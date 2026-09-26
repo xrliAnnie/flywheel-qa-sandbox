@@ -42,6 +42,8 @@ export interface CodexProcessRecord {
 	pid: number;
 	startIdentity: string;
 	argv0: string;
+	/** FLY-2830: the stable argv, whitespace split (Flywheel paths have none). */
+	argv: string[];
 	codexHome: string | null;
 	home: string | null;
 	executionId: string | null;
@@ -147,10 +149,12 @@ export function parseCodexProcessSnapshot(snapshot: CodexProcessSnapshot): {
 			unknown();
 			continue;
 		}
+		const argvTokens = argv.split(/\s+/).filter(Boolean);
 		codex.push({
 			pid,
 			startIdentity,
-			argv0: argv.split(/\s+/)[0]!,
+			argv0: argvTokens[0] ?? "",
+			argv: argvTokens,
 			codexHome: env.get("CODEX_HOME")?.[0] ?? null,
 			home: env.get("HOME")?.[0] ?? null,
 			executionId,

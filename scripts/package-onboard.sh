@@ -131,6 +131,7 @@ converge-flywheel-bin.sh
 check-global-path-hygiene.sh
 linux-preflight.sh
 materialize-lead-manifests.sh
+hooks/inject-runner-test-policy.mjs
 lib/buddy-escalate.sh
 lib/buddy-captain-preview.sh
 lib/buddy-connect.sh

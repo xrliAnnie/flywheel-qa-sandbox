@@ -1137,7 +1137,6 @@ expected_shard_tests = {
         "Test — FLY-1887 bounded Flywheel logs",
         "Test — FLY-957 record_deployed_range best-effort",
         "Test — FLY-2459 Codex department capability and migration",
-        "Test — FLY-1018 gemini-agent guard",
         "Test — FLY-880 PM executor role contract",
         "Test — FLY-2015 diagram-design role routing",
         "Test — FLY-2022 diagram-design project install",
@@ -1182,6 +1181,7 @@ expected_shard_tests = {
         "Test — FLY-2570 dynamic design ratio operator",
         "Test — FLY-1948 slot Discord channel evidence",
         "Test — FLY-1775 generalized-DAG 529 room",
+        "Test — FLY-2802 Runner local-test discipline",
         "Test — FLY-1649 r4 migration-window hardening",
         "Integration test — cmux-sync hooks",
         "Test — FLY-2033 meeting artifact closure",
@@ -1452,7 +1452,7 @@ fly1715_commands = [
 ]
 expected_fly1715_commands = [
     "bash scripts/__tests__/runner-tier-token-preflight.test.sh",
-    "bash scripts/__tests__/restart-services-voice-bridge.test.sh",
+    "bash scripts/__tests__/restart-services-no-voice-bridge.test.sh",
 ]
 require(
     fly1715_commands == expected_fly1715_commands,

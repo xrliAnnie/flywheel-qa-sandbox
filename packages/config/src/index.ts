@@ -475,6 +475,11 @@ export {
 	encodeMemoryPathComponent,
 	RUNNER_MEMORY_ID_MAX_LENGTH,
 } from "./runner-memory-path.js";
+export {
+	appendRunnerTestPolicyHookSettings,
+	buildRunnerTestPolicyHookCommand,
+	buildRunnerTestPolicyHookSettings,
+} from "./runner-test-policy-hook.js";
 // FLY-1356: skill_framework_mode three-way switch (A/superpowers, B/matt, C/bare).
 export type {
 	BackendSkillAssembly,

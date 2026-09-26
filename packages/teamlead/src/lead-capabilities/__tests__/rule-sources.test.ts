@@ -500,6 +500,45 @@ it("binds the Codex department Discord adapter to its canonical source", () => {
 	expect(canonical.adapterPath).toBeNull();
 });
 
+it("FLY-2862: binds the Codex reply adapter for a CoS carrier too, without the dept-only memory adapter", () => {
+	const options = {
+		scriptsDir,
+		projectRoot,
+		leadId: "flywheel-cos-lead",
+		role: "cos" as const,
+		commBackend: "mailbox" as const,
+		hasSummaryDuty: false,
+		inboxEnabled: false,
+		screencaptureEnabled: false,
+		skills: [],
+	};
+	const claude = selectLeadRuleSources(options).sources.find(
+		(source) => source.sourceId === "base/discord-reply-contract.md",
+	)!;
+	const codex = selectLeadRuleSources({
+		...options,
+		backend: "codex-app-server",
+	}).sources;
+	const adapterPath = resolve(
+		scriptsDir,
+		"../lead-rules-base/codex-discord-reply-contract.md",
+	);
+	expect(claude.adapterPath).toBeNull();
+	expect(
+		codex.find((source) => source.sourceId === claude.sourceId),
+	).toMatchObject({
+		sourcePath: claude.sourcePath,
+		adapterPath,
+		required: true,
+		status: "selected",
+	});
+	expect(
+		codex.some(
+			(source) => source.sourceId === "base/xiaohongshu-memory-rules.md",
+		),
+	).toBe(false);
+});
+
 it("keeps a missing Codex Discord adapter unavailable and rejects substitution", () => {
 	const { root, file } = fixture();
 	file("lead-rules-base/discord-reply-contract.md", "Canonical Discord rules");

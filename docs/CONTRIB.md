@@ -35,20 +35,20 @@ All scripts are run from the monorepo root.
 |--------|---------|-------------|
 | `build` | `pnpm build` | Build all packages recursively (`pnpm -r build`) |
 | `dev` | `pnpm dev` | Watch mode for all packages in parallel |
-| `test` | `pnpm test` | Run all tests across the monorepo |
+| `test` | `pnpm test` | CI/operator-only: run all tests across the monorepo |
 | `lint` | `pnpm lint` | Run Biome linter checks |
 | `format` | `pnpm format` | Auto-format with Biome (write + unsafe fixes) |
-| `test:packages` | `pnpm test:packages` | Test `packages/*` only |
-| `test:packages:run` | `pnpm test:packages:run` | Single-run tests for `packages/*` (no watch) |
-| `test:apps` | `pnpm test:apps` | Test `apps/*` only |
+| `test:packages` | `pnpm test:packages` | CI/operator-only aggregate for `packages/*` |
+| `test:packages:run` | `pnpm test:packages:run` | CI/operator-only single-run aggregate for `packages/*` |
+| `test:apps` | `pnpm test:apps` | CI/operator-only aggregate for `apps/*` |
 | `typecheck` | `pnpm typecheck` | TypeScript type checking across all packages |
 | `prepare` | `pnpm prepare` | Husky git hooks setup (runs automatically on install) |
 
-To run scripts for a specific package:
+To build a specific package and run one concrete related test file locally:
 
 ```bash
-pnpm --filter flywheel-teamlead test
 pnpm --filter flywheel-edge-worker build
+pnpm --filter flywheel-teamlead exec vitest run src/__tests__/specific.test.ts
 ```
 
 ## Packages
@@ -86,18 +86,15 @@ teamlead
 - **Approach**: TDD (RED -> GREEN -> REFACTOR)
 - **Coverage target**: 80%+
 
+Local Runner verification must use concrete related test files discovered from
+the changed paths and literal consumers. For changed TypeScript, also use
+`vitest related <changed-files> --run`. The broad `test`, `test:packages`,
+`test:apps`, package test aliases, and coverage aggregates above are
+CI/operator-only; exact-head PR CI owns full-suite evidence.
+
 ```bash
-# Run all tests
-pnpm test
-
-# Run tests for a specific package
-pnpm --filter flywheel-teamlead test
-
-# Single-run (no watch mode) for CI
-pnpm test:packages:run
-
-# Run with coverage (where configured)
-pnpm --filter flywheel-edge-worker test:coverage
+pnpm --filter flywheel-teamlead exec vitest run src/__tests__/specific.test.ts
+pnpm --filter flywheel-teamlead exec vitest related src/specific.ts --run
 ```
 
 Test files live in `__tests__/` directories alongside the source code they test.

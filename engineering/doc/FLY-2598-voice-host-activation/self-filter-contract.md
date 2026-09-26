@@ -5,13 +5,15 @@ Issue: FLY-2598 (https://linear.app/geoforge3d/issue/FLY-2598/语音激活-主�
 
 R1 HIGH `mirror-echo-guard-loses-its-only-fail-closed-preflight` 的必要修订。Lead 回答 `aa87aab0-b2f7-47eb-bee6-34e1d1976901` 已批准：Claude Discord fork 小补丁单独 PR、部署回执；主仓只接探测与准入，不复制插件实现、不改 allowBots、不恢复编排忽略名单。本文是实现要求，不是已运行能力。
 
+> **FLY-2711 修订（2026-09-24）**：Claude 入站 guard 以首次合法 ready 后固定且仍有效的 bot ID 为 authority，不再把当前连接态当入站条件；连接态只额外决定 voice probe 的 `ready`。socket 唯一主人改由 macOS 内核锁判定。完整理由、测试和 QA 判据见 [FLY-2711 plan](../FLY-2711-voice-carrier-parity/plan.md)。本修订取代下文原有的“未 ready/重连时拒收”与“重连期间 probe 失败和事件丢弃一致”表述。
+
 ## 1. 不允许回环的实际执行点
-Claude fork `xrliAnnie/claude-plugins-official` 的 Discord plugin（当前安装相对文件 server.ts）增加 `self-author-filter.ts`，导出不做 I/O 的自身作者判定。输入为已验证的固定 bot ID、当前连接 ready 布尔及 incoming authorId。首次 ready 捕获 client.user.id，后续 ready 必须仍相等；ID 变化、ID 未知或未 ready 一律拒收。断线时先把 ready 置 false；固定 ID 不因 client.user 暂时 undefined 而消失。
+Claude fork `xrliAnnie/claude-plugins-official` 的 Discord plugin（当前安装相对文件 server.ts）增加 `self-author-filter.ts`，导出不做 I/O 的自身作者判定。输入为已验证的固定 bot ID、固定身份是否仍有效及 incoming authorId。首次合法 ready 捕获 client.user.id，后续 ID 必须仍相等；固定前或检测到 ID 漂移后一律拒收。断线、resume 重放和 client.user 暂时 undefined 不清空或停用已固定身份，因此 founder 消息仍进入原 access 流程；自身 bot 在所有连接态仍先于下游被过滤。
 messageCreate 回调第一道判断调用这个函数，先于 allowBots、路由、回执、reaction 和 legacy notification；self echo 的 health 记录可以保留，但不得 ingest。函数只回答“可否进入下一道过滤”，不能自行授权 founder 或绕过现有 access。当前 enabled/broken/legacy delivery 模式都先经过它，堵住 legacy notification 绕路。
 Codex 的自身 ID 已是认证后固定值（CodexDiscordGateway.passesFilters），保持该行为；提取等价无 I/O 的判定供实际 callback 与探测共用。不能用额外 ignoredAuthorIds 代替 self guard。
 
 ## 2. 从正在处理消息的进程探测
-新能力名 `voice_self_filter_v1`。Codex 复用 CodexLeadInboxSocket 的认证 Unix socket，增加只读 `probeVoiceSelfFilter` method；server 通过 gateway 提供的闭包执行上述真实函数，不填硬编码 true。Claude fork 在当前 STATE_DIR 下增加 `voice-self-filter.sock`，0600，仅 owner 可读写；仅 RECORDER_MODE=enabled 且已知 leadId 时对 voice 返回 ready。该 socket 随插件生命周期启停，关闭时仅 unlink 自己 bind 的 inode；遇已有可连接 owner 不抢占，遇 symlink/无法证明 stale 不删除。
+新能力名 `voice_self_filter_v1`。Codex 复用 CodexLeadInboxSocket 的认证 Unix socket，增加只读 `probeVoiceSelfFilter` method；server 通过 gateway 提供的闭包执行上述真实函数，不填硬编码 true。Claude fork 在当前 STATE_DIR 下增加 `voice-self-filter.sock`，0600，仅 owner 可读写；仅 RECORDER_MODE=enabled 且已知 leadId 时对 voice 返回 ready。该 socket 随插件生命周期启停；macOS `O_EXLOCK` 锁决定唯一主人，持锁者才可回收同 UID 的残留 socket、绑定和发布公共名，关闭时按 inode 删除自己的名字、关闭 server、最后释放锁。活主人持续持锁；symlink、非 socket、非本 UID 或不安全锁一律不删并保持 voice fail closed。
 Claude STATE_DIR 解析复用现有 preflight 的 Lead Discord state-dir 规则，不接受请求方随意给路径。主仓新增 `bridge/voice-self-filter-probe.ts` 作为 client/校验器；Claude server 放 fork 内，不在主仓镜像或直接改安装缓存。
 
 请求为单行 JSON：`{version:1,method:'probeVoiceSelfFilter',leadId,expectedBotUserId,nonce,auth}`，nonce 为每次新生成的随机 32 字节 hex。使用该 Lead bot token 为 HMAC-SHA256 key，对固定有序数组 `[1,'voice-self-filter-v1',leadId,expectedBotUserId,nonce]` 的 JSON UTF-8 字节签名，恒时比较。Codex 外层保持 inbox transport version=2，此处 version=1 是 self-filter 子合同版本（字段 contractVersion）；其请求结构在既有 canonicalRequest/auth 分派中显式新增，不绕开原请求鉴权。Claude 独立 socket 直接使用上述 version=1 结构。无 token 值进消息、日志或收据。
@@ -20,7 +22,7 @@ Claude STATE_DIR 解析复用现有 preflight 的 Lead Discord state-dir 规则�
 
 ## 3. 准入与恢复边界
 start 在 reserve 前调用探测；缺能力统一 503 `voice_unavailable/self_filter_unverified`，细分检查原因只用枚举。claim/resume/recovery 首次允许发送前同样在 Bridge 侧重验；daemon 不持有任意插件 socket 路径。Bridge 的活动会话周期检查也复用探测，runtimeId 变化允许新进程重新证明，失败则走已有 failed/停流/离房清理；不得靠磁盘缓存继续。这不是“只开场检查后永久相信”的门。
-插件自身 guard 在每一条事件中独立 fail closed，重连期间 probe 失败与事件丢弃一致。部署或回滚 carrier/fork 前必须先结束 voice session；禁止活动会话期间回滚到没有 guard 的旧插件。此运行规则不自动获得重启生产 Lead 的权限。
+插件自身 guard 在每一条事件中独立 fail closed。重连期间 voice probe 因连接态返回 `ready=false`，暂停新语音准入；已固定且有效的身份仍继续过滤并交付非自身入站，避免 Discord resume replay 丢 founder 消息。部署或回滚 carrier/fork 前必须先结束 voice session；禁止活动会话期间回滚到没有 guard 的旧插件。此运行规则不自动获得重启生产 Lead 的权限。
 
 ## 4. 配套提交与验证
 实现节点创建 fork 独立 PR，固定 commit SHA 与 guard/probe tests；主仓 PR 引用此依赖并新增 client、Codex probe 接线及 preflight/恢复门。都按各仓现有 review/ship 流程走，不能直接写 main 或修改缓存。部署由既有独立 updater/插件受管流程负责，需收据记录 fork sha、目标 carrier incarnation、运行 probe runtimeId、主仓部署 sha。尚未载入的 Lead 只标未就绪。

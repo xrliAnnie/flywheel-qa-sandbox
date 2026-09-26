@@ -21,13 +21,23 @@
  */
 
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import {
+	appendRunnerTestPolicyHookSettings,
 	buildNonLeadClaudeSettings,
+	buildRunnerTestPolicyHookCommand,
 	getModelConfigSnapshot,
 	type RoleEffort,
 	resolveAllowedCanonicalModel,
 	resolveAllowedEffort,
 } from "flywheel-config";
+
+const RUNNER_TEST_POLICY_HOOK = fileURLToPath(
+	new URL(
+		"../../../../scripts/hooks/inject-runner-test-policy.mjs",
+		import.meta.url,
+	),
+);
 
 const washReviewEnv = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>
 	Object.fromEntries(
@@ -151,7 +161,16 @@ export function buildClaudeReviewArgv(
 		canonicalModel,
 		...(effort ? (["--effort", effort] as const) : []),
 		"--settings",
-		JSON.stringify(buildNonLeadClaudeSettings()),
+		JSON.stringify(
+			appendRunnerTestPolicyHookSettings(
+				buildNonLeadClaudeSettings(),
+				inv.prompt,
+				buildRunnerTestPolicyHookCommand(
+					process.execPath,
+					RUNNER_TEST_POLICY_HOOK,
+				),
+			),
+		),
 	];
 }
 

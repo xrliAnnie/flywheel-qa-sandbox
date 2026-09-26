@@ -1,0 +1,41 @@
+[
+ {
+  "engine": "A",
+  "voice": "alloy",
+  "rawSeconds": 10.2,
+  "clipSeconds": 4.1,
+  "voicedSeconds": 2.8,
+  "sylPerSec": 6.07,
+  "f0MedianHz": 142.4,
+  "f0Frames": 196,
+  "asr": "Annie,你好，我是Tadashi。现在有两件事要你看。",
+  "cerCore": 0.0,
+  "extraBeforeGreeting": "annie"
+ },
+ {
+  "engine": "A",
+  "voice": "marin",
+  "rawSeconds": 11.0,
+  "clipSeconds": 5.18,
+  "voicedSeconds": 3.86,
+  "sylPerSec": 4.4,
+  "f0MedianHz": 196.7,
+  "f0Frames": 280,
+  "asr": "Annie，你好，我是Tadashi。现在有两件事要你看。",
+  "cerCore": 0.0,
+  "extraBeforeGreeting": "annie"
+ },
+ {
+  "engine": "A",
+  "voice": "verse",
+  "rawSeconds": 10.1,
+  "clipSeconds": 4.46,
+  "voicedSeconds": 2.98,
+  "sylPerSec": 5.7,
+  "f0MedianHz": 151.9,
+  "f0Frames": 164,
+  "asr": "安妮你好，我是忠。现在有两件事要你看。",
+  "cerCore": 0.0,
+  "extraBeforeGreeting": "安妮"
+ }
+]

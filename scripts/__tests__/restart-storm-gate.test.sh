@@ -250,22 +250,22 @@ export FAKE_LEAD_RESULT=duplicate
 pending_ok=true
 for _ in 1 2 3 4 5; do
   run_expect 0 "$TEST_ROOT/out" "$TEST_ROOT/err" \
-    gate --root "$PENDING_ROOT" voice-bridge || pending_ok=false
+    gate --root "$PENDING_ROOT" voice || pending_ok=false
 done
 run_expect 3 "$TEST_ROOT/out" "$TEST_ROOT/err" \
-  gate --root "$PENDING_ROOT" voice-bridge || pending_ok=false
-PENDING_LINES="$(wc -l < "$PENDING_ROOT/voice-bridge.jsonl" | tr -d ' ')"
-PENDING_STATE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["state"])' "$PENDING_ROOT/voice-bridge.state")"
+  gate --root "$PENDING_ROOT" voice || pending_ok=false
+PENDING_LINES="$(wc -l < "$PENDING_ROOT/voice.jsonl" | tr -d ' ')"
+PENDING_STATE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["state"])' "$PENDING_ROOT/voice.state")"
 export FAKE_LEAD_RESULT=sent
 if [[ "$pending_ok" == true ]] \
   && [[ "$PENDING_STATE" == "held_alert_pending" ]] \
   && run_expect 3 "$TEST_ROOT/out" "$TEST_ROOT/err" \
-       gate --root "$PENDING_ROOT" voice-bridge \
-  && [[ "$(wc -l < "$PENDING_ROOT/voice-bridge.jsonl" | tr -d ' ')" == "$PENDING_LINES" ]] \
-  && [[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["state"])' "$PENDING_ROOT/voice-bridge.state")" == "held_alert_attempted" ]]; then
+       gate --root "$PENDING_ROOT" voice \
+  && [[ "$(wc -l < "$PENDING_ROOT/voice.jsonl" | tr -d ' ')" == "$PENDING_LINES" ]] \
+  && [[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["state"])' "$PENDING_ROOT/voice.state")" == "held_alert_attempted" ]]; then
   pass "duplicate is not a durable receipt; pending retries without another launch"
 else
-  fail "pending alert retry" "state=$(cat "$PENDING_ROOT/voice-bridge.state" 2>/dev/null || echo missing)"
+  fail "pending alert retry" "state=$(cat "$PENDING_ROOT/voice.state" 2>/dev/null || echo missing)"
 fi
 unset FAKE_LEAD_RESULT
 

@@ -1,0 +1,23 @@
+{"t":0.008,"kind":"request","data":{"method":"initialize","params":{"clientInfo":{"name":"fly2866-voice-audition","title":null,"version":"0.0.1"},"capabilities":{"experimentalApi":true}}}}
+{"t":0.042,"kind":"response","data":{"method":"initialize","error":null}}
+{"t":0.043,"kind":"request","data":{"method":"account/read","params":{}}}
+{"t":0.446,"kind":"response","data":{"method":"account/read","error":null}}
+{"t":0.447,"kind":"account","data":{"type":"chatgpt","planType":"pro"}}
+{"t":0.447,"kind":"request","data":{"method":"thread/realtime/listVoices","params":{}}}
+{"t":0.447,"kind":"response","data":{"method":"thread/realtime/listVoices","error":null}}
+{"t":0.447,"kind":"listVoices","data":{"voices":{"v1":["juniper","maple","spruce","ember","vale","breeze","arbor","sol","cove"],"v2":["alloy","ash","ballad","coral","echo","sage","shimmer","verse","marin","cedar"],"defaultV1":"cove","defaultV2":"marin"}}}
+{"t":0.447,"kind":"request","data":{"method":"thread/start","params":{"cwd":"/private/tmp/fly2866-v3-run/work","approvalPolicy":"never","sandbox":"read-only","ephemeral":true}}}
+{"t":0.619,"kind":"response","data":{"method":"thread/start","error":null}}
+{"t":0.677,"kind":"request","data":{"method":"thread/realtime/start","params":{"threadId":"01a0daf9-964e-7361-a6a7-37732758fa04","version":"v3","model":"gpt-live-1-codex","voice":"vale","clientManagedHandoffs":true,"outputModality":"audio","includeStartupContext":false,"prompt":"你是语音声线试听朗读员。不要调用任何工具，也不要主动说话。收到追加给你的可朗读内容时，用自然的普通话一字不改地念出来，不增不减，念完保持安静。","transport":{"type":"webrtc"}}}}
+{"t":0.704,"kind":"response","data":{"method":"thread/realtime/start","error":null}}
+{"t":1.439,"kind":"notify","data":{"method":"thread/realtime/started","params":{"threadId":"01a0daf9-964e-7361-a6a7-37732758fa04","realtimeSessionId":"01a0daf9-964e-7361-a6a7-37732758fa04","version":"v3"}}}
+{"t":1.452,"kind":"pc_state","data":{"s":"connecting"}}
+{"t":2.027,"kind":"pc_state","data":{"s":"connected"}}
+{"t":3.542,"kind":"request","data":{"method":"thread/realtime/appendSpeech","params":{"threadId":"01a0daf9-964e-7361-a6a7-37732758fa04","text":"你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。"}}}
+{"t":3.601,"kind":"response","data":{"method":"thread/realtime/appendSpeech","error":null}}
+{"t":63.684,"kind":"request","data":{"method":"thread/realtime/stop","params":{"threadId":"01a0daf9-964e-7361-a6a7-37732758fa04"}}}
+{"t":63.686,"kind":"response","data":{"method":"thread/realtime/stop","error":null}}
+{"t":63.687,"kind":"pc_state","data":{"s":"closed"}}
+{"t":63.692,"kind":"result","data":{"voice":"vale","attempt":"3","why":"no_audio","line":"你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。","downlinkSeconds":59.92,"audibleSpanSeconds":0,"assistantTranscript":""}}
+{"t":63.693,"kind":"notify","data":{"method":"thread/realtime/closed","params":{"threadId":"01a0daf9-964e-7361-a6a7-37732758fa04","reason":"requested"}}}
+{"t":63.701,"kind":"appserver_exit","data":{"code":0}}

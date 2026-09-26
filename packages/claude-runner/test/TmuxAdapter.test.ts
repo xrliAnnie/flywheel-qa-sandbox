@@ -1993,6 +1993,45 @@ describe("TmuxAdapter", () => {
 		expect(bytes.toString().split(protocol.trimEnd())).toHaveLength(2);
 	});
 
+	it("mechanically injects the local-test policy into delegated Agent and rescue prompts", async () => {
+		const protocol = loadWorkflowPhaseProtocols(["implement"]).get(
+			"implement",
+		)!;
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
+		await adapter.execute(
+			makeCtx({
+				executionId: "exec-delegation-policy-hook",
+				appendSystemPrompt: protocol,
+				workflowActivationId: "activation:delegation-policy-hook",
+			}),
+		);
+		const args = calls.find((call) => call.args[0] === "new-window")!.args;
+		const settings = JSON.parse(
+			args[args.indexOf("--settings") + 1] as string,
+		) as {
+			hooks?: {
+				PreToolUse?: Array<{
+					matcher: string;
+					hooks: Array<{ command: string }>;
+				}>;
+				UserPromptSubmit?: Array<{
+					hooks: Array<{ command: string }>;
+				}>;
+			};
+		};
+		const injection = settings.hooks?.PreToolUse?.find(
+			(entry) => entry.matcher === "Agent || Task || Skill",
+		);
+		expect(injection).toBeDefined();
+		expect(injection?.hooks[0]?.command).toMatch(
+			/scripts\/hooks\/inject-runner-test-policy\.mjs'$/,
+		);
+		expect(settings.hooks?.UserPromptSubmit?.[0]?.hooks[0]?.command).toBe(
+			'node "$FLYWHEEL_COMM_CLI" workflow-usage-source --event turn-start',
+		);
+	});
+
 	it("includes --permission-mode and --append-system-prompt-file (FLY-154 hotfix)", async () => {
 		// FLY-154 hotfix: large system prompts overflowed tmux's `new-window`
 		// internal command buffer ("command too long" — caught by qa-fly-372

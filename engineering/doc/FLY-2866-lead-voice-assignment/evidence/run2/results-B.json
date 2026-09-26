@@ -1,0 +1,112 @@
+[
+ {
+  "engine": "B",
+  "model": "gpt-realtime-2.1",
+  "version": "v2",
+  "voice": "alloy",
+  "startResponse": "ok",
+  "status": "ok",
+  "pcmBytes": 261600,
+  "sampleRate": 24000,
+  "modelTranscript": "Annie 你好，我是 Tadashi，现在有两件事要你看。"
+ },
+ {
+  "engine": "B",
+  "model": "gpt-realtime-2.1",
+  "version": "v2",
+  "voice": "ash",
+  "startResponse": "ok",
+  "status": "ok",
+  "pcmBytes": 252000,
+  "sampleRate": 24000,
+  "modelTranscript": "Annie 你好，我是 Tadashi，现在有两件事要你看。"
+ },
+ {
+  "engine": "B",
+  "model": "gpt-realtime-2.1",
+  "version": "v2",
+  "voice": "ballad",
+  "startResponse": "ok",
+  "status": "ok",
+  "pcmBytes": 247200,
+  "sampleRate": 24000,
+  "modelTranscript": "Annie 你好，我是 Tadashi，现在有两件事要你看。"
+ },
+ {
+  "engine": "B",
+  "model": "gpt-realtime-2.1",
+  "version": "v2",
+  "voice": "cedar",
+  "startResponse": "ok",
+  "status": "ok",
+  "pcmBytes": 220800,
+  "sampleRate": 24000,
+  "modelTranscript": "Annie 你好，我是 Tadashi，现在有两件事要你看。"
+ },
+ {
+  "engine": "B",
+  "model": "gpt-realtime-2.1",
+  "version": "v2",
+  "voice": "coral",
+  "startResponse": "ok",
+  "status": "ok",
+  "pcmBytes": 249600,
+  "sampleRate": 24000,
+  "modelTranscript": "Annie 你好，我是 Tadashi，现在有两件事要你看。"
+ },
+ {
+  "engine": "B",
+  "model": "gpt-realtime-2.1",
+  "version": "v2",
+  "voice": "echo",
+  "startResponse": "ok",
+  "status": "ok",
+  "pcmBytes": 228000,
+  "sampleRate": 24000,
+  "modelTranscript": "Annie 你好，我是 Tadashi，现在有两件事要你看。"
+ },
+ {
+  "engine": "B",
+  "model": "gpt-realtime-2.1",
+  "version": "v2",
+  "voice": "marin",
+  "startResponse": "ok",
+  "status": "ok",
+  "pcmBytes": 216000,
+  "sampleRate": 24000,
+  "modelTranscript": "Annie 你好，我是 Tadashi，现在有两件事要你看。"
+ },
+ {
+  "engine": "B",
+  "model": "gpt-realtime-2.1",
+  "version": "v2",
+  "voice": "sage",
+  "startResponse": "ok",
+  "status": "ok",
+  "pcmBytes": 237600,
+  "sampleRate": 24000,
+  "modelTranscript": "Annie 你好，我是 Tadashi，现在有两件事要你看。"
+ },
+ {
+  "engine": "B",
+  "model": "gpt-realtime-2.1",
+  "version": "v2",
+  "voice": "shimmer",
+  "startResponse": "ok",
+  "status": "ok",
+  "pcmBytes": 242400,
+  "sampleRate": 24000,
+  "modelTranscript": "Annie 你好，我是 Tadashi，现在有两件事要你看。"
+ },
+ {
+  "engine": "B",
+  "model": "gpt-realtime-2.1",
+  "version": "v2",
+  "voice": "verse",
+  "startResponse": "ok",
+  "status": "ok",
+  "pcmBytes": 314400,
+  "sampleRate": 24000,
+  "modelTranscript": "Annie 你好，我是 Tadashi，现在有两件事要你看。"
+ }
+]

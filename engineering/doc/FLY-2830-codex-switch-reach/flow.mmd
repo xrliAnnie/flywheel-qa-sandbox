@@ -1,0 +1,22 @@
+flowchart TD
+  subgraph S1["① 读数真实"]
+    R1["盘点占用：用自己那次盘点的结果作答"] --> R2["在用号走只读接口，真读到"]
+    R3["页面：卡到期到分钟 · 每行读于几点 · 读不到写真实原因"]
+  end
+  subgraph S2["② 自动切号真能开"]
+    A1["lsof 前先解析 socket 软链"] --> A2["活 daemon 证得出"]
+    A1 --> A3["任务结束时后台进程当场收得掉<br/>残留孤儿也收得掉"]
+    A4["老式执行体：认它自己的 TUI 客户端"] --> A5
+    A2 --> A5{"readiness 自检"}
+    A3 --> A5
+    A5 -->|"ready"| A6["号打满 → 真探下一个号 → 切过去 → 通知"]
+    A6 --> A7["新派 / 续跑的设计、实现节点落在新号"]
+  end
+  subgraph S3["③ 切号后 2 分钟内全量重读"]
+    T1["Codex 切号<br/>root generation +1"] --> T3["切号重读触发器"]
+    T2["Claude 切号<br/>lastSwitch generation +1"] --> T3
+    T3 --> T4["Bridge 读：Codex 6 号 + Codex 订阅 + Claude 卡/订阅"]
+    T3 --> T5["请 quota-monitor 立刻 sweep<br/>全部 Claude 号 5h/周用量"]
+  end
+  A6 --> T1
+  X["全部 Codex 号都打满"] --> Y["中文告警：逐号列出几点重置、最早几点恢复"]

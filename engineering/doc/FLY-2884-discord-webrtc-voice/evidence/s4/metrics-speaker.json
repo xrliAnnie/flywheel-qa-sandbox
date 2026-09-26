@@ -1,0 +1,121 @@
+{
+ "run": "s4",
+ "mode": "noise",
+ "why": "scenario_done",
+ "calibration": {
+  "floorMedian": 0,
+  "th": 300
+ },
+ "roomSegments": [
+  {
+   "start": 211409,
+   "end": 211727.3,
+   "voicedMs": 340
+  },
+  {
+   "start": 212131.3,
+   "end": 214409.1,
+   "voicedMs": 1880
+  },
+  {
+   "start": 214989.5,
+   "end": 217229.4,
+   "voicedMs": 2160
+  },
+  {
+   "start": 217670.1,
+   "end": 218887.3,
+   "voicedMs": 1220
+  },
+  {
+   "start": 219411.9,
+   "end": 221399.4,
+   "voicedMs": 1940
+  },
+  {
+   "start": 226047.5,
+   "end": 231447,
+   "voicedMs": 5040
+  },
+  {
+   "start": 241632.6,
+   "end": 245248.7,
+   "voicedMs": 3360
+  }
+ ],
+ "utterances": [
+  {
+   "label": "fan",
+   "file": "fan.wav",
+   "kind": "noise",
+   "frames": 3000,
+   "playStart": 8664.4,
+   "lastVoicedPull": 68325.4,
+   "playEnd": 68767.9,
+   "wallStart": 1790369971365,
+   "wallEnd": 1790370031493
+  },
+  {
+   "label": "keyboard",
+   "file": "keyboard.wav",
+   "kind": "noise",
+   "frames": 3000,
+   "playStart": 79198.6,
+   "lastVoicedPull": 138197.9,
+   "playEnd": 139299.9,
+   "wallStart": 1790370041923,
+   "wallEnd": 1790370102026
+  },
+  {
+   "label": "chatter_far",
+   "file": "chatter_far.wav",
+   "kind": "noise",
+   "frames": 3000,
+   "playStart": 149703.4,
+   "lastVoicedPull": 209283.4,
+   "playEnd": 209804.8,
+   "wallStart": 1790370112429,
+   "wallEnd": 1790370172531
+  },
+  {
+   "label": "fan_q6",
+   "file": "fan_q6.wav",
+   "kind": "speech",
+   "frames": 450,
+   "playStart": 219862.3,
+   "lastVoicedPull": 228522.1,
+   "playEnd": 228963.5,
+   "wallStart": 1790370182588,
+   "wallEnd": 1790370191690
+  },
+  {
+   "label": "fan_q7",
+   "file": "fan_q7.wav",
+   "kind": "speech",
+   "frames": 450,
+   "playStart": 235655.5,
+   "lastVoicedPull": 244317.5,
+   "playEnd": 244757.1,
+   "wallStart": 1790370198381,
+   "wallEnd": 1790370207484
+  }
+ ],
+ "latency": [
+  {
+   "label": "fan_q6",
+   "userEnd": 228522.1,
+   "roomStart": 241632.6,
+   "latencyMs": 13111,
+   "overlappedModelSpeech": true
+  },
+  {
+   "label": "fan_q7",
+   "userEnd": 244317.5,
+   "roomStart": null,
+   "latencyMs": null,
+   "overlappedModelSpeech": true
+  }
+ ],
+ "barge": [],
+ "bargeEval": []
+}

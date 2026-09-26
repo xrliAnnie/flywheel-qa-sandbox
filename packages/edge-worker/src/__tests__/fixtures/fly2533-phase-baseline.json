@@ -35,11 +35,16 @@
 				},
 				{
 					"before": "6. Run `pnpm lint`, `pnpm -r build`, `pnpm test:packages:run`, new `scripts/__tests__/*.test.sh`. Accept aggregate green OR complete PACKAGE_GATE_RECEIPT: zero assertion failures, only onTaskUpdate RPC errors; no Lead ruling. Unreached: `VITEST_MAX_FORKS=1 pnpm --filter <pkg> exec vitest run`. PR: artifacts + exact-head CI. Review: `codex:rescue` (never raw `codex exec`), injected gate; fix blockers, re-review.",
-					"after": "6. **Local targeted verification** — This rule overrides skill defaults that call full-repo build/tests. Run `pnpm lint`; build the affected package plus dependencies with `pnpm --filter \"<pkg>...\" build`; when exports, APIs, or types change, typecheck dependents with `pnpm --filter \"...<pkg>\" typecheck`. Select targeted tests from changed files' owning package and test files that directly depend on those changes. Discover consumers with `git grep -lF` using each changed file's full path, file name, and parent directory; document every excluded match. For changed TypeScript, also run the owning package's `vitest related <files> --run`; run all retained matches and every new `scripts/__tests__/*.test.sh`. There is no local full package suite. Only frozen-head full exact-head CI with `CI OK` is full-suite evidence; `CI Scope OK` is not. Fix every red current-HEAD CI job that ran. PR: disclose local and CI artifacts. Review: `codex:rescue` (never raw `codex exec`), injected gate; fix blockers, re-review."
+					"after": "6. Apply the injected `local-test-policy/v1` block above. Fix every red current-HEAD CI job that ran. In the PR, disclose targeted local artifacts separately from exact-head CI. Review with `codex:rescue` (never raw `codex exec`) and the injected gate; fix blockers and re-review."
 				}
 			],
 			"baselineRevision": "1e8d8a85ab35aa35dcaf06ef3e974bb822f31112",
-			"rebaseNote": "BUDGET ANCHOR (FLY-2753). This per-node baseline is the pre-change composed phase prompt from 1e8d8a85ab35aa35dcaf06ef3e974bb822f31112: canonical protocol + separator + old domain, rather than the fixture-level 26ebc4931 raw domain. platformMigration first removes the embedded protocol prefix, then applies only the FLY-2753 domain replacements, so domain equality remains exact. Direct composed text measured 3436->4043 utf16 (+17.67%) and 3438->4047 utf8 (+17.71%). Paired Blueprint measurements: claude-tmux 6910->7517 utf16 (+8.78%), 6924->7533 utf8 (+8.80%); codex-tmux 7011->7618 utf16 (+8.66%), 7027->7636 utf8 (+8.67%). These compare the real pre-change delivered prompt with the FLY-2753 prompt instead of charging the earlier protocol extraction to this issue."
+			"rebaseNote": "BUDGET ANCHOR (FLY-2753). This per-node baseline is the pre-change composed phase prompt from 1e8d8a85ab35aa35dcaf06ef3e974bb822f31112: canonical protocol + separator + old domain, rather than the fixture-level 26ebc4931 raw domain. platformMigration first removes the embedded protocol prefix, then applies only reviewed domain replacements, so domain equality remains exact. Direct composed text measured 3436->4043 utf16 (+17.67%) and 3438->4047 utf8 (+17.71%). FLY-2802 deliberately adds the shared fail-closed local-test policy to the phase protocol; its exact post-change carrier sizes are pinned below after replacing the machine-specific flywheel-comm CLI path with a fixed token, so any later byte growth fails again rather than inheriting an open-ended ratio waiver.",
+			"budgetException": {
+				"reason": "FLY-2802 must enumerate forbidden discovery/full-suite excuses and executable targeted alternatives in the injected phase protocol; exact sizes make this a one-head exception.",
+				"claude": { "utf16": 9093, "utf8": 9107 },
+				"codex": { "utf16": 9194, "utf8": 9210 }
+			}
 		},
 		{
 			"name": "qa",
@@ -52,11 +57,20 @@
 				},
 				{
 					"before": "3. **Run** the verification (the package's own tests where relevant: `pnpm test:packages:run`; plus the real behavior — Bridge / Lead / Discord live, or the rendered surface via proofshot / Claude-in-Chrome). Package gate: aggregate green OR only onTaskUpdate worker RPC errors with zero assertion failures and complete per-package receipts (PACKAGE_GATE_RECEIPT; artifact exit 2, real failure exit 1). Run every unreached Vitest package with `VITEST_MAX_FORKS=1 pnpm --filter <pkg> exec vitest run`; preserve required original script options, commands and exit codes. Other errors or incomplete results never qualify. Disclose artifacts in the PR; exact-head CI is required; no Lead ruling is needed for this bounded exception.",
-					"after": "3. **Run** the real behavior — Bridge / Lead / Discord live, or the rendered surface via proofshot / Claude-in-Chrome — plus local targeted verification. This rule overrides skill defaults that call full-repo build/tests. Run `pnpm lint`; build the affected package plus dependencies with `pnpm --filter \"<pkg>...\" build`; when exports, APIs, or types change, typecheck dependents with `pnpm --filter \"...<pkg>\" typecheck`. Select targeted tests from changed files' owning package and test files that directly depend on those changes. Discover consumers with `git grep -lF` using each changed file's full path, file name, and parent directory; document every excluded match. For changed TypeScript, also run the owning package's `vitest related <files> --run`; run all retained matches and every new `scripts/__tests__/*.test.sh`. There is no local full package suite. Only frozen-head full exact-head CI with `CI OK` is full-suite evidence; `CI Scope OK` is not. Any red current-HEAD CI job means FAIL; hand it to the author rather than fixing product code. Disclose local and CI evidence in the report."
+					"after": "3. **Run** the real behavior — Bridge / Lead / Discord live, or the rendered surface via proofshot / Claude-in-Chrome — and apply the injected `local-test-policy/v1` block above. Any red current-HEAD CI job means FAIL; hand it to the author rather than fixing product code. Disclose targeted local evidence and exact-head CI separately in the report."
+				},
+				{
+					"before": "Start from `.flywheel/templates/ship-report-template.html`; do not invent a plain markdown substitute. Replace every `{{SLOT}}`, HTML-escape all diff/test-derived text, and keep the page in founder language.",
+					"after": "Start from `.flywheel/templates/ship-report-template.html`; do not invent a plain markdown substitute. Replace every `{{SLOT}}`, HTML-escape all diff/test-derived text, and keep the page in founder language.\n\nDo not create or execute a temporary report-builder script (for example `node /tmp/build-*-ship-report.mjs`): an opaque local executable makes the runner-test-discipline evidence inconclusive. Copy the template, then write or edit the HTML artifact directly; invoke only the named render/publish tools below."
 				}
 			],
 			"baselineRevision": "1e8d8a85ab35aa35dcaf06ef3e974bb822f31112",
-			"rebaseNote": "BUDGET ANCHOR (FLY-2753). This per-node baseline is the pre-change composed phase prompt from 1e8d8a85ab35aa35dcaf06ef3e974bb822f31112: canonical protocol + separator + old domain, rather than the fixture-level 26ebc4931 raw domain. platformMigration first removes the embedded protocol prefix, then applies only the FLY-2753 domain replacements, so domain equality remains exact. Direct composed text measured 11054->11430 utf16 (+3.40%) and 11143->11521 utf8 (+3.39%). Paired Blueprint measurements: claude-tmux 14521->14897 utf16 (+2.59%), 14622->15000 utf8 (+2.59%); codex-tmux 14622->14998 utf16 (+2.57%), 14725->15103 utf8 (+2.57%). These compare the real pre-change delivered prompt with the FLY-2753 prompt instead of charging the earlier protocol extraction to this issue."
+			"rebaseNote": "BUDGET ANCHOR (FLY-2753). This per-node baseline is the pre-change composed phase prompt from 1e8d8a85ab35aa35dcaf06ef3e974bb822f31112: canonical protocol + separator + old domain, rather than the fixture-level 26ebc4931 raw domain. platformMigration first removes the embedded protocol prefix, then applies only reviewed domain replacements, so domain equality remains exact. Direct composed text measured 11054->11430 utf16 (+3.40%) and 11143->11521 utf8 (+3.39%). FLY-2802 deliberately adds the shared fail-closed local-test policy to the phase protocol; its exact post-change carrier sizes are pinned below after replacing the machine-specific flywheel-comm CLI path with a fixed token, so any later byte growth fails again rather than inheriting an open-ended ratio waiver.",
+			"budgetException": {
+				"reason": "FLY-2802 must give QA the same no-full-suite rule and make the prompt-change 529 behavior suite mandatory; exact sizes make this a one-head exception.",
+				"claude": { "utf16": 17477, "utf8": 17580 },
+				"codex": { "utf16": 17578, "utf8": 17683 }
+			}
 		},
 		{
 			"name": "general",
@@ -66,8 +80,17 @@
 				{
 					"before": "- Report to Tadashi (Flywheel Eng Lead) via `flywheel-comm ask` (never stock `SendMessage to:\"team-lead\"`).",
 					"after": ""
+				},
+				{
+					"before": "- **Audit the codebase first**; pick the right discipline: code-shaped work → follow the `engineer` node (TDD, full-repo `pnpm lint` + `pnpm -r build` + tests, `codex:rescue` review, PR); doc / UX-spec / design-production → `product_designer`; PM / product co-creation / PRD → `pm`; visual mockup-first design → `product_design`; feasibility prototype → `proto`.",
+					"after": "- **Audit the codebase first**; pick the right discipline: code-shaped work → follow the `engineer` node (TDD, its mandatory targeted-local-test policy, affected builds/typechecks, `codex:rescue` review, PR); doc / UX-spec / design-production → `product_designer`; PM / product co-creation / PRD → `pm`; visual mockup-first design → `product_design`; feasibility prototype → `proto`."
 				}
-			]
+			],
+			"budgetException": {
+				"reason": "FLY-2802 replaces the catch-all node's obsolete full-repository summary with the mandatory targeted-local-test contract; exact sizes make this a one-head exception.",
+				"claude": { "utf16": 4877, "utf8": 4901 },
+				"codex": { "utf16": 4978, "utf8": 5004 }
+			}
 		},
 		{
 			"name": "general.bare",

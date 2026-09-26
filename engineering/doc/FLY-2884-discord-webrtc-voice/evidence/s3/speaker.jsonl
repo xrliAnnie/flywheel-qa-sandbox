@@ -1,0 +1,58 @@
+{"t":3.901,"wall":1790369696187,"kind":"precheck","data":{"at":"2026-09-25T20:54:56.186Z","guildId":"1485787271192907816","channelId":"1542709028742893699","inTarget":["1493075160025272452"],"intruders":[],"busy":[],"ok":true}}
+{"t":4.065,"wall":1790369696351,"kind":"discord_conn_state","data":{"from":"signalling","to":"connecting"}}
+{"t":4.154,"wall":1790369696440,"kind":"discord_conn_state","data":{"from":"connecting","to":"connecting"}}
+{"t":4.178,"wall":1790369696464,"kind":"discord_conn_state","data":{"from":"connecting","to":"connecting"}}
+{"t":4.199,"wall":1790369696485,"kind":"discord_conn_state","data":{"from":"connecting","to":"connecting"}}
+{"t":4.282,"wall":1790369696568,"kind":"discord_dave_debug","data":"[NW] [DAVE] Session initialized for protocol version 1"}
+{"t":4.283,"wall":1790369696569,"kind":"discord_conn_state","data":{"from":"connecting","to":"ready"}}
+{"t":4.284,"wall":1790369696570,"kind":"discord_conn_state","data":{"from":"ready","to":"ready"}}
+{"t":4.284,"wall":1790369696570,"kind":"speaker_ready","data":{}}
+{"t":4.285,"wall":1790369696571,"kind":"discord_dave_debug","data":"[NW] [DAVE] Set MLS external sender"}
+{"t":4.288,"wall":1790369696574,"kind":"discord_dave_debug","data":"[NW] [DAVE] MLS proposals processed"}
+{"t":4.326,"wall":1790369696612,"kind":"discord_dave_debug","data":"[NW] [DAVE] MLS commit processed (transition id: 0)"}
+{"t":4.344,"wall":1790369696631,"kind":"discord_dave_debug","data":"[NW] [DAVE] Failed to decrypt a packet (1 consecutive fails)"}
+{"t":7.356,"wall":1790369699642,"kind":"play_start","data":{"label":"long1","file":"long1.wav","kind":"speech"}}
+{"t":7.584,"wall":1790369699870,"kind":"room_calibrated","data":{"th":300}}
+{"t":13.576,"wall":1790369705863,"kind":"played","data":{"label":"long1","file":"long1.wav","kind":"speech","frames":306,"playStart":7946.6,"lastVoicedPull":13726.4,"playEnd":14166.6,"wallStart":1790369699625,"wallEnd":1790369705863}}
+{"t":17.582,"wall":1790369709868,"kind":"play_start","data":{"label":"stop1","file":"stop1.wav","kind":"interrupt"}}
+{"t":21.242,"wall":1790369713529,"kind":"played","data":{"label":"stop1","file":"stop1.wav","kind":"interrupt","frames":178,"playStart":18172,"lastVoicedPull":21392.3,"playEnd":21832.3,"wallStart":1790369709868,"wallEnd":1790369713529}}
+{"t":22.764,"wall":1790369715050,"kind":"barge_new_answer_start","data":{"idx":1,"at":23130.7}}
+{"t":27.869,"wall":1790369720155,"kind":"play_start","data":{"label":"long2","file":"long2.wav","kind":"speech"}}
+{"t":34.63,"wall":1790369726916,"kind":"played","data":{"label":"long2","file":"long2.wav","kind":"speech","frames":333,"playStart":28459.2,"lastVoicedPull":34759.7,"playEnd":35219.7,"wallStart":1790369720155,"wallEnd":1790369726916}}
+{"t":38.073,"wall":1790369730359,"kind":"barge_invalid","data":{"attempt":2}}
+{"t":40.859,"wall":1790369733145,"kind":"play_start","data":{"label":"long3","file":"long3.wav","kind":"speech"}}
+{"t":47.181,"wall":1790369739467,"kind":"played","data":{"label":"long3","file":"long3.wav","kind":"speech","frames":311,"playStart":41449.2,"lastVoicedPull":47309.4,"playEnd":47771,"wallStart":1790369733145,"wallEnd":1790369739467}}
+{"t":51.237,"wall":1790369743523,"kind":"play_start","data":{"label":"stop2","file":"stop2.wav","kind":"interrupt"}}
+{"t":54.739,"wall":1790369747025,"kind":"played","data":{"label":"stop2","file":"stop2.wav","kind":"interrupt","frames":170,"playStart":51826.9,"lastVoicedPull":54886.6,"playEnd":55328.6,"wallStart":1790369743523,"wallEnd":1790369747025}}
+{"t":55.957,"wall":1790369748244,"kind":"barge_new_answer_start","data":{"idx":2,"at":56338.4}}
+{"t":60.424,"wall":1790369752710,"kind":"play_start","data":{"label":"long4","file":"long4.wav","kind":"speech"}}
+{"t":65.964,"wall":1790369758251,"kind":"played","data":{"label":"long4","file":"long4.wav","kind":"speech","frames":272,"playStart":61013.9,"lastVoicedPull":66094.5,"playEnd":66553.8,"wallStart":1790369752710,"wallEnd":1790369758250}}
+{"t":69.372,"wall":1790369761659,"kind":"play_start","data":{"label":"stop3","file":"stop3.wav","kind":"interrupt"}}
+{"t":72.033,"wall":1790369764320,"kind":"played","data":{"label":"stop3","file":"stop3.wav","kind":"interrupt","frames":128,"playStart":69962.7,"lastVoicedPull":72161.8,"playEnd":72623.1,"wallStart":1790369761659,"wallEnd":1790369764320}}
+{"t":72.435,"wall":1790369764722,"kind":"barge_new_answer_start","data":{"idx":3,"at":72590.7}}
+{"t":84.176,"wall":1790369776463,"kind":"play_start","data":{"label":"long5","file":"long5.wav","kind":"speech"}}
+{"t":90.538,"wall":1790369782825,"kind":"played","data":{"label":"long5","file":"long5.wav","kind":"speech","frames":313,"playStart":84768.4,"lastVoicedPull":90688.4,"playEnd":91128,"wallStart":1790369776463,"wallEnd":1790369782825}}
+{"t":94.094,"wall":1790369786381,"kind":"barge_invalid","data":{"attempt":5}}
+{"t":97.056,"wall":1790369789343,"kind":"play_start","data":{"label":"long1","file":"long1.wav","kind":"speech"}}
+{"t":103.278,"wall":1790369795565,"kind":"played","data":{"label":"long1","file":"long1.wav","kind":"speech","frames":306,"playStart":97647.3,"lastVoicedPull":103428.5,"playEnd":103867.8,"wallStart":1790369789343,"wallEnd":1790369795565}}
+{"t":107.249,"wall":1790369799537,"kind":"barge_invalid","data":{"attempt":6}}
+{"t":109.894,"wall":1790369802181,"kind":"play_start","data":{"label":"long2","file":"long2.wav","kind":"speech"}}
+{"t":116.654,"wall":1790369808942,"kind":"played","data":{"label":"long2","file":"long2.wav","kind":"speech","frames":333,"playStart":110484.1,"lastVoicedPull":116784.1,"playEnd":117244.4,"wallStart":1790369802181,"wallEnd":1790369808942}}
+{"t":120.573,"wall":1790369812861,"kind":"barge_invalid","data":{"attempt":7}}
+{"t":123.233,"wall":1790369815521,"kind":"play_start","data":{"label":"long3","file":"long3.wav","kind":"speech"}}
+{"t":129.556,"wall":1790369821843,"kind":"played","data":{"label":"long3","file":"long3.wav","kind":"speech","frames":311,"playStart":123823.6,"lastVoicedPull":129685.4,"playEnd":130145.7,"wallStart":1790369815521,"wallEnd":1790369821843}}
+{"t":133.702,"wall":1790369825990,"kind":"barge_invalid","data":{"attempt":8}}
+{"t":136.616,"wall":1790369828904,"kind":"play_start","data":{"label":"long4","file":"long4.wav","kind":"speech"}}
+{"t":142.159,"wall":1790369834447,"kind":"played","data":{"label":"long4","file":"long4.wav","kind":"speech","frames":272,"playStart":137206.4,"lastVoicedPull":142287.4,"playEnd":142749,"wallStart":1790369828904,"wallEnd":1790369834447}}
+{"t":145.341,"wall":1790369837629,"kind":"play_start","data":{"label":"stop4","file":"stop4.wav","kind":"interrupt"}}
+{"t":148.661,"wall":1790369840948,"kind":"played","data":{"label":"stop4","file":"stop4.wav","kind":"interrupt","frames":161,"playStart":145931.6,"lastVoicedPull":148793.7,"playEnd":149250.6,"wallStart":1790369837629,"wallEnd":1790369840948}}
+{"t":149.217,"wall":1790369841504,"kind":"barge_new_answer_start","data":{"idx":4,"at":149616.9}}
+{"t":162.594,"wall":1790369854882,"kind":"scenario_done","data":{}}
+{"t":162.599,"wall":1790369854887,"kind":"finish","data":{"why":"scenario_done"}}
+{"t":162.834,"wall":1790369855122,"kind":"discord_dave_debug","data":"[NW] [DAVE] Preparing for epoch (1)"}
+{"t":162.836,"wall":1790369855124,"kind":"discord_dave_debug","data":"[NW] [DAVE] Session reinitialized for protocol version 1"}
+{"t":162.838,"wall":1790369855126,"kind":"discord_dave_debug","data":"[NW] [DAVE] Preparing for transition (0, v1)"}
+{"t":162.838,"wall":1790369855126,"kind":"discord_dave_debug","data":"[NW] [DAVE] Executing transition (0)"}
+{"t":162.838,"wall":1790369855126,"kind":"discord_dave_debug","data":"[NW] [DAVE] Transition executed (v1 -> v1, id: 0)"}
+{"t":164.105,"wall":1790369856393,"kind":"discord_conn_state","data":{"from":"ready","to":"destroyed"}}
+{"t":164.249,"wall":1790369856537,"kind":"metrics_written","data":{"lat":9,"barge":4}}

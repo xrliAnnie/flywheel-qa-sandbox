@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { CheckpointsConfig } from "flywheel-config";
 import type {
 	AdapterExecutionContext,
@@ -514,6 +515,13 @@ describe("Blueprint generalized workflow capability contract", () => {
 });
 
 describe("FLY-2533 paired effective phase prompts", () => {
+	const commCliPath = fileURLToPath(
+		new URL("../../../flywheel-comm/dist/index.js", import.meta.url),
+	);
+	const normalizePromptForBudget = (prompt: string): string => {
+		expect(prompt).toContain(commCliPath);
+		return prompt.replaceAll(commCliPath, "<FLYWHEEL_COMM_CLI>");
+	};
 	const fixture = JSON.parse(
 		readFileSync(
 			new URL("./fixtures/fly2533-phase-baseline.json", import.meta.url),
@@ -529,6 +537,11 @@ describe("FLY-2533 paired effective phase prompts", () => {
 			/** Set when this node's baseline was re-pinned from a later commit. */
 			baselineRevision?: string;
 			rebaseNote?: string;
+			budgetException?: {
+				reason: string;
+				claude: { utf16: number; utf8: number };
+				codex: { utf16: number; utf8: number };
+			};
 		}>;
 	};
 	const roots: string[] = [];
@@ -542,9 +555,8 @@ describe("FLY-2533 paired effective phase prompts", () => {
 	it.each(cases)(
 		"preserves %s on %s with full domain, one protocol and <=10% growth",
 		async (name, backend) => {
-			const { type, baseline, platformMigration } = fixture.nodes.find(
-				(entry) => entry.name === name,
-			)!;
+			const { type, baseline, platformMigration, budgetException } =
+				fixture.nodes.find((entry) => entry.name === name)!;
 			// Fixture-level `revision` is the capture point for every entry that still
 			// carries its 26ebc4931 baseline. A node re-pinned from a later commit
 			// records that commit in its own `baselineRevision`, so the assertion below
@@ -618,12 +630,15 @@ describe("FLY-2533 paired effective phase prompts", () => {
 						.appendSystemPrompt,
 				);
 			}
-			const [before, after] = prompts;
+			const [rawBefore, rawAfter] = prompts;
+			const before = normalizePromptForBudget(rawBefore);
+			const after = normalizePromptForBudget(rawAfter);
 			process.stdout.write(
 				`FLY2533_PROMPT_MEASUREMENT ${JSON.stringify({
 					role: name,
 					vendor: backend === "codex-tmux" ? "codex" : "claude",
 					backend,
+					machinePathsNormalized: true,
 					utf16: { before: before.length, after: after.length },
 					utf8: {
 						before: Buffer.byteLength(before),
@@ -633,14 +648,29 @@ describe("FLY-2533 paired effective phase prompts", () => {
 			);
 			expect(after.split(protocol.trimEnd())).toHaveLength(2);
 			expect(after).toContain(composed);
-			expect(
-				after.length,
-				`${name}/${backend} UTF16 ${after.length}/${before.length}`,
-			).toBeLessThanOrEqual(before.length * 1.1);
-			expect(
-				Buffer.byteLength(after),
-				`${name}/${backend} UTF8 ${Buffer.byteLength(after)}/${Buffer.byteLength(before)}`,
-			).toBeLessThanOrEqual(Buffer.byteLength(before) * 1.1);
+			if (budgetException) {
+				expect(budgetException.reason.trim().length).toBeGreaterThan(20);
+				const expected =
+					backend === "codex-tmux"
+						? budgetException.codex
+						: budgetException.claude;
+				expect(after.length, `${name}/${backend} exact UTF16 exception`).toBe(
+					expected.utf16,
+				);
+				expect(
+					Buffer.byteLength(after),
+					`${name}/${backend} exact UTF8 exception`,
+				).toBe(expected.utf8);
+			} else {
+				expect(
+					after.length,
+					`${name}/${backend} UTF16 ${after.length}/${before.length}`,
+				).toBeLessThanOrEqual(before.length * 1.1);
+				expect(
+					Buffer.byteLength(after),
+					`${name}/${backend} UTF8 ${Buffer.byteLength(after)}/${Buffer.byteLength(before)}`,
+				).toBeLessThanOrEqual(Buffer.byteLength(before) * 1.1);
+			}
 		},
 	);
 });

@@ -1,0 +1,220 @@
+{
+ "run": "s2",
+ "mode": "latency",
+ "why": "stop_file",
+ "calibration": {
+  "up": {
+   "floorMedian": 0,
+   "th": 300
+  },
+  "down": {
+   "floorMedian": 0,
+   "th": 300
+  }
+ },
+ "upSegments": [
+  {
+   "start": 12557.4,
+   "end": 14578.8,
+   "voicedMs": 1720
+  },
+  {
+   "start": 21638,
+   "end": 25398.4,
+   "voicedMs": 3120
+  },
+  {
+   "start": 36597.2,
+   "end": 40417.5,
+   "voicedMs": 3420
+  },
+  {
+   "start": 49197.5,
+   "end": 51298.1,
+   "voicedMs": 2020
+  },
+  {
+   "start": 57578.6,
+   "end": 59617.5,
+   "voicedMs": 2020
+  },
+  {
+   "start": 65996.9,
+   "end": 72216.5,
+   "voicedMs": 5420
+  }
+ ],
+ "downSegments": [
+  {
+   "start": 15442.3,
+   "end": 16784.8,
+   "voicedMs": 1360
+  },
+  {
+   "start": 26735.4,
+   "end": 28445.9,
+   "voicedMs": 1620
+  },
+  {
+   "start": 29655,
+   "end": 31734.2,
+   "voicedMs": 1960
+  },
+  {
+   "start": 41276.4,
+   "end": 44418.7,
+   "voicedMs": 2900
+  },
+  {
+   "start": 52048.7,
+   "end": 52769,
+   "voicedMs": 740
+  },
+  {
+   "start": 60730.1,
+   "end": 61228.7,
+   "voicedMs": 520
+  },
+  {
+   "start": 73260.9,
+   "end": 74588.5,
+   "voicedMs": 1320
+  }
+ ],
+ "latencyPairs": [
+  {
+   "userEnd": 14578.8,
+   "modelStart": 15442.3,
+   "latencyMs": 864
+  },
+  {
+   "userEnd": 25398.4,
+   "modelStart": 26735.4,
+   "latencyMs": 1337
+  },
+  {
+   "userEnd": 40417.5,
+   "modelStart": 41276.4,
+   "latencyMs": 859
+  },
+  {
+   "userEnd": 51298.1,
+   "modelStart": 52048.7,
+   "latencyMs": 751
+  },
+  {
+   "userEnd": 59617.5,
+   "modelStart": 60730.1,
+   "latencyMs": 1113
+  },
+  {
+   "userEnd": 72216.5,
+   "modelStart": 73260.9,
+   "latencyMs": 1044
+  }
+ ],
+ "connectedMs": 70413,
+ "marks": {
+  "discord_ready": 6555.1,
+  "realtime_start_sent": 7495.9,
+  "answer_sdp": 8197.8,
+  "realtime_started": 8202,
+  "pc_connected": 8789.1,
+  "first_rtp_in": 9490.5,
+  "first_discord_packet": 12509,
+  "append_speech_sent": 28537.3,
+  "realtime_closed": 79107.1
+ },
+ "counters": {
+  "upReal": 1006,
+  "upSilenceFill": 2505,
+  "upDropped": 17,
+  "upUnderrun": 63,
+  "upNon960": 0,
+  "upStereo": 994,
+  "upMono": 29,
+  "downPkts": 3365,
+  "downNon960": 0,
+  "downTsAnomaly": 0,
+  "downReorder": 1,
+  "downLoss": 1,
+  "downStereo": 0,
+  "downMono": 3365,
+  "downQueueTrim": 0,
+  "maxDownQueue": 8,
+  "maxUpQueue": 6,
+  "dcEvents": {
+   "session.started": 1,
+   "input_transcript.added": 52,
+   "turn.created": 12,
+   "turn.delta": 75,
+   "output_transcript.added": 48,
+   "turn.done": 12,
+   "session.usage.updated": 4,
+   "delegation.created": 2,
+   "session.context.appended": 1
+  }
+ },
+ "transcripts": [
+  {
+   "t": 16387.9,
+   "role": "user",
+   "text": "你好,一加一等于 几?"
+  },
+  {
+   "t": 18679.8,
+   "role": "assistant",
+   "text": "你好!一加一等于二呀!"
+  },
+  {
+   "t": 27071.9,
+   "role": "user",
+   "text": "今天适合穿什么颜色的衣服?一句话回答"
+  },
+  {
+   "t": 33162.2,
+   "role": "assistant",
+   "text": "我看看今天的天气和氛围哈。浅蓝色吧,清爽又好搭配。"
+  },
+  {
+   "t": 42234.4,
+   "role": "user",
+   "text": "用一句话告诉我,猫为什么喜欢晒 太阳?"
+  },
+  {
+   "t": 46281,
+   "role": "assistant",
+   "text": "因为晒太阳能让它们暖和放松,还省力气。"
+  },
+  {
+   "t": 52824.8,
+   "role": "user",
+   "text": "北京市哪个国家的 首都"
+  },
+  {
+   "t": 54808,
+   "role": "assistant",
+   "text": "中国的首都。"
+  },
+  {
+   "t": 61329.6,
+   "role": "user",
+   "text": "给我说一个三个字的词语"
+  },
+  {
+   "t": 62926.5,
+   "role": "assistant",
+   "text": "慢慢来。"
+  },
+  {
+   "t": 73843.9,
+   "role": "user",
+   "text": "请读取hello.txt这个文件的第一行,告诉我写了什么"
+  },
+  {
+   "t": 76440.2,
+   "role": "assistant",
+   "text": "我看看第一行写了啥。"
+  }
+ ]
+}

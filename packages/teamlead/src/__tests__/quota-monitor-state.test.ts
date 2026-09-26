@@ -358,6 +358,9 @@ describe("quota monitor persistent state", () => {
 			nextUsageDueAt: _nextUsageDueAt,
 			nextPaneScanDueAt: _nextPaneScanDueAt,
 			confirmDueAt: _confirmDueAt,
+			lastSweepRequestId: _lastSweepRequestId,
+			lastSweepRequestOutcome: _lastSweepRequestOutcome,
+			pendingSweepRequest: _pendingSweepRequest,
 			version: _version,
 			...legacy
 		} = populatedState();
@@ -380,6 +383,9 @@ describe("quota monitor persistent state", () => {
 				confirmation: null,
 				unknownPanes: {},
 				modelPaneSuppressions: {},
+				lastSweepRequestId: null,
+				lastSweepRequestOutcome: null,
+				pendingSweepRequest: null,
 			},
 		});
 		writeQuotaMonitorState(migrated.state, path);
@@ -567,5 +573,104 @@ describe("quota monitor persistent state", () => {
 		expect(loaded.state.observedGeneration).toBe(6);
 		expect(loaded.state.lastSwitchAt).toBe(NOW);
 		expect(loaded.state.reviveEpoch).toBeNull();
+	});
+});
+
+describe("FLY-2830 — sweep request bookkeeping in state", () => {
+	const A = "3f2a8c1e-4b5d-4e6f-8a9b-0c1d2e3f4a5b";
+	const B = "9e8d7c6b-5a49-4382-9716-0a1b2c3d4e5f";
+
+	it("defaults the three keys to null in a fresh state", () => {
+		expect(emptyQuotaMonitorState(0)).toMatchObject({
+			lastSweepRequestId: null,
+			lastSweepRequestOutcome: null,
+			pendingSweepRequest: null,
+		});
+	});
+
+	it("round-trips an acknowledged request and a pending one", () => {
+		const state: QuotaMonitorState = {
+			...populatedState(),
+			lastSweepRequestId: A,
+			lastSweepRequestOutcome: "partial",
+			pendingSweepRequest: { requestId: B, attempts: 2 },
+		};
+		writeQuotaMonitorState(state, path);
+		expect(
+			loadQuotaMonitorState(path, { nowMs: NOW, storeGeneration: 7 }),
+		).toEqual({ state });
+	});
+
+	it("reads an older v2 state without the keys as null", () => {
+		const {
+			lastSweepRequestId: _id,
+			lastSweepRequestOutcome: _outcome,
+			pendingSweepRequest: _pending,
+			...older
+		} = populatedState();
+		writeFileSync(path, `${JSON.stringify(older)}\n`, { mode: 0o600 });
+		const loaded = loadQuotaMonitorState(path, {
+			nowMs: NOW,
+			storeGeneration: 7,
+		});
+		expect(loaded.recovery).toBeUndefined();
+		expect(loaded.state).toMatchObject({
+			lastSweepRequestId: null,
+			lastSweepRequestOutcome: null,
+			pendingSweepRequest: null,
+		});
+	});
+
+	it("keeps the bookkeeping across a store generation advance", () => {
+		writeQuotaMonitorState(
+			{
+				...populatedState(),
+				lastSweepRequestId: A,
+				lastSweepRequestOutcome: "swept",
+				pendingSweepRequest: { requestId: B, attempts: 1 },
+			},
+			path,
+		);
+		expect(
+			loadQuotaMonitorState(path, { nowMs: NOW, storeGeneration: 8 }).state,
+		).toMatchObject({
+			lastSweepRequestId: A,
+			lastSweepRequestOutcome: "swept",
+			pendingSweepRequest: { requestId: B, attempts: 1 },
+		});
+	});
+
+	it.each([
+		["a non-UUID acknowledged id", { lastSweepRequestId: "abc" }],
+		["an unknown outcome", { lastSweepRequestOutcome: "done" }],
+		[
+			"negative attempts",
+			{ pendingSweepRequest: { requestId: B, attempts: -1 } },
+		],
+		[
+			"attempts above 3",
+			{ pendingSweepRequest: { requestId: B, attempts: 4 } },
+		],
+		[
+			"fractional attempts",
+			{ pendingSweepRequest: { requestId: B, attempts: 1.5 } },
+		],
+		[
+			"a non-UUID pending id",
+			{ pendingSweepRequest: { requestId: "x", attempts: 0 } },
+		],
+		[
+			"an unknown pending key",
+			{ pendingSweepRequest: { requestId: B, attempts: 0, extra: true } },
+		],
+	])("treats %s as corrupt", (_label, mutation) => {
+		writeFileSync(
+			path,
+			`${JSON.stringify({ ...populatedState(), ...mutation })}\n`,
+			{ mode: 0o600 },
+		);
+		expect(
+			loadQuotaMonitorState(path, { nowMs: NOW, storeGeneration: 7 }).recovery,
+		).toBe("corrupt");
 	});
 });

@@ -1,0 +1,12 @@
+vendor,account,plan,active,weekly_used_pct,weekly_reset_at,observed_at,health
+codex,business,pro,False,100,2026-09-30T20:59:55.000Z,2026-09-25T20:52:02.502Z,valid
+codex,personal,pro,False,100,2026-09-29T23:51:17.000Z,2026-09-25T20:52:02.502Z,valid
+codex,personal1,prolite,False,100,2026-09-26T04:04:27.000Z,2026-09-25T20:20:46.753Z,unknown
+codex,personal2,prolite,False,100,2026-09-27T21:25:46.000Z,2026-09-25T20:52:02.502Z,valid
+codex,school,pro,True,32,2026-10-02T03:35:25.000Z,2026-09-25T20:52:30.611Z,valid
+codex,shopping,prolite,False,100,2026-09-25T22:06:34.000Z,2026-09-25T20:36:28.520Z,unknown
+claude,business,,False,99,2026-10-01T01:59:59.998840+00:00,2026-09-25T20:46:43.107Z,
+claude,personal,,True,17,2026-10-02T06:00:00.006676+00:00,2026-09-25T20:56:43.079Z,
+claude,school,,False,100,2026-09-28T15:59:59.940102+00:00,2026-09-25T20:46:45.008Z,
+claude,shopping,,False,100,2026-09-29T14:00:00.360015+00:00,2026-09-25T20:46:46.405Z,
+claude,personal1,,False,70,2026-09-09T07:00:00.088310+00:00,2026-09-08T21:33:20.161Z,

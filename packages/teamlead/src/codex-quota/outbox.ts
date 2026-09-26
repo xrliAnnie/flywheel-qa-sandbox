@@ -16,6 +16,13 @@ import {
 	formatCodexQuotaManualReason,
 } from "./availability.js";
 import {
+	formatPoolExhaustedAlert,
+	type PoolExhaustedAlertDetails,
+	type PoolExhaustedAlertSnapshot,
+	parsePoolExhaustedAlertDetails,
+	parsePoolExhaustedAlertSnapshot,
+} from "./pool-exhausted-alert.js";
+import {
 	type CodexSwitchNotificationSnapshot,
 	formatCodexSwitchNotification,
 	parseCodexSwitchNotificationSnapshot,
@@ -44,6 +51,7 @@ export interface CodexQuotaOutboxOptions {
 	): DurableQueueReceipt;
 	now?: () => number;
 	timezone?: () => string;
+	log?: (line: string) => void;
 }
 function resolveTimezone(options: Pick<CodexQuotaOutboxOptions, "timezone">) {
 	try {
@@ -416,6 +424,8 @@ export function createCodexQuotaOutboxDelivery(
 			const incident = options.store.codexQuota.getIncident(incidentId);
 			let reason = "quota_incident";
 			let notificationJson: string | null = null;
+			let alertSnapshotRaw: unknown;
+			let alertDetailsRaw: unknown;
 			try {
 				const data = JSON.parse(String(row.payload_json));
 				if (
@@ -425,7 +435,31 @@ export function createCodexQuotaOutboxDelivery(
 					reason = data.reason;
 				if (typeof data.notification === "string")
 					notificationJson = data.notification;
+				alertSnapshotRaw = data.alertSnapshot;
+				alertDetailsRaw = data.alertDetails;
 			} catch {}
+			// FLY-2830: rendered only from the frozen payload, re-validated here.
+			let alertSnapshot: PoolExhaustedAlertSnapshot | null = null;
+			let alertDetails: PoolExhaustedAlertDetails | null = null;
+			const log = options.log ?? ((line: string) => console.warn(line));
+			if (
+				founder &&
+				reason === "pool_exhausted" &&
+				alertSnapshotRaw !== undefined
+			) {
+				alertSnapshot = parsePoolExhaustedAlertSnapshot(alertSnapshotRaw);
+				if (alertSnapshot === null)
+					log(
+						`[codex-quota] pool_exhausted_snapshot_invalid incident=${incidentId}`,
+					);
+				else if (alertDetailsRaw !== undefined) {
+					alertDetails = parsePoolExhaustedAlertDetails(alertDetailsRaw);
+					if (alertDetails === null)
+						log(
+							`[codex-quota] pool_exhausted_details_invalid incident=${incidentId}`,
+						);
+				}
+			}
 			let sourceProfile = "unknown";
 			let reset = "unknown";
 			try {
@@ -493,7 +527,10 @@ export function createCodexQuotaOutboxDelivery(
 						? "Codex usage limit observed"
 						: "Codex quota recovery update",
 				body: founder
-					? `Codex fleet remains paused (${reason}). No blind replacement is allowed. Check account resets or add credits. ${details}`
+					? alertSnapshot
+						? // Payload only: an ambiguous replay must say exactly the same.
+							formatPoolExhaustedAlert(alertSnapshot, timezone, alertDetails)
+						: `Codex fleet remains paused (${reason}). No blind replacement is allowed. Check account resets or add credits. ${details}`
 					: notification
 						? formatCodexSwitchNotification(notificationSnapshot!, timezone)
 						: `Codex incident ${incidentId}: ${reason}. Recovery is tracked by the fleet coordinator.`,

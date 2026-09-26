@@ -191,6 +191,8 @@ jobs:
           node --test scripts/__tests__/qa-fly-2519-529-drill.test.mjs scripts/__tests__/qa-fly-2519-browser-node.test.mjs scripts/__tests__/qa-fly-2519-browser-process.test.mjs
           node --test scripts/__tests__/raya-cos-cli-dist.test.mjs
           node --test scripts/__tests__/fly2799-codex-container.test.mjs
+          node --test scripts/__tests__/remove-retired-dist.test.mjs
+          node --test scripts/__tests__/retire-legacy-voice.test.mjs
 
       - name: Test — FLY-2519 bounded patrol GitHub facts
         run: bash scripts/__tests__/lead-patrol-github-facts.test.sh
@@ -1070,13 +1072,6 @@ jobs:
           bash scripts/__tests__/lead-backend-migration-load.test.sh
           bash scripts/__tests__/lead-backend-migration-wave.test.sh
 
-      # FLY-1018: gemini-agent static guard. Pure grep assertions over
-      # packages/gemini-agent/src — zero reserved endpoints, zero forbidden
-      # imports, zero privileged credentials, exactly 6 tool declarations.
-      # Widening the agent's surface must be an explicit, reviewable act.
-      - name: Test — FLY-1018 gemini-agent guard
-        run: bash scripts/gemini-agent-guard.sh
-
       # FLY-880: internal PM agent role .md contract guard. Pure text assertions
       # (no external deps) — defends the 40k injection-truncation red line and the
       # product-co-creation (mode A) + inherited docs/design (mode B) anchors
@@ -1119,13 +1114,13 @@ jobs:
       - name: Test — FLY-1981 runtime role auto-QA retirement
         run: bash scripts/__tests__/runtime-role-auto-qa-retirement.test.sh
 
-      # FLY-1715: runner credential tier and managed voice replacement are
-      # deployment boundaries. Explicitly registered because script-tests
-      # does not glob.
+      # FLY-1715: runner credential tier and the deploy restart flow are
+      # deployment boundaries (FLY-2860: the voice-bridge restart step is
+      # retired). Explicitly registered because script-tests does not glob.
       - name: Test — FLY-1715 runner boundary shell contracts
         run: |
           bash scripts/__tests__/runner-tier-token-preflight.test.sh
-          bash scripts/__tests__/restart-services-voice-bridge.test.sh
+          bash scripts/__tests__/restart-services-no-voice-bridge.test.sh
 
       - name: Test — FLY-1945 trusted patrol helper closure
         run: bash scripts/__tests__/patrol-continuity-launcher.test.sh
@@ -1496,6 +1491,15 @@ jobs:
           node --test scripts/__tests__/qa-generalized-helper.test.mjs
           node --test scripts/__tests__/qa-generalized-e2e-lib.test.mjs
           node --test scripts/__tests__/qa-generalized-codex-stub.test.mjs
+
+      # FLY-2802: prompt policy consistency, command-event semantics, and the
+      # explicit real-room deployment mode are hermetic here. The four live
+      # model cells remain a 529 exact-head acceptance artifact.
+      - name: Test — FLY-2802 Runner local-test discipline
+        run: |
+          node --test scripts/__tests__/runner-test-discipline.test.mjs
+          node --test scripts/__tests__/runner-test-policy.test.mjs
+          bash scripts/__tests__/runner-test-discipline-deploy.test.sh
 
       # FLY-1649: hermetic r4 whole-state rollback and forward-window lifecycle
       # contracts. Explicitly registered because script-tests does not glob.

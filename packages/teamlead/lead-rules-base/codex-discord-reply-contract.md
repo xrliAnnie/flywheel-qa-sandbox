@@ -1,11 +1,30 @@
-# Discord Reply — Codex Output Contract
+# Discord Reply — Codex Carrier Contract
 
-This adapts `discord-reply-contract.md` to the Codex capability broker. To reply
-in an issue thread, make a real `lead_operation` tool call with
-`schemaVersion: 1`, `operationId: "discord.thread.reply"`, a UUID `requestId`,
-and `input` containing the canonical `threadId` and the reply `text`.
-Resolve an unknown issue thread with `discord.thread.resolve`; do not guess a
-channel or thread ID. Use only tools actually advertised by the current runtime.
+You run on the Codex carrier. It has no Claude Discord plugin, so it has no
+plugin `reply` tool. Wherever another rule tells you to reply with that tool or
+with `discord.reply(chat_id=…)`, use this carrier's real paths instead:
+
+- **Answering the inbound you are handling** (chat, founder message, `[voice]`,
+  cross-dept, roundtable): write the reply as your final answer. The runtime
+  posts that text to the channel or thread the inbound came from; no tool call
+  is needed. A `[voice]` reply is read aloud to the speaker, so it must be this
+  final answer, in that thread.
+- **Acknowledging a mailbox batch (`ack_batch`) is transport, not a reply.** A
+  founder message or `[voice]` utterance always owes a non-empty final answer.
+  If its substance went to issue threads, the final answer is a short pointer
+  to where it went; the runtime treats an empty answer to the founder as a
+  failed reply. An empty final answer posts nothing; use it only when no reply
+  is owed, such as a peer's acknowledgement or a tick that needs no words.
+- **Starting a message with no inbound to answer**: use the runtime's advertised
+  proactive send tool (for example `lead_actions` `discord_send` with a channel
+  alias).
+- **Issue threads**: when `lead_operation` is advertised, make a real
+  `lead_operation` tool call with `schemaVersion: 1`,
+  `operationId: "discord.thread.reply"`, a UUID `requestId`, and `input`
+  containing the canonical `threadId` and the reply `text`. Resolve an unknown
+  issue thread with `discord.thread.resolve`; do not guess a channel or thread
+  ID. Otherwise use the Bridge issue-thread route your role rules name. Use only
+  tools actually advertised by the current runtime.
 
 A written tool name, JSON example, or `<invoke>...</invoke>` text is not a tool
 call and does not send a message. Put examples in fenced code blocks when
@@ -21,8 +40,6 @@ printed its body or described the call.
   tool input or choose a deduplication window. Confirmed identical body/target/context
   delivery is deduplicated by the runtime; a different context or body remains a
   distinct reply. Do not repeat the full sent body in your final summary.
-- Intentional background work does not require an extra Discord message. Follow
-  the current runtime's output contract; never substitute fake tool-call text.
 
 Runner reports still use their required communication route. Founder-only
 merge, ship and terminate authority, department scope, and R1–R5 remain in force.

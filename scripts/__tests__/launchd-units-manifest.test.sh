@@ -223,7 +223,7 @@ def validate_repo_manifest(text):
         "com.flywheel.sub-create-nightly": ("-", "external", "*", "informational-only"),
         "com.flywheel.sub-daily-loop": ("-", "external", "*", "informational-only"),
         "com.flywheel.skills-update": ("-", "external", "*", "informational-only"),
-        "com.flywheel.voice-bridge": ("com.flywheel.voice-bridge.plist", "managed", "0", None),
+        "com.flywheel.voice-bridge": ("-", "managed", "0", "tombstone"),
         "com.flywheel.voice": ("com.flywheel.voice.plist", "setup", "0", "registered dormant"),
     }
     reject(set(by_label) != set(expected),

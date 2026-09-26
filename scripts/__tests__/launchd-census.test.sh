@@ -619,11 +619,11 @@ fi
 
 reset_convergence_world
 target="$ROOT/managed-disabled.sh"; printf '#!/bin/bash\n' > "$target"
-write_plist "$AGENTS/com.flywheel.voice-bridge.plist" \
-  com.flywheel.voice-bridge /bin/bash "$target"
-printf '%s\n' com.flywheel.voice-bridge > "$DOMAIN_FILE"
-append_manifest com.flywheel.voice-bridge - managed 0 'disabled managed fixture'
-disable_label com.flywheel.voice-bridge
+write_plist "$AGENTS/com.flywheel.managed-disabled.plist" \
+  com.flywheel.managed-disabled /bin/bash "$target"
+printf '%s\n' com.flywheel.managed-disabled > "$DOMAIN_FILE"
+append_manifest com.flywheel.managed-disabled - managed 0 'disabled managed fixture'
+disable_label com.flywheel.managed-disabled
 converge_nonlead_daemons >/dev/null 2>&1
 converge_state="$NONLEAD_DAEMON_CONVERGE_STATE"
 converge_detail="$NONLEAD_DAEMON_CONVERGE_DETAIL"
@@ -636,6 +636,31 @@ if [[ "$converge_state" == degraded && "$converge_detail" == *'managed_loaded=1'
   pass "disabled managed jobs remain visible as managed_loaded without mutation"
 else
   fail "disabled managed job was hidden: $converge_state / $converge_detail / $LAUNCHD_CENSUS_SUMMARY"
+fi
+
+# FLY-2860: the retired voice-bridge daemon keeps a managed tombstone row in
+# the real manifest. Without it the installed-disk side would bootstrap a
+# leftover plist (unlisted, enabled, absent from the domain) whose wrapper no
+# longer exists; with it a still-loaded leftover stays visible.
+reset_convergence_world
+target="$ROOT/retired-voice-bridge.sh"; printf '#!/bin/bash\n' > "$target"
+write_plist "$AGENTS/com.flywheel.voice-bridge.plist" \
+  com.flywheel.voice-bridge /bin/bash "$target"
+grep -E '^com\.flywheel\.voice-bridge[[:space:]]' "$REPO_ROOT/scripts/launchd/units.manifest" >> "$MANIFEST" || true
+converge_nonlead_daemons >/dev/null 2>&1
+if ! grep -Fxq com.flywheel.voice-bridge "$BOOTSTRAP_LOG"; then
+  pass "retired voice-bridge leftover plist is never bootstrapped by convergence"
+else
+  fail "convergence bootstrapped the retired voice-bridge leftover: $NONLEAD_DAEMON_CONVERGE_DETAIL"
+fi
+printf '%s\n' com.flywheel.voice-bridge > "$DOMAIN_FILE"
+: > "$BOOTSTRAP_LOG"
+converge_nonlead_daemons >/dev/null 2>&1
+if [[ "$NONLEAD_DAEMON_CONVERGE_STATE" == degraded \
+  && "$NONLEAD_DAEMON_CONVERGE_DETAIL" == *'managed_loaded=1'* && ! -s "$BOOTSTRAP_LOG" ]]; then
+  pass "a still-loaded retired voice-bridge stays visible as managed_loaded"
+else
+  fail "loaded retired voice-bridge was hidden: $NONLEAD_DAEMON_CONVERGE_STATE / $NONLEAD_DAEMON_CONVERGE_DETAIL"
 fi
 
 reset_convergence_world

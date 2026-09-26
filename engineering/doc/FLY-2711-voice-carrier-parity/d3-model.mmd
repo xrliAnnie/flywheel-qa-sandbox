@@ -1,0 +1,19 @@
+flowchart LR
+    subgraph Fork[Claude 插件 fork 仓库]
+      SF[SelfAuthorFilter 固定机器人身份]
+      IN[入站判定 只看身份]
+      PR[探针判定 身份加当前连接加接线完整]
+      SK[探针 socket 0600]
+      LK[内核锁文件 进程死自动释放]
+      SF --> IN
+      SF --> PR
+      PR --> SK
+      LK -->|唯一主人| SK
+    end
+    subgraph Main[主仓 flywheel]
+      CL[Bridge 探针客户端 已就绪不改]
+      GV[黄金向量测试 两仓同一组数字]
+      DOC[运维手册与合同修订]
+    end
+    CL -->|换行分帧 HMAC 签名| SK
+    GV -.钉住线协议.- SK

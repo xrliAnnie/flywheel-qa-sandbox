@@ -168,7 +168,12 @@ export function selectLeadRuleSources(options: LeadRuleSourceOptions) {
 		adapters = { ...options.adapters };
 	const codexDepartment =
 		options.backend === "codex-app-server" && options.role === "dept";
-	if (codexDepartment) {
+	// FLY-2862: every Codex CoS/dept carrier replies through its final answer, not
+	// the Claude Discord plugin the shared role rules name.
+	const codexReply =
+		options.backend === "codex-app-server" &&
+		(options.role === "dept" || options.role === "cos");
+	if (codexReply) {
 		const id = "base/discord-reply-contract.md";
 		const adapter = normalize(
 			join(
@@ -179,6 +184,8 @@ export function selectLeadRuleSources(options: LeadRuleSourceOptions) {
 		if (adapters[id] && adapters[id] !== adapter)
 			throw new Error("conflicting_codex_discord_adapter");
 		adapters[id] = adapter;
+	}
+	if (codexDepartment) {
 		const memoryId = "base/xiaohongshu-memory-rules.md";
 		const memoryAdapter = normalize(
 			join(
@@ -279,7 +286,7 @@ export function selectLeadRuleSources(options: LeadRuleSourceOptions) {
 			rule("founder-html-delivery.md");
 		}
 		rule("cross-dept-channel-rules.md");
-		rule("discord-reply-contract.md", codexDepartment);
+		rule("discord-reply-contract.md", codexReply);
 		const shared = join(options.projectRoot, ".lead/shared");
 		if (existsSync(shared)) {
 			add(

@@ -33,7 +33,7 @@ export type SpeakSource =
 export type ResourceSource =
 	| { kind: "file"; path: string }
 	| { kind: "stream"; stream: Readable }
-	/** FLY-545 PR-2: raw 48k s16le stereo PCM (GeminiTurnMouth) — the real
+	/** FLY-545 PR-2: raw 48k s16le stereo PCM (live streamed speech) — the real
 	 * wiring MUST tag it StreamType.Raw or discord.js probes/transcodes it. */
 	| { kind: "raw-stream"; stream: Readable };
 

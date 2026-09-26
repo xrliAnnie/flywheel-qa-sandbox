@@ -1,0 +1,18 @@
+{
+	"issue": "FLY-2860",
+	"note": "dist outputs of sources deleted with the legacy voice-bridge daemon (/gemini, /eleven, /glaw); tsc never removes them, so the build does (scripts/lib/remove-retired-dist.mjs).",
+	"stems": [
+		"SessionSlot",
+		"VoiceRoomRuntime",
+		"cli",
+		"config",
+		"preflight",
+		"roomEars",
+		"audio/EarsReceiver",
+		"audio/GeminiTurnMouth",
+		"audio/TextTurnMouth",
+		"audio/defaultCues",
+		"audio/resample"
+	],
+	"dirs": ["assistant", "brain", "discord", "eleven", "huddle", "linear"]
+}

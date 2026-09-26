@@ -1,0 +1,22 @@
+{
+ "A-alloy": {
+  "f0MedianHz": 151.9,
+  "frames": 147
+ },
+ "A-ash": {
+  "f0MedianHz": 102.1,
+  "frames": 134
+ },
+ "A-cedar": {
+  "f0MedianHz": 130.4,
+  "frames": 117
+ },
+ "A-coral": {
+  "f0MedianHz": 200.0,
+  "frames": 84
+ },
+ "A-echo": {
+  "f0MedianHz": 118.8,
+  "frames": 163
+ }
+}

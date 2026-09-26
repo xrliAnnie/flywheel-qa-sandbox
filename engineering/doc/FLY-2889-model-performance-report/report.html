@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>模型表现报告</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--text:#1d1d1f;--dim:#86868b;--line:#e5e5ea;--red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;--navy:#1a365d}
+*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.65 -apple-system,system-ui,"PingFang SC","Hiragino Sans GB",sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:24px;line-height:1.3;margin:0 0 6px;color:var(--navy)}
+h2{font-size:19px;margin:0 0 10px;color:var(--navy)}
+h3{font-size:15px;margin:16px 0 6px;color:var(--navy)}
+.sub{color:var(--dim);font-size:13px}
+.card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:16px;margin:16px 0;border-left:4px solid var(--line)}
+.card.red{border-left-color:var(--red)}.card.amber{border-left-color:var(--amber)}.card.blue{border-left-color:var(--blue)}.card.green{border-left-color:var(--green)}.card.purple{border-left-color:var(--purple)}.card.navy{border-left-color:var(--navy)}
+.num{display:inline-block;min-width:26px;height:26px;border-radius:13px;background:var(--navy);color:#fff;font-size:13px;text-align:center;line-height:26px;margin-right:8px;vertical-align:2px}
+.tldr p.big{font-size:16px;margin:4px 0 8px}
+.tldr li{margin:4px 0}
+ul{padding-left:20px;margin:6px 0}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:8px 0}
+.tbl{width:100%;border-collapse:collapse;font-size:13.5px}
+.tbl th,.tbl td{text-align:left;vertical-align:top;padding:7px 6px;border-top:1px solid var(--line)}
+.tbl th{font-size:12px;color:var(--dim);font-weight:600;border-top:none;white-space:nowrap}
+.tbl td:first-child{white-space:nowrap;font-weight:600}
+.dim{color:var(--dim);font-size:12px}
+.few{display:inline-block;background:#fff7e8;color:#a35a00;font-size:11.5px;font-weight:600;padding:1px 6px;border-radius:8px;margin-left:4px}
+.na{color:var(--dim)}
+.note{color:#3a3a3c;font-size:13.5px;margin:8px 0}
+.badge{display:inline-block;font-size:11px;padding:1px 6px;border-radius:8px;background:var(--navy);color:#fff;vertical-align:1px}
+code{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12px;word-break:break-all}
+.cbox{margin-top:14px;padding-top:12px;border-top:1px dashed var(--line)}
+.cbox label{display:block;font-size:12px;color:var(--dim);margin-bottom:4px}
+.cbox textarea{width:100%;min-height:60px;border:1px solid #d2d2d7;border-radius:8px;padding:8px 10px;font:inherit;font-size:14px;resize:vertical;background:#fbfbfd}
+.cbox textarea:focus{outline:none;border-color:var(--blue);background:#fff}
+.summary-box{white-space:pre-wrap;font-family:"SF Mono",Menlo,monospace;font-size:12.5px;background:#f2f2f5;border-radius:8px;padding:12px;min-height:60px;max-height:360px;overflow:auto}
+.btn{display:inline-block;background:var(--blue);color:#fff;border:none;border-radius:8px;padding:8px 14px;font:inherit;font-size:14px;cursor:pointer;margin:6px 8px 6px 0}
+.btn.sec{background:#e5e5ea;color:#1d1d1f}
+.status{font-size:13px;color:#1d7a3d;min-height:20px}
+@media (max-width:640px){.tbl{font-size:12.5px}h1{font-size:21px}}
+.legend{font-size:12px;color:var(--dim);margin:6px 0 2px;line-height:2}
+.g{display:inline-block;font-size:11.5px;font-weight:600;padding:1px 7px;border-radius:8px;margin:0 4px 0 6px;white-space:nowrap;vertical-align:1px}
+.g.best{background:#e3f6e8;color:#1e7d32}.g.mid{background:#fff3dd;color:#a35a00}.g.worst{background:#ffe5e3;color:#c4271d}.g.na,.g.tie{background:#eeeef1;color:#5a5a5e}
+td.c-best{background:#f3fbf5}td.c-mid{background:#fffaf0}td.c-worst{background:#fff5f4}
+.mtbl td{font-size:13px}.mtbl td:first-child{white-space:normal;min-width:130px}.mtbl td:nth-child(2){min-width:120px}.mtbl td:nth-child(3){min-width:230px}.mtbl td:nth-child(4){min-width:110px}.mtbl td:nth-child(5){min-width:150px}.mtbl td:nth-child(6){min-width:110px}.stbadge{margin-top:6px}.stbadge .g{margin-left:0;white-space:normal}
+.mob{display:none}
+.mcard{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:10px 0}
+.mcard ul{margin:6px 0 0}.mcard li{margin:3px 0;font-size:13.5px}
+@media (max-width:640px){.desk{display:none}.mob{display:block}}
+
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>模型表现报告：设计 / 实现 / QA 各模型的正确度、速度、花费</h1>
+<div class="sub">FLY-2889 · 数据截至 09-25 14:02 PDT · 只读分析，没有改任何配置 · 每节下面可以写意见，最底下一键复制全部</div>
+<section class="card green" id="s0"><h2><span class="num">0</span>结论与建议比例</h2>
+<div class="tldr">
+<p class="big">一句话：<b>没有哪个模型好到值得大调</b>。要处理的是两件事：① 过去 21 小时实际跑的比例和配置不一样（实现 30 个片段里 25 个、QA 23 个里 19 个跑在 Opus 5.5 上）；② 两个额度池都很紧（09-25 14:02 PDT：Claude 只剩 personal，17% 已用；Codex 只剩 school，32% 已用）。</p>
+</div>
+<h3>按模型看</h3>
+<p class="note">「跑了几次」= 单 × 节点 × run 的片段数。速度扣掉了等你 / 等 Lead 的阻塞提问和重启空窗。Claude 与 Codex 的 token 不能直接比。整体状态：<span class="g best">▲ 好</span> <span class="g mid">● 中等</span> <span class="g worst">▼ 偏弱 / 有问题</span> <span class="g na">— 仅参考</span></p>
+<div class="desk"><div class="scroll"><table class="tbl mtbl"><thead><tr><th>模型 · 整体状态</th><th>各节点跑了几次</th><th>正确度</th><th>速度（中位，首个 run）</th><th>花费（作者，中位）</th><th>建议比例（现 → 改）</th></tr></thead><tbody><tr><td><b>GPT-6 Astra</b><div class="stbadge"><span class="g best">▲ 速度、花费最好；质量证据有分歧</span></div></td><td>设计 xhigh <b>31</b> 次<span class='dim'>（28 张单）</span><br>设计 high <b>49</b> 次<span class='dim'>（32 张单）</span><br>实现 medium <b>125</b> 次<span class='dim'>（83 张单）</span></td><td>设计评审首轮通过：xhigh 19%（5/27）、high 22%（8/37），中位 2 轮（由 Claude 审）<br>实现 QA 首过 82%（74/90）——比 Sol、Opus 5.5 都高，但只跑在 09-09~16（Fable 8/9 更高，但只有 9 个）</td><td>设计 0.8 h（xhigh）/ 0.7 h（high），最快<br>实现 1.4 h</td><td>设计 15M token ≈ pro 号周额度 0.5–0.7%<br>实现 53M token ≈ 1.8–2.6%</td><td>设计 33% → <b>33%（不调）</b><br>实现 / QA：不在当前分流里</td></tr><tr><td><b>GPT-5.6 Sol</b><div class="stbadge"><span class="g worst">▼ 实现偏弱、系统故障最多；做 QA 没有证据</span></div></td><td>实现 xhigh <b>202</b> 次<span class='dim'>（95 张单）</span><br>QA high <b>4</b> 次<span class='dim'>（4 张单）</span></td><td>实现 QA 首过 45%（55/121）；同时段（09-21~25）32%（17/53），四个模型里最低<br>QA：只有 3 个判决，全撞上系统故障</td><td>实现 4.3 h，最慢<br>QA 样本太少</td><td>实现 59M token ≈ pro 号周额度 2.0–2.9%<br>实现片段 122/202 撞上判死 / 换体</td><td>实现 50% → <b>40%</b><br>QA 75% → <b>50%</b></td></tr><tr><td><b>Opus 5.5</b><div class="stbadge"><span class="g mid">● 中等、稳定；实现同时段比 Sol 好一些</span></div></td><td>设计 high <b>6</b> 次<span class='dim'>（6 张单）</span><br>实现 xhigh <b>28</b> 次<span class='dim'>（21 张单）</span><br>QA high <b>22</b> 次<span class='dim'>（16 张单）</span><br>general high <b>6</b> 次<span class='dim'>（6 张单）</span></td><td>实现 QA 首过 45%（10/22）（同时段 Sol 为 32%（17/53））<br>QA 通过后同一 commit 被你打回 24%（4/17）<br>设计评审轮数拿不到</td><td>设计 0.7 h<br>实现 3.5 h<br>QA 0.3 h</td><td>实现 58M token，QA 33M token（Claude token）<br>占周额度百分比拿不到</td><td>设计 33% → <b>33%</b><br>实现 50% → <b>60%</b><br>QA 25% → <b>50%</b></td></tr><tr><td><b>Fable 5.1</b><div class="stbadge"><span class="g mid">● 设计最慢；实现样本少但结果好</span></div></td><td>设计 high <b>42</b> 次<span class='dim'>（40 张单）</span><br>实现 high <b>11</b> 次<span class='dim'>（11 张单）</span></td><td>设计评审轮数拿不到；奇偶分流期下游 QA 首过 76%（16/21）<br>实现 QA 首过 89%（8/9）（只在 09-21~25）</td><td>设计 1.4 h，最慢<br>实现 样本太少</td><td>设计 27M token（Claude token）<br>占周额度百分比拿不到</td><td>设计 33% → <b>33%（不调）</b><br>实现：不在当前分流里</td></tr><tr><td><b>Opus 5（已换代，参考）</b><div class="stbadge"><span class="g na">— 历史基准，已由 Opus 5.5 取代</span></div></td><td>QA high <b>230</b> 次<span class='dim'>（157 张单）</span><br>实现 high <b>7</b> 次<span class='dim'>（6 张单）</span><br>general high <b>11</b> 次<span class='dim'>（11 张单）</span></td><td>QA 通过后同一 commit 被你打回 17%（36/216）<br>不通过后被 Lead 改判 1%（1/121）</td><td>QA 0.4 h<br>general 0.7 h</td><td>QA 29M token（Claude token）</td><td>已不参与分配</td></tr></tbody></table></div></div><div class="mob"><div class="mcard"><div class="mhead"><b>GPT-6 Astra</b> <span class="g best">▲ 速度、花费最好；质量证据有分歧</span></div><ul><li><b>跑了几次</b>：设计 xhigh <b>31</b> 次<span class='dim'>（28 张单）</span>；设计 high <b>49</b> 次<span class='dim'>（32 张单）</span>；实现 medium <b>125</b> 次<span class='dim'>（83 张单）</span></li><li><b>正确度</b>：设计评审首轮通过：xhigh 19%（5/27）、high 22%（8/37），中位 2 轮（由 Claude 审）；实现 QA 首过 82%（74/90）——比 Sol、Opus 5.5 都高，但只跑在 09-09~16（Fable 8/9 更高，但只有 9 个）</li><li><b>速度</b>：设计 0.8 h（xhigh）/ 0.7 h（high），最快；实现 1.4 h</li><li><b>花费</b>：设计 15M token ≈ pro 号周额度 0.5–0.7%；实现 53M token ≈ 1.8–2.6%</li><li><b>建议比例</b>：设计 33% → <b>33%（不调）</b>；实现 / QA：不在当前分流里</li></ul></div><div class="mcard"><div class="mhead"><b>GPT-5.6 Sol</b> <span class="g worst">▼ 实现偏弱、系统故障最多；做 QA 没有证据</span></div><ul><li><b>跑了几次</b>：实现 xhigh <b>202</b> 次<span class='dim'>（95 张单）</span>；QA high <b>4</b> 次<span class='dim'>（4 张单）</span></li><li><b>正确度</b>：实现 QA 首过 45%（55/121）；同时段（09-21~25）32%（17/53），四个模型里最低；QA：只有 3 个判决，全撞上系统故障</li><li><b>速度</b>：实现 4.3 h，最慢；QA 样本太少</li><li><b>花费</b>：实现 59M token ≈ pro 号周额度 2.0–2.9%；实现片段 122/202 撞上判死 / 换体</li><li><b>建议比例</b>：实现 50% → <b>40%</b>；QA 75% → <b>50%</b></li></ul></div><div class="mcard"><div class="mhead"><b>Opus 5.5</b> <span class="g mid">● 中等、稳定；实现同时段比 Sol 好一些</span></div><ul><li><b>跑了几次</b>：设计 high <b>6</b> 次<span class='dim'>（6 张单）</span>；实现 xhigh <b>28</b> 次<span class='dim'>（21 张单）</span>；QA high <b>22</b> 次<span class='dim'>（16 张单）</span>；general high <b>6</b> 次<span class='dim'>（6 张单）</span></li><li><b>正确度</b>：实现 QA 首过 45%（10/22）（同时段 Sol 为 32%（17/53））；QA 通过后同一 commit 被你打回 24%（4/17）；设计评审轮数拿不到</li><li><b>速度</b>：设计 0.7 h；实现 3.5 h；QA 0.3 h</li><li><b>花费</b>：实现 58M token，QA 33M token（Claude token）；占周额度百分比拿不到</li><li><b>建议比例</b>：设计 33% → <b>33%</b>；实现 50% → <b>60%</b>；QA 25% → <b>50%</b></li></ul></div><div class="mcard"><div class="mhead"><b>Fable 5.1</b> <span class="g mid">● 设计最慢；实现样本少但结果好</span></div><ul><li><b>跑了几次</b>：设计 high <b>42</b> 次<span class='dim'>（40 张单）</span>；实现 high <b>11</b> 次<span class='dim'>（11 张单）</span></li><li><b>正确度</b>：设计评审轮数拿不到；奇偶分流期下游 QA 首过 76%（16/21）；实现 QA 首过 89%（8/9）（只在 09-21~25）</li><li><b>速度</b>：设计 1.4 h，最慢；实现 样本太少</li><li><b>花费</b>：设计 27M token（Claude token）；占周额度百分比拿不到</li><li><b>建议比例</b>：设计 33% → <b>33%（不调）</b>；实现：不在当前分流里</li></ul></div><div class="mcard"><div class="mhead"><b>Opus 5（已换代，参考）</b> <span class="g na">— 历史基准，已由 Opus 5.5 取代</span></div><ul><li><b>跑了几次</b>：QA high <b>230</b> 次<span class='dim'>（157 张单）</span>；实现 high <b>7</b> 次<span class='dim'>（6 张单）</span>；general high <b>11</b> 次<span class='dim'>（11 张单）</span></li><li><b>正确度</b>：QA 通过后同一 commit 被你打回 17%（36/216）；不通过后被 Lead 改判 1%（1/121）</li><li><b>速度</b>：QA 0.4 h；general 0.7 h</li><li><b>花费</b>：QA 29M token（Claude token）</li><li><b>建议比例</b>：已不参与分配</li></ul></div></div>
+<h3>按角色看：配置 → 建议</h3>
+<div class="scroll"><table class="tbl"><thead><tr><th>角色</th><th>现在的配置</th><th>过去 21 小时实际跑的</th><th>建议</th><th>为什么</th></tr></thead><tbody><tr><td>设计</td><td>Astra / Opus 5.5 / Fable 各 1/3</td><td>11 个片段：Opus 5.5 · high 6、Fable 5.1 · high 4、GPT-6 Astra · high 1（其中 Lead 手动指定 4）</td><td><b>不调</b>，保持各 1/3</td><td>三者正确度拿不到可比数据（评审路径不同）；下游结果在准随机的奇偶分流期互有胜负；Astra 最快、作者 token 最少，但它的设计由 Claude 审，挪过去会把评审负担转到同样紧的 Claude 池。</td></tr><tr><td>实现</td><td>Opus 5.5 50% / Sol 5.6 50%</td><td>30 个片段：Opus 5.5 · xhigh 25、GPT-5.6 Sol · xhigh 5（按分组自动跑的只有 11 个；Lead 手动指定 4，run 没有新路由快照 15）</td><td><b>Opus 5.5 60% / Sol 5.6 40%</b></td><td>同一时段（09-21~25）QA 首过：Opus 5.5 <b>45%</b> <span class="dim">(10/22，16 张单)</span>，Sol <b>32%</b> <span class="dim">(17/53，21 张单)</span>；Sol 片段被系统判死/换体的比例高得多。差距不够大、两边样本都是条件样本，所以只挪 10 个点，并保留 Sol 继续积累数据。</td></tr><tr><td>QA</td><td>Sol 5.6 75% / Opus 5.5 25%</td><td>23 个片段：Opus 5.5 · high 19、GPT-5.6 Sol · high 4（按分组自动跑的 7 个；Lead 手动 1，无新路由快照 15）</td><td><b>Opus 5.5 50% / Sol 5.6 50%</b></td><td>Sol 做 QA 至今只有 4 个片段、3 个判决，而且 4 个全撞上系统故障——没有证据支持它占 75%；Codex 池这几天只剩 school，先让给实现。50% 保证下周每天仍有足够的 Sol QA 样本可评。</td></tr><tr><td>general</td><td>不在分流里，固定 Opus 5.5</td><td>—</td><td>不调</td><td>无正确度事实可评（没有评审/QA 环节）。</td></tr></tbody></table></div>
+<p class="note">你要做的只有一件事：回一句「按建议改」或「改成 X」。Lead 改 <code>~/.flywheel/models.json</code> 里对应节点的 weight（一行一个数），不重启、下一张新单生效；已开始的单保留原分组。随时可以改回。<br>另外建议：分流期间尽量<b>不要用手动指定替代自动分组</b>；如果是因为 Codex 号池打满，走 FLY-2788 已有的「号池权威耗尽 → 实现自动降级」通道，降级样本会被单独记账，统计才不会被污染。<br>过去 21 小时实际跑的比例里，按分组自动跑的只有 11 / 7 个（实现 / QA），其余是 Lead 通过菜单手动指定（4 / 1）或 run 根本没有新路由快照（15 / 15，多为同一张单的重派 run，原因待查）。</p>
+<div class="cbox"><label>对这一节的意见</label><textarea data-key="s0" data-title="结论与建议比例" placeholder="写在这里，自动保存在本机浏览器"></textarea></div></section><section class="card amber" id="s1"><h2><span class="num">1</span>先说清楚：这些数字能说明什么、不能说明什么</h2>
+<ul>
+<li><b>窗口</b>：09-08 12:18 PDT（第一条设计分组记录）到 09-25 14:02 PDT；全部 workflow 单的 eng_design / implement / qa / general 节点，共 774 个「单 × 节点 × run」片段、405 个 run。</li>
+<li><b>三层数据，不能相加、不能互相印证</b>：
+ <ul>
+ <li><b>新分流层</b>（09-24 16:15 PDT 起，按单号+节点稳定哈希分组）：只有 25 个片段。这是唯一按设计分组的一层，太少，不下结论。</li>
+ <li><b>旧设计分流层</b>（只管设计节点，Astra vs Fable）：奇偶 50/50 期 54 个片段，Astra 75% 期 46 个，其余 100%/0% 期是确定性分配，只作观察。</li>
+ <li><b>观察层</b>（全部片段按实际模型）：实现/QA 的模型是按日期整体切换的（例：09-09~16 实现几乎全是 Astra medium，09-16 以后是 Sol，09-24 以后大多是 Opus 5.5），和当时的单子难度、系统故障期混在一起。</li>
+ </ul></li>
+<li><b>评审路径不对称</b>：Codex 写的（Astra 设计、Sol/Astra 实现）由 Claude 审，每轮 verdict 在库里；Claude 写的设计由 runner 自己调 Codex 审，轮数只在已清理的 worktree 里，所以<b>拿不到</b>。Claude 写的实现，本窗大多是 Claude 同家族应急审。所以「首轮通过率」是流程结果，不是作者模型的固有正确率，跨评审家族不排名。</li>
+<li><b>「QA 通过后被 founder 打回」</b>只按同一个 commit 关联（QA 判的 head = founder 判 rework 的 head）。它包含你改需求的情况，也可能漏掉你没发现的问题，<b>不能解释为 QA 错误率</b>。</li>
+<li><b>样本门槛</b>按独立单数：少于 5 张单标「样本太少」，只列原值不排序。同一张单被重派多次只算一张单。</li>
+</ul>
+<div class="cbox"><label>对这一节的意见</label><textarea data-key="s1" data-title="先说清楚：这些数字能说明什么、不能说明什么" placeholder="写在这里，自动保存在本机浏览器"></textarea></div></section><section class="card navy" id="s2"><h2><span class="num">2</span>设计节点</h2>
+<p>设计评审的逐轮记录只有 Astra 有（Claude 审）。Fable / Opus 5.5 的设计由 runner 自己调 Codex 审，轮数写在 worktree 回执里，worktree 大多已清理，<b>拿不到</b>（设计评审 manifest 的版本号不是轮数：实测版本 1 里跑了 7 轮）。</p>
+<div class="legend">颜色：<span class="g best">▲ 最好</span>同一列最好 <span class="g mid">● 中间</span> <span class="g worst">▼ 最差</span>同一列最差 <span class="g tie">＝ 持平</span>差距太小（比率差 ≤5 个百分点、时长/次数差 ≤10%） <span class="g na">— 不参与比较</span>样本太少或没有可比对象。没有颜色的列不做比较，原因写在表下。</div><div class="scroll"><table class="tbl"><thead><tr><th>模型</th><th>片段 / 单</th><th>设计评审首轮 APPROVED</th><th>到通过的轮数（中位）</th><th>速度 首个 run（中位）</th><th>作者 token（中位）</th><th>≈ pro 号周额度（假设）</th></tr></thead><tbody><tr><td>GPT-6 Astra · xhigh</td><td>31 / 28</td><td class="c-tie"><b>19%</b> <span class="dim">(5/27，26 张单)</span><span class="g tie">＝ 持平</span></td><td class="c-tie">2 轮 <span class="dim">P90 3</span><span class="g tie">＝ 持平</span></td><td class="c-mid"><b>0.8 h</b> <span class="dim">P90 1.0 · n=26</span><span class="g mid">● 中间</span></td><td><b>15M</b> <span class="dim">P90 19M · n=28</span></td><td>0.5–0.7%</td></tr><tr><td>GPT-6 Astra · high</td><td>49 / 32</td><td class="c-tie"><b>22%</b> <span class="dim">(8/37，29 张单)</span><span class="g tie">＝ 持平</span></td><td class="c-tie">2 轮 <span class="dim">P90 3</span><span class="g tie">＝ 持平</span></td><td class="c-best"><b>0.7 h</b> <span class="dim">P90 1.1 · n=24</span><span class="g best">▲ 最好</span></td><td><b>15M</b> <span class="dim">P90 23M · n=44</span></td><td>0.5–0.7%</td></tr><tr><td>Fable 5.1 · high</td><td>42 / 40</td><td><span class="na">拿不到</span></td><td><span class="na">拿不到</span></td><td class="c-worst"><b>1.4 h</b> <span class="dim">P90 1.9 · n=36</span><span class="g worst">▼ 最差</span></td><td><b>27M</b> <span class="dim">P90 47M · n=39</span></td><td><span class="na">拿不到</span></td></tr><tr><td>Opus 5.5 · high</td><td>6 / 6</td><td><span class="na">拿不到</span></td><td><span class="na">拿不到</span></td><td class="c-best"><b>0.7 h</b> <span class="dim">P90 0.9 · n=5</span><span class="g best">▲ 最好</span></td><td><span class="few">样本太少</span> <span class="dim">22M、26M、50M</span></td><td><span class="na">拿不到</span></td></tr></tbody></table></div>
+<p class="note">不着色的列：作者 token（Claude 与 Codex 不可比）、≈ 周额度（假设值，不用于排序）。</p>
+<h3>下游结果（旧奇偶分流期：设计模型按单号奇偶分，和当天用哪个实现模型无关）</h3>
+<div class="legend">颜色：<span class="g best">▲ 最好</span>同一列最好 <span class="g mid">● 中间</span> <span class="g worst">▼ 最差</span>同一列最差 <span class="g tie">＝ 持平</span>差距太小（比率差 ≤5 个百分点、时长/次数差 ≤10%） <span class="g na">— 不参与比较</span>样本太少或没有可比对象。没有颜色的列不做比较，原因写在表下。</div><div class="scroll"><table class="tbl"><thead><tr><th>设计模型</th><th>下游实现片段</th><th>实现的 QA 首过</th><th>实现的代码复审首轮通过</th></tr></thead><tbody><tr><td>GPT-6 Astra · xhigh</td><td>25</td><td class="c-worst"><b>67%</b> <span class="dim">(8/12)</span><span class="g worst">▼ 最差</span></td><td class="c-best"><b>71%</b> <span class="dim">(10/14)</span><span class="g best">▲ 最好</span></td></tr><tr><td>Fable 5.1 · high</td><td>26</td><td class="c-best"><b>76%</b> <span class="dim">(16/21)</span><span class="g best">▲ 最好</span></td><td class="c-worst"><b>36%</b> <span class="dim">(8/22)</span><span class="g worst">▼ 最差</span></td></tr></tbody></table></div>
+<p class="note">读法：Fable 设计的单，下游 QA 首过更高；Astra 设计的单，下游代码复审首轮通过更高。两个方向相反、样本各二十来张，<b>不足以判断谁的设计更好</b>。</p>
+<p class="note">速度：Astra 明显更快（设计节点约 0.7–0.8 h vs Fable 1.4 h）。花费：Astra 作者约 1,500 万 token，Fable 约 2,700 万、Opus 5.5 样本太少（22M、26M、50M）；Claude 与 Codex 的 token 不能直接比。评审方的用量不在作者文件里，没算进去。</p>
+<div class="cbox"><label>对这一节的意见</label><textarea data-key="s2" data-title="设计节点" placeholder="写在这里，自动保存在本机浏览器"></textarea></div></section><section class="card navy" id="s3"><h2><span class="num">3</span>实现节点</h2>
+<div class="legend">颜色：<span class="g best">▲ 最好</span>同一列最好 <span class="g mid">● 中间</span> <span class="g worst">▼ 最差</span>同一列最差 <span class="g tie">＝ 持平</span>差距太小（比率差 ≤5 个百分点、时长/次数差 ≤10%） <span class="g na">— 不参与比较</span>样本太少或没有可比对象。没有颜色的列不做比较，原因写在表下。</div><div class="scroll"><table class="tbl"><thead><tr><th>模型</th><th>片段 / 单</th><th>代码复审首轮通过</th><th>QA 首过（全部）</th><th>QA 首过（剔除噪声）</th><th>被 QA 打回</th><th>系统噪声片段</th><th>速度 首个 run</th><th>作者 token（中位）</th><th>≈ pro 号周额度（假设）</th></tr></thead><tbody><tr><td>GPT-5.6 Sol · xhigh</td><td>202 / 95</td><td><b>44%</b> <span class="dim">(64/146，83 张单)</span> <span class='dim'>Claude 审</span></td><td class="c-worst"><b>45%</b> <span class="dim">(55/121，78 张单)</span><span class="g worst">▼ 最差</span></td><td class="c-mid"><b>57%</b> <span class="dim">(32/56，42 张单)</span><span class="g mid">● 中间</span></td><td class="c-mid">88 次 <span class="dim">平均 0.73 次/片段</span><span class="g mid">● 中间</span></td><td class="c-worst">122/202 <span class="dim">(60%)</span><span class="g worst">▼ 最差</span></td><td class="c-worst"><b>4.3 h</b> <span class="dim">P90 7.0 · n=40</span><span class="g worst">▼ 最差</span></td><td><b>59M</b> <span class="dim">P90 191M · n=157</span></td><td>2.0–2.9%</td></tr><tr><td>GPT-6 Astra · medium</td><td>125 / 83</td><td><b>63%</b> <span class="dim">(60/95，81 张单)</span> <span class='dim'>Claude 审</span></td><td class="c-mid"><b>82%</b> <span class="dim">(74/90，80 张单)</span><span class="g mid">● 中间</span></td><td class="c-best"><b>95%</b> <span class="dim">(40/42)</span><span class="g best">▲ 最好</span></td><td class="c-mid">24 次 <span class="dim">平均 0.27 次/片段</span><span class="g mid">● 中间</span></td><td class="c-worst">77/125 <span class="dim">(62%)</span><span class="g worst">▼ 最差</span></td><td class="c-best"><b>1.4 h</b> <span class="dim">P90 3.1 · n=53</span><span class="g best">▲ 最好</span></td><td><b>53M</b> <span class="dim">P90 159M · n=91</span></td><td>1.8–2.6%</td></tr><tr><td>Opus 5.5 · xhigh</td><td>28 / 21</td><td><b>88%</b> <span class="dim">(7/8，5 张单)</span> <span class='dim'>Claude 同家族审</span><br><span class='dim'>自报轮数中位 2（n=11，Codex 审）</span></td><td class="c-worst"><b>45%</b> <span class="dim">(10/22，16 张单)</span><span class="g worst">▼ 最差</span></td><td class="c-worst"><b>40%</b> <span class="dim">(6/15，13 张单)</span><span class="g worst">▼ 最差</span></td><td class="c-worst">19 次 <span class="dim">平均 0.86 次/片段</span><span class="g worst">▼ 最差</span></td><td class="c-mid">7/28 <span class="dim">(25%)</span><span class="g mid">● 中间</span></td><td class="c-mid"><b>3.5 h</b> <span class="dim">P90 5.6 · n=9</span><span class="g mid">● 中间</span></td><td><b>58M</b> <span class="dim">P90 191M · n=25</span></td><td><span class="na">拿不到</span></td></tr><tr><td>Fable 5.1 · high</td><td>11 / 11</td><td><b>67%</b> <span class="dim">(6/9)</span> <span class='dim'>Claude 同家族审</span><br><span class='dim'>自报轮数中位 1（n=1，Codex 审）</span></td><td class="c-best"><b>89%</b> <span class="dim">(8/9)</span><span class="g best">▲ 最好</span></td><td class="c-best"><b>100%</b> <span class="dim">(7/7)</span><span class="g best">▲ 最好</span></td><td class="c-best">2 次 <span class="dim">平均 0.22 次/片段</span><span class="g best">▲ 最好</span></td><td class="c-mid">4/11 <span class="dim">(36%)</span><span class="g mid">● 中间</span></td><td class="c-na"><span class="few">样本太少</span> <span class="dim">2.1 h</span><span class="g na">— 不参与比较</span></td><td><b>26M</b> <span class="dim">P90 169M · n=9</span></td><td><span class="na">拿不到</span></td></tr><tr><td>Opus 5 · high</td><td>7 / 6</td><td>3/4<span class="few">样本太少</span> <span class='dim'>Claude 同家族审</span><br><span class='dim'>自报轮数中位 4（n=4，Codex 审）</span></td><td class="c-worst"><b>43%</b> <span class="dim">(3/7，6 张单)</span><span class="g worst">▼ 最差</span></td><td class="c-mid"><b>50%</b> <span class="dim">(3/6，5 张单)</span><span class="g mid">● 中间</span></td><td class="c-worst">6 次 <span class="dim">平均 0.86 次/片段</span><span class="g worst">▼ 最差</span></td><td class="c-best">1/7 <span class="dim">(14%)</span><span class="g best">▲ 最好</span></td><td class="c-na"><span class="few">样本太少</span> <span class="dim">2.1、7.0、26.0 h</span><span class="g na">— 不参与比较</span></td><td><b>155M</b> <span class="dim">P90 364M · n=7</span></td><td><span class="na">拿不到</span></td></tr></tbody></table></div>
+<p class="note">不着色的列：代码复审首轮通过（Codex 写的由 Claude 审、Claude 写的多为 Claude 同家族审，评审方不同不排名）、作者 token（跨厂商不可比）、≈ 周额度（假设值）。「被 QA 打回」按每个已到 QA 的片段平均次数比较。</p>
+<h3>同一时段内比较（把时间混杂压小一点；颜色只在同一时段内比）</h3>
+<div class="legend">颜色：<span class="g best">▲ 最好</span>同一列最好 <span class="g mid">● 中间</span> <span class="g worst">▼ 最差</span>同一列最差 <span class="g tie">＝ 持平</span>差距太小（比率差 ≤5 个百分点、时长/次数差 ≤10%） <span class="g na">— 不参与比较</span>样本太少或没有可比对象。没有颜色的列不做比较，原因写在表下。</div><div class="scroll"><table class="tbl"><thead><tr><th>时段</th><th>实现模型</th><th>QA 首过</th></tr></thead><tbody><tr><td>09-08~09-15</td><td>GPT-5.6 Sol · xhigh</td><td class="c-worst"><b>58%</b> <span class="dim">(7/12)</span><span class="g worst">▼ 最差</span></td></tr><tr><td>09-08~09-15</td><td>GPT-6 Astra · medium</td><td class="c-best"><b>83%</b> <span class="dim">(71/86，77 张单)</span><span class="g best">▲ 最好</span></td></tr><tr><td>09-16~09-20</td><td>GPT-5.6 Sol · xhigh</td><td class="c-na"><b>55%</b> <span class="dim">(31/56，45 张单)</span><span class="g na">— 不参与比较</span></td></tr><tr><td>09-16~09-20</td><td>GPT-6 Astra · medium</td><td class="c-na">3/4<span class="few">样本太少</span><span class="g na">— 不参与比较</span></td></tr><tr><td>09-21~09-25</td><td>GPT-5.6 Sol · xhigh</td><td class="c-worst"><b>32%</b> <span class="dim">(17/53，21 张单)</span><span class="g worst">▼ 最差</span></td></tr><tr><td>09-21~09-25</td><td>Opus 5.5 · xhigh</td><td class="c-mid"><b>45%</b> <span class="dim">(10/22，16 张单)</span><span class="g mid">● 中间</span></td></tr><tr><td>09-21~09-25</td><td>Fable 5.1 · high</td><td class="c-best"><b>89%</b> <span class="dim">(8/9)</span><span class="g best">▲ 最好</span></td></tr><tr><td>09-21~09-25</td><td>Opus 5 · high</td><td class="c-mid"><b>43%</b> <span class="dim">(3/7，6 张单)</span><span class="g mid">● 中间</span></td></tr></tbody></table></div>
+<p class="note">读法：09-21~25 这一段四个模型同时在跑，Sol 的 QA 首过最低；但 Sol 在这段有大量同单重派（53 个片段只来自 21 张单），且系统故障集中在 Codex 会话上。09-08~15 的 Astra medium 首过率最高，可它只跑在那一周，那周的单子和 QA 口径都不同。</p>
+<p class="note">速度用「每张单该节点的首个 run」：重派的 run 往往接着前一个 run 的分支干，很快就完，会把重派多的模型显得很快（Opus 5.5 全部 attempt 中位 0.4 h，首个 run 中位 3.5 h）。花费里 Codex 实现一次约 5,000–6,000 万 token，98% 左右是缓存读。</p>
+<div class="cbox"><label>对这一节的意见</label><textarea data-key="s3" data-title="实现节点" placeholder="写在这里，自动保存在本机浏览器"></textarea></div></section><section class="card navy" id="s4"><h2><span class="num">4</span>QA 节点</h2>
+<div class="legend">颜色：<span class="g best">▲ 最好</span>同一列最好 <span class="g mid">● 中间</span> <span class="g worst">▼ 最差</span>同一列最差 <span class="g tie">＝ 持平</span>差距太小（比率差 ≤5 个百分点、时长/次数差 ≤10%） <span class="g na">— 不参与比较</span>样本太少或没有可比对象。没有颜色的列不做比较，原因写在表下。</div><div class="scroll"><table class="tbl"><thead><tr><th>模型</th><th>片段 / 单</th><th>通过 / 不通过</th><th>通过后同一 commit 被 founder 打回</th><th>通过后合并/CI 被引擎打回（参考）</th><th>不通过后被 Lead 改判</th><th>速度 首个 run</th><th>作者 token（中位）</th><th>≈ pro 号周额度（假设）</th></tr></thead><tbody><tr><td>Opus 5 · high</td><td>230 / 157</td><td><span style="white-space:nowrap">224 / 121</span></td><td class="c-best"><b>17%</b> <span class="dim">(36/216)</span><br><span class="dim">另 8 个通过还没到你手上</span><span class="g best">▲ 最好</span></td><td class="c-tie"><b>15%</b> <span class="dim">(33/224)</span><span class="g tie">＝ 持平</span></td><td class="c-tie"><b>1%</b> <span class="dim">(1/121)</span><span class="g tie">＝ 持平</span></td><td class="c-worst"><b>0.4 h</b> <span class="dim">P90 1.1 · n=153</span><span class="g worst">▼ 最差</span></td><td><b>29M</b> <span class="dim">P90 82M · n=226</span></td><td><span class="na">拿不到</span></td></tr><tr><td>Opus 5.5 · high</td><td>22 / 16</td><td><span style="white-space:nowrap">21 / 19</span></td><td class="c-worst"><b>24%</b> <span class="dim">(4/17)</span><br><span class="dim">另 4 个通过还没到你手上</span><span class="g worst">▼ 最差</span></td><td class="c-tie"><b>14%</b> <span class="dim">(3/21)</span><span class="g tie">＝ 持平</span></td><td class="c-tie"><b>0%</b> <span class="dim">(0/19)</span><span class="g tie">＝ 持平</span></td><td class="c-best"><b>0.3 h</b> <span class="dim">P90 10.6 · n=9</span><span class="g best">▲ 最好</span></td><td><b>33M</b> <span class="dim">P90 96M · n=19</span></td><td><span class="na">拿不到</span></td></tr><tr><td>GPT-5.6 Sol · high</td><td>4 / 4</td><td><span style="white-space:nowrap">2 / 1</span></td><td class="c-na">0/2<span class="few">样本太少</span><br><span class="dim">另 0 个通过还没到你手上</span><span class="g na">— 不参与比较</span></td><td class="c-na">0/2<span class="few">样本太少</span><span class="g na">— 不参与比较</span></td><td class="c-na">0/1<span class="few">样本太少</span><span class="g na">— 不参与比较</span></td><td class="c-na"><span class="few">样本太少</span> <span class="dim">0.5、0.7 h</span><span class="g na">— 不参与比较</span></td><td><span class="few">样本太少</span> <span class="dim">16M、23M、108M</span></td><td><span class="few">样本太少</span></td></tr></tbody></table></div>
+<p class="note">不着色的列：作者 token（跨厂商不可比）、≈ 周额度（假设值）。「被 founder 打回」越低越好，但它含改需求，不能当 QA 错误率。</p>
+<p class="note">读法：Opus 5 做 QA 的历史最长，通过的单约 17% 在同一个 commit 上被你打回（含改需求）；Opus 5.5 是 4/17。Sol 5.6 做 QA 只有 4 个片段、3 个判决，而且 4 个片段都遇到了执行被判死 / 换体——<b>对 Sol 做 QA 的能力目前没有任何可用证据</b>。「不通过被 Lead 改判」几乎没有发生（1 次）。</p>
+<div class="cbox"><label>对这一节的意见</label><textarea data-key="s4" data-title="QA 节点" placeholder="写在这里，自动保存在本机浏览器"></textarea></div></section><section class="card navy" id="s5"><h2><span class="num">5</span>general 节点（不在分流里）</h2><div class="scroll"><table class="tbl"><thead><tr><th>模型</th><th>片段 / 单</th><th>正确度</th><th>速度 首个 run</th><th>作者 token（中位）</th></tr></thead><tbody><tr><td>Opus 5 · high</td><td>11 / 11</td><td><span class="na">无适用正确度事实</span></td><td><b>0.7 h</b> <span class="dim">P90 1.3 · n=11</span></td><td><b>25M</b> <span class="dim">P90 48M · n=11</span></td></tr><tr><td>Opus 5.5 · high</td><td>6 / 6</td><td><span class="na">无适用正确度事实</span></td><td><span class="few">样本太少</span> <span class="dim">0.3、0.8、0.9 h</span></td><td><span class="few">样本太少</span> <span class="dim">18M、23M、28M</span></td></tr></tbody></table></div><div class="cbox"><label>对这一节的意见</label><textarea data-key="s5" data-title="general 节点（不在分流里）" placeholder="写在这里，自动保存在本机浏览器"></textarea></div></section><section class="card purple" id="s6"><h2><span class="num">6</span>额度现状与换算</h2>
+<div class="scroll"><table class="tbl"><thead><tr><th>池</th><th>账号</th><th>档位</th><th>周已用</th><th>周重置</th><th>读数时间</th></tr></thead><tbody><tr><td>Claude</td><td>business</td><td>—</td><td>99%</td><td>09-30 18:59 PDT</td><td>09-25 13:46 PDT</td></tr><tr><td>Claude</td><td>personal <span class='badge'>在用</span></td><td>—</td><td>17%</td><td>10-01 23:00 PDT</td><td>09-25 13:56 PDT</td></tr><tr><td>Claude</td><td>school</td><td>—</td><td>100%</td><td>09-28 08:59 PDT</td><td>09-25 13:46 PDT</td></tr><tr><td>Claude</td><td>shopping</td><td>—</td><td>100%</td><td>09-29 07:00 PDT</td><td>09-25 13:46 PDT</td></tr><tr><td>Codex</td><td>business</td><td>pro</td><td>100%</td><td>09-30 13:59 PDT</td><td>09-25 13:52 PDT</td></tr><tr><td>Codex</td><td>personal</td><td>pro</td><td>100%</td><td>09-29 16:51 PDT</td><td>09-25 13:52 PDT</td></tr><tr><td>Codex</td><td>personal1</td><td>prolite</td><td>100%</td><td>09-25 21:04 PDT</td><td>09-25 13:20 PDT</td></tr><tr><td>Codex</td><td>personal2</td><td>prolite</td><td>100%</td><td>09-27 14:25 PDT</td><td>09-25 13:52 PDT</td></tr><tr><td>Codex</td><td>school <span class='badge'>在用</span></td><td>pro</td><td>32%</td><td>10-01 20:35 PDT</td><td>09-25 13:52 PDT</td></tr><tr><td>Codex</td><td>shopping</td><td>prolite</td><td>100%</td><td>09-25 15:06 PDT</td><td>09-25 13:36 PDT</td></tr></tbody></table></div>
+<p class="note">Claude 的 personal1 读数停在 09-08，未列。Claude 这边每张单占百分之几<b>拿不到</b>：执行记录里没有「跑在哪个号」，而且你自己的交互和网页端用量不可见。</p>
+<h3>Codex：「每 1% 周额度 ≈ 多少 token」——假设系数，账号归属未验证，不用于排序</h3>
+<div class="scroll"><table class="tbl"><thead><tr><th>假设账号</th><th>档位</th><th>起</th><th>止</th><th>Δ百分点</th><th>同期 rollout token</th><th>每 1% ≈ 总 token</th><th>每 1% ≈ 非缓存+输出</th></tr></thead><tbody><tr><td>personal</td><td>pro</td><td>09-22 16:51 PDT</td><td>09-23 12:34 PDT</td><td>100</td><td>20.1 亿</td><td>20M</td><td>0.44M</td></tr><tr><td>business</td><td>pro</td><td>09-23 13:59 PDT</td><td>09-24 21:00 PDT</td><td>100</td><td>30.1 亿</td><td>30M</td><td>0.57M</td></tr><tr><td>school</td><td>pro</td><td>09-24 21:07 PDT</td><td>09-25 13:59 PDT</td><td>33</td><td>9.4 亿</td><td>28M</td><td>0.43M</td></tr></tbody></table></div>
+<p class="note">做法：Codex 每条用量事件带当时的周用量百分比和重置时间；按重置时间分桶，桶内从起点到第一次到达最高读数，除以同期全部 rollout 的 token 增量。当前账号表里恰有一个号的重置时间与桶吻合，只作旁证。偏差：看不到该号在本机 rollout 之外的用量，百分比是整数。<br>
+按这个系数，上面表里的「≈ pro 号周额度」= 作者 token × 系数，取三个 pro 桶的最小–最大。<b>一个 pro 号在满负荷下 20–31 小时就从 0 用到 100%</b>。</p>
+<p class="note">本单的 Codex 设计评审（4 轮，gpt-6-astra，按 Lead 要求中档 effort）用了约 1.9M token（其中 181 万是缓存读），按上表系数约为 school 周额度的 0.1–0.3%；评审期间 school 读数从 31% 走到 32%（同期全系统都在用）。</p>
+<div class="cbox"><label>对这一节的意见</label><textarea data-key="s6" data-title="额度现状与换算" placeholder="写在这里，自动保存在本机浏览器"></textarea></div></section><section class="card red" id="s7"><h2><span class="num">7</span>噪声：系统故障样本</h2>
+<p>片段只要出现过：执行被判死回滚、resume 失败、换体、同节点多个执行、启动后回滚，就记为「系统噪声样本」。主表用全部样本，「剔除噪声」只作对照（剔掉的正是某些模型更容易撞上的故障，剔完反而可能美化它）。</p>
+<div class="scroll"><table class="tbl"><thead><tr><th>节点</th><th>模型</th><th>噪声片段</th><th>主要原因（片段数）</th></tr></thead><tbody><tr><td>设计</td><td>GPT-6 Astra · xhigh</td><td>5/31</td><td>execution_dead_rolled_back 5、resume_target_unrecoverable 5、replacement_execution 4</td></tr><tr><td>设计</td><td>GPT-6 Astra · high</td><td>6/49</td><td>execution_dead_rolled_back 6、resume_target_unrecoverable 6、replacement_execution 5</td></tr><tr><td>设计</td><td>Fable 5.1 · high</td><td>0/42</td><td>—</td></tr><tr><td>设计</td><td>Opus 5.5 · high</td><td>0/6</td><td>—</td></tr><tr><td>实现</td><td>GPT-5.6 Sol · xhigh</td><td>122/202</td><td>execution_dead_rolled_back 118、resume_target_unrecoverable 102、replacement_execution 100</td></tr><tr><td>实现</td><td>GPT-6 Astra · medium</td><td>77/125</td><td>execution_dead_rolled_back 72、resume_target_unrecoverable 64、replacement_execution 62</td></tr><tr><td>实现</td><td>Opus 5.5 · xhigh</td><td>7/28</td><td>execution_dead_rolled_back 6、resume_target_unrecoverable 1</td></tr><tr><td>实现</td><td>Fable 5.1 · high</td><td>4/11</td><td>execution_dead_rolled_back 4、resume_target_unrecoverable 3、writer_replacement 2</td></tr><tr><td>实现</td><td>Opus 5 · high</td><td>1/7</td><td>execution_dead_rolled_back 1</td></tr><tr><td>QA</td><td>Opus 5 · high</td><td>13/230</td><td>execution_dead_rolled_back 9、unlaunched_admission_rolled_back 4、replacement_execution 2</td></tr><tr><td>QA</td><td>Opus 5.5 · high</td><td>0/22</td><td>—</td></tr><tr><td>QA</td><td>GPT-5.6 Sol · high</td><td>4/4</td><td>replacement_execution 3、repeated_dead_execution_pattern 3、execution_dead_rolled_back 3</td></tr></tbody></table></div>
+<p class="note">实现节点的 Codex 会话被判死 / 换体特别多（Sol 约 60%、Astra medium 约 62% 的片段），Claude 实现明显少。这更像是运行设施的问题（Codex 会话被重启误杀、换体），而不是模型本身写得差；但它确实让 Codex 实现更慢、更费。<br>
+速度扣除：阻塞提问等待共扣 23 小时，重启空窗共扣 6 小时。额度暂停：库里的两张暂停表都是 0 行，无已记录的可扣暂停（不代表没有过额度等待）。进程死掉到被发现之间的时间扣不掉，所以噪声片段仍偏慢。</p>
+<div class="cbox"><label>对这一节的意见</label><textarea data-key="s7" data-title="噪声：系统故障样本" placeholder="写在这里，自动保存在本机浏览器"></textarea></div></section><section class="card navy" id="s8"><h2><span class="num">8</span>每次成功交付的总时长</h2>
+<div class="scroll"><table class="tbl"><thead><tr><th>实现模型</th><th>成功 run</th><th>净时长（扣你审批+阻塞等待+重启空窗）</th><th>净时长（剔除噪声）</th><th>原始墙钟</th><th>在你那里等审批</th></tr></thead><tbody><tr><td>GPT-6 Astra · medium</td><td>71</td><td><b>3.0 h</b> <span class="dim">P90 7.9 · n=71</span></td><td><b>1.3 h</b> <span class="dim">P90 4.8 · n=38</span></td><td><b>8.7 h</b> <span class="dim">P90 36.5 · n=71</span></td><td><b>3.6 h</b> <span class="dim">P90 22.1 · n=71</span></td></tr><tr><td>GPT-5.6 Sol · xhigh</td><td>38</td><td><b>5.3 h</b> <span class="dim">P90 9.9 · n=38</span></td><td><b>2.8 h</b> <span class="dim">P90 7.1 · n=21</span></td><td><b>7.2 h</b> <span class="dim">P90 22.2 · n=38</span></td><td><b>1.6 h</b> <span class="dim">P90 13.4 · n=38</span></td></tr><tr><td>无实现节点（general / PRD 等）</td><td>12</td><td><b>0.8 h</b> <span class="dim">P90 1.5 · n=12</span></td><td><b>0.8 h</b> <span class="dim">P90 1.5 · n=12</span></td><td><b>1.6 h</b> <span class="dim">P90 8.1 · n=12</span></td><td><b>0.8 h</b> <span class="dim">P90 7.7 · n=12</span></td></tr><tr><td>Opus 5.5 · xhigh</td><td>10</td><td><b>4.7 h</b> <span class="dim">P90 15.4 · n=10</span></td><td><b>3.7 h</b> <span class="dim">P90 15.4 · n=6</span></td><td><b>11.2 h</b> <span class="dim">P90 17.1 · n=10</span></td><td><b>2.1 h</b> <span class="dim">P90 8.2 · n=10</span></td></tr><tr><td>Opus 5 · high</td><td>3</td><td><span class="few">样本太少</span> <span class="dim">2.0、2.6、7.5 h</span></td><td><span class="few">样本太少</span> <span class="dim">2.0、2.6、7.5 h</span></td><td><span class="few">样本太少</span> <span class="dim">2.9、8.6、11.6 h</span></td><td><span class="few">样本太少</span> <span class="dim">0.1、0.3、6.6 h</span></td></tr><tr><td>Fable 5.1 · high</td><td>2</td><td><span class="few">样本太少</span> <span class="dim">2.5、31.2 h</span></td><td><span class="few">样本太少</span> <span class="dim">2.5 h</span></td><td><span class="few">样本太少</span> <span class="dim">3.7、42.0 h</span></td><td><span class="few">样本太少</span> <span class="dim">1.2、10.8 h</span></td></tr></tbody></table></div>
+<p class="note">只统计截至 T1 已走完的 run（run 创建 → 合并完成），按 run 计，不含同一张单之前失败的 run，所以是「成功者的条件描述」，不是每张单的真实总投入。「在你那里等审批」的结束点用你的正式判决时间；没有判决时间的等待段不扣（本窗 0 段）。</p>
+<div class="cbox"><label>对这一节的意见</label><textarea data-key="s8" data-title="每次成功交付的总时长" placeholder="写在这里，自动保存在本机浏览器"></textarea></div></section><section class="card blue" id="s9"><h2><span class="num">9</span>方法、出处与不确定性</h2>
+<ul>
+<li>数据全部只读取自生产 teamlead.db（单个只读快照）、各项目 CommDB、Claude transcript 与 Codex rollout；T1 = 09-25 14:02 PDT。没有改任何配置、没有跑测试。</li>
+<li>速度：每个 attempt 从它的第一次激活到它的完成；只扣该 attempt 内发起的阻塞提问（等你 / 等 Lead）和「被判死 → 换体上岗」的空窗。评审往复不扣（两家族都有）。中位数 + P90。</li>
+<li>花费：逐个执行定位它自己的 transcript / rollout（Claude 377 个按启动快照精确匹配、3 个早期文件只算候选；Codex 768 个按线程 id 匹配，88 个找不到文件——多数是启动一分钟内就失败的）。只称「已观测作者用量（主会话）」，不是执行总成本；子代理与评审方用量另算、未计入。</li>
+<li>方法校验：和 FLY-2789 计分表（它从同一批文件导入）逐执行比对 102 个，102 个完全相等。</li>
+<li>方法经 Codex 设计评审 4 轮通过（gpt-6-astra），主要收窄：累计计数必须差分、文件定位≠用量完整、重置时间匹配≠账号已验证、gate 结束时间只用正式判决时间、QA 信号不叫「判决被推翻」。</li>
+<li>原始脚本与导出数据：<code>engineering/doc/FLY-2889-model-performance-report/scripts/</code>、<code>data/</code>（只含 id、模型、时间、计数，不含消息正文和凭据）。</li>
+</ul>
+<h3>还不知道的</h3>
+<ul>
+<li>Claude 每单占周额度的百分比；评审方（reviewer）的用量；Fable / Opus 设计的评审轮数。</li>
+<li>新分流层的真实优劣：需要让自动分组不被手动覆盖，跑满约一周、每组 ≥20 张单再看。</li>
+<li>为什么新分流生效后有 15 个实现片段、15 个 QA 片段所在的 run 根本没有新路由快照（多为同一张单的重派 run）：值得单独查一下是不是重派入口绕过了分流。</li>
+</ul>
+<div class="cbox"><label>对这一节的意见</label><textarea data-key="s9" data-title="方法、出处与不确定性" placeholder="写在这里，自动保存在本机浏览器"></textarea></div></section>
+<section class="card green">
+<h2>意见汇总（复制后贴回给我）</h2>
+<p class="note">下面实时汇总上面每一节里写的意见，首行固定是标记 <code>【页面意见汇总】FLY-2889</code>。超过约 1800 字会自动分段，每段都带标记。</p>
+<button class="btn" id="copy-all" type="button">复制全部评论</button>
+<button class="btn sec" id="clear-all" type="button">清空本机保存的意见</button>
+<div class="status" id="copy-status"></div>
+<div id="summary-chunks"></div>
+</section>
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var ISSUE = "FLY-2889";
+  var MARKER = "【页面意见汇总】" + ISSUE;
+  var CHUNK_LIMIT = 1800;
+  var prefix = "fly-comments:" + ISSUE + ":" + String(window.location.pathname || "/") + ":";
+
+  function storageGet(key) { try { return window.localStorage.getItem(prefix + key) || ""; } catch (e) { return ""; } }
+  function storageSet(key, value) { try { window.localStorage.setItem(prefix + key, value); } catch (e) {} }
+  function storageDel(key) { try { window.localStorage.removeItem(prefix + key); } catch (e) {} }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+  var chunksEl = document.getElementById("summary-chunks");
+  var statusEl = document.getElementById("copy-status");
+
+  function collect() {
+    var lines = [];
+    areas.forEach(function (ta) {
+      var text = (ta.value || "").trim();
+      if (!text) return;
+      lines.push("【" + (ta.getAttribute("data-title") || ta.getAttribute("data-key")) + "】" + text);
+    });
+    return lines;
+  }
+
+  function buildChunks(lines) {
+    var chunks = [];
+    if (lines.length === 0) return [MARKER + "\n(暂无意见)"];
+    var current = MARKER;
+    lines.forEach(function (line) {
+      var candidate = current + "\n" + line;
+      if (candidate.length > CHUNK_LIMIT && current !== MARKER) {
+        chunks.push(current);
+        current = MARKER + "\n" + line;
+      } else {
+        current = candidate;
+      }
+    });
+    chunks.push(current);
+    return chunks;
+  }
+
+  function copyText(text, onDone) {
+    function fallback() {
+      var ok = false;
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.top = "-1000px";
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch (e) { ok = false; }
+      onDone(ok);
+    }
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      navigator.clipboard.writeText(text).then(function () { onDone(true); }, function () { fallback(); });
+    } else {
+      fallback();
+    }
+  }
+
+  function setStatus(msg) {
+    statusEl.textContent = msg;
+    window.setTimeout(function () { if (statusEl.textContent === msg) statusEl.textContent = ""; }, 4000);
+  }
+
+  function render() {
+    var chunks = buildChunks(collect());
+    while (chunksEl.firstChild) chunksEl.removeChild(chunksEl.firstChild);
+    chunks.forEach(function (chunk, index) {
+      var box = document.createElement("div");
+      var pre = document.createElement("div");
+      pre.className = "summary-box";
+      pre.textContent = chunk;
+      box.appendChild(pre);
+      if (chunks.length > 1) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn sec";
+        btn.textContent = "复制第 " + (index + 1) + " / " + chunks.length + " 段";
+        btn.addEventListener("click", function () {
+          copyText(chunk, function (ok) { setStatus(ok ? "已复制第 " + (index + 1) + " 段" : "复制失败,请手动全选复制"); });
+        });
+        box.appendChild(btn);
+      }
+      chunksEl.appendChild(box);
+    });
+  }
+
+  areas.forEach(function (ta) {
+    var key = ta.getAttribute("data-key");
+    ta.value = storageGet(key);
+    ta.addEventListener("input", function () {
+      storageSet(key, ta.value);
+      render();
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var text = buildChunks(collect()).join("\n\n");
+    copyText(text, function (ok) { setStatus(ok ? "已复制全部评论" : "复制失败,请手动全选复制"); });
+  });
+
+  document.getElementById("clear-all").addEventListener("click", function () {
+    areas.forEach(function (ta) { ta.value = ""; storageDel(ta.getAttribute("data-key")); });
+    render();
+    setStatus("已清空");
+  });
+
+  render();
+})();
+
+</script>
+</body>
+</html>

@@ -1,0 +1,2 @@
+{ "name": "fly2884-proto", "private": true, "type": "module",
+  "dependencies": { "werift": "0.24.4", "opusscript": "0.0.8", "discord.js": "14.26.4", "@discordjs/voice": "0.19.2", "@snazzah/davey": "0.1.12", "prism-media": "1.3.5" } }

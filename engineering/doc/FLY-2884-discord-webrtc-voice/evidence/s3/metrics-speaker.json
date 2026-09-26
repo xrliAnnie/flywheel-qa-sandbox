@@ -1,0 +1,419 @@
+{
+ "run": "s3",
+ "mode": "barge",
+ "why": "scenario_done",
+ "calibration": {
+  "floorMedian": 0,
+  "th": 300
+ },
+ "roomSegments": [
+  {
+   "start": 15373.8,
+   "end": 19694.3,
+   "voicedMs": 3740
+  },
+  {
+   "start": 23130.7,
+   "end": 24896.2,
+   "voicedMs": 1620
+  },
+  {
+   "start": 36477.9,
+   "end": 37795.3,
+   "voicedMs": 1060
+  },
+  {
+   "start": 49061.6,
+   "end": 52135.3,
+   "voicedMs": 2580
+  },
+  {
+   "start": 56338.4,
+   "end": 57404.2,
+   "voicedMs": 920
+  },
+  {
+   "start": 67653.5,
+   "end": 70274.9,
+   "voicedMs": 2560
+  },
+  {
+   "start": 70678.2,
+   "end": 79453.2,
+   "voicedMs": 7240
+  },
+  {
+   "start": 80014.8,
+   "end": 81135.8,
+   "voicedMs": 1100
+  },
+  {
+   "start": 92516.1,
+   "end": 94103.6,
+   "voicedMs": 1440
+  },
+  {
+   "start": 105164,
+   "end": 106862.5,
+   "voicedMs": 1460
+  },
+  {
+   "start": 118851,
+   "end": 120238.3,
+   "voicedMs": 1240
+  },
+  {
+   "start": 131433.2,
+   "end": 133596.6,
+   "voicedMs": 1800
+  },
+  {
+   "start": 143717.9,
+   "end": 149113.7,
+   "voicedMs": 4740
+  },
+  {
+   "start": 149616.9,
+   "end": 152531.6,
+   "voicedMs": 2820
+  },
+  {
+   "start": 153140.3,
+   "end": 158130.4,
+   "voicedMs": 4480
+  },
+  {
+   "start": 158619.6,
+   "end": 159596.9,
+   "voicedMs": 1000
+  }
+ ],
+ "utterances": [
+  {
+   "label": "long1",
+   "file": "long1.wav",
+   "kind": "speech",
+   "frames": 306,
+   "playStart": 7946.6,
+   "lastVoicedPull": 13726.4,
+   "playEnd": 14166.6,
+   "wallStart": 1790369699625,
+   "wallEnd": 1790369705863
+  },
+  {
+   "label": "stop1",
+   "file": "stop1.wav",
+   "kind": "interrupt",
+   "frames": 178,
+   "playStart": 18172,
+   "lastVoicedPull": 21392.3,
+   "playEnd": 21832.3,
+   "wallStart": 1790369709868,
+   "wallEnd": 1790369713529
+  },
+  {
+   "label": "long2",
+   "file": "long2.wav",
+   "kind": "speech",
+   "frames": 333,
+   "playStart": 28459.2,
+   "lastVoicedPull": 34759.7,
+   "playEnd": 35219.7,
+   "wallStart": 1790369720155,
+   "wallEnd": 1790369726916
+  },
+  {
+   "label": "long3",
+   "file": "long3.wav",
+   "kind": "speech",
+   "frames": 311,
+   "playStart": 41449.2,
+   "lastVoicedPull": 47309.4,
+   "playEnd": 47771,
+   "wallStart": 1790369733145,
+   "wallEnd": 1790369739467
+  },
+  {
+   "label": "stop2",
+   "file": "stop2.wav",
+   "kind": "interrupt",
+   "frames": 170,
+   "playStart": 51826.9,
+   "lastVoicedPull": 54886.6,
+   "playEnd": 55328.6,
+   "wallStart": 1790369743523,
+   "wallEnd": 1790369747025
+  },
+  {
+   "label": "long4",
+   "file": "long4.wav",
+   "kind": "speech",
+   "frames": 272,
+   "playStart": 61013.9,
+   "lastVoicedPull": 66094.5,
+   "playEnd": 66553.8,
+   "wallStart": 1790369752710,
+   "wallEnd": 1790369758250
+  },
+  {
+   "label": "stop3",
+   "file": "stop3.wav",
+   "kind": "interrupt",
+   "frames": 128,
+   "playStart": 69962.7,
+   "lastVoicedPull": 72161.8,
+   "playEnd": 72623.1,
+   "wallStart": 1790369761659,
+   "wallEnd": 1790369764320
+  },
+  {
+   "label": "long5",
+   "file": "long5.wav",
+   "kind": "speech",
+   "frames": 313,
+   "playStart": 84768.4,
+   "lastVoicedPull": 90688.4,
+   "playEnd": 91128,
+   "wallStart": 1790369776463,
+   "wallEnd": 1790369782825
+  },
+  {
+   "label": "long1",
+   "file": "long1.wav",
+   "kind": "speech",
+   "frames": 306,
+   "playStart": 97647.3,
+   "lastVoicedPull": 103428.5,
+   "playEnd": 103867.8,
+   "wallStart": 1790369789343,
+   "wallEnd": 1790369795565
+  },
+  {
+   "label": "long2",
+   "file": "long2.wav",
+   "kind": "speech",
+   "frames": 333,
+   "playStart": 110484.1,
+   "lastVoicedPull": 116784.1,
+   "playEnd": 117244.4,
+   "wallStart": 1790369802181,
+   "wallEnd": 1790369808942
+  },
+  {
+   "label": "long3",
+   "file": "long3.wav",
+   "kind": "speech",
+   "frames": 311,
+   "playStart": 123823.6,
+   "lastVoicedPull": 129685.4,
+   "playEnd": 130145.7,
+   "wallStart": 1790369815521,
+   "wallEnd": 1790369821843
+  },
+  {
+   "label": "long4",
+   "file": "long4.wav",
+   "kind": "speech",
+   "frames": 272,
+   "playStart": 137206.4,
+   "lastVoicedPull": 142287.4,
+   "playEnd": 142749,
+   "wallStart": 1790369828904,
+   "wallEnd": 1790369834447
+  },
+  {
+   "label": "stop4",
+   "file": "stop4.wav",
+   "kind": "interrupt",
+   "frames": 161,
+   "playStart": 145931.6,
+   "lastVoicedPull": 148793.7,
+   "playEnd": 149250.6,
+   "wallStart": 1790369837629,
+   "wallEnd": 1790369840948
+  }
+ ],
+ "latency": [
+  {
+   "label": "long1",
+   "userEnd": 13726.4,
+   "roomStart": 15373.8,
+   "latencyMs": 1647,
+   "overlappedModelSpeech": false
+  },
+  {
+   "label": "long2",
+   "userEnd": 34759.7,
+   "roomStart": 36477.9,
+   "latencyMs": 1718,
+   "overlappedModelSpeech": false
+  },
+  {
+   "label": "long3",
+   "userEnd": 47309.4,
+   "roomStart": 49061.6,
+   "latencyMs": 1752,
+   "overlappedModelSpeech": false
+  },
+  {
+   "label": "long4",
+   "userEnd": 66094.5,
+   "roomStart": 67653.5,
+   "latencyMs": 1559,
+   "overlappedModelSpeech": false
+  },
+  {
+   "label": "long5",
+   "userEnd": 90688.4,
+   "roomStart": 92516.1,
+   "latencyMs": 1828,
+   "overlappedModelSpeech": false
+  },
+  {
+   "label": "long1",
+   "userEnd": 103428.5,
+   "roomStart": 105164,
+   "latencyMs": 1736,
+   "overlappedModelSpeech": false
+  },
+  {
+   "label": "long2",
+   "userEnd": 116784.1,
+   "roomStart": 118851,
+   "latencyMs": 2067,
+   "overlappedModelSpeech": false
+  },
+  {
+   "label": "long3",
+   "userEnd": 129685.4,
+   "roomStart": 131433.2,
+   "latencyMs": 1748,
+   "overlappedModelSpeech": false
+  },
+  {
+   "label": "long4",
+   "userEnd": 142287.4,
+   "roomStart": 143717.9,
+   "latencyMs": 1431,
+   "overlappedModelSpeech": false
+  }
+ ],
+ "barge": [
+  {
+   "attempt": 1,
+   "valid": true,
+   "idx": 1,
+   "answerStart": 15373.8,
+   "interruptStart": 18172,
+   "interruptLastVoiced": 21392.3,
+   "interruptWallStart": 1790369709868
+  },
+  {
+   "attempt": 2,
+   "valid": false,
+   "reason": "answer_not_playing",
+   "answerStart": 36477.9
+  },
+  {
+   "attempt": 3,
+   "valid": true,
+   "idx": 2,
+   "answerStart": 49061.6,
+   "interruptStart": 51826.9,
+   "interruptLastVoiced": 54886.6,
+   "interruptWallStart": 1790369743523
+  },
+  {
+   "attempt": 4,
+   "valid": true,
+   "idx": 3,
+   "answerStart": 67653.5,
+   "interruptStart": 69962.7,
+   "interruptLastVoiced": 72161.8,
+   "interruptWallStart": 1790369761659
+  },
+  {
+   "attempt": 5,
+   "valid": false,
+   "reason": "answer_not_playing",
+   "answerStart": 92516.1
+  },
+  {
+   "attempt": 6,
+   "valid": false,
+   "reason": "answer_not_playing",
+   "answerStart": 105164
+  },
+  {
+   "attempt": 7,
+   "valid": false,
+   "reason": "answer_not_playing",
+   "answerStart": 118851
+  },
+  {
+   "attempt": 8,
+   "valid": false,
+   "reason": "answer_not_playing",
+   "answerStart": 131433.2
+  },
+  {
+   "attempt": 9,
+   "valid": true,
+   "idx": 4,
+   "answerStart": 143717.9,
+   "interruptStart": 145931.6,
+   "interruptLastVoiced": 148793.7,
+   "interruptWallStart": 1790369837629
+  }
+ ],
+ "bargeEval": [
+  {
+   "attempt": 1,
+   "valid": true,
+   "idx": 1,
+   "answerStart": 15373.8,
+   "interruptStart": 18172,
+   "interruptLastVoiced": 21392.3,
+   "interruptWallStart": 1790369709868,
+   "stoppedWithin1500": false,
+   "oldAnswerStopMs": 1481,
+   "lateVoicedFrames": 2
+  },
+  {
+   "attempt": 3,
+   "valid": true,
+   "idx": 2,
+   "answerStart": 49061.6,
+   "interruptStart": 51826.9,
+   "interruptLastVoiced": 54886.6,
+   "interruptWallStart": 1790369743523,
+   "stoppedWithin1500": true,
+   "oldAnswerStopMs": 308,
+   "lateVoicedFrames": 0
+  },
+  {
+   "attempt": 4,
+   "valid": true,
+   "idx": 3,
+   "answerStart": 67653.5,
+   "interruptStart": 69962.7,
+   "interruptLastVoiced": 72161.8,
+   "interruptWallStart": 1790369761659,
+   "stoppedWithin1500": false,
+   "oldAnswerStopMs": 1494,
+   "lateVoicedFrames": 41
+  },
+  {
+   "attempt": 9,
+   "valid": true,
+   "idx": 4,
+   "answerStart": 143717.9,
+   "interruptStart": 145931.6,
+   "interruptLastVoiced": 148793.7,
+   "interruptWallStart": 1790369837629,
+   "stoppedWithin1500": false,
+   "oldAnswerStopMs": 1469,
+   "lateVoicedFrames": 76
+  }
+ ]
+}

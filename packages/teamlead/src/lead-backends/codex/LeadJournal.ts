@@ -9,6 +9,7 @@
  *
  *   accepted → dispatching(clientCorrelationId) → dispatched(turnId)
  *            → model_completed → output_pending → completed
+ *                              ↘ completed (no reply text; FLY-2862)
  *                                              ↘ ambiguous | dead_letter
  *
  * Honest semantics (Codex R3/R4/R5): the journal does NOT make arbitrary tool
@@ -327,6 +328,18 @@ export class LeadJournal {
 
 	toCompleted(id: string): JournalEntry {
 		return this.transition(id, "completed", {});
+	}
+
+	/** FLY-2862: the turn produced no reply text, so nothing is sent. Only a
+	 * `model_completed` entry qualifies; `reason` records why it is silent. */
+	toCompletedWithoutReply(id: string, reason: string): JournalEntry {
+		if (!reason) throw new Error("toCompletedWithoutReply: reason is required");
+		return this.store.transition({
+			id,
+			expectedFrom: ["model_completed"],
+			to: "completed",
+			patch: { reason, updatedAt: this.now() },
+		});
 	}
 
 	/** Escape hatches — allowed from any non-terminal state. */

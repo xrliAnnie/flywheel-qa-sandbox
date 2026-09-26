@@ -68,6 +68,7 @@ scripts/converge-flywheel-bin.sh
 scripts/check-global-path-hygiene.sh
 scripts/linux-preflight.sh
 scripts/materialize-lead-manifests.sh
+scripts/hooks/inject-runner-test-policy.mjs
 scripts/lib/buddy-escalate.sh
 scripts/lib/buddy-captain-preview.sh
 scripts/lib/buddy-connect.sh
@@ -186,3 +187,4 @@ node_modules/flywheel-teamlead/phase-protocols/implement.md
 node_modules/flywheel-teamlead/phase-protocols/qa.md
 node_modules/flywheel-teamlead/phase-protocols/generic.md
 node_modules/flywheel-teamlead/phase-protocols/review.md
+node_modules/flywheel-teamlead/phase-protocols/local-test-policy.md

@@ -27,5 +27,5 @@ com.flywheel.sub-create-nightly	-	external	*	informational-only external unit
 com.flywheel.sub-daily-loop	-	external	*	informational-only external unit
 com.flywheel.skills-update	-	external	*	informational-only external unit
 com.flywheel.voucher-watch	com.flywheel.voucher-watch.plist	copy	0	repo plist is byte authority
-com.flywheel.voice-bridge	com.flywheel.voice-bridge.plist	managed	0	must never be launched by convergence
+com.flywheel.voice-bridge	-	managed	0	retired in FLY-2860 (legacy voice daemon, plist removed); tombstone so convergence never relaunches a leftover plist
 com.flywheel.voice	com.flywheel.voice.plist	setup	0	registered dormant through explicit voice setup; on-demand identity checked separately

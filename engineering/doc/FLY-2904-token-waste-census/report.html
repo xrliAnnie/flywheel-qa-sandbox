@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Token 浪费全景</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--navy:#1a365d;--blue:#007aff;--green:#34c759;--amber:#ff9500;--red:#ff3b30;--purple:#af52de}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 -apple-system,system-ui,sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:24px 16px 80px}h1{font-size:26px;margin:8px 0 4px}h2{font-size:19px;margin:32px 0 12px;color:var(--navy)}
+.sub{color:var(--dim);font-size:13px}.tldr{background:var(--card);border-radius:12px;padding:16px 18px;box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--blue)}
+.tldr p{margin:6px 0}.card{background:var(--card);border-radius:12px;padding:14px 16px;margin:12px 0;box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--dim)}
+.card.top{border-left-color:var(--green)}.card-head{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:4px}
+.badge{background:#e8f8ed;color:#1f7a3a;border-radius:6px;padding:1px 8px;font-size:12px}.num{font:600 13px 'SF Mono',monospace;color:var(--navy)}
+.eff{font-size:12px;color:var(--dim)}.save{margin-left:auto;font-weight:600;color:var(--navy)}.card-title{font-weight:600;font-size:16px;margin:2px 0 6px}
+.kv{margin:3px 0}.kv b{display:inline-block;min-width:84px;color:var(--dim);font-weight:500}
+table{width:100%;border-collapse:collapse;background:var(--card);border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+td,th{padding:7px 10px;border-bottom:1px solid #eee;text-align:left;font-size:14px;vertical-align:top}td.n{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+td.bar{width:34%}td.bar span{display:inline-block;height:10px;vertical-align:middle}.c{background:var(--purple)}.x{background:var(--blue)}
+.legend span{display:inline-block;width:10px;height:10px;margin:0 4px 0 12px;vertical-align:middle}
+textarea{width:100%;min-height:54px;margin-top:8px;border:1px solid #d2d2d7;border-radius:8px;padding:8px;font:inherit;resize:vertical}
+.choice{margin-top:8px;display:flex;gap:16px;flex-wrap:wrap}.choice label{cursor:pointer}
+ul{padding-left:20px}li{margin:4px 0}.btn{background:var(--blue);color:#fff;border:0;border-radius:8px;padding:9px 16px;font:inherit;cursor:pointer;margin:4px 8px 4px 0}
+.btn.sec{background:#e5e5ea;color:var(--ink)}.summary-box{white-space:pre-wrap;background:#fafafa;border:1px solid #e5e5ea;border-radius:8px;padding:10px;font-size:13px;margin:8px 0;word-break:break-all}
+#copy-status{color:var(--green);margin-left:8px}.scroll{overflow-x:auto}
+@media(max-width:600px){td.bar{display:none}.save{margin-left:0;width:100%}.kv b{display:block}}
+</style></head><body><div class="wrap">
+<h1>Token 浪费全景</h1>
+<div class="sub">FLY-2904 · 窗口 2026-09-11 22:00Z – 09-25 22:00Z（14 天）· 本机 Claude + Codex 全部会话 · 只读统计</div>
+
+<h2>一句话</h2>
+<div class="tldr">
+<p>两周本机共用 <b>685 亿</b> token（Claude 452 亿、Codex 233 亿）。其中 <b>98% 是把已有上下文再读一遍</b>。</p>
+<p>浪费主要来自两件事相乘：<b>Lead 常驻超大上下文</b>（工程 Lead 每个请求平均读 56 万 token），以及 <b>Lead 被不需要动作的消息反复叫醒</b>（重复告警、ack 往返、轮询、巡检）。</p>
+<p>排前三的省法是：给 Lead 开自动压缩、收信 ack 和第一个动作放进同一次调用、告警去重：同一 Lead、同一标题 6 小时内合并成一条；info 级只进摘要。单第 1 条的回放模拟就能少读 Lead 用量的 43%（条件模拟，不是实测）。三条都不需要你写代码，你只需要批一个工程 Lead 的试点重启窗口。</p>
+<textarea data-key="tldr" data-title="一句话" placeholder="写在这里，自动保存在本机浏览器"></textarea>
+</div>
+
+<h2>推荐先做的 3 条</h2>
+<div class="card top"><div class="card-head"><span class="badge">推荐先做 #1</span><span class="save">情景省 61–91 亿 / 两周</span></div>
+<div class="card-title">给 Lead 开自动压缩（40 万窗口），先拿工程 Lead 试点</div>
+<div class="kv"><b>为什么</b>Lead 常驻 1M 大上下文：工程 Lead 每个请求平均重读 55.5 万 token。</div>
+<div class="kv"><b>怎么估的</b>回放模拟：所有 Lead 都开 40 万窗口时少读的量：91.4 亿 × 假设 67%–100%（模拟没算压缩后回头重读台账 / 文档，低值打 2/3 折；只有试点的 Lead 才拿得到对应部分）</div>
+<div class="kv"><b>代价</b>现成旋钮要先为每个 Lead 采集并核验 baseline（模型、Claude 版本、规则 / 工具指纹要逐项对上），Claude 升级后 baseline 失配会静默失效、要重采；压缩后 Lead 会丢一部分在飞细节，要靠台账补；每次压缩停顿几十秒</div>
+<div class="kv"><b>你要做什么</b>批准一个工程 Lead 的试点重启窗口</div>
+<div class="kv"><b>退路</b>删掉这项配置、重启 Lead 即恢复</div>
+<div class="choice" data-key="r1"><label><input type="radio" name="c-r1" value="做"> 做</label><label><input type="radio" name="c-r1" value="先不做"> 先不做</label><label><input type="radio" name="c-r1" value="要讨论"> 要讨论</label></div><textarea data-key="r1" data-title="推荐 · 给 Lead 开自动压缩（40 万窗口），先拿工程 Lead 试点" placeholder="写在这里，自动保存在本机浏览器"></textarea></div><div class="card top"><div class="card-head"><span class="badge">推荐先做 #2</span><span class="save">情景省 19–26 亿 / 两周</span></div>
+<div class="card-title">收信 ack 和第一个动作放进同一次调用（先改 Lead 提示）</div>
+<div class="kv"><b>为什么</b>每封信多一轮「ack 往返」：只由 ack 返回触发的请求 6,811 个、32.9 亿。</div>
+<div class="kv"><b>怎么估的</b>其中 ack 返回后直接收尾、没再调用工具的 5,457 个请求：25.8 亿 × 假设 75%–100%（提示方案不会 100% 被遵守；另有 7 亿是 ack 后继续干活的请求，合并后能否省掉要逐个看，不计入）</div>
+<div class="kv"><b>代价</b>只改提示，不改 ACK 语义；让 Bridge 代 ack 会改变「已收到」的含义，放到第二步再议</div>
+<div class="kv"><b>你要做什么</b>无</div>
+<div class="kv"><b>退路</b>改回原提示即恢复</div>
+<div class="choice" data-key="r2"><label><input type="radio" name="c-r2" value="做"> 做</label><label><input type="radio" name="c-r2" value="先不做"> 先不做</label><label><input type="radio" name="c-r2" value="要讨论"> 要讨论</label></div><textarea data-key="r2" data-title="推荐 · 收信 ack 和第一个动作放进同一次调用（先改 Lead 提示）" placeholder="写在这里，自动保存在本机浏览器"></textarea></div><div class="card top"><div class="card-head"><span class="badge">推荐先做 #3</span><span class="save">情景省 20–27 亿 / 两周</span></div>
+<div class="card-title">告警去重：同一 Lead、同一标题 6 小时内合并成一条；info 级只进摘要</div>
+<div class="kv"><b>为什么</b>同一条告警反复叫醒：3,296 次告警唤醒只有 67 种标题。</div>
+<div class="kv"><b>怎么估的</b>同一 Lead 6 小时内已收过同一标题的 2,928 个回合：27.1 亿 × 假设 75%–100%（状况升级的再次告警要照常叫醒，低值留出 1/4）</div>
+<div class="kv"><b>代价</b>状况恶化时的再次告警必须照常叫醒（升级 / 计数翻倍）</div>
+<div class="kv"><b>你要做什么</b>无</div>
+<div class="kv"><b>退路</b>关掉合并开关即恢复</div>
+<div class="choice" data-key="r3"><label><input type="radio" name="c-r3" value="做"> 做</label><label><input type="radio" name="c-r3" value="先不做"> 先不做</label><label><input type="radio" name="c-r3" value="要讨论"> 要讨论</label></div><textarea data-key="r3" data-title="推荐 · 告警去重：同一 Lead、同一标题 6 小时内合并成一条；info 级只进摘要" placeholder="写在这里，自动保存在本机浏览器"></textarea></div>
+
+<h2>谁在用（两周原始 token，亿）</h2>
+<div class="legend sub"><span class="c"></span>Claude<span class="x"></span>Codex</div>
+<div class="scroll"><table><tr><th>谁</th><th class="n">亿</th><th class="n">占比</th><th class="bar"></th></tr><tr><td>Runner · implement</td><td class="n">255.4</td><td class="n">37.3%</td><td class="bar"><span class="c" style="width:17.0%"></span><span class="x" style="width:83.0%"></span></td></tr><tr><td>Lead · flywheel-eng-lead</td><td class="n">149.4</td><td class="n">21.8%</td><td class="bar"><span class="c" style="width:58.5%"></span><span class="x" style="width:0.0%"></span></td></tr><tr><td>Runner · qa</td><td class="n">76.7</td><td class="n">11.2%</td><td class="bar"><span class="c" style="width:29.5%"></span><span class="x" style="width:0.6%"></span></td></tr><tr><td>评审 · 代码评审(Claude)</td><td class="n">70.8</td><td class="n">10.3%</td><td class="bar"><span class="c" style="width:27.7%"></span><span class="x" style="width:0.0%"></span></td></tr><tr><td>Lead · claude-infra-bot-lead</td><td class="n">29.3</td><td class="n">4.3%</td><td class="bar"><span class="c" style="width:11.5%"></span><span class="x" style="width:0.0%"></span></td></tr><tr><td>Lead · flywheel-product-lead</td><td class="n">20.7</td><td class="n">3.0%</td><td class="bar"><span class="c" style="width:8.1%"></span><span class="x" style="width:0.0%"></span></td></tr><tr><td>Runner · eng_design</td><td class="n">19.1</td><td class="n">2.8%</td><td class="bar"><span class="c" style="width:3.4%"></span><span class="x" style="width:4.1%"></span></td></tr><tr><td>评审 · 设计评审(Claude)</td><td class="n">11.9</td><td class="n">1.7%</td><td class="bar"><span class="c" style="width:4.6%"></span><span class="x" style="width:0.0%"></span></td></tr><tr><td>QA 测试环境</td><td class="n">7.6</td><td class="n">1.1%</td><td class="bar"><span class="c" style="width:2.7%"></span><span class="x" style="width:0.2%"></span></td></tr><tr><td>Runner · general</td><td class="n">7.0</td><td class="n">1.0%</td><td class="bar"><span class="c" style="width:2.7%"></span><span class="x" style="width:0.0%"></span></td></tr><tr><td>评审 · runner 调用的 Codex companion</td><td class="n">6.9</td><td class="n">1.0%</td><td class="bar"><span class="c" style="width:0.0%"></span><span class="x" style="width:2.7%"></span></td></tr><tr><td>其它 / founder 手动</td><td class="n">6.1</td><td class="n">0.9%</td><td class="bar"><span class="c" style="width:2.4%"></span><span class="x" style="width:0.0%"></span></td></tr><tr><td>Runner · pm</td><td class="n">5.5</td><td class="n">0.8%</td><td class="bar"><span class="c" style="width:2.2%"></span><span class="x" style="width:0.0%"></span></td></tr><tr><td>Lead · flywheel-cos-lead</td><td class="n">4.7</td><td class="n">0.7%</td><td class="bar"><span class="c" style="width:1.8%"></span><span class="x" style="width:0.0%"></span></td></tr><tr><td>Runner · unmapped-worktree</td><td class="n">3.4</td><td class="n">0.5%</td><td class="bar"><span class="c" style="width:1.3%"></span><span class="x" style="width:0.0%"></span></td></tr><tr><td>其余（每项不到 3 亿）</td><td class="n">10.7</td><td class="n">1.6%</td><td></td></tr></table></div>
+<p class="sub">Lead 合计 212 亿，占 Claude 的 47%。
+Codex 额度按 FLY-2893 的账号指纹，约 10 亿 token ≈ 一个号一周（区间 3–17%/亿）。
+按 API 相对价加权（缓存读只算 1/10）后，Claude 约 60 亿、Codex 约 31 亿「等价输入」；订阅额度怎么计缓存读，官方没有公布。</p>
+<textarea data-key="ledger" data-title="谁在用" placeholder="写在这里，自动保存在本机浏览器"></textarea>
+
+<h2>全部省法（按分数排序）</h2>
+<p class="sub">⚠️ 各条之间有重叠，<b>不能相加</b>：压缩窗口让每次读得少，减少叫醒 / 轮询让读的次数少，两者是相乘关系。<br>
+每条都写成「观测消耗 × 假设比例 = 情景节省」：观测消耗是实测的，比例是明示的假设，<b>情景节省不是保底，也不是实测</b>。<br>
+分数 = 情景节省中值（亿）× 好做系数（S=1、S–M=0.75、M=0.5、M–L=0.35、L=0.25）。S = 改提示 / 配置，M = 小改代码。</p>
+<div class="card item"><div class="card-head"><span class="num">#1</span><span class="eff">好做 M · 分数 38.1</span><span class="save">情景省 61–91 亿</span></div>
+<div class="card-title">给 Lead 开自动压缩（40 万窗口），先拿工程 Lead 试点</div>
+<div class="kv"><b>机制</b>Lead 常驻 1M 大上下文：工程 Lead 每个请求平均重读 55.5 万 token（缓存读为主）</div>
+<div class="kv"><b>观测</b>回放模拟：所有 Lead 都开 40 万窗口时少读的量：91.4 亿</div>
+<div class="kv"><b>假设</b>67%–100%：模拟没算压缩后回头重读台账 / 文档，低值打 2/3 折；只有试点的 Lead 才拿得到对应部分</div>
+<div class="kv"><b>代价</b>现成旋钮要先为每个 Lead 采集并核验 baseline（模型、Claude 版本、规则 / 工具指纹要逐项对上），Claude 升级后 baseline 失配会静默失效、要重采；压缩后 Lead 会丢一部分在飞细节，要靠台账补；每次压缩停顿几十秒</div>
+<div class="kv"><b>你要做什么</b>批准一个工程 Lead 的试点重启窗口</div>
+<textarea data-key="r1-all" data-title="#1 给 Lead 开自动压缩（40 万窗口），先拿工程 Lead 试点" placeholder="写在这里，自动保存在本机浏览器"></textarea></div><div class="card item"><div class="card-head"><span class="num">#2</span><span class="eff">好做 S · 分数 22.6</span><span class="save">情景省 19–26 亿</span></div>
+<div class="card-title">收信 ack 和第一个动作放进同一次调用（先改 Lead 提示）</div>
+<div class="kv"><b>机制</b>每封信多一轮「ack 往返」：只由 ack 返回触发的请求 6,811 个、32.9 亿（缓存读为主）</div>
+<div class="kv"><b>观测</b>其中 ack 返回后直接收尾、没再调用工具的 5,457 个请求：25.8 亿</div>
+<div class="kv"><b>假设</b>75%–100%：提示方案不会 100% 被遵守；另有 7 亿是 ack 后继续干活的请求，合并后能否省掉要逐个看，不计入</div>
+<div class="kv"><b>代价</b>只改提示，不改 ACK 语义；让 Bridge 代 ack 会改变「已收到」的含义，放到第二步再议</div>
+<div class="kv"><b>你要做什么</b>无</div>
+<textarea data-key="r2-all" data-title="#2 收信 ack 和第一个动作放进同一次调用（先改 Lead 提示）" placeholder="写在这里，自动保存在本机浏览器"></textarea></div><div class="card item"><div class="card-head"><span class="num">#3</span><span class="eff">好做 S–M · 分数 17.8</span><span class="save">情景省 20–27 亿</span></div>
+<div class="card-title">告警去重：同一 Lead、同一标题 6 小时内合并成一条；info 级只进摘要</div>
+<div class="kv"><b>机制</b>同一条告警反复叫醒：3,296 次告警唤醒只有 67 种标题（缓存读为主）</div>
+<div class="kv"><b>观测</b>同一 Lead 6 小时内已收过同一标题的 2,928 个回合：27.1 亿</div>
+<div class="kv"><b>假设</b>75%–100%：状况升级的再次告警要照常叫醒，低值留出 1/4</div>
+<div class="kv"><b>代价</b>状况恶化时的再次告警必须照常叫醒（升级 / 计数翻倍）</div>
+<div class="kv"><b>你要做什么</b>无</div>
+<textarea data-key="r3-all" data-title="#3 告警去重：同一 Lead、同一标题 6 小时内合并成一条；info 级只进摘要" placeholder="写在这里，自动保存在本机浏览器"></textarea></div><div class="card item"><div class="card-head"><span class="num">#4</span><span class="eff">好做 S–M · 分数 10.2</span><span class="save">情景省 11–17 亿</span></div>
+<div class="card-title">大输出规范：限制 rg / sed / Read 的输出量，Linear 写单不回显整单</div>
+<div class="kv"><b>机制</b>单个工具输出超过 5,000 token 的部分被后续请求反复重读（缓存读为主）</div>
+<div class="kv"><b>观测</b>能归因到工具输出的上下文增长里，超过 5,000 token 的部分 × 之后的重读次数：30.3 亿</div>
+<div class="kv"><b>假设</b>35%–55%：规则只能压掉一部分大输出，有些大输出确实需要</div>
+<div class="kv"><b>代价</b>规则太死会让体多读几次</div>
+<div class="kv"><b>你要做什么</b>无</div>
+<div class="choice" data-key="r6-all"><label><input type="radio" name="c-r6-all" value="做"> 做</label><label><input type="radio" name="c-r6-all" value="先不做"> 先不做</label><label><input type="radio" name="c-r6-all" value="要讨论"> 要讨论</label></div><textarea data-key="r6-all" data-title="#4 大输出规范：限制 rg / sed / Read 的输出量，Linear 写单不回显整单" placeholder="写在这里，自动保存在本机浏览器"></textarea></div><div class="card item"><div class="card-head"><span class="num">#5</span><span class="eff">好做 S · 分数 9.1</span><span class="save">情景省 7–11 亿</span></div>
+<div class="card-title">纯通知继续扩大「不叫醒」的覆盖（FLY-2749 的延续）</div>
+<div class="kv"><b>机制</b>阶段变更 / 会话启动 / 监控恢复 / 换体预告叫醒 Lead（FLY-2749 合并后仍在发生）（缓存读为主）</div>
+<div class="kv"><b>观测</b>这些回合的消耗（info 级告警已算进第 3 条，这里扣掉）：12.2 亿</div>
+<div class="kv"><b>假设</b>60%–90%：其中一部分带着真实待办，不能吞</div>
+<div class="kv"><b>代价</b>同 FLY-2749：不能把待办一起吞掉</div>
+<div class="kv"><b>你要做什么</b>无</div>
+<div class="choice" data-key="r9-all"><label><input type="radio" name="c-r9-all" value="做"> 做</label><label><input type="radio" name="c-r9-all" value="先不做"> 先不做</label><label><input type="radio" name="c-r9-all" value="要讨论"> 要讨论</label></div><textarea data-key="r9-all" data-title="#5 纯通知继续扩大「不叫醒」的覆盖（FLY-2749 的延续）" placeholder="写在这里，自动保存在本机浏览器"></textarea></div><div class="card item"><div class="card-head"><span class="num">#6</span><span class="eff">好做 M · 分数 8.8</span><span class="save">情景省 15–20 亿</span></div>
+<div class="card-title">巡检移出 Lead 上下文：脚本或小模型一次性跑，有异常才叫醒 Lead</div>
+<div class="kv"><b>机制</b>巡检 / 定时汇总在 Lead 的大上下文里跑（缓存读为主）</div>
+<div class="kv"><b>观测</b>patrol_tick + summary_due 回合的消耗：21.3 亿</div>
+<div class="kv"><b>假设</b>70%–95%：小上下文跑一次约为现在的 1/5；有异常时仍要叫醒 Lead</div>
+<div class="kv"><b>代价</b>巡检判断力可能下降；要改巡检入口</div>
+<div class="kv"><b>你要做什么</b>无</div>
+<div class="choice" data-key="r10-all"><label><input type="radio" name="c-r10-all" value="做"> 做</label><label><input type="radio" name="c-r10-all" value="先不做"> 先不做</label><label><input type="radio" name="c-r10-all" value="要讨论"> 要讨论</label></div><textarea data-key="r10-all" data-title="#6 巡检移出 Lead 上下文：脚本或小模型一次性跑，有异常才叫醒 Lead" placeholder="写在这里，自动保存在本机浏览器"></textarea></div><div class="card item"><div class="card-head"><span class="num">#7</span><span class="eff">好做 S–M · 分数 8.4</span><span class="save">情景省 8–14 亿</span></div>
+<div class="card-title">评审作废止损：head 一动就停掉在飞评审；推送后静默 2 分钟再开评审</div>
+<div class="kv"><b>机制</b>结论被丢弃的评审任务（被新版本取代、head 移动、外部已答、失败）（含缓存写）</div>
+<div class="kv"><b>观测</b>这些任务的全部消耗：16.1 亿</div>
+<div class="kv"><b>假设</b>50%–90%：停掉之前已经花掉的部分拿不回来；外部已答的可能是 Lead 主动答的</div>
+<div class="kv"><b>代价</b>评审会晚开始约 2 分钟</div>
+<div class="kv"><b>你要做什么</b>无</div>
+<div class="choice" data-key="r7-all"><label><input type="radio" name="c-r7-all" value="做"> 做</label><label><input type="radio" name="c-r7-all" value="先不做"> 先不做</label><label><input type="radio" name="c-r7-all" value="要讨论"> 要讨论</label></div><textarea data-key="r7-all" data-title="#7 评审作废止损：head 一动就停掉在飞评审；推送后静默 2 分钟再开评审" placeholder="写在这里，自动保存在本机浏览器"></textarea></div><div class="card item"><div class="card-head"><span class="num">#8</span><span class="eff">好做 M · 分数 6.7</span><span class="save">情景省 10–17 亿</span></div>
+<div class="card-title">给 Claude runner / 评审一套精简配置（去掉无关插件、MCP、代理描述、规则）</div>
+<div class="kv"><b>机制</b>Claude runner 的固定前缀中位 8.7–9.1 万，Codex 只有 2.4–3.1 万（上下文前缀代理；缓存读为主，但未拆分缓存读 / 写构成）</div>
+<div class="kv"><b>观测</b>runner、评审、QA 环境每个请求高于 4.5 万（infra-bot 水平）的最小上下文 × 请求数：33.7 亿</div>
+<div class="kv"><b>假设</b>30%–50%：最小上下文是代理量，里面还含首个任务等内容，不全是能删的系统前缀</div>
+<div class="kv"><b>代价</b>可能缺某个技能；要逐角色核对</div>
+<div class="kv"><b>你要做什么</b>无</div>
+<div class="choice" data-key="r11-all"><label><input type="radio" name="c-r11-all" value="做"> 做</label><label><input type="radio" name="c-r11-all" value="先不做"> 先不做</label><label><input type="radio" name="c-r11-all" value="要讨论"> 要讨论</label></div><textarea data-key="r11-all" data-title="#8 给 Claude runner / 评审一套精简配置（去掉无关插件、MCP、代理描述、规则）" placeholder="写在这里，自动保存在本机浏览器"></textarea></div><div class="card item"><div class="card-head"><span class="num">#9</span><span class="eff">好做 M · 分数 6.0</span><span class="save">情景省 9–15 亿</span></div>
+<div class="card-title">Lead 之间的 Discord 消息只在 @提及 / 本线程时叫醒</div>
+<div class="kv"><b>机制</b>Lead 之间在频道里互相叫醒（缓存读为主）</div>
+<div class="kv"><b>观测</b>被其它 bot / Lead 的频道消息叫醒的回合：17.1 亿</div>
+<div class="kv"><b>假设</b>50%–90%：其中有真协作，比例未核</div>
+<div class="kv"><b>代价</b>协作消息可能被漏看</div>
+<div class="kv"><b>你要做什么</b>定一条「Lead 之间什么时候必须 @」</div>
+<div class="choice" data-key="r12-all"><label><input type="radio" name="c-r12-all" value="做"> 做</label><label><input type="radio" name="c-r12-all" value="先不做"> 先不做</label><label><input type="radio" name="c-r12-all" value="要讨论"> 要讨论</label></div><textarea data-key="r12-all" data-title="#9 Lead 之间的 Discord 消息只在 @提及 / 本线程时叫醒" placeholder="写在这里，自动保存在本机浏览器"></textarea></div><div class="card item"><div class="card-head"><span class="num">#10</span><span class="eff">好做 M · 分数 5.8</span><span class="save">情景省 10–13 亿</span></div>
+<div class="card-title">轮询改成阻塞等待（check / turn / inbox 加长等待，规则里禁止 sleep 循环）</div>
+<div class="kv"><b>机制</b>轮询等待：体为了「再看一眼」反复发请求，每次都重读整段上下文（缓存读为主）</div>
+<div class="kv"><b>观测</b>只由「命中等待模式、未命中工作黑名单」的调用触发的 8,726 个请求（代理集合，可能仍含少量复合工作；命中工作标记的 24.2 亿不计入）：14.6 亿</div>
+<div class="kv"><b>假设</b>70%–90%：改成阻塞等待后每段等待仍剩 1–2 次请求</div>
+<div class="kv"><b>代价</b>长等待期间必须还能收到 Lead 指令，否则体会变迟钝</div>
+<div class="kv"><b>你要做什么</b>无</div>
+<div class="choice" data-key="r4-all"><label><input type="radio" name="c-r4-all" value="做"> 做</label><label><input type="radio" name="c-r4-all" value="先不做"> 先不做</label><label><input type="radio" name="c-r4-all" value="要讨论"> 要讨论</label></div><textarea data-key="r4-all" data-title="#10 轮询改成阻塞等待（check / turn / inbox 加长等待，规则里禁止 sleep 循环）" placeholder="写在这里，自动保存在本机浏览器"></textarea></div><div class="card item"><div class="card-head"><span class="num">#11</span><span class="eff">好做 M · 分数 5.5</span><span class="save">情景省 10–12 亿</span></div>
+<div class="card-title">Codex 体终态后立即停干净（FLY-2814 / FLY-2892 一线）</div>
+<div class="kv"><b>机制</b>Codex 体终态后还在烧 token；另有替身首轮 40.5 亿，FLY-2893 说明它含大量真实工作、无法分离，不计入（约 10 亿 ≈ 一个 Codex 号一周）</div>
+<div class="kv"><b>观测</b>终态 2 分钟以后仍在消耗的 token（本单复算，与 FLY-2893 差 0.8%）：12.2 亿</div>
+<div class="kv"><b>假设</b>80%–100%：终态后的消耗理论上应为 0</div>
+<div class="kv"><b>代价</b>见 FLY-2893 / FLY-2814</div>
+<div class="kv"><b>你要做什么</b>按 FLY-2893 拍板</div>
+<div class="choice" data-key="r5-all"><label><input type="radio" name="c-r5-all" value="做"> 做</label><label><input type="radio" name="c-r5-all" value="先不做"> 先不做</label><label><input type="radio" name="c-r5-all" value="要讨论"> 要讨论</label></div><textarea data-key="r5-all" data-title="#11 Codex 体终态后立即停干净（FLY-2814 / FLY-2892 一线）" placeholder="写在这里，自动保存在本机浏览器"></textarea></div><div class="card item"><div class="card-head"><span class="num">#12</span><span class="eff">好做 S · 分数 3.3</span><span class="save">情景省 3–4 亿</span></div>
+<div class="card-title">runner 的 Monitor 只推终态（CI 成功 / 失败各一次）</div>
+<div class="kv"><b>机制</b>runner 被 Monitor 流式事件叫醒（后台任务的终态通知另计，本来就该叫醒）（缓存读为主）</div>
+<div class="kv"><b>观测</b>Monitor 事件叫醒的 317 个回合：5.0 亿</div>
+<div class="kv"><b>假设</b>50%–80%：终态那一次仍要叫醒</div>
+<div class="kv"><b>代价</b>看不到中间过程</div>
+<div class="kv"><b>你要做什么</b>无</div>
+<div class="choice" data-key="r8-all"><label><input type="radio" name="c-r8-all" value="做"> 做</label><label><input type="radio" name="c-r8-all" value="先不做"> 先不做</label><label><input type="radio" name="c-r8-all" value="要讨论"> 要讨论</label></div><textarea data-key="r8-all" data-title="#12 runner 的 Monitor 只推终态（CI 成功 / 失败各一次）" placeholder="写在这里，自动保存在本机浏览器"></textarea></div><div class="card item"><div class="card-head"><span class="num">不排序</span><span class="save">只有上限 41 亿</span></div>
+<div class="card-title">runner / 评审也开自动压缩</div>
+<div class="kv"><b>机制</b>Claude runner / 评审跑到 25 万以上的上下文</div><div class="kv"><b>观测</b>25 万以上部分的缓存读：40.5 亿</div>
+<div class="kv"><b>代价</b>实现体长任务丢上下文，质量风险最大；没有可信的比例假设</div><div class="kv"><b>你要做什么</b>建议先不做，观察</div>
+<div class="choice" data-key="r13-all"><label><input type="radio" name="c-r13-all" value="做"> 做</label><label><input type="radio" name="c-r13-all" value="先不做"> 先不做</label><label><input type="radio" name="c-r13-all" value="要讨论"> 要讨论</label></div><textarea data-key="r13-all" data-title="runner / 评审也开自动压缩" placeholder="写在这里，自动保存在本机浏览器"></textarea></div>
+
+<h2>核过、但不是大问题的</h2>
+<div class="card"><ul>
+<li><b>跑整包测试</b>（FLY-2802）：测试输出进上下文的量很小，后续重读合计不到总量 2%。整包测试的代价在时间和 CPU，不在 token。</li>
+<li><b>缓存过期重建</b>：全部缓存写入 8.2 亿，占 Claude 的 1.8%。</li>
+<li><b>founder 自己的会话</b>：约 1%。</li>
+<li><b>「告警经 Discord 和 Bridge 各投一次」</b>：核过，两条通道的标题并不一一对应，不成立。</li>
+<li><b>语音</b>：实时语音不写 Codex rollout，本单量不到，是缺口。</li>
+</ul><textarea data-key="non-issues" data-title="核过、但不是大问题的" placeholder="写在这里，自动保存在本机浏览器"></textarea></div>
+
+<h2>口径</h2>
+<div class="card"><ul>
+<li>来源：本机 <code>~/.claude/projects</code> 全部 transcript、所有 Codex home 的 rollout、<code>teamlead.db</code>（只读）。只统计本机。</li>
+<li>量尺校验：复算 FLY-2749 冻结的 9/17 工程 Lead 数字逐位一致（1,710 请求 / 983,610,832 token）；Codex 终态后残留与 FLY-2893 相差 0.8%；评审任务分摊合计闭合。</li>
+<li>工具输出的量用「输出后下一个请求的上下文实际增量」来算，封顶为每字符 1 token；中间夹着其它输入（新消息、压缩、重启）的增长无法归因，记为未知、不计入。Codex 会截断大输出，所以不能按字符估。</li>
+<li>轮询集合是代理：只计命中等待模式、且没命中工作黑名单（git、构建 / 测试、脚本、文件写入等）的调用；命中工作标记的不计入。黑名单有限，集合里仍可能含少量复合工作。</li>
+<li>第 1 条是回放模拟：保留观测到的上下文增长，超过窗口就计一次压缩成本。40 万窗口省 91 亿（909 次压缩）；25 万窗口省 114 亿，但需要放开代码里的 40 万下限。没算压缩后重读台账的二阶效应，所以情景低值按模拟值的 2/3 取。</li>
+<li>Codex 相关数字引用 FLY-2893（PR #1336，尚未合并，读取于 4fc15a46e53a）。替身首轮 40.5 亿含大量真实工作、无法分离，只作参考，不算省。</li>
+<li>证据文件只含计数、类别、时间和哈希，不含任何消息原文或命令原文。</li>
+</ul><textarea data-key="method" data-title="口径" placeholder="写在这里，自动保存在本机浏览器"></textarea></div>
+
+<h2>复制全部评论</h2>
+<div class="card"><button class="btn" id="copy-all" type="button">复制全部评论</button><button class="btn sec" id="clear-all" type="button">清空</button><span id="copy-status"></span>
+<div id="summary-chunks"></div></div>
+</div>
+<script>
+(function () {
+  var ISSUE = "FLY-2904";
+  var MARKER = "【页面意见汇总】" + ISSUE;
+  var CHUNK_LIMIT = 1800;
+  var prefix = "fly-comments:" + ISSUE + ":" + String(window.location.pathname || "/") + ":";
+
+  function storageGet(key) { try { return window.localStorage.getItem(prefix + key) || ""; } catch (e) { return ""; } }
+  function storageSet(key, value) { try { window.localStorage.setItem(prefix + key, value); } catch (e) {} }
+  function storageDel(key) { try { window.localStorage.removeItem(prefix + key); } catch (e) {} }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+  var chunksEl = document.getElementById("summary-chunks");
+  var statusEl = document.getElementById("copy-status");
+
+  var choices = Array.prototype.slice.call(document.querySelectorAll(".choice[data-key]"));
+
+  function choiceOf(key) {
+    var el = document.querySelector('input[name="c-' + key + '"]:checked');
+    return el ? el.value : "";
+  }
+
+  function collect() {
+    var lines = [];
+    areas.forEach(function (ta) {
+      var key = ta.getAttribute("data-key");
+      var text = (ta.value || "").trim();
+      var pick = choiceOf(key);
+      if (!text && !pick) return;
+      lines.push("【" + (ta.getAttribute("data-title") || key) + "】" + (pick ? "〔" + pick + "〕" : "") + text);
+    });
+    return lines;
+  }
+
+  function buildChunks(lines) {
+    var chunks = [];
+    if (lines.length === 0) return [MARKER + "\n(暂无意见)"];
+    var current = MARKER;
+    lines.forEach(function (line) {
+      var candidate = current + "\n" + line;
+      if (candidate.length > CHUNK_LIMIT && current !== MARKER) {
+        chunks.push(current);
+        current = MARKER + "\n" + line;
+      } else {
+        current = candidate;
+      }
+    });
+    chunks.push(current);
+    return chunks;
+  }
+
+  function copyText(text, onDone) {
+    function fallback() {
+      var ok = false;
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.top = "-1000px";
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch (e) { ok = false; }
+      onDone(ok);
+    }
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      navigator.clipboard.writeText(text).then(function () { onDone(true); }, function () { fallback(); });
+    } else {
+      fallback();
+    }
+  }
+
+  function setStatus(msg) {
+    statusEl.textContent = msg;
+    window.setTimeout(function () { if (statusEl.textContent === msg) statusEl.textContent = ""; }, 4000);
+  }
+
+  function render() {
+    var chunks = buildChunks(collect());
+    while (chunksEl.firstChild) chunksEl.removeChild(chunksEl.firstChild);
+    chunks.forEach(function (chunk, index) {
+      var box = document.createElement("div");
+      var pre = document.createElement("div");
+      pre.className = "summary-box";
+      pre.textContent = chunk;
+      box.appendChild(pre);
+      if (chunks.length > 1) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn sec";
+        btn.textContent = "复制第 " + (index + 1) + " / " + chunks.length + " 段";
+        btn.addEventListener("click", function () {
+          copyText(chunk, function (ok) { setStatus(ok ? "已复制第 " + (index + 1) + " 段" : "复制失败,请手动全选复制"); });
+        });
+        box.appendChild(btn);
+      }
+      chunksEl.appendChild(box);
+    });
+  }
+
+  areas.forEach(function (ta) {
+    var key = ta.getAttribute("data-key");
+    ta.value = storageGet(key);
+    ta.addEventListener("input", function () {
+      storageSet(key, ta.value);
+      render();
+    });
+  });
+
+  choices.forEach(function (box) {
+    var key = box.getAttribute("data-key");
+    var saved = storageGet("choice:" + key);
+    Array.prototype.slice.call(box.querySelectorAll("input")).forEach(function (input) {
+      if (saved && input.value === saved) input.checked = true;
+      input.addEventListener("change", function () {
+        storageSet("choice:" + key, input.value);
+        render();
+      });
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var text = buildChunks(collect()).join("\n\n");
+    copyText(text, function (ok) { setStatus(ok ? "已复制全部评论" : "复制失败,请手动全选复制"); });
+  });
+
+  document.getElementById("clear-all").addEventListener("click", function () {
+    areas.forEach(function (ta) { ta.value = ""; storageDel(ta.getAttribute("data-key")); storageDel("choice:" + ta.getAttribute("data-key")); });
+    Array.prototype.slice.call(document.querySelectorAll(".choice input")).forEach(function (i) { i.checked = false; });
+    render();
+    setStatus("已清空");
+  });
+
+  render();
+})();
+
+</script>
+</body></html>

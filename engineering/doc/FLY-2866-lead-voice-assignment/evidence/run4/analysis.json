@@ -1,0 +1,80 @@
+[
+ {
+  "engine": "A",
+  "voice": "alloy",
+  "rawSeconds": 10.3,
+  "clipSeconds": 4.02,
+  "voicedSeconds": 2.68,
+  "sylPerSec": 6.34,
+  "f0MedianHz": 145.5,
+  "f0Frames": 187,
+  "asr": "Annie你好，我是Tadashi。现在有两件事要你看。",
+  "cerCore": 0.0,
+  "extraBeforeGreeting": "annie"
+ },
+ {
+  "engine": "A",
+  "voice": "ash",
+  "rawSeconds": 10.9,
+  "clipSeconds": 5.08,
+  "voicedSeconds": 3.68,
+  "sylPerSec": 4.62,
+  "f0MedianHz": 103.0,
+  "f0Frames": 225,
+  "asr": "安妮，你好，我是忠。现在有两件事要你看。",
+  "cerCore": 0.0,
+  "extraBeforeGreeting": "安妮"
+ },
+ {
+  "engine": "A",
+  "voice": "ballad",
+  "rawSeconds": 28.5,
+  "clipSeconds": 0.0,
+  "voicedSeconds": 0.0,
+  "sylPerSec": 170.0,
+  "f0MedianHz": null,
+  "f0Frames": 0,
+  "asr": "{\"error\": {\"message\": \"Audio file might be corrupted or unsupported\", \"type\": \"invalid_request_error\", \"param\": \"file\", \"code\": \"invalid_value\"}}",
+  "cerCore": 9.462,
+  "extraBeforeGreeting": null
+ },
+ {
+  "engine": "A",
+  "voice": "cedar",
+  "rawSeconds": 9.7,
+  "clipSeconds": 3.52,
+  "voicedSeconds": 2.34,
+  "sylPerSec": 7.26,
+  "f0MedianHz": 124.4,
+  "f0Frames": 168,
+  "asr": "安妮你好，我是田し，现在有两件事要你看。",
+  "cerCore": 0.0,
+  "extraBeforeGreeting": "安妮"
+ },
+ {
+  "engine": "A",
+  "voice": "coral",
+  "rawSeconds": 10.2,
+  "clipSeconds": 3.58,
+  "voicedSeconds": 2.28,
+  "sylPerSec": 7.46,
+  "f0MedianHz": 196.7,
+  "f0Frames": 108,
+  "asr": "Annie你好，我是Tadashi，现在有两件事要你看。",
+  "cerCore": 0.0,
+  "extraBeforeGreeting": "annie"
+ },
+ {
+  "engine": "A",
+  "voice": "echo",
+  "rawSeconds": 11.3,
+  "clipSeconds": 4.22,
+  "voicedSeconds": 3.06,
+  "sylPerSec": 5.56,
+  "f0MedianHz": 117.6,
+  "f0Frames": 213,
+  "asr": "Annie,你好,我是Tadashi,现在有两件事要你看。",
+  "cerCore": 0.0,
+  "extraBeforeGreeting": "annie"
+ }
+]

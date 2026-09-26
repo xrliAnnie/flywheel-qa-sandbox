@@ -1,0 +1,275 @@
+{
+ "root": "/Users/xiaorongli/Dev/flywheel-FLY-2860",
+ "counts": {
+  "files": 3237,
+  "prod": 1236,
+  "old": 0,
+  "onlyOld": 0,
+  "shared": 0,
+  "orphan": 6
+ },
+ "onlyOld": [],
+ "shared": {},
+ "orphan": [
+  "packages/voice-bridge/src/index.ts",
+  "packages/voice-core/src/audio/MicCapture.ts",
+  "packages/voice-core/src/audio/StreamPlayer.ts",
+  "packages/voice-core/src/cli.ts",
+  "packages/voice-core/src/headphone/index.ts",
+  "packages/voice-core/src/index.ts"
+ ],
+ "tests": {
+  "packages/voice-bridge/src/__tests__/bot-registry.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-bridge/src/bots/BotRegistry.ts"
+   ]
+  },
+  "packages/voice-bridge/src/__tests__/discord-wiring-policy.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-bridge/src/bots/discordWiring.ts"
+   ]
+  },
+  "packages/voice-bridge/src/__tests__/lead-speaker.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-bridge/src/audio/LeadSpeaker.ts"
+   ]
+  },
+  "packages/voice-bridge/src/__tests__/voice-conn-supervisor.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-bridge/src/audio/VoiceConnSupervisor.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/announcer.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/backends/edge-tts/EdgeTtsBackend.ts",
+    "packages/voice-core/src/transcript.ts",
+    "packages/voice-core/src/types.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/audio.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/audio/FilePlayer.ts",
+    "packages/voice-core/src/audio/MicCapture.ts",
+    "packages/voice-core/src/audio/StreamPlayer.ts",
+    "packages/voice-core/src/types.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/cli-factory.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/backends/edge-tts/EdgeTtsBackend.ts",
+    "packages/voice-core/src/cli.ts",
+    "packages/voice-core/src/config.ts",
+    "packages/voice-core/src/factory.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/config.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/config.ts",
+    "packages/voice-core/src/types.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/edge-tts.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/backends/edge-tts/EdgeTtsEngine.ts",
+    "packages/voice-core/src/types.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/fakes.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/audio/FilePlayer.ts",
+    "packages/voice-core/src/process.ts",
+    "packages/voice-core/src/types.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/headless-brain.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/brain/HeadlessClaudeBrain.ts",
+    "packages/voice-core/src/types.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/headphone-phrases.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/headphone/phrases.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/headphone-queue.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/headphone/queue.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/headphone-tap-filter.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/headphone/tap-filter.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/headphone-turn-machine.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/headphone/queue.ts",
+    "packages/voice-core/src/headphone/turn-machine.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/headphone-voice-directory.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/headphone/voice-directory.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/headphone-worked-example.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/headphone/queue.ts",
+    "packages/voice-core/src/headphone/turn-machine.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/process-resident.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/process.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/process.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/process.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/public-exports.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/index.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/receive-health.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/receive-health.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/registry.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/backends/registry.ts",
+    "packages/voice-core/src/types.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/scrub.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/scrub.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/stream-parse.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/brain/stream-parse.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/transcript.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/transcript.ts",
+    "packages/voice-core/src/types.ts"
+   ]
+  }
+ },
+ "prodSyms": {
+  "flywheel-voice-core": [
+   "AnnouncerSession <- packages/voice-core/src/types.ts",
+   "AudioFormat <- packages/voice-core/src/types.ts",
+   "BackendFactory <- packages/voice-core/src/backends/registry.ts",
+   "BackendRegistry <- packages/voice-core/src/backends/registry.ts",
+   "BrainAdapter <- packages/voice-core/src/types.ts",
+   "ConversationEventMap <- packages/voice-core/src/types.ts",
+   "ConversationOptions <- packages/voice-core/src/types.ts",
+   "ConversationSession <- packages/voice-core/src/types.ts",
+   "EdgeTtsBackend <- packages/voice-core/src/backends/edge-tts/EdgeTtsBackend.ts",
+   "HeadphoneIO <- packages/voice-core/src/headphone/turn-machine.ts",
+   "HeadphoneQueue <- packages/voice-core/src/headphone/queue.ts",
+   "HeadphoneTurnMachine <- packages/voice-core/src/headphone/turn-machine.ts",
+   "JsonlTranscriptSink <- packages/voice-core/src/transcript.ts",
+   "OPEN_WORD <- packages/voice-core/src/headphone/phrases.ts",
+   "PersistedTurnState <- packages/voice-core/src/headphone/turn-machine.ts",
+   "QueueItem <- packages/voice-core/src/headphone/queue.ts",
+   "QueueSnapshot <- packages/voice-core/src/headphone/queue.ts",
+   "ReceiveHealth <- packages/voice-core/src/receive-health.ts",
+   "ReceiveReason <- packages/voice-core/src/receive-health.ts",
+   "STOP_WORD <- packages/voice-core/src/headphone/phrases.ts",
+   "SpeakReceipt <- packages/voice-core/src/types.ts",
+   "TimerHost <- packages/voice-core/src/headphone/turn-machine.ts",
+   "TranscriptEntry <- packages/voice-core/src/types.ts",
+   "TurnEvent <- packages/voice-core/src/headphone/turn-machine.ts",
+   "TypedEmitter <- packages/voice-core/src/emitter.ts",
+   "VOICE_MIRROR_MARKS <- packages/voice-core/src/voice-mirror.ts",
+   "VoiceBackend <- packages/voice-core/src/types.ts",
+   "VoiceBackendCapabilities <- packages/voice-core/src/types.ts",
+   "VoiceDirectory <- packages/voice-core/src/headphone/voice-directory.ts",
+   "VoiceError <- packages/voice-core/src/types.ts",
+   "VoiceSpeakKind <- packages/voice-core/src/types.ts",
+   "VoiceSpeakOptions <- packages/voice-core/src/types.ts",
+   "VoiceSpeakVerification <- packages/voice-core/src/types.ts",
+   "VoiceSpec <- packages/voice-core/src/types.ts",
+   "VoiceUtterance <- packages/voice-core/src/types.ts",
+   "buildEdgeTtsBackend <- packages/voice-core/src/factory.ts",
+   "getTranscriptWriteFailure <- packages/voice-core/src/transcript.ts",
+   "isVoiceMirrorText <- packages/voice-core/src/voice-mirror.ts",
+   "matchPhrase <- packages/voice-core/src/headphone/phrases.ts",
+   "parseReceiveHealth <- packages/voice-core/src/receive-health.ts",
+   "resolveConfig <- packages/voice-core/src/config.ts",
+   "scrubTranscript <- packages/voice-core/src/scrub.ts",
+   "shouldEnqueue <- packages/voice-core/src/headphone/tap-filter.ts"
+  ],
+  "flywheel-voice-bridge": [
+   "BotRegistry <- packages/voice-bridge/src/bots/BotRegistry.ts",
+   "DiscordDeps <- packages/voice-bridge/src/bots/discordWiring.ts",
+   "DiscordReceiveDiagnostic <- packages/voice-bridge/src/bots/discordWiring.ts",
+   "DiscordReceivePolicy <- packages/voice-bridge/src/bots/discordWiring.ts",
+   "DiscordReceiveRuntimeDiagnostic <- packages/voice-bridge/src/bots/discordWiring.ts",
+   "RegistryClientLike <- packages/voice-bridge/src/bots/BotRegistry.ts",
+   "createDiscordDeps <- packages/voice-bridge/src/bots/discordWiring.ts"
+  ],
+  "flywheel-voice-core (via voice-bridge kept)": [
+   "TtsEngine <- packages/voice-core/src/types.ts"
+  ]
+ },
+ "dynamic": []
+}

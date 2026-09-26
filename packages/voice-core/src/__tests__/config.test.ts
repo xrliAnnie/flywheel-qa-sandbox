@@ -3,7 +3,6 @@ import {
 	resolveConfig,
 	verifyAnnounceComponents,
 	verifyBrainComponents,
-	verifyConverseComponents,
 } from "../config.js";
 import type { VoiceError } from "../types.js";
 
@@ -20,16 +19,34 @@ describe("resolveConfig", () => {
 	it("applies override > env > default precedence", () => {
 		const env = {
 			FLYWHEEL_VOICE_VOICE: "en-US-EnvNeural",
-			FLYWHEEL_VOICE_GEMINI_MODEL: "gemini-env",
+			FLYWHEEL_VOICE_TRANSCRIPT_DIR: "/env-transcripts",
 			FLYWHEEL_VOICE_TTS_TIMEOUT_MS: "5000",
 		} as NodeJS.ProcessEnv;
 		const c = resolveConfig({ voice: "en-US-Override" }, env);
 		expect(c.voice).toBe("en-US-Override"); // override wins
-		expect(c.gemini.model).toBe("gemini-env"); // env over default
+		expect(c.transcriptDir).toBe("/env-transcripts"); // env over default
 		expect(c.timeouts.ttsMs).toBe(5000);
 		expect(c.defaultAnnounceBackendId).toBe("edge-tts"); // default
-		expect(c.defaultConverseBackendId).toBe("gemini-live");
+		expect(c.defaultConverseBackendId).toBe(""); // no bundled converse backend
 		expect(c.timeouts.brainMs).toBe(120_000);
+	});
+
+	it("carries no retired converse-backend config (FLY-2860)", () => {
+		const c = resolveConfig({}, {} as NodeJS.ProcessEnv);
+		expect(Object.keys(c).sort()).toEqual([
+			"afplayBin",
+			"claudeBin",
+			"defaultAnnounceBackendId",
+			"defaultConverseBackendId",
+			"edgeTts",
+			"ffmpegBin",
+			"ffplayBin",
+			"identityFile",
+			"micDevice",
+			"timeouts",
+			"transcriptDir",
+			"voice",
+		]);
 	});
 
 	it("splits edge-tts args from env", () => {
@@ -41,15 +58,9 @@ describe("resolveConfig", () => {
 		expect(c.edgeTts.args).toEqual(["-m", "edge_tts"]);
 	});
 
-	it("defaults edge-tts command + gemini apiKeyEnv", () => {
+	it("defaults the edge-tts command", () => {
 		const c = resolveConfig({}, {} as NodeJS.ProcessEnv);
 		expect(c.edgeTts.command).toBe("edge-tts");
-		expect(c.gemini.apiKeyEnv).toBe("GEMINI_API_KEY");
-	});
-
-	it("defaults gemini model to the live-verified gemini-3.1-flash-live-preview", () => {
-		const c = resolveConfig({}, {});
-		expect(c.gemini.model).toBe("gemini-3.1-flash-live-preview");
 	});
 
 	it("resolves micDevice: override > env > ':default'", () => {
@@ -78,22 +89,6 @@ describe("fail-fast component checks", () => {
 	it("announce: passes with a command set", () => {
 		const c = resolveConfig({}, {} as NodeJS.ProcessEnv);
 		expect(() => verifyAnnounceComponents(c)).not.toThrow();
-	});
-
-	it("converse: throws when the API key env is unset", () => {
-		const c = resolveConfig({}, {} as NodeJS.ProcessEnv);
-		const err = catchErr(() =>
-			verifyConverseComponents(c, {} as NodeJS.ProcessEnv),
-		);
-		expect((err as VoiceError).code).toBe("component-missing");
-		expect((err as VoiceError).message).toContain("GEMINI_API_KEY");
-	});
-
-	it("converse: passes when the API key is present", () => {
-		const c = resolveConfig({}, {} as NodeJS.ProcessEnv);
-		expect(() =>
-			verifyConverseComponents(c, { GEMINI_API_KEY: "k" } as NodeJS.ProcessEnv),
-		).not.toThrow();
 	});
 
 	it("brain: throws when identity file unset or missing", () => {

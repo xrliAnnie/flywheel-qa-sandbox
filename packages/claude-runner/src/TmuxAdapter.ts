@@ -15,9 +15,12 @@ import {
 import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { CommDB } from "flywheel-comm/db";
 import {
+	appendRunnerTestPolicyHookSettings,
 	buildNonLeadClaudeSettings,
+	buildRunnerTestPolicyHookCommand,
 	PONYTAIL_PLUGIN,
 	resolveAllowedCanonicalModel,
 	resolveAllowedEffort,
@@ -46,6 +49,13 @@ import {
 } from "./sync-op-marker.js";
 import { parseTmuxEnsureSuccess } from "./tmux-ensure-result.js";
 import { pretrustClaudeWorkspace } from "./workspace-trust.js";
+
+const RUNNER_TEST_POLICY_HOOK = fileURLToPath(
+	new URL(
+		"../../../scripts/hooks/inject-runner-test-policy.mjs",
+		import.meta.url,
+	),
+);
 
 /**
  * FLY-494: optional per-call exec options.
@@ -1763,10 +1773,17 @@ export class TmuxAdapter implements IAdapter {
 		args.push(
 			"--settings",
 			JSON.stringify(
-				buildNonLeadClaudeSettings(
-					{ enabledPlugins },
-					memorySettings,
-					usageSettings,
+				appendRunnerTestPolicyHookSettings(
+					buildNonLeadClaudeSettings(
+						{ enabledPlugins },
+						memorySettings,
+						usageSettings,
+					),
+					ctx.appendSystemPrompt,
+					buildRunnerTestPolicyHookCommand(
+						process.execPath,
+						RUNNER_TEST_POLICY_HOOK,
+					),
 				),
 			),
 		);

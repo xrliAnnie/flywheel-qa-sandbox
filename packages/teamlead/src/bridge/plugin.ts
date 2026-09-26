@@ -103,6 +103,7 @@ import {
 } from "../account-heal/detection-classifier.js";
 import { defaultMachinePoolDir } from "../account-heal/machine-account.js";
 import { quarantinePendingSwitches } from "../account-heal/pending-store.js";
+import { writeSweepRequest } from "../account-heal/sweep-request.js";
 import {
 	type ApplyTransitionOpts,
 	applyTransition,
@@ -111,10 +112,22 @@ import { confirmStandingAuthorityCandidate } from "../bin/standing-authority-act
 import { resolveStandingAuthorityStateDir } from "../bin/standing-authority-confirmation-ledger.js";
 import { observeClaudeAccountDetails } from "../claude-quota/account-detail-observer.js";
 import {
+	type ClaudeAccountDetailStore,
 	defaultClaudeAccountDetailStorePath,
 	readClaudeAccountDetailStore,
 	writeClaudeAccountDetailStore,
 } from "../claude-quota/account-detail-store.js";
+import {
+	claudeChargeTargets,
+	createGogRunner,
+	observeClaudeCharges,
+} from "../claude-quota/charge-receipt-observer.js";
+import { createClaudeChargeScheduler } from "../claude-quota/charge-receipt-scheduler.js";
+import {
+	defaultClaudeChargeStorePath,
+	readClaudeChargeStore,
+	writeClaudeChargeStore,
+} from "../claude-quota/charge-receipt-store.js";
 import { createCodexQuotaDisabledAdmissionReplay } from "../codex-quota/admission-replay.js";
 import { projectCodexQuotaAudit } from "../codex-quota/audit.js";
 import { CodexQuotaAvailability } from "../codex-quota/availability.js";
@@ -251,7 +264,10 @@ import { AutoRepairBot } from "./AutoRepairBot.js";
 import { reconcileCodexAccountSubscriptionIdentityKeys } from "./account-quota-page.js";
 import {
 	createAccountQuotaRefresh,
+	createAccountReadingsRefresh,
+	createClaudeChargeRefresh,
 	createCodexAccountQuotaRefresh,
+	scheduledReadingsRefresh,
 } from "./account-quota-refresh.js";
 import {
 	buildVercelQuotaSection,
@@ -686,6 +702,7 @@ import {
 } from "./lead-persona-activation.js";
 import { createLeadPersonaRouter } from "./lead-persona-routes.js";
 import { runLeadReconcilePass } from "./lead-reconcile-pass.js";
+import { createLeadReplyFailedHandler } from "./lead-reply-failed-route.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
 import { leadEventEnvelopeFromJournalRow } from "./legacy-lead-event-reconciler.js";
@@ -787,7 +804,11 @@ import {
 } from "./project-runner-model-source.js";
 import { createPublishHtmlRouter } from "./publish-html-route.js";
 import { resolveQuotaDaemonBridgeMode } from "./quota-daemon-cutover.js";
-import { shouldWakeQuotaDaemon, wakeQuotaDaemon } from "./quota-daemon-wake.js";
+import {
+	createQuotaDaemonWaker,
+	shouldWakeQuotaDaemon,
+	wakeQuotaDaemon,
+} from "./quota-daemon-wake.js";
 import { loadReclosePeerNative } from "./reclose-peer-native.js";
 import { settleReconnectTitlesAndRefresh } from "./reconnect-title-restore.js";
 import { appendBugVersionFooter } from "./release-readiness/bug-footer.js";
@@ -943,6 +964,17 @@ import { createSummaryAbsorptionPass } from "./summary-absorption-rider.js";
 import { listSummaryPulls } from "./summary-delivery-ledger.js";
 import { readSummaryLinearActivity } from "./summary-linear-activity.js";
 import { SummaryPresentationController } from "./summary-presentation-controller.js";
+import {
+	defaultSwitchRecordPath,
+	readSwitchRecord,
+	resolvePageLastSwitch,
+	type SwitchRecord,
+	writeSwitchRecord,
+} from "./switch-record.js";
+import {
+	createClaudeSweepRequester,
+	createSwitchRefreshTrigger,
+} from "./switch-refresh-trigger.js";
 import {
 	createTerminalCommDbSync,
 	type TerminalCommDbSync,
@@ -1670,6 +1702,10 @@ export interface BridgeAppOptions {
 		}>;
 		/** FLY-2803: local, non-secret account identity digests for page confirmations. */
 		readAccountIdentityKeys?: () => Readonly<Record<string, string>>;
+		/** FLY-2830: in-process last switch (survives a failed disk write). */
+		latestSwitchRecord?: () => SwitchRecord | null;
+		/** FLY-2830: test seam; production uses defaultSwitchRecordPath(). */
+		switchRecordPath?: string;
 	};
 	/** FLY-2803: fixed page-only manual input seam; production uses stateDir. */
 	accountSubscriptionManual?: {
@@ -1683,6 +1719,13 @@ export interface BridgeAppOptions {
 	accountPageVercel?: {
 		storePath: string;
 		latest?: () => VercelAccountStore | null;
+	};
+	/**
+	 * FLY-2897: the Claude charge-receipt readings behind the next-charge
+	 * cells. Absent ⇒ never read (tests stay off the machine's real file).
+	 */
+	accountPageClaudeCharges?: {
+		storePath: string;
 	};
 	/** FLY-1995: additive health summary plus master-only profiler diagnostics. */
 	eventLoopAttribution?: {
@@ -2161,9 +2204,35 @@ export function createBridgeApp(
 							);
 						}
 					}
+					// FLY-2830: best effort — a broken record means no marks, never
+					// a broken page.
+					let lastSwitch: ReturnType<typeof resolvePageLastSwitch> = null;
+					try {
+						lastSwitch = resolvePageLastSwitch(
+							opts?.codexQuota?.latestSwitchRecord?.() ?? null,
+							() =>
+								readSwitchRecord(
+									opts?.codexQuota?.switchRecordPath ??
+										defaultSwitchRecordPath(),
+								),
+						);
+					} catch {
+						lastSwitch = null;
+					}
+					// FLY-2897: a broken receipt file only drops the receipt facts.
+					let claudeCharges: ReturnType<typeof readClaudeChargeStore> = null;
+					const chargesPage = opts?.accountPageClaudeCharges;
+					if (chargesPage) {
+						try {
+							claudeCharges = readClaudeChargeStore(chargesPage.storePath);
+						} catch {
+							claudeCharges = null;
+						}
+					}
 					const html = renderAccountsPageHtml(
 						buildAccountQuotaView(snapshot, {
 							claudeEmails,
+							claudeCharges,
 							subscriptionManual: {
 								confirmations: manual.data?.confirmations ?? [],
 								identityKeys,
@@ -2176,6 +2245,7 @@ export function createBridgeApp(
 							},
 						}),
 						vercelSection,
+						{ lastSwitch },
 					);
 					res.type("html").send(html);
 				} catch {
@@ -3923,6 +3993,13 @@ export function createBridgeApp(
 			(req, res) => {
 				void codexLeadOutbound(req, res);
 			},
+		);
+		// FLY-2862: a Codex Lead's owed reply came back empty; tell its live voice
+		// session (if any) so the daemon speaks a status line instead of waiting.
+		app.post(
+			"/api/lead-outbound/reply-failed",
+			tokenAuthMiddleware(config.apiToken),
+			createLeadReplyFailedHandler({ store }),
 		);
 
 		const rayaIdentities = projects.flatMap((project) =>
@@ -9120,18 +9197,41 @@ export async function startBridge(
 		writeCodexSubscriptionStore: (subscriptions) =>
 			writeCodexSubscriptionStore(codexSubscriptionStorePath, subscriptions),
 	});
+	// FLY-2830: one Claude card/subscription reader for every refresh path.
+	const observeClaudeDetails = (signal: AbortSignal) =>
+		observeClaudeAccountDetails({
+			profilesRoot:
+				config.capacityProbes?.claudeProfilesDir ?? defaultMachinePoolDir(),
+			previous: readClaudeAccountDetailStore(claudeAccountDetailStorePath),
+			signal,
+		});
+	const writeClaudeDetails = (details: ClaudeAccountDetailStore) =>
+		writeClaudeAccountDetailStore(claudeAccountDetailStorePath, details);
+	// FLY-2897: one Claude charge-receipt round (gog, Anthropic receipt mail
+	// only) for the page refresh, the post-switch refresh and the daily tick.
+	const claudeChargeStorePath = defaultClaudeChargeStorePath();
+	const runGog = createGogRunner();
+	const refreshClaudeCharges = createClaudeChargeRefresh({
+		ceilingMs: 90_000,
+		observe: (signal) =>
+			observeClaudeCharges({
+				// Re-read per round: an account or mailbox change needs no restart.
+				targets: claudeChargeTargets(readStoreStrict(defaultStorePath())),
+				previous: readClaudeChargeStore(claudeChargeStorePath),
+				runGog,
+				signal,
+			}),
+		write: (charges) => writeClaudeChargeStore(claudeChargeStorePath, charges),
+	});
+	const claudeChargeScheduler = createClaudeChargeScheduler({
+		refresh: refreshClaudeCharges,
+		readStore: () => readClaudeChargeStore(claudeChargeStorePath),
+	});
 	const refreshCodexAccountQuota = createAccountQuotaRefresh({
 		ceilingMs: 90_000,
 		refreshCodex: refreshCodexReadings,
-		observeClaudeAccountDetails: (signal) =>
-			observeClaudeAccountDetails({
-				profilesRoot:
-					config.capacityProbes?.claudeProfilesDir ?? defaultMachinePoolDir(),
-				previous: readClaudeAccountDetailStore(claudeAccountDetailStorePath),
-				signal,
-			}),
-		writeClaudeAccountDetailStore: (details) =>
-			writeClaudeAccountDetailStore(claudeAccountDetailStorePath, details),
+		observeClaudeAccountDetails: observeClaudeDetails,
+		writeClaudeAccountDetailStore: writeClaudeDetails,
 		vercel: {
 			observe: (signal) =>
 				observeVercelAccount({
@@ -9149,10 +9249,44 @@ export async function startBridge(
 			discardStale: () => discardVercelAccountStore(vercelAccountStorePath),
 			now: () => new Date(),
 		},
+		refreshClaudeCharges,
+	});
+	// FLY-2830: Codex readings + Claude cards/subscriptions (never Vercel),
+	// shared by the reading scheduler and the post-switch refresh.
+	const refreshAccountReadings = createAccountReadingsRefresh({
+		ceilingMs: 90_000,
+		refreshCodex: refreshCodexReadings,
+		observeClaudeAccountDetails: observeClaudeDetails,
+		writeClaudeAccountDetailStore: writeClaudeDetails,
+	});
+	// FLY-2830: every account switch (Codex or Claude, manual or automatic)
+	// re-reads every account. Rides the GatePoller tick like the scheduler.
+	const switchRecordPath = defaultSwitchRecordPath();
+	const switchRefreshTrigger = createSwitchRefreshTrigger({
+		readCodexGeneration: () =>
+			store.codexQuota.getRoot(codexQuotaRootKey)?.generation ?? null,
+		readClaudeGeneration: () => {
+			const accounts = readStoreStrict(defaultStorePath());
+			return accounts === null ? null : (accounts.lastSwitch?.generation ?? 0);
+		},
+		// A dedicated waker: its 60 s throttle is not shared with alert wakes.
+		requestClaudeSweep: createClaudeSweepRequester({
+			write: (input) => writeSweepRequest(input),
+			wake: createQuotaDaemonWaker(),
+		}),
+		refreshBridge: async () => {
+			const outcome = await refreshAccountReadings();
+			if (!outcome.codex.ok) throw outcome.codex.error;
+			if (!outcome.claude.ok) throw new Error("claude_details_failed");
+		},
+		refreshClaudeCharges,
+		persistSwitchRecord: (record) =>
+			writeSwitchRecord(switchRecordPath, record),
+		readPersistedSwitchRecord: () => readSwitchRecord(switchRecordPath),
 	});
 	// FLY-2869: rides the existing GatePoller tick (see onLandOperationTick).
 	const codexReadingScheduler = createCodexReadingScheduler({
-		refresh: refreshCodexReadings,
+		refresh: scheduledReadingsRefresh(refreshAccountReadings),
 		readStore: () => readCodexAccountQuotaStore(codexAccountQuotaStorePath),
 		observePipeline: (report) =>
 			store.codexQuota.observeCodexReadingPipeline(report),
@@ -9571,6 +9705,7 @@ export async function startBridge(
 				rootKey: codexQuotaRootKey,
 				canRecover: codexQuotaCanRecover,
 				refreshAccountQuota: refreshCodexAccountQuota,
+				latestSwitchRecord: () => switchRefreshTrigger.latestSwitchRecord(),
 				readAccountIdentityKeys: () => {
 					const pool = getCodexQuotaAccountPool();
 					const problems = new Set(
@@ -9610,6 +9745,7 @@ export async function startBridge(
 				storePath: vercelAccountStorePath,
 				latest: () => vercelAccountLatest.get(),
 			},
+			accountPageClaudeCharges: { storePath: claudeChargeStorePath },
 			vercelToken,
 			reportBlobStore,
 			reportHostingCredentials,
@@ -12895,6 +13031,16 @@ export async function startBridge(
 			} finally {
 				// FLY-2869: never let the maintenance chain short-circuit the readings.
 				codexReadingScheduler.tick();
+				// FLY-2830: after the maintenance reconcile, so a manual
+				// `codex-profile use` is seen in the same tick.
+				switchRefreshTrigger.tick();
+				// FLY-2897: daily receipt round; its own try so it can never
+				// skip the triggers above.
+				try {
+					claudeChargeScheduler.tick();
+				} catch {
+					console.warn("[claude-charge] scheduler tick failed");
+				}
 			}
 		},
 		onAutoNarrowGateTick: async () => {

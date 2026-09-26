@@ -1,0 +1,14 @@
+{
+ "A-alloy": {
+  "f0MedianHz": 144.6,
+  "frames": 139
+ },
+ "A-marin": {
+  "f0MedianHz": 200.0,
+  "frames": 219
+ },
+ "A-verse": {
+  "f0MedianHz": 155.8,
+  "frames": 131
+ }
+}

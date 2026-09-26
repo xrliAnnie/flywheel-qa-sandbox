@@ -203,6 +203,19 @@ async function verifyBindings(values) {
 				`workflow_category_binding mismatch: expected ${JSON.stringify(expected)}, got ${JSON.stringify(rows)}`,
 			);
 		}
+		if (values["required-binding"]) {
+			const [taskCategory, templateId, ...extra] =
+				values["required-binding"].split("=");
+			if (!taskCategory || !templateId || extra.length > 0) {
+				throw new Error("--required-binding must be task_category=template_id");
+			}
+			const required = rows.find((row) => row.task_category === taskCategory);
+			if (required?.template_id !== templateId) {
+				throw new Error(
+					`required binding ${taskCategory}=${templateId} is unavailable`,
+				);
+			}
+		}
 		process.stdout.write(
 			`${JSON.stringify({ success: true, project, bindings: rows.length })}\n`,
 		);

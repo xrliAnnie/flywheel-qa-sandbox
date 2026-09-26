@@ -29,6 +29,11 @@ Layer 1: qa-framework (this package)     Layer 2: your project
 4. **Write + Execute** — Create ad hoc tests, run iteratively until all pass
 5. **Finalize** — Update skill files, run regression, generate report
 
+Runner prompt or injected-skill changes must also follow
+[`suites/runner-test-discipline.md`](suites/runner-test-discipline.md). That 529
+behavior suite observes real Runner commands and fails on any local full-package
+test command; it does not authorize a Runner to run an aggregate locally.
+
 When a Flywheel QA scenario needs a production `teamlead.db` or `comm.db`
 snapshot, create it through `node scripts/flywheel-snapshot-control.mjs runner
 ...`; never copy a live database with `cp`. Managed copies stay under

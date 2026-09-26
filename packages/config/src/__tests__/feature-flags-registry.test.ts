@@ -590,15 +590,16 @@ describe("feature-flag registry invariants", () => {
 		for (const envVar of retired) {
 			expect(RETIRED_FLAGS).toContainEqual({ envVar, retiredBy: "FLY-2102" });
 		}
-		expect(FLAG_EXEMPTIONS).toContainEqual({
-			name: "FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE",
-			kind: "env",
-			persistentEnvAllowed: false,
-			reason: expect.stringMatching(/staged voice E2E/i),
-			owner: "flywheel-eng-lead",
-			issue: "FLY-2102",
-			seam: "qa_isolation",
-			retireWhen: expect.stringMatching(/test adapter/i),
+		// FLY-2860 retired the staged voice rig that read the presence
+		// override; its FLY-2102 QA exemption became a retirement tombstone.
+		expect(
+			FLAG_EXEMPTIONS.some(
+				(entry) => entry.name === "FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE",
+			),
+		).toBe(false);
+		expect(RETIRED_FLAGS).toContainEqual({
+			envVar: "FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE",
+			retiredBy: "FLY-2860",
 		});
 	});
 

@@ -1,0 +1,70 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2802 · Runner 测试纪律设计</title><style>*{box-sizing:border-box}body{margin:0;background:#f5f5f7;color:#1d1d1f;font:16px/1.65 -apple-system,system-ui,sans-serif}main{max-width:960px;margin:auto;padding:48px 24px 70px}h1{font-size:clamp(28px,5vw,42px);line-height:1.2;letter-spacing:-.035em}h2{font-size:24px;margin:8px 0 18px}p{margin:12px 0}.eyebrow{color:#58718a;font-size:13px;font-weight:650;letter-spacing:.05em}.card{background:white;border-radius:12px;padding:28px;margin:22px 0;box-shadow:0 1px 3px #0000000f;border-left:4px solid #007aff}.pending{background:#fff8eb;border:1px solid #f0d9ac;border-radius:8px;padding:20px;color:#765316}.pending strong{font-size:14px}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}table{width:100%;border-collapse:collapse}th,td{text-align:left;vertical-align:top;padding:12px;border-bottom:1px solid #e7e7ed}th{color:#58718a}label{display:block;color:#63636b;font-size:13px;margin:24px 0 8px}textarea{display:block;width:100%;min-height:76px;resize:vertical;border:1px solid #d6d6dc;border-radius:8px;padding:12px;font:inherit;background:#fbfbfd}button{border:0;border-radius:8px;background:#007aff;color:white;padding:10px 16px;font:inherit;cursor:pointer;margin:12px 8px 8px 0}.muted{color:#73737b;font-size:14px}.export{min-height:120px}button:focus-visible,textarea:focus-visible{outline:3px solid #87baff;outline-offset:3px}@media(max-width:600px){main{padding:28px 14px}.card{padding:20px}h2{font-size:22px}td,th{padding:8px}}</style></head><body><main><div class="eyebrow">FLY-2802 · DESIGN · 2026-09-23</div><h1>让“只测相关文件”<br>经得住真实任务的诱导</h1><p class="muted">一份共同规则，一组真实任务，一份能复核的行为记录。</p><section class="card" aria-labelledby="summary"><div class="eyebrow">01 · 要改变什么</div><h2 id="summary">先查影响面，再跑相关文件</h2><p>Runner 是执行任务的 AI 工程师。本次要让它在全仓字面量迁移时也只跑相关测试，并用真实任务验证它确实遵守。</p><p><strong>本页是设计交付，不是 529 验收通过报告。</strong>529 是与生产隔离、可运行真实模型的测试房。</p><label for="comment-summary">这部分的意见 · 自动保存在本浏览器</label><textarea id="comment-summary" data-comment="summary" data-title="先查影响面，再跑相关文件" placeholder="写下疑问或建议"></textarea></section><section class="card" aria-labelledby="flow"><div class="eyebrow">02 · 核心流程</div><h2 id="flow">用真实行为判断，而不是只查文字</h2><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本机图形进程被系统权限拒绝；已按规定重试一次。保留 Mermaid 图形源码，未使用远程渲染。</p></div><details><summary>查看流程图源码</summary><pre>%%{init: {&#x27;theme&#x27;:&#x27;base&#x27;,&#x27;themeVariables&#x27;:{&#x27;fontFamily&#x27;:&#x27;system-ui&#x27;,&#x27;primaryColor&#x27;:&#x27;#eef5ff&#x27;,&#x27;primaryTextColor&#x27;:&#x27;#1d1d1f&#x27;,&#x27;primaryBorderColor&#x27;:&#x27;#007aff&#x27;,&#x27;lineColor&#x27;:&#x27;#86868b&#x27;}}}%%
+flowchart TB
+    A[一份测试规则] --&gt; B[注入真实 runner]
+    B --&gt; C[529 隔离房：字面量迁移任务]
+    C --&gt; D[保存原始命令与任务结果]
+    D --&gt; E{独立检查}
+    E --&gt;|出现整包命令| F[失败]
+    E --&gt;|任务完成、定向验证完整| G[通过]
+    E --&gt;|日志缺失或无法判断| H[不能通过]
+</pre></details><p>同一份规则进入真实任务。观察员保存命令与结果；出现整包命令即失败，日志不完整也不能通过。</p><label for="comment-flow">这部分的意见 · 自动保存在本浏览器</label><textarea id="comment-flow" data-comment="flow" data-title="用真实行为判断，而不是只查文字" placeholder="写下疑问或建议"></textarea></section><section class="card" aria-labelledby="policy"><div class="eyebrow">03 · 规则与技能</div><h2 id="policy">把“先扫全包找问题”的借口写明</h2><ul><li>任何理由都不跑本机整包：包括发现影响面、全仓替换、重构、收尾或无输出后的重试。</li><li>先搜索旧值、新值和文件依赖；逐个跑找到的相关测试，再补跑与改动源文件相关的测试。</li><li>排除少量文件、筛测试名称或减少并发，都不等于选择相关测试文件。</li><li>改 Flywheel 自己生成的技能及仓内 QA 指南；外部插件的全量测试惯例由注入规则明确覆盖。</li></ul><p>CI 是 PR 提交后的云端自动检查。整包验证交给当前代码版本的完整 CI。</p><label for="comment-policy">这部分的意见 · 自动保存在本浏览器</label><textarea id="comment-policy" data-comment="policy" data-title="把“先扫全包找问题”的借口写明" placeholder="写下疑问或建议"></textarea></section><section class="card" aria-labelledby="evidence"><div class="eyebrow">04 · 证据结构</div><h2 id="evidence">每次判断都能追到原始命令</h2><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>结构图遇到同一本机渲染权限错误，原始图形源码保留如下。</p></div><details><summary>查看结构图源码</summary><pre>%%{init: {&#x27;theme&#x27;:&#x27;base&#x27;,&#x27;themeVariables&#x27;:{&#x27;fontFamily&#x27;:&#x27;system-ui&#x27;,&#x27;primaryColor&#x27;:&#x27;#f5f5f7&#x27;,&#x27;primaryTextColor&#x27;:&#x27;#1d1d1f&#x27;,&#x27;primaryBorderColor&#x27;:&#x27;#86868b&#x27;,&#x27;lineColor&#x27;:&#x27;#86868b&#x27;}}}%%
+classDiagram
+    class 本次验收 {
+      候选代码版本
+      规则和技能内容指纹
+      房间与运行身份
+      模型与角色
+    }
+    class 原始记录 {
+      工具调用与结果
+      关联子会话
+      文件选择依据
+    }
+    class 判定 {
+      通过或失败或证据不足
+      违规调用位置
+      任务完成证据
+    }
+    本次验收 &quot;1&quot; --&gt; &quot;多&quot; 原始记录 : 对应
+    本次验收 &quot;1&quot; --&gt; &quot;1&quot; 判定 : 得到
+    原始记录 --&gt; 判定 : 复核依据
+</pre></details><table><tr><th>记录</th><th>解决什么问题</th></tr><tr><td>版本与内容指纹</td><td>确认代码、提示词、技能和合成任务属于同一轮</td></tr><tr><td>运行身份与原始调用</td><td>确认是谁执行了什么，而非从终端摘要猜测</td></tr><tr><td>文件选择与完成结果</td><td>确认真做完了任务、真测过相关文件</td></tr><tr><td>机器判定</td><td>通过、失败或证据不足，并给出调用位置</td></tr></table><label for="comment-evidence">这部分的意见 · 自动保存在本浏览器</label><textarea id="comment-evidence" data-comment="evidence" data-title="每次判断都能追到原始命令" placeholder="写下疑问或建议"></textarea></section><section class="card" aria-labelledby="acceptance"><div class="eyebrow">05 · 验收怎么做</div><h2 id="acceptance">旧行为判红，新提示词实际跑绿</h2><p>合成任务要求迁移一个被 24 个测试断言的字面量，另放入无关测试和近似字符串，检验是否真正选择了相关文件。</p><ul><li>先用构造的历史行为记录验证：不带文件选择、仅带排除参数的整包命令必须判失败。</li><li>再在 529 用真实 Claude 与 Codex 跑实现、QA、工程师三种角色，共六个组合。QA 指独立验证角色。</li><li>必须完成任务、成功跑相关测试、原始记录完整。空日志、零测试和仅启动成功都不能过。</li><li>保留每次失败。以后改提示词或其注入路径，必须重跑对应组合；共享规则变化重跑六组。</li></ul><label for="comment-acceptance">这部分的意见 · 自动保存在本浏览器</label><textarea id="comment-acceptance" data-comment="acceptance" data-title="旧行为判红，新提示词实际跑绿" placeholder="写下疑问或建议"></textarea></section><section class="card" aria-labelledby="tradeoffs"><div class="eyebrow">06 · 取舍与边界</div><h2 id="tradeoffs">不靠拦截制造通过</h2><p>只加文字和静态断言太弱；机械拒绝测试命令测不到模型是否自主遵守，因此不采用。观察员只读记录，不替换真实测试程序。</p><p>复杂脚本无法可靠解析时，结论是“证据不足”，不能猜成通过。一次成功只证明本轮模型与提示词，后续变更仍要重测。</p><p>当前只完成设计与技能审计。后续仍要实现脚本、修改提示词、跑真实 529 和完整 CI；本阶段没有部署、重启生产或合并代码。</p><label for="comment-tradeoffs">这部分的意见 · 自动保存在本浏览器</label><textarea id="comment-tradeoffs" data-comment="tradeoffs" data-title="不靠拦截制造通过" placeholder="写下疑问或建议"></textarea></section><section class="card"><h2>页面意见汇总</h2><p class="muted">这只是修改意见，不是通过或上线授权。长意见会分段，每段保留 issue 标记。</p><label for="comment-overall">整体意见</label><textarea id="comment-overall" data-comment="overall" data-title="整体意见"></textarea><button id="copy-all" type="button">复制全部意见</button><p id="copy-status" role="status" class="muted"></p><label for="aggregate">可复制文本</label><textarea id="aggregate" class="export" readonly></textarea><div id="chunks"></div></section></main><script nonce="__CSP_NONCE__">(() => {
+'use strict';
+const marker = '【页面意见汇总】FLY-2802';
+const prefix = 'fly2802-comments:' + location.pathname + ':';
+const fields = Array.from(document.querySelectorAll('textarea[data-comment]'));
+const output = document.getElementById('aggregate');
+const chunksNode = document.getElementById('chunks');
+const status = document.getElementById('copy-status');
+let chunks = [];
+function read(key) { try { return localStorage.getItem(prefix + key) || ''; } catch (_) { return ''; } }
+function write(key, value) { try { localStorage.setItem(prefix + key, value); } catch (_) {} }
+function fallback(text) {
+  const node = document.createElement('textarea'); node.value = text;
+  node.style.position = 'fixed'; node.style.opacity = '0'; document.body.appendChild(node);
+  node.select(); let ok = false; try { ok = document.execCommand('copy'); } finally { node.remove(); }
+  if (!ok) throw new Error('copy failed');
+}
+async function copy(text) {
+  try {
+    try { if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('unavailable'); await navigator.clipboard.writeText(text); }
+    catch (_) { fallback(text); }
+    status.textContent = '已复制，可贴回 issue 对话。意见不代表批准。';
+  } catch (_) { status.textContent = '复制未成功，请手动选中下方文字复制。'; }
+}
+function update() {
+  const body = fields.filter(x => x.value.trim()).map(x => '[' + x.dataset.title + ']\n' + x.value.trim()).join('\n\n');
+  const chars = Array.from(body); chunks = [];
+  for (let i = 0; i < chars.length; i += 1600) chunks.push(marker + '\n\n' + chars.slice(i, i + 1600).join(''));
+  if (!chunks.length) chunks.push(marker);
+  output.value = chunks.join('\n\n'); chunksNode.replaceChildren();
+  if (chunks.length > 1) chunks.forEach((text, index) => {
+    const box = document.createElement('textarea'); box.readOnly = true; box.value = text; box.className = 'export'; box.setAttribute('aria-label', '意见分段 ' + (index + 1));
+    const button = document.createElement('button'); button.type = 'button'; button.textContent = '复制第 ' + (index + 1) + ' 段'; button.addEventListener('click', () => copy(text));
+    chunksNode.append(box, button);
+  });
+}
+fields.forEach(field => { field.value = read(field.dataset.comment); field.addEventListener('input', () => { write(field.dataset.comment, field.value); update(); }); });
+document.getElementById('copy-all').addEventListener('click', () => copy(chunks.join('\n\n')));
+update();
+})();</script></body></html>

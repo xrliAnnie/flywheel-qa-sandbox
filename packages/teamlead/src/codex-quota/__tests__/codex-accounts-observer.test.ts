@@ -190,7 +190,7 @@ describe("FLY-2688 — Codex accounts observer", () => {
 			previous: first,
 			isInUse: (_accountKey, slot) => {
 				probed.push(slot);
-				return slot === "shopping";
+				return { verdict: slot === "shopping" };
 			},
 			readInUseQuota: async ({ authPath }) => {
 				readonlyPaths.push(authPath);
@@ -386,7 +386,7 @@ describe("FLY-2688 — Codex accounts observer", () => {
 				return (_accountKey, slot) => {
 					seen.push(`${round}:${slot}`);
 					// A Lead launches on `shopping` after the first slot is read.
-					return round > 1 && slot === "shopping";
+					return { verdict: round > 1 && slot === "shopping" };
 				};
 			},
 		});
@@ -404,15 +404,77 @@ describe("FLY-2688 — Codex accounts observer", () => {
 		const f = fixture();
 		const store = await observeCodexAccounts({
 			...f.options,
-			isInUse: () => "unknown",
+			isInUse: () => ({
+				verdict: "unknown",
+				detail: "canonical_identity_unreadable",
+			}),
 		});
 
 		for (const account of store.accounts.filter((a) => a.name !== "broken")) {
 			expect(account).toMatchObject({
 				authHealth: "unknown",
 				note: "inventory_unavailable",
+				noteDetail: "canonical_identity_unreadable",
 			});
 		}
+	});
+
+	it("records guard_failed when the occupancy refresh itself rejects", async () => {
+		const f = fixture();
+		const store = await observeCodexAccounts({
+			...f.options,
+			refreshInUse: async () => {
+				throw new Error("boom");
+			},
+		});
+		expect(store.accounts.find((a) => a.name === "school")).toMatchObject({
+			note: "inventory_unavailable",
+			noteDetail: "guard_failed",
+		});
+	});
+
+	it("reads the in-use canonical account through WHAM when the guard proves it", async () => {
+		const f = fixture();
+		const reads: string[] = [];
+		const store = await observeCodexAccounts({
+			...f.options,
+			refreshInUse: async () => (_accountKey, slot) => ({
+				verdict: slot === "shopping",
+			}),
+			readInUseQuota: async ({ authPath }) => {
+				reads.push(authPath);
+				return {
+					ok: {
+						observedAt: "2026-09-21T12:00:00.000Z",
+						planType: "pro",
+						fiveH: null,
+						weekly: {
+							usedPercent: 28,
+							windowMinutes: 10080,
+							resetAt: "2026-10-02T03:35:25.000Z",
+						},
+						credits: {
+							known: false,
+							hasCredits: null,
+							unlimited: null,
+							balance: null,
+						},
+						resetCredits: {
+							known: false,
+							value: null,
+							availableCount: null,
+							credits: null,
+						},
+						unclassifiedWindows: 0,
+					},
+				};
+			},
+		});
+		expect(reads).toEqual([join(f.codexHome, "auth.json")]);
+		const shopping = store.accounts.find((a) => a.name === "shopping")!;
+		expect(shopping).toMatchObject({ note: null, authHealth: "valid" });
+		expect(shopping.noteDetail).toBeUndefined();
+		expect(shopping.weekly?.usedPercent).toBe(28);
 	});
 
 	it("refuses to replace the store when the profiles root cannot be read", async () => {

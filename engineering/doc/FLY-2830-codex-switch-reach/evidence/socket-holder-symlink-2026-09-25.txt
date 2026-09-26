@@ -1,0 +1,12 @@
+# 2026-09-25T19:22Z 只读取证：Codex 0.157 的 --listen 路径是软链，lsof 对软链路径找不到持有者
+$ ls -l ~/.flywheel/cdx-sock/579e915a2ed1a62c.sock      # FLY-2874 implement (exec b6c738ca)
+lrwxr-xr-x ... Sep 24 23:36 579e915a2ed1a62c.sock -> /private/tmp/codex-daemon-501/4a5777e4…
+$ lsof -t -- ~/.flywheel/cdx-sock/579e915a2ed1a62c.sock
+(无输出) exit=1
+$ lsof -t -- /private/tmp/codex-daemon-501/4a5777e4…
+60140   exit=0     # = codex app-server pid 60140, pgid 60140, CODEX_HOME=agents/flywheel/implement
+$ probeCodexDaemonEvidence(b6c738ca)  -> {"liveness":"unknown","ledger":"valid_group","socketLive":true}
+$ probeCodexDaemonEvidence(37624e3d)  -> {"liveness":"unknown","ledger":"valid_group","socketLive":true}
+# cdx-sock/ 下 206 个普通 socket（9-22 之前）+ 3 个软链（最早 2026-09-22 17:07 PDT，均为 0.157 启动）
+# FLY-2873 执行体 37624e3d：StateStore status=completed(07:57Z)，其 app-server pid 86434 仍活（启动 9-24 23:25 PDT）
+#   —— 收尾 reap 依赖同一个 lsof 证据，判 unverifiable 不敢杀 → 孤儿常驻

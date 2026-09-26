@@ -217,8 +217,6 @@ source "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/discord-pointer-gua
 source "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/conditional-restart.sh"
 # shellcheck source=lib/supervisor.sh
 source "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/supervisor.sh"
-# shellcheck source=lib/restart-voice-bridge.sh
-source "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/restart-voice-bridge.sh"
 # shellcheck source=lib/restart-voice.sh
 source "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/restart-voice.sh"
 # shellcheck source=lib/tmux-server-rescue.sh
@@ -2251,7 +2249,7 @@ restart_bridge=true
 restart_all_leads=true
 
     if [[ "$DRY_RUN" == "true" ]]; then
-    log "DRY RUN: Would restart Bridge + voice-bridge (when configured/loaded) + all Leads + voice when changed/loaded (reason=$RESTART_REASON build=$([[ "$SKIP_BUILD" == "true" ]] && echo skip || echo run) install=$need_install)"
+    log "DRY RUN: Would restart Bridge + all Leads + voice when changed/loaded (reason=$RESTART_REASON build=$([[ "$SKIP_BUILD" == "true" ]] && echo skip || echo run) install=$need_install)"
     log "DRY RUN: Changes since ${DEPLOYED_SHA:0:7}:"
     echo "${CHANGED:-"(first run)"}" | head -20
     exit 0
@@ -3626,12 +3624,6 @@ rollback_and_restart() {
         if [[ "$restart_bridge" == "true" ]]; then
             resume_admission_best_effort
         fi
-        if ! restart_voice_bridge_managed; then
-            alert_severe "rollback-voice-bridge-failed" "Flywheel deploy failed" \
-                "Flywheel 已回滚并重建到 \`${rollback_sha:0:7}\`，但 voice-bridge 旧版本受管重启/健康复验失败 (${VOICE_BRIDGE_RESTART_DETAIL})。Lead 恢复波次已先执行，deployed-sha 未推进，需要手动介入。"
-            RESTART_TERMINAL_REPORTED=true
-            return 1
-        fi
         if [[ "${restart_voice:-false}" == "true" ]] && ! restart_voice_managed; then
             alert_severe "rollback-voice-failed" "Flywheel deploy failed" \
                 "Flywheel 已回滚到旧版本，但 standalone voice 受管重启失败 (${VOICE_RESTART_DETAIL})。deployed-sha 未推进，需要手动介入。"
@@ -3654,29 +3646,6 @@ rollback_and_restart() {
         RESTART_TERMINAL_REPORTED=true
         return 1
     fi
-}
-
-ensure_voice_bridge_for_deploy() {
-    if restart_voice_bridge_managed; then
-        return 0
-    fi
-
-    local detail="${VOICE_BRIDGE_RESTART_DETAIL:-unknown failure}"
-    if [[ "$RESTART_CODE_ROLLBACK_DISABLED" == "1" ]]; then
-        log "ERROR: voice-bridge verification failed; code-only rollback is disabled"
-        alert_severe "deploy-voice-bridge-failed-code-rollback-disabled" \
-            "Flywheel voice-bridge restart failed; code-only rollback disabled" \
-            "voice-bridge 受管重启/健康复验失败 (${detail})。deployed-sha 未推进；未执行不带数据库快照的代码回滚，请走 window rollback。"
-        resume_admission_best_effort
-        RESTART_TERMINAL_REPORTED=true
-        return 1
-    fi
-
-    log "ERROR: voice-bridge verification failed (${detail}); attempting rollback"
-    if ! rollback_and_restart "$DEPLOYED_SHA"; then
-        log "ERROR: rollback after voice-bridge failure did not restore a healthy old voice service"
-    fi
-    return 1
 }
 
 ensure_voice_for_deploy() {
@@ -3908,13 +3877,6 @@ deploy_and_verify() {
         fi
     fi
 
-    # Step 3.5: voice-bridge consumes the same freshly-built workspace but has
-    # an independent supervisor and long-lived Headless/Resident descendants.
-    # Replace it under this transaction's restart lock, prove :9878/health and
-    # old PID+start tree reclamation, and fail before deployed-sha advancement.
-    if ! ensure_voice_bridge_for_deploy; then
-        return 1
-    fi
     if ! ensure_voice_for_deploy; then
         return 1
     fi

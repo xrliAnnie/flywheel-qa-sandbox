@@ -1,0 +1,3720 @@
+{
+ "totals": {
+  "claude_tokens": 45188034010,
+  "codex_tokens": 23324239505,
+  "claude_requests": 144965,
+  "codex_requests": 171153,
+  "claude_weighted": 6023751762,
+  "codex_weighted": 3084784603,
+  "claude_fields": {
+   "input": 857797,
+   "cache_creation": 820200957,
+   "cache_read": 44252496635,
+   "output": 114478621
+  },
+  "codex_fields": {
+   "input": 23277394547,
+   "cached": 22852684032,
+   "output": 46844958
+  }
+ },
+ "ledger": [
+  {
+   "who": "Runner · implement",
+   "tokens": 25539882361,
+   "claude": 4337230334,
+   "codex": 21202652027,
+   "share": 37.3,
+   "claude_share": 9.6,
+   "codex_share": 90.9,
+   "weighted_share_claude": 9.0,
+   "weighted_share_codex": 88.8,
+   "requests": 167757,
+   "subagent_tokens": 60357966
+  },
+  {
+   "who": "Lead · flywheel-eng-lead",
+   "tokens": 14938693601,
+   "claude": 14938693601,
+   "codex": 0,
+   "share": 21.8,
+   "claude_share": 33.1,
+   "codex_share": 0.0,
+   "weighted_share_claude": 28.8,
+   "weighted_share_codex": 0.0,
+   "requests": 26859,
+   "subagent_tokens": 0
+  },
+  {
+   "who": "Runner · qa",
+   "tokens": 7673419651,
+   "claude": 7526746427,
+   "codex": 146673224,
+   "share": 11.2,
+   "claude_share": 16.7,
+   "codex_share": 0.6,
+   "weighted_share_claude": 16.8,
+   "weighted_share_codex": 0.6,
+   "requests": 32471,
+   "subagent_tokens": 27528624
+  },
+  {
+   "who": "评审 · 代码评审(Claude)",
+   "tokens": 7080990503,
+   "claude": 7080990503,
+   "codex": 0,
+   "share": 10.3,
+   "claude_share": 15.7,
+   "codex_share": 0.0,
+   "weighted_share_claude": 17.5,
+   "weighted_share_codex": 0.0,
+   "requests": 32400,
+   "subagent_tokens": 860936886
+  },
+  {
+   "who": "Lead · claude-infra-bot-lead",
+   "tokens": 2926636175,
+   "claude": 2926636175,
+   "codex": 0,
+   "share": 4.3,
+   "claude_share": 6.5,
+   "codex_share": 0.0,
+   "weighted_share_claude": 5.5,
+   "weighted_share_codex": 0.0,
+   "requests": 7194,
+   "subagent_tokens": 0
+  },
+  {
+   "who": "Lead · flywheel-product-lead",
+   "tokens": 2069882581,
+   "claude": 2069882581,
+   "codex": 0,
+   "share": 3.0,
+   "claude_share": 4.6,
+   "codex_share": 0.0,
+   "weighted_share_claude": 4.6,
+   "weighted_share_codex": 0.0,
+   "requests": 4088,
+   "subagent_tokens": 0
+  },
+  {
+   "who": "Runner · eng_design",
+   "tokens": 1908509672,
+   "claude": 868425893,
+   "codex": 1040083779,
+   "share": 2.8,
+   "claude_share": 1.9,
+   "codex_share": 4.5,
+   "weighted_share_claude": 2.2,
+   "weighted_share_codex": 5.1,
+   "requests": 11690,
+   "subagent_tokens": 64468688
+  },
+  {
+   "who": "评审 · 设计评审(Claude)",
+   "tokens": 1185094924,
+   "claude": 1185094924,
+   "codex": 0,
+   "share": 1.7,
+   "claude_share": 2.6,
+   "codex_share": 0.0,
+   "weighted_share_claude": 3.0,
+   "weighted_share_codex": 0.0,
+   "requests": 7267,
+   "subagent_tokens": 9456002
+  },
+  {
+   "who": "QA 测试环境",
+   "tokens": 756064861,
+   "claude": 701792114,
+   "codex": 54272747,
+   "share": 1.1,
+   "claude_share": 1.6,
+   "codex_share": 0.2,
+   "weighted_share_claude": 1.9,
+   "weighted_share_codex": 0.4,
+   "requests": 5152,
+   "subagent_tokens": 2625517
+  },
+  {
+   "who": "Runner · general",
+   "tokens": 699474264,
+   "claude": 699474264,
+   "codex": 0,
+   "share": 1.0,
+   "claude_share": 1.5,
+   "codex_share": 0.0,
+   "weighted_share_claude": 1.7,
+   "weighted_share_codex": 0.0,
+   "requests": 3323,
+   "subagent_tokens": 104642513
+  },
+  {
+   "who": "评审 · runner 调用的 Codex companion",
+   "tokens": 686684862,
+   "claude": 0,
+   "codex": 686684862,
+   "share": 1.0,
+   "claude_share": 0.0,
+   "codex_share": 2.9,
+   "weighted_share_claude": 0.0,
+   "weighted_share_codex": 4.2,
+   "requests": 5569,
+   "subagent_tokens": 0
+  },
+  {
+   "who": "其它 / founder 手动",
+   "tokens": 613749805,
+   "claude": 612301221,
+   "codex": 1448584,
+   "share": 0.9,
+   "claude_share": 1.4,
+   "codex_share": 0.0,
+   "weighted_share_claude": 2.1,
+   "weighted_share_codex": 0.0,
+   "requests": 2291,
+   "subagent_tokens": 5479234
+  },
+  {
+   "who": "Runner · pm",
+   "tokens": 550582277,
+   "claude": 550582277,
+   "codex": 0,
+   "share": 0.8,
+   "claude_share": 1.2,
+   "codex_share": 0.0,
+   "weighted_share_claude": 1.2,
+   "weighted_share_codex": 0.0,
+   "requests": 1891,
+   "subagent_tokens": 5952530
+  },
+  {
+   "who": "Lead · flywheel-cos-lead",
+   "tokens": 471162743,
+   "claude": 471162743,
+   "codex": 0,
+   "share": 0.7,
+   "claude_share": 1.0,
+   "codex_share": 0.0,
+   "weighted_share_claude": 1.4,
+   "weighted_share_codex": 0.0,
+   "requests": 1032,
+   "subagent_tokens": 0
+  },
+  {
+   "who": "Runner · unmapped-worktree",
+   "tokens": 340354781,
+   "claude": 340354781,
+   "codex": 0,
+   "share": 0.5,
+   "claude_share": 0.8,
+   "codex_share": 0.0,
+   "weighted_share_claude": 1.5,
+   "weighted_share_codex": 0.0,
+   "requests": 3800,
+   "subagent_tokens": 1571133
+  },
+  {
+   "who": "Lead · product-lead",
+   "tokens": 205767380,
+   "claude": 205767380,
+   "codex": 0,
+   "share": 0.3,
+   "claude_share": 0.5,
+   "codex_share": 0.0,
+   "weighted_share_claude": 0.6,
+   "weighted_share_codex": 0.0,
+   "requests": 484,
+   "subagent_tokens": 0
+  },
+  {
+   "who": "Lead · sub-lead",
+   "tokens": 171774414,
+   "claude": 171774414,
+   "codex": 0,
+   "share": 0.3,
+   "claude_share": 0.4,
+   "codex_share": 0.0,
+   "weighted_share_claude": 0.5,
+   "weighted_share_codex": 0.0,
+   "requests": 483,
+   "subagent_tokens": 0
+  },
+  {
+   "who": "Lead · raya",
+   "tokens": 171227109,
+   "claude": 0,
+   "codex": 171227109,
+   "share": 0.2,
+   "claude_share": 0.0,
+   "codex_share": 0.7,
+   "weighted_share_claude": 0.0,
+   "weighted_share_codex": 0.8,
+   "requests": 607,
+   "subagent_tokens": 0
+  },
+  {
+   "who": "Lead · ops-lead",
+   "tokens": 156053738,
+   "claude": 156053738,
+   "codex": 0,
+   "share": 0.2,
+   "claude_share": 0.3,
+   "codex_share": 0.0,
+   "weighted_share_claude": 0.5,
+   "weighted_share_codex": 0.0,
+   "requests": 331,
+   "subagent_tokens": 0
+  },
+  {
+   "who": "Lead · joycon-lead",
+   "tokens": 93899438,
+   "claude": 93899438,
+   "codex": 0,
+   "share": 0.1,
+   "claude_share": 0.2,
+   "codex_share": 0.0,
+   "weighted_share_claude": 0.3,
+   "weighted_share_codex": 0.0,
+   "requests": 290,
+   "subagent_tokens": 0
+  },
+  {
+   "who": "Lead · cos-lead",
+   "tokens": 79830462,
+   "claude": 79830462,
+   "codex": 0,
+   "share": 0.1,
+   "claude_share": 0.2,
+   "codex_share": 0.0,
+   "weighted_share_claude": 0.2,
+   "weighted_share_codex": 0.0,
+   "requests": 226,
+   "subagent_tokens": 0
+  },
+  {
+   "who": "Runner · product_design",
+   "tokens": 60995601,
+   "claude": 60995601,
+   "codex": 0,
+   "share": 0.1,
+   "claude_share": 0.1,
+   "codex_share": 0.0,
+   "weighted_share_claude": 0.1,
+   "weighted_share_codex": 0.0,
+   "requests": 217,
+   "subagent_tokens": 0
+  },
+  {
+   "who": "Lead · tidal-echo-content-lead",
+   "tokens": 39517507,
+   "claude": 39517507,
+   "codex": 0,
+   "share": 0.1,
+   "claude_share": 0.1,
+   "codex_share": 0.0,
+   "weighted_share_claude": 0.2,
+   "weighted_share_codex": 0.0,
+   "requests": 163,
+   "subagent_tokens": 0
+  },
+  {
+   "who": "Lead · reflection-lead",
+   "tokens": 38787454,
+   "claude": 38787454,
+   "codex": 0,
+   "share": 0.1,
+   "claude_share": 0.1,
+   "codex_share": 0.0,
+   "weighted_share_claude": 0.2,
+   "weighted_share_codex": 0.0,
+   "requests": 196,
+   "subagent_tokens": 0
+  },
+  {
+   "who": "Lead · rafiki-lead",
+   "tokens": 25599070,
+   "claude": 25599070,
+   "codex": 0,
+   "share": 0.0,
+   "claude_share": 0.1,
+   "codex_share": 0.0,
+   "weighted_share_claude": 0.1,
+   "weighted_share_codex": 0.0,
+   "requests": 150,
+   "subagent_tokens": 0
+  },
+  {
+   "who": "Lead · mufasa",
+   "tokens": 21049471,
+   "claude": 0,
+   "codex": 21049471,
+   "share": 0.0,
+   "claude_share": 0.0,
+   "codex_share": 0.1,
+   "weighted_share_claude": 0.0,
+   "weighted_share_codex": 0.2,
+   "requests": 127,
+   "subagent_tokens": 0
+  },
+  {
+   "who": "Lead · tidal-echo-cos-lead",
+   "tokens": 6259649,
+   "claude": 6259649,
+   "codex": 0,
+   "share": 0.0,
+   "claude_share": 0.0,
+   "codex_share": 0.0,
+   "weighted_share_claude": 0.0,
+   "weighted_share_codex": 0.0,
+   "requests": 54,
+   "subagent_tokens": 0
+  },
+  {
+   "who": "Lead · scratchpad",
+   "tokens": 181459,
+   "claude": 181459,
+   "codex": 0,
+   "share": 0.0,
+   "claude_share": 0.0,
+   "codex_share": 0.0,
+   "weighted_share_claude": 0.0,
+   "weighted_share_codex": 0.0,
+   "requests": 4,
+   "subagent_tokens": 0
+  },
+  {
+   "who": "Lead · infra-bot",
+   "tokens": 147702,
+   "claude": 0,
+   "codex": 147702,
+   "share": 0.0,
+   "claude_share": 0.0,
+   "codex_share": 0.0,
+   "weighted_share_claude": 0.0,
+   "weighted_share_codex": 0.0,
+   "requests": 2,
+   "subagent_tokens": 0
+  }
+ ],
+ "daily": {
+  "2026-09-11": {
+   "claude": 65564435,
+   "codex": 65596852
+  },
+  "2026-09-12": {
+   "claude": 787794119,
+   "codex": 43051575
+  },
+  "2026-09-13": {
+   "claude": 1164325362,
+   "codex": 361554418
+  },
+  "2026-09-14": {
+   "claude": 3061202929,
+   "codex": 2003933736
+  },
+  "2026-09-15": {
+   "claude": 4493548492,
+   "codex": 2978665393
+  },
+  "2026-09-16": {
+   "claude": 4837947574,
+   "codex": 2203721614
+  },
+  "2026-09-17": {
+   "claude": 2145225575,
+   "codex": 1703138265
+  },
+  "2026-09-18": {
+   "claude": 4130215117,
+   "codex": 4725062045
+  },
+  "2026-09-19": {
+   "claude": 2334671771,
+   "codex": 1324009313
+  },
+  "2026-09-20": {
+   "claude": 768257620,
+   "codex": 315733763
+  },
+  "2026-09-21": {
+   "claude": 1437900816,
+   "codex": 263096227
+  },
+  "2026-09-22": {
+   "claude": 2669546331,
+   "codex": 3347833
+  },
+  "2026-09-23": {
+   "claude": 5840094966,
+   "codex": 3381725430
+  },
+  "2026-09-24": {
+   "claude": 5709738765,
+   "codex": 2371690552
+  },
+  "2026-09-25": {
+   "claude": 5742000138,
+   "codex": 1579912489
+  }
+ },
+ "lead_wakes": {
+  "lead_tokens": 21224045671,
+  "by_kind": [
+   {
+    "kind": "founder_or_mixed_with_founder",
+    "turns": 952,
+    "tokens": 4401824315,
+    "weighted": 554312165.95,
+    "requests": 8240,
+    "share_of_lead": 20.7,
+    "tokens_per_turn": 4623765
+   },
+   {
+    "kind": "runner_ask_or_unclassified",
+    "turns": 1949,
+    "tokens": 3570609121,
+    "weighted": 403472440.34999883,
+    "requests": 6144,
+    "share_of_lead": 16.8,
+    "tokens_per_turn": 1832021
+   },
+   {
+    "kind": "mixed_event_types",
+    "turns": 967,
+    "tokens": 2563716208,
+    "weighted": 295956681.35000014,
+    "requests": 4470,
+    "share_of_lead": 12.1,
+    "tokens_per_turn": 2651206
+   },
+   {
+    "kind": "patrol_tick",
+    "turns": 390,
+    "tokens": 1731443714,
+    "weighted": 223885329.99999982,
+    "requests": 3356,
+    "share_of_lead": 8.2,
+    "tokens_per_turn": 4439599
+   },
+   {
+    "kind": "discord:other_bot_or_lead",
+    "turns": 934,
+    "tokens": 1711008679,
+    "weighted": 226547946.7999999,
+    "requests": 3636,
+    "share_of_lead": 8.1,
+    "tokens_per_turn": 1831915
+   },
+   {
+    "kind": "discord:alerts_dispatcher",
+    "turns": 1401,
+    "tokens": 1290153552,
+    "weighted": 145540795.29999986,
+    "requests": 3060,
+    "share_of_lead": 6.1,
+    "tokens_per_turn": 920880
+   },
+   {
+    "kind": "infra_alert:warn_or_higher",
+    "turns": 1300,
+    "tokens": 1288125229,
+    "weighted": 148223672.89999992,
+    "requests": 3173,
+    "share_of_lead": 6.1,
+    "tokens_per_turn": 990866
+   },
+   {
+    "kind": "runner_report_text",
+    "turns": 444,
+    "tokens": 737144246,
+    "weighted": 80573363.60000005,
+    "requests": 1325,
+    "share_of_lead": 3.5,
+    "tokens_per_turn": 1660235
+   },
+   {
+    "kind": "task_notification:background",
+    "turns": 225,
+    "tokens": 721116294,
+    "weighted": 82879124.85000002,
+    "requests": 1318,
+    "share_of_lead": 3.4,
+    "tokens_per_turn": 3204961
+   },
+   {
+    "kind": "stage_changed",
+    "turns": 402,
+    "tokens": 582238360,
+    "weighted": 61630685.649999976,
+    "requests": 1012,
+    "share_of_lead": 2.7,
+    "tokens_per_turn": 1448354
+   },
+   {
+    "kind": "infra_alert:info",
+    "turns": 595,
+    "tokens": 532408121,
+    "weighted": 60357753.849999964,
+    "requests": 1276,
+    "share_of_lead": 2.5,
+    "tokens_per_turn": 894804
+   },
+   {
+    "kind": "summary_due",
+    "turns": 253,
+    "tokens": 397159629,
+    "weighted": 105208033.54999998,
+    "requests": 1127,
+    "share_of_lead": 1.9,
+    "tokens_per_turn": 1569801
+   },
+   {
+    "kind": "session_started",
+    "turns": 235,
+    "tokens": 373418622,
+    "weighted": 40511103.05000002,
+    "requests": 657,
+    "share_of_lead": 1.8,
+    "tokens_per_turn": 1589015
+   },
+   {
+    "kind": "nonreview_or_unknown_gate",
+    "turns": 123,
+    "tokens": 275917753,
+    "weighted": 30170319.799999997,
+    "requests": 498,
+    "share_of_lead": 1.3,
+    "tokens_per_turn": 2243234
+   },
+   {
+    "kind": "workflow_replacement_eligibility",
+    "turns": 115,
+    "tokens": 221589711,
+    "weighted": 25083072.350000013,
+    "requests": 368,
+    "share_of_lead": 1.0,
+    "tokens_per_turn": 1926867
+   },
+   {
+    "kind": "review_gate_text",
+    "turns": 144,
+    "tokens": 194209699,
+    "weighted": 21317940.65,
+    "requests": 327,
+    "share_of_lead": 0.9,
+    "tokens_per_turn": 1348678
+   },
+   {
+    "kind": "unclassified_external_input",
+    "turns": 98,
+    "tokens": 180508011,
+    "weighted": 22046761.850000005,
+    "requests": 310,
+    "share_of_lead": 0.9,
+    "tokens_per_turn": 1841918
+   },
+   {
+    "kind": "workflow_claim_recorded",
+    "turns": 52,
+    "tokens": 130439830,
+    "weighted": 14146063.999999998,
+    "requests": 243,
+    "share_of_lead": 0.6,
+    "tokens_per_turn": 2508458
+   },
+   {
+    "kind": "bootstrap",
+    "turns": 51,
+    "tokens": 104671207,
+    "weighted": 19638799.05,
+    "requests": 539,
+    "share_of_lead": 0.5,
+    "tokens_per_turn": 2052377
+   },
+   {
+    "kind": "multi_message_batch",
+    "turns": 51,
+    "tokens": 94347110,
+    "weighted": 11746533.700000001,
+    "requests": 210,
+    "share_of_lead": 0.4,
+    "tokens_per_turn": 1849943
+   },
+   {
+    "kind": "session_monitoring_reestablished",
+    "turns": 24,
+    "tokens": 42340754,
+    "weighted": 5683879.7,
+    "requests": 72,
+    "share_of_lead": 0.2,
+    "tokens_per_turn": 1764198
+   },
+   {
+    "kind": "other_event_type",
+    "turns": 15,
+    "tokens": 41288972,
+    "weighted": 7490202.100000001,
+    "requests": 122,
+    "share_of_lead": 0.2,
+    "tokens_per_turn": 2752598
+   },
+   {
+    "kind": "task_notification:monitor",
+    "turns": 13,
+    "tokens": 17609920,
+    "weighted": 1850708.4000000001,
+    "requests": 27,
+    "share_of_lead": 0.1,
+    "tokens_per_turn": 1354609
+   },
+   {
+    "kind": "session_failed",
+    "turns": 5,
+    "tokens": 11832718,
+    "weighted": 1302074.35,
+    "requests": 25,
+    "share_of_lead": 0.1,
+    "tokens_per_turn": 2366544
+   },
+   {
+    "kind": "discord:cron",
+    "turns": 5,
+    "tokens": 7270052,
+    "weighted": 785097.2,
+    "requests": 16,
+    "share_of_lead": 0.0,
+    "tokens_per_turn": 1454010
+   },
+   {
+    "kind": "action_executed",
+    "turns": 1,
+    "tokens": 1653844,
+    "weighted": 171923.30000000002,
+    "requests": 3,
+    "share_of_lead": 0.0,
+    "tokens_per_turn": 1653844
+   }
+  ],
+  "lifecycle_kinds": [
+   "action_executed",
+   "session_monitoring_reestablished",
+   "session_started",
+   "stage_changed",
+   "workflow_claim_recorded",
+   "workflow_replacement_eligibility"
+  ],
+  "eng_lead_lifecycle_by_day": {
+   "2026-09-12": {
+    "lifecycle_turns": 5,
+    "lifecycle_tokens": 5050672,
+    "all_turns": 68
+   },
+   "2026-09-13": {
+    "lifecycle_turns": 16,
+    "lifecycle_tokens": 21800884,
+    "all_turns": 189
+   },
+   "2026-09-14": {
+    "lifecycle_turns": 99,
+    "lifecycle_tokens": 155798151,
+    "all_turns": 817
+   },
+   "2026-09-15": {
+    "lifecycle_turns": 76,
+    "lifecycle_tokens": 127481762,
+    "all_turns": 766
+   },
+   "2026-09-16": {
+    "lifecycle_turns": 43,
+    "lifecycle_tokens": 99265822,
+    "all_turns": 482
+   },
+   "2026-09-17": {
+    "lifecycle_turns": 34,
+    "lifecycle_tokens": 64344915,
+    "all_turns": 381
+   },
+   "2026-09-18": {
+    "lifecycle_turns": 163,
+    "lifecycle_tokens": 206684237,
+    "all_turns": 763
+   },
+   "2026-09-19": {
+    "lifecycle_turns": 99,
+    "lifecycle_tokens": 129990856,
+    "all_turns": 427
+   },
+   "2026-09-20": {
+    "lifecycle_turns": 15,
+    "lifecycle_tokens": 21837722,
+    "all_turns": 146
+   },
+   "2026-09-21": {
+    "lifecycle_turns": 34,
+    "lifecycle_tokens": 40545115,
+    "all_turns": 166
+   },
+   "2026-09-22": {
+    "lifecycle_turns": 14,
+    "lifecycle_tokens": 23552647,
+    "all_turns": 218
+   },
+   "2026-09-23": {
+    "lifecycle_turns": 108,
+    "lifecycle_tokens": 220127749,
+    "all_turns": 632
+   },
+   "2026-09-24": {
+    "lifecycle_turns": 58,
+    "lifecycle_tokens": 121292425,
+    "all_turns": 423
+   },
+   "2026-09-25": {
+    "lifecycle_turns": 40,
+    "lifecycle_tokens": 64510813,
+    "all_turns": 468
+   }
+  },
+  "by_lead": {
+   "claude-infra-bot-lead": {
+    "infra_alert:warn_or_higher": {
+     "turns": 1214,
+     "tokens": 1084943084
+    },
+    "infra_alert:info": {
+     "turns": 594,
+     "tokens": 531611320
+    },
+    "discord:alerts_dispatcher": {
+     "turns": 1401,
+     "tokens": 1290153552
+    },
+    "task_notification:background": {
+     "turns": 3,
+     "tokens": 673903
+    },
+    "multi_message_batch": {
+     "turns": 15,
+     "tokens": 19254316
+    }
+   },
+   "cos-lead": {
+    "bootstrap": {
+     "turns": 1,
+     "tokens": 100012
+    },
+    "discord:other_bot_or_lead": {
+     "turns": 63,
+     "tokens": 79730450
+    }
+   },
+   "flywheel-cos-lead": {
+    "bootstrap": {
+     "turns": 2,
+     "tokens": 406376
+    },
+    "founder_or_mixed_with_founder": {
+     "turns": 55,
+     "tokens": 114574534
+    },
+    "task_notification:background": {
+     "turns": 14,
+     "tokens": 25099454
+    },
+    "session_started": {
+     "turns": 3,
+     "tokens": 2018886
+    },
+    "discord:other_bot_or_lead": {
+     "turns": 242,
+     "tokens": 323771684
+    },
+    "stage_changed": {
+     "turns": 2,
+     "tokens": 3037544
+    },
+    "multi_message_batch": {
+     "turns": 1,
+     "tokens": 1666195
+    },
+    "session_monitoring_reestablished": {
+     "turns": 2,
+     "tokens": 588070
+    }
+   },
+   "flywheel-eng-lead": {
+    "other_event_type": {
+     "turns": 13,
+     "tokens": 37345429
+    },
+    "founder_or_mixed_with_founder": {
+     "turns": 736,
+     "tokens": 3635479744
+    },
+    "discord:other_bot_or_lead": {
+     "turns": 182,
+     "tokens": 473380937
+    },
+    "runner_ask_or_unclassified": {
+     "turns": 1862,
+     "tokens": 3357269579
+    },
+    "task_notification:background": {
+     "turns": 194,
+     "tokens": 670783915
+    },
+    "mixed_event_types": {
+     "turns": 955,
+     "tokens": 2521839979
+    },
+    "stage_changed": {
+     "turns": 400,
+     "tokens": 579200816
+    },
+    "review_gate_text": {
+     "turns": 144,
+     "tokens": 194209699
+    },
+    "patrol_tick": {
+     "turns": 233,
+     "tokens": 1182905079
+    },
+    "workflow_replacement_eligibility": {
+     "turns": 115,
+     "tokens": 221589711
+    },
+    "runner_report_text": {
+     "turns": 444,
+     "tokens": 737144246
+    },
+    "infra_alert:warn_or_higher": {
+     "turns": 82,
+     "tokens": 190354494
+    },
+    "session_monitoring_reestablished": {
+     "turns": 6,
+     "tokens": 7990484
+    },
+    "session_failed": {
+     "turns": 5,
+     "tokens": 11832718
+    },
+    "unclassified_external_input": {
+     "turns": 94,
+     "tokens": 180326552
+    },
+    "workflow_claim_recorded": {
+     "turns": 52,
+     "tokens": 130439830
+    },
+    "nonreview_or_unknown_gate": {
+     "turns": 95,
+     "tokens": 182677662
+    },
+    "session_started": {
+     "turns": 230,
+     "tokens": 361409085
+    },
+    "summary_due": {
+     "turns": 37,
+     "tokens": 84875709
+    },
+    "infra_alert:info": {
+     "turns": 1,
+     "tokens": 796801
+    },
+    "multi_message_batch": {
+     "turns": 35,
+     "tokens": 73426599
+    },
+    "bootstrap": {
+     "turns": 12,
+     "tokens": 76880717
+    },
+    "task_notification:monitor": {
+     "turns": 13,
+     "tokens": 17609920
+    },
+    "discord:cron": {
+     "turns": 5,
+     "tokens": 7270052
+    },
+    "action_executed": {
+     "turns": 1,
+     "tokens": 1653844
+    }
+   },
+   "flywheel-product-lead": {
+    "bootstrap": {
+     "turns": 10,
+     "tokens": 21780859
+    },
+    "patrol_tick": {
+     "turns": 157,
+     "tokens": 548538635
+    },
+    "discord:other_bot_or_lead": {
+     "turns": 132,
+     "tokens": 305419861
+    },
+    "founder_or_mixed_with_founder": {
+     "turns": 157,
+     "tokens": 639241381
+    },
+    "nonreview_or_unknown_gate": {
+     "turns": 28,
+     "tokens": 93240091
+    },
+    "runner_ask_or_unclassified": {
+     "turns": 87,
+     "tokens": 213339542
+    },
+    "summary_due": {
+     "turns": 53,
+     "tokens": 121706307
+    },
+    "mixed_event_types": {
+     "turns": 12,
+     "tokens": 41876229
+    },
+    "task_notification:background": {
+     "turns": 12,
+     "tokens": 24215631
+    },
+    "session_monitoring_reestablished": {
+     "turns": 16,
+     "tokens": 33762200
+    },
+    "session_started": {
+     "turns": 2,
+     "tokens": 9990651
+    },
+    "other_event_type": {
+     "turns": 2,
+     "tokens": 3943543
+    },
+    "infra_alert:warn_or_higher": {
+     "turns": 4,
+     "tokens": 12827651
+    }
+   },
+   "joycon-lead": {
+    "bootstrap": {
+     "turns": 5,
+     "tokens": 578551
+    },
+    "summary_due": {
+     "turns": 23,
+     "tokens": 20729750
+    },
+    "discord:other_bot_or_lead": {
+     "turns": 41,
+     "tokens": 72591137
+    }
+   },
+   "ops-lead": {
+    "summary_due": {
+     "turns": 24,
+     "tokens": 30770697
+    },
+    "discord:other_bot_or_lead": {
+     "turns": 77,
+     "tokens": 113295621
+    },
+    "bootstrap": {
+     "turns": 1,
+     "tokens": 172334
+    },
+    "founder_or_mixed_with_founder": {
+     "turns": 2,
+     "tokens": 11815086
+    }
+   },
+   "product-lead": {
+    "summary_due": {
+     "turns": 23,
+     "tokens": 55987419
+    },
+    "discord:other_bot_or_lead": {
+     "turns": 63,
+     "tokens": 149227610
+    },
+    "bootstrap": {
+     "turns": 1,
+     "tokens": 552351
+    }
+   },
+   "rafiki-lead": {
+    "bootstrap": {
+     "turns": 5,
+     "tokens": 1071822
+    },
+    "summary_due": {
+     "turns": 24,
+     "tokens": 10452210
+    },
+    "discord:other_bot_or_lead": {
+     "turns": 20,
+     "tokens": 13679792
+    },
+    "task_notification:background": {
+     "turns": 1,
+     "tokens": 148266
+    },
+    "founder_or_mixed_with_founder": {
+     "turns": 1,
+     "tokens": 246980
+    }
+   },
+   "reflection-lead": {
+    "bootstrap": {
+     "turns": 6,
+     "tokens": 1943485
+    },
+    "summary_due": {
+     "turns": 23,
+     "tokens": 17888477
+    },
+    "discord:other_bot_or_lead": {
+     "turns": 22,
+     "tokens": 18760367
+    },
+    "task_notification:background": {
+     "turns": 1,
+     "tokens": 195125
+    }
+   },
+   "sub-lead": {
+    "bootstrap": {
+     "turns": 4,
+     "tokens": 778337
+    },
+    "discord:other_bot_or_lead": {
+     "turns": 65,
+     "tokens": 132072641
+    },
+    "summary_due": {
+     "turns": 23,
+     "tokens": 38923436
+    }
+   },
+   "tidal-echo-content-lead": {
+    "bootstrap": {
+     "turns": 3,
+     "tokens": 354783
+    },
+    "summary_due": {
+     "turns": 23,
+     "tokens": 15825624
+    },
+    "discord:other_bot_or_lead": {
+     "turns": 18,
+     "tokens": 23337100
+    }
+   },
+   "tidal-echo-cos-lead": {
+    "discord:other_bot_or_lead": {
+     "turns": 9,
+     "tokens": 5741479
+    },
+    "founder_or_mixed_with_founder": {
+     "turns": 1,
+     "tokens": 466590
+    },
+    "bootstrap": {
+     "turns": 1,
+     "tokens": 51580
+    }
+   },
+   "scratchpad": {
+    "unclassified_external_input": {
+     "turns": 4,
+     "tokens": 181459
+    }
+   }
+  }
+ },
+ "context_profile": {
+  "Lead · claude-infra-bot-lead": {
+   "requests": 7194,
+   "p50": 392752,
+   "p90": 666850,
+   "max": 753668,
+   "mean": 406681,
+   "over_200k": 6208,
+   "over_400k": 3493,
+   "cache_read_above_200k": 1518835747
+  },
+  "Lead · cos-lead": {
+   "requests": 226,
+   "p50": 396730,
+   "p90": 581803,
+   "max": 727466,
+   "mean": 352147,
+   "over_200k": 146,
+   "over_400k": 110,
+   "cache_read_above_200k": 37085063
+  },
+  "Lead · flywheel-cos-lead": {
+   "requests": 1032,
+   "p50": 479963,
+   "p90": 708386,
+   "max": 842637,
+   "mean": 456032,
+   "over_200k": 908,
+   "over_400k": 604,
+   "cache_read_above_200k": 253025366
+  },
+  "Lead · flywheel-eng-lead": {
+   "requests": 26859,
+   "p50": 552546,
+   "p90": 874591,
+   "max": 973388,
+   "mean": 555397,
+   "over_200k": 25393,
+   "over_400k": 18865,
+   "cache_read_above_200k": 9545050641
+  },
+  "Lead · flywheel-product-lead": {
+   "requests": 4088,
+   "p50": 501737,
+   "p90": 798138,
+   "max": 966132,
+   "mean": 505468,
+   "over_200k": 3760,
+   "over_400k": 2605,
+   "cache_read_above_200k": 1238034393
+  },
+  "Lead · joycon-lead": {
+   "requests": 290,
+   "p50": 311430,
+   "p90": 485829,
+   "max": 517849,
+   "mean": 323116,
+   "over_200k": 248,
+   "over_400k": 89,
+   "cache_read_above_200k": 35779544
+  },
+  "Lead · ops-lead": {
+   "requests": 331,
+   "p50": 440006,
+   "p90": 725296,
+   "max": 782695,
+   "mean": 470583,
+   "over_200k": 314,
+   "over_400k": 207,
+   "cache_read_above_200k": 85315359
+  },
+  "Lead · product-lead": {
+   "requests": 484,
+   "p50": 413766,
+   "p90": 617862,
+   "max": 694533,
+   "mean": 424355,
+   "over_200k": 472,
+   "over_400k": 262,
+   "cache_read_above_200k": 101339177
+  },
+  "Lead · rafiki-lead": {
+   "requests": 150,
+   "p50": 136756,
+   "p90": 288156,
+   "max": 300690,
+   "mean": 170198,
+   "over_200k": 58,
+   "over_400k": 0,
+   "cache_read_above_200k": 3774926
+  },
+  "Lead · reflection-lead": {
+   "requests": 196,
+   "p50": 200263,
+   "p90": 271339,
+   "max": 298542,
+   "mean": 197304,
+   "over_200k": 98,
+   "over_400k": 0,
+   "cache_read_above_200k": 4054834
+  },
+  "Lead · scratchpad": {
+   "requests": 4,
+   "p50": 45158,
+   "p90": 47061,
+   "max": 47061,
+   "mean": 45350,
+   "over_200k": 0,
+   "over_400k": 0,
+   "cache_read_above_200k": 0
+  },
+  "Lead · sub-lead": {
+   "requests": 483,
+   "p50": 343957,
+   "p90": 554851,
+   "max": 607327,
+   "mean": 354877,
+   "over_200k": 406,
+   "over_400k": 174,
+   "cache_read_above_200k": 75148471
+  },
+  "Lead · tidal-echo-content-lead": {
+   "requests": 163,
+   "p50": 265315,
+   "p90": 303704,
+   "max": 323093,
+   "mean": 241841,
+   "over_200k": 109,
+   "over_400k": 0,
+   "cache_read_above_200k": 7659805
+  },
+  "Lead · tidal-echo-cos-lead": {
+   "requests": 54,
+   "p50": 116259,
+   "p90": 155229,
+   "max": 160558,
+   "mean": 114980,
+   "over_200k": 0,
+   "over_400k": 0,
+   "cache_read_above_200k": 0
+  },
+  "runner · claude:qa": {
+   "requests": 31380,
+   "p50": 220333,
+   "p90": 377280,
+   "max": 613561,
+   "mean": 238340,
+   "over_200k": 18303,
+   "over_400k": 2314,
+   "cache_read_above_200k": 1846035535
+  },
+  "runner · claude:implement": {
+   "requests": 12020,
+   "p50": 323784,
+   "p90": 633157,
+   "max": 967018,
+   "mean": 354984,
+   "over_200k": 8961,
+   "over_400k": 4368,
+   "cache_read_above_200k": 2014893962
+  },
+  "review · claude-review:code": {
+   "requests": 27412,
+   "p50": 210168,
+   "p90": 368686,
+   "max": 709545,
+   "mean": 226048,
+   "over_200k": 14831,
+   "over_400k": 1954,
+   "cache_read_above_200k": 1476835449
+  },
+  "review · claude-review:design": {
+   "requests": 7215,
+   "p50": 154898,
+   "p90": 248414,
+   "max": 371081,
+   "mean": 162003,
+   "over_200k": 1872,
+   "over_400k": 0,
+   "cache_read_above_200k": 80954181
+  },
+  "runner · claude:eng_design": {
+   "requests": 3012,
+   "p50": 260700,
+   "p90": 418993,
+   "max": 602774,
+   "mean": 265450,
+   "over_200k": 2034,
+   "over_400k": 419,
+   "cache_read_above_200k": 255081673
+  },
+  "codex codex:implement": {
+   "requests": 155303,
+   "p50": 135835,
+   "p90": 220023,
+   "max": 250539,
+   "mean": 136272,
+   "over_200k": 29421,
+   "over_400k": 0,
+   "cache_read_above_200k": 636553251
+  },
+  "codex codex:eng_design": {
+   "requests": 7964,
+   "p50": 132201,
+   "p90": 207708,
+   "max": 244906,
+   "mean": 130205,
+   "over_200k": 1020,
+   "over_400k": 0,
+   "cache_read_above_200k": 18972370
+  },
+  "codex codex:qa": {
+   "requests": 990,
+   "p50": 154874,
+   "p90": 232001,
+   "max": 244977,
+   "mean": 147923,
+   "over_200k": 256,
+   "over_400k": 0,
+   "cache_read_above_200k": 6181246
+  }
+ },
+ "cache_rebuilds": {
+  "Runner · qa": {
+   "n": 522,
+   "cache_creation": 95877153,
+   "after_idle_1h": 197,
+   "cc_after_idle_1h": 53585953,
+   "after_idle_5m": 45,
+   "cc_after_idle_5m": 12159488
+  },
+  "Lead · flywheel-eng-lead": {
+   "n": 191,
+   "cache_creation": 74176351,
+   "after_idle_1h": 12,
+   "cc_after_idle_1h": 4275394,
+   "after_idle_5m": 23,
+   "cc_after_idle_5m": 12230815
+  },
+  "评审 · 代码评审(Claude)": {
+   "n": 411,
+   "cache_creation": 61670898,
+   "after_idle_1h": 53,
+   "cc_after_idle_1h": 15998066,
+   "after_idle_5m": 52,
+   "cc_after_idle_5m": 14953024
+  },
+  "Lead · flywheel-product-lead": {
+   "n": 100,
+   "cache_creation": 39569511,
+   "after_idle_1h": 40,
+   "cc_after_idle_1h": 15943247,
+   "after_idle_5m": 34,
+   "cc_after_idle_5m": 16079287
+  },
+  "Runner · implement": {
+   "n": 135,
+   "cache_creation": 27812389,
+   "after_idle_1h": 21,
+   "cc_after_idle_1h": 7129806,
+   "after_idle_5m": 24,
+   "cc_after_idle_5m": 9182466
+  },
+  "Lead · flywheel-cos-lead": {
+   "n": 59,
+   "cache_creation": 27790874,
+   "after_idle_1h": 42,
+   "cc_after_idle_1h": 19168705,
+   "after_idle_5m": 6,
+   "cc_after_idle_5m": 2817916
+  },
+  "Lead · claude-infra-bot-lead": {
+   "n": 67,
+   "cache_creation": 27251614,
+   "after_idle_1h": 7,
+   "cc_after_idle_1h": 2213475,
+   "after_idle_5m": 38,
+   "cc_after_idle_5m": 16469418
+  },
+  "其它 / founder 手动": {
+   "n": 58,
+   "cache_creation": 19722075,
+   "after_idle_1h": 44,
+   "cc_after_idle_1h": 16394553,
+   "after_idle_5m": 5,
+   "cc_after_idle_5m": 1529687
+  },
+  "QA 测试环境": {
+   "n": 142,
+   "cache_creation": 14465269,
+   "after_idle_1h": 2,
+   "cc_after_idle_1h": 278579,
+   "after_idle_5m": 10,
+   "cc_after_idle_5m": 1472806
+  },
+  "Lead · product-lead": {
+   "n": 29,
+   "cache_creation": 13110512,
+   "after_idle_1h": 24,
+   "cc_after_idle_1h": 11598637,
+   "after_idle_5m": 3,
+   "cc_after_idle_5m": 1036928
+  },
+  "Runner · unmapped-worktree": {
+   "n": 129,
+   "cache_creation": 10483239,
+   "after_idle_1h": 0,
+   "cc_after_idle_1h": 0,
+   "after_idle_5m": 0,
+   "cc_after_idle_5m": 0
+  },
+  "Lead · ops-lead": {
+   "n": 29,
+   "cache_creation": 10153339,
+   "after_idle_1h": 26,
+   "cc_after_idle_1h": 9253195,
+   "after_idle_5m": 1,
+   "cc_after_idle_5m": 321603
+  },
+  "Runner · eng_design": {
+   "n": 53,
+   "cache_creation": 8510074,
+   "after_idle_1h": 1,
+   "cc_after_idle_1h": 472666,
+   "after_idle_5m": 8,
+   "cc_after_idle_5m": 2817895
+  },
+  "Runner · pm": {
+   "n": 28,
+   "cache_creation": 7525790,
+   "after_idle_1h": 10,
+   "cc_after_idle_1h": 4065546,
+   "after_idle_5m": 7,
+   "cc_after_idle_5m": 2211328
+  },
+  "Lead · sub-lead": {
+   "n": 29,
+   "cache_creation": 7385799,
+   "after_idle_1h": 22,
+   "cc_after_idle_1h": 6126997,
+   "after_idle_5m": 1,
+   "cc_after_idle_5m": 201113
+  },
+  "评审 · 设计评审(Claude)": {
+   "n": 92,
+   "cache_creation": 6882152,
+   "after_idle_1h": 0,
+   "cc_after_idle_1h": 0,
+   "after_idle_5m": 2,
+   "cc_after_idle_5m": 384226
+  },
+  "Lead · joycon-lead": {
+   "n": 29,
+   "cache_creation": 6522428,
+   "after_idle_1h": 22,
+   "cc_after_idle_1h": 5510318,
+   "after_idle_5m": 1,
+   "cc_after_idle_5m": 218032
+  },
+  "Lead · tidal-echo-content-lead": {
+   "n": 28,
+   "cache_creation": 5726878,
+   "after_idle_1h": 23,
+   "cc_after_idle_1h": 4906533,
+   "after_idle_5m": 1,
+   "cc_after_idle_5m": 272145
+  },
+  "Runner · general": {
+   "n": 31,
+   "cache_creation": 5356195,
+   "after_idle_1h": 7,
+   "cc_after_idle_1h": 2360607,
+   "after_idle_5m": 2,
+   "cc_after_idle_5m": 321264
+  },
+  "Lead · reflection-lead": {
+   "n": 26,
+   "cache_creation": 4446216,
+   "after_idle_1h": 22,
+   "cc_after_idle_1h": 3983315,
+   "after_idle_5m": 1,
+   "cc_after_idle_5m": 172402
+  },
+  "Lead · cos-lead": {
+   "n": 18,
+   "cache_creation": 3980859,
+   "after_idle_1h": 16,
+   "cc_after_idle_1h": 3497316,
+   "after_idle_5m": 0,
+   "cc_after_idle_5m": 0
+  },
+  "Lead · rafiki-lead": {
+   "n": 26,
+   "cache_creation": 3716710,
+   "after_idle_1h": 22,
+   "cc_after_idle_1h": 3250701,
+   "after_idle_5m": 1,
+   "cc_after_idle_5m": 124858
+  },
+  "Runner · product_design": {
+   "n": 4,
+   "cache_creation": 1031545,
+   "after_idle_1h": 0,
+   "cc_after_idle_1h": 0,
+   "after_idle_5m": 1,
+   "cc_after_idle_5m": 349381
+  },
+  "Lead · tidal-echo-cos-lead": {
+   "n": 5,
+   "cache_creation": 531424,
+   "after_idle_1h": 3,
+   "cc_after_idle_1h": 389690,
+   "after_idle_5m": 0,
+   "cc_after_idle_5m": 0
+  }
+ },
+ "cache_rebuilds_total_cc": 820200957,
+ "fixed_prefix": {
+  "Codex Runner · implement": {
+   "files": 781,
+   "requests": 155303,
+   "prefix_tokens": 4761972596,
+   "first_ctx_median": 27178
+  },
+  "Lead · flywheel-eng-lead": {
+   "files": 19,
+   "requests": 26859,
+   "prefix_tokens": 3508647828,
+   "first_ctx_median": 124827
+  },
+  "Runner · qa": {
+   "files": 217,
+   "requests": 31481,
+   "prefix_tokens": 2932698272,
+   "first_ctx_median": 91045
+  },
+  "评审 · 代码评审(Claude)": {
+   "files": 456,
+   "requests": 32400,
+   "prefix_tokens": 2018680221,
+   "first_ctx_median": 61250.5
+  },
+  "Runner · implement": {
+   "files": 91,
+   "requests": 12454,
+   "prefix_tokens": 1113172282,
+   "first_ctx_median": 85558
+  },
+  "Lead · flywheel-product-lead": {
+   "files": 12,
+   "requests": 4088,
+   "prefix_tokens": 511036645,
+   "first_ctx_median": 120253.5
+  },
+  "QA 测试环境": {
+   "files": 209,
+   "requests": 4610,
+   "prefix_tokens": 480689652,
+   "first_ctx_median": 76563
+  },
+  "评审 · 设计评审(Claude)": {
+   "files": 115,
+   "requests": 7267,
+   "prefix_tokens": 469633644,
+   "first_ctx_median": 65346
+  },
+  "Lead · claude-infra-bot-lead": {
+   "files": 6,
+   "requests": 7194,
+   "prefix_tokens": 328773489,
+   "first_ctx_median": 44267.0
+  },
+  "Runner · eng_design": {
+   "files": 52,
+   "requests": 3726,
+   "prefix_tokens": 277626582,
+   "first_ctx_median": 82816.5
+  },
+  "Codex Runner · eng_design": {
+   "files": 169,
+   "requests": 7964,
+   "prefix_tokens": 254514333,
+   "first_ctx_median": 31272
+  },
+  "Runner · unmapped-worktree": {
+   "files": 501,
+   "requests": 3800,
+   "prefix_tokens": 229425971,
+   "first_ctx_median": 51052
+  },
+  "Runner · general": {
+   "files": 44,
+   "requests": 3323,
+   "prefix_tokens": 220962284,
+   "first_ctx_median": 46716.0
+  },
+  "Runner · pm": {
+   "files": 11,
+   "requests": 1891,
+   "prefix_tokens": 169818611,
+   "first_ctx_median": 89253
+  },
+  "Codex 评审 · runner 调用的 Codex companion": {
+   "files": 101,
+   "requests": 5569,
+   "prefix_tokens": 148156980,
+   "first_ctx_median": 24320
+  },
+  "其它 / founder 手动": {
+   "files": 860,
+   "requests": 2242,
+   "prefix_tokens": 120568785,
+   "first_ctx_median": 51477.0
+  },
+  "Lead · flywheel-cos-lead": {
+   "files": 3,
+   "requests": 1032,
+   "prefix_tokens": 93796664,
+   "first_ctx_median": 89006
+  },
+  "Lead · product-lead": {
+   "files": 2,
+   "requests": 484,
+   "prefix_tokens": 81123944,
+   "first_ctx_median": 168022.0
+  },
+  "Lead · sub-lead": {
+   "files": 5,
+   "requests": 483,
+   "prefix_tokens": 64316226,
+   "first_ctx_median": 147446
+  },
+  "Lead · ops-lead": {
+   "files": 2,
+   "requests": 331,
+   "prefix_tokens": 54721384,
+   "first_ctx_median": 165619.0
+  },
+  "Lead · joycon-lead": {
+   "files": 6,
+   "requests": 290,
+   "prefix_tokens": 39688463,
+   "first_ctx_median": 109078.0
+  },
+  "Codex Runner · qa": {
+   "files": 8,
+   "requests": 990,
+   "prefix_tokens": 27183361,
+   "first_ctx_median": 28058.5
+  },
+  "Codex Lead · raya": {
+   "files": 2,
+   "requests": 607,
+   "prefix_tokens": 22646552,
+   "first_ctx_median": 38546.0
+  },
+  "Lead · tidal-echo-content-lead": {
+   "files": 4,
+   "requests": 163,
+   "prefix_tokens": 22254558,
+   "first_ctx_median": 118125.0
+  },
+  "Lead · cos-lead": {
+   "files": 2,
+   "requests": 226,
+   "prefix_tokens": 21604108,
+   "first_ctx_median": 95844.5
+  },
+  "Runner · product_design": {
+   "files": 1,
+   "requests": 217,
+   "prefix_tokens": 20659485,
+   "first_ctx_median": 95205
+  },
+  "Codex QA 测试环境": {
+   "files": 19,
+   "requests": 542,
+   "prefix_tokens": 14747915,
+   "first_ctx_median": 23043
+  },
+  "Lead · reflection-lead": {
+   "files": 7,
+   "requests": 196,
+   "prefix_tokens": 9849293,
+   "first_ctx_median": 48799
+  },
+  "Lead · rafiki-lead": {
+   "files": 6,
+   "requests": 150,
+   "prefix_tokens": 7056378,
+   "first_ctx_median": 47605.5
+  },
+  "Codex Lead · mufasa": {
+   "files": 2,
+   "requests": 127,
+   "prefix_tokens": 4987774,
+   "first_ctx_median": 45326.5
+  },
+  "Lead · tidal-echo-cos-lead": {
+   "files": 2,
+   "requests": 54,
+   "prefix_tokens": 2696810,
+   "first_ctx_median": 49971.0
+  },
+  "Codex 其它 / founder 手动": {
+   "files": 28,
+   "requests": 49,
+   "prefix_tokens": 1134239,
+   "first_ctx_median": 22748.0
+  },
+  "Lead · scratchpad": {
+   "files": 4,
+   "requests": 4,
+   "prefix_tokens": 181400,
+   "first_ctx_median": 44877.0
+  },
+  "Codex Lead · infra-bot": {
+   "files": 1,
+   "requests": 2,
+   "prefix_tokens": 146060,
+   "first_ctx_median": 73030
+  }
+ },
+ "tool_amplification": {
+  "claude": {
+   "bash:read/search": {
+    "calls": 71585,
+    "chars": 153748112,
+    "reread_tokens": 7298317555,
+    "big_calls": 2526,
+    "big_reread": 1612880562,
+    "in_ctx_tokens": 77767780,
+    "unknown_outputs": 275
+   },
+   "bash:git diff/log/show": {
+    "calls": 11753,
+    "chars": 46901612,
+    "reread_tokens": 1795329919,
+    "big_calls": 1381,
+    "big_reread": 706442347,
+    "in_ctx_tokens": 24114781,
+    "unknown_outputs": 27
+   },
+   "Read": {
+    "calls": 4862,
+    "chars": 43792368,
+    "reread_tokens": 719592202,
+    "big_calls": 1210,
+    "big_reread": 503736387,
+    "in_ctx_tokens": 20253795,
+    "unknown_outputs": 274
+   },
+   "mcp__linear-api__save_issue": {
+    "calls": 904,
+    "chars": 4707628,
+    "reread_tokens": 558838464,
+    "big_calls": 186,
+    "big_reread": 266155351,
+    "in_ctx_tokens": 3479234,
+    "unknown_outputs": 5
+   },
+   "bash:sqlite": {
+    "calls": 5413,
+    "chars": 5392287,
+    "reread_tokens": 554260743,
+    "big_calls": 44,
+    "big_reread": 49758037,
+    "in_ctx_tokens": 3066246,
+    "unknown_outputs": 16
+   },
+   "mcp__plugin_discord_discord__fetch_messages": {
+    "calls": 529,
+    "chars": 1694466,
+    "reread_tokens": 348569700,
+    "big_calls": 63,
+    "big_reread": 200201955,
+    "in_ctx_tokens": 1306811,
+    "unknown_outputs": 3
+   },
+   "bash:flywheel-comm": {
+    "calls": 4054,
+    "chars": 7861240,
+    "reread_tokens": 310050845,
+    "big_calls": 47,
+    "big_reread": 22999062,
+    "in_ctx_tokens": 3832851,
+    "unknown_outputs": 50
+   },
+   "mcp__flywheel-inbox__flywheel_inbox_ack_batch": {
+    "calls": 19448,
+    "chars": 1057422,
+    "reread_tokens": 296093863,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 1027982,
+    "unknown_outputs": 37
+   },
+   "bash:test": {
+    "calls": 6541,
+    "chars": 5588735,
+    "reread_tokens": 280268682,
+    "big_calls": 30,
+    "big_reread": 20400493,
+    "in_ctx_tokens": 3534585,
+    "unknown_outputs": 35
+   },
+   "bash:gh": {
+    "calls": 3923,
+    "chars": 3635308,
+    "reread_tokens": 244192627,
+    "big_calls": 35,
+    "big_reread": 29298468,
+    "in_ctx_tokens": 2042490,
+    "unknown_outputs": 16
+   },
+   "mcp__linear-api__list_issues": {
+    "calls": 306,
+    "chars": 1518081,
+    "reread_tokens": 221549563,
+    "big_calls": 58,
+    "big_reread": 143338351,
+    "in_ctx_tokens": 988782,
+    "unknown_outputs": 1
+   },
+   "mcp__linear-api__get_issue": {
+    "calls": 340,
+    "chars": 1419423,
+    "reread_tokens": 214581861,
+    "big_calls": 26,
+    "big_reread": 54012789,
+    "in_ctx_tokens": 979864,
+    "unknown_outputs": 3
+   },
+   "bash:mixed-with-wait": {
+    "calls": 4157,
+    "chars": 2325828,
+    "reread_tokens": 166310031,
+    "big_calls": 9,
+    "big_reread": 9245566,
+    "in_ctx_tokens": 1425389,
+    "unknown_outputs": 26
+   },
+   "bash:script": {
+    "calls": 2326,
+    "chars": 1860836,
+    "reread_tokens": 129667552,
+    "big_calls": 30,
+    "big_reread": 18635663,
+    "in_ctx_tokens": 1094545,
+    "unknown_outputs": 4
+   },
+   "mcp__flywheel-terminal__runner_terminal_capture": {
+    "calls": 276,
+    "chars": 726630,
+    "reread_tokens": 120646501,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 407393,
+    "unknown_outputs": 1
+   },
+   "bash:flywheel-comm:other": {
+    "calls": 1729,
+    "chars": 776417,
+    "reread_tokens": 76332267,
+    "big_calls": 6,
+    "big_reread": 2556654,
+    "in_ctx_tokens": 488853,
+    "unknown_outputs": 5
+   },
+   "mcp__claude-in-chrome__computer": {
+    "calls": 610,
+    "chars": 2312047,
+    "reread_tokens": 75056725,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 486395,
+    "unknown_outputs": 1
+   },
+   "mcp__claude-in-chrome__get_page_text": {
+    "calls": 89,
+    "chars": 504268,
+    "reread_tokens": 64711067,
+    "big_calls": 17,
+    "big_reread": 35561999,
+    "in_ctx_tokens": 266260
+   },
+   "bash:build/lint": {
+    "calls": 1883,
+    "chars": 1196251,
+    "reread_tokens": 64619299,
+    "big_calls": 2,
+    "big_reread": 2584686,
+    "in_ctx_tokens": 689892,
+    "unknown_outputs": 4
+   },
+   "mcp__linear-api__save_comment": {
+    "calls": 467,
+    "chars": 497948,
+    "reread_tokens": 62095958,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 354546,
+    "unknown_outputs": 1
+   },
+   "bash:other": {
+    "calls": 1462,
+    "chars": 1070917,
+    "reread_tokens": 56006657,
+    "big_calls": 22,
+    "big_reread": 25883995,
+    "in_ctx_tokens": 544971,
+    "unknown_outputs": 1
+   },
+   "mcp__xiaohongshu-mcp__get_feed_detail": {
+    "calls": 61,
+    "chars": 539962,
+    "reread_tokens": 50443474,
+    "big_calls": 21,
+    "big_reread": 30120327,
+    "in_ctx_tokens": 248402
+   },
+   "mcp__linear-api__list_comments": {
+    "calls": 42,
+    "chars": 248078,
+    "reread_tokens": 43151201,
+    "big_calls": 9,
+    "big_reread": 34865870,
+    "in_ctx_tokens": 162661
+   },
+   "wait:sleep-loop": {
+    "calls": 765,
+    "chars": 390389,
+    "reread_tokens": 35730311,
+    "big_calls": 2,
+    "big_reread": 516463,
+    "in_ctx_tokens": 243669,
+    "unknown_outputs": 5
+   },
+   "bash:flywheel-comm:stage": {
+    "calls": 519,
+    "chars": 398273,
+    "reread_tokens": 30463940,
+    "big_calls": 6,
+    "big_reread": 4353181,
+    "in_ctx_tokens": 252578,
+    "unknown_outputs": 6
+   },
+   "ToolSearch": {
+    "calls": 879,
+    "chars": 137779,
+    "reread_tokens": 28342098,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 134432,
+    "unknown_outputs": 1
+   },
+   "WebSearch": {
+    "calls": 122,
+    "chars": 333991,
+    "reread_tokens": 28005833,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 147083
+   },
+   "mcp__xiaohongshu-mcp__search_feeds": {
+    "calls": 40,
+    "chars": 506048,
+    "reread_tokens": 25255179,
+    "big_calls": 31,
+    "big_reread": 22417052,
+    "in_ctx_tokens": 255266
+   },
+   "bash:curl": {
+    "calls": 319,
+    "chars": 179798,
+    "reread_tokens": 25155245,
+    "big_calls": 3,
+    "big_reread": 768412,
+    "in_ctx_tokens": 130582
+   },
+   "Edit": {
+    "calls": 1407,
+    "chars": 226667,
+    "reread_tokens": 19951132,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 160107,
+    "unknown_outputs": 8
+   },
+   "mcp__flywheel-terminal__runner_terminal_list": {
+    "calls": 113,
+    "chars": 99155,
+    "reread_tokens": 17680756,
+    "big_calls": 1,
+    "big_reread": 1809483,
+    "in_ctx_tokens": 56394
+   },
+   "Write": {
+    "calls": 1219,
+    "chars": 233921,
+    "reread_tokens": 14640470,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 149258,
+    "unknown_outputs": 5
+   },
+   "mcp__plugin_discord_discord__reply": {
+    "calls": 2302,
+    "chars": 87222,
+    "reread_tokens": 14498767,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 78053,
+    "unknown_outputs": 5
+   },
+   "wait:check": {
+    "calls": 422,
+    "chars": 267901,
+    "reread_tokens": 14176766,
+    "big_calls": 5,
+    "big_reread": 5008488,
+    "in_ctx_tokens": 156485,
+    "unknown_outputs": 1
+   },
+   "TaskStop": {
+    "calls": 154,
+    "chars": 150130,
+    "reread_tokens": 13980184,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 95043,
+    "unknown_outputs": 3
+   },
+   "mcp__claude-in-chrome__navigate": {
+    "calls": 228,
+    "chars": 124839,
+    "reread_tokens": 11473461,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 61979
+   },
+   "Agent": {
+    "calls": 221,
+    "chars": 235360,
+    "reread_tokens": 10604197,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 97278,
+    "unknown_outputs": 3
+   },
+   "WebFetch": {
+    "calls": 166,
+    "chars": 374827,
+    "reread_tokens": 10434861,
+    "big_calls": 7,
+    "big_reread": 3636329,
+    "in_ctx_tokens": 137765
+   },
+   "bash:flywheel-comm:progress": {
+    "calls": 388,
+    "chars": 165867,
+    "reread_tokens": 9564848,
+    "big_calls": 3,
+    "big_reread": 3455518,
+    "in_ctx_tokens": 100723,
+    "unknown_outputs": 2
+   },
+   "mcp__claude-in-chrome__tabs_context_mcp": {
+    "calls": 103,
+    "chars": 50405,
+    "reread_tokens": 7029855,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 27761
+   },
+   "mcp__claude-in-chrome__browser_batch": {
+    "calls": 67,
+    "chars": 365089,
+    "reread_tokens": 6064481,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 76049
+   },
+   "Monitor": {
+    "calls": 381,
+    "chars": 114991,
+    "reread_tokens": 6020063,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 56734
+   },
+   "mcp__xiaohongshu-mcp__get_collection_content": {
+    "calls": 9,
+    "chars": 269393,
+    "reread_tokens": 5817025,
+    "big_calls": 8,
+    "big_reread": 5799293,
+    "in_ctx_tokens": 151013
+   },
+   "wait:gh-watch": {
+    "calls": 86,
+    "chars": 102149,
+    "reread_tokens": 4771177,
+    "big_calls": 2,
+    "big_reread": 1613376,
+    "in_ctx_tokens": 58451
+   },
+   "mcp__claude-in-chrome__find": {
+    "calls": 67,
+    "chars": 32918,
+    "reread_tokens": 4245887,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 18462
+   },
+   "bash:flywheel-comm:publish-report": {
+    "calls": 282,
+    "chars": 88861,
+    "reread_tokens": 3943465,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 57521
+   },
+   "Grep": {
+    "calls": 983,
+    "chars": 1588536,
+    "reread_tokens": 3831285,
+    "big_calls": 21,
+    "big_reread": 539480,
+    "in_ctx_tokens": 836567,
+    "unknown_outputs": 63
+   },
+   "ListAgents": {
+    "calls": 109,
+    "chars": 59072,
+    "reread_tokens": 3700827,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 33950
+   },
+   "bash:codex": {
+    "calls": 115,
+    "chars": 298410,
+    "reread_tokens": 3550153,
+    "big_calls": 6,
+    "big_reread": 538902,
+    "in_ctx_tokens": 134158
+   },
+   "wait:turn": {
+    "calls": 118,
+    "chars": 42865,
+    "reread_tokens": 3546162,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 29833
+   },
+   "bash:flywheel-comm:ask": {
+    "calls": 643,
+    "chars": 49653,
+    "reread_tokens": 3491486,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 39732,
+    "unknown_outputs": 9
+   },
+   "mcp__claude-in-chrome__read_page": {
+    "calls": 7,
+    "chars": 15405,
+    "reread_tokens": 3074042,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 8013
+   },
+   "wait:inbox": {
+    "calls": 201,
+    "chars": 60657,
+    "reread_tokens": 2853590,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 35466
+   },
+   "mcp__plugin_discord_discord__download_attachment": {
+    "calls": 85,
+    "chars": 17744,
+    "reread_tokens": 2626787,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 13604
+   },
+   "bash:flywheel-comm:gate": {
+    "calls": 122,
+    "chars": 23941,
+    "reread_tokens": 2471483,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 17143,
+    "unknown_outputs": 1
+   },
+   "mcp__linear-api__list_issue_labels": {
+    "calls": 2,
+    "chars": 6925,
+    "reread_tokens": 2085658,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 3447
+   },
+   "SendMessage": {
+    "calls": 39,
+    "chars": 9876,
+    "reread_tokens": 2066009,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 7159
+   },
+   "mcp__plugin_context7_context7__query-docs": {
+    "calls": 18,
+    "chars": 72551,
+    "reread_tokens": 1809445,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 29827
+   },
+   "ScheduleWakeup": {
+    "calls": 52,
+    "chars": 8739,
+    "reread_tokens": 1705060,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 5573,
+    "unknown_outputs": 5
+   },
+   "mcp__plugin_playwright_playwright__browser_evaluate": {
+    "calls": 19,
+    "chars": 16735,
+    "reread_tokens": 1624333,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 10158
+   },
+   "CronCreate": {
+    "calls": 59,
+    "chars": 8579,
+    "reread_tokens": 1528670,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 6875
+   },
+   "mcp__claude-in-chrome__tabs_close_mcp": {
+    "calls": 82,
+    "chars": 8528,
+    "reread_tokens": 1315015,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 6821,
+    "unknown_outputs": 1
+   },
+   "mcp__xiaohongshu-mcp__list_collections": {
+    "calls": 3,
+    "chars": 47739,
+    "reread_tokens": 1186038,
+    "big_calls": 2,
+    "big_reread": 1086718,
+    "in_ctx_tokens": 28714
+   },
+   "bash:flywheel-comm:complete": {
+    "calls": 123,
+    "chars": 49978,
+    "reread_tokens": 1014352,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 26528
+   },
+   "bash:flywheel-comm:await-codex-gate": {
+    "calls": 68,
+    "chars": 20787,
+    "reread_tokens": 831759,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 13269
+   },
+   "mcp__claude-in-chrome__javascript_tool": {
+    "calls": 24,
+    "chars": 9417,
+    "reread_tokens": 654890,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 5610
+   },
+   "TaskOutput": {
+    "calls": 17,
+    "chars": 41423,
+    "reread_tokens": 452626,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 21731
+   },
+   "bash:flywheel-comm:respond": {
+    "calls": 16,
+    "chars": 1561,
+    "reread_tokens": 396724,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 1404
+   },
+   "mcp__plugin_context7_context7__resolve-library-id": {
+    "calls": 7,
+    "chars": 12612,
+    "reread_tokens": 381181,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 5139
+   },
+   "mcp__plugin_playwright_playwright__browser_navigate": {
+    "calls": 29,
+    "chars": 5689,
+    "reread_tokens": 378619,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 4068
+   },
+   "Artifact": {
+    "calls": 4,
+    "chars": 4255,
+    "reread_tokens": 343018,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 1838
+   },
+   "mcp__claude-in-chrome__list_connected_browsers": {
+    "calls": 72,
+    "chars": 4009,
+    "reread_tokens": 306037,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 3043
+   },
+   "CronList": {
+    "calls": 8,
+    "chars": 1107,
+    "reread_tokens": 298649,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 902
+   },
+   "mcp__claude-in-chrome__tabs_create_mcp": {
+    "calls": 7,
+    "chars": 2635,
+    "reread_tokens": 275678,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 1352
+   },
+   "mcp__plugin_playwright_playwright__browser_take_screenshot": {
+    "calls": 6,
+    "chars": 1845,
+    "reread_tokens": 260741,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 1148
+   },
+   "mcp__flywheel-terminal__runner_terminal_search": {
+    "calls": 12,
+    "chars": 2725,
+    "reread_tokens": 218733,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 2030
+   },
+   "mcp__plugin_discord_discord__edit_message": {
+    "calls": 30,
+    "chars": 960,
+    "reread_tokens": 217940,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 956
+   },
+   "mcp__flywheel-terminal__close_runner": {
+    "calls": 19,
+    "chars": 3639,
+    "reread_tokens": 196071,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 2213
+   },
+   "mcp__claude-in-chrome__form_input": {
+    "calls": 7,
+    "chars": 2303,
+    "reread_tokens": 164751,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 1171
+   },
+   "mcp__flywheel-terminal__runner_terminal_input": {
+    "calls": 17,
+    "chars": 467,
+    "reread_tokens": 113472,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 384
+   },
+   "mcp__linear-api__get_issue_status": {
+    "calls": 8,
+    "chars": 1549,
+    "reread_tokens": 105534,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 863
+   },
+   "mcp__plugin_playwright_playwright__browser_resize": {
+    "calls": 6,
+    "chars": 780,
+    "reread_tokens": 82549,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 620
+   },
+   "Skill": {
+    "calls": 23,
+    "chars": 2751,
+    "reread_tokens": 75929,
+    "big_calls": 0,
+    "big_reread": 0,
+    "unknown_outputs": 372,
+    "in_ctx_tokens": 1531
+   },
+   "CronDelete": {
+    "calls": 8,
+    "chars": 229,
+    "reread_tokens": 63874,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 218
+   },
+   "mcp__flywheel-terminal__runner_terminal_status": {
+    "calls": 5,
+    "chars": 399,
+    "reread_tokens": 57457,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 288
+   },
+   "mcp__xiaohongshu-mcp__check_login_status": {
+    "calls": 8,
+    "chars": 313,
+    "reread_tokens": 56515,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 237
+   },
+   "mcp__linear-api__list_issue_statuses": {
+    "calls": 1,
+    "chars": 571,
+    "reread_tokens": 44084,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 428
+   },
+   "PushNotification": {
+    "calls": 1,
+    "chars": 75,
+    "reread_tokens": 43128,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 72
+   },
+   "mcp__claude-in-chrome__resize_window": {
+    "calls": 3,
+    "chars": 955,
+    "reread_tokens": 40190,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 370
+   },
+   "Glob": {
+    "calls": 32,
+    "chars": 38733,
+    "reread_tokens": 35127,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 18975
+   },
+   "mcp__flywheel-xhs-write__xiaohongshu_search_feeds": {
+    "calls": 1,
+    "chars": 31,
+    "reread_tokens": 15004,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 31
+   },
+   "mcp__claude-in-chrome__read_console_messages": {
+    "calls": 2,
+    "chars": 814,
+    "reread_tokens": 13896,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 386
+   },
+   "mcp__plugin_playwright_playwright__browser_console_messages": {
+    "calls": 5,
+    "chars": 270,
+    "reread_tokens": 12505,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 210
+   },
+   "unknown": {
+    "calls": 13,
+    "chars": 26717,
+    "reread_tokens": 12407,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 3575,
+    "unknown_outputs": 1
+   },
+   "SubagentHandback": {
+    "calls": 100,
+    "chars": 6100,
+    "reread_tokens": 5519,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 5031
+   },
+   "mcp__claude-in-chrome__read_network_requests": {
+    "calls": 2,
+    "chars": 752,
+    "reread_tokens": 4306,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 346
+   },
+   "mcp__plugin_discord_discord__react": {
+    "calls": 9,
+    "chars": 85,
+    "reread_tokens": 4051,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 85
+   },
+   "mcp__claude-in-chrome": {
+    "calls": 1,
+    "chars": 85,
+    "reread_tokens": 3430,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 70
+   },
+   "mcp__plugin_playwright_playwright__browser_close": {
+    "calls": 3,
+    "chars": 330,
+    "reread_tokens": 3148,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 280
+   },
+   "bash:apply_patch": {
+    "calls": 1,
+    "chars": 31,
+    "reread_tokens": 2077,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 31
+   },
+   "StructuredOutput": {
+    "calls": 16,
+    "chars": 1008,
+    "reread_tokens": 1008,
+    "big_calls": 0,
+    "big_reread": 0,
+    "unknown_outputs": 371,
+    "in_ctx_tokens": 1008
+   },
+   "mcp__linear-api__delete_comment": {
+    "calls": 1,
+    "chars": 16,
+    "reread_tokens": 308,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 14
+   }
+  },
+  "codex": {
+   "bash:read/search": {
+    "calls": 27255,
+    "chars": 317569190,
+    "reread_tokens": 3712039755,
+    "big_calls": 4290,
+    "big_reread": 2065792477,
+    "unknown_outputs": 2758,
+    "in_ctx_tokens": 62225318
+   },
+   "bash:other": {
+    "calls": 43049,
+    "chars": 154163274,
+    "reread_tokens": 1607840138,
+    "big_calls": 1029,
+    "big_reread": 403534913,
+    "in_ctx_tokens": 27373568,
+    "unknown_outputs": 2557
+   },
+   "bash:git diff/log/show": {
+    "calls": 6123,
+    "chars": 73657033,
+    "reread_tokens": 718835565,
+    "big_calls": 790,
+    "big_reread": 446474793,
+    "in_ctx_tokens": 11072455,
+    "unknown_outputs": 279
+   },
+   "bash:flywheel-comm": {
+    "calls": 4129,
+    "chars": 39951852,
+    "reread_tokens": 464592617,
+    "big_calls": 555,
+    "big_reread": 244039863,
+    "in_ctx_tokens": 8187363,
+    "unknown_outputs": 455
+   },
+   "bash:test": {
+    "calls": 8484,
+    "chars": 29172566,
+    "reread_tokens": 342603469,
+    "big_calls": 142,
+    "big_reread": 91215375,
+    "in_ctx_tokens": 4543544,
+    "unknown_outputs": 37
+   },
+   "bash:gh": {
+    "calls": 5847,
+    "chars": 22289936,
+    "reread_tokens": 246351355,
+    "big_calls": 131,
+    "big_reread": 121177142,
+    "in_ctx_tokens": 2767311,
+    "unknown_outputs": 760
+   },
+   "bash:mixed-with-wait": {
+    "calls": 5520,
+    "chars": 16369227,
+    "reread_tokens": 173620271,
+    "big_calls": 87,
+    "big_reread": 54406495,
+    "unknown_outputs": 967,
+    "in_ctx_tokens": 2235874
+   },
+   "bash:script": {
+    "calls": 8585,
+    "chars": 13126427,
+    "reread_tokens": 164608737,
+    "big_calls": 57,
+    "big_reread": 31679787,
+    "in_ctx_tokens": 2264062,
+    "unknown_outputs": 3450
+   },
+   "bash:build/lint": {
+    "calls": 2581,
+    "chars": 17264077,
+    "reread_tokens": 122178358,
+    "big_calls": 43,
+    "big_reread": 21774556,
+    "in_ctx_tokens": 1672416,
+    "unknown_outputs": 17
+   },
+   "bash:apply_patch": {
+    "calls": 8157,
+    "chars": 2494092,
+    "reread_tokens": 98452074,
+    "big_calls": 9,
+    "big_reread": 5835514,
+    "in_ctx_tokens": 1342575,
+    "unknown_outputs": 6
+   },
+   "bash:flywheel-comm:other": {
+    "calls": 1659,
+    "chars": 7496887,
+    "reread_tokens": 60722489,
+    "big_calls": 46,
+    "big_reread": 25464841,
+    "in_ctx_tokens": 991057,
+    "unknown_outputs": 168
+   },
+   "wait:check": {
+    "calls": 1684,
+    "chars": 4197266,
+    "reread_tokens": 45179966,
+    "big_calls": 40,
+    "big_reread": 19309599,
+    "in_ctx_tokens": 734859,
+    "unknown_outputs": 3957
+   },
+   "wait:sleep-loop": {
+    "calls": 4065,
+    "chars": 1295501,
+    "reread_tokens": 45046437,
+    "big_calls": 1,
+    "big_reread": 866040,
+    "in_ctx_tokens": 456595,
+    "unknown_outputs": 1073
+   },
+   "bash:flywheel-comm:stage": {
+    "calls": 837,
+    "chars": 2411702,
+    "reread_tokens": 39599631,
+    "big_calls": 35,
+    "big_reread": 24493167,
+    "in_ctx_tokens": 571390,
+    "unknown_outputs": 171
+   },
+   "bash:sqlite": {
+    "calls": 1068,
+    "chars": 5388548,
+    "reread_tokens": 36951884,
+    "big_calls": 40,
+    "big_reread": 7971222,
+    "in_ctx_tokens": 996020,
+    "unknown_outputs": 65
+   },
+   "wait:turn": {
+    "calls": 661,
+    "chars": 1444711,
+    "reread_tokens": 34599141,
+    "big_calls": 13,
+    "big_reread": 10932560,
+    "in_ctx_tokens": 388953,
+    "unknown_outputs": 488
+   },
+   "bash:codex": {
+    "calls": 440,
+    "chars": 2064332,
+    "reread_tokens": 16701325,
+    "big_calls": 23,
+    "big_reread": 8068435,
+    "in_ctx_tokens": 400524,
+    "unknown_outputs": 7
+   },
+   "wait:inbox": {
+    "calls": 522,
+    "chars": 1424139,
+    "reread_tokens": 12804789,
+    "big_calls": 10,
+    "big_reread": 4941587,
+    "in_ctx_tokens": 194959,
+    "unknown_outputs": 43
+   },
+   "bash:flywheel-comm:progress": {
+    "calls": 836,
+    "chars": 814058,
+    "reread_tokens": 11251556,
+    "big_calls": 4,
+    "big_reread": 2136647,
+    "in_ctx_tokens": 171077,
+    "unknown_outputs": 2
+   },
+   "wait:gh-watch": {
+    "calls": 341,
+    "chars": 2403222,
+    "reread_tokens": 10927779,
+    "big_calls": 5,
+    "big_reread": 2484444,
+    "in_ctx_tokens": 158685,
+    "unknown_outputs": 2
+   },
+   "bash:flywheel-comm:ask": {
+    "calls": 574,
+    "chars": 408986,
+    "reread_tokens": 9439329,
+    "big_calls": 2,
+    "big_reread": 1150004,
+    "in_ctx_tokens": 153673,
+    "unknown_outputs": 4
+   },
+   "bash:flywheel-comm:complete": {
+    "calls": 344,
+    "chars": 340625,
+    "reread_tokens": 3345229,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 94519,
+    "unknown_outputs": 11
+   },
+   "bash:flywheel-comm:gate": {
+    "calls": 242,
+    "chars": 74743,
+    "reread_tokens": 1913018,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 27788,
+    "unknown_outputs": 1
+   },
+   "bash:curl": {
+    "calls": 25,
+    "chars": 94964,
+    "reread_tokens": 1157441,
+    "big_calls": 2,
+    "big_reread": 656747,
+    "in_ctx_tokens": 23918
+   },
+   "bash:flywheel-comm:await-codex-gate": {
+    "calls": 5,
+    "chars": 840,
+    "reread_tokens": 76479,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 447
+   },
+   "bash:flywheel-comm:publish-report": {
+    "calls": 6,
+    "chars": 4421,
+    "reread_tokens": 32441,
+    "big_calls": 0,
+    "big_reread": 0,
+    "in_ctx_tokens": 1121
+   }
+  }
+ },
+ "post_terminal": {
+  "codex:implement": {
+   "tokens": 1131200100,
+   "files": 5
+  },
+  "codex:eng_design": {
+   "tokens": 75845428,
+   "files": 21
+  },
+  "claude:eng_design": {
+   "tokens": 9172741,
+   "files": 4
+  },
+  "claude:implement": {
+   "tokens": 253011,
+   "files": 1
+  }
+ },
+ "extra_executions": {
+  "groups": 380,
+  "groups_multi": 155,
+  "executions": 1024,
+  "extra_executions": 644,
+  "extra_tokens": 19285654365,
+  "extra_tokens_failed": 16824665711,
+  "extra_first_turn_codex": 5091049945,
+  "by_node": {
+   "codex:implement": 13232770566,
+   "claude:qa": 3803057622,
+   "claude:implement": 1696160164,
+   "codex:eng_design": 385054221,
+   "claude:eng_design": 86376949,
+   "codex:qa": 82234843
+  },
+  "by_node_n": {
+   "codex:implement": 473,
+   "claude:qa": 82,
+   "claude:implement": 42,
+   "codex:eng_design": 36,
+   "codex:qa": 7,
+   "claude:eng_design": 4
+  },
+  "mapped_exec_tokens": 35747977405
+ },
+ "reviews": {
+  "jobs": 1036,
+  "rounds_hist": {
+   "code": {
+    "1": 320,
+    "2": 213,
+    "3": 133,
+    "4": 71,
+    "5": 37,
+    "6": 38
+   },
+   "design": {
+    "1": 113,
+    "2": 71,
+    "3": 31,
+    "4": 8,
+    "5": 1
+   }
+  },
+  "gates_by_max_round": {
+   "code": {
+    "1": 22,
+    "2": 29,
+    "3": 28,
+    "4": 23,
+    "5": 12,
+    "6": 13
+   },
+   "design": {
+    "1": 35,
+    "2": 34,
+    "3": 21,
+    "4": 7,
+    "5": 1
+   }
+  },
+  "failed": {
+   "code:superseded_by_revision": 69,
+   "code:head_moved": 49,
+   "code:gate_answered_externally": 20,
+   "design:superseded_by_revision": 11,
+   "code:nonzero_exit": 8,
+   "code:no_verdict": 6,
+   "design:gate_answered_externally": 1,
+   "code:gate_answered": 1,
+   "design:reviewed_plan_moved": 1,
+   "code:head_moved_exhausted": 1
+  },
+  "tokens": {
+   "claude-review:code": 7080990503,
+   "claude-review:design": 1185094924
+  },
+  "requests": {
+   "claude-review:code": 32400,
+   "claude-review:design": 7267
+  },
+  "sessions": 435
+ },
+ "review_unassigned_tokens": 0,
+ "review_job_tokens": {
+  "code:done": {
+   "jobs": 658,
+   "tokens": 5525197427,
+   "weighted": 811099797
+  },
+  "code:gate_answered_externally": {
+   "jobs": 20,
+   "tokens": 362032394,
+   "weighted": 59566482
+  },
+  "code:head_moved": {
+   "jobs": 48,
+   "tokens": 449988746,
+   "weighted": 66636864
+  },
+  "code:head_moved_exhausted": {
+   "jobs": 1,
+   "tokens": 8531086,
+   "weighted": 1003399
+  },
+  "code:no_verdict": {
+   "jobs": 5,
+   "tokens": 35885702,
+   "weighted": 5904788
+  },
+  "code:nonzero_exit": {
+   "jobs": 8,
+   "tokens": 34878463,
+   "weighted": 8608609
+  },
+  "code:round1": {
+   "jobs": 315,
+   "tokens": 4030271721,
+   "weighted": 630685792
+  },
+  "code:round2": {
+   "jobs": 212,
+   "tokens": 1354260943,
+   "weighted": 188743811
+  },
+  "code:round3": {
+   "jobs": 133,
+   "tokens": 718048332,
+   "weighted": 101957757
+  },
+  "code:round4": {
+   "jobs": 71,
+   "tokens": 498101918,
+   "weighted": 69092984
+  },
+  "code:round5+": {
+   "jobs": 75,
+   "tokens": 480307589,
+   "weighted": 63432393
+  },
+  "code:superseded_by_revision": {
+   "jobs": 66,
+   "tokens": 664476685,
+   "weighted": 101092797
+  },
+  "design:done": {
+   "jobs": 211,
+   "tokens": 1135229751,
+   "weighted": 174841840
+  },
+  "design:gate_answered_externally": {
+   "jobs": 1,
+   "tokens": 11157277,
+   "weighted": 1892529
+  },
+  "design:reviewed_plan_moved": {
+   "jobs": 1,
+   "tokens": 5001436,
+   "weighted": 796546
+  },
+  "design:round1": {
+   "jobs": 113,
+   "tokens": 747738352,
+   "weighted": 120948030
+  },
+  "design:round2": {
+   "jobs": 71,
+   "tokens": 304325904,
+   "weighted": 43363865
+  },
+  "design:round3": {
+   "jobs": 31,
+   "tokens": 103782301,
+   "weighted": 14705963
+  },
+  "design:round4": {
+   "jobs": 8,
+   "tokens": 23743810,
+   "weighted": 3284077
+  },
+  "design:round5+": {
+   "jobs": 1,
+   "tokens": 5504557,
+   "weighted": 713220
+  },
+  "design:superseded_by_revision": {
+   "jobs": 11,
+   "tokens": 33706460,
+   "weighted": 5484240
+  }
+ },
+ "review_sessions_by_jobs": {
+  "claude-review:code|jobs=1": {
+   "sessions": 111,
+   "tokens": 1011025555,
+   "median_max_ctx": 211780
+  },
+  "claude-review:code|jobs=2": {
+   "sessions": 78,
+   "tokens": 1255986572,
+   "median_max_ctx": 266815.5
+  },
+  "claude-review:code|jobs=3": {
+   "sessions": 59,
+   "tokens": 1306170475,
+   "median_max_ctx": 311358
+  },
+  "claude-review:code|jobs=4": {
+   "sessions": 36,
+   "tokens": 988034613,
+   "median_max_ctx": 351229.5
+  },
+  "claude-review:code|jobs=5": {
+   "sessions": 17,
+   "tokens": 549776937,
+   "median_max_ctx": 409263
+  },
+  "claude-review:code|jobs=6": {
+   "sessions": 9,
+   "tokens": 436782166,
+   "median_max_ctx": 467512
+  },
+  "claude-review:code|jobs=7": {
+   "sessions": 5,
+   "tokens": 315119866,
+   "median_max_ctx": 545536
+  },
+  "claude-review:code|jobs=8": {
+   "sessions": 5,
+   "tokens": 357157433,
+   "median_max_ctx": 455439
+  },
+  "claude-review:design|jobs=1": {
+   "sessions": 43,
+   "tokens": 253375860,
+   "median_max_ctx": 162586
+  },
+  "claude-review:design|jobs=2": {
+   "sessions": 42,
+   "tokens": 445109353,
+   "median_max_ctx": 238065.5
+  },
+  "claude-review:design|jobs=3": {
+   "sessions": 22,
+   "tokens": 346219807,
+   "median_max_ctx": 284364.5
+  },
+  "claude-review:design|jobs=4": {
+   "sessions": 7,
+   "tokens": 103844868,
+   "median_max_ctx": 279561
+  },
+  "claude-review:design|jobs=5": {
+   "sessions": 1,
+   "tokens": 27089034,
+   "median_max_ctx": 361237
+  }
+ },
+ "runner_turns": {
+  "claude:qa": {
+   "tok_first": 3833664802,
+   "tok_later": 3665553001,
+   "turns": 1492,
+   "files": 216
+  },
+  "claude:eng_design": {
+   "tok_first": 456906326,
+   "tok_later": 347050879,
+   "turns": 142,
+   "files": 39
+  },
+  "claude:pm": {
+   "tok_first": 107553584,
+   "tok_later": 437076163,
+   "turns": 191,
+   "files": 9
+  },
+  "claude:general": {
+   "tok_first": 350376514,
+   "tok_later": 244455237,
+   "turns": 123,
+   "files": 20
+  },
+  "claude:unmapped-worktree": {
+   "tok_first": 337645987,
+   "tok_later": 1137661,
+   "turns": 510,
+   "files": 580
+  },
+  "claude:implement": {
+   "tok_first": 1523675579,
+   "tok_later": 2753196789,
+   "turns": 550,
+   "files": 67
+  },
+  "claude:product_design": {
+   "tok_first": 32579443,
+   "tok_later": 28416158,
+   "turns": 14,
+   "files": 1
+  }
+ },
+ "subagents": {
+  "评审 · 代码评审(Claude)": 860936886,
+  "Runner · general": 104642513,
+  "Runner · eng_design": 64468688,
+  "Runner · implement": 60357966,
+  "Runner · qa": 27528624,
+  "评审 · 设计评审(Claude)": 9456002,
+  "Runner · pm": 5952530,
+  "其它 / founder 手动": 5479234,
+  "QA 测试环境": 2625517,
+  "Runner · unmapped-worktree": 1571133
+ },
+ "claude_models": {
+  "claude-opus-5": 20959110703,
+  "claude-fable-5-1": 11145404698,
+  "claude-opus-5-5": 9221052599,
+  "claude-sonnet-5": 3533246129,
+  "claude-opus-4-7": 272895748,
+  "claude-haiku-4-5-20251001": 45478851,
+  "claude-opus-4-8": 10845282
+ },
+ "mechanisms": {
+  "lead_cache_read_above_200k": 12905103326,
+  "eng_lead_cache_read_above_200k": 9545050641,
+  "claude_runner_review_cache_read_above_200k": 6126619226,
+  "lead_cache_read_above_250k": 11085958709,
+  "eng_lead_cache_read_above_250k": 8315523402,
+  "claude_runner_review_cache_read_above_250k": 4052094213,
+  "lead_cache_read_above_300k": 9412848471,
+  "eng_lead_cache_read_above_300k": 7166574245,
+  "claude_runner_review_cache_read_above_300k": 2631590561,
+  "lead_tokens_total": 21224045671,
+  "eng_lead_tokens": 14938693601,
+  "eng_lead_mean_ctx": 555397,
+  "wake_A_pure_lifecycle_or_info": {
+   "turns": 1371,
+   "tokens": 1751995568,
+   "weighted": 193266495,
+   "first_request_tokens": 710441809
+  },
+  "wake_C_cross_lead_chatter": {
+   "turns": 934,
+   "tokens": 1711008679,
+   "weighted": 226547947,
+   "first_request_tokens": 450621677
+  },
+  "wake_D_patrol_summary": {
+   "turns": 643,
+   "tokens": 2128603343,
+   "weighted": 329093364,
+   "first_request_tokens": 317180965
+  },
+  "wake_E_alerts_warn": {
+   "turns": 2701,
+   "tokens": 2578278781,
+   "weighted": 293764468,
+   "first_request_tokens": 1121804799
+  },
+  "wake_B_repeat_alert_6h": {
+   "turns": 2928,
+   "tokens": 2706400682,
+   "weighted": 305120431,
+   "alert_turns_total": 3296,
+   "alert_tokens_total": 3110686902,
+   "distinct_titles": 67
+  },
+  "wake_founder": {
+   "turns": 952,
+   "tokens": 4401824315
+  },
+  "lead_turns_total": 10744,
+  "poll_requests": {
+   "codex|runner|wait:sleep-loop": {
+    "requests": 4063,
+    "tokens": 569952292,
+    "weighted": 67028556
+   },
+   "codex|runner|wait:check": {
+    "requests": 1735,
+    "tokens": 249872926,
+    "weighted": 30231097
+   },
+   "claude|runner|wait:check": {
+    "requests": 388,
+    "tokens": 133128057,
+    "weighted": 15891150
+   },
+   "claude|runner|wait:sleep-loop": {
+    "requests": 353,
+    "tokens": 99531657,
+    "weighted": 12454428
+   },
+   "claude|lead|wait:sleep-loop": {
+    "requests": 189,
+    "tokens": 96882268,
+    "weighted": 11214115
+   },
+   "codex|runner|wait:turn": {
+    "requests": 671,
+    "tokens": 80121331,
+    "weighted": 11182890
+   },
+   "codex|runner|wait:inbox": {
+    "requests": 525,
+    "tokens": 71776940,
+    "weighted": 9254580
+   },
+   "codex|runner|wait:gh-watch": {
+    "requests": 334,
+    "tokens": 44944025,
+    "weighted": 5387004
+   },
+   "claude|runner|wait:inbox": {
+    "requests": 165,
+    "tokens": 42804267,
+    "weighted": 5505582
+   },
+   "claude|review|wait:sleep-loop": {
+    "requests": 88,
+    "tokens": 26194605,
+    "weighted": 3160606
+   },
+   "claude|runner|wait:turn": {
+    "requests": 101,
+    "tokens": 24158664,
+    "weighted": 2795653
+   },
+   "claude|runner|wait:gh-watch": {
+    "requests": 32,
+    "tokens": 7896535,
+    "weighted": 929690
+   },
+   "claude|review|wait:gh-watch": {
+    "requests": 16,
+    "tokens": 4125776,
+    "weighted": 525298
+   },
+   "claude|qa_env|wait:gh-watch": {
+    "requests": 14,
+    "tokens": 2051678,
+    "weighted": 384950
+   },
+   "claude|qa_env|wait:sleep-loop": {
+    "requests": 11,
+    "tokens": 1662173,
+    "weighted": 188803
+   },
+   "claude|qa_env|wait:inbox": {
+    "requests": 12,
+    "tokens": 1583971,
+    "weighted": 195494
+   },
+   "codex|review|wait:gh-watch": {
+    "requests": 7,
+    "tokens": 1156060,
+    "weighted": 192204
+   },
+   "claude|qa_env|wait:check": {
+    "requests": 6,
+    "tokens": 1027344,
+    "weighted": 122598
+   },
+   "claude|lead|wait:gh-watch": {
+    "requests": 2,
+    "tokens": 892365,
+    "weighted": 99416
+   },
+   "claude|qa_env|wait:turn": {
+    "requests": 6,
+    "tokens": 786646,
+    "weighted": 94891
+   },
+   "codex|review|wait:sleep-loop": {
+    "requests": 6,
+    "tokens": 542345,
+    "weighted": 98925
+   },
+   "codex|qa_env|wait:gh-watch": {
+    "requests": 1,
+    "tokens": 169702,
+    "weighted": 26579
+   },
+   "claude|other|wait:sleep-loop": {
+    "requests": 1,
+    "tokens": 97334,
+    "weighted": 10356
+   }
+  },
+  "mixed_wait_not_counted": {
+   "requests": 10627,
+   "tokens": 2424741948
+  },
+  "requests_by_trigger": {
+   "claude|bash:read/search": {
+    "requests": 66281,
+    "tokens": 16917340073
+   },
+   "claude|(external)": {
+    "requests": 17357,
+    "tokens": 6916289634
+   },
+   "codex|bash:other": {
+    "requests": 45606,
+    "tokens": 6193460108
+   },
+   "claude|mcp__flywheel-inbox__flywheel_inbox_ack_batch": {
+    "requests": 11584,
+    "tokens": 4539323813
+   },
+   "codex|bash:read/search": {
+    "requests": 30013,
+    "tokens": 3625456236
+   },
+   "claude|bash:git diff/log/show": {
+    "requests": 11364,
+    "tokens": 2493594065
+   },
+   "codex|(first/continue)": {
+    "requests": 16018,
+    "tokens": 2196694342
+   },
+   "claude|bash:sqlite": {
+    "requests": 5327,
+    "tokens": 1792931188
+   },
+   "codex|(external)": {
+    "requests": 21249,
+    "tokens": 1766182276
+   },
+   "claude|bash:test": {
+    "requests": 6373,
+    "tokens": 1718934658
+   },
+   "codex|bash:script": {
+    "requests": 12035,
+    "tokens": 1458592186
+   },
+   "claude|bash:mixed-with-wait": {
+    "requests": 4140,
+    "tokens": 1384172397
+   },
+   "codex|bash:apply_patch": {
+    "requests": 8163,
+    "tokens": 1265327101
+   },
+   "codex|bash:test": {
+    "requests": 8521,
+    "tokens": 1200817040
+   },
+   "claude|bash:gh": {
+    "requests": 3891,
+    "tokens": 1148359236
+   },
+   "claude|bash:flywheel-comm": {
+    "requests": 3905,
+    "tokens": 867191572
+   },
+   "codex|bash:gh": {
+    "requests": 6607,
+    "tokens": 854207415
+   },
+   "codex|bash:mixed-with-wait": {
+    "requests": 6487,
+    "tokens": 833376080
+   },
+   "codex|bash:git diff/log/show": {
+    "requests": 6402,
+    "tokens": 766692136
+   },
+   "claude|mcp__plugin_discord_discord__reply": {
+    "requests": 2202,
+    "tokens": 705694566
+   },
+   "claude|bash:script": {
+    "requests": 2322,
+    "tokens": 686152477
+   },
+   "codex|wait:sleep-loop": {
+    "requests": 5138,
+    "tokens": 638977180
+   },
+   "claude|bash:flywheel-comm:other": {
+    "requests": 1730,
+    "tokens": 567133891
+   },
+   "codex|bash:flywheel-comm": {
+    "requests": 4584,
+    "tokens": 552646234
+   },
+   "codex|wait:check": {
+    "requests": 5641,
+    "tokens": 523190424
+   },
+   "claude|bash:build/lint": {
+    "requests": 1867,
+    "tokens": 510958482
+   },
+   "claude|Read": {
+    "requests": 3751,
+    "tokens": 494326418
+   },
+   "claude|bash:other": {
+    "requests": 1454,
+    "tokens": 470917904
+   },
+   "claude|Edit": {
+    "requests": 1010,
+    "tokens": 361257877
+   },
+   "codex|bash:build/lint": {
+    "requests": 2598,
+    "tokens": 358024707
+   },
+   "claude|Write": {
+    "requests": 1134,
+    "tokens": 337897738
+   },
+   "claude|mcp__linear-api__save_issue": {
+    "requests": 718,
+    "tokens": 276797524
+   },
+   "claude|wait:sleep-loop": {
+    "requests": 766,
+    "tokens": 252880418
+   },
+   "claude|mcp__claude-in-chrome__computer": {
+    "requests": 570,
+    "tokens": 248600117
+   },
+   "codex|bash:flywheel-comm:other": {
+    "requests": 1817,
+    "tokens": 248568211
+   },
+   "claude|bash:flywheel-comm:ask": {
+    "requests": 642,
+    "tokens": 214672775
+   },
+   "claude|ToolSearch": {
+    "requests": 874,
+    "tokens": 208002622
+   },
+   "claude|mcp__linear-api__save_comment": {
+    "requests": 389,
+    "tokens": 147711870
+   },
+   "codex|bash:sqlite": {
+    "requests": 1133,
+    "tokens": 145448970
+   },
+   "claude|wait:check": {
+    "requests": 423,
+    "tokens": 137948724
+   }
+  },
+  "runner_task_notification_monitor": {
+   "requests": 1222,
+   "tokens": 504402520,
+   "weighted": 58783607,
+   "turns": 317
+  },
+  "runner_task_notification_background": {
+   "requests": 4106,
+   "tokens": 1593730851,
+   "weighted": 193225900,
+   "turns": 384
+  },
+  "prefix_above_45k_by_bucket": {
+   "lead": 2881744223,
+   "runner": 2390374867,
+   "review": 707258386,
+   "other": 14735880,
+   "qa_env": 271045979
+  },
+  "prefix_above_45k_runner_review_qa": 3368679232,
+  "prefix_floor": 45000,
+  "big_output_reread_above_5k": {
+   "codex|bash:read/search": {
+    "outputs": 4290,
+    "reread_above_cap": 867292477
+   },
+   "claude|bash:read/search": {
+    "outputs": 2526,
+    "reread_above_cap": 531180562
+   },
+   "claude|Read": {
+    "outputs": 1210,
+    "reread_above_cap": 291546387
+   },
+   "claude|bash:git diff/log/show": {
+    "outputs": 1381,
+    "reread_above_cap": 233777347
+   },
+   "codex|bash:git diff/log/show": {
+    "outputs": 790,
+    "reread_above_cap": 199209793
+   },
+   "codex|bash:other": {
+    "outputs": 1029,
+    "reread_above_cap": 143704913
+   },
+   "claude|mcp__linear-api__save_issue": {
+    "outputs": 186,
+    "reread_above_cap": 134220351
+   },
+   "claude|mcp__plugin_discord_discord__fetch_messages": {
+    "outputs": 63,
+    "reread_above_cap": 101746955
+   },
+   "codex|bash:flywheel-comm": {
+    "outputs": 555,
+    "reread_above_cap": 96654863
+   },
+   "claude|mcp__linear-api__list_issues": {
+    "outputs": 58,
+    "reread_above_cap": 84793351
+   },
+   "codex|bash:gh": {
+    "outputs": 131,
+    "reread_above_cap": 58532142
+   },
+   "codex|bash:test": {
+    "outputs": 142,
+    "reread_above_cap": 37210375
+   },
+   "claude|mcp__linear-api__get_issue": {
+    "outputs": 26,
+    "reread_above_cap": 28827789
+   },
+   "codex|bash:mixed-with-wait": {
+    "outputs": 87,
+    "reread_above_cap": 23836495
+   },
+   "claude|mcp__linear-api__list_comments": {
+    "outputs": 9,
+    "reread_above_cap": 22205870
+   },
+   "claude|bash:other": {
+    "outputs": 22,
+    "reread_above_cap": 13883995
+   },
+   "claude|bash:sqlite": {
+    "outputs": 44,
+    "reread_above_cap": 13393037
+   },
+   "codex|bash:script": {
+    "outputs": 57,
+    "reread_above_cap": 12704787
+   },
+   "codex|bash:flywheel-comm:stage": {
+    "outputs": 35,
+    "reread_above_cap": 11788167
+   },
+   "codex|bash:flywheel-comm:other": {
+    "outputs": 46,
+    "reread_above_cap": 11569841
+   }
+  },
+  "big_output_reread_above_5k_total": {
+   "claude": 1534546257,
+   "codex": 1498076208
+  },
+  "review_discarded": {
+   "code:gate_answered_externally": {
+    "jobs": 20,
+    "tokens": 362032394,
+    "weighted": 59566482
+   },
+   "code:head_moved": {
+    "jobs": 48,
+    "tokens": 449988746,
+    "weighted": 66636864
+   },
+   "code:head_moved_exhausted": {
+    "jobs": 1,
+    "tokens": 8531086,
+    "weighted": 1003399
+   },
+   "code:no_verdict": {
+    "jobs": 5,
+    "tokens": 35885702,
+    "weighted": 5904788
+   },
+   "code:nonzero_exit": {
+    "jobs": 8,
+    "tokens": 34878463,
+    "weighted": 8608609
+   },
+   "code:superseded_by_revision": {
+    "jobs": 66,
+    "tokens": 664476685,
+    "weighted": 101092797
+   },
+   "design:gate_answered_externally": {
+    "jobs": 1,
+    "tokens": 11157277,
+    "weighted": 1892529
+   },
+   "design:reviewed_plan_moved": {
+    "jobs": 1,
+    "tokens": 5001436,
+    "weighted": 796546
+   },
+   "design:superseded_by_revision": {
+    "jobs": 11,
+    "tokens": 33706460,
+    "weighted": 5484240
+   }
+  },
+  "review_discarded_tokens": 1605658249,
+  "review_round3plus_tokens": 1829488507,
+  "review_total_tokens": 8266085427,
+  "post_terminal_total": 1216471280,
+  "ack_solo_ended_turn": {
+   "requests": 5457,
+   "tokens": 2582466787,
+   "weighted": 264945000
+  },
+  "ack_solo": {
+   "requests": 6811,
+   "tokens": 3293551689,
+   "weighted": 341203594,
+   "by_sub": {
+    "flywheel-eng-lead": 1480469412,
+    "claude-infra-bot-lead": 1272707417,
+    "flywheel-product-lead": 253781379,
+    "flywheel-cos-lead": 101464113,
+    "sub-lead": 49501075,
+    "product-lead": 45710833,
+    "joycon-lead": 22051629,
+    "ops-lead": 17266119,
+    "test-slot lead": 15061426,
+    "cos-lead": 10355016,
+    "~-Dev-personal-assistant": 8993275,
+    "reflection-lead": 5939964,
+    "tidal-echo-content-lead": 4623556,
+    "rafiki-lead": 4520416,
+    "tidal-echo-cos-lead": 1106059
+   },
+   "avg_output": 233
+  },
+  "poll_total": {
+   "requests": 8726,
+   "tokens": 1461358961,
+   "weighted": 176974865
+  }
+ }
+}
