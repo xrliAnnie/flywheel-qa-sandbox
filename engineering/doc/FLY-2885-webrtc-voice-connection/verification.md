@@ -220,3 +220,28 @@ QA 在 `cd30b6ee9` 判定失败，唯一阻塞项是判据 3（不留锁和孤�
 - teamlead `voice-health-alert-delivery.test.ts` 3/3 过。它是 `git grep` 按名字匹配到的，实际引用的是另一个模块 `voice-health-alert-route`，仍然跑了一遍；`ci-structure.test.sh` 的匹配是不同的脚本名，排除。
 
 下一轮 QA 的硬性要求（按 Lead）：真实 529 房连续 ≥3 场引擎 B，每场后 UDP 回到基线；最后一场后 daemon 在 idle 或 SIGTERM 的 grace 内真正退出，下一场能正常认领；插话补足有效样本。
+
+
+### 返工评审 R2 的修复（`73df66c17`）
+
+R2 在 `af28c0497` 上提出 2 HIGH、2 MEDIUM，均已修复。
+
+- **H1 告警 shell 和它等待的 curl 会成为孤儿进程**：`execFile` 会悄悄丢掉 `detached`，所以告警发送进程根本不在自己的进程组里，按组终止打不到它。
+  - 改用 `spawn` 让发送进程自成进程组，同时保留 `execFile` 原有的 utf8、`maxBuffer`、`timeout` 行为。
+  - 收尾时对整组 SIGTERM，最多等 2 s，再对整组 SIGKILL；强制退出前也先 SIGKILL 这个组。
+- **H2 15 s 期限会切断合法的清理**：期限改为 60 s，比所有有界清理步骤加起来还长。
+  - 进行中会话约 22 s：realtime stop 5 s、`pc.close` 3 s、transport stop 4 s、app-server 10.05 s。
+  - 其余：Bridge 写入约 10 s，health 0.5 s，告警收尾 8 + 2 s。
+  - 这个期限现在只会打断真正卡死的清理。**上表第 ② 行写的「15 s」以此为准，已被取代**。
+  - idle 的 daemon 清理不到 1 s，清理完立即退出，不受期限影响。
+- **M1 `pc.close()` 本身无上界**：限 3 s，之后的显式 transport stop 一定会执行。
+- **M2 测试依赖主机网卡，且没覆盖 CLI 真实顺序**：
+  - CLI 的 run → cleanup → exit 顺序抽成 `superviseDaemon`，CLI 和进程测试共用这一份。
+  - 进程测试跑的就是这个顺序：真实 werift 泄漏（断言 ≥1 个 socket，不再依赖网卡数量），加一个真实派发器，其 lead-alert 脚本会挂着一个孙进程。
+  - 结果：SIGTERM 以 0 退出；清理卡住时在期限处以 1 退出；idle 以 0 退出；bash 和孙进程都不会残留。
+  - 负对照：让发送进程回到 daemon 的进程组，进程测试失败。
+
+验证：
+- `pnpm lint`、构建、typecheck 均为 exit 0。
+- voice-codex `vitest related src/codex/WebRtcLeg.ts src/cli.ts src/shutdown-exit.ts src/health-alert.ts` 6 个文件 122/122 过。
+- 负对照跑过之后，残留的测试进程已清理。
