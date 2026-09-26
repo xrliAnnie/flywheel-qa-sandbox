@@ -1,17 +1,18 @@
 ---
 issue: FLY-2925
 phase: design
-phaseCursor: 5/6
-updated: 2026-09-26T21:29:38.205Z
-nextStep: R3 effective APPROVED; engine proof and current plan blob
-  989780531149c2bd73c37bb3da1fe1a08ba60e62 match. Four nonblocking advisories
-  recorded/reported. Commit/push final HTML, publish-only, verify hosted
-  HTTP/CSP/source, report DESIGN-HTML ready, complete phase_design_complete and
-  park; do not modify approved plan.
+phaseCursor: 6/6
+updated: 2026-09-26T21:33:19.247Z
+nextStep: Design artifacts approved, final HTML committed/pushed/published,
+  hosted HTTP/CSP/exact source verified, DESIGN-HTML ready report
+  2bec8807-0eb3-4192-9b18-728c1ed12af1 sent. Four advisories now implementation
+  acceptance per Lead; approved plan frozen. Push publication evidence then
+  exact complete --route phase_design_complete; drain unread mail if requested;
+  park (do not end resident goal).
 chunks: []
 pointers: {}
 ---
 
 # FLY-2925 progress
-**phase**: design (5/6)
-**next**: R3 effective APPROVED; engine proof and current plan blob 989780531149c2bd73c37bb3da1fe1a08ba60e62 match. Four nonblocking advisories recorded/reported. Commit/push final HTML, publish-only, verify hosted HTTP/CSP/source, report DESIGN-HTML ready, complete phase_design_complete and park; do not modify approved plan.
+**phase**: design (6/6)
+**next**: Design artifacts approved, final HTML committed/pushed/published, hosted HTTP/CSP/exact source verified, DESIGN-HTML ready report 2bec8807-0eb3-4192-9b18-728c1ed12af1 sent. Four advisories now implementation acceptance per Lead; approved plan frozen. Push publication evidence then exact complete --route phase_design_complete; drain unread mail if requested; park (do not end resident goal).
