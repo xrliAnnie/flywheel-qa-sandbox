@@ -2047,6 +2047,53 @@ export interface DesignReviewApprovalProof {
 	invalidation_reason?: string;
 }
 
+export type CodexReviewRecoveryState =
+	| "retired"
+	| "held"
+	| "ready"
+	| "operator_required"
+	| "resolved";
+
+/** Immutable identity and budget of one reviewer attempt, retained after retry. */
+export interface CodexReviewAttempt {
+	request_id: string;
+	attempt_generation: number;
+	reviewer_session_uuid: string | null;
+	owner_boot_id: string | null;
+	reviewer_started_at: string | null;
+	configured_timeout_ms: number | null;
+	deadline_at: string | null;
+	pid: number | null;
+	process_started_at: string | null;
+	pgid: number | null;
+	recovery_state: CodexReviewRecoveryState | null;
+	retired_at: string | null;
+	next_probe_at: string | null;
+}
+
+export interface ReviewRecoveryNotice {
+	request_id: string;
+	source_request_id: string;
+	attempt_generation: number;
+	stage: "retired" | "ready" | "operator_required";
+	question_id: string;
+	execution_id: string;
+	project_name: string;
+	text: string;
+	created_at: string;
+	delivered_at: string | null;
+	acted_at: string | null;
+}
+
+export interface ReviewRecoveryNoticeBinding {
+	requestId: string;
+	attemptGeneration: number;
+	stage: ReviewRecoveryNotice["stage"];
+	questionId: string;
+	executionId: string;
+	projectName: string;
+}
+
 /**
  * FLY-1188 §7.1: one runner-issued review request in the codex-author lane.
  * `request_id` is the idempotency key; `question_id` is the ONE gate this job
@@ -2054,6 +2101,8 @@ export interface DesignReviewApprovalProof {
  * adapter_type, `frozen_head_sha` from rev-parse in the persisted worktree.
  */
 export interface CodexReviewJob {
+	attempt_generation: number;
+	retired_at?: string;
 	request_id: string;
 	execution_id: string;
 	issue_id?: string;
@@ -2157,6 +2206,8 @@ export interface AccountSwitchActionReceipt {
  * code-review job for the same issue/repository/head.
  */
 export interface CodexReviewReuseBinding {
+	retry_required_reason?: string;
+	source_attempt_generation?: number;
 	request_id: string;
 	source_request_id: string;
 	execution_id: string;
@@ -12016,8 +12067,8 @@ export class StateStore {
 		// key), bound to exactly one gate questionId. The Bridge derives the
 		// trusted inputs server-side (author family from sessions.adapter_type;
 		// code-review head frozen via rev-parse in the persisted worktree) —
-		// the payload is validated input, never authority. pending/running rows
-		// are redriven on Bridge boot.
+		// the payload is validated input, never authority. Only pending rows
+		// redrive automatically; interrupted running attempts are retired.
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS codex_review_job (
 				request_id            TEXT PRIMARY KEY,
@@ -12087,6 +12138,8 @@ export class StateStore {
 			reviewJobInfo[0]?.values.map((row) => row[1] as string) ?? [];
 		for (const [column, type] of [
 			["question_id", "TEXT"],
+			["attempt_generation", "INTEGER NOT NULL DEFAULT 0"],
+			["retired_at", "TEXT"],
 			["failure_raw", "TEXT"],
 			["retry_at", "TEXT"],
 			["retry_trigger", "TEXT"],
@@ -12180,6 +12233,8 @@ export class StateStore {
 			["reuse_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
 			["frozen_head_sha", "TEXT"],
 			["release_reason", "TEXT"],
+			["retry_required_reason", "TEXT"],
+			["source_attempt_generation", "INTEGER"],
 			["released_at", "TEXT"],
 		] as const) {
 			if (!reuseBindingColumns.includes(column)) {
@@ -12191,6 +12246,45 @@ export class StateStore {
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_codex_review_reuse_source ON codex_review_reuse_binding(source_request_id)",
 		);
+
+		// FLY-2920: attempts retain exact owner evidence across retries; notices
+		// are an outbox independent of the still-open review gate.
+		this.db.run(`CREATE TABLE IF NOT EXISTS codex_review_attempt (
+			request_id TEXT NOT NULL,
+			attempt_generation INTEGER NOT NULL,
+			reviewer_session_uuid TEXT,
+			owner_boot_id TEXT,
+			reviewer_started_at TEXT,
+			configured_timeout_ms INTEGER,
+			deadline_at TEXT,
+			pid INTEGER,
+			process_started_at TEXT,
+			pgid INTEGER,
+			recovery_state TEXT CHECK(recovery_state IN ('retired','held','ready','operator_required','resolved')),
+			retired_at TEXT,
+			next_probe_at TEXT,
+			PRIMARY KEY(request_id, attempt_generation)
+		)`);
+		this.db.run(`CREATE INDEX IF NOT EXISTS idx_codex_review_attempt_recovery
+			ON codex_review_attempt(recovery_state, deadline_at, next_probe_at, request_id)`);
+		this.db.run(`CREATE TABLE IF NOT EXISTS review_recovery_notice (
+			request_id TEXT NOT NULL,
+			source_request_id TEXT NOT NULL,
+			attempt_generation INTEGER NOT NULL,
+			stage TEXT NOT NULL CHECK(stage IN ('retired','ready','operator_required')),
+			question_id TEXT NOT NULL,
+			execution_id TEXT NOT NULL,
+			project_name TEXT NOT NULL,
+			text TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			delivered_at TEXT,
+			acted_at TEXT,
+			PRIMARY KEY(request_id, attempt_generation, stage)
+		)`);
+		this.db.run(`CREATE INDEX IF NOT EXISTS idx_review_recovery_notice_pending
+			ON review_recovery_notice(created_at, request_id) WHERE delivered_at IS NULL AND acted_at IS NULL`);
+		this.db.run(`CREATE INDEX IF NOT EXISTS idx_review_recovery_notice_execution
+			ON review_recovery_notice(execution_id, project_name, created_at) WHERE acted_at IS NULL`);
 
 		// FLY-1278: Lead-authoritative, per-finding governance rulings. Rows are
 		// audit history (revoke stamps, never DELETE); the partial unique index is
@@ -22187,6 +22281,8 @@ export class StateStore {
 
 	private rowToCodexReviewJob(row: Record<string, unknown>): CodexReviewJob {
 		return {
+			attempt_generation: Number(row.attempt_generation ?? 0),
+			retired_at: (row.retired_at as string) ?? undefined,
 			request_id: row.request_id as string,
 			execution_id: row.execution_id as string,
 			issue_id: (row.issue_id as string) ?? undefined,
@@ -22266,6 +22362,8 @@ export class StateStore {
 		row: Record<string, unknown>,
 	): CodexReviewReuseBinding {
 		return {
+			retry_required_reason: (row.retry_required_reason as string) ?? undefined,
+			source_attempt_generation: (row.source_attempt_generation as number) ?? undefined,
 			request_id: row.request_id as string,
 			source_request_id: row.source_request_id as string,
 			execution_id: row.execution_id as string,
@@ -22464,8 +22562,8 @@ export class StateStore {
 				    target_repo_identity, reuse_repo_identity, frozen_head_sha,
 				    reviewer_session_uuid, reviewer_session_generation,
 				    reviewer_session_failure_streak, author_family, status,
-				    delivery_nonce, created_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, datetime('now'))`,
+				    delivery_nonce, created_at, attempt_generation)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, datetime('now'), (SELECT COALESCE(MAX(attempt_generation), 0) FROM review_recovery_notice WHERE request_id = ?))`,
 				[
 					binding.request_id,
 					binding.execution_id,
@@ -22484,6 +22582,7 @@ export class StateStore {
 					priorSession.failureStreak,
 					source.author_family ?? null,
 					randomUUID(),
+					binding.request_id,
 				],
 			);
 			const job = this.getCodexReviewJob(binding.request_id);
@@ -22707,11 +22806,12 @@ export class StateStore {
 	 */
 	failAndRequeueCodexReviewJobForHeadMove(input: {
 		requestId: string;
+		expectedGeneration?: number;
 		successorRequestId: string;
 		currentHeadSha: string;
 		failureRaw?: string;
 	}): {
-		outcome: "requeued" | "existing" | "exhausted";
+		outcome: "requeued" | "existing" | "exhausted" | "stale";
 		parent: CodexReviewJob;
 		successor?: CodexReviewJob;
 	} {
@@ -22728,6 +22828,11 @@ export class StateStore {
 		try {
 			const parent = this.getCodexReviewJob(input.requestId);
 			if (!parent) throw new Error(`review job ${input.requestId} is missing`);
+			if (parent.failure_reason === "bridge_restart_retired" || (input.expectedGeneration !== undefined &&
+				(parent.status !== "running" || parent.attempt_generation !== input.expectedGeneration))) {
+				this.db.raw.exec("ROLLBACK");
+				return { outcome: "stale", parent };
+			}
 			const existing = this.getCodexReviewHeadMoveSuccessor(input.requestId);
 			if (existing) {
 				this.db.raw.exec("ROLLBACK");
@@ -22813,24 +22918,454 @@ export class StateStore {
 		return { outcome: "requeued", parent, successor };
 	}
 
+	/** Record before spawn. Replays cannot replace the original identity/budget. */
+	recordCodexReviewAttemptIntent(input: {
+		requestId: string;
+		attemptGeneration: number;
+		reviewerSessionUuid: string;
+		ownerBootId: string;
+		reviewerStartedAt: string;
+		configuredTimeoutMs: number;
+	}): boolean {
+		const started = Date.parse(input.reviewerStartedAt);
+		if (
+			!Number.isFinite(started) ||
+			!Number.isSafeInteger(input.configuredTimeoutMs) ||
+			input.configuredTimeoutMs <= 0 ||
+			!input.reviewerSessionUuid ||
+			!input.ownerBootId
+		)
+			return false;
+		const deadlineAt = new Date(
+			started + input.configuredTimeoutMs,
+		).toISOString();
+		this.db.run(
+			`INSERT OR IGNORE INTO codex_review_attempt
+			(request_id, attempt_generation, reviewer_session_uuid, owner_boot_id,
+			reviewer_started_at, configured_timeout_ms, deadline_at)
+			SELECT request_id, attempt_generation, ?, ?, ?, ?, ? FROM codex_review_job
+			WHERE request_id = ? AND attempt_generation = ? AND status = 'running'`,
+			[
+				input.reviewerSessionUuid,
+				input.ownerBootId,
+				input.reviewerStartedAt,
+				input.configuredTimeoutMs,
+				deadlineAt,
+				input.requestId,
+				input.attemptGeneration,
+			],
+		);
+		return this.db.getRowsModified() === 1;
+	}
+
+	getCodexReviewAttempt(
+		requestId: string,
+		generation: number,
+	): CodexReviewAttempt | null {
+		return (
+			(this.db.raw
+				.prepare(`SELECT * FROM codex_review_attempt
+			WHERE request_id = ? AND attempt_generation = ?`)
+				.get(requestId, generation) as CodexReviewAttempt | undefined) ?? null
+		);
+	}
+
+	/** Process evidence is write-once and cannot be attached to a retired attempt. */
+	recordCodexReviewAttemptProcess(input: {
+		requestId: string;
+		attemptGeneration: number;
+		reviewerSessionUuid: string;
+		ownerBootId: string;
+		pid: number;
+		processStartedAt: string;
+		pgid?: number;
+	}): boolean {
+		if (
+			!Number.isSafeInteger(input.pid) ||
+			input.pid <= 0 ||
+			!input.processStartedAt ||
+			(input.pgid !== undefined &&
+				(!Number.isSafeInteger(input.pgid) || input.pgid <= 0))
+		)
+			return false;
+		this.db.run(
+			`UPDATE codex_review_attempt SET pid = ?, process_started_at = ?, pgid = ?
+			WHERE request_id = ? AND attempt_generation = ? AND reviewer_session_uuid = ? AND owner_boot_id = ?
+			AND pid IS NULL AND recovery_state IS NULL
+			AND EXISTS (SELECT 1 FROM codex_review_job j WHERE j.request_id = codex_review_attempt.request_id
+				AND j.attempt_generation = codex_review_attempt.attempt_generation AND j.status = 'running')`,
+			[
+				input.pid,
+				input.processStartedAt,
+				input.pgid ?? null,
+				input.requestId,
+				input.attemptGeneration,
+				input.reviewerSessionUuid,
+				input.ownerBootId,
+			],
+		);
+		return this.db.getRowsModified() === 1;
+	}
+
+	/** Only after the prior subprocess closed with session-not-found. Keep its budget. */
+	replaceCodexReviewAttemptSession(input: {
+		requestId: string;
+		attemptGeneration: number;
+		expectedSessionUuid: string;
+		newSessionUuid: string;
+		ownerBootId: string;
+	}): boolean {
+		if (
+			!input.newSessionUuid ||
+			input.newSessionUuid === input.expectedSessionUuid
+		)
+			return false;
+		return this.db.raw
+			.transaction(() => {
+				this.db.run(
+					`UPDATE codex_review_attempt SET reviewer_session_uuid = ?, pid = NULL,
+				process_started_at = NULL, pgid = NULL
+				WHERE request_id = ? AND attempt_generation = ? AND reviewer_session_uuid = ?
+				AND owner_boot_id = ? AND recovery_state IS NULL
+				AND EXISTS (SELECT 1 FROM codex_review_job j WHERE j.request_id = codex_review_attempt.request_id
+					AND j.attempt_generation = codex_review_attempt.attempt_generation AND j.status = 'running')`,
+					[
+						input.newSessionUuid,
+						input.requestId,
+						input.attemptGeneration,
+						input.expectedSessionUuid,
+						input.ownerBootId,
+					],
+				);
+				if (this.db.getRowsModified() !== 1) return false;
+				this.db.run(
+					`UPDATE codex_review_job SET reviewer_session_uuid = ?, updated_at = datetime('now')
+				WHERE request_id = ? AND attempt_generation = ? AND status = 'running'`,
+					[input.newSessionUuid, input.requestId, input.attemptGeneration],
+				);
+				return true;
+			})
+			.immediate();
+	}
+
+	listRunningCodexReviewJobs(): CodexReviewJob[] {
+		return this.db.raw
+			.prepare(
+				"SELECT * FROM codex_review_job WHERE status = 'running' ORDER BY created_at, request_id",
+			)
+			.all()
+			.map((row) => this.rowToCodexReviewJob(row as Record<string, unknown>));
+	}
+
+	private insertReviewRecoveryNotices(
+		job: CodexReviewJob,
+		stage: ReviewRecoveryNotice["stage"],
+		now: string,
+		noticeText?: string,
+	): void {
+		const bindings = [
+			job,
+			...this.listCodexReviewReuseBindings(job.request_id).filter(
+				(binding) => !binding.released_at && !binding.responded_at,
+			),
+		];
+		// Display-only POSIX quoting; no notice text is ever executed here.
+		const quote = (value: string): string =>
+			"'" + value.replaceAll("'", "'\\''") + "'";
+		for (const binding of bindings) {
+			const command = `node "$FLYWHEEL_COMM_CLI" request-review --type ${quote(job.review_type)} --request-id ${quote(binding.request_id)} --question-id ${quote(binding.question_id)}${job.target_path ? ` --plan ${quote(job.target_path)}` : ""}`;
+			const text = `${noticeText ?? `Review attempt ${job.attempt_generation} ${stage}; the original review gate remains open.`}\nRequest: ${binding.request_id}; question: ${binding.question_id}.\n${command}`;
+			this.db.run(
+				`INSERT OR IGNORE INTO review_recovery_notice
+				(request_id, source_request_id, attempt_generation, stage, question_id, execution_id, project_name, text, created_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					binding.request_id,
+					job.request_id,
+					job.attempt_generation,
+					stage,
+					binding.question_id,
+					binding.execution_id,
+					job.project_name,
+					text,
+					now,
+				],
+			);
+		}
+	}
+
+	/** Retirement never answers gates, consumes retry quota, or releases followers. */
+	retireCodexReviewJob(input: {
+		requestId: string;
+		expectedGeneration: number;
+		retiredAt?: string;
+		noticeText?: string;
+	}): boolean {
+		const now = input.retiredAt ?? new Date().toISOString();
+		return this.db.raw
+			.transaction(() => {
+				const job = this.getCodexReviewJob(input.requestId);
+				if (
+					!job ||
+					job.status !== "running" ||
+					job.attempt_generation !== input.expectedGeneration
+				)
+					return false;
+				this.db.run(
+					`UPDATE codex_review_job SET status = 'failed', failure_reason = 'bridge_restart_retired',
+				retry_at = NULL, retry_trigger = NULL, retry_parked_at_ms = NULL, retired_at = ?, updated_at = ?
+				WHERE request_id = ? AND attempt_generation = ? AND status = 'running'`,
+					[now, now, input.requestId, input.expectedGeneration],
+				);
+				if (this.db.getRowsModified() !== 1) return false;
+				// Legacy rows without an intent have no trustworthy original budget.
+				this.db.run(
+					`INSERT OR IGNORE INTO codex_review_attempt
+				(request_id, attempt_generation, reviewer_session_uuid) VALUES (?, ?, ?)`,
+					[
+						input.requestId,
+						input.expectedGeneration,
+						job.reviewer_session_uuid ?? null,
+					],
+				);
+				this.db.run(
+					`UPDATE codex_review_attempt
+				SET recovery_state = CASE WHEN deadline_at IS NULL THEN 'operator_required' ELSE 'retired' END,
+				retired_at = ?, next_probe_at = CASE WHEN deadline_at IS NULL THEN NULL ELSE ? END
+				WHERE request_id = ? AND attempt_generation = ? AND recovery_state IS NULL`,
+					[now, now, input.requestId, input.expectedGeneration],
+				);
+				this.db.run(
+					`UPDATE codex_review_reuse_binding SET retry_required_reason = 'bridge_restart_retired', source_attempt_generation = ?
+				WHERE source_request_id = ? AND released_at IS NULL AND responded_at IS NULL`,
+					[input.expectedGeneration, input.requestId],
+				);
+				this.insertReviewRecoveryNotices(job, "retired", now, input.noticeText);
+				if (
+					this.getCodexReviewAttempt(input.requestId, input.expectedGeneration)
+						?.recovery_state === "operator_required"
+				) {
+					this.insertReviewRecoveryNotices(
+						job,
+						"operator_required",
+						now,
+						"legacy_owner_unverified: original reviewer identity or deadline is unavailable; operator evidence is required.",
+					);
+					this.db.run(
+						`UPDATE review_recovery_notice SET acted_at = COALESCE(acted_at, ?)
+					WHERE source_request_id = ? AND attempt_generation = ? AND stage = 'retired'`,
+						[now, input.requestId, input.expectedGeneration],
+					);
+				}
+				return true;
+			})
+			.immediate();
+	}
+
+	/** Deadline-expired rows outrank probe backoff; the batch is always bounded. */
+	listDueCodexReviewRecoveries(input: {
+		now: string;
+		limit: number;
+	}): CodexReviewAttempt[] {
+		const limit = Math.min(100, Math.max(1, Math.trunc(input.limit) || 1));
+		return this.db.raw
+			.prepare(`SELECT a.* FROM codex_review_attempt a
+			JOIN codex_review_job j ON j.request_id = a.request_id AND j.attempt_generation = a.attempt_generation
+			WHERE a.recovery_state IN ('retired','held') AND j.status = 'failed' AND j.failure_reason = 'bridge_restart_retired'
+			AND (julianday(a.deadline_at) <= julianday(?) OR a.next_probe_at IS NULL OR julianday(a.next_probe_at) <= julianday(?))
+			ORDER BY CASE WHEN julianday(a.deadline_at) <= julianday(?) THEN 0 ELSE 1 END,
+			CASE WHEN julianday(a.deadline_at) <= julianday(?) THEN julianday(a.deadline_at) ELSE julianday(a.next_probe_at) END,
+			a.request_id LIMIT ?`)
+			.all(input.now, input.now, input.now, input.now, limit) as CodexReviewAttempt[];
+	}
+
+	/** Forward recovery transitions; same-state updates persist observation backoff. */
+	transitionCodexReviewRecovery(input: {
+		requestId: string;
+		attemptGeneration: number;
+		expectedState: CodexReviewRecoveryState;
+		state: CodexReviewRecoveryState;
+		nextProbeAt?: string;
+		noticeText?: string;
+	}): boolean {
+		const allowed: Record<
+			CodexReviewRecoveryState,
+			CodexReviewRecoveryState[]
+		> = {
+			retired: ["retired", "held", "ready", "operator_required"],
+			held: ["held", "ready", "operator_required"],
+			ready: ["resolved"],
+			operator_required: [],
+			resolved: [],
+		};
+		if (!allowed[input.expectedState].includes(input.state)) return false;
+		return this.db.raw
+			.transaction(() => {
+				const job = this.getCodexReviewJob(input.requestId);
+				if (
+					!job ||
+					job.status !== "failed" ||
+					job.failure_reason !== "bridge_restart_retired" ||
+					job.attempt_generation !== input.attemptGeneration
+				)
+					return false;
+				const now = new Date().toISOString();
+				this.db.run(
+					`UPDATE codex_review_attempt SET recovery_state = ?, next_probe_at = ?
+				WHERE request_id = ? AND attempt_generation = ? AND recovery_state = ?`,
+					[
+						input.state,
+						["retired", "held"].includes(input.state)
+							? (input.nextProbeAt ?? now)
+							: null,
+						input.requestId,
+						input.attemptGeneration,
+						input.expectedState,
+					],
+				);
+				if (this.db.getRowsModified() !== 1) return false;
+				if (input.state !== "retired") {
+					this.db.run(
+						`UPDATE review_recovery_notice SET acted_at = COALESCE(acted_at, ?)
+				WHERE source_request_id = ? AND attempt_generation = ? AND stage = 'retired'`,
+						[now, input.requestId, input.attemptGeneration],
+					);
+				}
+				if (input.state === "ready" || input.state === "operator_required") {
+					this.insertReviewRecoveryNotices(
+						job,
+						input.state,
+						now,
+						input.noticeText,
+					);
+				}
+				return true;
+			})
+			.immediate();
+	}
+
+	listPendingReviewRecoveryNotices(limit = 50): ReviewRecoveryNotice[] {
+		return this.db.raw
+			.prepare(`SELECT * FROM review_recovery_notice WHERE delivered_at IS NULL AND acted_at IS NULL
+			ORDER BY created_at, request_id, attempt_generation, stage LIMIT ?`)
+			.all(
+				Math.min(100, Math.max(1, Math.trunc(limit) || 1)),
+			) as ReviewRecoveryNotice[];
+	}
+
+	markReviewRecoveryNoticeDelivered(
+		input: ReviewRecoveryNoticeBinding,
+	): boolean {
+		return this.stampReviewRecoveryNotice(input, "delivered_at");
+	}
+
+	markReviewRecoveryNoticeActed(input: ReviewRecoveryNoticeBinding): boolean {
+		return this.stampReviewRecoveryNotice(input, "acted_at");
+	}
+
+	private stampReviewRecoveryNotice(
+		input: ReviewRecoveryNoticeBinding,
+		column: "delivered_at" | "acted_at",
+	): boolean {
+		this.db.run(
+			`UPDATE review_recovery_notice SET ${column} = COALESCE(${column}, datetime('now'))
+			WHERE request_id = ? AND attempt_generation = ? AND stage = ? AND question_id = ? AND execution_id = ? AND project_name = ?`,
+			[
+				input.requestId,
+				input.attemptGeneration,
+				input.stage,
+				input.questionId,
+				input.executionId,
+				input.projectName,
+			],
+		);
+		return this.db.getRowsModified() === 1;
+	}
+
+	/** Author wake projection: delivery receipts do not consume an actionable notice. */
+	listActionableReviewRecoveryNotices(input: {
+		executionId: string;
+		projectName: string;
+		limit?: number;
+	}): ReviewRecoveryNotice[] {
+		return this.db.raw
+			.prepare(`SELECT n.* FROM review_recovery_notice n
+			JOIN codex_review_job j ON j.request_id = n.source_request_id AND j.attempt_generation = n.attempt_generation
+			WHERE n.execution_id = ? AND n.project_name = ? AND n.acted_at IS NULL
+			AND j.status = 'failed' AND j.failure_reason = 'bridge_restart_retired'
+			AND ((n.request_id = j.request_id AND n.question_id = j.question_id AND n.execution_id = j.execution_id AND n.project_name = j.project_name)
+			OR EXISTS (SELECT 1 FROM codex_review_reuse_binding b WHERE b.request_id = n.request_id
+				AND b.source_request_id = j.request_id AND b.source_attempt_generation = n.attempt_generation
+				AND b.question_id = n.question_id AND b.execution_id = n.execution_id AND b.released_at IS NULL AND b.responded_at IS NULL))
+			ORDER BY n.created_at, n.request_id, n.stage LIMIT ?`)
+			.all(
+				input.executionId,
+				input.projectName,
+				Math.min(100, Math.max(1, Math.trunc(input.limit ?? 50) || 1)),
+			) as ReviewRecoveryNotice[];
+	}
+
 	/**
 	 * CAS claim pending|failed → running (failed→running = the sanctioned
 	 * same-requestId retry after a reviewer failure). Returns false when the
 	 * job is already running/done/skipped — the caller must not double-run.
 	 */
-	claimCodexReviewJobRunning(requestId: string): boolean {
-		this.db.run(
-			`UPDATE codex_review_job
-			   SET status = 'running', failure_reason = NULL, failure_raw = NULL,
-			       retry_at = NULL, retry_trigger = NULL,
-			       retry_parked_at_ms = NULL,
-			       updated_at = datetime('now')
-			 WHERE request_id = ? AND status IN ('pending','failed')`,
-			[requestId],
-		);
-		const claimed = this.db.getRowsModified() > 0;
-		this.save();
-		return claimed;
+	claimCodexReviewJobRunning(
+		requestId: string,
+		options: {
+			expectedGeneration?: number;
+			explicitRetiredRetry?: boolean;
+		} = {},
+	): boolean {
+		return this.db.raw
+			.transaction(() => {
+				const before = this.getCodexReviewJob(requestId);
+				if (!before || !["pending", "failed"].includes(before.status))
+					return false;
+				if (
+					options.expectedGeneration !== undefined &&
+					before.attempt_generation !== options.expectedGeneration
+				)
+					return false;
+				const retired = before.failure_reason === "bridge_restart_retired";
+				if (
+					retired &&
+					(!options.explicitRetiredRetry ||
+						options.expectedGeneration === undefined ||
+						this.getCodexReviewAttempt(requestId, before.attempt_generation)
+							?.recovery_state !== "ready")
+				)
+					return false;
+				this.db.run(
+					`UPDATE codex_review_job
+				SET status = 'running', attempt_generation = attempt_generation + 1,
+				failure_reason = NULL, failure_raw = NULL, retry_at = NULL,
+				retry_trigger = NULL, retry_parked_at_ms = NULL, retired_at = NULL,
+				updated_at = datetime('now')
+				WHERE request_id = ? AND attempt_generation = ? AND status IN ('pending','failed')`,
+					[requestId, before.attempt_generation],
+				);
+				if (!this.db.getRowsModified()) return false;
+				if (retired) {
+					this.db.run(
+						`UPDATE codex_review_attempt SET recovery_state = 'resolved', next_probe_at = NULL
+					WHERE request_id = ? AND attempt_generation = ? AND recovery_state = 'ready'`,
+						[requestId, before.attempt_generation],
+					);
+					this.db.run(
+						`UPDATE review_recovery_notice SET acted_at = COALESCE(acted_at, datetime('now'))
+					WHERE source_request_id = ? AND attempt_generation = ?`,
+						[requestId, before.attempt_generation],
+					);
+					this.db.run(
+						`UPDATE codex_review_reuse_binding SET retry_required_reason = NULL
+					WHERE source_request_id = ? AND source_attempt_generation = ? AND released_at IS NULL`,
+						[requestId, before.attempt_generation],
+					);
+				}
+				return true;
+			})
+			.immediate();
 	}
 
 	completeCodexReviewJob(
@@ -22844,7 +23379,8 @@ export class StateStore {
 			responseJson: string;
 			payloadVersion: number;
 		},
-	): void {
+		expectedGeneration?: number,
+	): boolean {
 		this.db.run(
 			`UPDATE codex_review_job
 			   SET status = 'done', verdict = ?, reviewer_verdict = ?,
@@ -22854,7 +23390,9 @@ export class StateStore {
 			       failure_reason = NULL, failure_raw = NULL, retry_at = NULL,
 			       retry_trigger = NULL, retry_parked_at_ms = NULL,
 			       updated_at = datetime('now')
-			 WHERE request_id = ?`,
+			 WHERE request_id = ? AND status NOT IN ('done','skipped')
+			   AND COALESCE(failure_reason, '') != 'bridge_restart_retired'
+			   AND (? IS NULL OR (status = 'running' AND attempt_generation = ?))`,
 			[
 				verdict,
 				details?.reviewerVerdict ?? null,
@@ -22864,9 +23402,13 @@ export class StateStore {
 				details?.responseJson ?? null,
 				details?.payloadVersion ?? null,
 				requestId,
+				expectedGeneration ?? null,
+				expectedGeneration ?? null,
 			],
 		);
+		const updated = this.db.getRowsModified() > 0;
 		this.save();
+		return updated;
 	}
 
 	/**
@@ -22876,6 +23418,7 @@ export class StateStore {
 	 */
 	recordCodexReviewJobFailure(input: {
 		requestId: string;
+		expectedGeneration?: number;
 		reason: string;
 		failureRaw?: string;
 		retryAt?: string;
@@ -22944,7 +23487,9 @@ export class StateStore {
 			       END,
 			       failure_attempt_count = failure_attempt_count + 1,
 			       updated_at = datetime('now')
-			 WHERE request_id = ? AND status NOT IN ('done','skipped')`,
+			 WHERE request_id = ? AND status NOT IN ('done','skipped')
+			   AND COALESCE(failure_reason, '') != 'bridge_restart_retired'
+			   AND (? IS NULL OR (status = 'running' AND attempt_generation = ?))`,
 			[
 				input.reason,
 				input.failureRaw ?? null,
@@ -22960,6 +23505,8 @@ export class StateStore {
 				sessionIntegrityFailure ? 1 : 0,
 				sessionIntegrityFailure ? 1 : 0,
 				input.requestId,
+				input.expectedGeneration ?? null,
+				input.expectedGeneration ?? null,
 			],
 		);
 		const updated = this.db.getRowsModified() > 0;
@@ -22988,21 +23535,24 @@ export class StateStore {
 		requestId: string,
 		reason: string,
 		failureRaw?: string,
+		expectedGeneration?: number,
 	): void {
 		this.recordCodexReviewJobFailure({
 			requestId,
 			reason,
 			failureRaw,
+			expectedGeneration,
 		});
 	}
 
 	/** Stamp/refresh the claude reviewer session uuid used for this job. */
-	setCodexReviewJobReviewerSession(requestId: string, uuid: string): void {
-		this.db.run(
-			"UPDATE codex_review_job SET reviewer_session_uuid = ?, updated_at = datetime('now') WHERE request_id = ?",
-			[uuid, requestId],
-		);
-		this.save();
+	setCodexReviewJobReviewerSession(requestId: string, uuid: string, expectedGeneration?: number): boolean {
+		this.db.run(`UPDATE codex_review_job SET reviewer_session_uuid = ?, updated_at = datetime('now')
+			WHERE request_id = ? AND status NOT IN ('done','skipped')
+			AND COALESCE(failure_reason, '') != 'bridge_restart_retired'
+			AND (? IS NULL OR (status = 'running' AND attempt_generation = ?))`,
+			[uuid, requestId, expectedGeneration ?? null, expectedGeneration ?? null]);
+		return this.db.getRowsModified() > 0;
 	}
 
 	/**
@@ -23010,12 +23560,12 @@ export class StateStore {
 	 * is audit-only (never verdict/authority) and may mutate only the actively
 	 * running job; terminal outbox rows remain immutable.
 	 */
-	markCodexReviewJobTrailingBraceRepaired(requestId: string): boolean {
+	markCodexReviewJobTrailingBraceRepaired(requestId: string, expectedGeneration?: number): boolean {
 		this.db.run(
 			`UPDATE codex_review_job
 			   SET repaired_trailing_brace = 1, updated_at = datetime('now')
-			 WHERE request_id = ? AND status = 'running'`,
-			[requestId],
+			 WHERE request_id = ? AND status = 'running' AND (? IS NULL OR attempt_generation = ?)`,
+			[requestId, expectedGeneration ?? null, expectedGeneration ?? null],
 		);
 		const updated = this.db.getRowsModified() > 0;
 		this.save();
@@ -23023,15 +23573,13 @@ export class StateStore {
 	}
 
 	/**
-	 * Boot redrive (§7.1): pending jobs never started; running jobs were
-	 * in-flight when the Bridge died — both re-enqueue (the reviewer round is
-	 * re-run from scratch; verdicts are only recorded on completion, so a
-	 * half-run round has no partial state to reconcile).
+	 * Boot redrive: only never-started pending jobs enqueue automatically.
+	 * Interrupted running jobs require retirement and an explicit safe retry.
 	 */
 	listRedrivableCodexReviewJobs(): CodexReviewJob[] {
 		const jobs: CodexReviewJob[] = [];
 		const stmt = this.db.prepare(
-			"SELECT * FROM codex_review_job WHERE status IN ('pending','running') ORDER BY created_at ASC",
+			"SELECT * FROM codex_review_job WHERE status = 'pending' ORDER BY created_at ASC",
 		);
 		while (stmt.step()) {
 			jobs.push(
@@ -23048,6 +23596,7 @@ export class StateStore {
 		const stmt = this.db.prepare(
 			`SELECT * FROM codex_review_job
 			  WHERE status = 'failed' AND retry_at IS NOT NULL
+			    AND COALESCE(failure_reason, '') != 'bridge_restart_retired'
 			  ORDER BY julianday(retry_at) ASC, created_at ASC`,
 		);
 		while (stmt.step()) {
@@ -23094,6 +23643,7 @@ export class StateStore {
 		const stmt = this.db.prepare(
 			`SELECT * FROM codex_review_job
 			  WHERE status = 'failed'
+			    AND COALESCE(failure_reason, '') != 'bridge_restart_retired'
 			    AND retry_trigger = 'account_switch'
 			    AND retry_parked_at_ms < ?
 			    ${cursorClause}
@@ -23243,14 +23793,13 @@ export class StateStore {
 		return jobs;
 	}
 
-	/** Boot redrive prep: in-flight rows from a dead Bridge → pending again. */
+	/** Compatibility entry point: interrupted attempts retire, never auto-requeue. */
 	resetRunningCodexReviewJobs(): number {
-		this.db.run(
-			"UPDATE codex_review_job SET status = 'pending', updated_at = datetime('now') WHERE status = 'running'",
-		);
-		const n = this.db.getRowsModified();
-		this.save();
-		return n;
+		let retired = 0;
+		for (const job of this.listRunningCodexReviewJobs()) {
+			if (this.retireCodexReviewJob({ requestId: job.request_id, expectedGeneration: job.attempt_generation })) retired++;
+		}
+		return retired;
 	}
 
 	/** Server-derived round number: prior requests for (exec, type) + 1. */
