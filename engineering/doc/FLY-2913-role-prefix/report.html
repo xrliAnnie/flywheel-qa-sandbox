@@ -40,7 +40,7 @@ async function copyText(text){
 async function copyAndReport(text){try{await copyText(text);status.textContent='已复制。此汇总是修改意见，不表示批准。';}catch(_){status.textContent='自动复制未成功，请从汇总文本手动复制。';}}
 function render(){
  const body=fullText(); const chars=Array.from(body);chunks=[];
- for(let i=0;i<chars.length;i+=1700)chunks.push(marker+'\n'+chars.slice(i,i+1700).join(''));
+ let part='';for(const ch of chars){if(part.length+ch.length>1700){chunks.push(marker+'\n'+part);part='';}part+=ch;}if(part)chunks.push(marker+'\n'+part);
  target.replaceChildren();
  if(!chunks.length){const p=document.createElement('p');p.textContent='尚无意见。填写任一节后会自动汇总。';target.appendChild(p);return;}
  chunks.forEach((text,i)=>{const d=document.createElement('div');d.className='chunk';const pre=document.createElement('pre');pre.textContent=text;const b=document.createElement('button');b.type='button';b.textContent='复制第 '+(i+1)+' 段';b.addEventListener('click',()=>copyAndReport(text));d.append(pre,b);target.appendChild(d);});
