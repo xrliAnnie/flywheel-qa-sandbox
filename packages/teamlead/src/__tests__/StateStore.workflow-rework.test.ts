@@ -3985,9 +3985,9 @@ describe("FLY-1423 durable unified rework request", () => {
 			expect(
 				store.getWorkflowRunNode("run-heavy", "implement", 2),
 			).toMatchObject({ state: "pending", execution_id: "implement-exec" });
-			expect(
-				store.getWorkflowReworkVerificationPath(requestId),
-			).toMatchObject({ state: "pending" });
+			expect(store.getWorkflowReworkVerificationPath(requestId)).toMatchObject({
+				state: "pending",
+			});
 			const holdEventUid = `rework_returned_to_lead:${requestId}:1`;
 			expect(
 				store
@@ -4281,8 +4281,7 @@ describe("FLY-1423 durable unified rework request", () => {
 				expect(
 					store
 						.listWorkflowRunEvents("run-heavy")
-						.find((event) => event.kind === "rework_returned_to_lead")
-						?.payload,
+						.find((event) => event.kind === "rework_returned_to_lead")?.payload,
 				).toMatchObject({
 					cleanupDisposition: grantStarted
 						? "retain_ambiguous_grant"
@@ -6486,9 +6485,9 @@ describe("FLY-2921 C1 delivery facts and transitions", () => {
 				state: "wake_delivered",
 				wake_sent_at: "2026-07-23T00:12:01.000Z",
 			});
-			expect(
-				store.getWorkflowRunNode("run-heavy", "implement", 2)?.state,
-			).toBe("running");
+			expect(store.getWorkflowRunNode("run-heavy", "implement", 2)?.state).toBe(
+				"running",
+			);
 		} finally {
 			store.close();
 		}
@@ -6626,9 +6625,7 @@ describe("FLY-2921 C3 returned to Lead", () => {
 				}),
 			).toMatchObject({ ok: true, state: "returned_to_lead" });
 			expect(
-				store
-					.listWorkflowHolds("run-heavy")
-					.map((hold) => hold.shape),
+				store.listWorkflowHolds("run-heavy").map((hold) => hold.shape),
 			).toEqual(["rework_returned_to_lead"]);
 			expect(
 				fly2828Complete(store, {
@@ -6723,13 +6720,13 @@ describe("FLY-2921 C2 in-place replacement", () => {
 					preferred_actor_execution_id: next,
 					interpreted_by: "engine:proven_dead_replacement",
 				});
-				expect(store.getWorkflowReworkReplacementLaunch(requestId)).toMatchObject(
-					{
-						executionId: next,
-						ledgerState: "intent_recorded",
-						bindingMode: null,
-					},
-				);
+				expect(
+					store.getWorkflowReworkReplacementLaunch(requestId),
+				).toMatchObject({
+					executionId: next,
+					ledgerState: "intent_recorded",
+					bindingMode: null,
+				});
 				const uids = store
 					.listWorkflowRunEvents("run-heavy")
 					.map((event) => event.event_uid);
@@ -6879,7 +6876,9 @@ describe("FLY-2921 C2 in-place replacement", () => {
 			expect(tick(122)).toMatchObject({ ok: true, alerted: null });
 			const livenessAlerts = store
 				.listWorkflowAlertOutbox()
-				.filter((row) => row.escalation_uid.startsWith("rework_liveness_unknown:"));
+				.filter((row) =>
+					row.escalation_uid.startsWith("rework_liveness_unknown:"),
+				);
 			expect(livenessAlerts.map((row) => row.escalation_uid)).toEqual([
 				`rework_liveness_unknown:warn:${requestId}:1`,
 				`rework_liveness_unknown:severe:${requestId}:1`,
@@ -6930,9 +6929,7 @@ describe("FLY-2921 C6 generic dead recovery leaves rework targets to the coordin
 					.listWorkflowRunEvents("run-heavy")
 					.filter((event) => event.kind === "rework_dead_target_handoff")
 					.map((event) => event.event_uid),
-			).toEqual([
-				`rework_dead_target_handoff:${requestId}:1:implement-exec`,
-			]);
+			).toEqual([`rework_dead_target_handoff:${requestId}:1:implement-exec`]);
 			expect(
 				store.getWorkflowRunNode("run-heavy", "implement", 2),
 			).toMatchObject({ execution_id: "implement-exec" });

@@ -451,8 +451,7 @@ export interface WorkflowReworkCoordinatorEffects {
 		wakeId: string;
 		receiptId: string;
 	}): Promise<
-		| { kind: "reset" | "idempotent_replay" | "noop" }
-		| { kind: "busy" }
+		{ kind: "reset" | "idempotent_replay" | "noop" } | { kind: "busy" }
 	>;
 }
 
@@ -626,9 +625,7 @@ export class WorkflowReworkCoordinator {
 			requestId: input.requestId,
 			ownerId: this.deps.ownerId,
 			generation: input.generation,
-			nextRetryAt: new Date(
-				this.now().getTime() + input.delayMs,
-			).toISOString(),
+			nextRetryAt: new Date(this.now().getTime() + input.delayMs).toISOString(),
 			reason: input.reason,
 		});
 		return deferred.ok
@@ -820,7 +817,9 @@ export class WorkflowReworkCoordinator {
 		delivery: WorkflowReworkDeliveryRow;
 		route: WorkflowReworkRouteRevisionRow;
 		launch: NonNullable<
-			ReturnType<WorkflowReworkCoordinatorStore["getWorkflowReworkReplacementLaunch"]>
+			ReturnType<
+				WorkflowReworkCoordinatorStore["getWorkflowReworkReplacementLaunch"]
+			>
 		>;
 	}): Promise<WorkflowReworkCoordinatorOutcome> {
 		const { requestId, generation, run, delivery, route, launch } = input;
@@ -1672,7 +1671,9 @@ export class WorkflowReworkCoordinator {
 			this.deps.effects.rearmReworkWake
 		) {
 			let rearmed: Awaited<
-				ReturnType<NonNullable<WorkflowReworkCoordinatorEffects["rearmReworkWake"]>>
+				ReturnType<
+					NonNullable<WorkflowReworkCoordinatorEffects["rearmReworkWake"]>
+				>
 			>;
 			try {
 				rearmed = await this.deps.effects.rearmReworkWake({
