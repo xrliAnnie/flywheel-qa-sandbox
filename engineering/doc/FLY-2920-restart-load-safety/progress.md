@@ -2,17 +2,17 @@
 issue: FLY-2920
 phase: implement
 phaseCursor: 4/7
-updated: 2026-09-26T20:24:09.657Z
-nextStep: "F sampler/cache/admission work in progress; current Lead
-  unknown-deny/short-real-timer/sensor-switch overrides recorded in
-  acceptance-F. Retention audit discovered D missing registry entries, fixed
-  b538e0638: FLY2413 36 pass, consumer unit10 and production source scan pass. E
-  8ed70dc09 complete with documented ps limitations. G and final review/PR
-  remain."
+updated: 2026-09-26T20:38:15.124Z
+nextStep: "F in progress: sampler durability tests green before freeze; real
+  notifier same-millisecond queue collision requires pressure-only stable event
+  key; existing SWAP flag migration follows registry/store guard, no exemption.
+  Cache-read outage must retain durable notification history. Refresh consumer
+  audit and spec/quality review after freeze. G source untouched; read-only
+  recovery consumer audit underway."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2920 progress
 **phase**: implement (4/7)
-**next**: F sampler/cache/admission work in progress; current Lead unknown-deny/short-real-timer/sensor-switch overrides recorded in acceptance-F. Retention audit discovered D missing registry entries, fixed b538e0638: FLY2413 36 pass, consumer unit10 and production source scan pass. E 8ed70dc09 complete with documented ps limitations. G and final review/PR remain.
+**next**: F in progress: sampler durability tests green before freeze; real notifier same-millisecond queue collision requires pressure-only stable event key; existing SWAP flag migration follows registry/store guard, no exemption. Cache-read outage must retain durable notification history. Refresh consumer audit and spec/quality review after freeze. G source untouched; read-only recovery consumer audit underway.
