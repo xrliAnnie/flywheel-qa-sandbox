@@ -1,14 +1,15 @@
 ---
 issue: FLY-2778
 phase: implement
-phaseCursor: 2/6
-updated: 2026-09-26T22:21:42.209Z
-nextStep: Implement stock cleanup apply claim as scoped CAS with concurrent
-  double-claim negative coverage; keep destructive execution provider-gated.
+phaseCursor: 3/6
+updated: 2026-09-26T22:42:48.985Z
+nextStep: Implement the authenticated stock-cleanup preview lane and server-side
+  candidate proof; keep execute fail-closed behind the unfinished shared body
+  provider.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2778 progress
-**phase**: implement (2/6)
-**next**: Implement stock cleanup apply claim as scoped CAS with concurrent double-claim negative coverage; keep destructive execution provider-gated.
+**phase**: implement (3/6)
+**next**: Implement the authenticated stock-cleanup preview lane and server-side candidate proof; keep execute fail-closed behind the unfinished shared body provider.
