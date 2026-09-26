@@ -42,3 +42,7 @@ Lead question `aa046fc1-d883-44ff-8510-8eb27eedb337` 已明确：无法恢复的
 ## 交卷边界
 
 PR、有效代码评审及当前 HEAD CI 状态在控制器交卷报告中绑定。普通实现头不请求 full CI；冻结头 full CI 与真实载体验证由后续授权流程执行。`CI Scope OK` 只代表 scope 检查。没有 merge、ship、deploy 或服务重启。
+
+## 首轮 CI 精确登记修复
+
+PR #1355 首头 `c316fad97` 的 CI run `36224699108` 在 retention consumer gate 失败：`unclassified_retention_consumer:packages/teamlead/src/bridge/notification-audit-store.ts:lead_events:read`。该读取已使用热账/摘要范围及 SHA 校验的归档回退，但漏登 consumer registry。仅在 `scripts/fly-2006-retention-consumer-gate.config.json` 登记精确 file/table/read 为 `candidate_guarded`，不改检测器。相关 Node gate tests 10/10，通过完整 consumer 扫描（ok=true/errors=[]）。全量构建/类型/lint/此前门在首轮 CI 已成功；新头仍需新 CI 与有效评审。
