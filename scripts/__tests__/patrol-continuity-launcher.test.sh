@@ -1,6 +1,8 @@
 #!/bin/bash
 # FLY-1945: execute the trusted helper from source, managed symlink, and payload.
 set -euo pipefail
+# Temp fixture paths are not a Lead snapshot directory; drop any host Lead identity.
+unset FLYWHEEL_LEAD_ID LEAD_ID
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/patrol-launcher.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT

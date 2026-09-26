@@ -30,7 +30,11 @@ Issue: FLY-2914 (https://linear.app/geoforge3d/issue/FLY-2914/巡检闭环-6-巡
   可见、不静默丢弃。「[病根→修复]」等带计数或 class_key 的单仍按类别处理。
 - 代码评审 R1（codex:rescue，2 HIGH + 2 MEDIUM，均已修复并补回归测试）：
   1. 负责 Lead 的报告不能以改 header 的方式声明 not_applicable；CLI 以报告路径里的 lead 绑定 header；
-     负责范围内 Bridge 复核不到一律不能完成（报告不能自证 unavailable）。
+     负责范围内 Bridge 复核不到一律不能完成（报告不能自证 unavailable）。R2 补：调用方带 Lead 身份
+     （`FLYWHEEL_LEAD_ID`/`LEAD_ID`）时，`validate-report` 只接受该 Lead 自己的快照文件
+     `<state>/patrol-reports/<lead>/<快照名>.md`，复制到别处或他人目录一律 `root_cause_report_path_untrusted`。
+     残余边界：shell 载体里 Lead 能改自己的环境变量，所以这是「必须刻意多步伪造」而非密码学保证；
+     Bridge 载体的报告不经模型之手，不受此影响。
   2. 排修消息首行由服务端生成（「【排修请求】<identifier>…」），Lead 正文不能改变其语义；整条必须按发送器
      同一拆分规则恰好一段（按 UTF-16 计），只有整条成功才回填 messageId。
   3. 计数行存在非法值时不按「<3」排除，保留并标 `count_incomplete`。

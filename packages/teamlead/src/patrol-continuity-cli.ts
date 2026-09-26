@@ -1,6 +1,6 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
 	type ContinuityEntry,
 	type ContinuityResult,
@@ -27,8 +27,35 @@ async function verifyRootCausesViaBridge(
 		.find((line) => line.startsWith("ROOT_CAUSE_REVIEW "));
 	const status = / status=([a-z_]+)(?: |$)/.exec(review ?? "")?.[1];
 	const errors: string[] = [];
-	const pathLead = /\/patrol-reports\/([^/]+)\/[^/]+$/.exec(reportPath)?.[1];
+	let realPath = reportPath;
+	try {
+		realPath = realpathSync(reportPath);
+	} catch {}
+	const pathLead = /\/patrol-reports\/([^/]+)\/[^/]+$/.exec(realPath)?.[1];
 	const headerLead = /^lead: (.*)$/m.exec(text)?.[1];
+	// A Lead validates only its own snapshot output: <state>/patrol-reports/<lead>/<snapshot>.md.
+	// Copying a report elsewhere (or under another Lead) cannot re-scope it.
+	const callerLead = process.env.FLYWHEEL_LEAD_ID || process.env.LEAD_ID;
+	if (callerLead) {
+		let reportsRoot = "";
+		try {
+			reportsRoot = join(
+				realpathSync(
+					process.env.FLYWHEEL_STATE_DIR || join(homedir(), ".flywheel"),
+				),
+				"patrol-reports",
+				callerLead,
+			);
+		} catch {}
+		if (
+			!reportsRoot ||
+			dirname(realPath) !== reportsRoot ||
+			!/^[0-9]{8}T[0-9]{6}Z-tick(?:NA|[0-9]{1,16})\.md$/.test(
+				basename(realPath),
+			)
+		)
+			errors.push("root_cause_report_path_untrusted");
+	}
 	// The snapshot writes under patrol-reports/<lead>/; an edited header cannot move scope.
 	if (pathLead !== undefined && headerLead !== pathLead)
 		errors.push("root_cause_scope_mismatch");

@@ -28,7 +28,8 @@ validate_snapshot_skeleton() {
     printf '%s\n' 'MECHANISM_REVIEW result=none count=0' \
       'ROOT_CAUSE_REVIEW status=not_applicable parent=FLY-2072 observed_at=2026-09-26T00:00:00.000Z token=project_scope'
   } > "$report"
-  if "$ROOT/scripts/flywheel-patrol-continuity.mjs" validate-report --report "$report" > "$output" 2>&1; then
+  # Temp fixture paths are not a Lead's snapshot directory; drop any host Lead identity.
+  if env -u FLYWHEEL_LEAD_ID -u LEAD_ID "$ROOT/scripts/flywheel-patrol-continuity.mjs" validate-report --report "$report" > "$output" 2>&1; then
     pass "$label"
   else
     sed -n '1,20p' "$output" >&2

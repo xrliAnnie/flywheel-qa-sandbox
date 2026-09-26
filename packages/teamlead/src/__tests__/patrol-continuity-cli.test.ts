@@ -1,16 +1,34 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	activityEvidence,
 	runPatrolContinuity,
 } from "../patrol-continuity-cli.js";
 
 const roots: string[] = [];
+// Report-path binding applies when the caller carries a Lead identity; the
+// fixtures below validate unbound temp paths, so the host identity is removed.
+const savedIdentity = {
+	lead: process.env.FLYWHEEL_LEAD_ID,
+	legacy: process.env.LEAD_ID,
+	state: process.env.FLYWHEEL_STATE_DIR,
+};
+beforeEach(() => {
+	delete process.env.FLYWHEEL_LEAD_ID;
+	delete process.env.LEAD_ID;
+});
 afterEach(() => {
 	for (const root of roots.splice(0))
 		rmSync(root, { recursive: true, force: true });
+	for (const [key, value] of [
+		["FLYWHEEL_LEAD_ID", savedIdentity.lead],
+		["LEAD_ID", savedIdentity.legacy],
+		["FLYWHEEL_STATE_DIR", savedIdentity.state],
+	] as const)
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
 });
 describe("patrol helper CLI", () => {
 	it("projects verified package queue fields into machine evidence", () => {
@@ -244,6 +262,31 @@ describe("FLY-2914 validate-report root-cause verification", () => {
 		expect(
 			await runPatrolContinuity(["validate-report", "--report", path]),
 		).toBe(1);
+	});
+	it("binds a Lead caller to its own snapshot path so a copied, re-scoped report fails", async () => {
+		const { mkdirSync, realpathSync } = await import("node:fs");
+		const state = realpathSync(
+			mkdtempSync(join(tmpdir(), "patrol-cli-state-")),
+		);
+		roots.push(state);
+		process.env.FLYWHEEL_STATE_DIR = state;
+		process.env.FLYWHEEL_LEAD_ID = "flywheel-eng-lead";
+		const forged =
+			"# Lead Patrol Snapshot\npatrol_schema=2\nproject: geoforge3d\nlead: product-lead\nMECHANISM_REVIEW result=none count=0\nROOT_CAUSE_REVIEW status=not_applicable parent=FLY-2072 observed_at=2026-09-26T06:00:00.000Z token=project_scope\n";
+		expect(
+			await runPatrolContinuity(["validate-report", "--report", file(forged)]),
+		).toBe(1);
+		const foreignDir = join(state, "patrol-reports", "product-lead");
+		mkdirSync(foreignDir, { recursive: true });
+		const foreign = join(foreignDir, "20260926T060000Z-tick1.md");
+		writeFileSync(foreign, forged);
+		expect(
+			await runPatrolContinuity(["validate-report", "--report", foreign]),
+		).toBe(1);
+		process.env.FLYWHEEL_LEAD_ID = "product-lead";
+		expect(
+			await runPatrolContinuity(["validate-report", "--report", foreign]),
+		).toBe(0);
 	});
 	it("never contacts the Bridge for a not_applicable section", async () => {
 		const path = file(
