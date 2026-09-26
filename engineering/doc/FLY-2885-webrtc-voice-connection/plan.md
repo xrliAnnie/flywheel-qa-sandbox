@@ -3,7 +3,7 @@ Issue: FLY-2885 (https://linear.app/geoforge3d/issue/FLY-2885/语音b核心连�
 日期: 2026-09-25
 基于: research.md
 
-状态:v5(按设计评审 R1–R4 与 Lead 指令 0f475441 / f845f720 修订),待 T5c 定向复核。本文只设计,不含实现。
+状态:v6(按设计评审 R1–R5 与 Lead 指令/裁定修订),待 T5c 定向复核。本文只设计,不含实现。
 
 ## 0. 边界与验收映射
 
@@ -151,12 +151,12 @@ stateDiagram-v2
 
 **待答用户轮次(R3-3)**:每条用户回合证据(见 T5)都开一个「待答」标记,记下证据到达时刻 `u`。只有满足下面条件的 assistant 回合 A 才能清除它:A 的 `turn.created` **在 `u` 之后到达**,且 A 的 `turn.done` 已到。在 `u` 之前就已 created 的 assistant 回合(旧回答)即使其 done 晚于 `u` 到达,也**不能**清除(2884 s3 实测:旧回答的 done 晚于新用户 delta 到达)。数据通道没有 assistant 回合事件时无法证明 ⇒ 待答标记一直保留。
 
-1. **空闲准入**(每块发送前,全部满足才发):① 没有未结束的 assistant 回合(created 而无同 id done);② `OpusDownlink.audible()` 为假且已持续 600 ms;③ founder 门关着,且**没有待答用户轮次**;④ 不在 Muted/Deciding/WaitGap。不满足就等,最多 10 s ⇒ 仍不满足 ⇒ `rejected{reason:"busy_conversation"}`、`transport:none`(前端 `failed`,走现有「没能念出」路径)。
+1. **空闲准入**(每块发送前,全部满足才发):① 没有未结束的 assistant 回合(created 而无同 id done);② `OpusDownlink.audible()` 为假且已持续 600 ms;③ founder 门关着,且**没有待答用户轮次**;④ 不在 Muted/Deciding/WaitGap;⑤ **不在 T5c 的 OverrunDiscard 态**(丢弃态会把声音换成静音,`audible()` 为假不代表它已结束)。T5c 的无声重试同样要过这五条。不满足就等,最多 10 s ⇒ 仍不满足 ⇒ `rejected{reason:"busy_conversation"}`、`transport:none`(前端 `failed`,走现有「没能念出」路径)。
 2. **绑定**:准入并发出后,本代第一个 `turn.created{role:assistant}` 的 `turn.id`;绑定前出现新的用户回合证据 ⇒ `speech_preempted`。准入已排除「有待答用户轮次」与「有在途 assistant 回合」,首个新回合才被认为由本次朗读引起;这仍是基于事件完整性的推断,数据通道缺事件时走第 6 条的诚实失败。
 3. **转写**:同一 `turn.id` 的 `turn.done.transcript`,用现有 `isFiniteSpeechEquivalent` 判等价(越界见 T5c)。
 4. **已提交播放**:发出到同 id `turn.done` 之间,播放器以未静音状态**消费**过 ≥1 个有声包,且期间没有 cut、没有 T4 裁剪、没有静音丢包。发生裁剪 ⇒ `failed{reason:"playback_trimmed", transport:"submitted"}`。
 5. **中断**:期间本地插话 cut ⇒ `speech_interrupted`;换代 / 会话关闭 ⇒ `generation_changed`;已消费过有声包则 `transport:submitted`,否则 `none`。
-6. **无法关联**:30 s 内没有可绑定的 `turn.created`,或 `turn.done` 缺失 ⇒ `speech_binding_unavailable`、`transport:none` ⇒ 前端 `failed`。
+6. **无法关联**:30 s 内没有可绑定的 `turn.created`,或 `turn.done` 缺失 ⇒ `speech_binding_unavailable`,不重试;`transport` 按消费口径:发出后播放器消费过有声包 ⇒ `submitted`(前端 `unconfirmed`),否则 `none`(前端 `failed`,`CodexRoomFrontend.ts:140-143`)。
 7. 多块朗读逐块走 1–6;每块都重新准入(前一块尾音播完、`audible()` 为假 600 ms 后才发下一块)。
 
 ### T5c 朗读越界与无声的守卫(`codex/CodexProofSpeaker.ts`、`codex/CodexVoiceBackend.ts`、`audio/OpusDownlink.ts`)
@@ -178,14 +178,16 @@ stateDiagram-v2
 
 **3. 越界处置与「丢弃态」生命周期(R4-2)**
 - 触发即 `downlink.cut()`,进入会话级 **OverrunDiscard 状态**(属于 `CodexVoiceSession`,不挂在朗读 Promise 上,朗读回执结算后仍存在):该态下每个下行包都换成静音帧。
-- **退出条件**(先满足者):① 已见本块绑定回合的 `turn.done` **且**其后下行连续 ≥240 ms 无声(处理「done 先到、尾音后到」);② 未见 done,但下行连续 ≥1.5 s 无声(回合实际已结束,事件缺失);③ **15 s 上限**仍有有声下行持续 ⇒ 走 T7 换代(关闭屏障 + 新一代)强制终止该回答,记 `codex_speech_overrun_forced_restart`——不无限静音,也不放过旧尾音。
+- **退出条件**:
+  ① **恢复播放**只有一种:已见本块绑定回合的 `turn.done` **且**其后下行连续 ≥240 ms 无声(处理「done 先到、尾音后到」)。
+  ② **没有 done 就不恢复本代音频**:未见 done 而下行已连续 ≥1.5 s 无声(可能只是话中停顿,不能当作回合结束),**或**进入丢弃态满 **15 s**(绝对期限,不论此刻有声无声)⇒ 走 T7 的换代流程(旧会话 stop + closed 屏障 → 新一代;屏障确认不了就干净结束本场),记 `codex_speech_overrun_forced_restart{reason: silence_without_done|deadline}`。旧代的任何音频都不会再被放行。
 - **优先级**:founder 开口 ⇒ T5 的插话静音接管(OverrunDiscard 清除,之后按 T5 的边界规则恢复);换代/关闭 ⇒ 清除。
 - **转写处理**:本块被判越界后,「截断标记」保留到对应的 assistant `transcript/done` 被处理完(最长 30 s):持久化与 thread 镜像**截到期望文本为止**并标注「(已截断越界内容)」;越界部分只进审计证据 `codex_speech_overrun{pendingKey, turnId, expectedChars, unalignedChars, extraTextSha256, detectedAtMs, stopLatencyMs}`(长度与指纹,不含正文)。迟到的 final 因此不会走回普通镜像路径。
 - 回执 `failed{reason:"speech_overrun", transport:"submitted"}` ⇒ 前端 `unconfirmed`。
 
 **4. 无声与「不知道」分开(R4-3)**
 - 统一用**消费**口径:播放器取走的有声包数(T5b 同口径),外加「仍在队列里的有声包」。
-- **确认无声** = 本块绑定回合的 `turn.done` 已到,且从发出到此刻播放器消费的有声包为 0、队列里也没有有声包、之后再等 600 ms 仍为 0 ⇒ `speech_silent`,**重试 1 次**(重新走空闲准入;旧回合已 done,迟到事件不会被结算给新尝试,因为新尝试只绑定它发出之后才 created 的回合,且旧回合 id 已登记为已结束)。重试仍确认无声 ⇒ `failed{speech_silent, transport:none}` ⇒ 前端 `failed`,thread 有文字。
+- **确认无声** = 本块绑定回合的 `turn.done` 已到,且从发出到此刻播放器消费的有声包为 0、队列里也没有有声包、之后再等 600 ms 仍为 0,**并且**这段时间里客户端从未对下行做过 cut 或静音替换(插话静音、OverrunDiscard 等);期间有过客户端静音 ⇒ 不算「服务端无声」,按中断/未知结算、不重试 ⇒ `speech_silent`,**重试 1 次**(重新走空闲准入;旧回合已 done,迟到事件不会被结算给新尝试,因为新尝试只绑定它发出之后才 created 的回合,且旧回合 id 已登记为已结束)。重试仍确认无声 ⇒ `failed{speech_silent, transport:none}` ⇒ 前端 `failed`,thread 有文字。
 - **不知道** = 30 s 内没有可绑定的 `turn.created` 或没有 `turn.done`(不论有没有听到声音)⇒ 沿用 T5b 的 `speech_binding_unavailable`,**不自动重试**(可能已经念过,重试会重复);已消费过有声包则 `transport:submitted`,否则 `none`。
 
 **5. 指标与验收口径(R4-4)**
@@ -261,7 +263,7 @@ Lead 已批准(§9②)。服务端实测上限与本地计量见 research R3:`In
   缺省 `cove` 只在**引擎 B 消费处**(`cli.ts` 构造容器时)补上;旧引擎不读这个字段;不回退到 `realtimeVoice`。
 - **声线映射从哪来(Lead 指令 `f845f720`)**:founder 已选定——raya=`sol`、flywheel-eng-lead=`cove`、flywheel-product-lead=`breeze`、flywheel-cos-lead=`vale`、product-lead=`ember`、ops-lead=`spruce`、joycon-lead=`arbor`、tidal-echo-content-lead=`maple`、sub-lead=`juniper`,其余 8 个缺省 `cove`。
   **运行时唯一来源 = `projects.json` 的 `leads[].liveVoice`**(Bridge 启动时 `loadProjects()` 读入 → 投影 `liveVoice` → 引擎 B)。FLY-2866 在它的 PR 里落的机器可读映射文件**只是写入输入**,运行时不读它;不复用 `realtimeVoice`。
-  写入方式沿用 FLY-2866 的受控写(`projects.json.cfglock` + 临时文件 fsync rename + 写前备份 + 写后 `validate-projects`),可由 FLY-2866 在任意时点执行:现有 `ProjectConfig` 只对 `cosContext` 做未知字段拒绝(`ProjectConfig.ts:768-779`),lead 顶层的 `liveVoice` 在 T9 合入前会被忽略、不会让校验失败;T9 合入并部署后才生效。写入与生效时机:Bridge 只在启动时读配置,生效要等下一次定时部署重启。
+  写入方式沿用 FLY-2866 的受控写(`projects.json.cfglock` + 临时文件 fsync rename + 写前备份 + 写后 `validate-projects`),**由本单实施执行**(Lead 裁定 `54c3646c`:不回 FLY-2866 改;在 T9 里新增一个写 `liveVoice` 的受控写入步骤,以 FLY-2866 的映射文件为输入,不直接运行其写 `realtimeVoice` 的旧脚本)。写入时点不受代码合入顺序限制:现有 `ProjectConfig` 只对 `cosContext` 做未知字段拒绝(`ProjectConfig.ts:768-779`),lead 顶层的 `liveVoice` 在 T9 合入前会被忽略、不会让校验失败;T9 合入并部署后才生效。写入与生效时机:Bridge 只在启动时读配置,生效要等下一次定时部署重启。
   本单 QA 在 529 测试房用测试项目自己的 `projects.json` 配 `liveVoice`,不依赖现网写入。
 
 ### T10 配置、启动壳、QA 房(`config.ts`、`scripts/flywheel-voice-wrapper.sh`、`scripts/qa/fly2655-voice-room.mjs`)
@@ -299,7 +301,7 @@ Lead 已批准(§9②)。服务端实测上限与本地计量见 research R3:`In
 | T4 | 新 `__tests__/opus-downlink.test.ts`(首包同步入流;积压 10/25 包且播放器已取走部分时 `cut()` 后消费不到旧包、随后新首包正常;租约失效停止;idle 重建);`discord-room.test.ts`(缺省 pcm-mouth 不变、opus 模式 `cancelAllSpeech` 走 cut);voice-bridge `discordWiring` 资源工厂单测 |
 | T5 | `__tests__/codex-room.test.ts` + 新 `opus-downlink.test.ts`(按实际推给播放器的包序列断言:R2 合成反例从 1800 回放 40/40;R3 反例 16 包间隙 + 35 包回答 ⇒ 按 ≥240 ms 规则回放,不再 0/35;整段回答无合格间隙 ⇒ 2 s 期限放行并记 `boundary_unknown`;2884 s3 时间线夹具;两路事件都缺失走兜底且终会恢复;合格间隙挤出缓冲 ⇒ `head_lost`;回放积压消化;founder 连说 >15 s 保持静音) + **跨层**:回放积压仍在播、网络下行已静音 >600 ms 时 founder 开口 ⇒ `frontendResponseActive` 为真、cut 真被调用、之后旧包消费为 0 |
 | T5b | `__tests__/codex-speak.test.ts`(待答轮次:旧回答 done 晚于新用户 delta 到达时不清待答 ⇒ busy;R3 反例(新自然回答音频先到、created 迟到 915 ms、期间 600 ms 安静)不发朗读;短自然回答后长停顿;数据通道缺 assistant 事件 ⇒ 待答不清 ⇒ 10 s 后 `busy_conversation`;准入后用户抢先 ⇒ `speech_preempted`;单块/多块;等价旧转写不被借用;裁剪 ⇒ `playback_trimmed`;插话中断;无 turn ⇒ `speech_binding_unavailable`;换代 ⇒ `generation_changed`);`codex-room.test.ts` 里 Lead 回复朗读的现有用例改到新契约 |
-| T5c | `__tests__/codex-speak.test.ts`(越界:R4 反例「2 字替换 + 20 字追加」⇒ 越界;FLY-2866 四个真实越界文本的逐字增量夹具在第 56 字附近触发;1–6 字改写不越界;早于 `turn.created` 的增量被计入;只有 final 无增量时 final 检查仍截断;越界 ⇒ cut、OverrunDiscard 静音、回执 `speech_overrun`、镜像截到期望文本并标注、审计无正文。丢弃态:done 缺失时 1.5 s 静音退出;done 早于尾音 RTP 时尾音仍被静音;15 s 仍有声 ⇒ 强制换代;done 之后迟到的 final 仍走截断;插话/换代与越界同时发生。无声:确认无声(已 done、零消费、零积压)⇒ 重试 1 次、旧回合迟到事件不结算给新尝试、再次无声 ⇒ `speech_silent`;已播但 created 缺失 ⇒ `speech_binding_unavailable` 不重试;done 先于队列消费不误判无声) |
+| T5c | `__tests__/codex-speak.test.ts`(越界:R4 反例「2 字替换 + 20 字追加」⇒ 越界;FLY-2866 四个真实越界文本的逐字增量夹具在第 56 字附近触发;1–6 字改写不越界;早于 `turn.created` 的增量被计入;只有 final 无增量时 final 检查仍截断;越界 ⇒ cut、OverrunDiscard 静音、回执 `speech_overrun`、镜像截到期望文本并标注、审计无正文。丢弃态:同一越界回合暂停 >1.5 s 后续说且 done 缺失 ⇒ 不放回任何旧有声包、走强制换代;done 早于尾音 RTP 时尾音仍被静音;15 s 绝对期限 ⇒ 强制换代;丢弃态未退出时下一块朗读不发送、退出后才发送且首个有声包正常消费;确认无声窗口内有过客户端静音 ⇒ 不重试;`speech_binding_unavailable` 已消费/未消费两种 ⇒ 前端 `unconfirmed`/`failed`;done 之后迟到的 final 仍走截断;插话/换代与越界同时发生。无声:确认无声(已 done、零消费、零积压)⇒ 重试 1 次、旧回合迟到事件不结算给新尝试、再次无声 ⇒ `speech_silent`;已播但 created 缺失 ⇒ `speech_binding_unavailable` 不重试;done 先于队列消费不误判无声) |
 | T6 | `pipeline/UplinkSpeechGate.test.ts`、`Uplink.test.ts`、`UplinkSpeechGate.preroll.smoke.test.ts`(开后追帧、峰值门;用 2884 s4 远处人声与 s7 founder 帧电平时间线做夹具;旧默认不变) |
 | T7 | `__tests__/codex-container.test.ts`(合并多重故障为一次换代;stop 超时无 closed ⇒ 干净结束;屏障内迟到 closed/error 归旧代;ICE/answer 等待中 abort 关腿;上限与退避;收尾顺序;启动清扫 busy/removed 两分支) |
 | T8 | teamlead `src/__tests__/voice-session-context.test.ts`(Raya/Honey 规模夹具:builder→container 确定性样例(改任一 prompt 正文或 item ⇒ digest 变、加头不影响计算输入)、拆分确定性、按行切段、items 32,000 字节/128 条边界、prompt 15,500 边界、超长单行进 prompt、超限报错不截断、digest 覆盖 prompt 与 items);voice-codex `codex-container.test.ts`(v2 快照校验通过/各类不符 ⇒ `context_invalid`,同一快照把完整 prompt 与 items 原样传给 `realtime/start`,换代复用同一份);teamlead voice-session-routes 路由形状测试 |
@@ -330,11 +332,13 @@ T10 → T1 → T2 → T3 → T8 → T9 → T4 → T6 → T5 → T5b → T5c → 
 - 插话「停」是本地的;服务端仍约 1.2 s 才判定。插话后新回答的起点只能估计(T5),可能丢句首或漏出一小段旧音,QA 按次统计。
 - 朗读越界只能在转写出现后截断,越界开头可能已播出一小段(T5c,`overrunExposureMs` 验收 ≤1.0 s);越界丢弃态最坏靠强制换代收尾,会丢实时会话历史。模型之后是否接着说旧内容归大脑层(本单只加一句协议说明并量)。
 - 峰值门余量约 4 dB,基于合成远处人声;真人麦与 Krisp 下需 QA 复核,可配置/可关。
-- 数据通道事件不在 Codex 协议面上。静音解除以下行音频为准、事件只作「用户回合证据」之一(另一来源是 app-server 用户转写);朗读回执绑定依赖它,缺失时回执诚实地变 `failed`(`speech_binding_unavailable`)。
+- 数据通道事件不在 Codex 协议面上。静音解除以下行音频为准、事件只作「用户回合证据」之一(另一来源是 app-server 用户转写);朗读回执绑定依赖它,缺失时回执诚实地变 `speech_binding_unavailable`(已消费过有声包 ⇒ `unconfirmed`,否则 `failed`)。
 - 换代会丢失实时会话里的对话历史(新会话只带开场上下文);本单不回放历史。
 
 ## 9. Lead 裁定记录
 
+- 2026-09-25 问题 `1b96a832`:评审满 3 轮后选 (a)——v4 并入 R3 四条、T5c、声线映射后跑 1 轮限定 R4;T5c 的 HIGH 必须本轮修掉;其余新 HIGH 以下进 §11;QA 统计写成可量阈值。
+- 2026-09-25 问题 `54c3646c`:founder 声线映射写入 `liveVoice` 归本单 T9 实施。
 - 2026-09-25 问题 `2cb14675`(Lead 已回复):
   ① **同意** 新增 `liveVoice`(9 个 v3 声线枚举,缺省 `cove`),引擎 B 读它,旧引擎继续读 `realtimeVoice`;本单全部先用 `cove`。**试听分配不另开单**,由 Lead 把 FLY-2866 改成试听这 9 个声线。
   ② **同意** 身份/边界/状态/协议留在 prompt(预算 15,500 o200k),记忆放 v3 `initialItems`(developer 角色),都放不下才 `context_too_large`;两个上限与实测数据写入本计划(research R3,§3 T8)。
@@ -370,7 +374,11 @@ T10 → T1 → T2 → T3 → T8 → T9 → T4 → T6 → T5 → T5b → T5c → 
   2. 新增会话级 OverrunDiscard 态:done + 240 ms 静音 / 无 done 时 1.5 s 静音 / 15 s 上限强制换代三种退出;插话、换代优先;截断标记保留到对应 final 处理完。
   3. 「确认无声」(已 done、零消费、零积压)才重试 1 次;绑定或完成状态未知一律 `speech_binding_unavailable` 不重试;统一消费口径。
   4. 指标拆成 `stopLatencyMs`(进程内,≤200 ms)与 `overrunExposureMs`(房内录音人工标注,≤1.0 s),QA-7 按两项判定。
+- v6(2026-09-25):限定 R5 关闭 R4-1/3/4;T5c 余 2 HIGH + 1 LOW 全部修正:
+  1. OverrunDiscard 只在「已见 done 且其后 ≥240 ms 静音」时恢复播放;无 done 时 1.5 s 静音或 15 s 绝对期限一律走 T7 换代,旧代音频不再放行。
+  2. T5b 准入加第⑤条「不在 OverrunDiscard」,无声重试同样过准入;「确认无声」要求观察窗口内没有任何客户端静音/cut。
+  3. 统一 `speech_binding_unavailable` 的 transport 口径(按消费,已播 ⇒ unconfirmed,未播 ⇒ failed)。另记 Lead 裁定 `54c3646c`:声线映射写入归本单 T9。
 
 ## 11. Follow-ups(R4 之后按 Lead 裁定 `1b96a832` 登记,由 Lead 开单)
 
-- R4 未发现范围外问题,本表暂无条目。实施提醒(非缺陷):FLY-2866 的 `write-voices.py` 目前写 `realtimeVoice`,执行 founder 映射前须改为写 `liveVoice`,不能直接运行旧脚本。
+- R4 未发现范围外问题,本表暂无条目。(写 `liveVoice` 的受控写入按 Lead 裁定 `54c3646c` 归本单 T9 实施,不是 follow-up。)
