@@ -1,0 +1,165 @@
+{
+  "request_id": "50a52700-5102-48f9-b090-54b22e14f0b2",
+  "status": "done",
+  "verdict": "APPROVED",
+  "reviewer_verdict": "APPROVED",
+  "target_path": "engineering/doc/FLY-2373-completion-mail-drain/plan.md",
+  "updated_at": "2026-09-26 04:10:18",
+  "response": {
+    "reviewVerdict": "APPROVED",
+    "reviewerVerdict": "APPROVED",
+    "requestId": "50a52700-5102-48f9-b090-54b22e14f0b2",
+    "round": 1,
+    "findings": [
+      {
+        "id": "settled-wake-left-pending-readers",
+        "severity": "MEDIUM",
+        "file": "engineering/doc/FLY-2373-completion-mail-drain/plan.md",
+        "line": 51,
+        "title": "结算后 wake 仍留在 pending，但 plan 只让 phase reader、claim 和 sweep 过滤它，其余读 pending wake 的代码没有覆盖",
+        "detail": "plan 的做法是 settlement 不改 wake 的 state/admission，只让 phase reader、claim 和 sweep 按重算的 obligation_digest 跳过已结算 wake。代码里读 state='pending' wake 的地方远不止这些，plan 没有逐一列出：Bridge T1 推送（runner-wake.ts sendRunnerWake → claimRunnerReceiptWakePush）；T2 升级（db.ts claimRunnerReceiptWakeT2 → enqueueRunnerReceiptWakeEscalation → receipt_alert_outbox）；listPendingReceiptAlerts/revalidateReceiptAlert；teamlead delivery-contract/projector.ts；bin/restart-request.ts:2681；还有 markTurnCompleted 会把 deferred 提升为 queued。\n\n完工后如果 runner 还活着（resident hold、loop_park、ship park），已结算的 deferred wake 会在 turn 结束时被提升为 queued。之后要么被 Bridge 再推一次（重复投递已处理的正文），要么因为一直没被 start 而触发 T2 告警（发给 Lead 或 founder 的假告警）。另外，commitRunnerDoorbellWake 会把新义务合并进 state='pending' 的在飞 doorbell，也就是这个已结算的 doorbell。合并后内容会重新列出旧的 responseRefIds（`check <旧qid>`），模型会重读旧判决。\n\n建议改为：结算时把 wake 置为 finished，并链接到 settlement 行。代码里已有同类先例：disposeRunnerPhaseWakePending 的 started_ack_scope='normal_traffic'、disposeRunnerDoorbellsForTerminal 的 last_push_result='disposed:terminal_target'，以及 rework 的 retirement_id 模式。这样所有既有的 pending 读者会自然排除它，新义务会生成新的 doorbell。live 的旧版 reader 也本来就跳过 finished，第 51 行说的“旧 reader 必须一起升级”这个版本错位问题也随之消失；已在运行的 daemon 进程本来也无法随部署升级。如果坚持现方案，T3 必须列出全部读者并逐个写测试。",
+        "findingKey": "settled-wake-left-pending-readers"
+      },
+      {
+        "id": "obligation-enumeration-root-undefined",
+        "severity": "MEDIUM",
+        "file": "engineering/doc/FLY-2373-completion-mail-drain/plan.md",
+        "line": 43,
+        "title": "“全部当前义务”从哪些记录里枚举没有定义；started/finished 也没有对应的消费凭据来源",
+        "detail": "现有 getCompletionDrainPending 的枚举范围是：pending 且 queued/deferred_midturn 的 wake，加上 QUEUED/LEASED 的 mailbox。plan 在第 43 行和第 75 行宣称“started/finished 不证明已读”“全部义务（不限旧 challenge）”，却没有写明枚举从哪些记录出发。receipt 的 source_kind 也只有 inbox|check|drain_ack，没有“作为 turn 输入投递”这一种。\n\n如果实现者把 started/finished 的 inline wake 也纳入枚举，那么每个作为 turn prompt 送达的 rework、feedback、park 通知在交卷时都要多一轮 ACK。这违反 Lead 裁定的“已消费复审/park 通知按 1 次”。另外，第 60 行“历史 ACK 但无新 receipt 保守再读取”没有给出范围。部署当刻，在飞 runner 可能被要求“处理并确认”已经执行过、甚至已被取代的旧指令，从而重复执行有副作用的动作。529 新房里没有历史邮件，这一点 QA 覆盖不到。\n\napproval_wake 本身不带正文，但 plan 规定 approval 不是默认纯信号，因此一个 pending 的 approval_wake 也会让交卷变成 2 次。\n\n建议：\n- 明确枚举根，例如 pending wake 加 QUEUED/LEASED mailbox，started/finished 仅作 batch 成员解析的来源。\n- 要么把 turn-start 投递记作 inline 正文的消费凭据，要么说明为什么不算。\n- 把“历史再读”限定在 pending wake 的成员内，并在 409 文案里标注“可能已处理，先核对再执行”。\n- 补一个“部署前已由 inbox ACK 的成员”的过渡用例。",
+        "findingKey": "obligation-enumeration-root-undefined"
+      },
+      {
+        "id": "page-size-vs-carrier-output-truncation",
+        "severity": "MEDIUM",
+        "file": "engineering/doc/FLY-2373-completion-mail-drain/plan.md",
+        "line": 68,
+        "title": "服务端无法保证“所有页都输出给模型”，分页上限必须按 carrier 实际可见的工具输出上限来定",
+        "detail": "服务端只能证明 page 命令被调用过，证明不了模型真的看到了完整输出。Codex 的 exec 工具输出超过上限时，模型看到的是截掉中段的内容。如果每页 body 的上限（字节数和行数）不低于 carrier 的可见上限，并且没有扣除 409 其它文本所占的空间，那么一条长 Lead 指令会被截掉中段，模型却会照常 ACK，complete 也会成功，结果是正文静默丢失。\n\n现有 inbox 也有同样的隐患，但 plan 在这里把它写成了保证。建议：每页上限按最严格的 carrier（Codex exec 的输出上限，同时限制字节和行数）留出余量来定；在 page 输出中带上每页的 digest 和页序号，ACK 时要求提交全部页的 digest 回执。T2 需要加一个超上限正文的真实 carrier 用例。",
+        "findingKey": "page-size-vs-carrier-output-truncation"
+      },
+      {
+        "id": "successor-dispatch-gated-on-commdb-reconcile",
+        "severity": "LOW",
+        "file": "engineering/doc/FLY-2373-completion-mail-drain/plan.md",
+        "line": 78,
+        "title": "后继派发依赖 CommDB settlement reconcile，但失败时的有界重试、告警和具体 dispatcher 文件都没写",
+        "detail": "“dispatcher释放后继前要求drain settlement reconcile”会让 CommDB 能否写入成为 workflow 往前走的新前提。CommDB 持续写失败时，后继会一直被卡住。plan 没有说明重试上限、告警路径和降级策略，也没有写明是哪一个 dispatcher（workflow-engine-dispatcher.ts 还是 run-dispatcher.ts）。\n\n如果采纳 settled-wake-left-pending-readers 的建议（结算即 finished），那么 settlement 缺失的后果只是重复投递，这个门控可以降级为告警。",
+        "findingKey": "successor-dispatch-gated-on-commdb-reconcile"
+      },
+      {
+        "id": "bridge-commdb-writable-lock-scope",
+        "severity": "LOW",
+        "file": "engineering/doc/FLY-2373-completion-mail-drain/plan.md",
+        "line": 75,
+        "title": "完工路径需要从只读 CommDB 改为可写 IMMEDIATE 事务，这对 Bridge 事件循环的影响没有写",
+        "detail": "event-route.ts 目前在 drain 判断里用的是 CommDB.openReadonly。§5 要求 Bridge 在完工同步阶段持有 CommDB 的 IMMEDIATE 写锁，同时调用 StateStore.commitEnrolledCompletion。better-sqlite3 是同步的：CLI 写者（Lead send、runner inbox、check）持锁时，Bridge 在 busy_timeout 期间会整体阻塞。反过来，Bridge 持锁期间，所有 CLI 写 CommDB 都会被挡住。\n\n已核实 StateStore 内部没有反向打开 CommDB，所以自锁风险低。但 plan 应写明：连接从只读改为可写、busy_timeout 的取值、锁内工作量的上限（例如哈希 content-ref 大正文这类 I/O 应尽量在锁外预计算、锁内只比对 digest）。",
+        "findingKey": "bridge-commdb-writable-lock-scope"
+      },
+      {
+        "id": "retention-fragments-missing",
+        "severity": "LOW",
+        "file": "engineering/doc/FLY-2373-completion-mail-drain/plan.md",
+        "line": 46,
+        "title": "新增的两张 CommDB 表没有写 retention 分类片段和保留策略",
+        "detail": "runner_content_consumption 和 runner_wake_settlement 都需要在 scripts/lib/fly-2006-retention-tables/comm/<table>.json 里登记分类，否则 Quick Gate 会报 schema_unclassified（fly-2006-retention-registry.mjs:60）。T1 和 T3 的文件清单都没有列这两个文件，也没有说明这两张表的保留和清理策略：凭据和结算行会随门铃无限增长，已有的 pruneTerminalRunnerReceiptWakes 是否需要级联清理也没说。",
+        "findingKey": "retention-fragments-missing"
+      },
+      {
+        "id": "gate-and-verify-approval-consumers",
+        "severity": "LOW",
+        "file": "engineering/doc/FLY-2373-completion-mail-drain/plan.md",
+        "line": 54,
+        "title": "plan 只写了 check.ts，漏了 gate.ts 这个 consumeGateResponse 消费者；verify-approval 用的是纯查询 getResponse",
+        "detail": "commands/gate.ts:308 在阻塞等待拿到答复后，也会调用 consumeGateResponse。凭据应该写在 consumeGateResponse 内部，这样 gate.ts 也能覆盖到，并给 gate 补测试。\n\nverify-approval.ts:527 用的是 getResponse。审批答复如果是某个 doorbell 的成员，就永远不会产生 receipt，每次都要走 drain_ack 多一轮。这是有意为之还是遗漏，plan 需要写明。",
+        "findingKey": "gate-and-verify-approval-consumers"
+      },
+      {
+        "id": "tests_not_run",
+        "severity": "LOW",
+        "file": "engineering/doc/FLY-2373-completion-mail-drain/plan.md",
+        "line": 139,
+        "title": "worktree 没有安装依赖，本轮没有执行基线测试",
+        "detail": "被评审的改动只有文档。本 worktree 没有 node_modules（根目录和各 package 都没有），§9 列的现有套件（flywheel-comm 的 db.fly2268/db.fly1774/complete/receipt-wake-state-machine/mailbox-settlement，teamlead 的 fly2268-replay/event-route-session-completed-guard，claude-runner 的 fly2268-resident-receiver）都没有运行。我已核实这些测试文件都存在，列出的两个 teamlead 测试也都不调用 startBridge。本结论完全基于源码审读。",
+        "findingKey": "tests_not_run"
+      }
+    ],
+    "advisories": [
+      {
+        "id": "settled-wake-left-pending-readers",
+        "severity": "MEDIUM",
+        "file": "engineering/doc/FLY-2373-completion-mail-drain/plan.md",
+        "line": 51,
+        "title": "结算后 wake 仍留在 pending，但 plan 只让 phase reader、claim 和 sweep 过滤它，其余读 pending wake 的代码没有覆盖",
+        "detail": "plan 的做法是 settlement 不改 wake 的 state/admission，只让 phase reader、claim 和 sweep 按重算的 obligation_digest 跳过已结算 wake。代码里读 state='pending' wake 的地方远不止这些，plan 没有逐一列出：Bridge T1 推送（runner-wake.ts sendRunnerWake → claimRunnerReceiptWakePush）；T2 升级（db.ts claimRunnerReceiptWakeT2 → enqueueRunnerReceiptWakeEscalation → receipt_alert_outbox）；listPendingReceiptAlerts/revalidateReceiptAlert；teamlead delivery-contract/projector.ts；bin/restart-request.ts:2681；还有 markTurnCompleted 会把 deferred 提升为 queued。\n\n完工后如果 runner 还活着（resident hold、loop_park、ship park），已结算的 deferred wake 会在 turn 结束时被提升为 queued。之后要么被 Bridge 再推一次（重复投递已处理的正文），要么因为一直没被 start 而触发 T2 告警（发给 Lead 或 founder 的假告警）。另外，commitRunnerDoorbellWake 会把新义务合并进 state='pending' 的在飞 doorbell，也就是这个已结算的 doorbell。合并后内容会重新列出旧的 responseRefIds（`check <旧qid>`），模型会重读旧判决。\n\n建议改为：结算时把 wake 置为 finished，并链接到 settlement 行。代码里已有同类先例：disposeRunnerPhaseWakePending 的 started_ack_scope='normal_traffic'、disposeRunnerDoorbellsForTerminal 的 last_push_result='disposed:terminal_target'，以及 rework 的 retirement_id 模式。这样所有既有的 pending 读者会自然排除它，新义务会生成新的 doorbell。live 的旧版 reader 也本来就跳过 finished，第 51 行说的“旧 reader 必须一起升级”这个版本错位问题也随之消失；已在运行的 daemon 进程本来也无法随部署升级。如果坚持现方案，T3 必须列出全部读者并逐个写测试。",
+        "findingKey": "settled-wake-left-pending-readers"
+      },
+      {
+        "id": "obligation-enumeration-root-undefined",
+        "severity": "MEDIUM",
+        "file": "engineering/doc/FLY-2373-completion-mail-drain/plan.md",
+        "line": 43,
+        "title": "“全部当前义务”从哪些记录里枚举没有定义；started/finished 也没有对应的消费凭据来源",
+        "detail": "现有 getCompletionDrainPending 的枚举范围是：pending 且 queued/deferred_midturn 的 wake，加上 QUEUED/LEASED 的 mailbox。plan 在第 43 行和第 75 行宣称“started/finished 不证明已读”“全部义务（不限旧 challenge）”，却没有写明枚举从哪些记录出发。receipt 的 source_kind 也只有 inbox|check|drain_ack，没有“作为 turn 输入投递”这一种。\n\n如果实现者把 started/finished 的 inline wake 也纳入枚举，那么每个作为 turn prompt 送达的 rework、feedback、park 通知在交卷时都要多一轮 ACK。这违反 Lead 裁定的“已消费复审/park 通知按 1 次”。另外，第 60 行“历史 ACK 但无新 receipt 保守再读取”没有给出范围。部署当刻，在飞 runner 可能被要求“处理并确认”已经执行过、甚至已被取代的旧指令，从而重复执行有副作用的动作。529 新房里没有历史邮件，这一点 QA 覆盖不到。\n\napproval_wake 本身不带正文，但 plan 规定 approval 不是默认纯信号，因此一个 pending 的 approval_wake 也会让交卷变成 2 次。\n\n建议：\n- 明确枚举根，例如 pending wake 加 QUEUED/LEASED mailbox，started/finished 仅作 batch 成员解析的来源。\n- 要么把 turn-start 投递记作 inline 正文的消费凭据，要么说明为什么不算。\n- 把“历史再读”限定在 pending wake 的成员内，并在 409 文案里标注“可能已处理，先核对再执行”。\n- 补一个“部署前已由 inbox ACK 的成员”的过渡用例。",
+        "findingKey": "obligation-enumeration-root-undefined"
+      },
+      {
+        "id": "page-size-vs-carrier-output-truncation",
+        "severity": "MEDIUM",
+        "file": "engineering/doc/FLY-2373-completion-mail-drain/plan.md",
+        "line": 68,
+        "title": "服务端无法保证“所有页都输出给模型”，分页上限必须按 carrier 实际可见的工具输出上限来定",
+        "detail": "服务端只能证明 page 命令被调用过，证明不了模型真的看到了完整输出。Codex 的 exec 工具输出超过上限时，模型看到的是截掉中段的内容。如果每页 body 的上限（字节数和行数）不低于 carrier 的可见上限，并且没有扣除 409 其它文本所占的空间，那么一条长 Lead 指令会被截掉中段，模型却会照常 ACK，complete 也会成功，结果是正文静默丢失。\n\n现有 inbox 也有同样的隐患，但 plan 在这里把它写成了保证。建议：每页上限按最严格的 carrier（Codex exec 的输出上限，同时限制字节和行数）留出余量来定；在 page 输出中带上每页的 digest 和页序号，ACK 时要求提交全部页的 digest 回执。T2 需要加一个超上限正文的真实 carrier 用例。",
+        "findingKey": "page-size-vs-carrier-output-truncation"
+      },
+      {
+        "id": "successor-dispatch-gated-on-commdb-reconcile",
+        "severity": "LOW",
+        "file": "engineering/doc/FLY-2373-completion-mail-drain/plan.md",
+        "line": 78,
+        "title": "后继派发依赖 CommDB settlement reconcile，但失败时的有界重试、告警和具体 dispatcher 文件都没写",
+        "detail": "“dispatcher释放后继前要求drain settlement reconcile”会让 CommDB 能否写入成为 workflow 往前走的新前提。CommDB 持续写失败时，后继会一直被卡住。plan 没有说明重试上限、告警路径和降级策略，也没有写明是哪一个 dispatcher（workflow-engine-dispatcher.ts 还是 run-dispatcher.ts）。\n\n如果采纳 settled-wake-left-pending-readers 的建议（结算即 finished），那么 settlement 缺失的后果只是重复投递，这个门控可以降级为告警。",
+        "findingKey": "successor-dispatch-gated-on-commdb-reconcile"
+      },
+      {
+        "id": "bridge-commdb-writable-lock-scope",
+        "severity": "LOW",
+        "file": "engineering/doc/FLY-2373-completion-mail-drain/plan.md",
+        "line": 75,
+        "title": "完工路径需要从只读 CommDB 改为可写 IMMEDIATE 事务，这对 Bridge 事件循环的影响没有写",
+        "detail": "event-route.ts 目前在 drain 判断里用的是 CommDB.openReadonly。§5 要求 Bridge 在完工同步阶段持有 CommDB 的 IMMEDIATE 写锁，同时调用 StateStore.commitEnrolledCompletion。better-sqlite3 是同步的：CLI 写者（Lead send、runner inbox、check）持锁时，Bridge 在 busy_timeout 期间会整体阻塞。反过来，Bridge 持锁期间，所有 CLI 写 CommDB 都会被挡住。\n\n已核实 StateStore 内部没有反向打开 CommDB，所以自锁风险低。但 plan 应写明：连接从只读改为可写、busy_timeout 的取值、锁内工作量的上限（例如哈希 content-ref 大正文这类 I/O 应尽量在锁外预计算、锁内只比对 digest）。",
+        "findingKey": "bridge-commdb-writable-lock-scope"
+      },
+      {
+        "id": "retention-fragments-missing",
+        "severity": "LOW",
+        "file": "engineering/doc/FLY-2373-completion-mail-drain/plan.md",
+        "line": 46,
+        "title": "新增的两张 CommDB 表没有写 retention 分类片段和保留策略",
+        "detail": "runner_content_consumption 和 runner_wake_settlement 都需要在 scripts/lib/fly-2006-retention-tables/comm/<table>.json 里登记分类，否则 Quick Gate 会报 schema_unclassified（fly-2006-retention-registry.mjs:60）。T1 和 T3 的文件清单都没有列这两个文件，也没有说明这两张表的保留和清理策略：凭据和结算行会随门铃无限增长，已有的 pruneTerminalRunnerReceiptWakes 是否需要级联清理也没说。",
+        "findingKey": "retention-fragments-missing"
+      },
+      {
+        "id": "gate-and-verify-approval-consumers",
+        "severity": "LOW",
+        "file": "engineering/doc/FLY-2373-completion-mail-drain/plan.md",
+        "line": 54,
+        "title": "plan 只写了 check.ts，漏了 gate.ts 这个 consumeGateResponse 消费者；verify-approval 用的是纯查询 getResponse",
+        "detail": "commands/gate.ts:308 在阻塞等待拿到答复后，也会调用 consumeGateResponse。凭据应该写在 consumeGateResponse 内部，这样 gate.ts 也能覆盖到，并给 gate 补测试。\n\nverify-approval.ts:527 用的是 getResponse。审批答复如果是某个 doorbell 的成员，就永远不会产生 receipt，每次都要走 drain_ack 多一轮。这是有意为之还是遗漏，plan 需要写明。",
+        "findingKey": "gate-and-verify-approval-consumers"
+      },
+      {
+        "id": "tests_not_run",
+        "severity": "LOW",
+        "file": "engineering/doc/FLY-2373-completion-mail-drain/plan.md",
+        "line": 139,
+        "title": "worktree 没有安装依赖，本轮没有执行基线测试",
+        "detail": "被评审的改动只有文档。本 worktree 没有 node_modules（根目录和各 package 都没有），§9 列的现有套件（flywheel-comm 的 db.fly2268/db.fly1774/complete/receipt-wake-state-machine/mailbox-settlement，teamlead 的 fly2268-replay/event-route-session-completed-guard，claude-runner 的 fly2268-resident-receiver）都没有运行。我已核实这些测试文件都存在，列出的两个 teamlead 测试也都不调用 startBridge。本结论完全基于源码审读。",
+        "findingKey": "tests_not_run"
+      }
+    ],
+    "settled": [],
+    "policyNote": "medium_low_findings_are_non_blocking_v1",
+    "deliveryNonce": "5d210654-d6db-4c7a-8468-c5a84e38ddcf"
+  }
+}

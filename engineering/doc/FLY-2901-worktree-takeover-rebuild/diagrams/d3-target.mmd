@@ -1,0 +1,15 @@
+flowchart LR
+  H["H = 目录当前提交点"] --> Q1{"S 是 H 的祖先<br/>或 H 已是远端分支头?"}
+  Q1 -- 是 --> T1["目标 = H<br/>不丢任何提交<br/>(含 FLY-2463: 前任 rebase 后已推送)"]
+  Q1 -- 否 --> Q2{"H 落后于 S?"}
+  Q2 -- 是 --> T2["目标 = S<br/>快进, 零丢失"]
+  Q2 -- 否, 分叉且未推送 --> T3["目标 = S<br/>H 先推到救援分支<br/>发一条提醒: 有提交被搁置"]
+  T1 --> R{"远端分支头 R<br/>包含在目标里?"}
+  T2 --> R
+  T3 --> R
+  R -- 是 --> GO["继续清理"]
+  R -- 否 --> STOP["停手 + 告警<br/>远端有目标里没有的工作"]
+  classDef stop fill:#ffe5e5,stroke:#ff3b30,color:#1d1d1f;
+  classDef good fill:#e6f9ed,stroke:#34c759,color:#1d1d1f;
+  class STOP stop;
+  class GO,T1,T2,T3 good;

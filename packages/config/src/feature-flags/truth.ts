@@ -749,6 +749,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"secret: one-shot generalized workflow output credential",
 	FLYWHEEL_ALERT_REPAIR_BOT_TOKEN_ENV:
 		"config value: repair-bot token env NAME",
+	FLYWHEEL_QA_IDLE_THREAD_SWEEP_BOT_TOKEN_ENV:
+		"config value: QA Testing idle-thread sweep bot token env NAME (FLY-2916); unset keeps the QA group off",
 	// value config (non-boolean)
 	FLYWHEEL_PROJECTS: "config value: inline projects json (env-pin)",
 	FLYWHEEL_COMM_BACKEND: "config value: comm backend",

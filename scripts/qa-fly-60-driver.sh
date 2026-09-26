@@ -40,6 +40,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=lib/qa-slot-pool.sh
+source "${SCRIPT_DIR}/lib/qa-slot-pool.sh"
 
 SLOT=""
 SCENARIO="all"
@@ -70,7 +72,7 @@ usage() {
 Usage: scripts/qa-fly-60-driver.sh --slot <N> [options]
 
 Required:
-  --slot <N>              Slot number (1-4) for test-deploy.sh
+  --slot <N>              Slot number from the configured test-deploy pool
 
 Options:
   --scenario <id>         hp | v1 | v2 | v3 | v4a | v4b | v5 | v6 | all (default: all)
@@ -107,7 +109,15 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -z "$SLOT" ]] && { err "--slot is required"; usage 3; }
-[[ "$SLOT" =~ ^[1-4]$ ]] || { err "--slot must be 1-4 (got '$SLOT')"; exit 3; }
+SLOTS_FILE="${HOME}/.flywheel/test-slots.json"
+if ! TOTAL_SLOTS="$(qa_slot_pool_size "$SLOTS_FILE")"; then
+  err "invalid slot pool in ${SLOTS_FILE}"
+  exit 3
+fi
+if ! qa_slot_pool_require_member "$SLOTS_FILE" "$SLOT"; then
+  err "--slot must be in configured range 1-${TOTAL_SLOTS} (got '$SLOT')"
+  exit 3
+fi
 [[ "$G3_TRIALS" =~ ^[0-9]+$ ]] && (( G3_TRIALS > 0 )) || { err "--g3-trials must be positive"; exit 3; }
 
 # FLY-153: hard-gate suite is Runner-driven E2E and incompatible with mirror

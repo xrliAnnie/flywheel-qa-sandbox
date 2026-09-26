@@ -102,6 +102,13 @@ function makeWtManager(worktreePath: string) {
 			branch: "flywheel-FLY-1188",
 		})),
 		isRegistered: vi.fn(async () => false),
+		// FLY-2901: shared-branch takeovers classify registration inside the
+		// transaction; "not registered + absent" is its create path.
+		runTakeoverTransaction: vi.fn(async function (this: {
+			create: () => Promise<unknown>;
+		}) {
+			return { kind: "created", worktree: await this.create() };
+		}),
 		removeIfExists: vi.fn(async () => true),
 		create: vi.fn(async () => ({
 			projectName: "proj",
@@ -303,6 +310,30 @@ describe("FLY-1188 M2 — codex prompt has ZERO Claude-only tooling references",
 		expect(prompt).not.toContain(
 			"make your final message a short status note and END YOUR TURN",
 		);
+	});
+
+	it("FLY-2373 codex gate waits never stay inside one turn", async () => {
+		const phase = await buildCodexPrompt({
+			sessionRole: "implement",
+			shareParentBranch: true,
+			startPoint: "abc123",
+		});
+		expect(phase).toContain("CODEX GATE WAIT LAW");
+		expect(phase).toContain("Never wait inside one turn");
+		expect(phase).toContain("no `sleep`/`check` loop");
+		expect(phase).toMatch(
+			/park --exec-id \S+ --reason "waiting for question <questionId>"/,
+		);
+		expect(phase).toContain("END ONLY YOUR CURRENT TURN");
+		expect(phase).not.toContain("nothing auto-resumes or wakes you");
+		expect(phase).not.toContain("Nothing auto-resumes or wakes you");
+
+		const resident = await buildCodexPrompt();
+		expect(resident).toContain("Never wait inside one turn");
+		expect(resident).toContain(
+			"end your current turn; the goal continues and you `check` again next turn",
+		);
+		expect(resident).not.toContain('--reason "waiting for question');
 	});
 
 	it("codex DAG workflow design phase parks after its exact completion route", async () => {

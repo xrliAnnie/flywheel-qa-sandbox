@@ -55,7 +55,7 @@ CODEX_SLOT=34; CODEX_EXTRA_SLOT=35
 WORKER_SENTINEL_PID=""; DAEMON_SENTINEL_PID=""; TMUX_SENTINEL_PID=""
 # Per-process high ports keep repeated/parallel hermetic runs independent. A
 # force-stopped prior test must not make a new run accept its orphan listener.
-FIXTURE_PORT_BASE=$((20000 + ($$ % 5000)))
+FIXTURE_PORT_BASE=$((21000 + ($$ % 4000)))
 LEAD_PORT=$FIXTURE_PORT_BASE
 NOLEAD_PORT=$((FIXTURE_PORT_BASE + 1))
 cleanup() {
@@ -101,6 +101,7 @@ cp "${SCRIPT_DIR}/lib/qa-room.sh" \
   "${SCRIPT_DIR}/lib/qa-report-host.mjs" \
   "${SCRIPT_DIR}/lib/qa-report-host-bridge-wrapper.sh" \
   "${SCRIPT_DIR}/lib/qa-slot-bridge.sh" \
+  "${SCRIPT_DIR}/lib/qa-slot-pool.sh" \
   "${SCRIPT_DIR}/lib/qa-slot-env-contract.sh" \
   "${SCRIPT_DIR}/lib/qa-slot-env-contract.json" \
   "${SCRIPT_DIR}/lib/qa-slot-bridge-spec.mjs" \

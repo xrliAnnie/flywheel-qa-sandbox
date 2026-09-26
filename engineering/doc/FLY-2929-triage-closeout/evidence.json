@@ -1,0 +1,1789 @@
+{
+ "generated": "2026-09-26T06:30Z",
+ "deployed_sha": "59123848aac6a128ebb8291265fb06915d322b3b",
+ "acts": [
+  {
+   "id": "FLY-2081",
+   "op": "cancel",
+   "basis": "描述首行明写「⚠️测试用·可删」:FLY-2080 QA attempt 4 按 founder 8-27 05:36 授权建的补测夹具,×2 均为合成实例(run 92626055 rework:qa4-synthetic),未对生产库执行;巡检 7 天 0 命中。非真实病根。",
+   "state_before": "In Progress",
+   "result": {
+    "op": "cancel",
+    "before": "In Progress",
+    "comment": "9f7a2fb6-db39-4ab9-bee7-75cbd1e3e20f",
+    "state": true,
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2089",
+   "op": "cancel",
+   "basis": "描述明写「⚠️测试用·可删」:FLY-2080 qa@5 复测「截断安全查重 + ×N 累加」的夹具,形状 qa_retest_synthetic_root_2080,根因「无」;巡检 0 命中。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "cancel",
+    "before": "Backlog",
+    "comment": "0735ced1-dbe9-446c-822e-b97c4e7ce571",
+    "state": true,
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2120",
+   "op": "done",
+   "prs": [
+    "1053",
+    "1059"
+   ],
+   "refs": "#1053(069013b25,2026-09-03)、#1059(86387f17d,2026-09-03)",
+   "basis": "PR #1053(069013b25, FLY-2278, merged 2026-09-03T19:29Z)删除 reconcileWorkflowReworkStalls/escalateWorkflowReworkStall 及 REWORK_ALERT/HOLD 两旋钮,rework 观测并入 delivery-contract watch 且 alive 时绝不 hold,并加 GET holds/POST resume 正门;#1059(86387f17d, FLY-2096)钉退役回归。origin/main 已无 rework_activation_stalled_held 的写入点(仅剩读侧)。09-04T05:51Z FLY-2301 实例发生在合入后、09-04 00:00 PT 班车前(FLY-2096 milestone 记生产 buildSha 早于 2278),属旧字节;此后无新实例。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "done",
+    "before": "Backlog",
+    "comment": "927bb019-04eb-4cbb-a27b-c9741340eed4",
+    "state": true,
+    "ok": true
+   },
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-03T19:29:31Z",
+    "last_fix_merged": "2026-09-03T23:42:06Z",
+    "comments_after_fix": [
+     "2026-09-04T06:40:18.332Z",
+     "2026-09-04T06:38:49.054Z",
+     "2026-09-04T06:34:57.564Z"
+    ],
+    "patrol_lines_after_fix": []
+   }
+  },
+  {
+   "id": "FLY-2128",
+   "op": "done",
+   "prs": [
+    "982",
+    "1080",
+    "1089",
+    "1119"
+   ],
+   "refs": "#982(078f1811e,2026-08-29)、#1080(df815b841,2026-09-04)、#1089(73f438996,2026-09-05)、#1119(d294723ea,2026-09-07)",
+   "basis": "三次实例均已有根因且修复在 main:08-28 FLY-2097 卡=FLY-2129 的误退休(见下);08-29 两张卡为 event-loop 卡顿延迟非丢失(评论自证,FLY-2058/#982、FLY-2331/#1080、FLY-2339/#1089 已修);09-07 FLY-2394 由 FLY-2426 定因“根因不在 reaction/reply pickup”,是嵌套仓 PR 号误套主仓同号 merged PR 导致 superseded_merged,修复 PR #1119(d294723ea, merged 2026-09-07T23:57Z)。09-07 后无新实例。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "done",
+    "before": "Backlog",
+    "comment": "f578dfdb-d8b8-4bc6-b2fe-ab677f668ce5",
+    "state": true,
+    "ok": true
+   },
+   "recurrence_check": {
+    "first_fix_merged": "2026-08-29T04:50:03Z",
+    "last_fix_merged": "2026-09-07T23:57:14Z",
+    "comments_after_fix": [
+     "2026-09-07T16:06:57.487Z"
+    ],
+    "patrol_lines_after_fix": []
+   }
+  },
+  {
+   "id": "FLY-2129",
+   "op": "done",
+   "prs": [
+    "1119"
+   ],
+   "refs": "#1119(d294723ea,2026-09-07)",
+   "basis": "根因已核实即 FLY-2426:FLY-2097 attempt1 session pr_number=3 是 raya 仓 PR #3(gh 核:xrliAnnie/raya#3 = FLY-2097),externalMergeReconciler 拿它查 flywheel #3(2026-02-28 MERGED)⇒ revalidate 返回 authorized ⇒ 误判 superseded_merged。PR #1119(d294723ea, merged 2026-09-07T23:57Z)要求退休必须精确命中 __main__ anchor PR+run+exact-head binding。仅 1 例,之后无复发。遗留“死门收批准不告警/无复活路”未单独修,但误判源头已除。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "done",
+    "before": "Backlog",
+    "comment": "aec15ec3-5980-4596-a54b-6bb8917e302b",
+    "state": true,
+    "ok": true
+   },
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-07T23:57:14Z",
+    "last_fix_merged": "2026-09-07T23:57:14Z",
+    "comments_after_fix": [],
+    "patrol_lines_after_fix": []
+   }
+  },
+  {
+   "id": "FLY-2172",
+   "op": "cancel",
+   "basis": "仅 1 例(FLY-2121, 08-30),触发条件是 Lead 手工把 stall-hold 的 delivery 从 held 拨到 awaiting_receipt(合同外账本手术),引擎自身路径是否同病“待查”且此后无复现、巡检零命中。产生该 held 的 stall 看门狗已被 #1053(FLY-2278)删除,合同内解冻改走 hold resume 正门。邻近但不同的“ACK 未投影成回执”已由 #1310(FLY-2828)处理。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "cancel",
+    "before": "Backlog",
+    "comment": "322ff478-bdf1-4630-a14a-32af8a3336b9",
+    "state": true,
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2176",
+   "op": "cancel",
+   "basis": "误读:teamlead.db flag_scan_runs 只读核实为每周一次(08-17/08-23/08-30/09-06/09-13/09-20),“停更 6 天”就是周节拍间隔;08-30 那次扫描已把离场落账(flag_departures 49 行,max 08-30)。评论里 08-30 扫描的 value-clock 缺失/投递 fail-closed 属 FLY-2374 的缺口,不是本单现象。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "cancel",
+    "before": "Backlog",
+    "comment": "6352d813-8607-45b6-90e8-64965415b7c5",
+    "state": true,
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2231",
+   "op": "done",
+   "prs": [
+    "1137"
+   ],
+   "refs": "#1137(5cbd540f1,2026-09-10)",
+   "basis": "FLY-2454 #1137(5cbd540f1,2026-09-10T01:02Z 合入)把 FLYWHEEL_CODEX_HOMES_ROOT/SESSION_DIR/DAEMON_SOCKET_ROOT 写进 scripts/lib/qa-slot-env-contract.json 的 redirect + boot mustBeUnderRoot;FLY-2454 标题明写修 2231。描述里说的 FLY-2174 commit aae1b3b02/e643b8a20 实际不在 main。之后巡检零命中;9-3 评论那例是 COMM_DB 越界(属 FLY-2287)。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "done",
+    "before": "Backlog",
+    "comment": "56087fe0-345e-4657-962c-a1e572de72fb",
+    "state": true,
+    "ok": true
+   },
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-10T01:02:32Z",
+    "last_fix_merged": "2026-09-10T01:02:32Z",
+    "comments_after_fix": [],
+    "patrol_lines_after_fix": []
+   }
+  },
+  {
+   "id": "FLY-2287",
+   "op": "hold",
+   "verdict": "已修未关",
+   "reason": "修复 #1137 的 boot 守卫只在设置了隔离根(slot)时生效;本单最后一例正是 QA 体手工起「隔离」Bridge 未 env -i、未设隔离根而继承生产 env——这条路径 #1137 不覆盖(隔离根为空即按 production 模式放行),盘点证据自己也写「未逐行核」。现象不能确认已根除。",
+   "state_before": "Backlog",
+   "result": null,
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-04T23:41:19Z",
+    "last_fix_merged": "2026-09-10T01:02:32Z",
+    "comments_after_fix": [
+     "2026-09-09T09:53:52.439Z"
+    ],
+    "patrol_lines_after_fix": [
+     [
+      "2026-09-09T09:51:05Z",
+      "STEP6_NOTE no UNAVAILABLE this tick; previous report 20260909T084728Z had none un-filed. Carry-over registered: FLY-2287 x4->x5 (QA-launched isolated Bridge without env -i touched production quarantine marker; fix = FLY-2454 PR #1137 + attempt-2 criteria). Led"
+     ],
+     [
+      "2026-09-09T11:45:20Z",
+      "STEP6_NOTE no UNAVAILABLE this tick; previous report 20260909T104603Z had none un-filed. Ledger: FLY-2371 x2->x3 (comment bfd73c93, continuing-incident observation per FLY-2287 precedent). No other bridge_problem finding this tick."
+     ]
+    ]
+   }
+  },
+  {
+   "id": "FLY-2299",
+   "op": "done",
+   "prs": [
+    "1310"
+   ],
+   "refs": "#1310(88eb9fadc,2026-09-24)",
+   "basis": "FLY-2828 #1310(88eb9fadc,2026-09-24T16:25Z)在完工转换里强制结算:awaiting_receipt/turn_granted 的 rework 投递在节点完成时被 inline 投影回执并结算,「never advance leaving delivery and path unsettled behind a done node」,并把 verification path 纳入同一 open 判据——覆盖本单「目标 QA done 后验证路投递仍 awaiting_receipt → rework_already_open」的根因。本单仅 1 例(9-3),9-12 巡检只作为 FLY-2517 的「类似」观察项。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "done",
+    "before": "Backlog",
+    "comment": "7138bd6f-a9df-48ca-88a7-94bc0a75f502",
+    "state": true,
+    "ok": true
+   },
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-24T16:25:55Z",
+    "last_fix_merged": "2026-09-24T16:25:55Z",
+    "comments_after_fix": [],
+    "patrol_lines_after_fix": []
+   }
+  },
+  {
+   "id": "FLY-2308",
+   "op": "cancel",
+   "basis": "仅 9-3 一晚 1 例,巡检零复现(21 天)。main 上 patrol-tick.ts 每个 tick pass 都新建 capacityPromise 调 buildCapacitySnapshot(9-3 时的 4555e82bc 版本相同),与描述「tick 构建时没重新取样」的根因不符;更可能是那一晚同一条 tick 通知被重复投递,无法再证实。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "cancel",
+    "before": "Backlog",
+    "comment": "815463a1-3ae6-41ea-896f-417ca63d5c81",
+    "state": true,
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2315",
+   "op": "done",
+   "prs": [
+    "1047"
+   ],
+   "refs": "#1047(61e6c6798,2026-09-04)",
+   "basis": "FLY-2283 #1047(61e6c6798,2026-09-04T02:37Z)「guarantee hosted reports for 14 days」删掉了条数/体积 oldest-first 上限:main 上 report-registry.ts:843 注释「TTL is the only retention rule…Aggregate count and byte limits…intentionally absent」。本单根因(全舰共用条数/体积配额按最旧踢掉未答卡的页)随之消失;之后零复现。残余:超过 14 天未答的卡仍会 404,属另一问题。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "done",
+    "before": "Backlog",
+    "comment": "a060bc3f-1d73-410b-bfc9-9b1803f34d4c",
+    "state": true,
+    "ok": true
+   },
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-04T02:37:10Z",
+    "last_fix_merged": "2026-09-04T02:37:10Z",
+    "comments_after_fix": [],
+    "patrol_lines_after_fix": []
+   }
+  },
+  {
+   "id": "FLY-2321",
+   "op": "done",
+   "prs": [
+    "1067"
+   ],
+   "refs": "#1067(7e1c93cf7,2026-09-04)",
+   "basis": "FLY-2222 #1067(7e1c93cf7,2026-09-04T03:58Z)让 runner 的 inbox 把排队中的 response 显式列出并指令逐个 `check <question-id>`(「inbox does not consume response bodies」),消除「体报 no new instruction 而回复永远 QUEUED」的假阴性。本单实例 9-4 03:18–06:12Z 与合入同时段(大概率未部署)。之后巡检零命中。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "done",
+    "before": "Backlog",
+    "comment": "49098630-d89b-4cd6-ab0e-076c3106b50c",
+    "state": true,
+    "ok": true
+   },
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-04T03:58:31Z",
+    "last_fix_merged": "2026-09-04T03:58:31Z",
+    "comments_after_fix": [
+     "2026-09-04T06:12:22.327Z"
+    ],
+    "patrol_lines_after_fix": [
+     [
+      "2026-09-04T05:59:52Z",
+      "FINDING step=4 bridge_problem=yes result=escalated-with-plan evidence=mailbox_queued_x5_to_470e0afd_never_leased owner=agent:flywheel-eng-lead next=inspect:codex_inbox_response_kind_unleased epic=FLY-2072#d02c0c12-a505-424a-8f8c-e68b4d0e7560 epic_marker=6eca5c"
+     ]
+    ]
+   }
+  },
+  {
+   "id": "FLY-2333",
+   "op": "done",
+   "prs": [
+    "1077"
+   ],
+   "refs": "#1077(54cdf97f4,2026-09-04)",
+   "basis": "修法 FLY-2332 PR#1077(54cdf97f4,2026-09-04T19:03Z 合入 main):workflow-rework-coordinator.ts:966 在 idempotent replay 时调用 rotateGeneralizedWorkflowSubmissionCredential,正是本单根因。唯一实例(FLY-2301 run 5c616eb3 qa@7)为修前存量,21:54Z 复核同一实例未新增;FLY-2301 已于 9-5 Done。巡检命中 2 次全在 9-4,近 7 天 0 次,修复后无新实例。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "done",
+    "before": "Backlog",
+    "comment": "cf2430e1-09af-4d8a-b954-0fd6b733d38e",
+    "state": true,
+    "ok": true
+   },
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-04T19:03:54Z",
+    "last_fix_merged": "2026-09-04T19:03:54Z",
+    "comments_after_fix": [
+     "2026-09-04T21:54:56.436Z"
+    ],
+    "patrol_lines_after_fix": [
+     [
+      "2026-09-04T21:50:30Z",
+      "DWELL_NOTE FLY-2301 qa@7 deep dive 21:53Z: content read (pane %626 + run events seq 740-743 rework_delivery_claimed every 3-5min + activation epoch18 submission_credential NULL + delivery wake_delivered/actor_alive_after_receipt since 11:01Z): QA body holds PA"
+     ]
+    ]
+   }
+  },
+  {
+   "id": "FLY-2335",
+   "op": "done",
+   "prs": [
+    "1079"
+   ],
+   "refs": "#1079(96db86e58,2026-09-04)",
+   "basis": "修法 FLY-2334 PR#1079(96db86e58,2026-09-04T19:01Z 合入 main):claude-review-runner.ts:502-504 注入 VITEST_MAX_THREADS/FORKS=4,review-request-coordinator 同 head 复用 job——覆盖本单两条根因(无线程上限+同 head 重复起审)。仅 9-4 一次,巡检 1 次,之后无复发。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "done",
+    "before": "Backlog",
+    "comment": "8781bd86-1860-42d9-9755-6977b20c46a3",
+    "state": true,
+    "ok": true
+   },
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-04T19:01:55Z",
+    "last_fix_merged": "2026-09-04T19:01:55Z",
+    "comments_after_fix": [],
+    "patrol_lines_after_fix": []
+   }
+  },
+  {
+   "id": "FLY-2340",
+   "op": "done",
+   "prs": [
+    "1224"
+   ],
+   "refs": "#1224(aaf8e9c0e,2026-09-17)",
+   "basis": "修法并入 FLY-2616 PR#1224(aaf8e9c0e,2026-09-17T05:39Z 合入 main):新增 bridge/land-owner-liveness.ts,按 owner pid+process_start+host_boot 探活,死 owner 立即 reclaim(land_owner_reclaimed),不再等 1h 租约。两次实例(9-4、9-16T03:31Z)都在合入前;巡检最后命中 9-4,合入后无新实例。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "done",
+    "before": "Backlog",
+    "comment": "daf5cb69-a20c-417a-bf7f-5089f961220a",
+    "state": true,
+    "ok": true
+   },
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-17T05:39:01Z",
+    "last_fix_merged": "2026-09-17T05:39:01Z",
+    "comments_after_fix": [],
+    "patrol_lines_after_fix": []
+   }
+  },
+  {
+   "id": "FLY-2348",
+   "op": "done",
+   "prs": [
+    "1084"
+   ],
+   "refs": "#1084(641734888,2026-09-05)",
+   "basis": "FLY-2337 PR#1084(641734888,2026-09-05T07:23Z 合入 main)在 delivery-operations.ts:419/778 对 DEAD 且 type=response 的信不再复制 reroute,改走 StateStore.terminalizeUnsupportedWorkflowMailboxResponse(reason=response_reroute_unsupported,runHeld=false)fail-fast 结算,正是本单修法方向之一;UNIQUE 冲突与 hold 永不清的路径已不可达。仅 9-4/9-5 一次记录,之后无复发。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "done",
+    "before": "Backlog",
+    "comment": "eb945be8-4da9-42ec-a1eb-fe427b204d78",
+    "state": true,
+    "ok": true
+   },
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-05T07:23:12Z",
+    "last_fix_merged": "2026-09-05T07:23:12Z",
+    "comments_after_fix": [],
+    "patrol_lines_after_fix": []
+   }
+  },
+  {
+   "id": "FLY-2372",
+   "op": "cancel",
+   "basis": "宿主双 tmux 二进制事故:2026-09-25 实测 /usr/local/bin/tmux 已不存在,仅剩 /opt/homebrew/bin/tmux→3.7c,PATH 顺序已无法再命中 3.5a。只出现 1 次(9-5T19:45Z),巡检最后命中 9-6,Lead 当场 export PATH 恢复。scripts/lead-patrol-snapshot.sh:416 仍用 PATH 解析 tmux,但宿主只剩一个二进制后不再构成缺陷。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "cancel",
+    "before": "Backlog",
+    "comment": "7377c6d5-73e9-4052-9dff-82e440470b4e",
+    "state": true,
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2376",
+   "op": "cancel",
+   "basis": "本单自述为存量迁移缺口:只有加 episode 列之前写下的 waiting_founder 收据 episode_started_at 为 NULL,新收据都带 episode。仅 FLY-2309 同一 episode 在 9-6 连续 3 个 tick 出现,之后 19 天无巡检命中;FLY-2309 已于 9-16 Done。lead-patrol-snapshot.sh:1762 对 NULL 仍不匹配,但只作用于有限的旧行。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "cancel",
+    "before": "Backlog",
+    "comment": "0ac4a534-b3e4-4f39-b4f6-705f8a1f9cb1",
+    "state": true,
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2438",
+   "op": "done",
+   "prs": [
+    "1155"
+   ],
+   "refs": "#1155(bece7de15,2026-09-11)",
+   "basis": "9-9 评论读码定位根因:markWorkflowReworkReplacementLaunched 事件 uid 不含 route revision,第二代替身撞 uid 冲突→事务回滚→delivery 永停 replacement_pending。PR #1155(bece7de15,FLY-2504,2026-09-11T05:51Z 合入)把 uid 改为 rework_replacement_launched:<req>:<rev>:<exec>(StateStore.ts:44988),同事务 replacement_pending→wake_delivered(44947);milestone 明写「receipt UID 支持同请求第二代替身」。合入后无新实例(巡检 3 次,最后 20260909T214510Z;近 7 天 0)。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "done",
+    "before": "Backlog",
+    "comment": "df391c38-0f50-496b-bdbf-8050c60d61c7",
+    "state": true,
+    "ok": true
+   },
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-11T05:51:23Z",
+    "last_fix_merged": "2026-09-11T05:51:23Z",
+    "comments_after_fix": [],
+    "patrol_lines_after_fix": []
+   }
+  },
+  {
+   "id": "FLY-2462",
+   "op": "duplicate",
+   "target": "FLY-2586",
+   "basis": "[归并] 与 FLY-2586 同一缺口:重启后 reown 恢复提交后 turn reconcile 失败(active_turn_mismatch)即判死,错误码逐字相同;2586 次数更多(24)、实例延续到 9-24。原批次判定:main 上 codex-session-reown.ts:927 commit 后 reconcileBeforeArm 失败仍抛「turn reconciliation failed after recovery commit」,flywheel-comm db.ts:7420 reconcileTurnState 对 active_turn_id 不同仍返回 active_turn_mismatch;9-10 以来仅 FLY-2808 #1299(default-off standby 开关)与 FLY-2877 触及该文件,无针对修复。本单实例到 9-14T19:19Z;同一缺口的 FLY-2586(同错误码,班车后重启前 Codex 体必死)实例延续到 2026-09-24T19:13Z,应并入本单(本单更早、根因更精确)。",
+   "existing": null,
+   "state_before": "Backlog",
+   "result": {
+    "op": "duplicate",
+    "before": "Backlog",
+    "relation": true,
+    "comment": "0cf78416-2cd7-4cd1-b175-fd25b3343f40",
+    "state": true,
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2466",
+   "op": "done",
+   "prs": [
+    "1224"
+   ],
+   "refs": "#1224(aaf8e9c0e,2026-09-17)",
+   "basis": "PR #1224(aaf8e9c0e,FLY-2616,2026-09-17T05:39Z 合入)给 land closeout 加了 proven-gone 收账:lifecycle-closeout.ts:1501/1989 调 finalizeProvenGoneCommDbSession,flywheel-comm db.ts finalizeProvenGoneSession 在证明体消失后直接 DELETE runner_declared_states(不再被 parked 声明短路)。9-16T01:45Z 的记录早于该修复合入;此后无新实例(巡检最后 20260909T184629Z)。注:point 模式 kept_parked 守卫(commdb-session-prune.ts:504)仍在,但 land 收尾已不走它。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "done",
+    "before": "Backlog",
+    "comment": "6f3f3090-8816-4b26-ba2d-b6d49811dc11",
+    "state": true,
+    "ok": true
+   },
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-17T05:39:01Z",
+    "last_fix_merged": "2026-09-17T05:39:01Z",
+    "comments_after_fix": [],
+    "patrol_lines_after_fix": []
+   }
+  },
+  {
+   "id": "FLY-2472",
+   "op": "hold",
+   "verdict": "重复",
+   "reason": "与 FLY-2202 只共享修法②(implement_done 不校验产品代码 diff);本单独有的机制①——resume 替身重放死体 transcript 末尾的 complete 步——不在 2202 范围内,不是同一病根。改挂到修复单 #6 FLY-2921。",
+   "state_before": "Backlog",
+   "result": null
+  },
+  {
+   "id": "FLY-2477",
+   "op": "done",
+   "prs": [
+    "1164"
+   ],
+   "refs": "#1164(26ebc4931,2026-09-13)",
+   "basis": "PR #1164(26ebc4931,FLY-2478,2026-09-13T22:16Z 合入)在 codex-phase-lifecycle.ts:471-499 加入 stale_boundary 采纳:Bridge 端同 activation/node 的 resident|woken 行存在时沿用其 boundary 并返回,不再抛「resident hold refused」杀体;milestone 写明「resident boundary 续期及 stale boundary 采纳已覆盖」。最后实例 9-13T23:47Z 早于次日 00:00 PT(07:00Z)班车部署;此后 11 天无新实例(巡检最后 20260911T154553Z)。残留风险:activation 不同的 woken 行仍会走抛错分支。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "done",
+    "before": "Backlog",
+    "comment": "730a8b41-9e76-4483-af70-3394f5db7312",
+    "state": true,
+    "ok": true
+   },
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-13T22:16:27Z",
+    "last_fix_merged": "2026-09-13T22:16:27Z",
+    "comments_after_fix": [
+     "2026-09-13T23:52:33.465Z"
+    ],
+    "patrol_lines_after_fix": []
+   }
+  },
+  {
+   "id": "FLY-2518",
+   "op": "done",
+   "prs": [
+    "1168"
+   ],
+   "refs": "#1168(9713de9e5,2026-09-13)",
+   "basis": "PR #1168(9713de9e5,FLY-2517,2026-09-13T22:12Z 合入)明确并入本单两项:engineering/doc/FLY-2517-replacement-wake-retirement/plan.md §7.1「Lead 并入 FLY-2518:失败解锁与已完成目标 no-op」,milestone 写「FLY-2518 staging 失败操作写唯一 failed receipt,解除永久处理中状态」「已完成对应任务的替身 reroute_to 只关闭旧义务」。合入后无新实例。Linear 仍 In Progress、无开放 PR,应关。",
+   "state_before": "In Progress",
+   "result": {
+    "op": "done",
+    "before": "In Progress",
+    "comment": "3228965a-d654-4a8b-9ced-eb5385a4453f",
+    "state": true,
+    "ok": true
+   },
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-13T22:12:58Z",
+    "last_fix_merged": "2026-09-13T22:12:58Z",
+    "comments_after_fix": [],
+    "patrol_lines_after_fix": []
+   }
+  },
+  {
+   "id": "FLY-2521",
+   "op": "done",
+   "prs": [
+    "1246",
+    "1260"
+   ],
+   "refs": "#1246(1efbb9332,2026-09-18)、#1260(487799b80,2026-09-19)",
+   "basis": "PR #1246(1efbb9332,FLY-2676,2026-09-18T08:48Z 合入):readiness receipt 缺失/凭据不共享时自动切号保持关闭、每个额度事件发 N11 codex_quota_automation_disabled 可见告警、普通新 admission 退回手工不再被历史 pause 卡死;PR #1260(487799b80,FLY-2523,2026-09-19T03:57Z 合入)自动收敛 home 凭据软链与 readiness 收据(部署未完成那一半)。之后无新实例(巡检最后 20260918T024518Z,早于修复)。dead-exec recovery 直读 pause 的残余归 FLY-2525。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "done",
+    "before": "Backlog",
+    "comment": "1933ccf1-704f-4b4b-804c-a0849fdd6446",
+    "state": true,
+    "ok": true
+   },
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-18T08:48:47Z",
+    "last_fix_merged": "2026-09-19T03:57:20Z",
+    "comments_after_fix": [],
+    "patrol_lines_after_fix": []
+   }
+  },
+  {
+   "id": "FLY-2522",
+   "op": "done",
+   "prs": [
+    "1168"
+   ],
+   "refs": "#1168(9713de9e5,2026-09-13)",
+   "basis": "PR #1168(9713de9e5,FLY-2517,2026-09-13T22:12Z 合入):「proven-dead replacement 与 writer convergence 原子记录旧 wake 退役证明…投影、watch 和最终 hold 事务不再把已换体的旧信提升为 run hold」,覆盖 rework 家族。9-13T22:13Z 实例发生在合入后、次日 07:00Z 班车部署前(评论原文「22:12 已合入,07:00Z 班车部署后看能否自清」);此后无新实例(巡检最后 20260914T014607Z)。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "done",
+    "before": "Backlog",
+    "comment": "16800911-27e9-40af-bd7a-507c3e1eff30",
+    "state": true,
+    "ok": true
+   },
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-13T22:12:58Z",
+    "last_fix_merged": "2026-09-13T22:12:58Z",
+    "comments_after_fix": [
+     "2026-09-13T23:47:21.465Z"
+    ],
+    "patrol_lines_after_fix": []
+   }
+  },
+  {
+   "id": "FLY-2535",
+   "op": "done",
+   "prs": [
+    "1170"
+   ],
+   "refs": "#1170(c2820ba3c,2026-09-14)",
+   "basis": "修复单 FLY-2534 的 PR #1170(c2820ba3c,2026-09-14T03:03Z 合入 main,已核 ancestor)「reject workflow startup errors in CI OK」+ CI 加 actionlint,正好覆盖「被改 workflow 启动失败不进 CI OK」根因。合入后巡检/评论零复现(巡检最后提及 2026-09-12T23:45Z)。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "done",
+    "before": "Backlog",
+    "comment": "781ade89-0e30-4ce1-b456-fea2fbf7f2aa",
+    "state": true,
+    "ok": true
+   },
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-14T03:03:56Z",
+    "last_fix_merged": "2026-09-14T03:03:56Z",
+    "comments_after_fix": [],
+    "patrol_lines_after_fix": []
+   }
+  },
+  {
+   "id": "FLY-2558",
+   "op": "hold",
+   "verdict": "重复",
+   "reason": "本单描述明写与 FLY-2462(active_turn_mismatch,postCommit)「不同类」:报错点是 prepareCodexRecoveryAgentHome 的 arm 漂移(precommit)、修法是 arm 漂移容忍 + 不计 episode 预算;与 FLY-2586 同属「重启后 reown 失败」大类但不是同一病根。改挂到修复单 #7 FLY-2925。",
+   "state_before": "Backlog",
+   "result": null
+  },
+  {
+   "id": "FLY-2564",
+   "op": "done",
+   "prs": [
+    "1207"
+   ],
+   "refs": "#1207(156601a2e,2026-09-15)",
+   "basis": "FLY-2563 的 PR #1207(156601a2e,2026-09-15T16:21Z 合入 main,已核 ancestor)「bound ship-judgment observation」:加索引 + 游标分页 + modeTick 本地工作与网络 sweep 拆开、阶段间让出事件循环,正是本单根因(3s 同步全量 json_valid 扫描)。合入后零复现(巡检最后提及 2026-09-15T00:56Z)。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "done",
+    "before": "Backlog",
+    "comment": "45bfacaf-bf8f-4dc6-b226-09319da17978",
+    "state": true,
+    "ok": true
+   },
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-15T16:21:37Z",
+    "last_fix_merged": "2026-09-15T16:21:37Z",
+    "comments_after_fix": [],
+    "patrol_lines_after_fix": []
+   }
+  },
+  {
+   "id": "FLY-2565",
+   "op": "done",
+   "prs": [
+    "1207"
+   ],
+   "refs": "#1207(156601a2e,2026-09-15)",
+   "basis": "同 PR #1207(156601a2e,2026-09-15T16:21Z):释放泄漏的 CommDB 连接 + wrapper 抬 fd 软上限;origin/main scripts/flywheel-bridge-wrapper.sh:54-57 已有 ulimit -Sn 8192。合入后零复现(巡检最后提及 2026-09-15T00:56Z)。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "done",
+    "before": "Backlog",
+    "comment": "5847da72-54ac-4e29-827b-01b6028f1c2d",
+    "state": true,
+    "ok": true
+   },
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-15T16:21:37Z",
+    "last_fix_merged": "2026-09-15T16:21:37Z",
+    "comments_after_fix": [],
+    "patrol_lines_after_fix": []
+   }
+  },
+  {
+   "id": "FLY-2572",
+   "op": "duplicate",
+   "target": "FLY-2814",
+   "basis": "与 FLY-2814 同一缺口:引擎账面已判终态(usageLimited→failed / Lead 收尸),Codex goal runtime 仍自续干活,两边真相分裂;FLY-2893 普查把 2572 与 2814 同归 K13「终态后复活/自续」(codex 19 + claude 5 例,最近 2026-09-25T20:02Z)。本单是该缺口的「引擎据陈旧 failed 铸替身→worktree_takeover_failed」后果。无修复 commit。",
+   "existing": null,
+   "state_before": "Backlog",
+   "result": {
+    "op": "duplicate",
+    "before": "Backlog",
+    "relation": true,
+    "comment": "3d174044-ac4b-45be-8cce-547d062be83d",
+    "state": true,
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2592",
+   "op": "done",
+   "prs": [
+    "1216"
+   ],
+   "refs": "#1216(66f84d74e,2026-09-16)",
+   "basis": "FLY-2603 的 PR #1216(66f84d74e,2026-09-16T03:52Z 合入 main)按本单授权把 observation-performance.test.ts 从并行分片排除(origin/main scripts/teamlead-ci-shard.mjs:34 --exclude),只在专用单 worker job 跑(ci.yml:255)。合入后评论/巡检零复现。实际累计约 7 次(标题 ×4)。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "done",
+    "before": "Backlog",
+    "comment": "7ee5b53e-5aa8-4819-b921-4954ae539195",
+    "state": true,
+    "ok": true
+   },
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-16T03:52:21Z",
+    "last_fix_merged": "2026-09-16T03:52:21Z",
+    "comments_after_fix": [],
+    "patrol_lines_after_fix": []
+   }
+  },
+  {
+   "id": "FLY-2594",
+   "op": "done",
+   "prs": [
+    "1223",
+    "1222"
+   ],
+   "refs": "#1223(2768d5dc7,2026-09-16)、#1222(a3686d960,2026-09-16)",
+   "basis": "该用例 flake 根因是 Date.now 同毫秒导致 heartbeat event id 去重;PR #1223(2768d5dc7,2026-09-16T16:13Z)先给用例钉 Date.now,PR #1222(a3686d960,2026-09-16T23:29Z)改为每次 toggle 独立毫秒(HeartbeatService.test.ts:415 起)。之后零复现。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "done",
+    "before": "Backlog",
+    "comment": "b8af9bb8-4d4b-4e55-a754-e690fa8a50ca",
+    "state": true,
+    "ok": true
+   },
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-16T16:13:31Z",
+    "last_fix_merged": "2026-09-16T23:29:21Z",
+    "comments_after_fix": [],
+    "patrol_lines_after_fix": []
+   }
+  },
+  {
+   "id": "FLY-2595",
+   "op": "cancel",
+   "basis": "仅 2557 上线首轮 backfill(2026-09-15T19:02Z)命中 8 张遗留 QA 测试夹具单,Lead 当场逐张 resolve 并请 founder 关闭(FLY-127 已于 2026-09-16 Done);巡检零提及、无复现。epic-intake-route.ts 根过滤未改,但触发源是遗留夹具数据而非持续机制。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "cancel",
+    "before": "Backlog",
+    "comment": "1c0b6f7c-0b40-458a-9736-29e51ff1eb77",
+    "state": true,
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2600",
+   "op": "done",
+   "prs": [
+    "1251"
+   ],
+   "refs": "#1251(60f2fd04c,2026-09-22)",
+   "basis": "FLY-2643 的 PR #1251(60f2fd04c,2026-09-22T03:46Z 合入 main)在 tui-window.ts 去掉远程 resume 的 -s / approval_policy / default_permissions(文件头注释 14-17 行明写 0.154 拒绝),并以 pane_dead/pane_dead_status 探活(330/488 行)不再凭 create 返回码记 up。合入后零复现(最后实例 2026-09-17T21:50Z)。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "done",
+    "before": "Backlog",
+    "comment": "4d0cee55-1bdc-4f00-9884-1d5fffdaa45b",
+    "state": true,
+    "ok": true
+   },
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-22T03:46:53Z",
+    "last_fix_merged": "2026-09-22T03:46:53Z",
+    "comments_after_fix": [],
+    "patrol_lines_after_fix": []
+   }
+  },
+  {
+   "id": "FLY-2614",
+   "op": "done",
+   "prs": [
+    "1238"
+   ],
+   "refs": "#1238(45bda46ef,2026-09-17)",
+   "basis": "真实机制(worktree-cleanup 对注册分支≠派生分支名一律 SKIPPED branch_mismatch)由 FLY-2664 的 PR #1238(45bda46ef,2026-09-17T22:56Z 合入 main)修复:有可信 merged-PR 证明时允许删除分支名不一致的 worktree,并输出分型 cause。合入后巡检零新实例(最后提及 2026-09-17T23:51Z,属合入前存量)。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "done",
+    "before": "Backlog",
+    "comment": "ff3934b3-f7c0-46f0-ba72-c7200c1a7d13",
+    "state": true,
+    "ok": true
+   },
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-17T22:56:48Z",
+    "last_fix_merged": "2026-09-17T22:56:48Z",
+    "comments_after_fix": [],
+    "patrol_lines_after_fix": [
+     [
+      "2026-09-17T23:51:32Z",
+      "FINDING id=e5b7ed776b80b27d21e8324edb6cdfc66bd081ac6b325d2555ee56d3c25525e1 category=incident step=6 bridge_problem=yes result=advanced evidence=fly2601_closeout_worktree_branch_mismatch.fix_fly2664_landed_pr1238_merged_225648Z.followup_fly2691 owner=n/a next="
+     ]
+    ]
+   }
+  },
+  {
+   "id": "FLY-2615",
+   "op": "done",
+   "prs": [
+    "1227"
+   ],
+   "refs": "#1227(3876a76fe,2026-09-17)",
+   "basis": "FLY-2632 的 PR #1227(3876a76fe,2026-09-17T01:22Z 合入 main)「carry founder approval across land refresh」:按卡后引擎自动 rebase 最新 main,非冲突 hunk 逐字不变即沿用原批准,正是本单修法。合入后本单零新实例(巡检最后提及 2026-09-16T02:50Z)。残余:真冲突仍回卡路径(设计内);冲突解决后 carryover 顺序 bug 另有 FLY-2890。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "done",
+    "before": "Backlog",
+    "comment": "f599e86e-f4fb-41b9-a09f-a42f5b6e142c",
+    "state": true,
+    "ok": true
+   },
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-17T01:22:11Z",
+    "last_fix_merged": "2026-09-17T01:22:11Z",
+    "comments_after_fix": [],
+    "patrol_lines_after_fix": []
+   }
+  },
+  {
+   "id": "FLY-2629",
+   "op": "duplicate",
+   "target": "FLY-2771",
+   "basis": "与 FLY-2771 是同一段 CTE(lead-patrol-snapshot.sh:736 `WHEN c.row_count > 0 AND c.owner_count <> c.row_count THEN 'current_owner_invalid'`)、同一数据缺口:CommDB 里 lead_id 为空却永远 running 的陈旧 session 行(2771 评论实测 35f0dbf9/296488f3/c4138e92/0b2356d0,8-25~9-16 起跑至今 running)。本单只是 DWELL 维度、2771 是 CLAIM 维度,修同一处数据/判定即两维同愈。本单 4 轮均在 09-16。",
+   "existing": null,
+   "state_before": "Backlog",
+   "result": {
+    "op": "duplicate",
+    "before": "Backlog",
+    "relation": true,
+    "comment": "9fa93096-5828-423b-96b0-f3c7c7b046ab",
+    "state": true,
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2637",
+   "op": "duplicate",
+   "target": "FLY-2109",
+   "basis": "与 FLY-2109 同一缺口:切号器只换机器级凭据,在飞 Claude 体凭据焊死在旧号,撞周额度后停在空提示符、Bridge 无事件无告警,只能人眼发现(2109 为 8-28 首例、×2)。本单多出的 Fable 专属额度观测已由 FLY-2688 #1258(10e0db910)额度页部分补上,但在飞体静默停摆这一根因未修。",
+   "existing": null,
+   "state_before": "Backlog",
+   "result": {
+    "op": "duplicate",
+    "before": "Backlog",
+    "relation": true,
+    "comment": "3fa23c72-b438-43cd-b0b8-24074e3ec6ad",
+    "state": true,
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2640",
+   "op": "done",
+   "prs": [
+    "1310"
+   ],
+   "refs": "#1310(88eb9fadc,2026-09-24)",
+   "basis": "同形(turn_wake acked 但 receipt_projected_at NULL → delivery 永停 awaiting_receipt → rework_already_open)已由 FLY-2828『返工回执投影停摆』修复合入 main:88eb9fadc #1310(2026-09-24T16:25Z),修法=完成事实即回执结算 + 巡检逐行隔离/退避/quarantine + 两道 rework_already_open 门共用谓词,覆盖本单三条根因;FLY-2828 exploration.md 明确点名 FLY-2640。本单最后实例 09-23T16:29Z(FLY-2807)早于合入,合入后评论与巡检无复发。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "done",
+    "before": "Backlog",
+    "comment": "d4f7d9a0-994f-4d40-876f-c16d8fd8d582",
+    "state": true,
+    "ok": true
+   },
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-24T16:25:55Z",
+    "last_fix_merged": "2026-09-24T16:25:55Z",
+    "comments_after_fix": [],
+    "patrol_lines_after_fix": []
+   }
+  },
+  {
+   "id": "FLY-2652",
+   "op": "done",
+   "prs": [
+    "1272",
+    "1283",
+    "1311"
+   ],
+   "refs": "#1272(e844b4545,2026-09-19)、#1283(72706eb97,2026-09-23)、#1311(5393ce2d5,2026-09-25)",
+   "basis": "三段修复均已合入 main:FLY-2656 e844b4545 #1272(2026-09-19T06:40Z)cleanup-pending 入队过滤 + 7 天 TTL + 新窗镜像先于清理;FLY-2770 72706eb97 #1283(2026-09-23T23:14Z)修 09-22 那次『title stock topology proof refused → 反复 new-workspace』占位标题圈;FLY-2829 5393ce2d5 #1311(2026-09-25T14:37Z)陈旧 registry 批量补镜像。FLY-2829 research.md 明写『FLY-2652 的修复分别落在 FLY-2656 与 FLY-2770』。最后实例 09-22T03:55Z,早于 2770 合入,之后无复发。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "done",
+    "before": "Backlog",
+    "comment": "6a14f41f-94fb-4ba3-bc18-6fdf26c4a4b3",
+    "state": true,
+    "ok": true
+   },
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-19T06:40:06Z",
+    "last_fix_merged": "2026-09-25T14:37:37Z",
+    "comments_after_fix": [
+     "2026-09-22T03:56:16.814Z"
+    ],
+    "patrol_lines_after_fix": [
+     [
+      "2026-09-21T01:47:41Z",
+      "MECHANISM_DEFECT id=cmux_terminal_workspace_runaway class_candidate=cmux_sync_title_migration_surface_drift_unbounded_workspace_creation nearest_existing=FLY-2652(Backlog, starvation shape; different loop) disposition=no_issue reason=founder_2026-09-20_no_new_"
+     ],
+     [
+      "2026-09-22T03:55:40Z",
+      "NOTE step=6 (a) same-vendor instance FIXED: #1278 deployed 02:56Z via founder-authorized emergency ticket; all 6 qa@1 intents -> started (engine events: qa session_started 02:56:05-02:56:54Z), 4 QA PASS so far. (b) cmux watcher runaway after marker lift 03:46Z"
+     ]
+    ]
+   }
+  },
+  {
+   "id": "FLY-2660",
+   "op": "done",
+   "prs": [
+    "1233"
+   ],
+   "refs": "#1233(e41a86cfc,2026-09-17)",
+   "basis": "FLY-2661 e41a86cfc #1233(2026-09-17T05:25Z)『render ship judgment history on demand』删掉了 ship-judgment-history-runtime.ts 定时 worker(-39 行)与 plugin.ts 挂载,改为 flywheel-comm 按需生成,正是本单『不看就不上 Vercel』的修法。单例 09-17T02:35Z,之后巡检无再现。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "done",
+    "before": "Backlog",
+    "comment": "957c9e50-122c-48c2-bd77-7d5f4dc01d41",
+    "state": true,
+    "ok": true
+   },
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-17T05:25:03Z",
+    "last_fix_merged": "2026-09-17T05:25:03Z",
+    "comments_after_fix": [],
+    "patrol_lines_after_fix": [
+     [
+      "2026-09-17T05:45:36Z",
+      "FINDING id=388d822f0f7368c1ed9efbd82dd379fe76adc09af3fc9f2811e25790ba742671 category=incident step=6 bridge_problem=yes result=advanced evidence=mechanism_ship_judgment_history_full_republish_declared_034553Z.fly2660.fix_fly2661_merged_052503Z.worker_removed_s"
+     ]
+    ]
+   }
+  },
+  {
+   "id": "FLY-2710",
+   "op": "duplicate",
+   "target": "FLY-2474",
+   "basis": "与 FLY-2474 同一缺口:停驻 Codex 体被 resident grace(RESIDENT_GRACE_MS=30min)到期主动收掉,账面仍 parked/ship_parked、节点仍绑死体、引擎不换体。本单实例 #2 明写 `resident_hold_expired` → reown_exhausted;实例 #1『停驻 <1h pane 消失』与 30 分钟 grace 吻合。区别仅在停驻原因(Lead 令 park 等前置 vs 交卷后停驻)。FLY-2808 的 standby 体系为 default-off,未改变生产。",
+   "existing": null,
+   "state_before": "Backlog",
+   "result": {
+    "op": "duplicate",
+    "before": "Backlog",
+    "relation": true,
+    "comment": "c3153aa5-87a5-4c6d-b3e3-ff5f68d75299",
+    "state": true,
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2715",
+   "op": "done",
+   "prs": [
+    "1243"
+   ],
+   "refs": "#1243(58693d28c,2026-09-22)",
+   "basis": "两半均已修:读取顺序(FLYWHEEL_SUMMARY_CONFIG_HOME → projectsFile 派生 home → homedir)在 lead-runtime-tuning.ts:38-50,slot 侧 receipt producer `qa_multilead_mint_summary_receipt`(scripts/lib/qa-multilead.sh:126,由 test-deploy.sh:1629 调用)均由 FLY-2655 58693d28c #1243(2026-09-22T16:21Z)合入(git blame 可证)。本单评论所说『剩下的真缺口=slot 无 receipt producer』已补。单例 09-18,之后无复现;FLY-2711 已 Done。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "done",
+    "before": "Backlog",
+    "comment": "d44d348f-89f5-4bb7-b6db-b9e3738cb574",
+    "state": true,
+    "ok": true
+   },
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-22T16:21:34Z",
+    "last_fix_merged": "2026-09-22T16:21:34Z",
+    "comments_after_fix": [],
+    "patrol_lines_after_fix": []
+   }
+  },
+  {
+   "id": "FLY-2728",
+   "op": "done",
+   "prs": [
+    "1262"
+   ],
+   "refs": "#1262(ef3e6f35a,2026-09-19)",
+   "basis": "FLY-2727 ef3e6f35a #1262(2026-09-19T03:56Z)『make Epic runtime status trustworthy』合入:rules.ts classifyItem 现在先看 machineLive,type==='started' 另分 stopped_acceptance/stopped_stuck/evidence_gap,不再照抄 Linear 为 live。本单即 2727 的触发单;单例,之后无复发。",
+   "state_before": "Backlog",
+   "result": {
+    "op": "done",
+    "before": "Backlog",
+    "comment": "7f346e30-f4cf-4ffe-9a6f-732bba80de73",
+    "state": true,
+    "ok": true
+   },
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-19T03:56:18Z",
+    "last_fix_merged": "2026-09-19T03:56:18Z",
+    "comments_after_fix": [],
+    "patrol_lines_after_fix": []
+   }
+  },
+  {
+   "id": "FLY-2743",
+   "op": "duplicate",
+   "target": "FLY-2630",
+   "basis": "与 FLY-2630 同一缺口:codex-daemon-adapter-helpers.ts:~205 把任何 goal 非 complete 结束当终态失败拆体,不区分上游错误类型(本单是不可重试的 400 access_programs.cyber,2630 是可重试的 capacity);两单修法同落在该分类点(2743 描述自己也建议并入『上游错误分级处置表』)。单例 09-18T17:01Z。",
+   "existing": null,
+   "state_before": "Backlog",
+   "result": {
+    "op": "duplicate",
+    "before": "Backlog",
+    "relation": true,
+    "comment": "eab5dfce-2617-4fbf-ab2a-b4adcdcb3841",
+    "state": true,
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2892",
+   "op": "hold",
+   "verdict": "已修未关",
+   "reason": "修复 #1330(6523b997c)2026-09-25T23:20Z 才合入;生产 deployed-sha 仍是 59123848a(不含 #1330),要等 09-26 00:00 PDT 班车才上线,修复后尚无任何生产观察窗;盘点证据也写「生产侧 2873 收尾尚待核」。",
+   "state_before": "Backlog",
+   "result": null,
+   "recurrence_check": {
+    "first_fix_merged": "2026-09-25T23:20:52Z",
+    "last_fix_merged": "2026-09-25T23:20:52Z",
+    "comments_after_fix": [],
+    "patrol_lines_after_fix": []
+   }
+  }
+ ],
+ "links": [
+  {
+   "id": "FLY-2083",
+   "fix": "FLY-2919",
+   "cls": 2,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2084",
+   "fix": "FLY-2920",
+   "cls": 4,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2087",
+   "fix": "FLY-2928",
+   "cls": 11,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2091",
+   "fix": "FLY-2926",
+   "cls": 9,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2092",
+   "fix": "FLY-2921",
+   "cls": 6,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2093",
+   "fix": "FLY-2926",
+   "cls": 9,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2095",
+   "fix": "FLY-2922",
+   "cls": 8,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2098",
+   "fix": "FLY-2926",
+   "cls": 9,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2110",
+   "fix": "FLY-2926",
+   "cls": 9,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2114",
+   "fix": "FLY-2923",
+   "cls": 1,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2116",
+   "fix": "FLY-2922",
+   "cls": 8,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2117",
+   "fix": "FLY-2923",
+   "cls": 1,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2123",
+   "fix": "FLY-2927",
+   "cls": 10,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2124",
+   "fix": "FLY-2928",
+   "cls": 11,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2127",
+   "fix": "FLY-2373",
+   "cls": 5,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2133",
+   "fix": "FLY-2920",
+   "cls": 4,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2138",
+   "fix": "FLY-2927",
+   "cls": 10,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2181",
+   "fix": "FLY-2922",
+   "cls": 8,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2185",
+   "fix": "FLY-2921",
+   "cls": 6,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2191",
+   "fix": "FLY-2922",
+   "cls": 8,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2193",
+   "fix": "FLY-2919",
+   "cls": 2,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2198",
+   "fix": "FLY-2927",
+   "cls": 10,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2202",
+   "fix": "FLY-2921",
+   "cls": 6,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2230",
+   "fix": "FLY-2923",
+   "cls": 1,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2246",
+   "fix": "FLY-2926",
+   "cls": 9,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2267",
+   "fix": "FLY-2928",
+   "cls": 11,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2290",
+   "fix": "FLY-2928",
+   "cls": 11,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2292",
+   "fix": "FLY-2924",
+   "cls": 3,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2295",
+   "fix": "FLY-2922",
+   "cls": 8,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2297",
+   "fix": "FLY-2923",
+   "cls": 1,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2323",
+   "fix": "FLY-2920",
+   "cls": 4,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2328",
+   "fix": "FLY-2920",
+   "cls": 4,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2329",
+   "fix": "FLY-2922",
+   "cls": 8,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2330",
+   "fix": "FLY-2921",
+   "cls": 6,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2344",
+   "fix": "FLY-2925",
+   "cls": 7,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2378",
+   "fix": "FLY-2928",
+   "cls": 11,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2407",
+   "fix": "FLY-2926",
+   "cls": 9,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2416",
+   "fix": "FLY-2923",
+   "cls": 1,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2418",
+   "fix": "FLY-2924",
+   "cls": 3,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2464",
+   "fix": "FLY-2373",
+   "cls": 5,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2470",
+   "fix": "FLY-2926",
+   "cls": 9,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2472",
+   "fix": "FLY-2921",
+   "cls": 6,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2473",
+   "fix": "FLY-2921",
+   "cls": 6,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2474",
+   "fix": "FLY-2919",
+   "cls": 2,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2480",
+   "fix": "FLY-2373",
+   "cls": 5,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2486",
+   "fix": "FLY-2926",
+   "cls": 9,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2502",
+   "fix": "FLY-2373",
+   "cls": 5,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2512",
+   "fix": "FLY-2919",
+   "cls": 2,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2513",
+   "fix": "FLY-2927",
+   "cls": 10,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2514",
+   "fix": "FLY-2923",
+   "cls": 1,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2524",
+   "fix": "FLY-2922",
+   "cls": 8,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2525",
+   "fix": "FLY-2922",
+   "cls": 8,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2528",
+   "fix": "FLY-2919",
+   "cls": 2,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2529",
+   "fix": "FLY-2919",
+   "cls": 2,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2537",
+   "fix": "FLY-2919",
+   "cls": 2,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2545",
+   "fix": "FLY-2922",
+   "cls": 8,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2558",
+   "fix": "FLY-2925",
+   "cls": 7,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2568",
+   "fix": "FLY-2928",
+   "cls": 11,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2569",
+   "fix": "FLY-2373",
+   "cls": 5,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2586",
+   "fix": "FLY-2925",
+   "cls": 7,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2590",
+   "fix": "FLY-2928",
+   "cls": 11,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2596",
+   "fix": "FLY-2928",
+   "cls": 11,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2613",
+   "fix": "FLY-2926",
+   "cls": 9,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2617",
+   "fix": "FLY-2920",
+   "cls": 4,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2618",
+   "fix": "FLY-2919",
+   "cls": 2,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2620",
+   "fix": "FLY-2920",
+   "cls": 4,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2621",
+   "fix": "FLY-2927",
+   "cls": 10,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2630",
+   "fix": "FLY-2925",
+   "cls": 7,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2636",
+   "fix": "FLY-2924",
+   "cls": 3,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2666",
+   "fix": "FLY-2923",
+   "cls": 1,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2686",
+   "fix": "FLY-2924",
+   "cls": 3,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2689",
+   "fix": "FLY-2925",
+   "cls": 7,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2690",
+   "fix": "FLY-2919",
+   "cls": 2,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2705",
+   "fix": "FLY-2924",
+   "cls": 3,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2732",
+   "fix": "FLY-2926",
+   "cls": 9,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2733",
+   "fix": "FLY-2924",
+   "cls": 3,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2741",
+   "fix": "FLY-2926",
+   "cls": 9,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2771",
+   "fix": "FLY-2924",
+   "cls": 3,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2772",
+   "fix": "FLY-2923",
+   "cls": 1,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2814",
+   "fix": "FLY-2925",
+   "cls": 7,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2820",
+   "fix": "FLY-2923",
+   "cls": 1,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2821",
+   "fix": "FLY-2921",
+   "cls": 6,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2822",
+   "fix": "FLY-2926",
+   "cls": 9,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2865",
+   "fix": "FLY-2924",
+   "cls": 3,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2890",
+   "fix": "FLY-2926",
+   "cls": 9,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2893",
+   "fix": "FLY-2925",
+   "cls": 7,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "id": "FLY-2905",
+   "fix": "FLY-2373",
+   "cls": 5,
+   "existing": null,
+   "result": {
+    "ok": true
+   }
+  }
+ ]
+}

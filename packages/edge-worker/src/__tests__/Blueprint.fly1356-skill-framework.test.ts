@@ -162,6 +162,15 @@ async function runBlueprint(opts: RunOpts = {}): Promise<RunResult> {
 						branch: "flywheel-FLY-1395",
 					})),
 					isRegistered: vi.fn(async () => opts.worktreeRegistered === true),
+					// FLY-2901: registration is classified inside the takeover transaction.
+					runTakeoverTransaction: vi.fn(async function (this: {
+						create: () => Promise<Record<string, unknown>>;
+					}) {
+						const worktree = { ...(await this.create()), generation: "" };
+						return opts.worktreeRegistered === true
+							? { kind: "reused", worktree }
+							: { kind: "created", worktree };
+					}),
 					removeIfExists: vi.fn(async () => true),
 					create: vi.fn(async () => ({
 						projectName: "testproj",

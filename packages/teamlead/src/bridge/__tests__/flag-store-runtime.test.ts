@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveAllFlags, resolveSkillFrameworkMode } from "flywheel-config";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StateStore } from "../../StateStore.js";
 import {
 	enrichFlagViewsWithStore,
@@ -16,9 +16,11 @@ import {
 	storeCodexLeadThreadRotationEnabled,
 	storeCodexMemoryDistillEnabled,
 	storeCodexQuotaAutoSwitchEnabled,
+	storeCodexTerminalReapEnabled,
 	storeDatabaseArchiveEnabled,
 	storeDocFlowEnabled,
 	storeFlagRetirementScanEnabled,
+	storeLeadAlertWakeDedupEnabled,
 	storeLoopProfilerEnabled,
 	storeNodeDwellEnabled,
 	storeNodeDwellThresholdHours,
@@ -39,6 +41,7 @@ import {
 	storeWorkflowNodeReuseEnabled,
 	storeWorkflowReworkReentryEnabled,
 	storeWorkflowTurnDivergenceAlertsEnabled,
+	storeWorktreeTakeoverRescueDisabled,
 	storeXiaohongshuLearningEnabled,
 } from "../flag-store-runtime.js";
 
@@ -146,6 +149,31 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 		expect(storeShippedHuskForceEnabled(runtime)).toBe(true);
 	});
 
+	it("FLY-2903 terminal reap switch observes the next store write", () => {
+		const runtime = initializeFlagStore(store, {});
+		expect(storeCodexTerminalReapEnabled(runtime)).toBe(true);
+		const revision = store.getFlagValueRow(
+			"codex_terminal_reap_enabled",
+		)!.revision;
+		expect(
+			store.applyFlagValueChange({
+				name: "codex_terminal_reap_enabled",
+				rawTo: "0",
+				expectedRevision: revision,
+				actor: "bridge-local-operator",
+				reason: "prove the sweep kill switch reads at call time",
+			}),
+		).toMatchObject({ ok: true });
+		expect(storeCodexTerminalReapEnabled(runtime)).toBe(false);
+	});
+
+	it("FLY-2903 terminal reap switch can be seeded off from the environment", () => {
+		const runtime = initializeFlagStore(store, {
+			FLYWHEEL_CODEX_TERMINAL_REAP_ENABLED: "0",
+		});
+		expect(storeCodexTerminalReapEnabled(runtime)).toBe(false);
+	});
+
 	it("FLY-2076 keeps the alert system default-on and observes an off write without restart", () => {
 		const runtime = initializeFlagStore(store, {});
 		expect(storeAlertSystemEnabled(runtime)).toBe(true);
@@ -197,6 +225,24 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			}),
 		).toMatchObject({ ok: true });
 		expect(storeCmuxRebindDisabled(runtime)).toBe(true);
+	});
+
+	it("FLY-2901 opt-in takeover rescue disable observes the next store write", () => {
+		const runtime = initializeFlagStore(store, {});
+		expect(storeWorktreeTakeoverRescueDisabled(runtime)).toBe(false);
+		const revision = store.getFlagValueRow(
+			"worktree_takeover_rescue_disabled",
+		)!.revision;
+		expect(
+			store.applyFlagValueChange({
+				name: "worktree_takeover_rescue_disabled",
+				rawTo: "1",
+				expectedRevision: revision,
+				actor: "bridge-local-operator",
+				reason: "fall back to takeover refusal during a rescue incident",
+			}),
+		).toMatchObject({ ok: true });
+		expect(storeWorktreeTakeoverRescueDisabled(runtime)).toBe(true);
 	});
 
 	it("FLY-2775 opt-in Opus sync disable observes the next store write", () => {
@@ -313,6 +359,7 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 	it.each([
 		["codex_memory_distill", storeCodexMemoryDistillEnabled],
 		["codex_lead_thread_rotation", storeCodexLeadThreadRotationEnabled],
+		["lead_alert_wake_dedup", storeLeadAlertWakeDedupEnabled],
 	] as const)(
 		"%s reads at call time with project, star, default precedence",
 		(name, reader) => {
@@ -345,6 +392,53 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			expect(store.getFlagValueRow(name, "flywheel")).toBeUndefined();
 		},
 	);
+
+	it.each(["", "true", "2", null])(
+		"disables alert wake dedup for invalid explicit raw value %j",
+		(raw) => {
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+			try {
+				for (const invalidScope of ["flywheel", "*"]) {
+					expect(
+						storeLeadAlertWakeDedupEnabled(
+							{
+								store: {
+									getFlagValueRow: (_name, scope) =>
+										scope === invalidScope
+											? { hasOverride: true, raw }
+											: undefined,
+								},
+							},
+							"flywheel",
+						),
+					).toBe(false);
+				}
+			} finally {
+				warn.mockRestore();
+			}
+		},
+	);
+
+	it("disables alert wake dedup when the flag store read fails", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			expect(
+				storeLeadAlertWakeDedupEnabled(
+					{
+						store: {
+							getFlagValueRow: () => {
+								throw new Error("flag store unavailable");
+							},
+						},
+					},
+					"flywheel",
+				),
+			).toBe(false);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
 	it("keeps database archive default-on and observes a project off write", () => {
 		const runtime = initializeFlagStore(store, {});
 		expect(storeDatabaseArchiveEnabled(runtime, "flywheel")).toBe(true);

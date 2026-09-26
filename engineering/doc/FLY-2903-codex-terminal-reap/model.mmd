@@ -1,0 +1,29 @@
+erDiagram
+  sessions ||--o| codex_terminal_close : "execution_id"
+  codex_terminal_close ||--o{ session_events : "codex_terminal_close_* 审计事件"
+  codex_terminal_close ||--o{ lead_alerts : "codex_terminal_body_alive"
+  sessions {
+    text execution_id PK
+    text adapter_type "codex-tmux"
+    text status "completed/failed/terminated/blocked"
+    text terminal_at
+  }
+  codex_terminal_close {
+    text execution_id PK
+    text state "close_attempted/pending_confirm/closed/owned_seen/stop_requested/alive_*/probe_unknown"
+    int owned_streak
+    text rollout_path "来自 scorecard 游标，首次找到后缓存"
+    int rollout_offset "增量读位置"
+    int tokens_at_terminal
+    int tokens_after_terminal "终态后烧了多少"
+    text last_evidence "受限 JSON 证据"
+    text closed_at
+    text alerted_key "防重复告警"
+  }
+  session_events {
+    text event_id PK "确定性去重"
+    text event_type
+  }
+  lead_alerts {
+    text eventId "exec+state+token 数量级"
+  }

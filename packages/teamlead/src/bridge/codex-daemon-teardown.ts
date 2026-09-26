@@ -1,19 +1,97 @@
 import { createHash } from "node:crypto";
 import {
 	type CodexDaemonReapResult,
+	type CodexExecutionOwnershipRegistry,
+	type CodexStopReason,
+	type CodexStopResult,
 	reapCodexDaemonForExecution,
 } from "flywheel-claude-runner";
 import type { Session, StateStore } from "../StateStore.js";
+import type { CodexTerminalCloseAttemptRecorder } from "./codex-terminal-close-ledger.js";
 
 export interface CodexDaemonTeardownDeps {
 	gracefulOnly?: boolean;
 	beforeSignal?: () => boolean;
 	reap?: typeof reapCodexDaemonForExecution;
+	/**
+	 * FLY-2903: ask the in-process goal runtime to stop before the reap, so a
+	 * deliberate kill is never resumed as a mid-goal crash (FLY-2814).
+	 */
+	stopOwner?: {
+		registry: Pick<CodexExecutionOwnershipRegistry, "requestStop">;
+		reason: CodexStopReason;
+		timeoutMs?: number;
+	};
+	/** FLY-2903: record the attempt; the sweep gives the verified verdict. */
+	closeLedger?: CodexTerminalCloseAttemptRecorder;
 }
 
 export type CodexDaemonTeardownResult =
 	| { outcome: "not_codex" }
-	| CodexDaemonReapResult;
+	| (CodexDaemonReapResult & { ownerStop?: CodexStopResult });
+
+/** FLY-2903 Bridge-wide wiring for every terminal-path caller. */
+export interface CodexTerminalTeardownWiring {
+	owners?: Pick<CodexExecutionOwnershipRegistry, "requestStop">;
+	closeLedger?: CodexTerminalCloseAttemptRecorder;
+}
+
+export function terminalTeardownDeps(
+	wiring: CodexTerminalTeardownWiring | undefined,
+	reason: CodexStopReason | null,
+): Pick<CodexDaemonTeardownDeps, "stopOwner" | "closeLedger"> {
+	return {
+		...(wiring?.owners && reason
+			? { stopOwner: { registry: wiring.owners, reason } }
+			: {}),
+		...(wiring?.closeLedger ? { closeLedger: wiring.closeLedger } : {}),
+	};
+}
+
+let registeredTerminalTeardown: CodexTerminalTeardownWiring | undefined;
+
+/**
+ * FLY-2903: registered once at the Bridge composition root (same pattern as
+ * `registerLifecycleCloseGuard`). Absent (tests / non-Bridge callers) → the
+ * terminal paths keep their legacy reap-only behavior byte for byte.
+ */
+export function registerCodexTerminalTeardown(
+	wiring: CodexTerminalTeardownWiring,
+): () => void {
+	registeredTerminalTeardown = wiring;
+	return () => {
+		if (registeredTerminalTeardown === wiring) {
+			registeredTerminalTeardown = undefined;
+		}
+	};
+}
+
+/** Deps for a terminal-path caller; `null` records the attempt without a stop. */
+export function codexTerminalTeardownDeps(
+	reason: CodexStopReason | null,
+): Pick<CodexDaemonTeardownDeps, "stopOwner" | "closeLedger"> {
+	return terminalTeardownDeps(registeredTerminalTeardown, reason);
+}
+
+async function stopOwnerBeforeReap(
+	executionId: string,
+	stopOwner: NonNullable<CodexDaemonTeardownDeps["stopOwner"]>,
+): Promise<CodexStopResult | undefined> {
+	try {
+		return await stopOwner.registry.requestStop(
+			executionId,
+			stopOwner.reason,
+			stopOwner.timeoutMs !== undefined
+				? { timeoutMs: stopOwner.timeoutMs }
+				: {},
+		);
+	} catch (error) {
+		console.warn(
+			`[codex-daemon-teardown] ${executionId}: stop request failed (reap continues): ${error instanceof Error ? error.message : String(error)}`,
+		);
+		return undefined;
+	}
+}
 
 interface CodexDaemonReapFailure {
 	kind: "system_error" | "exception" | "non_error_throw";
@@ -56,6 +134,9 @@ export async function reapCodexDaemonForSession(
 	deps: CodexDaemonTeardownDeps = {},
 ): Promise<CodexDaemonTeardownResult> {
 	if (session.adapter_type !== "codex-tmux") return { outcome: "not_codex" };
+	const ownerStop = deps.stopOwner
+		? await stopOwnerBeforeReap(session.execution_id, deps.stopOwner)
+		: undefined;
 	let result: CodexDaemonReapResult;
 	let reapFailure: CodexDaemonReapFailure | undefined;
 	try {
@@ -109,5 +190,19 @@ export async function reapCodexDaemonForSession(
 			},
 		});
 	}
-	return result;
+	if (deps.closeLedger) {
+		try {
+			deps.closeLedger.recordCloseAttempt({
+				executionId: session.execution_id,
+				source,
+				...(ownerStop ? { ownerStop } : {}),
+				reap: result.outcome,
+			});
+		} catch (error) {
+			console.warn(
+				`[codex-daemon-teardown] ${session.execution_id}: close ledger write failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+	return ownerStop ? { ...result, ownerStop } : result;
 }

@@ -112,6 +112,10 @@ import {
 	parsePaneLossGenerationParams,
 	persistPaneLossGenerationCredential,
 } from "./pane-loss-reconcile.js";
+import {
+	BRIDGE_GIT_PROBE_TIMEOUT_MS,
+	probePhaseRetryBranchTip,
+} from "./phase-branch-tip.js";
 import type { LifecycleShipInfra } from "./post-ship-finalization.js";
 import {
 	computeProgressResume,
@@ -125,7 +129,6 @@ import {
 	type FreshStartAuditRecorder,
 	type LifecycleAdmissionFn,
 	type LifecycleLaunchGuard,
-	type PhaseRetryStartPoint,
 	type PhaseRetryStartPointComputer,
 	type ProjectRuntime,
 	type ResumeComputer,
@@ -141,7 +144,7 @@ import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
 import { reconcileProjectWorktrees } from "./worktree-reconciler.js";
 
 export const BRIDGE_CHILD_TIMEOUT_MS = 120_000;
-export const BRIDGE_GIT_PROBE_TIMEOUT_MS = 20_000;
+export { BRIDGE_GIT_PROBE_TIMEOUT_MS };
 
 export async function runInfraEvidenceCommand(
 	cmd: string,
@@ -436,59 +439,10 @@ export function keyedCodexHomeSessionSnapshot(
 	);
 }
 
-/**
- * FLY-1257 M3: inspect one fully-qualified local branch ref with a
- * machine-readable three-state exit contract. Exit 1 from `--verify --quiet`
- * is the only confirmed-missing result; every other failure is indeterminate.
- */
-export async function probePhaseRetryBranchTip(
-	projectRoot: string,
-	branch: string,
-	execFile: AsyncExecFileFn = defaultAsyncExecFile,
-): Promise<PhaseRetryStartPoint> {
-	try {
-		const { stdout } = await execFile(
-			"git",
-			[
-				"-C",
-				projectRoot,
-				"rev-parse",
-				"--verify",
-				"--quiet",
-				`refs/heads/${branch}^{commit}`,
-			],
-			{
-				cwd: projectRoot,
-				timeoutMs: BRIDGE_GIT_PROBE_TIMEOUT_MS,
-			},
-		);
-		const sha = stdout.trim();
-		if (!sha) {
-			return {
-				kind: "indeterminate",
-				error: `git rev-parse returned an empty sha for refs/heads/${branch}`,
-			};
-		}
-		return { kind: "found", sha };
-	} catch (error) {
-		const failure = error as {
-			code?: unknown;
-			status?: unknown;
-			signal?: unknown;
-			message?: unknown;
-			stderr?: unknown;
-		};
-		if ((failure.status ?? failure.code) === 1) return { kind: "missing" };
-		const detail = [
-			`exit=${String(failure.status ?? failure.code ?? "spawn-error")}`,
-			failure.signal ? `signal=${String(failure.signal)}` : "",
-			failure.message ? String(failure.message) : "",
-		]
-			.filter(Boolean)
-			.join(" ");
-		return { kind: "indeterminate", error: detail };
-	}
-}
+// FLY-2901: the branch-tip probe now lives in ./phase-branch-tip.ts so the
+// workflow engine dispatcher's head fallback shares the exact implementation;
+// it is re-exported here unchanged for existing consumers.
+export { probePhaseRetryBranchTip };
 
 /**
  * Build a fetchIssue function that tries Linear API, falls back to StateStore.
@@ -520,7 +474,8 @@ export function createFetchIssue(store: StateStore) {
 						descriptionSource: "authoritative" as const,
 						updatedAt: issue.updatedAt.toISOString(),
 						labels: labelNames,
-						projectId: issue.project ? (await issue.project)?.id : undefined,
+						// SDK relation getters create requests; the id is already hydrated.
+						projectId: issue.projectId,
 						identifier: issue.identifier,
 					};
 				}

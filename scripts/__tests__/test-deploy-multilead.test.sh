@@ -69,7 +69,8 @@ cat >"$SLOTS" <<'JSON'
     {"id":2,"bridgePort":19872,"botName":"flywheel-test-2","tokenEnvVar":"TEST_BOT_TOKEN_2","botAppId":"222","channelId":"chan-2","role":"lead","identitySource":"product-lead"},
     {"id":3,"bridgePort":19873,"botName":"flywheel-test-3","tokenEnvVar":"TEST_BOT_TOKEN_3","botAppId":"333","channelId":"chan-3","role":"lead","identitySource":"ops-lead"},
     {"id":4,"bridgePort":19874,"botName":"flywheel-test-4","tokenEnvVar":"TEST_BOT_TOKEN_4","botAppId":"","channelId":"chan-4","role":"lead"},
-    {"id":5,"bridgePort":19875,"botName":"flywheel-test-5","tokenEnvVar":"TEST_BOT_TOKEN_5","botAppId":"555","channelId":"chan-5","role":"lead","backend":"codex-app-server","codexProfile":"full-access"}
+    {"id":5,"bridgePort":19875,"botName":"flywheel-test-5","tokenEnvVar":"TEST_BOT_TOKEN_5","botAppId":"555","channelId":"chan-5","role":"lead","identitySource":"product-lead","backend":"codex-app-server","codexProfile":"full-access"},
+    {"id":6,"bridgePort":19876,"botName":"flywheel-test-6","tokenEnvVar":"TEST_BOT_TOKEN_6","botAppId":"666","channelId":"chan-6","role":"lead","identitySource":"ops-lead"}
   ]
 }
 JSON
@@ -371,6 +372,24 @@ else
 fi
 [[ "$C4_OK" == "1" ]] && pass "C4: campaign args validation matrix"
 
+# ── C5: FLY-2874 slot 5 + 6 N-to-N campaign shape ──
+C5_OK=1
+if v="$(qa_multilead_validate_campaign_args "$SLOTS" slot 5 "6:Ops-Test-2" 2>/dev/null)"; then
+  jq -e '
+    length == 1
+    and .[0].slotId == 6
+    and .[0].deptLabel == "Ops-Test-2"
+    and .[0].agentId == "flywheel-test-6"
+    and .[0].tokenEnvVar == "TEST_BOT_TOKEN_6"
+    and .[0].chatChannel == "chan-6"
+    and .[0].identitySource == "ops-lead"
+  ' >/dev/null 2>&1 <<<"$v" \
+    || { C5_OK=0; fail "C5: slot 5+6 campaign args JSON wrong: $v"; }
+else
+  C5_OK=0; fail "C5: slot 5+6 campaign should pass"
+fi
+[[ "$C5_OK" == "1" ]] && pass "C5: slot 5+6 N-to-N campaign shape"
+
 # ── Lock tests — all against a temp lock root ──
 LOCK_ROOT="${TMP}/locks"
 mkdir -p "$LOCK_ROOT"
@@ -538,7 +557,7 @@ exit 1
 STUB
 chmod +x "${STUB_BIN}/tmux"
 
-# W1: borrowed slot refusal (slot 27 — outside the real 4-slot pool)
+# W1: borrowed slot refusal (slot 27 — outside the real six-slot pool)
 W_LOCK="/tmp/flywheel-test-slot-27.lock"
 rm -rf "$W_LOCK"
 mkdir -p "$W_LOCK"

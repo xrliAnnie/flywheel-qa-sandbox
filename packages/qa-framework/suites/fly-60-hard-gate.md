@@ -3,7 +3,7 @@
 **Feature**: Validate the 3 spec-defined Hard Gates (G1 / G2 / G3) end-to-end through the real product surface, plus regression coverage for sprint v26 trust gates (FLY-108 / 109 / 99 / 83).
 **Plan**: `doc/engineer/plan/new/v1.25.0-FLY-60-hard-gate-e2e.md` (Codex APPROVED 4 rounds)
 **Tool**: Chrome Discord observation (Claude-in-Chrome MCP) + direct DB / tmux inspection + driver script `scripts/qa-fly-60-driver.sh`
-**Environment**: 4-slot test slot infrastructure (`scripts/test-deploy.sh`), sandbox repo `xrliAnnie/flywheel-qa-sandbox`, sandbox issue `FLY-SBX-1`
+**Environment**: 6-slot test slot infrastructure (`scripts/test-deploy.sh`), sandbox repo `xrliAnnie/flywheel-qa-sandbox`, sandbox issue `FLY-SBX-1`
 
 ## Scope (Annie-confirmed)
 
@@ -17,7 +17,7 @@
 
 - `xrliAnnie/flywheel-qa-sandbox` repo accessible with default branch
 - `FLY-SBX-1` Linear issue exists with `sandbox` label, non-terminal state, title like "sandbox dummy: add a Hi line in README"
-- 1 free test slot (1-4) — verify via `scripts/test-status.sh` if available, or `~/.flywheel/test-slots.json`
+- 1 free test slot (1–6) — verify via `scripts/test-status.sh` if available, or `~/.flywheel/test-slots.json`
 - `LINEAR_API_KEY` set (for sandbox preflight + `inject-linear-issue.sh`)
 - Annie's Chrome browser logged in to Discord (Claude-in-Chrome MCP for V6 + HP-3/HP-7)
 - Build artifacts: `scripts/test-deploy.sh` builds the slot services; ship approval uses the supported Bridge HTTP endpoint
