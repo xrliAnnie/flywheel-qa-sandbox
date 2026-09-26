@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
 phase: design
-phaseCursor: 3/6
-updated: 2026-09-26T11:36:46.042Z
-nextStep: design review gate on plan.md
+phaseCursor: 4/6
+updated: 2026-09-26T11:48:59.957Z
+nextStep: founder design HTML (mermaid→svg), publish, report
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: design (3/6)
-**next**: design review gate on plan.md
+**phase**: design (4/6)
+**next**: founder design HTML (mermaid→svg), publish, report
