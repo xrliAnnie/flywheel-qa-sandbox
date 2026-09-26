@@ -65311,6 +65311,184 @@ export class StateStore {
 		return `completion_transition_refused:${reason}:${detail.requestId}:${detail.routeRevision}:${input.executionId}:${detail.deliveryState}`;
 	}
 
+	checkEnrolledFailure(input: WorkflowFailureInput): WorkflowFailureCheck {
+		const activation = input.workflowActivation;
+		if (!input.executionId || !input.sourceEventId || !input.reason.trim())
+			return { ok: false, reason: "invalid_failure_report" };
+		if (!activation)
+			return { ok: false, reason: "workflow_activation_required" };
+		const context = this.generalizedExecutionContextForActivation(
+			activation.activationId,
+		);
+		if (
+			!context ||
+			context.binding.execution_id !== input.executionId ||
+			context.binding.run_id !== activation.runId ||
+			context.binding.node_id !== activation.nodeId ||
+			context.binding.attempt !== activation.attempt
+		)
+			return { ok: false, reason: "activation_context_conflict" };
+		const turn = this.getWorkflowActivationTurn(activation.activationId);
+		if (
+			!turn ||
+			turn.execution_id !== input.executionId ||
+			turn.issue_id !== context.run.issue_id ||
+			turn.epoch !== activation.turnEpoch
+		)
+			return { ok: false, reason: "activation_turn_conflict" };
+		const digest = canonicalSubmissionDigest(input.completionSubmission);
+		const eventUid = `workflow_failure:${canonicalSubmissionDigest(input.sourceEventId)}`;
+		const prior = this.workflowSelectAll(
+			"SELECT run_id,node_id,execution_id,kind,payload FROM workflow_run_event WHERE event_uid = ?",
+			[eventUid],
+		)[0];
+		const identity = {
+			runId: activation.runId,
+			nodeId: activation.nodeId,
+			attempt: activation.attempt,
+			activationId: activation.activationId,
+			projectName: context.run.project_name,
+			issueId: context.run.issue_id,
+			businessDigest: digest,
+			eventUid,
+		};
+		if (prior) {
+			let payload: Record<string, unknown>;
+			try {
+				payload = JSON.parse(String(prior.payload));
+			} catch {
+				return { ok: false, reason: "failure_receipt_invalid" };
+			}
+			if (
+				prior.kind !== "run_recovery_required" ||
+				prior.run_id !== activation.runId ||
+				prior.node_id !== activation.nodeId ||
+				prior.execution_id !== input.executionId ||
+				payload.activationId !== activation.activationId ||
+				payload.attempt !== activation.attempt ||
+				payload.businessDigest !== digest ||
+				payload.reason !== input.reason.trim() ||
+				payload.sourceEventId !== input.sourceEventId
+			)
+				return { ok: false, reason: "failure_receipt_conflict" };
+			return { ok: true, idempotentReplay: true, ...identity };
+		}
+  if (this.workflowSelectAll("SELECT 1 FROM session_events WHERE event_id = ?",[input.sourceEventId])[0] || findArchivedTerminalRow(this.db.raw,"session_events",[input.sourceEventId])) return {ok:false,reason:"failure_receipt_conflict"};
+		if (
+			this.getWorkflowNodeCompletion(
+				activation.runId,
+				activation.nodeId,
+				activation.attempt,
+			)
+		)
+			return { ok: false, reason: "completion_already_committed" };
+		const writer = this.classifyCurrentWorkflowWriterTx({
+			...activation,
+			executionId: input.executionId,
+		});
+		if (!writer.ok) return writer;
+		return { ok: true, idempotentReplay: false, ...identity };
+	}
+
+	/** Failure is a separate atomic receipt, never a synthetic successful completion. */
+	commitEnrolledFailure(input: WorkflowFailureInput): WorkflowFailureCheck {
+		const now = input.now ?? new Date().toISOString();
+		if (!StateStore.workflowFiniteTimestamp(now))
+			return { ok: false, reason: "invalid_timestamp" };
+		let result: WorkflowFailureCheck = {
+			ok: false,
+			reason: "failure_not_committed",
+		};
+		this.db.transaction(() => {
+			const checked = this.checkEnrolledFailure(input);
+			result = checked;
+			if (!checked.ok || checked.idempotentReplay) return;
+			if (input.drainChallenge) {
+				if (
+					!this.consumeDrainChallengeTx({
+						...input.drainChallenge,
+						executionId: input.executionId,
+						activationId: checked.activationId,
+						businessDigest: checked.businessDigest,
+						now,
+					})
+				) {
+					result = { ok: false, reason: "drain_receipt_rejected" };
+					return;
+				}
+			} else if (
+				this.findIssuedDrainChallenge({
+					executionId: input.executionId,
+					activationId: checked.activationId,
+					businessDigest: checked.businessDigest,
+				})
+			) {
+				result = { ok: false, reason: "drain_receipt_rejected" };
+				return;
+			}
+			const previousStatus = this.getSession(input.executionId)?.status;
+			this.db.run(
+				"UPDATE workflow_run_node SET state = 'failed', ended_at = ? WHERE run_id = ? AND node_id = ? AND attempt = ? AND execution_id = ? AND state IN ('pending','admitted','running')",
+				[
+					now,
+					checked.runId,
+					checked.nodeId,
+					checked.attempt,
+					input.executionId,
+				],
+			);
+			if (this.db.getRowsModified() !== 1)
+				throw new WorkflowEngineInvariantError("failure_node_changed");
+			this.db.run(
+				"UPDATE sessions SET status = 'failed', last_error = ?, last_activity_at = ? WHERE execution_id = ? AND status = ?",
+				[input.reason.trim(), now, input.executionId, previousStatus],
+			);
+			if (this.db.getRowsModified() !== 1)
+				throw new WorkflowEngineInvariantError("failure_session_changed");
+			this.applyTerminalTimestamp(input.executionId, previousStatus, "failed");
+			this.bumpLifecycleRevision(input.executionId);
+			this.db.run(
+				"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND current_node_id = ? AND status IN ('active','held')",
+				[checked.runId, checked.nodeId],
+			);
+			if (this.db.getRowsModified() !== 1)
+				throw new WorkflowEngineInvariantError("failure_run_changed");
+			this.appendWorkflowRunEventCheckedTx({
+				runId: checked.runId,
+				nodeId: checked.nodeId,
+				executionId: input.executionId,
+				eventUid: checked.eventUid,
+				kind: "run_recovery_required",
+				payload: {
+					reason: input.reason.trim(),
+					failureKind: "completion_blocked",
+					sourceEventId: input.sourceEventId,
+					activationId: checked.activationId,
+					attempt: checked.attempt,
+					businessDigest: checked.businessDigest,
+					at: now,
+				},
+			});
+			this.db.run(
+				"INSERT INTO session_events(event_id,execution_id,issue_id,project_name,event_type,severity,payload,source) VALUES(?,?,?,?,'session_failed','info',?,'workflow-generalized-failure')",
+				[
+					input.sourceEventId,
+					input.executionId,
+					checked.issueId,
+					checked.projectName,
+					JSON.stringify({
+						reason: input.reason.trim(),
+						sourceEventId: input.sourceEventId,
+						activationId: checked.activationId,
+						businessDigest: checked.businessDigest,
+					}),
+				],
+			);
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
 	commitEnrolledCompletion(input: {
 		nodeReuseEnabled: boolean;
 		executionId: string;
@@ -90977,3 +91155,14 @@ function rowToTmuxHold(row: Record<string, unknown>): TmuxHoldRow {
 		resolvedAt: row.resolved_at == null ? null : String(row.resolved_at),
 	};
 }
+
+export interface WorkflowFailureInput {
+ executionId: string;
+ sourceEventId: string;
+ reason: string;
+ completionSubmission: unknown;
+ workflowActivation?: WorkflowCompletionActivationContext;
+ drainChallenge?: {challengeId:string;verification:{mailbox:Record<string,string>;phaseWakes:Record<string,string>}};
+ now?: string;
+}
+export type WorkflowFailureCheck = {ok:false;reason:string} | {ok:true;idempotentReplay:boolean;runId:string;nodeId:string;attempt:number;activationId:string;projectName:string;issueId:string;businessDigest:string;eventUid:string};

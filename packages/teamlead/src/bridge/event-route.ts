@@ -122,6 +122,7 @@ import type { TerminalArchiveAdmission } from "./terminal-thread-archive.js";
 import type { TurnBeltReconciler } from "./turn-belt-reconcile.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 import { persistRunnerMemoryCloseout } from "./workflow-decision-routes.js";
+import { acceptWorkflowFailure } from "./workflow-failure-completion.js";
 import {
 	enqueueWorkflowReplacementLeadEvent,
 	resolveWorkflowReplacementLeadIntent,
@@ -1397,6 +1398,46 @@ export function createEventRouter(
 						? (event.payload.decision as Record<string, unknown>)
 						: undefined;
 				const rawWorkflowActivation = event.payload?.workflowActivation;
+				const workflowActivation = asWorkflowCompletionActivation(
+					rawWorkflowActivation,
+				);
+				if (rawWorkflowActivation !== undefined && !workflowActivation) {
+					res.status(409).json({
+						error: "workflow_completion_rejected",
+						reason: "invalid_activation_context",
+					});
+					return;
+				}
+				const generalizedContext = workflowActivation
+					? store.getGeneralizedWorkflowNodeForActivation(
+							workflowActivation.activationId,
+						)
+					: store.getGeneralizedWorkflowNodeForExecution(event.execution_id);
+				if (
+					asString(decision?.route) === "blocked" &&
+					(generalizedContext ||
+						store.isEnrolledWorkflowCarrier(event.execution_id))
+				) {
+					const failure = acceptWorkflowFailure(store, {
+						executionId: event.execution_id,
+						sourceEventId: event.event_id,
+						payload: event.payload,
+						workflowActivation,
+					});
+					if (failure.status === 200) {
+						persistRunnerMemoryCloseout(
+							store,
+							event.execution_id,
+							event.payload?.runnerMemoryCloseout,
+							"[event-route]",
+						);
+						await cleanupTerminalSnapshots(store, event.execution_id);
+						if (!failure.body.duplicate)
+							notifyEpicChanged(event.project_name, "session_failed");
+					}
+					res.status(failure.status).json(failure.body);
+					return;
+				}
 				const rawCompletionEvidence =
 					event.payload?.evidence &&
 					typeof event.payload.evidence === "object" &&
@@ -1423,21 +1464,6 @@ export function createEventRouter(
 					});
 					return;
 				}
-				const workflowActivation = asWorkflowCompletionActivation(
-					rawWorkflowActivation,
-				);
-				if (rawWorkflowActivation !== undefined && !workflowActivation) {
-					res.status(409).json({
-						error: "workflow_completion_rejected",
-						reason: "invalid_activation_context",
-					});
-					return;
-				}
-				const generalizedContext = workflowActivation
-					? store.getGeneralizedWorkflowNodeForActivation(
-							workflowActivation.activationId,
-						)
-					: store.getGeneralizedWorkflowNodeForExecution(event.execution_id);
 				if (parsedDeclaredPrs.declarations.length > 0 && !generalizedContext) {
 					res.status(422).json({
 						error: "declared_pr_rejected",

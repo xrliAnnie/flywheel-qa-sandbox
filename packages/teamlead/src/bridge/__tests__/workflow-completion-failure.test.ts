@@ -227,7 +227,7 @@ describe("FLY-2922 enrolled blocked completion", () => {
 		const db = (store as unknown as { db: { raw: Database.Database } }).db.raw;
 		return {
 			run: store!.getWorkflowRun(RUN),
-			nodes: store!.listWorkflowRunNodes(RUN),
+			nodes: store!.listWorkflowRunNodes(RUN, "produce"),
 			session: store!.getSession(EXEC),
 			events: store!.listWorkflowRunEvents(RUN),
 			audit: store!.getEventsByExecution(EXEC),
@@ -277,7 +277,14 @@ describe("FLY-2922 enrolled blocked completion", () => {
 				},
 			}),
 		});
-		return { status: response.status, body: await response.json() };
+		const bodyText = await response.text();
+		let body: Record<string, unknown>;
+		try {
+			body = JSON.parse(bodyText);
+		} catch {
+			body = { nonJson: true };
+		}
+		return { status: response.status, body };
 	}
 
 	it("fails the current node and session, holds its run, and never creates success evidence", async () => {
@@ -393,6 +400,79 @@ describe("FLY-2922 enrolled blocked completion", () => {
 			},
 		});
 		expect(state()).toEqual(before);
+	});
+
+	it("rejects reuse of an already recorded event identity without a failure receipt", async () => {
+		store!.insertEvent({
+			event_id: "collision",
+			execution_id: EXEC,
+			issue_id: ISSUE,
+			project_name: PROJECT,
+			event_type: "session_failed",
+			source: "prior-source",
+			payload: { reason: "different event" },
+		});
+		const before = state();
+		expect(await post({ eventId: "collision" })).toMatchObject({
+			status: 409,
+			body: { reason: "failure_receipt_conflict" },
+		});
+		expect(state()).toEqual(before);
+	});
+
+	it("rejects a live TURN transfer even while the StateStore projection still has the old epoch", async () => {
+		comm!.grantTurn(ISSUE, "replacement-owner", "produce", Date.now(), {
+			project: PROJECT,
+			sourceEventId: "other-turn",
+		});
+		const before = state();
+		expect(await post()).toMatchObject({
+			status: 409,
+			body: { reason: "activation_turn_conflict" },
+		});
+		expect(state()).toEqual(before);
+	});
+
+	it("requires exact activation and a nonempty failure reason", async () => {
+		const before = state();
+		expect(
+			await post({ payload: { workflowActivation: undefined } }),
+		).toMatchObject({ status: 409 });
+		expect(await post({ payload: { summary: "  " } })).toMatchObject({
+			status: 409,
+		});
+		expect(state()).toEqual(before);
+	});
+
+	it("rolls back failure projections and drain consumption when the final audit insert fails", async () => {
+		const id = comm!.insertInstruction(
+			"test-lead",
+			EXEC,
+			"Drain before injected failure",
+		);
+		const pending = await post();
+		expect(pending).toMatchObject({
+			status: 409,
+			body: { reason: "consume_pending_mail" },
+		});
+		comm!.markInstructionRead(id);
+		const db = (store as unknown as { db: { raw: Database.Database } }).db.raw;
+		db.exec(
+			"CREATE TRIGGER reject_failure BEFORE INSERT ON session_events WHEN NEW.source = 'workflow-generalized-failure' BEGIN SELECT RAISE(ABORT, 'injected_failure_commit'); END",
+		);
+		const before = state();
+		const receipt = { drainReceipt: { challengeId: pending.body.challengeId } };
+		expect(await post({ payload: receipt })).toMatchObject({ status: 500 });
+		expect(state()).toEqual(before);
+		expect(
+			db
+				.prepare(
+					"SELECT state FROM workflow_completion_drain_challenge WHERE challenge_id = ?",
+				)
+				.get(pending.body.challengeId),
+		).toEqual({ state: "issued" });
+		db.exec("DROP TRIGGER reject_failure");
+		expect(await post({ payload: receipt })).toMatchObject({ status: 200 });
 	});
 
 	it("requires and consumes the server-issued drain receipt before failing the node", async () => {
