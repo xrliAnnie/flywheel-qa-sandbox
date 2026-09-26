@@ -438,6 +438,38 @@ STEP DWELL 多 cause 统一使用稳定 `node_dwell_incomplete` token，逐 caus
    非空则把 identifier 写进报告且禁止重复建单。只有空且满足 structural 首现或
    transient 连续 2 tick 时 run:
    `PAYLOAD="$(jq -n --arg title "$TITLE" --arg description "patrol report: $REPORT_PATH" '{title:$title, description:$description, team:"FLY", project:"Flywheel", labels:["Flywheel"]}')"; printf 'header = "Authorization: Bearer %s"\n' "${TEAMLEAD_API_TOKEN:?TEAMLEAD_API_TOKEN required}" | curl --config - -fsS -X POST -H 'Content-Type: application/json' "$BRIDGE_URL/api/linear/create-issue" -d "$PAYLOAD"`。
+### FLY-2914 病根排修：每个达阈类别必须有处置
+
+快照在 STEP 6 写唯一 `ROOT_CAUSE_REVIEW`（只读 Linear，不增 occurrence、不写 comment、不建单、不派单）：
+- `status=not_applicable`：非负责范围（负责 = project flywheel + flywheel-eng-lead），无需处置。
+- `status=unavailable`：已带 `UNAVAILABLE_CAUSE step=6 class=transient token=root_cause_source_unavailable`；
+  STEP 6 不得 OK，无其它 finding 时写 `STEP 6: UNAVAILABLE(transient: root_cause_source_unavailable)`。
+  该 token 不走 `[patrol-unavailable]` 建单，下轮重试。
+- `status=complete`：每行 `ROOT_CAUSE_CANDIDATE <JSON>` 是 FLY-2072 下 occurrences ≥3、非 Done/Canceled、
+  无 active run 的类别（次数降序；`occurrences:null` 是计数不可读，仍需处置）；`ROOT_CAUSE_EXCLUDED`
+  是因 active run 排除的类别，只展示。有候选时 STEP 6 必须 FINDING。
+
+每个候选恰好一行 FINDING 加一行 `ROOT_CAUSE_DISPOSITION`，id/ref/scheduleKey 取候选 JSON，sourceDigest 取 review 的 source_digest：
+`FINDING id=<findingId> category=incident step=6 bridge_problem=no result=escalated-with-plan evidence=<ref> owner=<founder|agent:<lead>> next=<route:rootcause-schedule|inspect:rootcause-schedule> epic=n/a epic_marker=n/a disposition_ref=<ref>`
+`ROOT_CAUSE_DISPOSITION {"ref","findingId","scheduleKey","mode","askId","threadId","messageId","reason","owner","nextReviewAt","sourceDigest"}`，
+严格这些键，无值写 null。mode 三选一：
+- `reported`：本轮经既有发送口向 founder 请求排修。Claude Lead 用 `POST /api/chat-threads/send`，
+  `issueId` 与 `founderAsk.patrolSchedule.issueUuid` 都填候选 issueUuid；Codex Lead 在该类别 canonical
+  thread 用 `discord.thread.reply` 加 `patrolSchedule:{issueUuid}`。正文单条 ≤1800 字，含类别 identifier、
+  次数与排修请求；服务端自算 key、附 `rootcause:<前12位>` 标记。填返回的 askId/threadId/messageId，
+  owner=founder，nextReviewAt=null。回 409 `patrol_schedule_ask_open` 表示已有未结呈报，改 waiting_founder，不重发。
+- `waiting_founder`：已投递、founder 未回，快照自动预填，Lead 不必重写。founder 在该 thread 回复即结束等待，
+  下轮不再预填；回复只表示需要 Lead 重新判断，不是派单或 ship 批准。
+- `scheduled`：已有排期或延后理由。owner 必填；reason ≥10 字且点名具体产物（FLY-单、runId 或 askId）；
+  nextReviewAt 在未来且不超过 observed_at 后 7 天；ask 字段全 null 或引用真实 ask。未过期的 scheduled
+  下轮自动沿用，过期必须重新处置。报告后才开始的 run 写 scheduled 并在 reason 引用 runId。
+
+不得删候选、改 digest、编造 askId/messageId 或拿任意链接冒充回执。已有预填的候选只改它的
+`ROOT_CAUSE_DISPOSITION` 与 FINDING，不再追加第二行。Codex 用 `patrol.judgment.record` 的 findings（带
+dispositionRef）加 `rootCauseDispositions` 提交，gate 3 核验 founder_ask 真实记录。Claude 路径的
+`validate-report` 把 complete/unavailable 段交 Bridge 用 fresh 数据复核（需要 BRIDGE_URL 与
+TEAMLEAD_API_TOKEN）；`root_cause_snapshot_stale` 表示快照后出现新候选，重跑快照再处置。
+
 ### FLY-1945 机制缺陷 finding：声明后必须三选一
 
 机制设计不合理必须作为 `category=mechanism_defect` finding 声明，账落 Linear，不落 memory；

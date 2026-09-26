@@ -54,8 +54,8 @@
     {
       "path": "packages/teamlead/lead-rules-base/runner-patrol-rules.md",
       "revision": "f022a0a7ee5a4cf42f590cbd0c90b12b84e2c854",
-      "bytes": 92421,
-      "sha256": "bcee374943e5807eff632cc23786667cf630e7c6628b0145109a5226e4c32dd9"
+      "bytes": 95735,
+      "sha256": "aab078b2b1ec08ac4d553afd1d5c7db887400f69894997a6a9eefc6fedd7ebf3"
     }
   ],
   "constraints": [
@@ -102,5 +102,11 @@
     "beforeSourceSha256": "062b0049a13eb126aa2be31f913c06cc98e120c1680bcfb9b0e88eb6e845a100",
     "afterSourceSha256": "bcee374943e5807eff632cc23786667cf630e7c6628b0145109a5226e4c32dd9",
     "meaning": "The historical patrol procedure gains only the explicit-only Epic fixed-page publication duty shared with the current patrol rules."
+  },
+  "rootCauseSchedulingEvolution": {
+    "issue": "FLY-2914",
+    "beforeSourceSha256": "bcee374943e5807eff632cc23786667cf630e7c6628b0145109a5226e4c32dd9",
+    "afterSourceSha256": "aab078b2b1ec08ac4d553afd1d5c7db887400f69894997a6a9eefc6fedd7ebf3",
+    "meaning": "The historical patrol procedure gains only the STEP 6 root-cause scheduling disposition section shared byte-for-byte with the current patrol runbook."
   }
 }

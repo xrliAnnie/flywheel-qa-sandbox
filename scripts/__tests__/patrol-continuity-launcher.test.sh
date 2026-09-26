@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/patrol-launcher.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 HELPER="$ROOT/scripts/flywheel-patrol-continuity.mjs"
-printf 'patrol_schema=2\nMECHANISM_REVIEW result=none count=0\n' > "$TMP/report.md"
+printf 'patrol_schema=2\nMECHANISM_REVIEW result=none count=0\nROOT_CAUSE_REVIEW status=not_applicable parent=FLY-2072 observed_at=2026-09-26T00:00:00.000Z token=project_scope\n' > "$TMP/report.md"
 mkdir -p "$TMP/managed/bin" "$TMP/unrelated"
 ln -s "$HELPER" "$TMP/managed/bin/flywheel-patrol-continuity"
 for entry in "$HELPER" "$TMP/managed/bin/flywheel-patrol-continuity"; do
@@ -17,7 +17,7 @@ PAYLOAD="$TMP/payload"
 mkdir -p "$PAYLOAD/scripts" "$PAYLOAD/packages/teamlead/dist/bridge" "$PAYLOAD/packages/teamlead/dist/lead-backends/codex"
 cp "$HELPER" "$PAYLOAD/scripts/flywheel-patrol-continuity.mjs"
 printf '{"type":"module"}\n' > "$PAYLOAD/packages/teamlead/package.json"
-for module in patrol-continuity-cli patrol-continuity patrol-continuity-collector package-gate-queue patrol-report process-lock; do
+for module in patrol-continuity-cli patrol-continuity patrol-continuity-collector package-gate-queue patrol-report patrol-root-causes process-lock; do
  cp "$ROOT/packages/teamlead/dist/$module.js" "$PAYLOAD/packages/teamlead/dist/$module.js"
 done
 cp "$ROOT/packages/teamlead/dist/bridge/stage-utils.js" "$PAYLOAD/packages/teamlead/dist/bridge/stage-utils.js"
