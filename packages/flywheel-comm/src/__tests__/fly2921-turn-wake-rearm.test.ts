@@ -369,3 +369,49 @@ describe("FLY-2921 cancelTurnWakeDelivery on a terminal-guard-cancelled source",
 		).toEqual({ ok: false, reason: "turn_wake_source_changed" });
 	});
 });
+
+describe("FLY-2921 claimDueTurnWake scan cursor", () => {
+	it("claims only rows strictly after the cursor in created_at, wake_id order", () => {
+		const db = new CommDB(":memory:");
+		try {
+			for (const [wakeId, createdAtMs] of [
+				["wake-a", 1_000],
+				["wake-b", 1_000],
+				["wake-c", 2_000],
+			] as const) {
+				db.enqueueTurnWake({
+					wakeId,
+					executionId: `exec-${wakeId}`,
+					issueId: "FLY-2921",
+					epoch: 1,
+					purpose: "workflow_rework",
+					envelope: { fromAgent: "bridge", content: wakeId },
+					backend: "codex",
+					createdAtMs,
+				});
+			}
+			const claim = (after?: { createdAt: number; wakeId: string }) =>
+				db.claimDueTurnWake({
+					nowMs: 5_000,
+					retryAfterMs: 0,
+					leaseMs: 30_000,
+					...(after ? { after } : {}),
+				});
+			const first = claim();
+			expect(first?.wake_id).toBe("wake-a");
+			db.releaseTurnWakeClaim(first!.wake_id, first!.claim_token!);
+			const second = claim({ createdAt: 1_000, wakeId: "wake-a" });
+			expect(second?.wake_id).toBe("wake-b");
+			db.releaseTurnWakeClaim(second!.wake_id, second!.claim_token!);
+			const third = claim({ createdAt: 1_000, wakeId: "wake-b" });
+			expect(third?.wake_id).toBe("wake-c");
+			db.releaseTurnWakeClaim(third!.wake_id, third!.claim_token!);
+			expect(claim({ createdAt: 2_000, wakeId: "wake-c" })).toBeNull();
+			expect(() => claim({ createdAt: Number.NaN, wakeId: "wake-a" })).toThrow(
+				"invalid TURN wake claim window",
+			);
+		} finally {
+			db.close();
+		}
+	});
+});

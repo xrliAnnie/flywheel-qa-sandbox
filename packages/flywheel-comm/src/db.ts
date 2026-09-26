@@ -8934,6 +8934,12 @@ export class CommDB {
 		retryAfterMs: number;
 		leaseMs: number;
 		excludeWakeIds?: string[];
+		/**
+		 * FLY-2921: claim only rows strictly after this queue position
+		 * (`created_at, wake_id` order), so one patrol pass scans forward and
+		 * rows it chose to skip can never block the rest of the queue.
+		 */
+		after?: { createdAt: number; wakeId: string };
 	}): TurnWakeOutboxRow | null {
 		if (
 			!Number.isSafeInteger(input.nowMs) ||
@@ -8941,10 +8947,19 @@ export class CommDB {
 			!Number.isFinite(input.retryAfterMs) ||
 			input.retryAfterMs < 0 ||
 			!Number.isFinite(input.leaseMs) ||
-			input.leaseMs <= 0
+			input.leaseMs <= 0 ||
+			(input.after !== undefined &&
+				(!Number.isSafeInteger(input.after.createdAt) ||
+					!input.after.wakeId.trim()))
 		) {
 			throw new Error("invalid TURN wake claim window");
 		}
+		const afterSql = input.after
+			? "AND (created_at > ? OR (created_at = ? AND wake_id > ?))"
+			: "";
+		const afterParams = input.after
+			? [input.after.createdAt, input.after.createdAt, input.after.wakeId]
+			: [];
 		const excludeWakeIds = [
 			...new Set(
 				(input.excludeWakeIds ?? []).filter((wakeId) => wakeId.trim()),
@@ -8967,6 +8982,7 @@ export class CommDB {
 					      (push_count = 1 AND last_push_at <= ?)
 					    )
 					    ${exclusionSql}
+					    ${afterSql}
 					  ORDER BY created_at, wake_id
 					  LIMIT 1`,
 					)
@@ -8974,6 +8990,7 @@ export class CommDB {
 						input.nowMs,
 						input.nowMs - input.retryAfterMs,
 						...excludeWakeIds,
+						...afterParams,
 					) as TurnWakeOutboxRow | undefined;
 				if (!row) return;
 				const claimToken = randomUUID();

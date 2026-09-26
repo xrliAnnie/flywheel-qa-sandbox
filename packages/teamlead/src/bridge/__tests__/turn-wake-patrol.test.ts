@@ -174,7 +174,12 @@ describe("drainTurnWakeOutbox", () => {
 		dirs.push(dir);
 		const path = join(dir, "comm.db");
 		const seed = new CommDB(path);
-		const waiting = ["wake-wait-0", "wake-wait-1", "wake-wait-2"];
+		// Far more waiting rows than one pass's delivery budget: the pass scans
+		// forward past them (no threshold at which waits start to count).
+		const waiting = Array.from(
+			{ length: 25 },
+			(_, index) => `wake-wait-${String(index).padStart(2, "0")}`,
+		);
 		for (const [index, wakeId] of waiting.entries()) {
 			seed.enqueueTurnWake({
 				wakeId,
@@ -210,7 +215,7 @@ describe("drainTurnWakeOutbox", () => {
 				commDbPathForProject: () => path,
 				wake,
 				nowMs,
-				maxPerProject: waiting.length,
+				maxPerProject: 3,
 				canDeliver,
 			});
 		}
