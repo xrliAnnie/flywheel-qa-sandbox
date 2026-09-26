@@ -43,6 +43,7 @@ import { gate } from "./commands/gate.js";
 import { runHoldCommand } from "./commands/hold.js";
 import { inbox, renderInboxInstruction } from "./commands/inbox.js";
 import { runLandCommand } from "./commands/land.js";
+import { runLeadActivity } from "./commands/lead-activity.js";
 import { runLeadConfig } from "./commands/lead-config.js";
 import { runLeadIdentityCommand } from "./commands/lead-identity.js";
 import { runLeadLeaseCommand } from "./commands/lead-lease.js";
@@ -64,6 +65,7 @@ import { runReleaseBugTag } from "./commands/release-bug-tag.js";
 import { reportDeployed } from "./commands/report-deployed.js";
 import { requestReview } from "./commands/request-review.js";
 import { respond } from "./commands/respond.js";
+import { reviewRound } from "./commands/review-round.js";
 import { reviewRuling } from "./commands/review-ruling.js";
 import { runRoomCommand } from "./commands/room.js";
 import { runRunnerConfig } from "./commands/runner-config.js";
@@ -190,6 +192,12 @@ Commands:
   runner-wake-sweep  Ring a durable Codex phase-hold doorbell when unread
             Runner traffic exists (turn-ended hook use; never ACKs mailbox rows)
   await-codex-gate  Block until Bridge-written Codex review JSON or skip marker appears (Runner use)
+  review-round  FLY-2891: write one local Codex review round back to the Bridge
+            (run right after EACH round, before editing files). <design|code>
+            --exec-id <id> --round <n> --verdict APPROVED|CHANGES_REQUESTED
+            --thread <codexThreadId> [--turn <turnId>]
+            [--findings critical=N,high=N,medium=N,low=N] [--target <plan|pr-url>]
+            Never blocks: undeliverable rounds are spooled for the Bridge.
   qa-result  Emit a QA verdict (pass|fail) that gates the founder ship notification (QA Runner use)
   workflow-output  Submit a generalized node's JSON output before completion
   workflow-usage-source  Import an authenticated native Runner usage boundary (hook use)
@@ -236,6 +244,10 @@ Commands:
 	            render --project flywheel --out <file.html>. Local output may be
 	            up to 32MiB; publish-report rejects HTML over 512KiB.
 	  ship-judgment-ref  Re-fetch a referenced founder explanation (Lead only; no approval).
+	  lead-activity  Read-only: is a Lead in a turn right now (busy/idle/unknown),
+	            since when, and which issue opened it when provable:
+	            --project P --lead ID | --all [--bridge-url <loopback-url>].
+	            One JSON line; exit 0 = answered. Requires TEAMLEAD_API_TOKEN.
 	  lead-config    Set Lead model/effort for subsequent turns without restart:
 	            set --project P --lead ID [--model ID] [--effort VALUE] --reason TEXT
 	            rollback --operation-id OLD --reason TEXT | status --operation-id UUID
@@ -338,6 +350,9 @@ async function main(): Promise<void> {
 			"stage",
 			"ci-full",
 			"workflow-usage-source",
+			// FLY-2891: a review-round write-back must stay bounded (<2s) even
+			// when the Bridge is down; it never waits on stage replay.
+			"review-round",
 		].includes(command)
 	) {
 		await preflightStageQueue(process.env.FLYWHEEL_EXEC_ID);
@@ -457,6 +472,9 @@ async function main(): Promise<void> {
 		case "await-codex-gate":
 			await runAwaitCodexGate(commandArgs);
 			break;
+		case "review-round":
+			process.exitCode = await runReviewRound(commandArgs);
+			break;
 		case "qa-result":
 			await runQaResult(commandArgs);
 			break;
@@ -513,6 +531,9 @@ async function main(): Promise<void> {
 			break;
 		case "ship-judgment-ref":
 			process.exitCode = await runShipJudgmentRef(commandArgs);
+			break;
+		case "lead-activity":
+			process.exitCode = await runLeadActivity(commandArgs);
 			break;
 		case "feature-flags":
 			await runFeatureFlags(commandArgs);
@@ -1837,6 +1858,41 @@ async function runAwaitCodexGate(args: string[]): Promise<void> {
 		pollIntervalMs: values["poll-interval"]
 			? Number.parseInt(values["poll-interval"], 10)
 			: undefined,
+	});
+}
+
+async function runReviewRound(args: string[]): Promise<number> {
+	const reviewType = args[0] ?? "";
+	let values: Record<string, string | undefined>;
+	try {
+		({ values } = parseArgs({
+			args: args.slice(1),
+			options: {
+				"exec-id": { type: "string" },
+				round: { type: "string" },
+				verdict: { type: "string" },
+				thread: { type: "string" },
+				turn: { type: "string" },
+				findings: { type: "string" },
+				target: { type: "string" },
+			},
+			allowPositionals: false,
+		}) as { values: Record<string, string | undefined> });
+	} catch (error) {
+		console.error(
+			`[review-round] ${error instanceof Error ? error.message : String(error)}`,
+		);
+		return 2;
+	}
+	return reviewRound({
+		reviewType,
+		execId: values["exec-id"] ?? process.env.FLYWHEEL_EXEC_ID ?? "",
+		round: values.round ?? "",
+		verdict: values.verdict ?? "",
+		thread: values.thread ?? "",
+		turn: values.turn,
+		findings: values.findings,
+		target: values.target,
 	});
 }
 

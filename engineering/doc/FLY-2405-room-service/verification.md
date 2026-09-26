@@ -65,3 +65,11 @@ QA attempt 1 在冻结头 `71d14d4606e6bbd9f0f63a759db38ce870ead98e` 请求完�
 此前 review advisories 不属于本次 QA 失败修复，不在本轮改动。旧头完整 CI 明确失败，不能沿用旧头评审/CI 到新头；新头须有效 code review 与 QA retest，由 QA 请求冻结头完整 CI。
 
 返工后 `pnpm --filter "flywheel-teamlead..." build` 与 `pnpm lint` 均 exit 0（25 条 warning）；日志见 census-rework JSON。初始 stage 请求超时导致 progress 拒绝旧 started 阶段，随后 code_review stage 成功、progress 已重试成功；未手动改控制器状态。
+
+## QA 返工后的 main 同步
+
+4ca73d510 已有效 APPROVED 并正常推送，但 PR 随 main 前进变为 CONFLICTING，未触发 synchronize CI。同步 origin/main `33fa00747eacb8c1e1deaf7e17a5bb7fc5d856ae`，仅 StateStore 两处 import/getter 并发插入冲突；保留 QaRoomStore/qaRooms 和上游 ReviewRoundStore/reviewRounds，两者 migration 均保留。其余为 Git 自动合并，不新增产品行为或 advisory 修复。
+
+锁定安装、受影响 teamlead 及依赖 build、lint（25 warnings）通过。18 个具体文件逐个执行：15 个 TS 文件/242 tests 与3个 shell 文件通过；FLY-2211 首次 1/5 超过原15s门限，按 Lead 裁定仅原样重跑一次后5/5通过，未改断言/超时。保留 FLY-1560、FLY-2567、历史迁移、生产 spawn census 和 kill inventory 守卫。选择、357项排除及每次命令/日志见 verification-sync-rework.json。沿用 Lead298915b0 具体文件限定，不恢复 broad StateStore/plugin related。
+
+无未合并文件；StateStore/census diff --check 通过。完整 staged diff 的空白告警来自上游 FLY-2882 design-review.md，未修改该文件。同步后的新头需要新 effective review，正常推送后 scoped CI；冻结头 full CI 和 QA retest 仍由 QA 负责。

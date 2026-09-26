@@ -3175,8 +3175,6 @@ export class WorkflowEngineDispatcher {
 		const dispatchResolution = resolveNodeDispatchAtLaunch(store, {
 			runId: intent.run_id,
 			nodeId: intent.node_id,
-			codexQuotaRootKey: quotaRootKey,
-			now: now.getTime(),
 		});
 		if (
 			dispatchResolution.dispatch.vendor === "codex" &&

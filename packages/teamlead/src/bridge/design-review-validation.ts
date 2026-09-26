@@ -1,11 +1,90 @@
 import type { StateStore } from "../StateStore.js";
+import { resolveRequiredReviewModel } from "../workflow-review-routing.js";
 import { snapshotDesignReviewPlan } from "./design-review-manifest.js";
+import { reviewModelMatches } from "./review-round-ingest.js";
 
 const FULL_SHA_RE = /^[0-9a-f]{40}$/;
+const CODEX_ID_RE = /^[0-9A-Za-z-]{8,128}$/;
 
 export type DesignReviewValidationResult =
-	| { allowed: true }
-	| { allowed: false; reason: string; httpStatus: 400 | 404 | 409 };
+	| { allowed: true; reviewerModelChecked: true }
+	| { allowed: false; reason: string; httpStatus: 400 | 404 | 409 | 500 };
+
+export interface ReviewerModelProjection {
+	reviewerModel: string;
+	reviewerEffort: string;
+	codexThreadId: string;
+	codexTurnId: string;
+}
+
+/** FLY-2891: the verified reviewer-model fields every new gate sends. */
+export function readReviewerModelProjection(
+	body: Record<string, unknown>,
+): ReviewerModelProjection | undefined {
+	const model = requiredString(body, "reviewerModel");
+	const effort = requiredString(body, "reviewerEffort");
+	const thread = body.codexThreadId;
+	const turn = body.codexTurnId;
+	if (
+		!model ||
+		!effort ||
+		model.length > 128 ||
+		effort.length > 128 ||
+		typeof thread !== "string" ||
+		!CODEX_ID_RE.test(thread) ||
+		typeof turn !== "string" ||
+		!CODEX_ID_RE.test(turn)
+	)
+		return undefined;
+	return {
+		reviewerModel: model,
+		reviewerEffort: effort,
+		codexThreadId: thread,
+		codexTurnId: turn,
+	};
+}
+
+/**
+ * FLY-2891: compare the review's verified model with the route's required
+ * reviewer model. The required value is route config, not a manifest secret,
+ * so it may be echoed. A routing failure denies rather than skipping.
+ */
+export function checkReviewerModel(
+	store: StateStore,
+	executionId: string,
+	reviewType: "design" | "code",
+	projection: ReviewerModelProjection,
+	requestId?: string,
+): { ok: true } | { ok: false; reason: string; httpStatus: 409 | 500 } {
+	let required: ReturnType<typeof resolveRequiredReviewModel>;
+	try {
+		required = resolveRequiredReviewModel(
+			store,
+			executionId,
+			reviewType,
+			requestId,
+		);
+	} catch {
+		return {
+			ok: false,
+			reason: `cannot resolve the required ${reviewType} reviewer model for this execution`,
+			httpStatus: 500,
+		};
+	}
+	if (
+		required &&
+		reviewModelMatches(
+			{ model: projection.reviewerModel, effort: projection.reviewerEffort },
+			required,
+		) !== true
+	)
+		return {
+			ok: false,
+			reason: `reviewer model mismatch: request requires ${required.reviewerModel}/${required.reviewerEffort}, review ran ${projection.reviewerModel}/${projection.reviewerEffort}`,
+			httpStatus: 409,
+		};
+	return { ok: true };
+}
 
 function requiredString(
 	body: Record<string, unknown>,
@@ -45,6 +124,15 @@ export function validateDesignReviewProjection(
 			httpStatus: 400,
 		};
 	}
+	const reviewerModel = readReviewerModelProjection(body);
+	if (!reviewerModel) {
+		return {
+			allowed: false,
+			reason:
+				"design review result missing reviewer model (upgrade flywheel-comm and rerun the gate)",
+			httpStatus: 400,
+		};
+	}
 
 	const manifest = store.getCurrentDesignReviewManifest(executionId);
 	if (!manifest) {
@@ -63,6 +151,20 @@ export function validateDesignReviewProjection(
 			allowed: false,
 			reason: "design review result does not match the current request",
 			httpStatus: 409,
+		};
+	}
+	const modelCheck = checkReviewerModel(
+		store,
+		executionId,
+		"design",
+		reviewerModel,
+		manifest.request_id,
+	);
+	if (!modelCheck.ok) {
+		return {
+			allowed: false,
+			reason: modelCheck.reason,
+			httpStatus: modelCheck.httpStatus,
 		};
 	}
 
@@ -129,5 +231,5 @@ export function validateDesignReviewProjection(
 			validatedAt: new Date().toISOString(),
 		});
 	}
-	return { allowed: true };
+	return { allowed: true, reviewerModelChecked: true };
 }
