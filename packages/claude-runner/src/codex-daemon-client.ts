@@ -59,6 +59,12 @@ export type RecoveryOwnershipReceipt =
 			goalStatus: "active";
 	  }
 	| {
+			/** FLY-2925: a restored resident wait (paused; no self-resume). */
+			kind: "resident_wait_confirmed";
+			threadId: string;
+			goalStatus: "paused";
+	  }
+	| {
 			kind: "terminal_goal_confirmed";
 			threadId: string;
 			goalStatus: Exclude<GoalStatus, "active" | "paused">;
@@ -969,6 +975,13 @@ export async function runGoalToTerminal(
 		readUpstreamRetryEpisode?: () => UpstreamRetryEpisode | null;
 		/** FLY-2925: durable upstream retry episode writer (throw → no retry). */
 		writeUpstreamRetryEpisode?: (episode: UpstreamRetryEpisode | null) => void;
+		/**
+		 * FLY-2925: durable resident-wait latch. A restart that finds it set
+		 * re-parks the adopted goal instead of resuming it; only a wake clears it.
+		 * Read/write failures fail closed.
+		 */
+		readResidentWaitLatch?: () => boolean;
+		writeResidentWaitLatch?: (held: boolean) => void;
 		now?: () => number;
 		sleep?: (ms: number) => Promise<void>;
 	},
@@ -1348,6 +1361,9 @@ export async function runGoalToTerminal(
 		// recoverable: the phase hold becomes the single durable hold, which is
 		// exactly what the setup's `held` branch expects to find.
 		clearGateEpisode();
+		// FLY-2925: a phase boundary also ends any resident wait episode.
+		residentWait = null;
+		if (readResidentWaitLatch()) writeResidentWaitLatch(false);
 		if (!phaseHold) {
 			const t = now();
 			await phase.enterHold({
@@ -1693,10 +1709,33 @@ export async function runGoalToTerminal(
 			? { httpStatusCode: error.httpStatusCode }
 			: {}),
 	});
+	const writeResidentWaitLatch = (held: boolean): void => {
+		if (!input.writeResidentWaitLatch) return;
+		try {
+			input.writeResidentWaitLatch(held);
+		} catch (error) {
+			throw new GoalRunError(
+				`resident-wait latch write failed: ${error instanceof Error ? error.message : String(error)}`,
+				"setup_failed",
+			);
+		}
+	};
+	const readResidentWaitLatch = (): boolean => {
+		if (!input.readResidentWaitLatch) return false;
+		try {
+			return input.readResidentWaitLatch() === true;
+		} catch (error) {
+			throw new GoalRunError(
+				`resident-wait latch read failed: ${error instanceof Error ? error.message : String(error)}`,
+				"setup_failed",
+			);
+		}
+	};
 	const enterResidentWait = async (
 		observation: ResidentWaitObservation,
 	): Promise<void> => {
 		await settleTurnBarrier();
+		writeResidentWaitLatch(true);
 		const t = now();
 		residentWait = {
 			deadlineRemainingMs: Math.max(0, deadline - t),
@@ -1772,6 +1811,7 @@ export async function runGoalToTerminal(
 			}
 		}
 		residentWait = null;
+		writeResidentWaitLatch(false);
 		return true;
 	};
 	/**
@@ -1957,7 +1997,32 @@ export async function runGoalToTerminal(
 				}
 				const existingIsOurs =
 					existingGoal !== null && objectiveIsOurs(existingGoal);
-				if (existingIsOurs && existingGoal) {
+				// FLY-2925: a restart (or an adoption) never resumes a resident body
+				// that was waiting for correction; it re-parks and waits for a wake.
+				const residentLatched =
+					phase !== undefined && existingIsOurs && readResidentWaitLatch();
+				if (
+					residentLatched &&
+					existingGoal &&
+					input.isWaiting?.() !== true &&
+					existingGoal.status !== "complete"
+				) {
+					if (typeof existingGoal.tokensUsed === "number")
+						latestTokens = existingGoal.tokensUsed;
+					goalArmed = true;
+					const t = now();
+					residentWait = {
+						deadlineRemainingMs: Math.max(0, deadline - t),
+						hardDeadlineRemainingMs: Math.max(0, hardDeadline - t),
+					};
+					await setGoalStatus("paused", remainingBudget());
+					await establishRecoveryOwnership({
+						kind: "resident_wait_confirmed",
+						threadId: input.threadId,
+						goalStatus: "paused",
+					});
+					skipInitialActivation = true;
+				} else if (existingIsOurs && existingGoal) {
 					if (typeof existingGoal.tokensUsed === "number")
 						latestTokens = existingGoal.tokensUsed;
 					const waiting = input.isWaiting?.() === true;
@@ -2049,6 +2114,7 @@ export async function runGoalToTerminal(
 				err instanceof GoalRunError &&
 				err.kind === "setup_failed" &&
 				(err.message.startsWith("gate-hold latch") ||
+					err.message.startsWith("resident-wait latch") ||
 					err.message.startsWith("recovery commit failed"))
 			) {
 				throw err;

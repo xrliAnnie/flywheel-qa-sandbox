@@ -4757,6 +4757,9 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 				lastFailedTurnId: "turn-9",
 				nextAt: 123,
 			};
+			expect(input.readResidentWaitLatch?.()).toBe(false);
+			input.writeResidentWaitLatch?.(true);
+			expect(input.readResidentWaitLatch?.()).toBe(true);
 			input.writeUpstreamRetryEpisode?.(episode);
 			expect(input.readUpstreamRetryEpisode?.()).toEqual(episode);
 			const state = JSON.parse(

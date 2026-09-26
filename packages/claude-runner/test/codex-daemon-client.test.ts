@@ -3425,3 +3425,106 @@ describe("runGoalToTerminal — FLY-2925 resident goal observation", () => {
 		expect(result.status).toBe("blocked");
 	});
 });
+
+describe("runGoalToTerminal — FLY-2925 resident wait survives restart", () => {
+	it("a persisted resident-wait latch re-parks an adopted paused goal without resuming it; only a wake resumes", async () => {
+		const d = new FakeDaemon();
+		let current: GoalStatus = "paused";
+		d.responders.set("thread/goal/get", () => ({
+			goal: { status: current, objective: "OURS" },
+		}));
+		d.responders.set("thread/goal/set", (params) => {
+			current = (params as { status: GoalStatus }).status;
+			return {};
+		});
+		d.responders.set("turn/start", () => ({ turn: { id: "wake-turn" } }));
+		const phase = new FakePhaseLifecycle();
+		let latch = true;
+		const writes: boolean[] = [];
+		let waits = 0;
+		phase.onWait = () => {
+			waits += 1;
+			if (waits === 1) {
+				phase.observations.push({
+					kind: "wake",
+					message: { id: "doorbell:after-restart", content: "inbox" },
+				});
+			}
+			if (waits >= 2) d.triggerClose("engine stop");
+		};
+		const receipts: string[] = [];
+		await expect(
+			runGoalToTerminal(makeClient(d), {
+				threadId: "t",
+				objective: "OURS",
+				now: () => 0,
+				sleep: async () => {
+					d.triggerClose("engine stop");
+				},
+				pollIntervalMs: 1,
+				phaseLifecycle: phase,
+				readResidentWaitLatch: () => latch,
+				writeResidentWaitLatch: (held) => {
+					writes.push(held);
+					latch = held;
+				},
+				onRecoveryOwnershipEstablished: (r) => {
+					receipts.push(r.kind);
+				},
+			}),
+		).rejects.toMatchObject({ kind: "transport_closed" });
+		const sets = d.sent
+			.filter((f) => f.method === "thread/goal/set")
+			.map((f) => (f.params as { status: GoalStatus }).status);
+		// Re-parked first (no self-resume), resumed only by the wake.
+		expect(sets[0]).toBe("paused");
+		expect(sets).toContain("active");
+		expect(sets.indexOf("active")).toBeGreaterThan(0);
+		const starts = d.sent.filter((f) => f.method === "turn/start");
+		expect(starts).toHaveLength(1);
+		expect(receipts).toEqual(["resident_wait_confirmed"]);
+		expect(writes).toEqual([false]);
+		expect(latch).toBe(false);
+	});
+
+	it("entering a resident wait persists the latch before pausing", async () => {
+		const d = new FakeDaemon();
+		let current: GoalStatus = "active";
+		d.responders.set("thread/goal/get", () => ({
+			goal: { status: current, objective: "OURS" },
+		}));
+		d.responders.set("thread/goal/set", (params) => {
+			current = (params as { status: GoalStatus }).status;
+			return {};
+		});
+		d.responders.set("turn/start", (_p, _id, push) => {
+			push({
+				method: "thread/goal/updated",
+				params: { threadId: "t", goal: { status: "blocked", objective: "OURS" } },
+			});
+			return { turn: { id: "kick" } };
+		});
+		const phase = new FakePhaseLifecycle();
+		const order: string[] = [];
+		phase.onWait = () => d.triggerClose("engine stop");
+		const originalSend = d.send.bind(d);
+		d.send = (frame: unknown) => {
+			const f = frame as { method?: string; params?: { status?: string } };
+			if (f.method === "thread/goal/set") order.push(`set:${f.params?.status}`);
+			originalSend(frame);
+		};
+		await expect(
+			runGoalToTerminal(makeClient(d), {
+				threadId: "t",
+				objective: "OURS",
+				now: () => 0,
+				sleep: async () => {},
+				pollIntervalMs: 1,
+				phaseLifecycle: phase,
+				readResidentWaitLatch: () => false,
+				writeResidentWaitLatch: (held) => order.push(`latch:${held}`),
+			}),
+		).rejects.toMatchObject({ kind: "transport_closed" });
+		expect(order).toEqual(["set:active", "latch:true", "set:paused"]);
+	});
+});

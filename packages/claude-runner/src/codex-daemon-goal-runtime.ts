@@ -238,6 +238,9 @@ export interface RunGoalInput {
 	/** FLY-2925: durable upstream retry episode, shared across daemon restarts. */
 	readUpstreamRetryEpisode?: () => UpstreamRetryEpisode | null;
 	writeUpstreamRetryEpisode?: (episode: UpstreamRetryEpisode | null) => void;
+	/** FLY-2925: durable resident-wait latch, shared across daemon restarts. */
+	readResidentWaitLatch?: () => boolean;
+	writeResidentWaitLatch?: (held: boolean) => void;
 }
 
 export interface RestartDecision {
@@ -791,6 +794,12 @@ export class CodexDaemonGoalRuntime {
 								? {
 										writeUpstreamRetryEpisode: input.writeUpstreamRetryEpisode,
 									}
+								: {}),
+							...(input.readResidentWaitLatch
+								? { readResidentWaitLatch: input.readResidentWaitLatch }
+								: {}),
+							...(input.writeResidentWaitLatch
+								? { writeResidentWaitLatch: input.writeResidentWaitLatch }
 								: {}),
 						},
 						events,

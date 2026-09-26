@@ -492,6 +492,20 @@ export function readCodexGateHoldLatch(executionId: string): boolean {
 	return state.gateHold;
 }
 
+/** FLY-2925: durable resident-wait latch (fail-closed on a malformed value). */
+export function readCodexResidentWaitLatch(executionId: string): boolean {
+	const p = join(codexSessionStateDir(executionId), "session.json");
+	if (!existsSync(p)) return false;
+	const state = JSON.parse(readFileSync(p, "utf-8")) as {
+		residentWaitHold?: unknown;
+	};
+	if (state.residentWaitHold === undefined) return false;
+	if (typeof state.residentWaitHold !== "boolean") {
+		throw new Error(`invalid residentWaitHold in ${p}`);
+	}
+	return state.residentWaitHold;
+}
+
 /**
  * FLY-2925: the raw persisted same-thread upstream retry episode. The goal loop
  * validates the shape; a malformed value is treated as "no episode".
@@ -2353,6 +2367,12 @@ export class CodexTmuxAdapter implements IAdapter {
 					writeUpstreamRetryEpisode: (episode) =>
 						this.mergeSessionState(ctx.executionId, {
 							upstreamRetryEpisode: episode,
+						}),
+					readResidentWaitLatch: () =>
+						readCodexResidentWaitLatch(ctx.executionId),
+					writeResidentWaitLatch: (held) =>
+						this.mergeSessionState(ctx.executionId, {
+							residentWaitHold: held,
 						}),
 				},
 				{

@@ -1409,7 +1409,11 @@ describe("FLY-2925 resident restart gate + resident wait forwarding", () => {
 		const onResidentWait = () => {};
 		const readUpstreamRetryEpisode = () => null;
 		const writeUpstreamRetryEpisode = () => {};
+		const readResidentWaitLatch = () => false;
+		const writeResidentWaitLatch = () => {};
 		await new CodexDaemonGoalRuntime(h.opts).runGoal({
+			readResidentWaitLatch,
+			writeResidentWaitLatch,
 			objective: "x",
 			phaseLifecycle: residentPhase,
 			mayRestartAfterTransportDeath: () => true,
@@ -1424,6 +1428,8 @@ describe("FLY-2925 resident restart gate + resident wait forwarding", () => {
 			expect(input.onResidentWait).toBe(onResidentWait);
 			expect(input.readUpstreamRetryEpisode).toBe(readUpstreamRetryEpisode);
 			expect(input.writeUpstreamRetryEpisode).toBe(writeUpstreamRetryEpisode);
+			expect(input.readResidentWaitLatch).toBe(readResidentWaitLatch);
+			expect(input.writeResidentWaitLatch).toBe(writeResidentWaitLatch);
 		}
 	});
 });

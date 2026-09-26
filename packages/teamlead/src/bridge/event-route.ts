@@ -1506,6 +1506,37 @@ export function createEventRouter(
 			return;
 		}
 
+		// FLY-2925: a Codex goal status is observation, never a death verdict.
+		// A resident body no longer ends on `blocked`, and the live adapter's own
+		// result travels the in-process DirectEventSink; a goal_blocked failure
+		// arriving over HTTP is therefore an old-format or replayed event. Record
+		// it for forensics and never tear down (a waiting or newer body may own
+		// this execution now).
+		if (
+			event.event_type === "session_failed" &&
+			normalizedTerminalFailure?.failureKind === "goal_blocked"
+		) {
+			const inserted = store.insertEvent({
+				event_id: `goal-blocked-observed:${event.event_id}`,
+				execution_id: event.execution_id,
+				issue_id: event.issue_id,
+				project_name: event.project_name,
+				event_type: "codex_goal_blocked_observed",
+				source: "bridge.event-route",
+				payload: {
+					claimedSource: event.source,
+					failureReason: Array.from(normalizedTerminalFailure.failureReason)
+						.slice(0, 500)
+						.join(""),
+					...(normalizedTerminalFailure.failureCode
+						? { failureCode: normalizedTerminalFailure.failureCode }
+						: {}),
+				},
+			});
+			res.json({ ok: true, observationOnly: true, duplicate: !inserted });
+			return;
+		}
+
 		if (
 			rawTerminalFailure &&
 			typeof rawTerminalFailure === "object" &&
