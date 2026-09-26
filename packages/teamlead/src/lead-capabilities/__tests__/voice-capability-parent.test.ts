@@ -74,10 +74,11 @@ vi.mock("../skill-discovery.js", () => ({
 }));
 vi.mock("../../workflow-menu.js", () => ({ resolveLeadMenus: () => [] }));
 vi.mock("../node-runtime-closure.js", () => ({
-	leadNodeRuntimeReadPaths: (node: string) => [
-		node,
-		"/opt/closure/libnode.dylib",
-	],
+	resolveNodeRuntimeClosure: (node: string) => ({
+		files: [node, "/opt/closure/libnode.dylib"],
+		directories: [],
+	}),
+	leadNodeRuntimeReadPaths: (closure: { files: string[] }) => closure.files,
 }));
 vi.mock("../runtime-factory.js", () => ({
 	startLeadRuntimeParent: async (options: LeadRuntimeParentOptions) => {
@@ -154,6 +155,10 @@ it("starts without LINEAR_API_KEY and asks the factory to omit unavailable integ
 		expect(state.options?.integrationFailurePolicy).toBe("omit_integration");
 		expect(state.options?.linearToken).toBeUndefined();
 		expect(state.options?.secrets).not.toContain("");
+		expect(parent.nodeRuntimeClosure).toEqual({
+			files: [realpathSync(process.execPath), "/opt/closure/libnode.dylib"],
+			directories: [],
+		});
 		expect(state.options?.parent.permissionProfile.readPaths).toEqual(
 			expect.arrayContaining([
 				realpathSync(process.execPath),

@@ -1,17 +1,21 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { lookup as dnsLookup } from "node:dns/promises";
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readFileSync,
 	realpathSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { createServer, type Server } from "node:net";
+import { createServer as createHttpServer } from "node:http";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, expect, it } from "vitest";
+import { startBrowserEgressProxy } from "../browser-egress-proxy.js";
 import { ensureLeadCapabilityHome } from "../capability-home.js";
 import {
 	buildLeadModelEnv,
@@ -19,7 +23,10 @@ import {
 	writeLeadOpensslConf,
 } from "../model-env.js";
 import { verifyModelIsolation } from "../model-isolation.js";
-import { leadNodeRuntimeReadPaths } from "../node-runtime-closure.js";
+import {
+	leadNodeRuntimeReadPaths,
+	resolveNodeRuntimeClosure,
+} from "../node-runtime-closure.js";
 import {
 	LEAD_PERMISSION_PROFILE,
 	type LeadPermissionProfileSpec,
@@ -40,8 +47,10 @@ const hostReady =
 	nodePath.startsWith("/opt/homebrew/Cellar/node/");
 
 let root: string;
-let proxy: Server;
+let egress: Awaited<ReturnType<typeof startBrowserEgressProxy>>;
 let proxyPort: number;
+/** Hostnames the activation egress proxy was asked to resolve (i.e. forwarded to it). */
+let egressHosts: string[];
 beforeEach(async () => {
 	// The profile denies /tmp (:slash_tmp); a real Lead workspace lives elsewhere.
 	root = realpathSync(
@@ -52,12 +61,21 @@ beforeEach(async () => {
 			),
 		),
 	);
-	proxy = createServer((socket) => socket.end());
-	await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
-	proxyPort = (proxy.address() as { port: number }).port;
+	egressHosts = [];
+	egress = await startBrowserEgressProxy({
+		policy: () => ({ protectedPorts: [], localQaTargets: [] }),
+		assertCurrent: () => {},
+		lookup: async (hostname) => {
+			egressHosts.push(hostname);
+			return (await dnsLookup(hostname, { all: true, verbatim: true })).map(
+				(row) => ({ address: row.address, family: row.family }),
+			);
+		},
+	});
+	proxyPort = egress.port;
 });
 afterEach(async () => {
-	await new Promise<void>((resolve) => proxy.close(() => resolve()));
+	await egress.close();
 	rmSync(root, { recursive: true, force: true });
 });
 
@@ -86,6 +104,7 @@ async function prepare(readNode: "executable" | "closure", openssl: boolean) {
 		leadId: "host-probe",
 		activationId: "host-probe",
 		...(opensslConf ? { opensslConf } : {}),
+		egressProxyUrl: `http://127.0.0.1:${proxyPort}`,
 	};
 	const spec: LeadPermissionProfileSpec = {
 		deploymentRoot,
@@ -94,7 +113,7 @@ async function prepare(readNode: "executable" | "closure", openssl: boolean) {
 		readPaths: [
 			deploymentRoot,
 			...(readNode === "closure"
-				? leadNodeRuntimeReadPaths(nodePath)
+				? leadNodeRuntimeReadPaths(resolveNodeRuntimeClosure(nodePath))
 				: [nodePath]),
 			realpathSync(codexBin),
 			...(opensslConf ? [opensslConf] : []),
@@ -178,6 +197,7 @@ it.skipIf(!hostReady)(
 				deploymentRoot: spec.deploymentRoot,
 				credentialProbePath: credential,
 				proxyPort,
+				egressProbeSeen: egress.probeSeen,
 				env: process.env,
 				assertCurrent: () => {},
 			}),
@@ -199,10 +219,151 @@ it.skipIf(!hostReady)(
 				deploymentRoot: spec.deploymentRoot,
 				credentialProbePath: credential,
 				proxyPort,
+				egressProbeSeen: egress.probeSeen,
 				env: process.env,
 				assertCurrent: () => {},
 			}),
 		).rejects.toThrow("model_isolation_unproven");
 	},
 	30_000,
+);
+
+/**
+ * Lead ruling B regression (resident and voice share this profile): chaining the
+ * managed sandbox proxy to the activation egress proxy adds that hop and allows
+ * nothing more. Same targets, same outcomes; only the egress proxy now sees the
+ * public requests. Needs public DNS/HTTP for example.com.
+ */
+it.skipIf(!hostReady)(
+	"upstream chaining changes no outcome and puts the egress proxy in the path",
+	async () => {
+		const local = createHttpServer((_request, response) => response.end("ok"));
+		await new Promise<void>((resolve) => local.listen(0, "127.0.0.1", resolve));
+		const localPort = (local.address() as { port: number }).port;
+		const targets: Array<[string, string]> = [
+			["public https", "https://example.com/"],
+			["public http", "http://example.com/"],
+			["loopback", `http://127.0.0.1:${localPort}/`],
+			["localhost", `http://localhost:${localPort}/`],
+			["name to loopback", `http://localtest.me:${localPort}/`],
+			["metadata", "http://169.254.169.254/"],
+			["rfc1918", "http://10.255.255.1/"],
+			["name to rfc1918", "http://10.0.0.1.nip.io/"],
+		];
+		const run = async (legacy: boolean) => {
+			const { pins, spec } = await prepare("closure", true);
+			const env: NodeJS.ProcessEnv = {
+				...buildLeadModelEnv(process.env, pins),
+			};
+			if (legacy) {
+				// Pre-ruling shape: no upstream, no egress proxy env.
+				const config = join(pins.codexHome, "config.toml");
+				chmodSync(config, 0o600);
+				writeFileSync(
+					config,
+					readFileSync(config, "utf8").replace(
+						"allow_upstream_proxy = true",
+						"allow_upstream_proxy = false",
+					),
+				);
+				for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"])
+					delete env[key];
+			}
+			const script = [
+				...targets.map(
+					([name, url]) =>
+						`printf '%s|%s\\n' '${name}' "$(/usr/bin/curl -s -m 8 -o /dev/null -w '%{http_code}' '${url}')"`,
+				),
+				`printf 'direct public|%s\\n' "$(/usr/bin/curl --noproxy '*' -s -m 8 -o /dev/null -w '%{http_code}' https://example.com/)"`,
+				`printf 'direct loopback|%s\\n' "$(/usr/bin/curl --noproxy '*' -s -m 8 -o /dev/null -w '%{http_code}' http://127.0.0.1:${localPort}/)"`,
+			].join("\n");
+			egressHosts.length = 0;
+			const output = await new Promise<string>((resolve) => {
+				const child = spawn(
+					codexBin,
+					[
+						"sandbox",
+						"--permission-profile",
+						LEAD_PERMISSION_PROFILE,
+						"--cd",
+						spec.projectRoot,
+						"--",
+						"/bin/sh",
+						"-c",
+						script,
+					],
+					{ cwd: spec.projectRoot, env },
+				);
+				let text = "";
+				child.stdout.on("data", (chunk) => {
+					text += chunk;
+				});
+				child.on("close", () => resolve(text));
+			});
+			rmSync(join(root, "codex-home"), { recursive: true, force: true });
+			rmSync(join(root, "activation"), { recursive: true, force: true });
+			return {
+				outcomes: Object.fromEntries(
+					output
+						.trim()
+						.split("\n")
+						.map((line) => line.split("|") as [string, string]),
+				),
+				hosts: [...new Set(egressHosts)],
+			};
+		};
+		try {
+			const before = await run(true);
+			const after = await run(false);
+			expect(after.outcomes).toEqual(before.outcomes);
+			expect(after.outcomes).toEqual({
+				"public https": "200",
+				"public http": "200",
+				loopback: "403",
+				localhost: "403",
+				"name to loopback": "403",
+				metadata: "403",
+				rfc1918: "403",
+				"name to rfc1918": "403",
+				"direct public": "000",
+				"direct loopback": "000",
+			});
+			expect(before.hosts).toEqual([]);
+			expect(after.hosts).toEqual(["example.com"]);
+		} finally {
+			await new Promise<void>((resolve) => local.close(() => resolve()));
+		}
+	},
+	120_000,
+);
+
+it.skipIf(!hostReady)(
+	"verifyModelIsolation rejects a managed proxy that bypasses the egress proxy",
+	async () => {
+		const { pins, spec, credential } = await prepare("closure", true);
+		const config = join(pins.codexHome, "config.toml");
+		chmodSync(config, 0o600);
+		writeFileSync(
+			config,
+			readFileSync(config, "utf8").replace(
+				"allow_upstream_proxy = true",
+				"allow_upstream_proxy = false",
+			),
+		);
+		await expect(
+			verifyModelIsolation({
+				codexExecutable: codexBin,
+				nodeExecutable: nodePath,
+				pins,
+				projectRoot: spec.projectRoot,
+				deploymentRoot: spec.deploymentRoot,
+				credentialProbePath: credential,
+				proxyPort,
+				egressProbeSeen: egress.probeSeen,
+				env: process.env,
+				assertCurrent: () => {},
+			}),
+		).rejects.toThrow("model_isolation_unproven");
+	},
+	60_000,
 );

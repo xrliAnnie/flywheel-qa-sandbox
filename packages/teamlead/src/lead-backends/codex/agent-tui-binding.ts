@@ -210,12 +210,19 @@ function matchesCapabilityWords(
 		"FLYWHEEL_LEAD_CAPABILITY_ACTIVATION",
 		"FLYWHEEL_LEAD_CAPABILITY_SOCKET",
 		"FLYWHEEL_LEAD_CAPABILITY_MANIFEST",
-		// FLY-2886: parent-pinned OpenSSL config; absent on older panes.
+		// FLY-2886: parent-pinned OpenSSL config and egress upstream; absent on
+		// older panes.
 		"OPENSSL_CONF",
+		"HTTP_PROXY",
+		"HTTPS_PROXY",
+		"ALL_PROXY",
 	]);
 	if ([...env.keys()].some((key) => !allowed.has(key))) return false;
 	if (env.has("OPENSSL_CONF") && !env.get("OPENSSL_CONF")!.startsWith("/"))
 		return false;
+	for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"])
+		if (env.has(key) && !/^http:\/\/127\.0\.0\.1:\d{1,5}$/u.test(env.get(key)!))
+			return false;
 	for (const key of [
 		"TMPDIR",
 		"FLYWHEEL_LEAD_CAPABILITY_SOCKET",

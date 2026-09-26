@@ -104,7 +104,9 @@ function profileConfig(spec: LeadPermissionProfileSpec) {
 					proxy_url: `http://127.0.0.1:${spec.proxyPort}`,
 					enable_socks5: false,
 					enable_socks5_udp: false,
-					allow_upstream_proxy: false,
+					// The managed sandbox proxy forwards to the activation egress proxy
+					// (codex process HTTP(S)_PROXY), keeping it on every model request.
+					allow_upstream_proxy: true,
 					allow_local_binding: false,
 					dangerously_allow_non_loopback_proxy: false,
 					dangerously_allow_all_unix_sockets: false,

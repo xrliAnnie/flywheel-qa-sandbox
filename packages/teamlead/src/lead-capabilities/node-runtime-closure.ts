@@ -247,11 +247,9 @@ export function resolveNodeRuntimeClosure(
 	return { files: [...files].sort(), directories: [...directories].sort() };
 }
 
-/** Read grants the sandboxed node needs: the executable itself plus its loader closure. */
+/** Read grants for a resolved closure: exact files plus symlink hop directories. */
 export function leadNodeRuntimeReadPaths(
-	nodePath: string,
-	options: { otool?: (path: string) => string; home?: string } = {},
+	closure: NodeRuntimeClosure,
 ): string[] {
-	const closure = resolveNodeRuntimeClosure(nodePath, options);
 	return [...closure.files, ...closure.directories].sort();
 }

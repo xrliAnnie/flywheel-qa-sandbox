@@ -95,7 +95,11 @@ describe("verifyAgentTuiBinding", () => {
 			...CAPABILITY,
 			capabilityModelEnv: {
 				...CAPABILITY.capabilityModelEnv!,
-				pins: { ...PINS, opensslConf: "/tmp/cap/openssl.cnf" },
+				pins: {
+					...PINS,
+					opensslConf: "/tmp/cap/openssl.cnf",
+					egressProxyUrl: "http://127.0.0.1:40123",
+				},
 			},
 		};
 		const expected = {
@@ -112,6 +116,16 @@ describe("verifyAgentTuiBinding", () => {
 		expect(command).toContain("OPENSSL_CONF=/tmp/cap/openssl.cnf");
 		expect(verdict(command, withConf).ok).toBe(true);
 		expect(verifyAgentTuiBinding(command, expected).ok).toBe(true);
+		expect(command).toContain("HTTPS_PROXY=http://127.0.0.1:40123");
+		expect(
+			verifyAgentTuiBinding(
+				command.replaceAll(
+					"http://127.0.0.1:40123",
+					"http://proxy.example:40123",
+				),
+				expected,
+			),
+		).toEqual({ ok: false, reason: "identity_mismatch" });
 		expect(
 			verifyAgentTuiBinding(
 				command.replace(

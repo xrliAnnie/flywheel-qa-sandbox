@@ -1,0 +1,17 @@
+EGRESS-RESULT
+public https|via-proxy|200|
+public http|via-proxy|200|
+loopback ip|via-proxy|403|
+localhost|via-proxy|403|
+name->127.0.0.1 (localtest.me)|via-proxy|403|
+name->127.0.0.1 (127.0.0.1.nip.io)|via-proxy|403|
+link-local metadata|via-proxy|403|
+rfc1918 10/8|via-proxy|403|
+rfc1918 192.168/16|via-proxy|403|
+name->10.x (10.0.0.1.nip.io)|via-proxy|403|
+public https|DIRECT(no proxy)|curl: (6) Could not resolve host: example.com 000
+loopback|DIRECT(no proxy)|curl: (7) Failed to connect to 127.0.0.1 port 51937 after 0 ms: Couldn't connect to server 000
+HTTP_PROXY=http://127.0.0.1:51946 HTTPS_PROXY=http://127.0.0.1:51946 NO_PROXY=
+
+exit=0 stderr=
+flywheel-egress requests observed: 0

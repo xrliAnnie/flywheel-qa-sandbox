@@ -117,7 +117,7 @@ it("resolves @rpath through the loader chain, recurses, grants realpaths plus th
 	expect([...calls].sort()).toEqual(
 		[cellar, libnode, uvReal, sslReal, exec].sort(),
 	);
-	expect(leadNodeRuntimeReadPaths(cellar, { otool })).toEqual(
+	expect(leadNodeRuntimeReadPaths(closure)).toEqual(
 		[...closure.files, ...closure.directories].sort(),
 	);
 });

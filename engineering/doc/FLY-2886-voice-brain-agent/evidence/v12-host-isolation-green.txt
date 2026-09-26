@@ -1,13 +1,20 @@
-
- RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
-
- ✓ |parallel| src/lead-capabilities/__tests__/model-isolation-host.test.ts (4 tests) 934ms
-   ✓ the loader closure plus the pinned OPENSSL_CONF runs node and crypto inside the sandbox  372ms
-   ✓ verifyModelIsolation passes with the real codex, real node and the resident-shaped profile  379ms
- ✓ |parallel| src/lead-capabilities/__tests__/node-runtime-closure.test.ts (11 tests) 276ms
-
+ ✓ |parallel| src/lead-capabilities/__tests__/model-isolation-host.test.ts > the executable-only grant cannot even load Homebrew node (the QA@2 exit 134) 161ms
+ ✓ |parallel| src/lead-capabilities/__tests__/model-isolation-host.test.ts > the loader closure plus the pinned OPENSSL_CONF runs node and crypto inside the sandbox 407ms
+ ✓ |parallel| src/lead-capabilities/__tests__/model-isolation-host.test.ts > verifyModelIsolation passes with the real codex, real node and the resident-shaped profile 413ms
+ ✓ |parallel| src/lead-capabilities/__tests__/model-isolation-host.test.ts > verifyModelIsolation rejects the executable-only grant with the real codex 48ms
+ ✓ |parallel| src/lead-capabilities/__tests__/model-isolation-host.test.ts > upstream chaining changes no outcome and puts the egress proxy in the path 1101ms
+ ✓ |parallel| src/lead-capabilities/__tests__/model-isolation-host.test.ts > verifyModelIsolation rejects a managed proxy that bypasses the egress proxy 467ms
+ ✓ |parallel| src/lead-capabilities/__tests__/node-runtime-closure.test.ts > parses dependency and rpath load commands and ignores others 1ms
+ ✓ |parallel| src/lead-capabilities/__tests__/node-runtime-closure.test.ts > resolves @rpath through the loader chain, recurses, grants realpaths plus the directories of crossed symlinks, skips shared-cache libraries 4ms
+ ✓ |parallel| src/lead-capabilities/__tests__/node-runtime-closure.test.ts > uses the image's own rpaths before its loader's 1ms
+ ✓ |parallel| src/lead-capabilities/__tests__/node-runtime-closure.test.ts > skips an unresolvable weak dependency but rejects an unresolvable required one 1ms
+ ✓ |parallel| src/lead-capabilities/__tests__/node-runtime-closure.test.ts > rejects a relative install name 1ms
+ ✓ |parallel| src/lead-capabilities/__tests__/node-runtime-closure.test.ts > rejects a glob characters the permission profile cannot express 1ms
+ ✓ |parallel| src/lead-capabilities/__tests__/node-runtime-closure.test.ts > rejects a symlink hop directory that is home or one of its ancestors 2ms
+ ✓ |parallel| src/lead-capabilities/__tests__/node-runtime-closure.test.ts > rejects a closure over the file cap 9ms
+ ✓ |parallel| src/lead-capabilities/__tests__/node-runtime-closure.test.ts > rejects a closure deeper than the recursion cap 2ms
+ ✓ |parallel| src/lead-capabilities/__tests__/node-runtime-closure.test.ts > rejects when the load commands cannot be read 1ms
+ ✓ |parallel| src/lead-capabilities/__tests__/node-runtime-closure.test.ts > resolves the actual Homebrew node closure including @rpath libnode (host) 242ms
  Test Files  2 passed (2)
-      Tests  15 passed (15)
-   Start at  06:10:08
-   Duration  1.57s (transform 33ms, setup 12ms, collect 36ms, tests 1.21s, environment 0ms, prepare 50ms)
-
+      Tests  17 passed (17)
+   Start at  06:32:25

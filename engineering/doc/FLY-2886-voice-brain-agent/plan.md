@@ -523,3 +523,11 @@ broker 对 actor=voice 的 write 类回执（含 `browser.*` 写）成功 → Le
 - **降级后不走口语转述**：降级场的交办由 Lead 本体回答，proof speaker 维持逐字——这和 FLY-2884 founder 试过的行为一致。代价是降级场里 Lead 的回答仍然逐字念。
 - **`OPENSSL_CONF` 的代价**：沙箱内 node 用 OpenSSL 默认配置，不读宿主配置。这些 node 子进程只走 unix socket 和受管代理，不依赖宿主 OpenSSL 定制。
 - **QA-R2 用注入缝**：「会话降级」这条路径在真房里靠构造缝触发；「真 parent 能起来」由 QA-R1 在零桩条件下证明。两件事分开证，报告里如实写。
+
+### 14.7 实现期更正（真宿主实测；Lead 问询 `0feb0514`、`a94a6f30` 裁定）
+
+§14.3 在真 codex 0.156.1 + 真 Homebrew node 上实测后改三处，原件与矩阵见 `verification.md`，常驻与语音同修：
+
+1. **软链接按所在目录放行**。codex 把权限档路径一律 realpath 化，软链接节点本身无法按路径放行，而 Seatbelt 查找时要检查它（受控实验见 verification §1）。闭包改为：realpath 精确文件 + 解析链实际经过的每个软链接所在的 canonical 目录（只读）。守卫：目录深度 ≥ 3、不能是 HOME 或其祖先、文件 + 目录 ≤ 64。本机 22 个文件 + 12 个目录。清单随 parent 返回（`nodeRuntimeClosure`），常驻写 Lead 日志，语音写 evidence `codex_voice_node_runtime_closure`。
+2. **删掉 `:tmpdir` deny**。codex 按子进程 `TMPDIR` 解析 `:tmpdir`，而模型 env 把 `TMPDIR` 固定为 `modelTempRoot`，于是模型自己的 scratch 被拒写。宿主真 tmp 仍被 `:root` deny 拒。
+3. **出网走上游链（Lead 选 B）**。codex sandbox 自起托管代理并只放行连它；权限档 `allow_upstream_proxy = true`，codex 进程 `HTTP(S)_PROXY` / `ALL_PROXY` 指向本 activation 的 Flywheel egress（pins `egressProxyUrl`），模型流量经 codex 与 Flywheel egress 两层。隔离探针改为：连沙箱注入的 `HTTP_PROXY`（回环）必须通；经它请求 `http://example.com/.well-known/flywheel-egress-probe/<nonce>` 必须 204，且 Flywheel egress 必须记到同一 nonce。常驻回归：新旧配置同一出网矩阵结果逐目标相同，只多了 egress 这一跳。代价：隔离证明需要能解析 example.com。

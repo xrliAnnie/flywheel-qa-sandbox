@@ -36,6 +36,7 @@ import {
 	writeLeadOpensslConf,
 } from "./model-env.js";
 import { verifyModelIsolation } from "./model-isolation.js";
+import type { NodeRuntimeClosure } from "./node-runtime-closure.js";
 import {
 	assertLeadPermissionProfile,
 	LEAD_PERMISSION_PROFILE,
@@ -58,6 +59,8 @@ export interface LeadCapabilityParent {
 	readonly mcp: CodexLeadMcpResult;
 	readonly permissionArgv: readonly string[];
 	readonly outboundPost: HttpPost;
+	/** Launcher-resolved sandbox grants for node, listed for logs (FLY-2886 §14.3). */
+	readonly nodeRuntimeClosure?: NodeRuntimeClosure;
 	enterDeliveryContext(entryId: string): () => void;
 	assertCurrent(): Promise<void>;
 	verifyEffectiveConfig(config: unknown): Promise<void>;
@@ -80,6 +83,12 @@ export interface LeadCapabilityParentOptions {
 	modelEnv?: NodeJS.ProcessEnv;
 	/** Trusted abort-aware adapter; no direct Discord fallback when absent. */
 	outboundTransport?: HttpPost;
+	/**
+	 * The model egress proxy (permissionProfile.proxyPort) reports whether it
+	 * answered an isolation chain probe; required proof that Codex's managed
+	 * sandbox proxy forwards through it (FLY-2886 plan v12, Lead ruling B).
+	 */
+	egressProbeSeen(nonce: string): boolean;
 	proxyEntryPath: string;
 	handlers: ReadonlyMap<string, LeadOperationHandler>;
 	secrets: readonly string[];
@@ -273,6 +282,7 @@ export async function startLeadCapabilityParent(
 			leadId: manifest.leadId,
 			activationId: manifest.activationId,
 			opensslConf,
+			egressProxyUrl: `http://127.0.0.1:${options.permissionProfile.proxyPort}`,
 		});
 		const writableRoot = leadModelWritableRoot(options.permissionProfile);
 		if (
@@ -317,6 +327,7 @@ export async function startLeadCapabilityParent(
 			deploymentRoot: permissionProfile.deploymentRoot,
 			credentialProbePath: join(options.codexHome, "auth.json"),
 			proxyPort: permissionProfile.proxyPort,
+			egressProbeSeen: options.egressProbeSeen,
 			env: options.modelEnv ?? process.env,
 			assertCurrent: current,
 		});

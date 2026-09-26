@@ -27,6 +27,12 @@ export interface LeadModelEnvPins {
 	 * this exact file instead of a host config path the profile does not grant.
 	 */
 	opensslConf?: string;
+	/**
+	 * Loopback URL of the activation's egress proxy. Codex uses it as the upstream
+	 * of its managed sandbox proxy (allow_upstream_proxy), so model traffic passes
+	 * through Flywheel's egress policy (FLY-2886, Lead ruling B).
+	 */
+	egressProxyUrl?: string;
 }
 
 export const LEAD_OPENSSL_CONF_FILE = "openssl.cnf";
@@ -68,6 +74,11 @@ export function buildLeadModelEnv(
 		pins.modelTempRoot.startsWith(`${pins.artifactRoot}/`)
 	)
 		throw new Error("model temp overlaps protected artifacts");
+	if (
+		pins.egressProxyUrl !== undefined &&
+		!/^http:\/\/127\.0\.0\.1:\d{1,5}$/u.test(pins.egressProxyUrl)
+	)
+		throw new Error("invalid capability process path");
 	for (const value of [pins.projectName, pins.leadId, pins.activationId])
 		if (!/^[A-Za-z0-9_.:-]{1,256}$/.test(value))
 			throw new Error("invalid capability process identity");
@@ -89,5 +100,12 @@ export function buildLeadModelEnv(
 		FLYWHEEL_LEAD_CAPABILITY_SOCKET: pins.brokerSocket,
 		FLYWHEEL_LEAD_CAPABILITY_MANIFEST: pins.manifestPath,
 		...(pins.opensslConf ? { OPENSSL_CONF: pins.opensslConf } : {}),
+		...(pins.egressProxyUrl
+			? {
+					HTTP_PROXY: pins.egressProxyUrl,
+					HTTPS_PROXY: pins.egressProxyUrl,
+					ALL_PROXY: pins.egressProxyUrl,
+				}
+			: {}),
 	};
 }

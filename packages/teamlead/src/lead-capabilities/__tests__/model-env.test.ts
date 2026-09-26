@@ -56,6 +56,25 @@ describe("bundle v2 model process environment", () => {
 			buildLeadModelEnv({}, { ...pins, opensslConf: "run/openssl.cnf" }),
 		).toThrow("invalid capability process path");
 	});
+	it("points the codex process at the activation egress proxy only via the pin (FLY-2886 ruling B)", () => {
+		const env = buildLeadModelEnv(
+			{ HTTP_PROXY: "http://evil.example:3128" },
+			{ ...pins, egressProxyUrl: "http://127.0.0.1:40123" },
+		);
+		expect([env.HTTP_PROXY, env.HTTPS_PROXY, env.ALL_PROXY]).toEqual([
+			"http://127.0.0.1:40123",
+			"http://127.0.0.1:40123",
+			"http://127.0.0.1:40123",
+		]);
+		for (const bad of [
+			"http://evil.example:3128",
+			"http://127.0.0.1:1/x",
+			"https://127.0.0.1:40123",
+		])
+			expect(() =>
+				buildLeadModelEnv({}, { ...pins, egressProxyUrl: bad }),
+			).toThrow("invalid capability process path");
+	});
 	it("rejects injected newlines or relative trusted coordinates", () => {
 		expect(() =>
 			buildLeadModelEnv({}, { ...pins, brokerSocket: "relative" }),

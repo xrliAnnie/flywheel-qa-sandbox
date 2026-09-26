@@ -223,3 +223,46 @@ it.each(["http", "connect", "websocket"])(
 		expect(checks).toBe(2);
 	},
 );
+
+it("answers the isolation probe URL itself and records its nonce once (FLY-2886 upstream-chain proof)", async () => {
+	const lookups: string[] = [];
+	const proxy = await startBrowserEgressProxy({
+		policy: () => ({ localQaTargets: [], protectedPorts: [] }),
+		assertCurrent: () => {},
+		lookup: async (hostname) => {
+			lookups.push(hostname);
+			throw new Error("no network in this test");
+		},
+	});
+	cleanup.push(proxy.close);
+	const status = (path: string) =>
+		new Promise<number>((resolve, reject) => {
+			get(
+				{ host: "127.0.0.1", port: proxy.port, path, agent: false },
+				(res) => {
+					res.resume();
+					res.on("end", () => resolve(res.statusCode!));
+				},
+			).on("error", reject);
+		});
+	const nonce = "123e4567-e89b-42d3-a456-426614174000";
+	expect(proxy.probeSeen(nonce)).toBe(false);
+	expect(
+		await status(
+			`http://example.com/.well-known/flywheel-egress-probe/${nonce}`,
+		),
+	).toBe(204);
+	// Answered locally: no resolution, no upstream.
+	expect(lookups).toEqual([]);
+	expect(proxy.probeSeen(nonce)).toBe(true);
+	// Consumed: a later check cannot reuse an earlier observation.
+	expect(proxy.probeSeen(nonce)).toBe(false);
+	// Anything else under that host is ordinary traffic (here: refused).
+	for (const path of [
+		"http://example.com/.well-known/flywheel-egress-probe/not-a-uuid",
+		`http://www.example.com/.well-known/flywheel-egress-probe/${nonce}`,
+		`http://example.com:8080/.well-known/flywheel-egress-probe/${nonce}`,
+	])
+		expect(await status(path)).toBe(403);
+	expect(proxy.probeSeen(nonce)).toBe(false);
+});

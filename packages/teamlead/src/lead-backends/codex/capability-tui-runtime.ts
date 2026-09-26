@@ -74,6 +74,11 @@ export function createCapabilityTuiRuntime(
 					carrierInstanceId: config.carrierInstanceId,
 				});
 				abort.signal.throwIfAborted();
+				if (parent.nodeRuntimeClosure)
+					logger.info(
+						"Codex Lead sandbox node runtime grants",
+						parent.nodeRuntimeClosure,
+					);
 				const capabilitySession = {
 					parent,
 					journal,

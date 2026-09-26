@@ -20,7 +20,10 @@ import { LeadArtifactStore } from "./artifacts.js";
 import { leadCredentialAliases } from "./credential-paths.js";
 import { verifyLeadDeployment } from "./deployment.js";
 import { preparePinnedNativeSkillHome } from "./native-home.js";
-import { leadNodeRuntimeReadPaths } from "./node-runtime-closure.js";
+import {
+	leadNodeRuntimeReadPaths,
+	resolveNodeRuntimeClosure,
+} from "./node-runtime-closure.js";
 import { leadModelWritableRoot } from "./permission-profile.js";
 import { startLeadRuntimeParent } from "./runtime-factory.js";
 import { discoverLeadRuleSources } from "./skill-discovery.js";
@@ -294,6 +297,7 @@ export async function startVoiceCapabilityParent(
 				throw new Error("voice_capability_preparation_changed");
 		};
 		const require = createRequire(import.meta.url);
+		const nodeRuntimeClosure = resolveNodeRuntimeClosure(nodePath);
 		parent = await startLeadRuntimeParent({
 			env,
 			activationId: resolution.identity.activationId,
@@ -350,7 +354,7 @@ export async function startVoiceCapabilityParent(
 					projectRoot,
 					readPaths: [
 						deploymentRoot,
-						...leadNodeRuntimeReadPaths(nodePath),
+						...leadNodeRuntimeReadPaths(nodeRuntimeClosure),
 						codexPath,
 					],
 					credentialPaths: leadCredentialAliases(env, codexHome),
@@ -378,6 +382,7 @@ export async function startVoiceCapabilityParent(
 			beginTurn: turns.beginTurn,
 			endTurn: turns.endTurn,
 			cwd: projectRoot,
+			nodeRuntimeClosure,
 			revoke,
 			close: cleanup,
 		});

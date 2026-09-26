@@ -147,6 +147,7 @@ export interface LeadRuntimeParentOptions extends LeadRuntimeProviderOptions {
 		| "assertCurrent"
 		| "permissionProfile"
 		| "targetLocks"
+		| "egressProbeSeen"
 	> & {
 		permissionProfile: Omit<
 			LeadCapabilityParentOptions["permissionProfile"],
@@ -323,6 +324,7 @@ export async function startLeadRuntimeParent(
 				...options.parent.permissionProfile,
 				proxyPort: providers.proxyPort,
 			},
+			egressProbeSeen: providers.egressProbeSeen,
 			assertCurrent: current,
 			closeProviders: providers.close,
 			outboundTransport,
@@ -662,6 +664,7 @@ export async function startLeadRuntimeProviders(
 						return {
 							generation: undefined,
 							proxyPort: proxy.port,
+							egressProbeSeen: proxy.probeSeen,
 							close: () => proxy.close(),
 							handlers: new Map<string, LeadOperationHandler>(),
 						};
@@ -693,6 +696,7 @@ export async function startLeadRuntimeProviders(
 							return {
 								generation: undefined,
 								proxyPort: proxy.port,
+								egressProbeSeen: proxy.probeSeen,
 								close: () => proxy.close(),
 								handlers: new Map<string, LeadOperationHandler>(),
 							};
@@ -700,6 +704,7 @@ export async function startLeadRuntimeProviders(
 						return {
 							generation: randomUUID(),
 							proxyPort: proxy.port,
+							egressProbeSeen: proxy.probeSeen,
 							close: () => proxy.close(),
 							handlers: new Map<string, LeadOperationHandler>(
 								browserOperations.map((row) => [
@@ -763,6 +768,8 @@ export async function startLeadRuntimeProviders(
 			secrets,
 			browserGeneration: browser.generation,
 			proxyPort: browser.proxyPort,
+			/** The model's egress proxy answers the isolation chain probe (FLY-2886). */
+			egressProbeSeen: browser.egressProbeSeen,
 			integrationIds: (
 				[
 					"bridge",

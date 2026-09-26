@@ -1906,6 +1906,11 @@ export function buildCodexLeadRuntime(
 						carrierInstanceId: capabilityCarrierInstanceId,
 					});
 					await capabilityParent.assertCurrent();
+					if (capabilityParent.nodeRuntimeClosure)
+						logger.info(
+							"Codex Lead sandbox node runtime grants",
+							capabilityParent.nodeRuntimeClosure,
+						);
 					if (capabilityParent.skillGaps?.length)
 						logger.warn("Codex Lead persona skill gaps: manual fallback", {
 							skillGaps: capabilityParent.skillGaps,

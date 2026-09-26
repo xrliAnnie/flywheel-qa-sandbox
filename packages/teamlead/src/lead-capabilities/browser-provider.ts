@@ -118,6 +118,7 @@ export async function startBrowserProvider(
 			generation,
 			handlers,
 			proxyPort: proxy.port,
+			egressProbeSeen: proxy.probeSeen,
 			close,
 		});
 	} catch (error) {

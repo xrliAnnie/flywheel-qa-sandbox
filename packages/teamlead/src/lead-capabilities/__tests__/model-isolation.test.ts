@@ -67,6 +67,15 @@ it.each(["unconfined", "empty", "failed"])(
 				},
 				assertCurrent: () => {},
 			};
+			const http = await import("node:http");
+			const managed = http.createServer((_request, response) => {
+				response.writeHead(403, { connection: "close" });
+				response.end();
+			});
+			await new Promise<void>((resolve) =>
+				managed.listen(0, "127.0.0.1", resolve),
+			);
+			const managedProxy = managed.address() as { port: number };
 			const parent = await import("node:net");
 			const server = parent.createServer((socket) => socket.end());
 			await new Promise<void>((resolve) =>
@@ -106,7 +115,7 @@ it.each(["unconfined", "empty", "failed"])(
 								...options,
 								env: {
 									...options.env,
-									HTTP_PROXY: `http://127.0.0.1:${address.port}`,
+									HTTP_PROXY: `http://127.0.0.1:${managedProxy.port}`,
 								},
 							},
 						);
@@ -117,7 +126,11 @@ it.each(["unconfined", "empty", "failed"])(
 					}) as typeof spawn);
 				try {
 					await expect(
-						verifyModelIsolation({ ...launch, proxyPort: address.port }),
+						verifyModelIsolation({
+							...launch,
+							proxyPort: address.port,
+							egressProbeSeen: () => true,
+						}),
 					).rejects.toThrow("model_isolation_unproven");
 					if (mode === "unconfined")
 						expect(JSON.parse(observed)).toMatchObject({
@@ -132,6 +145,8 @@ it.each(["unconfined", "empty", "failed"])(
 							privateDenied: false,
 							listenDenied: false,
 							opensslConfRead: true,
+							// The stand-in managed proxy is not chained to the egress proxy.
+							egressChained: false,
 							cryptoReady: true,
 						});
 				} finally {
@@ -141,6 +156,8 @@ it.each(["unconfined", "empty", "failed"])(
 				expect(readdirSync(artifacts)).toEqual([]);
 				expect(readdirSync(deployment)).toEqual([]);
 			} finally {
+				managed.closeAllConnections();
+				await new Promise<void>((resolve) => managed.close(() => resolve()));
 				await new Promise<void>((resolve) => server.close(() => resolve()));
 			}
 		} finally {
@@ -170,9 +187,113 @@ it("refuses to probe without the parent-pinned OpenSSL config", async () => {
 			deploymentRoot: "/tmp/d",
 			credentialProbePath: "/tmp/h/auth.json",
 			proxyPort: 18080,
+			egressProbeSeen: () => true,
 			env: {},
 			assertCurrent: () => {},
 		}),
 	).rejects.toThrow("model_isolation_unproven");
 	expect(spawn).not.toHaveBeenCalled();
 });
+
+it.each([false, true])(
+	"requires the activation egress proxy to have answered the chain probe (seen=%s)",
+	async (seen) => {
+		const root = realpathSync(mkdtempSync(join(tmpdir(), "model-chain-test-")));
+		try {
+			const qa = join(root, "qa");
+			for (const path of [
+				qa,
+				join(qa, "tmp"),
+				join(qa, "artifacts"),
+				join(root, "home"),
+				join(root, "deployment"),
+			])
+				mkdirSync(path, { recursive: true, mode: 0o700 });
+			const credential = join(root, "home/auth.json");
+			writeFileSync(credential, "synthetic", { mode: 0o600 });
+			const opensslConf = join(root, "openssl.cnf");
+			writeFileSync(opensslConf, "", { mode: 0o400 });
+			const { spawn } =
+				await vi.importActual<typeof import("node:child_process")>(
+					"node:child_process",
+				);
+			let probeUrl = "";
+			const spawnSpy = vi
+				.mocked((await import("node:child_process")).spawn)
+				.mockImplementation(((
+					_command: string,
+					args: string[],
+					options: any,
+				) => {
+					const data = JSON.parse(args.at(-1)!);
+					probeUrl = data.egressProbeUrl;
+					const result = {
+						nonce: data.nonce,
+						...Object.fromEntries(
+							[
+								"writable",
+								"readDenied",
+								"credentialDenied",
+								"symlinkDenied",
+								"writeDenied",
+								"artifactWriteDenied",
+								"deploymentWriteDenied",
+								"proxyAllowed",
+								"privateDenied",
+								"listenDenied",
+								"opensslConfRead",
+								"egressChained",
+								"cryptoReady",
+							].map((key) => [key, true]),
+						),
+					};
+					return spawn(
+						process.execPath,
+						[
+							"-e",
+							`process.stdout.write(${JSON.stringify(JSON.stringify(result))})`,
+						],
+						options,
+					);
+				}) as typeof spawn);
+			const observed: string[] = [];
+			try {
+				const pending = verifyModelIsolation({
+					codexExecutable: "/opt/codex",
+					nodeExecutable: process.execPath,
+					pins: {
+						codexHome: join(root, "home"),
+						brokerSocket: join(root, "broker.sock"),
+						manifestPath: join(root, "manifest.json"),
+						artifactRoot: join(qa, "artifacts"),
+						modelTempRoot: join(qa, "tmp"),
+						projectName: "flywheel",
+						leadId: "honey",
+						activationId: "test",
+						opensslConf,
+					},
+					projectRoot: qa,
+					deploymentRoot: join(root, "deployment"),
+					credentialProbePath: credential,
+					proxyPort: 18080,
+					egressProbeSeen: (nonce) => {
+						observed.push(nonce);
+						return seen;
+					},
+					env: { PATH: "/usr/bin:/bin" },
+					assertCurrent: () => {},
+				});
+				if (seen) await expect(pending).resolves.toBeUndefined();
+				else await expect(pending).rejects.toThrow("model_isolation_unproven");
+			} finally {
+				spawnSpy.mockRestore();
+			}
+			expect(probeUrl).toMatch(
+				/^http:\/\/example\.com\/\.well-known\/flywheel-egress-probe\/[0-9a-f-]{36}$/u,
+			);
+			expect(observed).toEqual([probeUrl.split("/").at(-1)]);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	},
+);

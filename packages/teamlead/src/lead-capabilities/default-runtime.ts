@@ -18,7 +18,10 @@ import { LeadArtifactStore } from "./artifacts.js";
 import { leadCredentialAliases } from "./credential-paths.js";
 import { verifyLeadDeployment } from "./deployment.js";
 import { preparePinnedNativeSkillHome } from "./native-home.js";
-import { leadNodeRuntimeReadPaths } from "./node-runtime-closure.js";
+import {
+	leadNodeRuntimeReadPaths,
+	resolveNodeRuntimeClosure,
+} from "./node-runtime-closure.js";
 import { leadModelWritableRoot } from "./permission-profile.js";
 import { createLeadCapabilityContext } from "./runtime-context.js";
 import { startLeadRuntimeParent } from "./runtime-factory.js";
@@ -207,6 +210,7 @@ export async function startDefaultLeadCapabilityParent(input: {
 				throw new Error("default_capability_preparation_changed");
 		};
 		const require = createRequire(import.meta.url);
+		const nodeRuntimeClosure = resolveNodeRuntimeClosure(nodePath);
 		const parent = await startLeadRuntimeParent({
 			env,
 			activationId,
@@ -253,7 +257,7 @@ export async function startDefaultLeadCapabilityParent(input: {
 					projectRoot,
 					readPaths: [
 						deploymentRoot,
-						...leadNodeRuntimeReadPaths(nodePath),
+						...leadNodeRuntimeReadPaths(nodeRuntimeClosure),
 						codexPath,
 						join(realpathSync(config.codexHome), "skills"),
 					],
@@ -269,6 +273,7 @@ export async function startDefaultLeadCapabilityParent(input: {
 		});
 		return {
 			...parent,
+			nodeRuntimeClosure,
 			close: async () => {
 				try {
 					await parent.close();

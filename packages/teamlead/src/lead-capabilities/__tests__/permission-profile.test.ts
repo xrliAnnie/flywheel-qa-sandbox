@@ -42,7 +42,8 @@ describe("bundle v2 permission profile", () => {
 			[spec.brokerSocket]: "allow",
 		});
 		expect(profile.network.allow_local_binding).toBe(false);
-		expect(profile.network.allow_upstream_proxy).toBe(false);
+		// FLY-2886 Lead ruling B: the managed sandbox proxy chains to the egress proxy.
+		expect(profile.network.allow_upstream_proxy).toBe(true);
 		expect(() => assertLeadPermissionProfile(config, spec)).not.toThrow();
 	});
 	it("accepts config/read null legacy fields while rejecting populated overrides", () => {

@@ -6,6 +6,22 @@ import {
 	resolveBrowserEgressTarget,
 } from "./browser-egress.js";
 
+/**
+ * FLY-2886 upstream-chain proof. Codex's managed sandbox proxy forwards only
+ * publicly resolvable hosts, so the probe uses one; this proxy answers the exact
+ * URL itself before any resolution. A request that bypasses this proxy reaches
+ * the real host and is never recorded here.
+ */
+export const EGRESS_PROBE_URL_PREFIX =
+	"http://example.com/.well-known/flywheel-egress-probe/";
+const PROBE_NONCE =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const MAX_PENDING_PROBES = 64;
+function egressProbeNonce(raw: string | undefined): string | undefined {
+	if (!raw?.startsWith(EGRESS_PROBE_URL_PREFIX)) return undefined;
+	const nonce = raw.slice(EGRESS_PROBE_URL_PREFIX.length);
+	return PROBE_NONCE.test(nonce) ? nonce : undefined;
+}
 export interface BrowserEgressProxyOptions {
 	policy(): BrowserEgressPolicy;
 	assertCurrent(): void;
@@ -37,6 +53,7 @@ export async function startBrowserEgressProxy(
 	options.assertCurrent();
 	const lifetime = new AbortController();
 	const sockets = new Set<Socket>();
+	const probes = new Set<string>();
 	const server = createServer(
 		{ maxHeaderSize: 16 * 1024 },
 		async (incoming, response) => {
@@ -52,6 +69,13 @@ export async function startBrowserEgressProxy(
 			};
 			try {
 				options.assertCurrent();
+				const probe = egressProbeNonce(incoming.url);
+				if (probe && incoming.method === "GET") {
+					if (probes.size < MAX_PENDING_PROBES) probes.add(probe);
+					response.writeHead(204, { connection: "close" });
+					response.end();
+					return;
+				}
 				const policy = options.policy();
 				const revision = JSON.stringify(policy);
 				const target = await resolveBrowserEgressTarget(incoming.url ?? "", {
@@ -282,6 +306,8 @@ export async function startBrowserEgressProxy(
 	let closing: Promise<void> | undefined;
 	return {
 		port: address.port,
+		/** True once per recorded probe nonce; the observation is consumed. */
+		probeSeen: (nonce: string) => probes.delete(nonce),
 		close: () => {
 			closing ??= new Promise<void>((resolve) => {
 				lifetime.abort();
