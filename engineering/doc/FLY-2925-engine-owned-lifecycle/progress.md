@@ -1,16 +1,16 @@
 ---
 issue: FLY-2925
 phase: implement
-phaseCursor: 0/11
-updated: 2026-09-26T21:39:46.211Z
-nextStep: "Lead ruling ed47e482: one PR = release N (PR-A W2+FLY-2689 checkpoint
-  first, then PR-B adoption/reconnect/rollout/default). Host (N+1, PR-C) out of
-  scope. Start A1 TDD in codex-daemon-client runGoalToTerminal resident
-  disposition."
+phaseCursor: 5/11
+updated: 2026-09-26T22:35:36.770Z
+nextStep: "PR-A checkpoint pushed (0a65f2502, 2b391390c). Lead f0498f2b chose
+  (a): no FLY-2808 default flip; record plan §9.6 deviation + prerequisites in
+  PR body. Next: B1/B2 live-daemon adoption (runtime adopt handle, goal loop
+  adopt mode no set/kick, reowner alive → adopt instead of watch/reap)."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2925 progress
-**phase**: implement (0/11)
-**next**: Lead ruling ed47e482: one PR = release N (PR-A W2+FLY-2689 checkpoint first, then PR-B adoption/reconnect/rollout/default). Host (N+1, PR-C) out of scope. Start A1 TDD in codex-daemon-client runGoalToTerminal resident disposition.
+**phase**: implement (5/11)
+**next**: PR-A checkpoint pushed (0a65f2502, 2b391390c). Lead f0498f2b chose (a): no FLY-2808 default flip; record plan §9.6 deviation + prerequisites in PR body. Next: B1/B2 live-daemon adoption (runtime adopt handle, goal loop adopt mode no set/kick, reowner alive → adopt instead of watch/reap).
