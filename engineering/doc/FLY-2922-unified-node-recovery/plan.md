@@ -3,7 +3,7 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 日期: 2026-09-26
 基于: 无
 
-状态：待设计审阅。设计节点，不含实现或生产验证。基线 `af853328d`。
+状态：R1 CHANGES_REQUESTED 已修订，待 R2 设计审阅。设计节点，不含实现或生产验证。基线 `af853328d`。
 
 ## 1. 给 founder 的结论
 
@@ -31,7 +31,7 @@ flowchart TD
 
 ### 交付与边界
 
-- 删除工作流故障的按原因 resume 分支，保留诊断原因、审计历史和安全前置条件。
+- 删除工作流故障的按原因 resume 分支，保留诊断原因、审计历史和安全前置条件。人工暂停与业务决策不是执行故障；它们从同一入口按明确操作语义恢复，不强制杀体或重派已完成节点。
 - 同一 run/current node/attempt 的物理替换使用新 executionId 与递增 launch ordinal；业务返工的 attempt 增长仍归现有返工协议。
 - 不伪造完成、审批、启动收据；不重做已完成节点、不改变 pinned snapshot、不清除其他节点的驻留执行体。
 - 本单不重写 mailbox/CommDB 投递协议、额度切号机制或落地外部副作用。它们的必要安全限制仍生效，且不能形成第二个工作流恢复状态机。
@@ -63,7 +63,7 @@ flowchart TD
 - `workflow_rework_request / route_revision / delivery / verification_path` 是业务返工的现有事实；`resolveOpenWorkflowReworkTarget` 和 dispatcher replacement guard 必须同步满足。
 - `runs-route.ts:448–545` 的 hold list / resume stage / resume apply 受 master + loopback origin + 一次 confirm token 保护。继续用这个入口，不加第二个 recover API。
 - `flywheel-comm/src/commands/hold.ts`、hold-shape-registry、run detail 的 hold 消费者，以及 `codex-quota-store.ts:1059,1199` 的 hold 事件枚举必须随归一化更新；旧原因保留为历史别名。
-- `lifecycle-routes.ts:301` 的 land full resume 对 engine-owned run 改为调用同一个恢复服务；非 workflow 的 legacy land 和 `closeout_only`/reclose 仍保留其专有权限，不能用本单恢复越过已合并后的收尾权限。
+- `lifecycle-routes.ts:301` 的 land full resume 对 engine-owned run 不再直接写状态，返回 409 unified_recovery_required + 正式 runs resume/stage 路径；调用方必须重新以 master + loopback origin + confirm token 走同一正门。这里不能用原 apiToken/Gemini token 升格铸派发。非 workflow legacy land 和 closeout_only/reclose 仍保留原专有权限。
 
 ## 3. 单一恢复合同
 
@@ -73,7 +73,20 @@ flowchart TD
 
 `hold list` 对工作流恢复展示一行 `shape=workflow_node_recovery`、当前 tuple、全部诊断原因和不满足的前置条件。旧 `--shape` 和 `--hold-event` 输入只作为兼容定位，stage 端归一成当前统一 canonical，不能执行旧 switch。网络调用方无需猜恢复种类。现存 delivery-only/CommDB hold 是投递修复操作，不进入本单重派算法；若它真实阻断当前节点，统一入口显示精确 dependency，完成投递修复后仍经同一恢复入口。禁止把所有邮件失败无差别转成重派。
 
-全部 run 级旧形状的处理：unlaunched、completion_missing、retry/environment、rework stalled/pane loss/exhausted、land、operator hold、gate preflight、loop limit、idle spin 都进入同一恢复前置/派发事务。预算与人工决定是前置证据，不是隐藏的另一套恢复实现。operator hold 的活体须由原关闭权限路径先安全收回当前写者；loop/idle 的继续决定不得伪造成功边或改变当前节点。未来如需业务返工/跳节点，仍是明确的业务动作，不能搭恢复便车。
+统一的是公开入口和**执行故障的恢复算法**，不是将所有暂停都改成执行故障。stage 从权威状态与明确决定派生 `operationKind`，并冻结到 canonical；客户端不能凭 shape 选择更宽权限。旧 registry 仅解码；删除按故障原因分叉的恢复 switch，保留以下明确的业务语义（不把它们称为“新派发成功”）：
+
+| 权威情形 | operationKind / apply 语义 | 回执与限制 |
+|---|---|---|
+| 未启动回滚、缺完成回执、死体、重试/环境失败、返工替身失败 | redispatch_current；§3.3 单一故障事务 | 必须新 dispatch；当前 node/attempt 不变；无有效完成收据 |
+| land held，有或没有 operation | redispatch_current；引擎节点不要求不存在的 Runner 死亡证据 | 新 land dispatch；有 op 保留步骤，没有 op 由 dispatcher 正常创建；批准边界仍须成立 |
+| 只有人工 pause，无未处理故障 | resume_existing | 保留原 execution/activation/凭据/节点状态，held→active；原体 alive 不杀，gate 的 review+NULL execution 不改；回执 state=state_applied |
+| workflow_gate_origin_preflight_terminal | rearm_gate_probe | 保持 gate state=review/execution=NULL，不写 dispatch；CAS 精确 question/holder 的 probe counter/next_at/错误，revive 依赖 carrier，再 active；state=state_applied |
+| loop_limit_escalated 明确继续 / idle force_rework | apply_recorded_decision | 保留 source done/已提交完成；核对 hold 事件已冻结 targetNodeId/targetAttempt、loop 决定，target 尚未存在；在一事务使用同一账本 allocator mint 业务目标并移动 current_node_id；不是故障重派 |
+| idle accept_current_pass | apply_recorded_decision | 核对仍有效的同 head QA pass，维持完成的 source 与其 pass claim，消除 suppression/恢复 active，复用原后续审批语义；不合成 completion、不重跑 source、不 mint 假 dispatch；state=state_applied |
+
+人工 pause 同时存在执行故障时，stage 明确显示需 operator 同意解除 pause 并执行 redispatch_current；没有该同意不清 pause。没有发生故障的 completed source 不落进 §3.3 的 completion_already_committed 守卫。
+
+loop/idle 继续**不重定向 `/rework`**：保留现有 hold resume 决策的权威 target 语义，抽取共用 `applyRecordedWorkflowDecisionTx`，沿用事件绑定与预算确认；因此不用增加 openOperatorRework 的 idle allowlist。`/rework` 仍是“新业务返工”的独立动作。决策入口不能通过伪造 target 改流程，不能把任意 completed 节点交给物理恢复。以上每种情形都有 §7 专项回归。
 
 ### 3.2 请求与回执
 
@@ -81,6 +94,7 @@ flowchart TD
 
 ```ts
 type RecoveryTarget = {
+  operationKind: 'redispatch_current' | 'resume_existing' | 'rearm_gate_probe' | 'apply_recorded_decision';
   runId: string; nodeId: string; attempt: number;
   previousExecutionId: string | null; previousLaunchOrdinal: number;
   snapshotDigest: string; holdSetDigest: string;
@@ -88,6 +102,7 @@ type RecoveryTarget = {
   rework: null | { requestId: string; routeRevision: number };
   land: null | { operationId: string; resumeGeneration: number; approvedHead: string };
 };
+// 新派发分支的回执；state-only 操作另返回 state_applied，禁止伪装本类型。
 type RecoveryReceipt = {
   operationId: string; canonicalDigest: string; target: RecoveryTarget;
   executionId: string; launchOrdinal: number; dispatchLedgerId: number;
@@ -95,22 +110,24 @@ type RecoveryReceipt = {
 };
 ```
 
-沿用 `workflow_delivery_operation(kind='hold_resume')` 的 requestId 唯一性和 digest。增加 nullable `recovery_receipt_json` 保存以上回执，旧行无需回填。只有新统一操作必须非空；当前操作表的状态仍用 projected，响应的 dispatch_recorded 明确只承诺已持久化派发。GET receipt/list 显示该账本现在的 intent_recorded/launch_committed/started/abandoned 与诊断，不能把 accepted 当 launched。land executionId 是引擎调度身份，不是声称启动了人类可见的 Runner。
+沿用 `workflow_delivery_operation(kind='hold_resume')` 的 requestId 唯一性和 digest。增加 nullable `recovery_receipt_json` 保存以上回执，旧行无需回填。新统一操作必须非空；state-only receipt 同样保存 operationId/canonicalDigest/target，但 state=state_applied 且无 executionId/launchOrdinal/dispatchLedgerId；当前操作表的状态仍用 projected，响应的 dispatch_recorded 明确只承诺已持久化派发。GET receipt/list 显示该账本现在的 intent_recorded/launch_committed/started/abandoned 与诊断，不能把 accepted 当 launched。land executionId 是引擎调度身份，不是声称启动了人类可见的 Runner。
 
 - 同 requestId/同 canonical：先读持久回执并返回原身份，允许响应丢失后的重试；不得重新 mint。
 - 同 requestId/异 canonical：409 request_conflict。不同 requestId 但旧 tuple/旧 episode：409 recovery_target_changed，附当前可公开身份和原恢复 operationId。
 - stage 无写；apply 在单事务内重验全部身份。合法 token 也不能授权 stale tuple。
-- HTTP 200 必须同时存在新账本、当前节点绑定、run active、receipt；缺任何一项事务回滚。明确的未满足条件返回 409 与 reason，不能先持久化成功 operation 再拒绝。
+- redispatch_current 的 HTTP 200 必须同时存在新账本、当前节点绑定、run active、receipt；缺任何一项事务回滚。state-only/明确业务决定按 §3.1 返回其真实结果，不报告已重派。明确的未满足条件返回 409 与 reason，不能先持久化成功 operation 再拒绝。
 - 旧成功 receipt 保持可读；`recovery_receipt_json=NULL` 标为 legacy_result，不补铸新体、不报告新派发成功。
 
-### 3.3 统一事务的固定顺序
+### 3.3 执行故障统一事务的固定顺序
 
-1. 事务外由可信服务读取精确旧 execution 的 liveness、launch owner、cancellation generation、marker/window 证据。沿用 dead/unlaunched recovery 探测；不得接受 HTTP 客户端自报 dead。alive/unknown 拒绝物理替换；无旧 execution 的 legacy pending 必须能由旧 rollback UID 唯一定位，不能按最新 issue session 猜。
-2. 事务内读取 canonical 相同请求的 receipt；否则重验 run engine-owned 且 held、snapshot/current tuple/holdSetDigest、旧节点无已提交 completion/transition、所有相关 owner generation 未变。已完成或已取消/终结 run 不恢复。存在有效 completion 则由原完成幂等路径回放，本操作返回 completion_already_committed，不派新体。
+以下固定步骤仅用于 redispatch_current；§3.1 的 state-only 和已提交决策操作不要求死体、不撤销当前活体、不受“源 completion 已存在”禁止条件影响。它们共用身份/CAS/token/receipt/复活投递收尾，而不进入物理替换步骤。
+
+1. 事务外由可信服务读取精确旧 execution 的 liveness、launch owner、cancellation generation、marker/window 证据。沿用 dead/unlaunched recovery 探测；不得接受 HTTP 客户端自报 dead。Runner alive/unknown 拒绝物理替换；land 是引擎工作，不套用 Runner liveness，改核对 land owner 的 lease/generation/进程死亡或无 owner 证据。无旧 execution 的 legacy pending 必须能由旧 rollback UID 唯一定位，不能按最新 issue session 猜。
+2. 事务内读取 canonical 相同请求的 receipt；否则重验 run engine-owned 且 held（或 §5 的唯一 active orphan 例外）、snapshot/current tuple/holdSetDigest、旧节点无已提交 completion/transition、所有相关 owner generation 未变。检查同 project/issue 不存在别的 active run（否则 409 issue_has_active_run，终止之前不写）；已完成或已取消/终结 run 不恢复。存在有效 completion 则由原完成幂等路径回放，本操作返回 completion_already_committed，不派新体。
 3. 废止旧体写权限：复用精确 execution 的 cancellation fence、未消费 submission/output credential revoke、binding/activation supersede/close、lease 结算。保留所有历史证据；不把 started/launch_committed 的账本倒写 abandoned。仅有 pre-commit 非启动正证据的 intent 能 abandon。
 4. 固定 current nodeId 和 attempt；服务端生成新 executionId。调用 `allocateWorkflowLaunchOrdinalTx`（purpose=fault_replacement，不新增 purpose），得到新 ledger ID 与递增 ordinal。将节点绑定为 pending/new execution；不清空成 NULL。新 activation、输出 credential、submission credential 仍由现有 admission 铸造，绝不复用旧凭据。
 5. 关联对象归一（下面 §3.4）：只更新这个节点/请求/操作；保持原 snapshot、runId、worktree、branch、业务 attempt、批准 head 不变。参数化 SQL 每个 CAS 必须恰好一行；不成功就 throw 回滚。
-6. 同事务写新 `node_dispatched`、恢复 receipt、逐个 source UID 的 `hold_resumed`（供历史消费者关闭），清除此次 episode；run held→active。其他真实未解决 run blocker存在则在步骤 2 拒绝，不能 mint 后依然 held。多条同故障旧日志不算新 blocker。
+6. 同事务写新 `node_dispatched`、恢复 receipt、逐个 source UID 的 `hold_resumed`（供历史消费者关闭），清除此次 episode；run held→active（active orphan 保持 active）。同事务调用现有 `reviveHeldWorkflowCarrierDeliveriesTx`，只复活 run_inactive 派生的 carrier，不清除 carrier 自身 needs_lead。其他真实未解决 run blocker存在则在步骤 2 拒绝，不能 mint 后依然 held。多条同故障旧日志不算新 blocker。
 7. commit 后由现有 dispatcher 消费。提交后进程崩溃或 HTTP 丢包无需补偿删除，重启扫描同一 ledger。启动失败形成新的统一 episode，恢复按钮持续可用；重复 request 仍返回旧回执，新 episode 才允许再次 mint。
 
 重点并发：将统一恢复与自然完成/自动 dead rollback/显式 terminate/新 rework 的写 CAS 建在同一 current tuple 上。完成先提交则恢复失败；恢复先提交则旧完成为 stale_execution_superseded，不能推进 successor。自动恢复继续使用原重试上限，本单不无限 reset faultReplacementCount；明确 operator 确認的新恢复代不抹历史计数，下一次失败继续呈现统一入口。
@@ -119,13 +136,20 @@ type RecoveryReceipt = {
 
 **返工：** 保留 requestId、原反馈、base_revision、verification_policy 和目标 attempt。恢复事务追加 route revision（preferred_actor_execution_id=新体），delivery 精确同步 revision/state=replacement_pending、清 owner/lease/旧 wake；verification path 同 revision 回 pending，不产生第二个 active path。新 dispatch.reason 必须等于 `rework_replacement:<requestId>`，否则当前 dispatcher 会永久 fence。协调器只认领这个替代意图，不自己再 mint 第二具。旧 wake 的退休采用现有精确 replacement retirement 证明，不能取消未证明的 phase_wake；停驻的其他 QA 活体与本次 target quiescence 无关。需要 CommDB 投影的步骤走原持久投递协议，新体取得 TURN 以前不得写工作区。若关键 target 身份冲突，拒绝整个恢复而不是清空全部 rework 历史。
 
-**Land：** 仍复用同 run/approved_head 对应的 `land_operation`、已完成步骤和外部收据；held→partial、递增 resume_generation、清 owner/lease/重试 epoch，绑定新引擎派发 ordinal，run 同事务 active。现有 dispatcher 的 `node.type==='land'` 分支执行原 operation。新 intent 不代表重新 merge；执行器继续检查 holder/head/PR/repo 和步骤幂等。若已有操作 owner alive/unknown、head 变更、operation 被 supersede，恢复拒绝并保留可见原因。engine-owned 的 full resume 入口只是同一服务的兼容适配；closeout_only 不降权、不转换成 full。
+**Land：** 仍复用同 run/approved_head 对应的 `land_operation`、已完成步骤和外部收据；held→partial、递增 resume_generation、清 owner/lease/重试 epoch，绑定新引擎派发 ordinal，run 同事务 active。现有 dispatcher 的 `node.type==='land'` 分支执行原 operation。新 intent 不代表重新 merge；执行器继续检查 holder/head/PR/repo 和步骤幂等。若已有操作 owner alive/unknown、head 变更、operation 被 supersede，恢复拒绝并保留可见原因。engine-owned 的 full resume 旧入口只返回 409 + 正门信息，不持有 mutation 权；正式 apply 必须核对 pinned current node.type=land 与 operation.run_id/head/generation。closeout_only 不降权、不转换成 full。
 
-**审批/gate：** 同内容批准保持原绑定。不能仅凭 session.completed 或边只有一条合成 completion；删除 reconstruct_completion 及其唯一 allowCompletedWriter 例外。人类 gate 节点不是 Runner 节点：统一 receipt 的 dispatch 消费必须显式按 pinned node type 走现有 gate-holder materialization/retry 通路，重用 question/holder，不创建新批准、不把 review gate 当普通 Runner 启动。gate holder 的活体权限/传输按其现有协议收敛，若不具备可重派的当前目标，返回 authority_pending；不得硬改 gate 状态放行。为这一 typed dispatch 增加 dispatcher 分支与回归，不能假设现有普通 launch 分支会正确处理 gate。
+**审批/gate：** 同内容批准保持原绑定。不能仅凭 session.completed 或边只有一条合成 completion；删除 reconstruct_completion 及其唯一 allowCompletedWriter 例外。gate 保持现有 `review + execution_id NULL` 表达，**不引入 gate typed dispatch**，dispatcher 原 engine_node_not_executable 守卫保持。人工 gate pause 走 resume_existing；preflight 故障走精确 holder probe re-arm（§3.1），复活 run_inactive carrier；question/holder/批准不重造。这样只修改现有探测调度状态，不将缺权威解释成永远等待新 Runner。
 
-**额度：** 死体回滚不再读 `codexQuota.isExecutionPaused(deadExecutionId)`。完成绑定切换后用精确 execution + quota generation 的既有结算协议结束旧等待引用，不批量删除 incident/其他账号等待。新 dispatch 在 launch 时仍执行 `isCodexQuotaLaunchPaused` 和当前 launch flag/capacity 判断；被挡时展示已派发、尚未启动，不能写 started。
+**额度与自动恢复互斥：** 当前 `codex-quota/run-recovery.ts:68–108` 会 terminate/start；`updateTarget` 是无 CAS 更新，原方案所谓“既有精确结算协议”并不存在。必须在本单增加以下原子协议，而不是只删除 pause guard：
 
-**Watch 保留：** prune 的优先判断改为不可恢复的 terminal run（completed/terminated/cancelled 等以当前 run enum 为准）或明确孤儿；active/held 的未收敛 watch 整体排除 TTL 条件。已收敛 watch 可按原 TTL 清理。保留批量 limit 200，held 跨 TTL 后旧体复活仍能触发原 fence/converge。
+- 新增 `claimQuotaTargetForNodeRecoveryTx`，在 StateStore 同 DB 事务中以 `{incidentId,target_kind='runner',targetId,runId,nodeId,attempt,oldExecutionId,incident.generation,installed_generation,state='waiting'}` 为完整 CAS；对精确 matching waiting 行置 abandoned，last_error=`delegated_to_node_recovery:<operationId>`，new_run_id=原 run、new_execution_id=此次新体。这里 abandoned 只表示旧 terminate/start 路径已退休，不表示工作完成。操作与派发 receipt 同事务，失败全部回滚。incident 的原 generation/安装 generation 均须匹配已读值；dead cleanup 不要求额度安装成功，只结算旧等待引用，launch 仍另行验当前 permit。
+- 同一 old execution 若匹配多个 waiting target，全部逐行 CAS；出现 terminating/terminated/starting/queued 任一在途 target 则整次恢复 409 quota_recovery_inflight，不取消在途外部效果、不抢所有权。recovered/abandoned 终态只读，不反转；未关联的 target/账号保持不变。
+- 同步修改 quota worker：读 target 时先判断终态/委托 receipt，再调 getCodexQuotaRecoveryContext，避免重绑后 source_advanced 永久抛错。所有状态跃迁改为按上一 state+原 tuple+generation 的 CAS；persist 必须返回是否成功，CAS 失败立即停止，禁止旧内存副本再 POST terminate。禁止对这些 authority 字段继续使用无条件 updateTarget。
+- 对新启动的 engine-owned waiting quota target，删除 terminate/start 派发，取得有效安装 permit/readiness 和原死体证明后调用同一服务的 redispatch_current；服务端内部 automation authority 仅绑定 exact incident/target/generation，不开放 API token 自动升级 master。它和人工入口共享 CAS 和 mint；账户安装、非 workflow admission waiter 原流程不变。
+- 迁移时已在途的旧 quota target 先由原路径收敛；统一恢复明确等待其 durable terminal receipt（不是等待时间推断）。旧 quota terminate 请求新增服务端校验 expected old tuple/installed generation/target state=terminating，并在 run termination 事务内验证**不存在更新的 node recovery receipt/新 ordinal**；过期请求 409 quota_source_advanced，即使请求发出后恢复已提交，也不能关掉新体所在 run。已真正 terminated 的旧 run 不被复活，按旧 target 收据完成/废止既有 start；不再新增第二套 held 恢复。
+- 新 dispatch 在 launch 时仍执行 isCodexQuotaLaunchPaused 与 launch flag/capacity；该检查独立于旧体 waiting。状态显示“已派发、待额度”而非 started。
+
+**Watch 保留：** 现有 watch 只有 active/tripped，没有 converged。此次**不新增收敛状态，也不按 active/held 中的 TTL 删除任何 watch**；这两种 watch 都可能是恢复安全证据。仅 run 真终态或明确孤儿可清理，按现有有限批次 200 执行，TTL 只在这些已可清理候选上决定时间，不成为 OR 逃生门。SQL predicate 以当前 run status enum 的 terminal 集为准。held 跨 TTL 后旧体复活仍能触发原 fence/converge。活动任务长期保留 watch 是有意取舍；若日后需收敛清理，另定义可证明的完成条件。
 
 ## 4. complete 与 carrier close
 
@@ -137,23 +161,26 @@ type RecoveryReceipt = {
 
 删除 `cascadeRunTerminationOnCarrierClose` 的 run terminal 写入及 close-runner/actions 的调用与后续 terminal collection 触发。保留 prepare/commit close intent、精确进程关闭、credential revoke、mailbox 收尾；关闭当前体后确保统一 recovery episode 存在。关闭非当前/旧体不改 current run 状态。成功 ship/引擎业务完成、显式 run terminate/cancel 继续有原权威终态路径；不能因删除 cascade 让显式 terminate 遗留活体。
 
+Lead 可见合同必须同步更新：`actions/terminate`/close_runner `abandon` 的 executionId 目标仅关闭这一具执行体，返回 `executionClosed:true, runTerminated:false, runStatus, recoveryTarget`；UI/工具说明明确叫“关闭执行体”。不自动关闭其他 parked residents，它们保持原 phase hold，直到任务链显式结束由 collection 收走。要放弃整条任务链必须明确 runId 调 `/api/runs/:id/terminate` 并取得其原权限；此路径终结 run、settle parks、触发 ensureTerminalWorkflowRunCollection 并确认所有 parked residents 收尾。不得默默让现有 Lead 把 execution terminate 当 run cancel。同步更新 `packages/teamlead/lead-rules-base/{runner-reengage-rules,department-lead-rules,founder-only-authority}.md` 与工具定义的 target/scope 描述，消费者 sweep 列出每一个 terminate/close 调用者。
+
 ## 5. 删除与兼容清单
 
 | 删除/收敛 | 替代 | 消费者处置 |
 |---|---|---|
-| run 故障形状中的 resume_unlaunched / retry_limit / reconstruct_completion / land 等 switch | 一个 recoverCurrentWorkflowNodeTx + typed dispatch | registry 保留旧事件解码 aliases，不再把 shape 当操作选择器 |
+| run 故障形状中的 resume_unlaunched / retry_limit / reconstruct_completion / land 等 switch | 一个 recoverCurrentWorkflowNodeTx；land 沿用原 typed consumer | registry 保留旧事件解码；非故障暂停/业务决定按 §3.1，不塞进物理恢复 |
 | openOperatorRework 中 held rollback/needs_lead 的恢复专门分支 | same-target held 请求指向统一入口；业务 rework 仍原语义 | /rework 返回统一恢复定位；不新增 request 来解除故障 |
 | replacement 回滚再额外 delivery held | 统一 episode；恢复时一次重绑 request/route/path/delivery | coordinator 的认领条件与 dispatcher reason 一起改 |
 | carrier close 级联 run terminal | 仅显式 run 级终止与正常工作流结束 | close-runner.ts + actions.ts 两处；反转旧测试 |
 | completed-writer 恢复豁免 | 历史 completion 缺失重派当前节点 | 保留一般 writer_session_terminal 拒绝，删除唯一豁免 |
-| dead cleanup 的 quota pause 前置 | quota 只守新 launch | scoped quota settle，不改全局自动切号 |
-| watch 非 active/裸 TTL 删除 | terminal/已收敛后才可删 | dead-watch/dispatcher 相关回归 |
+| dead cleanup 的 quota pause 前置与新 quota target 的 terminate/start | quota 只守新 launch，同一恢复事务互斥 CAS | 新 scoped settlement、旧在途 receipt 收敛；不改账户安装 |
+| watch 非 active/裸 TTL 删除 | 仅 terminal/orphan 可删，active/tripped 均保留 | dead-watch/dispatcher 相关回归 |
 
 不净删 `hold` CLI；旧参数适配到统一 stage canonical。实现时记录带时间戳消费者 sweep：`scripts/`、`packages/`、插件 fork `external_plugins/`、本机 `~/.claude/plugins/cache/*/`；不可读 root 明确标未检查，不得当零引用。列出 hold shape 字符串、resume 返回字段、land full resume、close cascade 调用者的改造/兼容结果；不得编辑其他 checkout/插件缓存。hosted HTML 使用全部 textContent/value 与转义，单 nonced script，无外部依赖。
 
 ### 迁移与回滚
 
 - schema 仅给 operation 增 nullable receipt 字段；旧诊断事件只读归一，升级启动不批量恢复、不 mint、不杀体。
+- 增加只读 stranded inventory，覆盖既有 active run：current node=pending、execution_id NULL、没有当前可消费 intent，且存在唯一旧 unlaunched/retry rollback + hold_resumed 链，旧 execution/ordinal 能与 abandoned/已终结历史交叉定位、无 completion/新 reservation/活 owner。hold list 显示 recoveryKind=legacy_active_orphan；stage 冻结这些 UID 和 current tuple，apply 重验后允许 active→active 原子重派。无需先伪造 held，也不自动批量修复。唯一证据缺失则 repair_required；如果 active orphan 后已有新 dispatch/完成/写者，拒绝 stale 输入。FLY-2329 的“旧恢复已成功但空节点”夹具必须走此入口。
 - old held event 的 tuple 必须由 node/binding/ledger 交叉唯一确定；缺证据保持 held + 明确 repair_required。不得 `latest issue session` 猜出 authority。
 - 所有新消费者先认识统一事件，再切 producer；一个 PR 同步上线。不让旧二进制写新 episode：运行期版本切换由 updater 按现有窗口执行。
 - 应用回滚不撤销已提交 recovery/dispatch、不倒写 ledger、不恢复被撤销凭据；暂停新恢复入口，用持久账本对账后由支持新事件的兼容版本处理。禁止靠恢复旧 DB 或终结所有 run 回滚。
@@ -164,16 +191,16 @@ type RecoveryReceipt = {
 
 1. **原现象夹具与账本断言**：修改 `packages/teamlead/src/__tests__/StateStore.workflow-holds.test.ts`；新增 `packages/teamlead/src/__tests__/workflow-node-recovery.test.ts`，把 §7 九行分别建独立夹具，不把它们折成一个 shape 参数化 UPDATE 测试。用 `StateStore.create(':memory:')`，afterEach close；重启用临时 test DB。
 2. **统一事务与旧输入适配**：StateStore.ts 的 canonical/receipt/schema/hold projection/故障 producer/恢复事务；`bridge/hold-shape-registry.ts`；`bridge/runs-route.ts`；`flywheel-comm/src/commands/hold.ts`；相应 hold/runs-route 测试。保留阶段确认 token，不向客户端暴露秘密。
-3. **派发、返工与 land 贯通**：`bridge/workflow-engine-dispatcher.ts`、`bridge/workflow-rework-coordinator.ts`、`bridge/lifecycle-routes.ts` 及 StateStore 关联写入；更新 typed gate dispatch 与 land recovery；不新造调度器或轮询队列。
+3. **派发、返工与 land 贯通**：`bridge/workflow-engine-dispatcher.ts`、`bridge/workflow-rework-coordinator.ts`、`bridge/lifecycle-routes.ts` 及 StateStore 关联写入；保持 gate state-only re-arm 并更新 land recovery；不新造调度器或轮询队列。
 4. **完成先后与失败出口**：`bridge/event-route.ts`、StateStore enrolled completion/legacy-terminal 防护，删除 reconstruct 分支；相关 complete 与 event-route 测试。不改变已有成功完成的原子协议。
-5. **关闭与证据保留**：`bridge/close-runner.ts`、`bridge/actions.ts`、StateStore close cascade/watch/quota cleanup；必要的 `bridge/codex-quota-store.ts` 精确结算和事件枚举。保留独立 run terminate。
+5. **关闭与证据保留**：`bridge/close-runner.ts`、`bridge/actions.ts`、StateStore close cascade/watch/quota cleanup；`bridge/codex-quota-store.ts` 新增精确 CAS、`codex-quota/run-recovery.ts` 互斥/同 run 恢复与旧请求 fence、runs-route 的 quota terminate 前置及事件枚举。保留独立 run terminate。
 6. **消费端扫尾与逐行验收**：定点回归、重启/并发/失败注入；保存每个 issue 的 old tuple/new tuple/ledger/launch 证据；静态检查证明旧 resume switch 已删除且所有 hold writers 有统一投影。
 
 实现约 8 个责任面，实际文件数可超过 8（含测试与兼容消费者）；不为了凑数字遗漏边界。
 
 ## 7. 验收矩阵与测试命令
 
-共同成功断言：同 runId/snapshot/current node/attempt，new execution != old execution，ordinal 增 1；一条新 dispatch ledger + 一个对应 launch delivery；HTTP 成功回执绑定该行；dispatcher tick 实际消费到 launch_committed/started；普通 Runner 需精确 activation/window/启动证据。land/gate 用其类型的 executor/materialization 收据，不能捏造 Runner。intent_recorded 仅证明派发，不证明已经启动。
+redispatch_current 共同成功断言（state-only/业务决定另见下表）：同 runId/snapshot/current node/attempt，new execution != old execution，ordinal 增 1；一条新 dispatch ledger + 一个对应 launch delivery；HTTP 成功回执绑定该行；dispatcher tick 实际消费到 launch_committed/started；普通 Runner 需精确 activation/window/启动证据。land 用其 executor 收据，gate/state-only 用 holder/probe/carrier 状态收据而不是 dispatch，不得捏造 Runner。intent_recorded 仅证明派发，不证明已经启动。
 
 | 用例 | 构造原现象 | 必须额外证明 |
 |---|---|---|
@@ -181,12 +208,29 @@ type RecoveryReceipt = {
 | 2295 | 历史 session completed、node running、无 completion；并模拟新 complete 的转换失败 | 历史恢复不补造成功，重派原节点；新路径拒绝后 session 不 terminal，成功才写 terminal/park |
 | 2116 | rework replacement admission 失败回滚 | 同 requestId 新 actor/revision + replacement_pending，协调器/dispatcher 无永久 fence |
 | 2524 | active verification path + 停驻活 QA + 替身体失败 | 仅目标体死亡证明即可恢复；QA 不关；旧 path 唯一性与 founder 原 head 绑定保存；改 head 的负控拒绝 |
-| 2095 | sole current carrier close，run active，无其他派发 | run 不 terminal；统一入口可派；显式 run terminate 仍终止并收集全部体 |
+| 2095 | sole current carrier close，run active，无其他派发 | run 不 terminal；工具回复明确只关闭 execution；其他 parked residents 保持；统一入口可派；显式 run terminate 仍终止并收集全部体 |
 | 2181 | prd/design 需要 founder review，但 complete route=blocked，无 card/head/成功 output | 失败事实被接收、不推进下一节点；之后同入口派当前节点；成功 route 无 review 仍拒绝 |
-| 2191 | dead watch + run held + 超 TTL，然后恢复与旧体复活 | watch 保留、旧体写权被 fence、替身收敛；terminal/orphan/已收敛的清理负控 |
+| 2191 | dead watch + run held + 超 TTL，然后恢复与旧体复活 | watch 保留、旧体写权被 fence、替身收敛；terminal/orphan 的清理负控 |
 | 2525 | 精确 dead execution 留 quota waiting，分别开/关 launch flag | dead rollback 都可完成；新体 launch 仍受其当前 quota/容量限制，其他 execution incident 不变 |
-| 2545 | land op held，run held，同 episode 多诊断；恢复后 executor 再失败再恢复 | run/op/dispatch 原子一致，两次恢复均有账本；同 op、merge 已做步骤不重复；活 owner/旧 head 拒绝 |
+| 2545 | land op held，run held，同 episode 多诊断；恢复后 executor 再失败再恢复 | run/op/dispatch 原子一致，两次恢复均有账本；同 op、merge 已做步骤不重复；活 owner/旧 head 拒绝；弱 apiToken/Gemini 不能经旧 land full resume 改 run/mint |
 | 今晚两例 | QA head read timeout；design 起步即死缺 receipt | 同入口，无 terminate/start；失败前置不写虚假成功 |
+
+补充操作语义与迁移矩阵（同等必测，不以九单替代）：
+
+| 用例 | 构造 | 验收 |
+|---|---|---|
+| operator pause 活 Runner | 单纯 run_held_by_operator，当前体 alive | resume_existing 不杀体、不 mint、不撤销 credential；原体继续 |
+| operator pause gate | current gate review、execution=NULL、待 founder | 原 node/holder/question 不变，恢复 active、carrier 可投递，不要求不存在的死体 |
+| gate preflight terminal | holder materializing/awaiting_review，probe exhausted | reset 精确 probe counter，next_at 可执行；无 dispatch、无新批准；错 holder 拒绝 |
+| loop limit | source done + transition 已存在 + 明确继续 | 原 source 不动，冻结 target/attempt 一次 mint；重复请求幂等；不要求 source 无 completion |
+| idle accept | source done + 同 head 有效 QA pass | state_applied，无新 execution/伪完成；旧 pass 仍可由原审批消费；改 head 拒绝 |
+| idle force | source done + force_rework + target 未建 | 一次业务目标派发及 current_node 移动，不跑物理恢复守卫、不走 /rework |
+| land 无 op | current land + held + 无 operation | 经同一 redispatch_current mint，dispatcher 创建一个 operation，不要求 Runner 死亡 |
+| carrier 派生暂停 | 恢复前 carrier held 原因 run_inactive | 每种恢复 active 时调用 revive；自有 needs_lead 不误清 |
+| 2329 升级前已放行 | active+pending NULL+无可消费 ledger+旧 rollback/resume 证据 | list/stage 可定位，apply active→active 真 mint；无凭据/已有新写者拒绝 |
+| issue 同时有其他 active run | 本 run held，另 run active | 409 issue_has_active_run，无任何状态或凭据变更 |
+| quota 对称并发 | waiting claim 与恢复争用；worker 在 readAuthority 后暂停 | 只有一个 CAS 胜出；旧 worker CAS 失败不 POST，已发出的 stale terminate 被 server fence |
+| quota 旧在途 | terminating/terminated/starting/queued 各一夹具 | 统一入口明确 409，不抢外部效果；旧 target 收敛可观察；terminal target 读取不触发 source_advanced 永久等待 |
 
 故障注入：每个事务步骤抛错（所有行保持原值）；commit 后返回前宕机（同 request 原 receipt）；两个并发恢复（只有一个新身份）；恢复与 complete/terminate/rework 竞争（一个 CAS 胜出）；旧 token/改 tuple/跨 project/旧 actor/非法形状/活或 unknown 体（无写）；再次失败保留可恢复入口；旧体迟到 output/complete（拒绝并无 successor）。
 
@@ -213,4 +257,19 @@ pnpm --dir packages/flywheel-comm exec vitest run src/commands/__tests__/hold.te
 | 精确目标 quiescence | 不连带停驻 QA/其他节点 | 为恢复要求整条 run 所有体先死 |
 | 无外部副作用事务 | 外部启动不可与 DB 原子提交，依赖 outbox 重放 | DB 成功就写 started、盲目重复 merge |
 
-最大风险是“恢复只写出账本但 consumer guard 拒收”。因此返工 reason/actor/revision、gate typed consumer、land head/op generation、旧体 TURN 退休都列为合同与实测项，而非实现细节略过。
+最大风险是“恢复只写出账本但 consumer guard 拒收”。因此返工 reason/actor/revision、gate state-only re-arm、land head/op generation、旧体 TURN 退休都列为合同与实测项，而非实现细节略过。
+
+## 9. R1 审阅处置
+
+有效 verdict：CHANGES_REQUESTED，question `5700086d-8e52-463e-9516-03c9a347f749`，request `63bbd743-6a1f-4817-86fb-f261b56b7dfc`。没有把审阅建议当批准。
+
+- HIGH decision-holds-lose-exit：接受。§3.1 明确非故障暂停/业务决定，§3.3 限定物理故障恢复，§7 补逐形状回归。
+- gate-typed-dispatch-underspecified：接受。删除新 gate dispatch，保留 review/NULL 和原 probe re-arm。
+- quota-gate-removal-race：接受。新增精确 waiting CAS、worker 状态跃迁 CAS、过期 terminate server fence；新 engine quota target 用同一恢复服务，旧在途收据收敛。
+- land-resume-adapter-authz：接受。旧弱权限入口只返回正门定位，不能直接调用 mutation。
+- carrier-revive-omitted：接受。所有 active 恢复事务显式调用 reviveHeldWorkflowCarrierDeliveriesTx。
+- fly2329-stranded-active-runs：接受。增加已 active orphan 的只读 inventory 与受证据限制的 active→active 恢复。
+- terminate-abandon-semantics：接受。明确工具合同和 parked residents 生命周期，补 Lead 文本与调用方 sweep。
+- watch-convergence-undefined：接受。只对 terminal/orphan 清理，不创造未定义收敛状态。
+- active-run-unique-collision：接受。明确 409 issue_has_active_run 前置。
+- tests_not_run：保留为设计边界；无 node_modules，未执行实现测试，不以文档检查假充行为验收。
