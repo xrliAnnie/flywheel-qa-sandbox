@@ -413,6 +413,7 @@ export async function main(): Promise<void> {
 				binaryPath: config.codexBin,
 				scratchRoot: join(config.voiceRoot, "codex-containers"),
 				authSource: config.codexAuthSource,
+				stunUrls: config.webrtcStunUrls,
 				processEnv: process.env,
 				onEvidence: (record) =>
 					evidence.appendBuffered({
@@ -437,11 +438,8 @@ export async function main(): Promise<void> {
 							contextDigest = snapshot.snapshotDigest;
 							return snapshot;
 						},
-						openAudio: ({ itemId }) => {
-							context.lease.assert();
-							if (!room) throw new Error("speech_room_not_ready");
-							return room.openSpeech(itemId);
-						},
+						// FLY-2885 T4: WebRTC Opus goes straight into the room.
+						downlink: () => room?.opusDownlink,
 						persistUtterance: async (utterance, captureDigest) => {
 							const {
 								sessionId: _sessionId,
@@ -559,6 +557,12 @@ export async function main(): Promise<void> {
 					founderUserId: context.projection.founderUserId,
 					qaAllowUserIds: context.projection.qaAllowUserIds,
 					uplinkPrerollMs: config.uplinkPrerollMs,
+					...(config.backendId === "codex-realtime"
+						? {
+								downlink: "opus-passthrough" as const,
+								uplinkMinOnsetDbfs: config.uplinkMinOnsetDbfs,
+							}
+						: {}),
 					...handlers,
 				});
 				return room;

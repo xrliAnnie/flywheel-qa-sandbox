@@ -14,15 +14,14 @@ import {
 } from "flywheel-voice-core";
 import type { RealtimeAudioOwner } from "../realtime.js";
 import { CodexProofSpeaker } from "./CodexProofSpeaker.js";
+import { type DownlinkSink, DownlinkController } from "./DownlinkController.js";
 import type {
 	CodexVoiceContextSnapshot,
 	CodexVoiceOpenInput,
 } from "./CodexVoiceContainer.js";
 import type { CodexHandoffResult } from "./CodexVoiceHandoff.js";
 import {
-	CODEX_REALTIME_INPUT_QUEUE_BYTES,
 	type CodexRealtimeAppendOutcome,
-	type CodexRealtimeAudioDelta,
 	type CodexRealtimeBackgroundTurn,
 	type CodexRealtimeExecutionIntent,
 	type CodexRealtimeInputOwner,
@@ -30,6 +29,11 @@ import {
 	type CodexRealtimeTranscript,
 	type CodexRealtimeUnsettledInput,
 } from "./RealtimeTransport.js";
+import { TurnLedger } from "./TurnLedger.js";
+import type { RealtimeDataEvent } from "./WebRtcLeg.js";
+
+/** T5b ②: the downlink must have been inaudible this long before a read-aloud. */
+const READ_ALOUD_QUIET_MS = 600;
 
 const PCM24_MONO: AudioFormat = {
 	encoding: "pcm16",
@@ -97,14 +101,10 @@ export interface CodexVoiceBackendOptions {
 	container: CodexContainerLike;
 	loadContext: () => Promise<CodexVoiceContextSnapshot>;
 	/**
-	 * Opens the room playback for one assistant item. Audio is appended as it
-	 * arrives, so an answer starts on its first frame instead of after its
-	 * final transcript (FLY-2799 qa6: a 19s answer waited 4.8s).
+	 * FLY-2885 T4: the room's session-level Opus downlink. WebRTC packets are
+	 * pushed into it synchronously, so an answer starts on its first frame.
 	 */
-	openAudio?: (input: {
-		itemId: string;
-		generation: number;
-	}) => CodexAudioOutput;
+	downlink?: () => DownlinkSink | undefined;
 	persistUtterance?: (
 		utterance: VoiceUtterance,
 		captureDigest: string,
@@ -124,14 +124,6 @@ export interface CodexVoiceBackendOptions {
 	confirmTimeoutMs?: number;
 }
 
-/** One assistant item's playback, fed while its audio is still arriving. */
-export interface CodexAudioOutput {
-	append(pcm24Mono: Buffer): boolean;
-	end(): void;
-	cancel(): void;
-	readonly done: Promise<void>;
-}
-
 export class CodexVoiceBackend implements VoiceBackend {
 	readonly id = "codex-realtime" as const;
 	readonly capabilities = CODEX_VOICE_CAPABILITIES;
@@ -149,6 +141,8 @@ export class CodexVoiceBackend implements VoiceBackend {
 			voice: options.voice ?? this.options.voice,
 			loadContext: this.options.loadContext,
 			realtime: {
+				onDownlink: (input) => callbacks.session?.observeDownlink(input),
+				onDataEvent: (input) => callbacks.session?.observeDataEvent(input),
 				onTranscript: (input) => callbacks.session?.observeTranscript(input),
 				onItem: (input) => callbacks.session?.observeItem(input),
 				onInputGap: (input) => callbacks.session?.observeInputGap(input),
@@ -176,18 +170,19 @@ class CodexVoiceSession implements ConversationSession {
 	readonly sessionId: string;
 	private readonly events = new TypedEmitter<ConversationEventMap>();
 	private readonly speaker: CodexProofSpeaker;
+	private readonly downlink: DownlinkController;
+	private readonly turns: TurnLedger;
 	private readonly now: () => Date;
 	private readonly monotonicNow: () => number;
-	private readonly output = new Map<string, CodexAudioOutput>();
-	/** Items whose final arrived; audio after it is not played. */
-	private readonly outputEnded = new Set<string>();
-	private readonly outputStarted = new Set<string>();
-	private readonly restartAudio: Array<{
-		frame: Buffer;
-		owner: CodexRealtimeInputOwner;
-	}> = [];
-	private restartAudioBytes = 0;
-	private restartInputGap = false;
+	/** Whether downlink audio is audible now (drives response-started/done). */
+	private audible = false;
+	private lastAudibleAt = Number.NEGATIVE_INFINITY;
+	/** Someone's gated speech is reaching the uplink right now. */
+	private speakerActive = false;
+	/** T5c: the assistant turn under overrun discard ("pending" = not yet created). */
+	private overrunTurnId?: string;
+	/** Speech sent while the generation changed; it has no owner any more. */
+	private uplinkLostDuringRestart = false;
 	private durabilityTail: Promise<void> = Promise.resolve();
 	private latestKnownUser?: {
 		utterance: VoiceUtterance;
@@ -198,12 +193,7 @@ class CodexVoiceSession implements ConversationSession {
 	private latestUserTranscriptId?: string;
 	private handedOffTranscriptId?: string;
 	private repeatPromptSequence = 0;
-	private readonly outputFrameState = new Map<
-		string,
-		{ frameIndex: number; observedAt: number; durationMs: number }
-	>();
 	private sequence = 0;
-	private pendingPlaybackCount = 0;
 	private inputGapSinceUserFinal = false;
 	private generation: number;
 	private live = true;
@@ -222,6 +212,15 @@ class CodexVoiceSession implements ConversationSession {
 		this.monotonicNow =
 			options.monotonicNow ?? performance.now.bind(performance);
 		this.generation = options.conversation.generation ?? 1;
+		this.turns = new TurnLedger(this.monotonicNow);
+		this.downlink = new DownlinkController({
+			sink: () => options.downlink?.(),
+			now: this.monotonicNow,
+			evidence: (record) =>
+				options.onEvidence?.({ generation: this.generation, ...record }),
+			forceReconnect: (reason) =>
+				this.restartGeneration(`speech_overrun_${reason}`),
+		});
 		this.speaker = new CodexProofSpeaker({
 			sessionId: options.sessionId,
 			sessionGeneration: () => this.generation,
@@ -229,6 +228,18 @@ class CodexVoiceSession implements ConversationSession {
 			format: PCM24_MONO,
 			transport: () => options.conversation.transport,
 			isLive: () => this.live && !this.restarting && !this.closing,
+			now: this.monotonicNow,
+			busyReason: () => this.readAloudBusyReason(),
+			consumedVoiced: () => options.downlink?.()?.stats().consumedVoiced ?? 0,
+			queuedVoiced: () => options.downlink?.()?.queued().voiced ?? 0,
+			interference: () => this.downlink.interference,
+			trims: () => options.downlink?.()?.stats().trims ?? 0,
+			overrun: (turnId) => {
+				this.overrunTurnId = turnId ?? "pending";
+				this.downlink.overrunDiscard();
+				this.updateAudible();
+			},
+			evidence: (record) => options.onEvidence?.(record),
 			confirmTimeoutMs: options.confirmTimeoutMs,
 		});
 	}
@@ -260,8 +271,25 @@ class CodexVoiceSession implements ConversationSession {
 				"Codex voice requires 24k mono PCM16",
 			);
 		if (this.closing || !this.live) return;
+		// The uplink sends one frame per tick; an owned frame left the gate.
+		const speaking = owner.ownerUserId !== null;
+		if (speaking) this.turns.speakerActive();
+		if (speaking !== this.speakerActive) {
+			this.speakerActive = speaking;
+			this.downlink.founderSpeaking(speaking);
+		}
 		if (this.restarting) {
-			this.queueRestartAudio(frame, owner);
+			// Plan T7: nothing can carry this speech across a generation change,
+			// so it is dropped and whatever it belonged to is unattributed.
+			if (speaking && !this.uplinkLostDuringRestart) {
+				this.uplinkLostDuringRestart = true;
+				this.markInputGap();
+				this.options.onEvidence?.({
+					kind: "codex_input_gap",
+					reason: "generation_changed_uplink",
+					generation: this.generation,
+				});
+			}
 			return;
 		}
 		const outcome = this.options.conversation.transport.appendAudio(
@@ -303,43 +331,53 @@ class CodexVoiceSession implements ConversationSession {
 		// user text or tool result is injected here.
 	}
 
+	/**
+	 * FLY-2885 T5: barge-in is local. The room hears the old answer stop at
+	 * once (the downlink is cut and muted); the provider truncates it on its
+	 * own. The generation stays, so no founder speech is lost.
+	 */
 	interrupt(): void {
 		if (this.closing || this.restarting || !this.live) return;
-		// A barge-in only breaks attribution when the old generation really
-		// loses speech: bytes it never transcribed, or a VAD segment/committed
-		// item still awaiting its final. The barge-in audio itself is queued and
-		// replayed into the next generation. A transport that cannot measure this
-		// is treated as lossy.
+		this.downlink.bargeIn();
+		this.speaker.interrupt("speech_interrupted");
+		this.overrunTurnId = undefined;
+		this.audible = false;
+		this.options.onEvidence?.({
+			kind: "codex_barge_in",
+			generation: this.generation,
+			local: true,
+		});
+		this.events.emit("response-cancelled");
+	}
+
+	/**
+	 * T5c forced restart: the overrunning turn cannot be resumed on this
+	 * generation. The old generation's audio is never released again.
+	 */
+	private restartGeneration(reason: string): void {
+		if (this.closing || this.restarting || !this.live) return;
 		const unsettled =
 			this.options.conversation.transport.unsettledInput?.() ?? null;
-		const inputGap =
-			unsettled === null ||
-			unsettled.droppedBytes > 0 ||
-			unsettled.providerInputPending;
 		const lost = {
 			generation: this.generation,
 			droppedBytes: unsettled?.droppedBytes ?? null,
 			providerInputPending: unsettled?.providerInputPending ?? null,
 		};
 		this.restarting = true;
-		this.options.onEvidence?.({ kind: "codex_barge_in", ...lost, inputGap });
-		if (inputGap) {
-			this.markInputGap();
-			this.options.onEvidence?.({
-				kind: "codex_input_gap",
-				reason: "generation_changed",
-				...lost,
-			});
-		}
-		// Whatever the founder says next is a new request; nothing from before the
-		// barge-in may authorize a delegation that arrives ahead of its final.
+		this.markInputGap();
+		this.options.onEvidence?.({
+			kind: "codex_input_gap",
+			reason: "generation_changed",
+			...lost,
+		});
+		this.options.onEvidence?.({
+			kind: "codex_generation_restart",
+			reason,
+			generation: this.generation,
+		});
 		this.latestKnownUser = undefined;
 		this.latestUserTranscriptId = undefined;
-		this.speaker.interrupt();
-		this.cancelOutputs();
-		this.outputFrameState.clear();
-		this.outputStarted.clear();
-		this.events.emit("response-cancelled");
+		this.speaker.interrupt("generation_changed");
 		const restart = this.options.conversation.restart;
 		if (!restart) {
 			this.restarting = false;
@@ -351,14 +389,15 @@ class CodexVoiceSession implements ConversationSession {
 			.then((generation) => {
 				if (this.closing) return;
 				this.generation = generation;
+				this.turns.reset();
+				this.downlink.reset();
+				this.overrunTurnId = undefined;
+				this.audible = false;
 				this.restarting = false;
-				this.flushRestartAudio();
+				this.uplinkLostDuringRestart = false;
 			})
 			.catch((error) => {
 				this.restarting = false;
-				this.restartAudio.length = 0;
-				this.restartAudioBytes = 0;
-				this.restartInputGap = false;
 				this.transportError(
 					error instanceof Error ? error : new Error(String(error)),
 				);
@@ -385,7 +424,9 @@ class CodexVoiceSession implements ConversationSession {
 	private async closeOnce(): Promise<undefined> {
 		this.closing = true;
 		this.live = false;
-		this.cancelOutputs();
+		this.speaker.interrupt("session_closed");
+		// Plan T7 order: nothing more goes up, nothing queued is heard.
+		this.downlink.reset();
 		try {
 			await this.durabilityTail;
 			const flush = await this.options.transcriptSink?.flush?.();
@@ -406,49 +447,99 @@ class CodexVoiceSession implements ConversationSession {
 		return undefined;
 	}
 
-	observeItem(item: CodexRealtimeItem): void {
-		if (this.closing || this.restarting || item.generation !== this.generation)
-			return;
-		if (item.role === "assistant") {
-			this.speaker.observeAssistantItem(item);
-			if (!this.outputStarted.has(item.itemId)) {
-				this.outputStarted.add(item.itemId);
-				this.events.emit("response-started");
-			}
-		}
+	observeItem(_item: CodexRealtimeItem): void {
+		// v3 reports assistant turns on the data channel only (observeDataEvent).
 	}
 
-	observeAudio(delta: CodexRealtimeAudioDelta): void {
-		if (this.closing || this.restarting || delta.generation !== this.generation)
+	/** One WebRTC downlink packet of `generation`, payload untouched. */
+	observeDownlink(packet: {
+		generation: number;
+		payload: Buffer;
+		voiced: boolean;
+	}): void {
+		if (this.closing || this.restarting || packet.generation !== this.generation)
 			return;
-		const observedAt = this.monotonicNow();
-		const samples = delta.samplesPerChannel ?? delta.pcm24Mono.length / 2;
-		const durationMs = samples / 24;
-		const previous = this.outputFrameState.get(delta.itemId);
-		const intervalMs = previous
-			? Math.max(0, observedAt - previous.observedAt)
-			: null;
-		const underloadMs = previous
-			? Math.max(0, intervalMs! - previous.durationMs)
-			: null;
-		const frameIndex = (previous?.frameIndex ?? 0) + 1;
-		this.outputFrameState.set(delta.itemId, {
-			frameIndex,
-			observedAt,
-			durationMs,
+		this.downlink.packet(packet);
+		this.updateAudible();
+		this.speaker.playbackProgress();
+	}
+
+	/** oai-events of `generation`: tolerated, never required. */
+	observeDataEvent(input: {
+		generation: number;
+		event: RealtimeDataEvent;
+	}): void {
+		if (this.closing || this.restarting || input.generation !== this.generation)
+			return;
+		const event = input.event;
+		if (event.type === "session.started") {
+			this.options.onEvidence?.({
+				kind: "codex_realtime_session_started",
+				generation: input.generation,
+				expiresAt: event.expiresAt,
+			});
+			return;
+		}
+		if (event.type === "turn.created") {
+			this.turns.created(event.turnId, event.role);
+			if (event.role === "user") {
+				this.userTurnEvidence();
+				return;
+			}
+			if (this.overrunTurnId === "pending") this.overrunTurnId = event.turnId;
+			this.speaker.turnCreated({ turnId: event.turnId, role: event.role });
+			return;
+		}
+		this.turns.done(event.turnId, event.role);
+		if (event.role === "assistant" && event.turnId === this.overrunTurnId) {
+			this.overrunTurnId = undefined;
+			this.downlink.overrunTurnDone();
+		}
+		this.speaker.turnDone({
+			turnId: event.turnId,
+			role: event.role,
+			transcript: event.transcript,
 		});
-		this.options.onEvidence?.({
-			kind: "codex_output_audio_frame",
-			generation: delta.generation,
-			itemId: delta.itemId,
-			frameIndex,
-			pcmBytes: delta.pcm24Mono.length,
-			durationMs,
-			intervalMs,
-			underloadMs,
-		});
-		this.events.emit("response-audio", delta.pcm24Mono, PCM24_MONO);
-		this.streamAudio(delta.itemId, delta.generation, delta.pcm24Mono);
+	}
+
+	/** New user speech: a user turn.created, or a user transcript. */
+	private userTurnEvidence(): void {
+		if (!this.turns.userEvidence()) return;
+		this.downlink.userTurnEvidence();
+		this.speaker.userEvidence();
+	}
+
+	/** T5b ①–⑤: why a read-aloud must not be sent now. */
+	private readAloudBusyReason(): string | undefined {
+		if (this.turns.openAssistantTurn()) return "assistant_turn_open";
+		this.updateAudible();
+		if (
+			this.audible ||
+			this.monotonicNow() - this.lastAudibleAt < READ_ALOUD_QUIET_MS
+		)
+			return "audible";
+		if (this.speakerActive) return "speaker_active";
+		if (this.turns.pendingUserTurn()) return "pending_user_turn";
+		if (this.downlink.discarding) return "overrun_discard";
+		if (this.downlink.blocking) return "barge_in";
+		return undefined;
+	}
+
+	/** response-started/done follow what the player can still be heard playing. */
+	private updateAudible(): void {
+		const audible = this.downlink.audible();
+		if (audible) this.lastAudibleAt = this.monotonicNow();
+		if (audible === this.audible) return;
+		this.audible = audible;
+		if (audible) {
+			this.options.onEvidence?.({
+				kind: "codex_response_audible",
+				generation: this.generation,
+			});
+			this.events.emit("response-started");
+		} else {
+			this.events.emit("response-done");
+		}
 	}
 
 	observeTranscript(transcript: CodexRealtimeTranscript): void {
@@ -458,7 +549,12 @@ class CodexVoiceSession implements ConversationSession {
 			transcript.generation !== this.generation
 		)
 			return;
-		this.speaker.observeTranscript(transcript);
+		if (transcript.role === "user") this.userTurnEvidence();
+		else
+			this.speaker.assistantTranscript({
+				text: transcript.text,
+				final: transcript.final,
+			});
 		this.events.emit("transcript", {
 			role: transcript.role,
 			text: transcript.text,
@@ -512,7 +608,11 @@ class CodexVoiceSession implements ConversationSession {
 			sequence,
 			source: transcript.role === "user" ? "room_audio" : "engine_audio",
 			role: transcript.role,
-			text: transcript.text,
+			// T5c ③: an overrun read-aloud is kept only up to its line.
+			text:
+				transcript.role === "assistant"
+					? this.speaker.truncateAssistantFinal(transcript.text)
+					: transcript.text,
 			final: true,
 			attribution:
 				transcript.role === "assistant"
@@ -551,8 +651,6 @@ class CodexVoiceSession implements ConversationSession {
 					? { utterance, persisted }
 					: undefined;
 		}
-		if (transcript.role === "assistant" && transcript.itemId)
-			this.endOutput(transcript.itemId);
 	}
 
 	observeInputGap(input: { reason: string; droppedBytes: number }): void {
@@ -772,139 +870,8 @@ class CodexVoiceSession implements ConversationSession {
 		return persisted;
 	}
 
-	private streamAudio(itemId: string, generation: number, pcm24Mono: Buffer) {
-		if (this.outputEnded.has(itemId)) {
-			this.options.onEvidence?.({
-				kind: "codex_output_late_audio_dropped",
-				itemId,
-				generation,
-				pcmBytes: pcm24Mono.length,
-			});
-			return;
-		}
-		let output = this.output.get(itemId);
-		if (!output) {
-			// Assistant items play in order; one whose final never came must not
-			// hold the next one behind it.
-			for (const openItemId of [...this.output.keys()])
-				this.endOutput(openItemId);
-			output = this.openOutput(itemId, generation);
-		}
-		output?.append(pcm24Mono);
-	}
-
-	private openOutput(
-		itemId: string,
-		generation: number,
-	): CodexAudioOutput | undefined {
-		if (!this.options.openAudio) {
-			this.outputEnded.add(itemId);
-			this.options.onEvidence?.({
-				kind: "codex_output_unsubmitted",
-				itemId,
-				generation,
-				reason: "playback_sink_missing",
-			});
-			return undefined;
-		}
-		let output: CodexAudioOutput;
-		try {
-			output = this.options.openAudio({ itemId, generation });
-		} catch (error) {
-			this.outputEnded.add(itemId);
-			this.playbackFailed(error, generation);
-			return undefined;
-		}
-		this.output.set(itemId, output);
-		this.pendingPlaybackCount += 1;
-		let completed = false;
-		void output.done
-			.then(
-				() => {
-					this.speaker.observePlaybackSubmitted({ generation, itemId });
-					completed = true;
-				},
-				(error) => this.playbackFailed(error, generation),
-			)
-			.finally(() => {
-				this.pendingPlaybackCount -= 1;
-				if (
-					completed &&
-					this.pendingPlaybackCount === 0 &&
-					!this.closing &&
-					!this.restarting &&
-					generation === this.generation
-				) {
-					this.events.emit("response-done");
-				}
-			});
-		return output;
-	}
-
-	private endOutput(itemId: string): void {
-		const output = this.output.get(itemId);
-		this.output.delete(itemId);
-		this.outputEnded.add(itemId);
-		this.outputFrameState.delete(itemId);
-		output?.end();
-	}
-
-	/** Barge-in / close: open outputs belong to a response that is over. */
-	private cancelOutputs(): void {
-		const open = [...this.output.values()];
-		this.output.clear();
-		this.outputEnded.clear();
-		for (const output of open) output.cancel();
-	}
-
-	private playbackFailed(error: unknown, generation: number): void {
-		if (this.closing || this.restarting || generation !== this.generation)
-			return;
-		this.transportError(
-			error instanceof Error ? error : new Error(String(error)),
-		);
-	}
-
 	private unsupported(message: string): void {
 		this.events.emit("error", new VoiceError("unsupported", message));
-	}
-
-	private queueRestartAudio(
-		frame: Buffer,
-		owner: CodexRealtimeInputOwner,
-	): void {
-		if (
-			this.restartAudioBytes + frame.length >
-			CODEX_REALTIME_INPUT_QUEUE_BYTES
-		) {
-			this.restartInputGap = true;
-			this.markInputGap();
-			this.options.onEvidence?.({
-				kind: "codex_input_gap",
-				reason: "restart_backpressure",
-				droppedBytes: frame.length,
-			});
-			return;
-		}
-		this.restartAudio.push({ frame: Buffer.from(frame), owner: { ...owner } });
-		this.restartAudioBytes += frame.length;
-	}
-
-	private flushRestartAudio(): void {
-		const queued = this.restartAudio.splice(0);
-		this.restartAudioBytes = 0;
-		if (this.restartInputGap) {
-			this.options.conversation.transport.invalidateInputOwnership?.();
-			this.restartInputGap = false;
-		}
-		for (const { frame, owner } of queued) {
-			const outcome = this.options.conversation.transport.appendAudio(
-				frame,
-				this.generation,
-				owner,
-			);
-			this.observeAppendOutcome(outcome, frame.length);
-		}
 	}
 
 	private observeAppendOutcome(

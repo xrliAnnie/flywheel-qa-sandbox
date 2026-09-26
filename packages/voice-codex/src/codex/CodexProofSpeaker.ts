@@ -7,11 +7,59 @@ import type {
 	VoiceSpeakVerification,
 } from "flywheel-voice-core";
 import { isFiniteSpeechEquivalent, prepareReplySpeech } from "../speech.js";
+import { speechAlignment, unalignedText } from "./SpeechOverrun.js";
 
+/** No turn.created/turn.done within this long: binding is unknown (T5b ⑥). */
 const DEFAULT_CONFIRM_TIMEOUT_MS = 30_000;
+/** Idle admission waits this long before giving up (T5b ①). */
+const DEFAULT_ADMISSION_TIMEOUT_MS = 10_000;
+const DEFAULT_ADMISSION_POLL_MS = 50;
+/** A done with nothing played is re-checked this much later (T5c ④). */
+const DEFAULT_SILENCE_CONFIRM_MS = 600;
+/** How long after an overrun the stop latency is measured. */
+const OVERRUN_STOP_WINDOW_MS = 500;
+/** A truncation marker waits this long for its late final (T5c ③). */
+const TRUNCATION_MARKER_MS = 30_000;
+export const SPEECH_TRUNCATED_NOTE = "（已截断越界内容）";
 
 export interface CodexSpeechTransport {
 	appendSpeech(text: string, generation: number): Promise<void>;
+}
+
+/** What the speaker needs from the session; all of it is current-generation. */
+export interface CodexSpeakerHost {
+	sessionId: string;
+	voice: string;
+	format: AudioFormat;
+	sessionGeneration(): number;
+	transport(): CodexSpeechTransport;
+	isLive(): boolean;
+	/** Monotonic milliseconds. */
+	now(): number;
+	/**
+	 * Plan T5b ①–⑤: why the room is not idle enough to read aloud (an open
+	 * assistant turn, audible audio, the founder speaking or an unanswered user
+	 * turn, a barge-in in progress, an overrun discard), or undefined.
+	 */
+	busyReason(): string | undefined;
+	/** Real voiced packets the player has taken so far (monotonic counter). */
+	consumedVoiced(): number;
+	/** Voiced packets still queued for the player. */
+	queuedVoiced(): number;
+	/** Client-side cuts, silence substitutions, drops and trims so far. */
+	interference(): number;
+	/** Backlog trims so far. */
+	trims(): number;
+	/**
+	 * T5c: mute the overrunning turn (session-level discard state). The turn id
+	 * is known when the chunk was already bound, else its turn.created follows.
+	 */
+	overrun(turnId: string | undefined): void;
+	evidence(record: Record<string, unknown>): void;
+	confirmTimeoutMs?: number;
+	admissionTimeoutMs?: number;
+	admissionPollMs?: number;
+	silenceConfirmMs?: number;
 }
 
 interface ChunkResult {
@@ -19,20 +67,31 @@ interface ChunkResult {
 	transport: "none" | "submitted";
 	contentProof: "none" | "transcript_equivalent";
 	reason?: string;
+	/** Admission never succeeded: nothing was sent for this chunk. */
+	notSent?: boolean;
+	/** Confirmed silent: may be retried once (T5c ④). */
+	silent?: boolean;
 }
 
 interface PendingChunk {
+	pendingKey: string;
 	generation: number;
 	expected: string;
 	verification: VoiceSpeakVerification;
-	itemId?: string;
-	finalSeen: boolean;
-	playbackSubmitted: boolean;
-	contentProof: "none" | "transcript_equivalent";
-	failure?: string;
-	timer?: ReturnType<typeof setTimeout>;
-	settle(result: ChunkResult): void;
+	sent: boolean;
+	sentAt: number;
+	consumedAtSend: number;
+	interferenceAtSend: number;
+	trimsAtSend: number;
+	boundTurnId?: string;
+	done: boolean;
+	doneTranscript?: string;
+	finalText?: string;
+	accumulated: string;
+	silenceCheck?: boolean;
+	timers: Array<ReturnType<typeof setTimeout>>;
 	settled: boolean;
+	settle(result: ChunkResult): void;
 }
 
 function defaultVerification(kind: VoiceSpeakKind): VoiceSpeakVerification {
@@ -74,25 +133,27 @@ function digest(value: unknown): string {
 		.digest("hex");
 }
 
+/**
+ * Proof-bound read-aloud on Codex realtime v3 (FLY-2885 T5b/T5c).
+ *
+ * v3 has no assistant item ids and appendSpeech only queues the text, so a
+ * chunk is sent only when the room is idle, and is then bound to the first
+ * assistant turn the data channel reports after it. Playback proof is what the
+ * player actually consumed. A chunk whose transcript runs past its line is
+ * cut, its tail muted and its mirror truncated; a confirmed-silent chunk is
+ * retried once; anything that cannot be bound is reported honestly and never
+ * retried (it may already have been heard).
+ */
 export class CodexProofSpeaker {
 	private readonly requests = new Map<
 		string,
 		{ requestDigest: string; promise: Promise<SpeakReceipt> }
 	>();
-	private readonly usedItems = new Set<string>();
+	private readonly ended = new Set<string>();
 	private pending?: PendingChunk;
+	private truncation?: { expected: string; until: number };
 
-	constructor(
-		private readonly options: {
-			sessionId: string;
-			sessionGeneration(): number;
-			voice: string;
-			format: AudioFormat;
-			transport(): CodexSpeechTransport;
-			isLive(): boolean;
-			confirmTimeoutMs?: number;
-		},
-	) {}
+	constructor(private readonly host: CodexSpeakerHost) {}
 
 	speak(
 		text: string,
@@ -100,19 +161,19 @@ export class CodexProofSpeaker {
 		options: VoiceSpeakOptions,
 	): Promise<SpeakReceipt> {
 		const verification = options.verification ?? defaultVerification(kind);
-		const sessionGeneration = this.options.sessionGeneration();
+		const sessionGeneration = this.host.sessionGeneration();
 		let requestDigest: string;
 		try {
 			requestDigest = digest({
 				version: 1,
-				sessionId: this.options.sessionId,
+				sessionId: this.host.sessionId,
 				sessionGeneration,
 				pendingKey: options.pendingKey,
 				text,
 				kind,
 				verification,
-				voice: this.options.voice,
-				format: this.options.format,
+				voice: this.host.voice,
+				format: this.host.format,
 				chunkCharacters: options.chunkCharacters ?? 80,
 				authorityBinding: options.authorityBinding ?? null,
 			});
@@ -140,7 +201,6 @@ export class CodexProofSpeaker {
 		}
 		const promise = this.run({
 			text,
-			kind,
 			verification,
 			pendingKey: options.pendingKey,
 			requestDigest,
@@ -151,77 +211,92 @@ export class CodexProofSpeaker {
 		return promise;
 	}
 
-	observeAssistantItem(input: { generation: number; itemId: string }): void {
-		const pending = this.current(input.generation);
-		if (!pending || !input.itemId) return;
-		if (pending.itemId) {
-			if (pending.itemId !== input.itemId) return;
-			this.fail(pending, "speech_duplicate_item");
+	/** Data channel turn.created of the current generation. */
+	turnCreated(input: { turnId: string; role: "user" | "assistant" }): void {
+		if (input.role === "user") {
+			this.userEvidence();
 			return;
 		}
-		if (this.usedItems.has(input.itemId)) {
-			this.fail(pending, "speech_item_reused");
-			return;
-		}
-		pending.itemId = input.itemId;
-		this.usedItems.add(input.itemId);
-	}
-
-	observeTranscript(input: {
-		generation: number;
-		itemId?: string;
-		role: "user" | "assistant";
-		text: string;
-		final: boolean;
-	}): void {
-		const pending = this.current(input.generation);
+		const pending = this.pending;
 		if (
-			!pending ||
-			!input.final ||
-			input.role !== "assistant" ||
-			!input.itemId ||
-			input.itemId !== pending.itemId
+			!pending?.sent ||
+			pending.boundTurnId ||
+			this.ended.has(input.turnId)
 		)
 			return;
-		if (pending.finalSeen) {
-			this.fail(pending, "speech_duplicate_final");
-			return;
-		}
-		pending.finalSeen = true;
-		if (isFiniteSpeechEquivalent(pending.expected, input.text)) {
-			pending.contentProof = "transcript_equivalent";
-			this.evaluate(pending);
-		} else if (pending.verification !== "required") {
-			this.evaluate(pending);
-		} else {
-			this.fail(pending, "speech_not_equivalent");
-		}
+		pending.boundTurnId = input.turnId;
 	}
 
-	observePlaybackSubmitted(input: {
-		generation: number;
-		itemId: string;
+	/** Data channel turn.done of the current generation. */
+	turnDone(input: {
+		turnId: string;
+		role: "user" | "assistant";
+		transcript: string | null;
 	}): void {
-		const pending = this.current(input.generation);
-		if (!pending || !pending.itemId || input.itemId !== pending.itemId) return;
-		pending.playbackSubmitted = true;
+		if (input.role !== "assistant") return;
+		this.ended.add(input.turnId);
+		const pending = this.pending;
+		if (!pending || pending.boundTurnId !== input.turnId || pending.done)
+			return;
+		pending.done = true;
+		if (input.transcript !== null) pending.doneTranscript = input.transcript;
 		this.evaluate(pending);
+	}
+
+	/** New user speech (turn.created{user} or a user transcript delta). */
+	userEvidence(): void {
+		const pending = this.pending;
+		if (!pending?.sent || pending.boundTurnId) return;
+		this.fail(pending, "speech_preempted");
+	}
+
+	/**
+	 * app-server assistant transcript (the only overrun input, T5c ①). Every
+	 * delta after the chunk was sent belongs to it; the final is checked again
+	 * before anything is persisted or mirrored.
+	 */
+	assistantTranscript(input: { text: string; final: boolean }): void {
+		const pending = this.pending;
+		if (!pending?.sent || pending.settled) return;
+		if (input.final) pending.finalText = input.text;
+		else pending.accumulated += input.text;
+		const observed = input.final ? input.text : pending.accumulated;
+		const alignment = speechAlignment(pending.expected, observed);
+		if (alignment.overrun) this.overrun(pending, observed, alignment);
+	}
+
+	/** The player took more audio; a done waiting for playback re-evaluates. */
+	playbackProgress(): void {
+		const pending = this.pending;
+		if (pending?.done && !pending.settled) this.evaluate(pending);
 	}
 
 	interrupt(reason = "speech_interrupted"): void {
 		const pending = this.pending;
-		if (!pending) return;
+		if (!pending || pending.settled) return;
 		this.settle(pending, {
 			ok: false,
-			transport: pending.playbackSubmitted ? "submitted" : "none",
-			contentProof: pending.contentProof,
+			transport: this.consumedSince(pending) > 0 ? "submitted" : "none",
+			contentProof: "none",
 			reason,
+			...(pending.sent ? {} : { notSent: true }),
 		});
+	}
+
+	/**
+	 * T5c ③: an assistant final that belongs to an overrun chunk is persisted
+	 * and mirrored only up to the line it was asked to read.
+	 */
+	truncateAssistantFinal(text: string): string {
+		const marker = this.truncation;
+		if (!marker) return text;
+		this.truncation = undefined;
+		if (this.host.now() > marker.until) return text;
+		return `${marker.expected}${SPEECH_TRUNCATED_NOTE}`;
 	}
 
 	private async run(input: {
 		text: string;
-		kind: VoiceSpeakKind;
 		verification: VoiceSpeakVerification;
 		pendingKey: string;
 		requestDigest: string;
@@ -233,8 +308,8 @@ export class CodexProofSpeaker {
 			requestDigest: input.requestDigest,
 		};
 		if (
-			!this.options.isLive() ||
-			input.sessionGeneration !== this.options.sessionGeneration()
+			!this.host.isLive() ||
+			input.sessionGeneration !== this.host.sessionGeneration()
 		) {
 			return {
 				...binding,
@@ -267,14 +342,37 @@ export class CodexProofSpeaker {
 		let allProof = true;
 		let anySubmitted = false;
 		for (const [index, chunk] of chunks.entries()) {
-			const result = await this.runChunk(
+			let result = await this.runChunk(
+				input.pendingKey,
 				chunk.spokenText,
 				input.verification,
 				input.sessionGeneration,
 			);
+			if (result.silent) {
+				this.host.evidence({
+					kind: "codex_speech_silent_retry",
+					pendingKey: input.pendingKey,
+					chunk: index,
+				});
+				result = await this.runChunk(
+					input.pendingKey,
+					chunk.spokenText,
+					input.verification,
+					input.sessionGeneration,
+				);
+			}
 			anySubmitted ||= result.transport === "submitted";
 			allProof &&= result.contentProof === "transcript_equivalent";
 			if (!result.ok) {
+				if (result.notSent && !anySubmitted && index === 0) {
+					return {
+						...binding,
+						outcome: "rejected",
+						reason: result.reason ?? "busy_conversation",
+						transport: "none",
+						contentProof: "none",
+					};
+				}
 				return {
 					...binding,
 					outcome: "failed",
@@ -306,84 +404,249 @@ export class CodexProofSpeaker {
 	}
 
 	private runChunk(
+		pendingKey: string,
 		expected: string,
 		verification: VoiceSpeakVerification,
 		generation: number,
 	): Promise<ChunkResult> {
 		return new Promise<ChunkResult>((resolve) => {
 			const pending: PendingChunk = {
+				pendingKey,
 				generation,
 				expected,
 				verification,
-				finalSeen: false,
-				playbackSubmitted: false,
-				contentProof: "none",
-				settle: resolve,
+				sent: false,
+				sentAt: 0,
+				consumedAtSend: 0,
+				interferenceAtSend: 0,
+				trimsAtSend: 0,
+				done: false,
+				accumulated: "",
+				timers: [],
 				settled: false,
+				settle: resolve,
 			};
-			pending.timer = setTimeout(() => {
-				this.settle(pending, {
-					ok: verification !== "required" && pending.playbackSubmitted,
-					transport: pending.playbackSubmitted ? "submitted" : "none",
-					contentProof: pending.contentProof,
-					...(verification === "required" || !pending.playbackSubmitted
-						? { reason: "speech_proof_timeout" }
-						: {}),
-				});
-			}, this.options.confirmTimeoutMs ?? DEFAULT_CONFIRM_TIMEOUT_MS);
-			pending.timer.unref?.();
 			this.pending = pending;
-			void this.options
-				.transport()
-				.appendSpeech(expected, generation)
-				.then(() => this.evaluate(pending))
-				.catch(() =>
+			this.admit(pending, this.host.now());
+		});
+	}
+
+	/** T5b ①: send only into an idle room; give up after 10 s. */
+	private admit(pending: PendingChunk, startedAt: number): void {
+		if (pending.settled) return;
+		if (
+			!this.host.isLive() ||
+			pending.generation !== this.host.sessionGeneration()
+		) {
+			this.settle(pending, {
+				ok: false,
+				transport: "none",
+				contentProof: "none",
+				reason: "generation_changed",
+				notSent: true,
+			});
+			return;
+		}
+		const busy = this.host.busyReason();
+		if (busy === undefined) {
+			this.send(pending);
+			return;
+		}
+		if (
+			this.host.now() - startedAt >=
+			(this.host.admissionTimeoutMs ?? DEFAULT_ADMISSION_TIMEOUT_MS)
+		) {
+			this.host.evidence({
+				kind: "codex_speech_admission_timeout",
+				pendingKey: pending.pendingKey,
+				busy,
+			});
+			this.settle(pending, {
+				ok: false,
+				transport: "none",
+				contentProof: "none",
+				reason: "busy_conversation",
+				notSent: true,
+			});
+			return;
+		}
+		const timer = setTimeout(
+			() => this.admit(pending, startedAt),
+			this.host.admissionPollMs ?? DEFAULT_ADMISSION_POLL_MS,
+		);
+		timer.unref?.();
+		pending.timers.push(timer);
+	}
+
+	private send(pending: PendingChunk): void {
+		pending.sent = true;
+		pending.sentAt = this.host.now();
+		pending.consumedAtSend = this.host.consumedVoiced();
+		pending.interferenceAtSend = this.host.interference();
+		pending.trimsAtSend = this.host.trims();
+		const timer = setTimeout(
+			() => {
+				if (pending.settled) return;
+				this.settle(pending, {
+					ok: false,
+					transport: this.consumedSince(pending) > 0 ? "submitted" : "none",
+					contentProof: "none",
+					reason: "speech_binding_unavailable",
+				});
+			},
+			this.host.confirmTimeoutMs ?? DEFAULT_CONFIRM_TIMEOUT_MS,
+		);
+		timer.unref?.();
+		pending.timers.push(timer);
+		void this.host
+			.transport()
+			.appendSpeech(pending.expected, pending.generation)
+			.catch(() =>
+				this.settle(pending, {
+					ok: false,
+					transport: "none",
+					contentProof: "none",
+					reason: "speech_transport_failed",
+				}),
+			);
+	}
+
+	private evaluate(pending: PendingChunk): void {
+		if (pending.settled || !pending.done) return;
+		if (this.host.trims() !== pending.trimsAtSend) {
+			this.settle(pending, {
+				ok: false,
+				transport: "submitted",
+				contentProof: "none",
+				reason: "playback_trimmed",
+			});
+			return;
+		}
+		const consumed = this.consumedSince(pending);
+		if (consumed === 0) {
+			// Done can arrive before its audio is played: wait for the queue.
+			if (this.host.queuedVoiced() > 0) return;
+			this.checkSilent(pending);
+			return;
+		}
+		const transcript = pending.doneTranscript ?? pending.finalText;
+		const equivalent =
+			transcript !== undefined &&
+			isFiniteSpeechEquivalent(pending.expected, transcript);
+		if (!equivalent && pending.verification === "required") {
+			this.settle(pending, {
+				ok: false,
+				transport: "submitted",
+				contentProof: "none",
+				reason: "speech_not_equivalent",
+			});
+			return;
+		}
+		this.settle(pending, {
+			ok: true,
+			transport: "submitted",
+			contentProof: equivalent ? "transcript_equivalent" : "none",
+		});
+	}
+
+	/**
+	 * T5c ④: done, nothing played and nothing queued. Silent only if that is
+	 * still true 600 ms later and the client never cut or substituted audio in
+	 * the meantime; otherwise the outcome is unknown and is not retried.
+	 */
+	private checkSilent(pending: PendingChunk): void {
+		if (pending.silenceCheck) return;
+		pending.silenceCheck = true;
+		const timer = setTimeout(
+			() => {
+				if (pending.settled) return;
+				if (this.consumedSince(pending) > 0 || this.host.queuedVoiced() > 0) {
+					this.evaluate(pending);
+					return;
+				}
+				if (this.host.interference() !== pending.interferenceAtSend) {
 					this.settle(pending, {
 						ok: false,
 						transport: "none",
 						contentProof: "none",
-						reason: "speech_transport_failed",
-					}),
-				);
+						reason: "speech_binding_unavailable",
+					});
+					return;
+				}
+				this.settle(pending, {
+					ok: false,
+					transport: "none",
+					contentProof: "none",
+					reason: "speech_silent",
+					silent: true,
+				});
+			},
+			this.host.silenceConfirmMs ?? DEFAULT_SILENCE_CONFIRM_MS,
+		);
+		timer.unref?.();
+		pending.timers.push(timer);
+	}
+
+	private overrun(
+		pending: PendingChunk,
+		observed: string,
+		alignment: ReturnType<typeof speechAlignment>,
+	): void {
+		const detectedAt = this.host.now();
+		const consumedAtDetection = this.host.consumedVoiced();
+		this.host.overrun(pending.boundTurnId);
+		this.truncation = {
+			expected: pending.expected,
+			until: detectedAt + TRUNCATION_MARKER_MS,
+		};
+		const extra = unalignedText(pending.expected, observed);
+		const record = {
+			kind: "codex_speech_overrun",
+			pendingKey: pending.pendingKey,
+			turnId: pending.boundTurnId ?? null,
+			expectedChars: alignment.expectedChars,
+			unalignedChars: alignment.unaligned,
+			extraTextSha256: createHash("sha256").update(extra).digest("hex"),
+			detectedAtMs: Math.round(detectedAt - pending.sentAt),
+		};
+		const timer = setTimeout(() => {
+			// Real audio the player still took after the cut (its look-ahead).
+			const lateVoiced = this.host.consumedVoiced() - consumedAtDetection;
+			this.host.evidence({
+				...record,
+				stopLatencyMs: lateVoiced * 20,
+			});
+		}, OVERRUN_STOP_WINDOW_MS);
+		timer.unref?.();
+		this.settle(pending, {
+			ok: false,
+			transport: "submitted",
+			contentProof: "none",
+			reason: "speech_overrun",
 		});
 	}
 
-	private current(generation: number): PendingChunk | undefined {
-		return generation === this.pending?.generation ? this.pending : undefined;
+	private consumedSince(pending: PendingChunk): number {
+		return pending.sent
+			? this.host.consumedVoiced() - pending.consumedAtSend
+			: 0;
 	}
 
 	private fail(pending: PendingChunk, reason: string): void {
-		if (pending.settled) return;
-		pending.failure ??= reason;
-		queueMicrotask(() => this.evaluate(pending));
-	}
-
-	private evaluate(pending: PendingChunk): void {
-		if (pending.settled || this.pending !== pending) return;
-		if (pending.failure) {
-			this.settle(pending, {
-				ok: false,
-				transport: pending.playbackSubmitted ? "submitted" : "none",
-				contentProof: pending.contentProof,
-				reason: pending.failure,
-			});
-			return;
-		}
-		if (!pending.playbackSubmitted) return;
-		if (pending.verification === "required" && pending.contentProof === "none")
-			return;
-		if (pending.verification === "best_effort" && !pending.finalSeen) return;
 		this.settle(pending, {
-			ok: true,
-			transport: "submitted",
-			contentProof: pending.contentProof,
+			ok: false,
+			transport: this.consumedSince(pending) > 0 ? "submitted" : "none",
+			contentProof: "none",
+			reason,
 		});
 	}
 
 	private settle(pending: PendingChunk, result: ChunkResult): void {
 		if (pending.settled) return;
 		pending.settled = true;
-		if (pending.timer) clearTimeout(pending.timer);
+		for (const timer of pending.timers) clearTimeout(timer);
+		pending.timers.length = 0;
+		if (pending.boundTurnId) this.ended.add(pending.boundTurnId);
 		if (this.pending === pending) this.pending = undefined;
 		pending.settle(result);
 	}
