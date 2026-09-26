@@ -30,6 +30,8 @@ export interface BrainCoordinatorOptions {
 	speech: {
 		enqueue(request: BrainSpeechRequest): Promise<SpeechArbiterTerminal>;
 		drop(businessId: string, kind?: SpeechArbiterKind): void;
+		/** Drop queued entries but let a playing one finish (no barge-in). */
+		retire(businessId: string, kind?: SpeechArbiterKind): void;
 	};
 }
 
@@ -325,7 +327,9 @@ export class BrainCoordinator {
 	private settleObligation(obligation: StoredObligation): void {
 		this.clearTimers(obligation);
 		obligation.state = "settled";
-		this.options.speech.drop(obligation.handoffId, "cue");
+		// A playing “还在查” finishes; cutting it off would restart the realtime
+		// generation under the result that is about to play (FLY-2886 QA@4 D2).
+		this.options.speech.retire(obligation.handoffId, "cue");
 	}
 
 	private clearTimers(obligation: StoredObligation): void {

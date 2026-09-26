@@ -21,10 +21,17 @@ export interface SpeechArbiterRequest {
 	revalidate?(): Promise<boolean>;
 }
 
-type SpeechAttemptOutcome = "spoken" | "failed";
+/** `deferred`: the speaker was not live (a realtime generation is being
+ * replaced); the entry is replayed, not dropped (FLY-2886 QA@4 D2). */
+type SpeechAttemptOutcome = "spoken" | "failed" | "deferred";
 
 interface QueueEntry extends SpeechArbiterRequest {
 	attempts: number;
+	deferrals: number;
+	/** Settle as stale once the active playback ends (see `retire`). */
+	retired?: boolean;
+	/** Set while a deferred entry waits for a live generation or its retry. */
+	deferredUntil?: number;
 	settled: boolean;
 	resolve(outcome: SpeechArbiterTerminal): void;
 }
@@ -47,6 +54,10 @@ export interface SpeechArbiterOptions {
 	postThread?(request: { businessId: string; text: string }): Promise<void>;
 	floorQuietMs?: number;
 	providerStaleMs?: number;
+	/** Retry cadence for a deferred entry when no generation change arrives. */
+	deferRetryMs?: number;
+	/** Deferrals after which a retryable entry falls back to the thread. */
+	maxDeferrals?: number;
 }
 
 const RESULT_PREFIX = "刚才查到的：";
@@ -63,6 +74,9 @@ export class SpeechArbiter {
 	private readonly cancelScheduled: (handle: unknown) => void;
 	private readonly floorQuietMs: number;
 	private readonly providerStaleMs: number;
+	private readonly deferRetryMs: number;
+	private readonly maxDeferrals: number;
+	private deferTimer?: unknown;
 	private readonly localUtterances = new Set<string>();
 	private readonly providerSegments = new Map<
 		string,
@@ -89,6 +103,8 @@ export class SpeechArbiter {
 			((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>));
 		this.floorQuietMs = options.floorQuietMs ?? 800;
 		this.providerStaleMs = options.providerStaleMs ?? 3_000;
+		this.deferRetryMs = options.deferRetryMs ?? 1_000;
+		this.maxDeferrals = options.maxDeferrals ?? 30;
 		this.lastFloorActivityAt = this.now();
 	}
 
@@ -108,7 +124,13 @@ export class SpeechArbiter {
 		const result = new Promise<SpeechArbiterTerminal>((done) => {
 			resolve = done;
 		});
-		this.queue.push({ ...request, attempts: 0, settled: false, resolve });
+		this.queue.push({
+			...request,
+			attempts: 0,
+			deferrals: 0,
+			settled: false,
+			resolve,
+		});
 		this.requestPump();
 		return result;
 	}
@@ -132,6 +154,27 @@ export class SpeechArbiter {
 			this.settle(active.entry, "stale_dropped");
 			this.requestPump();
 		}
+	}
+
+	/**
+	 * Like `drop`, but an entry that is already playing is left to finish: its
+	 * obligation is settled, yet cutting it off would force a realtime
+	 * generation restart (a self-inflicted barge-in, FLY-2886 QA@4 D2).
+	 */
+	retire(businessId: string, kind?: SpeechArbiterKind): void {
+		for (let index = this.queue.length - 1; index >= 0; index -= 1) {
+			const entry = this.queue[index]!;
+			if (entry.businessId !== businessId || (kind && entry.kind !== kind))
+				continue;
+			this.queue.splice(index, 1);
+			this.settle(entry, "stale_dropped");
+		}
+		const active = this.active;
+		if (
+			active?.entry.businessId === businessId &&
+			(!kind || active.entry.kind === kind)
+		)
+			active.entry.retired = true;
 	}
 
 	localUtteranceStarted(utteranceId: string): void {
@@ -178,10 +221,9 @@ export class SpeechArbiter {
 			this.providerSegments.delete(key);
 			removed = true;
 		}
-		if (removed) {
-			this.floorActivity();
-			this.requestPump();
-		}
+		if (removed) this.floorActivity();
+		// A new live generation is exactly what a deferred entry waits for.
+		if (removed || this.hasDeferred()) this.requestPump();
 	}
 
 	outputState(active: boolean): void {
@@ -216,8 +258,10 @@ export class SpeechArbiter {
 		if (this.pumpTimer !== undefined) this.cancelScheduled(this.pumpTimer);
 		if (this.providerTimer !== undefined)
 			this.cancelScheduled(this.providerTimer);
+		if (this.deferTimer !== undefined) this.cancelScheduled(this.deferTimer);
 		this.pumpTimer = undefined;
 		this.providerTimer = undefined;
+		this.deferTimer = undefined;
 		const active = this.active;
 		this.active = undefined;
 		if (active) {
@@ -257,6 +301,9 @@ export class SpeechArbiter {
 		if (this.closed || this.active || this.userActive || this.outputActive)
 			return;
 		while (this.queue.length > 0) {
+			// Results stay in order: a deferred head holds the queue until the
+			// session is live again (generation change) or its retry timer fires.
+			if (this.queue[0]!.deferredUntil !== undefined) return;
 			const entry = this.queue.shift()!;
 			if (entry.settled) continue;
 			if (entry.expiresAt !== undefined && this.now() >= entry.expiresAt) {
@@ -264,10 +311,11 @@ export class SpeechArbiter {
 				continue;
 			}
 			const token = ++this.attemptToken;
+			// The speaker memoizes by key, so every replay needs a fresh one.
 			const pendingKey =
 				entry.kind === "cue"
 					? `${entry.businessId}:cue:${token}`
-					: `${entry.businessId}:attempt:${entry.attempts}`;
+					: `${entry.businessId}:attempt:${entry.attempts}${entry.deferrals ? `:defer:${entry.deferrals}` : ""}`;
 			this.active = { entry, pendingKey, token };
 			if (entry.revalidate) void this.validateAttempt(this.active);
 			else this.startAttempt(this.active);
@@ -312,8 +360,52 @@ export class SpeechArbiter {
 		const active = this.active;
 		if (!active || active.token !== token) return;
 		this.active = undefined;
-		this.settle(active.entry, outcome === "spoken" ? "spoken" : "failed");
+		const entry = active.entry;
+		if (outcome === "deferred" && !entry.retired) {
+			this.defer(entry);
+			this.requestPump();
+			return;
+		}
+		this.settle(
+			entry,
+			outcome === "spoken"
+				? "spoken"
+				: outcome === "deferred"
+					? "stale_dropped"
+					: "failed",
+		);
 		this.requestPump();
+	}
+
+	/** Park an entry the speaker could not take because it was not live. */
+	private defer(entry: QueueEntry): void {
+		if (!this.retryable(entry.kind)) {
+			this.settle(entry, "stale_dropped");
+			return;
+		}
+		entry.deferrals += 1;
+		if (entry.deferrals > this.maxDeferrals) {
+			void this.fallback(entry);
+			return;
+		}
+		entry.deferredUntil = this.now() + this.deferRetryMs;
+		this.queue.unshift(entry);
+		if (this.deferTimer !== undefined) this.cancelScheduled(this.deferTimer);
+		this.deferTimer = this.schedule(() => {
+			this.deferTimer = undefined;
+			for (const queued of this.queue) queued.deferredUntil = undefined;
+			this.requestPump();
+		}, this.deferRetryMs);
+	}
+
+	private hasDeferred(): boolean {
+		let found = false;
+		for (const entry of this.queue) {
+			if (entry.deferredUntil === undefined) continue;
+			entry.deferredUntil = undefined;
+			found = true;
+		}
+		return found;
 	}
 
 	private interruptActive(): void {

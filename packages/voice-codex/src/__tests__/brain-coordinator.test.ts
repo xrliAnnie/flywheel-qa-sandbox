@@ -46,6 +46,7 @@ function harness() {
 	const clock = new FakeClock();
 	const queued: BrainSpeechRequest[] = [];
 	const dropped: Array<{ businessId: string; kind: string }> = [];
+	const retired: Array<{ businessId: string; kind: string }> = [];
 	const coordinator = new BrainCoordinator({
 		now: () => clock.now,
 		schedule: clock.schedule,
@@ -58,9 +59,12 @@ function harness() {
 			drop: (businessId, kind) => {
 				dropped.push({ businessId, kind });
 			},
+			retire: (businessId, kind) => {
+				retired.push({ businessId, kind });
+			},
 		},
 	});
-	return { clock, coordinator, queued, dropped };
+	return { clock, coordinator, queued, dropped, retired };
 }
 
 describe("BrainCoordinator", () => {
@@ -253,7 +257,10 @@ describe("BrainCoordinator", () => {
 			outcome: "failed",
 			reasonCategory: "权限",
 		});
-		expect(h.dropped).toContainEqual({ businessId: "h1", kind: "cue" });
+		// FLY-2886 QA@4 D2: a playing cue is retired (left to finish), never
+		// cancelled — cancelling restarts the realtime generation.
+		expect(h.retired).toContainEqual({ businessId: "h1", kind: "cue" });
+		expect(h.dropped).not.toContainEqual({ businessId: "h1", kind: "cue" });
 		expect(h.queued.at(-1)).toMatchObject({
 			kind: "result",
 			text: "这件没查成：权限。",
@@ -271,6 +278,7 @@ it("validates background numbers against tool output, never the final answer or 
 				return "spoken";
 			},
 			drop: () => {},
+			retire: () => {},
 		},
 		postThread: async (request) => {
 			posted.push(request.text);
@@ -302,6 +310,7 @@ it("keeps unposted fallback material in unfinished minutes and makes no publicat
 				return "spoken";
 			},
 			drop: () => {},
+			retire: () => {},
 		},
 		postThread: async () => {
 			throw new Error("offline");
@@ -335,6 +344,7 @@ it("posts preserved text version before its pointer and retains pending result d
 				return "spoken";
 			},
 			drop: () => {},
+			retire: () => {},
 		},
 		postThread: () =>
 			new Promise<void>((resolve) => {

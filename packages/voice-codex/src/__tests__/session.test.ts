@@ -311,6 +311,57 @@ describe("GenericVoiceSession", () => {
 		}
 	});
 
+	// FLY-2886 QA@4 D2 (3/3 real sessions): the result arrived while the realtime
+	// generation was being replaced, speak was rejected not_live, and the result
+	// was dropped. It must be replayed once the new generation is live.
+	it("replays a background result the frontend deferred while the generation was being replaced", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		try {
+			const outcomes: Array<"deferred" | "confirmed"> = [
+				"deferred",
+				"confirmed",
+			];
+			const test = fixture({
+				coordinatedSpeech: true,
+				appendSpeech: async () => outcomes.shift() as never,
+			});
+			await test.session.start();
+			await test.session.markLive();
+			test.getFrontendHandlers().onBackgroundHandoff?.({
+				handoffId: "handoff-d2",
+				inputTranscript: "查 FLY-2886 的 PR",
+			});
+			test.getFrontendHandlers().onBackgroundTurnStarted?.("turn-d2");
+			test.getFrontendHandlers().onBackgroundTurnTerminal?.({
+				turnId: "turn-d2",
+				outcome: "completed",
+				spokenSegments: ["FLY-2886 在 PR #1360。"],
+				sources: [{ itemId: "tool", text: "FLY-2886 PR #1360" }],
+			});
+			await vi.advanceTimersByTimeAsync(800);
+			await vi.waitFor(() =>
+				expect(test.frontend.appendSpeech).toHaveBeenCalledTimes(1),
+			);
+			test.getFrontendHandlers().onGenerationChanged?.(2);
+			await vi.advanceTimersByTimeAsync(800);
+			await vi.waitFor(() =>
+				expect(test.frontend.appendSpeech).toHaveBeenCalledTimes(2),
+			);
+			const keys = test.frontend.appendSpeech.mock.calls.map(
+				(call) => (call as unknown as [{ speechId: string }])[0].speechId,
+			);
+			expect(keys[1]).not.toBe(keys[0]);
+			for (const call of test.frontend.appendSpeech.mock.calls)
+				expect(
+					(call as unknown as [{ spokenText: string }])[0].spokenText,
+				).toBe("FLY-2886 在 PR #1360。");
+			expect(test.postThread).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("routes an audio-attributed final exactly once with a deterministic transcript id", async () => {
 		const test = fixture();
 		await test.session.start();

@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AdmissionResidualRegistry } from "../codex/admission-residuals.js";
 import {
+	CAPABILITY_FEATURE_ARGV,
 	CODEX_VOICE_BINARY_SHA256,
 	CODEX_VOICE_BINARY_VERSION,
 	CodexVoiceContainer,
@@ -182,6 +183,7 @@ class FakeProcess implements CodexVoiceProcess {
 								"memories",
 								"apps",
 								"plugins",
+								"remote_plugin",
 								"browser_use",
 								"computer_use",
 								"multi_agent",
@@ -563,6 +565,86 @@ describe("Codex voice container", () => {
 		await opened.close();
 	});
 
+	// FLY-2886 QA@4 D2: a realtime generation restart (barge-in) re-ran the full
+	// capability self-check; skills drift failed it and took the whole session
+	// down with the result undelivered. A restart only re-proves the lease.
+	it("restarts a background session without re-running the capability self-check, even when it would now fail", async () => {
+		const h = harness();
+		const opened = await h.container.open({
+			sessionId: "session-restart-drift",
+			voice: "marin",
+			loadContext: async () => context("session-restart-drift"),
+			background: {
+				enabled: true,
+				onTurnStarted: vi.fn(),
+				onTurnTerminal: vi.fn(),
+			},
+		});
+		const capability = h.processes[0]!;
+		const admissionRequests = capability.requests.length;
+		const skillsChecks = h.parent.verifyEffectiveSkills.mock.calls.length;
+		const configChecks = h.parent.verifyEffectiveConfig.mock.calls.length;
+		const leaseChecks = h.parent.assertCurrent.mock.calls.length;
+		h.parent.verifyEffectiveSkills.mockRejectedValue(
+			new Error("capability_skills_unverified"),
+		);
+		mkdirSync(
+			join(
+				h.factoryOptions[0]!.codexHome,
+				"plugins",
+				"cache",
+				"openai-curated-remote",
+			),
+			{ recursive: true },
+		);
+		await expect(opened.restart()).resolves.toBe(2);
+		expect(h.parent.verifyEffectiveSkills).toHaveBeenCalledTimes(skillsChecks);
+		expect(h.parent.verifyEffectiveConfig).toHaveBeenCalledTimes(configChecks);
+		expect(h.parent.assertCurrent.mock.calls.length).toBeGreaterThan(
+			leaseChecks,
+		);
+		expect(
+			capability.requests
+				.slice(admissionRequests)
+				.map((row) => row.method)
+				.filter((method) =>
+					["skills/list", "config/read", "mcpServerStatus/list"].includes(
+						method,
+					),
+				),
+		).toEqual([]);
+		// The drift is reported, not fatal.
+		expect(h.evidence).toContainEqual(
+			expect.objectContaining({
+				kind: "codex_capability_plugins_observed",
+				generation: 2,
+			}),
+		);
+		const prompts = capability.requests
+			.filter((row) => row.method === "thread/realtime/start")
+			.map((row) => (row.params as { prompt: string }).prompt);
+		expect(prompts).toHaveLength(2);
+		expect(prompts[1]).toContain("后台工具类别：GitHub、Linear");
+		await opened.close();
+	});
+
+	it("still fails a restart closed when the lease is no longer current", async () => {
+		const h = harness();
+		const opened = await h.container.open({
+			sessionId: "session-restart-lease",
+			voice: "marin",
+			loadContext: async () => context("session-restart-lease"),
+			background: {
+				enabled: true,
+				onTurnStarted: vi.fn(),
+				onTurnTerminal: vi.fn(),
+			},
+		});
+		h.parent.assertCurrent.mockRejectedValue(new Error("lease_fenced"));
+		await expect(opened.restart()).rejects.toThrow("lease_fenced");
+		await opened.close();
+	});
+
 	it("uses durable context generation after process recreation and never reuses failed start generations", async () => {
 		const h = harness();
 		const loadContext = vi.fn(async (generation?: number) => ({
@@ -645,10 +727,20 @@ describe("Codex voice container", () => {
 			capabilityModelEnv: h.parent.capabilityModelEnv,
 			cwd: h.parent.cwd,
 		});
-		// Only managed MCP servers: ChatGPT apps are switched off (FLY-2886 real host).
-		expect(h.factoryOptions[0]!.mcpArgv.slice(-2)).toEqual([
+		// Only managed MCP servers: ChatGPT apps are switched off (FLY-2886 real
+		// host), and so is the plugin system — on the real host Codex installed
+		// openai-curated-remote plugins mid-session, whose skills then failed the
+		// restart self-check (QA@4 D2/D3).
+		expect(CAPABILITY_FEATURE_ARGV).toEqual([
 			"-c",
 			"features.apps=false",
+			"-c",
+			"features.plugins=false",
+			"-c",
+			"features.remote_plugin=false",
+		]);
+		expect(h.factoryOptions[0]!.mcpArgv.slice(-6)).toEqual([
+			...CAPABILITY_FEATURE_ARGV,
 		]);
 		expect(h.processes[0]!.threadParams).toMatchObject({
 			permissions: "flywheel-lead-v2",
@@ -693,6 +785,9 @@ describe("Codex voice container", () => {
 		"scribe_tool",
 		"permission_profile",
 		"scribe_probe_failed",
+		"plugins_enabled",
+		"remote_plugin_enabled",
+		"plugin_cache_present",
 	] as const)(
 		"degrades on enabled admission drift %s: revokes, reports, reaps, closes, then opens foreground",
 		async (drift) => {
@@ -704,7 +799,38 @@ describe("Codex voice container", () => {
 							process.threadId,
 							process.options.cwd,
 						);
+					if (drift === "plugin_cache_present" && capability)
+						mkdirSync(
+							join(
+								process.options.codexHome,
+								"plugins",
+								"cache",
+								"openai-curated-remote",
+								"github",
+							),
+							{ recursive: true },
+						);
 					process.requestHook = (method) => {
+						if (
+							method === "config/read" &&
+							capability &&
+							(drift === "plugins_enabled" || drift === "remote_plugin_enabled")
+						)
+							return Promise.resolve({
+								result: {
+									config: {
+										features: {
+											plugins: drift === "plugins_enabled",
+											remote_plugin: drift === "remote_plugin_enabled",
+										},
+										mcp_servers: {
+											flywheel_lead_capabilities: {
+												enabled_tools: ["lead_operation"],
+											},
+										},
+									},
+								},
+							});
 						if (
 							method === "account/read" &&
 							((drift === "background_api_account" && capability) ||

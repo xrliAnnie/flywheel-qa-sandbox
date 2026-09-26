@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
 import { getEncoding } from "js-tiktoken";
+import { z } from "zod";
+import { LEAD_ACTIONS_MCP_SERVER_NAME } from "../lead-backends/codex/lead-actions/mcp-config.js";
+import { getLeadCapability } from "./catalog.js";
 import type { LeadCapabilityManifest } from "./manifest.js";
 
 interface VoiceBriefSnapshot {
@@ -40,6 +43,65 @@ const countTokens = (text: string) => {
 	tokenizer ??= getEncoding("o200k_base");
 	return tokenizer.encode(text).length;
 };
+
+/** One compact `{field: type, optional?: type}` line from the catalog schema. */
+function inputShape(schema: z.ZodType): string {
+	let json: Record<string, unknown>;
+	try {
+		json = z.toJSONSchema(schema, { unrepresentable: "any" }) as Record<
+			string,
+			unknown
+		>;
+	} catch {
+		return "{…}";
+	}
+	const properties = (json.properties ?? {}) as Record<
+		string,
+		Record<string, unknown>
+	>;
+	const required = new Set((json.required as string[] | undefined) ?? []);
+	const type = (value: Record<string, unknown>): string => {
+		const values = value.enum as unknown[] | undefined;
+		if (Array.isArray(values) && values.length <= 8)
+			return values.map((entry) => JSON.stringify(entry)).join("|");
+		if (value.const !== undefined) return JSON.stringify(value.const);
+		if (value.type === "array") {
+			const items = value.items as Record<string, unknown> | undefined;
+			return `${items ? type(items) : "any"}[]`;
+		}
+		if (typeof value.type === "string") return value.type;
+		return "any";
+	};
+	return `{${Object.entries(properties)
+		.map(
+			([name, value]) =>
+				`${name}${required.has(name) ? "" : "?"}: ${type(value)}`,
+		)
+		.join(", ")}}`;
+}
+
+/**
+ * How the background agent acts (FLY-2886 QA@4 D1). The background model is
+ * code-mode-only and Codex defers MCP tools there: `exec` lists lead_operation
+ * only as `{name, description}`, never its input schema. Without this contract
+ * and catalog the agent finds the tool and still cannot call it.
+ */
+function leadOperationGuide(operationIds: readonly string[]): string {
+	const tool = `mcp__${LEAD_ACTIONS_MCP_SERVER_NAME}__lead_operation`;
+	const lines = operationIds.flatMap((id) => {
+		const operation = getLeadCapability(id);
+		if (!operation || operation.classification === "reserved") return [];
+		return [
+			`- ${id} [${operation.classification}] ${inputShape(operation.inputSchema)}`,
+		];
+	});
+	return [
+		"# Lead operations — how to act",
+		`Every read and write goes through lead_operation. In code mode it is a deferred nested tool (listed in ALL_TOOLS as ${tool}); call it inside exec as \`const r = await tools.${tool}({ schemaVersion: 1, operationId: "<id>", requestId: "<a new UUID v4 you write out>", input: { ... } }); text(r);\`. If it is offered as a direct tool, pass the same object. Use one new requestId per request and reuse it only to retry that same request. The result text is JSON {requestId, status, resourceRefs, data?, errorCode?}. Do not tell the founder a capability is missing before trying the matching operation below.`,
+		"Admitted operations for this session (id [kind] {input; ? = optional}):",
+		...(lines.length > 0 ? lines : ["- none admitted"]),
+	].join("\n");
+}
 
 /** Call only after the actual child config, skills and tools have been admitted. */
 export function bindAdmittedVoiceCapabilities<T extends VoiceBriefSnapshot>(
@@ -116,7 +178,13 @@ export function bindAdmittedVoiceCapabilities<T extends VoiceBriefSnapshot>(
 	realtimeBody = placeholder.test(realtimeBody)
 		? realtimeBody.replace(placeholder, section)
 		: `${realtimeBody}\n\n${section}`;
-	const baseBody = snapshot.baseInstructions.slice(originalHeader.length);
+	const callable = manifest.operationIds.filter((id) => {
+		const family = id.split(".")[0]!;
+		if (family === "browser" && !browser) return false;
+		const owner = FAMILY_INTEGRATION[family];
+		return !(owner && unavailableIds.has(owner));
+	});
+	const baseBody = `${snapshot.baseInstructions.slice(originalHeader.length)}\n\n${leadOperationGuide(callable)}`;
 	const digest = () =>
 		createHash("sha256")
 			.update(

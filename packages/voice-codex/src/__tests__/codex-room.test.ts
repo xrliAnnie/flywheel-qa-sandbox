@@ -231,6 +231,34 @@ describe("Codex room composition", () => {
 		await frontend.stop();
 	});
 
+	it("reports a not-live rejection as deferred so the result is replayed, not dropped (FLY-2886 QA@4 D2)", async () => {
+		const receipts = [
+			{ outcome: "rejected", reason: "not_live", transport: "none" },
+			{ outcome: "rejected", reason: "busy", transport: "none" },
+			{ outcome: "failed", reason: "speech_interrupted", transport: "none" },
+		];
+		const speak = vi.fn(async () => receipts.shift());
+		const session = { ...conversation(), speak };
+		const frontend = new CodexRoomFrontend({
+			backend: backend(async () => session as never),
+			conversationOptions: { brain },
+			allowSpokenParaphrase: true,
+			onUnavailable: vi.fn(),
+		});
+		await frontend.start();
+		const speech = (speechId: string) =>
+			frontend.appendSpeech({
+				speechId,
+				spokenText: "FLY-2886 的 PR #1360 还在评审。",
+				expectedTokens: [],
+				generationBudgetMs: 20000,
+			});
+		await expect(speech("p1")).resolves.toBe("deferred");
+		await expect(speech("p2")).resolves.toBe("failed");
+		await expect(speech("p3")).resolves.toBe("failed");
+		await frontend.stop();
+	});
+
 	it("reads the admitted background state per speech: degraded keeps verbatim proof (FLY-2886 §14.2)", async () => {
 		const rewriteSpeech = vi.fn();
 		const speak = vi.fn(async () => ({ outcome: "completed" }));

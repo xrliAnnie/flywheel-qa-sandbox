@@ -73,7 +73,9 @@ interface FrontendLike {
 	appendAudio(frame: Buffer, metadata: RealtimeAudioOwner): void;
 	appendSpeech(
 		speech: PreparedSpeech,
-	): Promise<void> | Promise<"confirmed" | "unconfirmed" | "failed">;
+	):
+		| Promise<void>
+		| Promise<"confirmed" | "unconfirmed" | "failed" | "deferred">;
 	cancelSpeech(speechId: string): void;
 	stop(): Promise<void>;
 }
@@ -137,7 +139,9 @@ function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
 	};
 }
 
-type SpeechReceipt = "confirmed" | "unconfirmed" | "failed";
+type PublicSpeechReceipt = "confirmed" | "unconfirmed" | "failed";
+/** `deferred` is internal: the speech arbiter replays it (FLY-2886 QA@4 D2). */
+type SpeechReceipt = PublicSpeechReceipt | "deferred";
 
 export class GenericVoiceSession implements ActiveVoiceSession {
 	private readonly frontend: FrontendLike;
@@ -250,7 +254,10 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 			this.speechArbiter = new SpeechArbiter({
 				now: () => this.now().getTime(),
 				speak: async ({ text, pendingKey }) => {
-					const businessId = pendingKey.replace(/:attempt:\d+$/u, "");
+					const businessId = pendingKey.replace(
+						/:attempt:\d+(?::defer:\d+)?$/u,
+						"",
+					);
 					const template = this.coordinatedSpeech.get(businessId) ?? {
 						speechId: pendingKey,
 						spokenText: text,
@@ -265,7 +272,11 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 						speechId: pendingKey,
 						spokenText: text,
 					});
-					return outcome === "confirmed" ? "spoken" : "failed";
+					return outcome === "confirmed"
+						? "spoken"
+						: outcome === "deferred"
+							? "deferred"
+							: "failed";
 				},
 				cancelSpeech: (pendingKey) => this.cancelPendingSpeech(pendingKey),
 				postThread: options.speechCoordination.postThread,
@@ -588,7 +599,7 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 		return this.options.speechCoordination?.active?.() ?? true;
 	}
 
-	async speak(speech: PreparedSpeech): Promise<SpeechReceipt> {
+	async speak(speech: PreparedSpeech): Promise<PublicSpeechReceipt> {
 		if (this.speechArbiter && this.coordinationActive()) {
 			this.coordinatedSpeech.set(speech.speechId, speech);
 			try {
@@ -607,7 +618,8 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 				this.coordinatedSpeech.delete(speech.speechId);
 			}
 		}
-		return this.speakNow(speech);
+		const receipt = await this.speakNow(speech);
+		return receipt === "deferred" ? "failed" : receipt;
 	}
 
 	private async speakNow(speech: PreparedSpeech): Promise<SpeechReceipt> {

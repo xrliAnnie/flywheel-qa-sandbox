@@ -131,6 +131,58 @@ describe("admitted capability opening brief", () => {
 		expect(completed.realtimePrompt).toContain("这场没有浏览器工具");
 		expect(completed.realtimePrompt).not.toMatch(/founder Chrome/u);
 	});
+	// FLY-2886 QA@4 D1: the background model (gpt-6-astra) is code-mode-only and
+	// Codex defers MCP tools, so `exec` shows lead_operation as a bare
+	// {name, description} — no input schema. 3/3 real sessions found the tool and
+	// still said "no PR query entry". The call contract and the admitted operation
+	// catalog must therefore be in the background instructions themselves.
+	it("gives the background agent the lead_operation call contract and the admitted operation catalog", () => {
+		const completed = bindAdmittedVoiceCapabilities(snapshot(), {
+			...manifest,
+			operationIds: [
+				"github.pr.view",
+				"linear.issue.get",
+				"linear.issue.update",
+				"bridge.read",
+				"browser.list_pages",
+			],
+			deniedOperationIds: ["bridge.merge", "bridge.ship"],
+			unavailableIntegrations: [],
+		});
+		const background = completed.baseInstructions;
+		expect(background).toContain("tools.mcp__lead_actions__lead_operation(");
+		expect(background).toContain("schemaVersion: 1");
+		expect(background).toMatch(/requestId: "<[^>]*UUID[^>]*>"/u);
+		expect(background).toContain("ALL_TOOLS");
+		for (const id of [
+			"github.pr.view",
+			"linear.issue.get",
+			"linear.issue.update",
+			"bridge.read",
+		])
+			expect(background).toMatch(
+				new RegExp(
+					`^- ${id.replaceAll(".", "\\.")} \\[(read|write)\\] \\{`,
+					"mu",
+				),
+			);
+		// Input fields come from the catalog schema, required vs optional marked.
+		expect(background).toMatch(
+			/^- linear\.issue\.get \[read\] \{[^}]*\bissueId\b/mu,
+		);
+		expect(background).toMatch(/^- linear\.issue\.update \[write\] \{/mu);
+		// Browser is off for this session: its operations are not advertised, and
+		// reserved/denied actions are never presented as callable.
+		expect(background).not.toMatch(/^- browser\./mu);
+		expect(background).not.toMatch(/^- bridge\.(merge|ship) /mu);
+		// The realtime brief stays within its own budget and carries no catalog.
+		expect(completed.realtimePrompt).not.toContain(
+			"mcp__lead_actions__lead_operation",
+		);
+		expect(completed.measurements.baseInstructions.bytes).toBe(
+			Buffer.byteLength(background),
+		);
+	});
 	it("adds no line when every integration is connected", () => {
 		const completed = bindAdmittedVoiceCapabilities(snapshot(), {
 			...manifest,

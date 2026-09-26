@@ -147,7 +147,7 @@ export class CodexRoomFrontend {
 
 	async appendSpeech(
 		speech: PreparedSpeech,
-	): Promise<"confirmed" | "unconfirmed" | "failed"> {
+	): Promise<"confirmed" | "unconfirmed" | "failed" | "deferred"> {
 		const session = this.requireSession();
 		if (!session.speak) return "failed";
 		const receipt = await session.speak(speech.spokenText, "readback", {
@@ -155,6 +155,14 @@ export class CodexRoomFrontend {
 			verification: this.allowParaphrase() ? "best_effort" : "required",
 		});
 		if (receipt.outcome === "completed") return "confirmed";
+		// The realtime generation is being replaced; nothing was spoken. The
+		// caller replays it once live instead of dropping it (FLY-2886 QA@4 D2).
+		if (
+			receipt.outcome === "rejected" &&
+			"reason" in receipt &&
+			receipt.reason === "not_live"
+		)
+			return "deferred";
 		return receipt.outcome === "failed" && receipt.transport !== "none"
 			? "unconfirmed"
 			: "failed";

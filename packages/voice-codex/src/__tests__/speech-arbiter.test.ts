@@ -269,6 +269,163 @@ describe("SpeechArbiter", () => {
 		});
 		await expect(terminal).resolves.toBe("fallback_posted");
 	});
+
+	// FLY-2886 QA@4 D2: a result that lands while the realtime generation is being
+	// replaced is rejected `not_live`; it must be replayed once the new generation
+	// is live, never silently dropped.
+	it("replays a result the speaker deferred as not-live once the new generation is live, with a fresh key", async () => {
+		const clock = new FakeClock();
+		const outcomes: Array<"deferred" | "spoken"> = ["deferred", "spoken"];
+		const speak = vi.fn(
+			async (_request: { text: string; pendingKey: string }) =>
+				outcomes.shift() ?? ("spoken" as const),
+		);
+		const arbiter = new SpeechArbiter({
+			now: () => clock.now,
+			schedule: clock.schedule,
+			cancelScheduled: clock.cancel,
+			speak,
+			cancelSpeech: vi.fn(),
+		});
+		const terminal = arbiter.enqueue({
+			businessId: "turn:t1:result:0",
+			kind: "result",
+			text: "FLY-2886 的 PR #1360 还在评审。",
+		});
+		clock.advance(800);
+		await settle();
+		expect(speak).toHaveBeenCalledTimes(1);
+		expect(speak).toHaveBeenLastCalledWith({
+			text: "FLY-2886 的 PR #1360 还在评审。",
+			pendingKey: "turn:t1:result:0:attempt:0",
+		});
+		arbiter.generationChanged(2);
+		clock.advance(800);
+		await settle();
+		expect(speak).toHaveBeenCalledTimes(2);
+		expect(speak).toHaveBeenLastCalledWith({
+			text: "FLY-2886 的 PR #1360 还在评审。",
+			pendingKey: "turn:t1:result:0:attempt:0:defer:1",
+		});
+		await expect(terminal).resolves.toBe("spoken");
+	});
+
+	it("keeps retrying a deferred result on its own clock and falls back to the thread when the session never comes back", async () => {
+		const clock = new FakeClock();
+		const speak = vi.fn(async () => "deferred" as const);
+		const postThread = vi.fn(async () => undefined);
+		const arbiter = new SpeechArbiter({
+			now: () => clock.now,
+			schedule: clock.schedule,
+			cancelScheduled: clock.cancel,
+			speak,
+			cancelSpeech: vi.fn(),
+			postThread,
+		});
+		const terminal = arbiter.enqueue({
+			businessId: "turn:t2:result:0",
+			kind: "result",
+			text: "FLY-2886 已合并。",
+			threadText: "FLY-2886 已合并。",
+		});
+		for (let step = 0; step < 80; step += 1) {
+			clock.advance(1_000);
+			await settle();
+		}
+		// One first attempt plus the default 30 deferred replays, each with a fresh
+		// key; the thread pointer spoken after the fallback is not a result attempt.
+		const keys = (speak.mock.calls as unknown as [{ pendingKey: string }][])
+			.map(([request]) => request.pendingKey)
+			.filter((key) => key.startsWith("turn:t2:result:0:attempt:0"));
+		expect(keys).toHaveLength(31);
+		expect(new Set(keys).size).toBe(31);
+		expect(postThread).toHaveBeenCalledWith({
+			businessId: "turn:t2:result:0",
+			text: "FLY-2886 已合并。",
+		});
+		await expect(terminal).resolves.toBe("fallback_posted");
+	});
+
+	it("never replays a deferred cue: a waiting phrase that missed its moment is dropped", async () => {
+		const clock = new FakeClock();
+		const speak = vi.fn(async () => "deferred" as const);
+		const arbiter = new SpeechArbiter({
+			now: () => clock.now,
+			schedule: clock.schedule,
+			cancelScheduled: clock.cancel,
+			speak,
+			cancelSpeech: vi.fn(),
+		});
+		const terminal = arbiter.enqueue({
+			businessId: "handoff-9",
+			kind: "cue",
+			text: "还在查",
+		});
+		clock.advance(800);
+		await settle();
+		arbiter.generationChanged(2);
+		clock.advance(5_000);
+		await settle();
+		expect(speak).toHaveBeenCalledTimes(1);
+		await expect(terminal).resolves.toBe("stale_dropped");
+	});
+
+	// FLY-2886 QA@4 D2: the result arriving must not cancel a waiting cue that is
+	// already playing — cancelling it restarts the realtime generation (a
+	// self-inflicted barge-in). The cue finishes, then the result plays.
+	it("lets an already-playing cue finish when its obligation settles, then plays the result", async () => {
+		const clock = new FakeClock();
+		let finishCue!: (outcome: "spoken") => void;
+		const speak = vi.fn((request: { text: string; pendingKey: string }) =>
+			request.text === "还在查"
+				? new Promise<"spoken">((resolve) => {
+						finishCue = resolve;
+					})
+				: Promise.resolve("spoken" as const),
+		);
+		const cancelSpeech = vi.fn();
+		const arbiter = new SpeechArbiter({
+			now: () => clock.now,
+			schedule: clock.schedule,
+			cancelScheduled: clock.cancel,
+			speak,
+			cancelSpeech,
+		});
+		const cue = arbiter.enqueue({
+			businessId: "handoff-1",
+			kind: "cue",
+			text: "还在查",
+		});
+		const queuedCue = arbiter.enqueue({
+			businessId: "handoff-1",
+			kind: "cue",
+			text: "还在查，快好了",
+		});
+		clock.advance(800);
+		await settle();
+		expect(speak).toHaveBeenCalledTimes(1);
+		arbiter.retire("handoff-1", "cue");
+		const result = arbiter.enqueue({
+			businessId: "turn:t1:result:0",
+			kind: "result",
+			text: "FLY-2886 的 PR #1360 还在评审。",
+		});
+		await expect(queuedCue).resolves.toBe("stale_dropped");
+		expect(cancelSpeech).not.toHaveBeenCalled();
+		clock.advance(800);
+		await settle();
+		expect(speak).toHaveBeenCalledTimes(1);
+		finishCue("spoken");
+		await settle();
+		await expect(cue).resolves.toBe("spoken");
+		clock.advance(800);
+		await settle();
+		expect(speak).toHaveBeenLastCalledWith({
+			text: "FLY-2886 的 PR #1360 还在评审。",
+			pendingKey: "turn:t1:result:0:attempt:0",
+		});
+		await expect(result).resolves.toBe("spoken");
+	});
 });
 
 it("exports queued and interrupted playback snapshots before close mutates the queue", async () => {

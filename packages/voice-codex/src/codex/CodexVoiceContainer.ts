@@ -73,6 +73,13 @@ const CLOSE_RPC_TIMEOUT_MS = 5_000;
 export const CAPABILITY_FEATURE_ARGV = Object.freeze([
 	"-c",
 	"features.apps=false",
+	// FLY-2886 QA@4 D3: on the real host a subscription account installed four
+	// openai-curated-remote plugins into the capability home mid-session; their
+	// skills are not Lead capabilities and broke the skills admission proof.
+	"-c",
+	"features.plugins=false",
+	"-c",
+	"features.remote_plugin=false",
 ]);
 
 const execFileAsync = promisify(execFile);
@@ -385,9 +392,26 @@ async function assertTools(
 	}
 }
 
+/** Whether Codex has materialized any plugin into this home. */
+async function hasPluginCache(codexHome: string): Promise<boolean> {
+	try {
+		await lstat(join(codexHome, "plugins"));
+		return true;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+		throw error;
+	}
+}
+
+/**
+ * Full admission proof, run once before a background thread exists: the plugin
+ * system is off and nothing was installed, then subscription, config, skills
+ * and the exact managed tool set.
+ */
 async function assertCapabilityProcess(
 	process: CodexVoiceProcess,
 	parent: VoiceCapabilityParent,
+	codexHome: string,
 ): Promise<void> {
 	await parent.assertCurrent();
 	await assertSubscription(process);
@@ -397,6 +421,13 @@ async function assertCapabilityProcess(
 	});
 	const config = asRecord(configResult.config);
 	if (!config || config.forced_login_method === "api")
+		throw new CodexVoiceContainerError("codex_profile_mismatch");
+	const features = asRecord(config.features);
+	if (
+		features?.plugins !== false ||
+		features.remote_plugin !== false ||
+		(await hasPluginCache(codexHome))
+	)
 		throw new CodexVoiceContainerError("codex_profile_mismatch");
 	await parent.verifyEffectiveConfig(config);
 	const skills = await readRpc(process, "skills/list", {
@@ -964,6 +995,8 @@ interface AdmittedBackground {
 	writer: ScriptWriter;
 	/** The opening brief bound to the admitted manifest. */
 	snapshot: CodexVoiceContextSnapshot;
+	/** The capability process's CODEX_HOME (drift observation on restart). */
+	codexHome: string;
 }
 
 export class CodexVoiceContainer {
@@ -1303,8 +1336,18 @@ export class CodexVoiceContainer {
 					if (!contextIsFresh(snapshot, this.now()))
 						throw new CodexVoiceContainerError("context_stale");
 					assertContext(snapshot, input.sessionId, !!admitted);
-					if (parent) {
-						await assertCapabilityProcess(process, parent);
+					if (parent && admitted) {
+						// A generation restart re-proves only the lease. The full
+						// capability proof ran at admission; re-running it here turned
+						// any later drift into a dead session with the result lost
+						// (FLY-2886 QA@4 D2). Drift is reported instead.
+						await parent.assertCurrent();
+						if (await hasPluginCache(admitted.codexHome).catch(() => true))
+							this.evidence({
+								kind: "codex_capability_plugins_observed",
+								sessionId: input.sessionId,
+								generation,
+							});
 						snapshot = bindAdmittedVoiceCapabilities(snapshot, parent.manifest);
 						assertContext(snapshot, input.sessionId, true);
 					}
@@ -1488,7 +1531,7 @@ export class CodexVoiceContainer {
 				const admitting = guardAdmissionProcess(process, scope);
 				await admitting.start();
 				scope.assertActive();
-				await assertCapabilityProcess(admitting, parent);
+				await assertCapabilityProcess(admitting, parent, home);
 				scope.assertActive();
 				const bound = bindAdmittedVoiceCapabilities(snapshot, parent.manifest);
 				assertContext(bound, input.sessionId, true);
@@ -1564,6 +1607,7 @@ export class CodexVoiceContainer {
 					scribe,
 					writer,
 					snapshot: bound,
+					codexHome: home,
 				};
 			},
 		);
