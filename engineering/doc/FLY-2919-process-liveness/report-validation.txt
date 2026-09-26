@@ -5,4 +5,4 @@ PASS plan precise test paths exist except its two explicitly new tests.
 PASS 7 sections / 7 comment inputs; one nonced script; no inline handlers/external assets/CSP override.
 PASS VM: section labels, raw user text, pathname storage isolation/reload, 1800-codepoint chunks, repeated exact summary marker, clipboard success/absent/rejected fallback, denied storage.
 LIMIT: VM controller verification only, not browser visual QA. Mermaid renders failed after required retry; render-evidence.txt records attempts.
-Hosted HTTP/source/CSP verification remains pending approved review and publication.
+PASS hosted HTTP 200, zero placeholder, matching script/CSP nonce, no external assets, exact committed source after publisher nonce/CSP/robots normalization; publication-receipt.json records URL and hashes.
