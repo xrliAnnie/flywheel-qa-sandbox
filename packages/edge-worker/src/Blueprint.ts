@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -37,6 +38,7 @@ import {
 	BACKEND_SKILL_ASSEMBLY,
 	captureRepositoryBaselineSet,
 	commDbPathForProject,
+	compileRunnerPrefixProfile,
 	DEFAULT_GATE_TIMEOUT_MS,
 	defaultAgentsSkillsDir,
 	isRunnerMemoryMode,
@@ -1380,6 +1382,16 @@ export class Blueprint {
 			claudePluginAssembly && skillFrameworkMode === "matt"
 				? [MATT_SKILLS_PLUGIN_KEY]
 				: [];
+		// FLY-2913: compile the pinned role-v1 prefix once the arm is final and
+		// before any worktree side effect. Claude-only; absent ⇒ legacy launch.
+		const prefixProfile =
+			backend === "claude-tmux" && ctx.runnerMcpProfile?.prefix
+				? compileRunnerPrefixProfile({
+						request: ctx.runnerMcpProfile.prefix,
+						home: homedir(),
+						skillArm: skillFrameworkMode,
+					})
+				: undefined;
 		const startTime = Date.now();
 		const executionId = env.executionId;
 		let cwd = projectRoot;
@@ -3097,6 +3109,7 @@ export class Blueprint {
 								]
 							: undefined,
 				}),
+				...(prefixProfile && { prefixProfile }),
 				...(!ctx.runnerMcpProfile && modeDisabledPlugins.length > 0
 					? {
 							disabledPlugins: modeDisabledPlugins,

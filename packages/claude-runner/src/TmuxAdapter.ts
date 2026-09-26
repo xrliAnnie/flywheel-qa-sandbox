@@ -8,6 +8,7 @@ import {
 	readFileSync,
 	realpathSync,
 	renameSync,
+	rmSync,
 	unlinkSync,
 	watch,
 	writeFileSync,
@@ -351,6 +352,45 @@ export interface RunnerSpawnTransport {
 		permissionMode?: string;
 		[key: string]: unknown;
 	}): { args: string[]; env: Record<string, string> };
+}
+
+/**
+ * FLY-2913: atomically write the secret-free role-v1 launch stamp (0600 file in
+ * a 0700 runner-state directory). Returns false — and the caller launches with
+ * the legacy settings — when the stamp cannot be made durable.
+ */
+function persistRunnerPrefixStamp(
+	ctx: AdapterExecutionContext,
+	sessionId: string,
+	profile: NonNullable<AdapterExecutionContext["prefixProfile"]>,
+): boolean {
+	const dir = join(homedir(), ".flywheel", "runner-state", ctx.executionId);
+	const target = join(dir, "prefix-profile.json");
+	const temp = `${target}.${process.pid}.${randomUUID()}.tmp`;
+	try {
+		mkdirSync(dir, { recursive: true, mode: 0o700 });
+		chmodSync(dir, 0o700);
+		writeFileSync(
+			temp,
+			`${JSON.stringify({
+				...profile.stamp,
+				executionId: ctx.executionId,
+				...(ctx.workflowActivationId && {
+					activationId: ctx.workflowActivationId,
+				}),
+				sessionId,
+			})}\n`,
+			{ encoding: "utf-8", mode: 0o600, flag: "wx" },
+		);
+		renameSync(temp, target);
+		return true;
+	} catch (err) {
+		rmSync(temp, { force: true });
+		console.warn(
+			`[TmuxAdapter] FLY-2913 prefix-profile stamp write failed for ${ctx.executionId} (${(err as Error).message}); launching with the legacy settings`,
+		);
+		return false;
+	}
 }
 
 export class TmuxAdapter implements IAdapter {
@@ -1760,10 +1800,19 @@ export class TmuxAdapter implements IAdapter {
 			hooks.PreToolUse = [{ matcher: "*", hooks: [guardHook] }];
 		}
 		const usageSettings = Object.keys(hooks).length > 0 ? { hooks } : undefined;
+		// FLY-2913: the role-v1 profile is the FIRST source so the skill arm,
+		// opt-ins, memory, hooks and forced denies all merge over it. It is only
+		// applied once its stamp is durable; otherwise the launch stays legacy.
+		const prefixSettings =
+			ctx.prefixProfile &&
+			persistRunnerPrefixStamp(ctx, sessionId, ctx.prefixProfile)
+				? ctx.prefixProfile.settings
+				: undefined;
 		args.push(
 			"--settings",
 			JSON.stringify(
 				buildNonLeadClaudeSettings(
+					prefixSettings,
 					{ enabledPlugins },
 					memorySettings,
 					usageSettings,

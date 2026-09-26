@@ -11,7 +11,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { resolveAllowedCanonicalModel } from "flywheel-config";
 import {
@@ -1235,6 +1235,124 @@ describe("TmuxAdapter", () => {
 		expect(settings.enabledPlugins).toMatchObject({
 			"discord@flywheel-plugins": false,
 			"discord@claude-plugins-official": false,
+		});
+	});
+
+	describe("FLY-2913 role-v1 prefix profile", () => {
+		const ORIGINAL_HOME = process.env.HOME;
+		let tmpHome: string;
+		beforeEach(() => {
+			tmpHome = mkdtempSync(join(tmpdir(), "fly2913-home-"));
+			process.env.HOME = tmpHome;
+		});
+		afterEach(() => {
+			if (ORIGINAL_HOME === undefined) delete process.env.HOME;
+			else process.env.HOME = ORIGINAL_HOME;
+			rmSync(tmpHome, { recursive: true, force: true });
+		});
+		const prefixProfile = {
+			settings: {
+				skillOverrides: { "gemini-image": "off" },
+				claudeMdExcludes: ["/Users/fixture/.claude/rules/gog.md"],
+				permissions: { deny: ["Agent(belle-lead)"] },
+			},
+			profileDigest: "f".repeat(64),
+			stamp: {
+				version: 1,
+				mode: "role-v1",
+				role: "implement",
+				profileDigest: "f".repeat(64),
+			},
+		};
+		const settingsOf = (args: string[]) =>
+			JSON.parse(args[args.indexOf("--settings") + 1] as string) as Record<
+				string,
+				unknown
+			>;
+		const stampPath = () =>
+			join(
+				tmpHome,
+				".flywheel",
+				"runner-state",
+				"test-exec-1",
+				"prefix-profile.json",
+			);
+
+		it("merges the profile into the single settings flag before arm opt-ins and forced denies", async () => {
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			await new TmuxAdapter("flywheel", fn, 10).execute(
+				makeCtx({
+					prefixProfile,
+					disabledPlugins: ["superpowers@superpowers-dev"],
+					enabledPluginsExtra: [
+						"matt-skills@matt-skills",
+						"discord@flywheel-plugins",
+					],
+				}),
+			);
+			const args = calls.find((c) => c.args[0] === "new-window")!.args;
+			expect(args.filter((a) => a === "--settings")).toHaveLength(1);
+			expect(settingsOf(args)).toEqual({
+				...prefixProfile.settings,
+				enabledPlugins: {
+					"superpowers@superpowers-dev": false,
+					"matt-skills@matt-skills": true,
+					"discord@flywheel-plugins": false,
+					"discord@claude-plugins-official": false,
+				},
+			});
+			expect(args).not.toContain("--tools");
+		});
+
+		it("persists a private, secret-free launch stamp bound to the session", async () => {
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			await new TmuxAdapter("flywheel", fn, 10).execute(
+				makeCtx({ prefixProfile, workflowActivationId: "activation:test" }),
+			);
+			const args = calls.find((c) => c.args[0] === "new-window")!.args;
+			const sessionId = args[args.indexOf("--session-id") + 1];
+			const stamp = JSON.parse(readFileSync(stampPath(), "utf-8"));
+			expect(stamp).toEqual({
+				...prefixProfile.stamp,
+				executionId: "test-exec-1",
+				activationId: "activation:test",
+				sessionId,
+			});
+			expect(statSync(stampPath()).mode & 0o777).toBe(0o600);
+			expect(statSync(dirname(stampPath())).mode & 0o777).toBe(0o700);
+			expect(JSON.stringify(stamp)).not.toContain("claudeMdExcludes");
+		});
+
+		it("falls back to the legacy settings when the stamp cannot be persisted", async () => {
+			mkdirSync(join(tmpHome, ".flywheel", "runner-state", "test-exec-1"), {
+				recursive: true,
+			});
+			mkdirSync(stampPath()); // a directory where the stamp file must go
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			await new TmuxAdapter("flywheel", fn, 10).execute(
+				makeCtx({ prefixProfile }),
+			);
+			const settings = settingsOf(
+				calls.find((c) => c.args[0] === "new-window")!.args,
+			);
+			expect(settings).not.toHaveProperty("skillOverrides");
+			expect(settings).not.toHaveProperty("claudeMdExcludes");
+			expect(settings).not.toHaveProperty("permissions");
+			expect(warn.mock.calls.flat().join("\n")).toMatch(
+				/prefix-profile.*legacy/i,
+			);
+			warn.mockRestore();
+		});
+
+		it("adds nothing when no profile is supplied (legacy byte-compat)", async () => {
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			await new TmuxAdapter("flywheel", fn, 10).execute(makeCtx());
+			const settings = settingsOf(
+				calls.find((c) => c.args[0] === "new-window")!.args,
+			);
+			expect(Object.keys(settings)).toEqual(["enabledPlugins"]);
+			expect(existsSync(stampPath())).toBe(false);
 		});
 	});
 

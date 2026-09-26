@@ -486,6 +486,17 @@ export {
 	RUNNER_PREFIX_PROFILES,
 	resolveRunnerPrefixSelection,
 } from "./runner-prefix-profile.js";
+export type {
+	CompiledRunnerPrefixProfile,
+	RunnerPrefixRoleProfile,
+	RunnerPrefixStamp,
+} from "./runner-prefix-profiles.js";
+export {
+	compileRunnerPrefixProfile,
+	parsePinnedRoleSkills,
+	RUNNER_PREFIX_PROFILES_V1,
+	RUNNER_PREFIX_REQUIRED_SKILLS,
+} from "./runner-prefix-profiles.js";
 // FLY-1356: skill_framework_mode three-way switch (A/superpowers, B/matt, C/bare).
 export type {
 	BackendSkillAssembly,

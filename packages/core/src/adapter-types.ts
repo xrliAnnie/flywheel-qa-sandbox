@@ -231,6 +231,18 @@ export interface AdapterExecutionContext {
 	 * `playwright` label / `full-mcp` label). Absent/empty = no change.
 	 */
 	enabledPluginsExtra?: string[];
+	/**
+	 * FLY-2913: compiled role-v1 fixed-prefix profile (claude-tmux only). The
+	 * adapter merges `settings` as the FIRST `--settings` source (skill arm,
+	 * opt-ins, memory, hooks and the forced non-Lead denies merge after it) and
+	 * persists `stamp` beside the execution's runner state. Absent ⇒ legacy
+	 * launch, byte-compatible.
+	 */
+	prefixProfile?: {
+		settings: Record<string, unknown>;
+		profileDigest: string;
+		stamp: Record<string, unknown>;
+	};
 	/** Maximum number of agentic turns */
 	maxTurns?: number;
 	/** Process-level timeout in milliseconds */

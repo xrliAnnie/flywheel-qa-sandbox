@@ -30,6 +30,7 @@ import {
 } from "flywheel-claude-runner";
 import type { PonytailConfig } from "flywheel-config";
 import {
+	compileRunnerPrefixProfile,
 	hashModeBucket,
 	MATT_SKILLS_PLUGIN_KEY,
 	SKILL_FRAMEWORK_MODE_ENV,
@@ -1299,6 +1300,86 @@ describe("FLY-1356 Blueprint — envelope + plugin layer", () => {
 		expect(execArgs.disabledPlugins).toEqual(["heavy-a@x"]);
 		expect(execArgs.disableChrome).toBe(false);
 		expect(execArgs.enabledPluginsExtra).toBeUndefined();
+	});
+});
+
+describe("FLY-2913 Blueprint — role-v1 prefix compile after the arm", () => {
+	const workflow = {
+		runId: "run-2913",
+		snapshotDigest: "a".repeat(64),
+		templateId: "tpl_code",
+	};
+	const prefix = {
+		selection: {
+			mode: "role-v1" as const,
+			role: "implement" as const,
+			taskSetId: "engineering" as const,
+			workflow,
+		},
+		context: {
+			workflow,
+			nodeId: "implement",
+			phase: "implement" as const,
+			agent: {
+				content: "---\nskills: [implement, problem-definition]\n---\nrole",
+				digest: "b".repeat(64),
+			},
+		},
+	};
+
+	it.each([
+		["superpowers", undefined],
+		["matt", "matt"],
+	])("compiles the pinned profile for the %s arm", async (arm, envValue) => {
+		const { execArgs } = await runBlueprint({
+			envValue,
+			ctxExtra: {
+				runnerMcpProfile: {
+					disabledPlugins: ["heavy-a@x"],
+					disableChrome: false,
+					prefix,
+				},
+			},
+		});
+		expect(execArgs.prefixProfile).toEqual(
+			compileRunnerPrefixProfile({
+				request: prefix,
+				home: os.homedir(),
+				skillArm: arm,
+			}),
+		);
+		expect(
+			(execArgs.prefixProfile?.settings as { skillOverrides: object })
+				.skillOverrides,
+		).not.toHaveProperty("problem-definition");
+		expect(execArgs.disabledPlugins?.[0]).toBe("heavy-a@x");
+		expect(execArgs).not.toHaveProperty("prefix");
+	});
+
+	it("leaves the launch byte-compatible without a pinned prefix", async () => {
+		const { execArgs } = await runBlueprint({
+			ctxExtra: {
+				runnerMcpProfile: {
+					disabledPlugins: ["heavy-a@x"],
+					disableChrome: false,
+				},
+			},
+		});
+		expect(execArgs).not.toHaveProperty("prefixProfile");
+	});
+
+	it("never compiles a Claude prefix for a Codex backend", async () => {
+		const { execArgs } = await runBlueprint({
+			ctxExtra: {
+				runnerBackend: "codex-tmux",
+				runnerMcpProfile: {
+					disabledPlugins: [],
+					disableChrome: false,
+					prefix,
+				},
+			},
+		});
+		expect(execArgs).not.toHaveProperty("prefixProfile");
 	});
 });
 
