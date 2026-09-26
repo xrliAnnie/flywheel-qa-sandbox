@@ -1,0 +1,21 @@
+{
+  "questionId": "3d0bd288-23a3-46e2-a652-86e1fb8e9b88",
+  "requestId": "9b8acb0b-8a17-4726-8d52-4e1eafef51ad",
+  "reviewVerdict": "CHANGES_REQUESTED",
+  "reviewerVerdict": "CHANGES_REQUESTED",
+  "round": 1,
+  "highFindingKeys": [
+    "immutable-release-premise-absent",
+    "first-deploy-transition-and-auto-rollback"
+  ],
+  "advisoryFindingKeys": [
+    "carrier-lost-resume-contract-gap",
+    "standby-flag-default-changes-claude",
+    "close-fence-misses-autonomous-goal-turns",
+    "fly2902-merge-order-dependency",
+    "host-socket-path-length",
+    "authority-reader-schema-skew",
+    "host-lifetime-container-and-window-reapers"
+  ],
+  "disposition": "All nine addressed in plan section 14; design changes only; awaiting new review. This is an author disposition summary, not the verbatim reviewer body."
+}

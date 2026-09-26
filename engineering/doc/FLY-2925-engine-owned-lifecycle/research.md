@@ -124,3 +124,9 @@ FLY-2902 还要求同号重登通过原子槽更新，迁移未 done 时准入 f
 ## 10. 本次重开核对（2026-09-26）
 
 执行 926640ee-6c0d-4bf1-93c4-237f93fadc69，design TURN epoch 3，activation 为 activation:926640ee-6c0d-4bf1-93c4-237f93fadc69:4bc1f8c4-a271-492d-9f88-c09050e61684:eng_design:1。分支初始头 b00dafc81 与交接一致。沿用冻结证据，不重跑生产统计。当前交接已裁定独立宿主方向、FLY-2902 原槽合同、FLY-2689 最小响应及 FLY-2893 伞单范围，§8 的旧待答项不再阻挡本次评审。只读复核相邻 FLY-2902 plan C1/C2 后对齐 plan §2/3/6/9/A7/13 与 HTML，删除旧稿把在飞切换当硬依赖的冲突要求；未修改实现或凭据。
+
+## 11. R1 评审回源核查（2026-09-26）
+
+本轮 read-only 查到 update-flywheel.sh default_deploy 的 merge→restart；restart-services.sh build_project 原地 pnpm build、rollback_and_restart reset --hard DEPLOYED_SHA；teamlead package prebuild/build 删除/复制 dist，claude-runner tsc 覆盖 dist。生产 standing-authority/active-package.json 不存在。旧 plan 的不可变 release 不是现成设施，已改为 W1 明确交付。
+
+codex-daemon-runtime.ts spawnCodexDaemon 取得 socket lock 后会 reap orphan，没有活 daemon adoption handle；codex-daemon-client.ts readThread 已有 includeTurns、goal/get 可作为接管观测原语，但不证明完整接管已实现。StateStore.beginWorkflowExecutionResume 只接受 standby/resume_failed 且要求 demand；plan 现规定新增 carrier_lost CAS/legacy enrollment，避免直接绕过检查。两项 HIGH 和七项 MEDIUM 全量处置见 plan §14；本轮仅改设计，未执行 build、迁移、重启或产品测试。
