@@ -127,3 +127,16 @@ Blueprint 在 skill arm 解析后、worktree 副作用前编译（仅 claude-tmu
 
 合并后：TmuxAdapter 192/192（首轮在负载 ~150 下 2 项进程退役/review-wait 时序失败，单测与整文件重跑均通过，判定负载抖动）；teamlead 相关 91 + 直接消费者 23 文件 519；config 138 + drift-scan 27；claude-runner 其他适配器 5 文件 202；edge-worker 3 文件 36；`pnpm lint` exit 0（25 既有 warning）；`...flywheel-config` 12 包 typecheck 通过；`flywheel-teamlead...` build 通过。检索与排除理由见 `evidence/session3-consumer-sweep.json`。
 
+
+## 2026-09-26 — 独立评审（fresh-context 子代理）处置
+
+结论无 HIGH。逐条：
+
+- **MEDIUM 解析器 fail-open → 已修**：`parsePinnedRoleSkills` 支持行内 `[a, b]`、标量 `skills: a`、任意缩进的块列表与行尾注释；`skills` 键存在但无法解析时返回 null，编译器随即跳过全部技能移除（stamp 记 `skillRemovals: skipped-unparsed-pinned-skills`），子代理/规则移除照常。新增用真实 `.flywheel/agents/nodes/{eng_design,implement,qa}.md` 解析的测试。红：新增 3 项及随签名改动的 5 项失败 → 转绿。
+- **MEDIUM tmux 命令预算 → 已修**：role-v1 时把完整合并后的 settings 写成 `runner-state/<exec>/claude-settings.<session>.json`（0600），argv 只带路径（CLI `--settings <file-or-json>`）；legacy 仍是原内联 JSON，字节不变。stamp 改为 `prefix-profile.<session>.json`，记录 `settingsFile` 与 `settingsSha256`（顺带处理“陈旧 stamp”LOW：stamp 与实际送给 CLI 的字节绑定、按 session 分文件）。新增 400 个技能条目的大 profile 用例，断言 argv 不含其内容。
+- **MEDIUM 插件技能控制可能无效却被记成功 → 部分处理**：驱动汇总新增 `ineffective`/`allControlsEffective`，CLI 输出分开的 capabilityPass 与 controlsEffective；能力安全通过不再被误读为节省已证实。`everything-claude-code:*` 条目暂留，由 529 实测决定：若 `skillOverrides` 对插件技能无效，就从 v1 清单删除这些条目（不让 stamp 夸大），并在 PR 注明。
+- **LOW runner 失败即阻断 vs 评审回落 → 统一为回落**：遵照 Lead“legacy 为唯一回退值”，dispatcher 在开关读取失败（`switch-unreadable`）或 pinned provenance 出错（`provenance-error:<code>`）时都以 legacy 启动并记录原因；原“损坏快照拒绝启动”测试改为“回落 legacy + 可见原因”。
+- **LOW CLAUDE_CONFIG_DIR → 已修**：编译器改收 `claudeConfigDir`（Blueprint/评审解析用 `CLAUDE_CONFIG_DIR ?? ~/.claude`），规则排除路径跟随实际配置目录。
+- **LOW 测试缺口 → 已补**：评审新 session 回退轮的 prefix 重解析测试（覆盖既有路径，非红转绿）；控制驱动按 `类型:文件名` 比对记忆文件，避免一个 CLAUDE.md 掩盖另一个的丢失。
+- **LOW QA 移除 codex-multi-account.md → 保留决定**：QA 合同不调用 Codex CLI（frozen-head CI 由 `ci-full` 命令负责），该规则只约束 `codex exec` 与切号；若 529/QA 发现 QA 需要，改回保留。
+- **LOW 评审 stamp 在同 session legacy 续轮后可能陈旧 → 记录不修**：评审 stamp 已按 session 分文件并带 `resume`；同 session 回滚到 legacy 的续轮属极端路径，列入已知局限。

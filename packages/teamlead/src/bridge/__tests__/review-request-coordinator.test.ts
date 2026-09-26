@@ -3067,6 +3067,83 @@ describe("FLY-1254 — lost reviewer session fallback", () => {
 		expect(h.comm.getResponse("q2")).toBeDefined();
 	});
 
+	it("FLY-2913 re-resolves the design-review prefix for the fresh fallback session", async () => {
+		const calls: Array<{ executionId: string; reviewType: string }> = [];
+		const h = await makeHarness({
+			reviewPrefixProfile: (input) => {
+				calls.push(input);
+				const digest = String(calls.length).repeat(64);
+				return {
+					profile: {
+						settings: {
+							skillOverrides: {},
+							claudeMdExcludes: [],
+							permissions: { deny: [] },
+						},
+						profileDigest: digest,
+						stamp: {
+							version: 1,
+							compilerVersion: 1,
+							mode: "role-v1",
+							role: "review-design",
+							taskSetId: "engineering",
+							workflow: {
+								runId: "run",
+								snapshotDigest: "a".repeat(64),
+								templateId: "tpl_code",
+							},
+							nodeId: "implement",
+							skillArm: "superpowers",
+							pinnedSkills: [],
+							removed: { skills: [], agents: [], rules: [] },
+							profileDigest: digest,
+						},
+					},
+					stampDir: "/state/runner-state/e1",
+				};
+			},
+		});
+		registerSession(h.store, "e1");
+		await seedPriorDesignRound(h);
+		openGate(h.comm, "q2", "e1", "review_design");
+		h.outcomes.push(
+			{
+				kind: "failed",
+				reason: "nonzero_exit",
+				detail: "claude exited 1",
+				exitCode: 1,
+				timedOut: false,
+				stderrTail: "No conversation found with session ID: lost-session",
+			},
+			{
+				kind: "verdict",
+				verdict: "APPROVED",
+				findings: [],
+				reviewedHeadSha: null,
+				raw: "",
+			},
+		);
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r2",
+			reviewType: "design",
+			questionId: "q2",
+		});
+		await settle();
+		expect(calls).toEqual([
+			{ executionId: "e1", reviewType: "design" },
+			{ executionId: "e1", reviewType: "design" },
+		]);
+		expect(h.invocations.map((i) => [i.resume, i.prefixDigest])).toEqual([
+			[true, "1".repeat(64)],
+			[false, "2".repeat(64)],
+		]);
+		expect(h.invocations[1]?.prefixStamp).toEqual({
+			dir: "/state/runner-state/e1",
+			requestId: "r2",
+		});
+	});
+
 	it("fails closed after the one fresh retry and stores both attempts", async () => {
 		const h = await makeHarness();
 		registerSession(h.store, "e1");

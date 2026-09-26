@@ -299,6 +299,7 @@ export type RunnerPrefixStamp = {
 	nodeId: string;
 	skillArm: string;
 	pinnedSkills: string[];
+	skillRemovals?: "skipped-unparsed-pinned-skills";
 	removed: { skills: string[]; agents: string[]; rules: string[] };
 	profileDigest: string;
 };
@@ -318,24 +319,47 @@ function fail(reason: string): never {
 	throw new Error(`runner_prefix_profile: ${reason}`);
 }
 
-/** Skills listed in the pinned role file's YAML frontmatter; body text ignored. */
-export function parsePinnedRoleSkills(content: string): string[] {
+const SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/;
+
+/**
+ * Skills listed in the pinned role file's YAML frontmatter; body text ignored.
+ * Supports `skills: [a, b]`, `skills: a` and block lists at any indentation,
+ * with trailing comments. Returns null when a `skills` key exists but cannot
+ * be parsed, so the caller keeps every skill instead of failing open.
+ */
+export function parsePinnedRoleSkills(content: string): string[] | null {
 	const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(content);
 	if (!match) return [];
 	const lines = (match[1] ?? "").split(/\r?\n/);
-	const clean = (value: string) => value.trim().replace(/^['"]|['"]$/g, "");
+	const clean = (value: string) =>
+		value
+			.replace(/\s+#.*$/, "")
+			.trim()
+			.replace(/^(['"])(.*)\1$/, "$2");
+	const valid = (names: string[]) =>
+		names.every((name) => SKILL_NAME.test(name)) ? names : null;
 	for (let i = 0; i < lines.length; i++) {
-		const inline = /^skills:\s*\[(.*)\]\s*$/.exec(lines[i] ?? "");
-		if (inline) return (inline[1] ?? "").split(",").map(clean).filter(Boolean);
-		if (/^skills:\s*$/.test(lines[i] ?? "")) {
-			const skills: string[] = [];
-			for (let j = i + 1; j < lines.length; j++) {
-				const item = /^\s+-\s+(.+)$/.exec(lines[j] ?? "");
-				if (!item) break;
-				skills.push(clean(item[1] ?? ""));
-			}
-			return skills.filter(Boolean);
+		const key = /^skills:(.*)$/.exec(lines[i] ?? "");
+		if (!key) continue;
+		const rest = clean(key[1] ?? "");
+		if (rest.startsWith("[")) {
+			if (!rest.endsWith("]")) return null;
+			const inner = rest.slice(1, -1).trim();
+			return valid(inner ? inner.split(",").map(clean) : []);
 		}
+		if (rest) return valid([rest]);
+		const skills: string[] = [];
+		for (let j = i + 1; j < lines.length; j++) {
+			const line = lines[j] ?? "";
+			if (!line.trim() || /^\s*#/.test(line)) continue;
+			const item = /^\s*-\s+(.+)$/.exec(line);
+			if (!item) {
+				if (/^\s/.test(line)) return null; // nested mapping, not a list
+				break;
+			}
+			skills.push(clean(item[1] ?? ""));
+		}
+		return valid(skills);
 	}
 	return [];
 }
@@ -348,18 +372,19 @@ const sorted = (values: Iterable<string>) => [...new Set(values)].sort();
  */
 export function compileRunnerPrefixProfile(input: {
 	request: RunnerPrefixRequest;
-	home: string;
+	/** The runner's Claude config dir (`CLAUDE_CONFIG_DIR` or `~/.claude`). */
+	claudeConfigDir: string;
 	skillArm: string;
 }): CompiledRunnerPrefixProfile {
-	const { request, home, skillArm } = input;
+	const { request, claudeConfigDir, skillArm } = input;
 	const { selection, context } = request;
 	if (
-		typeof home !== "string" ||
-		!isAbsolute(home) ||
-		home.includes("\0") ||
-		home.split("/").some((part) => part === "." || part === "..")
+		typeof claudeConfigDir !== "string" ||
+		!isAbsolute(claudeConfigDir) ||
+		claudeConfigDir.includes("\0") ||
+		claudeConfigDir.split("/").some((part) => part === "." || part === "..")
 	)
-		fail("home must be an absolute, normalized path");
+		fail("claudeConfigDir must be an absolute, normalized path");
 	if (
 		selection?.mode !== "role-v1" ||
 		!(selection.role in RUNNER_PREFIX_PROFILES_V1)
@@ -373,21 +398,26 @@ export function compileRunnerPrefixProfile(input: {
 	if (typeof skillArm !== "string" || !/^[a-z-]{1,40}$/.test(skillArm))
 		fail("invalid skill arm");
 	const profile = RUNNER_PREFIX_PROFILES_V1[selection.role];
-	const pinnedSkills = context.agent
+	const parsed = context.agent
 		? parsePinnedRoleSkills(context.agent.content)
 		: [];
+	const pinnedSkills = parsed ?? [];
 	const keep = new Set([
 		...pinnedSkills,
 		...RUNNER_PREFIX_REQUIRED_SKILLS[selection.role],
 	]);
-	const skills = sorted(profile.skillsOff.filter((skill) => !keep.has(skill)));
+	// Unknown pinned obligations: keep every skill rather than guess.
+	const skills =
+		parsed === null
+			? []
+			: sorted(profile.skillsOff.filter((skill) => !keep.has(skill)));
 	const agents = sorted(profile.agentsDeny);
 	const rules = sorted(profile.rulesExclude);
 	const settings = {
 		skillOverrides: Object.fromEntries(
 			skills.map((skill) => [skill, "off" as const]),
 		),
-		claudeMdExcludes: rules.map((rule) => `${home}/.claude/rules/${rule}`),
+		claudeMdExcludes: rules.map((rule) => `${claudeConfigDir}/rules/${rule}`),
 		permissions: { deny: agents.map((agent) => `Agent(${agent})`) },
 	};
 	const workflow = {
@@ -423,6 +453,9 @@ export function compileRunnerPrefixProfile(input: {
 			nodeId: context.nodeId,
 			skillArm,
 			pinnedSkills,
+			...(parsed === null && {
+				skillRemovals: "skipped-unparsed-pinned-skills" as const,
+			}),
 			removed: { skills, agents, rules },
 			profileDigest,
 		},

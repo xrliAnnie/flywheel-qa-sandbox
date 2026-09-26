@@ -214,12 +214,35 @@ describe("real dispatcher prefix provenance wiring", () => {
 			/FLY-2913 prefix legacy reason=unmapped-trigger exec=/,
 		);
 	});
-	it("refuses corrupted pinned engineering provenance before launching", async () => {
+	it("falls back to legacy with a visible reason when pinned provenance is corrupt", async () => {
+		const info = vi.spyOn(console, "info").mockImplementation(() => {});
 		const { dispatcher, pinned, captures } = harness();
 		pinned.run.snapshot = "corrupt";
-		await expect(
-			dispatcher.start({ issueId: "FLY-2913-fixture", projectName: "fixture" }),
-		).rejects.toThrow(/workflow_prefix_context/);
-		expect(captures).toHaveLength(0);
+		await dispatcher.start({
+			issueId: "FLY-2913-fixture",
+			projectName: "fixture",
+		});
+		await dispatcher.drain();
+		expect(captures).toHaveLength(1);
+		expect(captures[0]!.runnerMcpProfile?.prefix).toBeUndefined();
+		expect(info.mock.calls.flat().join("\n")).toMatch(
+			/FLY-2913 prefix legacy reason=provenance-error:workflow_prefix_context/,
+		);
+	});
+	it("falls back to legacy when the store switch cannot be read", async () => {
+		const info = vi.spyOn(console, "info").mockImplementation(() => {});
+		const { dispatcher, store, captures, flagRows } = harness();
+		flagRows.delete("runner_prefix_profile");
+		await dispatcher.start({
+			issueId: "FLY-2913-fixture",
+			projectName: "fixture",
+		});
+		await dispatcher.drain();
+		expect(captures).toHaveLength(1);
+		expect(captures[0]!.runnerMcpProfile?.prefix).toBeUndefined();
+		expect(store.getWorkflowExecutionRuntime).not.toHaveBeenCalled();
+		expect(info.mock.calls.flat().join("\n")).toMatch(
+			/FLY-2913 prefix legacy reason=switch-unreadable/,
+		);
 	});
 });

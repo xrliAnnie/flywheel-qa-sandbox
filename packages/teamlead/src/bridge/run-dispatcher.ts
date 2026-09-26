@@ -653,8 +653,21 @@ export class RetryDispatcher implements IRetryDispatcher {
 			sessionRole: req.sessionRole,
 			issueLabels: req.issueLabels,
 		});
+		// Legacy is the only fallback: a switch or provenance failure never
+		// blocks a launch; it keeps the original profile with a visible reason.
+		const fallback = (reason: string) => {
+			console.info(
+				`[run-dispatcher] FLY-2913 prefix legacy reason=${reason} exec=${executionId}`,
+			);
+			return legacy;
+		};
 		// One store read per launch; an absent store keeps the legacy default.
-		const profile = this.runnerPrefixProfileControl?.();
+		let profile: FlagStoreRawValue | undefined;
+		try {
+			profile = this.runnerPrefixProfileControl?.();
+		} catch {
+			return fallback("switch-unreadable");
+		}
 		const select = (context?: WorkflowPrefixContext) =>
 			resolveRunnerPrefixSelection({
 				actor: "runner",
@@ -672,24 +685,30 @@ export class RetryDispatcher implements IRetryDispatcher {
 			eligibility.reason !== "unmapped-trigger"
 		)
 			return legacy;
-		const context = this.workflowPrefixLookup?.({
-			executionId,
-			expected: req.generalizedExecution
-				? {
-						runId: req.generalizedExecution.runId,
-						nodeId: req.generalizedExecution.nodeId,
-						snapshotDigest: req.generalizedExecution.snapshotDigest,
-					}
-				: undefined,
-		});
-		const selection = select(context);
-		// The switch is role-v1 here: make every fallback reason visible.
-		if (selection.mode === "legacy" || !context) {
-			console.info(
-				`[run-dispatcher] FLY-2913 prefix legacy reason=${selection.mode === "legacy" ? selection.reason : "unbound-execution"} exec=${executionId}`,
+		let context: WorkflowPrefixContext | undefined;
+		let selection: ReturnType<typeof select>;
+		try {
+			context = this.workflowPrefixLookup?.({
+				executionId,
+				expected: req.generalizedExecution
+					? {
+							runId: req.generalizedExecution.runId,
+							nodeId: req.generalizedExecution.nodeId,
+							snapshotDigest: req.generalizedExecution.snapshotDigest,
+						}
+					: undefined,
+			});
+			selection = select(context);
+		} catch (err) {
+			return fallback(
+				`provenance-error:${String((err as Error)?.message ?? err)
+					.replace(/[^A-Za-z0-9_:.-]+/g, "-")
+					.slice(0, 120)}`,
 			);
-			return legacy;
 		}
+		// The switch is role-v1 here: make every fallback reason visible.
+		if (selection.mode === "legacy") return fallback(selection.reason);
+		if (!context) return fallback("unbound-execution");
 		console.info(
 			`[run-dispatcher] FLY-2913 prefix role-v1 role=${selection.role} exec=${executionId}`,
 		);

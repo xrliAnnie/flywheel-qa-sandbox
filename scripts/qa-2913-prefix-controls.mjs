@@ -75,7 +75,8 @@ async function main() {
 		probe: probeClaudeContext,
 		config,
 		pinnedAgents: readPinnedAgents(),
-		home: homedir(),
+		claudeConfigDir:
+			process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"),
 	});
 	writeFileSync(
 		args.out,
@@ -84,7 +85,7 @@ async function main() {
 	);
 	for (const [role, data] of Object.entries(result.roles))
 		console.log(
-			`${role}: pairs=${data.summary.completePairs}/${data.summary.samples} before=${data.summary.before?.p50 ?? "n/a"} after=${data.summary.after?.p50 ?? "n/a"} delta=${data.summary.deltaP50 ?? "n/a"} pass=${data.summary.allPairsPass}`,
+			`${role}: pairs=${data.summary.completePairs}/${data.summary.samples} before=${data.summary.before?.p50 ?? "n/a"} after=${data.summary.after?.p50 ?? "n/a"} delta=${data.summary.deltaP50 ?? "n/a"} capabilityPass=${data.summary.allPairsPass} controlsEffective=${data.summary.allControlsEffective} ineffective=${JSON.stringify(data.summary.ineffective)}`,
 		);
 }
 

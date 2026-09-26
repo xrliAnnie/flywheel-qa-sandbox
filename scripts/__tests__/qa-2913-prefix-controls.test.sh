@@ -36,6 +36,14 @@ await test('a removal the CLI ignored is reported as ineffective, not as over-re
   assert.equal(v.controls.rules.effective, true);
 });
 
+await test('memory files are compared by type and name, so one CLAUDE.md cannot mask another', async () => {
+  const withProject = { ...legacy, memoryFiles: [...legacy.memoryFiles, { file: 'CLAUDE.md', type: 'Project', tokens: 10 }, { file: 'CLAUDE.md', type: 'User', tokens: 10 }] };
+  const roleV1 = { ...inventory(['implement'], ['Explore'], ['context7.md']), memoryFiles: [{ file: 'context7.md', type: 'User', tokens: 10 }, { file: 'CLAUDE.md', type: 'User', tokens: 10 }] };
+  const v = verifyPair({ legacy: withProject, roleV1, compiled, requiredSkills: ['implement'] });
+  assert.equal(v.pass, false);
+  assert.deepEqual(v.unintendedLoss.rules, ['Project:CLAUDE.md']);
+});
+
 await test('losing a required or an unlisted item fails the pair', async () => {
   const missingRequired = verifyPair({ legacy, roleV1: inventory([], ['Explore'], ['context7.md']), compiled, requiredSkills: ['implement'] });
   assert.equal(missingRequired.pass, false);
@@ -47,12 +55,22 @@ await test('losing a required or an unlisted item fails the pair', async () => {
 
 await test('summaries use complete pairs only and flag incomplete runs', async () => {
   const sample = (fixed, status = 'complete') => ({ status, context: { knownFixedCategoryTokens: fixed } });
-  const ok = { legacy: sample(100), roleV1: sample(70), verdict: { pass: true } };
+  const controls = (stillSkills = []) => ({
+    skills: { targetedPresentInLegacy: 2, removed: 2 - stillSkills.length, stillPresent: stillSkills, effective: stillSkills.length === 0 },
+    agents: { targetedPresentInLegacy: 1, removed: 1, stillPresent: [], effective: true },
+    rules: { targetedPresentInLegacy: 0, removed: 0, stillPresent: [], effective: false },
+  });
+  const ok = { legacy: sample(100), roleV1: sample(70), verdict: { pass: true, controls: controls() } };
   assert.deepEqual(summarizeRole([ok, ok, { ...ok, legacy: sample(110), roleV1: sample(72) }]), {
     samples: 3, completePairs: 3,
     before: { p50: 100, min: 100, max: 110 }, after: { p50: 70, min: 70, max: 72 },
     deltaP50: 30, allPairsPass: true,
+    ineffective: { skills: [], agents: [], rules: [] }, allControlsEffective: true,
   });
+  const inert = summarizeRole([{ ...ok, verdict: { pass: true, controls: controls(['everything-claude-code:go-test']) } }]);
+  assert.deepEqual(inert.ineffective.skills, ['everything-claude-code:go-test']);
+  assert.equal(inert.allControlsEffective, false);
+  assert.equal(inert.allPairsPass, true);
   const partial = summarizeRole([ok, { legacy: sample(100), roleV1: sample(null, 'failed'), verdict: null }]);
   assert.equal(partial.completePairs, 1);
   assert.equal(partial.allPairsPass, false);
@@ -70,7 +88,7 @@ await test('pairs differ only in settings and run interleaved for every role', a
     return { status: 'complete', context: { knownFixedCategoryTokens: 1000 + skills.length }, inventory: inventory(skills, [], []) };
   };
   const result = await runPrefixControls({ binary: '/fake/claude', cwd: '/tmp/flywheel-test-slot-9/p', model: 'm', effort: 'high',
-    rounds: 2, probe, config, pinnedAgents: readPinnedAgents(root), home: '/Users/fixture', env: {} });
+    rounds: 2, probe, config, pinnedAgents: readPinnedAgents(root), claudeConfigDir: '/Users/fixture/.claude', env: {} });
   assert.deepEqual(Object.keys(result.roles), CONTROL_ROLES);
   assert.equal(launches.length, CONTROL_ROLES.length * 4);
   for (let i = 0; i < launches.length; i += 2) {

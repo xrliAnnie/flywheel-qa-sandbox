@@ -27,6 +27,7 @@ export function resolveReviewPrefixProfile(input: {
 	executionId: string;
 	reviewType: string;
 	home?: string;
+	claudeConfigDir?: string;
 }): ReviewPrefixResolution | undefined {
 	const select = (
 		workflow?: Parameters<typeof resolveRunnerPrefixSelection>[0]["workflow"],
@@ -56,7 +57,10 @@ export function resolveReviewPrefixProfile(input: {
 	return {
 		profile: compileRunnerPrefixProfile({
 			request: { selection, context: { ...context, agent: null } },
-			home,
+			claudeConfigDir:
+				input.claudeConfigDir ??
+				process.env.CLAUDE_CONFIG_DIR ??
+				join(home, ".claude"),
 			// Reviewer launches never apply a skill-arm plugin change.
 			skillArm: "superpowers",
 		}),

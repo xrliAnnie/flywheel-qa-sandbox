@@ -49,6 +49,7 @@ describe("reviewer prefix resolution (FLY-2913)", () => {
 				executionId: "exec-author",
 				reviewType,
 				home,
+				claudeConfigDir: `${home}/.claude`,
 			});
 			expect(resolved?.profile.stamp).toMatchObject({
 				role,
@@ -86,7 +87,7 @@ describe("reviewer prefix resolution (FLY-2913)", () => {
 							agent: null,
 						},
 					},
-					home,
+					claudeConfigDir: `${home}/.claude`,
 					skillArm: "superpowers",
 				}),
 			);

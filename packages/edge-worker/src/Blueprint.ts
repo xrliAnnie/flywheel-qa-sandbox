@@ -1388,7 +1388,8 @@ export class Blueprint {
 			backend === "claude-tmux" && ctx.runnerMcpProfile?.prefix
 				? compileRunnerPrefixProfile({
 						request: ctx.runnerMcpProfile.prefix,
-						home: homedir(),
+						claudeConfigDir:
+							process.env.CLAUDE_CONFIG_DIR ?? path.join(homedir(), ".claude"),
 						skillArm: skillFrameworkMode,
 					})
 				: undefined;

@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
 	chmodSync,
 	existsSync,
@@ -365,23 +365,42 @@ export interface RunnerSpawnTransport {
 }
 
 /**
- * FLY-2913: atomically write the secret-free role-v1 launch stamp (0600 file in
- * a 0700 runner-state directory). Returns false — and the caller launches with
- * the legacy settings — when the stamp cannot be made durable.
+ * FLY-2913: persist the role-v1 launch — the complete merged settings as a
+ * private file (the argv carries only its path, keeping the tmux command within
+ * budget) and a secret-free stamp bound to the session and those exact bytes.
+ * Both are written atomically (0600 files, 0700 directory). Returns the settings
+ * path, or undefined — and the caller launches with inline legacy settings —
+ * when either cannot be made durable.
  */
-function persistRunnerPrefixStamp(
+function persistRunnerPrefixLaunch(
 	ctx: AdapterExecutionContext,
 	sessionId: string,
 	profile: NonNullable<AdapterExecutionContext["prefixProfile"]>,
-): boolean {
+	settingsJson: string,
+): string | undefined {
 	const dir = join(homedir(), ".flywheel", "runner-state", ctx.executionId);
-	const target = join(dir, "prefix-profile.json");
-	const temp = `${target}.${process.pid}.${randomUUID()}.tmp`;
+	const temps: string[] = [];
+	const writeAtomic = (name: string, content: string) => {
+		const target = join(dir, name);
+		const temp = `${target}.${process.pid}.${randomUUID()}.tmp`;
+		temps.push(temp);
+		writeFileSync(temp, content, {
+			encoding: "utf-8",
+			mode: 0o600,
+			flag: "wx",
+		});
+		renameSync(temp, target);
+		return target;
+	};
 	try {
+		if (!/^[A-Za-z0-9-]{1,128}$/.test(sessionId))
+			throw new Error("invalid session id");
 		mkdirSync(dir, { recursive: true, mode: 0o700 });
 		chmodSync(dir, 0o700);
-		writeFileSync(
-			temp,
+		const settingsFile = `claude-settings.${sessionId}.json`;
+		const settingsPath = writeAtomic(settingsFile, settingsJson);
+		writeAtomic(
+			`prefix-profile.${sessionId}.json`,
 			`${JSON.stringify({
 				...profile.stamp,
 				executionId: ctx.executionId,
@@ -389,20 +408,22 @@ function persistRunnerPrefixStamp(
 					activationId: ctx.workflowActivationId,
 				}),
 				sessionId,
+				settingsFile,
+				settingsSha256: createHash("sha256").update(settingsJson).digest("hex"),
 			})}\n`,
-			{ encoding: "utf-8", mode: 0o600, flag: "wx" },
 		);
-		renameSync(temp, target);
-		return true;
+		return settingsPath;
 	} catch (err) {
 		// Best-effort temp cleanup; the primary failure is reported below.
-		try {
-			rmSync(temp, { force: true });
-		} catch {}
+		for (const temp of temps) {
+			try {
+				rmSync(temp, { force: true });
+			} catch {}
+		}
 		console.warn(
-			`[TmuxAdapter] FLY-2913 prefix-profile stamp write failed for ${ctx.executionId} (${(err as Error).message}); launching with the legacy settings`,
+			`[TmuxAdapter] FLY-2913 prefix-profile launch files failed for ${ctx.executionId} (${(err as Error).message}); launching with the legacy settings`,
 		);
-		return false;
+		return undefined;
 	}
 }
 
@@ -1813,31 +1834,38 @@ export class TmuxAdapter implements IAdapter {
 			hooks.PreToolUse = [{ matcher: "*", hooks: [guardHook] }];
 		}
 		const usageSettings = Object.keys(hooks).length > 0 ? { hooks } : undefined;
+		const hookCommand = buildRunnerTestPolicyHookCommand(
+			process.execPath,
+			RUNNER_TEST_POLICY_HOOK,
+		);
+		const composeSettings = (
+			prefix?: Record<string, unknown>,
+		): Record<string, unknown> =>
+			appendRunnerTestPolicyHookSettings(
+				buildNonLeadClaudeSettings(
+					prefix,
+					{ enabledPlugins },
+					memorySettings,
+					usageSettings,
+				),
+				ctx.appendSystemPrompt,
+				hookCommand,
+			);
 		// FLY-2913: the role-v1 profile is the FIRST source so the skill arm,
-		// opt-ins, memory, hooks and forced denies all merge over it. It is only
-		// applied once its stamp is durable; otherwise the launch stays legacy.
-		const prefixSettings =
-			ctx.prefixProfile &&
-			persistRunnerPrefixStamp(ctx, sessionId, ctx.prefixProfile)
-				? ctx.prefixProfile.settings
-				: undefined;
+		// opt-ins, memory, hooks, the test-policy hook and forced denies all merge
+		// over it. It rides a private file whose stamp is durable; otherwise the
+		// launch stays on the inline legacy settings.
+		const prefixSettingsPath = ctx.prefixProfile
+			? persistRunnerPrefixLaunch(
+					ctx,
+					sessionId,
+					ctx.prefixProfile,
+					JSON.stringify(composeSettings(ctx.prefixProfile.settings)),
+				)
+			: undefined;
 		args.push(
 			"--settings",
-			JSON.stringify(
-				appendRunnerTestPolicyHookSettings(
-					buildNonLeadClaudeSettings(
-						prefixSettings,
-						{ enabledPlugins },
-						memorySettings,
-						usageSettings,
-					),
-					ctx.appendSystemPrompt,
-					buildRunnerTestPolicyHookCommand(
-						process.execPath,
-						RUNNER_TEST_POLICY_HOOK,
-					),
-				),
-			),
+			prefixSettingsPath ?? JSON.stringify(composeSettings()),
 		);
 		// FLY-751: Claude-in-Chrome off for slimmed (non-QA) runners.
 		if (ctx.disableChrome) {

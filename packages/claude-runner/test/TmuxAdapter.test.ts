@@ -1,9 +1,11 @@
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
 	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	realpathSync,
 	rmSync,
@@ -11,7 +13,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { resolveAllowedCanonicalModel } from "flywheel-config";
 import {
@@ -1264,21 +1266,21 @@ describe("TmuxAdapter", () => {
 				profileDigest: "f".repeat(64),
 			},
 		};
-		const settingsOf = (args: string[]) =>
-			JSON.parse(args[args.indexOf("--settings") + 1] as string) as Record<
-				string,
-				unknown
-			>;
-		const stampPath = () =>
-			join(
-				tmpHome,
-				".flywheel",
-				"runner-state",
-				"test-exec-1",
-				"prefix-profile.json",
-			);
+		const settingsArg = (args: string[]) =>
+			args[args.indexOf("--settings") + 1] as string;
+		/** Inline JSON (legacy) or the private settings file (role-v1). */
+		const settingsOf = (args: string[]) => {
+			const value = settingsArg(args);
+			return JSON.parse(
+				value.startsWith("{") ? value : readFileSync(value, "utf-8"),
+			) as Record<string, unknown>;
+		};
+		const stateDir = () =>
+			join(tmpHome, ".flywheel", "runner-state", "test-exec-1");
+		const sessionOf = (args: string[]) =>
+			args[args.indexOf("--session-id") + 1] as string;
 
-		it("merges the profile into the single settings flag before arm opt-ins and forced denies", async () => {
+		it("merges the profile into the single settings source before arm opt-ins and forced denies", async () => {
 			const { fn, calls } = makeMockExec({ paneDead: true });
 			await new TmuxAdapter("flywheel", fn, 10).execute(
 				makeCtx({
@@ -1304,38 +1306,70 @@ describe("TmuxAdapter", () => {
 			expect(args).not.toContain("--tools");
 		});
 
-		it("persists a private, secret-free launch stamp bound to the session", async () => {
+		it("passes role-v1 settings by private file so the tmux command stays within budget", async () => {
+			const big = {
+				...prefixProfile,
+				settings: {
+					...prefixProfile.settings,
+					skillOverrides: Object.fromEntries(
+						Array.from({ length: 400 }, (_, i) => [`skill-${i}`, "off"]),
+					),
+				},
+			};
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			await new TmuxAdapter("flywheel", fn, 10).execute(
+				makeCtx({ prefixProfile: big }),
+			);
+			const args = calls.find((c) => c.args[0] === "new-window")!.args;
+			const file = settingsArg(args);
+			expect(file).toBe(
+				join(stateDir(), `claude-settings.${sessionOf(args)}.json`),
+			);
+			expect(statSync(file).mode & 0o777).toBe(0o600);
+			expect(args.join(" ")).not.toContain("skill-399");
+			expect(
+				Object.keys(settingsOf(args).skillOverrides as object),
+			).toHaveLength(400);
+		});
+
+		it("persists a private, secret-free launch stamp bound to the session and settings bytes", async () => {
 			const { fn, calls } = makeMockExec({ paneDead: true });
 			await new TmuxAdapter("flywheel", fn, 10).execute(
 				makeCtx({ prefixProfile, workflowActivationId: "activation:test" }),
 			);
 			const args = calls.find((c) => c.args[0] === "new-window")!.args;
-			const sessionId = args[args.indexOf("--session-id") + 1];
-			const stamp = JSON.parse(readFileSync(stampPath(), "utf-8"));
+			const sessionId = sessionOf(args);
+			const stampPath = join(stateDir(), `prefix-profile.${sessionId}.json`);
+			const stamp = JSON.parse(readFileSync(stampPath, "utf-8"));
 			expect(stamp).toEqual({
 				...prefixProfile.stamp,
 				executionId: "test-exec-1",
 				activationId: "activation:test",
 				sessionId,
+				settingsFile: `claude-settings.${sessionId}.json`,
+				settingsSha256: createHash("sha256")
+					.update(readFileSync(settingsArg(args)))
+					.digest("hex"),
 			});
-			expect(statSync(stampPath()).mode & 0o777).toBe(0o600);
-			expect(statSync(dirname(stampPath())).mode & 0o777).toBe(0o700);
+			expect(statSync(stampPath).mode & 0o777).toBe(0o600);
+			expect(statSync(stateDir()).mode & 0o777).toBe(0o700);
 			expect(JSON.stringify(stamp)).not.toContain("claudeMdExcludes");
 		});
 
-		it("falls back to the legacy settings when the stamp cannot be persisted", async () => {
-			mkdirSync(join(tmpHome, ".flywheel", "runner-state", "test-exec-1"), {
+		it("falls back to inline legacy settings when the launch files cannot be persisted", async () => {
+			mkdirSync(join(tmpHome, ".flywheel", "runner-state"), {
 				recursive: true,
 			});
-			mkdirSync(stampPath()); // a directory where the stamp file must go
+			writeFileSync(stateDir(), "file");
 			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 			const { fn, calls } = makeMockExec({ paneDead: true });
 			await new TmuxAdapter("flywheel", fn, 10).execute(
 				makeCtx({ prefixProfile }),
 			);
-			const settings = settingsOf(
-				calls.find((c) => c.args[0] === "new-window")!.args,
-			);
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			expect(newWindow).toBeDefined();
+			expect(settingsArg(newWindow!.args).startsWith("{")).toBe(true);
+			const settings = settingsOf(newWindow!.args);
 			expect(settings).not.toHaveProperty("skillOverrides");
 			expect(settings).not.toHaveProperty("claudeMdExcludes");
 			expect(settings).not.toHaveProperty("permissions");
@@ -1345,33 +1379,16 @@ describe("TmuxAdapter", () => {
 			warn.mockRestore();
 		});
 
-		it("stays legacy when the runner-state parent is not a directory", async () => {
-			mkdirSync(join(tmpHome, ".flywheel", "runner-state"), {
-				recursive: true,
-			});
-			writeFileSync(
-				join(tmpHome, ".flywheel", "runner-state", "test-exec-1"),
-				"file",
-			);
-			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-			const { fn, calls } = makeMockExec({ paneDead: true });
-			await new TmuxAdapter("flywheel", fn, 10).execute(
-				makeCtx({ prefixProfile }),
-			);
-			const newWindow = calls.find((c) => c.args[0] === "new-window");
-			expect(newWindow).toBeDefined();
-			expect(settingsOf(newWindow!.args)).not.toHaveProperty("skillOverrides");
-			warn.mockRestore();
-		});
-
 		it("adds nothing when no profile is supplied (legacy byte-compat)", async () => {
 			const { fn, calls } = makeMockExec({ paneDead: true });
 			await new TmuxAdapter("flywheel", fn, 10).execute(makeCtx());
-			const settings = settingsOf(
-				calls.find((c) => c.args[0] === "new-window")!.args,
-			);
-			expect(Object.keys(settings)).toEqual(["enabledPlugins"]);
-			expect(existsSync(stampPath())).toBe(false);
+			const args = calls.find((c) => c.args[0] === "new-window")!.args;
+			expect(settingsArg(args).startsWith("{")).toBe(true);
+			expect(Object.keys(settingsOf(args))).toEqual(["enabledPlugins"]);
+			const written = existsSync(stateDir()) ? readdirSync(stateDir()) : [];
+			expect(
+				written.filter((f) => /prefix-profile|claude-settings/.test(f)),
+			).toEqual([]);
 		});
 	});
 

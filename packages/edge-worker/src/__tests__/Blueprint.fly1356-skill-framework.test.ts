@@ -1344,7 +1344,8 @@ describe("FLY-2913 Blueprint — role-v1 prefix compile after the arm", () => {
 		expect(execArgs.prefixProfile).toEqual(
 			compileRunnerPrefixProfile({
 				request: prefix,
-				home: os.homedir(),
+				claudeConfigDir:
+					process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), ".claude"),
 				skillArm: arm,
 			}),
 		);

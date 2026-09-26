@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { RunnerPrefixRequest } from "../runner-prefix-profile.js";
 import {
@@ -40,7 +42,7 @@ function request(
 		},
 	};
 }
-const home = "/Users/fixture";
+const claudeConfigDir = "/Users/fixture/.claude";
 
 describe("runner prefix role profiles v1 (FLY-2913)", () => {
 	it("defines exactly the five engineering roles", () => {
@@ -132,7 +134,7 @@ describe("runner prefix role profiles v1 (FLY-2913)", () => {
 		}
 	});
 
-	it("parses pinned role frontmatter skills in inline and block form", () => {
+	it("parses pinned role frontmatter skills in every supported YAML form", () => {
 		expect(
 			parsePinnedRoleSkills(
 				"---\nname: x\nskills: [implement, systematic-debugging]\n---\nbody\nskills: [ignored]\n",
@@ -143,14 +145,69 @@ describe("runner prefix role profiles v1 (FLY-2913)", () => {
 				"---\nskills:\n  - research\n  - 'write-plan'\nmodel: sonnet\n---\n",
 			),
 		).toEqual(["research", "write-plan"]);
+		expect(
+			parsePinnedRoleSkills("---\nskills:\n- codex\n- simplify # why\n---\n"),
+		).toEqual(["codex", "simplify"]);
+		expect(parsePinnedRoleSkills("---\nskills: codex\n---\n")).toEqual([
+			"codex",
+		]);
+		expect(
+			parsePinnedRoleSkills('---\nskills: [a, "b"] # trailing\n---\n'),
+		).toEqual(["a", "b"]);
+		expect(parsePinnedRoleSkills("---\nskills: []\n---\n")).toEqual([]);
 		expect(parsePinnedRoleSkills("no frontmatter")).toEqual([]);
 		expect(parsePinnedRoleSkills("---\nname: x\n---\n")).toEqual([]);
+	});
+
+	it("reports an unparseable skills key instead of failing open", () => {
+		for (const content of [
+			"---\nskills:\n  a: b\n---\n",
+			"---\nskills: {implement: true}\n---\n",
+			"---\nskills: [implement\n---\n",
+		]) {
+			expect(parsePinnedRoleSkills(content), content).toBeNull();
+		}
+	});
+
+	it("parses the real pinned engineering role files", () => {
+		const nodes = fileURLToPath(
+			new URL("../../../../.flywheel/agents/nodes/", import.meta.url),
+		);
+		const read = (name: string) =>
+			parsePinnedRoleSkills(readFileSync(`${nodes}${name}.md`, "utf8"));
+		expect(read("eng_design")).toEqual([
+			"brainstorm",
+			"research",
+			"write-plan",
+			"diagram-design",
+			"codex-design-review",
+		]);
+		expect(read("implement")).toEqual([
+			"implement",
+			"systematic-debugging",
+			"frontend-design",
+			"proofshot",
+			"codex-code-review",
+		]);
+		expect(read("qa")?.length).toBeGreaterThan(0);
+	});
+
+	it("skips every skill removal when the pinned skills cannot be parsed", () => {
+		const compiled = compileRunnerPrefixProfile({
+			request: request("implement", "---\nskills: {implement: true}\n---\n"),
+			claudeConfigDir,
+			skillArm: "superpowers",
+		});
+		expect(compiled.settings.skillOverrides).toEqual({});
+		expect(compiled.stamp.removed.skills).toEqual([]);
+		expect(compiled.stamp.skillRemovals).toBe("skipped-unparsed-pinned-skills");
+		expect(compiled.settings.permissions.deny.length).toBeGreaterThan(0);
 	});
 
 	it("compiles into one per-launch settings source", () => {
 		const compiled = compileRunnerPrefixProfile({
 			request: request("implement"),
-			home,
+			claudeConfigDir,
 			skillArm: "superpowers",
 		});
 		const p = RUNNER_PREFIX_PROFILES_V1.implement;
@@ -160,7 +217,7 @@ describe("runner prefix role profiles v1 (FLY-2913)", () => {
 			),
 			claudeMdExcludes: [...p.rulesExclude]
 				.sort()
-				.map((rule) => `${home}/.claude/rules/${rule}`),
+				.map((rule) => `${claudeConfigDir}/rules/${rule}`),
 			permissions: {
 				deny: [...p.agentsDeny].sort().map((agent) => `Agent(${agent})`),
 			},
@@ -182,7 +239,7 @@ describe("runner prefix role profiles v1 (FLY-2913)", () => {
 				"implement",
 				"---\nskills: [implement, problem-definition]\n---\nrole\n",
 			),
-			home,
+			claudeConfigDir,
 			skillArm: "superpowers",
 		});
 		expect(compiled.settings.skillOverrides).not.toHaveProperty(
@@ -196,7 +253,11 @@ describe("runner prefix role profiles v1 (FLY-2913)", () => {
 	});
 
 	it("is deterministic and binds role, arm and pinned identity into the digest", () => {
-		const base = { request: request("qa"), home, skillArm: "superpowers" };
+		const base = {
+			request: request("qa"),
+			claudeConfigDir,
+			skillArm: "superpowers",
+		};
 		const a = compileRunnerPrefixProfile(base);
 		expect(compileRunnerPrefixProfile(base)).toEqual(a);
 		expect(
@@ -221,7 +282,7 @@ describe("runner prefix role profiles v1 (FLY-2913)", () => {
 	it("records only identities and decisions in the stamp", () => {
 		const compiled = compileRunnerPrefixProfile({
 			request: request("review-code", "---\nskills: [x]\n---\nSECRET BODY"),
-			home,
+			claudeConfigDir,
 			skillArm: "superpowers",
 		});
 		expect(compiled.stamp).toMatchObject({
@@ -236,15 +297,15 @@ describe("runner prefix role profiles v1 (FLY-2913)", () => {
 			compilerVersion: 1,
 		});
 		expect(JSON.stringify(compiled.stamp)).not.toContain("SECRET BODY");
-		expect(JSON.stringify(compiled.stamp)).not.toContain(home);
+		expect(JSON.stringify(compiled.stamp)).not.toContain(claudeConfigDir);
 	});
 
-	it("rejects a relative or unsafe home", () => {
+	it("rejects a relative or unsafe Claude config directory", () => {
 		for (const bad of ["relative/home", "", "/tmp/../etc", "/a\0b"]) {
 			expect(() =>
 				compileRunnerPrefixProfile({
 					request: request("design"),
-					home: bad,
+					claudeConfigDir: bad,
 					skillArm: "superpowers",
 				}),
 			).toThrow(/runner_prefix_profile/);
@@ -260,7 +321,7 @@ describe("runner prefix role profiles v1 (FLY-2913)", () => {
 		expect(() =>
 			compileRunnerPrefixProfile({
 				request: split,
-				home,
+				claudeConfigDir,
 				skillArm: "superpowers",
 			}),
 		).toThrow(/disagree/);
@@ -272,7 +333,7 @@ describe("runner prefix role profiles v1 (FLY-2913)", () => {
 		expect(() =>
 			compileRunnerPrefixProfile({
 				request: bad,
-				home,
+				claudeConfigDir,
 				skillArm: "superpowers",
 			}),
 		).toThrow(/runner_prefix_profile/);

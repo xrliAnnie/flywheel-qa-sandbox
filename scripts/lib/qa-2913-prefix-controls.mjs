@@ -63,20 +63,24 @@ const names = (rows, key) => new Set((rows ?? []).map((row) => row[key]));
 
 /** Item-level verdict for one legacy/role-v1 pair. */
 export function verifyPair({ legacy, roleV1, compiled, requiredSkills }) {
+	// Memory files are keyed by type and name: several CLAUDE.md files coexist.
+	const memory = (rows) =>
+		new Set((rows ?? []).map((row) => `${row.type}:${row.file}`));
 	const before = {
 		skills: names(legacy.skills, "name"),
 		agents: names(legacy.agents, "name"),
-		rules: names(legacy.memoryFiles, "file"),
+		rules: memory(legacy.memoryFiles),
 	};
 	const after = {
 		skills: names(roleV1.skills, "name"),
 		agents: names(roleV1.agents, "name"),
-		rules: names(roleV1.memoryFiles, "file"),
+		rules: memory(roleV1.memoryFiles),
 	};
 	const removed = {
 		skills: new Set(compiled.stamp.removed.skills),
 		agents: new Set(compiled.stamp.removed.agents),
-		rules: new Set(compiled.stamp.removed.rules),
+		// Excluded rules are user-level files under the Claude config dir.
+		rules: new Set(compiled.stamp.removed.rules.map((rule) => `User:${rule}`)),
 	};
 	const result = { controls: {}, unintendedLoss: {}, requiredMissing: [] };
 	for (const kind of ["skills", "agents", "rules"]) {
@@ -124,6 +128,13 @@ export function summarizeRole(pairs) {
 					max: Math.max(...values),
 				}
 			: null;
+	// A control whose targets survive in any pair saved nothing: report it so a
+	// capability-safe pass is never mistaken for a proven saving.
+	const ineffective = { skills: [], agents: [], rules: [] };
+	for (const pair of complete)
+		for (const kind of Object.keys(ineffective))
+			for (const item of pair.verdict?.controls?.[kind]?.stillPresent ?? [])
+				if (!ineffective[kind].includes(item)) ineffective[kind].push(item);
 	return {
 		samples: pairs.length,
 		completePairs: complete.length,
@@ -136,6 +147,11 @@ export function summarizeRole(pairs) {
 		allPairsPass:
 			complete.length === pairs.length &&
 			complete.every((p) => p.verdict?.pass === true),
+		ineffective,
+		allControlsEffective:
+			complete.length === pairs.length &&
+			complete.every((p) => p.verdict?.controls) &&
+			Object.values(ineffective).every((list) => list.length === 0),
 	};
 }
 
@@ -150,7 +166,7 @@ export async function runPrefixControls({
 	probe,
 	config,
 	pinnedAgents,
-	home,
+	claudeConfigDir,
 	env = process.env,
 }) {
 	const out = { roles: {} };
@@ -180,7 +196,7 @@ export async function runPrefixControls({
 				},
 				context: { workflow, nodeId: phase, phase, agent },
 			},
-			home,
+			claudeConfigDir,
 			skillArm: "superpowers",
 		});
 		const base = legacySettings({
