@@ -1,14 +1,16 @@
 ---
 issue: FLY-2405
 phase: design
-phaseCursor: 4/6
-updated: 2026-09-26T17:18:07.163Z
-nextStep: v2 design review R1 running (gpt-6-astra xhigh, manifest req
-  2994b155); founder HTML drill section drafted (uncommitted)
+phaseCursor: 6/6
+updated: 2026-09-26T17:31:14.898Z
+nextStep: "design v2 APPROVED (room drill §10c/C8). Implement: resume from WIP
+  22c94c810 per plan §20 (last implement cursor 2/7: C3 shell green; C1 green
+  except generalized native socket regression red; C4 route/wiring in progress;
+  C5 two audit fixes; C7 pending), then C8, then C6 docs"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2405 progress
-**phase**: design (4/6)
-**next**: v2 design review R1 running (gpt-6-astra xhigh, manifest req 2994b155); founder HTML drill section drafted (uncommitted)
+**phase**: design (6/6)
+**next**: design v2 APPROVED (room drill §10c/C8). Implement: resume from WIP 22c94c810 per plan §20 (last implement cursor 2/7: C3 shell green; C1 green except generalized native socket regression red; C4 route/wiring in progress; C5 two audit fixes; C7 pending), then C8, then C6 docs
