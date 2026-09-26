@@ -44,7 +44,7 @@ drill 环境沿用 plan §7.3 白名单(已含 `TMPDIR=/tmp/`),另注入房 depl
 - `evidence-run record` 需要 `--lane`、`--driver-exit-code`、`--local-copy`、`--rerun-spec`(`evidence-run.ts:229-271`)。
 - drill 请求字段与 `GeneralizedRerunSpecV1.driver` 一一对应:`issue`(`^[A-Z]+-\d+$`)、`timeout_ms`(沿用合同的 `[10_000, 3_600_000]`,默认 900_000 = driver 默认 15 min)、`real`(⇔ lane `generalized_e2e_real`)。
 - 服务返回 `driver_exit_code`(原样)与 `evidence_copy_dir`(操作目录下、房外、拆房不删),runner 直接拿去 record。
-- (评审 R1 更正)合同的 `deriveRerunArgv` 不输出 `--codex-runner` / `--from-branch`,`renderRerunCommand` 固定 `TEST_REPLY_BY_ISSUE=1` ⇒ 只映射 `issue/timeout_ms/real` 不足以保证复跑同一种房。v2 只允许在合同可完整表达的房配置上 drill,并由服务用 `validateRerunSpecV1` 生成 `rerun_spec` 返回;扩展合同覆盖 Codex runner 房列 follow-up。
+- (评审 R1 更正)合同的 `deriveRerunArgv` 不输出 `--codex-runner` / `--from-branch`,`renderRerunCommand` 固定 `TEST_REPLY_BY_ISSUE=1` ⇒ 只映射 `issue/timeout_ms/real` 不足以保证复跑同一种房。v2 只允许在合同可完整表达的房配置上 drill(含 deploy 请求显式 `env={TEST_REPLY_BY_ISSUE:"1"}`;空 env 在宿主未定义该变量时部署成 reply 关闭的房,与复跑配方不一致,同样拒绝),并由服务用 `validateRerunSpecV1` 生成 `rerun_spec` 返回;扩展合同覆盖 Codex runner 房列 follow-up。
 - 服务**不**替 runner 调 `evidence-run record`:record 绑定 runner 自己的 submission credential 与 QA attempt(记忆:必须在 qa-result 之前、由持凭据的 attempt 记);服务代记会把身份弄混。
 
 ## R4 drill 与已批准状态机 / 并发的关系
