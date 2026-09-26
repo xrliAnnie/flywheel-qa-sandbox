@@ -28,16 +28,17 @@ Issue: FLY-2925 (https://linear.app/geoforge3d/issue/FLY-2925/病根修复-7-cod
 | claude-runner | `test/codex-daemon-runtime.test.ts` | 125/125 通过（需短 TMPDIR；FLY-2830 真实 lsof 用例高负载下偶发失败，单跑通过） |
 | claude-runner | `test/CodexTmuxAdapter.test.ts` | 179/179 通过 |
 | claude-runner | `test/codex-session-state-forward-compat.test.ts`（新增） | 5/5 通过 |
-| teamlead | `src/__tests__/event-route.test.ts` | 本改动相关用例全部通过；completion/PR 声明类用例在负载 80+ 时偶发超时/409，其中 "forged generalized completion" 在原始基线文件上同样失败 |
+| teamlead | `src/__tests__/event-route.test.ts` | 本改动相关用例（4 个 FLY-2925 与改写的 FLY-2018/FLY-1279 用例）每次都通过；整文件一次 113/113 全过（新增最后一个用例之前），负载 104–117 时另两次为 109–111 通过，失败的始终是同一组 completion/PR 声明用例（超时或 409），其中 "forged generalized completion" 在原始基线文件上同样失败 |
 | teamlead | `src/__tests__/runs-route-generalized-pending.test.ts` | 10/10 通过 |
 | teamlead | `src/bridge/__tests__/runs-route.dag-entry.test.ts` | 通过 |
 | teamlead | `src/bridge/__tests__/codex-session-reown.test.ts` | 59/59 通过 |
 | teamlead | `src/bridge/__tests__/codex-session-reown-wiring.structure.test.ts` | 10/10 通过 |
 | teamlead | `src/bridge/__tests__/run-infra-codex-recovery.test.ts` | 10/10 通过 |
 | teamlead | `src/__tests__/HeartbeatService.zombie-reconcile.test.ts` | 43/43 通过；删掉保护判断的负控使 2 个新用例变红 |
+| teamlead | 其余 6 个 `HeartbeatService.*.test.ts` | 全部通过（22/12/22/8/23/6） |
 | teamlead | `src/__tests__/DirectEventSink.dag-seam.test.ts`（读 event-route 源码） | 13/13 通过 |
 | teamlead | `src/__tests__/DirectEventSink.fly1427-terminal-immunity.test.ts` | 7/7 通过 |
-| teamlead | event-route-* 12 个、infra-event-router、resident-receiver-supervisor、run-infra-* 4 个、runs-route-* 5 个、meeting-notes-scheduler、runner-action-http、runner-actions、gateway-main | 27/28 通过；`runs-route-registration.test.ts` 拉起整个 Bridge，内置 15s 超时，负载 104 时超时（见 §5） |
+| teamlead | event-route-* 12 个、infra-event-router、resident-receiver-supervisor、run-infra-* 4 个、runs-route-* 5 个、meeting-notes-scheduler、runner-action-http、runner-actions、gateway-main | 27/28 通过；`runs-route-registration.test.ts` 拉起整个 Bridge，内置 15s 超时，负载 104–117 时超时；把 teamlead 全部改动源文件换回基线 fdd1b404d 后同样超时（见 §5） |
 
 ## 4. 排除项与理由
 
@@ -48,5 +49,6 @@ Issue: FLY-2925 (https://linear.app/geoforge3d/issue/FLY-2925/病根修复-7-cod
 
 ## 5. 未闭合与环境说明
 
-- 本机负载在验证期间为 80–104（多 runner 并发）。时间敏感的 Bridge 启动类用例（`runs-route-registration`）与部分 event-route completion 用例出现超时；它们不经过本 PR 改动的分支，最终以精确 head CI 为准。
+- `pnpm --filter "flywheel-teamlead..." build` 通过；claude-runner 与 teamlead `tsc --noEmit` 通过；`pnpm lint` 改动文件干净（仓库其余错误在未改动文件中）。
+- 本机负载在验证期间为 80–117（多 runner 并发）。时间敏感的 Bridge 启动类用例（`runs-route-registration`）与部分 event-route completion 用例出现超时；它们不经过本 PR 改动的分支，最终以精确 head CI 为准。
 - 需要真实 Codex 的验收（活 daemon 被接管、blocked/429 不判死、旧 goal_blocked 重放不判终态）未在本机执行，交 QA 在 Codex 房间验证，见 PR test plan。
