@@ -89,7 +89,7 @@ Issue: FLY-145 (https://linear.app/geoforge3d/issue/FLY-145/qa-fly-127-sandbox-s
 
 配置还存在 slot 5/6，但 issue 的 S6 验收范围明确是 1–4。QA 启动前必须确认本轮 production-mirror 注入把同一测试输入送到指定四个参与者；不能仅凭各 slot 的默认频道名推断它们都收到了消息。
 
-当前 repo harness 的拓扑审计表明：slot mode 只订阅本 slot 的 channel；mirror mode 使用 `test-core-mirror` 且只支持 slot 1–3；roundtable mode 使用 `test-leads-roundtable`。没有一个现成模式能证明 slot 1–4 同时收到 `cos-test`。此外当前 design DAG 的 `/private/tmp/flywheel-test-slot-4/bridge-launch.json` 明确包含 `BRIDGE_DEPT_SCOPE_REJECT=off`。这两个事实是 QA execution blocker，不是可以用“零响应”绕过的细节。
+当前 repo harness 的拓扑审计表明：slot mode 只订阅本 slot 的 channel；mirror mode 使用 `test-core-mirror` 且只支持 slot 1–3；roundtable mode 使用 `test-leads-roundtable`。没有一个现成模式能证明 slot 1–4 同时收到 `cos-test`。此外当前 design DAG 的 `/private/tmp/flywheel-test-slot-4/bridge-launch.json` 明确包含 `BRIDGE_DEPT_SCOPE_REJECT=off`，staged cos identity 未证明 test-2/3/4 bot id 在 abstain roster 内，而 Bridge 没有覆盖所有早期 4xx 的通用 access log。这些事实都是 QA execution blocker，不是可以用“零响应”绕过的细节。
 
 现有 `scripts/qa-fly-1189-preflight.sh` 还提供了 FLY-145 的精确锚点示例：
 
@@ -140,7 +140,10 @@ Attempt
 | 只观察频道、不查 start/spawn | 漏掉静默越界副作用 | 每 slot 同时核对消息与后台事件 |
 | 四个 slot 未都收到同一输入 | 把“没收到”误判为“保持沉默” | 记录 fan-out/订阅证明；缺失则 INCONCLUSIVE |
 | 根消息没有点名 test-2 | cos 正常回复、test-2 正常沉默却被误判 FAIL | 使用唯一合法指令 `<@1493072948683341976> 起 Runner FLY-145` |
-| 任一 Bridge 闸门 off | 只测 prompt 层却宣称双层 PASS | 四个 launch receipt 都必须证明 `BRIDGE_DEPT_SCOPE_REJECT=on` |
+| 任一 Bridge 闸门 off | 只测 prompt 层却宣称双层 PASS | 四个 launch receipt 都必须证明显式 enabled，或在完整清洗环境下证明 key 缺失从而使用 default-on |
+| cos roster 不认识测试 bot id | cos 正常 default reply 被误报为规则失败 | 实际 staged identity 必须列出 test-2/3/4 bot id |
+| 没有四路 HTTP ingress capture | 无法证明非 owner 没有发起早退 4xx start | capture 缺口一律 INCONCLUSIVE |
+| DB 时间文本格式不同 | 字符串比较漏掉新 session 或纳入旧 route | 所有比较统一用 SQLite `julianday()` |
 | 重发测试消息 | 重复 start/spawn，无法归因 | 每 attempt 只发一次并记录 message id |
 | 用昵称判断身份 | 显示名变化导致归属错误 | 用 slot id、bot id、lead id 与标签绑定 |
 | PR #170 仓库混淆 | 引用错误实现 | 始终写 `xrliAnnie/flywheel#170` |

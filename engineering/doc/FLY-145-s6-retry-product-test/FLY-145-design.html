@@ -128,7 +128,7 @@
     <p>规则由两层机制保证:一是 <span class="term">prompt 规则</span><span class="gloss">(写进每个 Lead 行为说明书里的软规则:标签不属于本部门就别响应)</span>;二是 <span class="term">Bridge</span><span class="gloss">(Flywheel 的中枢调度服务,负责分发消息和把关规则的后台程序)</span>在 <code>xrliAnnie/flywheel#170</code> 引入的 <span class="term">dept-scope check</span><span class="gloss">(部门范围检查:放行认领前,用代码硬性核对任务标签与部门是否匹配)</span>。</p>
     <p>当前 <span class="term">Action Gate</span><span class="gloss">(Lead 决定是否允许启动 Runner 的输入规则)</span>要求同时出现:唯一点名、一个 issue id 和明确执行语义。因此裸发 <code>FLY-145</code> 会让 cos Lead 正常回复、product Lead 正常沉默,不能作为 S6 触发。合法根消息是 <code>&lt;@1493072948683341976&gt; 起 Runner FLY-145</code>。</p>
     <p>测试流程:QA agent 发送一次合法根消息 → 证明四个 slot 收到同一输入且四个 Bridge 闸门均 on → 各 Lead bot 各自反应 → QA agent 采集证据并判定 PASS / FAIL / INCONCLUSIVE。<span class="term">INCONCLUSIVE</span><span class="gloss">(证据不够,既不能说通过也不能说失败)</span>用于 fan-out、闸门或观察窗口无法证明的情况。<strong>本工单不涉及产品代码改动;只有 S6 PASS 且常开 fixture 依赖迁移后才归档。</strong></p>
-    <div class="callout"><strong>当前执行状态:</strong> repo 现有 slot/mirror/roundtable 模式没有 slot 1–4 同读 cos-test 的拓扑,且本 design DAG 的 slot 4 启动记录显示部门闸门为 off。因此当前只能完成设计,不能执行或宣称 S6 PASS;QA 必须等待独立 campaign 提供 fan-out + 四闸门 on receipts。</div>
+    <div class="callout"><strong>当前执行状态:</strong> repo 现有 slot/mirror/roundtable 模式没有 slot 1–4 同读 cos-test 的拓扑,本 design DAG 的 slot 4 闸门为 off,cos 测试 identity 未证明认识测试 dept bot id,Bridge 也没有完整 HTTP access log。因此当前只能完成设计,不能执行或宣称 S6 PASS;QA 必须等待独立 campaign 提供 fan-out、cos roster、四闸门 enabled 与四路 ingress-capture receipts。</div>
     <div class="comment-box">
       <label for="c2">对「测试背景」的意见</label>
       <textarea id="c2" class="sec-comment" data-sec-title="测试背景" placeholder="写下你的意见,自动保存在本机浏览器…"></textarea>

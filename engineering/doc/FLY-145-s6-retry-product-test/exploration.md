@@ -72,7 +72,7 @@ QA 在 `cos-test` 发布一次只点名 test-2 的 spawn 指令，按 slot 记�
 ## 边界与负向守卫
 
 - 不修改代码、配置、标签、Lead 身份或部署状态。
-- 当前 repo harness 没有支持 slot 1–4 同读 `cos-test` 的拓扑，且本 design DAG 的 slot 4 scope gate 为 off；没有独立 campaign 的 fan-out + gate-on receipts 时不得执行或宣称 PASS。
+- 当前 repo harness 没有支持 slot 1–4 同读 `cos-test` 的拓扑，本 design DAG 的 slot 4 scope gate 为 off，cos 测试 identity 也未证明认识测试 dept bot id，Bridge 没有通用 access log；没有独立 campaign 的 fan-out + roster + gate-enabled + ingress-capture receipts 时不得执行或宣称 PASS。
 - 不为了“制造成功”手动指定 test-2、重发多次消息或删除越界响应。
 - 不把 Bridge 对越界启动的拒绝消息误当成“保持沉默”；若被动噪声场景下非所属 Lead 发了任何回复，仍是 S6 FAIL。
 - 不把当前 sandbox 仓库的 PR #170 当成 FLY-127：该编号在 sandbox 指向无关的 FLY-2248 fixture；权威相关项是 `xrliAnnie/flywheel#170`。
