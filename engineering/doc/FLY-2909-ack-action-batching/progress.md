@@ -1,14 +1,14 @@
 ---
 issue: FLY-2909
 phase: implement
-phaseCursor: 1/5
-updated: 2026-09-26T14:56:30.841Z
-nextStep: "Rework: default-off governed ACK batching flag; TDD byte parity,
-  scoped tests, review and handoff"
+phaseCursor: 3/5
+updated: 2026-09-26T15:02:33.918Z
+nextStep: Flag and both carriers wired; finish targeted verification, exact-head
+  code review, PR handoff
 chunks: []
 pointers: {}
 ---
 
 # FLY-2909 progress
-**phase**: implement (1/5)
-**next**: Rework: default-off governed ACK batching flag; TDD byte parity, scoped tests, review and handoff
+**phase**: implement (3/5)
+**next**: Flag and both carriers wired; finish targeted verification, exact-head code review, PR handoff
