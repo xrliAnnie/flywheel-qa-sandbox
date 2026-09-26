@@ -14,6 +14,16 @@ Issue: FLY-2920 (https://linear.app/geoforge3d/issue/FLY-2920/病根修复-4-重
 - diagram-design self_check 未通过：无 accessible SVG（上面的真实渲染失败）；该通用工具还要求 motion script/data-motion-root。任务强制意见脚本与 nonce，且此页静态，所以不为通过该工具添加无意义 motion 控制或伪造 SVG。
 - 未做浏览器截图、真实布局或实际 CSP 下执行验收；只能将上述称为源码/控制器检查。未运行产品代码测试，未启动测试房、重启或部署服务。
 
+## 续接证据（2026-09-26）
+
+- 当前执行 `53313403-f4ae-43b1-83be-140eb624a1ea`，TURN epoch=5，run=`44d7b165-f570-4b98-9bb4-6e820193bef7`。保留历史执行身份，不复用旧凭据。
+- 旧 gate 实际回收为 R1 `CHANGES_REQUESTED`；其 findings 已由 `7f4fac134` 的 plan 修订记录逐项处置。上节“待回收”仅描述原体当时状态。
+- 新 gate `0479dcf9-4c98-4ef9-8bbb-8f2e9f36265f`、request `8d9a9612-1c5f-4e10-ba56-6d2c14ba3930`：accepted=true、skipped=false、duplicate=false。
+- 重新送审的 plan blob=`47caa6a7dd0a86ddce13bec586e4a6a5af193716`，与保留头 `7f4fac134` 完全相同。仅同步 research 的 R1 校正说明、探索续接身份和 founder 页面；提交 `14b9eac06` 已推到 origin。
+- founder 页面更正旧“未知即暂停”措辞：未知跳过这一压力检查，独立 load/free-bytes 护栏保留；补停等作者的退休/ready 唤醒、原预算到期处理及通知与派发分离。
+- 重新运行原 `/tmp/fly2920-report-check.cjs` 对当前生成页的源码/Node VM 检查：7 节意见、按路径隔离、保存恢复、存储异常、字面恶意标签、1800 字符分段与三个 clipboard 分支全部通过。`git diff --check` 通过。未运行产品代码测试。
+- 无新增可复用的角色判断需要写入记忆；本次延续既有的精确身份、有效裁决和托管校验要求。
+
 ## 待完成
 
 有效评审 → 最终页状态刷新 → commit/push → publish-only → 托管 HTTP/CSP/source 校验 → Lead URL report → exact complete/park。
