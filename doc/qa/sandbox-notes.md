@@ -2,7 +2,7 @@
 
 The `flywheel-qa-sandbox` repository is the QA test-slot framework's isolated target for exercising **real Runner** behavior end to end. Each slot clones the sandbox, starts a slot-local Bridge and Lead, and passes a real Linear issue through the PreHydrator—the component that turns issue data into Runner context—before spawning a genuine Runner. The framework deliberately has no synthetic fixture mode because failures such as worktree collisions, gate deadlocks, branch/PR wiring errors, and teardown leaks only appear on the real path.
 
-That isolation gives the fixture a safe blast radius. A slot can create branches, commit, push, open pull requests, and block on gates inside the sandbox clone without touching production repositories, Discord channels, alert queues, or databases. The slot-suffixed clone basename (`project-slot-<N>`) prevents WorktreeManager-derived branches from colliding when slots run the same issue, while `FLYWHEEL_RUNNER_START_POINT` lets only the slot Bridge start Runner worktrees from a selected sandbox branch.
+That isolation gives the fixture a safe blast radius. A slot can create branches, commit, push, open pull requests, and block on gates inside the sandbox clone without touching production repositories or Discord channels. Alert queues and the claims database are isolated only when the slot is deployed with `--alerts`; without that mode, alert writers use the production-path stores documented by the framework. The slot-suffixed clone basename (`project-slot-<N>`) prevents WorktreeManager-derived branches from colliding when slots run the same issue, while `FLYWHEEL_RUNNER_START_POINT` lets only the slot Bridge start Runner worktrees from a selected sandbox branch.
 
 The sandbox is disposable, repeatable integration-test infrastructure rather than a second source of truth. Every run should stay inside its clone and follow the `test-deploy.sh` → `inject-linear-issue.sh` → `test-teardown.sh` lifecycle so concurrent slots remain isolated and residual worktrees, branches, processes, and local databases are cleaned up. FLY-202 is a test-slot fixture only; production Leads and Runners must not pick it up.
 
@@ -10,7 +10,7 @@ The sandbox is disposable, repeatable integration-test infrastructure rather tha
 
 | Directory | Description |
 | --- | --- |
-| `.claude/` | Claude Code project commands, skills, `qa-config.yaml`, and orchestrator helpers. |
+| `.claude/` | Claude Code project commands, `qa-config.yaml`, and orchestrator helpers. |
 | `.flywheel/` | Project-local Flywheel configuration (`config.yaml`) and executor role definitions. |
 | `.github/` | GitHub Actions workflows for repository CI and automation. |
 | `.lead/` | Per-Lead identity folders (cos / eng / product / infra-bot / interviewer) plus the shared Lead rule bundle. |
