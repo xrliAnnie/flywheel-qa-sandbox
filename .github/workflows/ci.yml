@@ -1484,6 +1484,12 @@ jobs:
           bash scripts/__tests__/qa-room-env.test.sh
           node --test scripts/__tests__/qa-529-discord-roundtrip.test.mjs
 
+      - name: Test — FLY-2405 Bridge room service contracts
+        run: |
+          bash scripts/__tests__/fly2405-alert-duty.test.sh
+          bash scripts/__tests__/fly2405-room-job.test.sh
+          bash scripts/__tests__/fly2405-service-claim.test.sh
+
       # FLY-1775: generalized-DAG 529 room provisioning, canonical binding
       # seed/verify, deterministic persistent stub, and the nine-step replay
       # state machine. Hermetic: temporary SQLite/clone fixtures and fake

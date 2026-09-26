@@ -47,3 +47,11 @@ QA 使用最终 origin head，由 Codex 与 Claude 各自只经 `room deploy|dri
 另外 7 条 MEDIUM/LOW 审查建议已通过 ask --report 交 Lead：Codex 工具 PATH、逐房 tick 异常隔离、丢失 claim/source 恢复、qa-result 后凭据与拆房顺序、source cleanup 阻塞拆房、ps locale、告警 fixture 环境隔离。它们按当前有效审查策略为非阻断建议；本轮仅修唯一 HIGH，不宣称这些建议已解决。
 
 本轮受影响 teamlead 及依赖 build 通过；pnpm lint 通过，25 条既有 warning。重建后的 dist 亦接受真实 renderer 输出。
+
+## Scoped CI 登记修复
+
+d219e447f 已得到有效 APPROVED 并正常推送，但 CI run 36272181643 在 Quick Gate 的 shell-suite enumeration 即失败，尚未执行安装/构建：本单新增 4 个 shell 测试未登记。已本地复现红灯。
+
+修复仅登记 CI：alert-duty、room-job、service-claim 三个可移植 fixture 进入 script-tests-6；teardown-pits 使用真实 macOS /private/tmp/codex-daemon-* socket authority 路径，登记到带理由的 manual-only inventory，单独在 macOS 重跑通过。新增 step 同步进入 ci-structure 的精确名称/顺序清单，未放宽结构断言。
+
+验证：枚举守卫（含删除 mutation）、CI structure、23/23 package matrix、8 workflow startup validation 通过；workflow-startup 7、launchd foundation 20、timeout guard 5、wall-clock guard 1、workflow permissions 10 通过；teardown-pits 5 组通过。完整发现/排除与命令见 verification-ci-registration.json。产品源码与已批准/打包 smoke 26/26 的 d219e447f 完全相同；本次无新增 TS、接口、包依赖或打包变更，不重复构建/打包或广泛 related。新 HEAD 仍需重新有效复审，正常推送后复核 scoped CI。未请求 full CI。

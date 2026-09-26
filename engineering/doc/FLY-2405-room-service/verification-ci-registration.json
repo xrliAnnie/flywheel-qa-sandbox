@@ -1,0 +1,743 @@
+{
+  "queries": [
+    {
+      "needle": ".github/workflows/ci.yml",
+      "test_paths": [
+        "packages/flywheel-comm/src/__tests__/ci-full.test.ts",
+        "packages/flywheel-comm/src/__tests__/ship-ci-guard.test.ts",
+        "packages/teamlead/src/__tests__/fly-889-ci-workflow-timeout-guard.test.ts",
+        "packages/teamlead/src/__tests__/required-wall-clock-thresholds.test.ts",
+        "scripts/__tests__/ci-full-reuse.test.sh",
+        "scripts/__tests__/ci-matrix-coverage.test.sh",
+        "scripts/__tests__/ci-shell-suite-enumeration.test.sh",
+        "scripts/__tests__/ci-structure.test.sh",
+        "scripts/__tests__/fly1663-launchd-foundation.test.sh",
+        "scripts/__tests__/fly2102-flag-freeze.test.sh",
+        "scripts/__tests__/qa-fly-2007-phase0-analyze.test.sh",
+        "scripts/__tests__/teamlead-shards.test.mjs",
+        "scripts/__tests__/test-worktree-removal-contract.test.sh",
+        "scripts/__tests__/update-flywheel-sources.test.sh",
+        "scripts/__tests__/workflow-startup.test.mjs",
+        "scripts/cycle-time/__tests__/wiring.test.mjs"
+      ]
+    },
+    {
+      "needle": "ci.yml",
+      "test_paths": [
+        "packages/flywheel-comm/src/__tests__/ci-full.test.ts",
+        "packages/flywheel-comm/src/__tests__/ship-ci-guard.test.ts",
+        "packages/teamlead/src/__tests__/fly-889-ci-workflow-timeout-guard.test.ts",
+        "packages/teamlead/src/__tests__/required-wall-clock-thresholds.test.ts",
+        "packages/teamlead/src/__tests__/workflow-permissions.test.ts",
+        "scripts/__tests__/ci-classify.test.sh",
+        "scripts/__tests__/ci-full-reuse.test.sh",
+        "scripts/__tests__/ci-matrix-coverage.test.sh",
+        "scripts/__tests__/ci-shell-suite-enumeration.test.sh",
+        "scripts/__tests__/ci-structure.test.sh",
+        "scripts/__tests__/fly1663-launchd-foundation.test.sh",
+        "scripts/__tests__/fly2102-flag-freeze.test.sh",
+        "scripts/__tests__/qa-fly-2007-phase0-analyze.test.sh",
+        "scripts/__tests__/release-workflows-structure.test.sh",
+        "scripts/__tests__/teamlead-shards.test.mjs",
+        "scripts/__tests__/test-worktree-removal-contract.test.sh",
+        "scripts/__tests__/update-flywheel-sources.test.sh",
+        "scripts/__tests__/workflow-startup.test.mjs",
+        "scripts/ci-ubicloud/__tests__/runner-variable.test.mjs",
+        "scripts/cycle-time/__tests__/wiring.test.mjs"
+      ]
+    },
+    {
+      "needle": ".github/workflows",
+      "test_paths": [
+        "packages/edge-worker/src/__tests__/Blueprint.fly1505-ship-poll-window.test.ts",
+        "packages/edge-worker/src/__tests__/__snapshots__/Blueprint.fly1188-codex-prompt.test.ts.snap",
+        "packages/flywheel-comm/src/__tests__/ci-full.test.ts",
+        "packages/flywheel-comm/src/__tests__/ship-ci-guard.test.ts",
+        "packages/flywheel-comm/src/__tests__/summary-pr-verifier.test.ts",
+        "packages/payload-endpoint/__tests__/activation-config.test.mjs",
+        "packages/release-contract/__tests__/schema.test.mjs",
+        "packages/teamlead/src/__tests__/fly-889-ci-workflow-timeout-guard.test.ts",
+        "packages/teamlead/src/__tests__/fly247-bash-suites.test.ts",
+        "packages/teamlead/src/__tests__/required-wall-clock-thresholds.test.ts",
+        "packages/teamlead/src/__tests__/workflow-docs-git.integration.test.ts",
+        "packages/teamlead/src/__tests__/workflow-permissions.test.ts",
+        "packages/teamlead/src/bridge/__tests__/beta-release-github.test.ts",
+        "packages/teamlead/src/bridge/__tests__/beta-release-runtime.test.ts",
+        "packages/teamlead/src/bridge/__tests__/customer-release-advance.test.ts",
+        "packages/teamlead/src/bridge/__tests__/customer-release-decisions.test.ts",
+        "packages/teamlead/src/bridge/__tests__/customer-release-dispatch.test.ts",
+        "packages/teamlead/src/bridge/__tests__/customer-release-github.test.ts",
+        "packages/teamlead/src/bridge/__tests__/customer-release-manual-intake.test.ts",
+        "packages/teamlead/src/bridge/__tests__/ship-workflow-failure-receipt.test.ts",
+        "scripts/__tests__/beta-workflow-structure.test.mjs",
+        "scripts/__tests__/ci-classify.test.sh",
+        "scripts/__tests__/ci-full-reuse.test.sh",
+        "scripts/__tests__/ci-matrix-coverage.test.sh",
+        "scripts/__tests__/ci-shell-suite-enumeration.test.sh",
+        "scripts/__tests__/ci-structure.test.sh",
+        "scripts/__tests__/fly1663-launchd-foundation.test.sh",
+        "scripts/__tests__/fly2102-flag-freeze.test.sh",
+        "scripts/__tests__/payload-auto-release-workflow.test.mjs",
+        "scripts/__tests__/payload-manual-decision-workflow.test.mjs",
+        "scripts/__tests__/payload-rebind-workflow.test.mjs",
+        "scripts/__tests__/qa-fly-2007-phase0-analyze.test.sh",
+        "scripts/__tests__/release-workflows-structure.test.sh",
+        "scripts/__tests__/ship-merge-token.test.sh",
+        "scripts/__tests__/ship-report-failure.test.sh",
+        "scripts/__tests__/teamlead-shards.test.mjs",
+        "scripts/__tests__/test-lead-memory-bootstrap.test.sh",
+        "scripts/__tests__/test-lead-memory-hooks.test.sh",
+        "scripts/__tests__/test-lead-memory-observe-workflow.test.sh",
+        "scripts/__tests__/test-lead-memory-workflow.test.sh",
+        "scripts/__tests__/test-worktree-removal-contract.test.sh",
+        "scripts/__tests__/update-flywheel-sources.test.sh",
+        "scripts/__tests__/workflow-startup.test.mjs",
+        "scripts/ci-ubicloud/__tests__/runner-variable.test.mjs",
+        "scripts/cycle-time/__tests__/wiring.test.mjs"
+      ]
+    },
+    {
+      "needle": "scripts/__tests__/ci-shell-suite-manual-only.txt",
+      "test_paths": [
+        "scripts/__tests__/ci-shell-suite-enumeration.test.sh"
+      ]
+    },
+    {
+      "needle": "ci-shell-suite-manual-only.txt",
+      "test_paths": [
+        "scripts/__tests__/ci-shell-suite-enumeration.test.sh"
+      ]
+    },
+    {
+      "needle": "scripts/__tests__",
+      "test_paths": [
+        "packages/claude-runner/test/codex-reading-freshness.test.ts",
+        "packages/claude-runner/test/codex-shim.test.ts",
+        "packages/payload-endpoint/__tests__/etag.test.mjs",
+        "packages/teamlead/src/__tests__/fly-2413-retention-mutations.test.ts",
+        "packages/teamlead/src/__tests__/fly2139-standing-policy.test.ts",
+        "packages/teamlead/src/__tests__/fly247-bash-suites.test.ts",
+        "packages/teamlead/src/__tests__/fly574-bash-suites.test.ts",
+        "packages/teamlead/src/__tests__/path-hygiene.test.ts",
+        "packages/teamlead/src/bridge/__tests__/capacity-snapshot.test.ts",
+        "packages/teamlead/src/lead-backends/codex/__tests__/read-deny-removed.sentinel.test.ts",
+        "scripts/__tests__/autocompact-override-retirement.test.sh",
+        "scripts/__tests__/check-global-path-hygiene.test.sh",
+        "scripts/__tests__/ci-shell-suite-enumeration.test.sh",
+        "scripts/__tests__/ci-structure.test.sh",
+        "scripts/__tests__/converge-fly1389.test.sh",
+        "scripts/__tests__/customer-auto-update-acceptance.test.sh",
+        "scripts/__tests__/fly1165-sweep-decision.test.mjs",
+        "scripts/__tests__/fly1577-cmux-bin-closure.test.sh",
+        "scripts/__tests__/fly1663-launchd-foundation.test.sh",
+        "scripts/__tests__/fly1663-qa-launchd-mutants.test.sh",
+        "scripts/__tests__/fly1663-qa-launchd.test.sh",
+        "scripts/__tests__/fly1674-residue.test.sh",
+        "scripts/__tests__/fly1678-statusline-fable.test.sh",
+        "scripts/__tests__/fly1679-dev-channels-v2.test.sh",
+        "scripts/__tests__/fly1680-v1-extinction.test.sh",
+        "scripts/__tests__/fly2045-milestone-layout-mutations.test.sh",
+        "scripts/__tests__/fly2102-flag-freeze.test.sh",
+        "scripts/__tests__/fly2144-retired-dispatch-residue.test.sh",
+        "scripts/__tests__/flywheel-cmux-install-link-only.test.sh",
+        "scripts/__tests__/install-voice-launchd.test.sh",
+        "scripts/__tests__/launchd-units-manifest-fail-closed.test.sh",
+        "scripts/__tests__/lead-session-resume-gate.test.sh",
+        "scripts/__tests__/migrate-fly1572-mailbox.test.sh",
+        "scripts/__tests__/package-gate.test.mjs",
+        "scripts/__tests__/path-hygiene.test.sh",
+        "scripts/__tests__/qa-fly-2007-phase0-analyze.test.sh",
+        "scripts/__tests__/qa-lead-artifact-fixtures.test.sh",
+        "scripts/__tests__/release-workflows-structure.test.sh",
+        "scripts/__tests__/shell-publish-idempotent.test.sh",
+        "scripts/__tests__/shuttle-unit-results.test.sh",
+        "scripts/__tests__/test-auto-approve-identity.test.sh",
+        "scripts/__tests__/test-worktree-removal-contract.test.sh",
+        "scripts/__tests__/update-flywheel-sources.test.sh",
+        "scripts/__tests__/updater-trigger-policy.test.sh",
+        "scripts/__tests__/v2-retirement-cleanup.test.sh",
+        "scripts/__tests__/voucher-watch.test.sh"
+      ]
+    },
+    {
+      "needle": "fly2405-alert-duty.test.sh",
+      "test_paths": []
+    },
+    {
+      "needle": "fly2405-room-job.test.sh",
+      "test_paths": []
+    },
+    {
+      "needle": "fly2405-service-claim.test.sh",
+      "test_paths": []
+    },
+    {
+      "needle": "fly2405-teardown-pits.test.sh",
+      "test_paths": []
+    },
+    {
+      "needle": "scripts/__tests__/ci-structure.test.sh",
+      "test_paths": [
+        "scripts/__tests__/ci-structure.test.sh",
+        "scripts/__tests__/qa-fly-2007-phase0-analyze.test.sh"
+      ]
+    },
+    {
+      "needle": "ci-structure.test.sh",
+      "test_paths": [
+        "scripts/__tests__/ci-matrix-coverage.test.sh",
+        "scripts/__tests__/ci-structure.test.sh",
+        "scripts/__tests__/qa-fly-2007-phase0-analyze.test.sh"
+      ]
+    },
+    {
+      "needle": "Test \u2014 FLY-2405 Bridge room service contracts",
+      "test_paths": [
+        "scripts/__tests__/ci-structure.test.sh"
+      ]
+    }
+  ],
+  "decisions": [
+    {
+      "path": "packages/claude-runner/test/codex-reading-freshness.test.ts",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "packages/claude-runner/test/codex-shim.test.ts",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "packages/edge-worker/src/__tests__/Blueprint.fly1505-ship-poll-window.test.ts",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "packages/edge-worker/src/__tests__/__snapshots__/Blueprint.fly1188-codex-prompt.test.ts.snap",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "packages/flywheel-comm/src/__tests__/ci-full.test.ts",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "packages/flywheel-comm/src/__tests__/ship-ci-guard.test.ts",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "packages/flywheel-comm/src/__tests__/summary-pr-verifier.test.ts",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "packages/payload-endpoint/__tests__/activation-config.test.mjs",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "packages/payload-endpoint/__tests__/etag.test.mjs",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "packages/release-contract/__tests__/schema.test.mjs",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fly-2413-retention-mutations.test.ts",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fly-889-ci-workflow-timeout-guard.test.ts",
+      "retained": true,
+      "reason": "Validates modified script job timeout policy"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fly2139-standing-policy.test.ts",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fly247-bash-suites.test.ts",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fly574-bash-suites.test.ts",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/path-hygiene.test.ts",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/required-wall-clock-thresholds.test.ts",
+      "retained": true,
+      "reason": "Reads actual enumerated script commands and timeout contracts"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/workflow-docs-git.integration.test.ts",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/workflow-permissions.test.ts",
+      "retained": true,
+      "reason": "Reads real workflow permissions"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/beta-release-github.test.ts",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/beta-release-runtime.test.ts",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/capacity-snapshot.test.ts",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/customer-release-advance.test.ts",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/customer-release-decisions.test.ts",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/customer-release-dispatch.test.ts",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/customer-release-github.test.ts",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/customer-release-manual-intake.test.ts",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/ship-workflow-failure-receipt.test.ts",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "packages/teamlead/src/lead-backends/codex/__tests__/read-deny-removed.sentinel.test.ts",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/autocompact-override-retirement.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/beta-workflow-structure.test.mjs",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/check-global-path-hygiene.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/ci-classify.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/ci-full-reuse.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/ci-matrix-coverage.test.sh",
+      "retained": true,
+      "reason": "Real workflow parse and matrix coverage contract"
+    },
+    {
+      "path": "scripts/__tests__/ci-shell-suite-enumeration.test.sh",
+      "retained": true,
+      "reason": "Failing CI guard and inventory mutation checks"
+    },
+    {
+      "path": "scripts/__tests__/ci-structure.test.sh",
+      "retained": true,
+      "reason": "Validates real CI job and step structure"
+    },
+    {
+      "path": "scripts/__tests__/converge-fly1389.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/customer-auto-update-acceptance.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/fly1165-sweep-decision.test.mjs",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/fly1577-cmux-bin-closure.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/fly1663-launchd-foundation.test.sh",
+      "retained": true,
+      "reason": "Reads modified lifecycle script job and explicit suite wiring"
+    },
+    {
+      "path": "scripts/__tests__/fly1663-qa-launchd-mutants.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/fly1663-qa-launchd.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/fly1674-residue.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/fly1678-statusline-fable.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/fly1679-dev-channels-v2.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/fly1680-v1-extinction.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/fly2045-milestone-layout-mutations.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/fly2102-flag-freeze.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/fly2144-retired-dispatch-residue.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/flywheel-cmux-install-link-only.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/install-voice-launchd.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/launchd-units-manifest-fail-closed.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/lead-session-resume-gate.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/migrate-fly1572-mailbox.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/package-gate.test.mjs",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/path-hygiene.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/payload-auto-release-workflow.test.mjs",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/payload-manual-decision-workflow.test.mjs",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/payload-rebind-workflow.test.mjs",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/qa-fly-2007-phase0-analyze.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/qa-lead-artifact-fixtures.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/release-workflows-structure.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/shell-publish-idempotent.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/ship-merge-token.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/ship-report-failure.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/shuttle-unit-results.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/teamlead-shards.test.mjs",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/test-auto-approve-identity.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/test-lead-memory-bootstrap.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/test-lead-memory-hooks.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/test-lead-memory-observe-workflow.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/test-lead-memory-workflow.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/test-worktree-removal-contract.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/update-flywheel-sources.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/updater-trigger-policy.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/v2-retirement-cleanup.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/voucher-watch.test.sh",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/__tests__/workflow-startup.test.mjs",
+      "retained": true,
+      "reason": "Workflow startup syntax and contexts"
+    },
+    {
+      "path": "scripts/ci-ubicloud/__tests__/runner-variable.test.mjs",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    },
+    {
+      "path": "scripts/cycle-time/__tests__/wiring.test.mjs",
+      "retained": false,
+      "reason": "Unchanged workflow behavior or parent-directory reference: only one shell step and macOS fixture classification change; no classifier/full-CI/release/runner/permissions implementation changes. Existing approval and tests retained."
+    }
+  ],
+  "retained": {
+    "scripts/__tests__/ci-shell-suite-enumeration.test.sh": "Failing CI guard and inventory mutation checks",
+    "scripts/__tests__/ci-structure.test.sh": "Validates real CI job and step structure",
+    "scripts/__tests__/ci-matrix-coverage.test.sh": "Real workflow parse and matrix coverage contract",
+    "scripts/__tests__/fly1663-launchd-foundation.test.sh": "Reads modified lifecycle script job and explicit suite wiring",
+    "scripts/__tests__/workflow-startup.test.mjs": "Workflow startup syntax and contexts",
+    "packages/teamlead/src/__tests__/fly-889-ci-workflow-timeout-guard.test.ts": "Validates modified script job timeout policy",
+    "packages/teamlead/src/__tests__/required-wall-clock-thresholds.test.ts": "Reads actual enumerated script commands and timeout contracts",
+    "packages/teamlead/src/__tests__/workflow-permissions.test.ts": "Reads real workflow permissions",
+    "scripts/__tests__/fly2405-teardown-pits.test.sh": "Reverify classified macOS-only socket fixture explicitly"
+  },
+  "ci_failure": {
+    "run": 36272181643,
+    "head": "d219e447f2f3412cea1a14b1fe1bc4b76007c7ae",
+    "step": "Verify shell suite CI enumeration is complete",
+    "local_red": "4 unclassified fly2405 shell files"
+  },
+  "fixture_classification": "Three portable fly2405 shell files registered in script-tests-6; teardown-pits retained manual-only because real macOS /private/tmp/codex-daemon-* socket authority fixture; rerun concretely on macOS.",
+  "structure_guard": "New step name added to existing exact inventory/order assertion after red reproduction; assertion remains exact.",
+  "checks": [
+    {
+      "command": [
+        "bash",
+        "scripts/__tests__/ci-matrix-coverage.test.sh"
+      ],
+      "exit": 0,
+      "log": "/tmp/fly2405-ci-registration-0.log"
+    },
+    {
+      "command": [
+        "bash",
+        "scripts/__tests__/fly1663-launchd-foundation.test.sh"
+      ],
+      "exit": 0,
+      "log": "/tmp/fly2405-ci-registration-1.log"
+    },
+    {
+      "command": [
+        "node",
+        "--test",
+        "scripts/__tests__/workflow-startup.test.mjs"
+      ],
+      "exit": 0,
+      "log": "/tmp/fly2405-ci-registration-2.log"
+    },
+    {
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/fly-889-ci-workflow-timeout-guard.test.ts"
+      ],
+      "exit": 0,
+      "log": "/tmp/fly2405-ci-registration-3.log"
+    },
+    {
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/required-wall-clock-thresholds.test.ts"
+      ],
+      "exit": 0,
+      "log": "/tmp/fly2405-ci-registration-4.log"
+    },
+    {
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/workflow-permissions.test.ts"
+      ],
+      "exit": 0,
+      "log": "/tmp/fly2405-ci-registration-5.log"
+    },
+    {
+      "command": [
+        "bash",
+        "scripts/__tests__/fly2405-teardown-pits.test.sh"
+      ],
+      "exit": 0,
+      "log": "/tmp/fly2405-ci-registration-6.log"
+    },
+    {
+      "command": [
+        "bash",
+        "scripts/__tests__/ci-shell-suite-enumeration.test.sh"
+      ],
+      "exit": 0,
+      "result": "357 shell suites classified;91 Node suites enumerated;removal mutations turn red"
+    },
+    {
+      "command": [
+        "bash",
+        "scripts/__tests__/ci-structure.test.sh"
+      ],
+      "exit": 0,
+      "result": "Exact structure contract passed after adding new step to exact inventory"
+    },
+    {
+      "command": [
+        "node",
+        "scripts/check-workflow-startup.mjs"
+      ],
+      "exit": 0,
+      "result": "8 workflows validated"
+    },
+    {
+      "command": [
+        "pnpm",
+        "lint"
+      ],
+      "exit": 0,
+      "warnings": 25,
+      "log": "/tmp/fly2405-ci-registration-lint.log"
+    }
+  ],
+  "source_sha256": {
+    ".github/workflows/ci.yml": "3a9030d20e3f0def33fd633501db9f4cae0163b738bf5c50e13309317a7f908b",
+    "scripts/__tests__/ci-shell-suite-manual-only.txt": "64ff2d3136cea0e58a42819bf7fcfe068e8107902351c4af6312e376450291e7",
+    "scripts/__tests__/ci-structure.test.sh": "e4c47672b2f532ce96ede8603fdf6f2176cb0e4d7cad310cad266d0aec46da61"
+  }
+}

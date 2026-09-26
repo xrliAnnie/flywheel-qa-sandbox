@@ -16,6 +16,9 @@ scripts/__tests__/token-usage-daily-channel.test.sh
 scripts/__tests__/token-usage-daily-failloud.test.sh
 
 # macOS / launchd / Keychain / host-network integration suites.
+# FLY-2405 probes real Unix sockets under the macOS /private/tmp/codex-daemon
+# authority path; retained as a concrete local macOS test, not a Linux fixture.
+scripts/__tests__/fly2405-teardown-pits.test.sh
 scripts/__tests__/bridge-liveness-probe.test.sh
 scripts/__tests__/bridge-port.test.sh
 scripts/__tests__/bridge-wrapper-preflight.test.sh
