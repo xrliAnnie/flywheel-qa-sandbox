@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
 phase: design
-phaseCursor: 1/6
-updated: 2026-09-26T11:35:11.588Z
-nextStep: "refresh exploration/research/plan for slot-4 PR #194 continuation"
+phaseCursor: 2/6
+updated: 2026-09-26T11:35:57.786Z
+nextStep: write plan.md, then design review
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: design (1/6)
-**next**: refresh exploration/research/plan for slot-4 PR #194 continuation
+**phase**: design (2/6)
+**next**: write plan.md, then design review
