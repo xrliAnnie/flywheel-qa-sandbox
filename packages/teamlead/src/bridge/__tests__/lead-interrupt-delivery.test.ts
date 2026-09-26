@@ -822,6 +822,32 @@ describe("FLY-2883 interrupt delivery — code review R1 regressions", () => {
 		expect(events().at(-1)).toBe("acked_after_reply");
 	});
 
+	it("R2 advisory: a reply that acks the letter mid-judgment ends the tick cleanly", async () => {
+		seed();
+		const pane = fakePane([{ state: "busy_safe" }]);
+		const loop = makeLoop(
+			realAdapter(),
+			hooks("claude-code", { claudePane: pane }),
+		);
+		await loop.tick();
+		pane.assess.mockImplementationOnce(async () => {
+			// Exactly what the reply route does: record, then ack the letter.
+			store.leadInterrupts.recordReply({
+				interruptId: ID,
+				text: "马上好",
+				replyDigest: "c".repeat(64),
+				now: iso(),
+			});
+			expect(queue.ack(DELIVERY, iso())).toBe(true);
+			return { state: "idle" as const, reason: "done_line" };
+		});
+		clock += 10_000;
+		const result = await loop.tick();
+		expect(result.ok).toBe(true);
+		expect(letter().state).toBe("ACKED");
+		expect(nativeInbox()).not.toContain(ID);
+	});
+
 	it("#4 does not type when the Lead answers during the first judgment", async () => {
 		seed();
 		const pane = fakePane([]);

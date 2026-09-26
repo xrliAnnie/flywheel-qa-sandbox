@@ -502,7 +502,7 @@ export class LeadInboxLoop {
 			// A controlled interrupt letter always travels alone (its sender id is
 			// unique). Anything else claiming the type is dead-lettered unseen.
 			if (rows.length !== 1) {
-				this.assertInterruptClaim(rows);
+				if (!this.interruptClaimLive(rows)) return;
 				this.opts.interruptHooks.rejectBatch?.(rows);
 				this.deadLetterInterrupt(rows, "lead_interrupt_batch_invalid");
 				return;
@@ -515,8 +515,8 @@ export class LeadInboxLoop {
 			if (interrupt?.kind === "custom") {
 				const handled = await interrupt.deliver();
 				if ("hold" in handled) {
-					this.assertInterruptClaim(rows);
-					this.holdInterrupt(rows[0]!, handled.hold);
+					if (this.interruptClaimLive(rows))
+						this.holdInterrupt(rows[0]!, handled.hold);
 					return;
 				}
 				receipt = handled.receipt;
@@ -699,7 +699,10 @@ export class LeadInboxLoop {
 		let decision: LeadInterruptDecision;
 		try {
 			decision = await this.opts.interruptHooks!.decide(row, batch, {
-				assertCurrentOwner: () => this.assertInterruptClaim([row]),
+				assertCurrentOwner: () => {
+					if (!this.interruptClaimLive([row]))
+						throw new Error(`interrupt letter already settled: ${row.id}`);
+				},
 			});
 		} catch (error) {
 			this.opts.logger?.warn("lead_interrupt_hook_failed", {
@@ -715,7 +718,8 @@ export class LeadInboxLoop {
 		}
 		// The hook awaited; another Bridge may own this lead now. Nothing below
 		// (ack, dead-letter, hold, or handoff) may run on a lost owner or claim.
-		this.assertInterruptClaim([row]);
+		// A letter settled meanwhile (the reply route acks it) needs nothing.
+		if (!this.interruptClaimLive([row])) return undefined;
 		if (decision.kind === "ack") {
 			if (
 				!this.opts.queue.ackBatch({
@@ -739,13 +743,22 @@ export class LeadInboxLoop {
 		return decision;
 	}
 
-	/** Owner lease AND this batch's claim, or throw (no write happens). */
-	private assertInterruptClaim(rows: readonly MailboxRow[]): void {
+	/**
+	 * Owner lease AND this batch's claim, or throw (no write happens). Returns
+	 * false when every member was already settled elsewhere (ACKED/DEAD) —
+	 * e.g. the Lead's reply acked the letter — so there is nothing left to do.
+	 */
+	private interruptClaimLive(rows: readonly MailboxRow[]): boolean {
 		if (!this.opts.queue.isCurrentOwner(this.opts.ownerEpoch, this.isoNow())) {
 			throw new Error("owner fence lost during interrupt handling");
 		}
+		let settled = 0;
 		for (const row of rows) {
 			const live = this.opts.queue.getById(row.id);
+			if (live?.state === "ACKED" || live?.state === "DEAD") {
+				settled++;
+				continue;
+			}
 			if (
 				!live ||
 				live.state !== "LEASED" ||
@@ -755,6 +768,9 @@ export class LeadInboxLoop {
 				throw new Error(`interrupt claim lost: ${row.id}`);
 			}
 		}
+		if (settled === 0) return true;
+		if (settled === rows.length) return false;
+		throw new Error("interrupt batch partially settled");
 	}
 
 	/** Claim-fenced terminal dead-letter for every member of the batch. */
