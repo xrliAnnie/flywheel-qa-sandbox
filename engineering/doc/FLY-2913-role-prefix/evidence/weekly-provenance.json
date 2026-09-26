@@ -1,0 +1,17 @@
+{
+  "method": "transcript-only; bounded recognized role headers; unknown roles retained",
+  "sourceScript": "origin/main:engineering/doc/FLY-2904-token-waste-census/evidence/scripts/census.py (discovery pattern only; no DB roster)",
+  "cutoff": "2026-09-26T05:18:04.661Z",
+  "manifestSha256": "95f4f02d9071b10debbefd479d410e795e02eb930ebedb8bffe599fd9afefbfa",
+  "discoverySha256": "a1c7558a496d036de2c698d6344a49a16cecfd8e9a3f08509c72c628866c9486",
+  "collectorSha256": "9aada4bda4f888bee0e30b4a9d36939d30a84c42447e2227b55d3b700cc7bc6c",
+  "builderSha256": "57891857d596139a1dd40cf6099a54590578367278d016538efe749f6d83679f",
+  "resultSha256": "32574d938d8d9b5073c46a0d6ec3ffe437496f9776a219aa8c606c7f4c3aff25",
+  "limitations": [
+    "Role header discovery is bounded to first 96 records / 2MiB; no matching header means unattributed.",
+    "Only Claude transcript corpus is included. Codex history is not represented.",
+    "Live transcript reads are not filesystem snapshots; later reruns can differ if source files are edited. Input membership and cutoff are frozen here.",
+    "These are historical usage counts, not fixed-prefix or role-v1 acceptance evidence."
+  ],
+  "serialization": "Complete metadata objects; array entries serialized one per line. Parsed values equal collector output."
+}
