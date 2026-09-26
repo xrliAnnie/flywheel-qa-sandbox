@@ -1,0 +1,11 @@
+flowchart TD
+  A["Codex 号打满"] --> B{"自动切号的安全自检<br/>readiness"}
+  B -->|"要证明每个活 Codex 进程归谁"| C["用 lsof 查 socket 持有者"]
+  C -->|"Codex 0.157 把 socket 变成软链<br/>lsof 查不到任何人"| D["判：daemon 不活 / 证据不全"]
+  D --> E["全舰队自动切号关着<br/>authority_unavailable"]
+  E --> F["只发一句『自动切号关着』<br/>等 Lead 手动切"]
+  C -->|"同一原因"| G["已完成执行体的 app-server<br/>收不掉，常驻成孤儿"]
+  G --> D
+  H["定时读额度"] --> I{"读这个号前先盘点占用"}
+  I -->|"共享快照被别处同时盘点清空"| J["记『占用未知，本次未读』<br/>沿用旧读数"]
+  J --> K["school 已重置仍显示打满"]

@@ -1,0 +1,48 @@
+classDiagram
+  class CodexAccountsStore {
+    <<~/.flywheel/codex-quota/codex-accounts.json>>
+    activeAccount
+    accounts[]: name, observedAt, fiveH, weekly
+    resetCredits[]: id, expiresAt
+    note, noteDetail (新增：原因码)
+  }
+  class ClaudeAccountDetails {
+    <<~/.flywheel/claude-quota/account-details.json>>
+    cards: resetsLeft, endsAt
+    subscription, observedAt
+  }
+  class ClaudeAccountsStore {
+    <<claude-accounts.json · quota-monitor 写>>
+    lastSwitch.generation
+    per account: 5h/周用量, lastObservedAt
+  }
+  class CodexQuotaRoot {
+    <<teamlead.db codex_quota_root>>
+    generation (每次切号 +1)
+  }
+  class SweepRequest {
+    <<新增 ~/.flywheel/claude-quota/sweep-request.json>>
+    requestId, requestedAt, reason
+  }
+  class QuotaMonitorState {
+    lastSweepRequestId (新增)
+    lastSweepRequestOutcome (新增)
+  }
+  class SwitchRefreshTrigger {
+    <<新增，Bridge 内>>
+    记住两个 generation 基线
+    变大 → refreshAfterSwitch()
+  }
+  class AccountPage {
+    账户额度一览
+  }
+  SwitchRefreshTrigger --> CodexQuotaRoot : 读 generation
+  SwitchRefreshTrigger --> ClaudeAccountsStore : 读 lastSwitch
+  SwitchRefreshTrigger --> CodexAccountsStore : 重写
+  SwitchRefreshTrigger --> ClaudeAccountDetails : 重写
+  SwitchRefreshTrigger --> SweepRequest : 写 + SIGUSR1
+  QuotaMonitorState --> SweepRequest : 每轮读
+  QuotaMonitorState --> ClaudeAccountsStore : sweep 后重写
+  AccountPage --> CodexAccountsStore
+  AccountPage --> ClaudeAccountDetails
+  AccountPage --> ClaudeAccountsStore

@@ -53,13 +53,6 @@ const ENV_EXEMPTIONS = [
 		"the Bridge starter accepts an injected policy",
 	],
 	[
-		"FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE",
-		"FLY-2102",
-		"qa_isolation",
-		"headless staged voice E2E presence override",
-		"the staged voice rig supplies presence through its test adapter",
-	],
-	[
 		"FLYWHEEL_CHROME_REAPER_MIGRATE_UNATTRIBUTED",
 		"FLY-1831",
 		"one_time_migration",
@@ -212,20 +205,6 @@ const ENV_EXEMPTIONS = [
 		"one_time_migration",
 		"rollback seam while legacy mailbox sentinels are drained",
 		"CommDB rollback is removed and stale sentinel cleanup is complete",
-	],
-	[
-		"FLYWHEEL_ELEVEN_AUTOSTART",
-		"FLY-1455",
-		"qa_isolation",
-		"Eleven staged-rig autostart for voice QA",
-		"the staged rig has an authenticated command invocation",
-	],
-	[
-		"FLYWHEEL_GEMINI_AUTOSTART",
-		"FLY-1455",
-		"qa_isolation",
-		"Gemini staged-rig autostart for voice QA",
-		"the staged rig has an authenticated command invocation",
 	],
 ] as const satisfies readonly EnvExemptionRow[];
 

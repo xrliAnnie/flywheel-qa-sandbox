@@ -6491,6 +6491,56 @@ export class StateStore {
 	}
 
 	/**
+	 * FLY-2862: a Codex Lead reported that its reply to a turn in `threadId` failed
+	 * (an empty final answer, so nothing was posted). When a voice session with a
+	 * live daemon lease owns that thread, queue one fixed status line: the daemon speaks it,
+	 * which also stops the waiting tone. Idempotent per report key. Returns the
+	 * matched session id, or undefined when no such session exists.
+	 */
+	recordVoiceLeadReplyFailure(input: {
+		projectName: string;
+		leadId: string;
+		threadId: string;
+		key: string;
+		text: string;
+		now: string;
+	}): string | undefined {
+		let sessionId: string | undefined;
+		this.db.transaction(() => {
+			// Only a live daemon lease can read the row back (listVoiceOutbound
+			// checks the same lease), so an expired holder does not count.
+			const session = this.workflowSelectAll(
+				`SELECT session_id, voice_bot_user_id, lease_expires_at FROM voice_sessions
+				 WHERE project_name = ? AND lead_id = ? AND thread_id = ?
+				   AND state IN ('claimed','warming','live')
+				   AND lease_token IS NOT NULL
+				 ORDER BY created_at DESC`,
+				[input.projectName, input.leadId, input.threadId],
+			).find(
+				(row) =>
+					Date.parse(String(row.lease_expires_at)) > Date.parse(input.now),
+			);
+			if (!session) return;
+			sessionId = String(session.session_id);
+			this.db.run(
+				`INSERT OR IGNORE INTO voice_outbound
+				 (session_id, message_id, channel_id, author_id, text, observed_at)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					sessionId,
+					`lead-reply-failed:${input.key}`,
+					input.threadId,
+					(session.voice_bot_user_id as string | null) ?? "flywheel-runtime",
+					input.text,
+					input.now,
+				],
+			);
+		});
+		if (sessionId) this.save();
+		return sessionId;
+	}
+
+	/**
 	 * FLY-2799 qa6: the voice side registers the Discord message it posted as a
 	 * line's visible transcript. The poller then skips that message by id; if it
 	 * already queued it (the page landed before this call), the queued row is

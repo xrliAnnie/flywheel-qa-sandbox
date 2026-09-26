@@ -91,6 +91,11 @@ import {
 	readQuotaWitness,
 } from "./quota-witness.js";
 import {
+	defaultSweepRequestPath,
+	readSweepRequest as readSweepRequestFile,
+	type SweepRequest,
+} from "./sweep-request.js";
+import {
 	defaultLockPath,
 	switchAccount as defaultSwitchAccount,
 	type SwitchInput,
@@ -108,6 +113,8 @@ export interface QuotaMonitorPaths {
 	lockPath: string;
 	claudeJsonPath: string;
 	confirmationEvidenceDir: string;
+	/** FLY-2830: the same path the Bridge writes (defaultSweepRequestPath). */
+	sweepRequestPath: string;
 }
 
 export interface TmuxReviveDeps {
@@ -124,6 +131,8 @@ export interface QuotaMonitorRuntimeOptions {
 	fetchUsage?: (accessToken: string) => Promise<AccountUsageResult>;
 	fetchIdentity?: (accessToken: string) => Promise<ProfileIdentityResult>;
 	readWitness?: () => Promise<QuotaWitnessReadResult>;
+	/** FLY-2830: the Bridge's post-switch "re-read every account" request. */
+	readSweepRequest?: () => SweepRequest | null;
 	verifyCandidate?: (
 		name: string,
 		activeName: string | null,
@@ -160,6 +169,7 @@ export function defaultQuotaMonitorPaths(): QuotaMonitorPaths {
 		confirmationEvidenceDir:
 			process.env.FLYWHEEL_QUOTA_CONFIRMATION_DIR ??
 			join(homedir(), ".flywheel", "quota-confirmations"),
+		sweepRequestPath: defaultSweepRequestPath(),
 	};
 }
 
@@ -264,6 +274,17 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 				join(dirname(paths.statePath), "quota-monitor-witness.json"),
 				{ uid: process.getuid?.() ?? -1, now: now() },
 			));
+	// FLY-2830: never derived from the state path — the Bridge writes
+	// defaultSweepRequestPath(), and a state-path override must not split them.
+	const sweepRequestPath = paths.sweepRequestPath;
+	const readSweepRequest =
+		opts.readSweepRequest ??
+		(() =>
+			readSweepRequestFile({
+				path: sweepRequestPath,
+				now,
+				log: opts.log ?? (() => undefined),
+			}));
 	const verifyCandidate =
 		opts.verifyCandidate ??
 		((name: string, activeName: string | null) =>
@@ -569,6 +590,7 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 				fetchUsage,
 				fetchIdentity,
 				readWitness,
+				readSweepRequest,
 				resolveIdentityName: async (identity) =>
 					resolvePoolProfileIdentity(paths.poolDir, identity),
 				readPoolIdentity: async (name) =>

@@ -22,7 +22,7 @@ allowed_hits=(
   'packages/config/src/feature-flags/truth.ts|FLYWHEEL_CMUX_NODE_PRESENCE'
   'packages/config/src/feature-flags/truth.ts|FLYWHEEL_ISSUE_DISPLAY_SWEEP_TICKS'
   'packages/config/src/feature-flags/truth.ts|FLYWHEEL_LEAD_LEASE_BYPASS'
-  'packages/config/src/feature-flags/exemptions.ts|FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE'
+  'packages/config/src/feature-flags/truth.ts|FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE'
   'packages/config/src/__tests__/feature-flags-registry.test.ts|FLYWHEEL_FLAG_STORE'
   'packages/config/src/__tests__/feature-flags-registry.test.ts|FLYWHEEL_GHOST_GUARD_WAIT_MS'
   'packages/config/src/__tests__/feature-flags-registry.test.ts|FLYWHEEL_PUBLISH_BROKER'
@@ -32,7 +32,6 @@ allowed_hits=(
   'packages/config/src/__tests__/feature-flags-registry.test.ts|FLYWHEEL_ISSUE_DISPLAY_SWEEP_TICKS'
   'packages/config/src/__tests__/feature-flags-registry.test.ts|FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE'
   'packages/config/src/__tests__/feature-flags-registry.test.ts|FLYWHEEL_LEAD_LEASE_BYPASS'
-  'packages/config/src/__tests__/feature-flags-store-policy.test.ts|FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE'
   'packages/config/src/__tests__/fly1981-legacy-snapshot.ts|FLYWHEEL_FLAG_STORE'
   'packages/config/src/__tests__/fly1981-legacy-snapshot.ts|FLYWHEEL_GHOST_GUARD_WAIT_MS'
   'packages/config/src/__tests__/fly1981-legacy-snapshot.ts|FLYWHEEL_PUBLISH_BROKER'
@@ -49,11 +48,6 @@ allowed_hits=(
   'scripts/__tests__/converge-fly1389.test.sh|FLYWHEEL_CONVERGE_CMUX_SYMLINK'
   'scripts/test-cmux-sync.sh|FLYWHEEL_CMUX_VIEW_HELPER'
   'scripts/__tests__/fly1884-node-presence.test.sh|FLYWHEEL_CMUX_NODE_PRESENCE'
-  'packages/voice-bridge/src/assistant/wiring.ts|FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE'
-  'packages/voice-bridge/e2e/gemini-staged.mjs|FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE'
-  'packages/voice-bridge/e2e/gemini-voice-loop.mjs|FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE'
-  'packages/voice-bridge/src/__tests__/rig-config.test.ts|FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE'
-  'packages/voice-bridge/src/__tests__/assistant-wiring.test.ts|FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE'
 )
 
 for entry in "${allowed_hits[@]}"; do

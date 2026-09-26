@@ -1,0 +1,20 @@
+flowchart LR
+  subgraph BEFORE["删除前"]
+    direction TB
+    F1["founder 在 Discord 语音房"] --> VC1["voice-codex 守护进程<br/>(生产在用)"]
+    F1 -. 斜杠命令 .-> VB["voice-bridge 守护进程<br/>(生产未安装)"]
+    VB --> G["/gemini + /gemini-advanced"]
+    VB --> E["/eleven"]
+    VB --> H["/glaw"]
+    G --> GA["gemini-agent 包"]
+    G --> GL["voice-core Gemini Live"]
+    VC1 --> LIB1["voice-bridge 库面<br/>Discord 接线"]
+  end
+  subgraph AFTER["删除后"]
+    direction TB
+    F2["founder 在 Discord 语音房"] --> VC2["voice-codex 守护进程"]
+    VC2 --> LIB2["voice-bridge 库面<br/>BotRegistry + discordWiring"]
+    VC2 --> CORE["voice-core 公共件<br/>edge-tts / scrub / transcript"]
+    R["退役脚本 retire-legacy-voice<br/>删 Discord 残留命令"]
+  end
+  BEFORE ==> AFTER

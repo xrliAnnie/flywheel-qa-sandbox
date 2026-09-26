@@ -535,11 +535,6 @@
 			"disposition": "standalone_runtime"
 		},
 		{
-			"file": "packages/voice-core/src/brain/ResidentClaudeBrain.ts",
-			"raw_spawn": 1,
-			"disposition": "standalone_runtime"
-		},
-		{
 			"file": "packages/voice-core/src/process.ts",
 			"raw_spawn": 3,
 			"disposition": "standalone_runtime"

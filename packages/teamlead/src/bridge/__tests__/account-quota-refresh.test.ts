@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ClaudeAccountDetailStore } from "../../claude-quota/account-detail-store.js";
 import type { CodexAccountQuotaStore } from "../../codex-quota/codex-account-quota-store.js";
 import type { CodexSubscriptionStore } from "../../codex-quota/codex-subscription-store.js";
+import { createCodexReadingScheduler } from "../../codex-quota/reading-scheduler.js";
 import {
 	createVercelAccountLatest,
 	type VercelAccountStore,
@@ -11,7 +12,9 @@ import {
 	type AccountQuotaRefreshDeps,
 	type CodexAccountQuotaRefreshDeps,
 	createAccountQuotaRefresh,
+	createAccountReadingsRefresh,
 	createCodexAccountQuotaRefresh,
+	scheduledReadingsRefresh,
 } from "../account-quota-refresh.js";
 
 const codexStore: CodexAccountQuotaStore = {
@@ -423,5 +426,95 @@ describe("FLY-2875 — Vercel branch of the account refresh", () => {
 		expect(vercel.observe).not.toHaveBeenCalled();
 		await refresh();
 		expect(vercel.observe).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("FLY-2830 — scheduled readings also read Claude cards", () => {
+	const codexOk = async () => ({
+		generatedAt: codexStore.generatedAt,
+		accountCount: 2,
+	});
+
+	it("reads Codex and Claude details once each, never Vercel", async () => {
+		const observeClaude = vi.fn(async () => claudeStore);
+		const writeClaude = vi.fn();
+		const refreshCodex = vi.fn(codexOk);
+		const refresh = createAccountReadingsRefresh({
+			ceilingMs: 90_000,
+			refreshCodex,
+			observeClaudeAccountDetails: observeClaude,
+			writeClaudeAccountDetailStore: writeClaude,
+		});
+		await expect(refresh()).resolves.toEqual({
+			codex: { ok: true },
+			claude: { ok: true },
+		});
+		expect(refreshCodex).toHaveBeenCalledTimes(1);
+		expect(observeClaude).toHaveBeenCalledTimes(1);
+		expect(writeClaude).toHaveBeenCalledWith(claudeStore);
+	});
+
+	it("keeps the legs independent and reports each outcome", async () => {
+		const refresh = createAccountReadingsRefresh({
+			ceilingMs: 90_000,
+			refreshCodex: codexOk,
+			observeClaudeAccountDetails: async () => {
+				throw new Error("claude_down");
+			},
+			writeClaudeAccountDetailStore: vi.fn(),
+		});
+		const outcome = await refresh();
+		expect(outcome.codex).toEqual({ ok: true });
+		expect(outcome.claude).toMatchObject({ ok: false });
+	});
+
+	it("lets only the Codex leg decide the reading-stale state machine", async () => {
+		const reports: Array<{ failureCode: string | null }> = [];
+		const lines: string[] = [];
+		let observedAt = "2026-09-24T23:00:00.000Z";
+		const scheduler = createCodexReadingScheduler({
+			now: () => Date.parse("2026-09-24T23:30:00.000Z"),
+			refresh: scheduledReadingsRefresh(
+				createAccountReadingsRefresh({
+					ceilingMs: 90_000,
+					refreshCodex: async () => {
+						observedAt = "2026-09-24T23:30:00.000Z";
+						return { generatedAt: observedAt, accountCount: 1 };
+					},
+					observeClaudeAccountDetails: async () => {
+						throw new Error("claude_down");
+					},
+					writeClaudeAccountDetailStore: vi.fn(),
+				}),
+				(line) => lines.push(line),
+			),
+			readStore: () =>
+				({
+					...codexStore,
+					accounts: [{ name: "a", observedAt }],
+				}) as unknown as CodexAccountQuotaStore,
+			observePipeline: (report) => reports.push(report),
+		});
+		scheduler.tick();
+		await vi.waitFor(() => expect(reports).toHaveLength(1));
+		expect(reports[0]?.failureCode).toBeNull();
+		expect(lines).toEqual([
+			"[reading-scheduler] claude_details_failed:claude_down",
+		]);
+	});
+
+	it("still fails the scheduled round when the Codex leg fails", async () => {
+		const run = scheduledReadingsRefresh(
+			createAccountReadingsRefresh({
+				ceilingMs: 90_000,
+				refreshCodex: async () => {
+					throw new Error("codex_round_timeout");
+				},
+				observeClaudeAccountDetails: async () => claudeStore,
+				writeClaudeAccountDetailStore: vi.fn(),
+			}),
+			() => undefined,
+		);
+		await expect(run()).rejects.toThrow("codex_round_timeout");
 	});
 });

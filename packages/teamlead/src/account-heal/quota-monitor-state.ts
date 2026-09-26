@@ -161,6 +161,18 @@ export interface WitnessCursor {
 	digest: string;
 }
 
+/** FLY-2830: how the last acknowledged sweep request ended. */
+export type SweepRequestOutcome = "swept" | "partial" | "blocked_monitor_only";
+
+/** FLY-2830: an unacknowledged sweep request and its completed failed rounds. */
+export interface PendingSweepRequest {
+	requestId: string;
+	attempts: number;
+}
+
+/** A request is acknowledged `partial` after this many completed failed rounds. */
+export const MAX_SWEEP_REQUEST_ATTEMPTS = 3;
+
 export interface QuotaMonitorState {
 	version: 2;
 	lastPollAt: number | null;
@@ -187,6 +199,9 @@ export interface QuotaMonitorState {
 	activeUnreadableStreak: number;
 	deadAccountEpisode: DeadAccountEpisode | null;
 	witnessCursor: WitnessCursor | null;
+	lastSweepRequestId: string | null;
+	lastSweepRequestOutcome: SweepRequestOutcome | null;
+	pendingSweepRequest: PendingSweepRequest | null;
 }
 
 export interface LoadQuotaMonitorStateOptions {
@@ -229,6 +244,9 @@ const V2_STATE_KEYS = new Set([
 	"activeUnreadableStreak",
 	"deadAccountEpisode",
 	"witnessCursor",
+	"lastSweepRequestId",
+	"lastSweepRequestOutcome",
+	"pendingSweepRequest",
 ]);
 const EPOCH_KEYS = new Set([
 	"open",
@@ -329,6 +347,14 @@ const DEAD_ACCOUNT_EPISODE_KEYS = new Set([
 	"lastAlertAt",
 ]);
 const WITNESS_CURSOR_KEYS = new Set(["consumedAt", "digest"]);
+const PENDING_SWEEP_REQUEST_KEYS = new Set(["requestId", "attempts"]);
+const SWEEP_REQUEST_OUTCOMES = new Set<SweepRequestOutcome>([
+	"swept",
+	"partial",
+	"blocked_monitor_only",
+]);
+const SWEEP_REQUEST_ID =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const IDENTITY_CHECKPOINTS = new Set<IdentityMismatchCheckpoint>([
 	"candidate",
 	"active",
@@ -388,6 +414,9 @@ export function emptyQuotaMonitorState(
 		activeUnreadableStreak: 0,
 		deadAccountEpisode: null,
 		witnessCursor: null,
+		lastSweepRequestId: null,
+		lastSweepRequestOutcome: null,
+		pendingSweepRequest: null,
 	};
 }
 
@@ -709,6 +738,40 @@ function parseWitnessCursor(value: unknown): WitnessCursor | null | undefined {
 	return { consumedAt: value.consumedAt, digest: value.digest };
 }
 
+function parseSweepRequestId(value: unknown): string | null | undefined {
+	if (value === undefined || value === null) return null;
+	return typeof value === "string" && SWEEP_REQUEST_ID.test(value)
+		? value
+		: undefined;
+}
+
+function parseSweepRequestOutcome(
+	value: unknown,
+): SweepRequestOutcome | null | undefined {
+	if (value === undefined || value === null) return null;
+	return SWEEP_REQUEST_OUTCOMES.has(value as SweepRequestOutcome)
+		? (value as SweepRequestOutcome)
+		: undefined;
+}
+
+function parsePendingSweepRequest(
+	value: unknown,
+): PendingSweepRequest | null | undefined {
+	if (value === undefined || value === null) return null;
+	if (!isRecord(value) || !hasOnlyKeys(value, PENDING_SWEEP_REQUEST_KEYS)) {
+		return undefined;
+	}
+	if (
+		typeof value.requestId !== "string" ||
+		!SWEEP_REQUEST_ID.test(value.requestId) ||
+		!isGeneration(value.attempts) ||
+		value.attempts > MAX_SWEEP_REQUEST_ATTEMPTS
+	) {
+		return undefined;
+	}
+	return { requestId: value.requestId, attempts: value.attempts };
+}
+
 function parseReviveEpoch(value: unknown): ReviveEpoch | null | undefined {
 	if (value === null) return null;
 	if (!isRecord(value) || !hasOnlyKeys(value, EPOCH_KEYS)) return undefined;
@@ -1020,6 +1083,13 @@ function parseState(
 	const activeUnreadableStreak = value.activeUnreadableStreak ?? 0;
 	const deadAccountEpisode = parseDeadAccountEpisode(value.deadAccountEpisode);
 	const witnessCursor = parseWitnessCursor(value.witnessCursor);
+	const lastSweepRequestId = parseSweepRequestId(value.lastSweepRequestId);
+	const lastSweepRequestOutcome = parseSweepRequestOutcome(
+		value.lastSweepRequestOutcome,
+	);
+	const pendingSweepRequest = parsePendingSweepRequest(
+		value.pendingSweepRequest,
+	);
 	if (
 		(value.version !== 1 && value.version !== 2) ||
 		!isNullableTimestamp(value.lastPollAt) ||
@@ -1043,7 +1113,10 @@ function parseState(
 		identityAlertCursor === undefined ||
 		!isGeneration(activeUnreadableStreak) ||
 		deadAccountEpisode === undefined ||
-		witnessCursor === undefined
+		witnessCursor === undefined ||
+		lastSweepRequestId === undefined ||
+		lastSweepRequestOutcome === undefined ||
+		pendingSweepRequest === undefined
 	) {
 		return null;
 	}
@@ -1093,6 +1166,9 @@ function parseState(
 			activeUnreadableStreak,
 			deadAccountEpisode,
 			witnessCursor,
+			lastSweepRequestId,
+			lastSweepRequestOutcome,
+			pendingSweepRequest,
 		},
 	};
 }

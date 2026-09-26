@@ -1,0 +1,18 @@
+{
+  "freeze": {
+    "T0": "2026-09-11T22:00:00Z",
+    "T1": "2026-09-25T22:00:00Z",
+    "frozen_at": "2026-09-25T22:57:33Z",
+    "max_run_event_id": 193059,
+    "max_session_event_id": 10864431
+  },
+  "incidents": 559,
+  "codex_week_pct_per_100M_tokens_p25_p50_p75": [
+    4.952,
+    9.274,
+    9.824
+  ],
+  "fingerprints_used": 13,
+  "unclassified": 0,
+  "self_check_errors": []
+}

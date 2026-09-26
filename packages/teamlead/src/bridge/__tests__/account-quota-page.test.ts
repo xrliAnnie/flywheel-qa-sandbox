@@ -749,3 +749,224 @@ describe("FLY-2875 — Vercel section markup", () => {
 		expect(vercel).not.toMatch(/<(b|i|s|y)>/);
 	});
 });
+
+describe("FLY-2830 reading times and switch-refresh marks", () => {
+	const SWITCH = { at: "2026-09-23T19:50:00.000Z", vendor: "Codex" as const };
+	const OLD = "2026-09-23T19:40:00.000Z"; // 12:40 PT
+	const NEW = "2026-09-23T19:55:00.000Z"; // 12:55 PT
+	const codexRow = (
+		name: string,
+		sources: {
+			quota: string | null;
+			resetCredits: string | null;
+			subscription: string | null;
+		},
+		overrides: Partial<AccountQuotaRow> = {},
+	) =>
+		row(name, 40, "2026-09-28T16:00:00.000Z", {
+			provider: "Codex",
+			credits: cell("1 张\n#1 到期 10/22 13:22"),
+			nextCharge: cell("10/22 周四"),
+			sources: { provider: "Codex", ...sources },
+			...overrides,
+		});
+	const claudeRow = (
+		name: string,
+		sources: { usage: string | null; detail: string | null },
+		overrides: Partial<AccountQuotaRow> = {},
+	) =>
+		row(name, 30, "2026-09-28T16:00:00.000Z", {
+			credits: cell("0 张"),
+			sources: { provider: "Claude", ...sources },
+			...overrides,
+		});
+	const marks = (html: string) =>
+		[...html.matchAll(/<span class="switch-stale">([^<]*)<\/span>/g)].map(
+			(m) => m[1],
+		);
+
+	it("shows when each row was read, and says never read when it was not", () => {
+		const html = renderAccountQuotaPageHtml(
+			view(
+				[claudeRow("claude-a", { usage: OLD, detail: null })],
+				[
+					codexRow("codex-a", {
+						quota: NEW,
+						resetCredits: NEW,
+						subscription: NEW,
+					}),
+					codexRow("codex-b", {
+						quota: null,
+						resetCredits: null,
+						subscription: null,
+					}),
+				],
+			),
+		);
+		expect(html).toContain('<span class="reading-time">读于 12:55</span>');
+		expect(html).toContain('<span class="reading-time">读于 从未读到</span>');
+		expect(html).toContain(
+			'<span class="reading-time">用量读于 12:40 · 卡读于 从未读到</span>',
+		);
+	});
+
+	it("writes no mark and no banner without a recorded switch", () => {
+		const html = renderAccountQuotaPageHtml(
+			view(
+				[],
+				[codexRow("a", { quota: OLD, resetCredits: OLD, subscription: OLD })],
+			),
+		);
+		expect(marks(html)).toEqual([]);
+		expect(html).not.toContain('<div class="switch-banner">');
+	});
+
+	it("marks every Codex cell older than the switch and counts them in the banner", () => {
+		const html = renderAccountQuotaPageHtml(
+			view(
+				[],
+				[codexRow("a", { quota: OLD, resetCredits: OLD, subscription: null })],
+			),
+			undefined,
+			{ lastSwitch: SWITCH },
+		);
+		// tier, weekly reset, 5h reset, weekly usage (quota) · cards · next charge
+		expect(marks(html)).toEqual([
+			"切号后尚未刷新（切号 12:50，读于 12:40）",
+			"切号后尚未刷新（切号 12:50，读于 12:40）",
+			"切号后尚未刷新（切号 12:50，读于 12:40）",
+			"切号后尚未刷新（切号 12:50，读于 12:40）",
+			"切号后尚未刷新（切号 12:50，读于 12:40）",
+			"切号后尚未读到（切号 12:50）",
+		]);
+		expect(html).toContain(
+			'<div class="switch-banner">12:50 Codex 切号后，还有 6 格未刷新</div>',
+		);
+	});
+
+	it("marks only the cell whose own source is older (subscription / cards)", () => {
+		const subscriptionOnly = renderAccountQuotaPageHtml(
+			view(
+				[],
+				[codexRow("a", { quota: NEW, resetCredits: NEW, subscription: OLD })],
+			),
+			undefined,
+			{ lastSwitch: SWITCH },
+		);
+		expect(marks(subscriptionOnly)).toEqual([
+			"切号后尚未刷新（切号 12:50，读于 12:40）",
+		]);
+		expect(subscriptionOnly).toContain(
+			'<td><span class="next-charge">10/22 周四</span><span class="switch-stale">',
+		);
+		// Quota moved on but the reset cards were carried from before the switch.
+		const cardsOnly = renderAccountQuotaPageHtml(
+			view(
+				[],
+				[codexRow("a", { quota: NEW, resetCredits: OLD, subscription: NEW })],
+			),
+			undefined,
+			{ lastSwitch: SWITCH },
+		);
+		expect(marks(cardsOnly)).toHaveLength(1);
+		expect(cardsOnly).toMatch(
+			/#1 到期 10\/22 13:22<\/span><\/div><span class="switch-stale">/,
+		);
+		const cleared = renderAccountQuotaPageHtml(
+			view(
+				[],
+				[codexRow("a", { quota: NEW, resetCredits: NEW, subscription: NEW })],
+			),
+			undefined,
+			{ lastSwitch: SWITCH },
+		);
+		expect(marks(cleared)).toEqual([]);
+		expect(cleared).toContain(
+			'<div class="switch-banner">12:50 Codex 切号后已全部重读</div>',
+		);
+	});
+
+	it("does not mark a machine negative read after the switch", () => {
+		const html = renderAccountQuotaPageHtml(
+			view(
+				[],
+				[
+					codexRow(
+						"a",
+						{ quota: NEW, resetCredits: NEW, subscription: NEW },
+						{
+							nextCharge: cell("读不到（无有效订阅）", {
+								source: "missing",
+								observedAt: null,
+							}),
+						},
+					),
+				],
+			),
+			undefined,
+			{ lastSwitch: SWITCH },
+		);
+		expect(marks(html)).toEqual([]);
+	});
+
+	it("judges Claude usage and detail cells by their own sources", () => {
+		const html = renderAccountQuotaPageHtml(
+			view([claudeRow("c", { usage: NEW, detail: OLD })]),
+			undefined,
+			{ lastSwitch: { ...SWITCH, vendor: "Claude" } },
+		);
+		// tier (detail) · cards (detail) · next charge (detail); usage cells fresh.
+		expect(marks(html)).toHaveLength(3);
+		expect(html).toContain(
+			'<div class="account-tier">Max 20x</div><span class="switch-stale">',
+		);
+		const usageOld = renderAccountQuotaPageHtml(
+			view([claudeRow("c", { usage: OLD, detail: NEW })]),
+			undefined,
+			{ lastSwitch: SWITCH },
+		);
+		// weekly reset, 5h reset, weekly usage, Fable usage
+		expect(marks(usageOld)).toHaveLength(4);
+	});
+
+	it("never marks manual cells, exempt rows or the Vercel table", () => {
+		const manual = cell("手填", { source: "manual" });
+		const html = renderAccountQuotaPageHtml(
+			view([
+				claudeRow(
+					"c",
+					{ usage: NEW, detail: OLD },
+					{ credits: manual, nextCharge: manual, subscriptionTier: manual },
+				),
+				row("exempt", 20, "2026-09-28T16:00:00.000Z"),
+			]),
+			buildVercelQuotaSection(
+				{
+					version: 1,
+					observedAt: OLD,
+					status: "ok",
+					reason: null,
+					account: null,
+					team: null,
+					blob: null,
+				} as unknown as VercelAccountStore,
+				{ generatedAt: "2026-09-23T20:00:00.000Z" },
+			),
+			{ lastSwitch: SWITCH },
+		);
+		expect(marks(html)).toEqual([]);
+	});
+
+	it("escapes every derived fragment", () => {
+		const html = renderAccountQuotaPageHtml(
+			view(
+				[],
+				[codexRow("a", { quota: OLD, resetCredits: OLD, subscription: OLD })],
+			),
+			undefined,
+			{ lastSwitch: { at: SWITCH.at, vendor: "<b>" as never } },
+		);
+		expect(html).not.toContain("<b>");
+		expect(html).toContain("&lt;b&gt;");
+	});
+});

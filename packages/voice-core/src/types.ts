@@ -4,8 +4,8 @@
  * Round-1 abstracts voice as TWO independent capability faces:
  *   - announce (speech-out only)  — a Lead "speaks" (read a report / standup).
  *   - converse (speech-in + out)  — a full voice conversation with a Lead.
- * A backend implements one or both. Edge TTS = announce only; Gemini Live =
- * converse only (its ASR is built in, so round-1 needs no standalone STT).
+ * A backend implements one or both. Edge TTS = announce only; converse
+ * backends (voice-codex) bring their own speech recognition.
  *
  * The brain (reasoning + memory) lives in-repo, orthogonal to the backend; only
  * the converse face needs it (surfaced to the model as an ask_lead tool).
@@ -25,7 +25,7 @@ export type ResumeHandle = { backendId: string; payload: unknown };
 
 export type ToolResult = { callId: string; output: string };
 
-/** Gemini's async function-response scheduling positions. */
+/** Async function-response scheduling positions for realtime tool calls. */
 export type ScheduleHint = "silent" | "when_idle" | "interrupt";
 
 /** Every failure path surfaces as a VoiceError with a machine code. */
@@ -95,8 +95,7 @@ export interface AnnouncerOptions {
 }
 
 /** A full function declaration the backend passes to the model verbatim
- * (structurally identical to the Gemini transport's LiveToolDeclaration —
- * kept here so the orchestrator-facing contract has no backend import). */
+ * (kept here so the orchestrator-facing contract has no backend import). */
 export interface ToolDeclaration {
 	name: string;
 	description: string;
@@ -146,7 +145,7 @@ export interface ConversationOptions {
 	bargeIn?: boolean;
 	transcriptSink?: TranscriptSink;
 	/**
-	 * resume is injected at creation time (Gemini configures sessionResumption at
+	 * resume is injected at creation time (a backend configures resumption at
 	 * connect). supportsResume=false + a handle → VoiceError("unsupported").
 	 */
 	resumeHandle?: ResumeHandle;
@@ -158,13 +157,8 @@ export interface ConversationOptions {
 }
 
 export interface VoiceBackend {
-	readonly id:
-		| "edge-tts"
-		| "gemini-live"
-		| "openai-realtime"
-		| "cosyvoice"
-		| (string & {});
-	/** For Gemini: derived from the config-pinned model, never hardcoded. */
+	readonly id: "edge-tts" | "openai-realtime" | "cosyvoice" | (string & {});
+	/** Derived from the backend's configured model, never hardcoded. */
 	readonly capabilities: VoiceBackendCapabilities;
 	/** required when capabilities.announce is true (registry enforces). */
 	createAnnouncer?(opts: AnnouncerOptions): Promise<AnnouncerSession>;
@@ -290,7 +284,7 @@ export type ConversationEventMap = {
 	/** emitted after any interrupt; no assistant transcript follows for that turn. */
 	"response-cancelled": [];
 	"tool-call": [{ callId: string; name: string; args: unknown }];
-	/** Gemini goAway.timeLeft maps here. */
+	/** A backend's server-side session-expiry notice maps here. */
 	"session-expiring": [{ inSec: number }];
 	error: [VoiceError];
 };
@@ -313,12 +307,9 @@ export interface ConversationSession {
 	): Promise<SpeakReceipt>;
 	/**
 	 * FLY-545: SILENT context feed — catch this session up on meeting facts it
-	 * did not hear (the huddle's gated multi-session orchestration feeds the
-	 * non-addressed Leads this way). Unlike sendText it must NEVER trigger
-	 * speech: FLY-968 measured realtime text frames break silence on
-	 * gemini-3.1, while sendClientContent(turnComplete:false) injects with
-	 * 0 bytes of audio and the facts stay quotable. Nothing is written to the
-	 * transcript sink (these are minutes, not new conversation).
+	 * did not hear. Unlike sendText it must NEVER trigger speech; the facts
+	 * stay quotable. Nothing is written to the transcript sink (these are
+	 * minutes, not new conversation).
 	 */
 	injectContext(text: string): void;
 	/**

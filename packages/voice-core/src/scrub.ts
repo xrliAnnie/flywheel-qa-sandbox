@@ -1,7 +1,7 @@
 /**
  * scrubTranscript (FLY-1065) — the secret red line for spoken transcripts.
  *
- * Applied at the FINAL aggregation exit (GeminiLiveSession flush), so every
+ * Applied at the FINAL transcript aggregation exit, so every
  * downstream consumer (caption / quotes / recap / JSONL / Linear comment)
  * receives clean text from one choke point; the Discord caption exit and the
  * Linear landing re-apply it as defense in depth (shared/injectable paths).

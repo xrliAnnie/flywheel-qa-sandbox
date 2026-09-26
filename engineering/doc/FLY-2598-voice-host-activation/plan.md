@@ -73,6 +73,8 @@ DiscordVoiceRoom option 增 expectedBotUserId；`registry.start` ready 后再核
 
 ### 4.4 同作者防回环
 保留两个不同守卫：取信器拒收自己发出的消息；voice poller 排除 root 与 `🗣️/📻/🤖`。前者不再仅依赖已安装源码中的一行判断，必须满足 [self-filter-contract.md](self-filter-contract.md) 的运行中只读探测合同。Codex 在现有认证 inbox socket 增探测；Claude fork 配套小补丁固定已验证自身 ID、在未 ready/重连时拒收，并增加同等本地探测。不能直接改缓存；该补丁及受管载入是实现/激活依赖，缺席返回 503 `voice_unavailable/self_filter_unverified`。探测没有 Discord 发帖、模拟入房或 mailbox 写入。
+
+> **FLY-2711 修订（2026-09-24）**：上句“在未 ready/重连时拒收”作废。Claude 入站按固定且有效的 bot ID 判定，重连/resume 重放期间继续接收非自身消息；连接态只额外控制本地 voice probe 的 `ready`。socket 主人由内核锁判定。详见 [FLY-2711 plan](../FLY-2711-voice-carrier-parity/plan.md)。
 显式 chat-ingest 仍写 authorId=founder、source_kind=voice、deliveryId=chat:<lead>:<镜像id>，重放逐字段核对。所有 session 产生的镜像/状态必须经现有 labels helper；普通 Lead 正常回复被朗读一次。保留前缀导致真实回复以这些符号开头不朗读的现有限制，写进运行手册，不做新分类协议。
 删除 `codex-lead.sh` 从 huddle 注入编排忽略 ID；通用 ignoredAuthorIds 可选机制、self-id 过滤及其他调用方不删除，避免 CLI/能力不必要破坏。
 

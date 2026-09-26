@@ -88,47 +88,6 @@ printf '%s\n' \
   > "$BRIDGE_STATE/bin/host-tmux-selection-gate.sh"
 chmod +x "$BRIDGE_STATE/bin/host-tmux-selection-gate.sh"
 
-# Slice 2: voice-bridge has an independent KeepAlive birth and must make the
-# same decision before its health-port preflight or exec target.
-VOICE_ROOT="$SANDBOX/voice"
-VOICE_HOME="$VOICE_ROOT/home"
-VOICE_REPO="$VOICE_ROOT/repo"
-VOICE_STATE="$VOICE_HOME/.flywheel"
-mkdir -p "$VOICE_REPO/scripts" "$VOICE_STATE/bin" "$VOICE_HOME/.local/bin"
-cp "$REPO_ROOT/scripts/flywheel-voice-bridge-wrapper.sh" "$VOICE_REPO/scripts/"
-install_alert_fixture "$VOICE_ROOT" "$VOICE_REPO"
-: > "$VOICE_STATE/.env"
-printf '%s\n' "$SHA" > "$VOICE_STATE/deployed-sha"
-cp "$BRIDGE_STATE/bin/host-tmux-selection-gate.sh" "$VOICE_STATE/bin/"
-printf '%s\n' '#!/bin/bash' 'echo npx >> "${EXEC_CALLS:?}"' 'exit 0' \
-  > "$VOICE_HOME/.local/bin/npx"
-chmod +x "$VOICE_HOME/.local/bin/npx"
-: > "$VOICE_ROOT/exec-calls"
-
-VOICE_RC=0
-env -i \
-  HOME="$VOICE_HOME" \
-  PATH="/usr/bin:/bin" \
-  FLYWHEEL_DIR="$VOICE_REPO" \
-  FLYWHEEL_STATE_DIR="$VOICE_STATE" \
-  HOST_TMUX_GATE_CALL="$VOICE_ROOT/gate-call" \
-  HOST_TMUX_ALERT_CALL="$VOICE_ROOT/alert-call" \
-  FLYWHEEL_META_ALERT_BIN="$VOICE_ROOT/meta-alert.sh" \
-  EXEC_CALLS="$VOICE_ROOT/exec-calls" \
-  bash "$VOICE_REPO/scripts/flywheel-voice-bridge-wrapper.sh" \
-  > "$VOICE_ROOT/out.log" 2>&1 || VOICE_RC=$?
-
-if [ "$VOICE_RC" -eq 0 ] \
-  && grep -Fqx "gate voice-bridge|$SHA|keepalive:voice-bridge|scripts/flywheel-voice-bridge-wrapper.sh|$VOICE_STATE" "$VOICE_ROOT/gate-call" \
-  && grep -Fqx "verify voice-bridge|$SHA|keepalive:voice-bridge|scripts/flywheel-voice-bridge-wrapper.sh|$VOICE_STATE" "$VOICE_ROOT/gate-call" \
-  && grep -Fq 'host_tmux_selection_gate_unavailable_voice-bridge' "$VOICE_ROOT/alert-call" \
-  && [ ! -s "$VOICE_ROOT/exec-calls" ]; then
-  pass "voice-bridge KeepAlive birth verifies the receipt before exec"
-else
-  fail "voice-bridge gate mount (rc=$VOICE_RC gate=$(cat "$VOICE_ROOT/gate-call" 2>/dev/null) exec=$(cat "$VOICE_ROOT/exec-calls" 2>/dev/null))" \
-    "$(tail -20 "$VOICE_ROOT/out.log")"
-fi
-
 # Slice 3: quota-monitor is another direct launchd supervisor class. The host
 # gate must run before quota-specific config/artifact validation.
 QUOTA_ROOT="$SANDBOX/quota"
@@ -311,7 +270,6 @@ for wrapper in \
   scripts/flywheel-bridge-wrapper.sh \
   scripts/flywheel-quota-monitor-wrapper.sh \
   scripts/flywheel-lead-wrapper-v2.sh \
-  scripts/flywheel-voice-bridge-wrapper.sh \
   scripts/flywheel-voice-wrapper.sh \
   scripts/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh \
   scripts/flywheel-codex-lead-wrapper-codex-infra-bot.sh; do
@@ -319,7 +277,7 @@ for wrapper in \
     "$REPO_ROOT/$wrapper" && FALLBACK_DECLARATIONS=$((FALLBACK_DECLARATIONS + 1))
 done
 if [ "$FALLBACK_RC" -eq 0 ] \
-  && [ "$FALLBACK_DECLARATIONS" -eq 7 ] \
+  && [ "$FALLBACK_DECLARATIONS" -eq 6 ] \
   && [ ! -e "$FALLBACK_STATE/bin/host-tmux-selection-gate.sh" ] \
   && grep -Fqx "gate codex-infra-bot|$FALLBACK_SHA|$FALLBACK_STATE" \
     "$FALLBACK_ROOT/gate-call" \

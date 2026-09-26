@@ -36,7 +36,7 @@ describe("JsonlTranscriptSink", () => {
 		const second = sink.append(
 			entry({
 				face: "converse",
-				backendId: "gemini-live",
+				backendId: "codex-realtime",
 				role: "user",
 				text: "你好",
 			}),
@@ -53,7 +53,7 @@ describe("JsonlTranscriptSink", () => {
 		expect(JSON.parse(lines[1])).toMatchObject({
 			face: "converse",
 			role: "user",
-			backendId: "gemini-live",
+			backendId: "codex-realtime",
 		});
 	});
 });

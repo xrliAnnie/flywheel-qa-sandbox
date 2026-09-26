@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { computeCodexHomeInventoryDigest } from "flywheel-claude-runner";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { CodexProcessSnapshot } from "../host-process-snapshot.js";
 import { createCodexQuotaHostCollector } from "../host-readiness.js";
 
@@ -299,5 +299,153 @@ it("preserves an unattributed desktop reader as global unknown", async () => {
 				reason: "process_home_unknown",
 			},
 		],
+	});
+});
+
+describe("FLY-2830 resident execution with its TUI client", () => {
+	const SOCKET = "/sock/exec.sock";
+	function residentFixture(executions = ["exec"]) {
+		const f = fixture();
+		writeFileSync(
+			join(f.home, ".flywheel-agent-home.json"),
+			JSON.stringify({ project: "project", role: "implement" }),
+		);
+		const db = new Database(join(f.options.commRoot, "project", "comm.db"));
+		const insert = db.prepare(
+			"INSERT INTO sessions(execution_id,vendor,status,ended_at,phase_keep_alive) VALUES(?,?,?,?,?)",
+		);
+		for (const id of executions) insert.run(id, "codex", "running", null, 0);
+		db.close();
+		return f;
+	}
+	const env = (home: string, exec = "exec") =>
+		`CODEX_HOME=${home} FLYWHEEL_EXEC_ID=${exec}`;
+	const daemon = (home: string): ProcessRow => ({
+		pid: 60140,
+		ucomm: "codex",
+		args: `/bin/codex app-server --remote-control --listen unix://${SOCKET}`,
+		env: env(home),
+	});
+	const client = (
+		home: string,
+		args = `/bin/codex resume --remote unix://${SOCKET} -C /wt`,
+		exec = "exec",
+	): ProcessRow => ({ pid: 18081, ucomm: "codex", args, env: env(home, exec) });
+	function collector(
+		f: ReturnType<typeof residentFixture>,
+		daemonVerified = true,
+	) {
+		const calls: number[] = [];
+		const collect = createCodexQuotaHostCollector({
+			...f.options,
+			daemonSocketPath: (executionId: string) => `/sock/${executionId}.sock`,
+			residentEvidence: async (input) => {
+				calls.push(input.process.pid);
+				// Only the socket holder in the daemon group can ever verify.
+				return input.process.pid === 60140 && daemonVerified
+					? { verified: true, reason: "verified" }
+					: {
+							verified: false,
+							reason:
+								input.process.pid === 60140
+									? "state_not_live"
+									: "socket_holder_mismatch",
+						};
+			},
+		});
+		return { collect, calls };
+	}
+
+	it("counts the daemon plus its own TUI client as one active execution", async () => {
+		const f = residentFixture();
+		f.setProcesses([daemon(f.home), client(f.home)]);
+		const result = await collector(f).collect();
+		expect(result).toMatchObject({
+			complete: true,
+			registeredComplete: true,
+			homes: [{ activity: "active" }],
+		});
+		expect(result.diagnostics.filter((d) => d.scope !== "info")).toEqual([]);
+	});
+
+	it("is independent of process enumeration order", async () => {
+		const f = residentFixture();
+		f.setProcesses([client(f.home), daemon(f.home)]);
+		expect(await collector(f).collect()).toMatchObject({
+			complete: true,
+			homes: [{ activity: "active" }],
+		});
+	});
+
+	it("keeps the home blocked when the daemon itself fails the evidence chain", async () => {
+		const f = residentFixture();
+		f.setProcesses([daemon(f.home), client(f.home)]);
+		const result = await collector(f, false).collect();
+		expect(result).toMatchObject({
+			complete: false,
+			homes: [{ activity: "unknown" }],
+		});
+		expect(result.diagnostics).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ reason: "state_not_live" }),
+				expect.objectContaining({ reason: "resident_evidence_incomplete" }),
+			]),
+		);
+	});
+
+	it.each([
+		[
+			"points at another execution's socket",
+			`/bin/codex resume --remote unix:///sock/other.sock -C /wt`,
+		],
+		[
+			"repeats --remote",
+			`/bin/codex resume --remote unix://${SOCKET} --remote unix://${SOCKET}`,
+		],
+		[
+			"uses the --remote= form",
+			`/bin/codex resume --remote=unix://${SOCKET} -C /wt`,
+		],
+		["has no --remote value", "/bin/codex resume --remote"],
+		["is a different codex shape", `/bin/codex exec --remote unix://${SOCKET}`],
+	])("blocks a same-execution process that %s", async (_name, args) => {
+		const f = residentFixture();
+		f.setProcesses([daemon(f.home), client(f.home, args)]);
+		const result = await collector(f).collect();
+		expect(result).toMatchObject({
+			complete: false,
+			homes: [{ activity: "unknown" }],
+		});
+		expect(result.diagnostics).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					reason: "resident_process_unbound",
+					executionId: "exec",
+					pid: 18081,
+				}),
+				expect.objectContaining({ reason: "resident_evidence_incomplete" }),
+			]),
+		);
+	});
+
+	it("blocks a client whose environment names a different execution", async () => {
+		const f = residentFixture(["exec", "other"]);
+		f.setProcesses([
+			daemon(f.home),
+			client(f.home, `/bin/codex resume --remote unix://${SOCKET}`, "other"),
+		]);
+		expect(await collector(f).collect()).toMatchObject({
+			complete: false,
+			homes: [{ activity: "unknown" }],
+		});
+	});
+
+	it("blocks a client that has no daemon", async () => {
+		const f = residentFixture();
+		f.setProcesses([client(f.home)]);
+		expect(await collector(f).collect()).toMatchObject({
+			complete: false,
+			homes: [{ activity: "unknown" }],
+		});
 	});
 });

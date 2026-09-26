@@ -1,0 +1,456 @@
+{
+ "juniper": {
+  "best": {
+   "voice": "juniper",
+   "attempt": "1",
+   "why": "done",
+   "line": "你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+   "downlinkSeconds": 15.76,
+   "audibleSpanSeconds": 8.4,
+   "assistantTranscript": "你好,我是你的Lead,今天由我来跟你同步进度。我这边有两件事已经做完,还有一件在等你拍板,我一件一件跟你说。",
+   "clipSeconds": 8.68,
+   "voicedSeconds": 6.74,
+   "sylPerSec": 6.82,
+   "f0MedianHz": 181.8,
+   "f0Frames": 405,
+   "asr": "你好，我是你的lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板。我一件一件跟你说。",
+   "cer": 0.0
+  },
+  "verbatim": true,
+  "takes": [
+   {
+    "voice": "juniper",
+    "attempt": "1",
+    "why": "done",
+    "line": "你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+    "downlinkSeconds": 15.76,
+    "audibleSpanSeconds": 8.4,
+    "assistantTranscript": "你好,我是你的Lead,今天由我来跟你同步进度。我这边有两件事已经做完,还有一件在等你拍板,我一件一件跟你说。",
+    "clipSeconds": 8.68,
+    "voicedSeconds": 6.74,
+    "sylPerSec": 6.82,
+    "f0MedianHz": 181.8,
+    "f0Frames": 405,
+    "asr": "你好，我是你的lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板。我一件一件跟你说。",
+    "cer": 0.0
+   }
+  ]
+ },
+ "maple": {
+  "best": {
+   "voice": "maple",
+   "attempt": "1",
+   "why": "done",
+   "line": "你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+   "downlinkSeconds": 14.02,
+   "audibleSpanSeconds": 6.49,
+   "assistantTranscript": "你好,我是你的Lead,今天由我来跟你同步进度。我这边有两件事已经做完,还有一件在等你拍板,我一件一件跟你说。",
+   "clipSeconds": 6.8,
+   "voicedSeconds": 5.46,
+   "sylPerSec": 8.42,
+   "f0MedianHz": 218.2,
+   "f0Frames": 343,
+   "asr": "你好，我是你的料，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板。我一件一件跟你说。",
+   "cer": 0.022
+  },
+  "verbatim": true,
+  "takes": [
+   {
+    "voice": "maple",
+    "attempt": "1",
+    "why": "done",
+    "line": "你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+    "downlinkSeconds": 14.02,
+    "audibleSpanSeconds": 6.49,
+    "assistantTranscript": "你好,我是你的Lead,今天由我来跟你同步进度。我这边有两件事已经做完,还有一件在等你拍板,我一件一件跟你说。",
+    "clipSeconds": 6.8,
+    "voicedSeconds": 5.46,
+    "sylPerSec": 8.42,
+    "f0MedianHz": 218.2,
+    "f0Frames": 343,
+    "asr": "你好，我是你的料，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板。我一件一件跟你说。",
+    "cer": 0.022
+   }
+  ]
+ },
+ "spruce": {
+  "best": {
+   "voice": "spruce",
+   "attempt": "2",
+   "why": "done",
+   "line": "你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+   "downlinkSeconds": 14.06,
+   "audibleSpanSeconds": 6.56,
+   "assistantTranscript": "你好,我是你的 Lead,今天由我来跟你同步进度。我这边有两件事已经做完,还有一件在等你拍板,我一件一件跟你说。",
+   "clipSeconds": 6.92,
+   "voicedSeconds": 5.0,
+   "sylPerSec": 9.2,
+   "f0MedianHz": 88.2,
+   "f0Frames": 205,
+   "asr": "你好，我是你的lead，今天由我来给你同步进度。我这边有两件事情做完，还有一件在等你拍板，我一件一件跟你说。",
+   "cer": 0.067
+  },
+  "verbatim": false,
+  "takes": [
+   {
+    "voice": "spruce",
+    "attempt": "1",
+    "why": "done",
+    "line": "你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+    "downlinkSeconds": 15.44,
+    "audibleSpanSeconds": 7.95,
+    "assistantTranscript": "你好,我是你的 Lead,今天由我来跟你同步进度。我这边有两件事已经做完,还有一件在等你拍板,我一件一件跟你说。",
+    "clipSeconds": 8.26,
+    "voicedSeconds": 5.28,
+    "sylPerSec": 8.71,
+    "f0MedianHz": 106.7,
+    "f0Frames": 173,
+    "asr": "你好，lead由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+    "cer": 0.133
+   },
+   {
+    "voice": "spruce",
+    "attempt": "2",
+    "why": "done",
+    "line": "你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+    "downlinkSeconds": 14.06,
+    "audibleSpanSeconds": 6.56,
+    "assistantTranscript": "你好,我是你的 Lead,今天由我来跟你同步进度。我这边有两件事已经做完,还有一件在等你拍板,我一件一件跟你说。",
+    "clipSeconds": 6.92,
+    "voicedSeconds": 5.0,
+    "sylPerSec": 9.2,
+    "f0MedianHz": 88.2,
+    "f0Frames": 205,
+    "asr": "你好，我是你的lead，今天由我来给你同步进度。我这边有两件事情做完，还有一件在等你拍板，我一件一件跟你说。",
+    "cer": 0.067
+   },
+   {
+    "voice": "spruce",
+    "attempt": "3",
+    "why": "done",
+    "line": "你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+    "downlinkSeconds": 30.6,
+    "audibleSpanSeconds": 23.33,
+    "assistantTranscript": "你好,我是你的 Lead,今天由我来跟你同步进度。我这边有两件事已经做完,还有一件在等你拍板,我一件一件跟你说。第一,需求文档我已经补齐了边界条件和验收标准,也加了一个流程图,你有空帮我过一眼。第二,测试环境我已经搭好了,基础数据也灌进去了,现在可以直接开始联调。第三件事需要你决定的是接口方案选 A 还是 B。A 实现快但扩展性一般,B 稍微慢一点,不过后续更稳。",
+    "clipSeconds": 23.64,
+    "voicedSeconds": 17.06,
+    "sylPerSec": 2.7,
+    "f0MedianHz": 101.7,
+    "f0Frames": 569,
+    "asr": "你好，我是你的lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。第一，需求文档我已经补齐了边界条件和验收标准，也加了一个流程图，你有空帮我过一眼。第二，测试环境我已经搭好了，基础数据也灌进去了，现在可以直接开始联调。第三件事需要你决定的是接口方案选A还是B。A实现快但扩展性一般，B稍微慢一点不过后续更稳。",
+    "cer": 2.356
+   }
+  ]
+ },
+ "ember": {
+  "best": {
+   "voice": "ember",
+   "attempt": "1",
+   "why": "done",
+   "line": "你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+   "downlinkSeconds": 14.64,
+   "audibleSpanSeconds": 7.09,
+   "assistantTranscript": "你好,我是你的Lead,今天由我来跟你同步进度。我这边有两件事已经做完,还有一件在等你拍板,我一件一件跟你说。",
+   "clipSeconds": 7.4,
+   "voicedSeconds": 5.14,
+   "sylPerSec": 8.95,
+   "f0MedianHz": 112.7,
+   "f0Frames": 216,
+   "asr": "你好，我是你的lead，今天由我来给你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+   "cer": 0.022
+  },
+  "verbatim": true,
+  "takes": [
+   {
+    "voice": "ember",
+    "attempt": "1",
+    "why": "done",
+    "line": "你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+    "downlinkSeconds": 14.64,
+    "audibleSpanSeconds": 7.09,
+    "assistantTranscript": "你好,我是你的Lead,今天由我来跟你同步进度。我这边有两件事已经做完,还有一件在等你拍板,我一件一件跟你说。",
+    "clipSeconds": 7.4,
+    "voicedSeconds": 5.14,
+    "sylPerSec": 8.95,
+    "f0MedianHz": 112.7,
+    "f0Frames": 216,
+    "asr": "你好，我是你的lead，今天由我来给你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+    "cer": 0.022
+   }
+  ]
+ },
+ "vale": {
+  "best": {
+   "voice": "vale",
+   "attempt": "1",
+   "why": "done",
+   "line": "你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+   "downlinkSeconds": 13.94,
+   "audibleSpanSeconds": 6.34,
+   "assistantTranscript": "你好,我是你的 Lead,今天由我来跟你同步进度。我这边有两件事已经做完,还有一件在等你拍板,我一件一件跟你说。",
+   "clipSeconds": 6.64,
+   "voicedSeconds": 5.36,
+   "sylPerSec": 8.58,
+   "f0MedianHz": 134.8,
+   "f0Frames": 278,
+   "asr": "你好，我是你的Lead，今天要我来跟你同步进度，我这边有两件事情做完，还有一件在等你排版，我一件一件跟你说。",
+   "cer": 0.111
+  },
+  "verbatim": false,
+  "takes": [
+   {
+    "voice": "vale",
+    "attempt": "1",
+    "why": "done",
+    "line": "你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+    "downlinkSeconds": 13.94,
+    "audibleSpanSeconds": 6.34,
+    "assistantTranscript": "你好,我是你的 Lead,今天由我来跟你同步进度。我这边有两件事已经做完,还有一件在等你拍板,我一件一件跟你说。",
+    "clipSeconds": 6.64,
+    "voicedSeconds": 5.36,
+    "sylPerSec": 8.58,
+    "f0MedianHz": 134.8,
+    "f0Frames": 278,
+    "asr": "你好，我是你的Lead，今天要我来跟你同步进度，我这边有两件事情做完，还有一件在等你排版，我一件一件跟你说。",
+    "cer": 0.111
+   },
+   {
+    "voice": "vale",
+    "attempt": "2",
+    "why": "done",
+    "line": "你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+    "downlinkSeconds": 13.56,
+    "audibleSpanSeconds": 6.14,
+    "assistantTranscript": "你好,我是你的Lead,今天由我来跟你同步进度。我这边有两件事已经做完,还有一件在等你拍板,我一件一件跟你说。",
+    "clipSeconds": 6.44,
+    "voicedSeconds": 5.4,
+    "sylPerSec": 8.52,
+    "f0MedianHz": 194.3,
+    "f0Frames": 338,
+    "asr": "你好，我是你的莉克，今天我来给你同步进度，我这边有两件事已经做完，还有件在等你拍板，我一件件跟你说。",
+    "cer": 0.133
+   },
+   {
+    "voice": "vale",
+    "attempt": "3",
+    "why": "no_audio",
+    "line": "你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+    "downlinkSeconds": 59.92,
+    "audibleSpanSeconds": 0,
+    "assistantTranscript": ""
+   }
+  ]
+ },
+ "breeze": {
+  "best": {
+   "voice": "breeze",
+   "attempt": "2",
+   "why": "done",
+   "line": "你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+   "downlinkSeconds": 16.8,
+   "audibleSpanSeconds": 9.32,
+   "assistantTranscript": "你好,我是你的 Lead,今天由我来跟你同步进度。我这边有两件事已经做完,还有一件在等你拍板,我一件一件跟你说。",
+   "clipSeconds": 9.64,
+   "voicedSeconds": 7.44,
+   "sylPerSec": 6.18,
+   "f0MedianHz": 181.8,
+   "f0Frames": 467,
+   "asr": "你好，我是你的Lida，今天由我来跟你同步进度，我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+   "cer": 0.0
+  },
+  "verbatim": true,
+  "takes": [
+   {
+    "voice": "breeze",
+    "attempt": "1",
+    "why": "done",
+    "line": "你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+    "downlinkSeconds": 13.6,
+    "audibleSpanSeconds": 6.2,
+    "assistantTranscript": "你好,我是你的Lead,今天由我来跟你同步进度。我这边有两件事已经做完,还有一件在等你拍板,我一件一件跟你说。",
+    "clipSeconds": 6.5,
+    "voicedSeconds": 4.9,
+    "sylPerSec": 9.39,
+    "f0MedianHz": 146.3,
+    "f0Frames": 257,
+    "asr": "你好，我是你的lead，今天由我来给你同步进度。我这边有两件事已做完，还有一件在等你拍的，我一件件跟你说。",
+    "cer": 0.089
+   },
+   {
+    "voice": "breeze",
+    "attempt": "2",
+    "why": "done",
+    "line": "你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+    "downlinkSeconds": 16.8,
+    "audibleSpanSeconds": 9.32,
+    "assistantTranscript": "你好,我是你的 Lead,今天由我来跟你同步进度。我这边有两件事已经做完,还有一件在等你拍板,我一件一件跟你说。",
+    "clipSeconds": 9.64,
+    "voicedSeconds": 7.44,
+    "sylPerSec": 6.18,
+    "f0MedianHz": 181.8,
+    "f0Frames": 467,
+    "asr": "你好，我是你的Lida，今天由我来跟你同步进度，我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+    "cer": 0.0
+   }
+  ]
+ },
+ "arbor": {
+  "best": {
+   "voice": "arbor",
+   "attempt": "2",
+   "why": "done",
+   "line": "你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+   "downlinkSeconds": 14.64,
+   "audibleSpanSeconds": 7.48,
+   "assistantTranscript": "你好,我是你的Lead,今天由我来跟你同步进度。我这边有两件事已经做完,还有一件在等你拍板,我一件一件跟你说。",
+   "clipSeconds": 7.68,
+   "voicedSeconds": 6.06,
+   "sylPerSec": 7.59,
+   "f0MedianHz": 86.3,
+   "f0Frames": 201,
+   "asr": "你好，我是你的lead，今天由我来跟你同步进度。我这边有两件事已经做完了，还有一件在等你拍板。我一件一件跟你说。",
+   "cer": 0.022
+  },
+  "verbatim": true,
+  "takes": [
+   {
+    "voice": "arbor",
+    "attempt": "1",
+    "why": "done",
+    "line": "你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+    "downlinkSeconds": 14.46,
+    "audibleSpanSeconds": 6.99,
+    "assistantTranscript": "你好,我是你的 Lead,今天由我来跟你同步进度。我这边有两件事已经做完,还有一件在等你拍板,我一件一件跟你说。",
+    "clipSeconds": 7.3,
+    "voicedSeconds": 5.8,
+    "sylPerSec": 7.93,
+    "f0MedianHz": 97.0,
+    "f0Frames": 248,
+    "asr": "你好，我是你的lead，今天我来跟你同步进度。我这边有两件事已经做完，还有一件在动力拍吧，我一件一件跟你说。",
+    "cer": 0.089
+   },
+   {
+    "voice": "arbor",
+    "attempt": "2",
+    "why": "done",
+    "line": "你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+    "downlinkSeconds": 14.64,
+    "audibleSpanSeconds": 7.48,
+    "assistantTranscript": "你好,我是你的Lead,今天由我来跟你同步进度。我这边有两件事已经做完,还有一件在等你拍板,我一件一件跟你说。",
+    "clipSeconds": 7.68,
+    "voicedSeconds": 6.06,
+    "sylPerSec": 7.59,
+    "f0MedianHz": 86.3,
+    "f0Frames": 201,
+    "asr": "你好，我是你的lead，今天由我来跟你同步进度。我这边有两件事已经做完了，还有一件在等你拍板。我一件一件跟你说。",
+    "cer": 0.022
+   }
+  ]
+ },
+ "sol": {
+  "best": {
+   "voice": "sol",
+   "attempt": "1",
+   "why": "done",
+   "line": "你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+   "downlinkSeconds": 14.52,
+   "audibleSpanSeconds": 7.1,
+   "assistantTranscript": "你好,我是你的 Lead,今天由我来跟你同步进度。我这边有两件事已经做完,还有一件在等你拍板,我一件一件跟你说。",
+   "clipSeconds": 7.38,
+   "voicedSeconds": 5.9,
+   "sylPerSec": 7.8,
+   "f0MedianHz": 180.5,
+   "f0Frames": 363,
+   "asr": "你好，我是The Lead。今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你开吧。我一件一件跟你说。",
+   "cer": 0.089
+  },
+  "verbatim": false,
+  "takes": [
+   {
+    "voice": "sol",
+    "attempt": "1",
+    "why": "done",
+    "line": "你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+    "downlinkSeconds": 14.52,
+    "audibleSpanSeconds": 7.1,
+    "assistantTranscript": "你好,我是你的 Lead,今天由我来跟你同步进度。我这边有两件事已经做完,还有一件在等你拍板,我一件一件跟你说。",
+    "clipSeconds": 7.38,
+    "voicedSeconds": 5.9,
+    "sylPerSec": 7.8,
+    "f0MedianHz": 180.5,
+    "f0Frames": 363,
+    "asr": "你好，我是The Lead。今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你开吧。我一件一件跟你说。",
+    "cer": 0.089
+   },
+   {
+    "voice": "sol",
+    "attempt": "2",
+    "why": "done",
+    "line": "你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+    "downlinkSeconds": 15.12,
+    "audibleSpanSeconds": 7.81,
+    "assistantTranscript": "你好,我是你的 Lead,今天由我来跟你同步进度。我这边有两件事已经做完,还有一件在等你拍板,我一件一件跟你说。",
+    "clipSeconds": 8.12,
+    "voicedSeconds": 6.98,
+    "sylPerSec": 6.59,
+    "f0MedianHz": 155.8,
+    "f0Frames": 444,
+    "asr": "你好，我是你的lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件等你一件说。",
+    "cer": 0.089
+   },
+   {
+    "voice": "sol",
+    "attempt": "3",
+    "why": "done",
+    "line": "你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+    "downlinkSeconds": 30.44,
+    "audibleSpanSeconds": 22.95,
+    "assistantTranscript": "你好,我是你的Lead,今天由我来跟你同步进度。我这边有两件事已经做完,还有一件在等你拍板,我一件一件跟你说。第一件是上周提到的用户反馈整理,我已经按影响范围和紧急程度分了三类,对应的改进建议也写进文档了,你等下只要过目确认方向就行。第二件是和设计的对齐会,我们把交互细节敲定了,修改点我也同步给开发了,预计不会影响排期。最后在等你决定的是,是否要把A方案提前到这个迭代,",
+    "clipSeconds": 23.26,
+    "voicedSeconds": 18.14,
+    "sylPerSec": 2.54,
+    "f0MedianHz": 171.4,
+    "f0Frames": 1086,
+    "asr": "你好，我是你的lead，今天由我来给你同步进度。我这边有两件事已经做完，还有一件在等你拍板。我一件一件跟你说。第一件是上周提到的用户反馈整改，我已经按影响范围和紧急程度分了三类，对应的改进建议也写进文档了，你等一下只要过目确认方向就行。第二件是和设计的对齐会，我们把交互细节敲定了，修改点我也同步给开发了，预计不会影响排期。最后在等你决定的是，是否要把A方案提前到这个迭代。",
+    "cer": 2.711
+   }
+  ]
+ },
+ "cove": {
+  "best": {
+   "voice": "cove",
+   "attempt": "1",
+   "why": "done",
+   "line": "你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+   "downlinkSeconds": 14.88,
+   "audibleSpanSeconds": 7.35,
+   "assistantTranscript": "你好,我是你的 Lead,今天由我来跟你同步进度。我这边有两件事已经做完,还有一件在等你拍板,我一件一件跟你说。",
+   "clipSeconds": 7.68,
+   "voicedSeconds": 6.4,
+   "sylPerSec": 7.19,
+   "f0MedianHz": 99.0,
+   "f0Frames": 288,
+   "asr": "你好，我是你的lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+   "cer": 0.0
+  },
+  "verbatim": true,
+  "takes": [
+   {
+    "voice": "cove",
+    "attempt": "1",
+    "why": "done",
+    "line": "你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+    "downlinkSeconds": 14.88,
+    "audibleSpanSeconds": 7.35,
+    "assistantTranscript": "你好,我是你的 Lead,今天由我来跟你同步进度。我这边有两件事已经做完,还有一件在等你拍板,我一件一件跟你说。",
+    "clipSeconds": 7.68,
+    "voicedSeconds": 6.4,
+    "sylPerSec": 7.19,
+    "f0MedianHz": 99.0,
+    "f0Frames": 288,
+    "asr": "你好，我是你的lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+    "cer": 0.0
+   }
+  ]
+ }
+}

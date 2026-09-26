@@ -1794,24 +1794,6 @@
 		"classification": "qa-only"
 	},
 	{
-		"key": "packages/voice-core/src/__tests__/resident-brain.smoke.test.ts:() => process.kill(pid1, \"SIGKILL\"),#1",
-		"path": "packages/voice-core/src/__tests__/resident-brain.smoke.test.ts",
-		"code": "() => process.kill(pid1, \"SIGKILL\"),",
-		"classification": "qa-only"
-	},
-	{
-		"key": "packages/voice-core/src/__tests__/resident-brain.smoke.test.ts:process.kill(pid, 0);#1",
-		"path": "packages/voice-core/src/__tests__/resident-brain.smoke.test.ts",
-		"code": "process.kill(pid, 0);",
-		"classification": "qa-only"
-	},
-	{
-		"key": "packages/voice-core/src/__tests__/resident-manager.smoke.test.ts:process.kill(pid, 0);#1",
-		"path": "packages/voice-core/src/__tests__/resident-manager.smoke.test.ts",
-		"code": "process.kill(pid, 0);",
-		"classification": "qa-only"
-	},
-	{
 		"key": "packages/voice-core/src/audio/FilePlayer.ts:handle.kill(\"SIGTERM\");#1",
 		"path": "packages/voice-core/src/audio/FilePlayer.ts",
 		"code": "handle.kill(\"SIGTERM\");",
@@ -1845,36 +1827,6 @@
 		"key": "packages/voice-core/src/brain/HeadlessClaudeBrain.ts:this.child.kill(\"SIGKILL\");#1",
 		"path": "packages/voice-core/src/brain/HeadlessClaudeBrain.ts",
 		"code": "this.child.kill(\"SIGKILL\");",
-		"classification": "out-of-scope"
-	},
-	{
-		"key": "packages/voice-core/src/brain/ResidentClaudeBrain.ts:child.kill(\"SIGKILL\");#1",
-		"path": "packages/voice-core/src/brain/ResidentClaudeBrain.ts",
-		"code": "child.kill(\"SIGKILL\");",
-		"classification": "out-of-scope"
-	},
-	{
-		"key": "packages/voice-core/src/brain/ResidentClaudeBrain.ts:child.kill(\"SIGTERM\");#1",
-		"path": "packages/voice-core/src/brain/ResidentClaudeBrain.ts",
-		"code": "child.kill(\"SIGTERM\");",
-		"classification": "out-of-scope"
-	},
-	{
-		"key": "packages/voice-core/src/brain/ResidentClaudeBrain.ts:if (!t.finalized) this.child?.kill(\"SIGKILL\");#1",
-		"path": "packages/voice-core/src/brain/ResidentClaudeBrain.ts",
-		"code": "if (!t.finalized) this.child?.kill(\"SIGKILL\");",
-		"classification": "out-of-scope"
-	},
-	{
-		"key": "packages/voice-core/src/brain/ResidentClaudeBrain.ts:if (this.alive) this.child?.kill(\"SIGKILL\");#1",
-		"path": "packages/voice-core/src/brain/ResidentClaudeBrain.ts",
-		"code": "if (this.alive) this.child?.kill(\"SIGKILL\");",
-		"classification": "out-of-scope"
-	},
-	{
-		"key": "packages/voice-core/src/brain/ResidentClaudeBrain.ts:this.child?.kill(\"SIGKILL\"); // wedged — recovery via exit→respawn#1",
-		"path": "packages/voice-core/src/brain/ResidentClaudeBrain.ts",
-		"code": "this.child?.kill(\"SIGKILL\"); // wedged — recovery via exit→respawn",
 		"classification": "out-of-scope"
 	},
 	{
@@ -3510,12 +3462,6 @@
 		"classification": "signal-0-probe"
 	},
 	{
-		"key": "scripts/flywheel-voice-bridge-wrapper.sh:if [[ -n \"${EXISTING_PID:-}\" ]] && kill -0 \"$EXISTING_PID\" 2>/dev/null; then#1",
-		"path": "scripts/flywheel-voice-bridge-wrapper.sh",
-		"code": "if [[ -n \"${EXISTING_PID:-}\" ]] && kill -0 \"$EXISTING_PID\" 2>/dev/null; then",
-		"classification": "signal-0-probe"
-	},
-	{
 		"key": "scripts/flywheel-voucher-watch.sh:kill -TERM \"$pid\" 2>/dev/null; sleep 1; kill -KILL \"$pid\" 2>/dev/null#1",
 		"path": "scripts/flywheel-voucher-watch.sh",
 		"code": "kill -TERM \"$pid\" 2>/dev/null; sleep 1; kill -KILL \"$pid\" 2>/dev/null",
@@ -3928,12 +3874,6 @@
 		"path": "scripts/lib/restart-cmux-watcher.sh",
 		"code": "kill -TERM -- \"-$worker\" 2>/dev/null || true",
 		"classification": "out-of-scope"
-	},
-	{
-		"key": "scripts/lib/restart-voice-bridge.sh:kill -0 \"$1\" 2>/dev/null#1",
-		"path": "scripts/lib/restart-voice-bridge.sh",
-		"code": "kill -0 \"$1\" 2>/dev/null",
-		"classification": "signal-0-probe"
 	},
 	{
 		"key": "scripts/lib/setup.ts:execFileSync(\"tmux\", [\"kill-session\", \"-t\", `=${sessionName}`]);#1",

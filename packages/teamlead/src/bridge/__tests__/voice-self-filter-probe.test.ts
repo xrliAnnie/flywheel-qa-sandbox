@@ -155,6 +155,51 @@ function response(req: any) {
 		secret,
 	);
 }
+
+it("accepts a Claude newline response without half-closing the request", async () => {
+	const socket = socketPath();
+	let endedBeforeReply = false;
+	let receivedNewline = false;
+	const peers = new Set<import("node:net").Socket>();
+	const server = createServer({ allowHalfOpen: true }, (peer) => {
+		peers.add(peer);
+		peer.once("close", () => peers.delete(peer));
+		let ended = false;
+		let raw = "";
+		peer.on("error", () => {});
+		peer.once("end", () => {
+			ended = true;
+		});
+		peer.on("data", (chunk) => {
+			raw += chunk;
+			if (!raw.includes("\n")) return;
+			receivedNewline = true;
+			endedBeforeReply = ended;
+			peer.end(`${JSON.stringify(response(JSON.parse(raw)))}\n`);
+		});
+	});
+	await new Promise<void>((done) => server.listen(socket, done));
+	cleanup.push(
+		() =>
+			new Promise<void>((done) => {
+				for (const peer of peers) peer.destroy();
+				server.close(() => done());
+			}),
+	);
+
+	const receipt = await probeVoiceSelfFilterSocket({
+		socketPath: socket,
+		leadId,
+		expectedBotUserId: bot,
+		authSecret: secret,
+		backend: "claude",
+	});
+
+	expect(receivedNewline).toBe(true);
+	expect(endedBeforeReply).toBe(false);
+	expect(receipt.runtimeId).toBe("12345678-1234-4123-8123-123456789012");
+});
+
 it.each([
 	"nonce",
 	"botUserId",

@@ -1,0 +1,40 @@
+{
+ "run": "s1",
+ "mode": "smoke",
+ "why": "scenario_done",
+ "calibration": {
+  "floorMedian": 0,
+  "th": 300
+ },
+ "roomSegments": [
+  {
+   "start": 11795,
+   "end": 13068.1,
+   "voicedMs": 1160
+  }
+ ],
+ "utterances": [
+  {
+   "label": "q1",
+   "file": "q1.wav",
+   "kind": "speech",
+   "frames": 102,
+   "playStart": 8593.9,
+   "lastVoicedPull": 10275.2,
+   "playEnd": 10735.1,
+   "wallStart": 1790369511489,
+   "wallEnd": 1790369513654
+  }
+ ],
+ "latency": [
+  {
+   "label": "q1",
+   "userEnd": 10275.2,
+   "roomStart": 11795,
+   "latencyMs": 1520,
+   "overlappedModelSpeech": false
+  }
+ ],
+ "barge": [],
+ "bargeEval": []
+}

@@ -218,6 +218,8 @@ export interface CodexAccountProjection {
 	recoveryAt: string | null;
 	authUnusable: boolean;
 	note: string | null;
+	/** FLY-2830: bounded reason code behind `note` (store-validated). */
+	noteDetail?: string;
 	unclassifiedWindows: number;
 	tokenState: CodexTokenState;
 	/**
@@ -394,6 +396,9 @@ function projectCodexAccount(
 				"重复登录",
 			].includes(tokenState),
 		note: reading.note,
+		...(reading.noteDetail === undefined
+			? {}
+			: { noteDetail: reading.noteDetail }),
 		unclassifiedWindows: reading.unclassifiedWindows,
 		tokenState,
 		...(subscription === undefined ? {} : { subscription }),

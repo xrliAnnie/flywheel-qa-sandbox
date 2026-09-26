@@ -66,4 +66,4 @@ Edge TTS 面（announce）端到端流程 —— 真文本 → 真 edge-tts 子�
 真 afplay 播放 —— 在本机完整跑通两条独立路径（CLI 全链路 + 直调核心引擎），均产出
 可独立核验（ffprobe/file/afplay exit code）的真实音频证据，非 mock transport。
 
-converse 面（Gemini Live）的真 API 验证见 `poc-converse.md`（待 `GEMINI_API_KEY` 到位）。
+converse 面的 POC 与其证据已随 FLY-2860 退役（见 git 历史）。

@@ -4,10 +4,12 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -26,6 +28,7 @@ import {
 	probeCodexDaemonProcessBinding,
 	reapCodexDaemonForExecution,
 	resolveDaemonSocketPath,
+	resolveSocketProbePath,
 	SUN_PATH_MAX,
 	spawnCodexDaemon,
 } from "../src/codex-daemon-runtime.js";
@@ -1839,4 +1842,186 @@ describe("FLY-2490 bounded daemon evidence reads", () => {
 			}
 		},
 	);
+});
+
+describe("FLY-2830 symlinked daemon socket (Codex 0.157 --listen)", () => {
+	const socketStat = (uid: number, socket = true) => ({
+		isSocket: () => socket,
+		uid,
+	});
+	const lstatOf = (link: boolean) => () => ({ isSymbolicLink: () => link });
+
+	it.each([
+		{
+			name: "plain socket keeps its own path",
+			deps: { lstat: lstatOf(false), uid: 501 },
+			expected: { kind: "plain", path: "/s/a.sock" },
+		},
+		{
+			name: "missing path keeps its own path (lsof stays the authority)",
+			deps: {
+				lstat: () => {
+					throw Object.assign(new Error("gone"), { code: "ENOENT" });
+				},
+				uid: 501,
+			},
+			expected: { kind: "plain", path: "/s/a.sock" },
+		},
+		{
+			name: "link to an own-uid socket probes the resolved target",
+			deps: {
+				lstat: lstatOf(true),
+				realpath: () => "/private/tmp/codex-daemon-501/abc",
+				stat: () => socketStat(501),
+				uid: 501,
+			},
+			expected: { kind: "link", path: "/private/tmp/codex-daemon-501/abc" },
+		},
+		{
+			name: "link to a regular file is untrusted",
+			deps: {
+				lstat: lstatOf(true),
+				realpath: () => "/tmp/file",
+				stat: () => socketStat(501, false),
+				uid: 501,
+			},
+			expected: { kind: "untrusted", reason: "link_target_not_socket" },
+		},
+		{
+			name: "link to a foreign-owned socket is untrusted",
+			deps: {
+				lstat: lstatOf(true),
+				realpath: () => "/tmp/other",
+				stat: () => socketStat(0),
+				uid: 501,
+			},
+			expected: { kind: "untrusted", reason: "link_target_foreign_owner" },
+		},
+		{
+			name: "dangling link is untrusted",
+			deps: {
+				lstat: lstatOf(true),
+				realpath: () => {
+					throw Object.assign(new Error("dangling"), { code: "ENOENT" });
+				},
+				uid: 501,
+			},
+			expected: { kind: "untrusted", reason: "link_unresolvable" },
+		},
+		{
+			name: "any other lstat failure is untrusted",
+			deps: {
+				lstat: () => {
+					throw Object.assign(new Error("denied"), { code: "EACCES" });
+				},
+				uid: 501,
+			},
+			expected: { kind: "untrusted", reason: "lstat_failed" },
+		},
+	])("$name", ({ deps, expected }) => {
+		expect(resolveSocketProbePath("/s/a.sock", deps)).toEqual(expected);
+	});
+
+	it("is exported from the package root", async () => {
+		const root = await import("../src/index.js");
+		expect(typeof root.resolveSocketProbePath).toBe("function");
+		expect(root.resolveSocketProbePath).toBe(resolveSocketProbePath);
+	});
+
+	function ownPgid(): number {
+		return Number.parseInt(
+			execFileSync("ps", ["-o", "pgid=", "-p", String(process.pid)], {
+				encoding: "utf8",
+				timeout: 2000,
+			}).trim(),
+			10,
+		);
+	}
+	function ownStartIdentity(): string {
+		return execFileSync("ps", ["-o", "lstart=", "-p", String(process.pid)], {
+			encoding: "utf8",
+			timeout: 2000,
+		})
+			.trim()
+			.replace(/\s+/g, " ");
+	}
+
+	async function symlinkedSocketFixture() {
+		// Bind at the canonical path: darwin lsof matches a unix socket by the
+		// name it was bound under, and Codex binds under /private/tmp itself.
+		const root = realpathSync(mkdtempSync(join(tmpdir(), "f2830-")));
+		const env = {
+			FLYWHEEL_CODEX_SESSION_DIR: join(root, "s"),
+			FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT: join(root, "d"),
+		};
+		const id = "exec-symlinked";
+		mkdirSync(join(root, "d"), { recursive: true });
+		mkdirSync(join(root, "t"), { recursive: true });
+		mkdirSync(codexSessionStateDir(id, env), { recursive: true });
+		writeFileSync(
+			join(codexSessionStateDir(id, env), "session.json"),
+			JSON.stringify({ daemonPgid: ownPgid() }),
+		);
+		const target = join(root, "t", "real");
+		const server = createServer();
+		await new Promise<void>((resolveListen) =>
+			server.listen(target, () => resolveListen()),
+		);
+		const link = resolveDaemonSocketPath(id, env);
+		symlinkSync(target, link);
+		return {
+			root,
+			env,
+			id,
+			link,
+			target,
+			async close() {
+				await new Promise<void>((resolveClose) =>
+					server.close(() => resolveClose()),
+				);
+				rmSync(root, { recursive: true, force: true });
+			},
+		};
+	}
+
+	it("proves liveness and binding through the default lsof holder probe", async () => {
+		const f = await symlinkedSocketFixture();
+		try {
+			expect(await probeCodexDaemonLiveness(f.id, { env: f.env })).toBe(
+				"alive",
+			);
+			await expect(
+				probeCodexDaemonProcessBinding(
+					f.id,
+					{ pid: process.pid, startIdentity: ownStartIdentity() },
+					{ env: f.env },
+				),
+			).resolves.toEqual({ bound: true, reason: "bound" });
+		} finally {
+			await f.close();
+		}
+	});
+
+	it("stays unproven when the link points at a regular file", async () => {
+		const f = await symlinkedSocketFixture();
+		try {
+			const decoy = join(f.root, "t", "decoy");
+			writeFileSync(decoy, "not a socket");
+			rmSync(f.link);
+			symlinkSync(decoy, f.link);
+			// The socket itself stays live through the decoy's absence of a
+			// listener only if connect follows; force live to isolate the holder.
+			const deps = { env: f.env, isSocketLive: async () => true };
+			expect(await probeCodexDaemonLiveness(f.id, deps)).toBe("unknown");
+			await expect(
+				probeCodexDaemonProcessBinding(
+					f.id,
+					{ pid: process.pid, startIdentity: ownStartIdentity() },
+					deps,
+				),
+			).resolves.toMatchObject({ bound: false });
+		} finally {
+			await f.close();
+		}
+	});
 });
