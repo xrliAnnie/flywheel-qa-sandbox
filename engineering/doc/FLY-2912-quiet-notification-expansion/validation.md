@@ -14,3 +14,8 @@ Issue: FLY-2912 (https://linear.app/geoforge3d/issue/FLY-2912)
 
 ## 冻结样本复核
 全部3份私有输入SHA和行数吻合。257条Lead事件的项目范围已核对；7条不含project_name的升级事件通过exact workflow run绑定确认属于flywheel。18条model阶段分布为code_review 8、design_review 3、pr_created 7；12条model监控恢复全部为ship_parked。它们仍须按历史待办凭证分类，不能把park状态当作无待办证明。细目见evidence/baseline-classification.json。
+
+## R1 修订与R2审查
+R1有效verdict=CHANGES_REQUESTED，唯一HIGH为生产DirectEventSink入口漏查。计划revision2在§11.1/T3/T6补齐，并处理关联MEDIUM证据/时序问题；未实现生产代码。R1完整收据在evidence/review-round1.json。新请求52e0e9a4-a162-442d-a558-705bd631eef4 / question aaceefb4-073f-4544-a93f-12c52fda24c4已accepted，尚无批准。
+
+补充证据manifest v3保留21条DirectEventSink原启动事件（它们的random source ID不同于direct通知ID）、21条派发账、22条execution binding、191条带时间的workflow事件。本机当前派发账无purpose列，checkout源码有该列及历史backfill；不能从listWorkflowSideEffects的缺省initial或升级默认值反推9-25事件的来源。mutable当前ledger状态不作历史发生时的状态。回放须锁实际部署build，不能把本分支base SHA冒充当晚生产carrier；证据缺项如实保留，不缩样本。这是实施回放仍需解决的证据约束，不是已得改后对比。
