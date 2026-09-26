@@ -1,14 +1,14 @@
 ---
 issue: FLY-2885
 phase: implement
-phaseCursor: 2/6
-updated: 2026-09-26T16:57:25.680Z
-nextStep: "readback rework code+tests green locally (replay red→green, 4 mutants
-  killed); next: lint/build/related tests, docs, commit, push, codex review"
+phaseCursor: 5/6
+updated: 2026-09-26T17:04:08.750Z
+nextStep: milestone literal-last, push, stage pr_created → codex code review of
+  the readback rework delta, complete --route needs_review --pr 1353
 chunks: []
 pointers: {}
 ---
 
 # FLY-2885 progress
-**phase**: implement (2/6)
-**next**: readback rework code+tests green locally (replay red→green, 4 mutants killed); next: lint/build/related tests, docs, commit, push, codex review
+**phase**: implement (5/6)
+**next**: milestone literal-last, push, stage pr_created → codex code review of the readback rework delta, complete --route needs_review --pr 1353
