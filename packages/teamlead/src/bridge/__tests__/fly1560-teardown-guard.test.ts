@@ -83,10 +83,10 @@ describe("FLY-1560 remaining-family teardown", () => {
 		).toEqual([]);
 	});
 
-	it("keeps the two renamed survivors — behavior stays, the family name does not", () => {
-		// These carry real behavior (launchd KeepAlive depends on the loop guard
-		// turning a main-loop hang into a restartable crash; the unreachable
-		// reconcile is a genuine data-consistency pass), so a "clean grep" that
+	it("keeps the renamed survivors and the loop observation monitor", () => {
+		// These carry real behavior (the loop guard records stall and recovery
+		// evidence without process signals; unreachable reconcile is a genuine
+		// data-consistency pass), so a "clean grep" that
 		// deleted them would be a regression, not progress.
 		expect(existsSync(`${bridgeDir}/BridgeEventLoopGuard.ts`)).toBe(true);
 		expect(existsSync(`${bridgeDir}/founder-reply-unreachable.ts`)).toBe(true);

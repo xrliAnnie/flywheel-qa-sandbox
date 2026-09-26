@@ -20,7 +20,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-mkdir -p "$FAKE_BIN" "$TMP_ROOT/home" "$TMP_ROOT/state" "$TMP_ROOT/syncop"
+mkdir -p "$FAKE_BIN" "$TMP_ROOT/state" "$TMP_ROOT/syncop"
 cat > "$FAKE_BIN/git" <<'FAKE_GIT'
 #!/bin/sh
 set -eu
@@ -36,7 +36,6 @@ printf 'fake-git-complete\n'
 FAKE_GIT
 chmod +x "$FAKE_BIN/git"
 
-export HOME="$TMP_ROOT/home"
 export FLYWHEEL_STATE_DIR="$TMP_ROOT/state"
 export FLYWHEEL_BRIDGE_SYNCOP_DIR="$TMP_ROOT/syncop"
 export FLY2331_CALL_LOG="$CALL_LOG"
@@ -47,8 +46,14 @@ unset FLYWHEEL_BRIDGE_LOOP_GUARD_CHECK_MS
 unset FLYWHEEL_BRIDGE_LOOP_GUARD_LOG
 
 cd "$REPO_ROOT"
-pnpm --filter flywheel-claude-runner build >/dev/null
-pnpm --filter flywheel-teamlead build >/dev/null
+if ! pnpm --filter flywheel-claude-runner build >"$TMP_ROOT/runner-build.log" 2>&1; then
+  cat "$TMP_ROOT/runner-build.log" >&2
+  exit 1
+fi
+if ! pnpm --filter flywheel-teamlead build >"$TMP_ROOT/teamlead-build.log" 2>&1; then
+  cat "$TMP_ROOT/teamlead-build.log" >&2
+  exit 1
+fi
 export PATH="$FAKE_BIN:$PATH"
 
 run_bounded() {
@@ -102,12 +107,28 @@ ASYNC_SECONDS=$((SECONDS - START_SECONDS))
 : > "$CALL_LOG"
 START_SECONDS=$SECONDS
 run_bounded 80 "$SYNC_OUT" node scripts/fixtures/fly2331-guard-arm.mjs sync "$SYNC_LOG"
-if [[ "$ARM_STATUS" -ne 137 && "$ARM_STATUS" -ne 9 ]]; then
-  echo "sync mutant was not SIGKILLed: status $ARM_STATUS" >&2
+if [[ "$ARM_STATUS" -ne 0 ]]; then
+  echo "sync observation arm failed to survive: status $ARM_STATUS" >&2
   cat "$SYNC_OUT" >&2
   exit 1
 fi
-grep -q 'bridge_event_loop_stall' "$SYNC_LOG"
+grep -q '"mode":"sync"' "$SYNC_OUT"
+grep -q '"child":"fake-git-complete"' "$SYNC_OUT"
+SYNC_HEARTBEATS="$(sed -n 's/.*"heartbeats":\([0-9][0-9]*\).*/\1/p' "$SYNC_OUT")"
+if [[ "$SYNC_HEARTBEATS" != "0" ]]; then
+  echo "sync arm unexpectedly remained responsive: ${SYNC_HEARTBEATS:-missing}" >&2
+  exit 1
+fi
+node --input-type=module - "$SYNC_LOG" <<'CHECK_SYNC'
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+const records = readFileSync(process.argv[2], "utf8").trim().split("\n").map((line) => JSON.parse(line));
+assert.deepEqual(records.map((record) => record.event), ["bridge_event_loop_stall", "stall_recovered_after_freeze"]);
+assert.equal(records[1].recovered_via, "heartbeat");
+assert.equal(records[0].pid, records[1].pid);
+assert.equal(records[0].bootTs, records[1].bootTs);
+assert.ok(records[0].stall_age_ms > records[0].threshold_ms);
+CHECK_SYNC
 grep -q 'worktree add fake-target' "$CALL_LOG"
 SYNC_SECONDS=$((SECONDS - START_SECONDS))
 
@@ -128,5 +149,5 @@ if [[ "$ARM_STATUS" -ne 0 ]] || ! grep -q '"exitObserved":true,"absent":true' "$
   exit 1
 fi
 
-printf 'PASS fly2331 async=%ss sync-mutant=%ss heartbeats=%s group=2/2 reap=1/1\n' \
+printf 'PASS fly2331 async=%ss sync-observed=%ss async-heartbeats=%s sync-heartbeats=0 evidence=stall+recovery group=2/2 reap=1/1\n' \
   "$ASYNC_SECONDS" "$SYNC_SECONDS" "$ASYNC_HEARTBEATS"

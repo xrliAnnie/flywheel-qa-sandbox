@@ -144,10 +144,48 @@ describe("bridge-exit-marker (Task 2.4)", () => {
 			last_sync_op: "codex-tui:tmux-exec",
 		});
 		const alert = buildAbnormalExitAlertContent(prev, stall);
-		expect(alert.title).toContain("event loop");
+		expect(alert.title).toBe("Bridge 非正常退出 — 复活对账中");
 		expect(alert.body).toContain("65432ms");
 		expect(alert.body).toContain("codex-tui:tmux-exec");
 	});
+
+	it.each([false, true])(
+		"prior stall remains diagnostic when recovered=%s and a later dirty exit occurs",
+		(recovered) => {
+			const log = join(dir, "loop-guard.log");
+			const prev = { pid: 111, bootTs: 1000, state: "running" as const };
+			const records = [
+				{
+					event: "bridge_event_loop_stall",
+					pid: 111,
+					bootTs: 1000,
+					stall_age_ms: 61_000,
+					at: new Date(1500).toISOString(),
+				},
+			];
+			if (recovered)
+				records.push({
+					event: "stall_recovered_after_freeze",
+					pid: 111,
+					bootTs: 1000,
+					stall_age_ms: 61_000,
+					at: new Date(1700).toISOString(),
+				});
+			writeFileSync(
+				log,
+				records.map((record) => JSON.stringify(record)).join("\n"),
+			);
+			const alert = buildAbnormalExitAlertContent(
+				prev,
+				findLoopStallForExit(log, prev, 2000),
+			);
+			expect(alert.title).toBe("Bridge 非正常退出 — 复活对账中");
+			expect(alert.body).toContain("曾观察到卡顿，退出原因未证实");
+			expect(alert.body).toContain("61000ms");
+			expect(alert.body).toContain("bridge-abnormal-exit:111:1000");
+			expect(`${alert.title} ${alert.body}`).not.toMatch(/自杀|SIGKILL/);
+		},
+	);
 
 	it.each([
 		["pid mismatch", { pid: 112, bootTs: 1000, at: 1500 }],

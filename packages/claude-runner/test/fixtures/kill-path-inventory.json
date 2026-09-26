@@ -1326,12 +1326,6 @@
 		"classification": "out-of-scope"
 	},
 	{
-		"key": "packages/teamlead/src/bridge/BridgeEventLoopGuard.ts:process.kill(process.pid, \"SIGKILL\");#1",
-		"path": "packages/teamlead/src/bridge/BridgeEventLoopGuard.ts",
-		"code": "process.kill(process.pid, \"SIGKILL\");",
-		"classification": "out-of-scope"
-	},
-	{
 		"key": "packages/teamlead/src/bridge/chrome-session-reaper.ts:process.kill(pid, \"SIGTERM\");#1",
 		"path": "packages/teamlead/src/bridge/chrome-session-reaper.ts",
 		"code": "process.kill(pid, \"SIGTERM\");",

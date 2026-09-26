@@ -210,8 +210,8 @@ export function buildAbnormalExitAlertContent(
 	const episode = abnormalExitEpisodeSignature(prev);
 	if (stall) {
 		return {
-			title: "Bridge event loop 卡死自杀 — 复活对账中",
-			body: `上一代 Bridge (PID ${prev.pid}, boot ${prev.bootTs}) 的 loop guard 记录到 event loop 卡死 ${stall.stall_age_ms}ms，最后同步操作：${stall.last_sync_op ?? "无标记"}（episode ${episode}；wrapper 直发 page 同一 episode）。launchd 已复活本进程；boot 对账完成后本工单安静 resolve。`,
+			title: "Bridge 非正常退出 — 复活对账中",
+			body: `上一代 Bridge (PID ${prev.pid}, boot ${prev.bootTs}) 曾观察到卡顿，退出原因未证实。loop guard 记录的卡顿时长为 ${stall.stall_age_ms}ms，最后同步操作：${stall.last_sync_op ?? "无标记"}（episode ${episode}；wrapper 直发 page 同一 episode）。launchd 已复活本进程；boot 对账完成后本工单安静 resolve。`,
 		};
 	}
 	return {

@@ -21,29 +21,46 @@ if (isMainThread) {
 		bootTs: Date.now(),
 		syncOpMarkerPath: "",
 	};
+	let guard;
 	// The no-ps case preserves the original unknown/null fallback. Legacy mode
 	// exists only for the host RED probe, which models a delayed child exec.
 	if (psAvailable !== "true" || mode === "legacy") {
-		new Worker(source, { eval: true, workerData: guardData });
+		guard = new Worker(source, { eval: true, workerData: guardData });
 	} else {
-		new Worker(__filename, { workerData: { source, guardData, readyPath } });
+		guard = new Worker(__filename, {
+			workerData: { source, guardData, readyPath },
+		});
 	}
-	setInterval(() => Atomics.store(view, 0, BigInt(Date.now())), 20);
-	setTimeout(() => {
+	const heartbeat = setInterval(
+		() => Atomics.store(view, 0, BigInt(Date.now())),
+		20,
+	);
+	let episodes = 0;
+	const blockMainLoop = () => {
 		const result =
 			Number(delay) > 0
 				? spawnSync(process.execPath, [
 						"-e",
 						`
 Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${Number(delay)});
-process.execve("/bin/sleep", ["sleep", "30"], process.env);
+process.execve("/bin/sleep", ["sleep", "1.2"], process.env);
 `,
 					])
-				: spawnSync("/bin/sleep", ["30"]);
-		// Reaching here means no guard kill; do not leave the heartbeat alive.
-		if (result.error) console.error(result.error);
-		process.exit(2);
-	}, 150);
+				: spawnSync("/bin/sleep", ["1.2"]);
+		if (result.error) throw result.error;
+		Atomics.store(view, 0, BigInt(Date.now()));
+		episodes += 1;
+		// Keep advancing the heartbeat long enough to observe recovery, then
+		// create an independent second stall in this same process generation.
+		setTimeout(() => {
+			if (episodes < 2) blockMainLoop();
+			else {
+				clearInterval(heartbeat);
+				guard.terminate().then(() => process.exit(0));
+			}
+		}, 500);
+	};
+	setTimeout(blockMainLoop, 150);
 } else {
 	const { source, guardData, readyPath } = workerData;
 	const deadline = Date.now() + 4000;

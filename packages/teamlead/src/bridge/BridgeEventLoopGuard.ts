@@ -1,30 +1,14 @@
 /**
- * FLY-307 C: Bridge event-loop self-termination guard.
+ * FLY-2920: Bridge event-loop stall observation.
  *
- * The 2026-06-17 outage wedged the Bridge: a sql.js/WASM trap spun the main
- * event loop and pegged CPU. launchd `KeepAlive` only restarts a *crashed*
- * process, not a *hung* one, so it took a manual `kickstart` and a ~10-min
- * Discord blackout to recover.
+ * A separate worker observes the main thread heartbeat in a SharedArrayBuffer
+ * so evidence can still be collected while the main event loop is blocked.
+ * A stalled heartbeat produces one redacted forensic record, never a process
+ * signal. Heartbeat progress records recovery and permits a later stall to
+ * produce its own evidence. Scheduler freezes retain the recovery grace.
  *
- * This loop guard converts a hang into a launchd-restartable crash. A same-loop
- * timer cannot do that — if the main loop is dead, its own callbacks never
- * fire. So detection runs in a separate `worker_threads` Worker that observes
- * a heartbeat the main thread writes into a `SharedArrayBuffer`:
- *
- *   main loop  →  setInterval(heartbeatIntervalMs): Atomics.store(view, 0, BigInt(now))
- *   worker     →  setInterval(checkIntervalMs): if now - lastBeat > stallThresholdMs → SIGKILL self
- *
- * A healthy loop (even under heavy CPU — timers fire late by ms/s, never 60s)
- * keeps the heartbeat advancing; a dead loop freezes it. On a confirmed stall
- * the worker writes a forensic line, then `process.kill(process.pid, "SIGKILL")`
- * — a process-level signal that terminates the WHOLE process (a JS signal
- * handler is useless: the loop that would run it is dead; `process.exit()` in a
- * worker stops only the worker).
- *
- * The guard is permanently enabled in production. The VITEST/test auto-disable
- * lives at the `startBridge()` wiring boundary (so the
- * dedicated tests in this package can still exercise the real worker
- * directly), NOT in this class.
+ * The monitor stays enabled in production. VITEST auto-disable belongs at the
+ * startBridge() wiring boundary; dedicated tests exercise the real worker.
  */
 
 import { mkdirSync } from "node:fs";
@@ -51,7 +35,7 @@ export interface LoopGuardWorkerData {
 	stallThresholdMs: number;
 	checkIntervalMs: number;
 	logPath: string;
-	/** Test-only: post terminal "stall" instead of killing the process. */
+	/** Test-only: post observation/recovery messages and permit collector seams. */
 	testMode: boolean;
 	pid: number;
 	bootTs: number;
@@ -206,16 +190,21 @@ const path = require("node:path");
 	let lastCheckAt = Date.now();
 	let timer;
 	let pendingGrace;
-	let terminal = false;
+	let reportedBeat;
+	let reportedSnapshot;
 	function stopMonitoring() {
 		if (timer) clearInterval(timer);
 		timer = undefined;
+		if (pendingGrace) clearTimeout(pendingGrace);
+		pendingGrace = undefined;
 	}
 	function startMonitoring() {
-		if (terminal || timer) return;
+		if (timer) return;
 		timer = setInterval(check, checkIntervalMs);
 	}
 	function recover(snapshot, recoveredVia, lastSyncOp) {
+		reportedBeat = undefined;
+		reportedSnapshot = undefined;
 		append({
 			event: recoveredVia === "forensic"
 				? "stall_recovered_during_forensics"
@@ -236,7 +225,7 @@ const path = require("node:path");
 		startMonitoring();
 	}
 	function stall(snapshot) {
-		if (terminal) return;
+		if (reportedBeat === snapshot.lastBeatAtDetect) return;
 		stopMonitoring();
 		if (pendingGrace) clearTimeout(pendingGrace);
 		pendingGrace = undefined;
@@ -248,7 +237,8 @@ const path = require("node:path");
 			recover(snapshot, "forensic", lastSyncOp);
 			return;
 		}
-		terminal = true;
+		reportedBeat = snapshot.lastBeatAtDetect;
+		reportedSnapshot = snapshot;
 		const forensic = {
 			event: "bridge_event_loop_stall",
 			stall_age_ms: snapshot.ageAtDetect,
@@ -268,14 +258,12 @@ const path = require("node:path");
 		try {
 			console.error(
 				"[BridgeLoopGuard] event loop stalled for " + forensic.stall_age_final_ms +
-				"ms (threshold " + stallThresholdMs + "ms) — killing process for KeepAlive restart",
+				"ms (threshold " + stallThresholdMs + "ms) — observation recorded; monitoring continues",
 			);
 		} catch (e) { /* best-effort */ }
-		if (testMode) {
-			if (parentPort) parentPort.postMessage("stall");
-			return;
-		}
-		process.kill(process.pid, "SIGKILL");
+		if (testMode && parentPort) parentPort.postMessage("stall");
+		lastCheckAt = Date.now();
+		startMonitoring();
 	}
 	function check() {
 		const lastBeat = Number(Atomics.load(view, 0));
@@ -286,6 +274,11 @@ const path = require("node:path");
 			: 0;
 		const tickGap = forcedTickGap > 0 ? forcedTickGap : now - lastCheckAt;
 		lastCheckAt = now;
+		if (reportedBeat !== undefined) {
+			if (lastBeat === reportedBeat) return;
+			recover(reportedSnapshot, "heartbeat");
+			return;
+		}
 		const snapshot = {
 			lastBeatAtDetect: lastBeat,
 			ageAtDetect: age,

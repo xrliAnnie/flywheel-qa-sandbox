@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { defaultAsyncExecFile } from "../../packages/claude-runner/dist/TmuxAdapter.js";
 import { BridgeEventLoopGuard } from "../../packages/teamlead/dist/bridge/BridgeEventLoopGuard.js";
 
@@ -23,21 +23,42 @@ async function runGuardArm(blocking) {
 		heartbeats += 1;
 	}, 1_000);
 	guard.start();
-	if (blocking) {
-		execFileSync("git", ["worktree", "add", "fake-target"], {
-			encoding: "utf8",
-			timeout: 120_000,
+	try {
+		const stdout = blocking
+			? execFileSync("git", ["worktree", "add", "fake-target"], {
+					encoding: "utf8",
+					timeout: 120_000,
+				})
+			: (
+					await defaultAsyncExecFile(
+						"git",
+						["worktree", "add", "fake-target"],
+						{ timeoutMs: 120_000 },
+					)
+				).stdout;
+		// Capture responsiveness during the operation, before recovery ticks.
+		const operationHeartbeats = heartbeats;
+		if (blocking) {
+			const deadline = Date.now() + 5_000;
+			while (
+				!existsSync(logPath) ||
+				!readFileSync(logPath, "utf8").includes("stall_recovered_after_freeze")
+			) {
+				if (Date.now() >= deadline) {
+					throw new Error("blocking observation did not record recovery");
+				}
+				await new Promise((resolve) => setTimeout(resolve, 25));
+			}
+		}
+		result({
+			mode: blocking ? "sync" : "async",
+			heartbeats: operationHeartbeats,
+			child: stdout.trim(),
 		});
-		throw new Error("blocking mutant unexpectedly survived the guard");
+	} finally {
+		clearInterval(heartbeat);
+		guard.stop();
 	}
-	const child = await defaultAsyncExecFile(
-		"git",
-		["worktree", "add", "fake-target"],
-		{ timeoutMs: 120_000 },
-	);
-	clearInterval(heartbeat);
-	guard.stop();
-	result({ mode: "async", heartbeats, child: child.stdout.trim() });
 }
 
 async function processExists(pid) {

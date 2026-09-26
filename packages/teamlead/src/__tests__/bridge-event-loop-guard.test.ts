@@ -3,11 +3,11 @@
  *
  * Coverage:
  *  - pure `isLoopStalled` boundaries
- *  - main-side mechanics with an INJECTED worker (no real killing thread):
+ *  - main-side mechanics with an INJECTED worker (stub worker):
  *    heartbeat advances the BigInt64Array; enable/disable + env kill-switch;
  *    stop() tears down
- *  - real-worker cross-thread detection (testMode → postMessage, no kill)
- *  - POSIX child-process test of the actual SIGKILL recovery path
+ *  - real-worker cross-thread detection (testMode → postMessage)
+ *  - POSIX child-process test of the production observation and recovery path
  */
 
 import { spawn } from "node:child_process";
@@ -170,7 +170,7 @@ describe("BridgeEventLoopGuard (main-side mechanics, injected worker)", () => {
 		expect(wd.isEnabled()).toBe(false);
 	});
 
-	it("stop() terminates the worker", () => {
+	it("stop() terminates the worker and clears the heartbeat timer", () => {
 		const w = stubWorker();
 		const wd = new BridgeEventLoopGuard({
 			enabled: true,
@@ -182,6 +182,8 @@ describe("BridgeEventLoopGuard (main-side mechanics, injected worker)", () => {
 		expect(w.terminated).toBe(false);
 		wd.stop();
 		expect(w.terminated).toBe(true);
+		expect(vi.getTimerCount()).toBe(0);
+		expect(wd._peekHeartbeat()).toBeNull();
 	});
 });
 
@@ -471,7 +473,7 @@ Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
 		}
 	});
 
-	it("S3 without heartbeat progress emits one terminal stall after grace", async () => {
+	it("S3 without heartbeat progress emits one stall observation after grace", async () => {
 		const state = stateMachineWorker({
 			lastBeat: Date.now() - 10_000,
 			forceTickGap: 300,
@@ -495,16 +497,59 @@ Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
 		}
 	});
 
+	it("reports once per frozen heartbeat, recovers once, and observes the next stall", async () => {
+		const state = stateMachineWorker({ lastBeat: Date.now() - 10_000 });
+		const messages: unknown[] = [];
+		state.worker.on("message", (message) => messages.push(message));
+		let heartbeat: ReturnType<typeof setInterval> | undefined;
+		try {
+			await vi.waitFor(() => expect(messages).toEqual(["stall"]));
+			await new Promise((resolve) => setTimeout(resolve, 250));
+			expect(messages).toEqual(["stall"]);
+			heartbeat = setInterval(
+				() => Atomics.store(state.view, 0, BigInt(Date.now())),
+				10,
+			);
+			await vi.waitFor(() => expect(messages).toEqual(["stall", "recovered"]));
+			await new Promise((resolve) => setTimeout(resolve, 250));
+			expect(messages).toEqual(["stall", "recovered"]);
+			clearInterval(heartbeat);
+			await vi.waitFor(() =>
+				expect(messages).toEqual(["stall", "recovered", "stall"]),
+			);
+			await new Promise((resolve) => setTimeout(resolve, 250));
+			const records = readFileSync(state.logPath, "utf8")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line));
+			expect(records.map((record) => record.event)).toEqual([
+				"bridge_event_loop_stall",
+				"stall_recovered_after_freeze",
+				"bridge_event_loop_stall",
+			]);
+		} finally {
+			clearInterval(heartbeat);
+			await state.worker.terminate();
+			rmSync(state.dir, { recursive: true, force: true });
+		}
+	});
+
 	it.skipIf(process.platform === "win32").each([0, 800])(
-		"production kill: a real spawnSync stall is SIGKILLed with child attribution (exec delay %i ms)",
+		"production observation: two real spawnSync stalls survive with child attribution (exec delay %i ms)",
 		async (execDelayMs) => {
 			const psAvailable = canInspectProcesses();
-			const { result, forensic, ready, harnessPid } = await runKillHarness({
-				psAvailable,
-				execDelayMs,
-			});
-			expect(result.signal).toBe("SIGKILL");
-			expect(result.code).toBeNull();
+			const { result, forensic, records, ready, harnessPid } =
+				await runKillHarness({
+					psAvailable,
+					execDelayMs,
+				});
+			expect(result).toEqual({ code: 0, signal: null });
+			expect(records.map((record) => record.event)).toEqual([
+				"bridge_event_loop_stall",
+				"stall_recovered_after_freeze",
+				"bridge_event_loop_stall",
+				"stall_recovered_after_freeze",
+			]);
 			expect(forensic.pid).toBe(harnessPid);
 			expect(forensic.tick_gap_ms).toBeLessThan(200);
 			if (psAvailable) {

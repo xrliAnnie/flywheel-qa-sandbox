@@ -61,24 +61,27 @@ export async function runKillHarness(options: {
 			exited,
 			new Promise<never>((_, reject) => {
 				// 4s readiness + 200ms stall + 5s freeze grace + 2s forensic ps.
-				// The sleep lasts 30s; this deadline precedes Vitest's 15s limit.
+				// Two bounded stalls and recovery must finish before Vitest's 15s limit.
 				timer = setTimeout(
-					() => reject(new Error(`kill harness exceeded 12s: ${stderr}`)),
+					() =>
+						reject(new Error(`observation harness exceeded 12s: ${stderr}`)),
 					12_000,
 				);
 			}),
 		]);
-		if (result.signal !== "SIGKILL") {
-			throw new Error(
-				`kill harness exited ${JSON.stringify(result)}: ${stderr}`,
-			);
-		}
-		const forensic = JSON.parse(readFileSync(logPath, "utf8").trim()) as {
+		const records = readFileSync(logPath, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line)) as Array<{
+			event: string;
 			pid: number;
 			tick_gap_ms: number;
 			attribution: string;
 			children: Array<{ pid: number; comm: string }> | null;
-		};
+		}>;
+		const forensic = records[0];
+		if (!forensic)
+			throw new Error(`observation harness omitted evidence: ${stderr}`);
 		const ready =
 			options.psAvailable && !options.legacy
 				? (JSON.parse(readFileSync(readyPath, "utf8")) as {
@@ -86,11 +89,11 @@ export async function runKillHarness(options: {
 						ppid: number;
 					})
 				: null;
-		return { result, forensic, ready, harnessPid: child.pid };
+		return { result, forensic, records, ready, harnessPid: child.pid };
 	} finally {
 		clearTimeout(timer);
-		// Only our detached process group: includes the orphan sleep after the
-		// guard kills the harness and does not include Vitest sibling workers.
+		// Only our detached process group; clean up any remaining fixture children
+		// without including Vitest sibling workers.
 		if (child.pid) killGroup(child.pid);
 		await exited.catch(() => undefined);
 		rmSync(dir, { recursive: true, force: true });

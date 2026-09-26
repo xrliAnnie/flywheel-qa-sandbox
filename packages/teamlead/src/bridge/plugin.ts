@@ -13785,12 +13785,10 @@ export async function startBridge(
 		);
 	}
 
-	// FLY-307 C: Bridge event-loop self-guard — converts a main-loop hang
-	// (e.g. a spinning sql.js/WASM trap) into a launchd-restartable crash, the
-	// gap launchd KeepAlive can't cover. Permanently enabled in production and
-	// auto-disabled under VITEST at this wiring boundary
-	// so general Bridge integration suites are never SIGKILLed by the worker
-	// (the dedicated loop-guard tests exercise the real worker directly).
+	// FLY-2920: Observe main-loop stalls from a separate worker, preserving
+	// forensic evidence without terminating Bridge. Enabled in production;
+	// dedicated loop-guard tests exercise the worker directly, while general
+	// VITEST integration suites skip the background monitor.
 	const bridgeLoopGuard = new BridgeEventLoopGuard({
 		enabled: !process.env.VITEST,
 		bootTs: bridgeBootTs,
@@ -13800,7 +13798,7 @@ export async function startBridge(
 	bridgeLoopGuard.start();
 	if (bridgeLoopGuard.isEnabled()) {
 		console.log(
-			"[Bridge] EventLoopGuard started (worker-thread heartbeat; SIGKILL self on a confirmed main-loop stall → KeepAlive restart)",
+			"[Bridge] EventLoopGuard started (worker-thread heartbeat; records stalls and recovery without process signals)",
 		);
 	}
 

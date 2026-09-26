@@ -1,6 +1,9 @@
 /** QA host: pnpm exec tsx packages/teamlead/src/__tests__/fixtures/loop-guard/attribution-probe.mts */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { canInspectProcesses, runKillHarness } from "./run-kill-harness.js";
 
@@ -24,7 +27,7 @@ if (mode !== "--green-only") {
 		legacy: true,
 	});
 	console.log(JSON.stringify({ phase: "RED", result, forensic }));
-	assert.deepEqual(result, { code: null, signal: "SIGKILL" });
+	assert.deepEqual(result, { code: 0, signal: null });
 	assert.equal(forensic.attribution, "child");
 	assert.ok(forensic.children, "RED needs a real process snapshot");
 	assert.ok(
@@ -41,24 +44,57 @@ if (mode !== "--green-only") {
 }
 if (mode !== "--red-only") {
 	const cwd = fileURLToPath(new URL("../../../../../../", import.meta.url));
-	for (let round = 1; round <= 20; round += 1) {
-		const run = spawnSync(
-			"pnpm",
-			[
-				"--filter",
-				"flywheel-teamlead",
-				"exec",
-				"vitest",
-				"run",
-				"src/__tests__/bridge-event-loop-guard.test.ts",
-				"-t",
-				"production kill:",
-			],
-			{ cwd, stdio: "inherit", timeout: 60_000 },
+	const rounds = Number(process.env.LOOP_GUARD_PROBE_ROUNDS ?? 20);
+	assert.ok(Number.isInteger(rounds) && rounds > 0 && rounds <= 20);
+	const reportDir = mkdtempSync(join(tmpdir(), "loop-attribution-probe-"));
+	try {
+		for (let round = 1; round <= rounds; round += 1) {
+			const report = join(reportDir, `round-${round}.json`);
+			const run = spawnSync(
+				"pnpm",
+				[
+					"--filter",
+					"flywheel-teamlead",
+					"exec",
+					"vitest",
+					"run",
+					"src/__tests__/bridge-event-loop-guard.test.ts",
+					"-t",
+					"production observation:",
+					"--reporter=json",
+					`--outputFile=${report}`,
+					"--maxWorkers=1",
+					"--minWorkers=1",
+				],
+				{ cwd, stdio: "inherit", timeout: 60_000 },
+			);
+			assert.ifError(run.error);
+			assert.equal(run.status, 0, `GREEN round ${round}/${rounds} failed`);
+			const result = JSON.parse(readFileSync(report, "utf8")) as {
+				testResults: Array<{
+					assertionResults: Array<{ fullName: string; status: string }>;
+				}>;
+			};
+			const selected = result.testResults
+				.flatMap((suite) => suite.assertionResults)
+				.filter((test) => test.fullName.includes("production observation:"));
+			assert.equal(
+				selected.length,
+				2,
+				"GREEN must select direct sleep and delayed exec tests",
+			);
+			assert.ok(
+				selected.every((test) => test.status === "passed"),
+				"GREEN must execute both selected tests, not skip them",
+			);
+			console.log(
+				`GREEN ${round}/${rounds} PASS (direct sleep + delayed exec)`,
+			);
+		}
+		console.log(
+			`GREEN complete: ${rounds}/${rounds} rounds, ${rounds * 2}/${rounds * 2} observation cases`,
 		);
-		assert.ifError(run.error);
-		assert.equal(run.status, 0, `GREEN round ${round}/20 failed`);
-		console.log(`GREEN ${round}/20 PASS (direct sleep + delayed exec)`);
+	} finally {
+		rmSync(reportDir, { recursive: true, force: true });
 	}
-	console.log("GREEN complete: 20/20 rounds, 40/40 kill cases");
 }
