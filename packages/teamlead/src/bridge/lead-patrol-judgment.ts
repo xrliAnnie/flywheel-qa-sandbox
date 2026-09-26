@@ -7,6 +7,10 @@ import type {
 	OperationReceipt,
 	OperationReceiptStore,
 } from "../lead-capabilities/receipts.js";
+import {
+	type RootCauseAskRecord,
+	verifyRootCauseEvidence,
+} from "../patrol-root-causes.js";
 import { readLeadPatrolReport } from "./lead-patrol-snapshot.js";
 
 type Gates = ReturnType<typeof applyPatrolJudgment>["gates"];
@@ -38,6 +42,8 @@ export function recordLeadPatrolJudgment(options: {
 	secrets: readonly string[];
 	signal: AbortSignal;
 	assertCurrent(): void;
+	/** FLY-2914: Bridge-owned founder_ask reader; the registered report is the baseline. */
+	rootCauseAsk(askId: string): RootCauseAskRecord | undefined;
 }): Result {
 	const result = (status: Result["status"], errorCode?: string): Result => ({
 		requestId: options.requestId,
@@ -147,6 +153,11 @@ export function recordLeadPatrolJudgment(options: {
 			source: options.source,
 			secrets: options.secrets,
 			assertCurrent: current,
+			verifyRootCauses: (text) =>
+				verifyRootCauseEvidence(text, {
+					getAsk: options.rootCauseAsk,
+					nowMs: Date.now(),
+				}),
 			report: {
 				path: report.path,
 				sha256: report.sha256,

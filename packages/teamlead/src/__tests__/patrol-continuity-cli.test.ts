@@ -55,14 +55,14 @@ describe("patrol helper CLI", () => {
 		const path = join(root, "report.md");
 		writeFileSync(
 			path,
-			"patrol_schema=2\nMECHANISM_REVIEW result=none count=0\n",
+			"patrol_schema=2\nROOT_CAUSE_REVIEW status=not_applicable parent=FLY-2072 observed_at=2026-09-26T00:00:00.000Z token=project_scope\nMECHANISM_REVIEW result=none count=0\n",
 		);
 		expect(
 			await runPatrolContinuity(["validate-report", "--report", path]),
 		).toBe(0);
 		writeFileSync(
 			path,
-			"patrol_schema=2\nMECHANISM_REVIEW result=findings count=1\nMECHANISM_DEFECT id=" +
+			"patrol_schema=2\nROOT_CAUSE_REVIEW status=not_applicable parent=FLY-2072 observed_at=2026-09-26T00:00:00.000Z token=project_scope\nMECHANISM_REVIEW result=findings count=1\nMECHANISM_DEFECT id=" +
 				"a".repeat(64) +
 				" step=2 class_key=" +
 				"b".repeat(64) +
@@ -78,7 +78,7 @@ describe("patrol helper CLI", () => {
 		const path = join(root, "report.md");
 		writeFileSync(
 			path,
-			"patrol_schema=2\nMECHANISM_REVIEW result=none count=0\nACTIVITY_RECORD " +
+			"patrol_schema=2\nROOT_CAUSE_REVIEW status=not_applicable parent=FLY-2072 observed_at=2026-09-26T00:00:00.000Z token=project_scope\nMECHANISM_REVIEW result=none count=0\nACTIVITY_RECORD " +
 				JSON.stringify({
 					id: "a".repeat(64),
 					entry: { identity: { executionId: "fake" }, refs: [] },

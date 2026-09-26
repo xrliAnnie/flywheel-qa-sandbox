@@ -11,6 +11,8 @@ export function runPatrolCompletionGates(options: {
 	report: PinnedMarkdown;
 	secrets: readonly string[];
 	assertCurrent(): void;
+	/** FLY-2914: trusted founder_ask/time evidence for the root-cause section (gate 3). */
+	verifyRootCauses?(report: string): { valid: boolean };
 }) {
 	function current() {
 		options.assertCurrent();
@@ -66,13 +68,14 @@ export function runPatrolCompletionGates(options: {
 			exitCode = typeof status === "number" ? status : null;
 		}
 		current();
-		if (
-			index === 2 &&
-			!validatePatrolReport(
-				readManifestMarkdown([options.report], options.secrets)[0]!,
-			).valid
-		)
-			exitCode = 1;
+		if (index === 2) {
+			const text = readManifestMarkdown([options.report], options.secrets)[0]!;
+			if (
+				!validatePatrolReport(text).valid ||
+				(options.verifyRootCauses && !options.verifyRootCauses(text).valid)
+			)
+				exitCode = 1;
+		}
 		return { gate: index + 1, passed: exitCode === 0, exitCode };
 	});
 	return {

@@ -22,7 +22,7 @@ it.each(["existing", "created", "no_issue", "no_issue_comment"] as const)(
 		const path = join(root, "report.md"),
 			rules = realpathSync(resolve("lead-rules-base/runbooks/patrol-v1.md"));
 		const initial =
-			"patrol_schema=2\nMECHANISM_REVIEW result=LEAD-JUDGMENT-REQUIRED\n" +
+			"patrol_schema=2\nROOT_CAUSE_REVIEW status=not_applicable parent=FLY-2072 observed_at=2026-09-26T00:00:00.000Z token=project_scope\nMECHANISM_REVIEW result=LEAD-JUDGMENT-REQUIRED\n" +
 			Array.from(
 				{ length: 6 },
 				(_, i) =>

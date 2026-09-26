@@ -76,6 +76,36 @@ export const patrolMechanismInput = {
 		)
 		.max(100)
 		.optional(),
+	// FLY-2914: one record per listed root-cause category (report line ROOT_CAUSE_DISPOSITION).
+	rootCauseDispositions: z
+		.array(
+			z
+				.object({
+					ref: token,
+					findingId: hex,
+					scheduleKey: hex,
+					mode: z.enum(["reported", "waiting_founder", "scheduled"]),
+					askId: uuid.nullable(),
+					threadId: z
+						.string()
+						.regex(/^[0-9]{5,25}$/)
+						.nullable(),
+					messageId: z
+						.string()
+						.regex(/^[0-9]{5,25}$/)
+						.nullable(),
+					reason: prose.nullable(),
+					owner: z
+						.string()
+						.regex(/^(?:founder|agent:[A-Za-z0-9][A-Za-z0-9._-]{0,127})$/)
+						.nullable(),
+					nextReviewAt: z.string().datetime().nullable(),
+					sourceDigest: hex,
+				})
+				.strict(),
+		)
+		.max(100)
+		.optional(),
 };
 
 /** Declarations are append-only identities; no request may hide a prior defect. */
@@ -89,6 +119,9 @@ export function mergePatrolMechanisms(
 	const dispositions = z
 		.array(patrolMechanismInput.mechanismDispositions.unwrap().element)
 		.parse(input.mechanismDispositions ?? []);
+	const rootCauses = z
+		.array(patrolMechanismInput.rootCauseDispositions.unwrap().element)
+		.parse(input.rootCauseDispositions ?? []);
 	const result = [...lines];
 	const fail = () => {
 		throw new Error("patrol_judgment_invalid");
@@ -113,6 +146,22 @@ export function mergePatrolMechanisms(
 		});
 		if (indices.length > 1) fail();
 		const line = `MECHANISM_DISPOSITION ${JSON.stringify(disposition)}`;
+		if (indices.length) result[indices[0]!] = line;
+		else result.push(line);
+	}
+	// Upsert by schedule key; the snapshot's candidate lines are never touched here.
+	for (const disposition of rootCauses) {
+		const indices = result.flatMap((v, i) => {
+			if (!v.startsWith("ROOT_CAUSE_DISPOSITION ")) return [];
+			try {
+				const prior = JSON.parse(v.slice("ROOT_CAUSE_DISPOSITION ".length));
+				return prior.scheduleKey === disposition.scheduleKey ? [i] : [];
+			} catch {
+				return fail();
+			}
+		});
+		if (indices.length > 1) fail();
+		const line = `ROOT_CAUSE_DISPOSITION ${JSON.stringify(disposition)}`;
 		if (indices.length) result[indices[0]!] = line;
 		else result.push(line);
 	}

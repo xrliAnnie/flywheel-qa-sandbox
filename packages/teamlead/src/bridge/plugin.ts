@@ -197,6 +197,7 @@ import {
 	parseAndValidateProjects,
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
+import { linearRequestFromClient } from "../patrol-root-causes.js";
 import { findResidentCodexLeadTargets } from "../resident-codex-lead-roster.js";
 import { resolveSelfIdentity } from "../roundtable-allowbots.js";
 import {
@@ -770,6 +771,7 @@ import {
 	parsePaneLossGenerationParams,
 	reconcilePaneLoss,
 } from "./pane-loss-reconcile.js";
+import { createPatrolRootCauseRouter } from "./patrol-root-cause-route.js";
 import {
 	readPipelineEnrollment,
 	reconcileDefaultDagCategoryBindings,
@@ -5323,6 +5325,25 @@ export function createBridgeApp(
 				res.status(502).json({ error: "Linear API error" });
 			}
 		},
+	);
+
+	// FLY-2914: read-only root-cause scheduling facts + verdicts for the shell
+	// patrol path. Linear credential and StateStore stay inside the Bridge.
+	app.use(
+		"/api/patrol/root-causes",
+		tokenAuthMiddleware(config.apiToken),
+		createPatrolRootCauseRouter({
+			store,
+			getAsk: (askId) => store.getFounderAsk(askId),
+			linearRequest: () =>
+				config.linearApiKey
+					? linearRequestFromClient(
+							new LinearClient({ apiKey: config.linearApiKey }),
+						)
+					: undefined,
+			stateDir:
+				process.env.FLYWHEEL_STATE_DIR?.trim() || join(homedir(), ".flywheel"),
+		}),
 	);
 
 	// FLY-1160 (plan §3.3 读口): read-only PAGED comments of one issue — the

@@ -72,6 +72,12 @@ export function applyPatrolJudgment(
 		epic: string;
 		epicMarker: string;
 	}>;
+	// FLY-2914: only a root-cause scheduling incident may reference its disposition.
+	const rootCauseIncident = (f: (typeof findings)[number]) =>
+		f.category === "incident" &&
+		step === "6" &&
+		f.evidence.startsWith("rootcause:") &&
+		f.dispositionRef === f.evidence;
 	if (
 		new Set(findings.map((f) => f.id)).size !== findings.length ||
 		findings.some((f) => {
@@ -82,11 +88,26 @@ export function applyPatrolJudgment(
 				f.dispositionRef,
 			];
 			return f.category === "incident"
-				? fields.some((v) => v !== undefined)
+				? (rootCauseIncident(f) ? fields.slice(0, 3) : fields).some(
+						(v) => v !== undefined,
+					)
 				: fields.some((v) => v === undefined);
 		})
 	)
 		throw invalid();
+	// Snapshot pre-filled root-cause findings survive unless this request re-states them.
+	const preserved =
+		step === "6"
+			? original
+					.split("\n")
+					.filter(
+						(line) =>
+							line.startsWith("FINDING ") &&
+							line.split(" ").includes("step=6") &&
+							/ evidence=rootcause:[0-9a-f]{64} /.test(line) &&
+							!findings.some((f) => line.split(" ").includes(`id=${f.id}`)),
+					)
+			: [];
 	const unavailable = input.unavailable as
 		| { class: string; token: string }
 		| undefined;
@@ -97,7 +118,7 @@ export function applyPatrolJudgment(
 	}>;
 	if (
 		(judgment === "unknown") !== !!unavailable ||
-		(judgment === "unhealthy") !== findings.length > 0 ||
+		(judgment === "unhealthy") !== findings.length + preserved.length > 0 ||
 		(panes.length > 0 && input.step !== 2) ||
 		new Set(panes.map((p) => p.pane)).size !== panes.length
 	)
@@ -128,9 +149,10 @@ export function applyPatrolJudgment(
 				return [
 					`STEP ${step}: ${status}`,
 					...(cause && !lines.includes(cause) ? [cause] : []),
+					...preserved,
 					...findings.map(
 						(f) =>
-							`FINDING id=${f.id} category=${f.category} step=${step} bridge_problem=${f.bridgeProblem ? "yes" : "no"} result=${f.result} evidence=${f.evidence} owner=${f.owner} next=${f.next} epic=${f.epic} epic_marker=${f.epicMarker}${f.category === "mechanism_defect" ? ` disposition=${f.disposition} repair_issue=${f.repairIssue} repair_receipt=${f.repairReceipt} disposition_ref=${f.dispositionRef}` : ""}`,
+							`FINDING id=${f.id} category=${f.category} step=${step} bridge_problem=${f.bridgeProblem ? "yes" : "no"} result=${f.result} evidence=${f.evidence} owner=${f.owner} next=${f.next} epic=${f.epic} epic_marker=${f.epicMarker}${f.category === "mechanism_defect" ? ` disposition=${f.disposition} repair_issue=${f.repairIssue} repair_receipt=${f.repairReceipt} disposition_ref=${f.dispositionRef}` : rootCauseIncident(f) ? ` disposition_ref=${f.dispositionRef}` : ""}`,
 					),
 				];
 			if (line.startsWith("PANE_EVIDENCE ")) {

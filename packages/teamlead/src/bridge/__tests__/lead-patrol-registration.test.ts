@@ -123,6 +123,7 @@ it("registers actual reports in Bridge receipts and replays read-only across SQL
 			signal: options.signal,
 			secrets: [],
 			assertCurrent: () => {},
+			rootCauseAsk: () => undefined,
 			source: {
 				path: rules,
 				sha256: createHash("sha256").update(readFileSync(rules)).digest("hex"),

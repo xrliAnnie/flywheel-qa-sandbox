@@ -1,4 +1,6 @@
 /** Pure report closure validation; recorded receipts are evidence, never authority. */
+import { validateRootCauseStructure } from "./patrol-root-causes.js";
+
 type Fields = Record<string, string>;
 const HEX = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -220,13 +222,18 @@ export function validatePatrolReport(text: string): {
 					fail("invalid_bridge_receipt");
 			} else if (f.epic !== "n/a" || f.epic_marker !== "n/a")
 				fail("invalid_incident_receipt");
+			// FLY-2914: a root-cause scheduling incident closes through its own
+			// ROOT_CAUSE_DISPOSITION record; every other incident stays disposition-free.
+			const rootCause =
+				f.evidence?.startsWith("rootcause:") === true &&
+				f.disposition_ref === f.evidence;
 			if (
 				f.category === "incident" &&
 				[
 					"disposition",
 					"repair_issue",
 					"repair_receipt",
-					"disposition_ref",
+					...(rootCause ? [] : ["disposition_ref"]),
 				].some((k) => Object.hasOwn(f, k))
 			)
 				fail("incident_disposition");
@@ -425,5 +432,6 @@ export function validatePatrolReport(text: string): {
 			fail("mechanism_finding_missing");
 	for (const ref of dispositions.keys())
 		if (!used.has(ref)) fail("orphan_disposition");
+	for (const error of validateRootCauseStructure(text).errors) fail(error);
 	return { valid: errors.length === 0, errors };
 }

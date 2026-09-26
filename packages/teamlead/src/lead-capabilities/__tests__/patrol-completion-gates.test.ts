@@ -18,7 +18,7 @@ it("runs the three canonical gates against actual reports without upgrading cand
 	const rules = realpathSync(resolve("lead-rules-base/runbooks/patrol-v1.md"));
 	const source = { path: rules, sha256: hash(readFileSync(rules)) };
 	const reportPath = join(root, "report with spaces.md");
-	const valid = `patrol_schema=2\nMECHANISM_REVIEW result=none count=0\n${Array.from(
+	const valid = `patrol_schema=2\nROOT_CAUSE_REVIEW status=not_applicable parent=FLY-2072 observed_at=2026-09-26T00:00:00.000Z token=project_scope\nMECHANISM_REVIEW result=none count=0\n${Array.from(
 		{ length: 6 },
 		(_, i) =>
 			`## STEP ${i + 1}\nSTEP ${i + 1}: OK\n${i === 1 ? "pane_count=0" : i === 4 ? "disk_below_threshold=no" : ""}`,

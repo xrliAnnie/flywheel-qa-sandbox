@@ -7,6 +7,9 @@ import { validatePatrolReport } from "../patrol-report.js";
 const id = "a".repeat(64),
 	key = "b".repeat(64);
 const uuid = "123e4567-e89b-12d3-a456-426614174000";
+// FLY-2914: every report carries the root-cause review; header-less fixtures are out of scope.
+const NA_REVIEW =
+	"ROOT_CAUSE_REVIEW status=not_applicable parent=FLY-2072 observed_at=2026-09-26T00:00:00.000Z token=project_scope";
 function report(mode = "existing") {
 	const absent = mode === "no_issue";
 	const d = {
@@ -47,6 +50,7 @@ function report(mode = "existing") {
 		`MECHANISM_DEFECT id=${id} step=6 class_key=${key} root_cause_ref=disposition:one counterexample_ref=disposition:one`,
 		`FINDING id=${id} category=mechanism_defect step=6 bridge_problem=no result=advanced evidence=fixture owner=n/a next=n/a epic=n/a epic_marker=n/a disposition=${mode} repair_issue=${absent ? "n/a" : "FLY-1945"} repair_receipt=${absent ? "n/a" : uuid} disposition_ref=disposition:one`,
 		`MECHANISM_DISPOSITION ${JSON.stringify(d)}`,
+		NA_REVIEW,
 	].join("\n");
 }
 describe("patrol report closure", () => {
@@ -89,10 +93,34 @@ describe("patrol report closure", () => {
 	it("requires explicit zero review", () => {
 		expect(
 			validatePatrolReport(
-				"patrol_schema=2\nMECHANISM_REVIEW result=none count=0",
+				`patrol_schema=2\nMECHANISM_REVIEW result=none count=0\n${NA_REVIEW}`,
 			).valid,
 		).toBe(true);
-		expect(validatePatrolReport("patrol_schema=2").valid).toBe(false);
+		expect(validatePatrolReport(`patrol_schema=2\n${NA_REVIEW}`).valid).toBe(
+			false,
+		);
+	});
+	it("FLY-2914 rejects a report whose root-cause section was deleted", () => {
+		const verdict = validatePatrolReport(
+			"patrol_schema=2\nMECHANISM_REVIEW result=none count=0",
+		);
+		expect(verdict.errors).toContain("root_cause_review_missing");
+	});
+	it("FLY-2914 allows disposition_ref only on a root-cause scheduling incident", () => {
+		const scheduleKey = "e".repeat(64);
+		const incident = (evidence: string) =>
+			`patrol_schema=2\nMECHANISM_REVIEW result=none count=0\n${NA_REVIEW}\nSTEP 6: FINDING\nFINDING id=${id} category=incident step=6 bridge_problem=no result=escalated-with-plan evidence=${evidence} owner=founder next=route:rootcause-schedule epic=n/a epic_marker=n/a disposition_ref=${evidence}`;
+		expect(validatePatrolReport(incident("fixture")).errors).toContain(
+			"incident_disposition",
+		);
+		expect(
+			validatePatrolReport(incident(`rootcause:${scheduleKey}`)).errors,
+		).not.toContain("incident_disposition");
+		expect(
+			validatePatrolReport(
+				`${incident(`rootcause:${scheduleKey}`)} repair_issue=n/a`,
+			).errors,
+		).toContain("incident_disposition");
 	});
 	const mutants: [string, (s: string) => string][] = [
 		[
@@ -245,6 +273,7 @@ describe("activity report evidence", () => {
 		`PANE_EVIDENCE pane=p1 schema=2 exec=exec-one activity=STALLED_60M activity_evidence=${id}`,
 		`ACTIVITY_EVIDENCE id=${id} exec=exec-one activation=activation-one interval_start=100 interval_end=3700 source=remote_ref ref_complete=yes refs_sha256=${key} semantic_sha256=${key} coverage_since=100 reason=unchanged branch_activity=no`,
 		`ACTIVITY_RECORD ${JSON.stringify({ id, entry, sampledAtMs: 3700000, activity: "STALLED_60M", interval_start: 100, interval_end: 3700 })}`,
+		NA_REVIEW,
 	].join("\n");
 	const queueFields =
 		"queue_request=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa queue_position=3 queue_wait_seconds=65";

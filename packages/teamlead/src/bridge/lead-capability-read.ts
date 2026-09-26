@@ -405,6 +405,7 @@ export function createLeadCapabilityReadRouter(
 								...options.patrol,
 								...scope,
 								input: input.data,
+								rootCauseAsk: (askId) => options.store.getFounderAsk(askId),
 								assertCurrent: () => {
 									fresh();
 								},
