@@ -638,6 +638,8 @@ export class RetryDispatcher implements IRetryDispatcher {
 		protected workflowPrefixLookup?: (
 			input: WorkflowPrefixLookupInput,
 		) => WorkflowPrefixContext | undefined,
+		/** FLY-2913: store-backed `runner_prefix_profile`, read at each new launch. */
+		protected runnerPrefixProfileControl?: () => FlagStoreRawValue,
 	) {}
 
 	protected resolveMcpProfileForExecution(
@@ -651,6 +653,8 @@ export class RetryDispatcher implements IRetryDispatcher {
 			sessionRole: req.sessionRole,
 			issueLabels: req.issueLabels,
 		});
+		// One store read per launch; an absent store keeps the legacy default.
+		const profile = this.runnerPrefixProfileControl?.();
 		const select = (context?: WorkflowPrefixContext) =>
 			resolveRunnerPrefixSelection({
 				actor: "runner",
@@ -658,6 +662,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 				issueLabels: req.issueLabels,
 				phase: context?.phase,
 				workflow: context?.workflow,
+				profile,
 			});
 		// Check mode/escape hatches before consulting persisted data. Legacy launch
 		// behavior must not acquire new reads or failure modes.
@@ -1452,6 +1457,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		workflowPrefixLookup?: (
 			input: WorkflowPrefixLookupInput,
 		) => WorkflowPrefixContext | undefined,
+		runnerPrefixProfileControl?: () => FlagStoreRawValue,
 	) {
 		super(
 			blueprintsByProject,
@@ -1472,6 +1478,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			prelaunchWorkflowTurnGrant,
 			workflowUsageRecorder,
 			workflowPrefixLookup,
+			runnerPrefixProfileControl,
 		);
 	}
 

@@ -1,5 +1,4 @@
 import { normalizeCodexRecoveryFailure } from "flywheel-core";
-import { resolveExecutionWorkflowPrefixContext } from "../workflow-prefix-context.js";
 /**
  * FLY-22/FLY-50: Run infrastructure setup — creates per-project Blueprint + RunDispatcher.
  *
@@ -84,6 +83,7 @@ import {
 	type Session,
 	type StateStore,
 } from "../StateStore.js";
+import { resolveExecutionWorkflowPrefixContext } from "../workflow-prefix-context.js";
 import type { AdmissionCrossingBarrier } from "./admission-crossing-barrier.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import type { CodexReviewHoldCoordinator } from "./codex-review-hold.js";
@@ -102,6 +102,7 @@ import {
 	storePonytailEnabled,
 	storeProofshotEnabled,
 	storeRunnerMemoryMode,
+	storeRunnerPrefixProfile,
 	storeSkillFrameworkModeControl,
 	storeSkillFrameworkSplitParticipation,
 } from "./flag-store-runtime.js";
@@ -1266,6 +1267,7 @@ export function createRunInfraDispatcher(input: {
 			}
 		},
 		(lookup) => resolveExecutionWorkflowPrefixContext(input.store, lookup),
+		flagStore ? () => storeRunnerPrefixProfile(flagStore) : undefined,
 	);
 }
 

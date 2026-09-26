@@ -64,6 +64,8 @@ const EXPECTED_WHEN_ON = {
 		"dry_run 与 auto 都按设计对齐、在飞冲突、QA 覆盖三点显示机器判断；auto 仅在三点全通过且既有守卫有效时自动批准",
 	runner_memory_mode:
 		"决定新 Runner 使用哪种记忆方案；off 不注入实验记忆，其余选项用于对照实验",
+	runner_prefix_profile:
+		"决定新启动的 Claude 执行、评审与 QA 带哪套固定配置：legacy 保持原完整配置，role-v1 只带该角色需要的工具、插件与规则；Lead 与 Codex 不受影响",
 	skill_framework_mode:
 		"决定新 Runner 尝试加载哪套技能框架；方案不兼容当前后端或就绪检查失败时会回退或不生效",
 	skill_framework_split_participation:
@@ -88,7 +90,7 @@ describe("feature-flag registry invariants", () => {
 	});
 
 	it("FLY-2368 gives every current flag its reviewed founder copy", () => {
-		expect(FEATURE_FLAGS).toHaveLength(35);
+		expect(FEATURE_FLAGS).toHaveLength(36);
 		expect(
 			Object.fromEntries(FEATURE_FLAGS.map((flag) => [flag.name, flag.whenOn])),
 		).toEqual(EXPECTED_WHEN_ON);
@@ -354,6 +356,33 @@ describe("feature-flag registry invariants", () => {
 			default: "off",
 			toggleable: "direct",
 			retireWhen: expect.stringMatching(/founder.*role.*shared/i),
+		});
+	});
+
+	it("FLY-2913 registers the Claude runner prefix profile as a store-only legacy-default switch", () => {
+		expect(
+			FEATURE_FLAGS.find((flag) => flag.name === "runner_prefix_profile"),
+		).toMatchObject({
+			category: "feature",
+			source: "env",
+			scope: "bridge_global",
+			envVar: "FLYWHEEL_RUNNER_PREFIX_PROFILE",
+			polarity: "opt_in",
+			valueKind: "enum",
+			enumValues: ["legacy", "role-v1"],
+			default: "legacy",
+			toggleable: "direct",
+			directToggleProof: expect.stringMatching(/flag-store-runtime/),
+			readSites: [
+				{
+					file: "packages/teamlead/src/bridge/run-infra.ts",
+					symbol: "createRunInfraDispatcher",
+					pattern: "delegated",
+					timing: "call_time",
+					resolverModule: "packages/teamlead/src/bridge/flag-store-runtime.ts",
+					resolverSymbol: "storeRunnerPrefixProfile",
+				},
+			],
 		});
 	});
 

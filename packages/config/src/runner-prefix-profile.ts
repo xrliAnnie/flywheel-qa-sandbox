@@ -1,6 +1,8 @@
 /** FLY-2913: selection only; no files, settings, permissions or launch side effects.
  * Callers must obtain workflow and phase from the server's pinned run snapshot,
  * and reviewType from the persisted review job. This is not an API input parser.
+ * The mode comes only from the store-managed `runner_prefix_profile` row read at
+ * each new launch; the registry env name is bootstrap metadata, never read here.
  */
 export type RunnerPrefixRole =
 	| "design"
@@ -8,7 +10,17 @@ export type RunnerPrefixRole =
 	| "qa"
 	| "review-design"
 	| "review-code";
-export type RunnerPrefixMode = "legacy" | "role-v1";
+export const RUNNER_PREFIX_PROFILES = ["legacy", "role-v1"] as const;
+export type RunnerPrefixMode = (typeof RUNNER_PREFIX_PROFILES)[number];
+
+export function isRunnerPrefixProfile(
+	value: unknown,
+): value is RunnerPrefixMode {
+	return (
+		typeof value === "string" &&
+		(RUNNER_PREFIX_PROFILES as readonly string[]).includes(value)
+	);
+}
 
 export interface RunnerPrefixWorkflow {
 	runId: string;
@@ -35,7 +47,8 @@ export interface ResolveRunnerPrefixSelectionArgs {
 	reviewType?: string;
 	workflow?: RunnerPrefixWorkflow;
 	issueLabels?: readonly string[];
-	env?: NodeJS.ProcessEnv;
+	/** Raw `runner_prefix_profile` store row; absent/unset/unsupported ⇒ legacy. */
+	profile?: { hasOverride: boolean; raw: string | null };
 }
 
 export type RunnerPrefixSelection =
@@ -55,8 +68,8 @@ export type RunnerPrefixSelection =
 			workflow: RunnerPrefixWorkflow;
 	  };
 
-// Development remains opt-in until the five real-role acceptance runs pass.
-// The consumer integration/default-enable step is a later task in the plan.
+// Legacy is both the default and the only fallback; role-v1 is enabled only by
+// the managed feature-flags command (Lead ruling, 2026-09-26).
 const DEFAULT_MODE: RunnerPrefixMode = "legacy";
 
 export function resolveRunnerPrefixSelection(
@@ -70,10 +83,9 @@ export function resolveRunnerPrefixSelection(
 		return { mode: "legacy", reason: "not-applicable" };
 	}
 	const mode =
-		(args.env ?? process.env).FLYWHEEL_RUNNER_PREFIX_PROFILE ?? DEFAULT_MODE;
-	if (mode !== "legacy" && mode !== "role-v1") {
-		throw new Error("FLYWHEEL_RUNNER_PREFIX_PROFILE must be legacy or role-v1");
-	}
+		args.profile?.hasOverride && isRunnerPrefixProfile(args.profile.raw)
+			? args.profile.raw
+			: DEFAULT_MODE;
 	if (mode === "legacy") return { mode, reason: "operator-legacy" };
 	if (args.issueLabels?.some((label) => label.toLowerCase() === "full-mcp")) {
 		return { mode: "legacy", reason: "full-mcp" };

@@ -474,6 +474,13 @@ export function storeRunnerMemoryMode(
 	return readFlagValue(runtime, "runner_memory_mode");
 }
 
+/** FLY-2913: read at each new Claude runner/reviewer launch; never by Lead or Codex. */
+export function storeRunnerPrefixProfile(
+	runtime: FlagStoreRuntime,
+): FlagStoreRawValue {
+	return readFlagValue(runtime, "runner_prefix_profile");
+}
+
 export function storeWorkflowTurnDivergenceAlertsEnabled(
 	runtime: FlagStoreRuntime,
 ): boolean {

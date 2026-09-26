@@ -93,9 +93,13 @@ verdict 和注册路由回执。`回复 OK`、进程 exit 0、模型总结、空
 - 子代理独立采 inventory；父配置正确不证明子代理继承正确。
 - Lead settings/argv 与 Codex 配置做前后相同的负控。会议/小红书/Sub nightly/806/
   自定义来源不映射为 engineering，仍能加载其原能力，不对外部账户执行写操作。
-- `FLYWHEEL_RUNNER_PREFIX_PROFILE=legacy` 在新 session 恢复原 inventory。运行中的
-  slim session 不热变；实际回退通过既有受监督恢复流程保留进度并取得新 session
-  receipt。只改 env 不能称回退成功，超时/启动失败不能造 PASS。
+- 开关是 bridge_global FlagStore 枚举 `runner_prefix_profile`（`legacy|role-v1`，
+  默认且唯一回退值 legacy），只经受管命令
+  `flywheel-comm feature-flags set --name runner_prefix_profile --to legacy|role-v1 --reason <原因>`
+  修改；`FLYWHEEL_RUNNER_PREFIX_PROFILE` 只是 registry 引导元数据，改 env 不是开关。
+  设回 legacy 后的新 session 恢复原 inventory。运行中的 slim session 不热变；实际
+  回退通过既有受监督恢复流程保留进度并取得新 session receipt。只改 store 行不能称
+  回退成功，超时/启动失败不能造 PASS。
 
 ## 退出条件与证据
 

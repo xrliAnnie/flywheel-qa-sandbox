@@ -1,18 +1,22 @@
-import { describe, expect, it } from "vitest";
-import { resolveRunnerPrefixSelection } from "../runner-prefix-profile.js";
+import { describe, expect, it, vi } from "vitest";
+import {
+	isRunnerPrefixProfile,
+	RUNNER_PREFIX_PROFILES,
+	resolveRunnerPrefixSelection,
+} from "../runner-prefix-profile.js";
 
 const workflow = {
 	runId: "run-2913",
 	snapshotDigest: "a".repeat(64),
 	templateId: "tpl_code",
 };
-const enabled = { FLYWHEEL_RUNNER_PREFIX_PROFILE: "role-v1" };
+const enabled = { hasOverride: true, raw: "role-v1" };
 const runner = {
 	actor: "runner" as const,
 	backend: "claude-tmux",
 	phase: "implement",
 	workflow,
-	env: enabled,
+	profile: enabled,
 };
 
 describe("runner prefix selection (FLY-2913)", () => {
@@ -77,12 +81,11 @@ describe("runner prefix selection (FLY-2913)", () => {
 			}),
 		).toEqual({ mode: "legacy", reason: "unknown-role" });
 	});
-	it("never configures Lead or Codex, even with an invalid switch", () => {
-		const env = { FLYWHEEL_RUNNER_PREFIX_PROFILE: "bad" };
+	it("never configures Lead or Codex, even when the stored switch is role-v1", () => {
 		for (const args of [
-			{ ...runner, actor: "lead" as const, env },
-			{ ...runner, backend: "codex-app-server", env },
-			{ ...runner, backend: "claude-sdk", env },
+			{ ...runner, actor: "lead" as const },
+			{ ...runner, backend: "codex-app-server" },
+			{ ...runner, backend: "claude-sdk" },
 		]) {
 			expect(resolveRunnerPrefixSelection(args)).toEqual({
 				mode: "legacy",
@@ -94,20 +97,40 @@ describe("runner prefix selection (FLY-2913)", () => {
 		expect(
 			resolveRunnerPrefixSelection({
 				...runner,
-				env: { FLYWHEEL_RUNNER_PREFIX_PROFILE: "legacy" },
+				profile: { hasOverride: true, raw: "legacy" },
 			}),
 		).toEqual({ mode: "legacy", reason: "operator-legacy" });
 		expect(
 			resolveRunnerPrefixSelection({ ...runner, issueLabels: ["Full-MCP"] }),
 		).toEqual({ mode: "legacy", reason: "full-mcp" });
 	});
-	it("fails explicitly on an invalid switch for a covered consumer", () => {
-		expect(() =>
-			resolveRunnerPrefixSelection({
-				...runner,
-				env: { FLYWHEEL_RUNNER_PREFIX_PROFILE: "ROLE-V1" },
-			}),
-		).toThrow(/FLYWHEEL_RUNNER_PREFIX_PROFILE/);
+	it.each([
+		["absent store control", undefined],
+		["unset store row", { hasOverride: false, raw: null }],
+		["unset row with a stale raw", { hasOverride: false, raw: "role-v1" }],
+		["unsupported stored value", { hasOverride: true, raw: "ROLE-V1" }],
+		["null override", { hasOverride: true, raw: null }],
+	])("falls back to legacy for %s", (_label, profile) => {
+		expect(resolveRunnerPrefixSelection({ ...runner, profile })).toEqual({
+			mode: "legacy",
+			reason: "operator-legacy",
+		});
+	});
+	it("never reads the registry env name as a production switch", () => {
+		vi.stubEnv("FLYWHEEL_RUNNER_PREFIX_PROFILE", "role-v1");
+		try {
+			expect(
+				resolveRunnerPrefixSelection({ ...runner, profile: undefined }),
+			).toEqual({ mode: "legacy", reason: "operator-legacy" });
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	});
+	it("exports the store enum with legacy as the only fallback", () => {
+		expect(RUNNER_PREFIX_PROFILES).toEqual(["legacy", "role-v1"]);
+		expect(isRunnerPrefixProfile("role-v1")).toBe(true);
+		expect(isRunnerPrefixProfile("ROLE-V1")).toBe(false);
+		expect(isRunnerPrefixProfile(null)).toBe(false);
 	});
 	it("does not accept an unbound run identity", () => {
 		for (const pinned of [

@@ -207,3 +207,13 @@ Blueprint/dispatcher/land 三组按具体文件分别执行，避免 `vitest rel
 其余目标保留：五角色逐项 loaded 清单、低频必需能力、同条件三组配对测量、真实 529 任务、回退开关、身份/安全边界、Codex/Lead 不变及有效 code review。原 APPROVED 记录绑定的是修改前 plan；本节是后续 Lead 指示的透明记录，不冒称旧评审已经验证了新实现。
 
 `check 0b670309-af84-4999-a3bc-dbdad936e489` 另明确：七天历史统计是背景，硬证据为 529 同模型同任务三组改前/改后；不用等待 snapshot owner 恢复。FLY-2904 的 freeze/summary/census 已在 origin/main，原 CSV 未提交。读取 census 前发现其还包含 live DB roster 路径，因此不得直接照跑违反“只读转写、不碰活 DB”的要求；刷新使用其 transcript 读取/去敏口径，角色按转写内固定 phase 协议/系统提示判定，未知保持未知。
+
+## 七、Lead 裁定修订：开关改走 FlagStore（2026-09-26 UTC）
+
+Lead 重派说明（08:0xZ）裁定，替换 §二.5 与 T6 中的直接 env 语义：
+
+- 开关为 bridge_global SQLite FlagStore 登记的枚举 `runner_prefix_profile`（`legacy|role-v1`），照 `runner_memory_mode` 的做法：registry 条目 + store codec + 具名 wrapper `storeRunnerPrefixProfile`，read site 为 `run-infra.ts` 的 `createRunInfraDispatcher`（后续评审接线增加其 read site），每次**新启动**读 store。
+- `legacy` 为默认值，也是唯一回退值：未设置、非法或缺 store 一律 legacy；不再“非法值显式报错”（与 enum codec 合同一致，非法值无法经受管写入）。
+- Lead/Codex 消费者不读它，不改 Lead 配置。`FLYWHEEL_RUNNER_PREFIX_PROFILE` 只作 registry metadata（首次建行的引导种子，与其他 store flag 一致），业务代码不读 env，不作生产写入口。
+- 不新增 exemption；**不默认启用**，T6 不再把默认切到 role-v1，只通过受管 `flywheel-comm feature-flags set --name runner_prefix_profile --to role-v1 --reason <原因>` 改；回退即设回 legacy，新会话生效。
+
