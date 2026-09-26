@@ -77,8 +77,9 @@ async function fixture(path = ":memory:") {
 		"fixture",
 		NOW,
 	);
+	// FLY-2921 C1: a dead target is replaced in place from `pending`.
 	db.prepare(
-		"INSERT INTO workflow_rework_delivery (request_id,route_revision,state,updated_at) VALUES (?,1,'replacement_pending',?)",
+		"INSERT INTO workflow_rework_delivery (request_id,route_revision,state,updated_at) VALUES (?,1,'pending',?)",
 	).run("request", NOW);
 	db.prepare(`INSERT INTO workflow_execution_binding
 		(activation_id,execution_id,run_id,node_id,attempt,mode,rework_request_id,bound_at)
@@ -111,14 +112,40 @@ async function fixture(path = ":memory:") {
 		epoch: 9,
 	};
 	store.baselineWorkflowDeliveryContracts(NOW);
-	const replace = () =>
-		store.materializeWorkflowReworkReplacement({
+	// FLY-2921 C2 step 4: the replacement transaction only accepts an exact
+	// death proof (here the unlaunched-rollback fact, in the shape written for
+	// a replacement binding — not a hold shape) and the coordinator's claim.
+	store.appendWorkflowRunEvent({
+		runId: "run",
+		eventUid: "unlaunched_rollback:run:implement:2:old",
+		kind: "rework_replacement_launch_rolled_back",
+		nodeId: "implement",
+		executionId: "old",
+		payload: {
+			attempt: 2,
+			reason: "unlaunched_admission_rolled_back",
+			at: NOW,
+		},
+	});
+	const replace = () => {
+		const claim = store.claimWorkflowReworkDelivery({
 			requestId: "request",
+			ownerId: "coordinator",
+			now: NOW,
+			leaseExpiresAt: new Date(Date.parse(NOW) + 10 * 60_000).toISOString(),
+		});
+		if (!claim.ok) throw new Error(JSON.stringify(claim));
+		return store.replaceWorkflowReworkActor({
+			requestId: "request",
+			ownerId: "coordinator",
+			generation: claim.generation,
 			deadExecutionId: "old",
 			newExecutionId: "replacement",
+			proof: { kind: "unlaunched_rollback" },
 			reason: "persisted_target_dead",
 			observedAt: NOW,
 		});
+	};
 	return { store, db, identity, replace };
 }
 
@@ -138,7 +165,8 @@ describe("FLY-2517 exact engine replacement retirement", () => {
 				oldRouteRevision: 1,
 				newRouteRevision: 2,
 				replacementExecutionId: "replacement",
-				replacementEventUid: "rework_replacement_materialized:request",
+				// FLY-2921 C2: receipts are per dead route revision.
+				replacementEventUid: "rework_replacement_materialized:request:1",
 			},
 		});
 		expect(store.listPendingReworkWakeRetirements({ limit: 10 })).toHaveLength(
@@ -148,9 +176,10 @@ describe("FLY-2517 exact engine replacement retirement", () => {
 		expect(store.listPendingReworkWakeRetirements({ limit: 10 })).toHaveLength(
 			1,
 		);
-		expect(store.getWorkflowReworkDelivery("request")?.state).toBe(
-			"replacement_pending",
-		);
+		expect(store.getWorkflowReworkDelivery("request")).toMatchObject({
+			state: "pending",
+			route_revision: 2,
+		});
 		expect(() =>
 			db.prepare("UPDATE workflow_rework_wake_retirement SET epoch=10").run(),
 		).toThrow();
@@ -173,6 +202,55 @@ describe("FLY-2517 retirement guards", () => {
 			expect(store.resolveReworkWakeRetirementProofTx(candidate)).toMatchObject(
 				{ kind: "unproven" },
 			);
+	});
+
+	it("still proves a legacy per-request materialized receipt written before FLY-2921", async () => {
+		const { store, identity, db } = await fixture();
+		expect(store.resolveReworkWakeRetirementProofTx(identity)).toMatchObject({
+			kind: "unproven",
+		});
+		// Receipts written before FLY-2921 carry no route revision in the uid.
+		// `workflow_run_event` is append-only, so the historical replacement is
+		// reconstructed row by row: route revision 2, the replacement actor,
+		// its dispatch intent, and the per-request receipt (plan §8.2: the
+		// proof reader accepts both spellings).
+		db.prepare(
+			"INSERT INTO workflow_actor (execution_id,project_name,issue_id,role,created_at) VALUES ('replacement','flywheel','FLY-2517','implement',?)",
+		).run(NOW);
+		db.prepare(`INSERT INTO workflow_rework_route_revision
+			(request_id,revision,target_node_id,target_attempt,preferred_actor_execution_id,invalidation_scope_json,verification_policy_json,interpreted_by,interpretation_reason,created_at)
+			SELECT request_id,2,target_node_id,target_attempt,'replacement',invalidation_scope_json,verification_policy_json,'engine:proven_dead_replacement','legacy',created_at
+			  FROM workflow_rework_route_revision WHERE request_id='request' AND revision=1`).run();
+		db.prepare(`INSERT INTO workflow_side_effect_ledger
+			(run_id,node_id,attempt,kind,launch_ordinal,execution_id,state,reason,created_at,updated_at)
+			VALUES ('run','implement',2,'dispatch',7,'replacement','intent_recorded','rework_replacement:request',?,?)`).run(
+			NOW,
+			NOW,
+		);
+		store.appendWorkflowRunEvent({
+			runId: "run",
+			eventUid: "rework_replacement_materialized:request",
+			kind: "rework_replacement_materialized",
+			nodeId: "implement",
+			executionId: "old",
+			payload: {
+				requestId: "request",
+				deadExecutionId: "old",
+				newExecutionId: "replacement",
+				launchOrdinal: 7,
+				routeRevision: 2,
+				reason: "persisted_target_dead",
+			},
+		});
+		expect(store.resolveReworkWakeRetirementProofTx(identity)).toMatchObject({
+			kind: "proven",
+			proof: {
+				oldRouteRevision: 1,
+				newRouteRevision: 2,
+				replacementExecutionId: "replacement",
+				replacementEventUid: "rework_replacement_materialized:request",
+			},
+		});
 	});
 
 	it("rolls back the route, launch, actor, and retirement together on an insert failure", async () => {
@@ -387,9 +465,7 @@ describe("FLY-2517 real projection identity", () => {
 				}),
 			}).runPass(later);
 			expect(store.getWorkflowRun("run")?.status).toBe("active");
-			expect(store.getWorkflowReworkDelivery("request")?.state).toBe(
-				"replacement_pending",
-			);
+			expect(store.getWorkflowReworkDelivery("request")?.state).toBe("pending");
 		} finally {
 			commDb.close();
 		}
