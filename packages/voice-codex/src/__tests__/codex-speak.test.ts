@@ -1330,4 +1330,34 @@ describe("Codex Lead reply read to the end (FLY-2885 founder rework 2026-09-26)"
 		await notice;
 		expect(h.abandoned).not.toHaveBeenCalled();
 	});
+
+	it("forgets an overrun cut when the generation changes: a later barge-in there does not stop the queued rest (review R2)", async () => {
+		const h = harness();
+		const expected = "第一句话已经说完了。第二句话还没有念。";
+		const result = h.speaker.readReply(expected, { pendingKey: "gen-cut" });
+		await h.flush();
+		h.speaker.turnCreated({ turnId: "t1", role: "assistant" });
+		h.state.consumed += 10;
+		h.speaker.assistantTranscript({
+			text: "第一句话已经说完了。另外今天还有两件事情完成了呢。",
+			final: false,
+		});
+		// The conversation goes on; then the generation is replaced.
+		h.state.busy = "speaker_active";
+		h.state.active = true;
+		await vi.advanceTimersByTimeAsync(200);
+		h.speaker.interrupt("generation_changed");
+		h.state.generation = 10;
+		await vi.advanceTimersByTimeAsync(200);
+		// She barges into the new generation's own answer.
+		h.speaker.interrupt();
+		await vi.advanceTimersByTimeAsync(200);
+		expect(h.abandoned).not.toHaveBeenCalled();
+		h.state.busy = undefined;
+		h.state.active = false;
+		await vi.advanceTimersByTimeAsync(60);
+		expect(h.sent).toEqual([expected, "第二句话还没有念。"]);
+		await h.answer("t2", "第二句话还没有念。");
+		await expect(result).resolves.toMatchObject({ unreadChunks: 0 });
+	});
 });

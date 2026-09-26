@@ -481,14 +481,22 @@ export class CodexProofSpeaker {
 	}
 
 	interrupt(reason = "speech_interrupted"): void {
-		// A new generation or a closed session never sees the old turn's final.
-		if (reason === "generation_changed" || reason === "session_closed")
+		// A new generation or a closed session never sees the old turn's final,
+		// and holds none of the old speakable text (review R2).
+		if (reason === "generation_changed" || reason === "session_closed") {
 			this.keepOwed(() => false);
+			this.overrunCut = undefined;
+		}
 		// Review (QA@2 rework): she barged in after an overrun cut a Lead-reply
 		// chunk and before its rest went out. The rest is still speakable
 		// context: steer the model off it and stop the reply here.
 		const cut = this.overrunCut;
-		if (reason === "speech_interrupted" && cut && this.replyActive) {
+		if (
+			reason === "speech_interrupted" &&
+			cut &&
+			this.replyActive &&
+			cut.generation === this.host.sessionGeneration()
+		) {
 			this.overrunCut = undefined;
 			this.replyStop = reason;
 			if (cut.note) this.host.abandoned?.(cut.text, cut.generation);
