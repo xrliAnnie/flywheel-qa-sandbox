@@ -2,12 +2,14 @@
 issue: FLY-2778
 phase: design
 phaseCursor: 4/6
-updated: 2026-09-26T20:15:35.421Z
-nextStep: Lead确认单seam保守回退已更新plan；旧review167c252f返回后核对blob并为最新plan开新gate。HTML未发布，评论逻辑通过，图本地渲染受限。
+updated: 2026-09-26T20:18:47.961Z
+nextStep: 最新plan blob c1b9046e review
+  gate30cf5d2c-f32e-4ed6-ba89-3b4d012d3c3f已登记；旧167c252f仍需读取结果但不能批准最新blob。有效APPROVED后更新HTML状态、发布验证、Lead
+  report、complete与park。
 chunks: []
 pointers: {}
 ---
 
 # FLY-2778 progress
 **phase**: design (4/6)
-**next**: Lead确认单seam保守回退已更新plan；旧review167c252f返回后核对blob并为最新plan开新gate。HTML未发布，评论逻辑通过，图本地渲染受限。
+**next**: 最新plan blob c1b9046e review gate30cf5d2c-f32e-4ed6-ba89-3b4d012d3c3f已登记；旧167c252f仍需读取结果但不能批准最新blob。有效APPROVED后更新HTML状态、发布验证、Lead report、complete与park。
