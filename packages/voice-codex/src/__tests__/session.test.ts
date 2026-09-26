@@ -46,10 +46,13 @@ function fixture(options?: {
 	rewriteSpeech?: (input: {
 		sourceText: string;
 		rosterNames: readonly string[];
+		recentFounderAsks?: readonly string[];
 	}) => Promise<{
 		spoken: string;
 		threadText: string | null;
 		protectedFieldEvidence: [];
+		tell?: boolean;
+		skipReason?: "ack_only" | "receipt_only" | "no_new_information" | null;
 	}>;
 }) {
 	let frontendHandlers!: FrontendHandlers;
@@ -150,6 +153,7 @@ describe("GenericVoiceSession", () => {
 			expect(test.frontend.rewriteSpeech).toHaveBeenCalledWith({
 				sourceText: "**FLY-2886** 已经查到 PR #1326。",
 				rosterNames: ["Raya"],
+				recentFounderAsks: [],
 			});
 			expect(test.frontend.appendSpeech).not.toHaveBeenCalled();
 			test.getRoomHandlers().onLocalUtteranceEnded?.("u1");
@@ -1339,4 +1343,117 @@ it("a degraded background runs the background-off speech path (FLY-2886 §14.2)"
 	expect(test.frontend.rewriteSpeech).not.toHaveBeenCalled();
 	expect(test.postThread).not.toHaveBeenCalled();
 	await test.session.stop?.();
+});
+
+// FLY-2886 Lead 1c8019f8 (founder 2026-09-26 12:19 PDT): the voice brain first
+// decides whether a Lead message is worth saying. Answers to her are always
+// told; a pure ack/receipt/no-news message may be skipped, and every skip is
+// logged with its reason for QA — never dropped silently.
+describe("tell relevance", () => {
+	async function live(
+		rewrite: NonNullable<Parameters<typeof fixture>[0]>["rewriteSpeech"],
+	) {
+		const test = fixture({
+			coordinatedSpeech: true,
+			appendSpeech: async () => "confirmed",
+			rewriteSpeech: rewrite,
+		});
+		await test.session.start();
+		await test.session.markLive();
+		return test;
+	}
+
+	it("skips a pure receipt, logs the reason and the original text, and speaks nothing", async () => {
+		const test = await live(async () => ({
+			spoken: "收到。",
+			threadText: null,
+			protectedFieldEvidence: [],
+			tell: false,
+			skipReason: "receipt_only",
+		}));
+		await expect(
+			test.session.deliverTell({ businessId: "tell:ack", text: "收到，已排队。" }),
+		).resolves.toBe("skipped");
+		expect(test.frontend.appendSpeech).not.toHaveBeenCalled();
+		expect(test.evidence).toHaveBeenCalledWith(
+			expect.objectContaining({
+				kind: "voice_tell_skipped",
+				businessId: "tell:ack",
+				reason: "receipt_only",
+				originalText: "收到，已排队。",
+			}),
+		);
+		await test.session.stop();
+	});
+
+	it("always tells a reply that answers what she asked, even if the writer wanted to skip it", async () => {
+		vi.useFakeTimers();
+		try {
+			const test = await live(async () => ({
+				spoken: "FLY-2886 的 PR #1360 已经合并了。",
+				threadText: null,
+				protectedFieldEvidence: [],
+				tell: false,
+				skipReason: "no_new_information",
+			}));
+			test
+				.getFrontendHandlers()
+				.onTranscript(userTranscript("2886 的 PR 怎么样了"));
+			const result = test.session.deliverTell({
+				businessId: "tell:answer",
+				text: "FLY-2886 的 PR #1360 已合并。",
+			});
+			await vi.advanceTimersByTimeAsync(1_500);
+			await expect(result).resolves.toBe("spoken");
+			expect(test.frontend.rewriteSpeech).toHaveBeenCalledWith(
+				expect.objectContaining({
+					recentFounderAsks: ["2886 的 PR 怎么样了"],
+				}),
+			);
+			expect(test.frontend.appendSpeech).toHaveBeenCalledWith(
+				expect.objectContaining({
+					spokenText: "FLY-2886 的 PR #1360 已经合并了。",
+				}),
+			);
+			expect(test.evidence).toHaveBeenCalledWith(
+				expect.objectContaining({
+					kind: "voice_tell_skip_overridden",
+					businessId: "tell:answer",
+					reason: "no_new_information",
+					override: "answers_her",
+				}),
+			);
+			await test.session.stop();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("always tells a message that asks her something", async () => {
+		vi.useFakeTimers();
+		try {
+			const test = await live(async () => ({
+				spoken: "要不要现在合并 PR #1360？",
+				threadText: null,
+				protectedFieldEvidence: [],
+				tell: false,
+				skipReason: "ack_only",
+			}));
+			const result = test.session.deliverTell({
+				businessId: "tell:ask",
+				text: "要不要现在合并 PR #1360？",
+			});
+			await vi.advanceTimersByTimeAsync(1_500);
+			await expect(result).resolves.toBe("spoken");
+			expect(test.evidence).toHaveBeenCalledWith(
+				expect.objectContaining({
+					kind: "voice_tell_skip_overridden",
+					override: "asks_her",
+				}),
+			);
+			await test.session.stop();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });

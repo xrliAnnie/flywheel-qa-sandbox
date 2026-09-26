@@ -6,6 +6,8 @@ import type {
 } from "./SpeechArbiter.js";
 import {
 	type SpokenScriptSource,
+	repairSpokenScript,
+	THREAD_POINTER_SENTENCE,
 	validateSpokenScript,
 } from "./SpokenScript.js";
 
@@ -247,12 +249,30 @@ export class BrainCoordinator {
 
 	private async enqueueTurnResult(turn: BackgroundTurnTerminal): Promise<void> {
 		const segments = (turn.spokenSegments ?? []).filter((text) => text.trim());
-		const threadText =
+		let threadText =
 			(turn.threadSegments ?? []).join("\n\n") ||
 			segments.join("\n\n") ||
 			`这件没查成：${turn.reasonCategory ?? "出错"}。`;
 		const businessId = `turn:${turn.turnId}:material`;
-		const validations = segments.map((text) =>
+		// Free paraphrase; a sentence whose key fact the tool output does not
+		// support is dropped whole and the thread carries the text (FLY-2886
+		// Lead 1c8019f8). Links and over-long segments still go to the thread.
+		const repairs = segments.map((text) =>
+			repairSpokenScript({
+				spoken: text,
+				sources: turn.sources ?? [],
+				rosterNames: turn.rosterNames ?? [],
+				mode: "background_result",
+			}),
+		);
+		const kept = repairs
+			.map((repair) =>
+				repair.needsThread
+					? repair.spoken.slice(0, -THREAD_POINTER_SENTENCE.length).trim()
+					: repair.spoken,
+			)
+			.filter((text) => text.trim());
+		const validations = kept.map((text) =>
 			validateSpokenScript({
 				spoken: text,
 				sources: turn.sources ?? [],
@@ -260,23 +280,42 @@ export class BrainCoordinator {
 				mode: "background_result",
 			}),
 		);
+		const shapeOk = kept.every(
+			(text) => Array.from(text).length <= 120 && !/https?:\/\//iu.test(text),
+		);
+		const repaired = repairs.some((repair) => repair.needsThread);
 		const valid =
 			turn.outcome === "completed" &&
-			segments.length > 0 &&
-			segments.every(
-				(text, index) =>
-					Array.from(text).length <= 120 &&
-					!/https?:\/\//iu.test(text) &&
-					validations[index]!.ok,
-			);
+			kept.length > 0 &&
+			shapeOk &&
+			validations.every((result) => result.ok);
 		this.options.evidence?.({
 			kind: "voice_background_script_validated",
 			turnId: turn.turnId,
 			valid,
 			checks: validations,
+			droppedSentences: repairs.flatMap((repair) => repair.droppedSentences),
 		});
+		// The pointer says the thread is authoritative, so a repaired answer never
+		// posts the dropped sentence: it posts what was kept plus the tool output
+		// those facts come from (not her words, not the opening brief).
+		if (repaired && !turn.threadSegments?.length) {
+			const toolText = (turn.sources ?? [])
+				.filter(
+					(source) =>
+						!source.itemId.startsWith("founder:") &&
+						!source.itemId.startsWith("context:"),
+				)
+				.map((source) => source.text)
+				.join("\n")
+				.slice(0, 1_500);
+			threadText = [kept.join(""), toolText && `工具原始结果：\n${toolText}`]
+				.filter(Boolean)
+				.join("\n\n");
+		}
 		const needsPost =
 			!valid ||
+			repaired ||
 			Boolean(turn.threadSegments?.length) ||
 			validations.some((result) => result.usedThreadPointer);
 
@@ -308,10 +347,13 @@ export class BrainCoordinator {
 						`这件没查成：${turn.reasonCategory ?? "出错"}。${posted ? "细节我发到 thread。" : ""}`,
 					]
 				: valid && (!needsPost || posted)
-					? segments
+					? repaired &&
+						!validations.some((result) => result.usedThreadPointer)
+						? [...kept, THREAD_POINTER_SENTENCE]
+						: kept
 					: [
 							posted
-								? "这条我发到 thread 了，编号以文字为准。"
+								? THREAD_POINTER_SENTENCE
 								: "编号我没核对上，等下再给你",
 						];
 		for (const [index, text] of speech.entries()) {

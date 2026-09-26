@@ -3,7 +3,8 @@ export type ProtectedTokenKind =
 	| "pull_request"
 	| "commit"
 	| "number"
-	| "name";
+	| "name"
+	| "outcome";
 
 export interface ProtectedToken {
 	kind: ProtectedTokenKind;
@@ -109,6 +110,79 @@ function nameTokens(
 	return result;
 }
 
+/**
+ * Yes/no outcomes are key facts too (FLY-2886 Lead 1c8019f8): a paraphrase
+ * may say 过了 for 全绿, never 通过 for 没通过. Negations are matched and
+ * masked first so a bare positive word inside them is not read as a yes.
+ * The token is the polarity, so any wording of the same polarity matches.
+ */
+const NEGATIVE_OUTCOMES = [
+	"没通过",
+	"未通过",
+	"不通过",
+	"没有通过",
+	"没过",
+	"没有过",
+	"没成功",
+	"不成功",
+	"未成功",
+	"失败",
+	"挂了",
+	"红了",
+	"飘红",
+	"被拒",
+	"驳回",
+	"否决",
+	"没合并",
+	"未合并",
+	"没有合并",
+	"没合进",
+	"没批准",
+	"未批准",
+	"没批",
+	"没完成",
+	"未完成",
+];
+const POSITIVE_OUTCOMES = [
+	"通过",
+	"过了",
+	"成功",
+	"全绿",
+	"绿了",
+	"合并了",
+	"已合并",
+	"合进去",
+	"合进了",
+	"批准",
+	"批了",
+	"完成了",
+	"已完成",
+];
+const NEGATIVE_WORDS =
+	/\b(?:fail(?:ed|ing|ure)?|rejected|changes[ _]requested|not merged|unmerged)\b/giu;
+const POSITIVE_WORDS = /\b(?:pass(?:ed|es)?|approved|merged|succeeded|success)\b/giu;
+
+function outcomeTokens(value: string): ProtectedToken[] {
+	let rest = value.toLocaleLowerCase("en-US");
+	let negative = false;
+	for (const word of NEGATIVE_OUTCOMES)
+		if (rest.includes(word)) {
+			negative = true;
+			rest = rest.replaceAll(word, " ");
+		}
+	if (NEGATIVE_WORDS.test(rest)) negative = true;
+	NEGATIVE_WORDS.lastIndex = 0;
+	rest = rest.replace(NEGATIVE_WORDS, " ");
+	const positive =
+		POSITIVE_OUTCOMES.some((word) => rest.includes(word)) ||
+		POSITIVE_WORDS.test(rest);
+	POSITIVE_WORDS.lastIndex = 0;
+	return [
+		...(positive ? [{ kind: "outcome" as const, token: "positive" }] : []),
+		...(negative ? [{ kind: "outcome" as const, token: "negative" }] : []),
+	];
+}
+
 function unique(tokens: ProtectedToken[]): ProtectedToken[] {
 	const seen = new Set<string>();
 	return tokens.filter((token) => {
@@ -135,6 +209,7 @@ export function extractProtectedTokens(
 		),
 		...matches(value, NUMBER, "number"),
 		...nameTokens(value, rosterNames),
+		...outcomeTokens(value),
 	]);
 }
 
@@ -204,5 +279,64 @@ export function validateSpokenScript(input: {
 		unsupported,
 		missingRequired,
 		usedThreadPointer,
+	};
+}
+
+export const THREAD_POINTER_SENTENCE = "这条我发到 thread 了，编号以文字为准。";
+
+export interface SpokenScriptRepair {
+	/** Whole kept sentences, plus the thread pointer when anything was dropped. */
+	spoken: string;
+	droppedSentences: string[];
+	/** The source must be posted before `spoken` may be said. */
+	needsThread: boolean;
+}
+
+/**
+ * Sentence-level guard for free paraphrase (FLY-2886 Lead 1c8019f8): a
+ * sentence whose key fact does not match the source is dropped whole — never
+ * cut mid-sentence — and the script ends by pointing to the thread, where the
+ * exact text is posted. Supported sentences are kept as written.
+ */
+export function repairSpokenScript(input: {
+	spoken: string;
+	sources: readonly SpokenScriptSource[];
+	rosterNames: readonly string[];
+	mode?: "background_result" | "rewrite";
+}): SpokenScriptRepair {
+	const sentences =
+		input.spoken.match(/[^。！？!?；;\n]+[。！？!?；;\n]*/gu) ??
+		[];
+	const kept: string[] = [];
+	const droppedSentences: string[] = [];
+	for (const sentence of sentences) {
+		if (!sentence.trim()) continue;
+		const check = validateSpokenScript({
+			spoken: sentence,
+			sources: input.sources,
+			rosterNames: input.rosterNames,
+			mode: "background_result",
+		});
+		if (check.ok) kept.push(sentence);
+		else droppedSentences.push(sentence.trim());
+	}
+	const keptText = kept.join("").trim();
+	const missingRequired =
+		input.mode === "rewrite" &&
+		!validateSpokenScript({
+			spoken: keptText,
+			sources: input.sources,
+			rosterNames: input.rosterNames,
+			mode: "rewrite",
+		}).ok;
+	const needsThread = droppedSentences.length > 0 || missingRequired;
+	if (!needsThread)
+		return { spoken: input.spoken, droppedSentences, needsThread };
+	return {
+		spoken: keptText.endsWith(THREAD_POINTER_SENTENCE)
+			? keptText
+			: `${keptText}${THREAD_POINTER_SENTENCE}`,
+		droppedSentences,
+		needsThread,
 	};
 }

@@ -88,6 +88,7 @@ describe("BrainCoordinator", () => {
 			turnId: "turn-1",
 			outcome: "completed",
 			spokenSegments: ["PR #1324 已通过。"],
+			sources: [{ itemId: "tool", text: "PR #1324 checks passed" }],
 		});
 
 		expect(h.queued.filter((item) => item.kind === "result")).toEqual([
@@ -329,7 +330,10 @@ it("keeps unposted fallback material in unfinished minutes and makes no publicat
 	expect(queued[0]?.text).toBe("编号我没核对上，等下再给你");
 	expect(coordinator.unfinished()).toEqual(
 		expect.arrayContaining([
-			expect.objectContaining({ text: "FLY-9999", status: "unfinished" }),
+			expect.objectContaining({
+				text: "工具原始结果：\nFLY-2886",
+				status: "unfinished",
+			}),
 		]),
 	);
 });
@@ -373,4 +377,41 @@ it("posts preserved text version before its pointer and retains pending result d
 	await flush();
 	await flush();
 	expect(queued).toEqual([]);
+});
+
+// FLY-2886 Lead 1c8019f8: a key-fact mismatch drops that sentence only — the
+// right sentences are still said, whole, and the thread carries the exact text.
+it("keeps the supported sentences of a background answer and points to the thread for the wrong one", async () => {
+	const queued: BrainSpeechRequest[] = [];
+	const posted: string[] = [];
+	const coordinator = new BrainCoordinator({
+		speech: {
+			enqueue: async (request) => {
+				queued.push(request);
+				return "spoken";
+			},
+			drop: () => {},
+			retire: () => {},
+		},
+		postThread: async (request) => {
+			posted.push(request.text);
+		},
+	});
+	coordinator.registerHandoff({ handoffId: "h", inputTranscript: "查状态" });
+	coordinator.turnStarted("t");
+	coordinator.turnTerminal({
+		turnId: "t",
+		outcome: "completed",
+		spokenSegments: ["PR #2886 的 CI 过了。FLY-9999 也合并了。"],
+		sources: [{ itemId: "tool-1", text: "FLY-2886 PR #2886 CI passed" }],
+	});
+	await flush();
+	await flush();
+	expect(queued.map((row) => row.text)).toEqual([
+		"PR #2886 的 CI 过了。",
+		"这条我发到 thread 了，编号以文字为准。",
+	]);
+	expect(posted).toHaveLength(1);
+	expect(posted[0]).toContain("FLY-2886 PR #2886 CI passed");
+	expect(posted[0]).not.toContain("FLY-9999");
 });

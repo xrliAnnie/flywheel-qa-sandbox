@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	extractProtectedTokens,
+	repairSpokenScript,
 	validateSpokenScript,
 } from "../codex/SpokenScript.js";
 
@@ -127,5 +128,104 @@ describe("spoken script protected-field fidelity", () => {
 				(token) => token.kind === "commit",
 			),
 		).toHaveLength(1);
+	});
+});
+
+// FLY-2886 (Lead 1c8019f8, founder 2026-09-26 12:19 PDT): paraphrase freely;
+// only key facts (ids, numbers, names, times, yes/no outcomes) must match the
+// source, and a mismatch drops that whole sentence instead of truncating.
+describe("key-fact guard for free paraphrase", () => {
+	it("passes a free paraphrase that keeps every key fact", () => {
+		const result = validateSpokenScript({
+			spoken: "2886 那张单的 PR #1360 已经合进去了，CI 都过了，Tadashi 20:19 确认的。",
+			sources: [
+				source(
+					"lead",
+					"FLY-2886 的 PR #1360 CI 全绿，已经合并了，Tadashi 20:19 确认的。",
+				),
+			],
+			rosterNames: ["Tadashi"],
+		});
+		expect(result).toMatchObject({ ok: true });
+	});
+
+	it("catches a paraphrase that flips a yes/no outcome", () => {
+		const result = validateSpokenScript({
+			spoken: "PR #1360 的 CI 通过了。",
+			sources: [source("lead", "PR #1360 的 CI 没通过，卡在 lint。")],
+			rosterNames: [],
+		});
+		expect(result).toMatchObject({
+			ok: false,
+			unsupported: [{ kind: "outcome", token: "positive" }],
+		});
+		// Negation is read before the bare word: 没过 matches 没通过.
+		expect(
+			validateSpokenScript({
+				spoken: "PR #1360 的 CI 没过。",
+				sources: [source("lead", "PR #1360 的 CI 没通过，卡在 lint。")],
+				rosterNames: [],
+			}),
+		).toMatchObject({ ok: true });
+	});
+
+	it("catches a paraphrase that changes a PR number or a time", () => {
+		for (const spoken of ["PR #1361 已经合并了。", "20:30 合并的。"])
+			expect(
+				validateSpokenScript({
+					spoken,
+					sources: [source("lead", "PR #1360 已经合并了，20:19 合并的。")],
+					rosterNames: [],
+				}).ok,
+			).toBe(false);
+	});
+
+	it("drops only the sentence with a wrong key fact, keeps whole sentences, and points to the thread", () => {
+		const repaired = repairSpokenScript({
+			spoken: "PR #1361 已经合并了。CI 都过了！",
+			sources: [source("lead", "PR #1360 已经合并了，CI 全绿。")],
+			rosterNames: [],
+		});
+		expect(repaired).toEqual({
+			spoken: "CI 都过了！这条我发到 thread 了，编号以文字为准。",
+			droppedSentences: ["PR #1361 已经合并了。"],
+			needsThread: true,
+		});
+		expect(
+			validateSpokenScript({
+				spoken: repaired.spoken,
+				sources: [source("lead", "PR #1360 已经合并了，CI 全绿。")],
+				rosterNames: [],
+				mode: "rewrite",
+			}).ok,
+		).toBe(true);
+	});
+
+	it("leaves a fully supported paraphrase untouched", () => {
+		expect(
+			repairSpokenScript({
+				spoken: "PR #1360 合并了，CI 也过了。",
+				sources: [source("lead", "PR #1360 已经合并了，CI 全绿。")],
+				rosterNames: [],
+				mode: "rewrite",
+			}),
+		).toEqual({
+			spoken: "PR #1360 合并了，CI 也过了。",
+			droppedSentences: [],
+			needsThread: false,
+		});
+	});
+
+	it("points to the thread when a required id was left out rather than guessing", () => {
+		const repaired = repairSpokenScript({
+			spoken: "那个 PR 合并了。",
+			sources: [source("lead", "PR #1360 已经合并了。")],
+			rosterNames: [],
+			mode: "rewrite",
+		});
+		expect(repaired.needsThread).toBe(true);
+		expect(repaired.spoken).toBe(
+			"那个 PR 合并了。这条我发到 thread 了，编号以文字为准。",
+		);
 	});
 });

@@ -4,12 +4,18 @@ import {
 	type BackgroundTurnTerminal,
 	BrainCoordinator,
 } from "./codex/BrainCoordinator.js";
-import type { ScriptWriterResult } from "./codex/ScriptWriter.js";
+import type {
+	ScriptWriterInput,
+	ScriptWriterResult,
+} from "./codex/ScriptWriter.js";
 import {
 	SpeechArbiter,
 	type SpeechArbiterTerminal,
 } from "./codex/SpeechArbiter.js";
-import { validateSpokenScript } from "./codex/SpokenScript.js";
+import {
+	extractProtectedTokens,
+	validateSpokenScript,
+} from "./codex/SpokenScript.js";
 import type { ActiveVoiceSession, VoiceEnd } from "./daemon.js";
 import type { CapturedTranscript } from "./delivery.js";
 import type { RealtimeAudioOwner } from "./realtime.js";
@@ -65,10 +71,7 @@ export interface RoomHandlers {
 }
 
 interface FrontendLike {
-	rewriteSpeech?(input: {
-		sourceText: string;
-		rosterNames: readonly string[];
-	}): Promise<ScriptWriterResult>;
+	rewriteSpeech?(input: ScriptWriterInput): Promise<ScriptWriterResult>;
 	start(signal?: AbortSignal): Promise<void>;
 	appendAudio(frame: Buffer, metadata: RealtimeAudioOwner): void;
 	appendSpeech(
@@ -143,6 +146,34 @@ type PublicSpeechReceipt = "confirmed" | "unconfirmed" | "failed";
 /** `deferred` is internal: the speech arbiter replays it (FLY-2886 QA@4 D2). */
 type SpeechReceipt = PublicSpeechReceipt | "deferred";
 
+/** Her recent final words kept for relevance (FLY-2886 Lead 1c8019f8). */
+const RECENT_ASK_LIMIT = 6;
+const RECENT_ASK_WINDOW_MS = 10 * 60_000;
+
+/**
+ * Mechanical floor under the writer's relevance call: a message that asks her
+ * something, or that names a key fact she herself just mentioned (it answers
+ * her), is always told whatever the writer decided.
+ */
+function mustTell(
+	text: string,
+	recentAsks: readonly string[],
+	rosterNames: readonly string[],
+): "asks_her" | "answers_her" | undefined {
+	if (/[?？]|要不要|是否|可不可以|能不能|行不行|你确认|你看/u.test(text))
+		return "asks_her";
+	const keys = (value: string) =>
+		new Set(
+			extractProtectedTokens(value, rosterNames)
+				.filter((token) => token.kind !== "outcome")
+				.map((token) => token.token.normalize("NFKC").toLocaleLowerCase("en-US")),
+		);
+	const source = keys(text);
+	for (const ask of recentAsks)
+		for (const key of keys(ask)) if (source.has(key)) return "answers_her";
+	return undefined;
+}
+
 export class GenericVoiceSession implements ActiveVoiceSession {
 	private readonly frontend: FrontendLike;
 	private readonly room: RoomLike;
@@ -154,6 +185,7 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 	private readonly coordinatedSpeech = new Map<string, PreparedSpeech>();
 	private readonly unpostedTells = new Map<string, VoiceUnplayedItem>();
 	private readonly rewritingTells = new Map<string, VoiceUnplayedItem>();
+	private recentFounderAsks: Array<{ text: string; at: number }> = [];
 	private live = false;
 	private admitted = false;
 	private stopping = false;
@@ -493,7 +525,7 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 		businessId: string;
 		text: string;
 		revalidate?: () => Promise<boolean>;
-	}): Promise<SpeechArbiterTerminal | "disabled"> {
+	}): Promise<SpeechArbiterTerminal | "disabled" | "skipped"> {
 		const arbiter = this.speechArbiter;
 		const coordination = this.options.speechCoordination;
 		if (!arbiter || !coordination || !this.coordinationActive())
@@ -517,11 +549,40 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 				if (!this.frontend.rewriteSpeech)
 					throw new Error("script_writer_unavailable");
 				const rosterNames = [this.options.projection.displayName];
+				const now = this.now().getTime();
+				const recentFounderAsks = this.recentFounderAsks
+					.filter((ask) => now - ask.at <= RECENT_ASK_WINDOW_MS)
+					.map((ask) => ask.text);
 				const rewrite = await this.frontend.rewriteSpeech({
 					sourceText: input.text,
 					rosterNames,
+					recentFounderAsks,
 				});
 				if (this.stopping) return "failed";
+				if (rewrite.tell === false) {
+					const reason = rewrite.skipReason ?? "unspecified";
+					const override = mustTell(
+						input.text,
+						recentFounderAsks,
+						rosterNames,
+					);
+					if (!override) {
+						// Never silent: QA audits every skip (FLY-2886 Lead 1c8019f8).
+						this.options.evidence({
+							kind: "voice_tell_skipped",
+							businessId: input.businessId,
+							reason,
+							originalText: input.text,
+						});
+						return "skipped";
+					}
+					this.options.evidence({
+						kind: "voice_tell_skip_overridden",
+						businessId: input.businessId,
+						reason,
+						override,
+					});
+				}
 				const fidelity = validateSpokenScript({
 					spoken: rewrite.spoken,
 					sources: [{ itemId: input.businessId, text: input.text }],
@@ -533,6 +594,9 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 					kind: "voice_script_validated",
 					businessId: input.businessId,
 					protectedFieldEvidence: fidelity.evidence,
+					...(rewrite.droppedSentences?.length
+						? { droppedSentences: rewrite.droppedSentences }
+						: {}),
 				});
 				text = rewrite.spoken;
 				if (rewrite.threadText) {
@@ -719,6 +783,15 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 				this.room.setBedEnabled?.(command.endsWith("打开"));
 				return;
 			}
+		}
+		if (input.ownerUserId === this.options.projection.founderUserId) {
+			const at = this.now().getTime();
+			this.recentFounderAsks = [
+				...this.recentFounderAsks.filter(
+					(ask) => at - ask.at <= RECENT_ASK_WINDOW_MS,
+				),
+				{ text: input.text, at },
+			].slice(-RECENT_ASK_LIMIT);
 		}
 		// No waiting bed after she speaks (founder 2026-09-24, FLY-2799 qa6): with
 		// no update the room stays quiet.

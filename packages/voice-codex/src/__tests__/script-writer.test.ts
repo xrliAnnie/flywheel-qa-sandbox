@@ -60,11 +60,18 @@ async function started(process: FakeProcess): Promise<Record<string, unknown>> {
 		.params as Record<string, unknown>;
 }
 
+/** Outputs predating the relevance fields default to "tell it". */
+function withRelevance(output: unknown): unknown {
+	return output && typeof output === "object" && !("tell" in output)
+		? { ...output, tell: true, skipReason: null }
+		: output;
+}
+
 function complete(process: FakeProcess, output: unknown): void {
 	process.emit("item/agentMessage/delta", {
 		threadId: "thread-1",
 		turnId: process.turnId,
-		delta: JSON.stringify(output),
+		delta: JSON.stringify(withRelevance(output)),
 	});
 	process.emit("turn/completed", {
 		threadId: "thread-1",
@@ -76,7 +83,10 @@ describe("subscription-backed voice ScriptWriter", () => {
 	it("discards a prior turn final while the next turn start response is still pending", async () => {
 		const process = new FakeProcess();
 		const writer = new ScriptWriter({ process, threadId: "thread-1" });
-		const first = writer.rewrite({ sourceText: "FLY-2886", rosterNames: [] });
+		const first = writer.rewrite({
+			sourceText: "FLY-2886 已完成",
+			rosterNames: [],
+		});
 		await started(process);
 		complete(process, { spoken: "FLY-2886 已完成。", threadText: null });
 		await first;
@@ -87,7 +97,10 @@ describe("subscription-backed voice ScriptWriter", () => {
 					startNext = resolve;
 				}),
 		);
-		const second = writer.rewrite({ sourceText: "FLY-2999", rosterNames: [] });
+		const second = writer.rewrite({
+			sourceText: "FLY-2999 已完成",
+			rosterNames: [],
+		});
 		complete(process, { spoken: "FLY-2886 迟到了。", threadText: null });
 		startNext({ result: { turn: { id: "turn-2" } } });
 		await Promise.resolve();
@@ -115,6 +128,8 @@ describe("subscription-backed voice ScriptWriter", () => {
 				text: JSON.stringify({
 					spoken: "FLY-2886 在 PR #1326。",
 					threadText: null,
+					tell: true,
+					skipReason: null,
 				}),
 			},
 		});
@@ -148,7 +163,7 @@ describe("subscription-backed voice ScriptWriter", () => {
 			outputSchema: {
 				type: "object",
 				additionalProperties: false,
-				required: ["spoken", "threadText"],
+				required: ["spoken", "threadText", "tell", "skipReason"],
 			},
 		});
 		complete(process, {
@@ -159,6 +174,9 @@ describe("subscription-backed voice ScriptWriter", () => {
 			spoken: "FLY-2886 现在是 PR #1326，负责人是 Tadashi。",
 			threadText: null,
 			protectedFieldEvidence: expect.any(Array),
+			tell: true,
+			skipReason: null,
+			droppedSentences: [],
 		});
 	});
 
@@ -179,8 +197,13 @@ describe("subscription-backed voice ScriptWriter", () => {
 			},
 		},
 		{
-			name: "fabricated protected fields",
-			output: { spoken: "FLY-9999 在 PR #9876。", threadText: null },
+			name: "a skip without an allowed reason",
+			output: {
+				spoken: "收到。",
+				threadText: null,
+				tell: false,
+				skipReason: "boring",
+			},
 		},
 	])("rejects $name before the script can be spoken", async ({ output }) => {
 		const process = new FakeProcess();
@@ -192,6 +215,54 @@ describe("subscription-backed voice ScriptWriter", () => {
 		await started(process);
 		complete(process, output);
 		await expect(result).rejects.toThrow("script_writer_output_invalid");
+	});
+
+	// FLY-2886 Lead 1c8019f8: a changed key fact no longer rejects the whole
+	// rewrite; the wrong sentence is dropped whole and the exact source goes to
+	// the thread, so the founder still hears what was right.
+	it("drops a sentence with a fabricated key fact and routes the exact source to the thread", async () => {
+		const process = new FakeProcess();
+		const writer = new ScriptWriter({ process, threadId: "thread-1" });
+		const result = writer.rewrite({
+			sourceText: "FLY-2886 is on PR #1326. CI passed.",
+			rosterNames: [],
+		});
+		await started(process);
+		complete(process, {
+			spoken: "FLY-2886 在 PR #9876。CI 过了。",
+			threadText: null,
+		});
+		await expect(result).resolves.toMatchObject({
+			spoken: "CI 过了。这条我发到 thread 了，编号以文字为准。",
+			threadText: "FLY-2886 is on PR #1326. CI passed.",
+			droppedSentences: ["FLY-2886 在 PR #9876。"],
+			tell: true,
+		});
+	});
+
+	it("returns a relevance skip with its reason and sends her recent asks as data", async () => {
+		const process = new FakeProcess();
+		const writer = new ScriptWriter({ process, threadId: "thread-1" });
+		const result = writer.rewrite({
+			sourceText: "收到，已记下。",
+			rosterNames: [],
+			recentFounderAsks: ["2886 的 PR 怎么样了"],
+		});
+		const params = await started(process);
+		expect(JSON.stringify(params.input)).toContain(
+			"recentFounderAsks",
+		);
+		expect(JSON.stringify(params.input)).toContain("2886 的 PR 怎么样了");
+		complete(process, {
+			spoken: "收到。",
+			threadText: null,
+			tell: false,
+			skipReason: "ack_only",
+		});
+		await expect(result).resolves.toMatchObject({
+			tell: false,
+			skipReason: "ack_only",
+		});
 	});
 
 	it("interrupts at 15 seconds and discards a late successful result", async () => {

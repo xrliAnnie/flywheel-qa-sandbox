@@ -220,7 +220,12 @@ class FakeProcess implements CodexVoiceProcess {
 				this.emit("item/agentMessage/delta", {
 					threadId: this.threadId,
 					turnId: "scribe-probe",
-					delta: JSON.stringify({ spoken: "准备好了。", threadText: null }),
+					delta: JSON.stringify({
+						spoken: "准备好了。",
+						threadText: null,
+						tell: true,
+						skipReason: null,
+					}),
 				});
 				this.emit("turn/completed", {
 					threadId: this.threadId,
