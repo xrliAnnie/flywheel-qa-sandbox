@@ -250,9 +250,19 @@ function applyArgs(ledger: ProgressLedger, args: ProgressArgs): void {
 		const c = ledger.chunks.find((x) => x.id === upd.id);
 		if (c) c.status = upd.status as ProgressChunk["status"];
 	}
+	// Whitelist mirrors `parsePointers` in flywheel-config progress-schema.ts —
+	// an unknown key is dropped silently, so the two lists must stay in sync.
+	// `rescue` (FLY-2901 §4.8): the takeover-rescue evidence pointer.
 	for (const p of args.pointer ?? []) {
 		if (
-			["plan", "exploration", "research", "pr", "reviewedSha"].includes(p.key)
+			[
+				"plan",
+				"exploration",
+				"research",
+				"pr",
+				"reviewedSha",
+				"rescue",
+			].includes(p.key)
 		) {
 			(ledger.pointers as Record<string, string>)[p.key] = p.value;
 		}

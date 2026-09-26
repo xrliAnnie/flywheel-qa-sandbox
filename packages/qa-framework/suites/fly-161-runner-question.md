@@ -6,7 +6,7 @@
 
 **Tool**: Chrome Discord observation (Claude-in-Chrome MCP — Annie's Discord session is the only source of truth for what the Lead actually surfaced) + direct CommDB inspection + `pnpm bridge:logs` tail.
 
-**Environment**: 4-slot test slot infrastructure (`scripts/test-deploy.sh`), sandbox repo `xrliAnnie/flywheel-qa-sandbox`, sandbox issue `FLY-SBX-1`.
+**Environment**: 6-slot test slot infrastructure (`scripts/test-deploy.sh`), sandbox repo `xrliAnnie/flywheel-qa-sandbox`, sandbox issue `FLY-SBX-1`.
 
 ## Scope (Annie-confirmed pre-implement)
 
@@ -17,7 +17,7 @@
 
 ## Prerequisites
 
-- 1 free test slot (1–4) — `~/.flywheel/test-slots.json`. Slot 3 (lead-test-3) recommended for parity with the mirror-channel infrastructure (FLY-153).
+- 1 free test slot (1–6) — `~/.flywheel/test-slots.json`. Slot 3 (`ops-lead-test`) remains recommended for parity with the mirror-channel infrastructure (FLY-153).
 - v1.28.1+ Bridge deployed to the slot. Confirm `doc/VERSION == v1.28.1` in the source tree and the slot's `bridge.log` shows `[GatePoller] Started`.
 - A test Lead daemon running for `lead-test-{N}`.
 - A real Runner spawn in the slot's F1 sub-slot (see FLY-115 framework).

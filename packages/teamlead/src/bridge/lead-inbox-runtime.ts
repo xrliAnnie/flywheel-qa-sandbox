@@ -35,6 +35,7 @@ import type {
 	StateStore,
 } from "../StateStore.js";
 import { correlationKeyFor } from "./AlertChannelHub.js";
+import { AlertWakeDedup } from "./alert-wake-dedup.js";
 import { isCurrentDesignReviewManifestInstruction } from "./design-review-manifest.js";
 import {
 	type AlertHandoffContentInput,
@@ -97,6 +98,7 @@ export interface LeadInboxRuntimeOptions {
 	commDbPathForProject: (projectName: string) => string;
 	archiveEnabled?: (projectName: string) => boolean;
 	chatThreadsEnabled?: boolean;
+	dispatcherUserId?: () => string | null;
 	secretProvider?: DeliverySecretProvider;
 	ownerEpoch?: string;
 	adapterForLead?: (
@@ -236,6 +238,10 @@ export class LeadInboxRuntime {
 					processTupleStateWithStart(pid, start),
 				));
 		const adapterForLead = opts.adapterForLead ?? createProductionAdapter;
+		const alertWakeDedup = new AlertWakeDedup({
+			store: opts.store,
+			dispatcherUserId: opts.dispatcherUserId ?? (() => null),
+		});
 		const runnerAdapterForProject =
 			opts.runnerAdapterForProject ??
 			((_project, dbPath) =>
@@ -509,8 +515,18 @@ export class LeadInboxRuntime {
 								senderRef: encodeSenderRef(),
 							});
 						},
-						revalidateModel: (row) => admission.revalidate(row),
+						revalidateModel: async (row) =>
+							alertWakeDedup.revalidate(
+								row,
+								lead.agentId,
+								project.projectName,
+							) ?? admission.revalidate(row),
 						markAuditDelivered: (row) => {
+							alertWakeDedup.recordDelivered(
+								row,
+								lead.agentId,
+								project.projectName,
+							);
 							if (
 								(row.source_kind !== "lead_event" &&
 									row.source_kind !== "question") ||
@@ -720,7 +736,7 @@ export class LeadInboxRuntime {
 			}
 		}
 		try {
-			delivery = this.opts.store.upsertAlertMailboxLedger(
+			const ledger = this.opts.store.upsertAlertMailboxLedger(
 				{
 					correlationKey: correlationKeyFor(payload),
 					eventId: payload.eventId,
@@ -734,7 +750,11 @@ export class LeadInboxRuntime {
 					sessionKey: payload.sessionKey ?? null,
 				},
 				{ allowReseed },
-			).deliveryProjection;
+			);
+			delivery = ledger.deliveryProjection;
+			if (!canonicalArchived) {
+				this.recordAlertWakeMapping(delivery, ledger.canonicalEventId, payload);
+			}
 		} catch (error) {
 			this.ledgerWriteErrorCount += 1;
 			console.warn(
@@ -790,8 +810,36 @@ export class LeadInboxRuntime {
 					sessionKey: payload.sessionKey ?? null,
 				},
 				{ allowReseed: true },
-			).deliveryProjection;
-			return this.enqueueInfraAlertDelivery(fallback, payload);
+			);
+			this.recordAlertWakeMapping(
+				fallback.deliveryProjection,
+				fallback.canonicalEventId,
+				payload,
+			);
+			return this.enqueueInfraAlertDelivery(
+				fallback.deliveryProjection,
+				payload,
+			);
+		}
+	}
+
+	private recordAlertWakeMapping(
+		delivery: AlertMailboxDeliveryProjection,
+		canonicalEventId: string | null,
+		payload: AlertPayload,
+	): void {
+		if (!canonicalEventId) return;
+		try {
+			this.opts.store.recordAlertWakeLetter({
+				deliveryId: delivery.deliveryId,
+				correlationKey: correlationKeyFor(payload),
+				canonicalEventId,
+				recordedAt: new Date().toISOString(),
+			});
+		} catch (error) {
+			console.warn(
+				`[alert-wake-dedup] mapping failed delivery=${delivery.deliveryId}: ${error instanceof Error ? error.message : String(error)}`,
+			);
 		}
 	}
 

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { CommDB } from "flywheel-comm/db";
+import { ingestDiscordChatOnQueue } from "flywheel-comm/discord-chat-ingest";
 import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import { encodeSenderRef } from "flywheel-comm/sender-ref";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -13,7 +14,11 @@ import {
 import { resolveCodexLeadInboxSocketPath } from "../../lead-backends/codex/CodexLeadInboxSocket.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import { StateStore } from "../../StateStore.js";
-import { LeadDeliveryUnavailableError } from "../lead-delivery-adapter.js";
+import {
+	type LeadDeliveryBatch,
+	LeadDeliveryUnavailableError,
+} from "../lead-delivery-adapter.js";
+import type { LeadInboxLoop } from "../lead-inbox-loop.js";
 import {
 	LeadInboxRuntime,
 	resolveCodexLeadStateDir,
@@ -86,7 +91,283 @@ function projectsWithDutyLead(): ProjectEntry[] {
 	];
 }
 
+async function alertWakeRuntime(dispatcherUserId?: () => string | null) {
+	const root = mkdtempSync(join(tmpdir(), "fly2910-alert-runtime-"));
+	const store = await StateStore.create(":memory:");
+	const deliverBatch = vi.fn(async (batch: LeadDeliveryBatch) => ({
+		batchId: batch.batchId,
+		memberIds: batch.members.map((member) => member.deliveryId),
+		status: "accepted_new" as const,
+	}));
+	const runtime = new LeadInboxRuntime({
+		projects,
+		store,
+		registry: new RuntimeRegistry(),
+		dispatcherUserId,
+		commDbPathForProject: () => join(root, "comm.db"),
+		leadLeaseReader: { getLease: () => undefined },
+		runLegacyCutover: () => {},
+		adapterForLead: () => ({ deliverBatch }),
+		runnerAdapterForProject: () => ({
+			deliver: vi.fn(),
+			resolveQuestion: () => undefined,
+			close: vi.fn(),
+		}),
+	});
+	const loop = [
+		...(
+			runtime as unknown as { loops: Map<string, LeadInboxLoop> }
+		).loops.values(),
+	][0]!;
+	return {
+		store,
+		runtime,
+		deliverBatch,
+		queue: runtime.healthTargets()[0]!.queue,
+		tick: () => loop.tick(),
+		close: () => {
+			runtime.close();
+			store.close();
+			rmSync(root, { recursive: true, force: true });
+		},
+	};
+}
+
+function wakeAlert(eventId: string): AlertPayload {
+	return {
+		leadId: "lead-a",
+		projectName: "project-a",
+		eventId,
+		eventType: "cmux_watcher_stalled",
+		severity: "warning",
+		title: "cmux watcher stalled",
+		body: "pid=123 heartbeat_age_ms=1000",
+	};
+}
+
 describe("LeadInboxRuntime", () => {
+	it.each(["adapter rejection", "owner fence loss"])(
+		"FLY-2910 records no evidence after %s and wakes an equivalent after another object succeeds",
+		async (failure) => {
+			const fixture = await alertWakeRuntime();
+			const { runtime, store, queue, tick, deliverBatch } = fixture;
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+			vi.useFakeTimers({ toFake: ["Date"] });
+			try {
+				deliverBatch.mockImplementationOnce(async (batch) => {
+					if (failure === "adapter rejection")
+						throw new Error("adapter rejected");
+					expect(
+						queue.acquireOrRenewOwner({
+							ownerEpoch: "successor",
+							now: new Date(Date.now() + 60_000).toISOString(),
+							leaseTtlMs: 1,
+						}),
+					).toBe(true);
+					return {
+						batchId: batch.batchId,
+						memberIds: batch.members.map((member) => member.deliveryId),
+						status: "accepted_new",
+					};
+				});
+				const first = runtime.enqueueInfraAlert(
+					"lead-a",
+					wakeAlert("failed-a"),
+				);
+				expect(await tick()).toMatchObject({ ok: false });
+				expect(
+					store.getAlertWakeLetter(first.deliveryId)?.evidenceRecordedAt,
+				).toBeNull();
+				expect(store.listAlertWakeDedup("1970-01-01")).toEqual([]);
+				if (failure === "owner fence loss") {
+					expect(
+						queue.acquireOrRenewOwner({
+							ownerEpoch: runtime.receiptOwnerEpoch(),
+							now: new Date(Date.now() + 120_000).toISOString(),
+							leaseTtlMs: 1,
+						}),
+					).toBe(true);
+				}
+				const other = runtime.enqueueInfraAlert("lead-a", {
+					...wakeAlert("successful-b"),
+					body: "pid=456 heartbeat_age_ms=1000",
+				});
+				expect(await tick()).toMatchObject({ ok: true, modelConsumed: 1 });
+				queue.ack(other.deliveryId);
+				expect(store.listAlertWakeDedup("1970-01-01")).toHaveLength(1);
+				expect(
+					queue.markDead(
+						first.deliveryId,
+						new Date().toISOString(),
+						"test_delivery_exhausted",
+					),
+				).toBe(true);
+				const equivalent = runtime.enqueueInfraAlert(
+					"lead-a",
+					wakeAlert("equivalent-a"),
+				);
+				expect(await tick()).toMatchObject({ ok: true, modelConsumed: 1 });
+				expect(deliverBatch).toHaveBeenCalledTimes(3);
+				expect(deliverBatch.mock.calls[2]?.[0].members[0]?.deliveryId).toBe(
+					`${equivalent.deliveryId}#r0`,
+				);
+				expect(queue.getById(equivalent.deliveryId)?.delivery_disposition).toBe(
+					"model",
+				);
+			} finally {
+				vi.useRealTimers();
+				warn.mockRestore();
+				fixture.close();
+			}
+		},
+	);
+
+	it("FLY-2910 reads a late-bound dispatcher identity for real Discord ingress", async () => {
+		const dispatcher = { current: null as string | null };
+		const fixture = await alertWakeRuntime(() => dispatcher.current);
+		const { queue, tick, deliverBatch } = fixture;
+		const ingest = (messageId: string) =>
+			ingestDiscordChatOnQueue(queue, {
+				dbPath: "unused",
+				leadId: "lead-a",
+				chatId: "111111111111111111",
+				originChannelId: "111111111111111111",
+				messageId,
+				authorId: "222222222222222222",
+				authorName: "alerts dispatcher",
+				ts: new Date().toISOString(),
+				msgKind: "guild",
+				attachments: [],
+				text: "ℹ️ **Review passed** (lead-a / review_advisory_pass)\nOptional advice",
+			});
+		try {
+			ingest("333333333333333333");
+			expect(await tick()).toMatchObject({ ok: true, modelConsumed: 1 });
+			expect(queue.ack("chat:lead-a:333333333333333333")).toBe(true);
+			dispatcher.current = "222222222222222222";
+			ingest("444444444444444444");
+			expect(await tick()).toMatchObject({ ok: true, modelConsumed: 0 });
+			expect(deliverBatch).toHaveBeenCalledTimes(1);
+			expect(fixture.store.listAlertWakeDedup("1970-01-01")).toEqual([
+				expect.objectContaining({ infoOnly: true, digestPending: 1 }),
+			]);
+		} finally {
+			fixture.close();
+		}
+	});
+
+	it("FLY-2910 suppresses a second fire only after the real enqueue and delivery receipt", async () => {
+		const fixture = await alertWakeRuntime();
+		const { runtime, store, queue, tick, deliverBatch } = fixture;
+		try {
+			const first = runtime.enqueueInfraAlert(
+				"lead-a",
+				wakeAlert("wake-first"),
+			);
+			expect(store.getAlertWakeLetter(first.deliveryId)).toMatchObject({
+				deliveryId: first.deliveryId,
+				canonicalEventId: "wake-first",
+			});
+			expect(store.listAlertWakeDedup("1970-01-01")).toEqual([]);
+			expect(await tick()).toMatchObject({ ok: true, modelConsumed: 1 });
+			expect(
+				store.getAlertWakeLetter(first.deliveryId)?.evidenceRecordedAt,
+			).toEqual(expect.any(String));
+			queue.ack(first.deliveryId);
+			const second = runtime.enqueueInfraAlert(
+				"lead-a",
+				wakeAlert("wake-second"),
+			);
+			expect(second.deliveryId).not.toBe(first.deliveryId);
+			expect(
+				store.getAlertWakeLetter(second.deliveryId)?.canonicalEventId,
+			).toBe("wake-first");
+			expect(await tick()).toMatchObject({ ok: true, modelConsumed: 0 });
+			expect(deliverBatch).toHaveBeenCalledTimes(1);
+			expect(queue.getById(second.deliveryId)).toMatchObject({
+				state: "ACKED",
+				delivery_disposition: "audit_only",
+				resolved_via: "alert_wake_dedup",
+			});
+			expect(store.listAlertWakeDedup("1970-01-01")).toEqual([
+				expect.objectContaining({
+					occurrences: 2,
+					suppressed: 1,
+					ticketGeneration: "wake-first",
+				}),
+			]);
+		} finally {
+			fixture.close();
+		}
+	});
+
+	it("FLY-2910 keeps delivering when enqueue mapping fails without counting a ledger failure", async () => {
+		const fixture = await alertWakeRuntime();
+		const { runtime, store, queue, tick, deliverBatch } = fixture;
+		const mapping = vi
+			.spyOn(store, "recordAlertWakeLetter")
+			.mockImplementation(() => {
+				throw new Error("mapping unavailable");
+			});
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			for (const eventId of ["unmapped-first", "unmapped-second"]) {
+				const receipt = runtime.enqueueInfraAlert("lead-a", wakeAlert(eventId));
+				expect(receipt.queued).toBe(true);
+				expect(store.getAlertWakeLetter(receipt.deliveryId)).toBeUndefined();
+				expect(await tick()).toMatchObject({ ok: true, modelConsumed: 1 });
+				queue.ack(receipt.deliveryId);
+			}
+			expect(mapping).toHaveBeenCalledTimes(2);
+			expect(runtime.ledgerWriteErrors).toBe(0);
+			expect(deliverBatch).toHaveBeenCalledTimes(2);
+			expect(store.listAlertWakeDedup("1970-01-01")).toEqual([]);
+			expect(warn).toHaveBeenCalledWith(
+				expect.stringContaining("[alert-wake-dedup] mapping failed"),
+			);
+		} finally {
+			mapping.mockRestore();
+			warn.mockRestore();
+			fixture.close();
+		}
+	});
+
+	it("FLY-2910 settles info without waking and includes it in the next alert digest", async () => {
+		const fixture = await alertWakeRuntime();
+		const { runtime, store, queue, tick, deliverBatch } = fixture;
+		try {
+			const info = runtime.enqueueInfraAlert("lead-a", {
+				...wakeAlert("info-advisory"),
+				eventType: "review_advisory_pass",
+				severity: "info",
+				title: "Review passed with advice",
+				body: "Optional follow-up",
+			});
+			expect(await tick()).toMatchObject({ ok: true, modelConsumed: 0 });
+			expect(deliverBatch).not.toHaveBeenCalled();
+			expect(queue.getById(info.deliveryId)).toMatchObject({
+				state: "ACKED",
+				delivery_disposition: "audit_only",
+			});
+			expect(store.listAlertWakeDedup("1970-01-01")[0]?.digestPending).toBe(1);
+			runtime.enqueueInfraAlert("lead-a", wakeAlert("next-warning"));
+			expect(await tick()).toMatchObject({ ok: true, modelConsumed: 1 });
+			expect(deliverBatch.mock.calls[0]?.[0].modelPayload).toContain(
+				"[告警摘要]",
+			);
+			expect(deliverBatch.mock.calls[0]?.[0].modelPayload).toContain(
+				"Review passed with advice",
+			);
+			expect(
+				store
+					.listAlertWakeDedup("1970-01-01")
+					.every((row) => row.digestPending === 0),
+			).toBe(true);
+		} finally {
+			fixture.close();
+		}
+	});
+
 	it("routes XHS notices through the shared runtime to the scoped durable mailbox", () => {
 		const root = mkdtempSync(join(tmpdir(), "xhs-inbox-runtime-"));
 		const dbPath = join(root, "project-a.db");
@@ -1080,6 +1361,10 @@ describe("LeadInboxRuntime", () => {
 			expect(result.deliveryId).toBe(
 				"infra_alert:lead-a:bridge_abnormal_exit:bridge-exit-enqueue-fallback",
 			);
+			expect(store.getAlertWakeLetter(result.deliveryId)).toMatchObject({
+				canonicalEventId: "bridge-exit-enqueue-fallback",
+				deliveryId: result.deliveryId,
+			});
 			expect(
 				store.getMailboxLedgerByEventId(result.deliveryId.split(":").at(-1)!),
 			).toEqual(
@@ -1363,6 +1648,7 @@ describe("LeadInboxRuntime", () => {
 			).toEqual({ queued: true, deliveryId });
 			expect(ledgerWrite).toHaveBeenCalledOnce();
 			expect(enqueue).not.toHaveBeenCalled();
+			expect(store.getAlertWakeLetter(deliveryId)).toBeUndefined();
 		} finally {
 			inspect.mockRestore();
 			enqueue.mockRestore();

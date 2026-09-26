@@ -117,9 +117,10 @@ Fallback: source config-bridge.sh + state.sh directly.
 | Resource | Rule |
 |----------|------|
 | **Code** | 只在自己的 WORKTREE_PATH 工作 |
-| **Bridge** | 使用 `node "$FLYWHEEL_COMM_CLI" room deploy --head <candidate-sha>` 自动分配 test slot（固定端口 19871-19874）。不要手动指定端口 |
+| **Bridge** | 使用 `node "$FLYWHEEL_COMM_CLI" room deploy --head <candidate-sha>` 自动分配 test slot（固定端口 19871–19876）。不要手动指定端口 |
+
 | **CommDB** | test-deploy 自动创建隔离的 CommDB（`~/.flywheel/comm/test-slot-{N}/`），teardown 时自动清理 |
-| **Discord** | 4 个独立 test bot + 4 个独立 test channel，支持**完全并行**。每个 slot 有专属 bot token 和 channel，互不干扰 |
+| **Discord** | 6 个独立 test bot + 6 个独立 text channel + 6 个独立 voice channel，支持**完全并行**。每个 slot 有专属 bot token 和 text/voice channel，互不干扰 |
 
 ### Test Slot 工作流
 
@@ -157,22 +158,26 @@ CLI 退出 0 = driver exit 0；4 = driver 已结束但非零；1 = 拒绝/服务
 
 `evidence-run record` 仍由 runner 用自身 execution、ingest token 和当前 workflow submission credential 提交。原样保存服务所选 operation 的 `rerun_spec` JSON 给 `--rerun-spec`，把 `driver_exit_code` 给 `--driver-exit-code`；只有 `evidence_copy=ok` 才把 `evidence_copy_dir` 给 `--local-copy`。`succeeded` 只代表 driver 结束；退出 0 但副本失败/为空或步骤不全不能算 PASS，须重跑或报告缺口。先 record，再 qa-result，最后 teardown；不要用后一次 drill 的结果替代目标操作。
 
-**Slot 池**: 4 个 slot（端口 19871-19874），配置在 `~/.flywheel/test-slots.json`（模板: `scripts/test-slots.example.json`）。
-每个 slot 包含：独立 Bridge 进程、独立 test Lead、独立 Discord bot/channel、独立 CommDB。
+**Slot 池**: 6 个 slot（端口 19871–19876），配置在 `~/.flywheel/test-slots.json`（模板: `scripts/test-slots.example.json`）。
+每个 slot 包含：独立 Bridge 进程、独立 test Lead、独立 Discord bot/text channel/voice channel、独立 CommDB。
+
 
 ### Slot Role Map
 
-Each slot has a `role` field that selects which production identity.md to source from (`~/Dev/GeoForge3D/.lead/{cos-lead|product-lead}/identity.md`), so the test Lead mirrors production announce behavior (session_started / session_completed / session_failed messages) inside the test channel.
+Each slot has a `role` plus `identitySource` selecting the production identity under `~/Dev/GeoForge3D/.lead/`, so the test Lead mirrors production announce behavior (session_started / session_completed / session_failed messages) inside the test channel.
 
-| Slot | Role | Channel      | Identity source (Simba/Peter) |
-|------|------|--------------|-------------------------------|
-| 1    | cos  | cos-test     | `.lead/cos-lead/identity.md` (Simba)    |
-| 2    | lead | lead-test-1  | `.lead/product-lead/identity.md` (Peter) |
-| 3    | lead | lead-test-2  | `.lead/product-lead/identity.md` (Peter) |
-| 4    | lead | lead-test-3  | `.lead/product-lead/identity.md` (Peter) |
+| Slot | Port | Text channel | Voice channel | Identity source | Carrier |
+|------|------|--------------|---------------|-----------------|---------|
+| 1 | 19871 | `cos-test` | `voice-test-1` | `cos-lead` (Simba) | Claude |
+| 2 | 19872 | `product-lead-test` | `voice-test-2` | `product-lead` (Peter) | configured carrier |
+| 3 | 19873 | `ops-lead-test` | `voice-test-3` | `ops-lead` (Oliver) | Claude |
+| 4 | 19874 | `finance-lead-test` | `voice-test-4` | `product-lead` (Peter) | Claude |
+| 5 | 19875 | `product-lead-test-2` | `voice-test-5` | `product-lead` (Peter) | Codex app-server (`full-access`) |
+| 6 | 19876 | `ops-lead-test-2` | `voice-test-6` | `ops-lead` (Oliver) | Claude |
 
 **When testing CoS behavior** (triage, core channel routing) → claim slot 1.
-**When testing Lead behavior** (product-chat notifications, chat threads) → claim any of slot 2/3/4 (or let `room deploy --slot auto` allocate).
+**When testing Lead behavior** (product-chat notifications, chat threads) → claim any compatible slot from 2–6 (or let `room deploy --slot auto` allocate). Slots 5/6 initially support per-slot and N-to-N modes only; they do not have the shared-channel overwrites required by alerts, roundtable, or mirror modes.
+
 
 `scripts/pre-ship-check.sh` is a CI/operator-only aggregate. A Runner must not invoke it locally; select concrete test files and run the separately required real E2E surface instead.
 

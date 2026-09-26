@@ -15,6 +15,7 @@ import {
 	type SummaryPresentationStaleSignal,
 } from "./bridge/summary-presentation-store.js";
 import { SUMMARY_ACTIVITY_NOISE_EVENT_TYPES } from "./bridge/summary-activity-probe.js";
+import { CodexTerminalCloseStore } from "./bridge/codex-terminal-close-ledger.js";
 import { readEpicIntakeRefreshState, recordEpicIntakeRefreshResult, readEpicIntake, migrateEpicIntakes, hasEpicDispatchRecord, recordEpicIntake, beginEpicIntakeScan, completeEpicIntakeScan, type EpicIntakeScan, type EpicIntakeInput, type EpicIntakeRecord } from "./bridge/epic-intake-store.js";
 import {
 	assertPercentageModelAssignment,
@@ -52,6 +53,8 @@ import {
 	RECOVERY_PRECOMMIT_OBSERVATION_MS,
 } from "flywheel-core";
 import { buildReworkWakeId, type ReworkWakeIdentity, type ReworkWakeRetirementProof } from "flywheel-comm/db";
+import { newDrainReadId } from "flywheel-comm/completion-obligations";
+import { type CompletionDrainProof, isCompletionDrainProof } from "./bridge/completion-drain.js";
 import { BetaReleaseStore } from "./bridge/beta-release-store.js";
 import { QaRoomStore } from "./bridge/qa-room-store.js";
 import type { CompletionWorktreeBranchObservation } from "./bridge/worktree-binding-refresh.js";
@@ -3240,6 +3243,25 @@ export class StateStore {
 			this.customerReleaseStoreCache = { db, store: new CustomerReleaseStore(db) };
 		}
 		return this.customerReleaseStoreCache.store;
+	}
+	private codexTerminalCloseStoreCache?: {
+		db: BetterDb;
+		store: CodexTerminalCloseStore;
+	};
+	/** FLY-2903: terminal Codex close verdicts (single writer: codex-terminal-close-ledger). */
+	get codexTerminalClose(): CodexTerminalCloseStore {
+		const db = this.db.raw;
+		if (this.codexTerminalCloseStoreCache?.db !== db) {
+			this.codexTerminalCloseStoreCache = {
+				db,
+				store: new CodexTerminalCloseStore(db),
+			};
+		}
+		return this.codexTerminalCloseStoreCache.store;
+	}
+	/** FLY-2903: run `fn` in one transaction on this store's connection. */
+	runInTransaction(fn: () => void): void {
+		this.db.transaction(fn);
 	}
 	get summaryPresentations(): SummaryPresentationStore {
 		const db = this.db.raw;
@@ -10928,6 +10950,7 @@ export class StateStore {
 			"CREATE UNIQUE INDEX IF NOT EXISTS idx_lead_events_dedup ON lead_events(lead_id, event_id)",
 		);
 		this.summaryPresentations.migrate();
+		this.codexTerminalClose.migrate();
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS patrol_orphan_watch (
 				target TEXT PRIMARY KEY,
@@ -11562,6 +11585,36 @@ export class StateStore {
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_alert_mailbox_ledger_event ON alert_mailbox_ledger(event_id)",
 		);
+		// FLY-2910: only adapter-confirmed deliveries authorize wake suppression.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS alert_wake_dedup_state (
+				lead_id TEXT NOT NULL,
+				fingerprint TEXT NOT NULL,
+				project_name TEXT NOT NULL,
+				event_type TEXT NOT NULL,
+				category_key TEXT NOT NULL,
+				category_title TEXT NOT NULL,
+				info_only INTEGER NOT NULL DEFAULT 0 CHECK (info_only IN (0,1)),
+				window_started_at TEXT NOT NULL,
+				delivered_delivery_id TEXT,
+				max_severity INTEGER NOT NULL DEFAULT 0,
+				ticket_generation TEXT,
+				occurrences INTEGER NOT NULL DEFAULT 0,
+				suppressed INTEGER NOT NULL DEFAULT 0,
+				digest_pending INTEGER NOT NULL DEFAULT 0,
+				last_seen_at TEXT NOT NULL,
+				PRIMARY KEY (lead_id, fingerprint)
+			);
+			CREATE INDEX IF NOT EXISTS alert_wake_dedup_state_category
+				ON alert_wake_dedup_state(lead_id, category_key, window_started_at);
+			CREATE TABLE IF NOT EXISTS alert_wake_letter (
+				delivery_id TEXT PRIMARY KEY,
+				correlation_key TEXT,
+				canonical_event_id TEXT,
+				recorded_at TEXT NOT NULL,
+				evidence_recorded_at TEXT
+			);
+		`);
 
 		// FLY-1082 (Task 2.2): the fleet pressure-hold — a SINGLE durable row
 		// (id=1 enforced). While present, runner admission defers every new
@@ -24695,6 +24748,251 @@ export class StateStore {
 
 	// ── FLY-368: alert_threads (unified-alert per-error thread, active-mapping) ──
 
+	/** First enqueue mapping wins, including retries after a ticket reopens. */
+	recordAlertWakeLetter(input: {
+		deliveryId: string;
+		correlationKey: string;
+		canonicalEventId: string;
+		recordedAt: string;
+	}): boolean {
+		return (
+			this.db.raw
+				.prepare(
+					`INSERT OR IGNORE INTO alert_wake_letter
+			 (delivery_id, correlation_key, canonical_event_id, recorded_at)
+			 VALUES (?, ?, ?, ?)`,
+				)
+				.run(
+					input.deliveryId,
+					input.correlationKey,
+					input.canonicalEventId,
+					input.recordedAt,
+				).changes === 1
+		);
+	}
+
+	getAlertWakeLetter(deliveryId: string): AlertWakeLetter | undefined {
+		const row = this.db.raw
+			.prepare("SELECT * FROM alert_wake_letter WHERE delivery_id = ?")
+			.get(deliveryId) as Record<string, unknown> | undefined;
+		return row
+			? {
+					deliveryId: row.delivery_id as string,
+					correlationKey: row.correlation_key as string | null,
+					canonicalEventId: row.canonical_event_id as string | null,
+					recordedAt: row.recorded_at as string,
+					evidenceRecordedAt: row.evidence_recorded_at as string | null,
+				}
+			: undefined;
+	}
+
+	getAlertWakeDedupRecord(
+		leadId: string,
+		fingerprint: string,
+	): AlertWakeDedupRecord | undefined {
+		const row = this.db.raw
+			.prepare(
+				"SELECT * FROM alert_wake_dedup_state WHERE lead_id = ? AND fingerprint = ?",
+			)
+			.get(leadId, fingerprint) as Record<string, unknown> | undefined;
+		return row ? rowToAlertWakeDedupRecord(row) : undefined;
+	}
+
+	/** Marker and evidence commit together; a frozen delivery replay is a no-op. */
+	recordAlertWakeDelivered(input: AlertWakeDeliveredInput): boolean {
+		return this.db.raw.transaction(() => {
+			const marked =
+				input.sourceKind === "infra_alert"
+					? this.db.raw
+							.prepare(
+								`UPDATE alert_wake_letter SET evidence_recorded_at = ?
+					 WHERE delivery_id = ? AND evidence_recorded_at IS NULL
+					 AND canonical_event_id = ?`,
+							)
+							.run(input.nowIso, input.deliveryId, input.ticketGeneration)
+							.changes
+					: this.db.raw
+							.prepare(
+								`INSERT OR IGNORE INTO alert_wake_letter
+					 (delivery_id, evidence_recorded_at, recorded_at) VALUES (?, ?, ?)`,
+							)
+							.run(input.deliveryId, input.nowIso, input.nowIso).changes;
+			if (marked !== 1) return false;
+			const previous = this.getAlertWakeDedupRecord(
+				input.leadId,
+				input.fingerprint,
+			);
+			const reset =
+				!previous ||
+				Date.parse(input.nowIso) - Date.parse(previous.windowStartedAt) >
+					ALERT_WAKE_WINDOW_MS;
+			const maxSeverity =
+				reset || previous.ticketGeneration !== input.ticketGeneration
+					? input.severityRank
+					: Math.max(previous.maxSeverity, input.severityRank);
+			this.db.raw
+				.prepare(
+					`INSERT INTO alert_wake_dedup_state
+				 (lead_id, fingerprint, project_name, event_type, category_key, category_title,
+				  info_only, window_started_at, delivered_delivery_id, max_severity,
+				  ticket_generation, occurrences, suppressed, digest_pending, last_seen_at)
+				 VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+				 ON CONFLICT(lead_id, fingerprint) DO UPDATE SET
+				  project_name = excluded.project_name, event_type = excluded.event_type,
+				  category_key = excluded.category_key, category_title = excluded.category_title,
+				  info_only = 0, window_started_at = excluded.window_started_at,
+				  delivered_delivery_id = excluded.delivered_delivery_id,
+				  max_severity = excluded.max_severity, ticket_generation = excluded.ticket_generation,
+				  occurrences = excluded.occurrences, suppressed = excluded.suppressed,
+				  last_seen_at = excluded.last_seen_at`,
+				)
+				.run(
+					input.leadId,
+					input.fingerprint,
+					input.projectName,
+					input.eventType,
+					input.categoryKey,
+					input.categoryTitle,
+					reset ? input.nowIso : previous.windowStartedAt,
+					input.deliveryId,
+					maxSeverity,
+					input.ticketGeneration,
+					reset ? 1 : previous.occurrences + 1,
+					reset ? 0 : previous.suppressed,
+					previous?.digestPending ?? 0,
+					input.nowIso,
+				);
+			const cutoff = new Date(
+				Date.parse(input.nowIso) - 48 * 3_600_000,
+			).toISOString();
+			this.db.raw
+				.prepare(
+					`DELETE FROM alert_wake_dedup_state WHERE rowid IN
+				 (SELECT rowid FROM alert_wake_dedup_state
+				  WHERE last_seen_at < ? AND digest_pending = 0 LIMIT 200)`,
+				)
+				.run(cutoff);
+			this.db.raw
+				.prepare(
+					`DELETE FROM alert_wake_letter WHERE rowid IN
+				 (SELECT rowid FROM alert_wake_letter WHERE recorded_at < ? LIMIT 200)`,
+				)
+				.run(cutoff);
+			return true;
+		})();
+	}
+
+	bumpAlertWakeSuppressed(input: {
+		leadId: string;
+		fingerprint: string;
+		nowIso: string;
+	}): boolean {
+		return (
+			this.db.raw
+				.prepare(
+					`UPDATE alert_wake_dedup_state SET occurrences = occurrences + 1,
+			 suppressed = suppressed + 1, digest_pending = digest_pending + 1, last_seen_at = ?
+			 WHERE lead_id = ? AND fingerprint = ? AND info_only = 0
+			 AND delivered_delivery_id IS NOT NULL`,
+				)
+				.run(input.nowIso, input.leadId, input.fingerprint).changes === 1
+		);
+	}
+
+	bumpAlertWakeInfo(input: AlertWakeIdentityInput & { nowIso: string }): void {
+		this.db.raw.transaction(() => {
+			const previous = this.getAlertWakeDedupRecord(
+				input.leadId,
+				input.fingerprint,
+			);
+			const reset =
+				!previous ||
+				Date.parse(input.nowIso) - Date.parse(previous.windowStartedAt) >
+					ALERT_WAKE_WINDOW_MS;
+			this.db.raw
+				.prepare(
+					`INSERT INTO alert_wake_dedup_state
+				 (lead_id, fingerprint, project_name, event_type, category_key, category_title,
+				  info_only, window_started_at, occurrences, suppressed, digest_pending, last_seen_at)
+				 VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+				 ON CONFLICT(lead_id, fingerprint) DO UPDATE SET
+				  window_started_at = excluded.window_started_at, occurrences = excluded.occurrences,
+				  suppressed = excluded.suppressed, digest_pending = excluded.digest_pending,
+				  last_seen_at = excluded.last_seen_at`,
+				)
+				.run(
+					input.leadId,
+					input.fingerprint,
+					input.projectName,
+					input.eventType,
+					input.categoryKey,
+					input.categoryTitle,
+					reset ? input.nowIso : previous.windowStartedAt,
+					reset ? 1 : previous.occurrences + 1,
+					reset ? 1 : previous.suppressed + 1,
+					(previous?.digestPending ?? 0) + 1,
+					input.nowIso,
+				);
+		})();
+	}
+
+	sumAlertWakeCategory(
+		leadId: string,
+		categoryKey: string,
+		sinceIso: string,
+	): { occurrences: number; suppressed: number } {
+		return this.db.raw
+			.prepare(
+				`SELECT COALESCE(SUM(occurrences), 0) AS occurrences, COALESCE(SUM(suppressed), 0) AS suppressed
+			 FROM alert_wake_dedup_state WHERE lead_id = ? AND category_key = ? AND window_started_at >= ?`,
+			)
+			.get(leadId, categoryKey, sinceIso) as {
+			occurrences: number;
+			suppressed: number;
+		};
+	}
+
+	takeAlertWakeDigest(
+		leadId: string,
+		limit: number,
+	): {
+		entries: AlertWakeDedupRecord[];
+		total: number;
+		remainingCategories: number;
+	} {
+		return this.db.raw.transaction(() => {
+			const rows = (
+				this.db.raw
+					.prepare(
+						`SELECT * FROM alert_wake_dedup_state WHERE lead_id = ? AND digest_pending > 0
+				 ORDER BY digest_pending DESC, category_key ASC, fingerprint ASC`,
+					)
+					.all(leadId) as Record<string, unknown>[]
+			).map(rowToAlertWakeDedupRecord);
+			this.db.raw
+				.prepare(
+					"UPDATE alert_wake_dedup_state SET digest_pending = 0 WHERE lead_id = ? AND digest_pending > 0",
+				)
+				.run(leadId);
+			const entries = rows.slice(0, Math.max(0, Math.floor(limit)));
+			return {
+				entries,
+				total: rows.reduce((total, row) => total + row.digestPending, 0),
+				remainingCategories: rows.length - entries.length,
+			};
+		})();
+	}
+
+	listAlertWakeDedup(sinceIso: string): AlertWakeDedupRecord[] {
+		return (
+			this.db.raw
+				.prepare(
+					"SELECT * FROM alert_wake_dedup_state WHERE last_seen_at >= ? ORDER BY last_seen_at DESC, lead_id ASC, fingerprint ASC",
+				)
+				.all(sinceIso) as Record<string, unknown>[]
+		).map(rowToAlertWakeDedupRecord);
+	}
+
 	/** Open the first mailbox-lane alert episode for a correlation key. */
 	upsertAlertMailboxLedger(
 		input: AlertMailboxLedgerInput,
@@ -24719,6 +25017,7 @@ export class StateStore {
 		) {
 			return {
 				disposition: "replayed_same",
+				canonicalEventId: null,
 				deliveryProjection: deliveryProjectionFromLedger(existing),
 				};
 		}
@@ -24753,12 +25052,14 @@ export class StateStore {
 					this.save();
 					return {
 						disposition: "reseeded",
+						canonicalEventId: input.eventId,
 						deliveryProjection: deliveryProjectionFromInput(input),
 					};
 				}
 			}
 			return {
 				disposition: "locked_canonical",
+				canonicalEventId: existing.event_id,
 				deliveryProjection: deliveryProjectionFromLedger(existing),
 			};
 		}
@@ -24775,6 +25076,7 @@ export class StateStore {
 			this.save();
 			return {
 				disposition: "merged",
+				canonicalEventId: existing.event_id,
 				deliveryProjection: deliveryProjectionFromInput(input),
 				};
 		}
@@ -24812,6 +25114,7 @@ export class StateStore {
 			this.save();
 			return {
 				disposition: "new_episode",
+				canonicalEventId: input.eventId,
 				deliveryProjection: deliveryProjectionFromInput(input),
 			};
 		}
@@ -24858,6 +25161,7 @@ export class StateStore {
 		this.save();
 		return {
 				disposition: "inserted",
+			canonicalEventId: input.eventId,
 			deliveryProjection: deliveryProjectionFromInput(input),
 		};
 	}
@@ -33427,6 +33731,31 @@ export class StateStore {
 			ON workflow_completion_drain_challenge(
 				execution_id, activation_id, business_digest
 			) WHERE state = 'issued'
+		`);
+		// FLY-2373: a v2 challenge is a read envelope — the exact unread subject
+		// set, its carrier-safe pages and which pages the runner was shown.
+		this.addColumnIfMissing(
+			"workflow_completion_drain_challenge",
+			"protocol_version",
+			"INTEGER NOT NULL DEFAULT 1",
+		);
+		for (const column of [
+			"read_id",
+			"read_set_digest",
+			"read_set_json",
+			"pages_json",
+			"pages_served_json",
+		]) {
+			this.addColumnIfMissing(
+				"workflow_completion_drain_challenge",
+				column,
+				"TEXT",
+			);
+		}
+		this.db.run(`
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_wcdc_read_id
+			ON workflow_completion_drain_challenge(read_id)
+			WHERE read_id IS NOT NULL
 		`);
 		// FLY-1375: approval authority survives the QA process lifecycle. The
 		// source execution is attribution only; materialization and founder
@@ -48756,19 +49085,38 @@ export class StateStore {
 		)[0] as WorkflowResidentHoldRow | undefined;
 	}
 
+	/**
+	 * FLY-2373: issue (or reuse) the v2 read envelope for one completion
+	 * submission. The envelope freezes the exact unread subject set and its
+	 * carrier-safe pages; page 1 is shown by the 409 itself. A changed unread
+	 * set supersedes the previous envelope — reads of its exact versions stay
+	 * acknowledgeable, new content stays unread.
+	 */
 	issueDrainChallenge(input: {
 		executionId: string;
 		activationId: string;
 		businessDigest: string;
+		readSetDigest: string;
+		subjects: ReadonlyArray<{
+			subjectKind: string;
+			subjectId: string;
+			contentSha256: string;
+		}>;
 		mailSet: { mailbox: string[]; phaseWakes: string[] };
-		watermark: Record<string, unknown>;
+		pages: readonly string[];
 		now?: string;
-	}): { challengeId: string; mailbox: string[]; phaseWakes: string[] } {
+	}): {
+		challengeId: string;
+		readId: string;
+		pageCount: number;
+		reused: boolean;
+	} {
 		const now = input.now ?? new Date().toISOString();
 		if (
 			!input.executionId ||
 			!input.activationId ||
 			!/^[0-9a-f]{64}$/.test(input.businessDigest) ||
+			!/^[0-9a-f]{64}$/.test(input.readSetDigest) ||
 			!StateStore.workflowFiniteTimestamp(now)
 		) {
 			throw new Error("invalid drain challenge input");
@@ -48777,48 +49125,84 @@ export class StateStore {
 		if (!binding || binding.execution_id !== input.executionId) {
 			throw new Error("invalid drain challenge identity");
 		}
-		const mailbox = [...new Set(input.mailSet.mailbox)].sort();
-		const phaseWakes = [...new Set(input.mailSet.phaseWakes)].sort();
+		const subjects = input.subjects
+			.map((subject) => ({
+				subjectKind: subject.subjectKind,
+				subjectId: subject.subjectId,
+				contentSha256: subject.contentSha256,
+			}))
+			.sort((left, right) =>
+				`${left.subjectKind}\u0000${left.subjectId}\u0000${left.contentSha256}` <
+				`${right.subjectKind}\u0000${right.subjectId}\u0000${right.contentSha256}`
+					? -1
+					: 1,
+			);
 		if (
-			mailbox.some((id) => !id) ||
-			phaseWakes.some((id) => !id) ||
-			mailbox.length + phaseWakes.length === 0
+			subjects.length === 0 ||
+			input.pages.length === 0 ||
+			input.pages.some((page) => typeof page !== "string" || !page) ||
+			subjects.some(
+				(subject) =>
+					(subject.subjectKind !== "mailbox" &&
+						subject.subjectKind !== "inline_wake") ||
+					!subject.subjectId ||
+					!/^[0-9a-f]{64}$/.test(subject.contentSha256),
+			)
 		) {
-			throw new Error("invalid drain challenge mail set");
+			throw new Error("invalid drain challenge read set");
 		}
 		const existing = this.workflowSelectAll(
-			`SELECT challenge_id, mail_set_json
+			`SELECT challenge_id, read_id, protocol_version, read_set_digest, pages_json
 			   FROM workflow_completion_drain_challenge
 			  WHERE execution_id = ? AND activation_id = ? AND business_digest = ?
 			    AND state = 'issued'`,
 			[input.executionId, input.activationId, input.businessDigest],
 		)[0];
-		if (existing) {
-			const prior = JSON.parse(existing.mail_set_json as string) as {
-				mailbox: string[];
-				phaseWakes: string[];
-			};
+		if (
+			existing &&
+			Number(existing.protocol_version) === 2 &&
+			existing.read_set_digest === input.readSetDigest &&
+			typeof existing.read_id === "string"
+		) {
 			return {
 				challengeId: existing.challenge_id as string,
-				mailbox: prior.mailbox,
-				phaseWakes: prior.phaseWakes,
+				readId: existing.read_id,
+				pageCount: (JSON.parse(existing.pages_json as string) as string[])
+					.length,
+				reused: true,
 			};
 		}
-		const challengeId = `drain:${input.executionId}:${input.activationId}:${input.businessDigest.slice(0, 16)}`;
+		const challengeId = `drain2:${randomUUID()}`;
+		const readId = newDrainReadId();
+		const mailbox = [...new Set(input.mailSet.mailbox)].sort();
+		const phaseWakes = [...new Set(input.mailSet.phaseWakes)].sort();
 		this.db.transaction(() => {
+			if (existing) {
+				this.db.run(
+					`UPDATE workflow_completion_drain_challenge
+					    SET state = 'superseded'
+					  WHERE challenge_id = ? AND state = 'issued'`,
+					[existing.challenge_id],
+				);
+			}
 			this.db.run(
 				`INSERT INTO workflow_completion_drain_challenge (
 				   challenge_id, execution_id, activation_id, business_digest,
-				   mail_set_json, watermark_json, state, issued_at
-				 ) VALUES (?, ?, ?, ?, ?, ?, 'issued', ?)`,
+				   mail_set_json, watermark_json, state, issued_at,
+				   protocol_version, read_id, read_set_digest, read_set_json,
+				   pages_json, pages_served_json
+				 ) VALUES (?, ?, ?, ?, ?, '{}', 'issued', ?, 2, ?, ?, ?, ?, '[1]')`,
 				[
 					challengeId,
 					input.executionId,
 					input.activationId,
 					input.businessDigest,
 					canonicalJsonString({ mailbox, phaseWakes }),
-					canonicalJsonString(input.watermark),
 					now,
+					readId,
+					input.readSetDigest,
+					canonicalJsonString(subjects),
+					JSON.stringify(input.pages),
 				],
 			);
 			this.appendWorkflowRunEventCheckedTx({
@@ -48828,18 +49212,121 @@ export class StateStore {
 				nodeId: binding.node_id,
 				executionId: input.executionId,
 				payload: {
+					protocolVersion: 2,
 					challengeId,
 					activationId: input.activationId,
 					businessDigest: input.businessDigest,
-					mailbox,
-					phaseWakes,
-					watermark: input.watermark,
+					readSetDigest: input.readSetDigest,
+					subjects,
+					pageCount: input.pages.length,
+					...(existing
+						? { supersedes: existing.challenge_id as string }
+						: {}),
 					issuedAt: now,
 				},
 			});
 		});
 		this.save();
-		return { challengeId, mailbox, phaseWakes };
+		return {
+			challengeId,
+			readId,
+			pageCount: input.pages.length,
+			reused: false,
+		};
+	}
+
+	/** FLY-2373: the persisted v2 read envelope behind one runner read id. */
+	getDrainReadEnvelope(readId: string):
+		| {
+				challengeId: string;
+				executionId: string;
+				activationId: string;
+				businessDigest: string;
+				state: "issued" | "consumed" | "superseded";
+				subjects: Array<{
+					subjectKind: "mailbox" | "inline_wake";
+					subjectId: string;
+					contentSha256: string;
+				}>;
+				pages: string[];
+				pagesServed: number[];
+		  }
+		| undefined {
+		const row = this.workflowSelectAll(
+			`SELECT * FROM workflow_completion_drain_challenge
+			  WHERE read_id = ? AND protocol_version = 2`,
+			[readId],
+		)[0];
+		if (!row) return undefined;
+		try {
+			return {
+				challengeId: row.challenge_id as string,
+				executionId: row.execution_id as string,
+				activationId: row.activation_id as string,
+				businessDigest: row.business_digest as string,
+				state: row.state as "issued" | "consumed" | "superseded",
+				subjects: JSON.parse(row.read_set_json as string),
+				pages: JSON.parse(row.pages_json as string),
+				pagesServed: JSON.parse(row.pages_served_json as string),
+			};
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
+	 * FLY-2373: a ship-carrier runner deliberately sends no workflowActivation
+	 * (its env activation is the carrier, not the node). It proves itself the
+	 * same way its carrier wake receipt does: the carrier activation maps to
+	 * this source execution at exactly this TURN epoch.
+	 */
+	isShipCarrierReader(input: {
+		executionId: string;
+		carrierActivationId: string;
+		turnEpoch: number;
+	}): boolean {
+		if (
+			!input.executionId ||
+			!input.carrierActivationId ||
+			!Number.isInteger(input.turnEpoch) ||
+			input.turnEpoch < 1
+		) {
+			return false;
+		}
+		const row = this.workflowSelectAll(
+			`SELECT source_execution_id, turn_epoch FROM workflow_carrier_delivery
+			  WHERE carrier_activation_id = ?`,
+			[input.carrierActivationId],
+		)[0];
+		return (
+			row !== undefined &&
+			row.source_execution_id === input.executionId &&
+			Number(row.turn_epoch) === input.turnEpoch
+		);
+	}
+
+	/** Record that one page of a read envelope was shown to its runner. */
+	markDrainReadPageServed(readId: string, pageIndex: number): string {
+		const envelope = this.getDrainReadEnvelope(readId);
+		if (
+			!envelope ||
+			!Number.isSafeInteger(pageIndex) ||
+			pageIndex < 1 ||
+			pageIndex > envelope.pages.length
+		) {
+			throw new Error("drain read page not found");
+		}
+		const served = [...new Set([...envelope.pagesServed, pageIndex])].sort(
+			(left, right) => left - right,
+		);
+		this.db.run(
+			`UPDATE workflow_completion_drain_challenge
+			    SET pages_served_json = ?
+			  WHERE read_id = ? AND protocol_version = 2`,
+			[JSON.stringify(served), readId],
+		);
+		this.save();
+		return envelope.pages[pageIndex - 1]!;
 	}
 
 	getIssuedDrainChallenge(input: {
@@ -48907,81 +49394,94 @@ export class StateStore {
 		}
 	}
 
+	/**
+	 * FLY-2373: bind the server-built drain proof to this completion. The
+	 * Bridge re-resolved every obligation under the CommDB lock; this step only
+	 * consumes the submission's issued envelope (if any) and records the proof
+	 * so a crash between the two databases can re-apply wake settlement.
+	 * Wake run-state is deliberately not an input here.
+	 */
 	private consumeDrainChallengeTx(input: {
-		challengeId: string;
 		executionId: string;
 		activationId: string;
 		businessDigest: string;
-		verification: {
-			mailbox: Record<string, string>;
-			phaseWakes: Record<string, string>;
-		};
+		proof: CompletionDrainProof;
 		now: string;
 	}): boolean {
-		const row = this.workflowSelectAll(
-			`SELECT * FROM workflow_completion_drain_challenge
-			  WHERE challenge_id = ? AND execution_id = ? AND activation_id = ?
+		if (!isCompletionDrainProof(input.proof)) return false;
+		const issued = this.workflowSelectAll(
+			`SELECT challenge_id FROM workflow_completion_drain_challenge
+			  WHERE execution_id = ? AND activation_id = ?
 			    AND business_digest = ? AND state = 'issued'`,
-			[
-				input.challengeId,
-				input.executionId,
-				input.activationId,
-				input.businessDigest,
-			],
-		)[0];
-		if (!row) return false;
-		let mailSet: { mailbox: string[]; phaseWakes: string[] };
-		try {
-			mailSet = JSON.parse(row.mail_set_json as string) as typeof mailSet;
-		} catch {
-			return false;
+			[input.executionId, input.activationId, input.businessDigest],
+		)[0] as { challenge_id: string } | undefined;
+		if (!issued && input.proof.settledWakes.length === 0) return true;
+		if (issued) {
+			this.db.run(
+				`UPDATE workflow_completion_drain_challenge
+				    SET state = 'consumed', consumed_at = ?
+				  WHERE challenge_id = ? AND state = 'issued'`,
+				[input.now, issued.challenge_id],
+			);
+			if (this.db.getRowsModified() !== 1) return false;
 		}
-		if (
-			!Array.isArray(mailSet.mailbox) ||
-			!Array.isArray(mailSet.phaseWakes) ||
-			!mailSet.mailbox.every(
-				(id) => input.verification.mailbox[id] === "ACKED",
-			) ||
-			!mailSet.phaseWakes.every((id) =>
-				["started", "finished"].includes(input.verification.phaseWakes[id] ?? ""),
-			)
-		) {
-			return false;
-		}
-		this.db.run(
-			`UPDATE workflow_completion_drain_challenge
-			    SET state = 'consumed', consumed_at = ?
-			  WHERE challenge_id = ? AND execution_id = ? AND activation_id = ?
-			    AND business_digest = ? AND state = 'issued'`,
-			[
-				input.now,
-				input.challengeId,
-				input.executionId,
-				input.activationId,
-				input.businessDigest,
-			],
-		);
-		if (this.db.getRowsModified() !== 1) return false;
 		const binding = this.getWorkflowActivation(input.activationId);
 		if (!binding || binding.execution_id !== input.executionId) {
 			throw new WorkflowEngineInvariantError(
-				`completion_drain_activation_conflict:${input.challengeId}`,
+				`completion_drain_activation_conflict:${input.activationId}`,
 			);
 		}
+		const proofKey =
+			issued?.challenge_id ??
+			`proof:${input.executionId}:${input.activationId}:${input.businessDigest.slice(0, 16)}`;
 		this.appendWorkflowRunEventCheckedTx({
 			runId: binding.run_id,
-			eventUid: `completion_drain_consumed:${input.challengeId}`,
+			eventUid: `completion_drain_consumed:${proofKey}`,
 			kind: "completion_drain_consumed",
 			nodeId: binding.node_id,
 			executionId: input.executionId,
 			payload: {
-				challengeId: input.challengeId,
+				protocolVersion: 2,
+				...(issued ? { challengeId: issued.challenge_id } : {}),
 				activationId: input.activationId,
 				businessDigest: input.businessDigest,
+				proofDigest: input.proof.proofDigest,
+				settledWakes: input.proof.settledWakes,
+				receiptIds: input.proof.receiptIds,
 				consumedAt: input.now,
 			},
 		});
 		return true;
+	}
+
+	/** FLY-2373: recorded v2 drain proofs for one activation (replay reconcile). */
+	listCompletionDrainProofs(input: {
+		runId: string;
+		executionId: string;
+		activationId: string;
+	}): CompletionDrainProof["settledWakes"] {
+		return this.listWorkflowRunEvents(input.runId)
+			.filter(
+				(event) =>
+					event.kind === "completion_drain_consumed" &&
+					event.execution_id === input.executionId,
+			)
+			.flatMap((event) => {
+				const payload = event.payload as Record<string, unknown> | undefined;
+				if (
+					payload?.protocolVersion !== 2 ||
+					payload.activationId !== input.activationId ||
+					!isCompletionDrainProof({
+						protocolVersion: 2,
+						proofDigest: payload.proofDigest,
+						settledWakes: payload.settledWakes,
+						receiptIds: payload.receiptIds,
+					})
+				) {
+					return [];
+				}
+				return payload.settledWakes as CompletionDrainProof["settledWakes"];
+			});
 	}
 
 	enterResidentHold(input: {
@@ -64674,13 +65174,11 @@ export class StateStore {
 		route: string;
 		sourceEventId: string;
 		completionSubmission: unknown;
-		drainChallenge?: {
-			challengeId: string;
-			verification: {
-				mailbox: Record<string, string>;
-				phaseWakes: Record<string, string>;
-			};
-		};
+		/**
+		 * FLY-2373: Bridge-built proof that every completion obligation was
+		 * consumed, derived under the CommDB lock; never decoded from payload.
+		 */
+		drainProof?: CompletionDrainProof;
 		/** Current completion head carried by the trusted event envelope. */
 		subjectDigest?: string;
 		workflowActivation?: WorkflowCompletionActivationContext;
@@ -65173,13 +65671,12 @@ export class StateStore {
 					});
 				}
 				if (
-					input.drainChallenge &&
+					input.drainProof &&
 					!this.consumeDrainChallengeTx({
-						challengeId: input.drainChallenge.challengeId,
 						executionId: input.executionId,
 						activationId: context.binding.activation_id,
 						businessDigest: digest,
-						verification: input.drainChallenge.verification,
+						proof: input.drainProof,
 						now,
 					})
 				) {
@@ -65412,7 +65909,7 @@ export class StateStore {
 			});
 		} catch (error) {
 			if (drainChallengeRefused) {
-				return { ok: false, reason: "drain_challenge_not_issued" };
+				return { ok: false, reason: "drain_proof_invalid" };
 			}
 			if (terminalImmuneRefusal) {
 				return { ok: false, reason: "terminal_status_immune" };
@@ -88867,7 +89364,7 @@ export type WorkflowCompletionResult =
 				| "no_code_artifact_present"
 				| "no_code_attestation_missing"
 				| "no_code_attestation_stale"
-				| "drain_challenge_not_issued"
+				| "drain_proof_invalid"
 				| "terminal_status_immune"
 				| "stale_resubmission_identity_missing"
 				| "land_head_unavailable"
@@ -90105,6 +90602,68 @@ export interface AlertMailboxLedgerUpsertResult {
 		| "merged"
 		| "new_episode";
 	deliveryProjection: AlertMailboxDeliveryProjection;
+	canonicalEventId: string | null;
+}
+
+const ALERT_WAKE_WINDOW_MS = 6 * 3_600_000;
+
+export interface AlertWakeIdentityInput {
+	leadId: string;
+	fingerprint: string;
+	projectName: string;
+	eventType: string;
+	categoryKey: string;
+	categoryTitle: string;
+}
+
+export interface AlertWakeDeliveredInput extends AlertWakeIdentityInput {
+	deliveryId: string;
+	severityRank: number;
+	ticketGeneration: string;
+	nowIso: string;
+	sourceKind: "infra_alert" | "discord_chat";
+}
+
+export interface AlertWakeDedupRecord extends AlertWakeIdentityInput {
+	infoOnly: boolean;
+	windowStartedAt: string;
+	deliveredDeliveryId: string | null;
+	maxSeverity: number;
+	ticketGeneration: string | null;
+	occurrences: number;
+	suppressed: number;
+	digestPending: number;
+	lastSeenAt: string;
+}
+
+export interface AlertWakeLetter {
+	deliveryId: string;
+	correlationKey: string | null;
+	canonicalEventId: string | null;
+	recordedAt: string;
+	evidenceRecordedAt: string | null;
+}
+
+function rowToAlertWakeDedupRecord(
+	row: Record<string, unknown>,
+): AlertWakeDedupRecord {
+	return {
+		leadId: row.lead_id as string,
+		fingerprint: row.fingerprint as string,
+		projectName: row.project_name as string,
+		eventType: row.event_type as string,
+		categoryKey: row.category_key as string,
+		categoryTitle: row.category_title as string,
+		infoOnly: row.info_only === 1,
+		windowStartedAt: row.window_started_at as string,
+		deliveredDeliveryId: row.delivered_delivery_id as string | null,
+		maxSeverity: row.max_severity as number,
+		ticketGeneration: row.ticket_generation as string | null,
+		occurrences: row.occurrences as number,
+		suppressed: row.suppressed as number,
+		digestPending: row.digest_pending as number,
+		lastSeenAt: row.last_seen_at as string,
+	};
 }
 
 export type AlertDraftBindResult =

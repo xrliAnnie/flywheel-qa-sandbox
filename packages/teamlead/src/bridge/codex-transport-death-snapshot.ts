@@ -13,6 +13,8 @@ export interface CodexTransportDeathEvidence {
 	reason: string;
 	at: string;
 	trigger: "transport_close" | "zombie_declaration";
+	/** FLY-2903: the adapter refused to resume the goal after this death. */
+	restartRefused?: boolean;
 }
 
 interface SnapshotStore {
@@ -137,6 +139,7 @@ export async function recordCodexTransportDeathSnapshot(
 			at: evidence.at,
 			trigger: evidence.trigger,
 			reason: evidence.reason,
+			...(evidence.restartRefused === true ? { restartRefused: true } : {}),
 			socket,
 			processRows,
 			...(processError ? { processError } : {}),

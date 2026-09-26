@@ -60,7 +60,7 @@ If you skip this step, `test-deploy.sh` will fail at clone with a pointer back t
 node "$FLYWHEEL_COMM_CLI" room deploy --slot <N> --head <candidate-sha> --from-branch <fixture-branch>
 ```
 
-`<N>` is the slot number (1–4). `--from-branch` is optional; default is sandbox `main`.
+`<N>` is the configured slot number (1–6). `--from-branch` is optional; default is sandbox `main`.
 
 Save `room_id` from the service response. Deploy and teardown wait by default; exit 3 means still running, so continue with `room wait --room <id>`. `--from-branch` never selects Bridge source. `roomInfo` in the response contains:
 

@@ -1,0 +1,11 @@
+{
+  "commit": "88d89e8927f56aef3da523ce8d58ca3445c2b263",
+  "planBlob": "4428ecb754224a0a270f480a14f208480288e67e",
+  "files": [
+    "packages/edge-worker/src/worktree-takeover-transaction.ts",
+    "packages/edge-worker/src/worktree-takeover-rescue.ts",
+    "packages/edge-worker/src/worktree-paths.ts",
+    "packages/config/src/canonical-json.ts"
+  ],
+  "changes": "Only import specifiers adjusted for dependency-free Node execution; transaction behavior unchanged."
+}
