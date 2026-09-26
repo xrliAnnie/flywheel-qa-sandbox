@@ -1,13 +1,14 @@
 ---
 issue: FLY-2825
 phase: design
-phaseCursor: 3/8
-updated: 2026-09-26T18:58:23.657Z
-nextStep: commit docs; stage set design_review; codex-design-review loop
+phaseCursor: 4/8
+updated: 2026-09-26T19:01:34.220Z
+nextStep: await Codex design-review R1 verdict; fold findings; await-codex-gate;
+  publish-report; report; complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-2825 progress
-**phase**: design (3/8)
-**next**: commit docs; stage set design_review; codex-design-review loop
+**phase**: design (4/8)
+**next**: await Codex design-review R1 verdict; fold findings; await-codex-gate; publish-report; report; complete
