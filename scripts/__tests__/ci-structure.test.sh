@@ -1181,6 +1181,7 @@ expected_shard_tests = {
         "Test — FLY-2570 dynamic design ratio operator",
         "Test — FLY-1948 slot Discord channel evidence",
         "Test — FLY-1775 generalized-DAG 529 room",
+        "Test — FLY-2802 Runner local-test discipline",
         "Test — FLY-1649 r4 migration-window hardening",
         "Integration test — cmux-sync hooks",
         "Test — FLY-2033 meeting artifact closure",

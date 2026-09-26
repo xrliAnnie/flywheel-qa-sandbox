@@ -5,6 +5,8 @@
 #        [--alerts [--codex-home-reconcile]]
 #        [--generalized [--codex-runner] [--stub-runner] [--expect-head <full-sha>]
 #          [--voice-fixture <public-json>]]
+#        [--test-discipline --expect-head <full-sha> [--generalized]
+#          [--codex-runner]]
 #   If slot-number is provided, claims that specific slot.
 #   If omitted, claims the first available slot from the pool.
 #   --digest <id>  FLY-727: mount the daily-digest route on the slot Bridge
@@ -193,6 +195,7 @@ CODEX_RUNNER=0            # FLY-2211: opt-in real codex-tmux worker for restart 
 STUB_RUNNER=0             # FLY-1775: deterministic persistent claude stub for the 9-step drill.
 EXPECT_HEAD=""            # FLY-1775: optional script-repository HEAD fence.
 VOICE_FIXTURE=""          # FLY-2655: opt-in isolated 529 voice-room coordinates.
+TEST_DISCIPLINE=0          # FLY-2802: real-runner local-test behavior acceptance room.
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --from-branch)
@@ -237,6 +240,8 @@ while [[ $# -gt 0 ]]; do
       CODEX_RUNNER=1; shift ;;
     --stub-runner)
       STUB_RUNNER=1; shift ;;
+    --test-discipline)
+      TEST_DISCIPLINE=1; shift ;;
     --expect-head)
       EXPECT_HEAD="${2:?--expect-head requires a full SHA}"; shift 2 ;;
     --expect-head=*)
@@ -266,20 +271,24 @@ FROM_BRANCH="${FROM_BRANCH:-main}"
 # --from-branch clone. Fence the actual script repository before any slot,
 # lock, build, clone, or process mutation.
 SCRIPT_REPO_HEAD=""
-if [[ "$GENERALIZED" == "1" ]]; then
+if [[ "$GENERALIZED" == "1" || "$TEST_DISCIPLINE" == "1" ]]; then
+	if [[ "$TEST_DISCIPLINE" == "1" && -z "$EXPECT_HEAD" ]]; then
+		echo "ERROR: --test-discipline requires --expect-head with the current full SHA" >&2
+		exit 1
+	fi
   [[ "$MODE" == "slot" ]] || {
-    echo "ERROR: --generalized is only supported with --mode slot (mirror/roundtable are distinct topologies)." >&2
+    echo "ERROR: --generalized/--test-discipline is only supported with --mode slot (mirror/roundtable are distinct topologies)." >&2
     exit 1
   }
   SCRIPT_REPO_HEAD=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "")
   qa_generalized_validate_expected_head "$SCRIPT_REPO_HEAD" "$EXPECT_HEAD" || exit 1
-  log "GENERALIZED ROOM SOURCE HEAD: ${SCRIPT_REPO_HEAD} (Bridge runs this checkout; --from-branch only selects the sandbox clone)"
+  log "FENCED ROOM SOURCE HEAD: ${SCRIPT_REPO_HEAD} (Bridge runs this checkout; --from-branch only selects the sandbox clone)"
 fi
 if [[ "$STUB_RUNNER" == "1" && "$GENERALIZED" != "1" ]]; then
   echo "ERROR: --stub-runner requires --generalized" >&2
   exit 1
 fi
-if [[ "$CODEX_RUNNER" == "1" && "$GENERALIZED" != "1" ]]; then
+if [[ "$CODEX_RUNNER" == "1" && "$GENERALIZED" != "1" && "$TEST_DISCIPLINE" != "1" ]]; then
   echo "ERROR: --codex-runner requires --generalized" >&2
   exit 1
 fi
@@ -303,8 +312,12 @@ case "${TEST_CODEX_LEAD_OUTBOUND_MODE:-}" in
     exit 1
     ;;
 esac
-if [[ -n "$EXPECT_HEAD" && "$GENERALIZED" != "1" ]]; then
+if [[ -n "$EXPECT_HEAD" && "$GENERALIZED" != "1" && "$TEST_DISCIPLINE" != "1" ]]; then
   echo "ERROR: --expect-head requires --generalized" >&2
+  exit 1
+fi
+if [[ "$TEST_DISCIPLINE" == "1" && "$STUB_RUNNER" == "1" ]]; then
+  echo "ERROR: --test-discipline requires real runners; --stub-runner is forbidden" >&2
   exit 1
 fi
 if [[ -n "$VOICE_FIXTURE" ]]; then
@@ -328,12 +341,12 @@ if [[ -n "$VOICE_FIXTURE" ]]; then
     --fixture "$VOICE_FIXTURE" >/dev/null || exit 1
 fi
 
-# Generalized master entry always requires a token, independently of the
-# reply-by-issue Discord route. Reuse TEST_API_TOKEN when supplied; otherwise
-# mint the same per-room random form as the existing reply-by-issue path.
-if [[ "$GENERALIZED" == "1" && -z "$TEST_TEAMLEAD_API_TOKEN" ]]; then
+# Generalized and standalone test-discipline DAG entry require master auth,
+# independently of the reply-by-issue Discord route. Reuse TEST_API_TOKEN when
+# supplied; otherwise mint one per room.
+if [[ ( "$GENERALIZED" == "1" || "$TEST_DISCIPLINE" == "1" ) && -z "$TEST_TEAMLEAD_API_TOKEN" ]]; then
   qa_ensure_test_teamlead_api_token fly-1775-test
-  log "generalized master auth enabled with TEAMLEAD_API_TOKEN=<redacted len=${#TEST_TEAMLEAD_API_TOKEN}>; reply-by-issue remains ${TEST_REPLY_BY_ISSUE:-0}"
+  log "workflow master auth enabled with TEAMLEAD_API_TOKEN=<redacted len=${#TEST_TEAMLEAD_API_TOKEN}>; reply-by-issue remains ${TEST_REPLY_BY_ISSUE:-0}"
 fi
 TEST_TEAMLEAD_INGEST_TOKEN=""
 if [[ "$GENERALIZED" == "1" ]]; then
@@ -476,7 +489,7 @@ SANDBOX_PUSH_PERM=$(gh api "repos/${SANDBOX_SLUG}" --jq '.permissions.push' 2>/d
 #
 # Order: better-sqlite3 native compile + require() probe, THEN TypeScript
 # build of the dist artifacts Bridge imports at runtime.
-log "Preflight under ${REBUILD_LOCK}: better-sqlite3 native compile + flywheel-edge-worker build + flywheel-teamlead build"
+log "Preflight under ${REBUILD_LOCK}: better-sqlite3 native compile + edge-worker + inbox-mcp + teamlead builds"
 LOCK_TIMEOUT=300
 waited=0
 while ! mkdir "$REBUILD_LOCK" 2>/dev/null; do
@@ -661,7 +674,7 @@ cleanup_on_failure() {
   local lock_pid
 	local generalized_bridge_stopped=1
 	local qa_registry_stopped=1
-	# FLY-1775: generalized readiness remains inside the deploy transaction even
+	# FLY-1775: generalized/test-discipline readiness remains inside the deploy transaction even
 	# after bridge.pid replaces the "claiming" sentinel. A failure between
 	# /health and room-info finalization must leave no process, port, lock, or
 	# half-ready slot for a later QA run to mistake as usable.
@@ -965,11 +978,12 @@ GENERALIZED_ROOM_INFO=""
 # FLY-1775 pit 9 intentionally extends the ordinary reply-by-issue opt-in:
 # inject-linear-issue needs the same slot-local Bearer credential. Default
 # ordinary rooms still create no token file; the opt-in file is always 0600.
-if [[ "$GENERALIZED" == "1" || "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
+# FLYWHEEL_API_TOKEN_MODES_BEGIN
+if [[ "$GENERALIZED" == "1" || "$TEST_DISCIPLINE" == "1" || "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
   GENERALIZED_API_TOKEN_PATH="${SLOT_DIR}/state/api-token"
-  mkdir -p "${SLOT_DIR}/state"
-  printf '%s\n' "$TEST_TEAMLEAD_API_TOKEN" > "$GENERALIZED_API_TOKEN_PATH"
-  chmod 600 "$GENERALIZED_API_TOKEN_PATH"
+  qa_generalized_install_api_token \
+    "$GENERALIZED_API_TOKEN_PATH" "$TEST_TEAMLEAD_API_TOKEN" \
+    || campaign_abort "slot API token installation failed"
   REPORT_HOST_TOKEN_PATH="${REPORT_HOST_DIR}/token"
   if [[ -e "$REPORT_HOST_TOKEN_PATH" && ( ! -f "$REPORT_HOST_TOKEN_PATH" || -L "$REPORT_HOST_TOKEN_PATH" ) ]]; then
     campaign_abort "report host token path must be a regular non-symlink file"
@@ -991,7 +1005,8 @@ if [[ "$GENERALIZED" == "1" || "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
     "$REPORT_HOST_DIR" "$QA_SLOT_BRIDGE_NODE" --
   )
 fi
-if [[ "$GENERALIZED" == "1" ]]; then
+# FLYWHEEL_API_TOKEN_MODES_END
+if [[ "$GENERALIZED" == "1" || "$TEST_DISCIPLINE" == "1" ]]; then
   GENERALIZED_READINESS_PENDING=1
   GENERALIZED_ROOM_INFO="${SLOT_DIR}/room-info.json"
 fi
@@ -1246,7 +1261,13 @@ if [[ "$CODEX_RUNNER" == "1" ]]; then
 else
   QA_CONFIG_RUNNER="claude"
 fi
+if [[ "$TEST_DISCIPLINE" == "1" ]]; then
+  QA_CONFIG_DISCIPLINE="test-discipline"
+else
+  QA_CONFIG_DISCIPLINE="off"
+fi
 qa_multilead_config_yaml "${TEST_PROJECT_NAME}" "$QA_CONFIG_MODE" "$QA_CONFIG_RUNNER" \
+  "$QA_CONFIG_DISCIPLINE" \
   > "${HOST_REPO}/.flywheel/config.yaml"
 log "Wrote ${HOST_REPO}/.flywheel/config.yaml (approve_to_ship checkpoint enabled)"
 
@@ -1267,8 +1288,13 @@ nodes:
   qa: { file: nodes/qa.md, department: engineering }
   general: { file: nodes/general.md }
 EOF
-  printf '%s: [code, generic]\n' "$AGENT_ID" \
-    > "${HOST_REPO}/.flywheel/menus/adoption.yaml"
+  if [[ "$TEST_DISCIPLINE" == "1" ]]; then
+    printf '%s: [code, generic, simple_code]\n' "$AGENT_ID" \
+      > "${HOST_REPO}/.flywheel/menus/adoption.yaml"
+  else
+    printf '%s: [code, generic]\n' "$AGENT_ID" \
+      > "${HOST_REPO}/.flywheel/menus/adoption.yaml"
+  fi
   if [[ "$STUB_RUNNER" == "1" ]]; then
     qa_generalized_install_stub "${SLOT_DIR}/stub-bin" \
       "${REPO_ROOT}/scripts/qa-529-generalized-stub.mjs" \
@@ -1276,6 +1302,29 @@ EOF
     BRIDGE_EXTRA_ENV+=("PATH=${SLOT_DIR}/stub-bin:${PATH}")
   fi
   log "Wrote generalized registry/adoption (lead=${AGENT_ID}, menus=code,generic, runner=$([[ "$STUB_RUNNER" == "1" ]] && echo stub || echo real))"
+elif [[ "$TEST_DISCIPLINE" == "1" ]]; then
+  mkdir -p "${HOST_REPO}/.flywheel/agents/nodes" \
+    "${HOST_REPO}/.flywheel/menus"
+  cp "${REPO_ROOT}/.flywheel/agents/nodes/engineer.md" \
+    "${HOST_REPO}/.flywheel/agents/nodes/engineer.md"
+  cp "${REPO_ROOT}/.flywheel/agents/nodes/engineer.md" \
+    "${HOST_REPO}/.flywheel/agents/nodes/general.md"
+  if (( $(grep -c 'FLYWHEEL_LOCAL_TEST_POLICY:BEGIN' \
+    "${HOST_REPO}/.flywheel/agents/nodes/general.md") < 1 )); then
+    log "ERROR: standalone general node is missing the local-test policy"
+    exit 1
+  fi
+  cat > "${HOST_REPO}/.flywheel/agents/registry.yaml" <<'EOF'
+nodes:
+  engineer: { file: nodes/engineer.md, department: engineering }
+  general: { file: nodes/general.md }
+EOF
+  printf '%s: [generic]\n' "$AGENT_ID" \
+    > "${HOST_REPO}/.flywheel/menus/adoption.yaml"
+  node "${SCRIPT_DIR}/lib/qa-test-discipline-config.mjs" \
+    --root "$HOST_REPO" --flywheel-root "$REPO_ROOT" --agent engineer >/dev/null \
+    || { log "ERROR: standalone engineer config/dispatch verification failed"; exit 1; }
+  log "Wrote and verified standalone engineer registry/adoption (runner=${QA_CONFIG_RUNNER})"
 fi
 
 # ── Generate DISCORD_STATE_DIR files ──────────────────
@@ -2549,9 +2598,16 @@ if [[ "$GENERALIZED" == "1" ]]; then
     --db "${SLOT_DIR}/teamlead.db" --project "$TEST_PROJECT_NAME" \
     --flags pipeline_dag,pipeline_work_kind,doc_flow >/dev/null \
     || { log "ERROR: generalized scoped pipeline/doc_flow flag seed failed"; exit 1; }
-  node "${SCRIPT_DIR}/lib/qa-generalized.mjs" verify-bindings \
-    --db "${SLOT_DIR}/teamlead.db" --project "$TEST_PROJECT_NAME" >/dev/null \
-    || { log "ERROR: generalized binding verification failed"; exit 1; }
+  if [[ "$TEST_DISCIPLINE" == "1" ]]; then
+    node "${SCRIPT_DIR}/lib/qa-generalized.mjs" verify-bindings \
+      --db "${SLOT_DIR}/teamlead.db" --project "$TEST_PROJECT_NAME" \
+      --required-binding simple_code=tpl_simple_code >/dev/null \
+      || { log "ERROR: generalized simple_code binding verification failed"; exit 1; }
+  else
+    node "${SCRIPT_DIR}/lib/qa-generalized.mjs" verify-bindings \
+      --db "${SLOT_DIR}/teamlead.db" --project "$TEST_PROJECT_NAME" >/dev/null \
+      || { log "ERROR: generalized binding verification failed"; exit 1; }
+  fi
   node "${SCRIPT_DIR}/lib/qa-generalized.mjs" verify-config \
     --file "${HOST_REPO}/.flywheel/config.yaml" \
     --db "${SLOT_DIR}/teamlead.db" --project "$TEST_PROJECT_NAME" >/dev/null \
@@ -2561,12 +2617,12 @@ if [[ "$GENERALIZED" == "1" ]]; then
     --data-urlencode "leadId=${AGENT_ID}" \
     "http://localhost:${SLOT_PORT}/api/workflow/menus") \
     || { log "ERROR: generalized menu endpoint unavailable"; exit 1; }
-  if ! jq -e '
-    .success == true and
-    ([.menus[].item] | sort) == ["code","generic"] and
-    (any(.menus[]; .item == "code" and
-      ([.nodes[].id] | sort) == ["eng_design","founder_gate","implement","qa"]))
-  ' <<<"$GENERALIZED_MENU_JSON" >/dev/null; then
+  if [[ "$TEST_DISCIPLINE" == "1" ]]; then
+    GENERALIZED_EXPECTED_MENUS='["code","generic","simple_code"]'
+  else
+    GENERALIZED_EXPECTED_MENUS='["code","generic"]'
+  fi
+  if ! qa_generalized_menu_ready "$GENERALIZED_MENU_JSON" "$GENERALIZED_EXPECTED_MENUS"; then
     log "ERROR: generalized menu readiness failed: $(jq -c '{success,code,reason,legal,menus}' <<<"$GENERALIZED_MENU_JSON" 2>/dev/null || echo invalid-json)"
     exit 1
   fi
@@ -2591,12 +2647,15 @@ if [[ "$GENERALIZED" == "1" ]]; then
     --arg flywheelProjectsFile "$FLYWHEEL_PROJECTS_FILE" \
 	--arg summaryConfigHome "$QA_SUMMARY_CONFIG_HOME" \
     --arg flywheelRepo "$REPO_ROOT" \
-    --arg buildSha "$SCRIPT_REPO_HEAD" --arg apiTokenPath "$GENERALIZED_API_TOKEN_PATH" \
+    --arg buildSha "$SCRIPT_REPO_HEAD" --arg subjectBaseHead "$BRANCH_SHA" \
+    --arg apiTokenPath "$GENERALIZED_API_TOKEN_PATH" \
     --arg voiceFixtureReceipt "$VOICE_FIXTURE_RECEIPT" \
     --arg bridgeLog "${SLOT_DIR}/bridge.log" \
+    --argjson testDiscipline "$([[ "$TEST_DISCIPLINE" == "1" ]] && echo true || echo false)" \
     '{schemaVersion:1,slot:$slot,port:$port,projectName:$projectName,agentId:$agentId,
-      mode:$mode,generalized:true,runnerMode:$runnerMode,bridgeUrl:$bridgeUrl,lead:$lead,
+      mode:$mode,generalized:true,testDiscipline:$testDiscipline,runnerMode:$runnerMode,bridgeUrl:$bridgeUrl,lead:$lead,
       dbPath:$dbPath,hostRepo:$hostRepo,flywheelRepo:$flywheelRepo,buildSha:$buildSha,
+      subjectBaseHead:$subjectBaseHead,
       flywheelProjectsFile:$flywheelProjectsFile,
       summaryConfigHome:$summaryConfigHome,
       apiTokenPath:$apiTokenPath,
@@ -2605,7 +2664,65 @@ if [[ "$GENERALIZED" == "1" ]]; then
     || { rm -f "$_room_tmp"; exit 1; }
   chmod 600 "$_room_tmp"
   mv "$_room_tmp" "$GENERALIZED_ROOM_INFO"
-  log "generalized readiness: bindings 5/5 · pipeline+work_kind on · menu on"
+  if [[ "$TEST_DISCIPLINE" == "1" ]]; then
+    log "generalized readiness: bindings 6/6 · pipeline+work_kind on · code+generic+simple_code menus on"
+  else
+    log "generalized readiness: bindings 5/5 · pipeline+work_kind on · code+generic menus on"
+  fi
+elif [[ "$TEST_DISCIPLINE" == "1" ]]; then
+  TEST_DISCIPLINE_HEALTH_JSON=$(curl -sS "http://localhost:${SLOT_PORT}/health") \
+    || { log "ERROR: test-discipline /health body unavailable"; exit 1; }
+  if ! jq -e --arg sha "$SCRIPT_REPO_HEAD" \
+    '.ok == true and .buildMode == "built" and .buildSha == $sha and .artifactBuildSha == $sha' \
+    <<<"$TEST_DISCIPLINE_HEALTH_JSON" >/dev/null; then
+    log "ERROR: test-discipline health identity mismatch; expected built ${SCRIPT_REPO_HEAD}"
+    exit 1
+  fi
+  node "${SCRIPT_DIR}/lib/qa-generalized.mjs" seed-bindings \
+    --db "${SLOT_DIR}/teamlead.db" --project "$TEST_PROJECT_NAME" >/dev/null \
+    || { log "ERROR: standalone test-discipline workflow binding seed failed"; exit 1; }
+  node "${SCRIPT_DIR}/lib/qa-generalized.mjs" seed-project-flags \
+    --db "${SLOT_DIR}/teamlead.db" --project "$TEST_PROJECT_NAME" \
+    --flags pipeline_dag,pipeline_work_kind,doc_flow >/dev/null \
+    || { log "ERROR: standalone test-discipline scoped pipeline/doc_flow flag seed failed"; exit 1; }
+  node "${SCRIPT_DIR}/lib/qa-generalized.mjs" verify-bindings \
+    --db "${SLOT_DIR}/teamlead.db" --project "$TEST_PROJECT_NAME" \
+    --required-binding generic=tpl_generic_menu >/dev/null \
+    || { log "ERROR: standalone test-discipline generic binding verification failed"; exit 1; }
+  node "${SCRIPT_DIR}/lib/qa-generalized.mjs" verify-config \
+    --file "${HOST_REPO}/.flywheel/config.yaml" \
+    --db "${SLOT_DIR}/teamlead.db" --project "$TEST_PROJECT_NAME" >/dev/null \
+    || { log "ERROR: standalone test-discipline pipeline config verification failed"; exit 1; }
+  TEST_DISCIPLINE_MENU_JSON=$(curl -sS --get \
+    --data-urlencode "projectName=${TEST_PROJECT_NAME}" \
+    --data-urlencode "leadId=${AGENT_ID}" \
+    "http://localhost:${SLOT_PORT}/api/workflow/menus") \
+    || { log "ERROR: standalone test-discipline menu endpoint unavailable"; exit 1; }
+  if ! qa_generalized_menu_ready "$TEST_DISCIPLINE_MENU_JSON" '["generic"]'; then
+    log "ERROR: standalone test-discipline generic menu readiness failed"
+    exit 1
+  fi
+  TEST_DISCIPLINE_CONFIG_SHA=$(shasum -a 256 "${HOST_REPO}/.flywheel/config.yaml" | awk '{print $1}')
+  _room_tmp="${GENERALIZED_ROOM_INFO}.tmp.$$"
+  jq -n \
+    --argjson slot "$SLOT" --argjson port "$SLOT_PORT" \
+    --arg projectName "$TEST_PROJECT_NAME" --arg agentId "$AGENT_ID" \
+    --arg mode "$MODE" --arg bridgeUrl "http://localhost:${SLOT_PORT}" \
+    --arg dbPath "${SLOT_DIR}/teamlead.db" --arg hostRepo "$HOST_REPO" \
+    --arg flywheelRepo "$REPO_ROOT" --arg buildSha "$SCRIPT_REPO_HEAD" \
+    --arg subjectBaseHead "$BRANCH_SHA" \
+    --arg configSha256 "$TEST_DISCIPLINE_CONFIG_SHA" \
+    --arg apiTokenPath "$GENERALIZED_API_TOKEN_PATH" \
+    --arg bridgeLog "${SLOT_DIR}/bridge.log" \
+    '{schemaVersion:1,slot:$slot,port:$port,projectName:$projectName,agentId:$agentId,
+      mode:$mode,generalized:false,testDiscipline:true,runnerMode:"real",
+      bridgeUrl:$bridgeUrl,dbPath:$dbPath,hostRepo:$hostRepo,flywheelRepo:$flywheelRepo,
+      buildSha:$buildSha,subjectBaseHead:$subjectBaseHead,configSha256:$configSha256,
+      apiTokenPath:$apiTokenPath,bridgeLog:$bridgeLog}' \
+    > "$_room_tmp" || { rm -f "$_room_tmp"; exit 1; }
+  chmod 600 "$_room_tmp"
+  mv "$_room_tmp" "$GENERALIZED_ROOM_INFO"
+  log "standalone test-discipline readiness: generic menu + exact built head"
 fi
 
 # ── Bridge confirmed up → NOW finalize campaign locks ────────────────────────
@@ -2695,7 +2812,19 @@ if [[ "$GENERALIZED" == "1" ]]; then
   GENERALIZED_OUTPUT_FIELDS=$(cat <<EOF
 ,
   "generalized": true,
+  "testDiscipline": $([[ "$TEST_DISCIPLINE" == "1" ]] && echo true || echo false),
   "runnerMode": "${GENERALIZED_RUNNER_MODE}",
+  "buildSha": "${SCRIPT_REPO_HEAD}",
+  "apiTokenPath": "${GENERALIZED_API_TOKEN_PATH}",
+  "roomInfo": "${GENERALIZED_ROOM_INFO}"
+EOF
+)
+elif [[ "$TEST_DISCIPLINE" == "1" ]]; then
+  GENERALIZED_OUTPUT_FIELDS=$(cat <<EOF
+,
+  "generalized": false,
+  "testDiscipline": true,
+  "runnerMode": "real",
   "buildSha": "${SCRIPT_REPO_HEAD}",
   "apiTokenPath": "${GENERALIZED_API_TOKEN_PATH}",
   "roomInfo": "${GENERALIZED_ROOM_INFO}"

@@ -15,6 +15,9 @@ Flywheel 强制要求 TDD。不写测试直接实现是被禁止的。
 
 **Project**: {{projectName}}
 **Test framework**: {{testFramework}}
+**Configured test entry**: \`{{testCommand}}\` (never execute it bare)
+
+The injected local-test policy overrides this skill. First derive concrete related test files from literals and changed-file consumers. Use the project's framework-specific file selector; for Vitest the shape is \`pnpm --filter <pkg> exec vitest run <concrete-test-file>\`. Never turn RED, GREEN, refactor, coverage, or discovery into a full package/repository run.
 
 ## TDD Cycle
 
@@ -23,7 +26,7 @@ Flywheel 强制要求 TDD。不写测试直接实现是被禁止的。
 **先写测试，此时它应该失败。**
 
 \`\`\`bash
-{{testCommand}} -- --testPathPattern="<test-file>"
+<project-test-entry> <framework-specific-file-selector> <concrete-test-file>
 \`\`\`
 
 **RED 阶段检查清单**：
@@ -36,7 +39,7 @@ Flywheel 强制要求 TDD。不写测试直接实现是被禁止的。
 **写最少的代码让测试通过。**
 
 \`\`\`bash
-{{testCommand}} -- --testPathPattern="<test-file>"
+<project-test-entry> <framework-specific-file-selector> <concrete-test-file>
 \`\`\`
 
 GREEN 阶段原则：
@@ -49,7 +52,7 @@ GREEN 阶段原则：
 **在所有测试仍然通过的前提下，改善代码质量。**
 
 \`\`\`bash
-{{testCommand}}
+# Repeat every retained concrete test file; for changed TypeScript also run related mode with the changed source files.
 {{lintCommand}}
 \`\`\`
 

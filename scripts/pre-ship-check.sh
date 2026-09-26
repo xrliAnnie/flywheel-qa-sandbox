@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# FLY-96: Pre-ship check — full pipeline validation before creating PR.
+# FLY-96: CI/operator-only aggregate — Runner prompts must never invoke this
+# locally. Exact-head PR CI owns full-suite validation.
 #
 # Usage: scripts/pre-ship-check.sh [--skip-e2e]
 #

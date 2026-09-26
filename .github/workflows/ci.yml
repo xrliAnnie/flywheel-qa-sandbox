@@ -1491,6 +1491,15 @@ jobs:
           node --test scripts/__tests__/qa-generalized-e2e-lib.test.mjs
           node --test scripts/__tests__/qa-generalized-codex-stub.test.mjs
 
+      # FLY-2802: prompt policy consistency, command-event semantics, and the
+      # explicit real-room deployment mode are hermetic here. The four live
+      # model cells remain a 529 exact-head acceptance artifact.
+      - name: Test — FLY-2802 Runner local-test discipline
+        run: |
+          node --test scripts/__tests__/runner-test-discipline.test.mjs
+          node --test scripts/__tests__/runner-test-policy.test.mjs
+          bash scripts/__tests__/runner-test-discipline-deploy.test.sh
+
       # FLY-1649: hermetic r4 whole-state rollback and forward-window lifecycle
       # contracts. Explicitly registered because script-tests does not glob.
       - name: Test — FLY-1649 r4 migration-window hardening

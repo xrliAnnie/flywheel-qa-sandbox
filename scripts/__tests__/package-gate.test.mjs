@@ -447,19 +447,20 @@ test("active runner handbooks require targeted local verification and CI-owned f
 			name,
 		);
 		for (const required of [
+			"local-test-policy/v1",
 			"pnpm lint",
-			"affected package",
+			"affected-package-plus-dependencies builds",
 			'pnpm --filter "<pkg>..." build',
 			"git grep -lF",
 			"full path, file name, and parent directory",
-			"document every excluded match",
+			"Record every excluded test match",
 			"vitest related",
 			"scripts/__tests__/*.test.sh",
-			"no local full package suite",
-			"full exact-head CI",
+			"never uses a full repository or full package suite",
+			"Exact-head PR CI owns the full suite",
 			"CI OK",
 			"CI Scope OK",
-			"skill defaults",
+			"overrides every skill",
 		])
 			assert.ok(text.includes(required), `${name}: ${required}`);
 		assert.match(text, /red .*CI job/i, name);
