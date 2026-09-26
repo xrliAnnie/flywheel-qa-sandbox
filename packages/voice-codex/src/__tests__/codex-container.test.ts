@@ -3,6 +3,7 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	realpathSync,
 	rmSync,
 	statSync,
 	symlinkSync,
@@ -269,6 +270,7 @@ function harness(
 		}>;
 		processEnv?: NodeJS.ProcessEnv;
 		configureProcess?: (process: FakeProcess) => void;
+		scratchRoot?: (base: string) => string;
 	} = {},
 ) {
 	const base = root();
@@ -348,7 +350,7 @@ function harness(
 		},
 		createCapabilityParent: createCapabilityParent as never,
 		binaryPath,
-		scratchRoot: join(base, "scratch"),
+		scratchRoot: overrides.scratchRoot?.(base) ?? join(base, "scratch"),
 		openAiApiKey: "voice-api-key",
 		processEnv: overrides.processEnv ?? {
 			HOME: "/real/home",
@@ -854,6 +856,11 @@ describe("Codex voice container", () => {
 		expect(h.parent.close).toHaveBeenCalledTimes(1);
 		expect(h.processes[1]!.stopCount).toBe(1);
 		expect(existsSync(opened.root)).toBe(true);
+		// The parent's short activation root is kept with it (QA@3 B1).
+		const { activationRoot } = h.createCapabilityParent.mock
+			.calls[0]![0] as unknown as { activationRoot: string };
+		expect(existsSync(activationRoot)).toBe(true);
+		rmSync(activationRoot, { recursive: true, force: true });
 	});
 
 	it.each(["old_cancel_wait", "new_opening", "new_started"] as const)(
@@ -1488,6 +1495,67 @@ describe("background admission degrades to foreground voice (FLY-2886 plan v12 Â
 		expect(opened.background).toMatchObject({ state: "degraded" });
 		expect(h.processes[0]!.stopCount).toBe(1);
 		expect(h.parent.close).toHaveBeenCalledTimes(1);
+		await opened.close();
+	});
+});
+
+describe("the broker socket fits the platform limit in the production layout (QA@3 B1)", () => {
+	// Production: <HOME>/.flywheel/voice/codex-containers/container-XXXXXX/...,
+	// here with a HOME far longer than the host's own.
+	const deep = (base: string) =>
+		join(base, "h".repeat(90), ".flywheel", "voice", "codex-containers");
+	const activationRootOf = (h: ReturnType<typeof harness>) =>
+		(
+			h.createCapabilityParent.mock.calls[0]![0] as unknown as {
+				activationRoot: string;
+			}
+		).activationRoot;
+	// runtime-parent: mkdtemp("run-") + "/broker.sock", listen limit 100 bytes.
+	const socketBytes = (activationRoot: string) =>
+		Buffer.byteLength(join(activationRoot, "run-XXXXXX", "broker.sock"));
+
+	it("admits with a short private activation root, removed when the session closes", async () => {
+		const h = harness({ scratchRoot: deep });
+		const opened = await h.container.open({
+			sessionId: "session-socket",
+			voice: "marin",
+			loadContext: async () => context("session-socket"),
+			background: {
+				enabled: true,
+				onTurnStarted: vi.fn(),
+				onTurnTerminal: vi.fn(),
+			},
+		});
+		const activationRoot = activationRootOf(h);
+		expect(socketBytes(activationRoot)).toBeLessThanOrEqual(100);
+		expect(activationRoot.startsWith(`${realpathSync("/tmp")}/fw-vcap-`)).toBe(
+			true,
+		);
+		expect(statSync(activationRoot).mode & 0o777).toBe(0o700);
+		await opened.close();
+		expect(existsSync(activationRoot)).toBe(false);
+	});
+
+	it("removes the activation root when the admission degrades", async () => {
+		const h = harness({ scratchRoot: deep });
+		h.createCapabilityParent.mockRejectedValueOnce(
+			new Error("model_isolation_unproven"),
+		);
+		const opened = await h.container.open({
+			sessionId: "session-socket-degraded",
+			voice: "marin",
+			loadContext: async () => context("session-socket-degraded"),
+			background: {
+				enabled: true,
+				onTurnStarted: vi.fn(),
+				onTurnTerminal: vi.fn(),
+				markDegraded: vi.fn(async () => undefined),
+				onDegraded: vi.fn(),
+			},
+		});
+		const activationRoot = activationRootOf(h);
+		expect(socketBytes(activationRoot)).toBeLessThanOrEqual(100);
+		await vi.waitFor(() => expect(existsSync(activationRoot)).toBe(false));
 		await opened.close();
 	});
 });

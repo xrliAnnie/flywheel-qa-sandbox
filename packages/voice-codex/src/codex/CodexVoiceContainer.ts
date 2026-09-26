@@ -6,6 +6,7 @@ import {
 	lstat,
 	mkdir,
 	mkdtemp,
+	realpath,
 	rm,
 	symlink,
 	writeFile,
@@ -151,6 +152,8 @@ interface OpenResources {
 	process?: CodexVoiceProcess;
 	scribe?: CodexVoiceProcess;
 	parent?: VoiceCapabilityParent;
+	/** The admitted parent's short activation root (outside `root`). */
+	activationRoot?: string;
 	cleanup?: Promise<void>;
 	/** Background admission; owned separately until it succeeds (plan v12 §14.2). */
 	admission?: AdmissionScope;
@@ -196,6 +199,11 @@ class AdmissionScope {
 	parent?: VoiceCapabilityParent;
 	process?: CodexVoiceProcess;
 	scribe?: CodexVoiceProcess;
+	/**
+	 * Holds the parent's broker socket, so it lives under a short private root:
+	 * the voice root can be arbitrarily deep but a UDS path is capped (QA@3 B1).
+	 */
+	activationRoot?: string;
 	constructor(
 		readonly root: string,
 		readonly residuals: AdmissionResiduals,
@@ -751,6 +759,8 @@ export class CodexVoiceConversation {
 			parent: VoiceCapabilityParent;
 			scribe: CodexVoiceProcess;
 			writer: ScriptWriter;
+			/** Outside `root`; removed with it (QA@3 B1). */
+			activationRoot?: string;
 		},
 		private readonly threadEvents?: {
 			router: ThreadEventRouter;
@@ -884,6 +894,11 @@ export class CodexVoiceConversation {
 		}
 		this.threadEvents?.unregister();
 		await rm(this.root, { recursive: true, force: true });
+		if (this.capability?.activationRoot)
+			await rm(this.capability.activationRoot, {
+				recursive: true,
+				force: true,
+			});
 		this.evidence({
 			kind: "codex_voice_container_closed",
 			sessionId: this.sessionId,
@@ -1149,6 +1164,7 @@ export class CodexVoiceContainer {
 						resources.parent = admitted.parent;
 						resources.process = admitted.process;
 						resources.scribe = admitted.scribe;
+						resources.activationRoot = scope.activationRoot;
 					}
 				}
 				assertActive();
@@ -1331,6 +1347,7 @@ export class CodexVoiceContainer {
 							parent: admitted.parent,
 							scribe: admitted.scribe,
 							writer: admitted.writer,
+							activationRoot: resources.activationRoot,
 						}
 					: undefined,
 				unregisterBackground
@@ -1386,12 +1403,17 @@ export class CodexVoiceContainer {
 		await mkdir(directory, { mode: 0o700 });
 		scope.residuals.registerDirectory(directory);
 		scope.assertActive();
+		// Same short private root as the resident parent (default-runtime `fw-cap-`).
+		const activationRoot = await mkdtemp(
+			join(await realpath("/tmp"), "fw-vcap-"),
+		);
+		scope.activationRoot = activationRoot;
+		scope.residuals.registerDirectory(activationRoot);
 		const home = join(directory, "home");
-		const activationRoot = join(directory, "activation");
 		const scribeHome = join(directory, "scribe-home");
 		const scribeWork = join(directory, "scribe-work");
 		const work = join(directory, "work");
-		for (const path of [home, activationRoot, scribeHome, scribeWork, work])
+		for (const path of [home, scribeHome, scribeWork, work])
 			await mkdir(path, { mode: 0o700 });
 		scope.assertActive();
 		return observeChildSpawns(
@@ -1592,9 +1614,11 @@ export class CodexVoiceContainer {
 					/* The residual file keeps anything still alive. */
 				}
 			}
-			await rm(scope.root, { recursive: true, force: true }).catch(
-				() => undefined,
-			);
+			for (const path of [scope.root, scope.activationRoot])
+				if (path)
+					await rm(path, { recursive: true, force: true }).catch(
+						() => undefined,
+					);
 			await scope.residuals.reap(this.evidence).catch(() => "pending");
 		})();
 		// Hand leftovers to the periodic sweep only once this teardown is over.
@@ -1649,12 +1673,15 @@ export class CodexVoiceContainer {
 					await Promise.resolve()
 						.then(close)
 						.catch(() => undefined);
-				await rm(admission.root, { recursive: true, force: true }).catch(
-					() => undefined,
-				);
+				for (const path of [admission.root, admission.activationRoot])
+					if (path)
+						await rm(path, { recursive: true, force: true }).catch(
+							() => undefined,
+						);
 			})().finally(() => admission.residuals.detach());
 		}
-		if (!resources.process && !resources.root) return;
+		if (!resources.process && !resources.root && !resources.activationRoot)
+			return;
 		resources.cleanup = (async () => {
 			try {
 				await closeOwnedProcesses(
@@ -1669,6 +1696,8 @@ export class CodexVoiceContainer {
 			if (resources.root) {
 				await rm(resources.root, { recursive: true, force: true });
 			}
+			if (resources.activationRoot)
+				await rm(resources.activationRoot, { recursive: true, force: true });
 		})();
 		return resources.cleanup;
 	}
