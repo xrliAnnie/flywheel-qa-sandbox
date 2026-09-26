@@ -39,3 +39,9 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 消费者 sweep 必须包含 packages、scripts、插件 fork external_plugins 与本机插件缓存，记录时间和每个调用方处置。设计本轮未扫描外部插件 root，不声称其零引用；实现交接明确要求补该证据。保持 hold CLI 兼容定位参数，删除按故障原因选择算法的分支。
 
 本调研仅依赖本仓实现事实，不引入新的服务、队列、远程渲染器或架构重写。具体事务、迁移、回滚和错误码合同见 plan.md。
+
+## R2 追加源码核对
+
+已确认 dispatcher:2644–2785 通过 edge_traversed 或 execution_dead_rolled_back 回溯前序；单独 node_dispatched 无效。StateStore:61500–61780 的死体替换还维护 writer replacement、resume attachment/issue_delivery 迁移及 watch，统一入口必须复用这些记账。loop/idle 的现有 resume 分支只有新节点与 node_dispatched，不能直接照搬为完成方案；业务继续须补可消费 edge 与 QA fix context。
+
+同时确认 pane-loss 恢复可写 active 而没有 hold_resumed，land full resume 留下的是 land_operation_step 的 resume_authorized 收据。旧开放事件须按精确关联收据投影 superseded，不能按时间一笔清除。plugin.ts done-close 仍用 legacy finalizeDone，enrolled 分流必须只认真实 completion。以上具体修订及验收见 plan.md §3.1、3.4、3.5、4、7、10。
