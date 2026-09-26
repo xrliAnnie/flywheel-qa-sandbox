@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
 phase: design
-phaseCursor: 5/8
-updated: 2026-09-26T11:42:28.996Z
-nextStep: poll design review and incorporate verdict
+phaseCursor: 6/8
+updated: 2026-09-26T11:43:32.677Z
+nextStep: await approved design review verdict, then finalize and publish
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: design (5/8)
-**next**: poll design review and incorporate verdict
+**phase**: design (6/8)
+**next**: await approved design review verdict, then finalize and publish
