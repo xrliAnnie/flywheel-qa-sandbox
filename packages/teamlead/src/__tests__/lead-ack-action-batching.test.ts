@@ -1,9 +1,20 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
-import { selectLeadRuleSources } from "../lead-capabilities/rule-sources.js";
+import {
+	prepareLeadManifestSources,
+	selectLeadRuleSources,
+} from "../lead-capabilities/rule-sources.js";
 
 const root = fileURLToPath(new URL("../../", import.meta.url)).replace(
 	/\/$/,
@@ -88,5 +99,51 @@ it("preserves pre-batching Bootstrap generator and both formatters byte-for-byte
 				.update(readFileSync(`${root}/${path}`))
 				.digest("hex"),
 		).toBe(digest);
+	}
+});
+
+it("refuses missing enabled assets in shell and capability assembly", () => {
+	const fixture = mkdtempSync(join(tmpdir(), "fly2909-missing-rules-"));
+	try {
+		mkdirSync(join(fixture, "scripts"));
+		writeFileSync(
+			join(fixture, "scripts/inbox-ack-rule.md"),
+			"historical rule",
+		);
+		const shell = spawnSync(
+			"bash",
+			[
+				"-c",
+				'source "$1/scripts/lead-rules-bundle.sh"; _LEAD_ACK_ACTION_BATCHING_LAUNCH=1; rules_bundle_select_source "$2/scripts/inbox-ack-rule.md"',
+				"fixture",
+				root,
+				fixture,
+			],
+			{ encoding: "utf8", env: { ...process.env, BASH_ENV: "/dev/null" } },
+		);
+		expect(shell.status).toBe(10);
+		expect(shell.stderr).toContain("MISSING_REQUIRED_ACK_BATCHING");
+		const selected = selectLeadRuleSources({
+			scriptsDir: join(fixture, "scripts"),
+			projectRoot: fixture,
+			leadId: "eng-lead",
+			role: "dept",
+			commBackend: "mailbox",
+			hasSummaryDuty: false,
+			inboxEnabled: true,
+			screencaptureEnabled: false,
+			skills: [],
+			backend: "codex-app-server",
+			ackActionBatchingEnabled: true,
+		});
+		const record = selected.sources.find(
+			(row) => row.sourceId === "launcher/inbox-ack-rule.md",
+		)!;
+		expect(record).toMatchObject({ status: "missing", required: true });
+		expect(() => prepareLeadManifestSources([record], [])).toThrow(
+			"capability_rules_unverified",
+		);
+	} finally {
+		rmSync(fixture, { recursive: true, force: true });
 	}
 });
