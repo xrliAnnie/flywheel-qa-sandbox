@@ -39,7 +39,7 @@ This round is still design documents only, and the worktree still has no node_mo
 
 ## 2026-09-26 重开：FLY-2921 合同补充的 scoped review
 
-有效 reviewVerdict=APPROVED，reviewerVerdict=APPROVED；gate `0f29f815-f140-4e68-ac08-073a9a996389`，request `b5e92e5c-ce11-4f40-ab94-35d74af3e4c9`。审阅内容为 `af2178f24` 的 design-correction.md（blob `3ecbe571…a68a`）；原计划未修改。原 Follow-ups 继续保留。
+有效 reviewVerdict=APPROVED，reviewerVerdict=APPROVED；gate `0f29f815-f140-4e68-ac08-073a9a996389`，request `b5e92e5c-ce11-4f40-ab94-35d74af3e4c9`。审阅内容为 `af2178f24` 的 design-correction.md（blob `3ecbe57194f7e675b011b339e481e801a730d68a`）；原计划未修改。原 Follow-ups 继续保留。
 
 新增 4 MEDIUM / 4 LOW 均为非阻塞 advisories，未据此重开设计或宣称已解决。已报告 Lead，durable report `3f7025a4-f051-4fc4-8889-88f8e3d426a9`（即时 doorbell 超时，报告持久入队）。以下完整保留供实现/集成处置。
 
@@ -89,5 +89,4 @@ origin/flywheel-FLY-2921 的 plan.md 状态是 draft，progress 为 design 4/6�
 
 本轮没有运行测试
 
-worktree 没有 node_modules（根目录和 packages/teamlead 都没有），而本补充只改了文档，没有改代码，所以本轮没跑任何 vitest。结论来自静态核对：dispatcher 2483–2493 的 launch fence 与 2511–2524 的上下文校验、coordinator 580–640、StateStore 43055–43095 的替身 writer 迁移消费者、markWorkflowReplacementStartedTx、68319–68323 的 base_revision 回落值，以及 origin/flywheel-FLY-2921 plan §C2/C4/C6/§6.1 原文。另确认 plan.md 自 c4d40fbed 起未变，SHA-256 为 7de9bef9…a1c5，本补充的 blob 为 3ecbe571…a68a。
-
+worktree 没有 node_modules（根目录和 packages/teamlead 都没有），而本补充只改了文档，没有改代码，所以本轮没跑任何 vitest。结论来自静态核对：dispatcher 2483–2493 的 launch fence 与 2511–2524 的上下文校验、coordinator 580–640、StateStore 43055–43095 的替身 writer 迁移消费者、markWorkflowReplacementStartedTx、68319–68323 的 base_revision 回落值，以及 origin/flywheel-FLY-2921 plan §C2/C4/C6/§6.1 原文。另确认 plan.md 自 c4d40fbed 起未变，SHA-256 为 7de9bef9…a1c5，本补充的 blob 为 3ecbe57194f7e675b011b339e481e801a730d68a。

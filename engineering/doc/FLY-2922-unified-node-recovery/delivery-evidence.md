@@ -49,3 +49,17 @@ HTML 按 publishOnly=true 发布，无频道消息（messageId=null, delivered=f
 - 更新后 HTML 仍为 7 节/7 评论框、单一 nonced inline script、零外部资源、零 inline handlers/innerHTML、自定义 CSP 为零。重新抽取实际页面脚本，正常复制/拒绝 fallback/缺剪贴板且存储抛错的三组检查均通过；长意见拆为 4 段，每段带 marker 且不超过 1800 字符。
 - 原托管页重查 HTTP 200、nonce/CSP/期望内容通过；新页须在本轮批准后重新发布，不沿用旧 URL 冒充新内容。未重试已记录的本地 Mermaid 环境故障，保留原允许的两处占位与图源。
 - 未新增可复用的 role memory 判断；本次是既有合同的定向对齐，未重复写学习条目。未运行实现测试或声称 WIP 验收通过。
+
+### 本轮批准与托管完成证据
+
+scoped gate `0f29f815-f140-4e68-ac08-073a9a996389` 有效 reviewVerdict=APPROVED、reviewerVerdict=APPROVED；4 MEDIUM / 4 LOW 保留为 Follow-ups，全文见 review-result.md，已报告 Lead。没有为建议重开设计，也没有把建议描述成已修复。
+
+更新后的已提交 HTML 静默发布到 https://fw-reports-6da062.vercel.app/r/280583abeaf59eb54233a57c629d96f5/ ，publishOnly=true、messageId=null、delivered=false；指定 DESIGN-HTML ready 报告已持久入队，receipt `bc190294-ae43-477c-852f-ffbf9e8bd4bb`（doorbell 超时不等于报告丢失）。
+
+- verify-report：ok=true，HTTP 200，noncePlaceholder/scriptCsp/scriptNonce/期望新增内容均 pass。
+- 线上 body（仅归一化 minted nonce）与已提交 HTML 完全一致，零外部资源；评论脚本未变化。
+- HTML SHA-256 `7e457e51cdd4df0018404330e2263fc7ed6c1b6ef52d9ac8ed5489b3f8b9340b`。
+- 托管 HTML SHA-256 `5e3a0669f6db9da170891fe9eb343625e8645d88ad5e2e66a82da48fac982513`。
+- 两处 DIAGRAM PENDING LOCAL RENDER 沿用原允许的降级，不声称浏览器视觉 QA 或真实修复验收通过。
+
+设计完成审计：原 exploration/research/plan 与九单范围保留；新合同补充已有效批准；原代码 WIP 未改；补充/报告/评审与交付证据已落盘；HTML 已发布验证并报告。实现仍从旧 0/6 继续，不是整单完成。本轮下一步仅 exact phase_design_complete 收据及 park，由控制器决定后继，不自行派发。
