@@ -29,7 +29,7 @@ flowchart TD
 
 ### 取舍
 
-保留浏览器与 Context7：历史记录已证明使用，且角色合同要求。拒绝修改共享 home/Lead 配置、禁止所有技能、bare 模式、把 allowedTools 当 token 控制。稳定配置按会话固定，避免每轮换工具和缓存抖动；任务新增必需能力在下一次受控启动解决，不由模型偷偷扩权。
+保留浏览器与 Context7：历史记录已证明使用，且角色合同要求。拒绝修改共享 home/Lead 配置、禁止所有技能、bare 模式、把 allowedTools 当 token 控制。稳定配置按会话固定，避免每轮换工具和缓存抖动；新增必要能力先报告 Lead，由既有受监督新会话流程更正声明后恢复，不由模型偷偷扩权。未映射触发器原样走 legacy，不能仅凭 design/implement 角色开启精简。
 
 ## 二、技术合同
 
@@ -37,7 +37,30 @@ flowchart TD
 
 新增 `packages/config/src/runner-prefix-profile.ts` 及数据文件 `packages/config/runner-prefix-profiles.v1.json`。稳定键仅 `design | implement | qa | review-design | review-code`，展示名不参与解析。普通 runner 从服务端 pinned workflow phase + node role 得出；`eng_design` 等 node key 仅作已登记映射，未知角色走 legacy 并记 reason，绝不猜成 implement。reviewer 从持久 `job.review_type` 得出；land-content-review 显式 review-code。Lead、Codex、非 claude-tmux SDK/adapter 返回 not-applicable。
 
-沿现有 `runnerMcpProfile` 增量传递编译结果，不新增独立配置派发服务；任务/role manifest 的 required skills、skill-framework arm、已有 labels 是能力并集。权限及 security deny 是最终约束，不被该并集绕过。自由文本任务不能自动成为任意 plugin/path 的加载授权。
+沿现有 `runnerMcpProfile` 增量传递编译结果，不新增独立配置派发服务。**现状没有任务 required-skills 声明**；`workflowCapabilities` 只描述阶段权限，绝不能冒充能力清单。本单补入下述具名任务集合声明，再与 pinned role 的 `skills` frontmatter、skill-framework arm、已有 labels 做能力并集。权限及 security deny 是最终约束，不被并集绕过；任务声明只选加载能力，不增加文件/工具授权。
+
+#### 1.1 新增声明协议与生产者（R1 HIGH 修复）
+
+`POST /api/runs/start` 新增可选字段 `prefixTaskSet: {version: 1, id: string}`；没有该字段的请求为 **unmapped-trigger → legacy**，包括已有设计/实现角色、generic/code category、任意 issue 标题或 cron 文本。不得把无声明的 code 任务默认当通用工程任务。外部输入不能带 skills 列表、任意插件路径、MCP 配置或 credentials。
+
+可信源为本仓评审过的 `packages/config/runner-prefix-task-sets.v1.json`，由实现者提交，按正常 PR/code-review 更新。每条记录结构固定为 `{id, version, requiredSkillIds, requiredToolIds, requiredPluginIds, requiredMcpIds, requiredRuleIds}`，数组是 T1 已确认的规范 ID。registry 校验全部 ID 存在且依赖闭包完整；未知 ID 不加载任意资源。自由文本、issue labels 和客户端声明均不能写 registry。
+
+请求写入者是已获 `/runs/start` 启动权限的 Lead/API 客户端或可信 scheduler；Bridge 在 `runs-route.ts` 用既有认证/项目权限判断先授权，再验证这个有限枚举选择。不要新增 credential，也不要放宽 scoped Runner 的启动权限。未知 version/id 或未映射来源按 legacy 记录 `prefix_unmapped_trigger`，原始任务正常运行；若调用方显式要求 role-v1 验收，则该回退记未通过，不能当优化成功。
+
+| 触发任务 | 明确写入者/入口 | registry 集合及依赖要求 | 不认识/未声明时 |
+|---|---|---|---|
+| 普通工程任务 | 已授权的 runs/start 调用方显式给 `engineering`；阶段/review node 不自行推测 | role 基线 + pinned role skills + 当前 arm；不从七天无调用推断可删 | legacy，发可见原因；上线交付需给调用方明确 API 用例并验证工程任务确实带此字段 |
+| meeting-notes | `scripts/meeting-notes-scheduler.ts:525` POST payload 加常量 `meeting-notes`；无需改 Lead 配置 | `meeting-notes` 技能与其读会议存档/出摘要/报告所需工具和规则；来自真实技能内容的闭包 | 原旧调用 legacy |
+| xiaohongshu-learning | `scripts/xiaohongshu-scheduler.ts:236` POST payload 加常量 `xiaohongshu-learning` | 同名技能、实际 xiaohongshu MCP、浏览器/资料和报告依赖；不能套工程 MCP 删除表 | 原旧调用 legacy |
+| xiaohongshu-deep-learning | 已授权发起者在 runs/start 给 `xiaohongshu-deep-learning`；本仓没有可假定的同名 scheduler 写入者 | 同名技能及其真实脚本/视频/图片/MCP 依赖闭包；缺项不可 role-v1 | 外部既有触发器未升级声明前始终 legacy |
+| Sub nightly / 806 视频 / 自定义研究任务 | 未定位并确认的外部生产者**不映射**，不以项目名或标题猜任务 | 只有按相同 registry PR 流程登记实际技能/依赖并让生产者提交 ID，才进入 role-v1 | 明确 legacy 保留原技能、Chrome/MCP；不得受 default role-v1 波及 |
+
+这是兼容护栏，不是把这些任务算作已优化：PR 必须分别列 role-v1 任务覆盖和 legacy 未映射来源，不以未优化会话凑 before/after 样本。用户真正请求的五类工程角色都必须有携带显式 `engineering` 声明的真实验收；若启动调用方仍没带声明，本单不能完成默认启用交付。
+
+落盘与消费：`runs-route.ts` 将 registry 展开的内容和 digest 规范化，写入同一启动 reservation 的持久 start_request_json；new workflow materialization 在 `WorkflowRunSnapshotV1/V2/V3` 增可选 `prefixRequirements`，值为 `{version:1, taskSetId, registryDigest, requirements}`，参与 snapshot_digest。**两个 materialization 分支、所有 parse/validate 分支及 hydrate/重试路径一起更新**。客户端只给集合 ID，不能提供展开内容或 digest；旧 snapshot 无此字段沿 legacy，不能读当前 registry 补造。existing run start/retry/rework 只消费 pinned 值；请求更换集合必须返回明确冲突并要求新 run，不在同一 activation 换义务。Blueprint 和 AdapterExecutionContext 增 optional 已解析字段，`workflowCapabilities` 不复用。
+
+运行中若发现未声明技能：保留原会话与进度，用已有 `ask --report` 报所需规范技能 ID、失败操作、session/profileDigest；不自动安装或换工具。Lead 通过现有有权限的停止/新 run 恢复流程选择更完整集合或 legacy，新的 authenticated start 带原进度恢复引用；新 session 有独立 stamp，旧会话不得继续标为 role-v1 成功。不新增自动重启/授权通道。
+
 
 ```typescript
 type PrefixRole = 'design' | 'implement' | 'qa' | 'review-design' | 'review-code';
@@ -47,10 +70,11 @@ type SourceRef = { id: string; kind: 'tool'|'plugin'|'mcp'|'skill'|'agent'|'rule
 type PrefixStamp = { version: 1; mode: PrefixMode; role: PrefixRole;
   executionId: string; activationId?: string; reviewRequestId?: string;
   sessionId: string; cliVersion: string; profileDigest: string;
-  inventoryDigest: string; skillArm: string; sources: SourceRef[] };
+  inventoryDigest: string; taskSetId: string; registryDigest: string;
+  skillArm: string; sources: SourceRef[] };
 ```
 
-实际 stamp 只包含来源身份/摘要/决定；绝不存 credential 值、完整 MCP env、用户 prompt 或 tool payload。profileDigest 覆盖排序后的角色、配置版本、工具列表、skill arm、已选择文件内容 SHA 及 compiler version；不以安装目录名代替内容。stamp 原子写进现有 execution 的 runner-state，reviewer 按已有 request/session 产物目录保存。文件 0600、目录 0700；不新建数据库表。接入现有执行产物清理，不删除进行中的 profile。
+实际 stamp 只包含来源身份/摘要/决定；绝不存 credential 值、完整 MCP env、用户 prompt 或 tool payload。profileDigest 覆盖排序后的角色、taskSetId/registryDigest、配置版本、工具列表、skill arm、已选择文件内容 SHA 及 compiler version；不以安装目录名代替内容。stamp 原子写进现有 execution 的 runner-state，reviewer 按已有 request/session 产物目录保存。文件 0600、目录 0700；不新建数据库表。接入现有执行产物清理，不删除进行中的 profile。
 
 ### 2. 精简配置的选择规则
 
@@ -121,7 +145,7 @@ type PrefixStamp = { version: 1; mode: PrefixMode; role: PrefixRole;
 
 ### T3 — 普通 runner 路径
 
-修改 `packages/core/src/adapter-types.ts`（AdapterExecutionContext）、`packages/edge-worker/src/Blueprint.ts`、`packages/teamlead/src/bridge/run-dispatcher.ts`、`packages/claude-runner/src/TmuxAdapter.ts` 的既有配置传递。只加 optional profile 字段，不改公共生命周期协议。新 `Blueprint.fly2913-prefix.test.ts` 与现有 `TmuxAdapter.test.ts`、dispatcher resume/backend 测试覆盖 fresh/retry/resume、mode arm、hooks、memory、auth env、model/effort、Discord deny 均保持。
+先更新 `packages/config/runner-prefix-task-sets.v1.json`、`packages/teamlead/src/bridge/runs-route.ts`、`packages/teamlead/src/bridge/retry-dispatcher.ts`（StartRequest）、`packages/teamlead/src/workflow-run-snapshot.ts` 的声明校验/持久化/两个 materialization 与解析分支，以及 `scripts/meeting-notes-scheduler.ts`、`scripts/xiaohongshu-scheduler.ts` 的固定 ID。新增 snapshot roundtrip、旧 snapshot、篡改展开内容、retry digest 与源生产者 payload 测试。随后修改 `packages/core/src/adapter-types.ts`（AdapterExecutionContext）、`packages/edge-worker/src/Blueprint.ts`、`packages/teamlead/src/bridge/run-dispatcher.ts`、`packages/claude-runner/src/TmuxAdapter.ts` 的既有配置传递。只加 optional profile 字段，不改公共生命周期协议。新 `Blueprint.fly2913-prefix.test.ts` 与现有 `TmuxAdapter.test.ts`、dispatcher resume/backend 测试覆盖 fresh/retry/resume、mode arm、hooks、memory、auth env、model/effort、Discord deny 均保持。
 
 TDD 顺序：命中缺失字段/错误合并的红测试 → 最小实现 → 单文件绿 → 只重构本单合并逻辑。不要全包测试。
 
@@ -143,6 +167,8 @@ TDD 顺序：命中缺失字段/错误合并的红测试 → 最小实现 → �
 
 不能只问“回复 OK”。保存去敏完整行为链、必要工具请求/结果状态、缺失工具/技能错误扫描、artifact 与结构化结果。若出现缺工具，修补后重跑该角色全部对比，不删测试需求以求绿。模型最终 summary、命令被拒或空 transcript 均不算。
 
+技能驱动任务必须另加：在 529 通过真正 `meeting-notes-scheduler` payload → runs/start → pinned snapshot → design/implement 启动链，给一份沙箱会议存档，要求实际调用 meeting-notes 技能并产出含出处的摘要和结构化报告回执；用一个被工程默认候选排除的技能作为保留正控，删该 requiredSkillId 必须在启动前报错。未携带声明/未知 taskSetId 的同一输入必须产生 legacy receipt，并仍可调用原技能。xiaohongshu-learning scheduler payload、deep-learning 显式集合、Sub nightly/806/自定义研究的未映射回退分别做接口/继承清单负控；不调用外部账户写入来伪造范围覆盖。普通工程五类角色验收同时核显式集合确实被消费，不能只核 request body。
+
 另外：Lead settings/argv 负控字节相同；Codex 配置相同；unknown/backend legacy；full-mcp 和 QA Playwright；任务需要浏览器但 no-chrome 冲突；required Skill 被删启动拒绝；同名 plugin namespace/相对 assets；CLI 忽略 settings 对照；legacy 开关新会话恢复原 inventory；活会话未热变被如实标识；managed policy 不被排除；subagent 独立 inventory；异常启动/评审超时不造 PASS。
 
 ### T6 — 默认启用、PR 和交接
@@ -162,3 +188,10 @@ Blueprint/dispatcher/land 三组按具体文件分别执行，避免 `vitest rel
 已完成代码/资料研究与七天历史工具结果聚合、配置候选静态快照。实际 loaded 每项 token、改后数值、529 真任务和回退均未执行，属于以上实现/QA 完成条件，绝不以设计批准替代。
 
 设计节点提交 exploration/research/plan、证据脚本和 founder HTML；获得有效 APPROVED 后静默发布 HTML，验证 hosted HTTP/CSP/评论交互，报告 Lead，再 `complete --route phase_design_complete` 并 park。评审反馈只修阻断项；非阻断 advisory 逐条登记 Follow-ups。
+
+
+## 五、评审处置（R1）
+
+阻断 `task-declared-capability-undefined`：通过 §1.1 的真实新增声明协议、registry、生产者映射、持久链和 T5 技能任务修复；不再假设 required-skills 已存在。
+
+其余 MEDIUM/LOW 依服务器 policy 为非阻断项，列 `review-followups.md`，向 Lead 报告；未采纳建议不伪装成已修复。当前设计修订只用于验证这一阻断修复，其他 scope 不重开。

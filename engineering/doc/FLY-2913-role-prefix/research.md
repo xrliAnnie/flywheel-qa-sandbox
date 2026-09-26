@@ -63,3 +63,7 @@ Issue: FLY-2913 (https://linear.app/geoforge3d/issue/FLY-2913/token8-给-claude-
 不改 Lead、模型、effort、提示缓存机制、权限模式、credentials、生产服务生命周期、图调度或评审 verdict 规则；不把大工具输出优化和频繁唤醒并进本单。本机仅跑命中本改动的测试；所有模型代表任务在 529 隔离房执行。
 
 静态盘点是 bounded 候选采样：未穷举 synced 深层技能、所有祖先/嵌套 CLAUDE、动态加载和 managed 来源；目录深度及范围见脚本。零命中不作实际零加载，T1 必须补齐运行时清单。
+
+## R1 补查：任务技能声明缺口
+
+`Blueprint.ts` 的 workflowCapabilities 并不包含技能。`scripts/meeting-notes-scheduler.ts:525` 和 `scripts/xiaohongshu-scheduler.ts:236` 都通过 runs/start 启动普通 runner，当前 payload 没有能力集合。`lead-capabilities/skill-adapters.ts:58` 明确两种小红书学习是 Runner 工作流。修订计划新增有限 ID 声明及 pinned 传递；所有没声明的来源走可见 legacy，不以 phase 推断为纯工程任务。
