@@ -1,14 +1,14 @@
 ---
 issue: FLY-202
-phase: design
-phaseCursor: 6/6
-updated: 2026-09-26T11:52:32.293Z
-nextStep: "implement node: execute plan.md C1-C5 (known red item V7
-  alert-isolation sentence)"
+phase: implement
+phaseCursor: 1/5
+updated: 2026-09-26T11:54:11.657Z
+nextStep: Run V1-V4, V7, V8 against BASE
+  198bce3346b298cccfe030106746e7aec32dea91; then fix only red findings
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: design (6/6)
-**next**: implement node: execute plan.md C1-C5 (known red item V7 alert-isolation sentence)
+**phase**: implement (1/5)
+**next**: Run V1-V4, V7, V8 against BASE 198bce3346b298cccfe030106746e7aec32dea91; then fix only red findings
