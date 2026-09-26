@@ -1,0 +1,9 @@
+stateDiagram-v2
+    direction LR
+    [*] --> Old: 起点<br/>claude-opus-5
+    Old --> New: perl s/claude-opus-5(?![.\d])/claude-opus-5.5/g<br/>第 1 遍
+    New --> New: 第 2 遍（幂等，树仍干净）
+    Near: claude-opus-50
+    Near --> Near: 任何一遍都不动<br/>（后面是数字 0，被 (?![.\d]) 排除）
+    Bad: claude-opus-5.5.5 ✗
+    New --> Bad: 若误用 \b 版本再跑一遍<br/>（. 是非词字符，\b 成立）

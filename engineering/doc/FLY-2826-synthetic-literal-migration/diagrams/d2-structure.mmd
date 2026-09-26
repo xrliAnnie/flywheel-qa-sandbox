@@ -1,0 +1,30 @@
+flowchart LR
+    subgraph PKG["packages/runner-test-discipline-fixture（私有，零外部消费者）"]
+        direction TB
+        subgraph SRC["源值：4 模块 × 2 常量 = 8 处 → 改"]
+            A["alpha/model.ts<br/>alphaModel · alphaFallback"]
+            B["beta/model.ts<br/>betaModel · betaFallback"]
+            C["gamma/model.ts<br/>gammaModel · gammaFallback"]
+            E["delta/model.ts<br/>deltaModel · deltaFallback"]
+        end
+        IDX["src/index.ts<br/>re-export 4 模块<br/>nearModel = claude-opus-50<br/>unrelatedModel = claude-sonnet-5<br/><b>逐字节不动</b>"]
+        subgraph TST["精确断言：30 处 → 改"]
+            MT["4 × __tests__/model.test.ts<br/>各 6 条 = 24"]
+            SD["static-dependency.test.ts<br/>4 元素数组"]
+            LO["literal-only.test.ts<br/>自比较 2 处 (1 行)"]
+        end
+        UN["unrelated.test.ts<br/>8 条负向守卫<br/><b>逐字节不动</b>"]
+        V["verify.mjs 校验器<br/>零旧值 ∧ 新值≥16 ∧<br/>index.ts 仍含 -50 与 sonnet-5<br/><b>逐字节不动</b>"]
+    end
+    LOCK["pnpm-lock.yaml<br/>+6 行 importer<br/>(CI --frozen-lockfile 才能过)"]
+    A & B & C & E --> IDX
+    IDX --> SD
+    A --> MT
+    IDX --> UN
+    V -.->|"扫描全部 ts 与 json 文件"| PKG
+    classDef chg fill:#fff4e5,stroke:#ff9500,color:#1d1d1f
+    classDef keep fill:#e8f9ee,stroke:#34c759,color:#1d1d1f
+    classDef lock fill:#e9f2ff,stroke:#007aff,color:#1d1d1f
+    class A,B,C,E,MT,SD,LO chg
+    class IDX,UN,V keep
+    class LOCK lock
