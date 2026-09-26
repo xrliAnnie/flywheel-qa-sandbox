@@ -217,3 +217,22 @@ Lead 重派说明（08:0xZ）裁定，替换 §二.5 与 T6 中的直接 env 语
 - Lead/Codex 消费者不读它，不改 Lead 配置。`FLYWHEEL_RUNNER_PREFIX_PROFILE` 只作 registry metadata（首次建行的引导种子，与其他 store flag 一致），业务代码不读 env，不作生产写入口。
 - 不新增 exemption；**不默认启用**，T6 不再把默认切到 role-v1，只通过受管 `flywheel-comm feature-flags set --name runner_prefix_profile --to role-v1 --reason <原因>` 改；回退即设回 legacy，新会话生效。
 
+
+## 八、实施偏离（529 实测，Lead 已接受：check b22247e4，2026-09-26 UTC）
+
+原 §二.3 的技能手段 `skillOverrides: off` 与子代理手段 `permissions.deny Agent(name)` 被 529 实测否定，改为 **非插件技能 `name-only` + `claudeMdExcludes`**。测量条件：slot 4（head 5c061c862）、CLI 2.1.283、claude-opus-5-5、同 cwd/flags，只换 `--settings`；按 implement 清单，读首轮真实 API usage（input + cache_creation + cache_read）：
+
+| 手段 | 首轮 prompt tokens | 相对基线 72,532 / 72,976 |
+|---|---:|---:|
+| `off`（47 个非插件技能） | 73,844 | +0.9～1.3K（变大） |
+| `user-invocable-only`（同上） | 73,844 / 74,288 | +0.9～1.8K（变大） |
+| `name-only`（同上） | 68,428 | −4.1～4.5K |
+| `name-only`（14 个插件技能） | 不变 | 0（插件技能不受控） |
+| `Agent(name)` deny（31 个） | 诊断不变 | 0（不删描述） |
+| `claudeMdExcludes`（6 条规则） | 70,450 | −2.1～2.5K |
+| name-only + claudeMdExcludes | **65,902** | **−6.6～7.1K** |
+
+- `name-only` 只隐藏描述，名字仍在列表中、仍可调用，不删除任何能力，因此在能力上比原计划更保守。stamp 相应改记 `hiddenSkillDescriptions` / `excludedRules`，不再声称“移除”。
+- **验收口径**：固定前缀以首轮真实 API usage 为准。`get_context_usage` 只作辅助，并且对 skillOverrides **不可靠**：它把被隐藏技能的 token 挪进 “System tools”，还把 name-only 报成总量不变。
+- **Follow-up（本单不做，也不另开新单）**：子代理描述（诊断约 8.8K）与插件技能/子代理（everything-claude-code 约 2.4K）在当前 CLI 上没有按启动生效的逐项控制。已写好的离线选定组件插件副本编译器留作后续手段，v1 不接入生产。
+- 房内开关不需要设置：探针配对不依赖房内开关。带开关的真实任务验收由 QA 在自己的房里用 `qa-generalized seed-project-flags` 播种。
