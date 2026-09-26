@@ -1,0 +1,25 @@
+{
+  "verifiedAt": "2026-09-26T17:06:01.616361+00:00",
+  "executionId": "76f9a969-bb20-4c96-9b28-e8bd68d84dc1",
+  "turnEpoch": 16,
+  "baselineHead": "5c6b157e75114bc1199847189e0599b138ee7b01",
+  "reviewGate": "53e1859b-f323-4509-abca-a44e6661b3d3",
+  "reviewVerdict": "APPROVED",
+  "reviewerVerdict": "APPROVED",
+  "requestId": "045179e7-c350-4880-b86f-da28ffda1d38",
+  "advisoryCount": 9,
+  "planBlob": "2a56310ff5b1004c1e7a5d483c54d1b039c5d111",
+  "approvedPlanAndCorrectionUnchanged": true,
+  "hostedUrl": "https://fw-reports-6da062.vercel.app/r/3e94308ff6b105176863c572fc3e2d8d/",
+  "httpStatus": 200,
+  "sourceMatchAfterPublisherNormalization": true,
+  "scriptNonceMatchesCsp": true,
+  "htmlSha256": "25c715f9b3a9f9e82408d6058c18afd2a67d45a4becf73b57fe332cf9a2ca254",
+  "diagramStatus": "Previously documented local render denial; authorized pending placeholder retained",
+  "implementationCursorPreserved": {
+    "phase": "implement",
+    "cursor": "1/6",
+    "next": "C1 validated; C2/C3/C5 WIP; C4 transaction in progress; C6 pending"
+  },
+  "scope": "design handoff recovery only; no implementation or QA claim"
+}
