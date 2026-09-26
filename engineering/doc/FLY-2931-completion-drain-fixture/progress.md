@@ -1,9 +1,9 @@
 ---
 issue: FLY-2931
 phase: implement
-phaseCursor: 3/5
-updated: 2026-09-26T11:46:53.651Z
-nextStep: Register and obtain the mandatory effective code review
+phaseCursor: 4/5
+updated: 2026-09-26T11:53:52.728Z
+nextStep: Run the injected needs_review completion command for PR 261
 chunks:
   - id: fixture_file
     order: 1
@@ -21,30 +21,30 @@ chunks:
     deps:
       - pr
     done: Effective mandatory code review is APPROVED
-    status: doing
+    status: done
   - id: long_verification
     order: 4
     deps:
       - code_review
     done: Required 300-second fixture verification completes
-    status: todo
+    status: done
   - id: completion
     order: 5
     deps:
       - long_verification
     done: Lead mail handled and needs_review completion accepted
-    status: todo
+    status: doing
 pointers:
   pr: "261"
 ---
 
 # FLY-2931 progress
-**phase**: implement (3/5)
-**next**: Register and obtain the mandatory effective code review
+**phase**: implement (4/5)
+**next**: Run the injected needs_review completion command for PR 261
 
 ## chunks
 - ✅ fixture_file — Exact one-line fixture exists and is byte-verified
 - ✅ pr — Fixture committed, pushed, and PR opened
-- 🔨 code_review — Effective mandatory code review is APPROVED
-- ⬜ long_verification — Required 300-second fixture verification completes
-- ⬜ completion — Lead mail handled and needs_review completion accepted
+- ✅ code_review — Effective mandatory code review is APPROVED
+- ✅ long_verification — Required 300-second fixture verification completes
+- 🔨 completion — Lead mail handled and needs_review completion accepted
