@@ -1,0 +1,64 @@
+{
+  "baseHead": "b62836384c73fc83433cfec24916d35f8e3f592f",
+  "scope": "offline pinned workflow provenance only; no production consumers or real-role acceptance",
+  "sources": {
+    "packages/teamlead/src/workflow-prefix-context.ts": "0c67f62f5fb77fb536b8796700e3c9c4e65a9b32ebb089941533145c80144d27",
+    "packages/teamlead/src/__tests__/workflow-prefix-context.test.ts": "325642c82c9fd2e1c76f1cd336d4b4794227c9a1d89c8cda4a39a0a4def10dc7"
+  },
+  "checks": [
+    {
+      "command": "pnpm --filter flywheel-teamlead exec vitest run src/__tests__/workflow-prefix-context.test.ts",
+      "exitCode": 0,
+      "testFiles": 1,
+      "tests": 14,
+      "redBeforeImplementation": {
+        "failed": 10,
+        "passed": 4,
+        "fixtureSetupErrors": 0
+      }
+    },
+    {
+      "command": "pnpm --filter flywheel-teamlead exec vitest related src/workflow-prefix-context.ts src/__tests__/workflow-prefix-context.test.ts --run",
+      "exitCode": 0,
+      "testFiles": 1,
+      "tests": 14
+    },
+    {
+      "command": "pnpm --workspace-concurrency=2 --filter \"flywheel-teamlead...\" build",
+      "exitCode": 0
+    },
+    {
+      "command": "pnpm lint",
+      "exitCode": 0,
+      "existingWarnings": 25
+    },
+    {
+      "command": "pnpm --workspace-concurrency=1 --filter \"...flywheel-teamlead\" typecheck",
+      "exitCode": 0,
+      "packages": [
+        "flywheel-teamlead",
+        "flywheel-voice-codex"
+      ]
+    }
+  ],
+  "localLogDigests": {
+    "red": {
+      "path": "/tmp/fly2913-prefix-context-red.log",
+      "sha256": "c57bea2f86ac0f5580ce55b15a77fbbeeabc710200b78570217bd4feea2e9c06"
+    },
+    "build": {
+      "path": "/tmp/fly2913-prefix-context-build.log",
+      "sha256": "bb4adf15fc235dc1beb9b0fa889bf7fda3c320a8fbb600e522f0b86676259440"
+    },
+    "lint": {
+      "path": "/tmp/fly2913-prefix-context-lint.log",
+      "sha256": "c90397e8347b22992bf5495f3aada3d40389c3f8438ee3218a145b42fce801b4"
+    },
+    "typecheck": {
+      "path": "/tmp/fly2913-prefix-context-typecheck.log",
+      "sha256": "69325313ba81ffdad150bbc1409c803a4bcf57a04b63c13ce873597012879145"
+    }
+  },
+  "fullCi": false,
+  "roomAcceptance": false
+}

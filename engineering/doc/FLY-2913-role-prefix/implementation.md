@@ -75,3 +75,13 @@ Lead 回答 `1de718ec-43e5-455a-a259-981a1056f082` / `3c36ba2d-b163-4115-9417-ab
 已新增计划要求的 `packages/qa-framework/suites/fly-2913-role-prefix.md`，明确五角色、三组同条件配对、实际消费者、必要能力/低频依赖、控制测试、回退及退出判据。只读核对发现 `scripts/lib/qa-generalized-e2e-lib.mjs:657` 的通用 start builder 固定 implement=codex，不能直接当 Claude implement 验收；套件因此明确用独立串行的 Claude 作者/Codex 作者任务组覆盖原有两方向评审，并保留现有家族与阶段门禁。
 
 这只是 T5 的套件文档准备，尚无专项真实模型 driver 或任何角色成功回执，不上调 T1–T6 完成计数。已核对计划引用、五角色标识与 diff whitespace；纯 Markdown 变化未新增测试或运行全包测试。当前 Lead 尚未回 room-info，装房仍由其沙箱外载体执行。
+
+## Pinned 身份解析基础（2026-09-26 UTC）
+
+新增 `packages/teamlead/src/workflow-prefix-context.ts`，供后续真实采样及 T3/T4 接线共用；当前尚无生产调用者。只接收服务端持久 run、精确 nodeId 和可选预期 snapshot digest，调用现有完整 `parseWorkflowRunSnapshot` 校验器。只有持久 template 为 `tpl_code` / `tpl_simple_code` 才生成 engineering provenance；phase 取已校验节点 type，不猜 displayName/nodeId/标题。保持 schema 1/2/3 兼容；旧快照无 agent 时返回 null，不读当前磁盘补造义务；schema 2/3 的角色正文和摘要直接来自 pinned agent。
+
+不符的 template revision/id、snapshot digest、缺失节点及损坏 snapshot 明确拒绝，错误仅给固定码，不回显原文。输出只含 workflow 身份、nodeId、phase 和 pinned agent，不携带任意 row 元数据或 permissions。未改 API payload、snapshot schema、数据库、Lead、Codex、启动 argv 或默认开关。
+
+测试先修正夹具以符合真实 manifest 的独立 QA/角色/handbook 合同；这些构建失败没有计作功能红测。有效夹具下空实现有 10 个功能断言失败，再实现最小解析器，单文件及 owning package `vitest related` 各 14 tests 通过；related 仅命中新测试，没有跑全包。消费者全路径/文件名/父目录及 `.js` import spelling 搜索逐项记录在 `evidence/prefix-context-consumer-sweep.json`。`pnpm --workspace-concurrency=2 --filter "flywheel-teamlead..." build` 与 `pnpm lint` 均 exit 0（lint 25 条既有 warning）。`pnpm --workspace-concurrency=1 --filter "...flywheel-teamlead" typecheck` 的 teamlead 和 voice-codex 均 exit 0；命令、源码及日志摘要见 `evidence/prefix-context-checks.json`。
+
+这只是 T3 的身份解析基础，不能据此标记 T3 接线完成；T1 真角色加载盘点、T2 最终编译器/控制、实际启动消费及五角色验收仍缺。
