@@ -1,7 +1,7 @@
-2026-09-26 local render, mmdc 11.12.0
-flow.mmd: initial and required standard retry both exit 1
-model.mmd: initial and required standard retry both exit 1
+2026-09-26 resumed execution 1b78af3a-1a6f-4ee1-8061-a92d4e8338df, mmdc 11.12.0
+flow.mmd: first attempt 08:43 PDT and standard retry 08:45 PDT both exit 1
+model.mmd: first attempt and standard retry 08:45 PDT both exit 1
 Flags: -w 1000 -b white --svgId fly2919-d1 / fly2919-d2
 Fatal: bootstrap_check_in org.chromium.Chromium.MachPortRendezvousServer: Permission denied (1100)
-No remote renderer used. Required DIAGRAM PENDING LOCAL RENDER placeholders included.
+No remote renderer used. Required DIAGRAM PENDING LOCAL RENDER placeholders retained.
 Browser visual QA unavailable under same local browser launch restriction.

@@ -1,2 +1,8 @@
-PASS: 7 sections / 7 comments; one nonced script; no inline handlers/external assets/CSP override; script parses; exact first line; 1800-codepoint chunks; section labels; pathname storage isolation/reload; storage rejection; clipboard absent/rejection fallback; clipboard success; user strings remain text values.
-LIMIT: VM controller verification, not browser visual QA. Both local Mermaid renders failed after required retry.
+2026-09-26 resumed execution 1b78af3a-1a6f-4ee1-8061-a92d4e8338df
+PASS full DOC-FLOW frontmatter in exploration/research/plan.
+PASS nine issue acceptance IDs and 68 occurrences match K02 fixclasses.json.
+PASS plan precise test paths exist except its two explicitly new tests.
+PASS 7 sections / 7 comment inputs; one nonced script; no inline handlers/external assets/CSP override.
+PASS VM: section labels, raw user text, pathname storage isolation/reload, 1800-codepoint chunks, repeated exact summary marker, clipboard success/absent/rejected fallback, denied storage.
+LIMIT: VM controller verification only, not browser visual QA. Mermaid renders failed after required retry; render-evidence.txt records attempts.
+Hosted HTTP/source/CSP verification remains pending approved review and publication.
