@@ -1,14 +1,14 @@
 ---
 issue: FLY-145
-phase: design
-phaseCursor: 4/4
-updated: 2026-09-26T13:13:50.013Z
-nextStep: design phase complete; controller may wake implement phase; QA
-  execution remains gated on independent campaign receipts documented in plan.md
+phase: implement
+phaseCursor: 1/4
+updated: 2026-09-26T13:22:00.433Z
+nextStep: "no-code boundary confirmed (diff vs d6562f909 = FLY-145 docs only);
+  next: codex review of docs delta, milestone commit, open PR"
 chunks: []
 pointers: {}
 ---
 
 # FLY-145 progress
-**phase**: design (4/4)
-**next**: design phase complete; controller may wake implement phase; QA execution remains gated on independent campaign receipts documented in plan.md
+**phase**: implement (1/4)
+**next**: no-code boundary confirmed (diff vs d6562f909 = FLY-145 docs only); next: codex review of docs delta, milestone commit, open PR
