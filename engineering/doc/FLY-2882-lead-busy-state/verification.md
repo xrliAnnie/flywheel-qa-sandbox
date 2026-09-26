@@ -128,3 +128,68 @@ QA 的生产只读探测列出了全部 17 个 Lead,全部 fail-closed 答 unkno
 - 3 个 Codex Lead:`unknown / sidecar_unreachable`。原因是这三个 Lead 的 bot token 都经 `MUFASA_BOT_TOKEN` / `CODEX_INFRA_BOT_TOKEN` / `RAYA_BOT_TOKEN` 注入,runner 环境里没有这些变量(也没有 `DISCORD_BOT_TOKEN`),读取器在碰 socket 之前就因认证不可用答 unknown。Bridge 进程里有这些变量,会真正连上 sidecar;在 sidecar 进程重启到本分支代码之前,答案会是 `sidecar_lacks_turn_state`。
 
 没有向任何 pane 输入,没有落盘画面文字;Codex sidecar 这次没有被连接。
+
+## 7. QA 返工(implement attempt 3,QA attempt 2 FAIL)
+
+QA attempt 2(头 `fb3b3db53`)判 FAIL 的两条,Lead 查实后下发返工:
+
+1. **Claude 载体在 529 房里按构造恒为 `unknown / lead_window_unavailable`**:定位器只读生产 launchd 权威(`~/Library/LaunchAgents/com.flywheel.lead.<key>.plist` + `<stateDir>/manifests/<key>.json`),而 529 房的 Claude Lead 登记在房自己的 `launchd-leads.json`。
+2. **Codex 长回合证据缺失**:没有能稳定造出 ≥60 秒回合的夹具。
+
+### 7.1 改了什么(`753732e68`,评审修复 `7576d2f33`、`add4cdc12`、`e6dc0b8d1`、`d908a2296`、`efe8e61c6`)
+
+- **定位器按「本 Bridge 自己的 launchd 权威」找 Lead**(`bridge/fleet-lead-locator.ts`):新增可选 `launchdRegistryPath`。
+  - **未设置(生产)**:行为逐字不变——只读 LaunchAgents plist + `manifests/<key>.json`,缺 plist / 非 v2 / 身份不符一律不可见。
+  - **设置了(529 房)**:它是**唯一**权威,绝不回落到生产 LaunchAgents。链路逐跳交叉核验:注册表里**恰好一行**标签为 `com.flywheel.qa.lead.slot-<n>.<leadId>`、且不是 Codex 行(带 `carrier` 即拒);plist / manifest / Lead 自己的 state dir 必须是规范绝对路径且位于注册表所在目录之内;plist 用严格的结构化解析器读取(固定开头;只认 dict/key/string/array/integer/true/false;键名必须按字面写、不许实体编码;任何层级重复键即拒;没有注释、属性或尾随内容),`Label` 等于该行标签,`ProgramArguments` 恰为 `[绝对路径的 …/flywheel-lead-wrapper-v2.sh, 该行的 manifest]`,`FLYWHEEL_STATE_DIR` 只从 `EnvironmentVariables` 里取;之后原样交给 `locateLeadWindow`(manifest 的 projectName/leadId 身份 + 由 Lead 自己 state dir 推出的规范 socket + pane 探针)。
+- **显式配置,不猜路径**:`scripts/lib/qa-slot-env-contract.json` 新增 redirect `FLYWHEEL_LEAD_LAUNCHD_REGISTRY=${SLOT_DIR}/launchd-leads.json`(boot `mustBeUnderRootIfSet`:设了就必须在房根之内;缺席只意味着回到生产读法,而生产 plist 里没有 `test-slot-*` 项目,照样答 unknown)。`qa-slot-env-contract.test.sh` 断言渲染结果,并锁住它与 `test-deploy.sh` 的 `QA_LEAD_REGISTRY` 是同一路径。
+- **只接到 lead-activity**:`lead-activity-service.ts` 的 `claudeLeadLocatorOptions(env, stateDir)` 读该变量(空白 = 未设置)。`plugin.ts` 里另一个定位器消费者(`locateFleetLeadWindow`)**有意不改**——超出本单范围。
+- **≥60 秒回合夹具** `scripts/qa-lead-activity-long-turn.mjs`(两种载体通用):经插件同款 `chat-ingest` 通道给房里的 Lead 发一条消息,请它前台跑一条 `sleep <hold>`(默认 75 秒);前后与期间轮询 `GET /api/lead-activity`,并采满整段 hold(不在第一次 idle 就停)。真实开始时间取 mailbox 行的 `notified_at`——对 Lead 收件人,Bridge 投递循环在载体接收这批时写它(`delivered_at` 要到 ACK 才写);取不到即「不确定」。**按夹具自己的时钟判,不信接口自报的时长**:夹具这轮 = 在真实开始**之后**读到、报告开始时间落在真实开始 ±30 秒内、且与这轮第一个这样的应答开始时间相差 ≤5 秒(同一轮只有一个开始时间)的 busy 应答——投递前读到的 busy 永远不算这轮;检查窗口从「真实开始 + 15 秒」一直到这轮最后一个 busy **之后的第一个 idle**(没有 idle 收尾就到采样结束),窗口里每个应答都必须是这轮的 busy(出现 idle / unknown / HTTP 错误 / 别的开始时间即 FAIL,包括之后又被这轮 busy 推翻的 idle);夹具自己看到的**不间断** busy 跨度(以这轮最后一个 busy 结尾、中间没有任何别的应答的那一段,首末采样之差)≥60 秒——「投递到开始」的等待、以及被打断之前的 busy 都不计入;在要求的 hold 结束前读到 idle 一律不算通过;前后都要读到 idle;由聊天引起的回合必须是「判断不了」(给出单号即 FAIL)。退出码:0 通过 / 1 接口与夹具不一致(FAIL 证据)/ 2 环境或用法错误 / 3 不确定(Lead 没照做、始终没回到 idle、或投递时间证不出——**不算通过**)。基线读不出 idle 时先发一条不用工具的热身消息。chat-ingest 子进程环境恰为 `PATH/HOME/BRIDGE_URL/PROJECT_NAME/TEAMLEAD_API_TOKEN`(房内值),HOME 是一次性空目录——门铃在 401/403 时会回退读 `$HOME/.flywheel/.env`,给真 HOME 就会把生产 token 发给房里的 Bridge。CommDB 路径必须规范化且在房内。证据只含状态 / 时间 / 来源 / 原因字段,不含消息或画面正文。已列入 `ci.yml` 的 `node --test` 枚举。
+
+QA 用法(房须带 API token 文件,即 `--generalized` 或 `TEST_REPLY_BY_ISSUE=1`):
+`node scripts/qa-lead-activity-long-turn.mjs --slot <n> --agent <leadId> [--hold-seconds 75] --out /abs/evidence.json`,两种载体各跑一次。
+
+### 7.2 本机验证(只跑与改动直接相关的)
+
+统一环境同 §3(`TMPDIR=/tmp/f2882t`、隔离的 `FLYWHEEL_CODEX_HOMES_ROOT` / `FLYWHEEL_CODEX_SESSION_DIR`、排除 `tmux-viewer.macos.test.ts`)。判据:退出码 0、无 Unhandled、条数与预期一致。
+
+| 范围 | 结果 |
+|---|---|
+| teamlead(`753732e68`):`fleet-lead-locator`(25)、`lead-activity-service`(12)、`claude-lead-activity`、`lead-activity-route`、`bridge-child-process-census`、`fly-889-ci-workflow-timeout-guard` | 6 文件 / 70 条,exit 0 |
+| teamlead(`7576d2f33` 评审修复后):`fleet-lead-locator`(34)、`lead-activity-service`、`claude-lead-activity`、`lead-activity-route`、`bridge-child-process-census` | 5 文件 / 74 条,exit 0 |
+| config `flag-truth.test.ts`(读 env 合同) | 43 条,全绿 |
+| claude-runner `kill-path-inventory.test.ts`(扫 `scripts/`) | 5 条,全绿;本次没有新增任何 kill 路径 |
+| `node --test`:`qa-lead-activity-long-turn`(新;`753732e68` 19 条,`7576d2f33` 27 条,`add4cdc12` 29 条,`e6dc0b8d1` 31 条,`d908a2296` 35 条,`efe8e61c6` 36 条,`8b9fa8de1` 38 条,含一条带种子的性质测试)、`fly2655-voice-room`(19)、`teamlead-shards`(9)、`workflow-startup`(7) | 全部 fail 0 |
+| shell:`qa-slot-env-contract`、`run-bridge-isolation-boot`、`fly1680-v1-extinction`、`codex-home-reconcile-cadence`、`test-deploy-launch-boundary`、`ci-structure`、`ci-matrix-coverage`、`ci-shell-suite-enumeration`、`qa-codex-lead-layers`、`test-deploy-generalized`、`test-cycle-bridge` | 全部 exit 0 |
+| `test-deploy-fly1389.test.sh`(写死槽 30–35;跑前 `pgrep` 确认无他人实例;真实 launch spec 期望 vs 实际 Bridge 环境逐项比对,覆盖新 redirect) | 29 passed / 0 failed,exit 0 |
+| `pnpm lint`(两个头各一次) | exit 0,0 error(25 条既有 warning) |
+| `pnpm --filter "flywheel-teamlead..." build` / `pnpm --filter "...flywheel-teamlead" typecheck`(两个头各一次) | exit 0 / exit 0,0 个 `error TS` |
+| 真实渲染器产物:用 `qa_launchd_render_plist` 生成房内 plist(`plutil -lint` OK),定位器解析通过并探到由 Lead 自己 state dir 推出的规范 socket | 通过 |
+
+**变异验证(定位器)**:逐条去掉房内链路的 10 个检查(Label、state dir 在房内、Codex 行拒绝、wrapper 名、manifest 绑定、wrapper 绝对路径、唯一行、plist 在房内、重复键、注册表绝对路径),每一条都让至少 1 个用例变红。首轮有一个存活者(plist 在房外的用例因为文件读不到而「顺便」通过),已补一个「房外 plist 存在且其余全合法」的用例把它杀掉;另外两条负向用例改成只让被测检查起作用(state dir 在房外但 manifest socket 对该目录是规范的;Codex 行带合法 manifest)。评审修复后又对新增守卫做了同样的变异:结构化解析器的重复键、键名字面、单一顶层值、尾随内容 4 条(尾随内容那条首轮存活,补「`</plist>` 后跟纯文本」用例后杀掉);夹具的夹具时钟判时长、回合内只许 busy、缺投递证据判不确定、采满 hold、CommDB 规范化、一次性 HOME 6 条;R2、R3 修复后又对「busy 跨度按夹具首末采样算」「hold 结束前 idle 不算通过」「只算投递后读到的 busy」「同一轮开始时间稳定」4 条做了变异——全部让至少 1 个用例变红。
+
+**消费者扫描**(`git grep -lF`:完整路径、文件名、父目录):
+- `fleet-lead-locator`:自身测试、`lead-activity-service`、`plugin.ts`(未传新选项,行为不变)、`fly1680-v1-extinction.test.sh`(按路径引用)——全跑。
+- `lead-activity-service`:自身测试、`plugin.ts`、路由测试——全跑。`vitest related` 对两者都会经枢纽 `plugin.ts` 退化为整包全量,不用。
+- `qa-slot-env-contract.json` / `.sh`:12 个消费者,除下一条外全跑。**排除** `test-deploy-qa-room.test.sh`:在 manual-only 清单里,需要真房与真 Discord;合同变化由 `fly1389`(真实 launch spec 期望 vs 实际环境逐项比对)与 `run-bridge-isolation-boot`(boot 校验)覆盖。
+- `ci.yml`(只加一行 `node --test`):跑了会解析 node 套件枚举 / 结构的 5 个守卫(`ci-shell-suite-enumeration`、`ci-structure`、`ci-matrix-coverage`、`teamlead-shards`、`workflow-startup`)与 `fly-889` 超时守卫。**排除** `ci-full`、`ship-ci-guard`、`required-wall-clock-thresholds`、`ci-full-reuse`、`fly1663-launchd-foundation`、`fly2102-flag-freeze`、`qa-fly-2007-phase0-analyze`、`test-runner-workspace-trust`、`test-worktree-removal-contract`、`update-flywheel-sources`:它们读的是 ci.yml 里与本行无关的 job / 键(full-CI 触发、超时、flag 冻结、工作区信任等)。另:`required-wall-clock-thresholds` 与 `feature-flags-drift` 在 main 的 full CI 上有确定性 ENOBUFS 红,归 FLY-2907,与本单无关(Lead 2026-09-26 告知)。
+
+**没做的**:没有进 529 房。房内 Claude 定位与长回合夹具的真机效果只由单测(按 `qa-launchd-lead.sh` 真实布局构造)证明;夹具依赖 Lead 照做「前台 sleep」,不照做时答 3(不确定)而不是通过。
+
+### 7.3 代码评审(`codex:rescue`,gpt-6-astra,只读)
+
+| 轮次 | 头 | 结论 | 处置 |
+|---|---|---|---|
+| R1 | `753732e68`(返工增量) | CHANGES REQUESTED:3 HIGH(chat-ingest 子进程的真 HOME 让门铃 401/403 回退读生产 `.env`;夹具信接口自报时长、回合内持续 unknown 也能 PASS,且第一次 idle 就停采;CommDB 路径可用 `..` 逃出房间)+ 2 MEDIUM(plist 正则解析认不出实体编码的重复键和 `EnvironmentVariables` 外的键;缺投递证据时退回注入时刻仍能 PASS) | 五条全部采纳,`7576d2f33` 修复,见 7.1 与 7.2 |
+| R2 | `7576d2f33`(只验 R1 五条) | R1 五条全部 RESOLVED;新发现 1 HIGH:修复里新增的 `idleBeforeHoldEnd` 只记录不参与判定,且时长从真实开始算、把启动等待算进去,一个 56 秒的回合(busy 10–66 秒、hold 75 秒)会被判 PASS → CHANGES REQUESTED | 采纳,`add4cdc12`:跨度按夹具首末 busy 采样算;hold 结束前 idle 判不确定;复现用例两条 |
+| R3 | `add4cdc12`(只验 R2 那条) | R2 那条 RESOLVED;新发现 1 HIGH:投递前读到的另一轮 busy(报告开始时间也在 ±30 秒内)会被当成这轮的起点,把 56 秒的回合撑到 60 秒(`--poll-seconds 30` 可复现)→ CHANGES REQUESTED | 采纳,`e6dc0b8d1`:只算投递后读到、开始时间稳定的 busy;回合内出现别的开始时间即 FAIL;复现用例两条。提 R4 前自查了其余 PASS 条件(稀疏采样、容差内的别的轮、hold 前 idle、投递前 idle),没有再找到放行路径 |
+| R4 | `e6dc0b8d1`(只验 R3 那条) | R3 那条 RESOLVED;新发现 1 HIGH:「稳定开始时间」筛选把检查窗口缩到最后一个稳定 busy,之后的 unknown 与别的开始时间都掉出窗口 → CHANGES REQUESTED | 采纳,`d908a2296`:窗口改到「这轮最后一个 busy 之后的第一个 idle」;连续三轮都是修复引入新的放行路径,因此不再逐例打补丁,改为**性质测试**:另写一条与判定代码无关的 PASS 不变式,随机生成 20 万条采样序列,凡判 PASS 必须满足它——当前头 0 违例(17829 次 PASS);同一探针对 `e6dc0b8d1`、`7576d2f33` 分别找出 2546、7642 次违例,证明它测得出这类缺陷。以 8000 次、固定种子的形式进了测试文件 |
+| R5 | `d908a2296`(只验 R4 那条 + 不变式本身是否够强) | R4 那条 RESOLVED;新发现 1 HIGH,且**不变式有同样的盲点**:连续性从「真实开始 + 15 秒」才查,跨度却从 grace 内被 idle 打断之前的第一个 busy 算起(busy@5s、idle@10/15s、busy 20–75s 被算成 70 秒)→ CHANGES REQUESTED | 采纳,`efe8e61c6`:判定与不变式都只算以这轮最后一个 busy 结尾的不间断一段。又发现随机生成器根本造不出这种形状(`d908a2296` 与当前头在 20 万条上判定逐条相同),改为连续取值、偏向早期,并加一半「单轮 + 一段短中断」的结构化样本;改后同一性质在测试文件里(3000 次、固定种子)对 `7576d2f33`、`e6dc0b8d1`、`d908a2296` 三个旧判定全部报错,对当前头通过;20 万条本地复跑 0 违例(`d908a2296` 1025 次违例) |
+| R6 | `efe8e61c6`(只验 R5 那条 + 不变式强度) | R5 那条 RESOLVED;**判定逻辑本轮没有再找到放行路径**。2 MEDIUM 都在测试里的不变式:计入跨度的 grace 内 busy 没查 trigger;30 秒开始界限只查了第一个样本 → CHANGES REQUESTED | 采纳,`8b9fa8de1`(只改测试):对所有计入的 busy 逐个查 30 秒界限与 trigger;评审给的两个反例进测试(判定都答 FAIL,不变式指出违例);性质测试仍对三个旧判定报错、对当前头通过;20 万条本地复跑 0 违例 |
+| R7 | `8b9fa8de1`(只验 R6 两条) | R6 两条 RESOLVED;不变式与合同之间未发现剩余缺口;评审自己复跑定向测试与 3000 次性质测试(179 次 PASS、0 违例),三个旧判定都被拦下 → **APPROVED** | — |
+
+R4 起每轮都只验上一轮的条目。连续几轮「修复引入新的放行路径」都出在 QA 夹具的判定逻辑(不是产品代码);定位器与房内注册表那部分自 R2 起没有新的发现。已给 Lead 发非阻塞说明(`eae7d543`),在 APPROVED 前没有收到不同裁定。
+
+### 7.4 最终头的本机结果
+
+`8b9fa8de1`(之后只有文档、进度与里程碑提交):`packages/` 自 `7576d2f33` 起无改动,7.2 表里 `7576d2f33` 那几行对它仍然有效;夹具测试 38/38(含 3000 次固定种子性质测试);`ci-shell-suite-enumeration`、`kill-path-inventory` 通过;`pnpm lint` exit 0、0 error。没有请求 full CI,没有进 529 房。
+
