@@ -179,6 +179,13 @@ export class WebRtcLeg implements RealtimeMediaLeg {
 				video: [],
 			},
 			iceServers: options.stunUrls.map((urls) => ({ urls })),
+			// One ICE/DTLS transport for audio and the data channel. With
+			// werift 0.24.4's default max-compat an offer gathers a transport per
+			// m-line, and once the answer bundles them the dropped one is no
+			// longer tracked: pc.close() leaves its two host UDP sockets open and
+			// the daemon never exits (FLY-2885 QA@1). The realtime endpoint
+			// answers "a=group:BUNDLE 0 1" (live check 2026-09-26).
+			bundlePolicy: "max-bundle",
 		});
 		this.pc.addTransceiver(this.track, { direction: "sendrecv" });
 		this.channel = this.pc.createDataChannel("oai-events");

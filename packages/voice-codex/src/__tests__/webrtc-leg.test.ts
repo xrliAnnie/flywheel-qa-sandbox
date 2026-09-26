@@ -302,6 +302,21 @@ describe("WebRTC leg", () => {
 		expect(leg.writePcm24(Buffer.alloc(960))).toBe(false);
 	}, 20_000);
 
+	it("releases every UDP socket after a connected session closes, so the daemon can exit (QA@1)", async () => {
+		const udp = () =>
+			process.getActiveResourcesInfo().filter((kind) => kind === "UDPWrap")
+				.length;
+		// Earlier legs in this file close asynchronously; nothing may linger.
+		await vi.waitFor(() => expect(udp()).toBe(0), { timeout: 3_000 });
+		const { leg, server } = await connected();
+		expect(udp()).toBeGreaterThan(0);
+		await leg.close();
+		await server.pc.close();
+		// werift 0.24.4 with max-compat left the unbundled transport's two host
+		// sockets open after BUNDLE negotiation, keeping the process alive.
+		await vi.waitFor(() => expect(udp()).toBe(0), { timeout: 3_000 });
+	}, 20_000);
+
 	it("never reports a self-initiated close as lost", async () => {
 		const { leg, lost } = await connected();
 		await leg.close();
