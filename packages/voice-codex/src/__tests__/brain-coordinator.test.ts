@@ -197,7 +197,111 @@ describe("BrainCoordinator", () => {
 		expect(h.dropped).toContainEqual({ businessId: "h1", kind: "cue" });
 		expect(h.queued.at(-1)).toMatchObject({
 			kind: "result",
-			text: "这件没查成：权限。细节我发到 thread。",
+			text: "这件没查成：权限。",
 		});
 	});
+});
+
+it("validates background numbers against tool output, never the final answer or its text version", async () => {
+	const queued: BrainSpeechRequest[] = [];
+	const posted: string[] = [];
+	const coordinator = new BrainCoordinator({
+		speech: {
+			enqueue: async (request) => {
+				queued.push(request);
+				return "spoken";
+			},
+			drop: () => {},
+		},
+		postThread: async (request) => {
+			posted.push(request.text);
+		},
+	});
+	coordinator.registerHandoff({ handoffId: "h", inputTranscript: "查状态" });
+	coordinator.turnStarted("t");
+	coordinator.turnTerminal({
+		turnId: "t",
+		outcome: "completed",
+		spokenSegments: ["FLY-9999 在 PR #9876"],
+		threadSegments: ["FLY-9999 PR #9876 https://example.test"],
+		sources: [{ itemId: "tool-1", text: "FLY-2886 PR #2886" }],
+	});
+	await Promise.resolve();
+	await Promise.resolve();
+	expect(queued.map((row) => row.text)).toEqual([
+		"这条我发到 thread 了，编号以文字为准。",
+	]);
+	expect(posted).toEqual(["FLY-9999 PR #9876 https://example.test"]);
+});
+
+it("keeps unposted fallback material in unfinished minutes and makes no publication claim", async () => {
+	const queued: BrainSpeechRequest[] = [];
+	const coordinator = new BrainCoordinator({
+		speech: {
+			enqueue: async (row) => {
+				queued.push(row);
+				return "spoken";
+			},
+			drop: () => {},
+		},
+		postThread: async () => {
+			throw new Error("offline");
+		},
+	});
+	coordinator.registerHandoff({ handoffId: "h", inputTranscript: "查状态" });
+	coordinator.turnStarted("t");
+	coordinator.turnTerminal({
+		turnId: "t",
+		outcome: "completed",
+		spokenSegments: ["FLY-9999"],
+		sources: [{ itemId: "tool", text: "FLY-2886" }],
+	});
+	await Promise.resolve();
+	await Promise.resolve();
+	expect(queued[0]?.text).toBe("编号我没核对上，等下再给你");
+	expect(coordinator.unfinished()).toEqual(
+		expect.arrayContaining([
+			expect.objectContaining({ text: "FLY-9999", status: "unfinished" }),
+		]),
+	);
+});
+
+it("posts preserved text version before its pointer and retains pending result during close", async () => {
+	let resolvePost!: () => void;
+	const queued: BrainSpeechRequest[] = [];
+	const coordinator = new BrainCoordinator({
+		speech: {
+			enqueue: async (row) => {
+				queued.push(row);
+				return "spoken";
+			},
+			drop: () => {},
+		},
+		postThread: () =>
+			new Promise<void>((resolve) => {
+				resolvePost = resolve;
+			}),
+	});
+	coordinator.registerHandoff({
+		handoffId: "h",
+		inputTranscript: "查 FLY-2886",
+	});
+	coordinator.turnStarted("t");
+	coordinator.turnTerminal({
+		turnId: "t",
+		outcome: "completed",
+		spokenSegments: ["FLY-2886 已查到"],
+		threadSegments: ["FLY-2886 https://example.test"],
+	});
+	expect(queued).toEqual([]);
+	expect(coordinator.unfinished()).toEqual(
+		expect.arrayContaining([
+			expect.objectContaining({ text: "FLY-2886 https://example.test" }),
+		]),
+	);
+	coordinator.close();
+	resolvePost();
+	await Promise.resolve();
+	await Promise.resolve();
+	expect(queued).toEqual([]);
 });

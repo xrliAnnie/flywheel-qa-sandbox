@@ -35,8 +35,10 @@ import {
 	leadModelWritableRoot,
 } from "./permission-profile.js";
 import type { LeadTargetLockClient } from "./target-lock-client.js";
+import type { VoiceCapabilityDenials } from "./voice-denial.js";
 
 export interface LeadCapabilityParent {
+	readonly manifest: LeadCapabilityManifest;
 	readonly codexPath: string;
 	readonly skillGaps?: LeadCapabilityManifest["skillGaps"];
 	readonly skillSources?: {
@@ -55,6 +57,7 @@ export interface LeadCapabilityParent {
 	close(): Promise<void>;
 }
 export interface LeadCapabilityParentOptions {
+	voiceDenials?: VoiceCapabilityDenials;
 	manifest: LeadCapabilityManifest;
 	journal: SqliteJournalStore;
 	activationRoot: string;
@@ -323,6 +326,7 @@ export async function startLeadCapabilityParent(
 				now: Date.now(),
 			});
 		broker = new LeadCapabilityBroker({
+			voiceDenials: options.voiceDenials,
 			projectName: manifest.projectName,
 			leadId: manifest.leadId,
 			activationId: manifest.activationId,
@@ -341,6 +345,7 @@ export async function startLeadCapabilityParent(
 		await socket.listen();
 		await current();
 		return Object.freeze({
+			manifest: options.manifest,
 			codexPath: options.codexPath,
 			skillGaps,
 			skillSources: {

@@ -1,0 +1,36 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ❯ |parallel| src/lead-capabilities/__tests__/target-lock-client.test.ts (7 tests | 1 failed) 58ms
+   ✓ resident target-lock rollback policy > does not acquire locks for a disabled Lead with no outstanding writes 17ms
+   ✓ resident target-lock rollback policy > continues checking outstanding targets while draining 5ms
+   ✓ resident target-lock rollback policy > never applies the resident disabled shortcut to voice 4ms
+   ✓ resident target-lock rollback policy > fails closed if the read-only policy lookup cannot be verified 8ms
+   ✓ resident target-lock rollback policy > rechecks authority even when the disabled policy has been cached 3ms
+   ✓ retains only a matched settlement ticket after activation revocation 7ms
+   × records a voice founder-only notice at the fixed Bridge endpoint and requires its correlated receipt 13ms
+     → f.client.recordFounderDenial is not a function
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |parallel| src/lead-capabilities/__tests__/target-lock-client.test.ts > records a voice founder-only notice at the fixed Bridge endpoint and requires its correlated receipt
+TypeError: f.client.recordFounderDenial is not a function
+ ❯ src/lead-capabilities/__tests__/target-lock-client.test.ts:151:24
+    149|  const f = fixture(true, true);
+    150|  f.fetchImpl.mockImplementationOnce(async () => new Response(JSON.stri…
+    151|  expect(await f.client.recordFounderDenial!({operationId: "bridge.merg…
+       |                        ^
+    152|  const call = f.fetchImpl.mock.calls[0]!;
+    153|  expect(new URL(call[0]).pathname).toBe("/api/lead-capabilities/target…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 6 passed (7)
+   Start at  00:37:11
+   Duration  2.54s (transform 168ms, setup 146ms, collect 204ms, tests 58ms, environment 0ms, prepare 109ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/lead-capabilities/__tests__/target-lock-client.test.ts

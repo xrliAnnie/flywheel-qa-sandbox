@@ -102,6 +102,44 @@ describe("BridgeVoiceClient desired response decoding", () => {
 });
 
 describe("BridgeVoiceClient safe request diagnostics", () => {
+	it("revalidates exact outbound claim provenance before a tell attempt", async () => {
+		const fetchImpl = vi
+			.fn<typeof fetch>()
+			.mockResolvedValue(response('{"current":false}'));
+		const bridge = client(fetchImpl);
+		const lease = new VoiceLease(() => 100);
+		lease.install(100, 15000, 2000);
+		const original = {
+			attemptToken: "attempt",
+			messageId: "original",
+			text: "FLY-2886",
+		};
+		await expect(
+			bridge.revalidateOutbound("session-a", 3, "lease-a", lease, original),
+		).resolves.toBe(false);
+		expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(
+			`${LOOPBACK_URL}/api/voice/sessions/session-a/outbound/3/revalidate`,
+		);
+		expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))).toEqual(
+			original,
+		);
+	});
+
+	it("binds natural-restart context to its requested generation", async () => {
+		const fetchImpl = vi
+			.fn<typeof fetch>()
+			.mockResolvedValue(response('{"contextGeneration":7}'));
+		const bridge = client(fetchImpl);
+		const lease = new VoiceLease(() => 100);
+		lease.install(100, 15000, 2000);
+		await expect(
+			bridge.context("session-a", "lease-a", lease, 7),
+		).resolves.toEqual({ contextGeneration: 7 });
+		expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(
+			`${LOOPBACK_URL}/api/voice/sessions/session-a/context?generation=7`,
+		);
+	});
+
 	it("loads leased context and persists normalized utterances through master routes", async () => {
 		const fetchImpl = vi
 			.fn<typeof fetch>()

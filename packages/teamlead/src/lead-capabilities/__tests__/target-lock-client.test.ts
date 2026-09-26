@@ -144,3 +144,41 @@ it("retains only a matched settlement ticket after activation revocation", async
 	await expect(f.client.acquire(input())).rejects.toThrow("revoked");
 	expect(f.calls).toEqual(["acquire", "release"]);
 });
+
+it("records a voice founder-only notice at the fixed Bridge endpoint and requires its correlated receipt", async () => {
+	const f = fixture(true, true);
+	f.fetchImpl.mockImplementationOnce(
+		async () =>
+			new Response(
+				JSON.stringify({
+					requestId,
+					status: "recorded",
+					receiptId: "lead-event:17",
+				}),
+			),
+	);
+	expect(
+		await f.client.recordFounderDenial!({
+			operationId: "bridge.merge",
+			requestId,
+		}),
+	).toBe("lead-event:17");
+	const call = f.fetchImpl.mock.calls[0]!;
+	expect(new URL(call[0]).pathname).toBe(
+		"/api/lead-capabilities/target-lock/founder-denial",
+	);
+	f.fetchImpl.mockImplementationOnce(
+		async () => new Response(JSON.stringify({ requestId, status: "recorded" })),
+	);
+	await expect(
+		f.client.recordFounderDenial!({ operationId: "bridge.merge", requestId }),
+	).rejects.toThrow();
+	const resident = fixture(false);
+	await expect(
+		resident.client.recordFounderDenial!({
+			operationId: "bridge.merge",
+			requestId,
+		}),
+	).rejects.toThrow();
+	expect(resident.fetchImpl).not.toHaveBeenCalled();
+});

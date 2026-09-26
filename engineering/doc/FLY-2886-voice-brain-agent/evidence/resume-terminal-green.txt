@@ -1,0 +1,17 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ✓ |parallel| src/lead-capabilities/__tests__/bridge-terminal-evidence.test.ts (3 tests) 342ms
+ ✓ |parallel| src/lead-capabilities/__tests__/target-lock-provider-integration.test.ts (6 tests) 6559ms
+   ✓ target lock provider and durable state integration > keeps rollback draining until the timed-out original provider settles, then permits the resident's later write  1776ms
+   ✓ target lock provider and durable state integration > retains unknown when transport aborts although the remote later commits without a success response  778ms
+   ✓ target lock provider and durable state integration > removes a canceled resident waiter so it cannot block the next voice write  1520ms
+   ✓ target lock provider and durable state integration > clears abandoned waiters across Bridge restart while preserving the dispatched holder  918ms
+   ✓ target lock provider and durable state integration > preserves a late browser success as receipt evidence even after the output-delivery guard is revoked  737ms
+   ✓ target lock provider and durable state integration > does not classify a browser tool error response as terminal success  829ms
+
+ Test Files  2 passed (2)
+      Tests  9 passed (9)
+   Start at  00:26:36
+   Duration  29.41s (transform 11.46s, setup 153ms, collect 19.99s, tests 6.90s, environment 0ms, prepare 396ms)
+

@@ -10,6 +10,7 @@ import {
 	BridgeVoiceRequestError,
 	type VoiceLease,
 } from "./bridge-client.js";
+import type { SpeechArbiterTerminal } from "./codex/SpeechArbiter.js";
 import type {
 	VoiceHealthObservation,
 	VoiceHealthObserver,
@@ -56,6 +57,11 @@ export type VoiceDaemonIterationResult =
 	  };
 
 export interface ActiveVoiceSession {
+	deliverTell?(input: {
+		businessId: string;
+		text: string;
+		revalidate?: () => Promise<boolean>;
+	}): Promise<SpeechArbiterTerminal | "disabled">;
 	receiveHealth(): ReceiveHealth | undefined;
 	start(): Promise<{ founderPresent: boolean }>;
 	waitForFounder(timeoutMs: number): Promise<boolean>;
@@ -73,6 +79,13 @@ export interface ActiveVoiceSession {
 }
 
 interface VoiceDaemonBridge {
+	revalidateOutbound?(
+		sessionId: string,
+		seq: number,
+		leaseToken: string,
+		lease: VoiceLease,
+		original: { attemptToken: string; messageId: string; text: string },
+	): Promise<boolean>;
 	desired(): Promise<{ sessionId: string } | null>;
 	claim(
 		sessionId: string,
@@ -902,31 +915,68 @@ export class VoiceDaemon {
 				if (error instanceof SessionEnded || authorityLost(error)) throw error;
 				continue;
 			}
-			const speeches = prepareReplySpeech(
-				item.text,
-				this.options.timing.speechChunkTokens,
-			);
-			let status: "confirmed" | "unconfirmed" | "failed" | "dropped" =
-				speeches.length === 0 ? "dropped" : "confirmed";
+			let status: "confirmed" | "unconfirmed" | "failed" | "dropped" = "failed";
 			try {
-				if (speeches.length === 0) {
-					context.lease.assert();
-					await lifetime.wait(() =>
-						Promise.resolve(session.notify?.("📻 没有可朗读内容，请看文字")),
+				const terminal = session.deliverTell
+					? await lifetime.wait(() =>
+							session.deliverTell!({
+								businessId: `outbound:${item.seq}`,
+								text: item.text,
+								revalidate: async () => {
+									context.lease.assert();
+									if (!this.options.bridge.revalidateOutbound)
+										throw new Error("voice_tell_source_unavailable");
+									return lifetime.wait(() =>
+										this.options.bridge.revalidateOutbound!(
+											context.sessionId,
+											item.seq,
+											context.leaseToken,
+											context.lease,
+											{
+												attemptToken,
+												messageId: item.messageId,
+												text: item.text,
+											},
+										),
+									);
+								},
+							}),
+						)
+					: "disabled";
+				if (terminal !== "disabled") {
+					status =
+						terminal === "spoken"
+							? "confirmed"
+							: terminal === "stale_dropped"
+								? "dropped"
+								: "failed";
+				} else {
+					const speeches = prepareReplySpeech(
+						item.text,
+						this.options.timing.speechChunkTokens,
 					);
-				}
-				for (const speech of speeches) {
-					context.lease.assert();
-					const spoken = await lifetime.wait(() => session.speak(speech));
-					if (spoken === "failed") status = "failed";
-					else if (spoken === "unconfirmed" && status === "confirmed") {
-						status = "unconfirmed";
+					status = speeches.length === 0 ? "dropped" : "confirmed";
+
+					if (speeches.length === 0) {
+						context.lease.assert();
+						await lifetime.wait(() =>
+							Promise.resolve(session.notify?.("📻 没有可朗读内容，请看文字")),
+						);
+					}
+					for (const speech of speeches) {
+						context.lease.assert();
+						const spoken = await lifetime.wait(() => session.speak(speech));
+						if (spoken === "failed") status = "failed";
+						else if (spoken === "unconfirmed" && status === "confirmed") {
+							status = "unconfirmed";
+						}
 					}
 				}
 			} catch (error) {
 				if (error instanceof SessionEnded || authorityLost(error)) throw error;
-				status = speeches.length === 0 ? "dropped" : "failed";
+				status = "failed";
 			}
+
 			for (let receiptAttempt = 0; receiptAttempt < 2; receiptAttempt += 1) {
 				try {
 					await lifetime.wait(() =>

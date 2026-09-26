@@ -7,9 +7,12 @@ import {
 	leadCapabilityAuthorityFields,
 	leadCapabilityAuthorityFromEnvelope,
 } from "../lead-capabilities/authority.js";
+import { getLeadCapability } from "../lead-capabilities/catalog.js";
+import type { OperationReceiptStore } from "../lead-capabilities/receipts.js";
 import { effectiveVoiceBackground } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import { captureLeadCapabilityScope } from "./lead-capability-scope.js";
+import { readVoiceTargetTerminalProof } from "./voice-target-reconcile.js";
 
 const coordinate = z.string().regex(/^[A-Za-z0-9_.:-]{1,256}$/);
 const base = {
@@ -37,18 +40,29 @@ const acquireSchema = z
 const fenceSchema = z.object({ ...base, fence: z.string().uuid() }).strict();
 const releaseSchema = fenceSchema.extend({
 	outcome: z.enum(["succeeded", "rejected", "not_dispatched", "unknown"]),
+	providerRef: coordinate.optional(),
 	reason: z
 		.string()
 		.regex(/^[a-z][a-z0-9_]{0,95}$/)
 		.optional(),
 });
 const cancelSchema = z.object(base).strict();
+const reconcileSchema = z
+	.object({
+		...base,
+		lockedRequestId: z.string().uuid(),
+		mode: z.enum(["receipt", "force_clear"]),
+		riskAcknowledgement: z.literal("可能被旧请求覆盖").optional(),
+	})
+	.strict();
 const denied = () => new Error("target_lock_scope_denied");
 
 export function createLeadCapabilityTargetLockRouter(options: {
 	store: StateStore;
 	projectsPath?: string;
 	homeDir?: string;
+	stateDir?: string;
+	bridgeReceipts?: OperationReceiptStore;
 	env?: NodeJS.ProcessEnv;
 	now?: () => number;
 }): Router {
@@ -94,6 +108,45 @@ export function createLeadCapabilityTargetLockRouter(options: {
 		scope.assertSourceCurrent();
 		return { authority, scope };
 	};
+	router.post("/founder-denial", (req, res) => {
+		try {
+			const body = cancelSchema.parse(req.body);
+			const { authority, scope } = authorize(body);
+			if (
+				authority.kind !== "voice_session" ||
+				!effectiveVoiceBackground(scope.lead).enabled ||
+				getLeadCapability(body.operationId)?.classification !== "reserved" ||
+				body.targetKey !==
+					`${body.projectName}:founder-only:${body.operationId}`
+			)
+				throw denied();
+			scope.assertSourceCurrent();
+			const eventId = `voice-founder-denied:${body.projectName}:${authority.sessionId}:${body.requestId}:${body.operationId}`;
+			const seq = options.store.appendLeadEvent(
+				body.leadId,
+				eventId,
+				"voice_founder_only_denied",
+				JSON.stringify({
+					event_type: "voice_founder_only_denied",
+					execution_id: "",
+					issue_id: "",
+					project_name: body.projectName,
+					summary: `语音请求 ${body.operationId} 已拒绝：只能由 founder 本人处理，未执行操作。requestId ${body.requestId}。`,
+					operationId: body.operationId,
+					requestId: body.requestId,
+					activationId: body.activationId,
+					outcome: "not_executed",
+				}),
+			);
+			res.json({
+				requestId: body.requestId,
+				status: "recorded",
+				receiptId: `lead-event:${seq}`,
+			});
+		} catch {
+			res.status(403).json({ error: "voice_founder_denial_unavailable" });
+		}
+	});
 	router.post("/policy", (req, res) => {
 		try {
 			const body = acquireSchema.parse(req.body);
@@ -169,8 +222,11 @@ export function createLeadCapabilityTargetLockRouter(options: {
 			// revocation; it grants no acquire/mark or provider permission.
 			const authority = leadCapabilityAuthorityFromEnvelope(body);
 			const lock = options.store.getCapabilityTargetLock(body.targetKey);
+			if (!lock) {
+				res.json({ requestId: body.requestId, status: "not_owner" });
+				return;
+			}
 			if (
-				!lock ||
 				lock.projectName !== body.projectName ||
 				lock.leadId !== body.leadId ||
 				lock.holderActivation !== body.activationId ||
@@ -189,28 +245,70 @@ export function createLeadCapabilityTargetLockRouter(options: {
 				fence: body.fence,
 				outcome: body.outcome,
 				reason: body.reason,
+				operationId: body.operationId,
+				providerRef: body.providerRef,
 			});
-			if (
-				status === "released" &&
-				authority.kind === "voice_session" &&
-				body.outcome === "succeeded"
-			)
-				options.store.tryClaimLeadEvent(
-					body.leadId,
-					`voice-background-action:${body.requestId}`,
-					"voice_background_action",
-					JSON.stringify({
-						operationId: body.operationId,
-						targetKey: body.targetKey,
-						receiptId: body.requestId,
-						sessionId: authority.sessionId,
-					}),
-				);
 			res.json({ requestId: body.requestId, status });
 		} catch {
 			res.status(403).json({ error: "target lock scope denied" });
 		}
 	});
+	router.post("/reconcile", (req, res) => {
+		try {
+			const body = reconcileSchema.parse(req.body);
+			const { authority, scope } = authorize(body);
+			if (authority.kind !== "carrier") throw denied();
+			const lock = options.store.getCapabilityTargetLock(body.targetKey);
+			if (
+				!lock ||
+				lock.projectName !== body.projectName ||
+				lock.leadId !== body.leadId ||
+				lock.requestId !== body.lockedRequestId
+			) {
+				res.json({ requestId: body.requestId, status: "not_owner" });
+				return;
+			}
+			scope.assertSourceCurrent();
+			if (body.mode === "force_clear") {
+				const status = options.store.forceClearCapabilityTargetLock({
+					projectName: body.projectName,
+					leadId: body.leadId,
+					targetKey: body.targetKey,
+					requestId: lock.requestId,
+					fence: lock.fence,
+					actorActivation: body.activationId,
+					riskAcknowledgement: body.riskAcknowledgement ?? "",
+					now: options.now?.() ?? Date.now(),
+				});
+				res.json({ requestId: body.requestId, status });
+				return;
+			}
+			const proof = readVoiceTargetTerminalProof(
+				options.stateDir ?? env.FLYWHEEL_STATE_DIR ?? join(home, ".flywheel"),
+				lock,
+				options.bridgeReceipts,
+			);
+			if (!proof) {
+				res.json({
+					requestId: body.requestId,
+					status: "target_pending_reconcile",
+				});
+				return;
+			}
+			scope.assertSourceCurrent();
+			const status = options.store.releaseCapabilityTargetLock({
+				targetKey: lock.targetKey,
+				activationId: lock.holderActivation,
+				requestId: lock.requestId,
+				fence: lock.fence,
+				...proof,
+			});
+			res.json({ requestId: body.requestId, status });
+		} catch {
+			res.status(403).json({ error: "target lock scope denied" });
+		}
+	});
+
 	router.post("/cancel", (req, res) => {
 		try {
 			const body = cancelSchema.parse(req.body);

@@ -47,9 +47,39 @@ export function createBrowserHandlers(options: {
 						input.arguments,
 						ctx.signal,
 					);
+					// Record only a validated provider success before checking whether its
+					// output may still be delivered. This cannot start another operation.
+					const terminal = z
+						.object({
+							isError: z.literal(false).optional(),
+							content: z
+								.array(
+									z
+										.object({
+											type: z.literal("text"),
+											text: z.string().max(262144),
+										})
+										.strict(),
+								)
+								.max(64),
+							structuredContent: z.unknown().optional(),
+							_meta: z.unknown().optional(),
+						})
+						.strict()
+						.safeParse(output.result);
+					if (
+						operation.classification === "write" &&
+						terminal.success &&
+						Buffer.byteLength(JSON.stringify(output.result)) <= 4 * 1024 * 1024
+					)
+						await ctx.recordTerminalEvidence?.({
+							status: "succeeded",
+							providerRef: `browser:${generation}:${ctx.requestId}`,
+						});
 					await ctx.assertCurrent();
 					options.assertCurrent();
 					const data = await projectBrowserOutput(name, output, options);
+					if (data.isError) return { status: "unknown" };
 					return {
 						status: "succeeded",
 						providerRef: `browser:${generation}:${ctx.requestId}`,

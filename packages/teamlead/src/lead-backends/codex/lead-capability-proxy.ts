@@ -12,6 +12,7 @@ import type {
 	OperationRequest,
 	OperationResult,
 } from "../../lead-capabilities/broker.js";
+import { OperationRequestSchema } from "../../lead-capabilities/broker.js";
 import { getLeadCapability } from "../../lead-capabilities/catalog.js";
 import {
 	createLeadCapabilityManifest,
@@ -197,8 +198,12 @@ export function createLeadCapabilityProxy(
 		const index = operations.findIndex(
 			(operation) => operation.operationId === args?.operationId,
 		);
-		if (index < 0) return failure("operation_not_in_manifest");
-		const parsed = variants[index]!.safeParse(args);
+		const voiceDenial =
+			index < 0 && /^voice:[0-9a-f-]{36}$/i.test(manifest.activationId);
+		if (index < 0 && !voiceDenial) return failure("operation_not_in_manifest");
+		const parsed = voiceDenial
+			? OperationRequestSchema.safeParse(args)
+			: variants[index]!.safeParse(args);
 		if (!parsed.success) return failure("invalid_operation_request");
 		if (
 			Buffer.byteLength(JSON.stringify(parsed.data)) + 1 >
@@ -210,6 +215,14 @@ export function createLeadCapabilityProxy(
 				await requestClient(options.socketPath, parsed.data),
 			);
 			if (result.requestId !== parsed.data.requestId)
+				return failure("invalid_broker_result", parsed.data.requestId);
+			if (
+				voiceDenial &&
+				(result.status !== "rejected" ||
+					!["founder_only_denied", "unavailable", "invalid"].includes(
+						result.errorCode ?? "",
+					))
+			)
 				return failure("invalid_broker_result", parsed.data.requestId);
 			if (
 				result.status === "succeeded" &&

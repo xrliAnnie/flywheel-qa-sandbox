@@ -5,3 +5,5 @@ export {
 	startVoiceCapabilityParent,
 	type VoiceCapabilityParentInput,
 } from "./lead-capabilities/voice-capability-parent.js";
+
+export { bindAdmittedVoiceCapabilities } from "./lead-capabilities/voice-capability-brief.js";

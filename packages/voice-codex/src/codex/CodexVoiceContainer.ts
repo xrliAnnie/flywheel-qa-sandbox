@@ -17,6 +17,7 @@ import {
 	spawnCodexAppServer,
 } from "flywheel-teamlead/codex-process";
 import {
+	bindAdmittedVoiceCapabilities,
 	startVoiceCapabilityParent,
 	type VoiceCapabilityParentInput,
 } from "flywheel-teamlead/voice-capability";
@@ -57,6 +58,7 @@ const CLOSE_RPC_TIMEOUT_MS = 5_000;
 const execFileAsync = promisify(execFile);
 
 export interface CodexVoiceContextSnapshot {
+	readonly rosterNames?: readonly string[];
 	contextGeneration?: number;
 	baseInstructions: string;
 	realtimePrompt: string;
@@ -946,7 +948,11 @@ export class CodexVoiceContainer {
 			await process.start();
 			assertActive();
 			if (violation) throw new Error(violation);
-			if (parent) await assertCapabilityProcess(process, parent);
+			if (parent) {
+				await assertCapabilityProcess(process, parent);
+				snapshot = bindAdmittedVoiceCapabilities(snapshot, parent.manifest);
+				assertContext(snapshot, input.sessionId, true);
+			}
 			const opened = await process.startThreadWithResult(
 				parent
 					? {
@@ -1092,6 +1098,11 @@ export class CodexVoiceContainer {
 						input.sessionId,
 						input.background?.enabled === true,
 					);
+					if (parent) {
+						await assertCapabilityProcess(process, parent);
+						snapshot = bindAdmittedVoiceCapabilities(snapshot, parent.manifest);
+						assertContext(snapshot, input.sessionId, true);
+					}
 					if (
 						snapshot.contextGeneration !== undefined &&
 						snapshot.contextGeneration !== generation

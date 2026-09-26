@@ -8,6 +8,7 @@ import {
 import { getLeadCapability } from "../catalog.js";
 import type { LeadCapabilityRuntimeAuthorityOptions } from "../runtime-authority.js";
 import { resolveLeadCapabilityRuntimeAuthority } from "../runtime-authority.js";
+import { observeBridgeTerminalEvidence } from "./bridge-terminal-evidence.js";
 
 const operations = [
 	"discord.thread.resolve",
@@ -172,7 +173,7 @@ function createHandlers(
 					try {
 						signal.throwIfAborted();
 						trusted.assertActivationCurrent();
-						const response = await fetchImpl(endpoint, {
+						let response = await fetchImpl(endpoint, {
 							method: "POST",
 							redirect: "error",
 							headers: {
@@ -181,6 +182,13 @@ function createHandlers(
 							},
 							body,
 							signal,
+						});
+						response = await observeBridgeTerminalEvidence(response, {
+							operationId,
+							raw,
+							context,
+							receiptOnly,
+							secrets: [token!, authoritySecret],
 						});
 						responseBody = response.body;
 						await current(context);

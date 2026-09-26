@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { VoiceCapabilityActionLedgerEntry } from "flywheel-teamlead/voice-capability";
 import {
 	type AudioFormat,
 	type ConversationEventMap,
@@ -31,6 +32,9 @@ import {
 	type CodexRealtimeTranscript,
 	type CodexRealtimeUnsettledInput,
 } from "./RealtimeTransport.js";
+import type { ScriptWriterResult } from "./ScriptWriter.js";
+import type { SpokenScriptSource } from "./SpokenScript.js";
+import type { ThreadCompletedItem } from "./ThreadEventRouter.js";
 
 const PCM24_MONO: AudioFormat = {
 	encoding: "pcm16",
@@ -82,7 +86,12 @@ interface CodexTransportLike {
 }
 
 interface CodexConversationLike {
+	actionLedger?(): readonly VoiceCapabilityActionLedgerEntry[];
 	readonly generation?: number;
+	rewriteSpeech?(input: {
+		sourceText: string;
+		rosterNames: readonly string[];
+	}): Promise<ScriptWriterResult>;
 	readonly transport: CodexTransportLike;
 	restart?(): Promise<number>;
 	close(reason?: string): Promise<void>;
@@ -96,7 +105,7 @@ export interface CodexVoiceBackendOptions {
 	sessionId: string;
 	voice: string;
 	container: CodexContainerLike;
-	loadContext: () => Promise<CodexVoiceContextSnapshot>;
+	loadContext: (generation?: number) => Promise<CodexVoiceContextSnapshot>;
 	/**
 	 * Opens the room playback for one assistant item. Audio is appended as it
 	 * arrives, so an answer starts on its first frame instead of after its
@@ -112,6 +121,7 @@ export interface CodexVoiceBackendOptions {
 	) => Promise<void>;
 	publishUtterance?: (utterance: VoiceUtterance) => Promise<void>;
 	handoffToLead?: (input: {
+		actionLedger?: readonly VoiceCapabilityActionLedgerEntry[];
 		utterance: VoiceUtterance;
 		intent: CodexRealtimeExecutionIntent;
 	}) => Promise<CodexHandoffResult>;
@@ -138,6 +148,10 @@ export interface CodexAudioOutput {
 export class CodexVoiceBackend implements VoiceBackend {
 	readonly id = "codex-realtime" as const;
 	readonly capabilities = CODEX_VOICE_CAPABILITIES;
+	private conversation?: CodexConversationLike;
+	actionLedger(): readonly VoiceCapabilityActionLedgerEntry[] {
+		return this.conversation?.actionLedger?.() ?? [];
+	}
 
 	constructor(private readonly options: CodexVoiceBackendOptions) {}
 
@@ -147,10 +161,20 @@ export class CodexVoiceBackend implements VoiceBackend {
 		if (options.resumeHandle)
 			throw new VoiceError("unsupported", "Codex voice resume is unsupported");
 		const callbacks: { session?: CodexVoiceSession } = {};
+		const trustedContexts: SpokenScriptSource[] = [];
+		const rosterNames = new Set<string>();
 		const conversation = await this.options.container.open({
 			sessionId: this.options.sessionId,
 			voice: options.voice ?? this.options.voice,
-			loadContext: this.options.loadContext,
+			loadContext: async (generation) => {
+				const snapshot = await this.options.loadContext(generation);
+				trustedContexts.push({
+					itemId: `context:${snapshot.snapshotDigest}`,
+					text: snapshot.realtimePrompt,
+				});
+				for (const name of snapshot.rosterNames ?? []) rosterNames.add(name);
+				return snapshot;
+			},
 			realtime: {
 				onAudio: (input) => callbacks.session?.observeAudio(input),
 				onTranscript: (input) => callbacks.session?.observeTranscript(input),
@@ -171,15 +195,20 @@ export class CodexVoiceBackend implements VoiceBackend {
 							enabled: true,
 							onTurnStarted: (turnId: string) =>
 								callbacks.session?.observeProcessTurnStarted(turnId),
+							onItemCompleted: (item: ThreadCompletedItem) =>
+								callbacks.session?.observeProcessItemCompleted(item),
 							onTurnTerminal: (turn: BackgroundTurnTerminal) =>
 								callbacks.session?.observeProcessTurnTerminal(turn),
 						},
 					}
 				: {}),
 		});
+		this.conversation = conversation;
 		const session = new CodexVoiceSession({
 			...this.options,
 			conversation,
+			trustedContexts,
+			rosterNames,
 			transcriptSink: options.transcriptSink,
 		});
 		callbacks.session = session;
@@ -209,6 +238,22 @@ class CodexVoiceSession implements ConversationSession {
 		persisted: Promise<boolean>;
 	};
 	private readonly handoffKeys = new Set<string>();
+	private activeBackgroundTurnId?: string;
+	private readonly turnSources = new Map<
+		string,
+		Map<string, SpokenScriptSource>
+	>();
+	private readonly turnPriorReceipts = new Map<string, Set<string>>();
+	private readonly backgroundRequests = new Map<
+		string,
+		{
+			utterance: VoiceUtterance;
+			persisted: Promise<boolean>;
+			intent: CodexRealtimeExecutionIntent;
+			turnId?: string;
+		}
+	>();
+	private failureHandoffTail: Promise<void> = Promise.resolve();
 	/** Latest user final of the current generation, and the one handed off. */
 	private latestUserTranscriptId?: string;
 	private handedOffTranscriptId?: string;
@@ -229,6 +274,8 @@ class CodexVoiceSession implements ConversationSession {
 	constructor(
 		private readonly options: CodexVoiceBackendOptions & {
 			conversation: CodexConversationLike;
+			trustedContexts: SpokenScriptSource[];
+			rosterNames: Set<string>;
 			transcriptSink?: ConversationOptions["transcriptSink"];
 		},
 	) {
@@ -290,6 +337,24 @@ class CodexVoiceSession implements ConversationSession {
 
 	sendText(_text: string): void {
 		this.unsupported("freeform text control is disabled");
+	}
+
+	rewriteSpeech(input: {
+		sourceText: string;
+		rosterNames: readonly string[];
+	}): Promise<ScriptWriterResult> {
+		if (
+			!this.options.backgroundEnabled ||
+			!this.options.conversation.rewriteSpeech ||
+			this.closing
+		)
+			return Promise.reject(new Error("script_writer_unavailable"));
+		return this.options.conversation.rewriteSpeech({
+			...input,
+			rosterNames: [
+				...new Set([...input.rosterNames, ...this.options.rosterNames]),
+			],
+		});
 	}
 
 	speak(text: string, kind: VoiceSpeakKind, options: VoiceSpeakOptions) {
@@ -404,6 +469,7 @@ class CodexVoiceSession implements ConversationSession {
 		this.live = false;
 		this.cancelOutputs();
 		try {
+			await this.failureHandoffTail;
 			await this.durabilityTail;
 			const flush = await this.options.transcriptSink?.flush?.();
 			if (flush?.outcome === "failed") {
@@ -707,6 +773,11 @@ class CodexVoiceSession implements ConversationSession {
 		this.handoffKeys.add(key);
 		this.latestKnownUser = undefined;
 		this.handedOffTranscriptId = candidate.utterance.transcriptId;
+		this.backgroundRequests.set(handoffId, {
+			...candidate,
+			intent,
+			turnId: this.activeBackgroundTurnId,
+		});
 		this.events.emit("background-handoff", {
 			handoffId,
 			inputTranscript: candidate.utterance.text,
@@ -744,6 +815,13 @@ class CodexVoiceSession implements ConversationSession {
 			reason,
 			pendingKey,
 		});
+		if (this.options.backgroundEnabled) {
+			this.events.emit("coordinated-speech", {
+				businessId: pendingKey,
+				text: prompt,
+			});
+			return;
+		}
 		// required: the receipt must say whether the words were actually read.
 		void this.speak(prompt, "cue", { pendingKey, verification: "required" });
 	}
@@ -753,8 +831,44 @@ class CodexVoiceSession implements ConversationSession {
 		this.options.onEvidence?.({ kind: "codex_background_turn", ...turn });
 	}
 
+	observeProcessItemCompleted(item: ThreadCompletedItem): void {
+		if (
+			!this.options.backgroundEnabled ||
+			this.closing ||
+			!item.itemId ||
+			item.raw.status !== "completed"
+		)
+			return;
+		let text: string | undefined;
+		if (
+			item.type === "commandExecution" &&
+			typeof item.raw.aggregatedOutput === "string"
+		)
+			text = item.raw.aggregatedOutput;
+		if (item.type === "mcpToolCall" && item.raw.result != null)
+			text = JSON.stringify(item.raw.result);
+		if (text === undefined) return;
+		const sources =
+			this.turnSources.get(item.turnId) ??
+			new Map<string, SpokenScriptSource>();
+		sources.set(item.itemId, { itemId: item.itemId, text });
+		this.turnSources.set(item.turnId, sources);
+	}
+
 	observeProcessTurnStarted(turnId: string): void {
 		if (this.closing || !this.options.backgroundEnabled) return;
+		this.activeBackgroundTurnId = turnId;
+		if (!this.turnPriorReceipts.has(turnId))
+			this.turnPriorReceipts.set(
+				turnId,
+				new Set(
+					(this.options.conversation.actionLedger?.() ?? []).map(
+						(row) => row.requestId,
+					),
+				),
+			);
+		for (const request of this.backgroundRequests.values())
+			if (!request.turnId) request.turnId = turnId;
 		this.events.emit("background-turn-started", turnId);
 		this.options.onEvidence?.({
 			kind: "codex_background_turn_started",
@@ -764,24 +878,88 @@ class CodexVoiceSession implements ConversationSession {
 
 	observeProcessTurnTerminal(turn: BackgroundTurnTerminal): void {
 		if (this.closing || !this.options.backgroundEnabled) return;
-		this.events.emit("background-turn-terminal", turn);
+		if (this.activeBackgroundTurnId === turn.turnId)
+			this.activeBackgroundTurnId = undefined;
+		if (turn.outcome !== "completed" || !turn.spokenSegments?.length)
+			void this.handoffBackgroundFailures(turn.turnId);
+		else
+			for (const [id, request] of this.backgroundRequests)
+				if (request.turnId === turn.turnId) this.backgroundRequests.delete(id);
+		const prior = this.turnPriorReceipts.get(turn.turnId) ?? new Set<string>();
+		const receipts = (this.options.conversation.actionLedger?.() ?? []).filter(
+			(row) => !prior.has(row.requestId),
+		);
+		const completedTurn = {
+			...turn,
+			sources: [
+				...this.options.trustedContexts,
+				...(this.turnSources.get(turn.turnId)?.values() ?? []),
+			],
+			rosterNames: [...this.options.rosterNames],
+			hadWriteReceipt: receipts.some((row) => row.outcome === "succeeded"),
+			writeReceiptUnknown: receipts.some((row) => row.outcome === "unknown"),
+		};
+		this.turnSources.delete(turn.turnId);
+		this.turnPriorReceipts.delete(turn.turnId);
+		this.events.emit("background-turn-terminal", completedTurn);
 		this.options.onEvidence?.({
 			kind: "codex_background_turn_terminal",
 			...turn,
 		});
 	}
 
+	private handoffBackgroundFailures(turnId?: string): Promise<void> {
+		if (!this.options.backgroundEnabled) return Promise.resolve();
+		const pending = [...this.backgroundRequests].filter(
+			([, request]) => !turnId || request.turnId === turnId,
+		);
+		for (const [id] of pending) this.backgroundRequests.delete(id);
+		const work = async () => {
+			for (const [handoffId, request] of pending) {
+				try {
+					if (!(await request.persisted))
+						throw new Error("codex_handoff_transcript_not_durable");
+					if (!this.options.handoffToLead)
+						throw new Error("handoff_sink_missing");
+					const receipt = await this.options.handoffToLead({
+						utterance: request.utterance,
+						intent: request.intent,
+						actionLedger: this.options.conversation.actionLedger?.() ?? [],
+					});
+					this.options.onEvidence?.({
+						kind: "codex_background_failure_handoff",
+						handoffId,
+						state: receipt.state,
+						leadHandoffId: receipt.handoffId,
+					});
+				} catch (error) {
+					this.options.onEvidence?.({
+						kind: "codex_background_failure_handoff_failed",
+						handoffId,
+						reason: error instanceof Error ? error.message : "unknown_error",
+					});
+				}
+			}
+		};
+		this.failureHandoffTail = this.failureHandoffTail.then(work);
+		return this.failureHandoffTail;
+	}
+
 	transportClosed(input: { generation: number; reason: string }): void {
 		if (this.closing || this.restarting || input.generation !== this.generation)
 			return;
-		this.events.emit(
-			"error",
-			new VoiceError(
-				"connection-closed",
-				"Codex realtime closed",
-				input.reason,
-			),
-		);
+		const emitClosed = () =>
+			this.events.emit(
+				"error",
+				new VoiceError(
+					"connection-closed",
+					"Codex realtime closed",
+					input.reason,
+				),
+			);
+		if (this.options.backgroundEnabled)
+			void this.handoffBackgroundFailures().finally(emitClosed);
+		else emitClosed();
 	}
 
 	transportError(error: Error): void {
@@ -797,10 +975,14 @@ class CodexVoiceSession implements ConversationSession {
 			message: error.message,
 			...(upstreamEvent ? { upstreamEvent } : {}),
 		});
-		this.events.emit(
-			"error",
-			new VoiceError("backend-protocol", "Codex realtime failed", error),
-		);
+		const emitError = () =>
+			this.events.emit(
+				"error",
+				new VoiceError("backend-protocol", "Codex realtime failed", error),
+			);
+		if (this.options.backgroundEnabled)
+			void this.handoffBackgroundFailures().finally(emitError);
+		else emitError();
 	}
 
 	private persist(

@@ -1,3 +1,4 @@
+import type { VoiceUnplayedItem } from "../voice-minutes.js";
 export type SpeechArbiterKind =
 	| "cue"
 	| "result"
@@ -17,6 +18,7 @@ export interface SpeechArbiterRequest {
 	text: string;
 	threadText?: string;
 	expiresAt?: number;
+	revalidate?(): Promise<boolean>;
 }
 
 type SpeechAttemptOutcome = "spoken" | "failed";
@@ -189,6 +191,25 @@ export class SpeechArbiter {
 		if (!active) this.requestPump();
 	}
 
+	/** Snapshot content before cancellation settles and removes queue entries. */
+	unplayed(): readonly VoiceUnplayedItem[] {
+		const rows: VoiceUnplayedItem[] = [];
+		const add = (entry: QueueEntry, status: "playing" | "queued") => {
+			if (entry.kind === "cue" || entry.settled) return;
+			rows.push(
+				Object.freeze({
+					businessId: entry.businessId,
+					kind: entry.kind,
+					text: entry.threadText ?? entry.text,
+					status,
+					attempts: entry.attempts,
+				}),
+			);
+		};
+		if (this.active) add(this.active.entry, "playing");
+		for (const entry of this.queue) add(entry, "queued");
+		return Object.freeze(rows);
+	}
 	close(): void {
 		if (this.closed) return;
 		this.closed = true;
@@ -242,15 +263,49 @@ export class SpeechArbiter {
 				this.settle(entry, "stale_dropped");
 				continue;
 			}
-			const pendingKey = `${entry.businessId}:attempt:${entry.attempts}`;
 			const token = ++this.attemptToken;
+			const pendingKey =
+				entry.kind === "cue"
+					? `${entry.businessId}:cue:${token}`
+					: `${entry.businessId}:attempt:${entry.attempts}`;
 			this.active = { entry, pendingKey, token };
-			void this.options
-				.speak({ text: entry.text, pendingKey })
-				.then((outcome) => this.finishAttempt(token, outcome))
-				.catch(() => this.finishAttempt(token, "failed"));
+			if (entry.revalidate) void this.validateAttempt(this.active);
+			else this.startAttempt(this.active);
 			return;
 		}
+	}
+
+	private async validateAttempt(attempt: ActiveAttempt): Promise<void> {
+		try {
+			const valid = await attempt.entry.revalidate!();
+			if (this.active !== attempt || this.closed) return;
+			if (!valid) {
+				this.active = undefined;
+				this.settle(attempt.entry, "stale_dropped");
+				this.requestPump();
+				return;
+			}
+			if (
+				this.userActive ||
+				this.outputActive ||
+				this.now() < this.lastFloorActivityAt + this.floorQuietMs
+			) {
+				this.active = undefined;
+				this.queue.unshift(attempt.entry);
+				this.requestPump();
+				return;
+			}
+			this.startAttempt(attempt);
+		} catch {
+			this.finishAttempt(attempt.token, "failed");
+		}
+	}
+
+	private startAttempt(attempt: ActiveAttempt): void {
+		void this.options
+			.speak({ text: attempt.entry.text, pendingKey: attempt.pendingKey })
+			.then((outcome) => this.finishAttempt(attempt.token, outcome))
+			.catch(() => this.finishAttempt(attempt.token, "failed"));
 	}
 
 	private finishAttempt(token: number, outcome: SpeechAttemptOutcome): void {

@@ -313,7 +313,7 @@ it("does not retry provider rejection or an ambiguous thrown mutation", async ()
 		await f.handlers
 			.get("linear.comment.create")!
 			.execute({ issueId: "FLY-1", body: "x" }, f.context),
-	).toEqual({ status: "rejected" });
+	).toEqual({ status: "rejected", terminalEvidence: "provider_rejected" });
 	expect(f.client.createComment).toHaveBeenCalledTimes(1);
 	f.client.createComment
 		.mockReset()
@@ -382,4 +382,67 @@ it("read capability remains scoped when creation labels are not adopted", async 
 				f.context,
 			),
 	).rejects.toThrow();
+});
+
+it("normalizes issue UUID and identifier aliases before acquiring the write fence", async () => {
+	const f = fixture();
+	const store = new SqliteJournalStore(":memory:");
+	const targets: string[] = [];
+	const broker = new LeadCapabilityBroker({
+		projectName: "flywheel",
+		leadId: "product",
+		activationId: "a1",
+		receipts: store.operationReceipts,
+		allowedOperationIds: () => new Set(["linear.comment.create"]),
+		assertCurrent: async () => {},
+		handlers: f.handlers,
+		secrets: [],
+		targetLocks: {
+			actor: "voice",
+			acquire: async (input) => {
+				targets.push(input.targetKey);
+				return { status: "acquired", fence: "fence" };
+			},
+			markDispatched: async () => true,
+			release: async () => {},
+			cancel: async () => {},
+		},
+	});
+	try {
+		for (const [i, issueId] of ["issue-1", "FLY-1"].entries())
+			expect(
+				(
+					await broker.execute({
+						schemaVersion: 1,
+						operationId: "linear.comment.create",
+						requestId: `123e4567-e89b-42d3-a456-42661417400${i}`,
+						input: { issueId, body: "same target" },
+					})
+				).status,
+			).toBe("succeeded");
+		expect(targets).toEqual(["flywheel:linear:fly-1", "flywheel:linear:fly-1"]);
+	} finally {
+		await broker.close();
+		store.close();
+	}
+});
+
+it("records the successful mutation before revoked post-response projection fails", async () => {
+	const f = fixture();
+	const recordTerminalEvidence = vi.fn(async () => {});
+	f.context.recordTerminalEvidence = recordTerminalEvidence;
+	f.client.updateIssue.mockImplementation(async () => {
+		f.policy.projectId = "revoked";
+		return { success: true, issue: Promise.resolve(f.issue) };
+	});
+	await expect(
+		f.handlers
+			.get("linear.issue.update")!
+			.execute({ issueId: "FLY-1", title: "changed" }, f.context),
+	).rejects.toThrow();
+	expect(recordTerminalEvidence).toHaveBeenCalledWith({
+		status: "succeeded",
+		providerRef: "issue-1",
+	});
+	expect(f.client.updateIssue).toHaveBeenCalledTimes(1);
 });

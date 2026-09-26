@@ -111,6 +111,7 @@ function fixture() {
 			FLYWHEEL_PROJECTS_FILE: projectsPath,
 			FLYWHEEL_PROJECT_NAME: "flywheel",
 			FLYWHEEL_LEAD_ID: "eng",
+			FLYWHEEL_LEAD_CARRIER_INSTANCE_ID: "test-carrier",
 		},
 		activationId: "a1",
 	});
@@ -133,6 +134,7 @@ it("binds the actual SDK metadata request to cancellation before a mutation can 
 			FLYWHEEL_PROJECTS_FILE: f.projectsPath,
 			FLYWHEEL_PROJECT_NAME: "flywheel",
 			FLYWHEEL_LEAD_ID: "eng",
+			FLYWHEEL_LEAD_CARRIER_INSTANCE_ID: "test-carrier",
 		},
 		fetchImpl,
 	});

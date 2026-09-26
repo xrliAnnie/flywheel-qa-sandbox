@@ -1,0 +1,16 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ✓ |parallel| src/lead-capabilities/__tests__/target-lock-provider-integration.test.ts (5 tests) 2446ms
+   ✓ target lock provider and durable state integration > keeps rollback draining until the timed-out original provider settles, then permits the resident's later write  518ms
+   ✓ target lock provider and durable state integration > retains unknown when transport aborts although the remote later commits without a success response  636ms
+   ✓ target lock provider and durable state integration > removes a canceled resident waiter so it cannot block the next voice write  434ms
+   ✓ target lock provider and durable state integration > clears abandoned waiters across Bridge restart while preserving the dispatched holder  423ms
+   ✓ target lock provider and durable state integration > preserves a late browser success as receipt evidence even after the output-delivery guard is revoked  434ms
+ ✓ |parallel| src/lead-capabilities/__tests__/browser-handler.test.ts (4 tests) 27ms
+
+ Test Files  2 passed (2)
+      Tests  9 passed (9)
+   Start at  00:19:07
+   Duration  9.71s (transform 3.51s, setup 47ms, collect 6.02s, tests 2.47s, environment 0ms, prepare 234ms)
+

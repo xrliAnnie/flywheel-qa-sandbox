@@ -56,6 +56,7 @@ export interface GithubReadHandlerOptions {
 	): Promise<void>;
 }
 type PullData = {
+	body?: string | null;
 	number: number;
 	html_url: string;
 	title: string;
@@ -813,8 +814,6 @@ export function createGithubHandlers(
 					request: { signal: context.signal },
 				},
 			);
-			await guard(context, expected);
-			assertWrite(binding, context, expected);
 			const ready = result.markPullRequestReadyForReview.pullRequest;
 			if (
 				ready.id !== pr.node_id ||
@@ -822,6 +821,12 @@ export function createGithubHandlers(
 				ready.isDraft !== false
 			)
 				throw new Error("github_ready_evidence_mismatch");
+			await context.recordTerminalEvidence?.({
+				status: "succeeded",
+				providerRef: `pr:${pr.number}`,
+			});
+			await guard(context, expected);
+			assertWrite(binding, context, expected);
 		}
 		return {
 			status: "succeeded",
@@ -851,10 +856,14 @@ export function createGithubHandlers(
 			run_id: run.id,
 			request: { signal: context.signal },
 		});
-		await guard(context, expected);
-		assertWrite(binding, context, expected);
 		if (response.status !== 201)
 			throw new Error("github_rerun_evidence_mismatch");
+		await context.recordTerminalEvidence?.({
+			status: "succeeded",
+			providerRef: `run:${run.id}`,
+		});
+		await guard(context, expected);
+		assertWrite(binding, context, expected);
 		return {
 			status: "succeeded",
 			providerRef: `run:${run.id}`,
@@ -895,6 +904,26 @@ export function createGithubHandlers(
 				);
 			if (normalize(names as string[]) !== normalize(input.labels as string[]))
 				throw new Error("github_labels_evidence_mismatch");
+			let terminal = false;
+			try {
+				const path = new URL(updated.data.html_url).pathname;
+				checkUrl(updated.data.html_url, path);
+				terminal =
+					updated.data.number === input.number &&
+					(input.title === undefined || updated.data.title === input.title) &&
+					(input.body === undefined || updated.data.body === input.body) &&
+					[
+						`/${p.owner}/${p.repo}/issues/${input.number}`,
+						`/${p.owner}/${p.repo}/pull/${input.number}`,
+					].some((value) => value.toLowerCase() === path.toLowerCase());
+			} catch {
+				/* A response without correlated target evidence cannot settle early. */
+			}
+			if (terminal)
+				await context.recordTerminalEvidence?.({
+					status: "succeeded",
+					providerRef: `pr:${input.number}`,
+				});
 			await guard(context, expected);
 			assertWrite(binding, context, expected);
 			data = await pull(input.number as number, context, expected);
@@ -908,6 +937,15 @@ export function createGithubHandlers(
 				request: { signal: context.signal },
 			});
 			data = response.data;
+			projectPr(data, p, input.number as number);
+			if (
+				(input.title === undefined || data.title === input.title) &&
+				(input.body === undefined || data.body === input.body)
+			)
+				await context.recordTerminalEvidence?.({
+					status: "succeeded",
+					providerRef: `pr:${data.number}`,
+				});
 		}
 
 		current(context, expected);
@@ -938,7 +976,6 @@ export function createGithubHandlers(
 				body: input.body as string,
 				request: { signal: context.signal },
 			});
-			current(context, expected);
 			const path = new URL(data.html_url).pathname;
 			const allowed = [
 				`/${p.owner}/${p.repo}/issues/${input.number}`,
@@ -949,6 +986,11 @@ export function createGithubHandlers(
 			checkUrl(data.html_url, path);
 			if (!Number.isSafeInteger(data.id) || data.id <= 0)
 				throw new Error("github_invalid_provider_id");
+			await context.recordTerminalEvidence?.({
+				status: "succeeded",
+				providerRef: String(data.id),
+			});
+			current(context, expected);
 			return {
 				status: "succeeded",
 				providerRef: String(data.id),
@@ -977,7 +1019,6 @@ export function createGithubHandlers(
 			event: "COMMENT",
 			request: { signal: context.signal },
 		});
-		current(context, expected);
 		if (
 			data.commit_id !== input.commitId ||
 			data.state !== "COMMENTED" ||
@@ -986,6 +1027,11 @@ export function createGithubHandlers(
 		)
 			throw new Error("github_invalid_review_evidence");
 		checkUrl(data.html_url, `/${p.owner}/${p.repo}/pull/${input.number}`);
+		await context.recordTerminalEvidence?.({
+			status: "succeeded",
+			providerRef: String(data.id),
+		});
+		current(context, expected);
 		return {
 			status: "succeeded",
 			providerRef: String(data.id),

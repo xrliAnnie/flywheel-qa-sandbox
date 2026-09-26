@@ -218,3 +218,47 @@ describe("durable voice minutes", () => {
 		await expect(queue.drainOne()).rejects.toThrow("voice_minutes_job_corrupt");
 	});
 });
+
+it("durably carries unplayed results and the action ledger without asserting successful playback", () => {
+	const stateRoot = root();
+	const queue = new VoiceMinutesQueue({
+		root: stateRoot,
+		deliver: async (_job, deliveryId) => ({ deliveryId }),
+		inspect: () => ({ kind: "absent" }),
+	});
+	const unplayed = [
+		{
+			businessId: "result:turn-a",
+			kind: "result" as const,
+			text: "FLY-2886 done",
+			status: "playing" as const,
+			attempts: 1,
+		},
+	];
+	const actionLedger = [
+		{
+			requestId: "123e4567-e89b-42d3-a456-426614174000",
+			operationId: "linear.comment.create",
+			targetKey: "linear:FLY-2886",
+			state: "unknown" as const,
+			outcome: "unknown" as const,
+			errorCode: null,
+		},
+	];
+	const job = queue.enqueue({ ...payload(), unplayed, actionLedger });
+	expect(job.payload.unplayed).toEqual(unplayed);
+	expect(job.payload.actionLedger).toEqual(actionLedger);
+	const restarted = new VoiceMinutesQueue({
+		root: stateRoot,
+		deliver: async (_job, deliveryId) => ({ deliveryId }),
+		inspect: () => ({ kind: "absent" }),
+	});
+	expect(restarted.prepareNext()?.payload.unplayed).toEqual(unplayed);
+	expect(() =>
+		queue.enqueue({
+			...payload(),
+			unplayed: [{ ...unplayed[0], status: "spoken" as never }],
+			actionLedger,
+		}),
+	).toThrow("voice_minutes_invalid");
+});

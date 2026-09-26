@@ -1,0 +1,2 @@
+packages/voice-bridge/src/__tests__/assistant-wiring.test.ts
+packages/voice-bridge/src/__tests__/eleven-config.test.ts

@@ -39,7 +39,7 @@ interface ActiveRewrite {
 	turnId?: string;
 	buffer: string;
 	input: { sourceText: string; rosterNames: readonly string[] };
-	pendingCompletion?: unknown;
+	pendingNotifications: Array<{ method: string; params: unknown }>;
 	settled: boolean;
 	interruptWhenStarted: boolean;
 	timer?: ReturnType<typeof setTimeout>;
@@ -169,6 +169,7 @@ export class ScriptWriter {
 		promise.catch(() => undefined);
 		const active: ActiveRewrite = {
 			buffer: "",
+			pendingNotifications: [],
 			input,
 			settled: false,
 			interruptWhenStarted: false,
@@ -201,10 +202,8 @@ export class ScriptWriter {
 				this.release(active);
 				return;
 			}
-			if (active.pendingCompletion) {
-				const completion = active.pendingCompletion;
-				active.pendingCompletion = undefined;
-				this.complete(active, completion);
+			for (const notification of active.pendingNotifications.splice(0)) {
+				this.onNotification(notification.method, notification.params);
 			}
 		} catch {
 			if (!active.settled)
@@ -217,23 +216,31 @@ export class ScriptWriter {
 		const active = this.active;
 		if (!active || active.settled || !this.belongsToActive(active, params))
 			return;
+		if (!active.turnId) {
+			active.pendingNotifications.push({ method, params });
+			return;
+		}
 		if (method === "item/agentMessage/delta") {
 			const delta = record(params)?.delta;
 			if (typeof delta === "string") active.buffer += delta;
 			return;
 		}
 		if (method === "item/started" || method === "item/completed") {
-			const type = record(record(params)?.item)?.type;
+			const item = record(record(params)?.item);
+			const type = item?.type;
+			if (
+				method === "item/completed" &&
+				type === "agentMessage" &&
+				typeof item?.text === "string"
+			) {
+				active.buffer = item.text;
+			}
 			if (typeof type === "string" && FORBIDDEN_ITEM_TYPES.has(type)) {
 				this.reject(active, "script_writer_forbidden_tool", true);
 			}
 			return;
 		}
 		if (method !== "turn/completed") return;
-		if (!active.turnId) {
-			active.pendingCompletion = params;
-			return;
-		}
 		this.complete(active, params);
 	}
 

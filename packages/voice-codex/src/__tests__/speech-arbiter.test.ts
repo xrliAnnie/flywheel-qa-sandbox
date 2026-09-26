@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { CodexProofSpeaker } from "../codex/CodexProofSpeaker.js";
 import { SpeechArbiter } from "../codex/SpeechArbiter.js";
 
 class FakeClock {
@@ -42,6 +43,92 @@ async function settle(): Promise<void> {
 }
 
 describe("SpeechArbiter", () => {
+	it("gives the two waiting cues distinct keys through the real memoizing speaker", async () => {
+		const clock = new FakeClock();
+		const appendSpeech = vi.fn(async () => {});
+		const speaker = new CodexProofSpeaker({
+			sessionId: "s1",
+			sessionGeneration: () => 1,
+			voice: "marin",
+			format: { encoding: "pcm16", sampleRateHz: 24000, channels: 1 },
+			transport: () => ({ appendSpeech }),
+			isLive: () => true,
+			allowSpokenParaphrase: true,
+		});
+		const arbiter = new SpeechArbiter({
+			now: () => clock.now,
+			schedule: clock.schedule,
+			cancelScheduled: clock.cancel,
+			cancelSpeech: () => speaker.interrupt(),
+			speak: async ({ text, pendingKey }) =>
+				(await speaker.speak(text, "cue", { pendingKey })).outcome ===
+				"completed"
+					? "spoken"
+					: "failed",
+		});
+		for (let cue = 1; cue <= 2; cue += 1) {
+			clock.advance(20000);
+			const result = arbiter.enqueue({
+				businessId: "handoff-1",
+				kind: "cue",
+				text: "还在查",
+			});
+			await settle();
+			expect(appendSpeech).toHaveBeenCalledTimes(cue);
+			speaker.observeAssistantItem({ generation: 1, itemId: `cue-${cue}` });
+			speaker.observeTranscript({
+				generation: 1,
+				itemId: `cue-${cue}`,
+				role: "assistant",
+				text: "还在查",
+				final: true,
+			});
+			speaker.observePlaybackSubmitted({ generation: 1, itemId: `cue-${cue}` });
+			await expect(result).resolves.toBe("spoken");
+		}
+		arbiter.close();
+	});
+
+	it("awaits a fresh validation at every attempt and drops a stale tell without playback", async () => {
+		const clock = new FakeClock();
+		const speak = vi.fn(() => new Promise<"spoken">(() => {}));
+		let valid!: (value: boolean) => void;
+		const revalidate = vi.fn(
+			() =>
+				new Promise<boolean>((resolve) => {
+					valid = resolve;
+				}),
+		);
+		const arbiter = new SpeechArbiter({
+			now: () => clock.now,
+			schedule: clock.schedule,
+			cancelScheduled: clock.cancel,
+			speak,
+			cancelSpeech: vi.fn(),
+		});
+		const result = arbiter.enqueue({
+			businessId: "tell",
+			kind: "tell",
+			text: "FLY-2886",
+			revalidate,
+		});
+		clock.advance(800);
+		await settle();
+		expect(speak).not.toHaveBeenCalled();
+		valid(true);
+		await settle();
+		expect(speak).toHaveBeenCalledTimes(1);
+		arbiter.localUtteranceStarted("u1");
+		arbiter.localUtteranceEnded("u1");
+		clock.advance(800);
+		await settle();
+		expect(revalidate).toHaveBeenCalledTimes(2);
+		valid(false);
+		await settle();
+		await expect(result).resolves.toBe("stale_dropped");
+		expect(speak).toHaveBeenCalledTimes(1);
+	});
+
 	it("waits for 800ms of local-VAD floor idle before speaking serially", async () => {
 		const clock = new FakeClock();
 		const spoken: Array<{ text: string; pendingKey: string }> = [];
@@ -182,4 +269,51 @@ describe("SpeechArbiter", () => {
 		});
 		await expect(terminal).resolves.toBe("fallback_posted");
 	});
+});
+
+it("exports queued and interrupted playback snapshots before close mutates the queue", async () => {
+	const clock = new FakeClock(),
+		cancel = vi.fn();
+	const arbiter = new SpeechArbiter({
+		now: () => clock.now,
+		schedule: clock.schedule,
+		cancelScheduled: clock.cancel,
+		speak: () => new Promise<"spoken">(() => {}),
+		cancelSpeech: cancel,
+	});
+	const result = arbiter.enqueue({
+		businessId: "result-a",
+		kind: "result",
+		text: "result",
+	});
+	clock.advance(800);
+	await settle();
+	const tell = arbiter.enqueue({
+		businessId: "tell-a",
+		kind: "tell",
+		text: "spoken",
+		threadText: "full original",
+	});
+	const snapshot = arbiter.unplayed();
+	expect(snapshot).toEqual([
+		{
+			businessId: "result-a",
+			kind: "result",
+			text: "result",
+			status: "playing",
+			attempts: 0,
+		},
+		{
+			businessId: "tell-a",
+			kind: "tell",
+			text: "full original",
+			status: "queued",
+			attempts: 0,
+		},
+	]);
+	arbiter.close();
+	expect(await result).toBe("failed");
+	expect(await tell).toBe("failed");
+	expect(snapshot).toHaveLength(2);
+	expect(Object.isFrozen(snapshot)).toBe(true);
 });

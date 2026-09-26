@@ -1,0 +1,137 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+stderr | src/lead-capabilities/__tests__/github.test.ts > does not retry github.run.view network failures
+GET /repos/acme/project/actions/runs/99 - 500 with id UNKNOWN in 0ms
+
+stderr | src/lead-capabilities/__tests__/github.test.ts > does not retry github.pr.diff network failures
+GET /repos/acme/project/pulls/7 - 500 with id UNKNOWN in 0ms
+
+ ❯ |parallel| src/lead-capabilities/__tests__/github.test.ts (45 tests | 1 failed) 1244ms
+   ✓ GitHub fixed-repository read handlers > supports scoped PR and issue views with provider evidence 14ms
+   ✓ GitHub fixed-repository read handlers > lists bounded pages from /repos/acme/project/pulls without following provider URLs 4ms
+   ✓ GitHub fixed-repository read handlers > lists bounded pages from /repositories/1296269/pulls without following provider URLs 5ms
+   ✓ GitHub fixed-repository read handlers > includes check-runs and legacy commit statuses on the exact PR head 2ms
+   ✓ GitHub fixed-repository read handlers > denies foreign policy, repository response and caller-supplied repository 2ms
+   ✓ GitHub fixed-repository read handlers > rechecks revision after async authorization and provider reads 4ms
+   ✓ GitHub fixed-repository read handlers > fails closed on incomplete checks or legacy statuses instead of claiming all green 2ms
+   ✓ denies business targets before HTTP and rejects foreign issue repository evidence 1ms
+   ✓ rejects foreign pagination and unknown legacy states without inventing completion 2ms
+   ✓ does not retry an SDK request failure 2ms
+   ✓ rejects a changed PR head after fetching checks and retains checked-head provenance 2ms
+   ✓ rejects check-run or combined-status SHA evidence for a different head 2ms
+   × GitHub scoped mutations > creates and edits PR content using only trusted refs and fixed repository 11ms
+     → github_edit_evidence_mismatch
+   ✓ GitHub scoped mutations > supports PR and issue comments and preserves exact provider IDs 2ms
+   ✓ GitHub scoped mutations > allows COMMENT review only and binds the exact live head 3ms
+   ✓ GitHub scoped mutations > rejects main/default/foreign refs and empty edits before writes 2ms
+   ✓ GitHub scoped mutations > rejects foreign target and head drift, with zero mutation 2ms
+   ✓ GitHub scoped mutations > synchronously denies revocation after async create authorization without sending 1ms
+   ✓ GitHub scoped mutations > does not retry an ambiguous mutation outcome 1ms
+   ✓ rejects provider create evidence for a different head or base 1ms
+   ✓ fetches actual Octokit PR diff media with stable head evidence 7ms
+   ✓ pages diff content using a head/base-bound offset cursor 22ms
+   ✓ reads a repository workflow run with actual PR head evidence 4ms
+   ✓ rejects invalid workflow ID https://evil.test before HTTP 1ms
+   ✓ rejects invalid workflow ID -1 before HTTP 1ms
+   ✓ rejects invalid workflow ID 9007199254740992 before HTTP 1ms
+   ✓ rejects invalid workflow ID 01 before HTTP 1ms
+   ✓ denies foreign workflow repository and mismatched linked PR head 2ms
+   ✓ denies github.run.view target before HTTP and revocation after provider await 3ms
+   ✓ denies github.pr.diff target before HTTP and revocation after provider await 1ms
+   ✓ rejects invalid/stale diff cursors and head movement without returning diff 4ms
+   ✓ does not retry github.run.view network failures 4ms
+   ✓ does not retry github.pr.diff network failures 2ms
+   ✓ rejects workflow links naming a foreign PR repository even if the SHA matches 1ms
+   ✓ reads actual SDK manual log redirect through the bounded pinned archive reader 16ms
+   ✓ pages log text with archive digest and run attempt bound cursor 164ms
+   ✓ rejects log cursors before HTTP and refuses archive or attempt drift 80ms
+   ✓ fails closed after log redirect foreign without claiming success 3ms
+   ✓ fails closed after log redirect revoked without claiming success 2ms
+   ✓ fails closed after log redirect attempt without claiming success 8ms
+   ✓ does not download unfinished workflow logs 2ms
+   ✓ returns complete encoded text pages through the real broker: github.pr.diff 138ms
+   ✓ returns complete encoded text pages through the real broker: github.pr.diff 104ms
+   ✓ returns complete encoded text pages through the real broker: github.run.log 273ms
+   ✓ returns complete encoded text pages through the real broker: github.run.log  333ms
+ ✓ |parallel| src/lead-capabilities/__tests__/bridge-terminal-evidence.test.ts (10 tests) 362ms
+ ✓ |parallel| src/lead-capabilities/__tests__/github-terminal-evidence.test.ts (5 tests) 277ms
+ ❯ |parallel| src/lead-capabilities/__tests__/bridge-discord.test.ts (38 tests | 1 failed) 16528ms
+   ✓ dispatches once through the real Bridge router after the parent receipt is durable  633ms
+   ✓ parent restart reconciles a lost response without repeating a Discord write; lost=false  446ms
+   ✓ parent restart reconciles a lost response without repeating a Discord write; lost=true  468ms
+   ✓ denies uuid before any Bridge request 185ms
+   ✓ denies input before any Bridge request 253ms
+   ✓ denies carrier before any Bridge request  308ms
+   ✓ denies activation before any Bridge request 205ms
+   ✓ denies registry before any Bridge request  322ms
+   ✓ bounds and validates provider result wrong-id without retries  317ms
+   ✓ bounds and validates provider result oversized without retries  305ms
+   ✓ bounds and validates provider result redirect without retries 223ms
+   ✓ bounds and validates provider result bad-json without retries 254ms
+   ✓ bounds and validates provider result secret without retries 291ms
+   ✓ bounds and validates provider result unknown without retries 295ms
+   ✓ bounds and validates provider result rejected without retries 190ms
+   ✓ enforces the 15-second adapter deadline and aborts stalled provider fetch  543ms
+   × cancels an oversized unread response body 445ms
+     → expected "spy" to be called 1 times, but got 0 times
+   ✓ retains a crash-boundary dispatched receipt after parent restart without HTTP replay 296ms
+   ✓ cancels a stalled response stream at the deadline 281ms
+   ✓ captures trusted Bridge credentials and origin independently of later env mutation  482ms
+   ✓ rechecks the carrier after a provider await and retains an uncertain write  356ms
+   ✓ reduces parent guard errors to a stable adapter error 296ms
+   ✓ typed reply keeps durable parent outcome across restart; lost=false  553ms
+   ✓ typed reply keeps durable parent outcome across restart; lost=true  555ms
+   ✓ carries the parent context through actual typed Bridge delivery across different request keys  913ms
+   ✓ deduplicates a typed reply and authenticated automatic output in the same journal context  751ms
+   ✓ automatic output rejects invalid carrier before sending  506ms
+   ✓ automatic output rejects invalid lead before sending  503ms
+   ✓ automatic output rejects invalid context before sending  804ms
+   ✓ automatic output rejects invalid input before sending  548ms
+   ✓ keeps uncertain automatic output unknown across different request keys without another Discord write  550ms
+   ✓ authorizes automatic startup output without a journal context or Discord write 281ms
+   ✓ sends persisted automatic output through the parent adapter and rejects changed output before HTTP  702ms
+   ✓ automatic parent transport rejects wrong-id without retries 279ms
+   ✓ automatic parent transport rejects oversized without retries  432ms
+   ✓ automatic parent transport rejects secret without retries  557ms
+   ✓ automatic parent transport rejects timeout without retries  412ms
+   ✓ receipt-only retry stays unknown when the original request never reached Bridge  785ms
+ ✓ |parallel| src/lead-capabilities/__tests__/bridge-read.test.ts (22 tests) 387ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |parallel| src/lead-capabilities/__tests__/bridge-discord.test.ts > cancels an oversized unread response body
+AssertionError: expected "spy" to be called 1 times, but got 0 times
+ ❯ src/lead-capabilities/__tests__/bridge-discord.test.ts:495:18
+    493|    .execute(f.request);
+    494|   expect(result.status).toBe("unknown");
+    495|   expect(cancel).toHaveBeenCalledTimes(1);
+       |                  ^
+    496|  } finally {
+    497|   await f.close();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  |parallel| src/lead-capabilities/__tests__/github.test.ts > GitHub scoped mutations > creates and edits PR content using only trusted refs and fixed repository
+Error: github_edit_evidence_mismatch
+ ❯ src/lead-capabilities/handlers/github.ts:923:11
+    921|    projectPr(data, p, input.number as number);
+    922|    if ((input.title !== undefined && data.title !== input.title) || (i…
+    923|     throw new Error("github_edit_evidence_mismatch");
+       |           ^
+    924|    await context.recordTerminalEvidence?.({status: "succeeded", provid…
+    925|   }
+ ❯ Object.execute src/lead-capabilities/handlers/github.ts:426:20
+ ❯ src/lead-capabilities/__tests__/github.test.ts:386:3
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  2 failed | 3 passed (5)
+      Tests  2 failed | 118 passed (120)
+   Start at  00:29:40
+   Duration  33.12s (transform 5.04s, setup 107ms, collect 10.56s, tests 18.80s, environment 1ms, prepare 806ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/lead-capabilities/__tests__/github-terminal-evidence.test.ts src/lead-capabilities/__tests__/github.test.ts src/lead-capabilities/__tests__/bridge-terminal-evidence.test.ts src/lead-capabilities/__tests__/bridge-read.test.ts src/lead-capabilities/__tests__/bridge-discord.test.ts

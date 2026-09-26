@@ -1,0 +1,48 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ❯ |parallel| src/lead-capabilities/__tests__/bridge-terminal-evidence.test.ts (3 tests | 3 failed) 3224ms
+   × retains a correlated late 'discord.thread.reply' receipt without delivering output after cancellation 1098ms
+     → expected "spy" to be called with arguments: [ { status: 'succeeded', …(1) } ]
+
+Number of calls: 0
+
+   × retains a correlated late 'github.pr.ready' receipt without delivering output after cancellation 1066ms
+     → expected "spy" to be called with arguments: [ { status: 'succeeded', …(1) } ]
+
+Number of calls: 0
+
+   × retains a correlated late 'send_runner' receipt without delivering output after cancellation 1059ms
+     → expected "spy" to be called with arguments: [ { status: 'succeeded', …(1) } ]
+
+Number of calls: 0
+
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |parallel| src/lead-capabilities/__tests__/bridge-terminal-evidence.test.ts > retains a correlated late 'discord.thread.reply' receipt without delivering output after cancellation
+ FAIL  |parallel| src/lead-capabilities/__tests__/bridge-terminal-evidence.test.ts > retains a correlated late 'github.pr.ready' receipt without delivering output after cancellation
+ FAIL  |parallel| src/lead-capabilities/__tests__/bridge-terminal-evidence.test.ts > retains a correlated late 'send_runner' receipt without delivering output after cancellation
+AssertionError: expected "spy" to be called with arguments: [ { status: 'succeeded', …(1) } ]
+
+Number of calls: 0
+
+ ❯ src/lead-capabilities/__tests__/bridge-terminal-evidence.test.ts:28:39
+     26|  expect(await pending).toMatchObject({status: "unknown"});
+     27|  reply(Response.json({requestId: ID, status: "succeeded", resourceRefs…
+     28|  await vi.waitFor(() => expect(proof).toHaveBeenCalledWith({status: "s…
+       |                                       ^
+     29|  expect(fetchImpl).toHaveBeenCalledTimes(1);
+     30| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  3 failed (3)
+   Start at  00:22:39
+   Duration  5.52s (transform 850ms, setup 70ms, collect 1.58s, tests 3.22s, environment 0ms, prepare 110ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/lead-capabilities/__tests__/bridge-terminal-evidence.test.ts

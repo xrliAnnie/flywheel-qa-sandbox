@@ -1,0 +1,21 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ✓ |parallel| src/lead-capabilities/__tests__/broker.test.ts (29 tests) 300ms
+ ✓ |parallel| src/lead-capabilities/__tests__/runtime-factory.test.ts (19 tests) 363ms
+ ✓ |parallel| src/lead-capabilities/__tests__/runtime-parent.test.ts (4 tests) 1272ms
+   ✓ verifies effective config and broker lifecycle with browser mode undefined  394ms
+   ✓ verifies effective config and broker lifecycle with browser mode founder_chrome  315ms
+ ✓ |parallel| src/lead-backends/codex/__tests__/lead-capability-proxy.test.ts (11 tests) 100ms
+ ✓ |parallel| src/bridge/__tests__/lead-capability-target-lock.test.ts (5 tests) 1514ms
+   ✓ serves disabled/draining policy and checks only existing targets after rollback  326ms
+   ✓ reconciles only matching trusted terminal evidence and reserves explicit force clear for a resident  344ms
+   ✓ records only current voice founder-only denials with a durable idempotent mailbox receipt  314ms
+ ✓ |parallel| src/lead-capabilities/__tests__/voice-founder-denial.test.ts (5 tests) 36ms
+ ✓ |parallel| src/lead-capabilities/__tests__/target-lock-client.test.ts (7 tests) 19ms
+
+ Test Files  7 passed (7)
+      Tests  80 passed (80)
+   Start at  00:40:11
+   Duration  19.54s (transform 5.00s, setup 171ms, collect 11.70s, tests 3.60s, environment 1ms, prepare 851ms)
+

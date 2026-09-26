@@ -660,6 +660,7 @@ import {
 } from "./lead-capability-report-deliver.js";
 import { createLeadReportVerifyRouter } from "./lead-capability-report-verify.js";
 import { mountLeadRunnerProvider } from "./lead-capability-runners.js";
+import { createVoiceCapabilityEventPump } from "./voice-capability-events.js";
 import { createLeadCapabilityTargetLockRouter } from "./lead-capability-target-lock.js";
 import {
 	createProductionLeadConfigService,
@@ -3666,7 +3667,7 @@ export function createBridgeApp(
 		app.use(
 			"/api/lead-capabilities/target-lock",
 			tokenAuthMiddleware(config.apiToken, undefined),
-			createLeadCapabilityTargetLockRouter({ store }),
+			createLeadCapabilityTargetLockRouter({ store, bridgeReceipts: leadOutboundDedupStore?.operationReceipts }),
 		);
 	}
 
@@ -7282,6 +7283,11 @@ export async function startBridge(
 		leadInboxRuntime.nudge(leadId, projectName),
 	);
 	leadInboxRuntime.start();
+	const voiceCapabilityEvents = createVoiceCapabilityEventPump({ store, deliver: (envelope) => registry.dispatchLeadEvent(envelope) });
+	const tickVoiceCapabilityEvents = () => { void voiceCapabilityEvents.tick().catch((error) => console.warn("[voice-capability-events]", error instanceof Error ? error.message : "retry_pending")); };
+	const voiceCapabilityEventTimer = setInterval(tickVoiceCapabilityEvents, 30_000);
+	voiceCapabilityEventTimer.unref();
+	tickVoiceCapabilityEvents();
 	const xhsNotificationService = startXhsNotificationService({
 		enqueue: (scope, notice) =>
 			leadInboxRuntime.enqueueXhsNotification(scope, notice),
@@ -16139,6 +16145,7 @@ export async function startBridge(
 		await roundtableThreadManager?.stop();
 		bridgeLoopGuard.stop();
 		clearInterval(leadAlertDrainTimer);
+		clearInterval(voiceCapabilityEventTimer);
 		clearInterval(doaBackoffMaintenanceTimer);
 		clearInterval(designReviewManifestTimer);
 		if (reportBlobSweepTimer) clearInterval(reportBlobSweepTimer);

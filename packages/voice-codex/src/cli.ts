@@ -113,6 +113,23 @@ function renderVoiceMinutes(job: VoiceMinutesJob): string {
 		...(payload.pending.length > 0
 			? ["待确认：", ...payload.pending.map((item) => `- ${item}`)]
 			: []),
+		...((payload.unplayed?.length ?? 0) > 0
+			? [
+					"未播/未完成：",
+					...payload.unplayed!.map(
+						(item) => `- ${item.businessId} [${item.status}]: ${item.text}`,
+					),
+				]
+			: []),
+		...((payload.actionLedger?.length ?? 0) > 0
+			? [
+					"操作账本（成功项不重做；unknown 先对账）：",
+					...payload.actionLedger!.map(
+						(item) =>
+							`- ${item.requestId} ${item.operationId} ${item.targetKey ?? "无目标键"}: ${item.outcome}`,
+					),
+				]
+			: []),
 		...(payload.handoffs.length > 0
 			? [
 					"本体信箱 handoff：",
@@ -415,6 +432,19 @@ export async function main(): Promise<void> {
 				scratchRoot: join(config.voiceRoot, "codex-containers"),
 				openAiApiKey: config.realtimeApiKey,
 				processEnv: process.env,
+				...(voiceBackground.enabled
+					? {
+							capability: {
+								projectName: context.projection.projectName,
+								leadId: context.projection.leadId,
+								leaseFence: context.leaseToken,
+								browserMode: voiceBackground.browser,
+								projectsPath: config.projectsPath,
+								stateDir: config.healthStateRoot,
+								assertLeaseCurrent: () => context.lease.assert(),
+							},
+						}
+					: {}),
 				onEvidence: (record) =>
 					evidence.appendBuffered({
 						ts: new Date().toISOString(),
@@ -429,11 +459,12 @@ export async function main(): Promise<void> {
 						sessionId: context.sessionId,
 						voice: context.projection.realtimeVoice,
 						container,
-						loadContext: async () => {
+						loadContext: async (generation?: number) => {
 							const snapshot = await bridge.context<CodexVoiceContextSnapshot>(
 								context.sessionId,
 								context.leaseToken,
 								context.lease,
+								generation,
 							);
 							contextDigest = snapshot.snapshotDigest;
 							return snapshot;
@@ -459,7 +490,7 @@ export async function main(): Promise<void> {
 						},
 						publishUtterance: (utterance) =>
 							transcriptPublisher.publish(utterance),
-						handoffToLead: ({ utterance, intent }) => {
+						handoffToLead: ({ utterance, intent, actionLedger }) => {
 							context.lease.assert();
 							return bridge.handoffToLead(
 								context.sessionId,
@@ -470,6 +501,7 @@ export async function main(): Promise<void> {
 									leadId: context.projection.leadId,
 									utterance,
 									intent,
+									actionLedger,
 								}),
 							);
 						},
@@ -513,6 +545,7 @@ export async function main(): Promise<void> {
 			createFrontend: (handlers) => {
 				if (codexBackend) {
 					return new CodexRoomFrontend({
+						allowSpokenParaphrase: voiceBackground.enabled,
 						backend: codexBackend,
 						conversationOptions: {
 							brain: CODEX_VOICE_BRAIN,
@@ -614,11 +647,29 @@ export async function main(): Promise<void> {
 						},
 					}
 				: {}),
+			persistCloseSnapshot:
+				config.backendId === "codex-realtime"
+					? (snapshot) => {
+							new SessionJournal(
+								join(
+									config.voiceRoot,
+									"sessions",
+									context.sessionId,
+									"journal.jsonl",
+								),
+							).append({
+								kind: "close_snapshot",
+								transcriptId: `session-close:${context.sessionId}`,
+								unplayed: snapshot.unplayed,
+							});
+						}
+					: undefined,
 			finalize:
 				config.backendId === "codex-realtime"
-					? async (outcome) => {
+					? async (outcome, snapshot) => {
 							let raw = "";
-							let complete = outcome?.kind === "ended";
+							let complete =
+								outcome?.kind === "ended" && !snapshot?.unplayed.length;
 							try {
 								raw = existsSync(transcriptPath)
 									? readFileSync(transcriptPath, "utf8")
@@ -647,6 +698,8 @@ export async function main(): Promise<void> {
 								decisions: [],
 								pending: [],
 								handoffs: [],
+								unplayed: snapshot?.unplayed ?? [],
+								actionLedger: codexBackend?.actionLedger() ?? [],
 							});
 							await minutesQueue.drainAll().catch((error) => {
 								evidence.append({

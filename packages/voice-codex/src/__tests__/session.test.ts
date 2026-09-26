@@ -41,12 +41,28 @@ function fixture(options?: {
 		"confirmed" | "unconfirmed" | "failed" | undefined
 	>;
 	coordinatedSpeech?: boolean;
+	rewriteSpeech?: (input: {
+		sourceText: string;
+		rosterNames: readonly string[];
+	}) => Promise<{
+		spoken: string;
+		threadText: string | null;
+		protectedFieldEvidence: [];
+	}>;
 }) {
 	let frontendHandlers!: FrontendHandlers;
 	let roomHandlers!: RoomHandlers;
 	const frontend = {
 		start: vi.fn(async () => {}),
 		appendAudio: vi.fn(),
+		rewriteSpeech: vi.fn(
+			options?.rewriteSpeech ??
+				(async () => ({
+					spoken: "FLY-2886 已查到 PR #1326。",
+					threadText: null,
+					protectedFieldEvidence: [],
+				})),
+		),
 		appendSpeech: vi.fn(options?.appendSpeech ?? (async () => {})),
 		cancelSpeech: vi.fn(),
 		stop: vi.fn(async () => {}),
@@ -67,6 +83,10 @@ function fixture(options?: {
 	const lifecycle = vi.fn(async () => {});
 	const evidence = vi.fn();
 	const postThread = vi.fn(async () => undefined);
+	const persistCloseSnapshot = vi.fn((_snapshot?: unknown) => undefined);
+	const finalize = vi.fn(
+		async (_outcome?: unknown, _snapshot?: unknown) => undefined,
+	);
 	const session = new GenericVoiceSession({
 		projection,
 		delivery,
@@ -81,6 +101,8 @@ function fixture(options?: {
 		lifecycle,
 		evidence,
 		confirmationMs: 100,
+		finalize,
+		persistCloseSnapshot,
 		...(options?.coordinatedSpeech
 			? { speechCoordination: { postThread } }
 			: {}),
@@ -93,12 +115,123 @@ function fixture(options?: {
 		lifecycle,
 		evidence,
 		postThread,
+		finalize,
+		persistCloseSnapshot,
 		getFrontendHandlers: () => frontendHandlers,
 		getRoomHandlers: () => roomHandlers,
 	};
 }
 
 describe("GenericVoiceSession", () => {
+	it("rewrites original Lead text before queuing one tell and does not play before floor release", async () => {
+		vi.useFakeTimers();
+		try {
+			const test = fixture({
+				coordinatedSpeech: true,
+				appendSpeech: async () => "confirmed",
+			});
+			await test.session.start();
+			await test.session.markLive();
+			test.getRoomHandlers().onLocalUtteranceStarted?.("u1");
+			const result = test.session.deliverTell({
+				businessId: "tell:1",
+				text: "**FLY-2886** 已经查到 PR #1326。",
+			});
+			await vi.advanceTimersByTimeAsync(1000);
+			expect(test.frontend.rewriteSpeech).toHaveBeenCalledWith({
+				sourceText: "**FLY-2886** 已经查到 PR #1326。",
+				rosterNames: ["Raya"],
+			});
+			expect(test.frontend.appendSpeech).not.toHaveBeenCalled();
+			test.getRoomHandlers().onLocalUtteranceEnded?.("u1");
+			await vi.advanceTimersByTimeAsync(800);
+			await expect(result).resolves.toBe("spoken");
+			expect(test.frontend.appendSpeech).toHaveBeenCalledTimes(1);
+			expect(test.frontend.appendSpeech).toHaveBeenCalledWith(
+				expect.objectContaining({ spokenText: "FLY-2886 已查到 PR #1326。" }),
+			);
+			await test.session.stop();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it.each([true, false])(
+		"publishes original text before fallback pointer, post success=%s",
+		async (postSuccess) => {
+			vi.useFakeTimers();
+			try {
+				const test = fixture({
+					coordinatedSpeech: true,
+					appendSpeech: async () => "confirmed",
+					rewriteSpeech: async () => {
+						throw new Error("script_writer_output_invalid");
+					},
+				});
+				let finishPost!: () => void;
+				test.postThread.mockImplementationOnce(
+					() =>
+						new Promise<void>((resolve, reject) => {
+							finishPost = () =>
+								postSuccess ? resolve() : reject(new Error("offline"));
+						}),
+				);
+				await test.session.start();
+				await test.session.markLive();
+				const result = test.session.deliverTell({
+					businessId: "tell:1",
+					text: "FLY-2886 PR #1326",
+				});
+				await vi.advanceTimersByTimeAsync(1000);
+				expect(test.postThread).toHaveBeenCalledWith({
+					businessId: "tell:1",
+					text: "FLY-2886 PR #1326",
+				});
+				expect(test.frontend.appendSpeech).not.toHaveBeenCalled();
+				finishPost();
+				await vi.advanceTimersByTimeAsync(800);
+				await expect(result).resolves.toBe(
+					postSuccess ? "fallback_posted" : "failed",
+				);
+				expect(test.frontend.appendSpeech).toHaveBeenCalledWith(
+					expect.objectContaining({
+						spokenText: postSuccess
+							? "这条我发到 thread 了，编号以文字为准。"
+							: "编号我没核对上，等下再给你",
+					}),
+				);
+				await test.session.stop();
+			} finally {
+				vi.useRealTimers();
+			}
+		},
+	);
+
+	it("holds enabled repeat fallback on the same local speech floor", async () => {
+		vi.useFakeTimers();
+		try {
+			const test = fixture({
+				coordinatedSpeech: true,
+				appendSpeech: async () => "confirmed",
+			});
+			await test.session.start();
+			await test.session.markLive();
+			test.getRoomHandlers().onLocalUtteranceStarted?.("u1");
+			test.getFrontendHandlers().onCoordinatedSpeech?.({
+				businessId: "repeat-1",
+				text: "请再说一遍。",
+			});
+			await vi.advanceTimersByTimeAsync(1000);
+			expect(test.frontend.appendSpeech).not.toHaveBeenCalled();
+			test.getRoomHandlers().onLocalUtteranceEnded?.("u1");
+			await vi.advanceTimersByTimeAsync(800);
+			expect(test.frontend.appendSpeech).toHaveBeenCalledOnce();
+			await test.session.stop();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("holds coordinated speech until local VAD has been idle for 800ms", async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(0);
@@ -152,6 +285,7 @@ describe("GenericVoiceSession", () => {
 				turnId: "turn-a",
 				outcome: "completed",
 				spokenSegments: ["FLY-2886 在 PR #1324。"],
+				sources: [{ itemId: "completed-tool", text: "FLY-2886 PR #1324" }],
 			});
 
 			await vi.advanceTimersByTimeAsync(800);
@@ -993,4 +1127,140 @@ describe("GenericVoiceSession start fails fast on the first failure", () => {
 		landRoom({ founderPresent: true });
 		await vi.waitFor(() => expect(room.stop).toHaveBeenCalled());
 	});
+});
+
+it("freezes rewriting tells, queued results and unfinished obligations before stop clears them", async () => {
+	let finishRewrite!: (value: {
+		spoken: string;
+		threadText: null;
+		protectedFieldEvidence: [];
+	}) => void;
+	const test = fixture({
+		coordinatedSpeech: true,
+		rewriteSpeech: () =>
+			new Promise((resolve) => {
+				finishRewrite = resolve;
+			}),
+	});
+	await test.session.start();
+	await test.session.markLive();
+	test.getRoomHandlers().onLocalUtteranceStarted?.("speaker");
+	const handlers = test.getFrontendHandlers();
+	handlers.onBackgroundHandoff?.({
+		handoffId: "h1",
+		inputTranscript: "查 FLY-2886",
+	});
+	handlers.onBackgroundTurnStarted?.("turn-a");
+	handlers.onBackgroundTurnTerminal?.({
+		turnId: "turn-a",
+		outcome: "completed",
+		spokenSegments: ["FLY-2886 已查到"],
+	});
+	handlers.onBackgroundHandoff?.({
+		handoffId: "h2",
+		inputTranscript: "另一件还没完成",
+	});
+	const tell = test.session.deliverTell({
+		businessId: "tell-pending",
+		text: "FLY-2886 PR #1326",
+	});
+	await test.session.stop({ kind: "failed", reason: "session_failure" });
+	const snapshot = test.finalize.mock.calls[0]?.[1] as {
+		unplayed: readonly {
+			businessId: string;
+			kind: string;
+			status: string;
+			text: string;
+		}[];
+	};
+	expect(snapshot.unplayed).toEqual(
+		expect.arrayContaining([
+			expect.objectContaining({
+				businessId: "tell-pending",
+				status: "rewriting",
+				text: "FLY-2886 PR #1326",
+			}),
+			expect.objectContaining({
+				kind: "result",
+				status: "queued",
+				text: "FLY-2886 已查到",
+			}),
+			expect.objectContaining({
+				businessId: "h2",
+				kind: "obligation",
+				status: "unfinished",
+			}),
+		]),
+	);
+	expect(Object.isFrozen(snapshot.unplayed)).toBe(true);
+	finishRewrite({
+		spoken: "FLY-2886 PR #1326",
+		threadText: null,
+		protectedFieldEvidence: [],
+	});
+	expect(await tell).toBe("failed");
+	expect(test.postThread).not.toHaveBeenCalled();
+});
+
+it("persists immutable close state before cancellation and retains it when finalization fails", async () => {
+	const test = fixture({ coordinatedSpeech: true });
+	await test.session.start();
+	await test.session.markLive();
+	test.getRoomHandlers().onLocalUtteranceStarted?.("speaker");
+	const tell = test.session.deliverTell({
+		businessId: "queued-tell",
+		text: "FLY-2886 已完成",
+	});
+	await vi.waitFor(() =>
+		expect(test.frontend.rewriteSpeech).toHaveBeenCalled(),
+	);
+	test.finalize.mockRejectedValueOnce(new Error("minutes_failed"));
+	await expect(
+		test.session.stop({ kind: "failed", reason: "disconnected" }),
+	).rejects.toThrow("minutes_failed");
+	const snapshot = test.persistCloseSnapshot.mock.calls[0]?.[0];
+	expect(snapshot).toEqual(
+		expect.objectContaining({
+			unplayed: expect.arrayContaining([
+				expect.objectContaining({ businessId: "queued-tell" }),
+			]),
+		}),
+	);
+	expect(Object.isFrozen(snapshot)).toBe(true);
+	expect(test.persistCloseSnapshot.mock.invocationCallOrder[0]).toBeLessThan(
+		test.frontend.stop.mock.invocationCallOrder[0],
+	);
+	expect(test.finalize.mock.calls[0]?.[1]).toBe(snapshot);
+	expect(await tell).toBe("failed");
+});
+
+it("keeps original tell material for minutes when fidelity fallback cannot publish", async () => {
+	const test = fixture({
+		coordinatedSpeech: true,
+		rewriteSpeech: async () => {
+			throw new Error("rewrite_failed");
+		},
+		appendSpeech: async () => "confirmed",
+	});
+	test.postThread.mockRejectedValue(new Error("offline"));
+	await test.session.start();
+	await test.session.markLive();
+	const tell = test.session.deliverTell({
+		businessId: "unpublished-tell",
+		text: "FLY-2886 PR #1324",
+	});
+	await vi.waitFor(() => expect(test.postThread).toHaveBeenCalled());
+	await test.session.stop({ kind: "failed", reason: "closed" });
+	await tell;
+	expect(test.finalize.mock.calls[0]?.[1]).toEqual(
+		expect.objectContaining({
+			unplayed: expect.arrayContaining([
+				expect.objectContaining({
+					businessId: "unpublished-tell",
+					text: "FLY-2886 PR #1324",
+					status: "unfinished",
+				}),
+			]),
+		}),
+	);
 });

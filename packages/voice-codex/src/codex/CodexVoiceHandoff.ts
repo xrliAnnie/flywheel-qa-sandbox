@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { VoiceCapabilityActionLedgerEntry } from "flywheel-teamlead/voice-capability";
 import {
 	scrubTranscript,
 	VOICE_MIRROR_MARKS,
@@ -25,6 +26,7 @@ export function buildCodexDelegateHandoff(input: {
 	leadId: string;
 	utterance: VoiceUtterance;
 	intent: CodexRealtimeExecutionIntent;
+	actionLedger?: readonly VoiceCapabilityActionLedgerEntry[];
 }): VoiceHandoffToLeadInput {
 	if (
 		input.utterance.role !== "user" ||
@@ -44,6 +46,16 @@ export function buildCodexDelegateHandoff(input: {
 	return {
 		intentKind: "delegate_request",
 		payload: {
+			...(input.actionLedger
+				? {
+						actionLedger: input.actionLedger.map((row) => ({ ...row })),
+						recoveryPolicy: {
+							succeeded: "do_not_repeat",
+							unknown: "reconcile_before_retry",
+							not_executed: "may_resume_original_request",
+						},
+					}
+				: {}),
 			backendIntentKind: input.intent.kind,
 			backendMethod: input.intent.method,
 			...(input.intent.itemId ? { backendItemId: input.intent.itemId } : {}),

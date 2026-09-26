@@ -47,11 +47,16 @@ function turnId(params: Record<string, unknown>): string | undefined {
 		: undefined;
 }
 
-function spokenSegments(messages: readonly string[]): string[] {
+function answerSegments(
+	messages: readonly string[],
+	kind: "口语" | "文字版",
+): string[] {
 	const result: string[] = [];
 	for (const message of messages) {
-		const pattern =
-			/【口语】\s*([\s\S]*?)(?=(?:\r?\n)?【(?:口语|文字版)】|$)/gu;
+		const pattern = new RegExp(
+			`【${kind}】\\s*([\\s\\S]*?)(?=(?:\\r?\\n)?【(?:口语|文字版)】|$)`,
+			"gu",
+		);
 		for (const match of message.matchAll(pattern)) {
 			const segment = match[1]?.trim();
 			if (segment) result.push(segment);
@@ -171,8 +176,13 @@ export class ThreadEventRouter {
 			outcome,
 			spokenSegments:
 				outcome === "completed"
-					? spokenSegments(turn?.agentMessages ?? [])
+					? answerSegments(turn?.agentMessages ?? [], "口语")
 					: [],
+			...(answerSegments(turn?.agentMessages ?? [], "文字版").length
+				? {
+						threadSegments: answerSegments(turn?.agentMessages ?? [], "文字版"),
+					}
+				: {}),
 			...(outcome === "completed"
 				? {}
 				: { reasonCategory: reasonCategory(params) }),

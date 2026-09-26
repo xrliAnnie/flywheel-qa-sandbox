@@ -374,6 +374,13 @@ describe("voice session context assembly", () => {
 				capabilityCategories: ["Bridge", "Linear", "GitHub", "founder Chrome"],
 				founderOnlyActions: ["merge", "ship", "停 runner", "批准"],
 				founderAttention: ["FLY-2886 等 founder 批准"],
+				recentEvents: [
+					{
+						key: "session:exec-new:completed",
+						text: "FLY-2999 已完成 PR #1450",
+						observedAt: "2026-09-23T08:59:59.000Z",
+					},
+				],
 			},
 			session: {
 				sessionId: "session-1",
@@ -384,6 +391,8 @@ describe("voice session context assembly", () => {
 		});
 
 		expect(result.realtimePrompt).toContain("我是 Raya 的语音分身");
+		expect(result.realtimePrompt).toContain("FLY-2999 已完成 PR #1450");
+		expect(result.baseInstructions).toContain("FLY-2999 已完成 PR #1450");
 		expect(result.realtimePrompt).toContain(
 			"Discord server 100000000000000001 的语音房 100000000000000002",
 		);

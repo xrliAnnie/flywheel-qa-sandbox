@@ -73,6 +73,60 @@ function complete(process: FakeProcess, output: unknown): void {
 }
 
 describe("subscription-backed voice ScriptWriter", () => {
+	it("discards a prior turn final while the next turn start response is still pending", async () => {
+		const process = new FakeProcess();
+		const writer = new ScriptWriter({ process, threadId: "thread-1" });
+		const first = writer.rewrite({ sourceText: "FLY-2886", rosterNames: [] });
+		await started(process);
+		complete(process, { spoken: "FLY-2886 已完成。", threadText: null });
+		await first;
+		let startNext!: (value: { result: { turn: { id: string } } }) => void;
+		vi.spyOn(process, "request").mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					startNext = resolve;
+				}),
+		);
+		const second = writer.rewrite({ sourceText: "FLY-2999", rosterNames: [] });
+		complete(process, { spoken: "FLY-2886 迟到了。", threadText: null });
+		startNext({ result: { turn: { id: "turn-2" } } });
+		await Promise.resolve();
+		process.turnId = "turn-2";
+		complete(process, { spoken: "FLY-2999 已完成。", threadText: null });
+		await expect(second).resolves.toMatchObject({
+			spoken: "FLY-2999 已完成。",
+		});
+	});
+
+	it("captures completed agent output when the process sends no deltas", async () => {
+		const process = new FakeProcess();
+		const writer = new ScriptWriter({ process, threadId: "thread-1" });
+		const result = writer.rewrite({
+			sourceText: "FLY-2886 PR #1326",
+			rosterNames: [],
+		});
+		await started(process);
+		process.emit("item/completed", {
+			threadId: "thread-1",
+			turnId: "turn-1",
+			item: {
+				id: "answer",
+				type: "agentMessage",
+				text: JSON.stringify({
+					spoken: "FLY-2886 在 PR #1326。",
+					threadText: null,
+				}),
+			},
+		});
+		process.emit("turn/completed", {
+			threadId: "thread-1",
+			turn: { id: "turn-1", status: "completed" },
+		});
+		await expect(result).resolves.toMatchObject({
+			spoken: "FLY-2886 在 PR #1326。",
+		});
+	});
+
 	it("sends source text as data with a strict output schema and returns a locally validated rewrite", async () => {
 		const process = new FakeProcess();
 		const writer = new ScriptWriter({ process, threadId: "thread-1" });

@@ -244,6 +244,15 @@ export async function startLeadRuntimeParent(
 			closeProviders: providers.close,
 			outboundTransport,
 			targetLocks,
+			...(options.authority?.kind === "voice_session"
+				? {
+						voiceDenials: {
+							leadName: initial.lead.agentId,
+							record: (input: { requestId: string; operationId: string }) =>
+								targetLocks.recordFounderDenial!(input),
+						},
+					}
+				: {}),
 		});
 	} catch (error) {
 		try {

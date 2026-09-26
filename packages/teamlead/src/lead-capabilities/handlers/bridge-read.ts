@@ -14,6 +14,7 @@ import { prefetchPatrolGithubFacts } from "../patrol-github-facts.js";
 import { PATROL_SNAPSHOT_CLIENT_TIMEOUT_MS } from "../patrol-timeouts.js";
 import type { LeadCapabilityRuntimeAuthorityOptions } from "../runtime-authority.js";
 import { resolveLeadCapabilityRuntimeAuthority } from "../runtime-authority.js";
+import { observeBridgeTerminalEvidence } from "./bridge-terminal-evidence.js";
 
 const operations = [
 	"bridge.read",
@@ -316,7 +317,10 @@ function createBridgeHandlers(
 						if (Buffer.byteLength(body) > 65536) throw denied();
 						await current(context);
 						signal.throwIfAborted();
-						const response = await fetchImpl(endpoint, {
+						const terminalRepository = githubOperation
+							? trusted.assertActivationCurrent().project.projectRepo
+							: undefined;
+						let response = await fetchImpl(endpoint, {
 							method: "POST",
 							redirect: "error",
 							headers: {
@@ -325,6 +329,14 @@ function createBridgeHandlers(
 							},
 							body,
 							signal,
+						});
+						response = await observeBridgeTerminalEvidence(response, {
+							operationId,
+							raw,
+							context,
+							receiptOnly,
+							secrets,
+							repository: terminalRepository,
 						});
 						responseBody = response.body;
 						await current(context);

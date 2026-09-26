@@ -55,6 +55,98 @@ function active(
 }
 
 describe("VoiceDaemon", () => {
+	it.each(["spoken", "fallback_posted", "stale_dropped", "failed"] as const)(
+		"delivers raw tell once and waits for %s before the receipt",
+		async (terminal) => {
+			let end!: (value: { kind: "ended"; reason: "voice-stop" }) => void;
+			const ended = new Promise<{ kind: "ended"; reason: "voice-stop" }>(
+				(resolve) => {
+					end = resolve;
+				},
+			);
+			let finishTell!: () => void;
+			const deliverTell = vi.fn(
+				() =>
+					new Promise<typeof terminal>((resolve) => {
+						finishTell = () => resolve(terminal);
+					}),
+			);
+			const runtime = active({ waitForEnd: vi.fn(() => ended), deliverTell });
+			const claimedLease = lease();
+			const bridge = {
+				desired: vi.fn(async () => ({ sessionId: SESSION_ID })),
+				claim: vi.fn(async () => ({
+					lease: claimedLease,
+					leaseToken: "lease",
+					leaseExpiresAt: "later",
+					projection,
+				})),
+				renew: vi.fn(async () => ({ state: "live", leaseExpiresAt: "later" })),
+				renewRecovered: vi.fn(),
+				ready: vi.fn(),
+				setState: vi.fn(async () => {}),
+				outbound: vi
+					.fn()
+					.mockResolvedValueOnce([
+						{
+							seq: 1,
+							messageId: "lead-original",
+							text: `**FLY-2886** PR #1326 ${"长文本".repeat(80)}`,
+						},
+					])
+					.mockResolvedValue([]),
+				claimOutbound: vi.fn(async () => "attempt-1"),
+				receipt: vi.fn(async () => {
+					end({ kind: "ended", reason: "voice-stop" });
+				}),
+			};
+			const daemon = new VoiceDaemon({
+				bridge,
+				stateStore: {
+					save: vi.fn(),
+					list: vi.fn(() => []),
+					remove: vi.fn(),
+					quarantine: vi.fn(),
+				},
+				bootId: "22222222-2222-4222-8222-222222222222",
+				createSession: () => runtime,
+				recoverSession: vi.fn(),
+				sleep: vi.fn(() => new Promise((resolve) => setTimeout(resolve, 0))),
+				timing: {
+					idlePollMs: 5000,
+					leaseRenewMs: 1,
+					leaseMissMax: 2,
+					presenceGraceMs: 10,
+					speechChunkTokens: 80,
+				},
+			});
+			const result = daemon.runOnce();
+			await vi.waitFor(() => expect(deliverTell).toHaveBeenCalledOnce());
+			expect(deliverTell).toHaveBeenCalledWith(
+				expect.objectContaining({
+					businessId: "outbound:1",
+					text: `**FLY-2886** PR #1326 ${"长文本".repeat(80)}`,
+				}),
+			);
+			expect(bridge.receipt).not.toHaveBeenCalled();
+			finishTell();
+			await result;
+			expect(runtime.speak).not.toHaveBeenCalled();
+			expect(bridge.receipt).toHaveBeenCalledWith(
+				SESSION_ID,
+				1,
+				"lease",
+				claimedLease,
+				"attempt-1",
+				terminal === "spoken"
+					? "confirmed"
+					: terminal === "stale_dropped"
+						? "dropped"
+						: "failed",
+			);
+		},
+	);
+
 	it.each([410, 409])(
 		"handles a listed outbound claim returning %s without losing the lease distinction",
 		async (status) => {

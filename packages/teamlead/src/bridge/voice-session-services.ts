@@ -16,6 +16,7 @@ import {
 } from "./discord-utils.js";
 import { readFounderAttentionFacts } from "./founder-attention-facts.js";
 import { createLeadCapabilityVoiceRouter } from "./lead-capability-voice.js";
+import type { LeadBootstrap } from "./lead-runtime.js";
 import { filterSessionsByLead } from "./lead-scope.js";
 import type { BridgeConfig } from "./types.js";
 import type { VoiceHandoffService } from "./voice-handoff.js";
@@ -293,7 +294,11 @@ export function createVoiceSessionServices(input: {
 			: [];
 	const getSessionContext = async (
 		session: VoiceSessionRow,
-		authority: { leaseBindingDigest: string },
+		authority: {
+			leaseBindingDigest: string;
+			leaseToken: string;
+			generation?: number;
+		},
 	) => {
 		const { project, lead } = resolve(session);
 		const binding = deriveVoiceContextBinding({ project, lead, homeDir });
@@ -302,21 +307,41 @@ export function createVoiceSessionServices(input: {
 			lead,
 			binding,
 		});
-		const state = await generateBootstrap(
+		const background = effectiveVoiceBackground(lead);
+		let stateUnavailable = false;
+		const state: LeadBootstrap = await generateBootstrap(
 			lead.agentId,
 			input.store,
 			input.projects,
 		).catch(() => {
-			throw new VoiceSessionContextError("context_state_unavailable");
+			if (!background.enabled) throw new VoiceSessionContextError("context_state_unavailable");
+			stateUnavailable = true;
+			return { leadId: lead.agentId, activeSessions: [], pendingDecisions: [], recentFailures: [], recentEvents: [], memoryRecall: null };
 		});
 		const capturedAt = new Date().toISOString();
-		const background = effectiveVoiceBackground(lead);
 		const attention = background.enabled
 			? (input.readFounderAttention ?? readFounderAttentionFacts)(
 					{ stateStore: input.store },
 					{ projectName: project.projectName, now: new Date(capturedAt) },
 				)
 			: null;
+		const current = background.enabled
+			? input.store.getActiveVoiceLease(
+					session.sessionId,
+					authority.leaseToken,
+					capturedAt,
+				)
+			: session;
+		if (!current) throw new VoiceSessionHttpError(409, "voice_lease_conflict");
+		const contextGeneration = background.enabled
+			? (authority.generation ?? (current.contextPromptGeneration ?? 0) + 1)
+			: undefined;
+		if (
+			contextGeneration !== undefined &&
+			current.contextPromptGeneration !== null &&
+			contextGeneration <= current.contextPromptGeneration
+		)
+			throw new VoiceSessionHttpError(409, "voice_context_generation_stale");
 		const context = buildVoiceSessionContext({
 			sources,
 			rosterDigest: digestVoiceContextRoster(input.projects),
@@ -343,6 +368,7 @@ export function createVoiceSessionServices(input: {
 							// Until then the opening brief says the list is unavailable,
 							// rather than promising tools that are not yet connected.
 							capabilityCategories: [],
+							stateUnavailable,
 							founderOnlyActions: ["merge", "ship", "停 runner", "批准"],
 							founderAttention:
 								attention?.available === true
@@ -352,11 +378,12 @@ export function createVoiceSessionServices(input: {
 										})
 									: [],
 							founderAttentionUnavailable: attention?.available !== true,
+							recentEvents: current.contextRing,
 						},
 					}
 				: {}),
 		});
-		if (background.enabled) {
+		if (background.enabled && !stateUnavailable) {
 			input.store.initializeVoiceContextBrief({
 				sessionId: session.sessionId,
 				keys: voiceBackgroundBriefKeys({
@@ -381,6 +408,37 @@ export function createVoiceSessionServices(input: {
 				}),
 				now: capturedAt,
 			});
+		}
+		if (contextGeneration !== undefined) {
+			const loaded = input.store.loadVoiceContextRingForGeneration({
+				sessionId: session.sessionId,
+				leaseToken: authority.leaseToken,
+				generation: contextGeneration,
+				now: capturedAt,
+				naturalStartup: true,
+			});
+			if (loaded.status !== "loaded")
+				throw new VoiceSessionHttpError(
+					409,
+					loaded.status === "lease_conflict"
+						? "voice_lease_conflict"
+						: "voice_context_generation_stale",
+				);
+			return {
+				...context,
+				contextGeneration,
+				rosterNames: [
+					...new Set(
+						input.projects.flatMap((project) =>
+							project.leads.flatMap((lead) =>
+								[lead.agentId, lead.cosContext?.displayName].filter(
+									(name): name is string => Boolean(name),
+								),
+							),
+						),
+					),
+				],
+			};
 		}
 		return context;
 	};
@@ -552,6 +610,36 @@ export function createVoiceSessionServices(input: {
 			projectSession,
 			validateSession,
 			getSessionContext,
+			getCurrentTellKeys: (session) => {
+				const { project, lead } = resolve(session);
+				if (!effectiveVoiceBackground(lead).enabled) return [];
+				const now = new Date().toISOString();
+				const attention = (
+					input.readFounderAttention ?? readFounderAttentionFacts
+				)(
+					{ stateStore: input.store },
+					{ projectName: project.projectName, now: new Date(now) },
+				);
+				if (!attention.available)
+					throw new Error("voice_tell_source_unavailable");
+				const sessions = filterSessionsByLead(
+					input.store.getRecentSessions(100),
+					lead.agentId,
+					input.projects,
+				);
+				return voiceBackgroundBriefKeys({
+					sessions: sessions.map((item) => ({
+						executionId: item.execution_id,
+						issue: item.issue_identifier ?? item.issue_id,
+						status: item.status,
+						sessionRole: item.session_role,
+						lastError: item.last_error,
+						observedAt: item.last_activity_at ?? item.started_at ?? now,
+					})),
+					attention: attentionSnapshot(attention, now),
+				});
+			},
+
 			voiceHandoffs: input.voiceHandoffs,
 		}),
 		runtime,

@@ -5,7 +5,15 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { StateStore } from "../../StateStore.js";
 import { createLeadCapabilityTargetLockRouter } from "../lead-capability-target-lock.js";
 
-const state = vi.hoisted(() => ({ enabled: true, current: true }));
+const state = vi.hoisted(() => ({
+	enabled: true,
+	current: true,
+	proof: null as {
+		outcome: "succeeded";
+		operationId: string;
+		providerRef: string;
+	} | null,
+}));
 vi.mock("flywheel-comm/lead-lease", () => ({
 	forwardedLeadAuthorizationEnv: () => ({}),
 }));
@@ -16,6 +24,9 @@ vi.mock("../lead-capability-scope.js", () => ({
 			if (!state.current) throw new Error("denied");
 		},
 	}),
+}));
+vi.mock("../voice-target-reconcile.js", () => ({
+	readVoiceTargetTerminalProof: () => state.proof,
 }));
 let store: StateStore;
 let server: Server;
@@ -33,6 +44,7 @@ const base = {
 	targetKey: "flywheel:linear:fly-2886",
 };
 beforeEach(async () => {
+	state.proof = null;
 	state.enabled = true;
 	state.current = true;
 	store = await StateStore.create(":memory:");
@@ -165,8 +177,117 @@ it("accepts only the original fence for terminal settlement after authority revo
 	expect(await (await post("/release", terminal)).json()).toMatchObject({
 		status: "released",
 	});
+	expect(await (await post("/release", terminal)).json()).toMatchObject({
+		status: "not_owner",
+	});
 	expect(store.getCapabilityTargetLock(base.targetKey)).toBeUndefined();
 	expect((await post("/acquire", { ...base, deadline: 5_000 })).status).toBe(
 		403,
 	);
+});
+
+it("reconciles only matching trusted terminal evidence and reserves explicit force clear for a resident", async () => {
+	const owner = {
+		targetKey: base.targetKey,
+		projectName: base.projectName,
+		leadId: base.leadId,
+		actor: "voice" as const,
+		activationId: `voice:${SESSION}`,
+		requestId: REQUEST,
+		now: 1_000,
+		deadline: 2_000,
+	};
+	const lock = store.acquireCapabilityTargetLock(owner);
+	if (lock.status !== "acquired") throw new Error("fixture");
+	store.markCapabilityTargetLockDispatched({
+		...owner,
+		fence: lock.fence,
+		now: 1_100,
+	});
+	store.releaseCapabilityTargetLock({
+		...owner,
+		fence: lock.fence,
+		outcome: "unknown",
+	});
+	const control = { ...base, lockedRequestId: REQUEST, mode: "receipt" };
+	expect(await (await post("/reconcile", control)).json()).toMatchObject({
+		status: "target_pending_reconcile",
+	});
+	expect(store.getCapabilityTargetLock(base.targetKey)?.state).toBe("unknown");
+	expect(
+		(
+			await post("/reconcile", {
+				...control,
+				mode: "force_clear",
+				riskAcknowledgement: "current value unchanged",
+			})
+		).status,
+	).toBe(403);
+	expect(
+		(
+			await post("/reconcile", {
+				...control,
+				mode: "force_clear",
+				riskAcknowledgement: "可能被旧请求覆盖",
+				authority: {
+					kind: "voice_session",
+					sessionId: SESSION,
+					leaseFence: "lease",
+				},
+				activationId: owner.activationId,
+			})
+		).status,
+	).toBe(403);
+	state.proof = {
+		outcome: "succeeded",
+		operationId: "linear.issue.update",
+		providerRef: "issue:123",
+	};
+	expect(await (await post("/reconcile", control)).json()).toMatchObject({
+		status: "released",
+	});
+	expect(store.getCapabilityTargetLock(base.targetKey)).toBeUndefined();
+});
+
+it("records only current voice founder-only denials with a durable idempotent mailbox receipt", async () => {
+	const body = {
+		...base,
+		operationId: "bridge.merge",
+		targetKey: "flywheel:founder-only:bridge.merge",
+		authority: {
+			kind: "voice_session",
+			sessionId: SESSION,
+			leaseFence: "lease",
+		},
+		activationId: `voice:${SESSION}`,
+	};
+	const first = await post("/founder-denial", body);
+	expect(first.status).toBe(200);
+	const result = await first.json();
+	expect(result).toMatchObject({
+		requestId: REQUEST,
+		status: "recorded",
+		receiptId: expect.stringMatching(/^lead-event:[1-9][0-9]*$/),
+	});
+	expect(await (await post("/founder-denial", body)).json()).toEqual(result);
+	const rows = store.listPendingVoiceCapabilityEvents();
+	expect(rows).toHaveLength(1);
+	expect(rows[0]?.event_type).toBe("voice_founder_only_denied");
+	expect(JSON.parse(rows[0]!.payload)).toMatchObject({
+		operationId: "bridge.merge",
+		requestId: REQUEST,
+		outcome: "not_executed",
+	});
+	for (const override of [
+		{ operationId: "browser.click" },
+		{ operationId: "not.real" },
+		{ authority: base.authority, activationId: base.activationId },
+	]) {
+		expect(
+			(await post("/founder-denial", { ...body, ...override })).status,
+		).toBe(403);
+	}
+	state.current = false;
+	expect((await post("/founder-denial", body)).status).toBe(403);
+	expect(store.listPendingVoiceCapabilityEvents()).toHaveLength(1);
 });

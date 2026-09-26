@@ -300,3 +300,25 @@ describe("VoiceDelivery", () => {
 		expect(mirrored).toContain("**Annie**");
 	});
 });
+
+it("retains the close snapshot on disk without making it a pending transcript", () => {
+	const { path, journal: wal } = journal();
+	const unplayed = [
+		{
+			businessId: "tell-a",
+			kind: "tell",
+			text: "FLY-2886",
+			status: "queued",
+			attempts: 0,
+		},
+	] as const;
+	wal.append({
+		kind: "close_snapshot",
+		transcriptId: "session-close:a",
+		unplayed,
+	});
+	expect(new SessionJournal(path).records()).toEqual([
+		expect.objectContaining({ kind: "close_snapshot", unplayed }),
+	]);
+	expect(new SessionJournal(path).pending()).toEqual([]);
+});

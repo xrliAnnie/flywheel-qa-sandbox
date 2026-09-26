@@ -10,8 +10,10 @@ import type { RealtimeAudioOwner } from "../realtime.js";
 import type { PreparedSpeech } from "../speech.js";
 import type { BackgroundTurnTerminal } from "./BrainCoordinator.js";
 import { CodexVoiceContainerError } from "./CodexVoiceContainer.js";
+import type { ScriptWriterResult } from "./ScriptWriter.js";
 
 export interface CodexRoomFrontendHandlers {
+	onCoordinatedSpeech?(input: { businessId: string; text: string }): void;
 	onResponseState(active: boolean): void;
 	onProviderSpeechStarted?(input: { generation: number; itemId: string }): void;
 	onProviderSpeechStopped?(input: { generation: number; itemId: string }): void;
@@ -98,6 +100,7 @@ export class CodexRoomFrontend {
 			backend: VoiceBackend;
 			conversationOptions: ConversationOptions;
 			handlers?: CodexRoomFrontendHandlers;
+			allowSpokenParaphrase?: boolean;
 			onUnavailable(text: string): void | Promise<void>;
 		},
 	) {
@@ -145,12 +148,29 @@ export class CodexRoomFrontend {
 		if (!session.speak) return "failed";
 		const receipt = await session.speak(speech.spokenText, "readback", {
 			pendingKey: speech.speechId,
-			verification: "required",
+			verification: this.options.allowSpokenParaphrase
+				? "best_effort"
+				: "required",
 		});
 		if (receipt.outcome === "completed") return "confirmed";
 		return receipt.outcome === "failed" && receipt.transport !== "none"
 			? "unconfirmed"
 			: "failed";
+	}
+
+	rewriteSpeech(input: {
+		sourceText: string;
+		rosterNames: readonly string[];
+	}): Promise<ScriptWriterResult> {
+		const session = this.requireSession() as ConversationSession & {
+			rewriteSpeech?: (input: {
+				sourceText: string;
+				rosterNames: readonly string[];
+			}) => Promise<ScriptWriterResult>;
+		};
+		if (!this.options.allowSpokenParaphrase || !session.rewriteSpeech)
+			return Promise.reject(new Error("script_writer_unavailable"));
+		return session.rewriteSpeech(input);
 	}
 
 	cancelSpeech(): void {
@@ -170,6 +190,9 @@ export class CodexRoomFrontend {
 	}
 
 	private bind(session: ConversationSession): void {
+		session.on("coordinated-speech", (input) =>
+			this.handlers?.onCoordinatedSpeech?.(input),
+		);
 		session.on("speech-started", (input) => {
 			if (input) this.handlers?.onProviderSpeechStarted?.(input);
 		});

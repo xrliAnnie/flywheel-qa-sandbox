@@ -5,6 +5,7 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import { StateStore } from "../../StateStore.js";
+import * as bootstrap from "../bootstrap-generator.js";
 import type { BridgeConfig } from "../types.js";
 import * as routes from "../voice-session-routes.js";
 import { createVoiceSessionServices } from "../voice-session-services.js";
@@ -282,10 +283,61 @@ it("passes enabled background identity, room binding, and founder attention into
 			],
 		})) as never,
 	});
+	const now = new Date().toISOString();
+	store.updateVoiceProvisioning({
+		sessionId: SESSION_ID,
+		expectedStep: "reserved",
+		nextStep: "done",
+		nextState: "desired",
+		updatedAt: now,
+	});
+	const claim = store.claimVoiceSession({
+		sessionId: SESSION_ID,
+		daemonBootId: "boot-context",
+		now,
+		leaseTtlMs: 60000,
+	})!;
+	store.recordVoiceBackgroundEvent({
+		sessionId: SESSION_ID,
+		leaseToken: claim.leaseToken,
+		key: "session:exec-new:completed",
+		text: "FLY-2999 已完成 PR #1450",
+		deliveryClass: "context",
+		tokenCount: 25,
+		observedAt: now,
+		now,
+	});
 	const context = await factory.mock.calls[0]![0].getSessionContext(
 		store.getVoiceSession(SESSION_ID)!,
-		{ leaseBindingDigest: "d".repeat(64) },
+		{
+			leaseBindingDigest: "d".repeat(64),
+			leaseToken: claim.leaseToken,
+			requestedAt: now,
+		},
 	);
+
+	expect(context.contextGeneration).toBe(1);
+	expect(context.rosterNames).toEqual(
+		expect.arrayContaining([project.leads[0]!.agentId, "Lead A"]),
+	);
+	expect(context.realtimePrompt).toContain("FLY-2999 已完成 PR #1450");
+	const getContext = factory.mock.calls[0]![0].getSessionContext!;
+	const authority = {
+		leaseBindingDigest: "d".repeat(64),
+		leaseToken: claim.leaseToken,
+		requestedAt: now,
+	};
+	const reopened = await getContext(
+		store.getVoiceSession(SESSION_ID)!,
+		authority,
+	);
+	expect(reopened.contextGeneration).toBe(2);
+	await expect(
+		getContext(store.getVoiceSession(SESSION_ID)!, {
+			...authority,
+			generation: 1,
+		}),
+	).rejects.toThrow("voice_context_generation_stale");
 
 	expect(context.realtimePrompt).toContain("我是 Lead A 的语音分身");
 	expect(context.realtimePrompt).toContain(
@@ -298,6 +350,31 @@ it("passes enabled background identity, room binding, and founder attention into
 	expect(store.getVoiceSession(SESSION_ID)?.briefKeys).toEqual([
 		"attention:founder_gate:gate-1",
 	]);
+});
+
+it.each([true, false])("bootstrap failure yields honest unavailable state only when enabled=%s", async (enabled) => {
+	const identityPath = join(root, "identity.md");
+	writeFileSync(identityPath, "# Lead A\n## Speaking style\n简短。");
+	const project = configuredProject();
+	Object.assign(project.leads[0]!, {
+		voiceBackground: { enabled, browser: "off" },
+		cosContext: { displayName: "Lead A", aliases: [], workingSubdirectory: ".", identityPath, memoryPaths: [], writableRoots: [root] },
+	});
+	const factory = vi.spyOn(routes, "createVoiceSessionRouter");
+	createVoiceSessionServices({ probeSelfFilter: validProbe, store, projects: [project], env: { LEAD_TOKEN: "test-token" }, homeDir: root, cwd: root, config: {} as BridgeConfig });
+	const now = new Date().toISOString();
+	store.updateVoiceProvisioning({ sessionId: SESSION_ID, expectedStep: "reserved", nextStep: "done", nextState: "desired", updatedAt: now });
+	const claim = store.claimVoiceSession({ sessionId: SESSION_ID, daemonBootId: "boot-unavailable", now, leaseTtlMs: 60000 })!;
+	vi.spyOn(bootstrap, "generateBootstrap").mockRejectedValueOnce(new Error("state offline"));
+	const result = factory.mock.calls[0]![0].getSessionContext(store.getVoiceSession(SESSION_ID)!, { leaseBindingDigest: "d".repeat(64), leaseToken: claim.leaseToken, requestedAt: now });
+	if (!enabled) await expect(result).rejects.toThrow("context_state_unavailable");
+	else {
+		const context = await result;
+		expect(context.realtimePrompt).toContain("状态现在读不到");
+		expect(context.baseInstructions).toContain("状态现在读不到");
+		expect(context.manifest.stateUnavailable).toMatchObject({ activeSessions: true, pendingDecisions: true, pendingQuestions: true });
+		expect(context.realtimePrompt).not.toContain("没有活跃");
+	}
 });
 
 it("polls enabled Engine-B state into durable background tell rows", async () => {

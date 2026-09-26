@@ -188,3 +188,35 @@ describe("Codex voice handoff and visible transcript", () => {
 		});
 	});
 });
+
+it("attaches the full action ledger and explicit no-replay rules to failure handoff", () => {
+	const actionLedger = [
+		{
+			requestId: "123e4567-e89b-42d3-a456-426614174000",
+			operationId: "linear.comment.create",
+			targetKey: "linear:FLY-2886",
+			state: "succeeded" as const,
+			outcome: "succeeded" as const,
+			errorCode: null,
+		},
+	];
+	const built = buildCodexDelegateHandoff({
+		sessionId: "session-a",
+		leadId: "raya",
+		utterance: founderUtterance,
+		intent: {
+			generation: 1,
+			kind: "handoffRequest",
+			method: "thread/realtime/itemAdded",
+			itemId: "h1",
+			params: {},
+		},
+		actionLedger,
+	});
+	expect(built.payload.actionLedger).toEqual(actionLedger);
+	expect(built.payload.recoveryPolicy).toEqual({
+		succeeded: "do_not_repeat",
+		unknown: "reconcile_before_retry",
+		not_executed: "may_resume_original_request",
+	});
+});

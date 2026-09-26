@@ -37,6 +37,7 @@ afterEach(
 );
 
 async function start() {
+	const getCurrentTellKeys = vi.fn(async () => [] as string[]);
 	const getSessionContext = vi.fn(async (_session, authority) => ({
 		snapshotDigest: "context-digest",
 		leaseBindingDigest: authority.leaseBindingDigest,
@@ -88,6 +89,7 @@ async function start() {
 			projectSession,
 			validateSession,
 			getSessionContext,
+			getCurrentTellKeys,
 		}),
 	);
 	server = createServer(app);
@@ -99,6 +101,7 @@ async function start() {
 		projectSession,
 		validateSession,
 		getSessionContext,
+		getCurrentTellKeys,
 	};
 }
 
@@ -182,7 +185,7 @@ describe("voice session routes", () => {
 	});
 
 	it("claims, renews, advances state, and completes outbound receipt CAS", async () => {
-		const { base } = await start();
+		const { base, getCurrentTellKeys } = await start();
 		await call(base, "", {
 			method: "POST",
 			token: INGEST,
@@ -244,6 +247,31 @@ describe("voice session routes", () => {
 		});
 		const attemptToken = (attempt.body as { attemptToken: string })
 			.attemptToken;
+		const revalidate = (body: Record<string, unknown>, leaseValue = lease) =>
+			call(base, `/${SESSION_ID}/outbound/1/revalidate`, {
+				method: "POST",
+				token: MASTER,
+				lease: leaseValue,
+				body,
+			});
+		const original = {
+			attemptToken,
+			messageId: "100000000000000009",
+			text: "hello",
+		};
+		expect(await revalidate(original)).toMatchObject({
+			status: 200,
+			body: { current: true },
+		});
+		expect(await revalidate({ ...original, text: "changed" })).toMatchObject({
+			status: 200,
+			body: { current: false },
+		});
+		expect(
+			await revalidate({ ...original, attemptToken: "wrong" }),
+		).toMatchObject({ status: 200, body: { current: false } });
+		expect(await revalidate(original, "wrong")).toMatchObject({ status: 409 });
+
 		expect(
 			await call(base, `/${SESSION_ID}/outbound/1/receipt`, {
 				method: "POST",
@@ -252,6 +280,50 @@ describe("voice session routes", () => {
 				body: { attemptToken, status: "confirmed" },
 			}),
 		).toMatchObject({ status: 200, body: { status: "confirmed" } });
+		expect(await revalidate(original)).toMatchObject({
+			status: 200,
+			body: { current: false },
+		});
+		store.recordVoiceBackgroundEvent({
+			sessionId: SESSION_ID,
+			leaseToken: lease,
+			key: "attention:founder_gate:gate-current",
+			text: "FLY-2886 needs approval",
+			deliveryClass: "tell",
+			tokenCount: 20,
+			observedAt: NOW,
+			now: NOW,
+		});
+		const bridgeAttempt = await call(base, `/${SESSION_ID}/outbound/2/claim`, {
+			method: "POST",
+			token: MASTER,
+			lease,
+		});
+		const bridgeOriginal = {
+			attemptToken: (bridgeAttempt.body as { attemptToken: string })
+				.attemptToken,
+			messageId: `bridge-event:${SESSION_ID}:attention:founder_gate:gate-current`,
+			text: "FLY-2886 needs approval",
+		};
+		getCurrentTellKeys.mockResolvedValueOnce([
+			"attention:founder_gate:gate-current",
+		]);
+		expect(
+			await call(base, `/${SESSION_ID}/outbound/2/revalidate`, {
+				method: "POST",
+				token: MASTER,
+				lease,
+				body: bridgeOriginal,
+			}),
+		).toMatchObject({ status: 200, body: { current: true } });
+		expect(
+			await call(base, `/${SESSION_ID}/outbound/2/revalidate`, {
+				method: "POST",
+				token: MASTER,
+				lease,
+				body: bridgeOriginal,
+			}),
+		).toMatchObject({ status: 200, body: { current: false } });
 	});
 
 	it("returns not-claimable when a listed outbound mirror is withdrawn before claim", async () => {
@@ -372,7 +444,25 @@ describe("voice session routes", () => {
 				leaseBindingDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
 			},
 		});
-		expect(getSessionContext).toHaveBeenCalledTimes(1);
+		for (const generation of ["0", "-1", "1.2", "abc", "1&generation=2"]) {
+			expect(
+				await call(base, `/${SESSION_ID}/context?generation=${generation}`, {
+					token: MASTER,
+					lease: currentLease,
+				}),
+			).toMatchObject({ status: 400 });
+		}
+		await call(base, `/${SESSION_ID}/context?generation=7`, {
+			token: MASTER,
+			lease: currentLease,
+		});
+		expect(getSessionContext.mock.calls.at(-1)?.[1]).toMatchObject({
+			generation: 7,
+			leaseToken: currentLease,
+			requestedAt: NOW,
+		});
+
+		expect(getSessionContext).toHaveBeenCalledTimes(2);
 		expect(getSessionContext.mock.calls[0]?.[1].leaseBindingDigest).not.toBe(
 			currentLease,
 		);

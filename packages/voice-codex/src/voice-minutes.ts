@@ -10,6 +10,16 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 
+import type { VoiceCapabilityActionLedgerEntry } from "flywheel-teamlead/voice-capability";
+
+export interface VoiceUnplayedItem {
+	businessId: string;
+	kind: "result" | "tell" | "agenda" | "fallback" | "obligation";
+	text: string;
+	status: "playing" | "queued" | "rewriting" | "unfinished";
+	attempts: number;
+}
+
 const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 const SYNTHETIC_SNOWFLAKE_HIGH_BIT = 1n << 63n;
 
@@ -35,6 +45,8 @@ export interface VoiceMinutesPayload {
 	decisions: string[];
 	pending: string[];
 	handoffs: Array<{ handoffId: string; state: string }>;
+	unplayed?: readonly VoiceUnplayedItem[];
+	actionLedger?: readonly VoiceCapabilityActionLedgerEntry[];
 }
 
 export interface VoiceMinutesJob {
@@ -112,7 +124,10 @@ function validatePayload(payload: VoiceMinutesPayload): void {
 	if (
 		!payload ||
 		typeof payload !== "object" ||
-		Object.keys(payload).sort().join(",") !==
+		Object.keys(payload)
+			.filter((key) => key !== "unplayed" && key !== "actionLedger")
+			.sort()
+			.join(",") !==
 			"contextDigest,decisions,displayName,facts,founderUserId,handoffs,leadId,pending,projectName,sessionId,status,threadId,transcriptDigest,voiceBotUserId" ||
 		!validId(payload.sessionId) ||
 		!validId(payload.leadId) ||
@@ -151,6 +166,67 @@ function validatePayload(payload: VoiceMinutesPayload): void {
 				!validId(item.handoffId) ||
 				!validId(item.state),
 		)
+	)
+		throw new Error("voice_minutes_invalid");
+	if (
+		payload.unplayed !== undefined &&
+		(!Array.isArray(payload.unplayed) ||
+			payload.unplayed.length > 1024 ||
+			payload.unplayed.some(
+				(item) =>
+					!isObject(item) ||
+					Object.keys(item).sort().join(",") !==
+						"attempts,businessId,kind,status,text" ||
+					typeof item.businessId !== "string" ||
+					!validId(item.businessId) ||
+					typeof item.kind !== "string" ||
+					!["result", "tell", "agenda", "fallback", "obligation"].includes(
+						item.kind,
+					) ||
+					typeof item.status !== "string" ||
+					!["playing", "queued", "rewriting", "unfinished"].includes(
+						item.status,
+					) ||
+					typeof item.text !== "string" ||
+					Buffer.byteLength(item.text) > 32 * 1024 ||
+					typeof item.attempts !== "number" ||
+					!Number.isInteger(item.attempts) ||
+					item.attempts < 0,
+			))
+	)
+		throw new Error("voice_minutes_invalid");
+	if (
+		payload.actionLedger !== undefined &&
+		(!Array.isArray(payload.actionLedger) ||
+			payload.actionLedger.some(
+				(item) =>
+					!isObject(item) ||
+					Object.keys(item).sort().join(",") !==
+						"errorCode,operationId,outcome,requestId,state,targetKey" ||
+					typeof item.requestId !== "string" ||
+					!validId(item.requestId) ||
+					typeof item.operationId !== "string" ||
+					!validId(item.operationId) ||
+					(item.targetKey !== null &&
+						(typeof item.targetKey !== "string" ||
+							item.targetKey.length > 512)) ||
+					typeof item.state !== "string" ||
+					![
+						"prepared",
+						"dispatched",
+						"succeeded",
+						"rejected",
+						"unknown",
+					].includes(item.state) ||
+					item.outcome !==
+						(item.state === "succeeded"
+							? "succeeded"
+							: item.state === "prepared" || item.state === "rejected"
+								? "not_executed"
+								: "unknown") ||
+					(item.errorCode !== null &&
+						(typeof item.errorCode !== "string" || item.errorCode.length > 96)),
+			))
 	)
 		throw new Error("voice_minutes_invalid");
 	if (Buffer.byteLength(JSON.stringify(payload), "utf8") > 256 * 1024)

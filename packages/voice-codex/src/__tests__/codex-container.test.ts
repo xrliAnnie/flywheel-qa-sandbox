@@ -283,6 +283,12 @@ function harness(
 		return process;
 	};
 	const parent = {
+		manifest: {
+			manifestDigest: "c".repeat(64),
+			operationIds: ["linear.issue.read", "github.pr.read", "browser.list_pages"],
+			deniedOperationIds: ["bridge.merge", "bridge.ship"],
+			browserMode: "off" as const,
+		},
 		cwd: base,
 		capabilityModelEnv: {},
 		authSourcePath: join(base, "auth.json"),
@@ -497,6 +503,29 @@ describe("Codex voice container", () => {
 		expect(prompts[0]).toContain("BACKGROUND_GENERATION_1");
 		expect(prompts[1]).toContain("BACKGROUND_GENERATION_2");
 		expect(prompts[1]).not.toContain("BACKGROUND_GENERATION_1");
+		await opened.close();
+	});
+
+	it("binds discovered capability categories and reserved actions into opening and restarted briefs", async () => {
+		const h = harness();
+		const opened = await h.container.open({
+			sessionId: "session-capability-brief",
+			voice: "marin",
+			loadContext: async () => context("session-capability-brief"),
+			background: { enabled: true, onTurnStarted: vi.fn(), onTurnTerminal: vi.fn() },
+		});
+		await opened.restart();
+		const prompts = h.processes[0]!.requests
+			.filter((row) => row.method === "thread/realtime/start")
+			.map((row) => (row.params as { prompt: string }).prompt);
+		expect(prompts).toHaveLength(2);
+		for (const prompt of prompts) {
+			expect(prompt).toContain("后台工具类别：GitHub、Linear");
+			expect(prompt).toContain("bridge.merge、bridge.ship");
+			expect(prompt).toContain("这场没有浏览器工具");
+			expect(prompt).not.toContain("snapshotDigest=" + "a".repeat(64));
+		}
+		expect(h.parent.verifyEffectiveConfig).toHaveBeenCalled();
 		await opened.close();
 	});
 

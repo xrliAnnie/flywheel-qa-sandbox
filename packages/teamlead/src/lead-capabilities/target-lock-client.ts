@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { getLeadCapability } from "./catalog.js";
 import type { LeadCapabilityRuntimeAuthorityOptions } from "./runtime-authority.js";
 import { resolveLeadCapabilityRuntimeAuthority } from "./runtime-authority.js";
 
@@ -13,6 +14,10 @@ export type LeadTargetLockAcquireStatus =
 				| "target_pending_reconcile";
 	  };
 export interface LeadTargetLockClient {
+	recordFounderDenial?(input: {
+		operationId: string;
+		requestId: string;
+	}): Promise<string | undefined>;
 	readonly actor: "resident" | "voice";
 	acquire(input: {
 		operationId: string;
@@ -35,6 +40,7 @@ export interface LeadTargetLockClient {
 		fence: string;
 		outcome: "succeeded" | "rejected" | "not_dispatched" | "unknown";
 		reason?: string;
+		providerRef?: string;
 		signal: AbortSignal;
 	}): Promise<void>;
 	cancel(input: {
@@ -97,7 +103,13 @@ export function createLeadTargetLockClient(
 	const ticketKey = (input: Record<string, unknown>) =>
 		JSON.stringify([input.operationId, input.requestId, input.targetKey]);
 	async function call(
-		action: "policy" | "acquire" | "mark-dispatched" | "release" | "cancel",
+		action:
+			| "policy"
+			| "acquire"
+			| "mark-dispatched"
+			| "release"
+			| "cancel"
+			| "founder-denial",
 		input: Record<string, unknown> & { requestId: string; signal: AbortSignal },
 	) {
 		const { signal, ...fields } = input;
@@ -139,6 +151,25 @@ export function createLeadTargetLockClient(
 	}
 	let disabledWithoutLocks = false;
 	return Object.freeze<LeadTargetLockClient>({
+		recordFounderDenial: async (input) => {
+			if (
+				authority.kind !== "voice_session" ||
+				getLeadCapability(input.operationId)?.classification !== "reserved"
+			)
+				throw denied();
+			const result = await call("founder-denial", {
+				...input,
+				targetKey: `${env.FLYWHEEL_PROJECT_NAME}:founder-only:${input.operationId}`,
+				signal: AbortSignal.timeout(2000),
+			});
+			if (
+				result.status !== "recorded" ||
+				typeof result.receiptId !== "string" ||
+				!/^lead-event:[1-9][0-9]*$/.test(result.receiptId)
+			)
+				throw denied();
+			return result.receiptId;
+		},
 		actor: authority.kind === "voice_session" ? "voice" : "resident",
 		acquire: async (input) => {
 			input.signal.throwIfAborted();

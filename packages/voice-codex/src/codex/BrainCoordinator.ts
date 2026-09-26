@@ -1,8 +1,13 @@
+import type { VoiceUnplayedItem } from "../voice-minutes.js";
 import type {
 	SpeechArbiterKind,
 	SpeechArbiterRequest,
 	SpeechArbiterTerminal,
 } from "./SpeechArbiter.js";
+import {
+	type SpokenScriptSource,
+	validateSpokenScript,
+} from "./SpokenScript.js";
 
 export type BrainSpeechRequest = SpeechArbiterRequest;
 
@@ -17,6 +22,8 @@ export interface BrainObligation {
 }
 
 export interface BrainCoordinatorOptions {
+	evidence?(record: Record<string, unknown>): void;
+	postThread?(input: { businessId: string; text: string }): Promise<void>;
 	now?(): number;
 	schedule?(callback: () => void, delayMs: number): unknown;
 	cancelScheduled?(handle: unknown): void;
@@ -30,6 +37,9 @@ export interface BackgroundTurnTerminal {
 	turnId: string;
 	outcome: "completed" | "failed" | "interrupted";
 	spokenSegments?: string[];
+	threadSegments?: string[];
+	sources?: readonly SpokenScriptSource[];
+	rosterNames?: readonly string[];
 	reasonCategory?: "额度" | "权限" | "出错" | string;
 	hadWriteReceipt?: boolean;
 	writeReceiptUnknown?: boolean;
@@ -59,6 +69,7 @@ export class BrainCoordinator {
 	private lastTerminal?: TerminalTurn;
 	private waitingAnchorId?: string;
 	private closed = false;
+	private readonly pendingResults = new Map<string, VoiceUnplayedItem>();
 
 	constructor(private readonly options: BrainCoordinatorOptions) {
 		this.now = options.now ?? Date.now;
@@ -140,10 +151,36 @@ export class BrainCoordinator {
 				obligation.state === "attached" && obligation.turnId === turn.turnId,
 		);
 		for (const obligation of attached) this.settleObligation(obligation);
-		if (attached.length > 0) this.enqueueTurnResult(turn);
+		if (attached.length > 0)
+			void this.enqueueTurnResult({
+				...turn,
+				sources: [
+					...(turn.sources ?? []),
+					...attached.map((row) => ({
+						itemId: `founder:${row.handoffId}`,
+						text: row.inputTranscript,
+					})),
+				],
+			});
 		this.refreshWaitingAnchor();
 	}
 
+	unfinished(): readonly VoiceUnplayedItem[] {
+		return Object.freeze([
+			...this.pendingResults.values(),
+			...[...this.obligations.values()]
+				.filter((row) => row.state !== "settled")
+				.map((row) =>
+					Object.freeze({
+						businessId: row.handoffId,
+						kind: "obligation" as const,
+						text: row.inputTranscript,
+						status: "unfinished" as const,
+						attempts: 0,
+					}),
+				),
+		]);
+	}
 	close(): void {
 		if (this.closed) return;
 		this.closed = true;
@@ -177,29 +214,83 @@ export class BrainCoordinator {
 		this.refreshWaitingAnchor();
 	}
 
-	private enqueueTurnResult(turn: BackgroundTurnTerminal): void {
-		const segments = (turn.spokenSegments ?? []).filter(
-			(segment) => segment.trim().length > 0,
+	private async enqueueTurnResult(turn: BackgroundTurnTerminal): Promise<void> {
+		const segments = (turn.spokenSegments ?? []).filter((text) => text.trim());
+		const threadText =
+			(turn.threadSegments ?? []).join("\n\n") ||
+			segments.join("\n\n") ||
+			`这件没查成：${turn.reasonCategory ?? "出错"}。`;
+		const businessId = `turn:${turn.turnId}:material`;
+		const validations = segments.map((text) =>
+			validateSpokenScript({
+				spoken: text,
+				sources: turn.sources ?? [],
+				rosterNames: turn.rosterNames ?? [],
+				mode: "background_result",
+			}),
 		);
-		if (turn.outcome === "completed" && segments.length > 0) {
-			segments.forEach((text, index) => {
-				void this.options.speech.enqueue({
-					businessId: `turn:${turn.turnId}:result:${index}`,
-					kind: "result",
-					text,
-					threadText: text,
-				});
-			});
-			return;
-		}
-		const reason = turn.reasonCategory ?? "出错";
-		const text = `这件没查成：${reason}。细节我发到 thread。`;
-		void this.options.speech.enqueue({
-			businessId: `turn:${turn.turnId}:failure`,
-			kind: "result",
-			text,
-			threadText: text,
+		const valid =
+			turn.outcome === "completed" &&
+			segments.length > 0 &&
+			segments.every(
+				(text, index) =>
+					Array.from(text).length <= 120 &&
+					!/https?:\/\//iu.test(text) &&
+					validations[index]!.ok,
+			);
+		this.options.evidence?.({
+			kind: "voice_background_script_validated",
+			turnId: turn.turnId,
+			valid,
+			checks: validations,
 		});
+		const needsPost =
+			!valid ||
+			Boolean(turn.threadSegments?.length) ||
+			validations.some((result) => result.usedThreadPointer);
+
+		let posted = false;
+		if (needsPost) {
+			this.pendingResults.set(
+				businessId,
+				Object.freeze({
+					businessId,
+					kind: "result",
+					text: threadText,
+					status: "unfinished",
+					attempts: 0,
+				}),
+			);
+			try {
+				if (!this.options.postThread) throw new Error("thread_sink_missing");
+				await this.options.postThread({ businessId, text: threadText });
+				posted = true;
+			} catch {
+				/* Retain unpublished material for minutes. */
+			}
+			if (this.closed) return;
+			if (posted) this.pendingResults.delete(businessId);
+		}
+		const speech =
+			turn.outcome !== "completed"
+				? [
+						`这件没查成：${turn.reasonCategory ?? "出错"}。${posted ? "细节我发到 thread。" : ""}`,
+					]
+				: valid && (!needsPost || posted)
+					? segments
+					: [
+							posted
+								? "这条我发到 thread 了，编号以文字为准。"
+								: "编号我没核对上，等下再给你",
+						];
+		for (const [index, text] of speech.entries()) {
+			void this.options.speech.enqueue({
+				businessId: `turn:${turn.turnId}:result:${index}`,
+				kind: "result",
+				text,
+				threadText,
+			});
+		}
 	}
 
 	private settleObligation(obligation: StoredObligation): void {

@@ -164,6 +164,24 @@ export function createLinearHandlers(
 	) {
 		const definition = getLeadCapability(operationId)!;
 		handlers.set(operationId, {
+			...(definition.classification === "write" &&
+			operationId !== "linear.issue.create"
+				? {
+						resolveTargetKey: async (
+							raw: Record<string, unknown>,
+							context: LeadOperationContext,
+						) => {
+							const input = definition.inputSchema.parse(raw);
+							const expected = policyStart();
+							await context.assertCurrent();
+							const issue = await getIssue(input.issueId as string, expected);
+							await context.assertCurrent();
+							if (!/^[A-Z][A-Z0-9]*-[1-9][0-9]*$/.test(issue.identifier))
+								throw new ScopeDenied();
+							return `linear:${issue.identifier.toLowerCase()}`;
+						},
+					}
+				: {}),
 			authorize: async (raw, context) => {
 				const input = definition.inputSchema.parse(raw);
 				const expected = policyStart();
@@ -249,9 +267,19 @@ export function createLinearHandlers(
 				: {}),
 			labelIds: [...policy.createLabelIds],
 		});
-		if (!payload.success) return { status: "rejected" };
+		if (!payload.success) {
+			await context.recordTerminalEvidence?.({
+				status: "rejected",
+				terminalEvidence: "provider_rejected",
+			});
+			return { status: "rejected", terminalEvidence: "provider_rejected" };
+		}
 		const issue = await payload.issue;
 		if (!issue) throw new Error("linear_provider_result_missing");
+		await context.recordTerminalEvidence?.({
+			status: "succeeded",
+			providerRef: issue.id,
+		});
 		await scoped(issue, expected);
 		return {
 			status: "succeeded",
@@ -297,7 +325,17 @@ export function createLinearHandlers(
 			current(expected);
 			if (context.signal.aborted) throw new Error("linear_operation_aborted");
 			const payload = await client.updateIssue(issue.id, patch);
-			if (!payload.success) return { status: "rejected" };
+			if (!payload.success) {
+				await context.recordTerminalEvidence?.({
+					status: "rejected",
+					terminalEvidence: "provider_rejected",
+				});
+				return { status: "rejected", terminalEvidence: "provider_rejected" };
+			}
+			await context.recordTerminalEvidence?.({
+				status: "succeeded",
+				providerRef: issue.id,
+			});
 			const updated = await payload.issue;
 			if (!updated) throw new Error("linear_provider_result_missing");
 			await scoped(updated, expected);
@@ -322,9 +360,19 @@ export function createLinearHandlers(
 				LinearSdk["createIssueRelation"]
 			>[0]["type"],
 		});
-		if (!payload.success) return { status: "rejected" };
+		if (!payload.success) {
+			await context.recordTerminalEvidence?.({
+				status: "rejected",
+				terminalEvidence: "provider_rejected",
+			});
+			return { status: "rejected", terminalEvidence: "provider_rejected" };
+		}
 		const relation = await payload.issueRelation;
 		if (!relation) throw new Error("linear_provider_result_missing");
+		await context.recordTerminalEvidence?.({
+			status: "succeeded",
+			providerRef: relation.id,
+		});
 		return {
 			status: "succeeded",
 			providerRef: relation.id,
@@ -340,9 +388,19 @@ export function createLinearHandlers(
 			issueId: issue.id,
 			body: input.body as string,
 		});
-		if (!payload.success) return { status: "rejected" };
+		if (!payload.success) {
+			await context.recordTerminalEvidence?.({
+				status: "rejected",
+				terminalEvidence: "provider_rejected",
+			});
+			return { status: "rejected", terminalEvidence: "provider_rejected" };
+		}
 		const comment = await payload.comment;
 		if (!comment) throw new Error("linear_provider_result_missing");
+		await context.recordTerminalEvidence?.({
+			status: "succeeded",
+			providerRef: comment.id,
+		});
 		return {
 			status: "succeeded",
 			providerRef: comment.id,

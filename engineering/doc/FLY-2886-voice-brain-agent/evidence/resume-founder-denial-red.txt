@@ -1,0 +1,95 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+stderr | src/bridge/__tests__/lead-capability-target-lock.test.ts > serves disabled/draining policy and checks only existing targets after rollback
+[slow-sql] {"databaseKind":"teamlead","sqlId":"0801074aeaef699f","method":"exec","durationMs":314.6775830000006}
+[slow-sql] {"databaseKind":"teamlead","sqlId":"ce922519a3c3ecaf","method":"transaction","durationMs":338.45295799999985}
+
+ ❯ |parallel| src/bridge/__tests__/lead-capability-target-lock.test.ts (5 tests | 1 failed) 6499ms
+   ✓ serves disabled/draining policy and checks only existing targets after rollback  1224ms
+   ✓ rejects a voice activation alias and foreign project target before creating a lock  1088ms
+   ✓ accepts only the original fence for terminal settlement after authority revocation  794ms
+   ✓ reconciles only matching trusted terminal evidence and reserves explicit force clear for a resident  1674ms
+   × records only current voice founder-only denials with a durable idempotent mailbox receipt 1713ms
+     → expected 404 to be 200 // Object.is equality
+ ❯ |parallel| src/lead-capabilities/__tests__/voice-founder-denial.test.ts (3 tests | 3 failed) 283ms
+   × routes voice-only bridge.merge denial through the trusted broker and reports only confirmed Lead recording 267ms
+     → expected { Object (errorCode) } to match object { status: 'rejected', …(2) }
+   × routes voice-only bridge.terminate denial through the trusted broker and reports only confirmed Lead recording 9ms
+     → expected { Object (errorCode) } to match object { status: 'rejected', …(2) }
+   × classifies missing, unknown, and reserved operations separately without inventing a failed inbox receipt 6ms
+     → expected { …(4) } to match object { errorCode: 'unavailable', …(1) }
+(3 matching properties omitted from actual)
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |parallel| src/lead-capabilities/__tests__/voice-founder-denial.test.ts > routes voice-only bridge.merge denial through the trusted broker and reports only confirmed Lead recording
+ FAIL  |parallel| src/lead-capabilities/__tests__/voice-founder-denial.test.ts > routes voice-only bridge.terminate denial through the trusted broker and reports only confirmed Lead recording
+AssertionError: expected { Object (errorCode) } to match object { status: 'rejected', …(2) }
+
+- Expected
++ Received
+
+  {
+-   "data": {
+-     "leadReceiptId": "lead-event:123",
+-     "spokenText": "这个只能你本人做，我已经记给 eng",
+-   },
+-   "errorCode": "founder_only_denied",
+-   "status": "rejected",
++   "errorCode": "operation_not_in_manifest",
+  }
+
+ ❯ src/lead-capabilities/__tests__/voice-founder-denial.test.ts:27:16
+     25|   expect(result.isError).toBe(true);
+     26|   const body = JSON.parse((result.content as Array<{text: string}>)[0]…
+     27|   expect(body).toMatchObject({status: "rejected", errorCode: "founder_…
+       |                ^
+     28|   expect(dispatch).toHaveBeenCalledTimes(1);
+     29|   expect(record).toHaveBeenCalledWith({requestId, operationId});
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+ FAIL  |parallel| src/lead-capabilities/__tests__/voice-founder-denial.test.ts > classifies missing, unknown, and reserved operations separately without inventing a failed inbox receipt
+AssertionError: expected { …(4) } to match object { errorCode: 'unavailable', …(1) }
+(3 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+-   "data": {
+-     "spokenText": "这场没开这个能力",
+-   },
+-   "errorCode": "unavailable",
++   "errorCode": "invalid_input",
+  }
+
+ ❯ src/lead-capabilities/__tests__/voice-founder-denial.test.ts:38:58
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+
+ FAIL  |parallel| src/bridge/__tests__/lead-capability-target-lock.test.ts > records only current voice founder-only denials with a durable idempotent mailbox receipt
+AssertionError: expected 404 to be 200 // Object.is equality
+
+- Expected
++ Received
+
+- 200
++ 404
+
+ ❯ src/bridge/__tests__/lead-capability-target-lock.test.ts:253:23
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯
+
+
+ Test Files  2 failed (2)
+      Tests  4 failed | 4 passed (8)
+   Start at  00:36:31
+   Duration  27.15s (transform 9.12s, setup 162ms, collect 16.45s, tests 6.78s, environment 0ms, prepare 1.19s)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/lead-capabilities/__tests__/voice-founder-denial.test.ts src/bridge/__tests__/lead-capability-target-lock.test.ts

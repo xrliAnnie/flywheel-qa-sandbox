@@ -10,6 +10,8 @@ import {
 } from "node:fs";
 import { dirname } from "node:path";
 
+import type { VoiceUnplayedItem } from "./voice-minutes.js";
+
 export type JournalRecord = {
 	kind:
 		| "captured"
@@ -17,8 +19,10 @@ export type JournalRecord = {
 		| "mirrored"
 		| "ingested"
 		| "abandoned"
-		| "fenced";
+		| "fenced"
+		| "close_snapshot";
 	transcriptId: string;
+	unplayed?: readonly VoiceUnplayedItem[];
 	ts?: string;
 	safeText?: string;
 	nonce?: string;

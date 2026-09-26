@@ -141,6 +141,18 @@ describe("Codex proof-bound speak", () => {
 		});
 	});
 
+	it("keeps an enabled validated script and identifiers intact through the transport", async () => {
+		const h = harness({ allowSpokenParaphrase: true });
+		const text = `FLY-2886 PR #1324 ${"这是已核对的稿。".repeat(10)}`;
+		const result = h.speaker.speak(text, "readback", {
+			pendingKey: "intact",
+			verification: "best_effort",
+		});
+		expect(h.transport.sent).toEqual([{ text, generation: 9 }]);
+		await completeCurrent(h.speaker, "intact", text);
+		await expect(result).resolves.toMatchObject({ outcome: "completed" });
+	});
+
 	it("lets enabled voice sessions paraphrase while keeping exact proof absent", async () => {
 		const h = harness({ allowSpokenParaphrase: true });
 		const result = h.speaker.speak(

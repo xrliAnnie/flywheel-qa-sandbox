@@ -1,0 +1,12 @@
+scripts/__tests__/autocompact-override-retirement.test.sh
+scripts/__tests__/codex-home-reconcile-cadence.test.sh
+scripts/__tests__/fly1674-residue.test.sh
+scripts/__tests__/fly1680-v1-extinction.test.sh
+scripts/__tests__/fly2102-flag-freeze.test.sh
+scripts/__tests__/fly2403-design-model-comparison.test.sh
+scripts/__tests__/flywheel-voice-wrapper.test.sh
+scripts/__tests__/gate4-allowlist-masking.test.sh
+scripts/__tests__/package-onboard-smoke.test.sh
+scripts/__tests__/package-onboard.test.sh
+scripts/__tests__/runtime-role-auto-qa-retirement.test.sh
+scripts/__tests__/v2-retirement-cleanup.test.sh

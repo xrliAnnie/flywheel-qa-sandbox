@@ -259,7 +259,11 @@ export class CodexProofSpeaker {
 				contentProof: "none",
 			};
 		}
-		const chunks = prepareReplySpeech(input.text, input.chunkCharacters ?? 80);
+		const chunks = this.options.allowSpokenParaphrase
+			? input.text.trim()
+				? [{ spokenText: input.text }]
+				: []
+			: prepareReplySpeech(input.text, input.chunkCharacters ?? 80);
 		if (chunks.length === 0) {
 			return {
 				...binding,

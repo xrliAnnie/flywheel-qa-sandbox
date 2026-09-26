@@ -143,6 +143,94 @@ function backend(
 }
 
 describe("Codex room composition", () => {
+	it("routes enabled repeat prompts to the shared floor instead of speaking directly", async () => {
+		let callbacks!: Record<string, (input: unknown) => void>;
+		const appendSpeech = vi.fn(async () => {});
+		const onCoordinatedSpeech = vi.fn();
+		const actual = new CodexVoiceBackend({
+			sessionId: "s1",
+			voice: "marin",
+			loadContext: vi.fn(),
+			backgroundEnabled: true,
+			container: {
+				open: async (input) => {
+					callbacks = input.realtime as never;
+					return {
+						transport: {
+							appendAudio: () => "sent" as const,
+							appendSpeech,
+							appendText: async () => {},
+							cancel: async () => {},
+						},
+						close: async () => {},
+					};
+				},
+			},
+		});
+		const frontend = new CodexRoomFrontend({
+			backend: actual,
+			conversationOptions: { brain },
+			allowSpokenParaphrase: true,
+			handlers: {
+				onCoordinatedSpeech,
+				onResponseState: vi.fn(),
+				onTranscript: vi.fn(),
+				onSpeechAudioReady: vi.fn(),
+				onSpeechResult: vi.fn(),
+				onClosed: vi.fn(),
+			},
+			onUnavailable: vi.fn(),
+		});
+		await frontend.start();
+		callbacks.onExecutionIntent({
+			generation: 1,
+			kind: "handoffRequest",
+			itemId: "h1",
+			raw: {},
+		});
+		expect(appendSpeech).not.toHaveBeenCalled();
+		expect(onCoordinatedSpeech).toHaveBeenCalledWith(
+			expect.objectContaining({
+				businessId: expect.stringContaining("handoff-repeat"),
+				text: expect.stringContaining("请再说一遍"),
+			}),
+		);
+		await frontend.stop();
+	});
+
+	it("uses best-effort speech only in the enabled frontend and exposes the isolated rewrite seam", async () => {
+		const rewriteSpeech = vi.fn(async () => ({
+			spoken: "FLY-2886 已查到。",
+			threadText: null,
+			protectedFieldEvidence: [],
+		}));
+		const speak = vi.fn(async () => ({ outcome: "completed" }));
+		const session = { ...conversation(), rewriteSpeech, speak };
+		const frontend = new CodexRoomFrontend({
+			backend: backend(async () => session as never),
+			conversationOptions: { brain },
+			allowSpokenParaphrase: true,
+			onUnavailable: vi.fn(),
+		});
+		await frontend.start();
+		await frontend.rewriteSpeech({
+			sourceText: "FLY-2886 已查到。",
+			rosterNames: [],
+		});
+		expect(rewriteSpeech).toHaveBeenCalledOnce();
+		await frontend.appendSpeech({
+			speechId: "p1",
+			spokenText: "FLY-2886 已查到。",
+			expectedTokens: [],
+			generationBudgetMs: 20000,
+		});
+		expect(speak).toHaveBeenCalledWith("FLY-2886 已查到。", "readback", {
+			pendingKey: "p1",
+			verification: "best_effort",
+		});
+		await frontend.stop();
+	});
+
 	it("forwards the original backend failure instead of collapsing it to its code", async () => {
 		let onError!: (error: VoiceError) => void;
 		const onClosed = vi.fn();
@@ -567,11 +655,11 @@ describe("Codex room composition", () => {
 		});
 		expect(starts).toEqual(["turn-background"]);
 		expect(terminals).toEqual([
-			{
+			expect.objectContaining({
 				turnId: "turn-background",
 				outcome: "completed",
 				spokenSegments: ["FLY-2886 在 PR #1324。"],
-			},
+			}),
 		]);
 
 		finishPersist();
@@ -1943,4 +2031,195 @@ describe("Codex room composition", () => {
 			expect(unavailable).toHaveBeenCalledWith(expect.stringContaining(copy));
 		},
 	);
+});
+
+it.each(["failed", "interrupted", "session_error"] as const)(
+	"hands an authorized failed background request to Lead once with ledger: %s",
+	async (failure) => {
+		let callbacks!: Parameters<
+			NonNullable<
+				ConstructorParameters<typeof CodexVoiceBackend>[0]["container"]["open"]
+			>
+		>[0];
+		const ledger = [
+			{
+				requestId: "123e4567-e89b-42d3-a456-426614174000",
+				operationId: "linear.comment.create",
+				targetKey: "linear:FLY-2886",
+				state: "succeeded" as const,
+				outcome: "succeeded" as const,
+				errorCode: null,
+			},
+			{
+				requestId: "223e4567-e89b-42d3-a456-426614174000",
+				operationId: "linear.comment.create",
+				targetKey: "linear:FLY-2887",
+				state: "unknown" as const,
+				outcome: "unknown" as const,
+				errorCode: null,
+			},
+			{
+				requestId: "323e4567-e89b-42d3-a456-426614174000",
+				operationId: "linear.comment.create",
+				targetKey: "linear:FLY-2888",
+				state: "rejected" as const,
+				outcome: "not_executed" as const,
+				errorCode: "target_busy",
+			},
+		];
+		const handoffToLead = vi.fn(async () => ({
+			handoffId: "h-result",
+			state: "dispatched" as const,
+			idempotencyKey: "key",
+			requestDigest: "a".repeat(64),
+		}));
+		const actual = new CodexVoiceBackend({
+			sessionId: "session-failure",
+			voice: "marin",
+			backgroundEnabled: true,
+			loadContext: vi.fn(),
+			persistUtterance: async () => {},
+			handoffToLead,
+			container: {
+				open: async (input) => {
+					callbacks = input;
+					return {
+						generation: 1,
+						actionLedger: () => ledger,
+						transport: {
+							appendAudio: () => "sent" as const,
+							appendSpeech: async () => {},
+							appendText: async () => {},
+							cancel: async () => {},
+						},
+						close: async () => {},
+					};
+				},
+			},
+		});
+		const session = await actual.createConversation({ brain });
+		session.on("error", () => {});
+		callbacks.realtime.onTranscript?.({
+			generation: 1,
+			itemId: "founder-item",
+			association: "provider_item",
+			role: "user",
+			text: "修改三个 issue",
+			final: true,
+			inputOwner: { utteranceId: "utterance", ownerUserId: "founder" },
+			raw: {},
+		});
+		callbacks.realtime.onExecutionIntent?.({
+			generation: 1,
+			kind: "handoffRequest",
+			method: "thread/realtime/itemAdded",
+			itemId: "h-failure",
+			params: {},
+		});
+		callbacks.background?.onTurnStarted?.("turn-failure");
+		if (failure === "session_error")
+			callbacks.realtime.onError?.(new Error("quota_exhausted"));
+		else {
+			callbacks.background?.onTurnTerminal?.({
+				turnId: "turn-failure",
+				outcome: failure,
+			});
+			callbacks.background?.onTurnTerminal?.({
+				turnId: "turn-failure",
+				outcome: failure,
+			});
+		}
+		await vi.waitFor(() => expect(handoffToLead).toHaveBeenCalledOnce());
+		expect(handoffToLead).toHaveBeenCalledWith(
+			expect.objectContaining({ actionLedger: ledger }),
+		);
+		expect(actual.actionLedger()).toEqual(ledger);
+		await session.close();
+	},
+);
+
+it("collects only completed tool outputs and trusted context, excluding answer and command arguments", async () => {
+	let callbacks!: Parameters<
+		ConstructorParameters<typeof CodexVoiceBackend>[0]["container"]["open"]
+	>[0];
+	const backend = new CodexVoiceBackend({
+		sessionId: "sources",
+		voice: "marin",
+		backgroundEnabled: true,
+		loadContext: async () =>
+			({
+				realtimePrompt: "Trusted FLY-2886",
+				baseInstructions: "background",
+				snapshotDigest: "a".repeat(64),
+			}) as never,
+		container: {
+			open: async (input) => {
+				callbacks = input;
+				await input.loadContext();
+				return {
+					transport: {
+						appendAudio: () => "sent",
+						appendText: async () => {},
+						appendSpeech: async () => {},
+						cancel: async () => {},
+					},
+					close: async () => {},
+				};
+			},
+		},
+	});
+	const session = await backend.createConversation({ brain });
+	const terminal = vi.fn();
+	session.on("background-turn-terminal", terminal);
+	callbacks.background!.onTurnStarted("t");
+	callbacks.background!.onItemCompleted?.({
+		turnId: "t",
+		itemId: "tool-command",
+		type: "commandExecution",
+		raw: {
+			status: "completed",
+			command: "echo FLY-9999",
+			aggregatedOutput: "PR #2886",
+		},
+	});
+	callbacks.background!.onItemCompleted?.({
+		turnId: "t",
+		itemId: "tool-mcp",
+		type: "mcpToolCall",
+		raw: {
+			status: "completed",
+			arguments: { issue: "FLY-9999" },
+			result: { content: [{ type: "text", text: "FLY-2886" }] },
+		},
+	});
+	callbacks.background!.onItemCompleted?.({
+		turnId: "t",
+		itemId: "answer",
+		type: "agentMessage",
+		raw: { text: "FLY-9999" },
+	});
+	callbacks.background!.onItemCompleted?.({
+		turnId: "t",
+		itemId: "unfinished-tool",
+		type: "mcpToolCall",
+		raw: {
+			status: "inProgress",
+			result: { content: [{ type: "text", text: "FLY-9999" }] },
+		},
+	});
+	callbacks.background!.onTurnTerminal({
+		turnId: "t",
+		outcome: "completed",
+		spokenSegments: ["FLY-9999"],
+	});
+	const result = terminal.mock.calls[0]?.[0];
+	expect(result.sources).toEqual(
+		expect.arrayContaining([
+			{ itemId: "tool-command", text: "PR #2886" },
+			expect.objectContaining({ itemId: "tool-mcp" }),
+			expect.objectContaining({ text: "Trusted FLY-2886" }),
+		]),
+	);
+	expect(JSON.stringify(result.sources)).not.toContain("FLY-9999");
+	await session.close();
 });

@@ -269,6 +269,7 @@ export interface AnnouncerSession {
 }
 
 export type ConversationEventMap = {
+	"coordinated-speech": [input: { businessId: string; text: string }];
 	"speech-started": [input?: { generation: number; itemId: string }];
 	"speech-stopped": [input?: { generation: number; itemId: string }];
 	"generation-changed": [generation: number];
@@ -279,6 +280,9 @@ export type ConversationEventMap = {
 			turnId: string;
 			outcome: "completed" | "failed" | "interrupted";
 			spokenSegments?: string[];
+			threadSegments?: string[];
+			sources?: readonly { itemId: string; text: string }[];
+			rosterNames?: readonly string[];
 			reasonCategory?: "额度" | "权限" | "出错" | string;
 			hadWriteReceipt?: boolean;
 			writeReceiptUnknown?: boolean;

@@ -31,6 +31,17 @@ export function createLinearProviderSession(
 				[...handlers].map(([id, handler]) => [
 					id,
 					{
+						...(handler.resolveTargetKey
+							? {
+									resolveTargetKey: (
+										input: Record<string, unknown>,
+										context: LeadOperationContext,
+									) =>
+										session.withSignal(context.signal, () =>
+											handler.resolveTargetKey!(input, context),
+										),
+								}
+							: {}),
 						authorize: (input, context) =>
 							session.withSignal(context.signal, async () => {
 								await handler.authorize!(input, context);
@@ -203,6 +214,21 @@ export function createLinearProviderHandlers(
 		).map((d) => [
 			d.operationId,
 			{
+				...(d.classification === "write" &&
+				d.operationId !== "linear.issue.create"
+					? {
+							resolveTargetKey: async (
+								input: Record<string, unknown>,
+								context: LeadOperationContext,
+							) => {
+								const handlers = await prepare(context);
+								return handlers.get(d.operationId)!.resolveTargetKey!(
+									input,
+									context,
+								);
+							},
+						}
+					: {}),
 				authorize: async (input, context) => {
 					d.inputSchema.parse(input);
 					const handlers = await prepare(context);

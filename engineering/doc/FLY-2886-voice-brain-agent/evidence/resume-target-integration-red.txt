@@ -1,0 +1,35 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ❯ |parallel| src/lead-capabilities/__tests__/target-lock-provider-integration.test.ts (5 tests | 1 failed) 983ms
+   ✓ target lock provider and durable state integration > keeps rollback draining until the timed-out original provider settles, then permits the resident's later write 204ms
+   ✓ target lock provider and durable state integration > retains unknown when transport aborts although the remote later commits without a success response 216ms
+   ✓ target lock provider and durable state integration > removes a canceled resident waiter so it cannot block the next voice write 201ms
+   ✓ target lock provider and durable state integration > clears abandoned waiters across Bridge restart while preserving the dispatched holder 188ms
+   × target lock provider and durable state integration > preserves a late browser success as receipt evidence even after the output-delivery guard is revoked 173ms
+     → expected async boundary was not reached
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |parallel| src/lead-capabilities/__tests__/target-lock-provider-integration.test.ts > target lock provider and durable state integration > preserves a late browser success as receipt evidence even after the output-delivery guard is revoked
+Error: expected async boundary was not reached
+ ❯ observed src/lead-capabilities/__tests__/target-lock-provider-integration.test.ts:32:8
+     30|   await Promise.resolve();
+     31|  }
+     32|  throw new Error("expected async boundary was not reached");
+       |        ^
+     33| }
+     34| const success = (): HandlerOutcome => ({status: "succeeded", providerR…
+ ❯ src/lead-capabilities/__tests__/target-lock-provider-integration.test.ts:184:3
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 4 passed (5)
+   Start at  00:17:39
+   Duration  9.93s (transform 5.39s, setup 143ms, collect 7.85s, tests 983ms, environment 0ms, prepare 257ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/lead-capabilities/__tests__/target-lock-provider-integration.test.ts

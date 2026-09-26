@@ -511,10 +511,16 @@ export class BridgeVoiceClient {
 		sessionId: string,
 		leaseToken: string,
 		lease: VoiceLease,
+		generation?: number,
 	): Promise<T> {
 		lease.assert();
+		if (
+			generation !== undefined &&
+			(!Number.isSafeInteger(generation) || generation <= 0)
+		)
+			throw new Error("voice_context_generation_invalid");
 		return this.request<T>(
-			`/api/voice/sessions/${encodeURIComponent(sessionId)}/context`,
+			`/api/voice/sessions/${encodeURIComponent(sessionId)}/context${generation === undefined ? "" : `?generation=${generation}`}`,
 			{
 				operation: "context",
 				routeTemplate: "/api/voice/sessions/:sessionId/context",
@@ -635,6 +641,31 @@ export class BridgeVoiceClient {
 				},
 			)
 		).attemptToken;
+	}
+
+	async revalidateOutbound(
+		sessionId: string,
+		seq: number,
+		leaseToken: string,
+		lease: VoiceLease,
+		original: { attemptToken: string; messageId: string; text: string },
+	): Promise<boolean> {
+		lease.assert();
+		const result = await this.request<{ current: boolean }>(
+			`/api/voice/sessions/${encodeURIComponent(sessionId)}/outbound/${seq}/revalidate`,
+			{
+				operation: "outbound",
+				routeTemplate:
+					"/api/voice/sessions/:sessionId/outbound/:seq/revalidate",
+				method: "POST",
+				leaseToken,
+				body: original,
+			},
+		);
+		lease.assert();
+		if (typeof result.current !== "boolean")
+			throw new Error("voice_tell_source_unavailable");
+		return result.current;
 	}
 
 	async receipt(

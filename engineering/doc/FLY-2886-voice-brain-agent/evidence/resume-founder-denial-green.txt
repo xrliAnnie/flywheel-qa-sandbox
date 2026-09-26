@@ -1,0 +1,14 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ✓ |parallel| src/lead-backends/codex/__tests__/lead-capability-proxy.test.ts (11 tests) 52ms
+ ✓ |parallel| src/bridge/__tests__/lead-capability-target-lock.test.ts (5 tests) 1246ms
+   ✓ serves disabled/draining policy and checks only existing targets after rollback  301ms
+ ✓ |parallel| src/lead-capabilities/__tests__/voice-founder-denial.test.ts (3 tests) 40ms
+ ✓ |parallel| src/lead-capabilities/__tests__/target-lock-client.test.ts (7 tests) 21ms
+
+ Test Files  4 passed (4)
+      Tests  26 passed (26)
+   Start at  00:38:21
+   Duration  11.72s (transform 3.93s, setup 61ms, collect 8.06s, tests 1.36s, environment 1ms, prepare 514ms)
+

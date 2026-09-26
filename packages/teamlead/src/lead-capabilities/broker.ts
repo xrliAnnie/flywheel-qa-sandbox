@@ -8,6 +8,10 @@ import { z } from "zod";
 import { getLeadCapability, type LeadCapabilityDefinition } from "./catalog.js";
 import type { OperationReceipt, OperationReceiptStore } from "./receipts.js";
 import type { LeadTargetLockClient } from "./target-lock-client.js";
+import {
+	classifyVoiceCapabilityDenial,
+	type VoiceCapabilityDenials,
+} from "./voice-denial.js";
 
 export const OperationRequestSchema = z
 	.object({
@@ -29,6 +33,12 @@ export interface OperationResult {
 	data?: unknown;
 	errorCode?: string;
 }
+export type ProviderTerminalEvidence =
+	| { status: "succeeded"; providerRef: string }
+	| {
+			status: "rejected";
+			terminalEvidence: "provider_rejected" | "not_dispatched";
+	  };
 export interface LeadOperationContext {
 	/** Validated envelope key for downstream durable delivery; never mint a new retry identity. */
 	readonly requestId: string;
@@ -38,6 +48,8 @@ export interface LeadOperationContext {
 	readonly deliveryContext?: string;
 	readonly signal: AbortSignal;
 	assertCurrent(): Promise<void>;
+	/** Parent-only receipt settlement; never grants further provider or delivery authority. */
+	recordTerminalEvidence?(proof: ProviderTerminalEvidence): Promise<void>;
 }
 export interface HandlerOutcome {
 	/** Trusted adapter evidence only; generic errors/aborts/5xx are not terminal refusal. */
@@ -49,6 +61,11 @@ export interface HandlerOutcome {
 	data?: unknown;
 }
 export interface LeadOperationHandler {
+	/** Resolve provider aliases under the same authorization before fencing. */
+	resolveTargetKey?(
+		input: Record<string, unknown>,
+		context: LeadOperationContext,
+	): Promise<string>;
 	authorize(
 		input: Record<string, unknown>,
 		context: LeadOperationContext,
@@ -65,6 +82,8 @@ export interface LeadOperationHandler {
 	): Promise<HandlerOutcome>;
 }
 export interface LeadCapabilityBrokerOptions {
+	/** Only the voice runtime installs classified denial reporting. */
+	voiceDenials?: VoiceCapabilityDenials;
 	projectName: string;
 	leadId: string;
 	activationId: string;
@@ -164,6 +183,15 @@ export class LeadCapabilityBroker {
 			errorCode: code,
 		});
 		if (this.closed) return reject("broker_closed");
+		if (this.options.voiceDenials) {
+			const denial = await classifyVoiceCapabilityDenial(
+				request,
+				this.options.allowedOperationIds(),
+				this.options.voiceDenials,
+				() => this.options.assertCurrent(request.operationId),
+			);
+			if (denial) return denial;
+		}
 		const operation = getLeadCapability(request.operationId);
 		if (!operation) return reject("unknown_operation");
 		if (operation.classification === "reserved")
@@ -174,7 +202,7 @@ export class LeadCapabilityBroker {
 		const parsed = operation.inputSchema.safeParse(request.input);
 		if (!parsed.success) return reject("invalid_input");
 		const input = parsed.data;
-		const targetKey =
+		let targetKey =
 			operation.classification === "write" && operation.targetKey
 				? `${this.options.projectName}:${operation.targetKey(input)}`
 				: undefined;
@@ -214,6 +242,7 @@ export class LeadCapabilityBroker {
 			activationId: this.options.activationId,
 			...(delivery ? { deliveryContext: delivery.id } : {}),
 			signal: controller.signal,
+			recordTerminalEvidence: (proof) => settleProviderEvidence(proof),
 			assertCurrent: async () => {
 				if (controller.signal.aborted)
 					throw new BrokerFailure(
@@ -252,6 +281,8 @@ export class LeadCapabilityBroker {
 			dispatched = false,
 			finished = false,
 			reconciling = false;
+		let providerInvoked = false;
+		let terminalEvidenceRecorded = false;
 		let targetFence: string | undefined,
 			targetDispatched = false,
 			targetReleased = false,
@@ -264,6 +295,51 @@ export class LeadCapabilityBroker {
 			requestId: request.requestId,
 			targetKey: targetKey!,
 		});
+		const settleProviderEvidence = async (proof: ProviderTerminalEvidence) => {
+			if (!providerInvoked || !dispatched || terminalEvidenceRecorded) return;
+			if (
+				containsSecret(proof, this.secrets) ||
+				(proof.status === "succeeded" &&
+					!/^[A-Za-z0-9_.:-]{1,256}$/.test(proof.providerRef)) ||
+				(proof.status === "rejected" &&
+					!["provider_rejected", "not_dispatched"].includes(
+						proof.terminalEvidence,
+					))
+			)
+				throw new BrokerFailure("invalid_provider_output");
+			try {
+				const prior = this.options.receipts.get(key);
+				if (prior?.state === "dispatched" || prior?.state === "unknown")
+					this.options.receipts.transition({
+						...writeInput,
+						now: Date.now(),
+						from: prior.state,
+						to: proof.status,
+						...(proof.status === "succeeded"
+							? { providerRef: proof.providerRef }
+							: { errorCode: "provider_rejected" }),
+					});
+			} catch (error) {
+				if (!controller.signal.aborted && !this.closed) throw error;
+			}
+			terminalEvidenceRecorded = true;
+			if (!targetFence || !this.options.targetLocks || targetReleased) return;
+			try {
+				await this.options.targetLocks.release({
+					...targetInput(),
+					fence: targetFence,
+					outcome: proof.status,
+					...(proof.status === "succeeded"
+						? { providerRef: proof.providerRef }
+						: {}),
+					signal: AbortSignal.timeout(2000),
+				});
+				targetReleased = true;
+			} catch {
+				/* The durable success remains available to trusted reconciliation. */
+			}
+		};
+
 		const work = async (): Promise<OperationResult> => {
 			await context.assertCurrent();
 			try {
@@ -280,6 +356,14 @@ export class LeadCapabilityBroker {
 			}
 			await context.assertCurrent();
 			if (operation.classification === "write") {
+				if (handler.resolveTargetKey && this.options.targetLocks) {
+					const normalized = await handler.resolveTargetKey(input, context);
+					if (!/^[A-Za-z0-9_.:#/-]{1,400}$/.test(normalized))
+						throw new BrokerFailure("target_not_authorized");
+					await context.assertCurrent();
+					targetKey = `${this.options.projectName}:${normalized}`;
+					writeInput.targetKey = targetKey;
+				}
 				const prior = this.options.receipts.get(key);
 				if (prior) {
 					if (prior.inputDigest !== writeInput.inputDigest)
@@ -378,6 +462,7 @@ export class LeadCapabilityBroker {
 			}
 			// No await between this guard resolving and invoking the trusted handler.
 			await context.assertCurrent();
+			providerInvoked = true;
 			const outcome = await handler.execute(input, context);
 			// Terminal provider evidence remains valid after the caller times out.
 			// Settle only the original receipt/fence before checking delivery authority.
@@ -422,7 +507,7 @@ export class LeadCapabilityBroker {
 					// still accept terminal proof, without re-opening operation admission.
 					if (!controller.signal.aborted && !this.closed) throw error;
 				}
-				if (targetFence && this.options.targetLocks) {
+				if (targetFence && this.options.targetLocks && !targetReleased) {
 					await this.options.targetLocks.release({
 						...targetInput(),
 						fence: targetFence,
@@ -433,6 +518,9 @@ export class LeadCapabilityBroker {
 									? "rejected"
 									: "unknown",
 						...(result.errorCode ? { reason: result.errorCode } : {}),
+						...(result.resourceRefs[0]
+							? { providerRef: result.resourceRefs[0] }
+							: {}),
 						signal: AbortSignal.timeout(2000),
 					});
 					targetReleased = true;

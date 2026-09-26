@@ -70,6 +70,7 @@ describe("ThreadEventRouter", () => {
 				turnId: "turn-a",
 				outcome: "completed",
 				spokenSegments: ["FLY-2886 在 PR #1324。", "Tadashi 正在看。"],
+				threadSegments: ["https://example.test/pr/1324"],
 			});
 		},
 	);

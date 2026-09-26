@@ -41,8 +41,16 @@ export interface VoiceSessionRouterDeps {
 	validateSession?: (session: VoiceSessionRow) => void | Promise<void>;
 	getSessionContext?: (
 		session: VoiceSessionRow,
-		authority: { leaseBindingDigest: string; requestedAt: string },
+		authority: {
+			leaseBindingDigest: string;
+			requestedAt: string;
+			leaseToken: string;
+			generation?: number;
+		},
 	) => Record<string, unknown> | Promise<Record<string, unknown>>;
+	getCurrentTellKeys?(
+		session: VoiceSessionRow,
+	): readonly string[] | Promise<readonly string[]>;
 	voiceHandoffs?: Pick<VoiceHandoffService, "recordUtterance" | "handoff">;
 }
 
@@ -375,6 +383,16 @@ export function createVoiceSessionRouter(
 	router.get("/:sessionId/context", masterOnly(), async (req, res) => {
 		const sessionId = param(req.params.sessionId);
 		const leaseToken = lease(req);
+		const rawGeneration = req.query.generation;
+		if (
+			rawGeneration !== undefined &&
+			(typeof rawGeneration !== "string" ||
+				!/^[1-9]\d*$/.test(rawGeneration) ||
+				!Number.isSafeInteger(Number(rawGeneration)))
+		) {
+			res.status(400).json({ error: "voice_context_generation_invalid" });
+			return;
+		}
 		const requestedAt = now();
 		const session = deps.store.getActiveVoiceLease(
 			sessionId,
@@ -397,9 +415,17 @@ export function createVoiceSessionRouter(
 				await deps.getSessionContext(session, {
 					leaseBindingDigest: leaseBindingDigest(sessionId, leaseToken),
 					requestedAt,
+					leaseToken,
+					...(rawGeneration === undefined
+						? {}
+						: { generation: Number(rawGeneration) }),
 				}),
 			);
 		} catch (error) {
+			if (error instanceof VoiceSessionHttpError) {
+				res.status(error.status).json({ error: error.code });
+				return;
+			}
 			const reason =
 				error instanceof VoiceSessionContextError
 					? error.code
@@ -613,6 +639,79 @@ export function createVoiceSessionRouter(
 		}
 		res.json({ attemptToken: claimResult.attemptToken });
 	});
+
+	router.post(
+		"/:sessionId/outbound/:seq/revalidate",
+		masterOnly(),
+		async (req, res) => {
+			const seq = Number(req.params.seq);
+			const { attemptToken, messageId, text } = req.body ?? {};
+			if (
+				!Number.isSafeInteger(seq) ||
+				seq <= 0 ||
+				typeof attemptToken !== "string" ||
+				!attemptToken ||
+				typeof messageId !== "string" ||
+				!messageId ||
+				typeof text !== "string"
+			) {
+				res.status(400).json({ error: "voice_outbound_revalidate_invalid" });
+				return;
+			}
+			const sessionId = param(req.params.sessionId);
+			const leaseToken = lease(req);
+			const session = deps.store.getActiveVoiceLease(
+				sessionId,
+				leaseToken,
+				now(),
+			);
+			if (!session) {
+				res.status(409).json(LEASE_CONFLICT);
+				return;
+			}
+			const read = () =>
+				deps.store.getClaimedVoiceOutbound({
+					sessionId,
+					leaseToken,
+					seq,
+					attemptToken,
+					now: now(),
+				});
+			const row = read();
+			if (!row || row.messageId !== messageId || row.text !== text) {
+				res.json({ current: false });
+				return;
+			}
+			try {
+				await deps.validateSession?.(session);
+				let current = true;
+				if (row.source === "bridge_event") {
+					if (!deps.getCurrentTellKeys) {
+						res.status(503).json({ error: "voice_tell_source_unavailable" });
+						return;
+					}
+					const keys = await deps.getCurrentTellKeys(session);
+					const prefix = `bridge-event:${sessionId}:`;
+					current =
+						row.messageId.startsWith(prefix) &&
+						keys.includes(row.messageId.slice(prefix.length));
+				}
+				if (!deps.store.getActiveVoiceLease(sessionId, leaseToken, now())) {
+					res.status(409).json(LEASE_CONFLICT);
+					return;
+				}
+				const refreshed = read();
+				res.json({
+					current:
+						current &&
+						refreshed?.messageId === messageId &&
+						refreshed?.text === text,
+				});
+			} catch {
+				res.status(503).json({ error: "voice_tell_source_unavailable" });
+			}
+		},
+	);
 
 	router.post("/:sessionId/outbound/:seq/receipt", masterOnly(), (req, res) => {
 		const seq = Number(req.params.seq);

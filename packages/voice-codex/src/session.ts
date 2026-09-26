@@ -4,13 +4,23 @@ import {
 	type BackgroundTurnTerminal,
 	BrainCoordinator,
 } from "./codex/BrainCoordinator.js";
-import { SpeechArbiter } from "./codex/SpeechArbiter.js";
+import type { ScriptWriterResult } from "./codex/ScriptWriter.js";
+import {
+	SpeechArbiter,
+	type SpeechArbiterTerminal,
+} from "./codex/SpeechArbiter.js";
+import { validateSpokenScript } from "./codex/SpokenScript.js";
 import type { ActiveVoiceSession, VoiceEnd } from "./daemon.js";
 import type { CapturedTranscript } from "./delivery.js";
 import type { RealtimeAudioOwner } from "./realtime.js";
 import type { PreparedSpeech } from "./speech.js";
+import type { VoiceUnplayedItem } from "./voice-minutes.js";
+export interface VoiceSessionCloseSnapshot {
+	readonly unplayed: readonly VoiceUnplayedItem[];
+}
 
 export interface FrontendHandlers {
+	onCoordinatedSpeech?(input: { businessId: string; text: string }): void;
 	onResponseState(active: boolean): void;
 	onProviderSpeechStarted?(input: { generation: number; itemId: string }): void;
 	onProviderSpeechStopped?(input: { generation: number; itemId: string }): void;
@@ -55,6 +65,10 @@ export interface RoomHandlers {
 }
 
 interface FrontendLike {
+	rewriteSpeech?(input: {
+		sourceText: string;
+		rosterNames: readonly string[];
+	}): Promise<ScriptWriterResult>;
 	start(signal?: AbortSignal): Promise<void>;
 	appendAudio(frame: Buffer, metadata: RealtimeAudioOwner): void;
 	appendSpeech(
@@ -101,7 +115,11 @@ export interface GenericVoiceSessionOptions {
 	speechCoordination?: {
 		postThread(request: { businessId: string; text: string }): Promise<void>;
 	};
-	finalize?(outcome?: VoiceEnd): Promise<void> | void;
+	persistCloseSnapshot?(snapshot: VoiceSessionCloseSnapshot): void;
+	finalize?(
+		outcome?: VoiceEnd,
+		snapshot?: VoiceSessionCloseSnapshot,
+	): Promise<void> | void;
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
@@ -125,6 +143,8 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 	private readonly speechArbiter?: SpeechArbiter;
 	private readonly brainCoordinator?: BrainCoordinator;
 	private readonly coordinatedSpeech = new Map<string, PreparedSpeech>();
+	private readonly unpostedTells = new Map<string, VoiceUnplayedItem>();
+	private readonly rewritingTells = new Map<string, VoiceUnplayedItem>();
 	private live = false;
 	private admitted = false;
 	private stopping = false;
@@ -151,6 +171,10 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 	constructor(private readonly options: GenericVoiceSessionOptions) {
 		this.now = options.now ?? (() => new Date());
 		this.frontend = options.createFrontend({
+			onCoordinatedSpeech: (input) =>
+				this.guarded(() => {
+					void this.speechArbiter?.enqueue({ ...input, kind: "fallback" });
+				}),
 			onResponseState: (active) => {
 				if (!this.stopping) {
 					this.frontendResponseActive = active;
@@ -236,13 +260,15 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 						speechId: pendingKey,
 						spokenText: text,
 					});
-					return outcome === "failed" ? "failed" : "spoken";
+					return outcome === "confirmed" ? "spoken" : "failed";
 				},
 				cancelSpeech: (pendingKey) => this.cancelPendingSpeech(pendingKey),
 				postThread: options.speechCoordination.postThread,
 			});
 			this.brainCoordinator = new BrainCoordinator({
 				speech: this.speechArbiter,
+				postThread: options.speechCoordination.postThread,
+				evidence: options.evidence,
 			});
 		}
 	}
@@ -447,6 +473,111 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 		this.finish(outcome);
 	}
 
+	async deliverTell(input: {
+		businessId: string;
+		text: string;
+		revalidate?: () => Promise<boolean>;
+	}): Promise<SpeechArbiterTerminal | "disabled"> {
+		const arbiter = this.speechArbiter;
+		const coordination = this.options.speechCoordination;
+		if (!arbiter || !coordination) return "disabled";
+		if (this.stopping || !this.live) return "failed";
+		this.rewritingTells.set(
+			input.businessId,
+			Object.freeze({
+				businessId: input.businessId,
+				kind: "tell",
+				text: input.text,
+				status: "rewriting",
+				attempts: 0,
+			}),
+		);
+		try {
+			let text: string;
+			let fallback = false;
+			let posted = false;
+			try {
+				if (!this.frontend.rewriteSpeech)
+					throw new Error("script_writer_unavailable");
+				const rosterNames = [this.options.projection.displayName];
+				const rewrite = await this.frontend.rewriteSpeech({
+					sourceText: input.text,
+					rosterNames,
+				});
+				if (this.stopping) return "failed";
+				const fidelity = validateSpokenScript({
+					spoken: rewrite.spoken,
+					sources: [{ itemId: input.businessId, text: input.text }],
+					rosterNames,
+					mode: "rewrite",
+				});
+				if (!fidelity.ok) throw new Error("script_writer_output_invalid");
+				this.options.evidence({
+					kind: "voice_script_validated",
+					businessId: input.businessId,
+					protectedFieldEvidence: fidelity.evidence,
+				});
+				text = rewrite.spoken;
+				if (rewrite.threadText) {
+					await coordination.postThread({
+						businessId: input.businessId,
+						text: input.text,
+					});
+					posted = true;
+				}
+			} catch {
+				fallback = true;
+				try {
+					if (this.stopping) return "failed";
+					await coordination.postThread({
+						businessId: input.businessId,
+						text: input.text,
+					});
+					posted = true;
+				} catch {
+					/* A pointer must never claim an unpublished message. */
+				}
+				if (!posted)
+					this.unpostedTells.set(
+						input.businessId,
+						Object.freeze({
+							businessId: input.businessId,
+							kind: "tell",
+							text: input.text,
+							status: "unfinished",
+							attempts: 0,
+						}),
+					);
+				text = posted
+					? "这条我发到 thread 了，编号以文字为准。"
+					: "编号我没核对上，等下再给你";
+				this.options.evidence({
+					kind: "voice_script_fallback",
+					businessId: input.businessId,
+					posted,
+					originalText: input.text,
+				});
+			}
+			if (this.stopping) return "failed";
+			if (posted) this.unpostedTells.delete(input.businessId);
+			this.rewritingTells.delete(input.businessId);
+			const terminal = await arbiter.enqueue({
+				businessId: input.businessId,
+				kind: fallback ? "fallback" : "tell",
+				text,
+				threadText: input.text,
+				revalidate: input.revalidate,
+			});
+			return terminal === "spoken" && fallback
+				? posted
+					? "fallback_posted"
+					: "failed"
+				: terminal;
+		} finally {
+			this.rewritingTells.delete(input.businessId);
+		}
+	}
+
 	async speak(speech: PreparedSpeech): Promise<SpeechReceipt> {
 		if (this.speechArbiter) {
 			this.coordinatedSpeech.set(speech.speechId, speech);
@@ -495,6 +626,20 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 		this.stopping = true;
 		this.admitted = false;
 		this.frontendResponseActive = false;
+		const snapshot: VoiceSessionCloseSnapshot = Object.freeze({
+			unplayed: Object.freeze([
+				...(this.speechArbiter?.unplayed() ?? []),
+				...this.rewritingTells.values(),
+				...this.unpostedTells.values(),
+				...(this.brainCoordinator?.unfinished() ?? []),
+			]),
+		});
+		let persistFailure: { error: unknown } | undefined;
+		try {
+			this.options.persistCloseSnapshot?.(snapshot);
+		} catch (error) {
+			persistFailure = { error };
+		}
 		this.brainCoordinator?.close();
 		this.speechArbiter?.close();
 		const pending = this.pendingSpeech;
@@ -514,11 +659,12 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 			await this.frontend.stop().catch(() => undefined);
 			await this.room.stop().catch(() => undefined);
 			try {
-				await this.options.finalize?.(outcome);
+				await this.options.finalize?.(outcome, snapshot);
 			} finally {
 				this.options.cleanup?.();
 			}
 		}
+		if (persistFailure) throw persistFailure.error;
 	}
 
 	private founderPresence(present: boolean): void {
