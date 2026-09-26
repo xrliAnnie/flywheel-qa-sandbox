@@ -4,7 +4,7 @@ Issue: FLY-2912 (https://linear.app/geoforge3d/issue/FLY-2912/token5-纯通知�
 基于: exploration.md
 
 ## 结论
-不能只扩大 EventFilter 的名称白名单。普通阶段已经静默，但 code_review 的 owner 查找没有分支、Codex 自己 request-review 不产生旧触发 instruction，session_started 被明确拒绝静默，换体预告 append 默认 model，恢复路径把 openAlert 固定成 false。须在可信 producer 构造证据、持久化 disposition 后阻止所有 model consumer，并补下次真实唤醒的汇总。
+不能只扩大 EventFilter 的名称白名单。普通阶段已经静默，但 code_review 的 owner 查找没有分支、Codex 自己 request-review 不产生旧触发 instruction，session_started 被明确拒绝静默，换体预告 append 默认 model，恢复路径把 openAlert 固定成 false。生产session_started实际全部来自DirectEventSink，HTTP入口不足以覆盖；须在可信 producer 构造证据、持久化 disposition 后阻止所有 model consumer，并补下次真实唤醒的汇总。
 
 ## 逐条代码证据（HEAD 801ac86cb）
 | 入口/消费者 | 当前行为 | 本单处置 |
@@ -43,3 +43,11 @@ Issue: FLY-2912 (https://linear.app/geoforge3d/issue/FLY-2912/token5-纯通知�
 
 ## Lead 确认的回放输入（2026-09-25）
 问题 5fbba693-8282-4690-9a9c-0020b7aff927 已答：固定窗口 01:30–04:00Z（18:30–21:00 PDT）。必须含03:58Z重启恢复批（另案FLY-2917），真实待办单列。v2 manifest: 257条，stage 62 audit/18 model，started 21 model，monitoring 26 audit/12 model，replacement 2 model；不是唤醒统计。FLY-2904 证据在 PR #1340 / d4410e7e1 / engineering/doc/FLY-2904-token-waste-census/evidence，derived/recommendations.json 的r9数字仅作问题背景，不作本单验收分母。
+
+## R1 生产链路修正
+- `DirectEventSink.ts:233,441,1710`：21/21冻结started ID来自这里，之前漏查。emitStarted注册/线程副作用→finally pushNotification→默认model append→dispatch；§11明确结果捕获、稳定通知ID及proof写入。
+- `HeartbeatService.ts:1048,1459`：parked已probe alive却未透传；本轮verifier观察可作源证据，不凭空要求episode表。新增参数透传到notifier。
+- `workflow-engine-dispatcher.ts:2038–2080`：next check从最新dispatch created_at与常量延迟计算，无持久timer。
+- `event-route.ts:2003` / `DirectEventSink.ts:1400`：generalized failed提前return，预告可能是唯一故障信号。读teardown.failureKind；四个规范化故障kind必保留model，未知无独立信号也保留。
+- `bootstrap-route.ts:23`是masterOnly，不是per-Lead token；固定查询保留JSON。`reply-obligation.ts`依赖header与转义，摘要置末尾、对外部值转义。
+- stage→gate→request-review的先后固定，不能提前seed job来让测试绿。Codex engine_owned节点以已冻结Runner职责判定纯阶段播报，不冒充reviewer已存在。
