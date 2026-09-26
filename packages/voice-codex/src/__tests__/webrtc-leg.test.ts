@@ -317,6 +317,26 @@ describe("WebRTC leg", () => {
 		await vi.waitFor(() => expect(udp()).toBe(0), { timeout: 3_000 });
 	}, 20_000);
 
+	it("releases the transport BUNDLE dropped itself, not only through pc.close() (Lead c8e10764 ①)", async () => {
+		const udp = () =>
+			process.getActiveResourcesInfo().filter((kind) => kind === "UDPWrap")
+				.length;
+		await vi.waitFor(() => expect(udp()).toBe(0), { timeout: 3_000 });
+		// max-compat gathers a second transport that pc.close() never stops.
+		const { leg, server, evidence } = await connected({
+			bundlePolicy: "max-compat",
+		});
+		await leg.close();
+		await server.pc.close();
+		await vi.waitFor(() => expect(udp()).toBe(0), { timeout: 3_000 });
+		expect(evidence).toContainEqual(
+			expect.objectContaining({
+				kind: "webrtc_leg_closed",
+				transportsReleased: 2,
+			}),
+		);
+	}, 20_000);
+
 	it("never reports a self-initiated close as lost", async () => {
 		const { leg, lost } = await connected();
 		await leg.close();

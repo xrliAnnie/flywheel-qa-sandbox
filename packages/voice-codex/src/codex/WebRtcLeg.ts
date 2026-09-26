@@ -2,6 +2,7 @@ import OpusScript from "opusscript";
 import {
 	MediaStreamTrack,
 	type RTCDataChannel,
+	type RTCDtlsTransport,
 	RTCPeerConnection,
 	RTCRtpCodecParameters,
 	RtpHeader,
@@ -15,6 +16,8 @@ const PCM24_FRAME_SAMPLES = 480;
 const RTP_SAMPLES_PER_FRAME = 960;
 const OPUS_PAYLOAD_TYPE = 111;
 const ICE_GATHER_TIMEOUT_MS = 8_000;
+/** Each transport gets this long to stop on close before it is abandoned. */
+const TRANSPORT_STOP_TIMEOUT_MS = 2_000;
 const CONNECT_TIMEOUT_MS = 10_000;
 const DISCONNECTED_GRACE_MS = 5_000;
 const DOWNLINK_SILENCE_MS = 5_000;
@@ -61,6 +64,27 @@ export interface WebRtcLegOptions {
 	now?: () => number;
 	downlinkSilenceMs?: number;
 	disconnectedGraceMs?: number;
+	/** Tests only: prove close() releases transports BUNDLE dropped. */
+	bundlePolicy?: "max-bundle" | "max-compat";
+}
+
+/** A transport stop that never hangs close(). */
+async function boundedStop(stop: Promise<void>): Promise<void> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		await Promise.race([
+			stop,
+			new Promise<never>((_resolve, reject) => {
+				timer = setTimeout(
+					() => reject(new Error("webrtc_transport_stop_timeout")),
+					TRANSPORT_STOP_TIMEOUT_MS,
+				);
+				timer.unref?.();
+			}),
+		]);
+	} finally {
+		if (timer) clearTimeout(timer);
+	}
 }
 
 /** Samples per channel at 48 kHz in one Opus packet (RFC 6716 §3.1). */
@@ -150,6 +174,13 @@ export class WebRtcLeg implements RealtimeMediaLeg {
 	private lastDownlinkAt = 0;
 	private lastDownlinkSequence?: number;
 	private closePromise?: Promise<void>;
+	/**
+	 * Every ICE/DTLS transport werift created for this leg. werift derives
+	 * its own list from the current transceivers, so a transport BUNDLE
+	 * replaced drops out of it and pc.close() never stops it; the leg stops
+	 * each one itself (FLY-2885 QA@1).
+	 */
+	private readonly transports = new Set<RTCDtlsTransport>();
 	/** Aborted by close(): any wait in progress stops instead of hanging. */
 	private readonly closed = new AbortController();
 	private readonly counts = {
@@ -185,7 +216,7 @@ export class WebRtcLeg implements RealtimeMediaLeg {
 			// longer tracked: pc.close() leaves its two host UDP sockets open and
 			// the daemon never exits (FLY-2885 QA@1). The realtime endpoint
 			// answers "a=group:BUNDLE 0 1" (live check 2026-09-26).
-			bundlePolicy: "max-bundle",
+			bundlePolicy: options.bundlePolicy ?? "max-bundle",
 		});
 		this.pc.addTransceiver(this.track, { direction: "sendrecv" });
 		this.channel = this.pc.createDataChannel("oai-events");
@@ -205,6 +236,7 @@ export class WebRtcLeg implements RealtimeMediaLeg {
 		this.assertOpen(signal);
 		const offer = await this.guard(this.pc.createOffer(), signal);
 		await this.guard(this.pc.setLocalDescription(offer), signal);
+		this.trackTransports();
 		await this.until(
 			() => this.pc.iceGatheringState === "complete",
 			(done) => this.pc.iceGatheringStateChange.subscribe(done).unSubscribe,
@@ -228,6 +260,7 @@ export class WebRtcLeg implements RealtimeMediaLeg {
 				this.pc.setRemoteDescription({ type: "answer", sdp }),
 				signal,
 			);
+			this.trackTransports();
 			await this.until(
 				() => this.pc.connectionState === "connected",
 				(done) => this.pc.connectionStateChange.subscribe(done).unSubscribe,
@@ -296,11 +329,28 @@ export class WebRtcLeg implements RealtimeMediaLeg {
 		this.connected = false;
 		this.clearTimers();
 		this.closed.abort(new Error("webrtc_leg_closed"));
+		this.trackTransports();
 		try {
 			await this.pc.close();
 		} catch {
 			// The peer is being discarded either way.
 		}
+		// Stop every transport explicitly, including any pc.close() missed:
+		// their UDP sockets otherwise keep the daemon alive.
+		let transportsReleased = 0;
+		for (const transport of this.transports) {
+			try {
+				await boundedStop(transport.stop());
+				await boundedStop(transport.iceTransport.stop());
+				transportsReleased += 1;
+			} catch (error) {
+				this.options.onEvidence?.({
+					kind: "webrtc_transport_stop_failed",
+					reason: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
+		this.transports.clear();
 		for (const codec of [this.encoder, this.meter]) {
 			try {
 				codec.delete();
@@ -308,7 +358,11 @@ export class WebRtcLeg implements RealtimeMediaLeg {
 				// Already released.
 			}
 		}
-		this.options.onEvidence?.({ kind: "webrtc_leg_closed", ...this.counts });
+		this.options.onEvidence?.({
+			kind: "webrtc_leg_closed",
+			...this.counts,
+			transportsReleased,
+		});
 	}
 
 	private connectionState(state: string): void {
@@ -444,6 +498,11 @@ export class WebRtcLeg implements RealtimeMediaLeg {
 			...this.counts,
 		});
 		this.options.onLost(reason);
+	}
+
+	private trackTransports(): void {
+		for (const transport of this.pc.dtlsTransports)
+			this.transports.add(transport);
 	}
 
 	private clearTimers(): void {
