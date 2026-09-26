@@ -25,6 +25,7 @@ import type {
 } from "../bridge/retry-dispatcher.js";
 import { WorkflowDocsMaterializer } from "../bridge/workflow-docs-materializer.js";
 import { WorkflowEngineDispatcher } from "../bridge/workflow-engine-dispatcher.js";
+import type { WorkflowReworkCoordinatorOutcome } from "../bridge/workflow-rework-coordinator.js";
 import {
 	StateStore,
 	type WorkflowDeadExecutionWatchRow,
@@ -751,6 +752,97 @@ function seedWorkflowBinding(
 	);
 }
 
+/**
+ * FLY-2921 C2/C6: a rework replacement has exactly one minting path — the
+ * coordinator, inside its own delivery claim, against a death proof that the
+ * store re-verifies at commit time. Until FLY-2919's process evidence lands
+ * the only proofs are an unlaunched-rollback fact or an abandoned dispatch
+ * intent for the preferred actor. Fixtures seed the latter for the dead actor
+ * on the target tuple (unless a proof already exists) and then mint through
+ * the real transaction, so the dispatcher sees exactly what production
+ * writes: delivery `pending` on the next route revision, node `pending` on
+ * the new actor, and a dispatch intent with reason `rework_replacement:<req>`.
+ */
+function mintReworkReplacementViaCoordinatorClaim(
+	store: StateStore,
+	input: {
+		requestId: string;
+		deadExecutionId: string;
+		newExecutionId: string;
+		now: string;
+		ownerId?: string;
+	},
+): { generation: number; routeRevision: number; launchOrdinal: number } {
+	const db = (
+		store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		}
+	).db;
+	const request = store.getWorkflowReworkRequest(input.requestId);
+	const route = store.getLatestWorkflowReworkRoute(input.requestId);
+	if (!request || !route) {
+		throw new Error(`rework context missing for ${input.requestId}`);
+	}
+	if (route.preferred_actor_execution_id !== input.deadExecutionId) {
+		throw new Error(
+			`rework route prefers ${route.preferred_actor_execution_id}, not ${input.deadExecutionId}`,
+		);
+	}
+	if (!store.workflowReworkDeathProof(input.requestId)) {
+		db.run(
+			`INSERT INTO workflow_side_effect_ledger
+			   (run_id, node_id, attempt, kind, launch_ordinal, execution_id, state,
+			    reason, abandoned_at, created_at, updated_at)
+			 VALUES (?, ?, ?, 'dispatch',
+			         (SELECT COALESCE(MAX(launch_ordinal), 0) + 1
+			            FROM workflow_side_effect_ledger
+			           WHERE run_id = ? AND node_id = ? AND attempt = ?
+			             AND kind = 'dispatch'),
+			         ?, 'abandoned', 'test_death_proof:launch_abandoned', ?, ?, ?)`,
+			[
+				request.run_id,
+				route.target_node_id,
+				route.target_attempt,
+				request.run_id,
+				route.target_node_id,
+				route.target_attempt,
+				input.deadExecutionId,
+				input.now,
+				input.now,
+				input.now,
+			],
+		);
+	}
+	const proof = store.workflowReworkDeathProof(input.requestId);
+	if (!proof) throw new Error("death proof seed did not register");
+	const ownerId = input.ownerId ?? "test-rework-coordinator";
+	const claim = store.claimWorkflowReworkDelivery({
+		requestId: input.requestId,
+		ownerId,
+		now: input.now,
+		leaseExpiresAt: new Date(Date.parse(input.now) + 30_000).toISOString(),
+	});
+	if (!claim.ok) throw new Error(`rework claim refused: ${claim.reason}`);
+	const replaced = store.replaceWorkflowReworkActor({
+		requestId: input.requestId,
+		ownerId,
+		generation: claim.generation,
+		deadExecutionId: input.deadExecutionId,
+		newExecutionId: input.newExecutionId,
+		proof: { kind: proof },
+		reason: "persisted_target_dead",
+		observedAt: input.now,
+	});
+	if (!replaced.ok) {
+		throw new Error(`rework replacement refused: ${replaced.reason}`);
+	}
+	return {
+		generation: claim.generation,
+		routeRevision: replaced.routeRevision,
+		launchOrdinal: replaced.launchOrdinal,
+	};
+}
+
 async function storeWithMaterializedFounderReplacement(
 	target: "design" | "qa",
 	options: {
@@ -873,22 +965,22 @@ async function storeWithMaterializedFounderReplacement(
 	db.run(
 		`INSERT INTO workflow_rework_delivery
 		   (request_id, route_revision, state, updated_at)
-		 VALUES (?, 1, 'replacement_pending', '2026-08-15T08:00:00.000Z')`,
+		 VALUES (?, 1, 'pending', '2026-08-15T08:00:00.000Z')`,
 		[requestId],
 	);
 	store.baselineWorkflowDeliveryContracts("2026-08-15T08:00:30.000Z");
 	const replacementId = `${target}-replacement-2`;
-	const materialized = store.materializeWorkflowReworkReplacement({
+	const minted = mintReworkReplacementViaCoordinatorClaim(store, {
 		requestId,
 		deadExecutionId,
 		newExecutionId: replacementId,
-		reason: "persisted_target_dead",
-		observedAt: "2026-08-15T08:01:00.000Z",
+		now: "2026-08-15T08:01:00.000Z",
 	});
-	expect(materialized).toMatchObject({
-		ok: true,
-		executionId: replacementId,
-		idempotentReplay: false,
+	expect(minted).toMatchObject({ routeRevision: 2 });
+	expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
+		state: "pending",
+		route_revision: 2,
+		owner_id: null,
 	});
 	return { store, requestId, replacementId };
 }
@@ -1050,25 +1142,24 @@ async function storeWithFreshVerificationIntent(): Promise<{
 		grantedAt: "2026-07-16T00:08:30.000Z",
 	});
 	if (!turn.ok) throw new Error(turn.reason);
-	for (const [from, to] of [
-		["pending", "turn_granted"],
-		["turn_granted", "awaiting_receipt"],
-	] as const) {
-		const advanced = store.advanceWorkflowReworkDelivery({
-			requestId: opened.requestId,
-			ownerId: "fly1912-coordinator",
-			generation: claimed.generation,
-			from,
-			to,
-			now: "2026-07-16T00:09:00.000Z",
-			...(to === "awaiting_receipt"
-				? {
-						releaseOwner: true,
-					}
-				: {}),
-		});
-		if (!advanced.ok) throw new Error(advanced.reason);
-	}
+	// FLY-2921: the push is a fact on the `turn_granted` row (`wake_sent_at`),
+	// not a state; `markWorkflowReworkWakeSent` records it and releases the owner.
+	const granted = store.advanceWorkflowReworkDelivery({
+		requestId: opened.requestId,
+		ownerId: "fly1912-coordinator",
+		generation: claimed.generation,
+		from: "pending",
+		to: "turn_granted",
+		now: "2026-07-16T00:09:00.000Z",
+	});
+	if (!granted.ok) throw new Error(granted.reason);
+	const sent = store.markWorkflowReworkWakeSent({
+		requestId: opened.requestId,
+		ownerId: "fly1912-coordinator",
+		generation: claimed.generation,
+		now: "2026-07-16T00:09:00.000Z",
+	});
+	if (!sent.ok) throw new Error(sent.reason);
 	const receipt = store.recordWorkflowReworkWakeReceipt({
 		activationId: admitted.activationId,
 		executionId: "implement-1",
@@ -1081,6 +1172,9 @@ async function storeWithFreshVerificationIntent(): Promise<{
 		},
 	});
 	if (!receipt.ok) throw new Error(receipt.reason);
+	// FLY-2921 C7: a rework target's completion must carry a new head. This
+	// caller bypasses event-route (no `reworkEvidence`), so the head-only
+	// compare applies: a 40-hex `subjectDigest` that differs from the base.
 	const completed = store.commitWorkflowTransitionTx({
 		nodeReuseEnabled: false,
 		runId: "run-1",
@@ -1088,10 +1182,13 @@ async function storeWithFreshVerificationIntent(): Promise<{
 		attempt: 2,
 		executionId: "implement-1",
 		outcome: "implement_done",
+		subjectDigest: "b".repeat(40),
 		now: "2026-07-16T00:10:00.000Z",
 	});
 	if (!completed.ok || !completed.successorExecutionId) {
-		throw new Error("fresh verification dispatch missing");
+		throw new Error(
+			`fresh verification dispatch missing: ${completed.ok ? "no successor" : completed.reason}`,
+		);
 	}
 	return {
 		store,
@@ -2771,7 +2868,7 @@ describe("WorkflowEngineDispatcher", () => {
 		const scan = vi.spyOn(store, "listWorkflowReworkDeliveries");
 		const fake = fakeStartDispatcher(store);
 		const reconcileWorkflowRework = vi.fn(async () => ({
-			kind: "wake_delivered" as const,
+			kind: "wake_sent" as const,
 			executionId: "implement-1",
 			activationId: "activation:rework-1",
 			epoch: 2,
@@ -2789,14 +2886,10 @@ describe("WorkflowEngineDispatcher", () => {
 		expect(reconcileWorkflowRework).toHaveBeenCalledWith(
 			expect.stringMatching(/^rework:/),
 		);
+		// FLY-2921 §2: while the engine owns a rework its delivery is only ever
+		// pending, granted, or delivered; `returned_to_lead` is the Lead's door.
 		expect(scan).toHaveBeenCalledWith({
-			states: [
-				"pending",
-				"turn_granted",
-				"awaiting_receipt",
-				"wake_delivered",
-				"held",
-			],
+			states: ["pending", "turn_granted", "wake_delivered"],
 			now: expect.any(String),
 		});
 		expect(fake.start).not.toHaveBeenCalled();
@@ -2862,22 +2955,24 @@ describe("WorkflowEngineDispatcher", () => {
 		}));
 		const requestId = store.listWorkflowReworkDeliveries()[0]!.request_id;
 		const routeBefore = store.getLatestWorkflowReworkRoute(requestId)!;
+		const replacementId = "implement-replacement-1";
+		// FLY-2921 C2/C6: the coordinator mints the replacement itself, inside
+		// its claim and against a death proof; the dispatcher no longer
+		// materializes anything — it only launches the `pending` intent.
 		const reconcileWorkflowRework = vi.fn(async (requestId: string) => {
-			const db = (
-				store as unknown as {
-					db: { run(sql: string, params?: unknown[]): void };
-				}
-			).db;
-			db.run(
-				"UPDATE workflow_rework_delivery SET state = 'replacement_pending' WHERE request_id = ?",
-				[requestId],
-			);
+			mintReworkReplacementViaCoordinatorClaim(store, {
+				requestId,
+				deadExecutionId: "implement-1",
+				newExecutionId: replacementId,
+				now: "2026-07-16T00:16:00.000Z",
+			});
 			return {
-				kind: "replacement_pending" as const,
-				executionId: "implement-1",
+				kind: "replacement_minted" as const,
+				executionId: replacementId,
 				reason: "persisted_target_dead",
 			};
 		});
+		const materialize = vi.spyOn(store, "replaceWorkflowReworkActor");
 		const dispatcher = new WorkflowEngineDispatcher({
 			store,
 			startDispatcher: fake.dispatcher,
@@ -2891,6 +2986,8 @@ describe("WorkflowEngineDispatcher", () => {
 		});
 
 		const reconciled = await dispatcher.reconcile();
+		// Exactly one mint, and it came from the (mocked) coordinator's claim.
+		expect(materialize).toHaveBeenCalledOnce();
 		expect(fake.requests[0]?.generalizedExecution?.agentContent).toMatch(
 			/^## Rework context \(replacement launch\)/,
 		);
@@ -2913,8 +3010,7 @@ describe("WorkflowEngineDispatcher", () => {
 		);
 		expect(fake.requests[0]?.leadId).toBe("flywheel-eng-lead");
 		const launched = fake.requests[0]?.generalizedExecution?.executionId;
-		expect(launched).toEqual(expect.any(String));
-		expect(launched).not.toBe("implement-1");
+		expect(launched).toBe(replacementId);
 		expect(store.getWorkflowRunNode("run-1", "implement", 2)).toMatchObject({
 			state: "running",
 			execution_id: launched,
@@ -2922,22 +3018,31 @@ describe("WorkflowEngineDispatcher", () => {
 		expect(store.getLatestWorkflowReworkRoute(requestId)).toMatchObject({
 			revision: routeBefore.revision + 1,
 			preferred_actor_execution_id: launched,
+			interpreted_by: "engine:proven_dead_replacement",
 		});
 		expect(reconcileWorkflowRework.mock.calls[0]?.[0]).toBe(requestId);
+		// The launch carried the content: pending → wake_delivered with the
+		// push fact recorded and the receipt probe scheduled (+3 min).
 		expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
 			state: "wake_delivered",
+			wake_sent_at: "2026-07-16T00:16:00.000Z",
 			next_retry_at: "2026-07-16T00:19:00.000Z",
 		});
+		expect(store.getWorkflowRun("run-1")?.status).toBe("active");
 		store.close();
 	});
 
-	it("FLY-1596 anchor: recovers a held targetless rework after terminal and dead-process evidence", async () => {
+	it("FLY-1596 anchor (FLY-2921): five delivery failures return the rework to the Lead, the run stays active, and the dispatcher leaves it alone", async () => {
 		const store = await storeWithQaFailKickback();
 		const fake = fakeStartDispatcher(store);
 		const requestId = store.listWorkflowReworkDeliveries()[0]!.request_id;
+		const routeRevision =
+			store.getLatestWorkflowReworkRoute(requestId)!.revision;
+		// Backoff is 1/2/4/8 minutes, so these claim times are each exactly due.
 		const failureTimes = [11, 12, 14, 18, 26].map(
 			(minute) => `2026-07-16T00:${minute}:00.000Z`,
 		);
+		const settlements: Array<{ holdCount: number; state: string }> = [];
 		for (const now of failureTimes) {
 			const claim = store.claimWorkflowReworkDelivery({
 				requestId,
@@ -2946,208 +3051,153 @@ describe("WorkflowEngineDispatcher", () => {
 				leaseExpiresAt: new Date(Date.parse(now) + 30_000).toISOString(),
 			});
 			if (!claim.ok) throw new Error(claim.reason);
-			expect(
-				store.settleWorkflowReworkFailure({
-					requestId,
-					ownerId: "coordinator",
-					generation: claim.generation,
-					reason: "persisted_target_missing",
-					onExhausted: "handoff_held_pane_loss",
-					alertIdentity: {
-						leadId: "flywheel-eng-lead",
-						projectName: "flywheel",
-						leadResolution: "resolved",
-					},
-					now,
-				}),
-			).toMatchObject({ ok: true });
+			const settled = store.settleWorkflowReworkFailure({
+				requestId,
+				ownerId: "coordinator",
+				generation: claim.generation,
+				reason: "persisted_target_missing",
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+				now,
+			});
+			if (!settled.ok) throw new Error(settled.reason);
+			settlements.push({ holdCount: settled.holdCount, state: settled.state });
 		}
-		expect(store.getWorkflowRun("run-1")?.status).toBe("held");
-		expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
-			state: "held",
-			last_error: "persisted_target_missing",
-			hold_count: 0,
-		});
-		const reconcileWorkflowRework = vi.fn(async () => ({
-			kind: "busy" as const,
-		}));
-		const dispatcher = new WorkflowEngineDispatcher({
-			store,
-			startDispatcher: fake.dispatcher,
-			stateRoot: mkdtempSync(join(tmpdir(), "fly1628-held-rework-")),
-			env: WORKFLOW_ON,
-			now: () => new Date("2026-07-16T00:30:00.000Z"),
-			resolvePredecessorHead: async () => HEAD,
-			probeLaunchLiveness: async () => "dead",
-			reconcileWorkflowRework,
-		});
-
-		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
-		expect(reconcileWorkflowRework).not.toHaveBeenCalled();
-		expect(fake.start).toHaveBeenCalledOnce();
-		const launched = fake.requests[0]?.generalizedExecution?.executionId;
-		expect(launched).toEqual(expect.any(String));
-		expect(launched).not.toBe("implement-1");
+		expect(settlements).toEqual([
+			{ holdCount: 1, state: "pending" },
+			{ holdCount: 2, state: "pending" },
+			{ holdCount: 3, state: "pending" },
+			{ holdCount: 4, state: "pending" },
+			{ holdCount: 5, state: "returned_to_lead" },
+		]);
+		// C3: the only failure ending is `returned_to_lead`; nothing else moves.
 		expect(store.getWorkflowRun("run-1")?.status).toBe("active");
-		expect(store.getWorkflowRunNode("run-1", "implement", 2)).toMatchObject({
-			state: "running",
-			execution_id: launched,
-		});
 		expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
-			state: "wake_delivered",
-			hold_count: 0,
-			next_retry_at: "2026-07-16T00:33:00.000Z",
+			state: "returned_to_lead",
+			last_error: "persisted_target_missing",
+			hold_count: 5,
+			next_retry_at: null,
+			owner_id: null,
 		});
+		expect(store.getWorkflowRunNode("run-1", "implement", 2)).toMatchObject({
+			state: "pending",
+			execution_id: "implement-1",
+		});
+		const holdEventUid = `rework_returned_to_lead:${requestId}:${routeRevision}`;
+		expect(store.listWorkflowHolds("run-1")).toEqual([
+			expect.objectContaining({
+				shape: "rework_returned_to_lead",
+				scope: "delivery",
+				runLevel: false,
+				holdEventUid,
+			}),
+		]);
 		expect(
 			store
 				.listWorkflowAlertOutbox()
 				.map((row) => row.payload.metadata.workflowEngine.disposition),
-		).toEqual(["rework_pane_loss_handoff", "rework_stall_recovered"]);
-		expect(store.listWorkflowAlertOutbox()[1]?.payload).toMatchObject({
-			severity: "warning",
-			metadata: {
-				workflowEngine: {
-					disposition: "rework_stall_recovered",
-					leadResolution: "fallback",
-				},
-			},
-		});
-		store.close();
-	});
-
-	it("keeps a held targetless rework frozen while its actor may still be alive", async () => {
-		const store = await storeWithQaFailKickback();
-		const fake = fakeStartDispatcher(store);
-		const requestId = store.listWorkflowReworkDeliveries()[0]!.request_id;
-		const db = (
-			store as unknown as {
-				db: { run(sql: string, params?: unknown[]): void };
-			}
-		).db;
-		db.run("UPDATE workflow_run SET status = 'held' WHERE run_id = 'run-1'");
-		db.run(
-			`UPDATE workflow_rework_delivery
-			    SET state = 'held', last_error = 'persisted_target_missing'
-			  WHERE request_id = ?`,
-			[requestId],
-		);
-		const dispatcher = new WorkflowEngineDispatcher({
-			store,
-			startDispatcher: fake.dispatcher,
-			env: WORKFLOW_ON,
-			probeLaunchLiveness: async () => "alive",
-			reconcileWorkflowRework: async () => ({ kind: "busy" }),
+		).toEqual(["rework_returned_to_lead"]);
+		expect(store.listWorkflowAlertOutbox()[0]?.payload).toMatchObject({
+			severity: "severe",
+			body: expect.stringContaining(
+				`flywheel-comm hold resume --run run-1 --shape rework_returned_to_lead --hold-event ${holdEventUid}`,
+			),
 		});
 
-		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
-		expect(fake.start).not.toHaveBeenCalled();
-		expect(store.getWorkflowRun("run-1")?.status).toBe("held");
-		expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
-			state: "held",
-			last_error: "persisted_target_missing",
-		});
-		store.close();
-	});
-
-	it("contains a held pane-loss replacement CAS failure to that delivery", async () => {
-		const store = await storeWithQaFailKickback();
-		const fake = fakeStartDispatcher(store);
-		const requestId = store.listWorkflowReworkDeliveries()[0]!.request_id;
-		const db = (
-			store as unknown as {
-				db: { run(sql: string, params?: unknown[]): void };
-			}
-		).db;
-		db.run("UPDATE workflow_run SET status = 'held' WHERE run_id = 'run-1'");
-		db.run(
-			`UPDATE workflow_rework_delivery
-			    SET state = 'held', last_error = 'persisted_target_missing'
-			  WHERE request_id = ?`,
-			[requestId],
-		);
-		vi.spyOn(store, "materializeWorkflowReworkReplacement").mockImplementation(
-			() => {
-				throw new Error("synthetic pane-loss CAS failure");
-			},
-		);
-		const log = vi.fn();
-		const dispatcher = new WorkflowEngineDispatcher({
-			store,
-			startDispatcher: fake.dispatcher,
-			env: WORKFLOW_ON,
-			probeLaunchLiveness: async () => "dead",
-			reconcileWorkflowRework: async () => ({ kind: "busy" }),
-			log,
-		});
-
-		await expect(dispatcher.reconcile()).resolves.toEqual({
-			started: 0,
-			held: 1,
-		});
-		expect(log).toHaveBeenCalledWith(
-			expect.stringContaining("synthetic pane-loss CAS failure"),
-		);
-		store.close();
-	});
-
-	it("stops probing and materializing a permanently failing held rework after five due attempts", async () => {
-		const store = await storeWithQaFailKickback();
-		const fake = fakeStartDispatcher(store);
-		const requestId = store.listWorkflowReworkDeliveries()[0]!.request_id;
-		const db = (
-			store as unknown as {
-				db: { run(sql: string, params?: unknown[]): void };
-			}
-		).db;
-		db.run("UPDATE workflow_run SET status = 'held' WHERE run_id = 'run-1'");
-		db.run(
-			`UPDATE workflow_rework_delivery
-			    SET state = 'held', last_error = 'persisted_target_missing'
-			  WHERE request_id = ?`,
-			[requestId],
-		);
-		db.run(
-			`UPDATE workflow_run_node SET state = 'failed', ended_at = ?
-			  WHERE run_id = 'run-1' AND node_id = 'implement' AND attempt = 2`,
-			["2026-07-16T00:20:00.000Z"],
-		);
-		let now = "2026-07-16T00:30:00.000Z";
+		// The dispatcher's rework scan excludes `returned_to_lead`; the generic
+		// dead scan only looks at running nodes. Even with the actor proven
+		// dead, nothing wakes, probes, mints, or launches: it is the Lead's door.
+		const reconcileWorkflowRework = vi.fn(async () => ({
+			kind: "busy" as const,
+		}));
 		const probeLaunchLiveness = vi.fn(async () => "dead" as const);
-		const materialize = vi.spyOn(store, "materializeWorkflowReworkReplacement");
 		const dispatcher = new WorkflowEngineDispatcher({
 			store,
 			startDispatcher: fake.dispatcher,
+			stateRoot: mkdtempSync(join(tmpdir(), "fly1628-returned-rework-")),
 			env: WORKFLOW_ON,
-			now: () => new Date(now),
+			now: () => new Date("2026-07-16T00:30:00.000Z"),
+			resolvePredecessorHead: async () => HEAD,
 			probeLaunchLiveness,
-			reconcileWorkflowRework: async () => ({ kind: "busy" }),
+			reconcileWorkflowRework,
 		});
 
-		for (const minute of [30, 31, 33, 37, 45]) {
-			now = `2026-07-16T00:${minute}:00.000Z`;
-			await expect(dispatcher.reconcile()).resolves.toEqual({
-				started: 0,
-				held: 1,
-			});
-		}
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 0 });
+		expect(reconcileWorkflowRework).not.toHaveBeenCalled();
+		expect(probeLaunchLiveness).not.toHaveBeenCalled();
+		expect(fake.start).not.toHaveBeenCalled();
+		expect(store.getWorkflowRun("run-1")?.status).toBe("active");
+		expect(store.getWorkflowRunNode("run-1", "implement", 2)).toMatchObject({
+			state: "pending",
+			execution_id: "implement-1",
+		});
 		expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
-			state: "needs_lead",
+			state: "returned_to_lead",
 			hold_count: 5,
 			next_retry_at: null,
-			last_error: "rework_replacement_target_changed",
 		});
-		expect(probeLaunchLiveness).toHaveBeenCalledTimes(5);
-		expect(materialize).toHaveBeenCalledTimes(5);
-
-		now = "2026-07-17T00:45:00.000Z";
-		await expect(dispatcher.reconcile()).resolves.toEqual({
-			started: 0,
-			held: 0,
-		});
-		expect(probeLaunchLiveness).toHaveBeenCalledTimes(5);
-		expect(materialize).toHaveBeenCalledTimes(5);
+		expect(
+			store
+				.listWorkflowSideEffects("run-1")
+				.filter((row) => row.node_id === "implement" && row.attempt === 2),
+		).toEqual([]);
+		expect(store.listWorkflowAlertOutbox()).toHaveLength(1);
 		store.close();
 	});
+
+	it.each(["alive", "dead"] as const)(
+		"leaves a rework returned to the Lead untouched while its actor is %s",
+		async (liveness) => {
+			const store = await storeWithQaFailKickback();
+			const fake = fakeStartDispatcher(store);
+			const requestId = store.listWorkflowReworkDeliveries()[0]!.request_id;
+			const db = (
+				store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db;
+			// FLY-2921 §2: `returned_to_lead` is the engine's terminal state for
+			// a delivery; the run itself is never frozen for it.
+			db.run(
+				`UPDATE workflow_rework_delivery
+				    SET state = 'returned_to_lead', hold_count = 5,
+				        next_retry_at = NULL, last_error = 'persisted_target_missing'
+				  WHERE request_id = ?`,
+				[requestId],
+			);
+			const reconcileWorkflowRework = vi.fn(async () => ({
+				kind: "busy" as const,
+			}));
+			const probeLaunchLiveness = vi.fn(async () => liveness);
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: fake.dispatcher,
+				env: WORKFLOW_ON,
+				probeLaunchLiveness,
+				reconcileWorkflowRework,
+			});
+
+			expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 0 });
+			expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 0 });
+			expect(fake.start).not.toHaveBeenCalled();
+			expect(reconcileWorkflowRework).not.toHaveBeenCalled();
+			expect(probeLaunchLiveness).not.toHaveBeenCalled();
+			expect(store.getWorkflowRun("run-1")?.status).toBe("active");
+			expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
+				state: "returned_to_lead",
+				hold_count: 5,
+				last_error: "persisted_target_missing",
+			});
+			expect(store.getWorkflowRunNode("run-1", "implement", 2)).toMatchObject({
+				state: "pending",
+				execution_id: "implement-1",
+			});
+			store.close();
+		},
+	);
 
 	it("fences and rolls back a proven-dead replacement that never launches", async () => {
 		const store = await storeWithQaFailKickback();
@@ -3159,19 +3209,17 @@ describe("WorkflowEngineDispatcher", () => {
 			getInflightCount: () => 0,
 			validateAgentName: () => ({ ok: true as const }),
 		} as IStartDispatcher;
+		const replacementId = "implement-replacement-1";
 		const reconcileWorkflowRework = vi.fn(async (requestId: string) => {
-			const db = (
-				store as unknown as {
-					db: { run(sql: string, params?: unknown[]): void };
-				}
-			).db;
-			db.run(
-				"UPDATE workflow_rework_delivery SET state = 'replacement_pending' WHERE request_id = ?",
-				[requestId],
-			);
+			mintReworkReplacementViaCoordinatorClaim(store, {
+				requestId,
+				deadExecutionId: "implement-1",
+				newExecutionId: replacementId,
+				now: "2026-07-16T00:16:00.000Z",
+			});
 			return {
-				kind: "replacement_pending" as const,
-				executionId: "implement-1",
+				kind: "replacement_minted" as const,
+				executionId: replacementId,
 				reason: "persisted_target_dead",
 			};
 		});
@@ -3202,7 +3250,7 @@ describe("WorkflowEngineDispatcher", () => {
 			"implement",
 			2,
 		)?.execution_id;
-		expect(replacement).toEqual(expect.any(String));
+		expect(replacement).toBe(replacementId);
 		expect(store.getSession(replacement!)).toBeUndefined();
 		expect(store.getWorkflowRunNode("run-1", "implement", 2)).toMatchObject({
 			state: "admitted",
@@ -3242,18 +3290,49 @@ describe("WorkflowEngineDispatcher", () => {
 			}),
 		});
 		expect(await recovered.reconcile()).toEqual({ started: 0, held: 0 });
-		expect(store.getWorkflowRun("run-1")?.status).toBe("held");
+		// FLY-2921 C4.1: the rollback of a rework replacement never freezes the
+		// run and never writes a run-level hold; the delivery goes back to
+		// `pending` (due now) and the rollback fact is the coordinator's proof.
+		expect(store.getWorkflowRun("run-1")?.status).toBe("active");
 		expect(store.getWorkflowLaunchCancellation(replacement!)).toBeDefined();
 		expect(
 			store
 				.listWorkflowSideEffects("run-1")
 				.find((row) => row.execution_id === replacement),
 		).toMatchObject({ state: "abandoned" });
+		expect(store.getWorkflowRunNode("run-1", "implement", 2)).toMatchObject({
+			state: "failed",
+			execution_id: replacement,
+		});
 		expect(store.listWorkflowAlertOutbox().length).toBeGreaterThanOrEqual(2);
 		const requestId = reconcileWorkflowRework.mock.calls[0]?.[0];
 		expect(store.getWorkflowReworkDelivery(requestId!)).toMatchObject({
-			state: "held",
+			state: "pending",
+			next_retry_at: "2026-07-16T00:22:00.000Z",
 		});
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter(
+					(event) => event.kind === "rework_replacement_launch_rolled_back",
+				),
+		).toEqual([
+			expect.objectContaining({
+				execution_id: replacement,
+				payload: expect.objectContaining({ requestId }),
+			}),
+		]);
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.some((event) => event.kind === "unlaunched_admission_rolled_back"),
+		).toBe(false);
+		expect(store.listWorkflowHolds("run-1").filter((h) => h.runLevel)).toEqual(
+			[],
+		);
+		expect(store.workflowReworkDeathProof(requestId!)).toBe(
+			"unlaunched_rollback",
+		);
 		store.close();
 	});
 
@@ -5791,19 +5870,18 @@ async function fly2504ReplacementHarness() {
 	const db = (
 		store as unknown as { db: { run(sql: string, params?: unknown[]): void } }
 	).db;
-	db.run(
-		"UPDATE workflow_rework_delivery SET state = 'replacement_pending' WHERE request_id = ?",
-		[requestId],
-	);
-	expect(
-		store.materializeWorkflowReworkReplacement({
-			requestId,
-			deadExecutionId: "implement-1",
-			newExecutionId: "replacement-2504",
-			reason: "persisted_target_dead",
-			observedAt: "2026-07-16T00:15:00.000Z",
-		}),
-	).toMatchObject({ ok: true });
+	// FLY-2921: minted by the coordinator's claim; the delivery waits on
+	// `pending` for this exact intent's launch to prove the content.
+	mintReworkReplacementViaCoordinatorClaim(store, {
+		requestId,
+		deadExecutionId: "implement-1",
+		newExecutionId: "replacement-2504",
+		now: "2026-07-16T00:15:00.000Z",
+	});
+	expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
+		state: "pending",
+		route_revision: 2,
+	});
 	const fake = fakeStartDispatcher(store);
 	const logs: string[] = [];
 	const stateRoot = mkdtempSync(join(tmpdir(), "fly2504-dispatch-"));
@@ -5847,7 +5925,7 @@ describe("FLY-2504 replacement launch fences", () => {
 			});
 			expect(h.fake.start).toHaveBeenCalledTimes(1);
 			expect(h.store.getWorkflowReworkDelivery(h.requestId)?.state).toBe(
-				"replacement_pending",
+				"pending",
 			);
 			expect(await h.dispatcher.reconcile()).toMatchObject({
 				started: 1,
@@ -5984,7 +6062,7 @@ describe("FLY-2504 replacement envelope preservation", () => {
 				h.store.getWorkflowRunNode("run-1", "implement", 2)?.state,
 			).not.toBe("running");
 			expect(h.store.getWorkflowReworkDelivery(h.requestId)?.state).toBe(
-				"replacement_pending",
+				"pending",
 			);
 		} finally {
 			h.cleanup();
@@ -6702,6 +6780,564 @@ describe("FLY-2901 takeover rescue permit + predecessor head fallback", () => {
 		} finally {
 			h.cleanup();
 			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});
+
+// FLY-2921 plan §8.1 (FLY-2185 ③④, FLY-2330, C4.2) and §8.2 「未启动升级」:
+// dispatcher-level regressions for the two-state rework delivery. Every
+// test drives a real dispatcher tick. Where a replacement is needed it is
+// minted the only way production mints one — by the (mocked) coordinator,
+// inside its own claim, through `replaceWorkflowReworkActor`.
+describe("FLY-2921 rework delivery two-state — dispatcher ticks", () => {
+	const UNLAUNCHED_ENV = {
+		...WORKFLOW_ON,
+		FLYWHEEL_ENGINE_UNLAUNCHED_ALERT_MS: "1000",
+		FLYWHEEL_ENGINE_UNLAUNCHED_ROLLBACK_MS: "2000",
+	};
+	const ALERT_IDENTITY = {
+		leadId: "flywheel-eng-lead",
+		projectName: "flywheel",
+		leadResolution: "resolved" as const,
+	};
+	const T_MINT = "2026-07-16T00:16:00.000Z";
+	const T_TTL = "2026-07-16T00:22:00.000Z";
+	const T_AFTER_BACKOFF = "2026-07-16T00:24:00.000Z";
+	const REPLACEMENT_ID = "fly2921-replacement-1";
+
+	function throwingStartDispatcher() {
+		const start = vi.fn(async () => {
+			throw new Error("synthetic replacement prelaunch failure");
+		});
+		return {
+			start,
+			dispatcher: {
+				start,
+				getInflightCount: () => 0,
+				validateAgentName: () => ({ ok: true as const }),
+			} as IStartDispatcher,
+		};
+	}
+
+	function eventsOfKind(store: StateStore, kind: string) {
+		return store
+			.listWorkflowRunEvents("run-1")
+			.filter((event) => event.kind === kind);
+	}
+
+	function outboxDispositions(store: StateStore): string[] {
+		return store
+			.listWorkflowAlertOutbox()
+			.map((row) => row.payload.metadata.workflowEngine.disposition);
+	}
+
+	/**
+	 * A minted replacement that the dispatcher admitted (activation bound,
+	 * launch owner acquired) but whose start threw before any launch
+	 * evidence: node `admitted`, ledger `intent_recorded`, owner released.
+	 */
+	async function admittedUnlaunchedReplacement(
+		options: {
+			reconcileWorkflowRework?: () => Promise<WorkflowReworkCoordinatorOutcome>;
+		} = {},
+	) {
+		const store = await storeWithQaFailKickback();
+		const requestId = store.listWorkflowReworkDeliveries()[0]!.request_id;
+		const minted = mintReworkReplacementViaCoordinatorClaim(store, {
+			requestId,
+			deadExecutionId: "implement-1",
+			newExecutionId: REPLACEMENT_ID,
+			now: T_MINT,
+		});
+		expect(minted).toMatchObject({ routeRevision: 2 });
+		const stateRoot = mkdtempSync(join(tmpdir(), "fly2921-unlaunched-"));
+		const starter = throwingStartDispatcher();
+		const reconcileWorkflowRework =
+			options.reconcileWorkflowRework ??
+			(async () => ({ kind: "busy" as const }));
+		const tick = (input: {
+			now: string;
+			probeUnlaunchedExternalEvidence: () => Promise<
+				"absent" | "present" | "unknown"
+			>;
+		}) =>
+			new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: starter.dispatcher,
+				stateRoot,
+				env: UNLAUNCHED_ENV,
+				now: () => new Date(input.now),
+				resolvePredecessorHead: async () => HEAD,
+				resolveLeadId: () => "flywheel-eng-lead",
+				reconcileWorkflowRework,
+				probeUnlaunchedExternalEvidence: input.probeUnlaunchedExternalEvidence,
+				resolveRunAlertIdentity: () => ALERT_IDENTITY,
+			}).reconcile();
+		expect(
+			await tick({
+				now: T_MINT,
+				probeUnlaunchedExternalEvidence: async () => "absent",
+			}),
+		).toEqual({ started: 0, held: 1 });
+		expect(starter.start).toHaveBeenCalledTimes(1);
+		expect(store.getWorkflowRunNode("run-1", "implement", 2)).toMatchObject({
+			state: "admitted",
+			execution_id: REPLACEMENT_ID,
+		});
+		expect(
+			store
+				.listWorkflowSideEffects("run-1")
+				.find((row) => row.execution_id === REPLACEMENT_ID),
+		).toMatchObject({
+			state: "intent_recorded",
+			reason: `rework_replacement:${requestId}`,
+		});
+		expect(store.getWorkflowExecutionBinding(REPLACEMENT_ID)).toMatchObject({
+			mode: "replacement",
+			rework_request_id: requestId,
+		});
+		expect(store.getWorkflowLaunchOwner(REPLACEMENT_ID)).toMatchObject({
+			released_generation: 1,
+		});
+		expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
+			state: "pending",
+			route_revision: 2,
+			hold_count: 0,
+			owner_id: null,
+		});
+		expect(store.listWorkflowHolds("run-1")).toEqual([]);
+		return {
+			store,
+			requestId,
+			starter,
+			tick,
+			cleanup: () => {
+				store.close();
+				rmSync(stateRoot, { recursive: true, force: true });
+			},
+		};
+	}
+
+	it.each([
+		{
+			name: "unknown external launch evidence",
+			reason: "external_launch_evidence_unknown",
+			evidence: "unknown" as const,
+			incompleteWindow: false,
+		},
+		{
+			name: "an incomplete persisted window identity",
+			reason: "precise_window_identity_incomplete",
+			evidence: "absent" as const,
+			incompleteWindow: true,
+		},
+	])(
+		"C4.2: an admitted replacement stalled at intent_recorded with $name past the hard TTL keeps the run active and counts exactly one delivery failure",
+		async ({ reason, evidence, incompleteWindow }) => {
+			const h = await admittedUnlaunchedReplacement();
+			try {
+				if (incompleteWindow) {
+					// A window identity that is present but not exact: the engine
+					// must neither roll back nor guess death from it.
+					h.store.upsertSession({
+						execution_id: REPLACEMENT_ID,
+						issue_id: "FLY-1307",
+						project_name: "flywheel",
+						status: "running",
+						session_params: JSON.stringify({
+							pane_loss_generation: { socket_path: "/tmp/flywheel.sock" },
+						}),
+					});
+				}
+				expect(
+					await h.tick({
+						now: T_TTL,
+						probeUnlaunchedExternalEvidence: async () => evidence,
+					}),
+				).toMatchObject({ started: 0 });
+
+				// The run is never frozen and no run-level hold exists for it.
+				expect(h.store.getWorkflowRun("run-1")?.status).toBe("active");
+				expect(h.store.listWorkflowHolds("run-1")).toEqual([]);
+				expect(eventsOfKind(h.store, "unlaunched_admission_held")).toEqual([]);
+				expect(
+					eventsOfKind(h.store, "unlaunched_admission_rolled_back"),
+				).toEqual([]);
+				expect(
+					eventsOfKind(h.store, "rework_replacement_launch_rolled_back"),
+				).toEqual([]);
+				// Nothing was rolled back or guessed dead: the replacement is still
+				// the reserved target, its intent still recorded.
+				expect(
+					h.store.getWorkflowRunNode("run-1", "implement", 2),
+				).toMatchObject({ state: "admitted", execution_id: REPLACEMENT_ID });
+				expect(
+					h.store
+						.listWorkflowSideEffects("run-1")
+						.find((row) => row.execution_id === REPLACEMENT_ID)?.state,
+				).toBe("intent_recorded");
+				expect(
+					h.store.getWorkflowLaunchCancellation(REPLACEMENT_ID),
+				).toBeUndefined();
+				// The stall is diagnosed on the delivery: exactly one failure,
+				// counted against the rework budget with the 1-minute backoff.
+				expect(
+					eventsOfKind(h.store, "rework_replacement_launch_unresolved"),
+				).toEqual([
+					expect.objectContaining({
+						execution_id: REPLACEMENT_ID,
+						payload: expect.objectContaining({
+							action: "hold",
+							reason,
+							requestId: h.requestId,
+							reworkFailure: { holdCount: 1, state: "pending" },
+						}),
+					}),
+				]);
+				expect(eventsOfKind(h.store, "rework_delivery_failure")).toEqual([
+					expect.objectContaining({
+						event_uid: `rework_delivery_failure:${h.requestId}:unowned:2:1`,
+						payload: expect.objectContaining({
+							requestId: h.requestId,
+							generation: null,
+							routeRevision: 2,
+							holdCount: 1,
+							reason: `replacement_launch_unresolved:${reason}`,
+							returnedToLead: false,
+						}),
+					}),
+				]);
+				expect(h.store.getWorkflowReworkDelivery(h.requestId)).toMatchObject({
+					state: "pending",
+					route_revision: 2,
+					hold_count: 1,
+					owner_id: null,
+					last_error: `replacement_launch_unresolved:${reason}`,
+					next_retry_at: "2026-07-16T00:23:00.000Z",
+				});
+				expect(outboxDispositions(h.store)).toContain(
+					"rework_replacement_launch_unresolved",
+				);
+				const unresolvedAlert = h.store
+					.listWorkflowAlertOutbox()
+					.find(
+						(row) =>
+							row.payload.metadata.workflowEngine.disposition ===
+							"rework_replacement_launch_unresolved",
+					);
+				expect(unresolvedAlert?.payload).toMatchObject({
+					severity: "warning",
+					body: expect.stringContaining("The run stays active"),
+				});
+				expect(
+					h.store
+						.listWorkflowAlertOutbox()
+						.every((row) => !row.payload.title.startsWith("Workflow run held")),
+				).toBe(true);
+
+				// A later tick (past the backoff) re-observes the same stall: the
+				// escalation receipt is idempotent, so the failure is still one.
+				expect(
+					await h.tick({
+						now: T_AFTER_BACKOFF,
+						probeUnlaunchedExternalEvidence: async () => evidence,
+					}),
+				).toMatchObject({ started: 0 });
+				expect(h.store.getWorkflowRun("run-1")?.status).toBe("active");
+				expect(h.store.listWorkflowHolds("run-1")).toEqual([]);
+				expect(eventsOfKind(h.store, "rework_delivery_failure")).toHaveLength(
+					1,
+				);
+				expect(
+					eventsOfKind(h.store, "rework_replacement_launch_unresolved"),
+				).toHaveLength(1);
+				expect(h.store.getWorkflowReworkDelivery(h.requestId)).toMatchObject({
+					state: "pending",
+					hold_count: 1,
+				});
+			} finally {
+				h.cleanup();
+			}
+		},
+	);
+
+	it("C4.1 / FLY-2185 ③: rolling back an unlaunched replacement keeps the run active, records rework_replacement_launch_rolled_back, and leaves a death proof the coordinator can consume", async () => {
+		const h = await admittedUnlaunchedReplacement();
+		try {
+			expect(
+				await h.tick({
+					now: T_TTL,
+					probeUnlaunchedExternalEvidence: async () => "absent",
+				}),
+			).toEqual({ started: 0, held: 0 });
+
+			expect(h.store.getWorkflowRun("run-1")?.status).toBe("active");
+			expect(h.store.listWorkflowHolds("run-1")).toEqual([]);
+			expect(
+				eventsOfKind(h.store, "rework_replacement_launch_rolled_back"),
+			).toEqual([
+				expect.objectContaining({
+					event_uid: `unlaunched_rollback:run-1:implement:2:${REPLACEMENT_ID}`,
+					execution_id: REPLACEMENT_ID,
+					payload: expect.objectContaining({
+						requestId: h.requestId,
+						reason: "unlaunched_admission_rolled_back",
+					}),
+				}),
+			]);
+			expect(eventsOfKind(h.store, "unlaunched_admission_rolled_back")).toEqual(
+				[],
+			);
+			expect(eventsOfKind(h.store, "rework_delivery_failure")).toEqual([]);
+			expect(
+				h.store.getWorkflowLaunchCancellation(REPLACEMENT_ID),
+			).toBeDefined();
+			expect(
+				h.store
+					.listWorkflowSideEffects("run-1")
+					.find((row) => row.execution_id === REPLACEMENT_ID),
+			).toMatchObject({ state: "abandoned" });
+			expect(h.store.getWorkflowRunNode("run-1", "implement", 2)).toMatchObject(
+				{
+					state: "failed",
+					execution_id: REPLACEMENT_ID,
+				},
+			);
+			// The delivery goes back to `pending`, due now, on the same revision.
+			expect(h.store.getWorkflowReworkDelivery(h.requestId)).toMatchObject({
+				state: "pending",
+				route_revision: 2,
+				hold_count: 0,
+				owner_id: null,
+				next_retry_at: T_TTL,
+			});
+			expect(h.store.workflowReworkDeathProof(h.requestId)).toBe(
+				"unlaunched_rollback",
+			);
+			expect(outboxDispositions(h.store)).toContain(
+				"rework_replacement_launch_rolled_back",
+			);
+			expect(
+				h.store
+					.listWorkflowAlertOutbox()
+					.find(
+						(row) =>
+							row.payload.metadata.workflowEngine.disposition ===
+							"rework_replacement_launch_rolled_back",
+					)?.payload,
+			).toMatchObject({
+				severity: "warning",
+				body: expect.stringContaining("The run stays active"),
+			});
+
+			// The coordinator, inside its own claim, consumes that exact proof and
+			// mints the next replacement on revision 3 (within the budget).
+			const claim = h.store.claimWorkflowReworkDelivery({
+				requestId: h.requestId,
+				ownerId: "coordinator",
+				now: T_AFTER_BACKOFF,
+				leaseExpiresAt: "2026-07-16T00:24:30.000Z",
+			});
+			if (!claim.ok) throw new Error(claim.reason);
+			expect(
+				h.store.replaceWorkflowReworkActor({
+					requestId: h.requestId,
+					ownerId: "coordinator",
+					generation: claim.generation,
+					deadExecutionId: REPLACEMENT_ID,
+					newExecutionId: "fly2921-replacement-2",
+					proof: { kind: "unlaunched_rollback" },
+					reason: "unlaunched_rollback",
+					observedAt: T_AFTER_BACKOFF,
+				}),
+			).toMatchObject({
+				ok: true,
+				executionId: "fly2921-replacement-2",
+				routeRevision: 3,
+				idempotentReplay: false,
+			});
+			expect(h.store.getWorkflowRunNode("run-1", "implement", 2)).toMatchObject(
+				{
+					state: "pending",
+					execution_id: "fly2921-replacement-2",
+				},
+			);
+			expect(h.store.getWorkflowReworkDelivery(h.requestId)).toMatchObject({
+				state: "pending",
+				route_revision: 3,
+				owner_id: null,
+			});
+			expect(h.store.workflowReworkDeathProof(h.requestId)).toBeUndefined();
+			expect(h.store.getWorkflowRun("run-1")?.status).toBe("active");
+		} finally {
+			h.cleanup();
+		}
+	});
+
+	it("C6.1 / FLY-2185 ④: the generic dead scan hands a running rework target with a terminal session to the coordinator and never mints a context-free replacement", async () => {
+		const store = await storeWithQaFailKickback();
+		const requestId = store.listWorkflowReworkDeliveries()[0]!.request_id;
+		const stateRoot = mkdtempSync(join(tmpdir(), "fly2921-dead-target-"));
+		try {
+			// The rework target is the running preferred actor whose session
+			// label is irreversibly terminal — exactly what generic dead-exec
+			// recovery used to replace with a context-free actor.
+			store.upsertWorkflowRunNode({
+				runId: "run-1",
+				nodeId: "implement",
+				attempt: 2,
+				state: "running",
+				executionId: "implement-1",
+			});
+			store.upsertSession({
+				execution_id: "implement-1",
+				issue_id: "FLY-1307",
+				project_name: "flywheel",
+				status: "failed",
+				session_role: "implement",
+			});
+			const fake = fakeStartDispatcher(store);
+			const probeLaunchLiveness = vi.fn(async () => "dead" as const);
+			const reconcileWorkflowRework = vi.fn(async () => ({
+				kind: "busy" as const,
+			}));
+			const rollback = vi.spyOn(store, "rollbackDeadWorkflowNodeExecution");
+			const now = "2026-07-16T00:20:00.000Z";
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: fake.dispatcher,
+				stateRoot,
+				env: WORKFLOW_ON,
+				now: () => new Date(now),
+				resolvePredecessorHead: async () => HEAD,
+				probeLaunchLiveness,
+				reconcileWorkflowRework,
+				resolveRunAlertIdentity: () => ALERT_IDENTITY,
+			});
+			const ledgerBefore = store.listWorkflowSideEffects("run-1");
+
+			expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 0 });
+			expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 0 });
+
+			expect(probeLaunchLiveness).not.toHaveBeenCalled();
+			expect(rollback).not.toHaveBeenCalled();
+			expect(fake.start).not.toHaveBeenCalled();
+			expect(store.listWorkflowSideEffects("run-1")).toEqual(ledgerBefore);
+			expect(store.getWorkflowRunNode("run-1", "implement", 2)).toMatchObject({
+				state: "running",
+				execution_id: "implement-1",
+			});
+			expect(store.getLatestWorkflowReworkRoute(requestId)).toMatchObject({
+				revision: 1,
+				preferred_actor_execution_id: "implement-1",
+			});
+			expect(eventsOfKind(store, "rework_dead_target_handoff")).toEqual([
+				expect.objectContaining({
+					event_uid: `rework_dead_target_handoff:${requestId}:1:implement-1`,
+					execution_id: "implement-1",
+					payload: { requestId, routeRevision: 1, attempt: 2 },
+				}),
+			]);
+			expect(eventsOfKind(store, "execution_dead_rolled_back")).toEqual([]);
+			expect(outboxDispositions(store)).not.toContain("probe_unknown");
+			// The delivery is nudged (due now) so the coordinator looks at it.
+			expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
+				state: "pending",
+				next_retry_at: now,
+			});
+			expect(reconcileWorkflowRework).toHaveBeenCalledTimes(2);
+			expect(reconcileWorkflowRework).toHaveBeenCalledWith(requestId);
+			expect(store.getWorkflowRun("run-1")?.status).toBe("active");
+		} finally {
+			store.close();
+			rmSync(stateRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("C6.4: the launch fence admits only the intent whose reason is rework_replacement:<req> while the delivery is pending", async () => {
+		const h = await fly2504ReplacementHarness();
+		try {
+			// (a) right actor, right delivery state, wrong reason → fenced.
+			h.db.run(
+				"UPDATE workflow_side_effect_ledger SET reason = 'fault_replacement_retry' WHERE execution_id = 'replacement-2504'",
+			);
+			expect(await h.dispatcher.reconcile()).toMatchObject({
+				started: 0,
+				held: 1,
+			});
+			expect(h.fake.start).not.toHaveBeenCalled();
+			expect(h.logs).toContainEqual(
+				expect.stringContaining(
+					`engine_rework_target_launch_fenced:${h.requestId}:pending`,
+				),
+			);
+			expect(h.store.getWorkflowReworkDelivery(h.requestId)?.state).toBe(
+				"pending",
+			);
+
+			// (b) right reason, but the delivery is not `pending` → fenced.
+			h.db.run(
+				"UPDATE workflow_side_effect_ledger SET reason = ? WHERE execution_id = 'replacement-2504'",
+				[`rework_replacement:${h.requestId}`],
+			);
+			h.db.run(
+				"UPDATE workflow_rework_delivery SET state = 'turn_granted' WHERE request_id = ?",
+				[h.requestId],
+			);
+			h.logs.length = 0;
+			expect(await h.dispatcher.reconcile()).toMatchObject({
+				started: 0,
+				held: 1,
+			});
+			expect(h.fake.start).not.toHaveBeenCalled();
+			expect(h.logs).toContainEqual(
+				expect.stringContaining(
+					`engine_rework_target_launch_fenced:${h.requestId}:turn_granted`,
+				),
+			);
+			expect(
+				h.store.getWorkflowRunNode("run-1", "implement", 2)?.state,
+			).not.toBe("running");
+
+			// (c) exact reason + `pending` → launched with the rework content;
+			// the launch itself proves delivery (pending → wake_delivered).
+			h.db.run(
+				"UPDATE workflow_rework_delivery SET state = 'pending' WHERE request_id = ?",
+				[h.requestId],
+			);
+			h.logs.length = 0;
+			expect(await h.dispatcher.reconcile()).toMatchObject({
+				started: 1,
+				held: 0,
+			});
+			expect(h.fake.start).toHaveBeenCalledTimes(1);
+			expect(h.fake.requests[0]?.generalizedExecution?.executionId).toBe(
+				"replacement-2504",
+			);
+			expect(h.fake.requests[0]?.generalizedExecution?.agentContent).toMatch(
+				/^## Rework context \(replacement launch\)/,
+			);
+			expect(h.logs.join("\n")).not.toContain(
+				"engine_rework_target_launch_fenced",
+			);
+			expect(h.store.getWorkflowReworkDelivery(h.requestId)).toMatchObject({
+				state: "wake_delivered",
+				route_revision: 2,
+				wake_sent_at: "2026-07-16T00:16:00.000Z",
+				next_retry_at: "2026-07-16T00:19:00.000Z",
+			});
+			expect(h.store.getWorkflowRunNode("run-1", "implement", 2)).toMatchObject(
+				{
+					state: "running",
+					execution_id: "replacement-2504",
+				},
+			);
+			expect(eventsOfKind(h.store, "rework_replacement_launched")).toHaveLength(
+				1,
+			);
+			expect(h.store.getWorkflowRun("run-1")?.status).toBe("active");
+		} finally {
+			h.cleanup();
 		}
 	});
 });
