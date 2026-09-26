@@ -1,15 +1,15 @@
 ---
 issue: FLY-2885
 phase: implement
-phaseCursor: 1/6
-updated: 2026-09-26T21:12:37.810Z
-nextStep: "QA@2 fail: model resumes the unread readback after her barge-in;
-  probe8 shows a context note naming the text stops it (control 2/9 resumed,
-  steer2 0/8); implement note on abandoned readback chunk, tests, docs, review"
+phaseCursor: 5/6
+updated: 2026-09-26T21:20:47.532Z
+nextStep: milestone literal-last, push, stage pr_created → codex code review of
+  the QA@2 barge-in delta (cf47afa01..HEAD), await-codex-gate code, complete
+  --route needs_review --pr 1353
 chunks: []
 pointers: {}
 ---
 
 # FLY-2885 progress
-**phase**: implement (1/6)
-**next**: QA@2 fail: model resumes the unread readback after her barge-in; probe8 shows a context note naming the text stops it (control 2/9 resumed, steer2 0/8); implement note on abandoned readback chunk, tests, docs, review
+**phase**: implement (5/6)
+**next**: milestone literal-last, push, stage pr_created → codex code review of the QA@2 barge-in delta (cf47afa01..HEAD), await-codex-gate code, complete --route needs_review --pr 1353
