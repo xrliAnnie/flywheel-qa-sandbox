@@ -1,0 +1,67 @@
+# FLY-2919 进程生死单一真源 — 实施计划评审附录
+Issue: FLY-2919 (https://linear.app/geoforge3d/issue/FLY-2919/病根修复-2-体的生死只认一个真源死体当场终结活体不再按窗口判死9-张-68)
+日期: 2026-09-26
+基于: plan.md
+
+## 有效判决
+
+Gate: f4e94872-60c5-49a3-9d47-89a63b8264f6。Request: 7c112571-183b-46a4-969a-04b78a2d9cf4。reviewVerdict=APPROVED；reviewerVerdict=APPROVED。Bridge 返回本执行 round=1，设计沿革为原执行 R1/R2 之后的续稿审查。完整 finding 内容见 review-receipt.json。
+
+## Follow-ups（非阻塞，交 Lead 决定处置）
+
+以下建议不是已实现或已验证的能力；保留评审的明确风险，不能在实现中默默忽略，也不将它们冒称已修复。本轮不重开已通过的设计审查。
+
+### lease-contention-refuses-normal-restart — MEDIUM
+
+Lease contention during a normal Codex restart can fail a healthy execution
+
+§4.1 has beginSpawn serialize on the existing execution mutation lease, and beginDaemonRestart calls runtime.stop when refused. §5 step 1 takes that same lease and then collects evidence, which can take up to 5s of async probing. That contradicts §4.1's 'short lease only covers synchronous CAS'. Heartbeat samples the execution exactly when its daemon is absent, which is during a normal restart. It can then hold the lease while beginSpawn or beginDaemonRestart runs. claimExecutionMutationLease returns lease_held, and after a failed mutate the lease can stay durable for the 60s TTL. If that result is treated as a refusal, startSession throws a non-transport error, runGoal fails, and a live, restartable body is marked failed. That re-creates the R1 restart-gap bug through the new guard. Suggested spec: lease_held and other transient contention get a bounded wait or retry inside the restart budget. Only semantic refusals (close_requested=1, ownerToken/generation/spawn_epoch mismatch, session/owner missing) lead to stop. §5 step 1 should sample outside the lease and use the lease only for the final synchronous CAS. The four-boundary red test should force lease_held overlap explicitly.
+
+### consumer-inventory-direct-importers — MEDIUM
+
+Consumer sweep misses modules that call window probes directly
+
+§10.1 covers plugin.ts injection sites; its 16-call count is verified accurate. The repo-wide regex `pane_dead|isSessionTmuxAlive|dead_pin` misses modules that import probeTmuxWindowLiveness or isTmuxWindowAlive directly. Unlisted consumers that act on window death: (1) started-evidence.ts → actions.ts retry. Its docstring says a CommDB row without a live window counts as not-started, so a re-drive is allowed. A live Codex daemon whose window is missing can therefore be re-driven, which risks a second writer. (2) worktree-reconciler.ts probeLiveRunner and lifecycle-sweep.ts. They treat a non-alive window as 'dead' for worktree deletion, including the dirty-aged/stable-abandoned families that quarantine then force-remove. (3) terminal-tab-reaper.ts and account-heal/quota-revive-scan.ts (pane_dead), which are UI only but should be classified. None of this is a regression, but the plan says '全部属于本单'. Widen the sweep to `probeTmuxWindowLiveness|isTmuxWindowAlive|probeRunnerProcessLiveness|lookupTmuxTarget` across packages/* and scripts/, and add each of these to the disposition table.
+
+### fly2903-sweep-and-restart-gate-unmapped — MEDIUM
+
+FLY-2903 primitives that overlap this plan are not mapped
+
+cfc8d52 (not on this branch) adds three things the plan does not name. First, CodexDaemonGoalRuntime.mayRestartAfterTransportDeath/onRestartDecision: a synchronous restart gate checked after killSession/drainExit. That overlaps the plan's async beginDaemonRestart, which is placed before killSession. Second, codex-terminal-sweep.ts plus codex-terminal-close-ledger.ts: a separate two-sample close verdict that calls requestStop and reap on terminal Codex bodies. Third, codex-terminal-harvest.ts. The plan's FLY-2512/FLY-2690 terminal-live-body handling (§5, §7) and its 'single source' claim should state whether the sweep's close verdict consumes BodyObservation or remains a parallel judge. It should also state how beginDaemonRestart composes with the existing restart gate: extend it rather than add a second one. Otherwise two closers and two restart gates will race on the same execution.
+
+### probe-cadence-heartbeat-5min — MEDIUM
+
+Probes move to a 5-minute tick, with an 8-candidate cap and 10s evidence expiry
+
+HeartbeatService.check runs every TEAMLEAD_STUCK_INTERVAL, which defaults to 300000ms (config.ts:218). With at most 8 candidates per round, and parked sessions now also candidates, each execution is sampled only every ceil(N/8)×5 min. The dispatcher (1s tick) may only use observations under 10s old. Death detection for dispatcher paths (held rework, dead sweep) therefore slows from dispatcher cadence to 5–25+ minutes. This weakens the plan's 'first round with reliable evidence' promise and the per-ticket '本轮终结' acceptance. Suggested spec: an explicit sampling cadence independent of the stuck-check interval (or on-demand sampling for dispatcher-requested candidates), a bound on candidate population, and a latency SLO for the acceptance matrix.
+
+### obligation-replay-evidence-expiry — MEDIUM
+
+Replaying a crashed CommDB projection will hit evidence expiry
+
+Evidence is valid for 10s. The existing finalizeProvenGoneSession returns evidence_expired when now >= expiresAt, and the plan's trusted core keeps the expiry input. After a crash between the StateStore and CommDB commits, §5.6 says to replay the same obligation with the same idempotency key. Any replay after Bridge restart arrives far past 10s, so the projection fails closed and CommDB stays 'running'. That is the FLY-2537 symptom again. Suggested spec: once body_death is committed in StateStore, the obligation itself (execution, generation, identity revision) is the projection authority, and CommDB idempotency is keyed on obligationId. Alternatively, define that replay re-samples and binds a fresh evidenceId to the same obligation, and make the idempotency digest exclude the evidence timestamps.
+
+### no-runtime-kill-switch — MEDIUM
+
+No runtime switch to stop new death writes
+
+The worst failure mode is a probe or parse bug (PID/start/boot parsing, binding verification) returning a false 'dead'. That produces a failed status plus a successor next to a live writer. The blast radius is now larger because parked statuses (ship_parked, awaiting_review, design_done, approved_to_ship) lose their exemption. §9 only says to 'stop new death writes and hand to Lead', and the only mechanism is a code revert and redeploy. Add a feature-registry flag, following the repo's existing pattern, that sends all new death-authorizing consumers to observe/unknown-only while keeping alive/unknown reporting. Consider staged enablement per carrier.
+
+### claude-process-title-identity — MEDIUM
+
+Claude binding check relies on argv/command visibility, but Claude rewrites its process title
+
+quota-revive-scan's CLAUDE_COMMAND regex already matches a bare version such as `2.1.278` as pane_current_command, which shows Claude Code rewrites its process name/title. §4 requires the adapter to verify command path and the exact native-session argument from the OS before accepting a binding, and binding is mandatory before a launch counts as successful. The §4 legacy migration also matches by sessionId in argv. If argv is not visible after the title rewrite, every new Claude launch fails closed and every legacy backfill returns unknown. Specify identity sources that survive the rewrite: the shell-registered `$$` before exec plus start time, and the executable path from libproc/`lsof -p` txt rather than `ps args`. Add an early 529 check with the production Claude binary.
+
+### founder-wake-successor-handoff — LOW
+
+The 'founder wake not lost' acceptance is undefined for successor delivery
+
+§5 step 3 retires pending founder wakes through completeRunnerPhaseWakeTerminal with a wake_failed alert. The API is verified: it handles founder-origin wakes at any admission state. A 'legal successor' then only gets a new message 'via the existing wake entry'. The C-group test 'founder wake 不丢' should state whether the successor receives the founder's instruction automatically or a Lead must re-send it from the alert. It should also state where the wake_failed alert is surfaced, so a founder instruction does not end up only in an outbox.
+
+### tests-not-executed-docs-only — LOW
+
+Tests were not run: docs-only change and no node_modules in this worktree
+
+The reviewed commit changes only design docs. I checked that every test file listed in §8 exists, that package names (flywheel-claude-runner/teamlead/comm/edge-worker) match, and I read the referenced source symbols: inspectCodexDaemonOwnership, the runGoal restart loop, withExecutionMutationLease, terminalizeProvenDeadSessionTx, finalizeProvenGoneSession, deleteTurnIfCurrent, completeRunnerPhaseWakeTerminal, the CommDB status CHECK, and the TmuxAdapter pane_dead success:true branches. The branch is 7 commits behind main and does not contain FLY-2903 (cfc8d52). No vitest suite was run.
+

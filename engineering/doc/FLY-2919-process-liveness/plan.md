@@ -3,7 +3,7 @@ Issue: FLY-2919 (https://linear.app/geoforge3d/issue/FLY-2919/病根修复-2-体
 日期: 2026-09-26
 基于: research.md
 
-状态: DRAFT — 等待有效 design review；full DOC-FLOW 的 exploration.md、research.md 与本计划共同交付。
+状态: APPROVED — gate f4e94872-60c5-49a3-9d47-89a63b8264f6 / request 7c112571-183b-46a4-969a-04b78a2d9cf4 有效通过；full DOC-FLOW 的 exploration.md、research.md 与本计划共同交付。
 审计基线: `af853328d`，分支 `flywheel-FLY-2919`。原设计执行 `416169c3-8d61-4fc1-b20a-3e2263115f31`；续稿执行 `1b78af3a-1a6f-4ee1-8061-a92d4e8338df`，继承 `7520e274b`。
 
 ## 1. 给 founder 的说明
