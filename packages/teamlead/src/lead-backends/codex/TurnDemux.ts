@@ -26,11 +26,23 @@ export interface DemuxEvent {
 	params?: unknown;
 }
 
+/**
+ * FLY-2882: why an event reached the observer. `foreign` = provably not a
+ * sidecar turn (routed outside any dispatch window, or held while ANOTHER id
+ * was claimed); `unproven` = flushed by an abort/overflow, which proves nothing
+ * about ownership.
+ */
+export type ObserverProvenance = "foreign" | "unproven";
+
 export interface TurnDemuxSinks {
 	/** Sidecar-initiated turn events (the executor's notification feed). */
 	toExecutor: (method: string, params: unknown) => void;
 	/** Foreign (founder-terminal) turn events. */
-	toObserver: (method: string, params: unknown) => void;
+	toObserver: (
+		method: string,
+		params: unknown,
+		provenance: ObserverProvenance,
+	) => void;
 	/** Every event with any sign of life (activity timestamp feed). */
 	onActivity?: () => void;
 	log?: (m: string) => void;
@@ -152,13 +164,13 @@ export class TurnDemux {
 				);
 				this.settleDispatch(undefined);
 				this.dispatchPoisoned = true;
-				this.sinks.toObserver(method, params);
+				this.sinks.toObserver(method, params, "unproven");
 				return;
 			}
 			this.held.push({ turnId, method, params });
 			return;
 		}
-		this.sinks.toObserver(method, params);
+		this.sinks.toObserver(method, params, "foreign");
 	}
 
 	private settleDispatch(claimedId: string | undefined): void {
@@ -169,7 +181,11 @@ export class TurnDemux {
 			if (claimedId !== undefined && e.turnId === claimedId) {
 				this.sinks.toExecutor(e.method, e.params);
 			} else {
-				this.sinks.toObserver(e.method, e.params);
+				this.sinks.toObserver(
+					e.method,
+					e.params,
+					claimedId !== undefined ? "foreign" : "unproven",
+				);
 			}
 		}
 	}
