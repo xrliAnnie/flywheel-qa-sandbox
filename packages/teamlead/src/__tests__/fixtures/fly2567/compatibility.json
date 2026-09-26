@@ -33,29 +33,29 @@
 		},
 		{
 			"id": "runner-patrol-rules.md",
-			"rationale": "FLY-2557 section 0.11 is byte-identical in current ON and legacy OFF patrol sources. Lead ruling e1eff36e authorizes adding this shared intake duty to OFF while preserving every byte of its previous text. Both modes now contain intake identity, ACK versus pending, backfill, decomposition, dependency ledger, thread receipts and resolve, and both transports deliver the same intake event instructions. The savings switch continues selecting shortened versus historical patrol procedures; it no longer removes section 0.11. Capture command: python3 engineering/doc/FLY-2567-lead-token-savings/capture-legacy-bundle.py --intake-overlay engineering/doc/FLY-2557-epic-intake/approved-intake-section.txt. The script pins overlay SHA256 24d7b1928661a4952de3e721b684d703452c86dd25037bd9f1f6ea2631f902a6; OFF patrol source evolves from a48cb411861c7b3edd234d49e42efb3b5fd114b0e4b70872cffe2db4734bae1c to f274a86e359454d6ed8a2b3b6fb5f1e941b39425df2028a8a3abe9c873888ffc. Two captures produce byte-identical source and bundle goldens; an unapproved overlay is rejected before writes. FLY-2597 replaces Discord record-only intake receipts with Bridge receipts in both ON and OFF section 0.11; needs_founder retains an actual marked question. Both modes gain identical no-periodic-prose and quiet-record rules. The prior FLY-2557 overlay is preserved except these approved quiet-receipt edits. Reproduction: engineering/doc/FLY-2597-thread-title-needs-you/capture-rule-evolution.py verifies the historical bundle before replaying its pinned patch. FLY-2643 adds the visible-TUI roster check only to the current patrol source; OFF keeps the historical procedure without that visible-TUI addition. FLY-2702 then adds the same verified package-gate WAITING evidence and non-suppression rule to the current and historical patrol procedures. FLY-2751 adds the same explicit-only Epic fixed-page publication duty to both modes: show, render, generate, events, patrol, and expiry observation never publish; only a founder/Lead-requested epic-page publish may write hosted Blob state. FLY-2909 changes only shared ACK timing in current and legacy sections 5 and 6: handling still begins before ACK, while ACK is emitted beside the first handling action or, for status-only input, the turn's final tool action. Both cumulative hashes remain pinned.",
+			"rationale": "FLY-2557 section 0.11 is byte-identical in current ON and legacy OFF patrol sources. Lead ruling e1eff36e authorizes adding this shared intake duty to OFF while preserving every byte of its previous text. Both modes now contain intake identity, ACK versus pending, backfill, decomposition, dependency ledger, thread receipts and resolve, and both transports deliver the same intake event instructions. The savings switch continues selecting shortened versus historical patrol procedures; it no longer removes section 0.11. Capture command: python3 engineering/doc/FLY-2567-lead-token-savings/capture-legacy-bundle.py --intake-overlay engineering/doc/FLY-2557-epic-intake/approved-intake-section.txt. The script pins overlay SHA256 24d7b1928661a4952de3e721b684d703452c86dd25037bd9f1f6ea2631f902a6; OFF patrol source evolves from a48cb411861c7b3edd234d49e42efb3b5fd114b0e4b70872cffe2db4734bae1c to f274a86e359454d6ed8a2b3b6fb5f1e941b39425df2028a8a3abe9c873888ffc. Two captures produce byte-identical source and bundle goldens; an unapproved overlay is rejected before writes. FLY-2597 replaces Discord record-only intake receipts with Bridge receipts in both ON and OFF section 0.11; needs_founder retains an actual marked question. Both modes gain identical no-periodic-prose and quiet-record rules. The prior FLY-2557 overlay is preserved except these approved quiet-receipt edits. Reproduction: engineering/doc/FLY-2597-thread-title-needs-you/capture-rule-evolution.py verifies the historical bundle before replaying its pinned patch. FLY-2643 adds the visible-TUI roster check only to the current patrol source; OFF keeps the historical procedure without that visible-TUI addition. FLY-2702 then adds the same verified package-gate WAITING evidence and non-suppression rule to the current and historical patrol procedures. FLY-2751 adds the same explicit-only Epic fixed-page publication duty to both modes: show, render, generate, events, patrol, and expiry observation never publish; only a founder/Lead-requested epic-page publish may write hosted Blob state. FLY-2909 changes only shared ACK timing in current and legacy sections 5 and 6: ACK is emitted beside the first handling action, beside the final tool action for status-only input, or immediately by itself when it is the only needed action. Both cumulative hashes remain pinned.",
 			"members": [
 				{
 					"path": "packages/teamlead/lead-rules-base/runner-patrol-rules.md",
-					"sha256": "05b87a9cd21878838748edba70a1da8563e99b17d747ebf91c8c826322f4e815"
+					"sha256": "e0087b1392cecee4d885b8d6c0c6fd11f768ca773da0ad3068bd600ab9346f49"
 				},
 				{
 					"path": "packages/teamlead/lead-rules-base/legacy-token-savings/runner-patrol-rules.md",
-					"sha256": "8f93f6d068cd8ca19e2552f25a333e318de2279d07082520d1862496743868c4"
+					"sha256": "7882391142f01bb91711aef402a2fe568c5d9701f202b00ce838a741be1ef507"
 				}
 			]
 		},
 		{
 			"id": "inbox-ack-rule.md",
-			"rationale": "ON retains the reviewed shortened duties; OFF preserves pre-savings text at f022a0a7. FLY-2909 updates both modes identically in semantics: batch ACK is emitted beside the first handling action, or beside the turn's final tool action for status-only input, without changing header identity, redelivery, authority, urgent-founder, or no-automatic-ACK guards.",
+			"rationale": "ON retains the reviewed shortened duties; OFF preserves pre-savings text at f022a0a7. FLY-2909 updates both modes identically in semantics: batch ACK is emitted beside the first handling action, beside the final tool action for status-only input, or immediately by itself when it is the only needed action. Header identity, admission-only authority, urgent-founder, and no-automatic-ACK guards remain.",
 			"members": [
 				{
 					"path": "packages/teamlead/scripts/inbox-ack-rule.md",
-					"sha256": "e6840faa732988fb09565ce360eba409714103b24ad435d4e8ca67f656977756"
+					"sha256": "4c4639f806a0e3be2a45ec596244f76a3df9dcff8bebcfe5bf24b54a2b47815f"
 				},
 				{
 					"path": "packages/teamlead/lead-rules-base/legacy-token-savings/inbox-ack-rule.md",
-					"sha256": "82431169464d1460f0d9f3c753e5dd5b14e23ff5c0cc195b09c723b26d2d27bd"
+					"sha256": "b74ba794eb43506b892787153c994108cb6b27bad275f29c90a4830e96ef4c64"
 				}
 			]
 		},
@@ -69,7 +69,7 @@
 				},
 				{
 					"path": "packages/teamlead/lead-rules-base/legacy-token-savings/runner-patrol-rules.md",
-					"sha256": "8f93f6d068cd8ca19e2552f25a333e318de2279d07082520d1862496743868c4"
+					"sha256": "7882391142f01bb91711aef402a2fe568c5d9701f202b00ce838a741be1ef507"
 				}
 			]
 		},

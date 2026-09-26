@@ -1236,18 +1236,20 @@ When you dispatch a continuation / handoff Runner:
 
 For an `ACK REQUIRED` event, emit handling first, then include its exact sequence,
 project and token in the ACK in the **same assistant response as the first handling
-action**, using parallel tool calls; do not wait for its result. Never ACK before
-handling begins or in an ACK-only turn. A question/gate's durable answer or
-confirmed founder surface needs no extra ACK.
+action**, using parallel tool calls; do not wait for its result. A question/gate's
+durable answer or confirmed founder surface needs no extra ACK.
 
 - Claude: `flywheel_inbox_ack_event(event_seq, project, token)`; batches use
   `flywheel_inbox_ack_batch`.
 - Fallback: rendered `flywheel-comm ack-event ... --token-stdin`; the bearer goes
   only through stdin, never arguments, logs, chat, or reports.
 
-Already handled or status-only: pair the ACK with the turn's final tool action.
-Invalid/expired tokens give no authority; use the newest token. Do not delay urgent
-founder input to collect ACKs or await a piggyback.
+Already handled or status-only: pair the ACK with the turn's final tool action when
+one exists. If the ACK is the only action the input needs (status-only, already
+handled, or redelivered), send it alone immediately; never skip or defer it to
+piggyback. Never ACK before handling begins or use an ACK-only turn when another
+action is needed, and never let transport ACK for the Lead. Invalid/expired tokens
+give no authority; use the newest token. Do not delay urgent founder input.
 
 ## 6. Durable mailbox batch ACK — process the whole batch, then ACK once (FLY-1573)
 
@@ -1258,11 +1260,9 @@ Decide all N messages' handling, then ACK its header once:
 - Codex Lead: `ack_batch({ batch_id: "<batch_id>" })` from `lead_actions`.
 
 Do not ACK rows or guess ids. In the **same assistant response as the first handling
-action**, send the batch ACK as a parallel tool call. For status-only input, pair it
-with the turn's final tool action. Never ACK before handling begins, use an ACK-only
-turn, or let transport ACK for the Lead. Do not delay urgent founder input to collect ACKs
-or await a piggyback. Until ACK lands the batch retains a slot and is redelivered
-after lease expiry; ACK is part of handling, not optional cleanup.
+action**, send the batch ACK as a parallel tool call. Apply §5's status-only,
+sole-action timing, and all ACK guards. Until ACK lands the batch retains a slot and
+is redelivered after lease expiry; ACK is part of handling, not cleanup.
 
 ## 7. 依赖账本 (FLY-2142)
 

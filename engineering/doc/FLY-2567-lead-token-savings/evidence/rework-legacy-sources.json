@@ -36,8 +36,8 @@
     {
       "path": "packages/teamlead/scripts/inbox-ack-rule.md",
       "revision": "f022a0a7ee5a4cf42f590cbd0c90b12b84e2c854",
-      "bytes": 4594,
-      "sha256": "82431169464d1460f0d9f3c753e5dd5b14e23ff5c0cc195b09c723b26d2d27bd"
+      "bytes": 4766,
+      "sha256": "b74ba794eb43506b892787153c994108cb6b27bad275f29c90a4830e96ef4c64"
     },
     {
       "path": "packages/teamlead/lead-rules-base/department-lead-rules.md",
@@ -54,8 +54,8 @@
     {
       "path": "packages/teamlead/lead-rules-base/runner-patrol-rules.md",
       "revision": "f022a0a7ee5a4cf42f590cbd0c90b12b84e2c854",
-      "bytes": 92606,
-      "sha256": "8f93f6d068cd8ca19e2552f25a333e318de2279d07082520d1862496743868c4"
+      "bytes": 92643,
+      "sha256": "7882391142f01bb91711aef402a2fe568c5d9701f202b00ce838a741be1ef507"
     }
   ],
   "constraints": [
@@ -106,9 +106,9 @@
   "ackActionConcurrencyEvolution": {
     "issue": "FLY-2909",
     "beforePatrolSourceSha256": "bcee374943e5807eff632cc23786667cf630e7c6628b0145109a5226e4c32dd9",
-    "afterPatrolSourceSha256": "8f93f6d068cd8ca19e2552f25a333e318de2279d07082520d1862496743868c4",
+    "afterPatrolSourceSha256": "7882391142f01bb91711aef402a2fe568c5d9701f202b00ce838a741be1ef507",
     "beforeInboxSourceSha256": "26207a075496f647b3b12ff6d82b9f0235189a6eab61665c1a9c72bc6c1615ae",
-    "afterInboxSourceSha256": "82431169464d1460f0d9f3c753e5dd5b14e23ff5c0cc195b09c723b26d2d27bd",
-    "meaning": "The historical Lead rules gain only the FLY-2909 ACK/action concurrency timing shared with the current rules; ACK identity, redelivery, authority, and urgent-founder guards remain unchanged."
+    "afterInboxSourceSha256": "b74ba794eb43506b892787153c994108cb6b27bad275f29c90a4830e96ef4c64",
+    "meaning": "The historical Lead rules gain only the FLY-2909 ACK/action timing shared with the current rules, including immediate ACK when it is the only needed action; identity, admission-only authority, no-automatic-ACK, and urgent-founder guards remain."
   }
 }

@@ -1,8 +1,8 @@
 {
 	"revision": "41947cec9e157d9be5faf0eae8260bc3272d2def",
-	"meaning": "Historical shared selector and materializer, dept mailbox with summary duty plus inbox launcher rule. Body only: host paths and timestamp in metadata intentionally excluded. Additive FLY-2557 section 0.11 evolution, the FLY-2597 shared attention/quiet receipt patch, the FLY-2619 shared summary-duty contract, the FLY-2632 content-bound approval carryover clarification, the FLY-2634 activity-gated summary-duty contract, the FLY-2643 visible-TUI patrol contract, the FLY-2654 standing Raya and closeout authority contract with retired conditional tickets, the FLY-2655 manifest-only voice session duty shared by ON and OFF, the FLY-2702 package-gate WAITING evidence contract, the FLY-2751 explicit-only Epic fixed-page publication duty, the FLY-2775 current-family alias clarification, and the FLY-2909 ACK/action concurrency rule shared by ON and OFF; all other historical rule bytes preserved.",
-	"bodyBytes": 241866,
-	"sha256": "bd3830603c3c409857d5c75f4c966a36d883f1dabc215445be51138319c37710",
+	"meaning": "Historical shared selector and materializer, dept mailbox with summary duty plus inbox launcher rule. Body only: host paths and timestamp in metadata intentionally excluded. Additive FLY-2557 section 0.11 evolution, the FLY-2597 shared attention/quiet receipt patch, the FLY-2619 shared summary-duty contract, the FLY-2632 content-bound approval carryover clarification, the FLY-2634 activity-gated summary-duty contract, the FLY-2643 visible-TUI patrol contract, the FLY-2654 standing Raya and closeout authority contract with retired conditional tickets, the FLY-2655 manifest-only voice session duty shared by ON and OFF, the FLY-2702 package-gate WAITING evidence contract, the FLY-2751 explicit-only Epic fixed-page publication duty, the FLY-2775 current-family alias clarification, and the FLY-2909 ACK/action timing rule with its sole-action exception shared by ON and OFF; all other historical rule bytes preserved.",
+	"bodyBytes": 242075,
+	"sha256": "a196d0f6bb20787a8b297a1be3138c90909ff7f3dc33bb84d284dc91db10bf63",
 	"intakeOverlay": {
 		"approvedSectionSha256": "24d7b1928661a4952de3e721b684d703452c86dd25037bd9f1f6ea2631f902a6",
 		"beforeSourceSha256": "a48cb411861c7b3edd234d49e42efb3b5fd114b0e4b70872cffe2db4734bae1c",
@@ -41,11 +41,11 @@
 	"ackActionConcurrencyEvolution": {
 		"issue": "FLY-2909",
 		"beforePatrolSourceSha256": "bcee374943e5807eff632cc23786667cf630e7c6628b0145109a5226e4c32dd9",
-		"afterPatrolSourceSha256": "8f93f6d068cd8ca19e2552f25a333e318de2279d07082520d1862496743868c4",
+		"afterPatrolSourceSha256": "7882391142f01bb91711aef402a2fe568c5d9701f202b00ce838a741be1ef507",
 		"beforeInboxSourceSha256": "26207a075496f647b3b12ff6d82b9f0235189a6eab61665c1a9c72bc6c1615ae",
-		"afterInboxSourceSha256": "82431169464d1460f0d9f3c753e5dd5b14e23ff5c0cc195b09c723b26d2d27bd",
+		"afterInboxSourceSha256": "b74ba794eb43506b892787153c994108cb6b27bad275f29c90a4830e96ef4c64",
 		"beforeBundleSha256": "ab73159f9533d9786b8179a9ba850bedaaa877b35ca40153ec8403407c024356",
-		"afterBundleSha256": "bd3830603c3c409857d5c75f4c966a36d883f1dabc215445be51138319c37710",
-		"meaning": "Current and historical Lead rules begin handling before ACK, but emit ACK beside the first handling tool action; status-only batches pair ACK with the turn's final tool action. ACK identity, redelivery, authority, and urgent-founder guards are unchanged."
+		"afterBundleSha256": "a196d0f6bb20787a8b297a1be3138c90909ff7f3dc33bb84d284dc91db10bf63",
+		"meaning": "Current and historical Lead rules emit ACK beside the first handling action, beside the final tool action for status-only input, or immediately by itself when it is the only needed action. ACK identity, admission-only authority, no-automatic-ACK, and urgent-founder guards remain."
 	}
 }

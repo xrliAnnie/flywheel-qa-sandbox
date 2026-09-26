@@ -26,6 +26,9 @@ assert_rule_contract() {
 		&& [[ "$content" == *"parallel tool calls"* ]] \
 		&& [[ "$content" == *"status-only"* ]] \
 		&& [[ "$content" == *"final tool action"* ]] \
+		&& [[ "$content" == *"If the ACK is the only action the input needs"* ]] \
+		&& [[ "$content" == *"send it alone immediately"* ]] \
+		&& [[ "$content" == *"never skip or defer it to piggyback"* ]] \
 		&& [[ "$content" == *"Never ACK before"* ]] \
 		&& [[ "$content" == *"Do not delay urgent founder"* ]]; then
 		ok "$label pins ACK to the first or final action without weakening guards"
