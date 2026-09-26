@@ -60,57 +60,64 @@ sequenceDiagram
     participant B as 生产 Bridge(沙箱外)
     participant DB as StateStore(qa_room*)
     participant J as 受信包装器 qa-room-job.sh
-    participant S as 房源码目录 src/<sha>
+    participant S as 房源码目录 src/<room_id>
     R->>C: room deploy --head <sha> [...]
     C->>B: POST /api/qa-rooms (ingest bearer + exec_id + request_id)
     B->>B: 校验合同 / 身份 / 头在 origin 上
-    B->>DB: 写 room(queued) + 审计(accepted) + 占房位
-    B-->>C: 202 {room_id, status: queued}
+    B->>DB: 写 room(queued) + deploy 操作 + 审计 + 服务预留房位
+    B-->>C: 202 {room_id, operation_id, status: queued}
     loop 每 5s 调度 tick
         B->>B: 负载门 load1 < 144 且无其他 deploy 在跑?
     end
-    B->>J: spawn detached, env -i 最小环境 (prepare+deploy)
+    B->>B: 物理认领:mkdir 锁目录 + 写 service-claim(room_id+claim token)
+    B->>J: spawn detached,最小环境(prepare+deploy 同一操作)
+    J->>J: 先写 owner sidecar(operation_id, pid, lstart)
     J->>S: git worktree add --detach <sha>; pnpm install; pnpm -r build
-    J->>S: bash scripts/test-deploy.sh <slot> [白名单参数]
-    J-->>B: 写 exit/stdout/stderr 收据文件
+    J->>S: FLYWHEEL_QA_ROOM_CLAIM=<token> bash scripts/test-deploy.sh <slot> [白名单参数]
+    J-->>B: 写本操作的 receipt.json
     B->>B: 解析房 JSON;GET 房 /health 核 buildSha == sha
     B->>DB: room -> ready (存房 JSON)
     C-->>R: 轮询 GET /api/qa-rooms/:id → ready + 房 JSON
     R->>R: 在房里做真验证(HTTP 到 127.0.0.1:198N、读房内 DB 等)
     R->>C: room teardown --room <id>
-    C->>B: POST /api/qa-rooms/:id/teardown
-    B->>J: spawn detached (snapshot + teardown)
-    J->>J: VACUUM INTO 房内所有 *.db + 拷日志 → ~/.flywheel/qa-evidence/rooms/<id>/
-    J->>S: bash scripts/test-teardown.sh <slot>
-    B->>DB: room -> torn_down,释放房位,源码目录引用计数归零则移除
+    C->>B: POST /api/qa-rooms/:id/teardown (新 request_id)
+    B->>J: spawn detached,新 teardown 操作(attempt n)
+    J->>J: 快照:VACUUM INTO 必需库 + 发现库 + 拷日志 → staging → 原子发布
+    J->>S: FLYWHEEL_QA_ROOM_CLAIM=<token> bash scripts/test-teardown.sh <slot>
+    B->>B: 沙箱外残留观测(锁目录 / SLOT_DIR / launchd label / 进程)
+    B->>DB: room -> torn_down,释放预留,删除 src/<room_id>
 ```
 
 ### 3.1 状态机
 
 ```mermaid
 stateDiagram-v2
-    [*] --> queued: deploy 被接受
-    queued --> preparing: 过负载门 + 无其他 deploy
-    queued --> refused: 排队超时 60min / owner 撤销
-    preparing --> deploying: 源码就绪(install+build 成功)
-    preparing --> failed: 源码准备失败
+    [*] --> queued: deploy 被接受(仅服务预留)
+    queued --> refused: 排队超时 60min / 排队中房位被外部占用
+    queued --> preparing: 过负载门 + 物理认领成功
+    preparing --> released: install/build 失败或头不在 origin(未调 test-deploy,凭 token 删自己的锁)
+    preparing --> deploying: 源码就绪
     deploying --> ready: exit 0 + JSON 合法 + buildSha 相符
     deploying --> failed: exit≠0 / JSON 不合法 / buildSha 不符 / 超时
     ready --> tearing_down: teardown 请求
     failed --> tearing_down: teardown 请求(清残留)
-    tearing_down --> torn_down: 快照 OK + teardown exit 0
-    tearing_down --> teardown_failed: 快照失败 / teardown exit≠0 / 超时
-    teardown_failed --> tearing_down: 再次 teardown
-    preparing --> interrupted: Bridge 重启后 job 进程已死且无收据
-    deploying --> interrupted
-    tearing_down --> interrupted
     interrupted --> tearing_down: teardown 请求
+    teardown_failed --> tearing_down: 新 teardown 请求(新 attempt)
+    tearing_down --> torn_down: 快照 OK + teardown exit 0 + 残留观测为空
+    tearing_down --> teardown_failed: 快照失败 / teardown exit≠0 / 残留非空 / 超时
+    preparing --> interrupted: Bridge 重启后 owner 已死且无收据
+    deploying --> interrupted
+    tearing_down --> teardown_failed: Bridge 重启后 owner 已死且无收据
     refused --> [*]
+    released --> [*]
     torn_down --> [*]
 ```
 
-`failed / teardown_failed / interrupted` **一律继续占房位**(fail-closed,保留诊断现场),只能通过 teardown 离开。
-`refused` 从未占过真实房位(见 §6),释放服务侧预留。
+**两层占位,口径统一:**
+- **服务预留**(`qa_room_slot` 行):`queued` 起就有,防同实例内两个请求抢同一房位。
+- **物理认领**(锁目录 + `service-claim` 文件,§6.1):`preparing` 起才有;只有持有物理认领的房才可能调按 slot 拆房的脚本。
+- `refused` / `released`:从未调用 test-deploy、物理认领(若有)已凭 token 自己删除 ⇒ 终态,不能 teardown(只做作业/源码清理)。
+- `failed / interrupted / teardown_failed`:**保留**预留与物理认领(fail-closed,保留诊断现场),只能通过 teardown 离开;每次 teardown 前脚本都会核对认领 token(§6.1),房位已被别人占则拒绝,绝不按 slot 误拆。
 
 ## 4. 身份与授权
 
@@ -123,12 +130,14 @@ stateDiagram-v2
 | runner | `Authorization: Bearer <FLYWHEEL_INGEST_TOKEN>` + body `execution_id`;Bridge 查 `store.getSession(execution_id)` 必须存在且**非终态**;资格:`session_role === "qa"` 或当前 workflow activation 的 node 类型 ∈ {`qa`,`implement`};若该 activation 带 `submission_credential`,则 body 必须携带且 `credential.execution_id === execution_id`(沿用 evidence-run 的校验函数,防过期 attempt) | deploy(owner=自己)、status/wait/list(只看自己 issue 的房)、teardown(见下) |
 | Lead | `Authorization: Bearer <TEAMLEAD_API_TOKEN>`(runner pane 已剔除此变量,F12) | 全部动作、任何房 |
 
+**actor_key(非空):** runner 编码为 `runner:<execution_id>`;Lead 编码为 `lead:<lead_id>`,`lead_id` 取自请求头 `X-Flywheel-Lead-Id`(CLI 从 Lead 环境 `FLYWHEEL_LEAD_ID` 读,缺失即 400)。幂等、审计、「每 actor 一个非终态房」都按它算。
+
 所有路由 `rejectNonLoopback`(复用 `workflow-decision-routes.ts:459`)。
 
 **teardown 授权(按顺序判):**
 1. Lead → 允许(审计 `actor=lead`)。
-2. runner 的 `execution_id === room.owner_execution_id` → 允许。
-3. owner session 已终态 **且** 调用者 session 的 `issue_identifier === room.owner_issue` → 允许,审计记 `takeover_from=<旧 exec>`(QA 返工 attempt 换了 exec id 时不用麻烦 Lead)。
+2. 调用者 `actor_key === room.owner_actor_key` → 允许。
+3. owner session 已终态 **且** 调用者 session 的 `issue_identifier === room.owner_issue` → 允许,审计记 `takeover_from=<旧 actor_key>`(QA 返工 attempt 换了 exec id 时不用麻烦 Lead)。
 4. 其他 → `403 room_not_owned`,写审计 `refused`。
 
 ## 5. 请求合同(严格 schema,未知字段一律拒)
@@ -137,83 +146,108 @@ stateDiagram-v2
 
 | 字段 | 类型 / 约束 | 映射到 test-deploy |
 |---|---|---|
-| `execution_id` | UUID(runner 必填;Lead 可省) | — |
-| `request_id` | UUID,客户端生成;`(actor, request_id)` 唯一 ⇒ 重试幂等 | — |
+| `execution_id` | UUID;runner 必填,Lead 不传 | — |
+| `request_id` | UUID,客户端生成 | — |
 | `credential` | 可选字符串(见 §4) | — |
-| `head` | 必填,40 位小写 hex | 源码目录 = 该 commit;generalized/test-discipline 时另传 `--expect-head` |
+| `head` | 必填,40 位小写 hex;**选择 Bridge / Lead 跑的源码** | 源码目录 = 该 commit;generalized/test-discipline 时另传 `--expect-head` |
 | `slot` | `"auto"` 或 1..N(N = `test-slots.json` 条数) | 位置参数 |
 | `mode` | `slot`\|`mirror`\|`roundtable`,默认 `slot` | `--mode` |
-| `from_branch` | `^[A-Za-z0-9._/-]{1,200}$` 且不含 `..`,默认 `main` | `--from-branch` |
-| `generalized` / `test_discipline` / `codex_runner` / `stub_runner` / `no_lead` / `alerts` / `codex_home_reconcile` | bool | 对应 flag;组合合法性由服务先按 F-表复核一遍,再交给脚本兜底 |
+| `from_branch` | 默认 `main`;`^[A-Za-z0-9._/-]{1,200}$` 且不含 `..`;**只选择 sandbox 仓(`flywheel-qa-sandbox`)里 runner 用的 fixture 分支,与 `head` 无关**;非 main 须调用方事先推到 sandbox remote(服务不代推) | `--from-branch` |
+| `generalized` / `test_discipline` / `codex_runner` / `stub_runner` / `no_lead` / `alerts` / `codex_home_reconcile` | bool | 对应 flag;服务按 test-deploy 的组合约束先复核,再交给脚本兜底 |
 | `extra_leads` | `[{slot:int, label:^[A-Za-z0-9._-]{1,40}$}]`,≤4 | `--extra-lead s:label` |
 | `lead_label` | 同上字符集 | `--lead-label` |
 | `lead_ready_timeout_sec` / `lead_channel_timeout_sec` | 1..3600 | 对应 flag |
 | `digest_channel` | 17–20 位数字 | `--digest` |
 | `env` | 仅允许键:`TEST_REPLY_BY_ISSUE ∈ {0,1}`、`TEST_BRIDGE_DEPT_SCOPE_REJECT ∈ {on,off}`、`TEST_CODEX_LEAD_OUTBOUND_MODE ∈ {direct,bridge}` | 注入包装器环境 |
 
-显式拒绝(`400` + 审计 `refused`):未知字段;任意值里出现 `com.flywheel.` 但不含 `.qa.` 的字符串(`production_target_refused`);`slot`/`extra_leads.slot` 越界;`voice_fixture`、`TEST_API_TOKEN`、`TEST_INGEST_TOKEN`、`TEST_LEAD_CLAUDE_CONFIG_DIR` 等本版不开放项(`field_not_supported`)。
-teardown body:`{execution_id?, request_id, credential?, skip_snapshot?: bool}`(`skip_snapshot=true` 必须审计理由字段 `reason`,≤200 字)。
+`POST /api/qa-rooms/:id/teardown` body:`{execution_id?, request_id, credential?, skip_snapshot?: bool, reason?: string(1..200)}`;`skip_snapshot=true` 时 `reason` **必填**,否则禁止出现。
+
+显式拒绝(`400` + 审计 `refused`):未知字段;任意字符串值里出现 `com.flywheel.` 而不含 `.qa.`(`production_target_refused`);`slot`/`extra_leads.slot` 越界;`voice_fixture`、`TEST_API_TOKEN`、`TEST_INGEST_TOKEN`、`TEST_LEAD_CLAUDE_CONFIG_DIR` 等本版不开放项(`field_not_supported`)。
+
+**幂等:** 每个变更请求落一行 `qa_room_operation`,`UNIQUE(actor_key, request_id)`(两列均 `NOT NULL`)。同 key 同 `request_digest`(规范化 payload 去掉 credential 后的 sha256)⇒ 返回原 operation(传输重试不会再占房位);同 key 不同 digest ⇒ `409 request_conflict`。业务重试(比如拆房失败后再拆)用**新** `request_id`,产生新 attempt。
 
 **argv 由服务端从已校验字段拼成数组**(`spawn` 不经 shell 解释),永远不会出现请求原文拼接。
 
 ## 6. 房位、并发、负载门
 
-- 表 `qa_room_slot(slot INTEGER PRIMARY KEY, room_id TEXT NOT NULL)`:主键即互斥。受理 deploy 时在**同一事务**里为主房位 + 所有 extra-lead 房位插行;任何一个冲突 ⇒ `409 slot_busy`。
-- `slot=auto`:从 1..N 升序挑第一个满足「不在 `qa_room_slot` 中 **且** `/tmp/flywheel-test-slot-<n>.lock` 不存在」的(mode=mirror 限 1..3);锁目录是跨实例(手工起房、房中房)的唯一真相。显式 slot 若锁目录已存在 ⇒ `409 slot_occupied_outside_service`(**不**让 test-deploy 自己的「陈旧锁自动回收」去拆别人的手工房)。
-- 进入 `preparing` 前再查一次锁目录(排队期间可能被手工占用),冲突 ⇒ `refused(slot_taken_while_queued)` 并释放预留。
-- 并发:同一时刻最多 1 个 `preparing|deploying` 作业;最多 1 个 `tearing_down` 作业(teardown 本来就持有 cmux mutator 租约);每个 runner exec 最多 1 个活跃房。
-- 负载门:调度 tick(5s)对队首 deploy 调 `RunnerAdmissionController.probe()` 的同一计算(阈值来自同一个 `FLYWHEEL_RUNNER_LOAD_PER_CORE`,默认 8.0 × `os.cpus().length`,本机 = 144);`load1 ≥ 阈值` ⇒ 保持 `queued`,`status` 返回 `queue_reason=load_pressure, load1, threshold`。排队超过 60 min ⇒ `refused(load_gate_timeout)`。**teardown 不过负载门**(释放资源不应被高负载卡住)。
-- 作业墙钟上限:prepare+deploy 45 min、teardown 15 min;超时 ⇒ 对作业进程组 SIGTERM,10s 后 SIGKILL,状态 `failed(timeout)` / `teardown_failed(timeout)`。
+### 6.1 物理认领合同(服务 ↔ 脚本)
+
+- 进入 `preparing` 时,Bridge 对主房位与所有 extra-lead 房位按升序原子地 `mkdir /tmp/flywheel-test-slot-<n>.lock`,写 `pid=claiming` 与 `service-claim`(内容 `room_id` + 随机 `claim_token`,0600);任一 mkdir 失败 ⇒ 回滚已建的(只删带自己 token 的)并 `refused(slot_taken_while_queued)`。
+- 包装器以 `FLYWHEEL_QA_ROOM_CLAIM=<claim_token>` 调脚本。脚本改动(C1):
+  - `test-deploy.sh claim_slot()` 与 `qa_multilead_claim_set`:锁目录存在且 `service-claim` 的 token == `FLYWHEEL_QA_ROOM_CLAIM` ⇒ **收养**(视为已认领);
+  - 锁目录带 `service-claim` 但 token 不匹配(或调用方没给 token)⇒ **一律不自动回收**(不走 `claiming>300s` / 死 PID 回收分支),返回占用;
+  - `test-teardown.sh`:若设置了 `FLYWHEEL_QA_ROOM_CLAIM`,在**任何**破坏性步骤前核对主房位与 campaign 借位锁的 `service-claim` token,不符 ⇒ exit 1 `claim_mismatch`,什么都不动;
+  - 未设置该 env(Lead 手工路径)行为不变。
+- 服务从不在请求 slot 上看到「锁目录已存在」时继续:`queued` 受理时检查一次、认领时 mkdir 原子判定一次。
+- `released` 路径:prepare 失败时 test-deploy 未被调用,Bridge 核对 `service-claim` token 相符后删除自己建的锁目录,再释放预留。
+
+### 6.2 自动选位、并发、负载门
+
+- `slot=auto`:从 1..N 升序挑第一个「不在 `qa_room_slot` 中且锁目录不存在」的(mode=mirror 限 1..3)。
+- 并发:同一时刻最多 1 个 `preparing|deploying` 操作;最多 1 个 teardown 操作;每个 runner actor 最多 1 个非终态房。
+- 负载门:调度 tick(5s)对队首 deploy 计算 `load1` 与阈值(`FLYWHEEL_RUNNER_LOAD_PER_CORE` 默认 8.0 × `os.cpus().length`,本机 = 144,与 `RunnerAdmissionController` 同一旋钮);**`load1 >= 阈值` ⇒ 保持排队**(注意 admission 自己用的是 `>`,本服务按 issue 用 `>=`,测试覆盖等于阈值的边界)。`status` 返回 `queue_reason=load_pressure, load1, threshold`。排队超 60 min ⇒ `refused(load_gate_timeout)`。**teardown 不过负载门**。
+- 墙钟上限:deploy 操作(prepare+deploy)45 min、teardown 15 min;超时 ⇒ 对操作进程组 SIGTERM,10s 后 SIGKILL,状态 `failed(timeout)` / `teardown_failed(timeout)`。
 
 ## 7. 作业执行
 
 ### 7.1 受信包装器 `scripts/lib/qa-room-job.sh`
 
-- 从**生产 Bridge 自己的 checkout**(`FLYWHEEL_DIR`,即 main 上已合入的代码)执行,不是从被测 head 执行;被测代码只经它在房源码目录里调用 `test-deploy.sh` / `test-teardown.sh`。
-- 子命令:`prepare <sha> <src_dir> <repo_root>`、`deploy <src_dir> <argv...>`、`teardown <src_dir> <slot> <evidence_dir> [--skip-snapshot]`。
-- 每个作业目录 `~/.flywheel/state/qa-rooms/jobs/<room_id>/<phase>/`(0700):`stdout`、`stderr`、`pid`(包装器 pid + `ps -o lstart=` 起始时间)、最后原子写入 `receipt.json`(`{phase, exit_code, finished_at}`,先写临时文件再 `mv`)。
+- 从**运行本服务的 Bridge 自己的 checkout**(生产 = main 上已合入代码)执行;被测代码只经它在房源码目录里调用 `test-deploy.sh` / `test-teardown.sh`。
+- 子命令:`deploy <operation_dir> <sha> <src_dir> <bridge_repo_root> -- <argv...>`(内部顺序 prepare → deploy)、`teardown <operation_dir> <src_dir> <slot> <evidence_root> [--skip-snapshot]`。
+- 每个**操作**一个目录 `~/.flywheel/state/qa-rooms/<room_id>/ops/<operation_id>/`(0700):
+  1. 包装器**第一件事**原子写 `owner.json`(`operation_id`、自身 pid、`ps -o lstart=` 起始时间),写不成立即 exit 97,不做任何副作用;
+  2. `stdout`、`stderr`、`phase`(`prepare|deploy|snapshot|teardown`,每进一阶段覆写);
+  3. 结束时原子写 `receipt.json` = `{operation_id, phase_reached, exit_code, finished_at}`(临时文件 + `mv`)。
+- Bridge 只接受 `receipt.operation_id == 当前操作 id` 的收据;旧 attempt 的目录原样保留作历史,不参与判定。
 
-### 7.2 源码目录(精确头)
+### 7.2 源码目录(精确头,每房独立)
 
-- 位置 `~/.flywheel/state/qa-rooms/src/<sha>/`,以 `git -C <bridgeRepoRoot> worktree add --detach <dir> <sha>` 建立(`bridgeRepoRoot` = 运行本服务的 Bridge 自己的 checkout,其 `origin` 是 flywheel 主仓;**不是**项目 projectRoot——房内项目是 sandbox clone,origin 不同);同一 sha 被多个房复用(引用计数 = 活跃房中 `head=sha` 的行数),最后一个房 `torn_down` 后 `git worktree remove --force` 并 `git worktree prune`。
-- 准备步骤(包装器 `prepare`):`git fetch origin --prune` → 校验 `git branch -r --contains <sha>` 非空(**头必须已推到 origin**,否则 `failed(head_not_on_origin)`)→ worktree add(已存在且 `git rev-parse HEAD == sha` 且工作树干净则复用)→ `pnpm install --frozen-lockfile --prefer-offline` → `pnpm -r build`。
-  - 这就是 issue 要求的「先 pnpm install + build 防旧 dist」:源码目录**永远是该 sha 的干净检出**,不会继承 runner 工作树里的旧 dist 或未提交改动。
-- 为什么不直接用 runner 的工作树:runner 可能边测边改、dist 可能陈旧、「谁的工作树」在房中房/接管场景下不唯一;独立检出让「房里跑的就是这个 sha」成为结构性保证,也让 teardown 用与 deploy 配对的同一份脚本。
+- 位置 `~/.flywheel/state/qa-rooms/<room_id>/src/`,**每房独立**,不跨房/跨 Bridge 实例共享(房中房、多实例都不会互删);房 `torn_down` 或 `released` 后 `git worktree remove --force` + `git worktree prune`。
+- `git -C <bridgeRepoRoot> worktree add --detach <dir> <sha>`(`bridgeRepoRoot` = 运行本服务的 Bridge 自己的 checkout,其 `origin` 是 flywheel 主仓;**不是**项目 projectRoot)。
+- prepare:`git fetch origin --prune` → `git branch -r --contains <sha>` 非空(**头必须已推到 origin**,否则 `released(head_not_on_origin)`)→ worktree add → `pnpm install --frozen-lockfile --prefer-offline` → `pnpm -r build`。这就是 issue 要求的「先 pnpm install + build 防旧 dist」:源码目录永远是该 sha 的干净检出。
+- 为什么不用 runner 的工作树:runner 可能边测边改、dist 可能陈旧、接管/房中房场景下「谁的工作树」不唯一;独立检出让「房里跑的就是这个 sha」成为结构性保证,也让 teardown 用与 deploy 配对的同一份脚本。
 
 ### 7.3 最小环境
 
 包装器以 `spawn("/bin/bash", [...], {detached:true, env:<allowlist>})` 启动(Node 侧构造 env 对象,等价 `env -i`):
 `HOME`、`USER`、`LOGNAME`、`SHELL=/bin/bash`、`LANG=en_US.UTF-8`、`LC_ALL=en_US.UTF-8`(记忆:launchd 无 LANG 时 tmux 输出被清洗)、`TMPDIR=/tmp/`(记忆:runner TMPDIR 陷阱)、
-`PATH` = Bridge 启动时解析出的 `node`/`pnpm`/`git`/`jq`/`tmux`/`python3`/`gh` 所在目录 + `/usr/bin:/bin:/usr/sbin:/sbin`,
-`FLYWHEEL_QA_ROOM_ID`,以及 §5 白名单里的 `TEST_*`。
-**不传**任何 `TEAMLEAD_*` / `FLYWHEEL_*`(除上面一个)/ Discord / Codex / 生产 token;`test-deploy.sh` 自己会 `source ~/.flywheel/.env` 取 `TEST_BOT_TOKEN_N`、`LINEAR_API_KEY`(F-审计 1),与今天手工起房一致。
+`PATH` = Bridge 启动时解析出的 `node`/`pnpm`/`git`/`jq`/`tmux`/`python3`/`gh`/`sqlite3` 所在目录 + `/usr/bin:/bin:/usr/sbin:/sbin`,
+`FLYWHEEL_QA_ROOM_ID`、`FLYWHEEL_QA_ROOM_CLAIM`,以及 §5 白名单里的 `TEST_*`。
+**不传**任何 `TEAMLEAD_*` / 其他 `FLYWHEEL_*` / Discord / Codex / 生产 token;`test-deploy.sh` 自己会 `source ~/.flywheel/.env` 取 `TEST_BOT_TOKEN_N`、`LINEAR_API_KEY`,与今天手工起房一致。
 
 ### 7.4 结果判定
 
-- deploy:`receipt.exit_code == 0` → 解析 stdout(容忍前置噪声:取最后一个以 `{` 开头的行到结尾做 `JSON.parse`;必须含 `slot, port, bridgeUrl, slotDir`)→ `GET http://127.0.0.1:<port>/health` 且 `buildSha === head`(generalized 另要求 `buildMode=built` 与 `artifactBuildSha === head`,与 test-deploy 自身一致)→ `ready`,存 JSON。任一不满足 → `failed(<reason>)`。
-- 房 JSON 里的 token 文件路径(`apiTokenPath`、`reportHost.tokenPath`)**原样返回路径不返回内容**(房内 token 本就是 0600 文件,runner 同用户可读,与今天一致)。
-- `status` 的 `log_tail`:只取 stderr 里以 `[test-deploy]` / `[test-teardown]` / `[qa-room-job]` 开头的行(这些 `log()` 行本就遵守不打印 token 的约定,FLY-1189),最多 40 行 / 8KB。
+- deploy 操作:`receipt.exit_code == 0 && phase_reached == deploy` → 解析 stdout(容忍前置噪声:取最后一个以 `{` 开头的行到结尾 `JSON.parse`;必须含 `slot, port, bridgeUrl, slotDir, projectName`)→ `GET http://127.0.0.1:<port>/health` 且 `buildSha === head`(generalized 另要求 `buildMode=built` 且 `artifactBuildSha === head`)→ `ready`。`phase_reached == prepare` 且非 0 → `released(prepare_failed)`(§6.1 释放);`deploy` 阶段非 0 或核验不过 → `failed(<reason>)`。
+- teardown 操作:`exit_code == 0` 后,Bridge 在沙箱外做**残留观测**:主/借位锁目录不存在、`SLOT_DIR` 不存在、`launchctl list` 无 `com.flywheel.qa.lead.slot-<n>.` 前缀的 label、`ps -axo pid,command` 无引用 `SLOT_DIR` 的进程;结果写入操作记录 `residue_check`,非空 ⇒ `teardown_failed(residue)`。runner 用 `room status` 读到的就是这份沙箱外观测(沙箱内 `ps` 本就看不全)。
+- 房 JSON 里的 token 文件路径原样返回路径、不返回内容(房内 token 本就是 0600 文件,与今天一致)。
+- `log_tail`:只取 stderr 里以 `[test-deploy]` / `[test-teardown]` / `[qa-room-job]` 开头的行(这些 `log()` 行遵守不打印 token 的约定,FLY-1189),最多 40 行 / 8KB。
 
-### 7.5 Bridge 重启恢复
+### 7.5 Bridge 重启 / 崩溃恢复(确切顺序)
 
-- spawn **之前**写 `status=preparing|deploying|tearing_down` + `job_dir`;spawn 后写 `job_pid/job_started_at`。
-- Bridge 启动时 reconcile 每个进行中行:`receipt.json` 存在 → 按 §7.4 定案;pid 活着且 `lstart` 相符 → 继续由 tick 轮询;否则 → `interrupted`(**继续占房位**)。与 `fleet-console.spawnEngine` 同型(F13)。
+1. 事务里写 operation 行 `status=spawning`(含 `operation_dir`)→ 2. spawn → 3. 事务里写 `status=running, pid`;若第 3 步写库失败 ⇒ 立刻 `kill(-pid)` 整个进程组,操作记为 `failed(spawn_record_failed)`。
+- 启动 reconcile 每个 `spawning|running` 操作,按序判:
+  1. 当前操作目录有 `receipt.json` 且 `operation_id` 相符 ⇒ 按 §7.4 定案;
+  2. 有 `owner.json` 且其 pid 活着、`lstart` 相符 ⇒ 视为仍在跑,由 tick 继续轮询(不重复 spawn);
+  3. 其余(含 `spawning` 且没有 `owner.json`:父进程在 spawn 前后崩溃)⇒ 若 `owner.json` 缺失且无任何同 `operation_id` 进程,deploy 操作记 `interrupted`、teardown 操作记 `teardown_failed(interrupted)`;两者都**保留**物理认领,只能再发 teardown。
+- 对照 `fleet-console.ts:504-525,670-676` 的同型协议(子进程自报 owner、父进程落库失败杀组、恢复优先尊重活 owner)。
 
 ## 8. 拆房前证据快照(钩子)
 
 包装器 `teardown` 在调用 `test-teardown.sh` 之前:
-1. 对 `SLOT_DIR` 下(深度 ≤3)所有 `*.db` 执行 `sqlite3 <db> "VACUUM INTO '<evidence>/<相对路径>.db'"`,随后对快照 `PRAGMA quick_check` 并统计表数 >0;
-2. 拷 `bridge.log`、各 Lead 日志、`launch-manifest.json`、`campaign-manifest.json`、`launchd-leads.json`、房 JSON;**排除**任何 token 文件(`*token*`、`room-info.json` 里只保留非 token 键)。
-3. 目标 `~/.flywheel/qa-evidence/rooms/<room_id>/`(0700);写 `manifest.json`(文件、大小、sha256、源路径)。
-4. 任一步失败 ⇒ **不执行** teardown,`teardown_failed(snapshot_failed)`;owner 可以带 `skip_snapshot=true` + `reason` 重试(审计)。
-5. 快照保留 14 天:服务在每次 teardown 成功后顺手删 mtime > 14 天的 `rooms/*`。
+1. **必需库清单**(从房 JSON 坐标得出,不靠目录深度):`<slotDir>/teamlead.db`、`<slotDir>/state/comm/<projectName>/comm.db`;extra-lead / campaign 有独立库时按 `campaign-manifest.json` 追加。
+2. **补充发现**:`find <slotDir> -name '*.db' -not -path '*/project-slot-*' -not -path '*/node_modules/*'`(不设深度上限,排除 runner clone 与依赖目录)。
+3. 每个库 `sqlite3 <db> "VACUUM INTO '<staging>/<相对路径>'"`,再对快照 `PRAGMA quick_check` + 表数 > 0;对必需库另断言 `sessions` 表(teamlead)/`sessions` 与 `mailbox` 表(comm)存在(不断言非空——空房是合法的)。
+4. 拷 `bridge.log`、Lead 日志、`launch-manifest.json`、`campaign-manifest.json`、`launchd-leads.json`、房 JSON(去掉 token 值);排除任何 token 文件。
+5. staging = `~/.flywheel/qa-evidence/rooms/<room_id>/<operation_id>.partial/`;全部成功后写 `manifest.json`(`expected`/`exported`/`missing` 三栏,文件大小、sha256、源路径)并 `mv` 为 `<operation_id>/`;每次 attempt 独立目录,旧快照保留,**不会**因目标已存在而失败。
+6. 必需库任一 `missing` 或导出失败 ⇒ **不执行** teardown,`teardown_failed(snapshot_failed)`;owner 可带 `skip_snapshot=true` + `reason` 重试(审计)。
+7. 保留 14 天:每次 teardown 成功后顺手删 mtime > 14 天的 `rooms/*`。
 
-teardown 的响应与 `status` 返回 `evidence_dir`,runner 在沙箱内可只读访问(`~/.flywheel` 在其可读范围)。
+teardown 结果与 `status` 返回 `evidence_dir`(最新成功 attempt 的目录),runner 在沙箱内只读访问。
 
 ## 9. 审计
 
 `qa_room_audit`(追加式,`BEFORE UPDATE/DELETE … RAISE(ABORT)` 触发器,沿用 `strength_two_evidence_record` 写法):
-`id, at, actor_kind(runner|lead), actor_execution_id, actor_issue, action(deploy|teardown), room_id, slot, decision(accepted|refused|completed|failed), reason, head, request_digest(规范化 JSON 的 sha256,去掉 credential)`。
+`id, at, actor_key, actor_issue, action(deploy|teardown), room_id, slot, decision(accepted|refused|completed|failed), reason, head, request_digest(规范化 JSON 的 sha256,去掉 credential)`。
 所有**变更类**请求(受理 / 拒绝)与所有终态迁移都写一行;`status/list/wait` 只读不写。
 
 ## 10. 拆房坑修复
@@ -234,7 +268,7 @@ teardown 的响应与 `status` 返回 `evidence_dir`,runner 在沙箱内可只�
 
 ## 11. QA 规则与 runner 指引(G4)
 
-- `.flywheel/agents/nodes/qa.md:54-66`:把「自己跑 `scripts/test-deploy.sh`」改为「用 `flywheel-comm room deploy --head $(git rev-parse HEAD) --from-branch <PR 分支> [...]` 起房,`room teardown --room <id>` 拆房;不论 Codex 还是 Claude 体」,并写明:head 必须先 push;`room wait` 在工具超时后续等;证据看 `evidence_dir`;不要在沙箱里直接调 `test-deploy.sh` / `launchctl`。
+- `.flywheel/agents/nodes/qa.md:54-66`:把「自己跑 `scripts/test-deploy.sh`」改为「用 `flywheel-comm room deploy --head <candidate-sha> [...]` 起房,`room teardown --room <id>` 拆房;不论 Codex 还是 Claude 体」,并写明:`--head` 选择 Bridge / Lead 跑的 flywheel 源码(必须先 push 到 flywheel origin);`--from-branch` 只选 sandbox 仓里 runner 用的 fixture 分支,默认 `main`,非 main 须自己先推到 sandbox remote;`room wait` 在工具超时后续等;证据看 `evidence_dir`;不要在沙箱里直接调 `test-deploy.sh` / `launchctl`。
 - `edge-worker/src/Blueprint.ts:1989`:文本「before `test-teardown.sh`」→「before `flywheel-comm room teardown`」。
 - 文档同步:`doc/qa/framework/529-room-playbook.md`、`real-runner-e2e-guide.md`、`packages/qa-framework/README.md`、`packages/qa-framework/agents/qa-parallel-executor.md` 加「首选起房服务;脚本直跑仅限 Lead / 沙箱外人工」一节(不删除脚本用法)。
 - 新增子命令,不删改任何现有 CLI 子命令 ⇒ 不触发 FLY-1914 消费者 sweep 要求(PR body 注明)。
@@ -250,23 +284,20 @@ teardown 的响应与 `status` 返回 `evidence_dir`,runner 在沙箱内可只�
 
 ```mermaid
 erDiagram
-    qa_room ||--o{ qa_room_slot : "占用"
+    qa_room ||--o{ qa_room_slot : "服务预留"
+    qa_room ||--o{ qa_room_operation : "deploy 1 次 + teardown n 次"
     qa_room ||--o{ qa_room_audit : "被记录"
     qa_room {
         TEXT room_id PK
         TEXT status
         TEXT status_reason
-        TEXT owner_kind
-        TEXT owner_execution_id
+        TEXT owner_actor_key
         TEXT owner_issue
-        TEXT request_id
-        TEXT request_json
         TEXT head
         INTEGER slot
+        TEXT claim_token
+        INTEGER physically_claimed
         TEXT src_dir
-        TEXT job_dir
-        INTEGER job_pid
-        TEXT job_started_at
         TEXT deploy_json
         TEXT evidence_dir
         TEXT created_at
@@ -276,11 +307,25 @@ erDiagram
         INTEGER slot PK
         TEXT room_id FK
     }
+    qa_room_operation {
+        TEXT operation_id PK
+        TEXT room_id FK
+        TEXT kind
+        TEXT actor_key
+        TEXT request_id
+        TEXT request_digest
+        INTEGER attempt
+        TEXT status
+        TEXT operation_dir
+        INTEGER pid
+        TEXT residue_check
+        TEXT created_at
+        TEXT finished_at
+    }
     qa_room_audit {
         INTEGER id PK
         TEXT at
-        TEXT actor_kind
-        TEXT actor_execution_id
+        TEXT actor_key
         TEXT actor_issue
         TEXT action
         TEXT room_id
@@ -292,62 +337,68 @@ erDiagram
     }
 ```
 
-- `qa_room.status` 有 `CHECK` 限定于 §3.1 的 11 个值;唯一索引 `(owner_kind, owner_execution_id, request_id)`。
-- 迁移:新 `private migrateQaRoomTables()`,`CREATE TABLE/INDEX/TRIGGER IF NOT EXISTS`,从 `migrate()` 调用(`StateStore.ts:10351` 的既有模式)。纯新增表,回滚无须降级。
+- `qa_room.status` 用 `CHECK` 限定于 §3.1 的 11 个值(queued, refused, preparing, released, deploying, ready, failed, interrupted, tearing_down, torn_down, teardown_failed);`qa_room_operation` `UNIQUE(actor_key, request_id)`,`actor_key`/`request_id` 均 `NOT NULL`;`kind ∈ {deploy, teardown}`;`status ∈ {spawning, running, succeeded, failed}`。
+- `claim_token` 只存 Bridge 本地 StateStore,不在任何 API 响应里返回。
+- 迁移:新 `private migrateQaRoomTables()`,`CREATE TABLE/INDEX/TRIGGER IF NOT EXISTS`,从 `migrate()` 调用(`StateStore.ts:10351` 既有模式)。纯新增表,回滚无须降级。
 
 ## 14. 失败模式
 
 | 场景 | 行为 |
 |---|---|
-| 头没 push 到 origin | `failed(head_not_on_origin)`,不占真实房位(尚未调 test-deploy),释放服务预留 |
-| install/build 失败 | `failed(prepare_failed)` + log_tail;释放预留(未碰房位) |
-| test-deploy exit≠0 | `failed(deploy_exit_<n>)`,**保留**房位,提示 `room teardown` |
-| buildSha 不符 | `failed(head_mismatch)`,保留房位 |
-| Bridge 重启 | §7.5 reconcile |
+| 排队中房位被手工 / 其他实例占用 | 认领 mkdir 失败 ⇒ `refused(slot_taken_while_queued)`,释放预留 |
+| 头没 push 到 origin / install / build 失败 | `released(...)`:test-deploy 未调用,凭 token 删自己的锁,释放预留,删源码目录 |
+| test-deploy exit≠0 / buildSha 不符 / JSON 不合法 | `failed(<reason>)`,**保留**预留 + 物理认领,提示 `room teardown` |
+| 老 failed 房的房位后来被别人占(理论上不可能:认领不释放) | 仍防御:teardown 脚本核 `service-claim` token 不符 ⇒ `claim_mismatch`,零破坏 |
+| Bridge 重启 / 崩溃 | §7.5 |
 | 高负载 | `queued(load_pressure)`,60 min 后 `refused(load_gate_timeout)` |
 | owner 已终态、房还在 | `list` 标 `owner_terminal=true`;同 issue 后继或 Lead 可拆 |
-| 快照失败 | `teardown_failed(snapshot_failed)`,不拆 |
+| 快照失败 | `teardown_failed(snapshot_failed)`,不拆;可带 reason 跳过 |
+| 拆完仍有残留 | `teardown_failed(residue)`,附残留清单,可再拆或交 Lead |
 | 服务关闭 | `503 room_service_disabled` |
-
-「失败但未碰房位」判据:prepare 阶段失败时 test-deploy 尚未被调用,锁目录不可能由本作业创建;服务再查一次锁目录不存在才释放,否则转 `failed` 并保留。
 
 ## 15. 开关与部署
 
-- `FLYWHEEL_QA_ROOM_SERVICE`:`on|off`。默认:生产 Bridge(未设 `FLYWHEEL_ISOLATION_ROOT`)= on;房内 slot Bridge = off,除非显式 `on`。
-- 房内开启通道(给本单 QA 的「房中房」验收用):`test-deploy.sh` 新增 `TEST_QA_ROOM_SERVICE=1` 知识点 → 在 slot Bridge 环境里放 `FLYWHEEL_QA_ROOM_SERVICE=on`;需在 `lib/qa-slot-env-contract.json` 登记该键。
+- `FLYWHEEL_QA_ROOM_SERVICE`:`on|off`。默认:未设 `FLYWHEEL_ISOLATION_ROOT` 的 Bridge(生产)= on;房内 slot Bridge = off,除非显式 `on`。
+- 房内开启通道(本单「房中房」验收用):`test-deploy.sh` 新增 `TEST_QA_ROOM_SERVICE=1` 知识点 → slot Bridge 环境放 `FLYWHEEL_QA_ROOM_SERVICE=on`;在 `lib/qa-slot-env-contract.json` 登记该键。房中房的内层房有自己的 `src/<room_id>` 与自己的认领 token,与外层互不影响(§7.2、§6.1)。
 - 合并 ≠ 部署:随常规 updater 窗口上线,本单不重启任何服务。
-- 回滚:生产 `.env` 设 `FLYWHEEL_QA_ROOM_SERVICE=off`(下次 Bridge 重启生效)或 revert PR;已起的房仍可用脚本手工拆;新表惰性保留。
+- 回滚:生产 `.env` 设 `FLYWHEEL_QA_ROOM_SERVICE=off`(下次 Bridge 重启生效)或 revert PR;已起的房仍可用脚本手工拆(手工路径不带 `FLYWHEEL_QA_ROOM_CLAIM`,但带 `service-claim` 的锁不会被 test-deploy **自动**回收,只能显式 `test-teardown.sh <n>`,而手工 teardown 不带 env 时不做 token 核对 ⇒ Lead 手工拆可用);新表惰性保留。
 
 ## 16. 实施分块(chunks)
 
 | Chunk | 内容 | 主要文件 | 测试 |
 |---|---|---|---|
-| C1 | 坑 A + 坑 B + F6 | `scripts/lib/qa-reap-codex-slot-daemons.mjs`、`scripts/lib/qa-launchd-lead.sh`、`scripts/test-deploy.sh` | 新增 `scripts/__tests__/fly2405-teardown-pits.test.sh`:悬空软链 → 通过并 unlink;合法目标活 socket → 计 residual;非法目标 → 仍拒;marker-only + 无进程 → 退役成功;marker + 活 pid → 原失败语义不变;扩 `fly1663-qa-launchd.test.sh` 回归;F6 用 stub pnpm 断言 stdout 纯 JSON |
-| C2 | StateStore 表 + 方法 | `packages/teamlead/src/StateStore.ts`(或新 `qa-room-store.ts` 由 StateStore 调用) | 迁移幂等、PK 互斥、触发器拒改审计、状态 CHECK |
-| C3 | 受信包装器 | `scripts/lib/qa-room-job.sh` | `scripts/__tests__/fly2405-room-job.test.sh`:stub git/pnpm/test-deploy;收据原子性;快照(真 sqlite3 WAL 库 → VACUUM INTO 非空);token 文件排除;skip-snapshot |
-| C4 | Bridge 服务 + 路由 | 新 `packages/teamlead/src/bridge/qa-room-service.ts`、`qa-room-routes.ts`;`plugin.ts` 挂载 + runner-tier 旁路 + reconcile | vitest:schema(未知字段 / 生产 label / 越界 slot 拒并审计)、授权四分支、幂等、auto slot、负载门(注入 loadavg)、并发上限、超时杀组、reconcile 三分支、buildSha 不符、JSON 容错解析 |
-| C5 | CLI | `packages/flywheel-comm/src/commands/room.ts` + `index.ts` switch | 参数校验、`--wait` 轮询 / 退出码(0 ready|torn_down,1 失败,2 传输,3 仍在进行)、重试沿用 evidence-run 的 3 次退避与脱敏 |
-| C6 | 指引与文档 + 房内开关 | `.flywheel/agents/nodes/qa.md`、`Blueprint.ts:1989`、`doc/qa/framework/*`、`packages/qa-framework/*`、`scripts/lib/qa-slot-env-contract.json`、`test-deploy.sh` 知识点 | Blueprint 快照测试更新;env contract 测试 |
+| C1 | 坑 A + 坑 B + F6 + §6.1 认领合同(收养 / 拒自动回收 / teardown token 核对) | `scripts/lib/qa-reap-codex-slot-daemons.mjs`、`scripts/lib/qa-launchd-lead.sh`、`scripts/test-deploy.sh`、`scripts/lib/qa-multilead.sh`、`scripts/test-teardown.sh` | 新增 `scripts/__tests__/fly2405-teardown-pits.test.sh`:悬空软链 → 通过并 unlink;合法目标活 socket → 计 residual;非法目标 → 仍拒;marker-only + 无进程 → 退役成功;marker + 活 pid → 原失败语义不变。新增 `fly2405-service-claim.test.sh`:token 相符收养;token 不符 / 无 token 时 `claiming>300s` 与死 PID 分支都不回收;teardown token 不符零破坏;无 env 手工路径不变;campaign 借位同理。F6 用 stub pnpm 断言 stdout 纯 JSON。回归 `fly1663-qa-launchd.test.sh`、`test-deploy-generalized.test.sh` |
+| C2 | StateStore 表 + 方法 | `packages/teamlead/src/StateStore.ts`(或新 `qa-room-store.ts` 由 StateStore 调用) | 迁移幂等;`qa_room_slot` PK 互斥;`UNIQUE(actor_key,request_id)` 对 Lead 无 exec 的真实约束;审计触发器拒改;状态 CHECK |
+| C3 | 受信包装器 | `scripts/lib/qa-room-job.sh` | `scripts/__tests__/fly2405-room-job.test.sh`:stub git/pnpm/test-deploy;`owner.json` 先于副作用;收据带 operation_id 且原子;快照用真实目录层级(`state/comm/<p>/comm.db`)+ WAL 未 checkpoint 的已提交行 → 两库 rowset 都在;半快照后重试、快照成功后脚本失败再重试都能走通;token 文件排除;skip-snapshot |
+| C4 | Bridge 服务 + 路由 | 新 `packages/teamlead/src/bridge/qa-room-service.ts`、`qa-room-routes.ts`;`plugin.ts` 挂载 + runner-tier 旁路 + 启动 reconcile | vitest:schema(未知字段 / 生产 label / 越界 slot 拒并审计)、授权四分支、幂等(同 digest 回原操作 / 异 digest 409)、auto slot、认领 mkdir 竞争、负载门(注入 loadavg,覆盖 `==阈值`)、并发上限、超时杀组、spawn 后落库失败杀组、reconcile 三分支(含第二次 teardown 中重启)、buildSha 不符、JSON 容错解析、残留观测非空 |
+| C5 | CLI | `packages/flywheel-comm/src/commands/room.ts` + `index.ts` switch | 参数校验、`deploy/teardown` 默认 `--wait` 至多 30 min、`wait` 续等;退出码 0 = ready/torn_down,1 = 失败/拒绝,2 = 传输失败,3 = 仍在进行(打印 room_id,供工具超时后续等);重试沿用 evidence-run 的 3 次退避与脱敏;Lead 模式自动带 `X-Flywheel-Lead-Id` |
+| C6 | 指引与文档 + 房内开关 | `.flywheel/agents/nodes/qa.md`、`Blueprint.ts:1989`、`doc/qa/framework/*`、`packages/qa-framework/*`、`scripts/lib/qa-slot-env-contract.json`、`test-deploy.sh` 知识点 | Blueprint 相关快照测试更新;env contract 测试 |
 
-测试纪律:只跑相关测试(`pnpm --filter teamlead exec vitest run <files>`、`pnpm --filter flywheel-comm exec vitest run <files>`、`bash scripts/__tests__/<file>`);**排除** `**/tmux-viewer.macos.test.ts`;任何调 `startBridge` 的 vitest 先 export 隔离 `FLYWHEEL_CODEX_HOMES_ROOT`(记忆 FLY-2877)。
+顺序:C1 → C2 → C3 → C4 → C5 → C6(C4 依赖 C1 的认领合同与 C3 的收据格式)。
+
+测试纪律:只跑相关测试(`pnpm --filter flywheel-teamlead exec vitest run <files>`、`pnpm --filter flywheel-comm exec vitest run <files>`、`bash scripts/__tests__/<file>`);**排除** `**/tmux-viewer.macos.test.ts`;任何调 `startBridge` 的 vitest 先 export 隔离 `FLYWHEEL_CODEX_HOMES_ROOT`(记忆 FLY-2877)。
 
 ## 17. 验收(QA 节点执行)
 
-1. **房中房真沙箱验收**(合并前,在被测 head 上):用本分支起一间 `--generalized --codex-runner` 房 N(`TEST_QA_ROOM_SERVICE=1`,由 Claude QA 体或 Lead 起;这是唯一需要沙箱外人工的一步,因为被测服务还不在生产);在房 N 内派一个**真 Codex runner**(真实 Seatbelt 沙箱),任务:`flywheel-comm room deploy --slot auto --head <head>` 起房 M → 在房 M 做一项真验证(至少:`/health.buildSha == head` + 一次房 M Bridge 的鉴权 API 往返,如向房 M 注入一条 issue 并观察 run 进入可见状态)→ `room teardown` → 断言:房 M 锁目录、`SLOT_DIR`、`launchctl list | grep com.flywheel.qa.lead.slot-M` 全部为空,evidence_dir 快照非空。全程 Lead 零手工(房 N 除外)。同样再派一个 Claude runner 走一遍。
+1. **房中房真沙箱验收**(合并前,在被测 head 上):
+   - 外层房 N:用本分支起 `--generalized --codex-runner` 房,`TEST_QA_ROOM_SERVICE=1`;由 Claude QA 体(不在沙箱里)或 Lead 起,**也由起它的一方负责拆**——这是唯一需要沙箱外手工的一步,因为被测服务还没进生产。
+   - 在房 N 内派一个**真 Codex runner**(真实 Seatbelt 沙箱),任务:`flywheel-comm room deploy --slot auto --head <head> --generalized --stub-runner`(generalized 会铸房 M 的 API token,供鉴权往返)起房 M → 在房 M 做一项真验证:`/health.buildSha == head` + 用 `roomInfo`/`apiTokenPath` 里的 token 对房 M Bridge 做一次鉴权 API 往返(如 `/api/runs/start` 起一个 stub run 并读到它的状态)→ `room teardown` → 读 `room status` 返回的**沙箱外残留观测**为空 + `evidence_dir` 快照 `manifest.json` 的 `missing` 为空。全程 Lead 零手工(房 N 除外)。
+   - 同样再派一个 Claude runner 走一遍。
 2. **越权**:runner A 拆 runner B 的房 → 403 + 审计 `refused/room_not_owned`;请求里带 `com.flywheel.bridge` → 400 + 审计 `production_target_refused`;未知字段 → 400 + 审计。
-3. **拆房坑回归**:房 M 用 `--codex-runner` 跑过真 Codex 后 teardown 一次通过(坑 A);人工在一个 codex home 放陈旧 marker 后 teardown 通过(坑 B)。
-4. **合并后生产冒烟**(ship 后第一次真实使用即为验证):一个真实 Codex QA 体用生产服务起房→验证→拆房,Lead 零手工。
+3. **拆房坑回归**:房 M 用 `--codex-runner` 跑过真 Codex 后 teardown 一次通过(坑 A);在一个 codex home 放陈旧 marker 后 teardown 通过(坑 B)。
+4. **合并后生产冒烟**(ship 后第一次真实使用即验证):一个真实 Codex QA 体用生产服务起房 → 验证 → 拆房,Lead 零手工。
 
 ## 18. 诚实边界 / 已知限制
 
-- L1 服务执行的是**被测 head 的脚本与代码**(在沙箱外、以用户身份)。这与今天 Lead 手工代起的信任根相同;服务只是把「谁能请求、能请求什么、何时执行、留下什么记录」收紧并记账,**不是**针对恶意代码的沙箱。
-- L2 同用户威胁模型:作业目录在 `~/.flywheel` 下,Codex runner 可写;收据防的是意外,不防篡改。
+- L1 服务执行的是**被测 head 的脚本与代码**(沙箱外、以用户身份)。这与今天 Lead 手工代起的信任根相同;服务只把「谁能请求、能请求什么、何时执行、留下什么记录」收紧并记账,**不是**针对恶意代码的沙箱。
+- L2 同用户威胁模型:操作目录在 `~/.flywheel` 下,Codex runner 可写;收据/owner 文件防的是意外,不防篡改。
 - L3 不自动回收孤儿房;`list` 标记 + 同 issue 接管 + Lead 代拆。
 - L4 房内需要 `launchctl` 的动作(restart drill `kickstart -k`、房内 Lead 重启)不在本单;runner 仍做不了。
 - L5 `codex:rescue` / 嵌套 codex 诊断不在本服务(§12)。
-- L6 头必须已 push 到 origin;本地未推提交不能起房。
-- L7 首次某 sha 起房要 `pnpm install` + 全量构建,耗时数分钟且吃 CPU;同 sha 复用源码目录。
-- L8 部署在跑时 Bridge 被 updater 重启:作业不中断(detached),但若包装器本身也被系统杀掉则落 `interrupted`,需 teardown 清场。
+- L6 头必须已 push 到 flywheel origin;非 main 的 sandbox fixture 分支要调用方自己推到 sandbox remote。
+- L7 每房独立源码目录 ⇒ 每次起房都要 `pnpm install` + 全量构建(数分钟、吃 CPU);为了正确性放弃跨房复用(评审 R1 #4),优化留 follow-up。
+- L8 部署中 Bridge 被 updater 重启:操作不中断(detached);若包装器也被系统杀掉则 `interrupted`,需 teardown 清场。
+- L9 手工路径(不带 `FLYWHEEL_QA_ROOM_CLAIM`)的 teardown 不核 token —— 这是给 Lead 保留的逃生口,不是 runner 路径。
 
 ## 19. Follow-ups(不在本单)
 
