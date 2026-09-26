@@ -5,7 +5,7 @@ Issue: FLY-2885 (https://linear.app/geoforge3d/issue/FLY-2885/语音b核心连�
 
 ## 结论
 
-1. **developer 角色被接受。** v3 WebRTC 会话把 `initialItems` 放进建会话的 call body，和 FLY-2886 踩到的 V2 `appendText(role=developer)` 不是同一路径。全部 30 场都没有 `thread/realtime/error`，也没有提前 `closed`，每场都只在我们主动 `stop` 时以 `requested` 结束。条目不超过容量上限时，模型确实用上了条目里的事实：本批 developer 8/8 次答对，外加 research 的 probe-run3。**不需要改成 user 角色。**
+1. **developer 角色被接受。** v3 WebRTC 会话把 `initialItems` 放进建会话的 call body，和 FLY-2886 踩到的 V2 `appendText(role=developer)` 不是同一路径。全部 30 场都没有 `thread/realtime/error`，也没有提前 `closed`：29 场在我们主动 `stop` 后收到 `requested`；另 1 场（`probe-run5-developer-single-start-a`）`stop` 返回后进程先退出，没收到 `closed`，之前也没有任何错误。条目不超过容量上限时，模型确实用上了条目里的事实：本批 developer 8/8 次答对，外加 research 的 probe-run3。**不需要改成 user 角色。**
 2. **新发现：服务端有一个不报错的容量上限，大约是真实 8,192 个 o200k token。** 条目总量超过它时，模型一条都看不到，不论事实放在第 1 条还是第 3 条、放在条首还是条中，也不论 developer 还是 user 角色。这时没有任何错误事件，模型会编一个暗号。
    Codex 客户端只按「字节/4」估算（上限 8,192），中文每 token 约 3.4 字节，所以这道检查拦不住：本批失败的 28–30 KB 在 Codex 的估算里只有 7,088–7,610。
 3. 对 T8 的影响：计划写的「`initialItems` 合计 ≤32,000 字节（Codex 估计 8,000）」会让 Raya 这种记忆量大的 Lead **静默丢掉全部记忆**。要再加一条：**按 o200k 真实计数 ≤7,600**（相对 8,192 留约 7% 余量），放不下的段按计划里已有的路径回填到 prompt 的「Selected Lead memory (continued)」块。
