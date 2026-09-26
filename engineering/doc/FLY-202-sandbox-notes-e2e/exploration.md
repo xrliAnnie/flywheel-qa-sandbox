@@ -1,44 +1,42 @@
-# Exploration: QA Sandbox Fixture — slot-2 real-Runner E2E（sandbox-notes 重建轮）— FLY-202
+# FLY-202 QA 沙箱 fixture 说明刷新 — 探索
+Issue: FLY-202 (https://linear.app/geoforge3d/issue/FLY-202/qa-sandbox-fixture-slot-harness-real-runner-e2e-task-do-not-pick-up)
+日期: 2026-09-26
+基于: 无
 
-**Issue**: FLY-202 — https://linear.app/geoforge3d/issue/FLY-202/qa-sandbox-fixture-slot-harness-real-runner-e2e-task-do-not-pick-up
-**Date**: 2026-07-19
-**基于**: 本轮 dispatch 任务描述 + 历史轮次（sandbox PR #29/#30/#57、exec 48a781ff 等）设计文档
+## 1. 任务目的
 
----
+FLY-202 不是产品功能，而是 test-slot harness 的常驻 QA fixture（测试夹具，即为了稳定触发真实测试路径而保留的任务）。`scripts/inject-linear-issue.sh` 会把这个真实 Linear issue 注入 slot-local Bridge，再由 `/api/runs/start` 启动真实 Runner。任务刻意保持为低风险、多步骤文档工作，让 QA 能在 Runner 尚未完成时观察阶段、TURN、gate、commit、push 与 PR 行为。
 
-## 1. 这个 issue 是什么
+本 design 节点只定义后续 implement 节点如何刷新 `doc/qa/sandbox-notes.md` 并开 PR；它不修改目标文件、不创建 PR、不请求 ship，也不接触生产资源。
 
-FLY-202 **不是产品需求，是 QA 基础设施的 fixture（测试夹具）**。
+## 2. 当前状态与约束
 
-test-slot E2E 框架（FLY-96 + FLY-115）不支持 synthetic 模式——每个 slot 必须 spawn 一个
-**real Runner** 走完整 pipeline。spawn 需要 `scripts/inject-linear-issue.sh`
-（内部 `POST /api/runs/start`）拿到一个真实存在、PreHydrator 可见的 Linear issue。
-FLY-197 发现文档引用的 `FLY-SBX-1` 并不存在，FLY-202 就是填这个洞的常驻 fixture issue。
+- 当前仓库是 `xrliAnnie/flywheel-qa-sandbox` 的 slot-6 clone，分支为 `project-slot-6-FLY-202`。
+- 当前 HEAD 仅比 `origin/main` 多一笔本轮 progress ledger commit，且远端同名分支尚不存在；不存在历史重写或 force-push 需求。
+- `doc/qa/sandbox-notes.md` 已存在。因此 issue 中的 “Create” 在本轮解释为：对同一稳定路径做完整、可审查的原位刷新，而不是另建 run-stamped 文件。
+- 目标文件只能描述当前 sandbox clone。生产仓库、生产 Discord、生产数据库与 merge 均不在范围内。
+- 输出中的目录表和 `ls -R doc/ | head -50` 必须由 implement 节点现场读取，不能把本 design 阶段的快照当成最终内容。
 
-「do not pick up」是对**生产** Lead/Runner 的守卫；本 session 是 slot-2 harness 有意
-spawn 的沙箱 Runner，属于该 issue 的预期消费者。
+## 3. 可选方案
 
-## 2. 本轮的具体任务（issue 原文五步）
+### 方案 A：稳定路径原位刷新（推荐）
 
-1. 创建 `doc/qa/sandbox-notes.md`，2-3 段说明 `flywheel-qa-sandbox` 仓库的用途。
-2. 追加一张表：仓库每个顶层**目录** + 一行描述。
-3. 追加一节：`packages/qa-framework/README.md` 的 ~10 条 bullet 摘要。
-4. 运行 `ls -R doc/ | head -50`，输出放进 fenced block。
-5. 在 feature branch 上 commit，向 sandbox 仓库 main 开 PR。
+重写 `doc/qa/sandbox-notes.md` 的四个内容区块：2–3 段用途说明、全部顶层目录表、约 10 条 README 摘要、真实命令输出。优点是路径与 PR 形状稳定、重复 E2E 不产生垃圾文件、差异直接暴露仓库结构变化；缺点是每轮可能覆盖上一轮措辞，但 Git 历史仍保留审计轨迹。
 
-任务刻意「小、稳、多步」——给 QA harness 一个可观测的 mid-work 窗口。
+### 方案 B：只追加本轮内容
 
-## 3. 关键前提变化（相对上一轮）
+在现有文件尾部追加新表格、摘要和树快照。优点是写入简单；缺点是会保留过时目录、重复章节并让“当前仓库说明”失去单一事实源，因此拒绝。
 
-- `doc/qa/sandbox-notes.md` 在当前分支 tip（`7049f719`）**不存在**：#29 创建、#30 刷新，
-  随后 #58（FLY-1286 大规模 tree 同步）把它移除了。所以本轮 step 1 是**干净新建**，
-  不是刷新——无合并冲突包袱。
-- 本 sandbox clone 现在带 `.flywheel/config.yaml`，`doc_flow.enabled: true`、
-  department=engineering → 过程文档落 `engineering/doc/FLY-202-sandbox-notes-e2e/`
-  （旧轮次的 `doc/qa/exploration/FLY-202/`、`docs/superpowers/plans/` 位置已过时）。
+### 方案 C：增加生成脚本
 
-## 4. 边界
+新增脚本自动生成表格和命令输出。优点是机械一致；缺点是把纯文档 fixture 扩成代码改动，增加测试与维护面，也违反本 issue 的低风险、docs-only 意图，因此拒绝。
 
-- 一切写操作留在沙箱 clone（`/private/tmp/flywheel-test-slot-2/project-slot-2-FLY-202`）。
-- 不碰生产资源；不 merge PR（ship 由 founder gate 决定，不属于任何 runner 节点）。
-- 三段式:本文档属 design 段;implement 段在同一分支继续;QA 段最后验证。
+## 4. 推荐方向
+
+采用方案 A。文件路径 `doc/qa/sandbox-notes.md` 是稳定身份；标题与章节名只是显示标签，可以改善但不应改变下游引用路径。每轮从当前仓库读取事实并替换对应章节，避免复制旧轮次的 slot 号、目录计数或 `doc/` 树。
+
+回滚边界是本 issue 的 docs commit：出现内容问题时可修正该文件并追加 commit；不得回滚或重写已发布分支历史。负向守卫包括：不修改 `packages/` 或脚本、不访问生产资源、不 merge PR、不使用 force-push、不把隐藏的顶层文件误当目录。
+
+## 5. 成功证据
+
+后续节点需要提供以下可检查证据：目标 Markdown 四部分齐全；目录表集合等于现场顶层目录集合；README 摘要数量约为 10 且覆盖主要能力；fenced block 与同一时点命令输出一致；Git diff 只含本 issue 文档；远端 PR 为 open、base=`main`、head=`project-slot-6-FLY-202`。

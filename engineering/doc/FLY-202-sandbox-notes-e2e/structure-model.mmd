@@ -1,0 +1,19 @@
+flowchart TB
+    subgraph SOURCES["当前仓库事实来源"]
+      S1["仓库根目录扫描"]
+      S2["qa-framework README"]
+      S3["ls -R doc/ | head -50"]
+    end
+    subgraph DOC["稳定产物 doc/qa/sandbox-notes.md"]
+      D1["2–3 段用途说明"]
+      D2["全部顶层目录表"]
+      D3["恰好约 10 条摘要"]
+      D4["真实目录树 fenced block"]
+    end
+    S1 --> D2
+    S2 --> D3
+    S3 --> D4
+    D1 --> P["docs-only commit 与 PR"]
+    D2 --> P
+    D3 --> P
+    D4 --> P

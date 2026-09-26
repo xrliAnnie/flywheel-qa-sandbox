@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FLY-202 · QA 沙箱 fixture 设计</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5f5f7;
+      --surface: rgba(255, 255, 255, 0.92);
+      --ink: #1d1d1f;
+      --muted: #6e6e73;
+      --line: #d2d2d7;
+      --blue: #0071e3;
+      --blue-soft: #e8f2ff;
+      --amber: #9a6700;
+      --amber-soft: #fff7d6;
+      --green: #16803a;
+      --shadow: 0 18px 50px rgba(0, 0, 0, 0.08);
+      --radius: 24px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 50% -10%, #ffffff 0, var(--bg) 42%);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+    main { width: min(1120px, calc(100% - 32px)); margin: 0 auto; padding: 72px 0 96px; }
+    .eyebrow { color: var(--blue); font-size: 13px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+    h1 { max-width: 900px; margin: 12px 0 18px; font-size: clamp(40px, 6vw, 72px); line-height: 1.03; letter-spacing: -.045em; }
+    .lede { max-width: 820px; margin: 0; color: var(--muted); font-size: clamp(18px, 2.4vw, 25px); }
+    .meta { display: flex; flex-wrap: wrap; gap: 10px; margin: 26px 0 52px; }
+    .pill { padding: 7px 12px; border: 1px solid var(--line); border-radius: 999px; background: rgba(255,255,255,.7); color: var(--muted); font-size: 13px; }
+    .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 22px; }
+    .card { grid-column: 1 / -1; padding: 32px; border: 1px solid rgba(210,210,215,.75); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); }
+    .half { grid-column: span 6; }
+    h2 { margin: 0 0 10px; font-size: 28px; letter-spacing: -.025em; }
+    h3 { margin: 24px 0 8px; font-size: 18px; }
+    p { margin: 10px 0; }
+    ul { margin: 12px 0 0; padding-left: 22px; }
+    li + li { margin-top: 8px; }
+    code { padding: 2px 6px; border-radius: 7px; background: #f0f0f2; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .92em; }
+    .number { color: var(--blue); font-size: 13px; font-weight: 750; letter-spacing: .08em; }
+    .diagram-pending { margin-top: 22px; padding: 34px 24px; border: 2px dashed #d4a72c; border-radius: 18px; background: var(--amber-soft); text-align: center; }
+    .diagram-pending strong { display: block; color: var(--amber); font-size: 17px; letter-spacing: .025em; }
+    .diagram-pending span { display: block; max-width: 700px; margin: 8px auto 0; color: #6b5b22; }
+    .flow-plain { margin-top: 20px; padding: 18px; border-radius: 16px; background: var(--blue-soft); color: #153b68; font-weight: 650; }
+    .model { width: 100%; border-collapse: collapse; margin-top: 18px; }
+    .model th, .model td { padding: 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    .model th { color: var(--muted); font-size: 12px; letter-spacing: .06em; text-transform: uppercase; }
+    .decision { padding: 16px 0; border-top: 1px solid var(--line); }
+    .decision:first-of-type { border-top: 0; }
+    .recommended { color: var(--green); font-weight: 750; }
+    .comment { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--line); }
+    .comment label { display: block; margin-bottom: 8px; color: var(--muted); font-size: 13px; font-weight: 650; }
+    textarea { width: 100%; min-height: 92px; resize: vertical; padding: 13px 14px; border: 1px solid var(--line); border-radius: 14px; background: #fff; color: var(--ink); font: inherit; outline: none; }
+    textarea:focus { border-color: var(--blue); box-shadow: 0 0 0 4px rgba(0,113,227,.12); }
+    #summary-panel { margin-top: 22px; padding: 32px; border-radius: var(--radius); background: #1d1d1f; color: #f5f5f7; box-shadow: var(--shadow); }
+    #summary-panel h2 { color: #fff; }
+    #summary-empty { color: #a1a1a6; }
+    .summary-item { margin-top: 14px; padding: 14px; border: 1px solid #424245; border-radius: 14px; background: #2c2c2e; }
+    .summary-title { color: #8ec5ff; font-weight: 700; }
+    .summary-text { margin-top: 6px; white-space: pre-wrap; }
+    .chunk { margin-top: 14px; padding: 12px; border-radius: 12px; background: #2c2c2e; color: #d1d1d6; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+    button { margin-top: 18px; padding: 11px 16px; border: 0; border-radius: 999px; background: var(--blue); color: #fff; font: inherit; font-weight: 700; cursor: pointer; }
+    button:hover { filter: brightness(.94); }
+    #copy-status { margin-left: 12px; color: #8ec5ff; font-size: 13px; }
+    footer { padding-top: 28px; color: var(--muted); font-size: 13px; text-align: center; }
+    @media (max-width: 760px) { main { padding-top: 42px; } .half { grid-column: 1 / -1; } .card, #summary-panel { padding: 24px; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">Engineering design · FLY-202</div>
+    <h1>一个真实 Runner 的安全练习场</h1>
+    <p class="lede">一句话总结：重复使用真实 Linear issue，在隔离的 GitHub 沙箱里让 Runner 完成一份小而可查的文档任务，从而测试完整工作流而不触碰生产资源。</p>
+    <div class="meta">
+      <span class="pill">日期 · 2026-09-26</span>
+      <span class="pill">节点 · Design only</span>
+      <span class="pill">目标 · sandbox main 的 open PR</span>
+      <span class="pill">当前 slot · 6</span>
+    </div>
+  </header>
+
+  <div class="grid">
+    <article class="card">
+      <div class="number">01 · WHY</div>
+      <h2>为什么需要这个 fixture</h2>
+      <p><strong>Fixture（测试夹具）</strong>就是为了反复触发同一条测试路径而保留的稳定任务。这里的稳定任务是 FLY-202，它让 QA 不必伪造 issue。</p>
+      <p><strong>PreHydrator（启动 Runner 前读取 Linear issue 的准备步骤）</strong>需要一个真实存在的 issue。于是 test-slot Bridge 可以启动真实 Runner，观察 TURN、阶段、review gate、Git push 和 PR，而不是只验证 mock。</p>
+      <div class="comment">
+        <label for="comment-why">对「为什么」的评论 · 自动保存在本机浏览器</label>
+        <textarea id="comment-why" data-comment-key="why" data-section-title="为什么需要这个 fixture" placeholder="这里的目的是否说清楚了？"></textarea>
+      </div>
+    </article>
+
+    <article class="card">
+      <div class="number">02 · CORE FLOW</div>
+      <h2>核心流程</h2>
+      <p>Mermaid 是用文本描述流程图的格式；本设计把源文件保存在 HTML 旁边，并要求本地渲染，托管页面不加载任何外部脚本。</p>
+      <div class="diagram-pending" role="img" aria-label="核心流程图本地渲染失败占位">
+        <strong>DIAGRAM PENDING LOCAL RENDER</strong>
+        <span>本地 <code>mmdc</code> 两次均因 sandbox 拒绝 Chromium macOS rendezvous port 而失败。Mermaid 源保存在 <code>core-flow.mmd</code>，没有使用远程渲染或 CSS 假图。</span>
+      </div>
+      <div class="flow-plain">Linear FLY-202 → slot Bridge → 真实 Runner → 刷新四块文档内容 → feature branch → sandbox PR → 后续 QA / founder gate</div>
+      <div class="comment">
+        <label for="comment-flow">对「核心流程」的评论 · 自动保存在本机浏览器</label>
+        <textarea id="comment-flow" data-comment-key="flow" data-section-title="核心流程" placeholder="流程中有没有缺失或多余的环节？"></textarea>
+      </div>
+    </article>
+
+    <article class="card">
+      <div class="number">03 · DATA MODEL</div>
+      <h2>数据 / 结构模型</h2>
+      <p>这里没有数据库模型。结构模型是三个当前事实来源，汇入一个稳定 Markdown 路径；稳定路径让每轮 PR 的差异可直接比较。</p>
+      <div class="diagram-pending" role="img" aria-label="数据结构图本地渲染失败占位">
+        <strong>DIAGRAM PENDING LOCAL RENDER</strong>
+        <span>Mermaid 源保存在 <code>structure-model.mmd</code>；每张图使用独立稳定 id（<code>FLY-202-d1</code> / <code>FLY-202-d2</code>）。</span>
+      </div>
+      <table class="model">
+        <thead><tr><th>事实来源</th><th>写入位置</th><th>验证方式</th></tr></thead>
+        <tbody>
+          <tr><td>仓库根目录扫描</td><td>全部顶层目录表</td><td>集合逐项比对</td></tr>
+          <tr><td><code>packages/qa-framework/README.md</code></td><td>恰好约 10 条摘要</td><td>计数 + 主题覆盖</td></tr>
+          <tr><td><code>ls -R doc/ | head -50</code></td><td><code>text</code> fenced block</td><td>stdout 逐字比对</td></tr>
+        </tbody>
+      </table>
+      <div class="comment">
+        <label for="comment-model">对「数据 / 结构模型」的评论 · 自动保存在本机浏览器</label>
+        <textarea id="comment-model" data-comment-key="model" data-section-title="数据 / 结构模型" placeholder="这些来源和验证是否足够可信？"></textarea>
+      </div>
+    </article>
+
+    <article class="card half">
+      <div class="number">04 · TRADEOFFS</div>
+      <h2>关键取舍</h2>
+      <div class="decision"><span class="recommended">选择：原位刷新稳定路径。</span><br>重复运行不产生 run-stamped 垃圾文件，Git 历史仍保留每轮差异。</div>
+      <div class="decision"><strong>拒绝：只追加新章节。</strong><br>它会留下重复、互相矛盾的目录表和 tree snapshot。</div>
+      <div class="decision"><strong>拒绝：新增生成脚本。</strong><br>纯文档 fixture 不值得扩大为生产代码和测试维护面。</div>
+      <div class="comment">
+        <label for="comment-tradeoffs">对「关键取舍」的评论 · 自动保存在本机浏览器</label>
+        <textarea id="comment-tradeoffs" data-comment-key="tradeoffs" data-section-title="关键取舍" placeholder="你更偏向哪种做法？为什么？"></textarea>
+      </div>
+    </article>
+
+    <article class="card half">
+      <div class="number">05 · EVIDENCE</div>
+      <h2>如何证明做完</h2>
+      <ul>
+        <li>用途说明为 2–3 段。</li>
+        <li>目录表集合等于当前 17 个顶层目录；未来变化时以现场集合为准。</li>
+        <li>README 摘要为 10 条，并覆盖架构、五步协议、slot 脚本和模式边界。</li>
+        <li>内嵌 tree 与指定命令 stdout 完全一致。</li>
+        <li>PR 为 open，base 是 <code>main</code>，head 是 <code>project-slot-6-FLY-202</code>。</li>
+      </ul>
+      <div class="comment">
+        <label for="comment-evidence">对「完成证据」的评论 · 自动保存在本机浏览器</label>
+        <textarea id="comment-evidence" data-comment-key="evidence" data-section-title="如何证明做完" placeholder="验收证据有没有盲点？"></textarea>
+      </div>
+    </article>
+
+    <article class="card">
+      <div class="number">06 · HONEST BOUNDARY</div>
+      <h2>诚实边界</h2>
+      <p><strong>这个设计会做：</strong>指导 implement 节点刷新同一份 sandbox notes，做 docs-only commit，push 当前 feature branch，并创建 sandbox PR。</p>
+      <p><strong>这个设计不会做：</strong>不会改生产代码、不会访问生产频道或数据库、不会 merge PR、不会请求 ship authority，也不会把这个 fixture 交给生产 Lead / Runner。</p>
+      <p><strong>当前已知限制：</strong>本机 Mermaid CLI 因 sandbox 权限无法启动 Chromium，所以这份 HTML 清楚标注两张图仍待本地渲染；源文件已保留，发布失败或渲染失败都会如实报告。</p>
+      <div class="comment">
+        <label for="comment-boundary">对「诚实边界」的评论 · 自动保存在本机浏览器</label>
+        <textarea id="comment-boundary" data-comment-key="boundary" data-section-title="诚实边界" placeholder="范围边界是否符合预期？"></textarea>
+      </div>
+    </article>
+  </div>
+
+  <div id="summary-panel">
+    <h2>页面意见汇总</h2>
+    <p id="summary-empty">还没有评论。你在上方输入后，这里会实时按章节汇总。</p>
+    <div id="summary-list"></div>
+    <div id="summary-chunks"></div>
+    <button id="copy-all" type="button">复制全部评论</button><span id="copy-status" aria-live="polite"></span>
+  </div>
+
+  <footer>FLY-202 · comments stay in this browser via localStorage · no external dependencies</footer>
+</main>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var marker = "【页面意见汇总】FLY-202";
+  var limit = 1800;
+  var prefix = "fly202-founder-report:" + location.pathname + ":";
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-comment-key]"));
+  var summaryList = document.getElementById("summary-list");
+  var summaryEmpty = document.getElementById("summary-empty");
+  var summaryChunks = document.getElementById("summary-chunks");
+  var copyStatus = document.getElementById("copy-status");
+
+  function readStored(key) {
+    try { return localStorage.getItem(prefix + key) || ""; }
+    catch (error) { return ""; }
+  }
+
+  function writeStored(key, value) {
+    try { localStorage.setItem(prefix + key, value); }
+    catch (error) { return; }
+  }
+
+  function commentParts() {
+    var parts = [];
+    areas.forEach(function (area) {
+      var value = area.value.trim();
+      if (value) parts.push("【" + area.getAttribute("data-section-title") + "】\n" + value);
+    });
+    return parts;
+  }
+
+  function splitPiece(piece) {
+    var room = limit - marker.length - 2;
+    var pieces = [];
+    for (var offset = 0; offset < piece.length; offset += room) pieces.push(piece.slice(offset, offset + room));
+    return pieces;
+  }
+
+  function buildChunks() {
+    var pieces = [];
+    commentParts().forEach(function (part) {
+      if (marker.length + 2 + part.length > limit) splitPiece(part).forEach(function (piece) { pieces.push(piece); });
+      else pieces.push(part);
+    });
+    if (!pieces.length) return [];
+    var chunks = [];
+    var current = marker;
+    pieces.forEach(function (piece) {
+      var candidate = current + "\n\n" + piece;
+      if (candidate.length > limit && current !== marker) {
+        chunks.push(current);
+        current = marker + "\n\n" + piece;
+      } else current = candidate;
+    });
+    chunks.push(current);
+    return chunks;
+  }
+
+  function setStatus(message) {
+    copyStatus.textContent = message;
+    window.setTimeout(function () { copyStatus.textContent = ""; }, 2400);
+  }
+
+  function fallbackCopy(text) {
+    var helper = document.createElement("textarea");
+    helper.value = text;
+    helper.setAttribute("readonly", "");
+    helper.style.position = "fixed";
+    helper.style.left = "-9999px";
+    document.body.appendChild(helper);
+    helper.select();
+    var copied = false;
+    try { copied = document.execCommand("copy"); }
+    catch (error) { copied = false; }
+    document.body.removeChild(helper);
+    setStatus(copied ? "已复制" : "复制失败，请手动选择汇总文本");
+  }
+
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () { setStatus("已复制"); },
+        function () { fallbackCopy(text); }
+      );
+    } else fallbackCopy(text);
+  }
+
+  function render() {
+    while (summaryList.firstChild) summaryList.removeChild(summaryList.firstChild);
+    while (summaryChunks.firstChild) summaryChunks.removeChild(summaryChunks.firstChild);
+    var populated = 0;
+    areas.forEach(function (area) {
+      var value = area.value.trim();
+      if (!value) return;
+      populated += 1;
+      var item = document.createElement("div");
+      var title = document.createElement("div");
+      var text = document.createElement("div");
+      item.className = "summary-item";
+      title.className = "summary-title";
+      text.className = "summary-text";
+      title.textContent = area.getAttribute("data-section-title");
+      text.textContent = value;
+      item.appendChild(title);
+      item.appendChild(text);
+      summaryList.appendChild(item);
+    });
+    summaryEmpty.style.display = populated ? "none" : "block";
+    var chunks = buildChunks();
+    if (chunks.length > 1) chunks.forEach(function (chunk, index) {
+      var block = document.createElement("div");
+      block.className = "chunk";
+      block.textContent = "第 " + (index + 1) + " / " + chunks.length + " 段\n\n" + chunk;
+      summaryChunks.appendChild(block);
+    });
+  }
+
+  areas.forEach(function (area) {
+    area.value = readStored(area.getAttribute("data-comment-key"));
+    area.addEventListener("input", function () {
+      writeStored(area.getAttribute("data-comment-key"), area.value);
+      render();
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var chunks = buildChunks();
+    if (!chunks.length) { setStatus("没有可复制的评论"); return; }
+    copyText(chunks.join("\n\n"));
+  });
+
+  render();
+}());
+</script>
+</body>
+</html>
