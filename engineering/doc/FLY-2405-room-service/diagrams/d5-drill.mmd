@@ -1,0 +1,20 @@
+sequenceDiagram
+    autonumber
+    participant R as Codex runner(沙箱内)
+    participant B as Bridge(沙箱外)
+    participant J as 受信包装器 drill
+    participant D as 529 e2e driver
+    participant H as 宿主 HOME / 房内进程
+    R->>B: room drill --room M --issue FLY-N [--real]
+    B->>B: 校验:房 ready + generalized、调用者是房主/同单接手/Lead、同房无其他 drill
+    B-->>R: 202 已受理(operation_id)
+    B->>J: spawn(最小环境,房自己的源码目录)
+    J->>J: 探针:能在 HOME 根建目录吗?不能 = 身处沙箱 → 拒跑
+    J->>D: node scripts/qa-529-generalized-e2e.mjs slot --issue FLY-N [--real]
+    D->>H: pretrust 写 ~/.claude.json(沙箱外才写得了)
+    D->>H: 探测房内进程存活(沙箱外才看得真)
+    D-->>J: 退出码 0 / 20 / 21 / 其他
+    J->>J: 先把本次证据拷到房外操作目录,再写收据
+    B->>B: 读收据 → driver_exit_code、outcome、evidence_copy_dir
+    R->>B: room status / wait
+    B-->>R: 结果 + 证据副本路径(runner 拿去记 evidence-run)
