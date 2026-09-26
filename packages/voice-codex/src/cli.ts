@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { acquireProcessLifetimeFileLock } from "flywheel-teamlead/process-lock";
+import { VOICE_BACKGROUND_DEGRADED_REASON_TEXT } from "flywheel-teamlead/voice-capability";
 import { createDiscordDeps } from "flywheel-voice-bridge";
 import {
 	BackendRegistry,
@@ -18,12 +19,14 @@ import {
 	BridgeVoiceClient,
 	type VoiceSessionProjection,
 } from "./bridge-client.js";
+import { AdmissionResidualRegistry } from "./codex/admission-residuals.js";
 import {
 	CodexRoomFrontend,
 	registerCodexVoiceBackend,
 } from "./codex/CodexRoomFrontend.js";
 import { CodexVoiceBackend } from "./codex/CodexVoiceBackend.js";
 import {
+	CODEX_VOICE_BACKGROUND_OPEN_TIMEOUT_MS,
 	CodexVoiceContainer,
 	type CodexVoiceContextSnapshot,
 } from "./codex/CodexVoiceContainer.js";
@@ -355,6 +358,33 @@ export async function main(): Promise<void> {
 		},
 	});
 
+	// FLY-2886 plan v12 §14.2: failed background admissions leave identity-keyed
+	// residual files; each is retried here (restart and ~60s) until settled.
+	const residualEvidence = new EvidenceLog(
+		join(config.voiceRoot, "codex-containers", "residual-evidence.jsonl"),
+	);
+	const residuals = new AdmissionResidualRegistry({
+		root: join(config.voiceRoot, "codex-containers", "residuals"),
+		evidence: (record) =>
+			residualEvidence.append({ ts: new Date().toISOString(), ...record }),
+	});
+	let residualSweep: ReturnType<typeof setInterval> | undefined;
+	if (config.backendId === "codex-realtime") {
+		const sweep = () =>
+			void residuals
+				.sweep()
+				.catch((error) =>
+					console.error(
+						`[voice] admission residual sweep failed reasonClass=unknown_failure operation=session_runtime ${
+							error instanceof Error ? error.name : "unknown"
+						}`,
+					),
+				);
+		sweep();
+		residualSweep = setInterval(sweep, 60_000);
+		residualSweep.unref();
+	}
+
 	const createSession = async (context: VoiceSessionContext) => {
 		// Plan §7: the 120s ceiling covers preflight *and* both start branches.
 		// Identity verification below is preflight, so the clock starts here —
@@ -432,6 +462,7 @@ export async function main(): Promise<void> {
 				scratchRoot: join(config.voiceRoot, "codex-containers"),
 				openAiApiKey: config.realtimeApiKey,
 				processEnv: process.env,
+				residuals,
 				...(voiceBackground.enabled
 					? {
 							capability: {
@@ -515,6 +546,37 @@ export async function main(): Promise<void> {
 						allowSpokenParaphrase: voiceBackground.enabled,
 						backgroundEnabled: voiceBackground.enabled,
 						founderUserId: context.projection.founderUserId,
+						...(voiceBackground.enabled
+							? {
+									// Plan v12 §14.2: min(open entry + 90s, start deadline − 10s).
+									openDeadlineAt: () =>
+										Math.min(
+											Date.now() + CODEX_VOICE_BACKGROUND_OPEN_TIMEOUT_MS,
+											startDeadlineAt - 10_000,
+										),
+									markBackgroundDegraded: async (reason) => {
+										context.lease.assert();
+										await bridge.markBackgroundDegraded(
+											context.sessionId,
+											context.leaseToken,
+											context.lease,
+											reason,
+										);
+									},
+									onBackgroundDegraded: (reason) => {
+										const text = `这场语音后台没接上（${VOICE_BACKGROUND_DEGRADED_REASON_TEXT[reason]}），我先只陪你聊，要查的事转给 ${context.projection.displayName}。`;
+										void mirror
+											.post(context.projection.threadId, text, discordNonce())
+											.catch(() =>
+												evidence.appendBuffered({
+													ts: new Date().toISOString(),
+													voiceSessionId: context.sessionId,
+													kind: "codex_voice_degraded_notice_failed",
+												}),
+											);
+									},
+								}
+							: {}),
 					}),
 			);
 			codexBackend = (await registry.create(
@@ -545,8 +607,12 @@ export async function main(): Promise<void> {
 			startDeadlineAt: () => startDeadlineAt,
 			createFrontend: (handlers) => {
 				if (codexBackend) {
+					const backend = codexBackend;
 					return new CodexRoomFrontend({
-						allowSpokenParaphrase: voiceBackground.enabled,
+						// The admitted state, not the configured attempt (plan v12 §14.2).
+						allowSpokenParaphrase: () =>
+							voiceBackground.enabled &&
+							backend.effectiveBackground() === "enabled",
 						backend: codexBackend,
 						conversationOptions: {
 							brain: CODEX_VOICE_BRAIN,
@@ -645,6 +711,7 @@ export async function main(): Promise<void> {
 									discordNonce(),
 								);
 							},
+							active: () => codexBackend?.effectiveBackground() === "enabled",
 						},
 					}
 				: {}),
@@ -789,6 +856,7 @@ export async function main(): Promise<void> {
 	} finally {
 		process.off("SIGINT", shutdown);
 		process.off("SIGTERM", shutdown);
+		if (residualSweep) clearInterval(residualSweep);
 		health.stop();
 		await health.whenSettled();
 		await lock.handle.close();

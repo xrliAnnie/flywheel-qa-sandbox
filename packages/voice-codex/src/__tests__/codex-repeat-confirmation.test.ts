@@ -177,3 +177,65 @@ it("falls back to the start-of-turn diff when no per-turn ledger is available", 
 	);
 	await h.session.close();
 });
+
+it("a background session that degraded at open behaves as background-off (FLY-2886 §14.2)", async () => {
+	const handoffToLead = vi.fn(async () => ({
+		status: "accepted" as const,
+		handoffId: "handoff-1",
+		receipt: "receipt-1",
+	}));
+	let received!: OpenInput;
+	const markBackgroundDegraded = vi.fn(async () => {});
+	const onBackgroundDegraded = vi.fn();
+	const backend = new CodexVoiceBackend({
+		sessionId: "session-degraded",
+		voice: "marin",
+		backgroundEnabled: true,
+		allowSpokenParaphrase: true,
+		founderUserId: "founder",
+		loadContext: vi.fn(),
+		persistUtterance: async () => {},
+		handoffToLead: handoffToLead as never,
+		markBackgroundDegraded,
+		onBackgroundDegraded,
+		openDeadlineAt: () => 1234,
+		container: {
+			open: async (input) => {
+				received = input;
+				return {
+					generation: 1,
+					background: {
+						state: "degraded" as const,
+						reason: "model_isolation_unproven" as const,
+					},
+					rewriteSpeech: async () => ({ spoken: "x", threadText: null }),
+					transport: {
+						appendAudio: () => "sent" as const,
+						appendSpeech: async () => {},
+						appendText: async () => {},
+						cancel: async () => {},
+					},
+					close: async () => {},
+				};
+			},
+		},
+	});
+	expect(backend.effectiveBackground()).toBe("disabled");
+	const session = await backend.createConversation({ brain });
+	expect(received.openDeadlineAt).toBe(1234);
+	await received.background!.markDegraded("model_isolation_unproven");
+	expect(markBackgroundDegraded).toHaveBeenCalledWith(
+		"model_isolation_unproven",
+	);
+	received.background!.onDegraded?.("model_isolation_unproven");
+	expect(onBackgroundDegraded).toHaveBeenCalledWith("model_isolation_unproven");
+	expect(backend.effectiveBackground()).toBe("degraded");
+	await expect(
+		(
+			session as unknown as {
+				rewriteSpeech(input: unknown): Promise<unknown>;
+			}
+		).rewriteSpeech({ sourceText: "FLY-2886", rosterNames: [] }),
+	).rejects.toThrow("script_writer_unavailable");
+	await session.close();
+});

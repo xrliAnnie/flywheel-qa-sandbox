@@ -18,7 +18,9 @@ import {
 } from "flywheel-teamlead/codex-process";
 import {
 	bindAdmittedVoiceCapabilities,
+	observeChildSpawns,
 	startVoiceCapabilityParent,
+	type VoiceBackgroundDegradedReason,
 	type VoiceCapabilityParentInput,
 } from "flywheel-teamlead/voice-capability";
 import {
@@ -28,6 +30,10 @@ import {
 	VOICE_CODEX_HOME_CONFIG,
 	VOICE_SCRIBE_HOME_CONFIG,
 } from "../codex-home.js";
+import {
+	AdmissionResidualRegistry,
+	type AdmissionResiduals,
+} from "./admission-residuals.js";
 import type { BackgroundTurnTerminal } from "./BrainCoordinator.js";
 import {
 	type CodexRealtimeAudioDelta,
@@ -49,6 +55,14 @@ export const CODEX_VOICE_BINARY_SHA256 =
 export const CODEX_VOICE_REALTIME_MODEL = "gpt-realtime-2.1";
 export const CODEX_VOICE_REALTIME_VERSION = "v2";
 export const CODEX_VOICE_OPEN_TIMEOUT_MS = 60_000;
+/** Background sessions: open within min(entry + this, session start deadline − 10s). */
+export const CODEX_VOICE_BACKGROUND_OPEN_TIMEOUT_MS = 90_000;
+/** Reserved from the open deadline for admission teardown (plan v12 §14.2). */
+export const CODEX_VOICE_TEARDOWN_RESERVE_MS = 25_000;
+/** Reserved for the degraded POST, context reload and foreground open. */
+export const CODEX_VOICE_FOREGROUND_RESERVE_MS = 20_000;
+/** Below this much admission time the background is skipped outright. */
+export const CODEX_VOICE_MIN_ADMISSION_MS = 10_000;
 export const CODEX_VOICE_MAX_JSON_LINE_BYTES = 1024 * 1024;
 const CONTEXT_MAX_AGE_MS = 60_000;
 const CONTEXT_MAX_BYTES = 128 * 1024;
@@ -133,6 +147,89 @@ interface OpenResources {
 	scribe?: CodexVoiceProcess;
 	parent?: VoiceCapabilityParent;
 	cleanup?: Promise<void>;
+	/** Background admission; owned separately until it succeeds (plan v12 §14.2). */
+	admission?: AdmissionScope;
+}
+
+/** What the conversation actually runs with; the configured value is only an attempt. */
+export type VoiceBackgroundState =
+	| { state: "enabled" }
+	| { state: "degraded"; reason: VoiceBackgroundDegradedReason };
+
+type AdmissionStage =
+	| "budget"
+	| "parent"
+	| "capability_process"
+	| "capability_thread"
+	| "scribe"
+	| "script_writer";
+
+class AdmissionCancelled extends Error {
+	constructor() {
+		super("voice_admission_cancelled");
+	}
+}
+class AdmissionTimeout extends Error {
+	constructor() {
+		super("voice_admission_timeout");
+	}
+}
+
+/**
+ * Independent ownership of the background admission (R1#B5): its cancellation
+ * is separate from the whole open's; once cancelled, a late continuation may
+ * only close what it holds, never assemble or touch the foreground.
+ */
+class AdmissionScope {
+	cancelled = false;
+	/** Admission succeeded and handed its resources to the open. */
+	transferred = false;
+	/** The degrade path owns its teardown; the open's cleanup must not repeat it. */
+	released = false;
+	stage: AdmissionStage = "parent";
+	violation?: string;
+	parent?: VoiceCapabilityParent;
+	process?: CodexVoiceProcess;
+	scribe?: CodexVoiceProcess;
+	constructor(
+		readonly root: string,
+		readonly residuals: AdmissionResiduals,
+		private readonly open: OpenResources,
+	) {}
+	assertActive(): void {
+		if (this.cancelled || this.open.cancelled) throw new AdmissionCancelled();
+		if (this.violation) throw new Error(this.violation);
+	}
+}
+
+/** Map an admission failure to its public reason; the raw error stays local. */
+function degradedReason(
+	error: unknown,
+	stage: AdmissionStage,
+): VoiceBackgroundDegradedReason {
+	if (error instanceof AdmissionTimeout) return "admission_timeout";
+	const text = [
+		rpcErrorMessage(error),
+		error instanceof CodexVoiceContainerError ? error.reason : "",
+		error instanceof Error && error.cause instanceof Error
+			? error.cause.message
+			: "",
+	].join(" ");
+	if (
+		/native_skill|capability_skills_unverified/u.test(text) ||
+		(stage === "parent" && /baseline_drift/u.test(text))
+	)
+		return "native_skill_baseline_unverified";
+	if (text.includes("model_isolation_unproven"))
+		return "model_isolation_unproven";
+	if (text.includes("node_runtime_closure_unresolved"))
+		return "node_runtime_closure_unresolved";
+	if (text.includes("voice_capability_bridge_unavailable"))
+		return "bridge_unavailable";
+	if (/voice_capability_auth_invalid|codex_auth_rejected/u.test(text))
+		return "subscription_auth_unverified";
+	if (stage !== "parent") return "capability_process_failed";
+	return "parent_start_failed";
 }
 
 export class CodexVoiceContainerError extends Error {
@@ -567,6 +664,22 @@ function withTimeout<T>(
 	});
 }
 
+function withTimeoutError<T>(
+	promise: Promise<T>,
+	timeoutMs: number,
+	error: () => Error,
+): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const expiry = new Promise<never>((_resolve, reject) => {
+		timer = setTimeout(() => reject(error()), timeoutMs);
+		timer.unref?.();
+	});
+	promise.catch(() => undefined);
+	return Promise.race([promise, expiry]).finally(() => {
+		if (timer) clearTimeout(timer);
+	});
+}
+
 async function closeOwnedProcesses(
 	process: CodexVoiceProcess | undefined,
 	scribe: CodexVoiceProcess | undefined,
@@ -610,6 +723,8 @@ export class CodexVoiceConversation {
 			router: ThreadEventRouter;
 			unregister(): void;
 		},
+		/** Background sessions only: enabled, or degraded to foreground voice. */
+		readonly background?: VoiceBackgroundState,
 	) {
 		this.currentTransport = transport;
 		this.currentGeneration = transport.generation;
@@ -775,7 +890,28 @@ export interface CodexVoiceOpenInput {
 		onTurnStarted(turnId: string): void;
 		onTurnTerminal(turn: BackgroundTurnTerminal): void;
 		onItemCompleted?(item: ThreadCompletedItem): void;
+		/**
+		 * Tell Bridge before loading the foreground context (plan v12 §14.2).
+		 * If this rejects the session is unavailable: Bridge would still hand out
+		 * background-shaped context.
+		 */
+		markDegraded(reason: VoiceBackgroundDegradedReason): Promise<void>;
+		/** Runs after the foreground conversation is open (e.g. the thread notice). */
+		onDegraded?(reason: VoiceBackgroundDegradedReason): void;
 	};
+	/** Absolute deadline by the container clock; defaults to now + 60s. */
+	openDeadlineAt?: number;
+}
+
+interface AdmittedBackground {
+	parent: VoiceCapabilityParent;
+	process: CodexVoiceProcess;
+	threadEventRouter: ThreadEventRouter;
+	opened: { id: string; result: unknown };
+	scribe: CodexVoiceProcess;
+	writer: ScriptWriter;
+	/** The opening brief bound to the admitted manifest. */
+	snapshot: CodexVoiceContextSnapshot;
 }
 
 export class CodexVoiceContainer {
@@ -785,6 +921,7 @@ export class CodexVoiceContainer {
 		options: CodexVoiceProcessFactoryOptions,
 	) => CodexVoiceProcess;
 	private readonly evidence: EvidenceSink;
+	private readonly residuals: AdmissionResidualRegistry;
 
 	constructor(
 		private readonly options: {
@@ -803,23 +940,32 @@ export class CodexVoiceContainer {
 				options: CodexVoiceProcessFactoryOptions,
 			) => CodexVoiceProcess;
 			onEvidence?: EvidenceSink;
+			/** Daemon-level residual files; defaults under scratchRoot/residuals. */
+			residuals?: AdmissionResidualRegistry;
 		},
 	) {
 		this.now = options.now ?? Date.now;
 		this.inspectBinary = options.inspectBinary ?? inspectCodexVoiceBinary;
 		this.createProcess = options.createProcess ?? defaultCreateProcess;
 		this.evidence = options.onEvidence ?? (() => undefined);
+		this.residuals =
+			options.residuals ??
+			new AdmissionResidualRegistry({
+				root: join(options.scratchRoot, "residuals"),
+			});
 	}
 
 	open(input: CodexVoiceOpenInput): Promise<CodexVoiceConversation> {
 		const resources: OpenResources = { cancelled: false };
-		const attempt = this.openWithinDeadline(input, resources);
+		const openDeadlineAt =
+			input.openDeadlineAt ?? this.now() + CODEX_VOICE_OPEN_TIMEOUT_MS;
+		const attempt = this.openWithinDeadline(input, resources, openDeadlineAt);
 		// A timed-out real child is stopped below. Its in-flight RPC then rejects;
 		// keep that late settlement observed while the caller sees the deadline.
 		attempt.catch(() => undefined);
 		return withTimeout(
 			attempt,
-			CODEX_VOICE_OPEN_TIMEOUT_MS,
+			Math.max(0, openDeadlineAt - this.now()),
 			"codex_open_failed",
 		).catch(async (error) => {
 			resources.cancelled = true;
@@ -833,7 +979,9 @@ export class CodexVoiceContainer {
 	private async openWithinDeadline(
 		input: CodexVoiceOpenInput,
 		resources: OpenResources,
+		openDeadlineAt: number,
 	): Promise<CodexVoiceConversation> {
+		const openedAt = this.now();
 		const assertActive = () => {
 			if (resources.cancelled) {
 				throw new CodexVoiceContainerError("codex_open_failed");
@@ -852,25 +1000,31 @@ export class CodexVoiceContainer {
 			throw new CodexVoiceContainerError("codex_binary_mismatch");
 		}
 
-		let snapshot = await input.loadContext(undefined);
-		assertActive();
-		if (!contextIsFresh(snapshot, this.now()))
-			snapshot = await input.loadContext(undefined);
-		assertActive();
-		if (!contextIsFresh(snapshot, this.now())) {
-			throw new CodexVoiceContainerError("context_stale");
-		}
-		assertContext(
-			snapshot,
-			input.sessionId,
-			input.background?.enabled === true,
-		);
-		const initialGeneration = snapshot.contextGeneration ?? 1;
+		const loadFresh = async (backgroundShape: boolean) => {
+			let loaded = await input.loadContext(undefined);
+			assertActive();
+			if (!contextIsFresh(loaded, this.now()))
+				loaded = await input.loadContext(undefined);
+			assertActive();
+			if (!contextIsFresh(loaded, this.now())) {
+				throw new CodexVoiceContainerError("context_stale");
+			}
+			assertContext(loaded, input.sessionId, backgroundShape);
+			return loaded;
+		};
+		let snapshot = await loadFresh(input.background?.enabled === true);
+		let initialGeneration = snapshot.contextGeneration ?? 1;
 		if (!Number.isSafeInteger(initialGeneration) || initialGeneration < 1)
 			throw new CodexVoiceContainerError("context_invalid");
 
 		let conversation: CodexVoiceConversation | undefined;
 		let violation: string | undefined;
+		const timing: Record<string, number> = {
+			preAdmissionMs: 0,
+			admissionMs: 0,
+			teardownMs: 0,
+			foregroundMs: 0,
+		};
 		try {
 			await mkdir(this.options.scratchRoot, { recursive: true, mode: 0o700 });
 			assertActive();
@@ -890,202 +1044,193 @@ export class CodexVoiceContainer {
 			assertActive();
 			const root = resources.root;
 			await chmod(root, 0o700);
-			const home = join(root, "home");
-			const workdir = join(root, "work");
+			// The foreground never reuses a directory the admission wrote.
+			const home = join(root, "fg", "home");
+			const workdir = join(root, "fg", "work");
+			await mkdir(join(root, "fg"), { mode: 0o700 });
 			await mkdir(home, { mode: 0o700 });
 			await mkdir(workdir, { mode: 0o700 });
-			let parent: VoiceCapabilityParent | undefined;
+			timing.preAdmissionMs = this.now() - openedAt;
+
+			let admitted: AdmittedBackground | undefined;
+			let degraded:
+				| { reason: VoiceBackgroundDegradedReason; stage: AdmissionStage }
+				| undefined;
 			if (input.background?.enabled) {
 				if (!this.options.capability)
 					throw new Error("voice_capability_identity_missing");
-				const activationRoot = join(root, "activation");
-				await mkdir(activationRoot, { mode: 0o700 });
-				parent = await (
-					this.options.createCapabilityParent ?? startVoiceCapabilityParent
-				)({
-					...this.options.capability,
-					sessionId: input.sessionId,
-					codexHome: home,
-					codexBin: this.options.binaryPath,
-					activationRoot,
-					env: this.options.processEnv ?? processEnv(),
-				});
-				resources.parent = parent;
-				if (resources.cancelled) {
-					await parent.close();
-					assertActive();
+				const admissionDeadlineAt =
+					openDeadlineAt -
+					CODEX_VOICE_TEARDOWN_RESERVE_MS -
+					CODEX_VOICE_FOREGROUND_RESERVE_MS;
+				const admissionStartedAt = this.now();
+				if (
+					admissionDeadlineAt - admissionStartedAt <
+					CODEX_VOICE_MIN_ADMISSION_MS
+				) {
+					degraded = { reason: "admission_budget_exhausted", stage: "budget" };
+					this.evidence({
+						kind: "codex_voice_background_degraded",
+						sessionId: input.sessionId,
+						reason: degraded.reason,
+						stage: degraded.stage,
+						errorCode: "admission_budget_exhausted",
+					});
+					await this.markDegraded(input, degraded.reason);
+				} else {
+					const scope = new AdmissionScope(
+						join(root, "admission"),
+						this.residuals.forSession(input.sessionId),
+						resources,
+					);
+					resources.admission = scope;
+					try {
+						admitted = await withTimeoutError(
+							this.admit(input, scope, snapshot),
+							Math.max(0, admissionDeadlineAt - this.now()),
+							() => new AdmissionTimeout(),
+						);
+					} catch (error) {
+						if (resources.cancelled) throw error;
+						degraded = {
+							reason: degradedReason(error, scope.stage),
+							stage: scope.stage,
+						};
+						timing.admissionMs = this.now() - admissionStartedAt;
+						const teardownStartedAt = this.now();
+						await this.degradeAdmission(
+							input,
+							scope,
+							degraded,
+							error,
+							openDeadlineAt - CODEX_VOICE_FOREGROUND_RESERVE_MS,
+						);
+						timing.teardownMs = this.now() - teardownStartedAt;
+					}
+					if (admitted) {
+						timing.admissionMs = this.now() - admissionStartedAt;
+						scope.transferred = true;
+						resources.parent = admitted.parent;
+						resources.process = admitted.process;
+						resources.scribe = admitted.scribe;
+					}
 				}
-				assertVoiceCapabilityHome(home, parent.authSourcePath);
+				assertActive();
+			}
+			const foregroundStartedAt = this.now();
+			if (degraded) {
+				// Bridge now serves the foreground shape; never reuse the admission's.
+				snapshot = await loadFresh(false);
+				initialGeneration = snapshot.contextGeneration ?? 1;
+				if (!Number.isSafeInteger(initialGeneration) || initialGeneration < 1)
+					throw new CodexVoiceContainerError("context_invalid");
+			}
+			let process: CodexVoiceProcess;
+			let threadEventRouter: ThreadEventRouter;
+			let opened: { id: string; result: unknown };
+			const parent = admitted?.parent;
+			const onProcessExit = () => {
+				if (!conversation) violation ??= "process_exited_during_open";
+				else void conversation.close("process_exit").catch(() => undefined);
+			};
+			if (admitted) {
+				process = admitted.process;
+				threadEventRouter = admitted.threadEventRouter;
+				opened = admitted.opened;
+				snapshot = admitted.snapshot;
+				process.on("exit", onProcessExit);
 			} else {
 				await writeFile(join(home, "config.toml"), VOICE_CODEX_HOME_CONFIG, {
 					mode: 0o600,
 					flag: "wx",
 				});
 				assertVoiceCodexHome(home);
-			}
-			assertActive();
-
-			const processOptions: CodexVoiceProcessFactoryOptions = {
-				root,
-				codexBin: this.options.binaryPath,
-				codexHome: home,
-				cwd: parent?.cwd ?? workdir,
-				mcpArgv: parent ? [...parent.permissionArgv, ...parent.mcp.argv] : [],
-				...(parent
-					? {
-							profile: "voice-capability" as const,
-							capabilityModelEnv: parent.capabilityModelEnv,
-						}
-					: {}),
-				baseEnv: positiveChildEnv(
-					this.options.processEnv ?? processEnv(),
-					home,
-					workdir,
-				),
-				voiceProfile: { openAiApiKey: this.options.openAiApiKey },
-				knownServerMethods: [],
-				maxJsonLineBytes: CODEX_VOICE_MAX_JSON_LINE_BYTES,
-			};
-			const process = this.createProcess(processOptions);
-			const threadEventRouter = new ThreadEventRouter(process);
-			resources.process = process;
-			process.on("exit", () => {
-				if (!conversation) violation ??= "process_exited_during_open";
-				else void conversation.close("process_exit").catch(() => undefined);
-			});
-			await process.start();
-			assertActive();
-			if (violation) throw new Error(violation);
-			if (parent) {
-				await assertCapabilityProcess(process, parent);
-				snapshot = bindAdmittedVoiceCapabilities(snapshot, parent.manifest);
-				assertContext(snapshot, input.sessionId, true);
-			}
-			const opened = await process.startThreadWithResult(
-				parent
-					? {
-							cwd: parent.cwd,
-							approvalPolicy: "never",
-							permissions: "flywheel-lead-v2",
-							ephemeral: true,
-							environments: [],
-							baseInstructions: parent.baseInstructions,
-							developerInstructions: snapshot.baseInstructions,
-							config: { "features.realtime_conversation": true },
-						}
-					: {
-							cwd: workdir,
-							approvalPolicy: "never",
-							sandbox: "read-only",
-							ephemeral: true,
-							environments: [],
-							baseInstructions: snapshot.baseInstructions,
-							config: {
-								"features.shell_tool": false,
-								"features.memories": false,
-								"features.unified_exec": false,
-								"features.view_image": false,
-								"features.image_generation": false,
-								"features.code_mode_host": false,
-								"features.standalone_web_search": false,
-								web_search: "disabled",
-							},
-						},
-			);
-			assertActive();
-			if (violation) throw new Error(violation);
-			if (parent)
-				assertCapabilityThreadReceipt(opened.result, opened.id, parent.cwd);
-			else assertThreadReceipt(opened.result, opened.id, workdir);
-			let scribe: CodexVoiceProcess | undefined;
-			let writer: ScriptWriter | undefined;
-			if (parent) {
-				const scribeHome = join(root, "scribe-home");
-				const scribeWork = join(root, "scribe-work");
-				await mkdir(scribeHome, { mode: 0o700 });
-				await mkdir(scribeWork, { mode: 0o700 });
-				await writeFile(
-					join(scribeHome, "config.toml"),
-					VOICE_SCRIBE_HOME_CONFIG,
-					{ mode: 0o600, flag: "wx" },
-				);
-				await symlink(parent.authSourcePath, join(scribeHome, "auth.json"));
-				assertVoiceScribeHome(scribeHome, parent.authSourcePath);
-				scribe = this.createProcess({
+				assertActive();
+				process = this.createProcess({
 					root,
 					codexBin: this.options.binaryPath,
-					codexHome: scribeHome,
-					cwd: scribeWork,
+					codexHome: home,
+					cwd: workdir,
 					mcpArgv: [],
 					baseEnv: positiveChildEnv(
 						this.options.processEnv ?? processEnv(),
-						scribeHome,
-						scribeWork,
+						home,
+						workdir,
 					),
+					voiceProfile: { openAiApiKey: this.options.openAiApiKey },
 					knownServerMethods: [],
 					maxJsonLineBytes: CODEX_VOICE_MAX_JSON_LINE_BYTES,
 				});
-				resources.scribe = scribe;
-				await scribe.start();
+				threadEventRouter = new ThreadEventRouter(process);
+				resources.process = process;
+				process.on("exit", onProcessExit);
+				await process.start();
 				assertActive();
-				await assertSubscription(scribe);
-				await assertScribeTools(scribe, scribeWork);
-				const scribeThread = await scribe.startThreadWithResult({
-					cwd: scribeWork,
+				if (violation) throw new Error(violation);
+				opened = await process.startThreadWithResult({
+					cwd: workdir,
 					approvalPolicy: "never",
 					sandbox: "read-only",
 					ephemeral: true,
 					environments: [],
+					baseInstructions: snapshot.baseInstructions,
+					config: {
+						"features.shell_tool": false,
+						"features.memories": false,
+						"features.unified_exec": false,
+						"features.view_image": false,
+						"features.image_generation": false,
+						"features.code_mode_host": false,
+						"features.standalone_web_search": false,
+						web_search: "disabled",
+					},
 				});
-				assertThreadReceipt(scribeThread.result, scribeThread.id, scribeWork);
-				writer = new ScriptWriter({
-					process: scribe,
-					threadId: scribeThread.id,
-				});
-				// This ordinary subscription turn also admits the structured-output protocol.
-				await writer.rewrite({ sourceText: "准备好了。", rosterNames: [] });
 				assertActive();
+				if (violation) throw new Error(violation);
+				assertThreadReceipt(opened.result, opened.id, workdir);
 			}
-			const unregisterBackground = input.background
-				? threadEventRouter.register(opened.id, {
-						onTurnStarted: (turnId) => {
-							try {
-								parent?.beginTurn(opened.id, turnId);
-								input.background!.onTurnStarted(turnId);
-							} catch (error) {
-								violation = "background_context_failed";
-								this.evidence({
-									kind: "codex_background_context_failed",
-									threadId: opened.id,
-									turnId,
-									reason: rpcErrorMessage(error),
-								});
-								void process
-									.request("turn/interrupt", { threadId: opened.id, turnId })
-									.catch(() => undefined);
-								void conversation?.close(violation).catch(() => undefined);
-							}
-						},
-						onTurnTerminal: (turn) => {
-							try {
-								parent?.endTurn(turn.turnId, turn.outcome);
-							} catch (error) {
-								violation = "background_context_failed";
-								this.evidence({
-									kind: "codex_background_context_failed",
-									threadId: opened.id,
-									turnId: turn.turnId,
-									reason: rpcErrorMessage(error),
-								});
-								void conversation?.close(violation).catch(() => undefined);
-							}
-							input.background!.onTurnTerminal(turn);
-						},
-						...(input.background.onItemCompleted
-							? { onItemCompleted: input.background.onItemCompleted }
-							: {}),
-					})
-				: undefined;
+			const background = input.background;
+			const unregisterBackground =
+				admitted && background
+					? threadEventRouter.register(opened.id, {
+							onTurnStarted: (turnId) => {
+								try {
+									parent?.beginTurn(opened.id, turnId);
+									background.onTurnStarted(turnId);
+								} catch (error) {
+									violation = "background_context_failed";
+									this.evidence({
+										kind: "codex_background_context_failed",
+										threadId: opened.id,
+										turnId,
+										reason: rpcErrorMessage(error),
+									});
+									void process
+										.request("turn/interrupt", { threadId: opened.id, turnId })
+										.catch(() => undefined);
+									void conversation?.close(violation).catch(() => undefined);
+								}
+							},
+							onTurnTerminal: (turn) => {
+								try {
+									parent?.endTurn(turn.turnId, turn.outcome);
+								} catch (error) {
+									violation = "background_context_failed";
+									this.evidence({
+										kind: "codex_background_context_failed",
+										threadId: opened.id,
+										turnId: turn.turnId,
+										reason: rpcErrorMessage(error),
+									});
+									void conversation?.close(violation).catch(() => undefined);
+								}
+								background.onTurnTerminal(turn);
+							},
+							...(background.onItemCompleted
+								? { onItemCompleted: background.onItemCompleted }
+								: {}),
+						})
+					: undefined;
 			const realtimeStart = {
 				outputModality: "audio",
 				clientManagedHandoffs: true,
@@ -1101,11 +1246,7 @@ export class CodexVoiceContainer {
 					snapshot = await input.loadContext(generation);
 					if (!contextIsFresh(snapshot, this.now()))
 						throw new CodexVoiceContainerError("context_stale");
-					assertContext(
-						snapshot,
-						input.sessionId,
-						input.background?.enabled === true,
-					);
+					assertContext(snapshot, input.sessionId, !!admitted);
 					if (parent) {
 						await assertCapabilityProcess(process, parent);
 						snapshot = bindAdmittedVoiceCapabilities(snapshot, parent.manifest);
@@ -1123,9 +1264,7 @@ export class CodexVoiceContainer {
 					threadId: opened.id,
 					generation,
 					start: { ...realtimeStart, prompt: snapshot.realtimePrompt },
-					backgroundExecution: input.background?.enabled
-						? "allow"
-						: "interrupt",
+					backgroundExecution: admitted ? "allow" : "interrupt",
 					...input.realtime,
 				});
 			};
@@ -1133,6 +1272,13 @@ export class CodexVoiceContainer {
 			await transport.start();
 			assertActive();
 			if (violation) throw new Error(violation);
+			timing.foregroundMs = this.now() - foregroundStartedAt;
+			const backgroundState: VoiceBackgroundState | undefined = input.background
+				?.enabled
+				? admitted
+					? { state: "enabled" }
+					: { state: "degraded", reason: degraded!.reason }
+				: undefined;
 			conversation = new CodexVoiceConversation(
 				input.sessionId,
 				opened.id,
@@ -1144,13 +1290,20 @@ export class CodexVoiceContainer {
 				transport,
 				createTransport,
 				this.evidence,
-				parent && scribe && writer ? { parent, scribe, writer } : undefined,
+				admitted
+					? {
+							parent: admitted.parent,
+							scribe: admitted.scribe,
+							writer: admitted.writer,
+						}
+					: undefined,
 				unregisterBackground
 					? {
 							router: threadEventRouter,
 							unregister: unregisterBackground,
 						}
 					: undefined,
+				backgroundState,
 			);
 			this.evidence({
 				kind: "codex_voice_container_opened",
@@ -1160,11 +1313,25 @@ export class CodexVoiceContainer {
 				configDigest: parent?.mcp.configHash ?? sha256(VOICE_CODEX_HOME_CONFIG),
 				contextDigest: snapshot.snapshotDigest,
 				generation: initialGeneration,
-				backgroundExecution: parent ? "enabled" : "disabled",
+				backgroundExecution: admitted ? "enabled" : "disabled",
+				...(backgroundState ? { background: backgroundState.state } : {}),
 				...(parent
 					? { accountType: "chatgpt", toolServers: parent.mcp.included }
 					: {}),
 			});
+			if (input.background?.enabled)
+				this.evidence({
+					kind: "codex_voice_open_timing",
+					sessionId: input.sessionId,
+					...timing,
+				});
+			if (backgroundState?.state === "degraded") {
+				try {
+					input.background?.onDegraded?.(backgroundState.reason);
+				} catch {
+					/* A notice failure does not undo an open conversation. */
+				}
+			}
 			return conversation;
 		} catch (error) {
 			resources.cancelled = true;
@@ -1173,11 +1340,271 @@ export class CodexVoiceContainer {
 		}
 	}
 
+	/** Parent → capability process → capability thread → scribe → script writer. */
+	private async admit(
+		input: CodexVoiceOpenInput,
+		scope: AdmissionScope,
+		snapshot: CodexVoiceContextSnapshot,
+	): Promise<AdmittedBackground> {
+		const directory = scope.root;
+		await mkdir(directory, { mode: 0o700 });
+		scope.residuals.registerDirectory(directory);
+		scope.assertActive();
+		const home = join(directory, "home");
+		const activationRoot = join(directory, "activation");
+		const scribeHome = join(directory, "scribe-home");
+		const scribeWork = join(directory, "scribe-work");
+		const work = join(directory, "work");
+		for (const path of [home, activationRoot, scribeHome, scribeWork, work])
+			await mkdir(path, { mode: 0o700 });
+		scope.assertActive();
+		return observeChildSpawns(
+			(pid) => scope.residuals.registerSpawned(pid),
+			async () => {
+				scope.stage = "parent";
+				const parent = await (
+					this.options.createCapabilityParent ?? startVoiceCapabilityParent
+				)({
+					...this.options.capability!,
+					sessionId: input.sessionId,
+					codexHome: home,
+					codexBin: this.options.binaryPath,
+					activationRoot,
+					env: this.options.processEnv ?? processEnv(),
+				});
+				if (scope.cancelled) {
+					// Late: revoke at once, then only close it.
+					try {
+						parent.revoke?.();
+					} catch {
+						/* close() revokes too. */
+					}
+					void parent.close().catch(() => undefined);
+					throw new AdmissionCancelled();
+				}
+				scope.parent = parent;
+				scope.assertActive();
+				if (parent.nodeRuntimeClosure)
+					this.evidence({
+						kind: "codex_voice_node_runtime_closure",
+						sessionId: input.sessionId,
+						files: parent.nodeRuntimeClosure.files,
+						directories: parent.nodeRuntimeClosure.directories,
+					});
+				assertVoiceCapabilityHome(home, parent.authSourcePath);
+
+				scope.stage = "capability_process";
+				const process = this.createProcess({
+					root: directory,
+					codexBin: this.options.binaryPath,
+					codexHome: home,
+					cwd: parent.cwd,
+					mcpArgv: [...parent.permissionArgv, ...parent.mcp.argv],
+					profile: "voice-capability",
+					capabilityModelEnv: parent.capabilityModelEnv,
+					baseEnv: positiveChildEnv(
+						this.options.processEnv ?? processEnv(),
+						home,
+						work,
+					),
+					voiceProfile: { openAiApiKey: this.options.openAiApiKey },
+					knownServerMethods: [],
+					maxJsonLineBytes: CODEX_VOICE_MAX_JSON_LINE_BYTES,
+				});
+				const threadEventRouter = new ThreadEventRouter(process);
+				scope.process = process;
+				process.on("exit", () => {
+					if (!scope.transferred)
+						scope.violation ??= "process_exited_during_open";
+				});
+				await process.start();
+				scope.assertActive();
+				await assertCapabilityProcess(process, parent);
+				scope.assertActive();
+				const bound = bindAdmittedVoiceCapabilities(snapshot, parent.manifest);
+				assertContext(bound, input.sessionId, true);
+
+				scope.stage = "capability_thread";
+				const opened = await process.startThreadWithResult({
+					cwd: parent.cwd,
+					approvalPolicy: "never",
+					permissions: "flywheel-lead-v2",
+					ephemeral: true,
+					environments: [],
+					baseInstructions: parent.baseInstructions,
+					developerInstructions: bound.baseInstructions,
+					config: { "features.realtime_conversation": true },
+				});
+				scope.assertActive();
+				assertCapabilityThreadReceipt(opened.result, opened.id, parent.cwd);
+
+				scope.stage = "scribe";
+				await writeFile(
+					join(scribeHome, "config.toml"),
+					VOICE_SCRIBE_HOME_CONFIG,
+					{ mode: 0o600, flag: "wx" },
+				);
+				await symlink(parent.authSourcePath, join(scribeHome, "auth.json"));
+				assertVoiceScribeHome(scribeHome, parent.authSourcePath);
+				scope.assertActive();
+				const scribe = this.createProcess({
+					root: directory,
+					codexBin: this.options.binaryPath,
+					codexHome: scribeHome,
+					cwd: scribeWork,
+					mcpArgv: [],
+					baseEnv: positiveChildEnv(
+						this.options.processEnv ?? processEnv(),
+						scribeHome,
+						scribeWork,
+					),
+					knownServerMethods: [],
+					maxJsonLineBytes: CODEX_VOICE_MAX_JSON_LINE_BYTES,
+				});
+				scope.scribe = scribe;
+				await scribe.start();
+				scope.assertActive();
+				await assertSubscription(scribe);
+				await assertScribeTools(scribe, scribeWork);
+				const scribeThread = await scribe.startThreadWithResult({
+					cwd: scribeWork,
+					approvalPolicy: "never",
+					sandbox: "read-only",
+					ephemeral: true,
+					environments: [],
+				});
+				assertThreadReceipt(scribeThread.result, scribeThread.id, scribeWork);
+				scope.assertActive();
+
+				scope.stage = "script_writer";
+				const writer = new ScriptWriter({
+					process: scribe,
+					threadId: scribeThread.id,
+				});
+				// This ordinary subscription turn also admits the structured-output protocol.
+				await writer.rewrite({ sourceText: "准备好了。", rosterNames: [] });
+				scope.assertActive();
+				return {
+					parent,
+					process,
+					threadEventRouter,
+					opened,
+					scribe,
+					writer,
+					snapshot: bound,
+				};
+			},
+		);
+	}
+
+	/**
+	 * Fixed order (plan v12 §14.2, R6#N5): revoke the parent → Bridge degraded →
+	 * snapshot/freeze/reap by identity → close() each resource → foreground. Every
+	 * step runs even if an earlier one failed; only a failed degraded POST makes
+	 * the session unavailable, after the rest has run.
+	 */
+	private async degradeAdmission(
+		input: CodexVoiceOpenInput,
+		scope: AdmissionScope,
+		degraded: { reason: VoiceBackgroundDegradedReason; stage: AdmissionStage },
+		error: unknown,
+		teardownDeadlineAt: number,
+	): Promise<void> {
+		scope.cancelled = true;
+		scope.released = true;
+		try {
+			scope.parent?.revoke?.();
+		} catch {
+			/* Recorded by the reap/close below; never blocks degradation. */
+		}
+		this.evidence({
+			kind: "codex_voice_background_degraded",
+			sessionId: input.sessionId,
+			reason: degraded.reason,
+			stage: degraded.stage,
+			errorCode:
+				error instanceof AdmissionTimeout
+					? "admission_timeout"
+					: rpcErrorMessage(error) || "unknown_error",
+		});
+		let markError: unknown;
+		try {
+			await this.markDegraded(input, degraded.reason);
+		} catch (failure) {
+			markError = failure;
+		}
+		const teardown = (async () => {
+			await scope.residuals.reap(this.evidence).catch(() => "pending");
+			for (const close of [
+				() => scope.scribe?.stop(),
+				() => scope.process?.stop(),
+				() => scope.parent?.close(),
+			]) {
+				try {
+					await close();
+				} catch {
+					/* The residual file keeps anything still alive. */
+				}
+			}
+			await rm(scope.root, { recursive: true, force: true }).catch(
+				() => undefined,
+			);
+			await scope.residuals.reap(this.evidence).catch(() => "pending");
+		})();
+		teardown.catch(() => undefined);
+		await withTimeout(
+			teardown,
+			Math.max(0, teardownDeadlineAt - this.now()),
+			"codex_open_failed",
+		).catch(() => {
+			this.evidence({
+				kind: "codex_voice_admission_teardown_deferred",
+				sessionId: input.sessionId,
+			});
+		});
+		if (markError)
+			throw new CodexVoiceContainerError("codex_open_failed", markError);
+	}
+
+	private async markDegraded(
+		input: CodexVoiceOpenInput,
+		reason: VoiceBackgroundDegradedReason,
+	): Promise<void> {
+		if (!input.background?.markDegraded)
+			throw new Error("voice_background_degraded_unreported");
+		await input.background.markDegraded(reason);
+	}
+
 	private async cleanupOpen(
 		resources: OpenResources,
 		sessionId: string,
 	): Promise<void> {
 		if (resources.cleanup) return resources.cleanup;
+		const admission = resources.admission;
+		if (admission && !admission.transferred && !admission.released) {
+			admission.released = true;
+			// Best effort and outside the open's failure path (R4#N3).
+			admission.cancelled = true;
+			try {
+				admission.parent?.revoke?.();
+			} catch {
+				/* close() revokes too. */
+			}
+			void (async () => {
+				await admission.residuals.reap(this.evidence).catch(() => undefined);
+				for (const close of [
+					() => admission.scribe?.stop(),
+					() => admission.process?.stop(),
+					() => admission.parent?.close(),
+				])
+					await Promise.resolve()
+						.then(close)
+						.catch(() => undefined);
+				await rm(admission.root, { recursive: true, force: true }).catch(
+					() => undefined,
+				);
+			})();
+		}
 		if (!resources.process && !resources.root) return;
 		resources.cleanup = (async () => {
 			try {

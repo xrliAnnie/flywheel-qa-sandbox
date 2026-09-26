@@ -114,6 +114,11 @@ export interface GenericVoiceSessionOptions {
 	postStatus?(text: string): Promise<void>;
 	speechCoordination?: {
 		postThread(request: { businessId: string; text: string }): Promise<void>;
+		/**
+		 * Whether the background is actually on. A background session that
+		 * degraded at open runs the background-off speech path (plan v12 §14.2).
+		 */
+		active?(): boolean;
 	};
 	persistCloseSnapshot?(snapshot: VoiceSessionCloseSnapshot): void;
 	finalize?(
@@ -480,7 +485,8 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 	}): Promise<SpeechArbiterTerminal | "disabled"> {
 		const arbiter = this.speechArbiter;
 		const coordination = this.options.speechCoordination;
-		if (!arbiter || !coordination) return "disabled";
+		if (!arbiter || !coordination || !this.coordinationActive())
+			return "disabled";
 		if (this.stopping || !this.live) return "failed";
 		this.rewritingTells.set(
 			input.businessId,
@@ -578,8 +584,12 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 		}
 	}
 
+	private coordinationActive(): boolean {
+		return this.options.speechCoordination?.active?.() ?? true;
+	}
+
 	async speak(speech: PreparedSpeech): Promise<SpeechReceipt> {
-		if (this.speechArbiter) {
+		if (this.speechArbiter && this.coordinationActive()) {
 			this.coordinatedSpeech.set(speech.speechId, speech);
 			try {
 				const terminal = await this.speechArbiter.enqueue({

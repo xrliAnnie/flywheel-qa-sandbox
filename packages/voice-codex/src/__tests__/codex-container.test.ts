@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { AdmissionResidualRegistry } from "../codex/admission-residuals.js";
 import {
 	CODEX_VOICE_BINARY_SHA256,
 	CODEX_VOICE_BINARY_VERSION,
@@ -249,7 +250,9 @@ class FakeProcess implements CodexVoiceProcess {
 
 	async stop(): Promise<void> {
 		this.stopCount++;
+		this.onStop?.();
 	}
+	onStop?: () => void;
 
 	emit(method: string, params: unknown = {}): void {
 		for (const callback of this.notifications) callback(method, params);
@@ -282,6 +285,7 @@ function harness(
 		overrides.configureProcess?.(process);
 		return process;
 	};
+	const order: string[] = [];
 	const parent = {
 		manifest: {
 			manifestDigest: "c".repeat(64),
@@ -307,7 +311,12 @@ function harness(
 		beginTurn: vi.fn(),
 		actionLedger: vi.fn(() => []),
 		endTurn: vi.fn(),
-		close: vi.fn(async () => undefined),
+		close: vi.fn(async () => {
+			order.push("parent.close");
+		}),
+		revoke: vi.fn(() => {
+			order.push("parent.revoke");
+		}),
 		assertCurrent: vi.fn(async () => undefined),
 		verifyEffectiveConfig: vi.fn(async () => undefined),
 		verifyEffectiveSkills: vi.fn(async () => undefined),
@@ -361,8 +370,23 @@ function harness(
 			})),
 		createProcess,
 		onEvidence: (record) => evidence.push(record),
+		residuals: new AdmissionResidualRegistry({
+			root: join(base, "scratch", "residuals"),
+			system: {
+				snapshot: () => {
+					order.push("reap.snapshot");
+					return [];
+				},
+				signal: () => undefined,
+				removeDirectory: (path) =>
+					rmSync(path, { recursive: true, force: true }),
+				pause: async () => undefined,
+			},
+			report: () => undefined,
+		}),
 	});
 	return {
+		order,
 		base,
 		binaryPath,
 		container,
@@ -663,7 +687,7 @@ describe("Codex voice container", () => {
 		"permission_profile",
 		"scribe_probe_failed",
 	] as const)(
-		"rejects enabled admission drift %s and closes parent and both acquired children",
+		"degrades on enabled admission drift %s: revokes, reports, reaps, closes, then opens foreground",
 		async (drift) => {
 			const h = harness({
 				configureProcess: (process) => {
@@ -729,31 +753,78 @@ describe("Codex voice container", () => {
 					};
 				},
 			});
-			await expect(
-				h.container.open({
-					sessionId: "session-drift",
-					voice: "marin",
-					loadContext: async () => context("session-drift"),
-					background: {
-						enabled: true,
-						onTurnStarted: vi.fn(),
-						onTurnTerminal: vi.fn(),
-					},
-				}),
-			).rejects.toMatchObject({ code: "voice_unavailable" });
+			const markDegraded = vi.fn(async (reason: string) => {
+				h.order.push(`bridge.degraded:${reason}`);
+			});
+			const onDegraded = vi.fn();
+			const loadContext = vi.fn(async () => context("session-drift"));
+			const opened = await h.container.open({
+				sessionId: "session-drift",
+				voice: "marin",
+				loadContext,
+				background: {
+					enabled: true,
+					onTurnStarted: vi.fn(),
+					onTurnTerminal: vi.fn(),
+					markDegraded,
+					onDegraded,
+				},
+			});
+			const reason = ["background_api_account", "scribe_api_account"].includes(
+				drift,
+			)
+				? "subscription_auth_unverified"
+				: "capability_process_failed";
+			// Plan v12 §14.2: admission failure degrades; the session still opens.
+			expect(opened.background).toEqual({ state: "degraded", reason });
+			expect(markDegraded).toHaveBeenCalledExactlyOnceWith(reason);
+			expect(onDegraded).toHaveBeenCalledExactlyOnceWith(reason);
+			// Fixed order: revoke → Bridge degraded → reap → close.
+			expect(h.order.indexOf("parent.revoke")).toBe(0);
+			expect(h.order[1]).toBe(`bridge.degraded:${reason}`);
+			expect(h.order[2]).toBe("reap.snapshot");
+			expect(h.order.indexOf("parent.close")).toBeGreaterThan(2);
 			expect(h.parent.close).toHaveBeenCalledTimes(1);
-			expect(h.processes.every((process) => process.stopCount === 1)).toBe(
-				true,
-			);
-			expect(
-				h.processes.some((process) =>
+			const admission = h.processes.slice(0, -1);
+			const foreground = h.processes.at(-1)!;
+			expect(admission.every((process) => process.stopCount === 1)).toBe(true);
+			for (const process of admission) {
+				expect(
+					process.options.profile === "voice-capability" ||
+						!process.options.voiceProfile,
+				).toBe(true);
+				expect(
 					process.requests.some(
 						(row) => row.method === "thread/realtime/start",
 					),
-				),
-			).toBe(false);
-			for (const process of h.processes)
+				).toBe(false);
 				expect(existsSync(process.options.root)).toBe(false);
+			}
+			// Foreground: fresh home under fg/, read-only thread, no tools.
+			expect(foreground.options.profile).toBeUndefined();
+			expect(foreground.options.mcpArgv).toEqual([]);
+			expect(foreground.options.codexHome).toBe(
+				join(opened.root, "fg", "home"),
+			);
+			expect(foreground.threadParams).toMatchObject({ sandbox: "read-only" });
+			expect(
+				foreground.requests.some(
+					(row) => row.method === "thread/realtime/start",
+				),
+			).toBe(true);
+			expect(existsSync(join(opened.root, "admission"))).toBe(false);
+			// The foreground context is reloaded after Bridge knows.
+			expect(loadContext).toHaveBeenCalledTimes(2);
+			expect(h.evidence).toContainEqual(
+				expect.objectContaining({
+					kind: "codex_voice_background_degraded",
+					reason,
+				}),
+			);
+			expect(h.evidence).toContainEqual(
+				expect.objectContaining({ kind: "codex_voice_open_timing" }),
+			);
+			await opened.close();
 		},
 	);
 
@@ -1191,5 +1262,180 @@ describe("Codex voice container", () => {
 		await rejected;
 		expect(h.processes[0]!.stopCount).toBe(1);
 		expect(existsSync(h.processes[0]!.options.root)).toBe(false);
+	});
+});
+
+describe("background admission degrades to foreground voice (FLY-2886 plan v12 §14.2)", () => {
+	const background = (
+		markDegraded = vi.fn(async (_reason: string) => undefined),
+	) => ({
+		enabled: true as const,
+		onTurnStarted: vi.fn(),
+		onTurnTerminal: vi.fn(),
+		markDegraded,
+		onDegraded: vi.fn(),
+	});
+
+	it("reports enabled when the admission succeeds", async () => {
+		const h = harness();
+		const opened = await h.container.open({
+			sessionId: "session-enabled",
+			voice: "marin",
+			loadContext: async () => context("session-enabled"),
+			background: background(),
+		});
+		expect(opened.background).toEqual({ state: "enabled" });
+		expect(h.order).not.toContain("parent.revoke");
+		await opened.close();
+	});
+
+	it("opens the foreground when the parent itself cannot start, with nothing else created", async () => {
+		const h = harness();
+		h.createCapabilityParent.mockRejectedValueOnce(
+			new Error("model_isolation_unproven"),
+		);
+		const input = background();
+		const opened = await h.container.open({
+			sessionId: "session-parent-failed",
+			voice: "marin",
+			loadContext: async () => context("session-parent-failed"),
+			background: input,
+		});
+		expect(opened.background).toEqual({
+			state: "degraded",
+			reason: "model_isolation_unproven",
+		});
+		expect(input.markDegraded).toHaveBeenCalledExactlyOnceWith(
+			"model_isolation_unproven",
+		);
+		expect(h.processes).toHaveLength(1);
+		expect(h.processes[0]!.options.profile).toBeUndefined();
+		expect(h.evidence).toContainEqual(
+			expect.objectContaining({
+				kind: "codex_voice_background_degraded",
+				stage: "parent",
+				errorCode: "model_isolation_unproven",
+			}),
+		);
+		await opened.close();
+	});
+
+	it("is unavailable when Bridge cannot record the degrade, after reaping and closing", async () => {
+		const h = harness({
+			configureProcess: (process) => {
+				if (process.options.profile === "voice-capability")
+					process.requestHook = (method) =>
+						method === "account/read"
+							? Promise.resolve({ result: { account: { type: "apiKey" } } })
+							: undefined;
+			},
+		});
+		const input = background(
+			vi.fn(async () => {
+				throw new Error("bridge_down");
+			}),
+		);
+		await expect(
+			h.container.open({
+				sessionId: "session-post-failed",
+				voice: "marin",
+				loadContext: async () => context("session-post-failed"),
+				background: input,
+			}),
+		).rejects.toMatchObject({ code: "voice_unavailable" });
+		expect(h.order[0]).toBe("parent.revoke");
+		expect(h.order).toContain("reap.snapshot");
+		expect(h.parent.close).toHaveBeenCalledTimes(1);
+		expect(h.processes[0]!.stopCount).toBe(1);
+		// No foreground was started on a background-shaped context.
+		expect(h.processes).toHaveLength(1);
+		expect(input.onDegraded).not.toHaveBeenCalled();
+	});
+
+	it("skips the background when the open deadline leaves too little admission time", async () => {
+		const h = harness();
+		const input = background();
+		const now = Date.parse("2026-09-23T10:00:00.000Z");
+		const opened = await h.container.open({
+			sessionId: "session-budget",
+			voice: "marin",
+			loadContext: async () => context("session-budget"),
+			background: input,
+			openDeadlineAt: now + 25_000 + 20_000 + 9_000,
+		});
+		expect(h.createCapabilityParent).not.toHaveBeenCalled();
+		expect(opened.background).toEqual({
+			state: "degraded",
+			reason: "admission_budget_exhausted",
+		});
+		expect(input.markDegraded).toHaveBeenCalledExactlyOnceWith(
+			"admission_budget_exhausted",
+		);
+		await opened.close();
+	});
+
+	it("times out the admission, keeps a late parent out of the session and leaves the foreground alone", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		const h = harness();
+		let resolveParent!: (value: typeof h.parent) => void;
+		h.createCapabilityParent.mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					resolveParent = resolve as never;
+				}) as never,
+		);
+		const input = background();
+		const now = Date.parse("2026-09-23T10:00:00.000Z");
+		const pending = h.container.open({
+			sessionId: "session-late-parent",
+			voice: "marin",
+			loadContext: async () => context("session-late-parent"),
+			background: input,
+			openDeadlineAt: now + 25_000 + 20_000 + 11_000,
+		});
+		await vi.waitFor(() => expect(h.createCapabilityParent).toHaveBeenCalled());
+		await vi.advanceTimersByTimeAsync(11_000);
+		const opened = await pending;
+		expect(opened.background).toEqual({
+			state: "degraded",
+			reason: "admission_timeout",
+		});
+		expect(h.processes).toHaveLength(1);
+		// The parent arrives after the deadline: revoked and closed, never assembled.
+		resolveParent(h.parent);
+		await vi.waitFor(() => expect(h.parent.close).toHaveBeenCalled());
+		expect(h.parent.revoke).toHaveBeenCalled();
+		expect(existsSync(join(opened.root, "fg", "home"))).toBe(true);
+		expect(h.factoryOptions.every((row) => row.profile === undefined)).toBe(
+			true,
+		);
+		await opened.close();
+	});
+
+	it("still closes the rest when one admission resource fails to close", async () => {
+		const h = harness({
+			configureProcess: (process) => {
+				if (!process.options.profile && !process.options.voiceProfile) {
+					// The scribe: fails its probe, then fails to stop.
+					process.requestHook = (method) =>
+						method === "turn/start"
+							? Promise.resolve({ error: { code: 429, message: "quota" } })
+							: undefined;
+					process.stop = vi.fn(async () => {
+						throw new Error("still_alive");
+					});
+				}
+			},
+		});
+		const opened = await h.container.open({
+			sessionId: "session-close-failed",
+			voice: "marin",
+			loadContext: async () => context("session-close-failed"),
+			background: background(),
+		});
+		expect(opened.background).toMatchObject({ state: "degraded" });
+		expect(h.processes[0]!.stopCount).toBe(1);
+		expect(h.parent.close).toHaveBeenCalledTimes(1);
+		await opened.close();
 	});
 });

@@ -43,6 +43,7 @@ import {
 } from "flywheel-comm/lead-lease";
 import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import { resolvePersonaStateRoot } from "flywheel-config";
+import { reportChildSpawned } from "../../lead-capabilities/child-spawn-observer.js";
 import {
 	assertGatewayOnlyToolSurface,
 	gatewayActionToolNames,
@@ -1481,6 +1482,8 @@ export function spawnCodexAppServer(cfg: {
 				},
 		stdio: ["pipe", "pipe", "pipe"],
 	});
+	// FLY-2886 §14.2: a voice admission records this child's exact identity.
+	reportChildSpawned(child.pid);
 	child.stdout?.setEncoding("utf8");
 	child.stderr?.setEncoding("utf8");
 	return {

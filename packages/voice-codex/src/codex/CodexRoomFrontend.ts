@@ -100,7 +100,11 @@ export class CodexRoomFrontend {
 			backend: VoiceBackend;
 			conversationOptions: ConversationOptions;
 			handlers?: CodexRoomFrontendHandlers;
-			allowSpokenParaphrase?: boolean;
+			/**
+			 * Read per speech: a background session that degraded at open keeps the
+			 * verbatim, verified behaviour (plan v12 §14.2).
+			 */
+			allowSpokenParaphrase?: boolean | (() => boolean);
 			onUnavailable(text: string): void | Promise<void>;
 		},
 	) {
@@ -148,9 +152,7 @@ export class CodexRoomFrontend {
 		if (!session.speak) return "failed";
 		const receipt = await session.speak(speech.spokenText, "readback", {
 			pendingKey: speech.speechId,
-			verification: this.options.allowSpokenParaphrase
-				? "best_effort"
-				: "required",
+			verification: this.allowParaphrase() ? "best_effort" : "required",
 		});
 		if (receipt.outcome === "completed") return "confirmed";
 		return receipt.outcome === "failed" && receipt.transport !== "none"
@@ -168,13 +170,18 @@ export class CodexRoomFrontend {
 				rosterNames: readonly string[];
 			}) => Promise<ScriptWriterResult>;
 		};
-		if (!this.options.allowSpokenParaphrase || !session.rewriteSpeech)
+		if (!this.allowParaphrase() || !session.rewriteSpeech)
 			return Promise.reject(new Error("script_writer_unavailable"));
 		return session.rewriteSpeech(input);
 	}
 
 	cancelSpeech(): void {
 		this.session?.interrupt();
+	}
+
+	private allowParaphrase(): boolean {
+		const allow = this.options.allowSpokenParaphrase;
+		return typeof allow === "function" ? allow() : allow === true;
 	}
 
 	stop(): Promise<void> {

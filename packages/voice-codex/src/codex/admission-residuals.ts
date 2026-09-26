@@ -157,11 +157,14 @@ export class AdmissionResiduals {
 				};
 		this.identities.set(key(identity), identity);
 		if (identity.state === "gone") this.unprovable(identity);
+		// A late continuation may register after an earlier attempt settled.
+		this.removed = false;
 		this.persist();
 	}
 
 	registerDirectory(path: string): void {
 		this.directories.add(path);
+		this.removed = false;
 		this.persist();
 	}
 
@@ -385,7 +388,7 @@ export class AdmissionResidualRegistry {
 	}
 
 	private path(sessionId: string): string {
-		if (!/^[A-Za-z0-9-]{1,128}$/u.test(sessionId))
+		if (!/^[A-Za-z0-9_-]{1,128}$/u.test(sessionId))
 			throw new Error("voice_residual_session_invalid");
 		return join(this.directory(), `${sessionId}.json`);
 	}
@@ -409,7 +412,7 @@ export class AdmissionResidualRegistry {
 		let names: string[] = [];
 		try {
 			names = readdirSync(this.directory()).filter((name) =>
-				/^[A-Za-z0-9-]{1,128}\.json$/u.test(name),
+				/^[A-Za-z0-9_-]{1,128}\.json$/u.test(name),
 			);
 		} catch {
 			return;

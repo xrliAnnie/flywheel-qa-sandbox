@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { VoiceBackgroundDegradedReason } from "flywheel-teamlead/voice-capability";
 import type { ReceiveHealth, VoiceUtterance } from "flywheel-voice-core";
 import { validateVoiceBridgeUrl } from "./config.js";
 
@@ -577,6 +578,39 @@ export class BridgeVoiceClient {
 				method: "POST",
 				leaseToken,
 				body: input,
+			},
+		);
+	}
+
+	/**
+	 * FLY-2886 plan v12 §14.2: the background could not be admitted. Bridge then
+	 * serves the foreground context and revokes the session's Lead authority.
+	 */
+	async markBackgroundDegraded(
+		sessionId: string,
+		leaseToken: string,
+		lease: VoiceLease,
+		reason: VoiceBackgroundDegradedReason,
+	): Promise<{ status: "recorded" | "replayed" }> {
+		lease.assert();
+		return this.request(
+			`/api/voice/sessions/${encodeURIComponent(sessionId)}/background-degraded`,
+			{
+				operation: "context",
+				routeTemplate: "/api/voice/sessions/:sessionId/background-degraded",
+				method: "POST",
+				leaseToken,
+				body: { reason },
+				decode: (value) => {
+					const row = value as { status?: unknown; backgroundState?: unknown };
+					if (
+						!row ||
+						row.backgroundState !== "degraded" ||
+						(row.status !== "recorded" && row.status !== "replayed")
+					)
+						throw new Error("voice_background_degraded_receipt_invalid");
+					return { status: row.status };
+				},
 			},
 		);
 	}

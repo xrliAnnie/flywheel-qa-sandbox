@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
-import type { VoiceCapabilityActionLedgerEntry } from "flywheel-teamlead/voice-capability";
+import type {
+	VoiceBackgroundDegradedReason,
+	VoiceCapabilityActionLedgerEntry,
+} from "flywheel-teamlead/voice-capability";
 import {
 	type AudioFormat,
 	type ConversationEventMap,
@@ -94,6 +97,10 @@ interface CodexConversationLike {
 	/** Trusted repeat-confirmation input (FLY-2886 Lead ruling). */
 	observeFounderUtterance?(text: string): void;
 	readonly generation?: number;
+	/** What the container actually admitted (plan v12 §14.2). */
+	readonly background?:
+		| { state: "enabled" }
+		| { state: "degraded"; reason: VoiceBackgroundDegradedReason };
 	rewriteSpeech?(input: {
 		sourceText: string;
 		rosterNames: readonly string[];
@@ -140,10 +147,20 @@ export interface CodexVoiceBackendOptions {
 	onEvidence?: (record: Record<string, unknown>) => void;
 	confirmTimeoutMs?: number;
 	allowSpokenParaphrase?: boolean;
+	/** Configured: attempt the background. The effective state comes from open. */
 	backgroundEnabled?: boolean;
 	/** The session founder; only her words can answer a repeat confirmation. */
 	founderUserId?: string;
+	/** Absolute open deadline by Date.now(), read at open entry. */
+	openDeadlineAt?: () => number;
+	/** Tells Bridge the background could not be admitted (must succeed). */
+	markBackgroundDegraded?(reason: VoiceBackgroundDegradedReason): Promise<void>;
+	/** After a degraded open: e.g. post the fixed thread notice. */
+	onBackgroundDegraded?(reason: VoiceBackgroundDegradedReason): void;
 }
+
+/** What this session actually runs with; "disabled" until open completes. */
+export type EffectiveVoiceBackground = "enabled" | "degraded" | "disabled";
 
 /** One assistant item's playback, fed while its audio is still arriving. */
 export interface CodexAudioOutput {
@@ -159,6 +176,18 @@ export class CodexVoiceBackend implements VoiceBackend {
 	private conversation?: CodexConversationLike;
 	actionLedger(): readonly VoiceCapabilityActionLedgerEntry[] {
 		return this.conversation?.actionLedger?.() ?? [];
+	}
+
+	/**
+	 * The single source for paraphrase, speech coordination and handoff choices
+	 * (plan v12 §14.2). Before open completes it behaves as disabled.
+	 */
+	effectiveBackground(): EffectiveVoiceBackground {
+		if (!this.conversation || !this.options.backgroundEnabled)
+			return "disabled";
+		return this.conversation.background?.state === "degraded"
+			? "degraded"
+			: "enabled";
 	}
 
 	constructor(private readonly options: CodexVoiceBackendOptions) {}
@@ -200,20 +229,36 @@ export class CodexVoiceBackend implements VoiceBackend {
 			...(this.options.backgroundEnabled
 				? {
 						background: {
-							enabled: true,
+							enabled: true as const,
 							onTurnStarted: (turnId: string) =>
 								callbacks.session?.observeProcessTurnStarted(turnId),
 							onItemCompleted: (item: ThreadCompletedItem) =>
 								callbacks.session?.observeProcessItemCompleted(item),
 							onTurnTerminal: (turn: BackgroundTurnTerminal) =>
 								callbacks.session?.observeProcessTurnTerminal(turn),
+							markDegraded: async (reason: VoiceBackgroundDegradedReason) => {
+								if (!this.options.markBackgroundDegraded)
+									throw new Error("voice_background_degraded_unreported");
+								await this.options.markBackgroundDegraded(reason);
+							},
+							onDegraded: (reason: VoiceBackgroundDegradedReason) =>
+								this.options.onBackgroundDegraded?.(reason),
 						},
 					}
 				: {}),
+			...(this.options.openDeadlineAt
+				? { openDeadlineAt: this.options.openDeadlineAt() }
+				: {}),
 		});
 		this.conversation = conversation;
+		// Degraded runs the existing background-off path: Lead handoff, verbatim proof.
+		const enabled =
+			this.options.backgroundEnabled === true &&
+			conversation.background?.state !== "degraded";
 		const session = new CodexVoiceSession({
 			...this.options,
+			backgroundEnabled: enabled,
+			allowSpokenParaphrase: enabled && this.options.allowSpokenParaphrase,
 			conversation,
 			trustedContexts,
 			rosterNames,

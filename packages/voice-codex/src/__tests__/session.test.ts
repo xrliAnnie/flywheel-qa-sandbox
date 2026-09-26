@@ -41,6 +41,8 @@ function fixture(options?: {
 		"confirmed" | "unconfirmed" | "failed" | undefined
 	>;
 	coordinatedSpeech?: boolean;
+	/** FLY-2886 §14.2: false once the background degraded at open. */
+	coordinationActive?: () => boolean;
 	rewriteSpeech?: (input: {
 		sourceText: string;
 		rosterNames: readonly string[];
@@ -104,7 +106,14 @@ function fixture(options?: {
 		finalize,
 		persistCloseSnapshot,
 		...(options?.coordinatedSpeech
-			? { speechCoordination: { postThread } }
+			? {
+					speechCoordination: {
+						postThread,
+						...(options.coordinationActive
+							? { active: options.coordinationActive }
+							: {}),
+					},
+				}
 			: {}),
 	});
 	return {
@@ -1263,4 +1272,20 @@ it("keeps original tell material for minutes when fidelity fallback cannot publi
 			]),
 		}),
 	);
+});
+
+it("a degraded background runs the background-off speech path (FLY-2886 §14.2)", async () => {
+	const test = fixture({
+		coordinatedSpeech: true,
+		coordinationActive: () => false,
+		appendSpeech: async () => "confirmed",
+	});
+	await test.session.start();
+	await test.session.markLive();
+	expect(
+		await test.session.deliverTell({ businessId: "tell:1", text: "FLY-2886" }),
+	).toBe("disabled");
+	expect(test.frontend.rewriteSpeech).not.toHaveBeenCalled();
+	expect(test.postThread).not.toHaveBeenCalled();
+	await test.session.stop?.();
 });

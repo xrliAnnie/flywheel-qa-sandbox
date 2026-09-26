@@ -231,6 +231,46 @@ describe("Codex room composition", () => {
 		await frontend.stop();
 	});
 
+	it("reads the admitted background state per speech: degraded keeps verbatim proof (FLY-2886 §14.2)", async () => {
+		const rewriteSpeech = vi.fn();
+		const speak = vi.fn(async () => ({ outcome: "completed" }));
+		const session = { ...conversation(), rewriteSpeech, speak };
+		let admitted = false;
+		const frontend = new CodexRoomFrontend({
+			backend: backend(async () => session as never),
+			conversationOptions: { brain },
+			allowSpokenParaphrase: () => admitted,
+			onUnavailable: vi.fn(),
+		});
+		await frontend.start();
+		await expect(
+			frontend.rewriteSpeech({ sourceText: "FLY-2886", rosterNames: [] }),
+		).rejects.toThrow("script_writer_unavailable");
+		await frontend.appendSpeech({
+			speechId: "p1",
+			spokenText: "FLY-2886 已查到。",
+			expectedTokens: [],
+			generationBudgetMs: 20000,
+		});
+		expect(speak).toHaveBeenLastCalledWith("FLY-2886 已查到。", "readback", {
+			pendingKey: "p1",
+			verification: "required",
+		});
+		admitted = true;
+		await frontend.appendSpeech({
+			speechId: "p2",
+			spokenText: "FLY-2886 已查到。",
+			expectedTokens: [],
+			generationBudgetMs: 20000,
+		});
+		expect(speak).toHaveBeenLastCalledWith("FLY-2886 已查到。", "readback", {
+			pendingKey: "p2",
+			verification: "best_effort",
+		});
+		expect(rewriteSpeech).not.toHaveBeenCalled();
+		await frontend.stop();
+	});
+
 	it("forwards the original backend failure instead of collapsing it to its code", async () => {
 		let onError!: (error: VoiceError) => void;
 		const onClosed = vi.fn();
