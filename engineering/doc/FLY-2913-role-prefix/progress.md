@@ -2,18 +2,19 @@
 issue: FLY-2913
 phase: implement
 phaseCursor: 0/6
-updated: 2026-09-26T06:44:11.132Z
-nextStep: "Collector fixes committed and verified (011a8d57e). Added five-role
-  529 suite; generic driver pins implement=Codex, so suite requires separate
-  serial Claude-author/Codex-author cohorts. Specialized real-role driver not
-  implemented. No five-role baseline or controls yet: await Lead-owned room
-  after load recovery and provide latest full SHA before deploy. T1/T2 remain
-  incomplete; no production profile wiring/pruning/default enable; T3-T6 remain.
-  Prior role checks and lint passed; this batch is suite documentation only."
+updated: 2026-09-26T06:58:55.586Z
+nextStep: "Added offline workflow-prefix-context using full existing snapshot
+  parser: pinned template/type/agent, schema1-3, mismatch and corruption guards;
+  no production consumer yet. Direct and related tests 14/14, teamlead plus
+  dependencies build, lint and both dependent typechecks passed. Five-role suite
+  and collector fixes already committed. Next wire trusted context into real
+  consumer/sample paths, finish T2 compiler and obtain Lead-owned 529
+  before/after controls. Room not yet provided; all T1-T6 completion
+  requirements remain unproven; no pruning/default enable/review/PR/handoff."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2913 progress
 **phase**: implement (0/6)
-**next**: Collector fixes committed and verified (011a8d57e). Added five-role 529 suite; generic driver pins implement=Codex, so suite requires separate serial Claude-author/Codex-author cohorts. Specialized real-role driver not implemented. No five-role baseline or controls yet: await Lead-owned room after load recovery and provide latest full SHA before deploy. T1/T2 remain incomplete; no production profile wiring/pruning/default enable; T3-T6 remain. Prior role checks and lint passed; this batch is suite documentation only.
+**next**: Added offline workflow-prefix-context using full existing snapshot parser: pinned template/type/agent, schema1-3, mismatch and corruption guards; no production consumer yet. Direct and related tests 14/14, teamlead plus dependencies build, lint and both dependent typechecks passed. Five-role suite and collector fixes already committed. Next wire trusted context into real consumer/sample paths, finish T2 compiler and obtain Lead-owned 529 before/after controls. Room not yet provided; all T1-T6 completion requirements remain unproven; no pruning/default enable/review/PR/handoff.
