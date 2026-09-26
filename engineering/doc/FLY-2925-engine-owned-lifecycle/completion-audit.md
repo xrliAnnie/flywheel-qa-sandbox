@@ -23,3 +23,5 @@ Issue: FLY-2925 (https://linear.app/geoforge3d/issue/FLY-2925/病根修复-7-cod
 ## R1 返工状态
 
 question 3d0bd288-23a3-46e2-a652-86e1fb8e9b88 已返回有效 CHANGES_REQUESTED（2 HIGH、7 MEDIUM）。plan §4.4/6.1/9/14 已补快照、真实首次接管与两步发布/回滚守卫，全部九项有处置与验收；待新请求评审，不沿用旧 accepted 当批准。HTML 已补首屏成本和首次失败的诚实边界；无实现/构建/重启。
+
+复审 accepted：question 01a03f19-f1f8-44cb-92b9-ac4794b9c2b8，request f15d927d-4fb8-47f7-aaf7-eb441069a0d1，提交 3eaefd08e，plan blob af0f4fee21ff85424d2aa509ba80fa08997474a7。待有效 verdict，未发布。
