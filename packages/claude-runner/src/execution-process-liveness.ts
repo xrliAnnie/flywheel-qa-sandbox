@@ -193,7 +193,11 @@ export function observeExecutionProcesses(
 		return result("alive", "accepted_worker_alive");
 	}
 	const controller = processes.get(input.controller.pid);
+	// Only the Codex resident controller can restart an accepted worker in
+	// place. Tmux carriers launch once; durable spawn/restart fences above
+	// still protect every carrier, but the shared Bridge PID is not a writer.
 	if (
+		binding.adapter === "codex-tmux" &&
 		controller?.state === "running" &&
 		!input.ownerDrained &&
 		!input.ownerClosed
@@ -215,7 +219,12 @@ export function observeExecutionProcesses(
 		);
 		if (!viewer) return result("unknown", "writers_remain");
 	}
-	return result("dead", "writers_and_controller_gone");
+	return result(
+		"dead",
+		binding.adapter === "codex-tmux"
+			? "writers_and_controller_gone"
+			: "accepted_writer_tree_gone",
+	);
 }
 
 /** Consumers call this again inside their synchronous lifecycle CAS. */

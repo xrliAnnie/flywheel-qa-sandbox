@@ -1,4 +1,10 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AdapterExecutionContext } from "flywheel-core";
@@ -23,6 +29,8 @@ const identity = {
 };
 beforeEach(async () => {
 	root = mkdtempSync(join(tmpdir(), "fly2919-tmux-owner-"));
+	vi.stubEnv("FLYWHEEL_COMPLETE_MARKER_DIR", join(root, "markers"));
+	mkdirSync(join(root, "markers"));
 	store = await StateStore.create(join(root, "fixture.db"));
 	store.upsertSession({
 		execution_id: ctx.executionId,
@@ -62,6 +70,7 @@ beforeEach(async () => {
 });
 afterEach(() => {
 	store.close();
+	vi.unstubAllEnvs();
 	rmSync(root, { recursive: true, force: true });
 });
 function factory() {
@@ -85,6 +94,91 @@ function candidate(lease: any, adapter = "claude-tmux", binary = "claude") {
 	};
 }
 describe("FLY-2919 production Tmux owner factory", () => {
+	it("exposes only current accepted body evidence and hot-reads the death flag", async () => {
+		store.upsertSession({
+			execution_id: ctx.executionId,
+			issue_id: ctx.issueId,
+			project_name: "fixture",
+			status: "running",
+			adapter_type: "claude-tmux",
+		});
+		store.ensureFlagValueRows({ env: {}, now: 1000 });
+		const localCtx: AdapterExecutionContext = { ...ctx };
+		const lease = await factory().createLaunch(localCtx, {
+			adapter: "claude-tmux",
+			binaryName: "claude",
+			nativeSessionId: "native-session",
+		});
+		await lease.prepareSpawn();
+		options.bindSpawn.mockResolvedValue({
+			version: 1,
+			...identity,
+			adapter: "claude-tmux",
+			nativeSessionId: "native-session",
+			executable: "/bin/claude",
+			cwd: "/work",
+			nonce: "nonce-1",
+			writers: [],
+		});
+		await lease.acceptSpawn(candidate(lease));
+		expect(lease.observeBody).toBeTypeOf("function");
+		const dead = await lease.observeBody();
+		expect(dead).toMatchObject({
+			verdict: "dead",
+			ownerToken: "owner-1",
+			identity: { executionId: ctx.executionId, adapter: "claude-tmux" },
+		});
+		expect(lease.isCurrentBody(dead)).toBe(true);
+		expect(await lease.classifyBodyExit(dead)).toBe("completed"); // legacy decision semantics
+		localCtx.processLifecycle = { mode: "resume", generation: 1 };
+		expect(await lease.classifyBodyExit(dead)).toBe("pending");
+		delete localCtx.processLifecycle;
+		vi.spyOn(store, "getGeneralizedWorkflowNodeForExecution").mockReturnValue({
+			binding: {
+				run_id: "run",
+				node_id: "implement",
+				attempt: 1,
+				activation_id: null,
+			},
+		} as never);
+		const receipt = vi
+			.spyOn(store, "getWorkflowNodeCompletion")
+			.mockReturnValue(undefined);
+		expect(await lease.classifyBodyExit(dead)).toBe("abnormal_process_exit");
+		const lateMarker = lease.classifyBodyExit(dead);
+		writeFileSync(join(root, "markers", "exec-1.json"), "{}");
+		expect(await lateMarker).toBe("pending");
+		unlinkSync(join(root, "markers", "exec-1.json"));
+		receipt.mockReturnValue({
+			execution_id: ctx.executionId,
+			activation_id: null,
+		} as never);
+		expect(await lease.classifyBodyExit(dead)).toBe("completed");
+		receipt.mockReturnValue({
+			execution_id: "foreign",
+			activation_id: null,
+		} as never);
+		expect(await lease.classifyBodyExit(dead)).toBe("abnormal_process_exit");
+
+		const revision = store.getFlagValueRow(
+			"execution_body_death_enabled",
+		)!.revision;
+		expect(
+			store.applyFlagValueChange({
+				name: "execution_body_death_enabled",
+				rawTo: "0",
+				expectedRevision: revision,
+				actor: "bridge-local-operator",
+				reason: "negative control",
+			}),
+		).toMatchObject({ ok: true });
+		expect(lease.isCurrentBody(dead)).toBe(false);
+		expect(await lease.observeBody()).toMatchObject({
+			verdict: "unknown",
+			reason: "body_death_authorization_disabled",
+		});
+	});
+
 	it.each([
 		["claude-tmux", "claude"],
 		["kimi-tmux", "kimi"],

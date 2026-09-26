@@ -23,6 +23,7 @@ import {
 	type InspectedExecutionProcess,
 	readExecutionProcessIdentity,
 } from "./execution-process-inspector.js";
+import type { BodyObservation } from "./execution-process-liveness.js";
 
 const MAX_BYTES = 16 * 1024;
 const identity = z
@@ -72,6 +73,12 @@ export interface TmuxProcessLaunchLease {
 	readonly launchPath?: string;
 	readonly launchEnvPath?: string;
 	readonly signal?: AbortSignal;
+	/** Bridge-owned accepted identity; missing/unknown evidence never means gone. */
+	observeBody?(): Promise<BodyObservation | undefined>;
+	isCurrentBody?(observation: BodyObservation): boolean;
+	classifyBodyExit?(
+		observation: BodyObservation,
+	): Promise<"completed" | "abnormal_process_exit" | "pending">;
 	prepareSpawn(): Promise<void>;
 	authorizeSpawn(): boolean;
 	acceptSpawn(candidate: ExecutionProcessLaunchCandidate): Promise<void>;

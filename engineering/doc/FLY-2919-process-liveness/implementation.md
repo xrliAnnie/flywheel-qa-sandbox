@@ -313,3 +313,25 @@ TmuxAdapter 将已核验的绝对启动路径与固定 PATH 用于候选和真�
 - 启动入口检索另有 `scripts/lib/setup.ts → scripts/run-issue.ts` 的独立旧 CLI 与 e2e 脚本，未接管其无协调 StateStore 的旧流程；它们不能给共同死亡消费者提供本批受信 owner 证据。当前生产 DAG dispatch/retry 入口是 run-infra，完整旧入口迁移边界需在最终消费者清单与 QA 报告列清。
 
 保持 implement 0/6；没有代码复审通过、PR、full CI、QA529 或 needs_review 完成声明。
+
+## D1 Tmux 进程等待与 standby 证明（执行 7d99e8e8）
+
+从 2c694677d 续接，TURN implement epoch 13。生产 factory 绑定的 Claude/Kimi/Antigravity 在有 hook、无 hook 两种模式下均使用同一个 BodyObservation 等待分支。可靠死亡由当前 owner/generation/binding 证明；窗口存在或消失不影响结果。Tmux 单次 native launch 不再被共享 Bridge PID 存活永久遮住死亡；Codex resident controller 的恢复守卫继续保留，所有载体的 spawn/restart/recovery/writer census 守卫也保留。
+
+观测与分类跨 await 后重新核对当前身份；有待处理 complete marker 则继续等待 canonical reconciler，绝不从 provider Stop 或 legacy sentinel 补造 generalized 完成凭证。匹配 execution/activation 的真实 receipt 或当前批准 retirement 保持正常结果，否则输出 abnormal_process_exit。Blueprint 对 generalized 无判决退出保留这一失败类型，不再因存在提交而进入成功 DecisionLayer；legacy 合法决策语义保留。恢复 context 即使未携带 workflowActivationId，只要 processLifecycle 存在也不能走 legacy Stop/sentinel 完成捷径。
+
+legacy land-status 的 merged/failed/ready_to_merge 协议保留六个 poll 的宽限期，结束只表示完成信号，绝不冒充进程 drain；新共同分支不调用窗口探针。未接 factory 的旧 CLI/injected lease 仍走原 wait 实现，必须在最终入口清单中列明，不能声称所有旧路径已迁移。
+
+standby 的窗口清理仅作清理请求。onRetired 移到 owner.close/finish 成功之后，并要求再次采样的当前 dead + 当前 retirement approval；缺窗、旧代证据、未完成 drain 均不能确认 standby。即使未绑定 lease，原来的“cleanup window 成功→onRetired”捷径也已删除。单 Tmux 串行采样不依赖 5 分钟 heartbeat，名义观测间隔上界为采样预算5秒加poll默认5秒（不含宿主调度停顿）；全局8候选/并发2/公平游标仍未实现，不能用这项局部 cadence 代替全局验收。
+
+因果红绿覆盖：三载体死 worker 被活 Bridge 遮住（3 RED）；八个共同等待场景（8 RED）；缺窗却残留 writer 时旧 onRetired 提前调用（1 RED）；generalized 有提交但无判决退出被 Blueprint 误报成功（1 RED）；终态 failure 类型被丢弃（1 RED）；heartbeat 回调异常遮住采样（1 RED）；resume context 缺 receipt 被误分为 legacy completed（1 RED）；resume Stop 误完成与 legacy sentinel 丢失（2 RED）。新 factory observe API 的缺失 RED 是接线测试，不计九单原现象。sentinel 首次测试漏传参数的失败已明确归为 fixture 错误，保留日志但不算产品 RED。新等待文件最终13 GREEN；生产 factory 文件14 GREEN。
+
+### 本批验证与明确缺口
+
+19 个具体文件逐一执行，最终504 pass；FLY-2211 kill inventory 首次原15秒超时，同配置单独复跑5 pass，失败日志保留，没有放宽限额或删 guard。限定已发现文件的 owning related：runner7文件324 pass、teamlead3文件44 pass、edge-worker3文件81 pass。core 的 adapter-types 为类型引用，related 未选中测试（exit0）；两份显式 AdapterRegistry 共17 pass，并由依赖构建和 voice-codex typecheck 验证导出兼容，不把空 related 当测试通过。没有新增 shell 测试，没有运行整库/整包suite或真实模型/tmux/529。
+
+D1 仍是 WIP：DirectEventSink 与 HTTP event-route 在落库时尚未重新采样并执行 marker/receipt/版本 CAS，适配器返回后的竞态尚未闭合；不得把本批当作 HIGH death-before-pending-complete-marker 全局完成。abnormal CommDB 投影由后续共同死亡收敛负责，adapter 不自行把 running 投影写 failed。实际 standby resume 的启动 context 尚缺 activation 时会被 owner 的 activation_missing 守卫拒绝，下一批必须从唯一当前 binding 补全受信身份，不能放宽 owner 守卫。C 组 StateStore 死亡事务、跨库义务/幂等过期、TURN/wake 交代、其余直接消费者、旧体迁移、Codex reown、restart 暂时争用不能 stop、九单矩阵仍在全范围内。
+
+保持 implement 0/6；本批没有代码评审、PR、full CI、QA或交卷完成声明。消费者查询/逐文件排除与红绿、related、构建日志归档 implementation-d1-consumers.json.gz / implementation-d1-evidence.json.gz。
+
+最终源码的 teamlead 及依赖 build、lint 均exit0（保留25个既有warning）；voice-codex依赖方typecheck exit0。首轮build发现 CommDB updater 的有限状态类型不接受 failed，已去除adapter独立失败投影，失败及最终成功日志均保留。

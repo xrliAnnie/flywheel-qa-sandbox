@@ -38,3 +38,11 @@ it("FLY-2465 quota signal survives terminal normalization without field loss", (
 		}),
 	).toBeUndefined();
 });
+
+it("FLY-2919 retains abnormal process exit for terminal sink consumers", () => {
+	const failure = {
+		failureKind: "abnormal_process_exit",
+		failureReason: "abnormal_process_exit",
+	};
+	expect(normalizeTerminalFailureInfo(failure)).toEqual(failure);
+});

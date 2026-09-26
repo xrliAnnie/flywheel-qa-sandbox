@@ -78,6 +78,26 @@ function gone(input = fixture()): ExecutionProcessObservationInput {
 }
 
 describe("FLY-2919 execution process truth", () => {
+	it.each(["claude-tmux", "kimi-tmux", "antigravity-tmux"] as const)(
+		"does not grant the shared Bridge restart authority over an exited %s worker",
+		(adapter) => {
+			const input = gone(fixture(adapter));
+			input.sample!.processes.push({
+				pid: 100,
+				ppid: 1,
+				pgid: 100,
+				startIdentity: "controller-start",
+				state: "running",
+			});
+			expect(observeExecutionProcesses(input).verdict).toBe("dead");
+			input.spawnInflight = true;
+			expect(observeExecutionProcesses(input).verdict).toBe("unknown");
+			input.spawnInflight = false;
+			input.sample!.writersComplete = false;
+			expect(observeExecutionProcesses(input).verdict).toBe("unknown");
+		},
+	);
+
 	it("a durable close fences a stopped owner inside a still-live shared Bridge", () => {
 		const input = gone();
 		input.sample!.processes.push({
@@ -187,7 +207,10 @@ describe("FLY-2919 execution process truth", () => {
 				const dead = { ...gone(fixture(adapter)), windowState };
 				expect(observeExecutionProcesses(dead)).toMatchObject({
 					verdict: "dead",
-					reason: "writers_and_controller_gone",
+					reason:
+						adapter === "codex-tmux"
+							? "writers_and_controller_gone"
+							: "accepted_writer_tree_gone",
 				});
 			},
 		);

@@ -40,7 +40,8 @@ export function normalizeTerminalFailureInfo(
 		(failureKind !== "goal_usage_limited" &&
 			failureKind !== "goal_blocked" &&
 			failureKind !== "worktree_takeover_failed" &&
-			failureKind !== "reown_exhausted") ||
+			failureKind !== "reown_exhausted" &&
+			failureKind !== "abnormal_process_exit") ||
 		!failureReason
 	) {
 		return undefined;

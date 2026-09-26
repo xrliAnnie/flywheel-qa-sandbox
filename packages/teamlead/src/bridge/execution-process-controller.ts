@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import {
+	type BodyObservation,
 	bindSpawnedExecutionProcessGroup,
 	captureExecutionProcessSample,
 	capturePendingExecutionSpawnAbsence,
@@ -16,6 +17,11 @@ import {
 	verifyExecutionProcessLaunchCandidate,
 } from "flywheel-claude-runner";
 import type { StateStore } from "../StateStore.js";
+import {
+	completionBlocksDeath,
+	hasUnresolvedCompleteMarker,
+} from "./completion-before-death.js";
+import { createStoredExecutionBodyObserver } from "./execution-body-liveness.js";
 import type { ProcessRecoveryAdmission } from "./execution-process-owner.js";
 
 export interface ExecutionProcessControllerOptions {
@@ -52,9 +58,21 @@ export interface TmuxProcessControllerOptions
 /** Production Tmux carriers share the Codex durable owner and bounded OS verifier.
  * The pre-exec file only proposes an identity; this closure retains the authority. */
 export function createTmuxProcessLaunchDeps(
-	store: ProcessControllerStore,
+	store: StateStore,
 	options: TmuxProcessControllerOptions = {},
 ): TmuxProcessLaunchDeps {
+	const observer = createStoredExecutionBodyObserver(
+		store,
+		{ mode: "ready", store },
+		{
+			now: options.now,
+			sample: options.sample,
+			// This factory only admits single-launch Tmux carriers, never a Codex
+			// reowner. A misrouted Codex identity must remain recovery-protected.
+			isRecoveryActive: (id) =>
+				store.getSession(id)?.adapter_type === "codex-tmux",
+		},
+	);
 	return {
 		createLaunch: async (ctx, input) => {
 			const executable = await (
@@ -85,12 +103,69 @@ export function createTmuxProcessLaunchDeps(
 				nativeSessionId: input.nativeSessionId,
 				cwd,
 			};
+			const isCurrentBody = (observation: BodyObservation): boolean =>
+				observation.identity.executionId === ctx.executionId &&
+				observation.identity.generation === generation &&
+				observation.identity.adapter === input.adapter &&
+				observation.ownerToken === ownerToken &&
+				observer.isCurrent(observation);
 			return {
 				generation,
 				ownerToken,
 				nonce: owner.nonce,
 				launchPath: executable.launchPath,
 				launchEnvPath: executable.launchEnvPath,
+				observeBody: async () => {
+					const observation = await observer.observe(ctx.executionId);
+					return observation?.ownerToken === ownerToken &&
+						observation.identity.generation === generation &&
+						observation.identity.adapter === input.adapter
+						? observation
+						: undefined;
+				},
+				isCurrentBody,
+				classifyBodyExit: async (observation) => {
+					if (observation.verdict !== "dead" || !isCurrentBody(observation))
+						return "pending";
+					// The canonical marker reconciler owns replay. Until it has settled
+					// pending completion, an adapter cannot publish an abnormal exit.
+					if (await completionBlocksDeath(ctx.executionId, null))
+						return "pending";
+					if (
+						!isCurrentBody(observation) ||
+						hasUnresolvedCompleteMarker(ctx.executionId)
+					)
+						return "pending";
+					const context = store.getGeneralizedWorkflowNodeForExecution(
+						ctx.executionId,
+					);
+					if (!context)
+						return ctx.workflowActivationId ||
+							ctx.workflowSubmissionExpected ||
+							ctx.processLifecycle
+							? "pending"
+							: "completed";
+					const binding = context.binding;
+					if (binding.activation_id !== observation.identity.activationId)
+						return "pending";
+					const completion = store.getWorkflowNodeCompletion(
+						binding.run_id,
+						binding.node_id,
+						binding.attempt,
+					);
+					if (
+						completion?.execution_id === ctx.executionId &&
+						completion.activation_id === binding.activation_id
+					)
+						return "completed";
+					const body = store.getWorkflowExecutionProcessBody(ctx.executionId);
+					if (
+						body?.generation === generation &&
+						(body.state === "retiring" || body.state === "standby")
+					)
+						return "completed";
+					return "abnormal_process_exit";
+				},
 				prepareSpawn: owner.prepareSpawn,
 				authorizeSpawn: owner.authorizeSpawn,
 				acceptSpawn: async (untrusted) => {

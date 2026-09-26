@@ -529,6 +529,7 @@ export class TmuxAdapter implements IAdapter {
 			target?: string;
 			abortCleanup?: Promise<void>;
 			detachAbort?: () => void;
+			retiring?: boolean;
 		} = {};
 		let failure: { error: unknown } | undefined;
 		let result: AdapterExecutionResult | undefined;
@@ -559,8 +560,28 @@ export class TmuxAdapter implements IAdapter {
 				}
 				try {
 					await launch.lease.finish();
+					if (launch.retiring) {
+						const body = await launch.lease.observeBody?.();
+						if (
+							body?.verdict === "dead" &&
+							launch.lease.isCurrentBody?.(body) === true &&
+							ctx.processLifecycle?.retirementApproved?.() === true
+						) {
+							try {
+								ctx.processLifecycle.onRetired?.({
+									generation: ctx.processLifecycle.generation,
+									reasonCode: "process_tree_gone",
+									retiredAt: new Date().toISOString(),
+								});
+							} catch {
+								/* generation race is owned by the controller */
+							}
+						}
+					}
 				} catch {
-					cleanupFailed = true;
+					// A legacy provider completion can leave its interactive worker
+					// alive for DecisionLayer cleanup. Never forge a drained receipt.
+					if (result?.exitKind !== "completion_observed") cleanupFailed = true;
 				}
 				if (cleanupFailed) {
 					console.warn(
@@ -583,6 +604,7 @@ export class TmuxAdapter implements IAdapter {
 			target?: string;
 			abortCleanup?: Promise<void>;
 			detachAbort?: () => void;
+			retiring?: boolean;
 		},
 	): Promise<AdapterExecutionResult> {
 		// Lazy preflight: check tmux AND the agentic CLI on first run
@@ -753,6 +775,9 @@ export class TmuxAdapter implements IAdapter {
 					return close;
 				},
 				finish: () => acquired.finish(),
+				observeBody: acquired.observeBody?.bind(acquired),
+				isCurrentBody: acquired.isCurrentBody?.bind(acquired),
+				classifyBodyExit: acquired.classifyBodyExit?.bind(acquired),
 			};
 			const abort = () => {
 				launch.abortCleanup ??= launch
@@ -1518,17 +1543,27 @@ export class TmuxAdapter implements IAdapter {
 
 		// Wait for completion: mode depends on hookServer presence
 		let timedOut: boolean;
-		let sessionStatus: "completed" | "timeout" = "completed";
+		let exitKind: AdapterExecutionResult["exitKind"];
+		let sessionStatus: "completed" | "timeout" | "failed" = "completed";
 		try {
-			timedOut = await this.waitForCompletion(
+			const completion = await this.waitForCompletion(
 				ctx,
 				claudeSessionId,
 				windowId,
 				effectiveTimeoutMs,
 				callbackToken,
 				ctx.sentinelPath,
+				launch.lease,
 			);
-			sessionStatus = timedOut ? "timeout" : "completed";
+			timedOut =
+				typeof completion === "boolean" ? completion : completion.timedOut;
+			exitKind =
+				typeof completion === "boolean" ? undefined : completion.exitKind;
+			sessionStatus = timedOut
+				? "timeout"
+				: exitKind === "abnormal_process_exit"
+					? "failed"
+					: "completed";
 		} catch (err) {
 			// waitForCompletion failure — session may still exist
 			sessionStatus = "timeout";
@@ -1544,7 +1579,14 @@ export class TmuxAdapter implements IAdapter {
 			const retiringToStandby =
 				sessionStatus === "completed" && retirementApproved;
 			// GEO-206 Phase 2: Update session status
-			if (!retiringToStandby && registeredSession && ctx.commDbPath) {
+			// Abnormal exit is first reconciled by Bridge against workflow receipts;
+			// the adapter must not independently settle the communication projection.
+			if (
+				!retiringToStandby &&
+				sessionStatus !== "failed" &&
+				registeredSession &&
+				ctx.commDbPath
+			) {
 				try {
 					const commDb = new CommDB(ctx.commDbPath);
 					commDb.updateSessionStatusIfRunning(ctx.executionId, sessionStatus);
@@ -1566,32 +1608,13 @@ export class TmuxAdapter implements IAdapter {
 				}
 			}
 			if (retiringToStandby) {
-				const physicalRetirement = this.cleanupExactWindow(
-					exactWindowTarget,
-					"workflow_process_standby",
-				);
-				if (physicalRetirement === "cleaned") {
-					try {
-						ctx.processLifecycle!.onRetired?.({
-							generation: ctx.processLifecycle!.generation,
-							reasonCode: "process_tree_gone",
-							retiredAt: new Date().toISOString(),
-						});
-					} catch {
-						// A controller race after physical retirement must not rewrite success.
-					}
-				} else if (physicalRetirement === "present") {
-					try {
-						ctx.processLifecycle!.onRetirementFailed?.({
-							generation: ctx.processLifecycle!.generation,
-							reasonCode: "retirement_unconfirmed",
-							failedAt: new Date().toISOString(),
-						});
-					} catch {
-						// The process result is already final; controller failure remains visible.
-					}
-				}
+				launch.retiring = true;
+				// Cleanup is a UI action. Only the outer owner's awaited drain plus
+				// a current BodyObservation may confirm standby, even if no window
+				// remains or the tmux inventory cannot be read.
+				this.cleanupExactWindow(exactWindowTarget, "workflow_process_standby");
 			}
+
 			if (ctx.workflowActivationId && ctx.onWorkflowUsageEvent) {
 				try {
 					const providerHome =
@@ -1626,7 +1649,8 @@ export class TmuxAdapter implements IAdapter {
 		}
 
 		return {
-			success: true, // runner-level: process completed. Task-level success via GitResultChecker
+			success: exitKind !== "abnormal_process_exit",
+			...(exitKind ? { exitKind } : {}),
 			sessionId: claudeSessionId,
 			tmuxWindow: `${this.sessionName}:${windowId}`,
 			durationMs: Date.now() - start,
@@ -2137,6 +2161,163 @@ export class TmuxAdapter implements IAdapter {
 		return { shouldTimeout: activeTime > normalTimeoutMs, isWaiting };
 	}
 
+	/** Both callback modes use the same physical evidence for admitted launches. */
+	private waitForBodyCompletion(
+		ctx: AdapterExecutionContext,
+		sessionId: string,
+		timeoutMs: number,
+		callbackToken: string | undefined,
+		lease: TmuxProcessLaunchLease,
+		sentinelPath?: string,
+	): Promise<{
+		timedOut: boolean;
+		exitKind?: AdapterExecutionResult["exitKind"];
+	}> {
+		return new Promise((resolve) => {
+			let settled = false;
+			let poller: ReturnType<typeof setTimeout> | undefined;
+			let retirementObservedAt: number | undefined;
+			let completionObserved = false;
+			let sentinelObservedAt: number | undefined;
+			const start = Date.now();
+			const commDbHandle: { db: CommDB | null } = { db: null };
+			const waitState = {
+				totalWaitingMs: 0,
+				lastWaitStart: null as number | null,
+			};
+			const generalized = Boolean(
+				ctx.workflowActivationId ||
+					ctx.workflowSubmissionExpected ||
+					ctx.processLifecycle,
+			);
+			const hardTimeout = ctx.waitingTimeoutMs
+				? TmuxAdapter._computeOuterHardTimeoutMs(
+						timeoutMs,
+						ctx.waitingTimeoutMs,
+					)
+				: timeoutMs;
+			const settle = (
+				timedOut: boolean,
+				exitKind?: AdapterExecutionResult["exitKind"],
+			) => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timer);
+				if (poller) clearTimeout(poller);
+				if (callbackToken) this.hookServer?.cancelWait(callbackToken);
+				try {
+					commDbHandle.db?.close();
+				} catch {
+					/* best effort handle release */
+				}
+				commDbHandle.db = null;
+				resolve({ timedOut, ...(exitKind ? { exitKind } : {}) });
+			};
+			const timer = setTimeout(() => settle(true), hardTimeout);
+			if (callbackToken && this.hookServer) {
+				void this.hookServer
+					.waitForCompletion(callbackToken, hardTimeout, sessionId)
+					.then((event) => {
+						if (!event || settled) return;
+						completionObserved = true;
+						// Legacy task-level completion remains owned by its DecisionLayer.
+						// A provider Stop hook is not a generalized workflow receipt.
+						if (!generalized && !ctx.residentLoopTarget)
+							settle(false, "completion_observed");
+					})
+					.catch(() => {
+						/* process evidence remains authoritative */
+					});
+			}
+			const poll = async () => {
+				if (settled) return;
+				try {
+					try {
+						ctx.onHeartbeat?.(ctx.executionId);
+					} catch {
+						/* diagnostic reporting cannot veto process sampling */
+					}
+					const lifecycle = ctx.processLifecycle;
+					if (lifecycle?.retirementApproved?.() === true) {
+						retirementObservedAt ??= Date.now();
+						if (
+							Date.now() - retirementObservedAt >=
+							processRetirementGraceMs(lifecycle)
+						) {
+							settle(false, "retirement_requested");
+							return;
+						}
+					} else retirementObservedAt = undefined;
+					if (
+						sentinelObservedAt === undefined &&
+						ctx.commDbPath &&
+						this.checkDynamicTimeout(
+							ctx,
+							start,
+							timeoutMs,
+							commDbHandle,
+							waitState,
+							completionObserved,
+						).shouldTimeout
+					) {
+						settle(true);
+						return;
+					}
+					// Preserve the legacy completion protocol and its six-poll grace.
+					// Generalized completion requires the bound receipt checked below.
+					if (!generalized && sentinelPath) {
+						try {
+							if (
+								sentinelObservedAt === undefined &&
+								existsSync(sentinelPath)
+							) {
+								const signal = JSON.parse(readFileSync(sentinelPath, "utf-8"));
+								if (
+									["merged", "failed", "ready_to_merge"].includes(signal.status)
+								) {
+									sentinelObservedAt = Date.now();
+									completionObserved = true;
+									clearTimeout(timer);
+								}
+							}
+						} catch {
+							/* invalid completion files cannot suppress process sampling */
+						}
+						if (
+							sentinelObservedAt !== undefined &&
+							Date.now() - sentinelObservedAt >= 6 * this.pollIntervalMs
+						) {
+							settle(false, "completion_observed");
+							return;
+						}
+					}
+					const observation = await lease.observeBody!();
+					if (
+						settled ||
+						observation?.verdict !== "dead" ||
+						lease.isCurrentBody?.(observation) !== true
+					)
+						return;
+					const disposition = await lease.classifyBodyExit?.(observation);
+					if (settled || lease.isCurrentBody?.(observation) !== true) return;
+					if (disposition === "completed") settle(false, "process_exit");
+					else if (disposition === "abnormal_process_exit")
+						settle(false, "abnormal_process_exit");
+				} catch {
+					// Unreadable process/controller/receipt authority stays pending.
+				} finally {
+					// Serialize samples, with at most the 5s sample budget plus one
+					// polling interval between observations; no heartbeat timer dependency.
+					if (!settled)
+						poller = setTimeout(() => {
+							void poll();
+						}, this.pollIntervalMs);
+				}
+			};
+			void poll();
+		});
+	}
+
 	private async waitForCompletion(
 		ctx: AdapterExecutionContext,
 		claudeSessionId: string,
@@ -2144,7 +2325,20 @@ export class TmuxAdapter implements IAdapter {
 		timeoutMs: number,
 		callbackToken?: string,
 		sentinelPath?: string,
-	): Promise<boolean> {
+		lease?: TmuxProcessLaunchLease,
+	): Promise<
+		| boolean
+		| { timedOut: boolean; exitKind?: AdapterExecutionResult["exitKind"] }
+	> {
+		if (lease?.observeBody)
+			return this.waitForBodyCompletion(
+				ctx,
+				claudeSessionId,
+				timeoutMs,
+				callbackToken,
+				lease,
+				sentinelPath,
+			);
 		return new Promise<boolean>((resolve) => {
 			let settled = false;
 			let watcher: ReturnType<typeof watch> | null = null;

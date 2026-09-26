@@ -1732,7 +1732,7 @@ describe("TmuxAdapter", () => {
 		}
 	});
 
-	it("settles an approved retirement when the exact window leaves the tmux inventory", async () => {
+	it("does not confirm an unbound retirement from an absent exact window", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
 		const adapter = new TmuxAdapter("flywheel", fn, 10);
 		const onRetired = vi.fn();
@@ -1749,11 +1749,7 @@ describe("TmuxAdapter", () => {
 		);
 
 		expect(result).toMatchObject({ success: true, timedOut: false });
-		expect(onRetired).toHaveBeenCalledWith({
-			generation: 1,
-			reasonCode: "process_tree_gone",
-			retiredAt: expect.any(String),
-		});
+		expect(onRetired).not.toHaveBeenCalled();
 		expect(calls.some((call) => call.args[0] === "list-windows")).toBe(true);
 		expect(
 			calls.some(
@@ -1764,7 +1760,7 @@ describe("TmuxAdapter", () => {
 		).toBe(false);
 	});
 
-	it("forces an approved Claude retirement when its grace expires", async () => {
+	it("requests window cleanup at retirement grace without claiming an unbound body is gone", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: false });
 		const adapter = new TmuxAdapter("flywheel", fn, 10, 1_000);
 		const onRetired = vi.fn();
@@ -1786,7 +1782,7 @@ describe("TmuxAdapter", () => {
 		).resolves.toMatchObject({ success: true, timedOut: false });
 		expect(retirementApproved.mock.calls.length).toBeGreaterThanOrEqual(4);
 		expect(killWindowTargets(calls)).toContain("=flywheel:@42");
-		expect(onRetired).toHaveBeenCalledOnce();
+		expect(onRetired).not.toHaveBeenCalled();
 	});
 
 	it("keeps retirement pending when exact-window inventory is unreadable", async () => {

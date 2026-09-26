@@ -128,6 +128,55 @@ function harness(
 	};
 }
 describe("FLY-2919 tmux launch admission", () => {
+	it.each([true, false])(
+		"standby confirmation needs a current body proof after owner drain (current=%s)",
+		async (current) => {
+			const onRetired = vi.fn();
+			let drained = false;
+			const body = { verdict: "dead" } as never;
+			const h = harness("claude-tmux", {
+				observeBody: async () => body,
+				isCurrentBody: () => !drained || current,
+				classifyBodyExit: async () => "completed",
+				finish: vi.fn(async () => {
+					expect(onRetired).not.toHaveBeenCalled();
+					drained = true;
+				}),
+			});
+			await h.adapter.execute({
+				...h.ctx,
+				processLifecycle: {
+					mode: "initial",
+					generation: 1,
+					retirementApproved: () => true,
+					onRetired,
+				},
+			});
+			expect(onRetired).toHaveBeenCalledTimes(current ? 1 : 0);
+		},
+	);
+
+	it("never confirms standby from missing windows before writer drain succeeds", async () => {
+		const onRetired = vi.fn();
+		const h = harness("claude-tmux", {
+			finish: vi.fn(async () => {
+				throw new Error("writers remain");
+			}),
+		});
+		await expect(
+			h.adapter.execute({
+				...h.ctx,
+				processLifecycle: {
+					mode: "initial",
+					generation: 1,
+					retirementApproved: () => true,
+					onRetired,
+				},
+			}),
+		).rejects.toThrow("process_launch_cleanup_unconfirmed");
+		expect(onRetired).not.toHaveBeenCalled();
+	});
+
 	it.each(["claude-tmux", "kimi-tmux", "antigravity-tmux"])(
 		"awaits trusted native acceptance for %s before startup callbacks",
 		async (kind) => {

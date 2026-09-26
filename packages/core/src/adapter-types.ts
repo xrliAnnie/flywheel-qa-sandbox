@@ -526,7 +526,8 @@ export type TerminalFailureKind =
 	| "goal_usage_limited"
 	| "goal_blocked"
 	| "worktree_takeover_failed"
-	| "reown_exhausted";
+	| "reown_exhausted"
+	| "abnormal_process_exit";
 
 /** Bridge-proven failures before adapter.execute(); never infer these from HTTP events. */
 export const PRE_ADAPTER_FAILURE_KINDS: ReadonlySet<string> = new Set([
@@ -594,6 +595,12 @@ export interface AdapterExecutionResult {
 	durationMs?: number;
 	/** True if terminated by timeout */
 	timedOut?: boolean;
+	/** Physical exit classification; completion still requires workflow authority. */
+	exitKind?:
+		| "process_exit"
+		| "abnormal_process_exit"
+		| "completion_observed"
+		| "retirement_requested";
 	/** Total API cost in USD (if available) */
 	costUsd?: number;
 	/** Number of agentic turns used */

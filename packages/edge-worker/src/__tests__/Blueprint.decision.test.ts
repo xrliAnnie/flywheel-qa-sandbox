@@ -106,6 +106,73 @@ function makeContext(
 }
 
 describe("Blueprint Decision Layer Integration", () => {
+	it.each([true, false])(
+		"FLY-2919 preserves process exit versus legacy decision semantics (generalized=%s)",
+		async (generalized) => {
+			const decisionLayer = makeMockDecisionLayer();
+			const emitFailed = vi.fn(async () => {}),
+				emitCompleted = vi.fn(async () => {});
+			const blueprint = new Blueprint(
+				makeMockHydrator(),
+				makeMockGitChecker(),
+				() =>
+					makeMockAdapter({
+						success: false,
+						exitKind: "abnormal_process_exit",
+					} as Partial<AdapterExecutionResult>),
+				makeMockShell(),
+				undefined,
+				undefined,
+				makeMockEvidenceCollector(),
+				undefined,
+				decisionLayer,
+				{
+					emitStarted: vi.fn(async () => {}),
+					emitWorktreeReady: vi.fn(async () => {}),
+					emitCompleted,
+					emitFailed,
+					emitHeartbeat: vi.fn(async () => {}),
+					flush: vi.fn(async () => {}),
+				},
+			);
+			const result = await blueprint.run(
+				{ id: "GEO-101", blockedBy: [] },
+				"/project",
+				makeContext(
+					generalized
+						? {
+								generalizedExecutionContext: {
+									runId: "run-1",
+									nodeId: "implement",
+									attempt: 1,
+									snapshotDigest: "snapshot",
+								},
+								workflowAgentContent: "Implement the bounded task",
+								workflowCapabilities: {
+									creates_pr: false,
+									can_ship: false,
+									can_land: false,
+									produces_output: false,
+									shared_branch_writer: false,
+									completion_route: "no_code",
+								},
+							}
+						: {},
+				),
+			);
+			if (generalized) {
+				expect(result.success).toBe(false);
+				expect(result.failure?.failureKind).toBe("abnormal_process_exit");
+				expect(decisionLayer.decide).not.toHaveBeenCalled();
+				expect(emitCompleted).not.toHaveBeenCalled();
+				expect(emitFailed).toHaveBeenCalled();
+			} else {
+				expect(decisionLayer.decide).toHaveBeenCalled();
+				expect(result.success).toBe(true);
+			}
+		},
+	);
+
 	afterEach(() => {
 		vi.unstubAllEnvs();
 	});
