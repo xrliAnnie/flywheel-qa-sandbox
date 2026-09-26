@@ -356,8 +356,9 @@ describe("voice session routes", () => {
 			getSessionContext.mockRejectedValueOnce(
 				new VoiceSessionContextError("context_token_count_unavailable", {
 					tokenizer: VOICE_CONTEXT_TOKENIZER,
-					// Not an identifier: never forwarded.
-					block: "记忆 正文",
+					// A path and free text are not identifiers: never forwarded.
+					block: "memory/MEMORY.md",
+					estimatedTokens: "记忆 正文",
 				}),
 			);
 			expect(

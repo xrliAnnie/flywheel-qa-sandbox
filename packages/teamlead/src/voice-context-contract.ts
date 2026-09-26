@@ -68,12 +68,13 @@ const VOICE_CONTEXT_ERROR_DETAIL_KEYS = [
 	"maxItemsTokens",
 	"tokenizer",
 ] as const;
-const SHORT_ASCII_IDENTIFIER = /^[A-Za-z0-9._@/:-]{1,64}$/u;
+/** No "/" — a relative path is not an identifier. */
+const SHORT_ASCII_IDENTIFIER = /^[A-Za-z][A-Za-z0-9._-]{0,63}$/u;
 
 /**
  * plan §12.5: the only details that may leave the Bridge — whitelisted keys
- * holding a finite number or a short ASCII identifier. Never text, paths or
- * file contents.
+ * holding a finite number or a short ASCII identifier (the tokenizer only as
+ * this contract names it). Never text, paths or file contents.
  */
 export function voiceContextErrorDetails(
 	details: unknown,
@@ -84,9 +85,11 @@ export function voiceContextErrorDetails(
 		const value = (details as Record<string, unknown>)[key];
 		if (
 			(typeof value === "number" && Number.isFinite(value)) ||
-			(typeof value === "string" && SHORT_ASCII_IDENTIFIER.test(value))
+			(key === "tokenizer"
+				? value === VOICE_CONTEXT_TOKENIZER
+				: typeof value === "string" && SHORT_ASCII_IDENTIFIER.test(value))
 		)
-			safe[key] = value;
+			safe[key] = value as number | string;
 	}
 	return safe;
 }
