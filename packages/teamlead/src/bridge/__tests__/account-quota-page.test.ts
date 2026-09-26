@@ -975,6 +975,47 @@ describe("FLY-2830 reading times and switch-refresh marks", () => {
 	});
 });
 
+describe("FLY-2903 terminal Codex body banner", () => {
+	it("lists terminal bodies still alive or burning quota, escaped", () => {
+		const html = renderAccountQuotaPageHtml(view([]), undefined, {
+			terminalBodies: [
+				{
+					executionId: "0123456789abcdef",
+					issueIdentifier: "FLY-2903<script>alert(1)</script>",
+					terminalAt: "2026-09-23 19:00:00",
+					state: "alive_residual",
+					tokensAfterTerminal: 1234567,
+				},
+				{
+					executionId: "fedcba9876543210",
+					issueIdentifier: null,
+					terminalAt: null,
+					state: "probe_unknown",
+					tokensAfterTerminal: null,
+				},
+			],
+		});
+		expect(html).toContain('class="terminal-body-banner"');
+		expect(html).toContain("终态 Codex 体仍在用额度（2）");
+		expect(html).toContain("FLY-2903&lt;script&gt;alert(1)&lt;/script&gt;");
+		expect(html).not.toContain("<script>alert(1)");
+		expect(html).toContain("01234567");
+		expect(html).toContain("1,234,567");
+		expect(html).toContain("收不掉，仍在运行");
+		expect(html).toContain("读不到");
+		expect(html).toContain("探测结果不确定");
+	});
+
+	it("renders no banner without rows", () => {
+		expect(
+			renderAccountQuotaPageHtml(view([]), undefined, { terminalBodies: [] }),
+		).not.toContain('class="terminal-body-banner"');
+		expect(renderAccountQuotaPageHtml(view([]))).not.toContain(
+			'class="terminal-body-banner"',
+		);
+	});
+});
+
 describe("FLY-2897 Claude next charge cell from receipts", () => {
 	const SWITCH = { at: "2026-09-23T19:50:00.000Z", vendor: "Claude" as const };
 	const OLD = "2026-09-23T19:40:00.000Z"; // 12:40 PT

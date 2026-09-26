@@ -17,7 +17,8 @@ import {
 	INFORMATIONAL_KINDS,
 } from "../../LeadAlertNotifier.js";
 import { QUOTA_MONITOR_MANUAL_TICKET_KINDS } from "../AlertChannelHub.js";
-import { bodyFor, titleFor } from "../alert-kind-copy.js";
+import { bodyFor, severityFor, titleFor } from "../alert-kind-copy.js";
+import { ISSUE_PROGRESS_KINDS } from "../infra-event-router.js";
 import {
 	KIND_CONTRACTS,
 	type KindContract,
@@ -83,6 +84,7 @@ const QUOTA_INFORMATIONAL_KINDS = new Set([
 	"flag_scan_no_clock",
 	"shuttle_unit_unhealthy",
 	"voice_daemon_unhealthy",
+	"worktree_takeover_rescued",
 ]);
 const QUOTA_GUARD_KINDS = ["quota_guard_bypassed"] as const;
 
@@ -538,6 +540,37 @@ describe("FLY-1082 TS union ↔ lead-alert.sh allowlist drift guard (Task 1.2)",
 		});
 		expect(titleFor("calendar_wild_write")).toMatch(/calendar/i);
 		expect(bodyFor("calendar_wild_write", "")).toContain("raya_meeting_id");
+	});
+
+	// FLY-2901: a shared branch-B takeover that succeeded only because Bridge
+	// preserved the predecessor's work first (rescue refs pushed / nested repos
+	// moved). It is a receipt, not an incident: same owner and issue-thread
+	// routing as the refusal kind, but info severity and informational (root-only
+	// notice, no ticket/thread/ARC lifecycle) — nothing needs remediation.
+	it("FLY-2901 worktree_takeover_rescued is an informational issue-progress receipt on both faces", () => {
+		expect(ALERT_EVENT_TYPES).toContain("worktree_takeover_rescued");
+		expect(
+			shellAllowlist().has("worktree_takeover_rescued"),
+			'FLY-2901 kind "worktree_takeover_rescued" missing from lead-alert.sh allowlist',
+		).toBe(true);
+		expect(shellInformationalKinds().has("worktree_takeover_rescued")).toBe(
+			true,
+		);
+		expect(INFORMATIONAL_KINDS.has("worktree_takeover_rescued")).toBe(true);
+		// Mirrors the refusal kind's contract exactly (same owner, no ARC).
+		expect(KIND_CONTRACTS.worktree_takeover_rescued).toEqual({
+			owner: "claude",
+			arc: "human_by_design",
+		});
+		expect(ISSUE_PROGRESS_KINDS.has("worktree_takeover_rescued")).toBe(true);
+		expect(severityFor("worktree_takeover_rescued")).toBe("info");
+		expect(titleFor("worktree_takeover_rescued")).toMatch(/takeover/i);
+		expect(titleFor("worktree_takeover_rescued")).toMatch(/rescue/i);
+		const body = bodyFor("worktree_takeover_rescued", "ignored");
+		expect(body).toMatch(/nothing was lost/i);
+		expect(body).toContain("flywheel-rescue/");
+		expect(body).toContain(".flywheel/runs/takeover/");
+		expect(body).not.toContain("ignored");
 	});
 
 	it("FLY-1501 restart-storm hold is present on both faces with a human investigation contract", () => {

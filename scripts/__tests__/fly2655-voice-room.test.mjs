@@ -204,6 +204,8 @@ test("canonical macOS slot root accepts manifests written through the /tmp alias
 				flywheelRepo: repoRoot,
 				flywheelProjectsFile: projectsPath,
 				buildSha: head,
+				voiceChannelId: fixture().voiceChannelId,
+				voiceChannelName: "voice-test-2",
 			})}\n`,
 			{ mode: 0o600 },
 		);
@@ -217,6 +219,25 @@ test("canonical macOS slot root accepts manifests written through the /tmp alias
 		assert.equal(
 			loadSlot(slotDir, head).projectsPath,
 			`${realpathSync(slotDir)}/flywheel-projects.json`,
+		);
+
+		writeFileSync(
+			`${slotDir}/room-info.json`,
+			`${JSON.stringify({
+				slot: Number(slotId),
+				projectName: "test-slot-2",
+				agentId: "flywheel-test-2",
+				flywheelRepo: repoRoot,
+				flywheelProjectsFile: projectsPath,
+				buildSha: head,
+				voiceChannelId: snowflake("9"),
+				voiceChannelName: "voice-test-2",
+			})}\n`,
+			{ mode: 0o600 },
+		);
+		assert.throws(
+			() => loadSlot(realpathSync(slotDir), head),
+			/slot_voice_mapping_drift/,
 		);
 
 		const projectsLink = `${slotDir}/flywheel-projects-link.json`;
@@ -346,6 +367,8 @@ test("loadSlot accepts the final registry bytes produced by the summary migrator
 				flywheelRepo: repoRoot,
 				flywheelProjectsFile: projectsPath,
 				buildSha: head,
+				voiceChannelId: fixture().voiceChannelId,
+				voiceChannelName: "voice-test-2",
 			})}\n`,
 			{ mode: 0o600 },
 		);
@@ -506,6 +529,12 @@ test("test-deploy keeps the voice fixture opt-in and installs it before Lead sta
 	assert.match(source, /--voice-fixture requires --generalized --mode slot/);
 	assert.match(source, /--voice-fixture requires --expect-head/);
 	assert.match(source, /--voice-fixture requires a real Lead/);
+	assert.match(source, /--voice-fixture requires an explicit slot/);
+	assert.match(source, /voiceChannelId \/\/ empty/);
+	assert.match(source, /voiceChannelName \/\/ empty/);
+	assert.match(source, /voice fixture channel does not match slot/);
+	assert.match(source, /voiceChannelId:\$voiceChannelId/);
+	assert.match(source, /voiceChannelName:\$voiceChannelName/);
 	assert.match(source, /BRIDGE_ENV_UNSET_ARGS\+=\(-u OPENAI_API_KEY\)/);
 	assert.match(
 		source,

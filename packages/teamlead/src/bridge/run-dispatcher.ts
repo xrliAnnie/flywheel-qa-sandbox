@@ -1823,6 +1823,14 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				...(req.previousSession && {
 					workflowPreviousSession: req.previousSession,
 				}),
+				// FLY-2901 §3/§7: engine-computed takeover permit + kill-switch
+				// snapshot ride the shared-branch dispatch into Blueprint unchanged.
+				...(req.takeoverRescuePermit && {
+					takeoverRescuePermit: req.takeoverRescuePermit,
+				}),
+				...(req.takeoverRescueDisabled !== undefined && {
+					takeoverRescueDisabled: req.takeoverRescueDisabled,
+				}),
 				launchCommitPath: workflowLaunchCommitPath,
 				launchGateToken: req.generalizedExecution?.launchGateToken,
 				launchGeneration: req.generalizedExecution?.launchGeneration,

@@ -5,6 +5,56 @@ import {
 } from "../linear-issue-starter.js";
 
 describe("markLinearIssueStarted", () => {
+	it.each([1, 2, 3])(
+		"does not start a state request after abort at issue read %s",
+		async (abortedRead) => {
+			const controller = new AbortController();
+			let reads = 0;
+			let type = "backlog";
+			const stateReads = vi.fn();
+			const client = {
+				issue: vi.fn(async () => {
+					const read = ++reads;
+					if (read === abortedRead) {
+						// Abort after awaitUnlessAborted's post-await check but before its caller resumes.
+						queueMicrotask(() => queueMicrotask(() => controller.abort()));
+					}
+					return {
+						startedAt: type === "started" ? new Date() : null,
+						get state() {
+							stateReads(read);
+							return controller.signal.aborted
+								? Promise.reject(new Error("Fetch failed"))
+								: Promise.resolve({ id: type, name: type, type });
+						},
+						team: Promise.resolve({
+							states: async () => ({
+								nodes: [{ id: "started", name: "Started", type: "started" }],
+							}),
+						}),
+					};
+				}),
+				updateIssue: vi.fn(async () => {
+					type = "started";
+					return { success: true };
+				}),
+			};
+			await expect(
+				markLinearIssueStarted(client, "FLY-2917", controller.signal),
+			).resolves.toMatchObject({
+				started: false,
+				errorClass: "linear_start_aborted",
+			});
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			expect(stateReads.mock.calls.map(([read]) => read)).toEqual(
+				Array.from({ length: abortedRead - 1 }, (_, index) => index + 1),
+			);
+			expect(client.updateIssue).toHaveBeenCalledTimes(
+				abortedRead === 3 ? 1 : 0,
+			);
+		},
+	);
+
 	it.each(["backlog", "unstarted"])(
 		"moves a %s issue with no startedAt to the lowest-position started state",
 		async (initialType) => {

@@ -1,0 +1,120 @@
+[
+  {
+    "mode": "ignore-rule-removed",
+    "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-review-repro/ignore-rule-removed-RhRIlL",
+    "H": "97ac577eaef57e7a600a2660557fb6b11d517730",
+    "S": "7ab76bc0eee16991dd5003f080666a199f84f06a",
+    "beforeStatus": "",
+    "ignoredBefore": "drafts/unpublished.md",
+    "outcome": "rescued",
+    "class": "head_behind",
+    "snapshotCalls": 0,
+    "snapshot": null,
+    "rescueRefs": [],
+    "events": [
+      "rescued",
+      "cleaned"
+    ],
+    "steps": [
+      {
+        "step": "fingerprinted",
+        "exists": true,
+        "content": "UNIQUE LOCAL WORK NEVER COMMITTED\n"
+      },
+      {
+        "step": "manifest_written",
+        "exists": true,
+        "content": "UNIQUE LOCAL WORK NEVER COMMITTED\n"
+      },
+      {
+        "step": "event_recorded",
+        "exists": true,
+        "content": "UNIQUE LOCAL WORK NEVER COMMITTED\n"
+      },
+      {
+        "step": "reset_done",
+        "exists": true,
+        "content": "UNIQUE LOCAL WORK NEVER COMMITTED\n"
+      },
+      {
+        "step": "clean_done",
+        "exists": false,
+        "content": null
+      },
+      {
+        "step": "mirror_written",
+        "exists": false,
+        "content": null
+      },
+      {
+        "step": "cleaned_recorded",
+        "exists": false,
+        "content": null
+      }
+    ],
+    "fileExistsAfter": false,
+    "afterContent": null,
+    "originalBytesLost": true,
+    "finalHeadIsS": true,
+    "finalStatus": ""
+  },
+  {
+    "mode": "target-overwrites-ignored",
+    "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-review-repro/target-overwrites-ignored-vJflzy",
+    "H": "87a1b7947559114b9fd8e09ced3a1650053228c7",
+    "S": "64b5e8bc585aa9611a231263d068330e206fd720",
+    "beforeStatus": "",
+    "ignoredBefore": "drafts/unpublished.md",
+    "outcome": "rescued",
+    "class": "head_behind",
+    "snapshotCalls": 0,
+    "snapshot": null,
+    "rescueRefs": [],
+    "events": [
+      "rescued",
+      "cleaned"
+    ],
+    "steps": [
+      {
+        "step": "fingerprinted",
+        "exists": true,
+        "content": "UNIQUE LOCAL WORK NEVER COMMITTED\n"
+      },
+      {
+        "step": "manifest_written",
+        "exists": true,
+        "content": "UNIQUE LOCAL WORK NEVER COMMITTED\n"
+      },
+      {
+        "step": "event_recorded",
+        "exists": true,
+        "content": "UNIQUE LOCAL WORK NEVER COMMITTED\n"
+      },
+      {
+        "step": "reset_done",
+        "exists": true,
+        "content": "TARGET CONTENT\n"
+      },
+      {
+        "step": "clean_done",
+        "exists": true,
+        "content": "TARGET CONTENT\n"
+      },
+      {
+        "step": "mirror_written",
+        "exists": true,
+        "content": "TARGET CONTENT\n"
+      },
+      {
+        "step": "cleaned_recorded",
+        "exists": true,
+        "content": "TARGET CONTENT\n"
+      }
+    ],
+    "fileExistsAfter": true,
+    "afterContent": "TARGET CONTENT\n",
+    "originalBytesLost": true,
+    "finalHeadIsS": true,
+    "finalStatus": ""
+  }
+]

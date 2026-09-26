@@ -298,6 +298,26 @@ describe("alert kind copy", () => {
 		);
 	});
 
+	it("FLY-2901 renders a rescued worktree takeover as an informational receipt with evidence pointers", () => {
+		expect(titleFor("worktree_takeover_rescued")).toBe(
+			"DAG workflow worktree takeover rescued predecessor work",
+		);
+		expect(severityFor("worktree_takeover_rescued")).toBe("info");
+		const body = bodyFor("worktree_takeover_rescued", "private pane content");
+		// What happened: the successor took over only after Bridge preserved the
+		// predecessor's work; nothing was lost.
+		expect(body).toContain("preserved the predecessor's work");
+		expect(body).toContain("Nothing was lost");
+		// Where the evidence is: pushed rescue branches, the in-worktree mirror of
+		// the manifest, and the successor's first progress pointer.
+		expect(body).toContain("flywheel-rescue/");
+		expect(body).toContain(".flywheel/runs/takeover/");
+		expect(body).toContain("rescue=");
+		// The caller's body lists class/target/refs/paths; the static copy never
+		// echoes pane content.
+		expect(body).not.toContain("private pane content");
+	});
+
 	it("renders founder-calendar wild writes as an actionable warning", () => {
 		expect(titleFor("calendar_wild_write")).toBe(
 			"Founder calendar write governance finding",

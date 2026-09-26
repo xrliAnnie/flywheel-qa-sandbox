@@ -92,10 +92,11 @@ async function attemptLinearIssueStarted(
 	signal?: AbortSignal,
 ): Promise<MarkStartedResult> {
 	const issue = await awaitUnlessAborted(() => client.issue(issueId), signal);
-	const currentStatePromise = issue.state;
-	const currentState = currentStatePromise
-		? await awaitUnlessAborted(() => currentStatePromise, signal)
-		: undefined;
+	// Lazy SDK getters must run inside the abort guard, which owns the promise.
+	const currentState = await awaitUnlessAborted(
+		async () => issue.state,
+		signal,
+	);
 	const currentResult = settledStateResult(currentState?.type, issue.startedAt);
 	if (currentResult) return currentResult;
 	if (!currentState?.id || !currentState.type)
@@ -115,10 +116,10 @@ async function attemptLinearIssueStarted(
 		() => client.issue(issueId),
 		signal,
 	);
-	const freshStatePromise = freshIssue.state;
-	const freshState = freshStatePromise
-		? await awaitUnlessAborted(() => freshStatePromise, signal)
-		: undefined;
+	const freshState = await awaitUnlessAborted(
+		async () => freshIssue.state,
+		signal,
+	);
 	const freshResult = settledStateResult(
 		freshState?.type,
 		freshIssue.startedAt,
@@ -141,10 +142,10 @@ async function attemptLinearIssueStarted(
 		signal,
 	);
 	const updated = await awaitUnlessAborted(() => client.issue(issueId), signal);
-	const updatedStatePromise = updated.state;
-	const updatedState = updatedStatePromise
-		? await awaitUnlessAborted(() => updatedStatePromise, signal)
-		: undefined;
+	const updatedState = await awaitUnlessAborted(
+		async () => updated.state,
+		signal,
+	);
 	return updatedState?.type === "started" && updated.startedAt != null
 		? { started: true, outcome: "started" }
 		: failed("update_not_effective");

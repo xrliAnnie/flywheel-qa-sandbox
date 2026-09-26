@@ -15,6 +15,7 @@ import {
 	type SummaryPresentationStaleSignal,
 } from "./bridge/summary-presentation-store.js";
 import { SUMMARY_ACTIVITY_NOISE_EVENT_TYPES } from "./bridge/summary-activity-probe.js";
+import { CodexTerminalCloseStore } from "./bridge/codex-terminal-close-ledger.js";
 import { readEpicIntakeRefreshState, recordEpicIntakeRefreshResult, readEpicIntake, migrateEpicIntakes, hasEpicDispatchRecord, recordEpicIntake, beginEpicIntakeScan, completeEpicIntakeScan, type EpicIntakeScan, type EpicIntakeInput, type EpicIntakeRecord } from "./bridge/epic-intake-store.js";
 import {
 	assertPercentageModelAssignment,
@@ -52,6 +53,8 @@ import {
 	RECOVERY_PRECOMMIT_OBSERVATION_MS,
 } from "flywheel-core";
 import { buildReworkWakeId, type ReworkWakeIdentity, type ReworkWakeRetirementProof } from "flywheel-comm/db";
+import { newDrainReadId } from "flywheel-comm/completion-obligations";
+import { type CompletionDrainProof, isCompletionDrainProof } from "./bridge/completion-drain.js";
 import { BetaReleaseStore } from "./bridge/beta-release-store.js";
 import type { CompletionWorktreeBranchObservation } from "./bridge/worktree-binding-refresh.js";
 import { CustomerReleaseStore } from "./bridge/customer-release/store.js";
@@ -3239,6 +3242,25 @@ export class StateStore {
 			this.customerReleaseStoreCache = { db, store: new CustomerReleaseStore(db) };
 		}
 		return this.customerReleaseStoreCache.store;
+	}
+	private codexTerminalCloseStoreCache?: {
+		db: BetterDb;
+		store: CodexTerminalCloseStore;
+	};
+	/** FLY-2903: terminal Codex close verdicts (single writer: codex-terminal-close-ledger). */
+	get codexTerminalClose(): CodexTerminalCloseStore {
+		const db = this.db.raw;
+		if (this.codexTerminalCloseStoreCache?.db !== db) {
+			this.codexTerminalCloseStoreCache = {
+				db,
+				store: new CodexTerminalCloseStore(db),
+			};
+		}
+		return this.codexTerminalCloseStoreCache.store;
+	}
+	/** FLY-2903: run `fn` in one transaction on this store's connection. */
+	runInTransaction(fn: () => void): void {
+		this.db.transaction(fn);
 	}
 	get summaryPresentations(): SummaryPresentationStore {
 		const db = this.db.raw;
@@ -10923,6 +10945,7 @@ export class StateStore {
 			"CREATE UNIQUE INDEX IF NOT EXISTS idx_lead_events_dedup ON lead_events(lead_id, event_id)",
 		);
 		this.summaryPresentations.migrate();
+		this.codexTerminalClose.migrate();
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS patrol_orphan_watch (
 				target TEXT PRIMARY KEY,
@@ -33431,6 +33454,31 @@ export class StateStore {
 				execution_id, activation_id, business_digest
 			) WHERE state = 'issued'
 		`);
+		// FLY-2373: a v2 challenge is a read envelope — the exact unread subject
+		// set, its carrier-safe pages and which pages the runner was shown.
+		this.addColumnIfMissing(
+			"workflow_completion_drain_challenge",
+			"protocol_version",
+			"INTEGER NOT NULL DEFAULT 1",
+		);
+		for (const column of [
+			"read_id",
+			"read_set_digest",
+			"read_set_json",
+			"pages_json",
+			"pages_served_json",
+		]) {
+			this.addColumnIfMissing(
+				"workflow_completion_drain_challenge",
+				column,
+				"TEXT",
+			);
+		}
+		this.db.run(`
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_wcdc_read_id
+			ON workflow_completion_drain_challenge(read_id)
+			WHERE read_id IS NOT NULL
+		`);
 		// FLY-1375: approval authority survives the QA process lifecycle. The
 		// source execution is attribution only; materialization and founder
 		// approval advance this first-class holder row.
@@ -48759,19 +48807,38 @@ export class StateStore {
 		)[0] as WorkflowResidentHoldRow | undefined;
 	}
 
+	/**
+	 * FLY-2373: issue (or reuse) the v2 read envelope for one completion
+	 * submission. The envelope freezes the exact unread subject set and its
+	 * carrier-safe pages; page 1 is shown by the 409 itself. A changed unread
+	 * set supersedes the previous envelope — reads of its exact versions stay
+	 * acknowledgeable, new content stays unread.
+	 */
 	issueDrainChallenge(input: {
 		executionId: string;
 		activationId: string;
 		businessDigest: string;
+		readSetDigest: string;
+		subjects: ReadonlyArray<{
+			subjectKind: string;
+			subjectId: string;
+			contentSha256: string;
+		}>;
 		mailSet: { mailbox: string[]; phaseWakes: string[] };
-		watermark: Record<string, unknown>;
+		pages: readonly string[];
 		now?: string;
-	}): { challengeId: string; mailbox: string[]; phaseWakes: string[] } {
+	}): {
+		challengeId: string;
+		readId: string;
+		pageCount: number;
+		reused: boolean;
+	} {
 		const now = input.now ?? new Date().toISOString();
 		if (
 			!input.executionId ||
 			!input.activationId ||
 			!/^[0-9a-f]{64}$/.test(input.businessDigest) ||
+			!/^[0-9a-f]{64}$/.test(input.readSetDigest) ||
 			!StateStore.workflowFiniteTimestamp(now)
 		) {
 			throw new Error("invalid drain challenge input");
@@ -48780,48 +48847,84 @@ export class StateStore {
 		if (!binding || binding.execution_id !== input.executionId) {
 			throw new Error("invalid drain challenge identity");
 		}
-		const mailbox = [...new Set(input.mailSet.mailbox)].sort();
-		const phaseWakes = [...new Set(input.mailSet.phaseWakes)].sort();
+		const subjects = input.subjects
+			.map((subject) => ({
+				subjectKind: subject.subjectKind,
+				subjectId: subject.subjectId,
+				contentSha256: subject.contentSha256,
+			}))
+			.sort((left, right) =>
+				`${left.subjectKind}\u0000${left.subjectId}\u0000${left.contentSha256}` <
+				`${right.subjectKind}\u0000${right.subjectId}\u0000${right.contentSha256}`
+					? -1
+					: 1,
+			);
 		if (
-			mailbox.some((id) => !id) ||
-			phaseWakes.some((id) => !id) ||
-			mailbox.length + phaseWakes.length === 0
+			subjects.length === 0 ||
+			input.pages.length === 0 ||
+			input.pages.some((page) => typeof page !== "string" || !page) ||
+			subjects.some(
+				(subject) =>
+					(subject.subjectKind !== "mailbox" &&
+						subject.subjectKind !== "inline_wake") ||
+					!subject.subjectId ||
+					!/^[0-9a-f]{64}$/.test(subject.contentSha256),
+			)
 		) {
-			throw new Error("invalid drain challenge mail set");
+			throw new Error("invalid drain challenge read set");
 		}
 		const existing = this.workflowSelectAll(
-			`SELECT challenge_id, mail_set_json
+			`SELECT challenge_id, read_id, protocol_version, read_set_digest, pages_json
 			   FROM workflow_completion_drain_challenge
 			  WHERE execution_id = ? AND activation_id = ? AND business_digest = ?
 			    AND state = 'issued'`,
 			[input.executionId, input.activationId, input.businessDigest],
 		)[0];
-		if (existing) {
-			const prior = JSON.parse(existing.mail_set_json as string) as {
-				mailbox: string[];
-				phaseWakes: string[];
-			};
+		if (
+			existing &&
+			Number(existing.protocol_version) === 2 &&
+			existing.read_set_digest === input.readSetDigest &&
+			typeof existing.read_id === "string"
+		) {
 			return {
 				challengeId: existing.challenge_id as string,
-				mailbox: prior.mailbox,
-				phaseWakes: prior.phaseWakes,
+				readId: existing.read_id,
+				pageCount: (JSON.parse(existing.pages_json as string) as string[])
+					.length,
+				reused: true,
 			};
 		}
-		const challengeId = `drain:${input.executionId}:${input.activationId}:${input.businessDigest.slice(0, 16)}`;
+		const challengeId = `drain2:${randomUUID()}`;
+		const readId = newDrainReadId();
+		const mailbox = [...new Set(input.mailSet.mailbox)].sort();
+		const phaseWakes = [...new Set(input.mailSet.phaseWakes)].sort();
 		this.db.transaction(() => {
+			if (existing) {
+				this.db.run(
+					`UPDATE workflow_completion_drain_challenge
+					    SET state = 'superseded'
+					  WHERE challenge_id = ? AND state = 'issued'`,
+					[existing.challenge_id],
+				);
+			}
 			this.db.run(
 				`INSERT INTO workflow_completion_drain_challenge (
 				   challenge_id, execution_id, activation_id, business_digest,
-				   mail_set_json, watermark_json, state, issued_at
-				 ) VALUES (?, ?, ?, ?, ?, ?, 'issued', ?)`,
+				   mail_set_json, watermark_json, state, issued_at,
+				   protocol_version, read_id, read_set_digest, read_set_json,
+				   pages_json, pages_served_json
+				 ) VALUES (?, ?, ?, ?, ?, '{}', 'issued', ?, 2, ?, ?, ?, ?, '[1]')`,
 				[
 					challengeId,
 					input.executionId,
 					input.activationId,
 					input.businessDigest,
 					canonicalJsonString({ mailbox, phaseWakes }),
-					canonicalJsonString(input.watermark),
 					now,
+					readId,
+					input.readSetDigest,
+					canonicalJsonString(subjects),
+					JSON.stringify(input.pages),
 				],
 			);
 			this.appendWorkflowRunEventCheckedTx({
@@ -48831,18 +48934,121 @@ export class StateStore {
 				nodeId: binding.node_id,
 				executionId: input.executionId,
 				payload: {
+					protocolVersion: 2,
 					challengeId,
 					activationId: input.activationId,
 					businessDigest: input.businessDigest,
-					mailbox,
-					phaseWakes,
-					watermark: input.watermark,
+					readSetDigest: input.readSetDigest,
+					subjects,
+					pageCount: input.pages.length,
+					...(existing
+						? { supersedes: existing.challenge_id as string }
+						: {}),
 					issuedAt: now,
 				},
 			});
 		});
 		this.save();
-		return { challengeId, mailbox, phaseWakes };
+		return {
+			challengeId,
+			readId,
+			pageCount: input.pages.length,
+			reused: false,
+		};
+	}
+
+	/** FLY-2373: the persisted v2 read envelope behind one runner read id. */
+	getDrainReadEnvelope(readId: string):
+		| {
+				challengeId: string;
+				executionId: string;
+				activationId: string;
+				businessDigest: string;
+				state: "issued" | "consumed" | "superseded";
+				subjects: Array<{
+					subjectKind: "mailbox" | "inline_wake";
+					subjectId: string;
+					contentSha256: string;
+				}>;
+				pages: string[];
+				pagesServed: number[];
+		  }
+		| undefined {
+		const row = this.workflowSelectAll(
+			`SELECT * FROM workflow_completion_drain_challenge
+			  WHERE read_id = ? AND protocol_version = 2`,
+			[readId],
+		)[0];
+		if (!row) return undefined;
+		try {
+			return {
+				challengeId: row.challenge_id as string,
+				executionId: row.execution_id as string,
+				activationId: row.activation_id as string,
+				businessDigest: row.business_digest as string,
+				state: row.state as "issued" | "consumed" | "superseded",
+				subjects: JSON.parse(row.read_set_json as string),
+				pages: JSON.parse(row.pages_json as string),
+				pagesServed: JSON.parse(row.pages_served_json as string),
+			};
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
+	 * FLY-2373: a ship-carrier runner deliberately sends no workflowActivation
+	 * (its env activation is the carrier, not the node). It proves itself the
+	 * same way its carrier wake receipt does: the carrier activation maps to
+	 * this source execution at exactly this TURN epoch.
+	 */
+	isShipCarrierReader(input: {
+		executionId: string;
+		carrierActivationId: string;
+		turnEpoch: number;
+	}): boolean {
+		if (
+			!input.executionId ||
+			!input.carrierActivationId ||
+			!Number.isInteger(input.turnEpoch) ||
+			input.turnEpoch < 1
+		) {
+			return false;
+		}
+		const row = this.workflowSelectAll(
+			`SELECT source_execution_id, turn_epoch FROM workflow_carrier_delivery
+			  WHERE carrier_activation_id = ?`,
+			[input.carrierActivationId],
+		)[0];
+		return (
+			row !== undefined &&
+			row.source_execution_id === input.executionId &&
+			Number(row.turn_epoch) === input.turnEpoch
+		);
+	}
+
+	/** Record that one page of a read envelope was shown to its runner. */
+	markDrainReadPageServed(readId: string, pageIndex: number): string {
+		const envelope = this.getDrainReadEnvelope(readId);
+		if (
+			!envelope ||
+			!Number.isSafeInteger(pageIndex) ||
+			pageIndex < 1 ||
+			pageIndex > envelope.pages.length
+		) {
+			throw new Error("drain read page not found");
+		}
+		const served = [...new Set([...envelope.pagesServed, pageIndex])].sort(
+			(left, right) => left - right,
+		);
+		this.db.run(
+			`UPDATE workflow_completion_drain_challenge
+			    SET pages_served_json = ?
+			  WHERE read_id = ? AND protocol_version = 2`,
+			[JSON.stringify(served), readId],
+		);
+		this.save();
+		return envelope.pages[pageIndex - 1]!;
 	}
 
 	getIssuedDrainChallenge(input: {
@@ -48910,81 +49116,94 @@ export class StateStore {
 		}
 	}
 
+	/**
+	 * FLY-2373: bind the server-built drain proof to this completion. The
+	 * Bridge re-resolved every obligation under the CommDB lock; this step only
+	 * consumes the submission's issued envelope (if any) and records the proof
+	 * so a crash between the two databases can re-apply wake settlement.
+	 * Wake run-state is deliberately not an input here.
+	 */
 	private consumeDrainChallengeTx(input: {
-		challengeId: string;
 		executionId: string;
 		activationId: string;
 		businessDigest: string;
-		verification: {
-			mailbox: Record<string, string>;
-			phaseWakes: Record<string, string>;
-		};
+		proof: CompletionDrainProof;
 		now: string;
 	}): boolean {
-		const row = this.workflowSelectAll(
-			`SELECT * FROM workflow_completion_drain_challenge
-			  WHERE challenge_id = ? AND execution_id = ? AND activation_id = ?
+		if (!isCompletionDrainProof(input.proof)) return false;
+		const issued = this.workflowSelectAll(
+			`SELECT challenge_id FROM workflow_completion_drain_challenge
+			  WHERE execution_id = ? AND activation_id = ?
 			    AND business_digest = ? AND state = 'issued'`,
-			[
-				input.challengeId,
-				input.executionId,
-				input.activationId,
-				input.businessDigest,
-			],
-		)[0];
-		if (!row) return false;
-		let mailSet: { mailbox: string[]; phaseWakes: string[] };
-		try {
-			mailSet = JSON.parse(row.mail_set_json as string) as typeof mailSet;
-		} catch {
-			return false;
+			[input.executionId, input.activationId, input.businessDigest],
+		)[0] as { challenge_id: string } | undefined;
+		if (!issued && input.proof.settledWakes.length === 0) return true;
+		if (issued) {
+			this.db.run(
+				`UPDATE workflow_completion_drain_challenge
+				    SET state = 'consumed', consumed_at = ?
+				  WHERE challenge_id = ? AND state = 'issued'`,
+				[input.now, issued.challenge_id],
+			);
+			if (this.db.getRowsModified() !== 1) return false;
 		}
-		if (
-			!Array.isArray(mailSet.mailbox) ||
-			!Array.isArray(mailSet.phaseWakes) ||
-			!mailSet.mailbox.every(
-				(id) => input.verification.mailbox[id] === "ACKED",
-			) ||
-			!mailSet.phaseWakes.every((id) =>
-				["started", "finished"].includes(input.verification.phaseWakes[id] ?? ""),
-			)
-		) {
-			return false;
-		}
-		this.db.run(
-			`UPDATE workflow_completion_drain_challenge
-			    SET state = 'consumed', consumed_at = ?
-			  WHERE challenge_id = ? AND execution_id = ? AND activation_id = ?
-			    AND business_digest = ? AND state = 'issued'`,
-			[
-				input.now,
-				input.challengeId,
-				input.executionId,
-				input.activationId,
-				input.businessDigest,
-			],
-		);
-		if (this.db.getRowsModified() !== 1) return false;
 		const binding = this.getWorkflowActivation(input.activationId);
 		if (!binding || binding.execution_id !== input.executionId) {
 			throw new WorkflowEngineInvariantError(
-				`completion_drain_activation_conflict:${input.challengeId}`,
+				`completion_drain_activation_conflict:${input.activationId}`,
 			);
 		}
+		const proofKey =
+			issued?.challenge_id ??
+			`proof:${input.executionId}:${input.activationId}:${input.businessDigest.slice(0, 16)}`;
 		this.appendWorkflowRunEventCheckedTx({
 			runId: binding.run_id,
-			eventUid: `completion_drain_consumed:${input.challengeId}`,
+			eventUid: `completion_drain_consumed:${proofKey}`,
 			kind: "completion_drain_consumed",
 			nodeId: binding.node_id,
 			executionId: input.executionId,
 			payload: {
-				challengeId: input.challengeId,
+				protocolVersion: 2,
+				...(issued ? { challengeId: issued.challenge_id } : {}),
 				activationId: input.activationId,
 				businessDigest: input.businessDigest,
+				proofDigest: input.proof.proofDigest,
+				settledWakes: input.proof.settledWakes,
+				receiptIds: input.proof.receiptIds,
 				consumedAt: input.now,
 			},
 		});
 		return true;
+	}
+
+	/** FLY-2373: recorded v2 drain proofs for one activation (replay reconcile). */
+	listCompletionDrainProofs(input: {
+		runId: string;
+		executionId: string;
+		activationId: string;
+	}): CompletionDrainProof["settledWakes"] {
+		return this.listWorkflowRunEvents(input.runId)
+			.filter(
+				(event) =>
+					event.kind === "completion_drain_consumed" &&
+					event.execution_id === input.executionId,
+			)
+			.flatMap((event) => {
+				const payload = event.payload as Record<string, unknown> | undefined;
+				if (
+					payload?.protocolVersion !== 2 ||
+					payload.activationId !== input.activationId ||
+					!isCompletionDrainProof({
+						protocolVersion: 2,
+						proofDigest: payload.proofDigest,
+						settledWakes: payload.settledWakes,
+						receiptIds: payload.receiptIds,
+					})
+				) {
+					return [];
+				}
+				return payload.settledWakes as CompletionDrainProof["settledWakes"];
+			});
 	}
 
 	enterResidentHold(input: {
@@ -64677,13 +64896,11 @@ export class StateStore {
 		route: string;
 		sourceEventId: string;
 		completionSubmission: unknown;
-		drainChallenge?: {
-			challengeId: string;
-			verification: {
-				mailbox: Record<string, string>;
-				phaseWakes: Record<string, string>;
-			};
-		};
+		/**
+		 * FLY-2373: Bridge-built proof that every completion obligation was
+		 * consumed, derived under the CommDB lock; never decoded from payload.
+		 */
+		drainProof?: CompletionDrainProof;
 		/** Current completion head carried by the trusted event envelope. */
 		subjectDigest?: string;
 		workflowActivation?: WorkflowCompletionActivationContext;
@@ -65176,13 +65393,12 @@ export class StateStore {
 					});
 				}
 				if (
-					input.drainChallenge &&
+					input.drainProof &&
 					!this.consumeDrainChallengeTx({
-						challengeId: input.drainChallenge.challengeId,
 						executionId: input.executionId,
 						activationId: context.binding.activation_id,
 						businessDigest: digest,
-						verification: input.drainChallenge.verification,
+						proof: input.drainProof,
 						now,
 					})
 				) {
@@ -65415,7 +65631,7 @@ export class StateStore {
 			});
 		} catch (error) {
 			if (drainChallengeRefused) {
-				return { ok: false, reason: "drain_challenge_not_issued" };
+				return { ok: false, reason: "drain_proof_invalid" };
 			}
 			if (terminalImmuneRefusal) {
 				return { ok: false, reason: "terminal_status_immune" };
@@ -88860,7 +89076,7 @@ export type WorkflowCompletionResult =
 				| "no_code_artifact_present"
 				| "no_code_attestation_missing"
 				| "no_code_attestation_stale"
-				| "drain_challenge_not_issued"
+				| "drain_proof_invalid"
 				| "terminal_status_immune"
 				| "stale_resubmission_identity_missing"
 				| "land_head_unavailable"

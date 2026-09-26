@@ -1,3 +1,4 @@
+import { parseProgress } from "flywheel-config";
 import { describe, expect, it, vi } from "vitest";
 import { type ProgressDeps, runProgress } from "../progress.js";
 
@@ -197,5 +198,112 @@ describe("runProgress (FLY-795)", () => {
 		const r = runProgress(okArgs, deps);
 		expect(r.ok).toBe(true);
 		expect(calls).toEqual(["lock", "unlock"]);
+	});
+});
+
+/**
+ * FLY-2901 §4.8-3: `--pointer rescue=<encodeRescuePointer()>` — the stand-in's
+ * first write. `applyArgs` whitelists pointer keys, so without `rescue` in that
+ * list the CLI exits 0 while silently writing nothing (Codex R1 #7). These tests
+ * drive the REAL applyArgs → renderProgress → parseProgress chain (only the fs /
+ * git / StateStore seams are stubbed) and assert the value survives verbatim.
+ */
+describe("runProgress rescue pointer (FLY-2901)", () => {
+	const path = "/repo/engineering/doc/FLY-795-x/progress.md";
+	const eventUid = "0123456789abcdef".repeat(4); // 64 hex
+	const rescueSingle = `event:worktree_takeover_rescued:${eventUid}`;
+	const rescueMulti =
+		`${rescueSingle} refs:` +
+		`flywheel-rescue/FLY-12/aaaa1111-bbbb2222-20260925T010203Z-base@${"a".repeat(40)},` +
+		`flywheel-rescue/FLY-12/aaaa1111-bbbb2222-20260925T010203Z-dirty@${"b".repeat(40)}`;
+
+	function written(deps: ProgressDeps): string {
+		const v = (deps as any)._files.get(path) as string | undefined;
+		expect(v, "progress.md was written").toBeTypeOf("string");
+		return v as string;
+	}
+
+	it("writes `--pointer rescue=<event-only>` and it parses back byte-for-byte", () => {
+		const deps = makeDeps();
+		const r = runProgress(
+			{ ...okArgs, pointer: [{ key: "rescue", value: rescueSingle }] },
+			deps,
+		);
+		expect(r.ok, r.reason).toBe(true);
+		expect(parseProgress(written(deps)).pointers.rescue).toBe(rescueSingle);
+	});
+
+	it("writes the multi-ref value (space/colon/comma/slash/@) and it parses back byte-for-byte", () => {
+		const deps = makeDeps();
+		const r = runProgress(
+			{
+				...okArgs,
+				pointer: [
+					{ key: "plan", value: "engineering/doc/FLY-795-x/plan.md" },
+					{ key: "rescue", value: rescueMulti },
+				],
+			},
+			deps,
+		);
+		expect(r.ok, r.reason).toBe(true);
+		const back = parseProgress(written(deps));
+		expect(back.pointers.rescue).toBe(rescueMulti);
+		expect(back.pointers.plan).toBe("engineering/doc/FLY-795-x/plan.md");
+	});
+
+	it("preserves the rescue pointer verbatim across a later write that omits it (merge path)", () => {
+		const deps = makeDeps();
+		expect(
+			runProgress(
+				{ ...okArgs, pointer: [{ key: "rescue", value: rescueMulti }] },
+				deps,
+			).ok,
+		).toBe(true);
+		const r2 = runProgress({ ...okArgs, cursor: "3/5", next: "later" }, deps);
+		expect(r2.ok, r2.reason).toBe(true);
+		const back = parseProgress(written(deps));
+		expect(back.phaseCursor).toBe("3/5");
+		expect(back.pointers.rescue).toBe(rescueMulti);
+	});
+
+	it("still drops an unknown pointer key exactly as before", () => {
+		const deps = makeDeps();
+		const r = runProgress(
+			{
+				...okArgs,
+				pointer: [
+					{ key: "bogus", value: "nope" },
+					{ key: "rescue", value: rescueSingle },
+				],
+			},
+			deps,
+		);
+		expect(r.ok, r.reason).toBe(true);
+		const md = written(deps);
+		expect(md).not.toContain("bogus");
+		expect(parseProgress(md).pointers).not.toHaveProperty("bogus");
+	});
+
+	it('an empty `--pointer rescue=` behaves like any other empty pointer (written as "", absent after parse)', () => {
+		const deps = makeDeps();
+		const r = runProgress(
+			{
+				...okArgs,
+				pointer: [
+					{ key: "pr", value: "" },
+					{ key: "rescue", value: "" },
+				],
+			},
+			deps,
+		);
+		expect(r.ok, r.reason).toBe(true);
+		const md = written(deps);
+		// same on-disk rendering as the pre-existing pointers …
+		expect(md).toMatch(/^ {2}pr: ""$/m);
+		expect(md).toMatch(/^ {2}rescue: ""$/m);
+		// … and the same read-side outcome: an empty pointer is not a pointer.
+		const back = parseProgress(md);
+		expect(back.pointers.pr).toBeUndefined();
+		expect(back.pointers.rescue).toBeUndefined();
 	});
 });

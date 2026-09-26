@@ -1,0 +1,140 @@
+<div class="wrap">
+
+<h1>FLY-2901 · 替身接不了前任的工作目录时，自动保全再接上，不再 held 等人</h1>
+<div class="meta">
+  设计交付 · 2026-09-25（2026-09-26 重派复核后更新到 v5.2）· 证据来自 FLY-2893 普查（14 天只读冻结数据）+ Lead 从 Linear 转述的 FLY-2510 / FLY-2463 / FLY-2122 病根<br/>
+  分支 <code>flywheel-FLY-2901</code> · 文档 <code>engineering/doc/FLY-2901-worktree-takeover-rebuild/</code>{exploration, research, plan}.md · 评审记录见最后一节
+</div>
+
+<section class="card green" data-title="一句话结论">
+  <h2>一句话结论</h2>
+  <p class="summary-line">替身（接班的新执行体）发现共享<span class="term" title="工作目录（worktree）：同一张单的各个阶段共用的一份代码副本；每张单一份，放在 ~/Dev/flywheel-FLY-xxxx">工作目录</span>不干净或提交点对不上时，不再直接失败等人；而是先确认前任不会再写，再把前任留下的东西<b>一字不丢地存到远端的救援分支</b>，然后把目录清干净接着干——任何一步证明不了「零丢失」，就停手告警，和今天一样。</p>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:34%">issue 要求</th><th>本设计怎么落</th></tr>
+    <tr><td>按失败原因分类，每类定自动处置</td><td><span class="badge do">做</span> 七类（未提交改动 / 嵌套仓 / 提交点落后 / 前任已推送的分叉 / 未推送的分叉 / 目录没了 / 路径没登记），一张表定处置和停手条件</td></tr>
+    <tr><td>保全现场：未推提交推备份分支、未提交改动存档记 SHA</td><td><span class="badge do">做</span> 不用 <code>git stash</code>（它在所有工作目录间共享，别的会话可能把它弹走），改用带名字的引用 + 推到远端 <code>flywheel-rescue/…</code> 分支，推完再从远端读回核对</td></tr>
+    <tr><td>会丢工作的情况停手并告警</td><td><span class="badge do">做</span> 写成代码里的「零丢失不变式」断言；停手时目录一个字节不动，告警里列出具体脏路径</td></tr>
+    <tr><td>证据写进进度账本给替身读</td><td><span class="badge maybe">换个方式做</span> Bridge 直接改账本会移动提交点（和第 3 条冲突），所以证据先放在 git 看不见的文件 + 替身提示词里，替身第一次写账本时带上 <code>rescue</code> 指针</td></tr>
+    <tr><td>重建后能继续 complete / 复审，不撞 head</td><td><span class="badge do">做</span> 首选「原地清理」：路径、身份标记都不变，替身完成时读到的提交点就是清理后的那个</td></tr>
+  </table>
+  </div>
+  <div class="cbox"><label>给「一句话结论」的意见</label><textarea data-key="s01" data-title="一句话结论"></textarea></div>
+</section>
+
+<section class="card red" data-title="发生了什么">
+  <h2>发生了什么（为什么要做）</h2>
+  <ul>
+    <li>FLY-2893 普查：「工作目录接管失败」Codex 40 次 + Claude 5 次，浪费约 <b>150 单×节点小时</b>，其中 <b>133 小时是在等人手</b>。</li>
+    <li>45 次里 <b>34 次只是「脏」</b>：提交点是对的，只是多了没提交的改动——大多是被额度墙同时杀死的实现体写到一半的代码（FLY-2510）。</li>
+    <li>9 次同时提交点对不上，典型是 FLY-2463：返工体合法地把分支 rebase 到新 main 并推了上去，然后死了；替身还拿着旧的起点去比，于是拒绝。</li>
+    <li>2 次是目录本身坏了 / 没了。另有一支 <code>worktree_not_found</code>（前任的路径没登记）在派发前就失败，而且<b>没有任何告警</b>，每分钟静默重试。</li>
+    <li>今天的处置全靠 Lead 手工：<code>git stash</code> 记下死体编号 → 恢复被暂停的 run → 替身起来后再把改动取回。</li>
+  </ul>
+  <div class="callout amber">今天机器上还留着的工作目录里，脏的内容全是真实工作（未提交的代码、文档、报告）。所以「直接清掉」绝对不行，必须先保全。</div>
+  <div class="cbox"><label>给「发生了什么」的意见</label><textarea data-key="s02" data-title="发生了什么"></textarea></div>
+</section>
+
+<section class="card" data-title="核心流程">
+  <h2>核心流程</h2>
+  <div class="diagram"><!--DIAGRAM_1--></div>
+  <div class="cap">图 1 · 蓝：今天就能走通的路径，不变；绿：本单新增的自动处置；红：停手（和今天一样失败 + 告警，但信息更全）</div>
+  <ol>
+    <li><b>先证明前任不会再写</b>：前任已经正常交卷停驻（它按规矩不碰目录），或已被判死<b>且</b>进程探针证实它的窗口和进程都不在了；被判死但进程还活着的「僵尸」、探针说不清的、以及还在跑的前任，一律停手。这张判断叫<span class="term" title="许可证（permit）：派发器在派发替身时算出的一个是/否结论，附带理由和每个前任的状态快照">许可证</span>。</li>
+    <li><b>两次采样</b>：隔 5 秒对目录拍两次「指纹」（提交点 + 改动清单 + 每个改动文件的<b>内容哈希</b>），不一样说明还有人在写，停手。</li>
+    <li><b>保全</b>：没提交的改动用临时索引做成提交（不碰真实目录）；不在目标里的提交推到远端救援分支（名字带前任、替身编号和时间），再从远端读回核对。</li>
+    <li><b>先落盘再动手</b>：证据文件和一条持久运行事件写成功之后，才允许任何破坏性动作；写不进就停手。这样中途崩溃也不会出现「目录已清、却没人知道东西存在哪」。</li>
+    <li><b>清理</b>：嵌套仓整目录挪到 Flywheel 状态目录；目录还在就原地清理（忽略文件如 <code>node_modules</code> 不动）；已登记但目录没了才重建。</li>
+    <li><b>交给替身</b>：提示词一节列出救援清单。同一节点的替身会被明确要求<b>先把死体写到一半的改动恢复回来再干活</b>（对齐 Lead 今天的手工配方）。</li>
+  </ol>
+  <div class="cbox"><label>给「核心流程」的意见</label><textarea data-key="s03" data-title="核心流程"></textarea></div>
+</section>
+
+<section class="card purple" data-title="提交点怎么选">
+  <h2>清理后停在哪个提交点</h2>
+  <div class="diagram"><!--DIAGRAM_3--></div>
+  <div class="cap">图 2 · H = 目录原来的提交点；S = 引擎期望的起点；R = 远端分支头</div>
+  <p class="note">原则：远端分支是已发布的真相，清理后的提交点必须包含它；本地多出来又不在目标里的东西，一律先推救援分支。FLY-2463 那种「前任 rebase 后已经推送」的情况，直接采纳前任的提交点，不再拒绝。</p>
+  <div class="cbox"><label>给「提交点怎么选」的意见</label><textarea data-key="s04" data-title="提交点怎么选"></textarea></div>
+</section>
+
+<section class="card purple" data-title="数据与结构">
+  <h2>数据与结构</h2>
+  <div class="diagram"><!--DIAGRAM_2--></div>
+  <div class="cap">图 3 · 一次自动处置留下的所有记录，以及它们的关系（清单先写、事件带清单哈希、清理完再追加回执）</div>
+  <div class="kv">
+    <b>救援引用</b><span>本地一份（<code>refs/flywheel/rescue/…</code>，带完整的前任和替身编号）+ 远端一份（<code>flywheel-rescue/&lt;单号&gt;/…</code> 分支，GitHub 上能看到）。只新建、不改写、不删除。</span>
+    <b><span class="term" title="generation：工作目录创建时写进 git 管理区的一个随机身份号；Bridge 用它确认「这个目录还是当初那一个」，一张单的所有执行体绑的是同一个号">generation</span></b><span>原地清理时不变。目录没了必须重建时，沿用旧号——否则同一张单里其他执行体的绑定对不上，之后合并会卡住。这是本设计最需要评审盯的一点。</span>
+    <b>救援清单（manifest）</b><span>每次处置都有一份，先写在 Flywheel 状态目录（目录没了、或根本不需要推救援分支时也有），事件里记着它的哈希；清理完再复制一份到目录里 git 看不见的 <code>.flywheel/runs/takeover/</code>，不影响替身启动前的「目录必须干净」检查，也不移动提交点。</span>
+    <b>一把锁跑完</b><span>从检查到清理全程持有这个仓库的变更锁，中间不给别的流程插进来删建同一个目录的机会；中途崩溃后，下次派发先读回「已保全但没清理完」的事件，核对 manifest 哈希后只接着把剩下的做完，对不上就停手。</span>
+    <b>运行事件</b><span><code>worktree_takeover_rescued</code>，只能由 Bridge 进程内部写，外部 HTTP 通道写不进（防伪造）。</span>
+  </div>
+  <div class="cbox"><label>给「数据与结构」的意见</label><textarea data-key="s05" data-title="数据与结构"></textarea></div>
+</section>
+
+<section class="card gray" data-title="取舍与否决">
+  <h2>取舍与被否决的方案</h2>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:30%">方案</th><th>结论</th><th>为什么</th></tr>
+    <tr><td>原地清理（保全后 <code>reset --hard</code> + <code>clean -fd</code>）</td><td><span class="badge do">采纳</span></td><td>路径、身份号不变；不会把停驻前任的进程一起杀掉；替身完成时的提交点校验天然一致</td></tr>
+    <tr><td>issue 字面的「删目录，从远端重建」</td><td><span class="badge maybe">只用于目录已经没了</span></td><td>删目录会换身份号（合并会卡 <code>worktree_generation_mismatch</code>），还会把停驻前任的进程收割掉</td></tr>
+    <tr><td>在新路径旁建一个目录</td><td><span class="badge no">否决</span></td><td>路径是按单号算出来的，十几处代码依赖；绑定关系只能设一次</td></tr>
+    <tr><td>用 <code>git stash</code></td><td><span class="badge no">否决</span></td><td>stash 在所有工作目录间共享，别的会话可能弹走；也推不到远端</td></tr>
+    <tr><td>只留本地引用，不推远端</td><td><span class="badge no">否决</span></td><td>本机出事仍会丢；普查明确要求救援引用必须上远端。推送失败就停手</td></tr>
+    <tr><td>Bridge 把证据直接写进 progress.md 并提交</td><td><span class="badge no">否决</span></td><td>会移动提交点，QA 测的和评审过的就不是同一个了</td></tr>
+    <tr><td>Bridge 启动前自动把死体的改动放回去</td><td><span class="badge no">否决</span></td><td>启动前「目录必须干净」是防止把别人的改动算到替身头上的硬门；冲突处理也不该变成无人值守的静默决定。改为替身启动后按提示词自己恢复</td></tr>
+  </table>
+  </div>
+  <div class="cbox"><label>给「取舍与否决」的意见</label><textarea data-key="s06" data-title="取舍与否决"></textarea></div>
+</section>
+
+<section class="card red" data-title="诚实边界">
+  <h2>诚实边界：做什么、不做什么</h2>
+  <ul>
+    <li><b>做</b>：七类失败的自动保全 + 清理 + 接管；停手时告警列出具体脏路径；<code>worktree_not_found</code> 这支改为从分支尖回退找提交点，找不到时告警（今天完全静默）；一个总开关（kill switch），关掉即回到今天的行为（下面「关不掉的防线」除外）。</li>
+    <li><b>不做</b>：不修前任为什么会死（额度墙是 FLY-2521 等）；不修 FLY-2528（宿主 tmux 消失被记成「完成」）、FLY-2329（回滚后不重新派发）；不把评审目标 checkout 挪出共享目录（那是 FLY-2122 的根治）；不自动回收救援分支和救援目录（至少保留到本单 ship 之后，回收另起单）。</li>
+    <li><b>已与 Lead 定案（FLY-2122）</b>：「脏」的判断一字不改。前任不能证明已停时，往共享目录放未跟踪目录 → 接管仍失败并列出路径；能证明时 → 嵌套仓整目录零损失挪走、列出路径、再接管。同时做根治：跨仓评审的嵌套 checkout 固定放在树内 <code>.flywheel/review-targets/</code>，并被 git 精确排除（不能放到树外——「评审目标必须在工作树内」是防伪造的安全边界）。</li>
+    <li><b>不改变的老路</b>：「从没登记过、目录也不在」的首次创建照旧，只补一步：本地分支上有未推提交时先推救援分支。登记探针出错、目录在但读不出提交点、目录在却没登记——这三种一律停手，不再像今天那样直接删目录。</li>
+    <li><b>不承诺</b>：真 Codex 替身演练——要等 Codex 服务恢复后由 QA 另做；本机只跑相关测试。</li>
+    <li><b>关不掉的防线</b>：总开关只管「要不要自动保全 + 清理」。「登记状态查不清 / 目录在却读不出提交点 / 目录在却没登记 / 本地分支有未推提交却要被删」这四种今天会静默丢数据的情况，开关关着也一律停手。</li>
+    <li><b>回滚</b>：关开关即可；已经推上去的救援分支、救援目录都保留，不需要清理。</li>
+    <li><b>2026-09-26 新增（v5.2）· 被忽略文件的保全门</b>：<code>.gitignore</code>（仓库里一份「这些文件 git 不管」的名单，例如依赖包目录）列出的文件，git 平时看不见，所以既不进快照、也不进救援分支。重派时的新一轮评审用真实 git 复现出：如果清理要切到的提交点改了这份名单，或者开始管同名文件，清理就会把这些「看不见」的文件删掉或覆盖，而系统还报「零丢失成功」。现在清理前先逐条核对「这次清理会写哪些路径」：那些位置上只要有没被保全的东西、或这次清理会改动任何一份忽略名单，就<b>停手告警并列出路径</b>，和今天一样等人处理。代价：这类情况不再自动接上；常见的「只有未提交改动」和「只落后几个普通提交」不受影响。</li>
+  </ul>
+  <div class="cbox"><label>给「诚实边界」的意见</label><textarea data-key="s07" data-title="诚实边界"></textarea></div>
+</section>
+
+<section class="card" data-title="测试与验收">
+  <h2>测试与验收（实现节点要交的证据）</h2>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:28%">层</th><th>要证明的事</th></tr>
+    <tr><td>真 git 集成测试（每类一次）</td><td>临时目录里建远端 + 主仓 + 共享目录，构造每一类失败；处置后从远端救援分支取出内容，与处置前<b>逐字节</b>比对，提交集合完整；嵌套仓按挪走后的目录比对</td></tr>
+    <tr><td>停手场景</td><td>远端有目标里没有的工作 / 推送失败 / 合并冲突进行中 / 超过大小上限 / 等待期间有人写入 / 前任还在跑或是僵尸：目录、索引、提交点字节不变，返回对应原因，告警列路径</td></tr>
+    <tr><td>替身恢复指令</td><td>在清理后的目录里按提示词分两层恢复（先已暂存、再未暂存），暂存区、工作区、未跟踪文件三者都与处置前一致</td></tr>
+    <tr><td>崩溃注入</td><td>在写清单前、写事件前、事件后清理前、清理后回执前、目录重建的各个中间点、多个嵌套仓只挪了一部分等处中断；其中三种用真实数据库重启跑。重跑要么接着做完、要么停手，都不丢东西；改清单一个字节必须被识破</td></tr>
+    <tr><td>FLY-2122 阴性对照</td><td>前任不能证明已停 + 未跟踪目录 → 失败并列路径；放在两个排除目录之外的未跟踪目录仍判脏</td></tr>
+    <tr><td>不撞 head</td><td>替身完成 / QA 判决读到的提交点等于清理后的目标；分叉被搁置时，针对旧提交点的评审按现有规则判为「提交点已移动」，不会被静默复用</td></tr>
+    <tr><td>回归</td><td>FLY-1707 的恢复重建测试原样全绿；总开关关掉时控制流、失败类别与 held 语义同今天（失败文案允许多出脏路径诊断）</td></tr>
+  </table>
+  </div>
+  <div class="cbox"><label>给「测试与验收」的意见</label><textarea data-key="s08" data-title="测试与验收"></textarea></div>
+</section>
+
+<section class="card gray" data-title="评审记录">
+  <h2>评审记录</h2>
+  <!--REVIEW_LOG-->
+  <div class="cbox"><label>给「评审记录」的意见</label><textarea data-key="s09" data-title="评审记录"></textarea></div>
+</section>
+
+<section class="card" id="summary-card" data-title="页面意见汇总">
+  <h2>页面意见汇总</h2>
+  <p class="note">上面每一节的意见框会自动保存在你这台浏览器里；这里实时汇总所有非空意见。点「复制全部意见」把汇总贴回给 Lead 即可。这是修订反馈，不是通过信号。</p>
+  <div id="summary-chunks" class="chunks"></div>
+  <div>
+    <button type="button" class="btn" id="copy-all">复制全部意见</button>
+    <button type="button" class="btn sec" id="clear-all">清空本页意见</button>
+  </div>
+  <div class="status" id="copy-status"></div>
+</section>
+</div>

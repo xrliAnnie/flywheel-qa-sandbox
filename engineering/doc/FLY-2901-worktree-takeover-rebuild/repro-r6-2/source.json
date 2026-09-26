@@ -1,0 +1,11 @@
+{
+  "sourceCommit": "8e684a97df07d5fd8768e621fb5b06a7fd30c339",
+  "planBlob": "f28e685166841773c7d632a32aa38235d2fc7a08",
+  "sourceHashes": {
+    "packages/edge-worker/src/worktree-takeover-transaction.ts": "3fe9218868b940e10ed52687f28538535e12ab87596734c8775841f75752fabc",
+    "packages/edge-worker/src/worktree-takeover-rescue.ts": "70e27b01c7dad4eff6275283e9543129be442abbb6ad050533b4ceb8925675a8",
+    "packages/edge-worker/src/worktree-paths.ts": "88882037dd4b2295b8da88f2e5c79f738a53b80038cd801f114a347154d45e5a",
+    "packages/config/src/canonical-json.ts": "906b5ddedf5dd2dd2f6381572db69fa33454a6724fc5063a7caf1e749ea303bc",
+    "packages/edge-worker/src/WorktreeManager.ts": "782fd3fafbe2c710e82e30794f9b1214f4ee3a045e2d8fd80641414cac190607"
+  }
+}

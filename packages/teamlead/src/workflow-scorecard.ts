@@ -874,6 +874,21 @@ export class WorkflowScorecardStore {
 		}
 	}
 
+	/** FLY-2903: newest Codex usage source bound to one execution (read-only). */
+	latestCodexSourceForExecution(
+		executionId: string,
+	): { source_locator: string; native_session_id: string } | undefined {
+		return this.db
+			.prepare(
+				`SELECT source_locator, native_session_id FROM workflow_scorecard_cursor
+				  WHERE vendor = 'codex' AND execution_id = ?
+				  ORDER BY updated_at DESC LIMIT 1`,
+			)
+			.get(executionId) as
+			| { source_locator: string; native_session_id: string }
+			| undefined;
+	}
+
 	getActivation(
 		activationId: string,
 	): WorkflowScorecardActivationRow | undefined {

@@ -407,6 +407,19 @@ describe("feature-flag drift guard", () => {
 					resolverSymbol: "storeOpusModelSyncDisabled",
 				},
 			},
+			// FLY-2901: read by the workflow engine dispatcher at each handoff so
+			// the successor's Blueprint ctx carries the current kill-switch value.
+			{
+				name: "worktree_takeover_rescue_disabled",
+				site: {
+					file: "packages/teamlead/src/bridge/plugin.ts",
+					symbol: "workflowEngineDispatcher",
+					pattern: "delegated",
+					timing: "call_time",
+					resolverModule: "packages/teamlead/src/bridge/flag-store-runtime.ts",
+					resolverSymbol: "storeWorktreeTakeoverRescueDisabled",
+				},
+			},
 			...[
 				["cmux_rebind_disabled", "storeCmuxRebindDisabled"],
 				["summary_absorption_cadence_ms", "storeSummaryAbsorptionCadenceMs"],
@@ -417,6 +430,7 @@ describe("feature-flag drift guard", () => {
 				["account_switch_wake_sweep", "storeAccountSwitchWakeSweepEnabled"],
 				["loop_profiler", "storeLoopProfilerEnabled"],
 				["shipped_husk_force", "storeShippedHuskForceEnabled"],
+				["codex_terminal_reap_enabled", "storeCodexTerminalReapEnabled"],
 			].map(([name, resolverSymbol]) => ({
 				name,
 				site: {

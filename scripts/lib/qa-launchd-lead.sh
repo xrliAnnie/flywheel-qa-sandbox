@@ -1345,7 +1345,8 @@ qa_launchd_stop_codex_entry() {
   local registry="$1" entry="$2" validated entry_state label codex_home codex_bin state_dir runtime_pid_file tmux_bin
   local runtime_pid="" runtime_incarnation="" daemon_pid="" daemon_incarnation=""
   local daemon_pid_file managed_daemon_pid_file daemon_socket launch_marker bounded_run updater_rc
-  local slot_root home_residue updater_disposition="" runtime_started=0 failed=0
+  local slot_root home_residue updater_disposition="" runtime_pid_source=""
+  local runtime_started=0 stale_runtime_metadata=0 failed=0
   validated=$(qa_launchd_validate_codex_stop_entry "$registry" "$entry") \
     || { qa_launchd_err "carrier=codex-tui step=validate"; return 1; }
   IFS=$'\t' read -r entry_state label codex_home codex_bin state_dir runtime_pid_file tmux_bin <<<"$validated"
@@ -1361,11 +1362,19 @@ qa_launchd_stop_codex_entry() {
     return 0
   fi
   runtime_pid=$(qa_launchd_lead_pid_exact "$label" || true)
+  [[ -z "$runtime_pid" ]] || runtime_pid_source=launchd
   if [[ -z "$runtime_pid" && -f "$runtime_pid_file" && ! -L "$runtime_pid_file" ]]; then
     runtime_pid=$(cat "$runtime_pid_file" 2>/dev/null || true)
-    [[ "$runtime_pid" =~ ^[1-9][0-9]*$ ]] || runtime_pid=""
+    if [[ "$runtime_pid" =~ ^[1-9][0-9]*$ ]]; then
+      runtime_pid_source=pid-file
+    else
+      runtime_pid=""
+    fi
   fi
   runtime_incarnation=$(qa_launchd_process_incarnation "$runtime_pid" || true)
+  if [[ "$runtime_pid_source" == pid-file && -z "$runtime_incarnation" ]]; then
+    stale_runtime_metadata=1
+  fi
   launch_marker="${codex_home}/.flywheel-qa-launch-started"
   if [[ -e "$launch_marker" || -L "$launch_marker" ]]; then
     if [[ -f "$launch_marker" && ! -L "$launch_marker" ]]; then
@@ -1443,6 +1452,12 @@ qa_launchd_stop_codex_entry() {
       qa_launchd_err "carrier=codex-tui step=home-residue updater=${updater_disposition} residue=unknown"
     fi
     failed=1
+  fi
+  if [[ "$failed" == 0 && "$stale_runtime_metadata" == 1 ]]; then
+    if ! rm -f -- "$runtime_pid_file" "$launch_marker"; then
+      qa_launchd_err "carrier=codex-tui step=metadata-retire result=failed"
+      failed=1
+    fi
   fi
   if [[ "$failed" == 0 ]]; then
     slot_root=$(dirname "$registry")

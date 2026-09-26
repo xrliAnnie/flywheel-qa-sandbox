@@ -200,14 +200,16 @@ async function readBoundedBody(
 			if (next.done) break;
 			total += next.value.byteLength;
 			if (total > maxBodyBytes) {
-				void reader.cancel("body exceeds configured maximum");
+				// Cancellation can reject too; preserve the already selected failure.
+				void reader.cancel("body exceeds configured maximum").catch(() => {});
 				return { outcome: "too_large", bytes: new Uint8Array() };
 			}
 			chunks.push(next.value);
 		}
 	} catch (error) {
 		if (signal.aborted || (error as Error).name === "AbortError") {
-			void reader.cancel("probe deadline exceeded");
+			// An aborted/errored stream rejects cancel with the same AbortError.
+			void reader.cancel("probe deadline exceeded").catch(() => {});
 			return { outcome: "timeout", bytes: new Uint8Array() };
 		}
 		return {
