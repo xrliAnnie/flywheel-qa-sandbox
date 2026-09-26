@@ -500,6 +500,33 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: read-on-use wrapper observes the next store write",
 		note: "Only disables new forced teardown intents; strict land-lease and tmux execution-identity fences remain mandatory when enabled.",
 	},
+	// ─── FLY-2903: terminal Codex body sweep actions ───
+	{
+		name: "codex_terminal_reap_enabled",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_CODEX_TERMINAL_REAP_ENABLED",
+		polarity: "default_on",
+		valueKind: "bool",
+		onMeans: "enables",
+		default: true,
+		description:
+			"FLY-2903: lets the terminal Codex body sweep ask a still-owned terminal body to stop and reap an identity-proven live daemon; =0 keeps the sweep to observe, record and alert",
+		whenOn:
+			"已经结束的 Codex 任务如果还在后台运行，自动让它停下并收掉；关闭后只记录和告警",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"startBridge",
+				"storeCodexTerminalReapEnabled",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: FLY-2903 terminal reap switch observes the next store write",
+		note: "Controls only the sweep's stop request and reap. Terminal paths always stop the in-process runtime before reaping, and the restart gate never resurrects a stopped body, whatever this switch says.",
+	},
 	// ─── FLY-1781: weekly retirement candidate scan ───
 	{
 		name: "flag_retirement_scan",

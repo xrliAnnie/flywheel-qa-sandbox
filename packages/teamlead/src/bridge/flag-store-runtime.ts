@@ -438,6 +438,13 @@ export function storeLoopProfilerEnabled(runtime: FlagStoreRuntime): boolean {
 	return readBoolean(runtime, "loop_profiler");
 }
 
+/** FLY-2903: the terminal-body sweep's requestStop + reap (read on use). */
+export function storeCodexTerminalReapEnabled(
+	runtime: FlagStoreRuntime,
+): boolean {
+	return readBoolean(runtime, "codex_terminal_reap_enabled");
+}
+
 export function storeShippedHuskForceEnabled(
 	runtime: FlagStoreRuntime,
 ): boolean {

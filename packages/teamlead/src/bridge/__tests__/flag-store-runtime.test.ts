@@ -16,6 +16,7 @@ import {
 	storeCodexLeadThreadRotationEnabled,
 	storeCodexMemoryDistillEnabled,
 	storeCodexQuotaAutoSwitchEnabled,
+	storeCodexTerminalReapEnabled,
 	storeDatabaseArchiveEnabled,
 	storeDocFlowEnabled,
 	storeFlagRetirementScanEnabled,
@@ -144,6 +145,31 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 		}
 		expect(storeLoopProfilerEnabled(runtime)).toBe(true);
 		expect(storeShippedHuskForceEnabled(runtime)).toBe(true);
+	});
+
+	it("FLY-2903 terminal reap switch observes the next store write", () => {
+		const runtime = initializeFlagStore(store, {});
+		expect(storeCodexTerminalReapEnabled(runtime)).toBe(true);
+		const revision = store.getFlagValueRow(
+			"codex_terminal_reap_enabled",
+		)!.revision;
+		expect(
+			store.applyFlagValueChange({
+				name: "codex_terminal_reap_enabled",
+				rawTo: "0",
+				expectedRevision: revision,
+				actor: "bridge-local-operator",
+				reason: "prove the sweep kill switch reads at call time",
+			}),
+		).toMatchObject({ ok: true });
+		expect(storeCodexTerminalReapEnabled(runtime)).toBe(false);
+	});
+
+	it("FLY-2903 terminal reap switch can be seeded off from the environment", () => {
+		const runtime = initializeFlagStore(store, {
+			FLYWHEEL_CODEX_TERMINAL_REAP_ENABLED: "0",
+		});
+		expect(storeCodexTerminalReapEnabled(runtime)).toBe(false);
 	});
 
 	it("FLY-2076 keeps the alert system default-on and observes an off write without restart", () => {

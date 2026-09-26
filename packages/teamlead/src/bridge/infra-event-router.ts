@@ -85,6 +85,7 @@ export const TICKET_KINDS: ReadonlySet<AlertEventType> =
 		"cmux_cleanup",
 		"cmux_watcher_stalled",
 		"codex_lead_residency_stalled",
+		"codex_terminal_body_alive",
 		"tmux_rescue_hold",
 	]);
 

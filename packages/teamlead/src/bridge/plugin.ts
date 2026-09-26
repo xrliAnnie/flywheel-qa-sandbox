@@ -353,7 +353,11 @@ import {
 	createHostCmuxWatcherPatrol,
 	projectCmuxRebindDisabled,
 } from "./cmux-watcher-patrol.js";
-import { reapCodexDaemonForSession } from "./codex-daemon-teardown.js";
+import {
+	codexTerminalTeardownDeps,
+	reapCodexDaemonForSession,
+	registerCodexTerminalTeardown,
+} from "./codex-daemon-teardown.js";
 import {
 	createCredentialProbe,
 	reportCodexGlobalHealth,
@@ -379,6 +383,11 @@ import {
 	prepareCodexRecoveryAgentHome,
 	resolveCodexRecoveryWindow,
 } from "./codex-session-reown.js";
+import {
+	createCodexTerminalCloseAttemptRecorder,
+	terminalBodiesForQuotaPage,
+} from "./codex-terminal-close-ledger.js";
+import { createBridgeCodexTerminalSweep } from "./codex-terminal-sweep-runtime.js";
 import { recordCodexTransportDeathSnapshot } from "./codex-transport-death-snapshot.js";
 import { prepareBridgeCommDbRebuilds } from "./commdb-fly2268-preflight.js";
 import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
@@ -530,6 +539,7 @@ import {
 	storeCmuxRebindDisabled,
 	storeCmuxWatcherRebuildDisabled,
 	storeCodexQuotaAutoSwitchEnabled,
+	storeCodexTerminalReapEnabled,
 	storeDatabaseArchiveEnabled,
 	storeFlagRetirementScanEnabled,
 	storeLoopProfilerEnabled,
@@ -2244,7 +2254,11 @@ export function createBridgeApp(
 							},
 						}),
 						vercelSection,
-						{ lastSwitch },
+						{
+							lastSwitch,
+							// FLY-2903: best effort — a ledger failure is an empty banner.
+							terminalBodies: terminalBodiesForQuotaPage(store, new Date()),
+						},
 					);
 					res.type("html").send(html);
 				} catch {
@@ -4097,6 +4111,7 @@ export function createBridgeApp(
 				store,
 				session,
 				"bridge.close-tmux",
+				codexTerminalTeardownDeps("close_tmux"),
 			);
 			const target = getTmuxTargetFromCommDb(executionId, session.project_name);
 			if (!target) {
@@ -8321,6 +8336,13 @@ export async function startBridge(
 	// FLY-2211: one process-local authority shared by first dispatch, rescue,
 	// boot reconciliation, and the adjacent orphan reaper.
 	const codexExecutionOwners = new CodexExecutionOwnershipRegistry();
+	// FLY-2903: every Bridge terminal path (terminate / closeRunner /
+	// process retirement / close-tmux) stops this process's goal runtime before
+	// reaping its daemon and records the attempt for the terminal sweep.
+	const disposeCodexTerminalTeardown = registerCodexTerminalTeardown({
+		owners: codexExecutionOwners,
+		closeLedger: createCodexTerminalCloseAttemptRecorder(store),
+	});
 	const codexRecoveryRuntimes = new Map<string, CodexRecoveryRuntime>();
 	const codexMaintenanceTicks: string[] = [];
 
@@ -10208,6 +10230,25 @@ export async function startBridge(
 			);
 		}
 	};
+	// FLY-2903: late-bound sink for the terminal-body sweep, bound with the
+	// routed alert sink below. Unbound → the sweep keeps the alert pending and
+	// retries it next tick.
+	const codexTerminalSweepAlertHolder: {
+		current?: { alert: (p: AlertPayload) => Promise<AlertResult> };
+	} = {};
+	// Only this process's own ownership registry can say whether a terminal
+	// body is still owned; an injected dispatcher does not share it. Disabled
+	// under VITEST (same boundary as the codex health probe): general Bridge
+	// suites must never read the host's process table or its real socket root.
+	const codexTerminalSweep =
+		opts?.startDispatcher || process.env.VITEST
+			? undefined
+			: createBridgeCodexTerminalSweep({
+					store,
+					owners: codexExecutionOwners,
+					reapEnabled: () => storeCodexTerminalReapEnabled(flagStore),
+					alertSink: codexTerminalSweepAlertHolder,
+				});
 	const codexSessionReowner = new CodexSessionReowner({
 		store,
 		isIntentionalStandby: (executionId) => {
@@ -10753,6 +10794,24 @@ export async function startBridge(
 						error instanceof Error ? error.message : String(error)
 					}`,
 				);
+			}
+			// FLY-2903: after recovery claimed what it may, give every terminal
+			// Codex body a verified close verdict (single-flight, 30s soft budget).
+			if (codexTerminalSweep) {
+				try {
+					const swept = await codexTerminalSweep.tick();
+					if (swept.evaluated > 0 || swept.deferred > 0) {
+						console.log(
+							`[codex-terminal-sweep] evaluated=${swept.evaluated} deferred=${swept.deferred} skippedBodies=${swept.skippedBodies} states=${JSON.stringify(swept.states)}`,
+						);
+					}
+				} catch (error) {
+					console.warn(
+						`[codex-terminal-sweep] pass failed closed: ${
+							error instanceof Error ? error.message : String(error)
+						}`,
+					);
+				}
 			}
 			try {
 				await residentReceiverSupervisor.healthTick();
@@ -15953,6 +16012,7 @@ export async function startBridge(
 	// FLY-927: via the Router — runner_lead_pending_unhandled is an issue-progress
 	// kind, so with routing ON it lands in the issue's own thread.
 	leadPendingAlertHolder.current = routedAlertSink;
+	codexTerminalSweepAlertHolder.current = routedAlertSink;
 
 	// FLY-182 §4.1: surface any Lead whose alert channel/token cannot resolve
 	// from config — the silent gap that broke alerting for 25 days. LOUD log +
@@ -16240,6 +16300,7 @@ export async function startBridge(
 		// timeout so the process — and thus the port — is released even if any
 		// await below hangs.
 		shutdownStateHolder.shuttingDown = true;
+		disposeCodexTerminalTeardown();
 		landReclosePeerServer?.close();
 		await xhsWriteService.close();
 		await leadGithubProvider?.close();

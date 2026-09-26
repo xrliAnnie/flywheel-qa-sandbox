@@ -361,6 +361,10 @@ export const ALERT_EVENT_TYPES = [
 	// its business-level heartbeat independently proved stalled. Recovery remains
 	// tuple-bound.
 	"codex_lead_residency_stalled",
+	// FLY-2903: a terminal Codex execution still has a live body or keeps
+	// burning quota. Unrostered in ticket-owner-map on purpose: the default
+	// owner (the Claude infra bot) handles the Codex side.
+	"codex_terminal_body_alive",
 	// FLY-2207: the existing watcher patrol remained unhealthy for its bounded
 	// recovery window. This is the founder-facing face, not an ordinary ticket.
 	"cmux_watcher_unrecovered",

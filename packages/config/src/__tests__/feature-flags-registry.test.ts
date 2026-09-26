@@ -39,6 +39,8 @@ const EXPECTED_WHEN_ON = {
 	loop_profiler: "Bridge 卡顿时自动抓取一份限时 CPU 分析，方便排查原因",
 	shipped_husk_force:
 		"合入后的节点正常关闭失败一次后，自动清理已确认无用的残留进程",
+	codex_terminal_reap_enabled:
+		"已经结束的 Codex 任务如果还在后台运行，自动让它停下并收掉；关闭后只记录和告警",
 	flag_retirement_scan:
 		"每周检查长期没变的 flag，整理成「保留或清理」候选；不会自动删除",
 	workflow_rework_reentry:
@@ -88,7 +90,7 @@ describe("feature-flag registry invariants", () => {
 	});
 
 	it("FLY-2368 gives every current flag its reviewed founder copy", () => {
-		expect(FEATURE_FLAGS).toHaveLength(35);
+		expect(FEATURE_FLAGS).toHaveLength(36);
 		expect(
 			Object.fromEntries(FEATURE_FLAGS.map((flag) => [flag.name, flag.whenOn])),
 		).toEqual(EXPECTED_WHEN_ON);

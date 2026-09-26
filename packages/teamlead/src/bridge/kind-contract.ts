@@ -335,6 +335,12 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 		owner: "claude",
 		arc: "human_by_design",
 	},
+	// FLY-2903: the sweep already stopped/reaped what it could prove; whatever
+	// remains is unprovable by design and needs a human look.
+	codex_terminal_body_alive: {
+		owner: "claude",
+		arc: "human_by_design",
+	},
 	cmux_watcher_unrecovered: {
 		owner: "claude",
 		arc: "human_by_design",

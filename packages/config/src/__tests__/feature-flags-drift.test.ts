@@ -417,6 +417,7 @@ describe("feature-flag drift guard", () => {
 				["account_switch_wake_sweep", "storeAccountSwitchWakeSweepEnabled"],
 				["loop_profiler", "storeLoopProfilerEnabled"],
 				["shipped_husk_force", "storeShippedHuskForceEnabled"],
+				["codex_terminal_reap_enabled", "storeCodexTerminalReapEnabled"],
 			].map(([name, resolverSymbol]) => ({
 				name,
 				site: {

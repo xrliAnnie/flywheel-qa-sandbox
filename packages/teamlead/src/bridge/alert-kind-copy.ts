@@ -458,6 +458,8 @@ export function titleFor(kind: AlertEventType): string {
 			return "cmux watcher is stalled or unsupervised";
 		case "codex_lead_residency_stalled":
 			return "Resident Codex Lead business-liveness stalled";
+		case "codex_terminal_body_alive":
+			return "终态 Codex 体仍在运行 / 仍在用额度";
 		case "cmux_watcher_unrecovered":
 			return "cmux watcher recovery did not converge";
 		case "flag_scan_failed":
@@ -487,6 +489,7 @@ export function severityFor(kind: AlertEventType): AlertPayload["severity"] {
 		kind === "runner_login_expired" ||
 		kind === "cmux_watcher_stalled" ||
 		kind === "codex_lead_residency_stalled" ||
+		kind === "codex_terminal_body_alive" ||
 		kind === "cmux_watcher_unrecovered"
 	)
 		return "severe";
@@ -737,6 +740,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "The resident cmux watcher failed its launchd, owner, heartbeat, or event-backlog health contract. Review the supplied branch and canonical recovery outcome; uncertainty branches intentionally did not signal a process.";
 		case "codex_lead_residency_stalled":
 			return "An explicitly rostered resident Codex Lead generation failed its business-liveness contract. Review the supplied target, lifecycle, poll, turn, gateway, and tuple-bound recovery evidence; identity uncertainty and controlled replacement waves intentionally suppress mutation.";
+		case "codex_terminal_body_alive":
+			return "A Codex execution that already reached a terminal status still has a live body, or its rollout kept growing after terminal. The sweep already asked the in-process owner to stop or reaped the identity-proven daemon where it could; this alert means the rest could not be proven. Inspect the named execution's codex processes and quota usage before signalling anything by hand.";
 		case "cmux_watcher_unrecovered":
 			return "The resident cmux watcher stayed unhealthy beyond the bounded recovery window. Inspect the latest branch and recovery evidence before intervening; planned maintenance parks suppress this escalation.";
 		case "flag_scan_failed":

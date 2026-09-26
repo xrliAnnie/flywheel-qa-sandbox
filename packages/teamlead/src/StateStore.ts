@@ -15,6 +15,7 @@ import {
 	type SummaryPresentationStaleSignal,
 } from "./bridge/summary-presentation-store.js";
 import { SUMMARY_ACTIVITY_NOISE_EVENT_TYPES } from "./bridge/summary-activity-probe.js";
+import { CodexTerminalCloseStore } from "./bridge/codex-terminal-close-ledger.js";
 import { readEpicIntakeRefreshState, recordEpicIntakeRefreshResult, readEpicIntake, migrateEpicIntakes, hasEpicDispatchRecord, recordEpicIntake, beginEpicIntakeScan, completeEpicIntakeScan, type EpicIntakeScan, type EpicIntakeInput, type EpicIntakeRecord } from "./bridge/epic-intake-store.js";
 import {
 	assertPercentageModelAssignment,
@@ -3241,6 +3242,25 @@ export class StateStore {
 			this.customerReleaseStoreCache = { db, store: new CustomerReleaseStore(db) };
 		}
 		return this.customerReleaseStoreCache.store;
+	}
+	private codexTerminalCloseStoreCache?: {
+		db: BetterDb;
+		store: CodexTerminalCloseStore;
+	};
+	/** FLY-2903: terminal Codex close verdicts (single writer: codex-terminal-close-ledger). */
+	get codexTerminalClose(): CodexTerminalCloseStore {
+		const db = this.db.raw;
+		if (this.codexTerminalCloseStoreCache?.db !== db) {
+			this.codexTerminalCloseStoreCache = {
+				db,
+				store: new CodexTerminalCloseStore(db),
+			};
+		}
+		return this.codexTerminalCloseStoreCache.store;
+	}
+	/** FLY-2903: run `fn` in one transaction on this store's connection. */
+	runInTransaction(fn: () => void): void {
+		this.db.transaction(fn);
 	}
 	get summaryPresentations(): SummaryPresentationStore {
 		const db = this.db.raw;
@@ -10925,6 +10945,7 @@ export class StateStore {
 			"CREATE UNIQUE INDEX IF NOT EXISTS idx_lead_events_dedup ON lead_events(lead_id, event_id)",
 		);
 		this.summaryPresentations.migrate();
+		this.codexTerminalClose.migrate();
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS patrol_orphan_watch (
 				target TEXT PRIMARY KEY,
