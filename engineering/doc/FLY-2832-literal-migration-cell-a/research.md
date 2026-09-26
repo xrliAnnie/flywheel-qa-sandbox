@@ -83,12 +83,13 @@ fixture 没有 build 或 typecheck 脚本，也没有导出类型变化；实施
 
 实施还需要比验证器更强的差异守卫：改动文件应恰好是十个目标文件；`src/index.ts`、`src/__tests__/unrelated.test.ts`、`verify.mjs`、`package.json` 不应出现在迁移提交 diff 中；新值计数应为 38。
 
-## 7. 基线缺失的决策边界
+## 7. 基线与测试环境缺失的决策边界
 
-推荐把“fixture seed”视为测试台架提供的前置状态，而不是迁移实现的一部分：
+推荐把“fixture seed + lockfile importer + 可执行的本地 Vitest/Biome”视为测试台架提供的前置状态，而不是迁移实现的一部分。seed 提交 `f4825403b` 本身没有在 `pnpm-lock.yaml` 登记新 workspace，而 CI 使用 frozen lockfile，因此 package 已出现但 importer 缺失时，exact-head CI 必然在安装阶段失败：
 
-- 若实施 TURN 开始时 fixture 已存在，重新发现并按本计划执行。
-- 若 fixture 仍不存在，实施节点 fail-closed，报告 Lead 并等待台架注入；不手写、不从邻近分支复制、不把空搜索解释为成功。
+- 若实施 TURN 开始时 fixture、lock importer 和本地工具都存在，重新发现并按本计划执行。
+- 若任一前置项缺失，实施节点 fail-closed，报告 Lead 并等待台架补齐；不手写、不从邻近分支复制、不自行用 `pnpm install` 改写 lockfile、不把空搜索解释为成功。
 - 若 Lead 明确授权使用某个 seed 提交，seed 必须保持独立提交，并在迁移前核对树内容；迁移提交自身仍只能包含十个目标文件。
+- 任何 lockfile 或依赖安装副作用都不能混入迁移提交，也不能作为未解释的脏状态留给共享工作树的下一阶段。
 
 这样可以保住 529 的核心测量边界：主题变更是精确迁移，不夹带 fixture 构造或 lockfile 修复。

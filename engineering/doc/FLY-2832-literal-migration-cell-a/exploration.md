@@ -21,7 +21,7 @@ Issue: FLY-2832 (https://linear.app/geoforge3d/issue/FLY-2832/qa-fly-2802-qa-san
 
 设计审计时，当前 `HEAD`（`1855f7a1a`）和 `origin/main` 都没有 `packages/runner-test-discipline-fixture`，也没有目标旧值或新值。对象库中的合成基线提交 `f4825403b` 包含预期 fixture；相邻 FLY-2825 分支把该基线提交放在设计提交之前。
 
-因此，fixture 的存在是实施前置条件，而不是本设计允许重新创造的范围。实施节点应先重新运行发现命令：如果目录或旧精确标签仍不存在，应停止变更并向 Lead 报告“基线未注入”；不得凭本设计重建 fixture、复制邻近分支文件，或把空扫描当成迁移完成。
+因此，fixture、对应 lockfile importer 和可执行的本地测试工具都是实施前置条件，而不是本设计允许重新创造的范围。实施节点应先重新运行发现和环境检查：如果任一项不存在，应停止变更并向 Lead 报告“基线环境未注入”；不得凭本设计重建 fixture、复制邻近分支文件、自行改写 lockfile，或把空扫描当成迁移完成。
 
 ## 审计到的结构
 

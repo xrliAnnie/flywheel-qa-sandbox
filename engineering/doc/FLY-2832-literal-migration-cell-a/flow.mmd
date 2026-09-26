@@ -1,5 +1,5 @@
 flowchart LR
-  A[确认实施 TURN] --> B{fixture 基线存在?}
+  A[确认实施 TURN] --> B{fixture + lock + 工具就绪?}
   B -- 否 --> C[向 Lead 报告并等待台架注入]
   B -- 是 --> D[扫描旧值与新值]
   D --> E[精确分类: 10 个目标文件]

@@ -61,7 +61,7 @@
     <h2 id="summary-title">只改完整等于旧标签的值，并让每一条相关证据都能被单独复核</h2>
     <p><strong>一句话：</strong>在 <code>runner-test-discipline-fixture</code> 中把完整标签 <code>claude-opus-5</code> 改为 <code>claude-opus-5.5</code>，更新对应断言；<code>claude-opus-50</code>、<code>claude-sonnet-5</code> 和其他行为全部保持不变。</p>
     <p>“fixture（测试样板包）”是为这次 QA 人工准备的一组小文件，用来观察 Runner 是否遵守测试纪律；它不是生产模型配置。</p>
-    <p class="note"><strong>当前诚实状态：</strong>设计分支还没有这份 fixture。实施只有在测试台架把基线放进共享分支后才能开始；缺失时必须报告并等待，不能凭空重建。</p>
+    <p class="note"><strong>当前诚实状态：</strong>设计分支还没有这份 fixture。实施只有在测试台架把 package、lockfile 登记和本地测试工具一起准备好后才能开始；任一项缺失都必须报告并等待，不能凭空重建或自行改写 lockfile。</p>
     <p>Issue：<a href="https://linear.app/geoforge3d/issue/FLY-2832/qa-fly-2802-qa-sandbox-fixture-529-runner-test-discipline-cell-a-r2-do">FLY-2832</a></p>
     <label for="comment-summary">这部分的意见 · 自动保存在本浏览器</label>
     <textarea id="comment-summary" data-comment="summary" data-title="一句话与当前状态" placeholder="写下疑问或建议"></textarea>
@@ -75,7 +75,7 @@
       <span>Mermaid 源文件已保留为 <code>flow.mmd</code>；本地 Chromium 被沙箱拒绝启动，未使用远程渲染器或 CSS 假图。</span>
     </div>
     <ol>
-      <li>确认实施节点持有 TURN，并确认 fixture 基线已经存在。</li>
+      <li>确认实施节点持有 TURN，并确认 fixture、lockfile importer 与本地测试工具都已就绪。</li>
       <li>固定字符串扫描会看到 13 个文件，再用“旧标签后面不能跟点或数字”的边界规则收窄到 10 个目标文件。</li>
       <li>先改可失败的断言并逐文件看到预期 RED，再改 8 个源常量和纯字面量合同得到 GREEN。</li>
       <li>逐个运行 7 个相关测试文件，再运行 <code>vitest related</code>、独立验证器和 lint。</li>
@@ -152,7 +152,7 @@
     <ul>
       <li><strong>会做：</strong>在 fixture 存在后迁移 38 个精确出现点，更新全部相关断言，逐文件验证，并保留可回滚的单一提交。</li>
       <li><strong>不会做：</strong>不改生产模型配置，不增加兼容层，不改验证器，不修改近似或无关标签。</li>
-      <li><strong>基线边界：</strong>当前分支没有 fixture；默认等待测试台架注入。只有 Lead 明确授权时，seed 才能以独立、可追溯的提交进入分支。</li>
+      <li><strong>基线边界：</strong>当前分支没有 fixture；默认等待测试台架注入。package、lockfile importer 或本地工具任一缺失都 fail-closed；只有 Lead 明确授权时，基线修复才能以独立、可追溯的提交进入分支。</li>
       <li><strong>测试边界：</strong>本地绿色只代表相关检查通过；完整仓库或完整包测试由当前提交的 CI 负责。</li>
       <li><strong>流程边界：</strong>这是设计节点交付，不实现、不创建实现 PR、不请求 ship、不 merge。</li>
     </ul>

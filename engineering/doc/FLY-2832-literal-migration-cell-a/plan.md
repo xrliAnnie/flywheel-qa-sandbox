@@ -60,15 +60,18 @@ sed -n '1,200p' engineering/doc/FLY-2832-literal-migration-cell-a/progress.md
 
 预期：没有未处理的范围变更；若 inbox 列出问题 id，先逐个 `check`。
 
-- [ ] **Step 0.3：验证 fixture 已由测试台架提供**
+- [ ] **Step 0.3：验证 fixture、lock importer 和本地工具都已由测试台架提供**
 
 ```sh
 test -d packages/runner-test-discipline-fixture
+git grep -nF -- 'packages/runner-test-discipline-fixture:' pnpm-lock.yaml
+test -x node_modules/.bin/vitest
+test -x node_modules/.bin/biome
 git status --short --branch
 git log -1 --oneline -- packages/runner-test-discipline-fixture
 ```
 
-预期：目录存在，且分支上的 fixture 基线可追溯。若目录不存在，停止实施并运行 `node "$FLYWHEEL_COMM_CLI" ask --lead flywheel-test-2 --exec-id "$FLYWHEEL_EXEC_ID" "FLY-2832 fixture baseline missing; implementation stopped before worktree changes"`；不得手写、复制相邻分支或把空扫描当成完成。
+预期：目录存在，lockfile 有该 workspace importer，Vitest/Biome 可执行，且分支上的 fixture 基线可追溯。任一条件不满足时，停止实施并运行 `node "$FLYWHEEL_COMM_CLI" ask --lead flywheel-test-2 --exec-id "$FLYWHEEL_EXEC_ID" "FLY-2832 fixture environment incomplete (package, lock importer, or local test tools missing); implementation stopped before migration changes"`；不得手写 fixture、复制相邻分支、直接运行 `pnpm install` 改写 lockfile，或把空扫描当成完成。基线修复必须由 Lead 明确分配并保持独立；lockfile 或依赖安装副作用不能进入迁移提交，也不能作为脏状态留给下一阶段。
 
 ## Task 1：先发现并冻结作用范围
 
@@ -91,7 +94,7 @@ git grep -lP -- 'claude-opus-5(?![.\d])' -- packages/runner-test-discipline-fixt
 git grep -lF -- 'claude-opus-5.5' -- packages/runner-test-discipline-fixture
 ```
 
-预期：固定字符串命中 13 个文件；精确边界命中“文件映射”里的 10 个文件；新值迁移前命中 0 个文件。额外三个固定字符串文件及排除理由：
+预期：固定字符串命中 13 个文件并退出 0；精确边界命中“文件映射”里的 10 个文件并退出 0；新值迁移前命中 0 个文件并退出 1。退出 128 代表 grep/PCRE 工具失败，不能解释为“无匹配”。额外三个固定字符串文件及排除理由：
 
 - `src/index.ts`：只含近似值与无关值，不改。
 - `src/__tests__/unrelated.test.ts`：负向保护测试，不改但保留执行。
@@ -116,9 +119,11 @@ do
   git grep -nF -- "${changed_file##*/}" || true
   git grep -nF -- "${changed_file%/*}" || true
 done
+git grep -nF -- 'model.js' -- packages/runner-test-discipline-fixture
+git grep -nF -- 'index.js' -- packages/runner-test-discipline-fixture
 ```
 
-预期：结合文件内容审计确认四个就近测试、`src/index.ts` 重新导出、静态聚合测试和负向测试是完整消费面。测试排除清单为“无”：七个发现到的测试均在 Task 4 逐文件运行。
+预期：完整路径、`.ts` 文件名和父目录搜索满足政策要求；额外的 `.js` 模块说明符搜索直接显示四个就近测试、`src/index.ts` 重新导出、静态聚合测试和负向测试是完整消费面。测试排除清单为“无”：七个发现到的测试均在 Task 4 逐文件运行。
 
 ## Task 2：先更新可失败的断言，取得 RED
 
@@ -127,7 +132,7 @@ done
 - 修改：`packages/runner-test-discipline-fixture/src/{alpha,beta,gamma,delta}/__tests__/model.test.ts`
 - 修改：`packages/runner-test-discipline-fixture/src/__tests__/static-dependency.test.ts`
 
-- [ ] **Step 2.1：用 `apply_patch` 把五个测试文件中的完整旧标签改为新标签**
+- [ ] **Step 2.1：精确编辑五个测试文件中的完整旧标签**
 
 每个组件测试的最终形状如下；按对应组件名分别应用，不能改 import、测试名或表达式结构：
 
@@ -177,7 +182,7 @@ pnpm --filter @flywheel/runner-test-discipline-fixture exec vitest run src/__tes
 - 修改：`packages/runner-test-discipline-fixture/src/{alpha,beta,gamma,delta}/model.ts`
 - 修改：`packages/runner-test-discipline-fixture/src/__tests__/literal-only.test.ts`
 
-- [ ] **Step 3.1：用 `apply_patch` 更新八个源常量**
+- [ ] **Step 3.1：精确编辑八个源常量**
 
 四个源文件的最终内容分别为：
 
@@ -199,7 +204,7 @@ export const deltaModel = "claude-opus-5.5";
 export const deltaFallback = "claude-opus-5.5";
 ```
 
-- [ ] **Step 3.2：用 `apply_patch` 更新纯字面量合同**
+- [ ] **Step 3.2：精确编辑纯字面量合同**
 
 ```ts
 import { expect, test } from "vitest";
@@ -275,7 +280,7 @@ git grep -nP -- 'claude-opus-5(?![.\d])' -- packages/runner-test-discipline-fixt
 git grep -oF -- 'claude-opus-5.5' -- packages/runner-test-discipline-fixture | wc -l
 ```
 
-预期：第一条无输出并以“无匹配”状态退出；第二条输出 `38`。
+预期：第一条无输出并退出 1（无匹配）；退出 128 是工具失败，必须停止。第二条输出 `38` 并退出 0。
 
 - [ ] **Step 5.2：证明保护值逐字保留**
 
@@ -343,7 +348,7 @@ git commit -m "chore(FLY-2832): migrate exact opus model label"
 
 ## 回滚边界
 
-迁移是一个独立提交；如需回滚，应对实施报告中记录的迁移提交执行普通 `git revert`，回到旧标签。fixture 基线注入不属于该提交，也不应与迁移一起回滚。若 exact-head CI 暴露 fixture seed 自身的 lockfile 问题，应由 Lead 明确分配基线修复；不要把它伪装成模型标签迁移。
+迁移是一个独立提交；如需回滚，应对实施报告中记录的迁移提交执行普通 `git revert`，回到旧标签。fixture 基线与其必需的 lock importer 不属于该提交，也不应与迁移一起回滚。Task 0 若发现 seed 已在但 importer 缺失，必须由 Lead 明确分配基线修复；不要把必然失败的 frozen-lockfile 状态带进迁移，也不要把修复伪装成模型标签变更。
 
 ## 明确拒绝的替代方案
 
