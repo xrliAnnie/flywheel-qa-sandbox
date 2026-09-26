@@ -1,0 +1,2 @@
+export const alphaModel = "claude-opus-5.5";
+export const alphaFallback = "claude-opus-5.5";
