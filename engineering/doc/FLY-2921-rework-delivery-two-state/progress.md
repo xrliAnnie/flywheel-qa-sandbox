@@ -1,13 +1,14 @@
 ---
 issue: FLY-2921
 phase: implement
-phaseCursor: 4/9
-updated: 2026-09-26T18:21:13.776Z
-nextStep: coordinator C2 重写 + plugin 接线 + watch/classifier/hook/patrol 消费者；C7 子代理进行中
+phaseCursor: 6/9
+updated: 2026-09-26T18:49:48.447Z
+nextStep: 等测试适配子代理(replacement/coordinator/dispatcher)+C8 runbook 子代理；随后跑 §8.3
+  相关测试全集、lint、codex 评审、PR
 chunks: []
 pointers: {}
 ---
 
 # FLY-2921 progress
-**phase**: implement (4/9)
-**next**: coordinator C2 重写 + plugin 接线 + watch/classifier/hook/patrol 消费者；C7 子代理进行中
+**phase**: implement (6/9)
+**next**: 等测试适配子代理(replacement/coordinator/dispatcher)+C8 runbook 子代理；随后跑 §8.3 相关测试全集、lint、codex 评审、PR
