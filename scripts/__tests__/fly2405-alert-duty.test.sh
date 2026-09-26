@@ -177,7 +177,7 @@ JS
     [[ -z ${FLYWHEEL_ALERT_DUTY_TOKEN:-} ]] || return 1
     env_args=(); FLYWHEEL_ALERT_DUTY_TOKEN=fixture-duty
     source "$TEST_ROOT/pane.sh"
-    [[ " ${env_args[*]} " != *FLYWHEEL_ALERT_DUTY_TOKEN=* ]] || return 1
+    [[ " ${env_args[*]-} " != *FLYWHEEL_ALERT_DUTY_TOKEN=* ]] || return 1
   done
 }
 check carrier_pipeline
