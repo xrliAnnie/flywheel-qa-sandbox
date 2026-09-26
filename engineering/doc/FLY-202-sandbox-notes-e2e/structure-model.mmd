@@ -1,0 +1,8 @@
+flowchart LR
+    A["Repository root<br/>current top-level directories"] --> D["doc/qa/sandbox-notes.md<br/>stable fixture document"]
+    B["packages/qa-framework/README.md<br/>current framework behavior"] --> D
+    C["ls -R doc/ | head -50<br/>live command evidence"] --> D
+    D --> E["Feature branch<br/>project-slot-1-FLY-202"]
+    E --> F["Existing open PR #196<br/>base: main"]
+    G["engineering/doc/FLY-202-sandbox-notes-e2e/<br/>exploration + research + plan"] -. design contract .-> E
+
