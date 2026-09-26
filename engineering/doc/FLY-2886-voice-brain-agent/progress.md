@@ -1,15 +1,15 @@
 ---
 issue: FLY-2886
 phase: implement
-phaseCursor: 9/11
-updated: 2026-09-26T15:45:32.593Z
-nextStep: independent Claude review of gbrain removal running; await
-  founder/Lead decision on Codex R3 channel; then PR body + milestone last
-  commit + complete
+phaseCursor: 10/11
+updated: 2026-09-26T15:56:41.039Z
+nextStep: milestone last commit; Codex final round on final head;
+  code-review.json + await-codex-gate code; complete --route needs_review --pr
+  1360
 chunks: []
 pointers: {}
 ---
 
 # FLY-2886 progress
-**phase**: implement (9/11)
-**next**: independent Claude review of gbrain removal running; await founder/Lead decision on Codex R3 channel; then PR body + milestone last commit + complete
+**phase**: implement (10/11)
+**next**: milestone last commit; Codex final round on final head; code-review.json + await-codex-gate code; complete --route needs_review --pr 1360
