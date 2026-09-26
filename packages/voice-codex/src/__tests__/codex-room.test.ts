@@ -6,6 +6,7 @@ import {
 	VoiceError,
 } from "flywheel-voice-core";
 import { describe, expect, it, vi } from "vitest";
+import { BridgeVoiceHttpError } from "../bridge-client.js";
 import {
 	CodexRoomFrontend,
 	registerCodexVoiceBackend,
@@ -664,6 +665,36 @@ describe("Codex room composition", () => {
 				expect.stringContaining("语音不可用"),
 			);
 			expect(unavailable).toHaveBeenCalledWith(expect.stringContaining(copy));
+		},
+	);
+
+	it.each([
+		[
+			"context_too_large",
+			"📻 语音不可用：这位 Lead 的记忆与上下文超出语音会话上限",
+		],
+		["context_invalid", "📻 语音不可用：上下文无法核对大小"],
+	] as const)(
+		"tells the room why a %s context cannot open, with no context text (FLY-2885 plan §12.5)",
+		async (reason, copy) => {
+			const unavailable = vi.fn();
+			const create = vi.fn(async () => {
+				throw new CodexVoiceContainerError(
+					reason,
+					new BridgeVoiceHttpError(503, "http_5xx", undefined, {
+						reason: "context_too_large",
+						details: { block: "realtime.prompt", estimatedTokens: 18_000 },
+					}),
+				);
+			});
+			const frontend = new CodexRoomFrontend({
+				backend: backend(create),
+				conversationOptions: { brain },
+				onUnavailable: unavailable,
+			});
+			await expect(frontend.start()).rejects.toThrow("voice_unavailable");
+			expect(unavailable).toHaveBeenCalledTimes(1);
+			expect(unavailable).toHaveBeenCalledWith(copy);
 		},
 	);
 });

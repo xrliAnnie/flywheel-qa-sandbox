@@ -47,6 +47,11 @@ function unavailableCopy(error: CodexVoiceContainerError): string {
 			return "📻 语音不可用：Codex 额度已用完";
 		case "codex_auth_rejected":
 			return "📻 语音不可用：Codex 认证失败";
+		// FLY-2885 plan §12.5: never the context itself, only why.
+		case "context_too_large":
+			return "📻 语音不可用：这位 Lead 的记忆与上下文超出语音会话上限";
+		case "context_invalid":
+			return "📻 语音不可用：上下文无法核对大小";
 		default:
 			return "📻 语音不可用：Codex 容器启动失败";
 	}
