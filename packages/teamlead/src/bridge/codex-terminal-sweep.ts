@@ -1,0 +1,581 @@
+import type {
+	CodexDaemonEvidence,
+	CodexExecutionOwnershipRegistry,
+	CodexProcessRecord,
+	CodexStopResult,
+	CodexUnattributedProcess,
+} from "flywheel-claude-runner";
+import type { Session } from "../StateStore.js";
+import type { CodexDaemonTeardownResult } from "./codex-daemon-teardown.js";
+import type { RolloutTokenRead } from "./codex-rollout-token-watch.js";
+import {
+	CODEX_TERMINAL_SWEEP_STATUSES,
+	type CodexTerminalCloseEvidence,
+	type CodexTerminalCloseObservation,
+	type CodexTerminalCloseRow,
+	type CodexTerminalCloseState,
+	type CodexTerminalCloseStore,
+	type CodexTerminalCloseWrite,
+} from "./codex-terminal-close-ledger.js";
+
+/**
+ * FLY-2903 terminal-body sweep. Once per maintenance tick, every terminal
+ * Codex execution from the last 48h (plus any terminal execution that still
+ * has a live codex process, whatever its age) gets a close verdict that is
+ * proven by two samples, or an alert.
+ *
+ * It adds no kill path: the only signal comes from the existing
+ * `reapCodexDaemonForExecution` (ledger pgid proven to hold the socket, with a
+ * synchronous final guard); `requestStop` only asks the in-process runtime to
+ * stop itself. Anything that cannot be proven is alerted, never signalled.
+ */
+
+export const CODEX_TERMINAL_SWEEP_SOURCE = "bridge.codex-terminal-sweep";
+const MAX_CANDIDATES = 25;
+const SOFT_BUDGET_MS = 30_000;
+const DRAIN_MS = 3 * 60_000;
+const SWEEP_STOP_WAIT_MS = 5_000;
+const UNKNOWN_ALERT_STREAK = 3;
+const OWNED_STOP_STREAK = 2;
+const SKIPPED_BODY_STATES = new Set(["standby", "resuming", "retiring"]);
+const HELD_RESIDENT_STATES = new Set(["resident", "woken"]);
+const TERMINAL = new Set<string>(CODEX_TERMINAL_SWEEP_STATUSES);
+
+export type SweepSession = Pick<
+	Session,
+	| "execution_id"
+	| "issue_id"
+	| "project_name"
+	| "status"
+	| "adapter_type"
+	| "terminal_at"
+	| "issue_identifier"
+>;
+
+export interface SweepTokenObservation {
+	rolloutPath: string | null;
+	read?: RolloutTokenRead;
+	error?: "rollout_read_failed";
+}
+
+export interface CodexTerminalSweepAlert {
+	executionId: string;
+	issueIdentifier: string | null;
+	projectName: string | null;
+	sessionStatus: string;
+	terminalAt: string | null;
+	state: CodexTerminalCloseState;
+	tokensAfterTerminal: number | null;
+	/** `requestStop:<result>` / `reap:<outcome>` / `none`. */
+	action: string;
+	/** Dedupe key: `<state>:<token order of magnitude | u>`. */
+	alertKey: string;
+}
+
+export interface CodexTerminalSweepDeps {
+	now: () => Date;
+	ledger: Pick<
+		CodexTerminalCloseStore,
+		"get" | "listSweepCandidateExecutionIds"
+	>;
+	/** Bound single writer (`observeCodexTerminalClose`). */
+	observe: (
+		executionId: string,
+		observation: CodexTerminalCloseObservation,
+	) => CodexTerminalCloseWrite;
+	getSession: (executionId: string) => SweepSession | undefined;
+	processBodyState: (executionId: string) => string | undefined;
+	residentHoldState: (executionId: string) => string | undefined;
+	/** One parsed FLY-2877 process snapshot per tick; a throw means unknown. */
+	snapshot: () => Promise<{
+		codex: CodexProcessRecord[];
+		unattributed: CodexUnattributedProcess[];
+	}>;
+	owners: Pick<
+		CodexExecutionOwnershipRegistry,
+		"ownershipState" | "requestStop"
+	>;
+	probeEvidence: (executionId: string) => Promise<CodexDaemonEvidence>;
+	/** The existing Bridge reap; `beforeSignal` is its synchronous final guard. */
+	reap: (
+		session: SweepSession,
+		beforeSignal: () => boolean,
+	) => Promise<CodexDaemonTeardownResult>;
+	tokens: (input: {
+		executionId: string;
+		session: SweepSession;
+		row: CodexTerminalCloseRow | undefined;
+		processHomes: readonly string[];
+	}) => SweepTokenObservation;
+	/** Best-effort unlink of this execution's own socket path (never a link target). */
+	unlinkSocket: (executionId: string) => void;
+	/** Kill switch for the sweep's requestStop and reap only. */
+	reapEnabled: () => boolean;
+	alert: (alert: CodexTerminalSweepAlert) => Promise<void>;
+	log?: (line: string) => void;
+	maxCandidates?: number;
+	budgetMs?: number;
+	clockMs?: () => number;
+}
+
+export interface CodexTerminalSweepResult {
+	skipped?: "inflight";
+	candidates: number;
+	evaluated: number;
+	deferred: number;
+	skippedBodies: number;
+	states: Partial<Record<CodexTerminalCloseState, number>>;
+}
+
+type Verdict =
+	| "active"
+	| "alive"
+	| "unknown"
+	| "unverifiable_process"
+	| "closed";
+
+interface ProcessView {
+	status: "ok" | "unknown";
+	byExecution: Map<string, CodexProcessRecord[]>;
+}
+
+/** `terminal_at` is SQLite `datetime('now')` (UTC, no zone) or ISO. */
+export function parseTerminalAtMs(
+	value: string | null | undefined,
+): number | null {
+	if (!value) return null;
+	const iso = value.includes("T") ? value : `${value.replace(" ", "T")}Z`;
+	const ms = Date.parse(iso);
+	return Number.isFinite(ms) ? ms : null;
+}
+
+function tokenBucket(tokens: number | null): string {
+	return tokens === null || tokens < 0
+		? "u"
+		: String(Math.floor(Math.log10(tokens + 1)));
+}
+
+export class CodexTerminalSweep {
+	private inflight = false;
+
+	constructor(private readonly deps: CodexTerminalSweepDeps) {}
+
+	async tick(): Promise<CodexTerminalSweepResult> {
+		const empty: CodexTerminalSweepResult = {
+			candidates: 0,
+			evaluated: 0,
+			deferred: 0,
+			skippedBodies: 0,
+			states: {},
+		};
+		if (this.inflight) {
+			this.log("sweep_skipped_inflight");
+			return { ...empty, skipped: "inflight" };
+		}
+		this.inflight = true;
+		try {
+			return await this.run(empty);
+		} finally {
+			this.inflight = false;
+		}
+	}
+
+	private log(line: string): void {
+		(this.deps.log ?? ((l: string) => console.log(l)))(
+			`[codex-terminal-sweep] ${line}`,
+		);
+	}
+
+	private async run(
+		result: CodexTerminalSweepResult,
+	): Promise<CodexTerminalSweepResult> {
+		const clockMs = this.deps.clockMs ?? Date.now;
+		const startedMs = clockMs();
+		const budgetMs = this.deps.budgetMs ?? SOFT_BUDGET_MS;
+		const now = this.deps.now();
+		const view = await this.processView();
+		const candidates = this.candidates(now, view);
+		result.candidates = candidates.length;
+		for (const [index, session] of candidates.entries()) {
+			if (clockMs() - startedMs >= budgetMs) {
+				result.deferred = candidates.length - index;
+				this.log(`budget spent; ${result.deferred} candidate(s) deferred`);
+				break;
+			}
+			const exec = session.execution_id;
+			const body = this.safe(() => this.deps.processBodyState(exec));
+			if (body && SKIPPED_BODY_STATES.has(body)) {
+				result.skippedBodies += 1;
+				continue;
+			}
+			try {
+				const state = await this.sweepOne(session, view);
+				result.states[state] = (result.states[state] ?? 0) + 1;
+			} catch (error) {
+				this.log(
+					`candidate ${exec} failed: ${error instanceof Error ? error.message : String(error)}`,
+				);
+				this.recordFailure(session, "sweep_candidate_failed");
+			}
+			result.evaluated += 1;
+		}
+		return result;
+	}
+
+	private safe<T>(fn: () => T): T | undefined {
+		try {
+			return fn();
+		} catch {
+			return undefined;
+		}
+	}
+
+	private async processView(): Promise<ProcessView> {
+		try {
+			const parsed = await this.deps.snapshot();
+			const byExecution = new Map<string, CodexProcessRecord[]>();
+			for (const record of parsed.codex) {
+				if (!record.executionId) continue;
+				byExecution.set(record.executionId, [
+					...(byExecution.get(record.executionId) ?? []),
+					record,
+				]);
+			}
+			return {
+				status: parsed.unattributed.length > 0 ? "unknown" : "ok",
+				byExecution,
+			};
+		} catch (error) {
+			this.log(
+				`process snapshot unavailable: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return { status: "unknown", byExecution: new Map() };
+		}
+	}
+
+	/** Live-process hits first (no age limit), then the 48h ledger backlog. */
+	private candidates(now: Date, view: ProcessView): SweepSession[] {
+		const drainedBefore = now.getTime() - DRAIN_MS;
+		const eligible = (session: SweepSession | undefined) =>
+			!!session &&
+			session.adapter_type === "codex-tmux" &&
+			TERMINAL.has(session.status);
+		const live: SweepSession[] = [];
+		for (const exec of view.byExecution.keys()) {
+			const session = this.safe(() => this.deps.getSession(exec));
+			if (!eligible(session) || !session) continue;
+			const terminalMs = parseTerminalAtMs(session.terminal_at);
+			if (terminalMs !== null && terminalMs > drainedBefore) continue;
+			live.push(session);
+		}
+		live.sort(
+			(a, b) =>
+				(parseTerminalAtMs(a.terminal_at) ?? 0) -
+				(parseTerminalAtMs(b.terminal_at) ?? 0),
+		);
+		const max = this.deps.maxCandidates ?? MAX_CANDIDATES;
+		const seen = new Set(live.map((session) => session.execution_id));
+		const out = live.slice(0, max);
+		if (out.length >= max) return out;
+		for (const exec of this.deps.ledger.listSweepCandidateExecutionIds({
+			now,
+			limit: max * 2,
+		})) {
+			if (out.length >= max) break;
+			if (seen.has(exec)) continue;
+			const session = this.safe(() => this.deps.getSession(exec));
+			if (!eligible(session) || !session) continue;
+			seen.add(exec);
+			out.push(session);
+		}
+		return out;
+	}
+
+	private recordFailure(session: SweepSession, error: string): void {
+		try {
+			const row = this.deps.ledger.get(session.execution_id);
+			this.deps.observe(session.execution_id, {
+				...this.base(session, row),
+				state: "probe_unknown",
+				unknownStreak: (row?.unknown_streak ?? 0) + 1,
+				ownedStreak: 0,
+				evidence: { error },
+			});
+		} catch {
+			// The ledger itself is unavailable; the next tick retries.
+		}
+	}
+
+	private base(
+		session: SweepSession,
+		row: CodexTerminalCloseRow | undefined,
+	): Omit<CodexTerminalCloseObservation, "state" | "evidence"> {
+		return {
+			source: CODEX_TERMINAL_SWEEP_SOURCE,
+			projectName: session.project_name ?? row?.project_name ?? null,
+			issueIdentifier:
+				session.issue_identifier ?? session.issue_id ?? row?.issue_identifier,
+			sessionStatus: session.status,
+			terminalAt: session.terminal_at ?? null,
+		};
+	}
+
+	private finalGuard(exec: string): () => boolean {
+		return () => {
+			const current = this.deps.getSession(exec);
+			if (!current || !TERMINAL.has(current.status)) return false;
+			if (this.deps.owners.ownershipState(exec) === "active") return false;
+			const hold = this.deps.residentHoldState(exec);
+			if (hold && HELD_RESIDENT_STATES.has(hold)) return false;
+			const body = this.deps.processBodyState(exec);
+			if (body && SKIPPED_BODY_STATES.has(body)) return false;
+			return true;
+		};
+	}
+
+	private async sweepOne(
+		session: SweepSession,
+		view: ProcessView,
+	): Promise<CodexTerminalCloseState> {
+		const exec = session.execution_id;
+		const row = this.deps.ledger.get(exec);
+		const reapOn = this.deps.reapEnabled();
+		const evidence: CodexTerminalCloseEvidence = {};
+
+		let ownership = this.deps.owners.ownershipState(exec);
+		evidence.ownership = ownership;
+		if (ownership === "reserved") {
+			// A leftover reservation is not a running body. Fence it so nothing can
+			// claim it any more (not flag-gated: memory-only, no signal), then judge
+			// it as ownerless.
+			evidence.ownerStop = await this.deps.owners.requestStop(
+				exec,
+				"terminal_sweep",
+				{ timeoutMs: 0 },
+			);
+			ownership = "none";
+		}
+
+		const procs =
+			view.status === "ok" ? (view.byExecution.get(exec) ?? []) : null;
+		evidence.procs = {
+			status: procs === null ? "unknown" : "ok",
+			count: procs?.length ?? view.byExecution.get(exec)?.length ?? 0,
+		};
+
+		let daemon: CodexDaemonEvidence | undefined;
+		try {
+			daemon = await this.deps.probeEvidence(exec);
+			evidence.liveness = daemon.liveness;
+			evidence.ledger = daemon.ledger;
+			evidence.socketLive = daemon.socketLive;
+			evidence.spawnLock = daemon.spawnLock;
+		} catch {
+			evidence.error = "evidence_probe_failed";
+		}
+
+		const processHomes = [
+			...new Set(
+				(view.byExecution.get(exec) ?? [])
+					.map((record) => record.codexHome)
+					.filter((home): home is string => !!home),
+			),
+		];
+		let tokenView: SweepTokenObservation = { rolloutPath: null };
+		try {
+			tokenView = this.deps.tokens({
+				executionId: exec,
+				session,
+				row,
+				processHomes,
+			});
+		} catch {
+			tokenView = {
+				rolloutPath: row?.rollout_path ?? null,
+				error: "rollout_read_failed",
+			};
+		}
+		const read = tokenView.read;
+		evidence.rollout = read
+			? (read.note ?? "ok")
+			: tokenView.rolloutPath
+				? "ok"
+				: "unresolved";
+		if (tokenView.error && !evidence.error) evidence.error = tokenView.error;
+		const tokens: CodexTerminalCloseObservation["tokens"] = {
+			// A moved or vanished rollout replaces (or clears) the cached path.
+			...(tokenView.rolloutPath !== (row?.rollout_path ?? null)
+				? { rolloutPath: tokenView.rolloutPath }
+				: {}),
+			...(read
+				? {
+						rolloutOffset: read.offset,
+						rolloutLastTotal: read.lastTotal,
+						tokensAtTerminal: read.tokensAtTerminal,
+						tokensAfterTerminal: read.tokensAfterTerminal,
+					}
+				: {}),
+		};
+		const tokensAfter = read
+			? read.tokensAfterTerminal
+			: (row?.tokens_after_terminal ?? null);
+
+		const verdict = this.verdict(ownership, daemon, procs);
+		let state: CodexTerminalCloseState;
+		let ownedStreak = 0;
+		let unknownStreak = 0;
+		let alertAction: string | undefined;
+		let closedAt: string | undefined;
+		let confirmTokens: number | null | undefined;
+
+		switch (verdict) {
+			case "active": {
+				ownedStreak = (row?.owned_streak ?? 0) + 1;
+				if (ownedStreak < OWNED_STOP_STREAK) {
+					state = "owned_seen";
+				} else if (reapOn) {
+					const stop = await this.deps.owners.requestStop(
+						exec,
+						"terminal_sweep",
+						{ timeoutMs: SWEEP_STOP_WAIT_MS },
+					);
+					evidence.ownerStop = stop;
+					state = "stop_requested";
+					alertAction = `requestStop:${stop satisfies CodexStopResult}`;
+				} else {
+					state = "owned_seen";
+					alertAction = "none";
+				}
+				break;
+			}
+			case "alive": {
+				if (!reapOn) {
+					state = "alive_residual";
+					alertAction = "none";
+					break;
+				}
+				const reaped = await this.deps.reap(session, this.finalGuard(exec));
+				const outcome =
+					reaped.outcome === "not_codex" ? "unverifiable" : reaped.outcome;
+				evidence.reap = outcome;
+				state =
+					outcome === "residual"
+						? "alive_residual"
+						: outcome === "unverifiable"
+							? "alive_unverifiable"
+							: "alive_reaped_pending";
+				// A terminal body that was still alive is always worth a line, even
+				// when the reap worked (the issue asks to reap AND alert).
+				alertAction = `reap:${outcome}`;
+				break;
+			}
+			case "unverifiable_process": {
+				state = "alive_unverifiable";
+				alertAction = "none";
+				break;
+			}
+			case "closed": {
+				// A rollout that is still being read (over the per-tick byte budget)
+				// is not "token unknown": wait for a complete read, and then for one
+				// more complete sample to compare against, before claiming closed.
+				const readComplete = read?.complete === true;
+				if (
+					row?.state === "pending_confirm" &&
+					read &&
+					(!readComplete || row.confirm_tokens === null)
+				) {
+					state = "pending_confirm";
+					if (readComplete) confirmTokens = read.tokensAfterTerminal;
+				} else if (row?.state === "pending_confirm") {
+					const grew =
+						readComplete &&
+						row.confirm_tokens !== null &&
+						(read?.tokensAfterTerminal ?? 0) > row.confirm_tokens;
+					if (grew) {
+						state = "probe_unknown";
+						unknownStreak = (row.unknown_streak ?? 0) + 1;
+						alertAction = "none";
+					} else {
+						state = "closed";
+						closedAt = this.deps.now().toISOString();
+						try {
+							this.deps.unlinkSocket(exec);
+						} catch {
+							// Best effort: a stale socket file is harmless once unbound.
+						}
+					}
+				} else {
+					state = "pending_confirm";
+					confirmTokens = readComplete
+						? (read?.tokensAfterTerminal ?? null)
+						: null;
+				}
+				break;
+			}
+			default: {
+				state = "probe_unknown";
+				unknownStreak = (row?.unknown_streak ?? 0) + 1;
+				if (unknownStreak >= UNKNOWN_ALERT_STREAK) alertAction = "none";
+			}
+		}
+
+		const alertKey = `${state}:${tokenBucket(tokensAfter)}`;
+		let alertedKey: string | undefined;
+		if (alertAction !== undefined && row?.alerted_key !== alertKey) {
+			try {
+				await this.deps.alert({
+					executionId: exec,
+					issueIdentifier: session.issue_identifier ?? session.issue_id ?? null,
+					projectName: session.project_name ?? null,
+					sessionStatus: session.status,
+					terminalAt: session.terminal_at ?? null,
+					state,
+					tokensAfterTerminal: tokensAfter,
+					action: alertAction,
+					alertKey,
+				});
+				alertedKey = alertKey;
+			} catch (error) {
+				this.log(
+					`alert for ${exec} (${state}) deferred: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		}
+
+		this.deps.observe(exec, {
+			...this.base(session, row),
+			state,
+			evidence,
+			ownedStreak,
+			unknownStreak,
+			tokens: {
+				...tokens,
+				...(confirmTokens !== undefined ? { confirmTokens } : {}),
+			},
+			...(closedAt ? { closedAt } : {}),
+			...(alertedKey ? { alertedKey } : {}),
+		});
+		return state;
+	}
+
+	/** Order (A2): active → alive → procs unknown → live process → closed → unknown. */
+	private verdict(
+		ownership: "none" | "reserved" | "active",
+		daemon: CodexDaemonEvidence | undefined,
+		procs: CodexProcessRecord[] | null,
+	): Verdict {
+		if (ownership === "active") return "active";
+		if (daemon?.liveness === "alive") return "alive";
+		if (procs === null) return "unknown";
+		if (procs.length > 0) return "unverifiable_process";
+		if (
+			daemon &&
+			(daemon.liveness === "absent" ||
+				((daemon.ledger === "missing" || daemon.ledger === "no_group") &&
+					!daemon.socketLive))
+		) {
+			return "closed";
+		}
+		return "unknown";
+	}
+}

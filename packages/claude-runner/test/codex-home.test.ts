@@ -3096,7 +3096,7 @@ hide_full_access_warning = true
 		it("FLY-2506 scopes approval to ship while allowing main into the feature branch", () => {
 			const home = provisionCodexHome({ executionId: "exec-merge-scope", env });
 			expect(readFileSync(join(home, "AGENTS.md"), "utf-8")).toContain(
-				"Contract-Version: 3 (FLY-2509 merge authority alignment)",
+				"Contract-Version: 4 (FLY-2373 turn-boundary waits and completion drain)",
 			);
 			const agents = readFileSync(join(home, "AGENTS.md"), "utf-8");
 			const authority = agents
@@ -3123,6 +3123,21 @@ hide_full_access_warning = true
 			);
 			expect(authority).toContain("Honor your TURN and assigned task scope");
 			expect(authority).not.toMatch(/before ANY merge|only merge path/);
+		});
+
+		it("FLY-2373 forbids in-turn waits and teaches the in-turn completion drain", () => {
+			const home = provisionCodexHome({ executionId: "exec-wait", env });
+			const agents = readFileSync(join(home, "AGENTS.md"), "utf-8").replace(
+				/\s+/g,
+				" ",
+			);
+			expect(agents).toContain("Never wait inside one turn");
+			expect(agents).toContain("one `check <id>` per turn");
+			expect(agents).toContain('park --reason "waiting for question <id>"');
+			expect(agents).toContain("end only the current turn");
+			expect(agents).toContain("inbox --ack-consumed <read-id>");
+			expect(agents).toContain("inbox --drain-page");
+			expect(agents).not.toMatch(/sleep \d+/);
 		});
 
 		it("writes AGENTS.md (0600) with a managed header + the contract anchors", () => {

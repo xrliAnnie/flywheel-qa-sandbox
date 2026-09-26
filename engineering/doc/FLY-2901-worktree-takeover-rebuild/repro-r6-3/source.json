@@ -1,0 +1,6 @@
+{
+  "planCommit": "aa7b24529c934facc0234f1f6173e33f5b05cb47",
+  "planBlob": "89260d6b2c84c8795ed1f1b74c8780d866b49f33",
+  "unchangedSourceFrom": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r6-followup-lhgjf1md",
+  "notes": "Predicate replaced with revised spec. Prior counterexamples now expect refusal. Stable controls retain identical ignore rules. Additional staged, untracked and casefold cases."
+}

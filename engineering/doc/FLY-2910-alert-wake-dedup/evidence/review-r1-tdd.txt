@@ -1,0 +1,213 @@
+R1 HIGH lease-requeue-self-suppression: real MailboxQueue ACK lease expiry, both A/B carriers.
+
+red
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2910/packages/teamlead
+
+ ❯ |parallel| src/bridge/__tests__/alert-wake-dedup.test.ts (27 tests | 2 failed | 25 skipped) 514ms
+   ↓ alert wake recognition and equivalence > recognizes infra alerts and preserves request, issue and session identity
+   ↓ alert wake recognition and equivalence > folds only ISO timestamps and cmux ages, retaining other numbers
+   ↓ alert wake recognition and equivalence > normalizes category labels without merging changed counts or issue ids
+   ↓ alert wake recognition and equivalence > requires full-list producer proof for truncated zombie bodies
+   ↓ alert wake recognition and equivalence > authenticates dispatcher tickets and leaves other messages untouched
+   ↓ alert wake recognition and equivalence > recognizes the notifier's exact automatic marker before its optional mention
+   ↓ alert wake decision > suppresses only delivered equivalents in the same fixed six-hour window
+   ↓ alert wake decision > wakes on severity, generation, or unknown identity
+   ↓ alert wake decision > digests info while preserving actionable flag handoffs
+   × alert wake durable policy > preserves unacked infra_alert redelivery through ACK-lease exhaustion 325ms
+     → expected { Object (ok, protocolConsumed, ...) } to match object { ok: true, modelConsumed: 1 }
+(1 matching property omitted from actual)
+   × alert wake durable policy > preserves unacked discord_chat redelivery through ACK-lease exhaustion 185ms
+     → expected { Object (ok, protocolConsumed, ...) } to match object { ok: true, modelConsumed: 1 }
+(1 matching property omitted from actual)
+   ↓ alert wake durable policy > counts equivalent repeats only after receipt and exposes a digest on the next alert
+   ↓ alert wake durable policy > keeps different Lead and kind evidence separate
+   ↓ alert wake durable policy > annotates changed request-1 with the inclusive category count
+   ↓ alert wake durable policy > annotates changed session-a with the inclusive category count
+   ↓ alert wake durable policy > annotates changed FLY-2910 with the inclusive category count
+   ↓ alert wake durable policy > annotates changed please retry with the inclusive category count
+   ↓ alert wake durable policy > annotates changed severity=warning with the inclusive category count
+   ↓ alert wake durable policy > counts earlier wake candidates in the same batch without treating them as delivery evidence
+   ↓ alert wake durable policy > wakes and annotates a title quantity changing from 12 to 13
+   ↓ alert wake durable policy > wakes and annotates a title quantity changing from 12 to 24
+   ↓ alert wake durable policy > digests info without generation evidence but preserves the actionable exception
+   ↓ alert wake durable policy > attaches at most ten digest entries once per batch and never to founder messages
+   ↓ alert wake durable policy > fails open on missing mappings and keeps severity tied to the delivered generation
+   ↓ alert wake durable policy > keeps switch-off read-free, and still records confirmed deliveries for enabling later
+   ↓ alert wake durable policy > lets evidence write failures preserve delivery and future waking
+   ↓ alert wake durable policy > requires the actual dispatcher root mapping and wakes a reopened B episode
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |parallel| src/bridge/__tests__/alert-wake-dedup.test.ts > alert wake durable policy > preserves unacked infra_alert redelivery through ACK-lease exhaustion
+ FAIL  |parallel| src/bridge/__tests__/alert-wake-dedup.test.ts > alert wake durable policy > preserves unacked discord_chat redelivery through ACK-lease exhaustion
+AssertionError: expected { Object (ok, protocolConsumed, ...) } to match object { ok: true, modelConsumed: 1 }
+(1 matching property omitted from actual)
+
+- Expected
++ Received
+
+  {
+-   "modelConsumed": 1,
++   "modelConsumed": 0,
+    "ok": true,
+  }
+
+ ❯ src/bridge/__tests__/alert-wake-dedup.test.ts:364:36
+    362|     ) {
+    363|      clock += DEFAULT_MAILBOX_QUEUE_CONFIG.ackLeaseMs + 60_000;
+    364|      expect(await consumer.tick()).toMatchObject({
+       |                                    ^
+    365|       ok: true,
+    366|       modelConsumed: 1,
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 25 skipped (27)
+   Start at  00:23:09
+   Duration  4.81s (transform 2.54s, setup 15ms, collect 3.87s, tests 514ms, environment 0ms, prepare 77ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2910/packages/teamlead:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/bridge/__tests__/alert-wake-dedup.test.ts -t preserves unacked --exclude **/tmux-viewer.macos.test.ts
+
+
+green
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2910/packages/teamlead
+
+ ✓ |parallel| src/bridge/__tests__/alert-wake-dedup.test.ts (27 tests | 25 skipped) 397ms
+
+ Test Files  1 passed (1)
+      Tests  2 passed | 25 skipped (27)
+   Start at  00:23:43
+   Duration  4.51s (transform 2.47s, setup 23ms, collect 3.60s, tests 397ms, environment 0ms, prepare 110ms)
+
+
+
+related
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2910/packages/teamlead
+
+stderr | src/bridge/__tests__/lead-inbox-runtime.test.ts > LeadInboxRuntime > FLY-2018: admit redrives a committed replacement event and duplicate scans stay quiet
+codex_model_transport_unavailable { leadId: 'lead-a', error: 'offline' }
+
+stderr | src/bridge/__tests__/lead-inbox-runtime.test.ts > LeadInboxRuntime > FLY-2018: admit redrives a committed replacement event and duplicate scans stay quiet
+Lead inbox tick failed { leadId: 'lead-a', error: 'offline' }
+
+stderr | src/bridge/__tests__/lead-inbox-runtime.test.ts > LeadInboxRuntime > fails open to mailbox delivery when the ledger write fails and alerts once
+[alert-ledger] failed event=ledger-failure-one: ledger unavailable
+[alert-ledger] failed event=ledger-failure-two: ledger unavailable
+
+stderr | src/bridge/__tests__/lead-inbox-runtime.test.ts > LeadInboxRuntime > fails closed when canonical settlement inspection torn
+[alert-ledger] torn canonical settlement event=torn-canonical
+
+stderr | src/bridge/__tests__/lead-inbox-runtime.test.ts > LeadInboxRuntime > fails closed when canonical settlement inspection throws
+[alert-ledger] canonical settlement failed event=throws-canonical: settlement unavailable
+
+stderr | src/bridge/__tests__/lead-inbox-runtime.test.ts > LeadInboxRuntime > connects the registry producer seam to a live per-Lead loop
+[alert-wake-dedup] flag unavailable; restoring per-letter delivery: runtime.store.getFlagValueRow is not a function
+
+stderr | src/bridge/__tests__/lead-inbox-runtime.test.ts > LeadInboxRuntime > forwards model transport stall context to the production wiring seam
+[alert-wake-dedup] flag unavailable; restoring per-letter delivery: runtime.store.getFlagValueRow is not a function
+
+stderr | src/bridge/__tests__/lead-inbox-runtime.test.ts > LeadInboxRuntime > forwards model transport stall context to the production wiring seam
+codex_model_transport_unavailable { leadId: 'lead-a', error: 'socket unavailable' }
+
+stderr | src/bridge/__tests__/lead-inbox-runtime.test.ts > LeadInboxRuntime > forwards model transport stall context to the production wiring seam
+Lead inbox tick failed { leadId: 'lead-a', error: 'socket unavailable' }
+
+stderr | src/bridge/__tests__/lead-inbox-runtime.test.ts > LeadInboxRuntime > forwards terminal transport exhaustion before a row dies
+[alert-wake-dedup] flag unavailable; restoring per-letter delivery: runtime.store.getFlagValueRow is not a function
+
+stderr | src/bridge/__tests__/lead-inbox-runtime.test.ts > LeadInboxRuntime > forwards terminal transport exhaustion before a row dies
+Lead inbox tick failed { leadId: 'lead-a', error: 'socket unavailable' }
+
+stderr | src/bridge/__tests__/lead-inbox-runtime.test.ts > LeadInboxRuntime > forwards Discord quarantine evidence before marking the row DEAD
+[alert-wake-dedup] flag unavailable; restoring per-letter delivery: runtime.store.getFlagValueRow is not a function
+
+stderr | src/bridge/__tests__/lead-inbox-runtime.test.ts > LeadInboxRuntime > forwards Discord quarantine evidence before marking the row DEAD
+discord_mailbox_undeliverable {
+  leadId: 'lead-a',
+  deliveryIds: [ 'chat:lead-a:bad' ],
+  reason: 'route_parse:chat delivery v1 envelope header is missing'
+}
+
+stderr | src/bridge/__tests__/lead-inbox-runtime.test.ts > LeadInboxRuntime > clears a rejected cutover promise so a later doorbell retries it
+Lead inbox tick failed { leadId: 'lead-a', error: 'transient cutover failure' }
+
+stderr | src/bridge/__tests__/lead-inbox-runtime.test.ts > LeadInboxRuntime > routes an ownerless Runner dead-letter alert to the project's primary Lead
+Lead inbox tick failed {
+  leadId: 'lead-a',
+  error: "Cannot read properties of undefined (reading 'status')"
+}
+
+stdout | src/bridge/__tests__/lead-inbox-runtime.test.ts > LeadInboxRuntime > replays a claimed/no-receipt dead-letter after the existing reclaim fence and unblocks later windows
+[LeadAlertNotifier] replaying after ambiguous-attempt fence event=dead_letter_alert:runner_unroutable:runner-a:40
+
+ ✓ src/bridge/__tests__/lead-inbox-runtime.test.ts (47 tests) 18297ms
+   ✓ LeadInboxRuntime > FLY-2910 records no evidence after adapter rejection and wakes an equivalent after another object succeeds  534ms
+   ✓ LeadInboxRuntime > FLY-2910 records no evidence after owner fence loss and wakes an equivalent after another object succeeds  638ms
+   ✓ LeadInboxRuntime > FLY-2910 reads a late-bound dispatcher identity for real Discord ingress  409ms
+   ✓ LeadInboxRuntime > FLY-2910 suppresses a second fire only after the real enqueue and delivery receipt  418ms
+   ✓ LeadInboxRuntime > FLY-2910 keeps delivering when enqueue mapping fails without counting a ledger failure  1249ms
+   ✓ LeadInboxRuntime > FLY-2910 settles info without waking and includes it in the next alert digest  935ms
+   ✓ LeadInboxRuntime > periodically archives terminal mailbox families with audit evidence  346ms
+   ✓ LeadInboxRuntime > FLY-2018: admit redrives a committed replacement event and duplicate scans stay quiet  738ms
+   ✓ LeadInboxRuntime > FLY-2152: admit redrives an owner/project-scoped workflow claim event  523ms
+   ✓ LeadInboxRuntime > FLY-2152: one failed claim redrive does not block later rows  872ms
+   ✓ LeadInboxRuntime > reroutes an unowned alert to duty before writing the recipient mailbox  741ms
+   ✓ LeadInboxRuntime > keeps direct-owner alerts and duty-unconfigured fallbacks in the requested Lead inbox  441ms
+   ✓ LeadInboxRuntime > reseeds a changed recipient only when the canonical mailbox identity is absent  539ms
+   ✓ LeadInboxRuntime > falls back once to the requested Lead when the duty enqueue throws  635ms
+   ✓ LeadInboxRuntime > attempts duty and requested owner exactly once when both enqueues throw  667ms
+   ✓ LeadInboxRuntime > keeps the canonical live recipient when duty availability changes  498ms
+   ✓ LeadInboxRuntime > writes the canonical ledger before skipping an archived delivery  709ms
+   ✓ LeadInboxRuntime > fails closed when canonical settlement inspection torn  410ms
+   ✓ LeadInboxRuntime > fails closed when canonical settlement inspection throws  1127ms
+   ✓ LeadInboxRuntime > routes a retired Lead dead-letter through the live primary Lead  567ms
+   ✓ LeadInboxRuntime > routes an ownerless Runner dead-letter alert to the project's primary Lead  698ms
+   ✓ LeadInboxRuntime > replays a claimed/no-receipt dead-letter after the existing reclaim fence and unblocks later windows  561ms
+   ✓ LeadInboxRuntime > settles from the notifier receipt after a post-receipt crash without posting twice  365ms
+   ✓ rejects audit-only queue admission even after archival and raw registry dispatch  367ms
+stderr | src/bridge/__tests__/infra-alert-wiring.test.ts > buildInfraAlertRouting (plugin glue, real StateStore) > SENTINEL (routing OFF): every kind passes straight through to the raw sink
+[slow-sql] {"databaseKind":"teamlead","sqlId":"ce922519a3c3ecaf","method":"transaction","durationMs":427.72949999999946}
+
+ ✓ src/bridge/__tests__/infra-alert-wiring.test.ts (22 tests) 17152ms
+   ✓ buildInfraAlertRouting (plugin glue, real StateStore) > routes a review failure to its owning Lead and never posts the founder thread  722ms
+   ✓ buildInfraAlertRouting (plugin glue, real StateStore) > reseeds an owner delivery to duty when the outer owner-inbox catch observes no mailbox identity  1352ms
+   ✓ buildInfraAlertRouting (plugin glue, real StateStore) > tiers a workflow escalation requested for the owning Lead before mailbox delivery (duty=true)  794ms
+   ✓ buildInfraAlertRouting (plugin glue, real StateStore) > tiers a workflow escalation requested for the owning Lead before mailbox delivery (duty=false)  1295ms
+   ✓ buildInfraAlertRouting (plugin glue, real StateStore) > preserves a review failure in Claw when the owning Lead is not live  1201ms
+   ✓ buildInfraAlertRouting (plugin glue, real StateStore) > FULL-UNION SWEEP: progress uses its issue thread, escalation uses Hub, everything else uses Claw mailbox  1196ms
+   ✓ buildInfraAlertRouting (plugin glue, real StateStore) > routes an ordinary ticket only to the Claw mailbox  968ms
+   ✓ buildInfraAlertRouting (plugin glue, real StateStore) > FLY-2076 alert-system OFF records intake but creates no channel post, ticket, or Claw delivery  1292ms
+   ✓ buildInfraAlertRouting (plugin glue, real StateStore) > SENTINEL (routing OFF): every kind passes straight through to the raw sink  1702ms
+   ✓ buildInfraAlertRouting (plugin glue, real StateStore) > progress kind WITHOUT a bound thread fail-safes to the Claw mailbox  1044ms
+   ✓ buildInfraAlertRouting (plugin glue, real StateStore) > resolves a workflow issue alert by its dead execution metadata, not the wf run sessionKey  662ms
+   ✓ buildInfraAlertRouting (plugin glue, real StateStore) > still resolves the issue thread when the dead execution has no session row  1328ms
+   ✓ buildInfraAlertRouting (plugin glue, real StateStore) > issue-thread delivery failure routes the ORIGINAL alert to the Claw mailbox  327ms
+   ✓ buildInfraAlertRouting (plugin glue, real StateStore) > thread post uses the owning lead's bot token  574ms
+   ✓ FLY-927 Task 2.3: owner enrichment (🎫 context before the sink) > ticket kind gets owner context (claude lead default → cross to codex bot for auth kinds)  368ms
+   ✓ FLY-927 Task 2.3: owner enrichment (🎫 context before the sink) > provider-agnostic kind → claude bot owner  479ms
+   ✓ FLY-927 Task 2.3: owner enrichment (🎫 context before the sink) > FLY-2118 sends orphan-pane tickets to the final Claw owner payload  303ms
+   ✓ FLY-927 Task 2.3: owner enrichment (🎫 context before the sink) > tickets disabled → payload passes through un-enriched (byte-compat)  312ms
+   ✓ FLY-927 Task 2.3: owner enrichment (🎫 context before the sink) > issue-progress kinds are never 🎫-enriched  329ms
+   ✓ FLY-927 Task 2.3: owner enrichment (🎫 context before the sink) > keeps ordinary alerts in Claw mailbox and sends only a real escalation through the Hub  327ms
+ ✓ src/bridge/__tests__/alert-wake-dedup.test.ts (27 tests) 5223ms
+   ✓ alert wake durable policy > preserves unacked infra_alert redelivery through ACK-lease exhaustion  436ms
+   ✓ alert wake durable policy > preserves unacked discord_chat redelivery through ACK-lease exhaustion  358ms
+   ✓ alert wake durable policy > counts equivalent repeats only after receipt and exposes a digest on the next alert  330ms
+   ✓ alert wake durable policy > keeps different Lead and kind evidence separate  344ms
+   ✓ alert wake durable policy > annotates changed request-1 with the inclusive category count  402ms
+   ✓ alert wake durable policy > annotates changed session-a with the inclusive category count  302ms
+   ✓ alert wake durable policy > digests info without generation evidence but preserves the actionable exception  333ms
+   ✓ alert wake durable policy > lets evidence write failures preserve delivery and future waking  381ms
+
+ Test Files  3 passed (3)
+      Tests  96 passed (96)
+   Start at  00:26:52
+   Duration  65.41s (transform 121ms, setup 101ms, collect 14.58s, tests 40.67s, environment 0ms, prepare 594ms)
+

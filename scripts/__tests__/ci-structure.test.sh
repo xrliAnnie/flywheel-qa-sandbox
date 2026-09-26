@@ -1072,6 +1072,7 @@ expected_setup = [
 expected_shard_tests = {
     "script-tests": [
         "Test — FLY-1389 path-hygiene + 529-Room repair batch",
+        "Test — FLY-2874 six-slot pool contract",
         "Test — FLY-2598 voice host configuration",
         "Test — FLY-1496 model resolution + Lead derivation",
         "Test — FLY-2007 phase-0 analyser contract",
@@ -1181,6 +1182,7 @@ expected_shard_tests = {
         "Test — FLY-2570 dynamic design ratio operator",
         "Test — FLY-1948 slot Discord channel evidence",
         "Test — FLY-1775 generalized-DAG 529 room",
+        "Test — FLY-2802 Runner local-test discipline",
         "Test — FLY-1649 r4 migration-window hardening",
         "Integration test — cmux-sync hooks",
         "Test — FLY-2033 meeting artifact closure",

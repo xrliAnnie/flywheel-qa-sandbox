@@ -1,0 +1,13 @@
+sequenceDiagram
+  autonumber
+  participant L as Lead / 引擎
+  participant B as Bridge 关闭路径
+  participant R as goal runtime（Bridge 进程内）
+  participant D as Codex daemon（烧 token）
+  L->>B: terminate / closeRunner / 退役
+  B->>B: StateStore 写 terminated
+  B->>D: 直接 SIGTERM / SIGKILL 进程组
+  D--xR: socket 断开（transport death）
+  Note over R: stopped 仍是 false<br/>判定「中途崩溃」
+  R->>D: 重启 daemon + resume 同一线程（可能已是另一个号）
+  Note over R,D: 最多重复 5 次，StateStore 早已终态，runtime 从不看它

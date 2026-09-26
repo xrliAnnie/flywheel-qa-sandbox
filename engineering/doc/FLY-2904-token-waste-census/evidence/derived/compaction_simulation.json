@@ -1,0 +1,214 @@
+{
+ "250000": {
+  "observed": 21224045671,
+  "simulated": 9849435139,
+  "saving": 11374610532,
+  "compactions": 2049,
+  "by_lead": {
+   "claude-infra-bot-lead": {
+    "observed": 2926636175,
+    "simulated": 1215991701,
+    "compactions": 19,
+    "requests": 7194,
+    "saving": 1710644474
+   },
+   "cos-lead": {
+    "observed": 79830462,
+    "simulated": 165814417,
+    "compactions": 120,
+    "requests": 226,
+    "saving": -85983955
+   },
+   "flywheel-cos-lead": {
+    "observed": 471162743,
+    "simulated": 499608194,
+    "compactions": 221,
+    "requests": 1032,
+    "saving": -28445451
+   },
+   "flywheel-eng-lead": {
+    "observed": 14938693601,
+    "simulated": 5588311363,
+    "compactions": 455,
+    "requests": 26859,
+    "saving": 9350382238
+   },
+   "flywheel-product-lead": {
+    "observed": 2069882581,
+    "simulated": 1205922426,
+    "compactions": 260,
+    "requests": 4088,
+    "saving": 863960155
+   },
+   "joycon-lead": {
+    "observed": 93899438,
+    "simulated": 172267001,
+    "compactions": 186,
+    "requests": 290,
+    "saving": -78367563
+   },
+   "ops-lead": {
+    "observed": 156053738,
+    "simulated": 260968163,
+    "compactions": 177,
+    "requests": 331,
+    "saving": -104914425
+   },
+   "product-lead": {
+    "observed": 205767380,
+    "simulated": 311699375,
+    "compactions": 269,
+    "requests": 484,
+    "saving": -105931995
+   },
+   "rafiki-lead": {
+    "observed": 25599070,
+    "simulated": 49177558,
+    "compactions": 46,
+    "requests": 150,
+    "saving": -23578488
+   },
+   "reflection-lead": {
+    "observed": 38787454,
+    "simulated": 37738941,
+    "compactions": 2,
+    "requests": 196,
+    "saving": 1048513
+   },
+   "sub-lead": {
+    "observed": 171774414,
+    "simulated": 273561731,
+    "compactions": 248,
+    "requests": 483,
+    "saving": -101787317
+   },
+   "tidal-echo-content-lead": {
+    "observed": 39517507,
+    "simulated": 61933161,
+    "compactions": 46,
+    "requests": 163,
+    "saving": -22415654
+   },
+   "tidal-echo-cos-lead": {
+    "observed": 6259649,
+    "simulated": 6259649,
+    "compactions": 0,
+    "requests": 54,
+    "saving": 0
+   },
+   "scratchpad": {
+    "observed": 181459,
+    "simulated": 181459,
+    "compactions": 0,
+    "requests": 4,
+    "saving": 0
+   }
+  }
+ },
+ "400000": {
+  "observed": 21224045671,
+  "simulated": 12086941586,
+  "saving": 9137104085,
+  "compactions": 909,
+  "by_lead": {
+   "claude-infra-bot-lead": {
+    "observed": 2926636175,
+    "simulated": 1777634866,
+    "compactions": 9,
+    "requests": 7194,
+    "saving": 1149001309
+   },
+   "cos-lead": {
+    "observed": 79830462,
+    "simulated": 157601437,
+    "compactions": 110,
+    "requests": 226,
+    "saving": -77770975
+   },
+   "flywheel-cos-lead": {
+    "observed": 471162743,
+    "simulated": 552893223,
+    "compactions": 218,
+    "requests": 1032,
+    "saving": -81730480
+   },
+   "flywheel-eng-lead": {
+    "observed": 14938693601,
+    "simulated": 7370172108,
+    "compactions": 168,
+    "requests": 26859,
+    "saving": 7568521493
+   },
+   "flywheel-product-lead": {
+    "observed": 2069882581,
+    "simulated": 1458723024,
+    "compactions": 221,
+    "requests": 4088,
+    "saving": 611159557
+   },
+   "joycon-lead": {
+    "observed": 93899438,
+    "simulated": 82953656,
+    "compactions": 1,
+    "requests": 290,
+    "saving": 10945782
+   },
+   "ops-lead": {
+    "observed": 156053738,
+    "simulated": 270292378,
+    "compactions": 174,
+    "requests": 331,
+    "saving": -114238640
+   },
+   "product-lead": {
+    "observed": 205767380,
+    "simulated": 159891861,
+    "compactions": 5,
+    "requests": 484,
+    "saving": 45875519
+   },
+   "rafiki-lead": {
+    "observed": 25599070,
+    "simulated": 25599070,
+    "compactions": 0,
+    "requests": 150,
+    "saving": 0
+   },
+   "reflection-lead": {
+    "observed": 38787454,
+    "simulated": 38787454,
+    "compactions": 0,
+    "requests": 196,
+    "saving": 0
+   },
+   "sub-lead": {
+    "observed": 171774414,
+    "simulated": 146433894,
+    "compactions": 3,
+    "requests": 483,
+    "saving": 25340520
+   },
+   "tidal-echo-content-lead": {
+    "observed": 39517507,
+    "simulated": 39517507,
+    "compactions": 0,
+    "requests": 163,
+    "saving": 0
+   },
+   "tidal-echo-cos-lead": {
+    "observed": 6259649,
+    "simulated": 6259649,
+    "compactions": 0,
+    "requests": 54,
+    "saving": 0
+   },
+   "scratchpad": {
+    "observed": 181459,
+    "simulated": 181459,
+    "compactions": 0,
+    "requests": 4,
+    "saving": 0
+   }
+  }
+ }
+}

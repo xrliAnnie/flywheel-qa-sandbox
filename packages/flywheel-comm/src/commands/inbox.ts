@@ -50,11 +50,9 @@ export function inbox(args: InboxArgs): InboxResult {
 	}
 	const db = new CommDB(args.dbPath, false);
 	try {
-		const instructions = db.getUnreadInstructions(args.execId);
-		for (const inst of instructions) {
-			db.markInstructionRead(inst.id);
-		}
-		db.ackRunnerReceiptWakesStarted(
+		// FLY-2373: ACK, consumption receipt and wake start share one
+		// transaction; the debug override ACKs but never signs completion evidence.
+		const instructions = db.consumeRunnerInbox(
 			args.execId,
 			observedAtMs,
 			args.debugExecOverride ? "debug_override" : "exec_cli",

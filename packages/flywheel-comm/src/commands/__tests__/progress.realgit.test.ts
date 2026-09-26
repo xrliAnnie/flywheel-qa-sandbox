@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { parseProgress } from "flywheel-config";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type ProgressDeps, runProgress } from "../progress.js";
 
@@ -143,5 +144,34 @@ describe("runProgress — real git (first-write + path-limited)", () => {
 			encoding: "utf8",
 		});
 		expect(staged.stdout).toContain("app.ts");
+	});
+
+	it("FLY-2901: the multi-ref `rescue` pointer survives the real write → commit → read → merge path byte-for-byte", () => {
+		const eventUid = "0123456789abcdef".repeat(4); // 64 hex
+		const rescue =
+			`event:worktree_takeover_rescued:${eventUid} refs:` +
+			`flywheel-rescue/FLY-12/aaaa1111-bbbb2222-20260925T010203Z-base@${"a".repeat(40)},` +
+			`flywheel-rescue/FLY-12/aaaa1111-bbbb2222-20260925T010203Z-dirty@${"b".repeat(40)}`;
+		// first write = the stand-in's first `progress` call carrying the pointer
+		const r1 = runProgress(
+			{ ...args, pointer: [{ key: "rescue", value: rescue }] },
+			realDeps(),
+		);
+		expect(r1.ok, r1.reason).toBe(true);
+		const committed = spawnSync("git", ["show", `HEAD:${file}`], {
+			cwd: repo,
+			encoding: "utf8",
+		});
+		expect(committed.status).toBe(0);
+		expect(parseProgress(committed.stdout).pointers.rescue).toBe(rescue);
+		// a later write without the flag must re-read and re-emit it unchanged
+		const r2 = runProgress(
+			{ ...args, cursor: "2/3", next: "second step" },
+			realDeps(),
+		);
+		expect(r2.ok, r2.reason).toBe(true);
+		const back = parseProgress(readFileSync(join(repo, file), "utf8"));
+		expect(back.phaseCursor).toBe("2/3");
+		expect(back.pointers.rescue).toBe(rescue);
 	});
 });

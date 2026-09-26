@@ -772,12 +772,16 @@ describe("FLY-2830 reading times and switch-refresh marks", () => {
 		});
 	const claudeRow = (
 		name: string,
-		sources: { usage: string | null; detail: string | null },
+		sources: {
+			usage: string | null;
+			detail: string | null;
+			charge?: string | null;
+		},
 		overrides: Partial<AccountQuotaRow> = {},
 	) =>
 		row(name, 30, "2026-09-28T16:00:00.000Z", {
 			credits: cell("0 张"),
-			sources: { provider: "Claude", ...sources },
+			sources: { provider: "Claude", charge: sources.detail, ...sources },
 			...overrides,
 		});
 	const marks = (html: string) =>
@@ -968,5 +972,140 @@ describe("FLY-2830 reading times and switch-refresh marks", () => {
 		);
 		expect(html).not.toContain("<b>");
 		expect(html).toContain("&lt;b&gt;");
+	});
+});
+
+describe("FLY-2903 terminal Codex body banner", () => {
+	it("lists terminal bodies still alive or burning quota, escaped", () => {
+		const html = renderAccountQuotaPageHtml(view([]), undefined, {
+			terminalBodies: [
+				{
+					executionId: "0123456789abcdef",
+					issueIdentifier: "FLY-2903<script>alert(1)</script>",
+					terminalAt: "2026-09-23 19:00:00",
+					state: "alive_residual",
+					tokensAfterTerminal: 1234567,
+				},
+				{
+					executionId: "fedcba9876543210",
+					issueIdentifier: null,
+					terminalAt: null,
+					state: "probe_unknown",
+					tokensAfterTerminal: null,
+				},
+			],
+		});
+		expect(html).toContain('class="terminal-body-banner"');
+		expect(html).toContain("终态 Codex 体仍在用额度（2）");
+		expect(html).toContain("FLY-2903&lt;script&gt;alert(1)&lt;/script&gt;");
+		expect(html).not.toContain("<script>alert(1)");
+		expect(html).toContain("01234567");
+		expect(html).toContain("1,234,567");
+		expect(html).toContain("收不掉，仍在运行");
+		expect(html).toContain("读不到");
+		expect(html).toContain("探测结果不确定");
+	});
+
+	it("renders no banner without rows", () => {
+		expect(
+			renderAccountQuotaPageHtml(view([]), undefined, { terminalBodies: [] }),
+		).not.toContain('class="terminal-body-banner"');
+		expect(renderAccountQuotaPageHtml(view([]))).not.toContain(
+			'class="terminal-body-banner"',
+		);
+	});
+});
+
+describe("FLY-2897 Claude next charge cell from receipts", () => {
+	const SWITCH = { at: "2026-09-23T19:50:00.000Z", vendor: "Claude" as const };
+	const OLD = "2026-09-23T19:40:00.000Z"; // 12:40 PT
+	const NEW = "2026-09-23T19:55:00.000Z"; // 12:55 PT
+	const claudeRow = (overrides: Partial<AccountQuotaRow> = {}) =>
+		row("business", 30, "2026-09-28T16:00:00.000Z", {
+			credits: cell("0 张"),
+			nextCharge: cell("10/16 周五\n本期 9/16–10/16 · 已付 $200.01"),
+			sources: { provider: "Claude", usage: NEW, detail: NEW, charge: NEW },
+			receiptReadAt: NEW,
+			...overrides,
+		});
+	const marks = (html: string) =>
+		[...html.matchAll(/<span class="switch-stale">([^<]*)<\/span>/g)].map(
+			(m) => m[1],
+		);
+
+	it("renders the date, its note lines and when the receipts were read", () => {
+		const html = renderAccountQuotaPageHtml(view([claudeRow()]));
+		expect(html).toContain(
+			'<td><span class="next-charge">10/16 周五</span><span class="charge-note">本期 9/16–10/16 · 已付 $200.01</span><span class="charge-read-time">收据读于 12:55</span></td></tr>',
+		);
+	});
+
+	it("says never read, even on a row without switch sources", () => {
+		const html = renderAccountQuotaPageHtml(
+			view([
+				claudeRow({
+					nextCharge: cell("读不到（收据还没读过）", { source: "missing" }),
+					receiptReadAt: null,
+					sources: undefined,
+				}),
+			]),
+		);
+		expect(html).toContain(
+			'<span class="next-charge">读不到（收据还没读过）</span><span class="charge-read-time">收据读于 从未读到</span>',
+		);
+	});
+
+	it("writes no receipt line for founder-confirmed or Codex cells", () => {
+		const html = renderAccountQuotaPageHtml(
+			view(
+				[
+					claudeRow({
+						nextCharge: cell("已取消 · 10/05 周一 到期", { source: "manual" }),
+						receiptReadAt: undefined,
+					}),
+				],
+				[
+					row("codex", 20, "2026-09-28T16:00:00.000Z", {
+						provider: "Codex",
+						nextCharge: cell("10/22 周四"),
+					}),
+				],
+			),
+		);
+		expect(html).not.toContain('<span class="charge-read-time">');
+	});
+
+	it("escapes every note line", () => {
+		const html = renderAccountQuotaPageHtml(
+			view([claudeRow({ nextCharge: cell("<i>\n<b>x</b>") })]),
+		);
+		expect(html).toContain(
+			'<span class="next-charge">&lt;i&gt;</span><span class="charge-note">&lt;b&gt;x&lt;/b&gt;</span>',
+		);
+		expect(html).not.toMatch(/<(b|i)>/);
+	});
+
+	it("dates the next-charge switch mark by the receipt reading", () => {
+		const stale = renderAccountQuotaPageHtml(
+			view([
+				claudeRow({
+					sources: { provider: "Claude", usage: NEW, detail: NEW, charge: OLD },
+				}),
+			]),
+			undefined,
+			{ lastSwitch: SWITCH },
+		);
+		expect(marks(stale)).toEqual(["切号后尚未刷新（切号 12:50，读于 12:40）"]);
+		const fresh = renderAccountQuotaPageHtml(
+			view([
+				claudeRow({
+					sources: { provider: "Claude", usage: NEW, detail: OLD, charge: NEW },
+				}),
+			]),
+			undefined,
+			{ lastSwitch: SWITCH },
+		);
+		// tier and cards (detail) only; the next charge is fresh.
+		expect(marks(fresh)).toHaveLength(2);
 	});
 });

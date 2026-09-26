@@ -23,6 +23,7 @@ import {
 	closeRunner,
 	retireWorkflowProcessBody,
 } from "../bridge/close-runner.js";
+import { registerCodexTerminalTeardown } from "../bridge/codex-daemon-teardown.js";
 import { commDbPathForProject } from "../bridge/commdb-path.js";
 import * as commDbSessionPrune from "../bridge/commdb-session-prune.js";
 import { StateStore } from "../StateStore.js";
@@ -2105,5 +2106,125 @@ describe("closeRunner C5 detection CLEARING (FLY-1048)", () => {
 				"fp:1",
 			)?.status,
 		).toBe("NEW");
+	});
+});
+
+describe("closeRunner — FLY-2903 stop the in-process Codex owner first", () => {
+	let store: StateStore;
+	let isolated: string;
+	let requestStop: ReturnType<typeof vi.fn>;
+	let recordCloseAttempt: ReturnType<typeof vi.fn>;
+	let dispose: () => void;
+	const savedEnv = {
+		session: process.env.FLYWHEEL_CODEX_SESSION_DIR,
+		socket: process.env.FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT,
+	};
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+		isolated = mkdtempSync(join(tmpdir(), "fly2903-close-runner-"));
+		// The real reap only reads these: no ledger → no signal is ever sent.
+		process.env.FLYWHEEL_CODEX_SESSION_DIR = join(isolated, "sessions");
+		process.env.FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT = join(isolated, "sock");
+		mockGetTmuxTarget.mockReset().mockReturnValue(undefined);
+		mockKillTmuxWindow.mockReset();
+		mockProbeRunExecutionLiveness.mockReset().mockResolvedValue("dead");
+		mockPrepareCodexPhaseShutdown.mockReset();
+		mockFinalizeCommDbSession.mockReset().mockReturnValue({
+			ok: true,
+			outcome: "finalized",
+			retiredGateCount: 0,
+		});
+		requestStop = vi.fn(async () => "not_owned" as const);
+		recordCloseAttempt = vi.fn();
+		dispose = registerCodexTerminalTeardown({
+			owners: { requestStop },
+			closeLedger: { recordCloseAttempt },
+		});
+	});
+	afterEach(() => {
+		dispose();
+		store.close();
+		rmSync(isolated, { recursive: true, force: true });
+		for (const [key, value] of [
+			["FLYWHEEL_CODEX_SESSION_DIR", savedEnv.session],
+			["FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT", savedEnv.socket],
+		] as const) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	});
+
+	it("an ordinary close asks the owner to stop with close_runner", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-102",
+			project_name: "flywheel",
+			status: "completed",
+			adapter_type: "codex-tmux",
+		});
+		await closeRunner(makeOpts(), store);
+		expect(requestStop).toHaveBeenCalledWith("exec-1", "close_runner", {});
+		expect(recordCloseAttempt).toHaveBeenCalledWith(
+			expect.objectContaining({
+				executionId: "exec-1",
+				source: "bridge.close-runner",
+				ownerStop: "not_owned",
+			}),
+		);
+	});
+
+	it("process-body retirement uses process_retirement (keeps the execution resumable)", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-102",
+			project_name: "flywheel",
+			status: "ship_parked",
+			adapter_type: "codex-tmux",
+		});
+		vi.spyOn(store, "getWorkflowExecutionProcessBody").mockReturnValue({
+			state: "retiring",
+			generation: 1,
+			retirement_requested_at: "2026-09-24T10:14:55.000Z",
+		} as ReturnType<StateStore["getWorkflowExecutionProcessBody"]>);
+		await retireWorkflowProcessBody(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				projectName: "flywheel",
+				generation: 1,
+				vendor: "codex",
+				retirementRequestedAt: "2026-09-24T10:14:55.000Z",
+			},
+			store,
+		);
+		expect(requestStop).toHaveBeenCalledWith(
+			"exec-1",
+			"process_retirement",
+			{},
+		);
+	});
+
+	it("a gracefully shut down resident phase only records the attempt", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-102",
+			project_name: "flywheel",
+			status: "completed",
+			adapter_type: "codex-tmux",
+			chat_thread_role: "qa",
+		});
+		mockPrepareCodexPhaseShutdown.mockResolvedValue({
+			kind: "graceful",
+			requestId: "shutdown-1",
+		});
+		await closeRunner(makeOpts(), store);
+		expect(requestStop).not.toHaveBeenCalled();
+		expect(recordCloseAttempt).toHaveBeenCalledWith(
+			expect.objectContaining({
+				executionId: "exec-1",
+				source: "bridge.close-runner",
+			}),
+		);
 	});
 });

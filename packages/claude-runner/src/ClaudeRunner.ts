@@ -8,6 +8,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
 	type CanUseTool,
 	type PermissionResult,
@@ -17,7 +18,9 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import dotenv from "dotenv";
 import {
+	appendRunnerTestPolicyHookSettings,
 	buildNonLeadClaudeSettings,
+	buildRunnerTestPolicyHookCommand,
 	getModelConfigSnapshot,
 	ModelPolicyError,
 	resolveAllowedCanonicalModel,
@@ -44,6 +47,13 @@ import type {
 	ClaudeRunnerEvents,
 	ClaudeSessionInfo,
 } from "./types.js";
+
+const RUNNER_TEST_POLICY_HOOK = fileURLToPath(
+	new URL(
+		"../../../scripts/hooks/inject-runner-test-policy.mjs",
+		import.meta.url,
+	),
+);
 
 export declare interface ClaudeRunner {
 	on<K extends keyof ClaudeRunnerEvents>(
@@ -445,8 +455,15 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 			const extraArgs = {
 				...this.config.extraArgs,
 				settings: JSON.stringify(
-					buildNonLeadClaudeSettings(
-						this.config.extraArgs?.settings ?? undefined,
+					appendRunnerTestPolicyHookSettings(
+						buildNonLeadClaudeSettings(
+							this.config.extraArgs?.settings ?? undefined,
+						),
+						this.config.appendSystemPrompt,
+						buildRunnerTestPolicyHookCommand(
+							process.execPath,
+							RUNNER_TEST_POLICY_HOOK,
+						),
 					),
 				),
 			};

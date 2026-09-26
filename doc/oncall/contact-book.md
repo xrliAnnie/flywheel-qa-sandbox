@@ -45,6 +45,7 @@
 | `workflow_route_input_rejected` | 从工单绑定取该 runner 所属 Lead | 工作流节点输入被拒 |
 | `three_stage_stuck` | 从 issue thread 绑定取项目 Lead | Design、Implement、QA 交接卡住 |
 | `three_stage_takeover_failed` | 从 issue thread 绑定取项目 Lead | 共享分支接棒失败 |
+| `worktree_takeover_rescued` | 从 issue thread 绑定取项目 Lead | 共享分支接棒前已自动保全前任工作（info 回执，无需处置） |
 | `workflow_engine_escalation` | Tadashi | 工作流引擎恢复预算耗尽 |
 | `workflow_engine_issue_alert` | 从 issue thread 绑定取项目 Lead | 工作流引擎的 issue 级异常 |
 | `auto_qa_stuck` | Tadashi | QA 或授权阶段停滞 |

@@ -61,6 +61,7 @@ describe("handleFlagStage", () => {
 			"codex_lead_thread_rotation",
 			FlagStoreReaders.storeCodexLeadThreadRotationEnabled,
 		],
+		["lead_alert_wake_dedup", FlagStoreReaders.storeLeadAlertWakeDedupEnabled],
 	] as const)(
 		"%s manages global/project set and clear through SQLite only",
 		async (name, read) => {
