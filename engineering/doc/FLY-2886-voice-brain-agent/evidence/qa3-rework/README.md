@@ -47,3 +47,21 @@ Error: browser_host_identity_unverified
 ```
 
 旧的同步调用形态单次阻塞 26,963 ms（租约 TTL 15 s）；改后同一真检查 23 s 内事件循环最大阻塞 19 ms、心跳 449 次。isolated 端到端（`--no-headless` Chrome 会弹到 founder 屏幕）本机不跑，归 529 房 QA。
+
+## Lead 86cd5924 补充
+
+启动前预检先红（`voice-capability-parent.test.ts`，函数尚不存在）：
+
+```
+   ✓ fails before any allocation when the Bridge is not configured  751ms
+   × refuses an activation root whose broker socket cannot fit, before starting anything (QA@3 B1) 63ms
+   ✓ starts without LINEAR_API_KEY and asks the factory to omit unavailable integrations 23ms
+   ✓ revoke() is synchronous, refuses every later authority check and closes nothing 21ms
+   ✓ close() revokes before it tears anything down 23ms
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+TypeError: leadBrokerSocketBytes is not a function
+      Tests  1 failed | 4 passed (5)
+```
+
+后绿：101 字节拒（`voice_capability_broker_socket_too_long`，工厂未被调用、无任何打开），100 字节启动。租约测试改用虚拟时间（真实时长上限会被 `required-wall-clock-thresholds` 守卫拒，也会在高负载 CI 抖动）。
+

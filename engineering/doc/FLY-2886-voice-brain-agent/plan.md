@@ -552,4 +552,6 @@ QA@3（`~/.flywheel/artifacts/FLY-2886/qa3/QA3-REPORT.md`，被测头 `f8e5d048`
 - **B1 broker socket 超长**：语音 parent 的 activation 根原在 `<voiceRoot>/codex-containers/container-*/admission/activation`，生产 voice 根 `~/.flywheel/voice` 下 broker socket 111 字节（上限 100），每场后台都降级。改为容器用 `mkdtemp(realpath(/tmp)/fw-vcap-)` 建短私有根（与常驻 `default-runtime` 的 `fw-cap-` 同法），登记为残留目录，降级 / 取消 / 关闭时一并删；子进程停不下的 `cleanup_pending` 情况与容器根一样保留。socket 长度不再随 HOME 与 voice 根变化（本机 50 字节）。
 - **H1 isolated 档阻塞租约**：`verifyBrowserHostIdentity`（main #1191）同步跑 `codesign --verify --deep`（负载下 27–45 s），本单把 parent 放进语音守护进程后阻塞租约续期（TTL 15 s）→ 整场 `voice_lease_fenced`。改为全部身份检查子进程走异步 `execFile`（超时、输出上限、清洗环境不变），常驻同一实现（只是不再阻塞）。检查本身仍在准入时限内；超时按 §14.2 降级。
 - 实现期真宿主预演改用与生产同长的 voice 根（`evidence/qa3-rework/`）。
+- Lead 返工指令 `86cd5924` 补充并已落实：路径超长在启动前就报清楚的错（`voice-capability-parent` 入口按共享常量 `LEAD_BROKER_SOCKET_MAX_BYTES`=100 预检 `<root>/run-XXXXXX/broker.sock`，超出即抛 `voice_capability_broker_socket_too_long`，此前什么都不启动；边界 100 起、101 拒）；短根权限与归属校验不放松（mkdtemp 0700 + runtime-parent 原有 realpath/mode/uid 校验）；「检查耗时超过租约周期时会话不被 fenced」用虚拟时间测试证明（异步 2.5 个租约周期保住会话，阻塞对照被 fenced）。
+- Codex R6：`cleanup_pending`（admission 已交接后子进程停不下）原会永久遗留 `/tmp/fw-vcap-*`（残留记录已释放、无 sweep 接管），两条 `cleanup_pending` 路径现在都删它，容器根仍保留作证据。
 

@@ -112,5 +112,11 @@ QA@3 在 `f8e5d048` 判 FAIL：B1（生产布局 broker socket 111 字节 > 100�
 | `1887416ad` | H1：浏览器宿主身份检查全部子进程改异步 `execFile`；事件循环心跳测试（先红）；child-process census 去掉原同步条目 |
 | `7943f52a8` | 2519 browser canary 改 `await`（异步后同步调用会变成静默放行） |
 
+| `c319bc3a3` | Lead `86cd5924`：voice parent 入口预检 broker socket 长度（共享常量，100 起 / 101 拒，拒时什么都不启动） |
+| `d1400413d` | Lead `86cd5924`：虚拟时间测试——身份检查挂起期间心跳照常；守护进程 2.5 个租约周期的异步准入不被 fenced，阻塞对照被 fenced |
+| `af634411d` | Codex R6 MINOR：`cleanup_pending` 两条路径都删 `/tmp` activation 根（变异验证） |
+
 验证（定向）：voice-codex `vitest related CodexVoiceContainer.ts` 70/70；teamlead `vitest related browser-host-identity/browser-worker` 23 文件 385/385；census 1/1、kill-path 5/5；lint 0 error；teamlead 与 voice-codex 构建、依赖方 typecheck 通过；测试后 `/private/tmp/fw-vcap-*` 零残留（查出并修掉 `cleanup_pending` 用例未清理）。
+
+续（Lead `86cd5924` 与 R6 之后）：voice-codex related（容器 + 守护进程）3 文件 112/112；teamlead `vitest related broker-socket/voice-capability-parent` 23 文件 380/381，唯一红为 `codex-lead-tui-runtime.rotation` 一例 5s 超时（该文件自 `f8e5d048` 未改，负载 108–175 下单独以 30s 超时复跑 53/53 通过，归负载）；wall-clock 守卫、census、kill-path 通过；lint 0 error；构建与依赖方 typecheck 通过；`/private/tmp/fw-vcap-*` 零残留。评审按 Lead 改走 Bridge 评审门（`request-review --type code`）。
 
