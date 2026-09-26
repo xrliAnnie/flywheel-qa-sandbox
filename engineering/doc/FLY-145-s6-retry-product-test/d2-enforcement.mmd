@@ -1,0 +1,25 @@
+sequenceDiagram
+    participant QA as QA agent
+    participant CH as cos-test 频道
+    participant N as 非所属 Lead (1/3/4)
+    participant O as 所属 Lead (test-2)
+    participant BR as Bridge (调度服务)
+
+    QA->>CH: 只 @test-2:起 Runner FLY-145
+    CH->>N: 同一输入可见
+    CH->>O: 同一输入可见
+    N->>N: 第一道防线 - prompt 规则<br/>未被点名则保持沉默
+    Note over N,BR: 正常路径:非所属 Lead 不调用 Bridge
+
+    alt 非所属 Lead 错误地尝试启动
+        N->>BR: start 请求
+        BR->>BR: 第二道防线 - dept-scope check=on<br/>(xrliAnnie/flywheel#170)
+        BR-->>N: 403 DEPT_SCOPE_REJECT<br/>不产生 Runner
+    else 所属 Lead 正常认领
+        O->>BR: start 请求
+        BR-->>O: 通过 → spawn Runner
+    end
+
+    QA->>CH: 采集频道消息证据
+    QA->>BR: 采集 claim / session 证据
+    QA->>QA: 汇总 PASS / FAIL / INCONCLUSIVE

@@ -1,0 +1,25 @@
+flowchart TD
+    A["QA agent 在 cos-test 频道<br/>只发布一次 @test-2 起 Runner FLY-145<br/>(合法 Action Gate 指令)"] --> V{"能证明 4 个 Lead bot 都收到输入<br/>且 4 个 Bridge 闸门均 on?"}
+    V -->|否| X["INCONCLUSIVE<br/>补齐 fan-out / gate-on 证据"]
+    V -->|是| B["打开同一 attempt 的<br/>四 slot 观察窗口"]
+    B --> C2["flywheel-test-2<br/>(Product-Test owner)"]
+    B --> C1["flywheel-test-1<br/>(cos / PM-Test)"]
+    B --> C3["flywheel-test-3<br/>(Ops-Test)"]
+    B --> C4["flywheel-test-4<br/>(Finance-Test)"]
+    C2 --> D2{"标签匹配?<br/>Product-Test 属于本部门"}
+    D2 -->|是| E2["claim + spawn Runner"]
+    C1 --> S1["保持沉默"]
+    C3 --> S3["保持沉默"]
+    C4 --> S4["保持沉默"]
+    E2 --> F["QA agent 收集证据<br/>(reply / claim / spawn)"]
+    S1 --> F
+    S3 --> F
+    S4 --> F
+    F --> G{"只有 test-2 认领<br/>且其余 3 个 slot 零反应?"}
+    G -->|是| H["S6 PASS<br/>归档 FLY-145"]
+    G -->|否| I["S6 FAIL<br/>记录违规 slot<br/>保留 FLY-145 调查"]
+
+    style H fill:#d7f5dd,stroke:#34c759
+    style I fill:#ffe0dd,stroke:#ff3b30
+    style X fill:#fff3e0,stroke:#ff9500
+    style E2 fill:#e3f0ff,stroke:#007aff
