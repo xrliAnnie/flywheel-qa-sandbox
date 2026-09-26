@@ -184,3 +184,42 @@ Teamlead retained guards 四文件 **71 pass**（reown 63、launch claim 7、chi
 2. Claude/Kimi/Antigravity 的 exec 前 PID/start/boot 登记、真实 executable 与 native session 独立核验，以及旧体唯一匹配迁移尚未接线。现在不能声称四载体生产完成。
 3. 生死统一服务、运行时 kill switch、独立采样周期、所有直接 probe 消费者、HIGH pending complete-failed marker 优先对账、跨库义务重放、standby writer-empty、terminal sweep 仍待 A 后续和 B–F。
 4. 九单复现/删除分支清单、最终评审、PR 与注册交卷 route 均未完成。保持 implement 0/6。
+
+
+## 续接 A 第五小批（2026-09-26，执行 7b52a229）
+
+A4 代码 `7bad9acc8`、进度 `0cb9629b8` 已推送。A5 继续批准 A 组，尚未完成其他载体生产 factory、旧体迁移、runtime flag 或 B–F。
+
+### Codex 未完成启动的物理收尾
+
+新增独立 `capturePendingExecutionSpawnAbsence`，输入是实际在途许可的 nonce、已知 child PGID（未生成 child 为 null）、host boot；不伪造 native accepted binding。它在共同 5 秒预算内做稳定 census、argv 前后夹取环境 nonce、socket 和 boot 复核。组内活进程、脱组 nonce writer、不可核环境、活 socket、boot 变化均不授权结账；argv 中伪造 nonce 不冒充环境。
+
+Owner 持久保存 spawn_nonce/pending_pgid/binding_spawn_epoch；兼容旧表增加列时不补造 nonce，对已接纳且无在途的旧绑定回填原 epoch。未解决的旧在途记录仍 unknown。先登记实际 child group，再等待 native binding；接纳时同时核 nonce/group。重启时上一轮 binding 按自己的 epoch 校验保存，不能拿它冒充新 spawn。失败收尾分别核实上一轮 accepted writer 集合与新许可的 nonce/group/socket，所有证据确认后在短同步 CAS 中原子清 in-flight 并写 exact owner receipt。普通 recordDrained 仍拒绝 in-flight。相同已提交 receipt 的重放先核身份，再看期限；过 10 秒不会重复结账。
+
+额外复现了采样期间 session revision 变化：最初只 mock getSession 会被原 mutation lease 拒绝，属于无效 RED；改为真实 upsertSession 推进 revision 后两例确实 RED。修正固定采样前 revision 到最终 CAS，accepted/pending 两条收尾路径均拒旧证据。原 mock 通过日志保留，不计红测。
+
+### 三个 tmux 载体的共用候选登记钩子
+
+`TmuxAdapter` 新增 optional TmuxProcessLaunchDeps，由 Kimi/Antigravity 同样转发。配置时：先 prepare permit，最终 exec 的同一 shell 以显式 `$$` 生成候选，验证 PID/start/boot/独立 PGID/cwd；shell executable 明确只是候选，不能当 native 身份。要求 PID==PGID 且不同于 tmux server；不读取 pane PID。
+
+候选处于现有每执行隔离目录，0600 临时写+fsync+rename，读上限 16 KiB、不跟随文件 symlink；失败清理临时文件。cwd realpath，helper 同样走正向环境白名单。Bridge 的注入式 acceptSpawn(candidate) 完成前，不发 native identity/startup 通知或首心跳；撤权、取消、接纳失败执行 close/cleanup/finish，不能把 finish 未确认包装成成功。未配置 deps 保留 legacy 行为。
+
+这只是共用启动钩子；Claude/Kimi/Antigravity 的独立 native executable/session 核验与生产 factory 尚待下一批，不能据 mock lease 测试宣称其生产登记完成。特别是 Claude 标题会改写、Kimi 为 Node CLI，需要沿批准计划接独立 executable 与真实原生会话参数，不用 argv 标题猜身份。
+
+### 本批红绿与测试政策
+
+- failed-spawn census 8 RED → 8 GREEN；inspector 全文件 38 pass，既有 liveness 52 pass。
+- owner nonce/group 持久化与前一 epoch 两例 RED → 当时 owner 34 pass；外来 nonce/group 另 1 RED；加入旧表迁移后 owner 36 pass。
+- controller failed-native 四例 RED；真实 revision 变化两例 RED → 最终 controller 21 pass。
+- tmux 新候选/门控基础红绿，后补身份发布/收尾失败 2 RED → adapter 新文件 11 pass；manifest 5 pass。三 adapter 直接兼容、registry、defaultExec 共 7 个显式文件 239 pass。
+- StateStore 全文件 104 pass；先前并行时 3 个 5 秒超时，保留失败日志，未调整限额，逐文件重跑通过。FLY-1560 7、retention 36、FLY-2567 17 均通过。
+- FLY-2211 首轮发现新增测试一条 qa-only kill-window inventory hit，另一个 guard 在重载时超过原 15 秒限额。仅登记该精确 qa-only 条目，未改其他分类/断言/限额；独立复跑 5 pass。
+
+本轮收到 Contract v4 后，后续显式测试改为一次一个具体文件；完整 local-test-policy/v1 已同步正在执行的子任务。此前多文件命令是政策更新前的具名相关文件选择，不是整包测试。owning related 仍额外执行，teamlead 按六个直接消费者的 include 配置选择，5 文件 119 pass。原两项真实 ps fixture 的 sandbox EPERM 与禁止的 macOS viewer 继续交 QA529，不算通过。没有新 shell 测试。
+
+本批证据/完整消费者检索将归档到 implementation-a5-evidence.json.gz 与 implementation-a5-consumers.json.gz。最终 build/lint/related/依赖类型检查结果在下方补记；在通过前不宣称本批验证完成。任务仍 implement 0/6，HIGH completion marker、跨库重放、死亡消费者、采样节奏和九单验收未完成。
+
+
+A5 验证续记：lint 通过（5115 文件，25 个既有 warning）；Codex adapter 显式 190 pass、同步 timeout guard 2 pass。统一 runner related 因 TmuxAdapter 导入链带入 real-tmux 项而停止，保留其超时/失败日志，不计为本批通过或 529 验收；改用 /tmp/fly2919-a5-runner-related.config.mts 的 16 个明确相关单元文件待重跑。该次 async stdin 500ms 和 TUI timeout 负控也出现失败，必须按原限额独立复核。child census 与 flag drift 各一个原 5 秒超时也待重跑，不修改断言。
+
+2026-09-26 19:22Z 本机 uptime 显示 load averages 131.82/122.70/136.36（73 users）。已减少并发，没有触碰其他执行或服务。A5 作为 WIP 保全：teamlead... build 仍在 tsc（tool session 44125），flag drift 单文件重跑仍在采集（54600）。源码已冻结，后继先收这两个任务结果，再完成 bounded runner related、child census、async/TUI 复核、repo-fable argv 直接消费者和导出依赖 typecheck；不能将 WIP 当绿头或请求交卷。临时配置和命令日志同时归档供重启恢复。

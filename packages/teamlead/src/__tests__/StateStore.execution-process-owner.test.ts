@@ -463,4 +463,132 @@ describe("FLY-2919 execution process owner", () => {
 			owner_drained_receipt: null,
 		});
 	});
+	it("persists a failed-spawn nonce/group and settles it only against matching fresh physical proof", () => {
+		claim();
+		const begun = owners().beginSpawn({
+			...owner,
+			lifecycleRevision: revision,
+			spawnEpoch: 0,
+			nowMs: 1001,
+			nonce: "nonce-1",
+		} as any);
+		if (!begun.ok) throw new Error("begin failed");
+		const input = { ...begun.permit, lifecycleRevision: revision, nowMs: 1002 };
+		expect(
+			(owners() as any).noteSpawnGroup({ ...input, pgid: 200 }),
+		).toMatchObject({ ok: true });
+		owners().requestClose(input);
+		const evidence = {
+			...begun.permit,
+			controller: owner.controller,
+			bindingDigest: null,
+			controllerState: "stopped",
+			groupState: "absent",
+			writersState: "absent",
+			observedAtMs: 1001,
+			expiresAtMs: 11001,
+			nonce: "nonce-1",
+			pgid: 200,
+		};
+		for (const bad of [
+			{ nonce: "foreign" },
+			{ pgid: 201 },
+			{ groupState: "alive" },
+			{ writersState: "unknown" },
+			{ expiresAtMs: 1001 },
+		]) {
+			expect(
+				(owners() as any).recordFailedSpawnDrained({
+					...input,
+					evidence: { ...evidence, ...bad },
+					reason: "failed_spawn",
+				}),
+			).toMatchObject({ ok: false });
+			expect(owners().get("exec-1")?.spawn_inflight).toBe(1);
+		}
+		const done = (owners() as any).recordFailedSpawnDrained({
+			...input,
+			evidence,
+			reason: "failed_spawn",
+		});
+		expect(done).toMatchObject({ ok: true, receipt: expect.any(String) });
+		expect(owners().get("exec-1")).toMatchObject({
+			spawn_inflight: 0,
+			owner_drained_receipt: done.receipt,
+		});
+		expect(
+			(owners() as any).recordFailedSpawnDrained({
+				...input,
+				nowMs: 60000,
+				evidence,
+				reason: "failed_spawn",
+			}),
+		).toEqual(done);
+	});
+	it("retains the prior accepted binding across a failed restart without reclassifying it as the new spawn", () => {
+		claim();
+		const result = spawn();
+		if (!result.ok) throw new Error("fixture");
+		const input = {
+			...result.permit,
+			lifecycleRevision: revision,
+			nowMs: 1002,
+		};
+		owners().acceptSpawn({ ...input, binding });
+		owners().beginRestart(input);
+		owners().beginSpawn({ ...input, nonce: binding.nonce } as any);
+		expect(owners().getBinding("exec-1")).toBeUndefined();
+		expect((owners() as any).getPreviousBinding("exec-1")).toEqual(binding);
+	});
+
+	it("rejects an accepted worker from a foreign pending nonce or group", () => {
+		claim();
+		const begun = owners().beginSpawn({
+			...owner,
+			lifecycleRevision: revision,
+			spawnEpoch: 0,
+			nowMs: 1001,
+			nonce: binding.nonce,
+		});
+		if (!begun.ok) throw new Error("fixture");
+		const input = { ...begun.permit, lifecycleRevision: revision, nowMs: 1002 };
+		owners().noteSpawnGroup({ ...input, pgid: 200 });
+		for (const bad of [{ nonce: "foreign" }, { pgid: 201 }])
+			expect(
+				owners().acceptSpawn({ ...input, binding: { ...binding, ...bad } }),
+			).toMatchObject({ ok: false, reason: "spawn_identity_changed" });
+		expect(owners().get("exec-1")?.spawn_inflight).toBe(1);
+	});
+	it("migrates an older owner table without inventing nonce or accepting an unresolved prior epoch", async () => {
+		claim();
+		const begun = spawn();
+		if (!begun.ok) throw new Error("fixture");
+		owners().acceptSpawn({
+			...begun.permit,
+			lifecycleRevision: revision,
+			nowMs: 1002,
+			binding,
+		});
+		store.close();
+		const old = new Database(join(root, "fixture.db"));
+		for (const field of ["spawn_nonce", "pending_pgid", "binding_spawn_epoch"])
+			old.exec(`ALTER TABLE execution_process_owner DROP COLUMN ${field}`);
+		old.close();
+		store = await StateStore.create(join(root, "fixture.db"));
+		expect(owners().getBinding("exec-1")).toEqual(binding);
+		expect(owners().get("exec-1")).toMatchObject({
+			spawn_nonce: null,
+			pending_pgid: null,
+			binding_spawn_epoch: 1,
+		});
+		store.close();
+		const inflight = new Database(join(root, "fixture.db"));
+		inflight.exec(
+			"UPDATE execution_process_owner SET spawn_inflight = 1, spawn_epoch = 2, binding_spawn_epoch = NULL",
+		);
+		inflight.close();
+		store = await StateStore.create(join(root, "fixture.db"));
+		expect(owners().getPreviousBinding("exec-1")).toBeUndefined();
+		expect(owners().get("exec-1")?.binding_spawn_epoch).toBeNull();
+	});
 });

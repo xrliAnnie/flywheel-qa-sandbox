@@ -3,6 +3,7 @@ import { realpath } from "node:fs/promises";
 import {
 	bindSpawnedExecutionProcessGroup,
 	captureExecutionProcessSample,
+	capturePendingExecutionSpawnAbsence,
 	type ExecutionProcessOwnerFactory,
 	observeExecutionProcesses,
 	rawCodexBin,
@@ -20,6 +21,7 @@ export interface ExecutionProcessControllerOptions {
 	resolveExecutable?: () => Promise<string>;
 	bindSpawn?: typeof bindSpawnedExecutionProcessGroup;
 	sample?: typeof captureExecutionProcessSample;
+	pendingAbsence?: typeof capturePendingExecutionSpawnAbsence;
 }
 type MutationResult = { ok: true } | { ok: false; reason: string };
 const RETRY_DELAYS = [25, 50, 100, 200] as const;
@@ -247,7 +249,7 @@ export function createExecutionProcessOwnerFactory(
 				const result = await mutate(() =>
 					closed
 						? { ok: false as const, reason: "close_requested" }
-						: owners.beginSpawn(mutation()),
+						: owners.beginSpawn({ ...mutation(), nonce }),
 				);
 				requireAccepted(result);
 				if (result.ok) {
@@ -278,6 +280,9 @@ export function createExecutionProcessOwnerFactory(
 				return result.ok && !closed;
 			},
 			acceptSpawn: async (pgid) => {
+				requireAccepted(
+					await mutate(() => owners.noteSpawnGroup({ ...mutation(), pgid })),
+				);
 				const deadline = now() + 5000;
 				let binding: Awaited<
 					ReturnType<typeof bindSpawnedExecutionProcessGroup>
@@ -321,9 +326,96 @@ export function createExecutionProcessOwnerFactory(
 			close,
 			finish: async () => {
 				await close();
+				const finishIdentity = mutation();
+				const finishMutation = () => ({ ...finishIdentity, nowMs: now() });
 				const row = owners.get(ctx.executionId)!;
 				if (row.owner_drained_receipt) return;
-				if (row.spawn_inflight) throw new Error("process_spawn_unsettled");
+				if (row.spawn_inflight) {
+					const deadline = now() + 5000;
+					let observedAtMs = now();
+					const previous = owners.getPreviousBinding(ctx.executionId);
+					if (row.binding_digest && !previous)
+						throw new Error("process_binding_unavailable");
+					if (previous) {
+						const sample = await (
+							options.sample ?? captureExecutionProcessSample
+						)(previous, {
+							executionId: ctx.executionId,
+							deadlineMs: deadline - now(),
+						});
+						// This checks only the preceding accepted group. The unresolved newborn
+						// is checked separately below; no body-death verdict escapes this method.
+						const old = observeExecutionProcesses({
+							identity: {
+								executionId: ctx.executionId,
+								activationId: identity.activationId,
+								generation: identity.generation,
+								lifecycleRevision: finishIdentity.lifecycleRevision,
+								adapter: "codex-tmux",
+							},
+							ownerToken,
+							spawnEpoch: row.binding_spawn_epoch!,
+							binding: previous,
+							bindingDigest: row.binding_digest!,
+							controller,
+							ownerClosed: true,
+							ownerDrained: false,
+							spawnInflight: false,
+							restartInProgress: false,
+							recoveryActive: false,
+							sample,
+							nowMs: now(),
+						});
+						if (old.verdict !== "dead")
+							throw new Error("process_drain_unconfirmed");
+						observedAtMs = Date.parse(old.observedAt);
+					}
+					if (!row.spawn_nonce || now() >= deadline)
+						throw new Error("process_drain_unconfirmed");
+					const absent = await (
+						options.pendingAbsence ?? capturePendingExecutionSpawnAbsence
+					)(
+						{
+							hostBootId: row.host_boot_id,
+							nonce: row.spawn_nonce,
+							pgid: row.pending_pgid,
+						},
+						{ executionId: ctx.executionId, deadlineMs: deadline - now() },
+					);
+					if (
+						!absent ||
+						absent.hostBootId !== row.host_boot_id ||
+						absent.nonce !== row.spawn_nonce ||
+						absent.pgid !== row.pending_pgid
+					)
+						throw new Error("process_drain_unconfirmed");
+					observedAtMs = Math.min(observedAtMs, absent.observedAtMs);
+					requireAccepted(
+						await mutate(() =>
+							owners.recordFailedSpawnDrained({
+								...finishMutation(),
+								reason: "failed_native_spawn_drained",
+								evidence: {
+									...identity,
+									spawnEpoch,
+									controller,
+									bindingDigest: row.binding_digest,
+									controllerState: "stopped",
+									groupState: "absent",
+									writersState: "absent",
+									nonce: absent.nonce,
+									pgid: absent.pgid,
+									observedAtMs,
+									expiresAtMs: Math.min(
+										absent.expiresAtMs,
+										observedAtMs + 10_000,
+									),
+								},
+							}),
+						),
+					);
+					return;
+				}
 				const binding = owners.getBinding(ctx.executionId);
 				if (spawnPrepared && !binding)
 					throw new Error("process_binding_unavailable");
@@ -337,7 +429,7 @@ export function createExecutionProcessOwnerFactory(
 							executionId: ctx.executionId,
 							activationId: identity.activationId,
 							generation: identity.generation,
-							lifecycleRevision: current().lifecycleRevision,
+							lifecycleRevision: finishIdentity.lifecycleRevision,
 							adapter: "codex-tmux",
 						},
 						ownerToken,
@@ -360,7 +452,7 @@ export function createExecutionProcessOwnerFactory(
 				requireAccepted(
 					await mutate(() =>
 						owners.recordDrained({
-							...mutation(),
+							...finishMutation(),
 							reason: "runtime_drained",
 							evidence: {
 								...identity,

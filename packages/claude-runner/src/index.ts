@@ -259,11 +259,20 @@ export {
 export {
 	bindSpawnedExecutionProcessGroup,
 	captureExecutionProcessSample,
+	capturePendingExecutionSpawnAbsence,
 	type ExecutionProcessInspectorOptions,
 	type InspectedExecutionProcess,
+	type PendingExecutionSpawn,
+	type PendingExecutionSpawnAbsence,
 	readExecutionProcessIdentity,
 	type SpawnedExecutionProcessInput,
 } from "./execution-process-inspector.js";
+export type {
+	ExecutionProcessLaunchCandidate,
+	ExecutionProcessLaunchRequest,
+	TmuxProcessLaunchDeps,
+	TmuxProcessLaunchLease,
+} from "./execution-process-launch.js";
 export {
 	type BodyIdentity,
 	type BodyObservation,

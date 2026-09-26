@@ -268,4 +268,83 @@ describe("FLY-2919 durable production process owner", () => {
 			}
 		},
 	);
+	it.each(["no_child", "binding_failed", "writers_unknown", "previous_writer"])(
+		"settles %s only after independent failed-spawn absence",
+		async (mode) => {
+			options.pendingAbsence = async (pending: any) => ({
+				...pending,
+				observedAtMs: clock,
+				expiresAtMs: clock + 10000,
+			});
+			const lease = await acquire();
+			await lease.prepareSpawn();
+			if (mode === "previous_writer") {
+				await lease.acceptSpawn(200);
+				await lease.beginRestart();
+				await lease.prepareSpawn();
+				sample.processes = [
+					{
+						pid: 300,
+						ppid: 1,
+						pgid: 200,
+						startIdentity: "writer",
+						state: "running",
+					},
+				];
+			}
+			if (mode === "binding_failed") {
+				options.bindSpawn = async () => null;
+				await expect(lease.acceptSpawn(200)).rejects.toThrow(
+					"process_spawn_identity_unavailable",
+				);
+			}
+			if (mode === "writers_unknown") options.pendingAbsence = async () => null;
+			if (mode === "writers_unknown" || mode === "previous_writer") {
+				await expect(lease.finish()).rejects.toThrow(
+					"process_drain_unconfirmed",
+				);
+				expect(store.executionProcessOwners.get(ctx.executionId)).toMatchObject(
+					{ spawn_inflight: 1, owner_drained_receipt: null },
+				);
+			} else {
+				await lease.finish();
+				expect(store.executionProcessOwners.get(ctx.executionId)).toMatchObject(
+					{
+						spawn_inflight: 0,
+						spawn_nonce: "nonce-1",
+						pending_pgid: mode === "binding_failed" ? 200 : null,
+						owner_drained_receipt: expect.any(String),
+					},
+				);
+			}
+		},
+	);
+	it.each(["accepted", "pending"])(
+		"fences a lifecycle revision changed during %s drain sampling",
+		async (mode) => {
+			const lease = await acquire();
+			await lease.prepareSpawn();
+			if (mode === "accepted") await lease.acceptSpawn(200);
+			const change = () =>
+				store.upsertSession({
+					execution_id: ctx.executionId,
+					issue_id: ctx.issueId,
+					project_name: "fixture",
+					status: "failed",
+				});
+			options.sample = async () => {
+				change();
+				return { ...sample, sampledAtMs: clock };
+			};
+			options.pendingAbsence = async (pending: any) => {
+				change();
+				return { ...pending, observedAtMs: clock, expiresAtMs: clock + 10000 };
+			};
+			await expect(lease.finish()).rejects.toThrow("stale_revision");
+			expect(
+				store.executionProcessOwners.get(ctx.executionId)
+					?.owner_drained_receipt,
+			).toBeNull();
+		},
+	);
 });

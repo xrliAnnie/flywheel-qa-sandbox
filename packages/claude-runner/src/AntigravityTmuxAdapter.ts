@@ -5,6 +5,7 @@ import type {
 	AdapterExecutionContext,
 	IHookCallbackServer,
 } from "flywheel-core";
+import type { TmuxProcessLaunchDeps } from "./execution-process-launch.js";
 import { type ExecFileFn, TmuxAdapter } from "./TmuxAdapter.js";
 
 /**
@@ -43,6 +44,7 @@ export class AntigravityTmuxAdapter extends TmuxAdapter {
 		pollIntervalMs: number = 5000,
 		defaultTimeoutMs: number = 86_400_000,
 		hookServer?: IHookCallbackServer,
+		processLaunchDeps?: TmuxProcessLaunchDeps,
 	) {
 		// No transport (v1 transport=none) — agy has no Agent Team mailbox.
 		super(
@@ -52,6 +54,9 @@ export class AntigravityTmuxAdapter extends TmuxAdapter {
 			defaultTimeoutMs,
 			hookServer,
 			undefined,
+			undefined,
+			undefined,
+			processLaunchDeps,
 		);
 	}
 

@@ -127,6 +127,106 @@ export async function bindSpawnedExecutionProcessGroup(
 	}
 }
 
+export interface PendingExecutionSpawn {
+	hostBootId: string;
+	nonce: string;
+	pgid: number | null;
+}
+export interface PendingExecutionSpawnAbsence extends PendingExecutionSpawn {
+	observedAtMs: number;
+	expiresAtMs: number;
+}
+/** A failed native admission has no accepted worker identity. Prove absence using
+ * its durable launch nonce and actual child group, never a fabricated binding. */
+export async function capturePendingExecutionSpawnAbsence(
+	pending: PendingExecutionSpawn,
+	options: ExecutionProcessInspectorOptions = {},
+): Promise<PendingExecutionSpawnAbsence | null> {
+	try {
+		if (
+			!options.executionId ||
+			!/^[A-Za-z0-9_-]{1,256}$/.test(pending.nonce) ||
+			(pending.pgid !== null &&
+				(!Number.isSafeInteger(pending.pgid) || pending.pgid <= 1))
+		)
+			return null;
+		const c = capture(options);
+		const hostBootId = await c.boot();
+		if (hostBootId !== pending.hostBootId) return null;
+		const before = await c.processes();
+		const argvBefore = argvIndex(
+			await c.run("/bin/ps", ["-axww", "-o", "pid=,lstart=,command="]),
+		);
+		const environment = argvIndex(
+			await c.run("/bin/ps", [
+				c.platform === "darwin" ? "-axwwE" : "-axwwe",
+				"-o",
+				"pid=,lstart=,command=",
+			]),
+		);
+		const argvAfter = argvIndex(
+			await c.run("/bin/ps", ["-axww", "-o", "pid=,lstart=,command="]),
+		);
+		if (
+			await (options.socketProbe ?? probeSocket)(
+				resolveDaemonSocketPath(options.executionId, options.env),
+				c.control(),
+			)
+		)
+			return null;
+		const after = await c.processes();
+		if ((await c.boot()) !== hostBootId) return null;
+		const stable = (rows: ProcessRow[]) =>
+			rows
+				.filter((row) => !c.owned.has(row.pid))
+				.map((row) => JSON.stringify(row))
+				.sort()
+				.join("\n");
+		if (stable(before) !== stable(after)) return null;
+		const uid = options.uid ?? process.getuid?.();
+		if (uid === undefined) return null;
+		for (const row of after) {
+			if (row.state === "zombie" || c.owned.has(row.pid)) continue;
+			// A reused group is also a refusal: absence must be independently certain.
+			if (pending.pgid !== null && row.pgid === pending.pgid) return null;
+			if (row.uid !== uid) continue;
+			const a = argvBefore.get(row.pid),
+				e = environment.get(row.pid),
+				z = argvAfter.get(row.pid);
+			if (
+				!a ||
+				!e ||
+				!z ||
+				a.start !== row.startIdentity ||
+				e.start !== row.startIdentity ||
+				z.start !== row.startIdentity ||
+				a.text !== z.text ||
+				!e.text.startsWith(`${a.text} `)
+			)
+				return null;
+			const tokens = e.text
+				.slice(a.text.length + 1)
+				.trim()
+				.split(/\s+/);
+			if (!tokens.some((token) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(token)))
+				return null;
+			const nonces = tokens.filter((token) =>
+				token.startsWith(`${NONCE_KEY}=`),
+			);
+			if (nonces.length > 1 || nonces[0] === `${NONCE_KEY}=${pending.nonce}`)
+				return null;
+		}
+		c.control();
+		return {
+			...pending,
+			observedAtMs: c.sampledAtMs,
+			expiresAtMs: c.sampledAtMs + 10_000,
+		};
+	} catch {
+		return null;
+	}
+}
+
 /** Timeout/cancel signals ONLY this probe child; resolution waits for its close. */
 export function runExecutionProbeCommand(
 	file: string,

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
+import * as Inspector from "../src/execution-process-inspector.js";
 import {
 	bindSpawnedExecutionProcessGroup,
 	captureExecutionProcessSample,
@@ -423,5 +424,60 @@ describe("execution process inspector", () => {
 		expect(child.kill).toHaveBeenCalledWith("SIGKILL");
 		child.emit("close", null, "SIGKILL");
 		await expect(promise).rejects.toThrow("process_probe_unavailable");
+	});
+});
+
+describe("FLY-2919 failed native spawn absence", () => {
+	it.each([
+		"empty",
+		"group_alive",
+		"detached_writer",
+		"argv_spoof",
+		"environment_unknown",
+		"socket_alive",
+		"boot_changed",
+	])("requires independent %s evidence", async (mode) => {
+		const row: Row = { pid: 90, env: "PATH=/bin" };
+		if (mode === "group_alive") row.pgid = 42;
+		if (mode === "detached_writer")
+			row.env = "PATH=/bin FLYWHEEL_EXECUTION_NONCE=nonce-42";
+		if (mode === "argv_spoof")
+			row.argv = "tool FLYWHEEL_EXECUTION_NONCE=nonce-42";
+		if (mode === "environment_unknown") row.env = "";
+		const { options } = fixture([row]);
+		const result = await (Inspector as any).capturePendingExecutionSpawnAbsence(
+			{
+				hostBootId: mode === "boot_changed" ? "foreign-boot" : boot,
+				nonce: "nonce-42",
+				pgid: 42,
+			},
+			{
+				...options,
+				executionId: "exec-failed",
+				socketProbe: async () => mode === "socket_alive",
+			},
+		);
+		if (mode === "empty" || mode === "argv_spoof")
+			expect(result).toEqual({
+				hostBootId: boot,
+				nonce: "nonce-42",
+				pgid: 42,
+				observedAtMs: 1000,
+				expiresAtMs: 11000,
+			});
+		else expect(result).toBeNull();
+	});
+	it("can prove a canceled pre-spawn permit with no group only when the nonce census is complete", async () => {
+		const { options } = fixture([{ pid: 90, env: "PATH=/bin" }]);
+		expect(
+			await (Inspector as any).capturePendingExecutionSpawnAbsence(
+				{ hostBootId: boot, nonce: "nonce-42", pgid: null },
+				{
+					...options,
+					executionId: "exec-failed",
+					socketProbe: async () => false,
+				},
+			),
+		).toMatchObject({ pgid: null, nonce: "nonce-42" });
 	});
 });

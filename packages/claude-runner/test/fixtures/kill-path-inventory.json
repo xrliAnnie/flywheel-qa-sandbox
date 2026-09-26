@@ -432,6 +432,12 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/claude-runner/test/TmuxAdapter.process-launch.test.ts:if (args[0] === \"kill-window\") {#1",
+		"path": "packages/claude-runner/test/TmuxAdapter.process-launch.test.ts",
+		"code": "if (args[0] === \"kill-window\") {",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/claude-runner/test/TmuxAdapter.test.ts:.filter((c) => c.cmd === \"tmux\" && c.args[0] === \"kill-window\")#1",
 		"path": "packages/claude-runner/test/TmuxAdapter.test.ts",
 		"code": ".filter((c) => c.cmd === \"tmux\" && c.args[0] === \"kill-window\")",

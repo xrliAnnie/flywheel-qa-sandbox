@@ -36,6 +36,14 @@ import type {
 	LaunchPrecommitFailure,
 } from "flywheel-core";
 import { FLYWHEEL_MARKER_DIR, sanitizeTmuxName } from "flywheel-core";
+import {
+	createExecutionProcessLaunchManifest,
+	type ExecutionProcessLaunchCandidate,
+	type ExecutionProcessLaunchManifest,
+	type TmuxProcessLaunchDeps,
+	type TmuxProcessLaunchLease,
+	waitForExecutionProcessLaunchCandidate,
+} from "./execution-process-launch.js";
 import type { BoundaryEvidence } from "./isolation-boundary.js";
 import { auditedSignal } from "./kill-ledger.js";
 import {
@@ -162,6 +170,11 @@ export interface AmbientSafeWindowCommandOptions {
 	launchToken?: string;
 	cleanup?: "keep" | "unlink";
 	promptFile?: string;
+	processRegistration?: {
+		nodePath: string;
+		helperPath: string;
+		requestPath: string;
+	};
 }
 
 export interface BuiltCliArgs {
@@ -253,6 +266,8 @@ export function buildAmbientSafeWindowCommand(
 	const envPrefix = buildRunnerPaneEnvironmentPrefix(opts.allowedEnvNames);
 
 	const hasGate = opts.gateFile !== undefined || opts.launchToken !== undefined;
+	if (opts.processRegistration && !hasGate)
+		throw new Error("process registration requires a gated launch");
 	if (opts.promptFile && !hasGate) {
 		throw new Error("ambient-safe prompt file requires a gated launch");
 	}
@@ -279,11 +294,18 @@ export function buildAmbientSafeWindowCommand(
 		// $3 = optional prompt file;
 		// after shift, "$@" is binary + args. Only validated environment names
 		// enter this source; their values are expanded by the pane shell.
-		`cf="$0"; tok="$1"; cleanup="$2"; pf="$3"; shift 3; n=0; while ! grep -qF "$tok" "$cf" 2>/dev/null; do [ "$n" -ge 1500 ] && exit 1; sleep 0.02; n=$((n+1)); done; [ "$cleanup" = "unlink" ] && rm -f -- "$cf"; if [ -n "$pf" ]; then p="$(cat -- "$pf")" || { printf "FLYWHEEL_PROMPT_FILE_UNREADABLE %s\\n" "$pf" >&2; exit 78; }; [ -n "$p" ] || { printf "FLYWHEEL_PROMPT_FILE_UNREADABLE %s\\n" "$pf" >&2; exit 78; }; set -- "$@" "$p"; fi; exec ${envPrefix} "$@"`,
+		`${opts.processRegistration ? `${envPrefix} "$4" "$5" register "$6" "$$" || exit 78; ` : ""}cf="$0"; tok="$1"; cleanup="$2"; pf="$3"; shift ${opts.processRegistration ? 6 : 3}; n=0; while ! grep -qF "$tok" "$cf" 2>/dev/null; do [ "$n" -ge 1500 ] && exit 1; sleep 0.02; n=$((n+1)); done; [ "$cleanup" = "unlink" ] && rm -f -- "$cf"; if [ -n "$pf" ]; then p="$(cat -- "$pf")" || { printf "FLYWHEEL_PROMPT_FILE_UNREADABLE %s\\n" "$pf" >&2; exit 78; }; [ -n "$p" ] || { printf "FLYWHEEL_PROMPT_FILE_UNREADABLE %s\\n" "$pf" >&2; exit 78; }; set -- "$@" "$p"; fi; exec ${envPrefix} "$@"`,
 		opts.gateFile,
 		opts.launchToken,
 		opts.cleanup ?? "keep",
 		opts.promptFile ?? "",
+		...(opts.processRegistration
+			? [
+					opts.processRegistration.nodePath,
+					opts.processRegistration.helperPath,
+					opts.processRegistration.requestPath,
+				]
+			: []),
 		opts.binaryName,
 		...opts.binaryArgs,
 	];
@@ -415,6 +437,7 @@ export class TmuxAdapter implements IAdapter {
 		 */
 		private ownerStateDbPath?: string,
 		private ensureSessionOptions?: EnsureRunnerSessionOptions,
+		private processLaunchDeps?: TmuxProcessLaunchDeps,
 	) {}
 
 	/**
@@ -501,6 +524,67 @@ export class TmuxAdapter implements IAdapter {
 	}
 
 	async execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+		const launch: {
+			lease?: TmuxProcessLaunchLease;
+			target?: string;
+			abortCleanup?: Promise<void>;
+			detachAbort?: () => void;
+		} = {};
+		let failure: { error: unknown } | undefined;
+		let result: AdapterExecutionResult | undefined;
+		try {
+			result = await this.executeWithProcessLaunch(ctx, launch);
+		} catch (error) {
+			failure = { error };
+		} finally {
+			launch.detachAbort?.();
+			if (launch.lease) {
+				let cleanupFailed = false;
+				try {
+					await launch.lease.close();
+				} catch {
+					cleanupFailed = true;
+				}
+				if (failure && launch.target) {
+					try {
+						this.cleanupExactWindow(launch.target);
+					} catch {
+						cleanupFailed = true;
+					}
+				}
+				try {
+					await launch.abortCleanup;
+				} catch {
+					cleanupFailed = true;
+				}
+				try {
+					await launch.lease.finish();
+				} catch {
+					cleanupFailed = true;
+				}
+				if (cleanupFailed) {
+					console.warn(
+						`[TmuxAdapter] process launch cleanup unconfirmed for ${ctx.executionId}`,
+					);
+					failure ??= {
+						error: new Error("process_launch_cleanup_unconfirmed"),
+					};
+				}
+			}
+		}
+		if (failure) throw failure.error;
+		return result!;
+	}
+
+	private async executeWithProcessLaunch(
+		ctx: AdapterExecutionContext,
+		launch: {
+			lease?: TmuxProcessLaunchLease;
+			target?: string;
+			abortCleanup?: Promise<void>;
+			detachAbort?: () => void;
+		},
+	): Promise<AdapterExecutionResult> {
 		// Lazy preflight: check tmux AND the agentic CLI on first run
 		if (!this.preflightDone) {
 			this.runPreflight();
@@ -622,15 +706,88 @@ export class TmuxAdapter implements IAdapter {
 		const transportSpawnConfig = this.tryBuildTransportSpawnConfig(ctx);
 		const commitFile = ctx.launchCommitPath;
 		const generationGated = this.type === "claude-tmux";
+		const processGated = Boolean(this.processLaunchDeps);
 		const launchToken =
-			generationGated || commitFile
+			generationGated || processGated || commitFile
 				? (ctx.launchGateToken ?? randomUUID())
 				: undefined;
 		const directGateFile =
-			generationGated && !commitFile && launchToken
+			(generationGated || processGated) && !commitFile && launchToken
 				? join(tmpdir(), "flywheel-launch-gates", `launch-${launchToken}`)
 				: undefined;
 		const gateFile = commitFile ?? directGateFile;
+		let processManifest: ExecutionProcessLaunchManifest | undefined;
+		let processCandidate: ExecutionProcessLaunchCandidate | undefined;
+		const assertProcessLaunchAuthorized = (): void => {
+			if (
+				launch.lease &&
+				(launch.lease.signal?.aborted || !launch.lease.authorizeSpawn())
+			)
+				throw new Error("process_launch_revoked");
+		};
+		if (this.processLaunchDeps) {
+			if (
+				this.type !== "claude-tmux" &&
+				this.type !== "kimi-tmux" &&
+				this.type !== "antigravity-tmux"
+			)
+				throw new Error("process_launch_adapter_unsupported");
+			const acquired = await this.processLaunchDeps.createLaunch(ctx, {
+				adapter: this.type,
+				binaryName: this.binaryName,
+				nativeSessionId: this.type === "claude-tmux" ? claudeSessionId : null,
+			});
+			let close: Promise<void> | undefined;
+			launch.lease = {
+				generation: acquired.generation,
+				ownerToken: acquired.ownerToken,
+				nonce: acquired.nonce,
+				signal: acquired.signal,
+				prepareSpawn: () => acquired.prepareSpawn(),
+				authorizeSpawn: () => acquired.authorizeSpawn(),
+				acceptSpawn: (candidate) => acquired.acceptSpawn(candidate),
+				close: () => {
+					close ??= Promise.resolve().then(() => acquired.close());
+					return close;
+				},
+				finish: () => acquired.finish(),
+			};
+			const abort = () => {
+				launch.abortCleanup ??= launch
+					.lease!.close()
+					.catch(() => {})
+					.then(() => {
+						if (launch.target) this.cleanupExactWindow(launch.target);
+					})
+					.catch(() => {});
+			};
+			acquired.signal?.addEventListener("abort", abort, { once: true });
+			launch.detachAbort = () =>
+				acquired.signal?.removeEventListener("abort", abort);
+			if (acquired.signal?.aborted) throw new Error("process_launch_revoked");
+			if (
+				ctx.processLifecycle &&
+				acquired.generation !== ctx.processLifecycle.generation
+			)
+				throw new Error("process_launch_generation_mismatch");
+			await launch.lease.prepareSpawn();
+			assertProcessLaunchAuthorized();
+			processManifest = createExecutionProcessLaunchManifest(
+				this.processLaunchDeps.manifestDirectory?.(ctx) ??
+					join(tmpdir(), "flywheel-runner-prompts", ctx.executionId),
+				{
+					version: 1,
+					executionId: ctx.executionId,
+					generation: acquired.generation,
+					ownerToken: acquired.ownerToken,
+					nonce: acquired.nonce,
+					adapter: this.type,
+					binaryName: this.binaryName,
+					nativeSessionId: this.type === "claude-tmux" ? claudeSessionId : null,
+					cwd: realpathSync(ctx.cwd),
+				},
+			);
+		}
 		let processObservedCwd = ctx.cwd;
 		let processResolvedModel: string | null = null;
 		if (ctx.processLifecycle) {
@@ -691,6 +848,8 @@ export class TmuxAdapter implements IAdapter {
 			envArgs.push("-e", `${name}=${value}`);
 			allowedEnvNames.add(name);
 		};
+		if (launch.lease)
+			appendPaneEnv("FLYWHEEL_EXECUTION_NONCE", launch.lease.nonce);
 		if (this.hookServer && callbackToken) {
 			appendPaneEnv(
 				"FLYWHEEL_CALLBACK_PORT",
@@ -968,6 +1127,17 @@ export class TmuxAdapter implements IAdapter {
 			binaryName: this.binaryName,
 			binaryArgs: claudeArgs,
 			allowedEnvNames,
+			...(processManifest
+				? {
+						processRegistration: {
+							nodePath: process.execPath,
+							helperPath: fileURLToPath(
+								new URL("./execution-process-launch.js", import.meta.url),
+							),
+							requestPath: processManifest.requestPath,
+						},
+					}
+				: {}),
 			...(windowPromptFile ? { promptFile: windowPromptFile } : {}),
 			...(gateFile && launchToken
 				? {
@@ -984,7 +1154,9 @@ export class TmuxAdapter implements IAdapter {
 			"new-window",
 			"-P",
 			"-F",
-			"#{window_id}|#{socket_path}|#{start_time}",
+			processGated
+				? "#{window_id}|#{socket_path}|#{start_time}|#{pid}"
+				: "#{window_id}|#{socket_path}|#{start_time}",
 			"-t",
 			`=${this.sessionName}`,
 			...envArgs,
@@ -1012,16 +1184,27 @@ export class TmuxAdapter implements IAdapter {
 			}
 			throw error;
 		}
-		const launchResult = await this.inEnsuredSession(() =>
-			this.execFileFn("tmux", tmuxLaunchArgs),
-		);
+		const launchResult = await this.inEnsuredSession(() => {
+			assertProcessLaunchAuthorized();
+			return this.execFileFn("tmux", tmuxLaunchArgs);
+		});
 		// Both capture and later probe use tmux's raw `#{start_time}` decimal
 		// POSIX epoch seconds. Do not format it through Date/local timezone.
 		const launchFields = launchResult.stdout.trim().split("|");
-		const [windowId = "", socketPath = "", serverStartTime = ""] = launchFields;
+		const [
+			windowId = "",
+			socketPath = "",
+			serverStartTime = "",
+			rawServerPid = "",
+		] = launchFields;
+		const serverPid = Number(rawServerPid);
 		if (
-			generationGated &&
-			(launchFields.length !== 3 ||
+			(generationGated || processGated) &&
+			(launchFields.length !== (processGated ? 4 : 3) ||
+				(processGated &&
+					(!/^\d+$/.test(rawServerPid) ||
+						!Number.isSafeInteger(serverPid) ||
+						serverPid <= 1)) ||
 				!/^@\d+$/.test(windowId) ||
 				!socketPath ||
 				!/^[0-9]+$/.test(serverStartTime))
@@ -1042,6 +1225,7 @@ export class TmuxAdapter implements IAdapter {
 			);
 		}
 		const exactWindowTarget = `=${this.sessionName}:${windowId}`;
+		if (processGated) launch.target = exactWindowTarget;
 
 		// FLY-1374: publish the execution identity on the exact window. If its
 		// CommDB row is later lost, the event-driven WAKE path can rediscover this
@@ -1156,24 +1340,39 @@ export class TmuxAdapter implements IAdapter {
 				);
 			}
 		}
-		if (ctx.processLifecycle && !resumeIdentityRequired) {
-			try {
-				await this.persistClaudeSessionState(
-					ctx,
-					claudeSessionId,
-					processResolvedModel,
-					processObservedCwd,
-				);
-				ctx.processLifecycle.onIdentityVerified?.({
-					sessionId: claudeSessionId,
-					model: processResolvedModel,
-					cwd: processObservedCwd,
-					verifiedAt: new Date().toISOString(),
-				});
-			} catch (error) {
-				this.cleanupExactWindow(exactWindowTarget);
-				throw error;
+		const publishFreshIdentity = async () => {
+			if (ctx.processLifecycle && !resumeIdentityRequired) {
+				try {
+					await this.persistClaudeSessionState(
+						ctx,
+						claudeSessionId,
+						processResolvedModel,
+						processObservedCwd,
+					);
+					ctx.processLifecycle.onIdentityVerified?.({
+						sessionId: claudeSessionId,
+						model: processResolvedModel,
+						cwd: processObservedCwd,
+						verifiedAt: new Date().toISOString(),
+					});
+				} catch (error) {
+					this.cleanupExactWindow(exactWindowTarget);
+					throw error;
+				}
 			}
+		};
+		if (!processGated) await publishFreshIdentity();
+		if (processManifest && launch.lease) {
+			processCandidate = await (
+				this.processLaunchDeps!.waitForCandidate ??
+				waitForExecutionProcessLaunchCandidate
+			)(processManifest, { signal: launch.lease.signal });
+			if (
+				processCandidate.pid !== processCandidate.pgid ||
+				processCandidate.pid === serverPid
+			)
+				throw new Error("process_launch_group_invalid");
+			assertProcessLaunchAuthorized();
 		}
 		const resumeIdentityEvent = resumeIdentityManifest
 			? this.hookServer!.waitForEvent!(
@@ -1183,6 +1382,9 @@ export class TmuxAdapter implements IAdapter {
 					claudeSessionId,
 				)
 			: undefined;
+
+		// Admission may fail before the event waiter is awaited; consume its rejection.
+		void resumeIdentityEvent?.catch(() => {});
 
 		// FLY-245 R5/R6 HIGH-3: write THIS launch's token to the durable COMMIT file
 		// = release ONLY this launch's gated shell. The file's existence is the
@@ -1194,6 +1396,7 @@ export class TmuxAdapter implements IAdapter {
 		// self-reaps — a replay re-drives cleanly; no kill is required for safety.
 		if (gateFile && launchToken) {
 			try {
+				assertProcessLaunchAuthorized();
 				if (commitFile && ctx.commitWorkflowLaunch) {
 					const committed = ctx.commitWorkflowLaunch();
 					if (!committed.ok) {
@@ -1227,6 +1430,19 @@ export class TmuxAdapter implements IAdapter {
 					`[TmuxAdapter] launch aborted: could not write durable commit for ${ctx.executionId} ` +
 						`(Claude never started; gated shell self-reaps): ${(err as Error).message}`,
 				);
+			}
+		}
+		if (processCandidate && launch.lease) {
+			try {
+				assertProcessLaunchAuthorized();
+				await launch.lease.acceptSpawn(processCandidate);
+				assertProcessLaunchAuthorized();
+				await publishFreshIdentity();
+				assertProcessLaunchAuthorized();
+			} catch (error) {
+				if (resumeIdentityEvent && callbackToken)
+					this.hookServer?.cancelWait(callbackToken);
+				throw error;
 			}
 		}
 		if (resumeIdentityEvent && resumeIdentityManifest) {

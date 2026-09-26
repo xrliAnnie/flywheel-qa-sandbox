@@ -98,6 +98,9 @@ export interface ExecutionProcessOwnerRow {
 	spawn_epoch: number;
 	restart_in_progress: 0 | 1;
 	spawn_inflight: 0 | 1;
+	spawn_nonce: string | null;
+	pending_pgid: number | null;
+	binding_spawn_epoch: number | null;
 	close_requested: 0 | 1;
 	binding_json: string | null;
 	binding_digest: string | null;
@@ -130,6 +133,27 @@ export class ExecutionProcessOwnerStore {
 			owner_drained_at TEXT,
 			owner_drained_receipt TEXT
 		)`);
+
+		const columns = new Set(
+			(
+				this.db
+					.prepare("PRAGMA table_info(execution_process_owner)")
+					.all() as Array<{ name: string }>
+			).map((column) => column.name),
+		);
+		for (const [name, type] of [
+			["spawn_nonce", "TEXT"],
+			["pending_pgid", "INTEGER"],
+			["binding_spawn_epoch", "INTEGER"],
+		] as const) {
+			if (!columns.has(name))
+				this.db.exec(
+					`ALTER TABLE execution_process_owner ADD COLUMN ${name} ${type}`,
+				);
+		}
+		this.db.exec(
+			"UPDATE execution_process_owner SET binding_spawn_epoch = spawn_epoch WHERE binding_json IS NOT NULL AND binding_spawn_epoch IS NULL AND spawn_inflight = 0",
+		);
 	}
 
 	get(executionId: string): ExecutionProcessOwnerRow | undefined {
@@ -139,9 +163,20 @@ export class ExecutionProcessOwnerStore {
 	}
 
 	getBinding(executionId: string): ExecutionProcessBinding | undefined {
+		return this.readBinding(executionId, false);
+	}
+	getPreviousBinding(executionId: string): ExecutionProcessBinding | undefined {
+		return this.readBinding(executionId, true);
+	}
+	private readBinding(
+		executionId: string,
+		previous: boolean,
+	): ExecutionProcessBinding | undefined {
 		const row = this.get(executionId);
 		if (
 			!row?.binding_json ||
+			Boolean(row.spawn_inflight) !== previous ||
+			row.binding_spawn_epoch === null ||
 			!row.binding_digest ||
 			Buffer.byteLength(row.binding_json) > 1024 * 1024
 		)
@@ -155,7 +190,7 @@ export class ExecutionProcessOwnerStore {
 						row.activation_id,
 						row.generation,
 						row.owner_token,
-						row.spawn_epoch,
+						row.binding_spawn_epoch,
 						binding,
 					]),
 				)
@@ -228,6 +263,7 @@ export class ExecutionProcessOwnerStore {
 				controller_start = excluded.controller_start, host_boot_id = excluded.host_boot_id,
 				spawn_epoch = 0, restart_in_progress = 0, spawn_inflight = 0,
 				close_requested = 0, binding_json = NULL, binding_digest = NULL,
+    spawn_nonce = NULL, pending_pgid = NULL, binding_spawn_epoch = NULL,
 				owner_drained_at = NULL, owner_drained_receipt = NULL`)
 				.run(
 					input.executionId,
@@ -248,7 +284,13 @@ export class ExecutionProcessOwnerStore {
 		});
 	}
 
-	beginSpawn(input: SpawnMutation): Result<{ permit: ProcessSpawnPermit }> {
+	beginSpawn(
+		input: SpawnMutation & { nonce?: string },
+	): Result<{ permit: ProcessSpawnPermit }> {
+		const nonce =
+			input.nonce === undefined
+				? null
+				: identityText.regex(/^[A-Za-z0-9_-]+$/).parse(input.nonce);
 		return this.mutate(input, () => {
 			const checked = this.checkOwner(input, true);
 			if (!checked.ok) return checked;
@@ -262,9 +304,9 @@ export class ExecutionProcessOwnerStore {
 				return { ok: false, reason: "spawn_epoch_exhausted" };
 			this.db
 				.prepare(
-					"UPDATE execution_process_owner SET spawn_epoch = spawn_epoch + 1, spawn_inflight = 1 WHERE execution_id = ?",
+					"UPDATE execution_process_owner SET spawn_epoch = spawn_epoch + 1, spawn_inflight = 1, spawn_nonce = ?, pending_pgid = NULL WHERE execution_id = ?",
 				)
-				.run(input.executionId);
+				.run(nonce, input.executionId);
 			return {
 				ok: true,
 				permit: {
@@ -308,6 +350,13 @@ export class ExecutionProcessOwnerStore {
 			const checked = this.checkOwner(input, false);
 			if (!checked.ok) return checked;
 			if (
+				(checked.row.spawn_nonce !== null &&
+					binding.nonce !== checked.row.spawn_nonce) ||
+				(checked.row.pending_pgid !== null &&
+					binding.pgid !== checked.row.pending_pgid)
+			)
+				return { ok: false, reason: "spawn_identity_changed" };
+			if (
 				binding.hostBootId !== checked.row.host_boot_id ||
 				binding.writers.some(
 					(writer) => writer.hostBootId !== binding.hostBootId,
@@ -335,9 +384,91 @@ export class ExecutionProcessOwnerStore {
 			// cleanup/restart recovery. close_requested continues to veto all work.
 			this.db
 				.prepare(`UPDATE execution_process_owner SET binding_json = ?, binding_digest = ?,
-				spawn_inflight = 0, restart_in_progress = 0 WHERE execution_id = ?`)
-				.run(bindingJson, digest, input.executionId);
+				spawn_inflight = 0, restart_in_progress = 0, binding_spawn_epoch = ? WHERE execution_id = ?`)
+				.run(bindingJson, digest, input.spawnEpoch, input.executionId);
 			return { ok: true, bindingDigest: digest };
+		});
+	}
+
+	noteSpawnGroup(input: SpawnMutation & { pgid: number }): Result {
+		const pgid = positive.min(2).parse(input.pgid);
+		return this.mutate(input, () => {
+			const checked = this.checkOwner(input, false);
+			if (!checked.ok) return checked;
+			if (!checked.row.spawn_inflight)
+				return { ok: false, reason: "spawn_not_inflight" };
+			if (
+				checked.row.pending_pgid !== null &&
+				checked.row.pending_pgid !== pgid
+			)
+				return { ok: false, reason: "spawn_group_changed" };
+			this.db
+				.prepare(
+					"UPDATE execution_process_owner SET pending_pgid = ? WHERE execution_id = ?",
+				)
+				.run(pgid, input.executionId);
+			return { ok: true };
+		});
+	}
+	/** Only an internal, independently sampled failed-native-spawn proof can close
+	 * an in-flight permit. Ordinary drain evidence never clears this fence. */
+	recordFailedSpawnDrained(
+		input: SpawnMutation & {
+			evidence: ProcessOwnerDrainEvidence & {
+				nonce: string;
+				pgid: number | null;
+			};
+			reason: string;
+		},
+	): Result<{ receipt: string }> {
+		const reason = identityText.parse(input.reason);
+		return this.mutate(input, () => {
+			const checked = this.checkOwner(input, false);
+			if (!checked.ok) return checked;
+			const row = checked.row,
+				e = input.evidence;
+			if (!row.close_requested)
+				return { ok: false, reason: "owner_not_closed" };
+			if (
+				!this.sameOwner(row, e) ||
+				e.spawnEpoch !== row.spawn_epoch ||
+				e.bindingDigest !== row.binding_digest ||
+				e.controller.pid !== row.controller_pid ||
+				e.controller.startIdentity !== row.controller_start ||
+				e.controller.hostBootId !== row.host_boot_id ||
+				!row.spawn_nonce ||
+				e.nonce !== row.spawn_nonce ||
+				e.pgid !== row.pending_pgid
+			)
+				return { ok: false, reason: "drain_identity_changed" };
+			if (row.owner_drained_receipt && row.owner_drained_at)
+				return { ok: true, receipt: row.owner_drained_receipt };
+			if (!row.spawn_inflight)
+				return { ok: false, reason: "spawn_not_inflight" };
+			if (
+				!Number.isSafeInteger(e.observedAtMs) ||
+				e.observedAtMs < 0 ||
+				!Number.isSafeInteger(e.expiresAtMs) ||
+				e.observedAtMs > input.nowMs ||
+				e.expiresAtMs <= input.nowMs ||
+				e.expiresAtMs - e.observedAtMs > 10_000
+			)
+				return { ok: false, reason: "drain_evidence_expired" };
+			if (
+				(e.controllerState !== "stopped" && e.controllerState !== "absent") ||
+				e.groupState !== "absent" ||
+				e.writersState !== "absent"
+			)
+				return { ok: false, reason: "drain_unconfirmed" };
+			const receipt = createHash("sha256")
+				.update(JSON.stringify({ version: 1, evidence: e, reason }))
+				.digest("hex");
+			this.db
+				.prepare(
+					"UPDATE execution_process_owner SET spawn_inflight = 0, restart_in_progress = 0, owner_drained_at = ?, owner_drained_receipt = ? WHERE execution_id = ?",
+				)
+				.run(new Date(input.nowMs).toISOString(), receipt, input.executionId);
+			return { ok: true, receipt };
 		});
 	}
 
