@@ -1,0 +1,12 @@
+{
+  "reportId": "a47186b103dd3e0dc6b38a5bab8f7d61",
+  "url": "https://fw-reports-6da062.vercel.app/r/a47186b103dd3e0dc6b38a5bab8f7d61/",
+  "publishOnly": true,
+  "messageId": null,
+  "delivered": false,
+  "committedHtml": "68603f031",
+  "leadReportQuestionId": "f6be18de-1ab1-4546-b69b-c4ed1826fc21",
+  "advisoryReportQuestionId": "95039dbf-dcb7-4756-a663-b644978b8408",
+  "verification": "verify-report ok plus hosted-report-check.json",
+  "memoryCloseout": "User-requested learning note written to permitted native extensions/ad_hoc/notes/2026-09-26-fly2778-closeout-design.md; direct role index editing disallowed by active memory policy"
+}
