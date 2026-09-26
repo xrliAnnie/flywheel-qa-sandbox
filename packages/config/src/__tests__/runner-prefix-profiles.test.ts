@@ -318,11 +318,12 @@ describe("runner prefix role profiles v1 (FLY-2913)", () => {
 				/runner_prefix_profile: unreadable settings zero\.json/,
 			);
 			execFileSync("mkfifo", [join(dir, "fifo.json")]);
-			const started = Date.now();
+			// No writer ever opens this FIFO: a blocking open would hang until
+			// the test timeout. Returning with the not-a-regular-file rejection
+			// is the proof; no wall-clock threshold is asserted.
 			expect(() => readLowerSkillOverrides([join(dir, "fifo.json")])).toThrow(
 				/runner_prefix_profile: unreadable settings fifo\.json/,
 			);
-			expect(Date.now() - started).toBeLessThan(5_000);
 			writeFileSync(
 				join(dir, "huge.json"),
 				`{"a":"${"x".repeat(1024 * 1024)}"}`,

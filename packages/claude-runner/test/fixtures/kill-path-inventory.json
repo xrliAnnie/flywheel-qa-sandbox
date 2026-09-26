@@ -3684,6 +3684,12 @@
 		"classification": "signal-0-probe"
 	},
 	{
+		"key": "scripts/lib/qa-2913-context-probe.mjs:child.kill(signal);#1",
+		"path": "scripts/lib/qa-2913-context-probe.mjs",
+		"code": "child.kill(signal);",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/lib/qa-fly-2456-liveness.mjs:try{process.kill(-persistedPgidBefore,0);groupState='alive';}#1",
 		"path": "scripts/lib/qa-fly-2456-liveness.mjs",
 		"code": "try{process.kill(-persistedPgidBefore,0);groupState='alive';}",
@@ -3946,6 +3952,12 @@
 		"path": "scripts/package-gate-host.py",
 		"code": "launcher.kill()",
 		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/qa-2913-prefix-controls.mjs:const timer = setTimeout(() => child.kill(\"SIGKILL\"), 240000);#1",
+		"path": "scripts/qa-2913-prefix-controls.mjs",
+		"code": "const timer = setTimeout(() => child.kill(\"SIGKILL\"), 240000);",
+		"classification": "qa-only"
 	},
 	{
 		"key": "scripts/qa-529-generalized-codex-stub.mjs:if (worker && worker.exitCode === null) worker.kill(signal);#1",

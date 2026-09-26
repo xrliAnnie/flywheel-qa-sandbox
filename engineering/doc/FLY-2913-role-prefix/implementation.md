@@ -172,3 +172,9 @@ Blueprint 在 skill arm 解析后、worktree 副作用前编译（仅 claude-tmu
 ## 2026-09-26 — Codex 代码评审 Round 3 处置
 
 Round 2 的三项生产修复经 Codex 复核正确。剩余 MEDIUM（测量驱动）已修：驱动编译时与真实启动一样读取用户层与被测 cwd 的项目层 `lowerSkillOverrides`，输出 `keptLowerRestrictions`；`verifyPair` 新增 `unintendedGain`（role-v1 一侧出现 legacy 没有的技能/子代理/规则即失败）。已采证据不受影响：用户下层 off 的 10 个技能与五角色清单无交集，15 组两侧技能数均为 111、无新增。驱动 fixture 12/12。
+
+## 2026-09-26 — QA@1 返工（QA exec 12b15186，full exact-head CI 36238717885 两个红项）
+
+QA 在两个 529 房（slot 1、4）用真实 tpl_code run 验证了五角色 role-v1 均无缺工具/技能失败、settings 文件绑定、强制 deny 与 hooks 保留、Codex 不读开关、legacy 回退后的新启动无 stamp；只因两个 PR 引起的确定性 CI 红项判 FAIL，均已修：
+- **Unit heavy：kill-path-inventory 期望 773 实得 775**：本单新增的两处 `child.kill`（`scripts/lib/qa-2913-context-probe.mjs` 的探针收尾、`scripts/qa-2913-prefix-controls.mjs` 的首轮 240s 超时）按现有扫描器路径规则即为 qa-only；用 `scanKillPathInventory()` 重新生成 `packages/claude-runner/test/fixtures/kill-path-inventory.json`，只增这 2 条（+12 行），分类不变、扫描器未改。`kill-path-inventory.test.ts` 5/5。
+- **teamlead required-wall-clock-thresholds 标出 `runner-prefix-profiles.test.ts:325`**：去掉 FIFO 用例里的 `Date.now() - started < 5000` 毫秒上限，改为结果断言（无写端的 FIFO 以“非普通文件”被拒即证明未阻塞；真正挂死由测试超时兜底）。守卫本地 1/1 通过；负控：临时加回该断言，守卫即红（报 `real duration has an absolute upper bound`），已还原。
