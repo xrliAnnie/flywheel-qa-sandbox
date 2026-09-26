@@ -2,13 +2,13 @@
 issue: FLY-2921
 phase: design
 phaseCursor: 4/6
-updated: 2026-09-26T17:05:10.087Z
-nextStep: 等 Codex 额度（Lead 说 founder 几十分钟内决定）→ 重 stage set design_review →
-  gpt-6-astra 有效评审
+updated: 2026-09-26T17:26:36.913Z
+nextStep: Codex R2 (resume thread 01a0deb1) 进行中；通过后 re-stage 拿 rev + 写
+  design-review.json + await-codex-gate；HTML 需同步(s4 wake 文案)
 chunks: []
 pointers: {}
 ---
 
 # FLY-2921 progress
 **phase**: design (4/6)
-**next**: 等 Codex 额度（Lead 说 founder 几十分钟内决定）→ 重 stage set design_review → gpt-6-astra 有效评审
+**next**: Codex R2 (resume thread 01a0deb1) 进行中；通过后 re-stage 拿 rev + 写 design-review.json + await-codex-gate；HTML 需同步(s4 wake 文案)
