@@ -1,16 +1,17 @@
 ---
 issue: FLY-2922
 phase: design
-phaseCursor: 4/5
-updated: 2026-09-26T16:12:04.135Z
-nextStep: Effective APPROVED gate d9ab4f85-f464-4fee-9c09-7af6295b0c9a/request
-  16c59728-a305-411a-9cfd-7db7c803987e for c4d40fbed. Advisories recorded and
-  reported. Commit/push review receipt then publish-only HTML, verify hosted
-  source/CSP, report URL, complete phase_design_complete, park.
+phaseCursor: 5/5
+updated: 2026-09-26T16:13:32.210Z
+nextStep: APPROVED plan c4d40fbed. HTML published
+  https://fw-reports-6da062.vercel.app/r/52556a2f00b5808a1159dc751953af0c/;
+  HTTP200/source/script/CSP verified and DESIGN-HTML ready reported. Follow-ups
+  in review-result.md. Commit/push delivery evidence, run complete --route
+  phase_design_complete, then park; no worktree writes after TURN handoff.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2922 progress
-**phase**: design (4/5)
-**next**: Effective APPROVED gate d9ab4f85-f464-4fee-9c09-7af6295b0c9a/request 16c59728-a305-411a-9cfd-7db7c803987e for c4d40fbed. Advisories recorded and reported. Commit/push review receipt then publish-only HTML, verify hosted source/CSP, report URL, complete phase_design_complete, park.
+**phase**: design (5/5)
+**next**: APPROVED plan c4d40fbed. HTML published https://fw-reports-6da062.vercel.app/r/52556a2f00b5808a1159dc751953af0c/; HTTP200/source/script/CSP verified and DESIGN-HTML ready reported. Follow-ups in review-result.md. Commit/push delivery evidence, run complete --route phase_design_complete, then park; no worktree writes after TURN handoff.
