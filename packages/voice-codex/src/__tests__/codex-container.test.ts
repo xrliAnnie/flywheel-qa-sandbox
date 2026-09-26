@@ -1,9 +1,14 @@
 import {
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	mkdtempSync,
+	readFileSync,
+	readlinkSync,
+	realpathSync,
 	rmSync,
 	statSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -96,6 +101,9 @@ class FakeProcess implements CodexVoiceProcess {
 	threadResult?: Record<string, unknown>;
 	startThreadError?: Error;
 	realtimeError?: { code: number; message: string };
+	account: { result?: unknown; error?: { code: number; message: string } } = {
+		result: { account: { type: "chatgpt", planType: "pro" } },
+	};
 	onStartThread?: () => void;
 
 	constructor(
@@ -139,6 +147,7 @@ class FakeProcess implements CodexVoiceProcess {
 
 	async request(method: string, params?: unknown) {
 		this.requests.push({ method, params });
+		if (method === "account/read") return this.account;
 		if (!this.realtimeError && method === "thread/realtime/start") {
 			const threadId = (params as { threadId: string }).threadId;
 			queueMicrotask(() =>
@@ -180,9 +189,17 @@ function harness(
 		}>;
 		processEnv?: NodeJS.ProcessEnv;
 		configureProcess?: (process: FakeProcess) => void;
+		authSource?: (base: string) => string;
 	} = {},
 ) {
-	const base = root();
+	const base = realpathSync(root());
+	const authSource =
+		overrides.authSource?.(base) ??
+		(() => {
+			const path = join(base, "fleet-auth.json");
+			writeFileSync(path, '{"tokens":"fixture"}', { mode: 0o600 });
+			return path;
+		})();
 	const binaryPath = join(base, "standalone", "codex");
 	mkdirSync(join(base, "standalone"), { recursive: true });
 	writeFileSync(binaryPath, "fake standalone binary", { mode: 0o700 });
@@ -199,7 +216,7 @@ function harness(
 	const container = new CodexVoiceContainer({
 		binaryPath,
 		scratchRoot: join(base, "scratch"),
-		openAiApiKey: "voice-api-key",
+		authSource,
 		processEnv: overrides.processEnv ?? {
 			HOME: "/real/home",
 			PATH: "/usr/bin:/bin",
@@ -223,6 +240,7 @@ function harness(
 	});
 	return {
 		base,
+		authSource,
 		binaryPath,
 		container,
 		processes,
@@ -261,9 +279,15 @@ describe("Codex voice container", () => {
 
 		for (const [index, options] of h.factoryOptions.entries()) {
 			expect(options.codexBin).toBe(h.binaryPath);
-			expect(options.voiceProfile).toEqual({
-				openAiApiKey: "voice-api-key",
-			});
+			// FLY-2885: no API key reaches the child in any form.
+			expect("voiceProfile" in options).toBe(false);
+			expect(options.baseEnv.CODEX_API_KEY).toBeUndefined();
+			expect(
+				lstatSync(join(options.codexHome, "auth.json")).isSymbolicLink(),
+			).toBe(true);
+			expect(readlinkSync(join(options.codexHome, "auth.json"))).toBe(
+				h.authSource,
+			);
 			expect(options.knownServerMethods).toEqual([]);
 			expect(options.maxJsonLineBytes).toBe(1024 * 1024);
 			expect(options.mcpArgv).toEqual([]);
@@ -288,7 +312,11 @@ describe("Codex voice container", () => {
 			expect(process.threadParams?.baseInstructions).toContain(
 				index === 0 ? "session-a" : "session-b",
 			);
-			expect(process.requests[0]).toMatchObject({
+			expect(
+				process.requests.find(
+					(request) => request.method === "thread/realtime/start",
+				),
+			).toMatchObject({
 				method: "thread/realtime/start",
 				params: {
 					threadId: `thread-${index + 1}`,
@@ -310,7 +338,111 @@ describe("Codex voice container", () => {
 		expect(h.processes.map((process) => process.stopCount)).toEqual([1, 1]);
 		expect(existsSync(firstRoot)).toBe(false);
 		expect(existsSync(secondRoot)).toBe(false);
+		// Removing the container removes only the link.
+		expect(readFileSync(h.authSource, "utf8")).toBe('{"tokens":"fixture"}');
+		expect(h.processes.map((process) => process.requests[0]?.method)).toEqual([
+			"account/read",
+			"account/read",
+		]);
 	});
+
+	it.each([
+		["api-key login", { result: { account: { type: "apiKey" } } }],
+		["no account", { result: { account: null } }],
+		[
+			"401",
+			{
+				error: { code: -32000, message: "unexpected status 401 Unauthorized" },
+			},
+		],
+	] as const)(
+		"refuses a %s account before opening realtime and cleans up",
+		async (_name, account) => {
+			const h = harness({
+				configureProcess: (process) => {
+					process.account = account;
+				},
+			});
+			await expect(
+				h.container.open({
+					sessionId: "session-a",
+					voice: "cove",
+					loadContext: async () => context("session-a"),
+				}),
+			).rejects.toMatchObject({
+				code: "voice_unavailable",
+				reason: "codex_auth_rejected",
+			});
+			const process = h.processes[0]!;
+			expect(process.threadParams).toBeUndefined();
+			expect(
+				process.requests.some(
+					(request) => request.method === "thread/realtime/start",
+				),
+			).toBe(false);
+			expect(process.stopCount).toBe(1);
+			expect(existsSync(process.options.root)).toBe(false);
+		},
+	);
+
+	it.each(["missing", "symlink", "public"] as const)(
+		"refuses a %s credential source without spawning Codex",
+		async (failure) => {
+			const h = harness({
+				authSource: (base) => {
+					const real = join(base, "real-auth.json");
+					writeFileSync(real, "{}", {
+						mode: failure === "public" ? 0o644 : 0o600,
+					});
+					if (failure === "missing") return join(base, "absent-auth.json");
+					if (failure === "symlink") {
+						const link = join(base, "link-auth.json");
+						symlinkSync(real, link);
+						return link;
+					}
+					return real;
+				},
+			});
+			await expect(
+				h.container.open({
+					sessionId: "session-a",
+					voice: "cove",
+					loadContext: async () => context("session-a"),
+				}),
+			).rejects.toMatchObject({
+				code: "voice_unavailable",
+				reason: "codex_profile_mismatch",
+			});
+			expect(h.processes).toHaveLength(0);
+		},
+	);
+
+	it.each([
+		["usage limit", "codex_quota_exhausted"],
+		["You've hit your usage limit. Upgrade to Pro", "codex_quota_exhausted"],
+		["rate limit exceeded", "codex_quota_exhausted"],
+		["unexpected status 403 Forbidden", "codex_auth_rejected"],
+		[
+			"unexpected status 401 Unauthorized: token expired",
+			"codex_auth_rejected",
+		],
+	] as const)(
+		"classifies subscription-side start failure %s",
+		async (message, reason) => {
+			const h = harness({
+				configureProcess: (process) => {
+					process.realtimeError = { code: -32000, message };
+				},
+			});
+			await expect(
+				h.container.open({
+					sessionId: "session-a",
+					voice: "cove",
+					loadContext: async () => context("session-a"),
+				}),
+			).rejects.toMatchObject({ code: "voice_unavailable", reason });
+		},
+	);
 
 	it("restarts only the realtime connection and advances its generation after a confirmed close", async () => {
 		const h = harness();
@@ -326,6 +458,7 @@ describe("Codex voice container", () => {
 		expect(opened.generation).toBe(2);
 		expect(opened.transport).not.toBe(firstTransport);
 		expect(h.processes[0]?.requests.map(({ method }) => method)).toEqual([
+			"account/read",
 			"thread/realtime/start",
 			"thread/realtime/stop",
 			"thread/realtime/start",
@@ -498,7 +631,11 @@ describe("Codex voice container", () => {
 		const process = h.processes[0]!;
 		expect(process.threadParams?.baseInstructions).toContain(uniqueTail);
 		expect(
-			(process.requests[0]?.params as { prompt: string }).prompt,
+			(
+				process.requests.find(
+					(request) => request.method === "thread/realtime/start",
+				)?.params as { prompt: string }
+			).prompt,
 		).toContain(uniqueTail);
 
 		process.emit("turn/started", {

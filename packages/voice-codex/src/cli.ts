@@ -36,6 +36,7 @@ import {
 	loadVoiceProjects,
 	resolveLeadVoiceToken,
 	resolveVoiceCommDbPath,
+	scrubVoiceApiKeys,
 } from "./config.js";
 import { VoiceDaemon, type VoiceSessionContext } from "./daemon.js";
 import { VoiceDelivery } from "./delivery.js";
@@ -167,6 +168,9 @@ const SESSION_START_DEADLINE_MS = 120_000;
 
 export async function main(): Promise<void> {
 	const config = loadVoiceDaemonConfig(process.env, homedir());
+	// FLY-2885: second line of defence after the wrapper. Engine B never holds
+	// a platform key, so nothing below can hand one to a Codex child.
+	if (config.backendId === "codex-realtime") scrubVoiceApiKeys(process.env);
 	const projects = loadVoiceProjects(config);
 	if (process.argv.length === 3 && process.argv[2] === "--check-config") {
 		console.log(`[voice] config ok: ${projects.length} project(s)`);
@@ -408,7 +412,7 @@ export async function main(): Promise<void> {
 			const container = new CodexVoiceContainer({
 				binaryPath: config.codexBin,
 				scratchRoot: join(config.voiceRoot, "codex-containers"),
-				openAiApiKey: config.realtimeApiKey,
+				authSource: config.codexAuthSource,
 				processEnv: process.env,
 				onEvidence: (record) =>
 					evidence.appendBuffered({
@@ -519,6 +523,8 @@ export async function main(): Promise<void> {
 								.then(() => undefined),
 					});
 				}
+				if (!config.realtimeApiKey)
+					throw new Error("OPENAI_API_KEY is required");
 				return new RealtimeFrontend({
 					apiKey: config.realtimeApiKey,
 					voice: context.projection.realtimeVoice,

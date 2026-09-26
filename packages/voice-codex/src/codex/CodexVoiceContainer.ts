@@ -1,7 +1,15 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { chmod, lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+	chmod,
+	lstat,
+	mkdir,
+	mkdtemp,
+	rm,
+	symlink,
+	writeFile,
+} from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import {
@@ -10,6 +18,7 @@ import {
 } from "flywheel-teamlead/codex-process";
 import {
 	assertVoiceCodexHome,
+	pinVoiceCodexAuthSource,
 	VOICE_CODEX_HOME_CONFIG,
 } from "../codex-home.js";
 import {
@@ -81,7 +90,6 @@ export interface CodexVoiceProcessFactoryOptions {
 	cwd: string;
 	mcpArgv: string[];
 	baseEnv: NodeJS.ProcessEnv;
-	voiceProfile: { openAiApiKey: string };
 	knownServerMethods: string[];
 	maxJsonLineBytes: number;
 }
@@ -247,8 +255,9 @@ function defaultCreateProcess(
 				mcpArgv: options.mcpArgv,
 				codexHome: options.codexHome,
 				cwd: options.cwd,
+				// FLY-2885: no voiceProfile. The subscription login comes from the
+				// home's linked auth.json; the washed env carries no API key.
 				baseEnv: options.baseEnv,
-				voiceProfile: options.voiceProfile,
 			}),
 		experimentalApi: true,
 		knownServerMethods: options.knownServerMethods,
@@ -295,7 +304,12 @@ function classifyOpenError(error: unknown): CodexVoiceContainerError {
 	if (
 		message.includes("insufficient_quota") ||
 		message.includes("quota exceeded") ||
-		message.includes("usage limit")
+		message.includes("usage limit") ||
+		message.includes("usage_limit") ||
+		message.includes("rate limit") ||
+		message.includes("rate_limit") ||
+		message.includes("http 429") ||
+		message.includes("status 429")
 	) {
 		return new CodexVoiceContainerError("codex_quota_exhausted", error);
 	}
@@ -303,11 +317,55 @@ function classifyOpenError(error: unknown): CodexVoiceContainerError {
 		message.includes("invalid_api_key") ||
 		message.includes("authentication") ||
 		message.includes("unauthorized") ||
-		message.includes("http 401")
+		message.includes("forbidden") ||
+		message.includes("http 401") ||
+		message.includes("status 401") ||
+		message.includes("http 403") ||
+		message.includes("status 403") ||
+		message.includes("refresh_token") ||
+		message.includes("token_expired") ||
+		message.includes("not logged in")
 	) {
 		return new CodexVoiceContainerError("codex_auth_rejected", error);
 	}
 	return new CodexVoiceContainerError("codex_open_failed", error);
+}
+
+/**
+ * FLY-2885: the voice session must run on the ChatGPT subscription. Anything
+ * else (an API-key login, no login, a rejected token) is an auth failure; the
+ * engine and model are never swapped to get around it.
+ */
+async function assertSubscriptionAccount(
+	process: CodexVoiceProcess,
+): Promise<void> {
+	let response: Awaited<ReturnType<CodexVoiceProcess["request"]>>;
+	try {
+		response = await process.request("account/read", {});
+	} catch (error) {
+		const classified = classifyOpenError(error);
+		throw classified.reason === "codex_open_failed"
+			? new CodexVoiceContainerError("codex_auth_rejected", error)
+			: classified;
+	}
+	if (response.error) {
+		const classified = classifyOpenError(new Error(response.error.message));
+		throw classified.reason === "codex_quota_exhausted"
+			? classified
+			: new CodexVoiceContainerError(
+					"codex_auth_rejected",
+					new Error(`account/read: ${response.error.message}`),
+				);
+	}
+	const account = asRecord(asRecord(response.result)?.account);
+	if (account?.type !== "chatgpt") {
+		throw new CodexVoiceContainerError(
+			"codex_auth_rejected",
+			new Error(
+				`account/read: ${typeof account?.type === "string" ? account.type : "none"}`,
+			),
+		);
+	}
 }
 
 function openFailureEvidence(
@@ -532,7 +590,8 @@ export class CodexVoiceContainer {
 		private readonly options: {
 			binaryPath: string;
 			scratchRoot: string;
-			openAiApiKey: string;
+			/** FLY-2885: the fleet's subscription credential; linked, never copied. */
+			authSource: string;
 			processEnv?: NodeJS.ProcessEnv;
 			now?: () => number;
 			inspectBinary?: (path: string) => Promise<BinaryEvidence>;
@@ -576,9 +635,6 @@ export class CodexVoiceContainer {
 				throw new CodexVoiceContainerError("codex_open_failed");
 			}
 		};
-		if (!this.options.openAiApiKey.trim()) {
-			throw new CodexVoiceContainerError("codex_open_failed");
-		}
 		const binary = await this.inspectBinary(this.options.binaryPath);
 		assertActive();
 		if (
@@ -598,6 +654,12 @@ export class CodexVoiceContainer {
 			throw new CodexVoiceContainerError("context_stale");
 		}
 		assertContext(snapshot, input.sessionId);
+		let authSource: string;
+		try {
+			authSource = pinVoiceCodexAuthSource(this.options.authSource);
+		} catch (error) {
+			throw new CodexVoiceContainerError("codex_profile_mismatch", error);
+		}
 
 		let conversation: CodexVoiceConversation | undefined;
 		let violation: string | undefined;
@@ -628,8 +690,13 @@ export class CodexVoiceContainer {
 				mode: 0o600,
 				flag: "wx",
 			});
+			await symlink(authSource, join(home, "auth.json"));
 			assertActive();
-			assertVoiceCodexHome(home);
+			try {
+				assertVoiceCodexHome(home, authSource);
+			} catch (error) {
+				throw new CodexVoiceContainerError("codex_profile_mismatch", error);
+			}
 
 			const processOptions: CodexVoiceProcessFactoryOptions = {
 				root,
@@ -642,7 +709,6 @@ export class CodexVoiceContainer {
 					home,
 					workdir,
 				),
-				voiceProfile: { openAiApiKey: this.options.openAiApiKey },
 				knownServerMethods: [],
 				maxJsonLineBytes: CODEX_VOICE_MAX_JSON_LINE_BYTES,
 			};
@@ -653,6 +719,9 @@ export class CodexVoiceContainer {
 				else void conversation.close("process_exit").catch(() => undefined);
 			});
 			await process.start();
+			assertActive();
+			if (violation) throw new Error(violation);
+			await assertSubscriptionAccount(process);
 			assertActive();
 			if (violation) throw new Error(violation);
 			const opened = await process.startThreadWithResult({
