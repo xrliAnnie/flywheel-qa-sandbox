@@ -8,6 +8,7 @@ import type {
 } from "flywheel-voice-core";
 import { isFiniteSpeechEquivalent, prepareReplySpeech } from "../speech.js";
 import {
+	opensWith,
 	type SpokenPrefix,
 	speechAlignment,
 	spokenPrefix,
@@ -135,10 +136,12 @@ interface OwedFinal {
 	 */
 	overran?: boolean;
 	/**
-	 * What the overrun chunk had read. Its final must open with it (review
-	 * R2); a final that does not is a later turn's, and the entry is dropped.
+	 * Everything the overrun chunk's deltas showed up to the cut, the invented
+	 * part included. Its own final opens with it; a final that does not is a
+	 * later turn's, so the claim is dropped and that final left alone (review
+	 * R2/R3).
 	 */
-	spoken?: string;
+	heard?: string;
 }
 
 interface PendingChunk {
@@ -363,7 +366,7 @@ export class CodexProofSpeaker {
 		// longer attributable. A retry of the same line keeps them: whichever
 		// attempt a final belongs to, it is checked against that line. An
 		// overrun chunk's turn came first, so its final still comes first (and
-		// must open with what it read, see assistantTranscript).
+		// must open with what it showed, see assistantTranscript).
 		this.keepOwed(
 			(owed) =>
 				owed.overran === true ||
@@ -396,7 +399,7 @@ export class CodexProofSpeaker {
 			this.fail(pending, "speech_preempted");
 		// The founder spoke: the next final may be her answer's own — unless an
 		// overrun chunk still owes one, whose turn (and final) came before hers;
-		// that claim holds only for a final opening with what it read (R2).
+		// that claim holds only for a final opening with what it showed (R2/R3).
 		this.keepOwed((owed) => owed.overran === true);
 	}
 
@@ -408,16 +411,19 @@ export class CodexProofSpeaker {
 	assistantTranscript(input: { text: string; final: boolean }): void {
 		this.expireOwed();
 		if (input.final) this.finalOwner = undefined;
-		// Review R2: an overrun chunk whose final was lost must not take a later
-		// turn's (her answer's). Its final opens with what it read; one that does
-		// not is someone else's, so the claim is given up rather than guessed.
+		// Review R2/R3: an overrun chunk whose final was lost must not take a
+		// later turn's (her answer's). Its final opens with what its deltas
+		// showed; one that does not is someone else's: the claim is given up,
+		// and that final stays unowned (nothing is sent while the claim stands).
 		const head = this.owed[0];
 		if (
 			input.final &&
 			head?.overran &&
-			spokenPrefix(head.spoken ?? "", input.text).spokenSentences === 0
-		)
+			!opensWith(head.heard ?? "", input.text)
+		) {
 			this.keepOwed((entry) => entry !== head);
+			return;
+		}
 		const owed = this.owed[0];
 		if (owed) {
 			// Finals arrive in turn order: this one is the oldest owed chunk's.
@@ -984,8 +990,12 @@ export class CodexProofSpeaker {
 	/** An earlier chunk's final is still owed (T5c ③). */
 	private awaitingFinal(expected: string): string | undefined {
 		this.expireOwed();
-		// A retry of the same line may go: see turnCreated.
-		return this.owed.some((owed) => owed.expected !== expected)
+		// A retry of the same line may go (see turnCreated), but not while an
+		// overrun chunk's final is still to come: that final must not meet a
+		// chunk it could be taken for (review R3).
+		return this.owed.some(
+			(owed) => owed.overran === true || owed.expected !== expected,
+		)
 			? "awaiting_final"
 			: undefined;
 	}
@@ -1103,7 +1113,7 @@ export class CodexProofSpeaker {
 					sentAt: pending.sentAt,
 					until: detectedAt + TRUNCATION_MARKER_MS,
 					overran: true,
-					spoken: prefix ? prefix.spoken : pending.expected,
+					heard: observed,
 				};
 		if (owner) this.owed.push(owner);
 		this.truncation = {

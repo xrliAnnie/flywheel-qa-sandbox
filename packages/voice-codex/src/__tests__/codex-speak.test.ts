@@ -326,14 +326,13 @@ describe("Codex v3 read-aloud overrun and silence (FLY-2885 T5c)", () => {
 			reason: "speech_overrun",
 			transport: "submitted",
 		});
-		// The late final is mirrored only up to the line.
-		h.speaker.assistantTranscript({
-			text: `${expected}另外今天还有两件事。`,
-			final: true,
-		});
-		expect(
-			h.speaker.truncateAssistantFinal(`${expected}另外今天还有两件事。`),
-		).toBe(`${spoken(expected)}${SPEECH_TRUNCATED_NOTE}`);
+		// The late final (the whole transcript the deltas were part of) is
+		// mirrored only up to the line.
+		const late = `${expected.replace("目前", "现在")}另外今天还有两件事情已经顺利完成了呢。还有更多。`;
+		h.speaker.assistantTranscript({ text: late, final: true });
+		expect(h.speaker.truncateAssistantFinal(late)).toBe(
+			`${spoken(expected)}${SPEECH_TRUNCATED_NOTE}`,
+		);
 		expect(h.overrun).toHaveBeenCalledOnce();
 		await vi.advanceTimersByTimeAsync(600);
 		const audit = h.evidence.find(
@@ -1145,7 +1144,7 @@ describe("Codex Lead reply read to the end (FLY-2885 founder rework 2026-09-26)"
 		await expect(result).resolves.toMatchObject({ unreadChunks: 0 });
 	});
 
-	it("fails closed for an overrun that read nothing: no final is taken as its own (review R2)", async () => {
+	it("lets an overrun that read nothing claim its own late final by what was heard, and holds the re-read for it (review R3)", async () => {
 		const h = harness();
 		const result = h.speaker.readReply("今天下午三点开会。", {
 			pendingKey: "nothing-read",
@@ -1157,13 +1156,42 @@ describe("Codex Lead reply read to the end (FLY-2885 founder rework 2026-09-26)"
 			text: "我现在去帮你查一下这个问题的具体情况。",
 			final: false,
 		});
-		const answer = "我现在去帮你查一下这个问题的具体情况。";
-		h.speaker.assistantTranscript({ text: answer, final: true });
-		expect(h.speaker.truncateAssistantFinal(answer)).toBe(answer);
-		// Nothing was read, so the line is read once more.
+		// The same line is not re-read while t1's final is still to come.
+		await vi.advanceTimersByTimeAsync(2_000);
+		expect(h.sent).toEqual(["今天下午三点开会。"]);
+		const late = "我现在去帮你查一下这个问题的具体情况。然后还有很多别的事。";
+		h.speaker.assistantTranscript({ text: late, final: true });
+		// Nothing of the line was read: the mirror keeps only the note.
+		expect(h.speaker.truncateAssistantFinal(late)).toBe(SPEECH_TRUNCATED_NOTE);
+		expect(h.overrun).toHaveBeenCalledOnce();
 		await vi.advanceTimersByTimeAsync(60);
 		expect(h.sent).toEqual(["今天下午三点开会。", "今天下午三点开会。"]);
 		await h.answer("t2", "今天下午三点开会。");
 		await expect(result).resolves.toMatchObject({ unreadChunks: 0 });
+	});
+
+	it("never claims her answer for a lost overrun final just because both open with the same sentence (review R3)", async () => {
+		const h = harness();
+		const expected = "好的。第一项已经完成。第二项还在进行。";
+		const result = h.speaker.readReply(expected, { pendingKey: "shared-open" });
+		await h.flush();
+		h.speaker.turnCreated({ turnId: "t1", role: "assistant" });
+		h.state.consumed += 10;
+		h.speaker.assistantTranscript({
+			text: "好的。第一项已经完成。另外今天还有两件事情完成了呢。",
+			final: false,
+		});
+		// t1's final is lost; she asks, and the model's answer opens alike.
+		await vi.advanceTimersByTimeAsync(3_000);
+		h.speaker.userEvidence();
+		h.speaker.turnCreated({ turnId: "answer", role: "assistant" });
+		const answer = "好的。这是对新问题的完整回答，内容与刚才那句朗读完全不同。";
+		h.speaker.assistantTranscript({ text: answer, final: true });
+		expect(h.speaker.truncateAssistantFinal(answer)).toBe(answer);
+		await vi.advanceTimersByTimeAsync(60);
+		expect(h.sent.at(-1)).toBe("第二项还在进行。");
+		await h.answer("t2", "第二项还在进行。");
+		await expect(result).resolves.toMatchObject({ unreadChunks: 0 });
+		expect(h.overrun).toHaveBeenCalledOnce();
 	});
 });

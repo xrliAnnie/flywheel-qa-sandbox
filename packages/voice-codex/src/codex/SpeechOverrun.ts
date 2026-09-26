@@ -107,6 +107,18 @@ export function spokenPrefix(expected: string, observed: string): SpokenPrefix {
 }
 
 /**
+ * Review R3: whether `text` opens with `prefix` (in order, within the same
+ * tolerance). An overrun chunk's own final opens with everything its deltas
+ * showed up to the cut, invented part included, which a later turn's answer
+ * cannot; an empty prefix opens nothing.
+ */
+export function opensWith(prefix: string, text: string): boolean {
+	const want = Array.from(canonicalSpeech(prefix));
+	if (want.length === 0) return false;
+	return sentenceEnd(want, Array.from(canonicalSpeech(text)), 0) !== undefined;
+}
+
+/**
  * Where in `got` (from `start`) the sentence `want` ends, if a stretch there
  * reads it within tolerance; the closest such stretch wins.
  */

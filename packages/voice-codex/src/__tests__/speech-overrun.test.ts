@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+	opensWith,
 	readbackSentences,
 	SPEECH_OVERRUN_UNALIGNED_CHARS,
 	speechAlignment,
@@ -209,5 +210,26 @@ describe("the handoff correlation line is not read aloud (FLY-2885 founder rewor
 		`Request ID: ${id}`,
 	])("leaves %j alone", (line) => {
 		expect(stripHandoffCorrelation(line)).toBe(line);
+	});
+});
+
+describe("which final an overrun chunk may claim (FLY-2885 review R3)", () => {
+	const heard = "好的。第一项已经完成。另外今天还有两件事情完成了呢。";
+
+	it("claims its own final, which opens with everything its deltas showed", () => {
+		expect(opensWith(heard, `${heard}而且下周还会继续推进。`)).toBe(true);
+	});
+
+	it("does not claim an answer that only shares the opening sentence", () => {
+		expect(
+			opensWith(
+				heard,
+				"好的。这是对新问题的完整回答，内容与刚才那句朗读完全不同。",
+			),
+		).toBe(false);
+	});
+
+	it("claims nothing with an empty prefix", () => {
+		expect(opensWith("", "任何内容")).toBe(false);
 	});
 });
