@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>FLY-2832 · 模型标签精确迁移设计</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f5f5f7; color: #1d1d1f; font: 16px/1.65 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
+    main { max-width: 960px; margin: 0 auto; padding: 48px 24px 72px; }
+    h1 { margin: 10px 0 14px; font-size: clamp(30px, 5vw, 46px); line-height: 1.14; letter-spacing: -.04em; }
+    h2 { margin: 6px 0 16px; font-size: 24px; line-height: 1.25; letter-spacing: -.02em; }
+    h3 { margin: 22px 0 8px; font-size: 18px; }
+    p { margin: 10px 0; }
+    a { color: #007aff; }
+    code { padding: 2px 5px; border-radius: 5px; background: #f0f0f3; font-family: "SF Mono", ui-monospace, monospace; font-size: .91em; }
+    .eyebrow { color: #5d6f82; font-size: 13px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+    .lede { max-width: 760px; color: #5f6368; font-size: 18px; }
+    .card { margin: 22px 0; padding: 28px; border-left: 4px solid #007aff; border-radius: 12px; background: #fff; box-shadow: 0 1px 4px #00000010; }
+    .card.guard { border-left-color: #ff9f0a; }
+    .card.boundary { border-left-color: #34c759; }
+    .metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 18px 0; }
+    .metric { padding: 16px; border-radius: 10px; background: #f5f7fa; }
+    .metric strong { display: block; font-size: 25px; line-height: 1.1; }
+    .metric span { color: #6c6c73; font-size: 13px; }
+    table { width: 100%; border-collapse: collapse; font-size: 15px; }
+    th, td { padding: 12px 10px; border-bottom: 1px solid #e6e6eb; text-align: left; vertical-align: top; }
+    th { color: #5d6f82; font-size: 13px; letter-spacing: .02em; }
+    ul, ol { padding-left: 22px; }
+    li { margin: 7px 0; }
+    .diagram-pending { margin: 18px 0; padding: 28px; border: 2px dashed #ff9f0a; border-radius: 12px; background: #fffaf2; text-align: center; }
+    .diagram-pending strong { display: block; color: #8a5200; letter-spacing: .05em; }
+    .diagram-pending span { display: block; margin-top: 8px; color: #6c6c73; }
+    .decision { font-weight: 700; color: #147d3f; }
+    .rejected { font-weight: 700; color: #b42318; }
+    .note { padding: 14px 16px; border-radius: 9px; background: #eef5ff; color: #2b4b6f; }
+    label { display: block; margin: 24px 0 8px; color: #63636b; font-size: 13px; }
+    textarea { display: block; width: 100%; min-height: 78px; resize: vertical; padding: 12px; border: 1px solid #d6d6dc; border-radius: 9px; background: #fbfbfd; color: #1d1d1f; font: inherit; }
+    textarea.export { min-height: 150px; }
+    button { margin: 12px 8px 8px 0; padding: 10px 16px; border: 0; border-radius: 8px; background: #007aff; color: #fff; font: inherit; cursor: pointer; }
+    button.secondary { background: #e8f2ff; color: #0062cc; }
+    button:focus-visible, textarea:focus-visible, a:focus-visible { outline: 3px solid #8fc2ff; outline-offset: 3px; }
+    .muted { color: #72727a; font-size: 14px; }
+    .chunk { margin-top: 14px; padding-top: 14px; border-top: 1px solid #e6e6eb; }
+    @media (max-width: 700px) {
+      main { padding: 28px 14px 56px; }
+      .card { padding: 20px; }
+      .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      th, td { padding: 9px 6px; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">FLY-2832 · Design · 2026-09-26</div>
+  <h1>改 38 个精确标签，<br>不碰任何相似值</h1>
+  <p class="lede">这是一份实施设计：把测试样板包里的旧模型名迁移到新名字，同时用精确扫描和逐文件测试证明范围没有扩散。</p>
+
+  <section class="card" aria-labelledby="summary-title">
+    <div class="eyebrow">01 · 一句话</div>
+    <h2 id="summary-title">只改完整等于旧标签的值，并让每一条相关证据都能被单独复核</h2>
+    <p><strong>一句话：</strong>在 <code>runner-test-discipline-fixture</code> 中把完整标签 <code>claude-opus-5</code> 改为 <code>claude-opus-5.5</code>，更新对应断言；<code>claude-opus-50</code>、<code>claude-sonnet-5</code> 和其他行为全部保持不变。</p>
+    <p>“fixture（测试样板包）”是为这次 QA 人工准备的一组小文件，用来观察 Runner 是否遵守测试纪律；它不是生产模型配置。</p>
+    <p class="note"><strong>当前诚实状态：</strong>设计分支还没有这份 fixture。实施只有在测试台架把基线放进共享分支后才能开始；缺失时必须报告并等待，不能凭空重建。</p>
+    <p>Issue：<a href="https://linear.app/geoforge3d/issue/FLY-2832/qa-fly-2802-qa-sandbox-fixture-529-runner-test-discipline-cell-a-r2-do">FLY-2832</a></p>
+    <label for="comment-summary">这部分的意见 · 自动保存在本浏览器</label>
+    <textarea id="comment-summary" data-comment="summary" data-title="一句话与当前状态" placeholder="写下疑问或建议"></textarea>
+  </section>
+
+  <section class="card" aria-labelledby="flow-title">
+    <div class="eyebrow">02 · 核心流程</div>
+    <h2 id="flow-title">先确认基线，再走精确发现、RED→GREEN、负向守卫</h2>
+    <div class="diagram-pending" role="img" aria-label="核心流程 Mermaid 图等待本地渲染">
+      <strong>DIAGRAM PENDING LOCAL RENDER</strong>
+      <span>Mermaid 源文件已保留为 <code>flow.mmd</code>；本地 Chromium 被沙箱拒绝启动，未使用远程渲染器或 CSS 假图。</span>
+    </div>
+    <ol>
+      <li>确认实施节点持有 TURN，并确认 fixture 基线已经存在。</li>
+      <li>固定字符串扫描会看到 13 个文件，再用“旧标签后面不能跟点或数字”的边界规则收窄到 10 个目标文件。</li>
+      <li>先改可失败的断言并逐文件看到预期 RED，再改 8 个源常量和纯字面量合同得到 GREEN。</li>
+      <li>逐个运行 7 个相关测试文件，再运行 <code>vitest related</code>、独立验证器和 lint。</li>
+      <li>确认新值恰好 38 个、两个保护值各保留 4 个，然后创建单一迁移提交。</li>
+    </ol>
+    <label for="comment-flow">这部分的意见 · 自动保存在本浏览器</label>
+    <textarea id="comment-flow" data-comment="flow" data-title="核心流程" placeholder="写下疑问或建议"></textarea>
+  </section>
+
+  <section class="card" aria-labelledby="structure-title">
+    <div class="eyebrow">03 · 数据与结构模型</div>
+    <h2 id="structure-title">十个文件负责迁移，四个文件负责证明“没有误伤”</h2>
+    <div class="diagram-pending" role="img" aria-label="结构模型 Mermaid 类图等待本地渲染">
+      <strong>DIAGRAM PENDING LOCAL RENDER</strong>
+      <span>Mermaid UML 类图源文件已保留为 <code>structure.mmd</code>；发布页不加载任何外部脚本或图片。</span>
+    </div>
+    <div class="metric-grid">
+      <div class="metric"><strong>10</strong><span>迁移文件</span></div>
+      <div class="metric"><strong>38</strong><span>精确旧值</span></div>
+      <div class="metric"><strong>7</strong><span>逐文件测试</span></div>
+      <div class="metric"><strong>4</strong><span>字节不变文件</span></div>
+    </div>
+    <table>
+      <thead><tr><th>结构</th><th>内容</th><th>设计约束</th></tr></thead>
+      <tbody>
+        <tr><td>源常量</td><td>Alpha、Beta、Gamma、Delta 各有主值和回退值，共 8 个</td><td>只改字符串值，不改导出名或模块形状</td></tr>
+        <tr><td>改变的测试</td><td>4 个组件测试 + 纯字面量测试 + 静态聚合测试</td><td>所有属于旧标签的精确断言一起更新</td></tr>
+        <tr><td>保护面</td><td><code>index.ts</code>、<code>unrelated.test.ts</code>、<code>verify.mjs</code>、<code>package.json</code></td><td>四个文件必须字节不变</td></tr>
+        <tr><td>验证面</td><td>7 个具体测试、related、验证器、lint</td><td>本地不调用完整包测试</td></tr>
+      </tbody>
+    </table>
+    <label for="comment-structure">这部分的意见 · 自动保存在本浏览器</label>
+    <textarea id="comment-structure" data-comment="structure" data-title="数据与结构模型" placeholder="写下疑问或建议"></textarea>
+  </section>
+
+  <section class="card guard" aria-labelledby="evidence-title">
+    <div class="eyebrow">04 · 测试证据</div>
+    <h2 id="evidence-title">恰好选中了全部 7 个测试，但不是通过“跑整包”得到的</h2>
+    <p>每个测试文件都有独立的入选理由：四个组件测试直接锁定源常量；纯字面量测试和静态聚合测试本身要改；无关值测试负责证明 <code>claude-opus-50</code> 没被子串替换误伤。</p>
+    <table>
+      <thead><tr><th>证据</th><th>运行方式</th><th>证明什么</th></tr></thead>
+      <tbody>
+        <tr><td>4 个组件测试</td><td>一次一个具体 <code>model.test.ts</code></td><td>8 个源常量与 24 条组件断言一致</td></tr>
+        <tr><td>2 个横切测试</td><td>一次一个具体测试文件</td><td>纯字面量合同与聚合导出都已迁移</td></tr>
+        <tr><td>1 个负向测试</td><td>单独运行 <code>unrelated.test.ts</code></td><td>近似值和无关标签保留</td></tr>
+        <tr><td>TypeScript related</td><td>把 10 个改动文件作为参数</td><td>静态依赖选择没有遗漏；不替代显式测试</td></tr>
+        <tr><td>独立验证器</td><td><code>node verify.mjs</code></td><td>旧精确值清零、38 个新值、保护值仍在</td></tr>
+      </tbody>
+    </table>
+    <p class="muted">明确禁止：<code>pnpm test</code>、<code>test:packages</code>、包级 test alias、没有具体文件参数的 <code>vitest run</code>、目录或 glob 选择。完整套件只由 exact-head PR CI 证明。</p>
+    <label for="comment-evidence">这部分的意见 · 自动保存在本浏览器</label>
+    <textarea id="comment-evidence" data-comment="evidence" data-title="测试证据" placeholder="写下疑问或建议"></textarea>
+  </section>
+
+  <section class="card" aria-labelledby="tradeoffs-title">
+    <div class="eyebrow">05 · 关键取舍</div>
+    <h2 id="tradeoffs-title">选择可审核的精确替换，拒绝三条看起来更快的路</h2>
+    <table>
+      <thead><tr><th>方案</th><th>结论</th><th>原因</th></tr></thead>
+      <tbody>
+        <tr><td>十文件精确替换</td><td class="decision">采用</td><td>作用半径最小；每个改动都有对应断言和计数证据</td></tr>
+        <tr><td>目录级子串替换</td><td class="rejected">拒绝</td><td>会把 <code>claude-opus-50</code> 错改成另一个值</td></tr>
+        <tr><td>兼容映射或运行时规范化</td><td class="rejected">拒绝</td><td>增加任务没有要求的行为和双重来源</td></tr>
+        <tr><td>fixture 缺失时手工重建</td><td class="rejected">拒绝</td><td>掩盖测试台架错误，也会污染本次迁移的差异范围</td></tr>
+      </tbody>
+    </table>
+    <label for="comment-tradeoffs">这部分的意见 · 自动保存在本浏览器</label>
+    <textarea id="comment-tradeoffs" data-comment="tradeoffs" data-title="关键取舍" placeholder="写下疑问或建议"></textarea>
+  </section>
+
+  <section class="card boundary" aria-labelledby="boundary-title">
+    <div class="eyebrow">06 · 诚实边界</div>
+    <h2 id="boundary-title">这份设计说明怎么改；它不假装基线已到位，也不声称 QA 已通过</h2>
+    <ul>
+      <li><strong>会做：</strong>在 fixture 存在后迁移 38 个精确出现点，更新全部相关断言，逐文件验证，并保留可回滚的单一提交。</li>
+      <li><strong>不会做：</strong>不改生产模型配置，不增加兼容层，不改验证器，不修改近似或无关标签。</li>
+      <li><strong>基线边界：</strong>当前分支没有 fixture；默认等待测试台架注入。只有 Lead 明确授权时，seed 才能以独立、可追溯的提交进入分支。</li>
+      <li><strong>测试边界：</strong>本地绿色只代表相关检查通过；完整仓库或完整包测试由当前提交的 CI 负责。</li>
+      <li><strong>流程边界：</strong>这是设计节点交付，不实现、不创建实现 PR、不请求 ship、不 merge。</li>
+    </ul>
+    <label for="comment-boundary">这部分的意见 · 自动保存在本浏览器</label>
+    <textarea id="comment-boundary" data-comment="boundary" data-title="诚实边界" placeholder="写下疑问或建议"></textarea>
+  </section>
+
+  <section class="card" aria-labelledby="comments-title">
+    <div class="eyebrow">07 · 页面意见汇总</div>
+    <h2 id="comments-title">把每一节的意见汇总成可贴回 issue 的文字</h2>
+    <p class="muted">意见会保存在当前浏览器、当前页面路径下；它们是修改建议，不是通过、合并或上线授权。超过约 1800 字时会自动拆段，并在每段重复 issue 标记。</p>
+    <label for="comment-overall">整体意见 · 自动保存在本浏览器</label>
+    <textarea id="comment-overall" data-comment="overall" data-title="整体意见" placeholder="写下整体意见"></textarea>
+    <button id="copy-all" type="button">复制全部意见</button>
+    <p id="copy-status" class="muted" role="status"></p>
+    <label for="aggregate">实时汇总</label>
+    <textarea id="aggregate" class="export" readonly></textarea>
+    <div id="chunks"></div>
+  </section>
+</main>
+<script nonce="__CSP_NONCE__">
+(() => {
+  "use strict";
+  const marker = "【页面意见汇总】FLY-2832";
+  const storagePrefix = "fly2832-design-comments:" + location.pathname + ":";
+  const fields = Array.from(document.querySelectorAll("textarea[data-comment]"));
+  const aggregate = document.getElementById("aggregate");
+  const chunksContainer = document.getElementById("chunks");
+  const copyStatus = document.getElementById("copy-status");
+  let chunks = [];
+
+  function readStored(key) {
+    try {
+      return localStorage.getItem(storagePrefix + key) || "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function writeStored(key, value) {
+    try {
+      localStorage.setItem(storagePrefix + key, value);
+    } catch (_) {
+      copyStatus.textContent = "浏览器不允许本地保存；意见仍会保留在当前页面，刷新后可能丢失。";
+    }
+  }
+
+  function fallbackCopy(text) {
+    const helper = document.createElement("textarea");
+    helper.value = text;
+    helper.style.position = "fixed";
+    helper.style.opacity = "0";
+    document.body.appendChild(helper);
+    helper.select();
+    let copied = false;
+    try {
+      copied = document.execCommand("copy");
+    } finally {
+      helper.remove();
+    }
+    if (!copied) throw new Error("copy failed");
+  }
+
+  async function copyText(text) {
+    try {
+      try {
+        if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error("clipboard unavailable");
+        await navigator.clipboard.writeText(text);
+      } catch (_) {
+        fallbackCopy(text);
+      }
+      copyStatus.textContent = "已复制。可以贴回 issue 对话；页面意见不代表批准。";
+    } catch (_) {
+      copyStatus.textContent = "复制失败，请手动选择下方汇总文字。";
+    }
+  }
+
+  function rebuildSummary() {
+    const body = fields
+      .filter((field) => field.value.trim())
+      .map((field) => "[" + field.dataset.title + "]\n" + field.value.trim())
+      .join("\n\n");
+    const characters = Array.from(body);
+    chunks = [];
+    for (let offset = 0; offset < characters.length; offset += 1600) {
+      chunks.push(marker + "\n\n" + characters.slice(offset, offset + 1600).join(""));
+    }
+    if (!chunks.length) chunks.push(marker);
+    aggregate.value = chunks.join("\n\n");
+    chunksContainer.replaceChildren();
+    if (chunks.length > 1) {
+      chunks.forEach((chunkText, index) => {
+        const wrapper = document.createElement("div");
+        wrapper.className = "chunk";
+        const field = document.createElement("textarea");
+        field.readOnly = true;
+        field.className = "export";
+        field.value = chunkText;
+        field.setAttribute("aria-label", "意见分段 " + (index + 1));
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "secondary";
+        button.textContent = "复制第 " + (index + 1) + " 段";
+        button.addEventListener("click", () => copyText(chunkText));
+        wrapper.append(field, button);
+        chunksContainer.appendChild(wrapper);
+      });
+    }
+  }
+
+  fields.forEach((field) => {
+    field.value = readStored(field.dataset.comment);
+    field.addEventListener("input", () => {
+      writeStored(field.dataset.comment, field.value);
+      rebuildSummary();
+    });
+  });
+  document.getElementById("copy-all").addEventListener("click", () => copyText(chunks.join("\n\n")));
+  rebuildSummary();
+})();
+</script>
+</body>
+</html>

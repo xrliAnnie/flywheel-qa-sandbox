@@ -1,0 +1,37 @@
+classDiagram
+  class FixturePackage {
+    package runner-test-discipline-fixture
+    invariant old exact = 0
+    invariant new exact = 38
+  }
+  class ComponentSources {
+    alpha model + fallback
+    beta model + fallback
+    gamma model + fallback
+    delta model + fallback
+    total 8 constants
+  }
+  class ChangedTests {
+    4 component test files
+    literal-only test
+    static-dependency test
+    total 30 assertions
+  }
+  class ProtectedSurface {
+    index.ts
+    unrelated.test.ts
+    verify.mjs
+    package.json
+  }
+  class LocalEvidence {
+    7 concrete test files
+    vitest related on 10 files
+    verify.mjs
+    pnpm lint
+  }
+
+  FixturePackage *-- ComponentSources : owns
+  FixturePackage *-- ChangedTests : owns
+  FixturePackage *-- ProtectedSurface : preserves
+  ChangedTests --> ComponentSources : locks values
+  LocalEvidence --> FixturePackage : verifies
