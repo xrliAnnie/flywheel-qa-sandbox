@@ -1,16 +1,18 @@
 ---
 issue: FLY-2912
 phase: implement
-phaseCursor: 5/6
-updated: 2026-09-26T08:24:27.350Z
-nextStep: "QA rework attempt 2: regenerate stale FLY-2139 query audit evidence;
-  correct replay timing and stage payload modeling; reproduce two remaining CI
-  failures with targeted tests; fresh code review and scoped CI, then
-  needs_review."
+phaseCursor: 6/6
+updated: 2026-09-26T08:38:10.798Z
+nextStep: "QA rework 6e3416ddd: stale query evidence repaired; chronological
+  replay and real scoped OFF corrected; missing historical proofs explicit,
+  conditional 99-to-92 not measured savings. Related replay 2/2, query audit
+  2/2, retention named 2 pass, lint/build pass. Load-probe sandbox identity
+  failure disclosed. Refresh literal-last milestone, push, effective code review
+  and scoped CI, needs_review; QA owns full CI/529 retest."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2912 progress
-**phase**: implement (5/6)
-**next**: QA rework attempt 2: regenerate stale FLY-2139 query audit evidence; correct replay timing and stage payload modeling; reproduce two remaining CI failures with targeted tests; fresh code review and scoped CI, then needs_review.
+**phase**: implement (6/6)
+**next**: QA rework 6e3416ddd: stale query evidence repaired; chronological replay and real scoped OFF corrected; missing historical proofs explicit, conditional 99-to-92 not measured savings. Related replay 2/2, query audit 2/2, retention named 2 pass, lint/build pass. Load-probe sandbox identity failure disclosed. Refresh literal-last milestone, push, effective code review and scoped CI, needs_review; QA owns full CI/529 retest.
