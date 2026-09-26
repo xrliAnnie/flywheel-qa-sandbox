@@ -106,6 +106,8 @@ export class AdmissionResiduals {
 	private attempts = 0;
 	private reportedUnsettled = false;
 	private removed = false;
+	/** An admitted session owns its processes; nothing is tracked any more. */
+	private released = false;
 
 	constructor(
 		private readonly options: {
@@ -113,6 +115,8 @@ export class AdmissionResiduals {
 			sessionId: string;
 			system: ResidualSystem;
 			report(line: string): void;
+			/** Tells the registry this daemon no longer holds the session. */
+			onDetach?(): void;
 		},
 		file?: ResidualFile,
 	) {
@@ -130,6 +134,7 @@ export class AdmissionResiduals {
 
 	/** A child we just spawned. Its identity is read now, before it can be reused. */
 	registerSpawned(pid: number): void {
+		if (this.released) return;
 		let row: ProcessRow | undefined;
 		try {
 			row = this.options.system
@@ -163,9 +168,27 @@ export class AdmissionResiduals {
 	}
 
 	registerDirectory(path: string): void {
+		if (this.released) return;
 		this.directories.add(path);
 		this.removed = false;
 		this.persist();
+	}
+
+	/**
+	 * The admission succeeded: the conversation now owns every process and
+	 * directory. Drop the record so no sweep can touch a live session.
+	 */
+	release(): void {
+		this.released = true;
+		this.identities.clear();
+		this.directories.clear();
+		this.remove();
+		this.detach();
+	}
+
+	/** This daemon's own teardown is done; periodic sweeps may take over. */
+	detach(): void {
+		this.options.onDetach?.();
 	}
 
 	get pending(): boolean {
@@ -183,6 +206,7 @@ export class AdmissionResiduals {
 	async reap(
 		evidence?: (record: Record<string, unknown>) => void,
 	): Promise<ResidualOutcome> {
+		if (this.released) return "settled";
 		this.attempts++;
 		const record = (outcome: string) => {
 			const summary = {
@@ -372,6 +396,8 @@ export class AdmissionResiduals {
 
 /** Daemon-level registry: one file per session under `<voiceRoot>/codex-containers/residuals`. */
 export class AdmissionResidualRegistry {
+	/** Sessions whose admission this daemon still holds; sweeps skip them. */
+	private readonly held = new Set<string>();
 	constructor(
 		private readonly options: {
 			root: string;
@@ -393,8 +419,17 @@ export class AdmissionResidualRegistry {
 		return join(this.directory(), `${sessionId}.json`);
 	}
 
-	/** The residual set for one admission; resumes an existing file if present. */
-	forSession(sessionId: string): AdmissionResiduals {
+	/**
+	 * An admission in this daemon claims its session: periodic sweeps leave it
+	 * alone until it is released (admitted) or detached (own teardown done).
+	 */
+	claim(sessionId: string): AdmissionResiduals {
+		this.held.add(sessionId);
+		return this.forSession(sessionId, () => this.held.delete(sessionId));
+	}
+
+	/** The residual set for one session; resumes an existing file if present. */
+	forSession(sessionId: string, onDetach?: () => void): AdmissionResiduals {
 		const path = this.path(sessionId);
 		return new AdmissionResiduals(
 			{
@@ -402,6 +437,7 @@ export class AdmissionResidualRegistry {
 				sessionId,
 				system: this.options.system ?? hostResidualSystem,
 				report: this.options.report ?? ((line) => console.error(line)),
+				...(onDetach ? { onDetach } : {}),
 			},
 			existsSync(path) ? this.read(path) : undefined,
 		);
@@ -418,8 +454,9 @@ export class AdmissionResidualRegistry {
 			return;
 		}
 		for (const name of names) {
-			const residuals = this.forSession(name.slice(0, -5));
-			await residuals.reap(this.options.evidence);
+			const sessionId = name.slice(0, -5);
+			if (this.held.has(sessionId)) continue;
+			await this.forSession(sessionId).reap(this.options.evidence);
 		}
 	}
 

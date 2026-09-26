@@ -1083,9 +1083,10 @@ export class CodexVoiceContainer {
 					});
 					await this.markDegraded(input, degraded.reason);
 				} else {
+					// Claimed: periodic sweeps leave an in-flight admission alone.
 					const scope = new AdmissionScope(
 						join(root, "admission"),
-						this.residuals.forSession(input.sessionId),
+						this.residuals.claim(input.sessionId),
 						resources,
 					);
 					resources.admission = scope;
@@ -1115,6 +1116,8 @@ export class CodexVoiceContainer {
 					if (admitted) {
 						timing.admissionMs = this.now() - admissionStartedAt;
 						scope.transferred = true;
+						// The conversation owns these processes now; no sweep may reap them.
+						scope.residuals.release();
 						resources.parent = admitted.parent;
 						resources.process = admitted.process;
 						resources.scribe = admitted.scribe;
@@ -1562,7 +1565,10 @@ export class CodexVoiceContainer {
 			);
 			await scope.residuals.reap(this.evidence).catch(() => "pending");
 		})();
-		teardown.catch(() => undefined);
+		// Hand leftovers to the periodic sweep only once this teardown is over.
+		void teardown
+			.finally(() => scope.residuals.detach())
+			.catch(() => undefined);
 		await withTimeout(
 			teardown,
 			Math.max(0, teardownDeadlineAt - this.now()),
@@ -1614,7 +1620,7 @@ export class CodexVoiceContainer {
 				await rm(admission.root, { recursive: true, force: true }).catch(
 					() => undefined,
 				);
-			})();
+			})().finally(() => admission.residuals.detach());
 		}
 		if (!resources.process && !resources.root) return;
 		resources.cleanup = (async () => {

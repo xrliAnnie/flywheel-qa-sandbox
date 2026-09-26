@@ -1291,6 +1291,11 @@ describe("background admission degrades to foreground voice (FLY-2886 plan v12 Â
 		});
 		expect(opened.background).toEqual({ state: "enabled" });
 		expect(h.order).not.toContain("parent.revoke");
+		// An admitted session owns its processes: no residual record may remain
+		// for the periodic sweep to reap under a live conversation.
+		expect(
+			existsSync(join(h.base, "scratch", "residuals", "session-enabled.json")),
+		).toBe(false);
 		await opened.close();
 	});
 

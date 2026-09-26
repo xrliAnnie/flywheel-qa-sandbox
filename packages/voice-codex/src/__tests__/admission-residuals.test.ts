@@ -282,3 +282,32 @@ it.skipIf(process.platform !== "darwin")(
 	},
 	20_000,
 );
+
+describe("ownership of in-flight and admitted sessions (FLY-2886 §14.2)", () => {
+	it("never sweeps a session this daemon is still admitting", async () => {
+		const reg = registry();
+		const claimed = reg.claim(SESSION);
+		claimed.registerSpawned(host.spawn(701, DAEMON));
+		await reg.sweep();
+		expect(host.rows.has(701)).toBe(true);
+		expect(host.signals).toEqual([]);
+		// After the admission's own teardown hands it over, the sweep may act.
+		claimed.detach();
+		await reg.sweep();
+		expect(host.rows.has(701)).toBe(false);
+	});
+
+	it("an admitted session releases its record: nothing left for the sweep, later spawns ignored", async () => {
+		const reg = registry();
+		const claimed = reg.claim(SESSION);
+		claimed.registerSpawned(host.spawn(701, DAEMON));
+		claimed.release();
+		expect(existsSync(file())).toBe(false);
+		claimed.registerSpawned(host.spawn(702, DAEMON));
+		expect(existsSync(file())).toBe(false);
+		await reg.sweep();
+		expect(host.rows.has(701)).toBe(true);
+		expect(host.rows.has(702)).toBe(true);
+		expect(host.signals).toEqual([]);
+	});
+});
