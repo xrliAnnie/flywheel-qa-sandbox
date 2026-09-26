@@ -11,8 +11,7 @@
 		"audio/EarsReceiver",
 		"audio/GeminiTurnMouth",
 		"audio/TextTurnMouth",
-		"audio/defaultCues",
-		"audio/resample"
+		"audio/defaultCues"
 	],
 	"dirs": ["assistant", "brain", "discord", "eleven", "huddle", "linear"]
 }
