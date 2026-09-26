@@ -1,14 +1,13 @@
 ---
 issue: FLY-202
-phase: implement
-phaseCursor: 6/6
-updated: 2026-07-19T16:31:41.187Z
-nextStep: run required code review gate, monitor CI, write landing signal,
-  complete needs_review, and park
+phase: design
+phaseCursor: 1/6
+updated: 2026-09-26T11:35:11.588Z
+nextStep: "refresh exploration/research/plan for slot-4 PR #194 continuation"
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: implement (6/6)
-**next**: run required code review gate, monitor CI, write landing signal, complete needs_review, and park
+**phase**: design (1/6)
+**next**: refresh exploration/research/plan for slot-4 PR #194 continuation
