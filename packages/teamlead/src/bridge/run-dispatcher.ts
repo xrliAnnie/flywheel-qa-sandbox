@@ -42,7 +42,23 @@ import type {
 import type { AdmissionCrossingBarrier } from "./admission-crossing-barrier.js";
 import type { LaunchClaimStore } from "./launch-claim-store.js";
 import { resolveCommBackend } from "./plugin.js";
-import type { ProgressResumeInfo } from "./progress-resume.js";
+import {
+	resolveWorkflowStartPolicy,
+	FreshStartAuditError,
+	type ResumeComputer,
+	type ContinuityComputer,
+	type WorkflowStartPolicy,
+} from "./workflow-start-policy.js";
+export {
+	ContinuityIndeterminateError,
+	FreshStartAuditError,
+} from "./workflow-start-policy.js";
+export type {
+	ResumeComputer,
+	ContinuityComputer,
+	ContinuityInherit,
+	ContinuityStartPoint,
+} from "./workflow-start-policy.js";
 import type {
 	IRetryDispatcher,
 	IStartDispatcher,
@@ -148,39 +164,6 @@ function createLaunchOutcomeDeferred(
 		},
 	};
 }
-
-/**
- * FLY-795: compute the restart-resilient resume decision for a (re-)dispatch.
- * Returns a ProgressResumeInfo when a prior execution + committed progress.md on
- * branch B are found; null ⇒ start fresh. Injected into RunDispatcher so the
- * live git/StateStore lookups stay out of the generic dispatcher.
- */
-export type ResumeComputer = (
-	issueId: string,
-	role: string,
-	projectName: string,
-) => ProgressResumeInfo | null | Promise<ProgressResumeInfo | null>;
-
-/** FLY-1718 P1: explanatory metadata for a structurally inherited branch. */
-export interface ContinuityInherit {
-	branch: string;
-	sha: string;
-	prNumber?: number;
-	prUrl?: string;
-}
-
-/** FLY-1718 P1: origin-backed decision for an otherwise-fresh dispatch. */
-export type ContinuityStartPoint =
-	| ({ kind: "found" } & ContinuityInherit)
-	| { kind: "missing"; branch?: string }
-	| { kind: "indeterminate"; error: string };
-
-export type ContinuityComputer = (input: {
-	issueId: string;
-	role: string;
-	projectName: string;
-	shareParentBranch?: boolean;
-}) => Promise<ContinuityStartPoint>;
 
 /** FLY-1257 M3: machine-readable branch-tip probe result for phase retries. */
 export type PhaseRetryStartPoint =
@@ -457,16 +440,6 @@ export class LifecycleParkedError extends Error {
 	}
 }
 
-export class ContinuityIndeterminateError extends Error {
-	readonly code = "CONTINUITY_INDETERMINATE";
-	readonly retryable = true;
-
-	constructor(public readonly detail: string) {
-		super(`branch continuity is indeterminate: ${detail}`);
-		this.name = "ContinuityIndeterminateError";
-	}
-}
-
 export class DoaBackoffError extends Error {
 	readonly code = "DOA_BACKOFF";
 
@@ -476,15 +449,6 @@ export class DoaBackoffError extends Error {
 	) {
 		super(`DOA re-dispatch admission denied: ${reason}`);
 		this.name = "DoaBackoffError";
-	}
-}
-
-export class FreshStartAuditError extends Error {
-	readonly code = "FRESH_START_AUDIT_FAILED";
-
-	constructor(detail: string) {
-		super(`fresh-start override refused: ${detail}`);
-		this.name = "FreshStartAuditError";
 	}
 }
 
@@ -1554,57 +1518,31 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		// pre-registration, TURN, or worktree mutation. Progress resume remains the
 		// richer first choice; only a true fresh start consults origin continuity.
 		// A caller-pinned startPoint already carries explicit head authority.
-		if (req.freshStart && req.startPoint) {
-			this.abortPreLaunch(key, executionId, req.projectName);
-			throw new FreshStartAuditError(
-				"freshStart cannot be combined with a caller-pinned start",
-			);
-		}
-		let computedResume: ProgressResumeInfo | null;
+		let startPolicy: WorkflowStartPolicy;
 		try {
-			computedResume =
-				(await this.resumeComputer?.(req.issueId, role, req.projectName)) ??
-				null;
+			startPolicy = await resolveWorkflowStartPolicy(
+				{
+					issueId: req.issueId,
+					role,
+					projectName: req.projectName,
+					startPoint: req.startPoint,
+					freshStart: Boolean(req.freshStart),
+					shareParentBranch: req.shareParentBranch,
+				},
+				{
+					observeResume: this.resumeComputer
+                        ? (...args) => this.resumeComputer!(...args) : undefined,
+					observeContinuity: this.continuityComputer
+                        ? (input) => this.continuityComputer!(input) : undefined,
+				},
+			);
 		} catch (error) {
 			this.abortPreLaunch(key, executionId, req.projectName);
 			throw error;
 		}
-		const resume = req.freshStart ? null : computedResume;
-		let continuityInherit: ContinuityInherit | undefined;
-		let continuityBranch: string | undefined;
-		let skippedOriginTip: string | undefined;
-		if (!req.startPoint && !resume && this.continuityComputer) {
-			let continuity: ContinuityStartPoint;
-			try {
-				continuity = await this.continuityComputer({
-					issueId: req.issueId,
-					role,
-					projectName: req.projectName,
-					shareParentBranch: req.shareParentBranch,
-				});
-			} catch (error) {
-				this.abortPreLaunch(key, executionId, req.projectName);
-				throw error;
-			}
-			if (continuity.kind === "indeterminate") {
-				this.abortPreLaunch(key, executionId, req.projectName);
-				throw new ContinuityIndeterminateError(continuity.error);
-			}
-			continuityBranch = continuity.branch;
-			if (continuity.kind === "found") {
-				skippedOriginTip = continuity.sha;
-				if (!req.freshStart) {
-					continuityInherit = {
-						branch: continuity.branch,
-						sha: continuity.sha,
-						...(continuity.prNumber !== undefined && {
-							prNumber: continuity.prNumber,
-						}),
-						...(continuity.prUrl && { prUrl: continuity.prUrl }),
-					};
-				}
-			}
-		}
+		const { resume, continuityInherit, continuityBranch, skippedOriginTip } =
+			startPolicy;
+
 		if (req.freshStart) {
 			if (!this.continuityComputer || !continuityBranch) {
 				this.abortPreLaunch(key, executionId, req.projectName);
@@ -1774,7 +1712,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				...this.skillFrameworkPriorCtx(req.issueId),
 				// FLY-793: DAG workflows share one branch B (Bridge-internal).
 				// FLY-795: a resume also shares branch B (reuse the same mechanism).
-				shareParentBranch: req.shareParentBranch ?? (resume ? true : undefined),
+				shareParentBranch: startPolicy.shareParentBranch,
 				loopTarget: req.loopTarget,
 				// FLY-859: Implement-fix round context after a QA FAIL (Bridge-internal).
 				phaseFixContext: req.phaseFixContext,
@@ -1796,8 +1734,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				codexSkip: req.codexSkip,
 				// FLY-795: a resume pins startPoint = branch B tip so `worktree add -B`
 				// rebuilds WITH the committed progress.md (never override a caller's own).
-				startPoint:
-					req.startPoint ?? resume?.startPoint ?? continuityInherit?.sha,
+				startPoint: startPolicy.startPoint,
 				...(req.workflowResume && { workflowResume: req.workflowResume }),
 				...(continuityInherit && { continuityInherit }),
 				...(req.generalizedExecution && {
