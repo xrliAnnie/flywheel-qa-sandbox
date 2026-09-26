@@ -42,7 +42,11 @@ afterEach(async () => {
 
 // Only the physical launcher is replaced. The engine still resolves the real
 // predecessor HEAD, admits the execution, owns the launch, and writes its marker.
-function fakeStartDispatcher(store: StateStore, head: string) {
+function fakeStartDispatcher(
+	store: StateStore,
+	head: string,
+	worktreePath?: string,
+) {
 	const requests: StartRequest[] = [];
 	let failBeforeLaunch = true;
 	const start = vi.fn(async (request: StartRequest) => {
@@ -52,8 +56,9 @@ function fakeStartDispatcher(store: StateStore, head: string) {
 		const execution = request.generalizedExecution;
 		if (!execution) throw new Error("generalized execution missing");
 		if (
+			worktreePath ||
 			store.getWorkflowExecutionBinding(execution.executionId)?.mode ===
-			"replacement"
+				"replacement"
 		) {
 			execution.prepareWorkflowIssueDelivery?.({
 				sourceKind: "authoritative",
@@ -72,6 +77,7 @@ function fakeStartDispatcher(store: StateStore, head: string) {
 			status: "running",
 			session_role: request.sessionRole,
 			chat_thread_role: request.sessionRole,
+			...(worktreePath ? { worktree_path: worktreePath } : {}),
 		});
 		return { executionId: execution.executionId, issueId: request.issueId };
 	});
@@ -89,7 +95,11 @@ function fakeStartDispatcher(store: StateStore, head: string) {
 	};
 }
 
-async function materializePredecessor(store: StateStore, projectRoot: string) {
+async function materializePredecessor(
+	store: StateStore,
+	projectRoot: string,
+	rootOnly = false,
+) {
 	installSelfHostedWorkflowAgentProject(projectRoot);
 	const git = (...args: string[]) =>
 		execFileSync("git", ["-C", projectRoot, ...args], {
@@ -125,6 +135,7 @@ async function materializePredecessor(store: StateStore, projectRoot: string) {
 		claimsReadEnrolled: true,
 		actor: "lead",
 		canonicalRoot: projectRoot,
+		...(rootOnly ? { entryKind: "pipeline_dag_v1" as const } : {}),
 		env: ENV,
 		startReservation: {
 			idempotencyKey: "fly2329-start",
@@ -135,6 +146,7 @@ async function materializePredecessor(store: StateStore, projectRoot: string) {
 			createdAt: "2026-07-16T00:00:00.000Z",
 		},
 	});
+	if (rootOnly) return head;
 	store.upsertWorkflowRunNode({
 		runId: RUN_ID,
 		nodeId: "design",
@@ -435,6 +447,9 @@ describe("FLY-2329 unified recovery through HTTP and dispatcher consumption", ()
 			});
 			expect(receipt.executionId).not.toBe(ORIGINAL_EXECUTION);
 			expect(receipt.launchOrdinal).toBe(2);
+			expect(
+				store.getWorkflowDeadExecutionWatch(ORIGINAL_EXECUTION),
+			).toBeUndefined();
 			const recorded = store
 				.listWorkflowSideEffects(RUN_ID)
 				.find((row) => row.id === receipt.dispatchLedgerId);
@@ -533,6 +548,196 @@ describe("FLY-2329 unified recovery through HTTP and dispatcher consumption", ()
 			});
 		} finally {
 			await cleanup();
+		}
+	}, 60_000);
+});
+
+describe("FLY-2295/2914 started root recovery", () => {
+	it("uses the current root body's real worktree and preserves work across repeated recovery", async () => {
+		const projectRoot = mkdtempSync(join(tmpdir(), "fly2295-root-recovery-"));
+		const stateRoot = mkdtempSync(join(tmpdir(), "fly2295-root-markers-"));
+		const store = await StateStore.create(":memory:");
+		const server = createServer();
+		cleanups.push(async () => {
+			if (server.listening) {
+				server.closeAllConnections();
+				await new Promise<void>((resolve, reject) =>
+					server.close((error) => (error ? reject(error) : resolve())),
+				);
+			}
+			store.close();
+			rmSync(projectRoot, { recursive: true, force: true });
+			rmSync(stateRoot, { recursive: true, force: true });
+		});
+		const initialHead = await materializePredecessor(store, projectRoot, true);
+		const fake = fakeStartDispatcher(store, initialHead, projectRoot);
+		fake.allowLaunch();
+		const identity = {
+			leadId: "flywheel-eng-lead",
+			projectName: "flywheel",
+			leadResolution: "resolved" as const,
+		};
+		const engine = () =>
+			new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: fake.dispatcher,
+				stateRoot,
+				env: ENV,
+				resolveRunAlertIdentity: () => identity,
+			});
+		expect(await engine().reconcile()).toEqual({ started: 1, held: 0 });
+		expect(
+			store.getWorkflowLaunchOwner(PREDECESSOR)?.committed_generation,
+		).toBe(1);
+		const app = express();
+		app.use(express.json());
+		app.use(
+			"/api/runs",
+			createRunsRouter(
+				fake.dispatcher,
+				store,
+				[
+					{
+						projectName: "flywheel",
+						projectRoot,
+						leads: [{ agentId: "flywheel-eng-lead" }],
+					},
+				] as Parameters<typeof createRunsRouter>[2],
+				RunnerAdmissionController.alwaysAdmit(),
+				undefined,
+				false,
+				undefined,
+				{
+					masterToken: "test-master",
+					confirmTokens: new ConfirmTokenStore(),
+					probeRunLiveness: async () => "dead",
+				},
+			),
+		);
+		server.on("request", app);
+		await new Promise<void>((resolve) =>
+			server.listen(0, "127.0.0.1", resolve),
+		);
+		const post = async (path: string, body: unknown) => {
+			const response = await fetch(
+				`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/runs/${RUN_ID}${path}`,
+				{
+					method: "POST",
+					headers: {
+						"content-type": "application/json",
+						authorization: "Bearer test-master",
+					},
+					body: JSON.stringify(body),
+				},
+			);
+			return { status: response.status, body: await response.json() };
+		};
+		let oldExecutionId = PREDECESSOR;
+		for (const ordinal of [2, 3]) {
+			// Real work after the previous launch, not the original reservation's base.
+			execFileSync("git", [
+				"-C",
+				projectRoot,
+				"commit",
+				"--allow-empty",
+				"-m",
+				`root work before recovery ${ordinal}`,
+			]);
+			const head = execFileSync(
+				"git",
+				["-C", projectRoot, "rev-parse", "HEAD"],
+				{ encoding: "utf8" },
+			).trim();
+			expect(head).not.toBe(initialHead);
+			expect(
+				store.recordEnrolledTerminalSignal({
+					executionId: oldExecutionId,
+					sourceEventId: `root-exit-${ordinal}`,
+					signal: "completed",
+					source: "test",
+				}),
+			).toMatchObject({ ok: true });
+			expect(
+				store.holdCompletedWorkflowExecutionWithoutReceipt({
+					runId: RUN_ID,
+					nodeId: "design",
+					attempt: 1,
+					executionId: oldExecutionId,
+					alertIdentity: identity,
+				}),
+			).toMatchObject({ ok: true });
+			expect(
+				store.getWorkflowNodeCompletion(RUN_ID, "design", 1),
+			).toBeUndefined();
+			const episode = store
+				.listWorkflowRunEvents(RUN_ID)
+				.find(
+					(event) =>
+						event.kind === "completion_receipt_missing" &&
+						event.execution_id === oldExecutionId,
+				)!;
+			const hold = store
+				.listWorkflowHolds(RUN_ID)
+				.find((h) => h.holdEventUid === episode.event_uid)!;
+			const stageRequest = {
+				runId: RUN_ID,
+				shape: hold.shape,
+				holdEventUid: hold.holdEventUid,
+				decision: null,
+				reason:
+					"Recover the root after physical exit without a completion receipt",
+				principal: "master",
+				clientRequestId: `root-recovery-${ordinal}`,
+			};
+			const staged = await post("/resume/stage", stageRequest);
+			expect(staged.status, JSON.stringify(staged.body)).toBe(200);
+			expect(staged.body.canonical.target.startAuthority).toMatchObject({
+				mode: "execution_head",
+				sourceExecutionId: oldExecutionId,
+				headSha: head,
+			});
+			const applied = await post("/resume", {
+				canonical: staged.body.canonical,
+				confirmToken: staged.body.confirmToken,
+			});
+			expect(applied.status, JSON.stringify(applied.body)).toBe(200);
+			expect(applied.body).toMatchObject({
+				state: "dispatch_recorded",
+				launchOrdinal: ordinal,
+			});
+			expect(await engine().reconcile()).toEqual({ started: 1, held: 0 });
+			expect(fake.requests.at(-1)).toMatchObject({
+				startPoint: head,
+				generalizedExecution: { executionId: applied.body.executionId },
+			});
+			expect(
+				store.getWorkflowLaunchOwner(applied.body.executionId)
+					?.committed_generation,
+			).toBe(1);
+			expect(
+				store
+					.listWorkflowSideEffects(RUN_ID)
+					.find((row) => row.id === applied.body.dispatchLedgerId),
+			).toMatchObject({ state: "started", launch_ordinal: ordinal });
+			expect(store.getWorkflowRun(RUN_ID)).toMatchObject({
+				status: "active",
+				current_node_id: "design",
+			});
+			expect(
+				store.getWorkflowNodeCompletion(RUN_ID, "design", 1),
+			).toBeUndefined();
+			expect(store.getWorkflowDeadExecutionWatch(oldExecutionId)).toMatchObject(
+				{ new_execution_id: applied.body.executionId },
+			);
+			// The original root body must cease being a HEAD source after replacement.
+			store.upsertSession({
+				execution_id: oldExecutionId,
+				issue_id: ISSUE_ID,
+				project_name: "flywheel",
+				status: "completed",
+				worktree_path: join(projectRoot, `retired-body-${ordinal}`),
+			});
+			oldExecutionId = applied.body.executionId;
 		}
 	}, 60_000);
 });

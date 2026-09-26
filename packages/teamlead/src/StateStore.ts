@@ -62339,34 +62339,44 @@ export class StateStore {
 				at: now,
 			},
 		});
-		const activityBaseline: WorkflowDeadExecutionActivityBaseline =
-			input.activityBaseline ?? {
-				commitMarker: { state: "unknown" },
-				commDbMessageCount: null,
-				tmuxTarget: session?.tmux_session ?? null,
-				tmuxOutputDigest: null,
-				sessionCommitCount:
-					typeof session?.commit_count === "number"
-						? session.commit_count
-						: null,
-			};
-		this.db.run(
-			`INSERT INTO workflow_dead_execution_watch
-			   (dead_execution_id, run_id, node_id, attempt, new_execution_id,
-			    project_name, issue_id, observed_at, baseline_json, state)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
-			[
-				input.deadExecutionId,
-				input.runId,
-				input.nodeId,
-				input.attempt,
-				input.newExecutionId,
-				run.project_name,
-				run.issue_id,
-				input.livenessEvidence.observedAt,
-				JSON.stringify(activityBaseline),
-			],
-		);
+		// Cancelled, proven-unlaunched intents retain their cancellation/marker
+		// fences. A death watch would incorrectly assert a previous physical body.
+		const needsDeathWatch = !input.operatorRecovery ||
+			this.listWorkflowSideEffects(input.runId).find(row =>
+				row.kind === "dispatch" && row.node_id === input.nodeId &&
+				row.attempt === input.attempt && row.execution_id === input.deadExecutionId &&
+				row.launch_ordinal === input.operatorRecovery!.canonical.target.previousLaunchOrdinal
+			)?.state !== "abandoned";
+		if (needsDeathWatch) {
+			const activityBaseline: WorkflowDeadExecutionActivityBaseline =
+				input.activityBaseline ?? {
+					commitMarker: { state: "unknown" },
+					commDbMessageCount: null,
+					tmuxTarget: session?.tmux_session ?? null,
+					tmuxOutputDigest: null,
+					sessionCommitCount:
+						typeof session?.commit_count === "number"
+							? session.commit_count
+							: null,
+				};
+			this.db.run(
+				`INSERT INTO workflow_dead_execution_watch
+				   (dead_execution_id, run_id, node_id, attempt, new_execution_id,
+				    project_name, issue_id, observed_at, baseline_json, state)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
+				[
+					input.deadExecutionId,
+					input.runId,
+					input.nodeId,
+					input.attempt,
+					input.newExecutionId,
+					run.project_name,
+					run.issue_id,
+					input.livenessEvidence.observedAt,
+					JSON.stringify(activityBaseline),
+				],
+			);
+		}
 		if (priorDeadReplacementCount > 0) {
 			const deathNumber = priorDeadReplacementCount + 1;
 			const escalationUid = `repeated_dead:${input.runId}:${input.nodeId}:${input.attempt}:${deathNumber}`;

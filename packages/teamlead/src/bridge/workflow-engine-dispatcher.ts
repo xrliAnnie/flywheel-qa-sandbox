@@ -2807,7 +2807,11 @@ export class WorkflowEngineDispatcher {
 				throw new Error("recovery_start_authority_changed");
 		}
 		let startPoint: string | undefined;
-		if (workflowResume) {
+		if (recoveryAuthority && isRootPhaseFirstAttempt && !transition) {
+			// The exact current root may have advanced beyond the first root body's
+			// HEAD. Its immutable recovery proof was revalidated above.
+			startPoint = recoveryAuthority.headSha;
+		} else if (workflowResume) {
 			startPoint = workflowResume.anchorCommit;
 		} else if (isWorkflowPhaseRole(node.type)) {
 			if (replacementContext) {

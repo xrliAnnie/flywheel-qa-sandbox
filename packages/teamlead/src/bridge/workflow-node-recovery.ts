@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { canonicalSubmissionDigest } from "flywheel-config";
 import type { StateStore, WorkflowHoldResumeCanonical } from "../StateStore.js";
 import { resolveWorkflowDispatchLineage } from "../workflow-dispatch-lineage.js";
+import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
 import {
 	type WorkflowRecoveryCanonical,
 	type WorkflowRecoveryPreflight,
@@ -105,24 +106,46 @@ export async function prepareWorkflowNodeRecovery(
 			executionId,
 		},
 	);
-	// Root initial/resume authority is resolved by its own existing start policy,
-	// not by inventing a predecessor or reading an unlaunched body's HEAD.
-	if (!lineage.transition?.execution_id)
-		throw new Error("recovery_root_start_preflight_required");
-	const sourceSessionDigest = store.getWorkflowRecoverySourceBindingDigest(
-		lineage.transition.execution_id,
-	);
+	let sourceExecutionId = lineage.transition?.execution_id;
+	if (!sourceExecutionId) {
+		const reservation = store.getWorkflowStartReservationForRun(request.runId);
+		const run = store.getWorkflowRun(request.runId)!;
+		const snapshot = parseWorkflowRunSnapshot(run.snapshot!);
+		if (
+			!reservation ||
+			reservation.node_id !== before.target.nodeId ||
+			reservation.attempt !== before.target.attempt ||
+			reservation.execution_id !== lineage.originExecutionId ||
+			snapshot.manifest.edges.some((edge) => edge.to === before.target.nodeId)
+		)
+			throw new Error("workflow_lineage_missing");
+		const dispatch = store
+			.listWorkflowSideEffects(request.runId)
+			.find(
+				(row) =>
+					row.kind === "dispatch" &&
+					row.node_id === before.target.nodeId &&
+					row.attempt === before.target.attempt &&
+					row.execution_id === executionId &&
+					row.launch_ordinal === before.target.previousLaunchOrdinal,
+			);
+		// A previously launched root owns work in its own persisted worktree.
+		// An unlaunched root must instead resolve the original initial-start policy.
+		if (dispatch?.state !== "started")
+			throw new Error("recovery_root_start_preflight_required");
+		sourceExecutionId = executionId;
+	}
+	const sourceSessionDigest =
+		store.getWorkflowRecoverySourceBindingDigest(sourceExecutionId);
 	const startAuthority = await resolveRecoveryExecutionStartAuthority(
 		store,
-		lineage.transition.execution_id,
+		sourceExecutionId,
 	);
 	const after = store.inspectWorkflowNodeRecovery(request.runId);
 	if (
 		before.stateDigest !== after.stateDigest ||
 		sourceSessionDigest !==
-			store.getWorkflowRecoverySourceBindingDigest(
-				lineage.transition.execution_id,
-			)
+			store.getWorkflowRecoverySourceBindingDigest(sourceExecutionId)
 	)
 		throw new Error("recovery_target_changed");
 	const sourceEvidenceDigest = startAuthority.evidenceDigest;
