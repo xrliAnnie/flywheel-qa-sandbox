@@ -38,7 +38,7 @@ interface UplinkOptions {
 	onVoiceFrame?(frame: Buffer, atMs: number): void;
 	speechGate?: Pick<
 		UplinkSpeechGate,
-		"begin" | "push" | "end" | "cancel" | "takeDue" | "takeCompleted"
+		"token" | "begin" | "push" | "end" | "cancel" | "takeDue" | "takeCompleted"
 	>;
 	onGateSummary?(
 		summary: UplinkGateSummary & { utteranceId: string | null },
@@ -54,6 +54,8 @@ export class Uplink {
 	private readonly jitter: JitterBuffer;
 	private micOpen = true;
 	private activeGateMode: UplinkGateMode | null = null;
+	private readonly gateUtterances = new Map<number, string>();
+	private readonly completedGateUtterances: Array<string | null> = [];
 	droppedOtherSpeaker = 0;
 	droppedUnauthorized = 0;
 	droppedMuted = 0;
@@ -77,10 +79,15 @@ export class Uplink {
 	beginUtterance(mode: UplinkGateMode, atMs: number): void {
 		this.activeGateMode = mode;
 		this.options.speechGate?.begin(mode, atMs);
+		const token = this.options.speechGate?.token;
+		if (token !== undefined && this.activeUtteranceId)
+			this.gateUtterances.set(token, this.activeUtteranceId);
 		this.drainSpeechGate(atMs);
 	}
 
 	endUtterance(atMs: number): void {
+		if (this.options.speechGate)
+			this.completedGateUtterances.push(this.activeUtteranceId);
 		this.options.speechGate?.end(atMs);
 		this.drainSpeechGate(atMs);
 		this.activeGateMode = null;
@@ -88,7 +95,13 @@ export class Uplink {
 
 	cancelUtterance(): void {
 		this.options.speechGate?.cancel();
+		this.gateUtterances.clear();
+		this.completedGateUtterances.length = 0;
 		this.activeGateMode = null;
+	}
+
+	utteranceIdForGateToken(token: number): string | null {
+		return this.gateUtterances.get(token) ?? null;
 	}
 
 	speakingStart(userId: string, authorized: boolean): void {
@@ -194,9 +207,16 @@ export class Uplink {
 			);
 		}
 		for (const summary of gate.takeCompleted()) {
+			const utteranceId =
+				this.completedGateUtterances.shift() ?? this.activeUtteranceId;
+			if (utteranceId) {
+				for (const [token, bound] of this.gateUtterances) {
+					if (bound === utteranceId) this.gateUtterances.delete(token);
+				}
+			}
 			this.options.onGateSummary?.({
 				...summary,
-				utteranceId: this.activeUtteranceId,
+				utteranceId,
 			});
 		}
 	}

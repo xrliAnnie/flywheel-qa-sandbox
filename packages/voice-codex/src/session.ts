@@ -1,5 +1,6 @@
 import type { ReceiveHealth } from "flywheel-voice-core";
 import type { VoiceSessionProjection } from "./bridge-client.js";
+import { SpeechArbiter } from "./codex/SpeechArbiter.js";
 import type { ActiveVoiceSession, VoiceEnd } from "./daemon.js";
 import type { CapturedTranscript } from "./delivery.js";
 import type { RealtimeAudioOwner } from "./realtime.js";
@@ -7,6 +8,9 @@ import type { PreparedSpeech } from "./speech.js";
 
 export interface FrontendHandlers {
 	onResponseState(active: boolean): void;
+	onProviderSpeechStarted?(input: { generation: number; itemId: string }): void;
+	onProviderSpeechStopped?(input: { generation: number; itemId: string }): void;
+	onGenerationChanged?(generation: number): void;
 	onTranscript(input: {
 		itemId: string;
 		contentIndex: number;
@@ -31,6 +35,9 @@ export interface FrontendHandlers {
 
 export interface RoomHandlers {
 	onAudio(frame: Buffer, metadata: RealtimeAudioOwner): void;
+	onLocalUtteranceStarted?(utteranceId: string): void;
+	onLocalUtteranceEnded?(utteranceId: string): void;
+	onRawVoiceActivity?(): void;
 	onFounderPresence(present: boolean): void;
 	onReceiveHealth(snapshot: ReceiveHealth): void;
 	onError(error: Error): void;
@@ -81,6 +88,9 @@ export interface GenericVoiceSessionOptions {
 	cleanup?(): void;
 	assertLease?(): void;
 	postStatus?(text: string): Promise<void>;
+	speechCoordination?: {
+		postThread(request: { businessId: string; text: string }): Promise<void>;
+	};
 	finalize?(outcome?: VoiceEnd): Promise<void> | void;
 }
 
@@ -102,6 +112,8 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 	private readonly founder = deferred<boolean>();
 	private readonly ended = deferred<VoiceEnd>();
 	private readonly now: () => Date;
+	private readonly speechArbiter?: SpeechArbiter;
+	private readonly coordinatedSpeech = new Map<string, PreparedSpeech>();
 	private live = false;
 	private admitted = false;
 	private stopping = false;
@@ -129,8 +141,23 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 		this.now = options.now ?? (() => new Date());
 		this.frontend = options.createFrontend({
 			onResponseState: (active) => {
-				if (!this.stopping) this.frontendResponseActive = active;
+				if (!this.stopping) {
+					this.frontendResponseActive = active;
+					this.speechArbiter?.outputState(active);
+				}
 			},
+			onProviderSpeechStarted: (input) =>
+				this.speechArbiter?.providerSpeechStarted(
+					input.generation,
+					input.itemId,
+				),
+			onProviderSpeechStopped: (input) =>
+				this.speechArbiter?.providerSpeechFinished(
+					input.generation,
+					input.itemId,
+				),
+			onGenerationChanged: (generation) =>
+				this.speechArbiter?.generationChanged(generation),
 			onTranscript: (input) => this.transcript(input),
 			onUnattributedTranscript: () =>
 				this.status("📻 有一句话没能确认说话人，请再说一遍"),
@@ -157,6 +184,11 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 					}
 					this.frontend.appendAudio(frame, metadata);
 				}),
+			onLocalUtteranceStarted: (utteranceId) =>
+				this.speechArbiter?.localUtteranceStarted(utteranceId),
+			onLocalUtteranceEnded: (utteranceId) =>
+				this.speechArbiter?.localUtteranceEnded(utteranceId),
+			onRawVoiceActivity: () => this.speechArbiter?.observeRawVoiceActivity(),
 			onFounderPresence: (present) => this.founderPresence(present),
 			onReceiveHealth: (snapshot) => {
 				if (!this.stopping) this.latestReceiveHealth = { ...snapshot };
@@ -168,6 +200,31 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 				}),
 			assertLease: () => this.options.assertLease?.(),
 		});
+		if (options.speechCoordination) {
+			this.speechArbiter = new SpeechArbiter({
+				now: () => this.now().getTime(),
+				speak: async ({ text, pendingKey }) => {
+					const businessId = pendingKey.replace(/:attempt:\d+$/u, "");
+					const template = this.coordinatedSpeech.get(businessId) ?? {
+						speechId: pendingKey,
+						spokenText: text,
+						expectedTokens: [],
+						generationBudgetMs: Math.min(
+							70_000,
+							Math.max(20_000, 10_000 + 700 * Array.from(text).length),
+						),
+					};
+					const outcome = await this.speakNow({
+						...template,
+						speechId: pendingKey,
+						spokenText: text,
+					});
+					return outcome === "failed" ? "failed" : "spoken";
+				},
+				cancelSpeech: (pendingKey) => this.cancelPendingSpeech(pendingKey),
+				postThread: options.speechCoordination.postThread,
+			});
+		}
 	}
 
 	async start(): Promise<{ founderPresent: boolean }> {
@@ -371,6 +428,28 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 	}
 
 	async speak(speech: PreparedSpeech): Promise<SpeechReceipt> {
+		if (this.speechArbiter) {
+			this.coordinatedSpeech.set(speech.speechId, speech);
+			try {
+				const terminal = await this.speechArbiter.enqueue({
+					businessId: speech.speechId,
+					kind: "tell",
+					text: speech.spokenText,
+					threadText: speech.spokenText,
+				});
+				return terminal === "spoken"
+					? "confirmed"
+					: terminal === "fallback_posted"
+						? "unconfirmed"
+						: "failed";
+			} finally {
+				this.coordinatedSpeech.delete(speech.speechId);
+			}
+		}
+		return this.speakNow(speech);
+	}
+
+	private async speakNow(speech: PreparedSpeech): Promise<SpeechReceipt> {
 		if (this.pendingSpeech || this.stopping || !this.admitted || !this.live)
 			return "failed";
 		this.room.setWaiting?.(false);
@@ -396,6 +475,7 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 		this.stopping = true;
 		this.admitted = false;
 		this.frontendResponseActive = false;
+		this.speechArbiter?.close();
 		const pending = this.pendingSpeech;
 		if (pending) {
 			this.frontend.cancelSpeech(pending.speech.speechId);
@@ -532,6 +612,14 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 		this.pendingSpeech = undefined;
 		pending.resolve(status);
 		return true;
+	}
+
+	private cancelPendingSpeech(speechId: string): void {
+		const pending = this.pendingSpeech;
+		if (!pending || pending.speech.speechId !== speechId) return;
+		this.frontend.cancelSpeech(speechId);
+		this.room.cancelSpeech?.(speechId);
+		this.settleSpeech(speechId, "failed");
 	}
 
 	private status(text: string): void {

@@ -320,6 +320,47 @@ describe("Uplink", () => {
 		]);
 	});
 
+	it("keeps the local utterance id through an async VAD open and completion", async () => {
+		const decision = deferred<{ probability: number; next: unknown }>();
+		const ref: { uplink?: Uplink } = {};
+		const opened: Array<string | null> = [];
+		const summaries: Array<{ utteranceId: string | null }> = [];
+		const speechGate = new UplinkSpeechGate({
+			score: () => decision.promise,
+			initialState: () => ({}),
+			minSpeechMs: 32,
+			threshold: 0.5,
+			onOpened: ({ token }) =>
+				opened.push(ref.uplink?.utteranceIdForGateToken(token) ?? null),
+		});
+		const uplink = new Uplink({
+			appendAudio: () => "sent",
+			sessionGeneration: 1,
+			prebufferFrames: 1,
+			maxQueueFrames: 16,
+			createUtteranceId: () => "utterance-delayed",
+			record: () => {},
+			speechGate,
+			onGateSummary: (summary) => summaries.push(summary),
+		});
+		ref.uplink = uplink;
+		uplink.speakingStart("founder", true);
+		uplink.beginUtterance("gated", 0);
+		uplink.pushPcm48Stereo("founder", stereoFrame(2_000));
+		uplink.pushPcm48Stereo("founder", stereoFrame(2_000));
+		uplink.endUtterance(40);
+		uplink.speakingEnd("founder");
+
+		decision.resolve({ probability: 0.9, next: {} });
+		await settle();
+		uplink.tick();
+
+		expect(opened).toEqual(["utterance-delayed"]);
+		expect(summaries).toEqual([
+			expect.objectContaining({ utteranceId: "utterance-delayed" }),
+		]);
+	});
+
 	it("keeps first-speaker ownership until that speaker ends", () => {
 		const outcomes: string[] = [];
 		const sent: Buffer[] = [];

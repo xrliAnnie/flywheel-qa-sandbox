@@ -76,6 +76,9 @@ export interface DiscordVoiceRoomOptions {
 	founderUserId: string;
 	qaAllowUserIds: string[];
 	onAudio(frame: Buffer, metadata: RealtimeAudioOwner): void;
+	onLocalUtteranceStarted?(utteranceId: string): void;
+	onLocalUtteranceEnded?(utteranceId: string): void;
+	onRawVoiceActivity?(): void;
 	onFounderPresence(present: boolean): void;
 	onReceiveHealth?(snapshot: ReceiveHealth): void;
 	onError(error: Error): void;
@@ -173,6 +176,10 @@ export class DiscordVoiceRoom {
 			threshold: 0.5,
 			prerollMs: this.options.uplinkPrerollMs ?? DEFAULT_UPLINK_PREROLL_MS,
 			now: this.now,
+			onOpened: ({ token }) => {
+				const utteranceId = this.uplink?.utteranceIdForGateToken(token);
+				if (utteranceId) this.options.onLocalUtteranceStarted?.(utteranceId);
+			},
 			onDegraded: ({ reason, consecutive, sessionPermanent }) =>
 				this.options.onDiagnostic?.({
 					kind: "uplink_gate_degraded",
@@ -196,12 +203,16 @@ export class DiscordVoiceRoom {
 			maxQueueFrames: 100,
 			speechGate: gate,
 			now: this.now,
+			onVoiceFrame: () => this.options.onRawVoiceActivity?.(),
 			record: () => {},
-			onGateSummary: (summary) =>
+			onGateSummary: (summary) => {
 				this.options.onDiagnostic?.({
 					kind: "uplink_gate_utterance",
 					...summary,
-				}),
+				});
+				if (summary.opened && summary.utteranceId)
+					this.options.onLocalUtteranceEnded?.(summary.utteranceId);
+			},
 		});
 		await this.registry.start([{ id: "voice", token: this.options.token }]);
 		await this.checkActive(signal);

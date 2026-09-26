@@ -12,6 +12,9 @@ import { CodexVoiceContainerError } from "./CodexVoiceContainer.js";
 
 export interface CodexRoomFrontendHandlers {
 	onResponseState(active: boolean): void;
+	onProviderSpeechStarted?(input: { generation: number; itemId: string }): void;
+	onProviderSpeechStopped?(input: { generation: number; itemId: string }): void;
+	onGenerationChanged?(generation: number): void;
 	onTranscript(input: {
 		itemId: string;
 		contentIndex: number;
@@ -160,6 +163,15 @@ export class CodexRoomFrontend {
 	}
 
 	private bind(session: ConversationSession): void {
+		session.on("speech-started", (input) => {
+			if (input) this.handlers?.onProviderSpeechStarted?.(input);
+		});
+		session.on("speech-stopped", (input) => {
+			if (input) this.handlers?.onProviderSpeechStopped?.(input);
+		});
+		session.on("generation-changed", (generation) =>
+			this.handlers?.onGenerationChanged?.(generation),
+		);
 		session.on("response-started", () => this.handlers?.onResponseState(true));
 		session.on("response-done", () => this.handlers?.onResponseState(false));
 		session.on("response-cancelled", () =>

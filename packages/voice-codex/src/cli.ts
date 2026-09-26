@@ -600,6 +600,19 @@ export async function main(): Promise<void> {
 			postStatus: async (text) => {
 				await mirror.post(context.projection.threadId, text, discordNonce());
 			},
+			...(codexBackend && voiceBackground.enabled
+				? {
+						speechCoordination: {
+							postThread: async ({ text }: { text: string }) => {
+								await mirror.post(
+									context.projection.threadId,
+									text,
+									discordNonce(),
+								);
+							},
+						},
+					}
+				: {}),
 			finalize:
 				config.backendId === "codex-realtime"
 					? async (outcome) => {

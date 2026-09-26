@@ -222,8 +222,15 @@ describe("Codex room composition", () => {
 		const session = await actual.createConversation({ brain });
 		const utterances: unknown[] = [];
 		const errors: VoiceError[] = [];
+		const providerSpeech: unknown[] = [];
 		session.on("utterance", (value) => utterances.push(value));
 		session.on("error", (error) => errors.push(error));
+		session.on("speech-started", (value) =>
+			providerSpeech.push({ kind: "started", value }),
+		);
+		session.on("speech-stopped", (value) =>
+			providerSpeech.push({ kind: "stopped", value }),
+		);
 		session.sendAudio(Buffer.alloc(480), {
 			encoding: "pcm16",
 			sampleRateHz: 24_000,
@@ -233,6 +240,30 @@ describe("Codex room composition", () => {
 			ownerUserId: null,
 			utteranceId: null,
 		});
+		callbacks.onItem({
+			generation: 1,
+			itemId: "founder-speech",
+			role: "user",
+			status: "speech_started",
+			raw: {},
+		} as never);
+		callbacks.onItem({
+			generation: 1,
+			itemId: "founder-speech",
+			role: "user",
+			status: "completed",
+			raw: {},
+		} as never);
+		expect(providerSpeech).toEqual([
+			{
+				kind: "started",
+				value: { generation: 1, itemId: "founder-speech" },
+			},
+			{
+				kind: "stopped",
+				value: { generation: 1, itemId: "founder-speech" },
+			},
+		]);
 		const speechReceipt = session.speak!("你好", "readback", {
 			pendingKey: "speech-1",
 			verification: "required",

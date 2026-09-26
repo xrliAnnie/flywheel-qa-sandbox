@@ -88,6 +88,7 @@ function harness(generation = 7) {
 	const rpc = new FakeRpc();
 	const audio = vi.fn();
 	const transcript = vi.fn();
+	const items = vi.fn();
 	const gaps = vi.fn();
 	const violations = vi.fn();
 	const executionIntents = vi.fn();
@@ -110,6 +111,7 @@ function harness(generation = 7) {
 		},
 		onAudio: audio,
 		onTranscript: transcript,
+		onItem: items,
 		onInputGap: gaps,
 		onCapabilityViolation: violations,
 		onExecutionIntent: executionIntents,
@@ -122,6 +124,7 @@ function harness(generation = 7) {
 		transport,
 		audio,
 		transcript,
+		items,
 		gaps,
 		violations,
 		executionIntents,
@@ -413,6 +416,22 @@ describe("Codex V2 realtime transport", () => {
 			itemId: "item-founder",
 			role: "user",
 			text: "请把这件事交给本体",
+		});
+		expect(h.items).toHaveBeenNthCalledWith(1, {
+			generation: 7,
+			itemId: "item-founder",
+			role: "user",
+			status: "speech_started",
+			raw: expect.objectContaining({
+				type: "input_audio_buffer.speech_started",
+			}),
+		});
+		expect(h.items).toHaveBeenNthCalledWith(2, {
+			generation: 7,
+			itemId: "item-founder",
+			role: "user",
+			status: "completed",
+			raw: expect.objectContaining({ status: "completed" }),
 		});
 
 		expect(h.transcript).toHaveBeenLastCalledWith(

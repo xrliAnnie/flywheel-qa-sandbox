@@ -354,6 +354,7 @@ class CodexVoiceSession implements ConversationSession {
 			.then((generation) => {
 				if (this.closing) return;
 				this.generation = generation;
+				this.events.emit("generation-changed", generation);
 				this.restarting = false;
 				this.flushRestartAudio();
 			})
@@ -418,6 +419,16 @@ class CodexVoiceSession implements ConversationSession {
 				this.outputStarted.add(item.itemId);
 				this.events.emit("response-started");
 			}
+		} else if (item.status === "speech_started") {
+			this.events.emit("speech-started", {
+				generation: item.generation,
+				itemId: item.itemId,
+			});
+		} else if (item.status === "completed") {
+			this.events.emit("speech-stopped", {
+				generation: item.generation,
+				itemId: item.itemId,
+			});
 		}
 	}
 

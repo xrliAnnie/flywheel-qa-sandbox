@@ -37,13 +37,17 @@ function userTranscript(text: string) {
 function fixture(options?: {
 	founderPresent?: boolean;
 	playSpeech?: (speechId: string, pcm: Buffer) => Promise<void>;
+	appendSpeech?: () => Promise<
+		"confirmed" | "unconfirmed" | "failed" | undefined
+	>;
+	coordinatedSpeech?: boolean;
 }) {
 	let frontendHandlers!: FrontendHandlers;
 	let roomHandlers!: RoomHandlers;
 	const frontend = {
 		start: vi.fn(async () => {}),
 		appendAudio: vi.fn(),
-		appendSpeech: vi.fn(async () => {}),
+		appendSpeech: vi.fn(options?.appendSpeech ?? (async () => {})),
 		cancelSpeech: vi.fn(),
 		stop: vi.fn(async () => {}),
 	};
@@ -62,6 +66,7 @@ function fixture(options?: {
 	const delivery = { capture: vi.fn(async () => true) };
 	const lifecycle = vi.fn(async () => {});
 	const evidence = vi.fn();
+	const postThread = vi.fn(async () => undefined);
 	const session = new GenericVoiceSession({
 		projection,
 		delivery,
@@ -76,6 +81,9 @@ function fixture(options?: {
 		lifecycle,
 		evidence,
 		confirmationMs: 100,
+		...(options?.coordinatedSpeech
+			? { speechCoordination: { postThread } }
+			: {}),
 	});
 	return {
 		session,
@@ -84,12 +92,46 @@ function fixture(options?: {
 		delivery,
 		lifecycle,
 		evidence,
+		postThread,
 		getFrontendHandlers: () => frontendHandlers,
 		getRoomHandlers: () => roomHandlers,
 	};
 }
 
 describe("GenericVoiceSession", () => {
+	it("holds coordinated speech until local VAD has been idle for 800ms", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		try {
+			const test = fixture({
+				coordinatedSpeech: true,
+				appendSpeech: async () => "confirmed",
+			});
+			await test.session.start();
+			await test.session.markLive();
+			const speech = prepareReplySpeech("FLY-2886 已查到。", 80)[0]!;
+
+			test.getRoomHandlers().onLocalUtteranceStarted?.("founder-1");
+			const result = test.session.speak(speech);
+			await vi.advanceTimersByTimeAsync(5_000);
+			expect(test.frontend.appendSpeech).not.toHaveBeenCalled();
+
+			test.getRoomHandlers().onLocalUtteranceEnded?.("founder-1");
+			await vi.advanceTimersByTimeAsync(799);
+			expect(test.frontend.appendSpeech).not.toHaveBeenCalled();
+			await vi.advanceTimersByTimeAsync(1);
+			expect(test.frontend.appendSpeech).toHaveBeenCalledWith(
+				expect.objectContaining({
+					speechId: `${speech.speechId}:attempt:0`,
+					spokenText: speech.spokenText,
+				}),
+			);
+			await expect(result).resolves.toBe("confirmed");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("routes an audio-attributed final exactly once with a deterministic transcript id", async () => {
 		const test = fixture();
 		await test.session.start();

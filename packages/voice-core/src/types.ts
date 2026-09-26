@@ -269,8 +269,9 @@ export interface AnnouncerSession {
 }
 
 export type ConversationEventMap = {
-	"speech-started": [];
-	"speech-stopped": [];
+	"speech-started": [input?: { generation: number; itemId: string }];
+	"speech-stopped": [input?: { generation: number; itemId: string }];
+	"generation-changed": [generation: number];
 	/** FLY-1065: final:true events are TURN-LEVEL aggregates (full turn text,
 	 * scrubbed); final:false stays the raw fragment passthrough. `interrupted`
 	 * marks an assistant turn flushed half-said by a barge-in / manual

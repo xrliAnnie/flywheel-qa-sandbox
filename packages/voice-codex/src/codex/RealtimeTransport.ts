@@ -499,6 +499,13 @@ export class CodexRealtimeTransport {
 				this.activeInputItemId = item.item_id;
 				this.openSpeechItemId = item.item_id;
 				this.inputOwnershipByItem.set(item.item_id, this.inputOwnership);
+				this.options.onItem?.({
+					generation: this.options.generation,
+					itemId: item.item_id,
+					role: "user",
+					status: "speech_started",
+					raw: item,
+				});
 				return;
 			}
 			if (
