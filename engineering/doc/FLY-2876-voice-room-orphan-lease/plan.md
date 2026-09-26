@@ -1,7 +1,13 @@
 # FLY-2876 同 slot 孤儿语音房锁 start 自愈 — 实施计划
 Issue: FLY-2876 (https://linear.app/geoforge3d/issue/FLY-2876/病根529-语音房-语音会话自然结束-测试房被拆后语音房锁-tmpflywheel-voice-room-guild-channellock)
-日期: 2026-09-25
-基于: 无（上游设计为 engineering/doc/FLY-2867-extra-lead-inbox-lease/plan.md 部件 C；范围由 Lead 2026-09-25 裁定选项 B）
+日期: 2026-09-26（首版 2026-09-25）
+基于: research.md（上游事实以 #1323 已合入代码为准；范围由 Lead 2026-09-25 裁定选项 B）
+
+## 设计节点重派现状（2026-09-26）
+
+本计划在 eng_design 节点重派时重新审计：exploration.md 比较了 4 个方案并推荐方案 A（即本计划），research.md 逐函数核对了分支上的候选实现与本计划的对应关系，
+并复跑 `node --test scripts/__tests__/fly2655-voice-room.test.mjs` 24/24、kill-path 守卫 5/5。本节点不改代码、不动 PR；
+下文各节是经 Codex 代码评审 R1–R3 修订后的设计本体，作为 design_review gate 的评审对象。
 
 ## 背景与范围
 

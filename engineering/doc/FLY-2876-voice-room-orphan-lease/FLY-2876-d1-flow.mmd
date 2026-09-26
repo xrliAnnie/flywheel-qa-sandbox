@@ -1,0 +1,13 @@
+flowchart TD
+  S["start 请求建锁"] --> R{"本 slot 回执<br/>voice-run-receipt.json<br/>是否仍未 STOPPED?"}
+  R -->|"是（含读不了）"| K1["created:false<br/>先跑一次幂等 stop"]
+  R -->|"否（缺失或 STOPPED）"| M["mkdir 锁目录"]
+  M -->|"成功"| N["写 owner.json：<br/>slotDir · leaseId · holder(pid+身份)"] --> OK["created:true<br/>启动 daemon"]
+  M -->|"EEXIST 已有锁"| O{"owner.slotDir<br/>== 本 slot?"}
+  O -->|"否"| F["#1323 原规则：<br/>owner 的 slot 目录已消失<br/>且无存活 daemon 才回收"]
+  F -->|"不满足"| C["voice_room_lease_conflict"]
+  F -->|"满足"| T
+  O -->|"是"| A{"holder 活? 或 daemon 活?<br/>或 回执未 STOPPED?"}
+  A -->|"任一为真"| K2["created:false<br/>voice_room_lease_already_owned"]
+  A -->|"三者都不活 = 孤儿"| T["rename → 墓碑 →<br/>复核仍孤儿 → 删除"]
+  T --> M

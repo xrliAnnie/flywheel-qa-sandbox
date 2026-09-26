@@ -1,0 +1,13 @@
+sequenceDiagram
+  participant A as 旧 run 的 stop（代次 A）
+  participant FS as 文件系统（锁 + 回执）
+  participant B as 新 start（代次 B）
+  A->>FS: 读回执（STARTED, leaseId=A）
+  Note over B,FS: 回执仍是 STARTED ⇒ 算活
+  B->>FS: acquire：回执未 STOPPED ⇒ created:false
+  Note over B: 结构上不可能在进行中的 stop 底下回收
+  A->>FS: 释放锁（leaseId==A 才删）
+  A->>FS: 重读回执，仍是 A ⇒ 写 STOPPED
+  B->>FS: 下一次 acquire：回执 STOPPED，无锁 ⇒ mkdir 成功
+  B->>FS: owner.json leaseId=B, holder=B
+  Note over A,B: 若旧 stop 被重放：leaseId≠B 不删锁，回执归属≠A 不覆盖

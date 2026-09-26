@@ -1,0 +1,27 @@
+classDiagram
+  class LeaseDir {
+    路径 /tmp/flywheel-voice-room-guild-channel.lock/
+    mkdir 原子创建
+  }
+  class OwnerJson {
+    schemaVersion 1
+    slotDir 本 slot 目录
+    leaseId 代次 UUID
+    holder pid + 进程身份（执行 start 的 CLI）
+    daemon pid + 进程身份（语音 daemon，启动后追加）
+  }
+  class RunReceipt {
+    路径 slotDir/voice-run-receipt.json
+    status STARTED 或 STOPPED
+    sessionId
+    leaseId 与锁配对
+    pid + 进程身份
+  }
+  class StopSettle {
+    releaseVoiceRoomLease 仅同 leaseId
+    重读回执 sessionId+leaseId 仍是本 run 才写 STOPPED
+  }
+  LeaseDir "1" *-- "1" OwnerJson : 目录内
+  OwnerJson "1" .. "0..1" RunReceipt : leaseId 配对
+  StopSettle ..> OwnerJson : 按代次释放
+  StopSettle ..> RunReceipt : 归属检查后写 STOPPED
