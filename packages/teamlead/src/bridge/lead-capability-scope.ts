@@ -115,7 +115,9 @@ export function captureLeadCapabilityScope(options: {
 		if (
 			!session ||
 			session.projectName !== options.projectName ||
-			session.leadId !== options.leadId
+			session.leadId !== options.leadId ||
+			// FLY-2886 §14.2: a degraded session holds no Lead authority.
+			session.backgroundState === "degraded"
 		)
 			throw options.denied();
 		return JSON.stringify({

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import express, { type RequestHandler } from "express";
 import { parseReceiveHealth, type ReceiveHealth } from "flywheel-voice-core";
+import { isVoiceBackgroundDegradedReason } from "../lead-capabilities/voice-background-degraded.js";
 import type {
 	StateStore,
 	VoiceCredentialTier,
@@ -432,6 +433,42 @@ export function createVoiceSessionRouter(
 					: "context_state_unavailable";
 			res.status(503).json({ error: "voice_unavailable", reason });
 		}
+	});
+
+	// FLY-2886 §14.2: the daemon could not admit the session's background; the
+	// session continues foreground-only. One way; the first reason is kept.
+	router.post("/:sessionId/background-degraded", masterOnly(), (req, res) => {
+		const body = req.body as Record<string, unknown> | undefined;
+		if (
+			!body ||
+			typeof body !== "object" ||
+			Array.isArray(body) ||
+			Object.keys(body).length !== 1 ||
+			!isVoiceBackgroundDegradedReason(body.reason)
+		) {
+			res.status(400).json({ error: "voice_background_degraded_invalid" });
+			return;
+		}
+		const sessionId = param(req.params.sessionId);
+		const status = deps.store.markVoiceBackgroundDegraded({
+			sessionId,
+			leaseToken: lease(req),
+			reason: body.reason,
+			now: now(),
+		});
+		if (status === "lease_conflict") {
+			res.status(409).json(LEASE_CONFLICT);
+			return;
+		}
+		if (status === "invalid") {
+			res.status(400).json({ error: "voice_background_degraded_invalid" });
+			return;
+		}
+		res.json({
+			status,
+			backgroundState: "degraded",
+			reason: deps.store.getVoiceSession(sessionId)?.backgroundDegradedReason,
+		});
 	});
 
 	router.post("/:sessionId/utterances", masterOnly(), (req, res) => {

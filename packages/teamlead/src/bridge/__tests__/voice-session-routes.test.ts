@@ -957,3 +957,94 @@ describe("voice transcript mirror receipts (FLY-2799 qa6)", () => {
 		).toMatchObject({ status: 409 });
 	});
 });
+
+describe("voice background degraded receipt (FLY-2886 §14.2)", () => {
+	async function claimed() {
+		const { base } = await start();
+		await call(base, "", {
+			method: "POST",
+			token: INGEST,
+			body: { meetingId: "20000000-0000-4000-8000-000000000001" },
+		});
+		const claim = await call(base, `/${SESSION_ID}/claim`, {
+			method: "POST",
+			token: MASTER,
+			body: { daemonBootId: "boot-a" },
+		});
+		return {
+			base,
+			leaseToken: (claim.body as { leaseToken: string }).leaseToken,
+		};
+	}
+
+	it("records degraded once, master tier and live lease only, strict body", async () => {
+		const { base, leaseToken } = await claimed();
+		const path = `/${SESSION_ID}/background-degraded`;
+		expect(
+			await call(base, path, {
+				method: "POST",
+				token: INGEST,
+				lease: leaseToken,
+				body: { reason: "admission_timeout" },
+			}),
+		).toMatchObject({ status: 403 });
+		for (const body of [
+			{},
+			{ reason: "made_up" },
+			{ reason: "admission_timeout", detail: "raw error text" },
+			["admission_timeout"],
+		])
+			expect(
+				await call(base, path, {
+					method: "POST",
+					token: MASTER,
+					lease: leaseToken,
+					body,
+				}),
+			).toMatchObject({
+				status: 400,
+				body: { error: "voice_background_degraded_invalid" },
+			});
+		expect(
+			await call(base, path, {
+				method: "POST",
+				token: MASTER,
+				lease: "stale-lease",
+				body: { reason: "admission_timeout" },
+			}),
+		).toMatchObject({ status: 409, body: { error: "voice_lease_conflict" } });
+		expect(store.getVoiceSession(SESSION_ID)?.backgroundState).toBe(
+			"configured",
+		);
+		expect(
+			await call(base, path, {
+				method: "POST",
+				token: MASTER,
+				lease: leaseToken,
+				body: { reason: "model_isolation_unproven" },
+			}),
+		).toEqual({
+			status: 200,
+			body: {
+				status: "recorded",
+				backgroundState: "degraded",
+				reason: "model_isolation_unproven",
+			},
+		});
+		expect(
+			await call(base, path, {
+				method: "POST",
+				token: MASTER,
+				lease: leaseToken,
+				body: { reason: "admission_timeout" },
+			}),
+		).toEqual({
+			status: 200,
+			body: {
+				status: "replayed",
+				backgroundState: "degraded",
+				reason: "model_isolation_unproven",
+			},
+		});
+	});
+});

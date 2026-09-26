@@ -324,6 +324,10 @@ import {
 	WorkflowEngineInvariantError,
 } from "./workflow-engine-invariant.js";
 import { credentialWindowForNode } from "./workflow-submission-expiry.js";
+import {
+	isVoiceBackgroundDegradedReason,
+	type VoiceBackgroundDegradedReason,
+} from "./lead-capabilities/voice-background-degraded.js";
 
 export class Fly2121PreservedTemplateUnrunnableError extends Error {
 	readonly code = "FLY2121_PRESERVED_TEMPLATE_UNRUNNABLE" as const;
@@ -2787,6 +2791,10 @@ export interface VoiceSessionRow {
 	contextRing: VoiceContextRingEntry[];
 	contextRingRevision: number;
 	contextPromptGeneration: number | null;
+	/** FLY-2886 §14.2: one-way; degraded means foreground-only for this session. */
+	backgroundState: "configured" | "degraded";
+	backgroundDegradedReason: VoiceBackgroundDegradedReason | null;
+	backgroundDegradedAt: string | null;
 	scheduleId: string | null;
 	scheduleRevision: number | null;
 	notBeforeLiveAt: string | null;
@@ -3913,6 +3921,15 @@ export class StateStore {
 				row.context_prompt_generation == null
 					? null
 					: Number(row.context_prompt_generation),
+			backgroundState:
+				row.background_state === "degraded" ? "degraded" : "configured",
+			backgroundDegradedReason: isVoiceBackgroundDegradedReason(
+				row.background_degraded_reason,
+			)
+				? row.background_degraded_reason
+				: null,
+			backgroundDegradedAt:
+				(row.background_degraded_at as string | null) ?? null,
 			scheduleId: (row.schedule_id as string | null) ?? null,
 			scheduleRevision:
 				row.schedule_revision == null ? null : Number(row.schedule_revision),
@@ -6916,6 +6933,44 @@ export class StateStore {
 		return result.value;
 	}
 
+	/**
+	 * FLY-2886 §14.2: the daemon could not admit this session's background. One
+	 * way for the session's lifetime; a repeat keeps the first reason.
+	 */
+	markVoiceBackgroundDegraded(input: {
+		sessionId: string;
+		leaseToken: string;
+		reason: VoiceBackgroundDegradedReason;
+		now: string;
+	}): "recorded" | "replayed" | "lease_conflict" | "invalid" {
+		if (!isVoiceBackgroundDegradedReason(input.reason)) return "invalid";
+		const result: { value: "recorded" | "replayed" | "lease_conflict" } = {
+			value: "lease_conflict",
+		};
+		this.db.transaction(() => {
+			const session = this.getActiveVoiceLease(
+				input.sessionId,
+				input.leaseToken,
+				input.now,
+			);
+			if (!session) return;
+			if (session.backgroundState === "degraded") {
+				result.value = "replayed";
+				return;
+			}
+			this.db.run(
+				`UPDATE voice_sessions
+				 SET background_state = 'degraded', background_degraded_reason = ?,
+				     background_degraded_at = ?, updated_at = ?
+				 WHERE session_id = ? AND background_state = 'configured'`,
+				[input.reason, input.now, input.now, input.sessionId],
+			);
+			result.value = "recorded";
+		});
+		if (result.value === "recorded") this.save();
+		return result.value;
+	}
+
 	recordVoiceBackgroundEvent(input: {
 		sessionId: string;
 		leaseToken: string;
@@ -6925,7 +6980,13 @@ export class StateStore {
 		tokenCount: number;
 		observedAt: string;
 		now: string;
-	}): "recorded" | "replayed" | "already_briefed" | "lease_conflict" | "invalid" {
+	}):
+		| "recorded"
+		| "replayed"
+		| "already_briefed"
+		| "lease_conflict"
+		| "invalid"
+		| "degraded" {
 		const key = input.key.trim();
 		const text = input.text.trim();
 		if (
@@ -6941,7 +7002,12 @@ export class StateStore {
 		)
 			return "invalid";
 		const result: {
-			value: "recorded" | "replayed" | "already_briefed" | "lease_conflict";
+			value:
+				| "recorded"
+				| "replayed"
+				| "already_briefed"
+				| "lease_conflict"
+				| "degraded";
 		} = { value: "lease_conflict" };
 		this.db.transaction(() => {
 			const session = this.getActiveVoiceLease(
@@ -6950,6 +7016,10 @@ export class StateStore {
 				input.now,
 			);
 			if (!session) return;
+			if (session.backgroundState === "degraded") {
+				result.value = "degraded";
+				return;
+			}
 			if (session.briefKeys.includes(key)) {
 				result.value = "already_briefed";
 				return;
@@ -11966,6 +12036,18 @@ export class StateStore {
 			"context_prompt_generation",
 			"INTEGER",
 		);
+		// FLY-2886 §14.2: background admission outcome; only ever moves to degraded.
+		this.addColumnIfMissing(
+			"voice_sessions",
+			"background_state",
+			"TEXT NOT NULL DEFAULT 'configured' CHECK(background_state IN ('configured','degraded'))",
+		);
+		this.addColumnIfMissing(
+			"voice_sessions",
+			"background_degraded_reason",
+			"TEXT",
+		);
+		this.addColumnIfMissing("voice_sessions", "background_degraded_at", "TEXT");
 		// A legacy unknown root must never receive a fresh deduplication window.
 		this.db.run(
 			"UPDATE voice_sessions SET root_requested_at = created_at WHERE provisioning_step = 'root_requested' AND root_requested_at IS NULL",

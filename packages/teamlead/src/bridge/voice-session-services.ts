@@ -307,7 +307,14 @@ export function createVoiceSessionServices(input: {
 			lead,
 			binding,
 		});
-		const background = effectiveVoiceBackground(lead);
+		const configured = effectiveVoiceBackground(lead);
+		// FLY-2886 §14.2: the daemon could not admit this session's background, so
+		// it gets the foreground (background-off) context plus one fixed line.
+		const degraded =
+			configured.enabled && session.backgroundState === "degraded";
+		const background = degraded
+			? { ...configured, enabled: false as const }
+			: configured;
 		let stateUnavailable = false;
 		const state: LeadBootstrap = await generateBootstrap(
 			lead.agentId,
@@ -366,6 +373,14 @@ export function createVoiceSessionServices(input: {
 				topic: session.topic,
 				priorMinutes: null,
 			},
+			...(degraded && session.backgroundDegradedReason
+				? {
+						backgroundDegraded: {
+							displayName: lead.cosContext?.displayName ?? lead.agentId,
+							reason: session.backgroundDegradedReason,
+						},
+					}
+				: {}),
 			...(background.enabled
 				? {
 						voiceBackground: {
@@ -486,9 +501,12 @@ export function createVoiceSessionServices(input: {
 			});
 			const background = effectiveVoiceBackground(lead);
 			const pollAt = new Date().toISOString();
+			// A degraded session has no background agenda or context ring.
+			const backgroundActive =
+				background.enabled && session.backgroundState !== "degraded";
 			const pollAtMs = Date.parse(pollAt);
 			if (
-				background.enabled &&
+				backgroundActive &&
 				pollAtMs >= (backgroundPollAfter.get(session.sessionId) ?? 0)
 			) {
 				backgroundPollAfter.set(session.sessionId, pollAtMs + 10_000);
@@ -620,7 +638,11 @@ export function createVoiceSessionServices(input: {
 			getSessionContext,
 			getCurrentTellKeys: (session) => {
 				const { project, lead } = resolve(session);
-				if (!effectiveVoiceBackground(lead).enabled) return [];
+				if (
+					!effectiveVoiceBackground(lead).enabled ||
+					session.backgroundState === "degraded"
+				)
+					return [];
 				const now = new Date().toISOString();
 				const attention = (
 					input.readFounderAttention ?? readFounderAttentionFacts

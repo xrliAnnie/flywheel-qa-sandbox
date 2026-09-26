@@ -127,6 +127,44 @@ describe("voice session capability scope", () => {
 		}
 	});
 
+	it("revokes voice authority once the session's background is degraded (FLY-2886 §14.2)", async () => {
+		const f = await fixture();
+		try {
+			const capture = () =>
+				captureLeadCapabilityScope({
+					projectsPath: f.projectsPath,
+					homeDir: f.root,
+					projectName: "flywheel",
+					leadId: "eng",
+					identityDigest: f.identity.identityDigest,
+					authority: {
+						kind: "voice_session",
+						sessionId: SESSION_ID,
+						leaseFence: f.claim.leaseToken,
+					},
+					stateStore: f.store,
+					now: () => T0,
+					denied: () => new Error("denied"),
+				});
+			// In flight: the final re-check before a side effect refuses.
+			const scope = capture();
+			expect(() => scope.assertSourceCurrent()).not.toThrow();
+			expect(
+				f.store.markVoiceBackgroundDegraded({
+					sessionId: SESSION_ID,
+					leaseToken: f.claim.leaseToken,
+					reason: "capability_process_failed",
+					now: T0,
+				}),
+			).toBe("recorded");
+			expect(() => scope.assertSourceCurrent()).toThrow("denied");
+			// Afterwards: no new voice-authorized request is admitted at all.
+			expect(capture).toThrow("denied");
+		} finally {
+			f.store.close();
+		}
+	});
+
 	it("accepts a current Claude Lead voice lease and revokes on config drift", async () => {
 		const f = await fixture();
 		try {

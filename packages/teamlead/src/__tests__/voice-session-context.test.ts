@@ -472,6 +472,43 @@ describe("voice session context assembly", () => {
 		}
 	});
 
+	it("a degraded session gets the foreground context plus one fixed line (FLY-2886 §14.2)", () => {
+		const input = {
+			sources: sources(
+				"# Raya\n## Style\n直接。",
+				"# Memory index\n- FLY-2886",
+			),
+			rosterDigest: "c".repeat(64),
+			leaseBindingDigest: "d".repeat(64),
+			capturedAt: "2026-09-23T09:00:00.000Z",
+			openInitiatedAt: "2026-09-23T09:00:00.000Z",
+			state,
+			session: {
+				sessionId: "session-1",
+				mode: "meeting" as const,
+				guildId: "100000000000000001",
+				voiceChannelId: "100000000000000002",
+			},
+		};
+		const plain = buildVoiceSessionContext(input);
+		const degraded = buildVoiceSessionContext({
+			...input,
+			backgroundDegraded: {
+				displayName: "Raya",
+				reason: "model_isolation_unproven",
+			},
+		});
+		const line =
+			"这场后台没接上（沙箱隔离没证明）。我能聊天、回答简报里已有的信息；要查或要动手的事我转给 Raya，不说自己能查。";
+		expect(degraded.baseInstructions.endsWith(line)).toBe(true);
+		expect(degraded.realtimePrompt.startsWith(degraded.baseInstructions)).toBe(
+			true,
+		);
+		expect(plain.baseInstructions).not.toContain("这场后台没接上");
+		expect(degraded.snapshotDigest).not.toBe(plain.snapshotDigest);
+		expect(degraded.contextGeneration).toBeUndefined();
+	});
+
 	it("accepts exactly 60 seconds old, rejects stale snapshots, and never truncates over budget", () => {
 		expect(() =>
 			buildVoiceSessionContext({

@@ -564,3 +564,99 @@ it.each(["provisioning", "desired", "claimed", "warming", "live", "ending"])(
 		expect(fetchImpl).not.toHaveBeenCalled();
 	},
 );
+
+it("a degraded session gets the foreground context, no background agenda and no tells (FLY-2886 §14.2)", async () => {
+	const identityPath = join(root, "identity.md");
+	writeFileSync(identityPath, "# Lead A\n## Speaking style\n简短。");
+	const now = new Date().toISOString();
+	store.updateVoiceProvisioning({
+		sessionId: SESSION_ID,
+		expectedStep: "reserved",
+		nextStep: "done",
+		nextState: "desired",
+		rootMessageId: "100000000000000011",
+		threadId: "100000000000000011",
+		updatedAt: now,
+	});
+	const claim = store.claimVoiceSession({
+		sessionId: SESSION_ID,
+		daemonBootId: "boot-degraded",
+		now,
+		leaseTtlMs: 60_000,
+	})!;
+	store.upsertSession({
+		execution_id: "exec-failed",
+		project_name: "flywheel",
+		issue_id: "issue-2799",
+		issue_identifier: "FLY-2799",
+		issue_labels: '["Voice"]',
+		status: "failed",
+		last_error: "PR #1306 failed",
+		last_activity_at: now,
+	});
+	const project = configuredProject();
+	project.leads[0]!.match = { labels: ["Voice"] };
+	Object.assign(project.leads[0]!, {
+		voiceBackground: { enabled: true, browser: "founder_chrome" },
+		cosContext: {
+			displayName: "Lead A",
+			aliases: [],
+			workingSubdirectory: ".",
+			identityPath,
+			memoryPaths: [],
+			writableRoots: [root],
+		},
+	});
+	const readFounderAttention = vi.fn(() => ({
+		available: true,
+		pending: [],
+	}));
+	const factory = vi.spyOn(routes, "createVoiceSessionRouter");
+	const { runtime } = createVoiceSessionServices({
+		probeSelfFilter: validProbe,
+		store,
+		projects: [project],
+		env: { LEAD_TOKEN: "test-token" },
+		homeDir: root,
+		cwd: root,
+		config: { discordOwnerUserId: "founder" } as BridgeConfig,
+		fetchImpl: vi.fn(),
+		readFounderAttention: readFounderAttention as never,
+	});
+	expect(
+		store.markVoiceBackgroundDegraded({
+			sessionId: SESSION_ID,
+			leaseToken: claim.leaseToken,
+			reason: "model_isolation_unproven",
+			now,
+		}),
+	).toBe("recorded");
+	const deps = factory.mock.calls[0]![0];
+	const context = await deps.getSessionContext!(
+		store.getVoiceSession(SESSION_ID)!,
+		{
+			leaseBindingDigest: "d".repeat(64),
+			leaseToken: claim.leaseToken,
+			requestedAt: now,
+		},
+	);
+	expect(context.contextGeneration).toBeUndefined();
+	expect(String(context.baseInstructions)).toContain(
+		"这场后台没接上（沙箱隔离没证明）。我能聊天、回答简报里已有的信息；要查或要动手的事我转给 Lead A，不说自己能查。",
+	);
+	expect(
+		String(context.realtimePrompt).startsWith(String(context.baseInstructions)),
+	).toBe(true);
+	expect(store.getVoiceSession(SESSION_ID)).toMatchObject({
+		briefKeys: [],
+		contextPromptGeneration: null,
+	});
+	expect(
+		await deps.getCurrentTellKeys!(store.getVoiceSession(SESSION_ID)!),
+	).toEqual([]);
+	await runtime.tick();
+	expect(store.listVoiceOutbound(SESSION_ID, claim.leaseToken, now)).toEqual(
+		[],
+	);
+	expect(readFounderAttention).not.toHaveBeenCalled();
+});

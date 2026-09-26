@@ -3,6 +3,10 @@ import { lstat, readFile, realpath } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { getEncoding } from "js-tiktoken";
 import { parseDocument } from "yaml";
+import {
+	VOICE_BACKGROUND_DEGRADED_REASON_TEXT,
+	type VoiceBackgroundDegradedReason,
+} from "../lead-capabilities/voice-background-degraded.js";
 import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
 import { formatBootstrap } from "./bootstrap-format.js";
 import type { LeadBootstrap } from "./lead-runtime.js";
@@ -705,6 +709,15 @@ export function buildVoiceSessionContext(input: {
 		customContext?: string | null;
 	};
 	voiceBackground?: VoiceBackgroundContext;
+	/**
+	 * FLY-2886 §14.2: the daemon could not admit this session's background. The
+	 * foreground context is built as for a background-off session plus one fixed
+	 * line; the reason is mapped to fixed words, never raw text.
+	 */
+	backgroundDegraded?: {
+		displayName: string;
+		reason: VoiceBackgroundDegradedReason;
+	};
 	countTokens?: (value: string) => number;
 }) {
 	const capturedAt = Date.parse(input.capturedAt);
@@ -728,7 +741,7 @@ export function buildVoiceSessionContext(input: {
 		});
 	}
 	const countTokens = input.countTokens ?? defaultCountTokens;
-	if (input.voiceBackground?.enabled) {
+	if (input.voiceBackground?.enabled && !input.backgroundDegraded) {
 		const enabled = buildEnabledVoiceContext({
 			...input,
 			voiceBackground: input.voiceBackground,
@@ -803,6 +816,12 @@ export function buildVoiceSessionContext(input: {
 		canonical(meetingContext),
 		"# Exit rules",
 		"End when the room session ends. Do not resume this thread later. Return minutes and any requested action as a handoff to the resident Lead; do not perform the action here.",
+		...(input.backgroundDegraded
+			? [
+					"# 语音后台",
+					`这场后台没接上（${VOICE_BACKGROUND_DEGRADED_REASON_TEXT[input.backgroundDegraded.reason] ?? "后台启动失败"}）。我能聊天、回答简报里已有的信息；要查或要动手的事我转给 ${input.backgroundDegraded.displayName}，不说自己能查。`,
+				]
+			: []),
 	].join("\n\n");
 	const snapshotDigest = sha256(
 		canonical({
