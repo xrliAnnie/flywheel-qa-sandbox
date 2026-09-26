@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "execution_process_owner",
+	"classification": "protectedCurrentOrReference"
+}

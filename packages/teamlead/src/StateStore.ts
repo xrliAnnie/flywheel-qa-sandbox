@@ -16,6 +16,7 @@ import {
 } from "./bridge/summary-presentation-store.js";
 import { SUMMARY_ACTIVITY_NOISE_EVENT_TYPES } from "./bridge/summary-activity-probe.js";
 import { CodexTerminalCloseStore } from "./bridge/codex-terminal-close-ledger.js";
+import { ExecutionProcessOwnerStore } from "./bridge/execution-process-owner.js";
 import { readEpicIntakeRefreshState, recordEpicIntakeRefreshResult, readEpicIntake, migrateEpicIntakes, hasEpicDispatchRecord, recordEpicIntake, beginEpicIntakeScan, completeEpicIntakeScan, type EpicIntakeScan, type EpicIntakeInput, type EpicIntakeRecord } from "./bridge/epic-intake-store.js";
 import {
 	assertPercentageModelAssignment,
@@ -3257,6 +3258,10 @@ export class StateStore {
 			};
 		}
 		return this.codexTerminalCloseStoreCache.store;
+	}
+	/** FLY-2919: persistent physical owner identity and spawn fencing. */
+	get executionProcessOwners(): ExecutionProcessOwnerStore {
+		return new ExecutionProcessOwnerStore(this.db.raw, this);
 	}
 	/** FLY-2903: run `fn` in one transaction on this store's connection. */
 	runInTransaction(fn: () => void): void {
@@ -10946,6 +10951,7 @@ export class StateStore {
 		);
 		this.summaryPresentations.migrate();
 		this.codexTerminalClose.migrate();
+		this.executionProcessOwners.migrate();
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS patrol_orphan_watch (
 				target TEXT PRIMARY KEY,

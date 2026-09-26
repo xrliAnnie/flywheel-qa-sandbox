@@ -5,6 +5,46 @@ import {
 } from "../src/codex-execution-ownership.js";
 
 describe("CodexExecutionOwnershipRegistry", () => {
+	it("FLY-2919: exposes the same controlled owner token to the durable store and stop lease", async () => {
+		const registry = new CodexExecutionOwnershipRegistry();
+		const first = registry.claim("exec-1", "dispatch", {
+			ownerToken: "durable-owner-1",
+		});
+		expect(first?.ownerToken).toBe("durable-owner-1");
+		const stopped = registry.requestStop("exec-1", "process_retirement");
+		first?.release();
+		await expect(stopped).resolves.toBe("stopped");
+		const next = registry.claim("exec-1", "rescue", {
+			ownerToken: "durable-owner-2",
+		});
+		expect(next?.ownerToken).toBe("durable-owner-2");
+		first?.release();
+		expect(registry.ownershipState("exec-1")).toBe("active");
+		next?.release();
+	});
+
+	it.each(["", "x".repeat(257), "owner\nforeign"])(
+		"FLY-2919: invalid owner token cannot consume a reservation",
+		(ownerToken) => {
+			const registry = new CodexExecutionOwnershipRegistry();
+			registry.reserve("exec-1");
+			expect(
+				registry.claim("exec-1", "dispatch", { ownerToken }),
+			).toBeUndefined();
+			expect(registry.ownershipState("exec-1")).toBe("reserved");
+		},
+	);
+
+	it("FLY-2919: legacy claims still receive unique exposed tokens", () => {
+		const registry = new CodexExecutionOwnershipRegistry();
+		const first = registry.claim("exec-1", "dispatch");
+		expect(first?.ownerToken).toEqual(expect.any(String));
+		first?.release();
+		const second = registry.claim("exec-1", "rescue");
+		expect(second?.ownerToken).not.toBe(first?.ownerToken);
+		second?.release();
+	});
+
 	it("FLY-2211: reservation makes a dispatch visible as owned before adapter activation", () => {
 		const registry = new CodexExecutionOwnershipRegistry();
 

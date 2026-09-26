@@ -36,12 +36,16 @@ const DEFAULT_STOP_MARK_LIMIT = 2048;
 export interface CodexExecutionOwnershipLease {
 	readonly executionId: string;
 	readonly kind: CodexExecutionOwnerKind;
+	/** FLY-2919: the same identity is persisted by the Bridge before runGoal. */
+	readonly ownerToken: string;
 	/** FLY-2903: set synchronously by requestStop; null while no stop was asked. */
 	readonly stopRequested: CodexStopReason | null;
 	release(): void;
 }
 
 export interface CodexExecutionClaimOptions {
+	/** Optional Bridge-issued durable identity; legacy callers receive a UUID. */
+	ownerToken?: string;
 	/** Called synchronously, at most once, when a Bridge terminal path asks this owner to stop. */
 	onStopRequested?: (reason: CodexStopReason) => void;
 }
@@ -100,7 +104,8 @@ export class CodexExecutionOwnershipRegistry {
 		if (this.stopMarks.has(executionId)) return undefined;
 		const current = this.owners.get(executionId);
 		if (current?.state === "active") return undefined;
-		const token = randomUUID();
+		const token = options?.ownerToken ?? randomUUID();
+		if (!token || token.length > 256 || /\p{Cc}/u.test(token)) return undefined;
 		const leaseState: ActiveOwner["lease"] = { stopRequested: null };
 		const owner: ActiveOwner = {
 			state: "active",
@@ -117,6 +122,7 @@ export class CodexExecutionOwnershipRegistry {
 		return {
 			executionId,
 			kind,
+			ownerToken: token,
 			get stopRequested() {
 				return leaseState.stopRequested;
 			},
