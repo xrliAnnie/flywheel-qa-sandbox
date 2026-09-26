@@ -59,9 +59,115 @@ describe("StateStore voice session schema", () => {
 				"receive_health_observed_at",
 				"receive_health_boot_id",
 				"receive_card_digest",
+				"brief_keys_json",
+				"live_context_mode",
+				"live_context_fused_at",
+				"live_context_fuse_reason",
+				"context_ring_json",
+				"context_ring_revision",
+				"context_prompt_generation",
 			]),
 		);
+		const outboundColumns = db
+			.prepare("PRAGMA table_info(voice_outbound)")
+			.all()
+			.map((row) => (row as { name: string }).name);
+		expect(outboundColumns).toEqual(
+			expect.arrayContaining(["delivery_class", "source", "terminal_reason"]),
+		);
 		db.close();
+	});
+
+	it("adds default-off context columns while preserving legacy outbound as tell/discord", async () => {
+		const root = mkdtempSync(
+			join(tmpdir(), "flywheel-voice-context-migration-"),
+		);
+		cleanup.push(root);
+		const path = join(root, "teamlead.db");
+		const original = await StateStore.create(path);
+		const sessionId = "10000000-0000-4000-8000-000000000001";
+		const now = "2026-09-08T20:00:00.000Z";
+		original.reserveVoiceSession({
+			sessionId,
+			mode: "meeting",
+			projectName: "flywheel",
+			leadId: "lead-a",
+			guildId: "100000000000000001",
+			voiceBotUserId: "100000000000000005",
+			voiceChannelId: "100000000000000002",
+			requestedBy: "master",
+			credentialTier: "master",
+			createdAt: now,
+		});
+		original.updateVoiceProvisioning({
+			sessionId,
+			expectedStep: "reserved",
+			nextStep: "done",
+			nextState: "desired",
+			rootMessageId: "100000000000000011",
+			updatedAt: now,
+		});
+		const claim = original.claimVoiceSession({
+			sessionId,
+			daemonBootId: "boot-a",
+			now,
+			leaseTtlMs: 60_000,
+		})!;
+		original.recordVoiceOutboundPage({
+			sessionId,
+			leaseToken: claim.leaseToken,
+			channelId: "100000000000000003",
+			cursor: "100000000000000012",
+			messages: [
+				{
+					messageId: "100000000000000012",
+					authorId: "100000000000000005",
+					text: "legacy reply",
+					observedAt: now,
+				},
+			],
+			now,
+		});
+		original.close();
+
+		const legacy = new Database(path);
+		for (const column of [
+			"brief_keys_json",
+			"live_context_mode",
+			"live_context_fused_at",
+			"live_context_fuse_reason",
+			"context_ring_json",
+			"context_ring_revision",
+			"context_prompt_generation",
+		]) {
+			legacy.exec(`ALTER TABLE voice_sessions DROP COLUMN ${column}`);
+		}
+		legacy.exec("ALTER TABLE voice_outbound DROP COLUMN delivery_class");
+		legacy.exec("ALTER TABLE voice_outbound DROP COLUMN source");
+		legacy.exec("ALTER TABLE voice_outbound DROP COLUMN terminal_reason");
+		legacy.close();
+
+		const reopened = await StateStore.create(path);
+		expect(reopened.getVoiceSession(sessionId)).toMatchObject({
+			briefKeys: [],
+			liveContextMode: "disabled",
+			liveContextFusedAt: null,
+			liveContextFuseReason: null,
+			contextRing: [],
+			contextRingRevision: 0,
+			contextPromptGeneration: null,
+		});
+		expect(
+			reopened.listVoiceOutbound(sessionId, claim.leaseToken, now),
+		).toMatchObject([
+			{
+				text: "legacy reply",
+				deliveryClass: "tell",
+				source: "discord",
+				terminalReason: null,
+			},
+		]);
+		reopened.close();
 	});
 
 	it("adds a nullable topic to an existing voice_sessions table", async () => {

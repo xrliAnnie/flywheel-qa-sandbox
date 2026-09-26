@@ -1,9 +1,14 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { StateStore } from "../../StateStore.js";
-import { recordVoiceOutboundDiscordPage } from "../voice-session-poller.js";
+import {
+	recordVoiceBackgroundSnapshot,
+	recordVoiceOutboundDiscordPage,
+	voiceBackgroundBriefKeys,
+} from "../voice-session-poller.js";
 
 const SESSION_ID = "10000000-0000-4000-8000-000000000001";
 const T0 = "2026-09-08T20:00:00.000Z";
@@ -56,6 +61,140 @@ function claim() {
 }
 
 describe("voice outbound Discord poller", () => {
+	it("produces background events only for enabled Engine B and keeps tell separate from context", () => {
+		const leaseToken = claim().leaseToken;
+		const snapshot = {
+			sessions: [
+				{
+					executionId: "exec-brief",
+					issue: "FLY-100",
+					status: "running",
+					observedAt: T0,
+				},
+				{
+					executionId: "exec-complete",
+					issue: "FLY-2886",
+					status: "completed",
+					observedAt: "2026-09-08T20:00:01.000Z",
+				},
+				{
+					executionId: "exec-failed",
+					issue: "FLY-2799",
+					status: "failed",
+					lastError: "provider failed for PR #1306",
+					observedAt: "2026-09-08T20:00:02.000Z",
+				},
+			],
+			attention: [
+				{
+					kind: "founder_gate",
+					id: "gate-1",
+					issue: "FLY-2886",
+					observedAt: "2026-09-08T20:00:03.000Z",
+				},
+			],
+		};
+		expect(voiceBackgroundBriefKeys(snapshot)).toEqual([
+			"session:exec-brief:running",
+			"session:exec-complete:completed",
+			"session:exec-failed:failed",
+			"attention:founder_gate:gate-1",
+		]);
+		store.initializeVoiceContextBrief({
+			sessionId: SESSION_ID,
+			keys: ["session:exec-brief:running"],
+			now: T0,
+		});
+		for (const gate of [
+			{ backgroundEnabled: false, engineB: true },
+			{ backgroundEnabled: true, engineB: false },
+		]) {
+			expect(
+				recordVoiceBackgroundSnapshot({
+					store,
+					sessionId: SESSION_ID,
+					leaseToken,
+					...gate,
+					snapshot,
+					now: T0,
+					countTokens: (text) => text.length,
+				}),
+			).toEqual({ recorded: 0, replayed: 0, skipped: 4 });
+		}
+		expect(store.getVoiceSession(SESSION_ID)?.contextRing).toEqual([]);
+
+		expect(
+			recordVoiceBackgroundSnapshot({
+				store,
+				sessionId: SESSION_ID,
+				leaseToken,
+				backgroundEnabled: true,
+				engineB: true,
+				snapshot,
+				now: T0,
+				countTokens: (text) => text.length,
+			}),
+		).toEqual({ recorded: 3, replayed: 0, skipped: 1 });
+		const ring = store.getVoiceSession(SESSION_ID)!.contextRing;
+		expect(ring.map(({ key, deliveryClass }) => [key, deliveryClass])).toEqual([
+			["session:exec-complete:completed", "context"],
+			["session:exec-failed:failed", "tell"],
+			["attention:founder_gate:gate-1", "tell"],
+		]);
+		expect(ring.map(({ text }) => text).join("\n")).toContain(
+			"FLY-2799 failed：provider failed for PR #1306",
+		);
+		expect(
+			store
+				.listVoiceOutbound(SESSION_ID, leaseToken, T0)
+				.map(({ messageId }) => messageId),
+		).toEqual([
+			`bridge-event:${SESSION_ID}:session:exec-failed:failed`,
+			`bridge-event:${SESSION_ID}:attention:founder_gate:gate-1`,
+		]);
+		expect(
+			recordVoiceBackgroundSnapshot({
+				store,
+				sessionId: SESSION_ID,
+				leaseToken,
+				backgroundEnabled: true,
+				engineB: true,
+				snapshot: {
+					sessions: [
+						{
+							executionId: "exec-failed",
+							issue: "FLY-2799",
+							status: "completed",
+							observedAt: "2026-09-08T20:00:04.000Z",
+						},
+					],
+					attention: [],
+				},
+				now: "2026-09-08T20:00:04.000Z",
+				countTokens: (text) => text.length,
+			}),
+		).toEqual({ recorded: 1, replayed: 0, skipped: 0 });
+		expect(
+			store.listVoiceOutbound(
+				SESSION_ID,
+				leaseToken,
+				"2026-09-08T20:00:04.000Z",
+			),
+		).toEqual([]);
+		const audit = new Database(join(root, "teamlead.db"), { readonly: true });
+		expect(
+			audit
+				.prepare(
+					"SELECT phase, terminal_reason FROM voice_outbound WHERE terminal_reason IS NOT NULL ORDER BY seq",
+				)
+				.all(),
+		).toEqual([
+			{ phase: "dropped", terminal_reason: "agenda_stale_dropped" },
+			{ phase: "dropped", terminal_reason: "agenda_stale_dropped" },
+		]);
+		audit.close();
+	});
+
 	it("excludes root, wrong authors, empty/prefixed bot text and still advances to page max", () => {
 		const lease = claim().leaseToken;
 		expect(
@@ -120,9 +259,11 @@ describe("voice outbound Discord poller", () => {
 				},
 			],
 		});
-		expect(store.listVoiceOutbound(SESSION_ID, lease, T0)[0]?.text).toBe(
-			"Use [redacted]",
-		);
+		expect(store.listVoiceOutbound(SESSION_ID, lease, T0)[0]).toMatchObject({
+			text: "Use [redacted]",
+			deliveryClass: "tell",
+			source: "discord",
+		});
 	});
 });
 

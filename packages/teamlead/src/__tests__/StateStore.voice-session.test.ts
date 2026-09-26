@@ -42,6 +42,244 @@ function reservation(overrides: Record<string, unknown> = {}) {
 }
 
 describe("StateStore voice sessions", () => {
+	it("keeps new background context disabled, deduplicated, bounded, and separate from tell delivery", () => {
+		const { sessionId } = reservation();
+		store.reserveVoiceSession(reservation());
+		expect(store.getVoiceSession(sessionId)).toMatchObject({
+			briefKeys: [],
+			liveContextMode: "disabled",
+			liveContextFusedAt: null,
+			liveContextFuseReason: null,
+			contextRing: [],
+			contextRingRevision: 0,
+			contextPromptGeneration: null,
+		});
+		expect(
+			store.initializeVoiceContextBrief({
+				sessionId,
+				keys: ["session:exec-brief:running", "session:exec-brief:running"],
+				now: T0,
+			}),
+		).toBe("recorded");
+		expect(
+			store.initializeVoiceContextBrief({
+				sessionId,
+				keys: ["session:exec-brief:running"],
+				now: T0,
+			}),
+		).toBe("replayed");
+		expect(
+			store.initializeVoiceContextBrief({
+				sessionId,
+				keys: ["session:other:running"],
+				now: T0,
+			}),
+		).toBe("conflict");
+
+		store.updateVoiceProvisioning({
+			sessionId,
+			expectedStep: "reserved",
+			nextStep: "done",
+			nextState: "desired",
+			updatedAt: T0,
+			rootMessageId: "100000000000000011",
+		});
+		const claim = store.claimVoiceSession({
+			sessionId,
+			daemonBootId: "boot-context",
+			now: T0,
+			leaseTtlMs: 60_000,
+		})!;
+		expect(
+			store.recordVoiceBackgroundEvent({
+				sessionId,
+				leaseToken: claim.leaseToken,
+				key: "session:exec-brief:running",
+				text: "exec-brief 正在运行",
+				deliveryClass: "context",
+				tokenCount: 20,
+				observedAt: T0,
+				now: T0,
+			}),
+		).toBe("already_briefed");
+		for (let index = 0; index < 12; index++) {
+			expect(
+				store.recordVoiceBackgroundEvent({
+					sessionId,
+					leaseToken: claim.leaseToken,
+					key: `session:exec-${index}:running`,
+					text: `exec-${index} 正在运行`,
+					deliveryClass: "context",
+					tokenCount: 400,
+					observedAt: T0,
+					now: T0,
+				}),
+			).toBe("recorded");
+		}
+		const disabled = store.getVoiceSession(sessionId)!;
+		expect(disabled.contextRing).toHaveLength(10);
+		expect(disabled.contextRing.map(({ key }) => key)).toEqual(
+			Array.from(
+				{ length: 10 },
+				(_, index) => `session:exec-${index + 2}:running`,
+			),
+		);
+		expect(
+			disabled.contextRing.reduce((sum, entry) => sum + entry.tokenCount, 0),
+		).toBe(4_000);
+		expect(disabled.contextRingRevision).toBe(12);
+		expect(
+			store.recordVoiceBackgroundEvent({
+				sessionId,
+				leaseToken: claim.leaseToken,
+				key: "session:exec-11:running",
+				text: "changed text is still the same durable event key",
+				deliveryClass: "context",
+				tokenCount: 20,
+				observedAt: T0,
+				now: T0,
+			}),
+		).toBe("replayed");
+		expect(store.getVoiceSession(sessionId)?.contextRingRevision).toBe(12);
+		expect(store.listVoiceOutbound(sessionId, claim.leaseToken, T0)).toEqual(
+			[],
+		);
+
+		expect(
+			store.recordVoiceBackgroundEvent({
+				sessionId,
+				leaseToken: claim.leaseToken,
+				key: "attention:founder_gate:gate-1",
+				text: "FLY-2886 等 founder 回答 gate-1",
+				deliveryClass: "tell",
+				tokenCount: 32,
+				observedAt: T0,
+				now: T0,
+			}),
+		).toBe("recorded");
+		expect(
+			store.listVoiceOutbound(sessionId, claim.leaseToken, T0),
+		).toMatchObject([
+			{
+				messageId: `bridge-event:${sessionId}:attention:founder_gate:gate-1`,
+				deliveryClass: "tell",
+				source: "bridge_event",
+				phase: "queued",
+			},
+		]);
+		const revision = store.getVoiceSession(sessionId)!.contextRingRevision;
+		for (const invalid of [
+			{ text: "x".repeat(601), tokenCount: 20 },
+			{ text: "within chars", tokenCount: 769 },
+		]) {
+			expect(
+				store.recordVoiceBackgroundEvent({
+					sessionId,
+					leaseToken: claim.leaseToken,
+					key: `session:invalid-${invalid.tokenCount}:running`,
+					text: invalid.text,
+					deliveryClass: "context",
+					tokenCount: invalid.tokenCount,
+					observedAt: T0,
+					now: T0,
+				}),
+			).toBe("invalid");
+		}
+		expect(store.getVoiceSession(sessionId)?.contextRingRevision).toBe(
+			revision,
+		);
+	});
+
+	it("loads a context ring once per eligible generation and preserves it across an irreversible fuse", () => {
+		const { sessionId } = reservation();
+		store.reserveVoiceSession(reservation());
+		store.updateVoiceProvisioning({
+			sessionId,
+			expectedStep: "reserved",
+			nextStep: "done",
+			nextState: "desired",
+			updatedAt: T0,
+			rootMessageId: "100000000000000011",
+		});
+		const claim = store.claimVoiceSession({
+			sessionId,
+			daemonBootId: "boot-context",
+			now: T0,
+			leaseTtlMs: 60_000,
+		})!;
+		expect(
+			store.setVoiceLiveContextMode({
+				sessionId,
+				mode: "eligible",
+				now: T0,
+			}),
+		).toBe("updated");
+		store.recordVoiceBackgroundEvent({
+			sessionId,
+			leaseToken: claim.leaseToken,
+			key: "session:exec-1:running",
+			text: "exec-1 正在运行",
+			deliveryClass: "context",
+			tokenCount: 20,
+			observedAt: T0,
+			now: T0,
+		});
+		expect(
+			store.loadVoiceContextRingForGeneration({
+				sessionId,
+				leaseToken: claim.leaseToken,
+				generation: 3,
+				now: T0,
+			}),
+		).toMatchObject({
+			status: "loaded",
+			entries: [{ key: "session:exec-1:running" }],
+		});
+		expect(
+			store.loadVoiceContextRingForGeneration({
+				sessionId,
+				leaseToken: claim.leaseToken,
+				generation: 3,
+				now: T0,
+			}),
+		).toEqual({ status: "replayed", entries: [] });
+
+		expect(
+			store.fuseVoiceLiveContext({
+				sessionId,
+				leaseToken: claim.leaseToken,
+				reason: "markerless_echo",
+				now: "2026-09-08T20:00:01.000Z",
+			}),
+		).toBe("fused");
+		const fused = store.getVoiceSession(sessionId)!;
+		expect(fused).toMatchObject({
+			liveContextMode: "disabled",
+			liveContextFusedAt: "2026-09-08T20:00:01.000Z",
+			liveContextFuseReason: "markerless_echo",
+			contextPromptGeneration: 3,
+		});
+		expect(fused.contextRing).toHaveLength(1);
+		expect(
+			store.fuseVoiceLiveContext({
+				sessionId,
+				leaseToken: claim.leaseToken,
+				reason: "different_reason_must_not_overwrite",
+				now: "2026-09-08T20:00:02.000Z",
+			}),
+		).toBe("already_fused");
+		expect(
+			store.setVoiceLiveContextMode({
+				sessionId,
+				mode: "eligible",
+				now: "2026-09-08T20:00:02.000Z",
+			}),
+		).toBe("refused_fused");
+		expect(store.getVoiceSession(sessionId)?.liveContextFuseReason).toBe(
+			"markerless_echo",
+		);
+	});
+
 	it("atomically binds durable Lead voice intents to one scoped session", () => {
 		const first = store.reserveVoiceSessionIntent({
 			projectName: "flywheel",

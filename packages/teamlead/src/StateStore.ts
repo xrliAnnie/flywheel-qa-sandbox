@@ -2706,6 +2706,17 @@ export type VoiceOutboundPhase =
 	| "failed"
 	| "dropped"
 	| "ambiguous";
+export type VoiceOutboundDeliveryClass = "tell" | "context";
+export type VoiceOutboundSource = "discord" | "bridge_event";
+export type VoiceLiveContextMode = "disabled" | "eligible";
+export interface VoiceContextRingEntry {
+	key: string;
+	text: string;
+	deliveryClass: VoiceOutboundDeliveryClass;
+	source: "bridge_event";
+	tokenCount: number;
+	observedAt: string;
+}
 export type VoiceStopState =
 	| "cancel_requested"
 	| "cancelled"
@@ -2746,6 +2757,13 @@ export interface VoiceSessionRow {
 	receiveHealthBootId: string | null;
 	receiveCardDigest: string | null;
 	outboundCursor: Record<string, string>;
+	briefKeys: string[];
+	liveContextMode: VoiceLiveContextMode;
+	liveContextFusedAt: string | null;
+	liveContextFuseReason: string | null;
+	contextRing: VoiceContextRingEntry[];
+	contextRingRevision: number;
+	contextPromptGeneration: number | null;
 	scheduleId: string | null;
 	scheduleRevision: number | null;
 	notBeforeLiveAt: string | null;
@@ -2826,6 +2844,9 @@ export interface VoiceOutboundRow {
 	authorId: string;
 	text: string;
 	observedAt: string;
+	deliveryClass: VoiceOutboundDeliveryClass;
+	source: VoiceOutboundSource;
+	terminalReason: string | null;
 	phase: VoiceOutboundPhase;
 	attemptToken: string | null;
 	claimedAt: string | null;
@@ -3787,6 +3808,39 @@ export class StateStore {
 				return null;
 			}
 		};
+		const contextRing = (value: unknown): VoiceContextRingEntry[] => {
+			try {
+				const parsed = JSON.parse(String(value));
+				if (!Array.isArray(parsed)) return [];
+				return parsed.flatMap((item) => {
+					if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+					const candidate = item as Record<string, unknown>;
+					if (
+						typeof candidate.key !== "string" ||
+						typeof candidate.text !== "string" ||
+						(candidate.deliveryClass !== "tell" &&
+							candidate.deliveryClass !== "context") ||
+						candidate.source !== "bridge_event" ||
+						!Number.isSafeInteger(candidate.tokenCount) ||
+						Number(candidate.tokenCount) < 0 ||
+						typeof candidate.observedAt !== "string"
+					)
+						return [];
+					return [
+						{
+							key: candidate.key,
+							text: candidate.text,
+							deliveryClass: candidate.deliveryClass,
+							source: "bridge_event" as const,
+							tokenCount: Number(candidate.tokenCount),
+							observedAt: candidate.observedAt,
+						},
+					];
+				});
+			} catch {
+				return [];
+			}
+		};
 		return {
 			sessionId: String(row.session_id),
 			mode: row.mode as VoiceSessionMode,
@@ -3823,6 +3877,19 @@ export class StateStore {
 				(row.receive_health_boot_id as string | null) ?? null,
 			receiveCardDigest: (row.receive_card_digest as string | null) ?? null,
 			outboundCursor: stringRecord(row.outbound_cursor),
+			briefKeys: stringArray(row.brief_keys_json),
+			liveContextMode:
+				row.live_context_mode === "eligible" ? "eligible" : "disabled",
+			liveContextFusedAt:
+				(row.live_context_fused_at as string | null) ?? null,
+			liveContextFuseReason:
+				(row.live_context_fuse_reason as string | null) ?? null,
+			contextRing: contextRing(row.context_ring_json),
+			contextRingRevision: Number(row.context_ring_revision ?? 0),
+			contextPromptGeneration:
+				row.context_prompt_generation == null
+					? null
+					: Number(row.context_prompt_generation),
 			scheduleId: (row.schedule_id as string | null) ?? null,
 			scheduleRevision:
 				row.schedule_revision == null ? null : Number(row.schedule_revision),
@@ -3845,6 +3912,10 @@ export class StateStore {
 			authorId: String(row.author_id),
 			text: String(row.text),
 			observedAt: String(row.observed_at),
+			deliveryClass:
+				row.delivery_class === "context" ? "context" : "tell",
+			source: row.source === "bridge_event" ? "bridge_event" : "discord",
+			terminalReason: (row.terminal_reason as string | null) ?? null,
 			phase: row.phase as VoiceOutboundPhase,
 			attemptToken: (row.attempt_token as string | null) ?? null,
 			claimedAt: (row.claimed_at as string | null) ?? null,
@@ -6428,6 +6499,341 @@ export class StateStore {
 		return result;
 	}
 
+	initializeVoiceContextBrief(input: {
+		sessionId: string;
+		keys: readonly string[];
+		now: string;
+	}): "recorded" | "replayed" | "conflict" | "not_found" {
+		const keys = [
+			...new Set(input.keys.map((key) => key.trim()).filter(Boolean)),
+		];
+		if (
+			keys.length > 100 ||
+			keys.some(
+				(key) =>
+					key.length > 512 ||
+					!/^(?:attention|session):[A-Za-z0-9._:-]+$/u.test(key),
+			)
+		)
+			return "conflict";
+		const current = this.getVoiceSession(input.sessionId);
+		if (!current) return "not_found";
+		if (current.briefKeys.length > 0) {
+			return JSON.stringify(current.briefKeys) === JSON.stringify(keys)
+				? "replayed"
+				: "conflict";
+		}
+		this.db.run(
+			`UPDATE voice_sessions
+			 SET brief_keys_json = ?, updated_at = ?
+			 WHERE session_id = ? AND brief_keys_json = '[]'`,
+			[JSON.stringify(keys), input.now, input.sessionId],
+		);
+		if (this.db.getRowsModified() !== 1) return "conflict";
+		this.save();
+		return "recorded";
+	}
+
+	setVoiceLiveContextMode(input: {
+		sessionId: string;
+		mode: VoiceLiveContextMode;
+		now: string;
+	}): "updated" | "replayed" | "refused_fused" | "not_found" {
+		const result: {
+			value: "updated" | "replayed" | "refused_fused" | "not_found";
+		} = { value: "not_found" };
+		this.db.transaction(() => {
+			const session = this.getVoiceSession(input.sessionId);
+			if (!session) return;
+			if (input.mode === "eligible" && session.liveContextFusedAt) {
+				result.value = "refused_fused";
+				return;
+			}
+			if (session.liveContextMode === input.mode) {
+				result.value = "replayed";
+				return;
+			}
+			this.db.run(
+				`UPDATE voice_sessions SET live_context_mode = ?, updated_at = ?
+				 WHERE session_id = ?`,
+				[input.mode, input.now, input.sessionId],
+			);
+			if (input.mode === "disabled") {
+				this.db.run(
+					`UPDATE voice_outbound SET phase = 'dropped', finished_at = ?
+					 WHERE session_id = ? AND delivery_class = 'context' AND phase = 'queued'`,
+					[input.now, input.sessionId],
+				);
+			}
+			result.value = "updated";
+		});
+		if (result.value === "updated") this.save();
+		return result.value;
+	}
+
+	recordVoiceBackgroundEvent(input: {
+		sessionId: string;
+		leaseToken: string;
+		key: string;
+		text: string;
+		deliveryClass: VoiceOutboundDeliveryClass;
+		tokenCount: number;
+		observedAt: string;
+		now: string;
+	}): "recorded" | "replayed" | "already_briefed" | "lease_conflict" | "invalid" {
+		const key = input.key.trim();
+		const text = input.text.trim();
+		if (
+			!key ||
+			key.length > 512 ||
+			!/^(?:attention|session):[A-Za-z0-9._:-]+$/u.test(key) ||
+			!text ||
+			[...text].length > 600 ||
+			!Number.isSafeInteger(input.tokenCount) ||
+			input.tokenCount < 0 ||
+			input.tokenCount > 768 ||
+			!Number.isFinite(Date.parse(input.observedAt))
+		)
+			return "invalid";
+		const result: {
+			value: "recorded" | "replayed" | "already_briefed" | "lease_conflict";
+		} = { value: "lease_conflict" };
+		this.db.transaction(() => {
+			const session = this.getActiveVoiceLease(
+				input.sessionId,
+				input.leaseToken,
+				input.now,
+			);
+			if (!session) return;
+			if (session.briefKeys.includes(key)) {
+				result.value = "already_briefed";
+				return;
+			}
+			const messageId = `bridge-event:${input.sessionId}:${key}`;
+			const exists = this.workflowSelectAll(
+				"SELECT 1 FROM voice_outbound WHERE message_id = ? LIMIT 1",
+				[messageId],
+			).length;
+			if (exists || session.contextRing.some((entry) => entry.key === key)) {
+				result.value = "replayed";
+				return;
+			}
+			const entry: VoiceContextRingEntry = {
+				key,
+				text,
+				deliveryClass: input.deliveryClass,
+				source: "bridge_event",
+				tokenCount: input.tokenCount,
+				observedAt: input.observedAt,
+			};
+			const ring = [...session.contextRing, entry];
+			while (
+				ring.length > 10 ||
+				ring.reduce((sum, candidate) => sum + candidate.tokenCount, 0) > 4_096
+			)
+				ring.shift();
+			const contextQueued =
+				input.deliveryClass === "context" &&
+				session.liveContextMode === "eligible" &&
+				session.liveContextFusedAt === null;
+			const phase =
+				input.deliveryClass === "tell" || contextQueued ? "queued" : "dropped";
+			this.db.run(
+				`INSERT OR IGNORE INTO voice_outbound
+				 (session_id, message_id, channel_id, author_id, text, observed_at,
+				  delivery_class, source, phase, finished_at)
+				 VALUES (?, ?, ?, 'bridge', ?, ?, ?, 'bridge_event', ?, ?)`,
+				[
+					input.sessionId,
+					messageId,
+					session.threadId ?? session.voiceChannelId,
+					text,
+					input.observedAt,
+					input.deliveryClass,
+					phase,
+					phase === "dropped" ? input.now : null,
+				],
+			);
+			this.db.run(
+				`UPDATE voice_sessions
+				 SET context_ring_json = ?, context_ring_revision = context_ring_revision + 1,
+				     updated_at = ?
+				 WHERE session_id = ? AND lease_token = ?`,
+				[JSON.stringify(ring), input.now, input.sessionId, input.leaseToken],
+			);
+			result.value = "recorded";
+		});
+		if (result.value === "recorded") this.save();
+		return result.value;
+	}
+
+	reconcileVoiceBackgroundTells(input: {
+		sessionId: string;
+		leaseToken: string;
+		currentKeys: readonly string[];
+		now: string;
+	}): number | "lease_conflict" | "invalid" {
+		const currentKeys = new Set(input.currentKeys.map((key) => key.trim()));
+		if (
+			currentKeys.size !== input.currentKeys.length ||
+			[...currentKeys].some(
+				(key) =>
+					!key ||
+					key.length > 512 ||
+					!/^(?:attention|session):[A-Za-z0-9._:-]+$/u.test(key),
+			)
+		)
+			return "invalid";
+		const result: { value: number | "lease_conflict" } = {
+			value: "lease_conflict",
+		};
+		this.db.transaction(() => {
+			if (
+				!this.getActiveVoiceLease(
+					input.sessionId,
+					input.leaseToken,
+					input.now,
+				)
+			)
+				return;
+			const prefix = `bridge-event:${input.sessionId}:`;
+			const stale = this.workflowSelectAll(
+				`SELECT seq, message_id FROM voice_outbound
+				 WHERE session_id = ? AND source = 'bridge_event'
+				   AND delivery_class = 'tell' AND phase = 'queued'`,
+				[input.sessionId],
+			).filter((row) => {
+				const messageId = String(row.message_id);
+				return (
+					messageId.startsWith(prefix) &&
+					!currentKeys.has(messageId.slice(prefix.length))
+				);
+			});
+			for (const row of stale) {
+				this.db.run(
+					`UPDATE voice_outbound
+					 SET phase = 'dropped', finished_at = ?, terminal_reason = 'agenda_stale_dropped'
+					 WHERE seq = ? AND session_id = ? AND phase = 'queued'
+					   AND source = 'bridge_event' AND delivery_class = 'tell'`,
+					[input.now, Number(row.seq), input.sessionId],
+				);
+			}
+			result.value = stale.length;
+		});
+		if (typeof result.value === "number" && result.value > 0) this.save();
+		return result.value;
+	}
+
+	loadVoiceContextRingForGeneration(input: {
+		sessionId: string;
+		leaseToken: string;
+		generation: number;
+		now: string;
+	}):
+		| { status: "loaded"; entries: VoiceContextRingEntry[] }
+		| { status: "replayed" | "unavailable" | "lease_conflict" | "invalid"; entries: [] } {
+		if (!Number.isSafeInteger(input.generation) || input.generation <= 0)
+			return { status: "invalid", entries: [] };
+		const result: {
+			value:
+				| { status: "loaded"; entries: VoiceContextRingEntry[] }
+				| {
+						status: "replayed" | "unavailable" | "lease_conflict";
+						entries: [];
+				  };
+		} = { value: { status: "lease_conflict", entries: [] } };
+		this.db.transaction(() => {
+			const session = this.getActiveVoiceLease(
+				input.sessionId,
+				input.leaseToken,
+				input.now,
+			);
+			if (!session) return;
+			if (
+				session.liveContextFusedAt !== null ||
+				session.liveContextMode !== "eligible"
+			) {
+				result.value = { status: "unavailable", entries: [] };
+				return;
+			}
+			if (session.contextPromptGeneration === input.generation) {
+				result.value = { status: "replayed", entries: [] };
+				return;
+			}
+			this.db.run(
+				`UPDATE voice_sessions
+				 SET context_prompt_generation = ?, updated_at = ?
+				 WHERE session_id = ? AND lease_token = ?
+				   AND live_context_mode = 'eligible' AND live_context_fused_at IS NULL`,
+				[input.generation, input.now, input.sessionId, input.leaseToken],
+			);
+			for (const entry of session.contextRing) {
+				this.db.run(
+					`UPDATE voice_outbound SET phase = 'confirmed', finished_at = ?
+					 WHERE message_id = ? AND delivery_class = 'context' AND phase = 'queued'`,
+					[
+						input.now,
+						`bridge-event:${input.sessionId}:${entry.key}`,
+					],
+				);
+			}
+			this.db.run(
+				`UPDATE voice_outbound SET phase = 'dropped', finished_at = ?
+				 WHERE session_id = ? AND delivery_class = 'context' AND phase = 'queued'`,
+				[input.now, input.sessionId],
+			);
+			result.value = { status: "loaded", entries: session.contextRing };
+		});
+		if (result.value.status === "loaded") this.save();
+		return result.value;
+	}
+
+	fuseVoiceLiveContext(input: {
+		sessionId: string;
+		leaseToken: string;
+		reason: string;
+		now: string;
+	}): "fused" | "already_fused" | "lease_conflict" | "invalid" {
+		const reason = input.reason.trim();
+		if (!reason || reason.length > 512) return "invalid";
+		const result: {
+			value: "fused" | "already_fused" | "lease_conflict";
+		} = { value: "lease_conflict" };
+		this.db.transaction(() => {
+			const session = this.getActiveVoiceLease(
+				input.sessionId,
+				input.leaseToken,
+				input.now,
+			);
+			if (!session) return;
+			if (session.liveContextFusedAt !== null) {
+				result.value = "already_fused";
+				return;
+			}
+			this.db.run(
+				`UPDATE voice_sessions
+				 SET live_context_mode = 'disabled', live_context_fused_at = ?,
+				     live_context_fuse_reason = ?, updated_at = ?
+				 WHERE session_id = ? AND lease_token = ? AND live_context_fused_at IS NULL`,
+				[
+					input.now,
+					reason,
+					input.now,
+					input.sessionId,
+					input.leaseToken,
+				],
+			);
+			this.db.run(
+				`UPDATE voice_outbound SET phase = 'dropped', finished_at = ?
+				 WHERE session_id = ? AND delivery_class = 'context' AND phase = 'queued'`,
+				[input.now, input.sessionId],
+			);
+			result.value = "fused";
+		});
+		if (result.value === "fused") this.save();
+		return result.value;
+	}
+
 	recordVoiceOutboundPage(input: {
 		sessionId: string;
 		leaseToken: string;
@@ -6559,7 +6965,8 @@ export class StateStore {
 	): VoiceOutboundRow[] {
 		if (!this.getActiveVoiceLease(sessionId, leaseToken, now)) return [];
 		return this.workflowSelectAll(
-			`SELECT * FROM voice_outbound WHERE session_id = ? AND phase = 'queued'
+			`SELECT * FROM voice_outbound
+			 WHERE session_id = ? AND phase = 'queued' AND delivery_class = 'tell'
 			 ORDER BY seq LIMIT ?`,
 			[sessionId, Math.max(1, Math.min(20, Math.floor(limit)))],
 		).map((row) => this.voiceOutboundFromRow(row));
@@ -6581,7 +6988,8 @@ export class StateStore {
 			const candidate = randomUUID();
 			this.db.run(
 				`UPDATE voice_outbound SET phase = 'claimed', attempt_token = ?, claimed_at = ?
-				 WHERE seq = ? AND session_id = ? AND phase = 'queued'`,
+				 WHERE seq = ? AND session_id = ? AND phase = 'queued'
+				   AND delivery_class = 'tell'`,
 				[candidate, input.now, input.seq, input.sessionId],
 			);
 			if (this.db.getRowsModified() === 1) {
@@ -11120,6 +11528,39 @@ export class StateStore {
 		);
 		this.addColumnIfMissing("voice_sessions", "receive_health_boot_id", "TEXT");
 		this.addColumnIfMissing("voice_sessions", "receive_card_digest", "TEXT");
+		// FLY-2886: opening-brief dedupe and the context fallback ring are durable.
+		// Live append remains default-off; a fuse is irreversible for this session.
+		this.addColumnIfMissing(
+			"voice_sessions",
+			"brief_keys_json",
+			"TEXT NOT NULL DEFAULT '[]'",
+		);
+		this.addColumnIfMissing(
+			"voice_sessions",
+			"live_context_mode",
+			"TEXT NOT NULL DEFAULT 'disabled' CHECK(live_context_mode IN ('disabled','eligible'))",
+		);
+		this.addColumnIfMissing("voice_sessions", "live_context_fused_at", "TEXT");
+		this.addColumnIfMissing(
+			"voice_sessions",
+			"live_context_fuse_reason",
+			"TEXT",
+		);
+		this.addColumnIfMissing(
+			"voice_sessions",
+			"context_ring_json",
+			"TEXT NOT NULL DEFAULT '[]'",
+		);
+		this.addColumnIfMissing(
+			"voice_sessions",
+			"context_ring_revision",
+			"INTEGER NOT NULL DEFAULT 0",
+		);
+		this.addColumnIfMissing(
+			"voice_sessions",
+			"context_prompt_generation",
+			"INTEGER",
+		);
 		// A legacy unknown root must never receive a fresh deduplication window.
 		this.db.run(
 			"UPDATE voice_sessions SET root_requested_at = created_at WHERE provisioning_step = 'root_requested' AND root_requested_at IS NULL",
@@ -11251,6 +11692,17 @@ export class StateStore {
 				finished_at TEXT
 			)
 		`);
+		this.addColumnIfMissing(
+			"voice_outbound",
+			"delivery_class",
+			"TEXT NOT NULL DEFAULT 'tell' CHECK(delivery_class IN ('tell','context'))",
+		);
+		this.addColumnIfMissing(
+			"voice_outbound",
+			"source",
+			"TEXT NOT NULL DEFAULT 'discord' CHECK(source IN ('discord','bridge_event'))",
+		);
+		this.addColumnIfMissing("voice_outbound", "terminal_reason", "TEXT");
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS voice_outbound_session_phase ON voice_outbound(session_id, phase, seq)",
 		);

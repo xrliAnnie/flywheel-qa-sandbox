@@ -295,6 +295,89 @@ it("passes enabled background identity, room binding, and founder attention into
 	expect(context.realtimePrompt).toContain("FLY-2886 voice brain");
 	expect(context.realtimePrompt).not.toContain("PRIVATE_MEMORY_BODY");
 	expect(context.baseInstructions).toContain("PRIVATE_IDENTITY");
+	expect(store.getVoiceSession(SESSION_ID)?.briefKeys).toEqual([
+		"attention:founder_gate:gate-1",
+	]);
+});
+
+it("polls enabled Engine-B state into durable background tell rows", async () => {
+	const now = new Date().toISOString();
+	store.updateVoiceProvisioning({
+		sessionId: SESSION_ID,
+		expectedStep: "reserved",
+		nextStep: "done",
+		nextState: "desired",
+		rootMessageId: "100000000000000011",
+		threadId: "100000000000000011",
+		updatedAt: now,
+	});
+	const claim = store.claimVoiceSession({
+		sessionId: SESSION_ID,
+		daemonBootId: "boot-background",
+		now,
+		leaseTtlMs: 60_000,
+	})!;
+	store.upsertSession({
+		execution_id: "exec-failed",
+		project_name: "flywheel",
+		issue_id: "issue-2799",
+		issue_identifier: "FLY-2799",
+		issue_labels: '["Voice"]',
+		status: "failed",
+		last_error: "PR #1306 failed",
+		last_activity_at: now,
+	});
+	const project = configuredProject();
+	project.leads[0]!.match = { labels: ["Voice"] };
+	project.leads[0]!.voiceBackground = {
+		enabled: true,
+		browser: "founder_chrome",
+	};
+	const { runtime } = createVoiceSessionServices({
+		probeSelfFilter: validProbe,
+		store,
+		projects: [project],
+		env: { LEAD_TOKEN: "test-token" },
+		homeDir: root,
+		cwd: root,
+		config: { discordOwnerUserId: "founder" } as BridgeConfig,
+		fetchImpl: vi.fn(),
+		readFounderAttention: vi.fn(() => ({
+			available: true,
+			pending: [
+				{
+					key: "attention:founder_gate:gate-1",
+					issue: "FLY-2886",
+					source: {
+						fact: { value: { id: "gate-1", kind: "founder_gate" } },
+						since: { value: now },
+					},
+				},
+			],
+		})) as never,
+	});
+
+	await runtime.tick();
+	expect(
+		store
+			.listVoiceOutbound(SESSION_ID, claim.leaseToken, now)
+			.map(({ messageId, deliveryClass, source }) => ({
+				messageId,
+				deliveryClass,
+				source,
+			})),
+	).toEqual([
+		{
+			messageId: `bridge-event:${SESSION_ID}:session:exec-failed:failed`,
+			deliveryClass: "tell",
+			source: "bridge_event",
+		},
+		{
+			messageId: `bridge-event:${SESSION_ID}:attention:founder_gate:gate-1`,
+			deliveryClass: "tell",
+			source: "bridge_event",
+		},
+	]);
 });
 
 it("projects authoritative demand into the durable voice health store", async () => {

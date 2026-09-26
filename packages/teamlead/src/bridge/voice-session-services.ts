@@ -16,6 +16,7 @@ import {
 } from "./discord-utils.js";
 import { readFounderAttentionFacts } from "./founder-attention-facts.js";
 import { createLeadCapabilityVoiceRouter } from "./lead-capability-voice.js";
+import { filterSessionsByLead } from "./lead-scope.js";
 import type { BridgeConfig } from "./types.js";
 import type { VoiceHandoffService } from "./voice-handoff.js";
 import { createVoiceHealthDemandRecorder } from "./voice-health-demand-recorder.js";
@@ -38,7 +39,12 @@ import {
 	resolveVoiceContextSources,
 	VoiceSessionContextError,
 } from "./voice-session-context.js";
-import { pollVoiceSessionOnce } from "./voice-session-poller.js";
+import {
+	pollVoiceSessionOnce,
+	recordVoiceBackgroundSnapshot,
+	type VoiceBackgroundSnapshot,
+	voiceBackgroundBriefKeys,
+} from "./voice-session-poller.js";
 import { preflightVoiceSession } from "./voice-session-preflight.js";
 import {
 	createDiscordVoiceProvisionerDeps,
@@ -267,6 +273,24 @@ export function createVoiceSessionServices(input: {
 				: {}),
 		};
 	};
+	const attentionSnapshot = (
+		attention: ReturnType<typeof readFounderAttentionFacts> | null,
+		fallbackObservedAt: string,
+	): VoiceBackgroundSnapshot["attention"] =>
+		attention?.available === true
+			? attention.pending.flatMap((item) => {
+					const fact = item.source.fact.value;
+					if (!fact?.kind || !fact.id) return [];
+					return [
+						{
+							kind: fact.kind,
+							id: fact.id,
+							issue: item.issue,
+							observedAt: item.source.since?.value ?? fallbackObservedAt,
+						},
+					];
+				})
+			: [];
 	const getSessionContext = async (
 		session: VoiceSessionRow,
 		authority: { leaseBindingDigest: string },
@@ -293,7 +317,7 @@ export function createVoiceSessionServices(input: {
 					{ projectName: project.projectName, now: new Date(capturedAt) },
 				)
 			: null;
-		return buildVoiceSessionContext({
+		const context = buildVoiceSessionContext({
 			sources,
 			rosterDigest: digestVoiceContextRoster(input.projects),
 			leaseBindingDigest: authority.leaseBindingDigest,
@@ -332,6 +356,33 @@ export function createVoiceSessionServices(input: {
 					}
 				: {}),
 		});
+		if (background.enabled) {
+			input.store.initializeVoiceContextBrief({
+				sessionId: session.sessionId,
+				keys: voiceBackgroundBriefKeys({
+					sessions: [
+						...state.activeSessions.map((item) => ({
+							executionId: item.executionId,
+							issue: item.issueIdentifier ?? item.issueId,
+							status: item.status,
+							sessionRole: item.sessionRole,
+							observedAt: item.startedAt ?? capturedAt,
+						})),
+						...state.recentFailures.map((item) => ({
+							executionId: item.executionId,
+							issue: item.issueIdentifier ?? item.issueId,
+							status: "failed",
+							sessionRole: item.sessionRole,
+							lastError: item.lastError,
+							observedAt: item.failedAt ?? capturedAt,
+						})),
+					],
+					attention: attentionSnapshot(attention, capturedAt),
+				}),
+				now: capturedAt,
+			});
+		}
+		return context;
 	};
 	const postStatus = async (session: VoiceSessionRow, text: string) => {
 		await validateSession(session);
@@ -345,6 +396,7 @@ export function createVoiceSessionServices(input: {
 		);
 		if (!result.ok) throw new Error(result.error);
 	};
+	const backgroundPollAfter = new Map<string, number>();
 	const runtime = new VoiceSessionRuntime({
 		store: input.store,
 		timing,
@@ -353,7 +405,7 @@ export function createVoiceSessionServices(input: {
 		provision,
 		poll: async (session) => {
 			await validateSession(session);
-			const { token } = resolve(session);
+			const { project, lead, token } = resolve(session);
 			if (!session.leaseToken || !session.rootMessageId) return;
 			await pollVoiceSessionOnce({
 				store: input.store,
@@ -366,6 +418,47 @@ export function createVoiceSessionServices(input: {
 				rootMessageId: session.rootMessageId,
 				fetchImpl,
 			});
+			const background = effectiveVoiceBackground(lead);
+			const pollAt = new Date().toISOString();
+			const pollAtMs = Date.parse(pollAt);
+			if (
+				background.enabled &&
+				pollAtMs >= (backgroundPollAfter.get(session.sessionId) ?? 0)
+			) {
+				backgroundPollAfter.set(session.sessionId, pollAtMs + 10_000);
+				const attention = (
+					input.readFounderAttention ?? readFounderAttentionFacts
+				)(
+					{ stateStore: input.store },
+					{ projectName: project.projectName, now: new Date(pollAt) },
+				);
+				const sessions = filterSessionsByLead(
+					input.store.getRecentSessions(100),
+					lead.agentId,
+					input.projects,
+				);
+				recordVoiceBackgroundSnapshot({
+					store: input.store,
+					sessionId: session.sessionId,
+					leaseToken: session.leaseToken,
+					backgroundEnabled: true,
+					// This service is the generic Codex realtime (Engine B) session
+					// path. Legacy huddle/Engine A never enters this factory.
+					engineB: true,
+					snapshot: {
+						sessions: sessions.map((item) => ({
+							executionId: item.execution_id,
+							issue: item.issue_identifier ?? item.issue_id,
+							status: item.status,
+							sessionRole: item.session_role,
+							lastError: item.last_error,
+							observedAt: item.last_activity_at ?? item.started_at ?? pollAt,
+						})),
+						attention: attentionSnapshot(attention, pollAt),
+					},
+					now: pollAt,
+				});
+			}
 		},
 		// The waker resolves to the settled command result, so a coalesced request
 		// spends no budget and a contract fault stops the retries immediately.

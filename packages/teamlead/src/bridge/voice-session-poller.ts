@@ -1,6 +1,122 @@
 import { isVoiceMirrorText, scrubTranscript } from "flywheel-voice-core";
+import { getEncoding } from "js-tiktoken";
 import type { StateStore } from "../StateStore.js";
 import { DISCORD_API } from "./discord-utils.js";
+
+export interface VoiceBackgroundSnapshot {
+	sessions: Array<{
+		executionId: string;
+		issue: string;
+		status: string;
+		sessionRole?: string;
+		lastError?: string;
+		observedAt: string;
+	}>;
+	attention: Array<{
+		kind: string;
+		id: string;
+		issue: string | null;
+		observedAt: string;
+	}>;
+}
+
+interface VoiceBackgroundEvent {
+	key: string;
+	text: string;
+	deliveryClass: "tell" | "context";
+	observedAt: string;
+}
+
+const voiceBackgroundEncoding = getEncoding("o200k_base");
+
+function boundedBackgroundText(text: string): string {
+	return [...scrubTranscript(text)].slice(0, 600).join("");
+}
+
+function voiceBackgroundEvents(
+	snapshot: VoiceBackgroundSnapshot,
+): VoiceBackgroundEvent[] {
+	const events: VoiceBackgroundEvent[] = [];
+	for (const session of snapshot.sessions) {
+		const tell = session.status === "failed" || session.status === "blocked";
+		const context =
+			session.status === "running" ||
+			session.status === "completed" ||
+			session.sessionRole === "qa";
+		if (!tell && !context) continue;
+		const role =
+			session.sessionRole && session.sessionRole !== "main"
+				? ` ${session.sessionRole}`
+				: "";
+		const detail = tell && session.lastError ? `：${session.lastError}` : "";
+		events.push({
+			key: `session:${session.executionId}:${session.status}`,
+			text: boundedBackgroundText(
+				`${session.issue}${role} ${session.status}${detail}`,
+			),
+			deliveryClass: tell ? "tell" : "context",
+			observedAt: session.observedAt,
+		});
+	}
+	for (const attention of snapshot.attention) {
+		events.push({
+			key: `attention:${attention.kind}:${attention.id}`,
+			text: boundedBackgroundText(
+				`${attention.issue ?? "未绑定单号"} 等 founder 处理 ${attention.kind} ${attention.id}`,
+			),
+			deliveryClass: "tell",
+			observedAt: attention.observedAt,
+		});
+	}
+	return events;
+}
+
+export function voiceBackgroundBriefKeys(
+	snapshot: VoiceBackgroundSnapshot,
+): string[] {
+	return voiceBackgroundEvents(snapshot).map(({ key }) => key);
+}
+
+export function recordVoiceBackgroundSnapshot(input: {
+	store: StateStore;
+	sessionId: string;
+	leaseToken: string;
+	backgroundEnabled: boolean;
+	engineB: boolean;
+	snapshot: VoiceBackgroundSnapshot;
+	now: string;
+	countTokens?: (text: string) => number;
+}): { recorded: number; replayed: number; skipped: number } {
+	const events = voiceBackgroundEvents(input.snapshot);
+	if (!input.backgroundEnabled || !input.engineB) {
+		return { recorded: 0, replayed: 0, skipped: events.length };
+	}
+	const result = { recorded: 0, replayed: 0, skipped: 0 };
+	input.store.reconcileVoiceBackgroundTells({
+		sessionId: input.sessionId,
+		leaseToken: input.leaseToken,
+		currentKeys: events
+			.filter(({ deliveryClass }) => deliveryClass === "tell")
+			.map(({ key }) => key),
+		now: input.now,
+	});
+	const countTokens =
+		input.countTokens ??
+		((text: string) => voiceBackgroundEncoding.encode(text).length);
+	for (const event of events) {
+		const outcome = input.store.recordVoiceBackgroundEvent({
+			sessionId: input.sessionId,
+			leaseToken: input.leaseToken,
+			...event,
+			tokenCount: countTokens(event.text),
+			now: input.now,
+		});
+		if (outcome === "recorded") result.recorded++;
+		else if (outcome === "replayed") result.replayed++;
+		else result.skipped++;
+	}
+	return result;
+}
 
 export interface VoiceDiscordMessage {
 	id: string;
