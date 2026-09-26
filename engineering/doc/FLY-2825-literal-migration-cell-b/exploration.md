@@ -59,3 +59,7 @@ Issue: FLY-2825 (https://linear.app/geoforge3d/issue/FLY-2825/qa-fly-2802-qa-san
 ## 非阻塞待 Lead 确认
 
 - seed + lock 两个前置提交是否由实现节点自行落地（本设计默认是）。
+
+## 更新（2026-09-26 11:56 之后）
+
+审计时（分支头 `45ce57c54`）fixture 确实不在分支。随后 QA driver 把 seed 提交 `f4825403b`（`01838552f` 的 cherry-pick，树 hash `33099f034` 相同，`git diff --exit-code 01838552f f4825403b -- packages/runner-test-discipline-fixture` 为空）注入到本分支。因此选项 A 的 cherry-pick 不再需要，退化为「核树 hash」；选项 B 的守卫已被实际触发。lock importer 仍缺（`grep -c runner-test-discipline-fixture pnpm-lock.yaml` = 0）。plan.md 以此为准。

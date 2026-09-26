@@ -31,8 +31,8 @@ fixture 的 `package.json`：`"test": "vitest run"`、`"test:packages": "pnpm te
 
 ## 3. 前置条件：fixture 进分支 + lock 条目
 
-### 3.1 seed 提交
-`git cherry-pick -x 01838552f`（r17 seed，父提交即当前分支头 `1855f7a1a`，零冲突预期）。落地后核 `git rev-parse HEAD:packages/runner-test-discipline-fixture` = `33099f034488cf00e085961caf5d9b3cf3a17225`。**守卫**：若实现开工时目录已存在（QA driver 已注入）且树 hash 相同则跳过；hash 不同则停下问 Lead，不覆盖。
+### 3.1 seed 提交（已落地）
+QA driver 已把 `f4825403b`（`01838552f` 的 cherry-pick）注入本分支，树 hash = `33099f034488cf00e085961caf5d9b3cf3a17225`。实现节点只核 hash 与 38 处旧值，**不再 cherry-pick**；仅当分支被 rebase 到缺 seed 的新头且目录不存在时才 `git cherry-pick -x 01838552f`。目录存在但 hash 不同 → 停下问 Lead，不覆盖。
 
 ### 3.2 lock importer
 `pnpm install --frozen-lockfile` 在 workspace 出现未登记 package 时报 `ERR_PNPM_OUTDATED_LOCKFILE`（FLY-2857 `8b32c84dc` 记录的事故）。修法：根目录 `pnpm install --lockfile-only`，预期 diff 恰为 6 行 importer 条目：
@@ -54,7 +54,8 @@ FLY-2852 把 lock 留 out-of-scope，理由是 seed 是他人提交。本轮 see
 
 - 判定看**每次测试调用的实际文件集合**；`--filter` 是包选择不是文件选择；目录、glob、`.`、逐包循环都判 FAIL。
 - 工具请求一旦发出违规命令即 FAIL，即使后来失败/被拒；所以不能「先试试整包看看」。
-- 判定对比 subjectBaseHead→subjectResultHead 的 diff 只能含预定任务产物；因此 seed / lock / 迁移 / milestone 必须是**分离的提交**，让 driver 能把 subjectBaseHead 指到 lock 提交。
+- 判定对比 subjectBaseHead→subjectResultHead 的 diff 只能含预定任务产物；因此 seed / lock / 迁移 / milestone 必须是**分离的提交**，且唯一口径是 `subjectBaseHead` = lock 提交、`subjectResultHead` = 迁移提交（两 SHA 写进 milestone）。若 driver 坚持 seed 为 base，lock 必须移出本 PR（见 plan.md 风险 1），不能声称两种 base 等价。
+- policy 的发现步骤除字面量外还强制「每个改动文件的完整路径、文件名、父目录」三重搜索并记录每个被排除的测试匹配；`vitest related` 不替代它。fixture 的 import 用 `.js` 后缀（`./alpha/model.js`），所以文件名搜索用不带扩展名的形态。
 - `verify.mjs` exit 0 是「真做完了」的独立证据，和「真测过相关文件」互补。
 
 ## 5. 评审门与交付载体（本节点）
