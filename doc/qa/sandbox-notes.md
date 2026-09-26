@@ -1,10 +1,10 @@
 # Flywheel QA Sandbox Notes
 
-The `flywheel-qa-sandbox` repository is an isolated GitHub fork of Flywheel used by the QA test-slot framework to exercise **real Runner** behavior end to end. Each slot clones this repository into its own temporary workspace under `/tmp/flywheel-test-slot-<N>/`, starts a slot-local Bridge and Lead, and spawns a genuine Runner from a Linear issue. Nothing about the workflow is stubbed — the framework deliberately offers no synthetic fixture mode, because the failures it is built to catch (worktree collisions, gate deadlocks, branch/PR wiring, teardown leaks) only appear on the real path.
+The `flywheel-qa-sandbox` repository is the QA test-slot framework's isolated target for exercising **real Runner** behavior end to end. Each slot clones the sandbox, starts a slot-local Bridge and Lead, and passes a real Linear issue through the PreHydrator—the component that turns issue data into Runner context—before spawning a genuine Runner. The framework deliberately has no synthetic fixture mode because failures such as worktree collisions, gate deadlocks, branch/PR wiring errors, and teardown leaks only appear on the real path.
 
-That isolation is what makes the fork a safe blast radius. A test can create branches, commit, push, open pull requests, block on gates, and be torn down without touching production repositories, production Discord channels, or the production alert queue. The slot-suffixed clone basename (`project-slot-<N>`) keeps WorktreeManager-derived Runner branches from colliding on the sandbox remote when two slots run the same issue, and `FLYWHEEL_RUNNER_START_POINT` lets a slot Bridge start Runner worktrees from a selected sandbox branch so framework changes travel the same Git and GitHub operations a live run would.
+That isolation gives the fixture a safe blast radius. A slot can create branches, commit, push, open pull requests, and block on gates inside the sandbox clone without touching production repositories, Discord channels, alert queues, or databases. The slot-suffixed clone basename (`project-slot-<N>`) prevents WorktreeManager-derived branches from colliding when slots run the same issue, while `FLYWHEEL_RUNNER_START_POINT` lets only the slot Bridge start Runner worktrees from a selected sandbox branch.
 
-The sandbox is disposable integration-test infrastructure, not a second source of truth. Its contents mirror Flywheel closely enough to be realistic, but any state here may be reset or rewritten by the next QA run. Work should stay inside the slot clone and go through the framework's `test-deploy.sh` / `inject-linear-issue.sh` / `test-teardown.sh` scripts so concurrent slots do not collide and residual worktrees, branches, and local databases get cleaned up. Production Leads and Runners must not pick up sandbox fixture issues.
+The sandbox is disposable, repeatable integration-test infrastructure rather than a second source of truth. Every run should stay inside its clone and follow the `test-deploy.sh` → `inject-linear-issue.sh` → `test-teardown.sh` lifecycle so concurrent slots remain isolated and residual worktrees, branches, processes, and local databases are cleaned up. FLY-202 is a test-slot fixture only; production Leads and Runners must not pick it up.
 
 ## Top-level directories
 
@@ -44,9 +44,10 @@ The sandbox is disposable integration-test infrastructure, not a second source o
 ## `doc/` listing
 
 Command: `ls -R doc/ | head -50`
+Locale: `LC_ALL=C`
 
 ```text
-FLY-202-generalized-e2e
+FLY-145-s6-retry-product-test
 FLY-202-qa-sandbox-fixture
 VERSION
 architecture
@@ -56,8 +57,17 @@ qa
 reference
 retro
 
-doc//FLY-202-generalized-e2e:
+doc//FLY-145-s6-retry-product-test:
+design-review.md
 design.html
+exploration.md
+flow.mmd
+flow.svg
+model.mmd
+model.svg
+plan.md
+progress.md
+research.md
 
 doc//FLY-202-qa-sandbox-fixture:
 FLY-202-d1-e2e-chain.mmd
@@ -87,13 +97,4 @@ v2.0-product-vision.md
 
 doc//architecture/archive:
 v0.1.0-flywheel-orchestrator.md
-
-doc//engineer:
-deep-research
-exploration
-implementation
-onboarding
-plan
-qa
-research
 ```
