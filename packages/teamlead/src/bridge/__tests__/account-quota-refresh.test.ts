@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ClaudeAccountDetailStore } from "../../claude-quota/account-detail-store.js";
+import type { ClaudeChargeSummary } from "../../claude-quota/charge-receipt-observer.js";
+import type { ClaudeChargeStore } from "../../claude-quota/charge-receipt-store.js";
 import type { CodexAccountQuotaStore } from "../../codex-quota/codex-account-quota-store.js";
 import type { CodexSubscriptionStore } from "../../codex-quota/codex-subscription-store.js";
 import { createCodexReadingScheduler } from "../../codex-quota/reading-scheduler.js";
@@ -13,6 +15,7 @@ import {
 	type CodexAccountQuotaRefreshDeps,
 	createAccountQuotaRefresh,
 	createAccountReadingsRefresh,
+	createClaudeChargeRefresh,
 	createCodexAccountQuotaRefresh,
 	scheduledReadingsRefresh,
 } from "../account-quota-refresh.js";
@@ -40,6 +43,7 @@ type HarnessDeps = CodexAccountQuotaRefreshDeps & {
 	) => Promise<ClaudeAccountDetailStore>;
 	writeClaudeAccountDetailStore: (store: ClaudeAccountDetailStore) => void;
 	vercel?: AccountQuotaRefreshDeps["vercel"];
+	refreshClaudeCharges?: AccountQuotaRefreshDeps["refreshClaudeCharges"];
 };
 
 function harness(overrides: Partial<HarnessDeps> = {}) {
@@ -84,6 +88,7 @@ function harness(overrides: Partial<HarnessDeps> = {}) {
 			observeClaudeAccountDetails: deps.observeClaudeAccountDetails,
 			writeClaudeAccountDetailStore: deps.writeClaudeAccountDetailStore,
 			vercel: deps.vercel,
+			refreshClaudeCharges: deps.refreshClaudeCharges,
 			warn: deps.warn,
 		}),
 	};
@@ -516,5 +521,130 @@ describe("FLY-2830 — scheduled readings also read Claude cards", () => {
 			() => undefined,
 		);
 		await expect(run()).rejects.toThrow("codex_round_timeout");
+	});
+});
+
+describe("FLY-2897 — Claude charge receipt refresh", () => {
+	const chargeStore: ClaudeChargeStore = {
+		version: 1,
+		generatedAt: "2026-09-25T23:40:00.000Z",
+		accounts: [],
+	};
+	const summary: ClaudeChargeSummary = {
+		accounts: 5,
+		ok: 3,
+		canceled: 0,
+		failed: ["school:auth_invalid/invalid_grant"],
+	};
+
+	function chargeHarness(
+		observe: (
+			signal: AbortSignal,
+		) => Promise<{ store: ClaudeChargeStore; summary: ClaudeChargeSummary }>,
+		write: (store: ClaudeChargeStore) => void = vi.fn(),
+	) {
+		const lines: string[] = [];
+		const refresh = createClaudeChargeRefresh({
+			ceilingMs: 1_000,
+			observe,
+			write,
+			log: (line) => lines.push(line),
+		});
+		return { refresh, lines, write };
+	}
+
+	it("writes the observed store and logs only counts and codes", async () => {
+		const write = vi.fn();
+		const { refresh, lines } = chargeHarness(
+			async () => ({ store: chargeStore, summary }),
+			write,
+		);
+		await expect(refresh()).resolves.toEqual(summary);
+		expect(write).toHaveBeenCalledWith(chargeStore);
+		expect(lines).toEqual([
+			"[claude-charge] accounts=5 ok=3 canceled=0 failed=1 failures=school:auth_invalid/invalid_grant",
+		]);
+	});
+
+	it("coalesces concurrent calls into one round", async () => {
+		let release!: () => void;
+		const observe = vi.fn(
+			() =>
+				new Promise<{ store: ClaudeChargeStore; summary: ClaudeChargeSummary }>(
+					(resolve) => {
+						release = () => resolve({ store: chargeStore, summary });
+					},
+				),
+		);
+		const { refresh } = chargeHarness(observe);
+		const first = refresh();
+		const second = refresh();
+		release();
+		await Promise.all([first, second]);
+		expect(observe).toHaveBeenCalledTimes(1);
+		const third = refresh();
+		release();
+		await third;
+		expect(observe).toHaveBeenCalledTimes(2);
+	});
+
+	it("aborts the observer at its ceiling and gives up without writing past a hard limit", async () => {
+		vi.useFakeTimers();
+		try {
+			const signals: AbortSignal[] = [];
+			const write = vi.fn();
+			const { refresh } = chargeHarness((signal) => {
+				signals.push(signal);
+				return new Promise(() => {});
+			}, write);
+			const pending = refresh();
+			const settled = pending.catch((error: Error) => error.message);
+			await vi.advanceTimersByTimeAsync(1_000);
+			expect(signals[0]?.aborted).toBe(true);
+			await vi.advanceTimersByTimeAsync(5_000);
+			await expect(settled).resolves.toBe("timeout");
+			expect(write).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("turns any failure into a bare code", async () => {
+		const unreadable = chargeHarness(async () => {
+			throw new Error("accounts_unreadable");
+		});
+		await expect(unreadable.refresh()).rejects.toThrow("accounts_unreadable");
+		const leaky = chargeHarness(
+			async () => ({ store: chargeStore, summary }),
+			() => {
+				throw new Error(
+					"EACCES: permission denied, open '/Users/x/.flywheel/claude-quota/charge-receipts.json.tmp-1'",
+				);
+			},
+		);
+		await expect(leaky.refresh()).rejects.toThrow(/^error$/);
+		expect(leaky.lines).toEqual([]);
+	});
+
+	it("runs as an extra leg of the on-demand refresh that never fails it", async () => {
+		const refreshClaudeCharges = vi.fn(async () => {
+			throw new Error("gog said x@example.com is gone");
+		});
+		const { refresh, deps } = harness({ refreshClaudeCharges });
+		await expect(refresh()).resolves.toMatchObject({ accountCount: 2 });
+		expect(refreshClaudeCharges).toHaveBeenCalledTimes(1);
+		expect(deps.warn).toHaveBeenCalledWith(
+			"[Bridge] Claude charge refresh failed",
+			"error",
+		);
+		expect(
+			JSON.stringify((deps.warn as ReturnType<typeof vi.fn>).mock.calls),
+		).not.toContain("@");
+	});
+
+	it("keeps the on-demand refresh unchanged without the leg", async () => {
+		const { refresh, calls } = harness();
+		await refresh();
+		expect(calls).not.toContain("refreshClaudeCharges");
 	});
 });

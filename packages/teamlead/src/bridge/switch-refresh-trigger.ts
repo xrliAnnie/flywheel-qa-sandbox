@@ -11,6 +11,9 @@
  *      (request file + SIGUSR1), and re-read Codex + Claude cards in the Bridge.
  * Switches that arrive while a round is in flight coalesce into one trailing
  * round. Nothing here throws into the tick; failures are logged.
+ *
+ * FLY-2897: an optional third, independent leg re-reads the Claude charge
+ * receipts, so the next-charge cells are fresh after a switch too.
  */
 
 import type { QuotaDaemonWakeOutcome } from "./quota-daemon-wake.js";
@@ -34,6 +37,8 @@ export interface SwitchRefreshTriggerDeps {
 	requestClaudeSweep: (reason: SwitchRefreshReason) => ClaudeSweepLegResult;
 	/** Leg B: the Bridge-side re-read (Codex + Claude cards, no Vercel). */
 	refreshBridge: () => Promise<unknown>;
+	/** FLY-2897 leg C: the shared Claude charge-receipt round. */
+	refreshClaudeCharges?: () => Promise<unknown>;
 	persistSwitchRecord?: (record: SwitchRecord) => void;
 	readPersistedSwitchRecord?: () => SwitchRecord | null;
 	now?: () => number;
@@ -126,9 +131,11 @@ export function createSwitchRefreshTrigger(
 	};
 
 	const runOnce = async (reason: SwitchRefreshReason) => {
-		const [sweep, bridge] = await Promise.allSettled([
+		const charges = deps.refreshClaudeCharges;
+		const [sweep, bridge, charge] = await Promise.allSettled([
 			Promise.resolve().then(() => deps.requestClaudeSweep(reason)),
 			Promise.resolve().then(() => deps.refreshBridge()),
+			charges ? Promise.resolve().then(() => charges()) : undefined,
 		]);
 		const leg: ClaudeSweepLegResult =
 			sweep.status === "fulfilled"
@@ -141,8 +148,13 @@ export function createSwitchRefreshTrigger(
 			bridge.status === "fulfilled"
 				? "ok"
 				: `failed:${switchRefreshFailureCode(bridge.reason)}`;
+		const chargeRefresh = !charges
+			? ""
+			: charge.status === "fulfilled"
+				? " chargeRefresh=ok"
+				: ` chargeRefresh=failed:${switchRefreshFailureCode(charge.reason)}`;
 		log(
-			`[switch-refresh] reason=${reason} codexGen=${baseline.codex ?? "none"} claudeGen=${baseline.claude ?? "none"} sweepRequest=${leg.sweepRequest} wake=${leg.wake} bridgeRefresh=${bridgeRefresh}`,
+			`[switch-refresh] reason=${reason} codexGen=${baseline.codex ?? "none"} claudeGen=${baseline.claude ?? "none"} sweepRequest=${leg.sweepRequest} wake=${leg.wake} bridgeRefresh=${bridgeRefresh}${chargeRefresh}`,
 		);
 	};
 

@@ -117,6 +117,17 @@ import {
 	readClaudeAccountDetailStore,
 	writeClaudeAccountDetailStore,
 } from "../claude-quota/account-detail-store.js";
+import {
+	claudeChargeTargets,
+	createGogRunner,
+	observeClaudeCharges,
+} from "../claude-quota/charge-receipt-observer.js";
+import { createClaudeChargeScheduler } from "../claude-quota/charge-receipt-scheduler.js";
+import {
+	defaultClaudeChargeStorePath,
+	readClaudeChargeStore,
+	writeClaudeChargeStore,
+} from "../claude-quota/charge-receipt-store.js";
 import { createCodexQuotaDisabledAdmissionReplay } from "../codex-quota/admission-replay.js";
 import { projectCodexQuotaAudit } from "../codex-quota/audit.js";
 import { CodexQuotaAvailability } from "../codex-quota/availability.js";
@@ -254,6 +265,7 @@ import { reconcileCodexAccountSubscriptionIdentityKeys } from "./account-quota-p
 import {
 	createAccountQuotaRefresh,
 	createAccountReadingsRefresh,
+	createClaudeChargeRefresh,
 	createCodexAccountQuotaRefresh,
 	scheduledReadingsRefresh,
 } from "./account-quota-refresh.js";
@@ -1706,6 +1718,13 @@ export interface BridgeAppOptions {
 		storePath: string;
 		latest?: () => VercelAccountStore | null;
 	};
+	/**
+	 * FLY-2897: the Claude charge-receipt readings behind the next-charge
+	 * cells. Absent ⇒ never read (tests stay off the machine's real file).
+	 */
+	accountPageClaudeCharges?: {
+		storePath: string;
+	};
 	/** FLY-1995: additive health summary plus master-only profiler diagnostics. */
 	eventLoopAttribution?: {
 		healthSnapshot(): EventLoopHealthSnapshot;
@@ -2198,9 +2217,20 @@ export function createBridgeApp(
 					} catch {
 						lastSwitch = null;
 					}
+					// FLY-2897: a broken receipt file only drops the receipt facts.
+					let claudeCharges: ReturnType<typeof readClaudeChargeStore> = null;
+					const chargesPage = opts?.accountPageClaudeCharges;
+					if (chargesPage) {
+						try {
+							claudeCharges = readClaudeChargeStore(chargesPage.storePath);
+						} catch {
+							claudeCharges = null;
+						}
+					}
 					const html = renderAccountsPageHtml(
 						buildAccountQuotaView(snapshot, {
 							claudeEmails,
+							claudeCharges,
 							subscriptionManual: {
 								confirmations: manual.data?.confirmations ?? [],
 								identityKeys,
@@ -9164,6 +9194,26 @@ export async function startBridge(
 		});
 	const writeClaudeDetails = (details: ClaudeAccountDetailStore) =>
 		writeClaudeAccountDetailStore(claudeAccountDetailStorePath, details);
+	// FLY-2897: one Claude charge-receipt round (gog, Anthropic receipt mail
+	// only) for the page refresh, the post-switch refresh and the daily tick.
+	const claudeChargeStorePath = defaultClaudeChargeStorePath();
+	const runGog = createGogRunner();
+	const refreshClaudeCharges = createClaudeChargeRefresh({
+		ceilingMs: 90_000,
+		observe: (signal) =>
+			observeClaudeCharges({
+				// Re-read per round: an account or mailbox change needs no restart.
+				targets: claudeChargeTargets(readStoreStrict(defaultStorePath())),
+				previous: readClaudeChargeStore(claudeChargeStorePath),
+				runGog,
+				signal,
+			}),
+		write: (charges) => writeClaudeChargeStore(claudeChargeStorePath, charges),
+	});
+	const claudeChargeScheduler = createClaudeChargeScheduler({
+		refresh: refreshClaudeCharges,
+		readStore: () => readClaudeChargeStore(claudeChargeStorePath),
+	});
 	const refreshCodexAccountQuota = createAccountQuotaRefresh({
 		ceilingMs: 90_000,
 		refreshCodex: refreshCodexReadings,
@@ -9186,6 +9236,7 @@ export async function startBridge(
 			discardStale: () => discardVercelAccountStore(vercelAccountStorePath),
 			now: () => new Date(),
 		},
+		refreshClaudeCharges,
 	});
 	// FLY-2830: Codex readings + Claude cards/subscriptions (never Vercel),
 	// shared by the reading scheduler and the post-switch refresh.
@@ -9215,6 +9266,7 @@ export async function startBridge(
 			if (!outcome.codex.ok) throw outcome.codex.error;
 			if (!outcome.claude.ok) throw new Error("claude_details_failed");
 		},
+		refreshClaudeCharges,
 		persistSwitchRecord: (record) =>
 			writeSwitchRecord(switchRecordPath, record),
 		readPersistedSwitchRecord: () => readSwitchRecord(switchRecordPath),
@@ -9680,6 +9732,7 @@ export async function startBridge(
 				storePath: vercelAccountStorePath,
 				latest: () => vercelAccountLatest.get(),
 			},
+			accountPageClaudeCharges: { storePath: claudeChargeStorePath },
 			vercelToken,
 			reportBlobStore,
 			reportHostingCredentials,
@@ -12968,6 +13021,13 @@ export async function startBridge(
 				// FLY-2830: after the maintenance reconcile, so a manual
 				// `codex-profile use` is seen in the same tick.
 				switchRefreshTrigger.tick();
+				// FLY-2897: daily receipt round; its own try so it can never
+				// skip the triggers above.
+				try {
+					claudeChargeScheduler.tick();
+				} catch {
+					console.warn("[claude-charge] scheduler tick failed");
+				}
 			}
 		},
 		onAutoNarrowGateTick: async () => {

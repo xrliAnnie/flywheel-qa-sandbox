@@ -11,9 +11,14 @@
  * account. Its attempt is published to Bridge memory before it is written, so
  * a failed write can never leave an older success on the page; it never fails
  * the refresh and logs only fixed text (the token must not reach any log).
+ *
+ * FLY-2897: an optional on-demand Claude charge-receipt leg (see
+ * createClaudeChargeRefresh) that, like Vercel, never fails the refresh.
  */
 
 import type { ClaudeAccountDetailStore } from "../claude-quota/account-detail-store.js";
+import type { ClaudeChargeSummary } from "../claude-quota/charge-receipt-observer.js";
+import type { ClaudeChargeStore } from "../claude-quota/charge-receipt-store.js";
 import type { CodexAccountQuotaStore } from "../codex-quota/codex-account-quota-store.js";
 import type { CodexSubscriptionStore } from "../codex-quota/codex-subscription-store.js";
 import {
@@ -58,6 +63,8 @@ export interface AccountQuotaRefreshDeps {
 		discardStale: () => void;
 		now: () => Date;
 	};
+	/** FLY-2897: the shared single-flight receipt round; never fails the refresh. */
+	refreshClaudeCharges?: () => Promise<unknown>;
 	/** Used by the Vercel branch; the Codex round has its own. */
 	warn?: (message: string, detail: string) => void;
 }
@@ -83,6 +90,65 @@ async function withCeiling<T>(
 	} finally {
 		clearTimeout(ceiling);
 	}
+}
+
+const FAILURE_CODE = /^[a-z0-9_:.-]{1,60}$/;
+
+/** A bounded, path-free failure code: the message only when it already is one. */
+function failureCode(error: unknown): string {
+	const message = error instanceof Error ? error.message : "";
+	return FAILURE_CODE.test(message) ? message : "error";
+}
+
+/** Past the cooperative ceiling, how long a hung round may still take. */
+const CHARGE_HARD_GRACE_MS = 5_000;
+
+export interface ClaudeChargeRefreshDeps {
+	/** Cooperative ceiling: the observer's signal aborts here. */
+	ceilingMs: number;
+	observe: (
+		signal: AbortSignal,
+	) => Promise<{ store: ClaudeChargeStore; summary: ClaudeChargeSummary }>;
+	write: (store: ClaudeChargeStore) => void;
+	log?: (line: string) => void;
+}
+
+/**
+ * FLY-2897: one receipt round shared by the daily scheduler, the post-switch
+ * refresh and the on-demand page refresh. A round that outlives its ceiling
+ * by the hard grace is abandoned unwritten. Failures surface as bare codes.
+ */
+export function createClaudeChargeRefresh(
+	deps: ClaudeChargeRefreshDeps,
+): () => Promise<ClaudeChargeSummary> {
+	const log = deps.log ?? ((line: string) => console.warn(line));
+	return singleFlight(async () => {
+		let hard: ReturnType<typeof setTimeout> | undefined;
+		try {
+			const { store, summary } = await Promise.race([
+				withCeiling(deps.ceilingMs, deps.observe),
+				new Promise<never>((_resolve, reject) => {
+					hard = setTimeout(
+						() => reject(new Error("timeout")),
+						deps.ceilingMs + CHARGE_HARD_GRACE_MS,
+					);
+				}),
+			]);
+			deps.write(store);
+			const failures =
+				summary.failed.length === 0
+					? ""
+					: ` failures=${summary.failed.join(",")}`;
+			log(
+				`[claude-charge] accounts=${summary.accounts} ok=${summary.ok} canceled=${summary.canceled} failed=${summary.failed.length}${failures}`,
+			);
+			return summary;
+		} catch (error) {
+			throw new Error(failureCode(error));
+		} finally {
+			clearTimeout(hard);
+		}
+	});
 }
 
 export function createCodexAccountQuotaRefresh(
@@ -157,6 +223,9 @@ export function createAccountQuotaRefresh(
 						refreshVercel(vercel, signal, warn),
 					)
 				: undefined,
+			deps.refreshClaudeCharges?.().catch((error: unknown) => {
+				warn("[Bridge] Claude charge refresh failed", failureCode(error));
+			}),
 		]);
 		if (codexResult.status === "rejected") throw codexResult.reason;
 		if (claudeResult.status === "rejected") throw claudeResult.reason;

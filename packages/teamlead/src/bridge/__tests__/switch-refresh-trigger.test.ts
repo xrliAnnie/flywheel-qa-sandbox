@@ -265,3 +265,67 @@ describe("FLY-2830 Claude sweep requester", () => {
 		expect(calls).toEqual(["write:claude_switch", "wake"]);
 	});
 });
+
+describe("FLY-2897 SwitchRefreshTrigger — Claude charge receipt leg", () => {
+	it("re-reads the receipts alongside the other legs and logs its outcome", async () => {
+		const order: string[] = [];
+		const { state, trigger } = harness({
+			refreshClaudeCharges: async () => {
+				order.push("charges");
+			},
+		});
+		trigger.tick();
+		state.codex = 2;
+		trigger.tick();
+		await trigger.settled();
+		expect(order).toEqual(["charges"]);
+		expect(state.refreshes).toBe(1);
+		expect(state.lines).toContain(
+			"[switch-refresh] reason=codex_switch codexGen=2 claudeGen=10 sweepRequest=ok wake=signaled bridgeRefresh=ok chargeRefresh=ok",
+		);
+	});
+
+	it("keeps the other legs when the receipt leg fails, logging a bare code", async () => {
+		const { state, trigger } = harness({
+			refreshClaudeCharges: async () => {
+				throw new Error("gog said x@example.com expired");
+			},
+		});
+		trigger.tick();
+		state.codex = 2;
+		trigger.tick();
+		await trigger.settled();
+		expect(state.sweeps).toEqual(["codex_switch"]);
+		expect(state.refreshes).toBe(1);
+		expect(state.lines).toContain(
+			"[switch-refresh] reason=codex_switch codexGen=2 claudeGen=10 sweepRequest=ok wake=signaled bridgeRefresh=ok chargeRefresh=failed:error",
+		);
+		const timeout = harness({
+			refreshClaudeCharges: async () => {
+				throw new Error("timeout");
+			},
+		});
+		timeout.trigger.tick();
+		timeout.state.codex = 2;
+		timeout.trigger.tick();
+		await timeout.trigger.settled();
+		expect(timeout.state.lines.at(-1)).toMatch(
+			/ chargeRefresh=failed:timeout$/,
+		);
+	});
+
+	it("does not wait for a slow receipt leg to start the other two", async () => {
+		const slow = deferred();
+		const { state, trigger } = harness({
+			refreshClaudeCharges: () => slow.promise,
+		});
+		trigger.tick();
+		state.codex = 2;
+		trigger.tick();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(state.sweeps).toEqual(["codex_switch"]);
+		expect(state.refreshes).toBe(1);
+		slow.resolve();
+		await trigger.settled();
+	});
+});
