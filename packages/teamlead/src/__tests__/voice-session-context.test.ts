@@ -803,6 +803,55 @@ describe("voice session context v2: prompt plus initialItems (FLY-2885 T8)", () 
 			expect(reassemble(result, "memory/MEMORY.md")).toBe(memory);
 		}, 30_000);
 
+		it("gives lines back when the whole segment recounts over 2,000, losing and reordering none", () => {
+			// A tokenizer whose newline costs 50: the per-line running sum
+			// (1 per newline) says 6 lines fit, the whole-segment count says 5.
+			const newlineHeavy = (value: string) =>
+				xTokens(value) + 50 * (value.split("\n").length - 1);
+			const memory = Array.from(
+				// 11 lines: the last segment is the one that must give a line back.
+				{ length: 11 },
+				(_, index) => `${index}:${"X".repeat(300)}`,
+			).join("\n");
+			const result = build("ID", [["memory/MEMORY.md", memory]], {
+				countTokens: newlineHeavy,
+			});
+			const bodies = [
+				...result.realtime.initialItems.map((item) => itemBody(item.text)),
+				...continuedSegments(result.realtime.prompt).map(
+					(segment) => segment.body,
+				),
+			];
+			expect(bodies.map((body) => body.split("\n").length)).toEqual([5, 5, 1]);
+			for (const item of result.realtime.initialItems)
+				expect(newlineHeavy(item.text) + 8).toBeLessThanOrEqual(2_000);
+			expect(reassemble(result, "memory/MEMORY.md")).toBe(memory);
+		});
+
+		it("keeps order when a line fits by its own count but not joined to its title", () => {
+			// X and Y cost 1 each; a segment that opens with an X line costs 500
+			// more once joined to its title than its parts suggest.
+			const joinHeavy = (value: string) =>
+				value.replace(/[^XY]/gu, "").length +
+				(value.includes("】\nX") ? 500 : 0);
+			const opener = "Y".repeat(400);
+			const heavy = "X".repeat(1_700);
+			const memory = [opener, heavy, "b"].join("\n");
+			const result = build("ID", [["memory/MEMORY.md", memory]], {
+				countTokens: joinHeavy,
+			});
+			expect(
+				result.realtime.initialItems.map((item) => itemBody(item.text)),
+			).toEqual([opener]);
+			// The heavy line is prompt-only, and "b" stays behind it.
+			expect(
+				continuedSegments(result.realtime.prompt).map(
+					(segment) => segment.body,
+				),
+			).toEqual([heavy, "b"]);
+			expect(reassemble(result, "memory/MEMORY.md")).toBe(memory);
+		});
+
 		it("sends a line over 2,000 tokens but under 8,000 bytes, and everything after it, to the prompt", () => {
 			const long = "X".repeat(2_500);
 			const memory = ["first", long, "after-1", "after-2"].join("\n");

@@ -507,10 +507,18 @@ function memorySegments(
 		const title = segmentTitle(entry.relativePath, widest, widest);
 		const titleBytes = Buffer.byteLength(title, "utf8");
 		const titleTokens = count(title);
-		const fits = (bytes: number, tokens: number) =>
-			titleBytes + bytes <= VOICE_MEMORY_SEGMENT_MAX_BYTES &&
-			titleTokens + tokens + VOICE_INITIAL_ITEM_WRAPPER_TOKENS <=
-				VOICE_MEMORY_SEGMENT_MAX_TOKENS;
+		const lineBytes = lines.map((line) => Buffer.byteLength(line, "utf8"));
+		const lineTokens: Array<number | undefined> = [];
+		// Never hand the tokenizer a line already past the byte limit.
+		const aloneFits = (index: number) => {
+			if (titleBytes + lineBytes[index]! > VOICE_MEMORY_SEGMENT_MAX_BYTES)
+				return false;
+			lineTokens[index] ??= count(lines[index]!);
+			return (
+				titleTokens + lineTokens[index]! + VOICE_INITIAL_ITEM_WRAPPER_TOKENS <=
+				VOICE_MEMORY_SEGMENT_MAX_TOKENS
+			);
+		};
 		const exactFit = (body: string[]) => {
 			const text = title + body.join("\n");
 			return (
@@ -520,46 +528,42 @@ function memorySegments(
 			);
 		};
 		const chunks: Array<{ lines: string[]; promptOnly: boolean }> = [];
-		let current: string[] = [];
-		let bytes = 0;
-		let tokens = 0;
-		// The running sum per line only decides where to cut; each closed
-		// segment is recounted whole and gives lines back until it fits.
-		const close = () => {
-			const carried: string[] = [];
-			let fit = exactFit(current);
-			while (!fit && current.length > 1) {
-				carried.unshift(current.pop()!);
-				fit = exactFit(current);
+		let next = 0;
+		while (next < lines.length) {
+			if (!aloneFits(next)) {
+				chunks.push({ lines: [lines[next]!], promptOnly: true });
+				next += 1;
+				continue;
 			}
-			chunks.push({ lines: current, promptOnly: !fit });
-			current = [];
-			bytes = 0;
-			tokens = 0;
-			for (const line of carried) add(line);
-		};
-		const add = (line: string): void => {
-			const lineBytes = Buffer.byteLength(line, "utf8") + 1;
-			// Never hand the tokenizer a line already past the byte limit.
-			const alone =
-				titleBytes + lineBytes - 1 <= VOICE_MEMORY_SEGMENT_MAX_BYTES;
-			const lineTokens = alone ? count(line) + 1 : 0;
-			if (!alone || !fits(lineBytes - 1, lineTokens - 1)) {
-				if (current.length > 0) close();
-				chunks.push({ lines: [line], promptOnly: true });
-				return;
+			// Grow by the per-line running sum (one token per newline)...
+			const body = [lines[next]!];
+			let bytes = titleBytes + lineBytes[next]!;
+			let tokens = titleTokens + lineTokens[next]!;
+			for (let index = next + 1; index < lines.length; index += 1) {
+				if (!aloneFits(index)) break;
+				const addedBytes = bytes + 1 + lineBytes[index]!;
+				const addedTokens = tokens + 1 + lineTokens[index]!;
+				if (
+					addedBytes > VOICE_MEMORY_SEGMENT_MAX_BYTES ||
+					addedTokens + VOICE_INITIAL_ITEM_WRAPPER_TOKENS >
+						VOICE_MEMORY_SEGMENT_MAX_TOKENS
+				)
+					break;
+				body.push(lines[index]!);
+				bytes = addedBytes;
+				tokens = addedTokens;
 			}
-			if (
-				current.length > 0 &&
-				!fits(bytes + lineBytes - 1, tokens + lineTokens - 1)
-			)
-				close();
-			current.push(line);
-			bytes += lineBytes;
-			tokens += lineTokens;
-		};
-		for (const line of lines) add(line);
-		if (current.length > 0) close();
+			// ...then recount the whole segment and give lines back to the next
+			// one until it fits. A lone line that still does not fit is
+			// prompt-only.
+			let fit = exactFit(body);
+			while (!fit && body.length > 1) {
+				body.pop();
+				fit = exactFit(body);
+			}
+			chunks.push({ lines: body, promptOnly: !fit });
+			next += body.length;
+		}
 		chunks.forEach((chunk, index) =>
 			segments.push({
 				relativePath: entry.relativePath,
