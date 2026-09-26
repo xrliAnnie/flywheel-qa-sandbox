@@ -149,8 +149,11 @@ function deadExecEngineClockBaseMs(): number {
 	return Date.now() + DEAD_EXEC_ENGINE_CLOCK_MARGIN_MS;
 }
 
-async function storeWithIntent(target: "design" | "implement" | "qa") {
-	const store = await StateStore.create(":memory:");
+async function storeWithIntent(
+	target: "design" | "implement" | "qa",
+	storagePath = ":memory:",
+) {
+	const store = await StateStore.create(storagePath);
 	const seed = pinLegacyWorkflowSeedAgents(
 		legacyWorkflowSeeds().find(
 			(candidate) => candidate.templateId === "tpl_eng_heavy",
@@ -1093,6 +1096,324 @@ async function storeWithFreshVerificationIntent(): Promise<{
 }
 
 describe("WorkflowEngineDispatcher", () => {
+	it.each([
+		"engine_predecessor_head_invalid",
+		"engine_resume_admission_invalid",
+		"engine_materialized_head_invalid",
+		"engine_rework_replacement_context_invalid",
+		"lineage_missing",
+	])(
+		"FLY-2922 records permanent pre-admission failure %s",
+		async (errorCode) => {
+			const store = await storeWithIntent("implement");
+			try {
+				const dispatcher = new WorkflowEngineDispatcher({
+					store,
+					startDispatcher: inertStartDispatcher(),
+					env: WORKFLOW_ON,
+					now: () => new Date("2026-09-26T12:00:00.000Z"),
+					resolvePredecessorHead: async () => {
+						throw new Error(errorCode);
+					},
+				});
+				expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+				expect(store.getWorkflowRun("run-1")?.status).toBe("held");
+				expect(store.getWorkflowRunNode("run-1", "implement", 1)).toMatchObject(
+					{ state: "failed", execution_id: "implement-1" },
+				);
+				expect(
+					store
+						.listWorkflowSideEffects("run-1")
+						.find((row) => row.execution_id === "implement-1"),
+				).toMatchObject({ state: "abandoned" });
+				const failures = () =>
+					store
+						.listWorkflowRunEvents("run-1")
+						.filter((event) => event.kind === "run_recovery_required");
+				expect(failures()).toEqual([
+					expect.objectContaining({
+						execution_id: "implement-1",
+						payload: expect.objectContaining({
+							reason: "pre_admission_failed",
+							errorCode,
+							attempt: 1,
+							launchOrdinal: 1,
+						}),
+					}),
+				]);
+				await dispatcher.reconcile();
+				expect(failures()).toHaveLength(1);
+				expect(
+					store.getWorkflowExecutionBinding("implement-1"),
+				).toBeUndefined();
+			} finally {
+				store.close();
+			}
+		},
+	);
+
+	it("FLY-2922 retains transient pre-admission observations across dispatcher restart", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2922-pre-admission-"));
+		const storagePath = join(root, "test.db");
+		let store = await storeWithIntent("implement", storagePath);
+		try {
+			let now = Date.parse("2026-09-26T12:00:00.000Z");
+			const makeDispatcher = () =>
+				new WorkflowEngineDispatcher({
+					store,
+					startDispatcher: inertStartDispatcher(),
+					env: WORKFLOW_ON,
+					now: () => new Date(now),
+					resolvePredecessorHead: async () => {
+						throw new Error("git_head_unavailable");
+					},
+				});
+			await makeDispatcher().reconcile();
+			now += 60_000;
+			await makeDispatcher().reconcile();
+			expect(store.getWorkflowRun("run-1")?.status).toBe("active");
+			store.close();
+			store = await StateStore.create(storagePath);
+			now += 9 * 60_000;
+			await makeDispatcher().reconcile();
+			expect(store.getWorkflowRun("run-1")?.status).toBe("held");
+			expect(
+				store
+					.listWorkflowRunEvents("run-1")
+					.filter((event) => event.kind === "pre_admission_failure_observed")
+					.map((event) => event.payload.consecutiveCount),
+			).toEqual([1, 2, 3]);
+			expect(
+				store
+					.listWorkflowRunEvents("run-1")
+					.find((event) => event.kind === "run_recovery_required")?.payload,
+			).toMatchObject({
+				reason: "pre_admission_failed",
+				firstObservedAt: "2026-09-26T12:00:00.000Z",
+				consecutiveCount: 3,
+			});
+		} finally {
+			store.close();
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("FLY-2922 leaves repeated land executor failures to the land protocol", async () => {
+		const store = await storeWithLandIntent();
+		try {
+			let now = Date.parse("2026-09-26T12:00:00.000Z");
+			const landExecutor = vi.fn(async () => {
+				throw new Error("git_head_unavailable");
+			});
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: inertStartDispatcher(),
+				env: WORKFLOW_ON,
+				now: () => new Date(now),
+				landExecutor,
+			});
+			for (let i = 0; i < 4; i++) {
+				await dispatcher.reconcile();
+				now += 10 * 60_000;
+			}
+			expect(landExecutor).toHaveBeenCalledTimes(4);
+			expect(store.getWorkflowRun("run-land")?.status).toBe("active");
+			expect(store.listWorkflowSideEffects("run-land")[0]?.state).toBe(
+				"intent_recorded",
+			);
+			expect(
+				store
+					.listWorkflowRunEvents("run-land")
+					.filter((event) =>
+						[
+							"pre_admission_failure_observed",
+							"run_recovery_required",
+						].includes(event.kind),
+					),
+			).toHaveLength(0);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("FLY-2922 does not lose a permanent error after a transient error at the same timestamp", async () => {
+		const store = await storeWithIntent("implement");
+		try {
+			let errorCode = "git_head_unavailable";
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: inertStartDispatcher(),
+				env: WORKFLOW_ON,
+				now: () => new Date("2026-09-26T12:00:00.000Z"),
+				resolvePredecessorHead: async () => {
+					throw new Error(errorCode);
+				},
+			});
+			await dispatcher.reconcile();
+			errorCode = "engine_predecessor_head_invalid";
+			await dispatcher.reconcile();
+			expect(store.getWorkflowRun("run-1")?.status).toBe("held");
+		} finally {
+			store.close();
+		}
+	});
+
+	it("FLY-2922 counts distinct observations and resets transient history when the error changes", async () => {
+		const store = await storeWithIntent("implement");
+		try {
+			let now = Date.parse("2026-09-26T12:00:00.000Z");
+			let errorCode = "git_head_unavailable";
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: inertStartDispatcher(),
+				env: WORKFLOW_ON,
+				now: () => new Date(now),
+				resolvePredecessorHead: async () => {
+					throw new Error(errorCode);
+				},
+			});
+			for (let i = 0; i < 4; i++) await dispatcher.reconcile();
+			expect(
+				store
+					.listWorkflowRunEvents("run-1")
+					.filter((event) => event.kind === "pre_admission_failure_observed"),
+			).toHaveLength(1);
+			errorCode = "git_repository_unavailable";
+			for (let i = 0; i < 2; i++) {
+				now += 10 * 60_000;
+				await dispatcher.reconcile();
+			}
+			expect(store.getWorkflowRun("run-1")?.status).toBe("active");
+			now += 60_000;
+			await dispatcher.reconcile();
+			expect(store.getWorkflowRun("run-1")?.status).toBe("held");
+			expect(
+				store
+					.listWorkflowRunEvents("run-1")
+					.filter((event) => event.kind === "pre_admission_failure_observed")
+					.map((event) => event.payload.consecutiveCount),
+			).toEqual([1, 1, 2, 3]);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("FLY-2922 preserves admission that wins while a head lookup is pending", async () => {
+		const store = await storeWithIntent("implement");
+		try {
+			const now = "2026-09-26T12:00:00.000Z";
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: inertStartDispatcher(),
+				env: WORKFLOW_ON,
+				now: () => new Date(now),
+				resolvePredecessorHead: async () => {
+					expect(
+						store.admitGeneralizedWorkflowExecution({
+							runId: "run-1",
+							nodeId: "implement",
+							attempt: 1,
+							executionId: "implement-1",
+							now,
+							expiresAt: "2026-09-26T13:00:00.000Z",
+							absoluteDeadlineAt: "2026-09-27T12:00:00.000Z",
+							env: WORKFLOW_ON,
+						}),
+					).toMatchObject({ ok: true });
+					throw new Error("engine_predecessor_head_invalid");
+				},
+			});
+			await dispatcher.reconcile();
+			expect(store.getWorkflowRun("run-1")?.status).toBe("active");
+			expect(store.getWorkflowRunNode("run-1", "implement", 1)?.state).toBe(
+				"admitted",
+			);
+			expect(
+				store
+					.listWorkflowSideEffects("run-1")
+					.find((row) => row.execution_id === "implement-1")?.state,
+			).toBe("intent_recorded");
+			expect(
+				store
+					.listWorkflowRunEvents("run-1")
+					.filter((event) => event.kind === "run_recovery_required"),
+			).toHaveLength(0);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("FLY-2922 rolls back the entire failure episode when the run CAS fails", async () => {
+		const store = await storeWithIntent("implement");
+		try {
+			const db = (store as unknown as { db: { run(sql: string): void } }).db;
+			db.run(`CREATE TRIGGER fail_pre_admission_hold BEFORE UPDATE OF status ON workflow_run
+				WHEN NEW.status = 'held' BEGIN SELECT RAISE(ABORT, 'injected_hold_failure'); END`);
+			const before = {
+				events: store.listWorkflowRunEvents("run-1"),
+				effects: store.listWorkflowSideEffects("run-1"),
+				node: store.getWorkflowRunNode("run-1", "implement", 1),
+			};
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: inertStartDispatcher(),
+				env: WORKFLOW_ON,
+				resolvePredecessorHead: async () => {
+					throw new Error("engine_predecessor_head_invalid");
+				},
+			});
+			await dispatcher.reconcile();
+			expect(store.getWorkflowRun("run-1")?.status).toBe("active");
+			expect({
+				events: store.listWorkflowRunEvents("run-1"),
+				effects: store.listWorkflowSideEffects("run-1"),
+				node: store.getWorkflowRunNode("run-1", "implement", 1),
+			}).toEqual(before);
+			expect(store.listWorkflowAlertOutbox()).toHaveLength(0);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("FLY-2922 does not classify normal quota waiting as a pre-admission failure", async () => {
+		const store = await storeWithIntent("implement");
+		try {
+			let now = Date.parse("2026-09-26T12:00:00.000Z");
+			const paused = vi
+				.spyOn(store, "isCodexQuotaLaunchPaused")
+				.mockReturnValue(true);
+			const resolvePredecessorHead = vi.fn(async () => {
+				throw new Error("engine_predecessor_head_invalid");
+			});
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: inertStartDispatcher(),
+				env: WORKFLOW_ON,
+				now: () => new Date(now),
+				resolvePredecessorHead,
+			});
+			for (let i = 0; i < 4; i++) {
+				await dispatcher.reconcile();
+				now += 10 * 60_000;
+			}
+			expect(resolvePredecessorHead).not.toHaveBeenCalled();
+			expect(store.getWorkflowRun("run-1")?.status).toBe("active");
+			expect(
+				store
+					.listWorkflowRunEvents("run-1")
+					.filter((event) =>
+						[
+							"pre_admission_failure_observed",
+							"run_recovery_required",
+						].includes(event.kind),
+					),
+			).toHaveLength(0);
+			paused.mockRestore();
+		} finally {
+			store.close();
+		}
+	});
+
 	it("bounds resident fast retries to ten seconds and passes only owning projects", async () => {
 		const store = await StateStore.create(":memory:");
 		try {

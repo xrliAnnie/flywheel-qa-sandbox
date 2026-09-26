@@ -426,6 +426,28 @@ export class WorkflowEngineDispatcher {
 					else result.held += 1;
 				} catch (error) {
 					result.held += 1;
+					const message = error instanceof Error ? error.message : String(error);
+					const code = message.split(":", 1)[0]?.trim() ?? "";
+					this.options.store.recordWorkflowPreAdmissionFailure({
+						runId: intent.run_id,
+						nodeId: intent.node_id,
+						attempt: intent.attempt,
+						executionId: intent.execution_id,
+						launchOrdinal: intent.launch_ordinal,
+						errorCode: /^[a-z][a-z0-9_]{0,127}$/.test(code)
+							? code
+							: "dispatch_pre_admission_error",
+						rollbackMs: this.unlaunchedThresholdMs(
+							"FLYWHEEL_ENGINE_UNLAUNCHED_ROLLBACK_MS",
+							10 * 60_000,
+						),
+						now: this.now().toISOString(),
+						alertIdentity: this.resolveRunAlertIdentity(
+							run.project_name,
+							run.issue_id,
+							run.run_id,
+						),
+					});
 					this.log(
 						`workflow engine dispatch held for ${intent.execution_id}: ${
 							error instanceof Error ? error.message : String(error)

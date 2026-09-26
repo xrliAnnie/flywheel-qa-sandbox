@@ -60394,6 +60394,234 @@ export class StateStore {
 		).map((row) => this.workflowDeadExecutionWatchRow(row));
 	}
 
+	/** Record failures before admission, where no launch owner can exist yet. */
+	recordWorkflowPreAdmissionFailure(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+		launchOrdinal: number;
+		errorCode: string;
+		rollbackMs: number;
+		now: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+	}): { ok: true; held: boolean } | { ok: false; reason: string } {
+		if (
+			!input.runId ||
+			!input.nodeId ||
+			!input.executionId ||
+			!Number.isSafeInteger(input.attempt) ||
+			input.attempt < 1 ||
+			!Number.isSafeInteger(input.launchOrdinal) ||
+			input.launchOrdinal < 1 ||
+			!Number.isFinite(input.rollbackMs) ||
+			input.rollbackMs <= 0 ||
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!/^[a-z][a-z0-9_]{0,127}$/.test(input.errorCode)
+		)
+			return { ok: false, reason: "invalid_pre_admission_failure" };
+		let result: { ok: true; held: boolean } | { ok: false; reason: string } = {
+			ok: false,
+			reason: "pre_admission_target_changed",
+		};
+		let recorded = false;
+		this.db.transaction(() => {
+			const run = this.getWorkflowRun(input.runId);
+			const node = this.getWorkflowRunNode(
+				input.runId,
+				input.nodeId,
+				input.attempt,
+			);
+			if (
+				!run ||
+				run.engine_owned !== 1 ||
+				run.status !== "active" ||
+				run.current_node_id !== input.nodeId ||
+				!run.snapshot ||
+				node?.state !== "pending" ||
+				node.execution_id !== input.executionId
+			)
+				return;
+			const resolved = parseWorkflowRunSnapshot(
+				run.snapshot,
+			).resolved.nodes.find((candidate) => candidate.id === input.nodeId);
+			// Land has external step receipts and its own partial/held protocol.
+			// Gates are engine-owned probes, never a pending Runner admission.
+			if (!resolved || resolved.type === "land" || resolved.type === "gate") {
+				result = { ok: false, reason: "engine_owned_executor" };
+				return;
+			}
+			const latest = this.workflowSelectAll(
+				`SELECT launch_ordinal, execution_id, state FROM workflow_side_effect_ledger
+				  WHERE run_id = ? AND node_id = ? AND attempt = ? AND kind = 'dispatch'
+				  ORDER BY launch_ordinal DESC LIMIT 1`,
+				[input.runId, input.nodeId, input.attempt],
+			)[0];
+			// Admission precedes owner acquisition. This transaction is the pending
+			// no-start proof; the admitted-only cancellation API cannot prove it.
+			if (
+				!latest ||
+				latest.execution_id !== input.executionId ||
+				Number(latest.launch_ordinal) !== input.launchOrdinal ||
+				latest.state !== "intent_recorded" ||
+				this.getWorkflowExecutionBinding(input.executionId) ||
+				this.getWorkflowActivationForAttempt(input) ||
+				this.getWorkflowLaunchOwner(input.executionId) ||
+				this.getWorkflowNodeCompletion(input.runId, input.nodeId, input.attempt)
+			)
+				return;
+			const priorRow = this.workflowSelectAll(
+				`SELECT payload FROM workflow_run_event
+				  WHERE run_id = ? AND node_id = ? AND execution_id = ?
+				    AND kind = 'pre_admission_failure_observed' ORDER BY seq DESC LIMIT 1`,
+				[input.runId, input.nodeId, input.executionId],
+			)[0];
+			const prior = priorRow
+				? (JSON.parse(String(priorRow.payload)) as {
+						attempt: number;
+						launchOrdinal: number;
+						errorCode: string;
+						consecutiveCount: number;
+						firstObservedAt: string;
+						lastObservedAt: string;
+					})
+				: undefined;
+			if (
+				prior &&
+				(!Number.isSafeInteger(prior.consecutiveCount) ||
+					prior.consecutiveCount < 1 ||
+					!StateStore.workflowFiniteTimestamp(prior.firstObservedAt) ||
+					!StateStore.workflowFiniteTimestamp(prior.lastObservedAt))
+			) {
+				throw new WorkflowEngineInvariantError("pre_admission_history_invalid");
+			}
+			const consecutive =
+				prior?.attempt === input.attempt &&
+				prior.launchOrdinal === input.launchOrdinal &&
+				prior.errorCode === input.errorCode;
+			if (
+				prior &&
+				(Date.parse(prior.lastObservedAt) > Date.parse(input.now) ||
+					(consecutive && prior.lastObservedAt === input.now))
+			) {
+				result = { ok: true, held: false };
+				return;
+			}
+			const consecutiveCount = consecutive ? prior.consecutiveCount + 1 : 1;
+			const firstObservedAt = consecutive ? prior.firstObservedAt : input.now;
+			const sourceEventUid = `pre_admission_failure:${canonicalSubmissionDigest({ runId: input.runId, nodeId: input.nodeId, attempt: input.attempt, executionId: input.executionId, launchOrdinal: input.launchOrdinal, errorCode: input.errorCode, at: input.now })}`;
+			const payload = {
+				attempt: input.attempt,
+				launchOrdinal: input.launchOrdinal,
+				errorCode: input.errorCode,
+				consecutiveCount,
+				firstObservedAt,
+				lastObservedAt: input.now,
+			};
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				nodeId: input.nodeId,
+				executionId: input.executionId,
+				eventUid: sourceEventUid,
+				kind: "pre_admission_failure_observed",
+				payload,
+			});
+			recorded = true;
+			const permanent = [
+				"engine_predecessor_head_invalid",
+				"engine_predecessor_unavailable",
+				"engine_resume_admission_invalid",
+				"engine_materialized_head_invalid",
+				"engine_rework_replacement_context_invalid",
+				"lineage_missing",
+			].includes(input.errorCode);
+			if (
+				!permanent &&
+				(consecutiveCount < 3 ||
+					Date.parse(input.now) - Date.parse(firstObservedAt) <
+						input.rollbackMs)
+			) {
+				result = { ok: true, held: false };
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_run_node SET state = 'failed', ended_at = ?
+				  WHERE run_id = ? AND node_id = ? AND attempt = ? AND execution_id = ? AND state = 'pending'`,
+				[
+					input.now,
+					input.runId,
+					input.nodeId,
+					input.attempt,
+					input.executionId,
+				],
+			);
+			if (this.db.getRowsModified() !== 1)
+				throw new WorkflowEngineInvariantError("pre_admission_node_changed");
+			this.db.run(
+				`UPDATE workflow_side_effect_ledger SET state = 'abandoned', reason = 'pre_admission_failed', abandoned_at = ?, updated_at = ?
+				  WHERE run_id = ? AND node_id = ? AND attempt = ? AND execution_id = ? AND launch_ordinal = ? AND kind = 'dispatch' AND state = 'intent_recorded'`,
+				[
+					input.now,
+					input.now,
+					input.runId,
+					input.nodeId,
+					input.attempt,
+					input.executionId,
+					input.launchOrdinal,
+				],
+			);
+			if (this.db.getRowsModified() !== 1)
+				throw new WorkflowEngineInvariantError("pre_admission_intent_changed");
+			this.settleWorkflowDeliveryAttemptIfPresentTx({
+				family: "launch",
+				table: "workflow_execution_binding",
+				pk: input.executionId,
+				reason: "source_terminal",
+				now: input.now,
+			});
+			this.db.run(
+				"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND current_node_id = ? AND status = 'active'",
+				[input.runId, input.nodeId],
+			);
+			if (this.db.getRowsModified() !== 1)
+				throw new WorkflowEngineInvariantError("pre_admission_run_changed");
+			const eventUid = `run_recovery_required:pre_admission:${canonicalSubmissionDigest({ runId: input.runId, nodeId: input.nodeId, attempt: input.attempt, executionId: input.executionId, launchOrdinal: input.launchOrdinal })}`;
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				nodeId: input.nodeId,
+				executionId: input.executionId,
+				eventUid,
+				kind: "run_recovery_required",
+				payload: {
+					...payload,
+					reason: "pre_admission_failed",
+					sourceEventUid,
+					noStartEvidence: "pending_without_binding_or_owner",
+					at: input.now,
+				},
+			});
+			this.enqueueWorkflowEngineAlertTx({
+				escalationUid: eventUid,
+				runId: input.runId,
+				now: input.now,
+				payload: this.workflowDeadExecutionAlertPayload({
+					escalationUid: eventUid,
+					eventType: "workflow_engine_escalation",
+					runId: input.runId,
+					issueId: run.issue_id,
+					nodeId: input.nodeId,
+					executionId: input.executionId,
+					disposition: "pre_admission_failed",
+					body: `Execution ${input.executionId} failed before admission (${input.errorCode}); run ${input.runId} requires current-node recovery.`,
+					identity: input.alertIdentity,
+				}),
+			});
+			result = { ok: true, held: true };
+		});
+		if (recorded) this.save();
+		return result;
+	}
+
 	pruneWorkflowDeadExecutionWatches(input: {
 		now: string;
 		ttlMs: number;
