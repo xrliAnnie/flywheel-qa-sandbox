@@ -134,6 +134,11 @@ interface OwedFinal {
 	 * truncation marker, but is not checked again.
 	 */
 	overran?: boolean;
+	/**
+	 * What the overrun chunk had read. Its final must open with it (review
+	 * R2); a final that does not is a later turn's, and the entry is dropped.
+	 */
+	spoken?: string;
 }
 
 interface PendingChunk {
@@ -357,7 +362,8 @@ export class CodexProofSpeaker {
 		// Another turn: its final may come next, so older owed finals are no
 		// longer attributable. A retry of the same line keeps them: whichever
 		// attempt a final belongs to, it is checked against that line. An
-		// overrun chunk's turn came first, so its final still comes first.
+		// overrun chunk's turn came first, so its final still comes first (and
+		// must open with what it read, see assistantTranscript).
 		this.keepOwed(
 			(owed) =>
 				owed.overran === true ||
@@ -389,7 +395,8 @@ export class CodexProofSpeaker {
 		if (pending?.sent && !pending.boundTurnId)
 			this.fail(pending, "speech_preempted");
 		// The founder spoke: the next final may be her answer's own — unless an
-		// overrun chunk still owes one, whose turn (and final) came before hers.
+		// overrun chunk still owes one, whose turn (and final) came before hers;
+		// that claim holds only for a final opening with what it read (R2).
 		this.keepOwed((owed) => owed.overran === true);
 	}
 
@@ -401,6 +408,16 @@ export class CodexProofSpeaker {
 	assistantTranscript(input: { text: string; final: boolean }): void {
 		this.expireOwed();
 		if (input.final) this.finalOwner = undefined;
+		// Review R2: an overrun chunk whose final was lost must not take a later
+		// turn's (her answer's). Its final opens with what it read; one that does
+		// not is someone else's, so the claim is given up rather than guessed.
+		const head = this.owed[0];
+		if (
+			input.final &&
+			head?.overran &&
+			spokenPrefix(head.spoken ?? "", input.text).spokenSentences === 0
+		)
+			this.keepOwed((entry) => entry !== head);
 		const owed = this.owed[0];
 		if (owed) {
 			// Finals arrive in turn order: this one is the oldest owed chunk's.
@@ -1086,6 +1103,7 @@ export class CodexProofSpeaker {
 					sentAt: pending.sentAt,
 					until: detectedAt + TRUNCATION_MARKER_MS,
 					overran: true,
+					spoken: prefix ? prefix.spoken : pending.expected,
 				};
 		if (owner) this.owed.push(owner);
 		this.truncation = {

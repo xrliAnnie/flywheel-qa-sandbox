@@ -1113,4 +1113,57 @@ describe("Codex Lead reply read to the end (FLY-2885 founder rework 2026-09-26)"
 		await h.answer("t2", "第二句话还没有念。");
 		await expect(result).resolves.toMatchObject({ unreadChunks: 0 });
 	});
+
+	it("gives up an overrun chunk's claim when its final was lost and her next answer's comes first (review R2)", async () => {
+		const h = harness();
+		const expected = "第一句话已经说完了。第二句话还没有念。";
+		const result = h.speaker.readReply(expected, {
+			pendingKey: "lost-then-she",
+		});
+		await h.flush();
+		h.speaker.turnCreated({ turnId: "t1", role: "assistant" });
+		h.state.consumed += 10;
+		h.speaker.assistantTranscript({
+			text: "第一句话已经说完了。另外今天还有两件事情完成了呢。",
+			final: false,
+		});
+		// t1's final never comes. She asks something; the model answers.
+		await vi.advanceTimersByTimeAsync(3_000);
+		h.speaker.userEvidence();
+		h.speaker.turnCreated({ turnId: "answer", role: "assistant" });
+		const answer = "这是对新问题的完整回答，内容与刚才那句朗读完全不同。";
+		h.speaker.assistantTranscript({ text: answer, final: true });
+		expect(h.speaker.truncateAssistantFinal(answer)).toBe(answer);
+		expect(h.overrun).toHaveBeenCalledOnce();
+		// The fence went with the claim: the rest is read at the next pause.
+		await vi.advanceTimersByTimeAsync(60);
+		expect(h.sent.at(-1)).toBe("第二句话还没有念。");
+		await h.answer("t2", "第二句话还没有念。");
+		expect(h.speaker.truncateAssistantFinal("第二句话还没有念。")).toBe(
+			"第二句话还没有念。",
+		);
+		await expect(result).resolves.toMatchObject({ unreadChunks: 0 });
+	});
+
+	it("fails closed for an overrun that read nothing: no final is taken as its own (review R2)", async () => {
+		const h = harness();
+		const result = h.speaker.readReply("今天下午三点开会。", {
+			pendingKey: "nothing-read",
+		});
+		await h.flush();
+		h.speaker.turnCreated({ turnId: "t1", role: "assistant" });
+		h.state.consumed += 10;
+		h.speaker.assistantTranscript({
+			text: "我现在去帮你查一下这个问题的具体情况。",
+			final: false,
+		});
+		const answer = "我现在去帮你查一下这个问题的具体情况。";
+		h.speaker.assistantTranscript({ text: answer, final: true });
+		expect(h.speaker.truncateAssistantFinal(answer)).toBe(answer);
+		// Nothing was read, so the line is read once more.
+		await vi.advanceTimersByTimeAsync(60);
+		expect(h.sent).toEqual(["今天下午三点开会。", "今天下午三点开会。"]);
+		await h.answer("t2", "今天下午三点开会。");
+		await expect(result).resolves.toMatchObject({ unreadChunks: 0 });
+	});
 });
