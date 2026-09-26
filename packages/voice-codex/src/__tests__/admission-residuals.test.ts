@@ -358,6 +358,28 @@ describe("review R2 durability", () => {
 		expect(host.signals).toEqual([]);
 	});
 
+	it("when neither the rewrite nor the delete works, the session stays held and it is reported (R2#1)", async () => {
+		const reg = registry();
+		const claimed = reg.claim(SESSION);
+		claimed.registerSpawned(host.spawn(701, DAEMON));
+		const { chmodSync } = await import("node:fs");
+		chmodSync(join(root, "residuals"), 0o500);
+		host.failRemoveFile = true;
+		try {
+			claimed.release();
+		} finally {
+			host.failRemoveFile = false;
+			chmodSync(join(root, "residuals"), 0o700);
+		}
+		expect(
+			reports.some((line) =>
+				line.includes("admission_residual_release_failed"),
+			),
+		).toBe(true);
+		await reg.sweep();
+		expect(host.signals).toEqual([]);
+	});
+
 	it("a failing identity read is not proof the process is gone (R2#2)", async () => {
 		const reg = registry();
 		const residuals = reg.claim(SESSION);
@@ -390,6 +412,15 @@ it("host ps lookups: only exit 1 with no output means absent; other failures thr
 		start: "Sat Sep 26 08:00:01 2026",
 		zombie: false,
 	});
+	expect(() =>
+		interpretPsLookup(() => {
+			throw Object.assign(new Error("exit 1"), {
+				status: 1,
+				stdout: "",
+				stderr: "ps: process id too large",
+			});
+		}, 701),
+	).toThrow();
 	for (const error of [
 		Object.assign(new Error("timed out"), { code: "ETIMEDOUT" }),
 		Object.assign(new Error("spawn failed"), { code: "EAGAIN" }),
@@ -401,3 +432,21 @@ it("host ps lookups: only exit 1 with no output means absent; other failures thr
 			}, 701),
 		).toThrow();
 });
+
+it.skipIf(process.platform !== "darwin")(
+	"the host identity lookup goes through the strict ps interpretation (R2#2, host)",
+	async () => {
+		const { hostResidualSystem } = await import(
+			"../codex/admission-residuals.js"
+		);
+		const own = hostResidualSystem.identityOf!(process.pid);
+		expect(own).toMatchObject({ pid: process.pid, zombie: false });
+		// A pid that cannot exist on macOS makes ps print a diagnostic: not "absent".
+		expect(() => hostResidualSystem.identityOf!(99_999_999)).toThrow();
+		// A free pid in range: absent.
+		const used = new Set(hostResidualSystem.snapshot().map((row) => row.pid));
+		let free = 90_000;
+		while (used.has(free)) free++;
+		expect(hostResidualSystem.identityOf!(free)).toBeUndefined();
+	},
+);

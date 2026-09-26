@@ -99,13 +99,15 @@ export function interpretPsLookup(
 	try {
 		text = run();
 	} catch (error) {
-		const failure = error as { status?: unknown; stdout?: unknown };
-		if (
-			failure.status === 1 &&
-			(failure.stdout === undefined ||
-				failure.stdout === null ||
-				String(failure.stdout).trim() === "")
-		)
+		const failure = error as {
+			status?: unknown;
+			stdout?: unknown;
+			stderr?: unknown;
+		};
+		const empty = (value: unknown) =>
+			value === undefined || value === null || String(value).trim() === "";
+		// A missing pid: exit 1, no output at all. Any diagnostic is not proof.
+		if (failure.status === 1 && empty(failure.stdout) && empty(failure.stderr))
 			return undefined;
 		throw error;
 	}
@@ -137,7 +139,7 @@ export const hostResidualSystem: ResidualSystem = {
 						encoding: "utf8",
 						timeout: 5_000,
 						maxBuffer: 64 * 1024,
-						stdio: ["ignore", "pipe", "ignore"],
+						stdio: ["ignore", "pipe", "pipe"],
 						env: { PATH: "/usr/bin:/bin", LC_ALL: "C" },
 					},
 				),
@@ -159,6 +161,7 @@ export class AdmissionResiduals {
 	private removed = false;
 	/** An admitted session owns its processes; nothing is tracked any more. */
 	private released = false;
+	private reportedUndeletable = false;
 
 	constructor(
 		private readonly options: {
@@ -243,6 +246,10 @@ export class AdmissionResiduals {
 			/* Deletion below may still succeed. */
 		}
 		if (this.remove() || neutralised) this.detach();
+		else
+			this.options.report(
+				`[voice] admission residual release failed reasonClass=admission_residual_release_failed operation=session_runtime sessionId=${this.options.sessionId}`,
+			);
 	}
 
 	/** This daemon's own teardown is done; periodic sweeps may take over. */
@@ -320,7 +327,12 @@ export class AdmissionResiduals {
 				}
 			}
 			if (!this.pending) {
-				this.remove();
+				if (!this.remove() && !this.reportedUndeletable) {
+					this.reportedUndeletable = true;
+					this.options.report(
+						`[voice] admission residual file undeletable reasonClass=admission_residual_file_undeletable operation=session_runtime sessionId=${this.options.sessionId}`,
+					);
+				}
 				record("settled");
 				return "settled";
 			}

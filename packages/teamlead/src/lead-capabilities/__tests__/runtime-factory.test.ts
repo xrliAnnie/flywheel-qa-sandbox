@@ -1014,6 +1014,9 @@ it.each(["founder_chrome", "off"] as const)(
 				);
 			expect(manifest.operationIds).not.toContain("knowledge.get_page");
 			expect(manifest.operationIds).toContain("github.pr.view");
+			// Positive control for the R2#3 negative assertions below.
+			expect(manifest.operationIds).toContain("github.pr.create");
+			expect(manifest.operationIds).toContain("git.feature.push");
 			const mcp = buildCodexLeadMcpArgv({
 				capabilityV2: {
 					nodePath: process.execPath,
@@ -1125,11 +1128,7 @@ it("the voice manifest drops an unavailable integration's unconditional denials 
 		expect(
 			manifest.operationIds.filter((id) => githubOwned.includes(id)),
 		).toEqual([]);
-		for (const id of [
-			"github.pr.create",
-			"github.issue.comment",
-			"git.feature.push",
-		])
+		for (const id of ["github.pr.create", "git.feature.push"])
 			expect(manifest.operationIds).not.toContain(id);
 	} finally {
 		await session.close();
