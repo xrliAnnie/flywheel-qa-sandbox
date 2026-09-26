@@ -87,3 +87,9 @@ Issue: FLY-2886 (https://linear.app/geoforge3d/issue/FLY-2886/语音b核心大�
 **新发现：`codex_apps`**。ChatGPT 订阅账号下 codex 会自动注入一个 `codex_apps` MCP 服务器（52 个工具：sites 部署、plugin 管理、parental controls 等）。它不在 Flywheel 能力清单里、不经 broker、不留回执，而且会让 container 的服务器集合断言失败（准入在真宿主必降级）。处置：语音 capability 进程启动参数加 `-c features.apps=false`（scribe 早已如此）；实测加上后只剩 `lead_actions`，配置与技能照样核过（`appserver-apps-off.json`）。常驻 capability app-server 是否同样被注入未核实，列入 PR Follow-ups。
 
 未覆盖（归 529 房 QA）：有 Linear key 的一场、完整语音会话（realtime 需 API key）、后台读/写与 founder 门、浏览器模式。
+
+## 5. 裁定 B 的连带影响：codex 自身流量也经 egress
+
+实测（临时 CODEX_HOME、一个只记录不转发的本地代理、`HTTPS_PROXY` 指向它、`codex exec` 空跑）：codex 进程自身的请求全部走代理——`CONNECT chatgpt.com:443`、`api.openai.com:443`（Responses websocket `wss://api.openai.com`，失败后回落 HTTPS）、`github.com:443` 等。所以裁定 B 落地后，app-server 的模型与实时语音流量也经 Flywheel egress（公网、放行），与「我们自己的出网控制点在路径上、可审计」一致。
+
+但 egress 原本对**所有**入站 socket 与上游 socket 有 30 秒**空闲**超时，隧道建立后也不解除：安静超过 30 秒的实时语音 websocket 或长时间无字节的模型流会被掐断。已修：只限建连阶段（可配置，默认 30s），隧道建立后两端解除空闲超时；proxy close / 撤权照样拆隧道；websocket upgrade 分支不变。回归用例：建连超时 150ms、建立后空闲 450ms 隧道仍在且可回显（改前先红）。
