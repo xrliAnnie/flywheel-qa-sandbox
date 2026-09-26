@@ -162,6 +162,20 @@ export class CodexProofSpeaker {
 	private readonly ended = new Set<string>();
 	private pending?: PendingChunk;
 	private truncation?: { expected: string; until: number };
+	/**
+	 * T5c ③: a sent chunk that settled before its app-server final. That
+	 * final is still checked when it lands (up to 30 s), and no other chunk is
+	 * sent meanwhile, so it can never be taken for the next chunk's final. Any
+	 * new user or assistant turn ends the watch: finals carry no turn id, so
+	 * after that the next final may be the new turn's own.
+	 */
+	private finalWatch?: {
+		expected: string;
+		turnId?: string;
+		pendingKey: string;
+		sentAt: number;
+		until: number;
+	};
 
 	constructor(private readonly host: CodexSpeakerHost) {}
 
@@ -223,6 +237,10 @@ export class CodexProofSpeaker {
 
 	/** Data channel turn.created of the current generation. */
 	turnCreated(input: { turnId: string; role: "user" | "assistant" }): void {
+		// Finals carry no turn id: once another turn starts, the next final
+		// may be its own, so a late chunk's final is no longer attributable.
+		if (this.finalWatch && input.turnId !== this.finalWatch.turnId)
+			this.finalWatch = undefined;
 		if (input.role === "user") {
 			this.userEvidence();
 			return;
@@ -251,6 +269,7 @@ export class CodexProofSpeaker {
 
 	/** New user speech (turn.created{user} or a user transcript delta). */
 	userEvidence(): void {
+		this.finalWatch = undefined;
 		const pending = this.pending;
 		if (!pending?.sent || pending.boundTurnId) return;
 		this.fail(pending, "speech_preempted");
@@ -263,7 +282,10 @@ export class CodexProofSpeaker {
 	 */
 	assistantTranscript(input: { text: string; final: boolean }): void {
 		const pending = this.pending;
-		if (!pending?.sent || pending.settled) return;
+		if (!pending?.sent || pending.settled) {
+			if (input.final) this.checkLateFinal(input.text);
+			return;
+		}
 		if (input.final) pending.finalText = input.text;
 		else pending.accumulated += input.text;
 		const observed = input.final ? input.text : pending.accumulated;
@@ -283,6 +305,9 @@ export class CodexProofSpeaker {
 	}
 
 	interrupt(reason = "speech_interrupted"): void {
+		// A new generation or a closed session never sees the old turn's final.
+		if (reason === "generation_changed" || reason === "session_closed")
+			this.finalWatch = undefined;
 		const pending = this.pending;
 		if (!pending || pending.settled) return;
 		this.settle(pending, {
@@ -459,7 +484,7 @@ export class CodexProofSpeaker {
 			});
 			return;
 		}
-		const busy = this.host.busyReason();
+		const busy = this.host.busyReason() ?? this.awaitingFinal();
 		if (busy === undefined) {
 			this.send(pending);
 			return;
@@ -559,6 +584,43 @@ export class CodexProofSpeaker {
 			ok: true,
 			transport: "submitted",
 			contentProof: equivalent ? "transcript_equivalent" : "none",
+		});
+	}
+
+	/** An earlier chunk's final is still owed (T5c ③). */
+	private awaitingFinal(): string | undefined {
+		const watch = this.finalWatch;
+		if (!watch) return undefined;
+		if (this.host.now() <= watch.until) return "awaiting_final";
+		this.finalWatch = undefined;
+		return undefined;
+	}
+
+	/** The final of a chunk that settled first: check it like any other. */
+	private checkLateFinal(text: string): void {
+		const watch = this.finalWatch;
+		if (!watch) return;
+		this.finalWatch = undefined;
+		const now = this.host.now();
+		if (now > watch.until) return;
+		const alignment = speechAlignment(watch.expected, text);
+		if (!alignment.overrun) return;
+		this.host.overrun(watch.turnId);
+		this.truncation = {
+			expected: watch.expected,
+			until: now + TRUNCATION_MARKER_MS,
+		};
+		this.host.evidence({
+			kind: "codex_speech_overrun",
+			pendingKey: watch.pendingKey,
+			turnId: watch.turnId ?? null,
+			expectedChars: alignment.expectedChars,
+			unalignedChars: alignment.unaligned,
+			extraTextSha256: createHash("sha256")
+				.update(unalignedText(watch.expected, text))
+				.digest("hex"),
+			detectedAtMs: Math.round(now - watch.sentAt),
+			late: true,
 		});
 	}
 
@@ -669,6 +731,24 @@ export class CodexProofSpeaker {
 		pending.timers.length = 0;
 		if (pending.boundTurnId) this.ended.add(pending.boundTurnId);
 		if (this.pending === pending) this.pending = undefined;
+		// Settled before its app-server final: keep that final on the check.
+		// An overrun already truncates; a silent chunk's retry reads the same
+		// line; a new generation or close never delivers the old final.
+		if (
+			pending.sent &&
+			pending.finalText === undefined &&
+			!result.silent &&
+			result.reason !== "speech_overrun" &&
+			result.reason !== "generation_changed" &&
+			result.reason !== "session_closed"
+		)
+			this.finalWatch = {
+				expected: pending.expected,
+				turnId: pending.boundTurnId,
+				pendingKey: pending.pendingKey,
+				sentAt: pending.sentAt,
+				until: this.host.now() + TRUNCATION_MARKER_MS,
+			};
 		pending.settle(result);
 	}
 }

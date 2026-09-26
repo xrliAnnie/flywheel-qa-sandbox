@@ -430,6 +430,119 @@ describe("Codex v3 read-aloud overrun and silence (FLY-2885 T5c)", () => {
 		expect(h.overrun).not.toHaveBeenCalled();
 	});
 
+	it("still checks and truncates a final that arrives after the wait, and never lets it reach the next chunk", async () => {
+		const h = harness();
+		const overrunText = readback.transcripts.find((row) => row.overrun)!.text;
+		const first = h.speaker.speak(readback.expected, "brief", {
+			pendingKey: "late-final",
+		});
+		await h.flush();
+		h.speaker.turnCreated({ turnId: "t1", role: "assistant" });
+		h.state.consumed += 10;
+		h.speaker.turnDone({ turnId: "t1", role: "assistant", transcript: null });
+		await vi.advanceTimersByTimeAsync(2_000);
+		await expect(first).resolves.toMatchObject({ outcome: "completed" });
+		// The next reading waits for t1's final instead of claiming it.
+		const second = h.speaker.speak("好的。", "readback", {
+			pendingKey: "next",
+		});
+		await vi.advanceTimersByTimeAsync(500);
+		expect(h.sent).toEqual([spoken(readback.expected)]);
+		h.speaker.assistantTranscript({ text: overrunText, final: true });
+		expect(h.overrun).toHaveBeenCalledWith("t1");
+		expect(h.speaker.truncateAssistantFinal(overrunText)).toBe(
+			`${spoken(readback.expected)}${SPEECH_TRUNCATED_NOTE}`,
+		);
+		expect(h.evidence).toContainEqual(
+			expect.objectContaining({
+				kind: "codex_speech_overrun",
+				pendingKey: "late-final",
+				turnId: "t1",
+				late: true,
+			}),
+		);
+		await vi.advanceTimersByTimeAsync(100);
+		expect(h.sent).toEqual([spoken(readback.expected), "好的。"]);
+		await h.answer("t2", "好的。");
+		await expect(second).resolves.toMatchObject({ outcome: "completed" });
+		expect(h.overrun).toHaveBeenCalledTimes(1);
+	});
+
+	it.each([
+		["the founder's next turn", "user"],
+		["another assistant turn", "assistant"],
+	] as const)(
+		"never takes a final after %s for the late chunk",
+		async (_name, role) => {
+			const h = harness();
+			const first = h.speaker.speak(readback.expected, "brief", {
+				pendingKey: "stale",
+			});
+			await h.flush();
+			h.speaker.turnCreated({ turnId: "t1", role: "assistant" });
+			h.state.consumed += 10;
+			h.speaker.turnDone({ turnId: "t1", role: "assistant", transcript: null });
+			await vi.advanceTimersByTimeAsync(2_000);
+			await first;
+			// A new turn starts: whatever final follows may be its own.
+			h.speaker.turnCreated({ turnId: "n1", role });
+			const answer = "这是对新问题的完整回答，内容与刚才那句朗读完全不同。";
+			h.speaker.assistantTranscript({ text: answer, final: true });
+			expect(h.overrun).not.toHaveBeenCalled();
+			expect(h.speaker.truncateAssistantFinal(answer)).toBe(answer);
+			// The fence lifts with it.
+			const next = h.speaker.speak("好的。", "readback", {
+				pendingKey: "after",
+			});
+			await h.flush();
+			expect(h.sent.at(-1)).toBe("好的。");
+			await h.answer("t2", "好的。");
+			await expect(next).resolves.toMatchObject({ outcome: "completed" });
+		},
+	);
+
+	it("checks the late final of a chunk the founder interrupted", async () => {
+		const h = harness();
+		const overrunText = readback.transcripts.find((row) => row.overrun)!.text;
+		const result = h.speaker.speak(readback.expected, "readback", {
+			pendingKey: "cut-then-final",
+		});
+		await h.flush();
+		h.speaker.turnCreated({ turnId: "t", role: "assistant" });
+		h.state.consumed += 5;
+		h.speaker.interrupt();
+		await expect(result).resolves.toMatchObject({
+			reason: "speech_interrupted",
+		});
+		h.speaker.assistantTranscript({ text: overrunText, final: true });
+		expect(h.speaker.truncateAssistantFinal(overrunText)).toBe(
+			`${spoken(readback.expected)}${SPEECH_TRUNCATED_NOTE}`,
+		);
+	});
+
+	it("drops the pending final check on a new generation", async () => {
+		const h = harness();
+		const result = h.speaker.speak(readback.expected, "brief", {
+			pendingKey: "gen-final",
+		});
+		await h.flush();
+		h.speaker.turnCreated({ turnId: "t", role: "assistant" });
+		h.state.consumed += 5;
+		h.speaker.interrupt();
+		await result;
+		h.speaker.interrupt("generation_changed");
+		h.state.generation += 1;
+		// A new generation's reading is sent at once and owns its own final.
+		const next = h.speaker.speak("好的。", "readback", {
+			pendingKey: "new-gen",
+		});
+		await h.flush();
+		expect(h.sent.at(-1)).toBe("好的。");
+		await h.answer("n1", "好的。");
+		await expect(next).resolves.toMatchObject({ outcome: "completed" });
+		expect(h.overrun).not.toHaveBeenCalled();
+	});
+
 	it("retries a confirmed-silent chunk once and binds the retry only to a new turn", async () => {
 		const h = harness();
 		const result = h.speaker.speak("你好", "readback", { pendingKey: "mute" });

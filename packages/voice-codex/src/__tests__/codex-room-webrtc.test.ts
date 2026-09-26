@@ -572,6 +572,34 @@ describe("engine B read-aloud overrun in the room (FLY-2885 T5c)", () => {
 		expect(h.conversation.reconnect).not.toHaveBeenCalled();
 	});
 
+	it("still truncates a final that lands after the 2 s wait, and leaves the next answer alone", async () => {
+		const h = await harness();
+		const receipt = h.session.speak!(line, "brief", {
+			pendingKey: "late-final",
+		});
+		await vi.advanceTimersByTimeAsync(0);
+		h.turn("turn.created", "r1", "assistant");
+		await h.step("vvvvvvvvvv");
+		h.turn("turn.done", "r1", "assistant", null);
+		await h.step("s".repeat(110));
+		await expect(receipt).resolves.toMatchObject({ outcome: "completed" });
+		const invented = `${line}另外今天还有两件事情已经顺利完成了呢。`;
+		h.final(invented);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(h.persisted.at(-1)).toEqual({
+			role: "assistant",
+			text: `${prepareReplySpeech(line)[0]!.spokenText}${SPEECH_TRUNCATED_NOTE}`,
+		});
+		// The founder's next question gets its own answer, untouched.
+		h.turn("turn.created", "u1", "user");
+		h.turn("turn.created", "a1", "assistant");
+		const answer = "这是对新问题的完整回答，和刚才那句朗读无关。";
+		h.final(answer);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(h.persisted.at(-1)).toEqual({ role: "assistant", text: answer });
+		expect(h.conversation.reconnect).not.toHaveBeenCalled();
+	});
+
 	it("holds the next read-aloud until the overrun turn is done and quiet", async () => {
 		const h = await harness();
 		const first = h.session.speak!(line, "readback", {
