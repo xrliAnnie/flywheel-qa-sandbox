@@ -1923,6 +1923,7 @@ export class WorktreeManager {
 		mainRepoPath: string,
 		worktreePath: string,
 		branch?: string | null,
+		opts?: { processHandling?: "reap" | "refuse" },
 	): Promise<{
 		removed: boolean;
 		branchDeleted: boolean;
@@ -1934,6 +1935,7 @@ export class WorktreeManager {
 				mainRepoPath,
 				worktreePath,
 				branch,
+				opts,
 			),
 		);
 	}
@@ -1942,14 +1944,58 @@ export class WorktreeManager {
 		mainRepoPath: string,
 		worktreePath: string,
 		branch?: string | null,
+		opts?: { processHandling?: "reap" | "refuse" },
 	): Promise<{
 		removed: boolean;
 		branchDeleted: boolean;
 		error?: string;
 		reaps?: WorktreeReapRecord[];
 	}> {
-		// FLY-1759 reap-first: git remove must not erase cwd attribution first.
-		const reaps = [await this.reapPath(mainRepoPath, worktreePath)];
+		let reaps: WorktreeReapRecord[] | undefined;
+		if (opts?.processHandling === "refuse") {
+			if (branch) {
+				return {
+					removed: false,
+					branchDeleted: false,
+					error: "branch_deletion_forbidden",
+				};
+			}
+			let cwdRows: CwdRow[];
+			try {
+				cwdRows = await this.cwdScanner();
+			} catch (error) {
+				return {
+					removed: false,
+					branchDeleted: false,
+					error: `process_census_unknown:${error instanceof Error ? error.message : String(error)}`,
+				};
+			}
+			const target = canonicalizeWorktreePath(worktreePath);
+			for (const row of cwdRows) {
+				if (row.logicalCwd === null) {
+					return {
+						removed: false,
+						branchDeleted: false,
+						error: `process_census_unknown:invalid_cwd:${row.pid}`,
+					};
+				}
+				const cwd = canonicalizeWorktreePath(row.logicalCwd);
+				const relative = path.relative(target, cwd);
+				if (
+					relative === "" ||
+					(!relative.startsWith("..") && !path.isAbsolute(relative))
+				) {
+					return {
+						removed: false,
+						branchDeleted: false,
+						error: `process_present:${row.pid}`,
+					};
+				}
+			}
+		} else {
+			// FLY-1759 reap-first: git remove must not erase cwd attribution first.
+			reaps = [await this.reapPath(mainRepoPath, worktreePath)];
+		}
 		try {
 			await this.exec(
 				"git",
@@ -1961,7 +2007,7 @@ export class WorktreeManager {
 				removed: false,
 				branchDeleted: false,
 				error: err instanceof Error ? err.message : String(err),
-				reaps,
+				...(reaps ? { reaps } : {}),
 			};
 		}
 		let branchDeleted = false;
@@ -1980,12 +2026,16 @@ export class WorktreeManager {
 						removed: true,
 						branchDeleted: false,
 						error: msg,
-						reaps,
+						...(reaps ? { reaps } : {}),
 					};
 				}
 			}
 		}
-		return { removed: true, branchDeleted, reaps };
+		return {
+			removed: true,
+			branchDeleted,
+			...(reaps ? { reaps } : {}),
+		};
 	}
 
 	/**

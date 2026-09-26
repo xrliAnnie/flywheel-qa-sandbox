@@ -102,6 +102,153 @@ describe("WorktreeManager reap-before-remove integration", () => {
 		});
 	});
 
+	it("stock cleanup refuses a process cwd without invoking the reaper", async () => {
+		const { mainRepo, worktree } = fixture();
+		const reaperFn = vi.fn(async () => cleanSummary);
+		const execFn = vi.fn(async () => ({ stdout: "" }));
+		const manager = new WorktreeManager(
+			{
+				reaperFn,
+				cwdScannerFn: async () => [
+					{
+						pid: 4242,
+						rawCwd: path.join(worktree, "nested"),
+						logicalCwd: path.join(worktree, "nested"),
+						deletedMarker: false,
+					},
+				],
+			},
+			execFn,
+		);
+
+		await expect(
+			manager.removeCleanWorktreeByPath(mainRepo, worktree, null, {
+				processHandling: "refuse",
+			}),
+		).resolves.toEqual({
+			removed: false,
+			branchDeleted: false,
+			error: "process_present:4242",
+		});
+		expect(reaperFn).not.toHaveBeenCalled();
+		expect(execFn).not.toHaveBeenCalled();
+	});
+
+	it("stock cleanup fails closed when the cwd census is unavailable", async () => {
+		const { mainRepo, worktree } = fixture();
+		const reaperFn = vi.fn(async () => cleanSummary);
+		const execFn = vi.fn(async () => ({ stdout: "" }));
+		const manager = new WorktreeManager(
+			{
+				reaperFn,
+				cwdScannerFn: async () => {
+					throw new Error("lsof denied");
+				},
+			},
+			execFn,
+		);
+
+		await expect(
+			manager.removeCleanWorktreeByPath(mainRepo, worktree, null, {
+				processHandling: "refuse",
+			}),
+		).resolves.toEqual({
+			removed: false,
+			branchDeleted: false,
+			error: "process_census_unknown:lsof denied",
+		});
+		expect(reaperFn).not.toHaveBeenCalled();
+		expect(execFn).not.toHaveBeenCalled();
+	});
+
+	it("stock cleanup fails closed when a cwd record is not absolute", async () => {
+		const { mainRepo, worktree } = fixture();
+		const reaperFn = vi.fn(async () => cleanSummary);
+		const execFn = vi.fn(async () => ({ stdout: "" }));
+		const manager = new WorktreeManager(
+			{
+				reaperFn,
+				cwdScannerFn: async () => [
+					{
+						pid: 5252,
+						rawCwd: "unparseable",
+						logicalCwd: null,
+						deletedMarker: false,
+					},
+				],
+			},
+			execFn,
+		);
+
+		await expect(
+			manager.removeCleanWorktreeByPath(mainRepo, worktree, null, {
+				processHandling: "refuse",
+			}),
+		).resolves.toEqual({
+			removed: false,
+			branchDeleted: false,
+			error: "process_census_unknown:invalid_cwd:5252",
+		});
+		expect(reaperFn).not.toHaveBeenCalled();
+		expect(execFn).not.toHaveBeenCalled();
+	});
+
+	it("stock cleanup rejects branch deletion", async () => {
+		const { mainRepo, worktree } = fixture();
+		const reaperFn = vi.fn(async () => cleanSummary);
+		const cwdScannerFn = vi.fn(async () => []);
+		const execFn = vi.fn(async () => ({ stdout: "" }));
+		const manager = new WorktreeManager({ reaperFn, cwdScannerFn }, execFn);
+
+		await expect(
+			manager.removeCleanWorktreeByPath(
+				mainRepo,
+				worktree,
+				"flywheel-FLY-1759",
+				{ processHandling: "refuse" },
+			),
+		).resolves.toEqual({
+			removed: false,
+			branchDeleted: false,
+			error: "branch_deletion_forbidden",
+		});
+		expect(cwdScannerFn).not.toHaveBeenCalled();
+		expect(reaperFn).not.toHaveBeenCalled();
+		expect(execFn).not.toHaveBeenCalled();
+	});
+
+	it("stock cleanup removes without signals and never deletes a branch", async () => {
+		const { mainRepo, worktree } = fixture();
+		const reaperFn = vi.fn(async () => cleanSummary);
+		const cwdScannerFn = vi.fn(async () => [
+			{
+				pid: 3131,
+				rawCwd: mainRepo,
+				logicalCwd: mainRepo,
+				deletedMarker: false,
+			},
+		]);
+		const execFn = vi.fn(async () => ({ stdout: "" }));
+		const manager = new WorktreeManager({ reaperFn, cwdScannerFn }, execFn);
+
+		await expect(
+			manager.removeCleanWorktreeByPath(mainRepo, worktree, null, {
+				processHandling: "refuse",
+			}),
+		).resolves.toEqual({
+			removed: true,
+			branchDeleted: false,
+		});
+		expect(cwdScannerFn).toHaveBeenCalledOnce();
+		expect(reaperFn).not.toHaveBeenCalled();
+		expect(execFn).toHaveBeenCalledOnce();
+		expect(execFn).toHaveBeenCalledWith(
+			"git",
+			["-C", mainRepo, "worktree", "remove", worktree],
+			mainRepo,
+		);
+	});
+
 	it("removeIfExists() reaps an unregistered orphan before awaited fs.rm", async () => {
 		const { root, mainRepo, worktree } = fixture();
 		const order: string[] = [];
