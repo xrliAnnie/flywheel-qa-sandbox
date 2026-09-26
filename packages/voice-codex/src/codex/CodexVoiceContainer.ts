@@ -890,6 +890,10 @@ export class CodexVoiceConversation {
 				threadId: this.threadId,
 				reason,
 			});
+			// The container root stays as evidence; the /tmp activation root holds
+			// only the revoked parent's socket and pins, and no sweep owns it after
+			// admission, so it never outlives the session (review R6).
+			await removeActivationRoot(this.capability?.activationRoot);
 			throw new CodexVoiceContainerError("cleanup_pending");
 		}
 		this.threadEvents?.unregister();
@@ -1691,6 +1695,7 @@ export class CodexVoiceContainer {
 				);
 			} catch {
 				this.evidence({ kind: "codex_voice_cleanup_pending", sessionId });
+				await removeActivationRoot(resources.activationRoot);
 				throw new CodexVoiceContainerError("cleanup_pending");
 			}
 			if (resources.root) {
@@ -1705,6 +1710,11 @@ export class CodexVoiceContainer {
 
 function processEnv(): NodeJS.ProcessEnv {
 	return process.env;
+}
+
+async function removeActivationRoot(path: string | undefined): Promise<void> {
+	if (!path) return;
+	await rm(path, { recursive: true, force: true }).catch(() => undefined);
 }
 
 function processUid(): number | undefined {

@@ -856,11 +856,11 @@ describe("Codex voice container", () => {
 		expect(h.parent.close).toHaveBeenCalledTimes(1);
 		expect(h.processes[1]!.stopCount).toBe(1);
 		expect(existsSync(opened.root)).toBe(true);
-		// The parent's short activation root is kept with it (QA@3 B1).
+		// The parent's short /tmp root holds only its broker socket and pins; no
+		// sweep owns it after admission, so it goes now (review R6).
 		const { activationRoot } = h.createCapabilityParent.mock
 			.calls[0]![0] as unknown as { activationRoot: string };
-		expect(existsSync(activationRoot)).toBe(true);
-		rmSync(activationRoot, { recursive: true, force: true });
+		expect(existsSync(activationRoot)).toBe(false);
 	});
 
 	it.each(["old_cancel_wait", "new_opening", "new_started"] as const)(
@@ -1534,6 +1534,33 @@ describe("the broker socket fits the platform limit in the production layout (QA
 		expect(statSync(activationRoot).mode & 0o777).toBe(0o700);
 		await opened.close();
 		expect(existsSync(activationRoot)).toBe(false);
+	});
+
+	it("removes the activation root when the open fails after admission and a child cannot stop (review R6)", async () => {
+		const h = harness({
+			scratchRoot: deep,
+			configureProcess: (process) => {
+				if (process.options.profile !== "voice-capability") return;
+				process.realtimeError = { code: -32602, message: "rejected" };
+				process.stop = vi.fn(async () => {
+					throw new Error("still_alive");
+				});
+			},
+		});
+		await expect(
+			h.container.open({
+				sessionId: "session-socket-open-failed",
+				voice: "marin",
+				loadContext: async () => context("session-socket-open-failed"),
+				background: {
+					enabled: true,
+					onTurnStarted: vi.fn(),
+					onTurnTerminal: vi.fn(),
+				},
+			}),
+		).rejects.toBeDefined();
+		const activationRoot = activationRootOf(h);
+		await vi.waitFor(() => expect(existsSync(activationRoot)).toBe(false));
 	});
 
 	it("removes the activation root when the admission degrades", async () => {
