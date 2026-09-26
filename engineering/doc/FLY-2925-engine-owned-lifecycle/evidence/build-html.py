@@ -33,8 +33,8 @@ cards.append(card('decision', '让 Codex 独立运行，调度重启只重新连
 <p class="lead">选独立 runner 宿主 + 可见终端：把每个工程师的运行控制搬出 Bridge，保留现有程序通信能力。</p>
 <p>Bridge 是接单、调度与汇报的服务。宿主是守着一个 Codex 工程师的独立程序。今天终端已经可见，但运行控制还在 Bridge 里；服务重启时这部分控制需要重建。</p>
 <p><strong>为什么选它：</strong>调度服务重启时，原工程师继续工作；卡住不再等于死亡，明确结束后也不会自动复活。</p>
-<p><strong>代价：</strong>增加一个小的宿主程序和可重连通信通道；必须验证原会话、信件和账号切换都能跨重启保留。</p>
-<p class="notice">硬要求：在飞账号切换要平滑到达原会话。现有 FLY-2902 指定版本尚有能力差距，必须由上游补齐并取得真实切换回执才能启用；不能用固定原账号代替。本页尚未获设计评审批准。</p>
+<p><strong>代价：</strong>增加一个小的宿主程序和可重连通信通道；必须验证原会话、信件和原账号绑定都能跨重启保留。</p>
+<p class="notice">账号边界：沿用已批准的按账号固定归属方案；工作中的工程师保留原账号，切换默认账号只影响新工程师。独立宿主不需要在飞换号。本页尚未获设计评审批准。</p>
 <p class="meta">2026-09-26 · 依据：本单探索、调研与实施计划 · 设计阶段，未实施或部署</p>
 ''', 'hero'))
 cards.append(card('flow', '工作继续，生死由引擎决定',
@@ -66,8 +66,8 @@ cards.append(card('evidence', '近两周：62 个执行体有明确恢复失败�
 cards.append(card('model', '记住身份，不凭窗口名字找人',
     '<p>每个工程师有执行编号；每段原生对话有会话编号；实际程序重建时才增加进程代数，即这具身体的版本号。Bridge 重新连接不改变这些身份。</p>'
     + diagram('identity-model')
-    + '<div class="table-wrap"><table><thead><tr><th>数据</th><th>作用</th></tr></thead><tbody><tr><td>任务绑定</td><td>由引擎决定谁能继续工作、谁已结束</td></tr><tr><td>原会话与目标</td><td>保留上下文、目标、预算和已用额度</td></tr><tr><td>宿主与事件游标</td><td>找到正确程序，补齐断线期间的记录</td></tr><tr><td>有效账号绑定与切换回执</td><td>证明当前用哪个账号，以及授权切换是否真正被采用</td></tr></tbody></table></div>'
-    '<p>账号的物理隔离由上游提供，本单定义每体隔离与在飞切换接口，不另做一套凭据布局。发送成功不等于模型已看到，改了配置也不等于实际请求已换号。</p>'))
+    + '<div class="table-wrap"><table><thead><tr><th>数据</th><th>作用</th></tr></thead><tbody><tr><td>任务绑定</td><td>由引擎决定谁能继续工作、谁已结束</td></tr><tr><td>原会话与目标</td><td>保留上下文、目标、预算和已用额度</td></tr><tr><td>宿主与事件游标</td><td>找到正确程序，补齐断线期间的记录</td></tr><tr><td>原账号归属与切号回执</td><td>证明旧工程师仍用原账号、新工程师采用新默认账号</td></tr></tbody></table></div>'
+    '<p>账号归属沿用 FLY-2902：每个账号的凭据只有一份，工程师固定使用出生时选定的账号。本单不新增凭据副本或在飞换号接口。发送成功不等于模型已看到，改了配置也不等于实际请求已换号。</p>'))
 cards.append(card('restart', '重启后的三种处理',
     diagram('reconnect')
     + '<ol><li>原宿主还活着：只重连、补记录，不重发任务，不更换工程师。</li><li>载体确证消失：先由引擎授予唯一恢复权，再恢复精确的原会话。</li><li>身份不明、原会话损坏或引擎已结束：显示问题或清理，不偷偷创建新对话。</li></ol>'))
@@ -80,14 +80,14 @@ cards.append(card('acceptance', '怎样证明真的修好了', '''
 <tr><td>FLY-2630：模型短暂满载</td><td>同一会话有限重试；权限错误留体等待纠正</td></tr>
 <tr><td>FLY-2689：首次启动缺少租约</td><td>拒绝无授权启动；接口准确显示任务已接纳但正在等待</td></tr>
 <tr><td>FLY-2893：普查中的旧失败链</td><td>重建具体旧现象并核对修后行为，不扩成修所有普查类别</td></tr>
-<tr><td>新架构的额外风险</td><td>宿主重启、工作中切号、信件重复、确认丢失、账号绑定冲突，逐项注入故障</td></tr>
+<tr><td>新架构的额外风险</td><td>宿主重启、工作中切默认号但原体不换号、信件重复、确认丢失、账号绑定冲突，逐项注入故障</td></tr>
 </tbody></table></div>
 <p>已完成的是静态调研和冻结统计：9 条分层原始事件核对，五类全部覆盖；重复计算结果一致。尚未执行上表真实验收。</p>
 '''))
 cards.append(card('boundary', '做什么、尚未证明什么', '''
 <p><strong>做：</strong>独立运行控制、按原会话恢复、目标状态与体生死分离、复用 FLY-2903 的停止保护，以及最小启动返回值修正。</p>
 <p><strong>不扩展：</strong>凭据存储重做、全部额度故障、全部工作目录接管故障、Claude 架构重写。</p>
-<p><strong>当前限制：</strong>设计仍待评审；账号依赖尚须补齐，已向 Lead 报告；本地 Mermaid 图形启动失败，已按要求重试并保留图稿。没有部署或生产修后证明。</p>
+<p><strong>当前限制：</strong>设计仍待评审；账号合同已按 Lead 最新裁定对齐，实际接入仍待验证；本地 Mermaid 图形启动失败，已按要求重试并保留图稿。没有部署或生产修后证明。</p>
 <p>本页意见用于修改设计，不代表通过或允许上线。</p>
 <p class="meta">参考：<a href="https://github.com/xrliAnnie/flywheel/pull/1343">FLY-2903 停止保护</a> · <a href="https://github.com/xrliAnnie/flywheel/pull/1352">FLY-2902 当前依赖</a> · <a href="https://learn.chatgpt.com/docs/app-server">Codex 程序接口</a> · <a href="https://developers.openai.com/cookbook/examples/codex/using_goals_in_codex">原生持续目标</a></p>
 '''))
