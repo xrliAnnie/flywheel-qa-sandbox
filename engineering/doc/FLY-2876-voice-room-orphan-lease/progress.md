@@ -1,15 +1,15 @@
 ---
 issue: FLY-2876
 phase: design
-phaseCursor: 5/6
-updated: 2026-09-26T20:28:09.194Z
-nextStep: "Codex R3 CHANGES REQUESTED (helper-death split, lockf unlink, no
-  handshake) -> plan D3: parent-held fd + fd-form lock child (items 33-40,
-  T19/T20). Safety valve reported to Lead; proceeding to R4 via resume 01a0df4b"
+phaseCursor: 6/6
+updated: 2026-09-26T20:34:54.081Z
+nextStep: design gate APPROVED (Codex R4, manifest rev4 84d26c5d, blob 9aefef16,
+  await-codex-gate design passed 2026-09-26T20:34Z). Final HTML committed
+  d67945cc4; publish + report + complete --route phase_design_complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-2876 progress
-**phase**: design (5/6)
-**next**: Codex R3 CHANGES REQUESTED (helper-death split, lockf unlink, no handshake) -> plan D3: parent-held fd + fd-form lock child (items 33-40, T19/T20). Safety valve reported to Lead; proceeding to R4 via resume 01a0df4b
+**phase**: design (6/6)
+**next**: design gate APPROVED (Codex R4, manifest rev4 84d26c5d, blob 9aefef16, await-codex-gate design passed 2026-09-26T20:34Z). Final HTML committed d67945cc4; publish + report + complete --route phase_design_complete
