@@ -2,20 +2,20 @@
 issue: FLY-2919
 phase: implement
 phaseCursor: 0/6
-updated: 2026-09-26T21:40:02.685Z
-nextStep: B1/B2+ A6 pushed through9025d91b7. A7 managed
-  execution_body_death_enabled registry/codec/wrapper + stored observer
-  committed; 18 explicit files391 pass, config related8/184, teamlead
-  related3/95, shell freeze40, build/lint pass. Evidence/discovery archived.
-  Next finish A production Tmux/native-session binding and legacy migration,
-  wire common observer/reown precedence and independent fair sampling, then B-F
-  marker-first death CAS/cross-DB obligations/all consumers/nine-ticket proofs.
-  New observer/flag still not wired to production death consumers. No
-  PR/review/full CI/QA/handoff.
+updated: 2026-09-26T22:13:53.692Z
+nextStep: "A8 committed 9f5261f54: exact pre-exec PID/start/boot constraint and
+  actual launch argv/session validation; 16 explicit files 397 pass, bounded
+  runner related 8 files 292 pass, build/lint and dependent voice typecheck
+  green. Evidence archived. Still finish production Tmux factory (native
+  Claude/agy vs Kimi Node shebang), pass registered identity as expectedLeader,
+  legacy binding migration, common observer/reown precedence and independent
+  fair sampling, then B-F marker-first death CAS/cross-DB obligations/all
+  consumers/nine-ticket proofs. expectedLeader and Tmux deps not yet wired to
+  production. No PR/review/full CI/QA/handoff."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2919 progress
 **phase**: implement (0/6)
-**next**: B1/B2+ A6 pushed through9025d91b7. A7 managed execution_body_death_enabled registry/codec/wrapper + stored observer committed; 18 explicit files391 pass, config related8/184, teamlead related3/95, shell freeze40, build/lint pass. Evidence/discovery archived. Next finish A production Tmux/native-session binding and legacy migration, wire common observer/reown precedence and independent fair sampling, then B-F marker-first death CAS/cross-DB obligations/all consumers/nine-ticket proofs. New observer/flag still not wired to production death consumers. No PR/review/full CI/QA/handoff.
+**next**: A8 committed 9f5261f54: exact pre-exec PID/start/boot constraint and actual launch argv/session validation; 16 explicit files 397 pass, bounded runner related 8 files 292 pass, build/lint and dependent voice typecheck green. Evidence archived. Still finish production Tmux factory (native Claude/agy vs Kimi Node shebang), pass registered identity as expectedLeader, legacy binding migration, common observer/reown precedence and independent fair sampling, then B-F marker-first death CAS/cross-DB obligations/all consumers/nine-ticket proofs. expectedLeader and Tmux deps not yet wired to production. No PR/review/full CI/QA/handoff.
