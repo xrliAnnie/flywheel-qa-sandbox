@@ -224,8 +224,9 @@ export function toSample(atMs, dto) {
  * last busy (to the end of sampling if no idle closes it): every answer in it
  * must belong to the turn — an idle / unknown / HTTP error / other start there
  * is FAIL evidence, including an idle the turn's busy later contradicts. For a
- * PASS the fixture itself must see the turn busy for at least `minBusyMs`
- * (first to last busy sample — the start-up wait never counts), the closing
+ * PASS the fixture itself must see the turn busy, unbroken, for at least
+ * `minBusyMs` (first to last busy sample of that stretch — the start-up wait
+ * and anything before an interruption never count), the closing
  * idle must not come before the requested hold ends, and idle before.
  */
 export function evaluateLongTurn({
@@ -239,7 +240,9 @@ export function evaluateLongTurn({
 }) {
 	// A sample stamped at the injection instant was read before the ingest call.
 	const before = samples.filter((s) => s.atMs <= injectedAtMs);
-	const after = samples.filter((s) => s.atMs > injectedAtMs);
+	const after = samples
+		.filter((s) => s.atMs > injectedAtMs)
+		.sort((a, b) => a.atMs - b.atMs);
 	const answer = (s) =>
 		s.state === "unknown" ? `unknown:${s.reason}` : s.state;
 	const checks = { idleBefore: before.some((s) => s.state === "idle") };
@@ -266,14 +269,19 @@ export function evaluateLongTurn({
 			answers: [...new Set(wrong.map(answer))],
 		};
 	}
-	const first = turn[0];
+	const inTurn = new Set(turn);
 	const last = turn[turn.length - 1];
+	// The busy span is the unbroken stretch of this turn's busy that ends at its
+	// last busy: any other answer — even one inside the grace — cuts it (R5).
+	let first = last;
+	for (let i = after.indexOf(last) - 1; i >= 0 && inTurn.has(after[i]); i--)
+		first = after[i];
 	const closing = after.find((s) => s.atMs > last.atMs && s.state === "idle");
 	const inside = after.filter(
 		(s) =>
 			s.atMs >= truthStartMs + graceMs &&
 			s.atMs < (closing?.atMs ?? Number.POSITIVE_INFINITY) &&
-			!turn.includes(s),
+			!inTurn.has(s),
 	);
 	checks.onlyBusyInsideTurn = inside.length === 0;
 	checks.startErrorMs = Math.max(

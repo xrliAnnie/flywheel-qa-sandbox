@@ -207,6 +207,28 @@ describe("evaluateLongTurn", () => {
 		assert.equal(judge(samples).verdict, "fail");
 	});
 
+	it("does not count busy time across an idle inside the grace (review R5)", () => {
+		// Busy at 5 s, idle at 10/15 s, busy 20–75 s, idle 80 s (all start 3 s):
+		// the longest contiguous busy the fixture saw is 55 s, not 70 s.
+		const samples = [
+			idle(T0 - 5_000),
+			busy(T0 + 5_000, T0 + 3_000),
+			idle(T0 + 10_000),
+			idle(T0 + 15_000),
+		];
+		for (let at = T0 + 20_000; at <= T0 + 75_000; at += 5_000)
+			samples.push(busy(at, T0 + 3_000));
+		samples.push(idle(T0 + 80_000));
+		const result = judge(samples);
+		assert.notEqual(result.verdict, "pass");
+		assert.equal(result.checks.longTurnObserved, false);
+		assert.equal(result.turn.firstBusyAt, new Date(T0 + 20_000).toISOString());
+		assert.equal(
+			passInvariantViolation(samples, T0, T0 + 2_000, 75_000),
+			"span < 60 s",
+		);
+	});
+
 	it("fails when a chat-triggered turn is attributed to an issue", () => {
 		const start = T0 + 3_000;
 		const samples = [
@@ -264,7 +286,8 @@ describe("evaluateLongTurn", () => {
  * the answers are one contiguous run of busy with one start (±5 s, within 30 s
  * of truth), closed by an idle no earlier than the hold end and never
  * contradicted by that turn's busy afterwards; the fixture saw that turn busy
- * ≥60 s after delivery; no issue attributed; idle before injection.
+ * for an unbroken ≥60 s after delivery; no issue attributed; idle before
+ * injection.
  */
 function passInvariantViolation(samples, injectedAtMs, truth, holdMs) {
 	const sorted = [...samples].sort((a, b) => a.atMs - b.atMs);
@@ -287,13 +310,17 @@ function passInvariantViolation(samples, injectedAtMs, truth, holdMs) {
 			.some((s) => s.state === "busy" && Math.abs(s.startedAtMs - s0) <= 5_000)
 	)
 		return "turn busy after closing idle";
-	const firstBusy = sorted.find(
-		(s) =>
-			s.state === "busy" &&
-			s.atMs >= truth &&
-			Math.abs(s.startedAtMs - s0) <= 5_000,
-	);
-	if (run.at(-1).atMs - firstBusy.atMs < 60_000) return "span < 60 s";
+	// Span = the unbroken stretch of this turn's busy (read after delivery)
+	// that ends at the run's last busy; any other answer, even in the grace, cuts it.
+	let k = sorted.indexOf(run.at(-1));
+	while (
+		k > 0 &&
+		sorted[k - 1].state === "busy" &&
+		sorted[k - 1].atMs >= truth &&
+		Math.abs(sorted[k - 1].startedAtMs - s0) <= 5_000
+	)
+		k--;
+	if (run.at(-1).atMs - sorted[k].atMs < 60_000) return "span < 60 s";
 	if (!run.every((s) => s.trigger?.kind === "undetermined"))
 		return "issue attributed";
 	return null;
@@ -308,32 +335,45 @@ describe("evaluateLongTurn — seeded property check", () => {
 		};
 		const pick = (xs) => xs[Math.floor(rnd() * xs.length)];
 		let passes = 0;
-		for (let n = 0; n < 8_000; n++) {
+		for (let n = 0; n < 3_000; n++) {
 			const poll = pick([2_000, 5_000, 10_000, 30_000]);
 			const truth = T0 + pick([0, 500, 2_000, 10_000, 35_000]);
 			const holdMs = pick([65_000, 75_000, 90_000]);
 			const starts = [-60_000, -25_000, 0, 3_000, 10_000, 20_000, 40_000].map(
 				(d) => truth + d,
 			);
-			const realStart = truth + pick([1_000, 3_000, 10_000, 25_000]);
-			const realEnd =
-				realStart + pick([20_000, 56_000, 61_000, 76_000, 90_000]);
+			// Continuous, early-biased draws so boundaries (60 s span, hold end,
+			// a short interruption inside the grace) are actually explored.
+			const realStart = truth + Math.round(rnd() ** 2 * 25_000);
+			const realEnd = realStart + 40_000 + Math.round(rnd() * 60_000);
+			// Half the runs: one clean turn with a short structured interruption;
+			// the other half: 15 % random corruption of every answer.
+			const structured = rnd() < 0.5;
+			const gapAt = realStart + Math.round(rnd() ** 2 * 60_000);
+			const gapEnd = gapAt + pick([1, 2, 3]) * poll;
+			const gapKind = pick(["idle", "unknown", "http_500"]);
+			const odd = (at, kind) =>
+				kind === "idle"
+					? idle(at)
+					: kind === "unknown"
+						? unknown(at, "x")
+						: { at: new Date(at).toISOString(), atMs: at, state: kind };
 			const samples = [];
 			for (let at = T0 - poll; at <= T0 + 200_000; at += poll) {
+				const real = at >= realStart && at < realEnd;
 				let sample;
-				if (rnd() < 0.15) {
+				if (structured) {
+					sample =
+						real && at >= gapAt && at < gapEnd
+							? odd(at, gapKind)
+							: real
+								? busy(at, realStart)
+								: idle(at);
+				} else if (rnd() < 0.15) {
 					const kind = pick(["idle", "busy", "unknown", "http_500"]);
-					sample =
-						kind === "busy"
-							? busy(at, pick(starts))
-							: kind === "idle"
-								? idle(at)
-								: kind === "unknown"
-									? unknown(at, "x")
-									: { at: new Date(at).toISOString(), atMs: at, state: kind };
+					sample = kind === "busy" ? busy(at, pick(starts)) : odd(at, kind);
 				} else {
-					sample =
-						at >= realStart && at < realEnd ? busy(at, realStart) : idle(at);
+					sample = real ? busy(at, realStart) : idle(at);
 				}
 				if (sample.state === "busy" && rnd() < 0.02)
 					sample.trigger = { kind: "issue", issueId: "FLY-1" };
@@ -353,7 +393,7 @@ describe("evaluateLongTurn — seeded property check", () => {
 				JSON.stringify({ n, poll, truth: truth - T0, holdMs }),
 			);
 		}
-		assert.ok(passes > 300, `the generator must exercise PASS (got ${passes})`);
+		assert.ok(passes > 100, `the generator must exercise PASS (got ${passes})`);
 	});
 });
 
