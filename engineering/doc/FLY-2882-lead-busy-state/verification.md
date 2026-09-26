@@ -3,7 +3,7 @@ Issue: FLY-2882 (https://linear.app/geoforge3d/issue/FLY-2882/语音耳机bridge
 日期: 2026-09-25
 基于: plan.md
 
-本文件只记实现节点**本机实际跑过**的东西。没有请求 full CI、没有派 QA、没有进 529 房、没有合并或部署。
+本文件只记实现节点**本机实际跑过**的东西。没有请求 full CI、没有派 QA、没有进 529 房、没有合并或部署。(§9 那一轮按 Lead 的返工说明,在评审 APPROVED 后请求了一次冻结头的 full CI。)
 
 ## 0. 设计修正
 
@@ -208,3 +208,61 @@ QA(exec `ebc27720`)在头 `a34acbf28` 判 FAIL。产品部分 Codex 载体在 52
 - **另一处 CI 红** `qa-fly-1986-load-probe.test.sh`(Script Tests 5/6,「all-401 block certified as incomplete_expected=3」)与 §6 同一条、第二次出现;本分支不碰该脚本,按规矩不自行重跑 CI,交 Lead 裁定。
 - 按实现节点规矩,我没有请求 full CI(冻结头的 full CI 归 QA)。
 - **代码评审**:`codex:rescue`(gpt-6-astra,只读)只审 `a34acbf28..82f601950` 这一条登记 → **APPROVED**:`candidate_guarded` 符合该读者「只看本次注入的那一行、缺证据不会判通过」的行为;四字段键与扫描结果精确匹配;评审实测缺行 → `Date.parse("")` 为 `NaN` → `inconclusive / no_delivery_evidence`,旧配置复现唯一的未登记错误,新配置 `ok:true`。
+
+## 9. QA 返工(QA@2 FAIL claim 1599,头 `e33b15e7d`)
+
+Lead 在上一轮 QA 后查实两条阻断,本轮都修了。先 `git merge origin/main`(`2f6371633`,无冲突;merge 不 rebase)。
+
+### 9.1 产品阻断:launchd 环境下 tmux 输出不是 UTF-8(`629893409`、`8a041b790`)
+
+- **根因(本机实测 tmux 3.7c)**:真实 Bridge 由 launchd 起,环境里没有 TMUX,也没有 LANG / LC_*(`com.flywheel.bridge.plist` 无 EnvironmentVariables,`flywheel-bridge-wrapper.sh` 与 `~/.flywheel/.env` 都不设)。这时 tmux 客户端不是 UTF-8,会把命令输出里每个 tab 和非 ASCII 字节改写成 `_`:`list-panes -F "#{pane_id}\t#{session_name}"` 返回 `%0_main`,按 tab 切不开,窗口探针一律失败 → 所有 Claude Lead 答 `unknown / lead_window_unavailable`。runner 的 shell 里有 TMUX 或 LANG,所以之前几次冒烟都没暴露。加 `-u` 后恢复 `%0\tmain`。
+- **修法**:`lead-activity-service.ts` 新增 `utf8TmuxExec`(`file === "tmux"` 时在参数前加 `-u`,其它命令原样;固定 utf8 编码,转发 timeout)。生产装配把三处 tmux 读取全部接到它上:定位器(`execFn` → `locateLeadWindow` → `probeV2LeadPane`)、Claude 子进程检查(`readV2LeadClaudePid`)、抓屏(`defaultLeadPaneCapture` 的身份探针与 `capture-pane`)。
+- **有意不改**:共享 helper(`LeadWindowLocator.ts`、`lead-alert-helpers.ts`、`tmux-lookup.ts`)的默认行为不变。它们的其它消费者——FLY-368 `sendEnterToWindow` 的 send 级探针、plugin 的 `locateFleetLeadWindow`、告警 pane 抓屏循环——在 launchd 环境下有同一个潜在问题;但让它们开始「成功」会改变别的功能的行为(包括向 Lead pane 发键),不在本单范围,列入 Follow-ups。
+- **先红后绿**:新测试 `lead-activity-service.real-tmux.test.ts` 按 529 房布局造两个 Lead(注册表 → 严格 plist → manifest → 私有 socket;Lead state dir 用房里的短路径 `q/<n>`),用 `cc` 编一个最小的 `claude` 二进制做 pane 里 `bash lead-body.sh` 的直接子进程(macOS 上拷贝或软链 `sleep` 会被 SIGKILL 或内核名仍是 `sleep`,脚本的内核名是 `bash`),用剥掉 locale 的环境起真 tmux,再把 `process.env` 里的 TMUX / TMUX_PANE / LANG / LC_* 全部删掉(`finally` 里还原),调 `createProductionLeadActivityService(...).read()`。
+  - 修前:`lead_window_unavailable`(与 QA 现象一致)。
+  - 对照:同一夹具只把 `LANG=en_US.UTF-8` 放回去 → 通过(证明夹具本身正确,差别只在环境;对照副本没有提交)。
+  - 修后:idle 一个、busy 一个(65 秒、秒级精度、trigger `undetermined / causality_unproven`)。
+  - 变异:分别去掉定位器接线、子进程检查接线、抓屏接线、`-u` 前缀,各自变红(前三个依次答 `lead_window_unavailable`、`lead_process_unverified`、`lead_window_unavailable`,第四个 `lead_window_unavailable`)。
+  - 测试没有 tmux 或 `cc` 时跳过;CI 的 Linux runner 装了 tmux(`ci-apt-install.sh tmux …`)。
+- **生产同款环境只读冒烟(A/B,同一进程)**:`env -i` 只给 HOME / USER / LOGNAME / SHELL / TMPDIR / `FLYWHEEL_STATE_DIR` 和 wrapper 同款 PATH(脚本自检:TMUX / LANG / LC_* 一个都不在),读本机全部 17 个生产 Lead,只打印 状态 / 原因 / 时间 / 来源:
+  - A 旧装配(不带 `-u`),14 个 Claude Lead:**14/14 `unknown / lead_window_unavailable`**,复现 Lead 的生产探测。
+  - B 本分支生产工厂,整个舰队 1.9 秒:Claude 12 `idle`、1 `busy`(`flywheel-eng-lead`,28 秒,秒级,`undetermined / causality_unproven`)、1 `unknown / no_turn_status_line`(`tidal-echo-cos-lead`,与之前每次冒烟一致);Codex 3 个 `unknown / sidecar_unreachable`(这个环境里没有 bot token,读取器在碰 socket 前就答 unknown;Bridge 进程里有 token)。
+  - 没有向任何 pane 输入,没有落盘画面文字,没有打开生产 teamlead.db(`getLeadEventSessionKeyBySeq` 用桩)。
+
+### 9.2 夹具阻断:Claude Code 拦裸 `sleep`(`09772858d`)
+
+- Claude Code 拒绝单独的 `sleep 75`,529 房的 Claude Lead 于是改用后台计时,回合 31 秒就结束,造不出 ≥60 秒的 Claude 回合。`research.md` 早有同类记录(`sleep 25` 被拦,`python3 -c "import time; time.sleep(25)"` 正常)。
+- 提示词里 hold 与「补足」两步都改为 `python3 -c "import time; time.sleep(N)"`(`holdCommand`)。先红:提示词测试断言不含任何裸 `sleep <n>`,修前红、修后绿;夹具测试 38/38(含 3000 次固定种子的性质测试),判定逻辑没有改动。
+
+### 9.3 本机验证(只跑与改动直接相关的)
+
+统一环境同 §3(`TMPDIR=/tmp/f2882t`、隔离的 `FLYWHEEL_CODEX_HOMES_ROOT` / `FLYWHEEL_CODEX_SESSION_DIR`),逐个文件跑。
+
+| 范围 | 结果 |
+|---|---|
+| teamlead:`lead-activity-service`(12)、`lead-activity-service.real-tmux`(1)、`claude-lead-activity`(13)、`claude-pane-activity`(37)、`fleet-lead-locator`(34)、`LeadWindowLocator`(14)、`lead-activity-route`(14) | 7 文件 / 125 条,各自 exit 0,无 Unhandled |
+| `node --test scripts/__tests__/qa-lead-activity-long-turn.test.mjs` | 38 / 0 |
+| `node scripts/fly-2006-retention-consumer-gate.mjs` / 其测试 | `ok:true` / 10 / 0(本轮没有新增对目标表的读者) |
+| `pnpm lint` | exit 0,0 error(25 条既有 warning) |
+| `pnpm --filter "flywheel-teamlead..." build` / `pnpm --filter "...flywheel-teamlead" typecheck` | exit 0 / exit 0,0 个 `error TS`(teamlead、voice-codex) |
+
+**消费者扫描**(`git grep -lF`:完整路径、文件名、父目录、新符号):
+- `lead-activity-service`:自身测试、新 real-tmux 测试、`plugin.ts`。`plugin.ts` 只调 `createProductionLeadActivityService`,签名不变;路由测试(`lead-activity-route`)已跑。**不用** `vitest related`:它会经枢纽 `plugin.ts` 退化为整包全量,本机规则禁止(与 §7.2 同一处置)。
+- `bridge/lead-activity`(父目录):只命中 `fly-2006-retention-consumer-gate.config.json`,守卫已跑。
+- `qa-lead-activity-long-turn`:自身测试、`ci.yml`(`node --test` 枚举一行,未改)、FLY-2006 清册(已跑)。父目录 `scripts/` 命中全部脚本,**排除**:本次只改提示词字符串,没有其它脚本引用 `longTurnPrompt` / `holdCommand`(`git grep` 只命中夹具与其测试)。
+- `utf8TmuxExec`:只在 `lead-activity-service.ts` 内。
+
+### 9.4 代码评审(`codex:rescue`,gpt-6-astra,只读;提示词开头逐字附 local-test-policy 块)
+
+| 轮次 | 范围 | 结论 | 处置 |
+|---|---|---|---|
+| R1 | `2f6371633..8a041b790`(本轮三个提交) | **APPROVED**,1 LOW:real-tmux 测试在 `new-session` 返回后才登记 socket,客户端超时而 server 已起时 `afterAll` 会漏杀。六个问题逐项:没有遗漏的 tmux 调用(定位器、前后两次 pid 检查、抓屏的身份探针与 capture 都走 `utf8TmuxExec`);`-u` 只设 `CLIENT_UTF8`,macOS / Ubuntu 足够;非 tmux 命令 argv 不变,编码 / 超时 / 错误形态不变,各层仍 fail-closed;测试走真实工厂、真 tmux、真 ps,Linux procps 支持 `ucomm`;提示词与夹具判定规则兼容;共享 helper 不改是合理的范围选择。评审自跑夹具测试 38/38 | 采纳,`15377ad6c`:启动前登记 socket |
+| R2 | `15377ad6c`(只验 R1 那条) | **APPROVED**:R1 LOW 已解决(启动前登记,客户端超时后 `afterAll` 仍会关 server;server 未创建时 kill 失败不中断清理),无新发现 | — |
+
+评审同时提醒:「Codex 半边上轮用 `sleep` 通过」不能证明新提示词在 Codex 载体上也通过——529 provisioning 本身依赖 python3、Codex wrapper 保留 PATH,代码层面没有禁用,但这一点只有真机能证。
+
+### 9.5 Follow-ups(不在本单范围)
+
+1. **共享 tmux helper 的其它消费者在 launchd 环境下同样失效**:`probeV2LeadPane` / `defaultLeadPaneCapture` 的默认执行器不带 `-u`,Bridge 里 FLY-368 `sendEnterToWindow` 的 send 级探针、plugin 的 `locateFleetLeadWindow`、告警 pane 抓屏循环会按 tab 切不开而一律 fail-closed。修它会让这些功能(含向 Lead pane 发键)开始真正生效,需要单独立单、单独评估。
+2. **新会话启动横幅占住状态槽位**:Claude 新会话还没跑过任何一轮时,输入框上方是欢迎横幅而不是 `… · done …` 行,读取器 fail-closed 答 `unrecognized_status_line`(不会误答 idle)。夹具在基线读不出 idle 时先发一条热身消息,所以 QA 不受影响;若要让「从未跑过一轮」读成 idle,需要按真实横幅格式加一条严格规则,另评。
+3. `tidal-echo-cos-lead` 持续答 `no_turn_status_line`(各次冒烟一致),未深究其画面形态。
