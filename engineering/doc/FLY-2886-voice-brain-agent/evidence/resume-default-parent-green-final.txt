@@ -1,0 +1,13 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+stdout | src/lead-capabilities/__tests__/default-parent-integration.test.ts > executes the default factory, real provider assembly and parent broker with fixture host inputs
+FLY2519_DEFAULT_FACTORY={"schemaVersion":1,"scope":"fixture","operationId":"artifact.text.create","result":{"requestId":"22222222-2222-4222-8222-222222222222","status":"succeeded","resourceRefs":["c15948c9-ae4e-48e7-9e23-a5aa74a52627"],"data":{"artifactHandle":"c15948c9-ae4e-48e7-9e23-a5aa74a52627"}},"nativeSourcesVerified":6,"tuiGeneration":{"methods":["initialize","initialized","config/read","skills/list","config/read","skills/list","thread/start","initialize","initialized","config/read","skills/list","config/read","skills/list","thread/resume","initialize","initialized","config/read"],"sameWindowPreserved":true,"wrongConfigRejected":true},"realComponents":["default factory","provider assembly","parent","native source verification","rule loading","UDS broker","TUI generation","SQLite journal","artifact handler"],"fixtureBoundaries":["Codex version","deployment receipt","registry authority","menu and source selection","native source pins","browser","upstream services","model isolation","app-server WS","terminal window","process locks","Discord identity response","outbound preflight"],"cleanup":{"socketRemoved":true,"artifactsRemoved":true},"hostVerified":false}
+
+ ✓ |parallel| src/lead-capabilities/__tests__/default-parent-integration.test.ts (1 test) 1046ms
+   ✓ executes the default factory, real provider assembly and parent broker with fixture host inputs  1045ms
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  00:25:17
+   Duration  14.63s (transform 6.80s, setup 38ms, collect 12.74s, tests 1.05s, environment 0ms, prepare 134ms)

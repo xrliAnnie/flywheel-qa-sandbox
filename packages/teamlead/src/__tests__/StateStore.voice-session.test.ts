@@ -190,6 +190,20 @@ describe("StateStore voice sessions", () => {
 		);
 	});
 
+	it.each([false, true])("loads natural restart background when live context is disabled or fused=%s", (fused) => {
+		const {sessionId} = reservation();
+		store.reserveVoiceSession(reservation());
+		store.updateVoiceProvisioning({sessionId, expectedStep: "reserved", nextStep: "done", nextState: "desired", updatedAt: T0});
+		const claim = store.claimVoiceSession({sessionId, daemonBootId: "boot", now: T0, leaseTtlMs: 60000})!;
+		store.recordVoiceBackgroundEvent({sessionId, leaseToken: claim.leaseToken, key: "session:exec-1:running", text: "FLY-2886 running", deliveryClass: "context", tokenCount: 20, observedAt: T0, now: T0});
+		if (fused) store.fuseVoiceLiveContext({sessionId, leaseToken: claim.leaseToken, reason: "markerless_echo", now: T0});
+		const input = {sessionId, leaseToken: claim.leaseToken, generation: 5, now: T0, naturalStartup: true};
+		expect(store.loadVoiceContextRingForGeneration(input)).toMatchObject({status: "loaded", entries: [{text: "FLY-2886 running"}]});
+		expect(store.loadVoiceContextRingForGeneration({...input, generation: 4})).toEqual({status: "replayed", entries: []});
+		expect(store.loadVoiceContextRingForGeneration(input)).toEqual({status: "replayed", entries: []});
+		expect(store.getVoiceSession(sessionId)?.contextPromptGeneration).toBe(5);
+	});
+
 	it("loads a context ring once per eligible generation and preserves it across an irreversible fuse", () => {
 		const { sessionId } = reservation();
 		store.reserveVoiceSession(reservation());

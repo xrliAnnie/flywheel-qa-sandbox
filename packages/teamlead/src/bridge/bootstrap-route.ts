@@ -115,6 +115,7 @@ export function createBootstrapReadRouter(deps: {
 				kind !== "activeSessions" &&
 				kind !== "pendingDecisions" &&
 				kind !== "recentFailures" &&
+				kind !== "targetLocks" &&
 				kind !== "recentEvents" &&
 				kind !== "memoryRecall"
 			) {
@@ -144,7 +145,7 @@ export function createBootstrapReadRouter(deps: {
 						? snapshot.memoryRecall
 							? [snapshot.memoryRecall]
 							: []
-						: snapshot[kind];
+						: (snapshot[kind] ?? []);
 				res.json({
 					snapshotAt,
 					count: rows.length,

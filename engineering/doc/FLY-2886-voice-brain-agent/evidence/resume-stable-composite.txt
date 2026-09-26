@@ -1,0 +1,97 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+stderr | src/lead-backends/codex/__tests__/runner-actions.test.ts > provides read-only scope authorization without sending or answering
+[slow-sql] {"databaseKind":"comm","sqlId":"7fc32971e569928a","method":"exec","durationMs":512.6141669999997}
+
+ ✓ |parallel| src/lead-backends/codex/__tests__/runner-actions.test.ts (36 tests) 10798ms
+   ✓ shared Codex runner actions > sends through the durable mailbox with stable instruction identity  380ms
+   ✓ shared Codex runner actions > answers an ordinary scoped question through guardedResponse and replays it  302ms
+   ✓ shared Codex runner actions > refuses foreign-owner questions without inserting a response  660ms
+   ✓ shared Codex runner actions > registers exactly six opt-in tools and rejects extra fields through the actual MCP protocol  690ms
+   ✓ shared Codex runner actions > rejects empty, NUL or over-budget text before mailbox insertion  494ms
+   ✓ shared Codex runner actions > rejects empty, NUL or over-budget text before mailbox insertion  363ms
+   ✓ shared Codex runner actions > rejects scope changes during an outstanding capture  418ms
+   ✓ provides read-only scope authorization without sending or answering  721ms
+   ✓ runs a v2 Bridge start once and replays only a scoped durable receipt  595ms
+   ✓ composes all remaining runner actions with typed output and durable write replay  962ms
+   ✓ serves result-only runner writes on a real isolated Bridge HTTP route  2114ms
+stderr | src/__tests__/StateStore.voice-session.test.ts > StateStore voice sessions > loads a context ring once per eligible generation and preserves it across an irreversible fuse
+[slow-sql] {"databaseKind":"teamlead","sqlId":"ce922519a3c3ecaf","method":"transaction","durationMs":299.567750000002}
+
+ ✓ |parallel| src/__tests__/StateStore.voice-session.test.ts (27 tests) 20691ms
+   ✓ StateStore voice sessions > keeps new background context disabled, deduplicated, bounded, and separate from tell delivery  817ms
+   ✓ StateStore voice sessions > loads natural restart background when live context is disabled or fused=false  1003ms
+   ✓ StateStore voice sessions > loads natural restart background when live context is disabled or fused=true  1005ms
+   ✓ StateStore voice sessions > loads a context ring once per eligible generation and preserves it across an irreversible fuse  752ms
+   ✓ StateStore voice sessions > atomically binds durable Lead voice intents to one scoped session  869ms
+   ✓ StateStore voice sessions > rolls back the session reservation when durable intent insertion fails  610ms
+   ✓ StateStore voice sessions > stores monotonic receive health with idempotent and stale renew semantics  880ms
+   ✓ StateStore voice sessions > restarts into the idle loop after Bridge sweeps a crashed daemon session  1016ms
+   ✓ StateStore voice sessions > persists the voice topic for crash-safe provisioning  510ms
+   ✓ StateStore voice sessions > reserves before side effects and converges only the same meeting intent  465ms
+   ✓ StateStore voice sessions > claims one desired session and fences expired or stale lease mutations  892ms
+   ✓ StateStore voice sessions > maps stop by lifecycle phase without letting stop directly cancel provisioning  661ms
+   ✓ StateStore voice sessions > claims and receipts outbound rows exactly once, then settles them at terminal  786ms
+   ✓ StateStore voice sessions > expires only after lease plus skew grace and releases the room  851ms
+   ✓ StateStore voice sessions > lists stale provisioning rows for reducer takeover  604ms
+   ✓ does not let renew extend the ending timeout  689ms
+   ✓ does not let poller extend the ending timeout  783ms
+   ✓ preserves a cancelled receipt without advancing state or accepting a stale owner  673ms
+   ✓ maps live local end 'she-left' at 2000 ms with active-lease validation  650ms
+   ✓ maps live local end 'voice-stop' at 2000 ms with active-lease validation  446ms
+   ✓ maps live local end 'realtime_session_expiring' at 2000 ms with active-lease validation  815ms
+   ✓ maps live local end 'realtime_capacity' at 2000 ms with active-lease validation  653ms
+   ✓ maps live local end 'text-stop' at 2000 ms with active-lease validation  1221ms
+   ✓ maps live local end 'unknown' at 2000 ms with active-lease validation  861ms
+   ✓ maps live local end 'voice-stop' at 15000 ms with active-lease validation  556ms
+   ✓ rejects renew with leaseToken mismatch without returning a success receipt  1029ms
+   ✓ rejects renew with leaseExpiresAt null without returning a success receipt  594ms
+ ✓ |parallel| src/__tests__/mailbox-lead-runtime.test.ts (38 tests) 156ms
+stderr | src/bridge/__tests__/voice-session-routes.test.ts > voice session routes > accepts the daemon normal-end reason realtime_session_expiring from live
+[slow-sql] {"databaseKind":"teamlead","sqlId":"0801074aeaef699f","method":"exec","durationMs":271.2840839999999}
+[slow-sql] {"databaseKind":"teamlead","sqlId":"ce922519a3c3ecaf","method":"transaction","durationMs":273.5827499999996}
+
+ ✓ |parallel| src/bridge/__tests__/voice-session-routes.test.ts (23 tests) 15290ms
+   ✓ voice session routes > starts through the ingest tier, reserves first, and returns idempotent success  487ms
+   ✓ voice session routes > allows ingest status and stop but rejects daemon-only mutations  442ms
+   ✓ voice session routes > claims, renews, advances state, and completes outbound receipt CAS  479ms
+   ✓ voice session routes > returns not-claimable when a listed outbound mirror is withdrawn before claim  343ms
+   ✓ voice session routes > serves context only to the master holding the current session lease  638ms
+   ✓ voice session routes > accepts the daemon normal-end reason realtime_session_expiring from live  1237ms
+   ✓ voice session routes > accepts the daemon normal-end reason realtime_session_expiring from ending  1244ms
+   ✓ voice session routes > accepts the daemon normal-end reason realtime_capacity from live  622ms
+   ✓ voice session routes > accepts the daemon normal-end reason realtime_capacity from ending  1223ms
+   ✓ voice session routes > validates receive health and rejects a same-sequence conflict  1003ms
+   ✓ voice session routes > reports terminal abandoned speech after the ledger transition  1518ms
+   ✓ preserves 503 when provisioning throws before a durable transition  1046ms
+   ✓ rejects validation failure before claim mutates ownership  733ms
+   ✓ rejects projection failure before claim mutates ownership  431ms
+   ✓ requires live validation on renew without extending a rejected lease  406ms
+   ✓ returns pinned status without projecting a terminal session against registry  398ms
+   ✓ voice session ready receipt (FLY-2701) > records ready under the session lease and stays warming  397ms
+   ✓ voice session ready receipt (FLY-2701) > refuses a ready receipt without the current lease  397ms
+   ✓ voice session ready receipt (FLY-2701) > keeps the daemon-only surface closed to the ingest tier  437ms
+   ✓ voice session ready receipt (FLY-2701) > rejects a malformed schedule revision instead of guessing  472ms
+   ✓ voice session start meets an existing booking (FLY-2701) > hands back the existing booking instead of reporting a conflict  373ms
+   ✓ voice session start meets an existing booking (FLY-2701) > reports a conflict when the request disagrees with the booking  457ms
+   ✓ voice transcript mirror receipts (FLY-2799 qa6) > records the Discord id of a mirrored line so the poller never reads it back  497ms
+stdout | src/lead-capabilities/__tests__/default-parent-integration.test.ts > executes the default factory, real provider assembly and parent broker with fixture host inputs
+FLY2519_DEFAULT_FACTORY={"schemaVersion":1,"scope":"fixture","operationId":"artifact.text.create","result":{"requestId":"22222222-2222-4222-8222-222222222222","status":"succeeded","resourceRefs":["21cbd839-fa98-4b1c-8938-df338148c4e0"],"data":{"artifactHandle":"21cbd839-fa98-4b1c-8938-df338148c4e0"}},"nativeSourcesVerified":6,"tuiGeneration":{"methods":["initialize","initialized","config/read","skills/list","config/read","skills/list","thread/start","initialize","initialized","config/read","skills/list","config/read","skills/list","thread/resume","initialize","initialized","config/read"],"sameWindowPreserved":true,"wrongConfigRejected":true},"realComponents":["default factory","provider assembly","parent","native source verification","rule loading","UDS broker","TUI generation","SQLite journal","artifact handler"],"fixtureBoundaries":["Codex version","deployment receipt","registry authority","menu and source selection","native source pins","browser","upstream services","model isolation","app-server WS","terminal window","process locks","Discord identity response","outbound preflight"],"cleanup":{"socketRemoved":true,"artifactsRemoved":true},"hostVerified":false}
+
+ ✓ |parallel| src/lead-capabilities/__tests__/default-parent-integration.test.ts (1 test) 945ms
+   ✓ executes the default factory, real provider assembly and parent broker with fixture host inputs  944ms
+ ✓ |parallel| src/bridge/__tests__/voice-capability-events.test.ts (2 tests) 446ms
+ ✓ |parallel| src/lead-capabilities/__tests__/linear-provider.test.ts (13 tests) 147ms
+stdout | src/__tests__/createLeadRuntime-preflight.test.ts > createLeadRuntime — preflight error surfacing > passes a logger to transport.preflight (QA Bug #2 defense in depth)
+[Bridge] Lead "cos-lead" using mailbox runtime (FLY-142 PR 1.4 default)
+
+ ✓ |serial| src/__tests__/createLeadRuntime-preflight.test.ts (5 tests) 146ms
+ ✓ |parallel| src/lead-capabilities/__tests__/linear.test.ts (15 tests) 48ms
+ ✓ |parallel| src/bridge/__tests__/voice-target-reconcile.test.ts (2 tests) 92ms
+ ✓ |parallel| src/__tests__/lead-token-savings-bootstrap.test.ts (5 tests) 24ms
+
+ Test Files  11 passed (11)
+      Tests  167 passed (167)
+   Start at  00:36:39
+   Duration  114.31s (transform 25.56s, setup 267ms, collect 56.83s, tests 48.78s, environment 2ms, prepare 1.50s)

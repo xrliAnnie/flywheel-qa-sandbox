@@ -1,0 +1,50 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ❯ |parallel| src/lead-capabilities/__tests__/linear.test.ts (15 tests | 1 failed) 90ms
+   ✓ Linear broker handlers > creates a comment only on a scoped issue and returns exact provider evidence 5ms
+   ✓ Linear broker handlers > foreign team/project or excluded department produces zero writes 2ms
+   ✓ Linear broker handlers > rechecks changed policy after asynchronous issue lookup 1ms
+   ✓ Linear broker handlers > supports create/update/assign/relations with fixed field and scope checks 3ms
+   ✓ Linear broker handlers > filters bounded search results through the same live scope checks 1ms
+   ✓ rejects self relations, forbidden labels/users and extra fields without mutation 1ms
+   ✓ rechecks live policy after department authorization awaits 1ms
+   ✓ excludes foreign search nodes and fails closed on missing pagination evidence 1ms
+   ✓ rechecks policy in the same continuation immediately before the SDK mutation 1ms
+   ✓ returns scoped reads and permits configured updates and unassignment 1ms
+   ✓ does not retry provider rejection or an ambiguous thrown mutation 1ms
+   ✓ broker rejects foreign target before preparing or dispatching a receipt 42ms
+   ✓ read capability remains scoped when creation labels are not adopted 5ms
+   ✓ normalizes issue UUID and identifier aliases before acquiring the write fence 15ms
+   × records the successful mutation before revoked post-response projection fails 10ms
+     → expected "spy" to be called with arguments: [ { status: 'succeeded', …(1) } ]
+
+Number of calls: 0
+
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |parallel| src/lead-capabilities/__tests__/linear.test.ts > records the successful mutation before revoked post-response projection fails
+AssertionError: expected "spy" to be called with arguments: [ { status: 'succeeded', …(1) } ]
+
+Number of calls: 0
+
+ ❯ src/lead-capabilities/__tests__/linear.test.ts:407:33
+    405|  f.client.updateIssue.mockImplementation(async () => { f.policy.projec…
+    406|  await expect(f.handlers.get("linear.issue.update")!.execute({ issueId…
+    407|  expect(recordTerminalEvidence).toHaveBeenCalledWith({ status: "succee…
+       |                                 ^
+    408|  expect(f.client.updateIssue).toHaveBeenCalledTimes(1);
+    409| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 14 passed (15)
+   Start at  00:16:36
+   Duration  2.81s (transform 865ms, setup 32ms, collect 1.62s, tests 90ms, environment 0ms, prepare 348ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/lead-capabilities/__tests__/linear.test.ts

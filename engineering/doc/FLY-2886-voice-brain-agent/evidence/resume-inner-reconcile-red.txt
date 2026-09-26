@@ -1,0 +1,37 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ❯ |parallel| src/bridge/__tests__/voice-target-reconcile.test.ts (2 tests | 1 failed) 34ms
+   ✓ accepts a matching durable success, never an unknown receipt or a current-value observation 23ms
+   × accepts a late Bridge inner receipt only for the original voice activation and target 11ms
+     → expected null to match object { outcome: 'succeeded', …(2) }
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |parallel| src/bridge/__tests__/voice-target-reconcile.test.ts > accepts a late Bridge inner receipt only for the original voice activation and target
+AssertionError: expected null to match object { outcome: 'succeeded', …(2) }
+
+- Expected:
+{
+  "operationId": "github.pr.comment",
+  "outcome": "succeeded",
+  "providerRef": "github:comment:123",
+}
+
++ Received:
+null
+
+ ❯ src/bridge/__tests__/voice-target-reconcile.test.ts:89:80
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 1 passed (2)
+   Start at  00:34:19
+   Duration  1.97s (transform 775ms, setup 28ms, collect 1.32s, tests 34ms, environment 0ms, prepare 107ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/bridge/__tests__/voice-target-reconcile.test.ts

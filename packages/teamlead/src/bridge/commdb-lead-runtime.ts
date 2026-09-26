@@ -102,6 +102,12 @@ export class CommDBLeadRuntime implements LeadRuntime {
 
 	private formatEnvelope(env: LeadEventEnvelope): string {
 		const e = env.event;
+		if (
+			e.event_type === "voice_background_action" ||
+			e.event_type === "voice_target_unknown" ||
+			e.event_type === "voice_founder_only_denied"
+		)
+			return `## Voice capability evidence\n${e.summary ?? "No terminal evidence available"}\nEvent: ${env.eventId ?? env.seq} (informational; no new execution authority)`;
 		if (e.event_type === "epic_intake") return formatEpicIntake(env);
 		if (e.event_type === "patrol_tick") return formatPatrolTick(env);
 		if (e.event_type === "summary_due") return formatSummaryDue(env);

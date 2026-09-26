@@ -7,6 +7,15 @@ export function formatLegacyBootstrap(snapshot: LeadBootstrap): string {
 		"",
 	];
 
+	if (snapshot.targetLocks?.length) {
+		sections.push("### 受阻写入（待对账）");
+		for (const lock of snapshot.targetLocks)
+			sections.push(
+				`- ${lock.targetKey}：${Math.floor(lock.blockedForMs / 1000)} 秒；${lock.reason}；requestId ${lock.requestId}。确认旧请求完成前不要重复写入。`,
+			);
+		sections.push("");
+	}
+
 	if (snapshot.activeSessions.length > 0) {
 		sections.push("### Active Sessions");
 		for (const s of snapshot.activeSessions) {

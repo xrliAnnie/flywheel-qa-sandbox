@@ -1,0 +1,48 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ❯ |parallel| src/lead-capabilities/__tests__/github-terminal-evidence.test.ts (6 tests | 1 failed) 1854ms
+   ✓ records validated late 'github.pr.ready' success before refusing output delivery 61ms
+   ✓ records validated late 'github.pr.comment' success before refusing output delivery 56ms
+   ✓ records validated late 'github.pr.review' success before refusing output delivery 55ms
+   ✓ records validated late 'github.pr.edit' success before refusing output delivery 58ms
+   ✓ records validated late 'github.pr.edit' success before refusing output delivery 56ms
+   × settles a Bridge inner broker receipt after cancellation without a target lock client 1566ms
+     → expected { projectName: 'flywheel', …(11) } to match object { state: 'succeeded', …(1) }
+(10 matching properties omitted from actual)
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |parallel| src/lead-capabilities/__tests__/github-terminal-evidence.test.ts > settles a Bridge inner broker receipt after cancellation without a target lock client
+AssertionError: expected { projectName: 'flywheel', …(11) } to match object { state: 'succeeded', …(1) }
+(10 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+-   "providerRef": "42",
+-   "state": "succeeded",
++   "providerRef": null,
++   "state": "unknown",
+  }
+
+ ❯ src/lead-capabilities/__tests__/github-terminal-evidence.test.ts:52:69
+     50|   expect(journal.operationReceipts.get(key)?.state).toBe("unknown");
+     51|   settle({data: {id: 42, html_url: `${pr.html_url}#issuecomment-42`}});
+     52|   await vi.waitFor(() => expect(journal.operationReceipts.get(key)).to…
+       |                                                                     ^
+     53|   expect(mutate).toHaveBeenCalledTimes(1);
+     54|  } finally {await broker.close(); journal.close();}
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 5 passed (6)
+   Start at  00:30:15
+   Duration  4.23s (transform 436ms, setup 25ms, collect 261ms, tests 1.85s, environment 0ms, prepare 78ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/lead-capabilities/__tests__/github-terminal-evidence.test.ts

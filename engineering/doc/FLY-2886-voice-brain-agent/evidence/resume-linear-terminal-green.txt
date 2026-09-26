@@ -1,0 +1,10 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ✓ |parallel| src/lead-capabilities/__tests__/linear.test.ts (15 tests) 82ms
+ ✓ |parallel| src/lead-capabilities/__tests__/broker.test.ts (29 tests) 161ms
+
+ Test Files  2 passed (2)
+      Tests  44 passed (44)
+   Start at  00:17:30
+   Duration  1.79s (transform 350ms, setup 21ms, collect 915ms, tests 243ms, environment 0ms, prepare 98ms)

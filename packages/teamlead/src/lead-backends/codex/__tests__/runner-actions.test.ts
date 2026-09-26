@@ -827,6 +827,24 @@ it("serves result-only runner writes on a real isolated Bridge HTTP route", asyn
 			join(dirs[dirs.length - 1]!, "runner-http-receipts.db"),
 		);
 	const identity = f.options.context.assertCurrent().identity;
+	writeFileSync(
+		join(
+			f.options.context.env.HOME!,
+			".flywheel",
+			"lead-carrier-evidence.json",
+		),
+		JSON.stringify({
+			leads: {
+				[identity.leadKey]: {
+					backend: "codex-app-server",
+					identityDigest: identity.identityDigest,
+					pid: process.pid,
+					lstart: "fixture",
+					instanceDigest: "a".repeat(64),
+				},
+			},
+		}),
+	);
 	const carrierProbe = vi
 		.spyOn(leadLease, "validateLeadCarrierAuthorization")
 		.mockImplementation((input) =>
@@ -892,9 +910,12 @@ it("serves result-only runner writes on a real isolated Bridge HTTP route", asyn
 		});
 	try {
 		expect((await post(body, "wrong")).status).toBe(401);
-		expect(
-			await (await post({ ...body, receiptOnly: true })).json(),
-		).toMatchObject({ status: "unknown" });
+		const initialReceipt = await (
+			await post({ ...body, receiptOnly: true })
+		).json();
+		expect(initialReceipt, JSON.stringify(initialReceipt)).toMatchObject({
+			status: "unknown",
+		});
 		expect(f.fetchImpl).not.toHaveBeenCalled();
 		expect(await (await post(body)).json()).toMatchObject({
 			status: "succeeded",

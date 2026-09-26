@@ -1,0 +1,12 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ✓ |parallel| src/lead-capabilities/__tests__/linear-provider.test.ts (13 tests) 1334ms
+   ✓ binds the actual SDK metadata request to cancellation before a mutation can run  364ms
+ ✓ |parallel| src/lead-capabilities/__tests__/linear.test.ts (14 tests) 194ms
+ ✓ |parallel| src/lead-capabilities/__tests__/broker.test.ts (29 tests) 732ms
+
+ Test Files  3 passed (3)
+      Tests  56 passed (56)
+   Start at  00:07:03
+   Duration  20.63s (transform 4.59s, setup 87ms, collect 13.28s, tests 2.26s, environment 0ms, prepare 850ms)

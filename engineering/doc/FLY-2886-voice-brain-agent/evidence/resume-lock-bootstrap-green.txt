@@ -1,0 +1,9 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ✓ |parallel| src/__tests__/lead-token-savings-bootstrap.test.ts (5 tests) 18ms
+
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+   Start at  00:12:00
+   Duration  1.52s (transform 102ms, setup 45ms, collect 112ms, tests 18ms, environment 0ms, prepare 265ms)

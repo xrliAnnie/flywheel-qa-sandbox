@@ -1,0 +1,11 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ✓ |parallel| src/bridge/__tests__/lead-capability-target-lock.test.ts (4 tests) 645ms
+ ✓ |parallel| src/bridge/__tests__/voice-target-reconcile.test.ts (2 tests) 18ms
+ ✓ |parallel| src/bridge/__tests__/voice-capability-events.test.ts (2 tests) 349ms
+
+ Test Files  3 passed (3)
+      Tests  8 passed (8)
+   Start at  00:35:02
+   Duration  6.01s (transform 2.18s, setup 35ms, collect 3.92s, tests 1.01s, environment 0ms, prepare 157ms)

@@ -36,12 +36,12 @@ import type {
 	PreflightResult,
 } from "flywheel-agent-team-transport";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
+import { createLeadRuntime } from "../bridge/plugin.js";
 import type { LeadConfig } from "../ProjectConfig.js";
 
-// This integration imports the full Bridge plugin graph on its first assertion.
-// Keep the budget above a cold transform so a timed-out import cannot leak into
-// the following assertion and replace its mocked preflight result.
+// Collect the full Bridge graph before assertions begin. vi.mock is hoisted,
+// so static import retains the transport fake without a timed-out dynamic
+// import surviving into the next test and its different preflight result.
 vi.setConfig({ testTimeout: 15_000 });
 
 // createLeadRuntime mailbox branch only reads `lead.agentId` — keep the
@@ -118,9 +118,6 @@ describe("createLeadRuntime — preflight error surfacing", () => {
 			message: "claude CLI not found on PATH: spawn claude ENOENT",
 		});
 
-		// Late-import so vi.mock above takes effect.
-		const { createLeadRuntime } = await import("../bridge/plugin.js");
-
 		await expect(
 			createLeadRuntime(baseLead, {} as never, "test-project"),
 		).rejects.toThrow(/claude CLI not found on PATH: spawn claude ENOENT/);
@@ -144,8 +141,6 @@ describe("createLeadRuntime — preflight error surfacing", () => {
 			// no message field
 		});
 
-		const { createLeadRuntime } = await import("../bridge/plugin.js");
-
 		// Must surface the real failure, not "unknown".
 		await expect(
 			createLeadRuntime(baseLead, {} as never, "test-project"),
@@ -164,8 +159,6 @@ describe("createLeadRuntime — preflight error surfacing", () => {
 			availabilitySignals: [],
 		});
 
-		const { createLeadRuntime } = await import("../bridge/plugin.js");
-
 		await expect(
 			createLeadRuntime(baseLead, {} as never, "test-project"),
 		).rejects.toThrow(/preflight failed — unknown$/);
@@ -176,8 +169,6 @@ describe("createLeadRuntime — preflight error surfacing", () => {
 			ok: true,
 			availabilitySignals: [],
 		});
-
-		const { createLeadRuntime } = await import("../bridge/plugin.js");
 
 		await createLeadRuntime(baseLead, {} as never, "test-project");
 
@@ -209,7 +200,6 @@ it("opens the slot CommDB runtime and lease without creating HOME comm state", a
 	vi.stubEnv("FLYWHEEL_COMM_ROOT", commRoot);
 	vi.stubEnv("FLYWHEEL_COMM_BACKEND", "commdb");
 	try {
-		const { createLeadRuntime } = await import("../bridge/plugin.js");
 		const runtime = await createLeadRuntime(
 			baseLead,
 			{} as never,

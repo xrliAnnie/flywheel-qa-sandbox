@@ -212,6 +212,15 @@ it("executes the default factory, real provider assembly and parent broker with 
 		"fetch",
 		vi.fn(async (url: unknown, init?: RequestInit) => {
 			if (
+				String(url) ===
+					"http://127.0.0.1:31998/api/lead-capabilities/target-lock/policy" &&
+				init?.method === "POST"
+			)
+				return Response.json({
+					requestId: JSON.parse(String(init.body)).requestId,
+					status: "disabled",
+				});
+			if (
 				String(url) === "https://discord.com/api/v10/users/@me" &&
 				(!init?.method || init.method === "GET")
 			)
@@ -251,7 +260,10 @@ it("executes the default factory, real provider assembly and parent broker with 
 		});
 		expect(result.status).toBe("succeeded");
 		expect(JSON.stringify(result)).not.toMatch(/SYNTHETIC_/);
-		expect(fetch).not.toHaveBeenCalled();
+		expect(fetch).toHaveBeenCalledTimes(1);
+		expect(String(vi.mocked(fetch).mock.calls[0]![0])).toBe(
+			"http://127.0.0.1:31998/api/lead-capabilities/target-lock/policy",
+		);
 
 		const stateDir = join(root, "state");
 		mkdirSync(stateDir, { mode: 0o700 });
@@ -399,7 +411,11 @@ it("executes the default factory, real provider assembly and parent broker with 
 				codexHome: home,
 				capabilitySocketPath: join(root, "app.sock"),
 			});
-			expect(fetch).toHaveBeenCalledTimes(1);
+			expect(fetch).toHaveBeenCalledTimes(2);
+			expect(vi.mocked(fetch).mock.calls.map(([url]) => String(url))).toEqual([
+				"http://127.0.0.1:31998/api/lead-capabilities/target-lock/policy",
+				"https://discord.com/api/v10/users/@me",
+			]);
 		} finally {
 			await generation.stop();
 		}
@@ -419,7 +435,7 @@ it("executes the default factory, real provider assembly and parent broker with 
 				4,
 			);
 			expect(state.windows).toHaveLength(1);
-			expect(fetch).toHaveBeenCalledTimes(2);
+			expect(fetch).toHaveBeenCalledTimes(3);
 		} finally {
 			await resumed.stop();
 		}
@@ -433,7 +449,7 @@ it("executes the default factory, real provider assembly and parent broker with 
 		expect(methods.filter((method) => method === "thread/resume")).toHaveLength(
 			1,
 		);
-		expect(fetch).toHaveBeenCalledTimes(2);
+		expect(fetch).toHaveBeenCalledTimes(3);
 		await parent.assertCurrent();
 		expect(journal.getById("absent")).toBeUndefined();
 		const socket = parent.pins.brokerSocket,

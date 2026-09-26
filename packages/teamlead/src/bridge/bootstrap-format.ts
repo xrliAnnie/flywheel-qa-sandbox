@@ -18,6 +18,7 @@ const SECTIONS = [
 	"pendingDecisions",
 	"recentFailures",
 	"recentEvents",
+	"targetLocks",
 ] as const;
 
 /** Shared transport-independent recovery budget. Never cut an identifier. */
@@ -38,7 +39,9 @@ export function formatBootstrap(snapshot: LeadBootstrap): string {
 	}
 	const base = `/api/bootstrap/${encodeURIComponent(snapshot.leadId)}`;
 	for (;;) {
-		const pointers = SECTIONS.map((key) => {
+		const pointers = SECTIONS.filter(
+			(key) => key !== "targetLocks" || snapshot.targetLocks !== undefined,
+		).map((key) => {
 			const total = snapshot[key]?.length ?? 0;
 			const shown = bounded[key]?.length ?? 0;
 			const kind = QUESTION_KINDS[key as keyof typeof QUESTION_KINDS];
@@ -73,6 +76,15 @@ function renderBootstrap(snapshot: LeadBootstrap): string {
 		`Generated at ${new Date().toISOString()}`,
 		"",
 	];
+
+	if (snapshot.targetLocks?.length) {
+		sections.push("### 受阻写入（待对账）");
+		for (const lock of snapshot.targetLocks)
+			sections.push(
+				`- ${lock.targetKey}：${Math.floor(lock.blockedForMs / 1000)} 秒；${lock.reason}；requestId ${lock.requestId}。确认旧请求完成前不要重复写入。`,
+			);
+		sections.push("");
+	}
 
 	if (snapshot.activeSessions.length > 0) {
 		sections.push("### Active Sessions");

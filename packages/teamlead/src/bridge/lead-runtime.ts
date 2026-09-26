@@ -75,6 +75,13 @@ export interface LeadEventEnvelope {
 
 /** Bootstrap snapshot for crash recovery. */
 export interface LeadBootstrap {
+	/** Uncertain voice writes remain blocked until old-request terminal proof. */
+	targetLocks?: Array<{
+		targetKey: string;
+		requestId: string;
+		reason: string;
+		blockedForMs: number;
+	}>;
 	/** Frozen for this recovery; false restores the complete legacy payload. */
 	tokenSavingsEnabled?: boolean;
 	leadId: string;

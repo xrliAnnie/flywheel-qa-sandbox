@@ -917,3 +917,28 @@ describe("MailboxLeadRuntime", () => {
 		});
 	});
 });
+
+it.each(["voice_background_action", "voice_target_unknown"])(
+	"preserves complete voice operation evidence in %s",
+	(event_type) => {
+		const runtime = new MailboxLeadRuntime({
+			leadId: "eng",
+			transport: makeMockTransport(),
+		});
+		const requestId = "10000000-0000-4000-8000-000000000001";
+		const summary = `目标 ${"x".repeat(350)}；requestId ${requestId}；providerRef issue:123`;
+		const envelope = makeEnvelope({
+			leadId: "eng",
+			event: {
+				event_type,
+				execution_id: "",
+				issue_id: "",
+				project_name: "flywheel",
+				summary,
+			},
+		});
+		const text = runtime.renderEnvelope(envelope);
+		expect(text).toContain(requestId);
+		expect(text).toContain("providerRef issue:123");
+	},
+);

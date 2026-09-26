@@ -1,0 +1,44 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ❯ |parallel| src/bridge/__tests__/lead-capability-target-lock.test.ts (4 tests | 1 failed) 1429ms
+   ✓ serves disabled/draining policy and checks only existing targets after rollback  377ms
+   ✓ rejects a voice activation alias and foreign project target before creating a lock 267ms
+   × accepts only the original fence for terminal settlement after authority revocation 432ms
+     → expected { error: 'target lock scope denied' } to match object { status: 'not_owner' }
+(1 matching property omitted from actual)
+   ✓ reconciles only matching trusted terminal evidence and reserves explicit force clear for a resident  353ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |parallel| src/bridge/__tests__/lead-capability-target-lock.test.ts > accepts only the original fence for terminal settlement after authority revocation
+AssertionError: expected { error: 'target lock scope denied' } to match object { status: 'not_owner' }
+(1 matching property omitted from actual)
+
+- Expected
++ Received
+
+  {
+-   "status": "not_owner",
++   "error": "target lock scope denied",
+  }
+
+ ❯ src/bridge/__tests__/lead-capability-target-lock.test.ts:180:58
+    178|   status: "released",
+    179|  });
+    180|  expect(await (await post("/release", terminal)).json()).toMatchObject…
+       |                                                          ^
+    181|  expect(store.getCapabilityTargetLock(base.targetKey)).toBeUndefined();
+    182|  expect((await post("/acquire", { ...base, deadline: 5_000 })).status)…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 3 passed (4)
+   Start at  00:33:39
+   Duration  6.92s (transform 3.29s, setup 39ms, collect 4.81s, tests 1.43s, environment 0ms, prepare 78ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/bridge/__tests__/lead-capability-target-lock.test.ts

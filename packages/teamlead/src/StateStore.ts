@@ -6067,6 +6067,46 @@ export class StateStore {
 		}).immediate();
 	}
 
+	/** One durable reminder per unknown fence, plus one at thirty minutes. */
+	recordCapabilityTargetLockReminders(now: number): void {
+		const scopes = this.db.raw.prepare("SELECT DISTINCT project_name, lead_id FROM capability_target_locks").all() as Array<{project_name: string; lead_id: string}>;
+		for (const scope of scopes) for (const lock of this.listCapabilityTargetLocks(scope.project_name, scope.lead_id, now)) {
+			if (lock.state !== "unknown") continue;
+			const ageMs = Math.max(0, now - lock.acquiredAt);
+			for (const stage of ageMs >= 30 * 60_000 ? ["initial", "30m"] : ["initial"]) {
+				this.tryClaimLeadEvent(lock.leadId, `voice-target-unknown:${lock.fence}:${stage}`, "voice_target_unknown", JSON.stringify({
+					event_type: "voice_target_unknown", execution_id: "", issue_id: "", project_name: lock.projectName,
+					summary: `写入结果待对账：${lock.targetKey}，已等待 ${Math.floor(ageMs / 1000)} 秒；原因 ${lock.reason ?? "provider_unknown"}；requestId ${lock.requestId}。旧请求未确认完成前不要重复写入。`,
+					actor: lock.holderActor, activationId: lock.holderActivation, targetKey: lock.targetKey,
+					requestId: lock.requestId, reason: lock.reason, acquiredAt: lock.acquiredAt,
+				}));
+			}
+		}
+	}
+
+	listPendingVoiceCapabilityEvents(limit = 100): LeadEventRow[] {
+		return (this.db.raw.prepare("SELECT * FROM lead_events WHERE event_type IN ('voice_background_action','voice_target_unknown','voice_founder_only_denied') AND delivered_at IS NULL AND delivery_disposition = 'model' ORDER BY seq LIMIT ?").all(limit) as Record<string, unknown>[]).map(mapLeadEventRow);
+	}
+
+	forceClearCapabilityTargetLock(input: {
+		projectName: string; leadId: string; targetKey: string; requestId: string; fence: string;
+		actorActivation: string; riskAcknowledgement: string; now: number;
+	}): "released" | "not_owner" {
+		if (input.riskAcknowledgement !== "可能被旧请求覆盖" || !Number.isSafeInteger(input.now) || !input.actorActivation) throw new Error("force_clear_risk_ack_required");
+		return this.db.raw.transaction(() => {
+			const lock = this.getCapabilityTargetLock(input.targetKey);
+			if (!lock || lock.projectName !== input.projectName || lock.leadId !== input.leadId || lock.requestId !== input.requestId || lock.fence !== input.fence) return "not_owner" as const;
+			this.appendLeadEvent(input.leadId, `voice-target-force-clear:${lock.fence}`, "voice_target_force_clear", JSON.stringify({
+				event_type: "voice_target_force_clear", execution_id: "", issue_id: "", project_name: input.projectName,
+				summary: `常驻 Lead 显式 force-clear；${input.riskAcknowledgement}；目标 ${lock.targetKey}；原 requestId ${lock.requestId}`,
+				actor: "resident", actorActivation: input.actorActivation, targetKey: lock.targetKey, requestId: lock.requestId, acknowledgedAt: input.now,
+				riskAcknowledgement: input.riskAcknowledgement,
+			}), undefined, "audit_only");
+			this.db.raw.prepare("DELETE FROM capability_target_locks WHERE target_key = ? AND fence = ?").run(input.targetKey, input.fence);
+			return "released" as const;
+		}).immediate();
+	}
+
 	acquireCapabilityTargetLock(input: {
 		targetKey: string;
 		projectName: string;
@@ -6236,6 +6276,8 @@ export class StateStore {
 		fence: string;
 		outcome: "succeeded" | "rejected" | "not_dispatched" | "unknown";
 		reason?: string;
+		operationId?: string;
+		providerRef?: string;
 	}): CapabilityTargetLockState | "released" | "not_owner" {
 		return this.db.raw.transaction(() => {
 			const current = this.getCapabilityTargetLock(input.targetKey);
@@ -6246,6 +6288,16 @@ export class StateStore {
 				current.fence !== input.fence
 			)
 				return "not_owner" as const;
+			if (current.holderActor === "voice" && input.operationId) {
+				const outcome = input.outcome === "not_dispatched" && current.dispatchedAt != null ? "unknown" : input.outcome;
+				this.tryClaimLeadEvent(current.leadId, `voice-background-action:${current.requestId}:${input.operationId}:${outcome}`, "voice_background_action", JSON.stringify({
+					event_type: "voice_background_action", execution_id: "", issue_id: "", project_name: current.projectName,
+					summary: `语音后台动作 ${input.operationId}：${outcome}；目标 ${current.targetKey}；requestId ${current.requestId}${input.providerRef ? `；providerRef ${input.providerRef}` : ""}。成功项不要重做；unknown 先对账。`,
+					actor: "voice", activationId: current.holderActivation, operationId: input.operationId,
+					targetKey: current.targetKey, requestId: current.requestId, receiptId: current.requestId,
+					outcome, providerRef: input.providerRef,
+				}));
+			}
 			if (
 				(input.outcome === "unknown" || input.outcome === "not_dispatched") &&
 				current.dispatchedAt != null
@@ -7010,6 +7062,8 @@ export class StateStore {
 		sessionId: string;
 		leaseToken: string;
 		generation: number;
+		/** Trusted caller has checked voiceBackground.enabled; this is natural startup, not live append. */
+		naturalStartup?: boolean;
 		now: string;
 	}):
 		| { status: "loaded"; entries: VoiceContextRingEntry[] }
@@ -7032,21 +7086,20 @@ export class StateStore {
 			);
 			if (!session) return;
 			if (
-				session.liveContextFusedAt !== null ||
-				session.liveContextMode !== "eligible"
+				!input.naturalStartup && (session.liveContextFusedAt !== null ||
+				session.liveContextMode !== "eligible")
 			) {
 				result.value = { status: "unavailable", entries: [] };
 				return;
 			}
-			if (session.contextPromptGeneration === input.generation) {
+			if (session.contextPromptGeneration !== null && session.contextPromptGeneration >= input.generation) {
 				result.value = { status: "replayed", entries: [] };
 				return;
 			}
 			this.db.run(
 				`UPDATE voice_sessions
 				 SET context_prompt_generation = ?, updated_at = ?
-				 WHERE session_id = ? AND lease_token = ?
-				   AND live_context_mode = 'eligible' AND live_context_fused_at IS NULL`,
+				 WHERE session_id = ? AND lease_token = ?`,
 				[input.generation, input.now, input.sessionId, input.leaseToken],
 			);
 			for (const entry of session.contextRing) {
@@ -7252,6 +7305,15 @@ export class StateStore {
 			 ORDER BY seq LIMIT ?`,
 			[sessionId, Math.max(1, Math.min(20, Math.floor(limit)))],
 		).map((row) => this.voiceOutboundFromRow(row));
+	}
+
+	getClaimedVoiceOutbound(input: {sessionId: string; leaseToken: string; seq: number; attemptToken: string; now: string}): VoiceOutboundRow | null {
+		if (!this.getActiveVoiceLease(input.sessionId, input.leaseToken, input.now)) return null;
+		const row = this.workflowSelectAll(`SELECT * FROM voice_outbound AS outbound
+			WHERE session_id = ? AND seq = ? AND phase = 'claimed' AND attempt_token = ? AND delivery_class = 'tell'
+			AND NOT EXISTS (SELECT 1 FROM voice_utterances WHERE voice_utterances.session_id = outbound.session_id AND mirror_message_id = outbound.message_id)`,
+			[input.sessionId, input.seq, input.attemptToken])[0];
+		return row ? this.voiceOutboundFromRow(row) : null;
 	}
 
 	claimVoiceOutbound(input: {

@@ -527,10 +527,34 @@ export async function generateBootstrap(
 		return bs;
 	});
 
+	const lockNow = Date.now();
+	const targetLocks =
+		typeof store.listCapabilityTargetLocks === "function"
+			? projects
+					.filter((project) =>
+						project.leads.some((lead) => lead.agentId === leadId),
+					)
+					.flatMap((project) =>
+						store.listCapabilityTargetLocks(
+							project.projectName,
+							leadId,
+							lockNow,
+						),
+					)
+					.filter((lock) => lock.state === "unknown")
+					.map((lock) => ({
+						targetKey: lock.targetKey,
+						requestId: lock.requestId,
+						reason: lock.reason ?? "provider_unknown",
+						blockedForMs: Math.max(0, lockNow - lock.acquiredAt),
+					}))
+			: [];
+
 	return {
 		tokenSavingsEnabled,
 		leadId,
 		activeSessions: bootstrapSessions,
+		...(targetLocks.length ? { targetLocks } : {}),
 		pendingDecisions: pendingDecisions.map(toBootstrapDecision),
 		recentFailures: recentFailures.map(toBootstrapFailure),
 		recentEvents,
