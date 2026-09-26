@@ -1,0 +1,9 @@
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#eef5ff','primaryTextColor':'#1d1d1f','primaryBorderColor':'#007aff','lineColor':'#86868b','fontFamily':'-apple-system, system-ui, sans-serif'},'flowchart':{'htmlLabels':false,'curve':'basis'}}}%%
+flowchart TD
+ A[按执行身份读取进程证据] --> B{进程结果}
+ B -->|活着| C[保留体与工作资格]
+ B -->|未知| D[保留现场并报告无法确认]
+ B -->|已死| E[核对当前代次与退出回执]
+ E -->|批准退下| F[结束旧进程 保留待命会话]
+ E -->|意外退出| G[结束死体 结清通信记录]
+ G --> H[有未完成工作时按原流程恢复]

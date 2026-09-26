@@ -64,6 +64,9 @@ FLY-2903 PR #1343 在本轮 `gh pr view` 查询时仍 OPEN、无 mergeCommit；�
 | `packages/claude-runner/src/CodexTmuxAdapter.ts:1727,2278` | runEnded/finally 已取消 TUI 恢复 | 让真关闭到达该路径；恢复前重核当前 run/owner 关闭事实 |
 | `packages/teamlead/src/bridge/plugin.ts:15839`、`server-loss.ts` | tmux 服务损失可按窗口 gone 强制 failed | 服务损失只触发共同进程探测，不直接判死 |
 | `packages/teamlead/src/bridge/crash-reaper.ts`、`zombie-scan.ts:93` | dead_pin / 24h 心跳 + pane 决定尸体 | 分离进程死亡与窗口清理；生命判断共用接口 |
+| `packages/teamlead/src/bridge/pane-loss-reconcile.ts:510` | server generation + 窗口缺失仍可直接 applyTransition failed | 窗口事件只能触发共同进程探测；没有死亡证明只报窗口缺陷 |
+| `packages/teamlead/src/bridge/execution-closeout-evidence.ts:126,470`、`lifecycle-closeout.ts:1799` | window/heartbeat 可以 veto gone，另有只按窗确认 gone 的分支 | body verdict 统一来源，拆开物理体终结与 UI 残留；保留 land reservation/归属与消息保护 |
+| `packages/teamlead/src/bridge/commdb-session-prune.ts:503` | point/sweep parked veto、窗口探针仍独立决定 eligible_dead | 共用受信证据和结账义务，不保留旁路收账 |
 | `packages/teamlead/src/bridge/patrol-process-liveness.ts:58`、`scripts/lead-patrol-snapshot.sh:432` | 巡检按窗判死/活，MISSING_PANE 被当“未工作”线索 | 进程结论与窗口缺失分别输出；窗口缺失仍须修复，但不导出体死或 TURN 无人 |
 
 ## 4. 单一证据契约
@@ -107,7 +110,7 @@ type BodyObservation = {
 1. Bridge 获取 exact execution 的 mutation lease；收集证据，核对 run/node/attempt/activation/generation/lifecycleRevision 与 launch/resume owner。提交前再核新代次与证据时效，变化则放弃并重新采样。
 2. 对 `dead`：若存在当前代次已经批准的 retirement request，关闭旧物理代次并沿 FLY-2808 确认 standby；若已经有有效完成回执，保留 node 完成结果，关闭其物理体，不重跑已交卷阶段；其余意外退出使用 terminalizeProvenDeadSessionTx 记 failed（已不可逆终态保持原结局）。同一事务写 `body_death:<exec>:<generation>` 幂等事件和待投影结账义务，保存证据身份/原因、旧版本、需要保留/重路由的工作。
 3. 若死体持 TURN，控制器依现有 exact old holder/epoch 与节点路由事务撤销或交给合法后继；不是清掉所有 TURN。重工唤醒使用既有 `recordReworkWakeRetirementsTx` / CommDB retirement proof，持久保留来源。未消费 founder wake 必须按现有来源身份留存并重新绑定合法目标，不能视为垃圾删掉。未完成重路由阻止“通信已结清”回执，但不让死体复活为 running。
-4. CommDB 在同一事务验证其 identity epoch 和 StateStore 内部提供的死亡义务身份，清除 parked 声明并将 running 投影结束。将 finalizeProvenGoneSession 的内部核心与通用生命周期义务接通：输入须含受信 obligationId/exec/generation/expectedIdentityRevision/evidenceId/有效期；不可把任意字符串当 land reservation。普通状态驱动 finalizer 仍无杀活体权限。身份保留为 tombstone（已结束记录）直到 TURN/唤醒全部处理；不为赶清库删除恢复信息。
+4. CommDB 在同一事务验证其 identity epoch 和 StateStore 内部提供的死亡义务身份，清除 parked 声明并将 running 投影结束。将 finalizeProvenGoneSession 的内部核心与通用生命周期义务接通：输入须含受信 obligationId/exec/generation/expectedIdentityRevision/evidenceId/有效期；不可把任意字符串当 land reservation。普通状态驱动 finalizer 仍无杀活体权限。身份保留为现有 completed 状态的记录直到 TURN/唤醒全部处理（不新增 tombstone 状态枚举）；不为赶清库删除恢复信息。
 5. 只有旧 writer 已证死、TURN/旧启动所有权已 fenced、原有 dispatch/rework 约束通过，才创建一个后继。物理窗口清理单独重试，不作为生命结论或换体前置；新后继不得与旧可写进程重叠。
 6. 进程证死到 StateStore 提交前崩溃：无副作用，重探。StateStore 已提交到 CommDB 前崩溃：重放同一义务，幂等键不变；旧 running 行不能作为新生命权威。投影后回执前崩溃：读 CommDB 幂等结果补投影完成。身份在任一步改变：CAS 拒绝，不能将旧证据重绑给新代次。
 
@@ -117,20 +120,22 @@ type BodyObservation = {
 
 **FLY-2474 的到期退场：**到期只提出收体需求，不能先把 holder 的 run 权限删掉；当前有 TURN/新工作/新 activation 时拒绝过期请求。允许退场时用正常退出的同一顺序；两载体 StateStore 与 CommDB 都记录结果，不另留一条 grace timeout 的独立 completed 写法。
 
-**FLY-2528 的无判决退出：**两个 TmuxAdapter wait 分支均返回明确 exitKind；`abnormal_process_exit` 经 Blueprint → DirectEventSink/HTTP event-route 映射 failed。已接受 complete receipt 或匹配批准 retirement 则保留原结果。只删“pane 丢失→正常完成”与“无判决自然退出→完成”的生产分支。保留真实交卷投影丢失的 completion_receipt_missing / reconstruct_completion，且该恢复仍要原始真实 receipt，不能补造成功。历史错误 completed+held 仅在独立异常退出证据、无 accepted completion、当前 attempt 与 hold 匹配时由受控迁移切至失败恢复；不能按 completed 一刀切重跑。
+**FLY-2528 的无判决退出：**两个 TmuxAdapter wait 分支均返回明确 exitKind；`abnormal_process_exit` 经 Blueprint → DirectEventSink/HTTP event-route 映射 failed。只针对本单 DAG 执行的无判决异常退出；legacy blueprint 的合法 decision/GitResultChecker 成功语义不改。已接受 complete receipt 或匹配批准 retirement 则保留原结果。只删“pane 丢失→正常完成”与“无判决自然退出→完成”的生产分支。保留真实交卷投影丢失的 completion_receipt_missing / reconstruct_completion，且该恢复仍要原始真实 receipt，不能补造成功。历史错误 completed+held 仅在独立异常退出证据、无 accepted completion、当前 attempt 与 hold 匹配时由受控迁移切至失败恢复；不能按 completed 一刀切重跑。
 
 ## 6. 六组实施任务（均先红测，再最小实现，最后相关回归）
 
 | 组 | 修改文件/职责 | 必须先失败的测试与具体断言 |
 |---|---|---|
 | A 统一物理证据 | 新 `execution-process-liveness.ts`、`execution-body-liveness.ts`；`codex-daemon-runtime.ts`、`TmuxAdapter.ts` 启动绑定与包导出 | 新 `packages/claude-runner/test/execution-process-liveness.test.ts`：两载体 alive/dead/unknown × absent/present/pending window 恒等结果；PID/start/boot/generation 变更拒绝；viewer-only 不算 worker；旧绑定补采唯一匹配才成功 |
-| B 检测与恢复 | HeartbeatService、generalized-launch-recovery、run-quiescence、dispatcher、StateStore exact death事务；server-loss/plugin、crash-reaper、zombie-scan | `HeartbeatService.zombie-reconcile`、`StateStore.fly1385-dead-exec`、`workflow-engine-dispatcher`：非终态证死本轮 failed；终态活 worker 先 close；单一后继；死亡前后 generation 竞争不写；服务重启+活 daemon 不迁 failed |
-| C 双库收敛 | 新 convergence 协调器、StateStore events/投影义务、commdb-fsm-reconcile、commdb-session-prune、CommDB trusted finalizer 与既有 wake retirement | 新 `packages/teamlead/src/bridge/__tests__/execution-body-convergence.test.ts`：parked 不否决死亡；三个崩溃切点重放一次；旧 epoch 拒绝；死 TURN 先有合法交接；founder wake 不丢；projection pending 不当 alive |
+| B 检测与恢复 | HeartbeatService、generalized-launch-recovery、run-quiescence、dispatcher、StateStore exact death事务；server-loss/plugin、pane-loss-reconcile、crash-reaper、zombie-scan | `HeartbeatService.zombie-reconcile`、`StateStore.fly1385-dead-exec`、`workflow-engine-dispatcher`：非终态证死本轮 failed；终态活 worker 先 close；单一后继；死亡前后 generation 竞争不写；服务重启+活 daemon 不迁 failed |
+| C 双库收敛 | 新 convergence 协调器、StateStore events/投影义务、commdb-fsm-reconcile、commdb-session-prune、execution-closeout-evidence、lifecycle-closeout、CommDB trusted finalizer 与既有 wake retirement | 新 `packages/teamlead/src/bridge/__tests__/execution-body-convergence.test.ts`：parked 不否决死亡；三个崩溃切点重放一次；旧 epoch 拒绝；死 TURN 先有合法交接；founder wake 不丢；projection pending 不当 alive |
 | D 退出与到期 | TmuxAdapter 两 wait 分支、Blueprint、DirectEventSink、event-route、delivery-operations、StateStore resident expiry；不删除 receipt-repair registry | `TmuxAdapter.test`、`DirectEventSink.test`、`fly2268-resident-expiry`、`fly2478-resident-release`：窗丢但进程活继续；真实无判决退出 failed；已交卷保持；Claude/Codex running 投影不能挡住死亡 |
 | E 终止与残留 | StateStore collection 专用候选、plugin collection、codex-phase-shutdown、CodexTmuxAdapter/codex-runner-tui-window 既有取消路径、close-runner | `StateStore.workflow-run-collection` 改 completed exclusion；`codex-runner-tui-window.test`：completed 标签但进程活仍入清单，shutdown→进程 gone→结账，重放不恢复窗；无 session 但有进程不能 already-gone |
 | F 巡检与验收 | patrol-process-liveness、lead-patrol-snapshot 及对应规则/测试，逐消费者 sweep 与九单证据 | 巡检返回 body alive + window missing；不得建议以缺窗终结/换体；有关窗口缺失的报告仍在；九单逐条 before/after 记录 |
 
-每组执行顺序固定：添加表中 fixture → 精确文件 vitest 记录旧版本失败断言 → 最小实现 → 同一断言通过 → 跑下列受影响回归 → 提交。不允许先改全部代码再补镜像测试。新共用接口附加“任何 windowState 变化不改变 bodyVerdict”的性质测试；让旧 pane 实现跑该 fixture，必须出现反例。
+每组执行顺序固定：添加表中 fixture → 精确文件 vitest 记录旧版本失败断言 → 最小实现 → 同一断言通过 → 跑下列受影响回归 → 提交。不允许先改全部代码再补镜像测试。生命周期/land closeout 中仍保留已有 authority、reservation 与完整 UI 清理交付要求；只将“身体已死”和“展示清理完成”拆成独立事实，不能因窗口没清掉阻止身体终结，也不能因身体终结谎报整个 land closeout 完成。post-merge、done-thread-archiver、terminal-thread-archive、shipped-husk-escalation 的窗口调用逐一标为仅 UI 资源观察；若某调用仍据窗升级/收体，则在 B/C 同步迁走，不创建新告警项目。
+
+新共用接口附加“任何 windowState 变化不改变 bodyVerdict”的性质测试；让旧 pane 实现跑该 fixture，必须出现反例。
 
 ### 6.1 删除/保留清单（实现提交中逐项列出最终符号与行号）
 
@@ -170,7 +175,7 @@ pnpm --filter flywheel-claude-runner exec vitest run test/execution-process-live
 pnpm --filter flywheel-teamlead exec vitest run src/__tests__/HeartbeatService.zombie-reconcile.test.ts src/__tests__/HeartbeatService.monitor-loss.test.ts src/__tests__/HeartbeatService.fly1329-readopt-parked.test.ts src/__tests__/StateStore.fly1385-dead-exec.test.ts src/__tests__/workflow-engine-dispatcher.test.ts
 pnpm --filter flywheel-teamlead exec vitest run src/bridge/__tests__/execution-body-convergence.test.ts src/__tests__/commdb-fsm-reconcile.test.ts src/bridge/__tests__/commdb-fsm-reconcile.fly1329-parked-veto.test.ts src/bridge/__tests__/workflow-engine.fly2302-dead-body-commdb.test.ts
 pnpm --filter flywheel-teamlead exec vitest run src/__tests__/fly2268-resident-expiry.test.ts src/__tests__/fly2478-resident-release.test.ts src/__tests__/workflow-process-retirement.test.ts src/__tests__/DirectEventSink.test.ts src/__tests__/StateStore.workflow-run-collection.test.ts src/__tests__/hold-shape-registry.test.ts
-pnpm --filter flywheel-teamlead exec vitest run src/bridge/__tests__/generalized-launch-recovery.test.ts src/bridge/__tests__/run-quiescence.test.ts src/bridge/__tests__/patrol-process-liveness.test.ts src/bridge/__tests__/zombie-scan.test.ts src/bridge/__tests__/server-loss.test.ts src/bridge/__tests__/codex-phase-shutdown.test.ts
+pnpm --filter flywheel-teamlead exec vitest run src/bridge/__tests__/generalized-launch-recovery.test.ts src/bridge/__tests__/run-quiescence.test.ts src/bridge/__tests__/patrol-process-liveness.test.ts src/bridge/__tests__/zombie-scan.test.ts src/bridge/__tests__/server-loss.test.ts src/bridge/__tests__/codex-phase-shutdown.test.ts src/bridge/__tests__/pane-loss-reconcile.test.ts src/bridge/__tests__/execution-closeout-evidence.test.ts
 pnpm --filter flywheel-comm exec vitest run src/__tests__/db.fly1238.test.ts src/__tests__/db.fly2517-wake-retirement.test.ts
 ```
 

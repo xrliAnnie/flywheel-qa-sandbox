@@ -1,0 +1,2 @@
+PASS: 7 sections / 7 comments; one nonced script; no inline handlers/external assets/CSP override; script parses; exact first line; 1800-codepoint chunks; section labels; pathname storage isolation/reload; storage rejection; clipboard absent/rejection fallback; clipboard success; user strings remain text values.
+LIMIT: VM controller verification, not browser visual QA. Both local Mermaid renders failed after required retry.
