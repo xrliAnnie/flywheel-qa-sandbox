@@ -14,3 +14,5 @@ Review gate: c2bc9590-4a99-4032-97fd-aad2ddc17fb5
 Review request: 82f72478-f361-485a-be8c-4d1affa2035f
 Submitted plan commit: 8eb2ae53266a8d09a7b54cbf62170f1000696f11
 Status at this record: pending; only the eventual effective reviewVerdict can authorize design completion.
+
+R2 effective/raw APPROVED: gate 5aec411f-dcf1-4ecf-93ba-71fb9d401763, request eff3a170-6ae9-45b4-ad6f-766806747a19. Current plan blob 4e442607602291ce22695e9523a32c108c5416fa is preserved after approval. Remaining advisories are in review-followups.md.

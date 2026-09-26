@@ -1,0 +1,109 @@
+{
+  "request_id": "eff3a170-6ae9-45b4-ad6f-766806747a19",
+  "question_id": "5aec411f-dcf1-4ecf-93ba-71fb9d401763",
+  "status": "done",
+  "verdict": "APPROVED",
+  "reviewer_verdict": "APPROVED",
+  "updated_at": "2026-09-26 04:35:54",
+  "findings": [
+    {
+      "id": "downstream-dispatch-propagation",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2913-role-prefix/plan.md",
+      "line": 148,
+      "title": "The pinned prefixRequirements do not name the downstream-node dispatch paths, or what an absent field means on an existing run",
+      "detail": "T3 only names runs-route, retry-dispatcher, workflow-run-snapshot, run-dispatcher and Blueprint. For non-entry nodes, generalizedExecution is built in workflow-engine-dispatcher.ts:3092 (which already has `snapshot` in scope), and in actions.ts:1222 and DirectEventSink.ts:681/1403. This is the same entry vs engine split recorded in the FLY-2808 memory: fields added only on the entry path are always undefined downstream. If they are not wired through, the implement and qa nodes of an `engineering` run will fall back to legacy. That is safe, but the two core roles would never activate role-v1. Either name these sites in T3, or read snapshot.prefixRequirements by runId in one place inside run-dispatcher. Also state explicitly that when a start on an existing run (Lead rework, admission-replay via codexQuotaAdmissionRequest, and similar) omits prefixTaskSet, it inherits the pinned value. It must not be treated as 'switching sets → conflict', and must not be downgraded to legacy. Add tests for both cases."
+    },
+    {
+      "id": "engineering-producer-vs-lead-unchanged",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2913-role-prefix/plan.md",
+      "line": 52,
+      "title": "No producer is defined for the explicit `engineering` declaration, and adding one conflicts with 'Lead fully unchanged'",
+      "detail": "Ordinary engineering runs are started only by Claude Leads following packages/teamlead/lead-rules-base/department-lead-rules.md:37/77 (they call POST /api/runs/start), and by the codex Lead's runner-actions.ts:240. The plan requires callers to send `engineering` explicitly and forbids the Bridge from inferring it. But L8 says 'Lead 完全不动' (the Lead is left fully untouched), and changing lead-rules-base collides with the shared byte budget. As written, default enablement cannot be delivered. This is not ship-unsafe, because an absent field means legacy. Before implementation, decide where the declaration is attached: a typed field in the Lead-side CLI and runner-actions, or an authorization mapping on the Bridge side that is reviewed and limited to Lead-authenticated starts. Also state whether this counts as a change to the Lead."
+    },
+    {
+      "id": "snapshot-field-rollback-compat",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2913-role-prefix/plan.md",
+      "line": 60,
+      "title": "The new snapshot field is unreadable if the Bridge code is rolled back",
+      "detail": "parseWorkflowRunSnapshot (workflow-run-snapshot.ts:750) validates top-level keys with exact(). A new run written with prefixRequirements would therefore fail to parse after the Bridge is rolled back to a pre-FLY-2913 build. The schedulers always send the constant ID, so the field gets written even while the switch is set to legacy. modelRouting and tier were added the same way, so this is accepted practice. The rollback section should still note that the env switch is the only supported rollback path, and that a code rollback affects runs that are in flight."
+    },
+    {
+      "id": "reviewer-taskset-source",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2913-role-prefix/plan.md",
+      "line": 73,
+      "title": "The source of the reviewer stamp's required taskSetId is unspecified",
+      "detail": "PrefixStamp.taskSetId and registryDigest are required, but review-design, review-code and land-content-review do not go through runs/start. The plan should say whether they come from the reviewed execution's pinned snapshot, or whether reviewers have a fixed task-independent set. It should also say whether a missing value means legacy."
+    },
+    {
+      "id": "tests-incomplete",
+      "severity": "LOW",
+      "file": "packages/config",
+      "line": 0,
+      "title": "tests_incomplete",
+      "detail": "The worktree still has no node_modules, so vitest cannot run; no suites were run this round, including the config, claude-runner and teamlead files named in T6. This change is docs only. The verdict rests on static review of the code anchors: meeting-notes-scheduler.ts:525, xiaohongshu-scheduler.ts:236, retry-dispatcher.ts:177 StartRequest, WorkflowRunSnapshotV1/V2/V3 plus the exact-key parser, the skills frontmatter in .flywheel/agents/nodes/*.md, and the runs/start producers. All of them exist."
+    }
+  ],
+  "advisories": [
+    {
+      "id": "downstream-dispatch-propagation",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2913-role-prefix/plan.md",
+      "line": 148,
+      "title": "The pinned prefixRequirements do not name the downstream-node dispatch paths, or what an absent field means on an existing run",
+      "detail": "T3 only names runs-route, retry-dispatcher, workflow-run-snapshot, run-dispatcher and Blueprint. For non-entry nodes, generalizedExecution is built in workflow-engine-dispatcher.ts:3092 (which already has `snapshot` in scope), and in actions.ts:1222 and DirectEventSink.ts:681/1403. This is the same entry vs engine split recorded in the FLY-2808 memory: fields added only on the entry path are always undefined downstream. If they are not wired through, the implement and qa nodes of an `engineering` run will fall back to legacy. That is safe, but the two core roles would never activate role-v1. Either name these sites in T3, or read snapshot.prefixRequirements by runId in one place inside run-dispatcher. Also state explicitly that when a start on an existing run (Lead rework, admission-replay via codexQuotaAdmissionRequest, and similar) omits prefixTaskSet, it inherits the pinned value. It must not be treated as 'switching sets → conflict', and must not be downgraded to legacy. Add tests for both cases.",
+      "findingKey": "downstream-dispatch-propagation"
+    },
+    {
+      "id": "engineering-producer-vs-lead-unchanged",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2913-role-prefix/plan.md",
+      "line": 52,
+      "title": "No producer is defined for the explicit `engineering` declaration, and adding one conflicts with 'Lead fully unchanged'",
+      "detail": "Ordinary engineering runs are started only by Claude Leads following packages/teamlead/lead-rules-base/department-lead-rules.md:37/77 (they call POST /api/runs/start), and by the codex Lead's runner-actions.ts:240. The plan requires callers to send `engineering` explicitly and forbids the Bridge from inferring it. But L8 says 'Lead 完全不动' (the Lead is left fully untouched), and changing lead-rules-base collides with the shared byte budget. As written, default enablement cannot be delivered. This is not ship-unsafe, because an absent field means legacy. Before implementation, decide where the declaration is attached: a typed field in the Lead-side CLI and runner-actions, or an authorization mapping on the Bridge side that is reviewed and limited to Lead-authenticated starts. Also state whether this counts as a change to the Lead.",
+      "findingKey": "engineering-producer-vs-lead-unchanged"
+    },
+    {
+      "id": "snapshot-field-rollback-compat",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2913-role-prefix/plan.md",
+      "line": 60,
+      "title": "The new snapshot field is unreadable if the Bridge code is rolled back",
+      "detail": "parseWorkflowRunSnapshot (workflow-run-snapshot.ts:750) validates top-level keys with exact(). A new run written with prefixRequirements would therefore fail to parse after the Bridge is rolled back to a pre-FLY-2913 build. The schedulers always send the constant ID, so the field gets written even while the switch is set to legacy. modelRouting and tier were added the same way, so this is accepted practice. The rollback section should still note that the env switch is the only supported rollback path, and that a code rollback affects runs that are in flight.",
+      "findingKey": "snapshot-field-rollback-compat"
+    },
+    {
+      "id": "reviewer-taskset-source",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2913-role-prefix/plan.md",
+      "line": 73,
+      "title": "The source of the reviewer stamp's required taskSetId is unspecified",
+      "detail": "PrefixStamp.taskSetId and registryDigest are required, but review-design, review-code and land-content-review do not go through runs/start. The plan should say whether they come from the reviewed execution's pinned snapshot, or whether reviewers have a fixed task-independent set. It should also say whether a missing value means legacy.",
+      "findingKey": "reviewer-taskset-source"
+    },
+    {
+      "id": "tests-incomplete",
+      "severity": "LOW",
+      "file": "packages/config",
+      "line": 0,
+      "title": "tests_incomplete",
+      "detail": "The worktree still has no node_modules, so vitest cannot run; no suites were run this round, including the config, claude-runner and teamlead files named in T6. This change is docs only. The verdict rests on static review of the code anchors: meeting-notes-scheduler.ts:525, xiaohongshu-scheduler.ts:236, retry-dispatcher.ts:177 StartRequest, WorkflowRunSnapshotV1/V2/V3 plus the exact-key parser, the skills frontmatter in .flywheel/agents/nodes/*.md, and the runs/start producers. All of them exist.",
+      "findingKey": "tests-incomplete"
+    }
+  ],
+  "settled": [],
+  "proof": [
+    {
+      "lane": "coordinator",
+      "review_job_request_id": "eff3a170-6ae9-45b4-ad6f-766806747a19",
+      "plan_path": "engineering/doc/FLY-2913-role-prefix/plan.md",
+      "reviewed_commit_sha": "d37328269e46088f9c229aa29a1dfbd5aebcef46",
+      "expected_blob_sha": "4e442607602291ce22695e9523a32c108c5416fa",
+      "state": "approved",
+      "approved_at": "2026-09-26T04:35:54.765Z"
+    }
+  ]
+}
