@@ -1,0 +1,91 @@
+# FLY-2914 病根排修闭环 — 调研
+Issue: FLY-2914 (https://linear.app/geoforge3d/issue/FLY-2914/巡检闭环-6-巡检每轮自动列出病根类别出现-3-次且没有修复单在跑-lead-必须呈报-founder-排修让巡检发现的问题变成自动机制)
+日期: 2026-09-25
+基于: plan.md
+
+## 正式评审结果
+有效 reviewVerdict=APPROVED，reviewerVerdict=APPROVED，round=1。questionId: 856887c9-671e-4488-8b5b-f54a48cb4d48；requestId: 880598c9-20d5-4baf-9daf-3d2d6d9392d9。完整建议见 review-receipt.json。没有 HIGH 阻断项，没有 Lead ruling。
+
+plan.md 保持被审字节不变；其头部 review-pending 是送审时状态，本文件与正式回执记录当前 APPROVED。按注入合同继续交付，不把 MEDIUM/LOW 擅自升级为新的设计门，也不把它们隐藏成已解决。以下均为开放 Follow-ups，已逐项报告 Lead，由 Lead 决定实现阶段处理或另行跟进。设计批准不等于这些行为已经可用，也不等于生产验收。
+
+## 开放建议
+
+### founder-attention-flood · MEDIUM
+
+首次启用时，逐类别呈报可能一下子涌出最多 57 个新 thread 和 57 条「现在要你看」
+
+计划要求每个 scheduleKey 对应一条 founder_ask，并把消息发到『本类别所在 canonical issue thread』。病根子单大多在 Backlog，没有 run，也就没有 chat thread。`/chat-threads/send` 找不到行时会走 ensureChatThread：新建 thread，并在 Lead 主频道发一条 thread-created 通知（tools.ts:895-925）。Codex 的 discord.thread.reply 只接受已有 threadId，要先调 discord.thread.create。每条亮着的 founder_ask 都会进入 founder-attention-facts / epic-page 的「现在要你看」（lead-runtime.ts:84, founder-attention-facts.ts:138）、listDisplaySweepActiveIssues 的改名刷新（StateStore.ts:24632），以及 gate-poller 每轮扫描的 thread 集合（每批 50）。按 live census，首轮有 57 项未绑定，§8 又要求『首次启用未绑定项需真实呈报或排期理由』，于是 Lead 只剩两条路：一轮刷出 57 个 thread / 57 个注意项，或者写 57 条 scheduled 套话。建议：保持门的输入完整（不做 top-N），但给『每轮新发 ask』设预算，或允许一条聚合消息绑定多个 ask 行（同 message_id）；超出预算的项给一个可机器核验的排队处置；并在 founder HTML 里明确写出这种扇出形态，请 founder 确认。
+
+Disposition: Follow-up / open; no implementation performed, no governance ruling inferred.
+
+### unavailable-blocks-completion · MEDIUM
+
+数据源不可用时直接判 complete=false，与现有「UNAVAILABLE 也算定稿」的约定冲突，和 STEP 6 状态聚合也冲突
+
+§4.3 规定 missing/unknown 数据一律 complete=false，§2.1 规定 owner 不可解判 unavailable。现有合同是另一套：runner-patrol-rules.md:40 允许 UNAVAILABLE 作为定稿状态；FLY-2080 流程在 Linear 不可用时要写 `STEP 6: UNAVAILABLE(transient: linear_epic_unavailable)` 或 multiple_unavailable；而 patrol-report.ts 在 STEP 6 不是 FINDING 时会以 finding_step_mismatch 拒掉 step=6 的 FINDING 行。结果是 Linear 降级（或 3 页超过 30s）时，负责 Lead 一定完不成巡检：新规则要求 FINDING，旧规则要求 UNAVAILABLE，两者都过不了门。非负责的 flywheel Lead 也要读实时 Linear（FLY-2072 的 label → DepartmentRegistry）才能证明 not_applicable，所以这种耦合会波及全队。建议：数据源不可用时映射为 STEP 6 UNAVAILABLE(transient: root_cause_source_unavailable) 加 UNAVAILABLE_CAUSE，并写明这个 cause 不触发 runbook 里的 [patrol-unavailable] 建单流程；规定 STEP 6 在 FLY-2080 / mechanism / rootcause 三类子结果下怎么聚合；负责 Lead 从配置固定，不从实时 label 推断。
+
+Disposition: Follow-up / open; no implementation performed, no governance ruling inferred.
+
+### judgment-transport-cap · MEDIUM
+
+Bridge 路径每次 judgment 的传输上限，放不下「全量候选、每项一条 FINDING + disposition」
+
+patrol.judgment.record 的 findings 上限是 .max(100)（catalog.ts:845），envelope 两端都卡 65536 字节（bridge-read.ts:237, lead-capability-read.ts:136）。applyPatrolJudgment 会把某个 STEP 的 FINDING 整体替换掉（patrol-judgment.ts:117-123）。实测按计划字段拼：一条 FINDING 约 382B，一条 disposition 约 540–616B（含中文 reason）。57 项约 53–57KB，已占 64KB 的 85% 以上。约 65 项会触发 invalid_request，超过 100 项则门永远过不去。病根类别只增不减，而计划又明确禁止 top-N。目前负责 Lead flywheel-eng-lead 是 Claude（shell 路径），所以这是潜在问题；但计划宣称两种载体对等，Codex owner 或未来切换载体时会直接卡死。建议：rootcause 的 FINDING 和 disposition 按 scheduleKey upsert，允许分批，永不删除；或者由服务端预填可推导的处置；再加一条经真实 envelope 的 ≥150 候选用例。
+
+Disposition: Follow-up / open; no implementation performed, no governance ruling inferred.
+
+### per-tick-redisposition-cost · MEDIUM
+
+没有任何变化时，每轮仍要全量重写 57 项处置，token 成本和出错面都偏大
+
+报告会整份 printf 到 Lead 的上下文（lead-patrol-snapshot.sh:1942）。每轮默认 60 分钟（patrol-config.ts:9），负责 Lead 每轮都要读约 57 行候选 JSON，再手写 57 条 FINDING 和 57 条 ROOT_CAUSE_DISPOSITION，即使大多数项只是 waiting_founder（这完全能从 founder_ask 推出来），或者上一轮的 scheduled 还没到期。估算每轮几万 token，一天 24 轮；手写 JSON 越多，门失败的概率也越高。FLY-2904 刚做完 token 浪费普查，这里应当量化。建议：快照阶段由可信父进程预填 waiting_founder、active-run 这类可机器推导的处置，Lead 只处理增量（新候选、刚结算、scheduled 到期）；verifier 照样逐项核验。
+
+Disposition: Follow-up / open; no implementation performed, no governance ruling inferred.
+
+### scheduled-escape-hatch · MEDIUM
+
+scheduled 可以无限滚动，「nextReviewAt 过期必须重新说明」没有机制能执行
+
+scheduled 只要求 owner、reason ≥10 字、nextReviewAt 在未来，没有上限；计划又明确不新增表，也不读上一轮报告。每份报告都是新的，Lead 每轮写一个新的未来日期（甚至 2099 年）就一直满足，永远不必呈报 founder，FLY-2914『Lead 必须呈报 founder 排修』的目的就落空了。建议：nextReviewAt 设上限（例如 observedAt 后 ≤7 天）；reason 必须引用具体产物（FLY issue / runId / askId）；或者让 verifier 读同 key 在上一份报告里的 scheduled 截止时间，到期后禁止再次 scheduled，只能 reported 或 waiting_founder。
+
+Disposition: Follow-up / open; no implementation performed, no governance ruling inferred.
+
+### off-mode-rule-source-omitted · MEDIUM
+
+漏掉了 token-savings OFF 模式的规则源，以及钉住 runbook hash 的漂移测试
+
+runbooks/patrol-v1.md 的 sha256 钉在 src/__tests__/fixtures/fly2567/compatibility.json:67 里，并由 lead-token-savings-drift.test.ts 校验；对应的 rationale 写明『Any shared duty change must update both modes』。legacy-token-savings/runner-patrol-rules.md:503/605 自带一份 FLY-2080 gate awk 和 validate-report 调用。计划只提到 patrol-v1.md。OFF 模式的 Lead 会照旧用旧 awk 和不带参数的 validate-report，结果要么绕过新门，要么永远失败。§5.D 的测试清单也漏了 lead-token-savings-drift.test.ts、patrol-schema2.test.ts（改 catalog/schema）、patrol-continuity-cli.test.ts（改 validate-report 参数）、fly2567-rule-budget.test.ts。需要把 OFF 源、compatibility 证据和这几个测试补进计划。
+
+Disposition: Follow-up / open; no implementation performed, no governance ruling inferred.
+
+### snapshot-timeout-budget · MEDIUM
+
+collector 的 30s 串在 helper 的 270s 之前，最坏情况会超过服务端 275s 的中止计时
+
+lead-capability-read.ts:158 的服务端计时从请求开始算，时长 PATROL_SNAPSHOT_SERVER_TIMEOUT_MS=275s；helper 自己的预算是 270s（patrol-timeouts.ts）。计划在确认非 replay 之后先由父进程采集（最多 30s），再 spawn helper，最坏合计 300s，超过 275s，controller 会 abort，整份快照变成 unknown（连同 STEP 1-5）。建议：让采集与 helper 并发，或从执行预算里显式扣出 30s，并补一条最坏耗时用例。
+
+Disposition: Follow-up / open; no implementation performed, no governance ruling inferred.
+
+### active-run-alias-lookup · MEDIUM
+
+active run 只按 issue_id 精确匹配，没用上 FLY-2324 的 alias 表
+
+getActiveWorkflowRun 只做 `issue_id = ?` 精确匹配（StateStore.ts:72715）。但代码库专门建了 workflow_run_issue_alias（StateStore.ts:32951, 38095），原因就是 run 的 issue_id 可能存 UUID，也可能存 identifier；getWorkflowDeliveryReachabilityRuns 已经是 alias 感知的写法。只按 identifier 查，会把以 UUID 为键的 active run 漏掉，把正在修的类别误列为待排修，进而打扰 founder。建议：用 identifier 和 child UUID 两个别名，走 alias 感知查询，同时保持 status='active'（held 不算），并补一条 UUID 键 run 的用例。
+
+Disposition: Follow-up / open; no implementation performed, no governance ruling inferred.
+
+### repair-issue-linkage · LOW
+
+「没有修复单在跑」被收窄为「类别子单自身没有 run」，可能对 founder 误报
+
+修复单常常是另一张 issue：MECHANISM_DISPOSITION 的 repair_issue、Linear relations，或类别子单下的孙单。这些情况下计划不会排除。计划把它列为 follow-up，理由可以接受，但这些误报会直接进入 founder 的请求。建议至少在候选段展示已知关联，并允许 scheduled 引用关联修复单的 runId（不只限于『报告之后新开始的 run』）。
+
+Disposition: Follow-up / open; no implementation performed, no governance ruling inferred.
+
+### unknown-reservation-recovery · LOW
+
+message_id 为 NULL 的 unknown 预留行会永久占住 key，缺少终态恢复路径
+
+唯一索引覆盖未结算行，所以 message_id 为 NULL 的 unknown 行会一直挡住同 key 的新 ask；在这期间 reported / waiting_founder 都不成立，只能走 scheduled。计划只写了『给明确重查动作』。应当写明：传统路径（没有 outbox）按 marker 分页回读 thread 历史，找到就 backfill；找不到时显式 lead_withdrawn，并接受可能重复发送；以及这段时间门接受哪种处置、最长能停多久。
+
+Disposition: Follow-up / open; no implementation performed, no governance ruling inferred.
