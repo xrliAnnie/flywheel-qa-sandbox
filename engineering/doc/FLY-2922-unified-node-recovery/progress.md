@@ -2,15 +2,16 @@
 issue: FLY-2922
 phase: implement
 phaseCursor: 0/6
-updated: 2026-09-26T16:25:47.953Z
-nextStep: "Approved plan verified; watch retention first TDD slice: eight
-  regression cases red then green. Full affected-file regressions and retained
-  guards next; unified recovery transaction, consumers, completion/close/quota
-  and final handoff remain outstanding."
+updated: 2026-09-26T16:30:30.584Z
+nextStep: "89db8b1e2: retain active/held watches; eight red-to-green cases, two
+  targeted files and bounded vitest related 151 pass/1 existing skip, three
+  repository guards 29 pass; build/lint pass. Next: real pending/admitted
+  rollback fixture and unified recovery canonical/receipt. All remaining plan
+  requirements listed in implementation-evidence.md."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2922 progress
 **phase**: implement (0/6)
-**next**: Approved plan verified; watch retention first TDD slice: eight regression cases red then green. Full affected-file regressions and retained guards next; unified recovery transaction, consumers, completion/close/quota and final handoff remain outstanding.
+**next**: 89db8b1e2: retain active/held watches; eight red-to-green cases, two targeted files and bounded vitest related 151 pass/1 existing skip, three repository guards 29 pass; build/lint pass. Next: real pending/admitted rollback fixture and unified recovery canonical/receipt. All remaining plan requirements listed in implementation-evidence.md.
