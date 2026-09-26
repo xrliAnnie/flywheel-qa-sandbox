@@ -1,0 +1,11 @@
+flowchart TD
+    T0["Task 0 基线核对<br/>工作树全净 · 远端分支 == HEAD<br/>ahead 内容与路径白名单审计"] -->|"behind>0"| M["git merge origin/main<br/>冲突 → abort + ask + 停"]
+    T0 -->|"behind=0"| T1
+    M --> T1["Task 1 采集快照<br/>git ls-tree 顶层目录 · ls -R doc/ 前 50 行<br/>README blob"]
+    T1 --> T2{"Task 2 四项校验 V1–V4<br/>段落数 · 目录表 · 摘要+blob · 快照块"}
+    T2 -->|"全 PASS"| SKIP["不改文件 · 不 commit<br/>(避免 no-op commit 推离绿 CI)"]
+    T2 -->|"有 FAIL"| T3A["Task 3a 只刷新失败的 section<br/>重跑校验 → 同笔 commit"]
+    SKIP --> T3B
+    T3A --> T3B["Task 3b 探针决定 (始终执行)<br/>Lead 回「删」才 git rm FLY-2182-drill.md<br/>决定在此冻结"]
+    T3B --> T4["Task 4 PR #155 元数据对齐<br/>标题 + Linear Issue 段 + test plan<br/>失败两次 → ask + 停，不得 complete"]
+    T4 --> T5["Task 5 冻结与收尾<br/>见下图"]
