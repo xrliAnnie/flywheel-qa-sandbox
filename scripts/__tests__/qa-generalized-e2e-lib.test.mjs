@@ -2076,7 +2076,7 @@ async function replayStep6({
 		);
 		db.prepare("INSERT INTO workflow_rework_delivery VALUES (?, ?)").run(
 			qaFailRequestId,
-			"awaiting_receipt",
+			"turn_granted",
 		);
 		// The poller sees only the committed snapshot, never wake_delivered
 		// between these updates in the completion transaction.
@@ -2106,7 +2106,7 @@ async function replayStep6({
 			);
 			db.prepare("INSERT INTO workflow_rework_delivery VALUES (?, ?)").run(
 				qaVerifyRequestId,
-				"awaiting_receipt",
+				"turn_granted",
 			);
 		})();
 		const driver = readFileSync(
@@ -2175,11 +2175,11 @@ test("step 6 rejects missing or unrelated receipts, wrong source, and unsafe run
 		{ eventRequestId: qaVerifyRequestId },
 		{ eventRunId: "another-run" },
 		{ eventKind: "node_completed" },
-		{ state: "awaiting_receipt" },
-		{ state: "held" },
-		{ state: "needs_lead" },
+		{ state: "turn_granted" },
+		{ state: "returned_to_lead" },
+		{ state: "pending" },
 		{ runStatus: "held" },
-		{ dangerous: [{ state: "needs_lead" }] },
+		{ dangerous: [{ state: "returned_to_lead" }] },
 		{ sourceAttempt: 2 },
 		{ sourceExecutionId: "another-qa" },
 		{ outcome: "qa_pass" },
@@ -2188,5 +2188,159 @@ test("step 6 rejects missing or unrelated receipts, wrong source, and unsafe run
 			replayStep6(input),
 			/step 6 QA fail rework wake timed out/,
 		);
+	}
+});
+
+// FLY-2921: the step 6 danger predicate. A rework delivery ends only in
+// wake_delivered/completed or returned_to_lead; a run frozen by an open rework
+// hold is the other danger signal. This runs the real driver function.
+function loadDangerousReworkRows() {
+	const driver = readFileSync(
+		new URL("../qa-529-generalized-e2e.mjs", import.meta.url),
+		"utf8",
+	);
+	const start = driver.indexOf("\nconst REWORK_HOLD_EVENT_KINDS = [");
+	const end = driver.indexOf("\nfunction latestStub(", start);
+	assert.ok(start >= 0 && end > start);
+	return new Function(
+		"tableExists",
+		"all",
+		"one",
+		`${driver.slice(start, end)}; return dangerousReworkRows;`,
+	)(
+		(db, table) =>
+			Boolean(
+				db
+					.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?")
+					.get(table),
+			),
+		(db, sql, ...params) => db.prepare(sql).all(...params),
+		(db, sql, ...params) => db.prepare(sql).get(...params),
+	);
+}
+
+function reworkDangerFixture({
+	runStatus = "active",
+	deliveryState = "wake_delivered",
+	lastError = null,
+	events = [],
+} = {}) {
+	const require = createRequire(
+		new URL("../../packages/teamlead/package.json", import.meta.url),
+	);
+	const Database = require("better-sqlite3");
+	const db = new Database(":memory:");
+	db.exec(`
+		CREATE TABLE workflow_run (run_id TEXT, status TEXT);
+		CREATE TABLE workflow_rework_request (request_id TEXT, run_id TEXT);
+		CREATE TABLE workflow_rework_delivery (request_id TEXT, state TEXT, last_error TEXT);
+		CREATE TABLE workflow_run_event (run_id TEXT, event_uid TEXT, kind TEXT, payload TEXT);
+	`);
+	db.prepare("INSERT INTO workflow_run VALUES (?, ?)").run("run", runStatus);
+	db.prepare("INSERT INTO workflow_rework_request VALUES (?, ?)").run(
+		"req",
+		"run",
+	);
+	db.prepare("INSERT INTO workflow_rework_delivery VALUES (?, ?, ?)").run(
+		"req",
+		deliveryState,
+		lastError,
+	);
+	for (const [uid, kind, payload] of events)
+		db.prepare("INSERT INTO workflow_run_event VALUES (?, ?, ?, ?)").run(
+			"run",
+			uid,
+			kind,
+			payload,
+		);
+	return db;
+}
+
+const reworkHoldUid = "rework_returned_to_lead:req:3";
+const reworkHoldEvent = [
+	reworkHoldUid,
+	"rework_returned_to_lead",
+	JSON.stringify({ requestId: "req", routeRevision: 3 }),
+];
+const reworkHoldResumedEvent = [
+	`hold_resumed:rework_returned_to_lead:${reworkHoldUid}`,
+	"hold_resumed",
+	JSON.stringify({
+		shape: "rework_returned_to_lead",
+		holdEventUid: reworkHoldUid,
+	}),
+];
+
+test("dangerousReworkRows flags returned_to_lead and poisoned errors, never the live states", () => {
+	const dangerousReworkRows = loadDangerousReworkRows();
+	for (const deliveryState of [
+		"pending",
+		"turn_granted",
+		"wake_delivered",
+		"completed",
+	]) {
+		const db = reworkDangerFixture({ deliveryState });
+		try {
+			assert.deepEqual(dangerousReworkRows(db, "run"), []);
+		} finally {
+			db.close();
+		}
+	}
+	const returned = reworkDangerFixture({
+		deliveryState: "returned_to_lead",
+		lastError: "replacement_budget_exhausted",
+	});
+	try {
+		assert.deepEqual(dangerousReworkRows(returned, "run"), [
+			{
+				request_id: "req",
+				state: "returned_to_lead",
+				last_error: "replacement_budget_exhausted",
+			},
+		]);
+	} finally {
+		returned.close();
+	}
+	const poisoned = reworkDangerFixture({
+		lastError: "holder_activation_failed:stale",
+	});
+	try {
+		assert.equal(dangerousReworkRows(poisoned, "run").length, 1);
+	} finally {
+		poisoned.close();
+	}
+});
+
+test("dangerousReworkRows flags a run frozen by an open rework hold and clears it once resumed", () => {
+	const dangerousReworkRows = loadDangerousReworkRows();
+	const frozen = reworkDangerFixture({
+		runStatus: "held",
+		events: [reworkHoldEvent],
+	});
+	try {
+		assert.deepEqual(dangerousReworkRows(frozen, "run"), [
+			{
+				request_id: "req",
+				state: "run_held_by_rework_hold",
+				last_error: `rework_returned_to_lead:${reworkHoldUid}`,
+			},
+		]);
+	} finally {
+		frozen.close();
+	}
+	for (const input of [
+		// Resumed: the run may still be settling, but rework froze nothing.
+		{ runStatus: "held", events: [reworkHoldEvent, reworkHoldResumedEvent] },
+		// A delivery-scoped hold on an active run is returned_to_lead's business.
+		{ runStatus: "active", events: [reworkHoldEvent] },
+		// A run held for a non-rework reason is outside this predicate.
+		{ runStatus: "held", events: [["land_held:run", "land_held", "{}"]] },
+	]) {
+		const db = reworkDangerFixture(input);
+		try {
+			assert.deepEqual(dangerousReworkRows(db, "run"), []);
+		} finally {
+			db.close();
+		}
 	}
 });
