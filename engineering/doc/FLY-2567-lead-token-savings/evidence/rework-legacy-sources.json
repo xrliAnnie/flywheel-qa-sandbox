@@ -54,8 +54,8 @@
     {
       "path": "packages/teamlead/lead-rules-base/runner-patrol-rules.md",
       "revision": "f022a0a7ee5a4cf42f590cbd0c90b12b84e2c854",
-      "bytes": 95735,
-      "sha256": "aab078b2b1ec08ac4d553afd1d5c7db887400f69894997a6a9eefc6fedd7ebf3"
+      "bytes": 95780,
+      "sha256": "fd55f785e38dbf3a469a3b4d55f158e48180f8a5ff599774ffffbde64391e8f0"
     }
   ],
   "constraints": [
@@ -106,7 +106,7 @@
   "rootCauseSchedulingEvolution": {
     "issue": "FLY-2914",
     "beforeSourceSha256": "bcee374943e5807eff632cc23786667cf630e7c6628b0145109a5226e4c32dd9",
-    "afterSourceSha256": "aab078b2b1ec08ac4d553afd1d5c7db887400f69894997a6a9eefc6fedd7ebf3",
+    "afterSourceSha256": "fd55f785e38dbf3a469a3b4d55f158e48180f8a5ff599774ffffbde64391e8f0",
     "meaning": "The historical patrol procedure gains only the STEP 6 root-cause scheduling disposition section shared byte-for-byte with the current patrol runbook."
   }
 }

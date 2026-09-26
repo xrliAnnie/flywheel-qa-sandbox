@@ -775,3 +775,29 @@ describe("FLY-2914 send-path schedule identity", () => {
 		).rejects.toMatchObject({ token });
 	});
 });
+
+describe("FLY-2914 repair tickets under FLY-2072", () => {
+	it("shows a count-less repair ticket as excluded instead of an unscheduled category", () => {
+		const result = selectRootCauseCandidates({
+			projectName: "flywheel",
+			parentUuid: PARENT,
+			children: [
+				child(1, "[病根·修复 #2] 体的生死只认一个真源（9 张 ×68）", null, "unstarted"),
+				child(2, "[病根→修复] 本地评审写回 · ×4", `class_key: ${"4".repeat(64)}\noccurrences: 4`),
+				child(3, "[病根·盘] DAVE 诊断记录刷盘", null),
+			],
+			state: noState,
+		});
+		expect(result.excluded).toEqual([
+			expect.objectContaining({
+				identifier: "FLY-9001",
+				reason: "repair_ticket",
+				runId: null,
+			}),
+		]);
+		expect(result.candidates.map((c) => c.identifier)).toEqual([
+			"FLY-9002",
+			"FLY-9003",
+		]);
+	});
+});

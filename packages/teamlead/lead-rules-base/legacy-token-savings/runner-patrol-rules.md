@@ -449,7 +449,7 @@ STEP DWELL 多 cause 统一使用稳定 `node_dwell_incomplete` token，逐 caus
   该 token 不走 `[patrol-unavailable]` 建单，下轮重试。
 - `status=complete`：每行 `ROOT_CAUSE_CANDIDATE <JSON>` 是 FLY-2072 下 occurrences ≥3、非 Done/Canceled、
   无 active run 的类别（次数降序；`occurrences:null` 是计数不可读，仍需处置）；`ROOT_CAUSE_EXCLUDED`
-  是因 active run 排除的类别，只展示。有候选时 STEP 6 必须 FINDING。
+  是因 active run 排除的类别或无计数的「[病根·修复」修复单，只展示。有候选时 STEP 6 必须 FINDING。
 
 每个候选恰好一行 FINDING 加一行 `ROOT_CAUSE_DISPOSITION`，id/ref/scheduleKey 取候选 JSON，sourceDigest 取 review 的 source_digest：
 `FINDING id=<findingId> category=incident step=6 bridge_problem=no result=escalated-with-plan evidence=<ref> owner=<founder|agent:<lead>> next=<route:rootcause-schedule|inspect:rootcause-schedule> epic=n/a epic_marker=n/a disposition_ref=<ref>`

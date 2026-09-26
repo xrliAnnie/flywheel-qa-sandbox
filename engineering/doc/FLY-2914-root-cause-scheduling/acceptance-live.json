@@ -1,0 +1,658 @@
+{
+ "note": "FLY-2914 implementation acceptance: real read-only Linear GraphQL (FLY-2072 children, archived included) + read-only StateStore SELECTs; no Linear/StateStore/Discord write. Rendered through the real lead-patrol-snapshot.sh (--root-cause-facts, isolated state dir) and checked by the shipped gate functions.",
+ "observedAt": "2026-09-26T07:15:09.277Z",
+ "status": "complete",
+ "children": 221,
+ "pages": 3,
+ "nonCategory": 12,
+ "sourceDigest": "36a30d3c23b09ffa8f9cecf3f720e90c358c772a332228dc637345dd14dbbf84",
+ "founderAskScheduleColumnPresent": false,
+ "candidates": [
+  {
+   "identifier": "FLY-2114",
+   "occurrences": 289,
+   "titleCount": 289,
+   "descriptionCount": 289,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2418",
+   "occurrences": 49,
+   "titleCount": 49,
+   "descriptionCount": 49,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2083",
+   "occurrences": 25,
+   "titleCount": 25,
+   "descriptionCount": 25,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2330",
+   "occurrences": 23,
+   "titleCount": 23,
+   "descriptionCount": 23,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2133",
+   "occurrences": 22,
+   "titleCount": 22,
+   "descriptionCount": 22,
+   "state": "Backlog",
+   "diagnostics": [
+    "class_key_invalid"
+   ]
+  },
+  {
+   "identifier": "FLY-2329",
+   "occurrences": 19,
+   "titleCount": 19,
+   "descriptionCount": 19,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2537",
+   "occurrences": 16,
+   "titleCount": 16,
+   "descriptionCount": 16,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2371",
+   "occurrences": 14,
+   "titleCount": 14,
+   "descriptionCount": 13,
+   "state": "Backlog",
+   "diagnostics": [
+    "count_mismatch"
+   ]
+  },
+  {
+   "identifier": "FLY-2328",
+   "occurrences": 13,
+   "titleCount": 13,
+   "descriptionCount": 13,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2127",
+   "occurrences": 12,
+   "titleCount": 12,
+   "descriptionCount": 12,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2666",
+   "occurrences": 10,
+   "titleCount": 10,
+   "descriptionCount": 10,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2198",
+   "occurrences": 9,
+   "titleCount": 9,
+   "descriptionCount": 9,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2186",
+   "occurrences": 8,
+   "titleCount": 8,
+   "descriptionCount": 8,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2344",
+   "occurrences": 8,
+   "titleCount": 8,
+   "descriptionCount": 7,
+   "state": "Backlog",
+   "diagnostics": [
+    "count_mismatch"
+   ]
+  },
+  {
+   "identifier": "FLY-2772",
+   "occurrences": 8,
+   "titleCount": null,
+   "descriptionCount": 8,
+   "state": "Backlog",
+   "diagnostics": [
+    "class_key_invalid",
+    "title_count_missing"
+   ]
+  },
+  {
+   "identifier": "FLY-2110",
+   "occurrences": 7,
+   "titleCount": 7,
+   "descriptionCount": 7,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2193",
+   "occurrences": 7,
+   "titleCount": 7,
+   "descriptionCount": 7,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2474",
+   "occurrences": 7,
+   "titleCount": 7,
+   "descriptionCount": 7,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2510",
+   "occurrences": 7,
+   "titleCount": 7,
+   "descriptionCount": 7,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2295",
+   "occurrences": 6,
+   "titleCount": 6,
+   "descriptionCount": 6,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2336",
+   "occurrences": 6,
+   "titleCount": 6,
+   "descriptionCount": 6,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2400",
+   "occurrences": 6,
+   "titleCount": 6,
+   "descriptionCount": 6,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2590",
+   "occurrences": 6,
+   "titleCount": 6,
+   "descriptionCount": 6,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2091",
+   "occurrences": 5,
+   "titleCount": 5,
+   "descriptionCount": 5,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2123",
+   "occurrences": 5,
+   "titleCount": 5,
+   "descriptionCount": 5,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2185",
+   "occurrences": 5,
+   "titleCount": 5,
+   "descriptionCount": 5,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2287",
+   "occurrences": 5,
+   "titleCount": 5,
+   "descriptionCount": 5,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2462",
+   "occurrences": 5,
+   "titleCount": 5,
+   "descriptionCount": 5,
+   "state": "Duplicate",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2586",
+   "occurrences": 5,
+   "titleCount": 5,
+   "descriptionCount": 5,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2690",
+   "occurrences": 5,
+   "titleCount": 5,
+   "descriptionCount": 5,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2814",
+   "occurrences": 5,
+   "titleCount": 5,
+   "descriptionCount": 5,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2821",
+   "occurrences": 5,
+   "titleCount": 5,
+   "descriptionCount": 5,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2138",
+   "occurrences": 4,
+   "titleCount": 4,
+   "descriptionCount": 4,
+   "state": "Backlog",
+   "diagnostics": [
+    "class_key_invalid"
+   ]
+  },
+  {
+   "identifier": "FLY-2230",
+   "occurrences": 4,
+   "titleCount": 4,
+   "descriptionCount": 4,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2486",
+   "occurrences": 4,
+   "titleCount": 4,
+   "descriptionCount": 4,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2512",
+   "occurrences": 4,
+   "titleCount": 4,
+   "descriptionCount": 4,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2558",
+   "occurrences": 4,
+   "titleCount": 4,
+   "descriptionCount": 4,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2629",
+   "occurrences": 4,
+   "titleCount": 4,
+   "descriptionCount": null,
+   "state": "Duplicate",
+   "diagnostics": [
+    "class_key_invalid",
+    "description_count_missing"
+   ]
+  },
+  {
+   "identifier": "FLY-2630",
+   "occurrences": 4,
+   "titleCount": 4,
+   "descriptionCount": 4,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2714",
+   "occurrences": 4,
+   "titleCount": 4,
+   "descriptionCount": 4,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2891",
+   "occurrences": 4,
+   "titleCount": 4,
+   "descriptionCount": 4,
+   "state": "In Progress",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2098",
+   "occurrences": 3,
+   "titleCount": 3,
+   "descriptionCount": 2,
+   "state": "Backlog",
+   "diagnostics": [
+    "count_mismatch"
+   ]
+  },
+  {
+   "identifier": "FLY-2116",
+   "occurrences": 3,
+   "titleCount": 3,
+   "descriptionCount": 3,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2117",
+   "occurrences": 3,
+   "titleCount": 3,
+   "descriptionCount": 3,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2192",
+   "occurrences": 3,
+   "titleCount": 3,
+   "descriptionCount": 3,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2378",
+   "occurrences": 3,
+   "titleCount": 3,
+   "descriptionCount": 3,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2502",
+   "occurrences": 3,
+   "titleCount": 3,
+   "descriptionCount": 3,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2513",
+   "occurrences": 3,
+   "titleCount": 3,
+   "descriptionCount": 3,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2514",
+   "occurrences": 3,
+   "titleCount": 3,
+   "descriptionCount": 3,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2613",
+   "occurrences": 3,
+   "titleCount": 3,
+   "descriptionCount": 3,
+   "state": "Backlog",
+   "diagnostics": [
+    "class_key_missing"
+   ]
+  },
+  {
+   "identifier": "FLY-2740",
+   "occurrences": 3,
+   "titleCount": 3,
+   "descriptionCount": 3,
+   "state": "Backlog",
+   "diagnostics": [
+    "class_key_invalid"
+   ]
+  },
+  {
+   "identifier": "FLY-2822",
+   "occurrences": 3,
+   "titleCount": 3,
+   "descriptionCount": 3,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2122",
+   "occurrences": null,
+   "titleCount": null,
+   "descriptionCount": null,
+   "state": "Backlog",
+   "diagnostics": [
+    "class_key_missing",
+    "count_unreadable",
+    "description_count_missing",
+    "title_count_missing"
+   ]
+  },
+  {
+   "identifier": "FLY-2617",
+   "occurrences": null,
+   "titleCount": null,
+   "descriptionCount": null,
+   "state": "Backlog",
+   "diagnostics": [
+    "class_key_missing",
+    "count_unreadable",
+    "description_count_missing",
+    "title_count_missing"
+   ]
+  },
+  {
+   "identifier": "FLY-2618",
+   "occurrences": null,
+   "titleCount": null,
+   "descriptionCount": null,
+   "state": "Backlog",
+   "diagnostics": [
+    "class_key_missing",
+    "count_unreadable",
+    "description_count_missing",
+    "title_count_missing"
+   ]
+  },
+  {
+   "identifier": "FLY-2635",
+   "occurrences": null,
+   "titleCount": null,
+   "descriptionCount": null,
+   "state": "Backlog",
+   "diagnostics": [
+    "class_key_invalid",
+    "count_unreadable",
+    "description_count_missing",
+    "title_count_missing"
+   ]
+  },
+  {
+   "identifier": "FLY-2636",
+   "occurrences": null,
+   "titleCount": null,
+   "descriptionCount": null,
+   "state": "Backlog",
+   "diagnostics": [
+    "class_key_invalid",
+    "count_unreadable",
+    "description_count_missing",
+    "title_count_missing"
+   ]
+  },
+  {
+   "identifier": "FLY-2637",
+   "occurrences": null,
+   "titleCount": null,
+   "descriptionCount": null,
+   "state": "Duplicate",
+   "diagnostics": [
+    "class_key_invalid",
+    "count_unreadable",
+    "description_count_missing",
+    "title_count_missing"
+   ]
+  },
+  {
+   "identifier": "FLY-2730",
+   "occurrences": null,
+   "titleCount": null,
+   "descriptionCount": null,
+   "state": "Backlog",
+   "diagnostics": [
+    "class_key_missing",
+    "count_unreadable",
+    "description_count_missing",
+    "title_count_missing"
+   ]
+  }
+ ],
+ "excluded": [
+  {
+   "identifier": "FLY-2373",
+   "reason": "active_run",
+   "runId": "110e738b-87ff-4332-91a4-a29be96018be",
+   "occurrences": 34,
+   "titleCount": 34,
+   "descriptionCount": 31
+  },
+  {
+   "identifier": "FLY-2906",
+   "reason": "active_run",
+   "runId": "e3277136-8ff3-4721-afb6-2d7b25ace960",
+   "occurrences": 3,
+   "titleCount": 3,
+   "descriptionCount": 3
+  },
+  {
+   "identifier": "FLY-2919",
+   "reason": "repair_ticket",
+   "runId": null,
+   "occurrences": null,
+   "titleCount": null,
+   "descriptionCount": null
+  },
+  {
+   "identifier": "FLY-2920",
+   "reason": "repair_ticket",
+   "runId": null,
+   "occurrences": null,
+   "titleCount": null,
+   "descriptionCount": null
+  },
+  {
+   "identifier": "FLY-2921",
+   "reason": "repair_ticket",
+   "runId": null,
+   "occurrences": null,
+   "titleCount": null,
+   "descriptionCount": null
+  },
+  {
+   "identifier": "FLY-2922",
+   "reason": "repair_ticket",
+   "runId": null,
+   "occurrences": null,
+   "titleCount": null,
+   "descriptionCount": null
+  },
+  {
+   "identifier": "FLY-2923",
+   "reason": "repair_ticket",
+   "runId": null,
+   "occurrences": null,
+   "titleCount": null,
+   "descriptionCount": null
+  },
+  {
+   "identifier": "FLY-2924",
+   "reason": "repair_ticket",
+   "runId": null,
+   "occurrences": null,
+   "titleCount": null,
+   "descriptionCount": null
+  },
+  {
+   "identifier": "FLY-2925",
+   "reason": "repair_ticket",
+   "runId": null,
+   "occurrences": null,
+   "titleCount": null,
+   "descriptionCount": null
+  },
+  {
+   "identifier": "FLY-2926",
+   "reason": "repair_ticket",
+   "runId": null,
+   "occurrences": null,
+   "titleCount": null,
+   "descriptionCount": null
+  },
+  {
+   "identifier": "FLY-2927",
+   "reason": "repair_ticket",
+   "runId": null,
+   "occurrences": null,
+   "titleCount": null,
+   "descriptionCount": null
+  },
+  {
+   "identifier": "FLY-2928",
+   "reason": "repair_ticket",
+   "runId": null,
+   "occurrences": null,
+   "titleCount": null,
+   "descriptionCount": null
+  }
+ ],
+ "gate": {
+  "undisposed": {
+   "errors": [
+    "root_cause_disposition_missing"
+   ],
+   "candidates": 59
+  },
+  "allScheduled": {
+   "valid": true,
+   "errors": []
+  },
+  "oneMissing": [
+   "root_cause_digest_mismatch"
+  ],
+  "freshNewCategory": [
+   "root_cause_snapshot_stale"
+  ],
+  "fakeReported": [
+   "root_cause_ask_unbound"
+  ]
+ }
+}

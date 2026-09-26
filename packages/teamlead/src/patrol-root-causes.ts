@@ -75,8 +75,9 @@ export interface RootCauseCandidate {
 export interface RootCauseExcluded {
 	identifier: string;
 	issueUuid: string;
-	reason: "active_run";
-	runId: string;
+	/** active_run: its own run is fixing it; repair_ticket: a count-less fix ticket, not a category. */
+	reason: "active_run" | "repair_ticket";
+	runId: string | null;
 	occurrences: number | null;
 	titleCount: number | null;
 	descriptionCount: number | null;
@@ -266,6 +267,27 @@ export function selectRootCauseCandidates(input: {
 		if (meta.occurrences !== null && meta.occurrences < ROOT_CAUSE_THRESHOLD)
 			continue;
 		const diagnostics = [...meta.diagnostics];
+		// A founder-scheduled fix ticket (e.g. "[病根·修复 #2]") carries no category
+		// metadata; show it as excluded rather than as an unscheduled category.
+		if (
+			/^\[病根\s*[·→]\s*修复/.test(child.title.trim()) &&
+			meta.occurrences === null &&
+			meta.classKey === null &&
+			!meta.diagnostics.includes("class_key_invalid") &&
+			!meta.diagnostics.includes("class_key_conflict")
+		) {
+			excluded.push({
+				identifier: child.identifier,
+				issueUuid: child.id,
+				reason: "repair_ticket",
+				runId: null,
+				occurrences: null,
+				titleCount: null,
+				descriptionCount: null,
+				diagnostics: diagnostics.sort(),
+			});
+			continue;
+		}
 		if ((classKeys.get(meta.classKey ?? "") ?? 0) > 1)
 			diagnostics.push("duplicate_class_key");
 		if (
