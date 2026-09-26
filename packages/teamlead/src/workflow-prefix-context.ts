@@ -46,17 +46,28 @@ export function resolveWorkflowPrefixContext(input: {
 	const node = snapshot.resolved.nodes.find(
 		(candidate) => candidate.id === nodeId,
 	);
-	if (!node) throw new Error("workflow_prefix_context: node missing");
+	const manifestNode = snapshot.manifest.nodes.find(
+		(candidate) => candidate.id === nodeId,
+	);
+	if (!node || !manifestNode)
+		throw new Error("workflow_prefix_context: node missing");
 	if (node.type !== "design" && node.type !== "implement" && node.type !== "qa")
 		return undefined;
 	return {
 		workflow: {
 			runId: run.run_id,
 			templateId: snapshot.template.id,
+			templateRevision: snapshot.template.revision,
 			snapshotDigest: snapshot.snapshot_digest,
 		},
 		nodeId: node.id,
 		phase: node.type,
+		...(manifestNode.prefix_profile !== undefined
+			? { prefixProfile: manifestNode.prefix_profile }
+			: {}),
+		...(manifestNode.review_prefix_profile !== undefined
+			? { reviewPrefixProfile: manifestNode.review_prefix_profile }
+			: {}),
 		agent: node.agent
 			? { content: node.agent.content, digest: node.agent.digest }
 			: null,

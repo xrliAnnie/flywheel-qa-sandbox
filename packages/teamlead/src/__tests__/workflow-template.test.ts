@@ -16,6 +16,8 @@ import {
 	WORKFLOW_OUTCOME_VOCABULARY,
 } from "../workflow-template.js";
 import {
+	legacyEngineeringManifest,
+	legacyLandEngineeringManifest,
 	legacyWorkflowSeeds,
 	pinLegacyWorkflowSeedAgents,
 } from "./fixtures/legacy-workflow-manifests.js";
@@ -92,6 +94,138 @@ const handbookManifest = () => {
 	);
 	return manifest;
 };
+
+describe("workflow manifest prefix declarations (FLY-2913 C1)", () => {
+	function engineering(schemaVersion: 1 | 2 | 3, land = false) {
+		const source = land
+			? legacyLandEngineeringManifest()
+			: legacyEngineeringManifest();
+		const { manifest_variant: _variant, ...generalized } =
+			source as typeof source & {
+				manifest_variant?: string;
+			};
+		return {
+			...(schemaVersion === 1 ? source : generalized),
+			schema_version: schemaVersion,
+			loops:
+				schemaVersion === 1
+					? source.loops
+					: source.loops.filter((loop) => loop.loop_when === "qa_fail"),
+			nodes: source.nodes.map((node) => ({
+				...node,
+				...(schemaVersion === 3 && node.type !== "gate" && node.type !== "land"
+					? { handbook_ref: node.id }
+					: {}),
+			})),
+		};
+	}
+
+	it.each([1, 2, 3] as const)(
+		"schema %s preserves independent declarations on all engineering phases and Codex intent",
+		(schemaVersion) => {
+			for (const land of [false, true]) {
+				const manifest = engineering(schemaVersion, land);
+				for (const node of manifest.nodes) {
+					if (["design", "implement", "qa"].includes(node.type)) {
+						Object.assign(node, {
+							prefix_profile: "role-v1",
+							review_prefix_profile: "legacy",
+						});
+					}
+				}
+				const parsed = validateWorkflowManifest(manifest);
+				for (const node of parsed.nodes.filter((node) =>
+					["design", "implement", "qa"].includes(node.type),
+				)) {
+					expect(node).toMatchObject({
+						prefix_profile: "role-v1",
+						review_prefix_profile: "legacy",
+					});
+				}
+				const overridden = applyWorkflowOverride(parsed, {
+					reason: "Change model while retaining pinned profile intent",
+					nodes: {
+						implement: {
+							vendor: "claude",
+							model: "claude-fable-5",
+							effort: "high",
+						},
+					},
+				}).manifest;
+				expect(
+					overridden.nodes.find((node) => node.id === "implement"),
+				).toMatchObject({
+					vendor: "claude",
+					prefix_profile: "role-v1",
+					review_prefix_profile: "legacy",
+				});
+			}
+		},
+	);
+
+	it.each([1, 2, 3] as const)(
+		"schema %s validates each declaration independently",
+		(schemaVersion) => {
+			for (const field of [
+				"prefix_profile",
+				"review_prefix_profile",
+			] as const) {
+				for (const value of ["legacy", "role-v1"]) {
+					const manifest = engineering(schemaVersion);
+					Object.assign(manifest.nodes[0]!, { [field]: value });
+					const node = validateWorkflowManifest(manifest).nodes[0]!;
+					expect(node).toHaveProperty(field, value);
+					expect(node).not.toHaveProperty(
+						field === "prefix_profile"
+							? "review_prefix_profile"
+							: "prefix_profile",
+					);
+				}
+				for (const value of [null, "role-v2", 1, true, {}, []]) {
+					const manifest = engineering(schemaVersion);
+					Object.assign(manifest.nodes[0]!, { [field]: value });
+					expect(() => validateWorkflowManifest(manifest)).toThrow(
+						new RegExp(field),
+					);
+				}
+				for (const type of ["gate", "land"]) {
+					const manifest = engineering(schemaVersion, true);
+					Object.assign(manifest.nodes.find((node) => node.type === type)!, {
+						[field]: "role-v1",
+					});
+					expect(() => validateWorkflowManifest(manifest)).toThrow(
+						new RegExp(field),
+					);
+				}
+				expect(() =>
+					applyWorkflowOverride(engineering(schemaVersion), {
+						reason: "Profiles are not model overrides",
+						nodes: { implement: { [field]: "role-v1" } },
+					}),
+				).toThrow(new RegExp(field));
+			}
+		},
+	);
+
+	it.each([2, 3] as const)(
+		"schema %s rejects generic and review declarations",
+		(schemaVersion) => {
+			for (const field of ["prefix_profile", "review_prefix_profile"]) {
+				for (const type of ["generic", "review"]) {
+					const manifest =
+						schemaVersion === 2 ? generalizedManifest() : handbookManifest();
+					const nodes = manifest.nodes as Array<Record<string, unknown>>;
+					Object.assign(nodes.find((node) => node.type === type)!, {
+						[field]: "role-v1",
+					});
+					expect(() => validateWorkflowManifest(manifest)).toThrow(
+						new RegExp(field),
+					);
+				}
+			}
+		},
+	);
+});
 
 describe("workflow template manifest v1", () => {
 	it("accepts a land_v1 engine node with binding-engine tier presets", () => {

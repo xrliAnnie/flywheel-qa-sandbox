@@ -30,6 +30,7 @@ const workflow = {
 	runId: "run-2913",
 	snapshotDigest: "a".repeat(64),
 	templateId: "tpl_code",
+	templateRevision: 2,
 };
 function request(
 	role: (typeof ROLES)[number],
@@ -213,6 +214,35 @@ describe("runner prefix role profiles v1 (FLY-2913)", () => {
 			"kept-unparsed-pinned-skills",
 		);
 		expect(compiled.settings.claudeMdExcludes.length).toBeGreaterThan(0);
+	});
+
+	it("stamps the sealed revision and independent selection source without changing settings", () => {
+		for (const role of ["implement", "review-code"] as const) {
+			const first = request(role);
+			const next = structuredClone(first);
+			next.selection.workflow.templateRevision = 3;
+			next.context.workflow.templateRevision = 3;
+			const compile = (value: RunnerPrefixRequest) =>
+				compileRunnerPrefixProfile({
+					request: value,
+					claudeConfigDir,
+					skillArm: "superpowers",
+				});
+			const before = compile(first),
+				after = compile(next);
+			expect(after.stamp).toMatchObject({
+				workflow: { templateRevision: 3 },
+				requestedProfile: "role-v1",
+				effectiveProfile: "role-v1",
+				fallbackReason: null,
+				selectionSource:
+					role === "implement" ? "prefix_profile" : "review_prefix_profile",
+			});
+			expect(JSON.stringify(after.settings)).toBe(
+				JSON.stringify(before.settings),
+			);
+			expect(after.profileDigest).not.toBe(before.profileDigest);
+		}
 	});
 
 	it("compiles into one per-launch settings source", () => {

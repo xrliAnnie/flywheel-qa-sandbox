@@ -1,8 +1,8 @@
 /** FLY-2913: selection only; no files, settings, permissions or launch side effects.
  * Callers must obtain workflow and phase from the server's pinned run snapshot,
  * and reviewType from the persisted review job. This is not an API input parser.
- * The mode comes only from the store-managed `runner_prefix_profile` row read at
- * each new launch; the registry env name is bootstrap metadata, never read here.
+ * The mode comes only from the node declaration sealed into the run snapshot.
+ * Global settings and the current template pointer never select an existing run.
  */
 export type RunnerPrefixRole =
 	| "design"
@@ -26,6 +26,7 @@ export interface RunnerPrefixWorkflow {
 	runId: string;
 	snapshotDigest: string;
 	templateId: string;
+	templateRevision: number;
 }
 
 /** Server-derived source identity; never accepted from an HTTP start payload. */
@@ -33,7 +34,21 @@ export interface RunnerPrefixContext {
 	workflow: RunnerPrefixWorkflow;
 	nodeId: string;
 	phase: "design" | "implement" | "qa";
+	prefixProfile?: RunnerPrefixMode;
+	reviewPrefixProfile?: RunnerPrefixMode;
 	agent: { content: string; digest: string } | null;
+}
+/** Secret-free selection metadata, forwarded separately from effective settings. */
+export interface RunnerPrefixAudit {
+	workflow: RunnerPrefixWorkflow | null;
+	nodeId: string | null;
+	selectionSource:
+		| "prefix_profile"
+		| "review_prefix_profile"
+		| "historical-session";
+	requestedProfile: RunnerPrefixMode;
+	effectiveProfile: RunnerPrefixMode;
+	fallbackReason: string | null;
 }
 export interface RunnerPrefixRequest {
 	selection: Extract<RunnerPrefixSelection, { mode: "role-v1" }>;
@@ -47,8 +62,8 @@ export interface ResolveRunnerPrefixSelectionArgs {
 	reviewType?: string;
 	workflow?: RunnerPrefixWorkflow;
 	issueLabels?: readonly string[];
-	/** Raw `runner_prefix_profile` store row; absent/unset/unsupported ⇒ legacy. */
-	profile?: { hasOverride: boolean; raw: string | null };
+	/** Independent runner/reviewer declaration from the pinned manifest node. */
+	profile?: RunnerPrefixMode;
 }
 
 export type RunnerPrefixSelection =
@@ -56,7 +71,7 @@ export type RunnerPrefixSelection =
 			mode: "legacy";
 			reason:
 				| "not-applicable"
-				| "operator-legacy"
+				| "node-legacy"
 				| "unmapped-trigger"
 				| "unknown-role"
 				| "full-mcp";
@@ -68,8 +83,7 @@ export type RunnerPrefixSelection =
 			workflow: RunnerPrefixWorkflow;
 	  };
 
-// Legacy is both the default and the only fallback; role-v1 is enabled only by
-// the managed feature-flags command (Lead ruling, 2026-09-26).
+// Missing historical declarations retain the original settings.
 const DEFAULT_MODE: RunnerPrefixMode = "legacy";
 
 export function resolveRunnerPrefixSelection(
@@ -82,11 +96,10 @@ export function resolveRunnerPrefixSelection(
 	) {
 		return { mode: "legacy", reason: "not-applicable" };
 	}
-	const mode =
-		args.profile?.hasOverride && isRunnerPrefixProfile(args.profile.raw)
-			? args.profile.raw
-			: DEFAULT_MODE;
-	if (mode === "legacy") return { mode, reason: "operator-legacy" };
+	const mode = isRunnerPrefixProfile(args.profile)
+		? args.profile
+		: DEFAULT_MODE;
+	if (mode === "legacy") return { mode, reason: "node-legacy" };
 	if (args.issueLabels?.some((label) => label.toLowerCase() === "full-mcp")) {
 		return { mode: "legacy", reason: "full-mcp" };
 	}
@@ -99,7 +112,9 @@ export function resolveRunnerPrefixSelection(
 	}
 	if (
 		!/^[A-Za-z0-9][A-Za-z0-9:_-]{0,199}$/.test(workflow.runId) ||
-		!/^[a-f0-9]{64}$/.test(workflow.snapshotDigest)
+		!/^[a-f0-9]{64}$/.test(workflow.snapshotDigest) ||
+		!Number.isSafeInteger(workflow.templateRevision) ||
+		workflow.templateRevision < 1
 	) {
 		throw new Error("runner prefix requires a valid pinned workflow identity");
 	}
@@ -123,6 +138,7 @@ export function resolveRunnerPrefixSelection(
 			runId: workflow.runId,
 			snapshotDigest: workflow.snapshotDigest,
 			templateId: workflow.templateId,
+			templateRevision: workflow.templateRevision,
 		},
 	};
 }

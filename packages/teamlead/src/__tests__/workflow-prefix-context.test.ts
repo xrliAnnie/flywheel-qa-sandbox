@@ -14,10 +14,14 @@ afterEach(() => {
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true });
 });
 
-function fixture(version: 1 | 2 | 3 = 3, templateId = "tpl_code") {
+function fixture(
+	version: 1 | 2 | 3 = 3,
+	templateId = "tpl_code",
+	profiles?: Parameters<typeof createWorkflowPrefixFixture>[3],
+) {
 	const root = mkdtempSync(join(tmpdir(), "fly2913-prefix-context-"));
 	roots.push(root);
-	return createWorkflowPrefixFixture(root, version, templateId);
+	return createWorkflowPrefixFixture(root, version, templateId, profiles);
 }
 
 describe("pinned workflow prefix provenance (FLY-2913)", () => {
@@ -30,6 +34,7 @@ describe("pinned workflow prefix provenance (FLY-2913)", () => {
 				workflow: {
 					runId: run.run_id,
 					templateId: "tpl_code",
+					templateRevision: 2,
 					snapshotDigest: snapshot.snapshot_digest,
 				},
 				nodeId,
@@ -39,6 +44,32 @@ describe("pinned workflow prefix provenance (FLY-2913)", () => {
 				snapshot.resolved.nodes.find((node) => node.id === nodeId)?.agent ??
 					null,
 			);
+		},
+	);
+	it.each([1, 2, 3] as const)(
+		"schema %s derives independent profile declarations from the exact pinned manifest node",
+		(version) => {
+			for (const profiles of [
+				{ prefix_profile: "role-v1", review_prefix_profile: "legacy" },
+				{ prefix_profile: "legacy", review_prefix_profile: "role-v1" },
+				{ prefix_profile: "role-v1" },
+				{ review_prefix_profile: "role-v1" },
+			] as const) {
+				const { run, nodeId } = fixture(version, "tpl_code", profiles);
+				const context = resolveWorkflowPrefixContext({ run, nodeId });
+				expect(context?.prefixProfile).toBe(
+					"prefix_profile" in profiles ? profiles.prefix_profile : undefined,
+				);
+				expect(context?.reviewPrefixProfile).toBe(
+					"review_prefix_profile" in profiles
+						? profiles.review_prefix_profile
+						: undefined,
+				);
+				const qa = resolveWorkflowPrefixContext({ run, nodeId: "qa" });
+				expect(qa).toMatchObject({ nodeId: "qa", phase: "qa" });
+				expect(qa).not.toHaveProperty("prefixProfile");
+				expect(qa).not.toHaveProperty("reviewPrefixProfile");
+			}
 		},
 	);
 	it("recognizes simple-code using its persisted template", () => {
@@ -144,7 +175,10 @@ describe("pinned workflow prefix provenance (FLY-2913)", () => {
 
 describe("execution-bound prefix source lookup", () => {
 	function bound() {
-		const pinned = fixture();
+		const pinned = fixture(3, "tpl_code", {
+			prefix_profile: "legacy",
+			review_prefix_profile: "role-v1",
+		});
 		const runtime = {
 			execution_id: "execution-2913",
 			run_id: pinned.run.run_id,
@@ -155,6 +189,9 @@ describe("execution-bound prefix source lookup", () => {
 			getWorkflowRun: vi.fn(() => pinned.run),
 			getWorkflowExecutionBinding: vi.fn(() => {
 				throw new Error("ambiguous after reentry");
+			}),
+			getWorkflowTemplate: vi.fn(() => {
+				throw new Error("current published pointer is not run authority");
 			}),
 		};
 		const lookup = (expected?: {
@@ -174,10 +211,13 @@ describe("execution-bound prefix source lookup", () => {
 	it("uses immutable runtime after multiple activations instead of the single-activation lookup", () => {
 		const { lookup, store, pinned } = bound();
 		expect(lookup()).toMatchObject({
-			workflow: { runId: pinned.run.run_id },
+			workflow: { runId: pinned.run.run_id, templateRevision: 2 },
 			phase: "implement",
+			prefixProfile: "legacy",
+			reviewPrefixProfile: "role-v1",
 		});
 		expect(store.getWorkflowExecutionBinding).not.toHaveBeenCalled();
+		expect(store.getWorkflowTemplate).not.toHaveBeenCalled();
 	});
 	it.each(["runId", "nodeId", "snapshotDigest"] as const)(
 		"rejects mismatched dispatcher %s",

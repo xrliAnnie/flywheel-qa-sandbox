@@ -4,6 +4,7 @@ import { basename, isAbsolute } from "node:path";
 import type {
 	RunnerPrefixRequest,
 	RunnerPrefixRole,
+	RunnerPrefixWorkflow,
 } from "./runner-prefix-profile.js";
 
 /**
@@ -236,7 +237,11 @@ export type RunnerPrefixStamp = {
 	mode: "role-v1";
 	role: RunnerPrefixRole;
 	taskSetId: "engineering";
-	workflow: { runId: string; snapshotDigest: string; templateId: string };
+	workflow: RunnerPrefixWorkflow;
+	selectionSource: "prefix_profile" | "review_prefix_profile";
+	requestedProfile: "role-v1";
+	effectiveProfile: "role-v1";
+	fallbackReason: null;
 	nodeId: string;
 	skillArm: string;
 	pinnedSkills: string[];
@@ -405,7 +410,9 @@ export function compileRunnerPrefixProfile(input: {
 		fail("compile requires a role-v1 selection");
 	if (
 		context.workflow.runId !== selection.workflow.runId ||
-		context.workflow.snapshotDigest !== selection.workflow.snapshotDigest
+		context.workflow.snapshotDigest !== selection.workflow.snapshotDigest ||
+		context.workflow.templateId !== selection.workflow.templateId ||
+		context.workflow.templateRevision !== selection.workflow.templateRevision
 	)
 		fail("selection and pinned context disagree");
 	if (typeof skillArm !== "string" || !/^[a-z-]{1,40}$/.test(skillArm))
@@ -447,6 +454,7 @@ export function compileRunnerPrefixProfile(input: {
 		runId: selection.workflow.runId,
 		snapshotDigest: selection.workflow.snapshotDigest,
 		templateId: selection.workflow.templateId,
+		templateRevision: selection.workflow.templateRevision,
 	};
 	const profileDigest = createHash("sha256")
 		.update(
@@ -470,6 +478,12 @@ export function compileRunnerPrefixProfile(input: {
 			version: 1,
 			compilerVersion: COMPILER_VERSION,
 			mode: "role-v1",
+			selectionSource: selection.role.startsWith("review-")
+				? "review_prefix_profile"
+				: "prefix_profile",
+			requestedProfile: "role-v1",
+			effectiveProfile: "role-v1",
+			fallbackReason: null,
 			role: selection.role,
 			taskSetId: selection.taskSetId,
 			workflow,

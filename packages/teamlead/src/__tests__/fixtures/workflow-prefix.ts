@@ -11,6 +11,10 @@ export function createWorkflowPrefixFixture(
 	root: string,
 	version: 1 | 2 | 3 = 3,
 	templateId = "tpl_code",
+	profiles: {
+		prefix_profile?: "legacy" | "role-v1";
+		review_prefix_profile?: "legacy" | "role-v1";
+	} = {},
 ) {
 	mkdirSync(join(root, "agents"));
 	mkdirSync(join(root, ".flywheel/menus"), { recursive: true });
@@ -34,6 +38,7 @@ export function createWorkflowPrefixFixture(
 		nodes: [
 			{
 				id: authorId,
+				...profiles,
 				type: "implement",
 				vendor: "claude",
 				model: "claude-fable-5",
@@ -73,7 +78,12 @@ export function createWorkflowPrefixFixture(
 		version === 1
 			? buildWorkflowRunSnapshotV1({
 					template,
-					manifest: legacyEngineeringManifest(),
+					manifest: {
+						...legacyEngineeringManifest(),
+						nodes: legacyEngineeringManifest().nodes.map((node) =>
+							node.id === authorId ? { ...node, ...profiles } : node,
+						),
+					},
 				})
 			: (version === 2
 					? buildWorkflowRunSnapshotV2

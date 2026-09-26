@@ -3,6 +3,8 @@ import {
 	canonicalSubmissionDigest,
 	getModelConfigSnapshot,
 	type ModelConfigSnapshot,
+	RUNNER_PREFIX_PROFILES,
+	type RunnerPrefixMode,
 } from "flywheel-config";
 import { parse } from "yaml";
 import type { StateStore } from "./StateStore.js";
@@ -56,6 +58,9 @@ export interface WorkflowManifestNode {
 	vendor?: WorkflowVendor;
 	model?: string;
 	effort?: WorkflowEffort;
+	/** Immutable prefix intent; consumers apply it only to supported backends. */
+	prefix_profile?: RunnerPrefixMode;
+	review_prefix_profile?: RunnerPrefixMode;
 	handoff_pointer?: { worktree: boolean; design_doc: boolean };
 	agent_file?: string;
 	produces_output?: boolean;
@@ -285,6 +290,25 @@ function optionalPositiveInteger(
 	return Number(value);
 }
 
+function nodePrefixProfiles(
+	node: Record<string, unknown>,
+	type: WorkflowNodeType,
+	path: string,
+): Pick<WorkflowManifestNode, "prefix_profile" | "review_prefix_profile"> {
+	const profiles: Pick<
+		WorkflowManifestNode,
+		"prefix_profile" | "review_prefix_profile"
+	> = {};
+	for (const key of ["prefix_profile", "review_prefix_profile"] as const) {
+		if (!Object.hasOwn(node, key)) continue;
+		if (type !== "design" && type !== "implement" && type !== "qa") {
+			throw new Error(`${path} of type ${type} cannot define ${key}`);
+		}
+		profiles[key] = oneOf(node[key], RUNNER_PREFIX_PROFILES, `${path}.${key}`);
+	}
+	return profiles;
+}
+
 function assertSubmissionWindowsTargetDecisions(
 	manifest: Pick<WorkflowManifest, "nodes" | "edges" | "loops">,
 ): void {
@@ -464,6 +488,8 @@ function validateWorkflowManifestV1(
 						"vendor",
 						"model",
 						"effort",
+						"prefix_profile",
+						"review_prefix_profile",
 						"handoff_pointer",
 						"execution",
 						"submissionWindowMinutes",
@@ -475,6 +501,8 @@ function validateWorkflowManifestV1(
 						"vendor",
 						"model",
 						"effort",
+						"prefix_profile",
+						"review_prefix_profile",
 						"handoff_pointer",
 						"submissionWindowMinutes",
 						"founder_review",
@@ -490,6 +518,11 @@ function validateWorkflowManifestV1(
 				? ["design", "implement", "qa", "gate", "land"]
 				: ["design", "implement", "qa", "gate"]) as readonly WorkflowNodeType[],
 			`manifest.nodes[${index}].type`,
+		);
+		const prefixProfiles = nodePrefixProfiles(
+			node,
+			type,
+			`manifest.nodes[${index}]`,
 		);
 		const submissionWindowMinutes = optionalPositiveInteger(
 			node.submissionWindowMinutes,
@@ -608,6 +641,7 @@ function validateWorkflowManifestV1(
 			...(vendor ? { vendor } : {}),
 			...(canonicalModel ? { model: canonicalModel } : {}),
 			...(effort ? { effort } : {}),
+			...prefixProfiles,
 			...(handoffPointer ? { handoff_pointer: handoffPointer } : {}),
 			...(submissionWindowMinutes ? { submissionWindowMinutes } : {}),
 			...(founderReview !== undefined ? { founder_review: founderReview } : {}),
@@ -1022,6 +1056,8 @@ function validateGeneralizedWorkflowManifest(
 				"vendor",
 				"model",
 				"effort",
+				"prefix_profile",
+				"review_prefix_profile",
 				"handoff_pointer",
 				"agent_file",
 				"produces_output",
@@ -1053,6 +1089,7 @@ function validateGeneralizedWorkflowManifest(
 					]) as readonly WorkflowNodeType[],
 			`${nodePath}.type`,
 		);
+		const prefixProfiles = nodePrefixProfiles(node, type, nodePath);
 		const submissionWindowMinutes = optionalPositiveInteger(
 			node.submissionWindowMinutes,
 			`${nodePath}.submissionWindowMinutes`,
@@ -1204,6 +1241,7 @@ function validateGeneralizedWorkflowManifest(
 				...(vendor ? { vendor } : {}),
 				...(canonicalModel ? { model: canonicalModel } : {}),
 				...(effort ? { effort } : {}),
+				...prefixProfiles,
 				...(handoffPointer ? { handoff_pointer: handoffPointer } : {}),
 				...(role ? { role } : {}),
 				...(handbookRef ? { handbook_ref: handbookRef } : {}),

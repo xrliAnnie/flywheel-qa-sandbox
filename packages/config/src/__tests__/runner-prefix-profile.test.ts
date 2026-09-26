@@ -9,8 +9,9 @@ const workflow = {
 	runId: "run-2913",
 	snapshotDigest: "a".repeat(64),
 	templateId: "tpl_code",
+	templateRevision: 7,
 };
-const enabled = { hasOverride: true, raw: "role-v1" };
+const enabled = "role-v1" as const;
 const runner = {
 	actor: "runner" as const,
 	backend: "claude-tmux",
@@ -81,7 +82,7 @@ describe("runner prefix selection (FLY-2913)", () => {
 			}),
 		).toEqual({ mode: "legacy", reason: "unknown-role" });
 	});
-	it("never configures Lead or Codex, even when the stored switch is role-v1", () => {
+	it("never configures Lead or Codex, even when the pinned node declares role-v1", () => {
 		for (const args of [
 			{ ...runner, actor: "lead" as const },
 			{ ...runner, backend: "codex-app-server" },
@@ -93,40 +94,45 @@ describe("runner prefix selection (FLY-2913)", () => {
 			});
 		}
 	});
-	it("keeps the legacy switch and full-mcp escape hatch", () => {
+	it("keeps a legacy declaration and full-mcp escape hatch", () => {
 		expect(
 			resolveRunnerPrefixSelection({
 				...runner,
-				profile: { hasOverride: true, raw: "legacy" },
+				profile: "legacy",
 			}),
-		).toEqual({ mode: "legacy", reason: "operator-legacy" });
+		).toEqual({ mode: "legacy", reason: "node-legacy" });
 		expect(
 			resolveRunnerPrefixSelection({ ...runner, issueLabels: ["Full-MCP"] }),
 		).toEqual({ mode: "legacy", reason: "full-mcp" });
 	});
-	it.each([
-		["absent store control", undefined],
-		["unset store row", { hasOverride: false, raw: null }],
-		["unset row with a stale raw", { hasOverride: false, raw: "role-v1" }],
-		["unsupported stored value", { hasOverride: true, raw: "ROLE-V1" }],
-		["null override", { hasOverride: true, raw: null }],
-	])("falls back to legacy for %s", (_label, profile) => {
-		expect(resolveRunnerPrefixSelection({ ...runner, profile })).toEqual({
-			mode: "legacy",
-			reason: "operator-legacy",
-		});
+	it.each([undefined, "legacy"] as const)(
+		"defaults missing or legacy node declaration %s to legacy",
+		(profile) => {
+			expect(resolveRunnerPrefixSelection({ ...runner, profile })).toEqual({
+				mode: "legacy",
+				reason: "node-legacy",
+			});
+		},
+	);
+	it("does not interpret a stale store row as a node declaration", () => {
+		expect(
+			resolveRunnerPrefixSelection({
+				...runner,
+				profile: { hasOverride: true, raw: "role-v1" } as never,
+			}),
+		).toEqual({ mode: "legacy", reason: "node-legacy" });
 	});
 	it("never reads the registry env name as a production switch", () => {
 		vi.stubEnv("FLYWHEEL_RUNNER_PREFIX_PROFILE", "role-v1");
 		try {
 			expect(
 				resolveRunnerPrefixSelection({ ...runner, profile: undefined }),
-			).toEqual({ mode: "legacy", reason: "operator-legacy" });
+			).toEqual({ mode: "legacy", reason: "node-legacy" });
 		} finally {
 			vi.unstubAllEnvs();
 		}
 	});
-	it("exports the store enum with legacy as the only fallback", () => {
+	it("exports the node enum with legacy as the only fallback", () => {
 		expect(RUNNER_PREFIX_PROFILES).toEqual(["legacy", "role-v1"]);
 		expect(isRunnerPrefixProfile("role-v1")).toBe(true);
 		expect(isRunnerPrefixProfile("ROLE-V1")).toBe(false);
@@ -135,6 +141,8 @@ describe("runner prefix selection (FLY-2913)", () => {
 	it("does not accept an unbound run identity", () => {
 		for (const pinned of [
 			{ ...workflow, runId: "" },
+			{ ...workflow, templateRevision: 0 },
+			{ ...workflow, templateRevision: 1.5 },
 			{ ...workflow, snapshotDigest: "not-a-digest" },
 		]) {
 			expect(() =>

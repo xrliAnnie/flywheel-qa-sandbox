@@ -476,10 +476,12 @@ export {
 	RUNNER_MEMORY_ID_MAX_LENGTH,
 } from "./runner-memory-path.js";
 export type {
+	RunnerPrefixAudit,
 	RunnerPrefixContext,
 	RunnerPrefixMode,
 	RunnerPrefixRequest,
 	RunnerPrefixSelection,
+	RunnerPrefixWorkflow,
 } from "./runner-prefix-profile.js";
 export {
 	isRunnerPrefixProfile,
