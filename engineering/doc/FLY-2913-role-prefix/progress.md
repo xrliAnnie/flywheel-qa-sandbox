@@ -2,17 +2,17 @@
 issue: FLY-2913
 phase: implement
 phaseCursor: 5/6
-updated: 2026-09-26T18:10:24.632Z
-nextStep: Code review R1 HIGH resume settings fixed with red-green proof;
-  related 8 files prelisted, one real-tmux 5s fixture timeout under
-  investigation. Old slot2 torn down by Lead; C6 partial only. Finish targeted
-  checks, commit/push new milestone head, register new review, then request new
-  room after APPROVED. Nonblocking advisories recorded in PR Follow-ups per
-  Lead.
+updated: 2026-09-26T18:12:40.946Z
+nextStep: "HIGH role-v1 resume identity hooks fixed in 4e8e4774e: 10 focused
+  tests green, 8-file related preflight and checks complete with documented
+  real-tmux timeout/rerun; build/lint green. Old room partial evidence only and
+  torn down. Push new milestone head, obtain new effective code review, then ask
+  Lead for fresh C6 room. PR Follow-ups contains all six nonblocking
+  advisories."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2913 progress
 **phase**: implement (5/6)
-**next**: Code review R1 HIGH resume settings fixed with red-green proof; related 8 files prelisted, one real-tmux 5s fixture timeout under investigation. Old slot2 torn down by Lead; C6 partial only. Finish targeted checks, commit/push new milestone head, register new review, then request new room after APPROVED. Nonblocking advisories recorded in PR Follow-ups per Lead.
+**next**: HIGH role-v1 resume identity hooks fixed in 4e8e4774e: 10 focused tests green, 8-file related preflight and checks complete with documented real-tmux timeout/rerun; build/lint green. Old room partial evidence only and torn down. Push new milestone head, obtain new effective code review, then ask Lead for fresh C6 room. PR Follow-ups contains all six nonblocking advisories.
