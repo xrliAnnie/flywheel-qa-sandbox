@@ -15,11 +15,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildVoiceSessionContext } from "flywheel-teamlead/bridge/voice-session-context";
 import {
+	VOICE_CONTEXT_TOKENIZER,
 	type VoiceRealtimeItem,
 	voiceContextDigest,
 	voiceContextHeader,
+	voiceInitialItemsTokens,
 } from "flywheel-teamlead/voice-context-contract";
+import { getEncoding } from "js-tiktoken";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { BridgeVoiceHttpError } from "../bridge-client.js";
 import {
 	CODEX_VOICE_BINARY_SHA256,
 	CODEX_VOICE_BINARY_VERSION,
@@ -29,6 +33,10 @@ import {
 	type CodexVoiceProcessFactoryOptions,
 } from "../codex/CodexVoiceContainer.js";
 import type { RealtimeMediaLeg, WebRtcLegOptions } from "../codex/WebRtcLeg.js";
+
+/** The harness's tokenizer unless a test asks for the real one. */
+const fixtureTokens = (value: string) =>
+	Math.ceil(Buffer.byteLength(value) / 4);
 
 /** Records the leg's lifecycle; the transport's handshake drives it. */
 class FakeLeg implements RealtimeMediaLeg {
@@ -84,6 +92,7 @@ function context(
 			text: "【记忆文件 memory/MEMORY.md 第 1/1 段·只读数据】\nMEMORY_FACT",
 		},
 	],
+	countTokens: (value: string) => number = fixtureTokens,
 ): CodexVoiceContextSnapshot {
 	const sourceManifest = {
 		version: 1,
@@ -114,6 +123,7 @@ function context(
 		(total, item) => total + Buffer.byteLength(item.text),
 		0,
 	);
+	const itemTokens = initialItems.map((item) => countTokens(item.text));
 	return {
 		baseInstructions,
 		realtime: { prompt, initialItems },
@@ -141,6 +151,8 @@ function context(
 				count: initialItems.length,
 				bytes: itemBytes,
 				codexEstimatedTokens: Math.ceil(itemBytes / 4),
+				itemTokens,
+				tokens: voiceInitialItemsTokens(itemTokens),
 			},
 		},
 	};
@@ -288,6 +300,8 @@ function harness(
 		processEnv?: NodeJS.ProcessEnv;
 		configureProcess?: (process: FakeProcess) => void;
 		authSource?: (base: string) => string;
+		/** null: the container's own o200k counter. */
+		countTokens?: ((value: string) => number) | null;
 	} = {},
 ) {
 	const base = realpathSync(root());
@@ -348,6 +362,9 @@ function harness(
 			return leg;
 		},
 		onEvidence: (record) => evidence.push(record),
+		...(overrides.countTokens === null
+			? {}
+			: { countTokens: overrides.countTokens ?? fixtureTokens }),
 	});
 	return {
 		base,
@@ -967,6 +984,163 @@ describe("Codex voice container", () => {
 			expect(h.processes).toHaveLength(0);
 		},
 	);
+
+	it.each([
+		["context_too_large", "context_too_large"],
+		["context_token_count_unavailable", "context_invalid"],
+	] as const)(
+		"maps the Bridge's %s to %s before spawning Codex (plan §12.5)",
+		async (bridgeReason, containerReason) => {
+			const h = harness();
+			const details = {
+				block: "realtime.prompt",
+				estimatedTokens: 18_000,
+				itemsTokens: 7_056,
+				tokenizer: VOICE_CONTEXT_TOKENIZER,
+			};
+			await expect(
+				h.container.open({
+					sessionId: "session-large",
+					voice: "cove",
+					loadContext: async () => {
+						throw new BridgeVoiceHttpError(503, "http_5xx", undefined, {
+							reason: bridgeReason,
+							details,
+						});
+					},
+				}),
+			).rejects.toMatchObject({ reason: containerReason });
+			expect(h.processes).toHaveLength(0);
+			expect(h.evidence).toContainEqual(
+				expect.objectContaining({
+					kind: "codex_voice_container_open_failed",
+					reason: containerReason,
+					contextReason: bridgeReason,
+					details,
+				}),
+			);
+		},
+	);
+
+	it("keeps any other Bridge failure a generic open failure", async () => {
+		const h = harness();
+		await expect(
+			h.container.open({
+				sessionId: "session-down",
+				voice: "cove",
+				loadContext: async () => {
+					throw new BridgeVoiceHttpError(503, "http_5xx");
+				},
+			}),
+		).rejects.toMatchObject({ reason: "codex_open_failed" });
+		expect(h.processes).toHaveLength(0);
+	});
+
+	it.each([
+		[
+			"a different tokenizer",
+			(snapshot: CodexVoiceContextSnapshot) => {
+				(snapshot.manifest as { tokenizer: string }).tokenizer =
+					"js-tiktoken@1.0.22/o200k_base";
+			},
+		],
+		[
+			"a per-item count that does not match the recount",
+			(snapshot: CodexVoiceContextSnapshot) => {
+				snapshot.measurements.initialItems.itemTokens[0]! += 1;
+				snapshot.measurements.initialItems.tokens += 1;
+			},
+		],
+		[
+			"missing per-item counts",
+			(snapshot: CodexVoiceContextSnapshot) => {
+				(
+					snapshot.measurements.initialItems as { itemTokens?: number[] }
+				).itemTokens = undefined;
+			},
+		],
+		[
+			"a total that is not the per-item counts plus 8 each",
+			(snapshot: CodexVoiceContextSnapshot) => {
+				snapshot.measurements.initialItems.tokens -= 8;
+			},
+		],
+	] as const)(
+		"refuses %s as context_invalid before spawning Codex (plan §12.2)",
+		async (_name, mutate) => {
+			const h = harness();
+			const snapshot = context("session-count");
+			mutate(snapshot);
+			await expect(
+				h.container.open({
+					sessionId: "session-count",
+					voice: "cove",
+					loadContext: async () => snapshot,
+				}),
+			).rejects.toMatchObject({ reason: "context_invalid" });
+			expect(h.processes).toHaveLength(0);
+		},
+	);
+
+	it("refuses consistent items that recount over 7,600 tokens", async () => {
+		const h = harness();
+		// 30,500 bytes: inside the byte limit, 7,625 + 8 tokens under the stub.
+		const items = [{ role: "developer" as const, text: "x".repeat(30_500) }];
+		await expect(
+			h.container.open({
+				sessionId: "session-heavy",
+				voice: "cove",
+				loadContext: async () =>
+					context("session-heavy", undefined, undefined, items),
+			}),
+		).rejects.toMatchObject({ reason: "context_invalid" });
+		expect(h.processes).toHaveLength(0);
+	});
+
+	it("refuses to open when the container cannot count tokens", async () => {
+		const h = harness({
+			countTokens: () => {
+				throw new Error("rank table missing");
+			},
+		});
+		await expect(
+			h.container.open({
+				sessionId: "session-nocount",
+				voice: "cove",
+				loadContext: async () => context("session-nocount"),
+			}),
+		).rejects.toMatchObject({ reason: "context_invalid" });
+		expect(h.processes).toHaveLength(0);
+	});
+
+	it("recounts with the real o200k tokenizer by default", async () => {
+		const encoder = getEncoding("o200k_base");
+		const real = (value: string) => encoder.encode(value).length;
+		const items: VoiceRealtimeItem[] = [
+			{
+				role: "developer",
+				text: "【记忆文件 memory/MEMORY.md 第 1/1 段·只读数据】\n创始人上周定下的优先级。",
+			},
+		];
+		const h = harness({ countTokens: null });
+		const opened = await h.container.open({
+			sessionId: "session-o200k",
+			voice: "cove",
+			loadContext: async () =>
+				context("session-o200k", undefined, undefined, items, real),
+		});
+		await opened.close();
+		// The byte-quarter stub disagrees with o200k on this item.
+		expect(fixtureTokens(items[0]!.text)).not.toBe(real(items[0]!.text));
+		await expect(
+			harness({ countTokens: null }).container.open({
+				sessionId: "session-o200k",
+				voice: "cove",
+				loadContext: async () =>
+					context("session-o200k", undefined, undefined, items),
+			}),
+		).rejects.toMatchObject({ reason: "context_invalid" });
+	}, 30_000);
 
 	it("refuses more than 128 items", async () => {
 		const h = harness();

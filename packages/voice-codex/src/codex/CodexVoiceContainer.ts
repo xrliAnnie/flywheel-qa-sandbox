@@ -19,21 +19,26 @@ import {
 import {
 	VOICE_BASE_MAX_BYTES,
 	VOICE_BASE_MAX_ESTIMATED_TOKENS,
+	VOICE_CONTEXT_TOKENIZER,
 	VOICE_CONTEXT_VERSION,
 	VOICE_INITIAL_ITEMS_MAX_BYTES,
 	VOICE_INITIAL_ITEMS_MAX_COUNT,
+	VOICE_INITIAL_ITEMS_MAX_TOKENS,
 	VOICE_REALTIME_PROMPT_MAX_BYTES,
 	VOICE_REALTIME_PROMPT_MAX_TOKENS,
 	type VoiceRealtimeItem,
 	voiceContextDigest,
 	voiceContextHeader,
 	voiceContextSourceManifest,
+	voiceInitialItemsTokens,
 } from "flywheel-teamlead/voice-context-contract";
+import { BridgeVoiceHttpError } from "../bridge-client.js";
 import {
 	assertVoiceCodexHome,
 	pinVoiceCodexAuthSource,
 	VOICE_CODEX_HOME_CONFIG,
 } from "../codex-home.js";
+import { countVoiceContextTokens } from "./context-tokens.js";
 import {
 	type CodexRealtimeBackgroundTurn,
 	type CodexRealtimeExecutionIntent,
@@ -88,6 +93,10 @@ export interface CodexVoiceContextSnapshot {
 			count: number;
 			bytes: number;
 			codexEstimatedTokens: number;
+			/** plan §12.2: o200k per item text, without the wrapper. */
+			itemTokens: number[];
+			/** Σ itemTokens + 8 per item. */
+			tokens: number;
 		};
 	};
 }
@@ -154,6 +163,7 @@ export class CodexVoiceContainerError extends Error {
 			| "codex_open_failed"
 			| "context_stale"
 			| "context_invalid"
+			| "context_too_large"
 			| "cleanup_pending",
 		cause?: unknown,
 	) {
@@ -409,6 +419,9 @@ function openFailureEvidence(
 		kind: "codex_voice_container_open_failed",
 		sessionId,
 		reason: error.reason,
+		...(cause instanceof BridgeVoiceHttpError && cause.context
+			? { contextReason: cause.context.reason, details: cause.context.details }
+			: {}),
 		errorType: cause instanceof Error ? cause.name : typeof cause,
 		message:
 			cause instanceof Error
@@ -445,6 +458,7 @@ function contextIsFresh(
 function assertContext(
 	snapshot: CodexVoiceContextSnapshot,
 	sessionId: string,
+	countTokens: (value: string) => number,
 ): void {
 	const invalid = () => new CodexVoiceContainerError("context_invalid");
 	const digest = /^[a-f0-9]{64}$/u;
@@ -458,6 +472,7 @@ function assertContext(
 		!Array.isArray(realtime.initialItems) ||
 		!digest.test(snapshot.snapshotDigest) ||
 		manifest.version !== VOICE_CONTEXT_VERSION ||
+		manifest.tokenizer !== VOICE_CONTEXT_TOKENIZER ||
 		manifest.snapshotDigest !== snapshot.snapshotDigest ||
 		!digest.test(String(manifest.leaseBindingDigest)) ||
 		!digest.test(String(manifest.rosterDigest))
@@ -513,6 +528,40 @@ function assertContext(
 		measured.realtimePrompt.estimatedTokens > VOICE_REALTIME_PROMPT_MAX_TOKENS
 	)
 		throw invalid();
+	// plan §12.2: recount every item with the same tokenizer (bytes are
+	// already bounded above) and hold them to 7,600 with the wrapper.
+	const itemTokens = measured.initialItems.itemTokens;
+	if (!Array.isArray(itemTokens) || itemTokens.length !== items.length)
+		throw invalid();
+	for (const [index, item] of items.entries()) {
+		let tokens: number;
+		try {
+			tokens = countTokens(item.text);
+		} catch {
+			throw invalid();
+		}
+		if (!Number.isSafeInteger(tokens) || tokens !== itemTokens[index])
+			throw invalid();
+	}
+	const tokens = voiceInitialItemsTokens(itemTokens);
+	if (
+		tokens !== measured.initialItems.tokens ||
+		tokens > VOICE_INITIAL_ITEMS_MAX_TOKENS
+	)
+		throw invalid();
+}
+
+/**
+ * plan §12.5: a Bridge that could not build the context says why; an
+ * oversized context is its own reason, an uncountable one is invalid.
+ */
+function contextLoadError(error: unknown): unknown {
+	if (!(error instanceof BridgeVoiceHttpError) || !error.context) return error;
+	if (error.context.reason === "context_too_large")
+		return new CodexVoiceContainerError("context_too_large", error);
+	if (error.context.reason === "context_token_count_unavailable")
+		return new CodexVoiceContainerError("context_invalid", error);
+	return error;
 }
 
 function withTimeout<T>(
@@ -934,6 +983,8 @@ export class CodexVoiceContainer {
 				options: CodexVoiceProcessFactoryOptions,
 			) => CodexVoiceProcess;
 			onEvidence?: EvidenceSink;
+			/** plan §12.2: tests only; production recounts with o200k. */
+			countTokens?: (value: string) => number;
 		},
 	) {
 		this.now = options.now ?? Date.now;
@@ -982,16 +1033,23 @@ export class CodexVoiceContainer {
 			throw new CodexVoiceContainerError("codex_binary_mismatch");
 		}
 
-		let snapshot = await input.loadContext();
+		const loadContext = () =>
+			input.loadContext().catch((error: unknown) => {
+				throw contextLoadError(error);
+			});
+		let snapshot = await loadContext();
 		assertActive();
-		if (!contextIsFresh(snapshot, this.now()))
-			snapshot = await input.loadContext();
+		if (!contextIsFresh(snapshot, this.now())) snapshot = await loadContext();
 		assertActive();
 		if (!contextIsFresh(snapshot, this.now())) {
 			throw new CodexVoiceContainerError("context_stale");
 		}
 		try {
-			assertContext(snapshot, input.sessionId);
+			assertContext(
+				snapshot,
+				input.sessionId,
+				this.options.countTokens ?? countVoiceContextTokens,
+			);
 		} catch (error) {
 			throw error instanceof CodexVoiceContainerError
 				? error

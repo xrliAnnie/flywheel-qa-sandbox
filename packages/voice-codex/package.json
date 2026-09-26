@@ -23,6 +23,7 @@
 		"flywheel-teamlead": "workspace:*",
 		"flywheel-voice-bridge": "workspace:*",
 		"flywheel-voice-core": "workspace:*",
+		"js-tiktoken": "1.0.21",
 		"onnxruntime-node": "1.29.0",
 		"opusscript": "0.0.8",
 		"werift": "0.24.4",
