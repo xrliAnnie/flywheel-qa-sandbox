@@ -1,0 +1,15 @@
+sequenceDiagram
+  participant R as Design Runner
+  participant B as Bridge
+  participant C as Codex reviewer
+  R->>B: stage set design_review (plan blob d99199e)
+  B-->>R: manifest rev 1 (requestId, blob)
+  R->>C: Round 1 review
+  C-->>R: CHANGES REQUESTED (4 x P2)
+  R->>R: fold fixes into plan, commit e5b8067
+  R->>B: stage set design_review (plan blob 646f361)
+  B-->>R: manifest rev 2
+  R->>C: Round 2 (resume thread)
+  C-->>R: APPROVED (1 non-blocking note)
+  R->>B: await-codex-gate design
+  B-->>R: request id, path, blob, clean git all match - pass

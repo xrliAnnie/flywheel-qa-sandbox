@@ -1,0 +1,39 @@
+classDiagram
+  class PR194 {
+    state: OPEN
+    base: main
+    head: project-slot-4-FLY-202
+    merge: never
+  }
+  class SandboxNotes {
+    path: doc/qa/sandbox-notes.md
+    purpose: 2-3 paragraphs
+    dirTable: 17 rows
+    readmeSummary: 10 bullets
+    lsSnapshot: 50 lines
+    driftMarker: kept last line
+  }
+  class DesignFolder {
+    path: engineering/doc/FLY-202-sandbox-notes-e2e
+    exploration.md
+    research.md
+    plan.md
+    design-review.md
+    progress.md
+    founder HTML + SVGs
+  }
+  class AssertionContract {
+    V1 paragraphs
+    V2 directory set
+    V3 bullet count
+    V4 snapshot equality
+    V5a V5b whitespace
+    V6 PR + SHA binding
+    V7 content vs source
+    V8 marker kept
+    V9 no doc file add/delete
+  }
+  PR194 "1" --> "1" SandboxNotes : carries
+  PR194 "1" --> "1" DesignFolder : carries
+  AssertionContract ..> SandboxNotes : verifies
+  AssertionContract ..> PR194 : verifies

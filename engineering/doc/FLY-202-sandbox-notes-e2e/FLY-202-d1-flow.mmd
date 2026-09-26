@@ -1,0 +1,15 @@
+flowchart TD
+  A["Harness injects FLY-202<br/>(real Runner, sandbox only)"] --> B["C1 Sync branch<br/>equal / behind / ahead / diverged"]
+  B -->|diverged or dirty| X["Stop and ask Lead"]
+  B --> C["C2 Run checks V1-V4, V7, V8"]
+  C -->|PR not open / wrong branch| X
+  C -->|any red item| D["C3 Fix only the red item<br/>(known: alert-isolation sentence)"]
+  C -->|all green| E
+  D --> D2["Refresh ls snapshot last<br/>V5a whitespace pre-commit"]
+  D2 --> D3["Commit notes<br/>V5b + V9 after commit"]
+  D3 --> E["C4 Final progress ledger commit"]
+  E --> F["Push fast-forward<br/>(never force)"]
+  F --> G{"Local HEAD = remote SHA<br/>= PR head SHA?"}
+  G -->|no| X
+  G -->|yes| H["Update PR 194 body<br/>results bound to that SHA"]
+  H --> I["Hand off to QA node<br/>(QA waits for CI, no merge)"]
