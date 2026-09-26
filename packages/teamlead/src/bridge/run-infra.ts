@@ -23,6 +23,7 @@ import {
 	CodexTmuxAdapter,
 	type CodexTransportCloseEvidence,
 	defaultAsyncExecFile,
+	type ExecutionProcessOwnerFactory,
 	KimiTmuxAdapter,
 	type RunnerTuiWindowLostEvidence,
 	resolveExecutionCodexHome,
@@ -94,6 +95,7 @@ import {
 } from "./continuity-preflight.js";
 import { EventFilter } from "./EventFilter.js";
 import { withExecutionMutationLease } from "./execution-mutation-lease.js";
+import { createExecutionProcessOwnerFactory } from "./execution-process-controller.js";
 import {
 	type FlagStoreRuntime,
 	storeCodexMemoryDistillEnabled,
@@ -684,6 +686,7 @@ export async function createRunBlueprint(
 	},
 	codexMemorySeedSources?: CodexMemorySeedSourcesLoader,
 	codexMemoryDistillEnabled?: () => boolean,
+	codexProcessOwnerFactory?: ExecutionProcessOwnerFactory,
 ): Promise<{
 	blueprint: Blueprint;
 	cleanup: () => Promise<void>;
@@ -864,6 +867,7 @@ export async function createRunBlueprint(
 					codexTransport as unknown as import("flywheel-claude-runner").CodexRunnerTransport,
 					{
 						executionOwners: codexExecutionOwners,
+						processOwnerFactory: codexProcessOwnerFactory,
 						...(residentHold ? { residentHold } : {}),
 						...(onTuiWindowLost ? { onTuiWindowLost } : {}),
 						...(onTuiWindowRestored ? { onTuiWindowRestored } : {}),
@@ -1613,6 +1617,7 @@ export async function setupRunInfrastructure(
 						? () =>
 								storeCodexMemoryDistillEnabled(flagStore, project.projectName)
 						: undefined,
+					createExecutionProcessOwnerFactory(store),
 				);
 			runInfraOpts?.codexRecoveryRuntimes?.set(
 				project.projectName,

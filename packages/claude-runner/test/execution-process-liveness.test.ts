@@ -78,6 +78,21 @@ function gone(input = fixture()): ExecutionProcessObservationInput {
 }
 
 describe("FLY-2919 execution process truth", () => {
+	it("a durable close fences a stopped owner inside a still-live shared Bridge", () => {
+		const input = gone();
+		input.sample!.processes.push({
+			pid: 100,
+			ppid: 1,
+			pgid: 100,
+			startIdentity: "controller-start",
+			state: "running",
+		});
+		input.restartInProgress = true;
+		Object.assign(input, { ownerClosed: true });
+		expect(observeExecutionProcesses(input).verdict).toBe("dead");
+		input.spawnInflight = true;
+		expect(observeExecutionProcesses(input).verdict).toBe("unknown");
+	});
 	it.each(["detached", "foreign_boot", "pid_reused"])(
 		"retains independently discovered %s writers",
 		(kind) => {

@@ -223,6 +223,8 @@ const FLY1455_NON_FLAG_ENV = [
 ] as const;
 
 export const NON_FLAG_ALLOWLIST: Record<string, string> = {
+	FLYWHEEL_EXECUTION_NONCE:
+		"FLY-2919 per-owner process attribution nonce inherited by native writers, not an on/off gate",
 	FLYWHEEL_CLAUDE_SESSION_DIR:
 		"FLY-2808 plumbing: durable Claude session-manifest directory coordinate for exact-session resume, not an on/off gate",
 	FLYWHEEL_RESUME_IDENTITY_MANIFEST:

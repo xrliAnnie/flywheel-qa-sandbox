@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import {
+	bindSpawnedExecutionProcessGroup,
 	captureExecutionProcessSample,
 	type ExecutionProcessInspectorOptions,
 	readExecutionProcessIdentity,
@@ -71,6 +72,48 @@ function fixture(rows: Row[] = [{ pid: 42 }]) {
 	return { options, calls };
 }
 describe("execution process inspector", () => {
+	it.each([
+		"native",
+		"forked",
+		"wrong_executable",
+		"wrong_cwd",
+		"wrong_nonce",
+		"ambiguous",
+		"wrong_group",
+	])("binds only a proven %s launch", async (mode) => {
+		const rows: Row[] =
+			mode === "ambiguous"
+				? [{ pid: 42 }, { pid: 43, pgid: 42 }]
+				: [
+						{
+							pid: mode === "forked" ? 43 : 42,
+							pgid: mode === "wrong_group" ? 90 : 42,
+							env:
+								mode === "wrong_nonce"
+									? "PATH=/bin FLYWHEEL_EXECUTION_NONCE=foreign"
+									: undefined,
+						},
+					];
+		const { options } = fixture(rows);
+		const result = await bindSpawnedExecutionProcessGroup(binding, {
+			...options,
+			runCommand: async (f, a, c) => {
+				if (f.endsWith("lsof"))
+					return {
+						stdout: `p${a[a.indexOf("-p") + 1]}\nfcwd\nn${mode === "wrong_cwd" ? "/foreign" : "/work"}\nftxt\nn${mode === "wrong_executable" ? "/foreign" : "/bin/claude"}\n`,
+					};
+				return options.runCommand!(f, a, c);
+			},
+		});
+		if (mode === "native" || mode === "forked")
+			expect(result).toMatchObject({
+				pid: mode === "forked" ? 43 : 42,
+				pgid: 42,
+				executable: "/bin/claude",
+				nonce: "nonce-42",
+			});
+		else expect(result).toBeNull();
+	});
 	it("reads native identity independently of a rewritten process title", async () => {
 		const { options } = fixture();
 		expect(await readExecutionProcessIdentity(42, options)).toEqual({

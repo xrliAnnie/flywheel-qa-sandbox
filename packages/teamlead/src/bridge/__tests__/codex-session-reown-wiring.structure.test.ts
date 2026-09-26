@@ -10,6 +10,14 @@ const runInfraSource = readFileSync(
 );
 
 describe("FLY-2211 Bridge recovery wiring", () => {
+	it("FLY-2919 injects the durable process owner into the shared dispatch/rescue factory", () => {
+		expect(runInfraSource).toContain(
+			"createExecutionProcessOwnerFactory(store)",
+		);
+		expect(runInfraSource).toContain(
+			"processOwnerFactory: codexProcessOwnerFactory",
+		);
+	});
 	it("shares one owner registry with run-infra and the recovery coordinator", () => {
 		expect(source).toContain(
 			"const codexExecutionOwners = new CodexExecutionOwnershipRegistry()",

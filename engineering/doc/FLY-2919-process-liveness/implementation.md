@@ -139,3 +139,48 @@ Teamlead retained guards 四文件 **71 pass**（reown 63、launch claim 7、chi
 下一步仍为 A 的生产 owner/accepted OS binding/实际 spawn CAS 与 lease 重试、Claude/Kimi/Antigravity 注册与旧体迁移、runtime flag；随后按 B–F 完成所有消费者。HIGH pending-complete-marker、跨库义务幂等、standby 空 writer 证明、独立采样周期和九单生产验收尚待实现。
 
 本小批最终：独立复跑 inspector/kill inventory/sync-timeout 三文件 **30 pass**，原限额未改；最终 `pnpm --filter "flywheel-claude-runner..." build` exit 0。所有本批红绿/失败后复跑日志及 11 个源码、测试、inventory 文件 hash 已归档；没有请求 full CI、代码 review、PR 或 needs_review，任务仍在 implement 0/6。
+
+
+## 续接 A 第四小批（2026-09-26，执行 7b52a229）
+
+本批接通 Codex 生产 owner，仍为 A 部分实现，B–F 和九单验收未完成。未请求 full CI、代码评审、PR、QA 或 needs_review。
+
+- `run-infra.ts` 将 `createExecutionProcessOwnerFactory` 注入现有 dispatch/rescue adapter factory；沿用现有 execution registry 的同一个 token。启动前取得 OS controller PID/start/boot 和同步 owner CAS，每次 spawn 必须 prepare/authorize；native spawn 使用任务 cwd。没有把 Bridge 的 cwd 当作 worker cwd。
+- `CodexTmuxAdapter` 把每 owner nonce 传给 daemon；先保留原 PGID/session 登记，再 await 独立 binding 接纳。`execution-process-inspector` 允许 wrapper fork 的同 PGID native worker，但只有唯一 executable/cwd/boot/nonce/socket 一致的 worker 可接纳。nonceWriters 单独证明环境归属，不能用普通组成员冒充；不读 ps argv 判 executable。
+- runGoal 原 restartGate 内先检查已有停止/退役边界，再 await owner beginRestart，并在等待后复核。close 在 cooperative stop 前持久撤权，runtime.drained 后独立查清 group/writer 再写 receipt；TUI 清理未 join 时，沿已有 ownershipHeldUntil 保留 registry 至清理及 owner finish 都结束。不会凭 socket 消失直接铸 owner drain receipt。
+- 共享 Bridge controller 仍活但当前 owner 已持久 close，且 spawn 已结清、worker/writers 均空时允许收尾。`ownerClosed` 不覆盖 spawnInflight、不把活 worker 判死。缺失/未知 binding、残留 writer 和身份变化均拒绝 receipt。
+- 所有 OS await 都在 mutation lease 外；lease_held 按 25/50/100/200ms 有界重试（共最多 5 次），语义拒绝不重试。已结账 owner receipt 按身份先查幂等，再看证据期限，因此 60 秒后重放不会撞 10 秒有效期。跨 CommDB 的义务幂等仍待 C。
+
+### Lead 恢复裁定与落实
+
+问题 `d5574ed6-2a34-4296-b87f-2b7ba3bdeb42` 的有效答复批准：有效 recovery claim 作为独立受信授权；旧 controller/daemon/writers 经 OS 证明清空后，同 generation 新 owner token 可接纳，spawnEpoch 单调前进，不耗 fault-replacement 预算、不铸替身；保留原 reown 预算和耗尽告警。
+
+实现于 `ExecutionProcessOwnerStore.claim/mutate` 和 `execution-process-controller.ts`：同代换 owner 必须同时匹配未过期 claim、lifecycle revision、旧 owner/epoch/binding digest、旧 drain receipt。复用已有 recovery reservation 内的短同步 CAS，不另取同表 lease；不提交、不替换原 recovery claim。原 recovery commit 完成后 controller 识别同一 episode 已关闭与 revision 前进，后续正常 restart 回到普通 mutation lane。失效/过期 claim、旧 writer 仍在、binding 不符、普通 dispatch 试图同代接纳全部拒绝。没有改 CodexSessionReowner 的预算或 FLY-2921 的替身协调器。
+
+### 红绿及限定回归
+
+| 边界 | RED | GREEN |
+|---|---|---|
+| adapter owner 接线/收尾 | 新行为断言红；close 等待竞态另一次 1 fail/13 pass；dispatch kind 1 fail | adapter 全文件 190 pass；最终 owning related 包含全部 |
+| daemon 使用任务 cwd | 1 fail | 1 pass |
+| 唯一 native group/nonce 接纳 | 2 fail/5 pass | 7 pass |
+| 生产 controller CAS/采样/收尾 | 10 fail | 10 pass |
+| 同代 reown 精确授权 | Store 与 controller 各 1 fail；首次修正后暴露自持 lease_held，保留失败日志 | owner/controller 合计 47 pass；恢复 commit 后正常 restart 另补 1 pass |
+| durable close 后共享 controller 不阻止空 writer 收尾 | 1 fail | 1 pass |
+| run-infra 生产 factory 注入 | 1 fail | 1 pass |
+| nonce 配置分类 | drift guard 2 fail | truth/drift 57 pass；最终限定 related 134 pass |
+
+`NON_FLAG_ALLOWLIST` 新增 FLYWHEEL_EXECUTION_NONCE 原因：每 owner 的进程归属身份，不是行为开关。此条不替代待实现的运行时死亡授权 flag。限定 config related 发现未改动的 registry 已有 37 项，而 founder-copy 测试仍期待 36；仅把固定数量校正为 37，保留完整 EXPECTED_WHEN_ON 等值比对与作者约束。未放宽 predicate。
+
+最终相关结果：runner owning related 9 文件 **496 pass / 2 skip**；teamlead owning related 5 文件 **109 pass**；直接 run-infra/调度消费者 11 文件 **138 pass**；StateStore 原迁移/retention/FLY-2567/child census/reown wiring 5 文件 **169 pass**；FLY-1560 **7 pass**；kill inventory/sync timeout/Kimi registry 3 文件 **10 pass**；edge catchall **8 pass**；限定 config related 6 文件 **134 pass**。shell `codex-guard.test.sh` **49 pass**，`check-flag-truth.test.sh` **3 pass**。
+
+`pnpm --filter "flywheel-teamlead..." build` 通过；依赖方 runner/edge/teamlead/voice-codex 四包 typecheck 通过；`pnpm lint` 通过，25 个既有 warning。测试是局部证据，非 full CI / QA / 生产证明。保留两个真实 ps fixture 的 sandbox EPERM 排除与 macOS viewer 限制，交 QA529；没有改变测试超时。一次未限定 config related 因 barrel 扩到无关 ConfigLoader 等测试而中断，不作为通过证据，随后采用六个直接 truth/registry 文件 include 配置重跑。
+
+消费者归档 `implementation-a4-consumers.json.gz` 按 full path/basename/parent/stem 搜索，4370 路径逐项标处置；新增源码和直接测试补入记录。日志与源码 hash 为 `implementation-a4-evidence.json.gz`。这只是 A4 消费者检索，不替代最终五探针全仓死亡写入点清单。
+
+### 仍需继续的已知边界
+
+1. 失败/中断 native spawn 未接纳 binding 时，spawnInflight 保持 unknown；必须取得在途 newborn 的物理清空证明才能结账，不能直接清标记。
+2. Claude/Kimi/Antigravity 的 exec 前 PID/start/boot 登记、真实 executable 与 native session 独立核验，以及旧体唯一匹配迁移尚未接线。现在不能声称四载体生产完成。
+3. 生死统一服务、运行时 kill switch、独立采样周期、所有直接 probe 消费者、HIGH pending complete-failed marker 优先对账、跨库义务重放、standby writer-empty、terminal sweep 仍待 A 后续和 B–F。
+4. 九单复现/删除分支清单、最终评审、PR 与注册交卷 route 均未完成。保持 implement 0/6。

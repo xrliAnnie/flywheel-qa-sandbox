@@ -50,6 +50,12 @@ export interface ProcessOwnerIdentity {
 export interface ProcessSpawnPermit extends ProcessOwnerIdentity {
 	spawnEpoch: number;
 }
+export interface ProcessRecoveryAdmission {
+	claimToken: string;
+	priorOwnerToken: string;
+	priorSpawnEpoch: number;
+	priorBindingDigest: string | null;
+}
 /** Bridge-internal result of cooperative drain followed by independent OS
  * verification. A released registry lease alone is never a stopped controller.
  * This input must not be exposed through Runner HTTP or CLI payloads. */
@@ -65,6 +71,8 @@ export interface ProcessOwnerDrainEvidence extends ProcessSpawnPermit {
 interface MutationInput extends ProcessOwnerIdentity {
 	lifecycleRevision: number;
 	nowMs: number;
+	/** Reuse the still-current FLY-2211 reservation; never replace or settle it. */
+	recoveryClaimToken?: string;
 }
 type SpawnMutation = MutationInput & { spawnEpoch: number };
 type Result<T = object> = ({ ok: true } & T) | { ok: false; reason: string };
@@ -74,6 +82,7 @@ type LeaseStore = Pick<
 	| "getWorkflowActor"
 	| "getWorkflowActivation"
 	| "getWorkflowExecutionProcessBody"
+	| "getCodexRecoveryEpisode"
 	| "claimExecutionMutationLease"
 	| "commitExecutionMutationLease"
 >;
@@ -129,14 +138,46 @@ export class ExecutionProcessOwnerStore {
 			.get(executionId) as ExecutionProcessOwnerRow | undefined;
 	}
 
+	getBinding(executionId: string): ExecutionProcessBinding | undefined {
+		const row = this.get(executionId);
+		if (
+			!row?.binding_json ||
+			!row.binding_digest ||
+			Buffer.byteLength(row.binding_json) > 1024 * 1024
+		)
+			return undefined;
+		try {
+			const binding = bindingSchema.parse(JSON.parse(row.binding_json));
+			const digest = createHash("sha256")
+				.update(
+					JSON.stringify([
+						row.execution_id,
+						row.activation_id,
+						row.generation,
+						row.owner_token,
+						row.spawn_epoch,
+						binding,
+					]),
+				)
+				.digest("hex");
+			return digest === row.binding_digest ? binding : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
 	claim(
-		input: MutationInput & { controller: z.infer<typeof processIdentity> },
+		input: MutationInput & {
+			controller: z.infer<typeof processIdentity>;
+			recovery?: ProcessRecoveryAdmission;
+		},
 	): Result {
 		const controller = processIdentity.parse(input.controller);
 		return this.mutate(input, () => {
 			const fresh = this.fresh(input, true);
 			if (fresh) return { ok: false, reason: fresh };
 			const prior = this.get(input.executionId);
+			let recovery = false;
 			if (prior) {
 				if (this.sameOwner(prior, input)) {
 					if (prior.close_requested || prior.owner_drained_at)
@@ -153,8 +194,26 @@ export class ExecutionProcessOwnerStore {
 					prior.spawn_inflight
 				)
 					return { ok: false, reason: "owner_not_drained" };
+				if (input.recovery && input.generation === prior.generation) {
+					const claim = this.store.getCodexRecoveryEpisode(input.executionId);
+					recovery = Boolean(
+						claim &&
+							claim.episodeState === "open" &&
+							claim.claimToken === input.recovery.claimToken &&
+							claim.acquiredAtMs !== null &&
+							claim.acquiredAtMs <= input.nowMs &&
+							claim.expiresAtMs !== null &&
+							claim.expiresAtMs > input.nowMs &&
+							claim.expectedLifecycleRevision === input.lifecycleRevision &&
+							input.recovery.priorOwnerToken === prior.owner_token &&
+							input.recovery.priorSpawnEpoch === prior.spawn_epoch &&
+							input.recovery.priorBindingDigest === prior.binding_digest,
+					);
+					if (!recovery)
+						return { ok: false, reason: "recovery_authority_changed" };
+				}
 				if (
-					input.generation <= prior.generation ||
+					(input.generation <= prior.generation && !recovery) ||
 					input.ownerToken === prior.owner_token
 				)
 					return { ok: false, reason: "generation_not_advanced" };
@@ -179,6 +238,12 @@ export class ExecutionProcessOwnerStore {
 					controller.startIdentity,
 					controller.hostBootId,
 				);
+			if (recovery && prior)
+				this.db
+					.prepare(
+						"UPDATE execution_process_owner SET spawn_epoch = ?, restart_in_progress = 1 WHERE execution_id = ?",
+					)
+					.run(prior.spawn_epoch, input.executionId);
 			return { ok: true };
 		});
 	}
@@ -436,6 +501,22 @@ export class ExecutionProcessOwnerStore {
 			.parse(input.nowMs);
 		return this.db
 			.transaction((): Result<T> => {
+				if (input.recoveryClaimToken) {
+					const reservation = this.db
+						.prepare(
+							`SELECT claim_token FROM recovery_claim WHERE execution_id = ? AND claim_token = ? AND lease_purpose = 'recovery' AND episode_state = 'open' AND acquired_at_ms <= ? AND expires_at_ms > ? AND expected_lifecycle_revision = ? AND exhaustion_kind IS NULL`,
+						)
+						.get(
+							input.executionId,
+							input.recoveryClaimToken,
+							input.nowMs,
+							input.nowMs,
+							input.lifecycleRevision,
+						);
+					if (!reservation)
+						return { ok: false, reason: "recovery_authority_changed" };
+					return operation();
+				}
 				const lease = this.store.claimExecutionMutationLease(
 					input.executionId,
 					input.lifecycleRevision,

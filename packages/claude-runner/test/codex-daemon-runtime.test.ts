@@ -585,6 +585,19 @@ describe("spawnCodexDaemon", () => {
 		sleep: noSleep,
 		...extra,
 	});
+	it("FLY-2919: gives the native daemon its accepted execution cwd", async () => {
+		const child = new FakeChild();
+		const spawnFn = vi.fn(() => child);
+		await spawnCodexDaemon({
+			...baseOpts(child),
+			cwd: "/work/execution",
+			spawnFn,
+			socketExists: () => true,
+		});
+		expect(spawnFn.mock.calls[0]?.[2]).toMatchObject({
+			cwd: "/work/execution",
+		});
+	});
 
 	it.each([
 		"confirmed",

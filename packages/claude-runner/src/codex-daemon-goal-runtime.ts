@@ -405,6 +405,7 @@ export class CodexDaemonGoalRuntime {
 			executionId: this.opts.executionId,
 			codexBin: this.opts.codexBin,
 			codexHome,
+			cwd: this.opts.cwd,
 			socketPath: this.socketPath,
 			// FLY-1188 M4d: the daemon's workspace-write threads inherit these
 			// sandbox roots + network grant (the runner's worktree git metadata +

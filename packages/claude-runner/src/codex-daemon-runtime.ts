@@ -614,7 +614,7 @@ export interface DaemonChild {
 export type DaemonSpawnFn = (
 	bin: string,
 	args: string[],
-	opts: { env: NodeJS.ProcessEnv },
+	opts: { env: NodeJS.ProcessEnv; cwd?: string },
 ) => DaemonChild;
 
 export interface SpawnCodexDaemonOptions {
@@ -623,6 +623,8 @@ export interface SpawnCodexDaemonOptions {
 	codexBin: string;
 	/** Per-runner CODEX_HOME (auth/config); NOT where the socket lives. */
 	codexHome: string;
+	/** FLY-2919: physical daemon cwd is independently verified at binding. */
+	cwd?: string;
 	/** SHORT socket path (see resolveDaemonSocketPath). */
 	socketPath: string;
 	/**
@@ -1005,6 +1007,7 @@ export async function spawnCodexDaemon(
 				...buildDaemonEffortArgs(opts.effort),
 			],
 			{
+				...(opts.cwd ? { cwd: opts.cwd } : {}),
 				// R-M4c HIGH: NEVER let a GitHub token reach the codex process env
 				// — it lives only in the 0600 config.toml (FLY-123). The adapter's
 				// explicitly constructed env is authoritative; the defensive fallback
@@ -1284,11 +1287,12 @@ function dirnameOf(p: string): string {
 function defaultSpawnFn(
 	bin: string,
 	args: string[],
-	opts: { env: NodeJS.ProcessEnv },
+	opts: { env: NodeJS.ProcessEnv; cwd?: string },
 ): DaemonChild {
 	// Tests inject spawnFn, so the real spawn is never touched in unit tests.
 	return spawn(bin, args, {
 		env: opts.env,
+		...(opts.cwd ? { cwd: opts.cwd } : {}),
 		stdio: ["ignore", "ignore", "ignore"],
 		// QA · FLY-1188 HIGH-2: `detached: true` puts the daemon in its OWN process
 		// group, led by the pid we get back. That group contains the configured

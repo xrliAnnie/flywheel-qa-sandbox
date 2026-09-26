@@ -61,6 +61,8 @@ export interface ExecutionProcessSample {
 	writersComplete: boolean;
 	/** Nonce-attributed detached writers discovered by the independent OS census. */
 	discoveredWriters?: ExecutionProcessIdentity[];
+	/** Subset attributed by exact inherited nonce, independently of process group. */
+	nonceWriters?: ExecutionProcessIdentity[];
 	/** Only explicitly registered pure viewers can be excluded from writer checks. */
 	viewers: ExecutionProcessIdentity[];
 }
@@ -76,6 +78,8 @@ export interface ExecutionProcessObservationInput {
 	restartInProgress: boolean;
 	/** A persisted receipt matching this exact owner/epoch/binding. */
 	ownerDrained: boolean;
+	/** Durable exact-owner close CAS revokes further spawn/restart authority. */
+	ownerClosed?: boolean;
 	/** A valid FLY-2211 recovery claim with remaining budget takes precedence. */
 	recoveryActive: boolean;
 	sample: ExecutionProcessSample | null;
@@ -169,7 +173,11 @@ export function observeExecutionProcesses(
 		if (found && found.startIdentity !== identity.startIdentity)
 			return mismatch();
 	}
-	if (input.spawnInflight || input.restartInProgress || input.recoveryActive)
+	if (
+		input.spawnInflight ||
+		(input.restartInProgress && !input.ownerClosed) ||
+		input.recoveryActive
+	)
 		return result("unknown", "controller_recovery_active");
 	const worker = processes.get(binding.pid);
 	if (worker?.state === "running") {
@@ -185,7 +193,11 @@ export function observeExecutionProcesses(
 		return result("alive", "accepted_worker_alive");
 	}
 	const controller = processes.get(input.controller.pid);
-	if (controller?.state === "running" && !input.ownerDrained)
+	if (
+		controller?.state === "running" &&
+		!input.ownerDrained &&
+		!input.ownerClosed
+	)
 		return result("unknown", "controller_recovery_active");
 	if (!sample.writersComplete) return observation;
 	if (binding.adapter === "codex-tmux" && sample.daemon !== "absent")

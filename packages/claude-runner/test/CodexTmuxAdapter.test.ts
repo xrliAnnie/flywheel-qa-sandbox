@@ -69,6 +69,7 @@ import type {
 	CodexLeaseHolderProbeResult,
 } from "../src/codex-process-snapshot.js";
 import type { RunnerTuiWindowOutcome } from "../src/codex-runner-tui-window.js";
+import type { ExecutionProcessOwnerLease } from "../src/execution-process-owner-contract.js";
 
 // FLY-2877: lease deletion consults the host process table. These tests must
 // not depend on which codex processes the host runs (or on whether the CI
@@ -418,6 +419,275 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			...overrides,
 		};
 	}
+
+	describe("FLY-2919 durable process owner", () => {
+		function owner(): ExecutionProcessOwnerLease {
+			return {
+				nonce: "test-native-nonce",
+				prepareSpawn: vi.fn(async () => {}),
+				authorizeSpawn: vi.fn(() => true),
+				beginRestart: vi.fn(async () => true),
+				acceptSpawn: vi.fn(async () => {}),
+				close: vi.fn(async () => {}),
+				finish: vi.fn(async () => {}),
+			};
+		}
+		function adapter(deps: Partial<CodexDaemonAdapterDeps>): CodexTmuxAdapter {
+			return new CodexTmuxAdapter(
+				"testsess",
+				fake.exec,
+				25,
+				60_000,
+				undefined,
+				undefined,
+				{ ...makeDeps(), ...deps },
+			);
+		}
+		it("awaits factory acquisition using the existing registry token before native run", async () => {
+			const durable = owner();
+			let resolve!: (lease: ExecutionProcessOwnerLease) => void;
+			const factory = vi.fn(
+				async () =>
+					new Promise<ExecutionProcessOwnerLease>((r) => {
+						resolve = r;
+					}),
+			);
+			const execution = adapter({ processOwnerFactory: factory }).execute(
+				ctx(),
+			);
+			await vi.waitFor(() => expect(factory).toHaveBeenCalledOnce());
+			expect(factory).toHaveBeenCalledWith(
+				expect.objectContaining({ executionId: execId }),
+				expect.any(String),
+				"dispatch",
+			);
+			expect(executionOwners.isExecutionOwned(execId)).toBe(true);
+			expect(runtime.runGoalInputs).toHaveLength(0);
+			resolve(durable);
+			expect((await execution).success).toBe(true);
+			expect(durable.close).toHaveBeenCalledOnce();
+			expect(durable.finish).toHaveBeenCalledOnce();
+		});
+		it("refuses factory configuration without a registry lease", async () => {
+			const factory = vi.fn(async () => owner());
+			const result = await adapter({
+				executionOwners: undefined,
+				processOwnerFactory: factory,
+			}).execute(ctx());
+			expect(result).toMatchObject({
+				success: false,
+				recoveryFailure: { code: "owner_admission_failed" },
+			});
+			expect(factory).not.toHaveBeenCalled();
+			expect(runtime.runGoalInputs).toHaveLength(0);
+		});
+		it("turns failed acquisition into an admission failure before native start", async () => {
+			const result = await adapter({
+				processOwnerFactory: async () => {
+					throw new Error("owner unavailable");
+				},
+			}).execute(ctx());
+			expect(result).toMatchObject({
+				success: false,
+				recoveryFailure: { code: "owner_admission_failed" },
+			});
+			expect(runtime.runGoalInputs).toHaveLength(0);
+			expect(executionOwners.isExecutionOwned(execId)).toBe(false);
+		});
+		it("forwards nonce, prepare, permit and awaited acceptance on every spawn", async () => {
+			const durable = owner();
+			const accepted: number[] = [];
+			durable.acceptSpawn = vi.fn(async (pgid) => {
+				await Promise.resolve();
+				accepted.push(pgid);
+			});
+			runtime = new FakeRuntime(async (input) => {
+				expect(capturedOpts?.env?.FLYWHEEL_EXECUTION_NONCE).toBe(durable.nonce);
+				for (const pgid of [4100, 4200]) {
+					await input.prepareSpawn?.();
+					expect(input.authorizeSpawn?.()).toBe(true);
+					await input.onSpawnIdentity?.(pgid);
+					expect(accepted).toContain(pgid);
+				}
+				return complete();
+			});
+			expect(
+				(
+					await adapter({ processOwnerFactory: async () => durable }).execute(
+						ctx(),
+					)
+				).success,
+			).toBe(true);
+			expect(durable.prepareSpawn).toHaveBeenCalledTimes(2);
+			expect(durable.acceptSpawn).toHaveBeenCalledTimes(2);
+		});
+		it("uses durable restart gating and rechecks stop after the awaited gate", async () => {
+			const durable = owner();
+			let stop: Promise<unknown> | undefined;
+			durable.beginRestart = vi.fn(async () => {
+				stop = executionOwners.requestStop(execId, "terminate", {
+					timeoutMs: 1000,
+				});
+				return true;
+			});
+			runtime = new FakeRuntime(async (input) => {
+				expect(await input.mayRestartAfterTransportDeath?.()).toBe(false);
+				expect(input.authorizeSpawn?.()).toBe(false);
+				return complete();
+			});
+			await adapter({ processOwnerFactory: async () => durable }).execute(
+				ctx(),
+			);
+			await stop;
+			expect(durable.beginRestart).toHaveBeenCalledOnce();
+		});
+		it("fences stop arriving while factory acquisition is pending", async () => {
+			const durable = owner();
+			let resolve!: (lease: ExecutionProcessOwnerLease) => void;
+			const factory = vi.fn(
+				async () =>
+					new Promise<ExecutionProcessOwnerLease>((r) => {
+						resolve = r;
+					}),
+			);
+			const execution = adapter({ processOwnerFactory: factory }).execute(
+				ctx(),
+			);
+			await vi.waitFor(() => expect(factory).toHaveBeenCalledOnce());
+			const stopped = executionOwners.requestStop(execId, "terminate", {
+				timeoutMs: 1000,
+			});
+			resolve(durable);
+			await execution;
+			await stopped;
+			expect(runtime.runGoalInputs).toHaveLength(0);
+			expect(durable.close).toHaveBeenCalledOnce();
+			expect(durable.finish).toHaveBeenCalledOnce();
+		});
+		it("closes durably before cooperative stop and finishes only after runtime drain", async () => {
+			const durable = owner();
+			const order: string[] = [];
+			durable.close = vi.fn(async () => {
+				order.push("close");
+			});
+			durable.finish = vi.fn(async () => {
+				order.push("finish");
+				expect(runtime.drainedCalls).toBe(1);
+			});
+			vi.spyOn(runtime, "stop").mockImplementation(() => {
+				order.push("stop");
+			});
+			await adapter({ processOwnerFactory: async () => durable }).execute(
+				ctx(),
+			);
+			expect(order).toEqual(["close", "stop", "finish"]);
+		});
+		it("preserves cleanup_unconfirmed when independent physical finish rejects", async () => {
+			const durable = owner();
+			durable.finish = vi.fn(async () => {
+				throw new Error("sample unknown");
+			});
+			const result = await adapter({
+				processOwnerFactory: async () => durable,
+			}).execute(ctx());
+			expect(result).toMatchObject({
+				success: false,
+				recoveryFailure: {
+					code: "cleanup_unconfirmed",
+					cleanup: "unconfirmed",
+				},
+			});
+			expect(runtime.drainedCalls).toBe(1);
+			expect(durable.finish).toHaveBeenCalledOnce();
+		});
+		it("stops queued viewer creation before awaiting durable close", async () => {
+			const durable = owner();
+			let release!: () => void;
+			durable.close = vi.fn(
+				async () =>
+					new Promise<void>((r) => {
+						release = r;
+					}),
+			);
+			const scheduled: Array<() => void> = [];
+			runtime = new FakeRuntime(async (input) => {
+				input.onThreadReady?.(THREAD_ID, 0);
+				return complete();
+			});
+			const execution = adapter({
+				processOwnerFactory: async () => durable,
+				scheduleReopen: (fn) => {
+					scheduled.push(fn);
+					return () => {};
+				},
+			}).execute(ctx());
+			await vi.waitFor(() => expect(durable.close).toHaveBeenCalledOnce());
+			scheduled.forEach((fn) => fn());
+			release();
+			await execution;
+			expect(ensureWindowCalls).toHaveLength(0);
+		});
+		it("defers physical finish and registry release until a late viewer settles", async () => {
+			const durable = owner();
+			let release!: (outcome: RunnerTuiWindowOutcome) => void;
+			const opening = new Promise<RunnerTuiWindowOutcome>((r) => {
+				release = r;
+			});
+			const cleanup = vi.fn(async () => {});
+			runtime = new FakeRuntime(async (input) => {
+				input.onThreadReady?.(THREAD_ID, 0);
+				return complete();
+			});
+			const result = await adapter({
+				processOwnerFactory: async () => durable,
+				ensureWindow: async () => opening,
+				cleanupWindows: cleanup,
+				tuiJoinTimeoutMs: 1,
+			}).execute(ctx());
+			expect(result).toMatchObject({
+				success: false,
+				recoveryFailure: { code: "cleanup_unconfirmed" },
+			});
+			expect(durable.finish).not.toHaveBeenCalled();
+			expect(executionOwners.isExecutionOwned(execId)).toBe(true);
+			release({ created: true, windowId: WINDOW_ID });
+			await vi.waitFor(() =>
+				expect(executionOwners.isExecutionOwned(execId)).toBe(false),
+			);
+			expect(cleanup).toHaveBeenCalledOnce();
+			expect(durable.finish).toHaveBeenCalledOnce();
+		});
+		it("still drains and independently finishes after durable close fails", async () => {
+			const durable = owner();
+			durable.close = vi.fn(async () => {
+				throw new Error("close conflict");
+			});
+			const result = await adapter({
+				processOwnerFactory: async () => durable,
+			}).execute(ctx());
+			expect(result).toMatchObject({
+				success: false,
+				recoveryFailure: { code: "cleanup_unconfirmed" },
+			});
+			expect(runtime.drainedCalls).toBe(1);
+			expect(durable.finish).toHaveBeenCalledOnce();
+		});
+		it("does not authorize a revoked durable spawn permit", async () => {
+			const durable = owner();
+			durable.authorizeSpawn = vi.fn(() => false);
+			runtime = new FakeRuntime(async (input) => {
+				expect(input.authorizeSpawn?.()).toBe(false);
+				// Restart registration precedes prepareSpawn's new physical permit.
+				expect(await input.mayRestartAfterTransportDeath?.()).toBe(true);
+				expect(await input.mayRestartAfterTransportDeath?.()).toBe(true);
+				return complete();
+			});
+			await adapter({ processOwnerFactory: async () => durable }).execute(
+				ctx(),
+			);
+			expect(durable.beginRestart).toHaveBeenCalledTimes(2);
+		});
+	});
 
 	function codexAuth(email: string, accountId: string): string {
 		const idToken = [

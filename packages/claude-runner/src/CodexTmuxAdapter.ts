@@ -171,6 +171,10 @@ export interface RunnerTuiWindowLostEvidence {
 	lastFailure?: RunnerTuiWindowFailureEvidence;
 }
 
+import type {
+	ExecutionProcessOwnerFactory,
+	ExecutionProcessOwnerLease,
+} from "./execution-process-owner-contract.js";
 import { withSyncOpMarker } from "./sync-op-marker.js";
 import type { AsyncExecFileFn, ExecFileFn } from "./TmuxAdapter.js";
 import { defaultAsyncExecFile, defaultExecFile } from "./TmuxAdapter.js";
@@ -525,6 +529,8 @@ export interface CodexDaemonAdapterDeps {
 	codexAccountLedgerRoot?: string;
 	/** FLY-2211 process-local registry shared by dispatch and rescue factories. */
 	executionOwners?: CodexExecutionOwnershipRegistry;
+	/** FLY-2919: durable owner uses the same process-local registry token. */
+	processOwnerFactory?: ExecutionProcessOwnerFactory;
 	/** Build the resident-/goal runtime for one execution. */
 	runtimeFactory?: (
 		opts: CodexDaemonGoalRuntimeOptions,
@@ -632,6 +638,7 @@ export class CodexTmuxAdapter implements IAdapter {
 	private readonly codexAccountRegistryPath?: string;
 	private readonly codexAccountLedgerRoot?: string;
 	private readonly executionOwners?: CodexExecutionOwnershipRegistry;
+	private readonly processOwnerFactory?: ExecutionProcessOwnerFactory;
 	private readonly asyncExecFileFn: AsyncExecFileFn;
 
 	constructor(
@@ -707,6 +714,7 @@ export class CodexTmuxAdapter implements IAdapter {
 		this.codexAccountRegistryPath = deps.codexAccountRegistryPath;
 		this.codexAccountLedgerRoot = deps.codexAccountLedgerRoot;
 		this.executionOwners = deps.executionOwners;
+		this.processOwnerFactory = deps.processOwnerFactory;
 	}
 
 	private startProcessRetirementWatchdog(
@@ -988,8 +996,8 @@ export class CodexTmuxAdapter implements IAdapter {
 		const lease = this.executionOwners?.claim(ctx.executionId, kind, {
 			onStopRequested: (reason) => resolveTermination(reason),
 		});
-		if (this.executionOwners && !lease) {
-			if (this.executionOwners.isStopRequested(ctx.executionId)) {
+		if ((this.executionOwners || this.processOwnerFactory) && !lease) {
+			if (this.executionOwners?.isStopRequested(ctx.executionId)) {
 				this.log(
 					`[CodexTmuxAdapter] owner admission refused exec=${ctx.executionId}: termination_requested`,
 				);
@@ -1030,7 +1038,76 @@ export class CodexTmuxAdapter implements IAdapter {
 		};
 		let result: AdapterExecutionResult | undefined;
 		let ownershipHeldUntil: Promise<void> | undefined;
+		let processOwner: ExecutionProcessOwnerLease | undefined;
+		const finishProcessOwner = async (): Promise<void> => {
+			if (!processOwner) return;
+			let cleanupFailed = false;
+			try {
+				await processOwner.close();
+			} catch {
+				cleanupFailed = true;
+			}
+			try {
+				await processOwner.finish();
+			} catch {
+				cleanupFailed = true;
+			}
+			if (!cleanupFailed) return;
+			if (result) {
+				const primary = result.success
+					? createCodexRecoveryFailure({
+							code: "cleanup_unconfirmed",
+							stage: "teardown",
+						})
+					: normalizeCodexRecoveryFailure(result.recoveryFailure, {
+							failureReason: result.failure?.failureReason,
+							resultText: result.resultText,
+						});
+				result.recoveryFailure = withRecoveryCleanup(primary, "unconfirmed");
+				result.success = false;
+			}
+			this.log(
+				`[CodexTmuxAdapter] process_owner_finish_failed exec=${ctx.executionId}: cleanup_unconfirmed`,
+			);
+		};
 		try {
+			if (this.processOwnerFactory) {
+				try {
+					const acquired = await this.processOwnerFactory(
+						ctx,
+						lease!.ownerToken,
+						kind,
+					);
+					let close: Promise<void> | undefined;
+					let finish: Promise<void> | undefined;
+					processOwner = {
+						nonce: acquired.nonce,
+						prepareSpawn: () => acquired.prepareSpawn(),
+						authorizeSpawn: () => acquired.authorizeSpawn(),
+						beginRestart: () => acquired.beginRestart(),
+						acceptSpawn: (pgid) => acquired.acceptSpawn(pgid),
+						close: () => {
+							close ??= Promise.resolve().then(() => acquired.close());
+							return close;
+						},
+						finish: () => {
+							finish ??= Promise.resolve().then(() => acquired.finish());
+							return finish;
+						},
+					};
+				} catch {
+					result = this.ownershipFailureResult(
+						ctx,
+						createCodexRecoveryFailure({
+							code: "owner_admission_failed",
+							stage: "owner_admission",
+						}),
+					);
+					return result;
+				}
+				if (termination.reason())
+					throw new CodexTerminationRequestedError(termination.reason()!);
+			}
 			result = await this.executeOwned(
 				ctx,
 				snapshotExecution,
@@ -1039,6 +1116,7 @@ export class CodexTmuxAdapter implements IAdapter {
 					ownershipHeldUntil = settled;
 				},
 				termination,
+				processOwner,
 			);
 		} catch (error) {
 			if (error instanceof CodexTerminationRequestedError) {
@@ -1055,8 +1133,22 @@ export class CodexTmuxAdapter implements IAdapter {
 			// its late cleanup ran. `settled` never rejects.
 			if (ownershipHeldUntil && lease) {
 				const held = lease;
-				void ownershipHeldUntil.then(() => held.release());
+				void ownershipHeldUntil
+					.then(async () => {
+						await finishProcessOwner();
+						held.release();
+					})
+					.catch(() => {
+						try {
+							this.log(
+								`[CodexTmuxAdapter] process_owner_late_finish_failed exec=${ctx.executionId}: cleanup_unconfirmed`,
+							);
+						} catch {
+							/* detached cleanup must never reject */
+						}
+					});
 			} else {
+				await finishProcessOwner();
 				lease?.release();
 			}
 			try {
@@ -1262,6 +1354,7 @@ export class CodexTmuxAdapter implements IAdapter {
 			this.retireExecutionCredential(ctx, options),
 		holdOwnershipUntil?: (settled: Promise<void>) => void,
 		termination?: CodexTerminationSignal,
+		processOwner?: ExecutionProcessOwnerLease,
 	): Promise<AdapterExecutionResult> {
 		// FLY-2903: checked before every process-starting step of the preflight.
 		const throwIfTerminationRequested = (): void => {
@@ -1326,6 +1419,7 @@ export class CodexTmuxAdapter implements IAdapter {
 		// credential/CODEX_HOME provisioning so a rejection cannot leak a live token.
 		const gateMarkerDir = defaultGateMarkerDir();
 		const daemonEnv = this.buildDaemonEnv(ctx, gateMarkerDir);
+		if (processOwner) daemonEnv.FLYWHEEL_EXECUTION_NONCE = processOwner.nonce;
 		this.assertWorkflowCapabilities(ctx, daemonEnv);
 		const founderWindowSuppressed =
 			snapshotExecution?.founderWindow === "suppressed";
@@ -1440,6 +1534,31 @@ export class CodexTmuxAdapter implements IAdapter {
 		let resumeIdentitySettled = false;
 		let cancelProcessRetirementWatchdog: (() => void) | undefined;
 		let teardownError: unknown;
+		const closeProcessOwner = async (): Promise<void> => {
+			try {
+				await processOwner?.close();
+			} catch (error) {
+				teardownError ??= error;
+				this.log(
+					`[CodexTmuxAdapter] process_owner_close_failed exec=${ctx.executionId}: cleanup_unconfirmed`,
+				);
+			}
+		};
+		const finishProcessOwner = async (): Promise<void> => {
+			if (!processOwner) return;
+			if (lateTuiWindowPossible) {
+				teardownError ??= new Error("process_owner_finish_deferred");
+				return;
+			}
+			try {
+				await processOwner.finish();
+			} catch (error) {
+				teardownError ??= error;
+				this.log(
+					`[CodexTmuxAdapter] process_owner_finish_failed exec=${ctx.executionId}: cleanup_unconfirmed`,
+				);
+			}
+		};
 		let controlledShutdownRequestId: string | undefined;
 		let workflowUsageImported = false;
 		const importWorkflowUsage = (): void => {
@@ -2230,9 +2349,12 @@ export class CodexTmuxAdapter implements IAdapter {
 			// The same owner intent controls retry and physical spawn. In particular,
 			// a stop/retirement received during low-level preflight cannot create a
 			// newborn before the next phase-control poll.
-			const mayStartDaemon = () =>
+			const mayContinueDaemon = () =>
 				(termination?.reason() ?? null) === null &&
 				!(ctx.processLifecycle?.retirementApproved?.() ?? false);
+			const mayStartDaemon = processOwner
+				? () => mayContinueDaemon() && processOwner.authorizeSpawn()
+				: mayContinueDaemon;
 			const goalPromise = runtime.runGoal(
 				{
 					objective,
@@ -2301,6 +2423,7 @@ export class CodexTmuxAdapter implements IAdapter {
 					// Awaited before socket admission; failure forces newborn cleanup.
 					onSpawnIdentity: async (pgid) => {
 						this.persistSpawnIdentity(ctx, pgid);
+						await processOwner?.acceptSpawn(pgid);
 						try {
 							transcriptSink?.appendMeta(`daemon pgid: ${pgid}`);
 						} catch (error) {
@@ -2324,7 +2447,15 @@ export class CodexTmuxAdapter implements IAdapter {
 					// is never resumed. A throwing retirement reader throws here, which
 					// the runtime treats as a refusal (fail-closed).
 					authorizeSpawn: mayStartDaemon,
-					mayRestartAfterTransportDeath: mayStartDaemon,
+					...(processOwner
+						? { prepareSpawn: () => processOwner.prepareSpawn() }
+						: {}),
+					mayRestartAfterTransportDeath: processOwner
+						? async () =>
+								mayContinueDaemon() &&
+								(await processOwner.beginRestart()) &&
+								mayContinueDaemon()
+						: mayContinueDaemon,
 					onRestartDecision: (decision) =>
 						this.recordRestartDecision(ctx.executionId, socketPath, decision),
 				},
@@ -2380,13 +2511,16 @@ export class CodexTmuxAdapter implements IAdapter {
 			cancelProcessRetirementWatchdog = undefined;
 			if (first.kind === "shutdown") {
 				controlledShutdownRequestId = first.requestId;
+				await closeProcessOwner();
 				runtime.stop();
 				const settled = await settledGoal;
 				if (settled.kind === "goal") outcome = settled.outcome;
 				else if (settled.kind === "error") caughtError = settled.error;
 			} else if (first.kind === "retirement") {
+				await closeProcessOwner();
 				runtime.stop();
 			} else if (first.kind === "termination") {
+				await closeProcessOwner();
 				// FLY-2903: finish like a retirement — the Bridge already recorded the
 				// terminal state; we only stop, drain and release.
 				this.log(
@@ -2416,6 +2550,7 @@ export class CodexTmuxAdapter implements IAdapter {
 			// (killWindow / runtime.stop / drained / CommDB closeout / credential scrub)
 			// — a visibility-only failure staying fail-open is the whole contract.
 			runEnded = true;
+			await closeProcessOwner();
 			// FLY-2877: no lease self-heal may run past this point.
 			try {
 				stopLeaseReassert();
@@ -2535,6 +2670,7 @@ export class CodexTmuxAdapter implements IAdapter {
 						);
 					}
 				}
+				await finishProcessOwner();
 				try {
 					processRetirementControllerApproved =
 						ctx.processLifecycle?.retirementApproved?.() === true;
@@ -2633,6 +2769,7 @@ export class CodexTmuxAdapter implements IAdapter {
 						);
 					}
 				}
+				await finishProcessOwner();
 				const closeClassification = classifyGoalOutcome({
 					outcome,
 					caughtError,

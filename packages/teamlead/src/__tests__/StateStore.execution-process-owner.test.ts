@@ -261,6 +261,50 @@ describe("FLY-2919 execution process owner", () => {
 		};
 	};
 
+	it.each([
+		"valid",
+		"expired",
+		"foreign_claim",
+		"foreign_binding",
+		"not_drained",
+	])("same-generation reown requires exact %s recovery authority", (kind) => {
+		const prior = drainFixture();
+		if (kind !== "not_drained")
+			expect(owners().recordDrained(prior).ok).toBe(true);
+		const claim = store.claimCodexRecovery("exec-1", revision, {
+			holder: "reowner",
+			nowMs: 1100,
+			ttlMs: 1000,
+		});
+		if (!claim.ok) throw new Error(`fixture recovery refused:${claim.reason}`);
+		const input = {
+			...owner,
+			ownerToken: "owner-2",
+			controller: { ...owner.controller, pid: 101 },
+			lifecycleRevision: revision,
+			nowMs: kind === "expired" ? 2100 : 1101,
+			recoveryClaimToken: claim.claimToken,
+			recovery: {
+				claimToken: kind === "foreign_claim" ? "foreign" : claim.claimToken,
+				priorOwnerToken: owner.ownerToken,
+				priorSpawnEpoch: prior.spawnEpoch,
+				priorBindingDigest:
+					kind === "foreign_binding" ? "foreign" : prior.evidence.bindingDigest,
+			},
+		};
+		const result = owners().claim(input);
+		if (kind === "valid") {
+			expect(result).toEqual({ ok: true });
+			expect(owners().beginSpawn({ ...input, spawnEpoch: 1 })).toMatchObject({
+				ok: true,
+				permit: { spawnEpoch: 2, ownerToken: "owner-2" },
+			});
+			expect(store.getCodexRecoveryEpisode("exec-1")?.claimToken).toBe(
+				claim.claimToken,
+			);
+		} else expect(result.ok).toBe(false);
+	});
+
 	it("replays a persisted drain after evidence expiry without granting a foreign identity its receipt", async () => {
 		const input = drainFixture();
 		const result = owners().recordDrained(input);

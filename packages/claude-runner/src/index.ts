@@ -257,10 +257,12 @@ export {
 	writeTools,
 } from "./config.js";
 export {
+	bindSpawnedExecutionProcessGroup,
 	captureExecutionProcessSample,
 	type ExecutionProcessInspectorOptions,
 	type InspectedExecutionProcess,
 	readExecutionProcessIdentity,
+	type SpawnedExecutionProcessInput,
 } from "./execution-process-inspector.js";
 export {
 	type BodyIdentity,
@@ -273,6 +275,10 @@ export {
 	isCurrentBodyObservation,
 	observeExecutionProcesses,
 } from "./execution-process-liveness.js";
+export type {
+	ExecutionProcessOwnerFactory,
+	ExecutionProcessOwnerLease,
+} from "./execution-process-owner-contract.js";
 export {
 	ClaudeMessageFormatter,
 	type IMessageFormatter,

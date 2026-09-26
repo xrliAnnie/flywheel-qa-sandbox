@@ -60,6 +60,73 @@ export type InspectedExecutionProcess = ExecutionProcessIdentity & {
 	cwd: string;
 };
 
+export type SpawnedExecutionProcessInput = Pick<
+	ExecutionProcessBinding,
+	"adapter" | "pgid" | "executable" | "cwd" | "nonce" | "nativeSessionId"
+>;
+
+/** Accept only an independently identified native worker in the newly spawned group. */
+export async function bindSpawnedExecutionProcessGroup(
+	input: SpawnedExecutionProcessInput,
+	options: ExecutionProcessInspectorOptions = {},
+): Promise<ExecutionProcessBinding | null> {
+	try {
+		if (!Number.isSafeInteger(input.pgid) || input.pgid <= 1) return null;
+		absolutePath(input.executable);
+		absolutePath(input.cwd);
+		const c = capture(options);
+		const hostBootId = await c.boot();
+		const group = (await c.processes()).filter(
+			(row) => row.pgid === input.pgid && row.state === "running",
+		);
+		if (group.length === 0 || group.length > 32) return null;
+		const candidates: ExecutionProcessBinding[] = [];
+		for (const row of group) {
+			const worker = await c.worker(row.pid);
+			if (worker.executable !== input.executable || worker.cwd !== input.cwd)
+				continue;
+			candidates.push({
+				version: 1,
+				...input,
+				...identity(row, hostBootId),
+				writers: group
+					.filter((writer) => writer.pid !== row.pid)
+					.map((writer) => identity(writer, hostBootId)),
+			});
+		}
+		if (candidates.length !== 1) return null;
+		const candidate = candidates[0]!;
+		const sample = await captureExecutionProcessSample(candidate, {
+			...options,
+			deadlineMs: c.control().timeoutMs,
+		});
+		c.control();
+		if (
+			!sample ||
+			!sample.writersComplete ||
+			sample.worker?.executable !== input.executable ||
+			sample.worker.cwd !== input.cwd ||
+			(input.adapter === "codex-tmux" && sample.daemon !== "alive")
+		)
+			return null;
+		if (
+			!sample.nonceWriters?.some(
+				(writer) =>
+					writer.pid === candidate.pid &&
+					writer.startIdentity === candidate.startIdentity &&
+					writer.hostBootId === candidate.hostBootId,
+			)
+		)
+			return null;
+		candidate.writers = (sample.discoveredWriters ?? []).filter(
+			(writer) => writer.pid !== candidate.pid,
+		);
+		return candidate;
+	} catch {
+		return null;
+	}
+}
+
 /** Timeout/cancel signals ONLY this probe child; resolution waits for its close. */
 export function runExecutionProbeCommand(
 	file: string,
@@ -429,6 +496,7 @@ export async function captureExecutionProcessSample(
 		const isViewer = (row: ProcessRow) =>
 			viewers.some((viewer) => matches(row, viewer, hostBootId));
 		const discovered = new Map<number, ExecutionProcessIdentity>();
+		const nonceWriters = new Map<number, ExecutionProcessIdentity>();
 		let writersComplete = true;
 		const uid = options.uid ?? process.getuid?.();
 		if (uid === undefined) writersComplete = false;
@@ -471,8 +539,10 @@ export async function captureExecutionProcessSample(
 				writersComplete = false;
 				continue;
 			}
-			if (nonces[0] === `${NONCE_KEY}=${binding.nonce}`)
+			if (nonces[0] === `${NONCE_KEY}=${binding.nonce}`) {
 				discovered.set(row.pid, identity(row, hostBootId));
+				nonceWriters.set(row.pid, identity(row, hostBootId));
+			}
 		}
 		// A process lost between the first census and attribution could have forked a
 		// detached writer during capture. Require a later stable sample for death.
@@ -574,6 +644,7 @@ export async function captureExecutionProcessSample(
 			writersComplete,
 			viewers: viewers.filter((viewer) => !discovered.has(viewer.pid)),
 			discoveredWriters: [...discovered.values()],
+			nonceWriters: [...nonceWriters.values()],
 		};
 	} catch {
 		return null;
