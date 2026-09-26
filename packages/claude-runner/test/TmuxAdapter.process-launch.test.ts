@@ -161,6 +161,17 @@ describe("FLY-2919 tmux launch admission", () => {
 			expect(h.lease.finish).toHaveBeenCalledOnce();
 		},
 	);
+	it("pins the verified command path and interpreter PATH into the actual pane launch", async () => {
+		const h = harness("kimi-tmux", {
+			launchPath: "/tools/kimi",
+			launchEnvPath: "/tools:/bin",
+		} as Partial<TmuxProcessLaunchLease>);
+		await h.adapter.execute(h.ctx);
+		expect(h.observed()?.request.binaryName).toBe("/tools/kimi");
+		const command = h.calls.find((a) => a[0] === "new-window")!;
+		expect(command).toContain("/tools/kimi");
+		expect(command).toContain("PATH=/tools:/bin");
+	});
 	it("closes and cleans up when native acceptance fails", async () => {
 		const h = harness("claude-tmux", {
 			acceptSpawn: vi.fn(async () => {

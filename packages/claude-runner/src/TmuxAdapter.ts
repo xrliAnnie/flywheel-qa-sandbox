@@ -742,6 +742,8 @@ export class TmuxAdapter implements IAdapter {
 				generation: acquired.generation,
 				ownerToken: acquired.ownerToken,
 				nonce: acquired.nonce,
+				launchPath: acquired.launchPath,
+				launchEnvPath: acquired.launchEnvPath,
 				signal: acquired.signal,
 				prepareSpawn: () => acquired.prepareSpawn(),
 				authorizeSpawn: () => acquired.authorizeSpawn(),
@@ -782,7 +784,7 @@ export class TmuxAdapter implements IAdapter {
 					ownerToken: acquired.ownerToken,
 					nonce: acquired.nonce,
 					adapter: this.type,
-					binaryName: this.binaryName,
+					binaryName: acquired.launchPath ?? this.binaryName,
 					nativeSessionId: this.type === "claude-tmux" ? claudeSessionId : null,
 					cwd: realpathSync(ctx.cwd),
 				},
@@ -1099,6 +1101,8 @@ export class TmuxAdapter implements IAdapter {
 		for (const [key, value] of Object.entries(this.extraPaneEnv())) {
 			appendPaneEnv(key, value);
 		}
+		if (launch.lease?.launchEnvPath !== undefined)
+			appendPaneEnv("PATH", launch.lease.launchEnvPath);
 
 		// FLY-245 / FLY-1628: every claude-tmux launch is two-phase gated. The
 		// durable workflow path keeps its deterministic commit marker; the direct
@@ -1124,7 +1128,7 @@ export class TmuxAdapter implements IAdapter {
 		//   - commit written → only THIS launch's shell `exec`s Claude; a replay
 		//     sees the file exists → adopts → exactly one started Runner.
 		const windowCommand = buildAmbientSafeWindowCommand({
-			binaryName: this.binaryName,
+			binaryName: launch.lease?.launchPath ?? this.binaryName,
 			binaryArgs: claudeArgs,
 			allowedEnvNames,
 			...(processManifest

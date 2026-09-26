@@ -4,15 +4,24 @@ import {
 	bindSpawnedExecutionProcessGroup,
 	captureExecutionProcessSample,
 	capturePendingExecutionSpawnAbsence,
+	type ExecutionAdapter,
+	type ExecutionProcessIdentity,
+	type ExecutionProcessLaunchCandidate,
 	type ExecutionProcessOwnerFactory,
 	observeExecutionProcesses,
 	rawCodexBin,
 	readExecutionProcessIdentity,
+	resolveExecutionLaunchExecutable,
+	type TmuxProcessLaunchDeps,
+	verifyExecutionProcessLaunchCandidate,
 } from "flywheel-claude-runner";
 import type { StateStore } from "../StateStore.js";
 import type { ProcessRecoveryAdmission } from "./execution-process-owner.js";
 
 export interface ExecutionProcessControllerOptions {
+	adapter?: ExecutionAdapter;
+	nativeSessionId?: string | null;
+	expectedLeader?: () => ExecutionProcessIdentity | undefined;
 	now?: () => number;
 	nonce?: () => string;
 	sleep?: (ms: number) => Promise<void>;
@@ -26,17 +35,86 @@ export interface ExecutionProcessControllerOptions {
 type MutationResult = { ok: true } | { ok: false; reason: string };
 const RETRY_DELAYS = [25, 50, 100, 200] as const;
 
+type ProcessControllerStore = Pick<
+	StateStore,
+	| "executionProcessOwners"
+	| "getSession"
+	| "getWorkflowExecutionProcessBody"
+	| "getCodexRecoveryEpisode"
+>;
+
+export interface TmuxProcessControllerOptions
+	extends ExecutionProcessControllerOptions {
+	ownerToken?: () => string;
+	resolveLaunchExecutable?: typeof resolveExecutionLaunchExecutable;
+}
+
+/** Production Tmux carriers share the Codex durable owner and bounded OS verifier.
+ * The pre-exec file only proposes an identity; this closure retains the authority. */
+export function createTmuxProcessLaunchDeps(
+	store: ProcessControllerStore,
+	options: TmuxProcessControllerOptions = {},
+): TmuxProcessLaunchDeps {
+	return {
+		createLaunch: async (ctx, input) => {
+			const executable = await (
+				options.resolveLaunchExecutable ?? resolveExecutionLaunchExecutable
+			)(input.binaryName);
+			const cwd = await (options.resolveCwd ?? realpath)(ctx.cwd);
+			const ownerToken = (options.ownerToken ?? randomUUID)();
+			let candidate: ExecutionProcessLaunchCandidate | undefined;
+			const owner = await createExecutionProcessOwnerFactory(store, {
+				...options,
+				adapter: input.adapter,
+				nativeSessionId: input.nativeSessionId,
+				resolveCwd: async () => cwd,
+				resolveExecutable: async () => executable.executable,
+				expectedLeader: () => candidate,
+			})(ctx, ownerToken);
+			const generation = store.executionProcessOwners.get(
+				ctx.executionId,
+			)!.generation;
+			const expected = {
+				version: 1 as const,
+				executionId: ctx.executionId,
+				generation,
+				ownerToken,
+				nonce: owner.nonce,
+				adapter: input.adapter,
+				binaryName: executable.launchPath,
+				nativeSessionId: input.nativeSessionId,
+				cwd,
+			};
+			return {
+				generation,
+				ownerToken,
+				nonce: owner.nonce,
+				launchPath: executable.launchPath,
+				launchEnvPath: executable.launchEnvPath,
+				prepareSpawn: owner.prepareSpawn,
+				authorizeSpawn: owner.authorizeSpawn,
+				acceptSpawn: async (untrusted) => {
+					if (candidate) throw new Error("process_launch_already_submitted");
+					candidate = verifyExecutionProcessLaunchCandidate(
+						untrusted,
+						expected,
+					);
+					await owner.acceptSpawn(candidate.pgid);
+				},
+				close: owner.close,
+				finish: owner.finish,
+			};
+		},
+	};
+}
+
 /** All OS awaits happen outside the owner's short synchronous mutation lease. */
 export function createExecutionProcessOwnerFactory(
-	store: Pick<
-		StateStore,
-		| "executionProcessOwners"
-		| "getSession"
-		| "getWorkflowExecutionProcessBody"
-		| "getCodexRecoveryEpisode"
-	>,
+	store: ProcessControllerStore,
 	options: ExecutionProcessControllerOptions = {},
 ): ExecutionProcessOwnerFactory {
+	const adapter = options.adapter ?? "codex-tmux";
+	const nativeSessionId = options.nativeSessionId ?? null;
 	const now = options.now ?? Date.now;
 	const sleep =
 		options.sleep ??
@@ -283,6 +361,9 @@ export function createExecutionProcessOwnerFactory(
 				requireAccepted(
 					await mutate(() => owners.noteSpawnGroup({ ...mutation(), pgid })),
 				);
+				const acceptIdentity = mutation();
+				const leader = options.expectedLeader?.();
+				const expectedLeader = leader ? { ...leader } : undefined;
 				const deadline = now() + 5000;
 				let binding: Awaited<
 					ReturnType<typeof bindSpawnedExecutionProcessGroup>
@@ -292,12 +373,13 @@ export function createExecutionProcessOwnerFactory(
 						options.bindSpawn ?? bindSpawnedExecutionProcessGroup
 					)(
 						{
-							adapter: "codex-tmux",
+							adapter,
 							pgid,
 							executable,
 							cwd,
 							nonce,
-							nativeSessionId: null,
+							nativeSessionId,
+							...(expectedLeader ? { expectedLeader } : {}),
 						},
 						{ executionId: ctx.executionId, deadlineMs: deadline - now() },
 					);
@@ -307,7 +389,12 @@ export function createExecutionProcessOwnerFactory(
 				}
 				if (
 					!binding ||
-					binding.adapter !== "codex-tmux" ||
+					binding.adapter !== adapter ||
+					binding.nativeSessionId !== nativeSessionId ||
+					(expectedLeader &&
+						(binding.pid !== expectedLeader.pid ||
+							binding.startIdentity !== expectedLeader.startIdentity ||
+							binding.hostBootId !== expectedLeader.hostBootId)) ||
 					binding.pgid !== pgid ||
 					binding.cwd !== cwd ||
 					binding.executable !== executable ||
@@ -319,7 +406,11 @@ export function createExecutionProcessOwnerFactory(
 				const acceptedBinding = binding;
 				requireAccepted(
 					await mutate(() =>
-						owners.acceptSpawn({ ...mutation(), binding: acceptedBinding }),
+						owners.acceptSpawn({
+							...acceptIdentity,
+							nowMs: now(),
+							binding: acceptedBinding,
+						}),
 					),
 				);
 			},
@@ -351,7 +442,7 @@ export function createExecutionProcessOwnerFactory(
 								activationId: identity.activationId,
 								generation: identity.generation,
 								lifecycleRevision: finishIdentity.lifecycleRevision,
-								adapter: "codex-tmux",
+								adapter,
 							},
 							ownerToken,
 							spawnEpoch: row.binding_spawn_epoch!,
@@ -430,7 +521,7 @@ export function createExecutionProcessOwnerFactory(
 							activationId: identity.activationId,
 							generation: identity.generation,
 							lifecycleRevision: finishIdentity.lifecycleRevision,
-							adapter: "codex-tmux",
+							adapter,
 						},
 						ownerToken,
 						spawnEpoch,

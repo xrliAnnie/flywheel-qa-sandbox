@@ -30,6 +30,7 @@ import {
 	scrubOrphanedCodexAgentHomes,
 	scrubOrphanedCodexHomes,
 	TmuxAdapter,
+	type TmuxProcessLaunchDeps,
 } from "flywheel-claude-runner";
 import {
 	type AgentConfig,
@@ -95,7 +96,10 @@ import {
 } from "./continuity-preflight.js";
 import { EventFilter } from "./EventFilter.js";
 import { withExecutionMutationLease } from "./execution-mutation-lease.js";
-import { createExecutionProcessOwnerFactory } from "./execution-process-controller.js";
+import {
+	createExecutionProcessOwnerFactory,
+	createTmuxProcessLaunchDeps,
+} from "./execution-process-controller.js";
 import {
 	type FlagStoreRuntime,
 	storeCodexMemoryDistillEnabled,
@@ -556,6 +560,60 @@ export function createCodexRunAdapterFactory(
 	};
 }
 
+/** Preserve per-execution adapter instances while sharing durable launch authority. */
+export function registerTmuxRunAdapterFactories(
+	registry: AdapterRegistry,
+	input: {
+		sessionName: string;
+		sessionTimeoutMs: number;
+		hookServer?: ConstructorParameters<typeof TmuxAdapter>[4];
+		transport?: ConstructorParameters<typeof TmuxAdapter>[5];
+		ownerStateDbPath?: string;
+		processLaunchDeps?: TmuxProcessLaunchDeps;
+	},
+): void {
+	registry.registerFactory(
+		"claude-tmux",
+		() =>
+			new TmuxAdapter(
+				input.sessionName,
+				undefined,
+				5000,
+				input.sessionTimeoutMs,
+				input.hookServer,
+				input.transport,
+				input.ownerStateDbPath,
+				undefined,
+				input.processLaunchDeps,
+			),
+	);
+	// These two carriers intentionally have no Agent Team transport.
+	registry.registerFactory(
+		"antigravity-tmux",
+		() =>
+			new AntigravityTmuxAdapter(
+				input.sessionName,
+				undefined,
+				5000,
+				input.sessionTimeoutMs,
+				input.hookServer,
+				input.processLaunchDeps,
+			),
+	);
+	registry.registerFactory(
+		"kimi-tmux",
+		() =>
+			new KimiTmuxAdapter(
+				input.sessionName,
+				undefined,
+				5000,
+				input.sessionTimeoutMs,
+				input.hookServer,
+				input.processLaunchDeps,
+			),
+	);
+}
+
 type CodexMemoryHomeResolution = ReturnType<typeof resolveExecutionCodexHome>;
 
 /** Build the deterministic legacy-source set for one exact persistent home. */
@@ -687,6 +745,7 @@ export async function createRunBlueprint(
 	codexMemorySeedSources?: CodexMemorySeedSourcesLoader,
 	codexMemoryDistillEnabled?: () => boolean,
 	codexProcessOwnerFactory?: ExecutionProcessOwnerFactory,
+	tmuxProcessLaunchDeps?: TmuxProcessLaunchDeps,
 ): Promise<{
 	blueprint: Blueprint;
 	cleanup: () => Promise<void>;
@@ -837,19 +896,14 @@ export async function createRunBlueprint(
 		// Runners. 6th positional arg is the FLY-142 transport (positions 2-5:
 		// execFileFn/pollIntervalMs/defaultTimeoutMs/hookServer).
 		const adapterRegistry = new AdapterRegistry();
-		adapterRegistry.registerFactory(
-			"claude-tmux",
-			() =>
-				new TmuxAdapter(
-					tmuxSessionName,
-					undefined,
-					5000,
-					sessionTimeoutMs,
-					hookServer,
-					transport,
-					ownerStateDbPath, // FLY-766: threaded to the per-runner owner marker
-				),
-		);
+		registerTmuxRunAdapterFactories(adapterRegistry, {
+			sessionName: tmuxSessionName,
+			sessionTimeoutMs,
+			hookServer,
+			transport,
+			ownerStateDbPath,
+			processLaunchDeps: tmuxProcessLaunchDeps,
+		});
 		adapterRegistry.registerFactory(
 			"codex-tmux",
 			createCodexRunAdapterFactory(
@@ -878,38 +932,6 @@ export async function createRunBlueprint(
 				],
 				codexMemoryDistillEnabled,
 			),
-		);
-		// FLY-493: Antigravity (`agy`) executor backend — v1 transport=none, so
-		// NO transport arg (agy has no claude-code Agent Team mailbox). The
-		// vendor-neutral completion/timeout/comm.db machinery is inherited from
-		// TmuxAdapter; only the agy binary + args + fail-closed auth preflight
-		// differ. A no-transport runner finishes at `pr_handoff` (build+PR).
-		adapterRegistry.registerFactory(
-			"antigravity-tmux",
-			() =>
-				new AntigravityTmuxAdapter(
-					tmuxSessionName,
-					undefined,
-					5000,
-					sessionTimeoutMs,
-					hookServer,
-				),
-		);
-		// FLY-494: Kimi Code (`kimi`) executor backend — v1 transport=none, so
-		// NO transport arg (kimi has no claude-code Agent Team mailbox). Same
-		// vendor-neutral completion/timeout/comm.db machinery inherited from
-		// TmuxAdapter; only the kimi binary + args + fail-closed auth preflight
-		// differ. A no-transport runner finishes at `pr_handoff` (build+PR).
-		adapterRegistry.registerFactory(
-			"kimi-tmux",
-			() =>
-				new KimiTmuxAdapter(
-					tmuxSessionName,
-					undefined,
-					5000,
-					sessionTimeoutMs,
-					hookServer,
-				),
 		);
 		adapterRegistry.setDefault("claude-tmux");
 		const makeAdapter = (name: string) => adapterRegistry.get(name);
@@ -1618,6 +1640,7 @@ export async function setupRunInfrastructure(
 								storeCodexMemoryDistillEnabled(flagStore, project.projectName)
 						: undefined,
 					createExecutionProcessOwnerFactory(store),
+					createTmuxProcessLaunchDeps(store),
 				);
 			runInfraOpts?.codexRecoveryRuntimes?.set(
 				project.projectName,

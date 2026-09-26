@@ -14,7 +14,8 @@ import {
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { access, open, realpath } from "node:fs/promises";
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext } from "flywheel-core";
 import { z } from "zod";
@@ -67,12 +68,104 @@ export interface TmuxProcessLaunchLease {
 	readonly generation: number;
 	readonly ownerToken: string;
 	readonly nonce: string;
+	/** Pin the verified command and interpreter lookup, independent of tmux's PATH. */
+	readonly launchPath?: string;
+	readonly launchEnvPath?: string;
 	readonly signal?: AbortSignal;
 	prepareSpawn(): Promise<void>;
 	authorizeSpawn(): boolean;
 	acceptSpawn(candidate: ExecutionProcessLaunchCandidate): Promise<void>;
 	close(): Promise<void>;
 	finish(): Promise<void>;
+}
+
+export interface ExecutionLaunchExecutable {
+	launchPath: string;
+	executable: string;
+	launchEnvPath: string;
+}
+
+/** Resolve the actual executable before creating a durable spawn permit. Script
+ * launchers (e.g. Kimi) bind their native interpreter, never their ps title. */
+export async function resolveExecutionLaunchExecutable(
+	binaryName: string,
+	launchEnvPath = process.env.PATH ?? "",
+): Promise<ExecutionLaunchExecutable> {
+	try {
+		const entries = launchEnvPath.split(delimiter);
+		const search = entries.filter((path) => isAbsolute(path));
+		if (
+			entries.length > 256 ||
+			search.length === 0 ||
+			entries.some((p) => /\p{Cc}/u.test(p))
+		)
+			throw new Error("invalid_path");
+		// The pane receives this exact PATH too; relative entries cannot select a
+		// different interpreter from the caller's worktree at native exec time.
+		launchEnvPath = search.join(delimiter);
+		const find = async (name: string): Promise<string> => {
+			if (
+				!name ||
+				/\p{Cc}/u.test(name) ||
+				(!isAbsolute(name) && !/^[A-Za-z0-9._+-]+$/.test(name))
+			)
+				throw new Error("invalid_executable");
+			for (const candidate of isAbsolute(name)
+				? [name]
+				: search.map((p) => join(p, name))) {
+				try {
+					const path = await realpath(candidate);
+					await access(path, constants.X_OK);
+					const file = await open(
+						path,
+						constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+					);
+					try {
+						if ((await file.stat()).isFile()) return path;
+					} finally {
+						await file.close();
+					}
+				} catch {
+					/* Continue the same trusted PATH lookup. */
+				}
+			}
+			throw new Error("executable_missing");
+		};
+		const launchPath = await find(binaryName);
+		let executable = launchPath;
+		const seen = new Set<string>();
+		for (let depth = 0; depth < 4; depth++) {
+			if (seen.has(executable)) throw new Error("interpreter_cycle");
+			seen.add(executable);
+			const file = await open(
+				executable,
+				constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+			);
+			let header: string;
+			try {
+				if (!(await file.stat()).isFile()) throw new Error("not_regular");
+				const bytes = Buffer.alloc(4096);
+				const read = await file.read(bytes, 0, bytes.length, 0);
+				header = bytes.subarray(0, read.bytesRead).toString("utf8");
+			} finally {
+				await file.close();
+			}
+			if (!header.startsWith("#!"))
+				return { launchPath, executable, launchEnvPath };
+			const end = header.indexOf("\n");
+			if (end < 0) throw new Error("invalid_shebang");
+			const words = header.slice(2, end).trim().split(/\s+/);
+			if (!isAbsolute(words[0]!)) throw new Error("relative_interpreter");
+			if (words[0] === "/usr/bin/env" || words[0] === "/bin/env") {
+				if (words.length !== 2 || words[1]!.startsWith("-"))
+					throw new Error("unsupported_env_shebang");
+				executable = await find(words[1]!);
+			} else executable = await find(words[0]!);
+		}
+		throw new Error("interpreter_depth");
+	} catch {
+		throw new Error("process_launch_executable_unavailable");
+	}
 }
 export interface TmuxProcessLaunchDeps {
 	createLaunch(
@@ -229,10 +322,22 @@ export async function registerExecutionProcessLaunchCandidate(
 export function readExecutionProcessLaunchCandidate(
 	manifest: ExecutionProcessLaunchManifest,
 ): ExecutionProcessLaunchCandidate {
-	const candidate = candidateSchema.parse(readObject(manifest.candidatePath));
+	return verifyExecutionProcessLaunchCandidate(
+		readObject(manifest.candidatePath),
+		manifest.request,
+	);
+}
+
+/** Bridge supplies its own expected request; candidate contents are never authority. */
+export function verifyExecutionProcessLaunchCandidate(
+	input: unknown,
+	expected: ExecutionProcessLaunchRequest,
+): ExecutionProcessLaunchCandidate {
+	const candidate = candidateSchema.parse(input);
+	const request = requestSchema.parse(expected);
 	if (
 		candidate.pid !== candidate.pgid ||
-		Object.entries(manifest.request).some(
+		Object.entries(request).some(
 			([key, value]) =>
 				candidate[key as keyof ExecutionProcessLaunchRequest] !== value,
 		)

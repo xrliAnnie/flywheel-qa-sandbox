@@ -1,8 +1,11 @@
 import {
+	chmodSync,
 	fsyncSync,
+	mkdirSync,
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	statSync,
 	symlinkSync,
@@ -11,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import * as Launch from "../src/execution-process-launch.js";
 import {
 	createExecutionProcessLaunchManifest,
 	type ExecutionProcessLaunchRequest,
@@ -190,5 +194,84 @@ describe("FLY-2919 provisional tmux process launch", () => {
 				},
 			}),
 		).rejects.toThrow("process_launch_timeout");
+	});
+});
+
+describe("FLY-2919 trusted launch executable", () => {
+	it.each(["native", "absolute_shebang", "env_shebang", "symlink"])(
+		"resolves %s independently of a future process title",
+		async (mode) => {
+			const directory = realpathSync(
+				mkdtempSync(join(tmpdir(), "fly2919-a9-executable-")),
+			);
+			dirs.push(directory);
+			const tool = join(directory, "tool"),
+				runtime = join(directory, "runtime");
+			writeFileSync(runtime, Buffer.from([0x7f, 0x45, 0x4c, 0x46]));
+			chmodSync(runtime, 0o755);
+			if (mode === "symlink") symlinkSync(runtime, tool);
+			else {
+				writeFileSync(
+					tool,
+					mode === "native"
+						? Buffer.from([0x7f, 0x45, 0x4c, 0x46])
+						: mode === "absolute_shebang"
+							? `#!${runtime}\nsource`
+							: "#!/usr/bin/env runtime\nsource",
+				);
+				chmodSync(tool, 0o755);
+			}
+			const resolver = (Launch as any).resolveExecutionLaunchExecutable;
+			expect(resolver).toBeTypeOf("function");
+			expect(await resolver("tool", directory)).toEqual({
+				launchPath: mode === "symlink" ? runtime : tool,
+				executable: mode === "native" ? tool : runtime,
+				launchEnvPath: directory,
+			});
+		},
+	);
+	it("pins only absolute PATH entries when the host PATH contains an unexpanded tilde", async () => {
+		const directory = realpathSync(
+			mkdtempSync(join(tmpdir(), "fly2919-a9-mixed-path-")),
+		);
+		dirs.push(directory);
+		const tool = join(directory, "tool");
+		writeFileSync(tool, Buffer.from([0x7f, 0x45, 0x4c, 0x46]));
+		chmodSync(tool, 0o755);
+		expect(
+			await Launch.resolveExecutionLaunchExecutable(
+				"tool",
+				`${directory}:~/.dotnet/tools:.`,
+			),
+		).toEqual({ launchPath: tool, executable: tool, launchEnvPath: directory });
+	});
+	it.each([
+		"missing",
+		"relative_path",
+		"nonexec",
+		"directory",
+		"unsupported_env",
+		"interpreter_loop",
+	])("refuses ambiguous launch: %s", async (mode) => {
+		const directory = mkdtempSync(join(tmpdir(), "fly2919-a9-refused-"));
+		dirs.push(directory);
+		const tool = join(directory, "tool");
+		if (mode === "directory") mkdirSync(tool);
+		else if (mode !== "missing") {
+			writeFileSync(
+				tool,
+				mode === "unsupported_env"
+					? "#!/usr/bin/env -S runtime --flag\n"
+					: mode === "interpreter_loop"
+						? `#!${tool}\n`
+						: "native",
+			);
+			chmodSync(tool, mode === "nonexec" ? 0o600 : 0o755);
+		}
+		const resolver = (Launch as any).resolveExecutionLaunchExecutable;
+		expect(resolver).toBeTypeOf("function");
+		await expect(
+			resolver("tool", mode === "relative_path" ? "." : directory),
+		).rejects.toThrow("process_launch_executable_unavailable");
 	});
 });

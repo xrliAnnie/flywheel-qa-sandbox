@@ -101,6 +101,70 @@ describe("FLY-2919 durable production process owner", () => {
 			2,
 		);
 	});
+	it.each(["claude-tmux", "kimi-tmux", "antigravity-tmux"] as const)(
+		"binds and drains %s using the same durable owner",
+		async (adapter) => {
+			options.adapter = adapter;
+			options.nativeSessionId =
+				adapter === "claude-tmux" ? "native-session" : null;
+			options.expectedLeader = () => ({
+				pid: 200,
+				startIdentity: "worker-start",
+				hostBootId: "boot-1",
+			});
+			options.bindSpawn = vi.fn(async () => ({
+				...binding,
+				adapter,
+				nativeSessionId: options.nativeSessionId,
+			}));
+			const lease = await acquire();
+			await lease.prepareSpawn();
+			await lease.acceptSpawn(200);
+			expect(options.bindSpawn.mock.calls[0][0]).toMatchObject({
+				adapter,
+				nativeSessionId: options.nativeSessionId,
+				expectedLeader: options.expectedLeader(),
+			});
+			expect(
+				store.executionProcessOwners.getBinding(ctx.executionId)?.adapter,
+			).toBe(adapter);
+			await lease.finish();
+			expect(
+				store.executionProcessOwners.get(ctx.executionId)
+					?.owner_drained_receipt,
+			).toEqual(expect.any(String));
+		},
+	);
+	it.each(["leader", "session", "revision"])(
+		"rejects %s changed across native binding",
+		async (mode) => {
+			options.expectedLeader = () => ({
+				pid: 200,
+				startIdentity: "worker-start",
+				hostBootId: "boot-1",
+			});
+			const lease = await acquire();
+			await lease.prepareSpawn();
+			options.bindSpawn = async () => {
+				if (mode === "revision")
+					store.upsertSession({
+						execution_id: ctx.executionId,
+						issue_id: ctx.issueId,
+						project_name: "fixture",
+						status: "failed",
+					});
+				return {
+					...binding,
+					...(mode === "leader" ? { pid: 201 } : {}),
+					...(mode === "session" ? { nativeSessionId: "foreign" } : {}),
+				};
+			};
+			await expect(lease.acceptSpawn(200)).rejects.toThrow();
+			expect(
+				store.executionProcessOwners.getBinding(ctx.executionId),
+			).toBeUndefined();
+		},
+	);
 	it("samples outside mutation leases and rechecks close after awaited binding", async () => {
 		const lease = await acquire();
 		await lease.prepareSpawn();

@@ -288,3 +288,28 @@ B1/B2 + A6 owning related 使用25个明确相关文件的 include 上界，实�
 B–F 的共同观测生产接线、reown 预算优先、独立公平采样、marker-first 死亡 CAS、双库义务重放、全部消费者迁移、standby writer-empty、九单验收、有效代码评审/PR/full CI/QA529/needs_review 均未完成。保持 implement 0/6；本批不能作为生产故障已修复的声明。
 
 本批完整逐查询消费者匹配与逐文件排除理由归档 `implementation-a8-consumers.json.gz`；红绿日志、显式/related 命令、配置和最终源码 SHA256 归档 `implementation-a8-evidence.json.gz`。所有 16 个选择文件 exit 0；所有匹配测试均有保留或排除处置。
+
+## A9 三载体生产绑定接线（2026-09-26，执行 7d99e8e8）
+
+续接 `2bc0af382`，TURN implement epoch 13。统一使用现有 ExecutionProcessOwnerStore 与同步 mutation CAS，没有新增一套 owner 表/死亡缓存或替身协调器。
+
+`createTmuxProcessLaunchDeps` 已在 `setupRunInfrastructure → createRunBlueprint → registerTmuxRunAdapterFactories` 注入 Claude/Kimi/Antigravity；每次 registry.get 仍创建独立 adapter 实例。factory 在 claim 前独立解析 native executable 与 canonical cwd，生成本次 owner token/nonce，将它自己持有的完整 request 与候选逐字段比对，然后把登记 PID/start/boot 传给 A8 的 expectedLeader。只有真实 native executable/cwd/nonce/原进程身份核验通过才接受 binding；参数不匹配时保留在途资格，不能补造 drain。派生 adapter 共享 TmuxAdapter 的 gate、接纳和收尾钩子。
+
+TmuxAdapter 将已核验的绝对启动路径与固定 PATH 用于候选和真实 pane exec；这避免 tmux server 的旧 PATH 指向另一份解释器。独立解析支持 native、绝对 shebang、单一 `env <interpreter>` 与符号链接；拒绝不明确的 env -S 等形式、解释器循环、非文件/不可执行/缺失路径。PATH 的非绝对条目不参与查找，实际 pane 也只使用同一个绝对目录序列，不把 tilde 按当前 cwd 或 shell 设置猜测展开。本机只读解析发现原 PATH 含 `~/.dotnet/tools`，新增因果 RED 后修正：Claude/agy 对应 native executable，Kimi 的脚本对应实际 Node executable。该核验只读文件，未启动真实模型/窗口，不是 QA529。
+
+共享 controller 新增 adapter/nativeSession/expectedLeader 输入，Codex 默认仍为 codex-tmux，dispatch/rescue 的旧接口保留。另一个因果 RED 证明 native 采样 await 期间 revision 改变仍会被旧代码接纳：现将采样前 revision 固定到最终 acceptSpawn CAS，不能用 await 后读到的新 revision 替旧证据续权。接纳成功前同时核对 native session 和 exact leader；close 与采样竞争时仍可记录实际 newborn 供清理，不能绕过 spawn fence。
+
+红绿：共享 controller 的三载体接纳/收尾原本全拒绝，另三项 leader/session/revision 变化原本错误接纳，合计 6 RED → 文件 27 GREEN。新工厂 API 13 项从缺失到 GREEN，实际 registry factory 注入测试 1 项 GREEN；这两组新 API RED 不冒充九单原故障复现。绝对 command/PATH 未传入实际 pane 的 1 RED → adapter 文件 13 GREEN；resolver 首轮新 API 缺失，随后 fixture 的 macOS /var→/private/var canonical 路径修正（不计产品 RED），宿主混合 PATH 又有独立 1 RED → launch 文件 25 GREEN。
+
+验证已收齐：26 个明确选择文件逐一运行，25 文件 523 pass；runs-route-registration 原15秒限额连续超时，不能称本批全绿。临时阶段计时确认停在 plugin.ts 动态 import 尚未返回、没有进入 startBridge；诊断后原测试逐字恢复，没有增限、删断言或把诊断算通过。FLY-2211 inventory 与 FLY-1560 lexical guard 各有一次原限额超时，原配置单独复跑分别5/7 pass，初次失败日志保留。
+
+限定11个已发现单元文件的 runner related 实际选中7文件261 pass；限定13个的 teamlead related 实际选中8文件，7文件63 pass、同一个 routes 导入超时1 fail（因此该命令exit 1）。teamlead related 保留原 setupFiles 的 CommDB/state/Codex home 隔离、内置模型配置与 unstubGlobals。`pnpm --filter "flywheel-teamlead..." build`、lint（25个既有warning）、voice-codex依赖方typecheck均exit 0。消费者50条逐查询匹配、26文件选择、612条逐文件排除理由及旧启动入口清单归档 `implementation-a9-consumers.json.gz`；所有红/绿/超时/诊断日志、命令、related配置和最终源码SHA256归档 `implementation-a9-evidence.json.gz`。未跑整库/整包suite，没有新增shell测试文件。此批作为有明确验证缺口的实施检查点保全，后续仍需在原限额验证 routes，不请求评审或交卷。
+
+### 下一步必须继续，不能把生产 factory 接线当成九单完成
+
+- Tmux 两个 wait 分支以及 standby onRetired 仍按 pane/window 收尾；有了强制 owner.finish 后更必须接上 D 组的真实退出/完成回执分类与 writer-empty 证明。下一批优先完成这一依赖，不能以本批 mock 接纳/收尾测试声称缺窗活体或留窗死体已在生产路径通过。
+- 旧 Claude 唯一身份补采仍未实现；独立观测的生产消费者、reown 预算优先、独立公平采样、marker-first 死亡 CAS、双库义务、B–F 其余消费者和九单矩阵仍未完成。
+- 复核还确认继承的 `beginRestart` 在五次 lease_held 后仍返回 false，经既有 restartGate 当成 refused_by_owner；当前测试也固定这个旧行为。Lead 的“只有语义拒绝才 stop”义务尚未全闭合，必须在现有 restartGate 扩展临时争用结果，不能将本批保留的短 retry 测试报告成此义务已完成。
+- 启动入口检索另有 `scripts/lib/setup.ts → scripts/run-issue.ts` 的独立旧 CLI 与 e2e 脚本，未接管其无协调 StateStore 的旧流程；它们不能给共同死亡消费者提供本批受信 owner 证据。当前生产 DAG dispatch/retry 入口是 run-infra，完整旧入口迁移边界需在最终消费者清单与 QA 报告列清。
+
+保持 implement 0/6；没有代码复审通过、PR、full CI、QA529 或 needs_review 完成声明。

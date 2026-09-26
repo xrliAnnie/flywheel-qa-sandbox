@@ -267,11 +267,14 @@ export {
 	readExecutionProcessIdentity,
 	type SpawnedExecutionProcessInput,
 } from "./execution-process-inspector.js";
-export type {
-	ExecutionProcessLaunchCandidate,
-	ExecutionProcessLaunchRequest,
-	TmuxProcessLaunchDeps,
-	TmuxProcessLaunchLease,
+export {
+	type ExecutionLaunchExecutable,
+	type ExecutionProcessLaunchCandidate,
+	type ExecutionProcessLaunchRequest,
+	resolveExecutionLaunchExecutable,
+	type TmuxProcessLaunchDeps,
+	type TmuxProcessLaunchLease,
+	verifyExecutionProcessLaunchCandidate,
 } from "./execution-process-launch.js";
 export {
 	type BodyIdentity,
