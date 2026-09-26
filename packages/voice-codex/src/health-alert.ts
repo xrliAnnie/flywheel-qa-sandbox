@@ -107,7 +107,12 @@ export function runAlertSender(
 		if (settled) return;
 		settled = true;
 		clearTimeout(timer);
-		if (escalation) clearTimeout(escalation);
+		if (escalation) {
+			clearTimeout(escalation);
+			// Stopped, and its shell closed first: a child that ignored TERM
+			// and let go of the pipes may still live, so the group goes now.
+			signalGroup(child.pid, "SIGKILL");
+		}
 		callback(error, stdout, stderr);
 	};
 	child.stdout?.setEncoding(options.encoding);

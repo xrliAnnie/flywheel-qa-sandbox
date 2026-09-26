@@ -314,4 +314,53 @@ describe("alert sender process groups (FLY-2885 rework review R3)", () => {
 			rmSync(scratch, { recursive: true, force: true });
 		}
 	}, 15_000);
+
+	it("kills a grandchild that ignores TERM even after it closed its output (rework review R4)", async () => {
+		const scratch = mkdtempSync(join(tmpdir(), "fly2885-sender-"));
+		const pids = join(scratch, "pids");
+		let passed = false;
+		try {
+			// bash dies on TERM; its curl-like child ignores TERM and has let go
+			// of the pipes, so the sender's close comes before that child is gone.
+			const script = join(scratch, "detached-output.sh");
+			writeFileSync(
+				script,
+				`#!/bin/bash\n(trap '' TERM; exec sleep 60 </dev/null >/dev/null 2>&1) &\necho "$! $$" > "${pids}"\nwait\n`,
+				{ mode: 0o700 },
+			);
+			const error = await new Promise<Error | null>((resolve) => {
+				runAlertSender(
+					"/bin/bash",
+					[script],
+					{
+						detached: true,
+						encoding: "utf8",
+						maxBuffer: 4096,
+						shell: false,
+						timeout: 300,
+						windowsHide: true,
+					},
+					(caught) => resolve(caught),
+				);
+			});
+			expect(error?.message).toMatch(/timed out/u);
+			const [grandchild] = readFileSync(pids, "utf8").trim().split(/\s+/u);
+			// The dispatcher hears back only once the group has been KILLed; the
+			// kernel may take a moment to reap it.
+			await vi.waitFor(
+				() => expect(() => process.kill(Number(grandchild), 0)).toThrow(),
+				{ timeout: 2_000 },
+			);
+			passed = true;
+		} finally {
+			if (!passed)
+				try {
+					for (const pid of readFileSync(pids, "utf8").trim().split(/\s+/u))
+						process.kill(Number(pid), "SIGKILL");
+				} catch {
+					// Already gone, or never started.
+				}
+			rmSync(scratch, { recursive: true, force: true });
+		}
+	}, 15_000);
 });
