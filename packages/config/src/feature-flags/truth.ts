@@ -428,6 +428,14 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"FLY-2799 per-invocation voice backend selector for an explicitly requested session, not an on/off gate",
 	FLYWHEEL_VOICE_UPLINK_PREROLL_MS:
 		"FLY-2798/FLY-2799 bounded uplink VAD pre-roll duration in milliseconds, not an on/off gate",
+	FLYWHEEL_VOICE_CODEX_AUTH_SOURCE:
+		"FLY-2885 plumbing: path of the subscription credential engine B symlinks into its temporary CODEX_HOME, not an on/off gate",
+	FLYWHEEL_VOICE_UPLINK_MIN_ONSET_DBFS:
+		"FLY-2885 numeric tuning: sentence-level onset peak level in dBFS for the WebRTC room's uplink gate ('off' = no level floor), not a feature gate",
+	FLYWHEEL_VOICE_WEBRTC_STUN:
+		"FLY-2885 config value: comma-separated STUN URLs for engine B's WebRTC leg (empty = host candidates only), not an on/off gate",
+	FLYWHEEL_VOICE_QA_FAULTS:
+		"FLY-2885 QA-only fault seam (SIGUSR2 drops the WebRTC leg for QA-3a); the production voice wrapper never sets it, not a runtime feature toggle",
 	FLYWHEEL_CODEX_LEAD_STATE_DIRS:
 		"FLY-2301 slot-injected Lead identity-to-state-directory path map, not an on/off gate",
 	FLYWHEEL_CODEX_ACCOUNT_REGISTRY_PATH:
