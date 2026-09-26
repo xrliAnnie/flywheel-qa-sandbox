@@ -1,0 +1,11 @@
+{"parent":"OK","operations":50,"unavailable":[{"id":"context7","reason":"baseline_drift"},{"id":"github","reason":"credential_missing"},{"id":"linear","reason":"credential_missing"}]}
+{"thread":"01a0df0a-8d7a-78f1-91fd-f9ad9350c392","guide":"off"}
+{"item":{"type":"userMessage"}}
+{"item":{"type":"mcpToolCall","server":"codex","tool":"list_mcp_resources","status":"completed","arguments":"{}","result":"{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"resources\\\":[]}\"}],\"structuredContent\":null,\"_meta\":null}","error":"null"}}
+{"item":{"type":"mcpToolCall","server":"codex","tool":"list_mcp_resource_templates","status":"completed","arguments":"{}","result":"{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"resourceTemplates\\\":[]}\"}],\"structuredContent\":null,\"_meta\":null}","error":"null"}}
+{"item":{"type":"reasoning"}}
+{"item":{"type":"mcpToolCall","server":"lead_actions","tool":"lead_operation","status":"failed","arguments":"{}","result":"{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"errorCode\\\":\\\"invalid_operation_request\\\"}\"}],\"structuredContent\":null,\"_meta\":null}","error":"null"}}
+{"item":{"type":"agentMessage","text":"当前会话没有可用的 Bridge 状态查询入口，我无法核实 FLY-2886 的最新状态。"}}
+{"turnDone":"completed","ms":29685,"itemTypes":["userMessage","mcpToolCall","mcpToolCall","reasoning","mcpToolCall","agentMessage"]}
+{"leadOperationReceipts":["~/.flywheel/fly2886-qa4-OHtMHr/state/voice-capability/11111111-2222-4333-8444-555555555555/journal.db="]}
+{"pluginsDirPresent":false}

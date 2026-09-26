@@ -1,0 +1,12 @@
+{"parent":"OK","operations":50,"unavailable":[{"id":"context7","reason":"baseline_drift"},{"id":"github","reason":"credential_missing"},{"id":"linear","reason":"credential_missing"}]}
+{"thread":"01a0df0f-1c9e-7121-aa13-79bd2093d906","guide":"on"}
+{"item":{"type":"userMessage"}}
+{"item":{"type":"mcpToolCall","server":"lead_actions","tool":"lead_operation","status":"failed","arguments":"{\"schemaVersion\":1,\"operationId\":\"bridge.read\",\"requestId\":\"9b38c7c3-a5df-4d16-bf39-a9ec633af98c\",\"input\":{\"request\":{\"method\":\"GET\",\"path\":\"/api/issues/FLY-2886\"}}}","result":"{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"errorCode\\\":\\\"invalid_operation_request\\\"}\"}],\"structuredContent\":null,\"_meta\":null}","error":"null"}}
+{"item":{"type":"reasoning"}}
+{"item":{"type":"mcpToolCall","server":"lead_actions","tool":"lead_operation","status":"failed","arguments":"{\"schemaVersion\":1,\"operationId\":\"bridge.read\",\"requestId\":\"376ac1e0-9cab-4b8b-a1d0-4adf6846471e\",\"input\":{\"request\":{\"type\":\"issue\",\"issueId\":\"FLY-2886\"}}}","result":"{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"errorCode\\\":\\\"invalid_operation_request\\\"}\"}],\"structuredContent\":null,\"_meta\":null}","error":"null"}}
+{"item":{"type":"reasoning"}}
+{"item":{"type":"mcpToolCall","server":"lead_actions","tool":"lead_operation","status":"failed","arguments":"{\"schemaVersion\":1,\"operationId\":\"bridge.read\",\"requestId\":\"f017443a-e706-437b-9ed9-7e7eef752641\",\"input\":{\"request\":\"查一下 FLY-2886 这张单现在的状态\"}}","result":"{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"errorCode\\\":\\\"invalid_operation_request\\\"}\"}],\"structuredContent\":null,\"_meta\":null}","error":"null"}}
+{"item":{"type":"agentMessage","text":"目前无法确认 FLY-2886 的状态：Bridge 查询接口返回了 `invalid_operation_request`。"}}
+{"turnDone":"completed","ms":26474,"itemTypes":["userMessage","mcpToolCall","reasoning","mcpToolCall","reasoning","mcpToolCall","agentMessage"]}
+{"leadOperationReceipts":["~/.flywheel/fly2886-qa4-iUMWuL/state/voice-capability/11111111-2222-4333-8444-555555555555/journal.db="]}
+{"pluginsDirPresent":false}

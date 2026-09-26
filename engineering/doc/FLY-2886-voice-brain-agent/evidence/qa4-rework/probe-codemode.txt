@@ -1,0 +1,10 @@
+{"parent":"OK","operations":50,"unavailable":[{"id":"context7","reason":"baseline_drift"},{"id":"github","reason":"credential_missing"},{"id":"linear","reason":"credential_missing"}]}
+{"thread":"01a0df1d-c819-7f83-8048-9e9f9cc41cb9","guide":"on"}
+{"item":{"type":"userMessage"}}
+{"item":{"type":"mcpToolCall","server":"lead_actions","status":"completed","tool":"lead_operation","arguments":"{\"schemaVersion\":1,\"operationId\":\"bridge.read\",\"requestId\":\"6838c219-8f44-489a-b32c-e8db624154ea\",\"input\":{\"request\":{\"resource\":\"sessions.list\",\"limit\":50}}}","result":"{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"requestId\\\":\\\"6838c219-8f44-489a-b32c-e8db624154ea\\\",\\\"status\\\":\\\"unknown\\\",\\\"resourceRefs\\\":[],\\\"errorCode\\\":\\\"provider_unknown\\\"}\"}],\"structuredContent\":null,\"_meta\":null}","error":"null"}}
+{"item":{"type":"reasoning"}}
+{"item":{"type":"mcpToolCall","server":"lead_actions","status":"completed","tool":"lead_operation","arguments":"{\"schemaVersion\":1,\"operationId\":\"list_runners\",\"requestId\":\"45a4618a-4cef-49b0-985d-a6b7b2c50dcc\",\"input\":{\"mode\":\"recent\"}}","result":"{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"requestId\\\":\\\"45a4618a-4cef-49b0-985d-a6b7b2c50dcc\\\",\\\"status\\\":\\\"unknown\\\",\\\"resourceRefs\\\":[],\\\"errorCode\\\":\\\"provider_unknown\\\"}\"}],\"structuredContent\":null,\"_meta\":null}","error":"null"}}
+{"item":{"type":"agentMessage","text":"Bridge 查询返回 `provider_unknown`，暂时无法确认 FLY-2886 的当前状态。"}}
+{"turnDone":"completed","ms":33236,"itemTypes":["userMessage","mcpToolCall","reasoning","mcpToolCall","agentMessage"]}
+{"leadOperationReceipts":["~/.flywheel/fly2886-qa4-pkHCcT/state/voice-capability/11111111-2222-4333-8444-555555555555/journal.db="]}
+{"pluginsDirPresent":false}

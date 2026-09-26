@@ -137,6 +137,9 @@ describe("voice scribe Codex home", () => {
 			"memories",
 			"apps",
 			"plugins",
+			// FLY-2886 QA@4: a subscription account installs openai-curated-remote
+			// plugins unless remote_plugin is off too (real-host control run).
+			"remote_plugin",
 			"browser_use",
 			"computer_use",
 			"multi_agent",

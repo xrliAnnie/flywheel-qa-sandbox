@@ -1,0 +1,8 @@
+{"parent":"OK","operations":50,"unavailable":[{"id":"context7","reason":"baseline_drift"},{"id":"github","reason":"credential_missing"},{"id":"linear","reason":"credential_missing"}]}
+{"thread":"01a0df19-38c5-74c3-8ad2-df87c9dc20ea","guide":"on"}
+{"item":{"type":"userMessage"}}
+{"item":{"type":"mcpToolCall","server":"lead_actions","tool":"lead_operation","status":"completed","arguments":"{\"schemaVersion\":1,\"operationId\":\"bridge.read\",\"requestId\":\"8bf94719-648e-4d3e-a25f-6bcd94f1c840\",\"input\":{\"request\":{\"resource\":\"sessions.list\",\"limit\":50}}}","result":"{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"requestId\\\":\\\"8bf94719-648e-4d3e-a25f-6bcd94f1c840\\\",\\\"status\\\":\\\"unknown\\\",\\\"resourceRefs\\\":[],\\\"errorCode\\\":\\\"provider_unknown\\\"}\"}],\"structuredContent\":null,\"_meta\":null}","error":"null"}}
+{"item":{"type":"agentMessage","text":"Bridge 查询返回 `provider_unknown`，暂时无法确认 FLY-2886 的当前状态。"}}
+{"turnDone":"completed","ms":16497,"itemTypes":["userMessage","mcpToolCall","agentMessage"]}
+{"leadOperationReceipts":["~/.flywheel/fly2886-qa4-PMOqbo/state/voice-capability/11111111-2222-4333-8444-555555555555/journal.db="]}
+{"pluginsDirPresent":false}

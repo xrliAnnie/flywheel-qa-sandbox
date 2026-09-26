@@ -55,7 +55,7 @@ try {
 	const { CodexLeadProcess, spawnCodexAppServer } = await import(`${WT}/packages/teamlead/dist/codex-process.js`);
 	const work = dir(join(admission, "work"));
 	proc = new CodexLeadProcess({
-		spawnChild: () => spawnCodexAppServer({ codexBin, mcpArgv: [...parent.permissionArgv, ...parent.mcp.argv, ...CAPABILITY_FEATURE_ARGV], codexHome, cwd: parent.cwd,
+		spawnChild: () => spawnCodexAppServer({ codexBin, mcpArgv: [...parent.permissionArgv, ...parent.mcp.argv, ...(process.env.PLUGIN_FLAGS === "off" ? ["-c", "features.apps=false"] : CAPABILITY_FEATURE_ARGV)], codexHome, cwd: parent.cwd,
 			baseEnv: { HOME: codexHome, TMPDIR: work, PATH: process.env.PATH, LANG: "en_US.UTF-8" },
 			voiceProfile: { openAiApiKey: "smoke-not-used" }, profile: "voice-capability", capabilityModelEnv: parent.capabilityModelEnv }),
 		experimentalApi: true, knownServerMethods: [], requestTimeoutMs: 120000, maxJsonLineBytes: 1024 * 1024,
@@ -75,6 +75,11 @@ try {
 		if (method === "turn/completed") { try { parent.endTurn(params.turn?.id ?? params.turnId, "completed"); } catch {} done(params); }
 	});
 	await proc.start();
+	const cfg = await proc.request("config/read", { cwd: parent.cwd, includeLayers: false });
+	const feats = cfg.result?.config?.features ?? {};
+	out({ pluginFlags: process.env.PLUGIN_FLAGS ?? "on", features: { apps: feats.apps, plugins: feats.plugins, remote_plugin: feats.remote_plugin } });
+	const sk = await proc.request("skills/list", { cwds: [parent.cwd], forceReload: true });
+	try { await parent.verifyEffectiveSkills(sk.result, parent.cwd); out({ skillsAtStart: "verified" }); } catch (e) { out({ skillsAtStart: e.message }); }
 	const opened = await proc.startThreadWithResult({ cwd: parent.cwd, approvalPolicy: "never", permissions: "flywheel-lead-v2", ephemeral: true,
 		environments: process.env.ENVS === "omit" ? undefined : [], baseInstructions: parent.baseInstructions, developerInstructions: developer,
 		config: { "features.realtime_conversation": true, ...(process.env.CODE_MODE ? { "features.code_mode": true, "features.code_mode_only": process.env.CODE_MODE === "only" } : {}) } });
@@ -86,7 +91,9 @@ try {
 	const dbs = execFileSync("/usr/bin/find", [activation, state, codexHome, "-name", "*.db"], { encoding: "utf8" }).split("\n").filter(Boolean);
 	const receipts = dbs.map((db) => { try { return `${db.replace(homedir(), "~")}=${execFileSync("/usr/bin/sqlite3", [db, "select operation_id||':'||state from lead_operation_receipts"], { encoding: "utf8" }).trim().replace(/\n/g, ",")}`; } catch { return null; } }).filter(Boolean);
 	out({ leadOperationReceipts: receipts });
-	out({ pluginsDirPresent: existsSync(join(codexHome, "plugins")) });
+	out({ pluginsDirPresent: existsSync(join(codexHome, "plugins")), pluginCache: existsSync(join(codexHome, "plugins", "cache")) ? readdirSync(join(codexHome, "plugins", "cache")) : [] });
+	const sk2 = await proc.request("skills/list", { cwds: [parent.cwd], forceReload: true });
+	try { await parent.verifyEffectiveSkills(sk2.result, parent.cwd); out({ skillsAfterTurn: "verified" }); } catch (e) { out({ skillsAfterTurn: e.message }); }
 } catch (error) {
 	out({ error: error?.message, stack: error?.stack?.split("\n").slice(0, 4) });
 } finally {

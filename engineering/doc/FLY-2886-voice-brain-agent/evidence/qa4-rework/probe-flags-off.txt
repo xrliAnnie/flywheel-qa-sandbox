@@ -1,0 +1,13 @@
+{"parent":"OK","operations":50,"unavailable":[{"id":"context7","reason":"baseline_drift"},{"id":"github","reason":"credential_missing"},{"id":"linear","reason":"credential_missing"}]}
+{"pluginFlags":"off","features":{"apps":false,"remote_plugin":true}}
+{"skillsAtStart":"verified"}
+{"thread":"01a0df24-779d-7c10-8c8e-47c1aa7d567a","guide":"on"}
+{"item":{"type":"userMessage"}}
+{"item":{"type":"mcpToolCall","server":"lead_actions","status":"completed","tool":"lead_operation","arguments":"{\"schemaVersion\":1,\"operationId\":\"bridge.read\",\"requestId\":\"ea7670ec-bc40-4a22-967b-163091966ab6\",\"input\":{\"request\":{\"resource\":\"sessions.list\",\"limit\":100}}}","result":"{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"requestId\\\":\\\"ea7670ec-bc40-4a22-967b-163091966ab6\\\",\\\"status\\\":\\\"unknown\\\",\\\"resourceRefs\\\":[],\\\"errorCode\\\":\\\"provider_unknown\\\"}\"}],\"structuredContent\":null,\"_meta\":null}","error":"null"}}
+{"item":{"type":"reasoning"}}
+{"item":{"type":"mcpToolCall","server":"lead_actions","status":"completed","tool":"lead_operation","arguments":"{\"schemaVersion\":1,\"operationId\":\"list_runners\",\"requestId\":\"6497a1de-6e2a-4923-b319-72bc342e04fe\",\"input\":{\"mode\":\"recent\"}}","result":"{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"requestId\\\":\\\"6497a1de-6e2a-4923-b319-72bc342e04fe\\\",\\\"status\\\":\\\"unknown\\\",\\\"resourceRefs\\\":[],\\\"errorCode\\\":\\\"provider_unknown\\\"}\"}],\"structuredContent\":null,\"_meta\":null}","error":"null"}}
+{"item":{"type":"agentMessage","text":"Bridge 查询返回 `provider_unknown`，暂时无法确认 FLY-2886 的当前状态。"}}
+{"turnDone":"completed","ms":25882,"itemTypes":["userMessage","mcpToolCall","reasoning","mcpToolCall","agentMessage"]}
+{"leadOperationReceipts":["~/.flywheel/fly2886-qa4-hNSBwO/state/voice-capability/11111111-2222-4333-8444-555555555555/journal.db="]}
+{"pluginsDirPresent":true,"pluginCache":["openai-curated-remote"]}
+{"skillsAfterTurn":"capability_skills_unverified"}
