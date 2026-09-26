@@ -757,7 +757,7 @@ awk '
 	capture && /rm -f .*deploy-build-identity/ { capture=0 }
 	capture { print }
 ' "$RS" > "$identity_failure_body"
-awk '/^ensure_voice_bridge_for_deploy\(\)/,/^}/' "$RS" > "$voice_deploy_body"
+awk '/^ensure_voice_for_deploy\(\)/,/^}/' "$RS" > "$voice_deploy_body"
 notify_line=$(grep -n 'notify_routine "🔄 开始全量重启' "$deploy_body" | cut -d: -f1)
 pause_line=$(grep -n 'pause_admission_best_effort' "$deploy_body" | head -1 | cut -d: -f1)
 stop_line=$(grep -n 'if ! stop_bridge' "$deploy_body" | head -1 | cut -d: -f1)

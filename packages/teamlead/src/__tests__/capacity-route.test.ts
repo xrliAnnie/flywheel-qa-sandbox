@@ -22,6 +22,10 @@ import type { LeadEventEnvelope } from "../bridge/lead-runtime.js";
 import { createBridgeApp } from "../bridge/plugin.js";
 import { RunnerAdmissionController } from "../bridge/runner-admission.js";
 import type { BridgeConfig } from "../bridge/types.js";
+import {
+	claudeChargeMailboxKey,
+	writeClaudeChargeStore,
+} from "../claude-quota/charge-receipt-store.js";
 import { StateStore } from "../StateStore.js";
 import {
 	createVercelAccountLatest,
@@ -105,6 +109,7 @@ async function start(
 		storePath: string;
 		latest?: () => VercelAccountStore | null;
 	},
+	accountPageClaudeCharges?: { storePath: string },
 ): Promise<string> {
 	const store = await StateStore.create(":memory:");
 	stores.push(store);
@@ -126,7 +131,10 @@ async function start(
 		undefined,
 		undefined,
 		undefined,
-		refreshAccountQuota || accountPage || accountPageVercel
+		refreshAccountQuota ||
+			accountPage ||
+			accountPageVercel ||
+			accountPageClaudeCharges
 			? {
 					...(refreshAccountQuota || accountPage?.readAccountIdentityKeys
 						? {
@@ -152,6 +160,7 @@ async function start(
 							}
 						: {}),
 					...(accountPageVercel ? { accountPageVercel } : {}),
+					...(accountPageClaudeCharges ? { accountPageClaudeCharges } : {}),
 				}
 			: undefined,
 	);
@@ -675,6 +684,90 @@ describe("GET /api/accounts-page.html", () => {
 			.split("</tr>")
 			.find((row) => row.includes('<div class="account-name">personal1</div>'));
 		expect(personal1Row).toContain('<span class="next-charge">已取消</span>');
+	});
+
+	it("FLY-2897: reads the receipt readings only when the Bridge names the file", async () => {
+		const accountStorePath = writeAccountStore({
+			generation: 1,
+			activeAccount: null,
+			accounts: [
+				{
+					name: "business",
+					quotaExhaustedUntil: null,
+					weeklyResetAt: "2099-09-29T16:00:00.000Z",
+					lastObservedAt: new Date().toISOString(),
+					observedFiveHPct: 5,
+					observedSevenDPct: 20,
+					identity: {
+						email: "business@example.com",
+						setAt: "2026-09-01T00:00:00.000Z",
+					},
+				},
+			],
+		});
+		const chargePath = join(
+			dirname(accountStorePath),
+			"claude-quota",
+			"charge-receipts.json",
+		);
+		const readAt = new Date().toISOString();
+		const facts = {
+			periodStart: "2099-09-16",
+			periodEnd: "2099-10-16",
+			paidOn: "2099-09-16",
+			amountCents: 20001,
+			receiptCount: 2,
+			receiptAt: readAt,
+			canceledAt: null,
+			resumedAt: null,
+		};
+		writeClaudeChargeStore(chargePath, {
+			version: 1,
+			generatedAt: readAt,
+			accounts: [
+				{
+					name: "business",
+					mailboxKey: claudeChargeMailboxKey("business@example.com"),
+					readAt,
+					status: "ok",
+					reason: null,
+					facts,
+					lastGood: { readAt, status: "ok", facts },
+				},
+			],
+		});
+		const config = makeConfig({
+			apiToken: "master-token",
+			capacityProbes: { accountStorePath },
+		});
+		const page = async (withCharges: boolean) => {
+			const url = await start(
+				config,
+				undefined,
+				"/api/accounts-page.html",
+				undefined,
+				undefined,
+				undefined,
+				withCharges ? { storePath: chargePath } : undefined,
+			);
+			const response = await fetch(url, {
+				headers: { Authorization: "Bearer master-token" },
+			});
+			expect(response.status).toBe(200);
+			return (await response.text())
+				.split("</tr>")
+				.find((row) =>
+					row.includes('<div class="account-name">business</div>'),
+				);
+		};
+		const named = await page(true);
+		expect(named).toContain(
+			'<span class="next-charge">10/16 周五</span><span class="charge-note">本期 9/16–10/16 · 已付 $200.01</span><span class="charge-read-time">收据读于 ',
+		);
+		const unnamed = await page(false);
+		expect(unnamed).toContain(
+			'<span class="next-charge">读不到（收据还没读过）</span><span class="charge-read-time">收据读于 从未读到</span>',
+		);
 	});
 
 	it("keeps the page available when manual input or Codex identity lookup is unusable", async () => {

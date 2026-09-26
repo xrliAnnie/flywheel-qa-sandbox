@@ -1,0 +1,52 @@
+[
+ {
+  "engine": "A",
+  "model": "gpt-live-1",
+  "voice": "verse",
+  "serverVoice": "verse",
+  "closed": true,
+  "status": "ok",
+  "pcmBytes": 518400,
+  "modelTranscript": "Annie 你好,我是 Tadashi,现在有两件事要你看。"
+ },
+ {
+  "engine": "A",
+  "model": "gpt-live-1",
+  "voice": "alloy",
+  "serverVoice": "alloy",
+  "closed": true,
+  "status": "ok",
+  "pcmBytes": 475200,
+  "modelTranscript": "Annie 你好,我是 Tadashi,现在有两件事要你看。"
+ },
+ {
+  "engine": "A",
+  "model": "gpt-live-1",
+  "voice": "verse",
+  "serverVoice": "verse",
+  "closed": true,
+  "status": "ok",
+  "pcmBytes": 484800,
+  "modelTranscript": "Annie 你好,我是 Tadashi,现在有两件事要你看。"
+ },
+ {
+  "engine": "A",
+  "model": "gpt-live-1",
+  "voice": "alloy",
+  "serverVoice": "alloy",
+  "closed": true,
+  "status": "ok",
+  "pcmBytes": 489600,
+  "modelTranscript": "Annie 你好，我是Tadashi，现在有两件事要你看。"
+ },
+ {
+  "engine": "A",
+  "model": "gpt-live-1",
+  "voice": "marin",
+  "serverVoice": "marin",
+  "closed": true,
+  "status": "ok",
+  "pcmBytes": 528000,
+  "modelTranscript": "Annie 你好,我是 Tadashi,现在有两件事要你看。"
+ }
+]

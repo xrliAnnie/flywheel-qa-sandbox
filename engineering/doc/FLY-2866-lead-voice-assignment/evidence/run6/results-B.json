@@ -1,0 +1,35 @@
+[
+ {
+  "engine": "B",
+  "model": "gpt-realtime-2.1",
+  "version": "v2",
+  "voice": "verse",
+  "startResponse": "ok",
+  "status": "ok",
+  "pcmBytes": 254400,
+  "sampleRate": 24000,
+  "modelTranscript": "Annie 你好，我是 Tadashi，现在有两件事要你看。"
+ },
+ {
+  "engine": "B",
+  "model": "gpt-realtime-2.1",
+  "version": "v2",
+  "voice": "alloy",
+  "startResponse": "ok",
+  "status": "ok",
+  "pcmBytes": 249600,
+  "sampleRate": 24000,
+  "modelTranscript": "Annie 你好，我是 Tadashi，现在有两件事要你看。"
+ },
+ {
+  "engine": "B",
+  "model": "gpt-realtime-2.1",
+  "version": "v2",
+  "voice": "marin",
+  "startResponse": "ok",
+  "status": "ok",
+  "pcmBytes": 204000,
+  "sampleRate": 24000,
+  "modelTranscript": "Annie 你好，我是 Tadashi，现在有两件事要你看。"
+ }
+]

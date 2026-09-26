@@ -158,7 +158,6 @@ scripts/flywheel-codex-lead-wrapper-codex-infra-bot.sh
 scripts/resident-codex-lead-recover.sh
 scripts/flywheel-bridge-wrapper.sh
 scripts/packaged/flywheel-auto-update.sh
-scripts/flywheel-voice-bridge-wrapper.sh
 scripts/flywheel-voice-wrapper.sh
 scripts/flywheel-quota-monitor-wrapper.sh
 scripts/restart-services.sh
@@ -204,6 +203,7 @@ path_hygiene_source_priority_registry() {
   cat <<'EOF'
 packages/flywheel-comm/src/commands/qa-result.ts|QA_GITHUB_CLI_CANDIDATES=["/opt/homebrew/bin/gh","/usr/local/bin/gh","/usr/bin/gh",]asconst
 packages/teamlead/src/bin/restart-request.ts|["/opt/homebrew/bin/gh","/usr/local/bin/gh"].find
+packages/teamlead/src/claude-quota/charge-receipt-observer.ts|GOG_CANDIDATES=["/opt/homebrew/bin/gog","/usr/local/bin/gog"]
 EOF
 }
 

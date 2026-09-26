@@ -22,6 +22,7 @@ import type {
 	LeadDeliveryBatch,
 } from "./lead-delivery-adapter.js";
 import { LeadDeliveryUnavailableError } from "./lead-delivery-adapter.js";
+import { formatMailboxBatchHeader } from "./mailbox-batch-header.js";
 import {
 	DEFAULT_MAILBOX_QUEUE_CONFIG,
 	type MailboxQueueConfig,
@@ -462,7 +463,12 @@ export class LeadInboxLoop {
 		const transportMemberIds = rows.map(
 			(row) => `${row.delivery_id}#r${attempt}`,
 		);
-		const header = `[mailbox-batch ${batchId} | ${rows.length} messages | from ${rows[0]?.from_agent}]\nYou must ack this batch with ${this.opts.ackInstruction ?? "flywheel_inbox_ack_batch or lead_actions.ack_batch"} promptly so the sender can see you received it; unacked batches are redelivered and eventually dead-lettered.`;
+		const header = formatMailboxBatchHeader({
+			batchId,
+			count: rows.length,
+			fromAgent: rows[0]?.from_agent,
+			ackInstruction: this.opts.ackInstruction,
+		});
 		const batch: LeadDeliveryBatch = {
 			batchId: transportBatchId,
 			leadId: this.opts.leadId,

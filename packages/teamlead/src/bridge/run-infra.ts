@@ -195,6 +195,7 @@ export async function runInfraResumeGitRead(
 		return (
 			await execFile("git", args, {
 				cwd: projectRoot,
+				maxBuffer: 64 * 1024 * 1024,
 				timeoutMs: BRIDGE_GIT_PROBE_TIMEOUT_MS,
 			})
 		).stdout;

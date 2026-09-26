@@ -4,11 +4,68 @@ import {
 	mergeNonLeadClaudeSettingsArgv,
 	NON_LEAD_FORBIDDEN_PLUGINS,
 } from "../non-lead-forbidden-plugins.js";
+import {
+	appendRunnerTestPolicyHookSettings,
+	buildRunnerTestPolicyHookCommand,
+	buildRunnerTestPolicyHookSettings,
+} from "../runner-test-policy-hook.js";
 
 const FORK = "discord@flywheel-plugins";
 const OFFICIAL = "discord@claude-plugins-official";
 
 describe("non-Lead forbidden Claude plugins", () => {
+	it("adds the delegation hook only for prompts carrying the complete marked policy", () => {
+		expect(
+			buildRunnerTestPolicyHookSettings("ordinary prompt", "node hook.mjs"),
+		).toBeUndefined();
+		expect(
+			buildRunnerTestPolicyHookSettings(
+				"<!-- FLYWHEEL_LOCAL_TEST_POLICY:BEGIN -->\npolicy\n<!-- FLYWHEEL_LOCAL_TEST_POLICY:END -->",
+				"node hook.mjs",
+			),
+		).toMatchObject({
+			hooks: {
+				PreToolUse: [
+					{
+						matcher: "Agent || Task || Skill",
+					},
+				],
+			},
+		});
+	});
+
+	it("preserves existing hooks while appending the delegation policy hook", () => {
+		const settings = appendRunnerTestPolicyHookSettings(
+			{
+				hooks: {
+					PreToolUse: [{ matcher: "Bash", hooks: [{ type: "prompt" }] }],
+					PostToolUse: [{ matcher: "Write", hooks: [{ type: "prompt" }] }],
+				},
+			},
+			"<!-- FLYWHEEL_LOCAL_TEST_POLICY:BEGIN -->\npolicy\n<!-- FLYWHEEL_LOCAL_TEST_POLICY:END -->",
+			"node hook.mjs",
+		);
+
+		expect(settings).toMatchObject({
+			hooks: {
+				PreToolUse: [
+					{ matcher: "Bash" },
+					{ matcher: "Agent || Task || Skill" },
+				],
+				PostToolUse: [{ matcher: "Write" }],
+			},
+		});
+	});
+
+	it("shell-quotes both hook command paths", () => {
+		expect(
+			buildRunnerTestPolicyHookCommand(
+				"/opt/node bin/node",
+				"/tmp/a'b/hook.mjs",
+			),
+		).toBe("'/opt/node bin/node' '/tmp/a'\"'\"'b/hook.mjs'");
+	});
+
 	it("contains both Discord marketplace identities and marks both false", () => {
 		expect(NON_LEAD_FORBIDDEN_PLUGINS).toEqual([FORK, OFFICIAL]);
 		expect(buildNonLeadClaudeSettings()).toEqual({

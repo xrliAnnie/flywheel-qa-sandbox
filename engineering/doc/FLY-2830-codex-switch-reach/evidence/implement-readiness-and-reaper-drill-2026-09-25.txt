@@ -1,0 +1,38 @@
+# FLY-2830 implement — 生产只读回放与收割器演习（2026-09-25 PDT，worktree HEAD 836bdedc0 构建的 dist）
+# 只读：StateStore 以 readonly 句柄打开；收割器演习的 signalGroup/removeSocket 为只记录桩，未发任何信号、未删任何文件。
+
+## A. 原样回放（含 FLY-2873 孤儿 86434）  (final-replay-asis.out)
+ROUND1 complete=False
+  blocking: [('resident_evidence_incomplete', '/Users/xiaorongli/.flywheel/codex-homes/agents/flywheel/implement'), ('comm_orphan', 'e0c055e7-2e2a-4189-969a-d37d3109aed6'), ('comm_orphan', 'fa22d94c-042b-420f-99f3-5b9518b99e46'), ('comm_orphan', '35b23197-342c-4f5f-b506-7cad0b175e93'), ('comm_orphan', 'cf70ee17-21cd-48e5-a993-63f246ac2a48'), ('comm_orphan', 'b6c738ca-d135-4cb7-9116-17267466406b')]
+  homes: [('.codex-infra-bot', 'active'), ('.codex-mufasa', 'active'), ('.codex-raya', 'active'), ('eng_design', 'drained'), ('implement', 'unknown')]
+  info comm_stale_running: []
+ROUND2 complete=False
+  blocking: [('unapproved_live_home', '/tmp/fly2884-proto/home-s4'), ('resident_evidence_incomplete', '/Users/xiaorongli/.flywheel/codex-homes/agents/flywheel/implement'), ('comm_orphan', 'b6c738ca-d135-4cb7-9116-17267466406b')]
+  homes: [('.codex-infra-bot', 'active'), ('.codex-mufasa', 'active'), ('.codex-raya', 'active'), ('eng_design', 'drained'), ('implement', 'unknown')]
+  info comm_stale_running: ['e0c055e7-2e2a-4189-969a-d37d3109aed6', 'fa22d94c-042b-420f-99f3-5b9518b99e46', '35b23197-342c-4f5f-b506-7cad0b175e93', 'cf70ee17-21cd-48e5-a993-63f246ac2a48']
+readiness {"ready":false,"failures":[{"reason":"authority_unavailable"},{"home":"/Users/xiaorongli/.flywheel/codex-homes/agents/flywheel/implement","reason":"authority_unavailable"}]}
+
+## B. 模拟收割器已收掉 86434（快照里剔除该 pid，其余原样）  (final-replay-sim-drop86434.out)
+ROUND1 complete=False
+  blocking: [('comm_orphan', 'e0c055e7-2e2a-4189-969a-d37d3109aed6'), ('comm_orphan', 'fa22d94c-042b-420f-99f3-5b9518b99e46'), ('comm_orphan', '35b23197-342c-4f5f-b506-7cad0b175e93'), ('comm_orphan', 'cf70ee17-21cd-48e5-a993-63f246ac2a48')]
+  homes: [('.codex-infra-bot', 'active'), ('.codex-mufasa', 'active'), ('.codex-raya', 'active'), ('eng_design', 'drained'), ('implement', 'active')]
+  info comm_stale_running: []
+ROUND2 complete=True
+  blocking: []
+  homes: [('.codex-infra-bot', 'active'), ('.codex-mufasa', 'active'), ('.codex-raya', 'active'), ('eng_design', 'drained'), ('implement', 'active')]
+  info comm_stale_running: ['e0c055e7-2e2a-4189-969a-d37d3109aed6', 'fa22d94c-042b-420f-99f3-5b9518b99e46', '35b23197-342c-4f5f-b506-7cad0b175e93', 'cf70ee17-21cd-48e5-a993-63f246ac2a48']
+readiness {"ready":true,"failures":[]}
+
+## C. 孤儿收割器演习（生产清单 + 两版 dist；信号被桩拦下）
+- 生产 dist (/Users/xiaorongli/Dev/flywheel)
+  result: {'ledgerCandidates': 1159, 'processCandidates': 0, 'reaped': 0, 'identityMismatchSkipped': 1159, 'unparseableSkipped': 10, 'probeUnknown': 0, 'survivors': 0, 'boundaryRefused': 0}
+  signals: [] removed: []
+  events: {'codex_app_server_orphan_identity_mismatch': 1158, 'codex_app_server_orphan_socket_holder_mismatch': 1}
+  86434: {'event': 'codex_app_server_orphan_socket_holder_mismatch', 'pid': 86434, 'pgid': 86434, 'executionId': '37624e3d-2f56-4ee3-afdc-944f2666c229', 'source': 'ledger'}
+- 本单 dist (worktree)
+  result: {'ledgerCandidates': 1159, 'processCandidates': 0, 'reaped': 0, 'identityMismatchSkipped': 1158, 'unparseableSkipped': 10, 'probeUnknown': 0, 'survivors': 1, 'boundaryRefused': 1}
+  signals: [{'pgid': 86434, 'signal': 'SIGTERM'}] removed: []
+  events: {'codex_app_server_orphan_identity_mismatch': 1158, 'isolation_boundary_refused': 1}
+  86434: {'event': 'isolation_boundary_refused', 'pid': 86434, 'pgid': 86434, 'executionId': '37624e3d-2f56-4ee3-afdc-944f2666c229', 'source': 'ledger'}
+
+说明：本单 dist 下演习对 pgid 86434 发出 SIGTERM（isolation_boundary_refused 是演习桩的返回，不是生产行为）；生产 dist 判 socket_holder_mismatch（即 R1 缺陷）。演习后 ps 仍见 86434 存活。

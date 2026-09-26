@@ -78,7 +78,7 @@ eq "S4 first launch after resume allowed" "$(gate $C2)" "0"
 eq "S4 state active" "$(status $C2 | jget state)" "active"
 
 echo "== S5: window expiry — old events age out =="
-C3=voice-bridge
+C3=voice
 FLYWHEEL_RESTART_STORM_WINDOW_SEC=1 python3 "$GATE" gate --root "$ROOT" $C3 >/dev/null 2>&1
 for i in 2 3 4 5 6 7; do
   FLYWHEEL_RESTART_STORM_WINDOW_SEC=1 python3 "$GATE" gate --root "$ROOT" $C3 >/dev/null 2>&1

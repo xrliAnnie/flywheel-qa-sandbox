@@ -5,8 +5,7 @@
  * explicit avfoundation spec is given (FLY-959 bug 1 — ":0" is the built-in
  * mic's index, not the default device). A mute toggle stops forwarding frames
  * without tearing down the stream. This replaces the round-1(old) push-to-talk
- * file recorder; VAD/turn boundaries are the streaming backend's job (Gemini
- * server-side VAD).
+ * file recorder; VAD/turn boundaries are the streaming backend's job.
  */
 import {
 	NodeProcessRunner,

@@ -43,6 +43,7 @@ const sources = collectProductionSources(REPO_ROOT);
 const trackedConfigFiles = execFileSync("git", ["ls-files", "-z"], {
 	cwd: REPO_ROOT,
 	encoding: "utf8",
+	maxBuffer: 64 * 1024 * 1024,
 })
 	.split("\0")
 	.filter((file) => file === "config.yaml" || file.endsWith("/config.yaml"));
@@ -130,7 +131,7 @@ describe("feature-flag drift guard", () => {
 
 	it("finds exempt env gates but no raw skill-mode store read", () => {
 		const found = new Set(scan.rawCodeHits.map((hit) => hit.name));
-		expect(found.has("FLYWHEEL_GEMINI_AUTOSTART")).toBe(true);
+		expect(found.has("FLYWHEEL_LINEAR_STARTED_SYNC")).toBe(true);
 		expect(found.has("FLYWHEEL_SKILL_FRAMEWORK_MODE")).toBe(false);
 	});
 
