@@ -1,15 +1,16 @@
 ---
 issue: FLY-2882
 phase: implement
-phaseCursor: 1/5
-updated: 2026-09-26T00:55:56.447Z
-nextStep: "QA attempt 2 rework: room-authority locator via
-  FLYWHEEL_LEAD_LAUNCHD_REGISTRY (registry->plist->manifest), then >=60s
-  long-turn QA fixture"
+phaseCursor: 3/5
+updated: 2026-09-26T01:12:31.992Z
+nextStep: "Code pushed (locator+fixture). Remaining: run related shell tests
+  (run-bridge-isolation-boot, test-deploy-fly1389), update verification.md §7,
+  code review (codex:rescue gpt-6-astra), push, re-commit milestone as literal
+  last commit, ask --report, complete --route needs_review --pr 1331"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2882 progress
-**phase**: implement (1/5)
-**next**: QA attempt 2 rework: room-authority locator via FLYWHEEL_LEAD_LAUNCHD_REGISTRY (registry->plist->manifest), then >=60s long-turn QA fixture
+**phase**: implement (3/5)
+**next**: Code pushed (locator+fixture). Remaining: run related shell tests (run-bridge-isolation-boot, test-deploy-fly1389), update verification.md §7, code review (codex:rescue gpt-6-astra), push, re-commit milestone as literal last commit, ask --report, complete --route needs_review --pr 1331
