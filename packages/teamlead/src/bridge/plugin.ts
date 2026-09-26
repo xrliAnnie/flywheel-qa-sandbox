@@ -83,7 +83,7 @@ import {
 	WorkflowFSM,
 } from "flywheel-core";
 import type { CipherWriter, MemoryService } from "flywheel-edge-worker";
-import { WorktreeManager } from "flywheel-edge-worker";
+import { resolveWorktreeKey, WorktreeManager } from "flywheel-edge-worker";
 import { identityKey as claudeIdentityKey } from "../account-heal/account-identity.js";
 import { recordAuthHealth as ledgerRecordAuthHealth } from "../account-heal/account-ledger.js";
 import type { AccountRotationNotice } from "../account-heal/account-rotation-notice.js";
@@ -166,6 +166,7 @@ import {
 	reconcileCodexCanonicalRoot,
 	wireCodexQuotaDispatcher,
 } from "../codex-quota/runtime.js";
+import type { TakeoverRescuedAlertHook } from "../DirectEventSink.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
 import {
 	readAttentionSources,
@@ -353,7 +354,11 @@ import {
 	createHostCmuxWatcherPatrol,
 	projectCmuxRebindDisabled,
 } from "./cmux-watcher-patrol.js";
-import { reapCodexDaemonForSession } from "./codex-daemon-teardown.js";
+import {
+	codexTerminalTeardownDeps,
+	reapCodexDaemonForSession,
+	registerCodexTerminalTeardown,
+} from "./codex-daemon-teardown.js";
 import {
 	createCredentialProbe,
 	reportCodexGlobalHealth,
@@ -379,6 +384,11 @@ import {
 	prepareCodexRecoveryAgentHome,
 	resolveCodexRecoveryWindow,
 } from "./codex-session-reown.js";
+import {
+	createCodexTerminalCloseAttemptRecorder,
+	terminalBodiesForQuotaPage,
+} from "./codex-terminal-close-ledger.js";
+import { createBridgeCodexTerminalSweep } from "./codex-terminal-sweep-runtime.js";
 import { recordCodexTransportDeathSnapshot } from "./codex-transport-death-snapshot.js";
 import { prepareBridgeCommDbRebuilds } from "./commdb-fly2268-preflight.js";
 import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
@@ -530,6 +540,7 @@ import {
 	storeCmuxRebindDisabled,
 	storeCmuxWatcherRebuildDisabled,
 	storeCodexQuotaAutoSwitchEnabled,
+	storeCodexTerminalReapEnabled,
 	storeDatabaseArchiveEnabled,
 	storeFlagRetirementScanEnabled,
 	storeLoopProfilerEnabled,
@@ -543,6 +554,7 @@ import {
 	storeWorkflowNodeReuseEnabled,
 	storeWorkflowReworkReentryEnabled,
 	storeWorkflowTurnDivergenceAlertsEnabled,
+	storeWorktreeTakeoverRescueDisabled,
 	storeXiaohongshuLearningEnabled,
 } from "./flag-store-runtime.js";
 import { ConfirmTokenStore } from "./fleet-admin.js";
@@ -603,9 +615,10 @@ import {
 } from "./holder-wake-activation.js";
 import { buildSessionKey } from "./hook-payload.js";
 import {
+	describeIdleThreadSweepDenial,
 	IDLE_THREAD_SWEEP_SCHEDULER_CONFIG,
 	makeIdleThreadArchiveSweep,
-	resolveIdleThreadSweepChannelIds,
+	resolveIdleThreadSweepGroups,
 } from "./idle-thread-archive-sweep.js";
 import { INFRA_ALERT_OWNER_LEAD_ID } from "./infra-alert-mailbox.js";
 import { buildInfraAlertRouting } from "./infra-alert-wiring.js";
@@ -2245,7 +2258,11 @@ export function createBridgeApp(
 							},
 						}),
 						vercelSection,
-						{ lastSwitch },
+						{
+							lastSwitch,
+							// FLY-2903: best effort — a ledger failure is an empty banner.
+							terminalBodies: terminalBodiesForQuotaPage(store, new Date()),
+						},
 					);
 					res.type("html").send(html);
 				} catch {
@@ -4109,6 +4126,7 @@ export function createBridgeApp(
 				store,
 				session,
 				"bridge.close-tmux",
+				codexTerminalTeardownDeps("close_tmux"),
 			);
 			const target = getTmuxTargetFromCommDb(executionId, session.project_name);
 			if (!target) {
@@ -7827,8 +7845,12 @@ export async function startBridge(
 		current: ReviewRequestCoordinator | undefined;
 	} = { current: undefined };
 
+	// FLY-2901: the takeover-rescued INFO alert hook rides this holder too — the
+	// DirectEventSink is built inside setupRunInfrastructure, and this is the
+	// reference it already receives (run-infra copies it onto the sink).
 	const turnBeltReconcilerHolder: {
 		current: TurnBeltReconciler | undefined;
+		alertWorktreeTakeoverRescued?: TakeoverRescuedAlertHook;
 	} = { current: undefined };
 	const workflowReworkCoordinatorHolder: {
 		current: WorkflowReworkCoordinator | undefined;
@@ -8343,7 +8365,6 @@ export async function startBridge(
 	const terminalArchiveEnqueue = (issueId: string) =>
 		terminalArchiveBuffer.enqueue(issueId);
 	const infraDiscordIdentity = resolveInfraDiscordIdentity();
-	const idleThreadSweepChannelIds = resolveIdleThreadSweepChannelIds();
 	const listDiscordOpenThreadIds = infraDiscordIdentity
 		? async () => {
 				const listed = await listGuildActiveThreads(infraDiscordIdentity);
@@ -8358,6 +8379,13 @@ export async function startBridge(
 	// FLY-2211: one process-local authority shared by first dispatch, rescue,
 	// boot reconciliation, and the adjacent orphan reaper.
 	const codexExecutionOwners = new CodexExecutionOwnershipRegistry();
+	// FLY-2903: every Bridge terminal path (terminate / closeRunner /
+	// process retirement / close-tmux) stops this process's goal runtime before
+	// reaping its daemon and records the attempt for the terminal sweep.
+	const disposeCodexTerminalTeardown = registerCodexTerminalTeardown({
+		owners: codexExecutionOwners,
+		closeLedger: createCodexTerminalCloseAttemptRecorder(store),
+	});
 	const codexRecoveryRuntimes = new Map<string, CodexRecoveryRuntime>();
 	const codexMaintenanceTicks: string[] = [];
 
@@ -9516,6 +9544,28 @@ export async function startBridge(
 					storeWorkflowReworkReentryEnabled(flagStore),
 				nodeStandbyResumeEnabled: () =>
 					storeNodeStandbyResumeEnabled(flagStore),
+				// FLY-2901 §7: call-time kill switch snapshot for the successor's
+				// shared-worktree takeover (the dispatcher treats a reader failure
+				// as off; an opt-in kill switch cannot be asserted by an unreadable
+				// flag).
+				takeoverRescueDisabled: () =>
+					storeWorktreeTakeoverRescueDisabled(flagStore),
+				// FLY-2901 §3/§4.6: the shared branch-B worktree exactly as Blueprint
+				// derives it (same manager, projectRoot, projectName and shared key).
+				resolveSharedWorktree: ({ projectName, issueId }) => {
+					const projectRoot = resolveProjectRootByName(projectName);
+					if (!projectRoot) return undefined;
+					const expected = lifecycleWorktreeManager.expectedWorktree(
+						projectRoot,
+						projectName,
+						resolveWorktreeKey(issueId, { shareParentBranch: true }),
+					);
+					return {
+						projectRoot,
+						path: expected.path,
+						branch: expected.branch,
+					};
+				},
 				admissionProbe: () => config.runnerAdmission.tryAdmit(),
 				armResidentReceiver: (executionId, source) =>
 					residentReceiverSupervisor.arm(executionId, source),
@@ -10245,6 +10295,25 @@ export async function startBridge(
 			);
 		}
 	};
+	// FLY-2903: late-bound sink for the terminal-body sweep, bound with the
+	// routed alert sink below. Unbound → the sweep keeps the alert pending and
+	// retries it next tick.
+	const codexTerminalSweepAlertHolder: {
+		current?: { alert: (p: AlertPayload) => Promise<AlertResult> };
+	} = {};
+	// Only this process's own ownership registry can say whether a terminal
+	// body is still owned; an injected dispatcher does not share it. Disabled
+	// under VITEST (same boundary as the codex health probe): general Bridge
+	// suites must never read the host's process table or its real socket root.
+	const codexTerminalSweep =
+		opts?.startDispatcher || process.env.VITEST
+			? undefined
+			: createBridgeCodexTerminalSweep({
+					store,
+					owners: codexExecutionOwners,
+					reapEnabled: () => storeCodexTerminalReapEnabled(flagStore),
+					alertSink: codexTerminalSweepAlertHolder,
+				});
 	const codexSessionReowner = new CodexSessionReowner({
 		store,
 		isIntentionalStandby: (executionId) => {
@@ -10790,6 +10859,24 @@ export async function startBridge(
 						error instanceof Error ? error.message : String(error)
 					}`,
 				);
+			}
+			// FLY-2903: after recovery claimed what it may, give every terminal
+			// Codex body a verified close verdict (single-flight, 30s soft budget).
+			if (codexTerminalSweep) {
+				try {
+					const swept = await codexTerminalSweep.tick();
+					if (swept.evaluated > 0 || swept.deferred > 0) {
+						console.log(
+							`[codex-terminal-sweep] evaluated=${swept.evaluated} deferred=${swept.deferred} skippedBodies=${swept.skippedBodies} states=${JSON.stringify(swept.states)}`,
+						);
+					}
+				} catch (error) {
+					console.warn(
+						`[codex-terminal-sweep] pass failed closed: ${
+							error instanceof Error ? error.message : String(error)
+						}`,
+					);
+				}
 			}
 			try {
 				await residentReceiverSupervisor.healthTick();
@@ -11344,33 +11431,39 @@ export async function startBridge(
 		projects: projects ?? [],
 		enqueue: doneThreadReconcile.enqueueThread,
 	});
-	const idleThreadSweep =
-		infraDiscordIdentity && idleThreadSweepChannelIds.length > 0
-			? makeIdleThreadArchiveSweep({
-					identity: infraDiscordIdentity,
-					channelIds: idleThreadSweepChannelIds,
-					log: (message) => console.log(`[idle-thread-sweep] ${message}`),
-					onDenied: ({ status, context }) => {
-						void metaAlertNotifier.notify({
-							reason: "idle_thread_sweep_denied",
-							title: "Discord idle-thread sweep denied",
-							body: `Discord HTTP ${status} during ${context}; check claw-infra-bot VIEW_CHANNEL and MANAGE_THREADS permissions.`,
-						});
-					},
-				})
-			: undefined;
-	const idleThreadSweepScheduler = idleThreadSweep
-		? startDoneThreadReconcileScheduler({
-				runOnce: (shouldAbort) => idleThreadSweep.runOnce(shouldAbort),
+	// FLY-2916: each channel group (production, QA Testing) sweeps with its own
+	// bot identity on its own scheduler, so neither can spend the other's budget.
+	const idleThreadSweepSchedulers = resolveIdleThreadSweepGroups().map(
+		(group) => {
+			const tag =
+				group.name === "production"
+					? "idle-thread-sweep"
+					: "qa-idle-thread-sweep";
+			const log = (message: string) => console.log(`[${tag}] ${message}`);
+			const sweep = makeIdleThreadArchiveSweep({
+				identity: group.identity,
+				...(group.name === "production"
+					? { channelIds: group.channelIds }
+					: { qaTestingCategoryId: group.qaTestingCategoryId }),
+				log,
+				onDenied: (detail) =>
+					metaAlertNotifier
+						.notify(describeIdleThreadSweepDenial(group, detail))
+						.then((result) => !result.debounced),
+			});
+			const scheduler = startDoneThreadReconcileScheduler({
+				runOnce: (shouldAbort) => sweep.runOnce(shouldAbort),
 				resolveConfig: () => IDLE_THREAD_SWEEP_SCHEDULER_CONFIG,
-				log: (message) => console.log(`[idle-thread-sweep] ${message}`),
-			})
-		: undefined;
-	if (idleThreadSweepScheduler) {
-		console.log(
-			`[Bridge] idle-thread sweep ready — channels=${idleThreadSweepChannelIds.join(",")}`,
-		);
-	}
+				log,
+			});
+			console.log(
+				group.name === "production"
+					? `[Bridge] idle-thread sweep ready — channels=${group.channelIds.join(",")}`
+					: `[Bridge] QA idle-thread sweep ready — category=${group.qaTestingCategoryId} identity=${group.tokenEnv}`,
+			);
+			return scheduler;
+		},
+	);
 
 	// FLY-754: boot sweep — kill leaked `viewer-<execId>` tmux sessions (the
 	// FLY-116 Terminal.app viewer's linked sessions that were never destroyed).
@@ -14512,6 +14605,66 @@ export async function startBridge(
 			logger: { warn: (message) => console.warn(`[turn-belt] ${message}`) },
 		});
 
+		// FLY-2901 §4.8 item 4: Lead INFO alert once a head_diverged / nested_repo
+		// shared-worktree takeover rescue has been cleaned. DirectEventSink fires
+		// it right after the checked `worktree_takeover_cleaned` event lands (and
+		// never on a deduped replay). Same Lead resolution as the sibling
+		// alertWorktreeTakeoverFailure above; paths are data inside the body only.
+		turnBeltReconcilerHolder.alertWorktreeTakeoverRescued = async ({
+			session,
+			rescueEventUid,
+			rescue,
+		}) => {
+			const projectName = session.project_name;
+			let leadId: string | undefined;
+			try {
+				leadId = resolveLeadForIssue(
+					projects,
+					projectName,
+					parseJsonStringArray(
+						store.getSession(session.execution_id)?.issue_labels,
+					),
+				).lead.agentId;
+			} catch {
+				console.error(
+					`[workflow] worktree takeover rescue has no Lead: ${rescueEventUid}`,
+				);
+				return;
+			}
+			const lines = [
+				`class: ${rescue.class}`,
+				`branch: ${rescue.branch}`,
+				`target: ${rescue.target}`,
+				`worktree: ${rescue.canonicalPath}`,
+				`manifest: ${rescue.manifestPath} (sha256 ${rescue.manifestSha256})`,
+				`event: ${rescueEventUid}`,
+			];
+			if (rescue.rescues.length > 0) {
+				lines.push("rescue refs:");
+				for (const ref of rescue.rescues) {
+					lines.push(`  ${ref.kind}: ${ref.remoteBranch}@${ref.tip}`);
+				}
+			} else {
+				lines.push("rescue refs: none (nothing unique to preserve)");
+			}
+			if (rescue.nestedMoves.length > 0) {
+				lines.push("nested repos moved:");
+				for (const move of rescue.nestedMoves) {
+					lines.push(`  ${move.source} → ${move.destination}`);
+				}
+			}
+			await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert({
+				leadId,
+				projectName,
+				eventId: `workflow-worktree-takeover-rescued:${rescueEventUid}`,
+				eventType: "worktree_takeover_rescued",
+				title: `Workflow worktree takeover rescued — ${session.issue_identifier ?? session.issue_id}`,
+				body: lines.join("\n"),
+				severity: "info",
+				sessionKey: session.execution_id,
+			});
+		};
+
 		const assertWorkflowActorWorktreeReady = async (
 			session: WorkflowActorSession,
 			expectedHeadSha: string,
@@ -15984,6 +16137,7 @@ export async function startBridge(
 	// FLY-927: via the Router — runner_lead_pending_unhandled is an issue-progress
 	// kind, so with routing ON it lands in the issue's own thread.
 	leadPendingAlertHolder.current = routedAlertSink;
+	codexTerminalSweepAlertHolder.current = routedAlertSink;
 
 	// FLY-182 §4.1: surface any Lead whose alert channel/token cannot resolve
 	// from config — the silent gap that broke alerting for 25 days. LOUD log +
@@ -16271,6 +16425,7 @@ export async function startBridge(
 		// timeout so the process — and thus the port — is released even if any
 		// await below hangs.
 		shutdownStateHolder.shuttingDown = true;
+		disposeCodexTerminalTeardown();
 		landReclosePeerServer?.close();
 		await xhsWriteService.close();
 		await leadGithubProvider?.close();
@@ -16337,7 +16492,9 @@ export async function startBridge(
 		// FLY-1165: drain the done-thread reconcile (cooperative abort + await
 		// the in-flight pass) BEFORE store.close() below — a pass writing
 		// archived_at into a closed store would throw.
-		await idleThreadSweepScheduler?.stop();
+		await Promise.all(
+			idleThreadSweepSchedulers.map((scheduler) => scheduler.stop()),
+		);
 		stopWatchingBotSends();
 		await doneThreadReconcile.stop();
 		await xhsNotificationService.close();

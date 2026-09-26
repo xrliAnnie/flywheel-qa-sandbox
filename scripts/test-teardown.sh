@@ -27,6 +27,8 @@ source "${TEARDOWN_SCRIPT_DIR}/lib/qa-launchd-lead.sh"
 source "${TEARDOWN_SCRIPT_DIR}/lib/qa-generalized.sh"
 # shellcheck source=lib/qa-slot-bridge.sh
 source "${TEARDOWN_SCRIPT_DIR}/lib/qa-slot-bridge.sh"
+# shellcheck source=lib/qa-slot-pool.sh
+source "${TEARDOWN_SCRIPT_DIR}/lib/qa-slot-pool.sh"
 # shellcheck source=lib/runner-workspace-trust.sh
 source "${TEARDOWN_SCRIPT_DIR}/lib/runner-workspace-trust.sh"
 _CMUX_PROCESS_CENSUS_LIB="${TEARDOWN_SCRIPT_DIR}/lib/cmux-mutator-process-census.sh"
@@ -1347,7 +1349,10 @@ test_teardown_main() {
 
   if [[ "$target" == "all" ]]; then
     SLOTS_FILE="${HOME}/.flywheel/test-slots.json"
-    TOTAL_SLOTS=$(jq '.slots | length' "$SLOTS_FILE" 2>/dev/null || echo 4)
+    if ! TOTAL_SLOTS="$(qa_slot_pool_count "$SLOTS_FILE")"; then
+      log "ERROR: invalid slot sequence in ${SLOTS_FILE}; no teardown action taken (use explicit per-slot teardown only after verifying the target)"
+      return 1
+    fi
     for i in $(seq 1 "$TOTAL_SLOTS"); do
       # FLY-1189: a borrowed slot returns non-zero (guard above) — its lock is
       # released when the loop reaches the OWNER slot's manifest. Don't let one

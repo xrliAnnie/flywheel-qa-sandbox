@@ -106,6 +106,10 @@ allowed_hits=(
   'packages/teamlead/src/bridge/kind-contract.ts|three_stage_takeover_failed'
   'packages/teamlead/src/bridge/plugin.ts|three_stage_takeover_failed'
   'scripts/lead-alert.sh|three_stage_takeover_failed'
+  # FLY-2901 §4.6: the engine's predecessor-head fallback reuses the takeover
+  # refusal kind for its one-shot predecessor_head_unavailable alert.
+  'packages/teamlead/src/bridge/workflow-engine-dispatcher.ts|three_stage_takeover_failed'
+  'packages/teamlead/src/__tests__/workflow-engine-dispatcher.test.ts|three_stage_takeover_failed'
 )
 
 printf '%s\n' 'Three-stage' 'THREE_STAGE' 'ThreeStage' > "$TMP_ROOT/positive-control"

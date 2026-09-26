@@ -801,26 +801,28 @@ assert_contains "$(<"$ROOT/scripts/qa-529-generalized-e2e.mjs")" \
 step2_contract="$(sed -n '/const design = await waitFor(/,/const implement1 = await waitFor/p' \
 	"$ROOT/scripts/qa-529-generalized-e2e.mjs")"
 assert_contains "$step2_contract" \
-	'session?.status !== "ship_parked"' \
-	'step 2 waits for the enrolled design actor to remain ship parked'
+	'classifyDesignCompletion({' \
+	'step 2 uses the lifecycle-aware design completion contract'
 assert_contains "$step2_contract" \
-	'session.terminal_at != null' \
-	'step 2 rejects a terminal timestamp for the enrolled design actor'
+	"AND node_id IN ('implement', 'qa')" \
+	'step 2 waits for both downstream actors to be dispatched'
 assert_contains "$step2_contract" \
-	'processBody?.state !== "standby"' \
-	'step 2 waits for the enrolled design process body to reach standby'
+	'AND attempt = 1' \
+	'step 2 binds downstream dispatch to the first workflow attempt'
 assert_contains "$step2_contract" \
-	'liveness.liveness !== "dead"' \
-	'step 2 requires the enrolled design actor to release its process'
+ 'standbyResumeEnabled: nodeStandbyResumeEnabledAtStart' \
+ 'step 2 binds its contract to the effective run-start standby flag'
+step4_contract="$(sed -n '/const parked1 = await waitFor(/,/implementExecutionId = parked1.node.execution_id/p' \
+	"$ROOT/scripts/qa-529-generalized-e2e.mjs")"
+assert_contains "$step4_contract" \
+	'classifyImplementPark({' \
+	'step 4 uses the lifecycle-aware implement park contract'
+assert_contains "$step4_contract" \
+	'nodeStandbyResumeEnabledAtStart' \
+	'step 4 binds its contract to the effective run-start standby flag'
 assert_contains "$(<"$ROOT/scripts/qa-529-generalized-e2e.mjs")" \
-	'park.reason !== "process_retirement_pending"' \
-	'step 4 requires the standby-enrolled retirement park reason'
-assert_contains "$(<"$ROOT/scripts/qa-529-generalized-e2e.mjs")" \
-	'processBody?.state !== "standby"' \
-	'step 4 waits for the enrolled process body to reach standby'
-assert_contains "$(<"$ROOT/scripts/qa-529-generalized-e2e.mjs")" \
-	'liveness.liveness !== "dead"' \
-	'step 4 requires the retired standby actor to release its process'
+	'resolveScopedBooleanFlag(' \
+	'the driver resolves the effective scoped standby flag from canonical policy'
 if rg -q '"if-match"' "$ROOT/scripts/qa-529-generalized-e2e.mjs"; then
 	echo 'FAIL: driver claims unsupported GitHub If-Match write authority' >&2
 	failures=$((failures + 1))

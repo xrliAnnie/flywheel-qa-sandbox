@@ -4652,4 +4652,285 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			(capturedOpts as CodexDaemonGoalRuntimeOptions).effort,
 		).toBeUndefined();
 	});
+
+	describe("FLY-2903 stop channel", () => {
+		/**
+		 * A runtime that mirrors the real restart contract: it blocks until
+		 * stopped or until the test kills its daemon, and on a daemon death it
+		 * asks the injected restart predicate exactly like the real runtime.
+		 */
+		function blockingRuntime(): {
+			rt: FakeRuntime;
+			restarts: () => number;
+			killDaemon: () => void;
+		} {
+			let restarts = 0;
+			let die: ((err: Error) => void) | undefined;
+			const rt = new FakeRuntime(async (input) => {
+				input.onThreadReady?.(THREAD_ID, 0);
+				input.onGoalActive?.();
+				for (;;) {
+					try {
+						return await new Promise<RunGoalOutcome>((_resolve, reject) => {
+							die = reject;
+						});
+					} catch (err) {
+						if (rt.stopped > 0) throw err;
+						if (input.mayRestartAfterTransportDeath?.() ?? true) {
+							restarts += 1;
+							continue;
+						}
+						throw err;
+					}
+				}
+			});
+			const stop = rt.stop.bind(rt);
+			rt.stop = () => {
+				stop();
+				die?.(new Error("runtime stopped"));
+			};
+			return {
+				rt,
+				restarts: () => restarts,
+				killDaemon: () => die?.(new Error("transport closed")),
+			};
+		}
+
+		it("requestStop during the goal stops the runtime, drains, releases the lease and resolves stopped", async () => {
+			const harness = blockingRuntime();
+			runtime = harness.rt;
+			const execution = makeAdapter().execute(ctx());
+			await vi.waitFor(() => expect(runtime.runGoalInputs).toHaveLength(1));
+			expect(executionOwners.ownershipState(execId)).toBe("active");
+
+			const stopped = executionOwners.requestStop(execId, "terminate", {
+				timeoutMs: 5_000,
+			});
+			const result = await execution;
+
+			expect(runtime.stopped).toBeGreaterThanOrEqual(1);
+			expect(runtime.drainedCalls).toBeGreaterThanOrEqual(1);
+			expect(result.success).toBe(false);
+			await expect(stopped).resolves.toBe("stopped");
+			expect(executionOwners.isExecutionOwned(execId)).toBe(false);
+			expect(harness.restarts()).toBe(0);
+		});
+
+		it("FLY-2814: a transport death after requestStop is never restarted", async () => {
+			const harness = blockingRuntime();
+			runtime = harness.rt;
+			const execution = makeAdapter().execute(ctx());
+			await vi.waitFor(() => expect(runtime.runGoalInputs).toHaveLength(1));
+			const predicate = runtime.runGoalInputs[0]?.mayRestartAfterTransportDeath;
+			expect(predicate?.()).toBe(true);
+
+			// Bridge terminal path: mark first, then its reap kills the daemon.
+			const stopped = executionOwners.requestStop(execId, "close_runner", {
+				timeoutMs: 5_000,
+			});
+			expect(predicate?.()).toBe(false);
+			harness.killDaemon();
+			await execution;
+
+			expect(harness.restarts()).toBe(0);
+			await expect(stopped).resolves.toBe("stopped");
+		});
+
+		it("an approved retirement refuses the restart (retirement race)", async () => {
+			const harness = blockingRuntime();
+			runtime = harness.rt;
+			let approved = false;
+			const execution = makeAdapter().execute(
+				ctx({
+					processLifecycle: {
+						mode: "initial",
+						generation: 1,
+						retirementGraceMs: 60_000,
+						retirementApproved: () => approved,
+					},
+				}),
+			);
+			await vi.waitFor(() => expect(runtime.runGoalInputs).toHaveLength(1));
+			approved = true;
+			harness.killDaemon();
+			await execution;
+			expect(harness.restarts()).toBe(0);
+		});
+
+		it("a throwing retirement reader makes the restart predicate throw (runtime fails closed)", async () => {
+			let predicate: (() => boolean) | undefined;
+			runtime = new FakeRuntime(async (input) => {
+				input.onThreadReady?.(THREAD_ID, 0);
+				predicate = input.mayRestartAfterTransportDeath;
+				return complete();
+			});
+			await makeAdapter().execute(
+				ctx({
+					processLifecycle: {
+						mode: "initial",
+						generation: 1,
+						retirementApproved: () => {
+							throw new Error("controller unreadable");
+						},
+					},
+				}),
+			);
+			expect(predicate).toBeTypeOf("function");
+			expect(() => predicate?.()).toThrow("controller unreadable");
+		});
+
+		it("an unrequested transport death still restarts (a real crash is still rescued)", async () => {
+			const harness = blockingRuntime();
+			runtime = harness.rt;
+			const execution = makeAdapter().execute(ctx());
+			await vi.waitFor(() => expect(runtime.runGoalInputs).toHaveLength(1));
+			harness.killDaemon();
+			await vi.waitFor(() => expect(harness.restarts()).toBe(1));
+			void executionOwners.requestStop(execId, "terminate", {
+				timeoutMs: 5_000,
+			});
+			await execution;
+			expect(harness.restarts()).toBe(1);
+		});
+
+		it("without an ownership registry the predicate still allows a crash restart", async () => {
+			const harness = blockingRuntime();
+			runtime = harness.rt;
+			const deps = makeDeps();
+			delete deps.executionOwners;
+			const adapter = new CodexTmuxAdapter(
+				"testsess",
+				fake.exec,
+				25,
+				60_000,
+				undefined,
+				undefined,
+				deps,
+			);
+			const execution = adapter.execute(ctx());
+			await vi.waitFor(() => expect(runtime.runGoalInputs).toHaveLength(1));
+			expect(runtime.runGoalInputs[0]?.mayRestartAfterTransportDeath?.()).toBe(
+				true,
+			);
+			harness.killDaemon();
+			await vi.waitFor(() => expect(harness.restarts()).toBe(1));
+			runtime.stop();
+			await execution;
+		});
+
+		it("requestStop while the daemon is still starting yields no second daemon", async () => {
+			let spawns = 0;
+			let releaseStart!: () => void;
+			const started = new Promise<void>((resolve) => {
+				releaseStart = resolve;
+			});
+			runtime = new FakeRuntime(async (input) => {
+				spawns += 1;
+				await started;
+				if (runtime.stopped > 0) throw new Error("runtime stopped");
+				if (input.mayRestartAfterTransportDeath?.() === true) spawns += 1;
+				throw new Error("transport closed");
+			});
+			const execution = makeAdapter().execute(ctx());
+			await vi.waitFor(() => expect(runtime.runGoalInputs).toHaveLength(1));
+			const stopped = executionOwners.requestStop(execId, "terminate", {
+				timeoutMs: 5_000,
+			});
+			await vi.waitFor(() => expect(runtime.stopped).toBeGreaterThan(0));
+			releaseStart();
+			await execution;
+			expect(spawns).toBe(1);
+			await expect(stopped).resolves.toBe("stopped");
+		});
+
+		it("requestStop after claim but before any spawn starts nothing", async () => {
+			const baseExec = fake.exec;
+			let fired = false;
+			const stopDuringPreflight = ((
+				cmd: string,
+				args: string[],
+				o: unknown,
+			) => {
+				if (cmd === "codex" && !fired) {
+					fired = true;
+					void executionOwners.requestStop(execId, "terminate", {
+						timeoutMs: 5_000,
+					});
+				}
+				return (baseExec as (c: string, a: string[], o: unknown) => unknown)(
+					cmd,
+					args,
+					o,
+				);
+			}) as unknown as typeof fake.exec;
+			const factory = vi.fn(() => runtime);
+			const deps = { ...makeDeps(), runtimeFactory: factory };
+			const adapter = new CodexTmuxAdapter(
+				"testsess",
+				stopDuringPreflight,
+				25,
+				60_000,
+				undefined,
+				undefined,
+				deps,
+			);
+
+			const result = await adapter.execute(ctx());
+
+			expect(fired).toBe(true);
+			expect(result.success).toBe(false);
+			expect(factory).not.toHaveBeenCalled();
+			expect(runtime.runGoalInputs).toHaveLength(0);
+			expect(ensureWindowCalls).toHaveLength(0);
+			expect(executionOwners.isExecutionOwned(execId)).toBe(false);
+		});
+
+		it("a claim after a stop request is refused as owner admission", async () => {
+			await executionOwners.requestStop(execId, "terminate");
+			const result = await makeAdapter().execute(ctx());
+			expect(result).toMatchObject({
+				success: false,
+				recoveryFailure: { code: "owner_admission_failed" },
+			});
+			expect(runtime.runGoalInputs).toHaveLength(0);
+		});
+
+		it("records each restart decision and forwards a refusal to the transport forensic sink", async () => {
+			const closes: Array<Record<string, unknown>> = [];
+			const deps = makeDeps();
+			deps.onTransportClose = (evidence) => {
+				closes.push({ ...evidence });
+			};
+			runtime = new FakeRuntime(async (input) => {
+				input.onThreadReady?.(THREAD_ID, 0);
+				input.onRestartDecision?.({
+					restarts: 0,
+					allowed: false,
+					reason: "refused_by_owner",
+				});
+				return complete();
+			});
+			const adapter = new CodexTmuxAdapter(
+				"testsess",
+				fake.exec,
+				25,
+				60_000,
+				undefined,
+				undefined,
+				deps,
+			);
+			await adapter.execute(ctx());
+			await vi.waitFor(() => expect(closes).toHaveLength(1));
+			expect(closes[0]).toMatchObject({
+				executionId: execId,
+				reason: "restart_refused:refused_by_owner",
+				restartRefused: true,
+			});
+			expect(console.log).toHaveBeenCalledWith(
+				expect.stringContaining(
+					`daemon_restart_decision exec=${execId} restarts=0 allowed=false reason=refused_by_owner`,
+				),
+			);
+		});
+	});
 });

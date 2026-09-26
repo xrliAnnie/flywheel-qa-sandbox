@@ -7,6 +7,11 @@ import type {
 } from "flywheel-config";
 import type { TerminalFailureInfo } from "flywheel-core";
 import type { BlueprintResult } from "./Blueprint.js";
+import type {
+	PendingTakeoverRescue,
+	TakeoverCleanedEventPayload,
+	TakeoverRescueEventPayload,
+} from "./worktree-takeover-rescue.js";
 
 export interface EventEnvelope {
 	executionId: string;
@@ -145,6 +150,32 @@ export interface ExecutionEventEmitter {
 	): Promise<void>;
 	/** GEO-157: Heartbeat — dedicated route, no session_events, no lead notification */
 	emitHeartbeat(env: EventEnvelope): Promise<void>;
+	/**
+	 * FLY-2901: Bridge-local takeover-rescue capability. Only the in-process
+	 * DirectEventSink implements these; HTTP / NoOp emitters leave them absent,
+	 * and the shared-worktree takeover path then refuses with
+	 * `rescue_event_capability_missing` (the HTTP lane is not authority).
+	 */
+	loadPendingTakeoverRescue?(
+		env: EventEnvelope,
+		input: { runId: string; canonicalPath: string },
+	): Promise<PendingTakeoverRescue[]>;
+	recordTakeoverRescue?(
+		env: EventEnvelope,
+		input: {
+			runId: string;
+			eventUid: string;
+			payload: TakeoverRescueEventPayload;
+		},
+	): Promise<void>;
+	recordTakeoverCleaned?(
+		env: EventEnvelope,
+		input: {
+			runId: string;
+			rescueEventUid: string;
+			payload: TakeoverCleanedEventPayload;
+		},
+	): Promise<void>;
 	flush(): Promise<void>;
 }
 

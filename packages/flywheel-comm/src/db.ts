@@ -18,6 +18,20 @@ import {
 import { AUTO_NARROW_ACTOR } from "./auto-narrow-contract.js";
 import { openCommDbWritable } from "./commdb-open-gate.js";
 import {
+	COMPLETION_DRAIN_PROTOCOL_VERSION,
+	type CompletionObligation,
+	type CompletionObligationResolution,
+	type CompletionWakeResolution,
+	type ConsumptionSourceKind,
+	type ConsumptionSubjectKind,
+	drainReadSetDigest,
+	type ObligationSubject,
+	sha256Utf8,
+	subjectKey,
+	type WakeSettlementReason,
+	wakeObligationDigest,
+} from "./completion-obligations.js";
+import {
 	type IngestDiscordChatArgs,
 	ingestDiscordChatOnQueue,
 } from "./discord-chat-ingest.js";
@@ -67,6 +81,7 @@ import type {
 	ResponseWriteResult,
 	Session,
 } from "./types.js";
+import { isValidRefPath } from "./utils/content-ref.js";
 
 export const UNREAD_INSTRUCTIONS_SQL = `SELECT p.*
   FROM mailbox AS m
@@ -385,6 +400,30 @@ CREATE TABLE IF NOT EXISTS runner_phase_wakes (
 	purpose                 TEXT CHECK(purpose IN ('message_traffic','gate_response','park_wake')),
 	turn_generation         INTEGER,
   UNIQUE (execution_id, message_id)
+);
+CREATE TABLE IF NOT EXISTS runner_content_consumption (
+  receipt_id     TEXT PRIMARY KEY,
+  execution_id   TEXT NOT NULL,
+  subject_kind   TEXT NOT NULL CHECK(subject_kind IN ('mailbox','inline_wake')),
+  subject_id     TEXT NOT NULL CHECK(length(subject_id) > 0),
+  content_sha256 TEXT NOT NULL CHECK(length(content_sha256) = 64),
+  source_kind    TEXT NOT NULL CHECK(source_kind IN ('inbox','check','drain_ack')),
+  activation_id  TEXT NOT NULL DEFAULT '',
+  consumed_at    TEXT NOT NULL,
+  read_batch_id  TEXT,
+  UNIQUE (execution_id, subject_kind, subject_id, content_sha256, activation_id)
+);
+CREATE TABLE IF NOT EXISTS runner_wake_settlement (
+  execution_id        TEXT NOT NULL,
+  wake_message_id     TEXT NOT NULL,
+  obligation_digest   TEXT NOT NULL CHECK(length(obligation_digest) = 64),
+  activation_id       TEXT NOT NULL,
+  reason              TEXT NOT NULL
+    CHECK(reason IN ('content_consumed','signal_satisfied','authorized_disposal')),
+  evidence_json       TEXT NOT NULL CHECK(json_valid(evidence_json)),
+  completion_event_id TEXT NOT NULL,
+  created_at          TEXT NOT NULL,
+  PRIMARY KEY (execution_id, wake_message_id, obligation_digest)
 );
 CREATE TABLE IF NOT EXISTS runner_wake_failure_episode (
   execution_id                 TEXT NOT NULL,
@@ -855,6 +894,7 @@ export interface RunnerPhaseWake {
 		| "debug_override"
 		| "normal_traffic"
 		| "terminal"
+		| "drain_settled"
 		| null;
 	purpose: "message_traffic" | "gate_response" | "park_wake" | null;
 	turn_generation: number | null;
@@ -885,6 +925,10 @@ interface RunnerDoorbellMetadata {
 	responseRefIds: string[];
 	[key: string]: unknown;
 }
+
+/** `metadata_json.wakeId`, NULL (never an error) for a malformed legacy row. */
+const WAKE_ID_OF_METADATA = `CASE WHEN json_valid(metadata_json)
+  THEN json_extract(metadata_json, '$.wakeId') END`;
 
 function uniqueStrings(values: readonly string[]): string[] {
 	return [...new Set(values.filter((value) => value.length > 0))];
@@ -5084,6 +5128,817 @@ export class CommDB {
 		return { mailbox, phaseWakes };
 	}
 
+	// ── FLY-2373: semantic completion drain ──
+
+	/** Run `fn` inside one IMMEDIATE transaction on this connection. */
+	withImmediateTransaction<T>(fn: () => T): T {
+		return this.db.transaction(fn).immediate();
+	}
+
+	/**
+	 * Record that this execution received the exact bytes of one subject
+	 * through a supported consuming path. Idempotent on the full identity; the
+	 * conflict clause covers uniqueness only, so CHECK violations still throw.
+	 */
+	private recordContentConsumption(input: {
+		executionId: string;
+		subjectKind: ConsumptionSubjectKind;
+		subjectId: string;
+		contentSha256: string;
+		sourceKind: ConsumptionSourceKind;
+		activationId?: string;
+		consumedAt: string;
+		readBatchId?: string;
+	}): string {
+		const activationId = input.activationId ?? "";
+		this.db
+			.prepare(
+				`INSERT INTO runner_content_consumption
+				   (receipt_id, execution_id, subject_kind, subject_id, content_sha256,
+				    source_kind, activation_id, consumed_at, read_batch_id)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+				 ON CONFLICT(execution_id, subject_kind, subject_id, content_sha256, activation_id)
+				 DO NOTHING`,
+			)
+			.run(
+				`consume:${randomUUID()}`,
+				input.executionId,
+				input.subjectKind,
+				input.subjectId,
+				input.contentSha256,
+				input.sourceKind,
+				activationId,
+				input.consumedAt,
+				input.readBatchId ?? null,
+			);
+		const row = this.db
+			.prepare(
+				`SELECT receipt_id FROM runner_content_consumption
+				  WHERE execution_id = ? AND subject_kind = ? AND subject_id = ?
+				    AND content_sha256 = ? AND activation_id = ?`,
+			)
+			.get(
+				input.executionId,
+				input.subjectKind,
+				input.subjectId,
+				input.contentSha256,
+				activationId,
+			) as { receipt_id: string } | undefined;
+		if (!row) throw new Error("content consumption receipt was not stored");
+		return row.receipt_id;
+	}
+
+	private contentConsumptionReceipts(
+		executionId: string,
+		subject: ObligationSubject,
+		activationId: string,
+	): string[] {
+		const rows = this.db
+			.prepare(
+				`SELECT receipt_id FROM runner_content_consumption
+				  WHERE execution_id = ? AND subject_kind = ? AND subject_id = ?
+				    AND content_sha256 = ? AND activation_id = ?
+				  ORDER BY consumed_at, receipt_id`,
+			)
+			.all(
+				executionId,
+				subject.subjectKind,
+				subject.subjectId,
+				subject.contentSha256,
+				subject.subjectKind === "mailbox" ? "" : activationId,
+			) as Array<{ receipt_id: string }>;
+		return rows.map((row) => row.receipt_id);
+	}
+
+	/** Exact body of a runner-bound mailbox row; undefined when unreadable. */
+	private mailboxBody(row: MailboxRow): string | undefined {
+		if (!row.content_ref) return row.content;
+		if (!isValidRefPath(row.content_ref)) return undefined;
+		try {
+			return readFileSync(row.content_ref, "utf8");
+		} catch {
+			return undefined;
+		}
+	}
+
+	private recordMailboxConsumption(
+		row: MailboxRow,
+		executionId: string,
+		sourceKind: ConsumptionSourceKind,
+		consumedAt: string,
+	): string | undefined {
+		if (row.to_agent !== executionId) return undefined;
+		const body = this.mailboxBody(row);
+		if (body === undefined) return undefined;
+		return this.recordContentConsumption({
+			executionId,
+			subjectKind: "mailbox",
+			subjectId: row.delivery_id,
+			contentSha256: sha256Utf8(body),
+			sourceKind,
+			consumedAt,
+		});
+	}
+
+	/**
+	 * `flywheel-comm inbox`: return and consume every unread instruction in one
+	 * transaction. Only a real exec-bound read signs completion evidence; the
+	 * debug override still ACKs but never proves consumption.
+	 */
+	consumeRunnerInbox(
+		executionId: string,
+		observedAtMs: number,
+		ackScope: "exec_cli" | "debug_override",
+	): Message[] {
+		if (!executionId) throw new Error("inbox executionId is required");
+		return this.db
+			.transaction(() => {
+				const instructions = this.getUnreadInstructions(executionId);
+				const nowIso = new Date(observedAtMs).toISOString();
+				const queue = new MailboxQueue(this.db);
+				for (const instruction of instructions) {
+					queue.ack(instruction.id, nowIso);
+					if (ackScope !== "exec_cli") continue;
+					const row = this.db
+						.prepare("SELECT * FROM mailbox WHERE id = ?")
+						.get(instruction.id) as MailboxRow | undefined;
+					if (row) {
+						this.recordMailboxConsumption(row, executionId, "inbox", nowIso);
+					}
+				}
+				this.ackRunnerReceiptWakesStarted(executionId, observedAtMs, ackScope);
+				return instructions;
+			})
+			.immediate();
+	}
+
+	private mailboxObligation(
+		row: MailboxRow,
+		options: { historical: boolean; wakeMessageId?: string },
+	): CompletionObligation {
+		const body = this.mailboxBody(row);
+		return {
+			subjectKind: "mailbox",
+			subjectId: row.delivery_id,
+			contentSha256: sha256Utf8(body ?? row.content),
+			type: row.type === "response" ? "response" : "instruction",
+			sender: row.from_agent,
+			body: body ?? row.content,
+			createdAt: row.created_at,
+			...(row.type === "instruction" ? { leadInstructionId: row.id } : {}),
+			...(row.type === "response" && row.ref_id
+				? { questionId: row.ref_id }
+				: {}),
+			wakeMessageIds: options.wakeMessageId ? [options.wakeMessageId] : [],
+			historical: options.historical,
+			sourceStatus: body === undefined ? "content_unavailable" : "ok",
+		};
+	}
+
+	private inlineWakeObligation(
+		wake: RunnerPhaseWake,
+		subjectId: string,
+		sourceStatus: CompletionObligation["sourceStatus"],
+	): CompletionObligation {
+		return {
+			subjectKind: "inline_wake",
+			subjectId,
+			contentSha256: sha256Utf8(wake.content),
+			type: "wake",
+			sender: "bridge",
+			body: wake.content,
+			createdAt: new Date(wake.queued_at).toISOString(),
+			wakeMessageIds: [wake.message_id],
+			historical: false,
+			sourceStatus,
+		};
+	}
+
+	/**
+	 * Resolve one pending wake into the subjects it obliges this execution to
+	 * read, each paired with the server-side evidence that satisfies it.
+	 */
+	private resolveWakeSubjects(
+		executionId: string,
+		activationId: string,
+		wake: RunnerPhaseWake,
+	): Array<{
+		obligation: CompletionObligation;
+		receiptIds: string[];
+		turnInputWakeIds: string[];
+	}> {
+		let metadata: Record<string, unknown> = {};
+		try {
+			const parsed = wake.metadata_json
+				? (JSON.parse(wake.metadata_json) as unknown)
+				: undefined;
+			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+				metadata = parsed as Record<string, unknown>;
+			}
+		} catch {
+			metadata = {};
+		}
+		const mailboxSubject = (row: MailboxRow) => {
+			const live = row.state === "QUEUED" || row.state === "LEASED";
+			const obligation = this.mailboxObligation(row, {
+				historical: !live,
+				wakeMessageId: wake.message_id,
+			});
+			return {
+				obligation,
+				receiptIds: live
+					? []
+					: this.contentConsumptionReceipts(
+							executionId,
+							obligation,
+							activationId,
+						),
+				turnInputWakeIds: [] as string[],
+			};
+		};
+		const inlineSubject = (
+			subjectId: string,
+			sourceStatus: CompletionObligation["sourceStatus"],
+			turnInputWakeIds: string[] = [],
+		) => {
+			const obligation = this.inlineWakeObligation(
+				wake,
+				subjectId,
+				sourceStatus,
+			);
+			return {
+				obligation,
+				receiptIds: this.contentConsumptionReceipts(
+					executionId,
+					obligation,
+					activationId,
+				),
+				turnInputWakeIds,
+			};
+		};
+		const ownsRow = (row: MailboxRow | undefined): row is MailboxRow =>
+			row !== undefined &&
+			row.to_agent === executionId &&
+			row.recipient_kind === "runner" &&
+			row.carrier === "inbox";
+
+		if (wake.message_id.startsWith("doorbell:")) {
+			const memberIds = Array.isArray(metadata.memberIds)
+				? metadata.memberIds.filter(
+						(id): id is string => typeof id === "string" && id.length > 0,
+					)
+				: [];
+			const rows = memberIds.map(
+				(id) =>
+					this.db
+						.prepare("SELECT * FROM mailbox WHERE delivery_id = ?")
+						.get(id) as MailboxRow | undefined,
+			);
+			if (memberIds.length === 0 || !rows.every(ownsRow)) {
+				return [inlineSubject(`wake:${wake.message_id}`, "source_missing")];
+			}
+			return rows.map((row) => mailboxSubject(row as MailboxRow));
+		}
+		if (wake.source_instruction_id) {
+			const row = this.db
+				.prepare("SELECT * FROM mailbox WHERE id = ?")
+				.get(wake.source_instruction_id) as MailboxRow | undefined;
+			return ownsRow(row)
+				? [mailboxSubject(row)]
+				: [inlineSubject(`wake:${wake.message_id}`, "source_missing")];
+		}
+		const questionId = metadata.questionId;
+		const kind = metadata.kind;
+		if (
+			typeof questionId === "string" &&
+			questionId.length > 0 &&
+			metadata.flywheelId === undefined &&
+			(kind === "gate_answered" ||
+				kind === "ask_answered" ||
+				kind === "approval_wake" ||
+				kind === "feedback_wake")
+		) {
+			const response = this.db
+				.prepare(
+					`SELECT response.* FROM mailbox response
+					   JOIN mailbox question ON question.id = response.ref_id
+					  WHERE question.id = ? AND question.type = 'question'
+					    AND question.from_agent = ? AND response.type = 'response'
+					  ORDER BY response.seq DESC LIMIT 1`,
+				)
+				.get(questionId, executionId) as MailboxRow | undefined;
+			return ownsRow(response)
+				? [mailboxSubject(response)]
+				: [inlineSubject(`wake:${wake.message_id}`, "source_missing")];
+		}
+		const wakeId = metadata.wakeId;
+		if (
+			typeof wakeId === "string" &&
+			wakeId.length > 0 &&
+			(kind === "turn_recovery" ||
+				kind === "workflow_rework" ||
+				kind === "workflow_ship_carrier")
+		) {
+			// A durable TURN wake is re-pushed (verified T1 retry) under a fresh
+			// transport id with byte-identical text. A copy already delivered as a
+			// turn input satisfies every other copy of the same wake + digest.
+			const copies = this.db
+				.prepare(
+					`SELECT message_id, content FROM runner_phase_wakes
+					  WHERE execution_id = ? AND message_id <> ?
+					    AND state = 'finished'
+					    AND started_ack_scope = 'message'
+					    AND ${WAKE_ID_OF_METADATA} = ?`,
+				)
+				.all(executionId, wake.message_id, wakeId) as Array<{
+				message_id: string;
+				content: string;
+			}>;
+			return [
+				inlineSubject(
+					`turn-wake:${wakeId}`,
+					"ok",
+					copies
+						.filter((copy) => copy.content === wake.content)
+						.map((copy) => copy.message_id)
+						.sort(),
+				),
+			];
+		}
+		return [inlineSubject(`wake:${wake.message_id}`, "ok")];
+	}
+
+	/**
+	 * FLY-2373: every body this execution still owes before completion.
+	 * Enumeration roots are live runner mailbox rows (QUEUED/LEASED) and, for a
+	 * phase-keep-alive lifecycle, pending wakes (queued or deferred_midturn).
+	 * Started/finished wakes are not roots: an inline wake started as a turn
+	 * input delivered its body, and a started doorbell's unread members remain
+	 * live mailbox rows. Wake run-state is never itself consumption evidence.
+	 */
+	resolveCompletionObligations(
+		executionId: string,
+		activationId: string,
+	): CompletionObligationResolution {
+		if (!executionId || !activationId) {
+			throw new Error("completion obligations require execution + activation");
+		}
+		const unread = new Map<
+			string,
+			CompletionObligation & { mailboxId?: string }
+		>();
+		const addUnread = (
+			obligation: CompletionObligation,
+			mailboxId?: string,
+		): void => {
+			const key = subjectKey(obligation);
+			const existing = unread.get(key);
+			if (!existing) {
+				unread.set(key, {
+					...obligation,
+					...(mailboxId ? { mailboxId } : {}),
+				});
+				return;
+			}
+			existing.wakeMessageIds = [
+				...new Set([...existing.wakeMessageIds, ...obligation.wakeMessageIds]),
+			].sort();
+			existing.historical = existing.historical && obligation.historical;
+		};
+
+		const liveRows = this.db
+			.prepare(
+				`SELECT * FROM mailbox
+				  WHERE to_agent = ? AND recipient_kind = 'runner'
+				    AND carrier = 'inbox' AND state IN ('QUEUED','LEASED')
+				    AND type IN ('instruction','response')
+				    AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
+				  ORDER BY seq`,
+			)
+			.all(executionId) as MailboxRow[];
+		for (const row of liveRows) {
+			addUnread(this.mailboxObligation(row, { historical: false }), row.id);
+		}
+
+		const hasPhaseWakeLifecycle = Boolean(
+			this.db
+				.prepare(
+					`SELECT 1 FROM sessions
+					  WHERE execution_id = ? AND phase_keep_alive = 1`,
+				)
+				.get(executionId),
+		);
+		const pendingWakes = hasPhaseWakeLifecycle
+			? (this.db
+					.prepare(
+						`SELECT * FROM runner_phase_wakes
+						  WHERE execution_id = ? AND retirement_id IS NULL
+						    AND ((state = 'pending'
+						          AND admission_state IN ('queued','deferred_midturn'))
+						         OR state = 'started')
+						  ORDER BY queue_seq`,
+					)
+					.all(executionId) as RunnerPhaseWake[])
+			: [];
+		const wakes: CompletionWakeResolution[] = [];
+		for (const wake of pendingWakes) {
+			const members = this.resolveWakeSubjects(executionId, activationId, wake);
+			// Claimed by the daemon for a turn but not yet recorded as delivered:
+			// neither side may settle it (fence against claim-then-complete).
+			if (wake.state === "started" && wake.started_ack_scope === "message") {
+				members.push({
+					obligation: {
+						...this.inlineWakeObligation(
+							wake,
+							`inflight:${wake.message_id}`,
+							"in_flight",
+						),
+					},
+					receiptIds: [],
+					turnInputWakeIds: [],
+				});
+			}
+			const receiptIds: string[] = [];
+			const turnInputWakeIds: string[] = [];
+			let satisfied = true;
+			for (const member of members) {
+				const evidenced =
+					member.obligation.sourceStatus === "ok" &&
+					(member.receiptIds.length > 0 || member.turnInputWakeIds.length > 0);
+				receiptIds.push(...member.receiptIds);
+				turnInputWakeIds.push(...member.turnInputWakeIds);
+				if (!evidenced) {
+					satisfied = false;
+					addUnread(member.obligation);
+				}
+			}
+			const subjects = members.map(({ obligation }) => ({
+				subjectKind: obligation.subjectKind,
+				subjectId: obligation.subjectId,
+				contentSha256: obligation.contentSha256,
+			}));
+			wakes.push({
+				messageId: wake.message_id,
+				queueSeq: wake.queue_seq,
+				obligationDigest: wakeObligationDigest({
+					executionId,
+					activationId,
+					wakeMessageId: wake.message_id,
+					subjects,
+				}),
+				subjects,
+				satisfied,
+				evidence: {
+					receiptIds: [...new Set(receiptIds)].sort(),
+					turnInputWakeIds: [...new Set(turnInputWakeIds)].sort(),
+				},
+			});
+		}
+		const unreadList = [...unread.values()];
+		return {
+			protocolVersion: COMPLETION_DRAIN_PROTOCOL_VERSION,
+			executionId,
+			activationId,
+			unread: unreadList.map(({ mailboxId: _mailboxId, ...obligation }) => ({
+				...obligation,
+			})),
+			wakes,
+			mailboxIds: unreadList
+				.map((obligation) => obligation.mailboxId)
+				.filter((id): id is string => typeof id === "string"),
+			phaseWakeIds: wakes
+				.filter((wake) => !wake.satisfied)
+				.map((wake) => wake.messageId),
+			readSetDigest: drainReadSetDigest({
+				executionId,
+				activationId,
+				subjects: unreadList,
+			}),
+		};
+	}
+
+	/**
+	 * Bridge-verified drain ACK: the model read the exact subjects of one
+	 * server-issued read envelope. Each subject is re-read under this lock; a
+	 * changed body is refused (the new bytes stay unread), live rows are ACKed
+	 * and every accepted subject gets a `drain_ack` consumption receipt.
+	 */
+	acknowledgeCompletionDrainRead(input: {
+		executionId: string;
+		activationId: string;
+		readId: string;
+		subjects: readonly ObligationSubject[];
+		nowMs: number;
+	}): {
+		accepted: Array<ObligationSubject & { receiptId: string }>;
+		rejected: Array<
+			ObligationSubject & {
+				reason:
+					| "content_changed"
+					| "subject_missing"
+					| "content_unavailable"
+					| "source_missing"
+					| "in_flight";
+			}
+		>;
+	} {
+		if (!input.executionId || !input.activationId || !input.readId) {
+			throw new Error("drain acknowledgement requires exact identity");
+		}
+		return this.db
+			.transaction(() => {
+				const nowIso = new Date(input.nowMs).toISOString();
+				const accepted: Array<ObligationSubject & { receiptId: string }> = [];
+				const rejected: Array<
+					ObligationSubject & {
+						reason:
+							| "content_changed"
+							| "subject_missing"
+							| "content_unavailable"
+							| "source_missing"
+							| "in_flight";
+					}
+				> = [];
+				const queue = new MailboxQueue(this.db);
+				for (const subject of input.subjects) {
+					if (subject.subjectId.startsWith("inflight:")) {
+						rejected.push({ ...subject, reason: "in_flight" });
+						continue;
+					}
+					if (subject.subjectKind === "mailbox") {
+						const row = this.db
+							.prepare(
+								`SELECT * FROM mailbox WHERE delivery_id = ? AND to_agent = ?
+								   AND recipient_kind = 'runner' AND carrier = 'inbox'`,
+							)
+							.get(subject.subjectId, input.executionId) as
+							| MailboxRow
+							| undefined;
+						if (!row) {
+							rejected.push({ ...subject, reason: "subject_missing" });
+							continue;
+						}
+						const body = this.mailboxBody(row);
+						if (body === undefined) {
+							rejected.push({ ...subject, reason: "content_unavailable" });
+							continue;
+						}
+						if (sha256Utf8(body) !== subject.contentSha256) {
+							rejected.push({ ...subject, reason: "content_changed" });
+							continue;
+						}
+						queue.ack(row.id, nowIso);
+						accepted.push({
+							...subject,
+							receiptId: this.recordContentConsumption({
+								executionId: input.executionId,
+								subjectKind: "mailbox",
+								subjectId: subject.subjectId,
+								contentSha256: subject.contentSha256,
+								sourceKind: "drain_ack",
+								consumedAt: nowIso,
+								readBatchId: input.readId,
+							}),
+						});
+						continue;
+					}
+					// Locate the exact wake(s) behind this inline identity; resolve
+					// each so the identity is derived by the same code as the drain.
+					const candidates = subject.subjectId.startsWith("turn-wake:")
+						? (this.db
+								.prepare(
+									`SELECT * FROM runner_phase_wakes
+									  WHERE execution_id = ? AND ${WAKE_ID_OF_METADATA} = ?
+									  ORDER BY queue_seq`,
+								)
+								.all(
+									input.executionId,
+									subject.subjectId.slice("turn-wake:".length),
+								) as RunnerPhaseWake[])
+						: subject.subjectId.startsWith("wake:")
+							? (this.db
+									.prepare(
+										"SELECT * FROM runner_phase_wakes WHERE execution_id = ? AND message_id = ?",
+									)
+									.all(
+										input.executionId,
+										subject.subjectId.slice("wake:".length),
+									) as RunnerPhaseWake[])
+							: [];
+					const matches = candidates.flatMap((wake) =>
+						this.resolveWakeSubjects(
+							input.executionId,
+							input.activationId,
+							wake,
+						)
+							.filter(
+								({ obligation }) =>
+									obligation.subjectKind === "inline_wake" &&
+									obligation.subjectId === subject.subjectId,
+							)
+							.map(({ obligation }) => ({ wake, obligation })),
+					);
+					const current = matches.map(({ wake }) => wake);
+					if (current.length === 0) {
+						rejected.push({ ...subject, reason: "subject_missing" });
+						continue;
+					}
+					// Fail closed: a wake that only points at a missing source (or an
+					// unreadable body) is never settled by reading the pointer text.
+					const unbacked = matches.find(
+						({ obligation }) => obligation.sourceStatus !== "ok",
+					);
+					if (unbacked) {
+						rejected.push({
+							...subject,
+							reason:
+								unbacked.obligation.sourceStatus === "content_unavailable"
+									? "content_unavailable"
+									: "source_missing",
+						});
+						continue;
+					}
+					if (
+						!current.some(
+							(wake) => sha256Utf8(wake.content) === subject.contentSha256,
+						)
+					) {
+						rejected.push({ ...subject, reason: "content_changed" });
+						continue;
+					}
+					accepted.push({
+						...subject,
+						receiptId: this.recordContentConsumption({
+							executionId: input.executionId,
+							subjectKind: "inline_wake",
+							subjectId: subject.subjectId,
+							contentSha256: subject.contentSha256,
+							sourceKind: "drain_ack",
+							activationId: input.activationId,
+							consumedAt: nowIso,
+							readBatchId: input.readId,
+						}),
+					});
+				}
+				return { accepted, rejected };
+			})
+			.immediate();
+	}
+
+	/**
+	 * Settle the pending wakes a committed completion proved satisfied. The
+	 * wake becomes `finished` (scope `drain_settled`) so every existing pending
+	 * reader — push, T2 escalation, turn-boundary promotion, doorbell merge —
+	 * naturally skips it; the settlement row links the evidence. Callers run
+	 * this inside the same IMMEDIATE transaction that re-resolved the wakes.
+	 */
+	settleCompletionWakes(input: {
+		executionId: string;
+		activationId: string;
+		completionEventId: string;
+		wakes: readonly CompletionWakeResolution[];
+		nowMs: number;
+	}): number {
+		// Nested inside the completion transaction this is a savepoint, so a
+		// failed settlement never leaves a half-settled wake set behind.
+		return this.db.transaction(() => {
+			const nowIso = new Date(input.nowMs).toISOString();
+			let settled = 0;
+			for (const wake of input.wakes) {
+				if (!wake.satisfied) {
+					throw new Error(`cannot settle unsatisfied wake ${wake.messageId}`);
+				}
+				const reason: WakeSettlementReason =
+					wake.evidence.receiptIds.length > 0
+						? "content_consumed"
+						: "signal_satisfied";
+				this.db
+					.prepare(
+						`INSERT INTO runner_wake_settlement
+						   (execution_id, wake_message_id, obligation_digest, activation_id,
+						    reason, evidence_json, completion_event_id, created_at)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+						 ON CONFLICT(execution_id, wake_message_id, obligation_digest) DO NOTHING`,
+					)
+					.run(
+						input.executionId,
+						wake.messageId,
+						wake.obligationDigest,
+						input.activationId,
+						reason,
+						canonicalJsonString({
+							subjects: wake.subjects,
+							receiptIds: wake.evidence.receiptIds,
+							turnInputWakeIds: wake.evidence.turnInputWakeIds,
+						}),
+						input.completionEventId,
+						nowIso,
+					);
+				settled += this.db
+					.prepare(
+						`UPDATE runner_phase_wakes
+						    SET state = 'finished', finished_at = ?,
+						        started_ack_scope = 'drain_settled',
+						        claim_token = NULL, claim_expires_at = NULL
+						  WHERE execution_id = ? AND message_id = ?
+						    AND state IN ('pending','started')`,
+					)
+					.run(input.nowMs, input.executionId, wake.messageId).changes;
+			}
+			return settled;
+		})();
+	}
+
+	/**
+	 * Replay repair for a completion whose StateStore commit survived but whose
+	 * CommDB settlement did not. Only wakes whose *current* obligation digest
+	 * still equals the recorded one are settled; a doorbell that absorbed new
+	 * members since then stays pending for its new content.
+	 */
+	reapplyCompletionWakeSettlement(input: {
+		executionId: string;
+		activationId: string;
+		completionEventId: string;
+		recorded: ReadonlyArray<{ messageId: string; obligationDigest: string }>;
+		nowMs: number;
+	}): number {
+		return this.db
+			.transaction(() => {
+				const resolution = this.resolveCompletionObligations(
+					input.executionId,
+					input.activationId,
+				);
+				const wakes = resolution.wakes.filter(
+					(wake) =>
+						wake.satisfied &&
+						input.recorded.some(
+							(recorded) =>
+								recorded.messageId === wake.messageId &&
+								recorded.obligationDigest === wake.obligationDigest,
+						),
+				);
+				if (wakes.length === 0) return 0;
+				return this.settleCompletionWakes({
+					executionId: input.executionId,
+					activationId: input.activationId,
+					completionEventId: input.completionEventId,
+					wakes,
+					nowMs: input.nowMs,
+				});
+			})
+			.immediate();
+	}
+
+	listRunnerWakeSettlements(executionId: string): Array<{
+		wake_message_id: string;
+		obligation_digest: string;
+		activation_id: string;
+		reason: WakeSettlementReason;
+		evidence_json: string;
+		completion_event_id: string;
+	}> {
+		return this.db
+			.prepare(
+				`SELECT wake_message_id, obligation_digest, activation_id, reason,
+				        evidence_json, completion_event_id
+				   FROM runner_wake_settlement WHERE execution_id = ?
+				  ORDER BY created_at, wake_message_id`,
+			)
+			.all(executionId) as Array<{
+			wake_message_id: string;
+			obligation_digest: string;
+			activation_id: string;
+			reason: WakeSettlementReason;
+			evidence_json: string;
+			completion_event_id: string;
+		}>;
+	}
+
+	listContentConsumption(executionId: string): Array<{
+		receipt_id: string;
+		subject_kind: ConsumptionSubjectKind;
+		subject_id: string;
+		content_sha256: string;
+		source_kind: ConsumptionSourceKind;
+		activation_id: string;
+	}> {
+		return this.db
+			.prepare(
+				`SELECT receipt_id, subject_kind, subject_id, content_sha256,
+				        source_kind, activation_id
+				   FROM runner_content_consumption WHERE execution_id = ?
+				  ORDER BY consumed_at, receipt_id`,
+			)
+			.all(executionId) as Array<{
+			receipt_id: string;
+			subject_kind: ConsumptionSubjectKind;
+			subject_id: string;
+			content_sha256: string;
+			source_kind: ConsumptionSourceKind;
+			activation_id: string;
+		}>;
+	}
+
 	getPendingRunnerMailboxSnapshot(
 		agentId: string,
 	): PendingRunnerMailboxSnapshot {
@@ -6584,15 +7439,36 @@ export class CommDB {
 			.transaction((): RunnerPhaseWakeStartResult => {
 				const wake = this.db
 					.prepare(
-						"SELECT state, retirement_id FROM runner_phase_wakes WHERE execution_id = ? AND message_id = ?",
+						"SELECT state, retirement_id, started_ack_scope FROM runner_phase_wakes WHERE execution_id = ? AND message_id = ?",
 					)
 					.get(executionId, messageId) as
-					| Pick<RunnerPhaseWake, "state" | "retirement_id">
+					| Pick<
+							RunnerPhaseWake,
+							"state" | "retirement_id" | "started_ack_scope"
+					  >
 					| undefined;
 				if (!wake) return "missing";
 				if (wake.retirement_id) return "disposed";
-				if (wake.state === "started" || wake.state === "finished")
+				// FLY-2373: a completion already proved this wake's content was
+				// consumed; a reader that observed it earlier must not replay it.
+				if (
+					wake.state === "finished" &&
+					wake.started_ack_scope === "drain_settled"
+				) {
+					return "disposed";
+				}
+				if (wake.state === "finished") return "replay";
+				if (wake.state === "started") {
+					// FLY-2373 dispatch fence: a replayed claim is a dispatch in
+					// flight, so a concurrent completion must not settle it.
+					this.db
+						.prepare(
+							`UPDATE runner_phase_wakes SET started_ack_scope = 'message'
+							  WHERE execution_id = ? AND message_id = ? AND state = 'started'`,
+						)
+						.run(executionId, messageId);
 					return "replay";
+				}
 				const updated = this.db
 					.prepare(
 						`UPDATE runner_phase_wakes SET state = 'started', started_at = ?,
@@ -6800,7 +7676,16 @@ export class CommDB {
 				)
 				.get(questionId, executionId) as Message | undefined;
 			if (!response) return undefined;
-			new MailboxQueue(this.db).ack(response.id, new Date().toISOString());
+			const consumedAt = new Date().toISOString();
+			new MailboxQueue(this.db).ack(response.id, consumedAt);
+			// FLY-2373: the one consuming read of a response also signs the
+			// completion-drain receipt (check and blocking gate share this path).
+			const row = this.db
+				.prepare("SELECT * FROM mailbox WHERE id = ?")
+				.get(response.id) as MailboxRow | undefined;
+			if (row) {
+				this.recordMailboxConsumption(row, executionId, "check", consumedAt);
+			}
 			return this.db
 				.prepare("SELECT * FROM mailbox_message_projection WHERE id = ?")
 				.get(response.id) as Message;

@@ -1,0 +1,45 @@
+classDiagram
+  class 运行事件_rescued {
+    kind = worktree_takeover_rescued
+    manifestPath + manifestSha256
+    身份字段副本 路径 分支 generationBefore 目标
+    只允许 Bridge 进程内写 先于任何清理
+  }
+  class 运行事件_cleaned {
+    kind = worktree_takeover_cleaned
+    UID = cleaned 加 rescued 的 UID
+  }
+  class 救援清单_manifest {
+    放在 Flywheel 状态目录 每次处置都有
+    class 失败分类
+    canonicalPath branch generationBefore
+    target 清理后的提交点
+    fingerprint3 内容指纹
+    rescues 列表 可以为空
+    nestedMoves 列表
+    不含自身哈希
+  }
+  class 救援引用 {
+    本地 refs/flywheel/rescue/run/前任/替身/时间/种类
+    远端 flywheel-rescue/单号/前任8-替身8-时间-种类
+    种类 head 或 dirty 或 base
+    推送后 ls-remote 复核相等
+  }
+  class 未提交改动快照 {
+    暂存层提交 父 = H
+    工作区层提交 父 = 暂存层
+  }
+  class 挪走的嵌套仓 {
+    放在 同一时间戳目录下 nested/
+    嵌套仓 HEAD 与状态摘要
+  }
+  class 进度账本_progress_md {
+    指针 rescue = event 加 UID 可附 refs 列表
+    由替身第一次写账本时带上
+  }
+  运行事件_rescued --> 救援清单_manifest : 哈希核对
+  运行事件_cleaned --> 运行事件_rescued : 配对
+  救援清单_manifest --> 救援引用 : 记录
+  救援清单_manifest --> 挪走的嵌套仓 : 记录
+  救援引用 --> 未提交改动快照 : dirty 指向
+  进度账本_progress_md --> 运行事件_rescued : 指针

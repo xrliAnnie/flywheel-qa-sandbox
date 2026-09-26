@@ -24,9 +24,18 @@ export function writeBoundedRotationErrorMarker() {}
 JS
 cat > "$TMP/packages/edge-worker/dist/memory/index.js" <<'JS'
 export async function createMemoryService() { return undefined; }
+export const CipherWriter = { async create() { return undefined; } };
+export class CipherSyncService {}
 JS
 cat > "$TMP/packages/teamlead/dist/bridge/bounded-shutdown.js" <<'JS'
 export async function runBoundedShutdown() {}
+JS
+cat > "$TMP/packages/teamlead/dist/bridge/linear-transport-rejection-guard.js" <<'JS'
+// Boot wiring fixture: classifier and fatal semantics have real-SDK child tests.
+export function installLinearTransportRejectionGuard() {
+  process.stdout.write("guard-installed\n");
+  return () => {};
+}
 JS
 cat > "$TMP/packages/teamlead/dist/bridge/plugin.js" <<'JS'
 export async function startBridge() {
@@ -35,10 +44,12 @@ export async function startBridge() {
 }
 JS
 cat > "$TMP/packages/teamlead/dist/config.js" <<'JS'
-export function loadConfig() { return { dbPath: process.env.TEAMLEAD_DB_PATH }; }
+export function loadConfig() {
+  return { dbPath: process.env.TEAMLEAD_DB_PATH, defaultLeadAgentId: "test-lead" };
+}
 JS
 cat > "$TMP/packages/teamlead/dist/ProjectConfig.js" <<'JS'
-export function loadProjects() { return [{}]; }
+export function loadProjects() { return [{ leads: [{ agentId: "test-lead" }] }]; }
 JS
 cat > "$TMP/packages/teamlead/dist/StateStore.js" <<'JS'
 export const StateStore = { async create() { return {}; } };
@@ -50,9 +61,40 @@ run_bridge() {
 }
 
 prod_out="$(run_bridge 2>"$TMP/prod.err")"
-[[ "$prod_out" == $'rotation-installed\n[run-bridge] Starting with 1 project(s)...\n[run-bridge] StateStore initialized: undefined\nmain-reached' ]] \
+[[ "$prod_out" == $'rotation-installed\nguard-installed\n[run-bridge] Starting with 1 project(s)...\n[run-bridge] StateStore initialized: undefined\nmain-reached' ]] \
   || { echo "FAIL: production shape changed: $prod_out" >&2; exit 1; }
 [[ ! -s "$TMP/prod.err" ]] || { echo "FAIL: production stderr changed" >&2; exit 1; }
+
+# The teamlead bin is an independent Bridge entry and must install the same guard.
+cp "$ROOT/packages/teamlead/src/index.ts" "$TMP/packages/teamlead/dist/index.ts"
+cat > "$TMP/packages/teamlead/dist/bridge/EventFilter.js" <<'JS'
+export class EventFilter {}
+JS
+printf '{"type":"module","exports":"./dist/memory/index.js"}\n' > "$TMP/packages/edge-worker/package.json"
+mkdir -p "$TMP/node_modules"
+ln -s "$TMP/packages/edge-worker" "$TMP/node_modules/flywheel-edge-worker"
+bin_out="$(env -i PATH="$PATH" HOME="$HOME" "$ROOT/node_modules/.bin/tsx" \
+  "$TMP/packages/teamlead/dist/index.ts" 2>"$TMP/bin.err")"
+[[ "$bin_out" == $'guard-installed\nmain-reached' ]] \
+  || { echo "FAIL: teamlead bin guard missing: $bin_out" >&2; exit 1; }
+[[ ! -s "$TMP/bin.err" ]] || { echo "FAIL: teamlead bin stderr changed" >&2; exit 1; }
+
+# Exercise the real payload compiler: package-relative guard imports must be
+# rewritten along with the existing entry imports. Production boot has no
+# isolation root; compiled isolation-bootstrap packaging is a separate concern.
+PACKAGE_ONBOARD_SOURCED=1 source "$ROOT/scripts/package-onboard.sh"
+payload="$TMP/payload"
+mkdir -p "$payload/node_modules"
+for package in config edge-worker teamlead; do
+  mkdir -p "$payload/node_modules/flywheel-$package"
+  cp -R "$TMP/packages/$package/dist" "$payload/node_modules/flywheel-$package/dist"
+  printf '{"type":"module"}\n' > "$payload/node_modules/flywheel-$package/package.json"
+done
+po_compile_run_bridge "$ROOT" "$payload"
+compiled_out="$(env -i PATH="$PATH" HOME="$HOME" node "$payload/dist/run-bridge.js" 2>"$TMP/compiled.err")"
+[[ "$compiled_out" == "$prod_out" ]] \
+  || { echo "FAIL: compiled boot shape changed: $compiled_out" >&2; exit 1; }
+[[ ! -s "$TMP/compiled.err" ]] || { echo "FAIL: compiled boot stderr changed" >&2; exit 1; }
 
 slot="$TMP/slot"
 mkdir -p "$slot/state/comm" "$slot/state/codex-homes" \
@@ -106,6 +148,8 @@ grep -q 'BOOT REFUSED.*FLYWHEEL_COMM_ROOT' "$TMP/bad.err" \
   || { echo "FAIL: missing boot refusal evidence" >&2; exit 1; }
 ! grep -q 'rotation-installed' "$TMP/bad.out" \
   || { echo "FAIL: logging side effect preceded fence" >&2; exit 1; }
+! grep -q 'guard-installed' "$TMP/bad.out" \
+  || { echo "FAIL: rejection guard preceded fence" >&2; exit 1; }
 
 set +e
 env -i PATH="$PATH" HOME="$HOME" "${slot_env[@]}" \

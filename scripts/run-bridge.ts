@@ -79,6 +79,11 @@ if (rotatingStdio) {
 	});
 }
 
+const { installLinearTransportRejectionGuard } = await import(
+	"../packages/teamlead/dist/bridge/linear-transport-rejection-guard.js"
+);
+installLinearTransportRejectionGuard();
+
 async function main() {
 	const [
 		{ createMemoryService },
