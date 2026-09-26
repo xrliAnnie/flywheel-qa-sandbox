@@ -6623,9 +6623,7 @@ describe("FLY-2921 C3 returned to Lead", () => {
 				"returned_to_lead",
 			);
 			expect(
-				store
-					.listWorkflowHolds("run-heavy")
-					.map((hold) => hold.shape),
+				store.listWorkflowHolds("run-heavy").map((hold) => hold.shape),
 			).toEqual(["rework_returned_to_lead"]);
 		} finally {
 			store.close();
