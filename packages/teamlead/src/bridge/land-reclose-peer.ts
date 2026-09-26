@@ -22,7 +22,7 @@ import type {
 	RecloseProcessSnapshot,
 } from "./reclose-peer-native.js";
 
-const REQUEST_LIMIT = 65_536;
+const REQUEST_LIMIT = 6 * 1024 * 1024;
 const MAX_CONNECTIONS = 8;
 const CONNECTION_TIMEOUT_MS = 30_000;
 
@@ -37,6 +37,29 @@ export interface LandReclosePeerRequest {
 	projectName: string;
 	leadId: string;
 }
+
+export interface LandCleanupPreviewPeerRequest {
+	schemaVersion: 1;
+	method: "land.cleanup.preview";
+	requestId: string;
+	projectName: string;
+	leadId: string;
+}
+
+export interface LandCleanupExecutePeerRequest {
+	schemaVersion: 1;
+	method: "land.cleanup.execute";
+	requestId: string;
+	projectName: string;
+	leadId: string;
+	manifestJson: string;
+	manifestDigest: string;
+}
+
+export type LandPeerRequest =
+	| LandReclosePeerRequest
+	| LandCleanupPreviewPeerRequest
+	| LandCleanupExecutePeerRequest;
 
 export type LandRecloseResult =
 	| { ok: true; operation: LandOperationRow; alreadyCompleted?: true }
@@ -73,10 +96,27 @@ export interface StartLandReclosePeerServerInput {
 		authorityCheck?: () => void | Promise<void>;
 	}): Promise<LandRecloseResult>;
 	kick(operationId: string): void;
+	preview?(input: {
+		projectName: string;
+		actor: string;
+		authorityCheck: () => void | Promise<void>;
+	}): Promise<unknown>;
+	execute?(input: {
+		projectName: string;
+		actor: string;
+		requestId: string;
+		manifestJson: string;
+		manifestDigest: string;
+		authorityCheck: () => void | Promise<void>;
+	}): Promise<unknown>;
 	authorize?: (
 		connectionHandle: number,
 		request: LandReclosePeerRequest,
 		operation: LandOperationRow,
+	) => VerifiedRecloseActor;
+	authorizeCleanup?: (
+		connectionHandle: number,
+		request: LandCleanupPreviewPeerRequest | LandCleanupExecutePeerRequest,
 	) => VerifiedRecloseActor;
 	now?: () => number;
 	pollIntervalMs?: number;
@@ -147,6 +187,68 @@ export function parseLandReclosePeerRequest(
 		projectName: value.projectName.trim(),
 		leadId: value.leadId.trim(),
 	};
+}
+
+function parseCleanupPeerRequest(
+	value: Record<string, unknown>,
+): LandCleanupPreviewPeerRequest | LandCleanupExecutePeerRequest {
+	const preview = value.method === "land.cleanup.preview";
+	const execute = value.method === "land.cleanup.execute";
+	const allowed = new Set(
+		execute
+			? [
+					"schemaVersion",
+					"method",
+					"requestId",
+					"projectName",
+					"leadId",
+					"manifestJson",
+					"manifestDigest",
+				]
+			: ["schemaVersion", "method", "requestId", "projectName", "leadId"],
+	);
+	if (
+		(!preview && !execute) ||
+		Object.keys(value).some((key) => !allowed.has(key)) ||
+		value.schemaVersion !== 1 ||
+		typeof value.requestId !== "string" ||
+		!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+			value.requestId,
+		) ||
+		typeof value.projectName !== "string" ||
+		!value.projectName.trim() ||
+		value.projectName.length > 128 ||
+		typeof value.leadId !== "string" ||
+		!value.leadId.trim() ||
+		value.leadId.length > 256 ||
+		(execute &&
+			(typeof value.manifestJson !== "string" ||
+				Buffer.byteLength(value.manifestJson, "utf8") > 5 * 1024 * 1024 ||
+				typeof value.manifestDigest !== "string" ||
+				!/^[0-9a-f]{64}$/.test(value.manifestDigest)))
+	) {
+		throw Object.assign(new Error("request_invalid"), {
+			code: "request_invalid",
+		});
+	}
+	return {
+		...(value as unknown as
+			| LandCleanupPreviewPeerRequest
+			| LandCleanupExecutePeerRequest),
+		projectName: value.projectName.trim(),
+		leadId: value.leadId.trim(),
+	};
+}
+
+export function parseLandPeerRequest(value: unknown): LandPeerRequest {
+	if (!object(value)) {
+		throw Object.assign(new Error("request_invalid"), {
+			code: "request_invalid",
+		});
+	}
+	return value.method === "land.reclose"
+		? parseLandReclosePeerRequest(value)
+		: parseCleanupPeerRequest(value);
 }
 
 function assertPrivateSocketPath(socketPath: string): void {
@@ -273,10 +375,10 @@ function createDefaultAuthorizer(input: StartLandReclosePeerServerInput) {
 	);
 	return (
 		connectionHandle: number,
-		request: LandReclosePeerRequest,
-		operation: LandOperationRow,
+		request: LandPeerRequest,
+		operation?: LandOperationRow,
 	): VerifiedRecloseActor => {
-		if (operation.project_name !== request.projectName) {
+		if (operation && operation.project_name !== request.projectName) {
 			throw Error("peer_scope_mismatch");
 		}
 		const row = resolveLeadIdentityRow({
@@ -361,14 +463,17 @@ function createDefaultAuthorizer(input: StartLandReclosePeerServerInput) {
 			.update(
 				JSON.stringify([
 					initial.pin,
-					operation.operation_id,
-					operation.issue_id,
-					operation.approved_head,
+					request.method,
+					request.projectName,
+					request.requestId,
+					operation?.operation_id ?? null,
+					operation?.issue_id ?? null,
+					operation?.approved_head ?? null,
 				]),
 			)
 			.digest("hex");
 		return Object.freeze({
-			actor: `authenticated-reclose-peer:${identityDigest}`,
+			actor: `authenticated-${operation ? "reclose" : "cleanup"}-peer:${identityDigest}`,
 			assertCurrent() {
 				if (observe().pin !== initial.pin)
 					throw Error("peer_authority_changed");
@@ -384,7 +489,9 @@ export function startLandReclosePeerServer(
 	const listenerHandle = input.adapter.createListener(input.socketPath);
 	const connections = new Map<number, ConnectionState>();
 	const now = input.now ?? Date.now;
-	const authorize = input.authorize ?? createDefaultAuthorizer(input);
+	const defaultAuthorize = createDefaultAuthorizer(input);
+	const authorize = input.authorize ?? defaultAuthorize;
+	const authorizeCleanup = input.authorizeCleanup ?? defaultAuthorize;
 	let closed = false;
 
 	const closeConnection = (handle: number) => {
@@ -410,8 +517,37 @@ export function startLandReclosePeerServer(
 		state.processing = true;
 		let requestId: string | null = null;
 		try {
-			const request = parseLandReclosePeerRequest(JSON.parse(frame));
+			const request = parseLandPeerRequest(JSON.parse(frame));
 			requestId = request.requestId;
+			if (request.method === "land.cleanup.preview") {
+				if (!input.preview) throw Error("stock_cleanup_preview_unavailable");
+				const verified = authorizeCleanup(state.handle, request);
+				verified.assertCurrent();
+				const preview = await input.preview({
+					projectName: request.projectName,
+					actor: verified.actor,
+					authorityCheck: () => verified.assertCurrent(),
+				});
+				verified.assertCurrent();
+				respond(state.handle, { requestId, ok: true, preview });
+				return;
+			}
+			if (request.method === "land.cleanup.execute") {
+				if (!input.execute) throw Error("stock_cleanup_execute_disabled");
+				const verified = authorizeCleanup(state.handle, request);
+				verified.assertCurrent();
+				const result = await input.execute({
+					projectName: request.projectName,
+					actor: verified.actor,
+					requestId: request.requestId,
+					manifestJson: request.manifestJson,
+					manifestDigest: request.manifestDigest,
+					authorityCheck: () => verified.assertCurrent(),
+				});
+				verified.assertCurrent();
+				respond(state.handle, { requestId, ok: true, result });
+				return;
+			}
 			const operation = input.store.getLandOperation(request.operationId);
 			if (!operation) throw Error("land_operation_not_found");
 			const verified = authorize(state.handle, request, operation);

@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { isAbsolute, join, normalize } from "node:path";
@@ -30,10 +31,11 @@ interface LandCommandDeps {
 		socketPath: string,
 		request: Record<string, unknown>,
 	) => Promise<unknown>;
+	readManifest?: (path: string) => string;
 }
 
 const USAGE =
-	"usage: flywheel-comm land reclose --operation <full-id> --expected-generation <n> --expected-head <sha> --reason <text> [--request-id <uuid>] [--bridge-url <url>]";
+	"usage: flywheel-comm land reclose --operation <full-id> --expected-generation <n> --expected-head <sha> --reason <text> [--request-id <uuid>] [--bridge-url <url>] | flywheel-comm land cleanup [--dry-run | --execute <absolute-manifest-json-path>] --project <project> [--request-id <uuid>] [--bridge-url <url>]";
 
 async function requestPeerJson(
 	socketPath: string,
@@ -48,7 +50,8 @@ async function requestPeerJson(
 		throw new Error("peer_socket_invalid");
 	}
 	const frame = `${JSON.stringify(request)}\n`;
-	if (Buffer.byteLength(frame) > 65_536) throw new Error("request_too_large");
+	if (Buffer.byteLength(frame) > 6 * 1024 * 1024)
+		throw new Error("request_too_large");
 	return await new Promise((resolve, reject) => {
 		const socket = createConnection(socketPath);
 		const chunks: Buffer[] = [];
@@ -70,7 +73,7 @@ async function requestPeerJson(
 		socket.once("error", () => finish(new Error("peer_connection_failed")));
 		socket.on("data", (chunk: Buffer) => {
 			size += chunk.length;
-			if (size > 65_536) {
+			if (size > 6 * 1024 * 1024) {
 				finish(new Error("peer_response_too_large"));
 				return;
 			}
@@ -105,10 +108,187 @@ function option(args: string[], name: string): string | undefined {
 	return index >= 0 && index + 1 < args.length ? args[index + 1] : undefined;
 }
 
+const UUID =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+async function runCleanupCommand(
+	args: string[],
+	deps: LandCommandDeps,
+): Promise<number> {
+	const env = deps.env ?? process.env;
+	const log = deps.log ?? ((message: string) => console.log(message));
+	const errorLog =
+		deps.errorLog ?? ((message: string) => console.error(message));
+	const projectName = option(args, "--project")?.trim() ?? "";
+	const scopedProject = (
+		env.FLYWHEEL_PROJECT_NAME ??
+		env.PROJECT_NAME ??
+		""
+	).trim();
+	const leadId = (env.FLYWHEEL_LEAD_ID ?? env.LEAD_ID ?? "").trim();
+	const executePath = option(args, "--execute")?.trim();
+	const hasDryRun = args.includes("--dry-run");
+	const execute = Boolean(executePath);
+	const requestId = (
+		option(args, "--request-id") ??
+		deps.requestId?.() ??
+		randomUUID()
+	)
+		.trim()
+		.toLowerCase();
+	if (
+		!projectName ||
+		projectName.length > 128 ||
+		projectName !== scopedProject ||
+		!leadId ||
+		!UUID.test(requestId) ||
+		(hasDryRun && execute)
+	) {
+		errorLog(USAGE);
+		return 1;
+	}
+	let manifestJson: string | undefined;
+	let manifestDigest: string | undefined;
+	if (execute) {
+		if (
+			!executePath ||
+			!isAbsolute(executePath) ||
+			normalize(executePath) !== executePath ||
+			executePath.includes("\0")
+		) {
+			errorLog(USAGE);
+			return 1;
+		}
+		try {
+			manifestJson = (
+				deps.readManifest ?? ((path) => readFileSync(path, "utf8"))
+			)(executePath);
+			if (
+				!manifestJson ||
+				Buffer.byteLength(manifestJson, "utf8") > 5 * 1024 * 1024
+			) {
+				throw new Error("manifest_size_invalid");
+			}
+			JSON.parse(manifestJson);
+			manifestDigest = createHash("sha256")
+				.update(manifestJson, "utf8")
+				.digest("hex");
+		} catch (error) {
+			errorLog(
+				`land cleanup: manifest unreadable: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return 1;
+		}
+	}
+	let authorization: LeadWriteAuthorization;
+	try {
+		authorization = deps.authorizeLead
+			? deps.authorizeLead(leadId, env)
+			: authorizeLeadWrite({ claimedLeadId: leadId, env });
+	} catch (error) {
+		errorLog(
+			`land cleanup: Lead authorization failed: ${error instanceof Error ? error.message : String(error)}`,
+		);
+		return 1;
+	}
+	if (!authorization.identityDigest) {
+		errorLog("land cleanup: Lead identity digest unavailable");
+		return 1;
+	}
+	if (!authorization.carrierClaim) {
+		const socketPath =
+			env.FLYWHEEL_RECLOSE_PEER_SOCKET?.trim() ||
+			join(env.HOME ?? homedir(), ".flywheel", "reclose-peer", "bridge.sock");
+		try {
+			const response = (await (deps.peerJson ?? requestPeerJson)(socketPath, {
+				schemaVersion: 1,
+				method: execute ? "land.cleanup.execute" : "land.cleanup.preview",
+				requestId,
+				projectName,
+				leadId,
+				...(execute ? { manifestJson, manifestDigest } : {}),
+			})) as {
+				requestId?: unknown;
+				ok?: unknown;
+				preview?: unknown;
+				result?: unknown;
+				error?: unknown;
+			};
+			if (response.requestId !== requestId || response.ok !== true) {
+				errorLog(
+					`land cleanup: native peer refused request: ${typeof response.error === "string" ? response.error : "peer_response_invalid"}`,
+				);
+				return 1;
+			}
+			log(JSON.stringify(execute ? response.result : response.preview));
+			return 0;
+		} catch (error) {
+			errorLog(
+				`land cleanup: native peer unavailable at ${socketPath}: ${(error as Error).message}`,
+			);
+			return 1;
+		}
+	}
+	const token = env.TEAMLEAD_API_TOKEN?.trim();
+	const activationId = env.FLYWHEEL_LEAD_CAPABILITY_ACTIVATION?.trim();
+	if (!token || !activationId) {
+		errorLog(
+			"land cleanup: Codex carrier requires TEAMLEAD_API_TOKEN and FLYWHEEL_LEAD_CAPABILITY_ACTIVATION",
+		);
+		return 1;
+	}
+	const bridgeUrl = (
+		option(args, "--bridge-url") ??
+		env.FLYWHEEL_BRIDGE_URL ??
+		env.BRIDGE_URL ??
+		"http://127.0.0.1:9876"
+	).replace(/\/+$/, "");
+	const httpJson =
+		deps.httpJson ??
+		((url: string, init: Parameters<typeof fetch>[1]) =>
+			fetch(url, init) as unknown as Promise<HttpResponse>);
+	try {
+		const response = await httpJson(
+			`${bridgeUrl}/api/lifecycle/land/cleanup/${execute ? "execute" : "preview"}`,
+			{
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${token}`,
+					Origin: bridgeUrl,
+					"Content-Type": "application/json",
+					"X-Flywheel-Lead-Context": Buffer.from(
+						JSON.stringify({
+							projectName,
+							leadId,
+							identityDigest: authorization.identityDigest,
+							carrierClaim: authorization.carrierClaim,
+							activationId,
+						}),
+					).toString("base64"),
+				},
+				body: JSON.stringify(
+					execute
+						? { project: projectName, requestId, manifestJson, manifestDigest }
+						: { project: projectName },
+				),
+			},
+		);
+		const body = await response.json().catch(() => ({}));
+		log(JSON.stringify(body));
+		return response.ok ? 0 : 1;
+	} catch (error) {
+		errorLog(
+			`land cleanup: cannot reach Bridge at ${bridgeUrl}: ${(error as Error).message}`,
+		);
+		return 1;
+	}
+}
+
 export async function runLandCommand(
 	args: string[],
 	deps: LandCommandDeps = {},
 ): Promise<number> {
+	if (args[0] === "cleanup") return runCleanupCommand(args, deps);
 	const env = deps.env ?? process.env;
 	const log = deps.log ?? ((message: string) => console.log(message));
 	const errorLog =

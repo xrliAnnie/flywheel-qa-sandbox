@@ -652,6 +652,7 @@ import {
 	type PrepareLandIntentDeps,
 	prepareLandIntent,
 	prepareLandRecloseTargets,
+	readLandTargetSnapshot,
 } from "./land-intent-targets.js";
 import { arbitrateFreshLinearState } from "./land-linear-arbitration.js";
 import {
@@ -966,6 +967,7 @@ import {
 	reconcileStateStoreGhosts,
 	type StateStoreGhostDeps,
 } from "./statestore-ghost-reconcile.js";
+import { createStockCleanupPreviewer } from "./stock-worktree-cleanup-observer.js";
 import { createStrengthTwoEvidenceRouter } from "./strength-two-evidence-route.js";
 import {
 	createLeadDetectionAckRouter,
@@ -9812,6 +9814,130 @@ export async function startBridge(
 			materializedHeadAuthority,
 			// FLY-1185 §2.12: park/unpark + approved-manifest apply endpoints.
 			lifecycleRoutes: (() => {
+				const stockCleanupPreviewer = createStockCleanupPreviewer({
+					projects,
+					store,
+					readGeneration: (worktreePath) =>
+						lifecycleWorktreeManager.readWorktreeGeneration(worktreePath),
+					inspectPullRequest: async ({ repoSlug, prNumber }) => {
+						const [owner, repo] = repoSlug.split("/", 2);
+						if (!owner || !repo) throw new Error("invalid_repository_identity");
+						const response = await leadGithubProvider
+							.get()
+							.client.request("GET /repos/{owner}/{repo}/pulls/{pull_number}", {
+								owner,
+								repo,
+								pull_number: prNumber,
+							});
+						const pull = response.data;
+						return {
+							number: Number(pull.number),
+							state: pull.merged_at
+								? ("MERGED" as const)
+								: pull.state === "closed"
+									? ("CLOSED" as const)
+									: pull.state === "open"
+										? ("OPEN" as const)
+										: ("UNKNOWN" as const),
+							headRef: pull.head?.ref,
+							headSha: pull.head?.sha?.toLowerCase(),
+							baseRef: pull.base?.ref,
+							mergeCommitSha: pull.merge_commit_sha?.toLowerCase(),
+							mergedAt: pull.merged_at ?? undefined,
+						};
+					},
+					compareCommits: async ({ repoSlug, base, head }) => {
+						const [owner, repo] = repoSlug.split("/", 2);
+						if (!owner || !repo) return "unknown";
+						try {
+							const response = await leadGithubProvider
+								.get()
+								.client.request(
+									"GET /repos/{owner}/{repo}/compare/{basehead}",
+									{ owner, repo, basehead: `${base}...${head}` },
+								);
+							const status = String(response.data.status);
+							return status === "ahead" ||
+								status === "behind" ||
+								status === "diverged" ||
+								status === "identical"
+								? status
+								: "unknown";
+						} catch {
+							return "unknown";
+						}
+					},
+					// FLY-2919 remains the only permitted production body-liveness
+					// provider. Until its shared observer is exported and wired here,
+					// the previewer emits body_unknown and execute remains unavailable.
+					resolveTerminalAuthority: (input) => {
+						if (
+							!input.issueId ||
+							!input.pr ||
+							input.pr.state !== "MERGED" ||
+							!input.generation ||
+							!input.branch ||
+							!input.head ||
+							input.executionIds.length === 0
+						) {
+							return {
+								state: "missing" as const,
+								reason: "terminal_authority_missing",
+							};
+						}
+						const operation = store.getLatestLandOperationForIssue(
+							input.projectName,
+							input.issueId,
+						);
+						if (!operation) {
+							return {
+								state: "missing" as const,
+								reason: "land_operation_missing",
+							};
+						}
+						if (
+							operation.pr_number !== input.pr.number ||
+							operation.approved_head !== input.head.toLowerCase() ||
+							!new Set(["completed", "held", "partial"]).has(operation.state)
+						) {
+							return {
+								state: "changed" as const,
+								reason: "land_operation_identity_changed",
+								operationId: operation.operation_id,
+							};
+						}
+						const snapshot = readLandTargetSnapshot(operation);
+						if (!snapshot.ok) {
+							return {
+								state: "missing" as const,
+								reason: snapshot.reason,
+								operationId: operation.operation_id,
+							};
+						}
+						const expectedExecutions = [...input.executionIds].sort();
+						const target = snapshot.snapshot.targets.find(
+							(candidate) =>
+								candidate.kind === "bound_worktree" &&
+								candidate.path === input.canonicalPath &&
+								candidate.branch === input.branch &&
+								candidate.generation === input.generation &&
+								JSON.stringify([...candidate.sourceExecutionIds].sort()) ===
+									JSON.stringify(expectedExecutions),
+						);
+						if (!target) {
+							return {
+								state: "changed" as const,
+								reason: "land_target_identity_changed",
+								operationId: operation.operation_id,
+							};
+						}
+						return {
+							state: "valid" as const,
+							identity: `land:${operation.operation_id}:${operation.generation}:${operation.closeout_targets_digest}`,
+							operationId: operation.operation_id,
+						};
+					},
+				});
 				const routeDeps = {
 					store,
 					projects,
@@ -10033,6 +10159,7 @@ export async function startBridge(
 							);
 						},
 					},
+					stockCleanup: stockCleanupPreviewer,
 					apiTokenConfigured: Boolean(config.apiToken),
 					authorizeRecloseHttp: (header: unknown) => {
 						const context = createXhsWriteContext(header, process.env);
@@ -10072,6 +10199,7 @@ export async function startBridge(
 							store,
 							resume: routeDeps.land.resume,
 							kick: routeDeps.land.kick,
+							preview: routeDeps.stockCleanup.preview,
 						});
 						console.log(
 							`[land-reclose-peer] listening at ${landReclosePeerServer.socketPath}`,

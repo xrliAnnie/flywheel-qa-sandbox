@@ -34,6 +34,7 @@ import {
 import { isUuidKey, resolveLifecycleRootKey } from "./lifecycle-root-key.js";
 import { sweepProjectLifecycle } from "./lifecycle-sweep.js";
 import type { WithRepoLock } from "./repo-mutation-lock.js";
+import type { buildStockCleanupPreview } from "./stock-worktree-cleanup.js";
 
 export interface LifecycleRoutesDeps {
 	store: StateStore;
@@ -98,6 +99,21 @@ export interface LifecycleRoutesDeps {
 			| { ok: false; reason: string }
 		>;
 		kick(operationId: string): void;
+	};
+	stockCleanup?: {
+		preview(input: {
+			projectName: string;
+			actor: string;
+			authorityCheck: () => void | Promise<void>;
+		}): Promise<ReturnType<typeof buildStockCleanupPreview>>;
+		execute?(input: {
+			projectName: string;
+			actor: string;
+			requestId: string;
+			manifestJson: string;
+			manifestDigest: string;
+			authorityCheck: () => void | Promise<void>;
+		}): Promise<unknown>;
 	};
 }
 
@@ -278,6 +294,129 @@ export function createLifecycleRouter(deps: LifecycleRoutesDeps): Router {
 				operation_id: operation.operation_id,
 				state: operation.state,
 			});
+		} catch (error) {
+			res.status(409).json({
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	});
+
+	router.post("/land/cleanup/preview", async (req, res) => {
+		if (!guard(res)) return;
+		if (!deps.stockCleanup) {
+			res.status(503).json({ error: "stock_cleanup_unavailable" });
+			return;
+		}
+		const projectName =
+			typeof req.body?.project === "string" ? req.body.project.trim() : "";
+		if (
+			!projectName ||
+			projectName.length > 100 ||
+			!deps.projects.some((project) => project.projectName === projectName)
+		) {
+			res.status(400).json({ error: "valid project required" });
+			return;
+		}
+		let authority:
+			| {
+					actor: string;
+					projectName: string;
+					leadId: string;
+					assertCurrent(): void;
+			  }
+			| undefined;
+		try {
+			authority = deps.authorizeRecloseHttp?.(
+				req.headers["x-flywheel-lead-context"],
+			);
+			if (!authority) throw new Error("cleanup_authority_missing");
+		} catch {
+			res.status(403).json({ error: "claude_reclose_peer_transport_required" });
+			return;
+		}
+		if (authority.projectName !== projectName) {
+			res.status(403).json({ error: "cleanup_lead_scope_mismatch" });
+			return;
+		}
+		try {
+			authority.assertCurrent();
+			const preview = await deps.stockCleanup.preview({
+				projectName,
+				actor: authority.actor,
+				authorityCheck: authority.assertCurrent,
+			});
+			authority.assertCurrent();
+			res.status(200).json(preview);
+		} catch (error) {
+			res.status(409).json({
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	});
+
+	router.post("/land/cleanup/execute", async (req, res) => {
+		if (!guard(res)) return;
+		const projectName =
+			typeof req.body?.project === "string" ? req.body.project.trim() : "";
+		const requestId =
+			typeof req.body?.requestId === "string"
+				? req.body.requestId.trim().toLowerCase()
+				: "";
+		const manifestJson =
+			typeof req.body?.manifestJson === "string" ? req.body.manifestJson : "";
+		const manifestDigest =
+			typeof req.body?.manifestDigest === "string"
+				? req.body.manifestDigest.trim().toLowerCase()
+				: "";
+		if (
+			!projectName ||
+			projectName.length > 100 ||
+			!deps.projects.some((project) => project.projectName === projectName) ||
+			!isUuidKey(requestId) ||
+			!manifestJson ||
+			Buffer.byteLength(manifestJson, "utf8") > 5 * 1024 * 1024 ||
+			!/^[0-9a-f]{64}$/.test(manifestDigest)
+		) {
+			res.status(400).json({ error: "valid cleanup execution tuple required" });
+			return;
+		}
+		let authority:
+			| {
+					actor: string;
+					projectName: string;
+					leadId: string;
+					assertCurrent(): void;
+			  }
+			| undefined;
+		try {
+			authority = deps.authorizeRecloseHttp?.(
+				req.headers["x-flywheel-lead-context"],
+			);
+			if (!authority) throw new Error("cleanup_authority_missing");
+		} catch {
+			res.status(403).json({ error: "claude_reclose_peer_transport_required" });
+			return;
+		}
+		if (authority.projectName !== projectName) {
+			res.status(403).json({ error: "cleanup_lead_scope_mismatch" });
+			return;
+		}
+		try {
+			authority.assertCurrent();
+			if (!deps.stockCleanup?.execute) {
+				res.status(503).json({ error: "stock_cleanup_execute_disabled" });
+				return;
+			}
+			const result = await deps.stockCleanup.execute({
+				projectName,
+				actor: authority.actor,
+				requestId,
+				manifestJson,
+				manifestDigest,
+				authorityCheck: authority.assertCurrent,
+			});
+			authority.assertCurrent();
+			res.status(200).json(result);
 		} catch (error) {
 			res.status(409).json({
 				error: error instanceof Error ? error.message : String(error),

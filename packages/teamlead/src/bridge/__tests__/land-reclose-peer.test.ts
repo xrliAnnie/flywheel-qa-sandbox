@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LandOperationRow, StateStore } from "../../StateStore.js";
 import {
 	collectVerifiedPeerChain,
+	parseLandPeerRequest,
 	parseLandReclosePeerRequest,
 	startLandReclosePeerServer,
 } from "../land-reclose-peer.js";
@@ -54,6 +55,20 @@ describe("land reclose native peer", () => {
 		expect(parseLandReclosePeerRequest(request)).toEqual(request);
 		expect(() =>
 			parseLandReclosePeerRequest({ ...request, actor: "self-asserted" }),
+		).toThrow("request_invalid");
+	});
+
+	it("parses the versioned cleanup preview tuple without accepting extra authority", () => {
+		const request = {
+			schemaVersion: 1 as const,
+			method: "land.cleanup.preview" as const,
+			requestId: "11111111-1111-4111-8111-111111111111",
+			projectName: "flywheel",
+			leadId: "flywheel-eng-lead",
+		};
+		expect(parseLandPeerRequest(request)).toEqual(request);
+		expect(() =>
+			parseLandPeerRequest({ ...request, actor: "self-asserted" }),
 		).toThrow("request_invalid");
 	});
 
@@ -171,6 +186,76 @@ describe("land reclose native peer", () => {
 			expect(JSON.parse(responses[0]!)).toMatchObject({
 				requestId: request.requestId,
 				ok: true,
+			});
+		} finally {
+			server.close();
+		}
+	});
+
+	it("revalidates the OS-peer authority around cleanup preview", async () => {
+		const root = realpathSync(mkdtempSync(join(tmpdir(), "fly2778-peer-")));
+		roots.push(root);
+		const request = {
+			schemaVersion: 1,
+			method: "land.cleanup.preview",
+			requestId: "11111111-1111-4111-8111-111111111111",
+			projectName: "flywheel",
+			leadId: "flywheel-eng-lead",
+		};
+		const responses: string[] = [];
+		let accepted = false;
+		const adapter = {
+			abiVersion: () => 2,
+			createListener: () => 1,
+			accept: () => {
+				if (accepted) return null;
+				accepted = true;
+				return 2;
+			},
+			readFrame: () => ({
+				complete: true as const,
+				frame: JSON.stringify(request),
+			}),
+			writeFrame: (_handle: number, frame: string) => {
+				responses.push(frame);
+				return true;
+			},
+			getPeerSnapshot: vi.fn(),
+			revalidatePeer: vi.fn(),
+			inspectProcess: vi.fn(),
+			close: () => true,
+		} satisfies ReclosePeerNativeAdapter;
+		const assertCurrent = vi.fn();
+		const preview = vi.fn(async () => ({
+			manifest: { schemaVersion: 1, projectName: "flywheel", targets: [] },
+			manifestJson: "fixture",
+			manifestDigest: "a".repeat(64),
+		}));
+		const server = startLandReclosePeerServer({
+			adapter,
+			socketPath: join(root, "reclose.sock"),
+			store: { getLandOperation: vi.fn() } as unknown as StateStore,
+			resume: vi.fn(),
+			kick: vi.fn(),
+			preview,
+			authorizeCleanup: () => ({
+				actor: "authenticated-cleanup-peer:server-derived",
+				assertCurrent,
+			}),
+			pollIntervalMs: 1,
+		});
+		try {
+			await vi.waitFor(() => expect(responses).toHaveLength(1));
+			expect(assertCurrent).toHaveBeenCalledTimes(2);
+			expect(preview).toHaveBeenCalledWith({
+				projectName: "flywheel",
+				actor: "authenticated-cleanup-peer:server-derived",
+				authorityCheck: expect.any(Function),
+			});
+			expect(JSON.parse(responses[0]!)).toMatchObject({
+				requestId: request.requestId,
+				ok: true,
+				preview: { manifestDigest: "a".repeat(64) },
 			});
 		} finally {
 			server.close();

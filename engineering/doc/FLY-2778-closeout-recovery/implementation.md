@@ -54,3 +54,16 @@ Issue: FLY-2778 (https://linear.app/geoforge3d/issue/FLY-2778/收尾清理失效
 - 直接受影响旧契约：`lifecycle-closeout.test.ts` 64/64、`StateStore.fly663-migration.test.ts` 11/11、`fly-2413-retention-migration.test.ts` 1/1 均分别通过。没有新增表，既有 `lifecycle_apply_claims` retention 分类继续生效。
 - 受限 related config 经 `vitest list --filesOnly` 确认为上述 4 个具体文件；`vitest related` 实际选中 3 文件，79 项中 76 pass，3 项仅因当时 host load 65–79 下超过既有 5 秒超时。相同 `lifecycle-closeout.test.ts` 已在默认超时下单独 64/64 通过，因此该轮不计绿，最终验证需在负载恢复后按原 timeout 重跑；未提高 timeout、未放宽断言。
 - `pnpm --filter "flywheel-teamlead..." build` 成功。diff 不含进程 signal/spawn/kill 字面或 FLY-1560 禁用词；因此 kill-path inventory 与 lexical guard 均记录为本批排除项，不以无关全包运行代替。
+
+## C3：存量清理的认证 preview 与 fail-closed execute 边界
+
+实现新增版本化、哈希绑定的 stock cleanup manifest，以及 Claude reclose peer、Codex lifecycle route、`flywheel-comm land cleanup` 三条认证入口。preview 只枚举已注册 worktree，并逐项证明项目归属、目录 inode/realpath 身份、StateStore 绑定、PR 状态、远端提交包含关系、干净状态、嵌套仓库扫描、只读 CWD census 与 land target snapshot 权限。FLY-2688 / FLY-2751 固定保留；OPEN、无 PR、dirty、未推送、活体、未知或权限漂移一律排除。
+
+无绑定目标即使 PR 已终结，也必须具备受信来源、归属、socket 与锁四项证明；当前生产没有共同 body provider，因此这类目标额外标记 `untrusted_binding`，所有已绑定目标也保守标记 `body_unknown`。execute 入口验证认证上下文和 manifest/request tuple 后明确返回 `stock_cleanup_execute_disabled`，没有任何删除或 signal 路径；待 FLY-2919 导出同一生命真源后才能接通 apply。这保证 stock reclose 在任何发信号能力之前完成全量 cwd/process census，本批本身不含 signal API。
+
+### 红绿、选择与构建
+
+- RED 后 GREEN：`stock-worktree-cleanup.test.ts` 3/3、`stock-worktree-cleanup-observer.test.ts` 3/3、`stock-worktree-cleanup-route.test.ts` 4/4、`land-reclose-peer.test.ts` 6/6、`lifecycle-routes.test.ts` 17/17、flywheel-comm `land.test.ts` 6/6。
+- TeamLead 受限 related config 仅含上述 5 个具体文件，33/33；flywheel-comm 受限 related 仅含 `land.test.ts`，6/6。没有新增 `scripts/__tests__/*.test.sh`。
+- 12 个改动文件的精确 Biome check exit 0，仅报告 `plugin.ts` 两条既有 `useConst` warning。仓库级 `pnpm lint` 当前 exit 1（5117 files，10 errors / 26 warnings），错误均在本单未改的 FLY-1563/config/core/scripts 等文件；未越权修改。
+- `pnpm --filter flywheel-comm build`、`pnpm --filter flywheel-teamlead typecheck`、`pnpm --filter "flywheel-teamlead..." build` 均通过；`git diff --check` 通过。

@@ -102,6 +102,16 @@ describe("lifecycle routes (FLY-1185 §2.12, manifest v2)", () => {
 		serve(makeDeps({ apiTokenConfigured: false }));
 		for (const [path, body] of [
 			["/api/lifecycle/land", { issueId: UUID, project: "proj" }],
+			["/api/lifecycle/land/cleanup/preview", { project: "proj" }],
+			[
+				"/api/lifecycle/land/cleanup/execute",
+				{
+					project: "proj",
+					requestId: "11111111-1111-4111-8111-111111111111",
+					manifestJson: "{}",
+					manifestDigest: "a".repeat(64),
+				},
+			],
 			[
 				"/api/lifecycle/land/land%3Aone/resume",
 				{ actor: "operator", reason: "CI recovered" },
