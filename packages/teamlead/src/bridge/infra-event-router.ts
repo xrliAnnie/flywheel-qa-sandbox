@@ -85,6 +85,7 @@ export const TICKET_KINDS: ReadonlySet<AlertEventType> =
 		"cmux_cleanup",
 		"cmux_watcher_stalled",
 		"codex_lead_residency_stalled",
+		"codex_terminal_body_alive",
 		"tmux_rescue_hold",
 	]);
 
@@ -97,6 +98,9 @@ export const ISSUE_PROGRESS_KINDS: ReadonlySet<AlertEventType> =
 	new Set<AlertEventType>([
 		"three_stage_stuck",
 		"three_stage_takeover_failed",
+		// FLY-2901: the rescue receipt belongs next to the refusal — the issue's
+		// Lead reads where the predecessor's work went, in the issue thread.
+		"worktree_takeover_rescued",
 		"workflow_engine_issue_alert",
 		"founder_gate_delivery_failed",
 		"runner_lead_pending_unhandled",

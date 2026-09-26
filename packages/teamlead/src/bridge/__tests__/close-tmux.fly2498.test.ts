@@ -34,6 +34,9 @@ vi.mock("../run-quiescence.js", async (original) => {
 });
 vi.mock("../codex-daemon-teardown.js", () => ({
 	reapCodexDaemonForSession: teardown.reap,
+	// FLY-2903: the route asks for its terminal-path deps by reason.
+	codexTerminalTeardownDeps: (reason: string | null) => ({ reason }),
+	registerCodexTerminalTeardown: () => () => {},
 }));
 vi.mock("../runner-teardown.js", () => ({ reapRunnerMcp: teardown.mcp }));
 vi.mock("../tmux-lookup.js", async (original) => ({
@@ -171,6 +174,13 @@ describe("FLY-2498 real close-tmux route", () => {
 			status: 200,
 			body: { closed: true, commDbFinalized: true },
 		});
+		// FLY-2903: close-tmux stops the in-process owner before its reap.
+		expect(teardown.reap).toHaveBeenCalledWith(
+			store,
+			expect.objectContaining({ execution_id: exec }),
+			"bridge.close-tmux",
+			{ reason: "close_tmux" },
+		);
 		expect(db.getSession(exec)).toBeUndefined();
 		expect(store.getEventsByExecution(exec)).toEqual(
 			expect.arrayContaining([

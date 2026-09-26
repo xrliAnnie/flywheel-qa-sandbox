@@ -1,0 +1,291 @@
+{
+  "gitVersion": "git version 2.39.5 (Apple Git-154)",
+  "results": [
+    {
+      "case": "index-file-now-ignored-directory",
+      "expected": "lost",
+      "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r3-2b38itsm/index-file-now-ignored-directory-wxGIby",
+      "H": "94577f62c761945e52ed7cd897838c0d50b003c1",
+      "S": "94577f62c761945e52ed7cd897838c0d50b003c1",
+      "beforeStatus": "1 .D N... 100644 100644 000000 b8df7bd89be1f68287d4b5f4c74ac90341714ad5 b8df7bd89be1f68287d4b5f4c74ac90341714ad5 drafts\u0000",
+      "ignoredBefore": [
+        "drafts/unpublished.md"
+      ],
+      "checkIgnore": ".gitignore:1:drafts/\tdrafts/unpublished.md",
+      "guards": [
+        {
+          "phase": "before-any-rescue-write",
+          "allowed": true,
+          "I": []
+        },
+        {
+          "phase": "before-destructive-reset",
+          "allowed": true,
+          "I": []
+        }
+      ],
+      "outcome": "rescued",
+      "class": "dirty",
+      "snapshotCalls": 1,
+      "snapshot": {
+        "stagedCommit": "94577f62c761945e52ed7cd897838c0d50b003c1",
+        "worktreeCommit": "5ba76896ee630832cfb9d5f988359d3f5e66143e"
+      },
+      "rescueRefs": [
+        {
+          "kind": "dirty",
+          "tip": "5ba76896ee630832cfb9d5f988359d3f5e66143e",
+          "localRef": "refs/flywheel/rescue/run-review-2901/predecessor-review/successor-review-2901/20260926T063413Z/dirty",
+          "remoteBranch": "flywheel-rescue/FLY-2901/predeces-successo-20260926T063413Z-dirty"
+        }
+      ],
+      "events": [
+        "rescued",
+        "cleaned"
+      ],
+      "steps": [
+        {
+          "step": "fingerprinted",
+          "victimExists": true
+        },
+        {
+          "step": "pushed",
+          "victimExists": true
+        },
+        {
+          "step": "manifest_written",
+          "victimExists": true
+        },
+        {
+          "step": "event_recorded",
+          "victimExists": true
+        },
+        {
+          "step": "reset_done",
+          "victimExists": false
+        },
+        {
+          "step": "clean_done",
+          "victimExists": false,
+          "status": ""
+        },
+        {
+          "step": "mirror_written",
+          "victimExists": false
+        },
+        {
+          "step": "cleaned_recorded",
+          "victimExists": false
+        }
+      ],
+      "originalPreserved": false,
+      "originalBlobStored": false,
+      "afterBytes": null,
+      "finalStatus": ""
+    },
+    {
+      "case": "uppercase-ignore-changes",
+      "expected": "lost",
+      "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r3-2b38itsm/uppercase-ignore-changes-6jjE5z",
+      "H": "e2bb156b73dfb91d3218928fa298e262e5b91e5a",
+      "S": "be021c6cbbf3914f500226c51e0c23f02ec0d56a",
+      "beforeStatus": "",
+      "ignoredBefore": [
+        "drafts/unpublished.md"
+      ],
+      "checkIgnore": ".gitignore:1:drafts/\tdrafts/unpublished.md",
+      "guards": [
+        {
+          "phase": "before-any-rescue-write",
+          "allowed": true,
+          "I": [
+            "drafts/"
+          ],
+          "P": [
+            ".GITIGNORE",
+            ".flywheel/anchor",
+            "tracked"
+          ],
+          "collision": [],
+          "G": [],
+          "ignoreCase": true,
+          "ignoreChanged": [],
+          "ignoreComparisons": []
+        },
+        {
+          "phase": "before-destructive-reset",
+          "allowed": true,
+          "I": [
+            "drafts/"
+          ],
+          "P": [
+            ".GITIGNORE",
+            ".flywheel/anchor",
+            "tracked"
+          ],
+          "collision": [],
+          "G": [],
+          "ignoreCase": true,
+          "ignoreChanged": [],
+          "ignoreComparisons": []
+        }
+      ],
+      "outcome": "rescued",
+      "class": "head_behind",
+      "snapshotCalls": 0,
+      "snapshot": null,
+      "rescueRefs": [],
+      "events": [
+        "rescued",
+        "cleaned"
+      ],
+      "steps": [
+        {
+          "step": "fingerprinted",
+          "victimExists": true
+        },
+        {
+          "step": "manifest_written",
+          "victimExists": true
+        },
+        {
+          "step": "event_recorded",
+          "victimExists": true
+        },
+        {
+          "step": "reset_done",
+          "victimExists": true
+        },
+        {
+          "step": "clean_done",
+          "victimExists": false,
+          "status": ""
+        },
+        {
+          "step": "mirror_written",
+          "victimExists": false
+        },
+        {
+          "step": "cleaned_recorded",
+          "victimExists": false
+        }
+      ],
+      "originalPreserved": false,
+      "originalBlobStored": false,
+      "afterBytes": null,
+      "finalStatus": ""
+    },
+    {
+      "case": "excludes-file-in-worktree-changes",
+      "expected": "lost",
+      "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r3-2b38itsm/excludes-file-in-worktree-changes-U7D4rT",
+      "H": "4b298eca245c838d236ac2c937677c27a2e032fb",
+      "S": "66d9f06730339a39580c54068dfac08d453c3767",
+      "beforeStatus": "",
+      "ignoredBefore": [
+        "drafts/unpublished.md"
+      ],
+      "checkIgnore": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r3-2b38itsm/excludes-file-in-worktree-changes-U7D4rT/shared/project.ignore:1:drafts/\tdrafts/unpublished.md",
+      "guards": [
+        {
+          "phase": "before-any-rescue-write",
+          "allowed": true,
+          "I": [
+            "drafts/"
+          ],
+          "P": [
+            ".flywheel/anchor",
+            ".gitignore",
+            "project.ignore",
+            "tracked"
+          ],
+          "collision": [],
+          "G": [
+            ".gitignore"
+          ],
+          "ignoreCase": true,
+          "ignoreChanged": [],
+          "ignoreComparisons": [
+            {
+              "path": ".gitignore",
+              "current": "62a0161c9eab0d2d827a7795cc8831d1324e3bd9",
+              "target": "62a0161c9eab0d2d827a7795cc8831d1324e3bd9",
+              "changed": false
+            }
+          ]
+        },
+        {
+          "phase": "before-destructive-reset",
+          "allowed": true,
+          "I": [
+            "drafts/"
+          ],
+          "P": [
+            ".flywheel/anchor",
+            ".gitignore",
+            "project.ignore",
+            "tracked"
+          ],
+          "collision": [],
+          "G": [
+            ".gitignore"
+          ],
+          "ignoreCase": true,
+          "ignoreChanged": [],
+          "ignoreComparisons": [
+            {
+              "path": ".gitignore",
+              "current": "62a0161c9eab0d2d827a7795cc8831d1324e3bd9",
+              "target": "62a0161c9eab0d2d827a7795cc8831d1324e3bd9",
+              "changed": false
+            }
+          ]
+        }
+      ],
+      "outcome": "rescued",
+      "class": "head_behind",
+      "snapshotCalls": 0,
+      "snapshot": null,
+      "rescueRefs": [],
+      "events": [
+        "rescued",
+        "cleaned"
+      ],
+      "steps": [
+        {
+          "step": "fingerprinted",
+          "victimExists": true
+        },
+        {
+          "step": "manifest_written",
+          "victimExists": true
+        },
+        {
+          "step": "event_recorded",
+          "victimExists": true
+        },
+        {
+          "step": "reset_done",
+          "victimExists": true
+        },
+        {
+          "step": "clean_done",
+          "victimExists": false,
+          "status": ""
+        },
+        {
+          "step": "mirror_written",
+          "victimExists": false
+        },
+        {
+          "step": "cleaned_recorded",
+          "victimExists": false
+        }
+      ],
+      "originalPreserved": false,
+      "originalBlobStored": false,
+      "afterBytes": null,
+      "finalStatus": ""
+    }
+  ]
+}

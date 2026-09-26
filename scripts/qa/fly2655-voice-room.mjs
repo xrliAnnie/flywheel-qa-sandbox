@@ -629,6 +629,12 @@ export function loadSlot(slotDir, expectedHead) {
 			lead.codexVoiceActions !== true,
 		"slot_voice_registry_drift",
 	);
+	check(
+		room.voiceChannelId === fixtureReceipt.fixture.voiceChannelId &&
+			typeof room.voiceChannelName === "string" &&
+			room.voiceChannelName.length > 0,
+		"slot_voice_mapping_drift",
+	);
 	const topology = validatePreparedTopology({
 		slotDir: canonical,
 		buildSha: room.buildSha,

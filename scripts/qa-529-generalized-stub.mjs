@@ -10,10 +10,12 @@ import {
 } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
+	acknowledgeStubPhaseWakes,
 	buildDesignFixtureHtml,
+	completeStubWithDrain,
 	convergeRemotePrAuthority,
 	generalizedFixtureBranch,
 	nextStubAction,
@@ -36,6 +38,12 @@ const Database = requireFromTeamlead("better-sqlite3");
 const executionId = requiredEnv("FLYWHEEL_EXEC_ID");
 const stateDbPath = requiredEnv("FLYWHEEL_STATE_DB_PATH");
 const commCli = requiredEnv("FLYWHEEL_COMM_CLI");
+const { CommDB } = await import(
+	pathToFileURL(resolve(dirname(commCli), "db.js"))
+);
+const { resolveDbPath } = await import(
+	pathToFileURL(resolve(dirname(commCli), "resolve-db-path.js"))
+);
 const slotDir = dirname(stateDbPath);
 const stateDir = join(slotDir, "stub-state");
 const controlDir = join(slotDir, "stub-control");
@@ -207,6 +215,35 @@ function runComm(args) {
 	return { ok: result.status === 0, status: result.status, output };
 }
 
+function completeWithDrain(args) {
+	return completeStubWithDrain(args, {
+		runComm,
+		acknowledgeWakes: (ids) => {
+			const db = new CommDB(
+				resolveDbPath({ project: requiredEnv("FLYWHEEL_PROJECT_NAME") }),
+				false,
+			);
+			try {
+				acknowledgeStubPhaseWakes(db, executionId, ids, (wake) => {
+					state.consumedPhaseWakes = [
+						...(state.consumedPhaseWakes ?? []).filter(
+							(item) => item.messageId !== wake.message_id,
+						),
+						{
+							messageId: wake.message_id,
+							content: wake.content,
+							readAt: new Date().toISOString(),
+						},
+					];
+					writeJsonAtomic(statePath, state);
+				});
+			} finally {
+				db.close();
+			}
+		},
+	});
+}
+
 function configureGit() {
 	run("git", ["config", "user.name", "Flywheel QA 529 Stub"]);
 	run("git", ["config", "user.email", "flywheel-qa-529@invalid.local"]);
@@ -266,7 +303,7 @@ function completeDesign(context) {
 	);
 	state.pending = { action: "complete-design", attempt: context.attempt, head };
 	writeJsonAtomic(statePath, state);
-	const result = runComm([
+	const result = completeWithDrain([
 		"complete",
 		"--route",
 		"phase_design_complete",
@@ -414,7 +451,7 @@ async function completeImplement(context) {
 		branch: pr.branch,
 	};
 	writeJsonAtomic(statePath, state);
-	const result = runComm([
+	const result = completeWithDrain([
 		"complete",
 		"--route",
 		"needs_review",

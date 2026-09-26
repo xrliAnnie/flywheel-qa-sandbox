@@ -16,8 +16,18 @@ mkdir -p "$FIXTURE_HOME/.flywheel" "$STUB_BIN"
 trap 'rm -rf "$FIXTURE"' EXIT
 
 printf 'LINEAR_API_KEY=fixture-key\n' > "$FIXTURE_HOME/.flywheel/.env"
-printf '%s\n' '{"guildId":"fixture","slots":[{"id":99,"bridgePort":29999,"botName":"fixture","tokenEnvVar":"TEST_BOT_TOKEN_99","botAppId":"99","channelId":"99","role":"lead"}]}' \
-  > "$FIXTURE_HOME/.flywheel/test-slots.json"
+jq -n '{
+  guildId: "fixture",
+  slots: [range(1; 100) as $id | {
+    id: $id,
+    bridgePort: (29900 + $id),
+    botName: ("fixture-" + ($id | tostring)),
+    tokenEnvVar: ("TEST_BOT_TOKEN_" + ($id | tostring)),
+    botAppId: ("bot-" + ($id | tostring)),
+    channelId: ("channel-" + ($id | tostring)),
+    role: "lead"
+  }]
+}' > "$FIXTURE_HOME/.flywheel/test-slots.json"
 
 GH_LOG="$FIXTURE/gh.log"
 export FLY1624_GH_LOG="$GH_LOG"
@@ -82,6 +92,26 @@ elif grep -q 'is not reachable with the current gh auth' "$OUT_HIDDEN" \
   pass "confirmed REST reachability failure gives a runnable diagnostic, not a fork command"
 else
   fail "repository visibility failure emitted a misleading recovery instruction"
+fi
+
+RANGE_HOME="$FIXTURE/range-home"
+mkdir -p "$RANGE_HOME/.flywheel"
+printf 'LINEAR_API_KEY=fixture-key\n' > "$RANGE_HOME/.flywheel/.env"
+jq '.slots = .slots[:6]' "$FIXTURE_HOME/.flywheel/test-slots.json" \
+  > "$RANGE_HOME/.flywheel/test-slots.json"
+: > "$GH_LOG"
+set +e
+HOME="$RANGE_HOME" PATH="$STUB_BIN:$PATH" FLY1624_SCENARIO=rest_visible \
+  bash "$SCRIPT_DIR/test-deploy.sh" 7 >"$FIXTURE/range.out" 2>&1
+range_rc=$?
+set -e
+if [[ "$range_rc" -ne 0 ]] \
+    && grep -Fq 'configured range 1-6' "$FIXTURE/range.out" \
+    && [[ ! -s "$GH_LOG" ]] \
+    && [[ ! -e /tmp/flywheel-test-slot-7.lock ]]; then
+  pass "out-of-range slot fails before GitHub preflight or lock mutation"
+else
+  fail "out-of-range slot did not fail at the configured-pool boundary"
 fi
 
 echo "[TEST] test-deploy-preflight-github: ${PASSED} passed, ${FAILED} failed"

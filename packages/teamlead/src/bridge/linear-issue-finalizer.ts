@@ -80,7 +80,8 @@ export async function markLinearIssueDone(
 		assertLinearDoneNotAborted(signal);
 		const issue = await client.issue(issueId);
 		assertLinearDoneNotAborted(signal);
-		const current = issue.state ? await issue.state : undefined;
+		// Read once: each SDK getter access creates a distinct request promise.
+		const current = await issue.state;
 		assertLinearDoneNotAborted(signal);
 		if (!current?.type) throw new Error("state_unreadable");
 		return current.type;

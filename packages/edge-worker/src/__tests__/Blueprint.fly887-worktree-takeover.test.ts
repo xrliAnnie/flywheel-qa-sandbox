@@ -7,6 +7,12 @@
  * away). FAIL-CLOSED: only take over a worktree that is clean AND at the exact
  * captured head; any drift → `worktree_takeover_failed`. Gated on the keep-alive
  * kill-switch. Design / not-registered / kill-switch=0 → the legacy create path.
+ *
+ * FLY-2901: the shared-worktree decision (registration × existence, reuse,
+ * rescue, refusal) now lives in `WorktreeManager.runTakeoverTransaction`
+ * (real-git coverage: WorktreeManager.takeover-rescue.test.ts). These tests pin
+ * the Blueprint contract: WHEN the transaction is used, WHAT it is given, and
+ * how each outcome maps to launch / failure / prompt.
  */
 
 import { execFileSync } from "node:child_process";
@@ -21,6 +27,8 @@ import type { DagNode } from "../dag-node.js";
 import type { GitResultChecker } from "../GitResultChecker.js";
 import { PreHydrator } from "../PreHydrator.js";
 import type { WorktreeManager } from "../WorktreeManager.js";
+import type { TakeoverRescueManifest } from "../worktree-takeover-rescue.js";
+import type { TakeoverTransactionResult } from "../worktree-takeover-transaction.js";
 
 const HEAD = "0123456789abcdef0123456789abcdef01234567";
 
@@ -84,8 +92,21 @@ function makeWtManager(opts: {
 	registered: boolean;
 	path: string;
 	branch?: string;
+	takeover?: TakeoverTransactionResult | (() => Promise<never>);
 }) {
+	const worktree = {
+		projectName: "flywheel",
+		issueId: "FLY-887",
+		worktreePath: opts.path,
+		branch: opts.branch ?? "feat/branch-b",
+		mainRepoPath: "/project",
+		generation: "",
+	};
 	return {
+		runTakeoverTransaction: vi.fn(async () => {
+			if (typeof opts.takeover === "function") return opts.takeover();
+			return opts.takeover ?? { kind: "reused" as const, worktree };
+		}),
 		expectedWorktree: vi.fn(() => ({
 			path: opts.path,
 			branch: opts.branch ?? "feat/branch-b",
@@ -117,6 +138,7 @@ async function run(
 	wt: WorktreeManager,
 	gitChecker: GitResultChecker,
 	ctxOverrides: Partial<BlueprintContext>,
+	emitterExtras: Record<string, unknown> = {},
 ): Promise<{
 	result: Awaited<ReturnType<Blueprint["run"]>>;
 	wt: WorktreeManager;
@@ -131,6 +153,7 @@ async function run(
 		emitCompleted: vi.fn(async () => {}),
 		emitStage: vi.fn(async () => {}),
 		emitArtifact: vi.fn(async () => {}),
+		...emitterExtras,
 	} as never;
 	const blueprint = new Blueprint(
 		makeHydrator(),
@@ -172,6 +195,7 @@ describe("FLY-887 worktree in-place takeover", () => {
 			{ sessionRole: "implement", shareParentBranch: true, startPoint: HEAD },
 		);
 		expect(result.success).toBe(true);
+		expect(wt.runTakeoverTransaction).toHaveBeenCalledTimes(1);
 		expect(wt.removeIfExists).not.toHaveBeenCalled();
 		expect(wt.create).not.toHaveBeenCalled();
 		// worktree_path still persisted on the takeover path (Codex R1 #3)
@@ -191,77 +215,279 @@ describe("FLY-887 worktree in-place takeover", () => {
 		expect(wt.create).not.toHaveBeenCalled();
 	});
 
-	it("clean descendant HEAD fast-forwards the frozen startPoint and reuses in place", async () => {
+	it("FLY-2901: the transaction receives the Bridge-trusted permit, kill switch, run and successor identity", async () => {
 		const path = makeRealWorktree();
 		created.push(path);
 		const wt = makeWtManager({ registered: true, path });
-		const gitChecker = makeGitChecker({
-			clean: true,
-			head: `fedcba98${"0".repeat(32)}`,
-			ancestor: true,
-		});
-		const { result } = await run(wt, gitChecker, {
+		const permit = {
+			allowed: true,
+			reason: "no_live_writer" as const,
+			predecessors: [],
+		};
+		await run(wt, makeGitChecker({ clean: true, head: HEAD }), {
 			sessionRole: "implement",
 			shareParentBranch: true,
 			startPoint: HEAD,
+			takeoverRescuePermit: permit,
+			takeoverRescueDisabled: true,
 		});
-		expect(result.success).toBe(true);
-		expect(gitChecker.isAncestorOf).toHaveBeenCalledWith(
-			path,
-			HEAD,
-			`fedcba98${"0".repeat(32)}`,
+		expect(wt.runTakeoverTransaction).toHaveBeenCalledWith(
+			expect.objectContaining({
+				mainRepoPath: "/project",
+				issueId: "FLY-887",
+				issueKey: "FLY-887",
+				successorExec: "exec-take",
+				startPoint: HEAD,
+				permit,
+				rescueDisabled: true,
+				recorder: undefined,
+			}),
 		);
-		expect(wt.create).not.toHaveBeenCalled();
 	});
 
-	it("dirty worktree → worktree_takeover_failed (never removeIfExists an active phase worktree)", async () => {
+	it("FLY-2901: a refused rescue maps to worktree_takeover_failed naming class, reason, kept rescues and dirty paths", async () => {
 		const path = makeRealWorktree();
 		created.push(path);
-		const wt = makeWtManager({ registered: true, path });
-		const { result } = await run(
+		const wt = makeWtManager({
+			registered: true,
+			path,
+			takeover: {
+				kind: "refused",
+				reason: "permit_denied:live_writer",
+				class: "dirty",
+				dirtyPaths: ["a.txt", "paired/other/"],
+				dirtyPathsOverflow: 3,
+				completedRescues: [
+					{
+						kind: "dirty",
+						localRef: "refs/flywheel/rescue/x",
+						remoteBranch: "flywheel-rescue/FLY-887/a-b-20260925T000000Z-dirty",
+						tip: "a".repeat(40),
+					},
+				],
+				head: HEAD,
+				clean: false,
+				legacy: false,
+			},
+		});
+		const { result, adapter } = await run(
 			wt,
 			makeGitChecker({ clean: false, head: HEAD }),
 			{ sessionRole: "implement", shareParentBranch: true, startPoint: HEAD },
 		);
 		expect(result.success).toBe(false);
-		expect(result.error).toContain("worktree_takeover_failed");
 		expect(result.failure).toEqual({
 			failureKind: "worktree_takeover_failed",
 			failureReason: result.error,
 		});
+		expect(result.error).toContain(
+			"worktree_takeover_failed: rescue refused (dirty/permit_denied:live_writer)",
+		);
+		expect(result.error).toContain(
+			`preserved (kept): dirty flywheel-rescue/FLY-887/a-b-20260925T000000Z-dirty@${"a".repeat(40)}`,
+		);
+		expect(result.error).toContain(
+			"dirty paths: a.txt, paired/other/ …(+3 more)",
+		);
 		expect(wt.removeIfExists).not.toHaveBeenCalled();
 		expect(wt.create).not.toHaveBeenCalled();
+		expect(adapter.execute).not.toHaveBeenCalled();
 	});
 
-	it("HEAD drift → worktree_takeover_failed", async () => {
+	it("FLY-2901 kill switch: the legacy refusal keeps today's sentence (plus dirty-path diagnostics)", async () => {
 		const path = makeRealWorktree();
 		created.push(path);
-		const wt = makeWtManager({ registered: true, path });
+		const wt = makeWtManager({
+			registered: true,
+			path,
+			takeover: {
+				kind: "refused",
+				reason: "kill_switch",
+				class: "head_diverged",
+				dirtyPaths: [],
+				dirtyPathsOverflow: 0,
+				completedRescues: [],
+				head: `deadbeef${"0".repeat(32)}`,
+				clean: true,
+				legacy: true,
+			},
+		});
 		const { result } = await run(
 			wt,
 			makeGitChecker({ clean: true, head: `deadbeef${"0".repeat(32)}` }),
 			{ sessionRole: "implement", shareParentBranch: true, startPoint: HEAD },
 		);
 		expect(result.success).toBe(false);
-		expect(result.error).toContain("worktree_takeover_failed");
 		expect(result.failure?.failureKind).toBe("worktree_takeover_failed");
-		expect(result.failure?.failureReason).toContain("head=deadbeef");
-		expect(wt.create).not.toHaveBeenCalled();
+		expect(result.failure?.failureReason).toBe(
+			`worktree_takeover_failed: shared branch-B worktree ${path} is not reusable in place (clean=true, head=deadbeef${"0".repeat(32)}, expected=${HEAD}) — refusing to reuse an active phase worktree; a parked phase may hold uncommitted work`,
+		);
 	});
 
-	it("not registered (prior phase closed/died) → legacy create path", async () => {
+	it("FLY-2901: a throwing transaction fails the launch as worktree_takeover_failed", async () => {
 		const path = makeRealWorktree();
 		created.push(path);
-		const wt = makeWtManager({ registered: false, path });
+		const wt = makeWtManager({
+			registered: true,
+			path,
+			takeover: async () => {
+				throw new Error("create failed\nwith detail");
+			},
+		});
 		const { result } = await run(
+			wt,
+			makeGitChecker({ clean: true, head: HEAD }),
+			{ sessionRole: "qa", shareParentBranch: true, startPoint: HEAD },
+		);
+		expect(result.failure?.failureKind).toBe("worktree_takeover_failed");
+		expect(result.error).toContain("takeover transaction threw at");
+		expect(result.error).toContain("create failed with detail");
+	});
+
+	it("FLY-2901: not registered + absent → the transaction's create path (Blueprint never runs removeIfExists itself)", async () => {
+		const path = makeRealWorktree();
+		created.push(path);
+		const wt = makeWtManager({
+			registered: false,
+			path,
+			takeover: {
+				kind: "created",
+				worktree: {
+					projectName: "flywheel",
+					issueId: "FLY-887",
+					worktreePath: path,
+					branch: "feat/branch-b",
+					mainRepoPath: "/project",
+					generation: "fresh-generation",
+				},
+			},
+		});
+		const { result, emit } = await run(
 			wt,
 			makeGitChecker({ clean: true, head: HEAD }),
 			{ sessionRole: "implement", shareParentBranch: true, startPoint: HEAD },
 		);
 		expect(result.success).toBe(true);
-		expect(wt.removeIfExists).toHaveBeenCalled();
-		expect(wt.create).toHaveBeenCalledWith(
-			expect.objectContaining({ startPoint: HEAD }),
+		expect(wt.removeIfExists).not.toHaveBeenCalled();
+		expect(wt.create).not.toHaveBeenCalled();
+		expect(emit).toHaveBeenCalledWith(expect.anything(), path, {
+			branch: "feat/branch-b",
+			generation: "fresh-generation",
+		});
+	});
+
+	it("FLY-2901: a rescued takeover launches on the carried worktree and injects the rescue prompt section", async () => {
+		const path = makeRealWorktree();
+		created.push(path);
+		const rescueTip = "b".repeat(40);
+		const manifest: TakeoverRescueManifest = {
+			schema: "fly-2901.takeover-rescue.v1",
+			runId: "run-1",
+			issueKey: "FLY-887",
+			successorExec: "exec-take",
+			predecessors: [],
+			canonicalPath: path,
+			branch: "feat/branch-b",
+			generationBefore: "gen-old",
+			class: "dirty",
+			startPoint: HEAD,
+			headBefore: HEAD,
+			target: HEAD,
+			remoteTip: null,
+			rescues: [
+				{
+					kind: "dirty",
+					localRef:
+						"refs/flywheel/rescue/run-1/p/exec-take/20260925T000000Z/dirty",
+					remoteBranch:
+						"flywheel-rescue/FLY-887/p-exec-tak-20260925T000000Z-dirty",
+					tip: rescueTip,
+				},
+			],
+			snapshot: { stagedCommit: "c".repeat(40), worktreeCommit: rescueTip },
+			nestedMoves: [],
+			fingerprint3: "f3",
+			fingerprints: { first: "f1", second: "f2", third: "f3" },
+			generationCarried: false,
+			stamp: "20260925T000000Z",
+			at: "2026-09-25T00:00:00.000Z",
+		};
+		const pointer = `event:worktree_takeover_rescued:${"e".repeat(64)} refs:${manifest.rescues[0]!.remoteBranch}@${rescueTip}`;
+		const wt = makeWtManager({
+			registered: true,
+			path,
+			takeover: {
+				kind: "rescued",
+				worktree: {
+					projectName: "flywheel",
+					issueId: "FLY-887",
+					worktreePath: path,
+					branch: "feat/branch-b",
+					mainRepoPath: "/project",
+					generation: "gen-old",
+				},
+				evidence: {
+					eventUid: `worktree_takeover_rescued:${"e".repeat(64)}`,
+					manifest,
+					manifestPath:
+						"/state/takeover-rescue/run-1/exec-take/20260925T000000Z/manifest.json",
+					manifestSha256: "d".repeat(64),
+					mirrorJsonPath: `${path}/.flywheel/runs/takeover/exec-take.json`,
+					mirrorMdPath: `${path}/.flywheel/runs/takeover/exec-take.md`,
+					pointer,
+					resumed: false,
+				},
+			},
+		});
+		const { result, emit, adapter } = await run(
+			wt,
+			makeGitChecker({ clean: true, head: HEAD }),
+			{ sessionRole: "implement", shareParentBranch: true, startPoint: HEAD },
+		);
+		expect(result.success).toBe(true);
+		expect(emit).toHaveBeenCalledWith(expect.anything(), path, {
+			branch: "feat/branch-b",
+			generation: "gen-old",
+		});
+		const prompt = String(
+			(adapter.execute as ReturnType<typeof vi.fn>).mock.calls[0]![0].prompt,
+		);
+		expect(prompt).toContain("## Worktree takeover rescue");
+		expect(prompt).toContain(`--pointer 'rescue=${pointer}'`);
+		expect(prompt).toContain(
+			`git diff --binary ${HEAD} ${"c".repeat(40)} | git apply --index`,
+		);
+		expect(prompt).toContain(
+			`git diff --binary ${"c".repeat(40)} ${rescueTip} | git apply`,
+		);
+	});
+
+	it("FLY-2901: a Bridge-local emitter becomes the transaction recorder, bound to this launch's envelope", async () => {
+		const path = makeRealWorktree();
+		created.push(path);
+		const wt = makeWtManager({ registered: true, path });
+		const loadPendingTakeoverRescue = vi.fn(async () => []);
+		const recordTakeoverRescue = vi.fn(async () => {});
+		const recordTakeoverCleaned = vi.fn(async () => {});
+		await run(
+			wt,
+			makeGitChecker({ clean: true, head: HEAD }),
+			{ sessionRole: "implement", shareParentBranch: true, startPoint: HEAD },
+			{
+				loadPendingTakeoverRescue,
+				recordTakeoverRescue,
+				recordTakeoverCleaned,
+			},
+		);
+		const input = (wt.runTakeoverTransaction as ReturnType<typeof vi.fn>).mock
+			.calls[0]![0];
+		await input.recorder.loadPendingTakeoverRescue({
+			runId: "run-1",
+			canonicalPath: path,
+		});
+		expect(loadPendingTakeoverRescue).toHaveBeenCalledWith(
+			expect.objectContaining({ executionId: "exec-take" }),
+			{ runId: "run-1", canonicalPath: path },
 		);
 	});
 
@@ -275,6 +501,7 @@ describe("FLY-887 worktree in-place takeover", () => {
 			{ sessionRole: "design", shareParentBranch: true, startPoint: HEAD },
 		);
 		expect(result.success).toBe(true);
+		expect(wt.runTakeoverTransaction).toHaveBeenCalledTimes(1);
 		expect(wt.removeIfExists).not.toHaveBeenCalled();
 		expect(wt.create).not.toHaveBeenCalled();
 	});
@@ -292,6 +519,7 @@ describe("FLY-887 worktree in-place takeover", () => {
 			},
 		);
 		expect(result.success).toBe(true);
+		expect(wt.runTakeoverTransaction).not.toHaveBeenCalled();
 		expect(wt.create).toHaveBeenCalled();
 	});
 
@@ -308,6 +536,7 @@ describe("FLY-887 worktree in-place takeover", () => {
 			},
 		);
 		expect(result.success).toBe(true);
+		expect(wt.runTakeoverTransaction).not.toHaveBeenCalled();
 		expect(wt.removeIfExists).toHaveBeenCalled();
 		expect(wt.create).toHaveBeenCalledWith(
 			expect.objectContaining({ startPoint: undefined }),
@@ -332,6 +561,7 @@ describe("FLY-887 worktree in-place takeover", () => {
 			},
 		);
 		expect(result.success).toBe(true);
+		expect(wt.runTakeoverTransaction).not.toHaveBeenCalled();
 		expect(wt.removeIfExists).toHaveBeenCalled();
 		expect(wt.create).toHaveBeenCalledWith(
 			expect.objectContaining({ startPoint: HEAD }),
@@ -348,6 +578,7 @@ describe("FLY-887 worktree in-place takeover", () => {
 			{ sessionRole: "main", startPoint: HEAD },
 		);
 		expect(result.success).toBe(true);
+		expect(wt.runTakeoverTransaction).not.toHaveBeenCalled();
 		expect(wt.create).toHaveBeenCalled();
 	});
 
