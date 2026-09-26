@@ -105,3 +105,21 @@ Codex `gpt-6-astra` xhigh，线程 `01a0df1a-4e97-7402-a389-23f45bf8f21e`，原�
 | R5 | **APPROVED** | — |
 
 每轮修复都有回归测试，并做过突变验证（撤掉修复后测试转红，突变装载以标记计数确认）。
+
+补记：按 Lead 对问题 4dcfc95b 的裁定（批准必须是对确切 head 的全量复核），R5 之后又对 PR head `1fade6296` 做了全量复核 R6，结论 **APPROVED**（`codex-code-review-r6.md`）。
+
+## 7. QA 返工 1（QA FAIL @ 1fade6296）
+
+QA 依据：exact-head CI 36268153912 在 Quick Gate、teamlead 分片、light、script 分片变红，本地另有三处阻断。全部根因与修复：
+
+| 失败 | 根因 | 修复 |
+|---|---|---|
+| Quick Gate：FLY-2006 retention consumer gate | 529 脚本新增的 `hold_resumed` 不存在判断是对 `workflow_run_event` 的 anti-join，未登记 | 配置登记为 `protect`（归档回执会让脚本误判门仍开着） |
+| fly1674 residue | 新回归 `fly2921-rework-wake-no-freeze` 引用 hold 形状名 `three_stage_turn_stuck` | 精确白名单 |
+| fly2337 / StateStore.patrol-tick | 夹具往五态表插退役的 `held` | 改为 `returned_to_lead`（守卫已按新字面值判断） |
+| lead-token-savings drift | `flywheel-comm/src/db.ts` 字节变化，兼容摘要未刷新 | 逐块审计（只动 TURN wake 原语）后重钉哈希并补 rationale |
+| config feature-flags drift | C7 新增环境变量 `FLYWHEEL_REWORK_DELTA_TIMEOUT_MS` 未归类 | `NON_FLAG_ALLOWLIST` 登记为调参旋钮 |
+| required wall-clock thresholds | C7 超时测试用真实耗时上限断言 | 改为以 `rework_delta_unverified` 审计事件证明超时路径 |
+| Script Tests 4/6 容量护栏（1038s/1020s，86%） | 与 main 同一分片对比：增量来自 `test-cmux-sync.sh`（+88s）与 `pnpm build`（+37s），均非本改动 | 未自行 rerun，报 Lead 裁定 |
+
+教训：这几处都不在我当初的「相关测试」清单里。改动 CHECK 字面值、被钉哈希的共享文件、环境变量和 CI 门配置时，要按字面值 / 路径做全仓 `git grep`，再把命中的测试与门都纳入本地验证。
