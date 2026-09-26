@@ -388,3 +388,59 @@ T10 → T1 → T2 → T3 → T8 → T9 → T4 → T6 → T5 → T5b → T5c → 
 - R4–R6 未发现范围外问题。
 - R5 LOW(`speech_binding_unavailable` 口径不一)与 R6 LOW(无声分支文字连写)已分别在 v6 / v6.1 直接修正,无需开单。
 - (写 `liveVoice` 的受控写入按 Lead 裁定 `54c3646c` 归本单 T9 实施,不是 follow-up。)
+
+## 12. T8 修订（probe4 实测）
+
+Lead 裁定 `0ee0c065`（2026-09-25）：只追加本节，不重写全案；外部 Codex 只复核本节。**本节收紧 §3 T8 的 `initialItems` 预算**。原 T8 的数字（合计 ≤32,000 字节、≤128 条，prompt ≤15,500 o200k / 128 KB）全部保留、继续生效；本节在它们之上**再加一道真实 token 上限**，并写清超限时怎么处理。
+
+### 12.1 实测依据
+
+- 证据：`evidence/probe4-initialitems-summary.md`（commit `e1bd108b2`、`df76230ef`），台架 `evidence/probe4.mjs`，30 场日志 `evidence/probe-run{4,5,6}-*.jsonl`。环境同 research：固定 0.156.1、v3、WebRTC、gpt-live-1-codex、订阅、无 key。
+- developer 角色**被接受**：30 场零 `thread/realtime/error`、零提前 `closed`；未超限时条目里的事实被用上 8/8（另有 research probe-run3 1/1）。所以 T8 保持 developer 角色（与 FLY-2886 的 V2 `appendText(developer)` 不是一条路径）。
+- **服务端有一道不报错的上限**：条目合计 7,951 个 o200k token（27,309 字节）2/2 能用上，8,251 个（28,353 字节）起就**整体看不到**。超限的 20 场是 0/20：事实放第 1 条或第 3 条、放条首或条中、用 developer 还是 user+「[旁注,勿回应]」都一样，没有任何错误事件，模型编一个答案。
+  上限与 8,192 吻合。Codex 客户端只按「字节/4」估算（上限 8,192），中文每 token 约 3.4 字节，这道检查拦不住（失败的 28–30 KB 在它的估算里只有 7,088–7,610）。
+- 结论：原 T8 的「≤32,000 字节」在中文记忆上会让 Raya 这种大记忆 Lead **静默丢掉全部记忆**。必须按真实 o200k 计数限额。
+
+### 12.2 计数方法
+
+- 实现：`js-tiktoken`，**精确钉在 1.0.21**，编码 `o200k_base`。这是 Bridge 现在已经在用的计数器（`VOICE_CONTEXT_TOKENIZER = "js-tiktoken@1.0.21/o200k_base"`，`teamlead/package.json` 里就是精确版本）。
+- 离线可用：rank 表随 npm 包打包在 `dist/ranks` 里，`getEncoding("o200k_base")` 不联网。
+- Bridge 与 container 用**同一实现、同一版本**：voice-codex 新增依赖 `js-tiktoken: 1.0.21`（同一个 lockfile 条目）。container 的 `assertContext` 先核 `manifest.tokenizer === "js-tiktoken@1.0.21/o200k_base"`，不一致就 `context_invalid`；再对每条 item 重新计数，与快照 `measurements.initialItems` 逐项比对。
+- 计数口径：`itemsTokens = Σ o200k(item.text) + 8 × 条数`。每条加 8 个 token，是给服务端每条消息的包装开销（角色、分隔）留的余量，不依赖服务端的具体实现。
+- **计数失败即 fail-closed**：编码器加载失败或 `encode` 抛错时，Bridge 报新错误码 `context_token_count_unavailable`（同 `context_too_large` 走 503 `voice_unavailable`），container 报 `context_invalid`。**任何一侧都不许退回只按字节限额**，因为那正是本节要堵的静默丢失路径。
+
+### 12.3 上限 7,600 的余量
+
+- `initialItems`：`itemsTokens ≤ 7,600`，同时仍满足原 T8 的 ≤32,000 字节（即 Codex 客户端估算 ≤8,000）和 ≤128 条。三条都满足才算放得下。
+- 余量 592（约 7%），理由：
+  ① 实测只把服务端上限夹在 7,951–8,251 之间，不知道准确值；
+  ② 服务端怎么计包装开销不透明，我们按每条 +8 估，条数多时估算偏差会累积；
+  ③ 服务端分词版本可能漂移。
+  7,600 同时低于实测能用上的 7,951，本身就是一个已证可用的量级。
+- 仍按行切段、按 manifest 顺序装：再加一段会使任一条件超限就停，剩下的段按原顺序进下一步。
+
+### 12.4 溢出回填与「双超」
+
+1. 放不进 items 的段，按 T8 原有路径依次进 `realtime.prompt` 的「# Selected Lead memory (continued)」块。
+2. 回填后按原 T8 预算复核 prompt：≤15,500 o200k 且 ≤128 KB（加头后的实际发送文本）。
+3. **双超**（items 已按 12.3 装满，回填后 prompt 仍超）：**不截断、不摘要、不丢任何一段**，整场不开：
+   - Bridge 抛 `context_too_large{block:"realtime.prompt", bytes, estimatedTokens, itemsTokens, limits}`（不含正文），并 `console.warn` 一行同样的字段；
+   - container 把 Bridge 的 `context_too_large` 与 `context_token_count_unavailable` 映射为新原因 `context_too_large` / `context_invalid`，不再落进笼统的 `codex_open_failed`；
+   - founder 可见：语音 thread 发「📻 语音不可用：这位 Lead 的记忆与上下文超出语音会话上限」（计数不可用时发「📻 语音不可用：上下文无法核对大小」）。thread 在 Lead 自己的频道里，Lead 同样可见；
+   - 证据 `codex_voice_container_open_failed{reason}` 带上 Bridge 给的 limits 字段。
+4. 不存在「部分记忆被默默丢掉」的路径：一段记忆要么在 items 里（计数证明 ≤7,600），要么在 prompt 里（计数证明 ≤15,500），要么整场不开、明示原因。
+5. 容量估算（research R3）：Raya 记忆约 11,991 o200k，items 装 ≈7,600，其余约 4,400 回填进 prompt。prompt 约为身份 3,634 + 状态/会议/边界/协议约 2,000 + 4,400 ≈ 10,000，低于 15,500。Honey Lemon 记忆 6,492 全部装进 items。两者都不触发双超。
+
+### 12.5 测试（并入 §6 的 T8 行）
+
+teamlead `voice-session-context.test.ts`：
+- **边界**：记忆恰好 `itemsTokens = 7,600` 时全部进 items；多出一段就把这段回填到 prompt；再构造「字节未超、token 超」的中文夹具，证明是 token 这一条在起作用。
+- **溢出回填**：Raya 规模夹具。items 的 `itemsTokens ≤ 7,600`；其余段按原顺序出现在 continued 块；所有记忆段在 items 与 prompt 里恰好各出现一次，不重复、不缺失。
+- **双超**：回填后 prompt > 15,500，抛 `context_too_large`；错误里带 limits，不带正文；不返回任何被截断的快照。
+- **计数器不可用**：注入抛错的 `countTokens`，抛 `context_token_count_unavailable`，不产生只按字节放行的快照。
+
+voice-codex `codex-container.test.ts`：
+- `manifest.tokenizer` 不一致、item 复算 token 不符或超过 7,600、计数器抛错，都报 `context_invalid`，且不 spawn 进程；
+- Bridge 返回 `context_too_large`，映射为 `context_too_large` 并给出对应 thread 文案。
+
+原 §6 的 T8 用例（按字节和条数的边界等）照旧保留。
