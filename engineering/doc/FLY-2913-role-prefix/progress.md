@@ -1,19 +1,16 @@
 ---
 issue: FLY-2913
 phase: implement
-phaseCursor: 4/6
-updated: 2026-09-26T17:27:06.585Z
-nextStep: Resume live exec session 82709 first; bounded teamlead related 65
-  retained candidates is still running, do not restart on silence. Driver
-  /tmp/fly2913-scoped-verification.py; outputs
-  /tmp/fly2913-scoped-verification{.log,.json}; completed logs archived in
-  ~/.flywheel/qa-evidence/FLY-2913-implement-6c3014ba/local-revision. Then
-  archive all scoped results, freeze final full head, ask Lead for slot 2 or 5
-  C6 room, code review, needs_review.
+phaseCursor: 5/6
+updated: 2026-09-26T17:30:58.372Z
+nextStep: C1-C5 implementation retained and audited; 30-case settings parity
+  with QA@2 baseline passes. Session 82709 still owns scoped teamlead tests;
+  poll rather than restart. Freeze milestone head, register code review, clarify
+  C6 room ownership with Lead; no full CI or successor dispatch.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2913 progress
-**phase**: implement (4/6)
-**next**: Resume live exec session 82709 first; bounded teamlead related 65 retained candidates is still running, do not restart on silence. Driver /tmp/fly2913-scoped-verification.py; outputs /tmp/fly2913-scoped-verification{.log,.json}; completed logs archived in ~/.flywheel/qa-evidence/FLY-2913-implement-6c3014ba/local-revision. Then archive all scoped results, freeze final full head, ask Lead for slot 2 or 5 C6 room, code review, needs_review.
+**phase**: implement (5/6)
+**next**: C1-C5 implementation retained and audited; 30-case settings parity with QA@2 baseline passes. Session 82709 still owns scoped teamlead tests; poll rather than restart. Freeze milestone head, register code review, clarify C6 room ownership with Lead; no full CI or successor dispatch.
