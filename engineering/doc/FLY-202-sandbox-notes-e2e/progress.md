@@ -1,14 +1,15 @@
 ---
 issue: FLY-202
 phase: design
-phaseCursor: 5/6
-updated: 2026-09-26T18:57:01.439Z
-nextStep: "founder HTML: render 3 mermaid diagrams with mmdc, build page,
-  publish-report, report to Lead"
+phaseCursor: 6/6
+updated: 2026-09-26T19:00:23.902Z
+nextStep: publish-report, report DESIGN-HTML to Lead, complete --route
+  phase_design_complete; implement node continues per plan.md
+  (verify-then-refresh)
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: design (5/6)
-**next**: founder HTML: render 3 mermaid diagrams with mmdc, build page, publish-report, report to Lead
+**phase**: design (6/6)
+**next**: publish-report, report DESIGN-HTML to Lead, complete --route phase_design_complete; implement node continues per plan.md (verify-then-refresh)
