@@ -23,6 +23,12 @@ import {
 	readScorecardAssignment,
 } from "./workflow-model-assignment.js";
 import { WorkflowScorecardStore } from "./workflow-scorecard.js";
+import {
+	workflowRecoveryCanonicalSchema,
+	workflowRecoveryReceiptSchema,
+	type WorkflowRecoveryReceipt,
+	type WorkflowRecoveryTarget,
+} from "./workflow-recovery-contract.js";
 import { EvidenceAuthorityReader } from "./ship-judgment/evidence-authority.js";
 import { migrateEvidenceLedger } from "./ship-judgment/evidence-migration.js";
 import { readEpicHistory } from "./ship-judgment/epic-history.js";
@@ -492,6 +498,8 @@ export type WorkflowDeliveryAttemptVersion =
 	| { redriveGeneration: number };
 
 export interface WorkflowHoldResumeCanonical {
+	version?: 2;
+	target?: WorkflowRecoveryTarget;
 	runId: string;
 	shape: string;
 	holdEventUid: string;
@@ -3298,6 +3306,12 @@ export class StateStore {
 	): { canonical: WorkflowHoldResumeCanonical; digest: string } | undefined {
 		if (!value || typeof value !== "object" || Array.isArray(value)) return;
 		const raw = value as Record<string, unknown>;
+		if (raw.version !== undefined) {
+			const parsed = workflowRecoveryCanonicalSchema.safeParse(raw);
+			return parsed.success
+				? { canonical: parsed.data, digest: canonicalSubmissionDigest(parsed.data) }
+				: undefined;
+		}
 		const allowed = new Set([
 			"runId",
 			"shape",
@@ -33360,6 +33374,12 @@ export class StateStore {
 			)
 		`);
 		this.migrateWorkflowDeliveryOperationKinds();
+		// Nullable by design: historic projected operations are not dispatch receipts.
+		this.addColumnIfMissing(
+			"workflow_delivery_operation",
+			"recovery_receipt_json",
+			"TEXT",
+		);
 		this.addColumnIfMissing(
 			"workflow_delivery_operation",
 			"resolution_reason",
@@ -58713,6 +58733,11 @@ export class StateStore {
 		) {
 			return { ok: false, reason: "invalid_hold_resume" };
 		}
+		// Version 2 requires trusted recovery preflight and must never reach the
+		// legacy shape-specific mutation switch.
+		if (normalized.canonical.version === 2) {
+			return { ok: false, reason: "recovery_preflight_required" };
+		}
 		const input = {
 			...normalized.canonical,
 			...(normalized.canonical.decision
@@ -59090,22 +59115,67 @@ export class StateStore {
 				canonicalDigest: string;
 				operationId: string;
 				state: string;
+				receiptKind: "legacy_result" | "invalid_receipt" | WorkflowRecoveryReceipt["state"];
+				recoveryReceipt: WorkflowRecoveryReceipt | null;
+				dispatchState: WorkflowSideEffectState | null;
 		  }
 		| undefined {
 		const row = this.workflowSelectAll(
-			`SELECT client_request_id, canonical_digest, operation_id, state
+			`SELECT client_request_id, canonical_digest, operation_id, state,
+			        run_id, shape_id, recovery_receipt_json
 			   FROM workflow_delivery_operation
 			  WHERE kind = 'hold_resume' AND client_request_id = ?`,
 			[clientRequestId],
 		)[0];
-		return row
-			? {
-					clientRequestId: String(row.client_request_id),
-					canonicalDigest: String(row.canonical_digest),
-					operationId: String(row.operation_id),
-					state: String(row.state),
+		if (!row) return;
+		let recoveryReceipt: WorkflowRecoveryReceipt | null = null;
+		let dispatchState: WorkflowSideEffectState | null = null;
+		let receiptKind: "legacy_result" | "invalid_receipt" | WorkflowRecoveryReceipt["state"] =
+			row.recovery_receipt_json === null && row.shape_id !== "workflow_node_recovery"
+				? "legacy_result" : "invalid_receipt";
+		if (row.recovery_receipt_json !== null) {
+			try {
+				const parsed = workflowRecoveryReceiptSchema.safeParse(
+					JSON.parse(String(row.recovery_receipt_json)),
+				);
+				if (
+					parsed.success && row.state === "projected" &&
+					parsed.data.operationId === row.operation_id &&
+					parsed.data.canonicalDigest === row.canonical_digest &&
+					parsed.data.target.runId === row.run_id
+				) {
+					if (parsed.data.state === "state_applied") {
+						recoveryReceipt = parsed.data;
+						receiptKind = parsed.data.state;
+					} else {
+						const receipt = parsed.data;
+						const ledger = this.workflowSelectAll(
+							`SELECT state FROM workflow_side_effect_ledger
+							  WHERE id = ? AND run_id = ? AND node_id = ? AND attempt = ?
+							    AND execution_id = ? AND launch_ordinal = ? AND kind = 'dispatch'`,
+							[receipt.dispatchLedgerId, receipt.target.runId, receipt.target.nodeId,
+								receipt.target.attempt, receipt.executionId, receipt.launchOrdinal],
+						)[0];
+						if (ledger && ["intent_recorded", "launch_committed", "started", "abandoned"].includes(String(ledger.state))) {
+							recoveryReceipt = receipt;
+							receiptKind = receipt.state;
+							dispatchState = ledger.state as WorkflowSideEffectState;
+						}
+					}
 				}
-			: undefined;
+			} catch {
+				// Corrupt new evidence is never reinterpreted as legacy success.
+			}
+		}
+		return {
+			clientRequestId: String(row.client_request_id),
+			canonicalDigest: String(row.canonical_digest),
+			operationId: String(row.operation_id),
+			state: String(row.state),
+			receiptKind,
+			recoveryReceipt,
+			dispatchState,
+		};
 	}
 
 	listPendingWorkflowHoldResumeOperations(options?: {
@@ -61438,6 +61508,7 @@ export class StateStore {
 			!input.nodeId ||
 			!input.deadExecutionId ||
 			!input.newExecutionId ||
+			input.newExecutionId === input.deadExecutionId ||
 			!input.reason ||
 			!Number.isInteger(input.attempt) ||
 			input.attempt < 1 ||
@@ -61571,6 +61642,8 @@ export class StateStore {
 			);
 			if (
 				!node ||
+				run.current_node_id !== input.nodeId ||
+				this.listWorkflowRunNodes(input.runId, input.nodeId).at(-1)?.attempt !== input.attempt ||
 				node.state !== "running" ||
 				node.execution_id !== input.deadExecutionId
 			) {
@@ -61717,275 +61790,337 @@ export class StateStore {
 				};
 				return;
 			}
-			const priorDeadReplacementCount = Number(
-				this.workflowSelectAll(
-					`SELECT COUNT(*) AS count FROM workflow_dead_execution_watch
-					  WHERE run_id = ? AND node_id = ? AND attempt = ?`,
-					[input.runId, input.nodeId, input.attempt],
-				)[0]?.count ?? 0,
-			);
-
-			for (const table of [
-				"workflow_output_credential",
-				"workflow_submission_credential",
-			]) {
-				this.db.run(
-					`UPDATE ${table}
-					    SET revoked = 1, revoked_reason = 'dead_execution_rolled_back'
-					  WHERE run_id = ? AND node_id = ? AND attempt = ?
-					    AND execution_id = ? AND consumed_at IS NULL
-					    AND (revoked = 0 OR revoked_reason LIKE 'session_terminal:%')`,
-					[input.runId, input.nodeId, input.attempt, input.deadExecutionId],
-				);
-			}
-			const launchOrdinal = this.allocateWorkflowLaunchOrdinalTx(
-				input.runId,
-				input.nodeId,
-				input.attempt,
-				input.newExecutionId,
-			);
-			const deadBinding = this.getWorkflowActivationForAttempt({
-				executionId: input.deadExecutionId,
-				runId: input.runId,
-				nodeId: input.nodeId,
-				attempt: input.attempt,
-			});
-			if (deadBinding) {
-				this.workflowScorecard.closeActivationSafely({
-					activationId: deadBinding.activation_id,
-					closedAt: now,
-					closeEventUid: `dead_rollback:${input.runId}:${input.nodeId}:${input.attempt}:${input.deadExecutionId}`,
-					closeKind: "replaced",
-				});
-			}
-			this.upsertWorkflowRunNodeTx({
-				runId: input.runId,
-				nodeId: input.nodeId,
-				attempt: input.attempt,
-				state: "pending",
-				executionId: input.newExecutionId,
-			});
-			const writerTransitionUid = `writer_replacement:${canonicalSubmissionDigest(
-				{
-					runId: input.runId,
-					nodeId: input.nodeId,
-					attempt: input.attempt,
-					newExecutionId: input.newExecutionId,
-				},
-			)}`;
-			const writerReceipt = {
-				targetNodeId: input.nodeId,
-				targetAttempt: input.attempt,
-				deadExecutionId: input.deadExecutionId,
-				newExecutionId: input.newExecutionId,
-				launchOrdinal,
-			};
-			const sourceAttachment = this.listWorkflowResumeAttachments({
-				runId: input.runId,
-				nodeId: input.nodeId,
-				attempt: input.attempt,
-			}).at(-1);
-			const sourceState = sourceAttachment
-				? this.getWorkflowResumeAttachmentState(sourceAttachment.attachment_id)
-				: undefined;
-			const sourceDelivery = this.listWorkflowRunEvents(input.runId)
-				.filter(
-					(event) =>
-						event.kind === "issue_delivery" &&
-						event.node_id === input.nodeId &&
-						event.execution_id === input.deadExecutionId,
-				)
-				.at(-1);
-			const sourceDeliveryPayload =
-				sourceDelivery?.payload && typeof sourceDelivery.payload === "object"
-					? (sourceDelivery.payload as Record<string, unknown>)
-					: undefined;
-			let stampedBaselineDigest: string | undefined;
-			try {
-				const stamp = JSON.parse(
-					sourceState?.envelope_stamped_json ?? "null",
-				) as Record<string, unknown> | null;
-				const baseline = stamp?.issueBaseline as
-					| Record<string, unknown>
-					| undefined;
-				stampedBaselineDigest =
-					typeof baseline?.bodyDigest === "string"
-						? baseline.bodyDigest
-						: undefined;
-			} catch {
-				// Malformed resume evidence is diagnosed below without aborting recovery.
-			}
-			const sourceDeliveryDigest = sourceDelivery
-				? canonicalSubmissionDigest(sourceDelivery.payload ?? null)
-				: undefined;
-			const sourceKind = sourceDeliveryPayload?.sourceKind;
-			const canMigrate =
-				sourceAttachment !== undefined &&
-				sourceState?.state === "ready" &&
-				sourceDelivery !== undefined &&
-				sourceDeliveryPayload !== undefined &&
-				(sourceKind === "authoritative" ||
-					sourceKind === "frozen_replay" ||
-					sourceKind === "writer_migration") &&
-				typeof sourceDeliveryPayload.body === "string" &&
-				typeof sourceDeliveryPayload.bodyDigest === "string" &&
-				createHash("sha256")
-					.update(sourceDeliveryPayload.body)
-					.digest("hex") === sourceDeliveryPayload.bodyDigest &&
-				sourceDeliveryPayload.bodyDigest === stampedBaselineDigest;
-			this.recordWorkflowResumeEvidenceSafelyTx(
-				{
-					runId: input.runId,
-					targetNodeId: input.nodeId,
-					targetAttempt: input.attempt,
-					transitionUid: writerTransitionUid,
-					createdAt: now,
-				},
-				() => {
-					this.appendWorkflowRunEventCheckedTx({
-						runId: input.runId,
-						eventUid: writerTransitionUid,
-						kind: "writer_replacement",
-						nodeId: input.nodeId,
-						executionId: input.newExecutionId,
-						payload: writerReceipt,
-					});
-					if (!canMigrate || !sourceAttachment || !sourceDelivery) {
-						this.recordWorkflowResumeTargetUnrecoverableTx({
-							runId: input.runId,
-							targetNodeId: input.nodeId,
-							targetAttempt: input.attempt,
-							transitionUid: writerTransitionUid,
-							reason: "attachment_missing",
-							detail: { cause: "writer_source_evidence_unavailable" },
-							createdAt: now,
-						});
-						return;
-					}
-					const migrationBindingUid = `resume_writer_binding:${canonicalSubmissionDigest(
-						{
-							writerTransitionUid,
-							sourceDeliveryUid: sourceDelivery.event_uid,
-							sourceAttachmentId: sourceAttachment.attachment_id,
-						},
-					)}`;
-					const bindingPayload = {
-						targetNodeId: input.nodeId,
-						targetAttempt: input.attempt,
-						sourceExecutionId: input.deadExecutionId,
-						newExecutionId: input.newExecutionId,
-						launchOrdinal,
-						writerTransitionUid,
-						sourceAttachmentId: sourceAttachment.attachment_id,
-						sourceIssueDeliveryUid: sourceDelivery.event_uid,
-						sourceIssueDeliveryDigest: sourceDeliveryDigest,
-					};
-					this.appendWorkflowRunEventCheckedTx({
-						runId: input.runId,
-						eventUid: migrationBindingUid,
-						kind: "resume_writer_binding",
-						nodeId: input.nodeId,
-						executionId: input.newExecutionId,
-						payload: bindingPayload,
-					});
-					this.appendWorkflowRunEventCheckedTx({
-						runId: input.runId,
-						eventUid: `issue_delivery_migration:${canonicalSubmissionDigest(
-							bindingPayload,
-						)}`,
-						kind: "issue_delivery",
-						nodeId: input.nodeId,
-						executionId: input.newExecutionId,
-						payload: {
-							sourceKind: "writer_migration",
-							body: sourceDeliveryPayload.body,
-							bodyDigest: sourceDeliveryPayload.bodyDigest,
-							migrationBindingUid,
-							sourceIssueDeliveryUid: sourceDelivery.event_uid,
-							sourceIssueDeliveryDigest: sourceDeliveryDigest,
-						},
-					});
-					if (
-						!this.recordWorkflowResumeInheritedAttachmentTx({
-							source: sourceAttachment,
-							runId: input.runId,
-							targetNodeId: input.nodeId,
-							targetAttempt: input.attempt,
-							transitionUid: writerTransitionUid,
-							receiptKind: "writer_replacement",
-							receiptPayload: writerReceipt,
-							createdAt: now,
-						})
-					) {
-						throw new Error("workflow_resume_attachment_conflict");
-					}
-				},
-			);
-			this.appendWorkflowRunEventCheckedTx({
-				runId: input.runId,
+			const { launchOrdinal } = this.materializeWorkflowNodeReplacementTx({
+				...input,
+				now,
 				eventUid,
-				kind: "execution_dead_rolled_back",
-				nodeId: input.nodeId,
-				executionId: input.deadExecutionId,
-				payload: {
-					attempt: input.attempt,
-					newExecutionId: input.newExecutionId,
-					launchOrdinal,
-					reason: input.reason,
-					retryDisposition: "retry",
-					livenessEvidence: input.livenessEvidence,
-					at: now,
-				},
 			});
-			const activityBaseline: WorkflowDeadExecutionActivityBaseline =
-				input.activityBaseline ?? {
-					commitMarker: { state: "unknown" },
-					commDbMessageCount: null,
-					tmuxTarget: session?.tmux_session ?? null,
-					tmuxOutputDigest: null,
-					sessionCommitCount:
-						typeof session?.commit_count === "number"
-							? session.commit_count
-							: null,
-				};
-			this.db.run(
-				`INSERT INTO workflow_dead_execution_watch
-				   (dead_execution_id, run_id, node_id, attempt, new_execution_id,
-				    project_name, issue_id, observed_at, baseline_json, state)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
-				[
-					input.deadExecutionId,
-					input.runId,
-					input.nodeId,
-					input.attempt,
-					input.newExecutionId,
-					run.project_name,
-					run.issue_id,
-					input.livenessEvidence.observedAt,
-					JSON.stringify(activityBaseline),
-				],
-			);
-			if (priorDeadReplacementCount > 0) {
-				const deathNumber = priorDeadReplacementCount + 1;
-				const escalationUid = `repeated_dead:${input.runId}:${input.nodeId}:${input.attempt}:${deathNumber}`;
-				this.appendWorkflowRunEventCheckedTx({
-					runId: input.runId,
-					eventUid: escalationUid,
-					kind: "repeated_dead_execution_pattern",
-					nodeId: input.nodeId,
-					executionId: input.deadExecutionId,
-					payload: {
-						attempt: input.attempt,
-						deathNumber,
-						newExecutionId: input.newExecutionId,
-						at: now,
-					},
-				});
-			}
 			result = { ok: true, idempotentReplay: false, launchOrdinal };
 		});
 		this.save();
 		return result;
+	}
+
+	/** Shared replacement bookkeeping; callers must already own the transaction. */
+	private materializeWorkflowNodeReplacementTx(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		deadExecutionId: string;
+		newExecutionId: string;
+		reason: string;
+		eventUid: string;
+		now: string;
+		livenessEvidence: { liveness: "dead"; observedAt: string };
+		activityBaseline?: WorkflowDeadExecutionActivityBaseline;
+	}): { launchOrdinal: number; dispatchLedgerId: number } {
+		if (!this.db.raw.inTransaction) throw new Error("replacement_transaction_required");
+		const { now, eventUid } = input;
+		const run = this.getWorkflowRun(input.runId);
+		const node = this.listWorkflowRunNodes(input.runId, input.nodeId).at(-1);
+		if (
+			!run || run.engine_owned !== 1 || run.status !== "active" ||
+			run.current_node_id !== input.nodeId || !node ||
+			node.attempt !== input.attempt || node.state !== "running" ||
+			node.execution_id !== input.deadExecutionId ||
+			this.getWorkflowNodeCompletion(input.runId, input.nodeId, input.attempt)
+		) throw new Error("replacement_target_changed");
+		// Check the automatic budget here as well as at the producer's hold boundary.
+		if (this.countWorkflowFaultReplacements(input.runId, input.nodeId, input.attempt) >= MAX_BLIND_REPLACEMENTS) {
+			throw new Error("replacement_budget_exhausted");
+		}
+		if (
+			input.newExecutionId === input.deadExecutionId ||
+			this.getSession(input.newExecutionId) ||
+			this.workflowSelectAll(
+				"SELECT 1 FROM workflow_side_effect_ledger WHERE execution_id = ? LIMIT 1",
+				[input.newExecutionId],
+			).length > 0
+		) throw new Error("replacement_execution_not_fresh");
+		const session = this.getSession(input.deadExecutionId);
+		const priorDeadReplacementCount = Number(
+			this.workflowSelectAll(
+				`SELECT COUNT(*) AS count FROM workflow_dead_execution_watch
+				  WHERE run_id = ? AND node_id = ? AND attempt = ?`,
+				[input.runId, input.nodeId, input.attempt],
+			)[0]?.count ?? 0,
+		);
+
+		for (const table of [
+			"workflow_output_credential",
+			"workflow_submission_credential",
+		]) {
+			this.db.run(
+				`UPDATE ${table}
+				    SET revoked = 1, revoked_reason = 'dead_execution_rolled_back'
+				  WHERE run_id = ? AND node_id = ? AND attempt = ?
+				    AND execution_id = ? AND consumed_at IS NULL
+				    AND (revoked = 0 OR revoked_reason LIKE 'session_terminal:%')`,
+				[input.runId, input.nodeId, input.attempt, input.deadExecutionId],
+			);
+		}
+		const launchOrdinal = this.allocateWorkflowLaunchOrdinalTx(
+			input.runId,
+			input.nodeId,
+			input.attempt,
+			input.newExecutionId,
+		);
+		const deadBinding = this.getWorkflowActivationForAttempt({
+			executionId: input.deadExecutionId,
+			runId: input.runId,
+			nodeId: input.nodeId,
+			attempt: input.attempt,
+		});
+		if (deadBinding) {
+			this.workflowScorecard.closeActivationSafely({
+				activationId: deadBinding.activation_id,
+				closedAt: now,
+				closeEventUid: `dead_rollback:${input.runId}:${input.nodeId}:${input.attempt}:${input.deadExecutionId}`,
+				closeKind: "replaced",
+			});
+		}
+		this.upsertWorkflowRunNodeTx({
+			runId: input.runId,
+			nodeId: input.nodeId,
+			attempt: input.attempt,
+			state: "pending",
+			executionId: input.newExecutionId,
+		});
+		const writerTransitionUid = `writer_replacement:${canonicalSubmissionDigest(
+			{
+				runId: input.runId,
+				nodeId: input.nodeId,
+				attempt: input.attempt,
+				newExecutionId: input.newExecutionId,
+			},
+		)}`;
+		const writerReceipt = {
+			targetNodeId: input.nodeId,
+			targetAttempt: input.attempt,
+			deadExecutionId: input.deadExecutionId,
+			newExecutionId: input.newExecutionId,
+			launchOrdinal,
+		};
+		const sourceAttachment = this.listWorkflowResumeAttachments({
+			runId: input.runId,
+			nodeId: input.nodeId,
+			attempt: input.attempt,
+		}).at(-1);
+		const sourceState = sourceAttachment
+			? this.getWorkflowResumeAttachmentState(sourceAttachment.attachment_id)
+			: undefined;
+		const sourceDelivery = this.listWorkflowRunEvents(input.runId)
+			.filter(
+				(event) =>
+					event.kind === "issue_delivery" &&
+					event.node_id === input.nodeId &&
+					event.execution_id === input.deadExecutionId,
+			)
+			.at(-1);
+		const sourceDeliveryPayload =
+			sourceDelivery?.payload && typeof sourceDelivery.payload === "object"
+				? (sourceDelivery.payload as Record<string, unknown>)
+				: undefined;
+		let stampedBaselineDigest: string | undefined;
+		try {
+			const stamp = JSON.parse(
+				sourceState?.envelope_stamped_json ?? "null",
+			) as Record<string, unknown> | null;
+			const baseline = stamp?.issueBaseline as
+				| Record<string, unknown>
+				| undefined;
+			stampedBaselineDigest =
+				typeof baseline?.bodyDigest === "string"
+					? baseline.bodyDigest
+					: undefined;
+		} catch {
+			// Malformed resume evidence is diagnosed below without aborting recovery.
+		}
+		const sourceDeliveryDigest = sourceDelivery
+			? canonicalSubmissionDigest(sourceDelivery.payload ?? null)
+			: undefined;
+		const sourceKind = sourceDeliveryPayload?.sourceKind;
+		const canMigrate =
+			sourceAttachment !== undefined &&
+			sourceState?.state === "ready" &&
+			sourceDelivery !== undefined &&
+			sourceDeliveryPayload !== undefined &&
+			(sourceKind === "authoritative" ||
+				sourceKind === "frozen_replay" ||
+				sourceKind === "writer_migration") &&
+			typeof sourceDeliveryPayload.body === "string" &&
+			typeof sourceDeliveryPayload.bodyDigest === "string" &&
+			createHash("sha256")
+				.update(sourceDeliveryPayload.body)
+				.digest("hex") === sourceDeliveryPayload.bodyDigest &&
+			sourceDeliveryPayload.bodyDigest === stampedBaselineDigest;
+		// The writer transition authorizes the replacement, so conflicting proof
+		// aborts the whole transaction. Only optional attachment migration is best-effort.
+		this.appendWorkflowRunEventCheckedTx({
+			runId: input.runId,
+			eventUid: writerTransitionUid,
+			kind: "writer_replacement",
+			nodeId: input.nodeId,
+			executionId: input.newExecutionId,
+			payload: writerReceipt,
+		});
+		this.recordWorkflowResumeEvidenceSafelyTx(
+			{
+				runId: input.runId,
+				targetNodeId: input.nodeId,
+				targetAttempt: input.attempt,
+				transitionUid: writerTransitionUid,
+				createdAt: now,
+			},
+			() => {
+				if (!canMigrate || !sourceAttachment || !sourceDelivery) {
+					this.recordWorkflowResumeTargetUnrecoverableTx({
+						runId: input.runId,
+						targetNodeId: input.nodeId,
+						targetAttempt: input.attempt,
+						transitionUid: writerTransitionUid,
+						reason: "attachment_missing",
+						detail: { cause: "writer_source_evidence_unavailable" },
+						createdAt: now,
+					});
+					return;
+				}
+				const migrationBindingUid = `resume_writer_binding:${canonicalSubmissionDigest(
+					{
+						writerTransitionUid,
+						sourceDeliveryUid: sourceDelivery.event_uid,
+						sourceAttachmentId: sourceAttachment.attachment_id,
+					},
+				)}`;
+				const bindingPayload = {
+					targetNodeId: input.nodeId,
+					targetAttempt: input.attempt,
+					sourceExecutionId: input.deadExecutionId,
+					newExecutionId: input.newExecutionId,
+					launchOrdinal,
+					writerTransitionUid,
+					sourceAttachmentId: sourceAttachment.attachment_id,
+					sourceIssueDeliveryUid: sourceDelivery.event_uid,
+					sourceIssueDeliveryDigest: sourceDeliveryDigest,
+				};
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId,
+					eventUid: migrationBindingUid,
+					kind: "resume_writer_binding",
+					nodeId: input.nodeId,
+					executionId: input.newExecutionId,
+					payload: bindingPayload,
+				});
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId,
+					eventUid: `issue_delivery_migration:${canonicalSubmissionDigest(
+						bindingPayload,
+					)}`,
+					kind: "issue_delivery",
+					nodeId: input.nodeId,
+					executionId: input.newExecutionId,
+					payload: {
+						sourceKind: "writer_migration",
+						body: sourceDeliveryPayload.body,
+						bodyDigest: sourceDeliveryPayload.bodyDigest,
+						migrationBindingUid,
+						sourceIssueDeliveryUid: sourceDelivery.event_uid,
+						sourceIssueDeliveryDigest: sourceDeliveryDigest,
+					},
+				});
+				if (
+					!this.recordWorkflowResumeInheritedAttachmentTx({
+						source: sourceAttachment,
+						runId: input.runId,
+						targetNodeId: input.nodeId,
+						targetAttempt: input.attempt,
+						transitionUid: writerTransitionUid,
+						receiptKind: "writer_replacement",
+						receiptPayload: writerReceipt,
+						createdAt: now,
+					})
+				) {
+					throw new Error("workflow_resume_attachment_conflict");
+				}
+			},
+		);
+		this.appendWorkflowRunEventCheckedTx({
+			runId: input.runId,
+			eventUid,
+			kind: "execution_dead_rolled_back",
+			nodeId: input.nodeId,
+			executionId: input.deadExecutionId,
+			payload: {
+				attempt: input.attempt,
+				newExecutionId: input.newExecutionId,
+				launchOrdinal,
+				reason: input.reason,
+				retryDisposition: "retry",
+				livenessEvidence: input.livenessEvidence,
+				at: now,
+			},
+		});
+		const activityBaseline: WorkflowDeadExecutionActivityBaseline =
+			input.activityBaseline ?? {
+				commitMarker: { state: "unknown" },
+				commDbMessageCount: null,
+				tmuxTarget: session?.tmux_session ?? null,
+				tmuxOutputDigest: null,
+				sessionCommitCount:
+					typeof session?.commit_count === "number"
+						? session.commit_count
+						: null,
+			};
+		this.db.run(
+			`INSERT INTO workflow_dead_execution_watch
+			   (dead_execution_id, run_id, node_id, attempt, new_execution_id,
+			    project_name, issue_id, observed_at, baseline_json, state)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
+			[
+				input.deadExecutionId,
+				input.runId,
+				input.nodeId,
+				input.attempt,
+				input.newExecutionId,
+				run.project_name,
+				run.issue_id,
+				input.livenessEvidence.observedAt,
+				JSON.stringify(activityBaseline),
+			],
+		);
+		if (priorDeadReplacementCount > 0) {
+			const deathNumber = priorDeadReplacementCount + 1;
+			const escalationUid = `repeated_dead:${input.runId}:${input.nodeId}:${input.attempt}:${deathNumber}`;
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				eventUid: escalationUid,
+				kind: "repeated_dead_execution_pattern",
+				nodeId: input.nodeId,
+				executionId: input.deadExecutionId,
+				payload: {
+					attempt: input.attempt,
+					deathNumber,
+					newExecutionId: input.newExecutionId,
+					at: now,
+				},
+			});
+		}
+		const ledger = this.workflowSelectAll(
+			`SELECT id FROM workflow_side_effect_ledger
+			  WHERE run_id = ? AND node_id = ? AND attempt = ? AND kind = 'dispatch'
+			    AND execution_id = ? AND launch_ordinal = ? AND state = 'intent_recorded'`,
+			[input.runId, input.nodeId, input.attempt, input.newExecutionId, launchOrdinal],
+		)[0];
+		const writer = this.workflowSelectAll(
+			"SELECT payload FROM workflow_run_event WHERE event_uid = ? AND kind = 'writer_replacement'",
+			[writerTransitionUid],
+		)[0];
+		if (
+			!ledger || !Number.isSafeInteger(ledger.id) || Number(ledger.id) < 1 ||
+			!writer || canonicalSubmissionDigest(JSON.parse(String(writer.payload))) !== canonicalSubmissionDigest(writerReceipt) ||
+			this.getWorkflowRunNode(input.runId, input.nodeId, input.attempt)?.execution_id !== input.newExecutionId
+		) throw new Error("replacement_materialization_proof_missing");
+		return { launchOrdinal, dispatchLedgerId: Number(ledger.id) };
 	}
 
 	/** Startup safety collector: record durable holds, never dispatch successors. */

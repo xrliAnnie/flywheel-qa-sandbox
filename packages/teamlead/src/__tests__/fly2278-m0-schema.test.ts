@@ -110,7 +110,11 @@ describe("FLY-2278 M0 delivery operation schema migration", () => {
 					"SELECT * FROM workflow_delivery_operation WHERE operation_id = ?",
 				)
 				.get("resident-expiry:schema-upgrade"),
-		).toEqual({ ...before, resolution_reason: null });
+		).toEqual({
+			...before,
+			resolution_reason: null,
+			recovery_receipt_json: null,
+		});
 		expect(
 			raw.prepare("PRAGMA foreign_key_list(workflow_delivery_operation)").all(),
 		).toEqual(foreignKeysBefore);

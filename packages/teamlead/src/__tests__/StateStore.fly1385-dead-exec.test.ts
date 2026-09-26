@@ -494,6 +494,62 @@ describe("FLY-1385 dead workflow execution recovery", () => {
 		store.close();
 	});
 
+	it("FLY-2922 refuses replacement of a running historical node after the run cursor moves", async () => {
+		const store = await engineRunWithImplement();
+		const raw = (store as unknown as { db: { raw: Database.Database } }).db.raw;
+		raw
+			.prepare(
+				"UPDATE workflow_run SET current_node_id = 'qa' WHERE run_id = 'run-1'",
+			)
+			.run();
+		const before = store.listWorkflowSideEffects("run-1");
+		expect(
+			store.rollbackDeadWorkflowNodeExecution({
+				runId: "run-1",
+				nodeId: "implement",
+				attempt: 1,
+				deadExecutionId: "implement-dead",
+				newExecutionId: "invalid-replacement",
+				reason: "terminal_session_and_dead_probe",
+				livenessEvidence: {
+					liveness: "dead",
+					observedAt: "2026-07-20T00:10:00.000Z",
+				},
+				now: "2026-07-20T00:10:00.000Z",
+			}),
+		).toEqual({ ok: false, reason: "node_execution_not_current" });
+		expect(store.listWorkflowSideEffects("run-1")).toEqual(before);
+		expect(
+			store.getWorkflowRunNode("run-1", "implement", 1)?.execution_id,
+		).toBe("implement-dead");
+		store.close();
+	});
+
+	it("FLY-2922 refuses reusing the dead identity as its own replacement", async () => {
+		const store = await engineRunWithImplement();
+		const before = store.listWorkflowSideEffects("run-1");
+		expect(
+			store.rollbackDeadWorkflowNodeExecution({
+				runId: "run-1",
+				nodeId: "implement",
+				attempt: 1,
+				deadExecutionId: "implement-dead",
+				newExecutionId: "implement-dead",
+				reason: "terminal_session_and_dead_probe",
+				livenessEvidence: {
+					liveness: "dead",
+					observedAt: "2026-07-20T00:10:00.000Z",
+				},
+				now: "2026-07-20T00:10:00.000Z",
+			}),
+		).toEqual({ ok: false, reason: "invalid_dead_execution_rollback" });
+		expect(store.listWorkflowSideEffects("run-1")).toEqual(before);
+		expect(store.getWorkflowRunNode("run-1", "implement", 1)?.state).toBe(
+			"running",
+		);
+		store.close();
+	});
+
 	it("closes an enrolled carrier when its active process is proven dead", async () => {
 		const store = await engineRunWithImplement("failed", true);
 		expect(
@@ -524,7 +580,7 @@ describe("FLY-1385 dead workflow execution recovery", () => {
 		store.close();
 	});
 
-	it("keeps dead-execution recovery committed when its resume-only writer receipt conflicts", async () => {
+	it("rolls back replacement when its mandatory writer receipt conflicts", async () => {
 		const store = await engineRunWithImplement();
 		const newExecutionId = "implement-retry-conflict";
 		const writerTransitionUid = `writer_replacement:${canonicalSubmissionDigest(
@@ -544,7 +600,9 @@ describe("FLY-1385 dead workflow execution recovery", () => {
 			payload: { targetNodeId: "wrong", targetAttempt: 99 },
 		});
 
-		expect(
+		const beforeNode = store.getWorkflowRunNode("run-1", "implement", 1);
+		const beforeLedger = store.listWorkflowSideEffects("run-1");
+		expect(() =>
 			store.rollbackDeadWorkflowNodeExecution({
 				runId: "run-1",
 				nodeId: "implement",
@@ -558,16 +616,16 @@ describe("FLY-1385 dead workflow execution recovery", () => {
 				},
 				now: "2026-07-20T00:10:00.000Z",
 			}),
-		).toMatchObject({ ok: true, launchOrdinal: 2 });
-		expect(store.getWorkflowRunNode("run-1", "implement", 1)).toMatchObject({
-			state: "pending",
-			execution_id: newExecutionId,
-		});
+		).toThrow(`workflow_event_uid_conflict:${writerTransitionUid}`);
+		expect(store.getWorkflowRunNode("run-1", "implement", 1)).toEqual(
+			beforeNode,
+		);
+		expect(store.listWorkflowSideEffects("run-1")).toEqual(beforeLedger);
 		expect(
 			store
 				.listWorkflowRunEvents("run-1")
 				.filter((event) => event.kind === "execution_dead_rolled_back"),
-		).toHaveLength(1);
+		).toHaveLength(0);
 		store.close();
 	});
 

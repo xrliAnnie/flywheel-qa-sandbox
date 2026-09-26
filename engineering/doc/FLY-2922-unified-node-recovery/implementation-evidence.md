@@ -67,3 +67,28 @@ Lead 对 question `d0680b7b-9362-4d25-8126-f43dbea7ddf5` 的当前答复：FLY-2
 - 公共 dispatcher 真实替身的无效/超长 context 两个负控追加断言 run active、零 recovery episode：2 passed（`/tmp/fly2922-producer-rework-consumer.log`）。
 - 全仓 lint 最后一次 exit 0（`/tmp/fly2922-producer-lint-final.log`）；测试追加断言后 3 文件 biome 检查通过。
 - dependent typecheck 首次因缺少 voice-bridge dist 失败；`pnpm --filter "flywheel-voice-bridge..." build` 补齐后，`pnpm --filter "...flywheel-teamlead" typecheck` exit 0，teamlead/voice-codex 均通过（`/tmp/fly2922-producer-dependent-types-verified.log`）。
+
+## 2026-09-26：恢复合同与替换事务基础
+
+本块基于 `27fdc0fe6`，尚未接通 held 的正式恢复入口，六组批准合同仍未完成。`resumeWorkflowHold` 的版本 2 请求暂时明确拒绝为 `recovery_preflight_required`，不会进入旧 shape switch；下块用真实故障夹具接入可信预检及统一事务，随后删除旧故障分支。
+
+- `workflow-recovery-contract.ts` 严格解析版本 2 canonical、RecoveryTarget 和 dispatch/state-only 两类 receipt。摘要绑定旧 tuple、snapshot、head、源 hold UID 集合；UID 排序而不丢弃重复，额外字段、不安全整数、错误 episode 摘要均拒绝。旧 canonical 的字段与摘要不变。
+- `workflow_delivery_operation.recovery_receipt_json` 是 nullable 增量列，在旧 kind 表重建后升级。旧行不回填、不铸派发，读取标记 `legacy_result`。新 receipt 严格验证 operation/digest/run，并以真实 ledger ID 加完整 tuple 查账本，返回当前 dispatchState；无账本或损坏新证据标记 `invalid_receipt`，不降级成旧成功。迁移/重启测试只证明存储合同，不冒充 dispatcher 验收。
+- 自动死体替换的账本、writer/resume/attachment/watch 逻辑抽入 `materializeWorkflowNodeReplacementTx`。它显式检查处于事务、当前 run/node/最新 attempt、自动预算、新执行身份及最终派发/writer 证据。当前仍只接受 active 自动恢复，held CAS/操作员预检授权由下块接入，不能把这一步称为已满足全部 shared-materializer advisory。
+- mandatory `writer_replacement` 证据移出可选附件的 best-effort 包装，冲突使外层整笔回滚。原测试曾明确允许冲突后提交，现按批准计划反转该断言；可选附件缺失仍保留准确诊断，不伪造 ready checkpoint。
+- 自动替换补 run.current_node_id/最新 attempt 检查，并拒绝用死体自己的 ID 作为替身。两个红测在旧行为下都返回成功，修改后拒绝且 ledger/node 不变。
+
+红测日志：`/tmp/fly2922-canonical-red.log`（版本 2 不被识别）、`/tmp/fly2922-receipt-red.log`（缺 nullable 列）、`/tmp/fly2922-materializer-red.log`（writer 冲突仍提交）、`/tmp/fly2922-materializer-cas-red.log`（历史 cursor 与同 ID 替换）、`/tmp/fly2922-receipt-ledger-red.log`（缺实际账本状态）。回执夹具中的两次设置错误已修正：先创建关联 run 满足 attribution trigger；篡改 receipt JSON 而不越过账本身份不可变触发器。
+
+本块消费者范围：六个 TS 文件按完整路径、文件名、父目录执行 `git grep -lF`，完整路径与新旧 literal 共 24 个 term / 1887 个去重路径；`/tmp/fly2922-foundation-consumers.json` 保存结果，`/tmp/fly2922-foundation-consumer-disposition.tsv` 逐条记录保留/排除理由，28 文件清单在 `/tmp/fly2922-foundation-retained-tests.json`。只跑受限 related 与明确守卫，不跑本地全包/全仓 suite。新增 `workflow-node-recovery.test.ts` 属于下一块公共入口红测，不包含于本块提交或通过声明。
+
+后续接入点的只读核对（未实施）：
+- enrolled blocked 需在 event-route 的 declared-PR/head/founder 成功校验前分流，保留 ingest bearer + exact activation/TURN 的现有身份合同，复用 drain 挑战/验证/事务消费。没有现有 submission-token 传输，不能凭审阅文字另造凭据协议。新 failure receipt 必须支持恢复后的幂等回放；失败登记不得进入 success audit 或 legacy fallback。
+- 三处 carrier-close cascade 调用及级联实现待删。committed close intent 会长期 suppress dead recovery，因此恢复 episode 必须与 close settlement 同事务，不能放在成功后的 best-effort 回调。
+- enrolled `done` 必须在旧 FSM completed 投影前按持久 enrollment 分流；held、旧体和历史 activation 不能因 current lookup 失败而被当成 legacy。响应字段需穿过 close-runner、ActionResult、plugin endpoint 和 actions router 四层。显式 run terminate 的 collection 权限仍保留。
+
+基础块验证收据：affected-package/dependencies build、dependent typecheck、最终 lint 均 exit 0（lint 25 条既有 warning）。定点 schema/contract/migration 10 passed；自动替换文件 30 passed / 1 既有 skip。受限 related 为 23 files passed / 1 failed，604 passed / 2 skipped / 1 quota-bench timeout；该 quota 文件随后单文件通过。FLY-1560 lexical 扫描曾 timeout，原文件未改的独立重跑 7/7 passed；其余相关 guard 通过，FLY-2211 5/5 passed。保留原失败日志，不称本批全绿。
+
+按新版 local-test-policy/v1 逐文件补验时，quota-bench、codex-quota、workflow-holds 通过；workflow-rework 93 passed / 3 timeout（此前 related 同文件 96 passed），伴随 onTaskUpdate RPC 超时。其余逐文件检查和新增 fly2302 consumer 尚待执行。主机负载很高；未放宽既有测试超时、杀进程或删除锁。日志为 `/tmp/fly2922-foundation-related.log`、`/tmp/fly2922-foundation-explicit-01.log` 至 `-04.log` 及 `/tmp/fly2922-foundation-teardown-guard-retry.log`。
+
+下一块公共 FLY-2329 原现象已有效复现（`/tmp/fly2922-node-recovery-public-red.log`）：真实 dispatcher 准入后未启动回滚成功，但 stage 仍返回旧 unlaunched shape、缺 version 2。失败在预期的 canonical 断言，非夹具 setup；单独保留为待实现验收。仍是 implement 0/6，无 PR、review、CI、QA 或完成交付。
