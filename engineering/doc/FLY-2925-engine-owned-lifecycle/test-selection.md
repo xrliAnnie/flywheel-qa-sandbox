@@ -1,0 +1,52 @@
+# FLY-2925 引擎统一体生命周期 — 测试选择与本地验证
+Issue: FLY-2925 (https://linear.app/geoforge3d/issue/FLY-2925/病根修复-7-codex-体生死只认引擎一侧goal-结束不等于死引擎终结后-goal-不得自续重启只按原会话续接6-张-43)
+日期: 2026-09-26
+基于: plan.md
+
+遵循注入的 `local-test-policy/v1`：只跑相关测试，逐文件运行；没有运行任何全仓或全包测试。精确 head 的 PR CI 才是全套证据。
+
+## 1. 改动文件
+
+| 包 | 源文件 |
+|---|---|
+| flywheel-claude-runner | `src/codex-daemon-client.ts`、`src/codex-daemon-goal-runtime.ts`、`src/codex-daemon-runtime.ts`、`src/CodexTmuxAdapter.ts` |
+| flywheel-teamlead | `src/HeartbeatService.ts`、`src/bridge/codex-session-reown.ts`、`src/bridge/event-route.ts`、`src/bridge/plugin.ts`、`src/bridge/resident-receiver-supervisor.ts`、`src/bridge/run-infra.ts`、`src/bridge/runs-route.ts` |
+
+## 2. 发现过程
+
+- 字面量：`git grep -lF` 搜索 `goal_blocked`、`LAUNCH_PENDING`、`launchState`、`RUN_TERMINAL`、`codex_resident_wait`、`codex_goal_blocked_observed`、`residentWaitHold`、`upstreamRetryEpisode`、`resident_wait_confirmed`、`missing_resident_gate`、`adoptCodexDaemon`、`adoptLiveExecution`、`reown_adopt`、`reown_watch_started`、`turn reconciliation failed after recovery commit`。
+- 路径：对每个改动文件的 basename 搜索测试文件名；plugin.ts 为枢纽，单独处理（见 §4）。
+- TypeScript：claude-runner 运行 `vitest related <4 个改动文件> --run`。
+
+## 3. 保留并运行的测试（逐文件）
+
+| 包 | 测试文件 | 结果 |
+|---|---|---|
+| claude-runner | `vitest related` 选中 10 个文件 | 537/537 通过 |
+| claude-runner | `test/codex-daemon-client.test.ts` | 98/98 通过 |
+| claude-runner | `test/codex-daemon-goal-runtime.test.ts` | 63/63 通过 |
+| claude-runner | `test/codex-daemon-runtime.test.ts` | 125/125 通过（需短 TMPDIR；FLY-2830 真实 lsof 用例高负载下偶发失败，单跑通过） |
+| claude-runner | `test/CodexTmuxAdapter.test.ts` | 179/179 通过 |
+| claude-runner | `test/codex-session-state-forward-compat.test.ts`（新增） | 5/5 通过 |
+| teamlead | `src/__tests__/event-route.test.ts` | 本改动相关用例全部通过；completion/PR 声明类用例在负载 80+ 时偶发超时/409，其中 "forged generalized completion" 在原始基线文件上同样失败 |
+| teamlead | `src/__tests__/runs-route-generalized-pending.test.ts` | 10/10 通过 |
+| teamlead | `src/bridge/__tests__/runs-route.dag-entry.test.ts` | 通过 |
+| teamlead | `src/bridge/__tests__/codex-session-reown.test.ts` | 59/59 通过 |
+| teamlead | `src/bridge/__tests__/codex-session-reown-wiring.structure.test.ts` | 10/10 通过 |
+| teamlead | `src/bridge/__tests__/run-infra-codex-recovery.test.ts` | 10/10 通过 |
+| teamlead | `src/__tests__/HeartbeatService.zombie-reconcile.test.ts` | 43/43 通过；删掉保护判断的负控使 2 个新用例变红 |
+| teamlead | `src/__tests__/DirectEventSink.dag-seam.test.ts`（读 event-route 源码） | 13/13 通过 |
+| teamlead | `src/__tests__/DirectEventSink.fly1427-terminal-immunity.test.ts` | 7/7 通过 |
+| teamlead | event-route-* 12 个、infra-event-router、resident-receiver-supervisor、run-infra-* 4 个、runs-route-* 5 个、meeting-notes-scheduler、runner-action-http、runner-actions、gateway-main | 27/28 通过；`runs-route-registration.test.ts` 拉起整个 Bridge，内置 15s 超时，负载 104 时超时（见 §5） |
+
+## 4. 排除项与理由
+
+- `plugin.ts` 是枢纽：`vitest related` 会展开到几乎整个 teamlead 包，属于被禁止的全包运行。改为运行其改动路径的直接消费者：reowner、run-infra、wiring 结构、HeartbeatService 相关测试。
+- `goal_blocked` 字面量命中但未改动语义的测试：`DirectEventSink.test.ts`、`StateStore.fly1385-dead-exec.test.ts`、`StateStore.fly1427-terminal-immunity.test.ts`、`pre-adapter-failure-receipt.test.ts`、`lifecycle-closeout.test.ts`、`run-quiescence.test.ts`、`workflow-engine.fly2302-dead-body-commdb.test.ts`、edge-worker `Blueprint.decision`/`ExecutionEventEmitter`。它们覆盖进程内 DirectEventSink / StateStore / Blueprint 的 goal_blocked 处理，本 PR 没有改动这些路径（只改了 HTTP event-route 与 adapter 的生产端）。
+- `reown_watch_started` 命中 `scripts/__tests__/qa-fly-2456-*.test.mjs`：它们只读已持久化事件做报表，事件名未改。
+- `LAUNCH_PENDING` 消费者 `runner-action-http`、`runner-actions`、`gateway-main`、`meeting-notes-scheduler` 已纳入运行；它们按 202 + code 判 pending，不依赖 `success`。
+
+## 5. 未闭合与环境说明
+
+- 本机负载在验证期间为 80–104（多 runner 并发）。时间敏感的 Bridge 启动类用例（`runs-route-registration`）与部分 event-route completion 用例出现超时；它们不经过本 PR 改动的分支，最终以精确 head CI 为准。
+- 需要真实 Codex 的验收（活 daemon 被接管、blocked/429 不判死、旧 goal_blocked 重放不判终态）未在本机执行，交 QA 在 Codex 房间验证，见 PR test plan。

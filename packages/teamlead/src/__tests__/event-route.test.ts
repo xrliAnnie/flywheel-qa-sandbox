@@ -2993,6 +2993,37 @@ describe("Event route", () => {
 		).toMatchObject({ failureReason: "goal ended non-complete: blocked" });
 	});
 
+	it("FLY-2925: a codex_resident_wait observation is persisted through the unchanged generic path and never changes the session", async () => {
+		bindGeneralizedExecution(store, "exec-1");
+		const before = store.getSession("exec-1")?.status;
+		const record = vi.spyOn(store, "recordEnrolledTerminalSignal");
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "resident-wait-1",
+					event_type: "codex_resident_wait",
+					source: "codex-tmux-adapter",
+					payload: {
+						reason: "native_blocked",
+						threadId: "thread-live",
+						observedAt: "2026-09-26T00:00:00.000Z",
+					},
+				}),
+			),
+		});
+		expect(res.status).toBe(200);
+		expect(store.getEventPayloadById("resident-wait-1")).toMatchObject({
+			reason: "native_blocked",
+		});
+		expect(store.getSession("exec-1")?.status).toBe(before);
+		expect(record).not.toHaveBeenCalled();
+	});
+
 	it("FLY-2925: a replayed goal_blocked never tears down an enrolled resident body", async () => {
 		bindGeneralizedExecution(store, "exec-1");
 		const record = vi.spyOn(store, "recordEnrolledTerminalSignal");
