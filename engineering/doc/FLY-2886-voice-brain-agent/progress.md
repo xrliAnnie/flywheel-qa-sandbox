@@ -1,14 +1,14 @@
 ---
 issue: FLY-2886
 phase: implement
-phaseCursor: 4/6
-updated: 2026-09-26T17:04:05.698Z
-nextStep: PR body + milestone last commit; Codex review on final head;
-  code-review.json + gate; complete needs_review
+phaseCursor: 5/6
+updated: 2026-09-26T17:23:18.920Z
+nextStep: milestone last; push; Bridge review gate (gate review_code --no-block
+  + request-review --type code) to APPROVED; complete needs_review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2886 progress
-**phase**: implement (4/6)
-**next**: PR body + milestone last commit; Codex review on final head; code-review.json + gate; complete needs_review
+**phase**: implement (5/6)
+**next**: milestone last; push; Bridge review gate (gate review_code --no-block + request-review --type code) to APPROVED; complete needs_review
