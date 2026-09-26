@@ -42,7 +42,7 @@ button{background:var(--blue);color:#fff;border:0;border-radius:8px;padding:8px 
 
 <div class="card amber" id="s0">
 <h2>0. 这份设计现在到哪了</h2>
-<p><span class="badge b-amber">评审中</span>技术评审（由另一个 AI 模型 Codex 挑毛病）已做两轮：第一轮提出 12 条、第二轮剩 7 条，全部已改进设计。第三轮只核对第二轮那 7 条，<b>还没跑</b>——Codex 的共享登录失效了，Lead 正在处理，恢复后补跑。第三轮如果再提意见，这页会更新。</p>
+<p><span class="badge b-amber">评审收尾</span>技术评审（由另一个 AI 模型 Codex 挑毛病）做了三轮，意见数 12 → 7 → 2，全部已改进设计。最后 2 条都在「按单号的锁」上：锁住的那次改动结果不明时，现在双方都先停下，等核对清楚再动，绝不靠计时自动放行。第 3 轮是规则上的最后一轮，最终是否通过由 Lead 裁定。</p>
 <p class="note">这页不需要你批准就可以往下做实现；你的意见随时写在每节下面，我们按意见增量修改。</p>
 <div class="comment"><label>对这一节的意见</label><textarea data-section="s0" data-title="0. 设计现在到哪了"></textarea></div>
 </div>
@@ -115,7 +115,7 @@ button{background:var(--blue);color:#fff;border:0;border-radius:8px;padding:8px 
 <tr><td>口语转述谁来写</td><td>后台助手直接写口语稿；Lead 发来的文字由一个不带工具的「改稿」小对话改成口语；都先核对再说</td><td>把原文丢给前台自由发挥：说之前无法核对；继续逐字念：就是要去掉的现状</td></tr>
 <tr><td>等待话术</td><td>程序在固定时点说「我去看一下 / 还在查」</td><td>只靠提示词让前台自己说：次数和措辞不可控</td></tr>
 <tr><td>连着问几件事</td><td>按 Codex 的真实做法：后台同一时间只有一轮，后来的问题并进这一轮，最后逐件回答；没答到的那件会明说「还没查完」</td><td>我们自己排队或限次数：Codex 不给我们插手的时机；原型里限次数还把真要查的那次挤掉了</td></tr>
-<tr><td>和常驻 Lead 撞车</td><td>Bridge 上加一把「按单号的锁」：语音要改某张单时先拿锁；Lead 正拿着或在排队，语音这边直接放弃并告诉你「Lead 那边正在处理」；语音先拿到的话，Lead 排队等它做完再做，最后以 Lead 为准</td><td>谁后写谁覆盖：现有机制拦不住两个 agent 改同一张单</td></tr>
+<tr><td>和常驻 Lead 撞车</td><td>Bridge 上加一把「按单号的锁」：语音要改某张单时先拿锁；Lead 正拿着或在排队，语音这边直接放弃并告诉你「Lead 那边正在处理」；语音先拿到的话，Lead 排队等它做完再做，最后以 Lead 为准。如果某次改动「发出去了但不知道成没成」，双方都先停，等核对清楚（由 Lead 优先核对）再动</td><td>谁后写谁覆盖：现有机制拦不住两个 agent 改同一张单</td></tr>
 <tr><td>浏览器</td><td>你的 Chrome，可按 Lead 切换</td><td>只给隔离浏览器：更安全，但不是你要的「像 Lead 一样」</td></tr>
 </table>
 <div class="comment"><label>对这一节的意见</label><textarea data-section="s6" data-title="6. 关键取舍"></textarea></div>
