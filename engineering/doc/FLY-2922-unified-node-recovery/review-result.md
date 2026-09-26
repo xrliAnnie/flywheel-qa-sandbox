@@ -36,3 +36,58 @@ This round is still design documents only, and the worktree still has no node_mo
 
 设计文档与 founder HTML 已提交。九单及新增反例的行为验证属于后续实现/QA；本节点未改业务代码、未运行全套测试、未部署、未自行派发后继。图形渲染按任务允许的降级方式保留本地 Mermaid 图源及明显占位，细节见 delivery-evidence.md。
 学习记录按允许的 memory 更新路径写入单条 update note；未直接改写共享 role/project memory 索引。
+
+## 2026-09-26 重开：FLY-2921 合同补充的 scoped review
+
+有效 reviewVerdict=APPROVED，reviewerVerdict=APPROVED；gate `0f29f815-f140-4e68-ac08-073a9a996389`，request `b5e92e5c-ce11-4f40-ab94-35d74af3e4c9`。审阅内容为 `af2178f24` 的 design-correction.md（blob `3ecbe571…a68a`）；原计划未修改。原 Follow-ups 继续保留。
+
+新增 4 MEDIUM / 4 LOW 均为非阻塞 advisories，未据此重开设计或宣称已解决。已报告 Lead，durable report `3f7025a4-f051-4fc4-8889-88f8e3d426a9`（即时 doorbell 超时，报告持久入队）。以下完整保留供实现/集成处置。
+
+### preadmission-producer-rework-carveout (MEDIUM)
+
+§3.6 的准入前失败 producer 没有明确排除 rework_replacement:* 意图（Lead 合同不变式 6）
+
+FLY-2921 plan §6.1 不变式 6（origin/flywheel-FLY-2921 d12124f39）要求：2922 的 §3.6「准入前失败 → run_recovery_required + run held」必须排除 reason 以 rework_replacement: 开头的意图，这类意图交给 coordinator 按投递失败计数。已批准的 plan.md §3.6（第 195 行）仍把 engine_rework_replacement_context_invalid 列为「当次登记」的结构性错误。本补充的精确覆盖清单（第 21–27 行）没有点名 §3.6，只有第 5 条用一句总括「active 的返工 replacement 走 2921」，第 38 行的负控也只测投递失败。照 §3.6 字面实现会出现两种后果：一是 2922 的 producer 重新把返工失败变成 run held，违反不变式 2；二是和 2921 coordinator 的 replacement_launch_stalled 计数形成双重归属。建议：在覆盖清单里明确修改 §3.6，reason 以 rework_replacement: 开头的意图，无论错误码是什么都不进入 2922 producer；同时加一行负控：rework_replacement 意图在准入前抛错或被 fence 拦下时，run 保持 active，没有 run_recovery_required，由 coordinator 计数。
+
+### merge-order-dependency-unstated (MEDIUM)
+
+2922 写 pending 依赖 2921 先合入，但文档没把这个合入顺序写成硬约束，对旧消费者的拒绝方式也写得不准确
+
+第 14 行说旧 dispatcher 会用 engine_rework_replacement_context_invalid 拒绝，这不准确。更早的 fence 在 workflow-engine-dispatcher.ts:2483–2493：deliveryState !== 'replacement_pending' 时只记日志 engine_rework_target_launch_fenced 然后 return false，不会抛错。按 §3.6，return false 属于忙碌、不算故障，所以意图会一直停在 intent_recorded，形成没有 episode 的静默卡死。与此同时，当前 coordinator（workflow-rework-coordinator.ts:629–640）看到 pending 且替身还没有 session 时，会走 releaseRetryable('actor_session_missing')，经 settleWorkflowReworkFailure 最终把 run 打成 needs_lead/held。第 17 行和第 27 行的「后合者同步」允许任意合入顺序，但 2922 先合时，第 33/38 行的验收不做 2921 的活就过不了（dispatcher fence、coordinator、markWorkflowReplacementStartedTx 按 §6.1 都归 2921）。建议二选一写进文档：(a) 2922 的返工恢复切片以 2921 已合入为硬前置；(b) 2921 合入前，2922 遇到返工目标一律返回精确 409（例如 rework_target_owned_by_2921），不 mint，对应不变式 4 的「或拒绝并指向它」。同时把第 14 行的拒绝方式改准确。
+
+### shared-materializer-preconditions (MEDIUM)
+
+「共用物化方法」的前置条件与历史 held run 的场景不兼容，替身预算的交互也没写
+
+第 3 条和第 5 条要求历史 held 的死目标用共用物化方法和协议认可的替身来源（engine:proven_dead_replacement）。但 2921 C2 的 replaceWorkflowReworkActor 有三个前置条件：coordinator 持有 owner+generation 认领、delivery ∈ {pending, turn_granted, wake_delivered}、run active。历史 held run 的 run 是 held，2921 迁移后 delivery 是 returned_to_lead，coordinator 在 run 非 active 时也不认领，所以这三条都满足不了。文档没说明是抽出事务内核并由 2922 的权限做 CAS，还是另开一个变体。另有两点：2921 的换体预算按「最近一次 engine:hold_resume 之后、interpreted_by 为替身来源的行数」计算，operator 的显式恢复如果计为 proven_dead_replacement，可能被预算拒绝，或者恢复后下一次自动换体立刻超限；另外 StateStore.ts:43073 的 writer 迁移消费者一旦看到 interpreted_by=engine:proven_dead_replacement，就要求存在匹配的 rework_replacement_materialized 事件，且 payload 带 requestId/deadExecutionId/newExecutionId/routeRevision/launchOrdinal，否则静默跳过。建议写明 2922 调用的事务内核、它自己的前置 CAS（run held + returned_to_lead/历史态 + 精确 tuple），以及预算是否重置，并在验收里断言 writer 迁移和 materialized 事件齐全。
+
+### rework-replacement-context-not-preflighted (MEDIUM)
+
+stage/apply 没有预检 dispatcher 的返工替身上下文谓词，可能铸出永远启动不了的派发却返回 200
+
+第 4 条只要求消费端做校验。dispatcher 的 replacementContext（workflow-engine-dispatcher.ts:2511–2575）还要求 base_revision 必须是 40 位十六进制、buildWorkflowReworkContext 成功、内容不超过 WORKFLOW_AGENT_CONTENT_BUDGET、lead authority_context 一致。而 StateStore.ts:68319–68323 引擎创建的返工请求可能回落为 base_revision='unavailable'。这类历史请求一旦走 2922 的 redispatch_current，会拿到 HTTP 200 dispatch_recorded，但替身会被确定性拒绝，之后要么被 2921 反复换体直到 returned_to_lead，要么进入 §3.6 循环，正好是 plan §8 列出的「只写出账本、consumer 拒收」最大风险。建议 stage 和 apply 复用同一个只读谓词做预检，不满足就返回精确 409（例如 rework_replacement_context_unlaunchable），零 mint，并加一个 base_revision 非 40 位十六进制的负控夹具。
+
+### section5-row-not-overridden (LOW)
+
+覆盖清单漏了 plan §5 的「replacement 回滚再额外 delivery held」行
+
+2921 不变式 7 点名的四处包括 plan.md §5 第 220 行。该行把 replacement 回滚改成「统一 episode」，这与 2921 C4.1 冲突：replacement 回滚归 2921，写非 hold 事件 rework_replacement_launch_rolled_back，run 保持 active。第 16 行的「当前核对」提到了 C4，但第 1 条的精确覆盖只列了 §2/§3.4/§7/research。建议补进覆盖清单：§5 该行只适用于非 replacement 绑定。
+
+### alive-rearm-route-source-unspecified (LOW)
+
+活体同 actor 重投时新 route revision 的 interpreted_by 没有规定
+
+2921 用 engine:hold_resume 标记 Lead 重投并重置换体预算，isReworkReplacementLaunching 只认两种替身来源。第 6 条保留同 actor 重臂，但没说新 revision 用哪个 interpreted_by。建议明确用 engine:hold_resume（或 2921 认可的等价来源），避免预算不重置，也避免被误判为替身启动中。
+
+### sibling-contract-unpinned (LOW)
+
+引用的 FLY-2921 合同没有固定提交，且对方计划仍是 draft
+
+origin/flywheel-FLY-2921 的 plan.md 状态是 draft，progress 为 design 4/6，只有参考评审、没有有效评审。本补充引用 C2/C4/C6 时没有固定 commit 或 blob（当前是 d12124f39）。建议写上所依据的 2921 plan 提交和 blob，并加一条规则：2921 有效评审改动了 §6.1 不变式时，本补充需要重新对齐。
+
+### tests_not_run (LOW)
+
+本轮没有运行测试
+
+worktree 没有 node_modules（根目录和 packages/teamlead 都没有），而本补充只改了文档，没有改代码，所以本轮没跑任何 vitest。结论来自静态核对：dispatcher 2483–2493 的 launch fence 与 2511–2524 的上下文校验、coordinator 580–640、StateStore 43055–43095 的替身 writer 迁移消费者、markWorkflowReplacementStartedTx、68319–68323 的 base_revision 回落值，以及 origin/flywheel-FLY-2921 plan §C2/C4/C6/§6.1 原文。另确认 plan.md 自 c4d40fbed 起未变，SHA-256 为 7de9bef9…a1c5，本补充的 blob 为 3ecbe571…a68a。
+
