@@ -1,14 +1,14 @@
 ---
 issue: FLY-2921
 phase: implement
-phaseCursor: 6/9
-updated: 2026-09-26T18:49:48.447Z
-nextStep: 等测试适配子代理(replacement/coordinator/dispatcher)+C8 runbook 子代理；随后跑 §8.3
-  相关测试全集、lint、codex 评审、PR
+phaseCursor: 7/9
+updated: 2026-09-26T19:03:34.256Z
+nextStep: Codex code review R1 (gpt-6-astra xhigh) 进行中；4 个测试适配子代理进行中；之后 §8.3
+  全集、修 finding、里程碑、PR
 chunks: []
 pointers: {}
 ---
 
 # FLY-2921 progress
-**phase**: implement (6/9)
-**next**: 等测试适配子代理(replacement/coordinator/dispatcher)+C8 runbook 子代理；随后跑 §8.3 相关测试全集、lint、codex 评审、PR
+**phase**: implement (7/9)
+**next**: Codex code review R1 (gpt-6-astra xhigh) 进行中；4 个测试适配子代理进行中；之后 §8.3 全集、修 finding、里程碑、PR
