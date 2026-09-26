@@ -1,0 +1,31 @@
+{
+  "beforeRevision": "15f30a876d6d5864f885cf084f85995d53dcce01",
+  "enabledRevision": "f75e35f1466e0973311a0f06b931bc34de96f504",
+  "sources": [
+    {
+      "path": "scripts/inbox-ack-rule.md",
+      "off": "3a544e64a85d422c33a777979827f1616e284d530ec31de7102adbd722621614",
+      "on": "4c4639f806a0e3be2a45ec596244f76a3df9dcff8bebcfe5bf24b54a2b47815f"
+    },
+    {
+      "path": "lead-rules-base/runner-patrol-rules.md",
+      "off": "e23d5d7a03b60e19487d80edcc082e7bff7410f8d76fed25cd635ab7f96dfe59",
+      "on": "e0087b1392cecee4d885b8d6c0c6fd11f768ca773da0ad3068bd600ab9346f49"
+    },
+    {
+      "path": "lead-rules-base/legacy-token-savings/inbox-ack-rule.md",
+      "off": "26207a075496f647b3b12ff6d82b9f0235189a6eab61665c1a9c72bc6c1615ae",
+      "on": "b74ba794eb43506b892787153c994108cb6b27bad275f29c90a4830e96ef4c64"
+    },
+    {
+      "path": "lead-rules-base/legacy-token-savings/runner-patrol-rules.md",
+      "off": "bcee374943e5807eff632cc23786667cf630e7c6628b0145109a5226e4c32dd9",
+      "on": "7882391142f01bb91711aef402a2fe568c5d9701f202b00ce838a741be1ef507"
+    }
+  ],
+  "bootstrapSources": {
+    "src/bridge/bootstrap-generator.ts": "77f259207b109f51df655911bf46082a26715c8d7e9dbefc78884ed42d78b9ae",
+    "src/bridge/bootstrap-format.ts": "954d225f30cc71b0e13915bb56349f4ed5a1837fd61c6927ddab1f5eddcc7c2b",
+    "src/bridge/bootstrap-format-legacy.ts": "7eb9d4e45fc168feacf1852c83bd2d0c082400190e81502ccd3a1e695eb1983e"
+  }
+}

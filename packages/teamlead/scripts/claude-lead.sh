@@ -406,6 +406,7 @@ fi
 
 # Freeze one project flag read for this launch (rules and native window).
 lead_token_savings_read_launch "$PROJECT_NAME"
+lead_ack_action_batching_read_launch "$PROJECT_NAME"
 
 export PROJECT_NAME
 

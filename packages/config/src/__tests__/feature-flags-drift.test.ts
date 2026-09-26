@@ -500,6 +500,12 @@ describe("feature-flag drift guard", () => {
 					"storeDatabaseArchiveEnabled",
 				],
 				[
+					"lead_ack_action_batching",
+					"packages/teamlead/src/lead-ack-action-batching.ts",
+					"readLeadAckActionBatchingAtLaunch",
+					"storeLeadAckActionBatchingEnabled",
+				],
+				[
 					"lead_token_savings",
 					"packages/teamlead/src/bridge/bootstrap-generator.ts",
 					"generateBootstrap",

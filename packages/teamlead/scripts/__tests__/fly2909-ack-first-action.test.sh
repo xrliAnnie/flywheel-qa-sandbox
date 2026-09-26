@@ -38,16 +38,16 @@ assert_rule_contract() {
 }
 
 assert_rule_contract \
-	"$ROOT/packages/teamlead/scripts/inbox-ack-rule.md" \
+	"$ROOT/packages/teamlead/lead-rules-base/ack-action-batching/inbox-ack-rule.md" \
 	"current inbox rule"
 assert_rule_contract \
-	"$ROOT/packages/teamlead/lead-rules-base/runner-patrol-rules.md" \
+	"$ROOT/packages/teamlead/lead-rules-base/ack-action-batching/runner-patrol-rules.md" \
 	"current patrol rule"
 assert_rule_contract \
-	"$ROOT/packages/teamlead/lead-rules-base/legacy-token-savings/inbox-ack-rule.md" \
+	"$ROOT/packages/teamlead/lead-rules-base/legacy-token-savings/ack-action-batching/inbox-ack-rule.md" \
 	"legacy inbox rule"
 assert_rule_contract \
-	"$ROOT/packages/teamlead/lead-rules-base/legacy-token-savings/runner-patrol-rules.md" \
+	"$ROOT/packages/teamlead/lead-rules-base/legacy-token-savings/ack-action-batching/runner-patrol-rules.md" \
 	"legacy patrol rule"
 
 LEAD_DIR="$TMP/-Users-test--flywheel-lead-workspace-eng"

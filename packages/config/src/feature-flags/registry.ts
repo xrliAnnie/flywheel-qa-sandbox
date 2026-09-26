@@ -722,6 +722,30 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
+		name: "lead_ack_action_batching",
+		configKey: "lead.ack_action_batching_enabled",
+		category: "feature",
+		source: "project_config",
+		scope: "project",
+		polarity: "opt_in",
+		valueKind: "bool",
+		onMeans: "enables",
+		default: false,
+		description:
+			"Lead ACK/action batching; default off. Rules change at the next Claude or Codex Lead launch.",
+		whenOn:
+			"Lead 把收信确认与首个处理动作同轮发出，纯通知与最后一个动作同发，减少单独确认的一轮。",
+		note: "通过 feature-flags set --name lead_ack_action_batching --to on|off --project <project> --reason <reason> 治理。关闭恢复改前规则字节；打开选择 ACK 同轮规则。两种载体均在下次 Lead 启动读取；call_time 仅表示读取函数的时机，不会修改已运行会话的提示。合入上线后由 Lead 打开观察，529 双载体 ON/OFF 验收由 QA 执行。",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/lead-ack-action-batching.ts",
+				"readLeadAckActionBatchingAtLaunch",
+				"storeLeadAckActionBatchingEnabled",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
 		name: "lead_token_savings",
 		configKey: "lead.token_savings_enabled",
 		category: "feature",

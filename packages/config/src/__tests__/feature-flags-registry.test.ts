@@ -12,6 +12,8 @@ import { RETIRED_CONFIG_PATHS, RETIRED_FLAGS } from "../feature-flags/truth.js";
 import { auditFly1981LegacyLedger } from "./fly1981-legacy-snapshot.js";
 
 const EXPECTED_WHEN_ON = {
+	lead_ack_action_batching:
+		"Lead 把收信确认与首个处理动作同轮发出，纯通知与最后一个动作同发，减少单独确认的一轮。",
 	auto_release_on_silence_enabled:
 		"满足启用授权、送达和健康条件后，在否决窗口到期时默认发布客户版本",
 	lead_token_savings:
@@ -88,7 +90,7 @@ describe("feature-flag registry invariants", () => {
 	});
 
 	it("FLY-2368 gives every current flag its reviewed founder copy", () => {
-		expect(FEATURE_FLAGS).toHaveLength(35);
+		expect(FEATURE_FLAGS).toHaveLength(36);
 		expect(
 			Object.fromEntries(FEATURE_FLAGS.map((flag) => [flag.name, flag.whenOn])),
 		).toEqual(EXPECTED_WHEN_ON);

@@ -15,6 +15,8 @@ export interface LeadSkillSource {
 export interface LeadRuleSourceOptions {
 	/** Omitted preserves the canonical Claude selection. */
 	backend?: "claude-code" | "codex-app-server";
+	/** Governed launch receipt; omission preserves historical rule bytes. */
+	ackActionBatchingEnabled?: boolean;
 	scriptsDir: string;
 	projectRoot: string;
 	leadId: string;
@@ -207,6 +209,19 @@ export function selectLeadRuleSources(options: LeadRuleSourceOptions) {
 	) {
 		if (sources.some((source) => source.sourceId === sourceId))
 			throw new Error("duplicate_rule_source");
+		if (
+			options.ackActionBatchingEnabled === true &&
+			path &&
+			(sourceId === "launcher/inbox-ack-rule.md" ||
+				sourceId === "base/runner-patrol-rules.md")
+		) {
+			path = join(
+				options.scriptsDir,
+				"../lead-rules-base/ack-action-batching",
+				sourceId.split("/").at(-1)!,
+			);
+			required = true;
+		}
 		const source = applicable && path ? inspect(path) : null,
 			adapterPath = adapters[sourceId] ?? null,
 			adapter = applicable && adapterPath ? inspect(adapterPath) : null;

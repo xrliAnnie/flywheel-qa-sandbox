@@ -11,6 +11,7 @@ import {
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readLeadAckActionBatchingAtLaunch } from "../lead-ack-action-batching.js";
 import type { CodexLeadRuntimeConfig } from "../lead-backends/codex/codex-lead-runtime.js";
 import type { SqliteJournalStore } from "../lead-backends/codex/SqliteJournalStore.js";
 import { resolveLeadMenus } from "../workflow-menu.js";
@@ -170,8 +171,12 @@ export async function startDefaultLeadCapabilityParent(input: {
 			artifactRoot,
 			assertCurrent: current,
 		});
+		const ackActionBatchingEnabled = readLeadAckActionBatchingAtLaunch(
+			config.projectName,
+		);
 		const discover = () =>
 			discoverLeadRuleSources({
+				ackActionBatchingEnabled,
 				homeDir: home,
 				workspaceDir: join(home, ".flywheel/lead-workspace", config.leadId),
 				scriptsDir: join(deploymentRoot, "packages/teamlead/scripts"),

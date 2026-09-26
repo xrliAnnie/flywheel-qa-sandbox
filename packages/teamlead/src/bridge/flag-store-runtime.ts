@@ -236,6 +236,14 @@ export function storeNodeDwellThresholdHours(
 	return value;
 }
 
+/** FLY-2909: governed launch-time prompt selection; mailbox transport is unchanged. */
+export function storeLeadAckActionBatchingEnabled(
+	runtime: { store: ScopedFlagStore },
+	projectName: string,
+): boolean {
+	return readScopedBoolean(runtime, "lead_ack_action_batching", projectName);
+}
+
 export function storeLeadTokenSavingsEnabled(
 	runtime: { store: ScopedFlagStore },
 	projectName: string,

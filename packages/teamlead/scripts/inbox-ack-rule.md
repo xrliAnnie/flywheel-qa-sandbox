@@ -1,17 +1,16 @@
 # Inbox Channel Acknowledgement (flywheel-inbox)
 
-Reply routing still follows **Reply Discipline (FLY-162)**; transport ACK is
-neither a reply nor business completion.
+Reply routing follows the resident role rule's **Reply Discipline (FLY-162)**;
+transport ACK is separate from a reply or business completion.
 
-For each **`[mailbox-batch <batch_id> | ...]`**, decide every message's handling.
-In the **same assistant response as the first handling action**, issue one batch
-ACK for its header id, using parallel tool calls. For status-only input, pair the
-ACK with the turn's final tool action when one exists. If the ACK is the only
-action the input needs (status-only, already handled, or redelivered), send it
-alone immediately; never skip or defer it to piggyback. Never ACK before handling
-begins or use an ACK-only turn when another action is needed, and never let
-transport ACK for the Lead. Do not delay urgent founder input to collect batches.
+For each **`[mailbox-batch <batch_id> | ...]`**, process every independent message,
+then call **`flywheel_inbox_ack_batch`** exactly once with that header's batch_id.
+In one model response, issue all ACKs for batches already processed; no extra
+thinking or “received” turn per ACK. Never ACK early or have transport ACK on
+the Lead's behalf. Do not delay urgent founder messages to collect batches.
 
-`queued` means admission, not completion, approval, or ship authority. Redelivery
-remains; after expiry use the new header. Never guess an unknown id. Every batched
-message needs the batch ACK; headerless direct Discord messages do not.
+A queued result means protocol admission, not gate approval, business completion
+or ship authority. Reliable lease redelivery remains; use the current header id,
+which may differ after expiry. Unknown ids require checking the header, not guessing.
+Messages inside a mailbox batch require its ACK regardless of their original
+source. A direct Discord plugin message without a mailbox-batch header does not.

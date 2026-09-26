@@ -35,27 +35,55 @@ lead_token_savings_read_launch() {
   case "$_LEAD_TOKEN_SAVINGS_LAUNCH" in 0|1) ;; *) _LEAD_TOKEN_SAVINGS_LAUNCH=0 ;; esac
 }
 
+# Launch-local receipt from the governed project store; not an environment flag.
+lead_ack_action_batching_read_launch() {
+  local project="$1" helper script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || return 1
+  helper="$script_dir/../dist/lead-ack-action-batching.js"
+  _LEAD_ACK_ACTION_BATCHING_LAUNCH=0
+  if [ -r "$helper" ]; then
+    _LEAD_ACK_ACTION_BATCHING_LAUNCH="$(node "$helper" "$project")" || _LEAD_ACK_ACTION_BATCHING_LAUNCH=0
+  else
+    printf '[lead-ack-action-batching] reader unavailable; using historical ACK rules\n' >&2
+  fi
+  case "$_LEAD_ACK_ACTION_BATCHING_LAUNCH" in 0|1) ;; *) _LEAD_ACK_ACTION_BATCHING_LAUNCH=0 ;; esac
+}
+
 rules_bundle_select_source() {
   local path="$1" parent name legacy=""
-  if [ "${_LEAD_TOKEN_SAVINGS_LAUNCH:-1}" != 0 ]; then
-    printf '%s\n' "$path"
-    return 0
-  fi
   parent="${path%/*}"
   parent="${parent%/}"
   name="${path##*/}"
-  case "${parent##*/}/$name" in
-    lead-rules-base/department-lead-rules.md|lead-rules-base/runner-messaging-rules.md|lead-rules-base/runner-patrol-rules.md)
-      legacy="$parent/legacy-token-savings/$name" ;;
-    scripts/inbox-ack-rule.md)
-      legacy="$parent/../lead-rules-base/legacy-token-savings/$name" ;;
-  esac
+  if [ "${_LEAD_TOKEN_SAVINGS_LAUNCH:-1}" = 0 ]; then
+    case "${parent##*/}/$name" in
+      lead-rules-base/department-lead-rules.md|lead-rules-base/runner-messaging-rules.md|lead-rules-base/runner-patrol-rules.md)
+        legacy="$parent/legacy-token-savings/$name" ;;
+      scripts/inbox-ack-rule.md)
+        legacy="$parent/../lead-rules-base/legacy-token-savings/$name" ;;
+    esac
+  fi
   if [ -n "$legacy" ]; then
     if [ ! -f "$legacy" ] || [ ! -r "$legacy" ]; then
       printf 'MISSING_REQUIRED_LEGACY:%s\n' "$legacy" >&2
       return 10
     fi
     path="$legacy"
+  fi
+  if [ "${_LEAD_ACK_ACTION_BATCHING_LAUNCH:-0}" = 1 ]; then
+    case "${path%/*}" in
+      */scripts|*/lead-rules-base|*/lead-rules-base/legacy-token-savings)
+        case "$name" in
+          inbox-ack-rule.md|runner-patrol-rules.md)
+            case "${path%/*}" in
+              */scripts) path="${path%/*}/../lead-rules-base/ack-action-batching/$name" ;;
+              *) path="${path%/*}/ack-action-batching/$name" ;;
+            esac
+            if [ ! -f "$path" ] || [ ! -r "$path" ]; then
+              printf 'MISSING_REQUIRED_ACK_BATCHING:%s\n' "$path" >&2
+              return 10
+            fi ;;
+        esac ;;
+    esac
   fi
   printf '%s\n' "$path"
 }
@@ -480,6 +508,7 @@ compute_lead_rule_bundle() {
 assemble_full_access_governance() {
   local lead_id="$1" base_rules_dir="$2"
   lead_token_savings_read_launch "${FLYWHEEL_PROJECT_NAME:-${PROJECT_NAME:-}}" || return 1
+  lead_ack_action_batching_read_launch "${FLYWHEEL_PROJECT_NAME:-${PROJECT_NAME:-}}" || return 1
   # role: a full-access Lead is never a companion (ProjectConfig rejects the mix);
   # cos when LEAD_ID/role says so, else dept (mirrors claude-lead.sh role detection).
   local role="dept"

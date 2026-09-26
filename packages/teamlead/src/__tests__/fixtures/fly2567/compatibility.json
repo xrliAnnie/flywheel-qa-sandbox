@@ -33,35 +33,35 @@
 		},
 		{
 			"id": "runner-patrol-rules.md",
-			"rationale": "FLY-2557 section 0.11 is byte-identical in current ON and legacy OFF patrol sources. Lead ruling e1eff36e authorizes adding this shared intake duty to OFF while preserving every byte of its previous text. Both modes now contain intake identity, ACK versus pending, backfill, decomposition, dependency ledger, thread receipts and resolve, and both transports deliver the same intake event instructions. The savings switch continues selecting shortened versus historical patrol procedures; it no longer removes section 0.11. Capture command: python3 engineering/doc/FLY-2567-lead-token-savings/capture-legacy-bundle.py --intake-overlay engineering/doc/FLY-2557-epic-intake/approved-intake-section.txt. The script pins overlay SHA256 24d7b1928661a4952de3e721b684d703452c86dd25037bd9f1f6ea2631f902a6; OFF patrol source evolves from a48cb411861c7b3edd234d49e42efb3b5fd114b0e4b70872cffe2db4734bae1c to f274a86e359454d6ed8a2b3b6fb5f1e941b39425df2028a8a3abe9c873888ffc. Two captures produce byte-identical source and bundle goldens; an unapproved overlay is rejected before writes. FLY-2597 replaces Discord record-only intake receipts with Bridge receipts in both ON and OFF section 0.11; needs_founder retains an actual marked question. Both modes gain identical no-periodic-prose and quiet-record rules. The prior FLY-2557 overlay is preserved except these approved quiet-receipt edits. Reproduction: engineering/doc/FLY-2597-thread-title-needs-you/capture-rule-evolution.py verifies the historical bundle before replaying its pinned patch. FLY-2643 adds the visible-TUI roster check only to the current patrol source; OFF keeps the historical procedure without that visible-TUI addition. FLY-2702 then adds the same verified package-gate WAITING evidence and non-suppression rule to the current and historical patrol procedures. FLY-2751 adds the same explicit-only Epic fixed-page publication duty to both modes: show, render, generate, events, patrol, and expiry observation never publish; only a founder/Lead-requested epic-page publish may write hosted Blob state. FLY-2909 changes only shared ACK timing in current and legacy sections 5 and 6: ACK is emitted beside the first handling action, beside the final tool action for status-only input, or immediately by itself when it is the only needed action. Both cumulative hashes remain pinned.",
+			"rationale": "FLY-2557 section 0.11 is byte-identical in current ON and legacy OFF patrol sources. Lead ruling e1eff36e authorizes adding this shared intake duty to OFF while preserving every byte of its previous text. Both modes now contain intake identity, ACK versus pending, backfill, decomposition, dependency ledger, thread receipts and resolve, and both transports deliver the same intake event instructions. The savings switch continues selecting shortened versus historical patrol procedures; it no longer removes section 0.11. Capture command: python3 engineering/doc/FLY-2567-lead-token-savings/capture-legacy-bundle.py --intake-overlay engineering/doc/FLY-2557-epic-intake/approved-intake-section.txt. The script pins overlay SHA256 24d7b1928661a4952de3e721b684d703452c86dd25037bd9f1f6ea2631f902a6; OFF patrol source evolves from a48cb411861c7b3edd234d49e42efb3b5fd114b0e4b70872cffe2db4734bae1c to f274a86e359454d6ed8a2b3b6fb5f1e941b39425df2028a8a3abe9c873888ffc. Two captures produce byte-identical source and bundle goldens; an unapproved overlay is rejected before writes. FLY-2597 replaces Discord record-only intake receipts with Bridge receipts in both ON and OFF section 0.11; needs_founder retains an actual marked question. Both modes gain identical no-periodic-prose and quiet-record rules. The prior FLY-2557 overlay is preserved except these approved quiet-receipt edits. Reproduction: engineering/doc/FLY-2597-thread-title-needs-you/capture-rule-evolution.py verifies the historical bundle before replaying its pinned patch. FLY-2643 adds the visible-TUI roster check only to the current patrol source; OFF keeps the historical procedure without that visible-TUI addition. FLY-2702 then adds the same verified package-gate WAITING evidence and non-suppression rule to the current and historical patrol procedures. FLY-2751 adds the same explicit-only Epic fixed-page publication duty to both modes: show, render, generate, events, patrol, and expiry observation never publish; only a founder/Lead-requested epic-page publish may write hosted Blob state. Both cumulative hashes remain pinned.",
 			"members": [
 				{
 					"path": "packages/teamlead/lead-rules-base/runner-patrol-rules.md",
-					"sha256": "e0087b1392cecee4d885b8d6c0c6fd11f768ca773da0ad3068bd600ab9346f49"
+					"sha256": "e23d5d7a03b60e19487d80edcc082e7bff7410f8d76fed25cd635ab7f96dfe59"
 				},
 				{
 					"path": "packages/teamlead/lead-rules-base/legacy-token-savings/runner-patrol-rules.md",
-					"sha256": "7882391142f01bb91711aef402a2fe568c5d9701f202b00ce838a741be1ef507"
+					"sha256": "bcee374943e5807eff632cc23786667cf630e7c6628b0145109a5226e4c32dd9"
 				}
 			]
 		},
 		{
 			"id": "inbox-ack-rule.md",
-			"rationale": "ON retains the reviewed shortened duties; OFF preserves pre-savings text at f022a0a7. FLY-2909 updates both modes identically in semantics: batch ACK is emitted beside the first handling action, beside the final tool action for status-only input, or immediately by itself when it is the only needed action. Header identity, admission-only authority, urgent-founder, and no-automatic-ACK guards remain.",
+			"rationale": "ON retains the reviewed shortened duties; OFF preserves pre-savings text at f022a0a7. Any shared duty change must update both modes and the historical compatibility evidence.",
 			"members": [
 				{
 					"path": "packages/teamlead/scripts/inbox-ack-rule.md",
-					"sha256": "4c4639f806a0e3be2a45ec596244f76a3df9dcff8bebcfe5bf24b54a2b47815f"
+					"sha256": "3a544e64a85d422c33a777979827f1616e284d530ec31de7102adbd722621614"
 				},
 				{
 					"path": "packages/teamlead/lead-rules-base/legacy-token-savings/inbox-ack-rule.md",
-					"sha256": "b74ba794eb43506b892787153c994108cb6b27bad275f29c90a4830e96ef4c64"
+					"sha256": "26207a075496f647b3b12ff6d82b9f0235189a6eab61665c1a9c72bc6c1615ae"
 				}
 			]
 		},
 		{
 			"id": "patrol-runbook",
-			"rationale": "ON moves operational recipes to this runbook; OFF retains the prior inline recipes byte-for-byte. FLY-2557 adds only the identical approved section 0.11 intake duty to the OFF patrol source under ruling e1eff36e, matching current ON rules. The runbook recipes and existing OFF operational procedures are unchanged. FLY-2597 updates the OFF shared section 0.11 and adds the same attention/quiet-record duty as ON; runbook recipes remain unchanged. Reproduction: engineering/doc/FLY-2597-thread-title-needs-you/capture-rule-evolution.py verifies the historical bundle before replaying its pinned patch. FLY-2643 adds the current visible-TUI verification recipe to the ON runbook while OFF retains the historical inline procedure without that visible-TUI addition. FLY-2702 then updates both operational procedures with the package-gate queue WAITING contract while the resident ON source carries its concise equivalent. FLY-2751 changes only the shared Epic fixed-page publication guidance in the OFF patrol source. FLY-2909 changes only shared ACK timing in OFF sections 5 and 6; the operational patrol runbook remains unchanged. Both cumulative hashes remain pinned.",
+			"rationale": "ON moves operational recipes to this runbook; OFF retains the prior inline recipes byte-for-byte. FLY-2557 adds only the identical approved section 0.11 intake duty to the OFF patrol source under ruling e1eff36e, matching current ON rules. The runbook recipes and existing OFF operational procedures are unchanged. FLY-2597 updates the OFF shared section 0.11 and adds the same attention/quiet-record duty as ON; runbook recipes remain unchanged. Reproduction: engineering/doc/FLY-2597-thread-title-needs-you/capture-rule-evolution.py verifies the historical bundle before replaying its pinned patch. FLY-2643 adds the current visible-TUI verification recipe to the ON runbook while OFF retains the historical inline procedure without that visible-TUI addition. FLY-2702 then updates both operational procedures with the package-gate queue WAITING contract while the resident ON source carries its concise equivalent. FLY-2751 changes only the shared Epic fixed-page publication guidance in the OFF patrol source; the operational patrol runbook remains unchanged. Both cumulative hashes remain pinned.",
 			"members": [
 				{
 					"path": "packages/teamlead/lead-rules-base/runbooks/patrol-v1.md",
@@ -69,7 +69,7 @@
 				},
 				{
 					"path": "packages/teamlead/lead-rules-base/legacy-token-savings/runner-patrol-rules.md",
-					"sha256": "7882391142f01bb91711aef402a2fe568c5d9701f202b00ce838a741be1ef507"
+					"sha256": "bcee374943e5807eff632cc23786667cf630e7c6628b0145109a5226e4c32dd9"
 				}
 			]
 		},

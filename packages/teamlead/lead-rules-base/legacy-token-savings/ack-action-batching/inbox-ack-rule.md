@@ -55,11 +55,14 @@ the MCP channel `notifications/claude/channel`, NOT through Discord), you MUST
 acknowledge it exactly once after you have processed it:
 
 Every instruction notification starts with a
-**`[mailbox-batch <batch_id> | ...]`** header. Process every message in the
-batch, then call **`flywheel_inbox_ack_batch`** exactly once with
-`{ batch_id: "<batch_id>" }`. An unacked batch holds one of the three in-flight
-slots and is re-delivered under the same durable batch id when its lease expires.
-Unknown batch ids return a structured error; verify the header instead of
-guessing an id.
+**`[mailbox-batch <batch_id> | ...]`** header. Decide every message's handling.
+In the **same assistant response as the first handling action**, issue one batch
+ACK for its header id, using parallel tool calls. For status-only input, pair the
+ACK with the turn's final tool action when one exists. If the ACK is the only
+action the input needs (status-only, already handled, or redelivered), send it
+alone immediately; never skip or defer it to piggyback. Never ACK before handling
+begins or use an ACK-only turn when another action is needed, and never let
+transport ACK for the Lead. Do not delay urgent founder input to collect batches.
+Unacked batches retain a slot; use the latest header and never guess ids.
 
 Discord messages arrive through a different path and do NOT require this ack.
