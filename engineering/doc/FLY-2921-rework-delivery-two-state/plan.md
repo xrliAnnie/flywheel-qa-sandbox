@@ -298,8 +298,9 @@ stateDiagram-v2
 | 调度器 `replacement_pending` → 物化分支 | dispatcher 1405–1421 | 由协调器就地铸 |
 | `settleWorkflowReworkFailure` 的 run held、窗格交接、撤节点预留分支 | 45940–46090 | C3 |
 | `rollbackUnlaunchedWorkflowAdmission` 对 replacement 绑定的冻 run（41258）与投递置 held（41262–41280），以及它写的 run 级 hold 事件 | 41258–41280 | C4.1 |
-| `watch.ts` 返工 undeliverable 半边 | 219–223 | C4.2 |
-| `openReworkContentUndeliverableTx` 的冻 run 部分 | 64978– | C4.4 |
+| `escalateUnlaunchedWorkflowStall` 对返工替身写 run held / run 级 hold 的分支 | StateStore 41400 起；dispatcher 1884 调用方 | C4.2 |
+| `watch.ts` 返工 undeliverable 半边 | 219–223 | C4.3 |
+| `openReworkContentUndeliverableTx` 的冻 run 部分 | 64978– | C4.5 |
 | `validateNeedsLeadReworkQuiescenceTx` | 50865 | C3.5 |
 | `deliverResidentWake` 的 `resident_hold_already_woken` 返回 | fence 25 | C5 |
 | 协调器 `markReplacementPending`、`handoff_held_pane_loss`、`awaiting_receipt` 推进 | coordinator 584–606、782、1181–1199 | C2 |
