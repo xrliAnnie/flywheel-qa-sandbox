@@ -1,14 +1,15 @@
 ---
 issue: FLY-2886
 phase: implement
-phaseCursor: 2/6
-updated: 2026-09-26T13:34:31.221Z
-nextStep: "K3: Bridge background-degraded route + voice_sessions columns +
-  degraded context + scope rejection + poller skip (plan §14.2)"
+phaseCursor: 3/6
+updated: 2026-09-26T13:40:40.625Z
+nextStep: "K4: CodexVoiceContainer admission scope, revoke→degraded
+  POST→reap→close→foreground; residual reaper by process identity; deadlines;
+  daemon effectiveBackground"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2886 progress
-**phase**: implement (2/6)
-**next**: K3: Bridge background-degraded route + voice_sessions columns + degraded context + scope rejection + poller skip (plan §14.2)
+**phase**: implement (3/6)
+**next**: K4: CodexVoiceContainer admission scope, revoke→degraded POST→reap→close→foreground; residual reaper by process identity; deadlines; daemon effectiveBackground
