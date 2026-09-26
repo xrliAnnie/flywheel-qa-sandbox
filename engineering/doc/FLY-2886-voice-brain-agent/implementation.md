@@ -145,3 +145,5 @@ D2 根因（真宿主对照组）：不加开关时，订阅账号会话中途�
 | 本提交 | daemon 把跳过记为终态 `dropped` 回执；`rewriteSpeech` 管线类型改为 `ScriptWriterInput` |
 
 验收用例：跳过留痕（`session.test` tell relevance 三条）、改了关键事实被抓（`spoken-script` 结论翻转 / PR 号 / 时间、`script-writer` 伪造编号整句去掉、`brain-coordinator` 保留正确句）、同事实的自由转述通过（`spoken-script`「passes a free paraphrase…」）。验证：voice-codex `vitest related`（10 个改动文件）13 文件 276/276；teamlead `voice-handoff` 13/13；lint 退出 0；voice-codex 及依赖构建、依赖方 typecheck 通过。
+
+评审 `b5bc5d89`（@`8b3bcd4da` APPROVED，round 2）的 advisory：已修两条——报告「过没过/合没合」结论的消息机械兜底一律说（`reports_result`）；「过了十分钟 / 没过多久」等时间说法不再当结论。未修、列为 PR Follow-ups：结论极性未按主语绑定（「A 过 B 挂」可被说反）；broker 成功后解锁失败回报 unknown；残留清扫遇到坏文件整轮中止；founder-only 拒绝事件无去重；`backgroundPollAfter` 不回收已结束会话。
