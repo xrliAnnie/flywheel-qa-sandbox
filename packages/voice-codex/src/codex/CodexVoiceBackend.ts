@@ -257,7 +257,8 @@ class CodexVoiceSession implements ConversationSession {
 			busyReason: () => this.readAloudBusyReason(),
 			roomActive: () => this.roomActive(),
 			recovering: () => this.live && this.restarting && !this.closing,
-			abandoned: (text) => this.noteAbandonedReadback(text),
+			abandoned: (text, generation) =>
+				this.noteAbandonedReadback(text, generation),
 			consumedVoiced: () => options.downlink?.()?.stats().consumedVoiced ?? 0,
 			queuedVoiced: () => options.downlink?.()?.queued().voiced ?? 0,
 			interference: () => this.downlink.interference,
@@ -375,7 +376,8 @@ class CodexVoiceSession implements ConversationSession {
 							pendingKey: `${options.pendingKey}:remainder`,
 							verification: "best_effort",
 						},
-						{ ceilingMs: READBACK_NOTICE_CEILING_MS },
+						// The notice is ours, not the Lead's: nothing to steer off.
+						{ ceilingMs: READBACK_NOTICE_CEILING_MS, noteOnAbandon: false },
 					);
 		if (notice) this.receiptEvidence("cue", notice.receipt);
 		// One played packet is not a heard notice (review R1): unless it was
@@ -386,9 +388,15 @@ class CodexVoiceSession implements ConversationSession {
 	}
 
 	/** QA@2: tell the model not to finish a Lead-reply chunk she cut into. */
-	private noteAbandonedReadback(text: string): void {
-		if (this.closing || this.restarting || !this.live) return;
-		const generation = this.generation;
+	private noteAbandonedReadback(text: string, generation: number): void {
+		// Only into the generation that holds the text, and never while closing.
+		if (
+			this.closing ||
+			this.restarting ||
+			!this.live ||
+			generation !== this.generation
+		)
+			return;
 		this.options.onEvidence?.({
 			kind: "codex_readback_abandoned_note",
 			generation,
@@ -435,9 +443,22 @@ class CodexVoiceSession implements ConversationSession {
 	 * own. The generation stays, so no founder speech is lost.
 	 */
 	interrupt(): void {
+		this.cut("speech_interrupted");
+	}
+
+	/**
+	 * The room is stopping (GenericVoiceSession.stop): the same local cut as a
+	 * barge-in, but not hers — nothing is settled as interrupted by her, so no
+	 * steering note goes to the model (review, QA@2 rework).
+	 */
+	stopSpeech(): void {
+		this.cut("session_closed");
+	}
+
+	private cut(reason: "speech_interrupted" | "session_closed"): void {
 		if (this.closing || this.restarting || !this.live) return;
 		this.downlink.bargeIn();
-		this.speaker.interrupt("speech_interrupted");
+		this.speaker.interrupt(reason);
 		this.overrunTurnId = undefined;
 		this.audible = false;
 		this.options.onEvidence?.({

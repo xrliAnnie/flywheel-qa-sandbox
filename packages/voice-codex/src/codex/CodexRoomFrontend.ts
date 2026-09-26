@@ -181,8 +181,18 @@ export class CodexRoomFrontend {
 		return readbackStatus(receipt);
 	}
 
-	cancelSpeech(): void {
-		this.session?.interrupt();
+	/**
+	 * `__conversation__` is her barge-in (GenericVoiceSession); any other id
+	 * is the room stopping with a reading in flight, which is not hers.
+	 */
+	cancelSpeech(speechId?: string): void {
+		const session = this.session as
+			| (ConversationSession & { stopSpeech?: () => void })
+			| undefined;
+		if (speechId === undefined || speechId === "__conversation__")
+			session?.interrupt();
+		else if (session?.stopSpeech) session.stopSpeech();
+		else session?.interrupt();
 	}
 
 	stop(): Promise<void> {

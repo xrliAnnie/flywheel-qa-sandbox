@@ -1209,7 +1209,7 @@ describe("Codex Lead reply read to the end (FLY-2885 founder rework 2026-09-26)"
 		h.speaker.interrupt();
 		await expect(result).resolves.toMatchObject({ unreadChunks: 2 });
 		expect(h.abandoned).toHaveBeenCalledOnce();
-		expect(h.abandoned).toHaveBeenCalledWith("第一句。");
+		expect(h.abandoned).toHaveBeenCalledWith("第一句。", 9);
 	});
 
 	it("tells the model to drop a chunk she preempted after it was sent (QA@2)", async () => {
@@ -1222,7 +1222,7 @@ describe("Codex Lead reply read to the end (FLY-2885 founder rework 2026-09-26)"
 		await expect(result).resolves.toMatchObject({
 			receipt: { reason: "speech_preempted" },
 		});
-		expect(h.abandoned).toHaveBeenCalledWith("你好。");
+		expect(h.abandoned).toHaveBeenCalledWith("你好。", 9);
 	});
 
 	it.each([
@@ -1268,6 +1268,66 @@ describe("Codex Lead reply read to the end (FLY-2885 founder rework 2026-09-26)"
 		h.state.consumed += 2;
 		h.speaker.interrupt();
 		await cue;
+		expect(h.abandoned).not.toHaveBeenCalled();
+	});
+
+	it("stops the reply and steers off the cut chunk when she barges in between an overrun and its rest (review)", async () => {
+		const h = harness();
+		const expected = "第一句话已经说完了。第二句话还没有念。";
+		const result = h.speaker.readReply(expected, { pendingKey: "gap-barge" });
+		await h.flush();
+		h.speaker.turnCreated({ turnId: "t1", role: "assistant" });
+		h.state.consumed += 10;
+		h.speaker.assistantTranscript({
+			text: "第一句话已经说完了。另外今天还有两件事情完成了呢。",
+			final: false,
+		});
+		// The rest waits for t1's final; she barges in meanwhile.
+		await vi.advanceTimersByTimeAsync(200);
+		h.speaker.interrupt();
+		expect(h.abandoned).toHaveBeenCalledOnce();
+		expect(h.abandoned).toHaveBeenCalledWith(expected, 9);
+		await vi.advanceTimersByTimeAsync(60);
+		await expect(result).resolves.toMatchObject({
+			receipt: { outcome: "failed", reason: "speech_interrupted" },
+			unreadChunks: 1,
+		});
+		h.speaker.assistantTranscript({
+			text: "第一句话已经说完了。另外今天还有两件事情完成了呢。",
+			final: true,
+		});
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(h.sent).toEqual([expected]);
+	});
+
+	it("does not stop or steer a reply that only waits in the queue when she speaks", async () => {
+		const h = harness();
+		h.state.busy = "speaker_active";
+		h.state.active = true;
+		const result = h.speaker.readReply("你好。", { pendingKey: "queued" });
+		await vi.advanceTimersByTimeAsync(1_000);
+		h.speaker.interrupt();
+		h.state.busy = undefined;
+		h.state.active = false;
+		await vi.advanceTimersByTimeAsync(60);
+		expect(h.sent).toEqual(["你好。"]);
+		await h.answer("t", "你好。");
+		await expect(result).resolves.toMatchObject({ unreadChunks: 0 });
+		expect(h.abandoned).not.toHaveBeenCalled();
+	});
+
+	it("never steers off its own remainder notice", async () => {
+		const h = harness();
+		const notice = h.speaker.readReply(
+			"剩下的内容在频道里。",
+			{ pendingKey: "notice" },
+			{ noteOnAbandon: false },
+		);
+		await h.flush();
+		h.speaker.turnCreated({ turnId: "t1", role: "assistant" });
+		h.state.consumed += 2;
+		h.speaker.interrupt();
+		await notice;
 		expect(h.abandoned).not.toHaveBeenCalled();
 	});
 });

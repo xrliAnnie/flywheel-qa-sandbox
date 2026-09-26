@@ -89,11 +89,11 @@ export interface CodexSpeakerHost {
 	 */
 	recovering?(): boolean;
 	/**
-	 * QA@2: a Lead-reply chunk that was sent (so it sits in the model's
-	 * context as speakable text) was cut by her barge-in or preempt. The model
-	 * must be told not to finish it in its next answer.
+	 * QA@2: a Lead-reply chunk that was sent on `generation` (so it sits in the
+	 * model's context as speakable text) was cut by her barge-in or preempt.
+	 * The model must be told not to finish it in its next answer.
 	 */
-	abandoned?(text: string): void;
+	abandoned?(text: string, generation: number): void;
 	/**
 	 * T5c: mute the overrunning turn (session-level discard state). The turn id
 	 * is known when the chunk was already bound, else its turn.created follows.
@@ -107,6 +107,15 @@ export interface CodexSpeakerHost {
 	finalWaitMs?: number;
 	readbackQuietMs?: number;
 	readbackCeilingMs?: number;
+}
+
+export interface ReadReplyLimits {
+	ceilingMs?: number;
+	/**
+	 * QA@2: tell the model not to finish a chunk she cuts into. Only the Lead's
+	 * own text; the remainder notice is not steered.
+	 */
+	noteOnAbandon?: boolean;
 }
 
 /** A Lead reply read aloud: its receipt, and what of it was never read. */
@@ -127,6 +136,8 @@ interface ChunkResult {
 	silent?: boolean;
 	/** Overrun of a Lead-reply chunk: which of its sentences were read. */
 	prefix?: SpokenPrefix;
+	/** The generation the chunk was sent on. */
+	generation?: number;
 }
 
 interface OwedFinal {
@@ -241,6 +252,13 @@ export class CodexProofSpeaker {
 	>();
 	/** A Lead reply is being read (between chunks it holds no pending chunk). */
 	private replyActive = false;
+	/**
+	 * An overrun cut a Lead-reply chunk and its unread rest is not sent yet:
+	 * that rest is still speakable context on `generation`.
+	 */
+	private overrunCut?: { text: string; generation: number; note: boolean };
+	/** Why the waiting reply must stop (her barge-in in an overrun gap). */
+	private replyStop?: string;
 	private readonly ended = new Set<string>();
 	private pending?: PendingChunk;
 	/** Bound to the chunk whose final it truncates (none: this very final). */
@@ -276,7 +294,7 @@ export class CodexProofSpeaker {
 	readReply(
 		text: string,
 		options: VoiceSpeakOptions,
-		limits: { ceilingMs?: number } = {},
+		limits: ReadReplyLimits = {},
 	): Promise<ReadReplyResult> {
 		return this.request(text, "readback", options, limits).result;
 	}
@@ -285,7 +303,7 @@ export class CodexProofSpeaker {
 		text: string,
 		kind: VoiceSpeakKind,
 		options: VoiceSpeakOptions,
-		limits: { ceilingMs?: number } = {},
+		limits: ReadReplyLimits = {},
 	): { receipt: Promise<SpeakReceipt>; result: Promise<ReadReplyResult> } {
 		const settled = (receipt: SpeakReceipt) => ({
 			receipt: Promise.resolve(receipt),
@@ -339,6 +357,7 @@ export class CodexProofSpeaker {
 			sessionGeneration,
 			chunkCharacters: options.chunkCharacters,
 			ceilingMs: limits.ceilingMs,
+			noteOnAbandon: limits.noteOnAbandon ?? true,
 		});
 		const entry = {
 			requestDigest,
@@ -465,6 +484,15 @@ export class CodexProofSpeaker {
 		// A new generation or a closed session never sees the old turn's final.
 		if (reason === "generation_changed" || reason === "session_closed")
 			this.keepOwed(() => false);
+		// Review (QA@2 rework): she barged in after an overrun cut a Lead-reply
+		// chunk and before its rest went out. The rest is still speakable
+		// context: steer the model off it and stop the reply here.
+		const cut = this.overrunCut;
+		if (reason === "speech_interrupted" && cut && this.replyActive) {
+			this.overrunCut = undefined;
+			this.replyStop = reason;
+			if (cut.note) this.host.abandoned?.(cut.text, cut.generation);
+		}
 		const pending = this.pending;
 		if (!pending || pending.settled) return;
 		this.settle(pending, {
@@ -499,6 +527,7 @@ export class CodexProofSpeaker {
 		sessionGeneration: number;
 		chunkCharacters?: number;
 		ceilingMs?: number;
+		noteOnAbandon: boolean;
 	}): Promise<ReadReplyResult> {
 		const binding = {
 			pendingKey: input.pendingKey,
@@ -542,6 +571,8 @@ export class CodexProofSpeaker {
 			);
 		} finally {
 			this.replyActive = false;
+			this.overrunCut = undefined;
+			this.replyStop = undefined;
 		}
 	}
 
@@ -633,6 +664,7 @@ export class CodexProofSpeaker {
 			pendingKey: string;
 			sessionGeneration: number;
 			ceilingMs?: number;
+			noteOnAbandon: boolean;
 		},
 		binding: { pendingKey: string; requestDigest: string },
 		chunks: string[],
@@ -640,6 +672,7 @@ export class CodexProofSpeaker {
 		let allProof = true;
 		let anySubmitted = false;
 		let firstFailure: string | undefined;
+		let stopReason: string | undefined;
 		let index = 0;
 		let text = chunks[0]!;
 		/** An overrun that read none of its chunk earns one more try. */
@@ -671,10 +704,12 @@ export class CodexProofSpeaker {
 			// She cut in: what the model was given to read stays in its context,
 			// and its next answer would finish it first (QA@2, probe 8).
 			if (
+				input.noteOnAbandon &&
 				!result.notSent &&
+				result.generation !== undefined &&
 				(reason === "speech_interrupted" || reason === "speech_preempted")
 			)
-				this.host.abandoned?.(text);
+				this.host.abandoned?.(text, result.generation);
 			if (reason === "speech_overrun" && result.prefix) {
 				const { remainder, spokenSentences, totalSentences } = result.prefix;
 				this.host.evidence({
@@ -684,12 +719,23 @@ export class CodexProofSpeaker {
 					spokenSentences,
 					totalSentences,
 				});
+				// Until the rest is sent, the cut chunk's unread part is still
+				// speakable context: a barge-in meanwhile stops the reply (review).
+				if (remainder !== "" && result.generation !== undefined)
+					this.overrunCut = {
+						text,
+						generation: result.generation,
+						note: input.noteOnAbandon,
+					};
 				if (remainder === "") next();
 				else if (spokenSentences > 0) {
 					text = remainder;
 					stalled = false;
 				} else if (!stalled) stalled = true;
-				else break;
+				else {
+					stopReason = reason;
+					break;
+				}
 				continue;
 			}
 			if (result.transport === "submitted" && HEARD_BUT_UNPROVEN.has(reason)) {
@@ -707,6 +753,7 @@ export class CodexProofSpeaker {
 					},
 					unreadChunks: chunks.length,
 				};
+			stopReason = reason;
 			break;
 		}
 		if (index < chunks.length)
@@ -714,7 +761,7 @@ export class CodexProofSpeaker {
 				receipt: {
 					...binding,
 					outcome: "failed",
-					reason: firstFailure ?? "speech_failed",
+					reason: stopReason ?? firstFailure ?? "speech_failed",
 					transport: anySubmitted ? "submitted" : "none",
 					contentProof: "none",
 				},
@@ -765,7 +812,8 @@ export class CodexProofSpeaker {
 				};
 			// A cue can take the idle moment first; then wait for the next one.
 			// After a reconnect the chunk goes to the new generation.
-			if (!this.pending)
+			if (!this.pending) {
+				this.overrunCut = undefined;
 				return this.runChunk(
 					input.pendingKey,
 					text,
@@ -773,6 +821,7 @@ export class CodexProofSpeaker {
 					this.host.sessionGeneration(),
 					true,
 				);
+			}
 		}
 	}
 
@@ -793,6 +842,12 @@ export class CodexProofSpeaker {
 		let activeAt = startedAt;
 		return new Promise((resolve) => {
 			const poll = (): void => {
+				if (this.replyStop) {
+					const stop = this.replyStop;
+					this.replyStop = undefined;
+					resolve(stop);
+					return;
+				}
 				const live = this.host.isLive();
 				if (!live && !this.host.recovering?.()) {
 					resolve("generation_changed");
@@ -1211,6 +1266,6 @@ export class CodexProofSpeaker {
 				sentAt: pending.sentAt,
 				until: this.host.now() + TRUNCATION_MARKER_MS,
 			});
-		pending.settle(result);
+		pending.settle({ ...result, generation: pending.generation });
 	}
 }

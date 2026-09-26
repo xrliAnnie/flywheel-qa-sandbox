@@ -352,7 +352,7 @@ describe("engine B room over WebRTC (FLY-2885 T4/T5)", () => {
 });
 
 describe("engine B barge-in through the room session (FLY-2885 T5)", () => {
-	async function roomSession() {
+	async function roomSession(options: { lifecycleMs?: number } = {}) {
 		const h = await harness();
 		let roomHandlers!: RoomHandlers;
 		const frontend = new CodexRoomFrontend({
@@ -398,7 +398,15 @@ describe("engine B barge-in through the room session (FLY-2885 T5)", () => {
 					stop: vi.fn(async () => undefined),
 				};
 			},
-			lifecycle: vi.fn(),
+			// A lifecycle write that takes time keeps the room open a moment
+			// after it starts stopping, as production's evidence writes do.
+			lifecycle: vi.fn((state: string) =>
+				options.lifecycleMs && (state === "ended" || state === "interrupted")
+					? new Promise<void>((resolve) =>
+							setTimeout(resolve, options.lifecycleMs),
+						)
+					: undefined,
+			),
 			evidence: vi.fn(),
 			confirmationMs: 100,
 		});
@@ -421,6 +429,44 @@ describe("engine B barge-in through the room session (FLY-2885 T5)", () => {
 			});
 		return { ...h, session, founderSpeaks, founderSilent, ended: () => ended };
 	}
+
+	it("steers the model off a Lead reply when the founder's voice barges in through the room (QA@2)", async () => {
+		const h = await roomSession();
+		const reply = h.session.speakReply!("第一句。第二句。", 4);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(h.appendSpeech).toHaveBeenCalledWith("第一句。", 1);
+		h.turn("turn.created", "r1", "assistant");
+		await h.step("vvvvv");
+		h.founderSpeaks();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(h.appendText).toHaveBeenCalledOnce();
+		expect(h.appendText).toHaveBeenCalledWith(
+			readbackAbandonedNote("第一句。"),
+			"developer",
+			1,
+		);
+		await h.session.stop({ kind: "ended", reason: "she-left" });
+		await expect(reply).resolves.toBe("failed");
+	});
+
+	it("sends no note when the room stops with a Lead reply in flight: that is not her barge-in (review)", async () => {
+		const h = await roomSession({ lifecycleMs: 200 });
+		const reply = h.session.speakReply!("第一句。第二句。", 4);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(h.appendSpeech).toHaveBeenCalledWith("第一句。", 1);
+		h.turn("turn.created", "r1", "assistant");
+		await h.step("vvvvv");
+		const stopping = h.session.stop({ kind: "ended", reason: "she-left" });
+		await expect(reply).resolves.toBe("failed");
+		await vi.advanceTimersByTimeAsync(1_000);
+		await stopping;
+		expect(h.appendText).not.toHaveBeenCalled();
+		expect(
+			h.evidence.some(
+				(record) => record.kind === "codex_readback_abandoned_note",
+			),
+		).toBe(false);
+	});
 
 	it("cuts everything the player still has queued the moment the founder speaks, and keeps the generation", async () => {
 		const h = await roomSession();
@@ -918,6 +964,91 @@ describe("engine B says when a Lead reply could not be read to the end (FLY-2885
 			READBACK_REMAINDER_NOTICE,
 			1,
 		);
+		h.turn("turn.created", "notice", "assistant");
+		await h.step("vvvvv");
+		h.turn("turn.done", "notice", "assistant", READBACK_REMAINDER_NOTICE);
+		h.final(READBACK_REMAINDER_NOTICE);
+		await expect(receipt).resolves.toMatchObject({
+			reason: "speech_interrupted",
+		});
+	});
+
+	it("sends one note only, even when she also cuts the remainder notice (review)", async () => {
+		const h = await harness();
+		const receipt = readReply(h.session, "第一句。第二句。", {
+			pendingKey: "cut-twice",
+			verification: "required",
+			chunkCharacters: 4,
+		});
+		await vi.advanceTimersByTimeAsync(0);
+		h.turn("turn.created", "r1", "assistant");
+		await h.step("vvvvv");
+		h.session.interrupt();
+		h.turn("turn.done", "r1", "assistant", "第一");
+		h.final("第一");
+		for (let i = 0; i < 8 && h.appendSpeech.mock.calls.length < 2; i += 1)
+			await h.step("ssssssssssssssssssssssssssssssssssssssssssssssssss");
+		expect(h.appendSpeech).toHaveBeenLastCalledWith(
+			READBACK_REMAINDER_NOTICE,
+			1,
+		);
+		h.turn("turn.created", "notice", "assistant");
+		await h.step("vv");
+		h.session.interrupt();
+		await expect(receipt).resolves.toMatchObject({
+			reason: "speech_interrupted",
+		});
+		expect(h.appendText).toHaveBeenCalledOnce();
+		expect(h.appendText).toHaveBeenCalledWith(
+			readbackAbandonedNote("第一句。"),
+			"developer",
+			1,
+		);
+		expect(h.statuses).toContain(READBACK_REMAINDER_STATUS);
+	});
+
+	it("steers off an overrun chunk's unread rest when she barges in during the discard (review)", async () => {
+		const h = await harness();
+		const text = "第一句话已经说完了。第二句话还没有念。";
+		const receipt = readReply(h.session, text, {
+			pendingKey: "discard-barge",
+			verification: "required",
+		});
+		await vi.advanceTimersByTimeAsync(0);
+		h.turn("turn.created", "r1", "assistant");
+		await h.step("vvvvv");
+		h.callbacks.onTranscript({
+			generation: 1,
+			association: "unattributed",
+			role: "assistant",
+			text: "第一句话已经说完了。另外今天还有两件事情完成了呢。",
+			final: false,
+			raw: {},
+		} as never);
+		// Under overrun discard now; she speaks and the room barges in.
+		await h.step("vvvvv");
+		h.session.interrupt();
+		await vi.advanceTimersByTimeAsync(100);
+		expect(h.appendText).toHaveBeenCalledOnce();
+		expect(h.appendText).toHaveBeenCalledWith(
+			readbackAbandonedNote(text),
+			"developer",
+			1,
+		);
+		h.turn(
+			"turn.done",
+			"r1",
+			"assistant",
+			"第一句话已经说完了。另外今天还有两件事情完成了呢。",
+		);
+		h.final("第一句话已经说完了。另外今天还有两件事情完成了呢。");
+		for (let i = 0; i < 8 && h.appendSpeech.mock.calls.length < 2; i += 1)
+			await h.step("ssssssssssssssssssssssssssssssssssssssssssssssssss");
+		// The rest is not read; the notice is.
+		expect(h.appendSpeech.mock.calls.map(([spoken]) => spoken)).toEqual([
+			text,
+			READBACK_REMAINDER_NOTICE,
+		]);
 		h.turn("turn.created", "notice", "assistant");
 		await h.step("vvvvv");
 		h.turn("turn.done", "notice", "assistant", READBACK_REMAINDER_NOTICE);
