@@ -21,6 +21,7 @@ import {
 } from "../bridge/EventFilter.js";
 import {
 	initializeFlagStore,
+	storeLeadStageChangedAuditEnabled,
 	storeLeadTokenSavingsEnabled,
 } from "../bridge/flag-store-runtime.js";
 import {
@@ -268,6 +269,10 @@ async function replay(world: "A" | "B" | "C") {
 						{
 							binding: input.binding,
 							enabled: storeLeadTokenSavingsEnabled({ store }, PROJECT),
+							categoryEnabled: storeLeadStageChangedAuditEnabled(
+								{ store },
+								PROJECT,
+							),
 							projection: JSON.parse(input.payload),
 						},
 					),

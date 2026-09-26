@@ -49,17 +49,18 @@ const projects = [
 		leads: [lead],
 	},
 ] as ProjectEntry[];
-function setFlag(store: StateStore, enabled: boolean) {
+function setFlag(
+	store: StateStore,
+	enabled: boolean,
+	name = "lead_token_savings",
+) {
 	expect(
 		store.applyScopedFlagValueChange({
-			name: "lead_token_savings",
+			name,
 			scope: "flywheel",
 			op: "set",
 			rawTo: enabled ? "1" : "0",
-			expectedChangeSeq: store.getFlagValueChangeSeq(
-				"lead_token_savings",
-				"flywheel",
-			),
+			expectedChangeSeq: store.getFlagValueChangeSeq(name, "flywheel"),
 			actor: "test",
 			reason: "notification producer test",
 		}).ok,
@@ -198,13 +199,17 @@ describe("FLY-2912 DirectEventSink startup", () => {
 		});
 	});
 
-	it("OFF preserves new startup delivery", async () => {
-		const { sink, dispatch, rows } = await harness(false);
-		await sink.emitStarted(envelope);
-		await sink.flush();
-		expect(dispatch).toHaveBeenCalledOnce();
-		expect(rows()[0].delivery_disposition).toBe("model");
-	});
+	it.each(["lead_token_savings", "lead_session_started_audit"])(
+		"%s OFF preserves new startup delivery",
+		async (name) => {
+			const { sink, store, dispatch, rows } = await harness();
+			setFlag(store, false, name);
+			await sink.emitStarted(envelope);
+			await sink.flush();
+			expect(dispatch).toHaveBeenCalledOnce();
+			expect(rows()[0].delivery_disposition).toBe("model");
+		},
+	);
 	it.each([{ retryPredecessor: "prior" }, { runAttempt: 2 }])(
 		"keeps handoff startup immediate: %j",
 		async (extra) => {

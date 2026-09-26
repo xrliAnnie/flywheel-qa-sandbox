@@ -1639,6 +1639,7 @@ describe("FLY-2912 replacement notice policy", () => {
 	async function notice(
 		options: {
 			enabled?: boolean;
+			flagName?: string;
 			acceptedFault?: boolean;
 			failureKind?:
 				| "goal_blocked"
@@ -1649,12 +1650,12 @@ describe("FLY-2912 replacement notice policy", () => {
 	) {
 		const store = await engineRunWithImplement("running");
 		store.applyScopedFlagValueChange({
-			name: "lead_token_savings",
+			name: options.flagName ?? "lead_token_savings",
 			scope: "flywheel",
 			op: "set",
 			rawTo: options.enabled === false ? "0" : "1",
 			expectedChangeSeq: store.getFlagValueChangeSeq(
-				"lead_token_savings",
+				options.flagName ?? "lead_token_savings",
 				"flywheel",
 			),
 			actor: "fixture",
@@ -1722,6 +1723,21 @@ describe("FLY-2912 replacement notice policy", () => {
 				}),
 			).toBeUndefined();
 			expect(enqueueLeadEvent).not.toHaveBeenCalled();
+		} finally {
+			store.close();
+		}
+	});
+	it("category OFF keeps the proven future notice immediate", async () => {
+		const { store, row } = await notice({
+			acceptedFault: true,
+			enabled: false,
+			flagName: "lead_replacement_notice_audit",
+		});
+		try {
+			expect(row).toMatchObject({
+				delivery_disposition: "model",
+				notification_reason: "lead_replacement_notice_audit_disabled",
+			});
 		} finally {
 			store.close();
 		}

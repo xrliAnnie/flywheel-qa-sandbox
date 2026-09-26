@@ -545,6 +545,30 @@ describe("feature-flag drift guard", () => {
 					"storeLeadTokenSavingsEnabled",
 				],
 				[
+					"lead_stage_changed_audit",
+					"packages/teamlead/src/bridge/event-route.ts",
+					"createEventRouter",
+					"storeLeadStageChangedAuditEnabled",
+				],
+				[
+					"lead_session_started_audit",
+					"packages/teamlead/src/DirectEventSink.ts",
+					"DirectEventSink.pushNotification",
+					"storeLeadSessionStartedAuditEnabled",
+				],
+				[
+					"lead_monitoring_reestablished_audit",
+					"packages/teamlead/src/HeartbeatService.ts",
+					"RegistryHeartbeatNotifier.deliverHook",
+					"storeLeadMonitoringReestablishedAuditEnabled",
+				],
+				[
+					"lead_replacement_notice_audit",
+					"packages/teamlead/src/StateStore.ts",
+					"StateStore.appendWorkflowReplacementLeadIntentTx",
+					"storeLeadReplacementNoticeAuditEnabled",
+				],
+				[
 					"node_dwell",
 					"packages/teamlead/src/node-dwell-control.ts",
 					"readNodeDwellEnabled",

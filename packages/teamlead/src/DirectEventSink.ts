@@ -47,7 +47,10 @@ import {
 	type EventFilter,
 	leadNotificationDecision,
 } from "./bridge/EventFilter.js";
-import { storeLeadTokenSavingsEnabled } from "./bridge/flag-store-runtime.js";
+import {
+	storeLeadSessionStartedAuditEnabled,
+	storeLeadTokenSavingsEnabled,
+} from "./bridge/flag-store-runtime.js";
 import { buildSessionKey, type HookPayload } from "./bridge/hook-payload.js";
 import type { IssueDisplayRefreshHolder } from "./bridge/issue-display-refresher.js";
 import {
@@ -2263,6 +2266,10 @@ export class DirectEventSink implements ExecutionEventEmitter {
 					evidence,
 					{
 						binding,
+						categoryEnabled: storeLeadSessionStartedAuditEnabled(
+							{ store: this.store },
+							binding.projectName,
+						),
 						enabled: tokenSavingsEnabled,
 						projection: { ...hookPayload },
 					},

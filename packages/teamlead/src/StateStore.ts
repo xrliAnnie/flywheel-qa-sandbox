@@ -1,7 +1,7 @@
 import { NotificationAuditStore, type NotificationAuditRange } from "./bridge/notification-audit-store.js";
 import { buildSessionKey } from "./bridge/hook-payload.js";
 import { leadNotificationDecision, type LeadNotificationDecision } from "./bridge/EventFilter.js";
-import { storeLeadTokenSavingsEnabled } from "./bridge/flag-store-runtime.js";
+import { storeLeadReplacementNoticeAuditEnabled, storeLeadTokenSavingsEnabled } from "./bridge/flag-store-runtime.js";
 import type { NotificationBinding, NotificationEvidenceV2 } from "./bridge/lead-notification-evidence.js";
 import {
 	assertStandingAuthorityConfirmationRecord,
@@ -50648,7 +50648,7 @@ export class StateStore {
         } catch {
             // Missing or unreadable fault evidence preserves the immediate path.
         }
-        const decision = leadNotificationDecision("workflow_replacement_eligibility", { ...payload }, evidence, { binding, enabled: storeLeadTokenSavingsEnabled({ store: this }, binding.projectName) });
+        const decision = leadNotificationDecision("workflow_replacement_eligibility", { ...payload }, evidence, { binding, enabled: storeLeadTokenSavingsEnabled({ store: this }, binding.projectName), categoryEnabled: storeLeadReplacementNoticeAuditEnabled({ store: this }, binding.projectName) });
         return this.appendLeadNotification({ binding, eventType: "workflow_replacement_eligibility", payload: JSON.stringify(payload), sessionKey: `wf:${context.binding.run_id}`, evidence, decision });
 	}
 

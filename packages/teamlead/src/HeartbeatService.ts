@@ -30,7 +30,10 @@ import {
 	leadEventDeliveryDisposition,
 	leadNotificationDecision,
 } from "./bridge/EventFilter.js";
-import { storeLeadTokenSavingsEnabled } from "./bridge/flag-store-runtime.js";
+import {
+	storeLeadMonitoringReestablishedAuditEnabled,
+	storeLeadTokenSavingsEnabled,
+} from "./bridge/flag-store-runtime.js";
 import { buildSessionKey, type HookPayload } from "./bridge/hook-payload.js";
 import type { IssueDisplayRefreshHolder } from "./bridge/issue-display-refresher.js";
 import type {
@@ -2576,6 +2579,10 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 					evidence,
 					{
 						binding,
+						categoryEnabled: storeLeadMonitoringReestablishedAuditEnabled(
+							{ store: this.store },
+							binding.projectName,
+						),
 						enabled: storeLeadTokenSavingsEnabled(
 							{ store: this.store },
 							session.project_name,

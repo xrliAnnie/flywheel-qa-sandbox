@@ -411,6 +411,8 @@ function notificationV2Decision(
 	)
 		return result("model", "actionable_payload");
 	if (eventType === "stage_changed" && evidence.kind === "stage") {
+		if (!context.categoryEnabled)
+			return result("model", "lead_stage_changed_audit_disabled");
 		if (
 			payload.stage !== evidence.stage ||
 			(context.projection?.stage !== undefined &&
@@ -429,6 +431,8 @@ function notificationV2Decision(
 		return result("model", "stage_requires_action");
 	}
 	if (eventType === "session_started" && evidence.kind === "startup") {
+		if (!context.categoryEnabled)
+			return result("model", "lead_session_started_audit_disabled");
 		return evidence.handoff === "initial_notice" &&
 			evidence.registrationRef &&
 			["not_required", "ready"].includes(evidence.threadOutcome)
@@ -439,6 +443,8 @@ function notificationV2Decision(
 		eventType === "session_monitoring_reestablished" &&
 		evidence.kind === "monitoring"
 	) {
+		if (!context.categoryEnabled)
+			return result("model", "lead_monitoring_reestablished_audit_disabled");
 		return evidence.episodeRef &&
 			evidence.probeRef &&
 			(evidence.alertState === "none" ||
@@ -450,6 +456,8 @@ function notificationV2Decision(
 		eventType === "workflow_replacement_eligibility" &&
 		evidence.kind === "replacement_notice"
 	) {
+		if (!context.categoryEnabled)
+			return result("model", "lead_replacement_notice_audit_disabled");
 		return evidence.disposition === "replacement_candidate" &&
 			evidence.attemptRef &&
 			evidence.scheduleRef &&

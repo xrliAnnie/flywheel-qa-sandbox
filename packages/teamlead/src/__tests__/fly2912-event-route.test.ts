@@ -431,29 +431,31 @@ describe("FLY-2912 validated HTTP notification producers", () => {
 		expect(store.getSession(EXEC)?.status).toBe("running");
 	});
 
-	it("does not reclassify an already quiet stage when the switch is turned off", async () => {
-		expect((await post("frozen-stage", { stage: "test" })).status).toBe(200);
-		const first = journal("frozen-stage");
-		expect(
-			store.applyScopedFlagValueChange({
-				name: "lead_token_savings",
-				scope: PROJECT,
-				op: "set",
-				rawTo: "0",
-				expectedChangeSeq: store.getFlagValueChangeSeq(
-					"lead_token_savings",
-					PROJECT,
-				),
-				actor: "fixture-lead",
-				reason: "rollback",
-			}).ok,
-		).toBe(true);
-		expect((await post("frozen-stage", { stage: "test" })).status).toBe(200);
-		expect(journal("frozen-stage")).toEqual(first);
-		expect((await post("new-off-stage", { stage: "test" })).status).toBe(200);
-		expect(journal("new-off-stage")?.delivery_disposition).toBe("model");
-		expect(delivered.map((event) => event.eventId)).toEqual(["new-off-stage"]);
-	});
+	it.each(["lead_token_savings", "lead_stage_changed_audit"])(
+		"%s OFF restores new stages and preserves prior audit",
+		async (name) => {
+			expect((await post("frozen-stage", { stage: "test" })).status).toBe(200);
+			const first = journal("frozen-stage");
+			expect(
+				store.applyScopedFlagValueChange({
+					name,
+					scope: PROJECT,
+					op: "set",
+					rawTo: "0",
+					expectedChangeSeq: store.getFlagValueChangeSeq(name, PROJECT),
+					actor: "fixture-lead",
+					reason: "rollback",
+				}).ok,
+			).toBe(true);
+			expect((await post("frozen-stage", { stage: "test" })).status).toBe(200);
+			expect(journal("frozen-stage")).toEqual(first);
+			expect((await post("new-off-stage", { stage: "test" })).status).toBe(200);
+			expect(journal("new-off-stage")?.delivery_disposition).toBe("model");
+			expect(delivered.map((event) => event.eventId)).toEqual([
+				"new-off-stage",
+			]);
+		},
+	);
 
 	it("rejects invalid stages before they enter either journal", async () => {
 		expect((await post("invalid-stage", { stage: "made-up" })).status).toBe(

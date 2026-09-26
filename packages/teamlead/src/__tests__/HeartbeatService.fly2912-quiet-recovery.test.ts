@@ -243,30 +243,32 @@ describe("FLY-2912 actual monitoring recovery producer", () => {
 		expect(deliver).toHaveBeenCalledTimes(1);
 		expect(store.getLeadEventBySeq(1)?.delivery_disposition).toBe("model");
 	});
-	it("hot toggles actual recovery on the same service without rewriting earlier audit", async () => {
-		const { store, session, service, deliver } = await fixture();
-		for (const [index, enabled] of [true, false, true].entries()) {
-			store.applyScopedFlagValueChange({
-				name: "lead_token_savings",
-				scope: "test",
-				op: "set",
-				rawTo: enabled ? "1" : "0",
-				expectedChangeSeq: store.getFlagValueChangeSeq(
-					"lead_token_savings",
-					"test",
-				),
-				actor: "fixture",
-				reason: "hot rollback",
-			});
-			service.clearReconnecting(session.execution_id);
-			await service.seedReconnecting();
-			expect(store.getLeadEventBySeq(index + 1)?.delivery_disposition).toBe(
-				enabled ? "audit_only" : "model",
+	it.each(["lead_token_savings", "lead_monitoring_reestablished_audit"])(
+		"hot toggles %s on the same service without rewriting earlier audit",
+		async (name) => {
+			const { store, session, service, deliver } = await fixture();
+			for (const [index, enabled] of [true, false, true].entries()) {
+				store.applyScopedFlagValueChange({
+					name,
+					scope: "test",
+					op: "set",
+					rawTo: enabled ? "1" : "0",
+					expectedChangeSeq: store.getFlagValueChangeSeq(name, "test"),
+					actor: "fixture",
+					reason: "hot rollback",
+				});
+				service.clearReconnecting(session.execution_id);
+				await service.seedReconnecting();
+				expect(store.getLeadEventBySeq(index + 1)?.delivery_disposition).toBe(
+					enabled ? "audit_only" : "model",
+				);
+			}
+			expect(deliver).toHaveBeenCalledTimes(1);
+			expect(store.getLeadEventBySeq(1)?.delivery_disposition).toBe(
+				"audit_only",
 			);
-		}
-		expect(deliver).toHaveBeenCalledTimes(1);
-		expect(store.getLeadEventBySeq(1)?.delivery_disposition).toBe("audit_only");
-	});
+		},
+	);
 	it.each(["same-exec", "different-exec", "founder", "answered"] as const)(
 		"legal park checks authoritative %s gate state",
 		async (kind) => {

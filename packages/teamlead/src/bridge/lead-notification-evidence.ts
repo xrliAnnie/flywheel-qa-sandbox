@@ -75,6 +75,7 @@ export type NotificationEvidenceV2 = NotificationEvidenceBase &
 export interface NotificationDecisionContext {
 	binding: NotificationBinding;
 	enabled: boolean;
+	categoryEnabled: boolean;
 	projection?: Record<string, unknown>;
 }
 

@@ -4,7 +4,15 @@ import {
 	leadEventDeliveryDisposition,
 	leadNotificationDecision,
 } from "../bridge/EventFilter.js";
+import {
+	storeLeadMonitoringReestablishedAuditEnabled,
+	storeLeadReplacementNoticeAuditEnabled,
+	storeLeadSessionStartedAuditEnabled,
+	storeLeadStageChangedAuditEnabled,
+	storeLeadTokenSavingsEnabled,
+} from "../bridge/flag-store-runtime.js";
 import type { HookPayload } from "../bridge/hook-payload.js";
+import { StateStore } from "../StateStore.js";
 
 function makePayload(
 	overrides: Partial<HookPayload> = {},
@@ -457,8 +465,112 @@ describe("FLY-2912 notification v2", () => {
 		leadNotificationDecision(eventType, payload, evidence as never, {
 			binding,
 			enabled: true,
+			categoryEnabled: true,
 			...options,
 		});
+
+	it.each([
+		["stage_changed", "lead_stage_changed_audit"],
+		["session_started", "lead_session_started_audit"],
+		["session_monitoring_reestablished", "lead_monitoring_reestablished_audit"],
+		["workflow_replacement_eligibility", "lead_replacement_notice_audit"],
+	])("disabling %s restores only that category", (disabledType, flag) => {
+		for (const [type, payload, evidence] of cases) {
+			expect(
+				decide(type, { ...payload }, evidence, {
+					categoryEnabled: type !== disabledType,
+				}),
+			).toMatchObject(
+				type === disabledType
+					? {
+							disposition: "model",
+							reason: `${flag}_disabled`,
+						}
+					: { disposition: "audit_only" },
+			);
+		}
+	});
+
+	it.each([
+		["lead_stage_changed_audit", storeLeadStageChangedAuditEnabled],
+		["lead_session_started_audit", storeLeadSessionStartedAuditEnabled],
+		[
+			"lead_monitoring_reestablished_audit",
+			storeLeadMonitoringReestablishedAuditEnabled,
+		],
+		["lead_replacement_notice_audit", storeLeadReplacementNoticeAuditEnabled],
+	] as const)(
+		"hot reads %s with project isolation and master override",
+		async (name, reader) => {
+			const store = await StateStore.create(":memory:");
+			const readers = [
+				storeLeadStageChangedAuditEnabled,
+				storeLeadSessionStartedAuditEnabled,
+				storeLeadMonitoringReestablishedAuditEnabled,
+				storeLeadReplacementNoticeAuditEnabled,
+			];
+			const set = (flag: string, enabled: boolean) =>
+				expect(
+					store.applyScopedFlagValueChange({
+						name: flag,
+						scope: "flywheel",
+						op: "set",
+						rawTo: enabled ? "1" : "0",
+						expectedChangeSeq: store.getFlagValueChangeSeq(flag, "flywheel"),
+						actor: "test",
+						reason: "hot notification switch",
+					}).ok,
+				).toBe(true);
+			try {
+				for (const enabled of [true, false, true]) {
+					set(name, enabled);
+					for (const [index, [type, payload, evidence]] of cases.entries()) {
+						const category = readers[index]!;
+						expect(
+							decide(type, { ...payload }, evidence, {
+								enabled: storeLeadTokenSavingsEnabled({ store }, "flywheel"),
+								categoryEnabled: category({ store }, "flywheel"),
+							}).disposition,
+						).toBe(category === reader && !enabled ? "model" : "audit_only");
+					}
+					expect(reader({ store }, "other-project")).toBe(true);
+				}
+				set("lead_token_savings", false);
+				for (const [index, [type, payload, evidence]] of cases.entries()) {
+					expect(
+						decide(type, { ...payload }, evidence, {
+							enabled: storeLeadTokenSavingsEnabled({ store }, "flywheel"),
+							categoryEnabled: readers[index]!({ store }, "flywheel"),
+						}),
+					).toMatchObject({ disposition: "model", reason: "policy_disabled" });
+				}
+				for (const raw of ["false", "bad", null]) {
+					expect(
+						reader(
+							{
+								store: { getFlagValueRow: () => ({ hasOverride: true, raw }) },
+							},
+							"flywheel",
+						),
+					).toBe(false);
+				}
+				expect(
+					reader(
+						{
+							store: {
+								getFlagValueRow() {
+									throw new Error("unavailable");
+								},
+							},
+						},
+						"flywheel",
+					),
+				).toBe(false);
+			} finally {
+				store.close();
+			}
+		},
+	);
 
 	it.each(cases)("audits a proven pure %s", (type, payload, evidence) => {
 		expect(decide(type, { ...payload }, evidence)).toMatchObject({

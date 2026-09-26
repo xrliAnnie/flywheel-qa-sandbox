@@ -86,7 +86,10 @@ import {
 	isDoneButRunning,
 } from "./done-running-reconciler.js";
 import { type EventFilter, leadNotificationDecision } from "./EventFilter.js";
-import { storeLeadTokenSavingsEnabled } from "./flag-store-runtime.js";
+import {
+	storeLeadStageChangedAuditEnabled,
+	storeLeadTokenSavingsEnabled,
+} from "./flag-store-runtime.js";
 import {
 	evaluateFounderReviewAuthority,
 	type FounderReviewAuthorityResult,
@@ -4157,6 +4160,10 @@ export function createEventRouter(
 						evidence,
 						{
 							binding,
+							categoryEnabled: storeLeadStageChangedAuditEnabled(
+								{ store },
+								binding.projectName,
+							),
 							enabled: tokenSavingsEnabled,
 							projection: { ...hookPayload },
 						},
