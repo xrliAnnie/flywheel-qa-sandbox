@@ -44,6 +44,7 @@ drill 环境沿用 plan §7.3 白名单(已含 `TMPDIR=/tmp/`),另注入房 depl
 - `evidence-run record` 需要 `--lane`、`--driver-exit-code`、`--local-copy`、`--rerun-spec`(`evidence-run.ts:229-271`)。
 - drill 请求字段与 `GeneralizedRerunSpecV1.driver` 一一对应:`issue`(`^[A-Z]+-\d+$`)、`timeout_ms`(沿用合同的 `[10_000, 3_600_000]`,默认 900_000 = driver 默认 15 min)、`real`(⇔ lane `generalized_e2e_real`)。
 - 服务返回 `driver_exit_code`(原样)与 `evidence_copy_dir`(操作目录下、房外、拆房不删),runner 直接拿去 record。
+- (评审 R1 更正)合同的 `deriveRerunArgv` 不输出 `--codex-runner` / `--from-branch`,`renderRerunCommand` 固定 `TEST_REPLY_BY_ISSUE=1` ⇒ 只映射 `issue/timeout_ms/real` 不足以保证复跑同一种房。v2 只允许在合同可完整表达的房配置上 drill,并由服务用 `validateRerunSpecV1` 生成 `rerun_spec` 返回;扩展合同覆盖 Codex runner 房列 follow-up。
 - 服务**不**替 runner 调 `evidence-run record`:record 绑定 runner 自己的 submission credential 与 QA attempt(记忆:必须在 qa-result 之前、由持凭据的 attempt 记);服务代记会把身份弄混。
 
 ## R4 drill 与已批准状态机 / 并发的关系
@@ -54,7 +55,7 @@ drill 环境沿用 plan §7.3 白名单(已含 `TMPDIR=/tmp/`),另注入房 depl
   实现期注意本机开发库若已建旧表,测试用临时库即可(C2 测试全部用临时库)。
 - 并发:每房同时最多 1 个 drill;drill 进行中 runner 的 teardown ⇒ `409 drill_in_progress`(防止拆掉正在跑的测试、丢证据);Lead 的 teardown 可强制:先对 drill 进程组 SIGTERM→10s→SIGKILL、drill 记 `failed(cancelled_by_teardown)`,再照常拆。
 - 负载门:drill **不**过服务负载门。`--real` 起的真 runner 由房内 Bridge 自己的 `RunnerAdmissionController` 按宿主 load 把关(同一旋钮),再加一层会双重排队。
-- 墙钟:drill 操作上限 = `timeout_ms + 5 min`(driver 自己的收尾/清 PR 时间),超时同 plan §6.2 杀组,记 `failed(timeout)`。
+- 墙钟(评审 R1 更正):`timeout_ms` 是 driver **逐阶段**预算(`waitFor` 每次重算期限),driver 没有总时长;原稿「`timeout_ms + 5 min`」会误杀正常推进的运行。改为服务独立的安全上限 `phase_bound × timeout_ms + 15 min`(`phase_bound` = driver 源码 `await waitFor(` 静态计数 + 1,当前 16),spawn 时落库、重启不重置,越界才杀组记 `failed(service_deadline)`(plan §10c)。
 - Bridge 重启恢复:与 deploy/teardown 同一 owner.json / receipt.json 协议(plan §7.5);drill 中断记 `failed(interrupted)`,房保持 `ready`(房的物理认领从未释放)。
 
 ## R5 怎样证明 driver 真的在沙箱外跑?
