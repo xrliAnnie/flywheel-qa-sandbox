@@ -77,3 +77,21 @@ teamlead 13 项失败分诊：`runtime-parent` 4 项与 `codex-runner-orphan-rea
    复跑 52 文件 790/790。
 2. 对全部非枢纽变更生产文件做 `/<basename>.js"` 检索，新增未跑消费者：teamlead 59 文件 677/677、voice-codex 7 文件 51/51；claude-runner 与 voice-headphone 的命中是同名不同模块（各自的 `codex-home.ts` / `bridge-client.ts`），排除。
 3. 枢纽中 `catalog.js` 已无未跑消费者；`ProjectConfig.js` 与 `plugin.js` 的 166 个未跑消费者 2368/2368。`StateStore.js` 另有 476 个未跑消费者（约等于整包），按枢纽规则不在本机跑，留给 QA 冻结头的 full CI；语音相关的 StateStore 用例已在保留集中跑过。
+
+## 第三次恢复（执行身份 177564f8，2026-09-26）：plan v12 §14 真宿主起 parent
+
+从设计 v12（§14 APPROVED R7）接续；QA@2 FAIL（claim 1632）的 5 个阻断与 (a)(b) 结构问题按 §14 实现，另有 4 处实现期更正（plan §14.7，证据 `verification.md`）：
+
+| 提交 | 内容 |
+|---|---|
+| `c6bba2367` | §14.3：node 运行时闭包（Mach-O 解析、realpath 精确文件 + 软链跳点目录）、pins 目录 `openssl.cnf` 与 `OPENSSL_CONF` 三处同源注入；删 `:tmpdir` deny；真宿主测试（旧 readPaths 先红 exit 134） |
+| `0939c19de` | §14.1：`integrationFailurePolicy`（常驻 fail_closed 字节不变，语音 omit_integration）、`requires` 组、四种原因、覆盖不变式、manifest `unavailableIntegrations`、简报「没接上」一行；语音 parent 缺 Linear 不抛、Bridge 显式检查、同步 `revoke()` |
+| `29f6ab5e9` | Lead 裁定 B：codex 托管代理链到 Flywheel egress（`allow_upstream_proxy` + `HTTP(S)_PROXY`），隔离探针加上游链证明；常驻回归矩阵 |
+| `7aa5c58ef` | §14.2 Bridge：`background_state` 列、`POST background-degraded`、degraded 上下文、scope 撤权、poller 不写 |
+| `42a07a7ff` | §14.2 残留回收：spawn 观察器、按精确身份冻结再杀、落盘续做、unprovable/unsettled 上报 |
+| `6cfce8fc4` | §14.2 守护进程：准入/降级/前台三段、绝对截止时间、固定顺序、`effectiveBackground()`、thread 降级提示 |
+| `5fc0626ad` | 真宿主预演发现 `codex_apps` 注入，语音 capability 进程 `features.apps=false` |
+
+真宿主本地预演（verification §4）：语音 parent 1.75s 起来、不可用集成与原因正确、capability app-server 订阅/配置/技能核过、模型侧 MCP 只剩 `lead_actions`。未覆盖、归 529 房 QA：有 Linear key 的一场、完整语音会话、后台读写与 founder 门、浏览器模式、QA-R2a/R2b。
+
+相关验证见 `evidence/v12-related-test-scope.md`。没有跑本机全包套件的意图（teamlead `vitest related` 因叶子模块被 Bridge 插件引用而展开到 614 个文件，全部通过）；没有请求 full CI。
