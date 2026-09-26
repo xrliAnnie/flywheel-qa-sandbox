@@ -1,0 +1,51 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2913 · 每种工人只带必要说明</title><style>*{box-sizing:border-box}body{margin:0;background:#f5f5f7;color:#1d1d1f;font:17px/1.65 -apple-system,system-ui,sans-serif}main{max-width:960px;margin:auto;padding:48px 24px}header{margin-bottom:30px}h1{font-size:38px;line-height:1.2;letter-spacing:-1px}h2{font-size:23px;margin:0 0 16px}.eyebrow,.muted{color:#68686d;font-size:14px}.card{background:white;border-radius:12px;padding:28px;margin:20px 0;box-shadow:0 1px 3px #0000000f;border-left:4px solid #007aff}.large{font-size:24px;line-height:1.55}.pending{padding:24px;border:1px dashed #c88413;border-radius:8px;background:#fff9ed;color:#734d12}.pending strong{font-size:15px}table{border-collapse:collapse;width:100%;font-size:15px}td,th{text-align:left;padding:12px 10px;border-bottom:1px solid #e7e7ed}.table{overflow-x:auto}label{display:block;margin-top:24px;font-size:14px;color:#626269}textarea{display:block;width:100%;min-height:86px;border:1px solid #d2d2d7;border-radius:8px;padding:12px;font:inherit;resize:vertical;background:#fdfdfe}textarea:focus{outline:2px solid #007aff}button{border:0;border-radius:8px;background:#007aff;color:white;padding:11px 17px;font:inherit;cursor:pointer;margin:8px 8px 8px 0}.summary{border-color:#34c759}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.5 ui-monospace,monospace}.chunk{margin-top:15px;border-top:1px solid #ddd;padding-top:12px}svg{width:100%;height:auto}#status{font-size:14px;color:#626269}@media(max-width:600px){main{padding:24px 14px}h1{font-size:29px}.card{padding:20px}.large{font-size:21px}}</style></head><body><main><header><div class="eyebrow">FLY-2913 · 技术设计 · 2026-09-25</div><h1>每种工人，只带必要说明</h1><p>少读重复内容，保住完成任务的能力。</p></header><section class="card" id="decision"><h2>01 · 一句话方案</h2><p class="large">每种工人只带完成本职任务所需的工具和说明；先测量，再精简，用真实任务证明能力没有丢失。</p><p>范围：设计、实现、QA（质量验证）、设计评审、代码评审。<strong>Lead 的配置不改。</strong></p><label for="c-decision">对这一节的意见</label><textarea id="c-decision" data-title="01 · 一句话方案" placeholder="写下意见，自动保存在此浏览器"></textarea></section><section class="card" id="flow"><h2>02 · 从测量到可用</h2><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本机图形进程被系统权限阻止；按规定重试后仍未成功。已保留 Mermaid 图源，等待本地渲染。</p></div><details><summary>查看图源</summary><pre>flowchart TD
+ A[确认工人的角色与必要能力] --&gt; B[测量当前实际携带的说明]
+ B --&gt; C[生成本角色固定配置]
+ C --&gt; D[沿现有入口启动]
+ D --&gt; E[在529房完成真实任务]
+ E --&gt; F{能力完整且说明减少}
+ F --&gt;|通过| G[提交前后对比与任务证据]
+ F --&gt;|未通过| H[修正配置或切回旧配置]
+</pre></details><p>按顺序完成：确认角色 → 记录实际加载 → 生成固定配置 → 启动 → 529 房验收。529 房是与生产隔离的测试环境。</p><label for="c-flow">对这一节的意见</label><textarea id="c-flow" data-title="02 · 从测量到可用" placeholder="写下意见，自动保存在此浏览器"></textarea></section><section class="card" id="evidence"><h2>03 · 已经查到什么</h2><p>token 是模型计量输入长度的单位。原始调查中的最小上下文包含任务和历史，属于<strong>历史代理数据</strong>，不能直接说全是可删除的固定说明。</p><div class="table"><table><thead><tr><th>角色</th><th>历史上下文中位数</th><th>最近七天工具结果行</th></tr></thead><tbody><tr><td>实现</td><td>89,976</td><td>12,319</td></tr><tr><td>设计</td><td>87,164</td><td>1,765</td></tr><tr><td>QA</td><td>91,029.5</td><td>20,502</td></tr><tr><td>设计评审</td><td>65,351.5</td><td>2,357</td></tr><tr><td>代码评审</td><td>65,767.5</td><td>13,278</td></tr></tbody></table></div><p class="muted">七天窗口：9 月 18 日 22:00 至 9 月 25 日 22:00（UTC）。仅主会话；子代理单列。结果行可能含错误，不是去重的调用次数。上下文值来自入选文件全历史。另有 3,503 个请求无法确定角色。</p><p>当前配置候选盘点为 7 个启用插件、73 个技能描述、46 个代理描述、11 个规则文件；这仍<strong>不是实际加载清单</strong>。</p><label for="c-evidence">对这一节的意见</label><textarea id="c-evidence" data-title="03 · 已经查到什么" placeholder="写下意见，自动保存在此浏览器"></textarea></section><section class="card" id="capabilities"><h2>04 · 必需能力先保住</h2><p>插件是扩展功能包；MCP 是让模型调用外部工具的接口。历史记录显示，实现、设计和 QA 都调用过浏览器工具，实现和评审调用过 Context7（查询技术资料的工具）。</p><ul><li>设计保留研究、画图、HTML 报告及评审能力。</li><li>实现保留读写代码、测试、调试、浏览器和评审能力。</li><li>QA 保留浏览器、截图、失败对照和验收回执。</li><li>评审保留代码阅读、必要测试、资料查询和结构化结论。</li></ul><p>过去一周没调用过，不等于可以删除。低频的恢复路径、角色合同要求和当前任务依赖都要逐条核对。</p><label for="c-capabilities">对这一节的意见</label><textarea id="c-capabilities" data-title="04 · 必需能力先保住" placeholder="写下意见，自动保存在此浏览器"></textarea></section><section class="card" id="model"><h2>05 · 配置和证据如何对应</h2><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本机图形进程被系统权限阻止；按规定重试后仍未成功。已保留 Mermaid 图源，等待本地渲染。</p></div><details><summary>查看图源</summary><pre>classDiagram
+ class 角色配置 {
+  稳定角色身份
+  保留的工具与技能
+  规则来源与版本
+ }
+ class 会话记录 {
+  执行与会话身份
+  配置内容摘要
+  固定的加载决定
+ }
+ class 验收证据 {
+  实际加载清单
+  改前与改后数量
+  真实任务结果
+ }
+ 角色配置 &quot;1&quot; --&gt; &quot;多&quot; 会话记录 : 启动时固定
+ 会话记录 &quot;1&quot; --&gt; &quot;多&quot; 验收证据 : 按会话核验
+</pre></details><p>每次启动记录角色、会话身份、配置版本和内容摘要。内容摘要是根据文件内容计算的校验值，用来确认续跑使用同一份配置。改前与改后证据都绑定到实际会话。</p><label for="c-model">对这一节的意见</label><textarea id="c-model" data-title="05 · 配置和证据如何对应" placeholder="写下意见，自动保存在此浏览器"></textarea></section><section class="card" id="tradeoffs"><h2>06 · 选择与舍弃</h2><div class="table"><table><tr><th>做法</th><th>判断</th></tr><tr><td>通过现有启动入口，逐角色生成配置</td><td>采用；便于核查与回退</td></tr><tr><td>在共享目录删插件、规则</td><td>拒绝；会影响 Lead 和其他工人</td></tr><tr><td>所有角色禁用浏览器或技能</td><td>拒绝；会丢失已知必要能力</td></tr><tr><td>只改“允许调用哪些工具”</td><td>不足；不证明说明从输入里消失</td></tr></table></div><p>混合插件包只保留所需组件时，必须验证原技能名字、依赖文件和启动动作仍正确；不能为省字而改坏功能。</p><label for="c-tradeoffs">对这一节的意见</label><textarea id="c-tradeoffs" data-title="06 · 选择与舍弃" placeholder="写下意见，自动保存在此浏览器"></textarea></section><section class="card" id="acceptance"><h2>07 · 怎样才算完成</h2><ol><li>每角色逐项列出实际携带的工具、插件、技能和规则，以及各部分输入数量和占比。</li><li>同样的模型、版本和任务下，各做三次新会话的改前/改后对比。</li><li>五类角色各在 529 房完成代表任务；评审必须能找出预置错误，再通过修正版本。</li><li>确认必要工具和技能真能调用，缺失项会被检查发现，Lead 配置保持不变。</li><li>切换一个专用开关后，新会话恢复原配置，并验证恢复结果。</li></ol><p>旧会话不会因为开关变化就立即更新。正在运行的会话需要按现有恢复流程，在保留进度的前提下启动新会话。</p><label for="c-acceptance">对这一节的意见</label><textarea id="c-acceptance" data-title="07 · 怎样才算完成" placeholder="写下意见，自动保存在此浏览器"></textarea></section><section class="card" id="boundary"><h2>08 · 当前边界</h2><p><strong>现在交付的是技术设计和调查证据。</strong>实际加载的逐项输入数量、精简后的数量、529 真任务和回退测试，尚待后续实现与 QA 完成。</p><p>本次未实现配置修改，未部署、重启或更改 Lead。不会把设计评审通过写成运行验收通过，也不会承诺尚未测出的节省比例。</p><label for="c-boundary">对这一节的意见</label><textarea id="c-boundary" data-title="08 · 当前边界" placeholder="写下意见，自动保存在此浏览器"></textarea></section><section class="card summary"><h2>页面意见汇总</h2><label for="c-overall">补充整体意见</label><textarea id="c-overall" data-title="整体意见" placeholder="可填写整体意见"></textarea><button id="copy-all" type="button">复制全部意见</button><p id="status" aria-live="polite">意见只保存在当前浏览器；复制后发给 Lead。此标记不是批准信号。</p><div id="chunks"></div></section></main><script nonce="__CSP_NONCE__">(() => {
+'use strict';
+const marker='【页面意见汇总】FLY-2913';
+const prefix='flywheel-comments:'+location.pathname+':';
+const inputs=[...document.querySelectorAll('textarea[data-title]')];
+const target=document.getElementById('chunks');
+const status=document.getElementById('status');
+let chunks=[];
+const fullText=()=>inputs.filter(x=>x.value.trim()).map(x=>'【'+x.dataset.title+'】\n'+x.value.trim()).join('\n\n');
+async function copyText(text){
+ try { if(!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('unavailable'); await navigator.clipboard.writeText(text); }
+ catch (_) { const t=document.createElement('textarea');t.value=text;t.setAttribute('aria-label','临时复制文本');document.body.appendChild(t);t.select();let ok=false;try{ok=document.execCommand('copy');}finally{t.remove();}if(!ok)throw new Error('copy failed'); }
+}
+async function copyAndReport(text){try{await copyText(text);status.textContent='已复制。此汇总是修改意见，不表示批准。';}catch(_){status.textContent='自动复制未成功，请从汇总文本手动复制。';}}
+function render(){
+ const body=fullText(); const chars=Array.from(body);chunks=[];
+ for(let i=0;i<chars.length;i+=1700)chunks.push(marker+'\n'+chars.slice(i,i+1700).join(''));
+ target.replaceChildren();
+ if(!chunks.length){const p=document.createElement('p');p.textContent='尚无意见。填写任一节后会自动汇总。';target.appendChild(p);return;}
+ chunks.forEach((text,i)=>{const d=document.createElement('div');d.className='chunk';const pre=document.createElement('pre');pre.textContent=text;const b=document.createElement('button');b.type='button';b.textContent='复制第 '+(i+1)+' 段';b.addEventListener('click',()=>copyAndReport(text));d.append(pre,b);target.appendChild(d);});
+}
+inputs.forEach(t=>{try{t.value=localStorage.getItem(prefix+t.id)||'';}catch(_){}t.addEventListener('input',()=>{try{localStorage.setItem(prefix+t.id,t.value);}catch(_){status.textContent='浏览器无法保存；本页仍可汇总复制。';}render();});});
+document.getElementById('copy-all').addEventListener('click',()=>copyAndReport(chunks.length?chunks.join('\n\n'):marker));
+render();
+})();</script></body></html>

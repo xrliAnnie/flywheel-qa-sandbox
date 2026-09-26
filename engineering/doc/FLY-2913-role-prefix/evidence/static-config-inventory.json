@@ -1,0 +1,1460 @@
+{
+  "capturedAt": "2026-09-26T04:11:56.571487+00:00",
+  "evidenceKind": "configured-files-only; NOT actual loaded tool/schema/token inventory",
+  "configs": [
+    {
+      "path": "/Users/xiaorongli/.claude/settings.json",
+      "bytes": 24500,
+      "sha256": "919fd88762bd98d0e3ca80e4cc17dfa1caeb85ee7b45e478a8949b10882dbf52",
+      "enabledPlugins": {
+        "everything-claude-code@everything-claude-code": true,
+        "frontend-design@claude-plugins-official": false,
+        "linear@claude-plugins-official": false,
+        "context7@claude-plugins-official": true,
+        "code-review@claude-plugins-official": false,
+        "code-simplifier@claude-plugins-official": false,
+        "playwright@claude-plugins-official": true,
+        "typescript-lsp@claude-plugins-official": false,
+        "serena@claude-plugins-official": false,
+        "pr-review-toolkit@claude-plugins-official": false,
+        "security-guidance@claude-plugins-official": true,
+        "skill-creator@claude-plugins-official": false,
+        "claude-md-management@claude-plugins-official": false,
+        "discord@claude-plugins-official": false,
+        "codex@openai-codex": true,
+        "minimalist-entrepreneur@minimalist-entrepreneur": false,
+        "superpowers@superpowers-dev": true,
+        "matt-skills@matt-skills": false,
+        "discord@flywheel-plugins": true
+      },
+      "mcpServerNames": [
+        "linear-api",
+        "xiaohongshu-mcp"
+      ]
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/settings.local.json",
+      "bytes": 1900,
+      "sha256": "b9b7adecbfab11977dbfc07055f98104c7338cace5ab1214c01e57ea587dd9a8",
+      "enabledPlugins": {},
+      "mcpServerNames": []
+    },
+    {
+      "path": "/Users/xiaorongli/.claude.json",
+      "bytes": 402427,
+      "sha256": "45244c5c2e9c115ca72396eda03d89a04057048b4863bde76feb13e172ef9e02",
+      "enabledPlugins": {},
+      "mcpServerNames": [
+        "linear-api",
+        "xiaohongshu-mcp"
+      ]
+    }
+  ],
+  "plugins": [
+    {
+      "key": "everything-claude-code@everything-claude-code",
+      "enabledInUserSettings": true,
+      "scope": "user",
+      "version": "1.0.0",
+      "installPath": "/Users/xiaorongli/.claude/plugins/cache/everything-claude-code/everything-claude-code/1.0.0",
+      "mcpServerNames": []
+    },
+    {
+      "key": "frontend-design@claude-plugins-official",
+      "enabledInUserSettings": false,
+      "scope": "user",
+      "version": "fa59bc903774",
+      "installPath": "/Users/xiaorongli/.claude/plugins/cache/claude-plugins-official/frontend-design/fa59bc903774",
+      "mcpServerNames": []
+    },
+    {
+      "key": "context7@claude-plugins-official",
+      "enabledInUserSettings": true,
+      "scope": "user",
+      "version": "fa59bc903774",
+      "installPath": "/Users/xiaorongli/.claude/plugins/cache/claude-plugins-official/context7/fa59bc903774",
+      "mcpServerNames": [
+        "context7"
+      ]
+    },
+    {
+      "key": "code-review@claude-plugins-official",
+      "enabledInUserSettings": false,
+      "scope": "user",
+      "version": "fa59bc903774",
+      "installPath": "/Users/xiaorongli/.claude/plugins/cache/claude-plugins-official/code-review/fa59bc903774",
+      "mcpServerNames": []
+    },
+    {
+      "key": "code-simplifier@claude-plugins-official",
+      "enabledInUserSettings": false,
+      "scope": "user",
+      "version": "1.0.0",
+      "installPath": "/Users/xiaorongli/.claude/plugins/cache/claude-plugins-official/code-simplifier/1.0.0",
+      "mcpServerNames": []
+    },
+    {
+      "key": "playwright@claude-plugins-official",
+      "enabledInUserSettings": true,
+      "scope": "user",
+      "version": "fa59bc903774",
+      "installPath": "/Users/xiaorongli/.claude/plugins/cache/claude-plugins-official/playwright/fa59bc903774",
+      "mcpServerNames": [
+        "playwright"
+      ]
+    },
+    {
+      "key": "typescript-lsp@claude-plugins-official",
+      "enabledInUserSettings": false,
+      "scope": "user",
+      "version": "1.0.0",
+      "installPath": "/Users/xiaorongli/.claude/plugins/cache/claude-plugins-official/typescript-lsp/1.0.0",
+      "mcpServerNames": []
+    },
+    {
+      "key": "serena@claude-plugins-official",
+      "enabledInUserSettings": false,
+      "scope": "user",
+      "version": "fa59bc903774",
+      "installPath": "/Users/xiaorongli/.claude/plugins/cache/claude-plugins-official/serena/fa59bc903774",
+      "mcpServerNames": [
+        "serena"
+      ]
+    },
+    {
+      "key": "pr-review-toolkit@claude-plugins-official",
+      "enabledInUserSettings": false,
+      "scope": "user",
+      "version": "fa59bc903774",
+      "installPath": "/Users/xiaorongli/.claude/plugins/cache/claude-plugins-official/pr-review-toolkit/fa59bc903774",
+      "mcpServerNames": []
+    },
+    {
+      "key": "figma@claude-plugins-official",
+      "enabledInUserSettings": false,
+      "scope": "user",
+      "version": "2.2.120",
+      "installPath": "/Users/xiaorongli/.claude/plugins/cache/claude-plugins-official/figma/2.2.120",
+      "mcpServerNames": [
+        "figma"
+      ]
+    },
+    {
+      "key": "firebase@claude-plugins-official",
+      "enabledInUserSettings": false,
+      "scope": "user",
+      "version": "fa59bc903774",
+      "installPath": "/Users/xiaorongli/.claude/plugins/cache/claude-plugins-official/firebase/fa59bc903774",
+      "mcpServerNames": [
+        "firebase"
+      ]
+    },
+    {
+      "key": "linear@claude-plugins-official",
+      "enabledInUserSettings": false,
+      "scope": "user",
+      "version": "fa59bc903774",
+      "installPath": "/Users/xiaorongli/.claude/plugins/cache/claude-plugins-official/linear/fa59bc903774",
+      "mcpServerNames": [
+        "linear"
+      ]
+    },
+    {
+      "key": "security-guidance@claude-plugins-official",
+      "enabledInUserSettings": true,
+      "scope": "user",
+      "version": "2.0.8",
+      "installPath": "/Users/xiaorongli/.claude/plugins/cache/claude-plugins-official/security-guidance/2.0.8",
+      "mcpServerNames": []
+    },
+    {
+      "key": "skill-creator@claude-plugins-official",
+      "enabledInUserSettings": false,
+      "scope": "user",
+      "version": "fa59bc903774",
+      "installPath": "/Users/xiaorongli/.claude/plugins/cache/claude-plugins-official/skill-creator/fa59bc903774",
+      "mcpServerNames": []
+    },
+    {
+      "key": "claude-md-management@claude-plugins-official",
+      "enabledInUserSettings": false,
+      "scope": "user",
+      "version": "1.0.0",
+      "installPath": "/Users/xiaorongli/.claude/plugins/cache/claude-plugins-official/claude-md-management/1.0.0",
+      "mcpServerNames": []
+    },
+    {
+      "key": "discord@claude-plugins-official",
+      "enabledInUserSettings": false,
+      "scope": "user",
+      "version": "0.0.4",
+      "installPath": "/Users/xiaorongli/.claude/plugins/cache/claude-plugins-official/discord/0.0.4",
+      "mcpServerNames": [
+        "discord"
+      ]
+    },
+    {
+      "key": "codex@openai-codex",
+      "enabledInUserSettings": true,
+      "scope": "user",
+      "version": "1.0.0",
+      "installPath": "/Users/xiaorongli/.claude/plugins/cache/openai-codex/codex/1.0.0",
+      "mcpServerNames": []
+    },
+    {
+      "key": "minimalist-entrepreneur@minimalist-entrepreneur",
+      "enabledInUserSettings": false,
+      "scope": "user",
+      "version": "1.0.0",
+      "installPath": "/Users/xiaorongli/.claude/plugins/cache/minimalist-entrepreneur/minimalist-entrepreneur/1.0.0",
+      "mcpServerNames": []
+    },
+    {
+      "key": "superpowers@superpowers-dev",
+      "enabledInUserSettings": true,
+      "scope": "user",
+      "version": "5.1.0",
+      "installPath": "/Users/xiaorongli/.claude/plugins/cache/superpowers-dev/superpowers/5.1.0",
+      "mcpServerNames": []
+    },
+    {
+      "key": "matt-skills@matt-skills",
+      "enabledInUserSettings": false,
+      "scope": "user",
+      "version": "1.2.0-fly1356",
+      "installPath": "/Users/xiaorongli/.claude/plugins/cache/matt-skills/matt-skills/1.2.0-fly1356",
+      "mcpServerNames": []
+    },
+    {
+      "key": "discord@flywheel-plugins",
+      "enabledInUserSettings": true,
+      "scope": "user",
+      "version": "0.0.7",
+      "installPath": "/Users/xiaorongli/.claude/plugins/cache/flywheel-plugins/discord/0.0.7",
+      "mcpServerNames": [
+        "discord"
+      ]
+    }
+  ],
+  "skills": [
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/everything-claude-code/everything-claude-code/1.0.0/skills/golang-patterns/SKILL.md",
+      "bytes": 14017,
+      "sha256": "4012c03ded61270f96c2e3e58d89a45bf153b222031979df2b47d5eccced578f",
+      "name": "golang-patterns",
+      "descriptionSourceBytes": 120,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "everything-claude-code@everything-claude-code"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/everything-claude-code/everything-claude-code/1.0.0/skills/project-guidelines-example/SKILL.md",
+      "bytes": 9666,
+      "sha256": "d8156f2df70d407dcfa433d279c9160430ef00c1bfb015ae2cf495f7c1392d8a",
+      "name": "project-guidelines-example",
+      "descriptionSourceBytes": 0,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "everything-claude-code@everything-claude-code"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/everything-claude-code/everything-claude-code/1.0.0/skills/iterative-retrieval/SKILL.md",
+      "bytes": 6288,
+      "sha256": "b278e3e6de8cbf3546d8b9206370f9f2d8a900f2fed26f20a5d05ad15bd5aae9",
+      "name": "iterative-retrieval",
+      "descriptionSourceBytes": 90,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "everything-claude-code@everything-claude-code"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/everything-claude-code/everything-claude-code/1.0.0/skills/postgres-patterns/SKILL.md",
+      "bytes": 3816,
+      "sha256": "f38ed542ddcc0adbab49a960badcf015d0153f9ebe3d38f73ff0972756bc205f",
+      "name": "postgres-patterns",
+      "descriptionSourceBytes": 125,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "everything-claude-code@everything-claude-code"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/everything-claude-code/everything-claude-code/1.0.0/skills/clickhouse-io/SKILL.md",
+      "bytes": 9972,
+      "sha256": "8e0d4fd171e1ec995d642b84aeaf5843c8d6976c8d12e0a572fb807d9f351166",
+      "name": "clickhouse-io",
+      "descriptionSourceBytes": 139,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "everything-claude-code@everything-claude-code"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/everything-claude-code/everything-claude-code/1.0.0/skills/coding-standards/SKILL.md",
+      "bytes": 11398,
+      "sha256": "1827f282caa07d38ec64ce7bf2bbc4fc1a703080c9346e17aea731a08aafac24",
+      "name": "coding-standards",
+      "descriptionSourceBytes": 116,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "everything-claude-code@everything-claude-code"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/everything-claude-code/everything-claude-code/1.0.0/skills/eval-harness/SKILL.md",
+      "bytes": 5183,
+      "sha256": "4b2bb9f128ac85e8c9a2341c7fbdc955ba7b0bce7dfb995704191a6e650fc8e8",
+      "name": "eval-harness",
+      "descriptionSourceBytes": 106,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "everything-claude-code@everything-claude-code"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/everything-claude-code/everything-claude-code/1.0.0/skills/backend-patterns/SKILL.md",
+      "bytes": 13415,
+      "sha256": "e418ddceb5111238a91d9c78f249e34ee1ea87079711d045ad406836f96bab48",
+      "name": "backend-patterns",
+      "descriptionSourceBytes": 142,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "everything-claude-code@everything-claude-code"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/everything-claude-code/everything-claude-code/1.0.0/skills/continuous-learning/SKILL.md",
+      "bytes": 3367,
+      "sha256": "232d5af4df111439a518c3330be5ac28ae2ea93eebf83862d2ad56428584a7f2",
+      "name": "continuous-learning",
+      "descriptionSourceBytes": 113,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "everything-claude-code@everything-claude-code"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/everything-claude-code/everything-claude-code/1.0.0/skills/continuous-learning-v2/SKILL.md",
+      "bytes": 8265,
+      "sha256": "4ee690d36dc52725aaa4743e5e57866c24a2aebf1552f8465955ef435392a71c",
+      "name": "continuous-learning-v2",
+      "descriptionSourceBytes": 160,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "everything-claude-code@everything-claude-code"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/everything-claude-code/everything-claude-code/1.0.0/skills/verification-loop/SKILL.md",
+      "bytes": 2369,
+      "sha256": "850ae034c334a3c88428921043d6a2b3441284ee85b4d749fa19c62194190eaa",
+      "name": "verification-loop",
+      "descriptionSourceBytes": 0,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "everything-claude-code@everything-claude-code"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/everything-claude-code/everything-claude-code/1.0.0/skills/tdd-workflow/SKILL.md",
+      "bytes": 9763,
+      "sha256": "2b5f62f68752e7c21dd217c9274b23290a5b8a6d40454125a27560a905e3da92",
+      "name": "tdd-workflow",
+      "descriptionSourceBytes": 171,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "everything-claude-code@everything-claude-code"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/everything-claude-code/everything-claude-code/1.0.0/skills/frontend-patterns/SKILL.md",
+      "bytes": 14311,
+      "sha256": "193bfa61755991340c89e033b860fe7e84dd47ab013c844c09069e6e3543f21a",
+      "name": "frontend-patterns",
+      "descriptionSourceBytes": 116,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "everything-claude-code@everything-claude-code"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/everything-claude-code/everything-claude-code/1.0.0/skills/security-review/SKILL.md",
+      "bytes": 12202,
+      "sha256": "b4fbed82c5a1741432f0da689fd96e9fa0c40011d9450ca61065dad772758494",
+      "name": "security-review",
+      "descriptionSourceBytes": 209,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "everything-claude-code@everything-claude-code"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/everything-claude-code/everything-claude-code/1.0.0/skills/strategic-compact/SKILL.md",
+      "bytes": 2055,
+      "sha256": "1258d7208d76af5379be4ca02d2378064a8dea689396c7599bbcdccbfb7edf03",
+      "name": "strategic-compact",
+      "descriptionSourceBytes": 134,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "everything-claude-code@everything-claude-code"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/everything-claude-code/everything-claude-code/1.0.0/skills/golang-testing/SKILL.md",
+      "bytes": 16626,
+      "sha256": "30833ea5658bbf953e5121ccbb32ab7decd8e46ca5e618c7ca3af409a1d27ca6",
+      "name": "golang-testing",
+      "descriptionSourceBytes": 152,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "everything-claude-code@everything-claude-code"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/openai-codex/codex/1.0.0/skills/codex-cli-runtime/SKILL.md",
+      "bytes": 3097,
+      "sha256": "cce11c3bd6d7b5ec6277b3527e65ff38c5bd16084b436bf2870fabb30414359c",
+      "name": "codex-cli-runtime",
+      "descriptionSourceBytes": 81,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "codex@openai-codex"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/openai-codex/codex/1.0.0/skills/codex-result-handling/SKILL.md",
+      "bytes": 1731,
+      "sha256": "99fcbbebaeac1e1504b8adfba513bd5964e171414f6709034f3f980a1f2385a8",
+      "name": "codex-result-handling",
+      "descriptionSourceBytes": 69,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "codex@openai-codex"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/openai-codex/codex/1.0.0/skills/gpt-5-4-prompting/SKILL.md",
+      "bytes": 3644,
+      "sha256": "48222490b629e0e5cf7372253b864cc03b7780ce7afeaab4129f3dd2efdbf5d9",
+      "name": "gpt-5-4-prompting",
+      "descriptionSourceBytes": 143,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "codex@openai-codex"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/superpowers-dev/superpowers/5.1.0/skills/using-git-worktrees/SKILL.md",
+      "bytes": 7983,
+      "sha256": "085a45ee3de432bdb2768011591d9a882cb6c759e2317f379226451c5618fe8e",
+      "name": "using-git-worktrees",
+      "descriptionSourceBytes": 196,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "superpowers@superpowers-dev"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/superpowers-dev/superpowers/5.1.0/skills/test-driven-development/SKILL.md",
+      "bytes": 9867,
+      "sha256": "7dee67b4af6bdccc7a914ca34533184d64592d0f5b23aeae631538168db14994",
+      "name": "test-driven-development",
+      "descriptionSourceBytes": 79,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "superpowers@superpowers-dev"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/superpowers-dev/superpowers/5.1.0/skills/systematic-debugging/SKILL.md",
+      "bytes": 9884,
+      "sha256": "4999cb851360485eca5074e727bbdd62ef20549c5d5b01216fcbf5831badb473",
+      "name": "systematic-debugging",
+      "descriptionSourceBytes": 91,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "superpowers@superpowers-dev"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/superpowers-dev/superpowers/5.1.0/skills/using-superpowers/SKILL.md",
+      "bytes": 5421,
+      "sha256": "316e29381219adf0cac62190c67aeabf427d6e6e5f2735541d502b3d339be7aa",
+      "name": "using-superpowers",
+      "descriptionSourceBytes": 159,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "superpowers@superpowers-dev"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/superpowers-dev/superpowers/5.1.0/skills/dispatching-parallel-agents/SKILL.md",
+      "bytes": 6441,
+      "sha256": "76806091c7f923ba2596546b19cccd98a08e57a68745df77c3a7b998fe838e2b",
+      "name": "dispatching-parallel-agents",
+      "descriptionSourceBytes": 106,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "superpowers@superpowers-dev"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/superpowers-dev/superpowers/5.1.0/skills/executing-plans/SKILL.md",
+      "bytes": 2469,
+      "sha256": "e2102f11631433939f162d383d769f8257d859d6639e0e14969cda3ef0a95eca",
+      "name": "executing-plans",
+      "descriptionSourceBytes": 104,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "superpowers@superpowers-dev"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/superpowers-dev/superpowers/5.1.0/skills/finishing-a-development-branch/SKILL.md",
+      "bytes": 7061,
+      "sha256": "5c8d4b59aedb14c94e2f5d787a3265e858e8f53d4ceffe7ff1c15878a52b0e91",
+      "name": "finishing-a-development-branch",
+      "descriptionSourceBytes": 200,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "superpowers@superpowers-dev"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/superpowers-dev/superpowers/5.1.0/skills/brainstorming/SKILL.md",
+      "bytes": 10634,
+      "sha256": "bba47904a7f6bbee3bf8a107ebbe84e65d392be683bbb898ded736b29e415f90",
+      "name": "brainstorming",
+      "descriptionSourceBytes": 200,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "superpowers@superpowers-dev"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/superpowers-dev/superpowers/5.1.0/skills/writing-plans/SKILL.md",
+      "bytes": 6100,
+      "sha256": "4fd4627d2c02367879c0307d7249270bed633317ff9be82e926a6d57bf5d331b",
+      "name": "writing-plans",
+      "descriptionSourceBytes": 84,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "superpowers@superpowers-dev"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/superpowers-dev/superpowers/5.1.0/skills/requesting-code-review/SKILL.md",
+      "bytes": 2808,
+      "sha256": "5a3a44a3667800e2dc836829c6b92fada51e6dc58ac144ec05fe59f47d6bcd84",
+      "name": "requesting-code-review",
+      "descriptionSourceBytes": 107,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "superpowers@superpowers-dev"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/superpowers-dev/superpowers/5.1.0/skills/receiving-code-review/SKILL.md",
+      "bytes": 6314,
+      "sha256": "c9382e92b8f32363566068ecfed19d3b2651eaf40d3942b24840f839dedfc406",
+      "name": "receiving-code-review",
+      "descriptionSourceBytes": 234,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "superpowers@superpowers-dev"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/superpowers-dev/superpowers/5.1.0/skills/writing-skills/SKILL.md",
+      "bytes": 22624,
+      "sha256": "38ba648975ae6ba512d6695676f146163db61a496b867f716f4bdfb0ee3aca3e",
+      "name": "writing-skills",
+      "descriptionSourceBytes": 97,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "superpowers@superpowers-dev"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/superpowers-dev/superpowers/5.1.0/skills/verification-before-completion/SKILL.md",
+      "bytes": 4201,
+      "sha256": "ea52d15aabaf72bc6b558efe2c126f161b53961090ddcd712000273bfe8c7b6c",
+      "name": "verification-before-completion",
+      "descriptionSourceBytes": 225,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "superpowers@superpowers-dev"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/superpowers-dev/superpowers/5.1.0/skills/subagent-driven-development/SKILL.md",
+      "bytes": 12546,
+      "sha256": "905a2b9be59b734dbe166525ad31dcaaf712a75926135adee1f554557aba5744",
+      "name": "subagent-driven-development",
+      "descriptionSourceBytes": 85,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "superpowers@superpowers-dev"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/flywheel-plugins/discord/0.0.7/skills/access/SKILL.md",
+      "bytes": 4671,
+      "sha256": "90c7f6f4fad72640640fc1d629eef165388311474eee3adae4d48d0302a1468e",
+      "name": "access",
+      "descriptionSourceBytes": 201,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "discord@flywheel-plugins"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/flywheel-plugins/discord/0.0.7/skills/configure/SKILL.md",
+      "bytes": 4324,
+      "sha256": "9364d7895d6f38b917a711128e7b391884fb8b8d69a62c7d72a81e95b6e2b948",
+      "name": "configure",
+      "descriptionSourceBytes": 233,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "discord@flywheel-plugins"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/xiaohongshu-deep-learning/SKILL.md",
+      "bytes": 6628,
+      "sha256": "0f6eaeac4172944d58745892f740481fe439fd13a256678576ab8bdafd322224",
+      "name": "xiaohongshu-deep-learning",
+      "descriptionSourceBytes": 315,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/xiaohongshu-learning/SKILL.md",
+      "bytes": 31452,
+      "sha256": "1d16c3ab8867dc5331925768b1cdfb8f95ae38fbec91f0a55c0fce26ad43cec9",
+      "name": "xiaohongshu-learning",
+      "descriptionSourceBytes": 334,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/proofshot/SKILL.md",
+      "bytes": 2924,
+      "sha256": "0d730b66713764ef0a16f7e167b2e56250099d0b94a48be2a0e36ebbccfdac5c",
+      "name": "proofshot",
+      "descriptionSourceBytes": 273,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/writing-north-star-metrics/SKILL.md",
+      "bytes": 5469,
+      "sha256": "fba320bc3116cb6b426081ce805245f43ec0ed68262cee9cef55bb2a6ae3d273",
+      "name": "writing-north-star-metrics",
+      "descriptionSourceBytes": 228,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/video-watch/SKILL.md",
+      "bytes": 3200,
+      "sha256": "aa8ce8ed2d8efe7ca14d26130edfef8681d3c72dc72d0f436f1808729e3ca1c1",
+      "name": "video-watch",
+      "descriptionSourceBytes": 269,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/working-backwards/SKILL.md",
+      "bytes": 4957,
+      "sha256": "9f303b699213e37387c5c19c6875e8f5ac5306c7ad60d128264ead99b0ea531d",
+      "name": "working-backwards",
+      "descriptionSourceBytes": 211,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/product-taste-intuition/SKILL.md",
+      "bytes": 4076,
+      "sha256": "c92ba75a1bc708abd27bcc062aece839d662efd2c7beacaa00044d686153b5e4",
+      "name": "product-taste-intuition",
+      "descriptionSourceBytes": 234,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/computer-bootstrap/SKILL.md",
+      "bytes": 1714,
+      "sha256": "0fe4abb07f5d3c64c9ace96eede37348e0f530f0a4e48c7c8bdff3b03113524d",
+      "name": "computer-bootstrap",
+      "descriptionSourceBytes": 0,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/writing-prds/SKILL.md",
+      "bytes": 4756,
+      "sha256": "d50f38d7d96603e754fcc3418815c2c6eaf49a307c33f66f87989d1f4ee57ebc",
+      "name": "writing-prds",
+      "descriptionSourceBytes": 185,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/flywheel-land/SKILL.md",
+      "bytes": 7757,
+      "sha256": "f5f11071f5c9132e35a7008580c53d7a67139d4cd20481230eb49173e9a7ee83",
+      "name": "flywheel-land",
+      "descriptionSourceBytes": 59,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/product-brainstorming/SKILL.md",
+      "bytes": 16289,
+      "sha256": "68ddcabfa552c5bef590e419b03c1d2b41665d827c987c6143a9b003306ed19e",
+      "name": "product-brainstorming",
+      "descriptionSourceBytes": 304,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/codex/SKILL.md",
+      "bytes": 5079,
+      "sha256": "7dcfb0c708bc397e1e0d1371da3f7ded9284b1144f275585fb833449f76a013d",
+      "name": "codex",
+      "descriptionSourceBytes": 146,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/deep-research/SKILL.md",
+      "bytes": 18396,
+      "sha256": "26ea666f1eb59d062ce546823e8be296292a15bca67368ecee5ba821db45d7dc",
+      "name": "deep-research",
+      "descriptionSourceBytes": 309,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/codex-image/SKILL.md",
+      "bytes": 4632,
+      "sha256": "c6ae083079fbb513d692bf080a690ae9a6af9e862a0daca8799f0b315ccb2785",
+      "name": "codex-image",
+      "descriptionSourceBytes": 458,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/supabase-postgres-best-practices/SKILL.md",
+      "bytes": 2576,
+      "sha256": "ccd6e4596bd51cf344fe76c464867c541ccc16b6d90ae7a9db449fb17588613b",
+      "name": "supabase-postgres-best-practices",
+      "descriptionSourceBytes": 183,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/notion/SKILL.md",
+      "bytes": 5326,
+      "sha256": "52d9180c8889dc8f27689b898f9d8cc71da5a83fb22533812c76633a16dd44af",
+      "name": "notion",
+      "descriptionSourceBytes": 301,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/supabase/SKILL.md",
+      "bytes": 7628,
+      "sha256": "3c3f8be0662aaaed8900a2bb9bb8817a72a8eb91312ae9594b6c136dbd0ab875",
+      "name": "supabase",
+      "descriptionSourceBytes": 477,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/analyzing-user-feedback/SKILL.md",
+      "bytes": 4473,
+      "sha256": "0097f858d094fa637ebb1b136e98b5a1a2e4376cde40d657ce91ce11eed12cf6",
+      "name": "analyzing-user-feedback",
+      "descriptionSourceBytes": 245,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/prioritizing-roadmap/SKILL.md",
+      "bytes": 5158,
+      "sha256": "8db23f87817a0b3231420a7f2298f84f13c2a3caacaa0ed5fb5579af1e685d33",
+      "name": "prioritizing-roadmap",
+      "descriptionSourceBytes": 241,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/last30days/SKILL.md",
+      "bytes": 35102,
+      "sha256": "e52fc50969f4258fbe9a1e9ee8688cf7ad65f25c9c8670e549c09e569d6e459c",
+      "name": "last30days",
+      "descriptionSourceBytes": 281,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/competitive-analysis/SKILL.md",
+      "bytes": 4748,
+      "sha256": "b49801a00236d479ce5570a5cc2ef8b4059caf1cdb1f7e0f6dad88d425e09be9",
+      "name": "competitive-analysis",
+      "descriptionSourceBytes": 223,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/gemini-image/SKILL.md",
+      "bytes": 4525,
+      "sha256": "640d161c625f865e9da6fd315026dda741b3a62054c25e2222997f40b8aa6698",
+      "name": "gemini-image",
+      "descriptionSourceBytes": 416,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/defining-product-vision/SKILL.md",
+      "bytes": 5017,
+      "sha256": "829c4b8f49ee515ea3713fc3e8d5ec8080fce90f68425b6528c409c53da63b7a",
+      "name": "defining-product-vision",
+      "descriptionSourceBytes": 209,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/founder-html-delivery/SKILL.md",
+      "bytes": 4580,
+      "sha256": "b9dc392830d099775a508b712cc7df90bf49de5735961252ac585d60624277d6",
+      "name": "founder-html-delivery",
+      "descriptionSourceBytes": 292,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/problem-definition/SKILL.md",
+      "bytes": 5296,
+      "sha256": "3f0cbefef3f728b09ba27a8e40e70fd172d04a83ad7fd765ad2ebf2d6c8e62b2",
+      "name": "problem-definition",
+      "descriptionSourceBytes": 242,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/scoping-cutting/SKILL.md",
+      "bytes": 4835,
+      "sha256": "1ee06c295b548abda9f8128b12f96ea4b1b43c4d1ecf895c9bbbfd345845168b",
+      "name": "scoping-cutting",
+      "descriptionSourceBytes": 189,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/dogfooding/SKILL.md",
+      "bytes": 3035,
+      "sha256": "797192967070d51a1ed01daff8e6741a7c63c71ac05979aac200f8b8852d1f88",
+      "name": "dogfooding",
+      "descriptionSourceBytes": 213,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/chrome-repair/SKILL.md",
+      "bytes": 15962,
+      "sha256": "9be0576e1bab8096c0bb3f4b5fa99da1ed5670dbbcdcc91eaf4de7b586f586e7",
+      "name": "chrome-repair",
+      "descriptionSourceBytes": 358,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/synthesize-research/SKILL.md",
+      "bytes": 16478,
+      "sha256": "822ed6c48e856846e52c8496055642351c4757863807652e220f416707c06dd8",
+      "name": "synthesize-research",
+      "descriptionSourceBytes": 314,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/gemini-video/SKILL.md",
+      "bytes": 3911,
+      "sha256": "cc9f44aaccc97bc03a33902e2c56c62ffb2756257e7dbfa98bd935334f8bf427",
+      "name": "gemini-video",
+      "descriptionSourceBytes": 160,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/skills/writing-engine/SKILL.md",
+      "bytes": 5001,
+      "sha256": "5d7e45a672c8b919ef5dbe7b88db1642727ce045fd74b94552cb454803f2a913",
+      "name": "writing-engine",
+      "descriptionSourceBytes": 350,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/Dev/flywheel-FLY-2913/.claude/skills/flywheel-tdd/SKILL.md",
+      "bytes": 1777,
+      "sha256": "146b821b60dad9093e904f4e43ed18330f902a36e106da21989a816d6c5a2e23",
+      "name": "flywheel-tdd",
+      "descriptionSourceBytes": 74,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "worktree"
+    },
+    {
+      "path": "/Users/xiaorongli/Dev/flywheel-FLY-2913/.claude/skills/flywheel-git-workflow/SKILL.md",
+      "bytes": 1872,
+      "sha256": "10627d6552b984a14eb14a22648c7838e701da321cc4d5b9acc503486260e8ae",
+      "name": "flywheel-git-workflow",
+      "descriptionSourceBytes": 98,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "worktree"
+    },
+    {
+      "path": "/Users/xiaorongli/Dev/flywheel-FLY-2913/.claude/skills/linear-issue-context/SKILL.md",
+      "bytes": 2590,
+      "sha256": "72339ff0087a80539e177931cc3fa9ae150df8fff9ed248da91992d8e9b92163",
+      "name": "linear-issue-context",
+      "descriptionSourceBytes": 84,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "worktree"
+    },
+    {
+      "path": "/Users/xiaorongli/Dev/flywheel-FLY-2913/.claude/skills/flywheel-context/SKILL.md",
+      "bytes": 1209,
+      "sha256": "b0d8d18d8a6eff97d846b10030b33f22ab708b06c3b8941fdd43201c6c11da0c",
+      "name": "flywheel-context",
+      "descriptionSourceBytes": 95,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "worktree"
+    },
+    {
+      "path": "/Users/xiaorongli/Dev/flywheel-FLY-2913/.claude/skills/diagram-design/SKILL.md",
+      "bytes": 42059,
+      "sha256": "63ec59155f437430f66b2dbc649cc8fe7053eafde3080d60dbae0ea07fcf6831",
+      "name": "diagram-design",
+      "descriptionSourceBytes": 330,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "worktree"
+    },
+    {
+      "path": "/Users/xiaorongli/Dev/flywheel-FLY-2913/.claude/skills/flywheel-escalation/SKILL.md",
+      "bytes": 2127,
+      "sha256": "1dc3a680544ae7196dbb3b9467652feeb74f830d7df6391edab3931eca2fb0b9",
+      "name": "flywheel-escalation",
+      "descriptionSourceBytes": 63,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "worktree"
+    },
+    {
+      "path": "/Users/xiaorongli/Dev/flywheel-FLY-2913/.claude/skills/meeting-notes/SKILL.md",
+      "bytes": 5253,
+      "sha256": "9f13b2b42e806205d0e19bed96f8ae8c6aeaeab883a65cd73756071b01259151",
+      "name": "meeting-notes",
+      "descriptionSourceBytes": 226,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "worktree"
+    }
+  ],
+  "agents": [
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/everything-claude-code/everything-claude-code/1.0.0/agents/code-reviewer.md",
+      "bytes": 2897,
+      "sha256": "9703bf58fd371d25652837121c6e219351bfb3e2f3bd8fe8f72448218d43cf8a",
+      "name": "code-reviewer",
+      "descriptionSourceBytes": 183,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "everything-claude-code@everything-claude-code"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/everything-claude-code/everything-claude-code/1.0.0/agents/security-reviewer.md",
+      "bytes": 14334,
+      "sha256": "70a915f00a16ee9f31cb2b30066603b408e3d52d82fcb2cb1c3ca713d6f5ec69",
+      "name": "security-reviewer",
+      "descriptionSourceBytes": 251,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "everything-claude-code@everything-claude-code"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/everything-claude-code/everything-claude-code/1.0.0/agents/architect.md",
+      "bytes": 6291,
+      "sha256": "e4c02d466d90f1b70d77a0ad9c23b048d852a1d4e040d33e55ba1a859801a1f0",
+      "name": "architect",
+      "descriptionSourceBytes": 201,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "everything-claude-code@everything-claude-code"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/everything-claude-code/everything-claude-code/1.0.0/agents/refactor-cleaner.md",
+      "bytes": 7705,
+      "sha256": "3a5f6a77c40c75b4b137f22d41bd347a2a4e9d272060ef24b4aeb869a6865654",
+      "name": "refactor-cleaner",
+      "descriptionSourceBytes": 210,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "everything-claude-code@everything-claude-code"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/everything-claude-code/everything-claude-code/1.0.0/agents/go-build-resolver.md",
+      "bytes": 7340,
+      "sha256": "4646c0be15c6de3edd2a2ae1d4834085043a65bad1f8317c00fcba1f03c83cee",
+      "name": "go-build-resolver",
+      "descriptionSourceBytes": 161,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "everything-claude-code@everything-claude-code"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/everything-claude-code/everything-claude-code/1.0.0/agents/doc-updater.md",
+      "bytes": 11048,
+      "sha256": "b856aa5bdef47a7123e2161139c678b917f3efd714881ae3a5a9002b108f1bde",
+      "name": "doc-updater",
+      "descriptionSourceBytes": 189,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "everything-claude-code@everything-claude-code"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/everything-claude-code/everything-claude-code/1.0.0/agents/e2e-runner.md",
+      "bytes": 22633,
+      "sha256": "a7b61cb5dae4cea77f31136a0998abe64d4be45b3718dab7c0a17e4ed53c5ea4",
+      "name": "e2e-runner",
+      "descriptionSourceBytes": 297,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "everything-claude-code@everything-claude-code"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/everything-claude-code/everything-claude-code/1.0.0/agents/go-reviewer.md",
+      "bytes": 6623,
+      "sha256": "f45971c40819e18f8181ff2044cbe503188829f3a9dce2a5812ead691ee01c77",
+      "name": "go-reviewer",
+      "descriptionSourceBytes": 167,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "everything-claude-code@everything-claude-code"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/everything-claude-code/everything-claude-code/1.0.0/agents/tdd-guide.md",
+      "bytes": 7086,
+      "sha256": "97911dee63fd07a59de1cab0fa3207481c0b5ed8799e93a8db0b4617a1ce0c1f",
+      "name": "tdd-guide",
+      "descriptionSourceBytes": 180,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "everything-claude-code@everything-claude-code"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/everything-claude-code/everything-claude-code/1.0.0/agents/planner.md",
+      "bytes": 3240,
+      "sha256": "81592485df61b53b4b7b50e16a9cb14ceb7b374b0570409be5d38fa6f3ebfeea",
+      "name": "planner",
+      "descriptionSourceBytes": 214,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "everything-claude-code@everything-claude-code"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/everything-claude-code/everything-claude-code/1.0.0/agents/build-error-resolver.md",
+      "bytes": 12235,
+      "sha256": "68955de286e8e889d491aa7a367c32ca52102f9aabdb10e3586a055233b63aeb",
+      "name": "build-error-resolver",
+      "descriptionSourceBytes": 221,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "everything-claude-code@everything-claude-code"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/everything-claude-code/everything-claude-code/1.0.0/agents/database-reviewer.md",
+      "bytes": 17922,
+      "sha256": "f4bd23c2ba18c8db7ee7de6dcfcda87ba7d456e5cade60e1bfc622770d6705df",
+      "name": "database-reviewer",
+      "descriptionSourceBytes": 249,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "everything-claude-code@everything-claude-code"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/plugins/cache/openai-codex/codex/1.0.0/agents/codex-rescue.md",
+      "bytes": 3281,
+      "sha256": "67b992208eca3fa85b4b009c057906cfa75c1b40becacd8961b9b934c06f84db",
+      "name": "codex-rescue",
+      "descriptionSourceBytes": 209,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "enabled-plugin",
+      "plugin": "codex@openai-codex"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/rafiki-lead.md",
+      "bytes": 7132,
+      "sha256": "bd51849b3ecb2a2c991fc5365a63b4647a7d20395cd958475a1a2e859a886101",
+      "name": "rafiki-lead",
+      "descriptionSourceBytes": 198,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/Orchestrator.md",
+      "bytes": 29436,
+      "sha256": "1c2503c36adb6c8623ac7dae165e93928f946178abd0d5f5ee8722241d00101c",
+      "name": "Orchestrator",
+      "descriptionSourceBytes": 1485,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/Bar-Raiser.md",
+      "bytes": 9640,
+      "sha256": "a337fd1294aef3b73dfdaa017c8a5b026a39785505fe0fb48b04dc472c317fc0",
+      "name": "Bar-Raiser",
+      "descriptionSourceBytes": 1553,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/Content-Writer.md",
+      "bytes": 4047,
+      "sha256": "f7f5343385a25d4868679e8777691afdde45a756ff5be8539cc8f5a800910823",
+      "name": "Content-Writer",
+      "descriptionSourceBytes": 1290,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/sub-lead.md",
+      "bytes": 7482,
+      "sha256": "0f15a495b8288282a066e278f34ef4c1d015e74f3c2dbe6e509a5e2d4e7bdfc2",
+      "name": "sub-lead",
+      "descriptionSourceBytes": 157,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/reflection-lead.md",
+      "bytes": 9986,
+      "sha256": "998ab8fdc744524b39958b082170ee1f33cbfe55d53dcf0205fd2e38c8d6c2e7",
+      "name": "reflection-lead",
+      "descriptionSourceBytes": 236,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/mufasa-lead.md",
+      "bytes": 11126,
+      "sha256": "147d3cd8f5b73d1b78617ed6426fd34ea606fa2a5426171bd33533fbe88f6c31",
+      "name": "mufasa-lead",
+      "descriptionSourceBytes": 172,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/belle-lead.md",
+      "bytes": 20966,
+      "sha256": "2b6575cd48beb726093beb04f3d321ecd02c7e77eaa0ed4f6483f62f32892ad1",
+      "name": "belle-lead",
+      "descriptionSourceBytes": 199,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/flywheel-test-2.md",
+      "bytes": 11121,
+      "sha256": "00017c40f0c1c075e81de9b06d56817f83a075a24f6b8e646772e1c73871c0c9",
+      "name": "flywheel-test-2",
+      "descriptionSourceBytes": 67,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/Backend-Developer.md",
+      "bytes": 14832,
+      "sha256": "8cd128f63e37caa91407f8f4bd796d766bd4acc9bc65e2b0bbc44a46be6c1d94",
+      "name": "Backend-Developer",
+      "descriptionSourceBytes": 1755,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/tidal-echo-content-lead.md",
+      "bytes": 2412,
+      "sha256": "fe78adee08a9daafd8c3eea26936b4e5f8507e4dbd57e92eea3290632c555c40",
+      "name": "tidal-echo-content-lead",
+      "descriptionSourceBytes": 137,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/QA-Engineer.md",
+      "bytes": 11022,
+      "sha256": "8c33d4fdb8aa11041f2e31bc80e671d424334ed77c4562bdd97156442c7b61b2",
+      "name": "QA-Engineer",
+      "descriptionSourceBytes": 1487,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/flywheel-test-6.md",
+      "bytes": 9909,
+      "sha256": "c91b2e998629236939a116c8e126a49e6c10a5bbe3d59461e32682acaab8cd4c",
+      "name": "flywheel-test-6",
+      "descriptionSourceBytes": 98,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/anna-interviewer-lead.md",
+      "bytes": 4584,
+      "sha256": "086652895984bd8822d54168bce5b01292b400530325062fcbb3532887042ded",
+      "name": "anna-interviewer-lead",
+      "descriptionSourceBytes": 317,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/flywheel-product-lead.md",
+      "bytes": 17596,
+      "sha256": "ff96eac0e133c6ef4ac5715ffa85991e5e3631c4b3480d20749fcddbdb75195e",
+      "name": "flywheel-product-lead",
+      "descriptionSourceBytes": 372,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/UX-Designer.md",
+      "bytes": 10585,
+      "sha256": "8c863bc0369aea1c45569867fad5eb648f9179df82f2d36d5acbb36124fcb848",
+      "name": "UX-Designer",
+      "descriptionSourceBytes": 1828,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/claude-infra-bot-lead.md",
+      "bytes": 8705,
+      "sha256": "57e09f98a7324879091de287d3d0a178c663bc00e0967bf910b39be58b86c5ba",
+      "name": "claude-infra-bot-lead",
+      "descriptionSourceBytes": 242,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/joycon-lead.md",
+      "bytes": 6568,
+      "sha256": "0d5a13e2bef651ba2a06884bb4e027d36c339aeace5b65e380c4a13441324eba",
+      "name": "joycon-lead",
+      "descriptionSourceBytes": 134,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/flywheel-test-3.md",
+      "bytes": 11278,
+      "sha256": "6be5a9bb82e922f5b9fbe4efecf3e4ef18d8a4c722accdb21878e5972ad18095",
+      "name": "flywheel-test-3",
+      "descriptionSourceBytes": 67,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/Product-Manager.md",
+      "bytes": 9996,
+      "sha256": "635f723625cf2a07e86e3f73b04b46bb7a051a785271a03aed27982bba6b47e3",
+      "name": "Product-Manager",
+      "descriptionSourceBytes": 1516,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/flywheel-test-4.md",
+      "bytes": 9752,
+      "sha256": "ba2d753e396d9eb60a54c5dc01bd9f13d0c335f185d5e424c67fb532c5105bb1",
+      "name": "flywheel-test-4",
+      "descriptionSourceBytes": 98,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/Data-Scientist.md",
+      "bytes": 11994,
+      "sha256": "6ea178163b12caa3cb7e67b805824435193236a24cbe2bca3d990a09c7ede299",
+      "name": "Data-Scientist",
+      "descriptionSourceBytes": 1635,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/ops-lead.md",
+      "bytes": 7432,
+      "sha256": "101486362f1ca7d88af389eebda5d12bac05f9073b5f17757f6743431c2243f5",
+      "name": "ops-lead",
+      "descriptionSourceBytes": 118,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/Security-Engineer.md",
+      "bytes": 11267,
+      "sha256": "52267ad2c37e068ffed2a8f3751a3d90e3f79d0072541ff6ae19f819537ef412",
+      "name": "Security-Engineer",
+      "descriptionSourceBytes": 1756,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/flywheel-test-1.md",
+      "bytes": 24500,
+      "sha256": "4d4224da5b2062a4d84792b607300028563df6d552be5d22c347352c1c26ef32",
+      "name": "flywheel-test-1",
+      "descriptionSourceBytes": 66,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/flywheel-eng-lead.md",
+      "bytes": 12488,
+      "sha256": "29f5eed9b3382dc33b22c0f866fc713dfd27df59e03725af1b8a74b6334835e2",
+      "name": "flywheel-eng-lead",
+      "descriptionSourceBytes": 160,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/flywheel-cos-lead.md",
+      "bytes": 14105,
+      "sha256": "5a00d854007144b4ccc342da9c9e49e2da13413cd1a7d1e860786c7589cccddf",
+      "name": "flywheel-cos-lead",
+      "descriptionSourceBytes": 158,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/Data-Engineer.md",
+      "bytes": 8179,
+      "sha256": "8844d5fb6a3ccac23146a7c2092190588a37ea75e21bb397b61eb975cc4a0210",
+      "name": "Data-Engineer",
+      "descriptionSourceBytes": 1543,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/product-lead.md",
+      "bytes": 7275,
+      "sha256": "4708345be3139ccce4092d999764d08fd0fef57391a59c16627e33405055409c",
+      "name": "product-lead",
+      "descriptionSourceBytes": 112,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/cos-lead.md",
+      "bytes": 20655,
+      "sha256": "2469b84ffb458e8f58bcca3ab279b5de8ffbfef4fd0eac4b2a7146ff16ad0f77",
+      "name": "cos-lead",
+      "descriptionSourceBytes": 94,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/Mobile-Developer.md",
+      "bytes": 13686,
+      "sha256": "f03826f3f1feaa030bdc610996300945f581b9c84e91331e0b687ef070259f31",
+      "name": "Mobile-Developer",
+      "descriptionSourceBytes": 1646,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/tidal-echo-cos-lead.md",
+      "bytes": 2280,
+      "sha256": "dfb7a6c3077e7d91156362bbb4d51154493e7663975ae73a94415c991f19cf98",
+      "name": "tidal-echo-cos-lead",
+      "descriptionSourceBytes": 133,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/agents/Frontend-Developer.md",
+      "bytes": 15268,
+      "sha256": "cc094970d699122f4768aba68d2aa81fb41169dd0ca32f04355344eac044ac3f",
+      "name": "Frontend-Developer",
+      "descriptionSourceBytes": 1686,
+      "descriptionMeasurement": "UTF-8 bytes of raw YAML value including indentation; not token count",
+      "scope": "user"
+    }
+  ],
+  "rules": [
+    {
+      "path": "/Users/xiaorongli/.claude/rules/context7.md",
+      "bytes": 764,
+      "sha256": "04b641acaeff59bbc0290366f7883de0ff678799557839eaf664a50685ea5be5",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/rules/git-workflow.md",
+      "bytes": 2031,
+      "sha256": "532cb75f07e4e12f46a593e0dfc8fd107c9111b1afc14a87b9c586905dd707ae",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/rules/codex-multi-account.md",
+      "bytes": 2012,
+      "sha256": "f8ba3c0f7b6a181d16c7b864ab339fa76fb0cc8fba17fb4d36acf85605844348",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/rules/video-generation.md",
+      "bytes": 723,
+      "sha256": "aa0dfc914b46a3e525e7b94c831a2fe273d876252727a2d7590d1fcad402c69a",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/rules/html-report-style.md",
+      "bytes": 1997,
+      "sha256": "a523e8d7a642b131e72c68bc1ae59656b98542e78e04bdb5570df3ed99f07ef7",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/rules/image-generation.md",
+      "bytes": 619,
+      "sha256": "1eefb871b0a360819451d0b6f17c7b10a2913f8d796e195a92f490eb91e927a5",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/rules/summarize-toolchain.md",
+      "bytes": 1351,
+      "sha256": "0e355c2ff03830132da764a2c42232905df9a6ac9ce14ade6a339d5a294e7356",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/rules/deep-research.md",
+      "bytes": 686,
+      "sha256": "5fe6a7928a82d63bf4ff874c0e26d3cae99ca58864a7a9f712fcb1480ce35d52",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/rules/gemini-cli.md",
+      "bytes": 304,
+      "sha256": "5b1892cf662e4661083ac22792c7303a0040c4bab6ab1bfef865db020c868776",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/rules/codex-review.md",
+      "bytes": 1924,
+      "sha256": "cdae72d4a3aacb318467294c4c6898939763287dc39591192ccba4fc8d2b33fe",
+      "scope": "user"
+    },
+    {
+      "path": "/Users/xiaorongli/.claude/rules/gog.md",
+      "bytes": 937,
+      "sha256": "4b544908b1385190d384bd638cbb696abddd6f70ae573f84b12230059bc190fc",
+      "scope": "user"
+    }
+  ],
+  "claudeMd": [
+    {
+      "path": "/Users/xiaorongli/.claude/CLAUDE.md",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Users/xiaorongli/Dev/flywheel-FLY-2913/CLAUDE.md",
+      "bytes": 11801,
+      "sha256": "8929734ce9c95c716abb524c5ab812cf7d2a0ca9a91998800cde37cf19870cfa"
+    }
+  ],
+  "summary": {
+    "enabledPluginKeys": [
+      "everything-claude-code@everything-claude-code",
+      "context7@claude-plugins-official",
+      "playwright@claude-plugins-official",
+      "security-guidance@claude-plugins-official",
+      "codex@openai-codex",
+      "superpowers@superpowers-dev",
+      "discord@flywheel-plugins"
+    ],
+    "skillCandidates": 73,
+    "skillDescriptionSourceBytes": 13576,
+    "agentCandidates": 46,
+    "agentDescriptionSourceBytes": 25247,
+    "ruleFiles": 11,
+    "ruleBytes": 13348,
+    "claudeMdBytes": 11801
+  }
+}
