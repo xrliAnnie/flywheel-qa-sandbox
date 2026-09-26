@@ -161,7 +161,6 @@ export class AdmissionResiduals {
 	private removed = false;
 	/** An admitted session owns its processes; nothing is tracked any more. */
 	private released = false;
-	private reportedUndeletable = false;
 
 	constructor(
 		private readonly options: {
@@ -171,6 +170,11 @@ export class AdmissionResiduals {
 			report(line: string): void;
 			/** Tells the registry this daemon no longer holds the session. */
 			onDetach?(): void;
+			/**
+			 * Sessions whose settled record could not be deleted and were already
+			 * reported; shared by the registry so periodic sweeps do not repeat it.
+			 */
+			undeletableReported?: Set<string>;
 		},
 		file?: ResidualFile,
 	) {
@@ -184,6 +188,11 @@ export class AdmissionResiduals {
 
 	get sessionId(): string {
 		return this.options.sessionId;
+	}
+
+	private get undeletableReported(): Set<string> {
+		this.options.undeletableReported ??= new Set();
+		return this.options.undeletableReported;
 	}
 
 	/** A child we just spawned. Its identity is read now, before it can be reused. */
@@ -327,8 +336,10 @@ export class AdmissionResiduals {
 				}
 			}
 			if (!this.pending) {
-				if (!this.remove() && !this.reportedUndeletable) {
-					this.reportedUndeletable = true;
+				const reported = this.undeletableReported;
+				if (this.remove()) reported.delete(this.options.sessionId);
+				else if (!reported.has(this.options.sessionId)) {
+					reported.add(this.options.sessionId);
 					this.options.report(
 						`[voice] admission residual file undeletable reasonClass=admission_residual_file_undeletable operation=session_runtime sessionId=${this.options.sessionId}`,
 					);
@@ -488,6 +499,8 @@ export class AdmissionResiduals {
 export class AdmissionResidualRegistry {
 	/** Sessions whose admission this daemon still holds; sweeps skip them. */
 	private readonly held = new Set<string>();
+	/** Undeletable settled records already reported (report once per daemon). */
+	private readonly undeletableReported = new Set<string>();
 	constructor(
 		private readonly options: {
 			root: string;
@@ -527,6 +540,7 @@ export class AdmissionResidualRegistry {
 				sessionId,
 				system: this.options.system ?? hostResidualSystem,
 				report: this.options.report ?? ((line) => console.error(line)),
+				undeletableReported: this.undeletableReported,
 				...(onDetach ? { onDetach } : {}),
 			},
 			existsSync(path) ? this.read(path) : undefined,

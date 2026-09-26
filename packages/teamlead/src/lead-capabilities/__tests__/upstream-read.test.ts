@@ -16,7 +16,7 @@ import { createUpstreamReadAdapter } from "../handlers/upstream-read.js";
 vi.mock("../runtime-context.js", () => ({
 	createLeadCapabilityContext: () => ({ assertActivationCurrent: () => {} }),
 }));
-it("retains all 27 reads while keeping xsec tokens in parent handles", async () => {
+it("retains all 9 reads while keeping xsec tokens in parent handles", async () => {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "upstream-read-"))),
 		artifactRoot = join(root, "artifacts");
 	mkdirSync(artifactRoot, { mode: 0o700 });

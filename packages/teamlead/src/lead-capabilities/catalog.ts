@@ -1109,7 +1109,8 @@ export const LEAD_PARITY_COVERAGE = Object.freeze(
 		["P12", "native-browser-worker"],
 		["P13", "rule-sources"],
 		["P14", "skill-sources"],
-		["P15", "schema-pinned-handlers-pending"],
+		// FLY-2886: gbrain removed; P15 is the Bridge-backed memory.* only.
+		["P15", "catalog"],
 		["P16", "schema-pinned-handlers-pending"],
 		["P17", "catalog-context7-pending-other-applicable"],
 	].map(([parityId, coverage]) =>

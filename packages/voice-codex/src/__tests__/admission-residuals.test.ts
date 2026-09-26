@@ -358,26 +358,50 @@ describe("review R2 durability", () => {
 		expect(host.signals).toEqual([]);
 	});
 
-	it("when neither the rewrite nor the delete works, the session stays held and it is reported (R2#1)", async () => {
+	// chmod cannot make a write fail for root.
+	it.skipIf(process.getuid?.() === 0)(
+		"when neither the rewrite nor the delete works, the session stays held and it is reported (R2#1)",
+		async () => {
+			const reg = registry();
+			const claimed = reg.claim(SESSION);
+			claimed.registerSpawned(host.spawn(701, DAEMON));
+			const { chmodSync } = await import("node:fs");
+			chmodSync(join(root, "residuals"), 0o500);
+			host.failRemoveFile = true;
+			try {
+				claimed.release();
+			} finally {
+				host.failRemoveFile = false;
+				chmodSync(join(root, "residuals"), 0o700);
+			}
+			expect(
+				reports.some((line) =>
+					line.includes("admission_residual_release_failed"),
+				),
+			).toBe(true);
+			await reg.sweep();
+			expect(host.signals).toEqual([]);
+		},
+	);
+
+	it("a settled record that cannot be deleted is reported once across reaps and sweeps", async () => {
 		const reg = registry();
 		const claimed = reg.claim(SESSION);
 		claimed.registerSpawned(host.spawn(701, DAEMON));
-		const { chmodSync } = await import("node:fs");
-		chmodSync(join(root, "residuals"), 0o500);
 		host.failRemoveFile = true;
-		try {
-			claimed.release();
-		} finally {
-			host.failRemoveFile = false;
-			chmodSync(join(root, "residuals"), 0o700);
-		}
+		expect(await claimed.reap()).toBe("settled");
+		expect(await claimed.reap()).toBe("settled");
+		claimed.detach();
+		for (let sweep = 0; sweep < 3; sweep++) await reg.sweep();
 		expect(
-			reports.some((line) =>
-				line.includes("admission_residual_release_failed"),
+			reports.filter((line) =>
+				line.includes("admission_residual_file_undeletable"),
 			),
-		).toBe(true);
+		).toHaveLength(1);
+		// Once the record goes away, a later failure is news again.
+		host.failRemoveFile = false;
 		await reg.sweep();
-		expect(host.signals).toEqual([]);
+		expect(existsSync(file())).toBe(false);
 	});
 
 	it("a failing identity read is not proof the process is gone (R2#2)", async () => {
