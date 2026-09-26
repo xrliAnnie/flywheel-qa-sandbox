@@ -155,6 +155,12 @@ export interface SpeechStream {
 	readonly done: Promise<void>;
 }
 
+export interface SpeechRetraction {
+	removedQueuedFrames: number;
+	removedSubmittedFrames: number;
+	alreadyConsumedFrames: number;
+}
+
 interface QueuedSpeech {
 	id: string;
 	pcm24Mono: Buffer;
@@ -162,6 +168,18 @@ interface QueuedSpeech {
 	ended: boolean;
 	resolve(): void;
 	reject(error: Error): void;
+}
+
+interface SubmittedOutputFrame {
+	frameSeq: number;
+	speechId: string | null;
+	pcm48Stereo: Buffer;
+	resourceSeq: number;
+	submissionSeq: number;
+}
+
+interface SpeechFrameStats {
+	consumedFrames: number;
 }
 
 export type WaitingMouthDiagnostic =
@@ -178,7 +196,13 @@ export type WaitingMouthDiagnostic =
 			/** The speech was still streaming and its next frame had not arrived. */
 			upstreamStarved: boolean;
 	  }
-	| { kind: "playback_flushed"; droppedFrames: number };
+	| { kind: "playback_flushed"; droppedFrames: number }
+	| {
+			kind: "playback_retracted";
+			speechId: string;
+			removedFrames: number;
+			preservedFrames: number;
+	  };
 
 export class WaitingMouth {
 	private stream = new PassThrough({ highWaterMark: 1 << 20 });
@@ -193,8 +217,12 @@ export class WaitingMouth {
 	private openedAt = 0;
 	private lastPumpAt?: number;
 	private framesWritten = 0;
-	/** Frame count just past the last speech frame in the current output. */
-	private speechWrittenUntil = 0;
+	private resourceConsumedFrames = 0;
+	private nextFrameSeq = 1;
+	private nextResourceSeq = 1;
+	private resourceSeq = 0;
+	private outputFrames: SubmittedOutputFrame[] = [];
+	private readonly speechFrameStats = new Map<string, SpeechFrameStats>();
 	private readonly now: () => number;
 
 	constructor(
@@ -240,7 +268,8 @@ export class WaitingMouth {
 		if (
 			!speechId ||
 			this.stopped ||
-			this.speechQueue.some((speech) => speech.id === speechId)
+			this.speechQueue.some((speech) => speech.id === speechId) ||
+			this.speechFrameStats.has(speechId)
 		) {
 			const done = Promise.reject(new Error("speech_playback_invalid"));
 			return {
@@ -262,17 +291,38 @@ export class WaitingMouth {
 			...settle,
 		};
 		this.speechQueue.push(speech);
+		this.speechFrameStats.set(speechId, { consumedFrames: 0 });
 		return {
 			append: (pcm24Mono) => this.appendSpeech(speech, pcm24Mono),
 			end: () => this.endSpeech(speech),
-			cancel: () => this.stopSpeech(speech),
+			cancel: () => {
+				this.cancelSpeech(speech.id);
+			},
 			done,
 		};
 	}
 
-	cancelSpeech(speechId: string): void {
+	cancelSpeech(speechId: string): SpeechRetraction {
+		this.reconcileConsumedOutput();
 		const speech = this.speechQueue.find((queued) => queued.id === speechId);
-		if (speech) this.stopSpeech(speech);
+		let removedQueuedFrames = 0;
+		if (speech) {
+			removedQueuedFrames = Math.ceil(
+				Math.max(0, speech.pcm24Mono.length - speech.offset) /
+					PCM24_FRAME_BYTES,
+			);
+			this.speechQueue.splice(this.speechQueue.indexOf(speech), 1);
+			speech.reject(new Error("speech_playback_stopped"));
+		}
+		const alreadyConsumedFrames =
+			this.speechFrameStats.get(speechId)?.consumedFrames ?? 0;
+		const removedSubmittedFrames = this.rebuildWithoutSpeech(speechId);
+		this.speechFrameStats.delete(speechId);
+		return {
+			removedQueuedFrames,
+			removedSubmittedFrames,
+			alreadyConsumedFrames,
+		};
 	}
 
 	cancelAllSpeech(): void {
@@ -284,6 +334,7 @@ export class WaitingMouth {
 		for (const speech of pending) {
 			speech.reject(new Error("speech_playback_stopped"));
 		}
+		this.speechFrameStats.clear();
 		this.dropQueuedSpeech();
 	}
 
@@ -306,18 +357,12 @@ export class WaitingMouth {
 		this.options.player.stop();
 	}
 
-	private stopSpeech(speech: QueuedSpeech): void {
-		const index = this.speechQueue.indexOf(speech);
-		if (index < 0) return;
-		this.speechQueue.splice(index, 1);
-		speech.reject(new Error("speech_playback_stopped"));
-		if (index === 0 && speech.offset > 0) this.dropQueuedSpeech();
-	}
-
 	/** Speech frames already handed to the player but not yet played. */
 	private dropQueuedSpeech(): void {
-		if (this.speechWrittenUntil > this.consumedFrames())
+		this.reconcileConsumedOutput();
+		if (this.outputFrames.some((frame) => frame.speechId !== null)) {
 			this.dropQueuedOutput();
+		}
 	}
 
 	private appendSpeech(speech: QueuedSpeech, pcm24Mono: Buffer): boolean {
@@ -347,17 +392,36 @@ export class WaitingMouth {
 		}
 	}
 
-	private openOutput(): void {
+	private openOutput(replay: readonly SubmittedOutputFrame[] = []): void {
 		this.stream = new PassThrough({ highWaterMark: 1 << 20 });
 		this.resource = this.options.createResource({
 			kind: "raw-stream",
 			stream: this.stream,
 		});
-		this.options.player.play(this.resource);
 		this.openedAt = this.now();
 		this.framesWritten = 0;
-		this.speechWrittenUntil = 0;
+		this.resourceConsumedFrames = 0;
+		this.resourceSeq = this.nextResourceSeq++;
+		this.outputFrames = replay.map((frame, index) => ({
+			...frame,
+			resourceSeq: this.resourceSeq,
+			submissionSeq: index + 1,
+		}));
 		this.writeBlocked = false;
+		let replayBlocked = false;
+		for (const frame of this.outputFrames) {
+			const accepted = this.stream.write(frame.pcm48Stereo);
+			this.framesWritten += 1;
+			if (!accepted) replayBlocked = true;
+		}
+		if (replayBlocked) {
+			this.writeBlocked = true;
+			const stream = this.stream;
+			stream.once("drain", () => {
+				if (this.stream === stream) this.writeBlocked = false;
+			});
+		}
+		this.options.player.play(this.resource);
 	}
 
 	/**
@@ -381,15 +445,46 @@ export class WaitingMouth {
 	 */
 	private dropQueuedOutput(): void {
 		if (this.stopped || !this.timer) return;
+		this.reconcileConsumedOutput();
 		const previous = this.stream;
-		const droppedFrames = Math.max(
-			0,
-			this.framesWritten - this.consumedFrames(),
-		);
+		const droppedFrames = this.outputFrames.length;
 		this.openOutput();
 		previous.destroy();
 		this.options.onDiagnostic?.({ kind: "playback_flushed", droppedFrames });
 		this.pump();
+	}
+
+	private rebuildWithoutSpeech(speechId: string): number {
+		if (this.stopped || !this.timer) return 0;
+		const kept = this.outputFrames.filter(
+			(frame) => frame.speechId !== speechId,
+		);
+		const removedFrames = this.outputFrames.length - kept.length;
+		if (removedFrames === 0) return 0;
+		const previous = this.stream;
+		this.openOutput(kept);
+		previous.destroy();
+		this.options.onDiagnostic?.({
+			kind: "playback_retracted",
+			speechId,
+			removedFrames,
+			preservedFrames: kept.length,
+		});
+		this.pump();
+		return removedFrames;
+	}
+
+	private reconcileConsumedOutput(): void {
+		const consumed = this.consumedFrames();
+		const newlyConsumed = Math.max(0, consumed - this.resourceConsumedFrames);
+		if (newlyConsumed === 0) return;
+		const frames = this.outputFrames.splice(0, newlyConsumed);
+		for (const frame of frames) {
+			if (!frame.speechId) continue;
+			const stats = this.speechFrameStats.get(frame.speechId);
+			if (stats) stats.consumedFrames += 1;
+		}
+		this.resourceConsumedFrames = consumed;
 	}
 
 	private tick(): void {
@@ -409,6 +504,7 @@ export class WaitingMouth {
 		const sincePreviousPumpMs =
 			this.lastPumpAt === undefined ? 0 : pumpedAt - this.lastPumpAt;
 		this.lastPumpAt = pumpedAt;
+		this.reconcileConsumedOutput();
 		const consumed = this.consumedFrames();
 		const head = this.speechQueue[0];
 		if (head && head.offset > 0 && this.framesWritten <= consumed) {
@@ -422,10 +518,6 @@ export class WaitingMouth {
 		}
 		if (consumed - this.framesWritten > MAX_CATCH_UP_FRAMES) {
 			this.framesWritten = consumed - MAX_CATCH_UP_FRAMES;
-			this.speechWrittenUntil = Math.min(
-				this.speechWrittenUntil,
-				this.framesWritten,
-			);
 		}
 		while (!this.stopped && !this.writeBlocked) {
 			const lead = this.speechReady()
@@ -467,9 +559,16 @@ export class WaitingMouth {
 					: Buffer.alloc(PCM48_STEREO_FRAME_BYTES);
 		}
 		const stream = this.stream;
-		const accepted = stream.write(output);
+		const pcm48Stereo = Buffer.from(output);
+		const accepted = stream.write(pcm48Stereo);
+		this.outputFrames.push({
+			frameSeq: this.nextFrameSeq++,
+			speechId: speech?.id ?? null,
+			pcm48Stereo,
+			resourceSeq: this.resourceSeq,
+			submissionSeq: this.framesWritten + 1,
+		});
 		this.framesWritten += 1;
-		if (speech) this.speechWrittenUntil = this.framesWritten;
 		if (!accepted) {
 			this.writeBlocked = true;
 			stream.once("drain", () => {

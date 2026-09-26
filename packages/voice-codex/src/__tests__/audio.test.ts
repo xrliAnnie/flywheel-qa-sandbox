@@ -378,6 +378,136 @@ describe("WaitingMouth", () => {
 		mouth.stop();
 	});
 
+	it("retracts every target frame after the speech queue submitted them but before the player consumed them", async () => {
+		let callback!: () => void;
+		const simulated = simulatedPlayer();
+		const mouth = new WaitingMouth({
+			player: simulated.player,
+			createResource: simulated.createResource,
+			setIntervalFn: ((next: () => void) => {
+				callback = next;
+				return 1 as unknown as NodeJS.Timeout;
+			}) as unknown as typeof setInterval,
+			clearIntervalFn: vi.fn() as unknown as typeof clearInterval,
+		});
+		mouth.start();
+		const submitted = mouth.playSpeech(
+			"leak",
+			Buffer.concat(
+				Array.from({ length: 4 }, () => pcm16(Array(480).fill(22))),
+			),
+		);
+		callback();
+		await submitted;
+		expect(simulated.resources[0]?.playbackDuration).toBe(0);
+		expect(
+			simulated.resources[0]?.frames.filter(
+				(frame) => frame.readInt16LE(0) === 22,
+			),
+		).toHaveLength(4);
+
+		expect(mouth.cancelSpeech("leak")).toEqual({
+			removedQueuedFrames: 0,
+			removedSubmittedFrames: 4,
+			alreadyConsumedFrames: 0,
+		});
+		for (let index = 0; index < 10; index += 1) simulated.read();
+		expect(
+			simulated.heard.filter(
+				(frame) => frame !== null && frame.readInt16LE(0) === 22,
+			),
+		).toEqual([]);
+		mouth.stop();
+	});
+
+	it("reports target frames already consumed before retracting the buffered remainder", async () => {
+		let callback!: () => void;
+		const simulated = simulatedPlayer();
+		const mouth = new WaitingMouth({
+			player: simulated.player,
+			createResource: simulated.createResource,
+			setIntervalFn: ((next: () => void) => {
+				callback = next;
+				return 1 as unknown as NodeJS.Timeout;
+			}) as unknown as typeof setInterval,
+			clearIntervalFn: vi.fn() as unknown as typeof clearInterval,
+		});
+		mouth.start();
+		const submitted = mouth.playSpeech(
+			"leak",
+			Buffer.concat(
+				Array.from({ length: 4 }, () => pcm16(Array(480).fill(22))),
+			),
+		);
+		callback();
+		await submitted;
+		// Two idle frames lead the speech. Consuming three frames means exactly
+		// one target frame is already irreversible when retraction begins.
+		for (let index = 0; index < 3; index += 1) simulated.read();
+
+		expect(mouth.cancelSpeech("leak")).toEqual({
+			removedQueuedFrames: 0,
+			removedSubmittedFrames: 3,
+			alreadyConsumedFrames: 1,
+		});
+		for (let index = 0; index < 8; index += 1) simulated.read();
+		expect(
+			simulated.heard.filter(
+				(frame) => frame !== null && frame.readInt16LE(0) === 22,
+			),
+		).toHaveLength(1);
+		mouth.stop();
+	});
+
+	it("selectively rebuilds a shared player buffer and preserves authorized tail frames exactly once", async () => {
+		let callback!: () => void;
+		const simulated = simulatedPlayer();
+		const mouth = new WaitingMouth({
+			player: simulated.player,
+			createResource: simulated.createResource,
+			setIntervalFn: ((next: () => void) => {
+				callback = next;
+				return 1 as unknown as NodeJS.Timeout;
+			}) as unknown as typeof setInterval,
+			clearIntervalFn: vi.fn() as unknown as typeof clearInterval,
+		});
+		mouth.start();
+		const authorized = mouth.playSpeech(
+			"authorized",
+			Buffer.concat(
+				Array.from({ length: 3 }, () => pcm16(Array(480).fill(11))),
+			),
+		);
+		const leak = mouth.playSpeech(
+			"leak",
+			Buffer.concat(
+				Array.from({ length: 4 }, () => pcm16(Array(480).fill(22))),
+			),
+		);
+		callback();
+		await Promise.all([authorized, leak]);
+		expect(
+			simulated.resources[0]?.frames
+				.map((frame) => frame.readInt16LE(0))
+				.filter((sample) => sample !== 0),
+		).toEqual([11, 11, 11, 22, 22, 22, 22]);
+
+		expect(mouth.cancelSpeech("leak")).toEqual({
+			removedQueuedFrames: 0,
+			removedSubmittedFrames: 4,
+			alreadyConsumedFrames: 0,
+		});
+		for (let index = 0; index < 12; index += 1) simulated.read();
+		expect(
+			simulated.heard
+				.filter((frame): frame is Buffer => frame !== null)
+				.map((frame) => frame.readInt16LE(0))
+				.filter((sample) => sample !== 0),
+		).toEqual([11, 11, 11]);
+		expect(simulated.player.play).toHaveBeenCalledTimes(2);
+		mouth.stop();
+	});
+
 	it("starts a streamed speech before its audio is complete and resolves after the end", async () => {
 		const { tick, ...pacing } = lockstep();
 		const frames: Buffer[] = [];
