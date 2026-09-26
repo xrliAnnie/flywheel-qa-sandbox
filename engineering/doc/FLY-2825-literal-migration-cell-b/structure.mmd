@@ -1,0 +1,32 @@
+%%{init: {'theme':'base','themeVariables':{'fontFamily':'system-ui','primaryColor':'#f5f5f7','primaryTextColor':'#1d1d1f','primaryBorderColor':'#86868b','lineColor':'#86868b','fontSize':'14px'}}}%%
+classDiagram
+    direction LR
+    class 应改_10_文件 {
+      alpha/beta/gamma/delta model.ts  各2处
+      alpha/beta/gamma/delta model.test.ts  各6处
+      literal-only.test.ts  2处
+      static-dependency.test.ts  4处
+      合计 38 处精确旧值
+    }
+    class 不碰_4_文件 {
+      index.ts  近似值 + 无关值
+      unrelated.test.ts  守卫近似值/无关值
+      verify.mjs  独立检查器
+      package.json  整包别名(诱饵)
+    }
+    class 本机只跑的测试 {
+      4 个 model.test.ts  各 6 条
+      literal-only  1 条
+      static-dependency  1 条
+      unrelated  8 条
+      合计 34 条，逐文件运行
+    }
+    class 禁止的命令 {
+      pnpm test
+      pnpm --filter pkg test
+      vitest run 无文件参数
+      test:packages
+    }
+    应改_10_文件 --> 本机只跑的测试 : 断言同步更新
+    不碰_4_文件 --> 本机只跑的测试 : unrelated 经 index.ts 静态依赖
+    本机只跑的测试 ..> 禁止的命令 : 任一调用即 529 判失败

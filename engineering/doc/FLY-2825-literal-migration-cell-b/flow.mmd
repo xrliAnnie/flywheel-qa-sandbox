@@ -1,0 +1,12 @@
+%%{init: {'theme':'base','themeVariables':{'fontFamily':'system-ui','primaryColor':'#eef5ff','primaryTextColor':'#1d1d1f','primaryBorderColor':'#007aff','lineColor':'#86868b','fontSize':'15px'}}}%%
+flowchart TB
+    A["提交 1 · seed<br/>把样板包原样带进分支<br/>(cherry-pick 01838552f)"] --> B["提交 2 · lock<br/>补 6 行安装记录<br/>让 CI 能安装"]
+    B --> C["pnpm install --frozen-lockfile<br/>本地安装成功 = lock 正确"]
+    C --> D["先搜索，后测试<br/>13 个命中 → 10 个该改 + 3 个近似值不碰"]
+    D --> E["提交 3 · 迁移<br/>10 文件 38 处<br/>claude-opus-5 → claude-opus-5.5"]
+    E --> F{"自检"}
+    F -->|"diff 恰 10 文件<br/>近似值/无关值不变"| G["逐文件跑 7 个相关测试<br/>+ related + verify.mjs + lint"]
+    F -->|"多改/少改"| X["回退重来<br/>不扩大范围"]
+    G --> H["提交 4 · milestone<br/>开 PR，完整测试交给云端 CI"]
+    style X fill:#fff1f0,stroke:#ff3b30
+    style H fill:#eafaf0,stroke:#34c759
