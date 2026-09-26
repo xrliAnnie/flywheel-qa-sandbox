@@ -1051,3 +1051,49 @@ it("a resident (fail_closed) manifest carries no unavailableIntegrations field",
 		await session.close();
 	}
 });
+
+it("an unavailable integration keeps none of its operations: reads, writes, denials or management (review R1#3)", async () => {
+	state.failures = {
+		gbrain: "gbrain_host_unverified",
+		"xiaohongshu-mcp": "upstream_http_unavailable",
+		context7: "baseline_drift",
+	};
+	authority.enabled = true;
+	const options = withoutGithubCredential({
+		...fixture(),
+		linearToken: undefined as unknown as string,
+	});
+	const session = await startLeadRuntimeProviders({ ...options, ...OMIT });
+	try {
+		const unavailable = new Set(
+			session.unavailableIntegrations!.map((row) => row.id),
+		);
+		expect([...unavailable].sort()).toEqual([
+			"context7",
+			"gbrain",
+			"github",
+			"linear",
+			"xiaohongshu-mcp",
+		]);
+		const leaked = [...session.handlers.keys()].filter((id) =>
+			unavailable.has(
+				LEAD_CAPABILITY_CATALOG.find((row) => row.operationId === id)!
+					.credentialConsumer as never,
+			),
+		);
+		expect(leaked).toEqual([]);
+		for (const id of [
+			"knowledge.put_page",
+			"xiaohongshu.publish_content",
+			"xiaohongshu.write.prepare",
+			"github.pr.edit",
+			"patrol.snapshot",
+		])
+			expect(session.handlers.has(id)).toBe(false);
+		// Core capabilities remain.
+		for (const id of ["start_runner", "bridge.read", "memory.search"])
+			expect(session.handlers.has(id)).toBe(true);
+	} finally {
+		await session.close();
+	}
+});

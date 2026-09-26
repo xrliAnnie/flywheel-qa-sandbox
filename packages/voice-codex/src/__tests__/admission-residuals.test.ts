@@ -42,6 +42,12 @@ class FakeHost implements ResidualSystem {
 			zombie: row.zombie,
 		}));
 	}
+	identityOf(pid: number) {
+		const row = this.rows.get(pid);
+		return row
+			? { pid, ppid: row.ppid, start: row.start, zombie: row.zombie }
+			: undefined;
+	}
 	signal(pid: number, signal: "SIGSTOP" | "SIGKILL") {
 		this.signals.push([pid, signal]);
 		const row = this.rows.get(pid);
@@ -310,4 +316,24 @@ describe("ownership of in-flight and admitted sessions (FLY-2886 §14.2)", () =>
 		expect(host.rows.has(702)).toBe(true);
 		expect(host.signals).toEqual([]);
 	});
+});
+
+it("re-reads the exact identity right before each signal: a pid reused after the snapshot is never signalled (review R1#2)", async () => {
+	const reg = registry();
+	const residuals = reg.claim(SESSION);
+	residuals.registerSpawned(host.spawn(701, DAEMON));
+	// Between the reap snapshot and the first signal, 701 exits and the pid is reused.
+	const original = host.snapshot.bind(host);
+	let snapshots = 0;
+	host.snapshot = () => {
+		const rows = original();
+		if (++snapshots === 1) {
+			host.exit(701);
+			host.spawn(701, DAEMON);
+		}
+		return rows;
+	};
+	await residuals.reap();
+	expect(host.signals).toEqual([]);
+	expect(host.rows.has(701)).toBe(true);
 });

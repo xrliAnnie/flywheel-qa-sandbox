@@ -4,3 +4,7 @@ before (HEAD c6bba2367, pre-§14.1) vs after (§14.1 applied):
 0ea4568016be0442e75e7340f82438523c1591410f5a80554697c2cd940f44fd  before
 0ea4568016be0442e75e7340f82438523c1591410f5a80554697c2cd940f44fd  after
 cmp: identical (3 manifests)
+
+Re-run after the review R1#3 requires-slot restructure:
+0ea4568016be0442e75e7340f82438523c1591410f5a80554697c2cd940f44fd  after-r1
+cmp: identical (3 manifests)

@@ -566,32 +566,68 @@ export async function startLeadRuntimeProviders(
 				handlers.set(id, handler);
 			}
 		};
+		// Every handler group declares the optional integrations it requires and is
+		// assembled only after all providers started, in this fixed order (the
+		// resident fail_closed assembly order, so its manifest bytes are unchanged).
+		const slots: Array<{
+			requires: readonly OptionalIntegrationId[];
+			handlers: ReadonlyMap<string, LeadOperationHandler>;
+		}> = [];
+		const slot = (
+			handlers: ReadonlyMap<string, LeadOperationHandler>,
+			...requires: OptionalIntegrationId[]
+		) => slots.push({ requires, handlers });
+		/** Upstream writes and denials belong to the integration they write to. */
+		const writesFor = (consumer: "gbrain" | "xiaohongshu-mcp" | "other") =>
+			new Map(
+				[...writeHandlers].filter(([id]) => {
+					const owner = LEAD_CAPABILITY_CATALOG.find(
+						(row) => row.operationId === id,
+					)?.credentialConsumer;
+					return consumer === "other"
+						? owner !== "gbrain" && owner !== "xiaohongshu-mcp"
+						: owner === consumer;
+				}),
+			);
 		const [githubRead, patrol] = github ? githubGroups(github.client) : [];
-		for (const group of [
-			createRunnerBridgeHandlers(common),
-			createBridgeReadHandlers(common),
-			createMemoryBridgeHandlers(common),
-			createBridgeDiscordHandlers(common),
-			createBridgeVoiceHandlers(common),
+		slot(createRunnerBridgeHandlers(common));
+		slot(createBridgeReadHandlers(common));
+		slot(createMemoryBridgeHandlers(common));
+		slot(createBridgeDiscordHandlers(common));
+		slot(createBridgeVoiceHandlers(common));
+		slot(
 			createBridgeAttachmentHandlers({ ...common, store: options.artifacts }),
-			...(githubRead ? [githubRead] : []),
-			createGithubBridgeHandlers(common),
-			createTerminalInputHandlers(common),
-			createInboxBatchAckHandlers(common),
-			createInboxEventAckHandlers(common),
-			...(patrol ? [patrol] : []),
-			createReportPublishHandlers({ ...common, store: options.artifacts }),
-			createReportDeliverHandlers(common),
-			createReportVerifyHandlers(common),
-			...(linear ? [linear.handlers] : []),
-			writeHandlers,
+		);
+		if (githubRead) slot(githubRead, "github");
+		slot(createGithubBridgeHandlers(common), "github");
+		slot(createTerminalInputHandlers(common));
+		slot(createInboxBatchAckHandlers(common));
+		slot(createInboxEventAckHandlers(common));
+		if (patrol) slot(patrol, "github");
+		slot(createReportPublishHandlers({ ...common, store: options.artifacts }));
+		slot(createReportDeliverHandlers(common));
+		slot(createReportVerifyHandlers(common));
+		if (linear) slot(linear.handlers, "linear");
+		slot(
+			new Map(
+				[...writeHandlers].filter(([id]) => {
+					const owner = LEAD_CAPABILITY_CATALOG.find(
+						(row) => row.operationId === id,
+					)?.credentialConsumer;
+					return owner !== "gbrain" && owner !== "xiaohongshu-mcp";
+				}),
+			),
+		);
+		slot(writesFor("gbrain"), "gbrain");
+		slot(writesFor("xiaohongshu-mcp"), "xiaohongshu-mcp");
+		slot(
 			createXhsWriteManagementHandlers({
 				...common,
 				client: authorityClient,
 				artifacts: options.artifacts,
 			}),
-		])
-			add(group);
+			"xiaohongshu-mcp",
+		);
 		current();
 		const upstreamReads = (serverId: "gbrain" | "xiaohongshu-mcp") =>
 			UPSTREAM_TOOL_ROWS.filter(
@@ -608,7 +644,7 @@ export async function startLeadRuntimeProviders(
 		);
 		if (gbrain) {
 			cleanup.push(gbrain.close);
-			add(gbrain.handlers);
+			slot(gbrain.handlers, "gbrain");
 		}
 		current();
 		const xhsAuthorityReads = () =>
@@ -633,7 +669,7 @@ export async function startLeadRuntimeProviders(
 			const xhsReads = new Map(xiaohongshu.handlers);
 			for (const [id, handler] of xhsAuthorityReads())
 				xhsReads.set(id, handler);
-			add(xhsReads);
+			slot(xhsReads, "xiaohongshu-mcp");
 		}
 		current();
 		const context7 = await optional(
@@ -651,7 +687,7 @@ export async function startLeadRuntimeProviders(
 		);
 		if (context7) {
 			cleanup.push(context7.close);
-			add(context7.handlers);
+			slot(context7.handlers, "context7");
 		}
 		current();
 		const browser =
@@ -721,8 +757,18 @@ export async function startLeadRuntimeProviders(
 						};
 					});
 		cleanup.push(browser.close);
-		add(browser.handlers);
+		slot(browser.handlers, "browser");
 		current();
+		for (const group of slots) {
+			if (group.requires.some((id) => unavailable.has(id)))
+				for (const id of group.handlers.keys()) omitted.add(id);
+			else add(group.handlers);
+		}
+		// Whatever belongs to an unavailable integration is omitted as a whole; a
+		// group that forgot to declare it now fails the coverage check below.
+		for (const row of LEAD_CAPABILITY_CATALOG)
+			if (unavailable.has(row.credentialConsumer as OptionalIntegrationId))
+				omitted.add(row.operationId);
 		assertRuntimeHandlerCoverage({
 			handlers,
 			omitted,

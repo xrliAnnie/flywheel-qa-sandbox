@@ -277,7 +277,8 @@ export async function startBrowserEgressProxy(
 					// websockets ride these tunnels (FLY-2886 ruling B); a quiet voice
 					// session must not be cut. Close/revocation still tear them down.
 					upstream.setTimeout(0);
-					client.setTimeout(0);
+					// The CONNECT client is the proxy's own net.Socket.
+					(client as Socket).setTimeout(0);
 					if (head.length) upstream.write(head);
 					client.pipe(upstream);
 					upstream.pipe(client);

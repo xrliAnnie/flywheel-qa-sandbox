@@ -32,6 +32,8 @@ export interface ProcessRow {
 export interface ResidualSystem {
 	/** Every process on the host. */
 	snapshot(): ProcessRow[];
+	/** One process, read fresh; undefined when it does not exist. */
+	identityOf?(pid: number): ProcessRow | undefined;
 	signal(pid: number, signal: "SIGSTOP" | "SIGKILL"): void;
 	removeDirectory(path: string): void;
 	/** Lets the event loop reap killed children between checks. */
@@ -93,6 +95,26 @@ export const hostResidualSystem: ResidualSystem = {
 				env: { PATH: "/usr/bin:/bin", LC_ALL: "C" },
 			}),
 		),
+	identityOf: (pid) => {
+		try {
+			return parseProcessTable(
+				execFileSync(
+					"/bin/ps",
+					["-o", "pid=,ppid=,stat=,lstart=", "-p", String(pid)],
+					{
+						encoding: "utf8",
+						timeout: 5_000,
+						maxBuffer: 64 * 1024,
+						stdio: ["ignore", "pipe", "ignore"],
+						env: { PATH: "/usr/bin:/bin", LC_ALL: "C" },
+					},
+				),
+			).find((row) => row.pid === pid);
+		} catch {
+			// ps exits non-zero when the pid does not exist.
+			return undefined;
+		}
+	},
 	signal: (pid, signal) => {
 		process.kill(pid, signal);
 	},
@@ -328,9 +350,20 @@ export class AdmissionResiduals {
 		table: Map<number, ProcessRow>,
 		signal: "SIGSTOP" | "SIGKILL",
 	): boolean {
-		// Re-check the exact identity immediately before signalling.
-		const row = table.get(identity.pid);
-		if (!row || row.start !== identity.start) {
+		// Re-read this one pid immediately before signalling; the snapshot may be
+		// stale and its pid reused since (review R1#2).
+		const listed = table.get(identity.pid);
+		const system = this.options.system;
+		const row = system.identityOf
+			? system.identityOf(identity.pid)
+			: system.snapshot().find((candidate) => candidate.pid === identity.pid);
+		if (
+			!listed ||
+			!row ||
+			row.start !== identity.start ||
+			row.zombie ||
+			listed.start !== identity.start
+		) {
 			identity.state = "gone";
 			return false;
 		}
