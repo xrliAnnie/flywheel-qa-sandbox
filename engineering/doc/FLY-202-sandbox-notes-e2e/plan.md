@@ -42,7 +42,7 @@ Expected: `turn` 返回 `yours phase=implement` 后才可写 shared worktree；m
 Run:
 
 ```bash
-git fetch origin main
+git fetch origin main project-slot-6-FLY-202
 git branch --show-current
 git rev-list --count origin/main..HEAD
 git rev-list --count HEAD..origin/main
@@ -61,7 +61,16 @@ git push
 git rev-list --count HEAD..origin/main
 ```
 
-Expected after sync: behind=`0`。合并 `origin/main` 不需要 ship approval，也不得改写历史。若只在 `doc/qa/sandbox-notes.md` 冲突，以 `origin/main` 的最新文件为刷新起点，再按本计划重新生成四个区块；若冲突超出本 issue 文档范围，保持 merge state 并通过 Lead question gate 请求裁决。任何路径都不得 rebase 已发布分支或 force-push。
+Expected after sync: behind=`0`。合并 `origin/main` 不需要 ship approval，也不得改写历史。若只在 `doc/qa/sandbox-notes.md` 冲突，先完成纯同步 merge：
+
+```bash
+git checkout --theirs -- doc/qa/sandbox-notes.md
+git add doc/qa/sandbox-notes.md
+git commit --no-edit
+git push
+```
+
+这一步保留 `origin/main` 的最新 notes，不把本轮刷新埋进 merge commit。merge commit push 后，再从 Task 1 开始生成四个区块，并在 Task 5 建立独立、可审查的 docs commit。若冲突超出本 issue 文档范围，保持 merge state 并通过 Lead question gate 请求裁决。任何路径都不得 rebase 已发布分支或 force-push。
 
 - [ ] **Step 3: 按本地测试政策发现受 literal 影响的文件**
 
@@ -266,7 +275,7 @@ EOF
 Run:
 
 ```bash
-gh pr view --repo xrliAnnie/flywheel-qa-sandbox --json url,state,baseRefName,headRefName,files,commits
+gh pr view project-slot-6-FLY-202 --repo xrliAnnie/flywheel-qa-sandbox --json url,state,baseRefName,headRefName,files,commits
 ```
 
 Expected: `state=OPEN`、`baseRefName=main`、`headRefName=project-slot-6-FLY-202`；files 仅为 FLY-202 notes 与 design artifacts。记录 URL，按 implement 节点注入的 review、completion 和 park 协议交接；不要 merge。
