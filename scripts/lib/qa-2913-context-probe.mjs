@@ -5,7 +5,7 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
+import { basename, isAbsolute, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { summarizeClaudeContextDiagnostic } from "../qa-2913-prefix-inventory.mjs";
 
@@ -207,6 +207,42 @@ function sanitizeContext(payload, model) {
 	}
 }
 
+/** FLY-2913 opt-in: item identities only (no descriptions, paths or config). */
+function sanitizeInventory(payload) {
+	const tokens = (value) => {
+		check(Number.isFinite(value) && value >= 0, "invalid_context");
+		return value;
+	};
+	const rows = (value) => {
+		check(value === undefined || Array.isArray(value), "invalid_context");
+		return value ?? [];
+	};
+	const item = (name, source, count) => {
+		check(identifier(name) && identifier(source), "invalid_context");
+		return { name, source, tokens: tokens(count) };
+	};
+	check(
+		payload.skills === undefined || object(payload.skills),
+		"invalid_context",
+	);
+	return {
+		skills: rows(payload.skills?.skillFrontmatter).map((row) => {
+			check(object(row), "invalid_context");
+			return item(row.name, row.source, row.tokens);
+		}),
+		agents: rows(payload.agents).map((row) => {
+			check(object(row), "invalid_context");
+			return item(row.agentType, row.source, row.tokens);
+		}),
+		memoryFiles: rows(payload.memoryFiles).map((row) => {
+			check(object(row) && typeof row.path === "string", "invalid_context");
+			const file = basename(row.path);
+			check(identifier(file) && identifier(row.type), "invalid_context");
+			return { file, type: row.type, tokens: tokens(row.tokens) };
+		}),
+	};
+}
+
 /** Exact launcher args are validated, never rewritten. Only the listed flags
  * are accepted; positional prompts, resume and continue are rejected.
  * timeoutMs bounds collection; cleanup adds at most 3 * closeWaitMs.
@@ -243,6 +279,7 @@ export async function probeClaudeContext(options, spawnChild = spawn) {
 		controlTimeoutMs = 5000,
 		closeWaitMs = 1000,
 		pollIntervalMs = 250,
+		inventoryNames = false,
 	} = options ?? {};
 	try {
 		launch = validateLauncher(binary, args);
@@ -437,10 +474,9 @@ export async function probeClaudeContext(options, spawnChild = spawn) {
 		await control("initialize");
 		result.mcpServers = await settledServers();
 		result.mcpFingerprintBefore = digest(JSON.stringify(result.mcpServers));
-		const context = sanitizeContext(
-			await control("get_context_usage", { detail: "full" }),
-			launch.model,
-		);
+		const usage = await control("get_context_usage", { detail: "full" });
+		const context = sanitizeContext(usage, launch.model);
+		const inventory = inventoryNames ? sanitizeInventory(usage) : undefined;
 		const after = await settledServers();
 		result.mcpFingerprintAfter = digest(JSON.stringify(after));
 		check(
@@ -448,6 +484,7 @@ export async function probeClaudeContext(options, spawnChild = spawn) {
 			"unstable_mcp",
 		);
 		result.context = context;
+		if (inventory) result.inventory = inventory;
 		collected = true;
 	} catch (error) {
 		// All errors raised above are fixed codes; never copy a child error message.
@@ -506,6 +543,7 @@ export async function probeClaudeContext(options, spawnChild = spawn) {
 	if (failure || !collected) {
 		result.failure = failure ?? "protocol_failed";
 		result.context = null;
+		delete result.inventory;
 	} else if (
 		result.mcpServers.some((server) => server.status !== "connected")
 	) {

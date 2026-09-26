@@ -269,6 +269,35 @@ try {
     assert.equal(child.closed, true);
   });
 
+  await test('FLY-2913 opt-in inventory emits only item names, source kinds, basenames and tokens', async () => {
+    const withNames = () => ({ ...context(),
+      memoryFiles: [{ path: '/PRIVATE_ACCOUNT/.claude/rules/gog.md', type: 'User', tokens: 2 }],
+      agents: [{ agentType: 'belle-lead', source: 'userSettings', tokens: 1, description: 'PRIVATE_AGENT_TEXT' }],
+      skills: { totalSkills: 2, includedSkills: 1, tokens: 1,
+        skillFrontmatter: [{ name: 'everything-claude-code:go-test', source: 'plugin', tokens: 1, description: 'PRIVATE_SKILL_TEXT' }] } });
+    const child = fake({ onRequest(r, c) {
+      c.reply(r, r.request.subtype === 'mcp_status' ? servers() : r.request.subtype === 'get_context_usage' ? withNames() : {});
+    } });
+    const result = await run(child, { inventoryNames: true });
+    assert.equal(result.status, 'complete');
+    assert.deepEqual(result.inventory, {
+      skills: [{ name: 'everything-claude-code:go-test', source: 'plugin', tokens: 1 }],
+      agents: [{ name: 'belle-lead', source: 'userSettings', tokens: 1 }],
+      memoryFiles: [{ file: 'gog.md', type: 'User', tokens: 2 }],
+    });
+    assert.doesNotMatch(JSON.stringify(result), /PRIVATE_|https:\/\/|"path"|"env"|"config"|"description"/);
+    const plain = await run(fake());
+    assert.equal(plain.inventory, undefined);
+  });
+
+  await test('FLY-2913 opt-in inventory fails closed on an unsafe item name', async () => {
+    const bad = () => ({ ...context(), agents: [{ agentType: 'bad name; rm', source: 'userSettings', tokens: 1 }] });
+    const child = fake({ onRequest(r, c) {
+      c.reply(r, r.request.subtype === 'mcp_status' ? servers() : r.request.subtype === 'get_context_usage' ? bad() : {});
+    } });
+    failed(await run(child, { inventoryNames: true }), 'invalid_context');
+  });
+
   await test('parses split UTF-8 JSON lines and ignores source/tool ordering in fingerprint', async () => {
     let polls = 0;
     const child = fake({ onRequest(r, c) {
