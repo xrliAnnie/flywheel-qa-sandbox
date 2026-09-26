@@ -1,0 +1,18 @@
+{
+  "questionId": "01a03f19-f1f8-44cb-92b9-ac4794b9c2b8",
+  "requestId": "f15d927d-4fb8-47f7-aaf7-eb441069a0d1",
+  "reviewVerdict": "CHANGES_REQUESTED",
+  "reviewerVerdict": "CHANGES_REQUESTED",
+  "round": 2,
+  "highFindingKeys": [
+    "pinned-snapshot-cross-version-contracts"
+  ],
+  "advisoryFindingKeys": [
+    "legacy-enrollment-generation-zero-violates-check",
+    "first-deploy-rollback-blocks-whole-bridge",
+    "rollback-guard-wrapper-reverted-by-reset",
+    "snapshot-budget-per-deploy-retention",
+    "authority-read-failure-self-pause-resume-undefined"
+  ],
+  "disposition": "Author summary: HIGH addressed in section 4.5; all advisory dispositions and two non-blocking follow-ups in section 15. New review required; not a verbatim reviewer body."
+}

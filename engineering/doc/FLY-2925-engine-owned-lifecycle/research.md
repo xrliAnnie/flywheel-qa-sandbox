@@ -130,3 +130,7 @@ FLY-2902 还要求同号重登通过原子槽更新，迁移未 done 时准入 f
 本轮 read-only 查到 update-flywheel.sh default_deploy 的 merge→restart；restart-services.sh build_project 原地 pnpm build、rollback_and_restart reset --hard DEPLOYED_SHA；teamlead package prebuild/build 删除/复制 dist，claude-runner tsc 覆盖 dist。生产 standing-authority/active-package.json 不存在。旧 plan 的不可变 release 不是现成设施，已改为 W1 明确交付。
 
 codex-daemon-runtime.ts spawnCodexDaemon 取得 socket lock 后会 reap orphan，没有活 daemon adoption handle；codex-daemon-client.ts readThread 已有 includeTurns、goal/get 可作为接管观测原语，但不证明完整接管已实现。StateStore.beginWorkflowExecutionResume 只接受 standby/resume_failed 且要求 demand；plan 现规定新增 carrier_lost CAS/legacy enrollment，避免直接绕过检查。两项 HIGH 和七项 MEDIUM 全量处置见 plan §14；本轮仅改设计，未执行 build、迁移、重启或产品测试。
+
+## 12. R2 回源核查
+
+CodexTmuxAdapter.resolveCommCli 当前用 createRequire 解析 flywheel-comm，固定宿主后 CLI 的版本也会固定；必须给旧消费者兼容窗口。packages/flywheel-comm/src/db.ts constructor 执行 SCHEMA/applyMigrations/purge，但已有 `openExistingWriter` 跳过迁移，当前仅 assertMailboxGeneration，计划复用并增加事务级 writer 合同检查，而不是再造 DB 封装。StateStore 的 process-body generation CHECK > 0，legacy 初值已改为 1。R2 新 HIGH 的修订及非阻塞建议处置见 plan §4.5/15；没有打开或迁移活库，没有产品测试。

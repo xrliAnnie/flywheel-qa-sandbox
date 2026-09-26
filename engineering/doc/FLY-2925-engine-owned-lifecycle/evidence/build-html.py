@@ -88,8 +88,9 @@ cards.append(card('boundary', '做什么、尚未证明什么', '''
 <p><strong>做：</strong>独立运行控制、按原会话恢复、目标状态与体生死分离、复用 FLY-2903 的停止保护，以及最小启动返回值修正。</p>
 <p><strong>不扩展：</strong>凭据存储重做、全部额度故障、全部工作目录接管故障、Claude 架构重写。</p>
 <p><strong>当前限制：</strong>设计仍待评审；账号合同已按 Lead 最新裁定对齐，实际接入仍待验证；本地 Mermaid 图形启动失败，已按要求重试并保留图稿。没有部署或生产修后证明。</p>
-<p><strong>上线代价：</strong>第一次兼容版如果接管失败，不能自动退回会误杀原体的旧版，需要保留原会话并修复兼容版；后续启用失败可退回已经验证的兼容版。运行文件要保留在独立快照中，空间不足时停止新发布，不能删除正在使用的版本。</p>
-<p>本页意见用于修改设计，不代表通过或允许上线。</p>
+<p><strong>上线代价：</strong>第一次兼容版先通过服务健康检查再接管；健康检查失败仍可回旧版，接管后和后续启用失败则保留已经验证的兼容管理版本。运行文件要保留在独立快照中；每次更新必须兼容仍在工作的旧版本，否则先完成原会话升级。空间不足时停止新发布，不能删除正在使用的版本；容量优化尚是后续项。</p>
+<p>当前回滚保护覆盖受管自动部署，不保证人为把启动脚本退到旧版时仍有效。此限制已列后续项。
+</p><p>本页意见用于修改设计，不代表通过或允许上线。</p>
 <p class="meta">参考：<a href="https://github.com/xrliAnnie/flywheel/pull/1343">FLY-2903 停止保护</a> · <a href="https://github.com/xrliAnnie/flywheel/pull/1352">FLY-2902 当前依赖</a> · <a href="https://learn.chatgpt.com/docs/app-server">Codex 程序接口</a> · <a href="https://developers.openai.com/cookbook/examples/codex/using_goals_in_codex">原生持续目标</a></p>
 '''))
 cards.append(card('summary', '页面意见汇总', '''

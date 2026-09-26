@@ -2,6 +2,6 @@
   "staticChecks": "passed",
   "commentCards": 9,
   "controllerScriptUnchanged": true,
-  "currentHtmlSha256": "71e019ce5712cf0f83c0696b61be76592bd87d4aa0f5d8466cbd13e78e1a25fb",
-  "scope": "R1 revision static checks; prior mocked controller evidence uses byte-identical script; no browser or hosted proof."
+  "currentHtmlSha256": "5b095030c5e88caf78bbef4571693682c9f0a44022a2c8e172a0d440a0cb1aab",
+  "scope": "R2 revision static checks; prior mocked controller evidence applies to byte-identical script; no browser or hosted proof."
 }

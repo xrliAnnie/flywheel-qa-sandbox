@@ -67,7 +67,7 @@ Bridge 班车重启时原终端继续显示原会话；回来后看到同一执�
 
 新增 `packages/teamlead/src/runner-host/codex-runner-host.ts` 与 `codex-runner-host-protocol.ts`；宿主依赖现有 claude-runner，不反向让 claude-runner 导入 teamlead。从 `CodexTmuxAdapter.execute` 提取执行逻辑到 `packages/claude-runner/src/codex-runner-session.ts`，由 adapter 的宿主客户端与宿主入口共享类型，不能复制两个 goal loop。
 
-宿主包含现有 daemon runtime、goal loop、turn/phase consumers、mailbox intake、心跳、可见 TUI 和清理。Bridge 留 admission、TURN、引擎推进、关闭决定、事件接收和 reconnect proxy。`ExecuteContext` 中的函数不可 JSON 化：逐个替换为命名能力，manifest 仅传值；宿主构造本地 CommDB 读写器和引擎只读 authority reader，向 Bridge 写状态走现有认证事件入口。缺能力拒绝启动，不能吞掉闭包造成静默无邮件。
+宿主包含现有 daemon runtime、goal loop、turn/phase consumers、mailbox intake、心跳、可见 TUI 和清理。Bridge 留 admission、TURN、引擎推进、关闭决定、事件接收和 reconnect proxy。`ExecuteContext` 中的函数不可 JSON 化：逐个替换为命名能力，manifest 仅传值；宿主使用 CommDB.openExistingWriter（已存在库的无迁移写入口，见 §4.5）和引擎只读 authority reader，向 Bridge 写状态走现有认证事件入口。缺能力拒绝启动，不能吞掉闭包造成静默无邮件。
 
 宿主经现有 tmux/cmux 受管 launcher 独立启动，不能以 Bridge stdin/IPC channel 生存为前提。使用本单 W1 新增的、独立于可变 checkout 的发布快照（§4.4），不是假定生产已有 release/symlink 部署。launcher 从已验证快照的绝对路径启动，Bridge 重连握手检查协议兼容。Bridge 普通 shutdown 只关 proxy、保留宿主；issue 终结、显式关闭和批准 standby retirement 才发 stop。
 
@@ -106,6 +106,32 @@ W1 交付 `scripts/build-codex-host-release.mjs`、`scripts/lib/codex-host-relea
 初始预算明确为宿主快照根总计 12GiB（含 staging），创建后文件系统须保留至少 8GiB 可用；这两个数是可配置保护上限而非实测大小。构建前预估、复制中累计、完成后实测均检查；空间不足时只回收可证明无引用的旧快照，否则拒绝本次发布和新宿主 admission，保留旧体继续，向 Lead 报实际字节与超限原因。不得为凑预算删在用 release。529 记录实际快照大小与保留集，必要调整预算须显式配置并记录。
 
 A1 必须在宿主执行期间对隔离生产形状 checkout 做一次**实际 ff-only merge + 原地 build + Bridge stop/start**，让宿主在 dist 删除/覆盖窗口触发此前未加载的动态 import 和 CLI 子命令；证明读取路径均为旧 digest、原 native 模块正常、原 exec/thread/账号不变。不能用仅发 SIGTERM/重启 Bridge 的测试代替班车。
+
+### 4.5 最旧在用快照的跨版本合同（R2 HIGH）
+
+固定运行字节解决构建覆盖，但不允许把兼容责任推给旧体。以下合同是 W1/W4 的一部分：
+
+| 接触面 | 固定与演进规则 | 核验与失败行为 |
+|---|---|---|
+| 模型调用的 flywheel-comm | CLI 与宿主一起固定，防 CLI 在 build 中被删除；请求带 cliContractVersion + releaseDigest，Bridge 保留最旧在用版本的命令/端点/参数/响应及错误语义 | complete/qa-result/gate/ask/check/turn/park/progress 等**实际清单**在快照构建时从命令注册器/请求消费者提取；HTTP 成功不冒充旧 CLI 可解释的有效 receipt，保留旧响应适配器 |
+| CommDB 读写 | 宿主与该 CLI 所有库打开路径必须用 openReadonly/openExistingWriter；严禁调用会做 SCHEMA/applyMigrations/purge 的构造器 | 复用 db.ts 现有无迁移入口，加 writerContractVersion 校验与事务内版本围栏；只读元数据检查不执行 DDL。只由当前 Bridge 的受控启动迁移者执行迁移 |
+| turn/mail/goal/phase 事件、settlement 回执 | schema 和语义都按 eventContractVersion 标识；兼容窗口内保持消费唯一性、ACK/consumed 区分、终结/TURN 权限不变量 | 新必填字段须有服务端可证明的旧格式适配，不能填默认授权；未知事件持久保留且不推进工作流，不能 ACK 后丢弃 |
+| 宿主 socket/Bridge proxy | hostProtocolVersion 是协议族，不是孤立的“1==1”检查；双方声明 supported ranges 与 required capabilities | 握手无交集时拒绝 attach/新输入，保留 exec/thread、事件/邮件，显示 compatibility_hold；不能回退旧 reown 或重新 admission |
+| 原生 Codex/Node/SQLite ABI | 固定当前运行版本；显式受管升级换到经过验证的兼容快照 | 保留原 thread/home/账号/预算，按下述 upgrade receipt 执行；不能无限等旧 binary 重新被服务端接受 |
+
+**兼容清单与部署门。** 每个快照 manifest 增加准确 CLI 命令/HTTP consumer 清单、CommDB writer/read contract、事件/回执 contract、host protocol、原生 binary/profile 与 ABI。版本号仅是索引，证据是兼容适配代码与双版本验收。release registry 中 active、pending、standby、resuming、rollback-pin、upgrade-in-progress 都计入“在用”，不因最近没心跳就剔除。Bridge 候选产物须携带支持清单；部署守卫在 pre-merge/pre-stop 和任何 DB 迁移前，比较全部在用快照，拒绝删除或破坏最旧在用合同。持发布锁冻结清单，admission/恢复也用同一版本门，避免检查后冒出旧 consumer。未知清单拒绝部署，不静默忽略；新版本可选择保留旧适配器，或先由引擎受控升级并排空引用再移除。
+
+**旧写入者与迁移不能仅凭列还在就算兼容。** `CommDB.openExistingWriter` 已存在，但今天仅检查 mailbox generation，W1 必须扩展为在每个同步写事务取得 SQLite 写锁后核 `writerContractVersion`/迁移状态，再做原有 DML；版本检查与写入同一事务，不在库打开时检查一次后永久放行。当前迁移者以同一写锁发布 supportedWriterContracts 与迁移状态；兼容迁移保留旧写语义，新消费/settlement 不变量必须有兼容适配/trigger 等落实与反例测试，否则不能把旧版本列入支持集合。不兼容迁移先拒绝部署，不能先改变 schema 再让旧体发现。宿主/CLI 写入拒绝或 busy 保留原 requestId/deliveryId、退回可重试等待，不能重发新身份、丢信或伪造交卷。旧快照没有无迁移入口或事务围栏时，不能加入受支持宿主集。
+
+FLY-1914 消费者 sweep 新增 `<state>/codex-host-releases` 的全部在用 manifest 和实际封存 CLI/scripts 为必查 root（含 standby 和回滚保留版本）；仓库/插件缓存零引用不能取代此项。给出扫描时间、release digest、引用 execution 与命令/端点处置。缺 manifest/不可读快照标“未检查”并拒绝破坏性变更，不能写零引用。
+
+**不兼容握手与临时 hold。** 独立关闭 reader 不依赖握手成功，继续观察引擎关闭并 stop；协议不兼容期间不消费新业务输入、不推进事件 ACK 或 mailbox consumed，事件继续持久化直到既定上限。可暂停原生自动 goal，使用 `compatibility_hold` latch 记录施加前状态/exec/thread/generation；Bridge 通过兼容版本重新连接或引擎授权升级后才能解除，不能把 handshake timeout 当死亡。最旧关闭-reader 合同也在部署门里，不能先破坏它再期望旧宿主自行停机。
+
+**原会话受控升级（含服务端提高最低 Codex 版本）。** 结构化最低版本错误或经 Lead 核实的版本不可用事件触发引擎 `carrier_upgrade` 操作；普通 400 文案不自动授权。请求绑定 exec/activation、原 thread、当前 generation、old/new release digest、目标 binary hash、原账号槽、持久 requestId 和有效需求；目标须通过兼容清单/原生会话格式验收。当前回合能完成则等边界；已被服务端拒绝时在原回合终态边界保留失败证据。写 upgrade intent、保存目标/用量/预算/手工 pause/gate/邮箱游标，用专属 latch 暂停自动 goal，排空观察后受控停旧 daemon；证实旧进程组/监听退出，才由同一 process-body claim 增代，用新二进制 thread/resume 精确原 thread。先核身份与保留状态再接受合法输入，不重设 objective、不清预算、不换账号、不新建 execution/thread。显式升级不是 Bridge 普通重连，后者仍禁止 goal/set active 或换版本。
+
+升级按 requested→old_stopped→new_verified 持久推进，同 requestId 重放不重复停/启；关闭在任何窗口优先。失败保留原体等待，若旧版本仍受服务端支持且会话格式可逆，可凭同一引擎操作回原版本精确续接；否则不假回滚，不新建对话。目标格式/协议无法保留会话时明确 upgrade_blocked，报告依赖修复。standby 无模型工作可在下一次合法恢复需求时选择已验证的兼容新快照，用相同升级回执转移引用；当前版本不支持则保留原快照，不因保留成本偷删。
+
+新增 A9：在旧宿主及停驻体存在时，529 部署一次**实际改 CLI/HTTP、CommDB 列与写语义、事件 payload 的兼容版本**。旧 CLI 的真实 gate/check/ask/complete（专用可交卷测试体）仍获正确回执；旧写入者不执行迁移、新库消费唯一性与 settlement 不变量不破坏；旧事件补齐无重复推进。再部署删除旧端点/破坏旧写语义的候选，必须在 merge/stop/migrate 前被挡住；伪造兼容声明但语义错误须被双版本测试反例发现。另测不兼容 handshake、临时读失败恢复、强制最低版本错误及受控升级每个崩溃窗口；最后真实模型在原 thread 使用新版本完成后续任务。跨版本 smoke 必须运行封存旧 CLI 和 writer 代码，不能只模拟相同版本客户端。
 
 ## 5. goal 观察不再决定体死亡
 
@@ -151,7 +177,7 @@ A1 必须在宿主执行期间对隔离生产形状 checkout 做一次**实际 f
 
 扩展现有 StateStore 引擎事务，不绕过 beginWorkflowExecutionResume 的状态检查：在当前 execution/activation/非终态匹配、精确 carrier death 证据成立时，按 `(exec, generation, deathEvidenceId)` 唯一键登记 carrier_lost 需求与观察。若现有工作/phase 需求仍有效，引用其 demandId；仅引擎可为尚未完成的当前工作创建恢复需求，并关联原需求，宿主不能提供任意 demandId。active 经 CAS 写 `resume_failed(reason=carrier_lost_confirmed)`，随后复用同一 resume claim 流程；没有合法工作需求则登记等待、保持 standby，不启动模型。关闭优先、陈旧 generation/重复死亡事件不重复增代。
 
-flag 关闭时准入、没有 body 行的 legacy Codex，N 版只在核实 frozen launch + 当前 engine binding + 原 thread/home/credential-slot 后，以唯一 execution_id 在同一事务补登记实际 active/standby 和 manifest 所载代数；旧 manifest 无代数用明确的 legacy enrollment receipt 初始化 0，不从窗口猜，existing row 冲突拒绝。这项迁移只登记既有体，不创建新 execution 或请求；无法核实则 migration_required。测试包括缺记录、并发登记、active 死亡、重复 evidence、无需求、旧代数、关闭交错。
+flag 关闭时准入、没有 body 行的 legacy Codex，N 版只在核实 frozen launch + 当前 engine binding + 原 thread/home/credential-slot 后，以唯一 execution_id 在同一事务补登记实际 active/standby 和 manifest 所载代数；旧 manifest 无代数用明确的 legacy enrollment receipt 初始化 1（符合现有 CHECK generation > 0）；有合法代数原样保留，不从窗口猜，existing row 冲突拒绝。这项迁移只登记既有体，不创建新 execution 或请求；无法核实则 migration_required。测试包括缺记录、并发登记、active 死亡、重复 evidence、无需求、旧代数、关闭交错。
 
 **删除项**：`CodexSessionReowner.beginRecovery` 的新 rescue-owner 业务启动、recovery commit 后 reconcile 判死、恢复时泛用 startInitialTurn/kick；将 reowner 收敛为精确重连/委托 process resume，不再另建恢复状态机。保留被其他初始启动消费者需要的 launch commit；不要全局删掉 turn/start。
 
@@ -160,6 +186,8 @@ flag 关闭时准入、没有 body 行的 legacy Codex，N 版只在核实 froze
 PR #1343 已合入本基线。继续用它的 stop/drain、精确 PGID/socket/start identity、终态 sweep 和 token 账本；不重建相同组件。
 
 Bridge 先持久化 engine 关闭事实，关闭请求绑定 exec/generation；本地 owner registry 中宿主 proxy 的 requestStop 转发给宿主。宿主在处理请求、每次恢复、每次解除等待、每次发送输入前以及每个 turn/started、turn/completed 边界读最新引擎状态；另以不重叠的 1s 轮询覆盖 app-server 原生 goal 无宿主输入而自续的窗口。读到关闭立即 stop/drain，先请求暂停原生 goal 并中断在途回合；读失败亦停止新输入并请求暂停，不假定断 Bridge 后无关闭。关闭转发只是加速器，不是唯一触发。无法暂停/断线时按 FLY-2903 的授权精确清理收口；记录关闭写入、观察、停止及 token 增量时点，1s 是轮询目标而非瞬时零消耗保证。宿主将 stopRequested 同步置位并调用 runtime.stop；晚到的 transport-death catch 不得越过该位。关闭途中崩溃后只可恢复清理，不能恢复工作。
+
+宿主因 authority 读取失败施加的暂停单独记 `authority_read_hold`：落盘施加前 goal 状态、exec/thread/generation、当时有效 demand 与 pause 原因集合。读恢复后重核当前引擎非终态、同一需求/身份仍有效、无用户/gate/budget/其他 hold，且该 latch 独占本次暂停来源，才以同一持久 latch 幂等解除并恢复原 active；任何归因不明等明确纠正授权。解除属于原需求下技术 hold 的恢复，不是 Bridge reconnect 本身的授权。用户原先 paused 或期间新增手工 pause 不得解除；在暂停/记录之间崩溃先核原生状态，不能推测恢复。A9 包含短暂读失败后继续、并发手工暂停仍暂停。
 
 新宿主必须显式提供 restart gate；resident 模式缺 gate 视为拒绝，不继承当前“缺 predicate 默认 true”。所有物理恢复授权统一由引擎 claim 给出，runtime 不私自循环 spawn。引擎关闭拒绝优先于任何 reconnect/retry/phase wake。
 
@@ -176,10 +204,10 @@ Bridge 先持久化 engine 关闭事实，关闭请求绑定 exec/generation；�
 本节是未来独立 updater 的发布步骤，不授权设计节点部署。**N-1 是现网旧版，N 是兼容版，N+1 才启用宿主**；不能把同一次发布中先后执行的两行配置当成两步上线。两版各有独立 build SHA、评审/QA 和 updater 健康回执。
 
 1. **N 交付但不开放宿主 admission。** 先实现 §4.4 快照工具、§6.1 活 daemon 接管、旧体登记、外部宿主识别/协议与关闭兼容、窗口清理保护、回滚下限检查。reowner/terminal sweep 启动扫描前先读取 carrier kind/manifest；host-owned 或接管状态已登记的体不得走旧 reap/revive，即使暂时握手失败也只能观察/hold。N 保持创建新独立宿主的开关关闭，Bridge 可以接管原 daemon 继续控制；识别宿主不依赖 admission 开关。
-2. **真实 N-1→N。** N-1 不会 flush 或交接，updater 停旧 Bridge 后原 daemon 可能仍在回合中。N 启动首先执行 §6.1 的订阅/原生快照/投信账核对，再开放该体的输入；在所有 active/gate-held/phase-parked 体完成登记之前不启用宿主。证据不全显示 migration_required，保留原体不新建对话。N 成功健康检查、接管验收及发布回执之后，才能记为已知可用的回滚基线。
-3. **外置回滚守卫先安装，再改变所有权。** W1/W4 在受管 Bridge 启动入口与 updater 的 pre-merge、pre-stop、rollback_and_restart（reset 前）接入同一只读兼容检查，守卫可执行文件取自 N 的受保护快照，状态位于 checkout 外的 `<state>/codex-host-rollout.json`。记录 protocol、最低兼容 SHA/digest、rollout phase、迁移执行清单、已知可用回滚 SHA；原子写入、严格 schema、未知/损坏拒绝不兼容启动，不是授权票据。安装守卫本身走既有受管部署，不手改 launchd。首个旧体所有权迁移前写 migration_started；此时 N 尚未健康，若失败则**不存在可用旧版自动回滚**，阻止启动 N-1 并保留 daemon/快照，报待人工修复 N，不能把不健康的 N 谎报 known-good。这段可用性风险是首次上线代价，必须在 529 故障注入。
+2. **真实 N-1→N。** N-1 不会 flush 或交接，updater 停旧 Bridge 后原 daemon 可能仍在回合中。N 启动先保持 Codex adoption/reowner/相关 sweep 关闭，只做只读盘点并完成 Bridge 健康检查；不写 N-1 不懂的所有权/body 状态。健康通过并持久 known-good 回执后，才执行 §6.1 的订阅/原生快照/投信账核对，再开放该体的输入；在所有 active/gate-held/phase-parked 体完成登记之前不启用宿主。证据不全显示 migration_required，保留原体不新建对话。健康回执标识可回滚的 N 服务版本；接管验收回执另记，不把健康通过等同迁移完成。N 健康前失败仍按现有部署回 N-1，旧 daemon 无控制者的空窗与现状一致，不声称该失败路径已获宿主连续运行保证。
+3. **外置回滚守卫先安装，再改变所有权。** W1/W4 在受管 Bridge 启动入口与 updater 的 pre-merge、pre-stop、rollback_and_restart（reset 前）接入同一只读兼容检查，守卫可执行文件取自 N 的受保护快照，状态位于 checkout 外的 `<state>/codex-host-rollout.json`。记录 protocol、最低兼容 SHA/digest、rollout phase、迁移执行清单、已知可用回滚 SHA；原子写入、严格 schema、未知/损坏拒绝不兼容启动，不是授权票据。安装守卫本身走既有受管部署，不手改 launchd。N 健康并持久 known-good 后，首个旧体所有权迁移前才写 migration_started。此前失败允许自动回 N-1；此后失败保留 N 的兼容管理路径和原体，不能回不认识新状态的 N-1。两段都必须在 529 故障注入，不能提前写 known-good 或 migration_started。
 4. **N+1 只在 N 已部署并冻结 known-good 后启用宿主。** 验证 FLY-2902 已合入并集成、快照闭包/协议可用、N 回滚入口确实能识别宿主，才转移控制与开放新宿主准入。N+1 的 updater 在 stop N Bridge **之前**调用 N 已提供的 prepare-transfer：在回合边界冻结新输入、落观察账、持久 transfer intent，随后停止 N（不杀 daemon）。原 daemon 在 build 间隙仍可推进原生回合，因此 N+1 启动后仍必须执行 §6.1 的双读/缓冲收敛，不能仅信停机前快照；然后转移独占 claim/lock。N 不提前开放新宿主 admission，N+1 宿主在新产物就绪后接管原 daemon，不能杀后换体。失败/崩溃由 transfer receipt 指明唯一控制者；源控制者尚持锁时不启动第二 controller，源已死亡时用 §6.1 接管。既有在飞体全部记入迁移分母，不能批量关闭换新体清账。
-5. **回滚实际执行点必须受守卫约束。** 修改 update-flywheel.sh 的 pre-merge 和 restart-services.sh 的 rollback_and_restart，在任何 reset/build/start 前核 rollback SHA 的实际兼容 manifest 与已知可用 receipt，不能只比较版本号或相信 DEPLOYED_SHA。N+1 构建/健康失败可回 N（宿主 admission 关闭但能 attach/stop）；不兼容或早于 N 的目标拒绝。check 之后到 reset/start 之间以发布锁与冻结 receipt 防 TOCTOU；受管 wrapper 在启动时再次核对，防回滚后脚本自换成旧逻辑。回滚不能删除宿主 manifest/release、改 terminal_at，或把握手失败交给旧 reap/revive。未知状态停止部署并报警，原宿主继续已授权工作，不能为凑恢复绿而退 N-1。
+5. **回滚实际执行点必须受守卫约束。** 修改 update-flywheel.sh 的 pre-merge 和 restart-services.sh 的 rollback_and_restart，在任何 reset/build/start 前核 rollback SHA 的实际兼容 manifest 与已知可用 receipt，不能只比较版本号或相信 DEPLOYED_SHA。N+1 构建/健康失败可回 N（宿主 admission 关闭但能 attach/stop）；不兼容或早于 N 的目标拒绝。check 之后到 reset/start 之间以发布锁与冻结 receipt 防 TOCTOU；N 及以后受管 wrapper 在启动时再次核对。此承诺覆盖已接入守卫的自动部署路径；wrapper 仍位于 checkout，人工 reset 到 N-1 会把守卫一起撤掉，当前设计**不声称防住这种绕过**。见 §15 的非阻塞 Follow-up；在保护期内运维 runbook 禁止绕开受管回滚。回滚不能删除宿主 manifest/release、改 terminal_at，或把握手失败交给旧 reap/revive。未知状态停止部署并报警，原宿主继续已授权工作，不能为凑恢复绿而退 N-1。
 6. **默认开仅作用于 Codex。** 将 node_standby_resume 的有效默认解析改为 vendor-aware：无显式值时 Codex 为 true、Claude 沿原 false；registry、所有 default fallback、admission snapshot 和运行 consumer 同步调整。显式配置仍按原优先级生效并冻结；不得让全局布尔默认悄悄首次启用 Claude 退下/恢复。宿主 admission 另受 N/N+1 发布阶段门约束，不能以 resume 默认开绕过兼容部署。测试 Claude 无设置时不新增 body、原有显式设置保持、Codex 默认新体登记、legacy 仅依 §6.2 迁移。
 7. **删除旧恢复业务路径，保留兼容管理能力。** N+1 的所有正常重启/载体恢复不可达 recovery commit + kick；消费者 sweep 和相关测试证明删除闭包。N 回滚只允许原 daemon 接管/原 thread 恢复，不靠其旧恢复业务路径。保留历史审计表只读。协议/reader 旧版本的移除与快照 GC 都必须等引用体排空，不能以 latest 切换覆盖它们。
 
@@ -196,7 +224,7 @@ FLY-2902 已合入 main 且本分支集成其批准接口，是 W3 凭据接线�
 | W1 宿主与可重连控制 | 新 `teamlead/src/runner-host/codex-runner-host{,-protocol}.ts`，新 `claude-runner/src/codex-runner-session.ts`；调整 `CodexTmuxAdapter.ts`、`codex-daemon-transport.ts`、package build/bin 导出、受管 launcher；新增 host release builder/registry/GC、快照闭包及保护预算（§4.4）、readonly authority reader、adoptCodexDaemon 独立接管 handle；序列化值/重建能力清单逐项覆盖 | Bridge 退出宿主继续；host 重启/旧协议/伪 endpoint/双 claim 拒绝；TUI 真可见；journal 断行、重复、缺号、ACK 丢失 |
 | W2 生死分流 | `codex-daemon-client.ts`、`codex-daemon-adapter-helpers.ts`、`codex-daemon-goal-runtime.ts`、`event-route.ts` | blocked 可收信；complete 无交卷不推进；429 同体有界；400/unauthorized/手工暂停无盲重试；不清预算 |
 | W3 原会话恢复与终结 | `codex-session-reown.ts`、`plugin.ts`、`codex-execution-ownership.ts`、`codex-daemon-teardown.ts`、`codex-terminal-sweep{,-runtime}.ts`、现有 workflow-process-retirement / rework 接口及 `StateStore.ts` process-body claim | active 重连不 commit/kick，standby 无需求不启动；FLY-2903 关闭 race；原账号槽；旧体迁移，错误身份拒绝；legacy enrollment/carrier_lost demand CAS、窗口清理消费者闭包 |
-| W4 开关/API/真实验收 | config vendor-aware default consumer，`runs-route.ts` 及其调用方；update-flywheel.sh、restart-services.sh、受管 Bridge wrapper 的外置兼容守卫/回滚下限；529 验收工件与文档 | 开关声明/运行时/冻结 admission 一致；FLY-2689 首体失败仍 run pending；六单与负控逐项通过 |
+| W4 开关/API/真实验收 | §4.5 跨版本清单/部署门、FLY-1914 活快照 sweep、无迁移 writer 事务围栏；config vendor-aware default consumer，`runs-route.ts` 及其调用方；update-flywheel.sh、restart-services.sh、受管 Bridge wrapper 的外置兼容守卫/回滚下限；529 验收工件与文档 | 开关声明/运行时/冻结 admission 一致；FLY-2689 首体失败仍 run pending；六单与负控逐项通过 |
 
 若需要给既有持久表增字段，沿其 migration/retention 分类更新；不得为 transport journal 添加一套可修改工作流权威的数据库。所有 SQL 使用绑定参数。所有 HTML/告警的外来文本走现有 escapeHtml；日志不输出 credential bytes。
 
@@ -271,7 +299,7 @@ exploration.md、research.md、plan.md、冻结 evidence、Mermaid 源与本地�
 | findingKey | 本次设计处置 | 实现/QA 证据要求 |
 |---|---|---|
 | immutable-release-premise-absent (HIGH) | §4.4/W1 新增快照完整交付，不再假设已有 | A1 实际 merge/build/restart、延迟 import、原生模块、CLI 路径与 GC/预算负控 |
-| first-deploy-transition-and-auto-rollback (HIGH) | §6.1/§9 新接管 + N/N+1 分步 + 外置守卫 | N-1 首次中途接管，N 失败无假 known-good，N+1 自动回 N，拒 N-1 |
+| first-deploy-transition-and-auto-rollback (HIGH) | §6.1/§9 新接管 + N/N+1 分步 + 外置守卫 | N-1 首次中途接管，N 健康前失败仍回 N-1，迁移后/N+1 回 N，拒不兼容自动回滚 |
 | carrier-lost-resume-contract-gap (MEDIUM) | §6.1/6.2 明确 daemon 存活接管、死亡需求/CAS 与 legacy 登记 | 并发、无需求、关闭、缺行、旧代数 |
 | standby-flag-default-changes-claude (MEDIUM) | §9.6 Codex 默认开、Claude 默认保持 | 两 vendor 与显式 override/冻结快照 |
 | close-fence-misses-autonomous-goal-turns (MEDIUM) | §7 增边界+1s 只读轮询，A3 增丢转发 | 真 goal 自续关闭窗口与停止/token 时间线 |
@@ -281,3 +309,18 @@ exploration.md、research.md、plan.md、冻结 evidence、Mermaid 源与本地�
 | host-lifetime-container-and-window-reapers (MEDIUM) | §4.1 独立进程组，TUI 单独显示 | 关 pane/keeper/prune 不杀宿主，窗口恢复与 online 诚实性 |
 
 以上 MEDIUM 均纳入对应设计段，不升为额外审批门；实现者按此验证，不重新发明范围。新增具体相关文件：`scripts/__tests__/codex-host-release.test.sh`（快照/GC/空间/路径）、`scripts/__tests__/codex-host-rollout.test.sh`（两步/回滚守卫）、`packages/claude-runner/test/codex-daemon-adoption.test.ts`、`packages/teamlead/src/runner-host/__tests__/codex-host-authority-reader.test.ts`。W4 搜索上述新增脚本与既有 updater/restart/Bridge wrapper 的完整路径、basename、父目录，记录所有命中处置；现有 `scripts/__tests__/update-flywheel-sources.test.sh`、`bridge-wrapper-preflight.test.sh`、`restart-services-admission-pause.test.sh` 逐文件纳入，再依实际 diff 补发现。窗口消费者同样加入 §10.1 的逐文件发现，不运行目录或全包 suite。
+
+## 15. R2 处置与非阻塞 Follow-ups
+
+R2 request f15d927d-4fb8-47f7-aaf7-eb441069a0d1 有效 CHANGES_REQUESTED；确认 R1 两项 HIGH 修复，新增一项 HIGH、四项 MEDIUM、一项 LOW。
+
+| findingKey | 处置 |
+|---|---|
+| pinned-snapshot-cross-version-contracts (HIGH) | §4.5 完整兼容清单/最旧在用部署门、CLI/HTTP/事件语义、CommDB 无迁移写入口与事务围栏、FLY-1914 活快照 sweep、不兼容 hold、同会话 binary 升级、A9 真双版本台架；W1/W4 交付 |
+| legacy-enrollment-generation-zero-violates-check (MEDIUM) | §6.2 改为 1，保留现有 CHECK，已有代数原样；carrier_lost 从实际基线增代 |
+| first-deploy-rollback-blocks-whole-bridge (MEDIUM) | §9.2/3 延后 adoption 到 N 健康与 known-good 后，健康前失败仍可回 N-1 |
+| rollback-guard-wrapper-reverted-by-reset (MEDIUM) | 缩小承诺到受管自动部署路径；外置 launchd 入口作为 Follow-up 交 Lead 决定，本设计未实现抗人工 reset 保证，不将它冒充 HIGH 已解决证明 |
+| snapshot-budget-per-deploy-retention (MEDIUM) | Follow-up：分层去重（依赖按 lockfile+ABI、dist 按内容、binary 按 hash）、物理占用与逻辑大小分报、真实部署频率/寿命容量估算。现行 12GiB 是保护上限，不能声称足以支持生产频率；按 §4.4 保留引用并拒绝超限，可能暂停新 admission。§4.5 允许有凭证的 standby 兼容升级减少旧引用，但不把它当容量问题已解决。Lead 决定优化归属；上线容量验收必须明确报告能支持的保留集。 |
+| authority-read-failure-self-pause-resume-undefined (LOW) | §7 持久 authority_read_hold 与原需求/其他 pause 的解除条件，A9 负控 |
+
+A9 新增具体 `packages/teamlead/src/runner-host/__tests__/codex-host-version-compatibility.test.ts`、`packages/flywheel-comm/src/__tests__/host-existing-writer-contract.test.ts`，及 `scripts/__tests__/codex-host-compatibility-gate.test.sh`，按 §10.1 逐文件发现、运行；跨版本验收使用真实封存旧版本。以上 Follow-ups 不伪装为已实施或门已通过，最终有效 APPROVED 后向 Lead 原样报告。
