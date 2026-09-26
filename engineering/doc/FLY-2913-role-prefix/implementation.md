@@ -59,3 +59,13 @@ T3/T4 接线的只读路径核对另发现三个必须覆盖的入口：`actions
 本批新代码定向验证：config 22 tests、claude-runner 47 tests 通过，均用 owning package 的 `vitest related ... --run` 再验证；四个改动 TS 文件 Biome clean；`pnpm --filter 'flywheel-claude-runner...' build` exit 0；`pnpm lint` exit 0（25 条既有 warning）。消费者查询 12 次、831 个匹配，逐项处置见 `evidence/t2-consumer-sweep.json`。依赖方 typecheck 首轮 11 包通过，voice-codex 因缺少本地 voice-bridge dist 失败；补建 `flywheel-voice-bridge...` 后，voice-codex typecheck exit 0，没有改 voice 源码。命令、源码和日志摘要见 `evidence/t2-offline-checks.json`。
 
 继续：T1 基线与 collector 接线 → T2 编译器/CLI 控制负控 → T3 runner → T4 reviewer → T5 真实任务及回退 → T6 默认启用、最终 code-review、PR、needs_review 完成路由。
+
+## 换号续做：采集器修复（2026-09-26 UTC）
+
+从救援头 `eb1fe9e1d3039a9df0f2171bef76810df354f486` 恢复，当前 TURN 为 implement。重新执行发现 `qa-2913-context-probe.test.sh` 未登记 CI，枚举测试真实失败；probe 同时有 `noAssignInExpressions` 和格式两项 lint error。只在现有 FLY-2913 CI step 登记该测试、将读行循环的赋值移出条件并格式化本文件。
+
+进一步核对当前 CLI `--help` 的 effort 枚举和 `claude-review-runner.ts` 的 `DEFAULT_REVIEW_EFFORT=xhigh`，发现 probe 会在 spawn 前错误拒绝这个有效评审参数。新增保留 xhigh argv 的回归先报 failed/complete 不符，再仅补合法枚举项转绿；未修改模型、effort 或生产启动器。
+
+本批验证：27 项 probe fixtures、prefix inventory、13 项 weekly collector、CI shell suite enumeration（含删除变异负控）、CI structure 及 `required-wall-clock-thresholds.test.ts` 均通过。`pnpm lint` exit 0（25 条既有 warning）。无 TypeScript 源码/API/导出变更，无 owning package build 或 dependent typecheck 新要求；没有全包测试。按三个改动文件的全路径/文件名/父目录完成消费者搜索，逐匹配排除理由见 `evidence/resume-consumer-sweep.json`。
+
+Lead 回答 `1de718ec-43e5-455a-a259-981a1056f082` / `3c36ba2d-b163-4115-9417-ab744eb1e78e`：房间尚未启动，旧头冻结解除，先提交推送这些修复；房间待机器负载稳定由 Lead 在沙箱外按新完整 SHA 起，再回 room-info 和双 SHA。当前没有五角色基线或真实任务回执，T1/T2 未标完成，T3–T6 仍待执行。

@@ -129,6 +129,14 @@ try {
     assert.equal(result.protocol.responses, 4);
   });
 
+  await test('preserves xhigh effort used by current Claude reviewers', async () => {
+    const child = fake();
+    const reviewerArgs = args().map(value => value === 'high' ? 'xhigh' : value);
+    const result = await run(child, { args: reviewerArgs });
+    assert.equal(result.status, 'complete');
+    assert.deepEqual(child.launch.args, reviewerArgs);
+  });
+
   await test('polls pending servers until terminal before collecting context', async () => {
     let polls = 0;
     const child = fake({ onRequest(request, c) {
