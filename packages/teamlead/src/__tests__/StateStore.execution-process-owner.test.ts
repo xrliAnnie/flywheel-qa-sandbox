@@ -96,7 +96,9 @@ describe("FLY-2919 execution process owner", () => {
 
 	it("an owner claim without a native spawn permit never authorizes spawning", () => {
 		claim();
-		expect(owners().authorizeSpawn({ ...owner, spawnEpoch: 0 }, revision)).toBe(false);
+		expect(owners().authorizeSpawn({ ...owner, spawnEpoch: 0 }, revision)).toBe(
+			false,
+		);
 	});
 
 	it("closes a permit while preserving its newborn binding for recovery", () => {
@@ -258,6 +260,22 @@ describe("FLY-2919 execution process owner", () => {
 			reason: "process_retirement",
 		};
 	};
+
+	it("replays a persisted drain after evidence expiry without granting a foreign identity its receipt", async () => {
+		const input = drainFixture();
+		const result = owners().recordDrained(input);
+		expect(result.ok).toBe(true);
+		store.close();
+		store = await StateStore.create(join(root, "fixture.db"));
+		const replay = { ...input, nowMs: 60_000 };
+		expect(owners().recordDrained(replay)).toEqual(result);
+		expect(
+			owners().recordDrained({
+				...replay,
+				evidence: { ...input.evidence, ownerToken: "foreign-owner" },
+			}),
+		).toMatchObject({ ok: false, reason: "drain_identity_changed" });
+	});
 
 	it("persists exact drained evidence and admits only the approved next generation", async () => {
 		const input = drainFixture();

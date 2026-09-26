@@ -219,13 +219,15 @@ export interface RunGoalInput {
 	/** Current durable owner/spawn permit, checked by the physical spawn seam. */
 	authorizeSpawn?: () => boolean;
 	/**
-	 * FLY-2903: asked after every restartable transport death. A Bridge
-	 * terminal path that stopped or reaped this execution on purpose answers
+	 * FLY-2903/2919: awaited after every restartable transport death, before
+	 * teardown, so the owner can durably enter restart and retry lease contention.
+	 * Rechecked after drain; durable mutations in this callback must be idempotent.
+	 * A Bridge terminal path that stopped or reaped this execution on purpose answers
 	 * false, so the kill is never mistaken for a mid-goal crash and resumed
 	 * (FLY-2814). Absent → allowed (legacy callers). Any value other than
 	 * `true`, or a throw, refuses the restart (fail-closed).
 	 */
-	mayRestartAfterTransportDeath?: () => boolean;
+	mayRestartAfterTransportDeath?: () => boolean | Promise<boolean>;
 	/** FLY-2903: observes each restart decision; a throwing handler is swallowed. */
 	onRestartDecision?: (decision: RestartDecision) => void;
 }
@@ -782,6 +784,12 @@ export class CodexDaemonGoalRuntime {
 						...(this.quotaBinding ? { quotaBinding: this.quotaBinding } : {}),
 					};
 				} catch (err) {
+					// Reuse the existing restart gate. Its durable CAS must precede
+					// kill/drain; otherwise an observer can mistake that interval for
+					// a dead execution while its controller is about to restart it.
+					const restartable =
+						isTransportDeath(err) && restarts < maxRestarts && !this.stopped;
+					let gate = restartable ? await this.restartGate(input) : null;
 					// ANY failure tears the (possibly dead) session down first and
 					// WAITS for the daemon to exit — so we never leak a daemon and a
 					// restart never races the dying one on the same socket. (A
@@ -810,12 +818,11 @@ export class CodexDaemonGoalRuntime {
 						await this.teardownDone;
 					}
 
-					if (
-						isTransportDeath(err) &&
-						restarts < maxRestarts &&
-						!this.stopped
-					) {
-						const gate = this.restartGate(input);
+					// Preserve FLY-2903's post-drain fence: terminal intent may have
+					// arrived during either await. This is the same owner authority.
+					if (gate?.allowed && !this.stopped)
+						gate = await this.restartGate(input);
+					if (gate && !this.stopped) {
 						if (!gate.allowed) {
 							this.safeLog(
 								`daemon died mid-goal — restart refused (${gate.reason}) thread ${threadId}`,
@@ -853,14 +860,16 @@ export class CodexDaemonGoalRuntime {
 		}
 	}
 
-	/** FLY-2903: fail-closed evaluation of the caller's restart predicate. */
-	private restartGate(
+	/** FLY-2903/2919: fail-closed evaluation of the caller's restart predicate. */
+	private async restartGate(
 		input: RunGoalInput,
-	): { allowed: true } | { allowed: false; reason: RestartDecision["reason"] } {
+	): Promise<
+		{ allowed: true } | { allowed: false; reason: RestartDecision["reason"] }
+	> {
 		const predicate = input.mayRestartAfterTransportDeath;
 		if (!predicate) return { allowed: true };
 		try {
-			return predicate() === true
+			return (await predicate()) === true
 				? { allowed: true }
 				: { allowed: false, reason: "refused_by_owner" };
 		} catch {

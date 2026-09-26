@@ -313,6 +313,10 @@ export class ExecutionProcessOwnerStore {
 				evidence.controller.hostBootId !== row.host_boot_id
 			)
 				return { ok: false, reason: "drain_identity_changed" };
+			// A committed drain is a durable receipt, not a new death decision.
+			// Replay still requires the exact current owner, epoch and binding.
+			if (row.owner_drained_receipt && row.owner_drained_at)
+				return { ok: true, receipt: row.owner_drained_receipt };
 			if (
 				!Number.isSafeInteger(evidence.observedAtMs) ||
 				evidence.observedAtMs < 0 ||
@@ -329,8 +333,6 @@ export class ExecutionProcessOwnerStore {
 				evidence.writersState !== "absent"
 			)
 				return { ok: false, reason: "drain_unconfirmed" };
-			if (row.owner_drained_receipt && row.owner_drained_at)
-				return { ok: true, receipt: row.owner_drained_receipt };
 			const receipt = createHash("sha256")
 				.update(JSON.stringify({ version: 1, evidence, reason }))
 				.digest("hex");
@@ -353,6 +355,7 @@ export class ExecutionProcessOwnerStore {
 		);
 		return (
 			checked.ok &&
+			checked.row.spawn_epoch > 0 &&
 			checked.row.close_requested === 0 &&
 			checked.row.owner_drained_at === null
 		);

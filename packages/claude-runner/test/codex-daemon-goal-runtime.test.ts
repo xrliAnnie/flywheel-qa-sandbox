@@ -1280,6 +1280,95 @@ describe("FLY-2505 connect readiness provenance", () => {
 });
 
 describe("FLY-2903 restart gate (mayRestartAfterTransportDeath)", () => {
+	it("rechecks owner permission after asynchronous daemon drain", async () => {
+		let permitted = true;
+		const h = makeHarness({
+			runGoalScript: [
+				new GoalRunError("transport closed", "transport_closed"),
+				COMPLETE,
+			],
+			spawnDaemon: async () => {
+				const handle = fakeHandle(() => {});
+				handle.ensureDead = async () => {
+					await Promise.resolve();
+					permitted = false;
+					return true;
+				};
+				return handle;
+			},
+		});
+		const rt = new CodexDaemonGoalRuntime(h.opts);
+		await expect(
+			rt.runGoal({
+				objective: "work",
+				mayRestartAfterTransportDeath: () => permitted,
+			}),
+		).rejects.toBeInstanceOf(GoalRunError);
+		expect(h.clients).toHaveLength(1);
+	});
+
+	it("awaits the durable restart gate before tearing down the current daemon", async () => {
+		const h = makeHarness({
+			runGoalScript: [
+				new GoalRunError("transport closed", "transport_closed"),
+				COMPLETE,
+			],
+		});
+		const rt = new CodexDaemonGoalRuntime(h.opts);
+		let accept!: (allowed: boolean) => void;
+		const permission = new Promise<boolean>((resolve) => {
+			accept = resolve;
+		});
+		const gate = vi.fn(() => permission);
+		const run = rt.runGoal({
+			objective: "work",
+			mayRestartAfterTransportDeath: gate,
+		});
+		// Attach the failure observer while the async gate is intentionally pending.
+		const outcome = run.then(
+			(value) => ({ value }),
+			(error) => ({ error }),
+		);
+		await vi.waitFor(() => expect(gate).toHaveBeenCalledTimes(1));
+		expect(h.stops).toBe(0);
+		expect(h.spawns).toHaveLength(1);
+		accept(true);
+		expect(await outcome).toMatchObject({
+			value: { restarts: 1, threadId: "t-1" },
+		});
+		expect(h.clients[1]?.resumed).toEqual(["t-1"]);
+		rt.stop();
+		await rt.drained();
+	});
+
+	it("stop during the awaited restart gate drains without admitting another writer", async () => {
+		const h = makeHarness({
+			runGoalScript: [
+				new GoalRunError("transport closed", "transport_closed"),
+				COMPLETE,
+			],
+		});
+		const rt = new CodexDaemonGoalRuntime(h.opts);
+		let accept!: (allowed: boolean) => void;
+		const permission = new Promise<boolean>((resolve) => {
+			accept = resolve;
+		});
+		const gate = vi.fn(() => permission);
+		const outcome = rt
+			.runGoal({ objective: "work", mayRestartAfterTransportDeath: gate })
+			.then(
+				() => "unexpected success",
+				() => "stopped",
+			);
+		await vi.waitFor(() => expect(gate).toHaveBeenCalledTimes(1));
+		expect(h.stops).toBe(0);
+		rt.stop();
+		accept(true);
+		expect(await outcome).toBe("stopped");
+		await rt.drained();
+		expect(h.spawns).toHaveLength(1);
+	});
+
 	it("FLY-2814 counterexample: an owner-refused transport death does not restart and propagates the death", async () => {
 		const logs: string[] = [];
 		const death = new GoalRunError("killed by bridge", "transport_closed");
@@ -1370,13 +1459,11 @@ describe("FLY-2903 restart gate (mayRestartAfterTransportDeath)", () => {
 			],
 		});
 		const rt = new CodexDaemonGoalRuntime(h.opts);
-		let calls = 0;
 		await expect(
 			rt.runGoal({
 				objective: "x",
 				mayRestartAfterTransportDeath: () => {
-					calls += 1;
-					return calls < 2;
+					return h.spawns.length < 2;
 				},
 			}),
 		).rejects.toBeInstanceOf(GoalRunError);
