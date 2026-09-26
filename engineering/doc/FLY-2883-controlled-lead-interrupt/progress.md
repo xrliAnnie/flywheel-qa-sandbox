@@ -2,13 +2,13 @@
 issue: FLY-2883
 phase: implement
 phaseCursor: 5/8
-updated: 2026-09-25T21:28:57.944Z
-nextStep: wait for FLY-2882 merge; then sidecar onSubmitInterrupt on
-  LeadTurnStateTracker + Claude pane judge/typing
+updated: 2026-09-26T05:38:51.396Z
+nextStep: Codex R2 verification of 0972565cb; then wait for FLY-2882 merge
+  (tracker/pane steps), final full review, PR
 chunks: []
 pointers: {}
 ---
 
 # FLY-2883 progress
 **phase**: implement (5/8)
-**next**: wait for FLY-2882 merge; then sidecar onSubmitInterrupt on LeadTurnStateTracker + Claude pane judge/typing
+**next**: Codex R2 verification of 0972565cb; then wait for FLY-2882 merge (tracker/pane steps), final full review, PR
