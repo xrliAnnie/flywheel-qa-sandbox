@@ -552,3 +552,20 @@ Lead 按 hook 要求附上的「关联 Handoff ID：<uuid>」只在朗读投影�
 - `codex-readback-replay.test.ts`：用 `fixtures/fly2885-founder-readback-1043b4a4.json` 走生产路径回放。只模拟了 provider 事件和房间播放器；daemon → session → 前端 → 后端 → 说话者 → OpusDownlink 都是真实代码。
 - 修复前，回放逐项复现了证据：越界 27/9 字、4266 ms；丢弃态 4974 ms（录制值 4994）；两次 `assistant_turn_open` 准入超时；只发出第一句。修复后两句都发出，第二句在她那轮问答结束后发出。
 - 第二个回放：她连续说 32 s，回复一直排队，等她那一轮结束后念出。修复前这条在 10 s 时被丢。
+
+### 13.7 QA@2：打断朗读后，模型下一轮把没念完的部分补上（`12642644d`）
+
+- **现象**（QA@2，529 房 3/3）：她打断一段 Lead 朗读，本地 0.4 s 内就切掉了旧声音，也说了「剩下的内容在频道里。」。但模型的下一轮回答先把那段没念完的内容接着说完（从断点接，连半个词也补上），然后才回答她的新问题。
+- **原因**：v3 的 `appendSpeech` 是 `session.context.append`（`channel:"speakable"`），要念的文本常驻在模型上下文里。v3 没有撤销这类追加的接口（上行只有 `input_audio.append`、`delegation.context.append`、`session.context.append`、`session.close`、`response.create`、`session.update`、`conversation.item.create`）。prompt 里已有的「被打断就放弃没说完的话」压不住它。
+- **做法**：已发出的 Lead 朗读块被她打断（`speech_interrupted`）或抢先（`speech_preempted`）时，后端立刻用 `thread/realtime/appendText`（developer，v3 下是不带 channel 的 `session.context.append`，不会念出）追加一条提示。提示给出这块的原文，要求从被打断处起一个字都不再说：不补完没说完的词句、不接着念、不复述或总结，只回应她刚说的话。随后照旧念「剩下的内容在频道里。」。
+- **不追加提示的情况**：还在等停顿、没发出的块；遇到换代（新一代没有旧上下文）；非朗读类提示音。
+- **探针 8**（`evidence/probe8-bargein.mjs`，日志 `evidence/probe-run8-*.jsonl`）：固定 0.156.1、v3 WebRTC、订阅、无 key。prompt 用生产 protocol 原文，朗读文本和打断时机取 QA R8，问句为合成语音「打断一下，四加四等于几？」。
+
+| 组 | 次数 | 下一轮续念旧内容 |
+|---|---|---|
+| 对照（无提示；a–c 用简版 prompt，d–l 用生产 protocol） | 12 | 2 次完整续念（d、l，均从断点接，与 QA 相同） |
+| 通用提示（不含原文） | 6 | 0 次完整续念，1 次补了半个词（k：「个是」） |
+| **带原文的提示（本实现）** | 8 | **0** |
+
+  每一次都没有 `thread/realtime/error`、没有非 `requested` 的关闭，developer 追加都被接受。样本不大，结论是方向性的；房间里的最终判据交 QA。
+- **残余风险**：这是对模型行为的引导，不是协议层面的撤销。如果 QA 仍听到续念，下一步只能在本地按转写识别「接着念旧文本」的片段并静音，复杂度和漏听风险都显著更高，届时交 Lead 决定。

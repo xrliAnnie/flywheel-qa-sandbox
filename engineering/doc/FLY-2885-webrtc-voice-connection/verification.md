@@ -403,3 +403,30 @@ Codex R3：2 HIGH，都成立。
 另：一条 T5c 老用例投递的 final 与它自己发过的增量不一致（「目前/现在」、编造尾巴长短不同），改为与增量一致的全文，断言不变。
 
 验证：`pnpm lint` exit 0；voice-codex `tsc --noEmit` 通过；`vitest related` 12 个文件 251 条通过（+3 条环境门控跳过，含 founder 回放两条）；teamlead 消费者 36/36。
+
+## QA@2 返工：打断朗读后模型续念（`12642644d`，QA 执行 `098cd90b`，head `cf47afa01` FAIL）
+
+QA@2 唯一阻断项：她打断 Lead 朗读后，模型的下一轮先补上没念完的部分再回答。529 房复现 3/3（R4、R7、R8）。其余全部通过（A 越界续读、B 排队、C 提示、延迟、普通打断、UDP 清零），下一轮只需复核本项。设计见 `plan.md` §13.7。
+
+**先定位，再修**
+- 事件时间线（`qa-attempt2/session-3a07c03f/events.jsonl`，R8）：20:37:44.991 本地切断，朗读块结算为 `speech_interrupted`，`codex_readback_unfinished` 被记录；20:37:47.287 `codex_barge_in_resumed{boundary:"replay"}`。随后服务端第二个 assistant 回合的 final 是「第三个是主干上有一条旧的红灯。这些都在跟进中。四加四等于八。」，说明剩余内容是**模型在新回合里说出的**，不是本地回放旧音频。
+- Codex 源码（本机 `codex-oss`）：v3 的 `appendSpeech` = `session.context.append`（speakable）；v3 没有取消或截断这类追加的上行消息。
+- 探针 8 在生产条件下复现，并给出对照（见 plan §13.7 的表）：对照 2/12 续念；带原文的提示 0/8。
+
+**测试**
+- `codex-speak`：
+  - 已发出的朗读块被打断或被抢先时，通知后端并带上这块的原文；
+  - 还在等待的块、遇到换代的块、`cue` 不通知。
+- `codex-room-webrtc`：
+  - 她一打断就以 developer 角色追加提示（第 1 代、内容含原文、不作为语音发出），随后照常念「剩下的内容在频道里。」；
+  - 追加被拒时记录 `codex_readback_abandoned_note_failed`，回复照常停止并给出提示。
+- 先红后绿：这 4 条在实现前是红的（没有通知或追加），实现后变绿。
+
+**本机验证**
+- `pnpm lint` exit 0。
+- voice-codex `tsc --noEmit` 通过。
+- `vitest related`（7 个源文件）：12 个文件 258 条通过，另有 3 条按环境门控跳过（含 founder 回放 2 条和 A/B/C/D 主路径）。
+  - 第一次全量运行时，`daemon-health.test.ts` 有 1 条失败（「opens on the third required-demand poll failure…」）。本轮没有改 daemon 或 health 代码；单独重跑 3/3 通过，全量重跑 258/258 通过，判为并行负载下的偶发。
+- teamlead 消费者 36/36。
+
+**复现探针**：问句 WAV 用 `say -v Tingting -o q.aiff "打断一下，四加四等于几？" && afconvert -f WAVE -d LEI16@48000 -c 1 q.aiff q.wav` 生成；运行命令为 `PROBE_ARM=control|steer|steer2 PROBE_LOG=… PROBE_SCRATCH=… PROBE_WAV=q.wav node probe8-bargein.mjs`。

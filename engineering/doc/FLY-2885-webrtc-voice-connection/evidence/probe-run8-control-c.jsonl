@@ -1,0 +1,27 @@
+{"t":4.2,"kind":"arm","data":{"arm":"control"}}
+{"t":471.5,"kind":"response","data":{"method":"initialize","error":null}}
+{"t":1015.6,"kind":"response","data":{"method":"account/read","error":null}}
+{"t":1017.9,"kind":"account","data":{"type":"chatgpt"}}
+{"t":2166.9,"kind":"response","data":{"method":"thread/start","error":null}}
+{"t":2498,"kind":"response","data":{"method":"thread/realtime/start","error":null}}
+{"t":2498.2,"kind":"start_response","data":{"error":null}}
+{"t":3047.2,"kind":"started","data":{"version":"v3"}}
+{"t":3054.2,"kind":"pc_state","data":{"s":"connecting"}}
+{"t":3635.1,"kind":"pc_state","data":{"s":"connected"}}
+{"t":3711.8,"kind":"dc_event","data":{"type":"session.started"}}
+{"t":5224.6,"kind":"response","data":{"method":"thread/realtime/appendSpeech","error":null}}
+{"t":5228.6,"kind":"append_speech","data":{"error":null}}
+{"t":5793.7,"kind":"dc_event","data":{"type":"turn.created","turn":{"role":"assistant","transcript":"今天有"}}}
+{"t":8790.8,"kind":"barge_in","data":{"ms":2570}}
+{"t":10211.6,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"assistant","transcript":"今天有五件事要同步。第一件,设计评审已经通过。"}}}
+{"t":10221.6,"kind":"transcript_done","data":{"role":"assistant","text":"今天有五件事要同步。第一件,设计评审已经通过。"}}
+{"t":10224.3,"kind":"dc_event","data":{"type":"turn.created","turn":{"role":"user","transcript":"打"}}}
+{"t":13015,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"user","transcript":"打断 一下,4 加 4 等 于几?"}}}
+{"t":13024.8,"kind":"dc_event","data":{"type":"turn.created","turn":{"role":"assistant","transcript":"好的,收到,我停一下。等于八。"}}}
+{"t":13032,"kind":"transcript_done","data":{"role":"user","text":"打断 一下,4 加 4 等 于几?"}}
+{"t":14614.6,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"assistant","transcript":"好的,收到,我停一下。等于八。"}}}
+{"t":14630.6,"kind":"transcript_done","data":{"role":"assistant","text":"好的,收到,我停一下。等于八。"}}
+{"t":15439.6,"kind":"response","data":{"method":"thread/realtime/stop","error":null}}
+{"t":15440.1,"kind":"pc_state","data":{"s":"closed"}}
+{"t":15440.8,"kind":"realtime_closed","data":{"reason":"requested"}}
+{"t":15674.8,"kind":"summary","data":{"why":"done","arm":"control","bargeAtMs":8790.7,"errors":[],"closed":[{"t":15440.8,"reason":"requested"}],"transcripts":[{"t":10221.5,"role":"assistant","text":"今天有五件事要同步。第一件,设计评审已经通过。"},{"t":13032,"role":"user","text":"打断 一下,4 加 4 等 于几?"},{"t":14630.6,"role":"assistant","text":"好的,收到,我停一下。等于八。"}],"assistantTurnsAfterBarge":["今天有五件事要同步。第一件,设计评审已经通过。","好的,收到,我停一下。等于八。"],"answerText":"好的,收到,我停一下。等于八。","answeredEight":true,"resumedMarkers":[],"verdict":"CLEAN","authSourceStillFile":true}}

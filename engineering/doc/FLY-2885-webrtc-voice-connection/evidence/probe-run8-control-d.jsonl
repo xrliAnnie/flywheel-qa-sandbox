@@ -1,0 +1,27 @@
+{"t":19.3,"kind":"arm","data":{"arm":"control","bargeAfterMs":4500}}
+{"t":1073.7,"kind":"response","data":{"method":"initialize","error":null}}
+{"t":1479.7,"kind":"response","data":{"method":"account/read","error":null}}
+{"t":1480,"kind":"account","data":{"type":"chatgpt"}}
+{"t":2250.8,"kind":"response","data":{"method":"thread/start","error":null}}
+{"t":2382.2,"kind":"response","data":{"method":"thread/realtime/start","error":null}}
+{"t":2384.4,"kind":"start_response","data":{"error":null}}
+{"t":2953.5,"kind":"started","data":{"version":"v3"}}
+{"t":2957.1,"kind":"pc_state","data":{"s":"connecting"}}
+{"t":3513.9,"kind":"pc_state","data":{"s":"connected"}}
+{"t":3592.1,"kind":"dc_event","data":{"type":"session.started"}}
+{"t":5136,"kind":"response","data":{"method":"thread/realtime/appendSpeech","error":null}}
+{"t":5136.8,"kind":"append_speech","data":{"error":null}}
+{"t":5708.6,"kind":"dc_event","data":{"type":"turn.created","turn":{"role":"assistant","transcript":"我把"}}}
+{"t":10200.9,"kind":"barge_in","data":{"ms":2570}}
+{"t":11496,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"assistant","transcript":"我把三个风险点列一下。第一个是测试房负载太高。第二个是额度可能不够用。 第三"}}}
+{"t":11509.6,"kind":"transcript_done","data":{"role":"assistant","text":"我把三个风险点列一下。第一个是测试房负载太高。第二个是额度可能不够用。 第三"}}
+{"t":11511.9,"kind":"dc_event","data":{"type":"turn.created","turn":{"role":"user","transcript":"打"}}}
+{"t":14367,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"user","transcript":"打断 一下,四 加 四 等 于 几"}}}
+{"t":14372.9,"kind":"dc_event","data":{"type":"turn.created","turn":{"role":"assistant","transcript":"个是主干上有一条旧的红灯。等于八。"}}}
+{"t":14378,"kind":"transcript_done","data":{"role":"user","text":"打断 一下,四 加 四 等 于 几"}}
+{"t":16299,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"assistant","transcript":"个是主干上有一条旧的红灯。等于八。"}}}
+{"t":16309.5,"kind":"transcript_done","data":{"role":"assistant","text":"个是主干上有一条旧的红灯。等于八。"}}
+{"t":17119,"kind":"response","data":{"method":"thread/realtime/stop","error":null}}
+{"t":17119.6,"kind":"pc_state","data":{"s":"closed"}}
+{"t":17120.5,"kind":"realtime_closed","data":{"reason":"requested"}}
+{"t":17353.7,"kind":"summary","data":{"why":"done","arm":"control","bargeAtMs":10200.8,"errors":[],"closed":[{"t":17120.5,"reason":"requested"}],"transcripts":[{"t":11509.6,"role":"assistant","text":"我把三个风险点列一下。第一个是测试房负载太高。第二个是额度可能不够用。 第三"},{"t":14378,"role":"user","text":"打断 一下,四 加 四 等 于 几"},{"t":16309.5,"role":"assistant","text":"个是主干上有一条旧的红灯。等于八。"}],"assistantTurnsAfterBarge":["我把三个风险点列一下。第一个是测试房负载太高。第二个是额度可能不够用。 第三","个是主干上有一条旧的红灯。等于八。"],"answerText":"个是主干上有一条旧的红灯。等于八。","answeredEight":true,"resumedMarkers":["红灯"],"verdict":"RESUMED_OLD_CONTENT","authSourceStillFile":true}}
