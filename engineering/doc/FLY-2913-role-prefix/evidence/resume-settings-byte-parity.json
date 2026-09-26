@@ -1,0 +1,248 @@
+{
+  "scope": "Offline role-v1 compiler settings byte parity only; not C6 runtime proof",
+  "base": "2022d92d07e618beb142b20416ebde7ad862abd8",
+  "head": "ea02d07e5ee0e868a0c4ea5ad7a6a8529e454815",
+  "sourceSha256": "e0bfa188106a7731ceb1d997becd6c5cec8e84b04ed7dfb61125cce8d2bcca4f",
+  "samples": [
+    {
+      "role": "design",
+      "pinned": "none",
+      "lowerRestrictions": false,
+      "byteEqual": true,
+      "bytes": 1565,
+      "sha256": "32c774635c39eb1681343bda644b042533f479779d2970cc3cf373a901f974ca"
+    },
+    {
+      "role": "design",
+      "pinned": "none",
+      "lowerRestrictions": true,
+      "byteEqual": true,
+      "bytes": 1526,
+      "sha256": "ec5c755e48f2ae86b46c44f5f14257710b329033cb6dea6d2c186446a292a7d2"
+    },
+    {
+      "role": "design",
+      "pinned": "role-contract",
+      "lowerRestrictions": false,
+      "byteEqual": true,
+      "bytes": 1565,
+      "sha256": "32c774635c39eb1681343bda644b042533f479779d2970cc3cf373a901f974ca"
+    },
+    {
+      "role": "design",
+      "pinned": "role-contract",
+      "lowerRestrictions": true,
+      "byteEqual": true,
+      "bytes": 1526,
+      "sha256": "ec5c755e48f2ae86b46c44f5f14257710b329033cb6dea6d2c186446a292a7d2"
+    },
+    {
+      "role": "design",
+      "pinned": "unparsed",
+      "lowerRestrictions": false,
+      "byteEqual": true,
+      "bytes": 329,
+      "sha256": "de1a010df0abe27420207cb619d60ef5804166a723a178505ccff29811b957fd"
+    },
+    {
+      "role": "design",
+      "pinned": "unparsed",
+      "lowerRestrictions": true,
+      "byteEqual": true,
+      "bytes": 329,
+      "sha256": "de1a010df0abe27420207cb619d60ef5804166a723a178505ccff29811b957fd"
+    },
+    {
+      "role": "implement",
+      "pinned": "none",
+      "lowerRestrictions": false,
+      "byteEqual": true,
+      "bytes": 1614,
+      "sha256": "9f51b44ab00068c95ad08422c0dc114edb7dc783de3df6e3e948348548f5c11a"
+    },
+    {
+      "role": "implement",
+      "pinned": "none",
+      "lowerRestrictions": true,
+      "byteEqual": true,
+      "bytes": 1575,
+      "sha256": "d2e92aab55deef9dfb0802bcd7d65a00e62d65c6ca30148ab20b4efafc25f77b"
+    },
+    {
+      "role": "implement",
+      "pinned": "role-contract",
+      "lowerRestrictions": false,
+      "byteEqual": true,
+      "bytes": 1614,
+      "sha256": "9f51b44ab00068c95ad08422c0dc114edb7dc783de3df6e3e948348548f5c11a"
+    },
+    {
+      "role": "implement",
+      "pinned": "role-contract",
+      "lowerRestrictions": true,
+      "byteEqual": true,
+      "bytes": 1575,
+      "sha256": "d2e92aab55deef9dfb0802bcd7d65a00e62d65c6ca30148ab20b4efafc25f77b"
+    },
+    {
+      "role": "implement",
+      "pinned": "unparsed",
+      "lowerRestrictions": false,
+      "byteEqual": true,
+      "bytes": 329,
+      "sha256": "de1a010df0abe27420207cb619d60ef5804166a723a178505ccff29811b957fd"
+    },
+    {
+      "role": "implement",
+      "pinned": "unparsed",
+      "lowerRestrictions": true,
+      "byteEqual": true,
+      "bytes": 329,
+      "sha256": "de1a010df0abe27420207cb619d60ef5804166a723a178505ccff29811b957fd"
+    },
+    {
+      "role": "qa",
+      "pinned": "none",
+      "lowerRestrictions": false,
+      "byteEqual": true,
+      "bytes": 1784,
+      "sha256": "94a33eeea5f1b35a5a1c91e3abf53662cc03a8062d50805fed7f754c3b61794f"
+    },
+    {
+      "role": "qa",
+      "pinned": "none",
+      "lowerRestrictions": true,
+      "byteEqual": true,
+      "bytes": 1745,
+      "sha256": "55fcf28e4e66215d8459bcedf4d5ca2f0bc5dec200377ec189efd5ab22763dad"
+    },
+    {
+      "role": "qa",
+      "pinned": "role-contract",
+      "lowerRestrictions": false,
+      "byteEqual": true,
+      "bytes": 1784,
+      "sha256": "94a33eeea5f1b35a5a1c91e3abf53662cc03a8062d50805fed7f754c3b61794f"
+    },
+    {
+      "role": "qa",
+      "pinned": "role-contract",
+      "lowerRestrictions": true,
+      "byteEqual": true,
+      "bytes": 1745,
+      "sha256": "55fcf28e4e66215d8459bcedf4d5ca2f0bc5dec200377ec189efd5ab22763dad"
+    },
+    {
+      "role": "qa",
+      "pinned": "unparsed",
+      "lowerRestrictions": false,
+      "byteEqual": true,
+      "bytes": 430,
+      "sha256": "62924b2b7ba787f8876e3163f69d14af8ca2cac82402fde650399dee60d951e3"
+    },
+    {
+      "role": "qa",
+      "pinned": "unparsed",
+      "lowerRestrictions": true,
+      "byteEqual": true,
+      "bytes": 430,
+      "sha256": "62924b2b7ba787f8876e3163f69d14af8ca2cac82402fde650399dee60d951e3"
+    },
+    {
+      "role": "review-design",
+      "pinned": "none",
+      "lowerRestrictions": false,
+      "byteEqual": true,
+      "bytes": 2172,
+      "sha256": "1faa161084b5dabc77899cfe12490f628508d35c5e00e104b97b3162e2a5e970"
+    },
+    {
+      "role": "review-design",
+      "pinned": "none",
+      "lowerRestrictions": true,
+      "byteEqual": true,
+      "bytes": 2133,
+      "sha256": "3f0761da28fabb1fd2185a0a16cc0419b016a295dfc9f0419463948a9f64ae1a"
+    },
+    {
+      "role": "review-design",
+      "pinned": "role-contract",
+      "lowerRestrictions": false,
+      "byteEqual": true,
+      "bytes": 2172,
+      "sha256": "1faa161084b5dabc77899cfe12490f628508d35c5e00e104b97b3162e2a5e970"
+    },
+    {
+      "role": "review-design",
+      "pinned": "role-contract",
+      "lowerRestrictions": true,
+      "byteEqual": true,
+      "bytes": 2133,
+      "sha256": "3f0761da28fabb1fd2185a0a16cc0419b016a295dfc9f0419463948a9f64ae1a"
+    },
+    {
+      "role": "review-design",
+      "pinned": "unparsed",
+      "lowerRestrictions": false,
+      "byteEqual": true,
+      "bytes": 2172,
+      "sha256": "1faa161084b5dabc77899cfe12490f628508d35c5e00e104b97b3162e2a5e970"
+    },
+    {
+      "role": "review-design",
+      "pinned": "unparsed",
+      "lowerRestrictions": true,
+      "byteEqual": true,
+      "bytes": 2133,
+      "sha256": "3f0761da28fabb1fd2185a0a16cc0419b016a295dfc9f0419463948a9f64ae1a"
+    },
+    {
+      "role": "review-code",
+      "pinned": "none",
+      "lowerRestrictions": false,
+      "byteEqual": true,
+      "bytes": 2146,
+      "sha256": "ae1fb168f9b5e581ab94f61eab2fe7f98800290c4cb580f45705642c5c3d2734"
+    },
+    {
+      "role": "review-code",
+      "pinned": "none",
+      "lowerRestrictions": true,
+      "byteEqual": true,
+      "bytes": 2107,
+      "sha256": "9b44c67bbe12087f6483f9a1ccef4aeb7bfd2abd5a3e94249c0195a7730a5ac5"
+    },
+    {
+      "role": "review-code",
+      "pinned": "role-contract",
+      "lowerRestrictions": false,
+      "byteEqual": true,
+      "bytes": 2146,
+      "sha256": "ae1fb168f9b5e581ab94f61eab2fe7f98800290c4cb580f45705642c5c3d2734"
+    },
+    {
+      "role": "review-code",
+      "pinned": "role-contract",
+      "lowerRestrictions": true,
+      "byteEqual": true,
+      "bytes": 2107,
+      "sha256": "9b44c67bbe12087f6483f9a1ccef4aeb7bfd2abd5a3e94249c0195a7730a5ac5"
+    },
+    {
+      "role": "review-code",
+      "pinned": "unparsed",
+      "lowerRestrictions": false,
+      "byteEqual": true,
+      "bytes": 2146,
+      "sha256": "ae1fb168f9b5e581ab94f61eab2fe7f98800290c4cb580f45705642c5c3d2734"
+    },
+    {
+      "role": "review-code",
+      "pinned": "unparsed",
+      "lowerRestrictions": true,
+      "byteEqual": true,
+      "bytes": 2107,
+      "sha256": "9b44c67bbe12087f6483f9a1ccef4aeb7bfd2abd5a3e94249c0195a7730a5ac5"
+    }
+  ]
+}
