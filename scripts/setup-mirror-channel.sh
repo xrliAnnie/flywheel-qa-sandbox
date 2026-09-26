@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # FLY-153 mirror-channel setup helper.
 #
-# Why this isn't fully automated: the four test bots in the FLY-96 QA guild
+# Why this isn't fully automated: the test bots in the FLY-96 QA guild
 # only have View Channel + Send Messages + Read Message History (perms 68608).
 # None of them have MANAGE_CHANNELS / MANAGE_GUILD, so they cannot create the
 # `#test-core-mirror` channel or grant themselves channel-level overwrites.

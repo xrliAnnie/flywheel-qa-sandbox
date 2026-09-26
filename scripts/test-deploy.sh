@@ -42,6 +42,10 @@ source "${SCRIPT_DIR}/lib/qa-slot-bridge.sh"
 # shellcheck source=lib/qa-slot-env-contract.sh
 source "${SCRIPT_DIR}/lib/qa-slot-env-contract.sh"
 
+# FLY-2874: one validated source of truth for the configured 529-room pool.
+# shellcheck source=lib/qa-slot-pool.sh
+source "${SCRIPT_DIR}/lib/qa-slot-pool.sh"
+
 # FLY-1663: 529 Room Leads use the same launchd-native v2 topology as the
 # target fleet, with labels and state scoped to the ephemeral QA slot.
 # shellcheck source=lib/qa-launchd-lead.sh
@@ -69,7 +73,6 @@ if [[ ! -f "$SLOTS_FILE" ]]; then
 fi
 
 GUILD_ID=$(jq -r '.guildId' "$SLOTS_FILE")
-TOTAL_SLOTS=$(jq '.slots | length' "$SLOTS_FILE")
 
 log() { echo "[test-deploy] $(date +%H:%M:%S) $*" >&2; }
 campaign_abort() {
@@ -195,6 +198,8 @@ CODEX_RUNNER=0            # FLY-2211: opt-in real codex-tmux worker for restart 
 STUB_RUNNER=0             # FLY-1775: deterministic persistent claude stub for the 9-step drill.
 EXPECT_HEAD=""            # FLY-1775: optional script-repository HEAD fence.
 VOICE_FIXTURE=""          # FLY-2655: opt-in isolated 529 voice-room coordinates.
+VOICE_CHANNEL_ID=""       # FLY-2874: optional slot-owned voice map.
+VOICE_CHANNEL_NAME=""
 TEST_DISCIPLINE=0          # FLY-2802: real-runner local-test behavior acceptance room.
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -337,6 +342,10 @@ if [[ -n "$VOICE_FIXTURE" ]]; then
     echo "ERROR: --voice-fixture does not borrow extra Lead bots." >&2
     exit 1
   }
+  [[ -n "$REQUESTED_SLOT" ]] || {
+    echo "ERROR: --voice-fixture requires an explicit slot." >&2
+    exit 1
+  }
   node "${SCRIPT_DIR}/lib/fly2655-voice-fixture.mjs" validate \
     --fixture "$VOICE_FIXTURE" >/dev/null || exit 1
 fi
@@ -377,8 +386,8 @@ fi
 
 # ── FLY-153: Mirror mode validation (BEFORE expensive preflight) ──
 # Round 1 #3 + R2 #4: validate mode + mirror requirements before paying for
-# gh/pnpm preflight. If the user asks for an impossible mirror config (slot 4,
-# missing mirrorChannel), fail in milliseconds instead of minutes.
+# gh/pnpm preflight. If the user asks for a slot outside the designated
+# three-slot mirror topology, fail in milliseconds instead of minutes.
 case "$MODE" in
   slot|mirror|roundtable) ;;
   *)
@@ -386,6 +395,30 @@ case "$MODE" in
     exit 1
     ;;
 esac
+
+if ! TOTAL_SLOTS="$(qa_slot_pool_size "$SLOTS_FILE")"; then
+  echo "ERROR: invalid slot pool in ${SLOTS_FILE}" >&2
+  exit 1
+fi
+if [[ -n "$REQUESTED_SLOT" ]] \
+    && ! qa_slot_pool_require_member "$SLOTS_FILE" "$REQUESTED_SLOT"; then
+  echo "ERROR: slot must be in configured range 1-${TOTAL_SLOTS} (got '${REQUESTED_SLOT}')" >&2
+  exit 1
+fi
+if [[ -n "$VOICE_FIXTURE" ]]; then
+  VOICE_SLOT_IDX=$((REQUESTED_SLOT - 1))
+  VOICE_CHANNEL_ID=$(jq -r ".slots[${VOICE_SLOT_IDX}].voiceChannelId // empty" "$SLOTS_FILE")
+  VOICE_CHANNEL_NAME=$(jq -r ".slots[${VOICE_SLOT_IDX}].voiceChannelName // empty" "$SLOTS_FILE")
+  if [[ ! "$VOICE_CHANNEL_ID" =~ ^[0-9]{17,20}$ || -z "$VOICE_CHANNEL_NAME" ]]; then
+    echo "ERROR: slot ${REQUESTED_SLOT} requires a valid voiceChannelId/voiceChannelName for --voice-fixture" >&2
+    exit 1
+  fi
+  FIXTURE_VOICE_CHANNEL_ID=$(jq -er '.voiceChannelId' "$VOICE_FIXTURE") || exit 1
+  if [[ "$FIXTURE_VOICE_CHANNEL_ID" != "$VOICE_CHANNEL_ID" ]]; then
+    echo "ERROR: voice fixture channel does not match slot ${REQUESTED_SLOT} mapping" >&2
+    exit 1
+  fi
+fi
 
 MIRROR_CHANNEL_ID=""
 if [[ "$MODE" == "mirror" ]]; then
@@ -403,7 +436,7 @@ if [[ "$MODE" == "mirror" ]]; then
     case "$REQUESTED_SLOT" in
       1|2|3) ;;
       *)
-        echo "ERROR: --mode mirror supports slots 1-3 (cos/product/ops). Slot ${REQUESTED_SLOT} has no prod analog (slot 4 is finance-only)." >&2
+        echo "ERROR: --mode mirror supports only the designated slots 1-3 (cos/product/ops); got slot ${REQUESTED_SLOT}." >&2
         exit 1
         ;;
     esac
@@ -635,8 +668,7 @@ if [[ -n "$REQUESTED_SLOT" ]]; then
     exit 1
   fi
 else
-  # FLY-153: in mirror mode auto-allocation only considers slots 1-3
-  # (slot 4 is finance — no prod analog in mirror topology).
+  # FLY-153: mirror mode keeps its designated cos/product/ops topology.
   if [[ "$MODE" == "mirror" ]]; then
     AUTO_RANGE_END=3
   else
@@ -781,6 +813,10 @@ SLOT_ROLE=$(jq -r ".slots[${SLOT_IDX}].role" "$SLOTS_FILE")
 SLOT_BACKEND=$(jq -r ".slots[${SLOT_IDX}].backend // empty" "$SLOTS_FILE")
 SLOT_RETIRED_CODEX_SOURCE_HOME=$(jq -r ".slots[${SLOT_IDX}].codexSourceHome // empty" "$SLOTS_FILE")
 SLOT_CODEX_PROFILE=$(jq -r ".slots[${SLOT_IDX}].codexProfile // empty" "$SLOTS_FILE")
+if [[ -z "$VOICE_CHANNEL_ID" && -z "$VOICE_CHANNEL_NAME" ]]; then
+  VOICE_CHANNEL_ID=$(jq -r ".slots[${SLOT_IDX}].voiceChannelId // empty" "$SLOTS_FILE")
+  VOICE_CHANNEL_NAME=$(jq -r ".slots[${SLOT_IDX}].voiceChannelName // empty" "$SLOTS_FILE")
+fi
 if ! MAIN_LEAD_SHAPE=$(qa_multilead_validate_lead_shape \
     "$SLOT_BACKEND" "$SLOT_RETIRED_CODEX_SOURCE_HOME" "$SLOT_CODEX_PROFILE"); then
   echo "ERROR: slots[${SLOT_IDX}] has an invalid Lead carrier shape" >&2
@@ -2650,6 +2686,7 @@ if [[ "$GENERALIZED" == "1" ]]; then
     --arg buildSha "$SCRIPT_REPO_HEAD" --arg subjectBaseHead "$BRANCH_SHA" \
     --arg apiTokenPath "$GENERALIZED_API_TOKEN_PATH" \
     --arg voiceFixtureReceipt "$VOICE_FIXTURE_RECEIPT" \
+    --arg voiceChannelId "$VOICE_CHANNEL_ID" --arg voiceChannelName "$VOICE_CHANNEL_NAME" \
     --arg bridgeLog "${SLOT_DIR}/bridge.log" \
     --argjson testDiscipline "$([[ "$TEST_DISCIPLINE" == "1" ]] && echo true || echo false)" \
     '{schemaVersion:1,slot:$slot,port:$port,projectName:$projectName,agentId:$agentId,
@@ -2660,7 +2697,11 @@ if [[ "$GENERALIZED" == "1" ]]; then
       summaryConfigHome:$summaryConfigHome,
       apiTokenPath:$apiTokenPath,
       bridgeLog:$bridgeLog} +
-      (if $voiceFixtureReceipt == "" then {} else {voiceFixtureReceipt:$voiceFixtureReceipt} end)' > "$_room_tmp" \
+      (if $voiceFixtureReceipt == "" then {} else {voiceFixtureReceipt:$voiceFixtureReceipt} end) +
+      (if $voiceChannelId == "" then {} else {
+        voiceChannelId:$voiceChannelId,
+        voiceChannelName:$voiceChannelName
+      } end)' > "$_room_tmp" \
     || { rm -f "$_room_tmp"; exit 1; }
   chmod 600 "$_room_tmp"
   mv "$_room_tmp" "$GENERALIZED_ROOM_INFO"
@@ -2867,7 +2908,15 @@ qa_lead_render_stdout_json \
   "$REPORT_HOST_JSON" "$LEAD_LOG" "$FLYWHEEL_PROJECTS_FILE" \
   "${SLOT_DIR}/launch-manifest.json" "${CAMPAIGN_MANIFEST_FILE:-}" \
   "${CAMPAIGN_ID:-}" "$LEAD_LABEL" "$EXTRA_LEADS_JSON" \
-  "$GENERALIZED_OUTPUT_FIELDS" | jq --argjson leads "$LEAD_COORDINATES_JSON" ' . + {leads:$leads}'
+  "$GENERALIZED_OUTPUT_FIELDS" | jq \
+    --argjson leads "$LEAD_COORDINATES_JSON" \
+    --arg voiceChannelId "$VOICE_CHANNEL_ID" --arg voiceChannelName "$VOICE_CHANNEL_NAME" '
+      . + {leads:$leads}
+      + (if $voiceChannelId == "" then {} else {
+          voiceChannelId:$voiceChannelId,
+          voiceChannelName:$voiceChannelName
+        } end)
+    '
 
 # Every fallible publication step is now complete. Only a successful deploy
 # may disarm the transaction that owns Bridge, Lead, credential-home, and lock

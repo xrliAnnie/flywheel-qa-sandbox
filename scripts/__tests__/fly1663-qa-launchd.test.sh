@@ -1273,6 +1273,38 @@ else
     "$([[ -f "$stop_unstarted_call" ]] && printf yes || printf no)" >&2
   fail "Codex unstarted-home credential retirement"
 fi
+
+stop_stale_root="/tmp/flywheel-test-slot-$((981000 + $$))"
+stop_stale_home="$stop_stale_root/cdxh/stale"
+stop_stale_registry="$stop_stale_root/launchd-leads.json"
+stop_stale_pid_file="$stop_stale_root/launchd/stale/pid"
+mkdir -p "$stop_stale_home/packages/standalone/releases/r1" \
+  "$(dirname "$stop_stale_pid_file")"
+cat > "$stop_stale_home/packages/standalone/releases/r1/codex" <<'CODEX'
+#!/bin/bash
+exit 0
+CODEX
+chmod +x "$stop_stale_home/packages/standalone/releases/r1/codex"
+ln -s releases/r1 "$stop_stale_home/packages/standalone/current"
+: > "$stop_stale_home/.flywheel-qa-launch-started"
+printf '%s\n' 4242 > "$stop_stale_pid_file"
+qa_launchd_register "$stop_stale_registry" \
+  com.flywheel.qa.lead.slot-981.stale /tmp/stale.plist '' codex-tui \
+  "$stop_stale_home" "$stop_stale_home/packages/standalone/current/codex" \
+  "$stop_stale_root/q/stale" "$stop_stale_pid_file" "$codex_tmux_bin"
+if qa_launchd_stop_registry "$stop_stale_registry" \
+    >/dev/null 2>"$TMP/stop-stale.err" \
+    && [[ "$(jq -c . "$stop_stale_registry")" == '[]' ]] \
+    && [[ ! -e "$stop_stale_home" && ! -e "$stop_stale_pid_file" ]]; then
+  pass "Codex registry retires stale launch markers after the job and recorded PID are gone"
+else
+  printf 'stale diagnostics: %s home=%s pid-file=%s registry=%s\n' \
+    "$(tr '\n' ';' < "$TMP/stop-stale.err")" \
+    "$([[ -e "$stop_stale_home" ]] && printf yes || printf no)" \
+    "$([[ -e "$stop_stale_pid_file" ]] && printf yes || printf no)" \
+    "$(jq -c . "$stop_stale_registry")" >&2
+  fail "Codex stale launch-marker retirement"
+fi
 unset -f ps
 
 stop_retired_root="/tmp/flywheel-test-slot-$((982000 + $$))"
@@ -1637,7 +1669,8 @@ fi
 
 unset -f sleep
 rm -rf "$stop_matrix_root" "$stop_alive_root" "$stop_bootout_root" \
-  "$stop_unstarted_root" "$stop_retired_root" "$managed_root" "$residue_root" \
+  "$stop_unstarted_root" "$stop_stale_root" "$stop_retired_root" \
+  "$managed_root" "$residue_root" \
   "$found_root" "$evidence_root" "$orphan_root"
 
 printf '\n%d passed, %d failed\n' "$passed" "$failed"

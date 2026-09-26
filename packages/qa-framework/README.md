@@ -155,6 +155,24 @@ The driver emits `MANUAL_PENDING` gates whenever Chrome MCP-driven Discord inter
 
 The QA agent (`agents/qa-parallel-executor.md`) handles these via Claude-in-Chrome MCP and re-invokes the driver with `--evidence-only` to attach screenshots.
 
+## Test slot pool
+
+The default pool is configured in `~/.flywheel/test-slots.json` from
+`scripts/test-slots.example.json`. Slots 1–6 use ports 19871–19876 and each
+owns one bot, one text channel, and one `voice-test-N` channel:
+
+| Slot | Text | Voice | Identity | Carrier |
+|------|------|-------|----------|---------|
+| 1 | `cos-test` | `voice-test-1` | `cos-lead` | Claude |
+| 2 | `product-lead-test` | `voice-test-2` | `product-lead` | configured carrier |
+| 3 | `ops-lead-test` | `voice-test-3` | `ops-lead` | Claude |
+| 4 | `finance-lead-test` | `voice-test-4` | `product-lead` | Claude |
+| 5 | `product-lead-test-2` | `voice-test-5` | `product-lead` | Codex app-server (`full-access`) |
+| 6 | `ops-lead-test-2` | `voice-test-6` | `ops-lead` | Claude |
+
+Slots 5/6 initially support per-slot and N-to-N deployment. They are not
+members of the shared alerts, roundtable, or mirror channels.
+
 ### Spawn from a Claude Code session
 
 Annie says: "spawn a QA agent to run fly-60 hard-gate suite". The main agent invokes `Agent` tool with `subagent_type: qa-parallel-executor`, passing:
@@ -169,12 +187,12 @@ AGENT_ID      = qa-fly-60
 
 ## Mirror Mode (FLY-153) — multi-Lead shared-channel testing
 
-The default 4-slot framework gives every test slot its own dedicated Discord
+The default 6-slot framework gives every test slot its own dedicated Discord
 channel. Some scenarios — most notably FLY-152 reply discipline — only show
 up when **multiple Leads share one channel** (mirroring prod
 `#geoforge3d-core`). Mirror mode opts the first three slots
 (cos / product / ops) into one shared `#test-core-mirror` channel while
-keeping the legacy 4-slot per-channel mode untouched.
+keeping the default six-slot per-channel mode untouched.
 
 ### Quick reference
 
@@ -204,7 +222,7 @@ design (chat-thread dedupe across Bridges, etc.).
 ### One-time Annie setup — Discord guild
 
 You only need to do this once per dev machine. **Why this step is manual**:
-the four test bots in this guild only have View Channel + Send Messages +
+the test bots in this guild only have View Channel + Send Messages +
 Read Message History permissions (perms `68608`). Discord requires
 `MANAGE_CHANNELS` to create a channel or grant channel-level overwrites,
 and none of the bots have that. Only you do.
@@ -217,7 +235,7 @@ The framework expects:
 | Category ID | `1493080958889496760` (QA Testing) |
 | New channel name | `test-core-mirror` |
 | Channel type | Text channel |
-| Members | You + bots `flywheel-test-1`, `product-lead-test`, `ops-lead-test` |
+| Members | You + bots `flywheel-test-1`, `flywheel-test-2`, `flywheel-test-3` |
 | Per-bot permissions | View Channel · Send Messages · Read Message History |
 
 **Steps**:
