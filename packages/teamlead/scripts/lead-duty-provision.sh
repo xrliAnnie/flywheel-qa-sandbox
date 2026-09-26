@@ -42,7 +42,7 @@ _alert_duty_provision_main() {
   if [ -n "${FLYWHEEL_BRIDGE_URL:-}" ]; then
     cli_args+=(--bridge-url "$FLYWHEEL_BRIDGE_URL")
   fi
-  cli_output="$(node "$seat_cli" "${cli_args[@]}")" || cli_rc=$?
+  cli_output="$(FLYWHEEL_BRIDGE_URL="${FLYWHEEL_BRIDGE_URL:-}" node "$seat_cli" "${cli_args[@]}")" || cli_rc=$?
   if [ "$cli_rc" -ne 0 ] || ! printf '%s' "$cli_output" | jq -e . >/dev/null 2>&1; then
     unset FLYWHEEL_ALERT_DUTY_TOKEN
     echo "[alert-duty] seat CLI failed (exit ${cli_rc})" >&2

@@ -117,7 +117,7 @@ Fallback: source config-bridge.sh + state.sh directly.
 | Resource | Rule |
 |----------|------|
 | **Code** | 只在自己的 WORKTREE_PATH 工作 |
-| **Bridge** | 使用 `scripts/test-deploy.sh` 自动分配 test slot（固定端口 19871-19874）。不要手动指定端口 |
+| **Bridge** | 使用 `node "$FLYWHEEL_COMM_CLI" room deploy --head <candidate-sha>` 自动分配 test slot（固定端口 19871-19874）。不要手动指定端口 |
 | **CommDB** | test-deploy 自动创建隔离的 CommDB（`~/.flywheel/comm/test-slot-{N}/`），teardown 时自动清理 |
 | **Discord** | 4 个独立 test bot + 4 个独立 test channel，支持**完全并行**。每个 slot 有专属 bot token 和 channel，互不干扰 |
 
@@ -125,15 +125,18 @@ Fallback: source config-bridge.sh + state.sh directly.
 
 ```bash
 # 1. 部署 test slot（自动分配可用 slot）
-SLOT_INFO=$(scripts/test-deploy.sh)
-SLOT=$(echo "$SLOT_INFO" | jq -r '.slot')
+ROOM=$(node "$FLYWHEEL_COMM_CLI" room deploy --head <candidate-sha>)
+ROOM_ID=$(echo "$ROOM" | jq -r '.room_id')
+SLOT_INFO=$(echo "$ROOM" | jq -c '.roomInfo')
 
 # 2. 运行 Discord E2E 测试
 scripts/discord-e2e.sh basic "$SLOT_INFO"   # 或 lifecycle, error, all
 
 # 3. 清理
-scripts/test-teardown.sh "$SLOT"
+node "$FLYWHEEL_COMM_CLI" room teardown --room "$ROOM_ID"
 ```
+
+Codex / Claude 都走服务；先推精确 SHA 到 origin。`--head` 选择 Bridge / Lead 源码，`--from-branch` 只选择已推到 sandbox remote 的 fixture 分支。退出码 3 用 `room wait --room <id>` 续等；拆房前记录证据，拆房后保存 `evidence_dir`。裸脚本只供 Lead 维护。
 
 **Slot 池**: 4 个 slot（端口 19871-19874），配置在 `~/.flywheel/test-slots.json`（模板: `scripts/test-slots.example.json`）。
 每个 slot 包含：独立 Bridge 进程、独立 test Lead、独立 Discord bot/channel、独立 CommDB。
@@ -150,7 +153,7 @@ Each slot has a `role` field that selects which production identity.md to source
 | 4    | lead | lead-test-3  | `.lead/product-lead/identity.md` (Peter) |
 
 **When testing CoS behavior** (triage, core channel routing) → claim slot 1.
-**When testing Lead behavior** (product-chat notifications, chat threads) → claim any of slot 2/3/4 (or let `test-deploy.sh` auto-allocate).
+**When testing Lead behavior** (product-chat notifications, chat threads) → claim any of slot 2/3/4 (or let `room deploy --slot auto` allocate).
 
 `scripts/pre-ship-check.sh` is a CI/operator-only aggregate. A Runner must not invoke it locally; select concrete test files and run the separately required real E2E surface instead.
 

@@ -955,6 +955,11 @@ if [[ -f "$real_reap_script" ]]; then
 	live_unowned_slot="$live_unowned_root/live-slot"
 	live_unowned_socket="$live_unowned_slot/state/cdx-sock/unowned.sock"
 	live_unowned_ready="$live_unowned_slot/socket-ready"
+	live_unowned_err="$live_unowned_slot/reap.err"
+	slow_reap_start="$TMP_ROOT/slow-reap-start.mjs"
+	# Cold package imports or a busy host must not let the fixture disappear
+	# before teardown inspects it. Exercise startup beyond the former 5s TTL.
+	printf '%s\n' 'await new Promise(resolve => setTimeout(resolve, 5500));' > "$slow_reap_start"
 	mkdir -p "$live_unowned_slot/state/cdx-sock"
 	node -e '
 		const fs = require("node:fs");
@@ -962,8 +967,13 @@ if [[ -f "$real_reap_script" ]]; then
 		const server = net.createServer();
 		server.listen(process.argv[1], () => fs.writeFileSync(process.argv[2], "ready\n"));
 		process.on("SIGTERM", () => server.close(() => process.exit(0)));
-		setTimeout(() => process.exit(0), 5000).unref();
-	' "$live_unowned_socket" "$live_unowned_ready" &
+		// The harness owns this fixture. Host load must not silently expire it;
+		// a crashed harness still retires the listener without an arbitrary TTL.
+		setInterval(() => {
+			try { process.kill(Number(process.argv[3]), 0); }
+			catch (error) { if (error.code === "ESRCH") process.exit(0); }
+		}, 200).unref();
+	' "$live_unowned_socket" "$live_unowned_ready" "$$" &
 	live_unowned_pid=$!
 	for _ in $(seq 1 50); do
 		[[ -f "$live_unowned_ready" ]] && break
@@ -972,11 +982,17 @@ if [[ -f "$real_reap_script" ]]; then
 	if [[ ! -f "$live_unowned_ready" ]]; then
 		echo 'FAIL: live unowned socket fixture did not start' >&2
 		failures=$((failures + 1))
-	elif node "$real_reap_script" "$live_unowned_slot" >/dev/null 2>&1; then
+	elif node --import "$slow_reap_start" "$real_reap_script" "$live_unowned_slot" \
+		>/dev/null 2>"$live_unowned_err"; then
 		echo 'FAIL: real daemon teardown accepted a live socket without ledger proof' >&2
 		failures=$((failures + 1))
+	elif kill -0 "$live_unowned_pid" 2>/dev/null \
+		&& grep -Fq 'live Codex socket(s) remain' "$live_unowned_err"; then
+		echo 'PASS: real daemon teardown fails closed on a live socket after slow startup'
 	else
-		echo 'PASS: real daemon teardown fails closed on a live socket without ledger proof'
+		echo 'FAIL: live socket fixture expired or teardown failed before its socket probe' >&2
+		sed 's/^/  reaper: /' "$live_unowned_err" >&2
+		failures=$((failures + 1))
 	fi
 	kill "$live_unowned_pid" 2>/dev/null || true
 	wait "$live_unowned_pid" 2>/dev/null || true
@@ -1004,7 +1020,17 @@ if [[ -f "$real_reap_script" ]]; then
 		'case "$last" in ""|*[!0-9]*) exit 1 ;; esac' \
 		'printf "%s\\n" "$last"' \
 		> "$owned_fake_bin/ps"
-	chmod 700 "$owned_fake_bin/ps"
+	# Keep the production 2s holder-proof budget while avoiding a census of
+	# unrelated host processes. This shim accepts only this fixture socket and
+	# delegates to the real kernel-backed lsof query for its known child PID.
+	cat > "$owned_fake_bin/lsof" <<'LSOF'
+#!/bin/sh
+[ "$#" = 3 ] && [ "$1" = -t ] && [ "$2" = -- ] \
+  && [ "$3" = "$QA_TEST_SOCKET_PATH" ] || exit 1
+exec "$QA_TEST_LSOF_BIN" -a -p "$QA_TEST_SOCKET_HOLDER_PID" -t -- "$3"
+LSOF
+	chmod 700 "$owned_fake_bin/ps" "$owned_fake_bin/lsof"
+	owned_lsof_bin="$(command -v lsof)"
 	node -e '
 		const { spawn } = require("node:child_process");
 		const fs = require("node:fs");
@@ -1014,16 +1040,19 @@ if [[ -f "$real_reap_script" ]]; then
 			const server = net.createServer();
 			server.listen(process.argv[1], () => fs.writeFileSync(process.argv[2], "ready\\n"));
 			process.on("SIGTERM", () => server.close(() => process.exit(0)));
-			setTimeout(() => process.exit(0), 30000).unref();
+			setInterval(() => {
+				try { process.kill(Number(process.argv[3]), 0); }
+				catch (error) { if (error.code === "ESRCH") process.exit(0); }
+			}, 200).unref();
 		`;
-		const child = spawn(process.execPath, ["-e", source, process.argv[1], process.argv[2]], {
+		const child = spawn(process.execPath, ["-e", source, process.argv[1], process.argv[2], process.argv[4]], {
 			detached: true,
 			stdio: "ignore",
 		});
 		if (!Number.isInteger(child.pid)) process.exit(1);
 		fs.writeFileSync(process.argv[3], `${child.pid}\n`);
 		child.unref();
-	' "$owned_socket" "$owned_ready" "$owned_pid_file"
+	' "$owned_socket" "$owned_ready" "$owned_pid_file" "$$"
 	for _ in $(seq 1 50); do
 		[[ -f "$owned_ready" && -f "$owned_pid_file" ]] && break
 		sleep 0.1
@@ -1033,12 +1062,14 @@ if [[ -f "$real_reap_script" ]]; then
 		echo 'FAIL: owned real Codex socket fixture did not start' >&2
 		failures=$((failures + 1))
 	else
-		owned_holder_pids="$(lsof -t -- "$owned_socket" 2>/dev/null || true)"
+		owned_holder_pids="$("$owned_lsof_bin" -a -p "$owned_pid" -t -- "$owned_socket" 2>/dev/null || true)"
 		assert_contains "$owned_holder_pids" "$owned_pid" \
 			'positive real daemon fixture is the lexical /tmp socket holder'
 		printf '{"executionId":"%s","daemonPgid":%s}\n' \
 			"$owned_execution" "$owned_pid" > "$owned_session_dir/session.json"
-		if PATH="$owned_fake_bin:$PATH" node "$real_reap_script" "$owned_real_slot" \
+		if PATH="$owned_fake_bin:$PATH" QA_TEST_LSOF_BIN="$owned_lsof_bin" \
+			QA_TEST_SOCKET_HOLDER_PID="$owned_pid" QA_TEST_SOCKET_PATH="$owned_socket" \
+			node "$real_reap_script" "$owned_real_slot" \
 			>/dev/null 2>"$owned_reap_err"; then
 			for _ in $(seq 1 50); do
 				kill -0 "$owned_pid" 2>/dev/null || break

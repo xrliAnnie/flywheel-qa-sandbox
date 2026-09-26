@@ -21,6 +21,7 @@ log() { echo "[test-teardown] $(date +%H:%M:%S) $*" >&2; }
 TEARDOWN_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/qa-multilead.sh
 source "${TEARDOWN_SCRIPT_DIR}/lib/qa-multilead.sh"
+source "${TEARDOWN_SCRIPT_DIR}/lib/qa-slot-claim.sh"
 # shellcheck source=lib/qa-launchd-lead.sh
 source "${TEARDOWN_SCRIPT_DIR}/lib/qa-launchd-lead.sh"
 # shellcheck source=lib/qa-generalized.sh
@@ -779,11 +780,26 @@ teardown_slot() {
     return 1
   fi
   local SLOT_DIR="/tmp/flywheel-test-slot-${SLOT}"
+  local LOCK_FILE="/tmp/flywheel-test-slot-${SLOT}.lock"
+  local SERVICE_LOCKS="" service_lock
+  if [[ -n "${FLYWHEEL_QA_ROOM_CLAIM:-}" ]]; then
+    SERVICE_LOCKS=$(qa_slot_teardown_claims "$SLOT") || return 1
+    if [[ ! -e "$SLOT_DIR" && ! -L "$SLOT_DIR" \
+      && "$(cat "$LOCK_FILE/pid" 2>/dev/null)" == service-cleaned ]]; then
+      # Runtime cleanup finished before a prior borrowed-marker write failed.
+      # Recover the remaining markers from claims that outlive SLOT_DIR.
+      while IFS= read -r service_lock; do
+        if [[ "$(cat "$service_lock/pid" 2>/dev/null)" != service-cleaned ]]; then
+          qa_release_slot_lock "$service_lock" service-cleaned || return 1
+        fi
+      done <<< "$SERVICE_LOCKS"
+      return 0
+    fi
+  fi
   local SLOT_TMUX_SOCKET="${SLOT_DIR}/tmux-$(id -u)/default"
   local SLOT_TMUX_BIN
   SLOT_TMUX_BIN=$(command -v tmux 2>/dev/null || true)
   qa_launchd_require_tmux_bin "$SLOT_TMUX_BIN" || return 1
-  local LOCK_FILE="/tmp/flywheel-test-slot-${SLOT}.lock"
   local CYCLE_GUARD_RC=0
   qa_slot_bridge_guard_acquire "$SLOT" || CYCLE_GUARD_RC=$?
   case "$CYCLE_GUARD_RC" in
@@ -903,8 +919,11 @@ teardown_slot() {
   local CAMPAIGN_MANIFEST="${SLOT_DIR}/campaign-manifest.json"
   if [[ -f "$CAMPAIGN_MANIFEST" ]]; then
     log "Campaign manifest found — cleaning extra Leads + borrowed locks"
-    qa_multilead_teardown_extra_leads "$CAMPAIGN_MANIFEST"
-    qa_multilead_release_borrowed_locks "$CAMPAIGN_MANIFEST" "/tmp"
+    if ! qa_multilead_teardown_extra_leads "$CAMPAIGN_MANIFEST" \
+      || ! qa_multilead_release_borrowed_locks "$CAMPAIGN_MANIFEST" "/tmp"; then
+      qa_slot_bridge_guard_release
+      return 1
+    fi
   fi
 
   # ── Step 1b (FLY-115): Stop Runner tmux + its cmux linked sessions ──
@@ -1301,8 +1320,19 @@ teardown_slot() {
 
   # ── Step 8: Release slot lock ─────────────────────────
   if [[ -d "$LOCK_FILE" ]]; then
-    rm -rf "$LOCK_FILE"
-    log "Slot ${SLOT} released"
+    if [[ -n "${FLYWHEEL_QA_ROOM_CLAIM:-}" ]]; then
+      while IFS= read -r service_lock; do
+        [[ -n "$service_lock" ]] || continue
+        if ! qa_release_slot_lock "$service_lock" service-cleaned; then
+          qa_slot_bridge_guard_release
+          return 1
+        fi
+      done <<< "$SERVICE_LOCKS"
+      log "Slot ${SLOT} cleaned; service claims retained"
+    else
+      rm -rf "$LOCK_FILE"
+      log "Slot ${SLOT} released"
+    fi
   fi
 
   qa_slot_bridge_guard_release
@@ -1312,6 +1342,10 @@ teardown_slot() {
 # ── Main ──────────────────────────────────────────────
 test_teardown_main() {
   local target="${1:?Usage: test-teardown.sh <slot-number | all>}"
+
+  # Validate ownership before publishing even the cmux handoff claim. Service
+  # callers name one owner slot; its durable claim supplies all borrowed locks.
+  qa_slot_teardown_claims "$target" >/dev/null || return 1
 
   # The migration marker remains foreign, read-only authority. QA publishes a
   # separate owner-bound claim so a live watcher can yield without teardown

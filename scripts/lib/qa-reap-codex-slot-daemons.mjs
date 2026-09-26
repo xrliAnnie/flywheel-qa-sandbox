@@ -10,7 +10,7 @@
  * sockets fail closed so test-teardown retains the room for inspection.
  */
 
-import { lstat, readdir, readFile, realpath } from "node:fs/promises";
+import { lstat, readdir, readFile, realpath, unlink } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { isAbsolute, join, sep } from "node:path";
 
@@ -92,10 +92,20 @@ async function liveSockets(socketRoot) {
 	const live = [];
 	for (const entry of await readdir(socketRoot, { withFileTypes: true })) {
 		if (!entry.name.endsWith(".sock")) continue;
+		let socketPath = join(socketRoot, entry.name);
 		if (entry.isSymbolicLink()) {
-			throw new Error("socket authority contains a symlink");
+			try {
+				socketPath = await realpath(socketPath);
+			} catch (error) {
+				if (error?.code !== "ENOENT") throw error;
+				await unlink(socketPath);
+				continue;
+			}
+			const daemonRoot = `/private/tmp/codex-daemon-${process.getuid()}/`;
+			if (!socketPath.startsWith(daemonRoot)) {
+				throw new Error("socket symlink resolves outside the Codex daemon root");
+			}
 		}
-		const socketPath = join(socketRoot, entry.name);
 		if (await socketIsLive(socketPath)) live.push(socketPath);
 	}
 	return live;

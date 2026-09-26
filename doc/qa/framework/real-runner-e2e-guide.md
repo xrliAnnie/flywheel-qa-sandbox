@@ -1,7 +1,7 @@
 # Real Runner E2E Guide — FLY-115
 
 **Audience**: Annie + QA agents
-**When to read**: before running `scripts/test-deploy.sh` for the first time, and as a reference during QA.
+**When to read**: before requesting a room with `flywheel-comm room deploy` for the first time, and as a reference during QA.
 
 ---
 
@@ -40,9 +40,11 @@ All of the following must be true or `scripts/test-deploy.sh` will fail fast (ex
 
 ---
 
-## 2. Push the branch under test to sandbox
+## 2. Push the candidate source and optional sandbox fixture branch
 
-Required for every QA run that uses `--from-branch <br>` (i.e., anything that isn't testing sandbox `main`):
+Push the exact candidate source SHA to the Flywheel origin. `room deploy --head <sha>` selects that source for Bridge and Lead; Bridge installs locked dependencies and builds it in its own worktree outside the runner sandbox. Codex and Claude use the same service. Raw deploy/teardown scripts are Lead-only maintenance.
+
+A separate sandbox push is required for every QA run that uses `--from-branch <br>` (i.e., anything that isn't testing sandbox `main`):
 
 ```
 git push git@github.com:xrliAnnie/flywheel-qa-sandbox.git <branch>:<branch>
@@ -55,12 +57,12 @@ If you skip this step, `test-deploy.sh` will fail at clone with a pointer back t
 ## 3. Deploy a slot
 
 ```
-scripts/test-deploy.sh --from-branch <branch> <N>
+node "$FLYWHEEL_COMM_CLI" room deploy --slot <N> --head <candidate-sha> --from-branch <fixture-branch>
 ```
 
 `<N>` is the slot number (1–4). `--from-branch` is optional; default is sandbox `main`.
 
-On success, stdout is JSON with:
+Save `room_id` from the service response. Deploy and teardown wait by default; exit 3 means still running, so continue with `room wait --room <id>`. `--from-branch` never selects Bridge source. `roomInfo` in the response contains:
 
 ```
 {
@@ -155,10 +157,12 @@ gh pr list -R xrliAnnie/flywheel-qa-sandbox
 ## 6. Teardown
 
 ```
-scripts/test-teardown.sh <N>
+node "$FLYWHEEL_COMM_CLI" room teardown --room <room-id>
 ```
 
-Order of operations (test-teardown.sh):
+Record strength-two evidence before teardown. Bridge snapshots required DBs with `VACUUM INTO` and preserves logs before invoking the teardown script. Keep the returned `evidence_dir`; a failed snapshot retains the room. Inspect previous evidence before explicitly retrying with `--skip-snapshot --reason <reason>` and a new request id. The owner, Lead, or a same-issue successor after owner termination can tear down.
+
+Order of operations in the underlying script:
 
 1. Kill Runner tmux (`runner-test-slot-<N>`).
 2. Kill Lead supervisor, wait, SIGKILL fallback.
@@ -195,12 +199,12 @@ gh pr close <number> -R xrliAnnie/flywheel-qa-sandbox
 | Pre-flight exit 2: "LINEAR_API_KEY not set" | Shell env missing key | `export LINEAR_API_KEY=...` (or fix `~/.zshrc`) |
 | Pre-flight exit 2: "gh CLI not authenticated" | gh token expired | `gh auth refresh` |
 | Pre-flight exit 2: "sandbox repo missing" | Standalone sandbox not created | See §1 step 1 — `gh repo create` + seed from flywheel main |
-| Pre-flight exit 2: "preflight failed (...rebuild...)" | `better-sqlite3` build or edge-worker tsc failed under preflight lock | `pnpm -r install`, then re-run deploy |
+| Pre-flight exit 2: "preflight failed (...rebuild...)" | `better-sqlite3` build or edge-worker tsc failed under preflight lock | Inspect the operation log; retry a new service deploy after resolving the build failure |
 | Pre-flight exit 2: "no push permission on ..." | gh token lacks push scope on sandbox | `gh auth refresh -s repo`, confirm `gh api repos/<slug> --jq .permissions.push` returns `true` |
 | Pre-flight exit 2: "preflight lock busy > 300s" | Stale `/tmp/flywheel-qa-rebuild.lock` from a crashed deploy | Check holder PID in `${lock}/pid`; if dead, `rm -rf /tmp/flywheel-qa-rebuild.lock` |
 | Inject exit 2 (404) | Linear reports the issue doesn't exist | Check ID spelling; confirm the issue is visible to the LINEAR_API_KEY's workspace |
 | `git clone --branch <br>` fails | Branch not pushed to sandbox | `git push git@github.com:xrliAnnie/flywheel-qa-sandbox.git <br>:<br>` |
-| Inject exit 3 (409) | Previous run still live | `scripts/test-teardown.sh <N>` and redeploy, or wait for session to end |
+| Inject exit 3 (409) | Previous run still live | `node "$FLYWHEEL_COMM_CLI" room teardown --room <room-id>` and redeploy, or wait for session to end |
 | Inject exit 4 (502) | Linear API call failed (network / auth / Linear 5xx) | Check LINEAR_API_KEY on Bridge env, network reachability to linear.app, and Linear status |
 | Inject exit 5 (503) | LINEAR_API_KEY missing on Bridge env | Redeploy the slot |
 | Runner worktree HEAD == sandbox origin/main instead of branchSha | §3.1 env hook not wired | Confirm `FLYWHEEL_RUNNER_START_POINT` in Bridge env; verify `dist/WorktreeManager.js` contains the env var string |

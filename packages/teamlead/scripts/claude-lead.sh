@@ -2501,8 +2501,17 @@ _launch_claude() {
 
 	# FLY-2076: final env -i capability fence. Only the sole Alerts duty seat
 	# receives the repository path / bearer; every other pane has neither.
-	if [ "$LEAD_ID" = "claude-infra-bot-lead" ]; then
+	local _alert_duty_lead_id="claude-infra-bot-lead"
+	if [ -n "${FLYWHEEL_ISOLATION_ROOT:-}" ] && [ -n "${FLYWHEEL_ALERT_DUTY_LEAD_ID:-}" ]; then
+		_alert_duty_lead_id="$FLYWHEEL_ALERT_DUTY_LEAD_ID"
+	fi
+	if [ "$LEAD_ID" = "$_alert_duty_lead_id" ]; then
 		env_args+=(-e "FLYWHEEL_DIR=${FLYWHEEL_DIR:-${FLYWHEEL_ROOT}}")
+		if [ -n "${FLYWHEEL_ISOLATION_ROOT:-}" ]; then
+			env_args+=(-e "FLYWHEEL_ISOLATION_ROOT=${FLYWHEEL_ISOLATION_ROOT}"
+				-e "FLYWHEEL_ALERT_DUTY_LEAD_ID=${_alert_duty_lead_id}"
+				-e "FLYWHEEL_BRIDGE_URL=${FLYWHEEL_BRIDGE_URL:-}")
+		fi
 		if [ -n "${FLYWHEEL_ALERT_DUTY_TOKEN:-}" ]; then
 			env_args+=(-e "FLYWHEEL_ALERT_DUTY_TOKEN=${FLYWHEEL_ALERT_DUTY_TOKEN}")
 		fi

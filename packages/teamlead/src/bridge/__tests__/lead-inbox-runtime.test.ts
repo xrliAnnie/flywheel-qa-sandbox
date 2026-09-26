@@ -794,97 +794,106 @@ describe("LeadInboxRuntime", () => {
 		}
 	});
 
-	it("reroutes an unowned alert to duty before writing the recipient mailbox", async () => {
-		const root = mkdtempSync(join(tmpdir(), "fly2386-duty-reroute-"));
-		const dbPath = join(root, "project-a.db");
-		const store = await StateStore.create(":memory:");
-		const dutyProjects = [
-			{
-				...projects[0]!,
-				leads: [
-					...projects[0]!.leads,
-					{
-						agentId: "claude-infra-bot-lead",
-						summaryRole: "recipient",
-						chatChannel: "chat-alerts",
-						match: { labels: ["Infra"] },
-					},
-				],
-			},
-		] as ProjectEntry[];
-		const runtime = new LeadInboxRuntime({
-			projects: dutyProjects,
-			store,
-			registry: new RuntimeRegistry(),
-			commDbPathForProject: () => dbPath,
-			isDutyConfigured: () => true,
-		});
-		runtimes.push(runtime);
-		const result = runtime.enqueueInfraAlert("lead-a", {
-			leadId: "lead-a",
-			projectName: "project-a",
-			eventId: "bridge-exit-1",
-			eventType: "bridge_abnormal_exit",
-			title: "Bridge exited",
-			body: "unexpected exit",
-			severity: "severe",
-		});
-		const directDuty = runtime.enqueueInfraAlert("claude-infra-bot-lead", {
-			leadId: "lead-a",
-			projectName: "project-a",
-			sessionKey: "duty-direct",
-			eventId: "bridge-exit-duty",
-			eventType: "bridge_abnormal_exit",
-			title: "Bridge exited",
-			body: "already assigned to duty",
-			severity: "warning",
-		});
+	it.each([false, true])(
+		"reroutes an unowned alert to the duty mailbox (isolated=%s)",
+		async (isolated) => {
+			const dutyLeadId = isolated ? "flywheel-test-1" : "claude-infra-bot-lead";
+			vi.stubEnv(
+				"FLYWHEEL_ISOLATION_ROOT",
+				isolated ? "/tmp/fly2405-room" : "",
+			);
+			vi.stubEnv("FLYWHEEL_ALERT_DUTY_LEAD_ID", "flywheel-test-1");
+			const root = mkdtempSync(join(tmpdir(), "fly2386-duty-reroute-"));
+			const dbPath = join(root, "project-a.db");
+			const store = await StateStore.create(":memory:");
+			const dutyProjects = [
+				{
+					...projects[0]!,
+					leads: [
+						...projects[0]!.leads,
+						{
+							agentId: dutyLeadId,
+							summaryRole: "recipient",
+							chatChannel: "chat-alerts",
+							match: { labels: ["Infra"] },
+						},
+					],
+				},
+			] as ProjectEntry[];
+			const runtime = new LeadInboxRuntime({
+				projects: dutyProjects,
+				store,
+				registry: new RuntimeRegistry(),
+				commDbPathForProject: () => dbPath,
+				isDutyConfigured: () => true,
+			});
+			runtimes.push(runtime);
+			const result = runtime.enqueueInfraAlert("lead-a", {
+				leadId: "lead-a",
+				projectName: "project-a",
+				eventId: "bridge-exit-1",
+				eventType: "bridge_abnormal_exit",
+				title: "Bridge exited",
+				body: "unexpected exit",
+				severity: "severe",
+			});
+			const directDuty = runtime.enqueueInfraAlert(dutyLeadId, {
+				leadId: "lead-a",
+				projectName: "project-a",
+				sessionKey: "duty-direct",
+				eventId: "bridge-exit-duty",
+				eventType: "bridge_abnormal_exit",
+				title: "Bridge exited",
+				body: "already assigned to duty",
+				severity: "warning",
+			});
 
-		expect(result).toMatchObject({ queued: true });
-		expect(runtime.reroutedCount).toBe(1);
-		expect(runtime.isLeadQueueOpen("claude-infra-bot-lead")).toBe(true);
-		expect(runtime.isLeadQueueOpen("missing-lead")).toBe(false);
-		const queue = new MailboxQueue(dbPath);
-		try {
-			expect(queue.getById(result.deliveryId)).toEqual(
-				expect.objectContaining({ to_agent: "claude-infra-bot-lead" }),
-			);
-			expect(queue.getById(directDuty.deliveryId)).toEqual(
-				expect.objectContaining({ to_agent: "claude-infra-bot-lead" }),
-			);
-			const snapshot = new Database(dbPath, { readonly: true });
+			expect(result).toMatchObject({ queued: true });
+			expect(runtime.reroutedCount).toBe(1);
+			expect(runtime.isLeadQueueOpen(dutyLeadId)).toBe(true);
+			expect(runtime.isLeadQueueOpen("missing-lead")).toBe(false);
+			const queue = new MailboxQueue(dbPath);
 			try {
-				expect(
-					snapshot
-						.prepare(
-							"SELECT COUNT(*) AS count FROM mailbox WHERE to_agent='lead-a' AND source_kind='infra_alert'",
-						)
-						.get(),
-				).toEqual({ count: 0 });
+				expect(queue.getById(result.deliveryId)).toEqual(
+					expect.objectContaining({ to_agent: dutyLeadId }),
+				);
+				expect(queue.getById(directDuty.deliveryId)).toEqual(
+					expect.objectContaining({ to_agent: dutyLeadId }),
+				);
+				const snapshot = new Database(dbPath, { readonly: true });
+				try {
+					expect(
+						snapshot
+							.prepare(
+								"SELECT COUNT(*) AS count FROM mailbox WHERE to_agent='lead-a' AND source_kind='infra_alert'",
+							)
+							.get(),
+					).toEqual({ count: 0 });
+				} finally {
+					snapshot.close();
+				}
 			} finally {
-				snapshot.close();
+				queue.close();
 			}
-		} finally {
-			queue.close();
-		}
-		expect(store.getMailboxLedgerByEventId("bridge-exit-1")).toEqual(
-			expect.objectContaining({
-				to_agent: "claude-infra-bot-lead",
-				requested_owner: "lead-a",
-				route_class: "duty_reroute",
-				ticket_status: "NEW",
-			}),
-		);
-		expect(store.getMailboxLedgerByEventId("bridge-exit-duty")).toEqual(
-			expect.objectContaining({
-				to_agent: "claude-infra-bot-lead",
-				requested_owner: "claude-infra-bot-lead",
-				route_class: "duty",
-				ticket_status: "NEW",
-			}),
-		);
-		store.close();
-	});
+			expect(store.getMailboxLedgerByEventId("bridge-exit-1")).toEqual(
+				expect.objectContaining({
+					to_agent: dutyLeadId,
+					requested_owner: "lead-a",
+					route_class: "duty_reroute",
+					ticket_status: "NEW",
+				}),
+			);
+			expect(store.getMailboxLedgerByEventId("bridge-exit-duty")).toEqual(
+				expect.objectContaining({
+					to_agent: dutyLeadId,
+					requested_owner: dutyLeadId,
+					route_class: "duty",
+					ticket_status: "NEW",
+				}),
+			);
+			store.close();
+		},
+	);
 
 	it("keeps direct-owner alerts and duty-unconfigured fallbacks in the requested Lead inbox", async () => {
 		const root = mkdtempSync(join(tmpdir(), "fly2386-owner-tiers-"));

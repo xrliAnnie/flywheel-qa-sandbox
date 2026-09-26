@@ -61,6 +61,7 @@ import { reportDeployed } from "./commands/report-deployed.js";
 import { requestReview } from "./commands/request-review.js";
 import { respond } from "./commands/respond.js";
 import { reviewRuling } from "./commands/review-ruling.js";
+import { runRoomCommand } from "./commands/room.js";
 import { runRunnerConfig } from "./commands/runner-config.js";
 import {
 	type RunnerStopSource,
@@ -190,6 +191,12 @@ Commands:
             --lane <generalized_e2e_stub|generalized_e2e_real|manual_test_deploy>
             [--driver-exit-code <int>] --record-url <https-url>
             --rerun-spec <path.json> [--local-copy <path>] [--record-id <uuid>]
+  room      Manage QA rooms through Bridge: deploy|teardown|status|wait|list
+            deploy --head <sha40> [--slot auto|<n>] [--mode slot|mirror|roundtable]
+            teardown|status|wait --room <uuid>; mutations wait by default.
+            [--no-wait] [--timeout-sec <1..1800>] [--request-id <uuid>]
+            [--exec-id <uuid>] [--lead] (Lead mode requires FLYWHEEL_LEAD_ID)
+            Use room <subcommand> --help for supported options.
   shadow-declare  Record one Lead-authenticated shadow class declaration.
             --question <qid> --class pure_docs|config_only|single_point_change|other_code
             [--declaration-id <uuid-v4>] (direct to Bridge; do not post to Discord)
@@ -454,6 +461,9 @@ async function main(): Promise<void> {
 			break;
 		case "evidence-run":
 			process.exitCode = await runEvidenceRunCommand(commandArgs);
+			break;
+		case "room":
+			process.exitCode = await runRoomCommand(commandArgs);
 			break;
 		case "shadow-declare":
 			process.exitCode = await runShadowDeclareCommand(commandArgs);

@@ -424,6 +424,10 @@ else
   fatal "Atomic tmux config update failed"
 fi
 
+_alert_duty_lead_id="claude-infra-bot-lead"
+if [ -n "${FLYWHEEL_ISOLATION_ROOT:-}" ] && [ -n "${FLYWHEEL_ALERT_DUTY_LEAD_ID:-}" ]; then
+  _alert_duty_lead_id="$FLYWHEEL_ALERT_DUTY_LEAD_ID"
+fi
 SERVER_ENV=()
 while IFS= read -r name; do
   value="$(jq -r --arg name "$name" '.[$name]' <<<"$LAUNCH_ENVIRONMENT")"
@@ -455,7 +459,7 @@ while IFS= read -r name; do
 	# FLY-2076: this capability may cross the carrier only for the single Claw
 	# duty seat. A stale manifest entry on any other Lead is ignored.
 	if [ "$name" = "FLYWHEEL_ALERT_DUTY_TOKEN" ] \
-	    && [ "$LEAD_ID" != "claude-infra-bot-lead" ]; then
+	    && [ "$LEAD_ID" != "$_alert_duty_lead_id" ]; then
 		continue
 	fi
   if [ "$is_identity" = true ]; then

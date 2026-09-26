@@ -4,10 +4,10 @@
 
 ## 1. Quickstart
 
-从**准备被测的 Flywheel worktree**执行，fixture 固定使用 `FLY-202`。不要先切回主仓，也不要加内联环境变量：`test-deploy.sh` 会用当前仓字节装房，并用 `--expect-head` 可选地锁定被测 commit。
+Codex 和 Claude runner 都通过 Bridge 起房服务，fixture 固定使用 `FLY-202`。先把候选 40 位 SHA 推到 origin，再通过 `--head`（别名 `--expect-head`）明确选择 Bridge / Lead 源码。Bridge 在沙箱外建立独立源码目录、安装锁定依赖并构建。`--from-branch` 只选 sandbox 仓里的 runner fixture 分支，默认 `main`；它不选择 Bridge 源码。裸 `test-deploy.sh` / `test-teardown.sh` 仅供 Lead 维护。
 
 ```bash
-scripts/test-deploy.sh 2 --generalized --stub-runner --no-lead
+node "$FLYWHEEL_COMM_CLI" room deploy --slot 2 --head <candidate-sha> --generalized --stub-runner --no-lead
 scripts/qa-529-generalized-e2e.mjs 2 --issue FLY-202
 ```
 
@@ -15,7 +15,7 @@ FLY-2211 的重启杀伤专项必须换成真实 Codex 房型，并且不能同�
 `--stub-runner`：
 
 ```bash
-scripts/test-deploy.sh 2 --generalized --codex-runner --no-lead
+node "$FLYWHEEL_COMM_CLI" room deploy --slot 2 --head <candidate-sha> --generalized --codex-runner --no-lead
 scripts/qa-529-generalized-e2e.mjs 2 --issue FLY-202 --real
 ```
 
@@ -28,7 +28,7 @@ ledger，至少观察 30 分钟。默认 Quickstart 仍保持原来的双 stub �
 
 第一条命令只有在以下 readiness 全部成立后才发布 mode `0600` 的 `/tmp/flywheel-test-slot-2/room-info.json`：
 
-- `/health` 同时报 `ok=true`、`buildMode=built`，且 `buildSha` / `artifactBuildSha` 等于被测 worktree HEAD；
+- `/health` 同时报 `ok=true`、`buildMode=built`，且 `buildSha` / `artifactBuildSha` 等于请求的 `--head`；
 - slot SQLite 中 `pipeline_dag` 与 `pipeline_work_kind` 的项目行均解析为 `true`；
 - `workflow_category_binding` 的 5 个 canonical mapping 全部存在且模板为 published、未 retired；
 - menu 端点能解析 `code` / `generic`，`code` 含 design、implement、qa；
@@ -49,8 +49,14 @@ FLY-1808 已退役的 5 个 workflow env flag 不属于 readiness：装房脚本
 测试结束后：
 
 ```bash
-scripts/test-teardown.sh 2
+node "$FLYWHEEL_COMM_CLI" room teardown --room <room-id>
 ```
+
+保存服务返回的 `room_id` 和 `roomInfo`。`deploy` / `teardown` 默认等待 1800 秒；退出码 3 表示仍在运行，用 `room wait --room <id>` 继续观察。传输重试复用 `--request-id`；拆房失败后的业务重试使用新 id。负载达到每核 8（当前主机 144）时 deploy 排队，拆房不受负载门限制。
+
+拆房前先记录 strength-two evidence。服务通过 SQLite `VACUUM INTO` 保存必需 DB 和日志，成功后返回 `evidence_dir`；快照失败保留房位。先检查之前的证据，再决定是否用 `room teardown --room <id> --skip-snapshot --reason <说明>` 明确跳过缺失快照。只有 owner、Lead 或原 owner 终止后的同 issue 后继能拆房；`room list` 可查看本 issue 的遗留房。
+
+告警值守场景使用 `--alerts --alert-duty`，要求主 Lead 为 Claude，dispatcher 为测试 bot；返回 `alertDutyTokenPath` 供房内验证。隔离 Bridge 默认不开起房服务；仅 FLY-2405 嵌套服务验收的外层房由 Lead 用 `TEST_QA_ROOM_SERVICE=1` 维护开关启用，runner 不可经任意 env 注入它。
 
 ### 常驻 Lead 载体：Claude / Codex-converged
 
@@ -166,7 +172,7 @@ exact-head 闸会在被测 HEAD 变化后要求拆房重建。teardown 为了保
 
 ### 3.1 字节与 exec boundary
 
-`scripts/test-deploy.sh` 本身必须从被测 worktree 运行。generalized 模式依赖 slot SQLite 中项目级 `pipeline_dag=true`、`pipeline_work_kind=true`、schema-v2 engine authority 与 category bindings；FLY-1808 已退役的 workflow env flags 不再注入或 attestation。
+服务按 `--head` 选择被测源码；调用方的 cwd 和 `--from-branch` 不决定 Bridge 版本。generalized 模式依赖 slot SQLite 中项目级 `pipeline_dag=true`、`pipeline_work_kind=true`、schema-v2 engine authority 与 category bindings；FLY-1808 已退役的 workflow env flags 不再注入或 attestation。
 
 不要为了临时验收去改生产 `.env`。flag 归属 exec boundary；`.env` 热改既不能证明 slot 用的是同一值，还可能污染生产服务的下一次 restart。
 
@@ -225,8 +231,8 @@ stub 会在 QA attempt 1 先发布 ready tuple；driver 完成 step 4 四子断�
 链：
 
 ```bash
-scripts/test-deploy.sh 2 --generalized --stub-runner --no-lead > /tmp/slot-2-deploy.out
-sed -n '/^{/,$p' /tmp/slot-2-deploy.out > /tmp/slot-2.json
+node "$FLYWHEEL_COMM_CLI" room deploy --slot 2 --head <candidate-sha> --generalized --stub-runner --no-lead > /tmp/slot-2-deploy.out
+jq '.roomInfo' /tmp/slot-2-deploy.out > /tmp/slot-2.json
 
 BRIDGE_URL=$(jq -r '.bridgeUrl' /tmp/slot-2.json)
 PROJECT=$(jq -r '.projectName' /tmp/slot-2.json)
@@ -258,7 +264,7 @@ flywheel-comm publish-report \
 report host 的生命期等于 Bridge：`test-cycle-bridge.sh 2` 会停止旧 host、释放
 旧端口，并在新 Bridge PID 下起一个新端口；原先投到 Discord 的 loopback URL
 随即失效。`state/reports` 与 `state/report-host/sites` 仍保留，但验收应从新 URL
-重新 publish。`test-teardown.sh 2` 只需停止 Bridge；host 通过父进程监视自退，
+重新 publish。`room teardown --room <room-id>` 委托脚本停止 Bridge；host 通过父进程监视自退，
 没有独立 stop 命令或 pid 元数据。
 
 ## 6. Go / No-Go
@@ -297,7 +303,7 @@ launch-commit 路径；QA 不应把 boot PASS 表述为全部 state 写入均在
 ```bash
 scripts/qa-fly-2454-fleet-snapshot.sh --out /tmp/fly2454-before.txt
 # 起 529 房，创建并确认生产默认 tmux 的 fly2454-decoy 窗口，执行 slot terminate，
-# 等至少两个 maintenance tick，再用 scripts/test-teardown.sh 拆房。
+# 等至少两个 maintenance tick，再用 room teardown --room <room-id> 拆房。
 scripts/qa-fly-2454-fleet-snapshot.sh --out /tmp/fly2454-after.txt
 diff -u /tmp/fly2454-before.txt /tmp/fly2454-after.txt
 ```

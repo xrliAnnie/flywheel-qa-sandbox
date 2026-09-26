@@ -1,3 +1,4 @@
+import { resolveAlertDutyLeadId } from "../alert-duty-seat.js";
 /**
  * FLY-927 (W1): infra-event Router — responder-based durable alert routing.
  *
@@ -107,7 +108,7 @@ export const LEAD_INBOX_KINDS: ReadonlySet<AlertEventType> =
 	new Set<AlertEventType>(["review_job_failed"]);
 
 /** The sole recipient that watches the whole alert queue. */
-export const ALERT_DUTY_LEAD_ID = "claude-infra-bot-lead";
+export const ALERT_DUTY_LEAD_ID = resolveAlertDutyLeadId();
 
 /** Kinds whose producer-selected Lead is already the contractual owner. */
 export const DIRECT_OWNER_KINDS: ReadonlySet<AlertEventType> =
@@ -126,14 +127,15 @@ export function classifyInfraLetter(input: {
 	routeClass: "duty" | "direct_owner" | "duty_reroute" | "duty_fallback";
 	toAgent: string;
 } {
-	if (input.requestedOwner === ALERT_DUTY_LEAD_ID) {
-		return { routeClass: "duty", toAgent: ALERT_DUTY_LEAD_ID };
+	const dutyLeadId = resolveAlertDutyLeadId();
+	if (input.requestedOwner === dutyLeadId) {
+		return { routeClass: "duty", toAgent: dutyLeadId };
 	}
 	if (DIRECT_OWNER_KINDS.has(input.eventType)) {
 		return { routeClass: "direct_owner", toAgent: input.requestedOwner };
 	}
 	return input.dutyAvailable
-		? { routeClass: "duty_reroute", toAgent: ALERT_DUTY_LEAD_ID }
+		? { routeClass: "duty_reroute", toAgent: dutyLeadId }
 		: { routeClass: "duty_fallback", toAgent: input.requestedOwner };
 }
 

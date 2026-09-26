@@ -1,3 +1,4 @@
+import { resolveAlertDutyLeadId } from "../alert-duty-seat.js";
 import { LegacyRowPoisonError } from "./legacy-row-errors.js";
 /** FLY-1373 Bridge assembly for per-Lead inbox loops. */
 
@@ -40,10 +41,7 @@ import {
 	formatAlertHandoffContent,
 	formatInfraAlertMailboxContent,
 } from "./infra-alert-mailbox.js";
-import {
-	ALERT_DUTY_LEAD_ID,
-	classifyInfraLetter,
-} from "./infra-event-router.js";
+import { classifyInfraLetter } from "./infra-event-router.js";
 import {
 	ClaudeLeadDeliveryAdapter,
 	CodexLeadDeliveryAdapter,
@@ -651,7 +649,7 @@ export class LeadInboxRuntime {
 			eventType: payload.eventType,
 			dutyAvailable:
 				Boolean(this.opts.isDutyConfigured?.()) &&
-				this.isLeadQueueOpen(ALERT_DUTY_LEAD_ID),
+				this.isLeadQueueOpen(resolveAlertDutyLeadId()),
 		});
 		if (classification.routeClass === "duty_reroute") {
 			this.alertReroutedCount += 1;

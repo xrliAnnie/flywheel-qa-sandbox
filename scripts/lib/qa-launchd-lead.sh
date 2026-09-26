@@ -204,6 +204,19 @@ qa_launchd_plist_env_claude() {
     printf '<key>FLYWHEEL_SUMMARY_CONFIG_HOME</key><string>%s</string>\n' "$x_summary_config_home"
   fi
   printf '<key>FLYWHEEL_QA_LEAD_DIAGNOSTICS_DIR</key><string>%s</string>\n' "$x_diagnostics_dir"
+  # The wrapper guard reads its own plist environment before the manifest.
+  local duty_name duty_value duty_env
+  duty_env=$(jq -c '.launchEnvironment // {}' "$8") || return 1
+  if jq -e --arg lead "$(jq -r '.leadId' "$8")" '
+      .FLYWHEEL_ISOLATION_ROOT != null and .FLYWHEEL_ISOLATION_ROOT != ""
+      and .FLYWHEEL_ALERT_DUTY_LEAD_ID == $lead
+      and .FLYWHEEL_ALERT_DUTY_TOKEN != null and .FLYWHEEL_ALERT_DUTY_TOKEN != ""
+    ' <<<"$duty_env" >/dev/null; then
+    for duty_name in FLYWHEEL_ISOLATION_ROOT FLYWHEEL_ALERT_DUTY_LEAD_ID FLYWHEEL_ALERT_DUTY_TOKEN FLYWHEEL_BRIDGE_URL; do
+      duty_value=$(jq -er --arg name "$duty_name" '.[$name] | select(type == "string" and length > 0)' <<<"$duty_env") || return 1
+      printf '<key>%s</key><string>%s</string>\n' "$duty_name" "$(printf '%s' "$duty_value" | qa_launchd_xml_escape)"
+    done
+  fi
   printf '%s\n' '</dict>'
 }
 
@@ -272,7 +285,7 @@ qa_launchd_render_plist() {
     qa_launchd_plist_open "$x_label"
     qa_launchd_plist_argv_claude "$x_wrapper" "$x_manifest"
     qa_launchd_plist_env_claude "$x_home" "$x_path" "$x_state" \
-      "$x_projects" "$x_env" "$x_summary_config_home" "$x_diagnostics_dir"
+      "$x_projects" "$x_env" "$x_summary_config_home" "$x_diagnostics_dir" "$manifest"
     qa_launchd_plist_close "$x_log"
   } > "$tmp"; then
     rm -f "$tmp"
@@ -1345,7 +1358,7 @@ qa_launchd_stop_codex_entry() {
   local registry="$1" entry="$2" validated entry_state label codex_home codex_bin state_dir runtime_pid_file tmux_bin
   local runtime_pid="" runtime_incarnation="" daemon_pid="" daemon_incarnation=""
   local daemon_pid_file managed_daemon_pid_file daemon_socket launch_marker bounded_run updater_rc
-  local slot_root home_residue updater_disposition="" runtime_started=0 failed=0
+  local slot_root home_residue updater_disposition="" launch_attempted=0 runtime_started=0 failed=0
   validated=$(qa_launchd_validate_codex_stop_entry "$registry" "$entry") \
     || { qa_launchd_err "carrier=codex-tui step=validate"; return 1; }
   IFS=$'\t' read -r entry_state label codex_home codex_bin state_dir runtime_pid_file tmux_bin <<<"$validated"
@@ -1369,13 +1382,13 @@ qa_launchd_stop_codex_entry() {
   launch_marker="${codex_home}/.flywheel-qa-launch-started"
   if [[ -e "$launch_marker" || -L "$launch_marker" ]]; then
     if [[ -f "$launch_marker" && ! -L "$launch_marker" ]]; then
-      runtime_started=1
+      launch_attempted=1
     else
       qa_launchd_err "carrier=codex-tui step=validate"
       failed=1
     fi
   fi
-  [[ -z "$runtime_pid" ]] || runtime_started=1
+  [[ -z "$runtime_incarnation" ]] || runtime_started=1
   if ! qa_launchd_lead_stop "$label"; then
     qa_launchd_err "carrier=codex-tui step=bootout"
     failed=1
@@ -1435,7 +1448,7 @@ qa_launchd_stop_codex_entry() {
   # name), its code-mode-host child, a TUI client, or an unmatched updater.
   # A TUI client orphaned by a crashed runtime also blocks retirement: this
   # stop never signals it, so the lock stays held for the operator.
-  if [[ "$failed" == 0 && "$runtime_started" == 1 ]] \
+  if [[ "$failed" == 0 && ( "$runtime_started" == 1 || "$launch_attempted" == 1 ) ]] \
       && ! home_residue=$(qa_launchd_codex_home_residue_wait "$codex_home"); then
     if [[ -n "$home_residue" ]]; then
       qa_launchd_err "carrier=codex-tui step=home-residue updater=${updater_disposition} residue=$(awk -F, '{print NF}' <<<"$home_residue") pids=${home_residue}"

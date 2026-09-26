@@ -181,7 +181,11 @@ PROJECT_DIR="$(jq -er '.projectDir' "$MANIFEST")"
 PROJECT_NAME="$(jq -er '.projectName' "$MANIFEST")"
 # FLY-2076: .env is a fleet-wide source, but the duty bearer is a one-seat
 # capability. Scrub it immediately after the body reload for every other Lead.
-if [ "$LEAD_ID" != "claude-infra-bot-lead" ]; then
+_alert_duty_lead_id="claude-infra-bot-lead"
+if [ -n "${FLYWHEEL_ISOLATION_ROOT:-}" ] && [ -n "${FLYWHEEL_ALERT_DUTY_LEAD_ID:-}" ]; then
+  _alert_duty_lead_id="$FLYWHEEL_ALERT_DUTY_LEAD_ID"
+fi
+if [ "$LEAD_ID" != "$_alert_duty_lead_id" ]; then
   unset FLYWHEEL_ALERT_DUTY_TOKEN
 fi
 SUBDIR="$(jq -r '.subdir // ""' "$MANIFEST")"

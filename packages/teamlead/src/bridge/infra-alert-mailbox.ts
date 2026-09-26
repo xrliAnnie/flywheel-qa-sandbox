@@ -1,6 +1,7 @@
+import { resolveAlertDutyLeadId } from "../alert-duty-seat.js";
 import type { AlertPayload } from "../LeadAlertNotifier.js";
 
-export const INFRA_ALERT_OWNER_LEAD_ID = "claude-infra-bot-lead";
+export const INFRA_ALERT_OWNER_LEAD_ID = resolveAlertDutyLeadId();
 
 export function formatInfraAlertMailboxContent(payload: AlertPayload): string {
 	const context = [

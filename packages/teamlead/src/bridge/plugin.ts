@@ -607,7 +607,7 @@ import {
 	makeIdleThreadArchiveSweep,
 	resolveIdleThreadSweepChannelIds,
 } from "./idle-thread-archive-sweep.js";
-import { INFRA_ALERT_OWNER_LEAD_ID } from "./infra-alert-mailbox.js";
+import { resolveAlertDutyLeadId } from "../alert-duty-seat.js";
 import { buildInfraAlertRouting } from "./infra-alert-wiring.js";
 import {
 	formatRotationDigest,
@@ -954,6 +954,9 @@ import {
 	type StateStoreGhostDeps,
 } from "./statestore-ghost-reconcile.js";
 import { createStrengthTwoEvidenceRouter } from "./strength-two-evidence-route.js";
+import { createLocalQaRoomService, qaRoomServiceEnabled } from "./qa-room-host.js";
+import { createQaRoomRouter } from "./qa-room-routes.js";
+import type { QaRoomService } from "./qa-room-service.js";
 import {
 	createLeadDetectionAckRouter,
 	createStuckRemanageRouter,
@@ -1557,6 +1560,8 @@ export function apiAuthWithRunnerTierDelegation(
 	return (req, res, next) => {
 		if (
 			req.path === "/lead-inbox/nudge" ||
+			req.path === "/qa-rooms" ||
+			req.path.startsWith("/qa-rooms/") ||
 			req.path === "/reports" ||
 			req.path.startsWith("/reports/") ||
 			req.path === "/voice/sessions" ||
@@ -1687,6 +1692,7 @@ export class SseBroadcaster {
 
 /** GEO-294 + FLY-91 Round 3: Options object for new Bridge dependencies. */
 export interface BridgeAppOptions {
+	qaRoomService?: QaRoomService;
 	leadConfigService?: LeadConfigService;
 	processResources?: { snapshot(): FdHealth };
 	codexQuota?: {
@@ -6162,6 +6168,14 @@ export function createBridgeApp(
 		);
 	}
 
+	app.use(
+		"/api/qa-rooms",
+		opts?.qaRoomService
+			? createQaRoomRouter({ store, service: opts.qaRoomService, apiToken: config.apiToken,
+				ingestToken: config.ingestToken, enabled: () => qaRoomServiceEnabled() })
+			: ((_req, res) => { res.status(503).json({ ok: false, reason: "room_service_disabled" }); }),
+	);
+
 	// Catch-all 404 (must be after all routes)
 	app.use((_req, res) => {
 		res.status(404).json({ error: "not found" });
@@ -8949,9 +8963,9 @@ export async function startBridge(
 			console.warn("[Bridge] Codex quota rotation disabled", diagnostic),
 		alert: (diagnostic, eventId) => {
 			const receipt = leadInboxRuntime.enqueueInfraAlert(
-				INFRA_ALERT_OWNER_LEAD_ID,
+				resolveAlertDutyLeadId(),
 				{
-					leadId: INFRA_ALERT_OWNER_LEAD_ID,
+					leadId: resolveAlertDutyLeadId(),
 					projectName: projects[0]?.projectName ?? "flywheel",
 					eventId,
 					eventType: "workflow_engine_escalation",
@@ -9663,6 +9677,7 @@ export async function startBridge(
 			`[land-reclose-peer] peer_adapter_unavailable: ${reclosePeerNative.detail}`,
 		);
 	}
+	const qaRoomService = createLocalQaRoomService(store, flywheelRepoRoot);
 	const app = createBridgeApp(
 		store,
 		projects,
@@ -10073,6 +10088,7 @@ export async function startBridge(
 			},
 			flagScanRoute: flagScanRouteHolder,
 			voiceSessionRouter: voiceSessionServices.router,
+			qaRoomService,
 			voiceScheduleRouter: voiceSessionServices.scheduleRouter,
 			leadVoiceCapabilityRouter: voiceSessionServices.leadCapabilityRouter,
 			leadVoiceCapabilityReceiptRouter:
@@ -10087,6 +10103,7 @@ export async function startBridge(
 	reconcileDesignReviewManifestOutbox();
 
 	const server = app.listen(config.port, config.host);
+	qaRoomService.start();
 	voiceSessionServices.runtime.start();
 	voiceSessionServices.scheduleRuntime.start();
 	voiceSessionServices.cardProjector.start();
@@ -15555,7 +15572,7 @@ export async function startBridge(
 	const infraTicketSink = {
 		alert: async (payload: AlertPayload): Promise<AlertResult> => {
 			const receipt = leadInboxRuntime.enqueueInfraAlert(
-				INFRA_ALERT_OWNER_LEAD_ID,
+				resolveAlertDutyLeadId(),
 				payload,
 			);
 			return { queued: receipt.queued };
@@ -16234,6 +16251,7 @@ export async function startBridge(
 		// timeout so the process — and thus the port — is released even if any
 		// await below hangs.
 		shutdownStateHolder.shuttingDown = true;
+		await qaRoomService.stop();
 		landReclosePeerServer?.close();
 		await xhsWriteService.close();
 		await leadGithubProvider?.close();

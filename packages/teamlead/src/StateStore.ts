@@ -65619,6 +65619,16 @@ export class StateStore {
 	}
 
 	/** Resolve a scoped submission credential without ever exposing its hash. */
+	getWorkflowSubmissionCredentialForActivation(
+		activationId: string,
+	): WorkflowSubmissionCredentialRow | undefined {
+		const row = this.workflowSelectAll(
+			"SELECT id FROM workflow_submission_credential WHERE activation_id = ? ORDER BY id DESC LIMIT 1",
+			[activationId],
+		)[0];
+		return row ? this.getWorkflowSubmissionCredential(Number(row.id)) : undefined;
+	}
+
 	getWorkflowSubmissionCredentialByToken(
 		credential: string,
 	): WorkflowSubmissionCredentialRow | undefined {

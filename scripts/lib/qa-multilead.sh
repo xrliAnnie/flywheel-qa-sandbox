@@ -380,6 +380,7 @@ qa_multilead_validate_campaign_args() {
 }
 
 # ── Slot lock lifecycle (campaign claim set + borrowed-lock semantics) ─────
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qa-slot-claim.sh"
 # Sidecar file <lock>/campaign.json marks a lock as part of a multi-lead
 # campaign: {ownerSlot, campaignId, borrowed}. borrowed=true means "this
 # slot's Lead resources live in the OWNER slot's SLOT_DIR — the ONLY legal
@@ -411,8 +412,14 @@ _qa_multilead_mtime() {
 # Args: lockdir staleCmd slotArg   (staleCmd "" → no stale teardown, plain refuse)
 qa_multilead_claim_one() {
 	local lockfile="$1" stale_cmd="${2:-}" slot_arg="${3:-}"
+	QA_MULTILEAD_CLAIM_CREATED=0
 	if mkdir "$lockfile" 2>/dev/null; then
 		echo "claiming" >"$lockfile/pid"
+		QA_MULTILEAD_CLAIM_CREATED=1
+		return 0
+	fi
+	if qa_slot_has_service_claim "$lockfile"; then
+		qa_slot_service_claim_matches "$lockfile" || { qa_slot_claim_mismatch "$lockfile"; return 1; }
 		return 0
 	fi
 	local owner
@@ -422,6 +429,9 @@ qa_multilead_claim_one() {
 	fi
 	local lock_pid
 	lock_pid=$(cat "$lockfile/pid" 2>/dev/null || echo "")
+	if [[ "$lock_pid" == service-failed || "$lock_pid" == service-cleaned ]]; then
+		return 1
+	fi
 	if [[ "$lock_pid" == "diagnostic-evidence-pending" ]]; then
 		echo "[qa-multilead] ${lockfile} has diagnostic-evidence-pending ownership — not reclaiming; run explicit test-teardown.sh ${slot_arg}" >&2
 		return 1
@@ -439,6 +449,7 @@ qa_multilead_claim_one() {
 			fi
 			mkdir "$lockfile" 2>/dev/null || return 1
 			echo "claiming" >"$lockfile/pid"
+			QA_MULTILEAD_CLAIM_CREATED=1
 			return 0
 		fi
 		return 1
@@ -449,6 +460,7 @@ qa_multilead_claim_one() {
 		fi
 		mkdir "$lockfile" 2>/dev/null || return 1
 		echo "claiming" >"$lockfile/pid"
+		QA_MULTILEAD_CLAIM_CREATED=1
 		return 0
 	fi
 	return 1
@@ -464,16 +476,17 @@ qa_multilead_claim_set() {
 	shift 2
 	local sorted
 	sorted=$(printf '%s\n' "$@" | sort -n)
-	local claimed=() s lockdir c
+	local claimed=() created=() s lockdir c
 	while IFS= read -r s; do
 		[[ -z "$s" ]] && continue
 		lockdir="${lock_root}/flywheel-test-slot-${s}.lock"
 		if qa_multilead_claim_one "$lockdir" "$stale_cmd" "$s"; then
 			claimed+=("$lockdir")
+			[[ "$QA_MULTILEAD_CLAIM_CREATED" != 1 ]] || created+=("$lockdir")
 		else
 			echo "[qa-multilead] slot ${s} claim failed — rolling back ${#claimed[@]} already-claimed lock(s)" >&2
-			for c in ${claimed[@]+"${claimed[@]}"}; do
-				rm -rf "$c"
+			for c in ${created[@]+"${created[@]}"}; do
+				qa_release_slot_lock "$c" || true
 			done
 			return 1
 		fi
@@ -569,6 +582,7 @@ qa_multilead_teardown_extra_leads() {
 # Args: manifestFile lockRoot
 qa_multilead_release_borrowed_locks() {
 	local manifest="$1" lock_root="$2"
+	[[ -z "${FLYWHEEL_QA_ROOM_CLAIM:-}" ]] || return 0
 	[[ -f "$manifest" ]] || return 0
 	local s
 	while IFS= read -r s; do

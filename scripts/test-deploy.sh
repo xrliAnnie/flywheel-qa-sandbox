@@ -2,7 +2,7 @@
 # FLY-96: Deploy a test slot (Bridge + Lead) for Discord E2E testing.
 #
 # Usage: scripts/test-deploy.sh [slot-number] [--digest <channel-id>]
-#        [--alerts [--codex-home-reconcile]]
+#        [--alerts [--alert-duty] [--codex-home-reconcile]]
 #        [--generalized [--codex-runner] [--stub-runner] [--expect-head <full-sha>]
 #          [--voice-fixture <public-json>]]
 #        [--test-discipline --expect-head <full-sha> [--generalized]
@@ -28,6 +28,8 @@ source "${SCRIPT_DIR}/lib/qa-room.sh"
 # scripts/__tests__/test-deploy-multilead.test.sh A1-A3.
 # shellcheck source=lib/qa-multilead.sh
 source "${SCRIPT_DIR}/lib/qa-multilead.sh"
+# FLY-2405: physical service ownership survives deploy failure cleanup.
+source "${SCRIPT_DIR}/lib/qa-slot-claim.sh"
 
 # FLY-1775: generalized-DAG room provisioning helpers. Default-off; sourcing
 # is side-effect free and ordinary slots stay on their existing byte path.
@@ -120,9 +122,17 @@ claim_slot() {
     return 0
   fi
 
+  if qa_slot_has_service_claim "$lockfile"; then
+    qa_slot_service_claim_matches "$lockfile" || { qa_slot_claim_mismatch "$lockfile"; return 1; }
+    return 0
+  fi
+
   # Check if existing lock is stale (Bridge PID dead)
   local lock_pid
   lock_pid=$(cat "$lockfile/pid" 2>/dev/null || echo "")
+  if [[ "$lock_pid" == service-failed || "$lock_pid" == service-cleaned ]]; then
+    return 1
+  fi
   if [[ "$lock_pid" == "diagnostic-evidence-pending" ]]; then
     log "Slot ${slot_num} has diagnostic-evidence-pending ownership — refusing automatic reclaim; run explicit test-teardown.sh ${slot_num}"
     return 1
@@ -171,6 +181,7 @@ FROM_BRANCH=""
 REQUESTED_SLOT=""
 MODE="slot"   # FLY-153: slot (default, per-slot channel) | mirror (3-Lead shared channel)
               # FLY-529: roundtable (test #leads-roundtable mirror + auto-thread host)
+ALERT_DUTY=0  # FLY-2405: primary Claude Lead owns the isolated alert duty seat.
 ALERTS=0      # FLY-529: --alerts wires the isolated test alert channel (any mode)
 CODEX_HOME_RECONCILE=0 # FLY-2523: explicit QA-only health-rider opt-in (requires --alerts)
 DIGEST_CHANNEL=""  # FLY-727: --digest <id> mounts the daily-digest route on the slot
@@ -208,6 +219,8 @@ while [[ $# -gt 0 ]]; do
       MODE="${1#*=}"; shift ;;
     --alerts)
       ALERTS=1; shift ;;
+    --alert-duty)
+      ALERT_DUTY=1; shift ;;
     --codex-home-reconcile)
       CODEX_HOME_RECONCILE=1; shift ;;
     --digest)
@@ -258,6 +271,8 @@ while [[ $# -gt 0 ]]; do
       echo "ERROR: unknown argument '$1'" >&2; exit 1 ;;
   esac
 done
+
+qa_room_validate_alert_duty "$ALERT_DUTY" "$ALERTS" "$NO_LEAD" claude-code || exit 1
 
 if [[ "$CODEX_HOME_RECONCILE" == "1" && "$ALERTS" != "1" ]]; then
   echo "ERROR: --codex-home-reconcile requires --alerts" >&2
@@ -450,6 +465,18 @@ if (( ${#EXTRA_LEAD_SPECS[@]} > 0 )); then
   log "Campaign validated: main slot ${REQUESTED_SLOT} + extra lead(s) $(jq -c 'map({slotId, agentId, deptLabel})' <<<"$EXTRA_LEADS_JSON")"
 fi
 
+# Validate dispatcher configuration before any lookup of its secret or network
+# preflight. Repeat ownership validation after auto slot selection.
+ALERT_DISPATCHER_CONFIG=""
+if [[ "$ALERT_DUTY" == 1 ]]; then
+  ALERT_DISPATCHER_CONFIG=$(qa_room_alert_dispatcher_config \
+    "$SLOTS_FILE" "${REQUESTED_SLOT:-0}" "$EXTRA_LEADS_JSON") || exit 1
+  if [[ -n "$REQUESTED_SLOT" ]]; then
+    _duty_backend=$(jq -r --argjson slot "$REQUESTED_SLOT" '.slots[] | select(.id == $slot) | .backend // "claude-code"' "$SLOTS_FILE")
+    qa_room_validate_alert_duty "$ALERT_DUTY" "$ALERTS" "$NO_LEAD" "$_duty_backend" || exit 1
+  fi
+fi
+
 # ── FLY-115: Pre-flight ───────────────────────────────
 REBUILD_LOCK="/tmp/flywheel-qa-rebuild.lock"
 SANDBOX_SLUG="xrliAnnie/flywheel-qa-sandbox"
@@ -599,7 +626,7 @@ trap release_preflight_lock EXIT
   #    someone forgets to rebuild after editing src.
   grep -q 'FLYWHEEL_RUNNER_START_POINT' \
     "$REPO_ROOT/packages/edge-worker/dist/WorktreeManager.js" || exit 14
-) || fail_preflight "preflight failed. Run pnpm install --frozen-lockfile, then pnpm -r build; verify better-sqlite3, config, edge-worker, claude-runner, inbox-mcp, terminal-mcp, teamlead, and dist freshness."
+) >&2 || fail_preflight "preflight failed. Run pnpm install --frozen-lockfile, then pnpm -r build; verify better-sqlite3, config, edge-worker, claude-runner, inbox-mcp, terminal-mcp, teamlead, and dist freshness."
 
 release_preflight_lock
 trap - EXIT
@@ -694,7 +721,7 @@ cleanup_on_failure() {
 		qa_generalized_invalidate_room_info "$SLOT_DIR"
 			if (( generalized_bridge_stopped == 1 && qa_registry_stopped == 1 )) \
 					&& qa_slot_evidence_allows_release; then
-			rm -rf "$lock"
+			qa_release_slot_lock "$lock"
 		else
 			echo "ERROR: generalized cleanup did not converge; retaining slot ${SLOT} lock" >&2
 		fi
@@ -726,7 +753,7 @@ cleanup_on_failure() {
   if [[ "$lock_pid" == "claiming" ]]; then
     if (( qa_registry_stopped == 1 )) && qa_slot_evidence_allows_release; then
       log "Deploy interrupted — releasing slot ${SLOT} lock"
-      rm -rf "$lock"
+      qa_release_slot_lock "$lock"
     else
       log "Deploy interrupted — retaining slot ${SLOT} lock after failed Lead cleanup"
     fi
@@ -743,9 +770,22 @@ cleanup_on_failure() {
     if [[ "$xpid" == "claiming" && "$qa_registry_stopped" == 1 ]] \
         && qa_slot_evidence_allows_release; then
       log "Deploy interrupted — releasing borrowed slot ${xsid} lock"
-      rm -rf "$xlock"
+      qa_release_slot_lock "$xlock"
     elif [[ "$xpid" == "claiming" ]]; then
       log "Deploy interrupted — retaining borrowed slot ${xsid} lock after failed Lead cleanup"
+    fi
+  done
+  # Service ownership survives every failed deploy, including failures whose
+  # runtime cleanup did not converge or whose Bridge PID was already written.
+  # The failure marker never authorizes auto-reap; only the owner may retry.
+  if qa_slot_service_claim_matches "$lock"; then
+    qa_release_slot_lock "$lock" || true
+  fi
+  for xsid in ${CAMPAIGN_SLOT_IDS[@]+"${CAMPAIGN_SLOT_IDS[@]}"}; do
+    [[ "$xsid" == "$SLOT" ]] && continue
+    xlock="/tmp/flywheel-test-slot-${xsid}.lock"
+    if qa_slot_service_claim_matches "$xlock"; then
+      qa_release_slot_lock "$xlock" || true
     fi
   done
 	# A failed readiness transaction must retain bridge.log for diagnosis but
@@ -784,8 +824,13 @@ SLOT_CODEX_PROFILE=$(jq -r ".slots[${SLOT_IDX}].codexProfile // empty" "$SLOTS_F
 if ! MAIN_LEAD_SHAPE=$(qa_multilead_validate_lead_shape \
     "$SLOT_BACKEND" "$SLOT_RETIRED_CODEX_SOURCE_HOME" "$SLOT_CODEX_PROFILE"); then
   echo "ERROR: slots[${SLOT_IDX}] has an invalid Lead carrier shape" >&2
-  rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+  qa_release_slot_lock "/tmp/flywheel-test-slot-${SLOT}.lock"
   exit 1
+fi
+qa_room_validate_alert_duty "$ALERT_DUTY" "$ALERTS" "$NO_LEAD" "${SLOT_BACKEND:-claude-code}" || exit 1
+if [[ "$ALERT_DUTY" == 1 ]]; then
+  ALERT_DISPATCHER_CONFIG=$(qa_room_alert_dispatcher_config \
+    "$SLOTS_FILE" "$SLOT" "$EXTRA_LEADS_JSON") || exit 1
 fi
 # FLY-163: forum concept removed. forumChannelId field (if still present in
 # legacy test-slots.json) is ignored. No FORUM_CHANNEL_ID extraction needed.
@@ -803,7 +848,7 @@ for pair in "bridgePort:${SLOT_PORT}" "botName:${AGENT_ID}" "tokenEnvVar:${BOT_T
   value="${pair#*:}"
   if [[ -z "$value" || "$value" == "null" ]]; then
     echo "ERROR: slots[${SLOT_IDX}].${field} missing or null in ${SLOTS_FILE}" >&2
-    rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+    qa_release_slot_lock "/tmp/flywheel-test-slot-${SLOT}.lock"
     exit 1
   fi
 done
@@ -812,7 +857,7 @@ done
 TEST_BOT_TOKEN="${!BOT_TOKEN_ENV:-}"
 if [[ -z "$TEST_BOT_TOKEN" ]]; then
   echo "ERROR: ${BOT_TOKEN_ENV} not set in environment." >&2
-  rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+  qa_release_slot_lock "/tmp/flywheel-test-slot-${SLOT}.lock"
   exit 1
 fi
 
@@ -842,18 +887,18 @@ if [[ "$MODE" == "mirror" ]]; then
   PLUGIN_CHECK="${HOME}/.flywheel/bin/check-discord-plugin.sh"
   if [[ ! -x "$PLUGIN_CHECK" ]]; then
     echo "ERROR: managed Discord plugin checker is missing: ${PLUGIN_CHECK}" >&2
-    rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+    qa_release_slot_lock "/tmp/flywheel-test-slot-${SLOT}.lock"
     exit 1
   fi
   if ! ACTIVE_PLUGIN="$("$PLUGIN_CHECK" --print-install-path)"; then
     echo "ERROR: discord@flywheel-plugins does not match fork main; mirror QA refuses to start. Run: claude plugin update discord@flywheel-plugins --scope user" >&2
-    rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+    qa_release_slot_lock "/tmp/flywheel-test-slot-${SLOT}.lock"
     exit 1
   fi
   if [[ ! -f "${ACTIVE_PLUGIN}/server.ts" ]] \
       || ! grep -q "access.allowBots" "${ACTIVE_PLUGIN}/server.ts"; then
     echo "ERROR: Discord plugin at ${ACTIVE_PLUGIN} does not consume access.allowBots — mirror mode cascade will silently fail. Run: claude plugin update discord@flywheel-plugins --scope user" >&2
-    rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+    qa_release_slot_lock "/tmp/flywheel-test-slot-${SLOT}.lock"
     exit 1
   fi
 
@@ -875,13 +920,13 @@ if [[ "$MODE" == "mirror" ]]; then
       echo "ERROR: Mirror channel ${MIRROR_CHANNEL_ID} inaccessible to bot ${AGENT_ID} (HTTP ${PROBE_HTTP})." >&2
       echo "  Invite this bot with View Channel + Send Messages + Read Message History." >&2
       echo "  See packages/qa-framework/README.md §Mirror Mode for step-by-step." >&2
-      rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+      qa_release_slot_lock "/tmp/flywheel-test-slot-${SLOT}.lock"
       exit 1
       ;;
     *)
       echo "ERROR: Mirror channel probe network/auth error (HTTP ${PROBE_HTTP}) for bot ${AGENT_ID}." >&2
       echo "  Verify TEST_BOT_TOKEN_${SLOT} is fresh and Discord API is reachable." >&2
-      rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+      qa_release_slot_lock "/tmp/flywheel-test-slot-${SLOT}.lock"
       exit 1
       ;;
   esac
@@ -897,6 +942,9 @@ BRIDGE_ENV_UNSET_ARGS=()
 BRIDGE_EXPLICIT_CALLER_ENV=()
 UNCLASSIFIED_COORDINATES_CLEARED=()
 GENERALIZED_ENV_UNSET_ARGS=()
+GENERALIZED_ALERT_DISPATCHER_ARGS=()
+ALERT_DUTY_TOKEN=""
+ALERT_DUTY_TOKEN_PATH=""
 REPORT_HOST_WRAPPER_ARGS=()
 # Preserve ordinary caller compatibility while removing every exported
 # identity/state coordinate before the Bridge launch environment is rebuilt.
@@ -918,7 +966,7 @@ done
 while IFS='=' read -r BRIDGE_ENV_NAME _bridge_env_value; do
   [[ "$BRIDGE_ENV_NAME" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
   case "$BRIDGE_ENV_NAME" in
-    FLYWHEEL_*|TEAMLEAD_*|DELIVERY_*|*_DB|*_DIR|*_ROOT|*_TOKEN|CODEX_HOME|TMUX|TMUX_PANE|TMUX_TMPDIR|TMPDIR)
+    FLYWHEEL_*|TEAMLEAD_*|DELIVERY_*|*_DB|*_DIR|*_ROOT|*_TOKEN|TEST_BOT_TOKEN_*|CODEX_HOME|TMUX|TMUX_PANE|TMUX_TMPDIR|TMPDIR)
       if [[ "$QA_SLOT_CONTRACT_PASSTHROUGH" == *" ${BRIDGE_ENV_NAME} "* ]]; then
         continue
       fi
@@ -960,6 +1008,10 @@ chmod 700 "$GENERALIZED_CHILD_TMPDIR" "${SLOT_DIR}/state" \
 while IFS= read -r _qa_slot_assignment; do
   [[ -n "$_qa_slot_assignment" ]] && BRIDGE_EXTRA_ENV+=("$_qa_slot_assignment")
 done < <(qa_slot_env_contract_render "$SLOT_DIR" "$TEST_PROJECT_NAME")
+# FLY-2405: explicit nested-room QA opt-in; ambient production values are scrubbed.
+if [[ "${TEST_QA_ROOM_SERVICE:-0}" == 1 ]]; then
+  BRIDGE_EXTRA_ENV+=("FLYWHEEL_QA_ROOM_SERVICE=on")
+fi
 LEAD_EXTRA_ENV+=("FLYWHEEL_REPORTS_DIR=${SLOT_DIR}/state/reports")
 QA_LEAD_REGISTRY="${SLOT_DIR}/launchd-leads.json"
 # FLY-2030: canonical identity compilation requires the founder-selected
@@ -1081,7 +1133,7 @@ if [[ "$MODE" == "roundtable" ]]; then
   if [[ -z "$ROUNDTABLE_CHANNEL_ID" || "$ROUNDTABLE_CHANNEL_ID" == "<test-leads-roundtable-channel-id>" ]]; then
     echo "ERROR: --mode roundtable requires roundtableChannel.channelId in ${SLOTS_FILE}." >&2
     echo "  Run scripts/setup-roundtable-channel.sh <channel-id> first (see packages/qa-framework/README.md §Roundtable Mirror)." >&2
-    rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"; exit 1
+    qa_release_slot_lock "/tmp/flywheel-test-slot-${SLOT}.lock"; exit 1
   fi
   RT_HOST_SLOT=$(jq -r '.roundtableChannel.hostSlot // 1' "$SLOTS_FILE")
   RT_TRIGGER_MODE=$(jq -r '.roundtableChannel.triggerMode // "any_top_level"' "$SLOTS_FILE")
@@ -1098,7 +1150,7 @@ if [[ "$MODE" == "roundtable" ]]; then
     echo "ERROR: roundtable channel ${ROUNDTABLE_CHANNEL_ID} inaccessible to bot ${AGENT_ID} (HTTP ${RT_PROBE_HTTP})." >&2
     echo "  Invite this bot + grant View/Send/Read; host bot also needs Create Public Threads + Send Messages in Threads." >&2
     echo "  See scripts/setup-roundtable-channel.sh." >&2
-    rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"; exit 1
+    qa_release_slot_lock "/tmp/flywheel-test-slot-${SLOT}.lock"; exit 1
   fi
 
   # Lead subscribes to the roundtable channel as its cross-dept channel.
@@ -1137,18 +1189,51 @@ if [[ "$ALERTS" == "1" ]]; then
   if [[ -z "$ALERT_CHANNEL_ID" || "$ALERT_CHANNEL_ID" == "<test-flywheel-alerts-channel-id>" ]]; then
     echo "ERROR: --alerts requires alertChannel.channelId in ${SLOTS_FILE}." >&2
     echo "  Run scripts/setup-alert-channel.sh <channel-id> first (see packages/qa-framework/README.md §Alert Mirror)." >&2
-    rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"; exit 1
+    qa_release_slot_lock "/tmp/flywheel-test-slot-${SLOT}.lock"; exit 1
   fi
   ALERT_REPAIR_BOT_TOKEN_ENV=$(jq -r --arg d "$BOT_TOKEN_ENV" '.alertChannel.repairBotTokenEnv // $d' "$SLOTS_FILE")
+  # Even the legacy repair branch must name a registered test bot before
+  # dereferencing its token, probing Discord, or adding an environment entry.
+  if ! jq -e --arg token "$ALERT_REPAIR_BOT_TOKEN_ENV" '
+      ($token | test("^TEST_BOT_TOKEN_[0-9]+$")) and any(.slots[]; .tokenEnvVar == $token)
+    ' "$SLOTS_FILE" >/dev/null; then
+    echo 'ERROR: dispatcher_not_test_bot' >&2; exit 1
+  fi
+  if [[ "$ALERT_DUTY" == 1 ]]; then
+    ALERT_DISPATCHER_CONFIG=$(qa_room_alert_dispatcher_config "$SLOTS_FILE" "$SLOT" "$EXTRA_LEADS_JSON") || exit 1
+    ALERT_DISPATCHER_TOKEN_ENV=$(jq -r '.tokenEnvVar' <<<"$ALERT_DISPATCHER_CONFIG")
+    _alert_lead_ids='[]'
+    while IFS= read -r _alert_lead_env; do
+      _alert_lead_token="${!_alert_lead_env:-}"
+      [[ -n "$_alert_lead_token" ]] || { echo 'ERROR: alert_lead_token_missing' >&2; exit 1; }
+      _alert_lead_id=$(curl -fsS -H "Authorization: Bot ${_alert_lead_token}" \
+        https://discord.com/api/v10/users/@me | jq -er '.id | select(type == "string" and test("^[0-9]+$"))') || exit 1
+      _alert_lead_ids=$(jq -c --arg id "$_alert_lead_id" '. + [$id]' <<<"$_alert_lead_ids")
+    done < <(printf '%s\n' "$BOT_TOKEN_ENV"; jq -r '.[].tokenEnvVar' <<<"$EXTRA_LEADS_JSON")
+    ALERT_DISPATCHER_BOT_ID=$(qa_room_alert_dispatcher_identity "$ALERT_DISPATCHER_CONFIG" "$_alert_lead_ids") || exit 1
+    unset _alert_lead_token _alert_lead_env _alert_lead_id _alert_lead_ids
+    # One validated dispatcher is the only repair/sender token injection.
+    ALERT_REPAIR_BOT_TOKEN_ENV="$ALERT_DISPATCHER_TOKEN_ENV"
+    ALERT_DUTY_TOKEN=$("$QA_SLOT_BRIDGE_NODE" -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("hex"))') || exit 1
+    [[ "$ALERT_DUTY_TOKEN" =~ ^[0-9a-f]{64}$ && "$ALERT_DUTY_TOKEN" != "$TEST_TEAMLEAD_API_TOKEN" \
+        && "$ALERT_DUTY_TOKEN" != "$TEST_TEAMLEAD_INGEST_TOKEN" ]] || exit 1
+    ALERT_DUTY_TOKEN_PATH="${SLOT_DIR}/alert-duty-token"
+    qa_generalized_install_api_token "$ALERT_DUTY_TOKEN_PATH" "$ALERT_DUTY_TOKEN" || exit 1
+    BRIDGE_EXTRA_ENV+=("FLYWHEEL_ALERT_DUTY_LEAD_ID=${AGENT_ID}"
+      "FLYWHEEL_ALERT_DUTY_TOKEN=${ALERT_DUTY_TOKEN}"
+      "FLYWHEEL_ALERT_SENDER_TOKEN_ENV=${ALERT_DISPATCHER_TOKEN_ENV}")
+    GENERALIZED_ALERT_DISPATCHER_ARGS=(--alert-dispatcher-env "$ALERT_DISPATCHER_TOKEN_ENV")
+  fi
+
 
   # Reachability probe for the alert channel (this slot's bot must see it).
   AL_PROBE_HTTP=$(curl -s -H "Authorization: Bot ${TEST_BOT_TOKEN}" \
     "https://discord.com/api/v10/channels/${ALERT_CHANNEL_ID}" \
     -o /dev/null -w "%{http_code}" 2>/dev/null || echo "000")
   if [[ "$AL_PROBE_HTTP" != "200" ]]; then
-    echo "ERROR: alert channel ${ALERT_CHANNEL_ID} inaccessible to bot ${AGENT_ID} (HTTP ${AL_PROBE_HTTP})." >&2
+    echo "ERROR: alert_channel_forbidden: alert channel ${ALERT_CHANNEL_ID} inaccessible to bot ${AGENT_ID} (HTTP ${AL_PROBE_HTTP})." >&2
     echo "  Invite this bot with View/Send/Read. See scripts/setup-alert-channel.sh." >&2
-    rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"; exit 1
+    qa_release_slot_lock "/tmp/flywheel-test-slot-${SLOT}.lock"; exit 1
   fi
 
   # Isolated alert dirs go to BOTH Bridge and Lead (two alert writer paths).
@@ -1369,6 +1454,11 @@ GROUPS_JSON=$(jq -n --arg chat "$CHAT_CHANNEL_ID" --arg rt "$ROUNDTABLE_CHANNEL_
 cat > "${SLOT_DIR}/discord-state/access.json" <<EOF
 {"dmPolicy":"allowlist","allowFrom":[],"allowBots":${ALLOWBOTS_JSON},"groups":${GROUPS_JSON},"pending":{}}
 EOF
+if [[ "$ALERT_DUTY" == 1 ]]; then
+  qa_room_alert_duty_access "$ALERT_CHANNEL_ID" "$ALERT_DISPATCHER_BOT_ID" \
+    < "${SLOT_DIR}/discord-state/access.json" > "${SLOT_DIR}/discord-state/access.json.tmp" || exit 1
+  mv "${SLOT_DIR}/discord-state/access.json.tmp" "${SLOT_DIR}/discord-state/access.json"
+fi
 log "access.json allowBots: $(echo "$ALLOWBOTS_JSON" | jq -c .) groups: $(echo "$GROUPS_JSON" | jq -c 'keys')"
 
 # ── FLY-1389 P2-b: identity + shared-rules staging are Lead-only inputs ──
@@ -1398,7 +1488,7 @@ if [[ -n "$IDENTITY_SOURCE" ]]; then
       ;;
     *)
       echo "ERROR: slots[${SLOT_IDX}].identitySource '${IDENTITY_SOURCE}' not in allowlist (cos-lead|product-lead|ops-lead)" >&2
-      rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+      qa_release_slot_lock "/tmp/flywheel-test-slot-${SLOT}.lock"
       exit 1
       ;;
   esac
@@ -1409,7 +1499,7 @@ else
     lead) SOURCE_SUBDIR="product-lead" ;;
     *)
       echo "ERROR: unknown slot role '${SLOT_ROLE}' (expected 'cos' or 'lead')" >&2
-      rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+      qa_release_slot_lock "/tmp/flywheel-test-slot-${SLOT}.lock"
       exit 1
       ;;
   esac
@@ -1419,7 +1509,7 @@ PROD_IDENTITY="${HOME}/Dev/GeoForge3D/.lead/${SOURCE_SUBDIR}/identity.md"
 if [[ ! -f "$PROD_IDENTITY" ]]; then
   echo "ERROR: Production identity not found: ${PROD_IDENTITY}" >&2
   echo "  (test-deploy expects ~/Dev/GeoForge3D checkout with .lead/${SOURCE_SUBDIR}/identity.md)" >&2
-  rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+  qa_release_slot_lock "/tmp/flywheel-test-slot-${SLOT}.lock"
   exit 1
 fi
 
@@ -1721,7 +1811,7 @@ fi
 # generalized --alerts room, exercise every bot that the scrubbed Bridge send
 # chain can actually select, then delete its marker. This catches the observed
 # slot-1-works/slot-2-403 invitation matrix before Bridge startup.
-if [[ "$GENERALIZED" == "1" && "$ALERTS" == "1" ]]; then
+if [[ ( "$GENERALIZED" == "1" || "$ALERT_DUTY" == "1" ) && "$ALERTS" == "1" ]]; then
   _alert_sender_envs=""
   while IFS= read -r _sender_env; do
     [[ -n "$_sender_env" ]] || continue
@@ -1741,7 +1831,7 @@ if [[ "$GENERALIZED" == "1" && "$ALERTS" == "1" ]]; then
       exit 1
     fi
     if ! qa_generalized_probe_discord_sender "$ALERT_CHANNEL_ID" "$_sender_env" "$_sender_token"; then
-      echo "ERROR: invite slot ${SLOT} bot ${_sender_env} to alert channel ${ALERT_CHANNEL_ID} and grant Send Messages + Manage Messages (marker cleanup)." >&2
+      echo "ERROR: alert_channel_forbidden: invite slot ${SLOT} bot ${_sender_env} to alert channel ${ALERT_CHANNEL_ID} and grant Send Messages + Manage Messages (marker cleanup)." >&2
       exit 1
     fi
   done
@@ -1781,6 +1871,11 @@ qa_slot_start_lead() {
   )
   local codex_assignments=() env_assignments=()
   base_assignments+=("$@")
+  local duty_assignment
+  while IFS= read -r duty_assignment; do
+    [[ -n "$duty_assignment" ]] && base_assignments+=("$duty_assignment")
+  done < <(qa_room_alert_duty_lead_env "$ALERT_DUTY" "$SLOT_DIR" "$agent" "$AGENT_ID" \
+    "$ALERT_DUTY_TOKEN" "http://localhost:${SLOT_PORT}")
   mkdir -p "${SLOT_DIR}/state/comm/${TEST_PROJECT_NAME}" || return 1
   chmod 700 "${SLOT_DIR}/state/comm" \
     "${SLOT_DIR}/state/comm/${TEST_PROJECT_NAME}" || return 1
@@ -2104,7 +2199,7 @@ if [[ "$LEAD_READY" != "true" ]]; then
   if qa_launchd_stop_registry "$QA_LEAD_REGISTRY"; then
     if qa_slot_evidence_allows_release; then
       QA_LEAD_REGISTRY=""
-      rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+      qa_release_slot_lock "/tmp/flywheel-test-slot-${SLOT}.lock"
     fi
   else
     log "ERROR: Lead cleanup did not converge; retaining slot ${SLOT} lock"
@@ -2440,6 +2535,7 @@ if [[ "$GENERALIZED" == "1" ]]; then
       --log "${SLOT_DIR}/bridge.log" --script "${REPO_ROOT}/scripts/run-bridge.ts" \
       "${BRIDGE_OWNERSHIP_CAPTURE_ARGS[@]}" -- \
       "$QA_SLOT_BRIDGE_BASH" "${SCRIPT_DIR}/lib/qa-generalized-bridge-wrapper.sh" \
+      ${GENERALIZED_ALERT_DISPATCHER_ARGS[@]+"${GENERALIZED_ALERT_DISPATCHER_ARGS[@]}"} \
       ${REPORT_HOST_WRAPPER_ARGS[@]+"${REPORT_HOST_WRAPPER_ARGS[@]}"} \
       "$QA_SLOT_BRIDGE_NPX" tsx "${REPO_ROOT}/scripts/run-bridge.ts" )
 elif [[ -n "$TEST_TEAMLEAD_API_TOKEN" ]]; then
@@ -2555,7 +2651,7 @@ for i in $(seq 1 120); do
     if qa_launchd_stop_registry "$QA_LEAD_REGISTRY"; then
       if qa_slot_evidence_allows_release; then
         QA_LEAD_REGISTRY=""
-        rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+        qa_release_slot_lock "/tmp/flywheel-test-slot-${SLOT}.lock"
       fi
     else
       log "ERROR: Lead cleanup did not converge; retaining slot ${SLOT} lock"
@@ -2571,7 +2667,7 @@ if [[ "$BRIDGE_READY" != "true" ]]; then
   if qa_launchd_stop_registry "$QA_LEAD_REGISTRY"; then
     if qa_slot_evidence_allows_release; then
       QA_LEAD_REGISTRY=""
-      rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+      qa_release_slot_lock "/tmp/flywheel-test-slot-${SLOT}.lock"
     fi
   else
     log "ERROR: Lead cleanup did not converge; retaining slot ${SLOT} lock"
@@ -2649,6 +2745,7 @@ if [[ "$GENERALIZED" == "1" ]]; then
     --arg flywheelRepo "$REPO_ROOT" \
     --arg buildSha "$SCRIPT_REPO_HEAD" --arg subjectBaseHead "$BRANCH_SHA" \
     --arg apiTokenPath "$GENERALIZED_API_TOKEN_PATH" \
+    --arg alertDutyTokenPath "$ALERT_DUTY_TOKEN_PATH" \
     --arg voiceFixtureReceipt "$VOICE_FIXTURE_RECEIPT" \
     --arg bridgeLog "${SLOT_DIR}/bridge.log" \
     --argjson testDiscipline "$([[ "$TEST_DISCIPLINE" == "1" ]] && echo true || echo false)" \
@@ -2658,7 +2755,7 @@ if [[ "$GENERALIZED" == "1" ]]; then
       subjectBaseHead:$subjectBaseHead,
       flywheelProjectsFile:$flywheelProjectsFile,
       summaryConfigHome:$summaryConfigHome,
-      apiTokenPath:$apiTokenPath,
+      apiTokenPath:$apiTokenPath,alertDutyTokenPath:$alertDutyTokenPath,
       bridgeLog:$bridgeLog} +
       (if $voiceFixtureReceipt == "" then {} else {voiceFixtureReceipt:$voiceFixtureReceipt} end)' > "$_room_tmp" \
     || { rm -f "$_room_tmp"; exit 1; }
@@ -2713,12 +2810,13 @@ elif [[ "$TEST_DISCIPLINE" == "1" ]]; then
     --arg subjectBaseHead "$BRANCH_SHA" \
     --arg configSha256 "$TEST_DISCIPLINE_CONFIG_SHA" \
     --arg apiTokenPath "$GENERALIZED_API_TOKEN_PATH" \
+    --arg alertDutyTokenPath "$ALERT_DUTY_TOKEN_PATH" \
     --arg bridgeLog "${SLOT_DIR}/bridge.log" \
     '{schemaVersion:1,slot:$slot,port:$port,projectName:$projectName,agentId:$agentId,
       mode:$mode,generalized:false,testDiscipline:true,runnerMode:"real",
       bridgeUrl:$bridgeUrl,dbPath:$dbPath,hostRepo:$hostRepo,flywheelRepo:$flywheelRepo,
       buildSha:$buildSha,subjectBaseHead:$subjectBaseHead,configSha256:$configSha256,
-      apiTokenPath:$apiTokenPath,bridgeLog:$bridgeLog}' \
+      apiTokenPath:$apiTokenPath,alertDutyTokenPath:$alertDutyTokenPath,bridgeLog:$bridgeLog}' \
     > "$_room_tmp" || { rm -f "$_room_tmp"; exit 1; }
   chmod 600 "$_room_tmp"
   mv "$_room_tmp" "$GENERALIZED_ROOM_INFO"
@@ -2845,6 +2943,9 @@ if [[ "$LEAD_CARRIER" == launchd-codex-tui ]]; then
   "codexLead": ${CODEX_LEAD_JSON}
 EOF
 )"
+fi
+if [[ "$ALERT_DUTY" == 1 ]]; then
+  GENERALIZED_OUTPUT_FIELDS="${GENERALIZED_OUTPUT_FIELDS}, \"alertDutyTokenPath\": \"${ALERT_DUTY_TOKEN_PATH}\""
 fi
 LEAD_COORDINATES_JSON='[]'
 if [[ "$NO_LEAD" != "1" ]]; then

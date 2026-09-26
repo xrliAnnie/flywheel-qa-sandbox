@@ -60,13 +60,34 @@ QA tmux session names MUST use the `qa-` prefix (for example,
 on an isolated QA socket. Teardown remains lifecycle-owned by the creating QA
 driver; `restart-services.sh` only audits and alerts on detached residue.
 
-### Scripts
+### Room service (Codex and Claude)
+
+Push the candidate 40-character SHA to origin, then request a room with
+`node "$FLYWHEEL_COMM_CLI" room deploy --head <candidate-sha>`. Bridge runs the
+scripts outside the runner sandbox after installing locked dependencies and
+building an independent source worktree. `--from-branch` selects only the fixture
+branch already pushed to the sandbox remote; it does not select Bridge source.
+Raw scripts are Lead-only maintenance.
+
+Save the returned `room_id` and `roomInfo`. Deploy/teardown wait by default;
+exit 3 means still running, so use `room wait --room <id>`. `room status` and
+`room list` expose current state. At load >= 8 per CPU (144 on the current host),
+deploy queues; teardown still proceeds. Reuse `--request-id` only for a transport
+retry, and use a new id for a new teardown attempt.
+
+Record strength-two evidence while the room is live, then request teardown.
+The service snapshots required SQLite DBs with `VACUUM INTO`, preserves logs,
+and returns `evidence_dir`. Snapshot failure retains the room: inspect prior
+evidence before an explicit `--skip-snapshot --reason <reason>` retry. Owner,
+Lead, or a same-issue successor after owner termination may tear down a room.
+
+### Commands
 
 | Script | Purpose |
 |--------|---------|
-| `scripts/test-deploy.sh [--from-branch <br>] <N>` | Clone sandbox at `<br>` into `/tmp/flywheel-test-slot-<N>/project-slot-<N>`, start the slot Bridge, then start each real test Lead as its own isolated launchd v2 job and private tmux server. Default branch is sandbox `main`. |
+| `node "$FLYWHEEL_COMM_CLI" room deploy --head <sha> --slot <N> [--from-branch <fixture-br>]` | Clone sandbox at `<br>` into `/tmp/flywheel-test-slot-<N>/project-slot-<N>`, start the slot Bridge, then start each real test Lead as its own isolated launchd v2 job and private tmux server. Default branch is sandbox `main`. |
 | `scripts/inject-linear-issue.sh <N> <FLY-XXX>` | POST `/api/runs/start` directly to the slot's Bridge to spawn a real Runner. |
-| `scripts/test-teardown.sh <N>` | `bootout` slot Lead labels first, then stop Runner/Bridge, clean FLY-95 worktrees + slot-local branches, and remove `SLOT_DIR` + CommDB. |
+| `node "$FLYWHEEL_COMM_CLI" room teardown --room <id>` | `bootout` slot Lead labels first, then stop Runner/Bridge, clean FLY-95 worktrees + slot-local branches, and remove `SLOT_DIR` + CommDB. |
 
 ### Lead carrier evidence (FLY-1663)
 
@@ -180,19 +201,19 @@ keeping the legacy 4-slot per-channel mode untouched.
 
 ```bash
 # Legacy per-slot mode (default — 0 regression for existing suites)
-scripts/test-deploy.sh 1
-scripts/test-deploy.sh 4
+node "$FLYWHEEL_COMM_CLI" room deploy --head <sha> --slot 1
+node "$FLYWHEEL_COMM_CLI" room deploy --head <sha> --slot 4
 
 # Mirror mode — slots 1-3 only
-scripts/test-deploy.sh --mode mirror 1   # cos      → Simba identity
-scripts/test-deploy.sh --mode mirror 2   # product  → Peter identity
-scripts/test-deploy.sh --mode mirror 3   # ops      → Oliver identity
+node "$FLYWHEEL_COMM_CLI" room deploy --head <sha> --mode mirror --slot 1   # cos      → Simba identity
+node "$FLYWHEEL_COMM_CLI" room deploy --head <sha> --mode mirror --slot 2   # product  → Peter identity
+node "$FLYWHEEL_COMM_CLI" room deploy --head <sha> --mode mirror --slot 3   # ops      → Oliver identity
 
 # Smoke test (validates the mirror wiring deterministically + bot-origin LLM)
 scripts/qa-fly-153-mirror-smoke.sh
 
 # Teardown is mode-agnostic
-scripts/test-teardown.sh 1
+node "$FLYWHEEL_COMM_CLI" room teardown --room <room-id>
 ```
 
 Mirror mode is **out of scope for Runner E2E**. `inject-linear-issue.sh`
@@ -248,7 +269,7 @@ Then in Discord:
    `~/.flywheel/test-slots.json` with `mirrorChannel.channelId`. Idempotent —
    safe to re-run if you redo the Discord side.
 
-After that, `scripts/test-deploy.sh --mode mirror 1` should succeed. Each
+After that, `node "$FLYWHEEL_COMM_CLI" room deploy --head <sha> --mode mirror --slot 1` should succeed. Each
 deploy also runs the per-bot probe again and fails fast with a pointer back
 to this section if View Channel access is missing.
 
@@ -308,8 +329,8 @@ and a single auto-thread host.
 scripts/setup-roundtable-channel.sh <channel-id>   # probes thread perms + installs
 
 # Deploy a 2-lead room (host runs the single auto-thread manager):
-scripts/test-deploy.sh --mode roundtable 1   # hostSlot
-scripts/test-deploy.sh --mode roundtable 2   # member
+node "$FLYWHEEL_COMM_CLI" room deploy --head <sha> --mode roundtable --slot 1   # hostSlot
+node "$FLYWHEEL_COMM_CLI" room deploy --head <sha> --mode roundtable --slot 2   # member
 scripts/qa-fly-529-roundtable-smoke.sh       # AC1 auto-thread + AC2/AC3 isolation/membership
 ```
 
@@ -333,10 +354,12 @@ live Bridge drains.
 # One-time (Annie): create #test-flywheel-alerts, invite the repair/slot bots:
 scripts/setup-alert-channel.sh <channel-id>
 
-scripts/test-deploy.sh --alerts 1            # composable: --mode roundtable --alerts
+node "$FLYWHEEL_COMM_CLI" room deploy --head <sha> --alerts --slot 1            # composable: --mode roundtable --alerts
 scripts/qa-fly-529-alert-smoke.sh 1          # AC4 channel + AC5 two-path isolation
 ```
 
+- Add `--alert-duty` with `--alerts` for a room whose primary Claude Lead owns `/duty/alert-board` and B-class tickets. The dispatcher must be a test bot; service output returns `alertDutyTokenPath`, and borrowed Leads do not receive this token. Production routing ignores the room owner override.
+- Isolated Bridges default to room service disabled. A Lead may provision the outer FLY-2405 acceptance room with `TEST_QA_ROOM_SERVICE=1`; this is not an arbitrary runner environment option.
 - `alertChannel` in `test-slots.json`: `{ channelId, repairBotTokenEnv }`.
 - Isolation env (slot-local, set on Bridge AND Lead): `FLYWHEEL_ALERT_QUEUE_DIR`,
   `FLYWHEEL_ALERT_DEADLETTER_DIR`, `FLYWHEEL_CLAIMS_DB`; `FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID`
@@ -358,13 +381,12 @@ pre-delete, same issue):
 ```bash
 # Knob: widen the Lead inbox-ready wait budget (flag > env > default 120s;
 # strict integer 1..3600, validated BEFORE the expensive preflight).
-scripts/test-deploy.sh 1 --lead-ready-timeout 300
-FLYWHEEL_TEST_LEAD_READY_TIMEOUT_SEC=300 scripts/test-deploy.sh 1
+node "$FLYWHEEL_COMM_CLI" room deploy --head <sha> --slot 1 --lead-ready-timeout 300
 
 # Bridge-only deploy: skip identity staging + Lead startup + lease wait
 # entirely. For pure Bridge/API/DB suites — a Discord-Lead-behavior suite
 # must NOT use it. Also runs on hosts without ~/Dev/GeoForge3D.
-scripts/test-deploy.sh 1 --no-lead
+node "$FLYWHEEL_COMM_CLI" room deploy --head <sha> --slot 1 --no-lead
 ```
 
 - `--no-lead` output JSON carries `"noLead": true` with empty `leadPidFile` /

@@ -34,9 +34,16 @@ qa_generalized_ambient_scrub_env_names() {
 }
 
 qa_generalized_assert_ambient_scrubbed() {
-	local name
+	local name allowed_dispatcher="${1:-}"
+	if [[ -n "$allowed_dispatcher" && ! "$allowed_dispatcher" =~ ^TEST_BOT_TOKEN_[0-9]+$ ]]; then
+		echo "[qa-generalized] dispatcher_not_test_bot" >&2; return 1
+	fi
+	for name in FLYWHEEL_ALERT_DISPATCH_BOT_TOKEN CLAUDE_INFRA_BOT_TOKEN CASS_BOT_TOKEN; do
+		[[ -z "${!name:-}" ]] || { echo "[qa-generalized] production dispatcher token survived" >&2; return 1; }
+	done
 	while IFS= read -r name; do
 		[[ -n "$name" ]] || continue
+		if [[ "$name" == FLYWHEEL_ALERT_SENDER_TOKEN_ENV && -n "$allowed_dispatcher" && "${!name:-}" == "$allowed_dispatcher" ]]; then continue; fi
 		if [[ -n "${!name:-}" ]]; then
 			echo "[qa-generalized] ambient ${name} survived the generalized exec boundary" >&2
 			return 1

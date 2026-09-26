@@ -242,5 +242,36 @@
 		"disposition": "passthrough",
 		"reason": "The slot launcher requires the host toolchain executables",
 		"boot": "unchecked"
-	}
+	},
+	{
+		"name": "FLYWHEEL_ALERT_DUTY_TOKEN",
+		"disposition": "clear",
+		"boot": "unchecked"
+	},
+	{
+		"name": "FLYWHEEL_ALERT_DUTY_LEAD_ID",
+		"disposition": "clear",
+		"boot": "unchecked"
+	},
+	{
+		"name": "FLYWHEEL_ALERT_SENDER_TOKEN_ENV",
+		"disposition": "clear",
+		"boot": "unchecked"
+	},
+	{
+		"name": "FLYWHEEL_ALERT_DISPATCH_BOT_TOKEN",
+		"disposition": "clear",
+		"boot": "unchecked"
+	},
+	{
+		"name": "CLAUDE_INFRA_BOT_TOKEN",
+		"disposition": "clear",
+		"boot": "unchecked"
+	},
+	{
+		"name": "CASS_BOT_TOKEN",
+		"disposition": "clear",
+		"boot": "unchecked"
+	},
+	{ "name": "FLYWHEEL_QA_ROOM_SERVICE", "disposition": "clear", "boot": "unchecked" }
 ]

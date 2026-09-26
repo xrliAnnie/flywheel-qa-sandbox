@@ -301,3 +301,59 @@ qa_room_claude_lease_diagnosis() {
 		echo inbox_mcp_unregistered
 	fi
 }
+
+# FLY-2405: duty rooms need a real Claude Lead and an isolated alert channel.
+qa_room_validate_alert_duty() {
+	[[ "$1" == 1 ]] || return 0
+	[[ "$2" == 1 ]] || { echo 'ERROR: alert_duty_requires_alerts' >&2; return 1; }
+	[[ "$3" == 0 ]] || { echo 'ERROR: alert_duty_requires_lead' >&2; return 1; }
+	[[ "${4:-claude-code}" == claude-code ]] || { echo 'ERROR: alert_duty_requires_claude_lead' >&2; return 1; }
+}
+
+# Validate names and slot ownership before any secret dereference or network IO.
+# The legacy repair branch is validated even when dispatcherSlot is explicit.
+qa_room_alert_dispatcher_config() {
+	local slots_file="$1" main_slot="$2" extra_leads="$3"
+	jq -ce --argjson main "$main_slot" --argjson extras "$extra_leads" '
+		.slots as $slots | .alertChannel as $alert
+		| ($alert.repairBotTokenEnv // "") as $repair
+		| def registered($name): ($name | test("^TEST_BOT_TOKEN_[0-9]+$")) and any($slots[]; .tokenEnvVar == $name);
+		if ($repair != "" and (registered($repair) | not)) then error("dispatcher_not_test_bot") else . end
+		| [ $slots[] | select(if $alert.dispatcherSlot != null then .id == $alert.dispatcherSlot else .tokenEnvVar == $repair end) ]
+		| if length != 1 then error("dispatcher_not_test_bot") else .[0] end
+		| if (.id | type) != "number" or (.id | floor) != .id or (registered(.tokenEnvVar) | not)
+		  then error("dispatcher_not_test_bot")
+		  elif .id == $main or (.id as $id | any($extras[]; .slotId == $id)) then error("dispatcher_is_lead")
+		  elif (.botAppId | type) != "string" or (.botAppId | test("^[0-9]+$") | not) then error("dispatcher_identity_missing")
+		  else . end
+	' "$slots_file"
+}
+
+# A measured user id must equal the registered app id and differ from every
+# measured Lead id. Token aliases cannot evade this check.
+qa_room_alert_dispatcher_identity() {
+	local config="$1" lead_ids="$2" token_env token identity
+	token_env=$(jq -er '.tokenEnvVar | select(test("^TEST_BOT_TOKEN_[0-9]+$"))' <<<"$config") || return 1
+	token="${!token_env:-}"
+	[[ -n "$token" ]] || { echo 'ERROR: dispatcher_token_missing' >&2; return 1; }
+	identity=$(curl -fsS -H "Authorization: Bot ${token}" https://discord.com/api/v10/users/@me | jq -er '.id | select(type == "string" and test("^[0-9]+$"))') || return 1
+	[[ "$identity" == "$(jq -r '.botAppId' <<<"$config")" ]] || { echo 'ERROR: dispatcher_identity_mismatch' >&2; return 1; }
+	jq -e --arg id "$identity" 'index($id) == null' <<<"$lead_ids" >/dev/null || { echo 'ERROR: dispatcher_is_lead' >&2; return 1; }
+	printf '%s\n' "$identity"
+}
+
+# Only the primary duty seat receives this capability, at each carrier layer.
+qa_room_alert_duty_lead_env() {
+	local enabled="$1" slot_dir="$2" lead="$3" duty_lead="$4" token="$5" bridge_url="$6"
+	[[ "$enabled" == 1 && "$lead" == "$duty_lead" ]] || return 0
+	printf '%s\n' "FLYWHEEL_ISOLATION_ROOT=${slot_dir}" \
+		"FLYWHEEL_ALERT_DUTY_LEAD_ID=${duty_lead}" \
+		"FLYWHEEL_ALERT_DUTY_TOKEN=${token}" "FLYWHEEL_BRIDGE_URL=${bridge_url}"
+}
+
+qa_room_alert_duty_access() {
+	jq --arg channel "$1" --arg dispatcher "$2" '
+		.allowBots = ((.allowBots // []) + [$dispatcher] | unique)
+		| .groups[$channel] = {requireMention:false, allowFrom:[]}
+	'
+}
