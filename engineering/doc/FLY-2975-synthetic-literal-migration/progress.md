@@ -1,13 +1,13 @@
 ---
 issue: FLY-2975
 phase: implement
-phaseCursor: 1/5
-updated: 2026-09-27T23:22:00.295Z
-nextStep: update exact assertions and verify the RED state
+phaseCursor: 2/5
+updated: 2026-09-27T23:24:16.454Z
+nextStep: complete test discovery and targeted verification
 chunks: []
 pointers: {}
 ---
 
 # FLY-2975 progress
-**phase**: implement (1/5)
-**next**: update exact assertions and verify the RED state
+**phase**: implement (2/5)
+**next**: complete test discovery and targeted verification
