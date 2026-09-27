@@ -1218,6 +1218,7 @@ describe("WorkflowEngineDispatcher", () => {
 					startDispatcher: inertStartDispatcher(),
 					env: WORKFLOW_ON,
 					now: () => new Date("2026-09-26T12:00:00.000Z"),
+					probeUnlaunchedExternalEvidence: async () => "absent",
 					resolvePredecessorHead: async () => {
 						throw new Error(errorCode);
 					},
@@ -1264,6 +1265,9 @@ describe("WorkflowEngineDispatcher", () => {
 				expect(
 					store.getWorkflowExecutionBinding("implement-1"),
 				).toBeUndefined();
+				expect(
+					store.getWorkflowLaunchCancellation("implement-1"),
+				).toMatchObject({ reason: "pre_admission_failed" });
 			} finally {
 				store.close();
 			}
@@ -1282,6 +1286,7 @@ describe("WorkflowEngineDispatcher", () => {
 					startDispatcher: inertStartDispatcher(),
 					env: WORKFLOW_ON,
 					now: () => new Date(now),
+					probeUnlaunchedExternalEvidence: async () => "absent",
 					resolvePredecessorHead: async () => {
 						throw new Error("git_head_unavailable");
 					},
@@ -1363,6 +1368,7 @@ describe("WorkflowEngineDispatcher", () => {
 				startDispatcher: inertStartDispatcher(),
 				env: WORKFLOW_ON,
 				now: () => new Date("2026-09-26T12:00:00.000Z"),
+				probeUnlaunchedExternalEvidence: async () => "absent",
 				resolvePredecessorHead: async () => {
 					throw new Error(errorCode);
 				},
@@ -1386,6 +1392,7 @@ describe("WorkflowEngineDispatcher", () => {
 				startDispatcher: inertStartDispatcher(),
 				env: WORKFLOW_ON,
 				now: () => new Date(now),
+				probeUnlaunchedExternalEvidence: async () => "absent",
 				resolvePredecessorHead: async () => {
 					throw new Error(errorCode);
 				},
@@ -1425,6 +1432,7 @@ describe("WorkflowEngineDispatcher", () => {
 				startDispatcher: inertStartDispatcher(),
 				env: WORKFLOW_ON,
 				now: () => new Date(now),
+				probeUnlaunchedExternalEvidence: async () => "absent",
 				resolvePredecessorHead: async () => {
 					expect(
 						store.admitGeneralizedWorkflowExecution({
@@ -1476,6 +1484,7 @@ describe("WorkflowEngineDispatcher", () => {
 				store,
 				startDispatcher: inertStartDispatcher(),
 				env: WORKFLOW_ON,
+				probeUnlaunchedExternalEvidence: async () => "absent",
 				resolvePredecessorHead: async () => {
 					throw new Error("engine_predecessor_head_invalid");
 				},
@@ -1487,9 +1496,64 @@ describe("WorkflowEngineDispatcher", () => {
 				effects: store.listWorkflowSideEffects("run-1"),
 				node: store.getWorkflowRunNode("run-1", "implement", 1),
 			}).toEqual(before);
+			expect(store.getWorkflowLaunchCancellation("implement-1")).toBeUndefined();
 			expect(store.listWorkflowAlertOutbox()).toHaveLength(0);
 		} finally {
 			store.close();
+		}
+	});
+
+	it("FLY-2922 keeps a permanent pre-admission failure active without positive no-start evidence", async () => {
+		const store = await storeWithIntent("implement");
+		try {
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: inertStartDispatcher(),
+				env: WORKFLOW_ON,
+				now: () => new Date("2026-09-26T12:00:00.000Z"),
+				probeUnlaunchedExternalEvidence: async () => "unknown",
+				resolvePredecessorHead: async () => {
+					throw new Error("engine_predecessor_head_invalid");
+				},
+			});
+			expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+			expect(store.getWorkflowRun("run-1")?.status).toBe("active");
+			expect(store.getWorkflowRunNode("run-1", "implement", 1)?.state).toBe(
+				"pending",
+			);
+			expect(store.getWorkflowLaunchCancellation("implement-1")).toBeUndefined();
+			expect(
+				store
+					.listWorkflowRunEvents("run-1")
+					.filter((event) => event.kind === "run_recovery_required"),
+			).toEqual([]);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("FLY-2922 refuses pre-admission recovery while a launch marker exists", async () => {
+		const stateRoot = mkdtempSync(join(tmpdir(), "fly2922-pre-admission-marker-"));
+		const store = await storeWithIntent("implement");
+		try {
+			writeFileSync(join(stateRoot, "implement-1"), "committed");
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: inertStartDispatcher(),
+				stateRoot,
+				env: WORKFLOW_ON,
+				now: () => new Date("2026-09-26T12:00:00.000Z"),
+				probeUnlaunchedExternalEvidence: async () => "absent",
+				resolvePredecessorHead: async () => {
+					throw new Error("engine_predecessor_head_invalid");
+				},
+			});
+			await dispatcher.reconcile();
+			expect(store.getWorkflowRun("run-1")?.status).toBe("active");
+			expect(store.getWorkflowLaunchCancellation("implement-1")).toBeUndefined();
+		} finally {
+			store.close();
+			rmSync(stateRoot, { recursive: true, force: true });
 		}
 	});
 

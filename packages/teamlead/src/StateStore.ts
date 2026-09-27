@@ -103,7 +103,7 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { dirname } from "node:path";
+import { basename, dirname, isAbsolute } from "node:path";
 import BetterSqlite3, { type Database as BetterDb } from "better-sqlite3";
 import {
 	canonicalJsonString,
@@ -62942,6 +62942,11 @@ export class StateStore {
 		rollbackMs: number;
 		now: string;
 		alertIdentity: WorkflowEngineAlertIdentity;
+		noStartEvidence?: {
+			markerPath: string;
+			externalEvidence: "absent";
+			observedAt: string;
+		};
 	}): { ok: true; held: boolean } | { ok: false; reason: string } {
 		if (
 			!input.runId ||
@@ -62954,7 +62959,18 @@ export class StateStore {
 			!Number.isFinite(input.rollbackMs) ||
 			input.rollbackMs <= 0 ||
 			!StateStore.workflowFiniteTimestamp(input.now) ||
-			!/^[a-z][a-z0-9_]{0,127}$/.test(input.errorCode)
+			!/^[a-z][a-z0-9_]{0,127}$/.test(input.errorCode) ||
+			(input.noStartEvidence !== undefined &&
+				(!isAbsolute(input.noStartEvidence.markerPath) ||
+					basename(input.noStartEvidence.markerPath) !== input.executionId ||
+					input.noStartEvidence.externalEvidence !== "absent" ||
+					!StateStore.workflowFiniteTimestamp(
+						input.noStartEvidence.observedAt,
+					) ||
+					Date.parse(input.noStartEvidence.observedAt) > Date.parse(input.now) ||
+					Date.parse(input.now) -
+							Date.parse(input.noStartEvidence.observedAt) >
+						30_000))
 		)
 			return { ok: false, reason: "invalid_pre_admission_failure" };
 		let result: { ok: true; held: boolean } | { ok: false; reason: string } = {
@@ -63081,7 +63097,6 @@ export class StateStore {
 			recorded = true;
 			const permanent = [
 				"engine_predecessor_head_invalid",
-				"engine_predecessor_unavailable",
 				"engine_resume_admission_invalid",
 				"engine_materialized_head_invalid",
 				"engine_rework_replacement_context_invalid",
@@ -63095,6 +63110,57 @@ export class StateStore {
 			) {
 				result = { ok: true, held: false };
 				return;
+			}
+			const noStartEvidence = input.noStartEvidence;
+			const storedWindow = parseStoredWorkflowLaunchWindow(
+				this.getSession(input.executionId)?.session_params,
+			);
+			if (
+				!noStartEvidence ||
+				existsSync(noStartEvidence.markerPath) ||
+				storedWindow.status !== "none"
+			) {
+				result = { ok: true, held: false };
+				return;
+			}
+			const priorCancellation = this.getWorkflowLaunchCancellation(
+				input.executionId,
+			);
+			if (
+				priorCancellation &&
+				priorCancellation.reason !== "pre_admission_failed"
+			) {
+				result = { ok: false, reason: "pre_admission_cancellation_conflict" };
+				return;
+			}
+			const cancellationGeneration = priorCancellation?.generation ?? 1;
+			if (!priorCancellation) {
+				// Pre-admission intents do not have an activation binding yet. Enrol the
+				// immutable execution identity so the append-only cancellation fence can
+				// reference it without pretending that admission or launch occurred.
+				this.db.run(
+					`INSERT OR IGNORE INTO workflow_actor
+					   (execution_id, project_name, issue_id, role, created_at)
+					 VALUES (?, ?, ?, ?, ?)`,
+					[
+						input.executionId,
+						run.project_name,
+						run.issue_id,
+						input.nodeId,
+						input.now,
+					],
+				);
+				this.db.run(
+					`INSERT INTO workflow_launch_cancellation
+					   (execution_id, generation, reason, created_at)
+					 VALUES (?, ?, 'pre_admission_failed', ?)`,
+					[input.executionId, cancellationGeneration, input.now],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new WorkflowEngineInvariantError(
+						"pre_admission_cancellation_changed",
+					);
+				}
 			}
 			this.db.run(
 				`UPDATE workflow_run_node SET state = 'failed', ended_at = ?
@@ -63148,7 +63214,16 @@ export class StateStore {
 					...payload,
 					reason: "pre_admission_failed",
 					sourceEventUid,
-					noStartEvidence: "pending_without_binding_or_owner",
+					noStartEvidence: {
+						kind: "pre_admission_cancelled",
+						cancellationGeneration,
+						markerPathDigest: canonicalSubmissionDigest(
+							noStartEvidence.markerPath,
+						),
+						externalEvidence: noStartEvidence.externalEvidence,
+						observedAt: noStartEvidence.observedAt,
+						preciseWindow: "none",
+					},
 					at: input.now,
 				},
 			});

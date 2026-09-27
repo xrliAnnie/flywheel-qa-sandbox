@@ -783,6 +783,31 @@ export class WorkflowEngineDispatcher {
 					const message =
 						error instanceof Error ? error.message : String(error);
 					const code = message.split(":", 1)[0]?.trim() ?? "";
+					const observedAt = this.now().toISOString();
+					const markerPath = join(this.stateRoot, intent.execution_id);
+					const persistedWindow = this.persistedUnlaunchedWindow(
+						intent.execution_id,
+					);
+					let noStartEvidence:
+						| {
+								markerPath: string;
+								externalEvidence: "absent";
+								observedAt: string;
+						  }
+						| undefined;
+					if (!existsSync(markerPath) && persistedWindow.status === "none") {
+						const externalEvidence = await this.probeUnlaunchedEvidence(
+							intent.execution_id,
+							run.project_name,
+						);
+						if (externalEvidence === "absent") {
+							noStartEvidence = {
+								markerPath,
+								externalEvidence,
+								observedAt,
+							};
+						}
+					}
 					this.options.store.recordWorkflowPreAdmissionFailure({
 						runId: intent.run_id,
 						nodeId: intent.node_id,
@@ -796,7 +821,8 @@ export class WorkflowEngineDispatcher {
 							"FLYWHEEL_ENGINE_UNLAUNCHED_ROLLBACK_MS",
 							10 * 60_000,
 						),
-						now: this.now().toISOString(),
+						now: observedAt,
+						...(noStartEvidence ? { noStartEvidence } : {}),
 						alertIdentity: this.resolveRunAlertIdentity(
 							run.project_name,
 							run.issue_id,
@@ -3056,7 +3082,7 @@ export class WorkflowEngineDispatcher {
 				!isRootPhaseFirstAttempt &&
 				(!predecessorExecutionId || !predecessor)
 			) {
-				throw new Error("engine_predecessor_unavailable");
+				throw new Error("lineage_missing");
 			} else if (predecessorExecutionId) {
 				startPoint = (
 					await this.resolvePredecessorHead(
