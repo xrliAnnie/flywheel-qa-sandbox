@@ -669,3 +669,13 @@ R1 在精确头 `ce85c72eb972cf313179e36be1df93048ba30bfb` 上由 question `fc55
 本批最终相关验证：上述具体 Vitest 文件及直接消费者均逐文件运行；最终重跑 inspector 58/58、post-merge 20/20。Claude-runner 按策略执行 changed-TS `vitest related src/execution-process-inspector.ts --run`，结果 20 文件通过、1 文件因 sandbox `spawnSync ps EPERM` 失败，总计 755 pass / 2 failed / 2 skipped；两项失败均在 `test/codex-daemon-runtime.test.ts` 的真实 `ps` holder probe，留给 529，不是断言回归。依 `[lead-instruction e9cfb5af-ae02-489f-8d7a-6eb0aeb848a4]` 不重跑会扩张到 600+ 文件的 teamlead related；以列出的具体文件证据交接给 PR CI。`pnpm --filter "flywheel-teamlead..." build`、`pnpm --filter "...flywheel-teamlead" typecheck`（teamlead + voice-codex）和根 `pnpm lint` 均退出0；lint 仅有26项既有 warning。没有运行本机整包/整仓 suite。
 
 仍保留为后续的 review advisories：orphan owner drain、null-activation/旧 Codex、never-started launch、projection refusal alert、late TUI、finish drain wait、monitor-lost noise，以及四项 LOW 清理/展示问题。它们不改变本批六项 HIGH 的关闭证据，也不作为 QA、529 或 full CI 证明。
+
+### R2 代码复审第 3 轮修订
+
+question `f8ced131-aa0a-4fdc-8129-3fc27897dab0` 在精确头 `ec40d7dc2b2c5f85de279fe33819c858bccfb244` 上返回第 3 轮 `CHANGES_REQUESTED`（request `b3348e5e-362d-45d0-a474-61060e4024df`）。本批只修复唯一阻塞项 `macos-host-wide-env-census-blocks-binding`：精确 PGID、已接纳 writer 或其后代的进程已经由进程树归属，不再因 macOS 上读不到环境而把 `writersComplete` 翻为 false。环境证据仅用于发现该进程树之外的 nonce holder；native worker 的 nonce 与 executable/cwd/start/boot 身份验证仍保留。fresh bind 和 legacy adoption 都会把环境不可读的同组 child 保存到 binding writers。
+
+因果 RED/GREEN 不变换断言：先加 fresh bind fixture，旧代码 59 项中 1 项失败；再将旧的错误 `writersComplete=false` 期望改为批准契约，旧代码 59 项中 2 项失败。加入 legacy adoption fixture 后暂时恢复旧生产分支，60 项中 3 项失败（legacy adoption、fresh bind、writersComplete）。最小生产修复后同一具体文件 60/60 GREEN；`kill-path-inventory.test.ts` 5/5 GREEN。
+
+测试发现先检索了旧 literal、源文件完整路径/文件名/父目录，以及测试文件路径/文件名。保留 inspector 因果测试与 kill-path inventory；父目录命中的历史文档、配置和通用路径卫生项不是本分支的直接行为消费者，不扩张测试范围。changed-TS `vitest related src/execution-process-inspector.ts test/execution-process-inspector.test.ts --run` 结果为 20/21 文件通过，合计 757 pass / 2 failed / 2 skipped；两项失败均为 `codex-daemon-runtime.test.ts` 在当前 sandbox 中调用真实 `ps` 的 `spawnSync ps EPERM`，不是断言回归，保留给 529。`flywheel-claude-runner` 依赖闭包 build、被依赖包 typecheck 与根 `pnpm lint` 均退出0；lint 仅有26项既有 warning。`git diff --check` 退出0。没有运行本机整包/整仓 suite，也不将上述证据冒称 full CI、QA 或真机验收。
+
+复审中的 MEDIUM/LOW 仍是非阻塞 advisory，本批不扩张修复。下一步推送同头并开新的有效代码复审。

@@ -31,6 +31,7 @@ const binding: ExecutionProcessBinding = {
 };
 type Row = {
 	pid: number;
+	ppid?: number;
 	pgid?: number;
 	argv?: string;
 	env?: string;
@@ -57,7 +58,7 @@ function fixture(rows: Row[] = [{ pid: 42 }]) {
 					stdout: rows
 						.map(
 							(r) =>
-								`${r.pid} 1 ${r.pgid ?? r.pid} 501 ${r.state ?? "S"} ${r.start ?? start}`,
+								`${r.pid} ${r.ppid ?? 1} ${r.pgid ?? r.pid} 501 ${r.state ?? "S"} ${r.start ?? start}`,
 						)
 						.join("\n"),
 				};
@@ -129,6 +130,36 @@ describe("execution process inspector", () => {
 			},
 		);
 		expect(candidate).toBeNull();
+	});
+	it("discovers a legacy worker when its process-group child hides its environment", async () => {
+		const nativeSessionId = "11111111-2222-3333-4444-555555555555";
+		const { options } = fixture([
+			{
+				pid: 42,
+				argv: `/bin/claude --session-id ${nativeSessionId}`,
+				env: "PATH=/bin FLYWHEEL_EXEC_ID=exec-legacy",
+			},
+			{
+				pid: 90,
+				ppid: 42,
+				pgid: 42,
+				argv: "/bin/sleep 60",
+				env: "",
+			},
+		]);
+		const candidate = await Inspector.discoverLegacyClaudeProcessBinding(
+			{
+				executionId: "exec-legacy",
+				nativeSessionId,
+				executable: "/bin/claude",
+				cwd: "/work",
+			},
+			options,
+		);
+		expect(candidate).toMatchObject({
+			pid: 42,
+			writers: [{ pid: 90, startIdentity: start, hostBootId: boot }],
+		});
 	});
 	it.each([
 		"unique",
@@ -241,6 +272,28 @@ describe("execution process inspector", () => {
 				nonce: "nonce-42",
 			});
 		else expect(result).toBeNull();
+	});
+	it("binds a native worker when its process-group child hides its environment", async () => {
+		const { options } = fixture([
+			{ pid: 42 },
+			{ pid: 90, ppid: 42, pgid: 42, env: "" },
+		]);
+		const result = await bindSpawnedExecutionProcessGroup(binding, {
+			...options,
+			runCommand: async (file, args, control) => {
+				if (file.endsWith("lsof")) {
+					const pid = args[args.indexOf("-p") + 1];
+					return {
+						stdout: `p${pid}\nfcwd\nn/work\nftxt\nn${pid === "42" ? "/bin/claude" : "/bin/sleep"}\n`,
+					};
+				}
+				return options.runCommand!(file, args, control);
+			},
+		});
+		expect(result).toMatchObject({
+			pid: 42,
+			writers: [{ pid: 90, startIdentity: start, hostBootId: boot }],
+		});
 	});
 	it.each(["same", "forked", "reused", "boot", "changed_during_sample"])(
 		"ties a registered launch to its exact pre-exec leader: %s",
@@ -458,7 +511,7 @@ describe("execution process inspector", () => {
 			}),
 		).toBeNull();
 	});
-	it("cannot establish a complete nonce census with unstable argv or hidden environment", async () => {
+	it("counts scoped writers by process membership when environment attribution is unavailable", async () => {
 		const { options } = fixture();
 		let count = 0;
 		const sample = await captureExecutionProcessSample(binding, {
@@ -470,12 +523,12 @@ describe("execution process inspector", () => {
 				return result;
 			},
 		});
-		expect(sample?.writersComplete).toBe(false);
+		expect(sample?.writersComplete).toBe(true);
 		const hidden = fixture([{ pid: 42, env: "" }]);
 		expect(
 			(await captureExecutionProcessSample(binding, hidden.options))
 				?.writersComplete,
-		).toBe(false);
+		).toBe(true);
 	});
 	it("passes one decreasing deadline capped at five seconds to every command", async () => {
 		const { options, calls } = fixture();

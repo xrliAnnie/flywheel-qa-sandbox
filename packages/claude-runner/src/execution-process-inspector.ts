@@ -818,7 +818,9 @@ export async function captureExecutionProcessSample(
 				argvAfter,
 			);
 			if (!tokens) {
-				if (scopedWriterPids.has(row.pid)) writersComplete = false;
+				// Exact group, accepted-writer, and descendant membership already
+				// attributes scoped writers. Environment evidence is only needed to
+				// discover nonce holders outside that process tree.
 				continue;
 			}
 			const nonces = tokens.filter((token) =>
