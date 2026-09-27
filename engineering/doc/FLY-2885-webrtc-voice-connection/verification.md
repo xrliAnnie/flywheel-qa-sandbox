@@ -538,3 +538,20 @@ R5 的唯一 HIGH 成立：生产 wrapper 按 `uname -m` 选择 release target�
 修复只让 fixture 复用与 wrapper 相同的 `arm64 → aarch64-apple-darwin`、`x86_64 → x86_64-apple-darwin` 映射，不改生产代码。通过 x86_64 的 `/usr/local/bin/timeout` 经 Rosetta 启动测试可稳定复现红色 36/40；修改后同一 x86_64 路径 40/40，原生 arm64 也为 40/40。`bash -n`、`git diff --check` 和仓库 `pnpm lint`（25 条既有 warning，exit 0）通过。
 
 literal/path 发现中，旧的具体 aarch64 路径只剩历史文档和手工探针；新 `CODEX_RELEASE_TARGET` 只在本测试中。`ci-structure.test.sh` 仅检查这个脚本仍被 CI shard 枚举，文件名和枚举没有变化，因此排除。R5 的两个新 LOW 与历次非阻塞 advisories 不在本轮唯一 HIGH 的锁定修复范围内。
+
+## 本次 QA 返工：授权测试说话人没有触发本地朗读打断（2026-09-27）
+
+QA 报告对应真实会话 `e4c3fbac-99e5-445e-9a47-ddb6cb2aefab`。B5 的旧朗读尾巴「线的配置」和 C2 的「周会有结论」分别在打断开始后约 2.8 s、3.1 s 继续播放；两次都没有 `codex_barge_in` 或 `codex_readback_continuation_suppressed` 事件。会话投影里 `founderUserId=1493075160025272452`，而实际说话者是已经列入 `qaAllowUserIds` 的测试 bot `1493068669444427927`。房间入口允许 founder 和 `qaAllowUserIds` 的音频进入转写，但 `GenericVoiceSession` 原来只在 `ownerUserId === founderUserId` 时触发本地 `interrupt()`。因此服务端能听见 QA bot 并回答，本地却从未执行停播、取消回复、continuation fence 或剩余内容提示；这也解释了两次旧内容续播和没有 leftover-content notice，而不是已经修好的 replay/fence 逻辑再次失效。
+
+最小修复只把本地打断身份门与房间已有的授权集合对齐：说话者必须存在，且是 founder 或在 `projection.qaAllowUserIds` 中。未列入允许集合的用户仍由房间过滤，不会获得打断权限。生产状态机、readback replay 策略、提示文本和普通对话恢复均未改动。
+
+**红→绿**：房间级回归测试改由授权 QA 说话者发出 barge-in，沿 `CodexRoomFrontend → GenericVoiceSession` 的生产路径断言立即追加 steer。生产修复前该测试 1/28 红（`appendText` 为 0）；修复后 28/28。
+
+**本机定向验证（代码提交 `d4730a4a8`）**：
+
+- 直接消费者逐文件：`codex-room-webrtc.test.ts` 28/28、`session.test.ts` 34/34、`codex-room.test.ts` 13/13、`codex-readback-replay.test.ts` 2/2，共 77/77。
+- changed-TS `vitest related`（`src/session.ts`、`src/__tests__/codex-room-webrtc.test.ts`）选择同 4 个文件，77/77。
+- voice-codex `typecheck`、`pnpm --filter "flywheel-voice-codex..." build`、仓库 `pnpm lint`、两处改动文件的 Biome 和 `git diff --check` 均通过；lint 仍只有 25 条仓库既有 warning。
+- literal/path 发现：旧身份比较 literal 已无命中，新 literal 只在 `session.ts`；`session.js` 的 4 个测试消费者全部逐文件运行。`cipher-dimensions.test.ts` 只是同名 `session.ts` 命中；kill-path inventory 和 `flywheel-voice-wrapper.test.sh` 只引用父目录或包路径，均不依赖本次身份门，故排除。
+
+本实现节点未请求 full CI，也未进入或拆除 529 房；exact-head full CI 与真实房间 B5/C2 复测仍由 QA 负责。
