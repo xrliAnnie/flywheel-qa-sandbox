@@ -1646,6 +1646,53 @@ describe("WorkflowEngineDispatcher", () => {
 		}
 	});
 
+	it.each([
+		"admission_paused",
+		"pressure_hold",
+		"memory_pressure",
+		"load_pressure",
+	] as const)(
+		"FLY-2922 does not classify normal %s waiting as a pre-admission failure",
+		async (reason) => {
+			const store = await storeWithIntent("implement");
+			try {
+				let now = Date.parse("2026-09-26T12:00:00.000Z");
+				const startDispatcher = inertStartDispatcher();
+				const dispatcher = new WorkflowEngineDispatcher({
+					store,
+					startDispatcher,
+					env: WORKFLOW_ON,
+					now: () => new Date(now),
+					resolvePredecessorHead: async () => HEAD,
+					probeUnlaunchedExternalEvidence: async () => "absent",
+					admissionProbe: () => ({
+						admit: false,
+						reason,
+						detail: "normal capacity wait",
+					}),
+				});
+				for (let tick = 0; tick < 4; tick += 1) {
+					await dispatcher.reconcile();
+					now += 10 * 60_000;
+				}
+				expect(startDispatcher.start).not.toHaveBeenCalled();
+				expect(store.getWorkflowRun("run-1")?.status).toBe("active");
+				expect(
+					store
+						.listWorkflowRunEvents("run-1")
+						.filter((event) =>
+							[
+								"pre_admission_failure_observed",
+								"run_recovery_required",
+							].includes(event.kind),
+						),
+				).toHaveLength(0);
+			} finally {
+				store.close();
+			}
+		},
+	);
+
 	it("bounds resident fast retries to ten seconds and passes only owning projects", async () => {
 		const store = await StateStore.create(":memory:");
 		try {
@@ -4253,6 +4300,100 @@ describe("WorkflowEngineDispatcher", () => {
 			execution_id: fake.requests[1]?.successorExecutionId,
 		});
 		expect(store.listWorkflowSideEffects("run-1")).toHaveLength(2);
+		store.close();
+	});
+
+	it("FLY-2922 isolates a dead-execution quota recovery hold from other dispatches in the same tick", async () => {
+		const store = await storeWithIntent("implement");
+		const fake = fakeStartDispatcher(store);
+		const base = deadExecEngineClockBaseMs();
+		const logs: string[] = [];
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			stateRoot: mkdtempSync(join(tmpdir(), "fly2922-dead-isolation-")),
+			env: WORKFLOW_ON,
+			now: () => new Date(base),
+			resolvePredecessorHead: async () => HEAD,
+			probeLaunchLiveness: async () => "dead",
+			log: (message) => logs.push(message),
+		});
+		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+		store.upsertSession({
+			execution_id: "implement-1",
+			issue_id: "FLY-1307",
+			project_name: "flywheel",
+			status: "failed",
+			workflow_node_id: "implement",
+		});
+
+		const seed = pinLegacyWorkflowSeedAgents(
+			legacyWorkflowSeeds().find(
+				(candidate) => candidate.templateId === "tpl_eng_heavy",
+			)!,
+		);
+		store.materializeWorkflowRun({
+			runId: "run-2",
+			issueId: "FLY-2922-SIBLING",
+			projectName: "flywheel",
+			taskCategory: "code",
+			templateId: seed.templateId,
+			claimsReadEnrolled: true,
+			actor: "lead",
+			canonicalRoot: REPO_ROOT,
+			env: WORKFLOW_ON,
+			startReservation: {
+				idempotencyKey: "engine-start-2",
+				selectionDigest: "selection-2",
+				nodeId: "design",
+				attempt: 1,
+				executionId: "design-2",
+				createdAt: "2026-07-16T00:00:00.000Z",
+			},
+		});
+		store.upsertWorkflowRunNode({
+			runId: "run-2",
+			nodeId: "design",
+			attempt: 1,
+			state: "running",
+			executionId: "design-2",
+		});
+		store.upsertSession({
+			execution_id: "design-2",
+			issue_id: "FLY-2922-SIBLING",
+			project_name: "flywheel",
+			status: "design_done",
+			issue_identifier: "FLY-2922-SIBLING",
+			issue_title: "Sibling dispatch",
+			design_backend: "claude",
+			doc_tier: "none",
+			issue_url: "https://linear.app/flywheel/FLY-2922-SIBLING",
+			worktree_path: "/unused/design-2",
+		});
+		store.commitWorkflowTransitionTx({
+			nodeReuseEnabled: false,
+			runId: "run-2",
+			nodeId: "design",
+			attempt: 1,
+			executionId: "design-2",
+			outcome: "design_done",
+			successorExecutionId: "implement-2",
+			now: "2026-07-16T00:05:00.000Z",
+		});
+		vi.spyOn(store, "rollbackDeadWorkflowNodeExecution").mockImplementation(
+			() => {
+				throw new Error("quota_recovery_inflight");
+			},
+		);
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+		expect(fake.requests.map((request) => request.issueId)).toEqual([
+			"FLY-1307",
+			"FLY-2922-SIBLING",
+		]);
+		expect(logs).toContain(
+			"workflow engine dead-exec recovery held for implement-1: quota_recovery_inflight",
+		);
 		store.close();
 	});
 

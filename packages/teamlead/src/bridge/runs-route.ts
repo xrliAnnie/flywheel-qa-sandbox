@@ -95,6 +95,7 @@ import {
 	WorkKindRouteError,
 } from "../workflow-template-selection.js";
 import { validateAndRegisterChatThread } from "./chat-thread-register.js";
+import type { CodexQuotaTerminateExpectation } from "./codex-quota-store.js";
 import { fetchDiscordMessageFromChannel } from "./discord-utils.js";
 import { storeReviewSameFamilyAllowed } from "./flag-store-runtime.js";
 import type { ConfirmTokenStore } from "./fleet-admin.js";
@@ -122,6 +123,47 @@ import { resolveWorkflowResumeTarget } from "./workflow-resume-resolver.js";
 const THREAD_POLL_INTERVAL_MS = 500;
 const THREAD_POLL_MAX_MS = 5000;
 const execFileAsync = promisify(execFile);
+
+function parseCodexQuotaTerminateExpectation(
+	value: unknown,
+): CodexQuotaTerminateExpectation | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return;
+	const input = value as Record<string, unknown>;
+	const targetValue = input.target;
+	if (
+		!targetValue ||
+		typeof targetValue !== "object" ||
+		Array.isArray(targetValue)
+	)
+		return;
+	const target = targetValue as Record<string, unknown>;
+	const nonEmptyString = (candidate: unknown): candidate is string =>
+		typeof candidate === "string" && candidate.length > 0;
+	const positiveInteger = (candidate: unknown): candidate is number =>
+		Number.isSafeInteger(candidate) && Number(candidate) > 0;
+	const nullablePositiveInteger = (candidate: unknown): boolean =>
+		candidate === null || positiveInteger(candidate);
+	if (
+		!nonEmptyString(target.incidentId) ||
+		target.targetKind !== "runner" ||
+		!nonEmptyString(target.targetId) ||
+		!nonEmptyString(target.runId) ||
+		(target.nodeId !== null && !nonEmptyString(target.nodeId)) ||
+		!nullablePositiveInteger(target.attempt) ||
+		!nonEmptyString(target.oldExecutionId) ||
+		!nonEmptyString(target.state) ||
+		!positiveInteger(target.incidentGeneration) ||
+		!nullablePositiveInteger(target.installedGeneration) ||
+		!nonEmptyString(input.nodeId) ||
+		!positiveInteger(input.attempt) ||
+		!positiveInteger(input.launchOrdinal) ||
+		!nonEmptyString(input.permitIncidentId) ||
+		!positiveInteger(input.installedGeneration)
+	) {
+		return;
+	}
+	return value as CodexQuotaTerminateExpectation;
+}
 
 export const FLAG_GOVERNANCE_LABEL = "flag-governance";
 export const FLAG_GOVERNANCE_MARKER = "<!-- flywheel:flag-governance run=";
@@ -684,6 +726,13 @@ export function createRunsRouter(
 			const clientRequestId = req.body?.clientRequestId;
 			const closeoutInvariantDigest = req.body?.closeoutInvariantDigest;
 			const collectExecutions = req.body?.collectExecutions;
+			const quotaTerminateRequest =
+				action === "terminate" &&
+				typeof clientRequestId === "string" &&
+				clientRequestId.startsWith("codex-quota:");
+			const quotaRecovery = parseCodexQuotaTerminateExpectation(
+				req.body?.quotaRecovery,
+			);
 			if (
 				typeof reason !== "string" ||
 				!reason.trim() ||
@@ -695,7 +744,9 @@ export function createRunsRouter(
 						!/^[0-9a-f]{64}$/.test(closeoutInvariantDigest))) ||
 				(collectExecutions !== undefined &&
 					typeof collectExecutions !== "boolean") ||
-				(collectExecutions === true && action !== "terminate")
+				(collectExecutions === true && action !== "terminate") ||
+				(req.body?.quotaRecovery !== undefined && !quotaTerminateRequest) ||
+				(quotaTerminateRequest && !quotaRecovery)
 			) {
 				res.status(400).json({
 					success: false,
@@ -783,6 +834,7 @@ export function createRunsRouter(
 					...(closeoutKind ? { closeoutKind } : {}),
 					...(mergeProof ? { mergeProof } : {}),
 					...(forceCollect ? { collectExecutions: true } : {}),
+					...(quotaRecovery ? { quotaRecovery } : {}),
 				};
 				const result =
 					action === "hold"

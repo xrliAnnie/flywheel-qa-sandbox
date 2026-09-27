@@ -2429,22 +2429,32 @@ export class WorkflowEngineDispatcher {
 						);
 						continue;
 					}
-					const recovered = store.rollbackDeadWorkflowNodeExecution({
-						runId: run.run_id,
-						nodeId: workflowNode.id,
-						attempt: node.attempt,
-						deadExecutionId: node.execution_id,
-						newExecutionId: randomUUID(),
-						reason: "terminal_session_and_dead_probe",
-						activityBaseline,
-						alertIdentity: this.resolveRunAlertIdentity(
-							run.project_name,
-							run.issue_id,
-							run.run_id,
-						),
-						livenessEvidence: { liveness: "dead", observedAt },
-						now: observedAt,
-					});
+					let recovered: ReturnType<
+						typeof store.rollbackDeadWorkflowNodeExecution
+					>;
+					try {
+						recovered = store.rollbackDeadWorkflowNodeExecution({
+							runId: run.run_id,
+							nodeId: workflowNode.id,
+							attempt: node.attempt,
+							deadExecutionId: node.execution_id,
+							newExecutionId: randomUUID(),
+							reason: "terminal_session_and_dead_probe",
+							activityBaseline,
+							alertIdentity: this.resolveRunAlertIdentity(
+								run.project_name,
+								run.issue_id,
+								run.run_id,
+							),
+							livenessEvidence: { liveness: "dead", observedAt },
+							now: observedAt,
+						});
+					} catch (error) {
+						this.log(
+							`workflow engine dead-exec recovery held for ${node.execution_id}: ${error instanceof Error ? error.message : String(error)}`,
+						);
+						continue;
+					}
 					if (!recovered.ok) {
 						this.log(
 							`workflow engine dead-exec recovery held for ${node.execution_id}: ${recovered.reason}`,
@@ -3059,7 +3069,7 @@ export class WorkflowEngineDispatcher {
 			return false;
 		const admission = this.options.admissionProbe?.();
 		if (admission && !admission.admit) {
-			throw new Error(`engine_admission_${admission.reason}`);
+			return false;
 		}
 		const admitted = store.admitGeneralizedWorkflowExecution({
 			codexQuotaRootKey: quotaRootKey,

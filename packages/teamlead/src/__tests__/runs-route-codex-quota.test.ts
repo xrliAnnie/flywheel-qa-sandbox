@@ -202,6 +202,7 @@ describe("FLY-2465 Codex quota admission", () => {
 					masterToken: "master-token",
 					scopedToken: "scoped-token",
 					codexQuotaRootKey: () => "test-root",
+					probeRunLiveness: async () => "dead",
 					verifyCodexQuotaRecovery: async () => true,
 				},
 			),
@@ -954,18 +955,50 @@ describe("FLY-2465 Codex quota admission", () => {
 					effect.execution_id === old.execution_id,
 			)!;
 		const permit = store.getCodexQuotaRecoveryPermit(incidentId)!;
-		const result = store.terminateWorkflowRunByOperator({
-			...terminateRequest,
-			quotaRecovery: {
-				target: terminating,
-				nodeId: old.node_id,
-				attempt: sourceDispatch.attempt,
-				launchOrdinal: sourceDispatch.launch_ordinal,
-				permitIncidentId: String(permit.incident_id),
-				installedGeneration: Number(permit.installed_generation),
-			},
+		const quotaRecovery = {
+			target: terminating,
+			nodeId: old.node_id,
+			attempt: sourceDispatch.attempt,
+			launchOrdinal: sourceDispatch.launch_ordinal,
+			permitIncidentId: String(permit.incident_id),
+			installedGeneration: Number(permit.installed_generation),
+		};
+		const terminateThroughRoute = (recovery: typeof quotaRecovery) =>
+			fetch(`${baseUrl}/api/runs/${old.run_id}/terminate`, {
+				method: "POST",
+				headers: {
+					Authorization: "Bearer master-token",
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({
+					reason: terminateRequest.reason,
+					clientRequestId: terminateRequest.clientRequestId,
+					quotaRecovery: recovery,
+				}),
+			});
+		const malformedTerminate = await terminateThroughRoute({
+			...quotaRecovery,
+			launchOrdinal: 0,
 		});
-		expect(result).toMatchObject({ ok: true });
+		expect(malformedTerminate.status).toBe(400);
+		expect(await malformedTerminate.json()).toMatchObject({
+			success: false,
+			code: "INVALID_RUN_MANAGEMENT_REQUEST",
+		});
+		const staleTerminate = await terminateThroughRoute({
+			...quotaRecovery,
+			target: waiting,
+		});
+		expect(staleTerminate.status).toBe(409);
+		expect(await staleTerminate.json()).toMatchObject({
+			success: false,
+			reason: "quota_source_advanced",
+		});
+		const currentTerminate = await terminateThroughRoute(quotaRecovery);
+		expect(currentTerminate.status, await currentTerminate.clone().text()).toBe(
+			200,
+		);
+		expect(await currentTerminate.json()).toMatchObject({ success: true });
 		expect(
 			store.codexQuota.compareAndSwapTarget(terminating, {
 				state: "terminated",
