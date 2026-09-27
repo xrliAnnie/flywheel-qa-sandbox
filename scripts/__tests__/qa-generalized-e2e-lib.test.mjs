@@ -1,10 +1,19 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+
+import * as lib from "../lib/qa-generalized-e2e-lib.mjs";
 
 import {
 	a3QaSessionIsIrreversiblyTerminal,
@@ -15,7 +24,9 @@ import {
 	buildGeneralizedStartRequest,
 	buildSlotCommEnv,
 	buildStubFatalAbortError,
+	classifyDesignCompletion,
 	classifyDurableLaunchDrain,
+	classifyImplementPark,
 	classifyRemotePrObservation,
 	classifyStubFatal,
 	convergeRemotePrAuthority,
@@ -43,6 +54,183 @@ import {
 	validateRoomInfo,
 	waitFor,
 } from "../lib/qa-generalized-e2e-lib.mjs";
+
+test("design completion accepts either enrolled standby or completed default-off lifecycle", () => {
+	const node = { state: "done", execution_id: "design-exec" };
+	const downstreamNodes = [
+		{ node_id: "implement", attempt: 1, execution_id: "implement-exec" },
+		{ node_id: "qa", attempt: 1, execution_id: "qa-exec" },
+	];
+
+	assert.equal(
+		classifyDesignCompletion({
+			standbyResumeEnabled: false,
+			node,
+			session: { status: "completed", terminal_at: "2026-09-26T01:00:00Z" },
+			park: null,
+			processBody: null,
+			liveness: { liveness: "dead" },
+			downstreamNodes,
+		}),
+		"completed_unenrolled",
+	);
+	assert.equal(
+		classifyDesignCompletion({
+			standbyResumeEnabled: true,
+			node,
+			session: { status: "ship_parked", terminal_at: null },
+			park: { event: "park_opened", reason: "process_retirement_pending" },
+			processBody: { state: "standby" },
+			liveness: { liveness: "dead" },
+			downstreamNodes,
+		}),
+		"resumable_standby",
+	);
+});
+
+test("design completion rejects incomplete design and undispatched downstream nodes", () => {
+	const completedSession = {
+		status: "completed",
+		terminal_at: "2026-09-26T01:00:00Z",
+	};
+	const downstreamNodes = [
+		{ node_id: "implement", attempt: 1, execution_id: "implement-exec" },
+		{ node_id: "qa", attempt: 1, execution_id: "qa-exec" },
+	];
+
+	assert.equal(
+		classifyDesignCompletion({
+			standbyResumeEnabled: false,
+			node: { state: "running", execution_id: "design-exec" },
+			session: completedSession,
+			processBody: null,
+			downstreamNodes,
+		}),
+		null,
+	);
+	assert.equal(
+		classifyDesignCompletion({
+			standbyResumeEnabled: false,
+			node: { state: "done", execution_id: "design-exec" },
+			session: completedSession,
+			processBody: null,
+			downstreamNodes: downstreamNodes.slice(0, 1),
+		}),
+		null,
+	);
+	assert.equal(
+		classifyDesignCompletion({
+			standbyResumeEnabled: false,
+			node: { state: "done", execution_id: "design-exec" },
+			session: { status: "running", terminal_at: null },
+			processBody: null,
+			downstreamNodes,
+		}),
+		null,
+	);
+});
+
+test("design completion rejects shapes contrary to the run-start standby flag", () => {
+	const base = {
+		node: { state: "done", execution_id: "design-exec" },
+		downstreamNodes: [
+			{ node_id: "implement", attempt: 1, execution_id: "implement-exec" },
+			{ node_id: "qa", attempt: 1, execution_id: "qa-exec" },
+		],
+	};
+	const completed = {
+		...base,
+		session: { status: "completed", terminal_at: "2026-09-26T01:00:00Z" },
+		processBody: null,
+	};
+	const standby = {
+		...base,
+		session: { status: "ship_parked", terminal_at: null },
+		park: { event: "park_opened", reason: "process_retirement_pending" },
+		processBody: { state: "standby" },
+		liveness: { liveness: "dead" },
+	};
+	assert.equal(
+		classifyDesignCompletion({ ...completed, standbyResumeEnabled: true }),
+		null,
+	);
+	assert.equal(
+		classifyDesignCompletion({ ...standby, standbyResumeEnabled: false }),
+		null,
+	);
+	for (const shape of [completed, standby]) {
+		for (const flag of [undefined, null, "false", 0]) {
+			assert.equal(
+				classifyDesignCompletion({ ...shape, standbyResumeEnabled: flag }),
+				null,
+			);
+		}
+	}
+});
+
+test("implement park matches the lifecycle selected at run start", () => {
+	const node = { state: "done", execution_id: "implement-exec" };
+	const session = { status: "ship_parked", terminal_at: null };
+
+	assert.equal(
+		classifyImplementPark({
+			node,
+			session,
+			park: { event: "park_opened", reason: "rework_reachable_wait" },
+			processBody: null,
+			liveness: { liveness: "alive" },
+			standbyResumeEnabled: false,
+		}),
+		"rework_reachable_wait",
+	);
+	assert.equal(
+		classifyImplementPark({
+			node,
+			session,
+			park: { event: "park_opened", reason: "process_retirement_pending" },
+			processBody: { state: "standby" },
+			liveness: { liveness: "dead" },
+			standbyResumeEnabled: true,
+		}),
+		"resumable_standby",
+	);
+});
+
+test("implement park rejects lifecycle evidence that contradicts the selected flag", () => {
+	const node = { state: "done", execution_id: "implement-exec" };
+	const session = { status: "ship_parked", terminal_at: null };
+	const reworkWait = {
+		node,
+		session,
+		park: { event: "park_opened", reason: "rework_reachable_wait" },
+		processBody: null,
+		liveness: { liveness: "alive" },
+	};
+	const standby = {
+		node,
+		session,
+		park: { event: "park_opened", reason: "process_retirement_pending" },
+		processBody: { state: "standby" },
+		liveness: { liveness: "dead" },
+	};
+
+	assert.equal(
+		classifyImplementPark({ ...reworkWait, standbyResumeEnabled: true }),
+		null,
+	);
+	assert.equal(
+		classifyImplementPark({ ...standby, standbyResumeEnabled: false }),
+		null,
+	);
+	assert.equal(
+		classifyImplementPark({
+			...reworkWait,
+			node: { ...node, state: "running" },
+			standbyResumeEnabled: false,
+		}),
+		null,
+	);
+});
 
 test("identity env projection parsing preserves values and rejects ambiguity", () => {
 	assert.deepEqual(parseIdentityEnvProjection("A=one=two\nEMPTY=\n"), {
@@ -1635,4 +1823,524 @@ test("QA PASS preflight names every missing PR authority link", () => {
 		}),
 		{ ok: true, failures: [] },
 	);
+});
+
+const args = [
+	"complete",
+	"--route",
+	"needs_review",
+	"--pr",
+	"254",
+	"--session-role",
+	"implement",
+	"--summary",
+	"attempt 2",
+];
+const ok = { ok: true, output: "delivered" };
+const deferred = {
+	ok: false,
+	output: `[complete] completion deferred: acknowledge 0 mailbox item(s) and 1 wake(s) (mailbox [] / phase-wake ["wake-1"]), then retry the exact challenge:
+  node "$FLYWHEEL_COMM_CLI" complete --route needs_review --pr 254 --drain-receipt drain:exec:activation:one
+[complete] attempt 1/4 failed: Bridge returned 409: consume_pending_mail`,
+};
+
+function harness(completions, ack = () => {}) {
+	const calls = [];
+	return {
+		calls,
+		runComm(command) {
+			calls.push(command);
+			if (command[0] === "complete") return completions.shift();
+			if (command[0] === "inbox")
+				return {
+					ok: true,
+					output:
+						"Pending question response: run flywheel-comm check question-1.",
+				};
+			if (command[0] === "turn")
+				return { ok: true, output: "yours phase=implement epoch=2" };
+			return ok;
+		},
+		acknowledgeWakes(ids) {
+			calls.push(["ack-wakes", ...ids]);
+			ack(ids);
+		},
+	};
+}
+
+test("stub drains inbox, ACKs exact challenge wakes and retries unchanged completion once", () => {
+	const h = harness([deferred, ok]);
+	assert.deepEqual(lib.completeStubWithDrain(args, h), ok);
+	assert.deepEqual(h.calls, [
+		["inbox"],
+		["check", "question-1"],
+		args,
+		["inbox"],
+		["check", "question-1"],
+		["turn"],
+		["ack-wakes", "wake-1"],
+		[...args, "--drain-receipt", "drain:exec:activation:one"],
+	]);
+});
+test("stub normal completion does not invent a receipt", () => {
+	const h = harness([ok]);
+	assert.deepEqual(lib.completeStubWithDrain(args, h), ok);
+	assert.equal(h.calls.filter((c) => c[0] === "complete").length, 1);
+	assert.equal(
+		h.calls.some((c) => c[0] === "ack-wakes"),
+		false,
+	);
+});
+test("stub preserves non-drain rejection and bounds a rejected retry", () => {
+	for (const result of [
+		{ ok: false, output: "review_required" },
+		{ ok: false, output: "drain_receipt_rejected" },
+	]) {
+		const h = harness([result]);
+		assert.deepEqual(lib.completeStubWithDrain(args, h), result);
+		assert.equal(h.calls.filter((c) => c[0] === "complete").length, 1);
+	}
+	const h = harness([deferred, deferred]);
+	assert.deepEqual(lib.completeStubWithDrain(args, h), deferred);
+	assert.equal(h.calls.filter((c) => c[0] === "complete").length, 2);
+});
+test("stub rejects missing or malformed challenge without retry", () => {
+	for (const output of [
+		"consume_pending_mail",
+		deferred.output.replace("drain:exec:activation:one", "bad;command"),
+	]) {
+		const h = harness([{ ok: false, output }]);
+		assert.throws(() => lib.completeStubWithDrain(args, h), /challenge/);
+		assert.equal(h.calls.filter((c) => c[0] === "complete").length, 1);
+	}
+});
+test("stub must own TURN and successfully consume mail and wakes before retry", () => {
+	const h = harness([deferred, ok], () => {
+		throw new Error("wake missing");
+	});
+	assert.throws(() => lib.completeStubWithDrain(args, h), /wake missing/);
+	assert.equal(h.calls.filter((c) => c[0] === "complete").length, 1);
+	for (const command of ["inbox", "check", "turn"]) {
+		const h = harness([deferred, ok]);
+		const run = h.runComm;
+		h.runComm = (c) =>
+			c[0] === command ? { ok: false, output: "read failed" } : run(c);
+		assert.throws(() => lib.completeStubWithDrain(args, h), /read failed/);
+	}
+	const other = harness([deferred, ok]);
+	const run = other.runComm;
+	other.runComm = (c) =>
+		c[0] === "turn" ? { ok: true, output: "not-yours holder=other" } : run(c);
+	assert.throws(() => lib.completeStubWithDrain(args, other), /TURN/);
+});
+
+test("stub wake receipt consumes only its own exact durable wake and is replay safe", async () => {
+	const { CommDB } = await import("../../packages/flywheel-comm/dist/db.js");
+	const db = new CommDB(":memory:");
+	try {
+		db.registerSession(
+			"worker-a",
+			"window-a",
+			"test-slot-3",
+			"FLY-2906",
+			"lead",
+			"codex",
+			true,
+		);
+		db.registerSession(
+			"worker-b",
+			"window-b",
+			"test-slot-3",
+			"FLY-2906",
+			"lead",
+			"codex",
+			true,
+		);
+		for (const exec of ["worker-a", "worker-b"]) {
+			db.enqueueRunnerPhaseWake(
+				exec,
+				{ id: "wake-1", to: exec, content: `rework for ${exec}` },
+				101,
+				{ admissionState: "deferred_midturn", turnGeneration: 1 },
+			);
+		}
+		const read = [];
+		const h = harness([deferred, ok]);
+		h.acknowledgeWakes = (ids) =>
+			lib.acknowledgeStubPhaseWakes(db, "worker-a", ids, (wake) => {
+				assert.equal(db.listRunnerPhaseWakes("worker-a")[0].state, "pending");
+				read.push(wake.content);
+			});
+		assert.deepEqual(lib.completeStubWithDrain(args, h), ok);
+		assert.deepEqual(read, ["rework for worker-a"]);
+		assert.equal(
+			db.getCompletionDrainVerification("worker-a", [], ["wake-1"]).phaseWakes[
+				"wake-1"
+			],
+			"started",
+		);
+		assert.equal(db.listRunnerPhaseWakes("worker-b")[0].state, "pending");
+		assert.doesNotThrow(() =>
+			lib.acknowledgeStubPhaseWakes(db, "worker-a", ["wake-1"], () => {}),
+		);
+		assert.throws(
+			() => lib.acknowledgeStubPhaseWakes(db, "other", ["wake-1"], () => {}),
+			/wake missing/,
+		);
+		assert.throws(
+			() => lib.acknowledgeStubPhaseWakes(db, "worker-a", ["absent"], () => {}),
+			/wake missing/,
+		);
+	} finally {
+		db.close();
+	}
+});
+
+test("stub does not ACK a wake whose content was not durably consumed", () => {
+	let claimed = false;
+	const db = {
+		listRunnerPhaseWakes: () => [
+			{ execution_id: "worker", message_id: "wake", content: "rework" },
+		],
+		claimRunnerPhaseWakeStart: () => {
+			claimed = true;
+			return "started";
+		},
+	};
+	assert.throws(
+		() =>
+			lib.acknowledgeStubPhaseWakes(db, "worker", ["wake"], () => {
+				throw new Error("disk full");
+			}),
+		/disk full/,
+	);
+	assert.equal(claimed, false);
+	for (const outcome of ["disposed", "missing"]) {
+		db.claimRunnerPhaseWakeStart = () => outcome;
+		assert.throws(
+			() => lib.acknowledgeStubPhaseWakes(db, "worker", ["wake"], () => {}),
+			/not acknowledged/,
+		);
+	}
+});
+
+// Replay the actual step 6 SQL/polling block against SQLite. Rows reconstructed
+// from QA d287's archived report and consumedPhaseWakes (2026-09-26 07:41Z);
+// the original room DB was removed at teardown. This is not live-room evidence.
+const qaFailRunId = "049e0e6c-ff1b-4118-addc-bfdb8a19064f";
+const qaFailExecutionId = "e7ffc66e-8147-4296-bd7f-acb85283b5de";
+const qaFailRequestId =
+	"rework:2df2b0f9d36848cf3f6878120d2a7d495418d424c48c5d1f06042bc66bf663da";
+const qaVerifyRequestId =
+	"rework:c3548b890e24549ea40b537bdb8ac5fca39e3cc72c4ceb0964e70b9cf2a6b777";
+
+async function replayStep6({
+	state = "completed",
+	eventRequestId = qaFailRequestId,
+	eventRunId = qaFailRunId,
+	eventKind = "rework_delivery_wake_delivered",
+	runStatus = "active",
+	dangerous = [],
+	sourceAttempt = 1,
+	sourceExecutionId = qaFailExecutionId,
+	outcome = "qa_fail",
+} = {}) {
+	const require = createRequire(
+		new URL("../../packages/teamlead/package.json", import.meta.url),
+	);
+	const Database = require("better-sqlite3");
+	const db = new Database(":memory:");
+	try {
+		db.exec(`
+			CREATE TABLE workflow_run (run_id TEXT, status TEXT);
+			CREATE TABLE workflow_rework_request (request_id TEXT, run_id TEXT,
+			 authority TEXT, source_node_id TEXT, source_attempt INTEGER,
+			 authority_context_json TEXT, requested_at TEXT);
+			CREATE TABLE workflow_rework_delivery (request_id TEXT, state TEXT);
+			CREATE TABLE workflow_run_event (run_id TEXT, kind TEXT, payload TEXT);
+		`);
+		db.prepare("INSERT INTO workflow_run VALUES (?, ?)").run(
+			qaFailRunId,
+			runStatus,
+		);
+		const insertRequest = db.prepare(
+			"INSERT INTO workflow_rework_request VALUES (?, ?, 'qa', ?, ?, ?, ?)",
+		);
+		insertRequest.run(
+			qaFailRequestId,
+			qaFailRunId,
+			"qa",
+			sourceAttempt,
+			JSON.stringify({ outcome, sourceExecutionId }),
+			"2026-09-26T07:39:00Z",
+		);
+		db.prepare("INSERT INTO workflow_rework_delivery VALUES (?, ?)").run(
+			qaFailRequestId,
+			"turn_granted",
+		);
+		// The poller sees only the committed snapshot, never wake_delivered
+		// between these updates in the completion transaction.
+		db.transaction(() => {
+			db.prepare(
+				"UPDATE workflow_rework_delivery SET state = 'wake_delivered' WHERE request_id = ?",
+			).run(qaFailRequestId);
+			if (eventRequestId)
+				db.prepare("INSERT INTO workflow_run_event VALUES (?, ?, ?)").run(
+					eventRunId,
+					eventKind,
+					JSON.stringify({
+						requestId: eventRequestId,
+						source: "completion_implied",
+					}),
+				);
+			db.prepare(
+				"UPDATE workflow_rework_delivery SET state = ? WHERE request_id = ?",
+			).run(state, qaFailRequestId);
+			insertRequest.run(
+				qaVerifyRequestId,
+				qaFailRunId,
+				"implement",
+				2,
+				JSON.stringify({ outcome: "needs_review" }),
+				"2026-09-26T07:41:20Z",
+			);
+			db.prepare("INSERT INTO workflow_rework_delivery VALUES (?, ?)").run(
+				qaVerifyRequestId,
+				"turn_granted",
+			);
+		})();
+		const driver = readFileSync(
+			new URL("../qa-529-generalized-e2e.mjs", import.meta.url),
+			"utf8",
+		);
+		// Keep the request-id latch and the complete real polling block under test.
+		const start = driver.indexOf("\n\tconst rework = await waitFor(");
+		const latch = driver.lastIndexOf("\n\tlet qaFailRequestId", start);
+		const end = driver.indexOf("\n\tconst implement2 = await waitFor(", start);
+		assert.ok(start >= 0 && end > start);
+		const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+		const replay = new AsyncFunction(
+			"db",
+			"runId",
+			"qa1Ready",
+			"waitFor",
+			"one",
+			"all",
+			"guardStubFatal",
+			"dangerousReworkRows",
+			"syncOwnedExecutions",
+			"owner",
+			"ownerPath",
+			"timeoutMs",
+			"writeStep",
+			`${driver.slice(latch >= 0 ? latch : start, end)}; return rework;`,
+		);
+		return await replay(
+			db,
+			qaFailRunId,
+			{ row: { execution_id: qaFailExecutionId } },
+			waitFor,
+			(db, sql, ...params) => db.prepare(sql).get(...params),
+			(db, sql, ...params) => db.prepare(sql).all(...params),
+			() => {},
+			() => dangerous,
+			() => {},
+			{},
+			"unused",
+			50,
+			() => {},
+		);
+	} finally {
+		db.close();
+	}
+}
+
+test("step 6 settles the completed qa_fail request despite a newer QA verification request", async () => {
+	const result = await replayStep6();
+	assert.equal(result.delivery.request_id, qaFailRequestId);
+	assert.equal(result.delivery.state, "completed");
+	assert.equal(JSON.parse(result.wakeEvent.payload).requestId, qaFailRequestId);
+});
+
+test("step 6 accepts the exact request while wake_delivered remains visible", async () => {
+	assert.equal(
+		(await replayStep6({ state: "wake_delivered" })).delivery.request_id,
+		qaFailRequestId,
+	);
+});
+
+test("step 6 rejects missing or unrelated receipts, wrong source, and unsafe run states", async () => {
+	for (const input of [
+		{ eventRequestId: null },
+		{ eventRequestId: qaVerifyRequestId },
+		{ eventRunId: "another-run" },
+		{ eventKind: "node_completed" },
+		{ state: "turn_granted" },
+		{ state: "returned_to_lead" },
+		{ state: "pending" },
+		{ runStatus: "held" },
+		{ dangerous: [{ state: "returned_to_lead" }] },
+		{ sourceAttempt: 2 },
+		{ sourceExecutionId: "another-qa" },
+		{ outcome: "qa_pass" },
+	]) {
+		await assert.rejects(
+			replayStep6(input),
+			/step 6 QA fail rework wake timed out/,
+		);
+	}
+});
+
+// FLY-2921: the step 6 danger predicate. A rework delivery ends only in
+// wake_delivered/completed or returned_to_lead; a run frozen by an open rework
+// hold is the other danger signal. This runs the real driver function.
+function loadDangerousReworkRows() {
+	const driver = readFileSync(
+		new URL("../qa-529-generalized-e2e.mjs", import.meta.url),
+		"utf8",
+	);
+	const start = driver.indexOf("\nconst REWORK_HOLD_EVENT_KINDS = [");
+	const end = driver.indexOf("\nfunction latestStub(", start);
+	assert.ok(start >= 0 && end > start);
+	return new Function(
+		"tableExists",
+		"all",
+		"one",
+		`${driver.slice(start, end)}; return dangerousReworkRows;`,
+	)(
+		(db, table) =>
+			Boolean(
+				db
+					.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?")
+					.get(table),
+			),
+		(db, sql, ...params) => db.prepare(sql).all(...params),
+		(db, sql, ...params) => db.prepare(sql).get(...params),
+	);
+}
+
+function reworkDangerFixture({
+	runStatus = "active",
+	deliveryState = "wake_delivered",
+	lastError = null,
+	events = [],
+} = {}) {
+	const require = createRequire(
+		new URL("../../packages/teamlead/package.json", import.meta.url),
+	);
+	const Database = require("better-sqlite3");
+	const db = new Database(":memory:");
+	db.exec(`
+		CREATE TABLE workflow_run (run_id TEXT, status TEXT);
+		CREATE TABLE workflow_rework_request (request_id TEXT, run_id TEXT);
+		CREATE TABLE workflow_rework_delivery (request_id TEXT, state TEXT, last_error TEXT);
+		CREATE TABLE workflow_run_event (run_id TEXT, event_uid TEXT, kind TEXT, payload TEXT);
+	`);
+	db.prepare("INSERT INTO workflow_run VALUES (?, ?)").run("run", runStatus);
+	db.prepare("INSERT INTO workflow_rework_request VALUES (?, ?)").run(
+		"req",
+		"run",
+	);
+	db.prepare("INSERT INTO workflow_rework_delivery VALUES (?, ?, ?)").run(
+		"req",
+		deliveryState,
+		lastError,
+	);
+	for (const [uid, kind, payload] of events)
+		db.prepare("INSERT INTO workflow_run_event VALUES (?, ?, ?, ?)").run(
+			"run",
+			uid,
+			kind,
+			payload,
+		);
+	return db;
+}
+
+const reworkHoldUid = "rework_returned_to_lead:req:3";
+const reworkHoldEvent = [
+	reworkHoldUid,
+	"rework_returned_to_lead",
+	JSON.stringify({ requestId: "req", routeRevision: 3 }),
+];
+const reworkHoldResumedEvent = [
+	`hold_resumed:rework_returned_to_lead:${reworkHoldUid}`,
+	"hold_resumed",
+	JSON.stringify({
+		shape: "rework_returned_to_lead",
+		holdEventUid: reworkHoldUid,
+	}),
+];
+
+test("dangerousReworkRows flags returned_to_lead and poisoned errors, never the live states", () => {
+	const dangerousReworkRows = loadDangerousReworkRows();
+	for (const deliveryState of [
+		"pending",
+		"turn_granted",
+		"wake_delivered",
+		"completed",
+	]) {
+		const db = reworkDangerFixture({ deliveryState });
+		try {
+			assert.deepEqual(dangerousReworkRows(db, "run"), []);
+		} finally {
+			db.close();
+		}
+	}
+	const returned = reworkDangerFixture({
+		deliveryState: "returned_to_lead",
+		lastError: "replacement_budget_exhausted",
+	});
+	try {
+		assert.deepEqual(dangerousReworkRows(returned, "run"), [
+			{
+				request_id: "req",
+				state: "returned_to_lead",
+				last_error: "replacement_budget_exhausted",
+			},
+		]);
+	} finally {
+		returned.close();
+	}
+	const poisoned = reworkDangerFixture({
+		lastError: "holder_activation_failed:stale",
+	});
+	try {
+		assert.equal(dangerousReworkRows(poisoned, "run").length, 1);
+	} finally {
+		poisoned.close();
+	}
+});
+
+test("dangerousReworkRows flags a run frozen by an open rework hold and clears it once resumed", () => {
+	const dangerousReworkRows = loadDangerousReworkRows();
+	const frozen = reworkDangerFixture({
+		runStatus: "held",
+		events: [reworkHoldEvent],
+	});
+	try {
+		assert.deepEqual(dangerousReworkRows(frozen, "run"), [
+			{
+				request_id: "req",
+				state: "run_held_by_rework_hold",
+				last_error: `rework_returned_to_lead:${reworkHoldUid}`,
+			},
+		]);
+	} finally {
+		frozen.close();
+	}
+	for (const input of [
+		// Resumed: the run may still be settling, but rework froze nothing.
+		{ runStatus: "held", events: [reworkHoldEvent, reworkHoldResumedEvent] },
+		// A delivery-scoped hold on an active run is returned_to_lead's business.
+		{ runStatus: "active", events: [reworkHoldEvent] },
+		// A run held for a non-rework reason is outside this predicate.
+		{ runStatus: "held", events: [["land_held:run", "land_held", "{}"]] },
+	]) {
+		const db = reworkDangerFixture(input);
+		try {
+			assert.deepEqual(dangerousReworkRows(db, "run"), []);
+		} finally {
+			db.close();
+		}
+	}
 });

@@ -254,6 +254,9 @@ function prepareCompiledReworkReplacement(store: StateStore) {
 	if (!failed.ok || !failed.reworkRequestId) {
 		throw new Error("QA fail did not create rework");
 	}
+	// FLY-2921 C2: the replacement is minted in place, inside the coordinator's
+	// own claim, and only against a verifiable death proof (here: the exact
+	// unlaunched-rollback fact for the dead actor). No `replacement_pending`.
 	const claim = store.claimWorkflowReworkDelivery({
 		requestId: failed.reworkRequestId,
 		ownerId: "coordinator",
@@ -261,24 +264,23 @@ function prepareCompiledReworkReplacement(store: StateStore) {
 		leaseExpiresAt: "2026-08-14T01:33:00.000Z",
 	});
 	if (!claim.ok) throw new Error(claim.reason);
-	expect(
-		store.advanceWorkflowReworkDelivery({
-			requestId: failed.reworkRequestId,
-			ownerId: "coordinator",
-			generation: claim.generation,
-			from: "pending",
-			to: "replacement_pending",
-			now: "2026-08-14T01:32:10.000Z",
-			error: "persisted_target_dead",
-			releaseOwner: true,
-		}),
-	).toEqual({ ok: true });
+	store.appendWorkflowRunEvent({
+		runId: "run-1",
+		eventUid: "fixture_unlaunched_rollback:implement-1",
+		kind: "unlaunched_admission_rolled_back",
+		nodeId: "implement",
+		executionId: "implement-1",
+		payload: { attempt: 2, reason: "persisted_target_dead" },
+	});
 	return {
 		open,
 		replacement: {
 			requestId: failed.reworkRequestId,
+			ownerId: "coordinator",
+			generation: claim.generation,
 			deadExecutionId: "implement-1",
 			newExecutionId: "implement-2",
+			proof: { kind: "unlaunched_rollback" as const },
 			reason: "persisted_target_dead",
 			observedAt: "2026-08-14T01:33:00.000Z",
 		},
@@ -289,7 +291,7 @@ function prepareCompiledReworkReplacement(store: StateStore) {
 function settleOpenReworkFixture(store: StateStore) {
 	const db = (store as unknown as { db: { run(sql: string): void } }).db;
 	db.run(
-		"UPDATE workflow_rework_delivery SET state = 'completed' WHERE state IN ('pending','turn_granted','wake_delivered','replacement_pending')",
+		"UPDATE workflow_rework_delivery SET state = 'completed' WHERE state IN ('pending','turn_granted','wake_delivered')",
 	);
 	db.run(
 		"UPDATE workflow_rework_verification_path SET state = 'completed' WHERE state IN ('pending','active')",
@@ -1691,9 +1693,7 @@ describe("engine-owned snapshot transition transaction", () => {
 		const store = await compiledCodeEngineRun();
 		completeCompiledCodeImplement(store);
 		const { open, replacement } = prepareCompiledReworkReplacement(store);
-		expect(
-			store.materializeWorkflowReworkReplacement(replacement),
-		).toMatchObject({
+		expect(store.replaceWorkflowReworkActor(replacement)).toMatchObject({
 			ok: true,
 			idempotentReplay: false,
 		});
@@ -1727,9 +1727,7 @@ describe("engine-owned snapshot transition transaction", () => {
 						`engine-park-settle:implement-1:${open.generation}`,
 				),
 		).toMatchObject({ event: "park_cleared" });
-		expect(
-			store.materializeWorkflowReworkReplacement(replacement),
-		).toMatchObject({
+		expect(store.replaceWorkflowReworkActor(replacement)).toMatchObject({
 			ok: true,
 			idempotentReplay: true,
 		});
@@ -1749,9 +1747,10 @@ describe("engine-owned snapshot transition transaction", () => {
 		});
 		const beforeRevision = store.getLifecycleRevision("implement-1");
 
-		expect(
-			store.materializeWorkflowReworkReplacement(replacement),
-		).toMatchObject({ ok: true, idempotentReplay: false });
+		expect(store.replaceWorkflowReworkActor(replacement)).toMatchObject({
+			ok: true,
+			idempotentReplay: false,
+		});
 
 		expect(store.getSession("implement-1")).toMatchObject({
 			status: "failed",
@@ -1778,9 +1777,10 @@ describe("engine-owned snapshot transition transaction", () => {
 			createdAt: "2026-08-14T01:32:30.000Z",
 		});
 
-		expect(
-			store.materializeWorkflowReworkReplacement(replacement),
-		).toMatchObject({ ok: true, idempotentReplay: false });
+		expect(store.replaceWorkflowReworkActor(replacement)).toMatchObject({
+			ok: true,
+			idempotentReplay: false,
+		});
 		expect(store.getSession("implement-1")?.status).toBe("failed");
 		expect(
 			store.getCurrentWorkflowEngineParkEvidence("implement-1"),
@@ -3551,142 +3551,6 @@ describe("engine-owned snapshot transition transaction", () => {
 		store.close();
 	});
 
-	it("revives held carriers atomically with pane-loss run recovery", async () => {
-		const { store, holder } = await approvedCarrierRun();
-		const opened = store.openOperatorRework({
-			runId: "run-1",
-			targetNodeId: "implement",
-			actor: "flywheel-eng-lead",
-			founderQuote: null,
-			leadFeedback: "replace the missing carrier actor",
-			clientRequestId: "operator-rework-for-pane-loss",
-			principal: "master",
-			founderAuthorEvidence: { kind: "operator", principal: "master" },
-			evidence: [],
-			now: "2026-07-16T01:18:00.000Z",
-		});
-		if (!opened.ok) throw new Error(opened.reason);
-		const raw = (
-			store as unknown as {
-				db: { run(sql: string, params?: unknown[]): void };
-			}
-		).db;
-		raw.run(
-			`UPDATE workflow_carrier_delivery
-			    SET state = 'held', hold_count = 2, generation = 3,
-			        owner_id = NULL, lease_expires_at = NULL, next_retry_at = NULL,
-			        last_error = 'run_inactive:held'
-			  WHERE question_id = ?`,
-			[holder.question_id],
-		);
-		raw.run("UPDATE workflow_run SET status = 'held' WHERE run_id = 'run-1'");
-		raw.run(
-			`UPDATE workflow_rework_delivery
-			    SET state = 'held', last_error = 'persisted_target_missing'
-			  WHERE request_id = ?`,
-			[opened.requestId],
-		);
-		raw.run(
-			"UPDATE sessions SET status = 'failed' WHERE execution_id = 'implement-1'",
-		);
-		for (const [questionId, generation, lastError] of [
-			["carrier-second-episode", 7, "run_inactive:held"],
-			["carrier-manual-hold", 11, "operator_pause"],
-		] as const) {
-			raw.run(
-				`INSERT INTO workflow_gate_holder
-				   (run_id, gate_node_id, attempt, head_sha, source_execution_id,
-				    question_id, authority_mode, subject_kind, carrier_binding_state,
-				    state, materialization_stage, superseded_reason, created_at, updated_at)
-				 VALUES ('run-1', ?, 1, ?, ?, ?, 'runner_ship', 'git_head', 'bound',
-				         'superseded', 'completed', 'test_fixture', ?, ?)`,
-				[
-					`gate-${questionId}`,
-					"b".repeat(40),
-					`exec-${questionId}`,
-					questionId,
-					"2026-07-16T01:18:30.000Z",
-					"2026-07-16T01:18:30.000Z",
-				],
-			);
-			raw.run(
-				`INSERT INTO workflow_carrier_delivery
-				   (question_id, run_id, gate_node_id, gate_attempt, approved_head,
-				    source_execution_id, carrier_activation_id, generation, state,
-				    hold_count, last_error, created_at, updated_at)
-				 VALUES (?, 'run-1', ?, 1, ?, ?, ?, ?, 'held', 3, ?, ?, ?)`,
-				[
-					questionId,
-					`gate-${questionId}`,
-					"b".repeat(40),
-					`exec-${questionId}`,
-					`activation-${questionId}`,
-					generation,
-					lastError,
-					"2026-07-16T01:18:30.000Z",
-					"2026-07-16T01:18:30.000Z",
-				],
-			);
-		}
-
-		expect(
-			store.materializeWorkflowReworkReplacement({
-				requestId: opened.requestId,
-				deadExecutionId: "implement-1",
-				newExecutionId: "implement-replacement",
-				reason: "persisted target disappeared",
-				observedAt: "2026-07-16T01:19:00.000Z",
-				recoverHeldPaneLoss: true,
-			}),
-		).toMatchObject({ ok: true, idempotentReplay: false });
-		expect(store.getWorkflowRun("run-1")?.status).toBe("active");
-		expect(store.getWorkflowCarrierDelivery(holder.question_id)).toMatchObject({
-			state: "pending",
-			hold_count: 2,
-			owner_id: null,
-			lease_expires_at: null,
-			next_retry_at: null,
-			last_error: "pane_loss_recovery:persisted target disappeared",
-		});
-		expect(
-			store
-				.listWorkflowRunEvents("run-1")
-				.filter((event) => event.kind === "carrier_delivery_revived"),
-		).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({
-					event_uid: `carrier_delivery_revived:${holder.question_id}:3`,
-				}),
-				expect.objectContaining({
-					event_uid: "carrier_delivery_revived:carrier-second-episode:7",
-				}),
-			]),
-		);
-		expect(
-			store.getWorkflowCarrierDelivery("carrier-second-episode"),
-		).toMatchObject({
-			state: "pending",
-			hold_count: 3,
-			last_error: "pane_loss_recovery:persisted target disappeared",
-		});
-		expect(
-			store.getWorkflowCarrierDelivery("carrier-manual-hold"),
-		).toMatchObject({
-			state: "held",
-			hold_count: 3,
-			last_error: "operator_pause",
-		});
-		expect(
-			store.claimWorkflowCarrierDelivery({
-				questionId: holder.question_id,
-				ownerId: "revived-carrier-owner",
-				now: "2026-07-16T01:19:00.000Z",
-				leaseExpiresAt: "2026-07-16T01:20:00.000Z",
-			}),
-		).toMatchObject({ ok: true, generation: 4 });
-		store.close();
-	});
-
 	it.each([
 		["pending", true],
 		["grant_started", true],
@@ -5022,7 +4886,7 @@ describe("engine-owned snapshot transition transaction", () => {
 				}
 			).db;
 			db.run(
-				"UPDATE workflow_rework_delivery SET state = 'completed' WHERE state IN ('pending','turn_granted','wake_delivered','replacement_pending')",
+				"UPDATE workflow_rework_delivery SET state = 'completed' WHERE state IN ('pending','turn_granted','wake_delivered')",
 			);
 			db.run(
 				"UPDATE workflow_rework_verification_path SET state = 'completed' WHERE state IN ('pending','active')",

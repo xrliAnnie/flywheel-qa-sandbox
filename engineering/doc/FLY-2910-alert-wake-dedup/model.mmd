@@ -1,0 +1,25 @@
+erDiagram
+  MAILBOX_ROW ||--|| ALERT_WAKE_LETTER : "入队时记下它属于哪一代工单"
+  MAILBOX_ROW ||--o| ALERT_WAKE_DEDUP_STATE : "送达后按 (Lead, 等价指纹) 记录"
+  MAILBOX_ROW {
+    text delivery_id "每封信的身份"
+    text disposition "model=叫醒 / audit_only=只记账"
+    text notification_reason "为什么没叫醒"
+    text state "合并的信直接结算为 ACKED"
+  }
+  ALERT_WAKE_LETTER {
+    text delivery_id "哪封信"
+    text canonical_event_id "所属工单这一代的唯一身份"
+    text evidence_recorded_at "已记为送达（每封只记一次）"
+  }
+  ALERT_WAKE_DEDUP_STATE {
+    text lead_id "收件 Lead"
+    text fingerprint "等价指纹：类别+原标题+对象与要求"
+    text category_key "类别：只用于计数和摘要"
+    text window_started_at "首次送达时间 固定窗口起点"
+    text delivered_delivery_id "送达证据：哪封信送到了"
+    int max_severity "已送达的最高级别"
+    text ticket_generation "已送达时的工单代次"
+    int suppressed "合并了几次"
+    int digest_pending "待写进摘要的次数"
+  }

@@ -1,0 +1,17 @@
+stateDiagram-v2
+  direction TB
+  [*] --> 探测: 每 5 分钟一轮
+  探测 --> pending_confirm: 已关
+  pending_confirm --> closed: 再测仍已关 + token 未涨
+  pending_confirm --> probe_unknown: token 又涨 · 告警
+  探测 --> owned_seen: 仍在进程内跑
+  owned_seen --> stop_requested: 连续两轮 · 请停 + 告警
+  探测 --> alive_reaped_pending: 活 daemon 身份已证实 · reap
+  探测 --> alive_unverifiable: 身份证不出 · 只告警
+  探测 --> alive_residual: 杀不掉 · 告警
+  closed --> [*]
+  note right of 探测
+    候选 = 近 48h 终态 Codex 体
+    ∪ 仍有活进程的终态体（不限时间）
+    非 closed 的状态下一轮都回到「探测」
+  end note

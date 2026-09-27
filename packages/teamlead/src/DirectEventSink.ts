@@ -5,6 +5,7 @@ import { PRE_ADAPTER_FAILURE_KINDS } from "flywheel-core";
  */
 
 import { randomUUID } from "node:crypto";
+import { isAbsolute } from "node:path";
 import {
 	adapterTypeToFamily,
 	DEFAULT_PROOFSHOT_CONFIG,
@@ -17,10 +18,21 @@ import {
 	isNoOutEdgeTerminalStatus,
 	type TerminalFailureInfo,
 } from "flywheel-core";
-import type {
-	EventEnvelope,
-	ExecutionEventEmitter,
-	RunnerMemorySelectionRecord,
+import {
+	type EventEnvelope,
+	type ExecutionEventEmitter,
+	type PendingTakeoverRescue,
+	type RunnerMemorySelectionRecord,
+	TAKEOVER_CLEANED_EVENT_KIND,
+	TAKEOVER_RESCUE_SCHEMA,
+	TAKEOVER_RESCUED_EVENT_KIND,
+	type TakeoverCleanedEventPayload,
+	type TakeoverNestedMove,
+	type TakeoverRescueClass,
+	type TakeoverRescueEventPayload,
+	type TakeoverRescueKind,
+	type TakeoverRescueRef,
+	takeoverCleanedEventUid,
 } from "flywheel-edge-worker";
 import type { BlueprintResult } from "flywheel-edge-worker/dist/Blueprint.js";
 import type { ChatThreadCreator } from "./bridge/ChatThreadCreator.js";
@@ -74,11 +86,312 @@ import {
 } from "./bridge/workflow-replacement-lead-event.js";
 import type { WorktreeCleanupFn } from "./bridge/worktree-cleanup.js";
 import { type ProjectEntry, resolveLeadForIssue } from "./ProjectConfig.js";
-import type { StateStore } from "./StateStore.js";
+import type { Session, StateStore } from "./StateStore.js";
 import { normalizeTerminalFailureInfo } from "./terminal-failure-info.js";
 
 function sqliteDatetime(): string {
 	return new Date().toISOString().replace("T", " ").replace("Z", "");
+}
+
+/** FLY-2901 §4.8 item 4: input for the Lead INFO alert fired after cleanup. */
+export interface TakeoverRescuedAlertInput {
+	session: Session;
+	rescueEventUid: string;
+	rescue: TakeoverRescueEventPayload;
+}
+export type TakeoverRescuedAlertHook = (
+	input: TakeoverRescuedAlertInput,
+) => Promise<void>;
+
+/**
+ * FLY-2901: strict shape checks for the two takeover-rescue event payloads.
+ * The sink is the only writer of these events and the re-entry path trusts
+ * what it reads back, so a malformed payload (in or out) is a hard error —
+ * never skipped, never coerced.
+ */
+class TakeoverRescuePayloadError extends Error {
+	override name = "TakeoverRescuePayloadError";
+}
+
+function invalidTakeoverPayload(where: string, detail: string): never {
+	throw new TakeoverRescuePayloadError(
+		`takeover_rescue_payload_invalid:${where}:${detail}`,
+	);
+}
+
+const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
+const GIT_OID_RE = /^[0-9a-f]{40}$/;
+const TAKEOVER_RESCUED_EVENT_UID_RE = new RegExp(
+	`^${TAKEOVER_RESCUED_EVENT_KIND}:[0-9a-f]{64}$`,
+);
+/** Only these classes page the Lead after a successful cleanup (plan §4.8 item 4). */
+const TAKEOVER_ALERTED_CLASSES: ReadonlySet<TakeoverRescueClass> =
+	new Set<TakeoverRescueClass>(["head_diverged", "nested_repo"]);
+
+// Exhaustive lookup tables: a change to the shared contract's unions or payload
+// fields fails typecheck here instead of silently widening what we accept.
+const TAKEOVER_RESCUE_CLASSES: Record<TakeoverRescueClass, true> = {
+	dirty: true,
+	nested_repo: true,
+	head_behind: true,
+	head_published_diverged: true,
+	head_diverged: true,
+	worktree_missing: true,
+	unregistered_branch: true,
+};
+const TAKEOVER_RESCUE_KINDS: Record<TakeoverRescueKind, true> = {
+	dirty: true,
+	head: true,
+	base: true,
+};
+const TAKEOVER_NESTED_MOVE_MODES: Record<TakeoverNestedMove["mode"], true> = {
+	worktree_move: true,
+	rename: true,
+};
+const TAKEOVER_RESCUE_PAYLOAD_KEYS: Record<
+	keyof TakeoverRescueEventPayload,
+	true
+> = {
+	schema: true,
+	runId: true,
+	successorExec: true,
+	manifestPath: true,
+	manifestSha256: true,
+	canonicalPath: true,
+	branch: true,
+	generationBefore: true,
+	class: true,
+	target: true,
+	fingerprint3: true,
+	rescues: true,
+	nestedMoves: true,
+};
+const TAKEOVER_RESCUE_REF_KEYS: Record<keyof TakeoverRescueRef, true> = {
+	kind: true,
+	localRef: true,
+	remoteBranch: true,
+	tip: true,
+};
+const TAKEOVER_NESTED_MOVE_KEYS: Record<keyof TakeoverNestedMove, true> = {
+	relPath: true,
+	source: true,
+	destination: true,
+	mode: true,
+	head: true,
+	statusDigest: true,
+};
+const TAKEOVER_CLEANED_PAYLOAD_KEYS: Record<
+	keyof TakeoverCleanedEventPayload,
+	true
+> = {
+	schema: true,
+	rescueEventUid: true,
+	manifestSha256: true,
+	canonicalPath: true,
+	target: true,
+	generationAfter: true,
+	completedBy: true,
+};
+
+function takeoverRecord(
+	value: unknown,
+	where: string,
+): Record<string, unknown> {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		invalidTakeoverPayload(where, "not_an_object");
+	}
+	return value as Record<string, unknown>;
+}
+
+function assertTakeoverKeys(
+	record: Record<string, unknown>,
+	expected: Record<string, true>,
+	where: string,
+): void {
+	for (const key of Object.keys(record)) {
+		if (!Object.hasOwn(expected, key)) {
+			invalidTakeoverPayload(where, `unknown_key:${key}`);
+		}
+	}
+	for (const key of Object.keys(expected)) {
+		if (!Object.hasOwn(record, key)) {
+			invalidTakeoverPayload(where, `missing_key:${key}`);
+		}
+	}
+}
+
+function takeoverText(
+	record: Record<string, unknown>,
+	key: string,
+	where: string,
+): string {
+	const value = record[key];
+	if (typeof value !== "string" || value.length === 0) {
+		invalidTakeoverPayload(where, key);
+	}
+	return value;
+}
+
+function takeoverNullableText(
+	record: Record<string, unknown>,
+	key: string,
+	where: string,
+): string | null {
+	const value = record[key];
+	if (value === null) return null;
+	if (typeof value !== "string" || value.length === 0) {
+		invalidTakeoverPayload(where, key);
+	}
+	return value;
+}
+
+function takeoverMatch(
+	record: Record<string, unknown>,
+	key: string,
+	pattern: RegExp,
+	where: string,
+): string {
+	const value = takeoverText(record, key, where);
+	if (!pattern.test(value)) invalidTakeoverPayload(where, key);
+	return value;
+}
+
+function takeoverAbsolutePath(
+	record: Record<string, unknown>,
+	key: string,
+	where: string,
+): string {
+	const value = takeoverText(record, key, where);
+	if (!isAbsolute(value)) invalidTakeoverPayload(where, key);
+	return value;
+}
+
+function takeoverArray(
+	record: Record<string, unknown>,
+	key: string,
+	where: string,
+): unknown[] {
+	const value = record[key];
+	if (!Array.isArray(value)) invalidTakeoverPayload(where, key);
+	return value;
+}
+
+function parseTakeoverRescueRef(
+	value: unknown,
+	where: string,
+): TakeoverRescueRef {
+	const record = takeoverRecord(value, where);
+	assertTakeoverKeys(record, TAKEOVER_RESCUE_REF_KEYS, where);
+	const kind = record.kind;
+	if (typeof kind !== "string" || !Object.hasOwn(TAKEOVER_RESCUE_KINDS, kind)) {
+		invalidTakeoverPayload(where, "kind");
+	}
+	return {
+		kind: kind as TakeoverRescueKind,
+		localRef: takeoverText(record, "localRef", where),
+		remoteBranch: takeoverText(record, "remoteBranch", where),
+		tip: takeoverMatch(record, "tip", GIT_OID_RE, where),
+	};
+}
+
+function parseTakeoverNestedMove(
+	value: unknown,
+	where: string,
+): TakeoverNestedMove {
+	const record = takeoverRecord(value, where);
+	assertTakeoverKeys(record, TAKEOVER_NESTED_MOVE_KEYS, where);
+	const mode = record.mode;
+	if (
+		typeof mode !== "string" ||
+		!Object.hasOwn(TAKEOVER_NESTED_MOVE_MODES, mode)
+	) {
+		invalidTakeoverPayload(where, "mode");
+	}
+	const statusDigest = record.statusDigest;
+	if (typeof statusDigest !== "string") {
+		invalidTakeoverPayload(where, "statusDigest");
+	}
+	return {
+		relPath: takeoverText(record, "relPath", where),
+		source: takeoverAbsolutePath(record, "source", where),
+		destination: takeoverAbsolutePath(record, "destination", where),
+		mode: mode as TakeoverNestedMove["mode"],
+		head: takeoverNullableText(record, "head", where),
+		statusDigest,
+	};
+}
+
+function parseTakeoverRescueEventPayload(
+	value: unknown,
+	where: string,
+): TakeoverRescueEventPayload {
+	const record = takeoverRecord(value, where);
+	assertTakeoverKeys(record, TAKEOVER_RESCUE_PAYLOAD_KEYS, where);
+	if (record.schema !== TAKEOVER_RESCUE_SCHEMA) {
+		invalidTakeoverPayload(where, "schema");
+	}
+	const rescueClass = record.class;
+	if (
+		typeof rescueClass !== "string" ||
+		!Object.hasOwn(TAKEOVER_RESCUE_CLASSES, rescueClass)
+	) {
+		invalidTakeoverPayload(where, "class");
+	}
+	return {
+		schema: TAKEOVER_RESCUE_SCHEMA,
+		runId: takeoverText(record, "runId", where),
+		successorExec: takeoverText(record, "successorExec", where),
+		manifestPath: takeoverAbsolutePath(record, "manifestPath", where),
+		manifestSha256: takeoverMatch(
+			record,
+			"manifestSha256",
+			SHA256_HEX_RE,
+			where,
+		),
+		canonicalPath: takeoverAbsolutePath(record, "canonicalPath", where),
+		branch: takeoverText(record, "branch", where),
+		generationBefore: takeoverNullableText(record, "generationBefore", where),
+		class: rescueClass as TakeoverRescueClass,
+		target: takeoverMatch(record, "target", GIT_OID_RE, where),
+		fingerprint3: takeoverText(record, "fingerprint3", where),
+		rescues: takeoverArray(record, "rescues", where).map((entry, index) =>
+			parseTakeoverRescueRef(entry, `${where}.rescues[${index}]`),
+		),
+		nestedMoves: takeoverArray(record, "nestedMoves", where).map(
+			(entry, index) =>
+				parseTakeoverNestedMove(entry, `${where}.nestedMoves[${index}]`),
+		),
+	};
+}
+
+function parseTakeoverCleanedEventPayload(
+	value: unknown,
+	where: string,
+): TakeoverCleanedEventPayload {
+	const record = takeoverRecord(value, where);
+	assertTakeoverKeys(record, TAKEOVER_CLEANED_PAYLOAD_KEYS, where);
+	if (record.schema !== TAKEOVER_RESCUE_SCHEMA) {
+		invalidTakeoverPayload(where, "schema");
+	}
+	return {
+		schema: TAKEOVER_RESCUE_SCHEMA,
+		rescueEventUid: takeoverMatch(
+			record,
+			"rescueEventUid",
+			TAKEOVER_RESCUED_EVENT_UID_RE,
+			where,
+		),
+		manifestSha256: takeoverMatch(
+			record,
+			"manifestSha256",
+			SHA256_HEX_RE,
+			where,
+		),
+		canonicalPath: takeoverAbsolutePath(record, "canonicalPath", where),
+		target: takeoverMatch(record, "target", GIT_OID_RE, where),
+		generationAfter: takeoverNullableText(record, "generationAfter", where),
+		completedBy: takeoverText(record, "completedBy", where),
+	};
 }
 
 export class DirectEventSink implements ExecutionEventEmitter {
@@ -110,8 +423,17 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	public reviewAuthorizationAlerts?: {
 		current: ReviewAuthorizationAlerts | undefined;
 	};
-	/** Late-bound TURN recovery shared by generalized workflow actors. */
-	public turnBeltReconciler?: { current: TurnBeltReconciler | undefined };
+	/**
+	 * Late-bound TURN recovery shared by generalized workflow actors. FLY-2901
+	 * also hangs the takeover-rescued INFO alert hook on this holder: the sink
+	 * is constructed inside run-infra, and this holder is the reference the
+	 * Bridge composition root already shares with it (plugin.ts wires it next
+	 * to the sibling `alertWorktreeTakeoverFailure`).
+	 */
+	public turnBeltReconciler?: {
+		current: TurnBeltReconciler | undefined;
+		alertWorktreeTakeoverRescued?: TakeoverRescuedAlertHook;
+	};
 
 	/**
 	 * FLY-1282 Part C: targeted terminal-archive enqueue (pre-binding buffer →
@@ -1585,6 +1907,175 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			session,
 			failure.failureReason,
 		);
+	}
+
+	/**
+	 * FLY-2901 §4.0: every takeover-rescue method first binds the caller's
+	 * runId to the workflow run this execution belongs to. A foreign or absent
+	 * run is a bug or a forgery — never "some other run" — so it throws, and
+	 * the awaiting WorktreeManager transaction stops before anything destructive.
+	 */
+	private bindTakeoverRescueRun(env: EventEnvelope, runId: string): void {
+		const bound = this.store.getWorkflowRunIdForExecution(env.executionId);
+		if (!bound) {
+			throw new Error(`takeover_rescue_run_unbound:${env.executionId}`);
+		}
+		if (bound !== runId) {
+			throw new Error(
+				`takeover_rescue_run_mismatch:${env.executionId}:${runId}!=${bound}`,
+			);
+		}
+	}
+
+	/**
+	 * FLY-2901 §4.0: rescued-but-not-cleaned events for this run on exactly
+	 * this canonical path, oldest first. Every stored rescued-kind payload is
+	 * re-validated before filtering — a malformed row throws rather than
+	 * disappearing from the re-entry view.
+	 */
+	async loadPendingTakeoverRescue(
+		env: EventEnvelope,
+		input: { runId: string; canonicalPath: string },
+	): Promise<PendingTakeoverRescue[]> {
+		this.bindTakeoverRescueRun(env, input.runId);
+		const events = this.store.listWorkflowRunEvents(input.runId);
+		const uids = new Set(events.map((event) => event.event_uid));
+		const pending: PendingTakeoverRescue[] = [];
+		for (const event of events) {
+			if (event.kind !== TAKEOVER_RESCUED_EVENT_KIND) continue;
+			const payload = parseTakeoverRescueEventPayload(
+				event.payload,
+				`event:${event.event_uid}`,
+			);
+			if (payload.canonicalPath !== input.canonicalPath) continue;
+			if (uids.has(takeoverCleanedEventUid(event.event_uid))) continue;
+			pending.push({ eventUid: event.event_uid, seq: event.seq, payload });
+		}
+		return pending;
+	}
+
+	/**
+	 * FLY-2901 §4.5: append the checked `worktree_takeover_rescued` event. The
+	 * UID is produced by the caller over ALL preserved tips (not only rescue
+	 * refs), so it is validated by shape, not recomputed. Identical replays are
+	 * idempotent; a different payload under the same UID throws from the store.
+	 */
+	async recordTakeoverRescue(
+		env: EventEnvelope,
+		input: {
+			runId: string;
+			eventUid: string;
+			payload: TakeoverRescueEventPayload;
+		},
+	): Promise<void> {
+		this.bindTakeoverRescueRun(env, input.runId);
+		if (!TAKEOVER_RESCUED_EVENT_UID_RE.test(input.eventUid)) {
+			throw new Error(`takeover_rescue_event_uid_invalid:${input.eventUid}`);
+		}
+		const where = "recordTakeoverRescue";
+		const payload = parseTakeoverRescueEventPayload(input.payload, where);
+		if (payload.runId !== input.runId) {
+			invalidTakeoverPayload(where, `runId:${payload.runId}!=${input.runId}`);
+		}
+		if (payload.successorExec !== env.executionId) {
+			invalidTakeoverPayload(
+				where,
+				`successorExec:${payload.successorExec}!=${env.executionId}`,
+			);
+		}
+		this.store.appendWorkflowRunEventChecked({
+			runId: input.runId,
+			eventUid: input.eventUid,
+			kind: TAKEOVER_RESCUED_EVENT_KIND,
+			nodeId: this.store.resolveWorkflowNodeIdForExecution(env.executionId),
+			executionId: env.executionId,
+			payload,
+		});
+	}
+
+	/**
+	 * FLY-2901 §4.5: append the checked `worktree_takeover_cleaned` receipt for
+	 * an existing rescue in this run, cross-checked field by field against the
+	 * recorded rescue. A fresh (non-deduped) append for a `head_diverged` /
+	 * `nested_repo` rescue fires the Lead INFO alert; alert failures are logged
+	 * and never propagate — the receipt already landed.
+	 */
+	async recordTakeoverCleaned(
+		env: EventEnvelope,
+		input: {
+			runId: string;
+			rescueEventUid: string;
+			payload: TakeoverCleanedEventPayload;
+		},
+	): Promise<void> {
+		this.bindTakeoverRescueRun(env, input.runId);
+		const payload = parseTakeoverCleanedEventPayload(
+			input.payload,
+			"recordTakeoverCleaned",
+		);
+		const rescueEvent = this.store
+			.listWorkflowRunEvents(input.runId)
+			.find((event) => event.event_uid === input.rescueEventUid);
+		if (!rescueEvent || rescueEvent.kind !== TAKEOVER_RESCUED_EVENT_KIND) {
+			throw new Error(
+				`takeover_rescue_event_missing:${input.runId}:${input.rescueEventUid}`,
+			);
+		}
+		const rescue = parseTakeoverRescueEventPayload(
+			rescueEvent.payload,
+			`event:${rescueEvent.event_uid}`,
+		);
+		const mismatched = (
+			[
+				["rescueEventUid", payload.rescueEventUid, input.rescueEventUid],
+				["manifestSha256", payload.manifestSha256, rescue.manifestSha256],
+				["canonicalPath", payload.canonicalPath, rescue.canonicalPath],
+				["target", payload.target, rescue.target],
+			] as const
+		).find(([, actual, expected]) => actual !== expected);
+		if (mismatched) {
+			throw new Error(
+				`takeover_cleaned_mismatch:${mismatched[0]}:${input.rescueEventUid}`,
+			);
+		}
+		const appended = this.store.appendWorkflowRunEventChecked({
+			runId: input.runId,
+			eventUid: takeoverCleanedEventUid(input.rescueEventUid),
+			kind: TAKEOVER_CLEANED_EVENT_KIND,
+			nodeId: this.store.resolveWorkflowNodeIdForExecution(env.executionId),
+			executionId: env.executionId,
+			payload,
+		});
+		if (appended.deduped) return;
+		if (!TAKEOVER_ALERTED_CLASSES.has(rescue.class)) return;
+		await this.alertWorktreeTakeoverRescued(
+			env.executionId,
+			input.rescueEventUid,
+			rescue,
+		);
+	}
+
+	private async alertWorktreeTakeoverRescued(
+		executionId: string,
+		rescueEventUid: string,
+		rescue: TakeoverRescueEventPayload,
+	): Promise<void> {
+		const hook = this.turnBeltReconciler?.alertWorktreeTakeoverRescued;
+		if (!hook) return;
+		const session = this.store.getSession(executionId);
+		if (!session) {
+			console.warn(
+				`[DirectEventSink] takeover rescue alert skipped: no session for ${executionId} (${rescueEventUid})`,
+			);
+			return;
+		}
+		try {
+			await hook({ session, rescueEventUid, rescue });
+		} catch (err) {
+			console.error(
+				`[DirectEventSink] takeover rescue alert failed for ${executionId} (${rescueEventUid}): ${(err as Error).message}`,
+			);
+		}
 	}
 
 	/**

@@ -737,6 +737,20 @@
 			"baseTable": "workflow_run_event",
 			"usage": "read",
 			"disposition": "protect"
+		},
+		{
+			"file": "scripts/qa-529-generalized-e2e.mjs",
+			"relation": "workflow_run_event",
+			"baseTable": "workflow_run_event",
+			"usage": "anti_join",
+			"disposition": "protect"
+		},
+		{
+			"file": "scripts/qa-529-generalized-e2e.mjs",
+			"relation": "workflow_run_event",
+			"baseTable": "workflow_run_event",
+			"usage": "read",
+			"disposition": "protect"
 		}
 	]
 }

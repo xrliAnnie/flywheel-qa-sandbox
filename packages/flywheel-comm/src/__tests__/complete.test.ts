@@ -9,6 +9,7 @@
  * - Git field derivation (branch parse, commit count, diff numstat)
  */
 
+import { createHash } from "node:crypto";
 import {
 	existsSync,
 	mkdirSync,
@@ -265,22 +266,196 @@ describe("complete command", () => {
 					merged: false,
 					declarePr: ["nested-repo:77", "nested-repo:78"],
 				}),
-			).rejects.toThrow("process.exit(1)");
+			).rejects.toThrow("process.exit(3)");
 		} finally {
 			process.chdir(priorCwd);
 		}
+		// FLY-2373: pending mail is recoverable — one attempt, no FAIL-CLOSE marker.
+		expect(mockFetch).toHaveBeenCalledTimes(2);
+		expect(
+			existsSync(
+				join(tmpHome, ".flywheel", "state", "complete-failed", "exec-108.json"),
+			),
+		).toBe(false);
 		expect(errorSpy).toHaveBeenCalledWith(
 			expect.stringContaining("--drain-receipt drain-next"),
 		);
 		expect(errorSpy).toHaveBeenCalledWith(
-			expect.stringContaining('--declare-pr "nested-repo:77"'),
+			expect.stringContaining("--declare-pr 'nested-repo:77'"),
 		);
 		expect(errorSpy).toHaveBeenCalledWith(
-			expect.stringContaining('--declare-pr "nested-repo:78"'),
+			expect.stringContaining("--declare-pr 'nested-repo:78'"),
 		);
 		expect(errorSpy).toHaveBeenCalledWith(
 			expect.stringContaining('mailbox ["mail-1"] / phase-wake ["wake-1"]'),
 		);
+	});
+
+	describe("FLY-2373 v2 completion drain", () => {
+		function v2Answer(pageText: string, count = 1) {
+			return {
+				error: "workflow_completion_rejected",
+				reason: "consume_pending_mail",
+				hint: "Unread Lead traffic must be read before this completion commits.",
+				protocolVersion: 2,
+				challengeId: "drain2:abc",
+				readId: `read_${"a".repeat(32)}`,
+				unread: [
+					{
+						index: 1,
+						type: "instruction",
+						subjectKind: "mailbox",
+						subjectId: "delivery-1",
+						leadInstructionId: "msg-1",
+					},
+				],
+				page: {
+					index: 1,
+					count,
+					sha256: createHash("sha256").update(pageText, "utf8").digest("hex"),
+					text: pageText,
+				},
+				ackCommand: ["inbox", "--ack-consumed", `read_${"a".repeat(32)}`],
+				mailbox: ["msg-1"],
+				phaseWakes: [],
+			};
+		}
+
+		it("prints the whole unread body past 1000 chars, exits 3 once, and writes no FAIL-CLOSE marker", async () => {
+			const longBody = `=== BEGIN [1/1] Lead instruction [lead-instruction msg-1]\n${"x".repeat(3000)} TAIL-SENTINEL\n=== END [1/1]\n`;
+			mockFetch.mockResolvedValue({
+				ok: false,
+				status: 409,
+				text: async () => JSON.stringify(v2Answer(longBody)),
+			});
+			await expect(
+				complete({ route: "needs_review", pr: 7, merged: false }),
+			).rejects.toThrow("process.exit(3)");
+
+			expect(mockFetch).toHaveBeenCalledOnce();
+			const printed = errorSpy.mock.calls
+				.map((call) => String(call[0]))
+				.join("\n");
+			expect(printed).toContain("TAIL-SENTINEL");
+			expect(printed).toContain(
+				`node "$FLYWHEEL_COMM_CLI" inbox --ack-consumed read_${"a".repeat(32)}`,
+			);
+			expect(printed).toContain(
+				'node "$FLYWHEEL_COMM_CLI" complete --route needs_review --pr 7',
+			);
+			expect(printed).not.toMatch(/--pr 7 --drain-receipt/);
+			expect(
+				existsSync(
+					join(
+						tmpHome,
+						".flywheel",
+						"state",
+						"complete-failed",
+						"exec-108.json",
+					),
+				),
+			).toBe(false);
+			const pending = JSON.parse(
+				readFileSync(
+					join(
+						tmpHome,
+						".flywheel",
+						"runner-state",
+						"exec-108",
+						"completion-drain-pending.json",
+					),
+					"utf8",
+				),
+			);
+			expect(pending).toMatchObject({
+				executionId: "exec-108",
+				readId: `read_${"a".repeat(32)}`,
+				challengeId: "drain2:abc",
+				pageCount: 1,
+			});
+
+			mockFetch.mockResolvedValue({
+				ok: true,
+				status: 200,
+				text: async () => "",
+			});
+			await complete({ route: "needs_review", pr: 7, merged: false });
+			expect(
+				existsSync(
+					join(
+						tmpHome,
+						".flywheel",
+						"runner-state",
+						"exec-108",
+						"completion-drain-pending.json",
+					),
+				),
+			).toBe(false);
+		});
+
+		it("replays every parsed option, shell-quoted, as the same completion", async () => {
+			mockFetch.mockResolvedValue({
+				ok: false,
+				status: 409,
+				text: async () => JSON.stringify(v2Answer("page one\n")),
+			});
+			await expect(
+				complete({
+					route: "needs_review",
+					pr: 7,
+					merged: false,
+					sessionRole: "implement",
+					summary: "it's $(rm -rf ~) `x`",
+					exitReason: "done",
+					baseRef: "origin/main",
+					questionId: "q-1",
+				}),
+			).rejects.toThrow("process.exit(3)");
+			const printed = errorSpy.mock.calls
+				.map((call) => String(call[0]))
+				.join("\n");
+			expect(printed).toContain(
+				`node "$FLYWHEEL_COMM_CLI" complete --route needs_review --pr 7 --session-role 'implement' --summary 'it'"'"'s $(rm -rf ~) \`x\`' --exit-reason 'done' --base-ref 'origin/main' --question-id 'q-1'`,
+			);
+		});
+
+		it("lists the remaining page commands for a multi-page answer", async () => {
+			mockFetch.mockResolvedValue({
+				ok: false,
+				status: 409,
+				text: async () => JSON.stringify(v2Answer("page one\n", 3)),
+			});
+			await expect(
+				complete({ route: "needs_review", merged: false }),
+			).rejects.toThrow("process.exit(3)");
+			const printed = errorSpy.mock.calls
+				.map((call) => String(call[0]))
+				.join("\n");
+			expect(printed).toContain(
+				`inbox --drain-page read_${"a".repeat(32)} --page 2`,
+			);
+			expect(printed).toContain(
+				`inbox --drain-page read_${"a".repeat(32)} --page 3`,
+			);
+		});
+
+		it("refuses to render a page whose digest does not match its text", async () => {
+			const answer = v2Answer("real text\n");
+			answer.page.text = "tampered text\n";
+			mockFetch.mockResolvedValue({
+				ok: false,
+				status: 409,
+				text: async () => JSON.stringify(answer),
+			});
+			await expect(
+				complete({ route: "needs_review", merged: false }),
+			).rejects.toThrow("process.exit(3)");
+			const printed = errorSpy.mock.calls
+				.map((call) => String(call[0]))
+				.join("\n");
+			expect(printed).not.toContain("tampered text");
+			expect(printed).toContain("completion deferred");
+		});
 	});
 
 	it("attaches a non-blocking runner-memory closeout receipt to session_completed", async () => {
@@ -1330,6 +1505,67 @@ describe("complete command", () => {
 			expect(errorSpy).toHaveBeenCalledWith(
 				expect.stringContaining("rework-1"),
 			);
+		},
+	);
+
+	it.each([
+		"rework_head_unchanged",
+		"rework_no_product_change",
+		"rework_head_unavailable",
+		"rework_evidence_stale",
+	])(
+		"FLY-2921 C7 %s prints the new-commit hint, does not retry, writes no marker",
+		async (transitionReason) => {
+			mockFetch.mockResolvedValue(
+				new Response(
+					JSON.stringify({
+						error: "workflow_completion_rejected",
+						reason: "transition_refused",
+						retryable: true,
+						detail: {
+							transitionReason,
+							requestId: "rework-2921",
+							deliveryState: "wake_delivered",
+							routeRevision: 1,
+						},
+					}),
+					{ status: 409 },
+				),
+			);
+			await expect(complete({ route: "needs_review", pr: 42 })).rejects.toThrow(
+				"process.exit(1)",
+			);
+			// A retryable 409 normally loops ATTEMPT_COUNT times and then leaves a
+			// FAIL-CLOSE marker for the reconciler; the same bytes would only be
+			// refused again, so this stops at once and leaves nothing to replay.
+			expect(mockFetch).toHaveBeenCalledTimes(1);
+			expect(
+				existsSync(
+					join(
+						tmpHome,
+						".flywheel",
+						"state",
+						"complete-failed",
+						"exec-108.json",
+					),
+				),
+			).toBe(false);
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining(`refused (${transitionReason})`),
+			);
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining("rework-2921"),
+			);
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining(
+					"返工交卷必须带新提交；若你判断确实不需要改代码，请用 `flywheel-comm ask` 向 Lead 说明，由 Lead 决定。",
+				),
+			);
+			// FLY-2922 owns `complete --route blocked` for enrolled nodes; until it
+			// lands, that route is refused as route_mismatch, so never suggest it.
+			for (const call of errorSpy.mock.calls) {
+				expect(String(call[0])).not.toContain("--route blocked");
+			}
 		},
 	);
 

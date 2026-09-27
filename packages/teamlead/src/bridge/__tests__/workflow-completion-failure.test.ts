@@ -577,6 +577,18 @@ describe("FLY-2922 enrolled blocked completion", () => {
 		return { status: response.status, body };
 	}
 
+	function acknowledgeDrain(readId: string) {
+		const envelope = store!.getDrainReadEnvelope(readId);
+		if (!envelope) throw new Error("missing completion drain envelope");
+		return comm!.acknowledgeCompletionDrainRead({
+			executionId: EXEC,
+			activationId: envelope.activationId,
+			readId,
+			subjects: envelope.subjects,
+			nowMs: Date.now(),
+		});
+	}
+
 	it("fails the current node and session, holds its run, and never creates success evidence", async () => {
 		const before = state();
 		const result = await post();
@@ -735,24 +747,21 @@ describe("FLY-2922 enrolled blocked completion", () => {
 	});
 
 	it("rolls back failure projections and drain consumption when the final audit insert fails", async () => {
-		const id = comm!.insertInstruction(
-			"test-lead",
-			EXEC,
-			"Drain before injected failure",
-		);
+		comm!.insertInstruction("test-lead", EXEC, "Drain before injected failure");
 		const pending = await post();
 		expect(pending).toMatchObject({
 			status: 409,
 			body: { reason: "consume_pending_mail" },
 		});
-		comm!.markInstructionRead(id);
+		expect(acknowledgeDrain(pending.body.readId as string).rejected).toEqual(
+			[],
+		);
 		const db = (store as unknown as { db: { raw: Database.Database } }).db.raw;
 		db.exec(
 			"CREATE TRIGGER reject_failure BEFORE INSERT ON session_events WHEN NEW.source = 'workflow-generalized-failure' BEGIN SELECT RAISE(ABORT, 'injected_failure_commit'); END",
 		);
 		const before = state();
-		const receipt = { drainReceipt: { challengeId: pending.body.challengeId } };
-		expect(await post({ payload: receipt })).toMatchObject({ status: 500 });
+		expect(await post()).toMatchObject({ status: 500 });
 		expect(state()).toEqual(before);
 		expect(
 			db
@@ -762,10 +771,10 @@ describe("FLY-2922 enrolled blocked completion", () => {
 				.get(pending.body.challengeId),
 		).toEqual({ state: "issued" });
 		db.exec("DROP TRIGGER reject_failure");
-		expect(await post({ payload: receipt })).toMatchObject({ status: 200 });
+		expect(await post()).toMatchObject({ status: 200 });
 	});
 
-	it("requires and consumes the server-issued drain receipt before failing the node", async () => {
+	it("requires and consumes the server-issued content receipt before failing the node", async () => {
 		const mailId = comm!.insertInstruction(
 			"test-lead",
 			EXEC,
@@ -777,8 +786,10 @@ describe("FLY-2922 enrolled blocked completion", () => {
 			status: 409,
 			body: {
 				reason: "consume_pending_mail",
+				protocolVersion: 2,
 				mailbox: [mailId],
 				challengeId: expect.any(String),
+				readId: expect.any(String),
 			},
 		});
 		expect(store!.getSession(EXEC)?.status).toBe("running");
@@ -790,14 +801,12 @@ describe("FLY-2922 enrolled blocked completion", () => {
 			}),
 		).toMatchObject({
 			status: 409,
-			body: { reason: "drain_receipt_rejected" },
+			body: { reason: "consume_pending_mail" },
 		});
-		comm!.markInstructionRead(mailId);
-		expect(
-			await post({
-				payload: { drainReceipt: { challengeId: pending.body.challengeId } },
-			}),
-		).toMatchObject({ status: 200 });
+		expect(acknowledgeDrain(pending.body.readId as string).rejected).toEqual(
+			[],
+		);
+		expect(await post()).toMatchObject({ status: 200 });
 		expect(store!.getSession(EXEC)?.status).toBe("failed");
 		expect(store!.getWorkflowRun(RUN)?.status).toBe("held");
 		expect(state().effects).toEqual(before.effects);

@@ -84,6 +84,7 @@ import {
 import type {
 	CodexDaemonGoalRuntimeOptions,
 	CodexTransportCloseEvidence,
+	RestartDecision,
 	RunGoalInput,
 	RunGoalOutcome,
 } from "./codex-daemon-goal-runtime.js";
@@ -96,6 +97,7 @@ import {
 import type {
 	CodexExecutionOwnerKind,
 	CodexExecutionOwnershipRegistry,
+	CodexStopReason,
 } from "./codex-execution-ownership.js";
 import {
 	assertCodexSourceIdentity,
@@ -265,6 +267,24 @@ interface CodexSnapshotExecution {
 	recoveryHooks?: CodexRecoveryCommitHooks;
 	founderWindow: CodexRecoveryOptions["founderWindow"];
 	windowName?: string;
+}
+
+/**
+ * FLY-2903: a Bridge terminal path asked this execution's owner to stop.
+ * `promise` resolves once, from the registry's synchronous stop callback;
+ * `reason()` reads the lease mark (null while no stop was requested).
+ */
+interface CodexTerminationSignal {
+	promise: Promise<CodexStopReason>;
+	reason: () => CodexStopReason | null;
+}
+
+/** FLY-2903: raised before any process-starting step once a stop was requested. */
+class CodexTerminationRequestedError extends Error {
+	constructor(readonly reason: CodexStopReason) {
+		super(`termination requested (${reason})`);
+		this.name = "CodexTerminationRequestedError";
+	}
 }
 
 function requireNullableString(value: unknown, field: string): string | null {
@@ -737,6 +757,38 @@ export class CodexTmuxAdapter implements IAdapter {
 		return { promise, cancel };
 	}
 
+	/** FLY-2903: audit every restart decision; forward a refusal to forensics. */
+	private recordRestartDecision(
+		executionId: string,
+		socketPath: string,
+		decision: RestartDecision,
+	): void {
+		this.log(
+			`[CodexTmuxAdapter] daemon_restart_decision exec=${executionId} restarts=${decision.restarts} allowed=${decision.allowed} reason=${decision.reason}`,
+		);
+		if (decision.allowed || !this.onTransportClose) return;
+		const sink = this.onTransportClose;
+		try {
+			void Promise.resolve(
+				sink({
+					executionId,
+					socketPath,
+					reason: `restart_refused:${decision.reason}`,
+					at: new Date().toISOString(),
+					restartRefused: true,
+				}),
+			).catch((error) =>
+				this.log(
+					`[CodexTmuxAdapter] restart-refusal forensic hook rejected (ignored): ${safeErr(error)}`,
+				),
+			);
+		} catch (error) {
+			this.log(
+				`[CodexTmuxAdapter] restart-refusal forensic hook threw (ignored): ${safeErr(error)}`,
+			);
+		}
+	}
+
 	private founderTuiWindowPresence(
 		windowName: string,
 		windowId?: string,
@@ -926,8 +978,22 @@ export class CodexTmuxAdapter implements IAdapter {
 		kind: CodexExecutionOwnerKind,
 		snapshotExecution?: CodexSnapshotExecution,
 	): Promise<AdapterExecutionResult> {
-		const lease = this.executionOwners?.claim(ctx.executionId, kind);
+		// FLY-2903: armed at claim time so a stop request that lands anywhere in
+		// the preflight window (home provisioning, runtime construction, daemon
+		// start) is observed before the next process-starting step.
+		let resolveTermination!: (reason: CodexStopReason) => void;
+		const terminationPromise = new Promise<CodexStopReason>((resolve) => {
+			resolveTermination = resolve;
+		});
+		const lease = this.executionOwners?.claim(ctx.executionId, kind, {
+			onStopRequested: (reason) => resolveTermination(reason),
+		});
 		if (this.executionOwners && !lease) {
+			if (this.executionOwners.isStopRequested(ctx.executionId)) {
+				this.log(
+					`[CodexTmuxAdapter] owner admission refused exec=${ctx.executionId}: termination_requested`,
+				);
+			}
 			let diagnostic = createCodexRecoveryFailure({
 				code: "owner_admission_failed",
 				stage: "owner_admission",
@@ -958,6 +1024,10 @@ export class CodexTmuxAdapter implements IAdapter {
 				});
 			return retirement;
 		};
+		const termination: CodexTerminationSignal = {
+			promise: terminationPromise,
+			reason: () => lease?.stopRequested ?? null,
+		};
 		let result: AdapterExecutionResult | undefined;
 		let ownershipHeldUntil: Promise<void> | undefined;
 		try {
@@ -968,11 +1038,16 @@ export class CodexTmuxAdapter implements IAdapter {
 				(settled) => {
 					ownershipHeldUntil = settled;
 				},
+				termination,
 			);
 		} catch (error) {
-			// Dispatch callers retain their existing preflight throw contract.
-			if (!snapshotExecution) throw error;
-			result = this.ownershipFailureResult(ctx, error, "preflight");
+			if (error instanceof CodexTerminationRequestedError) {
+				result = this.terminatedBeforeStartResult(ctx, error.reason);
+			} else {
+				// Dispatch callers retain their existing preflight throw contract.
+				if (!snapshotExecution) throw error;
+				result = this.ownershipFailureResult(ctx, error, "preflight");
+			}
 		} finally {
 			// FLY-2877: while a late founder window can still start a codex
 			// process, this execution stays owned — the Bridge's lease sweep (and
@@ -1163,13 +1238,36 @@ export class CodexTmuxAdapter implements IAdapter {
 		};
 	}
 
+	/** FLY-2903: a stop request won the race before any daemon or window started. */
+	private terminatedBeforeStartResult(
+		ctx: AdapterExecutionContext,
+		reason: CodexStopReason,
+	): AdapterExecutionResult {
+		this.log(
+			`[CodexTmuxAdapter] termination requested (${reason}) for ${ctx.executionId} before any daemon or window started; nothing launched.`,
+		);
+		return {
+			success: false,
+			sessionId: ctx.executionId,
+			durationMs: 0,
+			timedOut: false,
+			resultText: `termination requested (${reason}) before start`,
+		};
+	}
+
 	private async executeOwned(
 		ctx: AdapterExecutionContext,
 		snapshotExecution?: CodexSnapshotExecution,
 		retireOnce: (options?: RetireOptions) => Promise<void> = (options) =>
 			this.retireExecutionCredential(ctx, options),
 		holdOwnershipUntil?: (settled: Promise<void>) => void,
+		termination?: CodexTerminationSignal,
 	): Promise<AdapterExecutionResult> {
+		// FLY-2903: checked before every process-starting step of the preflight.
+		const throwIfTerminationRequested = (): void => {
+			const reason = termination?.reason() ?? null;
+			if (reason) throw new CodexTerminationRequestedError(reason);
+		};
 		if (ctx.codexAgentHome) {
 			this.mergeSessionState(ctx.executionId, {
 				codexAgentHome: {
@@ -1255,6 +1353,7 @@ export class CodexTmuxAdapter implements IAdapter {
 			registryPath: this.codexAccountRegistryPath,
 		});
 
+		throwIfTerminationRequested();
 		// FLY-209 (credentials): host gh token + worktree git credential helper.
 		const ghToken = await this.provisionGitHubCredential(ctx);
 
@@ -1285,6 +1384,7 @@ export class CodexTmuxAdapter implements IAdapter {
 				codexMattSkillsSourceDir: ctx.codexMattSkillsSourceDir,
 			}),
 		};
+		throwIfTerminationRequested();
 		const codexHome = ctx.codexAgentHome
 			? await provisionCodexAgentHome(this.agentHomeHandle(ctx), {
 					...provisionOptions,
@@ -1548,6 +1648,7 @@ export class CodexTmuxAdapter implements IAdapter {
 				);
 			}
 
+			throwIfTerminationRequested();
 			runtime = this.runtimeFactory({
 				beforeCodexDaemonStart: ctx.beforeCodexDaemonStart,
 				codexQuotaBinding: ctx.codexQuotaBinding,
@@ -2051,6 +2152,8 @@ export class CodexTmuxAdapter implements IAdapter {
 					emitTuiLost("label-unavailable");
 					return;
 				}
+				// FLY-2903: a stopping execution never opens a founder window.
+				if (termination?.reason()) return;
 				startOpenChain();
 			};
 
@@ -2123,6 +2226,7 @@ export class CodexTmuxAdapter implements IAdapter {
 						},
 					}
 				: undefined;
+			throwIfTerminationRequested();
 			const goalPromise = runtime.runGoal(
 				{
 					objective,
@@ -2210,6 +2314,15 @@ export class CodexTmuxAdapter implements IAdapter {
 						: {}),
 					...(phaseLifecycle ? { phaseLifecycle } : {}),
 					...(turnLifecycle ? { turnLifecycle } : {}),
+					// FLY-2903: a daemon killed by a Bridge terminal path (stop
+					// requested) or during an approved retirement is not a crash and
+					// is never resumed. A throwing retirement reader throws here, which
+					// the runtime treats as a refusal (fail-closed).
+					mayRestartAfterTransportDeath: () =>
+						(termination?.reason() ?? null) === null &&
+						!(ctx.processLifecycle?.retirementApproved?.() ?? false),
+					onRestartDecision: (decision) =>
+						this.recordRestartDecision(ctx.executionId, socketPath, decision),
 				},
 				{
 					onNotification: (method, params) => {
@@ -2228,7 +2341,8 @@ export class CodexTmuxAdapter implements IAdapter {
 				| { kind: "goal"; outcome: RunGoalOutcome }
 				| { kind: "error"; error: unknown }
 				| { kind: "shutdown"; requestId: string }
-				| { kind: "retirement" };
+				| { kind: "retirement" }
+				| { kind: "termination"; reason: CodexStopReason };
 			const settledGoal: Promise<RunSettlement> = goalPromise.then(
 				(value) => ({ kind: "goal", outcome: value }),
 				(error: unknown) => ({ kind: "error", error }),
@@ -2249,6 +2363,14 @@ export class CodexTmuxAdapter implements IAdapter {
 					retirementWatchdog.promise.then(() => ({ kind: "retirement" })),
 				);
 			}
+			if (termination) {
+				settlements.push(
+					termination.promise.then((reason) => ({
+						kind: "termination",
+						reason,
+					})),
+				);
+			}
 			const first = await Promise.race(settlements);
 			cancelProcessRetirementWatchdog?.();
 			cancelProcessRetirementWatchdog = undefined;
@@ -2260,13 +2382,27 @@ export class CodexTmuxAdapter implements IAdapter {
 				else if (settled.kind === "error") caughtError = settled.error;
 			} else if (first.kind === "retirement") {
 				runtime.stop();
+			} else if (first.kind === "termination") {
+				// FLY-2903: finish like a retirement — the Bridge already recorded the
+				// terminal state; we only stop, drain and release.
+				this.log(
+					`[CodexTmuxAdapter] termination requested (${first.reason}) for ${ctx.executionId}; stopping and draining the owned daemon.`,
+				);
+				runtime.stop();
+				await settledGoal;
 			} else if (first.kind === "goal") {
 				outcome = first.outcome;
 			} else {
 				throw first.error;
 			}
 		} catch (err) {
-			caughtError = err;
+			if (err instanceof CodexTerminationRequestedError) {
+				this.log(
+					`[CodexTmuxAdapter] termination requested (${err.reason}) for ${ctx.executionId} before the daemon started; nothing launched.`,
+				);
+			} else {
+				caughtError = err;
+			}
 		} finally {
 			cancelProcessRetirementWatchdog?.();
 			// FLY-1239: cancel any pending founder-window reopen BEFORE teardown — so a

@@ -54,6 +54,44 @@ function fakeClient(over: Record<string, unknown> = {}) {
 }
 
 describe("markLinearIssueDone", () => {
+	it.each([1, 3])(
+		"owns the rejected SDK state getter on issue read %s",
+		async (failedRead) => {
+			let reads = 0;
+			const stateReads = vi.fn();
+			const client = fakeClient({
+				issue: vi.fn(async () => {
+					const read = ++reads;
+					return {
+						get state() {
+							stateReads(read);
+							return read === failedRead
+								? Promise.reject(new Error("Fetch failed"))
+								: Promise.resolve({ id: "started", type: "started" });
+						},
+						team: Promise.resolve({
+							states: async () => ({
+								nodes: [{ id: "done", name: "Done", type: "completed" }],
+							}),
+						}),
+					};
+				}),
+			});
+			await expect(
+				markLinearIssueDone(client as never, "FLY-2917"),
+			).resolves.toEqual({
+				done: false,
+				changed: false,
+				reason: "state_unreadable_fail_closed",
+			});
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			expect(stateReads.mock.calls.map(([read]) => read)).toEqual(
+				failedRead === 1 ? [1] : [1, 3],
+			);
+			expect(client.updateIssue).not.toHaveBeenCalled();
+		},
+	);
+
 	it("resolves the completed-type state and updates the issue's stateId", async () => {
 		const client = fakeClient();
 		const r = await markLinearIssueDone(client as never, "ISSUE-1");

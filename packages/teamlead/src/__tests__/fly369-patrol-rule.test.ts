@@ -574,7 +574,7 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		);
 	});
 
-	it("FLY-2080: guard classification, truth boundaries, and both executable recipes are complete", () => {
+	it("FLY-2080: guard classification, truth boundaries, and the predecessor recipe are complete", () => {
 		const section0 = patrol.slice(
 			patrol.indexOf("## 0."),
 			patrol.indexOf("## 1."),
@@ -591,15 +591,10 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 			"workflow_rework_delivery",
 			"workflow_run_node",
 			"workflow_rework_verification_path",
-			"workflow_rework_route_revision",
 			"workflow_carrier_delivery",
-			"delivery_awaiting_receipt",
 			"wake_delivered",
-			"hold_count",
 			"rework_delivery_wake_delivered",
-			"workflow_side_effect_ledger",
 			"rework_replacement:",
-			"replacement_pending",
 			"edge_traversed",
 			"loop_iteration",
 			"loop_limit_escalated",
@@ -614,12 +609,61 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		]) {
 			expect(section0).toContain(anchor);
 		}
-		expect(section0).toMatch(/held.*wake_delivered.*held.*active/s);
 		expect(section0).toMatch(/pane|workflow_run_event/);
 		expect(section0).toMatch(/引擎.*接力|Bridge.*接力/);
 		// A repair-authored event proves only that sqlite committed, never that
 		// Bridge reconciled the run. Handoff evidence must exclude those rows.
 		expect(section0).toContain("e.event_uid NOT LIKE 'patrol:%'");
+	});
+
+	it("FLY-2921: appendices A and B retire the rework-delivery repair SQL and route Leads through hold resume", () => {
+		const appendices = patrol.slice(
+			patrol.indexOf("### FLY-2080 附录 A"),
+			patrol.indexOf("#### 仅限 `engine_predecessor_unavailable`"),
+		);
+		expect(appendices.indexOf("### FLY-2080 附录 B")).toBeGreaterThan(0);
+		for (const anchor of [
+			"FLY-2921 之后本配方不再执行",
+			"returned_to_lead",
+			"rework_returned_to_lead:<requestId>:<routeRevision>",
+			"flywheel-comm hold resume --run <runId> --shape rework_returned_to_lead --hold-event <eventUid> --reason",
+			"founder `/rework`",
+			"terminate",
+			"迁移映射",
+			"返工协调器",
+			"不再手工 SQL 修返工投递表",
+			"伪造 receipt",
+		]) {
+			expect(appendices).toContain(anchor);
+		}
+		// Both delivery-scoped repair transactions are gone: no retired state
+		// names, no receipt/replacement UPDATE, no patrol-authored receipt event.
+		for (const retired of [
+			"awaiting_receipt",
+			"replacement_pending",
+			"needs_lead",
+			"state='held'",
+			"status='held'",
+			"hold_count=0",
+			"UPDATE workflow_rework_delivery",
+			"UPDATE workflow_run SET status='active'",
+			"patrol:FLY-2080:receipt:",
+			"receipt ledger repair after exact guard proof",
+			"replacement ledger repair after exact guard proof",
+			"workflow_side_effect_ledger",
+			"NEW_EXECUTION_ID",
+		]) {
+			expect(appendices).not.toContain(retired);
+		}
+		expect(appendices).not.toMatch(/held.*wake_delivered.*held.*active/s);
+		// The predecessor branch keeps its own exact recipe after the appendices.
+		const predecessor = patrol.slice(
+			patrol.indexOf("#### 仅限 `engine_predecessor_unavailable`"),
+			patrol.indexOf("### 0.9"),
+		);
+		expect(predecessor).toContain("BEGIN IMMEDIATE");
+		expect(predecessor).toContain("patrol:FLY-2080:edge:");
+		expect(predecessor).toContain("patrol:FLY-2080:loop:");
 	});
 
 	it("FLY-2111: repair handoff is event-first while pane evidence stays bounded and non-fingerprinted", () => {
@@ -650,7 +694,6 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 			"tail -40",
 			"pane_marker",
 			"observed_at",
-			"preferred_actor_execution_id` 已完成这次 rework",
 			"伪造 receipt",
 		]) {
 			expect(repairAppendices).toContain(anchor);

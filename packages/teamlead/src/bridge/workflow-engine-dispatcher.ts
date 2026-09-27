@@ -7,6 +7,12 @@ import {
 	canonicalSubmissionDigest,
 	isWorkflowPhaseRole,
 } from "flywheel-config";
+import {
+	canonicalizeWorktreePath,
+	type TakeoverPermitDenial,
+	type TakeoverRescuePermit,
+	type TakeoverRescuePredecessor,
+} from "flywheel-edge-worker";
 import type {
 	WorkflowIssueDeliveryInput,
 	WorkflowResumeContext,
@@ -67,6 +73,10 @@ import {
 	unavailableMaterializedHeadAuthority,
 } from "./materialized-head-authority.js";
 import { parsePaneLossGenerationParams } from "./pane-loss-reconcile.js";
+import {
+	probePhaseRetryBranchTip,
+	probeWorktreeHead,
+} from "./phase-branch-tip.js";
 import { RESIDENT_EXPIRY_FAST_RETRY_MS } from "./resident-hold.js";
 import type { IStartDispatcher, StartResult } from "./retry-dispatcher.js";
 import type { AdmissionDecision } from "./runner-admission.js";
@@ -111,6 +121,22 @@ interface WorkflowEngineDispatcherOptions {
 		executionId: string,
 		projectName: string,
 	) => Promise<string>;
+	/**
+	 * FLY-2901 §3 / §4.6: the run's shared branch-B worktree exactly as
+	 * Blueprint derives it (`expectedWorktree(projectRoot, projectName,
+	 * resolveWorktreeKey(issueId, { shareParentBranch: true }))`) plus the main
+	 * repo root. Unresolvable ⇒ the permit is `permit_indeterminate` and the
+	 * head fallback skips its branch-tip level.
+	 */
+	resolveSharedWorktree?: (input: {
+		projectName: string;
+		issueId: string;
+	}) => { projectRoot: string; path: string; branch: string } | undefined;
+	/**
+	 * FLY-2901 §7: call-time `worktree_takeover_rescue_disabled` kill switch.
+	 * Opt-in: an unreadable flag never asserts the kill (treated as false).
+	 */
+	takeoverRescueDisabled?: () => boolean;
 	resolveLeadId?: (executionId: string) => string | undefined;
 	resolveReplacementLeadIntent?: (
 		run: WorkflowRunRow,
@@ -188,6 +214,51 @@ const SHIP_READY_FOUNDER_BUDGET_MS = 45 * 60_000;
 const DEAD_EXECUTION_COMMDB_RETRY_BASE_MS = 1_000;
 const DEAD_EXECUTION_COMMDB_RETRY_CAP_MS = 60_000;
 
+/** FLY-2901 §4.6: run identity the default predecessor-head chain alerts with. */
+interface PredecessorHeadContext {
+	run: WorkflowRunRow;
+	nodeId: string;
+}
+
+/**
+ * FLY-2901 §3 row 1 ("completed / parked, TURN handed over"). A StateStore
+ * phase session reaches these statuses only AFTER its completion receipt, at
+ * which point the TURN belongs to the successor and the parked body no longer
+ * writes the shared worktree (TURN law), so liveness is not probed:
+ * - `design_done`: route phase_design_complete (event-route.ts session_completed,
+ *   DirectEventSink.ts emitCompleted).
+ * - `awaiting_review`: needs_review / auto_approve completion with a PR
+ *   (DirectEventSink.ts emitCompleted; StateStore review binding from
+ *   running|ship_parked).
+ * - `ship_parked`: post-completion park (StateStore founder-feedback CAS from
+ *   awaiting_review; DirectEventSink parkMergeBlock).
+ * - `completed`: terminal success.
+ * `approved_to_ship` is deliberately absent: that holder is woken to ship and
+ * may commit on branch B again, so it counts as a live writer below.
+ */
+const TAKEOVER_PARKED_SESSION_STATUSES: ReadonlySet<string> = new Set([
+	"completed",
+	"design_done",
+	"awaiting_review",
+	"ship_parked",
+]);
+
+/** FLY-2901 §3 rows 2-4: judged dead by the dead-exec scan; liveness decides. */
+function isTakeoverJudgedDeadStatus(status: string): boolean {
+	return (
+		status === "failed" ||
+		status === "blocked" ||
+		status.startsWith("terminated")
+	);
+}
+
+/** FLY-2901 §3: when several predecessors deny, the strongest reason wins. */
+const TAKEOVER_DENIAL_RANK: Record<TakeoverPermitDenial, number> = {
+	live_writer: 3,
+	zombie_writer: 2,
+	permit_indeterminate: 1,
+};
+
 /**
  * Consumes only engine-owned dispatch outbox rows. The snapshot already chose
  * the physical execution id and dispatch triple; this component may deliver or
@@ -203,7 +274,14 @@ export class WorkflowEngineDispatcher {
 	private readonly resolvePredecessorHead: (
 		executionId: string,
 		projectName: string,
+		context: PredecessorHeadContext,
 	) => Promise<string>;
+	private readonly resolveSharedWorktree: NonNullable<
+		WorkflowEngineDispatcherOptions["resolveSharedWorktree"]
+	>;
+	private readonly takeoverRescueDisabled: () => boolean;
+	/** FLY-2901 §4.6: one predecessor_head_unavailable alert per predecessor. */
+	private readonly predecessorHeadAlerted = new Set<string>();
 	private readonly resolveLeadId: (executionId: string) => string | undefined;
 	private readonly resolveReplacementLeadIntent: NonNullable<
 		WorkflowEngineDispatcherOptions["resolveReplacementLeadIntent"]
@@ -237,7 +315,6 @@ export class WorkflowEngineDispatcher {
 		string,
 		{ attempts: number; nextAttemptAtMs: number }
 	>();
-	private readonly heldReworkRecoveryProbeAt = new Map<string, number>();
 	private readonly completionExceptionProbeAt = new Map<string, number>();
 	private readonly deadExecutionCommDbSettled = new Set<string>();
 	private readonly deadExecutionCommDbRetries = new Map<
@@ -281,6 +358,268 @@ export class WorkflowEngineDispatcher {
 				});
 	}
 
+	/**
+	 * FLY-2901 §7: the kill switch is opt-in, so a reader failure (missing row,
+	 * unregistered name, non-boolean value) cannot assert the kill. Mirrors the
+	 * other bridge_global kill switches in plugin.ts (warn and keep the default).
+	 */
+	private readTakeoverRescueDisabled(): boolean {
+		try {
+			return this.takeoverRescueDisabled() === true;
+		} catch (error) {
+			this.log(
+				`takeover rescue kill switch unreadable; treating as off: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return false;
+		}
+	}
+
+	private resolveSharedWorktreeSafe(input: {
+		projectName: string;
+		issueId: string;
+	}): { projectRoot: string; path: string; branch: string } | undefined {
+		try {
+			return this.resolveSharedWorktree(input);
+		} catch (error) {
+			this.log(
+				`shared worktree resolution failed for ${input.issueId}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return undefined;
+		}
+	}
+
+	/**
+	 * FLY-2901 §3: prove that no other execution of this run can still write
+	 * the shared branch-B worktree. Predecessor set = every attributed execution
+	 * (other than the successor) whose `sessions.worktree_path` OR worktree
+	 * binding path canonicalizes to the expected shared path. Truth table:
+	 *   completed/parked (TURN handed over)         → allowed, liveness not probed
+	 *   judged dead (failed / terminated… / blocked) → dead: allowed · unknown:
+	 *                                                 permit_indeterminate ·
+	 *                                                 alive: zombie_writer
+	 *   anything else (non-terminal)                → live_writer, not probed
+	 * Disagreeing path sources, read failures, missing identity fields and any
+	 * computation error → permit_indeterminate. Denials rank
+	 * live_writer > zombie_writer > permit_indeterminate.
+	 */
+	private async computeTakeoverRescuePermit(
+		run: WorkflowRunRow,
+		successorExecutionId: string,
+	): Promise<TakeoverRescuePermit> {
+		const indeterminate = (
+			predecessors: TakeoverRescuePredecessor[] = [],
+		): TakeoverRescuePermit => ({
+			allowed: false,
+			reason: "permit_indeterminate",
+			predecessors,
+		});
+		try {
+			const expectedPath = this.resolveSharedWorktreeSafe({
+				projectName: run.project_name,
+				issueId: run.issue_id,
+			})?.path.trim();
+			if (!expectedPath) {
+				this.log(
+					`takeover permit indeterminate for ${successorExecutionId}: shared worktree path unresolved`,
+				);
+				return indeterminate();
+			}
+			const canonicalExpected = canonicalizeWorktreePath(expectedPath);
+			const store = this.options.store;
+			const predecessors: TakeoverRescuePredecessor[] = [];
+			let denial: TakeoverPermitDenial | undefined;
+			const deny = (reason: TakeoverPermitDenial): void => {
+				if (
+					!denial ||
+					TAKEOVER_DENIAL_RANK[reason] > TAKEOVER_DENIAL_RANK[denial]
+				)
+					denial = reason;
+			};
+			for (const executionId of store.listRunAttributedExecutions(run.run_id)) {
+				if (executionId === successorExecutionId) continue;
+				const session = store.getSession(executionId);
+				const binding = store.getWorktreeBinding(executionId);
+				const sessionPath = session?.worktree_path?.trim() || undefined;
+				const bindingPath = binding?.path?.trim() || undefined;
+				const sessionOnPath =
+					sessionPath !== undefined &&
+					canonicalizeWorktreePath(sessionPath) === canonicalExpected;
+				const bindingOnPath =
+					bindingPath !== undefined &&
+					canonicalizeWorktreePath(bindingPath) === canonicalExpected;
+				if (!sessionOnPath && !bindingOnPath) continue;
+				// Both sources are present but only one names the shared path.
+				const sourcesConflict =
+					sessionPath !== undefined &&
+					bindingPath !== undefined &&
+					sessionOnPath !== bindingOnPath;
+				const status = session?.status?.trim() || null;
+				let liveness: TakeoverRescuePredecessor["liveness"] = "not_probed";
+				let verdict: "allowed" | TakeoverPermitDenial;
+				if (status === null) {
+					verdict = "permit_indeterminate";
+				} else if (TAKEOVER_PARKED_SESSION_STATUSES.has(status)) {
+					verdict = "allowed";
+				} else if (isTakeoverJudgedDeadStatus(status)) {
+					try {
+						liveness = await this.probeTerminalLaunchLiveness(
+							executionId,
+							run.project_name,
+						);
+					} catch (error) {
+						this.log(
+							`takeover permit liveness probe failed for ${executionId}: ${error instanceof Error ? error.message : String(error)}`,
+						);
+						liveness = "unknown";
+					}
+					verdict =
+						liveness === "dead"
+							? "allowed"
+							: liveness === "alive"
+								? "zombie_writer"
+								: "permit_indeterminate";
+				} else {
+					verdict = "live_writer";
+				}
+				if (sourcesConflict && verdict === "allowed") {
+					verdict = "permit_indeterminate";
+				}
+				predecessors.push({
+					executionId,
+					sessionStatus: status,
+					liveness,
+					pathSource:
+						sessionOnPath && bindingOnPath
+							? "both"
+							: sessionOnPath
+								? "session"
+								: "binding",
+				});
+				if (verdict !== "allowed") deny(verdict);
+			}
+			return denial
+				? { allowed: false, reason: denial, predecessors }
+				: { allowed: true, reason: "no_live_writer", predecessors };
+		} catch (error) {
+			this.log(
+				`takeover permit computation failed for ${successorExecutionId}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return indeterminate();
+		}
+	}
+
+	/**
+	 * FLY-2901 §4.6: default predecessor head chain. Only `worktree_not_found`
+	 * and `git_head_unavailable` from the head authority fall through; every
+	 * other reason keeps today's behavior. Level 2 reads HEAD at the binding
+	 * path, level 3 reads `refs/heads/<binding.branch | derived branch>` in the
+	 * main repo. All levels read only; the predecessor's `sessions.worktree_path`
+	 * is never written back. When the whole chain fails the original authority
+	 * error is rethrown so `reconcile()` keeps its per-tick retry (held += 1).
+	 */
+	private async resolvePredecessorHeadWithFallback(
+		executionId: string,
+		projectName: string,
+		context: PredecessorHeadContext,
+	): Promise<string> {
+		const store = this.options.store;
+		let authorityError: Error;
+		try {
+			return (await resolveWorkflowHeadAuthority(store, executionId)).prHeadSha;
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			if (reason !== "worktree_not_found" && reason !== "git_head_unavailable")
+				throw error;
+			authorityError = error instanceof Error ? error : new Error(reason);
+		}
+		const session = store.getSession(executionId);
+		const binding = store.getWorktreeBinding(executionId);
+		const sessionPath = session?.worktree_path?.trim() || undefined;
+		const bindingPath = binding?.path?.trim() || undefined;
+		const tried = [
+			`worktree=${sessionPath ?? "unset"} (${authorityError.message})`,
+		];
+		if (bindingPath && bindingPath !== sessionPath) {
+			const head = await probeWorktreeHead(bindingPath);
+			if (head.kind === "found") return head.sha;
+			tried.push(
+				`binding=${bindingPath} (${head.kind === "missing" ? "missing" : head.error})`,
+			);
+		}
+		const shared = this.resolveSharedWorktreeSafe({
+			projectName,
+			issueId: context.run.issue_id,
+		});
+		const branch = binding?.branch?.trim() || shared?.branch;
+		if (shared?.projectRoot && branch) {
+			const tip = await probePhaseRetryBranchTip(shared.projectRoot, branch);
+			if (tip.kind === "found") return tip.sha;
+			tried.push(
+				`refs/heads/${branch} (${tip.kind === "missing" ? "missing" : tip.error})`,
+			);
+		} else {
+			tried.push("refs/heads/<branch> (main repo or branch unresolved)");
+		}
+		await this.alertPredecessorHeadUnavailable({
+			executionId,
+			context,
+			issueIdentifier: session?.issue_identifier,
+			tried,
+		});
+		throw authorityError;
+	}
+
+	private async alertPredecessorHeadUnavailable(input: {
+		executionId: string;
+		context: PredecessorHeadContext;
+		issueIdentifier: string | undefined;
+		tried: string[];
+	}): Promise<void> {
+		if (this.predecessorHeadAlerted.has(input.executionId)) return;
+		if (!this.alertsEnabled()) return;
+		const sink = this.alertSink?.current;
+		if (!sink) return;
+		const { run, nodeId } = input.context;
+		const identity = this.resolveRunAlertIdentity(
+			run.project_name,
+			run.issue_id,
+			run.run_id,
+		);
+		try {
+			const delivery = await sink.alert({
+				leadId: identity.leadId,
+				projectName: identity.projectName,
+				eventId: `workflow-predecessor-head:${input.executionId}`,
+				eventType: "three_stage_takeover_failed",
+				severity: "warning",
+				sessionKey: input.executionId,
+				title: `Workflow predecessor head unavailable — ${input.issueIdentifier ?? run.issue_id}`,
+				body: `Reason: predecessor_head_unavailable. The workflow engine cannot read a head for predecessor ${input.executionId} of run ${run.run_id} (${nodeId} dispatch): ${input.tried.join("; ")}. The successor stays held and is retried every tick; restore branch B or hold the run.`,
+				metadata: {
+					workflowEngine: {
+						runId: run.run_id,
+						issueId: run.issue_id,
+						nodeId,
+						executionId: input.executionId,
+						disposition: "held",
+						leadResolution: identity.leadResolution,
+					},
+				},
+			});
+			if (delivery.sent === true || delivery.queued === true) {
+				this.predecessorHeadAlerted.add(input.executionId);
+			} else {
+				this.log(
+					`predecessor head alert not delivered for ${input.executionId}: ${delivery.skipped ?? "alert_not_delivered"}`,
+				);
+			}
+		} catch (error) {
+			this.log(
+				`predecessor head alert failed for ${input.executionId}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+
 	constructor(private readonly options: WorkflowEngineDispatcherOptions) {
 		this.env = options.env ?? process.env;
 		this.workflowReworkReentryEnabled =
@@ -291,12 +630,22 @@ export class WorkflowEngineDispatcher {
 			join(homedir(), ".flywheel", "state", "launch-commits");
 		this.log = options.log ?? (() => {});
 		this.now = options.now ?? (() => new Date());
-		this.resolvePredecessorHead =
-			options.resolvePredecessorHead ??
-			((executionId) =>
-				resolveWorkflowHeadAuthority(options.store, executionId).then(
-					(authority) => authority.prHeadSha,
-				));
+		// FLY-2901 §4.6: an injected resolver bypasses the fallback chain entirely
+		// (tests pin it); the default is authority → binding HEAD → branch tip.
+		const injectedPredecessorHead = options.resolvePredecessorHead;
+		this.resolvePredecessorHead = injectedPredecessorHead
+			? (executionId, projectName) =>
+					injectedPredecessorHead(executionId, projectName)
+			: (executionId, projectName, context) =>
+					this.resolvePredecessorHeadWithFallback(
+						executionId,
+						projectName,
+						context,
+					);
+		this.resolveSharedWorktree =
+			options.resolveSharedWorktree ?? (() => undefined);
+		this.takeoverRescueDisabled =
+			options.takeoverRescueDisabled ?? (() => false);
 		this.resolveLeadId = options.resolveLeadId ?? (() => undefined);
 		this.resolveReplacementLeadIntent =
 			options.resolveReplacementLeadIntent ?? (() => undefined);
@@ -926,14 +1275,11 @@ export class WorkflowEngineDispatcher {
 			typeof this.options.store.listWorkflowReworkDeliveries
 		>;
 		try {
+			// FLY-2921: a rework delivery is only ever pending, granted, or
+			// delivered while the engine owns it; `returned_to_lead` waits for
+			// the Lead's door and no state freezes the run.
 			deliveries = this.options.store.listWorkflowReworkDeliveries({
-				states: [
-					"pending",
-					"turn_granted",
-					"awaiting_receipt",
-					"wake_delivered",
-					"held",
-				],
+				states: ["pending", "turn_granted", "wake_delivered"],
 				now: this.now().toISOString(),
 			});
 		} catch (error) {
@@ -943,7 +1289,6 @@ export class WorkflowEngineDispatcher {
 			);
 			return;
 		}
-		const heldRecoveryCandidates = new Set<string>();
 		for (const delivery of deliveries) {
 			const request = this.options.store.getWorkflowReworkRequest(
 				delivery.request_id,
@@ -951,99 +1296,6 @@ export class WorkflowEngineDispatcher {
 			const run = request
 				? this.options.store.getWorkflowRun(request.run_id)
 				: undefined;
-			if (
-				delivery.state === "held" &&
-				request &&
-				run?.engine_owned === 1 &&
-				run.status === "held" &&
-				delivery.last_error === "persisted_target_missing"
-			) {
-				heldRecoveryCandidates.add(delivery.request_id);
-				const route = this.options.store.getLatestWorkflowReworkRoute(
-					delivery.request_id,
-				);
-				if (!route) {
-					result.held += 1;
-					continue;
-				}
-				const probeNow = this.now();
-				const nextProbeAt = this.heldReworkRecoveryProbeAt.get(
-					delivery.request_id,
-				);
-				if (nextProbeAt !== undefined && probeNow.getTime() < nextProbeAt) {
-					continue;
-				}
-				// Pace every real probe, including thrown/unknown/alive outcomes. The
-				// durable delivery backoff remains authoritative across restarts.
-				this.heldReworkRecoveryProbeAt.set(
-					delivery.request_id,
-					probeNow.getTime() + 60_000,
-				);
-				let liveness: GeneralizedLaunchLiveness;
-				try {
-					liveness = await this.probeTerminalLaunchLiveness(
-						route.preferred_actor_execution_id,
-						run.project_name,
-					);
-				} catch (error) {
-					result.held += 1;
-					this.log(
-						`workflow rework pane-loss probe held for ${delivery.request_id}: ${error instanceof Error ? error.message : String(error)}`,
-					);
-					continue;
-				}
-				if (liveness !== "dead") {
-					result.held += 1;
-					continue;
-				}
-				let materialized: { ok: boolean; reason?: string };
-				const attemptedAt = this.now().toISOString();
-				try {
-					materialized =
-						this.options.store.materializeWorkflowReworkReplacement({
-							requestId: delivery.request_id,
-							deadExecutionId: route.preferred_actor_execution_id,
-							newExecutionId: randomUUID(),
-							reason: "persisted_target_missing_and_dead_probe",
-							observedAt: attemptedAt,
-							recoverHeldPaneLoss: true,
-						});
-				} catch (error) {
-					result.held += 1;
-					const reason = (
-						error instanceof Error ? error.message : String(error)
-					).slice(0, 240);
-					this.log(
-						`workflow held rework recovery failed for ${delivery.request_id}: ${reason}`,
-					);
-					this.settleHeldReworkRecoveryFailure({
-						requestId: delivery.request_id,
-						run,
-						reason,
-						now: attemptedAt,
-					});
-					continue;
-				}
-				if (!materialized.ok) {
-					result.held += 1;
-					const reason = (materialized.reason ?? "unknown_failure").slice(
-						0,
-						240,
-					);
-					this.log(
-						`workflow held rework recovery failed for ${delivery.request_id}: ${reason}`,
-					);
-					this.settleHeldReworkRecoveryFailure({
-						requestId: delivery.request_id,
-						run,
-						reason,
-						now: attemptedAt,
-					});
-				} else {
-					this.heldReworkRecoveryProbeAt.delete(delivery.request_id);
-				}
-				continue;
-			}
 			if (
 				!request ||
 				!run ||
@@ -1080,23 +1332,6 @@ export class WorkflowEngineDispatcher {
 				);
 				continue;
 			}
-			if (outcome.kind === "replacement_pending") {
-				const materialized =
-					this.options.store.materializeWorkflowReworkReplacement({
-						requestId: delivery.request_id,
-						deadExecutionId: outcome.executionId,
-						newExecutionId: randomUUID(),
-						reason: outcome.reason,
-						observedAt: this.now().toISOString(),
-					});
-				if (!materialized.ok) {
-					result.held += 1;
-					this.log(
-						`workflow rework replacement held for ${delivery.request_id}: ${materialized.reason}`,
-					);
-				}
-				continue;
-			}
 			if (outcome.kind === "disabled") {
 				const now = this.now().toISOString();
 				const alerted = this.options.store.transitionWorkflowReworkPause({
@@ -1122,11 +1357,6 @@ export class WorkflowEngineDispatcher {
 				result.held += 1;
 			}
 		}
-		for (const requestId of this.heldReworkRecoveryProbeAt.keys()) {
-			if (!heldRecoveryCandidates.has(requestId)) {
-				this.heldReworkRecoveryProbeAt.delete(requestId);
-			}
-		}
 	}
 
 	private async reconcileWorkflowCarriers(
@@ -1146,30 +1376,6 @@ export class WorkflowEngineDispatcher {
 			result.held += 1;
 			this.log(
 				`workflow carrier delivery scan held: ${error instanceof Error ? error.message : String(error)}`,
-			);
-		}
-	}
-
-	private settleHeldReworkRecoveryFailure(input: {
-		requestId: string;
-		run: NonNullable<ReturnType<StateStore["getWorkflowRun"]>>;
-		reason: string;
-		now: string;
-	}): void {
-		try {
-			this.options.store.settleHeldReworkRecoveryFailure({
-				requestId: input.requestId,
-				reason: input.reason,
-				alertIdentity: this.resolveRunAlertIdentity(
-					input.run.project_name,
-					input.run.issue_id,
-					input.run.run_id,
-				),
-				now: input.now,
-			});
-		} catch (error) {
-			this.log(
-				`workflow held rework failure ledger held for ${input.requestId}: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
 	}
@@ -2021,6 +2227,20 @@ export class WorkflowEngineDispatcher {
 					) {
 						continue;
 					}
+					// FLY-2921 C6.1: an open rework's target is replaced only by the
+					// rework coordinator (with the rework content); its unknown
+					// liveness is escalated there, not by this generic scan.
+					if (
+						store.handOffDeadReworkTargetToCoordinator({
+							runId: run.run_id,
+							nodeId: workflowNode.id,
+							attempt: node.attempt,
+							executionId: node.execution_id,
+							now: this.now().toISOString(),
+						})
+					) {
+						continue;
+					}
 					if (
 						store.shouldSuppressDeadExecutionRecovery({
 							executionId: node.execution_id,
@@ -2490,7 +2710,9 @@ export class WorkflowEngineDispatcher {
 			(reworkTarget.conflict ||
 				reworkTarget.preferredActorExecutionId !== intent.execution_id ||
 				intent.reason !== `rework_replacement:${reworkTarget.requestId}` ||
-				reworkTarget.deliveryState !== "replacement_pending")
+				// FLY-2921: a minted replacement waits on `pending`, pointing at
+				// this exact intent's actor, until its launch proves the content.
+				reworkTarget.deliveryState !== "pending")
 		) {
 			this.log(
 				`engine_rework_target_launch_fenced:${reworkTarget.conflict ? "conflict" : `${reworkTarget.requestId}:${reworkTarget.deliveryState}`}`,
@@ -2523,7 +2745,7 @@ export class WorkflowEngineDispatcher {
 						route.target_attempt !== intent.attempt ||
 						route.preferred_actor_execution_id !== intent.execution_id ||
 						delivery.route_revision !== route.revision ||
-						delivery.state !== "replacement_pending" ||
+						delivery.state !== "pending" ||
 						!baseRevision ||
 						!/^[0-9a-f]{40}$/.test(baseRevision)
 					) {
@@ -2840,6 +3062,7 @@ export class WorkflowEngineDispatcher {
 					await this.resolvePredecessorHead(
 						predecessorExecutionId,
 						run.project_name,
+						{ run, nodeId: intent.node_id },
 					)
 				)
 					.trim()
@@ -3113,6 +3336,20 @@ export class WorkflowEngineDispatcher {
 			if (!prepared.ok) throw new Error(prepared.reason);
 		};
 		const role = isWorkflowPhaseRole(node.type) ? node.type : "main";
+		// FLY-2901 §3/§7: every shared branch-B dispatch that carries a start
+		// point may take over the parked worktree in place, so it carries the
+		// engine's "predecessor will not write again" proof and the kill-switch
+		// snapshot read at this moment.
+		const takeoverRescue =
+			isWorkflowPhaseRole(node.type) && startPoint !== undefined
+				? {
+						takeoverRescuePermit: await this.computeTakeoverRescuePermit(
+							run,
+							intent.execution_id,
+						),
+						takeoverRescueDisabled: this.readTakeoverRescueDisabled(),
+					}
+				: {};
 		let startResult: StartResult;
 		try {
 			startResult = await this.options.startDispatcher.start({
@@ -3133,6 +3370,7 @@ export class WorkflowEngineDispatcher {
 						startPoint: recoveryAuthority.headSha,
 					},
 				}),
+				...takeoverRescue,
 				...(workflowResume && { workflowResume }),
 				ignoreRunnerLabelSelection: true,
 				...(predecessor?.issue_identifier && {

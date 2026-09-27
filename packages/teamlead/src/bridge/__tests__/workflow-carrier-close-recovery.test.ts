@@ -22,7 +22,8 @@ vi.mock("../tmux-lookup.js", () => ({
 	killCmuxLinkedSession: vi.fn(async () => ({ killed: false })),
 	probeRunnerProcessLiveness: vi.fn(async () => "absent"),
 }));
-vi.mock("../codex-daemon-teardown.js", () => ({
+vi.mock("../codex-daemon-teardown.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../codex-daemon-teardown.js")>()),
 	reapCodexDaemonForSession: vi.fn(async () => ({ outcome: "not_codex" })),
 }));
 vi.mock("../runner-teardown.js", () => ({

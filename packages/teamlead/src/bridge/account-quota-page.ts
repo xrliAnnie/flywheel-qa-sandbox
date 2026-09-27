@@ -272,8 +272,63 @@ export interface AccountQuotaPageSwitch {
 	vendor: "Codex" | "Claude";
 }
 
+/** FLY-2903: a terminal Codex body still alive or still using quota. */
+export interface AccountQuotaPageTerminalBody {
+	executionId: string;
+	issueIdentifier: string | null;
+	/** SQLite `datetime('now')` or ISO; unparsable text renders as-is (escaped). */
+	terminalAt: string | null;
+	state: string;
+	tokensAfterTerminal: number | null;
+}
+
 export interface AccountQuotaPageOptions {
 	lastSwitch?: AccountQuotaPageSwitch | null;
+	terminalBodies?: readonly AccountQuotaPageTerminalBody[];
+}
+
+const TERMINAL_BODY_STATE_TEXT: Readonly<Record<string, string>> = {
+	owned_seen: "仍被本进程占用，下轮请停",
+	stop_requested: "已请它停下",
+	alive_reaped_pending: "已收掉，待复核",
+	alive_unverifiable: "还活着但证不出身份，未发信号",
+	alive_residual: "收不掉，仍在运行",
+	probe_unknown: "探测结果不确定",
+	pending_confirm: "已停，待二次确认",
+	close_attempted: "已尝试关闭，待巡检确认",
+	closed: "已确认关闭（终态后用过额度）",
+};
+
+function terminalBodyClock(value: string | null, generatedAt: string): string {
+	if (!value) return "时间未知";
+	const iso = value.includes("T") ? value : `${value.replace(" ", "T")}Z`;
+	const parsed = Date.parse(iso);
+	return Number.isFinite(parsed)
+		? formatAccountQuotaPageClock(new Date(parsed).toISOString(), generatedAt)
+		: value;
+}
+
+/** FLY-2903: terminal Codex bodies still alive or burning quota (none → no banner). */
+function renderTerminalBodyBanner(
+	bodies: readonly AccountQuotaPageTerminalBody[],
+	generatedAt: string,
+): string {
+	if (bodies.length === 0) return "";
+	const items = bodies.map((body) => {
+		const tokens =
+			body.tokensAfterTerminal === null
+				? "读不到"
+				: body.tokensAfterTerminal.toLocaleString("en-US");
+		const text = [
+			body.issueIdentifier ?? "单号未知",
+			body.executionId.slice(0, 8),
+			`终态 ${terminalBodyClock(body.terminalAt, generatedAt)}`,
+			`终态后 token ${tokens}`,
+			TERMINAL_BODY_STATE_TEXT[body.state] ?? body.state,
+		].join(" · ");
+		return `<li>${escapeHtml(text)}</li>`;
+	});
+	return `<div class="terminal-body-banner"><strong>${escapeHtml(`⚠ 终态 Codex 体仍在用额度（${bodies.length}）`)}</strong><ul>${items.join("")}</ul></div>`;
 }
 
 type MarkedCell =
@@ -563,9 +618,9 @@ export function renderAccountQuotaPageHtml(
 	<title>账号额度一览</title>
 	<style>
 		:root{color-scheme:light;--ink:#1d1d1f;--muted:#6e6e73;--line:#e3e1dc;--paper:#fbfaf7;--page:#f0efec;--ok:#1f7a68;--active-bg:#e3f4ec;--full:#c0392b;--full-bg:#fdf0ee;--track:#e9e7e2}
-		*{box-sizing:border-box}body{margin:0;background:var(--page);color:var(--ink);font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",system-ui,sans-serif}main{max-width:1280px;margin:0 auto;background:var(--paper);min-height:100vh;padding:38px 28px 48px}header{display:flex;align-items:baseline;justify-content:space-between;gap:16px;border-bottom:2px solid var(--ink);padding-bottom:14px}h1{margin:0;font-size:25px;letter-spacing:-.02em}.generated{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)}section{margin-top:30px}h2{font-size:17px;margin:0 0 8px}.table-wrap{overflow-x:auto}table{width:100%;min-width:990px;border-collapse:collapse;border:1px solid var(--line)}th,td{text-align:left;padding:12px 13px;border-bottom:1px solid var(--line);vertical-align:middle}th{font-size:11px;letter-spacing:.06em;color:var(--muted);white-space:nowrap}.provider-unavailable td{color:var(--muted);font-size:12px}.provider-unavailable span{display:block}.quota-group-spacer td{height:10px;padding:0;border:0;background:var(--paper)}.quota-group[data-group="full"] .quota-row td{background:var(--full-bg)}.group-title td{background:var(--paper);color:var(--muted);font-size:12px;font-weight:650;letter-spacing:.04em;padding-top:15px;padding-bottom:6px}.active-account td{background:var(--active-bg)!important}.active-account td:first-child{box-shadow:inset 4px 0 0 var(--ok)}.account-name{display:flex;align-items:center;gap:7px;font-weight:700}.active-dot{width:8px;height:8px;border-radius:50%;background:var(--ok);flex:none}.active-chip{font-size:10px;color:var(--ok);background:#d8eee6;border-radius:5px;padding:1px 6px}.account-tier,.account-note{display:block;color:var(--muted);font-size:11px;margin-top:4px;max-width:240px;white-space:normal}.reset-time,.card-lines{font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}.card-lines{display:flex;flex-direction:column}.quota-na{color:#a1a1a6}.quota-meter{min-width:118px}.meter-copy{display:flex;align-items:baseline;gap:6px;margin-bottom:5px}.quota-pct{font:650 13px ui-monospace,SFMono-Regular,Menlo,monospace}.dimension-label{font-size:10px;color:var(--muted)}.dimension-full{font-size:10px;font-weight:700;color:var(--full)}progress{display:block;width:100%;height:6px;border:0;border-radius:3px;overflow:hidden;background:var(--track);accent-color:var(--ok)}progress::-webkit-progress-bar{background:var(--track)}progress::-webkit-progress-value{background:var(--ok)}progress::-moz-progress-bar{background:var(--ok)}.dimension-is-full progress{accent-color:var(--full)}.dimension-is-full progress::-webkit-progress-value{background:var(--full)}.dimension-is-full progress::-moz-progress-bar{background:var(--full)}.dimension-is-full .quota-pct{color:var(--full)}.next-charge{white-space:nowrap}.charge-note,.charge-read-time{display:block;color:var(--muted);font-size:11px;margin-top:4px;white-space:nowrap}table.vercel-table{min-width:640px}.section-caption{font-size:12px;color:var(--muted);margin:-4px 0 8px}.retired-account td{color:var(--muted)}.reading-time{display:block;color:var(--muted);font-size:11px;margin-top:4px}.switch-stale{display:block;color:#b25e00;font-size:11px;margin-top:4px;white-space:normal}.switch-banner{margin-top:14px;padding:8px 12px;border-left:4px solid #ff9500;background:#fff6e8;font-size:13px}@media(max-width:700px){main{padding:26px 14px 40px}header{display:block}.generated{margin-top:8px}h1{font-size:23px}}
+		*{box-sizing:border-box}body{margin:0;background:var(--page);color:var(--ink);font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",system-ui,sans-serif}main{max-width:1280px;margin:0 auto;background:var(--paper);min-height:100vh;padding:38px 28px 48px}header{display:flex;align-items:baseline;justify-content:space-between;gap:16px;border-bottom:2px solid var(--ink);padding-bottom:14px}h1{margin:0;font-size:25px;letter-spacing:-.02em}.generated{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)}section{margin-top:30px}h2{font-size:17px;margin:0 0 8px}.table-wrap{overflow-x:auto}table{width:100%;min-width:990px;border-collapse:collapse;border:1px solid var(--line)}th,td{text-align:left;padding:12px 13px;border-bottom:1px solid var(--line);vertical-align:middle}th{font-size:11px;letter-spacing:.06em;color:var(--muted);white-space:nowrap}.provider-unavailable td{color:var(--muted);font-size:12px}.provider-unavailable span{display:block}.quota-group-spacer td{height:10px;padding:0;border:0;background:var(--paper)}.quota-group[data-group="full"] .quota-row td{background:var(--full-bg)}.group-title td{background:var(--paper);color:var(--muted);font-size:12px;font-weight:650;letter-spacing:.04em;padding-top:15px;padding-bottom:6px}.active-account td{background:var(--active-bg)!important}.active-account td:first-child{box-shadow:inset 4px 0 0 var(--ok)}.account-name{display:flex;align-items:center;gap:7px;font-weight:700}.active-dot{width:8px;height:8px;border-radius:50%;background:var(--ok);flex:none}.active-chip{font-size:10px;color:var(--ok);background:#d8eee6;border-radius:5px;padding:1px 6px}.account-tier,.account-note{display:block;color:var(--muted);font-size:11px;margin-top:4px;max-width:240px;white-space:normal}.reset-time,.card-lines{font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}.card-lines{display:flex;flex-direction:column}.quota-na{color:#a1a1a6}.quota-meter{min-width:118px}.meter-copy{display:flex;align-items:baseline;gap:6px;margin-bottom:5px}.quota-pct{font:650 13px ui-monospace,SFMono-Regular,Menlo,monospace}.dimension-label{font-size:10px;color:var(--muted)}.dimension-full{font-size:10px;font-weight:700;color:var(--full)}progress{display:block;width:100%;height:6px;border:0;border-radius:3px;overflow:hidden;background:var(--track);accent-color:var(--ok)}progress::-webkit-progress-bar{background:var(--track)}progress::-webkit-progress-value{background:var(--ok)}progress::-moz-progress-bar{background:var(--ok)}.dimension-is-full progress{accent-color:var(--full)}.dimension-is-full progress::-webkit-progress-value{background:var(--full)}.dimension-is-full progress::-moz-progress-bar{background:var(--full)}.dimension-is-full .quota-pct{color:var(--full)}.next-charge{white-space:nowrap}.charge-note,.charge-read-time{display:block;color:var(--muted);font-size:11px;margin-top:4px;white-space:nowrap}table.vercel-table{min-width:640px}.section-caption{font-size:12px;color:var(--muted);margin:-4px 0 8px}.retired-account td{color:var(--muted)}.reading-time{display:block;color:var(--muted);font-size:11px;margin-top:4px}.switch-stale{display:block;color:#b25e00;font-size:11px;margin-top:4px;white-space:normal}.switch-banner{margin-top:14px;padding:8px 12px;border-left:4px solid #ff9500;background:#fff6e8;font-size:13px}.terminal-body-banner{margin-top:14px;padding:8px 12px;border-left:4px solid #ff3b30;background:#fff0ef;font-size:13px}.terminal-body-banner ul{margin:6px 0 0;padding-left:18px}.terminal-body-banner li{font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-all}@media(max-width:700px){main{padding:26px 14px 40px}header{display:block}.generated{margin-top:8px}h1{font-size:23px}}
 	</style>
 </head>
-<body><main><header><h1>账号额度一览</h1><div class="generated">${escapeHtml(formatAccountQuotaPageInstant(view.generatedAt))}</div></header>${renderSwitchBanner(view, context)}${renderTable("Claude", view.claude, view.claudeUnavailable, context)}${renderTable("Codex", view.codex, view.codexUnavailable, context)}${vercel === undefined ? "" : renderVercelTable(vercel)}</main></body>
+<body><main><header><h1>账号额度一览</h1><div class="generated">${escapeHtml(formatAccountQuotaPageInstant(view.generatedAt))}</div></header>${renderSwitchBanner(view, context)}${renderTerminalBodyBanner(options.terminalBodies ?? [], view.generatedAt)}${renderTable("Claude", view.claude, view.claudeUnavailable, context)}${renderTable("Codex", view.codex, view.codexUnavailable, context)}${vercel === undefined ? "" : renderVercelTable(vercel)}</main></body>
 </html>`;
 }

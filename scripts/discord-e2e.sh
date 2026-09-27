@@ -9,6 +9,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/qa-slot-pool.sh
+source "${SCRIPT_DIR}/lib/qa-slot-pool.sh"
 
 log() { echo "[discord-e2e] $(date +%H:%M:%S) $*" >&2; }
 
@@ -32,10 +34,14 @@ fi
 
 if [[ -z "$SLOT_INFO" ]]; then
   # Try to find running slot from lock files
-  for i in 1 2 3 4; do
+  SLOTS_FILE="${HOME}/.flywheel/test-slots.json"
+  if ! TOTAL_SLOTS="$(qa_slot_pool_count "$SLOTS_FILE")"; then
+    echo "ERROR: Invalid test slot pool at ${SLOTS_FILE}." >&2
+    exit 1
+  fi
+  for i in $(seq 1 "$TOTAL_SLOTS"); do
     if [[ -d "/tmp/flywheel-test-slot-${i}.lock" ]]; then
       SLOT_DIR="/tmp/flywheel-test-slot-${i}"
-      SLOTS_FILE="${HOME}/.flywheel/test-slots.json"
       SLOT_IDX=$((i - 1))
       # Schema matches ~/.flywheel/test-slots.json (FLY-96)
       PORT=$(jq -r ".slots[${SLOT_IDX}].bridgePort" "$SLOTS_FILE")

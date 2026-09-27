@@ -63,6 +63,8 @@ allowed_hits=(
   'packages/teamlead/src/StateStore.ts|three_stage_turn_stuck'
   'packages/teamlead/src/__tests__/StateStore.workflow-holds.test.ts|three_stage_turn_stuck'
   'packages/teamlead/src/__tests__/fly2278-hold-writers.test.ts|three_stage_turn_stuck'
+  'packages/teamlead/src/__tests__/fly2921-delivery-operations.test.ts|three_stage_turn_stuck'
+  'packages/teamlead/src/__tests__/fly2921-rework-wake-no-freeze.test.ts|three_stage_turn_stuck'
   'packages/teamlead/src/__tests__/hold-shape-registry.test.ts|three_stage_turn_stuck'
   'packages/teamlead/src/bridge/alert-kind-copy.ts|three_stage_turn_stuck'
   'packages/teamlead/src/bridge/delivery-contract/sources/turn-wake.ts|three_stage_turn_stuck'
@@ -106,6 +108,10 @@ allowed_hits=(
   'packages/teamlead/src/bridge/kind-contract.ts|three_stage_takeover_failed'
   'packages/teamlead/src/bridge/plugin.ts|three_stage_takeover_failed'
   'scripts/lead-alert.sh|three_stage_takeover_failed'
+  # FLY-2901 §4.6: the engine's predecessor-head fallback reuses the takeover
+  # refusal kind for its one-shot predecessor_head_unavailable alert.
+  'packages/teamlead/src/bridge/workflow-engine-dispatcher.ts|three_stage_takeover_failed'
+  'packages/teamlead/src/__tests__/workflow-engine-dispatcher.test.ts|three_stage_takeover_failed'
 )
 
 printf '%s\n' 'Three-stage' 'THREE_STAGE' 'ThreeStage' > "$TMP_ROOT/positive-control"

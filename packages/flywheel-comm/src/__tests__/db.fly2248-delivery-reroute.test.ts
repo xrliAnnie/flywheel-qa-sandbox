@@ -217,10 +217,13 @@ describe("FLY-2248 sanctioned CommDB hold recovery", () => {
 		const input = {
 			sourceId: "turn-held",
 			receiptId: "hold-resume:turn-1",
+			nowMs: Date.parse("2026-09-02T07:13:00.000Z"),
 		};
 
-		expect(db.resumeTurnWakeHold(input)).toEqual({ idempotentReplay: false });
-		expect(db.resumeTurnWakeHold(input)).toEqual({ idempotentReplay: true });
+		expect(db.resumeTurnWakeHold(input)).toEqual({ kind: "reset" });
+		expect(db.resumeTurnWakeHold(input)).toEqual({
+			kind: "idempotent_replay",
+		});
 		expect(db.getTurnWake("turn-held")).toMatchObject({
 			state: "pending",
 			push_count: 0,
@@ -271,8 +274,9 @@ describe("FLY-2248 sanctioned CommDB hold recovery", () => {
 			db.resumeTurnWakeHold({
 				sourceId: "turn-consumed",
 				receiptId: "hold-resume:turn-consumed",
+				nowMs: Date.parse("2026-09-03T07:12:00.000Z"),
 			}),
-		).toEqual({ idempotentReplay: false, noop: true });
+		).toEqual({ kind: "noop", reason: "acked" });
 		const raw = (db as unknown as { db: Database.Database }).db;
 		expect(
 			raw
@@ -314,14 +318,16 @@ describe("FLY-2248 sanctioned CommDB hold recovery", () => {
 			db.resumeTurnWakeHold({
 				sourceId: "turn-cancelled",
 				receiptId: "hold-resume:turn-cancelled",
+				nowMs: Date.parse("2026-09-03T07:12:00.000Z"),
 			}),
-		).toEqual({ idempotentReplay: false, noop: true });
+		).toEqual({ kind: "noop", reason: "cancelled" });
 		expect(
 			db.resumeTurnWakeHold({
 				sourceId: "turn-pruned",
 				receiptId: "hold-resume:turn-pruned",
+				nowMs: Date.parse("2026-09-03T07:12:00.000Z"),
 			}),
-		).toEqual({ idempotentReplay: false, noop: true });
+		).toEqual({ kind: "noop", reason: "source_missing" });
 	});
 });
 

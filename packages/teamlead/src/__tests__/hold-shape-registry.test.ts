@@ -12,6 +12,7 @@ const EXPECTED_SHAPES = [
 	"rework_activation_stalled_held",
 	"rework_pane_loss_handoff",
 	"rework_retry_exhausted",
+	"rework_returned_to_lead",
 	"unlaunched_admission_rolled_back",
 	"unlaunched_admission_held",
 	"completion_receipt_missing",
@@ -37,7 +38,7 @@ describe("FLY-2248 sanctioned hold-shape registry", () => {
 			HOLD_SHAPE_REGISTRY.filter(
 				({ authoritativeStore }) => authoritativeStore === "state",
 			),
-		).toHaveLength(19);
+		).toHaveLength(20);
 		expect(
 			HOLD_SHAPE_REGISTRY.filter(
 				({ authoritativeStore }) => authoritativeStore === "comm",
@@ -96,6 +97,14 @@ describe("FLY-2248 sanctioned hold-shape registry", () => {
 
 	it("classifies delivery and run-derived holds alongside the unified recovery descriptor and historical aliases", () => {
 		expect(getHoldShape("carrier_needs_lead")?.scope).toBe("delivery");
+		// FLY-2921: returning a rework to the Lead never freezes the run.
+		expect(getHoldShape("rework_returned_to_lead")?.scope).toBe("delivery");
+		expect(getHoldShape("rework_returned_to_lead")?.resumeAction).toBe(
+			"resume_rework",
+		);
+		expect(
+			getHoldShape("rework_returned_to_lead")?.requiredDecision,
+		).toBeUndefined();
 		expect(getHoldShape("delivery_undeliverable_no_recipient")?.scope).toBe(
 			"delivery",
 		);

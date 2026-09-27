@@ -25,6 +25,7 @@ vi.mock("flywheel-core", async (importOriginal) => ({
 
 import type { ApplyTransitionOpts } from "../applyTransition.js";
 import { handleTerminate } from "../bridge/actions.js";
+import { registerCodexTerminalTeardown } from "../bridge/codex-daemon-teardown.js";
 import { killTmuxWindow, lookupTmuxTarget } from "../bridge/tmux-lookup.js";
 import { StateStore } from "../StateStore.js";
 
@@ -344,5 +345,81 @@ describe("handleTerminate (FLY-228)", () => {
 		const res = await handleTerminate(store, "e1", opts);
 		expect(res.success).toBe(true);
 		expect(store.getSession("e1")!.status).toBe("terminated");
+	});
+
+	describe("FLY-2903 terminate stops the in-process Codex owner first", () => {
+		let isolated: string;
+		const savedEnv = {
+			session: process.env.FLYWHEEL_CODEX_SESSION_DIR,
+			socket: process.env.FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT,
+		};
+		beforeEach(() => {
+			isolated = mkdtempSync(join(tmpdir(), "fly2903-terminate-"));
+			// The real reap only reads these (ledger absent → no signal).
+			process.env.FLYWHEEL_CODEX_SESSION_DIR = join(isolated, "sessions");
+			process.env.FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT = join(isolated, "sock");
+		});
+		afterEach(() => {
+			rmSync(isolated, { recursive: true, force: true });
+			for (const [key, value] of [
+				["FLYWHEEL_CODEX_SESSION_DIR", savedEnv.session],
+				["FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT", savedEnv.socket],
+			] as const) {
+				if (value === undefined) delete process.env[key];
+				else process.env[key] = value;
+			}
+		});
+
+		it("requests a terminate stop before the reap and records the attempt", async () => {
+			store.upsertSession({
+				execution_id: "codex-1",
+				issue_id: "i1",
+				project_name: "geoforge3d",
+				status: "awaiting_review",
+				issue_identifier: "GEO-1",
+				adapter_type: "codex-tmux",
+			});
+			const order: string[] = [];
+			const requestStop = vi.fn(async () => {
+				order.push("requestStop");
+				return "stopped" as const;
+			});
+			const recordCloseAttempt = vi.fn(() => {
+				order.push("ledger");
+			});
+			const dispose = registerCodexTerminalTeardown({
+				owners: { requestStop },
+				closeLedger: { recordCloseAttempt },
+			});
+			try {
+				const res = await handleTerminate(store, "codex-1", opts);
+				expect(res.success).toBe(true);
+			} finally {
+				dispose();
+			}
+			expect(requestStop).toHaveBeenCalledWith("codex-1", "terminate", {});
+			expect(order).toEqual(["requestStop", "ledger"]);
+			expect(recordCloseAttempt).toHaveBeenCalledWith({
+				executionId: "codex-1",
+				source: "bridge.terminate",
+				ownerStop: "stopped",
+				reap: "unverifiable",
+			});
+			expect(store.getSession("codex-1")?.status).toBe("terminated");
+		});
+
+		it("without a registered wiring terminate keeps its legacy reap-only path", async () => {
+			store.upsertSession({
+				execution_id: "codex-2",
+				issue_id: "i1",
+				project_name: "geoforge3d",
+				status: "awaiting_review",
+				issue_identifier: "GEO-1",
+				adapter_type: "codex-tmux",
+			});
+			const res = await handleTerminate(store, "codex-2", opts);
+			expect(res.success).toBe(true);
+			expect(store.codexTerminalClose.get("codex-2")).toBeUndefined();
+		});
 	});
 });

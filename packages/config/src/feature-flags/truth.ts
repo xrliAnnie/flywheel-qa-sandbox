@@ -749,6 +749,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"secret: one-shot generalized workflow output credential",
 	FLYWHEEL_ALERT_REPAIR_BOT_TOKEN_ENV:
 		"config value: repair-bot token env NAME",
+	FLYWHEEL_QA_IDLE_THREAD_SWEEP_BOT_TOKEN_ENV:
+		"config value: QA Testing idle-thread sweep bot token env NAME (FLY-2916); unset keeps the QA group off",
 	// value config (non-boolean)
 	FLYWHEEL_PROJECTS: "config value: inline projects json (env-pin)",
 	FLYWHEEL_COMM_BACKEND: "config value: comm backend",
@@ -868,6 +870,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"numeric tuning: optional review concurrency cap; zero is unlimited (FLY-1949)",
 	FLYWHEEL_CLAUDE_REVIEW_TIMEOUT_MS:
 		"tuning knob: active Claude review subprocess timeout (FLY-1254)",
+	FLYWHEEL_REWORK_DELTA_TIMEOUT_MS:
+		"tuning knob: server-side rework completion diff timeout; a timeout degrades to an audited unverified delta (FLY-2921 C7)",
 	FLYWHEEL_CRASH_REAP_GRACE_MIN: "tuning knob: crash reap grace minutes",
 	FLYWHEEL_PARKED_PHASE_STALE_HOURS:
 		"tuning knob: parked DAG workflow reclaim time backstop hours (FLY-1204)",
