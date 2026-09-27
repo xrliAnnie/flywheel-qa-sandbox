@@ -9,6 +9,10 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 - `DRY_RUN=1 zsh handin.zsh`（提交 d87806136 后，本机）：`DRY_RUN OK: A1-A8 PASS on 2dd29e0276617cf21e31ce4bfe2a4df792d8cf0a | PR body checked; missing markers: 92e28887`。exit 0；零写入（A0 只更新沙箱 remote-tracking ref）。
 - R1 时用 `|| echo FAIL` 形式跑 A1–A7 曾出现 A7 FAIL 而整块 exit 0（Codex 复现），这正是改成脚本逐步检查退出码的原因。
 
+### 最终 DRY_RUN
+
+`DRY_RUN OK: A1-A7 PASS; A8=PASS (PR xrliAnnie/flywheel#1374 head == 2dd29e0276617cf21e31ce4bfe2a4df792d8cf0a; body missing markers: 92e28887; sandbox never edits the prod PR — missing items are host-side Lead work) | head 2dd29e0276617cf21e31ce4bfe2a4df792d8cf0a` (exit 0，提交 c48f6c156 的脚本)
+
 ## 本地交付页验证
 
 - 文件 `founder-design.html`，  134346 字节；SHA-256 `549b01f4a904a70ca23d5b1212a5d1d1ecb1b7b3e120d501d942bee1533ea369`。
