@@ -143,14 +143,23 @@ test("allows the audited Codex question consumer but still rejects unrelated rel
 	config.repositories.main.includeRoots.push("packages");
 	const consumer =
 		"packages/teamlead/src/lead-backends/codex/runner-actions.ts";
+	const reviewRecoveryConsumer =
+		"packages/teamlead/src/bridge/review-recovery-notice-sink.ts";
 	const other = "packages/teamlead/src/lead-backends/codex/unrelated.ts";
 	mkdirSync(dirname(join(mainRoot, consumer)), { recursive: true });
+	mkdirSync(dirname(join(mainRoot, reviewRecoveryConsumer)), {
+		recursive: true,
+	});
 	writeFileSync(
 		join(mainRoot, "src/migration.ts"),
 		"DROP TABLE IF EXISTS legacy_receipt_table;\n",
 	);
 	writeFileSync(
 		join(mainRoot, consumer),
+		'if (question.relay_state === "terminal_disposed") refuse();\n',
+	);
+	writeFileSync(
+		join(mainRoot, reviewRecoveryConsumer),
 		'if (question.relay_state === "terminal_disposed") refuse();\n',
 	);
 	const bootstrap = "packages/teamlead/src/bridge/bootstrap-generator.ts";

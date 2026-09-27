@@ -166,6 +166,7 @@
 		"packages/flywheel-comm/src/receipt-teardown-closeout.ts",
 		"packages/flywheel-comm/src/types.ts",
 		"packages/teamlead/src/lead-backends/codex/runner-actions.ts",
+		"packages/teamlead/src/bridge/review-recovery-notice-sink.ts",
 		"scripts/lib/fly-2006-mailbox-archive.mjs",
 		"scripts/lib/fly-2006-retention-engine.mjs",
 		"scripts/lib/fly-2006-retention-registry.mjs",
