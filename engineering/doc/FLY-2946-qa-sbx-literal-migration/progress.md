@@ -1,14 +1,14 @@
 ---
 issue: FLY-2946
 phase: implement
-phaseCursor: 3/5
-updated: 2026-09-27T11:40:19.265Z
-nextStep: Run literal/path discovery, lint/build checks, inspect the diff, then
-  commit and request code review.
+phaseCursor: 4/5
+updated: 2026-09-27T11:43:59.995Z
+nextStep: Create the FLY-2946 milestone as the literal-last commit, push the
+  final head, and obtain effective exact-head code review.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2946 progress
-**phase**: implement (3/5)
-**next**: Run literal/path discovery, lint/build checks, inspect the diff, then commit and request code review.
+**phase**: implement (4/5)
+**next**: Create the FLY-2946 milestone as the literal-last commit, push the final head, and obtain effective exact-head code review.
