@@ -17739,6 +17739,39 @@ export class StateStore {
 		return result;
 	}
 
+	/** Read-only exhaustion proof for body death. Missing, stale or malformed
+	 * policy leaves reown priority intact; this never spends recovery budget. */
+	hasCurrentCodexRecoveryExhaustion(executionId: string, nowMs: number): boolean {
+		if (!Number.isSafeInteger(nowMs) || nowMs < 0) return false;
+		const session = this.getSession(executionId);
+		const row = this.db.raw.prepare("SELECT * FROM recovery_claim WHERE execution_id = ?")
+			.get(executionId) as RecoveryPolicyRow | undefined;
+		if (!session || !row || row.recovery_policy_version !== 1 ||
+			row.episode_state !== "open" || row.episode_lifecycle_revision !== (session.lifecycle_revision ?? 0) ||
+			(row.claim_token && row.lease_purpose !== "mutation") ||
+			!row.exhaustion_kind || !row.last_failure_json || row.last_failure_json.length > 8192)
+			return false;
+		let last: CodexRecoverySettlement | undefined;
+		try { last = parseRecoverySettlement(JSON.parse(row.last_failure_json)); }
+		catch { return false; }
+		if (!last || last.episodeId !== row.episode_id || last.reservationSeq !== row.reservation_seq ||
+			last.lifecycleRevision !== row.episode_lifecycle_revision ||
+			last.chargedAttempts !== row.episode_attempts || last.readinessFailures !== row.readiness_failures)
+			return false;
+		if (row.exhaustion_kind === "charged")
+			return last.exhaustionKind === "charged" && last.exhaustionTrigger === "charged_count" &&
+				last.chargedAttempts === MAX_CHARGED_ATTEMPTS;
+		if (last.exhaustionKind === "readiness" && last.exhaustionTrigger === "readiness_count")
+			return last.readinessFailures === MAX_READINESS_FAILURES;
+		// The existing finalizer may settle the deadline after the last refundable
+		// failure. Require its persisted exhaustion kind and the exact old window.
+		return (last.exhaustionTrigger === null || last.exhaustionTrigger === "readiness_deadline") &&
+			Number.isSafeInteger(row.first_readiness_at_ms) && row.first_readiness_at_ms! >= 0 &&
+			row.readiness_deadline_ms === row.first_readiness_at_ms! + READINESS_WINDOW_MS &&
+			last.readinessDeadlineMs === row.readiness_deadline_ms &&
+			nowMs >= row.readiness_deadline_ms;
+	}
+
 	/** Monitoring grace never grants spawn or worktree mutation authority. */
 	getCodexRecoveryDeferral(
 		executionId: string,

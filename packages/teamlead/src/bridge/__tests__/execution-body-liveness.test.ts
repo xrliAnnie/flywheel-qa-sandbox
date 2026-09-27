@@ -6,6 +6,7 @@ describe("FLY-2919 current execution body observations", () => {
 	let clock: number;
 	let enabled: boolean;
 	let recovering: boolean;
+	let recoveryEligible: boolean;
 	let row: any;
 	let session: any;
 	let body: any;
@@ -28,6 +29,7 @@ describe("FLY-2919 current execution body observations", () => {
 		clock = 1000;
 		enabled = true;
 		recovering = false;
+		recoveryEligible = false;
 		session = {
 			execution_id: "exec-1",
 			adapter_type: "codex-tmux",
@@ -86,6 +88,7 @@ describe("FLY-2919 current execution body observations", () => {
 			{
 				now: () => clock,
 				isRecoveryActive: () => recovering,
+				isRecoveryEligible: () => recoveryEligible,
 				sample: capture,
 			},
 		);
@@ -276,5 +279,45 @@ describe("FLY-2919 current execution body observations", () => {
 		cancel.abort();
 		expect(await first).toMatchObject({ verdict: "unknown" });
 		expect(await second).toMatchObject({ verdict: "unknown" });
+	});
+	it("remaining reown budget defers death, without turning a live worker into unknown", async () => {
+		recoveryEligible = true;
+		const probe = observer();
+		expect(await probe.observe("exec-1")).toMatchObject({
+			verdict: "unknown",
+			reason: "recovery_active",
+		});
+		sample.processes = [
+			{
+				pid: 200,
+				ppid: 1,
+				pgid: 200,
+				startIdentity: "worker-start",
+				state: "running",
+			},
+		];
+		sample.worker = { executable: binding.executable, cwd: binding.cwd };
+		sample.daemon = "alive";
+		const alive = (await probe.observe("exec-1"))!;
+		expect(alive.verdict).toBe("alive");
+		expect(probe.isCurrent(alive)).toBe(true);
+	});
+	it("new recovery eligibility after OS sampling vetoes death at both observation and synchronous CAS", async () => {
+		const probe = observer();
+		const dead = (await probe.observe("exec-1"))!;
+		expect(dead.verdict).toBe("dead");
+		recoveryEligible = true;
+		expect(probe.isCurrent(dead)).toBe(false);
+		recoveryEligible = false;
+		const raced = observer(
+			vi.fn(async () => {
+				recoveryEligible = true;
+				return sample;
+			}),
+		);
+		expect(await raced.observe("exec-1")).toMatchObject({
+			verdict: "unknown",
+			reason: "recovery_active",
+		});
 	});
 });

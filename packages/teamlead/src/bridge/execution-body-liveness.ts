@@ -25,6 +25,8 @@ export interface ExecutionBodyObserverOptions {
 	isEnabled(): boolean;
 	/** Existing reowner authority; an indeterminate recovery read must protect it. */
 	isRecoveryActive(executionId: string): boolean;
+	/** Remaining recovery budget vetoes death, but does not hide a live worker. */
+	isRecoveryEligible?(executionId: string): boolean;
 	now?: () => number;
 	sample?: typeof captureExecutionProcessSample;
 }
@@ -72,6 +74,14 @@ export function createExecutionBodyObserver(
 			return true;
 		}
 	}
+	function recoveryEligible(executionId: string): boolean {
+		try {
+			return options.isRecoveryEligible?.(executionId) === true;
+		} catch {
+			return true;
+		}
+	}
+
 	function snapshot(executionId: string): Snapshot | undefined {
 		try {
 			const session = store.getSession(executionId);
@@ -158,11 +168,15 @@ export function createExecutionBodyObserver(
 			const current = snapshot(initial.input.identity.executionId);
 			if (!current || current.key !== initial.key)
 				return unknown(initial, "process_authority_changed");
-			return observeExecutionProcesses({
+			const observation = observeExecutionProcesses({
 				...current.input,
 				sample,
 				nowMs: now(),
 			});
+			return observation.verdict === "dead" &&
+				recoveryEligible(initial.input.identity.executionId)
+				? unknown(initial, "recovery_active")
+				: observation;
 		} catch {
 			return unknown(
 				initial,
@@ -208,6 +222,11 @@ export function createExecutionBodyObserver(
 		},
 		isCurrent(observation: BodyObservation): boolean {
 			if (!enabled() || observation.verdict === "unknown") return false;
+			if (
+				observation.verdict === "dead" &&
+				recoveryEligible(observation.identity.executionId)
+			)
+				return false;
 			const current = snapshot(observation.identity.executionId);
 			return Boolean(
 				current?.input.binding &&

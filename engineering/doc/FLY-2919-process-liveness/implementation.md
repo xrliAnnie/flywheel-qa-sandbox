@@ -5,7 +5,7 @@ Issue: FLY-2919 (https://linear.app/geoforge3d/issue/FLY-2919/病根修复-2-体
 
 ## 当前范围与游标
 
-当前执行 `bd58c685-54d1-4ceb-9240-20611b35b895`，implement 0/6；最新精确提交与下一步以同目录 progress.md 为准。A1–A10、B1/B2/B3、C1/C2 与 D1 已有分批证据；B4 接入终态 Codex sweep，B5 完成独立采样核心但未接生产启动。全部 A–F 与九单目标不变，生产 Heartbeat/dispatcher 死亡提交、独立 cadence、逻辑重入、legacy 与最终验收仍未完成。没有有效最终代码复审、PR、full CI、QA 或 handoff 声明。以下保留各次检查点历史，文末是最近批次。
+当前执行 `bd58c685-54d1-4ceb-9240-20611b35b895`，implement 0/6；最新精确提交与下一步以同目录 progress.md 为准。A1–A10、B1/B2/B3、C1/C2 与 D1 已有分批证据；B4 接入终态 Codex sweep，B5 完成独立采样核心但未接生产启动，B6 接入恢复预算死亡否决。全部 A–F 与九单目标不变，生产 Heartbeat/dispatcher 死亡提交、独立 cadence、逻辑重入、legacy 与最终验收仍未完成。没有有效最终代码复审、PR、full CI、QA 或 handoff 声明。以下保留各次检查点历史，文末是最近批次。
 
 ## 首次开工范围与游标（历史）
 
@@ -431,3 +431,17 @@ RED/GREEN：采样器初始缺模块RED；取消透传新增测试在旧observer
 下一批必须把 Heartbeat/dispatcher 接至 C2 的共同 StateStore+CommDB事务，先实现 Codex有效binding且复活预算未耗尽时reown优先；当前isRecoveryActive仅识别现有deferral，不能把它当完整预算判据。完成 marker 必须先对账，pane/server/心跳年龄不得再授权failed；保留死亡告警及崩溃后义务/告警重放。同物理generation新逻辑activation、legacy绑定、ordinary/rework结账和剩余直接窗口消费者仍未完成。全A–F/九单范围不变，A9 routes原15秒超时、有效review/PR/full CI/QA/handoff仍未完成。
 
 B5 最终验证：9个具体文件逐一最终147 pass；其中feature-flags-drift首跑13 pass/1项原5秒timeout，在其他检查结束后同一命令、同一期限重跑14 pass（断言757ms）。保留原失败日志，不更改守卫或超时。限定发现文件的owning related为4文件70 pass。最终teamlead及依赖build、teamlead/voice-codex typecheck、lint均exit0（25既有warning）；首次build发现新增索引的undefined类型未缩窄，已修复。FLY-1560/2211守卫保留。未跑整库/整包测试、无新shell测试、未验证真实OS或529。命令、红绿、首次失败/重试及源码hash归档implementation-b5-evidence.json.gz；匹配与排除理由归档implementation-b5-consumers.json.gz。
+
+## B6 Codex 复活预算优先（执行 bd58c685）
+
+从 B5 `7f5be0ba5` 续接，TURN implement epoch14，无新Lead指令。生产plugin的共用BodyObserver现注入独立的isRecoveryEligible死亡否决：适用Codex可恢复状态、当前run/node/attempt绑定、无retry_successor且非批准retiring/standby/resuming时，在没有当前耗尽证明前保留reown优先。未领取第一次claim仍受保护；临时缺runtime不能消费预算。显式room排除沿既有isCodexReownExcluded；绑定已被替代/运行已结束/终态不复活。读库或room判断异常保护为unknown。
+
+StateStore新增只读hasCurrentCodexRecoveryExhaustion，不修改预算、schema、既有claim/settle/finalize语义。证明要求policy v1/open、当前lifecycle revision、同episode/reservation、完整有界last_failure_json、现有解析器验证、持久计数相等及charged/readiness真实耗尽。readiness期限过去本身不够：既有finalizer须先持久化exhaustion_kind；再核原readiness window、当前时刻和settlement期限一致。畸形/旧代次/新recovery claim均不撤销复活优先。同步mutation lease允许读取旧结算证明；其既有commit关闭并重置episode的语义保留，新episode不能沿用旧耗尽。
+
+isRecoveryEligible只推迟dead，不把独立证实的alive改unknown；采样完成后及isCurrent同步CAS再读。真正pending reservation仍走既有isRecoveryActive。额外发现getCodexRecoveryDeferral在已到期readiness结账后仍可能返回expired_readiness，不能用Boolean把它当永远in-flight；生产callback因此只把pending_reservation作为active，readiness余额由上述死亡否决处理。未改native owner接纳、reowner运行入口、既有恢复预算或重启上限。
+
+RED/GREEN：旧observer新增两项均RED（23旧项pass）：尚有预算的dead未被推迟，以及采样后新恢复资格未挡住同步消费。StateStore新证明接口2项RED/32旧项pass，新增绑定策略先缺模块RED；生产active callback的expired-readiness结构契约1 RED/12pass。修复后StateStore34项已过，含首claim/两次charged、corrupt字段、mutation lease、readiness deadline-finalize先后。中途一个测试错误地期望mutation commit仍保持耗尽，核查16985行现有重置语义后改为明确验证重置，未改生产语义；保留诊断日志。
+
+本批是死亡消费者接线前必需的复活优先判据。生产共用observer已接该判据，但Heartbeat declareZombie/reapOrphans及dispatcher仍未接C2事务，不能称主账误判已消除。下一批直接接这些入口，删除pane/server/心跳年龄的死亡授权和parked分流，保留marker-before-death、当前身份CAS和死亡告警重放，并启动B5 sampler。同generation逻辑重入、legacy与剩余消费者/九单验收仍待完成；无review/PR/full CI/QA/handoff声明。
+
+B6 最终验证：13个具体文件逐一240 pass；限定发现文件的owning related为9文件212 pass。teamlead及依赖build、teamlead/voice-codex typecheck、lint均exit0（25既有warning）。FLY-1560、FLY-2211、FLY-2567、FLY-2006与StateStore既有migration/reopen负控保留；无整库/整包测试、新shell测试或真实OS/529证明。全部红绿与中间诊断、命令、related配置及源码SHA256归档implementation-b6-evidence.json.gz；匹配/排除理由归档implementation-b6-consumers.json.gz。

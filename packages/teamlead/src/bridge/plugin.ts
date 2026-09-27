@@ -354,6 +354,7 @@ import {
 	createHostCmuxWatcherPatrol,
 	projectCmuxRebindDisabled,
 } from "./cmux-watcher-patrol.js";
+import { codexBodyRecoveryPending } from "./codex-body-recovery.js";
 import {
 	codexTerminalTeardownDeps,
 	reapCodexDaemonForSession,
@@ -10273,8 +10274,17 @@ export async function startBridge(
 		store,
 		flagStore,
 		{
-			isRecoveryActive: (executionId) =>
-				Boolean(store.getCodexRecoveryDeferral(executionId, Date.now())),
+			isRecoveryActive: (executionId) => {
+				const deferral = store.getCodexRecoveryDeferral(
+					executionId,
+					Date.now(),
+				);
+				return Boolean(deferral && deferral.reason === "pending_reservation");
+			},
+			isRecoveryEligible: (executionId) =>
+				codexBodyRecoveryPending(store, executionId, Date.now(), (session) =>
+					isCodexReownExcluded(session, readCodexReownRoomInfo()),
+				),
 		},
 	);
 	const codexTerminalSweep =

@@ -141,4 +141,13 @@ describe("FLY-2268 resident receiver wiring", () => {
 		expect(candidates).toContain("activation.binding.mode");
 		expect(candidates).not.toContain("phase_keep_alive");
 	});
+	it("binds the body death veto to remaining durable recovery budget", () => {
+		expect(source).toContain('from "./codex-body-recovery.js"');
+		expect(source).toMatch(
+			/isRecoveryEligible:\s*\(executionId\) =>\s*codexBodyRecoveryPending\(/,
+		);
+	});
+	it("does not mistake expired readiness for an in-flight recovery", () => {
+		expect(source).toContain('deferral.reason === "pending_reservation"');
+	});
 });

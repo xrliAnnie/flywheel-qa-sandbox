@@ -1633,4 +1633,138 @@ describe("FLY-2211 codex recovery authority", () => {
 			),
 		).toEqual({ ok: false, reason: "activation_invalid" });
 	});
+	it("FLY-2919 accepts only current durable exhaustion as permission to end reown priority", async () => {
+		const store = await fixture();
+		expect(store.hasCurrentCodexRecoveryExhaustion("exec-reown", 0)).toBe(
+			false,
+		);
+		for (let i = 0; i < 2; i++) {
+			const claim = store.claimCodexRecovery("exec-reown", 0, {
+				holder: "bridge",
+				nowMs: i * 1000,
+				ttlMs: 60000,
+			});
+			if (!claim.ok) throw new Error("claim failed");
+			expect(
+				store.hasCurrentCodexRecoveryExhaustion("exec-reown", i * 1000),
+			).toBe(false);
+			expect(
+				store.settleCodexRecoveryFailure(
+					"exec-reown",
+					claim.claimToken,
+					0,
+					claim.reservationSeq,
+					undefined,
+					i * 1000 + 1,
+				).ok,
+			).toBe(true);
+			expect(
+				store.hasCurrentCodexRecoveryExhaustion("exec-reown", i * 1000 + 2),
+			).toBe(i === 1);
+		}
+		const db = rawDatabase(store);
+		const original = db
+			.prepare("SELECT * FROM recovery_claim WHERE execution_id = ?")
+			.get("exec-reown")!;
+		for (const patch of [
+			{ episode_lifecycle_revision: 99 },
+			{ episode_id: "foreign" },
+			{ reservation_seq: 99 },
+			{ last_failure_json: "{" },
+			{ recovery_policy_version: 0 },
+			{ episode_attempts: 0 },
+			{
+				claim_token: "new-owner",
+				expires_at_ms: 9999,
+				lease_purpose: "recovery",
+			},
+			{ episode_state: "closed" },
+		]) {
+			for (const [key, value] of Object.entries(patch))
+				db.prepare(
+					`UPDATE recovery_claim SET ${key} = ? WHERE execution_id = ?`,
+				).run(value, "exec-reown");
+			expect(store.hasCurrentCodexRecoveryExhaustion("exec-reown", 2000)).toBe(
+				false,
+			);
+			for (const key of Object.keys(patch))
+				db.prepare(
+					`UPDATE recovery_claim SET ${key} = ? WHERE execution_id = ?`,
+				).run(original[key], "exec-reown");
+		}
+		expect(store.hasCurrentCodexRecoveryExhaustion("exec-reown", 2000)).toBe(
+			true,
+		);
+		const lease = store.claimExecutionMutationLease("exec-reown", 0, {
+			holder: "body-death",
+			nowMs: 2000,
+			ttlMs: 60000,
+		});
+		if (!lease.ok) throw new Error("lease failed");
+		expect(store.hasCurrentCodexRecoveryExhaustion("exec-reown", 2000)).toBe(
+			true,
+		);
+		expect(
+			store.commitExecutionMutationLease(
+				"exec-reown",
+				lease.claimToken,
+				0,
+				2000,
+			).ok,
+		).toBe(true);
+
+		expect(store.hasCurrentCodexRecoveryExhaustion("exec-reown", 2000)).toBe(
+			false,
+		);
+	});
+	it("FLY-2919 readiness expiry remains protected until the existing finalizer settles it", async () => {
+		const store = await fixture();
+		const claim = store.claimCodexRecovery("exec-reown", 0, {
+			holder: "bridge",
+			nowMs: 0,
+			ttlMs: 60000,
+		});
+		if (!claim.ok) throw new Error("claim failed");
+		const settled = store.settleCodexRecoveryFailure(
+			"exec-reown",
+			claim.claimToken,
+			0,
+			claim.reservationSeq,
+			{
+				version: 1,
+				code: "daemon_socket_not_ready",
+				stage: "daemon_spawn",
+				summary: "not ready",
+				cleanup: "confirmed_absent",
+			},
+			1,
+		);
+		if (!settled.ok || settled.readinessDeadlineMs === null)
+			throw new Error("settlement failed");
+		expect(
+			store.hasCurrentCodexRecoveryExhaustion(
+				"exec-reown",
+				settled.readinessDeadlineMs,
+			),
+		).toBe(false);
+		expect(
+			store.finalizeCodexRecoveryExhaustion(
+				"exec-reown",
+				0,
+				settled.readinessDeadlineMs,
+			),
+		).toMatchObject({ exhaustionTrigger: "readiness_deadline" });
+		expect(
+			store.hasCurrentCodexRecoveryExhaustion(
+				"exec-reown",
+				settled.readinessDeadlineMs,
+			),
+		).toBe(true);
+		expect(
+			store.hasCurrentCodexRecoveryExhaustion(
+				"exec-reown",
+				settled.readinessDeadlineMs - 1,
+			),
+		).toBe(false);
+	});
 });
