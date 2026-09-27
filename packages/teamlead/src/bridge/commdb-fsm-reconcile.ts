@@ -2,7 +2,7 @@
  * FLY-817: CommDB ↔ Bridge-FSM reconcile — the FLY-638 blind-spot fix.
  *
  * `runner_terminal_list` / Lead bootstrap read the per-project CommDB `sessions`
- * table (status ∈ {running, completed, timeout}) + a live tmux probe; they CANNOT
+ * table (status ∈ {running, completed, timeout}); they CANNOT
  * see the Bridge WorkflowFSM (`packages/terminal-mcp/src/lifecycle.ts`). The
  * CommDB `status` CHECK constraint cannot even represent `terminated/failed/
  * blocked/…`, so the only way a CommDB row leaves is a DELETE — fired from the
@@ -15,20 +15,17 @@
  *
  * This is the FLY-638 sibling for CommDB `running` rows: delete a `running` row
  * IFF its Bridge FSM status is a **non-preserve terminal outcome**
- * (`RECONCILE_DELETABLE_STATES`) AND its tmux target is **provably dead**
- * (tri-state probe === "dead"). Both conditions are required (Codex design R1):
- *   - FSM terminal alone is NOT sufficient — a just-completed runner whose
- *     teardown is still pending has a LIVE tmux window, and deleting the CommDB
- *     row (the source-of-truth tmux target, per tmux-lookup.ts) would strand it.
- *     Keeping `alive`/`indeterminate` rows preserves the teardown target.
+ * (`RECONCILE_DELETABLE_STATES`) AND the shared execution-body observation is
+ * **dead**. Both conditions are required:
+ *   - FSM terminal alone is NOT sufficient — a just-completed runner may still
+ *     be draining. Keeping `alive`/`unknown` rows preserves its cleanup target.
  *   - `failed`/`blocked` (CRASH_PRESERVE) remain excluded by default: retry's
  *     `closeRunner(forcePreserved: true)` reads the CommDB tmux target to tear
  *     the preserved window/tab down. FLY-1066's opt-in harvest may finalize one
- *     only after the target is provably dead, when that teardown target and its
- *     scrollback no longer exist.
+ *     only after body death is proven. A remaining window is UI residue only.
  *
  * Safety, structurally (never a whitelist): absent-FSM rows require the explicit
- * harvest option, a valid age beyond its dispatch guard, and a proven-dead target.
+ * harvest option, a valid age beyond its dispatch guard, and proven body death.
  * Otherwise they retain the exact FLY-817 keep behavior. Terminal states never
  * transition back to running and a retry successor is a DIFFERENT execution_id,
  * so deleting by execution_id can never orphan a live runner. Best-effort: any
@@ -43,30 +40,25 @@ import {
 	type FinalizeCommDbResult,
 	resolveCommDbPath,
 } from "./commdb-session-prune.js";
-import {
-	probeTmuxWindowLiveness,
-	type TmuxWindowProbe,
-} from "./tmux-lookup.js";
 
 export { RECONCILE_DELETABLE_STATES } from "./commdb-deletable-states.js";
 
 export interface CommDbFsmReconcileResult {
 	/** CommDB `running` rows examined. */
 	scanned: number;
-	/** rows deleted (deletable-terminal FSM + tmux PROVABLY dead). */
+	/** rows deleted (deletable-terminal FSM + execution body proven dead). */
 	reconciled: number;
 	/** kept — FSM row missing OR a non-terminal/non-deletable state. */
 	keptNonTerminal: number;
-	/** kept — FSM is `failed`/`blocked` and harvest is off or target not dead. */
+	/** kept — FSM is `failed`/`blocked` and harvest is off or body is not dead. */
 	keptPreserve: number;
-	/** kept — deletable-terminal FSM but tmux target alive/indeterminate. */
+	/** kept — deletable-terminal FSM but body is alive/unknown. */
 	keptAliveTarget: number;
 	/** proven-dead candidates whose atomic CommDB finalization failed. */
 	finalizeFailed: number;
 	/**
-	 * FLY-1329 (A4): rows kept because the runner declared itself parked (or the
-	 * park lookup threw and we fail closed) — a `dead` probe here is only a stale
-	 * window name, not proof the process died.
+	 * Compatibility counter: rows retained by TURN/target CAS guards. Parked
+	 * workflow declarations no longer veto a proven body death.
 	 */
 	parkedVetoed: number;
 	/** FLY-2498: parked declarations overridden by independent execution absence. */
@@ -98,16 +90,14 @@ function parseHarvestStartedAt(
 
 /**
  * Reconcile one project's CommDB against the Bridge FSM. Deletes a `running` row
- * IFF (1) its FSM status ∈ `RECONCILE_DELETABLE_STATES` AND (2) its tmux target
- * probes `dead`. `dbPath` / `probe` are injectable for tests. Best-effort; never
- * throws.
+ * IFF (1) its FSM status ∈ `RECONCILE_DELETABLE_STATES` AND (2) its execution
+ * body is proven dead. Best-effort; never throws.
  */
 export async function reconcileCommDbRunningAgainstFsm(
 	projectName: string,
 	fsmStatusOf: FsmStatusLookup,
 	opts: {
 		dbPath?: string;
-		probe?: (tmuxWindow: string) => Promise<TmuxWindowProbe>;
 		harvest?: {
 			orphanMinAgeMs: number;
 			nowMs: () => number;
@@ -123,13 +113,6 @@ export async function reconcileCommDbRunningAgainstFsm(
 			projectName: string,
 			result: FinalizeCommDbResult,
 		) => void;
-		/**
-		 * FLY-1329 (A4): does this execId hold an UNEXPIRED park declaration? The
-		 * default reads it through the sweep's already-open CommDB handle; tests
-		 * inject to exercise the fail-closed path. Undefined here would fall back to
-		 * that default (see body).
-		 */
-		isParked?: (executionId: string) => boolean;
 		executionAbsence?: (
 			executionId: string,
 			projectName: string,
@@ -141,10 +124,6 @@ export async function reconcileCommDbRunningAgainstFsm(
 			tmuxWindow: string,
 			targetUnchangedAndNoTurn: () => boolean,
 		) => Promise<CodexTerminalHarvestResult>;
-		parkedGenerationEvidence?: (
-			executionId: string,
-			tmuxWindow: string,
-		) => Promise<"superseded" | "same_generation" | "unavailable">;
 	} = {},
 ): Promise<CommDbFsmReconcileResult> {
 	const result: CommDbFsmReconcileResult = {
@@ -167,16 +146,10 @@ export async function reconcileCommDbRunningAgainstFsm(
 	}
 	const dbPath = opts.dbPath ?? resolveCommDbPath(projectName);
 	if (!dbPath) return result;
-	const probe = opts.probe ?? probeTmuxWindowLiveness;
-	const finalizeSession =
-		opts.finalizeSession ??
-		((db: CommDB, executionId: string) =>
-			db.finalizeSessionUnlessTurnHolder(executionId));
 	const finalizePaneLossResidue =
 		opts.finalizePaneLossResidue ??
 		((db: CommDB, executionId: string, expectedTmuxWindow: string) =>
 			db.finalizePaneLossResidue(executionId, expectedTmuxWindow));
-
 	let db: CommDB | undefined;
 	try {
 		db = new CommDB(dbPath);
@@ -186,10 +159,9 @@ export async function reconcileCommDbRunningAgainstFsm(
 		const running = db.listSessions(projectName, ["running"]);
 		result.scanned = running.length;
 		for (const s of running) {
-			let parkedSuperseded = false;
 			// FLY-1374: a TURN holder is an active writer even when StateStore
 			// still carries the prior activation's terminal status. Never let a
-			// stale tmux target authorize deletion of its turn/mailbox identity.
+			// stale lifecycle state authorize deletion of its turn/mailbox identity.
 			if (turnHolders.has(s.execution_id)) {
 				result.parkedVetoed++;
 				console.log(
@@ -199,27 +171,18 @@ export async function reconcileCommDbRunningAgainstFsm(
 			}
 			const fsm = fsmStatusOf(s.execution_id);
 			let harvestKind: "orphan" | "preserve" | undefined;
-			let targetProvenDead = false;
-			// FLY-817 legacy: preserve targets are never probed. FLY-1066 opt-in:
-			// once the target is PROVEN dead, the teardown target + scrollback no
-			// longer exist, so the stale registration can be finalized safely.
+			// Preserve rows remain outside the legacy pass. The explicit harvest
+			// pass may settle them, but only from the shared execution-body truth.
 			if (fsm && CRASH_PRESERVE_STATES.has(fsm)) {
 				if (!opts.harvest) {
 					result.keptPreserve++;
 					continue;
 				}
-				const state = await probe(s.tmux_window);
-				if (state !== "dead") {
-					result.keptPreserve++;
-					result.harvest!.keptPreserveAlive++;
-					continue;
-				}
-				targetProvenDead = true;
 				harvestKind = "preserve";
 			}
 			// FLY-1066 CommDB-only orphan: the 24h guard is the actual mid-dispatch
 			// safety boundary. Missing/invalid/future timestamps fail closed before
-			// probing; alive/indeterminate targets are always kept.
+			// body sampling; alive/unknown bodies are always kept.
 			if (!fsm && opts.harvest) {
 				const nowMs = opts.harvest.nowMs();
 				const startedAtMs = parseHarvestStartedAt(s.started_at, nowMs);
@@ -231,13 +194,6 @@ export async function reconcileCommDbRunningAgainstFsm(
 					result.harvest!.keptOrphanCandidate++;
 					continue;
 				}
-				const state = await probe(s.tmux_window);
-				if (state !== "dead") {
-					result.keptNonTerminal++;
-					result.harvest!.keptOrphanCandidate++;
-					continue;
-				}
-				targetProvenDead = true;
 				harvestKind = "orphan";
 			}
 			// FSM row missing with harvest off, OR a non-deletable / non-terminal
@@ -246,18 +202,14 @@ export async function reconcileCommDbRunningAgainstFsm(
 				result.keptNonTerminal++;
 				continue;
 			}
-			// Deletable terminal outcome → require a PROVEN-dead tmux target so a
-			// pending-teardown window is never stranded (BLOCKER 2, mirrors FLY-638).
-			if (!targetProvenDead) {
-				const state = await probe(s.tmux_window);
-				if (state !== "dead") {
-					result.keptAliveTarget++;
-					continue;
-				}
-			}
-			let codexAbsent = false;
+			let body = opts.executionAbsence
+				? await opts
+						.executionAbsence(s.execution_id, projectName)
+						.catch(() => "unknown" as const)
+				: "unknown";
 			let canFinalizeCodex: (() => boolean) | undefined;
 			if (
+				body !== "dead" &&
 				opts.harvest &&
 				opts.harvestCodexDaemon &&
 				(fsm === "completed" || fsm === "failed" || fsm === "terminated")
@@ -276,78 +228,43 @@ export async function reconcileCommDbRunningAgainstFsm(
 								.some((turn) => turn.holder_exec_id === s.execution_id),
 					)
 					.catch(() => "keep" as const);
-				if (harvest === "keep") {
-					result.keptAliveTarget++;
-					continue;
-				}
 				if (typeof harvest === "object") {
-					codexAbsent = true;
+					body = "dead";
 					canFinalizeCodex = harvest.canFinalize;
 				}
 			}
-			// FLY-1329 (A4, Codex R1 HIGH-2): an unexpired park declaration vetoes
-			// the delete. The `dead` verdict above is `isTmuxAbsenceMessage` — tmux
-			// could not find the window at this name, which a stale mapping produces
-			// on a live parked runner (the FLY-1319 shape). This is the running-face
-			// delete site that runs FIRST on boot, before the terminal-face prune the
-			// veto also guards. Fail-closed: a lookup that throws keeps the row.
-			const activeDb = db;
-			let parked: boolean;
-			try {
-				parked = opts.isParked
-					? opts.isParked(s.execution_id)
-					: activeDb.getEffectiveDeclaredState(s.execution_id, Date.now())
-							?.kind === "parked";
-			} catch (err) {
-				result.parkedVetoed++;
-				console.warn(
-					`[commdb-fsm-reconcile] declared-state lookup failed for ${s.execution_id}: ${(err as Error).message} — KEEPING the row (fail-closed)`,
-				);
+			if (body !== "dead") {
+				if (harvestKind === "preserve") {
+					result.keptPreserve++;
+					result.harvest!.keptPreserveAlive++;
+				} else if (harvestKind === "orphan") {
+					result.keptNonTerminal++;
+					result.harvest!.keptOrphanCandidate++;
+				} else {
+					result.keptAliveTarget++;
+				}
 				continue;
 			}
-			if (parked) {
-				const evidence = opts.parkedGenerationEvidence
-					? await opts
-							.parkedGenerationEvidence(s.execution_id, s.tmux_window)
-							.catch(() => "unavailable" as const)
-					: "unavailable";
-				if (evidence === "superseded") {
-					parkedSuperseded = true;
-				} else {
-					const absence = codexAbsent
-						? "dead"
-						: fsm &&
-								RECONCILE_DELETABLE_STATES.has(fsm) &&
-								opts.executionAbsence
-							? await opts
-									.executionAbsence(s.execution_id, projectName)
-									.catch(() => "unknown" as const)
-							: "unknown";
-					if (absence === "dead") {
-						parkedSuperseded = true;
-						result.parkedOverridden++;
-						console.log(
-							`[commdb-fsm-reconcile] prune_parked_overridden_execution_absent: ${s.execution_id} (${projectName}) has no daemon, marker window, or host process — finalizing by exact target`,
-						);
-					} else {
-						result.parkedVetoed++;
-						console.log(
-							`[commdb-fsm-reconcile] prune_skipped_parked_conflict: ${s.execution_id} (${projectName}) declares itself parked while its window name does not resolve — KEEPING the row (stale mapping suspected, FLY-1319 shape)`,
-						);
-						continue;
-					}
+			try {
+				if (
+					db.getEffectiveDeclaredState(s.execution_id, Date.now())?.kind ===
+					"parked"
+				) {
+					result.parkedOverridden++;
 				}
+			} catch {
+				// Parked is diagnostic workflow state only; read failures cannot veto
+				// a current-generation body-death fact.
 			}
 			try {
-				// No asynchronous boundary between this authority check and finalization.
 				if (canFinalizeCodex && !canFinalizeCodex()) {
 					result.parkedVetoed++;
 					continue;
 				}
 				const raw = (
-					parkedSuperseded
-						? finalizePaneLossResidue(db, s.execution_id, s.tmux_window)
-						: finalizeSession(db, s.execution_id)
+					opts.finalizeSession
+						? opts.finalizeSession(db, s.execution_id)
+						: finalizePaneLossResidue(db, s.execution_id, s.tmux_window)
 				) as
 					| {
 							finalized?: boolean;
@@ -372,7 +289,7 @@ export async function reconcileCommDbRunningAgainstFsm(
 				if (raw?.finalized === false && raw.reason === "target_changed") {
 					result.parkedVetoed++;
 					console.log(
-						`[commdb-fsm-reconcile] pane-loss target changed for ${s.execution_id} — KEEPING the row`,
+						`[commdb-fsm-reconcile] target identity changed for ${s.execution_id} — KEEPING the row`,
 					);
 					continue;
 				}

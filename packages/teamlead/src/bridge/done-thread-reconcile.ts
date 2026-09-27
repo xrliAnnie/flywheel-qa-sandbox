@@ -21,12 +21,11 @@
  *   - triple veto: liveness is re-checked after EVERY slow await — before
  *     Linear (#1, cheap), after Linear (#2), and after husk finalize right
  *     before the archive (#3) — so a run started mid-sweep always wins;
- *   - fail-closed: tri-state target lookup `error`, probe throw,
- *     `indeterminate`, and terminal-status rows with a live process ALL count
- *     as live; a failed husk finalize skips the whole thread; ambiguous
+ *   - fail-closed: body-reader throw/unknown and terminal-status rows with a
+ *     live body ALL count as active; a failed husk finalize skips the whole thread; ambiguous
  *     project resolution skips; Linear failure skips.
- *   - never kills a live tmux: finalize only runs on rows whose process is
- *     provably gone AND whose status is FSM-finalizable.
+ *   - never finalizes a live body: finalize only runs on rows whose shared body
+ *     fact is dead AND whose status is FSM-finalizable. Window state is irrelevant.
  *
  * Archiving goes through `archiveThreadAndRecord` (the single token-bearing
  * sink); terminal authority, per-thread serialization, quiet-window fencing,
@@ -46,13 +45,12 @@ import {
 	archiveThreadAndRecord,
 	resolveBotTokenForThread,
 } from "./done-thread-archiver.js";
+import {
+	type ExecutionBodyLivenessReader,
+	readStoredExecutionBodyLiveness,
+} from "./execution-body-reader.js";
 import { lookupLinearIssueByIdentifier } from "./linear-query.js";
 import type { TerminalArchiveAdmission } from "./terminal-thread-archive.js";
-import {
-	lookupTmuxTarget,
-	probeRunnerProcessLiveness,
-	type RunnerLiveness,
-} from "./tmux-lookup.js";
 
 /**
  * Statuses a dead husk can be finalized out of (FSM-legal edges to
@@ -143,9 +141,8 @@ export interface DoneThreadReconcileDeps {
 	archiveFn?: typeof archiveChatThread;
 	removeUserFn?: typeof removeUserFromChatThread;
 	fetchImpl?: typeof fetch;
-	/** Tri-state discriminated target lookup — `error` ⇒ LIVE (fail-closed). */
-	lookupTarget?: typeof lookupTmuxTarget;
-	probeLiveness?: (tmuxWindow: string) => Promise<RunnerLiveness>;
+	/** Current-generation body truth. Unknown/error remains active fail-closed. */
+	readBodyLiveness?: ExecutionBodyLivenessReader;
 	closeRunnerFn?: typeof closeRunner;
 	sleepImpl?: (ms: number) => Promise<void>;
 	now?: () => number;
@@ -301,8 +298,10 @@ export async function reconcileDoneThreads(
 		const linearApiKey = deps.linearApiKey; // narrowed by the guard above
 		const lookupIssue: ReconcileLinearLookup =
 			deps.lookupIssue ?? lookupLinearIssueByIdentifier;
-		const lookupTarget = deps.lookupTarget ?? lookupTmuxTarget;
-		const probeLiveness = deps.probeLiveness ?? probeRunnerProcessLiveness;
+		const readBodyLiveness: ExecutionBodyLivenessReader =
+			deps.readBodyLiveness ??
+			((executionId, projectName) =>
+				readStoredExecutionBodyLiveness(store, executionId, projectName));
 		const closeRunnerFn = deps.closeRunnerFn ?? closeRunner;
 		const archiveSink = deps.archiveSinkFn ?? archiveThreadAndRecord;
 		const sleepImpl =
@@ -318,33 +317,22 @@ export async function reconcileDoneThreads(
 		const startedAt = now();
 
 		/**
-		 * Alias-aware liveness over ALL session rows (any status — a terminal
-		 * row can still own a live process, HeartbeatService precedent). Any
-		 * signal that is not a provable "dead" counts as LIVE.
+		 * Alias-aware body liveness over ALL session rows (any status — terminal
+		 * labels do not prove process death). Any result other than the shared,
+		 * current-generation `dead` fact counts as active fail-closed.
 		 */
 		const checkLiveness = async (
 			keys: string[],
 		): Promise<{ live: boolean; rows: SessionAliasRow[] }> => {
 			const rows = store.getSessionsForIssueAliases(keys);
 			for (const row of rows) {
-				let lookup: ReturnType<typeof lookupTmuxTarget>;
 				try {
-					lookup = lookupTarget(row.execution_id, row.project_name);
+					if (readBodyLiveness(row.execution_id, row.project_name) !== "dead") {
+						return { live: true, rows };
+					}
 				} catch {
 					return { live: true, rows };
 				}
-				if (lookup.kind === "error") return { live: true, rows };
-				if (lookup.kind === "gone") continue;
-				let liveness: RunnerLiveness;
-				try {
-					liveness = await probeLiveness(lookup.target.tmuxWindow);
-				} catch {
-					return { live: true, rows };
-				}
-				if (liveness === "alive" || liveness === "indeterminate") {
-					return { live: true, rows };
-				}
-				// dead_pin / absent → provably dead, keep checking siblings.
 			}
 			return { live: false, rows };
 		};
@@ -934,29 +922,20 @@ export async function reconcileDoneThreads(
 					residue.set(sess.issue_id, sess.project_name);
 				}
 			}
-			// R3#4 + R6#5 + R7#3: TERMINAL-LIVE residue — a terminal session
-			// whose runner is STILL alive. `found` only proves a CommDB record;
-			// probe the actual process and count only alive/indeterminate (an
-			// error is fail-closed → kept, an absent/dead pane is dropped). A
-			// fully-zeroed issue (process gone) is not re-added → no cap
-			// starvation.
+			// R3#4 + R6#5 + R7#3: TERMINAL-LIVE residue — terminal labels do not
+			// prove process death. Only the shared current-generation `dead` fact
+			// drops the row; alive/unknown/error remain cleanup-pending.
 			for (const sess of store.listTerminalSessionsWithResidue()) {
 				if (seenIssueKeys.has(sess.issue_id) || residue.has(sess.issue_id)) {
 					continue;
 				}
-				const look = lookupTarget(sess.execution_id, sess.project_name);
-				// R8#2: three-state, fail-closed. `gone` is the ONLY drop — a
-				// `error` (CommDB corruption/lock) can NOT prove the target
-				// vanished, so it is kept as a cleanup-pending residue candidate
-				// (the lookup's own fail-closed contract; deps note: error ⇒ LIVE).
-				// Only a `found` (real CommDB record) is probed for liveness.
-				if (look.kind === "gone") continue;
-				if (look.kind === "found") {
-					const live = await probeLiveness(look.target.tmuxWindow).catch(
-						() => "indeterminate" as RunnerLiveness,
-					);
-					if (live === "absent" || live === "dead_pin") continue;
+				let body: ReturnType<ExecutionBodyLivenessReader> = "unknown";
+				try {
+					body = readBodyLiveness(sess.execution_id, sess.project_name);
+				} catch {
+					body = "unknown";
 				}
+				if (body === "dead") continue;
 				residue.set(sess.issue_id, sess.project_name);
 			}
 			// R3#4 + R6#5 + R7#3: binding-owned residue — a SEPARATE D source

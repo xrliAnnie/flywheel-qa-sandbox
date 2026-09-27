@@ -1419,6 +1419,7 @@ async function closeoutOneNode(
 						session: undefined,
 						launchClaimState: store.getLaunchClaim(node.executionId)?.state,
 					},
+					{ probeExecutionBody: () => observeExecutionBody() },
 				);
 			} catch (error) {
 				result.evidenceVerdict = "unknown";
@@ -1884,6 +1885,7 @@ async function closeoutOneNode(
 					session: fresh,
 					launchClaimState: store.getLaunchClaim(node.executionId)?.state,
 				},
+				{ probeExecutionBody: () => observeExecutionBody() },
 			);
 		} catch (error) {
 			result.confirmedGone = false;

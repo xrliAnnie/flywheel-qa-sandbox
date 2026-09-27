@@ -61,7 +61,7 @@ describe("StateStore ghost reconcile (FLY-1066)", () => {
 			nowMs: () => NOW_MS,
 			lookupCommDbSession: vi.fn(() => undefined),
 			getProvenDeadTmuxTarget: vi.fn(() => "runner-geo:@42"),
-			probe: vi.fn(async () => "dead" as const),
+			readBodyLiveness: vi.fn(() => "dead" as const),
 			finalizeCommDbSession: vi.fn(() => ({
 				ok: true,
 				outcome: "finalized",
@@ -124,6 +124,45 @@ describe("StateStore ghost reconcile (FLY-1066)", () => {
 		},
 	);
 
+	it("FLY-2919 keeps a live body even when the same-pass window target is dead", async () => {
+		seed("live-body-window-dead");
+		const probe = vi.fn(async () => "dead" as const);
+		const deps = baseDeps({
+			readBodyLiveness: () => "alive",
+			probe,
+		} as Partial<StateStoreGhostDeps>);
+
+		const outcome = await reapStateStoreGhost(
+			store.getSession("live-body-window-dead")!,
+			deps,
+		);
+
+		expect(outcome).toBe("kept_target_not_dead");
+		expect(probe).not.toHaveBeenCalled();
+		expect(deps.finalizeCommDbSession).not.toHaveBeenCalled();
+		expect(store.getSession("live-body-window-dead")?.status).toBe("running");
+	});
+
+	it("FLY-2919 reaps a dead body even while its window remains alive", async () => {
+		seed("dead-body-window-alive");
+		const probe = vi.fn(async () => "alive" as const);
+		const deps = baseDeps({
+			readBodyLiveness: () => "dead",
+			probe,
+		} as Partial<StateStoreGhostDeps>);
+
+		const outcome = await reapStateStoreGhost(
+			store.getSession("dead-body-window-alive")!,
+			deps,
+		);
+
+		expect(outcome).toBe("reaped");
+		expect(probe).not.toHaveBeenCalled();
+		expect(store.getSession("dead-body-window-alive")?.status).toBe(
+			"terminated",
+		);
+	});
+
 	it.each(["awaiting_review", "approved_to_ship", "design_done"])(
 		"keeps parked founder-owned status %s even with exact dead-target evidence",
 		async (status) => {
@@ -137,7 +176,7 @@ describe("StateStore ghost reconcile (FLY-1066)", () => {
 
 			expect(outcome).toBe("kept_non_candidate_status");
 			expect(deps.lookupCommDbSession).not.toHaveBeenCalled();
-			expect(deps.probe).not.toHaveBeenCalled();
+			expect(deps.readBodyLiveness).not.toHaveBeenCalled();
 			expect(store.getSession(`parked-${status}`)?.status).toBe(status);
 		},
 	);
@@ -154,7 +193,7 @@ describe("StateStore ghost reconcile (FLY-1066)", () => {
 
 		expect(result.scanned).toBe(1);
 		expect(result.reaped).toBe(1);
-		expect(deps.probe).toHaveBeenCalledTimes(1);
+		expect(deps.readBodyLiveness).toHaveBeenCalledTimes(2);
 		expect(store.getSession("terminal")?.status).toBe("completed");
 		expect(store.getSession("preserve")?.status).toBe("failed");
 		expect(store.getSession("reconnecting")?.status).toBe("reconnecting");
@@ -182,7 +221,7 @@ describe("StateStore ghost reconcile (FLY-1066)", () => {
 
 			expect(outcome).toBe("kept_fresh_or_invalid_age");
 			expect(deps.lookupCommDbSession).not.toHaveBeenCalled();
-			expect(deps.probe).not.toHaveBeenCalled();
+			expect(deps.readBodyLiveness).not.toHaveBeenCalled();
 		},
 	);
 
@@ -198,7 +237,7 @@ describe("StateStore ghost reconcile (FLY-1066)", () => {
 		);
 
 		expect(outcome).toBe("kept_commdb_present");
-		expect(deps.probe).not.toHaveBeenCalled();
+		expect(deps.readBodyLiveness).not.toHaveBeenCalled();
 		expect(store.getSession("active-holder")?.status).toBe("pending");
 	});
 
@@ -216,7 +255,7 @@ describe("StateStore ghost reconcile (FLY-1066)", () => {
 		);
 
 		expect(outcome).toBe("kept_commdb_indeterminate");
-		expect(deps.probe).not.toHaveBeenCalled();
+		expect(deps.readBodyLiveness).not.toHaveBeenCalled();
 		expect(deps.finalizeCommDbSession).not.toHaveBeenCalled();
 	});
 
@@ -232,7 +271,7 @@ describe("StateStore ghost reconcile (FLY-1066)", () => {
 		);
 
 		expect(outcome).toBe("kept_no_authoritative_target");
-		expect(deps.probe).not.toHaveBeenCalled();
+		expect(deps.readBodyLiveness).not.toHaveBeenCalled();
 	});
 
 	it("rejects a bare-session evidence target instead of probing shared-session scope", async () => {
@@ -247,30 +286,30 @@ describe("StateStore ghost reconcile (FLY-1066)", () => {
 		);
 
 		expect(outcome).toBe("kept_invalid_authoritative_target");
-		expect(deps.probe).not.toHaveBeenCalled();
+		expect(deps.readBodyLiveness).not.toHaveBeenCalled();
 	});
 
-	it.each(["alive", "indeterminate"] as const)(
-		"keeps running + %s exact window",
-		async (probeState) => {
-			seed(`review-${probeState}`);
-			const deps = baseDeps({ probe: vi.fn(async () => probeState) });
+	it.each(["alive", "unknown"] as const)(
+		"keeps running with %s body evidence",
+		async (bodyState) => {
+			seed(`review-${bodyState}`);
+			const deps = baseDeps({ readBodyLiveness: vi.fn(() => bodyState) });
 
 			const outcome = await reapStateStoreGhost(
-				store.getSession(`review-${probeState}`)!,
+				store.getSession(`review-${bodyState}`)!,
 				deps,
 			);
 
 			expect(outcome).toBe("kept_target_not_dead");
 			expect(deps.finalizeCommDbSession).not.toHaveBeenCalled();
-			expect(store.getSession(`review-${probeState}`)?.status).toBe("running");
+			expect(store.getSession(`review-${bodyState}`)?.status).toBe("running");
 		},
 	);
 
-	it("treats a throwing tmux probe as indeterminate and keeps the founder-owned row", async () => {
+	it("treats a throwing body reader as unknown and keeps the founder-owned row", async () => {
 		seed("probe-error");
 		const deps = baseDeps({
-			probe: vi.fn(async () => {
+			readBodyLiveness: vi.fn(() => {
 				throw new Error("tmux timed out");
 			}),
 		});
@@ -284,17 +323,17 @@ describe("StateStore ghost reconcile (FLY-1066)", () => {
 		expect(deps.finalizeCommDbSession).not.toHaveBeenCalled();
 	});
 
-	it("keeps when the post-probe StateStore status changes", async () => {
+	it("keeps when the StateStore status changes while reading body evidence", async () => {
 		seed("state-race");
 		const deps = baseDeps({
-			probe: vi.fn(async () => {
+			readBodyLiveness: vi.fn(() => {
 				store.upsertSession({
 					execution_id: "state-race",
 					issue_id: "issue-state-race",
 					project_name: "geo",
 					status: "completed",
 				});
-				return "dead";
+				return "dead" as const;
 			}),
 		});
 

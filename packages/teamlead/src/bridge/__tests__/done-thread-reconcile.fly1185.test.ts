@@ -45,8 +45,7 @@ function baseDeps(
 			stateType: "canceled",
 			updatedAt: "2026-07-11T00:00:00.000Z",
 		}),
-		lookupTarget: (() => ({ kind: "gone" }) as const) as never,
-		probeLiveness: async () => "absent" as const,
+		readBodyLiveness: () => "dead",
 		archiveSinkFn: (async () => ({ archived: true })) as never,
 		sleepImpl: async () => {},
 		log: () => {},
@@ -203,11 +202,7 @@ describe("FLY-1185 D entry — cutover episode machine (plan §4 #30)", () => {
 		const result = await reconcileDoneThreads(
 			baseDeps(store, {
 				retireIssueGates,
-				lookupTarget: (() => ({
-					kind: "found",
-					target: { tmuxWindow: "runner" },
-				})) as never,
-				probeLiveness: async () => "alive" as const,
+				readBodyLiveness: () => "alive" as const,
 			}),
 		);
 

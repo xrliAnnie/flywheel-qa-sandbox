@@ -98,8 +98,7 @@ function makeDeps(
 		archiveFn,
 		archiveSinkFn,
 		closeRunnerFn,
-		lookupTarget: () => ({ kind: "gone" }) as const,
-		probeLiveness: async () => "absent" as const,
+		readBodyLiveness: () => "dead",
 		sleepImpl: async () => {},
 		log: () => {},
 		...over,
@@ -185,11 +184,7 @@ describe("reconcileDoneThreads (FLY-1165)", () => {
 			status: "running",
 		});
 		const deps = makeDeps(store, {
-			lookupTarget: () => ({
-				kind: "found" as const,
-				target: { tmuxWindow: "w:@1", sessionName: "w" },
-			}),
-			probeLiveness: async () => "alive" as const,
+			readBodyLiveness: () => "alive",
 		});
 		const r = await reconcileDoneThreads(deps);
 		expect(r.skippedActive).toBe(1);
@@ -197,10 +192,53 @@ describe("reconcileDoneThreads (FLY-1165)", () => {
 		expect(deps.archiveFn).not.toHaveBeenCalled();
 	});
 
-	it("6. indeterminate probe / probe throw → treated as live", async () => {
-		for (const probe of [
-			async () => "indeterminate" as const,
-			async () => {
+	it("FLY-2919: a live body remains active when its window lookup is gone", async () => {
+		const store = await freshStore();
+		store.upsertChatThread("t-live-missing", "ch-eng", "FLY-2919-A", "tadashi");
+		seedSession(store, {
+			execution_id: "e-live-missing",
+			issue_id: "FLY-2919-A",
+			status: "completed",
+		});
+		const deps = makeDeps(store, {
+			lookupTarget: () => ({ kind: "gone" }) as const,
+			readBodyLiveness: () => "alive",
+		} as Partial<DoneThreadReconcileDeps>);
+
+		const result = await reconcileDoneThreads(deps);
+
+		expect(result.skippedActive).toBe(1);
+		expect(result.archived).toBe(0);
+		expect(deps.archiveFn).not.toHaveBeenCalled();
+	});
+
+	it("FLY-2919: a dead body does not remain active because its window is alive", async () => {
+		const store = await freshStore();
+		store.upsertChatThread("t-dead-window", "ch-eng", "FLY-2919-B", "tadashi");
+		seedSession(store, {
+			execution_id: "e-dead-window",
+			issue_id: "FLY-2919-B",
+			status: "completed",
+		});
+		const deps = makeDeps(store, {
+			lookupTarget: () => ({
+				kind: "found" as const,
+				target: { tmuxWindow: "w:@1", sessionName: "w" },
+			}),
+			probeLiveness: async () => "alive" as const,
+			readBodyLiveness: () => "dead",
+		} as Partial<DoneThreadReconcileDeps>);
+
+		const result = await reconcileDoneThreads(deps);
+
+		expect(result.skippedActive).toBe(0);
+		expect(result.archived).toBe(1);
+	});
+
+	it("6. unknown body / body reader throw → treated as live", async () => {
+		for (const readBodyLiveness of [
+			() => "unknown" as const,
+			() => {
 				throw new Error("probe blew up");
 			},
 		]) {
@@ -208,11 +246,7 @@ describe("reconcileDoneThreads (FLY-1165)", () => {
 			store.upsertChatThread("t-1", "ch-eng", "FLY-8", "tadashi");
 			seedSession(store, { execution_id: "e-1", issue_id: "FLY-8" });
 			const deps = makeDeps(store, {
-				lookupTarget: () => ({
-					kind: "found" as const,
-					target: { tmuxWindow: "w:@1", sessionName: "w" },
-				}),
-				probeLiveness: probe as DoneThreadReconcileDeps["probeLiveness"],
+				readBodyLiveness,
 			});
 			const r = await reconcileDoneThreads(deps);
 			expect(r.skippedActive).toBe(1);
@@ -220,12 +254,14 @@ describe("reconcileDoneThreads (FLY-1165)", () => {
 		}
 	});
 
-	it("7. lookupTarget error tri-state → treated as live (CommDB lock ≠ dead)", async () => {
+	it("7. body reader failure is fail-closed active", async () => {
 		const store = await freshStore();
 		store.upsertChatThread("t-1", "ch-eng", "FLY-9", "tadashi");
 		seedSession(store, { execution_id: "e-1", issue_id: "FLY-9" });
 		const deps = makeDeps(store, {
-			lookupTarget: () => ({ kind: "error", error: "db locked" }) as const,
+			readBodyLiveness: () => {
+				throw new Error("body store locked");
+			},
 		});
 		const r = await reconcileDoneThreads(deps);
 		expect(r.skippedActive).toBe(1);
@@ -241,11 +277,7 @@ describe("reconcileDoneThreads (FLY-1165)", () => {
 			status: "completed",
 		});
 		const deps = makeDeps(store, {
-			lookupTarget: () => ({
-				kind: "found" as const,
-				target: { tmuxWindow: "w:@1", sessionName: "w" },
-			}),
-			probeLiveness: async () => "alive" as const,
+			readBodyLiveness: () => "alive",
 		});
 		const r = await reconcileDoneThreads(deps);
 		expect(r.skippedActive).toBe(1);
@@ -262,14 +294,7 @@ describe("reconcileDoneThreads (FLY-1165)", () => {
 			status: "awaiting_review",
 		});
 		const deps = makeDeps(store, {
-			lookupTarget: (execId: string) =>
-				execId === "e-uuid"
-					? {
-							kind: "found" as const,
-							target: { tmuxWindow: "w:@1", sessionName: "w" },
-						}
-					: { kind: "gone" as const },
-			probeLiveness: async () => "alive" as const,
+			readBodyLiveness: (execId) => (execId === "e-uuid" ? "alive" : "dead"),
 		});
 		const r = await reconcileDoneThreads(deps);
 		expect(r.skippedActive).toBe(1);
@@ -291,14 +316,7 @@ describe("reconcileDoneThreads (FLY-1165)", () => {
 				liveNow = true;
 				return { id: `uuid-${id}`, identifier: id, stateType: "completed" };
 			}),
-			lookupTarget: () =>
-				liveNow
-					? ({
-							kind: "found",
-							target: { tmuxWindow: "w:@1", sessionName: "w" },
-						} as const)
-					: ({ kind: "gone" } as const),
-			probeLiveness: async () => "alive" as const,
+			readBodyLiveness: () => (liveNow ? "alive" : "dead"),
 		});
 		const r = await reconcileDoneThreads(deps);
 		expect(r.skippedActive).toBe(1);
@@ -325,16 +343,8 @@ describe("reconcileDoneThreads (FLY-1165)", () => {
 				liveNow = true;
 				return { closed: true, alreadyGone: false };
 			}) as DoneThreadReconcileDeps["closeRunnerFn"],
-			lookupTarget: ((execId: string) =>
-				liveNow && execId === "e-new"
-					? ({
-							kind: "found",
-							target: { tmuxWindow: "w:@1", sessionName: "w" },
-						} as const)
-					: ({
-							kind: "gone",
-						} as const)) as DoneThreadReconcileDeps["lookupTarget"],
-			probeLiveness: async () => "alive" as const,
+			readBodyLiveness: (execId) =>
+				liveNow && execId === "e-new" ? "alive" : "dead",
 		});
 		const r = await reconcileDoneThreads(deps);
 		expect(r.skippedActive).toBe(1);

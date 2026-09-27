@@ -1511,7 +1511,7 @@ describe("FLY-1709 reopen-veto policy", () => {
 
 	it("temporarily vetoes a fresh post-epoch admission without probing", async () => {
 		const now = Date.parse("2026-08-12T12:04:00.000Z");
-		const lookup = vi.fn();
+		const readBodyLivenessFn = vi.fn();
 		const hit = await resolveReopenVeto(
 			{
 				sessions: [
@@ -1525,13 +1525,13 @@ describe("FLY-1709 reopen-veto policy", () => {
 				claims: [],
 			},
 			"2026-08-12T12:00:00.000Z",
-			{ nowMs: () => now, targetLookupFn: lookup },
+			{ nowMs: () => now, readBodyLivenessFn },
 		);
 		expect(hit).toEqual({ executionId: "exec-new" });
-		expect(lookup).not.toHaveBeenCalled();
+		expect(readBodyLivenessFn).not.toHaveBeenCalled();
 	});
 
-	it("vetoes a genuinely live pre-epoch runner but ignores a dead husk", async () => {
+	it("uses body truth for a pre-epoch runner regardless of window state", async () => {
 		const candidate = {
 			sessions: [
 				{
@@ -1543,20 +1543,14 @@ describe("FLY-1709 reopen-veto policy", () => {
 			],
 			claims: [],
 		};
-		const targetLookupFn = vi.fn(() => ({
-			kind: "found" as const,
-			target: { tmuxWindow: "fw:@1", sessionName: "fw" },
-		}));
 		expect(
 			await resolveReopenVeto(candidate, "2026-08-12T12:00:00.000Z", {
-				targetLookupFn,
-				livenessProbeFn: vi.fn(async () => "alive"),
+				readBodyLivenessFn: vi.fn(() => "alive" as const),
 			}),
 		).toEqual({ executionId: "exec-old" });
 		expect(
 			await resolveReopenVeto(candidate, "2026-08-12T12:00:00.000Z", {
-				targetLookupFn,
-				livenessProbeFn: vi.fn(async () => "dead_pin"),
+				readBodyLivenessFn: vi.fn(() => "dead" as const),
 			}),
 		).toBeNull();
 	});

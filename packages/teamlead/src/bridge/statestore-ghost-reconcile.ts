@@ -2,12 +2,13 @@
  * FLY-1066 face ③: reconcile StateStore-only non-terminal session ghosts.
  *
  * A row is terminalized only when it is an active pending/running session, old
- * enough, has no CommDB registration, and the immediately preceding terminal
- * CommDB prune supplied an exact window target that it proved dead. Legacy
- * StateStore `tmux_session` is never used as authority. The decision is
- * serialized with the issue lifecycle mutex and re-reads both stores and the
- * same-pass evidence after the asynchronous probe. Alive, indeterminate,
- * unreadable, fresh, parked, or changed evidence is always kept.
+ * enough, has no CommDB registration, the immediately preceding terminal
+ * CommDB prune supplied its exact target identity, and the shared execution
+ * body observation says dead. The target is only a same-pass identity fence;
+ * neither it nor legacy StateStore `tmux_session` is death authority. The
+ * decision is serialized with the issue lifecycle mutex and re-reads both
+ * stores, the body fact, and the identity fence before mutation. Alive,
+ * unknown, unreadable, fresh, or changed evidence is always kept.
  */
 
 import type { TransitionContext } from "flywheel-core";
@@ -17,7 +18,7 @@ import {
 } from "../applyTransition.js";
 import type { Session, StateStore } from "../StateStore.js";
 import type { FinalizeCommDbResult } from "./commdb-session-prune.js";
-import type { TmuxWindowProbe } from "./tmux-lookup.js";
+import type { ExecutionBodyLivenessReader } from "./execution-body-reader.js";
 
 export const STATESTORE_GHOST_SOURCE_STATUSES: ReadonlySet<string> = new Set([
 	"pending",
@@ -48,14 +49,15 @@ export interface StateStoreGhostDeps {
 		projectName: string,
 	) => unknown | undefined;
 	/**
-	 * Same-pass evidence from a successfully finalized terminal CommDB row.
-	 * Historical StateStore metadata is deliberately not a fallback.
+	 * Same-pass target identity from a CommDB row finalized after body death.
+	 * This is a CAS fence, not liveness evidence; historical StateStore metadata
+	 * is deliberately not a fallback.
 	 */
 	getProvenDeadTmuxTarget: (
 		executionId: string,
 		projectName: string,
 	) => string | undefined;
-	probe: (tmuxWindow: string) => Promise<TmuxWindowProbe>;
+	readBodyLiveness: ExecutionBodyLivenessReader;
 	finalizeCommDbSession: (
 		executionId: string,
 		projectName: string,
@@ -178,16 +180,16 @@ async function reapStateStoreGhostUnlocked(
 		return "kept_invalid_authoritative_target";
 	}
 
-	let probe: TmuxWindowProbe;
+	let body: ReturnType<ExecutionBodyLivenessReader>;
 	try {
-		probe = await deps.probe(tmuxWindow);
+		body = deps.readBodyLiveness(executionId, projectName);
 	} catch (err) {
 		log(
-			`[statestore-ghost-reconcile] ${executionId}: tmux probe indeterminate (${(err as Error).message})`,
+			`[statestore-ghost-reconcile] ${executionId}: body liveness unavailable (${(err as Error).message})`,
 		);
 		return "kept_target_not_dead";
 	}
-	if (probe !== "dead") return "kept_target_not_dead";
+	if (body !== "dead") return "kept_target_not_dead";
 
 	// Close the probe's async race: the StateStore row must still be the same
 	// candidate and CommDB absence must still be true immediately before mutate.
@@ -196,7 +198,8 @@ async function reapStateStoreGhostUnlocked(
 		!current ||
 		current.project_name !== projectName ||
 		current.status !== session.status ||
-		deps.getProvenDeadTmuxTarget(executionId, projectName) !== tmuxWindow
+		deps.getProvenDeadTmuxTarget(executionId, projectName) !== tmuxWindow ||
+		deps.readBodyLiveness(executionId, projectName) !== "dead"
 	) {
 		return "kept_changed_after_probe";
 	}
@@ -261,7 +264,7 @@ async function reapStateStoreGhostUnlocked(
 			{
 				last_activity_at: sqliteDatetimeAt(nowMs),
 				last_error:
-					"StateStore ghost reaped (CommDB absent, authoritative tmux window dead)",
+					"StateStore ghost reaped (CommDB absent, current execution body dead)",
 			},
 		);
 	} catch (err) {

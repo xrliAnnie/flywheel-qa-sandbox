@@ -42,12 +42,11 @@ import {
 	resolveBotTokenForThread,
 } from "./done-thread-archiver.js";
 import type { ReconcileLinearLookup } from "./done-thread-reconcile.js";
-import { lookupLinearIssueByIdentifier } from "./linear-query.js";
 import {
-	lookupTmuxTarget,
-	probeRunnerProcessLiveness,
-	type RunnerLiveness,
-} from "./tmux-lookup.js";
+	type ExecutionBodyLivenessReader,
+	readStoredExecutionBodyLiveness,
+} from "./execution-body-reader.js";
+import { lookupLinearIssueByIdentifier } from "./linear-query.js";
 
 /** Successful terminal states — the "全段 completed" auditable definition. */
 const ALLOWED_TERMINAL = new Set(["completed", "terminated"]);
@@ -125,8 +124,7 @@ export interface TargetedArchiveDeps {
 	archiveSinkFn?: typeof archiveThreadAndRecord;
 	archiveFn?: typeof archiveChatThread;
 	fetchImpl?: typeof fetch;
-	lookupTarget?: typeof lookupTmuxTarget;
-	probeLiveness?: (tmuxWindow: string) => Promise<RunnerLiveness>;
+	readBodyLiveness?: ExecutionBodyLivenessReader;
 	log?: (msg: string) => void;
 }
 
@@ -165,8 +163,10 @@ async function runInsideLock(
 	const log =
 		deps.log ?? ((m: string) => console.log(`[terminal-archive] ${m}`));
 	const lookupIssue = deps.lookupIssue ?? lookupLinearIssueByIdentifier;
-	const lookupTarget = deps.lookupTarget ?? lookupTmuxTarget;
-	const probeLiveness = deps.probeLiveness ?? probeRunnerProcessLiveness;
+	const readBodyLiveness =
+		deps.readBodyLiveness ??
+		((executionId: string, projectName: string) =>
+			readStoredExecutionBodyLiveness(store, executionId, projectName));
 
 	// ── Fresh Linear double gate (identifier OR UUID accepted). ──
 	if (!deps.linearApiKey) {
@@ -191,25 +191,15 @@ async function runInsideLock(
 	const stateVeto = checkStatePreconditions(store, snapshot);
 	if (stateVeto) return stateVeto;
 
-	// ── Pane liveness across ALL alias rows (alive/indeterminate/error veto). ──
+	// ── Shared execution-body truth across ALL alias rows. ──
 	for (const row of snapshot.rows) {
-		let lookup: ReturnType<typeof lookupTmuxTarget>;
+		let liveness: ReturnType<ExecutionBodyLivenessReader>;
 		try {
-			lookup = lookupTarget(row.execution_id, row.project_name);
+			liveness = readBodyLiveness(row.execution_id, row.project_name);
 		} catch {
 			return { kind: "vetoed_active", executionId: row.execution_id };
 		}
-		if (lookup.kind === "error") {
-			return { kind: "vetoed_active", executionId: row.execution_id };
-		}
-		if (lookup.kind === "gone") continue;
-		let liveness: RunnerLiveness;
-		try {
-			liveness = await probeLiveness(lookup.target.tmuxWindow);
-		} catch {
-			return { kind: "vetoed_active", executionId: row.execution_id };
-		}
-		if (liveness === "alive" || liveness === "indeterminate") {
+		if (liveness !== "dead") {
 			return { kind: "vetoed_active", executionId: row.execution_id };
 		}
 	}

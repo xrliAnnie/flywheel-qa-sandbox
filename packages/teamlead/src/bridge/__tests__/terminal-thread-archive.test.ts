@@ -93,8 +93,7 @@ function makeDeps(
 		fetchImpl: (() => {
 			throw new Error("no network in tests");
 		}) as unknown as typeof fetch,
-		lookupTarget: () => ({ kind: "gone" }) as const,
-		probeLiveness: async () => "dead" as const,
+		readBodyLiveness: () => "dead" as const,
 		log: () => {},
 		...over,
 		// keep the named handle even when overridden
@@ -214,30 +213,24 @@ describe("M9 targeted mode — veto fixtures (stricter than the global sweep)", 
 		});
 	}
 
-	it("completed-but-LIVE pane vetoes; indeterminate vetoes; lookup error vetoes", async () => {
+	it("uses execution-body truth instead of window state for archive admission", async () => {
 		seedSession("exec-a");
 		store.upsertChatThread("thread-1", "ch-eng", UUID, "tadashi");
-		for (const probe of ["alive", "indeterminate"] as const) {
-			const out = await runTargetedArchiveCheck(
-				IDENT,
-				makeDeps({
-					lookupTarget: () =>
-						({
-							kind: "found",
-							target: { tmuxWindow: "fw:1" },
-						}) as never,
-					probeLiveness: async () => probe,
-				}),
-			);
-			expect(out.kind).toBe("vetoed_active");
-		}
-		const errOut = await runTargetedArchiveCheck(
+		const liveBodyMissingWindow = await runTargetedArchiveCheck(
 			IDENT,
 			makeDeps({
-				lookupTarget: () => ({ kind: "error", error: "boom" }) as never,
+				readBodyLiveness: () => "alive" as const,
 			}),
 		);
-		expect(errOut.kind).toBe("vetoed_active");
+		expect(liveBodyMissingWindow.kind).toBe("vetoed_active");
+
+		const deadBodyLiveWindow = await runTargetedArchiveCheck(
+			IDENT,
+			makeDeps({
+				readBodyLiveness: () => "dead" as const,
+			}),
+		);
+		expect(deadBodyLiveWindow.kind).toBe("archived");
 	});
 
 	it("unresolved FLY-208 evidence-gap marker on ANY alias row vetoes", async () => {
@@ -326,12 +319,10 @@ describe("M9 targeted mode — veto fixtures (stricter than the global sweep)", 
 		const out = await runTargetedArchiveCheck(
 			IDENT,
 			makeDeps({
-				lookupTarget: () =>
-					({ kind: "found", target: { tmuxWindow: "fw:1" } }) as never,
-				probeLiveness: async () => {
+				readBodyLiveness: () => {
 					// A pending successor lands while the probe is in flight.
 					seedSession("exec-mid", "running");
-					return "dead" as const;
+					return "dead";
 				},
 			}),
 		);

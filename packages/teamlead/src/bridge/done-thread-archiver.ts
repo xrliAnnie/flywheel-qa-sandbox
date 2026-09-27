@@ -56,15 +56,13 @@ import {
 } from "./chat-thread-utils.js";
 import { snowflakeToMs } from "./discord-guild-active-threads.js";
 import {
+	type ExecutionBodyLivenessReader,
+	readStoredExecutionBodyLiveness,
+} from "./execution-body-reader.js";
+import {
 	type LandOperationAuditIdentity,
 	recordLandCloseoutAudit,
 } from "./land-operation-audit.js";
-import {
-	lookupTmuxTarget,
-	probeRunnerProcessLiveness,
-	type RunnerLiveness,
-	type TmuxTargetLookup,
-} from "./tmux-lookup.js";
 
 // ── Shared archive sink (single token-bearing path) ─────────────────────────
 
@@ -100,11 +98,7 @@ export interface ArchiveThreadDeps {
 	classifyFn?: typeof classifyThreadReopener;
 	frontierFn?: typeof getLatestThreadMessageId;
 	unarchiveFn?: typeof unarchiveChatThread;
-	targetLookupFn?: (
-		executionId: string,
-		projectName: string,
-	) => TmuxTargetLookup;
-	livenessProbeFn?: (tmuxWindow: string) => Promise<RunnerLiveness>;
+	readBodyLivenessFn?: ExecutionBodyLivenessReader;
 	nowMs?: () => number;
 	sleepImpl?: (ms: number) => Promise<void>;
 }
@@ -172,16 +166,13 @@ export function stateTimestampMs(raw: string): number | null {
 export async function resolveReopenVeto(
 	candidates: ReopenVetoCandidates,
 	archivedAtRaw: string,
-	deps: Pick<
-		ArchiveThreadDeps,
-		"targetLookupFn" | "livenessProbeFn" | "nowMs"
-	> = {},
+	deps: Pick<ArchiveThreadDeps, "readBodyLivenessFn" | "nowMs"> = {},
 ): Promise<{ executionId: string } | null> {
 	const epoch = archiveEpochInterval(archivedAtRaw);
 	if (!epoch) return candidates.sessions[0] ?? candidates.claims[0] ?? null;
 	const nowMs = (deps.nowMs ?? Date.now)();
-	const lookup = deps.targetLookupFn ?? lookupTmuxTarget;
-	const probe = deps.livenessProbeFn ?? probeRunnerProcessLiveness;
+	const readBodyLiveness =
+		deps.readBodyLivenessFn ?? (() => "unknown" as const);
 	const sessionIds = new Set(candidates.sessions.map((row) => row.executionId));
 
 	for (const session of candidates.sessions) {
@@ -195,21 +186,13 @@ export async function resolveReopenVeto(
 		) {
 			return { executionId: session.executionId };
 		}
-		let target: TmuxTargetLookup;
+		let liveness: ReturnType<ExecutionBodyLivenessReader>;
 		try {
-			target = lookup(session.executionId, session.projectName);
+			liveness = readBodyLiveness(session.executionId, session.projectName);
 		} catch {
 			return { executionId: session.executionId };
 		}
-		if (target.kind === "error") return { executionId: session.executionId };
-		if (target.kind === "gone") continue;
-		let liveness: RunnerLiveness;
-		try {
-			liveness = await probe(target.target.tmuxWindow);
-		} catch {
-			liveness = "indeterminate";
-		}
-		if (liveness === "alive" || liveness === "indeterminate") {
+		if (liveness !== "dead") {
 			return { executionId: session.executionId };
 		}
 	}
@@ -794,7 +777,13 @@ export async function archiveThreadAndRecord(
 			const active = await resolveReopenVeto(
 				store.listReopenVetoCandidates(input.issueId),
 				archivedAtRaw,
-				deps,
+				{
+					nowMs: deps.nowMs,
+					readBodyLivenessFn:
+						deps.readBodyLivenessFn ??
+						((executionId, projectName) =>
+							readStoredExecutionBodyLiveness(store, executionId, projectName)),
+				},
 			);
 			if (active) {
 				return audit(

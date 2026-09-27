@@ -583,3 +583,15 @@ B14 最终逐文件证据：9个直接改动测试文件共340 pass（execution-
 受影响包及依赖 build、teamlead typecheck、voice-codex dependent typecheck 均退出0。根 `pnpm lint` 检查5141文件后因范围外既有债务退出1（2 errors、26 warnings；可见项位于历史 doc/scripts/config/core 测试），未顺手修改；B14当前三份恢复体改动文件的 scoped Biome 检查为0错误。全量20份B14 TS范围另有3个 useConst warning及超大 StateStore 跳过提示，没有格式错误；生命周期文件格式化后再次单文件66 pass。`git diff --check` 为0。
 
 本检查点仍不是整单完成。剩余工作继续按批准计划清除 C/D/E/F 的直接窗口死亡授权、补旧 Codex binding/普通与 rework 结账及九单矩阵，然后同头评审、PR、冻结头 CI 与 needs_review 交卷；不在 B14 停止或声明 QA/生产证明。
+
+### C3：双库残留、closeout 与 thread 结账统一 body truth（恢复体检查点）
+
+本批完成 C 组剩余直接消费者的迁移。`commdb-session-prune`、`commdb-fsm-reconcile`、`statestore-ghost-reconcile`、`done-thread-reconcile`、`execution-closeout-evidence`、`lifecycle-closeout`、`terminal-thread-archive` 与 `done-thread-archiver` 的状态写/通信结账均只接受共享 current-generation body fact；window/pane 仍可作为 exact-target CAS 或 UI 诊断/清理定位，但不能提供死亡授权。parked 声明不再否决已证 body death；TURN holder、目标替换、launch claim、generation/identity 竞态仍 fail-closed。终态 Codex 的 graceful harvest 保留，但不再以 window death 证明 daemon death，实际 finalization 仍需 body-dead 或 harvester 的独立 absence + 最终同步 guard。
+
+因果 RED 与同断言 GREEN 包括：活体且窗口缺失不得 prune/ghost-reap/archive，死体且窗口仍在必须 finalize；parked 死体必须结账，parked 活体必须保留；TURN 在采样期间取得、CommDB target 替换、body reader 抛错/unknown 均不得删；closeout 的 live/unknown window 只进入诊断，不再翻转 absent body；thread reopen compensation 只按 body alive/dead 决定 active-use。`terminal-thread-archive` 和 `done-thread-archiver` 两个遗漏点分别先得到旧实现 `archived`（应 veto）与 `null`（应 veto）的红测，再改绿。
+
+删除/降权清单：删除 CommDB FSM 的 `probe` / `isParked` / `parkedGenerationEvidence` 分支与生产 generation-window 接线；删除 terminal archive 的 `lookupTarget` / `probeLiveness` 判生死；删除 done-thread reconcile/archiver 的 target lookup + pane liveness 判 active；删除 closeout verdict 的 window/heartbeat live veto和 window unknown/dead 物理前置；StateStore ghost 的 same-pass target 仅保留身份 fence；CommDB trusted finalizer 仍以 exact target + TURN 做 CAS，不把该 target 当死亡证据。
+
+本批具体文件逐一验证共 **16 个文件 / 410 pass**：CommDB session prune 6+51+5+2，StateStore ghost 26，done-thread reconcile 55+6，closeout evidence/lifecycle/replay 33+66+2，CommDB FSM/terminal harvest/wiring 25+8+38+2，terminal archive 28，done-thread archiver 57。QA real-tmux fixture只改为让 window observation 与 body verdict 正交，未在本机运行。受影响包及依赖 build 退出0；23个限定文件 Biome 写入后仅报告 plugin.ts 三个既有 useConst warning。没有本机整库/整包 suite，也未把这些结果冒称 CI/529/QA。
+
+C3 不是整单完成。下一批按批准计划进入 D/E：无 verdict 退出、resident expiry、collection/shutdown/close-runner；随后 F 消费者巡检、九单矩阵与最终反向 inventory。A9 原 timeout 已在 B13 按原限制关闭；仍不得在剩余范围、有效代码评审、PR、冻结头 CI 与 needs_review 完成前交卷。

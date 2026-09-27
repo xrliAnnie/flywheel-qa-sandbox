@@ -225,7 +225,7 @@ describe("FLY-2555 terminal Codex daemon harvest", () => {
 });
 
 describe("FLY-2555 real CommDB two-pass convergence", () => {
-	it("rechecks ownership after awaiting parked-generation evidence", async () => {
+	it("rechecks ownership after awaiting execution-body evidence", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "fly2555-finalize-"));
 		const dbPath = join(dir, "comm.db");
 		const db = new CommDB(dbPath);
@@ -245,13 +245,12 @@ describe("FLY-2555 real CommDB two-pass convergence", () => {
 				{
 					dbPath,
 					harvest: { orphanMinAgeMs: 86400000, nowMs: Date.now },
-					probe: async () => "dead",
+					executionAbsence: async () => {
+						f.setOwned(true);
+						return "unknown";
+					},
 					harvestCodexDaemon: async () =>
 						harvestTerminalCodexDaemon("exec", "project", f.deps),
-					parkedGenerationEvidence: async () => {
-						f.setOwned(true);
-						return "unavailable";
-					},
 				},
 			);
 			expect(result.reconciled).toBe(0);
@@ -407,7 +406,7 @@ describe("FLY-2555 real CommDB two-pass convergence", () => {
 		},
 	);
 
-	it("retains an unparked Codex row whose status changes while probing tmux", async () => {
+	it("retains an unparked Codex row whose status changes while sampling body liveness", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "fly2555-race-"));
 		const dbPath = join(dir, "comm.db");
 		const db = new CommDB(dbPath);
@@ -420,9 +419,9 @@ describe("FLY-2555 real CommDB two-pass convergence", () => {
 				{
 					dbPath,
 					harvest: { orphanMinAgeMs: 86400000, nowMs: Date.now },
-					probe: async () => {
+					executionAbsence: async () => {
 						f.setSession({ status: "running" });
-						return "dead";
+						return "unknown";
 					},
 					harvestCodexDaemon: async (
 						executionId,

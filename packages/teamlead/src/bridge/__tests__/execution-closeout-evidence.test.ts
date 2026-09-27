@@ -85,6 +85,13 @@ describe("execution closeout evidence", () => {
 		).toBe("gone");
 	});
 
+	it.each(["live", "unknown"] as const)(
+		"FLY-2919 treats window %s as presentation-only when body sources prove absence",
+		(window) => {
+			expect(decideCloseoutEvidence(allCovered({ window }))).toBe("gone");
+		},
+	);
+
 	it("refuses gone while a launch or revival can still create a runner", () => {
 		expect(decideCloseoutEvidence(allCovered({ launch: "present" }))).toBe(
 			"unknown",
@@ -295,7 +302,7 @@ describe("execution closeout evidence", () => {
 		).toBe(30_000);
 	});
 
-	it("turns a timed-out source into unknown instead of manufacturing absence", async () => {
+	it("records a timed-out window probe without letting it override body absence", async () => {
 		const evidence = await collectCloseoutEvidence(
 			{
 				evidenceId: "44444444-4444-4444-8444-444444444444",
@@ -330,7 +337,7 @@ describe("execution closeout evidence", () => {
 			state: "unknown",
 			reason: "probe_timeout",
 		});
-		expect(evidence.verdict).toBe("unknown");
+		expect(evidence.verdict).toBe("gone");
 	});
 
 	it.each([
@@ -571,7 +578,59 @@ describe("execution closeout evidence", () => {
 
 		expect(probes).toEqual(["flywheel:@42", "flywheel:@43"]);
 		expect(evidence.observations.window).toMatchObject({ state: "live" });
-		expect(evidence.verdict).toBe("alive");
+		expect(evidence.liveVetoes).not.toContainEqual(
+			expect.stringContaining("window"),
+		);
+		expect(evidence.verdict).toBe("gone");
+	});
+
+	it("uses one shared dead-body observation while retaining a live window only as diagnostics", async () => {
+		const probeHostProcess = vi.fn(async () => ({ verdict: "live" as const }));
+		const probeCodexDaemon = vi.fn(async () => "alive" as const);
+		const evidence = await collectExecutionCloseoutEvidence(
+			{
+				evidenceId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+				project: "flywheel",
+				issueUuid: "issue-1",
+				runId: "run-1",
+				executionId: "dead-body-window-live",
+				activationId: "activation-1",
+				operationId: "land:1",
+				operationGeneration: 3,
+				lifecycleRevision: 2,
+				attributionDigest: "b".repeat(64),
+				commIdentityRevision: null,
+				windowIdentity: "flywheel:@42",
+				controllerGeneration: null,
+				adapter: "unknown",
+			},
+			{ session: undefined, launchClaimState: undefined },
+			{
+				probeExecutionBody: () => "dead",
+				readCommSession: () => "absent",
+				lookupTarget: () => ({
+					kind: "found",
+					target: { tmuxWindow: "flywheel:@42", sessionName: "flywheel" },
+				}),
+				listWindows: async () => ({ kind: "ok", windows: [] }),
+				probeWindow: async () => "alive",
+				probeHostProcess,
+				probeCodexDaemon,
+			},
+		);
+
+		expect(evidence.observations.window.state).toBe("live");
+		expect(evidence.observations.hostProcess).toMatchObject({
+			state: "absent",
+			reason: "execution_body_dead",
+		});
+		expect(evidence.observations.daemon).toMatchObject({
+			state: "not_applicable",
+			reason: "unified_execution_body_observation",
+		});
+		expect(probeHostProcess).not.toHaveBeenCalled();
+		expect(probeCodexDaemon).not.toHaveBeenCalled();
+		expect(evidence.verdict).toBe("gone");
 	});
 
 	it("keeps a host sensor error unknown instead of calling it live", async () => {

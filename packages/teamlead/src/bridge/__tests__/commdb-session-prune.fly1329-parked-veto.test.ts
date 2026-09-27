@@ -63,20 +63,18 @@ describe("FLY-1329 A4: CommDB prune respects a park declaration", () => {
 	/** The stale-mapping shape: tmux says "can't find window". */
 	const probeDead = vi.fn(async () => "dead" as const);
 
-	it("KEEPS the row of a runner that declares itself parked, even on a dead probe", async () => {
+	it("keeps a parked row when the execution body is alive", async () => {
 		seedTerminal("parked-alive", true);
 
 		const result = await pruneDeadTerminalCommDbSessions("flywheel", {
 			dbPath,
-			probe: probeDead,
+			readBodyLiveness: () => "alive",
 		});
 
 		expect(result.scanned).toBe(1);
 		expect(result.pruned).toBe(0);
-		expect(result.parkedVetoed).toBe(1);
-		expect(probeDead).toHaveBeenCalledExactlyOnceWith(
-			"runner-flywheel:parked-alive",
-		);
+		expect(result.parkedVetoed).toBe(0);
+		expect(probeDead).not.toHaveBeenCalled();
 
 		// The real proof: the row is still there.
 		const db = new CommDB(dbPath);
@@ -93,12 +91,10 @@ describe("FLY-1329 A4: CommDB prune respects a park declaration", () => {
 
 		const result = await pruneDeadTerminalCommDbSessions("flywheel", {
 			dbPath,
-			probe: probeAlive,
+			readBodyLiveness: () => "alive",
 		});
 
-		expect(probeAlive).toHaveBeenCalledExactlyOnceWith(
-			"runner-flywheel:parked-window-alive",
-		);
+		expect(probeAlive).not.toHaveBeenCalled();
 		expect(result.kept).toBe(1);
 		expect(result.parkedVetoed).toBe(0);
 		expect(result.pruned).toBe(0);
@@ -109,7 +105,7 @@ describe("FLY-1329 A4: CommDB prune respects a park declaration", () => {
 
 		const result = await pruneDeadTerminalCommDbSessions("flywheel", {
 			dbPath,
-			probe: probeDead,
+			readBodyLiveness: () => "dead",
 		});
 
 		expect(result.parkedVetoed).toBe(0);
@@ -129,10 +125,46 @@ describe("FLY-1329 A4: CommDB prune respects a park declaration", () => {
 
 		const result = await pruneDeadTerminalCommDbSessions("flywheel", {
 			dbPath,
-			probe: vi.fn(async () => "alive" as const),
+			readBodyLiveness: () => "alive",
 		});
 
 		expect(result.kept).toBe(1);
 		expect(result.pruned).toBe(0);
+	});
+
+	it("FLY-2919 keeps a live body when its window is absent", async () => {
+		seedTerminal("live-body-missing-window", false);
+
+		const result = await pruneDeadTerminalCommDbSessions("flywheel", {
+			dbPath,
+			readBodyLiveness: () => "alive",
+		});
+
+		expect(result.pruned).toBe(0);
+		expect(result.kept).toBe(1);
+		const db = new CommDB(dbPath);
+		try {
+			expect(db.getSession("live-body-missing-window")).toBeTruthy();
+		} finally {
+			db.close();
+		}
+	});
+
+	it("FLY-2919 prunes a parked dead body even while its window remains", async () => {
+		seedTerminal("parked-dead-body", true);
+
+		const result = await pruneDeadTerminalCommDbSessions("flywheel", {
+			dbPath,
+			readBodyLiveness: () => "dead",
+		});
+
+		expect(result.pruned).toBe(1);
+		expect(result.parkedVetoed).toBe(0);
+		const db = new CommDB(dbPath);
+		try {
+			expect(db.getSession("parked-dead-body")).toBeFalsy();
+		} finally {
+			db.close();
+		}
 	});
 });

@@ -2,23 +2,23 @@
  * FLY-638: CommDB session-registry pruning.
  *
  * `runner_terminal_list` / Lead bootstrap read the per-project CommDB
- * (`~/.flywheel/comm/<project>/comm.db`) `sessions` table and probe tmux
- * liveness; a terminal (completed/timeout) row whose tmux window is gone renders
- * as `class=dead`. These rows are never deleted, so they pile up (~65 observed in
- * production) and pollute the list + bootstrap with stale entries.
+ * (`~/.flywheel/comm/<project>/comm.db`) `sessions` table. Terminal rows that
+ * outlive their execution bodies pile up and pollute the list + bootstrap with
+ * stale entries.
  *
  * Two surfaces — mirroring the FLY-324 live-handler + boot-sweep shape:
  *   1. `finalizeCommDbSession` — live cleanup. Atomically retires unresolved
- *      gates and deletes the session once the tmux window is gone.
+ *      gates and deletes the session after normal closeout authority.
  *   2. `pruneDeadTerminalCommDbSessions` — boot/maintenance sweep. Clears the
- *      EXISTING backlog: every eligible terminal row whose tmux window is
- *      provably gone. FLY-1066 extends eligibility to failed/blocked only while
- *      its residue-harvest kill-switch is enabled.
+ *      EXISTING backlog: every eligible terminal row whose current execution
+ *      body is proven dead. FLY-1066 extends eligibility to failed/blocked only
+ *      while its residue-harvest kill-switch is enabled.
  *
  * Safety: only eligible terminal rows are swept (completed/timeout always;
- * failed/blocked only under the residue-harvest switch), and only when the tmux
- * probe says the window is gone — a still-alive parked runner's row is left
- * untouched. The path is project-name-guarded (no traversal) and best-effort:
+ * failed/blocked only under the residue-harvest switch), and only when shared
+ * body liveness says dead. Parked is workflow state, not a liveness veto; live
+ * or unknown bodies are retained regardless of window state. The path is
+ * project-name-guarded (no traversal) and best-effort:
  * any failure logs a warning and is swallowed (a prune must never break a close
  * or block Bridge startup).
  */
@@ -32,10 +32,7 @@ import {
 } from "flywheel-comm/db";
 import { RECONCILE_DELETABLE_STATES } from "./commdb-deletable-states.js";
 import { commDbPathForProject } from "./commdb-path.js";
-import {
-	probeTmuxWindowLiveness,
-	type TmuxWindowProbe,
-} from "./tmux-lookup.js";
+import type { ExecutionBodyLivenessReader } from "./execution-body-reader.js";
 
 /**
  * Resolve a project's comm.db path (matches tmux-lookup.ts's resolution).
@@ -398,28 +395,24 @@ export function finalizeCommDbTerminalSession(
 export interface CommDbPruneResult {
 	/** terminal rows examined. */
 	scanned: number;
-	/** rows deleted (terminal + tmux PROVABLY dead). */
+	/** rows deleted (eligible terminal + current execution body proven dead). */
 	pruned: number;
 	/**
-	 * rows KEPT — tmux is alive (parked-alive) OR the probe was indeterminate
-	 * (timeout / tmux-missing / EACCES). A destructive delete must require PROOF
-	 * of death, never the absence of proof of life.
+	 * rows KEPT — body is alive or the shared body observation was unknown.
+	 * A destructive delete requires proof of death, never absence of proof of life.
 	 */
 	kept: number;
 	/** proven-dead rows whose atomic gate+session finalization failed. */
 	failed: number;
 	/**
-	 * Exact CommDB window targets that were proven dead immediately before their
-	 * rows were successfully finalized. This evidence is intentionally returned
-	 * to the caller rather than persisted in StateStore, where legacy
-	 * `tmux_session` values have no trustworthy provenance.
+	 * Exact CommDB target identities captured when rows were finalized after body
+	 * death. The target binds the same-pass StateStore ghost cleanup; it is not
+	 * liveness evidence.
 	 */
 	provenDeadTargets: ProvenDeadTmuxTarget[];
 	/**
-	 * FLY-1329 (A4): rows KEPT because the runner declared itself parked, despite a
-	 * `dead` probe. That probe's `dead` only means tmux could not FIND the window
-	 * at the name we passed — a stale mapping reads identically to a real death,
-	 * and deleting on it is how a live runner's row vanished in FLY-1319.
+	 * Compatibility counter for TURN-holder vetoes. Parked declarations no longer
+	 * veto a current-generation body-death fact.
 	 */
 	parkedVetoed: number;
 }
@@ -437,14 +430,14 @@ export type DeadTerminalFinalizeOutcome =
 	| "kept_turn_holder"
 	| "kept_alive"
 	| "kept_indeterminate"
-	| "kept_parked"
 	| "kept_target_changed"
 	| "failed"
 	| "not_wired";
 
 export interface FinalizeDeadTerminalOpts {
 	includeCrashPreserve?: boolean;
-	probe?: (tmuxWindow: string) => Promise<TmuxWindowProbe>;
+	/** Current-generation process truth. Window state is never a fallback. */
+	readBodyLiveness?: ExecutionBodyLivenessReader;
 	onFinalizeOutcome?: (
 		executionId: string,
 		projectName: string,
@@ -458,11 +451,9 @@ type DeadTerminalInspectionOutcome =
 	| "kept_status"
 	| "kept_turn_holder"
 	| "kept_alive"
-	| "kept_indeterminate"
-	| "kept_parked";
+	| "kept_indeterminate";
 
 async function inspectDeadTerminalCommDbSession(
-	db: CommDB,
 	projectName: string,
 	session: Session,
 	turnHolders: ReadonlySet<string>,
@@ -486,34 +477,15 @@ async function inspectDeadTerminalCommDbSession(
 		}
 		return "kept_turn_holder";
 	}
-	const isParked = (): boolean => {
-		try {
-			return (
-				db.getEffectiveDeclaredState(session.execution_id, Date.now())?.kind ===
-				"parked"
-			);
-		} catch (error) {
-			if (opts.finalizeMode === "sweep") {
-				console.warn(
-					`[commdb-prune] declared-state lookup failed for ${session.execution_id}: ${(error as Error).message} — KEEPING the row (fail-closed)`,
-				);
-			}
-			return true;
-		}
-	};
-	if (opts.finalizeMode === "point" && isParked()) {
-		return "kept_parked";
+	let state: ReturnType<ExecutionBodyLivenessReader> = "unknown";
+	try {
+		state =
+			opts.readBodyLiveness?.(session.execution_id, projectName) ?? "unknown";
+	} catch {
+		state = "unknown";
 	}
-	const probe = opts.probe ?? probeTmuxWindowLiveness;
-	const state = await probe(session.tmux_window);
 	if (state === "alive") return "kept_alive";
-	if (state === "indeterminate") return "kept_indeterminate";
-	if (opts.finalizeMode === "sweep" && isParked()) {
-		console.log(
-			`[commdb-prune] prune_skipped_parked_conflict: ${session.execution_id} (${projectName}) declares itself parked while its window name does not resolve — KEEPING the row (stale mapping suspected, FLY-1319 shape)`,
-		);
-		return "kept_parked";
-	}
+	if (state !== "dead") return "kept_indeterminate";
 	return "eligible_dead";
 }
 
@@ -594,7 +566,6 @@ export async function finalizeDeadTerminalCommDbSession(
 	result?: FinalizeCommDbResult;
 }> {
 	const inspection = await inspectDeadTerminalCommDbSession(
-		db,
 		projectName,
 		session,
 		turnHolders,
@@ -634,7 +605,6 @@ export async function finalizeDeadTerminalCommDbSessionById(
 			reader.listTurns().map((turn) => turn.holder_exec_id),
 		);
 		inspection = await inspectDeadTerminalCommDbSession(
-			reader,
 			projectName,
 			session,
 			turnHolders,
@@ -671,13 +641,10 @@ export async function finalizeDeadTerminalCommDbSessionById(
 }
 
 /**
- * Boot/maintenance sweep: delete eligible terminal CommDB session rows whose
- * tmux window is **provably** gone. Uses the tri-state
- * `probeTmuxWindowLiveness` (NOT
- * the boolean `isTmuxWindowAlive`, which collapses a transient/indeterminate
- * probe failure into "not alive") so a parked-alive runner whose probe merely
- * timed out is never deleted — only a `dead` verdict deletes (Codex R1 HIGH).
- * Probe + db path are injectable for tests. Best-effort; never throws.
+ * Boot/maintenance sweep: delete eligible terminal CommDB rows only after the
+ * shared convergence path projects current-generation process death. Parked is
+ * workflow state, not a liveness veto; live or unknown bodies are retained
+ * regardless of the window. Best-effort; never throws.
  */
 export async function pruneDeadTerminalCommDbSessions(
 	projectName: string,
@@ -685,7 +652,7 @@ export async function pruneDeadTerminalCommDbSessions(
 		dbPath?: string;
 		/** FLY-1066: include failed/blocked CRASH_PRESERVE rows. */
 		includeCrashPreserve?: boolean;
-		probe?: (tmuxWindow: string) => Promise<TmuxWindowProbe>;
+		readBodyLiveness?: ExecutionBodyLivenessReader;
 		onFinalizeOutcome?: (
 			executionId: string,
 			projectName: string,
@@ -733,7 +700,6 @@ export async function pruneDeadTerminalCommDbSessions(
 					});
 					break;
 				case "kept_turn_holder":
-				case "kept_parked":
 					result.parkedVetoed++;
 					break;
 				case "kept_alive":

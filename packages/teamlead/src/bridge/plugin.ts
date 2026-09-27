@@ -512,7 +512,10 @@ import {
 } from "./execution-body-convergence.js";
 import { createStoredExecutionBodyObserver } from "./execution-body-liveness.js";
 import type { ExecutionBodyLivenessReader } from "./execution-body-reader.js";
-import { createExecutionBodyReader } from "./execution-body-reader.js";
+import {
+	createExecutionBodyReader,
+	readStoredExecutionBodyLiveness,
+} from "./execution-body-reader.js";
 import { createExecutionBodyRuntime } from "./execution-body-runtime.js";
 import { withExecutionMutationLease } from "./execution-mutation-lease.js";
 import {
@@ -802,9 +805,7 @@ import { OutboundPressureMeter } from "./outbound-pressure.js";
 import { isTransientThrottlePane } from "./pane-blocked-classifier.js";
 import { fingerprintOutput } from "./pane-fingerprint.js";
 import {
-	isAutoMigratableClaudeTmux,
 	type PaneLossNotificationClass,
-	parsePaneLossGenerationParams,
 	reconcilePaneLoss,
 } from "./pane-loss-reconcile.js";
 import {
@@ -8114,7 +8115,8 @@ export async function startBridge(
 		// Full passes override this with the immediately preceding prune's
 		// short-lived evidence. Targeted/historical rows have no safe fallback.
 		getProvenDeadTmuxTarget: () => undefined,
-		probe: (tmuxSession) => probeTmuxWindowLiveness(tmuxSession),
+		readBodyLiveness: (executionId, projectName) =>
+			readStoredExecutionBodyLiveness(store, executionId, projectName),
 		finalizeCommDbSession: (executionId, projectName) =>
 			finalizeCommDbSession(executionId, projectName),
 		lifecycleMutex: {
@@ -8161,6 +8163,8 @@ export async function startBridge(
 		try {
 			const pruned = await pruneDeadTerminalCommDbSessions(projectName, {
 				includeCrashPreserve: true,
+				readBodyLiveness: (executionId, name) =>
+					readStoredExecutionBodyLiveness(store, executionId, name),
 				onFinalizeOutcome: recordResidueFinalizeOutcome,
 			});
 			if (pruned.pruned > 0) {
@@ -8175,21 +8179,6 @@ export async function startBridge(
 			);
 			return [];
 		}
-	};
-	const parkedGenerationEvidence = async (
-		executionId: string,
-	): Promise<"superseded" | "same_generation" | "unavailable"> => {
-		const session = store.getSession(executionId);
-		if (!session || !isAutoMigratableClaudeTmux(session.adapter_type)) {
-			return "unavailable";
-		}
-		const generation = parsePaneLossGenerationParams(session.session_params);
-		if (!generation) return "unavailable";
-		const current = await probeTmuxServerStartTime(generation.socket_path);
-		if (current.kind !== "found") return "unavailable";
-		return current.startTime === generation.server_start_time
-			? "same_generation"
-			: "superseded";
 	};
 	const executionAbsence = async (executionId: string, project: string) => {
 		const { probeExecutionAbsenceBeyondTarget } = await import(
@@ -8245,7 +8234,6 @@ export async function startBridge(
 					},
 					finalizePaneLossResidue: (db, executionId, expectedTmuxWindow) =>
 						db.finalizePaneLossResidue(executionId, expectedTmuxWindow),
-					parkedGenerationEvidence,
 					executionAbsence,
 					harvestCodexDaemon: async (
 						executionId,
@@ -9629,6 +9617,8 @@ export async function startBridge(
 				finalizeDeadExecutionCommDb: ({ projectName, executionId, issueId }) =>
 					finalizeDeadTerminalCommDbSessionById(projectName, executionId, {
 						includeCrashPreserve: true,
+						readBodyLiveness: (id, name) =>
+							readStoredExecutionBodyLiveness(store, id, name),
 						onFinalizeOutcome: (execId, project, outcome) =>
 							store.recordCommDbFinalizeOutcome({
 								executionId: execId,
@@ -11495,8 +11485,9 @@ export async function startBridge(
 				maxCandidatesPerRun: reconcileCfg.maxCandidatesPerRun,
 				runDeadlineMs: reconcileCfg.runDeadlineMs,
 				shouldAbort,
-				lookupTarget: lookupTmuxTarget,
-				probeLiveness: (w) => probeRunnerProcessLiveness(w),
+				readBodyLiveness: (executionId, projectName) =>
+					executionBodyReader?.read(executionId, projectName) ??
+					readStoredExecutionBodyLiveness(store, executionId, projectName),
 				// FLY-1185 entry D: authorized issue closeout (episode-gated inside
 				// the reconcile) + the dual-switch contract — the NEW mutators hang
 				// disable autoclean through the integration seam; the original FLY-1165 behavior
@@ -11545,8 +11536,9 @@ export async function startBridge(
 					const keys = res.lockKeys.length > 0 ? res.lockKeys : [lockIssueId];
 					return issueMutex(keys, fn);
 				},
-				lookupTarget: lookupTmuxTarget,
-				probeLiveness: (w) => probeRunnerProcessLiveness(w),
+				readBodyLiveness: (executionId, projectName) =>
+					executionBodyReader?.read(executionId, projectName) ??
+					readStoredExecutionBodyLiveness(store, executionId, projectName),
 			});
 			return {
 				done: threadId
@@ -11744,7 +11736,6 @@ export async function startBridge(
 						onFinalizeOutcome: recordResidueFinalizeOutcome,
 						finalizePaneLossResidue: (db, executionId, expectedTmuxWindow) =>
 							db.finalizePaneLossResidue(executionId, expectedTmuxWindow),
-						parkedGenerationEvidence,
 						executionAbsence,
 					},
 				);

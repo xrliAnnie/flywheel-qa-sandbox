@@ -63,7 +63,7 @@ describe("FLY-1066 B2 Layer 1 × Layer 2 flag interactions", () => {
 			pruneDeadTerminalCommDbSessions("flywheel", {
 				dbPath,
 				includeCrashPreserve,
-				probe: async () => "dead",
+				readBodyLiveness: () => "dead",
 			});
 		const residueHarvester = flags.residueHarvest
 			? createResidueHarvester({
@@ -117,7 +117,7 @@ describe("FLY-1066 B2 Layer 1 × Layer 2 flag interactions", () => {
 		await expect(converge(flags)).resolves.toBe(expected);
 	});
 
-	it("passes exact dead-window proof only from terminal prune to the same-pass active ghost scan", async () => {
+	it("passes settled body-death proof from terminal prune to the same-pass active ghost scan", async () => {
 		const store = await StateStore.create(":memory:");
 		try {
 			for (const [executionId, status] of [
@@ -160,7 +160,7 @@ describe("FLY-1066 B2 Layer 1 × Layer 2 flag interactions", () => {
 					(
 						await pruneDeadTerminalCommDbSessions("flywheel", {
 							dbPath,
-							probe: async () => "dead",
+							readBodyLiveness: () => "dead",
 						})
 					).provenDeadTargets,
 				harvestStateStoreGhosts: async (projectName, evidence) => {
@@ -179,7 +179,7 @@ describe("FLY-1066 B2 Layer 1 × Layer 2 flag interactions", () => {
 						lookupCommDbSession: (executionId) => db.getSession(executionId),
 						getProvenDeadTmuxTarget: (executionId) =>
 							exactTargets.get(executionId),
-						probe: async () => "dead",
+						readBodyLiveness: () => "dead",
 						finalizeCommDbSession: () => ({
 							ok: true,
 							outcome: "finalized",

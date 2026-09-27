@@ -1,12 +1,10 @@
 /**
- * FLY-1066 QA (Tadashi ②) — face-③ REAL-PROBE verification.
+ * FLY-1066 / FLY-2919 QA — window observation is not body authority.
  *
- * The unit suite proves the keep/reap decision with a MOCKED probe. This QA test
- * exercises the SAME reconciler against a REAL tmux session and the REAL
- * `probeTmuxWindowLiveness` — no mock — to prove the design→implement handoff
- * shape (active StateStore row + same-pass authoritative exact target) is left
- * untouched while live and reaped only once that exact window is gone. Parked
- * founder-review states stay outside the candidate set even with dead evidence.
+ * The real tmux window is varied independently from the injected shared body
+ * verdict. It proves the reconciler does not promote window presence/absence to
+ * process life/death authority. Parked founder-review states remain outside the
+ * legacy ghost candidate set even with settled body-death evidence.
  *
  * Skipped automatically where tmux is unavailable (e.g. CI without a tmux server).
  */
@@ -67,7 +65,10 @@ describe.skipIf(!tmuxAvailable)(
 			tmux(["kill-session", "-t", SESSION]);
 		});
 
-		async function mkDeps(target = EXACT_TARGET): Promise<{
+		async function mkDeps(
+			body: "alive" | "dead" | "unknown" = "alive",
+			target = EXACT_TARGET,
+		): Promise<{
 			store: StateStore;
 			deps: StateStoreGhostDeps;
 		}> {
@@ -83,7 +84,7 @@ describe.skipIf(!tmuxAvailable)(
 				nowMs: () => NOW,
 				lookupCommDbSession: () => undefined, // empty CommDB window (the handoff transient)
 				getProvenDeadTmuxTarget: () => target,
-				probe: (t) => probeTmuxWindowLiveness(t), // THE REAL PROBE
+				readBodyLiveness: () => body,
 				finalizeCommDbSession: () => ({
 					ok: true,
 					outcome: "finalized",
@@ -116,8 +117,8 @@ describe.skipIf(!tmuxAvailable)(
 			expect(await probeTmuxWindowLiveness(`${SESSION}:@999999`)).toBe("dead");
 		});
 
-		it("(A) running + same-pass exact target + REAL live window + 46min → KEEP", async () => {
-			const { store, deps } = await mkDeps();
+		it("(A) live body + REAL live window + 46min → KEEP", async () => {
+			const { store, deps } = await mkDeps("alive");
 			seed(store, "handoff-alive", OLD);
 			const outcome = await reapStateStoreGhost(
 				store.getSession("handoff-alive")!,
@@ -127,26 +128,46 @@ describe.skipIf(!tmuxAvailable)(
 			expect(store.getSession("handoff-alive")?.status).toBe("running");
 		});
 
-		it("(C) fresh (<30min) is kept by the age guard BEFORE any probe", async () => {
-			const { store, deps } = await mkDeps();
+		it("(C) fresh (<30min) is kept before body evidence is read", async () => {
+			const { store, deps } = await mkDeps("dead");
 			seed(store, "handoff-fresh", FRESH);
-			let probed = false;
-			deps.probe = (t) => {
-				probed = true;
-				return probeTmuxWindowLiveness(t);
+			let bodyRead = false;
+			deps.readBodyLiveness = () => {
+				bodyRead = true;
+				return "dead";
 			};
 			const outcome = await reapStateStoreGhost(
 				store.getSession("handoff-fresh")!,
 				deps,
 			);
 			expect(outcome).toBe("kept_fresh_or_invalid_age");
-			expect(probed).toBe(false);
+			expect(bodyRead).toBe(false);
 		});
 
-		it("(B) SAME active shape but the REAL exact window is gone → reaped; parked stays parked", async () => {
+		it("(B) REAL live window cannot veto settled body death", async () => {
+			expect(await probeTmuxWindowLiveness(EXACT_TARGET)).toBe("alive");
+			const { store, deps } = await mkDeps("dead");
+			seed(store, "body-dead-window-live", OLD);
+			expect(
+				await reapStateStoreGhost(
+					store.getSession("body-dead-window-live")!,
+					deps,
+				),
+			).toBe("reaped");
+		});
+
+		it("(D) REAL missing window cannot override a live body; dead body still reaps", async () => {
 			tmux(["kill-session", "-t", SESSION]);
 			expect(await probeTmuxWindowLiveness(EXACT_TARGET)).toBe("dead");
-			const { store, deps } = await mkDeps();
+			const { store, deps } = await mkDeps("alive");
+			seed(store, "handoff-alive-missing-window", OLD);
+			expect(
+				await reapStateStoreGhost(
+					store.getSession("handoff-alive-missing-window")!,
+					deps,
+				),
+			).toBe("kept_target_not_dead");
+			deps.readBodyLiveness = () => "dead";
 			seed(store, "handoff-dead", OLD);
 			seed(store, "parked-dead", OLD, "awaiting_review");
 			const outcome = await reapStateStoreGhost(

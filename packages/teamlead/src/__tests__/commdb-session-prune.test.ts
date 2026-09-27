@@ -454,9 +454,9 @@ describe("commdb-session-prune (FLY-638)", () => {
 
 			const res = await pruneDeadTerminalCommDbSessions("flywheel", {
 				dbPath,
-				probe: async (w) => {
-					if (w === "base:@3") return "alive";
-					if (w === "base:@5") return "indeterminate";
+				readBodyLiveness: (executionId) => {
+					if (executionId === "parked") return "alive";
+					if (executionId === "flaky") return "unknown";
 					return "dead";
 				},
 			});
@@ -483,12 +483,12 @@ describe("commdb-session-prune (FLY-638)", () => {
 			expect(db.getSession("run")).toBeDefined(); // running → untouched
 		});
 
-		it("NEVER deletes when the probe is indeterminate (no proof of death)", async () => {
+		it("NEVER deletes when body liveness is unknown", async () => {
 			seed("t1", "completed", "base:@1");
 			seed("t2", "timeout", "base:@2");
 			const res = await pruneDeadTerminalCommDbSessions("flywheel", {
 				dbPath,
-				probe: async () => "indeterminate",
+				readBodyLiveness: () => "unknown",
 			});
 			expect(res.scanned).toBe(2);
 			expect(res.pruned).toBe(0);
@@ -504,10 +504,10 @@ describe("commdb-session-prune (FLY-638)", () => {
 				sourceEventId: "turn:holder",
 			});
 
-			const probe = vi.fn(async () => "dead" as const);
+			const readBodyLiveness = vi.fn(() => "dead" as const);
 			const res = await pruneDeadTerminalCommDbSessions("flywheel", {
 				dbPath,
-				probe,
+				readBodyLiveness,
 			});
 
 			expect(res).toMatchObject({
@@ -515,7 +515,7 @@ describe("commdb-session-prune (FLY-638)", () => {
 				pruned: 0,
 				parkedVetoed: 1,
 			});
-			expect(probe).not.toHaveBeenCalled();
+			expect(readBodyLiveness).not.toHaveBeenCalled();
 			expect(db.getSession("holder")).toBeDefined();
 			expect(db.getTurn("FLY-1374")?.holder_exec_id).toBe("holder");
 		});
@@ -525,7 +525,7 @@ describe("commdb-session-prune (FLY-638)", () => {
 
 			const res = await pruneDeadTerminalCommDbSessions("flywheel", {
 				dbPath,
-				probe: async () => {
+				readBodyLiveness: () => {
 					db.grantTurn("FLY-1374", "holder", "implement", 1_000, {
 						project: "flywheel",
 						sourceEventId: "turn:holder-during-probe",
@@ -552,7 +552,8 @@ describe("commdb-session-prune (FLY-638)", () => {
 			const res = await pruneDeadTerminalCommDbSessions("flywheel", {
 				dbPath,
 				includeCrashPreserve: true,
-				probe: async (window) => (window === "base:@alive" ? "alive" : "dead"),
+				readBodyLiveness: (executionId) =>
+					executionId === "failed-alive" ? "alive" : "dead",
 			});
 
 			expect(res).toEqual({
@@ -577,7 +578,7 @@ describe("commdb-session-prune (FLY-638)", () => {
 
 			const res = await pruneDeadTerminalCommDbSessions("flywheel", {
 				dbPath,
-				probe: async () => "dead",
+				readBodyLiveness: () => "dead",
 				onFinalizeOutcome: () => {
 					throw new Error("StateStore unavailable");
 				},
@@ -602,11 +603,11 @@ describe("commdb-session-prune (FLY-638)", () => {
 			seed("blocked-dead", "blocked", "base:@blocked");
 			seed("completed-dead", "completed", "base:@completed");
 
-			const probe = vi.fn(async () => "dead" as const);
+			const readBodyLiveness = vi.fn(() => "dead" as const);
 			const res = await pruneDeadTerminalCommDbSessions("flywheel", {
 				dbPath,
 				includeCrashPreserve: false,
-				probe,
+				readBodyLiveness,
 			});
 
 			expect(res).toEqual({
@@ -620,7 +621,10 @@ describe("commdb-session-prune (FLY-638)", () => {
 				// FLY-1329 (A4): parkedVetoed joins the counters.
 				parkedVetoed: 0,
 			});
-			expect(probe).toHaveBeenCalledExactlyOnceWith("base:@completed");
+			expect(readBodyLiveness).toHaveBeenCalledExactlyOnceWith(
+				"completed-dead",
+				"flywheel",
+			);
 			expect(db.getSession("failed-dead")).toBeDefined();
 			expect(db.getSession("blocked-dead")).toBeDefined();
 			expect(db.getSession("completed-dead")).toBeUndefined();
@@ -630,7 +634,7 @@ describe("commdb-session-prune (FLY-638)", () => {
 			seed("only-running", "running");
 			const res = await pruneDeadTerminalCommDbSessions("flywheel", {
 				dbPath,
-				probe: async () => "dead",
+				readBodyLiveness: () => "dead",
 			});
 			expect(res).toEqual({
 				scanned: 0,
@@ -646,7 +650,7 @@ describe("commdb-session-prune (FLY-638)", () => {
 	});
 
 	describe("finalizeDeadTerminalCommDbSessionById (FLY-2302)", () => {
-		it("finalizes a blocked row whose tmux target is proven dead", async () => {
+		it("finalizes a blocked row whose execution body is proven dead", async () => {
 			seed("blocked-dead", "blocked", "base:@blocked");
 			const onFinalizeOutcome = vi.fn();
 			const openReadonly = vi.fn((path: string) => CommDB.openReadonly(path));
@@ -659,7 +663,7 @@ describe("commdb-session-prune (FLY-638)", () => {
 					{
 						dbPath,
 						includeCrashPreserve: true,
-						probe: async () => "dead",
+						readBodyLiveness: () => "dead",
 						onFinalizeOutcome,
 						openReadonly,
 						openWritable,
@@ -676,7 +680,7 @@ describe("commdb-session-prune (FLY-638)", () => {
 			);
 		});
 
-		it("keeps a blocked row while its crash-preserve pane is alive", async () => {
+		it("keeps a blocked row while its execution body is alive", async () => {
 			seed("blocked-alive", "blocked", "base:@alive");
 			const openReadonly = vi.fn((path: string) => CommDB.openReadonly(path));
 			const openWritable = vi.fn((path: string) => new CommDB(path));
@@ -688,7 +692,7 @@ describe("commdb-session-prune (FLY-638)", () => {
 					{
 						dbPath,
 						includeCrashPreserve: true,
-						probe: async () => "alive",
+						readBodyLiveness: () => "alive",
 						openReadonly,
 						openWritable,
 					},
@@ -699,7 +703,7 @@ describe("commdb-session-prune (FLY-638)", () => {
 			expect(db.getSession("blocked-alive")).toBeDefined();
 		});
 
-		it("keeps a blocked row when the tmux probe is indeterminate", async () => {
+		it("keeps a blocked row when body liveness is unknown", async () => {
 			seed("blocked-unknown", "blocked", "base:@unknown");
 
 			expect(
@@ -709,7 +713,7 @@ describe("commdb-session-prune (FLY-638)", () => {
 					{
 						dbPath,
 						includeCrashPreserve: true,
-						probe: async () => "indeterminate",
+						readBodyLiveness: () => "unknown",
 					},
 				),
 			).toBe("kept_indeterminate");
@@ -722,7 +726,7 @@ describe("commdb-session-prune (FLY-638)", () => {
 				project: "flywheel",
 				sourceEventId: "turn:blocked-holder",
 			});
-			const probe = vi.fn(async () => "dead" as const);
+			const readBodyLiveness = vi.fn(() => "dead" as const);
 
 			expect(
 				await finalizeDeadTerminalCommDbSessionById(
@@ -731,11 +735,11 @@ describe("commdb-session-prune (FLY-638)", () => {
 					{
 						dbPath,
 						includeCrashPreserve: true,
-						probe,
+						readBodyLiveness,
 					},
 				),
 			).toBe("kept_turn_holder");
-			expect(probe).not.toHaveBeenCalled();
+			expect(readBodyLiveness).not.toHaveBeenCalled();
 			expect(db.getSession("blocked-holder")).toBeDefined();
 		});
 
@@ -748,22 +752,22 @@ describe("commdb-session-prune (FLY-638)", () => {
 				"lead-a",
 			);
 			db.markSessionTerminalStatus("foreign", "blocked");
-			const probe = vi.fn(async () => "dead" as const);
+			const readBodyLiveness = vi.fn(() => "dead" as const);
 
 			expect(
 				await finalizeDeadTerminalCommDbSessionById("flywheel", "foreign", {
 					dbPath,
 					includeCrashPreserve: true,
-					probe,
+					readBodyLiveness,
 				}),
 			).toBe("kept_project_mismatch");
-			expect(probe).not.toHaveBeenCalled();
+			expect(readBodyLiveness).not.toHaveBeenCalled();
 			expect(db.getSession("foreign")).toBeDefined();
 		});
 
 		it("keeps a running row without probing tmux", async () => {
 			seed("still-running", "running", "base:@running");
-			const probe = vi.fn(async () => "dead" as const);
+			const readBodyLiveness = vi.fn(() => "dead" as const);
 
 			expect(
 				await finalizeDeadTerminalCommDbSessionById(
@@ -772,15 +776,15 @@ describe("commdb-session-prune (FLY-638)", () => {
 					{
 						dbPath,
 						includeCrashPreserve: true,
-						probe,
+						readBodyLiveness,
 					},
 				),
 			).toBe("kept_status");
-			expect(probe).not.toHaveBeenCalled();
+			expect(readBodyLiveness).not.toHaveBeenCalled();
 			expect(db.getSession("still-running")).toBeDefined();
 		});
 
-		it("keeps a parked blocked row without probing tmux", async () => {
+		it("finalizes a parked blocked row when its body is dead", async () => {
 			seed("blocked-parked", "blocked", "base:@parked");
 			db.upsertDeclaredState(
 				"blocked-parked",
@@ -789,7 +793,7 @@ describe("commdb-session-prune (FLY-638)", () => {
 				Date.now(),
 				null,
 			);
-			const probe = vi.fn(async () => "dead" as const);
+			const readBodyLiveness = vi.fn(() => "dead" as const);
 
 			expect(
 				await finalizeDeadTerminalCommDbSessionById(
@@ -798,12 +802,15 @@ describe("commdb-session-prune (FLY-638)", () => {
 					{
 						dbPath,
 						includeCrashPreserve: true,
-						probe,
+						readBodyLiveness,
 					},
 				),
-			).toBe("kept_parked");
-			expect(probe).not.toHaveBeenCalled();
-			expect(db.getSession("blocked-parked")).toBeDefined();
+			).toBe("finalized");
+			expect(readBodyLiveness).toHaveBeenCalledExactlyOnceWith(
+				"blocked-parked",
+				"flywheel",
+			);
+			expect(db.getSession("blocked-parked")).toBeUndefined();
 		});
 
 		it("returns failed and audits a point-finalize transaction error", async () => {
@@ -823,7 +830,7 @@ describe("commdb-session-prune (FLY-638)", () => {
 						{
 							dbPath,
 							includeCrashPreserve: true,
-							probe: async () => "dead",
+							readBodyLiveness: () => "dead",
 							onFinalizeOutcome,
 						},
 					),
@@ -843,35 +850,35 @@ describe("commdb-session-prune (FLY-638)", () => {
 			);
 		});
 
-		it("returns no_row without probing when the execution is absent", async () => {
-			const probe = vi.fn(async () => "dead" as const);
+		it("returns no_row without reading body liveness when the execution is absent", async () => {
+			const readBodyLiveness = vi.fn(() => "dead" as const);
 
 			expect(
 				await finalizeDeadTerminalCommDbSessionById("flywheel", "missing", {
 					dbPath,
 					includeCrashPreserve: true,
-					probe,
+					readBodyLiveness,
 				}),
 			).toBe("no_row");
-			expect(probe).not.toHaveBeenCalled();
+			expect(readBodyLiveness).not.toHaveBeenCalled();
 		});
 
 		it("keeps blocked when crash-preserve eligibility is disabled", async () => {
 			seed("blocked-flag-off", "blocked", "base:@flag-off");
-			const probe = vi.fn(async () => "dead" as const);
+			const readBodyLiveness = vi.fn(() => "dead" as const);
 
 			expect(
 				await finalizeDeadTerminalCommDbSessionById(
 					"flywheel",
 					"blocked-flag-off",
-					{ dbPath, includeCrashPreserve: false, probe },
+					{ dbPath, includeCrashPreserve: false, readBodyLiveness },
 				),
 			).toBe("kept_status");
-			expect(probe).not.toHaveBeenCalled();
+			expect(readBodyLiveness).not.toHaveBeenCalled();
 			expect(db.getSession("blocked-flag-off")).toBeDefined();
 		});
 
-		it("fails closed when declared-state lookup throws", async () => {
+		it("does not consult a parked declaration after body death is proven", async () => {
 			seed("blocked-state-error", "blocked", "base:@state-error");
 			const declaredState = vi
 				.spyOn(CommDB.prototype, "getEffectiveDeclaredState")
@@ -887,17 +894,18 @@ describe("commdb-session-prune (FLY-638)", () => {
 						{
 							dbPath,
 							includeCrashPreserve: true,
-							probe: async () => "dead",
+							readBodyLiveness: () => "dead",
 						},
 					),
-				).toBe("kept_parked");
+				).toBe("finalized");
 			} finally {
 				declaredState.mockRestore();
 			}
-			expect(db.getSession("blocked-state-error")).toBeDefined();
+			expect(declaredState).not.toHaveBeenCalled();
+			expect(db.getSession("blocked-state-error")).toBeUndefined();
 		});
 
-		it("keeps the row when its tmux target changes during the probe", async () => {
+		it("keeps the replacement row when its tmux target changes during body read", async () => {
 			seed("blocked-target-race", "blocked", "base:@old");
 
 			expect(
@@ -907,7 +915,7 @@ describe("commdb-session-prune (FLY-638)", () => {
 					{
 						dbPath,
 						includeCrashPreserve: true,
-						probe: async () => {
+						readBodyLiveness: () => {
 							db.registerSession(
 								"blocked-target-race",
 								"base:@new",

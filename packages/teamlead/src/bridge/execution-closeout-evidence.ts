@@ -91,6 +91,10 @@ export interface ExecutionCloseoutFacts {
 }
 
 export interface ExecutionCloseoutProbeDeps {
+	probeExecutionBody?: (
+		executionId: string,
+		projectName: string,
+	) => "alive" | "dead" | "unknown" | Promise<"alive" | "dead" | "unknown">;
 	readCommSession?: (
 		executionId: string,
 		projectName: string,
@@ -121,10 +125,8 @@ export interface ExecutionCloseoutProbeDeps {
 }
 
 const LIVE_VETO_SOURCES: ReadonlyArray<keyof CloseoutObservations> = [
-	"window",
 	"hostProcess",
 	"daemon",
-	"heartbeat",
 ];
 
 const OBSERVATION_SOURCES: ReadonlyArray<keyof CloseoutObservations> = [
@@ -223,7 +225,11 @@ export async function collectCloseoutEvidence(
 		expiresAt: new Date(observedAt.getTime() + 30_000).toISOString(),
 		observations,
 		negativeReasons: reasons(new Set<ObservationState>(["absent", "stale"])),
-		liveVetoes: reasons(new Set<ObservationState>(["live"])),
+		liveVetoes: LIVE_VETO_SOURCES.flatMap((source) =>
+			observations[source].state === "live"
+				? [`${source}:${observations[source].reason}`]
+				: [],
+		),
 		unknownReasons,
 		verdict,
 	};
@@ -269,6 +275,13 @@ export async function collectExecutionCloseoutEvidence(
 	deps: ExecutionCloseoutProbeDeps = {},
 ): Promise<CloseoutEvidence> {
 	const now = deps.now ?? (() => new Date());
+	const bodyObservation = deps.probeExecutionBody
+		? Promise.resolve()
+				.then(() =>
+					deps.probeExecutionBody!(identity.executionId, identity.project),
+				)
+				.catch(() => "unknown" as const)
+		: undefined;
 	const lookup = (deps.lookupTarget ?? lookupTmuxTarget)(
 		identity.executionId,
 		identity.project,
@@ -365,6 +378,14 @@ export async function collectExecutionCloseoutEvidence(
 			};
 		},
 		hostProcess: async () => {
+			if (bodyObservation) {
+				const body = await bodyObservation;
+				return {
+					state:
+						body === "alive" ? "live" : body === "dead" ? "absent" : "unknown",
+					reason: `execution_body_${body}`,
+				} as const;
+			}
 			const result = deps.probeHostProcess
 				? await deps.probeHostProcess(identity.executionId)
 				: deps.hasHostProcess
@@ -388,6 +409,13 @@ export async function collectExecutionCloseoutEvidence(
 			};
 		},
 		daemon: async () => {
+			if (bodyObservation) {
+				await bodyObservation;
+				return {
+					state: "not_applicable",
+					reason: "unified_execution_body_observation",
+				} as const;
+			}
 			if (adapter === "claude-tmux" || adapter === "engine") {
 				return {
 					state: "not_applicable",
@@ -478,27 +506,18 @@ export function decideCloseoutEvidence(
 	if (
 		observations.stateSession.state === "unknown" ||
 		observations.commSession.state === "unknown" ||
-		observations.window.state === "unknown" ||
 		observations.hostProcess.state === "unknown" ||
 		observations.daemon.state === "unknown" ||
-		observations.heartbeat.state === "unknown" ||
 		!PHYSICAL_ABSENCE.has(observations.launch.state) ||
-		!PHYSICAL_ABSENCE.has(observations.window.state) ||
 		!PHYSICAL_ABSENCE.has(observations.hostProcess.state) ||
-		!PHYSICAL_ABSENCE.has(observations.daemon.state) ||
-		!(["stale", "not_applicable"] as const).includes(
-			observations.heartbeat.state as "stale" | "not_applicable",
-		)
+		!PHYSICAL_ABSENCE.has(observations.daemon.state)
 	) {
 		return "unknown";
 	}
 
 	const hasNegativeFact =
-		observations.stateSession.state === "absent" ||
-		observations.commSession.state === "absent" ||
-		observations.window.state === "absent" ||
 		observations.hostProcess.state === "absent" ||
-		observations.heartbeat.state === "stale";
+		observations.daemon.state === "absent";
 
 	return hasNegativeFact ? "gone" : "unknown";
 }

@@ -96,6 +96,7 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 		const res = await reconcileCommDbRunningAgainstFsm("flywheel", fsm, {
 			dbPath,
 			probe: async () => "dead",
+			executionAbsence: async () => "dead",
 		});
 		expect(res.scanned).toBe(6);
 		expect(res.reconciled).toBe(6);
@@ -115,7 +116,11 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 		const result = await reconcileCommDbRunningAgainstFsm(
 			"flywheel",
 			fsmFrom({ "dead-runner": "completed" }),
-			{ dbPath, probe: async () => "dead" },
+			{
+				dbPath,
+				probe: async () => "dead",
+				executionAbsence: async () => "dead",
+			},
 		);
 		expect(result.reconciled).toBe(1);
 		db.close();
@@ -135,6 +140,7 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 			{
 				dbPath,
 				probe: async () => "dead",
+				executionAbsence: async () => "dead",
 				finalizeSession: () => {
 					throw new Error("locked");
 				},
@@ -182,6 +188,47 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 		expect(db.getSession("flaky1")).toBeDefined();
 	});
 
+	it("FLY-2919 keeps a live body when its window target is dead", async () => {
+		seedRunning("live-body-missing-window");
+		const result = await reconcileCommDbRunningAgainstFsm(
+			"flywheel",
+			fsmFrom({ "live-body-missing-window": "completed" }),
+			{
+				dbPath,
+				probe: async () => "dead",
+				executionAbsence: async () => "alive",
+			},
+		);
+
+		expect(result.reconciled).toBe(0);
+		expect(result.keptAliveTarget).toBe(1);
+		expect(db.getSession("live-body-missing-window")).toBeDefined();
+	});
+
+	it("FLY-2919 finalizes a parked dead body even while its window remains alive", async () => {
+		seedRunning("parked-dead-body");
+		db.upsertDeclaredState(
+			"parked-dead-body",
+			"parked",
+			"awaiting review",
+			Date.now(),
+			null,
+		);
+		const result = await reconcileCommDbRunningAgainstFsm(
+			"flywheel",
+			fsmFrom({ "parked-dead-body": "completed" }),
+			{
+				dbPath,
+				probe: async () => "alive",
+				executionAbsence: async () => "dead",
+			},
+		);
+
+		expect(result.reconciled).toBe(1);
+		expect(result.parkedVetoed).toBe(0);
+		expect(db.getSession("parked-dead-body")).toBeUndefined();
+	});
+
 	it("FLY-1374 never finalizes the current TURN holder even when FSM is terminal and its stale target probes dead", async () => {
 		seedRunning("holder", "stale:@holder");
 		db.grantTurn("FLY-1374", "holder", "implement", 1_000, {
@@ -206,7 +253,7 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 		expect(db.getTurn("FLY-1374")?.holder_exec_id).toBe("holder");
 	});
 
-	it("FLY-1374 rechecks TURN authority atomically when a holder is granted during the liveness probe", async () => {
+	it("FLY-1374 rechecks TURN authority atomically when a holder is granted during the body read", async () => {
 		seedRunning("holder", "stale:@holder");
 
 		const res = await reconcileCommDbRunningAgainstFsm(
@@ -214,7 +261,7 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 			fsmFrom({ holder: "completed" }),
 			{
 				dbPath,
-				probe: async () => {
+				executionAbsence: async () => {
 					db.grantTurn("FLY-1374", "holder", "implement", 1_000, {
 						project: "flywheel",
 						sourceEventId: "turn:holder-during-probe",
@@ -271,23 +318,23 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 		expect(probe).not.toHaveBeenCalled();
 	});
 
-	it("FSM-first ordering: probes ONLY deletable-terminal rows", async () => {
+	it("FSM-first ordering: reads body truth ONLY for deletable-terminal rows", async () => {
 		seedRunning("del1"); // deletable → probed
 		seedRunning("keep1"); // non-terminal → not probed
 		seedRunning("pres1"); // preserve → not probed
-		const probed: string[] = [];
+		const bodyReads: string[] = [];
 		await reconcileCommDbRunningAgainstFsm(
 			"flywheel",
 			fsmFrom({ del1: "completed", keep1: "awaiting_review", pres1: "failed" }),
 			{
 				dbPath,
-				probe: async (w) => {
-					probed.push(w);
+				executionAbsence: async (executionId) => {
+					bodyReads.push(executionId);
 					return "dead";
 				},
 			},
 		);
-		expect(probed).toEqual(["base:@del1"]);
+		expect(bodyReads).toEqual(["del1"]);
 	});
 
 	it("mixed scenario: only (deletable terminal + tmux dead) deleted; exact counters", async () => {
@@ -306,7 +353,11 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 				fail: "failed",
 				review: "awaiting_review",
 			}),
-			{ dbPath, probe: async (w) => (w === "base:@live" ? "alive" : "dead") },
+			{
+				dbPath,
+				executionAbsence: async (executionId) =>
+					executionId === "live" ? "alive" : "dead",
+			},
 		);
 		expect(res).toEqual({
 			scanned: 6,
@@ -334,7 +385,7 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 		const res = await reconcileCommDbRunningAgainstFsm(
 			"flywheel",
 			fsmFrom({ c1: "completed", t1: "terminated" }),
-			{ dbPath, probe: async () => "dead" },
+			{ dbPath, executionAbsence: async () => "dead" },
 		);
 		expect(res.scanned).toBe(0); // neither is `running`
 		expect(res.reconciled).toBe(0);
@@ -364,7 +415,7 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 		const terminalPass = await pruneDeadTerminalCommDbSessions("flywheel", {
 			dbPath,
 			includeCrashPreserve: true,
-			probe: async () => "dead",
+			readBodyLiveness: () => "dead",
 		});
 		expect(terminalPass).toMatchObject({ scanned: 1, pruned: 1 });
 		expect(db.getSession("marked-failed")).toBeUndefined();
@@ -375,7 +426,7 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 		const res = await reconcileCommDbRunningAgainstFsm(
 			"flywheel",
 			fsmFrom({ pend: "completed" }),
-			{ dbPath, probe: async () => "dead" },
+			{ dbPath, executionAbsence: async () => "dead" },
 		);
 		expect(res.reconciled).toBe(1);
 		expect(db.getSession("pend")).toBeUndefined();
@@ -397,7 +448,12 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 			const result = await reconcileCommDbRunningAgainstFsm(
 				"flywheel",
 				fsmFrom({}),
-				{ dbPath, probe, harvest },
+				{
+					dbPath,
+					probe,
+					harvest,
+					executionAbsence: async () => "dead",
+				},
 			);
 
 			expect(result).toMatchObject({
@@ -413,7 +469,7 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 			});
 			expect(db.getSession("orphan-old")).toBeUndefined();
 			expect(db.isQuestionPending(qid)).toBe(false);
-			expect(probe).toHaveBeenCalledTimes(1);
+			expect(probe).not.toHaveBeenCalled();
 		});
 
 		it("keeps young, missing, invalid, and future-dated CommDB-only registrations without probing", async () => {
@@ -456,8 +512,8 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 				{
 					dbPath,
 					harvest,
-					probe: async (target) =>
-						target.endsWith("orphan-alive") ? "alive" : "indeterminate",
+					executionAbsence: async (executionId) =>
+						executionId === "orphan-alive" ? "alive" : "unknown",
 				},
 			);
 
@@ -491,6 +547,11 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 					dbPath,
 					harvest,
 					probe,
+					executionAbsence: async (executionId) => {
+						if (executionId === "failed-alive") return "alive";
+						if (executionId === "failed-unknown") return "unknown";
+						return "dead";
+					},
 				},
 			);
 
@@ -506,7 +567,7 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 			expect(db.getSession("blocked-dead")).toBeUndefined();
 			expect(db.getSession("failed-alive")).toBeDefined();
 			expect(db.getSession("failed-unknown")).toBeDefined();
-			expect(probe).toHaveBeenCalledTimes(4);
+			expect(probe).not.toHaveBeenCalled();
 		});
 
 		it("preserves the exact legacy result shape and no-probe behavior when harvest is omitted", async () => {

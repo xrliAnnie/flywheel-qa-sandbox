@@ -213,7 +213,7 @@ describe("FLY-2302 dead workflow body CommDB convergence", () => {
 	}
 
 	function buildDispatcher(
-		tmuxProbe: ReturnType<typeof vi.fn>,
+		readBodyLiveness: ReturnType<typeof vi.fn>,
 		onFinalizeOutcome: ReturnType<typeof vi.fn>,
 	): { dispatcher: WorkflowEngineDispatcher; requests: StartRequest[] } {
 		const fake = fakeStartDispatcher(store!);
@@ -235,7 +235,7 @@ describe("FLY-2302 dead workflow body CommDB convergence", () => {
 			finalizeDeadExecutionCommDb: ({ projectName, executionId, issueId }) =>
 				finalizeDeadTerminalCommDbSessionById(projectName, executionId, {
 					includeCrashPreserve: true,
-					probe: tmuxProbe,
+					readBodyLiveness,
 					onFinalizeOutcome: (execId, project, outcome) => {
 						onFinalizeOutcome(execId, project, outcome);
 						store!.recordCommDbFinalizeOutcome({
@@ -262,9 +262,9 @@ describe("FLY-2302 dead workflow body CommDB convergence", () => {
 		seedCommDbDeadBody();
 		const terminalBefore = store.getSession(DEAD_EXECUTION_ID)!;
 		const terminalAtBefore = terminalBefore.terminal_at;
-		const tmuxProbe = vi.fn(async () => "dead" as const);
+		const readBodyLiveness = vi.fn(() => "dead" as const);
 		const onFinalizeOutcome = vi.fn();
-		const { dispatcher } = buildDispatcher(tmuxProbe, onFinalizeOutcome);
+		const { dispatcher } = buildDispatcher(readBodyLiveness, onFinalizeOutcome);
 
 		await dispatcher.reconcile();
 		expect(
@@ -280,15 +280,15 @@ describe("FLY-2302 dead workflow body CommDB convergence", () => {
 			store.getWorkflowDeadExecutionWatch(DEAD_EXECUTION_ID),
 		).toBeDefined();
 		expect(db.getSession(DEAD_EXECUTION_ID)).toBeDefined();
-		expect(tmuxProbe).not.toHaveBeenCalled();
+		expect(readBodyLiveness).not.toHaveBeenCalled();
 
 		await dispatcher.reconcile();
-		expect(tmuxProbe).not.toHaveBeenCalled();
+		expect(readBodyLiveness).not.toHaveBeenCalled();
 		expect(db.getSession(DEAD_EXECUTION_ID)).toBeDefined();
 		for (let elapsedSeconds = 1; elapsedSeconds <= 10; elapsedSeconds++) {
 			nowMs += 1_000;
 			await dispatcher.reconcile();
-			expect(tmuxProbe).not.toHaveBeenCalled();
+			expect(readBodyLiveness).not.toHaveBeenCalled();
 			expect(db.getSession(DEAD_EXECUTION_ID)).toBeDefined();
 		}
 
@@ -301,7 +301,10 @@ describe("FLY-2302 dead workflow body CommDB convergence", () => {
 		nowMs += 1_000;
 		await dispatcher.reconcile();
 
-		expect(tmuxProbe).toHaveBeenCalledExactlyOnceWith("runner-flywheel:@1");
+		expect(readBodyLiveness).toHaveBeenCalledExactlyOnceWith(
+			DEAD_EXECUTION_ID,
+			PROJECT_NAME,
+		);
 		expect(db.getSession(DEAD_EXECUTION_ID)).toBeUndefined();
 		expect(onFinalizeOutcome).toHaveBeenCalledWith(
 			DEAD_EXECUTION_ID,
@@ -353,8 +356,8 @@ describe("FLY-2302 dead workflow body CommDB convergence", () => {
 	it("keeps a blocked registration while its crash-preserve pane is alive", async () => {
 		store = await seedBlockedImplement();
 		seedCommDbDeadBody();
-		const tmuxProbe = vi.fn(async () => "alive" as const);
-		const { dispatcher } = buildDispatcher(tmuxProbe, vi.fn());
+		const readBodyLiveness = vi.fn(() => "alive" as const);
+		const { dispatcher } = buildDispatcher(readBodyLiveness, vi.fn());
 
 		await dispatcher.reconcile();
 		await dispatcher.reconcile();
@@ -365,11 +368,11 @@ describe("FLY-2302 dead workflow body CommDB convergence", () => {
 			sourceEventId: "fly2302-turn-live-pane",
 		});
 		await dispatcher.reconcile();
-		expect(tmuxProbe).not.toHaveBeenCalled();
+		expect(readBodyLiveness).not.toHaveBeenCalled();
 		nowMs += 1_000;
 		await dispatcher.reconcile();
 
-		expect(tmuxProbe).toHaveBeenCalledTimes(1);
+		expect(readBodyLiveness).toHaveBeenCalledTimes(1);
 		expect(db.getSession(DEAD_EXECUTION_ID)).toBeDefined();
 		expect(store.getEventsByType("commdb_ask_disposed")).toEqual([]);
 	});
