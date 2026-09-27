@@ -649,3 +649,23 @@ C3 不是整单完成。下一批按批准计划进入 D/E：无 verdict 退出�
 `probeCodexDaemonLiveness` 仍是 Codex 身体采样源；残留直接窗口探针仅服务 UI/定位/诊断或显式 `close_tmux` 后置条件。`destructive-verdict.ts` 的历史 dead-pin helper 无生产调用，仅由自身测试引用，记录为非活跃兼容工具，未扩张本单删除范围。
 
 本地证据不是 full CI、QA 或生产证明。529 真机需复核真实 macOS PID/start/libproc/lsof、Claude 标题改写身份、真实 tmux 窗口正反例、旧体迁移 unresolved 数与5秒采样延迟上界。下一步是同一精确头代码复审、PR 与显式冻结头 CI；不得派发 QA 或 merge。
+
+### R1 代码复审修订
+
+R1 在精确头 `ce85c72eb972cf313179e36be1df93048ba30bfb` 上由 question `fc550978-8096-4a45-9018-242e2e8c7b11` / request `71d4036a-10c7-43e0-912f-d7c28c3f4c8f` 返回 `CHANGES_REQUESTED`。本批只处理六项 HIGH、批准设计中明确要求的 lease contention，以及会使精确头 CI 失败的 patrol 契约；另随 macOS 身份修复一起关闭时区 advisory。其余非阻断 MEDIUM/LOW 保持 review follow-up，不冒充本单已解决。
+
+| findingKey | 修订与红/绿证据 |
+|---|---|
+| `settled-death-requires-standby-body-row` | `StateStore.getCurrentProjectedExecutionBodyDeath` 对普通 body 不再要求 opt-in standby 行；standby 仍要求精确 generation/state。owner inventory 仅在同代 `body_death` 已投影且无 inflight/restart 时退场。真实缺 body-row fixture 先 RED 1/32，修后 `execution-body-convergence` 32/32；owner 45/45。 |
+| `macos-host-wide-env-census-blocks-binding` | `execution-process-inspector` 将环境完整性限定到 binding PGID、已登记 writers/descendants 与显式 nonce holder；不再让无关同 uid 进程的隐藏环境否决启动或 pending absence。新 fixture 初始 RED，最终 inspector 58/58、legacy binding 18/18。 |
+| `census-rejects-macos-question-state` | census 接受 macOS `?`、`?s`、`?E`、`?Es` 非 zombie 状态；四个新断言先 RED、最终 inspector 58/58。 |
+| `codex-phase-shutdown-store-only-reader-never-alive` | `close-runner`、`post-merge`、post-ship/lifecycle 以及 plugin 的点查消费者改为注入可 await 的 `observeBodyOnDemand`；cache miss 会触发有界按需采样，raw dead 在持久死亡投影前仍不授予破坏性权限。注入 observer 用例先 RED，最终 close-runner 86/86、post-merge 20/20、post-ship 58/58、FLY-887 12/12、reown wiring 21/21。 |
+| `stale-completed-close-and-notify-flood` | Heartbeat 对无 owner 的历史 terminal row 只在 exact target 存在且活着时尝试关闭/通知；owner-backed row 可不依赖窗口关闭，unknown/failed close 不发“tmux still alive”假警报。新历史 row 负控先 RED，最终 stale-terminal-close 10/10。 |
+| `point-in-time-alive-needs-fresh-cache` | runtime 增加 `observe(executionId)` 的 hot-read + demand + bounded pass；并发 pass miss 时允许第二次有界 pass。plugin 所有 point-in-time 调用改为异步 observer。候选库存排除已投影同代死亡，legacy union 仅保留 active 状态。cold-demand 用例先 RED 1/9，最终 runtime 9/9、convergence 32/32、owner 45/45。 |
+| `lease-contention-refuses-restart` | `execution-process-controller` 对 `lease_held` 在完整 60 秒 mutation TTL 内做指数退避、有界重试；语义拒绝仍立即停止。61 秒 fake-timer 用例先 RED 1/28，最终 28/28。 |
+| `patrol-snapshot-output-contract-break` | 保持 `live_panes=... findings=...` 原契约相邻，新 body 字段追加其后并修正缩进。`scripts/__tests__/lead-patrol-snapshot.test.sh` 单独完整运行 414 pass / 0 fail。 |
+| `probe-timezone-not-pinned` | probe 子进程固定 `TZ=UTC0`，避免登记 helper 与 Bridge 的 `ps lstart` 身份因时区不同。env 断言纳入 inspector 58/58。 |
+
+本批最终相关验证：上述具体 Vitest 文件及直接消费者均逐文件运行；最终重跑 inspector 58/58、post-merge 20/20。Claude-runner 按策略执行 changed-TS `vitest related src/execution-process-inspector.ts --run`，结果 20 文件通过、1 文件因 sandbox `spawnSync ps EPERM` 失败，总计 755 pass / 2 failed / 2 skipped；两项失败均在 `test/codex-daemon-runtime.test.ts` 的真实 `ps` holder probe，留给 529，不是断言回归。依 `[lead-instruction e9cfb5af-ae02-489f-8d7a-6eb0aeb848a4]` 不重跑会扩张到 600+ 文件的 teamlead related；以列出的具体文件证据交接给 PR CI。`pnpm --filter "flywheel-teamlead..." build`、`pnpm --filter "...flywheel-teamlead" typecheck`（teamlead + voice-codex）和根 `pnpm lint` 均退出0；lint 仅有26项既有 warning。没有运行本机整包/整仓 suite。
+
+仍保留为后续的 review advisories：orphan owner drain、null-activation/旧 Codex、never-started launch、projection refusal alert、late TUI、finish drain wait、monitor-lost noise，以及四项 LOW 清理/展示问题。它们不改变本批六项 HIGH 的关闭证据，也不作为 QA、529 或 full CI 证明。
