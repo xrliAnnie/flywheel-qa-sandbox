@@ -438,12 +438,18 @@ export type DeadTerminalFinalizeOutcome =
 	| "kept_alive"
 	| "kept_indeterminate"
 	| "kept_parked"
+	| "kept_quota_standby"
 	| "kept_target_changed"
 	| "failed"
 	| "not_wired";
 
 export interface FinalizeDeadTerminalOpts {
 	includeCrashPreserve?: boolean;
+	/**
+	 * FLY-2900: executions whose CommDB `timeout` row is intentional — a Codex
+	 * quota standby body keeps its registration for the same-execution resume.
+	 */
+	isProtectedExecution?: (executionId: string) => boolean;
 	probe?: (tmuxWindow: string) => Promise<TmuxWindowProbe>;
 	onFinalizeOutcome?: (
 		executionId: string,
@@ -459,7 +465,8 @@ type DeadTerminalInspectionOutcome =
 	| "kept_turn_holder"
 	| "kept_alive"
 	| "kept_indeterminate"
-	| "kept_parked";
+	| "kept_parked"
+	| "kept_quota_standby";
 
 async function inspectDeadTerminalCommDbSession(
 	db: CommDB,
@@ -485,6 +492,14 @@ async function inspectDeadTerminalCommDbSession(
 			);
 		}
 		return "kept_turn_holder";
+	}
+	if (opts.isProtectedExecution?.(session.execution_id) === true) {
+		if (opts.finalizeMode === "sweep") {
+			console.log(
+				`[commdb-prune] prune_skipped_quota_standby: ${session.execution_id} (${projectName}) is parked in Codex quota standby — KEEPING the row`,
+			);
+		}
+		return "kept_quota_standby";
 	}
 	const isParked = (): boolean => {
 		try {
@@ -691,6 +706,8 @@ export async function pruneDeadTerminalCommDbSessions(
 			projectName: string,
 			result: FinalizeCommDbResult,
 		) => void;
+		/** FLY-2900: see FinalizeDeadTerminalOpts.isProtectedExecution. */
+		isProtectedExecution?: (executionId: string) => boolean;
 	} = {},
 ): Promise<CommDbPruneResult> {
 	const result: CommDbPruneResult = {

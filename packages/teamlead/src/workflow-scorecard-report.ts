@@ -3,6 +3,7 @@ import type { WorkflowRunEventRow } from "./StateStore.js";
 import {
 	readScorecardAssignment,
 	readScorecardDegradation,
+	readScorecardQuotaFallback,
 } from "./workflow-model-assignment.js";
 
 export interface WorkflowScorecardReportOptions {
@@ -1017,6 +1018,21 @@ export function readWorkflowScorecardReport(
 			let sawUnassigned = false;
 			let sawUnknown = false;
 			for (const activation of axisActivations) {
+				if (
+					readScorecardQuotaFallback(eventRows, {
+						runId: String(activation.run_id),
+						nodeId: String(activation.node_id),
+						activationId: String(activation.activation_id),
+					})
+				) {
+					// FLY-2900: a quota fallback sample is excluded like a degradation.
+					degraded = true;
+					degradations.set(String(activation.activation_id), {
+						degraded: true,
+						reason: "quota_fallback",
+					});
+					continue;
+				}
 				const assignment = readScorecardAssignment(eventRows, {
 					runId: String(activation.run_id),
 					nodeId: String(activation.node_id),

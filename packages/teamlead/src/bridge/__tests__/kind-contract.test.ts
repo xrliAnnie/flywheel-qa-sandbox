@@ -77,6 +77,7 @@ const QUOTA_INFORMATIONAL_KINDS = new Set([
 	"quota_switch_confirmation",
 	"codex_quota_automation_disabled",
 	"codex_quota_reading_stale",
+	"codex_quota_standby_diagnostic",
 	"quota_blocked_recovered",
 	"workflow_route_input_rejected",
 	"flag_scan_failed",

@@ -592,44 +592,51 @@ describe("handleFlagApply", () => {
 		});
 	});
 
-	it("hot-toggles the project-scoped Lead token savings kill switch", async () => {
-		const { deps, store } = await makeManagedDeps();
-		for (const [to, raw, effective] of [
-			[false, "0", false],
-			[true, "1", true],
-		] as const) {
-			const staged = handleFlagStage(
-				deps,
-				{
-					name: "lead_token_savings",
-					to,
-					project: "flywheel",
-					reason: `Lead token savings ${effective ? "on" : "off"}`,
-				},
-				"o",
-			);
-			expect(staged.code).toBe(200);
-			const body = staged.body as {
-				canonical: FlagStoreCanonical;
-				confirmToken: string;
-			};
-			expect(body.canonical).toMatchObject({
-				name: "lead_token_savings",
-				scope: "flywheel",
-				rawTo: raw,
-				effectiveTo: effective,
+	it.each([
+		"lead_token_savings",
+		"lead_stage_changed_audit",
+		"lead_session_started_audit",
+		"lead_monitoring_reestablished_audit",
+		"lead_replacement_notice_audit",
+	])(
+		"hot-toggles project-scoped %s through the management route",
+		async (name) => {
+			const { deps, store } = await makeManagedDeps();
+			for (const [to, raw, effective] of [
+				[false, "0", false],
+				[true, "1", true],
+			] as const) {
+				const staged = handleFlagStage(
+					deps,
+					{
+						name,
+						to,
+						project: "flywheel",
+						reason: `Lead token savings ${effective ? "on" : "off"}`,
+					},
+					"o",
+				);
+				expect(staged.code).toBe(200);
+				const body = staged.body as {
+					canonical: FlagStoreCanonical;
+					confirmToken: string;
+				};
+				expect(body.canonical).toMatchObject({
+					name,
+					scope: "flywheel",
+					rawTo: raw,
+					effectiveTo: effective,
+				});
+				expect(
+					handleFlagApply(deps, body.canonical, body.confirmToken, "o").code,
+				).toBe(200);
+			}
+			expect(store.getFlagValueRow(name, "flywheel")).toMatchObject({
+				raw: "1",
+				lastEffective: "true",
 			});
-			expect(
-				handleFlagApply(deps, body.canonical, body.confirmToken, "o").code,
-			).toBe(200);
-		}
-		expect(
-			store.getFlagValueRow("lead_token_savings", "flywheel"),
-		).toMatchObject({
-			raw: "1",
-			lastEffective: "true",
-		});
-	});
+		},
+	);
 
 	it("clears a project row to inheritance and keeps the scoped audit", async () => {
 		const { deps, store } = await makeManagedDeps();

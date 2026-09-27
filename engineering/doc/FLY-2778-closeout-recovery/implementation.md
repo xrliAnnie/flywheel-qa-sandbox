@@ -112,3 +112,42 @@ FLY-2754 的 auth pre-spawn 只提供“可能从未启动”的来源，不能�
 - mandatory changed-TypeScript `vitest related ... --run` 因 `plugin.ts` 是组合根扩展为 141 files：139 files / 1846 tests pass、1 skipped；`fly2139-query-plans.test.ts` 的生成 evidence digest 过期，按同一 capture set 更新后单文件 2/2 通过。`lead-activity-service.real-tmux.test.ts` 在 suite 初始化调用 `ps -A` 时被 runner sandbox 稳定拒绝为 `EPERM`，测试正文未执行（1 skipped）；独立 shell `ps -A -o ppid=,ucomm=` 同样返回 operation not permitted，记录为本地环境限制，不作为绿色证据。
 - 测试发现中的直接行为/结构消费者全部保留并逐文件运行。仅命中通用 `plugin.ts`、`packages/teamlead/src/bridge` 父目录、历史 test-report/fixture 或静态 test-consumer inventory 的宽泛结果被排除：这些匹配不导入或断言本轮变更契约，逐个纳入会把目录文字匹配伪装成包级 suite；required `related` 仍覆盖实际 TypeScript 依赖闭包。没有新增 `scripts/__tests__/*.test.sh`。
 - `pnpm lint` exit 0（5184 files，25 个既有 warning、0 error）；`pnpm --filter "flywheel-teamlead..." build` 与 TeamLead typecheck 通过；`git diff --check` 通过。
+
+## QA rework：同步主干与 CI 容量归因
+
+QA 在 `14b6e0284` 上确认 PR #1375 的唯一 full-CI 红项是 Script Tests 4/6 容量
+tripwire（1068 秒，大于 1020 秒），同时 PR 已与 `origin/main` 发生内容冲突。本轮只按 Lead
+裁定做技术同步与同头复验，不调整全局 CI 分片，也不把本地 targeted/related 结果冒充 full CI。
+
+- 合入 `origin/main@975822f5d`。`StateStore.ts` 的冲突同时保留本分支 `preSpawnReceipt`
+  接线与主干 `quotaStandby` 状态；FLY-2139 index audit 使用合并后 capture set 的真实 digest
+  `685b14ca379b1222376c5ee1a180fd2763183e857aaef8e748eb384dd46317dd`。后者先以主干旧
+  digest 跑出 1 fail / 1 pass，再更新 evidence 后同一具体文件 2/2 通过。
+- 同步后 TeamLead related 首轮暴露的 13 个失败中，12 个来自主干新增 API 对应的
+  `flywheel-comm/dist` 陈旧产物；先构建 `flywheel-comm` 后两个具体失败文件分别 49/49、1/1
+  通过。剩余一个 real-tmux 文件在 runner sandbox 的 `ps` 权限边界失败；用只服务于测试的
+  临时、未入库 process census seam 验证后，Claude Runner 相关闭包为 10 files / 669 tests
+  全绿。该临时 seam 已删除，未进入提交。
+- 受影响依赖构建 `pnpm --filter "flywheel-teamlead..." build` 成功；edge-worker related 为
+  36 files（1 skipped）/ 542 pass / 9 skip，Claude Runner related 为 10 files / 669 pass，
+  core related 为 2 files / 23 pass / 2 skip，flywheel-comm land related 为 1 file / 6 pass。
+- TeamLead changed-TypeScript related 以 `StateStore.ts` / `plugin.ts` 等 18 个改动源文件为根会
+  展开 600+ 个文件；重跑过程中 Lead 因同机多 Runner 负载影响 Bridge 而将其终止，没有最终
+  汇总，故本轮不计 related 绿色证据，也不再重启。改为保留已逐文件完成的直接测试：
+  `DirectEventSink.dag-seam` 16/16、`StateStore.fly2341-terminal-archive` 29/29、
+  `StateStore.lifecycle-apply-claims` 5/5、`event-route` 115/115、retention migration 1/1、
+  `terminal-failure-info` 3/3、`codex-pre-spawn-source` 5/5、execution-body wiring 2/2、
+  `execution-closeout-evidence` 31/31、`infra-alert-wiring` 23/23、`land-alert-delivery` 5/5、
+  `land-reclose-peer` 7/7、`lifecycle-closeout-body-observation` 11/11、`lifecycle-routes` 17/17、
+  stock cleanup executor/observer/route/main 分别 8/8、3/3、5/5、10/10，以及 Lead inbox
+  runtime/summary 分别 49/49、1/1。最终 `pnpm lint` 检查 5228 files，0 error / 25 个既有 warning。
+
+### Script Tests 4/6 容量比较
+
+PR run `36298125503` 的该 job 从开始到 tripwire 为 1068 秒，其中 Build 121 秒、既有
+`Test — FLY-1364 cmux sync repair` 771 秒。同步目标主干 run `36298975675` 同一 job 成功，
+对应 898 / 66 / 675 秒；再往前三次成功主干分别约为 852 / 79 / 621、815 / 58 / 605、
+877 / 80 / 636 秒（总时长 / Build / cmux）。本 PR 相对同步后主干只改动两个 retention
+registry JSON，没有修改 `.github/workflows`、`scripts/__tests__` 或该 shard 的命令。因此
+现有证据指向 runner/host 时间波动，而不是 FLY-2778 向 4/6 增加了脚本负载；按 Lead 裁定
+不做无归属的 CI 重排，新的 exact-head full CI 留给 QA 冻结后验证。

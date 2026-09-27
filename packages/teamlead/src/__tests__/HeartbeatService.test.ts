@@ -196,6 +196,23 @@ describe("HeartbeatService", () => {
 		);
 	});
 
+	it("FLY-2900 reapOrphans() leaves a Codex quota standby body running", async () => {
+		const parked = makeSession({
+			execution_id: "exec-parked",
+			heartbeat_at: "2026-03-06 08:00:00",
+			adapter_type: "codex-tmux",
+		});
+		store.getOrphanSessions.mockReturnValue([parked]);
+		(store as { isCodexQuotaStandby?: unknown }).isCodexQuotaStandby = vi.fn(
+			(id: string) => id === "exec-parked",
+		);
+
+		await service.reapOrphans();
+
+		expect(store.forceStatus).not.toHaveBeenCalled();
+		expect(notifier.onSessionOrphaned).not.toHaveBeenCalled();
+	});
+
 	it("reapOrphans() skips already-notified orphans", async () => {
 		const orphan = makeSession({
 			execution_id: "exec-orphan",
@@ -412,7 +429,7 @@ async function makeReconnectHarness(
 }
 
 describe("RegistryHeartbeatNotifier", () => {
-	it("hot toggles monitoring re-entry on the same notifier", async () => {
+	it("missing episode proof keeps monitoring model-visible across flag toggles", async () => {
 		const { registry, envelopes } = createMockRegistry();
 		const hbStore = await StateStore.create(":memory:");
 		const now = vi.spyOn(Date, "now");
@@ -451,10 +468,10 @@ describe("RegistryHeartbeatNotifier", () => {
 					stampReconnectTitle: false,
 				});
 				expect(hbStore.getLeadEventBySeq(index + 1)?.delivery_disposition).toBe(
-					enabled ? "audit_only" : "model",
+					"model",
 				);
 			}
-			expect(envelopes).toHaveLength(1);
+			expect(envelopes).toHaveLength(3);
 			expect(hbStore.getLeadEventBySeq(2)?.payload).toBe(
 				hbStore.getLeadEventBySeq(1)?.payload,
 			);
@@ -464,7 +481,7 @@ describe("RegistryHeartbeatNotifier", () => {
 		}
 	});
 
-	it("audits runtime re-entry without model delivery or a reconnect title write", async () => {
+	it("unverified runtime re-entry keeps delivery without a reconnect title write", async () => {
 		const { registry, envelopes } = createMockRegistry();
 		const hbStore = await StateStore.create(":memory:");
 		const notifier = new RegistryHeartbeatNotifier(
@@ -493,11 +510,10 @@ describe("RegistryHeartbeatNotifier", () => {
 		});
 
 		expect(stampReconnect).not.toHaveBeenCalled();
-		expect(envelopes).toHaveLength(0);
+		expect(envelopes).toHaveLength(1);
 		expect(hbStore.getLeadEventBySeq(1)).toMatchObject({
 			event_type: "session_monitoring_reestablished",
-			delivery_disposition: "audit_only",
-			delivered_at: undefined,
+			delivery_disposition: "model",
 		});
 		hbStore.close();
 	});

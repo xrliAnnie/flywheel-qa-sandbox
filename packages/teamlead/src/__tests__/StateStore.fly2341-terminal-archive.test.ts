@@ -17,6 +17,25 @@ const NOW = "2026-09-04T20:00:00.000Z";
 const OLD = "2026-08-20T00:00:00.000Z";
 const RECENT = "2026-09-03T00:00:00.000Z";
 
+it("FLY-2912 retains proof snapshots through terminal cold archive", () => {
+	const db = database();
+	try {
+		addSessionEvent(db, "quiet-proof", "completed", "lead_notification_proof");
+		expect(
+			archiveTerminalRows(db, { now: NOW, sourceTable: "session_events" })
+				.archived,
+		).toBe(1);
+		const row = db
+			.prepare(
+				"SELECT row_json FROM workflow_terminal_archive WHERE source_table='session_events'",
+			)
+			.get() as { row_json: string };
+		expect(JSON.parse(row.row_json).event_type).toBe("lead_notification_proof");
+	} finally {
+		db.close();
+	}
+});
+
 it("bounds a sparse 100k large-payload scan and persists skipped candidate progress across connections", () => {
 	let db = database();
 	try {

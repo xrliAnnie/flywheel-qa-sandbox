@@ -1,0 +1,20 @@
+{
+  "flow-render-retry.log": {
+    "failed": true,
+    "error": "bootstrap_check_in org.chromium.Chromium.MachPortRendezvousServer: Permission denied (1100)",
+    "localOnly": true,
+    "standardRetry": true
+  },
+  "data-render-first.log": {
+    "failed": true,
+    "error": "bootstrap_check_in org.chromium.Chromium.MachPortRendezvousServer: Permission denied (1100)",
+    "localOnly": true,
+    "standardRetry": false
+  },
+  "data-render-retry.log": {
+    "failed": true,
+    "error": "bootstrap_check_in org.chromium.Chromium.MachPortRendezvousServer: Permission denied (1100)",
+    "localOnly": true,
+    "standardRetry": true
+  }
+}

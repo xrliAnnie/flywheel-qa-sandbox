@@ -47,6 +47,12 @@ export interface CodexQuotaHostCollectorOptions {
 	verifyDesktopCodex?: (pid: number, argv0: string) => Promise<boolean>;
 	/** FLY-2869: where 529 test slots live; defaults to /private/tmp. */
 	testSlotRoot?: string;
+	/**
+	 * FLY-2900: executions parked in Codex quota standby. Their process exited
+	 * on purpose, so a lease they left behind is not a live-without-process
+	 * fault that makes the registered inventory incomplete.
+	 */
+	isQuotaStandby?: (executionId: string) => boolean;
 	now?: () => number;
 	monotonicNow?: () => number;
 	credentialIdentity?: (
@@ -763,6 +769,22 @@ export function createCodexQuotaHostCollector(
 							activity = "unknown";
 						else for (const id of leases) matched.add(id);
 					}
+				} else if (
+					leases.length &&
+					options.isQuotaStandby &&
+					leases.every((id) => {
+						try {
+							return options.isQuotaStandby!(id);
+						} catch {
+							return false;
+						}
+					})
+				) {
+					diagnostics.push({
+						reason: "quota_standby_lease",
+						scope: "info",
+						home,
+					});
 				} else if (leases.length) {
 					activity = "unknown";
 					diagnostics.push({

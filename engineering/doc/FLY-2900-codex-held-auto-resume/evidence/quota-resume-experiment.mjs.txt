@@ -1,0 +1,255 @@
+// FLY-2900 design experiment (Lead answer 65fdd8c6): after a Codex goal ends usageLimited on
+// account A, can a NEW app-server process on account B (same CODEX_HOME, auth.json symlink
+// swapped) thread/resume the SAME thread, re-activate the usageLimited goal and run a turn?
+// Isolated CODEX_HOME; symlinks only (never copies credential bytes); never touches the shared
+// ~/.codex/auth.json; refuses the live canonical account and business; holds both account leases.
+import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import {
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	readlinkSync,
+	renameSync,
+	rmSync,
+	symlinkSync,
+} from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { createInterface } from "node:readline";
+
+const BIN = "/Users/xiaorongli/Dev/flywheel-FLY-2900/packages/claude-runner/bin";
+const { identifyCodexAuth, loadCodexAccountPool } = await import(
+	`${BIN}/codex-account-core.mjs`
+);
+const { acquireCodexAccountLease, codexInstallAccountKey } = await import(
+	`${BIN}/codex-account-install.mjs`
+);
+
+const [A, B] = process.argv.slice(2);
+if (!A || !B || [A, B].includes("business") || A === B)
+	throw new Error("usage: <exhaustedProfileA> <availableProfileB> (never business)");
+const SCRATCH = process.env.EXP_ROOT;
+const CODEX = process.env.EXP_CODEX_BIN;
+const profilesRoot = join(homedir(), ".codex", "profiles");
+const registryPath = join(
+	homedir(),
+	".flywheel/libexec/codex-guard/current/codex-account-registry.json",
+);
+const pool = loadCodexAccountPool({ profilesRoot, registryPath });
+const slot = (p) => join(profilesRoot, p, "auth.json");
+const sha = (p) => createHash("sha256").update(readFileSync(p)).digest("hex");
+const redact = (s) =>
+	typeof s === "string" ? s.replace(/[\w.+-]+@[\w.-]+/g, "<email>").slice(0, 300) : s;
+const canonical = identifyCodexAuth(
+	readFileSync(join(homedir(), ".codex", "auth.json"), "utf8"),
+	pool,
+);
+if ([A, B].includes(canonical.profile))
+	throw new Error(`refusing: ${canonical.profile} is the live canonical account`);
+const ids = Object.fromEntries(
+	[A, B].map((p) => [p, identifyCodexAuth(readFileSync(slot(p), "utf8"), pool)]),
+);
+for (const p of [A, B])
+	if (ids[p].profile !== p) throw new Error(`slot ${p} identity mismatch`);
+const before = Object.fromEntries([A, B].map((p) => [p, sha(slot(p))]));
+const leases = [A, B].map((p) =>
+	acquireCodexAccountLease(profilesRoot, codexInstallAccountKey(ids[p])),
+);
+if (leases.some((l) => l.orphanRecovery)) {
+	for (const l of leases) l.release();
+	throw new Error("pending candidate recovery; refusing");
+}
+const note = (event, data = {}) =>
+	console.log(JSON.stringify({ t: new Date().toISOString(), event, ...data }));
+
+const root = mkdtempSync(join(SCRATCH, "qr-"));
+const home = join(root, "home");
+const work = join(root, "work");
+mkdirSync(home, { mode: 0o700 });
+mkdirSync(work, { mode: 0o700 });
+const link = join(home, "auth.json");
+symlinkSync(slot(A), link);
+note("setup", { canonical: canonical.profile, A, B, link: readlinkSync(link) });
+
+function startServer(label) {
+	const child = spawn(CODEX, ["app-server", "-c", 'cli_auth_credentials_store="file"'], {
+		cwd: work,
+		env: { PATH: process.env.PATH, HOME: homedir(), CODEX_HOME: home },
+		stdio: ["pipe", "pipe", "pipe"],
+	});
+	let stderr = "";
+	child.stderr.on("data", (d) => {
+		stderr += d;
+	});
+	const pending = new Map();
+	const events = [];
+	const waiters = [];
+	createInterface({ input: child.stdout }).on("line", (line) => {
+		let m;
+		try {
+			m = JSON.parse(line);
+		} catch {
+			return;
+		}
+		if (m.id !== undefined && pending.has(m.id)) {
+			pending.get(m.id)(m);
+			pending.delete(m.id);
+			return;
+		}
+		if (typeof m.method === "string") {
+			events.push(m);
+			for (const w of [...waiters]) if (w.pred(m)) w.resolve(m);
+		}
+	});
+	let nextId = 1;
+	const request = (method, params, ms = 60_000) =>
+		new Promise((resolve, reject) => {
+			const id = nextId++;
+			const timer = setTimeout(() => reject(new Error(`timeout ${method}`)), ms);
+			pending.set(id, (m) => {
+				clearTimeout(timer);
+				resolve(m);
+			});
+			child.stdin.write(`${JSON.stringify({ id, method, ...(params ? { params } : {}) })}\n`);
+		});
+	const waitFor = (pred, ms) =>
+		new Promise((resolve) => {
+			const hit = events.find(pred);
+			if (hit) return resolve(hit);
+			const w = { pred, resolve: (m) => (clearTimeout(timer), waiters.splice(waiters.indexOf(w), 1), resolve(m)) };
+			const timer = setTimeout(() => {
+				waiters.splice(waiters.indexOf(w), 1);
+				resolve(null);
+			}, ms);
+			waiters.push(w);
+		});
+	const stop = () =>
+		new Promise((r) => {
+			child.stdin.end();
+			const t = setTimeout(() => {
+				child.kill("SIGTERM");
+				r();
+			}, 10_000);
+			child.once("exit", () => {
+				clearTimeout(t);
+				r();
+			});
+		});
+	note(`${label}:spawned`, { pid: child.pid });
+	return { child, request, waitFor, stop, events, stderr: () => stderr };
+}
+const err = (m) => (m?.error ? redact(JSON.stringify(m.error)) : null);
+const goalOf = (m) => m?.result?.goal ?? null;
+const summarizeGoal = (g) => (g ? { status: g.status, objectiveLen: g.objective?.length ?? null } : null);
+const methodCounts = (events) =>
+	events.reduce((acc, e) => ((acc[e.method] = (acc[e.method] ?? 0) + 1), acc), {});
+const goalEvents = (events) =>
+	events
+		.filter((e) => e.method.includes("goal"))
+		.map((e) => ({ method: e.method, status: e.params?.goal?.status ?? e.params?.status ?? null }));
+const errorEvents = (events) =>
+	events
+		.filter((e) => /error/i.test(e.method) || e.params?.error || e.params?.turn?.error)
+		.map((e) => ({
+			method: e.method,
+			error: redact(JSON.stringify(e.params?.error ?? e.params?.turn?.error ?? null)),
+		}));
+const turnStatus = (events) =>
+	events
+		.filter((e) => e.method === "turn/completed")
+		.map((e) => ({ status: e.params?.turn?.status ?? null, error: redact(JSON.stringify(e.params?.turn?.error ?? null)) }));
+const agentText = (events) =>
+	events
+		.filter((e) => e.method === "item/completed" && e.params?.item?.type === "agentMessage")
+		.map((e) => redact(String(e.params.item.text ?? "")).slice(0, 120));
+
+const OBJECTIVE = "FLY-2900 quota-resume experiment: answer the user's short questions.";
+let threadId = null;
+try {
+	// Phase 1: account A (exhausted) — produce a usageLimited goal.
+	const s1 = startServer("phase1");
+	try {
+		const init = await s1.request("initialize", { clientInfo: { name: "fly2900-quota-resume", version: "1.0.0" }, capabilities: {} });
+		s1.child.stdin.write(`${JSON.stringify({ method: "initialized", params: {} })}\n`);
+		note("phase1:initialized", { error: err(init) });
+		const acct = await s1.request("account/read", { refreshToken: false });
+		note("phase1:account", { isA: acct.result?.account?.email === ids[A].email, error: err(acct) });
+		const started = await s1.request("thread/start", { cwd: work, sandbox: "read-only", approvalPolicy: "never" });
+		threadId = started.result?.thread?.id ?? started.result?.threadId ?? null;
+		note("phase1:thread", { threadId, error: err(started) });
+		const setGoal = await s1.request("thread/goal/set", { threadId, objective: OBJECTIVE, status: "active" });
+		note("phase1:goal_set", { error: err(setGoal) });
+		const turn = await s1.request("turn/start", { threadId, input: [{ type: "text", text: "Reply exactly: ok" }] });
+		note("phase1:turn_start", { error: err(turn) });
+		await s1.waitFor((e) => e.method === "turn/completed" || (e.method.includes("goal") && e.params?.goal?.status && e.params.goal.status !== "active"), 120_000);
+		await new Promise((r) => setTimeout(r, 3_000));
+		const g1 = await s1.request("thread/goal/get", { threadId });
+		note("phase1:result", {
+			goal: summarizeGoal(goalOf(g1)),
+			goalGetError: err(g1),
+			goalEvents: goalEvents(s1.events),
+			turns: turnStatus(s1.events),
+			errors: errorEvents(s1.events).slice(0, 5),
+			methods: methodCounts(s1.events),
+		});
+	} finally {
+		await s1.stop();
+		note("phase1:stopped", { stderrTail: redact(s1.stderr().slice(-300)) });
+	}
+	if (!threadId) throw new Error("no thread id from phase 1");
+
+	// Swap the home's auth symlink to account B (production analogue: canonical link switch).
+	const tmp = join(home, ".auth.json.swap");
+	symlinkSync(slot(B), tmp);
+	renameSync(tmp, link);
+	note("swapped", { link: readlinkSync(link) });
+
+	// Phase 2: NEW process on account B — resume the same thread, re-activate, continue.
+	const s2 = startServer("phase2");
+	try {
+		const init = await s2.request("initialize", { clientInfo: { name: "fly2900-quota-resume", version: "1.0.0" }, capabilities: {} });
+		s2.child.stdin.write(`${JSON.stringify({ method: "initialized", params: {} })}\n`);
+		note("phase2:initialized", { error: err(init) });
+		const acct = await s2.request("account/read", { refreshToken: false });
+		note("phase2:account", { isB: acct.result?.account?.email === ids[B].email, error: err(acct) });
+		const resumed = await s2.request("thread/resume", { threadId });
+		const resumedId = resumed.result?.thread?.id ?? resumed.result?.threadId ?? null;
+		note("phase2:thread_resume", { sameThread: resumedId === threadId, error: err(resumed) });
+		const g2 = await s2.request("thread/goal/get", { threadId });
+		note("phase2:goal_before", { goal: summarizeGoal(goalOf(g2)), error: err(g2) });
+		const reactivate = await s2.request("thread/goal/set", { threadId, objective: OBJECTIVE, status: "active" });
+		note("phase2:goal_reactivate", { error: err(reactivate) });
+		const turn = await s2.request("turn/start", {
+			threadId,
+			input: [{ type: "text", text: "[flywheel quota-resume] Quota restored. What exact word did I ask you to reply with in my first message? Reply with only that word, then the word resumed." }],
+		});
+		note("phase2:turn_start", { error: err(turn) });
+		await s2.waitFor((e) => e.method === "turn/completed", 180_000);
+		await new Promise((r) => setTimeout(r, 3_000));
+		const g3 = await s2.request("thread/goal/get", { threadId });
+		note("phase2:result", {
+			goalAfter: summarizeGoal(goalOf(g3)),
+			goalEvents: goalEvents(s2.events),
+			turns: turnStatus(s2.events),
+			agentText: agentText(s2.events),
+			errors: errorEvents(s2.events).slice(0, 5),
+			methods: methodCounts(s2.events),
+		});
+	} finally {
+		await s2.stop();
+		note("phase2:stopped", { stderrTail: redact(s2.stderr().slice(-300)) });
+	}
+} finally {
+	const linkState = lstatSync(link);
+	const after = Object.fromEntries([A, B].map((p) => [p, sha(slot(p))]));
+	note("teardown", {
+		homeAuthIsSymlink: linkState.isSymbolicLink(),
+		slotBytesUnchanged: { [A]: before[A] === after[A], [B]: before[B] === after[B] },
+		canonicalUnchanged: identifyCodexAuth(readFileSync(join(homedir(), ".codex", "auth.json"), "utf8"), pool).profile === canonical.profile,
+	});
+	for (const l of leases) l.release();
+	if (linkState.isSymbolicLink()) rmSync(root, { recursive: true, force: true });
+	else note("KEPT_ROOT_FOR_OPERATOR", { root });
+}

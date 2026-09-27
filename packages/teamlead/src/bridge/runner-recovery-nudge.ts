@@ -228,6 +228,15 @@ export async function attemptRunnerRecoveryNudge(
 			session,
 		);
 	}
+	// FLY-2900: a Codex quota standby body has no process to nudge; the quota
+	// resume loop relaunches it once capacity returns.
+	if (store.isCodexQuotaStandby?.(executionId) === true) {
+		return refuse(
+			409,
+			"session is parked in Codex quota standby — the quota resume loop relaunches it",
+			session,
+		);
+	}
 	// Gate 2: pending-review gray zone.
 	if (mode === "recovery" && session.decision_route === "needs_review") {
 		return refuse(

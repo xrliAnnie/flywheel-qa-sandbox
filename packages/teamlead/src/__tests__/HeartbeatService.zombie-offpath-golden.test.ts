@@ -1,7 +1,7 @@
 /** FLY-1282 notifier payload and delivery-lifecycle goldens. */
 import { describe, expect, it, vi } from "vitest";
 import { RegistryHeartbeatNotifier } from "../HeartbeatService.js";
-import type { Session } from "../StateStore.js";
+import type { Session, StateStore } from "../StateStore.js";
 
 function sess(overrides: Partial<Session> = {}): Session {
 	return {
@@ -53,6 +53,17 @@ function makeRegistryFixture(opts?: { deliverImpl?: MockFn }): {
 		markLeadEventDelivered: vi.fn(),
 		recordDeliveryFailure: vi.fn(),
 	};
+	store.appendLeadNotification = vi.fn(
+		(input: Parameters<StateStore["appendLeadNotification"]>[0]) =>
+			store.appendLeadEvent(
+				input.binding.leadId,
+				input.binding.eventId,
+				input.eventType,
+				input.payload,
+				input.sessionKey,
+				input.decision.disposition,
+			),
+	);
 	const registry = {
 		resolveWithLead: vi.fn(() => ({
 			runtime: { deliver },
@@ -150,12 +161,12 @@ describe("OFF-path golden — RegistryHeartbeatNotifier payload + delivery lifec
 		expect("liveness_probe" in payload).toBe(false);
 	});
 
-	it("monitoring restoration is audited without invoking transport or recording delivery", async () => {
+	it("monitoring restoration without episode proof keeps advisory best-effort delivery", async () => {
 		const deliver = vi.fn(async () => ({ delivered: false, error: "boom" }));
 		const { notifier, store } = makeRegistryFixture({ deliverImpl: deliver });
 		await notifier.onSessionMonitoringReestablished(sess(), 5, {});
-		expect(deliver).not.toHaveBeenCalled();
-		expect(store.markLeadEventDelivered).not.toHaveBeenCalled();
+		expect(deliver).toHaveBeenCalledTimes(1);
+		expect(store.markLeadEventDelivered).toHaveBeenCalledWith(41);
 		expect(store.recordDeliveryFailure).not.toHaveBeenCalled();
 	});
 
@@ -181,11 +192,11 @@ describe("OFF-path golden — RegistryHeartbeatNotifier payload + delivery lifec
 		expect(appendPayloads).toHaveLength(1); // row WAS appended before the throw
 		expect(store.recordDeliveryFailure).not.toHaveBeenCalled();
 		expect(store.markLeadEventDelivered).not.toHaveBeenCalled();
-		// Routine restoration never invokes the throwing transport.
+		// Unverified restoration retains the advisory's original throw contract.
 		const adv = makeRegistryFixture({ deliverImpl: deliver });
 		await expect(
 			adv.notifier.onSessionMonitoringReestablished(sess(), 5, {}),
-		).resolves.toBeUndefined();
+		).rejects.toThrow("transport exploded");
 		expect(adv.store.recordDeliveryFailure).not.toHaveBeenCalled();
 		expect(adv.store.markLeadEventDelivered).not.toHaveBeenCalled();
 	});

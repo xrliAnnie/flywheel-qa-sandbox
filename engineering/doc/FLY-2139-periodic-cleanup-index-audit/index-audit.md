@@ -38,7 +38,7 @@ Issue: FLY-2139 (https://linear.app/geoforge3d/issue/FLY-2139/bridge-稳定全�
 | patrol-tick | 10 | 5 | idx_lead_events_patrol, idx_sessions_status_revision, idx_workflow_terminal_archive_lead_event_id | 0 |
 | workflow-transition | 6 | 3 | sqlite_autoindex_workflow_rework_delivery_1, sqlite_autoindex_workflow_rework_request_1, sqlite_autoindex_workflow_rework_route_revision_1 | 0 |
 | outbox-dead-letter | 4 | 2 | idx_dead_letter_alert_due, idx_workflow_alert_delivery, sqlite_autoindex_alert_delivery_receipts_1 | 4 |
-capture-set-sha256: `9d374b9877fad98af79f11e72563c58577f117491276872b63ca3133a7882f6d`
+capture-set-sha256: `685b14ca379b1222376c5ee1a180fd2763183e857aaef8e748eb384dd46317dd`
 <!-- FLY-2139 GENERATED QUERY-AUDIT EVIDENCE: END -->
 
 ## 防真空负控制

@@ -33,6 +33,7 @@ import type { ProjectEntry } from "../ProjectConfig.js";
 import type { Session } from "../StateStore.js";
 import { StateStore } from "../StateStore.js";
 import { buildWorkflowRunSnapshotV2 } from "../workflow-run-snapshot.js";
+import { createCodexStandbyRun } from "./helpers/codex-quota-standby-fixture.js";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 
@@ -2428,6 +2429,60 @@ describe("Event route", () => {
 		expect(store.getPreAdapterFailureReceipt("exec-1")).toBeUndefined();
 	});
 
+	it("FLY-2900 HTTP parks a generalized Codex wall in quota standby", async () => {
+		store.codexQuotaStandbyEnabled = () => true;
+		const roots: string[] = [];
+		try {
+			createCodexStandbyRun(store, {
+				runId: "run-standby-http",
+				executionId: "exec-1",
+				issueId: "issue-1",
+				projectName: "geoforge3d",
+				cleanups: roots,
+			});
+			const event = makeEvent({
+				event_id: "quota-standby-http",
+				event_type: "session_failed",
+				payload: {
+					error: "untrusted raw diagnostic",
+					failure: {
+						failureKind: "goal_usage_limited",
+						failureReason: "goal ended non-complete: usageLimited",
+					},
+				},
+			});
+			const bodies: unknown[] = [];
+			for (let n = 0; n < 2; n++) {
+				const response = await fetch(`${baseUrl}/events`, {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Authorization: "Bearer ingest-secret",
+					},
+					body: JSON.stringify(event),
+				});
+				expect(response.status).toBe(200);
+				bodies.push(await response.json());
+			}
+			expect(bodies).toEqual([
+				expect.objectContaining({
+					quotaStandby: true,
+					teardown: "quota_standby",
+					duplicate: false,
+				}),
+				expect.objectContaining({
+					quotaStandby: true,
+					teardown: "quota_standby",
+					duplicate: true,
+				}),
+			]);
+			expect(store.getSession("exec-1")?.status).toBe("running");
+			expect(store.isCodexQuotaStandby("exec-1")).toBe(true);
+		} finally {
+			for (const root of roots) rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it.each([true, false])(
 		"FLY-2465 HTTP preserves quota in real store; generalized=%s",
 		async (generalized) => {
@@ -3697,7 +3752,7 @@ describe("Event route — PM lead routed via chat_channel (FLY-163)", () => {
 		).toBe(true);
 	});
 
-	it("does not reawaken the Lead for a fresh routine stage carrying an inherited decision", async () => {
+	it("keeps an inherited decision immediate without an exact resolution receipt", async () => {
 		store.upsertSession({
 			execution_id: "exec-stale-decision",
 			issue_id: "issue-stale-decision",
@@ -3729,12 +3784,12 @@ describe("Event route — PM lead routed via chat_channel (FLY-163)", () => {
 					"SELECT delivery_disposition FROM lead_events WHERE event_id=?",
 				)
 				.get("routine-inherited-decision"),
-		).toEqual({ delivery_disposition: "audit_only" });
+		).toEqual({ delivery_disposition: "model" });
 		expect(
 			capturedEnvelopes.find(
 				(envelope) => envelope.eventId === "routine-inherited-decision",
 			),
-		).toBeUndefined();
+		).toBeDefined();
 	});
 
 	it("keeps persisted session_started immediate with savings enabled or disabled", async () => {

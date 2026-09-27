@@ -14,6 +14,7 @@
 import {
 	type AdapterExecutionContext,
 	type CodexQuotaBindingV1,
+	type CodexQuotaResumeLifecycle,
 	CodexRecoveryError,
 	createCodexRecoveryFailure,
 	normalizeCodexRecoveryFailure,
@@ -44,6 +45,7 @@ import {
 	type ConnectDaemonTransportOptions,
 	connectDaemonTransport,
 } from "./codex-daemon-transport.js";
+import { trackQuotaResumeAcrossRestarts } from "./codex-quota-resume.js";
 import type { CodexTurnBarrier } from "./codex-turn-barrier.js";
 
 export type Sandbox = "read-only" | "workspace-write" | "danger-full-access";
@@ -163,6 +165,8 @@ export interface RunGoalInput {
 	phaseLifecycle?: GoalPhaseLifecycle;
 	/** FLY-2268 durable turn-boundary writer, shared across daemon restarts. */
 	turnLifecycle?: GoalTurnLifecycle;
+	/** FLY-2900: quota standby relaunch; tracked across daemon restarts. */
+	quotaResume?: CodexQuotaResumeLifecycle;
 	/** Test seam for deterministic retry exhaustion. */
 	turnBarrier?: CodexTurnBarrier;
 	phaseControlPollIntervalMs?: number;
@@ -632,6 +636,9 @@ export class CodexDaemonGoalRuntime {
 			const maxRestarts = this.opts.maxRestarts ?? 5;
 			let threadId = input.resumeThreadId;
 			let restarts = 0;
+			const quotaResume = input.quotaResume
+				? trackQuotaResumeAcrossRestarts(input.quotaResume)
+				: undefined;
 			// HIGH-3/FLY-1940: reap a prior orphan only on the FIRST spawn of this
 			// run. Every new spawn persists its group before the socket wait through
 			// the hard onSpawnIdentity contract.
@@ -702,6 +709,7 @@ export class CodexDaemonGoalRuntime {
 							);
 						}
 					}
+					const sessionQuotaResume = quotaResume?.current();
 					const result = await this.runGoalFn(
 						session.client,
 						{
@@ -731,6 +739,9 @@ export class CodexDaemonGoalRuntime {
 								: {}),
 							...(input.turnLifecycle
 								? { turnLifecycle: input.turnLifecycle }
+								: {}),
+							...(sessionQuotaResume
+								? { quotaResume: sessionQuotaResume }
 								: {}),
 							...(input.turnBarrier ? { turnBarrier: input.turnBarrier } : {}),
 							...(input.phaseControlPollIntervalMs !== undefined
