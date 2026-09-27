@@ -2,17 +2,15 @@
 issue: FLY-2920
 phase: implement
 phaseCursor: 5/7
-updated: 2026-09-26T21:31:47.419Z
-nextStep: F completed ed7b9251d and pushed. G genuine stale-phase TDD red
-  captured; exact binding/live resume factory implementation underway. Real
-  Git+StateStore+engine fixture still being initialized; must add bound dead
-  replacement, terminal reopened DB, valid generic/QA controls before internal
-  review. Legacy consumer sweep committed c545d3203. No formal gate/PR/CI/QA
-  claim.
+updated: 2026-09-27T00:23:56.573Z
+nextStep: G WIP production source and real workflow fixture now pass 36 direct
+  tests after fixing the custom-node agent binding and predecessor-intent
+  reconcile expectation. Run the retained G consumer/guard files one concrete
+  file at a time, refresh evidence, then commit/push G.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2920 progress
 **phase**: implement (5/7)
-**next**: F completed ed7b9251d and pushed. G genuine stale-phase TDD red captured; exact binding/live resume factory implementation underway. Real Git+StateStore+engine fixture still being initialized; must add bound dead replacement, terminal reopened DB, valid generic/QA controls before internal review. Legacy consumer sweep committed c545d3203. No formal gate/PR/CI/QA claim.
+**next**: G WIP production source and real workflow fixture now pass 36 direct tests after fixing the custom-node agent binding and predecessor-intent reconcile expectation. Run the retained G consumer/guard files one concrete file at a time, refresh evidence, then commit/push G.
