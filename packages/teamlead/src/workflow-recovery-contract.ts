@@ -221,6 +221,8 @@ export function isWorkflowStateRecoveryShape(shape: string): boolean {
 	return [
 		"run_held_by_operator",
 		"workflow_gate_origin_preflight_terminal",
+		"loop_limit_escalated",
+		"rework_suppressed_idle_spin",
 	].includes(shape);
 }
 

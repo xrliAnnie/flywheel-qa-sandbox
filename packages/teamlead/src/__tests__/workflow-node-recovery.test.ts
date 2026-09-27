@@ -1042,6 +1042,10 @@ describe("FLY-2545 land recovery", () => {
 			}
 		).db;
 		raw.run(
+			"UPDATE workflow_side_effect_ledger SET state='started' WHERE run_id=? AND state='intent_recorded'",
+			[RUN_ID],
+		);
+		raw.run(
 			"UPDATE workflow_run SET engine_owned = 1, current_node_id = 'land' WHERE run_id = 'run-land-recovery'",
 		);
 		store.upsertWorkflowRunNode({
@@ -1616,6 +1620,383 @@ describe("state-only recovery through the unified endpoint", () => {
 		).toMatchObject({
 			origin_probe_attempts: 0,
 			origin_probe_last_reason: null,
+		});
+	});
+});
+
+describe("recorded workflow decisions through the unified endpoint", () => {
+	async function heldDecision(
+		shape: "loop_limit_escalated" | "rework_suppressed_idle_spin",
+	) {
+		const projectRoot = mkdtempSync(join(tmpdir(), "fly2922-decision-project-"));
+		const store = await StateStore.create(":memory:");
+		const head = await materializePredecessor(store, projectRoot, true);
+		cleanups.push(async () => {
+			store.close();
+			rmSync(projectRoot, { recursive: true, force: true });
+		});
+		const sourceAttempt = shape === "loop_limit_escalated" ? 4 : 1;
+		const targetAttempt = shape === "loop_limit_escalated" ? 5 : 2;
+		const sourceExecutionId = `qa-${shape}`;
+		const holdEventUid = `hold:${shape}`;
+		const raw = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		raw.run(
+			`INSERT INTO workflow_run_node
+			 (run_id,node_id,attempt,state,execution_id,ended_at)
+			 VALUES (?, 'qa', ?, 'done', ?, ?)`,
+			[
+				RUN_ID,
+				sourceAttempt,
+				sourceExecutionId,
+				"2026-09-26T23:00:00.000Z",
+			],
+		);
+		raw.run(
+			`INSERT INTO workflow_node_completion
+			 (activation_id,run_id,node_id,attempt,execution_id,route,event_uid,
+			  source_event_id,completion_submission_digest,completed_at)
+			 VALUES (NULL,?,'qa',?,?,'blocked',?,?,?,?)`,
+			[
+				RUN_ID,
+				sourceAttempt,
+				sourceExecutionId,
+				`completion:${shape}`,
+				`source:${shape}`,
+				"c".repeat(64),
+				"2026-09-26T23:00:00.000Z",
+			],
+		);
+		raw.run(
+			"UPDATE workflow_run SET status='held',current_node_id='qa' WHERE run_id=?",
+			[RUN_ID],
+		);
+		store.upsertSession({
+			execution_id: sourceExecutionId,
+			issue_id: ISSUE_ID,
+			issue_identifier: ISSUE_ID,
+			issue_title: "Recover a recorded workflow decision",
+			project_name: "flywheel",
+			status: "completed",
+			session_role: "qa",
+			workflow_node_id: "qa",
+			design_backend: "claude",
+			doc_tier: "none",
+			worktree_path: projectRoot,
+		});
+		store.appendWorkflowRunEvent({
+			runId: RUN_ID,
+			eventUid: holdEventUid,
+			kind: shape,
+			nodeId: "qa",
+			edgeId: "qa_retry",
+			executionId: sourceExecutionId,
+			payload: {
+				edgeId: "qa_retry",
+				targetNodeId: "implement",
+				targetAttempt,
+				sourceAttempt,
+				outcome: "qa_fail",
+				loopIteration: sourceAttempt,
+				escalated: true,
+				...(shape === "rework_suppressed_idle_spin"
+					? {
+							reason: "current_qa_pass_already_exists",
+							subjectDigest: "a".repeat(40),
+						}
+					: { maxIterations: 3, onLimit: "escalate" }),
+			},
+		});
+		if (shape === "rework_suppressed_idle_spin") {
+			raw.run(
+				`INSERT INTO workflow_claims
+				 (server_seq,issued_at,issue_id,workflow_run_id,node_id,decision_kind,
+				  attempt,predicate,issuer_kind,subject_kind,subject_digest,permanent,
+				  authority_id)
+				 VALUES (1,?,?,?,?,? ,?,'qa_passed','bridge_policy','git_head',?,1,?)`,
+				[
+					"2026-09-26T22:59:00.000Z",
+					ISSUE_ID,
+					RUN_ID,
+					"qa",
+					"qa_verdict",
+					sourceAttempt,
+					"a".repeat(40),
+					"fly2922-test-pass",
+				],
+			);
+		}
+		return {
+			store,
+			raw,
+			head,
+			projectRoot,
+			sourceAttempt,
+			targetAttempt,
+			sourceExecutionId,
+			holdEventUid,
+		};
+	}
+
+	it("continues a loop limit with one real dispatch and one consumable lineage edge", async () => {
+		const fixture = await heldDecision("loop_limit_escalated");
+		fixture.store.insertEvent({
+			event_id: "workflow-decision:fly2922:qa-fail",
+			execution_id: fixture.sourceExecutionId,
+			issue_id: ISSUE_ID,
+			project_name: "flywheel",
+			event_type: "workflow_decision",
+			source: "bridge.workflow-decision",
+			payload: { status: "fail", summary: "recorded QA failure" },
+		});
+		const sourceCompletion = fixture.store.getWorkflowNodeCompletion(
+			RUN_ID,
+			"qa",
+			fixture.sourceAttempt,
+		);
+		const prepared = await prepareWorkflowNodeRecovery(fixture.store, {
+			runId: RUN_ID,
+			shape: "loop_limit_escalated",
+			holdEventUid: fixture.holdEventUid,
+			decision: null,
+			reason: "continue the recorded loop target",
+			principal: "master",
+			clientRequestId: "fly2922-loop-continue",
+		});
+		expect(prepared.canonical.target).toMatchObject({
+			operationKind: "apply_recorded_decision",
+			nodeId: "implement",
+			attempt: fixture.targetAttempt,
+			previousExecutionId: fixture.sourceExecutionId,
+			previousLaunchOrdinal: 0,
+		});
+		const applied = fixture.store.recoverWorkflowNode({
+			...prepared,
+			now: new Date().toISOString(),
+		});
+		expect(applied).toMatchObject({
+			ok: true,
+			idempotentReplay: false,
+			state: "dispatch_recorded",
+			launchOrdinal: 1,
+			dispatchLedgerId: expect.any(Number),
+		});
+		if (!applied.ok || applied.state !== "dispatch_recorded") {
+			throw new Error("recorded decision dispatch missing");
+		}
+		expect(
+			fixture.store.getWorkflowNodeCompletion(
+				RUN_ID,
+				"qa",
+				fixture.sourceAttempt,
+			),
+		).toEqual(sourceCompletion);
+		expect(
+			fixture.store.getWorkflowRunNode(
+				RUN_ID,
+				"qa",
+				fixture.sourceAttempt,
+			),
+		).toMatchObject({ state: "done", execution_id: fixture.sourceExecutionId });
+		expect(
+			fixture.store.getWorkflowRunNode(
+				RUN_ID,
+				"implement",
+				fixture.targetAttempt,
+			),
+		).toMatchObject({ state: "pending", execution_id: applied.executionId });
+		expect(
+			fixture.store
+				.listWorkflowSideEffects(RUN_ID)
+				.find((row) => row.id === applied.dispatchLedgerId),
+		).toMatchObject({
+			node_id: "implement",
+			attempt: fixture.targetAttempt,
+			execution_id: applied.executionId,
+			launch_ordinal: 1,
+			state: "intent_recorded",
+		});
+		const decisionEdges = fixture.store
+			.listWorkflowRunEvents(RUN_ID)
+			.filter(
+				(event) =>
+					event.kind === "edge_traversed" &&
+					event.payload?.origin === "hold_decision_resume",
+			);
+		expect(decisionEdges).toEqual([
+			expect.objectContaining({
+				node_id: "qa",
+				execution_id: fixture.sourceExecutionId,
+				payload: expect.objectContaining({
+					operationId: applied.operationId,
+					sourceHoldEventUid: fixture.holdEventUid,
+					sourceAttempt: fixture.sourceAttempt,
+					targetNodeId: "implement",
+					targetAttempt: fixture.targetAttempt,
+					outcome: "qa_fail",
+					loopIteration: fixture.sourceAttempt,
+					successorExecutionId: applied.executionId,
+					gateOpened: false,
+				}),
+			}),
+		]);
+		expect(fixture.store.getWorkflowRun(RUN_ID)).toMatchObject({
+			status: "active",
+			current_node_id: "implement",
+		});
+		const replay = fixture.store.recoverWorkflowNode({
+			...prepared,
+			now: new Date().toISOString(),
+		});
+		expect(replay).toMatchObject({
+			ok: true,
+			idempotentReplay: true,
+			executionId: applied.executionId,
+			dispatchLedgerId: applied.dispatchLedgerId,
+		});
+		expect(
+			fixture.store
+				.listWorkflowRunEvents(RUN_ID)
+				.filter((event) => event.kind === "edge_traversed"),
+		).toHaveLength(1);
+
+		const stateRoot = mkdtempSync(join(tmpdir(), "fly2922-decision-markers-"));
+		cleanups.push(async () => {
+			rmSync(stateRoot, { recursive: true, force: true });
+		});
+		const fake = fakeStartDispatcher(
+			fixture.store,
+			fixture.head,
+			fixture.projectRoot,
+		);
+		fake.allowLaunch();
+		const engine = new WorkflowEngineDispatcher({
+			store: fixture.store,
+			startDispatcher: fake.dispatcher,
+			stateRoot,
+			env: ENV,
+			now: () => new Date(),
+			resolveRunAlertIdentity: () => ({
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved",
+			}),
+		});
+		expect(await engine.reconcile()).toMatchObject({ held: 0 });
+		const recoveredRequests = fake.requests.filter(
+			(request) =>
+				request.generalizedExecution?.executionId === applied.executionId,
+		);
+		expect(recoveredRequests).toHaveLength(1);
+		expect(recoveredRequests[0]).toMatchObject({
+			startPoint: fixture.head,
+			phaseFixContext: {
+				round: fixture.sourceAttempt,
+				qaSummary: "recorded QA failure",
+			},
+		});
+	});
+
+	it("forces idle-spin rework through the recorded target without /rework", async () => {
+		const fixture = await heldDecision("rework_suppressed_idle_spin");
+		const prepared = await prepareWorkflowNodeRecovery(fixture.store, {
+			runId: RUN_ID,
+			shape: "rework_suppressed_idle_spin",
+			holdEventUid: fixture.holdEventUid,
+			decision: "force_rework",
+			reason: "force the frozen target once",
+			principal: "master",
+			clientRequestId: "fly2922-idle-force",
+		});
+		const applied = fixture.store.recoverWorkflowNode({
+			...prepared,
+			now: new Date().toISOString(),
+		});
+		expect(applied).toMatchObject({
+			ok: true,
+			state: "dispatch_recorded",
+			launchOrdinal: 1,
+		});
+		expect(
+			fixture.store
+				.listWorkflowRunEvents(RUN_ID)
+				.filter(
+					(event) =>
+						event.kind === "edge_traversed" &&
+						event.payload?.origin === "hold_decision_resume",
+				),
+		).toHaveLength(1);
+		expect(fixture.store.listWorkflowRunEvents(RUN_ID)).not.toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ kind: "operator_rework_requested" }),
+			]),
+		);
+	});
+
+	it("accepts only the still-current same-head PASS without minting a dispatch", async () => {
+		const revokedFixture = await heldDecision("rework_suppressed_idle_spin");
+		const request = {
+			runId: RUN_ID,
+			shape: "rework_suppressed_idle_spin",
+			holdEventUid: revokedFixture.holdEventUid,
+			decision: "accept_current_pass",
+			reason: "accept the exact current QA PASS",
+			principal: "master" as const,
+			clientRequestId: "fly2922-idle-accept",
+		};
+		const prepared = await prepareWorkflowNodeRecovery(
+			revokedFixture.store,
+			request,
+		);
+		expect(prepared.canonical.target.operationKind).toBe(
+			"apply_recorded_decision",
+		);
+		revokedFixture.raw.run(
+			"INSERT INTO workflow_claim_revocation (claim_id,reason,actor) VALUES (1,'head_changed','test')",
+		);
+		expect(
+			revokedFixture.store.recoverWorkflowNode({
+				...prepared,
+				now: new Date().toISOString(),
+			}),
+		).toMatchObject({ ok: false });
+
+		const fixture = await heldDecision("rework_suppressed_idle_spin");
+		const beforeLedger = fixture.store.listWorkflowSideEffects(RUN_ID);
+		const sourceCompletion = fixture.store.getWorkflowNodeCompletion(
+			RUN_ID,
+			"qa",
+			fixture.sourceAttempt,
+		);
+		const restaged = await prepareWorkflowNodeRecovery(fixture.store, request);
+		const applied = fixture.store.recoverWorkflowNode({
+			...restaged,
+			now: new Date().toISOString(),
+		});
+		expect(applied).toMatchObject({
+			ok: true,
+			idempotentReplay: false,
+			state: "state_applied",
+		});
+		expect(fixture.store.listWorkflowSideEffects(RUN_ID)).toEqual(beforeLedger);
+		expect(
+			fixture.store.getWorkflowNodeCompletion(
+				RUN_ID,
+				"qa",
+				fixture.sourceAttempt,
+			),
+		).toEqual(sourceCompletion);
+		expect(
+			fixture.store
+				.listWorkflowRunEvents(RUN_ID)
+				.filter((event) => event.kind === "edge_traversed"),
+		).toEqual([]);
+		expect(fixture.store.getWorkflowRun(RUN_ID)).toMatchObject({
+			status: "active",
+			current_node_id: "qa",
 		});
 	});
 });

@@ -59405,14 +59405,239 @@ export class StateStore {
 		return recorded;
 	}
 
+	private applyRecordedWorkflowDecisionTx(input: {
+		runId: string;
+		shape: string;
+		resumeAction: string;
+		holdEventUid: string;
+		decision?: string;
+		operationId: string;
+		expectedTarget: WorkflowRecoveryTarget;
+		now: string;
+	}):
+		| {
+				executionId: string;
+				launchOrdinal: number;
+				dispatchLedgerId: number;
+		  }
+		| undefined {
+		if (!this.db.raw.inTransaction) {
+			throw new Error("recorded_decision_transaction_required");
+		}
+		const observed = this.inspectWorkflowStateRecovery({
+			runId: input.runId,
+			holdEventUid: input.holdEventUid,
+			decision: input.decision ?? null,
+			expectedShape: input.shape,
+		});
+		if (
+			observed.resumeAction !== input.resumeAction ||
+			observed.target.operationKind !== "apply_recorded_decision" ||
+			canonicalSubmissionDigest(observed.target) !==
+				canonicalSubmissionDigest(input.expectedTarget)
+		) {
+			throw new Error("recovery_recorded_decision_changed");
+		}
+		if (
+			input.resumeAction === "resume_idle_spin" &&
+			input.decision === "accept_current_pass"
+		) {
+			return undefined;
+		}
+		const event = this.listWorkflowRunEvents(input.runId).find(
+			(candidate) => candidate.event_uid === input.holdEventUid,
+		);
+		const payload =
+			event?.payload &&
+			typeof event.payload === "object" &&
+			!Array.isArray(event.payload)
+				? (event.payload as Record<string, unknown>)
+				: undefined;
+		const sourceAttempt = Number(payload?.sourceAttempt);
+		const targetAttempt = Number(payload?.targetAttempt);
+		const loopIteration = Number(payload?.loopIteration);
+		if (
+			!event ||
+			!payload ||
+			!event.node_id ||
+			!event.execution_id ||
+			typeof payload.edgeId !== "string" ||
+			typeof payload.targetNodeId !== "string" ||
+			typeof payload.outcome !== "string" ||
+			!Number.isSafeInteger(sourceAttempt) ||
+			!Number.isSafeInteger(targetAttempt) ||
+			!Number.isSafeInteger(loopIteration) ||
+			input.expectedTarget.nodeId !== payload.targetNodeId ||
+			input.expectedTarget.attempt !== targetAttempt ||
+			input.expectedTarget.previousExecutionId !== event.execution_id
+		) {
+			throw new Error("recovery_recorded_decision_changed");
+		}
+		const run = this.getWorkflowRun(input.runId);
+		const snapshot = run?.snapshot
+			? parseWorkflowRunSnapshot(run.snapshot)
+			: undefined;
+		const targetDefinition = snapshot?.resolved.nodes.find(
+			(candidate) => candidate.id === payload.targetNodeId,
+		);
+		if (
+			!run ||
+			run.status !== "held" ||
+			run.current_node_id !== event.node_id ||
+			!targetDefinition ||
+			targetDefinition.type === "gate" ||
+			targetDefinition.dispatch === undefined ||
+			this.getWorkflowRunNode(input.runId, payload.targetNodeId, targetAttempt)
+		) {
+			throw new Error("recovery_recorded_target_changed");
+		}
+		const executionId = randomUUID();
+		const launchOrdinal = this.allocateWorkflowLaunchOrdinalTx(
+			input.runId,
+			payload.targetNodeId,
+			targetAttempt,
+			executionId,
+		);
+		this.upsertWorkflowRunNodeTx({
+			runId: input.runId,
+			nodeId: payload.targetNodeId,
+			attempt: targetAttempt,
+			state: "pending",
+			executionId,
+		});
+		const transitionUid = `decision_resume_edge:${input.operationId}`;
+		const receipt = {
+			origin: "hold_decision_resume",
+			operationId: input.operationId,
+			sourceHoldEventUid: input.holdEventUid,
+			edgeId: payload.edgeId,
+			sourceAttempt,
+			targetNodeId: payload.targetNodeId,
+			targetAttempt,
+			outcome: payload.outcome,
+			loopIteration,
+			successorExecutionId: executionId,
+			gateOpened: false,
+			...(typeof payload.founderFeedback === "string"
+				? { founderFeedback: payload.founderFeedback.slice(0, 4_000) }
+				: {}),
+		};
+		this.appendWorkflowRunEventCheckedTx({
+			runId: input.runId,
+			eventUid: transitionUid,
+			kind: "edge_traversed",
+			nodeId: event.node_id,
+			edgeId: payload.edgeId,
+			executionId: event.execution_id,
+			payload: receipt,
+		});
+		const sourceAttachment = this.listWorkflowResumeAttachments({
+			runId: input.runId,
+			nodeId: event.node_id,
+			attempt: sourceAttempt,
+		}).at(-1);
+		const sourceAttachmentState = sourceAttachment
+			? this.getWorkflowResumeAttachmentState(sourceAttachment.attachment_id)
+			: undefined;
+		const subjectHead =
+			typeof payload.subjectDigest === "string" &&
+			/^[0-9a-f]{40}$/i.test(payload.subjectDigest)
+				? payload.subjectDigest.toLowerCase()
+				: undefined;
+		const targetAnchor =
+			subjectHead ??
+			sourceAttachment?.anchor_commit ??
+			sourceAttachmentState?.resolved_anchor_commit ??
+			undefined;
+		this.recordWorkflowResumeEvidenceSafelyTx(
+			{
+				runId: input.runId,
+				targetNodeId: payload.targetNodeId,
+				targetAttempt,
+				transitionUid,
+				createdAt: input.now,
+			},
+			() => {
+				if (!targetAnchor) {
+					this.recordWorkflowResumeTargetUnrecoverableTx({
+						runId: input.runId,
+						targetNodeId: payload.targetNodeId as string,
+						targetAttempt,
+						transitionUid,
+						reason: "attachment_missing",
+						detail: { cause: "anchor_source_unavailable" },
+						createdAt: input.now,
+					});
+					return;
+				}
+				this.recordWorkflowResumeAttachmentTx({
+					runId: input.runId,
+					targetNodeId: payload.targetNodeId as string,
+					targetAttempt,
+					transitionUid,
+					receiptKind: "edge_traversed",
+					receiptPayload: receipt,
+					carrierKind: "git_checkpoint",
+					anchorCommit: targetAnchor,
+					repoIdentity: sourceAttachment?.repo_identity ?? run.project_name,
+					snapshotDigest: snapshot!.snapshot_digest,
+					resolvedNodeDigest: canonicalSubmissionDigest(targetDefinition),
+					envelopeJson:
+						sourceAttachment?.envelope_json ??
+						JSON.stringify({
+							schemaVersion: 1,
+							issueBaselineUid: `issue_input_baseline:${input.runId}`,
+						}),
+					createdAt: input.now,
+				});
+			},
+		);
+		this.db.run(
+			`UPDATE workflow_run SET current_node_id = ?
+			  WHERE run_id = ? AND status = 'held' AND current_node_id = ?`,
+			[payload.targetNodeId, input.runId, event.node_id],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			throw new Error("recovery_recorded_run_cas_failed");
+		}
+		const ledger = this.workflowSelectAll(
+			`SELECT id FROM workflow_side_effect_ledger
+			  WHERE run_id = ? AND node_id = ? AND attempt = ? AND kind = 'dispatch'
+			    AND execution_id = ? AND launch_ordinal = ? AND state = 'intent_recorded'`,
+			[
+				input.runId,
+				payload.targetNodeId,
+				targetAttempt,
+				executionId,
+				launchOrdinal,
+			],
+		)[0];
+		if (!ledger || !Number.isSafeInteger(ledger.id) || Number(ledger.id) < 1) {
+			throw new Error("recorded_decision_materialization_proof_missing");
+		}
+		return {
+			executionId,
+			launchOrdinal,
+			dispatchLedgerId: Number(ledger.id),
+		};
+	}
+
 	private applyStateWorkflowHoldResumeActionTx(input: {
 		runId: string;
 		shape: string;
 		resumeAction: string;
 		holdEventUid: string;
 		decision?: string;
+		operationId?: string;
+		expectedTarget?: WorkflowRecoveryTarget;
 		now: string;
-	}): void {
+	}):
+		| {
+				executionId: string;
+				launchOrdinal: number;
+				dispatchLedgerId: number;
+		  }
+		| undefined {
 		const event = this.workflowSelectAll(
 			`SELECT node_id, execution_id, payload
 			   FROM workflow_run_event
@@ -59659,6 +59884,13 @@ export class StateStore {
 				break;
 			}
 			case "resume_loop_limit": {
+				if (input.operationId && input.expectedTarget) {
+					return this.applyRecordedWorkflowDecisionTx({
+						...input,
+						operationId: input.operationId,
+						expectedTarget: input.expectedTarget,
+					});
+				}
 				const targetNodeId = payloadId("targetNodeId");
 				const targetAttempt = Number(payload.targetAttempt);
 				if (
@@ -59709,6 +59941,13 @@ export class StateStore {
 				break;
 			}
 			case "resume_idle_spin": {
+				if (input.operationId && input.expectedTarget) {
+					return this.applyRecordedWorkflowDecisionTx({
+						...input,
+						operationId: input.operationId,
+						expectedTarget: input.expectedTarget,
+					});
+				}
 				if (input.decision === "accept_current_pass") break;
 				const targetNodeId = payloadId("targetNodeId");
 				const targetAttempt = Number(payload.targetAttempt);
@@ -59778,6 +60017,7 @@ export class StateStore {
 					`workflow_hold_resume_action_unsupported:${input.resumeAction}`,
 				);
 		}
+		return undefined;
 	}
 
 	private cancelWorkflowStateDeliveryTx(input: {
@@ -60034,6 +60274,9 @@ export class StateStore {
 				? "resume_existing"
 				: descriptor.resumeAction === "resume_gate_origin_preflight"
 					? "rearm_gate_probe"
+					: descriptor.resumeAction === "resume_loop_limit" ||
+							descriptor.resumeAction === "resume_idle_spin"
+						? "apply_recorded_decision"
 					: undefined;
 		if (!operationKind) throw new Error("recovery_operation_unsupported");
 		const snapshot = parseWorkflowRunSnapshot(run.snapshot);
@@ -60061,6 +60304,172 @@ export class StateStore {
 			!Array.isArray(event.payload)
 				? (event.payload as Record<string, unknown>)
 				: {};
+		if (operationKind === "apply_recorded_decision") {
+			const sourceAttempt = Number(eventPayload.sourceAttempt);
+			const targetAttempt = Number(eventPayload.targetAttempt);
+			const targetNodeId =
+				typeof eventPayload.targetNodeId === "string"
+					? eventPayload.targetNodeId
+					: undefined;
+			const edgeId =
+				typeof eventPayload.edgeId === "string"
+					? eventPayload.edgeId
+					: undefined;
+			const outcome =
+				typeof eventPayload.outcome === "string"
+					? eventPayload.outcome
+					: undefined;
+			const loopIteration = Number(eventPayload.loopIteration);
+			const loop = snapshot.manifest.loops.find(
+				(candidate) => candidate.id === edgeId,
+			);
+			const targetDefinition = snapshot.resolved.nodes.find(
+				(candidate) => candidate.id === targetNodeId,
+			);
+			const completion = Number.isSafeInteger(sourceAttempt)
+				? this.getWorkflowNodeCompletion(
+						input.runId,
+						node.node_id,
+						sourceAttempt,
+					)
+				: undefined;
+			if (
+				event.kind !== hold.shape ||
+				event.node_id !== node.node_id ||
+				!event.execution_id ||
+				node.state !== "done" ||
+				node.attempt !== sourceAttempt ||
+				node.execution_id !== event.execution_id ||
+				!completion ||
+				completion.execution_id !== event.execution_id ||
+				!edgeId ||
+				event.edge_id !== edgeId ||
+				!targetNodeId ||
+				!Number.isSafeInteger(targetAttempt) ||
+				targetAttempt < 1 ||
+				!outcome ||
+				!Number.isSafeInteger(loopIteration) ||
+				loopIteration < 1 ||
+				!loop ||
+				loop.from !== node.node_id ||
+				loop.to !== targetNodeId ||
+				loop.loop_when !== outcome ||
+				!targetDefinition
+			) {
+				throw new Error("recovery_recorded_decision_changed");
+			}
+			if (
+				descriptor.resumeAction === "resume_loop_limit" &&
+				(!Number.isSafeInteger(loop.max_iterations) ||
+					loopIteration <= loop.max_iterations! ||
+					eventPayload.maxIterations !== loop.max_iterations ||
+					eventPayload.onLimit !== loop.on_limit)
+			) {
+				throw new Error("recovery_loop_budget_changed");
+			}
+			const dispatchDecision =
+				descriptor.resumeAction === "resume_loop_limit" ||
+				input.decision === "force_rework";
+			if (
+				dispatchDecision &&
+				(targetDefinition.type === "gate" ||
+					targetDefinition.dispatch === undefined ||
+					this.getWorkflowRunNode(input.runId, targetNodeId, targetAttempt))
+			) {
+				throw new Error("recovery_recorded_target_changed");
+			}
+			let decisionAuthority: unknown = null;
+			if (
+				descriptor.resumeAction === "resume_idle_spin" &&
+				input.decision === "accept_current_pass"
+			) {
+				let subjectDigest =
+					typeof eventPayload.subjectDigest === "string" &&
+					/^[0-9a-f]{40}$/i.test(eventPayload.subjectDigest)
+						? eventPayload.subjectDigest.toLowerCase()
+						: undefined;
+				if (!subjectDigest) {
+					const legacySubjects = this.workflowSelectAll(
+						`SELECT DISTINCT lower(claim.subject_digest) AS subject_digest
+						   FROM workflow_claims claim
+						  WHERE claim.workflow_run_id = ? AND claim.node_id = ?
+						    AND claim.attempt = ? AND claim.decision_kind = 'qa_verdict'
+						    AND claim.predicate = 'qa_passed'
+						    AND claim.subject_kind = 'git_head'
+						    AND NOT EXISTS (
+						      SELECT 1 FROM workflow_claim_revocation rev
+						       WHERE rev.claim_id = claim.id
+						    )`,
+						[input.runId, node.node_id, sourceAttempt],
+					)
+						.map((row) => String(row.subject_digest))
+						.filter((value) => /^[0-9a-f]{40}$/.test(value));
+					if (legacySubjects.length === 1) subjectDigest = legacySubjects[0];
+				}
+				const resolved = subjectDigest
+					? this.resolveWorkflowDecisionClaim({
+							runId: input.runId,
+							nodeId: node.node_id,
+							decisionKind: "qa_verdict",
+							predicate: "qa_passed",
+							requiredAttempt: sourceAttempt,
+							subjectKind: "git_head",
+							subjectDigest,
+						})
+					: { valid: false as const, reason: "no_claim" as const };
+				if (!resolved.valid) throw new Error("recovery_idle_pass_changed");
+				decisionAuthority = {
+					subjectDigest,
+					claim: resolved.claim,
+				};
+			}
+			const sourceHoldEventUids = [input.holdEventUid];
+			const target: WorkflowRecoveryTarget = {
+				operationKind,
+				runId: input.runId,
+				nodeId: dispatchDecision ? targetNodeId : node.node_id,
+				attempt: dispatchDecision ? targetAttempt : sourceAttempt,
+				previousExecutionId: event.execution_id,
+				previousLaunchOrdinal: 0,
+				snapshotDigest: snapshot.snapshot_digest,
+				holdSetDigest: canonicalSubmissionDigest(sourceHoldEventUids),
+				startAuthority: null,
+				sourceHoldEventUids,
+				rework: null,
+				land: null,
+			};
+			return {
+				target,
+				projectName: run.project_name,
+				sourceShape: hold.shape,
+				resumeAction: descriptor.resumeAction,
+				stateDigest: canonicalSubmissionDigest({
+					target,
+					runStatus: run.status,
+					currentNodeId: run.current_node_id,
+					node,
+					completion,
+					hold,
+					event: {
+						kind: event.kind,
+						nodeId: event.node_id,
+						edgeId: event.edge_id,
+						executionId: event.execution_id,
+						payload: eventPayload,
+					},
+					loop,
+					targetDefinition,
+					targetNode: dispatchDecision
+						? this.getWorkflowRunNode(
+								input.runId,
+								targetNodeId,
+								targetAttempt,
+							)
+						: null,
+					decisionAuthority,
+				}),
+			};
+		}
 		let authority: unknown = null;
 		if (operationKind === "rearm_gate_probe") {
 			const questionId =
@@ -60120,12 +60529,32 @@ export class StateStore {
 	}
 
 	/** Public conflict identity is read from current state and validated receipts. */
-	getWorkflowNodeRecoveryConflict(target: WorkflowRecoveryTarget): {
+	getWorkflowNodeRecoveryConflict(
+		target: WorkflowRecoveryTarget,
+		stateRequest?: { holdEventUid: string; decision: string | null },
+	): {
 		reason: "recovery_target_changed";
 		currentTarget: {runId: string; nodeId: string | null; attempt: number | null;
 			executionId: string | null; launchOrdinal: number; runStatus: string} | null;
 		originalOperationId: string | null;
 	} | undefined {
+		if (target.operationKind !== "redispatch_current" && stateRequest) {
+			try {
+				const current = this.inspectWorkflowStateRecovery({
+					runId: target.runId,
+					holdEventUid: stateRequest.holdEventUid,
+					decision: stateRequest.decision,
+				});
+				if (
+					canonicalSubmissionDigest(current.target) ===
+					canonicalSubmissionDigest(target)
+				) {
+					return undefined;
+				}
+			} catch {
+				// Fall through to the public current-target conflict below.
+			}
+		}
 		const run = this.getWorkflowRun(target.runId);
 		const node = run?.current_node_id
 			? this.listWorkflowRunNodes(target.runId, run.current_node_id).at(-1) : undefined;
@@ -60364,8 +60793,7 @@ export class StateStore {
 				(hold) =>
 					hold.runLevel &&
 					hold.requiredDecision &&
-					(canonical.decision !== "retry" ||
-						!hold.requiredDecision.includes(canonical.decision)),
+					!hold.requiredDecision.includes(canonical.decision ?? ""),
 			)
 		)
 			throw new Error("recovery_decision_required");
@@ -60593,7 +61021,7 @@ export class StateStore {
 						holdEventUid: canonical.holdEventUid,
 						decision: canonical.decision,
 					});
-					this.applyStateWorkflowHoldResumeActionTx({
+					dispatch = this.applyStateWorkflowHoldResumeActionTx({
 						runId: canonical.runId,
 						shape: state.sourceShape,
 						resumeAction: state.resumeAction,
@@ -60601,14 +61029,26 @@ export class StateStore {
 						...(canonical.decision
 							? { decision: canonical.decision }
 							: {}),
+						operationId,
+						expectedTarget: target,
 						now: input.now,
 					});
-					receipt = workflowRecoveryReceiptSchema.parse({
-						operationId,
-						canonicalDigest: digest,
-						target,
-						state: "state_applied",
-					});
+					receipt = workflowRecoveryReceiptSchema.parse(
+						dispatch
+							? {
+									operationId,
+									canonicalDigest: digest,
+									target,
+									...dispatch,
+									state: "dispatch_recorded",
+								}
+							: {
+									operationId,
+									canonicalDigest: digest,
+									target,
+									state: "state_applied",
+								},
+					);
 				} else {
 					const executionId = randomUUID();
 					const materialized =
@@ -66890,6 +67330,7 @@ export class StateStore {
 			} catch {
 				return undefined;
 			}
+			if (payload.origin === "hold_decision_resume") continue;
 			if (payload.sourceAttempt !== context.binding.attempt) continue;
 			const residentHold = this.getResidentHold(
 				context.binding.execution_id,
@@ -70813,6 +71254,9 @@ export class StateStore {
 						maxIterations: loop.max_iterations,
 						onLimit: loop.on_limit,
 						escalated: true,
+						...(input.subjectDigest
+							? { subjectDigest: input.subjectDigest.toLowerCase() }
+							: {}),
 					},
 				});
 				result = {
@@ -70894,6 +71338,7 @@ export class StateStore {
 					loopIteration,
 					escalated: true,
 					reason: "current_qa_pass_already_exists",
+					subjectDigest: input.subjectDigest!.toLowerCase(),
 				};
 				this.appendWorkflowRunEventTx({
 					runId: input.runId,
@@ -76083,6 +76528,7 @@ export class StateStore {
 					| Record<string, unknown>
 					| undefined;
 				if (
+					payload?.origin !== "hold_decision_resume" &&
 					payload?.targetNodeId === gateNodeId &&
 					Number(payload.targetAttempt) === gate.attempt
 				) {

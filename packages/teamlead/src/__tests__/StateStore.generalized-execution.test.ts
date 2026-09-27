@@ -1438,6 +1438,88 @@ describe("generalized execution admission and terminal contracts", () => {
 		store.close();
 	});
 
+	it("does not reconstruct source completion disposition from a recovery decision edge", async () => {
+		const store = await StateStore.create(":memory:");
+		const admitted = createAdmittedEngineRun(store, { loopTarget: true });
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+		});
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(
+			"UPDATE workflow_run SET gate_carrier_epoch = 1 WHERE run_id = 'run-1'",
+		);
+		if (!admitted.outputCredential)
+			throw new Error("output credential missing");
+		expect(
+			store.submitWorkflowNodeOutput({
+				token: admitted.outputCredential,
+				clientRequestId: "recovery-edge-output",
+				payload: '{"ok":true}',
+				now: "2026-07-15T00:05:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+		const completionInput = {
+			nodeReuseEnabled: false,
+			executionId: "exec-1",
+			route: "needs_review",
+			sourceEventId: "recovery-edge-complete",
+			completionSubmission: { decision: { route: "needs_review" } },
+			now: "2026-07-15T00:10:00.000Z",
+		};
+		expect(store.commitEnrolledCompletion(completionInput)).toMatchObject({
+			ok: true,
+			completionDisposition: "terminal_no_gate",
+		});
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(`
+			DROP TRIGGER workflow_run_event_no_delete;
+			DELETE FROM workflow_run_event
+			 WHERE run_id = 'run-1'
+			   AND kind IN ('completion_disposition','edge_traversed');
+			CREATE TRIGGER workflow_run_event_no_delete
+			BEFORE DELETE ON workflow_run_event
+			BEGIN SELECT RAISE(ABORT, 'workflow_run_event is append-only'); END
+		`);
+		store.appendWorkflowRunEvent({
+			runId: "run-1",
+			eventUid: "decision_resume_edge:hold-resume:test",
+			kind: "edge_traversed",
+			nodeId: "execute",
+			edgeId: "loop",
+			executionId: "exec-1",
+			payload: {
+				origin: "hold_decision_resume",
+				operationId: "hold-resume:test",
+				sourceHoldEventUid: "hold:test",
+				sourceAttempt: 1,
+				targetNodeId: "execute",
+				targetAttempt: 2,
+				outcome: "retry",
+				loopIteration: 1,
+				successorExecutionId: "exec-2",
+				gateOpened: false,
+			},
+		});
+
+		const replay = store.commitEnrolledCompletion({
+			...completionInput,
+			sourceEventId: "recovery-edge-complete-replay",
+			now: "2026-07-15T00:11:00.000Z",
+		});
+		expect(replay).toMatchObject({ ok: true, idempotentReplay: true });
+		expect("completionDisposition" in replay).toBe(false);
+		store.close();
+	});
+
 	it("FLY-2373 consumes the issued read envelope with the server drain proof", async () => {
 		const store = await StateStore.create(":memory:");
 		const admitted = createAdmittedEngineRun(store);

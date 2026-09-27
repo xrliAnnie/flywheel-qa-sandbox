@@ -572,7 +572,14 @@ export function createRunsRouter(
 				res.status(400).json({ ok: false, reason: "invalid_request" });
 				return;
 			}
-			const staleTarget = store.getWorkflowNodeRecoveryConflict(recoveryTarget);
+			const recoveryStateRequest = {
+				holdEventUid: normalized.canonical.holdEventUid,
+				decision: normalized.canonical.decision,
+			};
+			const staleTarget = store.getWorkflowNodeRecoveryConflict(
+				recoveryTarget,
+				recoveryStateRequest,
+			);
 			if (staleTarget) {
 				res.status(409).json({ ok: false, ...staleTarget });
 				return;
@@ -613,7 +620,10 @@ export function createRunsRouter(
 						? result
 						: {
 								...result,
-								...store.getWorkflowNodeRecoveryConflict(recoveryTarget),
+								...store.getWorkflowNodeRecoveryConflict(
+									recoveryTarget,
+									recoveryStateRequest,
+								),
 							},
 				);
 			} catch (error) {
@@ -623,7 +633,10 @@ export function createRunsRouter(
 						error instanceof Error
 							? error.message
 							: "recovery_preflight_failed",
-					...store.getWorkflowNodeRecoveryConflict(recoveryTarget),
+					...store.getWorkflowNodeRecoveryConflict(
+						recoveryTarget,
+						recoveryStateRequest,
+					),
 				});
 			}
 			return;

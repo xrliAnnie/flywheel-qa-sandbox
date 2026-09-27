@@ -219,6 +219,35 @@ describe("workflow ship-ready StateStore contract", () => {
 		store.close();
 	});
 
+	it("does not treat a recorded-decision recovery edge as the gate entry", async () => {
+		const store = await readyRun();
+		store.appendWorkflowRunEvent({
+			runId: "run-ship-ready",
+			eventUid: "decision_resume_edge:hold-resume:test",
+			kind: "edge_traversed",
+			nodeId: "qa",
+			edgeId: "qa_retry",
+			executionId: "recovery-edge-source",
+			payload: {
+				origin: "hold_decision_resume",
+				operationId: "hold-resume:test",
+				sourceHoldEventUid: "hold:test",
+				sourceAttempt: 1,
+				targetNodeId: "founder_gate",
+				targetAttempt: 1,
+				outcome: "qa_fail",
+				loopIteration: 1,
+				successorExecutionId: "recovery-edge-target",
+				gateOpened: false,
+			},
+		});
+
+		expect(store.listWorkflowShipReadyGates({ now: NOW })[0]).toMatchObject({
+			sourceExecutionId: "qa-run-ship-ready",
+		});
+		store.close();
+	});
+
 	it("yields epoch-1 Gate-carrier runs to the authoritative holder path", async () => {
 		const store = await readyRun();
 		testDb(store).run(
