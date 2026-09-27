@@ -187,6 +187,7 @@ jobs:
           node --test scripts/__tests__/fly2074-founder-disclosure-guard.test.mjs
           node --test scripts/__tests__/fly-2413-retention-mutations.test.mjs
           node --test scripts/__tests__/qa-codex-lead-parity-drill.test.mjs
+          node --test scripts/__tests__/qa-lead-activity-long-turn.test.mjs
           node --test scripts/__tests__/qa-fly-2519-529-drill.test.mjs scripts/__tests__/qa-fly-2519-browser-node.test.mjs scripts/__tests__/qa-fly-2519-browser-process.test.mjs
           node --test scripts/__tests__/raya-cos-cli-dist.test.mjs
           node --test scripts/__tests__/fly2799-codex-container.test.mjs

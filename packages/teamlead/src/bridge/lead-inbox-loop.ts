@@ -22,6 +22,11 @@ import type {
 	LeadDeliveryBatch,
 } from "./lead-delivery-adapter.js";
 import { LeadDeliveryUnavailableError } from "./lead-delivery-adapter.js";
+import { LEAD_INTERRUPT_MESSAGE_TYPE } from "./lead-interrupt-contract.js";
+import type {
+	LeadInterruptDecision,
+	LeadInterruptLoopHooks,
+} from "./lead-interrupt-delivery.js";
 import { formatMailboxBatchHeader } from "./mailbox-batch-header.js";
 import {
 	DEFAULT_MAILBOX_QUEUE_CONFIG,
@@ -119,6 +124,11 @@ export interface LeadInboxLoopOptions {
 	logger?: { warn: (message: string, context?: unknown) => void };
 	/** FLY-1393 QA seam: stall after the heartbeat is durably started. */
 	afterTickStarted?: () => Promise<void>;
+	/**
+	 * FLY-2883: controlled interrupt letters (single-row batches of type
+	 * lead_interrupt). Absent = such letters are ordinary mail (byte-compat).
+	 */
+	interruptHooks?: LeadInterruptLoopHooks;
 }
 
 /**
@@ -509,8 +519,35 @@ export class LeadInboxLoop {
 			}`,
 			...route,
 		};
+		let interrupt: LeadInterruptDecision | undefined;
+		if (
+			this.opts.interruptHooks &&
+			rows.some((row) => row.type === LEAD_INTERRUPT_MESSAGE_TYPE)
+		) {
+			// A controlled interrupt letter always travels alone (its sender id is
+			// unique). Anything else claiming the type is dead-lettered unseen.
+			if (rows.length !== 1) {
+				if (!this.interruptClaimLive(rows)) return;
+				this.opts.interruptHooks.rejectBatch?.(rows);
+				this.deadLetterInterrupt(rows, "lead_interrupt_batch_invalid");
+				return;
+			}
+			interrupt = await this.decideInterrupt(rows[0]!, batch);
+			if (!interrupt) return;
+		}
 		try {
-			const receipt = await this.opts.adapter.deliverBatch(batch);
+			let receipt: Awaited<ReturnType<LeadDeliveryAdapter["deliverBatch"]>>;
+			if (interrupt?.kind === "custom") {
+				const handled = await interrupt.deliver();
+				if ("hold" in handled) {
+					if (this.interruptClaimLive(rows))
+						this.holdInterrupt(rows[0]!, handled.hold);
+					return;
+				}
+				receipt = handled.receipt;
+			} else {
+				receipt = await this.opts.adapter.deliverBatch(batch);
+			}
 			if (receipt.status === "membership_conflict") {
 				if (discord) {
 					await this.quarantineDiscord(rows, `membership_conflict:${batchId}`);
@@ -543,6 +580,7 @@ export class LeadInboxLoop {
 			// Cross-store order is deliberate: adapter receipt → audit mirror → queue
 			// consume. Any crash before the last step retries through adapter dedupe.
 			for (const row of rows) await this.opts.markAuditDelivered?.(row);
+			if (interrupt?.kind === "mail") await interrupt.onDelivered();
 			if (
 				this.opts.queue.recordLeadBatchDelivered({
 					batchId,
@@ -671,6 +709,130 @@ export class LeadInboxLoop {
 				});
 			}
 			throw error;
+		}
+	}
+
+	/**
+	 * FLY-2883: settle the terminal interrupt decisions here; return the
+	 * decision only when it still needs a transport handoff. A hook failure
+	 * holds the letter (no retry-count burn) instead of failing the tick.
+	 */
+	private async decideInterrupt(
+		row: MailboxRow,
+		batch: LeadDeliveryBatch,
+	): Promise<LeadInterruptDecision | undefined> {
+		let decision: LeadInterruptDecision;
+		try {
+			decision = await this.opts.interruptHooks!.decide(row, batch, {
+				assertCurrentOwner: () => {
+					if (!this.interruptClaimLive([row]))
+						throw new Error(`interrupt letter already settled: ${row.id}`);
+				},
+			});
+		} catch (error) {
+			this.opts.logger?.warn("lead_interrupt_hook_failed", {
+				leadId: this.opts.leadId,
+				deliveryId: row.delivery_id,
+				error: describeError(error),
+			});
+			decision = {
+				kind: "hold",
+				retryAfterMs: 30_000,
+				reason: "lead_interrupt_hook_failed",
+			};
+		}
+		// The hook awaited; another Bridge may own this lead now. Nothing below
+		// (ack, dead-letter, hold, or handoff) may run on a lost owner or claim.
+		// A letter settled meanwhile (the reply route acks it) needs nothing.
+		if (!this.interruptClaimLive([row])) return undefined;
+		if (decision.kind === "ack") {
+			if (
+				!this.opts.queue.ackBatch({
+					batchId: row.batch_id!,
+					ownerEpoch: this.opts.ownerEpoch,
+					memberIds: [row.delivery_id],
+					now: this.isoNow(),
+				})
+			)
+				throw new Error("owner fence lost while acking interrupt letter");
+			return undefined;
+		}
+		if (decision.kind === "dead") {
+			this.deadLetterInterrupt([row], decision.reason);
+			return undefined;
+		}
+		if (decision.kind === "hold") {
+			this.holdInterrupt(row, decision);
+			return undefined;
+		}
+		return decision;
+	}
+
+	/**
+	 * Owner lease AND this batch's claim, or throw (no write happens). Returns
+	 * false when every member was already settled elsewhere (ACKED/DEAD) —
+	 * e.g. the Lead's reply acked the letter — so there is nothing left to do.
+	 */
+	private interruptClaimLive(rows: readonly MailboxRow[]): boolean {
+		if (!this.opts.queue.isCurrentOwner(this.opts.ownerEpoch, this.isoNow())) {
+			throw new Error("owner fence lost during interrupt handling");
+		}
+		let settled = 0;
+		for (const row of rows) {
+			const live = this.opts.queue.getById(row.id);
+			if (live?.state === "ACKED" || live?.state === "DEAD") {
+				settled++;
+				continue;
+			}
+			if (
+				!live ||
+				live.state !== "LEASED" ||
+				live.claimed_by !== this.opts.ownerEpoch ||
+				live.batch_id !== row.batch_id
+			) {
+				throw new Error(`interrupt claim lost: ${row.id}`);
+			}
+		}
+		if (settled === 0) return true;
+		if (settled === rows.length) return false;
+		throw new Error("interrupt batch partially settled");
+	}
+
+	/** Claim-fenced terminal dead-letter for every member of the batch. */
+	private deadLetterInterrupt(
+		rows: readonly MailboxRow[],
+		reason: string,
+	): void {
+		const changed = this.opts.queue.recordLeadDeliveryFailure({
+			batchId: rows[0]!.batch_id!,
+			ownerEpoch: this.opts.ownerEpoch,
+			now: this.isoNow(),
+			nextRetryAt: this.isoNow(),
+			error: reason,
+			maxAttempts: 1,
+			deadReason: reason,
+		});
+		if (changed !== rows.length) {
+			throw new Error("owner fence lost while dead-lettering interrupt letter");
+		}
+	}
+
+	private holdInterrupt(
+		row: MailboxRow,
+		hold: { retryAfterMs: number; reason: string },
+	): void {
+		if (
+			!this.opts.queue.releaseClaimForRetry({
+				id: row.id,
+				ownerEpoch: this.opts.ownerEpoch,
+				batchId: row.batch_id!,
+				nextRetryAt: new Date(
+					this.now().getTime() + hold.retryAfterMs,
+				).toISOString(),
+				reason: hold.reason,
+			})
+		) {
+			throw new Error("owner fence lost while holding interrupt letter");
 		}
 	}
 

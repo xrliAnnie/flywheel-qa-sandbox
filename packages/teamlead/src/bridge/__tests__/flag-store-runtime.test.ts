@@ -30,6 +30,7 @@ import {
 	storePipelineWorkKindEnabled,
 	storePonytailEnabled,
 	storeProofshotEnabled,
+	storeReviewEarlyStopEnabled,
 	storeReviewQuotaAutoRetryEnabled,
 	storeRunnerMemoryMode,
 	storeShippedHuskForceEnabled,
@@ -280,6 +281,25 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			expect(storeCodexQuotaAutoSwitchEnabled(runtime)).toBe(rawTo === null);
 		}
 	});
+	it.each(["0", "off", "false"])(
+		"FLY-2911 early stop defaults on and observes rollback %s without restart",
+		(rawTo) => {
+			const runtime = initializeFlagStore(store, {});
+			expect(storeReviewEarlyStopEnabled(runtime)).toBe(true);
+			expect(
+				store.applyFlagValueChange({
+					name: "review_early_stop",
+					rawTo,
+					expectedRevision:
+						store.getFlagValueRow("review_early_stop")!.revision,
+					actor: "bridge-local-operator",
+					reason: "rollback review early retirement",
+				}),
+			).toMatchObject({ ok: true });
+			expect(storeReviewEarlyStopEnabled(runtime)).toBe(false);
+		},
+	);
+
 	it("FLY-2177 keeps quota retry default-on and observes an off write without restart", () => {
 		const runtime = initializeFlagStore(store, {});
 		expect(storeReviewQuotaAutoRetryEnabled(runtime)).toBe(true);

@@ -141,6 +141,12 @@ const nodeDwellThresholdHoursCodec: FlagStoreCodec = {
 };
 
 export function getFlagStoreCodec(name: string): FlagStoreCodec | undefined {
+	if (name === "review_early_stop")
+		return {
+			parse: ({ hasOverride, raw }) =>
+				!hasOverride || !/^(0|off|false)$/i.test(raw?.trim() ?? ""),
+			canonicalEffective: String,
+		};
 	if (name === "auto_merge_narrow_gate") return autoNarrowModeCodec;
 	if (name === "summary_absorption_cadence_ms") {
 		return summaryAbsorptionCadenceCodec;

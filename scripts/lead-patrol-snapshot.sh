@@ -889,7 +889,8 @@ failed_review_candidates AS (
     )
     AND coalesce(j.failure_reason,'') NOT IN (
       'head_moved','reviewed_wrong_head','gate_answered_externally','gate_answered',
-      'gate_expired','gate_missing','gate_mismatch','gate_unknown','superseded_by_revision'
+      'gate_expired','gate_missing','gate_mismatch','gate_unknown','superseded_by_revision',
+      'superseded_by_request'
     )
 ),
 attribution_subjects AS (
