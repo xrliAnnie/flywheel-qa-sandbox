@@ -452,3 +452,23 @@ Codex（新线程 `01a0df98-9c61-7cc3-9505-31cd30ca0302`，范围 `cf47afa01..HE
 修复：换代或关闭时清掉截断记录；打断时只认当前这一代的截断。回归测试（`codex-speak`）：越界后换代，再在新一代上打断，不追加提示，也不停止，剩余部分在新一代读完。负对照：去掉这两处检查 → 这一条红。
 
 验证：`pnpm lint` exit 0；voice-codex `tsc --noEmit` 通过；`vitest related`（7 个源文件）12 个文件 266 条通过（3 条按环境门控跳过）；teamlead 消费者 36/36。
+
+## QA@3 返工：朗读打断后旧音频 replay、半词续念与 B5 重连（2026-09-26）
+
+QA@3 的 B5/C2 录音和事件日志表明，问题不是 steer 文案本身：本地切断朗读后，`DownlinkController` 仍按普通对话执行 `boundary=replay`，补播了 420–1280 ms 已静音的旧音频；同时真实事件顺序是“被打断朗读的 own final → 用户 final → 新回答 final”，旧实现会在 own final 之前处理 abandoned fence，导致 fence 被提前清掉或余下提示占住 pending，下一条回答又能带回旧尾巴。B5 的余下提示因此超时并强制重连。
+
+本轮只改朗读块：
+
+- `CodexProofSpeaker.interrupt()` 返回这次是否切断可放弃的 readback；`CodexVoiceBackend` 仅对这类切断调用 `bargeIn({ replayBuffered: false })`。普通对话仍保留原来的 resume/replay。
+- 先让被打断块的 own final 消费 owed-final 队列，再让 abandoned fence 处理下一条回答；按已念前缀去掉旧尾巴和半词。余下提示自己的等价 final 可以正常结算，不会被 fence 吞掉。
+- developer steer 带上已念前缀，明确禁止补完截断的半词。B5/C2 fixture 按录音里的真实事件顺序投递，并把余下提示走完；断言干净回答、无旧音频 replay、无强制重连。
+
+**红→绿**：补上真实的 own-final/用户-final/answer-final 顺序后，B5 会留下旧朗读尾巴且提示超时，C2 会把「了终面」带进回答；修复后 fixture 两项都只保留干净回答，余下提示完成，`conversation.reconnect` 未调用。
+
+**最终合并头的本机定向验证（代码头 `434955dbd`；之后只追加本节和 milestone）**：
+
+- 7 个直接消费者逐文件运行：`codex-room-webrtc` 28/28、`codex-speak` 57/57、`downlink-controller` 16/16、`speech-overrun` 24/24、`codex-readback-replay` 2/2、`codex-room` 13/13、`codex-transport` 28/28，共 168/168。
+- voice-codex `vitest related`（5 个改动 TS 文件）选择同 7 个文件，168/168 通过；`typecheck` 通过；`pnpm --filter "flywheel-voice-codex..." build` 通过。
+- 与 `origin/main@b0da16c38` 的唯一冲突是 `voice-session-routes.ts` 相邻 import；保留 FLY-2885 的 context error details 和 main 的 Lead interrupt routes。两个直接路由文件各 23/23 通过，`pnpm --filter "flywheel-teamlead..." build` 通过。该中心文件的 `vitest related` 选到 111 文件，1348/1349；唯一失败 `lead-lease-self-check` 随即按具体文件重跑 6/6 通过，判定为并发负载偶发，不以整包重跑掩盖。
+- Biome 对 5 个 voice-codex 改动文件和冲突文件检查通过；`git diff --check` 对本轮代码范围通过。
+- 仓库级 `pnpm lint` 仍 exit 1：唯一 error 在无关的 `doc/engineer/research/new/FLY-1547-e2e/e2e-mailbox.mjs`（unused import/variable）；另有 25 条无关 warning。本轮不改这些文件。exact-head 全量 CI 仍由 QA 请求，本实现节点未请求 full CI。
