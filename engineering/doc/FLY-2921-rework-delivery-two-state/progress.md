@@ -1,13 +1,13 @@
 ---
 issue: FLY-2921
 phase: design
-phaseCursor: 4/7
-updated: 2026-09-27T17:29:09.894Z
-nextStep: codex design review R1 (gpt-6-astra/xhigh, requestId 27b5088c)
+phaseCursor: 5/7
+updated: 2026-09-27T17:33:14.371Z
+nextStep: await codex design R1; visual check html
 chunks: []
 pointers: {}
 ---
 
 # FLY-2921 progress
-**phase**: design (4/7)
-**next**: codex design review R1 (gpt-6-astra/xhigh, requestId 27b5088c)
+**phase**: design (5/7)
+**next**: await codex design R1; visual check html
