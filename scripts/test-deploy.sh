@@ -1160,9 +1160,6 @@ qa_start_codex_fault_stub() {
     || campaign_abort "Codex fault source preparation failed"
   chmod 600 "$_qa_fault_source_receipt_tmp"
   mv "$_qa_fault_source_receipt_tmp" "$_qa_fault_source_receipt"
-  printf '%s\n' "$CODEX_FAULT_STUB_PID" > "${CODEX_FAULT_ROOT}/pid.tmp.$$"
-  chmod 600 "${CODEX_FAULT_ROOT}/pid.tmp.$$"
-  mv "${CODEX_FAULT_ROOT}/pid.tmp.$$" "${CODEX_FAULT_ROOT}/pid"
   log "Codex fault stub ready on slot-local loopback; sequence entries: $(jq '.sequence | length' "$CODEX_FAULT_RECEIPT")"
 }
 

@@ -315,7 +315,7 @@ test("Codex upstream fault stub refuses a non-slot room before listening", async
 	}
 });
 
-test("Codex upstream fault stub serves the bounded loopback fault sequence", async () => {
+test("Codex upstream fault stub serves faults and teardown retires it from the receipt", async () => {
 	const slot = 48_000 + (process.pid % 1_000);
 	const slotRoot = `/tmp/flywheel-test-slot-${slot}`;
 	const faultRoot = join(slotRoot, "state", "codex-fault");
@@ -427,6 +427,50 @@ test("Codex upstream fault stub serves the bounded loopback fault sequence", asy
 		);
 		assert.doesNotMatch(config, /production\.invalid/);
 		assert.match(config, /\[features\]\nweb_search = true/);
+
+		// The readiness receipt is published before deploy finishes preparing the
+		// slot-local source home. Teardown must therefore be able to retire the
+		// stub from that receipt alone if deploy is interrupted in between.
+		assert.equal(existsSync(join(faultRoot, "pid")), false);
+		const teardownEnv = Object.fromEntries(
+			Object.entries(process.env).filter(
+				([name]) => name !== "BASH_ENV" && name !== "ENV",
+			),
+		);
+		const teardown = spawn(
+			"/bin/bash",
+			[
+				"--noprofile",
+				"--norc",
+				"-c",
+				'source "$1"; fault_slot="$2"; fault_script="$3"; ps() { printf "%s serve --slot %s --receipt fixture\\n" "$fault_script" "$fault_slot"; }; qa_teardown_codex_fault_stub "$fault_slot"',
+				"qa-fault-teardown",
+				resolve(root, "scripts/test-teardown.sh"),
+				String(slot),
+				resolve(root, "scripts/qa/codex-upstream-fault-stub.mjs"),
+			],
+			{ env: teardownEnv, stdio: ["ignore", "ignore", "pipe"] },
+		);
+		let teardownStderr = "";
+		teardown.stderr.on("data", (chunk) => {
+			teardownStderr += chunk;
+		});
+		const [teardownCode, teardownSignal] = await once(teardown, "exit");
+		assert.equal(teardownSignal, null, teardownStderr);
+		assert.equal(teardownCode, 0, teardownStderr);
+		if (fault.exitCode === null && fault.signalCode === null) {
+			await Promise.race([
+				once(fault, "exit"),
+				sleep(2_000).then(() => {
+					throw new Error("teardown left the Codex fault stub running");
+				}),
+			]);
+		}
+		assert.notEqual(
+			spawnSync("kill", ["-0", String(ready.pid)]).status,
+			0,
+			"teardown left the Codex fault stub PID observable",
+		);
 	} finally {
 		if (fault.exitCode === null) fault.kill("SIGTERM");
 		if (fault.exitCode === null) await once(fault, "exit");
@@ -457,6 +501,8 @@ test("529 deploy wires the fault stub only through an explicit real-Codex slot s
 		teardown,
 		/CODEX_FAULT_RECEIPT="\$\{CODEX_FAULT_ROOT\}\/receipt\.json"/,
 	);
+	assert.doesNotMatch(deploy, /CODEX_FAULT_ROOT\}\/pid\.tmp/);
+	assert.match(teardown, /if ! qa_teardown_codex_fault_stub "\$SLOT"; then/);
 	const roomGuard = teardown.indexOf('.mode == "slot"');
 	const faultSignal = teardown.indexOf(
 		'qa_generalized_terminate_pid "$CODEX_FAULT_PID"',
