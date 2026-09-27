@@ -16555,6 +16555,31 @@ export class StateStore {
 		}
 	}
 
+	/** Display-cleanup inventory only. The projected death duty remains the
+	 * authority; a receipt tied to this generation ends retries. No age gate. */
+	listExecutionBodyCleanupCandidates(input: {
+		limit: number;
+		afterId?: string;
+	}): string[] {
+		if (
+			!Number.isSafeInteger(input.limit) ||
+			input.limit < 1 ||
+			input.limit > 64
+		)
+			throw new Error("invalid_body_cleanup_page");
+		return this.workflowSelectAll(
+			`SELECT owner.execution_id FROM execution_process_owner owner
+			WHERE owner.execution_id > ? AND owner.close_requested = 1
+			AND (EXISTS (SELECT 1 FROM workflow_run_event projected WHERE projected.event_uid = 'body_death:' || owner.execution_id || ':' || owner.generation || ':projected')
+			OR EXISTS (SELECT 1 FROM workflow_terminal_archive projected WHERE projected.source_table = 'workflow_run_event' AND json_extract(projected.row_json,'$.event_uid') = 'body_death:' || owner.execution_id || ':' || owner.generation || ':projected'))
+			AND owner.owner_drained_receipt IS NOT NULL
+			AND NOT EXISTS (SELECT 1 FROM session_events cleaned WHERE cleaned.event_id = 'body_death:' || owner.execution_id || ':' || owner.generation || ':ui-cleaned')
+			AND NOT EXISTS (SELECT 1 FROM workflow_terminal_archive cleaned WHERE cleaned.source_table = 'session_events' AND json_extract(cleaned.row_json,'$.event_id') = 'body_death:' || owner.execution_id || ':' || owner.generation || ':ui-cleaned')
+			ORDER BY owner.execution_id LIMIT ?`,
+			[input.afterId ?? "", input.limit],
+		).map((row) => String(row.execution_id));
+	}
+
 	/** Bounded restart cursor; the event is the duty, its projection event the receipt. */
 	listPendingExecutionBodyDeaths(input: {
 		limit: number;

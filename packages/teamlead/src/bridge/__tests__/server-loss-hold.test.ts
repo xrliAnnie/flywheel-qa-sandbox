@@ -70,6 +70,7 @@ describe("ServerLossCoordinator durable tmux holds (FLY-1285)", () => {
 			inspectSocket: inspection,
 			normalizedSocketPath: SOCKET,
 			targetGone: async (s) => targetVerdicts[s.execution_id] ?? null,
+			bodyLiveness: async () => "dead",
 			migrate: async (s) => {
 				migrations.push(s.execution_id);
 				store.forceStatus(s.execution_id, "failed", "2026-07-15 08:00:00", "x");

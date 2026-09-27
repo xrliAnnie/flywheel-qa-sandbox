@@ -507,3 +507,19 @@ B9 fixture诊断更正：完整dispatcher首轮142 pass/3失败，三项为重�
 B9 最终验证进度：完整dispatcher已145 GREEN；首批14个具体文件全部通过，限定related为8文件304 pass/1个既有skip。受影响依赖build与teamlead/voice-codex typecheck均通过。首次lint仅因新let类型声明需换行而exit1；只调整类型注解空白，原/新源码hash及精确替换归档候选为format-only proof。接线结构18项复验通过，完整lint exit0（26 warnings，较既有25项多一条晚赋值let的useConst提示，未禁用规则）。进一步字面检索替换事务直接调用者，补留quota/rework/resume的5文件及对应bounded related，正在逐文件执行；未运行整库/整包suite。
 
 B9 最终检查点：19个明确选择文件逐一480 pass，保留StateStore.fly1385-dead-exec既有1个operator管理skip（未修改该文件）；两组限定owning related分别8文件304 pass/1既有skip与5文件104 pass。依赖build、teamlead及voice-codex typecheck、完整lint最终exit0。8个源码SHA256已核一致；唯一在语义验证后发生的源码变化是plugin类型注解换行，before/after hash与精确替换已单独归档，并复验18项接线结构与lint。全部命令、红绿、中间fixture/格式诊断和配置归档implementation-b9-evidence.json.gz；直接调用者、完整匹配及逐项排除理由归档implementation-b9-consumers.json.gz。无整库/整包suite、新shell测试、真实OS/529或最终review/PR/CI/QA/handoff声明。下一批直接迁移已定位的server-loss/crash-reaper/zombie-scan等旧消费者，继续完整A–F/九单，不停在本检查点。
+
+## B10：server-loss / zombie-scan / crash-reaper（相关验证完成，非整单完成）
+
+死亡写入继续只走共同 BodyObservation → marker 优先 → StateStore CAS → CommDB 投影。server-loss 的 server-down / target-gone 只建立窗口故障事件与既有 hold；迁移须独立进程证死，生产回调改为 `HeartbeatService.reconcileExecutionBody`。删除该回调自己的 applyTransition / forceStatus。分组通知区分进程存活、死亡、未知，窗口事故不再统一称“阵亡”。socket rescue / split-brain / hold / outbox 去重不改。
+
+zombie-scan 保留既有三种告警 shape 与双账本差异检测；`stale_target` 改读共同进程证据，不再以窗口、24h 心跳或 running/awaiting_review 标签决定死亡。unknown/异常仍不报进程死亡。
+
+crash-reaper 现在只清理共同流程已结账的 failed 身体。删除 dead-pin 认领、heartbeat/orphan/grace 等待、`FLYWHEEL_CRASH_REAP_GRACE_MIN`、窗口清理后才 terminated，以及它自己的 CommDB finalizer。每次副作用前核对同一物理代次死亡回执、运行时开关及 marker；MCP 清理 await 后另核回执，再清 cmux。保留 forensic → cmux → window 顺序、issue mutex、窗口查找未知/pending 的重试、terminal-view 最佳努力关闭、既有线程归档规则。完成/批准 standby 保留自己的 closeout 权限，不走 crash archive。追加窗口身份负控2项 RED：独立死亡事实不授权清理被复用的 @id。生产清理复用 `resolveCmuxAttachTarget(expectedExecutionId)`，forensic 前、cmux 前、window 前分别核对；异主/读取未知留下清理待办，确证窗口缺失只完成 UI 清理。capture/cmux await 期间改绑的2项负控亦保留，不把此窗口检查再接回死亡事务。
+
+清理库存来自 owner 当前 generation 的 projected duty，窗口清理回执 `${obligationId}:ui-cleaned` 结束该代重试；支持热表/归档精确查找。Heartbeat 每轮最多64条，游标越过失败记录并回绕。窗口清理失败留下已 failed 的身体和未结清理义务；Bridge 重启后继续消费。该回执只证明 crash 窗口清理路径，terminal-view/线程归档沿用既有最佳努力/独立归档机制，不是 land closeout、QA 或生产完成凭证。生命采样仍由 B8 独立5秒调度，不受此5分钟 Heartbeat UI重试节奏控制。
+
+因果 RED：server-loss 活体/unknown 在窗口丢失时旧代码误迁移2项；zombie-scan 原心跳/标签/窗口分支6项失败（其中2项为旧接口不接受新进程探针，其余是行为断言）；crash-reaper 旧代码漏重试已终态身体并误清活体2项；新持久清理库存入口1项缺失；生产 wiring1项仍有独立 failed 路径。日志与最终逐文件、限定 related、构建、类型检查、lint 结果已归档到 `implementation-b10-evidence.json.gz`；选择与逐个排除理由在 `implementation-b10-consumers.json.gz`。
+
+仍未完成：其余直接消费者（generalized-launch-recovery/actions/runs-route、run-quiescence、started-evidence/gateway、worktree-reconciler/lifecycle-sweep、pane-loss 等）、存量绑定迁移、同物理代逻辑 activation、普通/rework 通信义务及 D/E/F、九单矩阵、A9原15秒导入超时、精确头评审/PR/冻结 CI/needs_review。B10 不代表 A–F 交卷。
+
+B10 最终本地证据：27个具体 Vitest 文件550项通过；retention consumer gate（单一 Node 测试文件）10项通过。最终13个 TS 文件的限定 related：18文件458项通过；窗口身份修正后的额外3文件79项 related 亦保留。受影响包及依赖 build、teamlead tsc、voice-codex dependent typecheck、pnpm lint 均退出0；lint26条既有 warnings，无新增 skip/timeout 放宽。最后源码 SHA256 与归档13项一致。首次全选验证后因 UI身份修正补跑受影响3文件、归档/身份helper2文件和最终原related集合，旧批次日志保留并标 superseded，未伪装成冻结头CI。

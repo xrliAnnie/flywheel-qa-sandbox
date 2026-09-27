@@ -1,21 +1,18 @@
 /**
  * FLY-720: unit coverage for the liveness-based crash reaper. Uses a real
- * in-memory StateStore + WorkflowFSM (so the canonical applyTransition path is
- * exercised) and injects tmux / archive / forensics deps as mocks.
+ * in-memory StateStore; the projected-death reader is injected here. Its actual
+ * generation/identity and cross-store proof are covered by body-death tests.
  */
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ApplyTransitionOpts } from "../applyTransition.js";
 import {
 	type CrashReapDeps,
 	defaultWriteCrashLog,
 	reapCrashedRunners,
 } from "../bridge/crash-reaper.js";
 import type { TmuxTargetLookup } from "../bridge/tmux-lookup.js";
-import { DirectiveExecutor } from "../DirectiveExecutor.js";
 import { StateStore } from "../StateStore.js";
 
 function minutesAgoSqlite(n: number): string {
@@ -30,46 +27,35 @@ const FOUND: (w: string) => TmuxTargetLookup = (tmuxWindow) => ({
 	target: { tmuxWindow, sessionName: tmuxWindow.split(":")[0] },
 });
 
-describe("reapCrashedRunners (FLY-720)", () => {
+describe("reapCrashedRunners (FLY-2919 display cleanup)", () => {
 	let store: StateStore;
-	let transitionOpts: ApplyTransitionOpts;
-
 	beforeEach(async () => {
 		store = await StateStore.create(":memory:");
-		transitionOpts = {
-			store,
-			fsm: new WorkflowFSM(WORKFLOW_TRANSITIONS),
-			executor: new DirectiveExecutor(store),
-		};
 	});
 	afterEach(() => store.close());
-
-	function seedRunning(
-		execId: string,
-		staleMin: number,
-		issueId = `i-${execId}`,
-	) {
+	function seed(status = "failed", stale = 0) {
 		store.upsertSession({
-			execution_id: execId,
-			issue_id: issueId,
+			execution_id: "z1",
+			issue_id: "i-z1",
 			project_name: "geo",
-			status: "running",
-			heartbeat_at: minutesAgoSqlite(staleMin),
+			status,
+			heartbeat_at: minutesAgoSqlite(stale),
 		});
 	}
-
 	function baseDeps(over: Partial<CrashReapDeps> = {}): CrashReapDeps {
 		return {
 			enabled: true,
-			crashGraceMinutes: 60,
-			orphanThresholdMinutes: 60,
 			nowMs: Date.now(),
 			store,
-			transitionOpts,
+			candidates: ["z1"],
+			readCurrentDeath: (id) =>
+				store.getSession(id)?.status === "failed"
+					? { obligationId: `body_death:${id}:1`, disposition: "failed" }
+					: undefined,
 			isSuppressed: () => false,
 			hasPendingCompleteMarker: () => false,
-			lookupTmuxTarget: (_e, _p) => FOUND("geo:@1"),
-			probeLiveness: vi.fn(async () => "dead_pin" as const),
+			lookupTmuxTarget: () => FOUND("geo:@1"),
+			inspectWindow: async () => "owned",
 			captureScrollback: vi.fn(async () => ({
 				ok: true as const,
 				text: "CRASH",
@@ -78,75 +64,114 @@ describe("reapCrashedRunners (FLY-720)", () => {
 			killCmuxLinkedSession: vi.fn(async () => ({ killed: true })),
 			killTmuxWindow: vi.fn(async () => ({ killed: true })),
 			closeTerminalView: vi.fn(async () => {}),
-			finalizeCommDbSession: vi.fn(() => ({
-				ok: true,
-				outcome: "finalized",
-				retiredGateCount: 1,
-				deletedSessionCount: 1,
-			})),
 			archiveThread: vi.fn(async () => {}),
 			log: () => {},
 			...over,
 		};
 	}
+	it.each(["unknown", "absent"] as const)(
+		"FLY-2919 %s window ownership never kills a recycled target",
+		async (verdict) => {
+			seed();
+			const deps = baseDeps({ inspectWindow: async () => verdict });
+			const result = await reapCrashedRunners(deps);
+			expect(deps.killCmuxLinkedSession).not.toHaveBeenCalled();
+			expect(deps.killTmuxWindow).not.toHaveBeenCalled();
+			expect(result.reaped).toBe(verdict === "absent" ? 1 : 0);
+		},
+	);
 
-	it("reaps a confirmed dead-pin past grace: teardown → terminated → prune → archive", async () => {
-		seedRunning("z1", 120);
-		const deps = baseDeps();
-		const res = await reapCrashedRunners(deps);
+	it.each(["capture", "cmux"])(
+		"window reassignment during %s stops the next destructive effect",
+		async (boundary) => {
+			seed();
+			let owned = true;
+			const deps = baseDeps({
+				inspectWindow: async () => (owned ? "owned" : "unknown"),
+				captureScrollback: vi.fn(async () => {
+					if (boundary === "capture") owned = false;
+					return { ok: true as const, text: "trace" };
+				}),
+				killCmuxLinkedSession: vi.fn(async () => {
+					owned = false;
+					return { killed: true };
+				}),
+			});
+			expect((await reapCrashedRunners(deps)).cleanupPending).toBe(1);
+			expect(deps.killTmuxWindow).not.toHaveBeenCalled();
+			if (boundary === "capture")
+				expect(deps.killCmuxLinkedSession).not.toHaveBeenCalled();
+			expect(store.getSession("z1")?.status).toBe("failed");
+		},
+	);
 
-		expect(res.reaped).toBe(1);
-		expect(res.deadPinOwned.has("z1")).toBe(true);
-		expect(deps.killCmuxLinkedSession).toHaveBeenCalledWith("geo:@1");
-		expect(deps.killTmuxWindow).toHaveBeenCalledWith("geo:@1");
-		expect(deps.finalizeCommDbSession).toHaveBeenCalledWith("z1", "geo");
-		expect(deps.archiveThread).toHaveBeenCalledTimes(1);
-		expect(store.getSession("z1")?.status).toBe("terminated");
-		const events = store.getEventsByExecution("z1") ?? [];
-		expect(events.some((e) => e.event_type === "runner_crash_reaped")).toBe(
-			true,
+	it("FLY-2919 retries display cleanup after committed death even with a fresh heartbeat", async () => {
+		seed();
+		const deps = baseDeps({
+			killTmuxWindow: vi.fn(async () => ({ killed: false, error: "busy" })),
+		});
+		expect((await reapCrashedRunners(deps)).cleanupPending).toBe(1);
+		expect(store.getSession("z1")?.status).toBe("failed");
+		expect(deps.archiveThread).not.toHaveBeenCalled();
+		expect(store.getEventsByExecution("z1")).toHaveLength(0);
+		deps.killTmuxWindow = vi.fn(async () => ({ killed: true }));
+		expect((await reapCrashedRunners(deps)).reaped).toBe(1);
+		expect(store.getSession("z1")?.status).toBe("failed");
+		expect(store.getEventsByExecution("z1")[0]?.event_id).toBe(
+			"body_death:z1:1:ui-cleaned",
 		);
 	});
-
-	it("suppresses :pending metadata without probing or reaping it", async () => {
-		seedRunning("pending-window", 120);
-		const deps = baseDeps({
-			lookupTmuxTarget: () => FOUND("geo:pending"),
-		});
-		const res = await reapCrashedRunners(deps);
-		expect(res.reaped).toBe(0);
-		expect(res.indeterminateSuppressed).toBe(1);
-		expect(deps.probeLiveness).not.toHaveBeenCalled();
-		expect(deps.killTmuxWindow).not.toHaveBeenCalled();
+	it("FLY-2919 a dead window cannot authorize cleanup of a live body", async () => {
+		seed("running", 120);
+		const deps = baseDeps();
+		expect((await reapCrashedRunners(deps)).reaped).toBe(0);
+		expect(store.getSession("z1")?.status).toBe("running");
+		expect(deps.killCmuxLinkedSession).not.toHaveBeenCalled();
 	});
-
-	it.each(["probe", "mutex", "capture", "cmux", "window", "terminal"])(
-		"FLY-2919 reconciles completion arriving during %s before further teardown or death",
+	it("FLY-1238 pending CommDB projection cannot authorize cleanup or archive", async () => {
+		seed();
+		const deps = baseDeps({ readCurrentDeath: () => undefined });
+		expect((await reapCrashedRunners(deps)).reaped).toBe(0);
+		expect(deps.killCmuxLinkedSession).not.toHaveBeenCalled();
+		expect(deps.archiveThread).not.toHaveBeenCalled();
+		expect(store.getSession("z1")?.status).toBe("failed");
+	});
+	it.each(["completion_preserved", "terminal_preserved", "standby"] as const)(
+		"%s retains its existing closeout policy",
+		async (disposition) => {
+			seed();
+			const deps = baseDeps({
+				readCurrentDeath: () => ({
+					obligationId: "body_death:z1:1",
+					disposition,
+				}),
+			});
+			expect((await reapCrashedRunners(deps)).reaped).toBe(0);
+			expect(deps.killTmuxWindow).not.toHaveBeenCalled();
+		},
+	);
+	it.each(["mutex", "capture", "cmux", "window", "terminal"])(
+		"completion arriving during %s stops further cleanup",
 		async (boundary) => {
-			seedRunning("z1", 120);
+			seed();
 			let pending = false;
 			const arrive = (at: string) => {
 				if (boundary === at) pending = true;
 			};
-			const reconcile = vi.fn(async () => {
-				if (!pending) return false;
-				store.upsertSession({
-					execution_id: "z1",
-					issue_id: "i-z1",
-					project_name: "geo",
-					status: "awaiting_review",
-					decision_route: "needs_review",
-				});
-				pending = false;
-				return true;
-			});
 			const deps = baseDeps({
 				hasPendingCompleteMarker: () => pending,
-				reconcileCompletionBeforeDeath: reconcile,
-				probeLiveness: vi.fn(async () => {
-					arrive("probe");
-					return "dead_pin" as const;
-				}),
+				reconcileCompletionBeforeDeath: async () => {
+					if (!pending) return false;
+					store.upsertSession({
+						execution_id: "z1",
+						issue_id: "i-z1",
+						project_name: "geo",
+						status: "awaiting_review",
+						decision_route: "needs_review",
+					});
+					pending = false;
+					return true;
+				},
 				lifecycleMutex: {
 					resolveLockKeys: (id) => [id],
 					withIssueMutex: async (_keys, fn) => {
@@ -170,295 +195,206 @@ describe("reapCrashedRunners (FLY-720)", () => {
 					arrive("terminal");
 				}),
 			});
-			const result = await reapCrashedRunners(deps);
-			expect(store.getSession("z1")?.status).toBe("awaiting_review");
+			expect((await reapCrashedRunners(deps)).reaped).toBe(0);
 			expect(store.getSession("z1")?.decision_route).toBe("needs_review");
-			expect(result.reaped).toBe(0);
-			expect(result.deadPinOwned.has("z1")).toBe(true);
-			expect(deps.finalizeCommDbSession).not.toHaveBeenCalled();
 			expect(deps.archiveThread).not.toHaveBeenCalled();
-			if (["probe", "mutex", "capture"].includes(boundary))
+			if (["mutex", "capture"].includes(boundary))
 				expect(deps.killCmuxLinkedSession).not.toHaveBeenCalled();
-			if (["probe", "mutex", "capture", "cmux"].includes(boundary))
+			if (["mutex", "capture", "cmux"].includes(boundary))
 				expect(deps.killTmuxWindow).not.toHaveBeenCalled();
 		},
 	);
-	it.each(["read_error", "replay_error", "held"])(
-		"FLY-2919 %s completion evidence vetoes crash death",
+	it.each(["mutex", "capture", "cmux", "window", "terminal", "archive"])(
+		"generation or managed-policy change during %s fences the next effect and receipt",
+		async (boundary) => {
+			seed();
+			let current = true;
+			const arrive = (at: string) => {
+				if (boundary === at) current = false;
+			};
+			const deps = baseDeps({
+				readCurrentDeath: () =>
+					current
+						? { obligationId: "body_death:z1:1", disposition: "failed" }
+						: undefined,
+				lifecycleMutex: {
+					resolveLockKeys: (id) => [id],
+					withIssueMutex: async (_keys, fn) => {
+						arrive("mutex");
+						return fn();
+					},
+				},
+				captureScrollback: vi.fn(async () => {
+					arrive("capture");
+					return { ok: true as const, text: "CRASH" };
+				}),
+				killCmuxLinkedSession: vi.fn(async () => {
+					arrive("cmux");
+					return { killed: true };
+				}),
+				killTmuxWindow: vi.fn(async () => {
+					arrive("window");
+					return { killed: true };
+				}),
+				closeTerminalView: vi.fn(async () => {
+					arrive("terminal");
+				}),
+				archiveThread: vi.fn(async () => {
+					arrive("archive");
+				}),
+			});
+			expect((await reapCrashedRunners(deps)).reaped).toBe(0);
+			expect(store.getEventsByExecution("z1")).toHaveLength(0);
+			if (["mutex", "capture"].includes(boundary))
+				expect(deps.killCmuxLinkedSession).not.toHaveBeenCalled();
+			if (["mutex", "capture", "cmux"].includes(boundary))
+				expect(deps.killTmuxWindow).not.toHaveBeenCalled();
+		},
+	);
+	it.each(["read_error", "replay_error", "held", "pending"])(
+		"%s completion evidence vetoes cleanup",
 		async (mode) => {
-			seedRunning("z1", 120);
+			seed();
 			const deps = baseDeps({
 				hasPendingCompleteMarker: () => {
 					if (mode === "read_error") throw new Error("EACCES");
-					return false;
+					return mode === "pending";
 				},
 				reconcileCompletionBeforeDeath: async () => {
-					if (mode === "replay_error") throw new Error("sqlite busy");
+					if (mode === "replay_error") throw new Error("busy");
 					return mode === "held";
 				},
 			});
-			const result = await reapCrashedRunners(deps);
-			expect(store.getSession("z1")?.status).toBe("running");
-			expect(result.deadPinOwned.has("z1")).toBe(true);
+			expect((await reapCrashedRunners(deps)).reaped).toBe(0);
 			expect(deps.killCmuxLinkedSession).not.toHaveBeenCalled();
-			expect(deps.finalizeCommDbSession).not.toHaveBeenCalled();
 		},
 	);
-	it("FLY-2919 synchronously vetoes a marker written after the last reconciliation await", async () => {
-		seedRunning("z1", 120);
-		let pending = false;
-		const deps = baseDeps({
-			hasPendingCompleteMarker: () => pending,
-			reconcileCompletionBeforeDeath: async () => {
-				pending = true;
-				return false;
-			},
-		});
-		const result = await reapCrashedRunners(deps);
-		expect(store.getSession("z1")?.status).toBe("running");
-		expect(result.deadPinOwned.has("z1")).toBe(true);
-		expect(deps.probeLiveness).not.toHaveBeenCalled();
-		expect(deps.finalizeCommDbSession).not.toHaveBeenCalled();
-	});
-	it("FLY-2919 rechecks in the caller after the async completion guard returns", async () => {
-		seedRunning("z1", 120);
-		let pending = false;
-		const deps = baseDeps({
-			hasPendingCompleteMarker: () => {
-				queueMicrotask(() => {
-					pending = true;
-				});
-				return pending;
-			},
-			reconcileCompletionBeforeDeath: async () => false,
-		});
-		const result = await reapCrashedRunners(deps);
-		expect(result.reaped).toBe(0);
-		expect(deps.probeLiveness).not.toHaveBeenCalled();
-		expect(deps.finalizeCommDbSession).not.toHaveBeenCalled();
-	});
-
-	it("FLY-1238: a CommDB finalization failure remains cleanup-pending and never archives", async () => {
-		seedRunning("z1", 120);
-		const deps = baseDeps({
-			finalizeCommDbSession: vi.fn(() => ({
-				ok: false,
-				outcome: "failed",
-				retiredGateCount: 0,
-				deletedSessionCount: 0,
-				error: "sqlite busy",
-			})),
-		});
-
-		const res = await reapCrashedRunners(deps);
-
-		expect(res.cleanupPending).toBe(1);
-		expect(res.reaped).toBe(0);
-		expect(deps.archiveThread).not.toHaveBeenCalled();
-		expect(store.getSession("z1")?.status).toBe("running");
-	});
-
-	it("dumps forensics BEFORE teardown", async () => {
-		seedRunning("z1", 120);
+	it.each(["reconcile", "microtask"])(
+		"synchronous marker fence after %s await",
+		async (mode) => {
+			seed();
+			let pending = false;
+			const deps = baseDeps({
+				hasPendingCompleteMarker: () => {
+					if (mode === "microtask")
+						queueMicrotask(() => {
+							pending = true;
+						});
+					return pending;
+				},
+				reconcileCompletionBeforeDeath: async () => {
+					if (mode === "reconcile") pending = true;
+					return false;
+				},
+			});
+			expect((await reapCrashedRunners(deps)).reaped).toBe(0);
+			expect(deps.killCmuxLinkedSession).not.toHaveBeenCalled();
+		},
+	);
+	it("preserves forensic capture then cmux then window ordering after death", async () => {
+		seed();
 		const order: string[] = [];
 		const deps = baseDeps({
 			captureScrollback: vi.fn(async () => {
 				order.push("capture");
-				return { ok: true as const, text: "CRASH" };
+				expect(store.getSession("z1")?.status).toBe("failed");
+				return { ok: true as const, text: "trace" };
 			}),
 			killCmuxLinkedSession: vi.fn(async () => {
-				order.push("killCmux");
+				order.push("cmux");
 				return { killed: true };
 			}),
 			killTmuxWindow: vi.fn(async () => {
-				order.push("killWindow");
+				order.push("window");
 				return { killed: true };
 			}),
 		});
-		await reapCrashedRunners(deps);
-		expect(order).toEqual(["capture", "killCmux", "killWindow"]);
+		expect((await reapCrashedRunners(deps)).reaped).toBe(1);
+		expect(order).toEqual(["capture", "cmux", "window"]);
 	});
-
-	it("owns but does NOT reap a dead-pin in the [orphan, grace) middle band", async () => {
-		// grace 120 > orphan 60; heartbeat stale 90 → owned, waiting.
-		seedRunning("z1", 90);
-		const deps = baseDeps({ crashGraceMinutes: 120 });
-		const res = await reapCrashedRunners(deps);
-
-		expect(res.deadPinOwned.has("z1")).toBe(true);
-		expect(res.confirmedDeadButWaitingForGrace).toBe(1);
-		expect(res.reaped).toBe(0);
-		expect(deps.killTmuxWindow).not.toHaveBeenCalled();
-		expect(store.getSession("z1")?.status).toBe("running");
-	});
-
-	it("leaves an `absent` window to reapOrphans (not owned, not reaped)", async () => {
-		seedRunning("z1", 120);
-		const deps = baseDeps({
-			probeLiveness: vi.fn(async () => "absent" as const),
-		});
-		const res = await reapCrashedRunners(deps);
-
-		expect(res.deadPinOwned.has("z1")).toBe(false);
-		expect(res.absentPassedToOrphan).toBe(1);
-		expect(res.reaped).toBe(0);
-		expect(deps.killTmuxWindow).not.toHaveBeenCalled();
-		expect(store.getSession("z1")?.status).toBe("running");
-	});
-
-	it("suppresses on CommDB lookup error (GEO-374), never reaps", async () => {
-		seedRunning("z1", 120);
-		const deps = baseDeps({
-			lookupTmuxTarget: () => ({ kind: "error", error: "db locked" }),
-		});
-		const res = await reapCrashedRunners(deps);
-		expect(res.indeterminateSuppressed).toBe(1);
-		expect(res.deadPinOwned.size).toBe(0);
-		expect(deps.probeLiveness).not.toHaveBeenCalled();
-	});
-
-	it("suppresses on pane-probe indeterminate, never reaps", async () => {
-		seedRunning("z1", 120);
-		const deps = baseDeps({
-			probeLiveness: vi.fn(async () => "indeterminate" as const),
-		});
-		const res = await reapCrashedRunners(deps);
-		expect(res.indeterminateSuppressed).toBe(1);
-		expect(res.deadPinOwned.size).toBe(0);
-		expect(store.getSession("z1")?.status).toBe("running");
-	});
-
-	it("skips a suppressed (reconnecting/monitor-lost) session", async () => {
-		seedRunning("z1", 120);
-		const deps = baseDeps({ isSuppressed: (id) => id === "z1" });
-		const res = await reapCrashedRunners(deps);
-		expect(res.deadPinOwned.size).toBe(0);
-		expect(deps.lookupTmuxTarget).not.toBeUndefined();
-		expect(deps.probeLiveness).not.toHaveBeenCalled();
-	});
-
-	it("skips a session with a pending complete marker (FLY-172 owns it)", async () => {
-		seedRunning("z1", 120);
-		const deps = baseDeps({ hasPendingCompleteMarker: (id) => id === "z1" });
-		const res = await reapCrashedRunners(deps);
-		// Preserve completion ownership through the following orphan pass.
-		expect(res.deadPinOwned.has("z1")).toBe(true);
-		expect(res.confirmedDeadPinOwned).toBe(0);
-		expect(deps.probeLiveness).not.toHaveBeenCalled();
-	});
-
-	it("cleanup_pending on tmux window kill error: stays running, no archive, retried next cycle", async () => {
-		seedRunning("z1", 120);
-		const deps = baseDeps({
-			killTmuxWindow: vi.fn(async () => ({ killed: false, error: "boom" })),
-		});
-		const res = await reapCrashedRunners(deps);
-
-		expect(res.cleanupPending).toBe(1);
-		expect(res.reaped).toBe(0);
-		expect(res.deadPinOwned.has("z1")).toBe(true); // still owned
-		expect(deps.archiveThread).not.toHaveBeenCalled();
-		expect(store.getSession("z1")?.status).toBe("running");
-	});
-
-	it("cmux kill failure → cleanup_pending, does NOT kill the window (Codex code R1 HIGH)", async () => {
-		// If we killed the window on a cmux failure, next cycle the probe reads
-		// `absent` → the row drops out of deadPinOwned → reapOrphans force-fails it to
-		// `failed` (skipping terminated+archive) and cmux loses its re-resolution point.
-		seedRunning("z1", 120);
+	it("cmux failure preserves its window locator for retry without reviving the dead body", async () => {
+		seed();
 		const deps = baseDeps({
 			killCmuxLinkedSession: vi.fn(async () => ({
 				killed: false,
-				error: "tmux busy",
+				error: "busy",
 			})),
 		});
-		const res = await reapCrashedRunners(deps);
-
-		expect(res.cleanupPending).toBe(1);
-		expect(res.reaped).toBe(0);
-		expect(res.deadPinOwned.has("z1")).toBe(true); // still owned → reapOrphans skips it
-		expect(deps.killTmuxWindow).not.toHaveBeenCalled(); // window preserved for retry
+		expect((await reapCrashedRunners(deps)).cleanupPending).toBe(1);
+		expect(deps.killTmuxWindow).not.toHaveBeenCalled();
 		expect(deps.archiveThread).not.toHaveBeenCalled();
-		expect(store.getSession("z1")?.status).toBe("running");
+		expect(store.getSession("z1")?.status).toBe("failed");
 	});
-
-	it("terminal-close failure is best-effort (does NOT block reap)", async () => {
-		seedRunning("z1", 120);
-		const deps = baseDeps({
-			closeTerminalView: vi.fn(async () => {
-				throw new Error("osascript nope");
-			}),
-		});
-		const res = await reapCrashedRunners(deps);
-		expect(res.reaped).toBe(1);
-		expect(store.getSession("z1")?.status).toBe("terminated");
+	it.each(["pending", "error"])(
+		"%s window lookup leaves cleanup pending, not the body running",
+		async (kind) => {
+			seed();
+			const deps = baseDeps({
+				lookupTmuxTarget: () =>
+					kind === "pending"
+						? FOUND("geo:pending")
+						: { kind: "error", error: "busy" },
+			});
+			expect((await reapCrashedRunners(deps)).cleanupPending).toBe(1);
+			expect(deps.killTmuxWindow).not.toHaveBeenCalled();
+			expect(store.getSession("z1")?.status).toBe("failed");
+		},
+	);
+	it("missing display target is already clean after independently proven body death", async () => {
+		seed();
+		const deps = baseDeps({ lookupTmuxTarget: () => ({ kind: "gone" }) });
+		expect((await reapCrashedRunners(deps)).reaped).toBe(1);
+		expect(deps.killTmuxWindow).not.toHaveBeenCalled();
 	});
-
-	it("post-teardown race: row moved off running → no force-terminate, prune + skip event", async () => {
-		seedRunning("z1", 120);
-		// Simulate a concurrent transition to completed AFTER teardown succeeds by
-		// flipping the row inside killTmuxWindow.
+	it.each(["capture", "terminal"])(
+		"best-effort %s failure does not block cleanup",
+		async (boundary) => {
+			seed();
+			const deps = baseDeps(
+				boundary === "capture"
+					? {
+							captureScrollback: vi.fn(async () => {
+								throw new Error("capture failed");
+							}),
+						}
+					: {
+							closeTerminalView: vi.fn(async () => {
+								throw new Error("view failed");
+							}),
+						},
+			);
+			expect((await reapCrashedRunners(deps)).reaped).toBe(1);
+			if (boundary === "capture")
+				expect(store.getEventsByExecution("z1")[0]?.payload).toMatchObject({
+					dumpError: "capture failed",
+				});
+		},
+	);
+	it("concurrent terminal completion preserves its status and archive authority", async () => {
+		seed();
 		const deps = baseDeps({
 			killTmuxWindow: vi.fn(async () => {
-				store.upsertSession({
-					execution_id: "z1",
-					issue_id: "i-z1",
-					project_name: "geo",
-					status: "completed",
-				});
+				store.forceStatus("z1", "completed", minutesAgoSqlite(0));
 				return { killed: true };
 			}),
 		});
-		const res = await reapCrashedRunners(deps);
-
-		expect(res.transitionSkipped).toBe(1);
-		expect(res.reaped).toBe(0);
+		expect((await reapCrashedRunners(deps)).transitionSkipped).toBe(1);
 		expect(deps.archiveThread).not.toHaveBeenCalled();
-		expect(store.getSession("z1")?.status).toBe("completed"); // NOT forced to terminated
-		expect(deps.finalizeCommDbSession).toHaveBeenCalledWith("z1", "geo");
-		const events = store.getEventsByExecution("z1") ?? [];
-		expect(
-			events.some(
-				(e) => e.event_type === "runner_crash_teardown_transition_skipped",
-			),
-		).toBe(true);
+		expect(store.getSession("z1")?.status).toBe("completed");
 	});
-
-	it("records dumpError when scrollback capture fails but still reaps", async () => {
-		seedRunning("z1", 120);
-		const deps = baseDeps({
-			captureScrollback: vi.fn(async () => ({
-				ok: false as const,
-				error: "no window",
-			})),
-			writeCrashLog: vi.fn(() => ({ path: undefined, error: "unused" })),
-		});
-		const res = await reapCrashedRunners(deps);
-		expect(res.reaped).toBe(1);
-		const events = store.getEventsByExecution("z1") ?? [];
-		const ev = events.find((e) => e.event_type === "runner_crash_reaped");
-		expect(ev?.payload).toMatchObject({ dumpError: "no window" });
-	});
-
-	it("is a no-op when disabled", async () => {
-		seedRunning("z1", 120);
-		const deps = baseDeps({ enabled: false });
-		const res = await reapCrashedRunners(deps);
-		expect(res.reaped).toBe(0);
-		expect(res.deadPinOwned.size).toBe(0);
-		expect(deps.probeLiveness).not.toHaveBeenCalled();
-	});
-
-	it("skips an alive pane defensively", async () => {
-		seedRunning("z1", 120);
-		const deps = baseDeps({
-			probeLiveness: vi.fn(async () => "alive" as const),
-		});
-		const res = await reapCrashedRunners(deps);
-		expect(res.deadPinOwned.size).toBe(0);
-		expect(res.reaped).toBe(0);
-		expect(store.getSession("z1")?.status).toBe("running");
-	});
+	it.each(["disabled", "held"])(
+		"%s defers only display cleanup",
+		async (mode) => {
+			seed();
+			const deps = baseDeps({
+				enabled: mode !== "disabled",
+				isSuppressed: () => mode === "held",
+			});
+			expect((await reapCrashedRunners(deps)).reaped).toBe(0);
+			expect(deps.killTmuxWindow).not.toHaveBeenCalled();
+			expect(store.getSession("z1")?.status).toBe("failed");
+		},
+	);
 });
 
 describe("defaultWriteCrashLog (FLY-720)", () => {

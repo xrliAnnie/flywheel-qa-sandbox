@@ -10,6 +10,46 @@ const runInfraSource = readFileSync(
 );
 
 describe("FLY-2211 Bridge recovery wiring", () => {
+	it("crash display cleanup has no pane-death or second terminalization path", () => {
+		const wiring = source.slice(
+			source.indexOf("const crashReaperConfig:"),
+			source.indexOf("// FLY-1374: complete-marker"),
+		);
+		expect(wiring).toContain("getCurrentProjectedExecutionBodyDeath(id)");
+		expect(wiring).toContain("storeExecutionBodyDeathEnabled(flagStore)");
+		expect(wiring).not.toContain("probeRunnerProcessLiveness");
+		expect(wiring).not.toContain("finalizeCommDbSession:");
+		expect(wiring).not.toContain("crashGraceMinutes");
+		expect(wiring).toContain("expectedExecutionId: executionId");
+		expect(wiring.indexOf("if (!canCleanup())")).toBeGreaterThan(
+			wiring.indexOf("await reapRunnerMcp(w)"),
+		);
+	});
+
+	it("FLY-2919 server loss and zombie scan consume shared body evidence", () => {
+		const server = source.slice(
+			source.indexOf("serverLossHolder.current = new ServerLossCoordinator({"),
+			source.indexOf(
+				"resolveLeadId: (session)",
+				source.indexOf(
+					"serverLossHolder.current = new ServerLossCoordinator({",
+				),
+			),
+		);
+		expect(server).toContain("bodyLiveness:");
+		expect(server).toContain(
+			"heartbeatService.reconcileExecutionBody(session.execution_id)",
+		);
+		expect(server).not.toContain("forceStatus(");
+		expect(server).not.toContain("applyTransition(");
+		const scan = source.slice(
+			source.indexOf("const scanZombiesWired ="),
+			source.indexOf("fleetSensorsHolder.current = new FleetSensors"),
+		);
+		expect(scan).toContain("readObservedBody(");
+		expect(scan).not.toContain("probeRunnerProcessLiveness(");
+	});
+
 	it("FLY-2919 gives the dispatcher a synchronous managed body reader", () => {
 		expect(source).toContain("let executionBodyReader:");
 		expect(source).toContain("readBodyLiveness:");

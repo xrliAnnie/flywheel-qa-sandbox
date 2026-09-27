@@ -426,6 +426,7 @@ export class HeartbeatService implements ReconnectController {
 	private skippedLivenessTicks = 0;
 	/** FLY-1282 (R5 #3): backfill fair-rotation watermark + single-flight. */
 	private zombieBackfillWatermark = "";
+	private bodyCleanupWatermark = "";
 	private backfillInFlight = false;
 	private readonly probeForensicsCounts: Record<ProbeForensicsSource, number> =
 		{
@@ -442,7 +443,7 @@ export class HeartbeatService implements ReconnectController {
 		private thresholdMinutes: number,
 		private intervalMs: number,
 		private orphanThresholdMinutes: number,
-		private transitionOpts?: ApplyTransitionOpts,
+		_transitionOpts?: ApplyTransitionOpts,
 		private staleThresholdHours: number = 24,
 		private staleCheckIntervalMs: number = 6 * 3_600_000,
 		/** FLY-172: marker reconcile wiring; when absent, monitor-loss reconcile is a no-op. */
@@ -1763,23 +1764,35 @@ export class HeartbeatService implements ReconnectController {
 	}
 
 	/**
-	 * FLY-720: run the liveness-based crash reaper for this cycle and return the
-	 * set of confirmed dead-pin execIds so `reapOrphans` skips them. No-op (empty
+	 * FLY-2919: retry a bounded page of display cleanup after committed body death.
+	 * This worker never authorizes a lifecycle transition. No-op (empty
 	 * set) when the reaper is unwired or its kill-switch is OFF. Never throws — a
 	 * reaper failure logs and returns an empty set so the rest of the cycle runs.
 	 */
 	private async reapCrashedRunners(
 		tmuxHeld: ReadonlySet<string> = new Set(),
 	): Promise<ReadonlySet<string>> {
-		if (!this.crashReaperConfig?.enabled || !this.transitionOpts) {
+		if (!this.crashReaperConfig?.enabled) {
 			return new Set();
 		}
 		try {
+			let candidates = this.store.listExecutionBodyCleanupCandidates({
+				limit: 64,
+				afterId: this.bodyCleanupWatermark,
+			});
+			if (!candidates.length && this.bodyCleanupWatermark) {
+				this.bodyCleanupWatermark = "";
+				candidates = this.store.listExecutionBodyCleanupCandidates({
+					limit: 64,
+				});
+			}
+			// Rotate past failures as well as successes; a poison cleanup cannot
+			// monopolize subsequent pages. Restart safely replays durable duties.
+			this.bodyCleanupWatermark = candidates.at(-1) ?? "";
 			const res = await reapCrashedRunners({
 				...this.crashReaperConfig,
 				store: this.store,
-				transitionOpts: this.transitionOpts,
-				orphanThresholdMinutes: this.orphanThresholdMinutes,
+				candidates,
 				nowMs: Date.now(),
 				isSuppressed: (id) =>
 					this.isMonitorSuppressed(id) ||
@@ -1791,14 +1804,14 @@ export class HeartbeatService implements ReconnectController {
 			});
 			if (
 				res.reaped > 0 ||
-				res.confirmedDeadPinOwned > 0 ||
+				res.confirmedBodyDeaths > 0 ||
 				res.cleanupPending > 0
 			) {
 				console.log(
-					`[crash-reaper] owned=${res.confirmedDeadPinOwned} reaped=${res.reaped} waitingGrace=${res.confirmedDeadButWaitingForGrace} cleanupPending=${res.cleanupPending} absentToOrphan=${res.absentPassedToOrphan} indeterminateSuppressed=${res.indeterminateSuppressed} transitionSkipped=${res.transitionSkipped}`,
+					`[crash-reaper] owned=${res.confirmedBodyDeaths} reaped=${res.reaped} cleanupPending=${res.cleanupPending} indeterminateSuppressed=${res.indeterminateSuppressed} transitionSkipped=${res.transitionSkipped}`,
 				);
 			}
-			return res.deadPinOwned;
+			return res.bodyDeathOwned;
 		} catch (err) {
 			console.error(
 				`[crash-reaper] cycle failed (skipping, Bridge stays up): ${(err as Error).message}`,

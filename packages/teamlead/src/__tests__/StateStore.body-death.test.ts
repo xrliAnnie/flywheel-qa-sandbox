@@ -364,6 +364,38 @@ describe("FLY-2919 atomic proven body death", () => {
 		db.exec("DROP TRIGGER fail_death");
 		expect(commit().ok).toBe(true);
 	});
+	it("FLY-2919 cleanup inventory survives restart, uses current generation, and skips its receipt", async () => {
+		await refresh();
+		const result = commit();
+		if (!result.ok) throw new Error(result.reason);
+		expect(store.listExecutionBodyCleanupCandidates({ limit: 2 })).toEqual([]);
+		store.markExecutionBodyDeathProjected(
+			result.obligation,
+			new Date(clock).toISOString(),
+		);
+		store.close();
+		store = await StateStore.create(join(root, "state.db"));
+		expect(store.listExecutionBodyCleanupCandidates({ limit: 2 })).toEqual([
+			"exec-1",
+		]);
+		expect(
+			store.listExecutionBodyCleanupCandidates({ limit: 2, afterId: "exec-1" }),
+		).toEqual([]);
+		store.insertEvent({
+			event_id: `${result.obligation.obligationId}:ui-cleaned`,
+			execution_id: "exec-1",
+			issue_id: "FLY-2919",
+			project_name: "fixture",
+			event_type: "runner_crash_reaped",
+			source: "bridge.crash-reaper",
+			payload: { obligationId: result.obligation.obligationId },
+		});
+		expect(store.listExecutionBodyCleanupCandidates({ limit: 2 })).toEqual([]);
+		expect(() =>
+			store.listExecutionBodyCleanupCandidates({ limit: 0 }),
+		).toThrow();
+	});
+
 	it("lists a durable unprojected death after restart and marks only its exact duty", async () => {
 		const result = commit();
 		if (!result.ok) throw new Error(result.reason);

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HeartbeatService } from "../../HeartbeatService.js";
 import { StateStore } from "../../StateStore.js";
 import { hasUnresolvedCompleteMarker } from "../completion-before-death.js";
+import { reapCrashedRunners } from "../crash-reaper.js";
 import {
 	convergeExecutionBody,
 	type ExecutionBodyConvergenceDeps,
@@ -159,6 +160,51 @@ describe("FLY-2919 body death across StateStore and CommDB", () => {
 		store.close();
 		comm.close();
 		rmSync(root, { recursive: true, force: true });
+	});
+
+	it("FLY-2919 projected death stays terminal through UI failure and restart cleanup", async () => {
+		const death = await convergeExecutionBody(deps, "exec-1");
+		expect(death).toMatchObject({
+			kind: "committed",
+			projection: { projected: true },
+		});
+		let cleaned = false;
+		const cleanup = () =>
+			reapCrashedRunners({
+				store,
+				enabled: true,
+				nowMs: clock,
+				candidates: store.listExecutionBodyCleanupCandidates({ limit: 64 }),
+				readCurrentDeath: (id) =>
+					enabled ? store.getCurrentProjectedExecutionBodyDeath(id) : undefined,
+				isSuppressed: () => false,
+				hasPendingCompleteMarker: (id) => hasUnresolvedCompleteMarker(id, root),
+				lookupTmuxTarget: () => ({
+					kind: "found",
+					target: { tmuxWindow: "fixture:@1", sessionName: "fixture" },
+				}),
+				inspectWindow: async () => "owned",
+				captureScrollback: async () => ({ ok: true, text: "fixture" }),
+				writeCrashLog: () => ({ path: join(root, "fixture.log") }),
+				killCmuxLinkedSession: async () => ({ killed: true }),
+				killTmuxWindow: async () => ({ killed: cleaned }),
+			});
+		expect((await cleanup()).cleanupPending).toBe(1);
+		expect(store.getSession("exec-1")?.status).toBe("failed");
+		expect(comm.getSession("exec-1")?.status).toBe("failed");
+		store.close();
+		store = await StateStore.create(join(root, "state.db"));
+		clock += 60000;
+		enabled = false;
+		cleaned = true;
+		expect((await cleanup()).reaped).toBe(0);
+		expect(store.listExecutionBodyCleanupCandidates({ limit: 64 })).toEqual([
+			"exec-1",
+		]);
+		enabled = true;
+		expect((await cleanup()).reaped).toBe(1);
+		expect(store.listExecutionBodyCleanupCandidates({ limit: 64 })).toEqual([]);
+		expect(capture).toHaveBeenCalledOnce();
 	});
 
 	it("reads settled current-generation death after observation expiry and restart without another OS probe", async () => {

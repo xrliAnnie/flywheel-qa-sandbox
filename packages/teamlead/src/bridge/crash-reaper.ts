@@ -1,41 +1,16 @@
 /**
- * FLY-720: liveness-based crash-runner reaper.
- *
- * Closes the auto-cleanup gap for crashed / abnormally-exited Runners. The clean
- * completion paths (markers, FLY-324 done-but-running, FLY-172 marker drain) do
- * NOT cover a Runner that crashes without writing a completion marker: its cmux
- * `remain-on-exit on` window lingers as an `[exited]` dead-pin (FLY-622), the old
- * window-existence liveness read it as alive so FLY-623 readopt re-adopted it
- * forever, it never aged into an orphan, and `reapOrphans` never force-failed it
- * → a permanent `status=running` zombie (cmux residue + un-archived thread).
- *
- * This reaper runs on the heartbeat tick BEFORE `reapOrphans`, in two phases:
- *   Phase 1 (ownership) — for each running session stale ≥ orphan threshold that
- *     is a CONFIRMED dead-pin (`found` target + `probeRunnerProcessLiveness` ===
- *     `dead_pin`), claim it into `deadPinOwned` so `reapOrphans` skips it (never
- *     force-fails it to `failed`).
- *   Phase 2 (reap) — of the owned set, once stale ≥ crash grace: dump the
- *     scrollback (forensics) → tear down (cmux + window + terminal) → ONLY if the
- *     tmux kill succeeded, transition to `terminated` + prune CommDB + archive.
- *
- * Teardown-first / transition-after gives automatic retry: while the tmux kill is
- * `cleanup_pending` the row stays `running`, so the next cycle re-matches and
- * retries — no persisted retry surface needed. `absent` / no-target / indeterminate
- * are NOT owned here (they keep today's `reapOrphans` / suppression behavior).
+ * FLY-2919: retry display cleanup after the common process-death transaction.
+ * The independent body runtime owns death and CommDB projection. This worker
+ * consumes its exact current-generation receipt; windows only locate resources.
+ * A failed cleanup leaves the death committed and the cleanup receipt absent.
  */
 
 import { chmodSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { TransitionContext } from "flywheel-core";
-import {
-	type ApplyTransitionOpts,
-	applyTransition,
-} from "../applyTransition.js";
 import type { Session, StateStore } from "../StateStore.js";
-import type { FinalizeCommDbResult } from "./commdb-session-prune.js";
-import type { RunnerLiveness, TmuxTargetLookup } from "./tmux-lookup.js";
-import { sqliteDatetime } from "./types.js";
+import type { BodyDeathObligation } from "./execution-body-convergence.js";
+import type { TmuxTargetLookup } from "./tmux-lookup.js";
 
 /** Default durable crash-log location. */
 export function crashLogDir(): string {
@@ -73,14 +48,6 @@ export function defaultWriteCrashLog(
 	}
 }
 
-/** Minutes since a sqlite-datetime heartbeat (UTC). Infinity when unknown. */
-function staleMinutes(heartbeatAt: string | undefined, nowMs: number): number {
-	if (!heartbeatAt) return Number.POSITIVE_INFINITY;
-	const t = new Date(`${heartbeatAt.replace(" ", "T")}Z`).getTime();
-	if (Number.isNaN(t)) return Number.POSITIVE_INFINITY;
-	return (nowMs - t) / 60_000;
-}
-
 /** Static deps supplied once by plugin.ts (tmux / discord / fs sinks). */
 export interface CrashReaperInjectedDeps {
 	/**
@@ -93,31 +60,34 @@ export interface CrashReaperInjectedDeps {
 		withIssueMutex: <T>(keys: string[], fn: () => Promise<T>) => Promise<T>;
 		resolveLockKeys: (issueId: string) => string[];
 	};
-	/** FLY-720 kill-switch: whole reaper off when false → reapOrphans→failed. */
+	/** Display cleanup switch; process death is owned by the body runtime. */
 	enabled: boolean;
-	/** Forensics grace: reap only once heartbeat is stale ≥ this (≥ orphan threshold). */
-	crashGraceMinutes: number;
+	/** Must recheck managed policy and the exact current projected death on every read. */
+	readCurrentDeath: (
+		executionId: string,
+	) => Pick<BodyDeathObligation, "obligationId" | "disposition"> | undefined;
 	lookupTmuxTarget: (
 		executionId: string,
 		projectName: string,
 	) => TmuxTargetLookup;
-	probeLiveness: (tmuxWindow: string) => Promise<RunnerLiveness>;
+	/** UI ownership only; never process-death evidence. */
+	inspectWindow: (
+		executionId: string,
+		tmuxWindow: string,
+	) => Promise<"owned" | "absent" | "unknown">;
 	captureScrollback: (
 		tmuxWindow: string,
 	) => Promise<{ ok: true; text: string } | { ok: false; error: string }>;
 	killCmuxLinkedSession: (
 		tmuxWindow: string,
+		canCleanup: () => boolean,
 	) => Promise<{ killed: boolean; error?: string }>;
 	killTmuxWindow: (
 		tmuxWindow: string,
 	) => Promise<{ killed: boolean; error?: string }>;
 	/** Best-effort terminal-view close (does NOT gate cleanup_pending). */
 	closeTerminalView?: (session: Session, tmuxWindow: string) => Promise<void>;
-	finalizeCommDbSession: (
-		executionId: string,
-		projectName: string,
-	) => FinalizeCommDbResult;
-	/** Archive the issue thread (allowStatuses ["terminated"]), post-transition. */
+	/** Archive only the failed body whose exact death is still current. */
 	archiveThread?: (session: Session) => Promise<void>;
 	/** Override crash-log writer (tests). */
 	writeCrashLog?: (
@@ -130,10 +100,10 @@ export interface CrashReaperInjectedDeps {
 /** Per-cycle deps supplied by HeartbeatService. */
 export interface CrashReapCycleDeps {
 	store: StateStore;
-	transitionOpts: ApplyTransitionOpts;
-	orphanThresholdMinutes: number;
+	/** Bounded durable inventory, including bodies already terminalized. */
+	candidates: readonly string[];
 	nowMs: number;
-	/** A session the reconcile pass classified alive-but-detached / marker-retry. */
+	/** Transport/closeout holds may defer display cleanup only. */
 	isSuppressed: (executionId: string) => boolean;
 	/** FLY-172 pending complete marker → that drain owns the session. */
 	hasPendingCompleteMarker: (executionId: string) => boolean;
@@ -145,13 +115,11 @@ export interface CrashReapCycleDeps {
 export type CrashReapDeps = CrashReaperInjectedDeps & CrashReapCycleDeps;
 
 export interface CrashReapResult {
-	/** execIds `reapOrphans` MUST skip: dead-pins or completion-owned/unknown. */
-	deadPinOwned: Set<string>;
-	confirmedDeadPinOwned: number;
-	confirmedDeadButWaitingForGrace: number;
+	/** Bodies with settled death or completion-owned/unknown bookkeeping. */
+	bodyDeathOwned: Set<string>;
+	confirmedBodyDeaths: number;
 	reaped: number;
 	cleanupPending: number;
-	absentPassedToOrphan: number;
 	indeterminateSuppressed: number;
 	transitionSkipped: number;
 }
@@ -161,275 +129,160 @@ export async function reapCrashedRunners(
 ): Promise<CrashReapResult> {
 	const log = deps.log ?? ((m: string) => console.log(m));
 	const result: CrashReapResult = {
-		deadPinOwned: new Set(),
-		confirmedDeadPinOwned: 0,
-		confirmedDeadButWaitingForGrace: 0,
+		bodyDeathOwned: new Set(),
+		confirmedBodyDeaths: 0,
 		reaped: 0,
 		cleanupPending: 0,
-		absentPassedToOrphan: 0,
 		indeterminateSuppressed: 0,
 		transitionSkipped: 0,
 	};
 	if (!deps.enabled) return result;
 
-	// Candidate set: running + heartbeat stale ≥ orphan threshold (Phase-1 gate).
-	const candidates = deps.store.getOrphanSessions(deps.orphanThresholdMinutes);
-
-	for (const session of candidates) {
-		const execId = session.execution_id;
-		// Alive-but-detached (reconnecting / monitor-lost / marker-retry) → never reap.
-		if (deps.isSuppressed(execId)) continue;
+	for (const execId of deps.candidates) {
+		const session = deps.store.getSession(execId);
+		if (!session || deps.isSuppressed(execId)) continue;
 		if (
 			(await completionOwnsReap(execId, deps, result)) ||
 			pendingCompletionOwnsReap(execId, deps, result)
 		)
 			continue;
-		if (!session.project_name) continue;
-
-		// CommDB lookup indeterminacy (Codex R1 MED-3, GEO-374): a read `error` must
-		// be suppressed (alive-for-suppression), never reaped. `gone` = no target →
-		// reapOrphans owns it (unchanged).
-		const lookup = deps.lookupTmuxTarget(execId, session.project_name);
-		if (lookup.kind === "error") {
+		const death = deps.readCurrentDeath(execId);
+		// Completed/standby bodies retain their existing closeout policy. Only
+		// the common failed-body disposition enters crash display cleanup.
+		if (!death || death.disposition !== "failed") {
 			result.indeterminateSuppressed++;
 			continue;
 		}
-		if (lookup.kind === "gone") continue;
-
-		const tmuxWindow = lookup.target.tmuxWindow;
-		// A Codex self-registration stays `:pending` until an immutable @id is
-		// committed. It is routing metadata, never liveness or reap authority.
-		if (tmuxWindow.endsWith(":pending")) {
-			result.indeterminateSuppressed++;
-			continue;
-		}
-		let liveness: RunnerLiveness;
+		result.bodyDeathOwned.add(execId);
+		result.confirmedBodyDeaths++;
+		const cleanup = () =>
+			reapOne(session, death.obligationId, deps, result, log);
 		try {
-			liveness = await deps.probeLiveness(tmuxWindow);
-		} catch (err) {
-			// Defensive: an unexpected probe throw is indeterminate → suppress.
-			log(`[crash-reaper] ${execId}: probe threw (${(err as Error).message})`);
-			result.indeterminateSuppressed++;
-			continue;
-		}
-
-		if (liveness === "alive") continue; // still working (defensive)
-		if (liveness === "indeterminate") {
-			result.indeterminateSuppressed++;
-			continue;
-		}
-		if (liveness === "absent") {
-			// Window gone → NOT a dead-pin; leave for reapOrphans → failed (unchanged).
-			result.absentPassedToOrphan++;
-			continue;
-		}
-
-		// liveness === "dead_pin": Phase 1 ownership — reapOrphans MUST skip it.
-		result.deadPinOwned.add(execId);
-		result.confirmedDeadPinOwned++;
-
-		// Phase 2 gate: reap only once stale ≥ crash grace (forensics window).
-		const stale = staleMinutes(session.heartbeat_at, deps.nowMs);
-		if (stale < deps.crashGraceMinutes) {
-			result.confirmedDeadButWaitingForGrace++;
-			continue; // owned, waiting out the forensics window
-		}
-
-		if (deps.lifecycleMutex) {
-			const keys = deps.lifecycleMutex.resolveLockKeys(session.issue_id);
-			await deps.lifecycleMutex.withIssueMutex(keys, () =>
-				reapOne(session, tmuxWindow, stale, deps, result, log),
+			if (deps.lifecycleMutex) {
+				await deps.lifecycleMutex.withIssueMutex(
+					deps.lifecycleMutex.resolveLockKeys(session.issue_id),
+					cleanup,
+				);
+			} else await cleanup();
+		} catch (error) {
+			result.cleanupPending++;
+			log(
+				`[crash-reaper] ${execId}: display cleanup deferred (${error instanceof Error ? error.message : String(error)})`,
 			);
-		} else {
-			await reapOne(session, tmuxWindow, stale, deps, result, log);
 		}
 	}
 
 	return result;
 }
 
-/** The teardown-first reap sequence for one confirmed dead-pin past grace. */
+/** No status mutation here: death and communication projection precede cleanup. */
 async function reapOne(
 	session: Session,
-	tmuxWindow: string,
-	stale: number,
+	obligationId: string,
 	deps: CrashReapDeps,
 	result: CrashReapResult,
 	log: (m: string) => void,
 ): Promise<void> {
 	const execId = session.execution_id;
-	const projectName = session.project_name;
-	// Probe and mutex acquisition can both yield while a complete-failed marker arrives.
+	const current = () =>
+		deps.readCurrentDeath(execId)?.obligationId === obligationId;
+	const allowedNow = () =>
+		current() && !pendingCompletionOwnsReap(execId, deps, result);
+	const guarded = async () => {
+		if (
+			(await completionOwnsReap(execId, deps, result)) ||
+			pendingCompletionOwnsReap(execId, deps, result)
+		)
+			return false;
+		if (current()) return true;
+		result.transitionSkipped++;
+		return false;
+	};
+	if (!(await guarded()) || !allowedNow()) return;
+	const lookup = deps.lookupTmuxTarget(execId, session.project_name);
 	if (
-		(await completionOwnsReap(execId, deps, result)) ||
-		pendingCompletionOwnsReap(execId, deps, result)
-	)
+		lookup.kind === "error" ||
+		(lookup.kind === "found" && lookup.target.tmuxWindow.endsWith(":pending"))
+	) {
+		result.cleanupPending++;
 		return;
-
-	// 1. Forensics dump BEFORE teardown (best-effort).
-	const cap = await deps.captureScrollback(tmuxWindow);
+	}
 	let crashLogPath: string | undefined;
 	let dumpError: string | undefined;
-	if (cap.ok) {
-		const w = (deps.writeCrashLog ?? defaultWriteCrashLog)(
-			execId,
-			cap.text,
-			deps.nowMs,
-		);
-		crashLogPath = w.path;
-		dumpError = w.error;
-	} else {
-		dumpError = cap.error;
-	}
-
-	// 2. Teardown while still running. cleanup_pending iff a tmux kill returns a
-	//    real error (not already-gone). Terminal close is best-effort and does NOT
-	//    gate cleanup_pending (Codex design R2 LOW-4).
-	//
-	// ORDER MATTERS (Codex code R1 HIGH): kill the cmux linked session FIRST and
-	// return `cleanup_pending` WITHOUT killing the window if it fails. cmux cleanup
-	// resolves `cmux-<window_name>` from the still-alive window; if we killed the
-	// window on a cmux failure, next cycle the window is gone → the probe reads
-	// `absent` (not `dead_pin`) → the session drops out of `deadPinOwned` →
-	// reapOrphans force-fails it to `failed` (skipping terminated + archive) AND the
-	// cmux session loses its only re-resolution point. Leaving the window alive keeps
-	// it a `dead_pin` the next cycle re-owns and retries.
-	if (
-		(await completionOwnsReap(execId, deps, result)) ||
-		pendingCompletionOwnsReap(execId, deps, result)
-	)
-		return;
-	const cmux = await deps.killCmuxLinkedSession(tmuxWindow);
-	if (!cmux.killed) {
-		result.cleanupPending++;
-		log(
-			`[crash-reaper] ${execId}: cmux kill failed (${cmux.error ?? "unknown"}) — leaving window alive as dead_pin, retry next cycle`,
-		);
-		return; // window untouched → still a dead_pin → re-owned + retried next cycle
-	}
-	if (
-		(await completionOwnsReap(execId, deps, result)) ||
-		pendingCompletionOwnsReap(execId, deps, result)
-	)
-		return;
-	const win = await deps.killTmuxWindow(tmuxWindow);
-	if (!win.killed) {
-		result.cleanupPending++;
-		log(
-			`[crash-reaper] ${execId}: window kill failed (${win.error ?? "unknown"}) — leaving running, retry next cycle`,
-		);
-		return; // window still there (dead_pin) → re-owned + retried next cycle
-	}
-	// Both kills succeeded — best-effort terminal-view close (never gates the reap).
-	if (
-		(await completionOwnsReap(execId, deps, result)) ||
-		pendingCompletionOwnsReap(execId, deps, result)
-	)
-		return;
-	if (deps.closeTerminalView) {
-		try {
-			await deps.closeTerminalView(session, tmuxWindow);
-		} catch (e) {
-			log(
-				`[crash-reaper] ${execId}: terminal close warn: ${(e as Error).message}`,
-			);
-		}
-	}
-
-	// FLY-1238: once the physical runner is gone, retire every unresolved gate
-	// in the same transaction that deletes its CommDB session. Failure blocks
-	// terminalization and archive so the row remains eligible for retry.
-	if (
-		(await completionOwnsReap(execId, deps, result)) ||
-		pendingCompletionOwnsReap(execId, deps, result)
-	)
-		return;
-	const finalized = deps.finalizeCommDbSession(execId, projectName);
-	deps.store.recordCommDbFinalizeOutcome({
-		executionId: execId,
-		issueId: session.issue_id,
-		projectName,
-		ok: finalized.ok,
-		error: finalized.error,
-		runnerDeathProven: true,
-		audit: {
-			retiredGateCount: finalized.retiredGateCount,
-			retiredAskCount: finalized.retiredAskCount,
-			source: "bridge.crash-reaper",
-		},
-	});
-	if (!finalized.ok) {
-		result.cleanupPending++;
-		log(
-			`[crash-reaper] ${execId}: CommDB finalization failed (${finalized.error ?? "unknown"}) — retry next cycle`,
-		);
-		return;
-	}
-
-	// 3. Re-read status and branch on the post-teardown FSM race (Codex R2 MED-3).
-	const current = deps.store.getSession(execId);
-	if (current && current.status === "running") {
-		// No await between the final marker veto and the lifecycle mutation.
-		if (pendingCompletionOwnsReap(execId, deps, result)) return;
-		const ctx: TransitionContext = {
-			executionId: execId,
-			issueId: session.issue_id,
-			projectName,
-			trigger: "crash_reap",
-		};
-		const forensics = crashLogPath ?? `dump_failed:${dumpError ?? "unknown"}`;
-		const tr = applyTransition(deps.transitionOpts, execId, "terminated", ctx, {
-			last_activity_at: sqliteDatetime(),
-			last_error: `Crashed (process dead, no marker) — reaped. forensics=${forensics}`,
-		});
-		if (!tr.ok) {
-			log(
-				`[crash-reaper] ${execId}: FSM rejected running→terminated after teardown: ${tr.error}`,
-			);
+	let tmuxWindow = lookup.kind === "found" ? lookup.target.tmuxWindow : null;
+	if (tmuxWindow) {
+		const ownership = await deps.inspectWindow(execId, tmuxWindow);
+		if (!(await guarded()) || !allowedNow()) return;
+		if (ownership === "absent") tmuxWindow = null;
+		else if (ownership !== "owned") {
+			result.cleanupPending++;
 			return;
 		}
-		if (deps.archiveThread) {
-			const reaped = deps.store.getSession(execId) ?? {
-				...session,
-				status: "terminated",
-			};
-			await deps.archiveThread(reaped);
-		}
-		deps.store.insertEvent({
-			event_id: `crash-reaped-${execId}`,
-			execution_id: execId,
-			issue_id: session.issue_id,
-			project_name: projectName,
-			event_type: "runner_crash_reaped",
-			source: "bridge.crash-reaper",
-			payload: {
-				tmuxWindow,
-				crashLogPath: crashLogPath ?? null,
-				dumpError: dumpError ?? null,
-				minutesSinceHeartbeat: Math.round(stale),
-			},
-		});
-		result.reaped++;
-		return;
 	}
-
-	// Concurrent completion/event/action moved the row off `running`: do NOT force
-	// `terminated`. Prune the (already killed) CommDB row and record the skip; the
-	// concurrent terminal status owns its own archive.
+	if (tmuxWindow) {
+		try {
+			const cap = await deps.captureScrollback(tmuxWindow);
+			if (cap.ok) {
+				const written = (deps.writeCrashLog ?? defaultWriteCrashLog)(
+					execId,
+					cap.text,
+					deps.nowMs,
+				);
+				crashLogPath = written.path;
+				dumpError = written.error;
+			} else dumpError = cap.error;
+		} catch (error) {
+			dumpError = error instanceof Error ? error.message : String(error);
+		}
+		if (!(await guarded()) || !allowedNow()) return;
+		// cmux resolves through the window. Preserve that locator on failure;
+		// the durable death duty, not running status, makes the next pass retry.
+		if ((await deps.inspectWindow(execId, tmuxWindow)) !== "owned") {
+			result.cleanupPending++;
+			return;
+		}
+		if (!(await guarded()) || !allowedNow()) return;
+		const cmux = await deps.killCmuxLinkedSession(tmuxWindow, allowedNow);
+		if (!cmux.killed) {
+			result.cleanupPending++;
+			return;
+		}
+		if (!(await guarded()) || !allowedNow()) return;
+		if ((await deps.inspectWindow(execId, tmuxWindow)) !== "owned") {
+			result.cleanupPending++;
+			return;
+		}
+		if (!(await guarded()) || !allowedNow()) return;
+		const win = await deps.killTmuxWindow(tmuxWindow);
+		if (!win.killed) {
+			result.cleanupPending++;
+			return;
+		}
+		if (!(await guarded()) || !allowedNow()) return;
+		try {
+			await deps.closeTerminalView?.(session, tmuxWindow);
+		} catch (error) {
+			log(`[crash-reaper] ${execId}: terminal close warn: ${String(error)}`);
+		}
+	}
+	if (!(await guarded()) || !allowedNow()) return;
+	await deps.archiveThread?.(session);
+	if (!(await guarded()) || !allowedNow()) return;
 	deps.store.insertEvent({
-		event_id: `crash-reap-skip-${execId}`,
+		event_id: `${obligationId}:ui-cleaned`,
 		execution_id: execId,
 		issue_id: session.issue_id,
-		project_name: projectName,
-		event_type: "runner_crash_teardown_transition_skipped",
+		project_name: session.project_name,
+		event_type: "runner_crash_reaped",
 		source: "bridge.crash-reaper",
 		payload: {
+			obligationId,
 			tmuxWindow,
-			actualStatus: current?.status ?? "missing",
 			crashLogPath: crashLogPath ?? null,
+			dumpError: dumpError ?? null,
 		},
 	});
-	result.transitionSkipped++;
+	result.reaped++;
 }
 
 function pendingCompletionOwnsReap(
@@ -442,7 +295,7 @@ function pendingCompletionOwnsReap(
 	} catch {
 		// A failed read is unknown, never permission to replace real completion.
 	}
-	result.deadPinOwned.add(executionId);
+	result.bodyDeathOwned.add(executionId);
 	result.indeterminateSuppressed++;
 	return true;
 }
@@ -458,7 +311,7 @@ async function completionOwnsReap(
 	} catch {
 		// Replay uncertainty belongs to the completion drain, including read errors.
 	}
-	result.deadPinOwned.add(executionId);
+	result.bodyDeathOwned.add(executionId);
 	result.indeterminateSuppressed++;
 	return true;
 }

@@ -1026,6 +1026,7 @@ import {
 	probeTmuxServer,
 	probeTmuxServerStartTime,
 	probeTmuxWindowLiveness,
+	resolveCmuxAttachTarget,
 	sendEnterToWindow,
 	sendKeysToWindow,
 } from "./tmux-lookup.js";
@@ -10620,23 +10621,14 @@ export async function startBridge(
 			!codexRecoveryRuntimes.has(session.project_name),
 	});
 
-	// FLY-720: crash-reaper injected deps, permanently enabled. Grace defaults
-	// to the orphan threshold (clean handoff with reapOrphans); a larger
-	// `FLYWHEEL_CRASH_REAP_GRACE_MIN` is clamped to ≥ orphan threshold. Teardown +
-	// archive reuse the same primitives as close_runner (killCmux/window, terminal
-	// close, finalizeCommDbSession, the shared archive predicate w/ allowStatuses).
-	const crashReaperGraceMinutes = (() => {
-		const raw = Number.parseInt(
-			process.env.FLYWHEEL_CRASH_REAP_GRACE_MIN ?? "",
-			10,
-		);
-		const v =
-			Number.isFinite(raw) && raw > 0 ? raw : config.orphanThresholdMinutes;
-		return Math.max(v, config.orphanThresholdMinutes);
-	})();
+	// FLY-2919: UI cleanup consumes the common settled body-death duty. No
+	// heartbeat grace or window probe can authorize a lifecycle transition.
 	const crashReaperConfig: CrashReaperInjectedDeps = {
 		enabled: true,
-		crashGraceMinutes: crashReaperGraceMinutes,
+		readCurrentDeath: (id) =>
+			storeExecutionBodyDeathEnabled(flagStore)
+				? store.getCurrentProjectedExecutionBodyDeath(id)
+				: undefined,
 		// Codex R2#3 (entry C): each crash reap serializes with the unified
 		// executor's per-issue mutex — never interleaved with a closeout.
 		lifecycleMutex: {
@@ -10647,14 +10639,27 @@ export async function startBridge(
 				return res.lockKeys.length > 0 ? res.lockKeys : [issueId];
 			},
 		},
+		inspectWindow: async (executionId, tmuxWindow) => {
+			const identity = await resolveCmuxAttachTarget(tmuxWindow, {
+				expectedExecutionId: executionId,
+			});
+			if (identity.kind !== "unresolved") return "owned";
+			// A recycled/foreign target is not ours to touch. A genuine missing
+			// target proves only display absence; body death was committed earlier.
+			if (identity.reason !== "probe-failed") return "unknown";
+			return (await probeTmuxWindowLiveness(tmuxWindow)) === "dead"
+				? "absent"
+				: "unknown";
+		},
 		lookupTmuxTarget,
-		probeLiveness: (w) => probeRunnerProcessLiveness(w),
 		captureScrollback: (w) => captureRunnerScrollback(w),
 		// FLY-1185 §2.5: MCP reap piggybacks the injected cmux kill (entry C —
-		// crash reap). Reap-only, before the kill; the reaper's own teardown-
-		// first sequencing (Codex code R1 HIGH) is byte-unchanged.
-		killCmuxLinkedSession: async (w) => {
+		// crash cleanup). Reap-only, before the UI kill; body death is already
+		// committed, while cmux-before-window ordering preserves retry lookup.
+		killCmuxLinkedSession: async (w, canCleanup) => {
 			await reapRunnerMcp(w).catch(() => undefined);
+			if (!canCleanup())
+				return { killed: false, error: "body_cleanup_authority_changed" };
 			return killCmuxLinkedSession(w);
 		},
 		killTmuxWindow: (w) => killTmuxWindow(w),
@@ -10672,8 +10677,6 @@ export async function startBridge(
 				sessionRole: identity.sessionRole,
 			});
 		},
-		finalizeCommDbSession: (execId, projectName) =>
-			finalizeCommDbSession(execId, projectName),
 		archiveThread: (session) =>
 			archiveIssueThreadIfNoOtherActive(
 				store,
@@ -10683,7 +10686,7 @@ export async function startBridge(
 					globalBotToken: config.discordBotToken,
 					discordOwnerUserId: config.discordOwnerUserId,
 				},
-				{ allowStatuses: ["terminated"] },
+				{ allowStatuses: ["failed"] },
 			),
 	};
 
@@ -11349,6 +11352,26 @@ export async function startBridge(
 		sampler: () => executionBodyRuntime,
 		isEnabled: () => storeExecutionBodyDeathEnabled(flagStore),
 	});
+
+	// All consumers share the sampler's original bounded observation. A settled
+	// death remains readable after projection closes the sampled owner binding.
+	const readObservedBody = (
+		executionId: string,
+		projectName: string,
+	): "alive" | "dead" | "unknown" => {
+		if (
+			!storeExecutionBodyDeathEnabled(flagStore) ||
+			store.getSession(executionId)?.project_name !== projectName
+		)
+			return "unknown";
+		const settled =
+			executionBodyReader?.read(executionId, projectName) ?? "unknown";
+		if (settled !== "unknown") return settled;
+		const observation = executionBodyRuntime?.read(executionId);
+		return observation?.verdict === "alive" || observation?.verdict === "dead"
+			? observation.verdict
+			: "unknown";
+	};
 
 	heartbeatServiceRef.current = heartbeatService;
 	livenessWiring.liveness = true;
@@ -16084,14 +16107,8 @@ export async function startBridge(
 								? { status: s.status, heartbeat_at: s.heartbeat_at }
 								: undefined;
 						},
-						targetAlive: async (w) => {
-							const liveness = await probeRunnerProcessLiveness(w);
-							if (liveness === "alive") return true;
-							if (liveness === "absent" || liveness === "dead_pin")
-								return false;
-							return null;
-						},
-						nowMs: Date.now(),
+						bodyLiveness: async (id, projectName) =>
+							readObservedBody(id, projectName),
 					})),
 				);
 			} catch (err) {
@@ -16138,36 +16155,16 @@ export async function startBridge(
 			if (liveness === "absent" || liveness === "dead_pin") return true;
 			return null;
 		},
-		migrate: async (session, episodeSignature) => {
-			const now = new Date()
-				.toISOString()
-				.replace("T", " ")
-				.replace(/\.\d+Z$/, "");
-			if (transitionOpts) {
-				applyTransition(
-					transitionOpts,
+		bodyLiveness: async (session) =>
+			readObservedBody(session.execution_id, session.project_name),
+		migrate: async (session) => {
+			await heartbeatService.reconcileExecutionBody(session.execution_id);
+			return (
+				executionBodyReader?.read(
 					session.execution_id,
-					"failed",
-					{
-						executionId: session.execution_id,
-						issueId: session.issue_id,
-						projectName: session.project_name,
-						trigger: "server_loss",
-					},
-					{
-						last_activity_at: now,
-						last_error: `tmux server lost (${episodeSignature})`,
-					},
-				);
-			} else {
-				store.forceStatus(
-					session.execution_id,
-					"failed",
-					now,
-					`tmux server lost (${episodeSignature})`,
-				);
-			}
-			return true;
+					session.project_name,
+				) === "dead"
+			);
 		},
 		resolveLeadId: (session) => {
 			try {

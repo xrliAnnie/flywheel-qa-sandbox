@@ -58,6 +58,7 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 		sessions: Session[];
 		probe: ServerProbe | (() => ServerProbe);
 		targetGone?: (s: Session) => Promise<boolean | null>;
+		bodyLiveness?: (s: Session) => Promise<"alive" | "dead" | "unknown">;
 		notifyOk?: (leadId: string) => boolean;
 		env?: NodeJS.ProcessEnv;
 	}) {
@@ -67,6 +68,7 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 			probeServer: async () =>
 				typeof opts.probe === "function" ? opts.probe() : opts.probe,
 			targetGone: opts.targetGone ?? (async () => true),
+			bodyLiveness: opts.bodyLiveness ?? (async () => "dead"),
 			migrate: async (s, episode) => {
 				migrations.push({ execId: s.execution_id, episode });
 				// mimic the real transition: the session leaves `running`
@@ -88,6 +90,33 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 			logger: () => {},
 		});
 	}
+
+	it.each(["alive", "unknown"] as const)(
+		"FLY-2919 server loss cannot kill a %s body or call it a casualty",
+		async (verdict) => {
+			const coordinator = makeCoordinator({
+				sessions: [session(1, "lead")],
+				probe: "down",
+				targetGone: async () => true,
+				bodyLiveness: async () => verdict,
+			});
+			await coordinator.check();
+			expect(migrations).toHaveLength(0);
+			expect(store.getSession("exec-1")?.status).toBe("running");
+			expect(notifications[0]?.content).not.toContain("阵亡");
+			expect(notifications[0]?.content).not.toContain("已标记终态");
+		},
+	);
+	it("FLY-2919 a dead body is eligible even while its window is present", async () => {
+		const coordinator = makeCoordinator({
+			sessions: [session(1, "lead")],
+			probe: "down",
+			targetGone: async () => false,
+			bodyLiveness: async () => "dead",
+		});
+		await coordinator.check();
+		expect(migrations).toHaveLength(1);
+	});
 
 	it("server DOWN: ONE episode, one migration per runner, one grouped notify per Lead", async () => {
 		const fleet = incidentFleet();
@@ -303,6 +332,7 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 		for (const s of fleet) store.upsertSession(s);
 		let failFor = new Set(["exec-1", "exec-2"]);
 		const coordinator = new ServerLossCoordinator({
+			bodyLiveness: async () => "dead",
 			store,
 			probeServer: async () => "down",
 			targetGone: async () => true,
@@ -356,6 +386,7 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 		for (const s of fleet) store.upsertSession(s);
 		const failFor = new Set(["exec-1"]);
 		const coordinator = new ServerLossCoordinator({
+			bodyLiveness: async () => "dead",
 			store,
 			probeServer: async () => "down",
 			targetGone: async () => true,
@@ -479,7 +510,8 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 		const coordinator = makeCoordinator({
 			sessions: [],
 			probe: "unknown",
-			targetGone: async () => null, // cannot tell — must not migrate
+			targetGone: async () => null,
+			bodyLiveness: async () => "unknown", // cannot tell — must not migrate
 		});
 		const claimed = await coordinator.check();
 		expect(claimed.size).toBe(4); // reapers stay suppressed
@@ -487,7 +519,7 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 		expect(alerts).toHaveLength(0);
 	});
 
-	it("within an ongoing episode, a pending session with a PROVABLY gone target migrates even while the server probe is up", async () => {
+	it("within an ongoing episode, a pending session with a confirmed dead body migrates even while the server probe is up", async () => {
 		const fleet = incidentFleet().slice(0, 3);
 		for (const s of fleet) store.upsertSession(s);
 		store.setServerLossEpisode("tmux-server-lost:1000", {
@@ -553,6 +585,7 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 		});
 		// Override migrate to control failures.
 		const controlled = new ServerLossCoordinator({
+			bodyLiveness: async () => "dead",
 			store,
 			probeServer: async () => "down",
 			targetGone: async () => true,
@@ -598,6 +631,7 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 		const fleet = [session(1, "tadashi")];
 		for (const s of fleet) store.upsertSession(s);
 		const coordinator = new ServerLossCoordinator({
+			bodyLiveness: async () => "dead",
 			store,
 			probeServer: async () => "down",
 			targetGone: async () => true,
@@ -624,6 +658,7 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 		let alertOk = false;
 		const make = () =>
 			new ServerLossCoordinator({
+				bodyLiveness: async () => "dead",
 				store,
 				probeServer: async () => "down",
 				targetGone: async () => true,
@@ -673,6 +708,7 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 		let notifyOk = true;
 		const make = () =>
 			new ServerLossCoordinator({
+				bodyLiveness: async () => "dead",
 				store,
 				probeServer: async () => "down",
 				targetGone: async () => true,

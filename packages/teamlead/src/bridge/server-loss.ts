@@ -80,7 +80,9 @@ export interface ServerLossDeps {
 	 * (live) server? true=gone, false=present, null=cannot tell (never claim).
 	 */
 	targetGone: (session: Session) => Promise<boolean | null>;
-	/** Terminal migration for one runner (reapOrphans `failed` semantics). */
+	/** Process evidence independent of the transport incident. Missing/error is unknown. */
+	bodyLiveness?: (session: Session) => Promise<"alive" | "dead" | "unknown">;
+	/** Common body convergence revalidates process evidence and completion markers. */
 	migrate: (session: Session, episodeSignature: string) => Promise<boolean>;
 	/** The owning Lead's agent id for grouping (null = unresolvable). */
 	resolveLeadId: (session: Session) => string | null;
@@ -402,14 +404,11 @@ export class ServerLossCoordinator {
 			}
 		}
 
-		// Migrate pending sessions — PROOF-gated per session (Codex R3 HIGH-1):
-		// server provably down, or the session's own target provably gone. An
-		// `unknown` probe suppresses the reapers but buries nothing.
+		// A transport incident never authorizes death. The common convergence
+		// callback rechecks identity, feature policy and completion before its CAS.
 		const pending = running.filter((s) => claimed.has(s.execution_id));
 		for (const session of pending) {
-			const provablyDead =
-				probe === "down" || (await this.deps.targetGone(session)) === true;
-			if (!provablyDead) continue;
+			if ((await this.bodyVerdict(session)) !== "dead") continue;
 			try {
 				await this.deps.migrate(session, ledger.signature);
 			} catch (err) {
@@ -445,13 +444,21 @@ export class ServerLossCoordinator {
 				state.failedLeads.includes(leadId)
 			)
 				continue;
-			const lines = group.map(
-				(s) =>
-					`- ${s.issue_identifier ?? s.issue_id} (exec ${s.execution_id})：progress ledger 在其分支上（$FLYWHEEL_PROGRESS_PATH 指向,可 resume 续跑）`,
+			const lines = await Promise.all(
+				group.map(async (s) => {
+					const verdict = await this.bodyVerdict(s);
+					const label =
+						verdict === "alive"
+							? "进程存活"
+							: verdict === "dead"
+								? "已证实进程死亡"
+								: "进程状态未知";
+					return `- ${s.issue_identifier ?? s.issue_id} (exec ${s.execution_id})：${label}；progress ledger 在其分支上（$FLYWHEEL_PROGRESS_PATH 指向,可 resume 续跑）`;
+				}),
 			);
-			const content = `[fleet-alert] tmux server 丢失（${ledger.signature}）— 你名下 ${group.length} 个 runner 阵亡,已标记终态：\n${lines.join(
+			const content = `[fleet-alert] tmux server 丢失（${ledger.signature}）— 你名下 ${group.length} 个 runner 受窗口故障影响：\n${lines.join(
 				"\n",
-			)}\n复活由你驱动（respawn 不代劳）;每个都有 restart-resilient resume（FLY-795）。${
+			)}\n存活进程修复显示；未知进程继续探活；死亡收敛后按既有恢复流程处理。每个都有 restart-resilient resume（FLY-795）。${
 				watermark
 					? `当前内存水位 ${watermark} — 请按内存压力节奏复活,避免 stampede。`
 					: ""
@@ -511,9 +518,15 @@ export class ServerLossCoordinator {
 			);
 		}
 		if (!state.ticketDone && owed.length === 0) {
-			const migrated = state.claimed.filter(
-				(id) => this.deps.store.getSession(id)?.status !== "running",
-			).length;
+			const migrated = (
+				await Promise.all(
+					sessions.map(
+						async (session) =>
+							session.status !== "running" &&
+							(await this.bodyVerdict(session)) === "dead",
+					),
+				)
+			).filter(Boolean).length;
 			const perLead = [...byLead.entries()]
 				.map(([leadId, group]) => `${leadId}: ${group.length}`)
 				.join(" / ");
@@ -523,14 +536,14 @@ export class ServerLossCoordinator {
 					projectName: FLEET_ALERT_PROJECT,
 					eventId: ledger.signature,
 					eventType: "tmux_server_lost",
-					title: `tmux server 丢失 — ${state.claimed.length} 个 runner 阵亡`,
+					title: `tmux server 丢失 — ${state.claimed.length} 个 runner 受影响`,
 					body: `${
 						state.shape === "server_down"
 							? "tmux server 整个消失（no server running）"
-							: "tmux server 重启（复活对账发现上一世代 runner 全灭）"
+							: "tmux server 重启（窗口对账发现上一世代目标丢失）"
 					}。受影响：${perLead}${
 						unresolvedCount > 0 ? ` / 无主 ${unresolvedCount}` : ""
-					}。已成组迁移 ${migrated}/${state.claimed.length} 到终态,并按 Lead 分组通知（各自阵亡清单 + resume 指针）。respawn 由各 Lead 驱动。`,
+					}。已终态且进程证死 ${migrated}/${state.claimed.length}，按 Lead 分组通知（进程证据 + resume 指针）。窗口故障本身不授权终结或换体。`,
 					severity: "severe",
 					metadata: {
 						tmuxServerLost: {
@@ -554,6 +567,16 @@ export class ServerLossCoordinator {
 		}
 
 		return checkResult(claimed, heldExecutionIds);
+	}
+
+	private async bodyVerdict(
+		session: Session,
+	): Promise<"alive" | "dead" | "unknown"> {
+		try {
+			return (await this.deps.bodyLiveness?.(session)) ?? "unknown";
+		} catch {
+			return "unknown";
+		}
 	}
 
 	private openHold(
