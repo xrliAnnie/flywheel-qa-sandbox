@@ -2,24 +2,21 @@
 issue: FLY-2919
 phase: implement
 phaseCursor: 0/6
-updated: 2026-09-27T05:51:58.609Z
-nextStep: "B13 committed d4cc25102: same physical owner now resolves current
-  unique logical activation through observer/death CAS/settled fact/Comm
-  projection without changing physical token/binding. Core RED2 and tied
-  same-node attempt RED1 -> GREEN.20 concrete files567pass incl A9 original15s
-  test13.089s; bounded
-  related11files468pass,retention10,build/types/lint0(26warnings),6 source
-  hashes archived. Consumed Lead reply to report93e6d052: continue all remaining
-  scope without checkpoint wait. Next B14 full
-  generalized-launch/run-quiescence/closeout window-to-body reader migration,
-  preserving trusted pre-adapter no-body exception and neutralized ordinary
-  gate. Old Codex unregistered-controller evidence and ordinary/rework
-  C/D/E/F/nine-ticket matrix/final same-head review PR frozenCI handoff remain.
-  Full goal active, no gate/blocker, no completion/QA/CI claim."
+updated: 2026-09-27T06:13:36.177Z
+nextStep: "B14 WIP after pushed B13 5d115a9a4: generalized-launch and quiescence
+  use shared body reader; no window death fallback. Nine core RED->GREEN;
+  launch15, absence4, quiescence40, close-tmux10 passed before latest CAS edits.
+  needs_lead coarse dead verdict reproduced RED; added final managed
+  flag/current death-duty or pre-adapter snapshot guard, original ordinary
+  quiescence gate unchanged. CAS focused retry exited0; full workflow-rework and
+  types running, final related/build/lint/discovery pending; worktree code
+  intentionally uncommitted until verification. Continue B14 consumer migration
+  and remaining old Codex binding/C-D-E-F/nine-ticket matrix; no gate or
+  blocker; no final review PR frozen CI handoff claim."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2919 progress
 **phase**: implement (0/6)
-**next**: B13 committed d4cc25102: same physical owner now resolves current unique logical activation through observer/death CAS/settled fact/Comm projection without changing physical token/binding. Core RED2 and tied same-node attempt RED1 -> GREEN.20 concrete files567pass incl A9 original15s test13.089s; bounded related11files468pass,retention10,build/types/lint0(26warnings),6 source hashes archived. Consumed Lead reply to report93e6d052: continue all remaining scope without checkpoint wait. Next B14 full generalized-launch/run-quiescence/closeout window-to-body reader migration, preserving trusted pre-adapter no-body exception and neutralized ordinary gate. Old Codex unregistered-controller evidence and ordinary/rework C/D/E/F/nine-ticket matrix/final same-head review PR frozenCI handoff remain. Full goal active, no gate/blocker, no completion/QA/CI claim.
+**next**: B14 WIP after pushed B13 5d115a9a4: generalized-launch and quiescence use shared body reader; no window death fallback. Nine core RED->GREEN; launch15, absence4, quiescence40, close-tmux10 passed before latest CAS edits. needs_lead coarse dead verdict reproduced RED; added final managed flag/current death-duty or pre-adapter snapshot guard, original ordinary quiescence gate unchanged. CAS focused retry exited0; full workflow-rework and types running, final related/build/lint/discovery pending; worktree code intentionally uncommitted until verification. Continue B14 consumer migration and remaining old Codex binding/C-D-E-F/nine-ticket matrix; no gate or blocker; no final review PR frozen CI handoff claim.
