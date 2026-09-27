@@ -1051,6 +1051,7 @@ import {
 	isWorkflowProcessRetirementApproved,
 	runWorkflowProcessRetirementTick,
 } from "./workflow-process-retirement.js";
+import { recoverQuotaHeldWorkflowNode } from "./workflow-quota-recovery.js";
 import { resolveWorkflowReplacementLeadIntent } from "./workflow-replacement-lead-event.js";
 import {
 	GitWorkflowResumeCheckpointStore,
@@ -9090,6 +9091,15 @@ export async function startBridge(
 				apiToken: config.apiToken,
 				canonicalHome,
 				pool: getCodexQuotaAccountPool,
+				recoverHeldWorkflowNode: async (expectation) => {
+					await recoverQuotaHeldWorkflowNode(store, expectation, {
+						isEnabled: () => storeCodexQuotaAutoSwitchEnabled(flagStore),
+						observeInitialStart:
+							startDispatcher?.observeInitialWorkflowStart?.bind(
+								startDispatcher,
+							),
+					});
+				},
 			});
 			codexQuotaCanRecover = recovery.canRecover;
 			codexQuotaRuntime = new CodexQuotaRuntime({
