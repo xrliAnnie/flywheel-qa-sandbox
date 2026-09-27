@@ -526,8 +526,8 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 		);
 	});
 
-	// FLY-755: the model short code (F/O/S/H) rides the same rename as the stage
-	// badge — a FRONT bracket marker (`[F] `) between the badge and the issue key
+	// FLY-755/2936: the model short code rides the same rename as the stage
+	// badge — FRONT bracket markers (`[A][F] `) between the badge and the issue key
 	// (the FLY-728 tail suffix was invisible on mobile truncation).
 	it("FLY-755: stamps the model code as a front marker after the stage emoji", async () => {
 		mockFetch
@@ -539,14 +539,14 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 			.mockResolvedValueOnce({ ok: true, status: 200 });
 
 		await creator.stampStageEmoji(
-			ctx({ modelMarker: "F" }),
+			ctx({ modelMarker: "[A][F]" }),
 			"thread-1",
 			"implement",
 		);
 
 		const patchOpts = mockFetch.mock.calls[1]![1];
 		expect(JSON.parse(patchOpts.body).name).toBe(
-			"🔨 [F] [FLY-560] Discord issue status",
+			"🔨 [A][F] [FLY-560] Discord issue status",
 		);
 	});
 
@@ -557,13 +557,13 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 				status: 200,
 				json: () =>
 					Promise.resolve({
-						name: "🔨 [G] [FLY-560] Discord issue status",
+						name: "🔨 [O][G] [FLY-560] Discord issue status",
 					}),
 			})
 			.mockResolvedValueOnce({ ok: true, status: 200 });
 
 		await creator.stampStageEmoji(
-			ctx({ modelMarker: "K" }),
+			ctx({ modelMarker: "[K][K]" }),
 			"thread-1",
 			"design_review",
 		);
@@ -572,7 +572,7 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 			(c) => c[1]?.method === "PATCH",
 		);
 		expect(JSON.parse(patchCall![1].body).name).toBe(
-			"👀 [K] [FLY-560] Discord issue status",
+			"👀 [K][K] [FLY-560] Discord issue status",
 		);
 	});
 
@@ -613,7 +613,7 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 			.mockResolvedValueOnce({ ok: true, status: 200 });
 
 		await creator.stampStageEmoji(
-			ctx({ issueTitle: undefined, modelMarker: "G" }),
+			ctx({ issueTitle: undefined, modelMarker: "[O][G]" }),
 			"thread-1",
 			"implement",
 		);
@@ -623,7 +623,7 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 		);
 		const name = JSON.parse(patchCall![1].body).name as string;
 		expect(name).toHaveLength(100);
-		expect(name.startsWith("🔨 [G] [FLY-560]")).toBe(true);
+		expect(name.startsWith("🔨 [O][G] [FLY-560]")).toBe(true);
 	});
 
 	it("FLY-755: an authoritative modelMarker=null CLEARS a stale front marker", async () => {

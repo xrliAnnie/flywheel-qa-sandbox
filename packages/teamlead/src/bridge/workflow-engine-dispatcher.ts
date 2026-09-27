@@ -198,6 +198,14 @@ export interface WorkflowEngineReconcileResult {
 	held: number;
 }
 
+/** FLY-2900: the transient global admission brake (see `consume`). */
+function isAdmissionBrakeError(error: unknown): boolean {
+	return (
+		error instanceof Error &&
+		(error as { admissionBrake?: unknown }).admissionBrake === true
+	);
+}
+
 export const DEAD_EXECUTION_WATCH_TTL_MS = 24 * 60 * 60 * 1_000;
 export const NOT_WIRED_DEAD_EXECUTION_COMMDB_FINALIZER =
 	async (): Promise<"not_wired"> => "not_wired";
@@ -2227,6 +2235,8 @@ export class WorkflowEngineDispatcher {
 					workflowNode.id,
 				)) {
 					if (node.state !== "running" || !node.execution_id) continue;
+					// FLY-2900 §4.2: a Codex quota standby body is parked, not dead.
+					if (store.isCodexQuotaStandby(node.execution_id)) continue;
 					const session = store.getSession(node.execution_id);
 					if (
 						!isStateStoreIrreversibleTerminalForZombie(session?.status) &&
@@ -2548,7 +2558,51 @@ export class WorkflowEngineDispatcher {
 		return this.markStarted(intent, { replacement });
 	}
 
+	/**
+	 * FLY-2900 §5.2: every refusal before admission (dispatch resolution,
+	 * predecessor / start point, admission) hands a prepared quota fallback
+	 * body back to its parked source in one place. The global admission brake
+	 * is transient (restart/deploy window): the body stays queued for the next
+	 * tick instead of spending one of its two fallback attempts.
+	 */
 	private async consume(intent: WorkflowSideEffectRow): Promise<boolean> {
+		const phase = { prelaunch: true };
+		try {
+			return await this.consumeIntent(intent, phase);
+		} catch (error) {
+			if (phase.prelaunch && !isAdmissionBrakeError(error))
+				this.revertPreparedQuotaFallback(intent.execution_id, error);
+			throw error;
+		}
+	}
+
+	private revertPreparedQuotaFallback(executionId: string, cause: unknown) {
+		const store = this.options.store;
+		if (typeof store.revertCodexQuotaFallback !== "function") return;
+		const message = cause instanceof Error ? cause.message : String(cause);
+		const code =
+			message
+				.toLowerCase()
+				.replace(/[^a-z0-9_:.-]+/g, "_")
+				.replace(/^_+|_+$/g, "")
+				.slice(0, 50) || "prelaunch_refused";
+		try {
+			store.revertCodexQuotaFallback({
+				newExecutionId: executionId,
+				reason: code,
+				now: this.now().toISOString(),
+			});
+		} catch (error) {
+			this.log(
+				`quota fallback revert failed for ${executionId}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+
+	private async consumeIntent(
+		intent: WorkflowSideEffectRow,
+		phase: { prelaunch: boolean },
+	): Promise<boolean> {
 		const store = this.options.store;
 		if (store.isCodexQuotaLaunchPaused(intent.execution_id)) return false;
 		const run = store.getWorkflowRun(intent.run_id);
@@ -3061,6 +3115,7 @@ export class WorkflowEngineDispatcher {
 		const dispatchResolution = resolveNodeDispatchAtLaunch(store, {
 			runId: intent.run_id,
 			nodeId: intent.node_id,
+			executionId: intent.execution_id,
 		});
 		if (
 			dispatchResolution.dispatch.vendor === "codex" &&
@@ -3090,9 +3145,9 @@ export class WorkflowEngineDispatcher {
 				: {}),
 			dispatchResolution,
 		});
-		if (!admitted.ok) {
-			throw new Error(`engine_admission_${admitted.reason}`);
-		}
+		if (!admitted.ok) throw new Error(`engine_admission_${admitted.reason}`);
+		// Admitted: later failures unwind through releaseFailedWorkflowLaunch.
+		phase.prelaunch = false;
 		const runtime = store.getWorkflowExecutionRuntime(intent.execution_id);
 		if (!runtime) throw new Error("engine_runtime_dispatch_missing");
 		const runtimeDispatch = {

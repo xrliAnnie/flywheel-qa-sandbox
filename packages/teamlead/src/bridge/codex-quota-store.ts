@@ -7,6 +7,9 @@ import {
 } from "flywheel-claude-runner/bin/codex-account-core.mjs";
 import {
 	type CodexQuotaBindingV1,
+	type CodexQuotaContinueDecision,
+	type CodexQuotaContinueReconciliation,
+	type CodexQuotaResumeAuthorization,
 	parseCodexQuotaBindingV1,
 } from "flywheel-core";
 import type {
@@ -87,6 +90,103 @@ export type CodexQuotaIncidentState =
 	| "pool_exhausted"
 	| "probe_failed"
 	| "identity_uncertain";
+/** FLY-2900 §2.2: one standby carrier row per execution. */
+export type CodexQuotaStandbyState =
+	| "standby"
+	| "resuming"
+	| "fallback_prepared"
+	| "released"
+	| "closed";
+export interface CodexQuotaStandbyRow {
+	execution_id: string;
+	run_id: string;
+	node_id: string;
+	attempt: number;
+	activation_id: string | null;
+	entry_seq: number;
+	trigger_signal_seq: number;
+	source_event_id: string;
+	root_key: string | null;
+	generation: number | null;
+	binding_id: string | null;
+	state: CodexQuotaStandbyState;
+	resume_phase: "launching" | "identity_verified" | "continuing" | null;
+	continue_attempt_id: string | null;
+	continue_turn_id: string | null;
+	permit_id: string | null;
+	resume_attempt: number;
+	mechanical_failures: number;
+	capacity_rejections: number;
+	reconcile_failures: number;
+	owner_claim_id: string | null;
+	lease_expires_at: string | null;
+	fallback_attempt: number;
+	fallback_execution_id: string | null;
+	fallback_vendor: "codex" | "claude" | null;
+	fallback_reason: string | null;
+	checkpoint_commit: string | null;
+	release_reason: string | null;
+	last_error_code: string | null;
+	entered_at: string;
+	updated_at: string;
+}
+export type CodexQuotaResumeAuditAction =
+	| "standby_entered"
+	| "resume_started"
+	| "identity_verified"
+	| "continue_started"
+	| "resumed"
+	| "resume_failed"
+	| "capacity_rejected"
+	| "fallback_prepared"
+	| "fallback_committed"
+	| "fallback_reverted"
+	| "fallback_blocked"
+	| "released"
+	| "standby_overdue";
+/** FLY-2900 §2.3: one durable capacity permit. */
+export interface CodexQuotaCapacityPermitRow {
+	permit_id: string;
+	root_key: string;
+	generation: number;
+	kind: "switch_committed" | "reading_confirmed";
+	account_key: string;
+	profile: string;
+	covers_signal_seq: number;
+	evidence_ref: string;
+	created_at: string;
+}
+/** FLY-2900 §3.2: the reading fields a reading-confirmed permit may rely on. */
+export interface CodexReadingEvidence {
+	name: string;
+	identityKey?: string;
+	observedAt: string | null;
+	fiveH: { usedPercent: number; resetAt: string | null } | null;
+	weekly: { usedPercent: number; resetAt: string | null } | null;
+	requestSeq?: number;
+}
+export type CodexReadingPermitOutcome =
+	| { outcome: "issued" | "exists"; permit: CodexQuotaCapacityPermitRow }
+	| { outcome: "not_needed" }
+	| { outcome: "refused"; reason: string; needsRefresh: boolean };
+/** FLY-2900 §3.2: a reading older than this cannot open a permit. */
+export const CODEX_READING_PERMIT_FRESH_MS = 5 * 60_000;
+const READING_PERMIT_FUTURE_SKEW_MS = 60_000;
+/**
+ * FLY-2900 §3.3: a signal that voids a permit — any later wall on the
+ * permit's root at its generation or newer, or any unbound wall.
+ */
+const RELEVANT_SIGNAL_AFTER = `SELECT 1 FROM codex_quota_signal_event s
+	WHERE COALESCE(s.signal_seq,0) > p.covers_signal_seq
+	  AND ((s.root_key=p.root_key AND s.generation>=p.generation) OR s.root_key IS NULL)`;
+/** FLY-2900 §6: non-quota relaunch failures under one permit before fallback. */
+export const CODEX_QUOTA_MECHANICAL_BUDGET = 2;
+/** FLY-2900 §6: consecutive unreadable reconciliations before the Lead hears. */
+const CODEX_QUOTA_RECONCILE_ALERT_AFTER = 3;
+/** Owner claim ids are `<owner prefix>:<nonce>`, bounded and printable. */
+const CODEX_QUOTA_CLAIM_ID = /^[A-Za-z0-9_.-]+(:[A-Za-z0-9_.-]+)+$/;
+/** Bounded machine code; never a path, email or free text. */
+export const CODEX_QUOTA_MACHINE_CODE = /^[a-z0-9_:.-]{1,80}$/;
 export type CodexQuotaSignalSource =
 	| "runner_terminal"
 	| "review_exec"
@@ -251,7 +351,73 @@ export class CodexQuotaStore {
    CREATE TABLE IF NOT EXISTS codex_quota_legacy_member(batch_id TEXT NOT NULL,source TEXT NOT NULL,source_ref TEXT NOT NULL,run_id TEXT,node_id TEXT,attempt INTEGER,execution_id TEXT,incident_id TEXT,result TEXT NOT NULL DEFAULT 'pending',reason TEXT,event_key TEXT,attempt_count INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(batch_id,source,source_ref));
    CREATE INDEX IF NOT EXISTS codex_quota_legacy_member_result ON codex_quota_legacy_member(batch_id,result,source,source_ref);
    CREATE INDEX IF NOT EXISTS codex_quota_legacy_workflow_held ON workflow_run(status,current_node_id,run_id);
+   CREATE TABLE IF NOT EXISTS codex_quota_sequence(name TEXT PRIMARY KEY,value INTEGER NOT NULL CHECK(value>=0));
+   CREATE TABLE IF NOT EXISTS codex_quota_standby(execution_id TEXT PRIMARY KEY,run_id TEXT NOT NULL,node_id TEXT NOT NULL,attempt INTEGER NOT NULL CHECK(attempt>0),activation_id TEXT,entry_seq INTEGER NOT NULL CHECK(entry_seq>0),trigger_signal_seq INTEGER NOT NULL CHECK(trigger_signal_seq>=0),source_event_id TEXT NOT NULL,root_key TEXT,generation INTEGER,binding_id TEXT,state TEXT NOT NULL CHECK(state IN ('standby','resuming','fallback_prepared','released','closed')),resume_phase TEXT CHECK(resume_phase IS NULL OR resume_phase IN ('launching','identity_verified','continuing')),continue_attempt_id TEXT,continue_turn_id TEXT,permit_id TEXT,resume_attempt INTEGER NOT NULL DEFAULT 0 CHECK(resume_attempt BETWEEN 0 AND 2),mechanical_failures INTEGER NOT NULL DEFAULT 0 CHECK(mechanical_failures>=0),capacity_rejections INTEGER NOT NULL DEFAULT 0 CHECK(capacity_rejections>=0),reconcile_failures INTEGER NOT NULL DEFAULT 0 CHECK(reconcile_failures>=0),owner_claim_id TEXT,lease_expires_at TEXT,fallback_attempt INTEGER NOT NULL DEFAULT 0 CHECK(fallback_attempt BETWEEN 0 AND 3),fallback_execution_id TEXT,fallback_vendor TEXT CHECK(fallback_vendor IS NULL OR fallback_vendor IN ('codex','claude')),fallback_reason TEXT,checkpoint_commit TEXT,release_reason TEXT,last_error_code TEXT,entered_at TEXT NOT NULL,updated_at TEXT NOT NULL,CHECK((state='resuming')=(resume_phase IS NOT NULL)));
+   CREATE INDEX IF NOT EXISTS codex_quota_standby_state ON codex_quota_standby(state,trigger_signal_seq);
+   CREATE TABLE IF NOT EXISTS codex_quota_capacity_permit(permit_id TEXT PRIMARY KEY,root_key TEXT NOT NULL,generation INTEGER NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('switch_committed','reading_confirmed')),account_key TEXT NOT NULL,profile TEXT NOT NULL,covers_signal_seq INTEGER NOT NULL CHECK(covers_signal_seq>=0),evidence_ref TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(root_key,generation,kind,covers_signal_seq));
+   CREATE TABLE IF NOT EXISTS codex_quota_dispatch_demand(new_execution_id TEXT PRIMARY KEY,source_execution_id TEXT NOT NULL,entry_seq INTEGER NOT NULL,fallback_attempt INTEGER NOT NULL CHECK(fallback_attempt BETWEEN 1 AND 2),vendor TEXT NOT NULL CHECK(vendor IN ('codex','claude')),model TEXT NOT NULL,effort TEXT NOT NULL,reason TEXT NOT NULL CHECK(reason IN ('resume_attempts_exhausted','codex_quota_fallback')),same_vendor_evidence_json TEXT NOT NULL,pool_evidence_ref TEXT,source_node_state TEXT NOT NULL DEFAULT 'running',state TEXT NOT NULL CHECK(state IN ('prepared','committed','reverted')),revert_reason TEXT,created_at TEXT NOT NULL,updated_at TEXT,UNIQUE(source_execution_id,entry_seq,fallback_attempt));
+   CREATE TABLE IF NOT EXISTS codex_quota_resume_output_proof(claim_id TEXT PRIMARY KEY,permit_id TEXT NOT NULL,execution_id TEXT NOT NULL,binding_id TEXT NOT NULL,continue_attempt_id TEXT NOT NULL,session_id TEXT NOT NULL,auth_digest TEXT NOT NULL,identity_seq INTEGER NOT NULL,output_seq INTEGER,proved_at TEXT);
+   CREATE TABLE IF NOT EXISTS codex_quota_resume_audit(event_uid TEXT PRIMARY KEY,at TEXT NOT NULL,execution_id TEXT NOT NULL,run_id TEXT,issue_id TEXT,node_id TEXT,attempt INTEGER,action TEXT NOT NULL CHECK(action IN ('standby_entered','resume_started','identity_verified','continue_started','resumed','resume_failed','capacity_rejected','fallback_prepared','fallback_committed','fallback_reverted','fallback_blocked','released','standby_overdue')),permit_kind TEXT,from_profile TEXT,to_profile TEXT,vendor TEXT,detail_code TEXT);
+   CREATE INDEX IF NOT EXISTS codex_quota_resume_audit_execution ON codex_quota_resume_audit(execution_id,at);
+   CREATE INDEX IF NOT EXISTS codex_quota_resume_audit_action ON codex_quota_resume_audit(action,at);
   `);
+		const signalColumns = new Set(
+			(
+				this.db
+					.prepare("PRAGMA table_info(codex_quota_signal_event)")
+					.all() as { name: string }[]
+			).map((column) => column.name),
+		);
+		if (!signalColumns.has("signal_seq"))
+			this.db.exec(
+				"ALTER TABLE codex_quota_signal_event ADD COLUMN signal_seq INTEGER",
+			);
+		this.db.exec(
+			"CREATE INDEX IF NOT EXISTS codex_quota_signal_seq ON codex_quota_signal_event(signal_seq)",
+		);
+		// FLY-2900 §4.3: every operator close intent and every writer that moves
+		// a run to a terminal status releases its parked executions in the same
+		// statement's transaction, so a prepared intent stops a claim at once.
+		// Re-created on every open, after any workflow table rebuild.
+		this.db.exec(`
+			CREATE TRIGGER IF NOT EXISTS codex_quota_standby_release_close_intent_insert
+			AFTER INSERT ON workflow_operator_close_intent
+			WHEN NEW.stage IN ('prepared','committed')
+			BEGIN
+				UPDATE codex_quota_standby
+				   SET state='released',resume_phase=NULL,release_reason='operator_close_intent',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+				 WHERE execution_id=NEW.execution_id AND state IN ('standby','resuming','fallback_prepared');
+			END;
+			CREATE TRIGGER IF NOT EXISTS codex_quota_standby_release_close_intent_update
+			AFTER UPDATE OF stage ON workflow_operator_close_intent
+			WHEN NEW.stage IN ('prepared','committed')
+			BEGIN
+				UPDATE codex_quota_standby
+				   SET state='released',resume_phase=NULL,release_reason='operator_close_intent',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+				 WHERE execution_id=NEW.execution_id AND state IN ('standby','resuming','fallback_prepared');
+			END;
+			CREATE TRIGGER IF NOT EXISTS codex_quota_standby_release_run_terminal
+			AFTER UPDATE OF status ON workflow_run
+			WHEN NEW.status IN ('terminated','completed') AND OLD.status IS NOT NEW.status
+			BEGIN
+				UPDATE codex_quota_standby
+				   SET state='released',resume_phase=NULL,release_reason='run_' || NEW.status,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+				 WHERE run_id=NEW.run_id AND state IN ('standby','resuming','fallback_prepared');
+			END;
+		`);
+		const externalColumns = new Set(
+			(
+				this.db
+					.prepare("PRAGMA table_info(codex_quota_external_generation)")
+					.all() as { name: string }[]
+			).map((column) => column.name),
+		);
+		// FLY-2900: NULL is a manual canonical switch; 'reading_confirmed' is a
+		// same-account generation opened by post-wall recovery evidence.
+		if (!externalColumns.has("reason"))
+			this.db.exec(
+				"ALTER TABLE codex_quota_external_generation ADD COLUMN reason TEXT",
+			);
 		const installMaterialColumns = new Set(
 			(
 				this.db
@@ -420,7 +586,7 @@ export class CodexQuotaStore {
 				throw new Error("quota_installation_pending");
 			this.db
 				.prepare(
-					"INSERT INTO codex_quota_external_generation VALUES(?,?,?,?,?,?)",
+					"INSERT INTO codex_quota_external_generation(root_key,generation,account_key,profile,auth_digest,observed_at) VALUES(?,?,?,?,?,?)",
 				)
 				.run(
 					input.rootKey,
@@ -784,6 +950,21 @@ export class CodexQuotaStore {
 					"UPDATE codex_quota_install_material SET resolution='installed',resolved_at=? WHERE incident_id=? AND resolution='pending'",
 				)
 				.run(committedAt, input.incidentId);
+			// FLY-2900 §3.2: a committed switch is recovery evidence for every
+			// wall recorded so far against this root (or unbound).
+			this.insertPermit({
+				kind: "switch_committed",
+				rootKey: root.rootKey,
+				generation: root.generation + 1,
+				accountKey: input.accountKey,
+				profile: input.profile,
+				coversSignalSeq: this.maxRootSignalSeqBelow(
+					root.rootKey,
+					Number.MAX_SAFE_INTEGER,
+				),
+				evidenceRef: `selection:${String(incident.selection_id ?? input.incidentId)}`,
+				now: committedAt,
+			});
 			this.enqueueOutbox({
 				incidentId: input.incidentId,
 				kind: "switch_notification",
@@ -816,7 +997,8 @@ export class CodexQuotaStore {
 	): void {
 		if (
 			(state === "recovering" || state === "settled") &&
-			this.getIncident(incidentId)?.probe_result !== "ok"
+			this.getIncident(incidentId)?.probe_result !== "ok" &&
+			!this.getResumeOutputRecoveryPermit(incidentId)
 		)
 			throw new Error("quota_probe_not_successful");
 		this.db.transaction(() => {
@@ -934,6 +1116,14 @@ export class CodexQuotaStore {
 					// FLY-2869: a manual switch has no incident; its generation keys it.
 					incidentId: null;
 					kind: "switch_notification";
+					eventId: string;
+					destination: string;
+					payload: Record<string, unknown>;
+			  }
+			| {
+					// FLY-2900: one issue-thread line per resume / fallback outcome.
+					incidentId: null;
+					kind: "resume_notice";
 					eventId: string;
 					destination: string;
 					payload: Record<string, unknown>;
@@ -1494,6 +1684,1274 @@ export class CodexQuotaStore {
 		});
 	}
 
+	/**
+	 * FLY-2900: the single quota causal counter. Signals and reading requests
+	 * draw from it inside synchronous StateStore transactions, so "a reading
+	 * was requested after a wall" is a pure integer comparison.
+	 */
+	allocateCausalSeq(): number {
+		return this.db.transaction(() => {
+			this.db
+				.prepare(
+					"INSERT INTO codex_quota_sequence(name,value) VALUES('quota_causal',1) ON CONFLICT(name) DO UPDATE SET value=value+1",
+				)
+				.run();
+			const row = this.db
+				.prepare(
+					"SELECT value FROM codex_quota_sequence WHERE name='quota_causal'",
+				)
+				.get() as { value: number };
+			if (!Number.isSafeInteger(row.value) || row.value < 1)
+				throw new Error("quota_causal_sequence_invalid");
+			return row.value;
+		})();
+	}
+	/** Causal number of one recorded signal; a legacy row without one is 0. */
+	signalSeqFor(
+		source: CodexQuotaSignalSource,
+		executionId: string,
+		sourceEventId: string,
+	): number | null {
+		const row = this.db
+			.prepare(
+				"SELECT COALESCE(signal_seq,0) AS seq FROM codex_quota_signal_event WHERE event_key=?",
+			)
+			.get(quotaSignalEventKey(source, executionId, sourceEventId)) as
+			| { seq: number }
+			| undefined;
+		return row ? Number(row.seq) : null;
+	}
+	getStandby(executionId: string): CodexQuotaStandbyRow | undefined {
+		return this.db
+			.prepare("SELECT * FROM codex_quota_standby WHERE execution_id=?")
+			.get(executionId) as CodexQuotaStandbyRow | undefined;
+	}
+	listStandby(
+		states: readonly CodexQuotaStandbyState[] = [
+			"standby",
+			"resuming",
+			"fallback_prepared",
+		],
+	): CodexQuotaStandbyRow[] {
+		if (!states.length) return [];
+		return this.db
+			.prepare(
+				`SELECT * FROM codex_quota_standby WHERE state IN (${states.map(() => "?").join(",")}) ORDER BY trigger_signal_seq,execution_id`,
+			)
+			.all(...states) as CodexQuotaStandbyRow[];
+	}
+	/** FLY-2900 §2.7: standby entries of one (run,node,attempt) since an instant. */
+	countStandbyEntriesSince(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		since: string;
+	}): number {
+		return Number(
+			(
+				this.db
+					.prepare(
+						"SELECT COUNT(*) AS n FROM codex_quota_resume_audit WHERE action='standby_entered' AND run_id=? AND node_id=? AND attempt=? AND at>=?",
+					)
+					.get(input.runId, input.nodeId, input.attempt, input.since) as {
+					n: number;
+				}
+			).n,
+		);
+	}
+	/**
+	 * FLY-2900 §2.6: append one resume audit row. The uid is scoped by the
+	 * execution, its standby entry and the action, numbered in arrival order.
+	 */
+	appendResumeAudit(input: {
+		executionId: string;
+		entrySeq: number;
+		action: CodexQuotaResumeAuditAction;
+		at: string;
+		runId?: string | null;
+		issueId?: string | null;
+		nodeId?: string | null;
+		attempt?: number | null;
+		permitKind?: string | null;
+		fromProfile?: string | null;
+		toProfile?: string | null;
+		vendor?: string | null;
+		detailCode?: string | null;
+	}): string {
+		const detail =
+			input.detailCode == null
+				? null
+				: CODEX_QUOTA_MACHINE_CODE.test(input.detailCode)
+					? input.detailCode
+					: "invalid_detail_code";
+		const prefix = `${input.executionId}:${input.entrySeq}:${input.action}:`;
+		const n =
+			Number(
+				(
+					this.db
+						.prepare(
+							"SELECT COUNT(*) AS n FROM codex_quota_resume_audit WHERE execution_id=? AND substr(event_uid,1,?)=?",
+						)
+						.get(input.executionId, prefix.length, prefix) as { n: number }
+				).n,
+			) + 1;
+		const eventUid = `${prefix}${n}`;
+		this.db
+			.prepare(
+				"INSERT INTO codex_quota_resume_audit(event_uid,at,execution_id,run_id,issue_id,node_id,attempt,action,permit_kind,from_profile,to_profile,vendor,detail_code) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+			)
+			.run(
+				eventUid,
+				input.at,
+				input.executionId,
+				input.runId ?? null,
+				input.issueId ?? null,
+				input.nodeId ?? null,
+				input.attempt ?? null,
+				input.action,
+				input.permitKind ?? null,
+				input.fromProfile ?? null,
+				input.toProfile ?? null,
+				input.vendor ?? null,
+				detail,
+			);
+		return eventUid;
+	}
+	listResumeAudit(executionId?: string): Record<string, unknown>[] {
+		return (
+			executionId === undefined
+				? this.db
+						.prepare(
+							"SELECT * FROM codex_quota_resume_audit ORDER BY at,rowid LIMIT 2048",
+						)
+						.all()
+				: this.db
+						.prepare(
+							"SELECT * FROM codex_quota_resume_audit WHERE execution_id=? ORDER BY at,rowid",
+						)
+						.all(executionId)
+		) as Record<string, unknown>[];
+	}
+	/**
+	 * FLY-2900 §3.3: the newest permit a parked execution qualifies for right
+	 * now: current root generation, covers its trigger, not voided by a later
+	 * relevant wall. Unbound carriers may use any root's current permit.
+	 */
+	eligiblePermitFor(
+		executionId: string,
+	): CodexQuotaCapacityPermitRow | undefined {
+		const row = this.getStandby(executionId);
+		if (!row) return undefined;
+		return this.db
+			.prepare(
+				`SELECT p.* FROM codex_quota_capacity_permit p
+				   JOIN codex_quota_root r ON r.root_key=p.root_key AND r.generation=p.generation
+				    AND r.account_key=p.account_key AND r.profile=p.profile
+				  WHERE p.covers_signal_seq >= ?
+				    AND (? IS NULL OR p.root_key = ?)
+				    AND NOT EXISTS (${RELEVANT_SIGNAL_AFTER})
+				  ORDER BY p.covers_signal_seq DESC, p.created_at DESC, p.permit_id DESC
+				  LIMIT 1`,
+			)
+			.get(row.trigger_signal_seq, row.root_key, row.root_key) as
+			| CodexQuotaCapacityPermitRow
+			| undefined;
+	}
+	/** A permit is still valid for its root's current generation (§3.3 sequence fences). */
+	isPermitCurrent(permitId: string): boolean {
+		return !!this.db
+			.prepare(
+				`SELECT 1 FROM codex_quota_capacity_permit p
+				   JOIN codex_quota_root r ON r.root_key=p.root_key AND r.generation=p.generation
+				    AND r.account_key=p.account_key AND r.profile=p.profile
+				  WHERE p.permit_id=? AND NOT EXISTS (${RELEVANT_SIGNAL_AFTER})`,
+			)
+			.get(permitId);
+	}
+	getPermit(permitId: string): CodexQuotaCapacityPermitRow | undefined {
+		return this.db
+			.prepare("SELECT * FROM codex_quota_capacity_permit WHERE permit_id=?")
+			.get(permitId) as CodexQuotaCapacityPermitRow | undefined;
+	}
+	/** Durable probe-equivalent proof. Never fabricates installation material or a probe result. */
+	getResumeOutputRecoveryPermit(
+		incidentId: string,
+	): Record<string, unknown> | undefined {
+		const incident = this.getIncident(incidentId);
+		if (!incident) return undefined;
+		const proof = this.db
+			.prepare(`SELECT p.root_key,p.generation AS installed_generation,
+			proof.auth_digest AS installed_auth_digest,proof.claim_id,proof.output_seq
+			FROM codex_quota_resume_output_proof proof
+			JOIN codex_quota_capacity_permit p ON p.permit_id=proof.permit_id
+			JOIN codex_quota_root r ON r.root_key=p.root_key AND r.generation=p.generation
+			 AND r.account_key=p.account_key AND r.profile=p.profile
+			JOIN codex_quota_binding b ON b.binding_id=proof.binding_id
+			 AND b.execution_id=proof.execution_id AND b.root_key=p.root_key
+			 AND b.generation=p.generation AND b.account_key=p.account_key AND b.profile=p.profile
+			WHERE p.root_key=? AND p.generation>? AND p.kind='reading_confirmed'
+			 AND proof.output_seq>proof.identity_seq AND proof.identity_seq>p.covers_signal_seq
+			 AND NOT EXISTS (${RELEVANT_SIGNAL_AFTER})
+			ORDER BY proof.output_seq DESC LIMIT 1`)
+			.get(incident.root_key, incident.generation) as
+			| Record<string, unknown>
+			| undefined;
+		return proof
+			? {
+					...incident,
+					...proof,
+					state: "settled",
+					recovery_proof_kind: "resume_output",
+				}
+			: undefined;
+	}
+	/** Highest signal number recorded against a root (or unbound), below a bound. */
+	private maxRootSignalSeqBelow(rootKey: string, bound: number): number {
+		return Number(
+			(
+				this.db
+					.prepare(
+						"SELECT COALESCE(MAX(COALESCE(signal_seq,0)),0) AS seq FROM codex_quota_signal_event WHERE (root_key=? OR root_key IS NULL) AND COALESCE(signal_seq,0) < ?",
+					)
+					.get(rootKey, bound) as { seq: number }
+			).seq,
+		);
+	}
+	private insertPermit(input: {
+		kind: CodexQuotaCapacityPermitRow["kind"];
+		rootKey: string;
+		generation: number;
+		accountKey: string;
+		profile: string;
+		coversSignalSeq: number;
+		evidenceRef: string;
+		now: string;
+	}): CodexQuotaCapacityPermitRow {
+		const permitId = `${input.kind}:${input.rootKey}:${input.generation}:${input.coversSignalSeq}`;
+		this.db
+			.prepare(
+				"INSERT OR IGNORE INTO codex_quota_capacity_permit(permit_id,root_key,generation,kind,account_key,profile,covers_signal_seq,evidence_ref,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+			)
+			.run(
+				permitId,
+				input.rootKey,
+				input.generation,
+				input.kind,
+				input.accountKey,
+				input.profile,
+				input.coversSignalSeq,
+				input.evidenceRef,
+				input.now,
+			);
+		return this.getPermit(permitId)!;
+	}
+	/**
+	 * FLY-2900 §3.2: turn one post-wall reading of the canonical account into a
+	 * permit. The reading must be the canonical login, requested after every
+	 * pending wall (causal sequence, not wall clock), fresh, with both windows
+	 * known and below 100 %, and no relevant wall may have landed after its
+	 * request. When this generation itself walled, a same-account generation is
+	 * opened (manual switches already moved the generation).
+	 */
+	issueReadingConfirmedPermit(input: {
+		rootKey: string;
+		expectedGeneration: number;
+		authDigest: string;
+		reading: CodexReadingEvidence | undefined;
+		activeAccount: string | null;
+		nowMs: number;
+	}): CodexReadingPermitOutcome {
+		return this.db.transaction((): CodexReadingPermitOutcome => {
+			const refuse = (
+				reason: string,
+				needsRefresh = false,
+			): CodexReadingPermitOutcome => ({
+				outcome: "refused",
+				reason,
+				needsRefresh,
+			});
+			const root = this.getRoot(input.rootKey);
+			if (!root || root.generation !== input.expectedGeneration)
+				return refuse("generation_moved");
+			const parked = this.db
+				.prepare(
+					"SELECT execution_id,trigger_signal_seq FROM codex_quota_standby WHERE state='standby' AND (root_key=? OR root_key IS NULL) ORDER BY trigger_signal_seq",
+				)
+				.all(root.rootKey) as {
+				execution_id: string;
+				trigger_signal_seq: number;
+			}[];
+			const pending = parked.filter(
+				(row) => !this.eligiblePermitFor(row.execution_id),
+			);
+			if (pending.length === 0) {
+				const permit = parked[0]
+					? this.eligiblePermitFor(parked[0].execution_id)
+					: undefined;
+				return permit
+					? { outcome: "exists", permit }
+					: { outcome: "not_needed" };
+			}
+			const evidence = input.reading;
+			if (!evidence) return refuse("reading_missing", true);
+			if (
+				evidence.name !== root.profile ||
+				evidence.identityKey !== root.accountKey
+			)
+				return refuse("reading_identity_mismatch");
+			if (input.activeAccount !== root.profile)
+				return refuse("reading_not_active");
+			const requestSeq = evidence.requestSeq;
+			if (
+				requestSeq === undefined ||
+				!Number.isSafeInteger(requestSeq) ||
+				requestSeq < 1
+			)
+				return refuse("reading_unsequenced", true);
+			const maxTrigger = Math.max(
+				...pending.map((row) => row.trigger_signal_seq),
+			);
+			if (requestSeq <= maxTrigger)
+				return refuse("reading_predates_wall", true);
+			const observedMs =
+				evidence.observedAt === null
+					? Number.NaN
+					: Date.parse(evidence.observedAt);
+			if (
+				!Number.isFinite(observedMs) ||
+				observedMs > input.nowMs + READING_PERMIT_FUTURE_SKEW_MS ||
+				input.nowMs - observedMs > CODEX_READING_PERMIT_FRESH_MS
+			)
+				return refuse("reading_stale", true);
+			if (evidence.fiveH === null || evidence.weekly === null)
+				return refuse("reading_window_unknown");
+			if (
+				evidence.fiveH.usedPercent >= 100 ||
+				evidence.weekly.usedPercent >= 100
+			)
+				return refuse("reading_exhausted");
+			if (
+				this.db
+					.prepare(
+						"SELECT 1 FROM codex_quota_signal_event WHERE COALESCE(signal_seq,0) >= ? AND ((root_key=? AND generation>=?) OR root_key IS NULL) LIMIT 1",
+					)
+					.get(requestSeq, root.rootKey, root.generation)
+			)
+				return refuse("reading_superseded", true);
+			const nowIso = new Date(input.nowMs).toISOString();
+			let generation = root.generation;
+			const walledThisGeneration = !!this.db
+				.prepare(
+					"SELECT 1 FROM codex_quota_signal_event WHERE root_key=? AND generation=? AND signal_seq IS NOT NULL LIMIT 1",
+				)
+				.get(root.rootKey, root.generation);
+			if (walledThisGeneration) {
+				if (
+					!Number.isSafeInteger(root.generation + 1) ||
+					this.db
+						.prepare(
+							"SELECT 1 FROM codex_quota_incident WHERE root_key=? AND state='installing' LIMIT 1",
+						)
+						.get(root.rootKey)
+				)
+					return refuse("installation_pending");
+				generation = root.generation + 1;
+				this.db
+					.prepare(
+						"INSERT INTO codex_quota_external_generation(root_key,generation,account_key,profile,auth_digest,observed_at,reason) VALUES(?,?,?,?,?,?,'reading_confirmed')",
+					)
+					.run(
+						root.rootKey,
+						generation,
+						root.accountKey,
+						root.profile,
+						input.authDigest,
+						nowIso,
+					);
+				this.db
+					.prepare(
+						"UPDATE codex_quota_root SET generation=? WHERE root_key=? AND generation=?",
+					)
+					.run(generation, root.rootKey, root.generation);
+			}
+			// Readings permit a fresh attempt; only a verified process's successful
+			// output can authorize recovery of admission/review/legacy casualties.
+
+			const digest = createHash("sha256")
+				.update(
+					JSON.stringify({
+						observedAt: evidence.observedAt,
+						fiveH: evidence.fiveH,
+						weekly: evidence.weekly,
+					}),
+				)
+				.digest("hex")
+				.slice(0, 16);
+			const permit = this.insertPermit({
+				kind: "reading_confirmed",
+				rootKey: root.rootKey,
+				generation,
+				accountKey: root.accountKey,
+				profile: root.profile,
+				coversSignalSeq: this.maxRootSignalSeqBelow(root.rootKey, requestSeq),
+				evidenceRef: `reading:${requestSeq}:${digest}`,
+				now: nowIso,
+			});
+			return { outcome: "issued", permit };
+		})();
+	}
+	/**
+	 * FLY-2900 §3.3/§4.1: the workflow fences a parked execution must still pass
+	 * to be relaunched — run active, node live on this execution, no operator
+	 * close intent. Returns the refusal code, or null.
+	 */
+	standbyWorkflowFence(row: CodexQuotaStandbyRow): string | null {
+		const run = this.db
+			.prepare("SELECT status FROM workflow_run WHERE run_id=?")
+			.get(row.run_id) as { status: string } | undefined;
+		if (!run || run.status !== "active") return "run_not_active";
+		const node = this.db
+			.prepare(
+				"SELECT state,execution_id FROM workflow_run_node WHERE run_id=? AND node_id=? AND attempt=?",
+			)
+			.get(row.run_id, row.node_id, row.attempt) as
+			| { state: string; execution_id: string | null }
+			| undefined;
+		if (
+			!node ||
+			node.execution_id !== row.execution_id ||
+			(node.state !== "admitted" && node.state !== "running")
+		)
+			return "node_not_live";
+		if (
+			this.db
+				.prepare(
+					"SELECT 1 FROM workflow_operator_close_intent WHERE execution_id=? AND stage IN ('prepared','committed')",
+				)
+				.get(row.execution_id)
+		)
+			return "operator_close_intent";
+		return null;
+	}
+	/**
+	 * FLY-2900 §6 step 2: claim a permit for one parked execution. CAS
+	 * standby→resuming, bind the permit and attempt, keep (or mint) the durable
+	 * continue id, and register a binding for the relaunched process on the
+	 * current root generation so a later wall is attributed to it.
+	 */
+	claimResume(input: {
+		executionId: string;
+		ownerClaimId: string;
+		now: string;
+		leaseMs: number;
+	}):
+		| {
+				ok: true;
+				authorization: CodexQuotaResumeAuthorization;
+				continueAttemptId: string;
+				continueAttemptFresh: boolean;
+				permit: CodexQuotaCapacityPermitRow;
+				bindingId: string;
+		  }
+		| { ok: false; reason: string } {
+		if (!CODEX_QUOTA_CLAIM_ID.test(input.ownerClaimId))
+			throw new Error("invalid_quota_claim_id");
+		return this.db.transaction(() => {
+			const row = this.getStandby(input.executionId);
+			if (!row || row.state !== "standby")
+				return { ok: false as const, reason: "not_standby" };
+			if (row.mechanical_failures >= CODEX_QUOTA_MECHANICAL_BUDGET)
+				return { ok: false as const, reason: "mechanical_budget_exhausted" };
+			const fence = this.standbyWorkflowFence(row);
+			if (fence) return { ok: false as const, reason: fence };
+			const permit = this.eligiblePermitFor(input.executionId);
+			if (!permit) return { ok: false as const, reason: "no_permit" };
+			const root = this.getRoot(permit.root_key);
+			if (!root || root.generation !== permit.generation)
+				return { ok: false as const, reason: "no_permit" };
+			const samePermit = row.permit_id === permit.permit_id;
+			const mechanicalFailures = samePermit ? row.mechanical_failures : 0;
+			const resumeAttempt = mechanicalFailures + 1;
+			const continueAttemptFresh = row.continue_attempt_id === null;
+			const continueAttemptId = row.continue_attempt_id ?? randomUUID();
+			const bindingId = randomUUID();
+			this.registerBinding({
+				bindingId,
+				executionId: row.execution_id,
+				runId: row.run_id,
+				purpose: "runner",
+				accountKey: root.accountKey,
+				profile: root.profile,
+				generation: root.generation,
+				credentialRootKey: root.rootKey,
+			});
+			const leaseExpiresAt = new Date(
+				Date.parse(input.now) + input.leaseMs,
+			).toISOString();
+			const changed = this.db
+				.prepare(
+					"UPDATE codex_quota_standby SET state='resuming',resume_phase='launching',permit_id=?,resume_attempt=?,mechanical_failures=?,continue_attempt_id=?,continue_turn_id=NULL,owner_claim_id=?,lease_expires_at=?,root_key=?,generation=?,binding_id=?,last_error_code=NULL,updated_at=? WHERE execution_id=? AND state='standby'",
+				)
+				.run(
+					permit.permit_id,
+					resumeAttempt,
+					mechanicalFailures,
+					continueAttemptId,
+					input.ownerClaimId,
+					leaseExpiresAt,
+					root.rootKey,
+					root.generation,
+					bindingId,
+					input.now,
+					row.execution_id,
+				).changes;
+			if (changed !== 1) return { ok: false as const, reason: "claim_race" };
+			this.appendResumeAudit({
+				executionId: row.execution_id,
+				entrySeq: row.entry_seq,
+				action: "resume_started",
+				at: input.now,
+				runId: row.run_id,
+				nodeId: row.node_id,
+				attempt: row.attempt,
+				permitKind: permit.kind,
+				toProfile: root.profile,
+				detailCode: `attempt_${resumeAttempt}`,
+			});
+			return {
+				ok: true as const,
+				authorization: {
+					executionId: row.execution_id,
+					claimId: input.ownerClaimId,
+					entrySeq: row.entry_seq,
+					resumeAttempt,
+				},
+				continueAttemptId,
+				continueAttemptFresh,
+				permit,
+				bindingId,
+			};
+		})();
+	}
+	/**
+	 * FLY-2900 §4.1 validateActiveAuthorization: the exact live claim, entry and
+	 * attempt, an unexpired lease, a permit that still satisfies the §3.3
+	 * sequence fences, and the workflow fences. Deliberately not the pre-claim
+	 * mechanical budget.
+	 */
+	activeResumeClaim(
+		authorization: CodexQuotaResumeAuthorization | undefined,
+		nowMs = Date.now(),
+	): CodexQuotaStandbyRow | undefined {
+		if (!authorization) return undefined;
+		const row = this.getStandby(authorization.executionId);
+		if (
+			!row ||
+			row.state !== "resuming" ||
+			row.owner_claim_id !== authorization.claimId ||
+			row.entry_seq !== authorization.entrySeq ||
+			row.resume_attempt !== authorization.resumeAttempt ||
+			(authorization.resumeAttempt !== 1 && authorization.resumeAttempt !== 2)
+		)
+			return undefined;
+		const leaseMs =
+			row.lease_expires_at === null
+				? Number.NaN
+				: Date.parse(row.lease_expires_at);
+		if (!Number.isFinite(leaseMs) || leaseMs <= nowMs) return undefined;
+		if (!row.permit_id || !this.isPermitCurrent(row.permit_id))
+			return undefined;
+		const permit = this.getPermit(row.permit_id);
+		if (!permit || permit.covers_signal_seq < row.trigger_signal_seq)
+			return undefined;
+		if (this.standbyWorkflowFence(row)) return undefined;
+		return row;
+	}
+	/** FLY-2900 §3.2: the binding a live claim registered for its relaunch. */
+	claimedResumeBinding(
+		authorization: CodexQuotaResumeAuthorization,
+	): CodexQuotaBindingV1 | null {
+		const row = this.activeResumeClaim(authorization);
+		if (!row?.binding_id) return null;
+		const binding = this.getBinding(row.binding_id);
+		return binding && binding.executionId === row.execution_id ? binding : null;
+	}
+	resumeVerificationStatus(
+		authorization: CodexQuotaResumeAuthorization,
+	): "pending" | "accepted" | "rejected" {
+		const row = this.getStandby(authorization.executionId);
+		if (
+			!row ||
+			row.state !== "resuming" ||
+			row.owner_claim_id !== authorization.claimId
+		)
+			return "rejected";
+		if (!this.activeResumeClaim(authorization)) return "rejected";
+		return row.resume_phase === "identity_verified" ||
+			row.resume_phase === "continuing"
+			? "accepted"
+			: "pending";
+	}
+	markResumeIdentityVerified(
+		authorization: CodexQuotaResumeAuthorization,
+		now: string,
+		evidence?: { sessionId: string; authDigest?: string },
+	): boolean {
+		return this.db.transaction(() => {
+			const row = this.activeResumeClaim(authorization, Date.parse(now));
+			if (!row || row.resume_phase !== "launching") return false;
+			const permit = row.permit_id ? this.getPermit(row.permit_id) : undefined;
+			if (
+				permit?.kind === "reading_confirmed" &&
+				row.binding_id &&
+				row.continue_attempt_id &&
+				evidence?.sessionId &&
+				evidence.sessionId.length <= 256 &&
+				/^[0-9a-f]{64}$/.test(evidence.authDigest ?? "")
+			) {
+				this.db
+					.prepare(`INSERT INTO codex_quota_resume_output_proof
+					(claim_id,permit_id,execution_id,binding_id,continue_attempt_id,session_id,auth_digest,identity_seq)
+					VALUES(?,?,?,?,?,?,?,?)`)
+					.run(
+						row.owner_claim_id,
+						permit.permit_id,
+						row.execution_id,
+						row.binding_id,
+						row.continue_attempt_id,
+						evidence.sessionId,
+						evidence.authDigest,
+						this.allocateCausalSeq(),
+					);
+			}
+			this.db
+				.prepare(
+					"UPDATE codex_quota_standby SET resume_phase='identity_verified',updated_at=? WHERE execution_id=? AND owner_claim_id=? AND state='resuming' AND resume_phase='launching'",
+				)
+				.run(now, row.execution_id, authorization.claimId);
+			this.appendResumeAudit({
+				executionId: row.execution_id,
+				entrySeq: row.entry_seq,
+				action: "identity_verified",
+				at: now,
+				runId: row.run_id,
+				nodeId: row.node_id,
+				attempt: row.attempt,
+			});
+			return true;
+		})();
+	}
+	markContinueStarted(
+		authorization: CodexQuotaResumeAuthorization,
+		turnId: string,
+		now: string,
+	): boolean {
+		if (!turnId || turnId.length > 256) return false;
+		return this.db.transaction(() => {
+			const row = this.activeResumeClaim(authorization, Date.parse(now));
+			if (!row || row.resume_phase !== "identity_verified") return false;
+			this.db
+				.prepare(
+					"UPDATE codex_quota_standby SET resume_phase='continuing',continue_turn_id=?,updated_at=? WHERE execution_id=? AND owner_claim_id=? AND state='resuming' AND resume_phase='identity_verified'",
+				)
+				.run(turnId, now, row.execution_id, authorization.claimId);
+			this.appendResumeAudit({
+				executionId: row.execution_id,
+				entrySeq: row.entry_seq,
+				action: "continue_started",
+				at: now,
+				runId: row.run_id,
+				nodeId: row.node_id,
+				attempt: row.attempt,
+			});
+			return true;
+		})();
+	}
+	/**
+	 * FLY-2900 §6 step 4: the single success settlement. Closes the carrier,
+	 * marks every unsettled FLY-2465 runner target of this execution recovered
+	 * (whatever incident), audits `resumed` and enqueues the thread notice.
+	 * Only two proofs reach it, both under the live claim: the continue turn's
+	 * first model output (`requireTurn` + `turnId`) and a `thread/read`
+	 * reconciliation that proved the carried continue produced output.
+	 */
+	settleResumeSuccess(input: {
+		authorization: CodexQuotaResumeAuthorization;
+		turnId?: string;
+		requireTurn: boolean;
+		now: string;
+	}): boolean {
+		return this.db.transaction(() => {
+			const row = this.activeResumeClaim(
+				input.authorization,
+				Date.parse(input.now),
+			);
+			if (
+				!row ||
+				!["identity_verified", "continuing"].includes(row.resume_phase ?? "")
+			)
+				return false;
+			if (
+				input.requireTurn &&
+				(row.resume_phase !== "continuing" ||
+					!input.turnId ||
+					row.continue_turn_id !== input.turnId)
+			)
+				return false;
+			const changed = this.db
+				.prepare(
+					"UPDATE codex_quota_standby SET state='closed',resume_phase=NULL,owner_claim_id=NULL,lease_expires_at=NULL,continue_attempt_id=NULL,continue_turn_id=NULL,last_error_code=NULL,updated_at=? WHERE execution_id=? AND state='resuming' AND owner_claim_id IS ?",
+				)
+				.run(input.now, row.execution_id, row.owner_claim_id).changes;
+			if (changed !== 1) return false;
+			this.db
+				.prepare(
+					"UPDATE codex_quota_target SET state='recovered',last_error=NULL WHERE old_execution_id=? AND target_kind='runner' AND state NOT IN ('recovered','abandoned')",
+				)
+				.run(row.execution_id);
+			const permit = row.permit_id ? this.getPermit(row.permit_id) : undefined;
+			if (permit?.kind === "reading_confirmed") {
+				// An observed first output proves this live claim. A carried turn
+				// additionally needs its original identity under the SAME permit,
+				// credential bytes and thread, never today's identity for an old turn.
+				this.db
+					.prepare(`UPDATE codex_quota_resume_output_proof AS proof
+					SET output_seq=?,proved_at=? WHERE claim_id=? AND permit_id=?
+					AND (? OR EXISTS (SELECT 1 FROM codex_quota_resume_output_proof prior
+					 WHERE prior.claim_id<>proof.claim_id AND prior.permit_id=proof.permit_id
+					 AND prior.continue_attempt_id=proof.continue_attempt_id
+					 AND prior.auth_digest=proof.auth_digest AND prior.session_id=proof.session_id
+					 AND prior.identity_seq<proof.identity_seq))`)
+					.run(
+						this.allocateCausalSeq(),
+						input.now,
+						row.owner_claim_id,
+						permit.permit_id,
+						input.requireTurn ? 1 : 0,
+					);
+				for (const incident of this.listIncidents()) {
+					if (
+						incident.root_key !== permit.root_key ||
+						Number(incident.generation) >= permit.generation ||
+						["installing", "committed", "recovering"].includes(
+							String(incident.state),
+						) ||
+						!this.getResumeOutputRecoveryPermit(String(incident.incident_id))
+					)
+						continue;
+					this.setIncidentState(String(incident.incident_id), "settled");
+				}
+			}
+			const standbyMs = Date.parse(input.now) - Date.parse(row.entered_at);
+			this.appendResumeAudit({
+				executionId: row.execution_id,
+				entrySeq: row.entry_seq,
+				action: "resumed",
+				at: input.now,
+				runId: row.run_id,
+				nodeId: row.node_id,
+				attempt: row.attempt,
+				permitKind: permit?.kind ?? null,
+				toProfile: permit?.profile ?? null,
+				vendor: "codex",
+			});
+			this.enqueueOutbox({
+				incidentId: null,
+				kind: "resume_notice",
+				eventId: `codex-standby-resumed:${row.execution_id}:${row.entry_seq}`,
+				destination: "issue_thread",
+				payload: {
+					notice: "resumed",
+					executionId: row.execution_id,
+					runId: row.run_id,
+					nodeId: row.node_id,
+					entrySeq: row.entry_seq,
+					permitKind: permit?.kind ?? null,
+					toProfile: permit?.profile ?? null,
+					standbyMs: Number.isFinite(standbyMs) ? Math.max(0, standbyMs) : null,
+				},
+			});
+			return true;
+		})();
+	}
+	/**
+	 * FLY-2900: the resumed body completed its node before any success proof
+	 * was recorded (e.g. the first-output settlement was lost in a crash).
+	 * The carrier closes so nothing relaunches a finished execution, but a
+	 * completion is not first-output evidence: no `resumed` audit, no thread
+	 * notice. Runs inside the terminal-signal transaction.
+	 */
+	closeResumingOnCompletion(executionId: string, now: string): boolean {
+		return (
+			this.db
+				.prepare(
+					"UPDATE codex_quota_standby SET state='closed',resume_phase=NULL,owner_claim_id=NULL,lease_expires_at=NULL,continue_attempt_id=NULL,continue_turn_id=NULL,last_error_code='completed_while_resuming',updated_at=? WHERE execution_id=? AND state='resuming'",
+				)
+				.run(now, executionId).changes === 1
+		);
+	}
+	/**
+	 * FLY-2900 §6 step 7 + §3.1/§6 step 6: send a resuming carrier back to
+	 * standby. mechanical → counts against this permit's budget; capacity →
+	 * counts capacity_rejections only; neutral (restart, unreadable history)
+	 * counts nothing. The continue id is cleared only when its outcome is
+	 * determined. `executionId` alone settles whatever claim is live (terminal
+	 * signal path); `authorization` settles only that claim.
+	 */
+	failResume(input: {
+		authorization?: CodexQuotaResumeAuthorization;
+		executionId?: string;
+		kind: "mechanical" | "capacity" | "neutral";
+		detailCode: string;
+		continueDetermined: boolean;
+		now: string;
+	}): { ok: true; mechanicalFailures: number } | { ok: false } {
+		const executionId =
+			input.authorization?.executionId ?? input.executionId ?? "";
+		const detail = CODEX_QUOTA_MACHINE_CODE.test(input.detailCode)
+			? input.detailCode
+			: "resume_failed";
+		return this.db.transaction(() => {
+			const row = this.getStandby(executionId);
+			if (!row || row.state !== "resuming") return { ok: false as const };
+			if (
+				input.authorization &&
+				row.owner_claim_id !== input.authorization.claimId
+			)
+				return { ok: false as const };
+			const mechanicalFailures =
+				row.mechanical_failures + (input.kind === "mechanical" ? 1 : 0);
+			this.db
+				.prepare(
+					`UPDATE codex_quota_standby SET state='standby',resume_phase=NULL,owner_claim_id=NULL,lease_expires_at=NULL,
+					   mechanical_failures=?,capacity_rejections=capacity_rejections+?,
+					   continue_attempt_id=CASE WHEN ? THEN NULL ELSE continue_attempt_id END,
+					   continue_turn_id=NULL,last_error_code=?,updated_at=?
+					 WHERE execution_id=? AND state='resuming' AND owner_claim_id IS ?`,
+				)
+				.run(
+					mechanicalFailures,
+					input.kind === "capacity" ? 1 : 0,
+					input.continueDetermined ? 1 : 0,
+					detail,
+					input.now,
+					row.execution_id,
+					row.owner_claim_id,
+				);
+			this.appendResumeAudit({
+				executionId: row.execution_id,
+				entrySeq: row.entry_seq,
+				action:
+					input.kind === "capacity" ? "capacity_rejected" : "resume_failed",
+				at: input.now,
+				runId: row.run_id,
+				nodeId: row.node_id,
+				attempt: row.attempt,
+				detailCode: detail,
+			});
+			return { ok: true as const, mechanicalFailures };
+		})();
+	}
+	/** FLY-2900 §6 step 5: settle what the runner learned about a carried continue. */
+	reconcileContinue(input: {
+		authorization: CodexQuotaResumeAuthorization;
+		outcome: CodexQuotaContinueReconciliation;
+		now: string;
+	}): CodexQuotaContinueDecision {
+		const row = this.activeResumeClaim(
+			input.authorization,
+			Date.parse(input.now),
+		);
+		if (!row || row.continue_attempt_id === null)
+			return { action: "abort", reason: "claim_lost" };
+		switch (input.outcome.kind) {
+			case "absent":
+				return {
+					action: "send",
+					continueAttemptId: row.continue_attempt_id,
+					settled: false,
+				};
+			case "proven":
+				return this.settleResumeSuccess({
+					authorization: input.authorization,
+					requireTurn: false,
+					now: input.now,
+				})
+					? { action: "send", continueAttemptId: randomUUID(), settled: true }
+					: { action: "abort", reason: "claim_lost" };
+			case "failed_before_output":
+				this.failResume({
+					authorization: input.authorization,
+					kind: input.outcome.usageLimited ? "capacity" : "mechanical",
+					detailCode: input.outcome.usageLimited
+						? "continue_turn_failed_before_output:usage_limit_exceeded"
+						: "continue_turn_failed_before_output",
+					continueDetermined: true,
+					now: input.now,
+				});
+				return {
+					action: "abort",
+					reason: input.outcome.usageLimited
+						? "capacity_rejected"
+						: "continue_turn_failed_before_output",
+				};
+			case "unavailable": {
+				this.failResume({
+					authorization: input.authorization,
+					kind: "neutral",
+					detailCode: "continue_reconcile_unavailable",
+					continueDetermined: false,
+					now: input.now,
+				});
+				const failures = Number(
+					(
+						this.db
+							.prepare(
+								"UPDATE codex_quota_standby SET reconcile_failures=reconcile_failures+1 WHERE execution_id=? RETURNING reconcile_failures",
+							)
+							.get(row.execution_id) as { reconcile_failures: number }
+					).reconcile_failures,
+				);
+				if (failures >= CODEX_QUOTA_RECONCILE_ALERT_AFTER)
+					this.enqueueOutbox({
+						incidentId: `codex-standby:${row.execution_id}`,
+						kind: "lead_diagnostic",
+						eventId: `codex-standby-reconcile:${row.execution_id}:${row.entry_seq}`,
+						destination: "lead",
+						payload: {
+							reason: "continue_reconcile_unavailable",
+							executionId: row.execution_id,
+							runId: row.run_id,
+							nodeId: row.node_id,
+							failures,
+						},
+					});
+				return { action: "abort", reason: "continue_reconcile_unavailable" };
+			}
+		}
+	}
+	renewResumeLease(
+		authorization: CodexQuotaResumeAuthorization,
+		now: string,
+		leaseMs: number,
+	): boolean {
+		return (
+			this.db
+				.prepare(
+					"UPDATE codex_quota_standby SET lease_expires_at=?,updated_at=? WHERE execution_id=? AND owner_claim_id=? AND state='resuming' AND entry_seq=? AND resume_attempt=?",
+				)
+				.run(
+					new Date(Date.parse(now) + leaseMs).toISOString(),
+					now,
+					authorization.executionId,
+					authorization.claimId,
+					authorization.entrySeq,
+					authorization.resumeAttempt,
+				).changes === 1
+		);
+	}
+	/**
+	 * FLY-2900 §6 step 7: claims left by an earlier Bridge process go back to
+	 * standby without counting a failure and keep their continue id; the next
+	 * relaunch reaps the orphan daemon first and reconciles.
+	 */
+	recoverAbandonedClaims(ownerPrefix: string, now: string): string[] {
+		return this.db.transaction(() => {
+			const rows = (
+				this.db
+					.prepare(
+						"SELECT * FROM codex_quota_standby WHERE state='resuming' AND (owner_claim_id IS NULL OR substr(owner_claim_id,1,?)<>?)",
+					)
+					.all(
+						ownerPrefix.length + 1,
+						`${ownerPrefix}:`,
+					) as CodexQuotaStandbyRow[]
+			).map((row) => row.execution_id);
+			for (const executionId of rows)
+				this.failResume({
+					executionId,
+					kind: "neutral",
+					detailCode: "bridge_restarted",
+					continueDetermined: false,
+					now,
+				});
+			return rows;
+		})();
+	}
+	/**
+	 * FLY-2900 §4.3: released carriers that still name the claim that was
+	 * relaunching them — that claim's process may be alive (its owner never
+	 * got to reap it, e.g. the Bridge died right after the release).
+	 */
+	listReleasedResumeOwners(): CodexQuotaStandbyRow[] {
+		return this.db
+			.prepare(
+				"SELECT * FROM codex_quota_standby WHERE state='released' AND owner_claim_id IS NOT NULL ORDER BY execution_id",
+			)
+			.all() as CodexQuotaStandbyRow[];
+	}
+	/** FLY-2900 §4.3: the released claim's process is proven gone. */
+	clearReleasedResumeOwner(
+		executionId: string,
+		claimId: string,
+		now: string,
+	): boolean {
+		return (
+			this.db
+				.prepare(
+					"UPDATE codex_quota_standby SET owner_claim_id=NULL,lease_expires_at=NULL,updated_at=? WHERE execution_id=? AND state='released' AND owner_claim_id=?",
+				)
+				.run(now, executionId, claimId).changes === 1
+		);
+	}
+	/**
+	 * FLY-2900 §4.3: flip live carriers to released (idempotent). Returns the
+	 * rows as they were before the flip; each one is finalized immediately.
+	 */
+	releaseStandby(input: {
+		executionId?: string;
+		runId?: string;
+		reason: string;
+		now: string;
+	}): CodexQuotaStandbyRow[] {
+		if (
+			(input.executionId === undefined) === (input.runId === undefined) ||
+			!CODEX_QUOTA_MACHINE_CODE.test(input.reason)
+		)
+			throw new Error("invalid_quota_standby_release");
+		const rows = (
+			input.executionId !== undefined
+				? this.db
+						.prepare(
+							"SELECT * FROM codex_quota_standby WHERE execution_id=? AND state IN ('standby','resuming','fallback_prepared')",
+						)
+						.all(input.executionId)
+				: this.db
+						.prepare(
+							"SELECT * FROM codex_quota_standby WHERE run_id=? AND state IN ('standby','resuming','fallback_prepared')",
+						)
+						.all(input.runId)
+		) as CodexQuotaStandbyRow[];
+		const flip = this.db.prepare(
+			"UPDATE codex_quota_standby SET state='released',resume_phase=NULL,release_reason=?,updated_at=? WHERE execution_id=? AND state IN ('standby','resuming','fallback_prepared')",
+		);
+		const released: CodexQuotaStandbyRow[] = [];
+		for (const row of rows) {
+			if (flip.run(input.reason, input.now, row.execution_id).changes !== 1)
+				continue;
+			released.push(row);
+			this.finalizeReleasedRow(row.execution_id, input.now);
+		}
+		return released;
+	}
+	/**
+	 * FLY-2900 §4.3: settle what a release owes — FLY-2465 runner targets of the
+	 * execution become abandoned and one `released` audit row is written per
+	 * entry. Also completes releases flipped by the schema triggers.
+	 */
+	finalizeReleasedStandby(now: string, executionId?: string): number {
+		const rows = (
+			executionId === undefined
+				? this.db
+						.prepare(
+							"SELECT execution_id FROM codex_quota_standby WHERE state='released'",
+						)
+						.all()
+				: this.db
+						.prepare(
+							"SELECT execution_id FROM codex_quota_standby WHERE state='released' AND execution_id=?",
+						)
+						.all(executionId)
+		) as { execution_id: string }[];
+		let finalized = 0;
+		for (const row of rows)
+			if (this.finalizeReleasedRow(row.execution_id, now)) finalized += 1;
+		return finalized;
+	}
+	private finalizeReleasedRow(executionId: string, now: string): boolean {
+		const row = this.getStandby(executionId);
+		if (!row || row.state !== "released") return false;
+		this.abandonRunnerTargets(executionId, "standby_released");
+		const prefix = `${executionId}:${row.entry_seq}:released:`;
+		if (
+			this.db
+				.prepare(
+					"SELECT 1 FROM codex_quota_resume_audit WHERE execution_id=? AND substr(event_uid,1,?)=? LIMIT 1",
+				)
+				.get(executionId, prefix.length, prefix)
+		)
+			return false;
+		this.appendResumeAudit({
+			executionId,
+			entrySeq: row.entry_seq,
+			action: "released",
+			at: now,
+			runId: row.run_id,
+			nodeId: row.node_id,
+			attempt: row.attempt,
+			detailCode: row.release_reason,
+		});
+		return true;
+	}
+	/**
+	 * FLY-2900 §4.2 / C7: does the standby carrier own this FLY-2465 runner
+	 * target? Only when every wall the incident recorded for the execution is
+	 * covered by the carrier's current entry (signal_seq ≤ trigger). Returns
+	 * the disposition the recovery must take: leave it to the carrier, or the
+	 * settlement the carrier already implies.
+	 */
+	standbyTargetDisposition(
+		incidentId: string,
+		executionId: string,
+	): "carrier" | "recovered" | "abandoned" | null {
+		const row = this.getStandby(executionId);
+		const incident = this.getIncident(incidentId);
+		if (!row || !incident) return null;
+		const latest = Number(
+			(
+				this.db
+					.prepare(
+						"SELECT COALESCE(MAX(COALESCE(signal_seq,0)),0) AS seq FROM codex_quota_signal_event WHERE execution_id=? AND root_key=? AND generation=?",
+					)
+					.get(executionId, incident.root_key, incident.generation) as {
+					seq: number;
+				}
+			).seq,
+		);
+		if (latest > row.trigger_signal_seq) return null;
+		if (
+			row.state === "standby" ||
+			row.state === "resuming" ||
+			row.state === "fallback_prepared"
+		)
+			return "carrier";
+		if (row.state === "released") return "abandoned";
+		return row.fallback_execution_id ? "abandoned" : "recovered";
+	}
+	/** FLY-2465 runner targets of one execution that no incident has settled. */
+	abandonRunnerTargets(executionId: string, lastError: string): number {
+		return this.db
+			.prepare(
+				"UPDATE codex_quota_target SET state='abandoned',last_error=? WHERE old_execution_id=? AND target_kind='runner' AND state NOT IN ('recovered','abandoned')",
+			)
+			.run(lastError, executionId).changes;
+	}
+	/**
+	 * FLY-2900 §3.1: settle one runner usage-limit wall against the carrier.
+	 * Runs inside the caller's terminal-signal transaction.
+	 *  - enter: a new standby entry (closed → standby bumps entry_seq and resets
+	 *    every per-entry budget);
+	 *  - refresh: already parked; only the trigger moves forward;
+	 *  - capacity_rejected: the resumed process hit the wall again; back to
+	 *    standby without touching mechanical_failures, the old permit is void
+	 *    because the trigger moved past it.
+	 */
+	settleStandbyWall(input: {
+		disposition: "enter" | "refresh" | "capacity_rejected";
+		executionId: string;
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		activationId: string | null;
+		issueId: string | null;
+		sourceEventId: string;
+		signalSeq: number;
+		rootKey: string | null;
+		generation: number | null;
+		bindingId: string | null;
+		now: string;
+	}): { entrySeq: number } {
+		const prior = this.getStandby(input.executionId);
+		if (input.disposition === "refresh") {
+			if (!prior) throw new Error("quota_standby_missing");
+			this.db
+				.prepare(
+					"UPDATE codex_quota_standby SET trigger_signal_seq=MAX(trigger_signal_seq,?),updated_at=? WHERE execution_id=? AND state IN ('standby','fallback_prepared')",
+				)
+				.run(input.signalSeq, input.now, input.executionId);
+			return { entrySeq: prior.entry_seq };
+		}
+		if (input.disposition === "capacity_rejected") {
+			if (!prior || prior.state !== "resuming")
+				throw new Error("quota_standby_not_resuming");
+			this.db
+				.prepare(
+					"UPDATE codex_quota_standby SET state='standby',resume_phase=NULL,trigger_signal_seq=MAX(trigger_signal_seq,?),capacity_rejections=capacity_rejections+1,owner_claim_id=NULL,lease_expires_at=NULL,continue_attempt_id=NULL,continue_turn_id=NULL,root_key=COALESCE(?,root_key),generation=COALESCE(?,generation),binding_id=COALESCE(?,binding_id),last_error_code='capacity_rejected',updated_at=? WHERE execution_id=? AND state='resuming'",
+				)
+				.run(
+					input.signalSeq,
+					input.rootKey,
+					input.generation,
+					input.bindingId,
+					input.now,
+					input.executionId,
+				);
+			this.appendResumeAudit({
+				executionId: input.executionId,
+				entrySeq: prior.entry_seq,
+				action: "capacity_rejected",
+				at: input.now,
+				runId: input.runId,
+				issueId: input.issueId,
+				nodeId: input.nodeId,
+				attempt: input.attempt,
+				detailCode: "usage_limited",
+			});
+			return { entrySeq: prior.entry_seq };
+		}
+		if (prior && prior.state !== "closed")
+			throw new Error("quota_standby_entry_conflict");
+		const entrySeq = (prior?.entry_seq ?? 0) + 1;
+		this.db
+			.prepare(
+				`INSERT INTO codex_quota_standby(execution_id,run_id,node_id,attempt,activation_id,entry_seq,trigger_signal_seq,source_event_id,root_key,generation,binding_id,state,entered_at,updated_at)
+				 VALUES(?,?,?,?,?,?,?,?,?,?,?,'standby',?,?)
+				 ON CONFLICT(execution_id) DO UPDATE SET run_id=excluded.run_id,node_id=excluded.node_id,attempt=excluded.attempt,activation_id=excluded.activation_id,entry_seq=excluded.entry_seq,trigger_signal_seq=excluded.trigger_signal_seq,source_event_id=excluded.source_event_id,root_key=excluded.root_key,generation=excluded.generation,binding_id=excluded.binding_id,state='standby',resume_phase=NULL,continue_attempt_id=NULL,continue_turn_id=NULL,permit_id=NULL,resume_attempt=0,mechanical_failures=0,capacity_rejections=0,reconcile_failures=0,owner_claim_id=NULL,lease_expires_at=NULL,fallback_attempt=0,fallback_execution_id=NULL,fallback_vendor=NULL,fallback_reason=NULL,checkpoint_commit=NULL,release_reason=NULL,last_error_code=NULL,entered_at=excluded.entered_at,updated_at=excluded.updated_at
+				 WHERE codex_quota_standby.state='closed'`,
+			)
+			.run(
+				input.executionId,
+				input.runId,
+				input.nodeId,
+				input.attempt,
+				input.activationId,
+				entrySeq,
+				input.signalSeq,
+				input.sourceEventId,
+				input.rootKey,
+				input.generation,
+				input.bindingId,
+				input.now,
+				input.now,
+			);
+		this.appendResumeAudit({
+			executionId: input.executionId,
+			entrySeq,
+			action: "standby_entered",
+			at: input.now,
+			runId: input.runId,
+			issueId: input.issueId,
+			nodeId: input.nodeId,
+			attempt: input.attempt,
+		});
+		return { entrySeq };
+	}
+	/** FLY-2900: parked without a process (standby / fallback prepared); not resuming. */
+	isCodexQuotaParkedWithoutProcess(executionId: string): boolean {
+		return !!this.db
+			.prepare(
+				"SELECT 1 FROM codex_quota_standby WHERE execution_id=? AND state IN ('standby','fallback_prepared')",
+			)
+			.get(executionId);
+	}
+	/** FLY-2900: the one predicate every "running but no process" consumer asks. */
+	isCodexQuotaStandby(executionId: string): boolean {
+		return !!this.db
+			.prepare(
+				"SELECT 1 FROM codex_quota_standby WHERE execution_id=? AND state IN ('standby','resuming','fallback_prepared')",
+			)
+			.get(executionId);
+	}
 	recordSignal(input: {
 		executionId: string;
 		bindingId?: string;
@@ -1558,6 +3016,11 @@ export class CodexQuotaStore {
 						now,
 						payloadDigest,
 					);
+				this.db
+					.prepare(
+						"UPDATE codex_quota_signal_event SET signal_seq=? WHERE event_key=?",
+					)
+					.run(this.allocateCausalSeq(), eventKey);
 				const stickyManual =
 					incidentId !== null && this.isIncidentManual(incidentId);
 				const availability = input.availability ?? {

@@ -3,6 +3,7 @@ import { readFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import {
 	type CodexQuotaBindingV1,
+	type CodexQuotaResumeAuthorization,
 	parseCodexQuotaBindingV1,
 } from "flywheel-core";
 import type { StateStore } from "../StateStore.js";
@@ -19,14 +20,24 @@ export function createCodexQuotaLaunchBinder(options: {
 	store: StateStore;
 	canonicalHome: string;
 	identify(auth: string): { profile: string; accountKey: string };
-}): (home: string, executionId: string) => Promise<CodexQuotaBindingV1> {
-	return async (home, executionId) => {
+}): (
+	home: string,
+	executionId: string,
+	authorization?: CodexQuotaResumeAuthorization,
+) => Promise<CodexQuotaBindingV1> {
+	return async (home, executionId, authorization) => {
 		const session = options.store.getSession(executionId);
 		if (!session) throw new Error("quota_launch_session_missing");
 		const canonicalHome = await realpath(options.canonicalHome);
 		const rootKey = createHash("sha256").update(canonicalHome).digest("hex");
 		const quota = options.store.codexQuota;
-		if (options.store.isCodexQuotaLaunchPaused(executionId, rootKey))
+		if (
+			options.store.isCodexQuotaLaunchPaused(
+				executionId,
+				rootKey,
+				authorization,
+			)
+		)
 			throw new CodexQuotaLaunchPausedError();
 		const canonicalAuthPath = join(canonicalHome, "auth.json");
 		const readiness = await checkCodexQuotaReadiness({
@@ -41,7 +52,13 @@ export function createCodexQuotaLaunchBinder(options: {
 			await readFile(join(home, "auth.json"), "utf8"),
 		);
 		// Readiness and auth reads yield; reject a pause that opened meanwhile.
-		if (options.store.isCodexQuotaLaunchPaused(executionId, rootKey))
+		if (
+			options.store.isCodexQuotaLaunchPaused(
+				executionId,
+				rootKey,
+				authorization,
+			)
+		)
 			throw new CodexQuotaLaunchPausedError();
 		const existing = quota.getRoot(rootKey);
 		quota.initializeRoot({

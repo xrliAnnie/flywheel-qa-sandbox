@@ -1,0 +1,48 @@
+{
+  "version": 3,
+  "supplementTo": "evening-manifest-v2.json",
+  "capturedAt": "2026-09-26T04:26:15.127521+00:00",
+  "files": [
+    {
+      "path": "/Users/xiaorongli/.flywheel/artifacts/FLY-2912/direct-start-source-v3.jsonl",
+      "rows": 21,
+      "sha256": "a9b36d2ebaefeb57429e87cdf650cd6e7e1dc1345eb576f0678b4cdaea387663"
+    },
+    {
+      "path": "/Users/xiaorongli/.flywheel/artifacts/FLY-2912/dispatch-ledger-v3.jsonl",
+      "rows": 21,
+      "sha256": "f3081bd7d5512aad8fa6c8f16d9ff002bd62d766e11407b92379c9f2e601e456"
+    },
+    {
+      "path": "/Users/xiaorongli/.flywheel/artifacts/FLY-2912/execution-binding-v3.jsonl",
+      "rows": 22,
+      "sha256": "e5fb11d58fb1b3e35c0a775ffeac1a8b42a0424ef43042f8b0d2e3adaa14381a"
+    },
+    {
+      "path": "/Users/xiaorongli/.flywheel/artifacts/FLY-2912/workflow-events-v3.jsonl",
+      "rows": 191,
+      "sha256": "fb0ba2b137e5469be7819d9d379e50f26ce975db94ed8a6fbe244aa7b8ad936b"
+    }
+  ],
+  "observedDispatchColumns": [
+    "id",
+    "run_id",
+    "node_id",
+    "attempt",
+    "kind",
+    "launch_ordinal",
+    "execution_id",
+    "state",
+    "reason",
+    "created_at",
+    "updated_at",
+    "committed_at",
+    "started_at",
+    "abandoned_at"
+  ],
+  "limitations": [
+    "Live database dispatch ledger has no purpose column, while checkout StateStore defines it. No purpose inferred from absent field or migration default.",
+    "Rows retrieved after window; mutable ledger state is not historical at-event authority. Immutable bindings and timestamped events may support recovery; inspect provenance per sample.",
+    "direct start source event ID differs from notification ID; matched by exact exec/source/type/time, not fabricated event ID equality."
+  ]
+}

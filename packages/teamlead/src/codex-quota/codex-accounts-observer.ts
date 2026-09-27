@@ -69,6 +69,13 @@ export interface CodexAccountsObserverOptions {
 	) => ReturnType<typeof readCodexReadonlyUsage>;
 	/** Last store, so an unread account still shows its previous reading. */
 	previous?: CodexAccountQuotaStore | null;
+	/**
+	 * FLY-2900: allocates the shared quota causal number immediately before
+	 * each account's request is sent, so a reading can prove it reflects the
+	 * server state after a given usage-limit signal. Only a fresh reading
+	 * carries the number; carried readings keep their old one.
+	 */
+	allocateRequestSeq?: () => number;
 }
 
 const EMPTY_CREDITS: CodexAccountReading["credits"] = {
@@ -98,9 +105,13 @@ function carried(
 	| "resetCredits"
 	| "resetCreditsObservedAt"
 	| "unclassifiedWindows"
+	| "requestSeq"
 > {
 	if (previous?.identityKey !== identityKey) previous = undefined;
 	return {
+		...(previous?.requestSeq === undefined
+			? {}
+			: { requestSeq: previous.requestSeq }),
 		observedAt: previous?.observedAt ?? null,
 		planType: previous?.planType ?? null,
 		fiveH: previous?.fiveH ?? null,
@@ -166,6 +177,7 @@ async function readSlot(
 		profile: string;
 		nowIso: string;
 		previous: CodexAccountReading | undefined;
+		requestSeq: number | undefined;
 	},
 ): Promise<
 	Pick<CodexAccountReading, "authHealth" | "note"> & ReturnType<typeof carried>
@@ -260,6 +272,9 @@ async function readSlot(
 				resetCredits: detail.resetCredits,
 				resetCreditsObservedAt: input.nowIso,
 				unclassifiedWindows: detail.unclassifiedWindows,
+				...(input.requestSeq === undefined
+					? {}
+					: { requestSeq: input.requestSeq }),
 			};
 		},
 	);
@@ -384,6 +399,7 @@ export async function observeCodexAccounts(
 		if (inUse === true) {
 			const matchingPrevious =
 				previous?.identityKey === accountKey ? previous : undefined;
+			const requestSeq = options.allocateRequestSeq?.();
 			const readonly = await (options.readInUseQuota ?? readCodexReadonlyUsage)(
 				{
 					authPath:
@@ -420,6 +436,7 @@ export async function observeCodexAccounts(
 							: (matchingPrevious?.resetCreditsObservedAt ??
 								matchingPrevious?.observedAt ??
 								null),
+						...(requestSeq === undefined ? {} : { requestSeq }),
 					}),
 				);
 				continue;
@@ -452,6 +469,7 @@ export async function observeCodexAccounts(
 			continue;
 		}
 		try {
+			const requestSeq = options.allocateRequestSeq?.();
 			accounts.push(
 				reading(
 					await readSlot(options, pool, {
@@ -461,6 +479,7 @@ export async function observeCodexAccounts(
 						profile: identity.profile,
 						nowIso,
 						previous,
+						requestSeq,
 					}),
 				),
 			);

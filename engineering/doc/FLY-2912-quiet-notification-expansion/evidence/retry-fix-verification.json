@@ -1,0 +1,430 @@
+{
+  "issue": "FLY-2912",
+  "base": "95b137b89efab3e85d5a3bdbadad43fc02563f8c",
+  "findingKey": "summary-attach-on-retry-after-unfrozen-attempt-membership-conflict",
+  "sourceBlobs": {
+    "packages/teamlead/src/bridge/lead-audit-summary.ts": "009fa2c4d8458a490a9d602c1eba001e44843045",
+    "packages/teamlead/src/bridge/lead-inbox-loop.ts": "fced93d46fc1d261efd04afa0fcbc81daf7f3278",
+    "packages/teamlead/src/bridge/__tests__/lead-audit-summary.fly2912.test.ts": "82e3c70238654ee2d36f63de6b482d79c70248f3",
+    "packages/teamlead/src/bridge/__tests__/lead-summary-retry.fly2912.test.ts": "cf2924b7e0d1fc60378a4424347b49ac2928f30c"
+  },
+  "explicit": {
+    "files": 16,
+    "passed": 262,
+    "includesUnsupportedDowngradeDiagnostics": 4,
+    "attempts": [
+      {
+        "path": "packages/teamlead/src/__tests__/fly2912-evening-replay.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/__tests__/fly2912-evening-replay.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 26.71,
+        "log": "fly2912-toggle-fly2912-evening-replay.test.ts.log",
+        "sha256": "5f4d461a68e84c9ad1c211f574fa8e45ca4e4a3c04c05ab285729c3af07b832a",
+        "sourceBlob": "d3584448ff67bb39647053bc7b152b583d2fd136",
+        "testSummary": "2 passed (2)"
+      },
+      {
+        "path": "packages/teamlead/src/__tests__/fly2139-query-plans.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/__tests__/fly2139-query-plans.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 10.55,
+        "log": "fly2912-toggle-fly2139-query-plans.test.ts.log",
+        "sha256": "56d85fa41d89a75a5cfab730fee7a635361b67afc1e2cc5f7565a7dbe24e0e36",
+        "sourceBlob": "a0f31c09432b50b703b9540e34b15d15be8ce9f0",
+        "testSummary": "2 passed (2)"
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/lead-audit-summary.fly2912.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/bridge/__tests__/lead-audit-summary.fly2912.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 3.4,
+        "log": "fly2912-toggle-lead-audit-summary.fly2912.test.ts.log",
+        "sha256": "6f1e008c9399b756b7fe752aa2709b9570499515c257b4f55cafe6d15980ec0e",
+        "sourceBlob": "82e3c70238654ee2d36f63de6b482d79c70248f3",
+        "testSummary": "6 passed (6)"
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/lead-inbox-loop.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/bridge/__tests__/lead-inbox-loop.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 3.71,
+        "log": "fly2912-toggle-lead-inbox-loop.test.ts.log",
+        "sha256": "70aeb90ac97fb7aa4721a5cc9f8890f940c963c2e310a54f7a4c9d5a48d2828b",
+        "sourceBlob": "fb17c164e25c9b08255dc9f9ca8f91e55dbfecf0",
+        "testSummary": "34 passed (34)"
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/lead-inbox-summary.fly2912.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/bridge/__tests__/lead-inbox-summary.fly2912.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 3.26,
+        "log": "fly2912-toggle-lead-inbox-summary.fly2912.test.ts.log",
+        "sha256": "76dab3a4f096bd3ded00f2439e52fd58836f76057d815345c75993b9b6fa11ff",
+        "sourceBlob": "f59964d95fd8240e49b7b9775ba5e4a7c40910a1",
+        "testSummary": "12 passed (12)"
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/lead-inbox-runtime.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/bridge/__tests__/lead-inbox-runtime.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 12.16,
+        "log": "fly2912-toggle-lead-inbox-runtime.test.ts.log",
+        "sha256": "2dc09bbb09c44a241c2399beadd92501719d78b730644fd7c5133181d603839c",
+        "sourceBlob": "23c495285ea94eccdb847409ac60a4d60cfb5871",
+        "testSummary": "47 passed (47)"
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/lead-inbox-runtime-summary.fly2912.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/bridge/__tests__/lead-inbox-runtime-summary.fly2912.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 5.75,
+        "log": "fly2912-toggle-lead-inbox-runtime-summary.fly2912.test.ts.log",
+        "sha256": "b4f39e0543f51255b10fc2dc5c99ac07ea044e07ca183634ff469c3635ba2d26",
+        "sourceBlob": "0a892c1a5d97a88c0ba4dc17c9f1ff269f1caf65",
+        "testSummary": "1 passed (1)"
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/lead-inbox-batch-ack.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/bridge/__tests__/lead-inbox-batch-ack.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 2.68,
+        "log": "fly2912-toggle-lead-inbox-batch-ack.test.ts.log",
+        "sha256": "8a281cba1e11e6cae2b3f30a64478b6f790887b6e3f5e4375d0c975b67c5696f",
+        "sourceBlob": "1848f65d953f2a14124fdfd24f7674476dfcc60d",
+        "testSummary": "1 passed (1)"
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/mailbox-queue-config.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/bridge/__tests__/mailbox-queue-config.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 2.9,
+        "log": "fly2912-toggle-mailbox-queue-config.test.ts.log",
+        "sha256": "c8f33f7932ea066bf7bc6569c60b6c36f104c1a28c25f2288665f7c2d6603771",
+        "sourceBlob": "4016ac9cc8c8706d1e52c0d7d2b5718d47748bc6",
+        "testSummary": "12 passed (12)"
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/protocol-ingress.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/bridge/__tests__/protocol-ingress.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 8.98,
+        "log": "fly2912-toggle-protocol-ingress.test.ts.log",
+        "sha256": "2a04b37d519e6dfafc1c76e55629d27ae0fffe379e78365491ca440e6316b93f",
+        "sourceBlob": "530984c6157c4cc7da0abc8795a1dd43c5196332",
+        "testSummary": "12 passed (12)"
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/question-admission.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/bridge/__tests__/question-admission.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 9.15,
+        "log": "fly2912-toggle-question-admission.test.ts.log",
+        "sha256": "a03bde204a5c8fe231fccab38aa7c03477e5ec25d8bf3da676d293713a4ad10b",
+        "sourceBlob": "0e4363b0ca80e9541103f84e6177fc47378f5237",
+        "testSummary": "40 passed (40)"
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/alert-wake-dedup.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/bridge/__tests__/alert-wake-dedup.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 29.45,
+        "log": "fly2912-toggle-alert-wake-dedup.test.ts.log",
+        "sha256": "8022f744fd943153e014a7c1ef2cd68c131a43822b0ca7c82c4243b561d941f7",
+        "sourceBlob": "f62e24afbd52321243d9107cc22dab05d3b24960",
+        "testSummary": "27 passed (27)"
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/runner-mailbox-lane.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/bridge/__tests__/runner-mailbox-lane.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 4.21,
+        "log": "fly2912-toggle-runner-mailbox-lane.test.ts.log",
+        "sha256": "f39d4f37356a7a3083d4e852e7745236d34941af79383e8babcd2fe3577424a1",
+        "sourceBlob": "0a8d286788fe4283a02312040e8b359b1fff3b58",
+        "testSummary": "13 passed (13)"
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/lead-delivery-adapter.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/bridge/__tests__/lead-delivery-adapter.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 4.25,
+        "log": "fly2912-toggle-lead-delivery-adapter.test.ts.log",
+        "sha256": "22d7468f330d14c819be0614d454272380f14216e49694d943647864a33268cd",
+        "sourceBlob": "d743259e8aaf2bbb855fa0bef771c157b900a433",
+        "testSummary": "5 passed (5)"
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/lead-summary-retry.fly2912.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/bridge/__tests__/lead-summary-retry.fly2912.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 5.89,
+        "log": "fly2912-toggle-lead-summary-retry.fly2912.test.ts.log",
+        "sha256": "4bebf349f78b19119d4739a303eaf3c7e00e5d9fd7c2b7b18fc5a6665901189b",
+        "sourceBlob": "d9734e325ccbd4eb3d01c1c1aa19d9eedb910292",
+        "testSummary": "16 passed (16)"
+      },
+      {
+        "path": "packages/flywheel-comm/src/__tests__/lead-audit-summary-receipt.fly2912.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-comm",
+          "exec",
+          "vitest",
+          "run",
+          "src/__tests__/lead-audit-summary-receipt.fly2912.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 3.6,
+        "log": "fly2912-toggle-lead-audit-summary-receipt.fly2912.test.ts.log",
+        "sha256": "0035012208e375c365c2e57a5be9191c2657a79c77f316d5e6240a928a44fe5f",
+        "sourceBlob": "ab62c1a72c31e18b00453f620f1a614341cdab2c",
+        "testSummary": "28 passed (28)"
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/lead-summary-retry.fly2912.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/bridge/__tests__/lead-summary-retry.fly2912.test.ts"
+        ],
+        "exitCode": 0,
+        "log": "fly2912-toggle-downgrade-diagnostic-final.log",
+        "sha256": "446225f53a0fc0ac42b10d97445f9d8b35a984986b706c38749cb91e22a1db17",
+        "sourceBlob": "cf2924b7e0d1fc60378a4424347b49ac2928f30c",
+        "testSummary": "20 passed (20)"
+      }
+    ]
+  },
+  "related": {
+    "command": [
+      "pnpm",
+      "--filter",
+      "flywheel-teamlead",
+      "exec",
+      "vitest",
+      "related",
+      "src/bridge/lead-audit-summary.ts",
+      "src/bridge/lead-inbox-loop.ts",
+      "src/bridge/__tests__/lead-audit-summary.fly2912.test.ts",
+      "src/bridge/__tests__/lead-summary-retry.fly2912.test.ts",
+      "--run",
+      "--config",
+      "../../engineering/doc/FLY-2912-quiet-notification-expansion/evidence/retry-fix-teamlead-related.config.mjs",
+      "--no-file-parallelism"
+    ],
+    "summary": "191 passed (191)",
+    "exitCode": 0,
+    "uniqueCollectionCandidates": 15,
+    "log": "fly2912-toggle-related.log",
+    "sha256": "eb792c83dfdb0358e4724c40ad16b2063503971bdafe9e20814ee548e91fe854"
+  },
+  "checks": [
+    {
+      "command": [
+        "pnpm",
+        "lint"
+      ],
+      "completionEvidence": "Found 25 warnings.",
+      "log": "fly2912-toggle-lint-final.log",
+      "sha256": "b8479b6bc8bbbdd8a9720a9993b5f81e59522cd952ff6363f610e0e0681d7ffe"
+    },
+    {
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead...",
+        "build"
+      ],
+      "completionEvidence": "packages/teamlead build: Done",
+      "log": "fly2912-toggle-build-final.log",
+      "sha256": "8edbd2059982133924552c77dcfe1e01fc367cb65d515cfa17e0180a5538b282"
+    },
+    {
+      "command": [
+        "pnpm",
+        "--filter",
+        "...flywheel-teamlead",
+        "typecheck"
+      ],
+      "completionEvidence": "packages/voice-codex typecheck: Done",
+      "log": "fly2912-toggle-typecheck-final.log",
+      "sha256": "a4a7b641d6563d2bce7376ac1c5956c505d97465bf029950a36ff2f08805a5e4"
+    }
+  ],
+  "checkSequenceExitCode": 0,
+  "tddAndDiagnosticHistory": [
+    {
+      "description": "Initial run: 12 actual DEAD/membership_conflict failures and 4 incorrect duplicate-status assertions; latter corrected before implementation.",
+      "log": "fly2912-toggle-red.log",
+      "sha256": "58162930ef7e5275d77baa4eacc426f32ed00993cd6aff352a2f378737507669"
+    },
+    {
+      "description": "Before fix: 12 failed / 4 passed; failures demonstrate real transport payload drift.",
+      "log": "fly2912-toggle-red-corrected.log",
+      "sha256": "1a1a43149976f84e122eaab731326e76658fb44461a0044e313081bcd30e2dd1"
+    },
+    {
+      "description": "Before fix: 2 failed / 4 passed for OFF and resumed unfrozen batches.",
+      "log": "fly2912-toggle-unit-red.log",
+      "sha256": "cb3c155cf61e6ddfa581c2aacf3831cfe731a2f920b178c563160819c9932585"
+    },
+    {
+      "description": "After minimal fix: 16 transport regression cases passed.",
+      "log": "fly2912-toggle-green.log",
+      "sha256": "59b20894367a1280c121473211bccf67a6c4ea5c14b286097a9912360a31a345"
+    },
+    {
+      "description": "After minimal fix: 6 helper cases passed.",
+      "log": "fly2912-toggle-unit-green.log",
+      "sha256": "c34331ba2934f3c7481cf27d513c060a5f5acd25359266a78cf0f24d35efa6f2"
+    },
+    {
+      "description": "Diagnostic first run: 2 assertions missed Discord's isolation prefix; corrected to observe existing behavior, no product change.",
+      "log": "fly2912-toggle-downgrade-diagnostic.log",
+      "sha256": "eaec59fd0654fd693b1f80394a27d9e4cd7e1aef4a57a1883dd1a3f696a16845"
+    }
+  ],
+  "downgrade": {
+    "manualBoundaryLeadQuestion": "f51fe18d-51a3-43d8-83ac-b21afed3239b",
+    "manualBoundary": "Current binary OFF -> settle summary-bearing in-flight batches -> downgrade; no live changes authorized or performed.",
+    "automaticRollbackSafe": false,
+    "observedRisk": "Pre-summary hook omission after durable acceptance causes membership_conflict: regular tasks DEAD, Discord tasks quarantined; original delivery_content preserved and one durable intake, but no guarantee of safe delivery/consumption.",
+    "legacyBranchProof": {
+      "baseline": "33fa00747eacb8c1e1deaf7e17a5bb7fc5d856ae",
+      "path": "packages/teamlead/src/bridge/lead-inbox-loop.ts",
+      "membershipConflictBranchUnchanged": true,
+      "branchSha256": "02cfb615f21ef9df9fe14de4eeac1c0576c7fd88ed28367963cbced7316158b9",
+      "limitation": "Diagnostic omits prepareAuditSummary to emulate the pre-summary protocol; it does not execute a previous deployment binary or assert model consumption."
+    }
+  },
+  "limitations": [
+    "Related and explicit checks overlap; do not add their counts.",
+    "Four downgrade diagnostics observe known unsafe behavior; passing them is not rollback acceptance.",
+    "Historical wake acceptance remains false and after-wake count null. No local full suite, no full-CI request, no production or QA dispatch."
+  ]
+}

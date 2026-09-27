@@ -127,7 +127,7 @@ describe("RunDispatcher backend resolution (FLY-123)", () => {
 			runner: { backend: "codex-tmux", model: "gpt-5.6-sol" },
 		});
 		const ctx = await startAndWait(dispatcher);
-		expect(ctx.runnerName).toBe("runner-codex-G");
+		expect(ctx.runnerName).toBe("runner-codex-OS");
 	});
 
 	it("Kimi project model appears in the real start() window name", async () => {
@@ -135,7 +135,7 @@ describe("RunDispatcher backend resolution (FLY-123)", () => {
 			runner: { backend: "kimi-tmux", model: "kimi-for-coding" },
 		});
 		const ctx = await startAndWait(dispatcher);
-		expect(ctx.runnerName).toBe("runner-kimi-K");
+		expect(ctx.runnerName).toBe("runner-kimi-KK");
 	});
 
 	it("phase dispatch prefixes the resolved Codex model with its phase", async () => {
@@ -147,7 +147,7 @@ describe("RunDispatcher backend resolution (FLY-123)", () => {
 			dispatchVendor: "codex",
 			dispatchModel: "gpt-5.6-sol",
 		});
-		expect(ctx.runnerName).toBe("implement-codex-G");
+		expect(ctx.runnerName).toBe("implement-codex-OS");
 	});
 
 	// FLY-241: per-project Runner model override on the DEFAULT claude backend.

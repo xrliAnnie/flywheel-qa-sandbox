@@ -300,6 +300,18 @@ describe("M3 declaration", () => {
 		store.getOrphanSessions.mockReturnValue([s]);
 	}
 
+	it("FLY-2900: never declares a Codex quota standby body a zombie", async () => {
+		primeTwoAbsentPasses();
+		(store as { isCodexQuotaStandby?: unknown }).isCodexQuotaStandby = vi.fn(
+			() => true,
+		);
+		await service.reconcileMonitorLoss();
+		await service.reconcileMonitorLoss();
+		await service.reconcileMonitorLoss();
+		expect(notifier.prepareSessionZombieDetected).not.toHaveBeenCalled();
+		expect(store.forceStatus).not.toHaveBeenCalled();
+	});
+
 	it("absent x2 (server up) → full order: forensics, re-proof, prepare, transition, persist", async () => {
 		primeTwoAbsentPasses();
 		await service.reconcileMonitorLoss(); // streak 1

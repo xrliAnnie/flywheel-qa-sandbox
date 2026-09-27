@@ -186,6 +186,23 @@ export function readScorecardAssignment(
 	};
 }
 
+/**
+ * FLY-2900 §5.4: an activation dispatched from a Codex quota fallback demand
+ * (either vendor). Such samples join neither vendor's normal split.
+ */
+export function readScorecardQuotaFallback(
+	events: readonly WorkflowRunEventRow[],
+	identity: { runId: string; nodeId: string; activationId: string },
+): boolean {
+	return events.some(
+		(event) =>
+			event.kind === "dispatch_quota_fallback" &&
+			event.run_id === identity.runId &&
+			event.node_id === identity.nodeId &&
+			record(event.payload)?.activationId === identity.activationId,
+	);
+}
+
 /** Validate explicit degradation authority; a model mismatch alone is never degradation. */
 export function readScorecardDegradation(
 	events: readonly WorkflowRunEventRow[],

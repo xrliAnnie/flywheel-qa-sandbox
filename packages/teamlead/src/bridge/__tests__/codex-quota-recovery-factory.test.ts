@@ -665,3 +665,29 @@ it("refreshes workflow authority after liveness before delegating a held target"
 	expect(f.recoverHeldWorkflowNode).not.toHaveBeenCalled();
 	expect(f.target.state).toBe("waiting");
 });
+
+it("FLY-2900 never terminates or starts a run whose execution is parked in quota standby", async () => {
+	const f = await fixture();
+	(f.quota as Record<string, unknown>).standbyTargetDisposition = vi.fn(
+		() => "carrier",
+	);
+	const fetcher = vi.fn();
+	vi.stubGlobal("fetch", fetcher);
+	await f.factory.recover(f.incident);
+	expect(fetcher).not.toHaveBeenCalled();
+	expect(f.target.state).toBe("waiting");
+});
+
+it("FLY-2900 settles a target the standby carrier already recovered or handed off", async () => {
+	for (const disposition of ["recovered", "abandoned"] as const) {
+		const f = await fixture();
+		(f.quota as Record<string, unknown>).standbyTargetDisposition = vi.fn(
+			() => disposition,
+		);
+		const fetcher = vi.fn();
+		vi.stubGlobal("fetch", fetcher);
+		await f.factory.recover(f.incident);
+		expect(fetcher).not.toHaveBeenCalled();
+		expect(f.target.state).toBe(disposition);
+	}
+});

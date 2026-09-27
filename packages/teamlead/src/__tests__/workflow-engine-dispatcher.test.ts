@@ -4706,6 +4706,157 @@ describe("WorkflowEngineDispatcher", () => {
 		},
 	);
 
+	it("FLY-2900 never sweeps a Codex quota standby body, even with a terminal session row", async () => {
+		const store = await storeWithIntent("implement");
+		const fake = fakeStartDispatcher(store);
+		const captureDeadExecutionActivityBaseline = vi.fn(async () => undefined);
+		const probeLaunchLiveness = vi.fn(async () => "dead" as const);
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			stateRoot: mkdtempSync(join(tmpdir(), "fly2900-standby-sweep-")),
+			env: WORKFLOW_ON,
+			now: () => new Date(deadExecEngineClockBaseMs()),
+			resolvePredecessorHead: async () => HEAD,
+			probeLaunchLiveness,
+			captureDeadExecutionActivityBaseline,
+		});
+		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+		store.upsertSession({
+			execution_id: "implement-1",
+			issue_id: "FLY-1307",
+			project_name: "flywheel",
+			status: "failed",
+			workflow_node_id: "implement",
+		});
+		(
+			store as unknown as { db: { raw: import("better-sqlite3").Database } }
+		).db.raw
+			.prepare(
+				"INSERT INTO codex_quota_standby(execution_id,run_id,node_id,attempt,entry_seq,trigger_signal_seq,source_event_id,state,entered_at,updated_at) VALUES('implement-1','run-1','implement',1,1,1,'wall','standby','t','t')",
+			)
+			.run();
+		probeLaunchLiveness.mockClear();
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 0 });
+		expect(captureDeadExecutionActivityBaseline).not.toHaveBeenCalled();
+		expect(fake.requests).toHaveLength(1);
+		expect(store.getWorkflowRunNode("run-1", "implement", 1)).toMatchObject({
+			state: "running",
+			execution_id: "implement-1",
+		});
+		store.close();
+	});
+
+	async function preparedQuotaFallback(
+		options: {
+			resolvePredecessorHead?: () => Promise<string>;
+			admissionProbe?: () => { admit: boolean; reason?: string };
+		} = {},
+	) {
+		const store = await storeWithIntent("implement");
+		const fake = fakeStartDispatcher(store);
+		const resolvePredecessorHead = vi.fn(
+			options.resolvePredecessorHead ?? (async () => HEAD),
+		);
+		let admission: { admit: boolean; reason?: string } = { admit: true };
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			stateRoot: mkdtempSync(join(tmpdir(), "fly2900-fallback-unwind-")),
+			env: WORKFLOW_ON,
+			now: () => new Date(deadExecEngineClockBaseMs()),
+			resolvePredecessorHead: async () => resolvePredecessorHead(),
+			admissionProbe: () => admission as never,
+		});
+		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+		const raw = (
+			store as unknown as { db: { raw: import("better-sqlite3").Database } }
+		).db.raw;
+		raw
+			.prepare(
+				"INSERT INTO codex_quota_standby(execution_id,run_id,node_id,attempt,entry_seq,trigger_signal_seq,source_event_id,state,entered_at,updated_at) VALUES('implement-1','run-1','implement',1,1,1,'wall','standby','t','t')",
+			)
+			.run();
+		const runtime = store.getWorkflowExecutionRuntime("implement-1")!;
+		expect(
+			store.prepareCodexQuotaFallback({
+				executionId: "implement-1",
+				vendor: runtime.vendor as "codex",
+				model: runtime.model,
+				effort: runtime.effort ?? "high",
+				reason: "resume_attempts_exhausted",
+				newExecutionId: "implement-fb",
+				sameVendorEvidence: {},
+				now: new Date(deadExecEngineClockBaseMs()).toISOString(),
+			}),
+		).toMatchObject({ ok: true });
+		return {
+			store,
+			fake,
+			dispatcher,
+			resolvePredecessorHead,
+			brake: (next: { admit: boolean; reason?: string }) => {
+				admission = next;
+			},
+		};
+	}
+
+	it("FLY-2900 launches a downstream quota fallback body from its parked source's transition and commits it", async () => {
+		const t = await preparedQuotaFallback();
+		expect(await t.dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+		expect(t.fake.requests).toHaveLength(2);
+		expect(t.fake.requests[1]).toMatchObject({
+			successorExecutionId: "implement-fb",
+			startPoint: HEAD,
+		});
+		expect(t.store.codexQuota.getStandby("implement-1")?.state).toBe("closed");
+		expect(t.store.getSession("implement-1")).toMatchObject({
+			status: "failed",
+			last_error: "codex_quota_fallback",
+		});
+		t.store.close();
+	});
+
+	it("FLY-2900 a quota fallback body refused before admission hands the node back to its parked source", async () => {
+		const t = await preparedQuotaFallback();
+		t.resolvePredecessorHead.mockRejectedValue(
+			new Error("predecessor worktree unavailable"),
+		);
+		expect(await t.dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+		expect(t.store.getCodexQuotaPreparedDemand("implement-fb")).toBeUndefined();
+		expect(t.store.getWorkflowRunNode("run-1", "implement", 1)).toMatchObject({
+			execution_id: "implement-1",
+		});
+		expect(t.store.codexQuota.getStandby("implement-1")).toMatchObject({
+			state: "standby",
+			last_error_code: expect.stringMatching(/^fallback_refused:/),
+		});
+		expect(
+			t.store.getWorkflowDeadExecutionWatch("implement-1"),
+		).toBeUndefined();
+		expect(t.fake.requests).toHaveLength(1);
+		t.store.close();
+	});
+
+	it("FLY-2900 the transient admission brake keeps a prepared quota fallback body queued", async () => {
+		const t = await preparedQuotaFallback();
+		t.brake({ admit: false, reason: "operator_pause" });
+		expect(await t.dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+		expect(t.store.getCodexQuotaPreparedDemand("implement-fb")).toBeDefined();
+		expect(t.store.getWorkflowRunNode("run-1", "implement", 1)).toMatchObject({
+			state: "pending",
+			execution_id: "implement-fb",
+		});
+		expect(t.store.codexQuota.getStandby("implement-1")?.state).toBe(
+			"fallback_prepared",
+		);
+		t.brake({ admit: true });
+		expect(await t.dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+		expect(t.store.codexQuota.getStandby("implement-1")?.state).toBe("closed");
+		t.store.close();
+	});
+
 	it("keeps the dead execution in place when its tripwire baseline cannot be captured", async () => {
 		const store = await storeWithIntent("implement");
 		const fake = fakeStartDispatcher(store);

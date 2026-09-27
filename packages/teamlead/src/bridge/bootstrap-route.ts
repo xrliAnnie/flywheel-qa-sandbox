@@ -28,7 +28,8 @@ export function createBootstrapReadRouter(deps: {
 				res.status(400).json({ error: "invalid_lead" });
 				return;
 			}
-			if (!findProjectForLead(leadId, deps.projects)) {
+			const project = findProjectForLead(leadId, deps.projects);
+			if (!project) {
 				res.status(404).json({ error: "unknown_lead" });
 				return;
 			}
@@ -55,12 +56,68 @@ export function createBootstrapReadRouter(deps: {
 					res.status(400).json({ error: "invalid_cursor" });
 					return;
 				}
+				const range: {
+					afterSeq?: number;
+					throughSeq?: number;
+					storeEpoch?: string;
+				} = {};
+				if (
+					Object.keys(req.query).some((key) =>
+						/^(afterSeq|throughSeq|storeEpoch)\[/.test(key),
+					)
+				) {
+					res.status(400).json({ error: "invalid_audit_range" });
+					return;
+				}
+				for (const field of ["afterSeq", "throughSeq"] as const) {
+					const value = req.query[field];
+					if (value === undefined) continue;
+					if (
+						typeof value !== "string" ||
+						!/^\d+$/.test(value) ||
+						!Number.isSafeInteger(Number(value))
+					) {
+						res.status(400).json({ error: "invalid_audit_range" });
+						return;
+					}
+					range[field] = Number(value);
+				}
+				if (
+					range.afterSeq !== undefined &&
+					range.throughSeq !== undefined &&
+					range.afterSeq > range.throughSeq
+				) {
+					res.status(400).json({ error: "invalid_audit_range" });
+					return;
+				}
+				if (req.query.storeEpoch !== undefined) {
+					if (
+						typeof req.query.storeEpoch !== "string" ||
+						!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+							req.query.storeEpoch,
+						)
+					) {
+						res.status(400).json({ error: "invalid_store_epoch" });
+						return;
+					}
+					range.storeEpoch = req.query.storeEpoch;
+				}
 				try {
 					res.json({
 						snapshotAt,
-						...deps.store.getLeadAuditEventPage(leadId, limit, beforeSeq),
+						...deps.store.getLeadAuditEventPage(leadId, limit, beforeSeq, {
+							projectName: project.projectName,
+							...range,
+						}),
 					});
-				} catch {
+				} catch (error) {
+					if (
+						error instanceof Error &&
+						error.message === "audit_store_epoch_mismatch"
+					) {
+						res.status(409).json({ error: "audit_store_epoch_mismatch" });
+						return;
+					}
 					res.status(500).json({ error: "bootstrap_read_failed" });
 				}
 				return;

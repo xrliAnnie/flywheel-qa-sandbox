@@ -1,0 +1,18 @@
+{
+  "url": "https://fw-reports-6da062.vercel.app/r/6337c7b8cc78142ca5ae7162c3366e6c/",
+  "httpStatus": 200,
+  "sourceSha256": "2b0bab1a9d7f8734c713f4f4934f3c04698e8c6dc7a05b4d69e11b6f85e8b167",
+  "hostedSha256": "4444eab098813e97c0a05a5621e0a9a8387971b6145a5e6320075640d0a3d12e",
+  "noncePlaceholderRemaining": false,
+  "scriptNonceMatchesCsp": true,
+  "scriptMatchesCommittedSource": true,
+  "bodyMatchesCommittedSource": true,
+  "externalAssets": [],
+  "inlineEventHandlers": [],
+  "publishedCommit": "256d43738",
+  "publishOnly": true,
+  "messageId": null,
+  "delivered": false,
+  "browserVisual": "NOT_RUN: opening new page denied by approval policy",
+  "diagramStatus": "PENDING_LOCAL_RENDER (two local attempts per diagram failed)"
+}

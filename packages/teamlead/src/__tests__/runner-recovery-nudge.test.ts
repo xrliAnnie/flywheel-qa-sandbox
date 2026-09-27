@@ -145,6 +145,25 @@ describe("attemptRunnerRecoveryNudge (FLY-368 shared audited op)", () => {
 		expect(sendKeys).not.toHaveBeenCalled();
 	});
 
+	it("FLY-2900 refuses to nudge a Codex quota standby body", async () => {
+		(
+			store as unknown as { isCodexQuotaStandby: (id: string) => boolean }
+		).isCodexQuotaStandby = (id) => id === "exec-1";
+		const out = await attemptRunnerRecoveryNudge(
+			{
+				actor: "auto-repair-bot",
+				executionId: "exec-1",
+				leadId: "product-lead",
+				fingerprint: STUCK_FP,
+				phrase: "continue",
+			},
+			deps(),
+		);
+		expect(out.status).toBe(409);
+		expect(out.body.nudged).toBe(false);
+		expect(sendKeys).not.toHaveBeenCalled();
+	});
+
 	it("refuses when fingerprint no longer matches the live terminal", async () => {
 		const out = await attemptRunnerRecoveryNudge(
 			{

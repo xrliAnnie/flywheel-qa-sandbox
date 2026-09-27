@@ -428,6 +428,22 @@ describe("commdb-session-prune (FLY-638)", () => {
 	});
 
 	describe("pruneDeadTerminalCommDbSessions", () => {
+		it("FLY-2900 keeps a quota standby body's timeout row even when its target is dead", async () => {
+			seed("parked", "timeout", "base:@1");
+			seed("dead", "timeout", "base:@2");
+			const res = await pruneDeadTerminalCommDbSessions("flywheel", {
+				dbPath,
+				probe: async () => "dead",
+				isProtectedExecution: (id) => id === "parked",
+			});
+			expect(res.pruned).toBe(1);
+			expect(db.getSession("parked")?.status).toBe("timeout");
+			expect(db.getSession("dead")).toBeUndefined();
+			expect(res.provenDeadTargets).toEqual([
+				{ executionId: "dead", tmuxWindow: "base:@2" },
+			]);
+		});
+
 		it("deletes only PROVABLY-dead terminal rows in any scan order; keeps alive/indeterminate + running", async () => {
 			seed("dead1", "completed", "base:@1");
 			db.enqueueRunnerPhaseWake(

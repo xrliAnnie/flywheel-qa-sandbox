@@ -54,7 +54,8 @@ export function resolveWorkflowDispatchLineage(
 		);
 		const replacements = decoded.filter(
 			({ event, payload }) =>
-				event.kind === "execution_dead_rolled_back" &&
+				(event.kind === "execution_dead_rolled_back" ||
+					event.kind === "codex_quota_fallback_prepared") &&
 				payload?.newExecutionId === originExecutionId,
 		);
 		if (edges.length + replacements.length > 1)
@@ -86,7 +87,8 @@ export function resolveWorkflowDispatchLineage(
 		if (
 			replacement.event.run_id !== target.runId ||
 			replacement.event.node_id !== target.nodeId ||
-			!matchesAttempt(originExecutionId, replacement.payload?.attempt) ||
+			(replacement.event.kind === "execution_dead_rolled_back" &&
+				!matchesAttempt(originExecutionId, replacement.payload?.attempt)) ||
 			!replacement.event.execution_id
 		)
 			throw new Error("workflow_lineage_target_mismatch");

@@ -442,6 +442,25 @@ describe("④ CommDB live executions", () => {
 		expect(reasons(red)).not.toContain("info:terminal_session_residue");
 	});
 
+	it("FLY-2900: a lease left by a quota standby body is recorded, not a readiness fault", async () => {
+		const h = host();
+		h.session({ id: "parked-q", status: "timeout", keepAlive: 0 });
+		h.lease("parked-q");
+		const collect = createCodexQuotaHostCollector({
+			...h.options,
+			isQuotaStandby: (id) => id === "parked-q",
+		});
+		const green = await collect();
+		expect(reasons(green)).not.toContain("registered:lease_without_process");
+		expect(reasons(green)).toContain("info:quota_standby_lease");
+		// Any other leaseholder without a process still fails closed.
+		h.session({ id: "other-1", status: "completed", keepAlive: 1 });
+		h.lease("other-1");
+		const red = await collect();
+		expect(red.complete).toBe(false);
+		expect(reasons(red)).toContain("registered:lease_without_process");
+	});
+
 	it("a terminal row that still has only a process enters the original reconciliation", async () => {
 		const h = host();
 		const perExecution = join(h.homesRoot, "parked-2");

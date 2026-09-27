@@ -1,0 +1,171 @@
+{
+  "frozenInputsShaVerified": true,
+  "leadScope": "flywheel-eng-lead",
+  "projectScopeVerified": "flywheel",
+  "scopeBindingsForMissingPayloadProject": [
+    {
+      "seq": 129578,
+      "runId": "b1ebedf1-aa24-4279-95f5-84bafbccb953",
+      "binding": [
+        "b1ebedf1-aa24-4279-95f5-84bafbccb953",
+        "flywheel",
+        "FLY-2886"
+      ]
+    },
+    {
+      "seq": 129599,
+      "runId": "ccbf5666-c900-44b3-8acf-8f8d3988a53b",
+      "binding": [
+        "ccbf5666-c900-44b3-8acf-8f8d3988a53b",
+        "flywheel",
+        "FLY-2906"
+      ]
+    },
+    {
+      "seq": 129659,
+      "runId": "061f087c-3d3d-48d7-b10a-f2274299b9fb",
+      "binding": [
+        "061f087c-3d3d-48d7-b10a-f2274299b9fb",
+        "flywheel",
+        "FLY-2894"
+      ]
+    },
+    {
+      "seq": 129662,
+      "runId": "35a1d137-8635-48b5-81e3-bcfe25f114d1",
+      "binding": [
+        "35a1d137-8635-48b5-81e3-bcfe25f114d1",
+        "flywheel",
+        "FLY-2860"
+      ]
+    },
+    {
+      "seq": 129666,
+      "runId": "35a1d137-8635-48b5-81e3-bcfe25f114d1",
+      "binding": [
+        "35a1d137-8635-48b5-81e3-bcfe25f114d1",
+        "flywheel",
+        "FLY-2860"
+      ]
+    },
+    {
+      "seq": 129703,
+      "runId": "43dc8b0e-8096-4a8e-ab53-18361012297b",
+      "binding": [
+        "43dc8b0e-8096-4a8e-ab53-18361012297b",
+        "flywheel",
+        "FLY-2913"
+      ]
+    },
+    {
+      "seq": 129748,
+      "runId": "43dc8b0e-8096-4a8e-ab53-18361012297b",
+      "binding": [
+        "43dc8b0e-8096-4a8e-ab53-18361012297b",
+        "flywheel",
+        "FLY-2913"
+      ]
+    }
+  ],
+  "note": "Baseline journal disposition only; not a purity claim or counterfactual wake count. Missing project field checked against current durable workflow identity, not inferred from Lead name.",
+  "groups": [
+    {
+      "eventType": "session_monitoring_reestablished",
+      "stage": "",
+      "status": "running",
+      "disposition": "audit_only",
+      "count": 26
+    },
+    {
+      "eventType": "session_monitoring_reestablished",
+      "stage": "",
+      "status": "ship_parked",
+      "disposition": "model",
+      "count": 12
+    },
+    {
+      "eventType": "session_started",
+      "stage": "",
+      "status": "running",
+      "disposition": "model",
+      "count": 21
+    },
+    {
+      "eventType": "stage_changed",
+      "stage": "brainstorm",
+      "status": "running",
+      "disposition": "audit_only",
+      "count": 19
+    },
+    {
+      "eventType": "stage_changed",
+      "stage": "code_review",
+      "status": "running",
+      "disposition": "model",
+      "count": 8
+    },
+    {
+      "eventType": "stage_changed",
+      "stage": "design_review",
+      "status": "running",
+      "disposition": "model",
+      "count": 3
+    },
+    {
+      "eventType": "stage_changed",
+      "stage": "implement",
+      "status": "running",
+      "disposition": "audit_only",
+      "count": 11
+    },
+    {
+      "eventType": "stage_changed",
+      "stage": "onboard",
+      "status": "running",
+      "disposition": "audit_only",
+      "count": 19
+    },
+    {
+      "eventType": "stage_changed",
+      "stage": "plan",
+      "status": "running",
+      "disposition": "audit_only",
+      "count": 2
+    },
+    {
+      "eventType": "stage_changed",
+      "stage": "pr_created",
+      "status": "running",
+      "disposition": "audit_only",
+      "count": 5
+    },
+    {
+      "eventType": "stage_changed",
+      "stage": "pr_created",
+      "status": "running",
+      "disposition": "model",
+      "count": 7
+    },
+    {
+      "eventType": "stage_changed",
+      "stage": "research",
+      "status": "running",
+      "disposition": "audit_only",
+      "count": 3
+    },
+    {
+      "eventType": "stage_changed",
+      "stage": "test",
+      "status": "running",
+      "disposition": "audit_only",
+      "count": 3
+    },
+    {
+      "eventType": "workflow_replacement_eligibility",
+      "stage": "",
+      "status": "",
+      "disposition": "model",
+      "count": 2
+    }
+  ]
+}

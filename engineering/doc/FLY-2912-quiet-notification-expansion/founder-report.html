@@ -1,0 +1,89 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2912 · 纯通知只记账</title><style>*{box-sizing:border-box}body{margin:0;background:#f5f5f7;color:#1d1d1f;font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:980px;margin:auto;padding:48px 24px 72px}header{margin-bottom:32px}.eyebrow{color:#0071e3;font-weight:650;letter-spacing:.07em}h1{font-size:clamp(30px,5vw,46px);line-height:1.2;margin:12px 0}h2{font-size:22px;line-height:1.4;margin-top:0}section{background:white;border:1px solid #e8e8ed;border-radius:20px;padding:28px;margin:20px 0;box-shadow:0 2px 10px #00000003}p{margin:12px 0}.lede{font-size:20px}label{display:block;font-size:13px;color:#6e6e73;margin-top:24px}textarea.comment{width:100%;min-height:86px;resize:vertical;font:inherit;padding:12px;margin-top:7px;border:1px solid #d2d2d7;border-radius:10px;background:#fafafa}textarea:focus{outline:2px solid #0071e3}.table{overflow:auto}table{border-collapse:collapse;width:100%;min-width:460px;font-size:14px}td,th{text-align:left;padding:12px;border-bottom:1px solid #eee}th{color:#6e6e73;font-weight:500}.metrics{display:flex;gap:32px;flex-wrap:wrap}.metrics b{display:block;font-size:36px;line-height:1.2}.metrics span{font-size:13px;color:#6e6e73}.notice,.pending{background:#fff8e8;border:1px solid #f2dfb4;padding:16px;border-radius:12px}.pending strong{font-size:13px;color:#946400}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.6 ui-monospace,monospace;background:#f5f5f7;padding:16px;border-radius:10px}button{border:0;border-radius:9px;padding:10px 16px;margin:5px 8px 5px 0;background:#0071e3;color:white;font:inherit;cursor:pointer}svg{max-width:100%;height:auto}li{margin:8px 0}footer{font-size:13px;color:#6e6e73}@media(max-width:600px){main{padding:28px 14px}section{padding:20px}.metrics{gap:18px}}</style></head><body><main><header><div class="eyebrow">FLY-2912 · 工程设计</div><h1>状态照常记录，<br>有事才叫醒。</h1><p>把重复的“收到”留在账里，把注意力留给真正需要推进的事。</p></header><section id="flow" data-title="01 · 什么时候需要叫醒"><h2>01 · 什么时候需要叫醒</h2><p class="lede">只播报状态的消息先记账，等负责人被真实任务叫醒时一起看；问题、失败和需要接手的动作仍立即送达。</p><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本地浏览器沙箱拒绝启动；已按标准参数重试。图源已保存，未使用远程渲染。</p><pre>flowchart TD
+  accTitle: 纯通知不单独叫醒负责人
+  accDescr: 事件经业务验证后，有待办立即发送，纯通知记账并附在下次真实任务中。
+  A[事件先完成业务校验] --&gt; B{真实待办或证据不足}
+  B --&gt;|有| C[立即叫醒负责人]
+  B --&gt;|无且开关开启| D[完整记账 不单独叫醒]
+  B --&gt;|开关关闭| C
+  D --&gt; E[固定入口随时查询]
+  D --&gt; F[下次真实任务附带汇总]
+</pre></div><label for="comment-flow">对这一节的意见</label><textarea class="comment" id="comment-flow" data-section="flow" placeholder="写下需要调整的地方…"></textarea></section><section id="scope" data-title="02 · 四类事件，同一条边界"><h2>02 · 四类事件，同一条边界</h2><p>Lead 是负责推进任务的 AI 负责人。是否唤醒取决于真实待办和已核实的记录，不取决于消息名称。</p><div class="table"><table><thead><tr><th>事件</th><th>只记账的条件</th><th>仍立即叫醒</th></tr></thead><tbody><tr><td>阶段变更</td><td>阶段已登记，动作已有人负责或已处理</td><td>问题未答、评审无人接手、需要审批</td></tr><tr><td>会话开始</td><td>首次执行身份已登记，启动和线程结果均已核实</td><td>新执行体仍需负责人交办或救援</td></tr><tr><td>监控恢复</td><td>已验证恢复，相关告警已解决</td><td>仍卡住、存活不明、告警未结</td></tr><tr><td>换体预告</td><td>未来检查已有调度依据，相关故障已另行通知</td><td>需要接手、重试到顶、环境故障</td></tr></tbody></table></div><label for="comment-scope">对这一节的意见</label><textarea class="comment" id="comment-scope" data-section="scope" placeholder="写下需要调整的地方…"></textarea></section><section id="data" data-title="03 · 原始账完整，汇总不冒充已读"><h2>03 · 原始账完整，汇总不冒充已读</h2><p>audit_only 的意思是“保留记录，但不单独交给模型”。事件编号、执行编号和处理证据留在原账中，显示多少条不影响保存多少条。</p><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本地浏览器沙箱拒绝启动；已按标准参数重试。图源已保存，未使用远程渲染。</p><pre>erDiagram
+  accTitle: 原始账与汇总收据分开
+  accDescr: 原事件账保留所有记录，汇总收据关联真实投递批次，展示游标只记录已提供的概览范围。
+  EVENT_LEDGER ||--o{ SUMMARY_OFFER : &quot;范围引用&quot;
+  REAL_BATCH ||--o| SUMMARY_OFFER : &quot;附带&quot;
+  SUMMARY_OFFER }o--|| DISPLAY_CURSOR : &quot;成功提交后推进&quot;
+  EVENT_LEDGER {
+    string event_id &quot;稳定事件编号&quot;
+    string disposition &quot;即时或只记账&quot;
+    string proof_ref &quot;权威证据&quot;
+  }
+  SUMMARY_OFFER {
+    string batch_id &quot;真实批次编号&quot;
+    int through_seq &quot;覆盖到的账目序号&quot;
+    string content_hash &quot;冻结内容校验值&quot;
+  }
+</pre></div><p>下次真实任务会带上类别总数、最新状态、供负责人读取的完整查询入口。提交成功只说明载体收到概览，不表示模型读过，更不表示待办已完成。</p><label for="comment-data">对这一节的意见</label><textarea class="comment" id="comment-data" data-section="data" placeholder="写下需要调整的地方…"></textarea></section><section id="evidence" data-title="04 · 今晚的样本已冻结"><h2>04 · 今晚的样本已冻结</h2><div class="metrics"><div><b>257</b><span>负责人事件账</span></div><div><b>206</b><span>邮箱输入</span></div><div><b>80</b><span>关联原始事件</span></div></div><p>固定窗口：9 月 25 日 18:30–21:00 PDT。包含 20:58 左右重启产生的恢复通知。</p><div class="table"><table><thead><tr><th>类别</th><th>当前只记账</th><th>当前模型路径</th></tr></thead><tbody><tr><td>阶段变更</td><td>62</td><td>18</td></tr><tr><td>会话开始</td><td>0</td><td>21</td></tr><tr><td>监控恢复</td><td>26</td><td>12</td></tr><tr><td>换体预告</td><td>0</td><td>2</td></tr></tbody></table></div><p class="notice">这些数字是事件数量，不是唤醒次数。尚未实现，也没有改后节省结果。</p><label for="comment-evidence">对这一节的意见</label><textarea class="comment" id="comment-evidence" data-section="evidence" placeholder="写下需要调整的地方…"></textarea></section><section id="acceptance" data-title="05 · 怎样证明修好了"><h2>05 · 怎样证明修好了</h2><ul><li>四类纯通知不产生单独的模型回合；原账和查询页仍完整。</li><li>每类混入问题、创始人消息、失败或真实动作，都必须立即送达。</li><li>同一晚完整序列分别跑改前、改后开启、改后关闭，分别统计事件、投递批次和真实回合。</li><li>两种模型载体都实际看到下一次任务附带的汇总；发送回执不能代替消费记录。</li><li>只跑相关测试，不在本机跑全仓测试。</li></ul><label for="comment-acceptance">对这一节的意见</label><textarea class="comment" id="comment-acceptance" data-section="acceptance" placeholder="写下需要调整的地方…"></textarea></section><section id="tradeoffs" data-title="06 · 取舍与边界"><h2>06 · 取舍与边界</h2><p>沿用现有开关和事件账，只补证据分类与下次唤醒时的汇总。关开关后，新事件恢复原投递；历史通知不会突然集中重放。</p><ul><li>不按事件名一刀切，避免吞掉夹带待办。</li><li>不让模型先醒来再判断是否回复“收到”。</li><li>不新增定时摘要唤醒，不改任务调度、审批或告警结案。</li><li>遇到未知字段、丢失证据或查证失败，保留即时通知。</li></ul><p>当前交付是设计和实施合同。正式实现、相关测试及回放对比由后续节点完成。评审已纠正生产启动入口遗漏，并明确保留真实换体交接和失败通知。</p><label for="comment-tradeoffs">对这一节的意见</label><textarea class="comment" id="comment-tradeoffs" data-section="tradeoffs" placeholder="写下需要调整的地方…"></textarea></section><section id="feedback" data-title="07 · 页面意见汇总"><h2>07 · 页面意见汇总</h2><p>评论只保存在本浏览器；复制后发回即可。此标记是修改意见，不是通过信号。</p><div id="summary" aria-live="polite"></div><button id="copy-all" type="button">复制全部意见</button><p id="copy-status" role="status"></p><label for="comment-feedback">对这一节的意见</label><textarea class="comment" id="comment-feedback" data-section="feedback" placeholder="写下需要调整的地方…"></textarea></section><footer>设计日期：2026-09-25 · 设计审查已通过，带非阻塞建议。实现与上线尚未完成。</footer></main><script nonce="__CSP_NONCE__">(() => {
+'use strict';
+const marker = '【页面意见汇总】FLY-2912';
+const prefix = 'fly2912-comments:' + location.pathname + ':';
+const inputs = Array.from(document.querySelectorAll('textarea.comment'));
+const summary = document.getElementById('summary');
+const status = document.getElementById('copy-status');
+let chunks = [];
+function entries() {
+ return inputs.flatMap(input => {
+  const value = input.value.trim();
+  return value ? ['[' + input.closest('section').dataset.title + ']\n' + value] : [];
+ });
+}
+function makeChunks(values) {
+ const result = []; let current = marker;
+ for (const entry of values) {
+  let remaining = Array.from(entry);
+  while (remaining.length) {
+   let room = 1780 - Array.from(current).length - 2;
+   if (room <= 0) { result.push(current); current = marker; room = 1780 - marker.length - 2; }
+   current += '\n\n' + remaining.splice(0, room).join('');
+   if (remaining.length) { result.push(current); current = marker; }
+  }
+ }
+ if (current !== marker) result.push(current);
+ return result;
+}
+async function copy(text) {
+ try {
+  if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('clipboard unavailable');
+  await navigator.clipboard.writeText(text);
+ } catch (_) {
+  const area = document.createElement('textarea'); area.value = text;
+  area.style.position = 'fixed'; area.style.opacity = '0';
+  document.body.appendChild(area); area.select();
+  let copied = false;
+  try { copied = document.execCommand('copy'); } finally { area.remove(); }
+  if (!copied) throw new Error('copy failed');
+ }
+}
+async function performCopy(text) {
+ try { await copy(text); status.textContent = '已复制，可粘贴发送。'; }
+ catch (_) { status.textContent = '复制未成功，请选择汇总文字手动复制。'; }
+}
+function render() {
+ chunks = makeChunks(entries()); summary.replaceChildren();
+ if (!chunks.length) { const empty = document.createElement('p'); empty.textContent = '暂无意见。'; summary.appendChild(empty); }
+ chunks.forEach((chunk, i) => {
+  const pre = document.createElement('pre'); pre.textContent = chunk; summary.appendChild(pre);
+  const button = document.createElement('button'); button.type = 'button'; button.textContent = '复制第 ' + (i + 1) + ' 段';
+  button.addEventListener('click', () => performCopy(chunk)); summary.appendChild(button);
+ });
+}
+inputs.forEach(input => {
+ try { input.value = localStorage.getItem(prefix + input.dataset.section) || ''; } catch (_) {}
+ input.addEventListener('input', () => {
+  try { localStorage.setItem(prefix + input.dataset.section, input.value); } catch (_) {}
+  render();
+ });
+});
+document.getElementById('copy-all').addEventListener('click', () => performCopy(chunks.length ? chunks.join('\n\n') : marker));
+render();
+})();</script></body></html>

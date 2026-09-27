@@ -234,6 +234,20 @@ describe("pane-loss reconciler (FLY-1628)", () => {
 		expect(d.notify).not.toHaveBeenCalled();
 	});
 
+	it("FLY-2900: does not classify a Codex quota standby body as pane loss", async () => {
+		seed("quota-standby");
+		vi.spyOn(store, "isCodexQuotaStandby").mockImplementation(
+			(id) => id === "quota-standby",
+		);
+		const d = deps();
+
+		const result = await reconcilePaneLoss("flywheel", d);
+
+		expect(result).toMatchObject({ scanned: 1, kept: 1, advisories: 0 });
+		expect(d.lookupTarget).not.toHaveBeenCalled();
+		expect(d.notify).not.toHaveBeenCalled();
+	});
+
 	it("keeps parked and same-generation rows active, with class-specific truthful advisory debt", async () => {
 		seed("parked-lost", { status: "ship_parked" });
 		seed("same-generation");

@@ -1,6 +1,6 @@
 import type http from "node:http";
 import { WORKFLOW_TRANSITIONS } from "flywheel-core";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBridgeApp } from "../bridge/plugin.js";
 import type { CaptureSessionFn } from "../bridge/tools.js";
 import type { BridgeConfig } from "../bridge/types.js";
@@ -237,6 +237,26 @@ describe("Query tools", () => {
 		expect(body.sessions.map((s: any) => s.execution_id)).toContain("stuck-1");
 		expect(body.sessions.map((s: any) => s.execution_id)).not.toContain(
 			"recent-1",
+		);
+	});
+
+	it("FLY-2900 GET /api/sessions?mode=stuck leaves out a quota-standby body", async () => {
+		store.upsertSession({
+			execution_id: "parked-1",
+			issue_id: "i3",
+			project_name: "p",
+			status: "running",
+			last_activity_at: toSqlite(new Date(Date.now() - 30 * 60_000)),
+		});
+		vi.spyOn(store, "isCodexQuotaStandby").mockImplementation(
+			(id) => id === "parked-1",
+		);
+		const res = await fetch(
+			`${baseUrl}/api/sessions?mode=stuck&stuck_threshold=15`,
+		);
+		const body = await res.json();
+		expect(body.sessions.map((s: any) => s.execution_id)).not.toContain(
+			"parked-1",
 		);
 	});
 

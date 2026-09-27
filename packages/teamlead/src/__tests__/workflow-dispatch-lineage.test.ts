@@ -67,6 +67,16 @@ describe("shared workflow dispatch lineage", () => {
 			chain[1]!.event_uid,
 		]);
 	});
+	it("follows a quota fallback body to its parked source transition", () => {
+		const fallback = event("codex_quota_fallback_prepared", "first", {
+			newExecutionId: "new",
+			fallbackAttempt: 1,
+		});
+		const resolved = resolveWorkflowDispatchLineage([edge, fallback], target);
+		expect(resolved.transition).toBe(edge);
+		expect(resolved.originExecutionId).toBe("first");
+		expect(resolved.replacementEventUids).toEqual([fallback.event_uid]);
+	});
 	it("accepts a prior rework actor attempt only with its exact immutable origin", () => {
 		const historical = {
 			...edge,
