@@ -927,8 +927,7 @@ class CodexVoiceSession implements ConversationSession {
 	}
 
 	transportClosed(input: { generation: number; reason: string }): void {
-		if (this.closing || this.restarting || input.generation !== this.generation)
-			return;
+		if (this.closing || input.generation !== this.generation) return;
 		this.events.emit(
 			"error",
 			new VoiceError(

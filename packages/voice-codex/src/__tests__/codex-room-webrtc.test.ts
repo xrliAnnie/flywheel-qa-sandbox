@@ -765,6 +765,29 @@ describe("engine B generation change in the session (FLY-2885 T7)", () => {
 		expect(h.heardIds().slice(0, old.length)).toEqual(old);
 		expect(h.statuses).toEqual(["📻 语音连接断了，正在重连", "📻 已重连"]);
 	});
+
+	it.each([
+		"realtime_reconnect_exhausted",
+		"realtime_reconnect_unconfirmed",
+		"process_exit",
+	])("ends a reconnecting session on terminal close: %s", async (reason) => {
+		const h = await harness();
+		const errors: Error[] = [];
+		h.session.on("error", (error) => errors.push(error));
+
+		h.callbacks.onGenerationLost({
+			generation: 1,
+			reason: "webrtc_downlink_silent",
+		} as never);
+		h.callbacks.onClosed({ generation: 1, reason } as never);
+
+		expect(errors).toHaveLength(1);
+		expect(errors[0]).toMatchObject({
+			name: "VoiceError",
+			code: "connection-closed",
+			cause: reason,
+		});
+	});
 });
 
 describe("engine B says when a Lead reply could not be read to the end (FLY-2885 founder rework C)", () => {
