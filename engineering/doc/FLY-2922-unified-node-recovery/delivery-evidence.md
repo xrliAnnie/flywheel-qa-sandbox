@@ -32,4 +32,9 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 
 ## 门与发布
 
-（await-codex-gate / publish-report / 报告收据在执行后追加。）
+- `await-codex-gate design`：`design review APPROVED for exec=8a9027c6-… (reviewer gpt-6-astra/xhigh, turn 01a0e3b1-7f6d-72a1-a69b-f344aaad5a96)`。
+- 设计产物提交 `99b6e0c93` 已推送 `origin/project-slot-2-FLY-2922`。
+- `publish-report --publish-only`：`{"url":"http://127.0.0.1:60111/fw-reports-9edb89/r/c78cd5676188c1a21784e8bcc8d62c4f/","reportId":"c78cd5676188c1a21784e8bcc8d62c4f","messageId":null,"delivered":false,"publishOnly":true}`（无频道消息为本任务预期）。
+- 托管页核验：HTTP 200；`__CSP_NONCE__` 残留 0；单一 `<script nonce="262ad223…">`；CSP 中同 nonce 出现 1 次；标记首行 1、内联 SVG 3、外部 src/href 0。本地 SHA-256 `7df46ef3fad31ef9b947e2511b898c4c9c0fc2de2f17830ec60f8d11a2b7b2c7`；托管 SHA-256 `7034279871bd60b9ecd820b81e084f7ac1334a8bd82095668f2181e4c5698d0b`；去掉 minted nonce 与 CSP 行后与本地一致：no。
+- Lead 报告 `DESIGN-HTML ready: <url> | repo: engineering/doc/FLY-2922-unified-node-recovery/founder-design.html | issue: FLY-2922`，durable report `efa1eee3-9630-4cdf-8818-e6da1e75cf3f`。
+- 下一步仅 `complete --route phase_design_complete`；本段不冒充该收据。
