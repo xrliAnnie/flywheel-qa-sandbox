@@ -205,11 +205,31 @@ describe("Opus downlink", () => {
 		expect(h.diagnostics).not.toContainEqual(
 			expect.objectContaining({ kind: "downlink_queue_trim" }),
 		);
+	});
 
-		// Once a pause lets the replay-derived debt fall below the live-backlog
-		// threshold, ordinary runaway-backlog trimming is armed again.
-		h.tickFor(41);
-		for (let index = 0; index < 3; index += 1)
+	it("keeps a continuing live answer through post-replay arrival jitter", () => {
+		const h = harness();
+		for (let index = 0; index < 32; index += 1)
+			h.downlink.push(packet(index), { voiced: true, replay: true });
+
+		// The first eight live packets are delayed, then the server and player
+		// resume the same 20 ms cadence while replay drains. Immediately after
+		// the final replay packet, a two-packet catch-up burst must not trim the
+		// still-playing live answer from 26 packets to 3.
+		for (let index = 0; index < 32; index += 1) {
+			h.tickFor(1);
+			if (index >= 8) h.downlink.push(packet(100 + index), { voiced: true });
+		}
+		expect(h.downlink.queued()).toEqual({ total: 24, voiced: 24 });
+		h.downlink.push(packet(200), { voiced: true });
+		h.downlink.push(packet(201), { voiced: true });
+		expect(h.downlink.queued()).toEqual({ total: 26, voiced: 26 });
+		expect(h.downlink.stats().trims).toBe(0);
+
+		// Once playback returns to the normal three-packet live depth, ordinary
+		// runaway-backlog trimming is armed again.
+		h.tickFor(23);
+		for (let index = 0; index < 23; index += 1)
 			h.downlink.push(packet(200 + index), { voiced: true });
 		expect(h.downlink.queued().total).toBe(3);
 		expect(h.downlink.stats().trims).toBe(1);

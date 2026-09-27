@@ -222,7 +222,7 @@ export class OpusDownlink {
 		if (
 			this.replayBacklog &&
 			!this.queue.some((queued) => queued.replay) &&
-			this.queue.length < TRIM_ABOVE_PACKETS
+			this.queue.length <= TRIM_TO_PACKETS
 		)
 			this.replayBacklog = false;
 		const at = this.now();
