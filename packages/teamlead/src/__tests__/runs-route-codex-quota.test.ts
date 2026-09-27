@@ -916,7 +916,7 @@ describe("FLY-2465 Codex quota admission", () => {
 		const { collectRunQuiescenceEvidence } = await import(
 			"../bridge/run-quiescence.js"
 		);
-		const result = store.terminateWorkflowRunByOperator({
+		const terminateRequest = {
 			runId: old.run_id,
 			reason: `codex quota recovery ${incidentId}`,
 			clientRequestId: `codex-quota:${incidentId}:${old.run_id}:terminate`,
@@ -927,8 +927,50 @@ describe("FLY-2465 Codex quota admission", () => {
 				old.run_id,
 				async () => "dead",
 			),
+		};
+		expect(store.terminateWorkflowRunByOperator(terminateRequest)).toEqual({
+			ok: false,
+			reason: "quota_source_advanced",
+		});
+		const waiting = store.codexQuota.getTargetFence(
+			incidentId,
+			"runner",
+			old.run_id,
+		)!;
+		expect(
+			store.codexQuota.compareAndSwapTarget(waiting, { state: "terminating" }),
+		).toBe(true);
+		const terminating = store.codexQuota.getTargetFence(
+			incidentId,
+			"runner",
+			old.run_id,
+		)!;
+		const sourceDispatch = store
+			.listWorkflowSideEffects(old.run_id)
+			.find(
+				(effect) =>
+					effect.kind === "dispatch" &&
+					effect.node_id === old.node_id &&
+					effect.execution_id === old.execution_id,
+			)!;
+		const permit = store.getCodexQuotaRecoveryPermit(incidentId)!;
+		const result = store.terminateWorkflowRunByOperator({
+			...terminateRequest,
+			quotaRecovery: {
+				target: terminating,
+				nodeId: old.node_id,
+				attempt: sourceDispatch.attempt,
+				launchOrdinal: sourceDispatch.launch_ordinal,
+				permitIncidentId: String(permit.incident_id),
+				installedGeneration: Number(permit.installed_generation),
+			},
 		});
 		expect(result).toMatchObject({ ok: true });
+		expect(
+			store.codexQuota.compareAndSwapTarget(terminating, {
+				state: "terminated",
+			}),
+		).toBe(true);
 		const changed = v2Seed("claude");
 		store.importWorkflowTemplateSeed(changed, process.env);
 		store.bindWorkflowCategory({
