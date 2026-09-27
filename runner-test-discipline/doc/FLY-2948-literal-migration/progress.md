@@ -1,13 +1,13 @@
 ---
 issue: FLY-2948
-phase: design
-phaseCursor: 1/5
-updated: 2026-09-27T11:55:07.544Z
-nextStep: Update exact assertions first and run a concrete failing test
+phase: implement
+phaseCursor: 2/5
+updated: 2026-09-27T11:56:44.321Z
+nextStep: Install only fixture dependencies offline, rerun concrete RED test
 chunks: []
 pointers: {}
 ---
 
 # FLY-2948 progress
-**phase**: design (1/5)
-**next**: Update exact assertions first and run a concrete failing test
+**phase**: implement (2/5)
+**next**: Install only fixture dependencies offline, rerun concrete RED test
