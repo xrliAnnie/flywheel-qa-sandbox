@@ -1,12 +1,11 @@
 ---
 issue: FLY-2922
 phase: design
-phaseCursor: 6/6
-updated: 2026-09-27T16:32:19.778Z
-nextStep: "design complete: R3 APPROVED (request 16de6265, blob ad33389ff), gate
-  passed, HTML published c78cd567 and reported efa1eee3. Handoff: implement node
-  runs plan §3.1 (LANE=A unless Lead answers 0d73b791 with sandbox PR); QA per
-  plan §5."
+phaseCursor: 1/5
+updated: 2026-09-27T17:19:58.427Z
+nextStep: "redispatch verify: docs intact (plan blob ad33389ff); rebind
+  design-review manifest to exec 0edcc786, gate, republish HTML, report,
+  complete"
 chunks: []
 pointers: {}
 handoff: "implement: cd repo root; verify plan §3.1 awk/diff
@@ -16,7 +15,7 @@ handoff: "implement: cd repo root; verify plan §3.1 awk/diff
 ---
 
 # FLY-2922 progress
-**phase**: design (6/6)
-**next**: design complete: R3 APPROVED (request 16de6265, blob ad33389ff), gate passed, HTML published c78cd567 and reported efa1eee3. Handoff: implement node runs plan §3.1 (LANE=A unless Lead answers 0d73b791 with sandbox PR); QA per plan §5.
+**phase**: design (1/5)
+**next**: redispatch verify: docs intact (plan blob ad33389ff); rebind design-review manifest to exec 0edcc786, gate, republish HTML, report, complete
 
 **handoff**: implement: cd repo root; verify plan §3.1 awk/diff SCRIPT-MATCHES-PLAN; check 0d73b791; LANE=A zsh engineering/doc/FLY-2922-unified-node-recovery/handin.zsh (DRY_RUN=1 first if unsure); no code changes; no local tests
