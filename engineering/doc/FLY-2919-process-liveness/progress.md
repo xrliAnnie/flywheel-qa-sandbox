@@ -2,30 +2,33 @@
 issue: FLY-2919
 phase: implement
 phaseCursor: 0/6
-updated: 2026-09-27T03:23:00.342Z
-nextStep: "B8 pushed153320e79/8b63b9bac, verified14files273pass+related9files219
-  coverage with owner-timeout retry, builds/types/lint green. B9 WIP
-  uncommitted: durable projected body-death reader checks exact
-  owner/generation/spawn/binding/terminal lifecycle/activation/ack; current
-  workflow slot intentionally checked at replacement CAS not physical fact
-  reader, so predecessor death remains readable after successor starts. Added
-  synchronous cached/durable reader, plugin wiring and dispatcher removes
-  terminal-first/default-window fallback. Registered-owner replacement now
-  requires exact proof + synchronous managed-flag/currentness callback within
-  transaction. Causal dispatcher5RED, CAS1RED actually returnedok:true when
-  callbackfalse; C2 proof/CAS final20GREEN, reader5GREEN. Initial dispatcher
-  green attempt hit missing test activation fixture and2original5s timeouts
-  under hostload256; fixture corrected without production change or timeout
-  changes. Active full dispatcher concrete-file verification session79987, log
-  /tmp/fly2919-b9-dispatcher-full.log; inspect before starting another test. B9
-  inventory archive14retained files exists, full
-  selected/related/build/typechecks/lint still pending. Full A-F/nine
-  tickets/legacy/direct consumers/ordinary-rework settlement/A9 routes timeout
-  remain; no final review/PR/CI/QA/handoff."
+updated: 2026-09-27T03:46:32.402Z
+nextStep: "B8 committed153320e79 and pushed8b63b9bac. B9 code d7089d4b1 COMPLETE
+  AS CHECKPOINT ONLY: dispatcher uses synchronous shared body reader, no default
+  window probe or terminal-first death gate. Current-generation immutable
+  body_death + exact projected receipt survives sampling expiry and workflow
+  slot handoff; registered-owner replacement revalidates proof/run/node/attempt
+  and managed switch inside final transaction after awaits. Normal
+  single-successor and disable/generation-race guards proved red/green. 19
+  concrete files480pass/1existing skip; bounded related8files304pass/1skip plus
+  direct-caller5files104pass. Build+dependencies, teamlead/voice-codex
+  typechecks, lint final pass (26warnings incl1late-assignment advisory).
+  Formatter-only type annotation wrap has explicit before/after hash proof and
+  post-format18wiring tests;8source hashes archived with all diagnostics. NEXT
+  DIRECT B10 server-loss/crash-reaper/zombie-scan: plugin
+  ServerLossCoordinator.targetGone still maps missing window/dead_pin to death
+  and migrate applies failed/forceStatus around161xx; crash-reaper still gates
+  ownership on dead-pin/heartbeat age and terminalizes after window kill. Unify
+  with common BodyObservation/C2 and separate window cleanup from death. Full
+  approved A-F/nine-ticket objective remains: legacy binding/compatibility path,
+  same-generation logical activation, ordinary/rework settlement/retirement, all
+  direct importers, D/E/F and nine-case matrix, A9 original15s routes import
+  timeout, final effective review/PR/frozen CI/handoff. No external pending
+  gate, no blocked condition, no final completion."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2919 progress
 **phase**: implement (0/6)
-**next**: B8 pushed153320e79/8b63b9bac, verified14files273pass+related9files219 coverage with owner-timeout retry, builds/types/lint green. B9 WIP uncommitted: durable projected body-death reader checks exact owner/generation/spawn/binding/terminal lifecycle/activation/ack; current workflow slot intentionally checked at replacement CAS not physical fact reader, so predecessor death remains readable after successor starts. Added synchronous cached/durable reader, plugin wiring and dispatcher removes terminal-first/default-window fallback. Registered-owner replacement now requires exact proof + synchronous managed-flag/currentness callback within transaction. Causal dispatcher5RED, CAS1RED actually returnedok:true when callbackfalse; C2 proof/CAS final20GREEN, reader5GREEN. Initial dispatcher green attempt hit missing test activation fixture and2original5s timeouts under hostload256; fixture corrected without production change or timeout changes. Active full dispatcher concrete-file verification session79987, log /tmp/fly2919-b9-dispatcher-full.log; inspect before starting another test. B9 inventory archive14retained files exists, full selected/related/build/typechecks/lint still pending. Full A-F/nine tickets/legacy/direct consumers/ordinary-rework settlement/A9 routes timeout remain; no final review/PR/CI/QA/handoff.
+**next**: B8 committed153320e79 and pushed8b63b9bac. B9 code d7089d4b1 COMPLETE AS CHECKPOINT ONLY: dispatcher uses synchronous shared body reader, no default window probe or terminal-first death gate. Current-generation immutable body_death + exact projected receipt survives sampling expiry and workflow slot handoff; registered-owner replacement revalidates proof/run/node/attempt and managed switch inside final transaction after awaits. Normal single-successor and disable/generation-race guards proved red/green. 19 concrete files480pass/1existing skip; bounded related8files304pass/1skip plus direct-caller5files104pass. Build+dependencies, teamlead/voice-codex typechecks, lint final pass (26warnings incl1late-assignment advisory). Formatter-only type annotation wrap has explicit before/after hash proof and post-format18wiring tests;8source hashes archived with all diagnostics. NEXT DIRECT B10 server-loss/crash-reaper/zombie-scan: plugin ServerLossCoordinator.targetGone still maps missing window/dead_pin to death and migrate applies failed/forceStatus around161xx; crash-reaper still gates ownership on dead-pin/heartbeat age and terminalizes after window kill. Unify with common BodyObservation/C2 and separate window cleanup from death. Full approved A-F/nine-ticket objective remains: legacy binding/compatibility path, same-generation logical activation, ordinary/rework settlement/retirement, all direct importers, D/E/F and nine-case matrix, A9 original15s routes import timeout, final effective review/PR/frozen CI/handoff. No external pending gate, no blocked condition, no final completion.
