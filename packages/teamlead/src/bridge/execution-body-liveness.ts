@@ -27,6 +27,11 @@ export interface ExecutionBodyObserverOptions {
 	isRecoveryActive(executionId: string): boolean;
 	/** Remaining recovery budget vetoes death, but does not hide a live worker. */
 	isRecoveryEligible?(executionId: string): boolean;
+	/** Identity-only legacy backfill before the common OS observation. */
+	prepareBinding?(
+		executionId: string,
+		control: ExecutionBodySampleControl,
+	): Promise<void>;
 	now?: () => number;
 	sample?: typeof captureExecutionProcessSample;
 }
@@ -187,13 +192,34 @@ export function createExecutionBodyObserver(
 		}
 	}
 	return {
-		observe(
+		async observe(
 			executionId: string,
 			control: ExecutionBodySampleControl = {},
 		): Promise<BodyObservation | undefined> {
+			const startedAt = now();
+			const requestedBudget = Math.min(5_000, control.deadlineMs ?? 5_000);
+			if (
+				!Number.isFinite(requestedBudget) ||
+				requestedBudget <= 0 ||
+				control.signal?.aborted
+			) {
+				const known = snapshot(executionId);
+				return known ? unknown(known, "process_sampling_cancelled") : undefined;
+			}
+			if (!snapshot(executionId) && enabled() && options.prepareBinding) {
+				try {
+					await options.prepareBinding(executionId, {
+						...control,
+						deadlineMs: requestedBudget,
+					});
+				} catch {
+					return undefined;
+				}
+			}
 			const initial = snapshot(executionId);
-			if (!initial) return Promise.resolve(undefined);
-			const budget = Math.min(5_000, control.deadlineMs ?? 5_000);
+			if (!initial) return undefined;
+			const elapsed = now() - startedAt;
+			const budget = elapsed < 0 ? 0 : requestedBudget - elapsed;
 			if (control.signal?.aborted || !Number.isFinite(budget) || budget <= 0)
 				return Promise.resolve(unknown(initial, "process_sampling_cancelled"));
 			let entry = inflight.get(initial.key);

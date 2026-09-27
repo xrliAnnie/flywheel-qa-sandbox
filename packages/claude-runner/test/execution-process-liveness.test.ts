@@ -78,6 +78,32 @@ function gone(input = fixture()): ExecutionProcessObservationInput {
 }
 
 describe("FLY-2919 execution process truth", () => {
+	it.each([
+		"valid",
+		"missing_marker",
+		"wrong_execution",
+		"wrong_adapter",
+		"missing_session",
+		"invented_nonce",
+	])(
+		"FLY-2919 validates legacy attribution identity before death: %s",
+		(mode) => {
+			const input = gone(
+				fixture(mode === "wrong_adapter" ? "codex-tmux" : "claude-tmux"),
+			);
+			input.binding!.nonce = mode === "invented_nonce" ? "invented" : null;
+			input.binding!.nativeSessionId =
+				mode === "missing_session"
+					? null
+					: "11111111-2222-3333-4444-555555555555";
+			if (mode !== "missing_marker")
+				input.binding!.legacyExecutionId =
+					mode === "wrong_execution" ? "foreign" : "exec-1";
+			expect(observeExecutionProcesses(input).verdict).toBe(
+				mode === "valid" ? "dead" : "unknown",
+			);
+		},
+	);
 	it.each(["claude-tmux", "kimi-tmux", "antigravity-tmux"] as const)(
 		"does not grant the shared Bridge restart authority over an exited %s worker",
 		(adapter) => {

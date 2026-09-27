@@ -17,7 +17,9 @@ export interface ExecutionProcessBinding extends ExecutionProcessIdentity {
 	pgid: number;
 	executable: string;
 	cwd: string;
-	nonce: string;
+	/** Null only for an independently adopted legacy Claude process. */
+	nonce: string | null;
+	legacyExecutionId?: string;
 	nativeSessionId: string | null;
 	writers: ExecutionProcessIdentity[];
 }
@@ -121,6 +123,12 @@ export function observeExecutionProcesses(
 	if (
 		binding.version !== 1 ||
 		binding.adapter !== input.identity.adapter ||
+		(binding.legacyExecutionId === undefined
+			? !validText(binding.nonce ?? "")
+			: binding.adapter !== "claude-tmux" ||
+				binding.legacyExecutionId !== input.identity.executionId ||
+				binding.nonce !== null ||
+				!validText(binding.nativeSessionId ?? "")) ||
 		!validIdentity(binding) ||
 		!validPid(binding.pgid) ||
 		!validIdentity(input.controller) ||

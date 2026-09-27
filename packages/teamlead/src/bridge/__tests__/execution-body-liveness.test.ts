@@ -1,6 +1,9 @@
 import type { ExecutionProcessSample } from "flywheel-claude-runner";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createStoredExecutionBodyObserver } from "../execution-body-liveness.js";
+import {
+	createExecutionBodyObserver,
+	createStoredExecutionBodyObserver,
+} from "../execution-body-liveness.js";
 
 describe("FLY-2919 current execution body observations", () => {
 	let clock: number;
@@ -93,6 +96,32 @@ describe("FLY-2919 current execution body observations", () => {
 			},
 		);
 	}
+	it("FLY-2919 prepares a legacy binding within the same sample budget", async () => {
+		const accepted = row;
+		row = undefined;
+		const prepareBinding = vi.fn(async () => {
+			clock += 300;
+			row = accepted;
+		});
+		const capture = vi.fn(
+			async (_binding: unknown, _control?: { deadlineMs?: number }) => ({
+				...sample,
+				sampledAtMs: clock,
+			}),
+		);
+		const common = createExecutionBodyObserver(store, {
+			isEnabled: () => enabled,
+			isRecoveryActive: () => false,
+			now: () => clock,
+			sample: capture,
+			prepareBinding,
+		});
+		expect(
+			(await common.observe("exec-1", { deadlineMs: 1000 }))?.verdict,
+		).toBe("dead");
+		expect(prepareBinding).toHaveBeenCalledOnce();
+		expect(capture.mock.calls[0]?.[1]?.deadlineMs).toBe(700);
+	});
 	it.each(["running", "ship_parked", "awaiting_review", "failed", "completed"])(
 		"does not let %s override independently absent controller and writers",
 		async (status) => {

@@ -16,6 +16,7 @@ import type {
 const MAX_BYTES = 16 * 1024 * 1024;
 const MAX_ROWS = 100_000;
 const NONCE_KEY = "FLYWHEEL_EXECUTION_NONCE";
+const LEGACY_EXEC_KEY = "FLYWHEEL_EXEC_ID";
 const DATE =
 	"((?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\\s+\\d{1,2} \\d{2}:\\d{2}:\\d{2} \\d{4})";
 const CENSUS_LINE = new RegExp(
@@ -74,7 +75,12 @@ export async function bindSpawnedExecutionProcessGroup(
 	options: ExecutionProcessInspectorOptions = {},
 ): Promise<ExecutionProcessBinding | null> {
 	try {
-		if (!Number.isSafeInteger(input.pgid) || input.pgid <= 1) return null;
+		if (
+			!Number.isSafeInteger(input.pgid) ||
+			input.pgid <= 1 ||
+			input.nonce === null
+		)
+			return null;
 		absolutePath(input.executable);
 		absolutePath(input.cwd);
 		const c = capture(options);
@@ -129,6 +135,125 @@ export async function bindSpawnedExecutionProcessGroup(
 			)
 		)
 			return null;
+		candidate.writers = (sample.discoveredWriters ?? []).filter(
+			(writer) => writer.pid !== candidate.pid,
+		);
+		return candidate;
+	} catch {
+		return null;
+	}
+}
+
+/** Read-only backfill candidate for a pre-binding Claude launch. The native
+ * session argument is association metadata only: executable/cwd and PID/start/
+ * boot come from independent OS reads. A rewritten title with no native session
+ * association stays unknown; it never proves absence. No window participates. */
+export async function discoverLegacyClaudeProcessBinding(
+	input: {
+		executionId: string;
+		nativeSessionId: string;
+		executable: string;
+		cwd: string;
+	},
+	options: ExecutionProcessInspectorOptions = {},
+): Promise<ExecutionProcessBinding | null> {
+	try {
+		if (
+			!/^[A-Za-z0-9_-]{1,256}$/.test(input.executionId) ||
+			!/^[a-fA-F0-9-]{36}$/.test(input.nativeSessionId)
+		)
+			return null;
+		absolutePath(input.executable);
+		absolutePath(input.cwd);
+		const c = capture(options);
+		const hostBootId = await c.boot();
+		const rows = await c.processes();
+		const argv = argvIndex(
+			await c.run("/bin/ps", ["-axww", "-o", "pid=,lstart=,command="]),
+		);
+		const uid = options.uid ?? process.getuid?.();
+		if (uid === undefined) return null;
+		const candidates: ExecutionProcessBinding[] = [];
+		for (const row of rows) {
+			if (row.uid !== uid || row.state !== "running" || c.owned.has(row.pid))
+				continue;
+			const args = argv.get(row.pid);
+			if (!args || args.start !== row.startIdentity) return null;
+			const tokens = args.text.trim().split(/\s+/);
+			const sessionArgs = tokens.flatMap((token, i) =>
+				token === "--session-id" || token === "--resume" ? [tokens[i + 1]] : [],
+			);
+			if (sessionArgs.length !== 1 || sessionArgs[0] !== input.nativeSessionId)
+				continue;
+			const worker = await c.worker(row.pid);
+			if (worker.executable !== input.executable || worker.cwd !== input.cwd)
+				continue;
+			candidates.push({
+				version: 1,
+				adapter: "claude-tmux",
+				...identity(row, hostBootId),
+				pgid: row.pgid,
+				executable: input.executable,
+				cwd: input.cwd,
+				nonce: null,
+				legacyExecutionId: input.executionId,
+				nativeSessionId: input.nativeSessionId,
+				writers: [],
+			});
+			if (candidates.length > 1) return null;
+		}
+		if (candidates.length !== 1) return null;
+		const candidate = candidates[0]!;
+		const sample = await captureExecutionProcessSample(candidate, {
+			...options,
+			executionId: input.executionId,
+			deadlineMs: c.control().timeoutMs,
+		});
+		c.control();
+		if (
+			!sample?.writersComplete ||
+			sample.worker?.executable !== input.executable ||
+			sample.worker.cwd !== input.cwd ||
+			!sample.processes.some(
+				(row) =>
+					row.pid === candidate.pid &&
+					row.startIdentity === candidate.startIdentity &&
+					row.state === "running",
+			)
+		)
+			return null;
+		// Recheck uniqueness after all discovery awaits: a concurrent native
+		// worker cannot turn the initially unique candidate into accepted identity.
+		const finalRows = await c.processes();
+		const finalArgs = argvIndex(
+			await c.run("/bin/ps", ["-axww", "-o", "pid=,lstart=,command="]),
+		);
+		let finalCandidate: ProcessRow | undefined;
+		for (const row of finalRows) {
+			if (row.uid !== uid || row.state !== "running" || c.owned.has(row.pid))
+				continue;
+			const args = finalArgs.get(row.pid);
+			if (!args || args.start !== row.startIdentity) return null;
+			const tokens = args.text.trim().split(/\s+/);
+			const sessions = tokens.flatMap((token, i) =>
+				token === "--session-id" || token === "--resume" ? [tokens[i + 1]] : [],
+			);
+			if (sessions.length !== 1 || sessions[0] !== input.nativeSessionId)
+				continue;
+			const worker = await c.worker(row.pid);
+			if (worker.executable !== input.executable || worker.cwd !== input.cwd)
+				continue;
+			if (finalCandidate) return null;
+			finalCandidate = row;
+		}
+		if (
+			!finalCandidate ||
+			!matches(finalCandidate, candidate, hostBootId) ||
+			finalCandidate.pgid !== candidate.pgid ||
+			(await c.boot()) !== hostBootId
+		)
+			return null;
+		c.control();
 		candidate.writers = (sample.discoveredWriters ?? []).filter(
 			(writer) => writer.pid !== candidate.pid,
 		);
@@ -546,11 +671,21 @@ export async function captureExecutionProcessSample(
 	try {
 		const c = capture(options);
 		const hostBootId = await c.boot();
+		const legacy = binding.legacyExecutionId !== undefined;
 		if (
 			binding.hostBootId !== hostBootId ||
-			!/^[A-Za-z0-9_-]{1,256}$/.test(binding.nonce)
+			(legacy
+				? binding.adapter !== "claude-tmux" ||
+					binding.nonce !== null ||
+					!binding.nativeSessionId ||
+					!/^[A-Za-z0-9_-]{1,256}$/.test(binding.legacyExecutionId!) ||
+					options.executionId !== binding.legacyExecutionId
+				: binding.nonce === null ||
+					!/^[A-Za-z0-9_-]{1,256}$/.test(binding.nonce))
 		)
 			return null;
+		const attributionKey = legacy ? LEGACY_EXEC_KEY : NONCE_KEY;
+		const attributionValue = legacy ? binding.legacyExecutionId : binding.nonce;
 		const before = await c.processes();
 		const initial = before.find((row) => row.pid === binding.pid);
 		if (
@@ -608,6 +743,7 @@ export async function captureExecutionProcessSample(
 			viewers.some((viewer) => matches(row, viewer, hostBootId));
 		const discovered = new Map<number, ExecutionProcessIdentity>();
 		const nonceWriters = new Map<number, ExecutionProcessIdentity>();
+		let legacyWorkerAttributed = false;
 		let writersComplete = true;
 		const uid = options.uid ?? process.getuid?.();
 		if (uid === undefined) writersComplete = false;
@@ -644,17 +780,19 @@ export async function captureExecutionProcessSample(
 				continue;
 			}
 			const nonces = tokens.filter((token) =>
-				token.startsWith(`${NONCE_KEY}=`),
+				token.startsWith(`${attributionKey}=`),
 			);
 			if (nonces.length > 1) {
 				writersComplete = false;
 				continue;
 			}
-			if (nonces[0] === `${NONCE_KEY}=${binding.nonce}`) {
+			if (nonces[0] === `${attributionKey}=${attributionValue}`) {
 				discovered.set(row.pid, identity(row, hostBootId));
-				nonceWriters.set(row.pid, identity(row, hostBootId));
+				if (!legacy) nonceWriters.set(row.pid, identity(row, hostBootId));
+				else if (row.pid === binding.pid) legacyWorkerAttributed = true;
 			}
 		}
+		if (legacy && worker && !legacyWorkerAttributed) return null;
 		// A process lost between the first census and attribution could have forked a
 		// detached writer during capture. Require a later stable sample for death.
 		if (

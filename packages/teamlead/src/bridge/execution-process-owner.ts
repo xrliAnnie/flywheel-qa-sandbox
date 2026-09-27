@@ -33,11 +33,21 @@ const bindingSchema = z
 		hostBootId: identityText,
 		executable: boundedText,
 		cwd: boundedText,
-		nonce: identityText,
+		nonce: identityText.nullable(),
+		legacyExecutionId: identityText.optional(),
 		nativeSessionId: identityText.nullable(),
 		writers: z.array(processIdentity).max(4096),
 	})
-	.strict();
+	.strict()
+	.refine(
+		(binding) =>
+			binding.legacyExecutionId === undefined
+				? binding.nonce !== null
+				: binding.adapter === "claude-tmux" &&
+					binding.nonce === null &&
+					binding.nativeSessionId !== null,
+		"invalid_legacy_process_binding",
+	);
 
 /** Accepted only from the Bridge's independent OS verifier, never an HTTP payload. */
 export type ExecutionProcessBinding = z.infer<typeof bindingSchema>;
@@ -81,6 +91,7 @@ type LeaseStore = Pick<
 	| "getSession"
 	| "getWorkflowActor"
 	| "getWorkflowActivation"
+	| "resolveCurrentWorkflowActivation"
 	| "getWorkflowExecutionProcessBody"
 	| "getCodexRecoveryEpisode"
 	| "claimExecutionMutationLease"
@@ -168,7 +179,10 @@ export class ExecutionProcessOwnerStore {
 			WHERE owner.close_requested = 0 OR owner.owner_drained_receipt IS NULL
 			OR owner.spawn_inflight = 1 OR owner.restart_in_progress = 1
 			OR body.state IS NULL OR body.state NOT IN ('closed', 'standby')
-			ORDER BY owner.execution_id`)
+			UNION SELECT session.execution_id FROM sessions session
+			WHERE session.adapter_type = 'claude-tmux'
+			AND NOT EXISTS (SELECT 1 FROM execution_process_owner owner WHERE owner.execution_id = session.execution_id)
+			ORDER BY execution_id`)
 				.all() as Array<{ execution_id: string }>
 		).map((row) => row.execution_id);
 	}
@@ -301,6 +315,92 @@ export class ExecutionProcessOwnerStore {
 		});
 	}
 
+	/** Internal live-process backfill only. OS discovery precedes this short CAS;
+	 * it must never overwrite a registered owner or become a spawn permit. */
+	adoptLegacyBinding(
+		input: MutationInput & {
+			binding: ExecutionProcessBinding;
+			observedAtMs: number;
+			expiresAtMs: number;
+			isCurrent(): boolean;
+		},
+	): Result<{ bindingDigest: string }> {
+		if (Buffer.byteLength(JSON.stringify(input.binding)) > 1024 * 1024)
+			throw new Error("process_binding_oversize");
+		const binding = bindingSchema.parse(input.binding);
+		if (
+			binding.legacyExecutionId !== input.executionId ||
+			binding.adapter !== "claude-tmux" ||
+			binding.nonce !== null
+		)
+			return { ok: false, reason: "legacy_binding_identity_changed" };
+		return this.mutate<{ bindingDigest: string }>(input, () => {
+			const invalid = this.fresh(input, false);
+			if (invalid) return { ok: false, reason: invalid };
+			if (this.get(input.executionId))
+				return { ok: false, reason: "owner_exists" };
+			const current = this.store.resolveCurrentWorkflowActivation(
+				input.executionId,
+			);
+			if (
+				input.activationId === null
+					? current.kind !== "none"
+					: current.kind !== "current" ||
+						current.binding.activation_id !== input.activationId
+			)
+				return { ok: false, reason: "activation_changed" };
+			if (
+				this.store.getSession(input.executionId)?.adapter_type !== "claude-tmux"
+			)
+				return { ok: false, reason: "adapter_changed" };
+			if (
+				!Number.isSafeInteger(input.observedAtMs) ||
+				!Number.isSafeInteger(input.expiresAtMs) ||
+				input.observedAtMs < 0 ||
+				input.observedAtMs > input.nowMs ||
+				input.expiresAtMs <= input.nowMs ||
+				input.expiresAtMs <= input.observedAtMs ||
+				input.expiresAtMs - input.observedAtMs > 5000
+			)
+				return { ok: false, reason: "legacy_evidence_expired" };
+			try {
+				if (input.isCurrent() !== true)
+					return { ok: false, reason: "legacy_authority_changed" };
+			} catch {
+				return { ok: false, reason: "legacy_authority_changed" };
+			}
+			const digest = createHash("sha256")
+				.update(
+					JSON.stringify([
+						input.executionId,
+						input.activationId,
+						input.generation,
+						input.ownerToken,
+						1,
+						binding,
+					]),
+				)
+				.digest("hex");
+			this.db
+				.prepare(`INSERT INTO execution_process_owner
+			 (execution_id, activation_id, generation, owner_token, controller_pid, controller_start, host_boot_id,
+			 spawn_epoch, binding_spawn_epoch, binding_json, binding_digest)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)`)
+				.run(
+					input.executionId,
+					input.activationId,
+					input.generation,
+					input.ownerToken,
+					binding.pid,
+					binding.startIdentity,
+					binding.hostBootId,
+					JSON.stringify(binding),
+					digest,
+				);
+			return { ok: true, bindingDigest: digest };
+		});
+	}
+
 	beginSpawn(
 		input: SpawnMutation & { nonce?: string },
 	): Result<{ permit: ProcessSpawnPermit }> {
@@ -363,6 +463,8 @@ export class ExecutionProcessOwnerStore {
 		if (Buffer.byteLength(JSON.stringify(input.binding)) > 1024 * 1024)
 			throw new Error("process_binding_oversize");
 		const binding = bindingSchema.parse(input.binding);
+		if (binding.legacyExecutionId !== undefined)
+			return { ok: false, reason: "legacy_binding_requires_adoption" };
 		return this.mutate(input, () => {
 			const checked = this.checkOwner(input, false);
 			if (!checked.ok) return checked;

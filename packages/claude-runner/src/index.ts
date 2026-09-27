@@ -260,6 +260,7 @@ export {
 	bindSpawnedExecutionProcessGroup,
 	captureExecutionProcessSample,
 	capturePendingExecutionSpawnAbsence,
+	discoverLegacyClaudeProcessBinding,
 	type ExecutionProcessInspectorOptions,
 	type InspectedExecutionProcess,
 	type PendingExecutionSpawn,

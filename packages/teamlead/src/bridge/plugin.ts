@@ -729,6 +729,7 @@ import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
 import { leadEventEnvelopeFromJournalRow } from "./legacy-lead-event-reconciler.js";
 import { reconcileLegacyPhaseThreads } from "./legacy-phase-thread-sweep.js";
+import { createLegacyProcessBindingPreparer } from "./legacy-process-binding.js";
 import { assertIssueNotLifecycleClosed } from "./lifecycle-admission.js";
 import {
 	closeoutIssue,
@@ -10297,6 +10298,11 @@ export async function startBridge(
 		store,
 		flagStore,
 		{
+			prepareBinding: executionBodyProbesEnabled
+				? createLegacyProcessBindingPreparer(store, {
+						isEnabled: () => storeExecutionBodyDeathEnabled(flagStore),
+					})
+				: undefined,
 			sample: executionBodyProbesEnabled ? undefined : async () => null,
 			isRecoveryActive: (executionId) => {
 				const deferral = store.getCodexRecoveryDeferral(

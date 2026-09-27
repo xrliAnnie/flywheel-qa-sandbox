@@ -539,3 +539,19 @@ Bridge composition root 把同一个 late-bound reader 接入两个 action mount
 B11 复查追加：WAL 与 gateway 两层原先除 lookup_error 外均放行。新增各3项旧值负控得到6项行为 RED，修为只有 body_dead 放行；首轮 related 19文件707 pass/3 RED 仅为这个预期缺口，无其它失败。逐文件 WAL 12 pass/3 RED、gateway 10 pass/3 RED 日志保留。正在复验两文件及最终 related/build/typecheck/lint。
 
 B11 最终验证：25个具体文件的最终覆盖778 pass（首轮773，WAL13→15、gateway10→13）；retention Node gate10 pass；严格重放修正后限定 owning related20文件723 pass。依赖build、teamlead/voice-codex typecheck、pnpm lint均exit0（既有26 warnings）。18个改动源码SHA256在最终验证后核对无漂移。完整命令/日志/红绿切点/源码hash在 implementation-b11-evidence.json.gz；发现与逐项排除理由在 implementation-b11-consumers.json.gz。无整库/整包suite，未跳过或延长timeout，无CI/529/QA/最终评审/交卷声明。下一批优先解决存量/未启动绑定的可靠证据以及run-quiescence全调用链，不能将缺绑定的unknown当作迁移完成。
+
+### B12：旧 Claude 活体身份补采（实现检查点，非全范围完成）
+
+对应 plan §4 旧体迁移：`discoverLegacyClaudeProcessBinding` 只在唯一 native session 关联、规范 cwd、独立 OS executable、PID/start/boot 和当前进程组一致时返回候选。命令行只提供旧 native session 关联，不作为 executable 身份；进程标题已改写且失去关联时保持 unknown。新增旧模式显式使用 `nonce: null` 与 `legacyExecutionId`，依据旧 launcher 已注入的 `FLYWHEEL_EXEC_ID` 核验 worker 及脱组后代，绝不伪造启动 nonce。普通新启动仍要求 nonce，`acceptSpawn` 明确拒绝旧模式。发现结束重新核唯一性，避免 await 期间出现第二个同会话 worker 后仍接纳。
+
+Bridge 的 `createLegacyProcessBindingPreparer` 读取既有 Claude session.json（64 KiB 上限、拒绝 symlink/非普通文件、exact execution/vendor/session/cwd），与 StateStore 规范工作树和独立 OS 采样交叉核验。没有新死亡缓存、轮询器或表；在现有观测器预算内准备身份，共享 sampler 的2个工作槽，准备耗时从原5秒观测预算扣除。同 execution 合并在途准备，取消后等 OS 工作回收。现有候选库存加入未绑定 Claude（包括账面终态），不会从状态标签推断死活。
+
+接纳写点为现有 owner 表上的短同步 CAS：同 activation/generation/lifecycleRevision、开关仍开、观测未过期、无既有 owner。文件和 OS 读取在 lease 外；lease_held 最多3次、间隔25/75ms，身份发现不重跑。记录的 controller 是已核验旧 worker，标记 accepted binding，不启动或换体。缺 manifest、多个匹配、身份变化、取消和开关关闭均不接纳、不写 failed。unknown/adopted 按 context digest 写既有 session event 账本，重复同原因去重；观测本身仍由共享 BodyObservation 决定。
+
+因果证据：旧模式 inspector 9 RED（其中1项为原 capture 行为，其余8项为缺接口）；纯契约5 RED/1 pass；owner 接纳与普通 spawn 拒绝7 RED；旧候选库存1 RED；观测器准备1 RED；发现期间第二个 native worker 的负控1 RED。开发过程中一次错误的 nonce-key 替换导致5项现有 inspector 失败，已修正；提前取消语义回归1项已修正。构建首次出现泛型推断错误，显式指定返回类型后构建通过。这些失败不冒称全是原 bug 的因果红证据。当前五个具体文件 GREEN：inspector53、契约61、owner45、preparer18、observer26；新增负控覆盖 generation/activation/lifecycle 改变、取消、超时、开关、manifest、lease争用、旧 owner不覆盖、detached writer未退出禁止死亡。最终相关回归、related、build/types/lint 和源码 hash 见本节后续记录及 B12 evidence。
+
+限制与后续：这是旧 Claude 活体补采；无法核清的历史执行保持 unknown，并通过既有事件明确入账。不存在“所有历史体5秒内迁移”的承诺：候选数和公平游标影响排队，5秒是单次采样窗口上限，529仍需量化真实库存及 unresolved 数。旧 Codex controller/accepted binding 核验、可信 pre-adapter 无体例外、同物理代次新逻辑 activation 仍须完成；全部 quiescence/closeout 直接消费者、C/D/E/F及九单矩阵也未交卷。真机进程/529、最终评审、PR、冻结头CI均不由本批本地绿测代替。
+
+B12 最终本地验证：25个具体文件640 pass；retention guard10 pass；claude-runner bounded related5文件168 pass、teamlead bounded related12文件399 pass（合计17文件567 pass）。`pnpm --filter flywheel-teamlead... build`、teamlead tsc、voice-codex typecheck 全0；lint首轮1处新增 owner 测试格式错误，格式化该处后最终0错误/26既有warnings，该文件再跑45 pass。格式化前后 TypeScript AST结构及字面值相同（trailing comma 导致token序列变化，不伪称token相同）；其余11份TS源码hash未变。`implementation-b12-evidence.json.gz` 保存12文件当前hash、格式化映射、命令/退出码和红绿原始日志；`implementation-b12-consumers.json.gz` 保存26项保留文件及300项排除命中与原因。无本机全套测试、PR CI或529证据。
+
+后续只读审计：`run-quiescence.ts` 的生产调用包括 close-runner 三处、lifecycle-closeout、post-merge、plugin close-tmux/pane-loss/quota、runs-route 三处、codex-quota/run-recovery、workflow-template-selection。`StateStore.validateRunQuiescenceEvidenceTx` 已由既有 founder 指令停用；本单不得顺手重启普通 gate。真正 needs_lead rework 的严格校验为旁边独立方法，后续必须把最终死亡事实/无体受信例外接到其现有事务边界，而非追加平行 gate。此段是未实施库存，不是完成声明。

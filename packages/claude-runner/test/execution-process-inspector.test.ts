@@ -73,6 +73,131 @@ function fixture(rows: Row[] = [{ pid: 42 }]) {
 	return { options, calls };
 }
 describe("execution process inspector", () => {
+	it("FLY-2919 tracks legacy execution writers without inventing a launch nonce", async () => {
+		const { options } = fixture([
+			{ pid: 42, env: "PATH=/bin FLYWHEEL_EXEC_ID=exec-legacy" },
+			{ pid: 88, env: "PATH=/bin FLYWHEEL_EXEC_ID=exec-legacy" },
+			{ pid: 99, env: "PATH=/bin FLYWHEEL_EXEC_ID=other" },
+		]);
+		const sample = await captureExecutionProcessSample(
+			{
+				...binding,
+				nonce: null,
+				nativeSessionId: "11111111-2222-3333-4444-555555555555",
+				legacyExecutionId: "exec-legacy",
+			},
+			{ ...options, executionId: "exec-legacy" },
+		);
+		expect(sample?.writersComplete).toBe(true);
+		expect(sample?.discoveredWriters?.map((p) => p.pid)).toEqual([42, 88]);
+		expect(sample?.nonceWriters).toEqual([]);
+	});
+	it("FLY-2919 refuses a second native worker appearing during legacy discovery", async () => {
+		const nativeSessionId = "11111111-2222-3333-4444-555555555555";
+		const rows: Row[] = [
+			{
+				pid: 42,
+				argv: `/bin/claude --session-id ${nativeSessionId}`,
+				env: "PATH=/bin FLYWHEEL_EXEC_ID=exec-legacy",
+			},
+		];
+		const { options } = fixture(rows);
+		let reads = 0;
+		const candidate = await Inspector.discoverLegacyClaudeProcessBinding(
+			{
+				executionId: "exec-legacy",
+				nativeSessionId,
+				executable: "/bin/claude",
+				cwd: "/work",
+			},
+			{
+				...options,
+				runCommand: async (f, a, c) => {
+					if (
+						a.includes("pid=,ppid=,pgid=,uid=,stat=,lstart=") &&
+						++reads === 2
+					)
+						rows.push({ ...rows[0]!, pid: 43 });
+					if (f.endsWith("lsof"))
+						return {
+							stdout: `p${a[a.indexOf("-p") + 1]}\nfcwd\nn/work\nftxt\nn/bin/claude\n`,
+						};
+					return options.runCommand!(f, a, c);
+				},
+			},
+		);
+		expect(candidate).toBeNull();
+	});
+	it.each([
+		"unique",
+		"missing",
+		"ambiguous",
+		"foreign_session",
+		"foreign_execution",
+		"foreign_executable",
+		"foreign_cwd",
+		"changed_start",
+	])(
+		"FLY-2919 independently discovers a legacy Claude body: %s",
+		async (mode) => {
+			const nativeSessionId = "11111111-2222-3333-4444-555555555555";
+			const worker = {
+				pid: 42,
+				argv: `/bin/claude --session-id ${mode === "foreign_session" ? "other" : nativeSessionId}`,
+				env: `PATH=/bin FLYWHEEL_EXEC_ID=${mode === "foreign_execution" ? "other" : "exec-legacy"}`,
+			};
+			const { options } = fixture(
+				mode === "missing"
+					? [{ pid: 99, argv: "viewer", env: "PATH=/bin" }]
+					: mode === "ambiguous"
+						? [worker, { ...worker, pid: 43 }]
+						: [worker],
+			);
+			let censusReads = 0;
+			const candidate = await Inspector.discoverLegacyClaudeProcessBinding(
+				{
+					executionId: "exec-legacy",
+					nativeSessionId,
+					executable: "/bin/claude",
+					cwd: "/work",
+				},
+				{
+					...options,
+					runCommand: async (f, a, c) => {
+						if (f.endsWith("lsof"))
+							return {
+								stdout: `p${a[a.indexOf("-p") + 1]}\nfcwd\nn${mode === "foreign_cwd" ? "/foreign" : "/work"}\nftxt\nn${mode === "foreign_executable" ? "/bin/viewer" : "/bin/claude"}\n`,
+							};
+						const result = await options.runCommand!(f, a, c);
+						if (
+							a.includes("pid=,ppid=,pgid=,uid=,stat=,lstart=") &&
+							++censusReads > 1 &&
+							mode === "changed_start"
+						)
+							return {
+								stdout: result.stdout.replaceAll(
+									start,
+									"Sat Sep 26 10:00:01 2026",
+								),
+							};
+						return result;
+					},
+				},
+			);
+			if (mode === "unique")
+				expect(candidate).toMatchObject({
+					pid: 42,
+					pgid: 42,
+					nonce: null,
+					nativeSessionId,
+					legacyExecutionId: "exec-legacy",
+					executable: "/bin/claude",
+					cwd: "/work",
+				});
+			else expect(candidate).toBeNull();
+		},
+	);
+
 	it.each([
 		"native",
 		"forked",

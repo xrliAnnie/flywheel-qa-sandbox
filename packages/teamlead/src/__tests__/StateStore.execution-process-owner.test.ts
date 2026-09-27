@@ -63,6 +63,118 @@ describe("FLY-2919 execution process owner", () => {
 		rmSync(root, { recursive: true, force: true });
 	});
 
+	it("FLY-2919 schedules unbound legacy Claude records without treating them as alive or dead", () => {
+		store.upsertSession({
+			execution_id: "legacy",
+			issue_id: "FLY-2919",
+			project_name: "fixture",
+			status: "failed",
+			adapter_type: "claude-tmux",
+		});
+		expect(owners().listObservationCandidates()).toContain("legacy");
+		expect(owners().get("legacy")).toBeUndefined();
+	});
+	it("FLY-2919 adopts a uniquely observed legacy body without granting a new spawn", () => {
+		store.upsertSession({
+			execution_id: owner.executionId,
+			issue_id: "FLY-2919",
+			project_name: "fixture",
+			status: "running",
+			adapter_type: "claude-tmux",
+		});
+		revision = store.getLifecycleRevision(owner.executionId);
+		const legacy = {
+			...binding,
+			adapter: "claude-tmux" as const,
+			executable: "/bin/claude",
+			nonce: null,
+			nativeSessionId: "11111111-2222-3333-4444-555555555555",
+			legacyExecutionId: owner.executionId,
+		};
+		expect(
+			owners().adoptLegacyBinding({
+				...owner,
+				binding: legacy,
+				lifecycleRevision: revision,
+				nowMs: 1001,
+				observedAtMs: 1000,
+				expiresAtMs: 6000,
+				isCurrent: () => true,
+			}),
+		).toMatchObject({ ok: true });
+		expect(owners().getBinding(owner.executionId)).toEqual(legacy);
+		expect(owners().get(owner.executionId)).toMatchObject({
+			spawn_epoch: 1,
+			spawn_inflight: 0,
+			controller_pid: legacy.pid,
+			controller_start: legacy.startIdentity,
+		});
+		expect(
+			owners().claim({
+				...owner,
+				ownerToken: "new-launch",
+				lifecycleRevision: revision,
+				nowMs: 1002,
+			}),
+		).toEqual({ ok: false, reason: "owner_not_drained" });
+	});
+	it.each(["stale", "expired", "disabled", "existing", "wrong_execution"])(
+		"FLY-2919 refuses unsafe legacy adoption: %s",
+		(mode) => {
+			if (mode === "existing") claim();
+			const before = owners().get(owner.executionId);
+			store.upsertSession({
+				execution_id: owner.executionId,
+				issue_id: "FLY-2919",
+				project_name: "fixture",
+				status: "running",
+				adapter_type: "claude-tmux",
+			});
+			revision = store.getLifecycleRevision(owner.executionId);
+			const legacy = {
+				...binding,
+				adapter: "claude-tmux" as const,
+				executable: "/bin/claude",
+				nonce: null,
+				nativeSessionId: "11111111-2222-3333-4444-555555555555",
+				legacyExecutionId:
+					mode === "wrong_execution" ? "foreign" : owner.executionId,
+			};
+			expect(
+				owners().adoptLegacyBinding({
+					...owner,
+					binding: legacy,
+					lifecycleRevision: mode === "stale" ? revision + 1 : revision,
+					nowMs: mode === "expired" ? 7000 : 1001,
+					observedAtMs: 1000,
+					expiresAtMs: 6000,
+					isCurrent: () => mode !== "disabled",
+				}).ok,
+			).toBe(false);
+			expect(owners().get(owner.executionId)).toEqual(before);
+		},
+	);
+	it("FLY-2919 a normal spawn cannot use a legacy binding", () => {
+		claim();
+		spawn();
+		const legacy = {
+			...binding,
+			adapter: "claude-tmux" as const,
+			nonce: null,
+			nativeSessionId: "11111111-2222-3333-4444-555555555555",
+			legacyExecutionId: owner.executionId,
+		};
+		expect(
+			owners().acceptSpawn({
+				...owner,
+				lifecycleRevision: revision,
+				spawnEpoch: 1,
+				nowMs: 1002,
+				binding: legacy,
+			}),
+		).toEqual({ ok: false, reason: "legacy_binding_requires_adoption" });
+	});
+
 	it("samples terminal-labelled owners until the same-generation physical body is settled too", () => {
 		claim();
 		store.createWorkflowRun({
