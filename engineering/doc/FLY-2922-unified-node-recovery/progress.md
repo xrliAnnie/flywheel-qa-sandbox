@@ -1,19 +1,20 @@
 ---
 issue: FLY-2922
 phase: design
-phaseCursor: 1/6
-updated: 2026-09-27T12:42:06.237Z
-nextStep: "audit done (sandbox main 1855f7a1a has no hold/recovery subsystem;
-  delivered code = origin/flywheel-FLY-2922@2dd29e027 mirror, code review
-  92e28887 APPROVED, no sandbox PR). Lead question 0d73b791 (PR evidence
-  baseline) pending, non-blocking. Next: write exploration.md -> research.md ->
-  plan.md (verify-then-submit contract), stage set design_review --plan,
-  codex-design-review, founder HTML with local mmdc SVGs, publish-report, ask
-  --report, complete --route phase_design_complete"
+phaseCursor: 3/6
+updated: 2026-09-27T16:11:29.435Z
+nextStep: "exploration/research/plan committed 1b7c5a11d; design_review bound
+  request 023e256d blob 1aa36a8de reviewer gpt-6-astra/xhigh; Codex R1 running
+  (companion task-mujtepf3-smzxlk, thread 01a0e2e9-4f98-7502-b116-d377dd2fd8d6);
+  founder-design.html drafted (3 local mmdc SVGs d1-d3, VM script checks pass)
+  not yet committed. Next: review-round design --round 1, iterate to APPROVED,
+  design-review.json, await-codex-gate design, commit HTML+mmd+svg,
+  publish-report --publish-only, ask --report DESIGN-HTML ready, complete
+  --route phase_design_complete"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2922 progress
-**phase**: design (1/6)
-**next**: audit done (sandbox main 1855f7a1a has no hold/recovery subsystem; delivered code = origin/flywheel-FLY-2922@2dd29e027 mirror, code review 92e28887 APPROVED, no sandbox PR). Lead question 0d73b791 (PR evidence baseline) pending, non-blocking. Next: write exploration.md -> research.md -> plan.md (verify-then-submit contract), stage set design_review --plan, codex-design-review, founder HTML with local mmdc SVGs, publish-report, ask --report, complete --route phase_design_complete
+**phase**: design (3/6)
+**next**: exploration/research/plan committed 1b7c5a11d; design_review bound request 023e256d blob 1aa36a8de reviewer gpt-6-astra/xhigh; Codex R1 running (companion task-mujtepf3-smzxlk, thread 01a0e2e9-4f98-7502-b116-d377dd2fd8d6); founder-design.html drafted (3 local mmdc SVGs d1-d3, VM script checks pass) not yet committed. Next: review-round design --round 1, iterate to APPROVED, design-review.json, await-codex-gate design, commit HTML+mmd+svg, publish-report --publish-only, ask --report DESIGN-HTML ready, complete --route phase_design_complete
