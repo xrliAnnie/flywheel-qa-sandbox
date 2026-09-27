@@ -555,3 +555,15 @@ QA 报告对应真实会话 `e4c3fbac-99e5-445e-9a47-ddb6cb2aefab`。B5 的旧�
 - literal/path 发现：旧身份比较 literal 已无命中，新 literal 只在 `session.ts`；`session.js` 的 4 个测试消费者全部逐文件运行。`cipher-dimensions.test.ts` 只是同名 `session.ts` 命中；kill-path inventory 和 `flywheel-voice-wrapper.test.sh` 只引用父目录或包路径，均不依赖本次身份门，故排除。
 
 本实现节点未请求 full CI，也未进入或拆除 529 房；exact-head full CI 与真实房间 B5/C2 复测仍由 QA 负责。
+
+### 本次 QA 返工代码评审 R1：重连终止关闭不得被吞掉
+
+评审在头 `b652f0d6e` 提出 1 个 HIGH，成立：`generationLost()` 先把 session 置为 `restarting=true`；如果旧代关闭无法确认、三次重连用尽，或 app-server 在重连中退出，container 会以 `realtime_reconnect_unconfirmed`、`realtime_reconnect_exhausted` 或 `process_exit` 发出终止 `onClosed`。`transportClosed()` 的旧 `restarting` guard 会吞掉这三个终止信号，前端收不到 error，房间和 lease 因而可能一直存活。container 已把代内可恢复故障留给 `onGenerationLost`，`onClosed` 只表示终止结束，所以 session 不应再按 `restarting` 忽略它；仍保留 closing 和 generation 两个 guard。
+
+- 红：session 先收到 generation lost，再分别收到上述三个 terminal close；旧实现三条都没有 error，测试为 3 failed / 28 passed。
+- 绿：去掉该 terminal path 的 `restarting` 早退后，三条都发出 `VoiceError(connection-closed)` 并保留具体 cause；`codex-room-webrtc.test.ts` 31/31。
+- 直接消费者逐文件：`codex-room.test.ts` 13/13、`codex-readback-replay.test.ts` 2/2、`codex-transport.test.ts` 28/28、teamlead `voice-handoff.test.ts` 13/13；连同上项，voice-codex 74/74，teamlead 13/13。
+- changed-TS `vitest related` 选择 4 个 voice-codex 文件，74/74；voice-codex typecheck、受影响包及依赖构建、仓库 lint、两处改动文件 Biome 和 `git diff --check` 均通过。lint 仍只有 25 条仓库既有 warning。
+- literal/path 发现纳入了 4 个直接导入 `CodexVoiceBackend` 的 voice-codex 测试和 teamlead 的源码直连消费者，没有遗漏的测试命中。
+
+评审另列 3 个 LOW advisories（stale-root 删除失败、TurnLedger 丢 created 的 done、silence drop 计 interference）；它们按当前门禁政策不阻塞，也不属于本轮唯一 HIGH 的锁定范围，本实现未顺带修改。
