@@ -156,3 +156,41 @@ QA 依据：PR #1364 对 origin/main `1f5626254` 为 CONFLICTING/DIRTY，唯一�
 两 Lead 529 复测由 QA 在新 head 上负责。
 
 代码评审：对合并提交做只读 Codex 评审 R8（`codex:rescue`），结论 **APPROVED**，0 finding，原文见 `codex-code-review-r8.md`。
+
+## 9. QA 返工 3（QA FAIL @ 72be5fc30：exact-head CI Script Tests 1/6 红）
+
+QA 依据：exact-head 全量 CI run `36292915296` 只有 Script Tests 1/6 失败，失败项是
+`scripts/__tests__/test-claude-lead-session-start-adopt.test.sh` 的
+`repeated installer convergence blocked or failed under a tty`（17 passed / 1 failed）。另一项是两 Lead 529 在
+step 0-1 后中止，属 QA 复测范围，实现侧无法补跑。
+
+本 diff 没有改这个测试，也没有改它测的 `claude-lead.sh` 安装函数。这是测试 harness 本来就有的竞态：
+
+- 日志时间：上一条 PASS 在 `04:11:04.6917`，`installer pty attempt 1 timed out` 在 `04:11:04.7630`，
+  只隔 71ms；harness 的 deadline 是 30s，而且报错里已经捕获到安装器的成功行（`hook installed`）。
+- 读循环只有三个出口：`poll()` 非 None、deadline 到、`os.read` 抛 `OSError` 后 `break`。71ms 排除 deadline；
+  若是第一个出口，后面的 `poll()` 不会返回 None。所以只能是：Linux 上子进程最后一个 slave fd 关闭时，
+  master 的 read 抛 EIO，而这时子进程还不能被回收，紧接着的 `poll()` 仍为 None，被当成超时 SIGKILL。
+- 修复（`2b8ef4a7f`，测试文件 +5/-2）：读循环后用剩余 deadline 调 `process.wait(timeout=…)`，只有
+  `TimeoutExpired` 才判超时；非零退出仍照报。产品代码零改动。Lead 对问题 `6f359a0b` 裁定在本 PR 内修，不另开单。
+
+复现与验证（本机是 macOS，pty 挂断语义和 Linux 不同，没有另起 Linux 虚拟机）：
+
+| 项 | 结果 |
+|---|---|
+| 同构 harness + 「master 空读改抛 EIO」模拟 Linux，子进程关 pty 后 0.3s 才退出 | 旧逻辑：9ms 报 `attempt 1 timed out`，输出含 `installed`（与 CI 同形）；新逻辑通过 |
+| 反例（新逻辑） | 真挂死仍在 deadline 超时；关 pty 后挂死仍超时；关 pty 后 `exit 3` 仍报 `exited 3` |
+| 真实文件里的 harness 原样提取 + 真实安装器，建模「EIO 后下一次 `poll()` 仍为 None」 | 基线 `72be5fc30` 走进超时分支失败；修复后通过；探针确认竞态窗口各触发 1 次；不建模的对照也通过 |
+| 改动的测试文件本机连跑 6 次 | 每次 18 passed, 0 failed |
+| `bash -n`、`git diff --check` | 通过 |
+| `pnpm lint` | exit 0（25 条仓库既有 warning） |
+
+另外做过一次「加宽窗口」实验（安装器后 `exec 0<&- 1>&- 2>&-; sleep 0.3`），但真实安装器那一路在 macOS 上
+直到进程退出才收到挂断，旧 harness 也通过了。所以它不算 RED 证据，上表没有用它。
+
+消费者发现：按全路径 / 文件名 `git grep -lF` 只命中 `.github/workflows/ci.yml`（调用方，未改）和
+FLY-1751 / FLY-2562 / FLY-2799 的历史文档（排除）；父目录 `scripts/__tests__` 的 903 处命中只是路径同目录，
+不依赖本文件行为（排除）。没有改包源码或 TypeScript，所以不需要 build、typecheck 和 `vitest related`。
+exact-head 全量 CI 与两 Lead 529 复测由 QA 在新 head 上负责。
+
+代码评审：对 `2b8ef4a7f` 做只读 Codex 评审 R9（`codex:rescue`，xhigh），结论 **APPROVED**，0 finding，原文见 `codex-code-review-r9.md`。
