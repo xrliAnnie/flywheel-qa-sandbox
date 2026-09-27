@@ -5,7 +5,7 @@ Issue: FLY-2919 (https://linear.app/geoforge3d/issue/FLY-2919/病根修复-2-体
 
 ## 当前范围与游标
 
-当前执行 `bd58c685-54d1-4ceb-9240-20611b35b895`，implement 0/6；最新精确提交与下一步以同目录 progress.md 为准。A1–A10、B1/B2/B3、C1/C2 与 D1 已有分批证据；B4 接入终态 Codex sweep，B5 完成独立采样核心但未接生产启动，B6 接入恢复预算死亡否决。全部 A–F 与九单目标不变，生产 Heartbeat/dispatcher 死亡提交、独立 cadence、逻辑重入、legacy 与最终验收仍未完成。没有有效最终代码复审、PR、full CI、QA 或 handoff 声明。以下保留各次检查点历史，文末是最近批次。
+当前执行 `9e96f8f7-d6cd-4dc1-a416-3701b50ed63b`，implement 5/6；最新精确提交与下一步以同目录 progress.md 为准。A–F 的实现与九单本地矩阵已经收敛到代码提交 `a7349581d`，等待同头有效代码复审、PR 与冻结头 CI。没有 QA、529 真机或 handoff 完成声明。以下保留各次检查点历史，文末是最近批次。
 
 ## 首次开工范围与游标（历史）
 
@@ -595,3 +595,57 @@ B14 最终逐文件证据：9个直接改动测试文件共340 pass（execution-
 本批具体文件逐一验证共 **16 个文件 / 410 pass**：CommDB session prune 6+51+5+2，StateStore ghost 26，done-thread reconcile 55+6，closeout evidence/lifecycle/replay 33+66+2，CommDB FSM/terminal harvest/wiring 25+8+38+2，terminal archive 28，done-thread archiver 57。QA real-tmux fixture只改为让 window observation 与 body verdict 正交，未在本机运行。受影响包及依赖 build 退出0；23个限定文件 Biome 写入后仅报告 plugin.ts 三个既有 useConst warning。没有本机整库/整包 suite，也未把这些结果冒称 CI/529/QA。
 
 C3 不是整单完成。下一批按批准计划进入 D/E：无 verdict 退出、resident expiry、collection/shutdown/close-runner；随后 F 消费者巡检、九单矩阵与最终反向 inventory。A9 原 timeout 已在 B13 按原限制关闭；仍不得在剩余范围、有效代码评审、PR、冻结头 CI 与 needs_review 完成前交卷。
+
+### D/E/F：退出、收集、关闭与最终消费者盘点
+
+从 C3 `13cb7c23b` 继续，最终代码检查点为 `a7349581d`。本批没有重开设计；删除余下将窗口状态提升为死亡事实的分支，并把 pane/tmux 证据降为可附着 UI、精确目标 CAS 或诊断信息。
+
+- resident expiry 只消费共享 `BodyObservation`。Codex 的精确 shutdown 请求与 Claude cleanup 请求仍保留，但 ACK、CommDB 运行标签和窗口缺失都不证明死亡；只有 body dead 才结束。
+- `StateStore` 的 run collection 候选包含所有有物理归属的 execution，不再因 session 已 terminal 就跳过；只有已经响应证明 closed 且 CommDB finalized 的记录排除。phase shutdown 在 body dead 前不接受 ACK 或超时作为消失证明。
+- close-runner 在 target 缺失或窗口清理失败时都继续核 body。alive/unknown 阻止终结；dead 即使仍有陈旧窗口也可在既有身份/CAS 守卫下结账。
+- abnormal exit 沿 TmuxAdapter → Blueprint → DirectEventSink/HTTP event route 保持 `success:false`，不因缺窗口改写成成功。TUI 仍保留 founder 可附着窗口，但 StateStore collection 和 phase shutdown 分别负责收体与关体。
+- patrol 同时报告独立的 `body` 与 `window` 维度；快照中的 missing pane 变成 `RESTORE_WINDOW_ONLY`，不再投射为 body dead。worktree reconciler、lifecycle sweep、stale-approved ship、holder wake、TURN-holder/rework/server-loss 均改读共享 body。
+- complete-marker reconciliation 明确执行顺序：先重放/对账 marker，再允许死亡 fallback；fallback 也必须带 body dead。alive/unknown 不写 failed。Heartbeat stale terminal、stale blocker 与 pane-loss 同样只在 body dead 时执行状态收敛。
+- gateway 的 `close_runner` crash recovery 通过带身份的 Bridge started-evidence 读取 body verdict；显式 `close_tmux` 仍是 UI 后置条件。旧 stale-approved window classifier 已删除。
+
+本批因果 RED 覆盖两向边界：进程活着但窗口不存在时，resident expiry、close-runner、pane-loss、patrol、stale blocker、worktree/lifecycle 与 started-evidence 均不得判死；窗口仍在但进程已死时，close-runner、phase shutdown、pane-loss 与 stale blocker 必须当次收敛。另覆盖 completion marker 先于死亡、terminal run 仍纳入物理收集、异常退出保持失败、巡检窗口维度不污染身体维度。相同断言在最终代码全部 GREEN。
+
+最终本地证据为 **33 个具体 Vitest 文件 / 992 pass**，每个文件单独运行：resident expiry、StateStore collection、phase shutdown、close-runner、Tmux body wait、Blueprint、DirectEventSink、event route、terminal failure、patrol、FLY-369、worktree、lifecycle sweep、GatePoller、post-merge、TUI、reown wiring、server loss、workflow rework、Heartbeat monitor loss、CommDB parked body、Heartbeat zombie、session reown、body convergence/runtime、pane loss、stale blocker、gateway、stale terminal close、holder wake、stale-approved ship、complete marker 与 FLY-2478。受影响 `flywheel-teamlead` build 退出0；37个改动文件 `git diff --check` 为0；scoped Biome 为0错误、仅 plugin.ts 三个既有 `useConst` warning。依 Lead 指令未重跑扩张到600+文件的 teamlead related；没有本机全包/全仓 suite。
+
+### Lead 实现义务逐项落实
+
+| 义务 | 落实与证据 |
+|---|---|
+| HIGH death-before-pending-complete-marker | `complete-marker-reconciler` 与 Heartbeat 共同强制 marker replay/reconcile 先于死亡 fallback；marker pending/unknown/held 均拒绝写 failed。complete-marker 77项及 Heartbeat zombie 30项覆盖真实完成不被死亡覆盖。 |
+| codex-reown-revive-precedence | body observer/convergence 在有效 recovery/reown 时返回 recovery_active/unknown；只有预算耗尽且绑定仍当前才可进死亡收敛。`codex-session-reown*` 53项、body convergence 31项、runtime 8项。 |
+| obligation-replay-evidence-expiry | owner receipt、CommDB closeout 与 `body_death` projection 都先查已提交幂等回执，再对首次义务检查10秒证据期限；跨重启/过期重放不重复结账。 |
+| lease-contention-refuses-normal-restart | OS采样在 lease 外；lease 只包最终同步 CAS。owner/旧体接纳与死亡投影使用有界重试，`lease_held` 保持可重试，语义拒绝才停止。 |
+| no-runtime-kill-switch | `storeExecutionBodyDeathEnabled` 经 feature registry/store 动态读取；关闭时首次死亡消费者只返回 unknown/观察，不提交；已提交义务仍允许完成幂等投影。 |
+| consumer-inventory-direct-importers | 已扫描并迁移 started-evidence、worktree-reconciler、lifecycle-sweep、pane-loss、quiescence/closeout、巡检及 Heartbeat/CommDB/StateStore 直接消费者。 |
+| fly2903-sweep-and-restart-gate-unmapped | 扩展既有 restartGate，没有新增平行 gate；Codex terminal sweep 消费 BodyObservation，窗口只做清理定位。 |
+| claude-process-title-identity | 旧 Claude 绑定使用 exec 前/manifest 的 PID、start、boot 与 libproc/lsof executable/cwd；不从已改写 argv 标题认 executable。 |
+| standby-retirement-window-proof | standby/retirement 以 accepted writer 集合清空和 BodyObservation 证明，不以窗口消失证明；残留 writer 负控拒绝死亡。 |
+| probe-cadence-heartbeat-5min | 独立5秒 sampler，每轮最多8候选、并发2、5秒总窗；即时按需排队，不依赖5分钟 Heartbeat。 |
+| LOW follow-ups | founder wake successor handoff 与本机未跑真机项保留给 PR/QA；未将它们冒充当前完成证据。 |
+
+### 九单验收矩阵
+
+| 原单 | 原现象与最终证据 |
+|---|---|
+| FLY-2083 | workflow rework 只标记已证死 actor；alive/unknown 即使缺窗也退避。`workflow-rework-coordinator` 47项。 |
+| FLY-2537 | parked dead execution 可结账且重放幂等；parked live body 即使无窗仍保留。CommDB parked body 8项及双库投影证据。 |
+| FLY-2474 | resident expiry 不再用 pane/CommDB 标签证死；body dead 可穿过陈旧 registry。FLY-2268 16项、FLY-2478 31项。 |
+| FLY-2193 | pane-loss 证明“活体+缺窗不失败”“死体+窗口仍在当次收敛”。pane-loss 22项、patrol 8项。 |
+| FLY-2690 | completed/terminal session 的物理 actor 仍进入 collection，随后 phase shutdown 只按 body dead 关闭。collection 7项、phase shutdown 20项、TUI 60项。 |
+| FLY-2512 | close-runner 在 target 缺失时仍被 live body 否决；dead body 即使 stale window 清理失败也终结。close-runner 85项、post-merge 19项。 |
+| FLY-2618 | Heartbeat pending-window 路径从 unknown 恢复 alive 不写失败，dead body 当次收敛；server-loss 同样只认 body。Heartbeat monitor 22项、zombie 30项、server loss 30项。 |
+| FLY-2528 | 无判决/异常退出沿 adapter、Blueprint、Direct/HTTP sink 保持失败，不由窗口补成成功。相关5文件210项。 |
+| FLY-2529 | patrol 分离 body/window：alive+missing window 只修窗口，dead+present window 仍报死亡。patrol 8项、FLY-369 34项。 |
+
+### 最终删除与保留清单
+
+删除或降权：parked/ship_parked/awaiting_review 的死亡豁免；pane absent、dead pin、tmux server generation、CommDB running/ACK、heartbeat age、terminal label和窗口清理结果对 body 生死的授权；terminal sweep pending-confirm/token等待；stale-approved window classifier；close-runner target absence 快捷成功。保留：窗口的 founder 可附着性、exact-target compare/delete、UI清理与诊断；TURN、generation、activation、lifecycle revision、owner/spawn/binding、completion marker、feature flag和恢复预算的 fail-closed 守卫。
+
+`probeCodexDaemonLiveness` 仍是 Codex 身体采样源；残留直接窗口探针仅服务 UI/定位/诊断或显式 `close_tmux` 后置条件。`destructive-verdict.ts` 的历史 dead-pin helper 无生产调用，仅由自身测试引用，记录为非活跃兼容工具，未扩张本单删除范围。
+
+本地证据不是 full CI、QA 或生产证明。529 真机需复核真实 macOS PID/start/libproc/lsof、Claude 标题改写身份、真实 tmux 窗口正反例、旧体迁移 unresolved 数与5秒采样延迟上界。下一步是同一精确头代码复审、PR 与显式冻结头 CI；不得派发 QA 或 merge。
