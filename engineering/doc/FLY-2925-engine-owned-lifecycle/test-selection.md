@@ -68,3 +68,34 @@ QA 判决：精确 head f8f0ba0c9 的全量 CI 仅 `Unit (heavy)` 中 `packages/
 | teamlead | codex-session-reown / wiring / run-infra-codex-recovery / HeartbeatService.zombie-reconcile / DirectEventSink.dag-seam | 59 / 10 / 10 / 43 / 13 全过 |
 
 claude-runner 与 teamlead `tsc --noEmit` 干净。
+
+## 7. QA@2 返工（2026-09-26，attempt 3）
+
+QA 判决：generalized 529 房的 `room-info.json` 同时包含
+`generalized: true` 与 `runnerMode: "real"`，但
+`isCodexReownExcluded` 只看 generalized/project，导致真 Codex 也在维护心跳进入
+reowner 前被排除。修复只把 `runnerMode !== "real"` 的房保留在排除集合；stub
+和缺旧字段的房保持原有隔离，real 房进入既有 adoption 路径。
+
+TDD 与直接覆盖：
+
+| 包 | 测试文件 / 命令 | 结果 |
+|---|---|---|
+| teamlead | `src/bridge/__tests__/codex-session-reown.test.ts`（RED） | 新用例按预期失败：real 房收到 `true`；其余 58 项通过 |
+| teamlead | `src/bridge/__tests__/codex-session-reown.test.ts`（GREEN） | 59/59 通过 |
+| teamlead | `src/bridge/__tests__/codex-session-reown-wiring.structure.test.ts` | 10/10 通过 |
+| teamlead | `src/__tests__/HeartbeatService.zombie-reconcile.test.ts` | 43/43 通过 |
+| teamlead + dependencies | `pnpm --filter "flywheel-teamlead..." build` | 通过 |
+| teamlead | `pnpm --filter flywheel-teamlead typecheck` | 通过 |
+| repository | `pnpm lint` | exit 0；仅报告本次改动文件之外的既存 warning |
+
+按 changed-TypeScript 规则运行的 `vitest related` 展开为 105 个 teamlead 文件：
+101 个文件 / 1278 项通过，4 个文件 / 6 项失败。失败均不经过本次谓词：
+`flag-scan-route-mount` 与 `epic-residual-plugin-wiring` 逐文件复跑分别 3/3、3/3
+通过；`createLeadRuntime-preflight` 逐文件在本机 15s 预检等待超时，
+`ship-judgment-routes` 逐文件在本机 30s 统计请求超时。未改这两个无关路径；
+基线 `4cc071628` 的 exact-head full CI `36285259307` 已全绿，新头的全量 CI 仍交 QA。
+
+未在本机冒充真房证明。下一轮 QA 仍须在 generalized + runnerMode=real 的真
+Codex 房观察首个维护心跳后的 `reown_adopt_started` / `reown_adopt_succeeded`，
+并核对 execution/thread/daemon PGID 不变。

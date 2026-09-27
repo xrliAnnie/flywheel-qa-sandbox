@@ -397,7 +397,8 @@ export async function prepareCodexRecoveryAgentHome(
 }
 
 /**
- * The 529 room is an isolated stub topology, not production daemon authority.
+ * A 529 generalized room can use either stub or real runners. Only the stub
+ * topology lacks production daemon authority; real runners must be re-owned.
  * Keep the predicate narrow and data-derived so ordinary tests are unaffected.
  */
 export function isCodexReownExcluded(
@@ -420,6 +421,7 @@ export function isCodexReownExcluded(
 	}
 	return (
 		(roomInfo as { generalized: boolean }).generalized === true &&
+		(roomInfo as { runnerMode?: unknown }).runnerMode !== "real" &&
 		(roomInfo as { projectName: string }).projectName === session.project_name
 	);
 }

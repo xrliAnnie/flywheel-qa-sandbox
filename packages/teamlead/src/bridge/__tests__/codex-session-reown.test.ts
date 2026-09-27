@@ -535,6 +535,7 @@ describe("FLY-2211 Codex session re-owner", () => {
 			slot: 3,
 			projectName: "test-slot-3",
 			generalized: true,
+			runnerMode: "stub",
 		};
 		const rows = [
 			session({ execution_id: "superseded", retry_successor: "next" }),
@@ -564,7 +565,7 @@ describe("FLY-2211 Codex session re-owner", () => {
 		).toHaveLength(2);
 	});
 
-	it("requires explicit room-info for a real generalized-room session shape", () => {
+	it("does not exclude a generalized room backed by a real Codex runner", () => {
 		const candidate = session({
 			execution_id: "9b08b5aa-7ba7-4e24-9d7c-a43f3844c288",
 			project_name: "test-slot-3",
@@ -576,10 +577,17 @@ describe("FLY-2211 Codex session re-owner", () => {
 			slot: 3,
 			projectName: "test-slot-3",
 			generalized: true,
+			runnerMode: "stub",
 		};
 
 		expect(isCodexReownExcluded(candidate)).toBe(false);
 		expect(isCodexReownExcluded(candidate, roomInfo)).toBe(true);
+		expect(
+			isCodexReownExcluded(candidate, {
+				...roomInfo,
+				runnerMode: "real",
+			}),
+		).toBe(false);
 		expect(() =>
 			isCodexReownExcluded(candidate, {
 				...roomInfo,
