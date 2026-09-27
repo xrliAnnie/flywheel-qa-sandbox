@@ -14,6 +14,7 @@ import type {
 import { RunnerAdmissionController } from "../bridge/runner-admission.js";
 import { createRunsRouter } from "../bridge/runs-route.js";
 import { WorkflowEngineDispatcher } from "../bridge/workflow-engine-dispatcher.js";
+import { prepareWorkflowNodeRecovery } from "../bridge/workflow-node-recovery.js";
 import { resolveWorkflowStartPolicy } from "../bridge/workflow-start-policy.js";
 import { StateStore } from "../StateStore.js";
 import { workflowRecoveryCanonicalSchema } from "../workflow-recovery-contract.js";
@@ -1242,5 +1243,214 @@ describe("FLY-2545 land recovery", () => {
 				.listWorkflowRunEvents("run-land-recovery")
 				.filter((event) => event.kind === "land_held"),
 		).toHaveLength(2);
+	});
+});
+
+describe("state-only recovery through the unified endpoint", () => {
+	it("resumes an operator-paused current execution without minting a replacement", async () => {
+		const projectRoot = mkdtempSync(join(tmpdir(), "fly2922-pause-project-"));
+		const store = await StateStore.create(":memory:");
+		const head = await materializePredecessor(store, projectRoot, true);
+		const raw = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		raw.run("UPDATE workflow_run SET status = 'held' WHERE run_id = ?", [
+			RUN_ID,
+		]);
+		store.appendWorkflowRunEvent({
+			runId: RUN_ID,
+			eventUid: "operator-pause:fly2922",
+			kind: "run_held_by_operator",
+			nodeId: "design",
+			executionId: PREDECESSOR,
+			payload: { attempt: 1, reason: "operator maintenance pause" },
+		});
+		const beforeNode = store.getWorkflowRunNode(RUN_ID, "design", 1);
+		const beforeLedger = store.listWorkflowSideEffects(RUN_ID);
+		const fake = fakeStartDispatcher(store, head);
+		const liveness = vi.fn(async () => "alive" as const);
+		const app = express();
+		app.use(express.json());
+		app.use(
+			"/api/runs",
+			createRunsRouter(
+				fake.dispatcher,
+				store,
+				[
+					{
+						projectName: "flywheel",
+						projectRoot,
+						leads: [{ agentId: "flywheel-eng-lead" }],
+					},
+				] as Parameters<typeof createRunsRouter>[2],
+				RunnerAdmissionController.alwaysAdmit(),
+				undefined,
+				false,
+				undefined,
+				{
+					masterToken: "test-master",
+					confirmTokens: new ConfirmTokenStore(),
+					probeRunLiveness: liveness,
+				},
+			),
+		);
+		const server = createServer(app);
+		cleanups.push(async () => {
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+			store.close();
+			rmSync(projectRoot, { recursive: true, force: true });
+		});
+		await new Promise<void>((resolve) =>
+			server.listen(0, "127.0.0.1", resolve),
+		);
+		const post = async (path: string, body: unknown) => {
+			const response = await fetch(
+				`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/runs/${RUN_ID}${path}`,
+				{
+					method: "POST",
+					headers: {
+						"content-type": "application/json",
+						authorization: "Bearer test-master",
+					},
+					body: JSON.stringify(body),
+				},
+			);
+			return { status: response.status, body: await response.json() };
+		};
+		const request = {
+			runId: RUN_ID,
+			shape: "run_held_by_operator",
+			holdEventUid: "operator-pause:fly2922",
+			decision: null,
+			reason: "resume the existing execution",
+			principal: "master",
+			clientRequestId: "fly2922-resume-existing",
+		};
+		const staged = await post("/resume/stage", request);
+		expect(staged).toMatchObject({
+			status: 200,
+			body: {
+				canonical: {
+					version: 2,
+					shape: "workflow_node_recovery",
+					target: {
+						operationKind: "resume_existing",
+						previousExecutionId: PREDECESSOR,
+					},
+				},
+			},
+		});
+		const applied = await post("/resume", {
+			canonical: staged.body.canonical,
+			confirmToken: staged.body.confirmToken,
+		});
+		expect(applied).toMatchObject({
+			status: 200,
+			body: { ok: true, state: "state_applied" },
+		});
+		expect(store.getWorkflowRun(RUN_ID)?.status).toBe("active");
+		expect(store.getWorkflowRunNode(RUN_ID, "design", 1)).toEqual(beforeNode);
+		expect(store.listWorkflowSideEffects(RUN_ID)).toEqual(beforeLedger);
+		expect(fake.start).not.toHaveBeenCalled();
+		expect(liveness).not.toHaveBeenCalled();
+		expect(
+			store.getWorkflowHoldResumeReceipt(request.clientRequestId),
+		).toMatchObject({ receiptKind: "state_applied" });
+		expect(
+			await post("/resume", {
+				canonical: staged.body.canonical,
+				confirmToken: staged.body.confirmToken,
+			}),
+		).toMatchObject({
+			status: 200,
+			body: { idempotentReplay: true, state: "state_applied" },
+		});
+		expect(store.listWorkflowSideEffects(RUN_ID)).toEqual(beforeLedger);
+	});
+
+	it("rearms the exact gate probe without creating a gate dispatch", async () => {
+		const projectRoot = mkdtempSync(join(tmpdir(), "fly2922-gate-project-"));
+		const store = await StateStore.create(":memory:");
+		await materializePredecessor(store, projectRoot, true);
+		cleanups.push(async () => {
+			store.close();
+			rmSync(projectRoot, { recursive: true, force: true });
+		});
+		const raw = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		raw.run(
+			`INSERT INTO workflow_run_node
+			 (run_id,node_id,attempt,state,execution_id)
+			 VALUES (?, 'founder_gate', 1, 'review', NULL)`,
+			[RUN_ID],
+		);
+		raw.run(
+			"UPDATE workflow_run SET status='held',current_node_id='founder_gate' WHERE run_id=?",
+			[RUN_ID],
+		);
+		raw.run(
+			`INSERT INTO workflow_gate_holder
+			 (run_id,gate_node_id,attempt,head_sha,source_execution_id,question_id,
+			  state,materialization_stage,origin_probe_attempts,
+			  origin_probe_last_reason,created_at,updated_at)
+			 VALUES (?,'founder_gate',1,? ,?,'fly2922-gate-question',
+			  'materializing','question_intent',7,'origin_terminal',?,?)`,
+			[
+				RUN_ID,
+				"b".repeat(40),
+				PREDECESSOR,
+				"2026-09-26T23:00:00.000Z",
+				"2026-09-26T23:00:00.000Z",
+			],
+		);
+		store.appendWorkflowRunEvent({
+			runId: RUN_ID,
+			eventUid: "gate-origin-terminal:fly2922",
+			kind: "workflow_gate_origin_preflight_terminal",
+			nodeId: "founder_gate",
+			payload: {
+				questionId: "fly2922-gate-question",
+				reason: "origin_terminal",
+			},
+		});
+		const beforeLedger = store.listWorkflowSideEffects(RUN_ID);
+		const prepared = await prepareWorkflowNodeRecovery(store, {
+			runId: RUN_ID,
+			shape: "workflow_gate_origin_preflight_terminal",
+			holdEventUid: "gate-origin-terminal:fly2922",
+			decision: null,
+			reason: "retry the exact gate origin probe",
+			principal: "master",
+			clientRequestId: "fly2922-rearm-gate",
+		});
+		expect(prepared.canonical).toMatchObject({
+			version: 2,
+			shape: "workflow_node_recovery",
+			target: {
+				operationKind: "rearm_gate_probe",
+				previousExecutionId: null,
+				previousLaunchOrdinal: 0,
+			},
+		});
+		const result = store.recoverWorkflowNode({
+			...prepared,
+			now: new Date().toISOString(),
+		});
+		expect(result).toMatchObject({ ok: true, state: "state_applied" });
+		expect(store.getWorkflowRun(RUN_ID)?.status).toBe("active");
+		expect(store.listWorkflowSideEffects(RUN_ID)).toEqual(beforeLedger);
+		expect(
+			store.getCurrentWorkflowGateHolderByQuestionId(
+				"fly2922-gate-question",
+			),
+		).toMatchObject({
+			origin_probe_attempts: 0,
+			origin_probe_last_reason: null,
+		});
 	});
 });

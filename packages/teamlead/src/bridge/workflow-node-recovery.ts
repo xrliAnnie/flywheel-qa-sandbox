@@ -10,6 +10,7 @@ import { resolveWorktreeStartPoint } from "flywheel-edge-worker/dist/WorktreeMan
 import type { StateStore, WorkflowHoldResumeCanonical } from "../StateStore.js";
 import { resolveWorkflowDispatchLineage } from "../workflow-dispatch-lineage.js";
 import {
+	isWorkflowStateRecoveryShape,
 	type WorkflowRecoveryCanonical,
 	type WorkflowRecoveryPreflight,
 	type WorkflowRecoveryTarget,
@@ -151,6 +152,51 @@ export async function prepareWorkflowNodeRecovery(
 	canonical: WorkflowRecoveryCanonical;
 	preflight: WorkflowRecoveryPreflight;
 }> {
+	if (
+		isWorkflowStateRecoveryShape(request.shape) ||
+		(request.version === 2 &&
+			request.target?.operationKind !== "redispatch_current")
+	) {
+		const before = store.inspectWorkflowStateRecovery({
+			runId: request.runId,
+			holdEventUid: request.holdEventUid,
+			decision: request.decision,
+			...(isWorkflowStateRecoveryShape(request.shape)
+				? { expectedShape: request.shape }
+				: {}),
+		});
+		const target = before.target;
+		const sourceSessionDigest = canonicalSubmissionDigest({
+			runId: target.runId,
+			nodeId: target.nodeId,
+			attempt: target.attempt,
+			executionId: target.previousExecutionId,
+			launchOrdinal: target.previousLaunchOrdinal,
+			operationKind: target.operationKind,
+		});
+		const sourceEvidenceDigest = canonicalSubmissionDigest({
+			snapshotDigest: target.snapshotDigest,
+			holdSetDigest: target.holdSetDigest,
+			operationKind: target.operationKind,
+		});
+		const canonical = workflowRecoveryCanonicalSchema.parse({
+			...request,
+			version: 2,
+			shape: "workflow_node_recovery",
+			target,
+		});
+		return {
+			canonical,
+			preflight: {
+				target,
+				stateDigest: before.stateDigest,
+				sourceSessionDigest,
+				sourceEvidenceDigest,
+				observedAt: new Date().toISOString(),
+				liveness: "not_required",
+			},
+		};
+	}
 	const before = store.inspectWorkflowNodeRecovery(request.runId);
 	if (!before.target.sourceHoldEventUids.includes(request.holdEventUid))
 		throw new Error("recovery_target_changed");

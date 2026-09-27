@@ -1,4 +1,7 @@
-import { isWorkflowNodeRecoveryFaultShape } from "../workflow-recovery-contract.js";
+import {
+	isWorkflowNodeRecoveryFaultShape,
+	isWorkflowStateRecoveryShape,
+} from "../workflow-recovery-contract.js";
 import { CodexQuotaQueuedError } from "./retry-dispatcher.js";
 import { prepareWorkflowNodeRecovery } from "./workflow-node-recovery.js";
 /**
@@ -469,7 +472,11 @@ export function createRunsRouter(
 			res.status(400).json({ ok: false, reason: "invalid_request" });
 			return;
 		}
-		if (isWorkflowNodeRecoveryFaultShape(normalized.canonical.shape)) {
+		if (
+			isWorkflowNodeRecoveryFaultShape(normalized.canonical.shape) ||
+			(isWorkflowStateRecoveryShape(normalized.canonical.shape) &&
+				store.getWorkflowRun(runId)?.engine_owned === 1)
+		) {
 			try {
 				const prepared = await prepareWorkflowNodeRecovery(
 					store,

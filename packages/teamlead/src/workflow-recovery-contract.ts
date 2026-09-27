@@ -216,6 +216,13 @@ export function isWorkflowNodeRecoveryFaultShape(shape: string): boolean {
 	].includes(shape);
 }
 
+export function isWorkflowStateRecoveryShape(shape: string): boolean {
+	return [
+		"run_held_by_operator",
+		"workflow_gate_origin_preflight_terminal",
+	].includes(shape);
+}
+
 /** Informational close result; stage/apply still resolves its own trusted target. */
 export interface WorkflowCarrierCloseOutcome {
 	executionClosed: true;
