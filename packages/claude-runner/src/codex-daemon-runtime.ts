@@ -651,19 +651,21 @@ export async function adoptCodexDaemon(
 	}, opts.exitPollMs ?? 500);
 	(poller as { unref?: () => void }).unref?.();
 
+	// Every signal to an adopted body goes through the audited group killer.
+	const signalGroup = (signal: NodeJS.Signals): boolean => {
+		try {
+			killGroup(pgid, signal);
+			return true;
+		} catch {
+			return false;
+		}
+	};
 	const child: DaemonChild = {
 		pid: pgid,
-		kill: (signal) => {
-			try {
-				killGroup(
-					pgid,
-					(typeof signal === "string" ? signal : "SIGTERM") as NodeJS.Signals,
-				);
-				return true;
-			} catch {
-				return false;
-			}
-		},
+		kill: (signal) =>
+			signalGroup(
+				(typeof signal === "string" ? signal : "SIGTERM") as NodeJS.Signals,
+			),
 		once: ((event: string, cb: (...args: never[]) => void) => {
 			if (event !== "exit") return;
 			if (exited) {
@@ -706,11 +708,11 @@ export async function adoptCodexDaemon(
 		child,
 		socketPath: opts.socketPath,
 		stop: (signal) => {
-			child.kill(signal ?? "SIGTERM");
+			signalGroup(signal ?? "SIGTERM");
 		},
 		ensureDead: async () => {
 			if (!(await waitForAbsent())) {
-				child.kill("SIGKILL");
+				signalGroup("SIGKILL");
 				if (!(await waitForAbsent())) return false;
 			}
 			markExited();
