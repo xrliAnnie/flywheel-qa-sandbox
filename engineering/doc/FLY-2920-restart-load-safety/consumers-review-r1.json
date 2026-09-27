@@ -1,0 +1,97 @@
+{
+  "issue": "FLY-2920",
+  "phase": "implement",
+  "recordedAt": "2026-09-26T19:00:00-07:00",
+  "scope": "R1 blocking pressure-render fix plus origin/main review-lifecycle merge resolution",
+  "policy": "local-test-policy/v1",
+  "discovery": {
+    "commands": [
+      "git grep -lF -- 'review-request-coordinator' -- packages",
+      "git grep -lF -- 'claude-review-runner' -- packages",
+      "git grep -lF -- 'claimCodexReviewJobRunning' -- packages",
+      "git grep -lF -- 'retireCodexReviewJob' -- packages",
+      "git grep -lF -- 'review_early_stop' -- packages",
+      "git grep -lF -- 'swap_pressure_sensor' -- packages",
+      "git grep -lF -- 'pressure_evidence_unavailable' -- packages",
+      "git grep -lF -- 'startBridge' -- packages/config packages/teamlead",
+      "git grep -lF -- 'startBridgeInternal' -- packages/config packages/teamlead"
+    ],
+    "changedPathSearches": [
+      "packages/config/src/__tests__/feature-flags-registry.test.ts",
+      "packages/config/src/feature-flags/registry.ts",
+      "packages/teamlead/src/StateStore.ts",
+      "packages/teamlead/src/__tests__/fixtures/fly2567/compatibility.json",
+      "packages/teamlead/src/bridge/__tests__/claude-review-runner.test.ts",
+      "packages/teamlead/src/bridge/__tests__/review-request-coordinator.test.ts",
+      "packages/teamlead/src/bridge/claude-review-runner.ts",
+      "packages/teamlead/src/bridge/review-request-coordinator.ts",
+      "packages/teamlead/src/bridge/capacity-snapshot.ts",
+      "packages/teamlead/src/bridge/hook-payload.ts",
+      "packages/teamlead/src/bridge/machine-free-pct.ts"
+    ]
+  },
+  "retainedTests": [
+    { "file": "packages/teamlead/src/bridge/__tests__/capacity-snapshot.test.ts", "tests": 45, "result": "passed" },
+    { "file": "packages/teamlead/src/bridge/__tests__/machine-free-pct.test.ts", "tests": 7, "result": "passed" },
+    { "file": "packages/teamlead/src/bridge/__tests__/patrol-tick-render.test.ts", "tests": 50, "result": "passed" },
+    { "file": "packages/teamlead/src/bridge/__tests__/patrol-tick.test.ts", "tests": 39, "result": "passed" },
+    { "file": "packages/config/src/__tests__/feature-flags-registry.test.ts", "tests": 57, "result": "passed" },
+    { "file": "packages/config/src/__tests__/feature-flags-drift.test.ts", "tests": 14, "result": "passed" },
+    { "file": "packages/teamlead/src/bridge/__tests__/claude-review-runner.test.ts", "tests": 44, "result": "passed" },
+    { "file": "packages/teamlead/src/bridge/__tests__/review-request-coordinator.test.ts", "tests": 186, "result": "passed" },
+    { "file": "packages/teamlead/src/__tests__/StateStore.codex-review.test.ts", "tests": 77, "result": "passed" },
+    { "file": "packages/teamlead/src/__tests__/StateStore.review-retirement.test.ts", "tests": 14, "result": "passed" },
+    { "file": "packages/teamlead/src/__tests__/StateStore.fly663-migration.test.ts", "tests": 11, "result": "passed" },
+    { "file": "packages/teamlead/src/__tests__/lead-token-savings-drift.test.ts", "tests": 17, "result": "passed" },
+    { "file": "packages/teamlead/src/bridge/__tests__/review-recovery-integration.test.ts", "tests": 8, "result": "passed" },
+    { "file": "packages/teamlead/src/bridge/__tests__/review-recovery-pass.test.ts", "tests": 10, "result": "passed" },
+    { "file": "packages/teamlead/src/bridge/__tests__/review-recovery-status-route.test.ts", "tests": 1, "result": "passed" },
+    { "file": "packages/teamlead/src/bridge/__tests__/bridge-child-process-census.test.ts", "tests": 1, "result": "passed" },
+    { "file": "packages/teamlead/src/bridge/__tests__/fly1560-teardown-guard.test.ts", "tests": 7, "result": "passed" },
+    { "file": "packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts", "tests": 48, "result": "passed" },
+    { "file": "packages/teamlead/src/__tests__/StateStore.fly1314.test.ts", "tests": 2, "result": "passed" },
+    { "file": "packages/teamlead/src/bridge/__tests__/review-target-containment.fly2901.test.ts", "tests": 2, "result": "passed" },
+    { "file": "packages/teamlead/src/bridge/__tests__/review-recovery-target-repo.test.ts", "tests": 3, "result": "passed" },
+    { "file": "packages/teamlead/src/__tests__/StateStore.review-rulings.test.ts", "tests": 11, "result": "passed" },
+    { "file": "packages/teamlead/src/bridge/__tests__/review-recovery-notice-sink.test.ts", "tests": 13, "result": "passed" }
+  ],
+  "retainedTotal": 667,
+  "otherChecks": [
+    { "command": "pnpm lint", "result": "passed_with_25_existing_warnings" },
+    { "command": "pnpm exec biome check <10 changed review/pressure files>", "result": "passed" },
+    { "command": "pnpm --filter \"flywheel-teamlead...\" build", "result": "passed" },
+    { "command": "git diff --cached --check -- <merge-resolution paths>", "result": "passed" }
+  ],
+  "excludedMatches": [
+    {
+      "match": "packages/teamlead/src/__tests__/account-switch-e2e.test.ts",
+      "reason": "Indirect account-switch consumer; generation, retirement, runner and coordinator behavior is covered by the retained direct files."
+    },
+    {
+      "match": "packages/teamlead/src/ship-judgment/__tests__/{plan-source,runtime-collect,ship-judgment-auto-approval.integration}.test.ts",
+      "reason": "Read-only downstream judgment consumers of review records; no judgment schema or policy changed in the merge resolution."
+    },
+    {
+      "match": "packages/teamlead/src/bridge/__tests__/progress-resume-workflow.test.ts",
+      "reason": "R1 non-blocking timing advisory only; no progress-resume code changed in the blocking fix or merge resolution."
+    },
+    {
+      "match": "parent-directory-only matches under packages/teamlead/src/bridge",
+      "reason": "Excluded when they neither import a changed module nor reference a changed symbol; concrete literal and direct dependency matches above were retained."
+    },
+    {
+      "match": "vitest related over the teamlead changed-file graph",
+      "reason": "Explicit Lead instruction for this resume forbids covering the entire teamlead graph; direct concrete files were selected instead."
+    },
+    {
+      "match": "packages/teamlead/src/bridge/__tests__/capacity-route.test.ts",
+      "reason": "An attempted concrete run produced no final receipt before tool output ended. Per local-test-policy it was not rerun after truncated output and is not counted as passed."
+    }
+  ],
+  "claims": {
+    "fullSuite": false,
+    "fullCi": false,
+    "qa": false,
+    "production": false
+  }
+}

@@ -19,7 +19,7 @@ Lead 注入的实现裁定优先于原计划的三处 advisory：启动/过期�
 | E / FLY-2323 | 本地完成 `8ed70dc09` | 见 acceptance-E.md；A/B 一次退休、换代/race/unknown；两项 ps EPERM 与一项环境 skip 留 QA |
 | F / FLY-2620 | 本地完成 `ed7b9251d` | 见 acceptance-F.md 与 verification-F.json；三条 Lead 裁定、采样/缓存/短真实接线/通知均有相关证据 |
 | G / FLY-2084 | 本地完成 `9b84697f1` + `5ccb661f4` | 见 acceptance-G.md；真实 Git+StateStore+engine 重启、终态、坏绑定、local-only tip/description/ledger 与人工负控；16 文件 432 tests + 1 shell guard |
-| 联合验证 / 交卷 | 进行中 | G 消费者及最终 lint/build/typecheck 已验证；仍需有效 code review、PR、needs_review 收据 |
+| 联合验证 / 交卷 | 本地完成，待精确头复审 | R1 HIGH 已修；与 `origin/main@1f5626254` 合并后的 review-lifecycle 交汇已定向验证；仍需有效 exact-head code review 与 needs_review 收据 |
 
 ## C 开工时调用方源码核对（历史）
 
@@ -50,4 +50,23 @@ Lead 注入的实现裁定优先于原计划的三处 advisory：启动/过期�
 - 同头执行 `pnpm --filter "flywheel-teamlead..." build` 成功，含 teamlead 及依赖 TypeScript 构建。
 - 本机仅具体相关测试文件；真实负载用受控延迟夹具，不制造宿主高负载，不操作生产数据库/服务。
 
-B–G 的检查证据分别记录在 acceptance-B.md 至 acceptance-G.md。G 与联合 lint/build 已完成本地相关验证；正式代码评审、PR 与交卷尚未完成。
+B–G 的检查证据分别记录在 acceptance-B.md 至 acceptance-G.md。G 与联合 lint/build 已完成本地相关验证；PR #1369 已打开，精确头代码复审与交卷尚未完成。
+
+## R1 阻断项与主干同步
+
+首轮代码评审唯一 HIGH 指出非 healthy 压力采样会令 patrol 容量整行退化成
+`invalid_capacity_snapshot`。提交 `abc4a2b91` 注册
+`pressure_evidence_unavailable`，并允许没有人工 `setBy` 的 sensor-derived hold 渲染
+source/state/reason/sample/free/delta；真实 `buildCapacitySnapshot` 到
+`formatPatrolTick` 的 warming/pressure/unknown 回归已覆盖。相关 4 文件 141/141 通过。
+
+随后技术合并 `origin/main@1f5626254`。FLY-2920 的 attempt generation、一次退休与
+ready retry 语义，和 FLY-2911 的 `accept_seq`、void/quiet-window/AbortSignal 语义均保留；
+claim 后 head-move CAS 明确期待 `running`，启动恢复仍退休旧 running source 而不自动
+materialize follower。合并交汇及 R1 共保留 23 个具体文件、667/667 tests；完整选择与
+排除理由见 `consumers-review-r1.json`。`capacity-route.test.ts` 的一次执行未返回最终
+receipt，按本地策略没有因输出截断而宽泛重跑，也不计为通过。
+
+合并后的 `pnpm lint` 成功（25 个仓库既有 warning），定向 Biome 成功；
+`pnpm --filter "flywheel-teamlead..." build` 成功。按 Lead 明示未运行覆盖整张
+teamlead 图的 `vitest related`，未运行整仓/整包测试，也未请求 full CI、QA 或 ship。
