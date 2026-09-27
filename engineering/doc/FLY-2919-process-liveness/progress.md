@@ -2,28 +2,27 @@
 issue: FLY-2919
 phase: implement
 phaseCursor: 0/6
-updated: 2026-09-27T02:45:56.295Z
-nextStep: "B8 WIP after1c4b1a8ca: implemented independent runtime over sole B5
-  sampler cache. Plugin starts5s sampling after boot reown barrier,
-  Heartbeat/C2/terminal-sweep read cached original observation; 2 lifecycle
-  consumers run separately from 8-per-pass/2-OS-worker budget, stop drains.
-  Added owner scheduling inventory including business-terminal rows until
-  closed+drained; duty replay every pass. C2 retries lease_held at25/75ms only,
-  each attempt rechecks all fences outside wait.
-  Sampler13/runtime8/owner37/wiring17/C2integration16 passed individually and
-  affected dependencies build passed. C2 real fresh-heartbeat test proves both
-  ledgers close with one sample. B8 final related/guards/typechecks/lint not yet
-  collected; changes uncommitted. NEXT finish B8 verification/checkpoint then
-  DIRECT dispatcher durable death receipt/current generation reader plus cached
-  hot-tick consumption: sampler observations invalidate on death CAS, so old
-  terminal-first window probe cannot merely be swapped to read(). Full A-F/nine
-  tickets and server-loss/crash-reaper/other consumers, logical activation
-  bridging, legacy, ordinary/rework settlement, A9 original15s timeout still
-  remain. No final review/PR/CI/QA/handoff."
+updated: 2026-09-27T03:05:48.955Z
+nextStep: "B8 code153320e79: independent 5s runtime wired to sole sampler cache;
+  Heartbeat/C2/terminal-sweep consume original cached observations; separate
+  max2 lifecycle jobs; owner inventory retains until close+drain AND
+  same-generation body closed/standby. Lease contention retries25/75ms outside
+  lease. Causal inventory RED/37GREEN, real fresh-heartbeat double-ledger
+  single-sample convergence; 14 explicit files273pass. Related9files219 coverage
+  across initial8pass plus failed owner setup-timeout slice37pass at unchanged
+  timeout; failure logs retained. Final affected-deps build,
+  teamlead/voice-codex typechecks, lint pass. Evidence and10source hashes
+  archived. NEXT DIRECT B9 dispatcher hot-tick reader with current-generation
+  immutable death duty + exact projected receipt: death CAS invalidates original
+  short-lived observation. B9 discovery and draft proof tests prepared in
+  /tmp/fly2919-b9-*; not applied. Full A-F/nine tickets remain, including other
+  window consumers/server-loss/crash-reaper, activation bridging, legacy,
+  ordinary/rework settlement, A9 routes original15s timeout. No final
+  review/PR/CI/QA/handoff."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2919 progress
 **phase**: implement (0/6)
-**next**: B8 WIP after1c4b1a8ca: implemented independent runtime over sole B5 sampler cache. Plugin starts5s sampling after boot reown barrier, Heartbeat/C2/terminal-sweep read cached original observation; 2 lifecycle consumers run separately from 8-per-pass/2-OS-worker budget, stop drains. Added owner scheduling inventory including business-terminal rows until closed+drained; duty replay every pass. C2 retries lease_held at25/75ms only, each attempt rechecks all fences outside wait. Sampler13/runtime8/owner37/wiring17/C2integration16 passed individually and affected dependencies build passed. C2 real fresh-heartbeat test proves both ledgers close with one sample. B8 final related/guards/typechecks/lint not yet collected; changes uncommitted. NEXT finish B8 verification/checkpoint then DIRECT dispatcher durable death receipt/current generation reader plus cached hot-tick consumption: sampler observations invalidate on death CAS, so old terminal-first window probe cannot merely be swapped to read(). Full A-F/nine tickets and server-loss/crash-reaper/other consumers, logical activation bridging, legacy, ordinary/rework settlement, A9 original15s timeout still remain. No final review/PR/CI/QA/handoff.
+**next**: B8 code153320e79: independent 5s runtime wired to sole sampler cache; Heartbeat/C2/terminal-sweep consume original cached observations; separate max2 lifecycle jobs; owner inventory retains until close+drain AND same-generation body closed/standby. Lease contention retries25/75ms outside lease. Causal inventory RED/37GREEN, real fresh-heartbeat double-ledger single-sample convergence; 14 explicit files273pass. Related9files219 coverage across initial8pass plus failed owner setup-timeout slice37pass at unchanged timeout; failure logs retained. Final affected-deps build, teamlead/voice-codex typechecks, lint pass. Evidence and10source hashes archived. NEXT DIRECT B9 dispatcher hot-tick reader with current-generation immutable death duty + exact projected receipt: death CAS invalidates original short-lived observation. B9 discovery and draft proof tests prepared in /tmp/fly2919-b9-*; not applied. Full A-F/nine tickets remain, including other window consumers/server-loss/crash-reaper, activation bridging, legacy, ordinary/rework settlement, A9 routes original15s timeout. No final review/PR/CI/QA/handoff.
