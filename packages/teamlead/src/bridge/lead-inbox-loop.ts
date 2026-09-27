@@ -517,18 +517,21 @@ export class LeadInboxLoop {
 			}`,
 			...route,
 		};
+		// Freeze the attachment before entering transport failure accounting. A
+		// local preparation/fencing failure has not attempted a send and must
+		// not exhaust real tasks or quarantine founder messages.
+		const summary = this.opts.prepareAuditSummary?.({
+			batchId,
+			transportBatchId,
+			memberIds: transportMemberIds,
+			now: this.isoNow(),
+		});
+		if (summary?.content) {
+			const lastMember = batch.members.at(-1)!;
+			lastMember.content += `\n\n${summary.content}`;
+			batch.modelPayload += `\n\n${summary.content}`;
+		}
 		try {
-			const summary = this.opts.prepareAuditSummary?.({
-				batchId,
-				transportBatchId,
-				memberIds: transportMemberIds,
-				now: this.isoNow(),
-			});
-			if (summary?.content) {
-				const lastMember = batch.members.at(-1)!;
-				lastMember.content += `\n\n${summary.content}`;
-				batch.modelPayload += `\n\n${summary.content}`;
-			}
 			const receipt = await this.opts.adapter.deliverBatch(batch);
 			if (receipt.status === "membership_conflict") {
 				if (discord) {

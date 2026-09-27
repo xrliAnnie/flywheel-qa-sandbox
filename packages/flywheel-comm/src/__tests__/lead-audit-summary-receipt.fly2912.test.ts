@@ -154,6 +154,113 @@ describe("FLY-2912 frozen summary delivery receipt", () => {
 			notified_at: NOW,
 		});
 	});
+	it.each(["before freeze", "after freeze"])(
+		"accepts the full batch when a member is ACKED %s",
+		(timing) => {
+			const { queue } = setup();
+			queue.enqueue({
+				id: "settled",
+				fromAgent: "runner",
+				toAgent: "lead-a",
+				recipientKind: "lead",
+				type: "question",
+				content: "settled task",
+				createdAt: NOW,
+				senderRef: encodeSenderRef(),
+			});
+			const batch = {
+				...claim(queue),
+				memberIds: ["settled#r0", "question#r0"],
+			};
+			if (timing === "after freeze") expect(freeze(queue, batch)).toBeDefined();
+			expect(queue.ack("settled", NOW)).toBe(true);
+			const settled = queue.getById("settled");
+			expect(settled).toMatchObject({ state: "ACKED", claimed_by: null });
+			expect(freeze(queue, batch)).toBeDefined();
+			const input = receipt();
+			input.auditSummaryReceipt.memberIds = batch.memberIds;
+			expect(queue.recordLeadBatchDelivered(input)).toBe("applied");
+			expect(queue.getById("settled")).toEqual(settled);
+			expect(queue.getById("question")).toMatchObject({
+				state: "LEASED",
+				notified_at: NOW,
+			});
+			expect(queue.getLeadAuditSummaryCursor(scope)?.offeredThroughSeq).toBe(
+				15,
+			);
+		},
+	);
+	it("accepts an exact receipt after every member was ACKED in flight", () => {
+		const { queue } = setup();
+		freeze(queue);
+		expect(queue.ack("question", NOW)).toBe(true);
+		expect(queue.recordLeadBatchDelivered(receipt())).toBe("already_settled");
+		expect(queue.getLeadAuditSummaryCursor(scope)?.offeredThroughSeq).toBe(15);
+		expect(
+			queue.getLeadAuditSummaryOffer({ ...scope, transportBatchId: "batch#r0" })
+				?.acceptedAt,
+		).toBe(NOW);
+	});
+	it.each([
+		"owner",
+		"state",
+		"attempt",
+		"class",
+		"carrier",
+		"disposition",
+		"lead",
+		"order",
+		"missing",
+	])(
+		"rejects a mixed batch with an invalid %s without recording delivery",
+		(mismatch) => {
+			const { queue, path } = setup();
+			queue.enqueue({
+				id: "settled",
+				fromAgent: "runner",
+				toAgent: "lead-a",
+				recipientKind: "lead",
+				type: "question",
+				content: "settled task",
+				createdAt: NOW,
+				senderRef: encodeSenderRef(),
+			});
+			const batch = {
+				...claim(queue),
+				memberIds: ["settled#r0", "question#r0"],
+			};
+			freeze(queue, batch);
+			queue.ack("settled", NOW);
+			const db = new Database(path);
+			try {
+				const mutations: Record<string, string> = {
+					owner: "claimed_by = 'foreign'",
+					state: "state = 'DEAD'",
+					attempt: "lease_retry_count = 1",
+					class: "msg_class = 'protocol'",
+					carrier: "carrier = 'external'",
+					disposition: "delivery_disposition = 'audit_only'",
+					lead: "to_agent = 'foreign'",
+				};
+				if (mutations[mismatch])
+					db.prepare(
+						`UPDATE mailbox SET ${mutations[mismatch]} WHERE id = 'question'`,
+					).run();
+			} finally {
+				db.close();
+			}
+			if (mismatch === "order") batch.memberIds.reverse();
+			if (mismatch === "missing") batch.memberIds.shift();
+			expect(freeze(queue, batch)).toBeUndefined();
+			const input = receipt();
+			input.auditSummaryReceipt.memberIds = batch.memberIds;
+			expect(queue.recordLeadBatchDelivered(input)).toBe("lost_race");
+			expect(queue.getLeadAuditSummaryCursor(scope)?.offeredThroughSeq).toBe(
+				10,
+			);
+			expect(queue.getById("question")?.notified_at).toBeNull();
+		},
+	);
 	it.each(["owner", "batch", "members", "epoch", "lead", "project"])(
 		"rejects %s mismatches without advancing or recording queue delivery",
 		(mismatch) => {

@@ -2054,11 +2054,13 @@ export class MailboxQueue {
 			input.transportBatchId === `${input.batchId}#r${attempt}` &&
 			rows.every(
 				(row, index) =>
-					row.state === "LEASED" &&
+					// ACKed members remain in the frozen transport membership even
+					// after settlement clears their lease owner.
+					(row.state === "ACKED" ||
+						(row.state === "LEASED" && row.claimed_by === input.ownerEpoch)) &&
 					row.msg_class === "model" &&
 					row.carrier === "inbox" &&
 					row.delivery_disposition === "model" &&
-					row.claimed_by === input.ownerEpoch &&
 					row.to_agent === input.leadId &&
 					row.lease_retry_count === attempt &&
 					input.memberIds[index] === `${row.delivery_id}#r${attempt}`,
@@ -2199,9 +2201,12 @@ export class MailboxQueue {
 				}
 				const leased = rows.filter(({ state }) => state === "LEASED");
 				if (leased.length === 0) {
-					return rows.every(({ state }) => state === "ACKED")
-						? "already_settled"
-						: "lost_race";
+					if (!rows.every(({ state }) => state === "ACKED")) return "lost_race";
+					// The exact adapter receipt still accepts the attached summary when
+					// every original task was settled while delivery was in flight.
+					if (summaryOffer)
+						this.acceptLeadAuditSummaryOffer(summaryOffer, input.now);
+					return "already_settled";
 				}
 				if (leased.some(({ claimed_by }) => claimed_by !== input.ownerEpoch)) {
 					return "lost_race";

@@ -227,6 +227,60 @@ describe("FLY-2912 summary rides existing Lead batches", () => {
 		expect(f.cursor()?.offeredThroughSeq).toBe(3);
 	});
 
+	it.each(["revalidation", "adapter receipt", "frozen retry"])(
+		"delivers the remaining task when another member is ACKED during %s",
+		async (timing) => {
+			const f = setup({
+				revalidateModel: async () => {
+					await Promise.resolve();
+					if (timing === "revalidation")
+						f.queue.ack("question-a", "2099-07-19T12:00:00.000Z");
+					return { deliver: true };
+				},
+			});
+			f.enqueue("question-a");
+			f.enqueue("question-b");
+			f.adapter.deliverBatch.mockImplementationOnce(async (batch) => {
+				await Promise.resolve();
+				if (timing !== "revalidation")
+					f.queue.ack("question-a", "2099-07-19T12:00:00.000Z");
+				if (timing === "frozen retry") throw new Error("lost receipt");
+				return f.accepted(batch);
+			});
+			const first = await f.loop.tick();
+			if (timing === "frozen retry") {
+				expect(first.ok).toBe(false);
+				f.changeContent("later events must wait");
+				f.advance();
+				f.adapter.deliverBatch.mockImplementationOnce(async (batch) => ({
+					...f.accepted(batch),
+					status: "accepted_duplicate" as never,
+				}));
+				expect((await f.loop.tick()).ok).toBe(true);
+				expect(f.adapter.deliverBatch.mock.calls[1]![0]).toEqual(
+					f.adapter.deliverBatch.mock.calls[0]![0],
+				);
+			} else expect(first.ok).toBe(true);
+			expect(
+				f.adapter.deliverBatch.mock.calls[0]![0].members.map(
+					({ deliveryId }) => deliveryId,
+				),
+			).toEqual(["question-a#r0", "question-b#r0"]);
+			expect(f.queue.getById("question-a")).toMatchObject({
+				state: "ACKED",
+				claimed_by: null,
+			});
+			expect(f.queue.getById("question-b")).toMatchObject({
+				state: "LEASED",
+				last_error: null,
+				dead_reason: null,
+			});
+			expect(f.queue.getById("question-b")?.notified_at).not.toBeNull();
+			expect(f.cursor()?.offeredThroughSeq).toBe(3);
+			expect(f.offer()?.acceptedAt).not.toBeNull();
+		},
+	);
+
 	it("does not advance for a mismatched adapter receipt", async () => {
 		const f = setup();
 		f.enqueue("question-a");
@@ -239,17 +293,36 @@ describe("FLY-2912 summary rides existing Lead batches", () => {
 		expect(f.offer()?.acceptedAt).toBeNull();
 	});
 
-	it("holds the batch when its frozen summary cannot be persisted", async () => {
-		const f = setup({
-			prepareAuditSummary: () => {
+	it.each([false, true])(
+		"does not spend transport attempts on summary preparation failure (Discord=%s)",
+		async (discord) => {
+			const prepare = vi.fn<
+				NonNullable<LeadInboxLoopOptions["prepareAuditSummary"]>
+			>(() => {
 				throw new Error("queue unavailable");
-			},
-		});
-		f.enqueue("question-a");
-		expect((await f.loop.tick()).ok).toBe(false);
-		expect(f.adapter.deliverBatch).not.toHaveBeenCalled();
-		expect(f.queue.getById("question-a")?.delivered_at).toBeNull();
-	});
+			});
+			const f = setup({ prepareAuditSummary: prepare, maxModelAttempts: 1 });
+			f.enqueue("question-a", discord);
+			for (let tick = 0; tick < 2; tick++) {
+				expect((await f.loop.tick()).ok).toBe(false);
+				f.advance();
+			}
+			expect(prepare).toHaveBeenCalledTimes(2);
+			expect(f.adapter.deliverBatch).not.toHaveBeenCalled();
+			expect(f.queue.getById("question-a")).toMatchObject({
+				state: "LEASED",
+				retry_count: 0,
+				dead_reason: null,
+				last_error: null,
+				notified_at: null,
+				delivered_at: null,
+			});
+			prepare.mockImplementation(f.prepareAuditSummary);
+			expect((await f.loop.tick()).ok).toBe(true);
+			expect(f.adapter.deliverBatch).toHaveBeenCalledTimes(1);
+			expect(f.cursor()?.offeredThroughSeq).toBe(3);
+		},
+	);
 
 	it("empty frozen attachments keep the task payload and never advance", async () => {
 		const f = setup();
