@@ -74,6 +74,7 @@ function setup() {
 		batchId: "batch",
 		transportBatchId: "batch#r0",
 		memberIds: ["q#r0"],
+		canBuildSummary: true,
 		now,
 	};
 }
@@ -109,12 +110,25 @@ it("freezes bytes before delivery and reuses them even after OFF or source failu
 	expect(buildLeadAuditSummaryOffer(input)).toEqual(first);
 	expect(input.store.readLeadAuditSummary).toHaveBeenCalledTimes(1);
 });
-it("OFF new batch has no offer and source failure freezes empty without coverage", () => {
+it("OFF freezes empty and keeps those bytes after enabling without source reads", () => {
 	const input = setup();
 	input.store.getFlagValueRow.mockReturnValue({ hasOverride: true, raw: "0" });
-	expect(buildLeadAuditSummaryOffer(input)).toBeUndefined();
-	expect(input.queue.getLeadAuditSummaryOffer(input)).toBeUndefined();
+	const empty = buildLeadAuditSummaryOffer(input);
+	expect(empty?.content).toBe("");
+	expect(input.queue.getLeadAuditSummaryOffer(input)?.content).toBe("");
 	input.store.getFlagValueRow.mockReturnValue({ hasOverride: true, raw: "1" });
+	expect(buildLeadAuditSummaryOffer(input)).toEqual(empty);
+	expect(input.store.getNotificationAuditGeneration).not.toHaveBeenCalled();
+	expect(input.store.readLeadAuditSummary).not.toHaveBeenCalled();
+});
+it("never creates new summary bytes for a resumed transport without an offer", () => {
+	const input = { ...setup(), canBuildSummary: false };
+	expect(buildLeadAuditSummaryOffer(input)?.content).toBe("");
+	expect(input.store.getNotificationAuditGeneration).not.toHaveBeenCalled();
+	expect(input.store.readLeadAuditSummary).not.toHaveBeenCalled();
+});
+it("source failure freezes empty without coverage", () => {
+	const input = setup();
 	input.store.readLeadAuditSummary.mockImplementation(() => {
 		throw Error("bad archive");
 	});

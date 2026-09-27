@@ -67,6 +67,7 @@ export function buildLeadAuditSummaryOffer(input: {
 	batchId: string;
 	transportBatchId: string;
 	memberIds: readonly string[];
+	canBuildSummary: boolean;
 	now: string;
 }): { content: string; receipt: LeadAuditSummaryReceipt } | undefined {
 	const { queue } = input;
@@ -82,8 +83,6 @@ export function buildLeadAuditSummaryOffer(input: {
 	const frozen = queue.getLeadAuditSummaryOffer(input);
 	if (frozen)
 		return { content: frozen.content, receipt: receiptFor(frozen.storeEpoch) };
-	if (!storeLeadTokenSavingsEnabled({ store: input.store }, input.projectName))
-		return undefined;
 	const freezeEmpty = () => {
 		const offer = queue.freezeLeadAuditSummaryOffer({
 			...input,
@@ -96,6 +95,14 @@ export function buildLeadAuditSummaryOffer(input: {
 		if (!offer) throw new Error("audit summary empty offer not frozen");
 		return { content: offer.content, receipt: receiptFor(offer.storeEpoch) };
 	};
+	// OFF must pin empty bytes too: enabling between attempts cannot change an
+	// already accepted payload. Older binaries left no offer, so an unfrozen
+	// resumed batch also keeps its original, attachment-free transport bytes.
+	if (
+		!input.canBuildSummary ||
+		!storeLeadTokenSavingsEnabled({ store: input.store }, input.projectName)
+	)
+		return freezeEmpty();
 	let generation: ReturnType<SummaryStore["getNotificationAuditGeneration"]>;
 	try {
 		generation = input.store.getNotificationAuditGeneration();

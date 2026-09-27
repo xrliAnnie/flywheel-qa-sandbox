@@ -78,6 +78,8 @@ export interface LeadInboxLoopOptions {
 		batchId: string;
 		transportBatchId: string;
 		memberIds: readonly string[];
+		/** True only before a new batch's first possible transport handoff. */
+		canBuildSummary: boolean;
 		now: string;
 	}) => { content: string; receipt: LeadAuditSummaryReceipt } | undefined;
 	/** FLY-1573: resolved exactly once at the beginning of a tick. */
@@ -426,7 +428,7 @@ export class LeadInboxLoop {
 				}
 
 				if (deliverable.length > 0) {
-					await this.deliverModelBatch(deliverable, queueConfig);
+					await this.deliverModelBatch(deliverable, queueConfig, freshBatch);
 					modelConsumed = deliverable.length;
 				}
 			}
@@ -450,6 +452,7 @@ export class LeadInboxLoop {
 	private async deliverModelBatch(
 		rows: MailboxRow[],
 		queueConfig: MailboxQueueConfig,
+		freshBatch: boolean,
 	): Promise<void> {
 		const batchId = rows[0]?.batch_id;
 		if (!batchId || rows.some((row) => row.batch_id !== batchId)) {
@@ -524,6 +527,9 @@ export class LeadInboxLoop {
 			batchId,
 			transportBatchId,
 			memberIds: transportMemberIds,
+			// A resumed batch may have reached the adapter even if a crash left
+			// retry_count at zero. Only the claim's new batch can add new bytes.
+			canBuildSummary: freshBatch && rows.every((row) => row.retry_count === 0),
 			now: this.isoNow(),
 		});
 		if (summary?.content) {
