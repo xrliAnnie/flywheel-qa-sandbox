@@ -2,18 +2,20 @@
 issue: FLY-2922
 phase: implement
 phaseCursor: 0/6
-updated: 2026-09-27T00:58:47.699Z
-nextStep: "17f117231 routes engine-owned operator pause and gate-origin
-  preflight through canonical v2 stage/apply. resume_existing preserves
-  execution and ledger; rearm_gate_probe preserves holder/question and writes no
-  dispatch; both persist state_applied receipts and replay idempotently. Node
-  recovery 9/9, legacy holds 34/34, contract 3/3, receipts 2/2, registry 4/4,
-  package build GREEN. Next: historical active-orphan/supersession and recorded
-  loop/idle decisions; then FLY-2921-compatible rework."
+updated: 2026-09-27T01:07:59.789Z
+nextStep: "e3ae5cc0d adds bounded legacy_active_orphan discovery for
+  active+pending+NULL execution only when an exact abandoned dispatch,
+  cancellation, old rollback event, and matching hold_resumed chain uniquely
+  agree. Canonical v2 apply mints ordinal+1, binds the node, remains active, and
+  dispatcher starts it; missing release proof does not expose the synthetic
+  recovery. Node recovery 10/10, dead-exec 30 pass/1 existing skip, holds 35/35,
+  dispatcher 137/137, registry 4/4, package build GREEN. Next: recorded
+  loop/idle decisions and historical supersession; FLY-2921 merge-order question
+  c56a7e05 pending."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2922 progress
 **phase**: implement (0/6)
-**next**: 17f117231 routes engine-owned operator pause and gate-origin preflight through canonical v2 stage/apply. resume_existing preserves execution and ledger; rearm_gate_probe preserves holder/question and writes no dispatch; both persist state_applied receipts and replay idempotently. Node recovery 9/9, legacy holds 34/34, contract 3/3, receipts 2/2, registry 4/4, package build GREEN. Next: historical active-orphan/supersession and recorded loop/idle decisions; then FLY-2921-compatible rework.
+**next**: e3ae5cc0d adds bounded legacy_active_orphan discovery for active+pending+NULL execution only when an exact abandoned dispatch, cancellation, old rollback event, and matching hold_resumed chain uniquely agree. Canonical v2 apply mints ordinal+1, binds the node, remains active, and dispatcher starts it; missing release proof does not expose the synthetic recovery. Node recovery 10/10, dead-exec 30 pass/1 existing skip, holds 35/35, dispatcher 137/137, registry 4/4, package build GREEN. Next: recorded loop/idle decisions and historical supersession; FLY-2921 merge-order question c56a7e05 pending.
