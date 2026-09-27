@@ -118,6 +118,7 @@ async function setup(options: {
 	const approved = previewFor(target());
 	let fresh = options.fresh ?? target();
 	let removed = false;
+	const preview = vi.fn(async () => previewFor(fresh));
 	const remove = vi.fn(
 		options.remove ??
 			(async () => {
@@ -129,7 +130,7 @@ async function setup(options: {
 		store,
 		projectRoot: (projectName) =>
 			projectName === "flywheel" ? "/srv/flywheel" : undefined,
-		preview: vi.fn(async () => previewFor(fresh)),
+		preview,
 		withIssueMutex: createIssueMutex(),
 		withRepoLock: createRepoMutationLock().withRepoLock,
 		worktreeManager: {
@@ -143,6 +144,7 @@ async function setup(options: {
 		approved,
 		executor,
 		remove,
+		preview,
 		setFresh(value: StockCleanupObservedTarget) {
 			fresh = value;
 		},
@@ -175,6 +177,9 @@ describe("FLY-2778 stock cleanup executor", () => {
 			target().canonicalPath,
 			null,
 			{ processHandling: "refuse" },
+		);
+		expect(f.preview).toHaveBeenCalledWith(
+			expect.objectContaining({ canonicalPath: target().canonicalPath }),
 		);
 	});
 
@@ -227,6 +232,24 @@ describe("FLY-2778 stock cleanup executor", () => {
 
 		expect(retry.items[0]).toMatchObject({ status: "removed" });
 		expect(f.remove).toHaveBeenCalledOnce();
+	});
+
+	it("allows a later worktree generation at the same path to claim cleanup", async () => {
+		const f = await setup({});
+		await f.executor.execute(input(f.approved));
+		const later = target("dead");
+		later.generation = "generation-2";
+		later.leafIdentity = { dev: "1", ino: "4" };
+		later.bindings[0]!.generation = "generation-2";
+		f.setFresh(later);
+		const laterApproved = previewFor(later, "2026-09-26T20:00:02.000Z");
+
+		const result = await f.executor.execute(
+			input(laterApproved, "55555555-5555-4555-8555-555555555555"),
+		);
+
+		expect(result.items[0]).toMatchObject({ status: "removed" });
+		expect(f.remove).toHaveBeenCalledTimes(2);
 	});
 
 	it("rejects a binding identity change before removal", async () => {

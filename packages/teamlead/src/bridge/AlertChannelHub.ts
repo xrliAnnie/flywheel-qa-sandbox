@@ -21,6 +21,7 @@
  */
 
 import {
+	type AlertAttemptOptions,
 	type AlertEventType,
 	type AlertPayload,
 	type AlertResult,
@@ -231,7 +232,12 @@ export interface DiscordOps {
 
 export interface AlertChannelHubDeps {
 	store: StateStore;
-	notifier: { alert: (p: AlertPayload) => Promise<AlertResult> };
+	notifier: {
+		alert: (
+			p: AlertPayload,
+			attempt?: AlertAttemptOptions,
+		) => Promise<AlertResult>;
+	};
 	discord: DiscordOps;
 	/** Parent-channel archive default reader. Missing/null/failure preserves 1440. */
 	archiveDefaultProvider?: () => Promise<number | null>;
@@ -327,8 +333,13 @@ export class AlertChannelHub {
 	}
 
 	/** The alert notifier points here in unified+threading mode. */
-	async handle(payload: AlertPayload): Promise<AlertResult> {
-		const result = await this.deps.notifier.alert(payload);
+	async handle(
+		payload: AlertPayload,
+		attempt?: AlertAttemptOptions,
+	): Promise<AlertResult> {
+		const result = attempt
+			? await this.deps.notifier.alert(payload, attempt)
+			: await this.deps.notifier.alert(payload);
 		if (isInformationalKind(payload.eventType)) return result;
 		// Degrade to root-only on duplicate/queued (Codex R1 MEDIUM-5).
 		if (result.skipped === "duplicate" || result.queued) return result;

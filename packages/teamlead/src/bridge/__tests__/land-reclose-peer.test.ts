@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LandOperationRow, StateStore } from "../../StateStore.js";
 import {
 	collectVerifiedPeerChain,
+	deriveLandPeerActor,
 	parseLandPeerRequest,
 	parseLandReclosePeerRequest,
 	startLandReclosePeerServer,
@@ -40,6 +41,33 @@ function processSnapshot(
 }
 
 describe("land reclose native peer", () => {
+	it("keeps cleanup actor stable across CLI peer connections in one lease generation", () => {
+		const common = {
+			leadKey: "flywheel:flywheel-eng-lead",
+			leadId: "flywheel-eng-lead",
+			projectName: "flywheel",
+			generation: 7,
+			holderPid: 100,
+			holderStart: "2026-09-26T20:00:00.000Z",
+			identityDigest: "a".repeat(64),
+			method: "land.cleanup.execute",
+			requestId: "11111111-1111-4111-8111-111111111111",
+		};
+		const first = deriveLandPeerActor({
+			...common,
+			peerPin: "peer-connection-one",
+		});
+		const replay = deriveLandPeerActor({
+			...common,
+			peerPin: "peer-connection-two",
+		});
+
+		expect(replay).toBe(first);
+		expect(
+			deriveLandPeerActor({ ...common, generation: 8, peerPin: "peer-three" }),
+		).not.toBe(first);
+	});
+
 	it("parses only the bounded closeout-only request tuple", () => {
 		const request = {
 			schemaVersion: 1 as const,

@@ -26,6 +26,48 @@ const REQUEST_LIMIT = 6 * 1024 * 1024;
 const MAX_CONNECTIONS = 8;
 const CONNECTION_TIMEOUT_MS = 30_000;
 
+export function deriveLandPeerActor(input: {
+	leadKey: string;
+	leadId: string;
+	projectName: string;
+	generation: number;
+	holderPid: number;
+	holderStart: string;
+	identityDigest: string;
+	peerPin: string;
+	method: LandPeerRequest["method"];
+	requestId: string;
+	operation?: Pick<
+		LandOperationRow,
+		"operation_id" | "issue_id" | "approved_head"
+	>;
+}): string {
+	const cleanup = input.method.startsWith("land.cleanup.");
+	const identity = cleanup
+		? [
+				input.leadKey,
+				input.leadId,
+				input.projectName,
+				input.generation,
+				input.holderPid,
+				input.holderStart,
+				input.identityDigest,
+			]
+		: [
+				input.peerPin,
+				input.method,
+				input.projectName,
+				input.requestId,
+				input.operation?.operation_id ?? null,
+				input.operation?.issue_id ?? null,
+				input.operation?.approved_head ?? null,
+			];
+	const digest = createHash("sha256")
+		.update(JSON.stringify(identity))
+		.digest("hex");
+	return `authenticated-${cleanup ? "cleanup" : "reclose"}-peer:${digest}`;
+}
+
 export interface LandReclosePeerRequest {
 	schemaVersion: 1;
 	method: "land.reclose";
@@ -459,21 +501,21 @@ function createDefaultAuthorizer(input: StartLandReclosePeerServerInput) {
 			};
 		};
 		const initial = observe();
-		const identityDigest = createHash("sha256")
-			.update(
-				JSON.stringify([
-					initial.pin,
-					request.method,
-					request.projectName,
-					request.requestId,
-					operation?.operation_id ?? null,
-					operation?.issue_id ?? null,
-					operation?.approved_head ?? null,
-				]),
-			)
-			.digest("hex");
+		const actor = deriveLandPeerActor({
+			leadKey: initial.validated.leadKey,
+			leadId: request.leadId,
+			projectName: request.projectName,
+			generation: initial.validated.generation,
+			holderPid: initial.validated.holderPid,
+			holderStart: initial.validated.holderStart,
+			identityDigest: row.identity.identityDigest,
+			peerPin: initial.pin,
+			method: request.method,
+			requestId: request.requestId,
+			...(operation ? { operation } : {}),
+		});
 		return Object.freeze({
-			actor: `authenticated-${operation ? "reclose" : "cleanup"}-peer:${identityDigest}`,
+			actor,
 			assertCurrent() {
 				if (observe().pin !== initial.pin)
 					throw Error("peer_authority_changed");

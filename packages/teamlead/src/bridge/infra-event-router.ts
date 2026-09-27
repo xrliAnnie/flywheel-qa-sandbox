@@ -19,6 +19,7 @@
  */
 
 import type {
+	AlertAttemptOptions,
 	AlertEventType,
 	AlertPayload,
 	AlertResult,
@@ -170,7 +171,18 @@ export function classifyInfraEvent(input: RouteInput): AlertRouteClass {
 
 /** The minimal sink face shared by LeadAlertNotifier / AlertChannelHub. */
 export interface AlertSinkLike {
-	alert(payload: AlertPayload): Promise<AlertResult>;
+	alert(
+		payload: AlertPayload,
+		attempt?: AlertAttemptOptions,
+	): Promise<AlertResult>;
+}
+
+function callAlertSink(
+	sink: AlertSinkLike,
+	payload: AlertPayload,
+	attempt?: AlertAttemptOptions,
+): Promise<AlertResult> {
+	return attempt ? sink.alert(payload, attempt) : sink.alert(payload);
 }
 
 export interface InfraAlertSinkDeps {
@@ -195,6 +207,7 @@ export interface InfraAlertSinkDeps {
 	deliverToIssueThread: (
 		payload: AlertPayload,
 		thread: BoundIssueThread,
+		attempt?: AlertAttemptOptions,
 	) => Promise<AlertResult>;
 	logger?: (msg: string) => void;
 }
@@ -208,16 +221,20 @@ export function createInfraAlertSink(deps: InfraAlertSinkDeps): AlertSinkLike {
 	const logger =
 		deps.logger ?? ((m) => console.log(`[infra-alert-router] ${m}`));
 	return {
-		async alert(payload: AlertPayload): Promise<AlertResult> {
-			if (!routingEnabled()) return deps.rawSink.alert(payload);
+		async alert(
+			payload: AlertPayload,
+			attempt?: AlertAttemptOptions,
+		): Promise<AlertResult> {
+			if (!routingEnabled())
+				return callAlertSink(deps.rawSink, payload, attempt);
 			if (LEAD_INBOX_KINDS.has(payload.eventType)) {
 				try {
-					return await deps.leadInboxSink.alert(payload);
+					return await callAlertSink(deps.leadInboxSink, payload, attempt);
 				} catch (err) {
 					logger(
 						`owning-Lead inbox delivery threw for ${payload.eventType}/${payload.eventId}: ${(err as Error).message} — fail-safe to Claw mailbox`,
 					);
-					return deps.ticketSink.alert(payload);
+					return callAlertSink(deps.ticketSink, payload, attempt);
 				}
 			}
 			const explicitMention = isDiscordSnowflake(payload.mentionUserId)
@@ -233,17 +250,21 @@ export function createInfraAlertSink(deps: InfraAlertSinkDeps): AlertSinkLike {
 						? deps.founderUserId
 						: undefined);
 				if (mentionUserId) {
-					return deps.rawSink.alert({ ...payload, mentionUserId });
+					return callAlertSink(
+						deps.rawSink,
+						{ ...payload, mentionUserId },
+						attempt,
+					);
 				}
 				logger(
 					`founder escalation ${payload.eventId} has no valid founder id — fail-safe to Claw mailbox`,
 				);
-				return deps.ticketSink.alert(payload);
+				return callAlertSink(deps.ticketSink, payload, attempt);
 			}
-			if (explicitMention) return deps.rawSink.alert(payload);
+			if (explicitMention) return callAlertSink(deps.rawSink, payload, attempt);
 			// Ordinary alert kinds short-circuit to Claw's mailbox.
 			if (!ISSUE_PROGRESS_KINDS.has(payload.eventType)) {
-				return deps.ticketSink.alert(payload);
+				return callAlertSink(deps.ticketSink, payload, attempt);
 			}
 			let thread: BoundIssueThread | null = null;
 			try {
@@ -259,15 +280,17 @@ export function createInfraAlertSink(deps: InfraAlertSinkDeps): AlertSinkLike {
 			});
 			if (route === "issue_thread" && thread) {
 				try {
-					return await deps.deliverToIssueThread(payload, thread);
+					return attempt
+						? await deps.deliverToIssueThread(payload, thread, attempt)
+						: await deps.deliverToIssueThread(payload, thread);
 				} catch (err) {
 					logger(
 						`issue-thread delivery threw for ${payload.eventType}/${payload.eventId}: ${(err as Error).message} — fail-safe to Claw mailbox`,
 					);
-					return deps.ticketSink.alert(payload);
+					return callAlertSink(deps.ticketSink, payload, attempt);
 				}
 			}
-			return deps.ticketSink.alert(payload);
+			return callAlertSink(deps.ticketSink, payload, attempt);
 		},
 	};
 }

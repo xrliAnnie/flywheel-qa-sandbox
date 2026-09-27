@@ -36,6 +36,7 @@ export interface StockCleanupExecutorDeps {
 		projectName: string;
 		actor: string;
 		authorityCheck: () => void | Promise<void>;
+		canonicalPath?: string;
 	}): Promise<PreviewResult>;
 	withIssueMutex<T>(keys: string[], fn: () => Promise<T>): Promise<T>;
 	withRepoLock: WithRepoLock;
@@ -225,7 +226,15 @@ export function createStockCleanupExecutor(deps: StockCleanupExecutorDeps): {
 			const items: StockCleanupExecutionItem[] = [];
 			for (const approved of selected) {
 				const digest = targetDigest(approved);
-				const effectKey = `target:${sha256(`${input.projectName}\0${approved.canonicalPath}`)}`;
+				const effectKey = `target:${sha256(
+					[
+						input.projectName,
+						approved.canonicalPath,
+						approved.generation ?? "",
+						approved.leafIdentity?.dev ?? "",
+						approved.leafIdentity?.ino ?? "",
+					].join("\0"),
+				)}`;
 				const claim: ApplyEffectClaimInput = {
 					rootUuid: approved.issueId ?? `stock:${input.projectName}`,
 					effectScope: "stock_worktree_cleanup",
@@ -260,6 +269,7 @@ export function createStockCleanupExecutor(deps: StockCleanupExecutorDeps): {
 								projectName: input.projectName,
 								actor: input.actor,
 								authorityCheck: input.authorityCheck,
+								canonicalPath: approved.canonicalPath,
 							});
 							const current = fresh.manifest.targets.find(
 								(target) => target.canonicalPath === approved.canonicalPath,

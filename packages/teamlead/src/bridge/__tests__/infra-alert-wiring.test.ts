@@ -12,6 +12,7 @@ import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	ALERT_EVENT_TYPES,
+	type AlertAttemptOptions,
 	type AlertEventType,
 	type AlertPayload,
 	type AlertResult,
@@ -722,5 +723,54 @@ describe("FLY-927 Task 2.3: owner enrichment (🎫 context before the sink)", ()
 					!post.content.includes("ESCALATED"),
 			),
 		).toBe(true);
+	});
+
+	it("threads fenced replay options and receipts across production routing", async () => {
+		const attempts: Array<AlertAttemptOptions | undefined> = [];
+		const receipts: Array<{ eventId: string; outcome: string }> = [];
+		const raw = {
+			alert: vi.fn(async (_payload, attempt?: AlertAttemptOptions) => {
+				attempts.push(attempt);
+				return { sent: true } as AlertResult;
+			}),
+		};
+		const queued = {
+			alert: vi.fn(async (): Promise<AlertResult> => ({ queued: true })),
+		};
+		const sink = buildInfraAlertRouting({
+			store,
+			projects,
+			rawSink: raw,
+			ticketSink: queued,
+			leadInboxSink: queued,
+			leadRecipientState: () => "alive",
+			founderUserId: "123456789012345678",
+			routingEnabled: () => true,
+			ticketsEnabled: () => false,
+			recordDeliveryReceipt: (eventId, outcome) =>
+				receipts.push({ eventId, outcome }),
+		});
+		const replay = { replayAfterAmbiguousAttempt: true };
+		const escalation = {
+			...payload("workflow_engine_escalation"),
+			eventId: "e-replayed-land-alert",
+		};
+
+		await sink.alert(escalation, replay);
+		expect(attempts).toEqual([replay]);
+		expect(receipts).toContainEqual({
+			eventId: escalation.eventId,
+			outcome: "sent",
+		});
+
+		const ticket = {
+			...payload("zombie_session_backlog"),
+			eventId: "e-durable-ticket",
+		};
+		await sink.alert(ticket, replay);
+		expect(receipts).toContainEqual({
+			eventId: ticket.eventId,
+			outcome: "queued_durable",
+		});
 	});
 });

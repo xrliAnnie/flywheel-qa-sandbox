@@ -117,21 +117,26 @@ async function fixture(verdicts: Array<"alive" | "dead" | "unknown">) {
 			identity: Record<string, unknown>,
 			facts: Record<string, unknown>,
 		) => {
-			const body = facts.bodyObservation as ReturnType<typeof observation>;
+			const body = facts.bodyObservation as
+				| ReturnType<typeof observation>
+				| undefined;
 			return {
 				...identity,
 				version: 2 as const,
-				observedAt: body.observedAt,
-				expiresAt: body.expiresAt,
+				observedAt: body?.observedAt ?? new Date(now).toISOString(),
+				expiresAt: body?.expiresAt ?? new Date(now + 60_000).toISOString(),
 				observations: {},
-				negativeReasons: body.verdict === "dead" ? [`body:${body.reason}`] : [],
-				liveVetoes: body.verdict === "alive" ? [`body:${body.reason}`] : [],
+				negativeReasons:
+					!body || body.verdict === "dead"
+						? [body ? `body:${body.reason}` : "legacy:close_runner"]
+						: [],
+				liveVetoes: body?.verdict === "alive" ? [`body:${body.reason}`] : [],
 				unknownReasons:
-					body.verdict === "unknown" ? [`body:${body.reason}`] : [],
+					body?.verdict === "unknown" ? [`body:${body.reason}`] : [],
 				commIdentityRevision: "c".repeat(64),
-				bodyObservation: body,
+				...(body ? { bodyObservation: body } : {}),
 				verdict:
-					body.verdict === "dead"
+					!body || body.verdict === "dead"
 						? ("gone" as const)
 						: body.verdict === "alive"
 							? ("alive" as const)
@@ -182,6 +187,28 @@ async function fixture(verdicts: Array<"alive" | "dead" | "unknown">) {
 }
 
 describe("FLY-2778 shared BodyObservation closeout seam", () => {
+	it.each([
+		["closed", { closed: true }],
+		["already gone", { closed: false, alreadyGone: true }],
+	] as const)(
+		"keeps legacy %s closeout authoritative when no provider is loaded",
+		async (_name, result) => {
+			const f = await fixture([]);
+			delete f.deps.bodyObserver;
+			f.closeRunnerFn.mockResolvedValue({
+				...result,
+				commDbFinalized: false,
+				retiredGateCount: 0,
+			});
+
+			const report = await closeoutIssue(f.deps, f.input);
+
+			expect(report.outcome).toBe("complete");
+			expect(report.nodes[0]).toMatchObject({ confirmedGone: true });
+			expect(f.closeRunnerFn).toHaveBeenCalledOnce();
+		},
+	);
+
 	it("accepts a current never-started closure without entering the signal path", async () => {
 		const f = await fixture([]);
 		vi.spyOn(f.store, "getWorkflowExecutionBinding").mockReturnValue({

@@ -15,17 +15,18 @@ describe("FLY-2778 execution body observer production fallback", () => {
 		).toBe(false);
 	});
 
-	it("always injects the fail-closed observer into lifecycle closeout", () => {
+	it("keeps the legacy lifecycle path active until the shared provider loads", () => {
 		const plugin = readFileSync(
 			new URL("../plugin.ts", import.meta.url),
 			"utf8",
 		);
 		expect(plugin).toContain(
-			"let executionBodyObserver: ExecutionBodyObserver =\n\t\tFAIL_CLOSED_EXECUTION_BODY_OBSERVER;",
+			"let executionBodyObserver: ExecutionBodyObserver | undefined;",
 		);
-		expect(plugin).toContain("bodyObserver: executionBodyObserver,");
-		expect(plugin).not.toContain(
+		expect(plugin).toContain(
 			"...(executionBodyObserver ? { bodyObserver: executionBodyObserver } : {}),",
 		);
+		expect(plugin).toContain("execution body provider unavailable");
+		expect(plugin).toContain("execution body provider failed to load");
 	});
 });

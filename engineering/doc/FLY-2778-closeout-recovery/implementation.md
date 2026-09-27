@@ -5,7 +5,7 @@ Issue: FLY-2778 (https://linear.app/geoforge3d/issue/FLY-2778/收尾清理失效
 
 ## 当前依赖边界
 
-- 本轮审计时 `origin/main` 为 `570fdb56d`。FLY-2919 尚未合入；远端头 `da14f1f89` 的进度仍明确写着 B11 及后续范围、最终审查/PR 未完成。因此本单不把整条 WIP 分支当作已发布的共同生命 provider，也不复制第二套死亡判定；provider 缺席时 A/C 均保持 unknown 拒删。
+- 本轮审计时 `origin/main` 为 `570fdb56d`。FLY-2919 尚未合入；远端头 `da14f1f89` 的进度仍明确写着 B11 及后续范围、最终审查/PR 未完成。因此本单不把整条 WIP 分支当作已发布的共同生命 provider，也不复制第二套死亡判定。provider 缺席时 stock cleanup 保持 unknown 拒删；正常 land closeout 继续既有路径，避免把所有 ship 收尾永久锁死。provider 一旦可用，normal land 与 stock cleanup 才共同消费其 observation。
 - FLY-2754 远端头 `3f89b8a76` 尚未完成实现审查。本单只按已批准计划逐项重取其受信来源凭证设计，并重新做当前头红绿；不整分支 cherry-pick。
 
 ## C1：stock cleanup 的零信号删除原语
@@ -72,7 +72,7 @@ Issue: FLY-2778 (https://linear.app/geoforge3d/issue/FLY-2778/收尾清理失效
 
 FLY-2754 的 auth pre-spawn 只提供“可能从未启动”的来源，不能自行证明体已死。本批新增 source-only assessor：live receipt 必须来自 Bridge 内部原子终态链；legacy 只接受冻结 cutoff 前、同一 `DirectEventSink` 终态与 teardown 锚定的两种 auth 失败族。普通 `Child stdio timeout`、cutoff 后事件、项目/activation/revision 漂移、活动 launch owner 或 receipt 身份不一致全部拒绝。dry-run 只报 candidate；正常路径才按 snapshot digest CAS 落 `legacy_compat` receipt。assessor 不调用 pgrep/tmux/window，也不产生独立死亡 verdict。
 
-共同 provider 契约新增 typed `NeverStartedBodyObservation`，把来源、owner/spawn/restart、daemon ledger shape、socket、spawn lock、TTL 与 digest 放在同一 observation。legacy 必须是 `no_group + prelaunch_home_only`；live 只允许 `missing` 或同一 prelaunch shape。正常 land closeout 与 stock preview 都只在常规 `observe()` 没有 process binding 时查询这个可选分支，并在 effect 前调用 provider 的同步 current check。两条消费者都核对 execution/project/issue/run/activation/lifecycle/adapter；来源、归属、socket、锁任一缺失都保持 unknown，不归档、不删 worktree。FLY-2919 factory 尚未合入时可选分支不存在，生产保持 fail-closed。
+共同 provider 契约新增 typed `NeverStartedBodyObservation`，把来源、owner/spawn/restart、daemon ledger shape、socket、spawn lock、TTL 与 digest 放在同一 observation。legacy 必须是 `no_group + prelaunch_home_only`；live 只允许 `missing` 或同一 prelaunch shape。provider 存在时，正常 land closeout 与 stock preview 都只在常规 `observe()` 没有 process binding 时查询这个可选分支，并在 effect 前调用 provider 的同步 current check。两条消费者都核对 execution/project/issue/run/activation/lifecycle/adapter；来源、归属、socket、锁任一缺失都保持 unknown，不归档、不删 worktree。FLY-2919 factory 尚未合入时 stock cleanup 仍 fail-closed，正常 land closeout 则继续既有收尾判定。
 
 ### 红绿与验证
 
@@ -87,6 +87,28 @@ FLY-2754 的 auth pre-spawn 只提供“可能从未启动”的来源，不能�
 
 1. stock execute 的冻结目标 digest 原先没有绑定 execution run、lifecycle revision 与 adapter；新 activation/revision 即使目录、branch、generation 未变也可能沿用旧批准。现把三项加入稳定 target identity，revision 漂移在 remove 前返回 `target_identity_changed`。
 2. stock effect 的唯一索引原先覆盖 `rejected`，一次临时 unknown/CWD veto 会让该目录永久 `effect_already_claimed`。索引现只占用 `claimed|applied`；原 request 仍精确回放 rejected 审计，新 dry-run/new request 可重试。`claimed` 崩溃恢复与 `applied` 永久防重语义不变。
-3. FLY-2919 provider 模块尚不存在时，stock preview 会 unknown，但 normal land closeout 因未注入 observer 会回落旧死亡判定。生产现始终注入 fail-closed observer；provider 加载失败只返回 unknown，绝不重新启用 window/heartbeat/旧 probe 作为第二死亡真源。
+3. 早期 WIP 曾在 FLY-2919 provider 模块不存在时给 normal land closeout 注入 fail-closed observer。代码复审确认这会阻塞所有 ship 收尾；下节 R1 修订已经撤销该接线。stock preview 仍因缺少 observation 拒删，而 normal land closeout 在 provider 尚未发布时继续既有路径。
 
 对应 RED→GREEN：`stock-worktree-cleanup-executor.test.ts` 7/7、`StateStore.lifecycle-apply-claims.test.ts` 5/5、`execution-body-observer-wiring.test.ts` 2/2；共同 closeout 回归 `lifecycle-closeout-body-observation.test.ts` 9/9。受限 changed-file `vitest related` 只选中这 4 个具体文件，23/23。当前代码提交 `c6f686aef` 上 `pnpm --filter "flywheel-teamlead..." build`、TeamLead typecheck、仓库 lint（5184 files，25 个既有 warning、0 error）与 `git diff --check` 均通过。
+
+## 代码复审 R1 修订
+
+首轮代码复审在 `48bcb715e` 上给出 1 个 HIGH 与 6 个 MEDIUM/LOW 可修正项。本轮按原设计边界逐项收敛：
+
+1. FLY-2919 provider 缺席时不再向 normal land closeout 注入永久 unknown；动态 factory 只有在同时提供 `observe` / `isCurrent` 时才启用。精确的模块不存在会告警并保持 legacy land 可用，factory 缺失、契约错误或其它加载异常会显式报错。stock cleanup 因没有 observation 仍拒删。
+2. land 告警第三次 sink 抛错后把 outbox 终结为 `failed`，保留错误细节，不再永久停在 `delivering`。
+3. `replayAfterAmbiguousAttempt` 沿 Hub、infra router、Lead inbox、issue-thread 与 fallback 全链传递；`sent` / `queued_durable` 路由结果写 delivery receipt，duplicate/skipped 不伪造送达。
+4. cleanup apply actor 改为 lease-generation 稳定身份；连接 peer pin 仍在每次 effect 前由 `assertCurrent()` 校验。不同连接可恢复同一 generation 的 claim，新 generation 不能继承。
+5. stock execute 在 repo lock 内只重取获批的单个 canonical path，不再为每个目标重复做全仓 preview。
+6. provider 加载的非预期错误不再静默吞掉。
+7. stock effect key 加入 generation 与 leaf inode identity；同一路径后续真实 generation 可以重新认领，既有 generation 仍保持幂等。
+
+复审 LOW 项“body 已死后是否继续清理 tmux UI residue”未在本单改动：当前没有不向 pane 进程发信号的安全 UI-only 原语；扩展 `closeRunner` 会改变 teardown 语义。现有规则仍是先完成 CWD/进程 census，再决定是否发信号，stock cleanup 全程使用 no-signal 删除路径；该 LOW 项留给后续治理，不冒充已修复。
+
+### R1 红绿与最终本地证据
+
+- 每项先补失败用例：provider 缺席的 normal land、第三次告警异常、route replay/receipt、跨连接 cleanup actor、target-only revalidation 与同路径新 generation 均先在旧实现上转红，再做最小修复。
+- 直接变更测试 9 files / 118 tests 全绿；literal 命中的 `LeadAlertNotifier.test.ts` 69/69、`codex-quota-outbox.test.ts` 12/12、`lead-inbox-runtime.test.ts` 49/49，以及结构命中的 `fly2278-retirement.test.ts` 1/1、`workflow-dispatch-seams.structure.test.ts` 8/8、`workflow-gate-fence-wiring.test.ts` 2/2、`workflow-pr-binding-wiring.test.ts` 2/2、`automated-message-inventory.test.ts` 2/2 均逐文件通过。
+- mandatory changed-TypeScript `vitest related ... --run` 因 `plugin.ts` 是组合根扩展为 141 files：139 files / 1846 tests pass、1 skipped；`fly2139-query-plans.test.ts` 的生成 evidence digest 过期，按同一 capture set 更新后单文件 2/2 通过。`lead-activity-service.real-tmux.test.ts` 在 suite 初始化调用 `ps -A` 时被 runner sandbox 稳定拒绝为 `EPERM`，测试正文未执行（1 skipped）；独立 shell `ps -A -o ppid=,ucomm=` 同样返回 operation not permitted，记录为本地环境限制，不作为绿色证据。
+- 测试发现中的直接行为/结构消费者全部保留并逐文件运行。仅命中通用 `plugin.ts`、`packages/teamlead/src/bridge` 父目录、历史 test-report/fixture 或静态 test-consumer inventory 的宽泛结果被排除：这些匹配不导入或断言本轮变更契约，逐个纳入会把目录文字匹配伪装成包级 suite；required `related` 仍覆盖实际 TypeScript 依赖闭包。没有新增 `scripts/__tests__/*.test.sh`。
+- `pnpm lint` exit 0（5184 files，25 个既有 warning、0 error）；`pnpm --filter "flywheel-teamlead..." build` 与 TeamLead typecheck 通过；`git diff --check` 通过。

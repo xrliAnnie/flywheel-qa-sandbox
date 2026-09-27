@@ -283,6 +283,7 @@ export function createStockCleanupPreviewer(deps: StockCleanupPreviewerDeps): {
 		projectName: string;
 		actor: string;
 		authorityCheck: () => void | Promise<void>;
+		canonicalPath?: string;
 	}): Promise<ReturnType<typeof buildStockCleanupPreview>>;
 } {
 	const gitExec = deps.gitExec ?? defaultGitExec;
@@ -353,6 +354,9 @@ export function createStockCleanupPreviewer(deps: StockCleanupPreviewerDeps): {
 					// The pure classifier treats absent identities as an identity conflict.
 				}
 				if (canonicalPath === canonicalProjectRoot) continue;
+				if (input.canonicalPath && canonicalPath !== input.canonicalPath) {
+					continue;
+				}
 
 				const targetBindings = bindings.filter(
 					(binding) => binding.canonicalPath === canonicalPath,

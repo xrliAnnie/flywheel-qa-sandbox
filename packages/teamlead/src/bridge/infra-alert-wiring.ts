@@ -6,7 +6,11 @@
  * against a real (in-memory) StateStore.
  */
 
-import type { AlertPayload, AlertResult } from "../LeadAlertNotifier.js";
+import type {
+	AlertAttemptOptions,
+	AlertPayload,
+	AlertResult,
+} from "../LeadAlertNotifier.js";
 import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import { correlationKeyFor } from "./AlertChannelHub.js";
@@ -63,6 +67,18 @@ export interface InfraAlertRoutingDeps {
 	sleepFn?: (ms: number) => Promise<void>;
 	logger?: (msg: string) => void;
 	now?: () => number;
+	recordDeliveryReceipt?: (
+		eventId: string,
+		outcome: "sent" | "queued_durable",
+	) => void;
+}
+
+function callAlertSink(
+	sink: AlertSinkLike,
+	payload: AlertPayload,
+	attempt?: AlertAttemptOptions,
+): Promise<AlertResult> {
+	return attempt ? sink.alert(payload, attempt) : sink.alert(payload);
 }
 
 /**
@@ -120,6 +136,7 @@ export function buildInfraAlertRouting(
 	const deliverToIssueThread = async (
 		payload: AlertPayload,
 		thread: BoundIssueThread,
+		attempt?: AlertAttemptOptions,
 	): Promise<AlertResult> => {
 		const session =
 			deps.store.getSession(thread.executionId) ??
@@ -131,7 +148,7 @@ export function buildInfraAlertRouting(
 					parseLabels(session.issue_labels),
 				).lead
 			: configuredLead(payload);
-		if (!lead) return deps.ticketSink.alert(payload);
+		if (!lead) return callAlertSink(deps.ticketSink, payload, attempt);
 		const sev =
 			payload.severity === "severe"
 				? "🚨"
@@ -157,7 +174,7 @@ export function buildInfraAlertRouting(
 				},
 				botToken: lead.botToken ?? deps.globalBotToken,
 				onUndeliverable: async () => {
-					fallback = await deps.ticketSink.alert(payload);
+					fallback = await callAlertSink(deps.ticketSink, payload, attempt);
 				},
 			},
 			{
@@ -174,7 +191,7 @@ export function buildInfraAlertRouting(
 		rawSink: deps.rawSink,
 		ticketSink: deps.ticketSink,
 		leadInboxSink: {
-			alert: async (payload) => {
+			alert: async (payload, attempt) => {
 				let state: "alive" | "terminal" | "missing" | "unknown" = "unknown";
 				try {
 					state = deps.leadRecipientState(payload.leadId);
@@ -187,9 +204,9 @@ export function buildInfraAlertRouting(
 					deps.logger?.(
 						`owning-Lead ${payload.leadId} is ${state}; preserving ${payload.eventId} in Claw mailbox`,
 					);
-					return deps.ticketSink.alert(payload);
+					return callAlertSink(deps.ticketSink, payload, attempt);
 				}
-				return deps.leadInboxSink.alert(payload);
+				return callAlertSink(deps.leadInboxSink, payload, attempt);
 			},
 		},
 		founderUserId: deps.founderUserId,
@@ -271,7 +288,7 @@ export function buildInfraAlertRouting(
 	};
 
 	return {
-		alert: (payload) => {
+		alert: async (payload, attempt) => {
 			if (!alertsEnabled()) {
 				deps.store.recordAlertSystemSuppression({
 					leadId: payload.leadId,
@@ -280,9 +297,15 @@ export function buildInfraAlertRouting(
 					payload: JSON.stringify(payload),
 					sessionKey: payload.sessionKey,
 				});
-				return Promise.resolve({ skipped: "disabled" });
+				return { skipped: "disabled" };
 			}
-			return routedSink.alert(enrich(payload));
+			const result = await callAlertSink(routedSink, enrich(payload), attempt);
+			if (result.sent) {
+				deps.recordDeliveryReceipt?.(payload.eventId, "sent");
+			} else if (result.queued) {
+				deps.recordDeliveryReceipt?.(payload.eventId, "queued_durable");
+			}
+			return result;
 		},
 	};
 }

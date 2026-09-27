@@ -183,6 +183,7 @@ import {
 	RegistryHeartbeatNotifier,
 } from "../HeartbeatService.js";
 import {
+	type AlertAttemptOptions,
 	type AlertPayload,
 	type AlertResult,
 	FLEET_ALERT_PROJECT,
@@ -506,10 +507,7 @@ import {
 	yieldToEventLoop,
 } from "./event-loop-yield.js";
 import { createEventRouter } from "./event-route.js";
-import {
-	type ExecutionBodyObserver,
-	FAIL_CLOSED_EXECUTION_BODY_OBSERVER,
-} from "./execution-body-observation-contract.js";
+import type { ExecutionBodyObserver } from "./execution-body-observation-contract.js";
 import { withExecutionMutationLease } from "./execution-mutation-lease.js";
 import {
 	checkPrMergeViaGh,
@@ -8007,11 +8005,10 @@ export async function startBridge(
 			),
 		);
 	};
-	// FLY-2778 is merge-ordered after FLY-2919. Load only that branch's shared
-	// provider factory when present; an absent/failed provider leaves both A and C
-	// fail-closed and never activates a local window/pgrep fallback.
-	let executionBodyObserver: ExecutionBodyObserver =
-		FAIL_CLOSED_EXECUTION_BODY_OBSERVER;
+	// FLY-2778 is merge-ordered after FLY-2919. Until the shared provider is
+	// present, leave the existing land closeout path active; stock cleanup still
+	// refuses bound targets because its preview has no body observations.
+	let executionBodyObserver: ExecutionBodyObserver | undefined;
 	try {
 		const bodyModulePath = "./execution-body-liveness.js";
 		const bodyModule = (await import(bodyModulePath)) as {
@@ -8019,10 +8016,10 @@ export async function startBridge(
 				stateStore: StateStore,
 				flags: unknown,
 				options: { isRecoveryActive(executionId: string): boolean },
-			) => ExecutionBodyObserver;
+			) => unknown;
 		};
 		if (typeof bodyModule.createStoredExecutionBodyObserver === "function") {
-			executionBodyObserver = bodyModule.createStoredExecutionBodyObserver(
+			const candidate = bodyModule.createStoredExecutionBodyObserver(
 				store,
 				flagStore,
 				{
@@ -8030,17 +8027,48 @@ export async function startBridge(
 						store.getCodexRecoveryEpisode(executionId)?.episodeState === "open",
 				},
 			);
+			if (
+				candidate &&
+				typeof candidate === "object" &&
+				typeof (candidate as ExecutionBodyObserver).observe === "function" &&
+				typeof (candidate as ExecutionBodyObserver).isCurrent === "function"
+			) {
+				executionBodyObserver = candidate as ExecutionBodyObserver;
+			} else {
+				console.error(
+					"[Bridge] execution body provider failed to load: invalid observer contract",
+				);
+			}
+		} else {
+			console.error(
+				"[Bridge] execution body provider failed to load: factory missing",
+			);
 		}
-	} catch {
-		// Expected before FLY-2919 lands; destructive consumers remain disabled by
-		// unknown observations and the durable held-alert path reports exhaustion.
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error);
+		const code =
+			error && typeof error === "object" && "code" in error
+				? String((error as { code?: unknown }).code ?? "")
+				: "";
+		if (
+			code === "ERR_MODULE_NOT_FOUND" &&
+			detail.includes("execution-body-liveness")
+		) {
+			console.warn(
+				"[Bridge] execution body provider unavailable; keeping legacy land closeout active",
+			);
+		} else {
+			console.error(
+				`[Bridge] execution body provider failed to load: ${detail}`,
+			);
+		}
 	}
 	const lifecycleExecutorDeps = {
 		store,
 		transitionOpts,
 		withIssueMutex: issueMutex,
 		withRepoLock: repoMutationLock.withRepoLock,
-		bodyObserver: executionBodyObserver,
+		...(executionBodyObserver ? { bodyObserver: executionBodyObserver } : {}),
 		openPrDisposal: makeCanceledPrDisposal({
 			store,
 			resolveProjectRoot: resolveProjectRootByName,
@@ -16068,8 +16096,14 @@ export async function startBridge(
 
 	// FLY-368: a single alert sink shared by every Lead alert producer. When the Hub is on it
 	// adds threading + auto-repair; otherwise it's the raw notifier (byte-compat).
-	const alertSink: { alert: (p: AlertPayload) => Promise<AlertResult> } =
-		alertHub ? { alert: (p) => alertHub.handle(p) } : leadAlertNotifier;
+	const alertSink: {
+		alert: (
+			p: AlertPayload,
+			attempt?: AlertAttemptOptions,
+		) => Promise<AlertResult>;
+	} = alertHub
+		? { alert: (p, attempt) => alertHub.handle(p, attempt) }
+		: leadAlertNotifier;
 
 	// FLY-927 / FLY-2228: wrap the raw sink with responder routing. Issue
 	// progress goes to its bound thread; review failures go to the owning Lead's
@@ -16102,12 +16136,21 @@ export async function startBridge(
 		leadRecipientState: (leadId) =>
 			leadInboxRuntime.getLeadRecipientState(leadId),
 		founderUserId: config.discordOwnerUserId,
+		recordDeliveryReceipt: (eventId, outcome) =>
+			store.recordAlertDeliveryReceipt(
+				eventId,
+				outcome,
+				new Date().toISOString(),
+			),
 	});
 	const routedAlertSink: {
-		alert: (p: AlertPayload) => Promise<AlertResult>;
+		alert: (
+			p: AlertPayload,
+			attempt?: AlertAttemptOptions,
+		) => Promise<AlertResult>;
 	} = {
-		alert: async (payload) => {
-			const delivered = await routedAlertSinkCore.alert(payload);
+		alert: async (payload, attempt) => {
+			const delivered = await routedAlertSinkCore.alert(payload, attempt);
 			if (shouldWakeQuotaDaemon(payload)) wakeQuotaDaemon();
 			return delivered;
 		},

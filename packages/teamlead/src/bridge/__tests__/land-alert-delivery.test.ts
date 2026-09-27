@@ -296,4 +296,59 @@ describe("legacy land held alert delivery", () => {
 		});
 		store.close();
 	});
+
+	it("settles a third thrown delivery attempt as failed", async () => {
+		const store = await StateStore.create(":memory:");
+		const operation = store.ensureLandOperation({
+			issueId: "FLY-2778",
+			projectName: "flywheel",
+			prNumber: 2778,
+			approvedHead: HEAD,
+			now: "2026-08-18T04:00:00.000Z",
+		});
+		const claim = store.claimLandOperation({
+			operationId: operation.operation_id,
+			ownerId: "land-worker",
+			now: "2026-08-18T04:00:01.000Z",
+			leaseExpiresAt: "2026-08-18T04:10:01.000Z",
+		})!;
+		store.releaseLandOperationWithRetryAccounting({
+			operationId: operation.operation_id,
+			ownerId: claim.ownerId,
+			generation: claim.generation,
+			class: "terminal",
+			reason: "retry_exhausted:issue_closeout_incomplete",
+			now: "2026-08-18T04:00:02.000Z",
+		});
+		let nowMs = Date.parse("2026-08-18T04:00:03.000Z");
+		const alert = vi.fn(async () => {
+			throw new Error("transport threw");
+		});
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: {} as never,
+			alertSink: { current: { alert } },
+			now: () => new Date(nowMs),
+			resolveRunAlertIdentity: (projectName) => ({
+				leadId: "flywheel-eng-lead",
+				projectName,
+				leadResolution: "resolved",
+			}),
+		});
+
+		for (let attempt = 1; attempt <= 3; attempt += 1) {
+			await expect(dispatcher.reconcileWorkflowEngineAlerts(1)).resolves.toBe(
+				1,
+			);
+			if (attempt < 3) nowMs += 30 * 60_000 + 1;
+		}
+
+		expect(alert).toHaveBeenCalledTimes(3);
+		expect(store.listLandAlertOutbox()[0]).toMatchObject({
+			state: "failed",
+			attempt: 3,
+			last_error: "transport threw",
+		});
+		store.close();
+	});
 });

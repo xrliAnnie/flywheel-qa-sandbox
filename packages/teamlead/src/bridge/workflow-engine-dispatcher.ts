@@ -2245,9 +2245,19 @@ export class WorkflowEngineDispatcher {
 					now: this.now().toISOString(),
 				});
 			} catch (error) {
-				this.log(
-					`land alert delivery ambiguous for ${eventId}: ${error instanceof Error ? error.message : String(error)}`,
-				);
+				const detail = error instanceof Error ? error.message : String(error);
+				this.log(`land alert delivery ambiguous for ${eventId}: ${detail}`);
+				if (claim.attempt >= 3) {
+					this.options.store.finishLandAlertDelivery({
+						operationId: claim.operationId,
+						resumeGeneration: claim.resumeGeneration,
+						ownerId: claim.ownerId,
+						generation: claim.generation,
+						outcome: "failed",
+						error: detail,
+						now: this.now().toISOString(),
+					});
+				}
 			}
 			finalized += 1;
 		}
