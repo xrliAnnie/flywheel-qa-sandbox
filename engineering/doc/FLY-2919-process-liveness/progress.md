@@ -2,27 +2,30 @@
 issue: FLY-2919
 phase: implement
 phaseCursor: 0/6
-updated: 2026-09-27T03:05:48.955Z
-nextStep: "B8 code153320e79: independent 5s runtime wired to sole sampler cache;
-  Heartbeat/C2/terminal-sweep consume original cached observations; separate
-  max2 lifecycle jobs; owner inventory retains until close+drain AND
-  same-generation body closed/standby. Lease contention retries25/75ms outside
-  lease. Causal inventory RED/37GREEN, real fresh-heartbeat double-ledger
-  single-sample convergence; 14 explicit files273pass. Related9files219 coverage
-  across initial8pass plus failed owner setup-timeout slice37pass at unchanged
-  timeout; failure logs retained. Final affected-deps build,
-  teamlead/voice-codex typechecks, lint pass. Evidence and10source hashes
-  archived. NEXT DIRECT B9 dispatcher hot-tick reader with current-generation
-  immutable death duty + exact projected receipt: death CAS invalidates original
-  short-lived observation. B9 discovery and draft proof tests prepared in
-  /tmp/fly2919-b9-*; not applied. Full A-F/nine tickets remain, including other
-  window consumers/server-loss/crash-reaper, activation bridging, legacy,
-  ordinary/rework settlement, A9 routes original15s timeout. No final
-  review/PR/CI/QA/handoff."
+updated: 2026-09-27T03:23:00.342Z
+nextStep: "B8 pushed153320e79/8b63b9bac, verified14files273pass+related9files219
+  coverage with owner-timeout retry, builds/types/lint green. B9 WIP
+  uncommitted: durable projected body-death reader checks exact
+  owner/generation/spawn/binding/terminal lifecycle/activation/ack; current
+  workflow slot intentionally checked at replacement CAS not physical fact
+  reader, so predecessor death remains readable after successor starts. Added
+  synchronous cached/durable reader, plugin wiring and dispatcher removes
+  terminal-first/default-window fallback. Registered-owner replacement now
+  requires exact proof + synchronous managed-flag/currentness callback within
+  transaction. Causal dispatcher5RED, CAS1RED actually returnedok:true when
+  callbackfalse; C2 proof/CAS final20GREEN, reader5GREEN. Initial dispatcher
+  green attempt hit missing test activation fixture and2original5s timeouts
+  under hostload256; fixture corrected without production change or timeout
+  changes. Active full dispatcher concrete-file verification session79987, log
+  /tmp/fly2919-b9-dispatcher-full.log; inspect before starting another test. B9
+  inventory archive14retained files exists, full
+  selected/related/build/typechecks/lint still pending. Full A-F/nine
+  tickets/legacy/direct consumers/ordinary-rework settlement/A9 routes timeout
+  remain; no final review/PR/CI/QA/handoff."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2919 progress
 **phase**: implement (0/6)
-**next**: B8 code153320e79: independent 5s runtime wired to sole sampler cache; Heartbeat/C2/terminal-sweep consume original cached observations; separate max2 lifecycle jobs; owner inventory retains until close+drain AND same-generation body closed/standby. Lease contention retries25/75ms outside lease. Causal inventory RED/37GREEN, real fresh-heartbeat double-ledger single-sample convergence; 14 explicit files273pass. Related9files219 coverage across initial8pass plus failed owner setup-timeout slice37pass at unchanged timeout; failure logs retained. Final affected-deps build, teamlead/voice-codex typechecks, lint pass. Evidence and10source hashes archived. NEXT DIRECT B9 dispatcher hot-tick reader with current-generation immutable death duty + exact projected receipt: death CAS invalidates original short-lived observation. B9 discovery and draft proof tests prepared in /tmp/fly2919-b9-*; not applied. Full A-F/nine tickets remain, including other window consumers/server-loss/crash-reaper, activation bridging, legacy, ordinary/rework settlement, A9 routes original15s timeout. No final review/PR/CI/QA/handoff.
+**next**: B8 pushed153320e79/8b63b9bac, verified14files273pass+related9files219 coverage with owner-timeout retry, builds/types/lint green. B9 WIP uncommitted: durable projected body-death reader checks exact owner/generation/spawn/binding/terminal lifecycle/activation/ack; current workflow slot intentionally checked at replacement CAS not physical fact reader, so predecessor death remains readable after successor starts. Added synchronous cached/durable reader, plugin wiring and dispatcher removes terminal-first/default-window fallback. Registered-owner replacement now requires exact proof + synchronous managed-flag/currentness callback within transaction. Causal dispatcher5RED, CAS1RED actually returnedok:true when callbackfalse; C2 proof/CAS final20GREEN, reader5GREEN. Initial dispatcher green attempt hit missing test activation fixture and2original5s timeouts under hostload256; fixture corrected without production change or timeout changes. Active full dispatcher concrete-file verification session79987, log /tmp/fly2919-b9-dispatcher-full.log; inspect before starting another test. B9 inventory archive14retained files exists, full selected/related/build/typechecks/lint still pending. Full A-F/nine tickets/legacy/direct consumers/ordinary-rework settlement/A9 routes timeout remain; no final review/PR/CI/QA/handoff.
