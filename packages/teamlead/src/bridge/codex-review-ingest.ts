@@ -1,6 +1,8 @@
 import { adapterTypeToFamily } from "flywheel-config";
 import type { StateStore } from "../StateStore.js";
+import { resolveRequiredReviewModel } from "../workflow-review-routing.js";
 import { isReviewableRole } from "./codex-gate.js";
+import { reviewModelMatches } from "./review-round-ingest.js";
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
 
@@ -42,6 +44,33 @@ export class CodexReviewIngest {
 				`[codex-review-ingest] ignored unknown/non-reviewable execution ${targetExec}`,
 			);
 			return;
+		}
+		// FLY-2891: an execution with a Codex reviewer route must carry the
+		// verified reviewer model, and it must match; otherwise the approval is
+		// not recorded and the existing hold re-queues the review (a gate that
+		// predates FLY-2891 sends no model). Unrouted runs keep legacy behavior.
+		let required: ReturnType<typeof resolveRequiredReviewModel>;
+		try {
+			required = resolveRequiredReviewModel(
+				this.deps.store,
+				targetExec,
+				"code",
+			);
+		} catch (error) {
+			this.deps.logger?.warn?.(
+				`[codex-review-ingest] not recording ${targetExec} @ ${sha.slice(0, 8)}: required reviewer model unresolved (${error instanceof Error ? error.message : String(error)})`,
+			);
+			return;
+		}
+		if (required) {
+			const model = asString(payload.reviewerModel);
+			const effort = asString(payload.reviewerEffort);
+			if (reviewModelMatches({ model, effort }, required) !== true) {
+				this.deps.logger?.warn?.(
+					`[codex-review-ingest] not recording ${targetExec} @ ${sha.slice(0, 8)}: ${model ? `review ran ${model}/${effort ?? "?"}` : "no reviewer model (gate predates FLY-2891)"}, route requires ${required.reviewerModel}/${required.reviewerEffort}; hold stays`,
+				);
+				return;
+			}
 		}
 		this.deps.store.recordCodexReviewApproved({
 			executionId: targetExec,

@@ -1,0 +1,24 @@
+erDiagram
+  LEAD_INTERRUPTS ||--o{ LEAD_INTERRUPT_AUDIT : "每一步留一条"
+  LEAD_INTERRUPTS ||--|| MAILBOX_LETTER : "对应一封加急信"
+  LEAD_INTERRUPTS {
+    string interrupt_id "打断编号 li_..."
+    string initiator_ref "哪个语音会话发起"
+    string founder_message_id "引用你的哪句话"
+    string target_lead_id "打断谁"
+    string body "问题正文"
+    string state "requested queued delivered replied failed"
+    string disposition "steered queued_turn nudged mailbox_only"
+    string reply_text "Lead 的回复"
+  }
+  LEAD_INTERRUPT_AUDIT {
+    int id "只增不改"
+    string event "requested nudged steered replied ..."
+    string body_digest "正文指纹,不存原文"
+    string at "时间"
+  }
+  MAILBOX_LETTER {
+    string delivery_id "lead-interrupt:li_..."
+    int priority "0 = 加急"
+    string type "lead_interrupt"
+  }

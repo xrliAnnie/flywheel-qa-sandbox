@@ -26,6 +26,7 @@ import {
 	wireDemuxedProcess,
 } from "../codex-lead-tui-runtime.js";
 import { DaemonConnectionSupervisor } from "../DaemonConnectionSupervisor.js";
+import { LeadTurnStateTracker } from "../LeadTurnStateTracker.js";
 
 function outboundPreflightHarness(
 	options: {
@@ -613,6 +614,147 @@ describe("wireDemuxedProcess", () => {
 			turnId: "founder-turn",
 		});
 		expect(usage).toEqual([params]);
+	});
+});
+
+describe("wireDemuxedProcess — turn-state tracker (FLY-2882 design-correction C1)", () => {
+	const THREAD = "019eaf5d-a5b7-7a72-b73f-cd1063892aa1";
+	const SEC = 1_790_366_370;
+	const at = (id: string) => ({
+		threadId: THREAD,
+		turn: { id, status: "inProgress", startedAt: SEC },
+	});
+	const done = (id: string) => ({
+		threadId: THREAD,
+		turn: { id, status: "completed" },
+	});
+	function setup(heldCap?: number) {
+		const f = fakeProc();
+		const tracker = new LeadTurnStateTracker({
+			binding: { findEntryIdsByTurnId: () => [], listMemberIds: () => [] },
+			now: () => (SEC + 30) * 1000,
+		});
+		tracker.bindThread(THREAD);
+		expect(tracker.applySeed(tracker.beginSeed(), null)).toBe(true);
+		const wiring = wireDemuxedProcess({
+			proc: f.proc,
+			onFounderTurnCompleted: () => {},
+			turnState: tracker,
+			...(heldCap === undefined ? {} : { demuxOptions: { heldCap } }),
+		});
+		return { f, tracker, ...wiring };
+	}
+	/** CodexLeadProcess emits BOTH for every turn/completed notification. */
+	const fireCompleted = (f: ReturnType<typeof fakeProc>, id: string) => {
+		f.fire("notification", "turn/completed", done(id));
+		f.fire("turnCompleted", done(id));
+	};
+	const turns = (t: LeadTurnStateTracker) =>
+		t.snapshot().activeTurns.map((turn) => [turn.turnId, turn.origin]);
+
+	it("labels a founder turn founder_terminal and clears it on completion", () => {
+		const { f, tracker } = setup();
+		f.fire("notification", "turn/started", at("founder"));
+		expect(turns(tracker)).toEqual([["founder", "founder_terminal"]]);
+		fireCompleted(f, "founder");
+		expect(tracker.snapshot()).toMatchObject({ seeded: true, activeTurns: [] });
+	});
+
+	it("is busy as soon as the raw start arrives, even while turn/start is still pending", async () => {
+		const { f, tracker, facade } = setup();
+		let respond!: (id: string) => void;
+		f.setStartTurn(
+			() =>
+				new Promise((resolve) => {
+					respond = resolve;
+				}),
+		);
+		const own = facade.startTurn({ threadId: THREAD, input: [] });
+		await Promise.resolve();
+		f.fire("notification", "turn/started", at("t1")); // demux HOLDS this
+		expect(turns(tracker)).toEqual([["t1", "unknown"]]);
+		respond("t1");
+		await own;
+		expect(turns(tracker)).toEqual([["t1", "message"]]);
+		fireCompleted(f, "t1");
+		expect(turns(tracker)).toEqual([]);
+	});
+
+	it("a completion is counted once although the process emits it twice", () => {
+		const { f, tracker } = setup();
+		f.fire("notification", "turn/started", at("founder"));
+		const rev = tracker.beginSeed();
+		fireCompleted(f, "founder");
+		expect(tracker.beginSeed()).toBe(rev + 1);
+	});
+
+	it("still clears a timed-out (tombstoned) turn when its late completion arrives", async () => {
+		vi.useFakeTimers();
+		try {
+			const { f, tracker, facade, awaitTurnCompletion } = setup();
+			const own = facade.startTurn({ threadId: THREAD, input: [] });
+			f.fire("notification", "turn/started", at("t1"));
+			await own;
+			const waiter = awaitTurnCompletion("t1", 1_000);
+			await vi.advanceTimersByTimeAsync(1_000);
+			await expect(waiter).resolves.toBe("timeout");
+			expect(turns(tracker)).toEqual([["t1", "message"]]);
+			fireCompleted(f, "t1");
+			expect(turns(tracker)).toEqual([]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("stays idle when a turn completes before turn/start returns (replayed start is stale)", async () => {
+		const { f, tracker, facade } = setup();
+		f.setStartTurn(async () => {
+			f.fire("notification", "turn/started", at("t1"));
+			fireCompleted(f, "t1");
+			return "t1";
+		});
+		await facade.startTurn({ threadId: THREAD, input: [] });
+		expect(tracker.snapshot()).toMatchObject({ seeded: true, activeTurns: [] });
+	});
+
+	it("an aborted dispatch leaves the held turn busy with origin unknown (not founder)", async () => {
+		const { f, tracker, facade } = setup();
+		f.setStartTurn(async () => {
+			f.fire("notification", "turn/started", at("maybe-ours"));
+			throw new Error("rpc timed out");
+		});
+		await expect(
+			facade.startTurn({ threadId: THREAD, input: [] }),
+		).rejects.toThrow();
+		expect(turns(tracker)).toEqual([["maybe-ours", "unknown"]]);
+	});
+
+	it("an overflow-poisoned claim keeps the turn busy with origin unknown, and its later completion clears it", async () => {
+		const { f, tracker, facade } = setup(1);
+		f.setStartTurn(async () => {
+			f.fire("notification", "turn/started", at("t1"));
+			f.fire("notification", "item/agentMessage/delta", { turnId: "t1" });
+			return "t1";
+		});
+		await expect(
+			facade.startTurn({ threadId: THREAD, input: [] }),
+		).rejects.toThrow(/poisoned/);
+		expect(turns(tracker)).toEqual([["t1", "unknown"]]);
+		fireCompleted(f, "t1"); // tombstoned in the demux — still reaches the tracker
+		expect(turns(tracker)).toEqual([]);
+	});
+
+	it("a malformed completion on the bound thread voids trust instead of reporting idle", () => {
+		const { f, tracker } = setup();
+		f.fire("notification", "turn/started", at("founder"));
+		f.fire("notification", "turn/completed", {
+			threadId: THREAD,
+			turn: { id: "founder", status: "inProgress" },
+		});
+		expect(tracker.snapshot()).toMatchObject({
+			seeded: false,
+			activeTurns: [],
+		});
 	});
 });
 

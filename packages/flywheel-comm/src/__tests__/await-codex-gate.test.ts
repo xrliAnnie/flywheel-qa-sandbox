@@ -28,18 +28,89 @@ function gitInitHead(dir: string): string {
 		.toLowerCase();
 }
 
+const THREAD = "01a0daf6-1f50-7522-b7dc-f0b3812a5dab";
+const TURN = "01a0daf6-2634-7a23-a8e9-c1669023f458";
+
+/** FLY-2891: a Codex rollout proving `TURN` ran `model`/`effort`. */
+function writeRollout(
+	codexHome: string,
+	model = "gpt-6-astra",
+	effort = "xhigh",
+): void {
+	const dir = join(codexHome, "sessions", "2026", "09", "25");
+	mkdirSync(dir, { recursive: true });
+	const lines = [
+		{
+			timestamp: "2026-09-25T10:00:00.000Z",
+			type: "session_meta",
+			payload: { id: THREAD },
+		},
+		{
+			timestamp: "2026-09-25T10:00:01.000Z",
+			type: "event_msg",
+			payload: { type: "task_started", turn_id: TURN },
+		},
+		{
+			timestamp: "2026-09-25T10:00:02.000Z",
+			type: "turn_context",
+			payload: { turn_id: TURN, model, effort },
+		},
+		{
+			timestamp: "2026-09-25T10:05:00.000Z",
+			type: "event_msg",
+			payload: { type: "task_complete", turn_id: TURN },
+		},
+	];
+	writeFileSync(
+		join(dir, `rollout-2026-09-25T10-00-00-${THREAD}.jsonl`),
+		`${lines.map((line) => JSON.stringify(line)).join("\n")}\n`,
+	);
+}
+
+/** FLY-2891 result fields binding the APPROVED round to its Codex turn. */
+function modelFields(model = "gpt-6-astra", effort = "xhigh") {
+	return {
+		reviewerModel: model,
+		reviewerEffort: effort,
+		codexThreadId: THREAD,
+		codexTurnId: TURN,
+		finalRound: 2,
+		rounds: 2,
+	};
+}
+
+function allowed(extra: Record<string, unknown> = {}): Response {
+	return new Response(
+		JSON.stringify({ allowed: true, reviewerModelChecked: true, ...extra }),
+		{ status: 200, headers: { "Content-Type": "application/json" } },
+	);
+}
+
 describe("awaitCodexGate", () => {
 	let tmpRoot: string;
 	let codexDir: string;
 	let exitSpy: ReturnType<typeof vi.spyOn>;
 	let errorSpy: ReturnType<typeof vi.spyOn>;
 	let logSpy: ReturnType<typeof vi.spyOn>;
-	const execId = "exec-await-1";
+	let codexHome: string;
+	let stateDir: string;
+	const execId = "11111111-2222-4333-8444-555555555555";
+	/** Env for a Bridge-validated gate run (isolated codex home + spool). */
+	const bridgeEnv = (extra: Record<string, string> = {}) => ({
+		FLYWHEEL_BRIDGE_URL: "http://127.0.0.1:9999/",
+		FLYWHEEL_INGEST_TOKEN: "ingest-token",
+		CODEX_HOME: codexHome,
+		FLYWHEEL_STATE_DIR: stateDir,
+		...extra,
+	});
 
 	beforeEach(() => {
 		tmpRoot = join(tmpdir(), `await-gate-${Date.now()}-${Math.random()}`);
 		codexDir = join(tmpRoot, ".flywheel", "runs", execId, "codex");
 		mkdirSync(codexDir, { recursive: true });
+		codexHome = join(tmpRoot, "codex-home");
+		stateDir = join(tmpRoot, "state-root");
+		writeRollout(codexHome);
 
 		exitSpy = vi.spyOn(process, "exit").mockImplementation((code?: number) => {
 			throw new Error(`process.exit(${code})`);
@@ -54,12 +125,10 @@ describe("awaitCodexGate", () => {
 	});
 
 	it("exits 0 on a valid APPROVED design-review.json", async () => {
-		const fetchImpl = vi.fn(
-			async () =>
-				new Response(JSON.stringify({ allowed: true }), {
-					status: 200,
-					headers: { "Content-Type": "application/json" },
-				}),
+		const fetchImpl = vi.fn(async (url: string | URL | Request) =>
+			String(url).endsWith("/review-rounds")
+				? new Response(JSON.stringify({ recorded: true }), { status: 200 })
+				: allowed(),
 		);
 		writeFileSync(
 			join(codexDir, "design-review.json"),
@@ -69,10 +138,9 @@ describe("awaitCodexGate", () => {
 				status: "APPROVED",
 				reviewedTarget: "doc/engineer/plan/draft/foo.md",
 				timestamp: new Date().toISOString(),
-				rounds: 2,
-				codexThreadId: "thread-abc",
 				requestId: "request-abc",
 				reviewedPlanBlobSha: "a".repeat(40),
+				...modelFields(),
 			}),
 		);
 
@@ -83,10 +151,7 @@ describe("awaitCodexGate", () => {
 				worktreePath: tmpRoot,
 				timeoutMs: 5_000,
 				pollIntervalMs: 50,
-				env: {
-					FLYWHEEL_BRIDGE_URL: "http://127.0.0.1:9999/",
-					FLYWHEEL_INGEST_TOKEN: "ingest-token",
-				},
+				env: bridgeEnv(),
 				fetchImpl,
 			}),
 		).rejects.toThrow("process.exit(0)");
@@ -94,7 +159,7 @@ describe("awaitCodexGate", () => {
 		expect(logSpy).toHaveBeenCalledWith(
 			expect.stringContaining("design review APPROVED"),
 		);
-		expect(fetchImpl).toHaveBeenCalledOnce();
+		expect(fetchImpl).toHaveBeenCalledTimes(2);
 		const [url, init] = fetchImpl.mock.calls[0]!;
 		expect(url).toBe("http://127.0.0.1:9999/design-review-validation");
 		expect(JSON.parse(String(init?.body))).toEqual({
@@ -104,6 +169,10 @@ describe("awaitCodexGate", () => {
 			reviewedTarget: "doc/engineer/plan/draft/foo.md",
 			requestId: "request-abc",
 			reviewedPlanBlobSha: "a".repeat(40),
+			reviewerModel: "gpt-6-astra",
+			reviewerEffort: "xhigh",
+			codexThreadId: THREAD,
+			codexTurnId: TURN,
 		});
 	});
 
@@ -143,6 +212,7 @@ describe("awaitCodexGate", () => {
 				requestId: "request-1",
 				reviewedPlanBlobSha: "b".repeat(40),
 				timestamp: new Date().toISOString(),
+				...modelFields(),
 			}),
 		);
 		await expect(
@@ -151,7 +221,7 @@ describe("awaitCodexGate", () => {
 				execId,
 				worktreePath: tmpRoot,
 				timeoutMs: 1_000,
-				env: {},
+				env: { CODEX_HOME: codexHome, FLYWHEEL_STATE_DIR: stateDir },
 			}),
 		).rejects.toThrow("process.exit(1)");
 		expect(errorSpy).toHaveBeenCalledWith(
@@ -165,10 +235,7 @@ describe("awaitCodexGate", () => {
 				execId,
 				worktreePath: tmpRoot,
 				timeoutMs: 1_000,
-				env: {
-					FLYWHEEL_BRIDGE_URL: "http://bridge.invalid",
-					FLYWHEEL_INGEST_TOKEN: "token",
-				},
+				env: bridgeEnv({ FLYWHEEL_BRIDGE_URL: "http://bridge.invalid" }),
 				fetchImpl: vi.fn(async () => {
 					throw new Error("connection refused");
 				}),
@@ -190,6 +257,7 @@ describe("awaitCodexGate", () => {
 				requestId: "request-1",
 				reviewedPlanBlobSha: "c".repeat(40),
 				timestamp: new Date().toISOString(),
+				...modelFields(),
 			}),
 		);
 		await expect(
@@ -198,11 +266,10 @@ describe("awaitCodexGate", () => {
 				execId,
 				worktreePath: tmpRoot,
 				timeoutMs: 1_000,
-				env: {
+				env: bridgeEnv({
 					FLYWHEEL_BRIDGE_URL: "http://bridge.invalid",
-					FLYWHEEL_INGEST_TOKEN: "token",
 					FLYWHEEL_INSTRUCTION_PATH_CHECK: "0",
-				},
+				}),
 				fetchImpl: vi.fn(
 					async () =>
 						new Response(
@@ -402,6 +469,7 @@ describe("awaitCodexGate", () => {
 	it("polls until result appears, then exits 0 (code review, reviewedHeadSha === HEAD)", async () => {
 		// FLY-827: a code review must bind to the reviewed commit == current HEAD.
 		const head = gitInitHead(tmpRoot);
+		writeRollout(codexHome, "gpt-5.6-sol", "xhigh");
 		// Spawn a "writer" that drops the result file after ~150ms.
 		const writer = setTimeout(() => {
 			writeFileSync(
@@ -413,9 +481,15 @@ describe("awaitCodexGate", () => {
 					reviewedTarget: "https://github.com/org/repo/pull/123",
 					reviewedHeadSha: head,
 					timestamp: new Date().toISOString(),
+					...modelFields("gpt-5.6-sol"),
 				}),
 			);
 		}, 150);
+		const fetchImpl = vi.fn(async (url: string | URL | Request) =>
+			String(url).endsWith("/code-review-validation")
+				? allowed()
+				: new Response(JSON.stringify({ recorded: true }), { status: 200 }),
+		);
 
 		try {
 			await expect(
@@ -425,6 +499,8 @@ describe("awaitCodexGate", () => {
 					worktreePath: tmpRoot,
 					timeoutMs: 5_000,
 					pollIntervalMs: 50,
+					env: bridgeEnv(),
+					fetchImpl,
 				}),
 			).rejects.toThrow("process.exit(0)");
 

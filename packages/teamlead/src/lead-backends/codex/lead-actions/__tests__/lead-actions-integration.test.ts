@@ -122,6 +122,8 @@ describe("lead-actions MCP real-spawn integration", () => {
 				"summary_presentation",
 				"ack_batch",
 				"discord_read_attachment",
+				"lead_interrupt_pending",
+				"lead_interrupt_reply",
 			]);
 		},
 		20_000,
@@ -141,6 +143,8 @@ describe("lead-actions MCP real-spawn integration", () => {
 				"summary_presentation",
 				"ack_batch",
 				"discord_read_attachment",
+				"lead_interrupt_pending",
+				"lead_interrupt_reply",
 			]);
 		},
 		20_000,
@@ -160,6 +164,8 @@ describe("lead-actions MCP real-spawn integration", () => {
 					"summary_presentation",
 					"ack_batch",
 					"discord_read_attachment",
+					"lead_interrupt_pending",
+					"lead_interrupt_reply",
 				]);
 			}
 		},

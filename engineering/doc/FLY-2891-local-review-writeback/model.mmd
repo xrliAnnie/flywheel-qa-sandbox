@@ -1,0 +1,33 @@
+erDiagram
+    REVIEW_ROUND_RECORD {
+        text execution_id PK "哪个设计/实现体"
+        text review_type PK "design 或 code"
+        text codex_turn_id PK "Codex 的哪一个回合"
+        int round "线程内第几轮"
+        text verdict "APPROVED / CHANGES_REQUESTED"
+        int findings_high "各级别问题条数"
+        text observed_model "会话记录里的真实模型"
+        text observed_effort "真实思考档位"
+        text required_model "路由要求的模型"
+        int model_match "对上了吗"
+    }
+    REVIEW_GATE_ACCEPTANCE {
+        text codex_turn_id PK "被接受的那个回合"
+        int final_round "它在线程内是第几轮"
+        int rounds_total "总共几轮（用来对账）"
+        text observed_model "门核实过的真实模型"
+    }
+    CODEX_REVIEW_JOB {
+        text request_id PK "Astra 线已有：每轮一行"
+        text reviewer_verdict "原始结论"
+        text completed_at "新增：评完时间"
+    }
+    SCORECARD_REPORT {
+        text line "Claude 线 / Astra 线"
+        real first_pass_rate "首轮通过率"
+        real rounds_mean "平均通过轮数"
+        text coverage "数据全不全"
+    }
+    REVIEW_ROUND_RECORD }o--|| REVIEW_GATE_ACCEPTANCE : "按总轮数对账"
+    REVIEW_ROUND_RECORD }o--|| SCORECARD_REPORT : "Claude 线"
+    CODEX_REVIEW_JOB }o--|| SCORECARD_REPORT : "Astra 线"

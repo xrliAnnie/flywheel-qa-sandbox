@@ -29,6 +29,9 @@ export const LEAD_ACTIONS_TOOLS: readonly string[] = [
 	"ack_batch",
 	"directory",
 	"discord_read_attachment",
+	// FLY-2883: controlled interrupts relayed by the voice agent.
+	"lead_interrupt_pending",
+	"lead_interrupt_reply",
 ];
 
 /** Keys that must NEVER appear as literal MCP-server env values. */

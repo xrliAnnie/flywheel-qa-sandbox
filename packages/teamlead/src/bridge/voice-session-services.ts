@@ -18,6 +18,12 @@ import { readFounderAttentionFacts } from "./founder-attention-facts.js";
 import { createLeadCapabilityVoiceRouter } from "./lead-capability-voice.js";
 import type { LeadBootstrap } from "./lead-runtime.js";
 import { filterSessionsByLead } from "./lead-scope.js";
+import {
+	createCommDbFounderQuoteVerifier,
+	createLeadInterruptVoiceHandlers,
+	createProjectLeadTargetResolver,
+	type LeadInterruptMailbox,
+} from "./lead-interrupt-routes.js";
 import type { BridgeConfig } from "./types.js";
 import type { VoiceHandoffService } from "./voice-handoff.js";
 import { createVoiceHealthDemandRecorder } from "./voice-health-demand-recorder.js";
@@ -70,6 +76,14 @@ export function createVoiceSessionServices(input: {
 	cwd?: string;
 	fetchImpl?: typeof fetch;
 	probeSelfFilter?: typeof probeVoiceSelfFilter;
+	/** FLY-2883: absent = no controlled-interrupt routes (byte-compatible). */
+	leadInterrupts?: {
+		commDbPathForProject: (projectName: string) => string;
+		mailboxForProject: (
+			projectName: string,
+		) => LeadInterruptMailbox | undefined;
+		nudgeLead: (projectName: string, leadId: string) => void;
+	};
 	voiceHandoffs?: VoiceHandoffService;
 	readFounderAttention?: typeof readFounderAttentionFacts;
 }): {
@@ -635,6 +649,23 @@ export function createVoiceSessionServices(input: {
 				postStatus(session, `📻 有 ${count} 条语音没有送达`),
 			projectSession,
 			validateSession,
+			...(input.leadInterrupts
+				? {
+						leadInterrupts: createLeadInterruptVoiceHandlers({
+							store: input.store,
+							resolveTarget: createProjectLeadTargetResolver(
+								input.projects,
+								env,
+							),
+							verifyFounderQuote: createCommDbFounderQuoteVerifier({
+								commDbPathForProject: input.leadInterrupts.commDbPathForProject,
+								founderUserId: input.config.discordOwnerUserId,
+							}),
+							mailboxForProject: input.leadInterrupts.mailboxForProject,
+							nudgeLead: input.leadInterrupts.nudgeLead,
+						}),
+					}
+				: {}),
 			getSessionContext,
 			getCurrentTellKeys: (session) => {
 				const { project, lead } = resolve(session);

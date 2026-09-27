@@ -1,0 +1,17 @@
+[
+  "packages/config/src/__tests__/feature-flags-registry.test.ts",
+  "packages/teamlead/src/__tests__/lead-token-savings-drift.test.ts",
+  "packages/teamlead/src/__tests__/lead-token-savings-generator-oracle.test.ts",
+  "packages/teamlead/src/__tests__/lead-token-savings-launch.test.ts",
+  "packages/teamlead/src/bridge/__tests__/review-request-coordinator.test.ts",
+  "packages/teamlead/src/bridge/__tests__/claude-review-runner.test.ts",
+  "packages/teamlead/src/__tests__/StateStore.codex-review.test.ts",
+  "packages/teamlead/src/__tests__/StateStore.review-rulings.test.ts",
+  "packages/teamlead/src/__tests__/StateStore.design-review-approval-proof.test.ts",
+  "packages/teamlead/src/__tests__/StateStore.design-review-manifest.test.ts",
+  "packages/teamlead/src/__tests__/StateStore.fly663-migration.test.ts",
+  "packages/teamlead/src/bridge/__tests__/review-round-ingest.test.ts",
+  "packages/teamlead/src/__tests__/StateStore-lead-event-session-key.test.ts",
+  "packages/teamlead/src/bridge/__tests__/fly1560-teardown-guard.test.ts",
+  "packages/teamlead/src/__tests__/workflow-scorecard-review.test.ts"
+]

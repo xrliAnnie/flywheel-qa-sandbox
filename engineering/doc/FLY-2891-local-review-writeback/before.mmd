@@ -1,0 +1,12 @@
+flowchart LR
+  subgraph A["Astra 线（Codex 作者）"]
+    A1["作者写完方案"] --> A2["Bridge 自己拉起评审"]
+    A2 --> A3[("codex_review_job<br/>每轮一行：轮号 / 结论 / 条数")]
+  end
+  subgraph C["Claude 线（Claude 作者）—— 今天"]
+    C1["作者写完方案"] --> C2["本机 codex-companion<br/>默认模型 gpt-5.6-sol"]
+    C2 --> C3["工作目录里的 JSON<br/>只有最后一次 APPROVED"]
+    C3 --> C4{"评审门"}
+    C4 -->|"不看模型，放行"| C5["设计完成"]
+    C3 -. "目录一删就没了" .-> X["报表：拿不到轮数"]
+  end
