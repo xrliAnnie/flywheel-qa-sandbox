@@ -255,6 +255,7 @@ export async function postMergeTmuxCleanup(
 							session,
 							opts.executionId,
 							opts.projectName,
+							{ store },
 						)) === "dead";
 					if (physicalGone) {
 						// The placeholder refusal remains a safety success: an independent

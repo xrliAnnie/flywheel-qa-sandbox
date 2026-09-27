@@ -51138,6 +51138,43 @@ export class StateStore {
 		return { ok: true };
 	}
 
+	/** Durable identity surrounding the two zero-body samples. A pre-adapter
+	 * receipt is the sole exception to an accepted physical-owner death duty. */
+	getPreAdapterQuiescenceSnapshot(
+		executionId: string,
+		projectName: string,
+	): string | undefined {
+		const session = this.getSession(executionId);
+		const receipt = this.getPreAdapterFailureReceipt(executionId);
+		const claim = this.getLaunchClaim(executionId);
+		if (
+			!session ||
+			session.project_name !== projectName ||
+			session.adapter_type !== "codex-tmux" ||
+			(session.status !== "failed" && session.status !== "blocked") ||
+			!receipt ||
+			!PRE_ADAPTER_FAILURE_KINDS.has(receipt.failureKind) ||
+			!receipt.sourceEventId ||
+			!Number.isFinite(Date.parse(receipt.recordedAt)) ||
+			claim?.state !== "closed" ||
+			claim.project !== projectName ||
+			this.executionProcessOwners.get(executionId)
+		)
+			return undefined;
+		return canonicalSubmissionDigest({
+			executionId,
+			projectName,
+			receipt,
+			claim,
+			activations: this.listWorkflowActivationsForActor(executionId)
+				.map((binding) => binding.activation_id).sort(),
+			status: session.status,
+			revision: session.lifecycle_revision,
+			generation:
+				this.getWorkflowExecutionProcessBody(executionId)?.generation ?? 0,
+		});
+	}
+
 	/** Strict proof used only before replacing a fenced needs_lead activation. */
 	private validateNeedsLeadReworkQuiescenceTx(
 		runId: string,
@@ -51149,8 +51186,30 @@ export class StateStore {
 			evidence.map((item) => [item.executionId, item]),
 		);
 		const live = new Set<string>();
+		let deathEnabled = false;
+		try {
+			const row = this.getFlagValueRow("execution_body_death_enabled");
+			deathEnabled = !!row &&
+				getFlagStoreCodec("execution_body_death_enabled")?.parse(row) === true;
+		} catch {
+			/* Unreadable controls cannot authorize replacement. */
+		}
 		for (const executionId of attributed) {
 			const observed = byExecution.get(executionId);
+			const session = this.getSession(executionId);
+			const duty = this.getCurrentProjectedExecutionBodyDeath(executionId);
+			const preAdapter = session &&
+				this.getPreAdapterQuiescenceSnapshot(executionId, session.project_name);
+			if (
+				!deathEnabled ||
+				!observed ||
+				observed.liveness !== "dead" ||
+				(!(duty && duty.obligationId === observed.bodyDeathObligationId) &&
+					!(preAdapter && preAdapter === observed.preAdapterSnapshot))
+			) {
+				live.add(executionId);
+				continue;
+			}
 			const observedMs = observed ? Date.parse(observed.observedAt) : NaN;
 			const ageMs = Date.parse(now) - observedMs;
 			if (
@@ -51162,7 +51221,6 @@ export class StateStore {
 				live.add(executionId);
 				continue;
 			}
-			const session = this.getSession(executionId);
 			if (!session) {
 				if (
 					observed.sessionStatus !== null ||
@@ -89674,6 +89732,8 @@ export interface RunQuiescenceEvidence {
 	liveness: "alive" | "dead" | "unknown";
 	observedAt: string;
 	trustedZombieEventUid?: string;
+	bodyDeathObligationId?: string;
+	preAdapterSnapshot?: string;
 }
 
 export type FounderAuthorEvidence =

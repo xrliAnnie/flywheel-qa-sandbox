@@ -300,6 +300,7 @@ describe("postMergeTmuxCleanup", () => {
 			expect.objectContaining({ execution_id: "exec-1" }),
 			"exec-1",
 			"geoforge3d",
+			{ store },
 		);
 		expect(mockFinalizeCommDbSession).toHaveBeenCalledWith(
 			"exec-1",
@@ -385,6 +386,7 @@ describe("postMergeTmuxCleanup", () => {
 			expect.objectContaining({ adapter_type: "codex-tmux" }),
 			"exec-1",
 			"geoforge3d",
+			{ store },
 		);
 		expect(mockFinalizeCommDbSession).not.toHaveBeenCalled();
 	});

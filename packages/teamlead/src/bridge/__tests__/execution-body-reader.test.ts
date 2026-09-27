@@ -1,7 +1,10 @@
 import type { BodyObservation } from "flywheel-claude-runner";
 import { describe, expect, it, vi } from "vitest";
 import type { BodyDeathObligation } from "../execution-body-convergence.js";
-import { createExecutionBodyReader } from "../execution-body-reader.js";
+import {
+	createExecutionBodyReader,
+	readStoredExecutionBodyLiveness,
+} from "../execution-body-reader.js";
 
 function harness() {
 	let enabled = true;
@@ -80,5 +83,39 @@ describe("FLY-2919 synchronous body reader", () => {
 			throw new Error("store unavailable");
 		});
 		expect(h.reader.read("exec", "fixture")).toBe("unknown");
+	});
+});
+
+describe("FLY-2919 non-runtime stored body reader", () => {
+	it("accepts only settled current death in its project under the managed switch", () => {
+		const proof = vi.fn(() => ({ obligationId: "body_death:exec:1" }));
+		const flag = vi.fn(() => ({ hasOverride: true, raw: "1" }));
+		const store = {
+			getSession: () => ({ project_name: "fixture", status: "failed" }),
+			getCurrentProjectedExecutionBodyDeath: proof,
+			getFlagValueRow: flag,
+		} as never;
+		expect(readStoredExecutionBodyLiveness(store, "exec", "fixture")).toBe(
+			"dead",
+		);
+		expect(flag).toHaveBeenCalledWith("execution_body_death_enabled");
+		flag.mockReturnValue({ hasOverride: true, raw: "0" });
+		expect(readStoredExecutionBodyLiveness(store, "exec", "fixture")).toBe(
+			"unknown",
+		);
+		flag.mockReturnValue({ hasOverride: true, raw: "1" });
+		expect(readStoredExecutionBodyLiveness(store, "exec", "foreign")).toBe(
+			"unknown",
+		);
+		proof.mockReturnValue(undefined as never);
+		expect(readStoredExecutionBodyLiveness(store, "exec", "fixture")).toBe(
+			"unknown",
+		);
+		flag.mockImplementation(() => {
+			throw new Error("unreadable flag");
+		});
+		expect(readStoredExecutionBodyLiveness(store, "exec", "fixture")).toBe(
+			"unknown",
+		);
 	});
 });

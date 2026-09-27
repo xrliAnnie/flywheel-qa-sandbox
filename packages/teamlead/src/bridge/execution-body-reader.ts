@@ -1,5 +1,6 @@
 import type { BodyObservation } from "flywheel-claude-runner";
 import type { StateStore } from "../StateStore.js";
+import { storeExecutionBodyDeathEnabled } from "./flag-store-runtime.js";
 
 export type ExecutionBodyLivenessReader = (
 	executionId: string,
@@ -46,4 +47,18 @@ export function createExecutionBodyReader(options: BodyReaderOptions) {
 			}
 		},
 	};
+}
+
+/** Non-runtime callers can read already settled physical death from the same
+ * ledger. Live/uncached observations require the runtime's shared reader. */
+export function readStoredExecutionBodyLiveness(
+	store: StateStore,
+	executionId: string,
+	projectName: string,
+): ReturnType<ExecutionBodyLivenessReader> {
+	return createExecutionBodyReader({
+		store,
+		sampler: () => undefined,
+		isEnabled: () => storeExecutionBodyDeathEnabled({ mode: "ready", store }),
+	}).read(executionId, projectName);
 }

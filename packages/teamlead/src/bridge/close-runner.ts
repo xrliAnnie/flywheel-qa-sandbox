@@ -318,6 +318,7 @@ export async function cleanupWorkflowResumeAttempt(
 		store.getSession(opts.executionId),
 		opts.executionId,
 		opts.projectName,
+		{ store },
 	);
 	return liveness === "dead"
 		? result
@@ -373,6 +374,7 @@ export async function retireWorkflowProcessBody(
 		store.getSession(opts.executionId),
 		opts.executionId,
 		opts.projectName,
+		{ store },
 	);
 	return liveness === "dead"
 		? { ...result, physicalGone: true }
@@ -1086,6 +1088,7 @@ async function closeRunnerInner(
 					session,
 					opts.executionId,
 					opts.projectName,
+					{ store },
 				)
 			: undefined;
 	const runnerLiveness =

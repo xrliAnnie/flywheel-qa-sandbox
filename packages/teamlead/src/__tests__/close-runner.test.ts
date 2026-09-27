@@ -697,6 +697,7 @@ describe("closeRunner", () => {
 			expect.objectContaining({ execution_id: "exec-1" }),
 			"exec-1",
 			"flywheel",
+			{ store },
 		);
 		expect(mockFinalizeCommDbTerminalSession).toHaveBeenCalledWith(
 			"exec-1",
@@ -738,6 +739,7 @@ describe("closeRunner", () => {
 			}),
 			fixture.opts.executionId,
 			"flywheel",
+			{ store },
 		);
 		expect(mockFinalizeCommDbTerminalSession).toHaveBeenCalledWith(
 			fixture.opts.executionId,
@@ -820,6 +822,7 @@ describe("closeRunner", () => {
 			expect.objectContaining({ execution_id: "exec-1" }),
 			"exec-1",
 			"flywheel",
+			{ store },
 		);
 		expect(mockFinalizeCommDbSession).not.toHaveBeenCalled();
 		expect(mockFinalizeCommDbSessionCommunications).not.toHaveBeenCalled();
@@ -851,6 +854,7 @@ describe("closeRunner", () => {
 			expect.objectContaining({ adapter_type: "codex-tmux" }),
 			"exec-1",
 			"flywheel",
+			{ store },
 		);
 		expect(mockFinalizeCommDbSession).not.toHaveBeenCalled();
 		expect(mockFinalizeCommDbSessionCommunications).not.toHaveBeenCalled();

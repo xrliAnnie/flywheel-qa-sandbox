@@ -1,129 +1,94 @@
 import {
 	type CodexDaemonEvidence,
 	probeCodexDaemonEvidence,
-	probeCodexDaemonLiveness,
 } from "flywheel-claude-runner";
-import { PRE_ADAPTER_FAILURE_KINDS } from "flywheel-core";
 import type {
 	RunQuiescenceEvidence,
 	Session,
 	StateStore,
 } from "../StateStore.js";
-import { CRASH_PRESERVE_STATES } from "./close-runner-states.js";
+import {
+	type ExecutionBodyLivenessReader,
+	readStoredExecutionBodyLiveness,
+} from "./execution-body-reader.js";
+import { storeExecutionBodyDeathEnabled } from "./flag-store-runtime.js";
 import {
 	type GeneralizedLaunchLiveness,
-	hasHostProcessByExecutionId,
-	probeGeneralizedLaunchLiveness,
+	probeHostProcessByExecutionId,
 } from "./generalized-launch-recovery.js";
-import { discoverTmuxTargetByExecutionId } from "./tmux-lookup.js";
 
 export type RunExecutionLivenessProbe = (
 	executionId: string,
 	projectName: string,
 ) => Promise<GeneralizedLaunchLiveness>;
 
-export interface ExecutionStoreFacts {
-	failureKind?: string;
-	launchClaimState?: string;
-}
-
 export interface RunExecutionLivenessDeps {
+	store?: StateStore;
+	readBodyLiveness?: ExecutionBodyLivenessReader;
+	/** Internal testing/embedding seam; production reads the managed store flag. */
+	isEnabled?(): boolean;
 	probeCodexDaemonEvidence?: typeof probeCodexDaemonEvidence;
-	/** Bridge-local pre-adapter receipt only; never session_events payloads. */
-	storeFacts?: (executionId: string) => ExecutionStoreFacts;
-	probeCodexDaemon?: typeof probeCodexDaemonLiveness;
-	probeGeneric?: typeof probeGeneralizedLaunchLiveness;
+	probeHostProcess?: typeof probeHostProcessByExecutionId;
 }
 
-/** FLY-2498: independent of the registered window name. All three absence
- * proofs are required; a discovered marker (even on a dead pane) is uncertainty.
- * Do not reuse generic recovery's dead-pane shortcut: it skips host evidence. */
+/** Compatibility name for execution-wide physical evidence, independent of any
+ * presentation target. Both callers use the same reader and no-body exception. */
 export async function probeExecutionAbsenceBeyondTarget(
 	session: Pick<Session, "adapter_type"> | undefined,
 	executionId: string,
-	_projectName: string,
-	deps: {
-		probeCodexDaemon?: typeof probeCodexDaemonLiveness;
-		discover?: typeof discoverTmuxTargetByExecutionId;
-		hasHostProcess?: typeof hasHostProcessByExecutionId;
-	} = {},
+	projectName: string,
+	deps: RunExecutionLivenessDeps = {},
 ): Promise<GeneralizedLaunchLiveness> {
-	try {
-		if (session?.adapter_type === "codex-tmux") {
-			const daemon = await (deps.probeCodexDaemon ?? probeCodexDaemonLiveness)(
-				executionId,
-			);
-			if (daemon !== "absent") return daemon;
-		}
-		const marker = await (deps.discover ?? discoverTmuxTargetByExecutionId)(
-			executionId,
-		);
-		if (marker.kind !== "missing") return "unknown";
-		const hasProcess = await (
-			deps.hasHostProcess ?? hasHostProcessByExecutionId
-		)(executionId);
-		return hasProcess ? "unknown" : "dead";
-	} catch {
-		return "unknown";
-	}
+	return probeRunExecutionLiveness(session, executionId, projectName, deps);
 }
 
-/** Production policy for the strict quiescence gate. Codex owns a detached
- * daemon outside tmux, so generic target/argv evidence cannot prove it dead.
- * Socket+group absence, or a closed pre-adapter failure receipt with no daemon
- * evidence, permits the existing tmux/discovery/host absence checks. */
+/** Ordinary death comes only from the shared body reader. A trusted pre-adapter
+ * receipt is a separate never-spawned exception: two zero daemon samples, host
+ * absence and the same closed launch claim must survive every async boundary. */
 export async function probeRunExecutionLiveness(
-	session:
+	_session:
 		| (Pick<Session, "adapter_type"> & Partial<Pick<Session, "status">>)
 		| undefined,
 	executionId: string,
 	projectName: string,
 	deps: RunExecutionLivenessDeps = {},
 ): Promise<GeneralizedLaunchLiveness> {
-	const generic = () =>
-		(deps.probeGeneric ?? probeGeneralizedLaunchLiveness)(
+	try {
+		const enabled = () =>
+			deps.isEnabled
+				? deps.isEnabled() === true
+				: deps.store
+					? storeExecutionBodyDeathEnabled({ mode: "ready", store: deps.store })
+					: deps.readBodyLiveness !== undefined;
+		if (!enabled()) return "unknown";
+		const body = deps.readBodyLiveness
+			? deps.readBodyLiveness(executionId, projectName)
+			: deps.store
+				? readStoredExecutionBodyLiveness(deps.store, executionId, projectName)
+				: "unknown";
+		if (body === "alive" || body === "dead") return body;
+		const store = deps.store;
+		if (!store) return "unknown";
+		const snapshot = () =>
+			store.getPreAdapterQuiescenceSnapshot(executionId, projectName);
+		const initial = snapshot();
+		if (!initial) return "unknown";
+		const current = () => enabled() && snapshot() === initial;
+		const zero = (e: CodexDaemonEvidence) =>
+			e.liveness === "unknown" &&
+			e.ledger === "missing" &&
+			!e.socketLive &&
+			e.spawnLock === "absent";
+		const probe = deps.probeCodexDaemonEvidence ?? probeCodexDaemonEvidence;
+		if (!zero(await probe(executionId)) || !current()) return "unknown";
+		const host = await (deps.probeHostProcess ?? probeHostProcessByExecutionId)(
 			executionId,
-			projectName,
-			{ allowMissingTargetHostAbsence: true },
 		);
-	if (session?.adapter_type !== "codex-tmux") return generic();
-
-	// Existing callers and legacy injection retain the liveness-only probe.
-	const probeEvidence = async (): Promise<CodexDaemonEvidence> => {
-		if (deps.probeCodexDaemonEvidence)
-			return deps.probeCodexDaemonEvidence(executionId);
-		if (deps.probeCodexDaemon || !deps.storeFacts) {
-			return {
-				liveness: await (deps.probeCodexDaemon ?? probeCodexDaemonLiveness)(
-					executionId,
-				),
-				ledger: "valid_group",
-				socketLive: false,
-				spawnLock: "unreadable",
-			};
-		}
-		return probeCodexDaemonEvidence(executionId);
-	};
-	const first = await probeEvidence();
-	if (first.liveness === "alive") return "alive";
-	if (first.liveness === "absent") return generic();
-	if (!deps.storeFacts || !CRASH_PRESERVE_STATES.has(session.status ?? ""))
+		if (host.verdict !== "absent" || !current()) return "unknown";
+		return zero(await probe(executionId)) && current() ? "dead" : "unknown";
+	} catch {
 		return "unknown";
-	const facts = deps.storeFacts(executionId);
-	if (
-		!PRE_ADAPTER_FAILURE_KINDS.has(facts.failureKind ?? "") ||
-		facts.launchClaimState !== "closed"
-	)
-		return "unknown";
-	const isZeroEvidence = (e: CodexDaemonEvidence) =>
-		e.liveness === "unknown" &&
-		e.ledger === "missing" &&
-		!e.socketLive &&
-		e.spawnLock === "absent";
-	if (!isZeroEvidence(first)) return "unknown";
-	const result = await generic();
-	if (result !== "dead") return result;
-	return isZeroEvidence(await probeEvidence()) ? "dead" : "unknown";
+	}
 }
 
 /**
@@ -142,15 +107,38 @@ export async function collectRunQuiescenceEvidence(
 	const evidence: RunQuiescenceEvidence[] = [];
 	for (const executionId of store.listRunAttributedExecutions(runId)) {
 		const session = store.getSession(executionId);
+		const bodyDeathObligationId =
+			store.getCurrentProjectedExecutionBodyDeath(executionId)?.obligationId;
+		const preAdapterSnapshot = store.getPreAdapterQuiescenceSnapshot(
+			executionId,
+			run.project_name,
+		);
 		const liveness = probe
 			? await probe(executionId, run.project_name)
-			: await probeRunExecutionLiveness(session, executionId, run.project_name);
+			: await probeRunExecutionLiveness(
+					session,
+					executionId,
+					run.project_name,
+					{ store },
+				);
 		evidence.push({
 			executionId,
 			sessionStatus: session?.status ?? null,
 			lifecycleRevision: session?.lifecycle_revision ?? null,
 			liveness,
 			observedAt: now().toISOString(),
+			...(liveness === "dead" &&
+			bodyDeathObligationId &&
+			store.getCurrentProjectedExecutionBodyDeath(executionId)?.obligationId ===
+				bodyDeathObligationId
+				? { bodyDeathObligationId }
+				: {}),
+			...(liveness === "dead" &&
+			preAdapterSnapshot &&
+			store.getPreAdapterQuiescenceSnapshot(executionId, run.project_name) ===
+				preAdapterSnapshot
+				? { preAdapterSnapshot }
+				: {}),
 			...(session?.last_error?.startsWith("zombie: ")
 				? { trustedZombieEventUid: `zombie-${executionId}` }
 				: {}),

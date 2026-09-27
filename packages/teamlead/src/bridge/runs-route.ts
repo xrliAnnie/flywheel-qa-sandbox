@@ -106,7 +106,10 @@ import {
 	type WorkKindConfigResult,
 } from "./pipeline-config-source.js";
 import type { IStartDispatcher, StartResult } from "./retry-dispatcher.js";
-import { collectRunQuiescenceEvidence } from "./run-quiescence.js";
+import {
+	collectRunQuiescenceEvidence,
+	probeRunExecutionLiveness,
+} from "./run-quiescence.js";
 import type { RunnerAdmissionController } from "./runner-admission.js";
 import { waitForSession } from "./session-wait.js";
 import { waitForWorkflowLaunchOutcome } from "./workflow-launch-outcome.js";
@@ -386,6 +389,11 @@ export function createRunsRouter(
 	__testOnly: { ghostGuardSessionWaitMs?: number } = {},
 ): Router {
 	const router = Router();
+	const probeRunBody = (id: string, project: string) =>
+		probeRunExecutionLiveness(store.getSession(id), id, project, {
+			store,
+			readBodyLiveness: auth?.readBodyLiveness,
+		});
 	const notifyEpicChanged = (
 		projectName: string,
 		reason: "run_started" | "run_resumed",
@@ -595,7 +603,7 @@ export function createRunsRouter(
 					: await collectRunQuiescenceEvidence(
 							store,
 							runId,
-							auth?.probeRunLiveness,
+							auth?.probeRunLiveness ?? probeRunBody,
 						);
 				const now = new Date().toISOString();
 				const run = store.getWorkflowRun(runId)!;
@@ -790,7 +798,11 @@ export function createRunsRouter(
 			return;
 		}
 		try {
-			const evidence = await collectRunQuiescenceEvidence(store, runId);
+			const evidence = await collectRunQuiescenceEvidence(
+				store,
+				runId,
+				probeRunBody,
+			);
 			const result = store.getWorkflowRunDiagnostic({
 				runId,
 				evidence,
@@ -1298,7 +1310,11 @@ export function createRunsRouter(
 				});
 				return;
 			}
-			const evidence = await collectRunQuiescenceEvidence(store, runId);
+			const evidence = await collectRunQuiescenceEvidence(
+				store,
+				runId,
+				probeRunBody,
+			);
 			const result = store.openOperatorRework({
 				runId,
 				targetNodeId: targetNodeId.trim(),

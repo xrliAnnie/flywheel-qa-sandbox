@@ -230,6 +230,7 @@ export function createCodexQuotaRunRecovery(
 			store.getSession(executionId),
 			executionId,
 			projectName,
+			{ store },
 		);
 	};
 	const post: CodexRunRecoveryPorts["post"] = async (path, body) => {

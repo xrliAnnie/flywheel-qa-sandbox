@@ -15,6 +15,7 @@ const teardown = vi.hoisted(() => ({
 	cmux: vi.fn(async () => {}),
 	discover: vi.fn(),
 	host: vi.fn(),
+	body: vi.fn(),
 }));
 vi.mock("../run-quiescence.js", async (original) => {
 	const actual = await original<typeof import("../run-quiescence.js")>();
@@ -26,9 +27,7 @@ vi.mock("../run-quiescence.js", async (original) => {
 			project: string,
 		) =>
 			actual.probeExecutionAbsenceBeyondTarget(session, executionId, project, {
-				probeCodexDaemon: async () => "absent",
-				discover: teardown.discover,
-				hasHostProcess: teardown.host,
+				readBodyLiveness: teardown.body,
 			}),
 	};
 });
@@ -82,6 +81,7 @@ describe("FLY-2498 real close-tmux route", () => {
 		teardown.kill.mockReset().mockResolvedValue({ killed: true });
 		teardown.discover.mockReset().mockResolvedValue({ kind: "missing" });
 		teardown.host.mockReset().mockResolvedValue(false);
+		teardown.body.mockReset().mockReturnValue("dead");
 	});
 	afterEach(() => {
 		db.close();
@@ -127,22 +127,15 @@ describe("FLY-2498 real close-tmux route", () => {
 			);
 		}
 	}
-	it.each(["marker_found", "host_alive", "discovery_error"])(
-		"preserves a non-Codex holder on stale-target kill success when %s",
-		async (evidence) => {
+	it.each(["alive", "unknown"])(
+		"preserves a non-Codex holder when its body is %s despite stale-target kill success",
+		async (verdict) => {
 			store.upsertSession({
 				...store.getSession(exec)!,
 				adapter_type: "claude-tmux",
 			});
 			teardown.reap.mockResolvedValue({ outcome: "not_codex" });
-			if (evidence === "marker_found")
-				teardown.discover.mockResolvedValue({
-					kind: "found",
-					tmuxWindow: "renamed:@live",
-				});
-			if (evidence === "host_alive") teardown.host.mockResolvedValue(true);
-			if (evidence === "discovery_error")
-				teardown.discover.mockRejectedValue(new Error("probe unavailable"));
+			teardown.body.mockReturnValue(verdict);
 			expect(await post()).toMatchObject({
 				status: 200,
 				body: { closed: true, commDbFinalized: false },
@@ -156,7 +149,7 @@ describe("FLY-2498 real close-tmux route", () => {
 			).toBe(false);
 		},
 	);
-	it("removes a non-Codex holder only after independent marker and host absence", async () => {
+	it("removes a non-Codex holder only after shared body death proof", async () => {
 		store.upsertSession({
 			...store.getSession(exec)!,
 			adapter_type: "claude-tmux",
@@ -165,8 +158,9 @@ describe("FLY-2498 real close-tmux route", () => {
 		expect(await post()).toMatchObject({
 			body: { closed: true, commDbFinalized: true },
 		});
-		expect(teardown.discover).toHaveBeenCalledWith(exec);
-		expect(teardown.host).toHaveBeenCalledWith(exec);
+		expect(teardown.body).toHaveBeenCalledWith(exec, "flywheel");
+		expect(teardown.discover).not.toHaveBeenCalled();
+		expect(teardown.host).not.toHaveBeenCalled();
 		expect(db.getSession(exec)).toBeUndefined();
 	});
 	it("removes the dead parked identity and records real ask disposition", async () => {

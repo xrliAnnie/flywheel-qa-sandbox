@@ -1,199 +1,240 @@
 import { describe, expect, it, vi } from "vitest";
-import { probeRunExecutionLiveness } from "../run-quiescence.js";
+import { StateStore } from "../../StateStore.js";
+import {
+	probeExecutionAbsenceBeyondTarget,
+	probeRunExecutionLiveness,
+} from "../run-quiescence.js";
 
-describe("FLY-1940 run quiescence production policy", () => {
-	it("vetoes dead when a codex daemon is alive after CommDB/tmux teardown", async () => {
-		const genericProbe = vi.fn(async () => "dead" as const);
-		await expect(
-			probeRunExecutionLiveness(
-				{ adapter_type: "codex-tmux" },
-				"exec-1",
-				"flywheel",
-				{
-					probeCodexDaemon: async () => "alive",
-					probeGeneric: genericProbe,
-				},
-			),
-		).resolves.toBe("alive");
-		expect(genericProbe).not.toHaveBeenCalled();
-	});
-
-	it("keeps an indeterminate codex group fail-closed even when generic host evidence says dead", async () => {
-		await expect(
-			probeRunExecutionLiveness(
-				{ adapter_type: "codex-tmux" },
-				"exec-1",
-				"flywheel",
-				{
-					probeCodexDaemon: async () => "unknown",
-					probeGeneric: async () => "dead",
-				},
-			),
-		).resolves.toBe("unknown");
-	});
-
-	it("allows dead only after codex daemon absence plus tmux/host absence", async () => {
-		const probeGeneric = vi.fn(async () => "dead" as const);
-		await expect(
-			probeRunExecutionLiveness(
-				{ adapter_type: "codex-tmux" },
-				"exec-1",
-				"flywheel",
-				{
-					probeCodexDaemon: async () => "absent",
-					probeGeneric,
-				},
-			),
-		).resolves.toBe("dead");
-		expect(probeGeneric).toHaveBeenCalledWith("exec-1", "flywheel", {
-			allowMissingTargetHostAbsence: true,
-		});
-	});
-
-	it("keeps injected two-argument probes assignable for tests and callers", async () => {
-		const probeGeneric = vi.fn(async () => "alive" as const);
-		await expect(
-			probeRunExecutionLiveness(
-				{ adapter_type: "claude-code" },
-				"exec-2",
-				"flywheel",
-				{ probeGeneric },
-			),
-		).resolves.toBe("alive");
-	});
-});
-
-describe("FLY-2490 pre-adapter quiescence", () => {
+describe("FLY-2919 trusted pre-adapter no-body exception", () => {
 	const zero = {
 		liveness: "unknown",
 		ledger: "missing",
 		socketLive: false,
 		spawnLock: "absent",
 	} as const;
-	const facts = {
-		failureKind: "worktree_takeover_failed",
-		launchClaimState: "closed",
-	};
+	function fixture() {
+		const state: any = {
+			enabled: true,
+			activations: [{ activation_id: "original" }],
+			owner: undefined,
+			generation: 1,
+			session: {
+				adapter_type: "codex-tmux",
+				project_name: "flywheel",
+				status: "failed",
+				lifecycle_revision: 4,
+			},
+			receipt: {
+				failureKind: "worktree_takeover_failed",
+				sourceEventId: "trusted-failure",
+				recordedAt: "2026-09-26T00:00:00Z",
+			},
+			claim: { state: "closed", project: "flywheel" },
+		};
+		const store = {
+			getPreAdapterQuiescenceSnapshot:
+				StateStore.prototype.getPreAdapterQuiescenceSnapshot,
+			getSession: () => state.session,
+			listWorkflowActivationsForActor: () => state.activations,
+			getPreAdapterFailureReceipt: () => state.receipt,
+			getLaunchClaim: () => state.claim,
+			getWorkflowExecutionProcessBody: () => ({ generation: state.generation }),
+			executionProcessOwners: { get: () => state.owner },
+		};
+		const deps = {
+			store: store as never,
+			isEnabled: () => state.enabled,
+			readBodyLiveness: () => "unknown" as const,
+			probeCodexDaemonEvidence: vi.fn(
+				async () =>
+					zero as import("flywheel-claude-runner").CodexDaemonEvidence,
+			),
+			probeHostProcess: vi.fn(
+				async () =>
+					({
+						verdict: "absent",
+						source: "process-environment",
+					}) as import("../generalized-launch-recovery.js").HostProcessByExecutionIdProbe,
+			),
+		};
+		return {
+			state,
+			deps,
+			probe: () =>
+				probeRunExecutionLiveness(state.session, "exec", "flywheel", deps),
+		};
+	}
 	it.each(["failed", "blocked"])(
-		"proves a never-launched %s execution dead after a final evidence check",
+		"permits never-launched %s only with a trusted receipt and two zero samples",
 		async (status) => {
-			const probeGeneric = vi.fn(async () => "dead" as const);
-			const probeCodexDaemonEvidence = vi.fn(async () => zero);
-			expect(
-				await probeRunExecutionLiveness(
-					{ adapter_type: "codex-tmux", status },
-					"exec",
-					"flywheel",
-					{ probeGeneric, probeCodexDaemonEvidence, storeFacts: () => facts },
-				),
-			).toBe("dead");
-			expect(probeCodexDaemonEvidence).toHaveBeenCalledTimes(2);
-			expect(probeGeneric).toHaveBeenCalledWith("exec", "flywheel", {
-				allowMissingTargetHostAbsence: true,
-			});
+			const f = fixture();
+			f.state.session.status = status;
+			expect(await f.probe()).toBe("dead");
+			expect(f.deps.probeCodexDaemonEvidence).toHaveBeenCalledTimes(2);
+			expect(f.deps.probeHostProcess).toHaveBeenCalledWith("exec");
 		},
 	);
 	it.each([
-		{ status: "running" },
-		{ status: undefined },
-		{ evidence: { ...zero, ledger: "no_group" } },
-		{ evidence: { ...zero, ledger: "valid_group" } },
-		{ evidence: { ...zero, ledger: "unreadable" } },
-		{ evidence: { ...zero, socketLive: true } },
-		{ evidence: { ...zero, spawnLock: "live" } },
-		{ evidence: { ...zero, spawnLock: "stale" } },
-		{ evidence: { ...zero, spawnLock: "unreadable" } },
-		{ evidence: { ...zero, ledger: "no_group", spawnLock: "stale" } },
-		{ facts: { ...facts, failureKind: "goal_blocked" } },
-		{ facts: { ...facts, failureKind: undefined } },
-		...["starting", "active", "cancelled", undefined].map(
-			(launchClaimState) => ({ facts: { ...facts, launchClaimState } }),
-		),
-		{ noFacts: true },
-	] as Array<{
-		status?: string;
-		evidence?: import("flywheel-claude-runner").CodexDaemonEvidence;
-		facts?: { failureKind?: string; launchClaimState?: string };
-		noFacts?: boolean;
-	}>)("fails closed for %j", async (variant) => {
-		const probeGeneric = vi.fn(async () => "dead" as const);
-		expect(
-			await probeRunExecutionLiveness(
-				{
-					adapter_type: "codex-tmux",
-					status: Object.hasOwn(variant, "status") ? variant.status : "failed",
-				},
-				"exec",
-				"flywheel",
-				{
-					probeGeneric,
-					probeCodexDaemonEvidence: async () => variant.evidence ?? zero,
-					storeFacts: variant.noFacts
-						? undefined
-						: () => variant.facts ?? facts,
-				},
-			),
-		).toBe("unknown");
-		expect(probeGeneric).not.toHaveBeenCalled();
+		"running",
+		"wrong_adapter",
+		"wrong_project",
+		"no_receipt",
+		"wrong_kind",
+		"no_source",
+		"invalid_date",
+		"open_claim",
+		"cancelled_claim",
+		"no_claim",
+		"owner_registered",
+		"disabled",
+	])("refuses missing authority: %s", async (mode) => {
+		const f = fixture();
+		if (mode === "running") f.state.session.status = "running";
+		if (mode === "wrong_adapter") f.state.session.adapter_type = "claude-tmux";
+		if (mode === "wrong_project") f.state.session.project_name = "foreign";
+		if (mode === "no_receipt") f.state.receipt = undefined;
+		if (mode === "wrong_kind") f.state.receipt.failureKind = "goal_blocked";
+		if (mode === "no_source") f.state.receipt.sourceEventId = "";
+		if (mode === "invalid_date") f.state.receipt.recordedAt = "invalid";
+		if (mode === "open_claim") f.state.claim.state = "active";
+		if (mode === "cancelled_claim") f.state.claim.state = "cancelled";
+		if (mode === "no_claim") f.state.claim = undefined;
+		if (mode === "owner_registered") f.state.owner = { owner_token: "owner" };
+		if (mode === "disabled") f.state.enabled = false;
+		expect(await f.probe()).toBe("unknown");
+		expect(f.deps.probeCodexDaemonEvidence).not.toHaveBeenCalled();
 	});
 	it.each([
-		{ ...zero, spawnLock: "live" },
+		{ ...zero, liveness: "alive" },
+		{ ...zero, liveness: "absent" },
 		{ ...zero, ledger: "no_group" },
+		{ ...zero, ledger: "valid_group" },
+		{ ...zero, ledger: "unreadable" },
 		{ ...zero, socketLive: true },
+		{ ...zero, spawnLock: "live" },
+		{ ...zero, spawnLock: "stale" },
+		{ ...zero, spawnLock: "unreadable" },
 	] as const)(
-		"withdraws dead when evidence appears during generic probing: %j",
-		async (second) => {
-			const probeCodexDaemonEvidence = vi
-				.fn()
+		"rejects nonzero or indeterminate daemon evidence %j",
+		async (evidence) => {
+			const f = fixture();
+			f.deps.probeCodexDaemonEvidence.mockResolvedValue(evidence);
+			expect(await f.probe()).toBe("unknown");
+			expect(f.deps.probeHostProcess).not.toHaveBeenCalled();
+		},
+	);
+	it.each(["live", "unknown"] as const)(
+		"host %s refuses the no-body exception",
+		async (verdict) => {
+			const f = fixture();
+			f.deps.probeHostProcess.mockResolvedValue(
+				verdict === "live"
+					? { verdict, source: "process-environment" }
+					: { verdict, source: "process-environment", reason: "unreadable" },
+			);
+			expect(await f.probe()).toBe("unknown");
+		},
+	);
+	it.each([
+		"flag",
+		"revision",
+		"generation",
+		"claim",
+		"receipt",
+		"owner",
+		"second_sample",
+		"activation",
+	])("rechecks %s after asynchronous evidence", async (mode) => {
+		const f = fixture();
+		f.deps.probeHostProcess.mockImplementation(async () => {
+			if (mode === "activation")
+				f.state.activations.push({ activation_id: "new" });
+			if (mode === "flag") f.state.enabled = false;
+			if (mode === "revision") f.state.session.lifecycle_revision++;
+			if (mode === "generation") f.state.generation++;
+			if (mode === "claim") f.state.claim.state = "active";
+			if (mode === "receipt") f.state.receipt.sourceEventId = "changed";
+			if (mode === "owner") f.state.owner = { owner_token: "new" };
+			return { verdict: "absent", source: "process-environment" };
+		});
+		if (mode === "second_sample")
+			f.deps.probeCodexDaemonEvidence
 				.mockResolvedValueOnce(zero)
-				.mockResolvedValueOnce(second);
+				.mockResolvedValueOnce({ ...zero, socketLive: true });
+		expect(await f.probe()).toBe("unknown");
+	});
+	it.each(["probeCodexDaemonEvidence", "probeHostProcess"] as const)(
+		"fails closed when %s throws",
+		async (key) => {
+			const f = fixture();
+			f.deps[key].mockRejectedValue(new Error("unavailable"));
+			expect(await f.probe()).toBe("unknown");
+		},
+	);
+});
+
+// The same physical evidence must survive every window presentation state.
+describe("FLY-2919 common body quiescence", () => {
+	it.each(["claude-tmux", "codex-tmux"])(
+		"uses only the body reader for %s",
+		async (adapter_type) => {
+			for (const body of ["alive", "dead", "unknown"] as const) {
+				for (const window of ["alive", "dead"] as const) {
+					const probeGeneric = vi.fn(async () => window);
+					const readBodyLiveness = vi.fn(() => body);
+					expect(
+						await probeRunExecutionLiveness(
+							{ adapter_type },
+							"exec",
+							"flywheel",
+							{
+								readBodyLiveness,
+								probeGeneric,
+								probeCodexDaemon: async () => "absent",
+							} as never,
+						),
+						`${adapter_type} body=${body} window=${window}`,
+					).toBe(body);
+					expect(readBodyLiveness).toHaveBeenCalledWith("exec", "flywheel");
+					expect(probeGeneric).not.toHaveBeenCalled();
+				}
+			}
+		},
+	);
+	it.each(["alive", "dead", "unknown"] as const)(
+		"execution absence facade preserves body %s regardless of the registered window",
+		async (body) => {
+			const discover = vi.fn(async () => ({
+				kind: "found",
+				tmuxWindow: "visible:@42",
+			}));
 			expect(
-				await probeRunExecutionLiveness(
-					{ adapter_type: "codex-tmux", status: "failed" },
+				await probeExecutionAbsenceBeyondTarget(
+					{ adapter_type: "codex-tmux" },
 					"exec",
 					"flywheel",
 					{
-						probeCodexDaemonEvidence,
-						probeGeneric: async () => "dead",
-						storeFacts: () => facts,
-					},
+						readBodyLiveness: () => body,
+						discover,
+						probeCodexDaemon: async () => "absent",
+						hasHostProcess: async () => false,
+					} as never,
 				),
-			).toBe("unknown");
+			).toBe(body);
+			expect(discover).not.toHaveBeenCalled();
 		},
 	);
-	it.each(["alive", "unknown"] as const)(
-		"preserves generic %s without claiming death",
-		async (result) => {
-			const probeCodexDaemonEvidence = vi.fn(async () => zero);
-			expect(
-				await probeRunExecutionLiveness(
-					{ adapter_type: "codex-tmux", status: "failed" },
-					"exec",
-					"flywheel",
-					{
-						probeCodexDaemonEvidence,
-						probeGeneric: async () => result,
-						storeFacts: () => facts,
-					},
-				),
-			).toBe(result);
-			expect(probeCodexDaemonEvidence).toHaveBeenCalledTimes(1);
-		},
-	);
-	it("keeps legacy unknown injection fail-closed even with a receipt", async () => {
-		const probeGeneric = vi.fn(async () => "dead" as const);
+	it("refuses ordinary death when only legacy daemon/window/host absence is available", async () => {
 		expect(
 			await probeRunExecutionLiveness(
-				{ adapter_type: "codex-tmux", status: "failed" },
+				{ adapter_type: "codex-tmux" },
 				"exec",
 				"flywheel",
 				{
-					probeCodexDaemon: async () => "unknown",
-					probeGeneric,
-					storeFacts: () => facts,
-				},
+					probeCodexDaemon: async () => "absent",
+					probeGeneric: async () => "dead",
+				} as never,
 			),
 		).toBe("unknown");
-		expect(probeGeneric).not.toHaveBeenCalled();
 	});
 });

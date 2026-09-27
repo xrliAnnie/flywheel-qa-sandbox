@@ -1,28 +1,13 @@
 import { execFile } from "node:child_process";
 import type { WorkflowLaunchOwnerRow } from "../StateStore.js";
-import {
-	discoverTmuxTargetByExecutionId,
-	lookupTmuxTarget,
-	probeRunnerProcessLiveness,
-	type RunnerLiveness,
-	type RunnerTmuxTargetDiscovery,
-	type TmuxTargetLookup,
-} from "./tmux-lookup.js";
+import type { ExecutionBodyLivenessReader } from "./execution-body-reader.js";
+import type { TmuxTargetLookup } from "./tmux-lookup.js";
 
 export type GeneralizedLaunchLiveness = "alive" | "dead" | "unknown";
 export type GeneralizedLaunchTargetLookup = TmuxTargetLookup;
 
 interface GeneralizedLaunchProbeDeps {
-	lookup?: (executionId: string, projectName: string) => TmuxTargetLookup;
-	probe?: (tmuxWindow: string) => Promise<RunnerLiveness>;
-	discover?: (executionId: string) => Promise<RunnerTmuxTargetDiscovery>;
-	/** Does ANY process on this host reference the execution id? */
-	hasHostProcess?: (executionId: string) => Promise<boolean>;
-	probeHostProcess?: (
-		executionId: string,
-	) => Promise<HostProcessByExecutionIdProbe>;
-	/** Terminal-session callers may combine three independent absence proofs. */
-	allowMissingTargetHostAbsence?: boolean;
+	readBodyLiveness?: ExecutionBodyLivenessReader;
 }
 
 export type HostProcessByExecutionIdProbe =
@@ -119,81 +104,19 @@ export function probeHostProcessByExecutionId(
 	});
 }
 
-async function hostProcessVerdict(
-	executionId: string,
-	deps: GeneralizedLaunchProbeDeps,
-): Promise<HostProcessByExecutionIdProbe> {
-	if (deps.probeHostProcess) return deps.probeHostProcess(executionId);
-	if (deps.hasHostProcess) {
-		return (await deps.hasHostProcess(executionId))
-			? { verdict: "live", source: "pgrep" }
-			: { verdict: "absent", source: "process-environment" };
-	}
-	return probeHostProcessByExecutionId(executionId);
-}
-
-/**
- * A committed launch may be adopted only with positive delivery evidence.
- * CommDB absence and probe errors are deliberately UNKNOWN: registration is
- * non-atomic with the marker, so neither is proof that the gated shell died.
- */
+/** Consume the shared physical-body decision. Missing evidence queues through
+ * that reader and remains unknown; presentation metadata grants no authority. */
 export async function probeGeneralizedLaunchLiveness(
 	executionId: string,
 	projectName: string,
 	deps: GeneralizedLaunchProbeDeps = {},
 ): Promise<GeneralizedLaunchLiveness> {
-	const lookup = (deps.lookup ?? lookupTmuxTarget)(executionId, projectName);
-	if (lookup.kind === "error") {
+	try {
+		const result = deps.readBodyLiveness?.(executionId, projectName);
+		return result === "alive" || result === "dead" ? result : "unknown";
+	} catch {
 		return "unknown";
 	}
-	if (lookup.kind === "gone") {
-		if (!deps.allowMissingTargetHostAbsence) return "unknown";
-		const discovery = await (deps.discover ?? discoverTmuxTargetByExecutionId)(
-			executionId,
-		);
-		if (discovery.kind === "found") {
-			const state = await (deps.probe ?? probeRunnerProcessLiveness)(
-				discovery.tmuxWindow,
-			);
-			if (state === "alive") return "alive";
-			if (state === "dead_pin" || state === "absent") return "dead";
-			return "unknown";
-		}
-		if (discovery.kind !== "missing") return "unknown";
-		const host = await hostProcessVerdict(executionId, deps);
-		return host.verdict === "absent" ? "dead" : "unknown";
-	}
-	if (lookup.target.tmuxWindow.endsWith(":pending")) {
-		// 2026-07-24 incident (founder-directed hotfix): a runner that dies
-		// BEFORE its tmux window materializes stays ":pending" forever. There is
-		// nothing to probe, so this branch returned "unknown" eternally and the
-		// dead-exec sweep never reclaimed the node (unknown = keep unchanged) —
-		// the run wedged and every later dispatch replayed STALE_START_RESPONSE.
-		// Registration can lag behind materialization, so discover by execution
-		// identity before falling back to the host-wide process absence proof.
-		const discovery = await (deps.discover ?? discoverTmuxTargetByExecutionId)(
-			executionId,
-		);
-		if (discovery.kind === "found") {
-			const state = await (deps.probe ?? probeRunnerProcessLiveness)(
-				discovery.tmuxWindow,
-			);
-			if (state === "alive") return "alive";
-			if (state === "dead_pin" || state === "absent") return "dead";
-			return "unknown";
-		}
-		if (discovery.kind !== "missing") return "unknown";
-		// If neither discovery nor the host process table finds the execution,
-		// the runner cannot be alive. Any matching process stays unknown.
-		const host = await hostProcessVerdict(executionId, deps);
-		return host.verdict === "absent" ? "dead" : "unknown";
-	}
-	const state = await (deps.probe ?? probeRunnerProcessLiveness)(
-		lookup.target.tmuxWindow,
-	);
-	if (state === "alive") return "alive";
-	if (state === "dead_pin" || state === "absent") return "dead";
-	return "unknown";
 }
 
 type WorkflowLaunchDeliveryEvidence = Pick<

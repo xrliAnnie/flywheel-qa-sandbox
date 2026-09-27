@@ -2305,12 +2305,13 @@ describe("FLY-2490 default closeout liveness wiring", () => {
 	])("handles %s evidence through the production closure", async (shape) => {
 		const root = mkdtempSync(join(tmpdir(), "fly2490-"));
 		const store = await freshStore();
+		store.ensureFlagValueRows({ env: {}, now: Date.now() });
 		let liveGroup: ChildProcess | undefined;
 		vi.stubEnv("FLYWHEEL_CODEX_SESSION_DIR", join(root, "s"));
 		vi.stubEnv("FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT", join(root, "d"));
 		const probe = vi
-			.spyOn(genericLiveness, "probeGeneralizedLaunchLiveness")
-			.mockResolvedValue("dead");
+			.spyOn(genericLiveness, "probeHostProcessByExecutionId")
+			.mockResolvedValue({ verdict: "absent", source: "process-environment" });
 		try {
 			store.upsertSession({
 				execution_id: "never",
@@ -2407,6 +2408,7 @@ describe("FLY-2490 default closeout liveness wiring", () => {
 			expect(report.outcome).toBe(shape === "missing" ? "complete" : "blocked");
 			expect(report.nodes[0].confirmedGone).toBe(shape === "missing");
 			if (shape === "missing") {
+				expect(probe).toHaveBeenCalledWith("never");
 				expect(report.nodes[0]).toMatchObject({
 					communicationsFinalized: true,
 					teardown: { state: "skipped", reason: "crash_preserve" },

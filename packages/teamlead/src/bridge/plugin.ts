@@ -4169,6 +4169,7 @@ export function createBridgeApp(
 							session,
 							executionId,
 							session.project_name,
+							{ store, readBodyLiveness: opts?.readBodyLiveness },
 						)) === "dead";
 				}
 				if (decision.finalize && executionAbsent) {
@@ -8198,6 +8199,11 @@ export async function startBridge(
 			store.getSession(executionId),
 			executionId,
 			project,
+			{
+				store,
+				readBodyLiveness: (id, name) =>
+					executionBodyReader?.read(id, name) ?? "unknown",
+			},
 		);
 	};
 
@@ -9386,6 +9392,11 @@ export async function startBridge(
 						store.getSession(executionId),
 						executionId,
 						projectName,
+						{
+							store,
+							readBodyLiveness: (id, name) =>
+								executionBodyReader?.read(id, name) ?? "unknown",
+						},
 					);
 					return result === "alive"
 						? "alive"
