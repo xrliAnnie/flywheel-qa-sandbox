@@ -151,4 +151,44 @@ describe("stock worktree cleanup HTTP authority", () => {
 		expect(assertCurrent).toHaveBeenCalledOnce();
 		expect(preview).not.toHaveBeenCalled();
 	});
+
+	it("passes the exact authenticated execute tuple to the server-side executor", async () => {
+		const assertCurrent = vi.fn();
+		const execute = vi.fn(async () => ({ status: "applied", items: [] }));
+		serve({
+			authorizeRecloseHttp: () => ({
+				actor: "lead:eng",
+				projectName: "flywheel",
+				leadId: "eng",
+				assertCurrent,
+			}),
+			stockCleanup: { preview: vi.fn(), execute },
+		});
+		const tuple = {
+			project: "flywheel",
+			requestId: "11111111-1111-4111-8111-111111111111",
+			manifestJson: "{}",
+			manifestDigest: "a".repeat(64),
+		};
+		const response = await post(
+			server!,
+			tuple,
+			"private-context",
+			"/api/lifecycle/land/cleanup/execute",
+		);
+
+		expect(response).toMatchObject({
+			status: 200,
+			body: { status: "applied" },
+		});
+		expect(execute).toHaveBeenCalledWith({
+			projectName: "flywheel",
+			actor: "lead:eng",
+			requestId: tuple.requestId,
+			manifestJson: tuple.manifestJson,
+			manifestDigest: tuple.manifestDigest,
+			authorityCheck: assertCurrent,
+		});
+		expect(assertCurrent).toHaveBeenCalledTimes(2);
+	});
 });

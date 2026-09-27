@@ -1,16 +1,7 @@
 import { createHash } from "node:crypto";
+import type { BodyObservation } from "./execution-body-observation-contract.js";
 
 export type StockCleanupPrState = "MERGED" | "CLOSED" | "OPEN" | "UNKNOWN";
-
-export interface StockCleanupBodyObservation {
-	executionId: string;
-	activationId: string;
-	state: "dead" | "alive" | "unknown";
-	source: string;
-	observedAt?: string;
-	expiresAt?: string;
-	reason?: string;
-}
 
 export interface StockCleanupObservedTarget {
 	projectName: string;
@@ -42,7 +33,7 @@ export interface StockCleanupObservedTarget {
 		branch: string;
 		generation: string;
 	}>;
-	bodyObservations: StockCleanupBodyObservation[];
+	bodyObservations: BodyObservation[];
 	bindinglessProviderProof?: {
 		source: string | null;
 		ownership: string | null;
@@ -146,17 +137,17 @@ function bodyReasons(
 	for (const binding of target.bindings) {
 		const observation = target.bodyObservations.find(
 			(candidate) =>
-				candidate.executionId === binding.executionId &&
+				candidate.identity.executionId === binding.executionId &&
 				(!binding.activationId ||
-					candidate.activationId === binding.activationId),
+					candidate.identity.activationId === binding.activationId),
 		);
-		if (!observation || !observation.source) {
+		if (!observation) {
 			push(reasons, "body_unknown");
 			continue;
 		}
-		if (observation.state === "alive") push(reasons, "body_alive");
+		if (observation.verdict === "alive") push(reasons, "body_alive");
 		if (
-			observation.state === "unknown" ||
+			observation.verdict === "unknown" ||
 			!observation.expiresAt ||
 			observation.expiresAt <= observedAt
 		) {

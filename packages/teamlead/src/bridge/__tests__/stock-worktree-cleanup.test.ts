@@ -42,12 +42,20 @@ function eligibleTarget(): StockCleanupObservedTarget {
 		],
 		bodyObservations: [
 			{
-				executionId: "execution-3000",
-				activationId: "activation-3000",
-				state: "dead",
-				source: "execution-body-liveness/v1",
+				identity: {
+					executionId: "execution-3000",
+					activationId: "activation-3000",
+					generation: 1,
+					lifecycleRevision: 0,
+					adapter: "codex-tmux",
+				},
+				ownerToken: "owner-3000",
+				spawnEpoch: 1,
+				verdict: "dead",
 				observedAt: "2026-09-26T20:00:00.000Z",
 				expiresAt: "2026-09-26T20:01:00.000Z",
+				bindingDigest: "c".repeat(64),
+				reason: "writers_and_controller_gone",
 			},
 		],
 		clean: true,
@@ -141,7 +149,7 @@ describe("stock worktree cleanup preview", () => {
 		target.remoteProof = { state: "unknown", reason: "compare_timeout" };
 		target.bodyObservations[0] = {
 			...target.bodyObservations[0]!,
-			state: "alive",
+			verdict: "alive",
 		};
 		target.processCensus = {
 			state: "present",

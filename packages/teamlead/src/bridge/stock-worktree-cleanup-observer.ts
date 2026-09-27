@@ -3,9 +3,12 @@ import { lstat, opendir, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { type CwdRow, listSystemCwds } from "flywheel-edge-worker";
 import type { ProjectEntry } from "../ProjectConfig.js";
+import type {
+	BodyObservation,
+	ExecutionBodyObserver,
+} from "./execution-body-observation-contract.js";
 import {
 	buildStockCleanupPreview,
-	type StockCleanupBodyObservation,
 	type StockCleanupObservedTarget,
 	type StockCleanupPrState,
 } from "./stock-worktree-cleanup.js";
@@ -84,10 +87,7 @@ export interface StockCleanupPreviewerDeps {
 		base: string;
 		head: string;
 	}): Promise<"ahead" | "behind" | "diverged" | "identical" | "unknown">;
-	observeBody?: (input: {
-		executionId: string;
-		activationId: string;
-	}) => Promise<StockCleanupBodyObservation>;
+	bodyObserver?: ExecutionBodyObserver;
 	resolveTerminalAuthority(input: {
 		projectName: string;
 		canonicalPath: string;
@@ -97,7 +97,7 @@ export interface StockCleanupPreviewerDeps {
 		issueId?: string;
 		pr?: StockCleanupPullObservation;
 		executionIds: string[];
-	}): StockCleanupTerminalAuthority;
+	}): StockCleanupTerminalAuthority | Promise<StockCleanupTerminalAuthority>;
 	gitExec?: StockCleanupGitExec;
 	listCwds?: () => Promise<CwdRow[]>;
 	now?: () => Date;
@@ -275,20 +275,6 @@ function cwdState(
 		: { state: "clear", observedAt: new Date().toISOString() };
 }
 
-function unknownBody(
-	executionId: string,
-	activationId: string,
-	reason: string,
-): StockCleanupBodyObservation {
-	return {
-		executionId,
-		activationId,
-		state: "unknown",
-		source: "execution-body-liveness/unavailable",
-		reason,
-	};
-}
-
 export function createStockCleanupPreviewer(deps: StockCleanupPreviewerDeps): {
 	preview(input: {
 		projectName: string;
@@ -408,7 +394,7 @@ export function createStockCleanupPreviewer(deps: StockCleanupPreviewerDeps): {
 				} catch {
 					generation = undefined;
 				}
-				const bodyObservations: StockCleanupBodyObservation[] = [];
+				const bodyObservations: BodyObservation[] = [];
 				const boundTargets: StockCleanupObservedTarget["bindings"] = [];
 				for (const binding of targetBindings) {
 					const activationId =
@@ -421,29 +407,23 @@ export function createStockCleanupPreviewer(deps: StockCleanupPreviewerDeps): {
 						branch: binding.branch,
 						generation: binding.generation,
 					});
-					if (!deps.observeBody || !activationId) {
-						bodyObservations.push(
-							unknownBody(
-								binding.execution_id,
-								activationId,
-								deps.observeBody
-									? "activation_identity_ambiguous"
-									: "provider_unavailable",
-							),
-						);
+					if (!deps.bodyObserver || !activationId) {
 						continue;
 					}
 					try {
-						bodyObservations.push(
-							await deps.observeBody({
-								executionId: binding.execution_id,
-								activationId,
-							}),
+						const observation = await deps.bodyObserver.observe(
+							binding.execution_id,
 						);
+						if (
+							observation?.identity.executionId === binding.execution_id &&
+							observation.identity.activationId === activationId &&
+							(observation.verdict === "unknown" ||
+								deps.bodyObserver.isCurrent(observation))
+						) {
+							bodyObservations.push(observation);
+						}
 					} catch {
-						bodyObservations.push(
-							unknownBody(binding.execution_id, activationId, "provider_error"),
-						);
+						// Missing or indeterminate shared evidence remains body_unknown.
 					}
 				}
 
@@ -528,7 +508,7 @@ export function createStockCleanupPreviewer(deps: StockCleanupPreviewerDeps): {
 					}
 				}
 
-				const authority = deps.resolveTerminalAuthority({
+				const authority = await deps.resolveTerminalAuthority({
 					projectName: input.projectName,
 					canonicalPath,
 					branch: registered.branch,
@@ -575,6 +555,15 @@ export function createStockCleanupPreviewer(deps: StockCleanupPreviewerDeps): {
 				});
 			}
 			await input.authorityCheck();
+			if (deps.bodyObserver) {
+				for (const target of targets) {
+					target.bodyObservations = target.bodyObservations.filter(
+						(observation) =>
+							observation.verdict === "unknown" ||
+							deps.bodyObserver!.isCurrent(observation),
+					);
+				}
+			}
 			return buildStockCleanupPreview({
 				projectName: input.projectName,
 				observedAt,

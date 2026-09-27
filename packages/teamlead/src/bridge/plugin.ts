@@ -504,6 +504,7 @@ import {
 	yieldToEventLoop,
 } from "./event-loop-yield.js";
 import { createEventRouter } from "./event-route.js";
+import type { ExecutionBodyObserver } from "./execution-body-observation-contract.js";
 import { withExecutionMutationLease } from "./execution-mutation-lease.js";
 import {
 	checkPrMergeViaGh,
@@ -967,6 +968,7 @@ import {
 	reconcileStateStoreGhosts,
 	type StateStoreGhostDeps,
 } from "./statestore-ghost-reconcile.js";
+import { createStockCleanupExecutor } from "./stock-worktree-cleanup-executor.js";
 import { createStockCleanupPreviewer } from "./stock-worktree-cleanup-observer.js";
 import { createStrengthTwoEvidenceRouter } from "./strength-two-evidence-route.js";
 import {
@@ -7906,11 +7908,39 @@ export async function startBridge(
 			),
 		);
 	};
+	// FLY-2778 is merge-ordered after FLY-2919. Load only that branch's shared
+	// provider factory when present; an absent/failed provider leaves both A and C
+	// fail-closed and never activates a local window/pgrep fallback.
+	let executionBodyObserver: ExecutionBodyObserver | undefined;
+	try {
+		const bodyModulePath = "./execution-body-liveness.js";
+		const bodyModule = (await import(bodyModulePath)) as {
+			createStoredExecutionBodyObserver?: (
+				stateStore: StateStore,
+				flags: unknown,
+				options: { isRecoveryActive(executionId: string): boolean },
+			) => ExecutionBodyObserver;
+		};
+		if (typeof bodyModule.createStoredExecutionBodyObserver === "function") {
+			executionBodyObserver = bodyModule.createStoredExecutionBodyObserver(
+				store,
+				flagStore,
+				{
+					isRecoveryActive: (executionId) =>
+						store.getCodexRecoveryEpisode(executionId)?.episodeState === "open",
+				},
+			);
+		}
+	} catch {
+		// Expected before FLY-2919 lands; destructive consumers remain disabled by
+		// unknown observations and the durable held-alert path reports exhaustion.
+	}
 	const lifecycleExecutorDeps = {
 		store,
 		transitionOpts,
 		withIssueMutex: issueMutex,
 		withRepoLock: repoMutationLock.withRepoLock,
+		...(executionBodyObserver ? { bodyObserver: executionBodyObserver } : {}),
 		openPrDisposal: makeCanceledPrDisposal({
 			store,
 			resolveProjectRoot: resolveProjectRootByName,
@@ -9817,6 +9847,7 @@ export async function startBridge(
 				const stockCleanupPreviewer = createStockCleanupPreviewer({
 					projects,
 					store,
+					bodyObserver: executionBodyObserver,
 					readGeneration: (worktreePath) =>
 						lifecycleWorktreeManager.readWorktreeGeneration(worktreePath),
 					inspectPullRequest: async ({ repoSlug, prNumber }) => {
@@ -9868,18 +9899,75 @@ export async function startBridge(
 						}
 					},
 					// FLY-2919 remains the only permitted production body-liveness
-					// provider. Until its shared observer is exported and wired here,
-					// the previewer emits body_unknown and execute remains unavailable.
-					resolveTerminalAuthority: (input) => {
+					// provider. Until present, preview emits body_unknown and execute
+					// revalidates every selected target to a zero-removal refusal.
+					resolveTerminalAuthority: async (input) => {
 						if (
 							!input.issueId ||
 							!input.pr ||
-							input.pr.state !== "MERGED" ||
 							!input.generation ||
 							!input.branch ||
 							!input.head ||
 							input.executionIds.length === 0
 						) {
+							return {
+								state: "missing" as const,
+								reason: "terminal_authority_missing",
+							};
+						}
+						if (input.pr.state === "CLOSED") {
+							const persisted = store.getLinearStateObservation(
+								input.projectName,
+								input.issueId,
+							);
+							if (
+								!persisted?.terminalAuthorized ||
+								persisted.legacyTerminalEpisode ||
+								persisted.lastStateType !== "canceled" ||
+								!persisted.lastLinearUpdatedAt ||
+								!config.linearApiKey
+							) {
+								return {
+									state: "missing" as const,
+									reason: "canceled_terminal_authority_missing",
+								};
+							}
+							try {
+								const { LinearClient } = await import("@linear/sdk");
+								const client = new LinearClient({
+									apiKey: config.linearApiKey,
+								});
+								const issue = await client.issue(input.issueId);
+								const state = await issue.state;
+								const updatedAt =
+									issue.updatedAt instanceof Date
+										? issue.updatedAt.toISOString()
+										: String(issue.updatedAt ?? "");
+								if (
+									state?.type !== "canceled" ||
+									updatedAt !== persisted.lastLinearUpdatedAt
+								) {
+									return {
+										state: "changed" as const,
+										reason: "canceled_terminal_authority_changed",
+									};
+								}
+								return {
+									state: "valid" as const,
+									identity: `linear-canceled:${input.issueId}:${createHash(
+										"sha256",
+									)
+										.update(persisted.lastLinearUpdatedAt)
+										.digest("hex")}`,
+								};
+							} catch {
+								return {
+									state: "missing" as const,
+									reason: "canceled_terminal_authority_unavailable",
+								};
+							}
+						}
+						if (input.pr.state !== "MERGED") {
 							return {
 								state: "missing" as const,
 								reason: "terminal_authority_missing",
@@ -9937,6 +10025,16 @@ export async function startBridge(
 							operationId: operation.operation_id,
 						};
 					},
+				});
+				const stockCleanupExecutor = createStockCleanupExecutor({
+					store,
+					projectRoot: (projectName) =>
+						projects.find((project) => project.projectName === projectName)
+							?.projectRoot,
+					preview: stockCleanupPreviewer.preview,
+					withIssueMutex: issueMutex,
+					withRepoLock: repoMutationLock.withRepoLock,
+					worktreeManager: lifecycleWorktreeManager,
 				});
 				const routeDeps = {
 					store,
@@ -10159,7 +10257,10 @@ export async function startBridge(
 							);
 						},
 					},
-					stockCleanup: stockCleanupPreviewer,
+					stockCleanup: {
+						preview: stockCleanupPreviewer.preview,
+						execute: stockCleanupExecutor.execute,
+					},
 					apiTokenConfigured: Boolean(config.apiToken),
 					authorizeRecloseHttp: (header: unknown) => {
 						const context = createXhsWriteContext(header, process.env);
@@ -10200,6 +10301,7 @@ export async function startBridge(
 							resume: routeDeps.land.resume,
 							kick: routeDeps.land.kick,
 							preview: routeDeps.stockCleanup.preview,
+							execute: routeDeps.stockCleanup.execute,
 						});
 						console.log(
 							`[land-reclose-peer] listening at ${landReclosePeerServer.socketPath}`,

@@ -50,7 +50,7 @@ export interface CloseoutEvidenceIdentity {
 }
 
 export interface CloseoutEvidence extends CloseoutEvidenceIdentity {
-	version: 1;
+	version: 1 | 2;
 	observedAt: string;
 	expiresAt: string;
 	observations: CloseoutObservations;
@@ -58,6 +58,7 @@ export interface CloseoutEvidence extends CloseoutEvidenceIdentity {
 	liveVetoes: string[];
 	unknownReasons: string[];
 	verdict: CloseoutEvidenceVerdict;
+	bodyObservation?: BodyObservation;
 }
 
 type ObservationProbeResult = Pick<Observation, "state" | "reason"> &
@@ -88,6 +89,8 @@ export interface ExecutionCloseoutFacts {
 		  >
 		| undefined;
 	launchClaimState: string | undefined;
+	/** Presence selects the FLY-2919 seam; null means unavailable and forbids fallback. */
+	bodyObservation?: BodyObservation | null;
 }
 
 export interface ExecutionCloseoutProbeDeps {
@@ -262,12 +265,110 @@ function closeoutAdapter(
 		: "unknown";
 }
 
+function collectSharedBodyCloseoutEvidence(
+	identity: CloseoutEvidenceIdentity,
+	facts: ExecutionCloseoutFacts,
+	deps: ExecutionCloseoutProbeDeps,
+): CloseoutEvidence {
+	const body = facts.bodyObservation ?? null;
+	const now = deps.now ?? (() => new Date());
+	const fallbackAt = now().toISOString();
+	const rawComm = (deps.readCommSession ?? readCommSession)(
+		identity.executionId,
+		identity.project,
+	);
+	const comm =
+		typeof rawComm === "string"
+			? { state: rawComm, revision: identity.commIdentityRevision }
+			: rawComm;
+	const staticIdentityMatches = Boolean(
+		body &&
+			body.identity.executionId === identity.executionId &&
+			body.identity.activationId === identity.activationId &&
+			(identity.lifecycleRevision === null ||
+				body.identity.lifecycleRevision === identity.lifecycleRevision) &&
+			(identity.adapter === "unknown" ||
+				body.identity.adapter === identity.adapter),
+	);
+	const effectiveVerdict = staticIdentityMatches
+		? (body?.verdict ?? "unknown")
+		: "unknown";
+	const reason = body
+		? staticIdentityMatches
+			? body.reason
+			: "process_authority_changed"
+		: "body_observation_unavailable";
+	const observedAt = body?.observedAt ?? fallbackAt;
+	const expiresAt = body?.expiresAt ?? fallbackAt;
+	const physicalState: ObservationState =
+		effectiveVerdict === "alive"
+			? "live"
+			: effectiveVerdict === "dead"
+				? "absent"
+				: "unknown";
+	const physical = (source: string): Observation => ({
+		state: physicalState,
+		observedAt,
+		source: "execution-body-liveness",
+		identity: identity.executionId,
+		reason: `${source}:${reason}`,
+	});
+	const observations: CloseoutObservations = {
+		stateSession: {
+			state: facts.session ? "present" : "absent",
+			observedAt,
+			source: "stateSession",
+			identity: identity.executionId,
+			reason: facts.session ? "state_session_present" : "state_session_absent",
+		},
+		commSession: {
+			state: comm.state,
+			observedAt,
+			source: "commSession",
+			identity: comm.revision ?? identity.executionId,
+			reason: `comm_session_${comm.state}`,
+		},
+		window: physical("window"),
+		hostProcess: physical("hostProcess"),
+		daemon: physical("daemon"),
+		heartbeat: physical("heartbeat"),
+		launch: physical("launch"),
+	};
+	const evidenceReason = `body:${reason}`;
+	return {
+		version: 2,
+		...identity,
+		adapter:
+			body?.identity.adapter === "codex-tmux" ||
+			body?.identity.adapter === "claude-tmux"
+				? body.identity.adapter
+				: identity.adapter,
+		commIdentityRevision: comm.revision,
+		observedAt,
+		expiresAt,
+		observations,
+		negativeReasons: effectiveVerdict === "dead" ? [evidenceReason] : [],
+		liveVetoes: effectiveVerdict === "alive" ? [evidenceReason] : [],
+		unknownReasons: effectiveVerdict === "unknown" ? [evidenceReason] : [],
+		verdict:
+			effectiveVerdict === "dead"
+				? "gone"
+				: effectiveVerdict === "alive"
+					? "alive"
+					: "unknown",
+		...(body ? { bodyObservation: body } : {}),
+	};
+}
+
 /** Production adapter from execution-bound probes to the evidence collector. */
 export async function collectExecutionCloseoutEvidence(
 	identity: CloseoutEvidenceIdentity,
 	facts: ExecutionCloseoutFacts,
 	deps: ExecutionCloseoutProbeDeps = {},
 ): Promise<CloseoutEvidence> {
+	if (Object.hasOwn(facts, "bodyObservation")) {
+		return collectSharedBodyCloseoutEvidence(identity, facts, deps);
+	}
 	const now = deps.now ?? (() => new Date());
 	const lookup = (deps.lookupTarget ?? lookupTmuxTarget)(
 		identity.executionId,
@@ -511,6 +612,7 @@ import { CommDB } from "flywheel-comm/db";
 import { isOperationalTerminalStatus } from "../operational-terminal-status.js";
 import type { Session } from "../StateStore.js";
 import { resolveCommDbPath } from "./commdb-session-prune.js";
+import type { BodyObservation } from "./execution-body-observation-contract.js";
 import {
 	type HostProcessByExecutionIdProbe,
 	probeHostProcessByExecutionId,

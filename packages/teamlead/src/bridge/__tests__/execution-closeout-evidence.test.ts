@@ -614,4 +614,76 @@ describe("execution closeout evidence", () => {
 		);
 		expect(evidence.verdict).toBe("unknown");
 	});
+
+	it("maps the shared BodyObservation directly and never runs legacy physical probes", async () => {
+		const probeWindow = vi.fn();
+		const probeHostProcess = vi.fn();
+		const probeCodexDaemon = vi.fn();
+		const evidence = await collectExecutionCloseoutEvidence(
+			{
+				evidenceId: "12121212-1212-4212-8212-121212121212",
+				project: "flywheel",
+				issueUuid: "issue-1",
+				runId: "run-1",
+				executionId: "exec-body",
+				activationId: "activation-body",
+				operationId: "land:body",
+				operationGeneration: 4,
+				lifecycleRevision: 7,
+				attributionDigest: "1".repeat(64),
+				commIdentityRevision: null,
+				windowIdentity: null,
+				controllerGeneration: null,
+				adapter: "codex-tmux",
+			},
+			{
+				session: {
+					status: "failed",
+					adapter_type: "codex-tmux",
+					heartbeat_at: "2026-09-26T22:59:59.000Z",
+					lifecycle_revision: 7,
+				},
+				launchClaimState: "active",
+				bodyObservation: {
+					identity: {
+						executionId: "exec-body",
+						activationId: "activation-body",
+						generation: 3,
+						lifecycleRevision: 7,
+						adapter: "codex-tmux",
+					},
+					ownerToken: "owner-body",
+					spawnEpoch: 2,
+					verdict: "dead",
+					observedAt: "2026-09-26T23:00:00.000Z",
+					expiresAt: "2026-09-26T23:00:10.000Z",
+					bindingDigest: "d".repeat(64),
+					reason: "writers_and_controller_gone",
+				},
+			},
+			{
+				readCommSession: () => ({
+					state: "present",
+					revision: "e".repeat(64),
+				}),
+				lookupTarget: vi.fn(() => ({ kind: "gone" })),
+				listWindows: vi.fn(async () => ({ kind: "ok", windows: [] })),
+				probeWindow,
+				probeHostProcess,
+				probeCodexDaemon,
+			},
+		);
+
+		expect(evidence).toMatchObject({
+			version: 2,
+			verdict: "gone",
+			observedAt: "2026-09-26T23:00:00.000Z",
+			expiresAt: "2026-09-26T23:00:10.000Z",
+			negativeReasons: ["body:writers_and_controller_gone"],
+			bodyObservation: { verdict: "dead" },
+		});
+		expect(probeWindow).not.toHaveBeenCalled();
+		expect(probeHostProcess).not.toHaveBeenCalled();
+		expect(probeCodexDaemon).not.toHaveBeenCalled();
+	});
 });

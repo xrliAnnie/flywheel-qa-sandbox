@@ -40,6 +40,10 @@ import {
 	finalizeCommDbTerminalSession,
 	finalizeProvenGoneCommDbSession,
 } from "./commdb-session-prune.js";
+import type {
+	BodyObservation,
+	ExecutionBodyObserver,
+} from "./execution-body-observation-contract.js";
 import {
 	type CloseoutEvidence,
 	collectExecutionCloseoutEvidence,
@@ -315,6 +319,8 @@ export interface LifecycleCloseoutDeps {
 	audit?: (event: string, detail: Record<string, unknown>) => void;
 	log?: (msg: string) => void;
 	collectCloseoutEvidenceFn?: typeof collectExecutionCloseoutEvidence;
+	/** FLY-2919 single physical-body authority. Presence disables legacy death authorization. */
+	bodyObserver?: ExecutionBodyObserver;
 }
 
 export interface CloseoutInput {
@@ -1332,6 +1338,41 @@ async function closeoutOneNode(
 		confirmedGone: false,
 		communicationsFinalized: false,
 	};
+	const sharedBodySelected = Boolean(input.landOperation && deps.bodyObserver);
+	const observeSharedBody = async (): Promise<{
+		observation?: BodyObservation;
+		current: boolean;
+	}> => {
+		if (!sharedBodySelected || !deps.bodyObserver) return { current: false };
+		let observation: BodyObservation | undefined;
+		try {
+			observation = await deps.bodyObserver.observe(node.executionId);
+		} catch {
+			return { current: false };
+		}
+		if (!observation) return { current: false };
+		const session = store.getSession(node.executionId);
+		const activation = store.getWorkflowExecutionBinding(node.executionId);
+		const identityMatches = Boolean(
+			session &&
+				observation.identity.executionId === node.executionId &&
+				observation.identity.activationId ===
+					(activation?.activation_id ?? null) &&
+				observation.identity.lifecycleRevision ===
+					(session.lifecycle_revision ?? 0) &&
+				observation.identity.adapter === session.adapter_type,
+		);
+		let current = false;
+		try {
+			current =
+				identityMatches &&
+				observation.verdict !== "unknown" &&
+				deps.bodyObserver.isCurrent(observation);
+		} catch {
+			current = false;
+		}
+		return { observation, current };
+	};
 
 	if (!fresh) {
 		// No session row. For a launch claim this is the park-vs-start race
@@ -1418,6 +1459,7 @@ async function closeoutOneNode(
 					{
 						session: undefined,
 						launchClaimState: store.getLaunchClaim(node.executionId)?.state,
+						...(sharedBodySelected && { bodyObservation: null }),
 					},
 				);
 			} catch (error) {
@@ -1649,106 +1691,138 @@ async function closeoutOneNode(
 		});
 	}
 
-	// (3) teardown — closeRunner owns the battle-tested MCP-reap → cmux →
-	// window → terminal-view sequence (the reap primitive is wired inside it).
-	// R3#5: the transition above was a slow boundary — re-verify authority
-	// (uncached) before the kill sequence; R3#13: teardown = one mutator slot.
-	if (deps.freshAuthority) {
-		const auth = await deps.freshAuthority().catch(() => "unknown" as const);
-		if (auth !== "authorized") {
-			result.teardown = {
-				state: "skipped",
-				reason:
-					auth === "reopened" ? "authority_reopened" : "authority_unknown",
-			};
-			return result;
-		}
-	}
-	if (!consume("teardown")) return result;
+	// (3) teardown — a current shared dead observation is checked before the
+	// signal-capable closeRunner path. Alive/unknown bodies may still require the
+	// normal issue-terminal shutdown, but only a fresh post-close observation can
+	// authorize land finalization once the shared provider is selected.
+	let bodyCapture = await observeSharedBody();
+	const bodyDeadBeforeSignal = Boolean(
+		bodyCapture.current && bodyCapture.observation?.verdict === "dead",
+	);
 	let preserved = false;
 	let closeRunnerDeathProven = false;
 	let executionDeathProven = false;
 	let executionDeathTarget: string | undefined;
-	try {
-		const closeRes = await closeRunnerFn(
-			{
-				executionId: node.executionId,
-				issueId: node.issueKey,
-				projectName: node.projectName,
-				reason: `FLY-1185 lifecycle closeout (${input.disposition})`,
-				leadId: "bridge.lifecycle-closeout",
-				executorType: "lifecycle",
-				// preserve-state nodes are torn down under the ISSUE-TERMINAL
-				// authority (audited above) — that is exactly forcePreserved.
-				forcePreserved: preserveForensics,
-				finalizeDone,
-				deferCommunicationFinalization: input.deferRecordFinalization,
-				// Codex R1#13: legacy statuses OUTSIDE closeRunner's eligible sets
-				// (e.g. a live `approved` husk) are torn down under the explicit
-				// issue-terminal authority — without this the matrix's
-				// already_terminal husks would stay blocked forever.
-				issueTerminalOverride: true,
-				// R2#3: the executor already holds the issue mutex.
-				skipLifecycleGuard: true,
-				transitionOpts: deps.transitionOpts,
-				// R4#2: thread the fresh-authority probe INTO the kill sequence —
-				// closeRunner re-verifies before each subsequent external mutation
-				// (MCP reap → cmux kill → tmux kill → terminal view), so a Linear
-				// reopen landing mid-teardown stops the remaining kills.
-				...(deps.freshAuthority && {
-					authorityCheck: async () => {
-						const auth = await deps
-							.freshAuthority?.()
-							.catch(() => "unknown" as const);
-						return auth === "authorized"
-							? { ok: true }
-							: {
-									ok: false,
-									reason:
-										auth === "reopened"
-											? "authority_reopened"
-											: "authority_unknown",
-								};
-					},
-				}),
-			},
-			store,
-		);
-		executionDeathProven = closeRes.runnerDeathProven === true;
-		closeRunnerDeathProven = Boolean(
-			closeRes.closed || closeRes.alreadyGone || executionDeathProven,
-		);
-		result.communicationsFinalized = input.deferRecordFinalization
-			? closeRunnerDeathProven
-			: closeRes.commDbFinalized;
-		if (closeRunnerDeathProven) {
-			result.teardown = result.communicationsFinalized
-				? {
-						state: "done",
-						detail: closeRes.alreadyGone
-							? "already_gone"
-							: closeRes.runnerDeathProven === true && !closeRes.closed
-								? "proven_gone"
-								: "closed",
-					}
-				: {
-						state: "failed",
-						error: closeRes.error ?? "commdb_finalize_failed:unknown",
-					};
-		} else if (closeRes.preserved) {
-			preserved = true;
-			result.teardown = { state: "skipped", reason: "crash_preserve" };
-		} else {
+	if (bodyDeadBeforeSignal) {
+		closeRunnerDeathProven = true;
+		executionDeathProven = true;
+		result.communicationsFinalized = Boolean(input.deferRecordFinalization);
+		result.teardown = {
+			state: "done",
+			detail: "shared_body_confirmed_dead_before_signal",
+		};
+	} else {
+		// R3#5: the transition above was a slow boundary — re-verify authority
+		// (uncached) before the kill sequence; R3#13: teardown = one mutator slot.
+		if (deps.freshAuthority) {
+			const auth = await deps.freshAuthority().catch(() => "unknown" as const);
+			if (auth !== "authorized") {
+				result.teardown = {
+					state: "skipped",
+					reason:
+						auth === "reopened" ? "authority_reopened" : "authority_unknown",
+				};
+				return result;
+			}
+		}
+		if (!consume("teardown")) return result;
+		try {
+			const closeRes = await closeRunnerFn(
+				{
+					executionId: node.executionId,
+					issueId: node.issueKey,
+					projectName: node.projectName,
+					reason: `FLY-1185 lifecycle closeout (${input.disposition})`,
+					leadId: "bridge.lifecycle-closeout",
+					executorType: "lifecycle",
+					// preserve-state nodes are torn down under the ISSUE-TERMINAL
+					// authority (audited above) — that is exactly forcePreserved.
+					forcePreserved: preserveForensics,
+					finalizeDone,
+					deferCommunicationFinalization: input.deferRecordFinalization,
+					// Codex R1#13: legacy statuses OUTSIDE closeRunner's eligible sets
+					// (e.g. a live `approved` husk) are torn down under the explicit
+					// issue-terminal authority — without this the matrix's
+					// already_terminal husks would stay blocked forever.
+					issueTerminalOverride: true,
+					// R2#3: the executor already holds the issue mutex.
+					skipLifecycleGuard: true,
+					transitionOpts: deps.transitionOpts,
+					// R4#2: thread the fresh-authority probe INTO the kill sequence —
+					// closeRunner re-verifies before each subsequent external mutation
+					// (MCP reap → cmux kill → tmux kill → terminal view), so a Linear
+					// reopen landing mid-teardown stops the remaining kills.
+					...(deps.freshAuthority && {
+						authorityCheck: async () => {
+							const auth = await deps
+								.freshAuthority?.()
+								.catch(() => "unknown" as const);
+							return auth === "authorized"
+								? { ok: true }
+								: {
+										ok: false,
+										reason:
+											auth === "reopened"
+												? "authority_reopened"
+												: "authority_unknown",
+									};
+						},
+					}),
+				},
+				store,
+			);
+			executionDeathProven = closeRes.runnerDeathProven === true;
+			closeRunnerDeathProven = Boolean(
+				closeRes.closed || closeRes.alreadyGone || executionDeathProven,
+			);
+			result.communicationsFinalized = input.deferRecordFinalization
+				? closeRunnerDeathProven
+				: closeRes.commDbFinalized;
+			if (closeRunnerDeathProven) {
+				result.teardown = result.communicationsFinalized
+					? {
+							state: "done",
+							detail: closeRes.alreadyGone
+								? "already_gone"
+								: closeRes.runnerDeathProven === true && !closeRes.closed
+									? "proven_gone"
+									: "closed",
+						}
+					: {
+							state: "failed",
+							error: closeRes.error ?? "commdb_finalize_failed:unknown",
+						};
+			} else if (closeRes.preserved) {
+				preserved = true;
+				result.teardown = { state: "skipped", reason: "crash_preserve" };
+			} else {
+				result.teardown = {
+					state: "failed",
+					error: closeRes.error ?? "close_failed",
+				};
+			}
+		} catch (err) {
 			result.teardown = {
 				state: "failed",
-				error: closeRes.error ?? "close_failed",
+				error: err instanceof Error ? err.message : String(err),
 			};
 		}
-	} catch (err) {
-		result.teardown = {
-			state: "failed",
-			error: err instanceof Error ? err.message : String(err),
-		};
+		if (sharedBodySelected) {
+			bodyCapture = await observeSharedBody();
+			const sharedDead = Boolean(
+				bodyCapture.current && bodyCapture.observation?.verdict === "dead",
+			);
+			closeRunnerDeathProven = sharedDead;
+			executionDeathProven = sharedDead;
+			if (!sharedDead) {
+				result.confirmedGone = false;
+				audit("closeout_body_observation_refused", {
+					executionId: node.executionId,
+					verdict: bodyCapture.observation?.verdict ?? "unknown",
+					reason: bodyCapture.observation?.reason ?? "provider_unavailable",
+				});
+			}
+		}
 	}
 
 	// R6#1: a mid-flight launch (session row written, no durable binding yet)
@@ -1760,7 +1834,7 @@ async function closeoutOneNode(
 		result.confirmedGone = false;
 		return result;
 	}
-	if (!closeRunnerDeathProven && preserved) {
+	if (!closeRunnerDeathProven && preserved && !sharedBodySelected) {
 		const liveness = await probeExecutionLiveness(
 			node.executionId,
 			node.projectName,
@@ -1909,6 +1983,12 @@ async function closeoutOneNode(
 				{
 					session: fresh,
 					launchClaimState: store.getLaunchClaim(node.executionId)?.state,
+					...(sharedBodySelected && {
+						bodyObservation:
+							bodyCapture.current && bodyCapture.observation?.verdict === "dead"
+								? bodyCapture.observation
+								: null,
+					}),
 				},
 			);
 		} catch (error) {
@@ -1919,6 +1999,24 @@ async function closeoutOneNode(
 				`collector_error:${error instanceof Error ? error.message : String(error)}`,
 			];
 			return result;
+		}
+		if (sharedBodySelected) {
+			let stillCurrent = false;
+			try {
+				stillCurrent = Boolean(
+					bodyCapture.observation?.verdict === "dead" &&
+						deps.bodyObserver?.isCurrent(bodyCapture.observation),
+				);
+			} catch {
+				stillCurrent = false;
+			}
+			if (!stillCurrent) {
+				result.confirmedGone = false;
+				result.communicationsFinalized = false;
+				result.evidenceVerdict = "unknown";
+				result.evidenceReasons = ["body:process_authority_changed"];
+				return result;
+			}
 		}
 		result.evidenceId = evidence.evidenceId;
 		result.evidenceVerdict = evidence.verdict;

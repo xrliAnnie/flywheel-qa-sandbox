@@ -1,0 +1,182 @@
+import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ApplyTransitionOpts } from "../../applyTransition.js";
+import { StateStore } from "../../StateStore.js";
+import {
+	closeoutIssue,
+	createIssueMutex,
+	type LifecycleCloseoutDeps,
+} from "../lifecycle-closeout.js";
+
+const ISSUE = "11111111-1111-4111-8111-111111111111";
+const stores: StateStore[] = [];
+
+afterEach(() => {
+	for (const store of stores.splice(0)) store.close();
+});
+
+function observation(verdict: "alive" | "dead" | "unknown") {
+	return {
+		identity: {
+			executionId: "exec-1",
+			activationId: null,
+			generation: 1,
+			lifecycleRevision: 0,
+			adapter: "codex-tmux" as const,
+		},
+		ownerToken: "owner-1",
+		spawnEpoch: 1,
+		verdict,
+		observedAt: "2026-09-26T23:00:00.000Z",
+		expiresAt: "2026-09-26T23:00:10.000Z",
+		bindingDigest: "a".repeat(64),
+		reason: `${verdict}_fixture`,
+	};
+}
+
+async function fixture(verdicts: Array<"alive" | "dead" | "unknown">) {
+	const store = await StateStore.create(":memory:");
+	stores.push(store);
+	store.upsertSession({
+		execution_id: "exec-1",
+		issue_id: ISSUE,
+		issue_identifier: "FLY-2778",
+		project_name: "proj",
+		status: "failed",
+		adapter_type: "codex-tmux",
+	});
+	const operation = store.ensureLandOperation({
+		issueId: ISSUE,
+		projectName: "proj",
+		prNumber: 2778,
+		approvedHead: "b".repeat(40),
+		now: "2026-09-26T22:59:00.000Z",
+	});
+	const claim = store.claimLandOperation({
+		operationId: operation.operation_id,
+		ownerId: "land-worker",
+		now: "2026-09-26T22:59:01.000Z",
+		leaseExpiresAt: "2026-09-27T00:00:00.000Z",
+	});
+	expect(claim).toBeDefined();
+	const closeRunnerFn = vi.fn(async () => ({
+		closed: false,
+		commDbFinalized: false,
+		retiredGateCount: 0,
+		preserved: true,
+		reason: "crash_preserve" as const,
+	}));
+	const observe = vi.fn(async () => observation(verdicts.shift() ?? "unknown"));
+	const collectCloseoutEvidenceFn = vi.fn(
+		async (
+			identity: Record<string, unknown>,
+			facts: Record<string, unknown>,
+		) => {
+			const body = facts.bodyObservation as ReturnType<typeof observation>;
+			return {
+				...identity,
+				version: 2 as const,
+				observedAt: body.observedAt,
+				expiresAt: body.expiresAt,
+				observations: {},
+				negativeReasons: body.verdict === "dead" ? [`body:${body.reason}`] : [],
+				liveVetoes: body.verdict === "alive" ? [`body:${body.reason}`] : [],
+				unknownReasons:
+					body.verdict === "unknown" ? [`body:${body.reason}`] : [],
+				commIdentityRevision: "c".repeat(64),
+				bodyObservation: body,
+				verdict:
+					body.verdict === "dead"
+						? ("gone" as const)
+						: body.verdict === "alive"
+							? ("alive" as const)
+							: ("unknown" as const),
+			};
+		},
+	);
+	const transitionOpts: ApplyTransitionOpts = {
+		store,
+		fsm: new WorkflowFSM(WORKFLOW_TRANSITIONS),
+	};
+	const deps: LifecycleCloseoutDeps = {
+		store,
+		transitionOpts,
+		withIssueMutex: createIssueMutex(),
+		closeRunnerFn: closeRunnerFn as never,
+		lookupTarget: (() => ({ kind: "gone" }) as const) as never,
+		probeLiveness: async () => "absent",
+		// The shared observer must suppress this legacy authorization path.
+		probeExecutionLiveness: vi.fn(async () => "dead" as const),
+		bodyObserver: {
+			observe,
+			isCurrent: () => true,
+		},
+		collectCloseoutEvidenceFn: collectCloseoutEvidenceFn as never,
+		log: () => undefined,
+	};
+	const input = {
+		issueKey: ISSUE,
+		projectName: "proj",
+		disposition: "shipped" as const,
+		authority: "ship_complete" as const,
+		landOperation: {
+			operationId: operation.operation_id,
+			ownerId: claim!.ownerId,
+			generation: claim!.generation,
+		},
+		deferRecordFinalization: true,
+	};
+	return { deps, input, closeRunnerFn, observe, collectCloseoutEvidenceFn };
+}
+
+describe("FLY-2778 shared BodyObservation closeout seam", () => {
+	it("uses current dead evidence before any closeRunner signal path", async () => {
+		const f = await fixture(["dead"]);
+		const report = await closeoutIssue(f.deps, f.input);
+
+		expect(report.outcome).toBe("complete");
+		expect(report.nodes[0]).toMatchObject({
+			confirmedGone: true,
+			communicationsFinalized: true,
+			evidenceVerdict: "gone",
+		});
+		expect(f.closeRunnerFn).not.toHaveBeenCalled();
+		expect(f.collectCloseoutEvidenceFn).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({
+				bodyObservation: expect.objectContaining({ verdict: "dead" }),
+			}),
+		);
+	});
+
+	it("re-observes after closing an alive body and accepts only the fresh dead proof", async () => {
+		const f = await fixture(["alive", "dead"]);
+		const report = await closeoutIssue(f.deps, f.input);
+
+		expect(report.outcome).toBe("complete");
+		expect(f.closeRunnerFn).toHaveBeenCalledOnce();
+		expect(f.observe).toHaveBeenCalledTimes(2);
+		expect(report.nodes[0]).toMatchObject({ confirmedGone: true });
+	});
+
+	it("keeps unknown fail-closed and never falls back to the legacy dead probe", async () => {
+		const f = await fixture(["unknown", "unknown"]);
+		const report = await closeoutIssue(f.deps, f.input);
+
+		expect(report.outcome).toBe("blocked");
+		expect(report.nodes[0]).toMatchObject({ confirmedGone: false });
+		expect(f.deps.probeExecutionLiveness).not.toHaveBeenCalled();
+		expect(f.collectCloseoutEvidenceFn).not.toHaveBeenCalled();
+	});
+
+	it("rejects a dead observation when the synchronous owner/epoch check changed", async () => {
+		const f = await fixture(["dead", "dead"]);
+		f.deps.bodyObserver!.isCurrent = () => false;
+		const report = await closeoutIssue(f.deps, f.input);
+
+		expect(report.outcome).toBe("blocked");
+		expect(f.closeRunnerFn).toHaveBeenCalledOnce();
+		expect(f.deps.probeExecutionLiveness).not.toHaveBeenCalled();
+		expect(f.collectCloseoutEvidenceFn).not.toHaveBeenCalled();
+	});
+});
