@@ -17,6 +17,7 @@ import {
 	resolveBotTokenForThread,
 } from "./done-thread-archiver.js";
 import type { ReconcileLinearLookup } from "./done-thread-reconcile.js";
+import type { ExecutionBodyLivenessReader } from "./execution-body-reader.js";
 import { filterSessionsByLead } from "./lead-scope.js";
 import { lookupLinearIssueByIdentifier } from "./linear-query.js";
 import {
@@ -45,6 +46,7 @@ export type StatusQueryFn = (
 
 /** FLY-91 Round 3: Options object for createQueryRouter (replaces positional params). */
 export interface QueryRouterOptions {
+	readBodyLiveness?: ExecutionBodyLivenessReader;
 	onFounderAttentionChange?: (issueId: string, projectName: string) => void;
 	retryDispatcher?: IRetryDispatcher;
 	captureSessionFn?: CaptureSessionFn;
@@ -264,7 +266,15 @@ export function createQueryRouter(
 			return;
 		}
 
-		const result = omitIssueId(session);
+		let bodyVerdict: ReturnType<ExecutionBodyLivenessReader> = "unknown";
+		try {
+			bodyVerdict =
+				opts?.readBodyLiveness?.(session.execution_id, session.project_name) ??
+				"unknown";
+		} catch {
+			/* Observer unavailability must not become death authority. */
+		}
+		const result = { ...omitIssueId(session), body_verdict: bodyVerdict };
 		// FLY-163: forum conversation_threads removed; per-issue chat threads
 		// surface via chat_thread_id on hook payloads.
 		res.json(result);

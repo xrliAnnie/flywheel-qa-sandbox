@@ -1,6 +1,11 @@
 import type { BodyObservation } from "flywheel-claude-runner";
 import type { StateStore } from "../StateStore.js";
 
+export type ExecutionBodyLivenessReader = (
+	executionId: string,
+	projectName: string,
+) => "alive" | "dead" | "unknown";
+
 interface BodyReaderOptions {
 	store: Pick<
 		StateStore,

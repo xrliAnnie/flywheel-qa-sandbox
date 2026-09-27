@@ -1,3 +1,4 @@
+import type { ExecutionBodyLivenessReader } from "./execution-body-reader.js";
 import { CodexQuotaQueuedError } from "./retry-dispatcher.js";
 /**
  * GEO-267: /api/runs routes — start new Runner executions.
@@ -95,7 +96,7 @@ import { storeReviewSameFamilyAllowed } from "./flag-store-runtime.js";
 import type { ConfirmTokenStore } from "./fleet-admin.js";
 import {
 	getGeneralizedLaunchDelivery,
-	probeGeneralizedLaunchLiveness,
+	type probeGeneralizedLaunchLiveness,
 	waitForGeneralizedLaunchDelivery,
 } from "./generalized-launch-recovery.js";
 import { resolveLifecycleRootKey } from "./lifecycle-root-key.js";
@@ -366,6 +367,7 @@ export function createRunsRouter(
 			project: ProjectEntry;
 		}) => boolean;
 		probeRunLiveness?: typeof probeGeneralizedLaunchLiveness;
+		readBodyLiveness?: ExecutionBodyLivenessReader;
 		collectWorkflowRun?: (
 			receiptKey: string,
 		) => Promise<WorkflowRunCollectReceiptRow>;
@@ -3443,16 +3445,17 @@ export function createRunsRouter(
 				}
 				let shouldDispatch = launch.status === "acquired";
 				if (launch.status === "committed") {
-					const liveness = await probeGeneralizedLaunchLiveness(
-						generalizedSelection.executionId,
-						projectName,
-					);
+					const liveness =
+						auth?.readBodyLiveness?.(
+							generalizedSelection.executionId,
+							projectName,
+						) ?? "unknown";
 					if (liveness === "unknown") {
 						res.status(409).json({
 							success: false,
 							code: "GENERALIZED_LAUNCH_LIVENESS_HOLD",
 							reason:
-								"committed launch has neither a durable session nor conclusive tmux liveness evidence",
+								"committed launch has no current process liveness evidence",
 						});
 						return;
 					}
@@ -3473,6 +3476,11 @@ export function createRunsRouter(
 						const repair = store.claimWorkflowLaunchDeliveryRepair({
 							executionId: generalizedSelection.executionId,
 							repairOwner: launchOwnerId,
+							isBodyDeathCurrent: () =>
+								auth?.readBodyLiveness?.(
+									generalizedSelection.executionId,
+									projectName,
+								) === "dead",
 							now: repairNow.toISOString(),
 							leaseExpiresAt: new Date(
 								repairNow.getTime() + 60 * 60_000,

@@ -52,9 +52,9 @@ import {
 import { commDbPathForProject } from "./commdb-path.js";
 import { finalizeCommDbSession } from "./commdb-session-prune.js";
 import type { EventFilter } from "./EventFilter.js";
+import type { ExecutionBodyLivenessReader } from "./execution-body-reader.js";
 import {
 	getGeneralizedLaunchDelivery,
-	probeGeneralizedLaunchLiveness,
 	waitForGeneralizedLaunchDelivery,
 } from "./generalized-launch-recovery.js";
 import { buildSessionKey, type HookPayload } from "./hook-payload.js";
@@ -685,6 +685,7 @@ async function handleRetry(
 	gatewayDispatch?: GatewayRetryDispatch,
 	nodeStandbyResumeEnabled?: () => boolean,
 	codexQuotaRootKey?: (projectName: string) => string | undefined,
+	readBodyLiveness?: ExecutionBodyLivenessReader,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -709,7 +710,12 @@ async function handleRetry(
 				predecessorExecutionId: executionId,
 				projectName: session.project_name,
 			},
-			{ checkEvidence: gatewayDispatch.checkEvidence ?? checkStartedEvidence },
+			{
+				checkEvidence:
+					gatewayDispatch.checkEvidence ??
+					((id, project) =>
+						checkStartedEvidence(id, project, { readBodyLiveness })),
+			},
 		);
 		if (verdict.kind === "converged") {
 			return {
@@ -1066,12 +1072,9 @@ async function handleRetry(
 			| (() => { ok: boolean; reason?: string })
 			| undefined;
 		if (launch.status === "committed") {
-			const liveness = store.getSession(successorExecutionId)
-				? "alive"
-				: await probeGeneralizedLaunchLiveness(
-						successorExecutionId,
-						session.project_name,
-					);
+			const liveness =
+				readBodyLiveness?.(successorExecutionId, session.project_name) ??
+				"unknown";
 			if (liveness === "unknown") {
 				return {
 					success: false,
@@ -1093,6 +1096,9 @@ async function handleRetry(
 				const repair = store.claimWorkflowLaunchDeliveryRepair({
 					executionId: successorExecutionId,
 					repairOwner: launchOwnerId,
+					isBodyDeathCurrent: () =>
+						readBodyLiveness?.(successorExecutionId, session.project_name) ===
+						"dead",
 					now: repairNow.toISOString(),
 					leaseExpiresAt: new Date(
 						repairNow.getTime() + 15 * 60_000,
@@ -1849,7 +1855,10 @@ export function createActionRouter(
 	materializedHeadAuthority?: MaterializedHeadAuthority,
 	gateAuthorityView?: GateAuthorityView,
 	onEpicChange?: (projectName: string, reason: "linear_done") => void,
-	runtime?: { nodeStandbyResumeEnabled?: () => boolean },
+	runtime?: {
+		nodeStandbyResumeEnabled?: () => boolean;
+		readBodyLiveness?: ExecutionBodyLivenessReader;
+	},
 	codexQuotaRootKey?: (projectName: string) => string | undefined,
 ): Router {
 	const router = Router();
@@ -2072,6 +2081,7 @@ export function createActionRouter(
 							: undefined,
 						runtime?.nodeStandbyResumeEnabled,
 						codexQuotaRootKey,
+						runtime?.readBodyLiveness,
 					);
 					if (retryResult.success) {
 						res.status(retryResult.pending ? 202 : 200).json({

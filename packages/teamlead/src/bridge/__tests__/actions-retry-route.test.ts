@@ -55,6 +55,7 @@ let dispatched: RetryRequest[];
 let dispatchImpl: (req: RetryRequest) => Promise<{ newExecutionId: string }>;
 let generalizedRoot: string | undefined;
 let savedHome: string | undefined;
+const readBodyLiveness = vi.fn<() => "alive" | "dead" | "unknown">();
 
 const WORKFLOW_ON = {
 	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
@@ -231,6 +232,7 @@ beforeEach(async () => {
 		status: "failed",
 	});
 	dispatched = [];
+	readBodyLiveness.mockReset().mockReturnValue("unknown");
 	generalizedRoot = undefined;
 	generalizedRecoveryMocks.waitForDelivery
 		.mockReset()
@@ -271,7 +273,7 @@ beforeEach(async () => {
 			undefined,
 			undefined,
 			undefined,
-			{ nodeStandbyResumeEnabled: () => true },
+			{ nodeStandbyResumeEnabled: () => true, readBodyLiveness },
 		),
 	);
 	server = createServer(app);
@@ -368,14 +370,29 @@ describe("POST /api/actions/retry — D2 pre-bound dispatch flow", () => {
 		expect(intent?.state).toBe("intent"); // never marked dispatched
 	});
 
-	it("replay with intent + no started evidence: re-drives with the SAME successor id", async () => {
+	it("replay with settled body death re-drives with the SAME successor id", async () => {
 		// the binding exists from a previous (crashed) attempt
 		store.recordRetryDispatchIntent("gwreq-12345", SUCC, "pred-1");
-		// default evidence checker: no CommDB for this project → no_row → re-drive
+		readBodyLiveness.mockReturnValue("dead");
 		const r = await postRetry({ execution_id: "pred-1", ...gw });
 		expect(r.status).toBe(200);
 		expect(dispatched).toHaveLength(1);
 		expect(dispatched[0]?.successorExecutionId).toBe(SUCC);
+	});
+
+	it("FLY-2919 unknown process evidence refuses a second dispatch despite missing window metadata", async () => {
+		store.recordRetryDispatchIntent("gwreq-12345", SUCC, "pred-1");
+		const r = await postRetry({ execution_id: "pred-1", ...gw });
+		expect(r.status).toBe(400);
+		expect(dispatched).toHaveLength(0);
+	});
+	it("FLY-2919 live process converges without any registered window", async () => {
+		store.recordRetryDispatchIntent("gwreq-12345", SUCC, "pred-1");
+		readBodyLiveness.mockReturnValue("alive");
+		const r = await postRetry({ execution_id: "pred-1", ...gw });
+		expect(r.status).toBe(200);
+		expect(dispatched).toHaveLength(0);
+		expect(store.getSession("pred-1")?.retry_successor).toBe(SUCC);
 	});
 
 	it("conflict: same request id with a different successor id → 400, dispatcher never called", async () => {

@@ -396,6 +396,59 @@ describe("FLY-2919 atomic proven body death", () => {
 		).toThrow();
 	});
 
+	it("FLY-2919 delivery repair requires settled death and a current final authorization", () => {
+		db.prepare(`INSERT INTO workflow_launch_owner
+		 (execution_id, owner_generation, owner_id, acquired_at, lease_expires_at, committed_generation, delivery_state)
+		 VALUES ('exec-1',1,'dispatcher','1970-01-01T00:00:00Z','1970-01-01T00:00:01Z',1,'delivered')`).run();
+		const repair = (isBodyDeathCurrent?: () => boolean) =>
+			store.claimWorkflowLaunchDeliveryRepair({
+				executionId: "exec-1",
+				repairOwner: "repair-a",
+				now: "1970-01-01T00:00:02Z",
+				leaseExpiresAt: "1970-01-01T00:00:10Z",
+				isBodyDeathCurrent,
+			});
+		expect(repair(() => true)).toEqual({
+			status: "hold",
+			reason: "body_death_not_current",
+		});
+		const result = commit();
+		if (!result.ok) throw new Error(result.reason);
+		expect(repair(() => true)).toEqual({
+			status: "hold",
+			reason: "body_death_not_current",
+		});
+		expect(
+			store.markExecutionBodyDeathProjected(
+				result.obligation,
+				new Date(clock).toISOString(),
+			),
+		).toBe(true);
+		expect(repair()).toEqual({
+			status: "hold",
+			reason: "body_death_not_current",
+		});
+		expect(repair(() => false)).toEqual({
+			status: "hold",
+			reason: "body_death_not_current",
+		});
+		expect(
+			repair(() => {
+				throw new Error("flag read failed");
+			}),
+		).toEqual({ status: "hold", reason: "body_death_not_current" });
+		expect(store.getWorkflowLaunchOwner("exec-1")?.delivery_attempt).toBe(0);
+		expect(repair(() => true)).toMatchObject({ status: "claimed", attempt: 1 });
+		// A new physical generation invalidates the settled old-generation duty.
+		db.prepare(
+			"UPDATE workflow_execution_process_body SET generation = 2 WHERE execution_id = 'exec-1'",
+		).run();
+		expect(repair(() => true)).toEqual({
+			status: "hold",
+			reason: "body_death_not_current",
+		});
+	});
+
 	it("lists a durable unprojected death after restart and marks only its exact duty", async () => {
 		const result = commit();
 		if (!result.ok) throw new Error(result.reason);

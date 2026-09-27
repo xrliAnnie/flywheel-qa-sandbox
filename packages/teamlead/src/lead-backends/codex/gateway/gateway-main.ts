@@ -42,7 +42,7 @@ import {
 	isLifecycleAction,
 } from "../../../bridge/founder-consent/reserved-endpoints.js";
 import { matchesLead } from "../../../bridge/lead-scope.js";
-import { checkStartedEvidence } from "../../../bridge/started-evidence.js";
+import { readStartedEvidenceFromBridge } from "../../../bridge/started-evidence.js";
 import {
 	isTmuxWindowAlive,
 	lookupTmuxTarget,
@@ -671,7 +671,10 @@ export async function gatewayMain(
 			// started evidence on the PRE-BOUND successor id.
 			return makeRetryDispatchPostcondition({
 				checkEvidence: (execId, project) =>
-					checkStartedEvidence(execId, project),
+					readStartedEvidenceFromBridge(execId, project, {
+						bridgeUrl: cfg.bridgeUrl,
+						apiToken,
+					}),
 			})(row);
 		}
 		return makePostconditionCheck(row.action, {

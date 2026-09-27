@@ -43,7 +43,7 @@ describe("reconcileGatewayRetry (D2)", () => {
 	});
 
 	it("① first attempt: records the intent WAL and proceeds (binding committed BEFORE dispatch)", async () => {
-		const check = evidence({ started: false, reason: "no_row" });
+		const check = evidence({ started: false, reason: "body_dead" });
 		const verdict = await reconcileGatewayRetry(store, ARGS, {
 			checkEvidence: check,
 		});
@@ -57,10 +57,10 @@ describe("reconcileGatewayRetry (D2)", () => {
 		expect(check).not.toHaveBeenCalled();
 	});
 
-	it("② replay with intent + no started evidence → proceed (re-drive, same successor id)", async () => {
+	it("② replay with settled body death → proceed (re-drive, same successor id)", async () => {
 		store.recordRetryDispatchIntent("gwreq-1", "succ-1", "pred-1");
 		const verdict = await reconcileGatewayRetry(store, ARGS, {
-			checkEvidence: evidence({ started: false, reason: "no_row" }),
+			checkEvidence: evidence({ started: false, reason: "body_dead" }),
 		});
 		expect(verdict).toEqual({ kind: "proceed", firstAttempt: false });
 		// still exactly one binding
@@ -69,13 +69,19 @@ describe("reconcileGatewayRetry (D2)", () => {
 		).toBe("succ-1");
 	});
 
-	it("③ replay with pending-only evidence → proceed (partial startup converges by execId)", async () => {
-		store.recordRetryDispatchIntent("gwreq-1", "succ-1", "pred-1");
-		const verdict = await reconcileGatewayRetry(store, ARGS, {
-			checkEvidence: evidence({ started: false, reason: "pending_only" }),
-		});
-		expect(verdict).toEqual({ kind: "proceed", firstAttempt: false });
-	});
+	it.each(["no_row", "pending_only", "tmux_dead"] as const)(
+		"FLY-2919 legacy %s evidence cannot authorize replay",
+		async (reason) => {
+			store.recordRetryDispatchIntent("gwreq-1", "succ-1", "pred-1");
+			const verdict = await reconcileGatewayRetry(store, ARGS, {
+				checkEvidence: evidence({ started: false, reason }),
+			});
+			expect(verdict).toEqual({
+				kind: "fail_closed",
+				detail: "started_evidence_unprovable",
+			});
+		},
+	);
 
 	it("⑤ replay with AUTHORITATIVE started evidence → converged: lineage persisted, no re-dispatch", async () => {
 		store.recordRetryDispatchIntent("gwreq-1", "succ-1", "pred-1");
@@ -94,7 +100,7 @@ describe("reconcileGatewayRetry (D2)", () => {
 
 	it("conflict: a request id can NEVER bind a second successor id", async () => {
 		store.recordRetryDispatchIntent("gwreq-1", "succ-1", "pred-1");
-		const check = evidence({ started: false, reason: "no_row" });
+		const check = evidence({ started: false, reason: "body_dead" });
 		const verdict = await reconcileGatewayRetry(
 			store,
 			{ ...ARGS, successorExecutionId: "succ-OTHER" },
@@ -133,7 +139,7 @@ describe("reconcileGatewayRetry (D2)", () => {
 		const verdict = await reconcileGatewayRetry(
 			store,
 			{ ...ARGS, gatewayRequestId: "" },
-			{ checkEvidence: evidence({ started: false, reason: "no_row" }) },
+			{ checkEvidence: evidence({ started: false, reason: "body_dead" }) },
 		);
 		expect(verdict.kind).toBe("fail_closed");
 	});

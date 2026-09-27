@@ -1,90 +1,97 @@
-/**
- * FLY-245 D2 — the AUTHORITATIVE started-evidence checker (plan §5.2.1 item 4,
- * R4-HIGH + the Codex R5 implementation note).
- *
- * "Started" for an execution id means exactly one thing: the Runner
- * SELF-REGISTERED a non-`:pending` tmux identity in CommDB AND that tmux window
- * is live right now. Everything weaker is NOT evidence:
- *   - the intent WAL marker (written before `blueprint.run()`) only proves
- *     "we meant to start";
- *   - the Bridge's CommDB pre-registration (`<session>:pending`, FLY-80) is
- *     written before the runner exists;
- *   - StateStore's early `session_started` event fires before the adapter
- *     spawn — this module never consults StateStore at all, by construction;
- *   - a bare CommDB row without a live window proves a runner once existed,
- *     not that one is running (row exists ≠ live) — a same-execId re-drive
- *     converges via find-or-create, so treating it as not-started is safe.
- *
- * A CommDB read error (or a thrown probe) is `lookup_error`: we could not
- * prove the state either way, and every caller must fail closed on it (a blind
- * re-drive could start a second runner; a blind "started" could swallow one).
- */
-
-import {
-	lookupTmuxTarget,
-	probeTmuxWindowLiveness,
-	type TmuxTargetLookup,
-	type TmuxWindowProbe,
-} from "./tmux-lookup.js";
+import type { ExecutionBodyLivenessReader } from "./execution-body-reader.js";
 
 export type StartedEvidence =
-	| { started: true; tmuxWindow: string }
+	| { started: true; tmuxWindow?: string }
 	| {
 			started: false;
-			reason: "no_row" | "pending_only" | "tmux_dead" | "lookup_error";
+			/** Legacy producer values are recognized only to refuse replay authority. */
+			reason:
+				| "body_dead"
+				| "no_row"
+				| "pending_only"
+				| "tmux_dead"
+				| "lookup_error";
 	  };
 
 export interface StartedEvidenceDeps {
-	/** CommDB session lookup (default: real `lookupTmuxTarget`). */
-	lookup?: (executionId: string, projectName: string) => TmuxTargetLookup;
-	/**
-	 * Tri-state live tmux window probe (default: real
-	 * `probeTmuxWindowLiveness`). MUST distinguish a provably-dead window from an
-	 * indeterminate probe failure — see Codex R1 HIGH-4.
-	 */
-	probeWindow?: (tmuxWindow: string) => Promise<TmuxWindowProbe>;
+	readBodyLiveness?: ExecutionBodyLivenessReader;
 }
 
+/** Only the shared reader can prove a current live body or settled death.
+ * Missing metadata, a window, and an early session row are not process evidence.
+ * Unknown refuses replay so an unavailable observer cannot start a second body. */
 export async function checkStartedEvidence(
 	executionId: string,
 	projectName: string,
 	deps: StartedEvidenceDeps = {},
 ): Promise<StartedEvidence> {
-	const lookup = deps.lookup ?? lookupTmuxTarget;
-	const probeWindow = deps.probeWindow ?? probeTmuxWindowLiveness;
-
-	let target: TmuxTargetLookup;
 	try {
-		target = lookup(executionId, projectName);
+		const verdict = deps.readBodyLiveness?.(executionId, projectName);
+		if (verdict === "alive") return { started: true };
+		if (verdict === "dead") return { started: false, reason: "body_dead" };
 	} catch {
-		return { started: false, reason: "lookup_error" };
-	}
-	if (target.kind === "error") {
-		return { started: false, reason: "lookup_error" };
-	}
-	if (target.kind === "gone") {
-		return { started: false, reason: "no_row" };
-	}
-	// FLY-80 pre-registration is `<session>:pending` — never started evidence,
-	// and not worth probing (the shared session being alive proves nothing
-	// about THIS execution).
-	if (target.target.tmuxWindow.endsWith(":pending")) {
-		return { started: false, reason: "pending_only" };
-	}
-	let probe: TmuxWindowProbe;
-	try {
-		probe = await probeWindow(target.target.tmuxWindow);
-	} catch {
-		return { started: false, reason: "lookup_error" };
-	}
-	// HIGH-4: only a PROVABLY dead window is `tmux_dead`. An indeterminate probe
-	// (timeout / ENOENT / EACCES) is `lookup_error` (fail-closed) — never a
-	// false "dead" that would re-dispatch a second Runner.
-	if (probe === "alive") {
-		return { started: true, tmuxWindow: target.target.tmuxWindow };
-	}
-	if (probe === "dead") {
-		return { started: false, reason: "tmux_dead" };
+		// An unavailable observer cannot authorize delivery repair.
 	}
 	return { started: false, reason: "lookup_error" };
+}
+
+/** Gateway reads a coarse verdict from Bridge's existing authenticated query.
+ * This DTO is a replay check, never accepted as mutation/CAS authority. Bridge
+ * independently revalidates its own current observation on the action path. */
+export async function readStartedEvidenceFromBridge(
+	executionId: string,
+	projectName: string,
+	options: { bridgeUrl: string; apiToken: string; fetchImpl?: typeof fetch },
+): Promise<StartedEvidence> {
+	const unknown: StartedEvidence = { started: false, reason: "lookup_error" };
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), 5_000);
+	let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+	try {
+		const response = await (options.fetchImpl ?? fetch)(
+			`${options.bridgeUrl.replace(/\/+$/, "")}/api/sessions/${encodeURIComponent(executionId)}`,
+			{
+				headers: { Authorization: `Bearer ${options.apiToken}` },
+				signal: controller.signal,
+				redirect: "error",
+			},
+		);
+		if (!response.ok || !response.body) {
+			await response.body?.cancel();
+			return unknown;
+		}
+		reader = response.body.getReader();
+		const chunks: Uint8Array[] = [];
+		let bytes = 0;
+		for (;;) {
+			const chunk = await reader.read();
+			if (chunk.done) break;
+			bytes += chunk.value.byteLength;
+			if (bytes > 65_536) return unknown;
+			chunks.push(chunk.value);
+		}
+		if (controller.signal.aborted) return unknown;
+		const body: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+		if (
+			!body ||
+			typeof body !== "object" ||
+			!("execution_id" in body) ||
+			body.execution_id !== executionId ||
+			!("project_name" in body) ||
+			body.project_name !== projectName ||
+			!("body_verdict" in body)
+		)
+			return unknown;
+		const verdict = body.body_verdict;
+		return checkStartedEvidence(executionId, projectName, {
+			readBodyLiveness: () =>
+				verdict === "alive" || verdict === "dead" ? verdict : "unknown",
+		});
+	} catch {
+		return unknown;
+	} finally {
+		controller.abort();
+		clearTimeout(timer);
+		await reader?.cancel().catch(() => {});
+	}
 }

@@ -3186,6 +3186,16 @@ describe("generalized execution admission and terminal contracts", () => {
 				.listWorkflowRunEvents("run-1")
 				.filter((event) => event.kind === "issue_delivery"),
 		).toEqual([]);
+		expect(
+			store.claimWorkflowLaunchDeliveryRepair({
+				executionId: "exec-1",
+				repairOwner: "stale-observer",
+				now: "2026-07-15T00:12:00.000Z",
+				leaseExpiresAt: "2026-07-15T00:20:00.000Z",
+				isBodyDeathCurrent: () => false,
+			}),
+		).toEqual({ status: "hold", reason: "body_death_not_current" });
+		expect(store.getWorkflowLaunchOwner("exec-1")?.delivery_attempt).toBe(0);
 		const repairA = store.claimWorkflowLaunchDeliveryRepair({
 			executionId: "exec-1",
 			repairOwner: "repair-a",

@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Database } from "better-sqlite3";
 import type { LaunchPrecommitFailure } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBridgeApp } from "../bridge/plugin.js";
@@ -116,6 +117,7 @@ describe("FLY-1336 generalized launch accepted-pending route", () => {
 	let precommitFailure: LaunchPrecommitFailure | undefined;
 	let savedFlags: Record<(typeof workflowFlags)[number], string | undefined>;
 	let savedLinearApiKey: string | undefined;
+	const readBodyLiveness = vi.fn<() => "alive" | "dead" | "unknown">();
 
 	beforeEach(async () => {
 		savedFlags = Object.fromEntries(
@@ -140,6 +142,7 @@ describe("FLY-1336 generalized launch accepted-pending route", () => {
 			updatedBy: "test",
 		});
 		dispatchMode = "session_only";
+		readBodyLiveness.mockReset().mockReturnValue("unknown");
 		precommitFailure = undefined;
 		commitLaunch = undefined;
 		waitMocks.waitForDelivery.mockReset().mockResolvedValue(undefined);
@@ -215,6 +218,9 @@ describe("FLY-1336 generalized launch accepted-pending route", () => {
 			undefined,
 			undefined,
 			dispatcher,
+			undefined,
+			undefined,
+			{ readBodyLiveness },
 		);
 		server = app.listen(0, "127.0.0.1");
 		await new Promise<void>((resolve) => server.once("listening", resolve));
@@ -303,6 +309,39 @@ describe("FLY-1336 generalized launch accepted-pending route", () => {
 		expect(start).toHaveBeenCalledOnce();
 		expect(store.getWorkflowStartResponse("upgrade-key")).toEqual(body);
 	});
+
+	it.each(["alive", "unknown", "dead"] as const)(
+		"FLY-2919 committed repair checks shared %s evidence through Bridge wiring",
+		async (verdict) => {
+			const first = await postStart("FLY-PROCESS", "process-key");
+			expect(first.status).toBe(202);
+			const { executionId } = await first.json();
+			expect(commitLaunch?.()).toMatchObject({ ok: true });
+			// A durable commit exists, but delivery reconciliation has not settled.
+			(store as unknown as { db: { raw: Database } }).db.raw
+				.prepare(
+					"UPDATE workflow_launch_owner SET delivery_state = 'pending' WHERE execution_id = ?",
+				)
+				.run(executionId);
+			readBodyLiveness.mockReturnValue(verdict);
+			const second = await postStart("FLY-PROCESS", "process-key");
+			expect(readBodyLiveness).toHaveBeenCalledWith(executionId, "TestProject");
+			expect(start).toHaveBeenCalledOnce();
+			if (verdict === "alive") {
+				expect(second.status).toBe(202);
+			} else {
+				expect(second.status).toBe(409);
+				expect(await second.json()).toMatchObject(
+					verdict === "unknown"
+						? { code: "GENERALIZED_LAUNCH_LIVENESS_HOLD" }
+						: {
+								code: "GENERALIZED_DELIVERY_REPAIR_HELD",
+								reason: "body_death_not_current",
+							},
+				);
+			}
+		},
+	);
 
 	it("keeps generalized pre-session ghosts on the existing 500 contract", async () => {
 		dispatchMode = "ghost";

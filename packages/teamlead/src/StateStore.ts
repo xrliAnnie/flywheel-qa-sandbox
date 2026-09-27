@@ -42843,6 +42843,7 @@ export class StateStore {
 		repairOwner: string;
 		now: string;
 		leaseExpiresAt: string;
+		isBodyDeathCurrent?: () => boolean;
 	}): WorkflowLaunchDeliveryResult {
 		if (
 			!StateStore.workflowFiniteTimestamp(input.now) ||
@@ -42879,6 +42880,26 @@ export class StateStore {
 			) {
 				result = { status: "busy", attempt: owner.delivery_attempt };
 				return;
+			}
+			// Sampling is outside this transaction. The final synchronous CAS may
+			// consume only the common current-generation, projected death fact.
+			if (
+				input.isBodyDeathCurrent ||
+				this.executionProcessOwners.get(input.executionId)
+			) {
+				let current = false;
+				try {
+					current = Boolean(
+						this.getCurrentProjectedExecutionBodyDeath(input.executionId) &&
+						input.isBodyDeathCurrent?.() === true,
+					);
+				} catch {
+					/* Unknown authority refuses delivery repair. */
+				}
+				if (!current) {
+					result = { status: "hold", reason: "body_death_not_current" };
+					return;
+				}
 			}
 			const attempt =
 				owner.delivery_state === "repairing" &&

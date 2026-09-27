@@ -107,17 +107,20 @@ describe("makeRetryDispatchPostcondition (D2 recovery verdicts)", () => {
 		expect(check).toHaveBeenCalledWith("succ-1", "geoforge3d");
 	});
 
-	it("successor bound + no_row/pending/tmux_dead → retry_safe (idempotent re-drive by key)", async () => {
-		for (const reason of ["no_row", "pending_only", "tmux_dead"] as const) {
+	it.each(["no_row", "pending_only", "tmux_dead"] as const)(
+		"FLY-2919 legacy %s evidence cannot authorize replay",
+		async (reason) => {
 			const verdict = await makeRetryDispatchPostcondition({
 				checkEvidence: evidence({ started: false, reason }),
 			})(rowWithSuccessor("succ-1"));
-			expect(verdict).toBe("retry_safe");
-			store.close();
-			rmSync(dir, { recursive: true, force: true });
-			dir = mkdtempSync(join(tmpdir(), "fly245-d2-gw-"));
-			store = new LifecycleRequestStore(join(dir, "lr.db"), () => 1_000_000);
-		}
+			expect(verdict).toBe("needs_reconfirm");
+		},
+	);
+	it("settled body death permits a same-key retry", async () => {
+		const verdict = await makeRetryDispatchPostcondition({
+			checkEvidence: evidence({ started: false, reason: "body_dead" }),
+		})(rowWithSuccessor("succ-1"));
+		expect(verdict).toBe("retry_safe");
 	});
 
 	it("lookup_error → needs_reconfirm (fail-closed: cannot prove, never re-drive blind)", async () => {

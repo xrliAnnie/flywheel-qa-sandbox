@@ -10,15 +10,13 @@
  *   - no successor bound yet → `retry_safe`: nothing can have started (the
  *     Bridge only accepts dispatches carrying the pre-bound id), so the
  *     re-drive — which binds first, then dispatches — is safe;
- *   - successor bound + AUTHORITATIVE started evidence (the Runner's
- *     self-registered non-`:pending` LIVE tmux identity, never the intent
- *     marker, never an early `session_started` event) → `reached`: the action
+ *   - successor bound + AUTHORITATIVE started evidence (the shared accepted
+ *     process observation, never a window, intent marker or early session row) → `reached`: the action
  *     landed, never start a second runner;
- *   - successor bound + provably not started (no row / pending-only / dead
- *     window) → `retry_safe`: re-driving with the SAME pre-bound execId is
+ *   - successor bound + current settled body death → `retry_safe`: re-driving with the SAME pre-bound execId is
  *     idempotent — the Bridge's find-or-create converges to exactly one
  *     started execution;
- *   - unprovable (CommDB lookup error / thrown probe) → `needs_reconfirm`
+ *   - unprovable (including legacy window/row absence results) → `needs_reconfirm`
  *     (fail-closed; a blind re-drive could start a second runner).
  */
 
@@ -53,7 +51,7 @@ export function makeRetryDispatchPostcondition(
 		if (evidence.started) {
 			return "reached";
 		}
-		if (evidence.reason === "lookup_error") {
+		if (evidence.reason !== "body_dead") {
 			return "needs_reconfirm";
 		}
 		return "retry_safe";

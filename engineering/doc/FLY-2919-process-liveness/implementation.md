@@ -523,3 +523,19 @@ crash-reaper 现在只清理共同流程已结账的 failed 身体。删除 dead
 仍未完成：其余直接消费者（generalized-launch-recovery/actions/runs-route、run-quiescence、started-evidence/gateway、worktree-reconciler/lifecycle-sweep、pane-loss 等）、存量绑定迁移、同物理代逻辑 activation、普通/rework 通信义务及 D/E/F、九单矩阵、A9原15秒导入超时、精确头评审/PR/冻结 CI/needs_review。B10 不代表 A–F 交卷。
 
 B10 最终本地证据：27个具体 Vitest 文件550项通过；retention consumer gate（单一 Node 测试文件）10项通过。最终13个 TS 文件的限定 related：18文件458项通过；窗口身份修正后的额外3文件79项 related 亦保留。受影响包及依赖 build、teamlead tsc、voice-codex dependent typecheck、pnpm lint 均退出0；lint26条既有 warnings，无新增 skip/timeout 放宽。最后源码 SHA256 与归档13项一致。首次全选验证后因 UI身份修正补跑受影响3文件、归档/身份helper2文件和最终原related集合，旧批次日志保留并标 superseded，未伪装成冻结头CI。
+
+### B11 — started / committed-launch consumers（验证中）
+
+接 B10 `da14f1f89`。`checkStartedEvidence` 删除 CommDB row/pending/window 探针的生命判定，只消费共同同步 reader：alive 为 started，已投影的当前死亡为 body_dead，缺 reader/unknown/异常为 lookup_error 并拒绝重放。旧 reason 字面量只供重放消费者识别并拒绝旧生产者结果，生产检查器不再生成 no_row/pending_only/tmux_dead；它们不是本模块持久化的记录。actions 的 committed 分支删除「存在 session 行就 alive」，runs/start 删除直接窗口探针；原完成、取消、output credential 不可重建、租约争用与幂等策略不改。
+
+Bridge composition root 把同一个 late-bound reader 接入两个 action mount、runs 与原有 session GET。gateway 重放通过已有带 token 的 `/api/sessions/:id` 查询 coarse body_verdict；核对 exact execution/project，5秒超时、64KiB上限、拒绝跳转。HTTP 不暴露/接受 BodyObservation、owner/binding 或死亡写授权；执行 action 时 Bridge 仍独立读取共同真源。传输/身份/结构错误只回 lookup_error。
+
+`claimWorkflowLaunchDeliveryRepair` 在原同步事务内，对已登记 owner 或新 reader 调用者要求当前代已投影死亡事实，并调用 `isBodyDeathCurrent` 最后核验。OS 采样不进 lease/事务。无证明、未投影、新代次、开关核验 false/异常不取得 repair lease，不增加 attempt。尚未登记且未传新授权的旧内部调用兼容口仍存在，留在必须继续的 legacy 迁移范围；本批不是全消费者收敛完成。
+
+因果 RED：started 5 项（活体缺窗被否认、窗口掩盖 dead/unknown）；repair 最终授权 false 仍错误取得 attempt1；retry 接线活体无窗仍被拒绝。HTTP 初次 fixture 缺 issue_id 的失败已更正，不计因果红证据；随后 gateway 缺新函数的10项失败只计缺接口 RED，查询4项当时已绿，不冒称 query 的旧实现行为红证据。最终定向、related、build/typecheck/lint 与源码 hash 待本批收齐。新增 route 集成覆盖共同 alive/unknown/dead；已结账死亡仍须最终事务事实，单个注入字符串不足以 repair。
+
+下一批仍须处理 run-quiescence/generalized-launch-recovery 的全调用链、worktree/lifecycle/pane-loss、存量 owner/binding、同物理代逻辑 activation、普通/rework 通信结账与 D/E/F，九单矩阵及 A9 原15秒导入超时。没有 final review/PR/full CI/529/QA/needs_review 声明。
+
+B11 复查追加：WAL 与 gateway 两层原先除 lookup_error 外均放行。新增各3项旧值负控得到6项行为 RED，修为只有 body_dead 放行；首轮 related 19文件707 pass/3 RED 仅为这个预期缺口，无其它失败。逐文件 WAL 12 pass/3 RED、gateway 10 pass/3 RED 日志保留。正在复验两文件及最终 related/build/typecheck/lint。
+
+B11 最终验证：25个具体文件的最终覆盖778 pass（首轮773，WAL13→15、gateway10→13）；retention Node gate10 pass；严格重放修正后限定 owning related20文件723 pass。依赖build、teamlead/voice-codex typecheck、pnpm lint均exit0（既有26 warnings）。18个改动源码SHA256在最终验证后核对无漂移。完整命令/日志/红绿切点/源码hash在 implementation-b11-evidence.json.gz；发现与逐项排除理由在 implementation-b11-consumers.json.gz。无整库/整包suite，未跳过或延长timeout，无CI/529/QA/最终评审/交卷声明。下一批优先解决存量/未启动绑定的可靠证据以及run-quiescence全调用链，不能将缺绑定的unknown当作迁移完成。

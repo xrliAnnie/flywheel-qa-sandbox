@@ -511,6 +511,7 @@ import {
 	retryExecutionBodyConvergence,
 } from "./execution-body-convergence.js";
 import { createStoredExecutionBodyObserver } from "./execution-body-liveness.js";
+import type { ExecutionBodyLivenessReader } from "./execution-body-reader.js";
 import { createExecutionBodyReader } from "./execution-body-reader.js";
 import { createExecutionBodyRuntime } from "./execution-body-runtime.js";
 import { withExecutionMutationLease } from "./execution-mutation-lease.js";
@@ -1711,6 +1712,7 @@ export class SseBroadcaster {
 
 /** GEO-294 + FLY-91 Round 3: Options object for new Bridge dependencies. */
 export interface BridgeAppOptions {
+	readBodyLiveness?: ExecutionBodyLivenessReader;
 	leadConfigService?: LeadConfigService;
 	processResources?: { snapshot(): FdHealth };
 	codexQuota?: {
@@ -3123,7 +3125,7 @@ export function createBridgeApp(
 			opts?.materializedHeadAuthority,
 			actionGateAuthorityView,
 			opts?.epicPageRefresher?.requestRefresh,
-			{ nodeStandbyResumeEnabled },
+			{ nodeStandbyResumeEnabled, readBodyLiveness: opts?.readBodyLiveness },
 			() => opts?.codexQuota?.rootKey,
 		),
 	);
@@ -3764,6 +3766,7 @@ export function createBridgeApp(
 		"/api",
 		apiAuthWithRunnerTierDelegation(config.apiToken, config.geminiAgentToken),
 		createQueryRouter(store, projects, {
+			readBodyLiveness: opts?.readBodyLiveness,
 			onFounderAttentionChange: (issueId, projectName) => {
 				opts?.issueDisplayRefresh?.current?.enqueue(issueId);
 				opts?.epicPageRefresher?.requestRefresh(
@@ -3820,7 +3823,7 @@ export function createBridgeApp(
 			opts?.materializedHeadAuthority,
 			actionGateAuthorityView,
 			opts?.epicPageRefresher?.requestRefresh,
-			{ nodeStandbyResumeEnabled },
+			{ nodeStandbyResumeEnabled, readBodyLiveness: opts?.readBodyLiveness },
 			() => opts?.codexQuota?.rootKey,
 		),
 	);
@@ -5820,6 +5823,7 @@ export function createBridgeApp(
 			staleBlockerGuard,
 			{
 				nodeStandbyResumeEnabled,
+				readBodyLiveness: opts?.readBodyLiveness,
 				codexQuotaRootKey: () => opts?.codexQuota?.rootKey,
 				verifyCodexQuotaRecovery: opts?.codexQuota?.canRecover,
 				masterToken: config.apiToken,
@@ -9747,6 +9751,8 @@ export async function startBridge(
 		standupService,
 		standupProjectName,
 		{
+			readBodyLiveness: (id, project) =>
+				executionBodyReader?.read(id, project) ?? "unknown",
 			leadConfigService,
 			leadEventDelivery,
 			leadGithub: leadGithubProvider.get,

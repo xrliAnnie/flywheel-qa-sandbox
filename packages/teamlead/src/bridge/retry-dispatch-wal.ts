@@ -16,12 +16,12 @@
  *      commits the (request id → successor id) binding to the WAL BEFORE any
  *      dispatch — the binding survives every later crash;
  *   2. a REPLAY of a known request id reconciles against AUTHORITATIVE started
- *      evidence (started-evidence.ts — the Runner's self-registered live tmux
- *      identity, never the intent marker):
+ *      evidence (started-evidence.ts — the shared accepted process observation,
+ *      never a window or the intent marker):
  *        - evidence started → CONVERGED: repair the lineage
  *          (setRetrySuccessor + mark dispatched) and return the successor —
  *          never a second dispatch;
- *        - provably not started (no row / pending-only / dead window) →
+ *        - current settled body death →
  *          re-drive with the SAME successor id (find-or-create converges);
  *        - unprovable (lookup error / throw) → FAIL-CLOSED;
  *   3. a request id can never bind a second successor id (conflict).
@@ -127,10 +127,10 @@ export async function reconcileGatewayRetry(
 			successorExecutionId: args.successorExecutionId,
 		};
 	}
-	if (evidence.reason === "lookup_error") {
+	if (evidence.reason !== "body_dead") {
 		return { kind: "fail_closed", detail: "started_evidence_unprovable" };
 	}
-	// no_row / pending_only / tmux_dead: provably not started — the same-key
-	// re-drive is idempotent (find-or-create by execId converges).
+	// Only shared, settled death permits same-key delivery repair. Legacy
+	// window/row absence values above fail closed even from an old producer.
 	return { kind: "proceed", firstAttempt: false };
 }
