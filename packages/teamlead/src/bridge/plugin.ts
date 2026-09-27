@@ -504,6 +504,7 @@ import {
 	yieldToEventLoop,
 } from "./event-loop-yield.js";
 import { createEventRouter } from "./event-route.js";
+import { createStoredExecutionBodyObserver } from "./execution-body-liveness.js";
 import { withExecutionMutationLease } from "./execution-mutation-lease.js";
 import {
 	checkPrMergeViaGh,
@@ -10268,11 +10269,20 @@ export async function startBridge(
 	// body is still owned; an injected dispatcher does not share it. Disabled
 	// under VITEST (same boundary as the codex health probe): general Bridge
 	// suites must never read the host's process table or its real socket root.
+	const executionBodyObserver = createStoredExecutionBodyObserver(
+		store,
+		flagStore,
+		{
+			isRecoveryActive: (executionId) =>
+				Boolean(store.getCodexRecoveryDeferral(executionId, Date.now())),
+		},
+	);
 	const codexTerminalSweep =
 		opts?.startDispatcher || process.env.VITEST
 			? undefined
 			: createBridgeCodexTerminalSweep({
 					store,
+					bodyObserver: executionBodyObserver,
 					owners: codexExecutionOwners,
 					reapEnabled: () => storeCodexTerminalReapEnabled(flagStore),
 					alertSink: codexTerminalSweepAlertHolder,

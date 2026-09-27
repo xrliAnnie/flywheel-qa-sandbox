@@ -3,7 +3,7 @@ import type { SessionEvent } from "../StateStore.js";
 
 /**
  * FLY-2903 terminal close ledger: one row per terminal Codex execution, so
- * every such execution ends with a verified close verdict (two samples, see
+ * every such execution ends with a verified close verdict (current process evidence, see
  * codex-terminal-sweep.ts) or a visible alert. This module is the only writer
  * of `codex_terminal_close` and of the `codex_terminal_close_*` audit events.
  */
@@ -258,7 +258,7 @@ export class CodexTerminalCloseStore {
 				    AND s.status IN (${CODEX_TERMINAL_SWEEP_STATUSES.map(() => "?").join(",")})
 				    AND s.terminal_at IS NOT NULL
 				    AND julianday(s.terminal_at) >= julianday(?, '-48 hours')
-				    AND julianday(s.terminal_at) <= julianday(?, '-3 minutes')
+				    AND julianday(s.terminal_at) <= julianday(?)
 				    AND (c.state IS NULL OR c.state <> 'closed')
 				  ORDER BY (c.last_checked_at IS NOT NULL) ASC,
 				           c.last_checked_at ASC,

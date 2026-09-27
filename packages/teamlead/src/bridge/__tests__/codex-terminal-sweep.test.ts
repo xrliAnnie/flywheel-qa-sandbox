@@ -1,4 +1,5 @@
 import type {
+	BodyObservation,
 	CodexDaemonEvidence,
 	CodexProcessRecord,
 } from "flywheel-claude-runner";
@@ -51,6 +52,8 @@ describe("FLY-2903 terminal Codex sweep", () => {
 	let clock: Date;
 	let ownership: Map<string, "none" | "reserved" | "active">;
 	let evidence: Map<string, CodexDaemonEvidence | Error>;
+	let bodies: Map<string, BodyObservation["verdict"]>;
+	let currentBody: boolean;
 	let procs: CodexProcessRecord[] | Error;
 	let unattributed: number;
 	let tokens: Map<string, SweepTokenObservation>;
@@ -76,6 +79,38 @@ describe("FLY-2903 terminal Codex sweep", () => {
 			adapter_type: adapter,
 		});
 		if (status !== "running") store.forceStatus(exec, status, "", "x");
+	};
+
+	const bodyObservation = (exec: string): BodyObservation => {
+		const value = evidence.get(exec) ?? ABSENT;
+		if (value instanceof Error) throw value;
+		const verdict =
+			bodies.get(exec) ??
+			(ownership.get(exec) === "active"
+				? "alive"
+				: value.liveness === "alive"
+					? "alive"
+					: value.liveness === "absent" &&
+							!(procs instanceof Error) &&
+							unattributed === 0
+						? "dead"
+						: "unknown");
+		return {
+			identity: {
+				executionId: exec,
+				activationId: `activation-${exec}`,
+				adapter: "codex-tmux",
+				generation: 1,
+				lifecycleRevision: store.getSession(exec)?.lifecycle_revision ?? 0,
+			},
+			ownerToken: "owner",
+			spawnEpoch: 1,
+			bindingDigest: "a".repeat(64),
+			verdict,
+			observedAt: clock.toISOString(),
+			expiresAt: new Date(clock.getTime() + 10000).toISOString(),
+			reason: "fixture_process_evidence",
+		};
 	};
 
 	const deps = (
@@ -115,11 +150,12 @@ describe("FLY-2903 terminal Codex sweep", () => {
 			ownershipState: (exec) => ownership.get(exec) ?? "none",
 			requestStop,
 		},
-		probeEvidence: async (exec) => {
-			const value = evidence.get(exec) ?? ABSENT;
-			if (value instanceof Error) throw value;
-			return value;
+		bodyObserver: {
+			observe: async (exec) => bodyObservation(exec),
+			isCurrent: () => currentBody,
 		},
+		completionPending: () => false,
+		stopAuthorized: () => true,
 		reap,
 		tokens: ({ executionId }) =>
 			tokens.get(executionId) ?? { rolloutPath: null },
@@ -149,6 +185,8 @@ describe("FLY-2903 terminal Codex sweep", () => {
 		clock = new Date(realNow + 10 * 60_000);
 		ownership = new Map();
 		evidence = new Map();
+		bodies = new Map();
+		currentBody = true;
 		procs = [];
 		unattributed = 0;
 		tokens = new Map();
@@ -165,7 +203,136 @@ describe("FLY-2903 terminal Codex sweep", () => {
 	});
 	afterEach(() => store.close());
 
-	it("acceptance: a terminal body with a live daemon is reaped, then proven closed in two samples", async () => {
+	it("FLY-2919: exact dead body closes in this pass despite an unavailable diagnostic process snapshot", async () => {
+		seed("exec-exact");
+		bodies.set("exec-exact", "dead");
+		procs = new Error("diagnostic unavailable");
+		await sweep().tick();
+		expect(row("exec-exact")?.state).toBe("closed");
+		expect(unlinkSocket).toHaveBeenCalledOnce();
+	});
+	it("FLY-2919: missing daemon ledger and a silent socket never prove death", async () => {
+		seed("exec-unbound");
+		evidence.set("exec-unbound", NO_LEDGER_DEAD);
+		const s = sweep();
+		await s.tick();
+		advance(5);
+		await s.tick();
+		expect(row("exec-unbound")?.state).toBe("probe_unknown");
+		expect(unlinkSocket).not.toHaveBeenCalled();
+	});
+	it("FLY-2919: unknown body overrides a stale active ownership registry without stopping it", async () => {
+		seed("exec-unknown");
+		ownership.set("exec-unknown", "active");
+		bodies.set("exec-unknown", "unknown");
+		const s = sweep();
+		await s.tick();
+		advance(5);
+		await s.tick();
+		expect(row("exec-unknown")?.state).toBe("probe_unknown");
+		expect(requestStop).not.toHaveBeenCalled();
+	});
+	it("FLY-2919: exact living body overrides an absent daemon-only observation", async () => {
+		seed("exec-writer");
+		bodies.set("exec-writer", "alive");
+		await sweep().tick();
+		expect(reap).toHaveBeenCalledOnce();
+		expect(row("exec-writer")?.state).toBe("alive_reaped_pending");
+	});
+	it("FLY-2919: authority changed during token collection refuses death and cleanup", async () => {
+		seed("exec-race");
+		const s = sweep({
+			tokens: () => {
+				currentBody = false;
+				return { rolloutPath: null };
+			},
+		});
+		await s.tick();
+		advance(5);
+		await s.tick();
+		expect(row("exec-race")?.state).toBe("probe_unknown");
+		expect(unlinkSocket).not.toHaveBeenCalled();
+	});
+
+	it("FLY-2919: pending completion marker prevents stop, reap and death projection", async () => {
+		for (const exec of ["exec-marker-live", "exec-marker-dead"]) seed(exec);
+		bodies.set("exec-marker-live", "alive");
+		ownership.set("exec-marker-live", "active");
+		const s = sweep({ completionPending: () => true });
+		await s.tick();
+		advance(5);
+		await s.tick();
+		expect(requestStop).not.toHaveBeenCalled();
+		expect(reap).not.toHaveBeenCalled();
+		expect(unlinkSocket).not.toHaveBeenCalled();
+		expect(row("exec-marker-dead")?.state).toBe("probe_unknown");
+	});
+	it("FLY-2919: disabling the signal switch during reap preflight denies the existing reap guard", async () => {
+		seed("exec-switch");
+		bodies.set("exec-switch", "alive");
+		reap.mockImplementation(async (_session, beforeSignal: () => boolean) => {
+			reapEnabled = false;
+			return {
+				outcome: beforeSignal() ? "reaped" : "unverifiable",
+				socketPath: "/s",
+			};
+		});
+		await sweep().tick();
+		expect(row("exec-switch")?.state).toBe("alive_unverifiable");
+	});
+	it("FLY-2919: a changed body during alert await cannot write the old close state", async () => {
+		seed("exec-alert-race");
+		bodies.set("exec-alert-race", "alive");
+		await sweep({
+			alert: async () => {
+				currentBody = false;
+			},
+		}).tick();
+		expect(row("exec-alert-race")?.state).toBe("probe_unknown");
+	});
+	it("FLY-2919: approved retirement skips live cleanup but still recognizes a dead writer set", async () => {
+		seed("exec-retired");
+		bodyState.set("exec-retired", "retiring");
+		await sweep().tick();
+		expect(row("exec-retired")?.state).toBe("closed");
+		expect(reap).not.toHaveBeenCalled();
+	});
+
+	it.each(["active", "none"] as const)(
+		"FLY-2919: current TURN protects a %s owner from stop and reap",
+		async (owner) => {
+			seed("exec-turn");
+			bodies.set("exec-turn", "alive");
+			ownership.set("exec-turn", owner);
+			const s = sweep({ stopAuthorized: () => false });
+			await s.tick();
+			advance(5);
+			await s.tick();
+			expect(requestStop).not.toHaveBeenCalled();
+			expect(reap).not.toHaveBeenCalled();
+		},
+	);
+	it("FLY-2919: a resident hold protects an owned terminal body from cooperative stop", async () => {
+		seed("exec-held");
+		ownership.set("exec-held", "active");
+		const s = sweep({ residentHoldState: () => "woken" });
+		await s.tick();
+		advance(5);
+		await s.tick();
+		expect(requestStop).not.toHaveBeenCalled();
+	});
+
+	it("FLY-2919: unknown body stays unknown even when the diagnostic census sees an unbound process", async () => {
+		seed("exec-unknown-view");
+		bodies.set("exec-unknown-view", "unknown");
+		procs = [proc("exec-unknown-view")];
+		await sweep().tick();
+		expect(row("exec-unknown-view")?.state).toBe("probe_unknown");
+		expect(reap).not.toHaveBeenCalled();
+		expect(requestStop).not.toHaveBeenCalled();
+	});
+
+	it("acceptance: a live terminal body is reaped and an exact dead sample closes it immediately", async () => {
 		seed("exec-a");
 		evidence.set("exec-a", ALIVE);
 		procs = [proc("exec-a")];
@@ -180,16 +347,11 @@ describe("FLY-2903 terminal Codex sweep", () => {
 		procs = [];
 		advance(5);
 		await s.tick();
-		expect(row("exec-a")?.state).toBe("pending_confirm");
-
-		advance(5);
-		await s.tick();
 		expect(row("exec-a")).toMatchObject({ state: "closed" });
 		expect(row("exec-a")?.closed_at).toBeTruthy();
 		expect(unlinkSocket).toHaveBeenCalledWith("exec-a");
 		expect(closeEvents("exec-a")).toEqual([
 			"codex_terminal_close_alive_reaped_pending",
-			"codex_terminal_close_pending_confirm",
 			"codex_terminal_close_closed",
 		]);
 		// Closed rows leave the candidate set.
@@ -197,7 +359,7 @@ describe("FLY-2903 terminal Codex sweep", () => {
 		reap.mockClear();
 		await s.tick();
 		expect(reap).not.toHaveBeenCalled();
-		expect(closeEvents("exec-a")).toHaveLength(3);
+		expect(closeEvents("exec-a")).toHaveLength(2);
 	});
 
 	it("the reap's final guard re-checks terminal status, ownership and resident hold", async () => {
@@ -257,7 +419,7 @@ describe("FLY-2903 terminal Codex sweep", () => {
 		advance(5);
 		await s.tick();
 		expect(row("exec-f")).toMatchObject({
-			state: "pending_confirm",
+			state: "closed",
 			owned_streak: 0,
 		});
 		expect(requestStop).not.toHaveBeenCalled();
@@ -274,7 +436,7 @@ describe("FLY-2903 terminal Codex sweep", () => {
 			"terminal_sweep",
 			expect.anything(),
 		);
-		expect(row("exec-r")?.state).toBe("pending_confirm");
+		expect(row("exec-r")?.state).toBe("closed");
 		expect(alerts).toEqual([]);
 	});
 
@@ -307,13 +469,17 @@ describe("FLY-2903 terminal Codex sweep", () => {
 			await s.tick();
 			advance(5);
 			await s.tick();
-			expect(row(exec)?.state).toBe("alive_unverifiable");
+			expect(row(exec)?.state).toBe("probe_unknown");
 			expect(reap).not.toHaveBeenCalled();
-			expect(alerts.at(-1)).toMatchObject({
-				executionId: exec,
-				state: "alive_unverifiable",
-				action: "none",
-			});
+			advance(5);
+			await s.tick();
+			expect(alerts.filter((a) => a.executionId === exec).at(-1)).toMatchObject(
+				{
+					executionId: exec,
+					state: "probe_unknown",
+					action: "none",
+				},
+			);
 		}
 	});
 
@@ -345,7 +511,7 @@ describe("FLY-2903 terminal Codex sweep", () => {
 		expect(row("exec-s")?.state).toBe("probe_unknown");
 	});
 
-	it("a daemon that never spawned (no_group ledger, dead socket) closes after two samples", async () => {
+	it("a no_group ledger cannot substitute for an accepted process binding", async () => {
 		seed("exec-n", "failed");
 		evidence.set("exec-n", {
 			liveness: "unknown",
@@ -357,54 +523,46 @@ describe("FLY-2903 terminal Codex sweep", () => {
 		await s.tick();
 		advance(5);
 		await s.tick();
-		expect(row("exec-n")?.state).toBe("closed");
+		expect(row("exec-n")?.state).toBe("probe_unknown");
 	});
 
-	it("tokens that grew after pending_confirm are a false success: probe_unknown + alert", async () => {
+	it("late token ingestion does not revive an independently dead body", async () => {
 		seed("exec-t");
-		tokens.set("exec-t", {
-			rolloutPath: "/r.jsonl",
-			read: {
-				offset: 10,
-				lastTotal: 110,
-				tokensAtTerminal: 100,
-				tokensAfterTerminal: 10,
-				complete: true,
+		observeCodexTerminalClose(
+			{
+				store: store.codexTerminalClose,
+				events: { insertEvent: (event) => store.insertEvent(event) },
 			},
-		});
-		const s = sweep();
-		await s.tick();
-		expect(row("exec-t")).toMatchObject({
-			state: "pending_confirm",
-			confirm_tokens: 10,
-		});
+			"exec-t",
+			{
+				state: "pending_confirm",
+				source: "bridge.codex-terminal-sweep",
+				sessionStatus: "completed",
+				evidence: {},
+				tokens: { confirmTokens: 10 },
+			},
+		);
 		tokens.set("exec-t", {
 			rolloutPath: "/r.jsonl",
 			read: {
 				offset: 20,
-				lastTotal: 5_110,
+				lastTotal: 5110,
 				tokensAtTerminal: 100,
-				tokensAfterTerminal: 5_010,
+				tokensAfterTerminal: 5010,
 				complete: true,
 			},
 		});
-		advance(5);
-		await s.tick();
+		await sweep().tick();
 		expect(row("exec-t")).toMatchObject({
-			state: "probe_unknown",
-			tokens_after_terminal: 5_010,
+			state: "closed",
+			tokens_after_terminal: 5010,
 			rollout_offset: 20,
-			rollout_last_total: 5_110,
+			rollout_last_total: 5110,
 		});
-		expect(alerts).toEqual([
-			expect.objectContaining({
-				state: "probe_unknown",
-				tokensAfterTerminal: 5_010,
-			}),
-		]);
+		expect(alerts).toEqual([]);
 	});
 
-	it("unchanged tokens across the two samples close the body", async () => {
+	it("token telemetry is retained alongside independently proven death", async () => {
 		seed("exec-same");
 		const read = {
 			rolloutPath: "/r.jsonl",
@@ -451,20 +609,18 @@ describe("FLY-2903 terminal Codex sweep", () => {
 		expect(row("exec-old")?.state).toBe("alive_reaped_pending");
 	});
 
-	it("non-terminal, parked, Claude and fresh sessions are never candidates", async () => {
+	it("non-terminal, parked and Claude sessions are never terminal-sweep candidates", async () => {
 		seed("exec-running", "running");
 		seed("exec-parked", "ship_parked");
 		seed("exec-claude", "completed", "claude-tmux");
 		procs = [proc("exec-running"), proc("exec-parked"), proc("exec-claude")];
 		evidence.set("exec-running", ALIVE);
-		const probe = vi.fn(async () => ALIVE);
-		await sweep({ probeEvidence: probe }).tick();
-		seed("exec-fresh");
-		clock = new Date(Date.now() + 60_000);
-		await sweep({ probeEvidence: probe }).tick();
+		const probe = vi.fn(async (exec: string) => bodyObservation(exec));
+		await sweep({
+			bodyObserver: { observe: probe, isCurrent: () => currentBody },
+		}).tick();
 		expect(probe).not.toHaveBeenCalled();
 		expect(row("exec-running")).toBeUndefined();
-		expect(row("exec-fresh")).toBeUndefined();
 	});
 
 	it("a standby / resuming / retiring process body is skipped this tick", async () => {
@@ -599,51 +755,36 @@ describe("FLY-2903 terminal Codex sweep", () => {
 		expect(JSON.parse(row("exec-e1")?.last_evidence ?? "{}")).toMatchObject({
 			error: "evidence_probe_failed",
 		});
-		expect(row("exec-e2")?.state).toBe("pending_confirm");
+		expect(row("exec-e2")?.state).toBe("closed");
 	});
 
-	it("review R1 MEDIUM: an incomplete rollout read keeps pending_confirm until a complete baseline exists", async () => {
+	it("an incomplete token read cannot postpone exact process death", async () => {
 		seed("exec-big");
-		const set = (after: number, complete: boolean) =>
-			tokens.set("exec-big", {
-				rolloutPath: "/r.jsonl",
-				read: {
-					offset: after,
-					lastTotal: after,
-					tokensAtTerminal: 0,
-					tokensAfterTerminal: after,
-					complete,
-					...(complete ? {} : { note: "read_truncated" as const }),
-				},
-			});
-		const s = sweep();
-		set(100, false);
-		await s.tick();
-		expect(row("exec-big")).toMatchObject({
-			state: "pending_confirm",
-			confirm_tokens: null,
+		tokens.set("exec-big", {
+			rolloutPath: "/r.jsonl",
+			read: {
+				offset: 100,
+				lastTotal: 100,
+				tokensAtTerminal: 0,
+				tokensAfterTerminal: 100,
+				complete: false,
+				note: "read_truncated",
+			},
 		});
-		set(200, false);
-		advance(5);
-		await s.tick();
-		expect(row("exec-big")?.state).toBe("pending_confirm");
-		// First complete read becomes the baseline; one more sample is required.
-		set(300, true);
-		advance(5);
-		await s.tick();
+		await sweep().tick();
 		expect(row("exec-big")).toMatchObject({
-			state: "pending_confirm",
-			confirm_tokens: 300,
+			state: "closed",
+			rollout_offset: 100,
 		});
-		// Tokens grew between the two complete samples: not closed.
-		set(900, true);
-		advance(5);
-		await s.tick();
-		expect(row("exec-big")?.state).toBe("probe_unknown");
-		expect(alerts.map((a) => a.state)).toEqual(["probe_unknown"]);
+	});
+	it("FLY-2919: a newly terminal dead body is considered without a three minute delay", async () => {
+		seed("exec-fresh");
+		clock = new Date(Date.now() + 1000);
+		await sweep().tick();
+		expect(row("exec-fresh")?.state).toBe("closed");
 	});
 
-	it("an unresolvable rollout still closes on two process-free samples", async () => {
+	it("an unresolvable rollout does not block exact process death", async () => {
 		seed("exec-norollout");
 		const s = sweep();
 		await s.tick();

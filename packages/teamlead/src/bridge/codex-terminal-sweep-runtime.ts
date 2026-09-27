@@ -5,9 +5,9 @@ import {
 	captureCodexProcessSnapshot,
 	codexHomesRoot,
 	parseCodexProcessSnapshot,
-	probeCodexDaemonEvidence,
 	resolveDaemonSocketPath,
 } from "flywheel-claude-runner";
+import { CommDB } from "flywheel-comm/db";
 import {
 	type AlertPayload,
 	type AlertResult,
@@ -30,6 +30,8 @@ import {
 	type CodexTerminalSweepDeps,
 	parseTerminalAtMs,
 } from "./codex-terminal-sweep.js";
+import { resolveCommDbPath } from "./commdb-session-prune.js";
+import { hasUnresolvedCompleteMarker } from "./completion-before-death.js";
 
 /** FLY-2903 production wiring of the terminal-body sweep (plugin stays thin). */
 
@@ -157,6 +159,7 @@ export interface BridgeCodexTerminalSweepOptions {
 		CodexExecutionOwnershipRegistry,
 		"ownershipState" | "requestStop"
 	>;
+	bodyObserver: CodexTerminalSweepDeps["bodyObserver"];
 	reapEnabled: () => boolean;
 	alertSink: {
 		current?: { alert: (payload: AlertPayload) => Promise<AlertResult> };
@@ -194,8 +197,52 @@ export function createBridgeCodexTerminalSweep(
 				await captureCodexProcessSnapshot(SNAPSHOT_DEADLINE_MS),
 			),
 		owners: options.owners,
-		probeEvidence: (executionId) =>
-			probeCodexDaemonEvidence(executionId, { env }),
+		bodyObserver: {
+			observe: (executionId) => options.bodyObserver.observe(executionId),
+			isCurrent: (observation) => {
+				if (!options.bodyObserver.isCurrent(observation)) return false;
+				// Terminal runs need not still be active. Fence newer logical work
+				// using immutable bindings, not the active-run recovery selector.
+				const bindings = store.listWorkflowActivationsForActor(
+					observation.identity.executionId,
+				);
+				if (observation.identity.activationId === null)
+					return bindings.length === 0;
+				const exact = bindings.find(
+					(binding) =>
+						binding.activation_id === observation.identity.activationId,
+				);
+				return Boolean(
+					exact &&
+						bindings.every(
+							(binding) =>
+								binding.activation_id === exact.activation_id ||
+								binding.bound_at < exact.bound_at,
+						),
+				);
+			},
+		},
+		completionPending: (executionId) =>
+			hasUnresolvedCompleteMarker(executionId),
+		stopAuthorized: (executionId) => {
+			let db: CommDB | undefined;
+			try {
+				const session = store.getSession(executionId);
+				const dbPath = session?.project_name
+					? resolveCommDbPath(session.project_name)
+					: undefined;
+				if (!dbPath || !session?.issue_id) return false;
+				db = CommDB.openReadonly(dbPath);
+				return !db
+					.listTurns()
+					.some((turn) => turn.holder_exec_id === executionId);
+			} catch {
+				return false;
+			} finally {
+				db?.close();
+			}
+		},
+
 		reap: (session, beforeSignal) =>
 			reapCodexDaemonForSession(store, session, CODEX_TERMINAL_SWEEP_SOURCE, {
 				beforeSignal,

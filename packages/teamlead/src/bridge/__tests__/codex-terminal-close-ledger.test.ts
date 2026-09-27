@@ -293,7 +293,7 @@ describe("FLY-2903 codex_terminal_close ledger", () => {
 		);
 	});
 
-	it("sweep candidates: terminal codex-tmux sessions 3min..48h past terminal, not closed, oldest first", () => {
+	it("sweep candidates: terminal codex-tmux sessions 0..48h past terminal, not closed, oldest first", () => {
 		const seed = (exec: string, status: string, adapter = "codex-tmux") => {
 			store.upsertSession({
 				execution_id: exec,
@@ -327,7 +327,13 @@ describe("FLY-2903 codex_terminal_close ledger", () => {
 			"c-failed",
 			"c-terminated",
 		]);
-		expect(ids(60_000)).toEqual([]);
+		expect(ids(60_000).sort()).toEqual([
+			"c-blocked",
+			"c-completed",
+			"c-failed",
+			"c-terminated",
+		]);
+		expect(ids(-60_000)).toEqual([]);
 		expect(ids(49 * 3_600_000)).toEqual([]);
 		expect(
 			store.codexTerminalClose.listSweepCandidateExecutionIds({

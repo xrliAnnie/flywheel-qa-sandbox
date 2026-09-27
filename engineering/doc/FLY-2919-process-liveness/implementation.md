@@ -5,6 +5,10 @@ Issue: FLY-2919 (https://linear.app/geoforge3d/issue/FLY-2919/病根修复-2-体
 
 ## 当前范围与游标
 
+当前执行 `bd58c685-54d1-4ceb-9240-20611b35b895`，implement 0/6；最新精确提交与下一步以同目录 progress.md 为准。A1–A10、B1/B2/B3、C1/C2 与 D1 已有分批证据；B4 接入终态 Codex sweep。全部 A–F 与九单目标不变，生产 Heartbeat/dispatcher 死亡提交、独立 cadence、逻辑重入、legacy 与最终验收仍未完成。没有有效最终代码复审、PR、full CI、QA 或 handoff 声明。以下保留各次检查点历史，文末是最近批次。
+
+## 首次开工范围与游标（历史）
+
 实现执行 `8031d5c6-58bf-45e7-bdb4-8648d332e6bc`，TURN implement epoch 6，activation `activation:8031d5c6-58bf-45e7-bdb4-8648d332e6bc:9d401eac-e64b-4165-b3af-d6b0cf08466a:implement:1`。
 设计 gate `f4e94872-60c5-49a3-9d47-89a63b8264f6` 的有效 APPROVED 已通过 CLI 核验。开工同步 origin/main（含 FLY-2903），未重开设计。
 
@@ -393,3 +397,21 @@ CommDB 的既有方法按字节保持不变（剥除新 import 与新 method 后
 本批仍未接生产 Heartbeat/dispatcher/其余窗口消费者；同物理generation的新逻辑activation桥接、独立采样节奏、reown生产保护、legacy迁移、普通/rework义务及完整A–F/九单均未完成。A9 routes原15秒导入超时未在本批关闭。没有review/PR/full CI/QA/handoff完成声明。
 
 C2 验证收齐：16个具体文件依次执行337 pass；限定发现文件的 owning related 为 comm7文件130 pass、teamlead6文件181 pass。teamlead及依赖build、teamlead/voice-codex typecheck、lint均exit0（25条既有warning）。初次build缺lib.ts类型导出及owner缩窄、初次lint导入分隔错误均已修复并重跑通过；不算产品行为RED。无整库/整包测试，无新shell测试。全部红绿、初次失败和最终检查日志、命令、related配置、现有db方法字节核对及源码SHA256归档 implementation-c2-evidence.json.gz；逐查询消费者/排除理由归档 implementation-c2-consumers.json.gz。
+
+## B4 终态 Codex sweep 消费 BodyObservation（执行 bd58c685）
+
+从 C2 `de3025777` 续接，TURN implement epoch14，无新 Lead 指令。开始接实际生产消费者：plugin 创建共用的 store-managed ExecutionBodyObserver，并传给现有 CodexTerminalSweep；死亡开关仍经 registry/store 每次读取，recovery deferral 参与观察。此批仅接终态 sweep，不把这段 callback 当作运行中 reown 的完整预算优先实现。
+
+删除的生命推断与等待分支：daemon-only absent，以及 missing/no_group ledger + silent socket → closed；内存 owner active 优先覆盖 unknown；pending_confirm 的两轮 token 比较；token 增长/读不全阻止可靠死亡；候选查询的三分钟下限；在采样前按 retiring/standby/resuming 一律跳过。历史 pending_confirm 枚举与字段保留用于兼容旧行，不新写这种等待状态。token/process snapshot 只用于诊断和发现候选；新鲜、当前身份绑定的 dead 在该次 sweep 直接关闭物理审计行。活的批准 standby 仍不 signal，死 writer 集合不靠 parked 豁免。
+
+沿用同一 requestStop 和 reap，并保留同步 beforeSignal；不增加 kill 路径。关闭/清理前核 BodyObservation 身份、revision/owner/generation/epoch、动态 flag 与未处理 completion marker；活体 stop/reap 另核当前 TURN（查全项目 TURN，覆盖 issue alias）、resident hold、retirement 状态。采样或 alert await 后身份变化降为 unknown，不写旧关闭结论。CommDB 不可读时不授权 signal。reserved-only 内存 fence 仅在独立证死后执行，await 后重新观察，不把 fence 当死亡证明。
+
+终态 run 不一定还 active，因此 runtime 不使用 resolveCurrentWorkflowActivation 的 active-run 筛选。它核不可变 activation 列表：原物理绑定仍最新才可用，有新绑定或同时间戳歧义则拒绝。该限制未解决同物理generation正常逻辑重入，后续 B/C 仍须完成该桥接；不能把 unknown 当最终结果。legacy 缺 accepted binding 也仍待迁移。
+
+RED/GREEN：最初5项新增契约在旧路径全部 RED（24旧测pass），证明当前 dead 受诊断失败阻碍、缺ledger被误认为dead、unknown被内存active覆盖、活writer被daemon-only absent覆盖、token采集中身份变化仍写closed。改用共同观察后这5项GREEN。fresh terminal 的三分钟延迟另1项RED，去掉筛选下限后GREEN；TURN/owned resident保护另3 RED，统一stop/reap守卫后GREEN。旧 token 等待用例改为证明历史 pending_confirm 可由当前物理死亡直接收敛，保留 token 遥测。新增 marker、开关、alert-await、retirement负控；最终 sweep37pass。生产factory8pass涵盖真实临时CommDB别名TURN、动态证据、ended-run原绑定及更新/同时间绑定拒绝（OS census在测试中明确mock，不访问宿主机）。
+
+本批改的是 codex_terminal_close 的物理诊断/清理消费者，不代表 StateStore/CommDB C2 死亡义务已由生产 Heartbeat/dispatcher提交；这些主账接线仍待下一批。仍沿既有 maintenance tick运行，尚未满足批准的独立采样 cadence、8候选/并发2/5秒总窗与延迟上界验收。全部A–F/九单、A9 routes原15秒超时、effective review/PR/CI/QA/handoff仍未完成。
+
+B4 最后追加 unknown+诊断进程列表负控：1 RED/37 pass，移除该列表对生命 verdict 的覆盖后38 GREEN；进程列表只用于发现候选和诊断，unknown一律probe_unknown。该追加不改变公共接口或关停原语。
+
+B4 最终验证：9个明确文件逐一167pass，限定发现文件的 owning related 4文件111pass（含53项reown）；FLY-2211 inventory5项和FLY-1560守卫7项保留未弱化。最终源码teamlead及依赖build、teamlead/voice-codex typecheck、lint均exit0（25既有warning）；无整库/整包测试、新shell测试、真实OS探活或529声明。命令、全部红/绿及中间诊断、related配置和源码hash归档 implementation-b4-evidence.json.gz；逐查询匹配/排除理由归档 implementation-b4-consumers.json.gz。

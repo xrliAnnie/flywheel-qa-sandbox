@@ -9,13 +9,24 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveDaemonSocketPath } from "flywheel-claude-runner";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+	type BodyObservation,
+	resolveDaemonSocketPath,
+} from "flywheel-claude-runner";
+import { CommDB } from "flywheel-comm/db";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { StateStore } from "../../StateStore.js";
 import {
 	buildCodexTerminalBodyAlert,
+	createBridgeCodexTerminalSweep,
 	createRolloutTokenObserver,
 	unlinkOwnCodexSocket,
 } from "../codex-terminal-sweep-runtime.js";
+
+vi.mock("flywheel-claude-runner", async (importOriginal) => ({
+	...(await importOriginal<typeof import("flywheel-claude-runner")>()),
+	captureCodexProcessSnapshot: vi.fn(async () => ""),
+}));
 
 const THREAD = "019a0000-aaaa-bbbb-cccc-00000000abcd";
 
@@ -43,7 +54,170 @@ describe("FLY-2903 terminal sweep runtime wiring", () => {
 	beforeEach(() => {
 		root = mkdtempSync(join(tmpdir(), "fly2903-sweep-rt-"));
 	});
-	afterEach(() => rmSync(root, { recursive: true, force: true }));
+	afterEach(() => {
+		vi.unstubAllEnvs();
+		vi.restoreAllMocks();
+		rmSync(root, { recursive: true, force: true });
+	});
+
+	it("wires body proof, current activation and every TURN alias into the production stop guard", async () => {
+		vi.stubEnv("FLYWHEEL_COMM_ROOT", root);
+		const store = await StateStore.create(":memory:");
+		const comm = new CommDB(join(root, "fixture", "comm.db"));
+		try {
+			store.upsertSession({
+				execution_id: "exec-live",
+				issue_id: "internal-issue",
+				project_name: "fixture",
+				status: "running",
+				adapter_type: "codex-tmux",
+			});
+			store.forceStatus("exec-live", "completed", "", "fixture");
+			const stop = vi.fn(async () => "stopped" as const);
+			let valid = true;
+			const observation: BodyObservation = {
+				identity: {
+					executionId: "exec-live",
+					activationId: null,
+					generation: 1,
+					lifecycleRevision: store.getSession("exec-live")!.lifecycle_revision,
+					adapter: "codex-tmux",
+				},
+				ownerToken: "owner",
+				spawnEpoch: 1,
+				bindingDigest: "a".repeat(64),
+				verdict: "alive",
+				observedAt: new Date().toISOString(),
+				expiresAt: new Date(Date.now() + 10000).toISOString(),
+				reason: "fixture_body",
+			};
+			const bodyObserver = {
+				observe: vi.fn(async () => observation),
+				isCurrent: () => valid,
+			};
+			const make = () =>
+				createBridgeCodexTerminalSweep({
+					store,
+					owners: { ownershipState: () => "active", requestStop: stop },
+					bodyObserver,
+					reapEnabled: () => true,
+					alertSink: {
+						current: { alert: vi.fn(async () => ({ kind: "sent" }) as never) },
+					},
+				});
+			comm.grantTurn("FLY-2919", "exec-live", "implement", Date.now());
+			const sweep = make();
+			await sweep.tick();
+			await sweep.tick();
+			expect(stop).not.toHaveBeenCalled();
+			expect(bodyObserver.observe).toHaveBeenCalledTimes(2);
+			comm.deleteTurnIfCurrent(
+				"FLY-2919",
+				"exec-live",
+				comm.getTurn("FLY-2919")!.epoch,
+			);
+			const activation = vi
+				.spyOn(store, "listWorkflowActivationsForActor")
+				.mockReturnValue([{ activation_id: "newer-activation" }] as never);
+			await sweep.tick();
+			expect(stop).not.toHaveBeenCalled();
+			expect(store.codexTerminalClose.get("exec-live")?.state).toBe(
+				"probe_unknown",
+			);
+			activation.mockRestore();
+			valid = false;
+			await sweep.tick();
+			expect(stop).not.toHaveBeenCalled();
+			valid = true;
+			await sweep.tick();
+			await sweep.tick();
+			expect(stop).toHaveBeenCalledOnce();
+		} finally {
+			comm.close();
+			store.close();
+		}
+	});
+
+	it.each(["only_binding", "newer_binding", "same_timestamp"] as const)(
+		"terminal-run identity fence: %s",
+		async (mode) => {
+			const store = await StateStore.create(":memory:");
+			try {
+				store.upsertSession({
+					execution_id: "exec-terminal",
+					issue_id: "issue",
+					project_name: "fixture",
+					status: "running",
+					adapter_type: "codex-tmux",
+				});
+				store.forceStatus("exec-terminal", "completed", "", "fixture");
+				const first = {
+					activation_id: "activation-original",
+					execution_id: "exec-terminal",
+					run_id: "ended-run",
+					node_id: "implement",
+					attempt: 1,
+					mode: "spawn" as const,
+					rework_request_id: null,
+					bound_at: "2026-09-26T01:00:00Z",
+				};
+				vi.spyOn(store, "listWorkflowActivationsForActor").mockReturnValue(
+					mode === "only_binding"
+						? [first]
+						: [
+								first,
+								{
+									...first,
+									activation_id: "activation-new",
+									bound_at:
+										mode === "same_timestamp"
+											? first.bound_at
+											: "2026-09-26T02:00:00Z",
+								},
+							],
+				);
+				// An ended run need not qualify for the active recovery selector.
+				vi.spyOn(store, "resolveCurrentWorkflowActivation").mockReturnValue({
+					kind: "ambiguous",
+					activationIds: [],
+				});
+				const observation: BodyObservation = {
+					identity: {
+						executionId: "exec-terminal",
+						activationId: first.activation_id,
+						generation: 1,
+						lifecycleRevision:
+							store.getSession("exec-terminal")!.lifecycle_revision,
+						adapter: "codex-tmux",
+					},
+					ownerToken: "owner",
+					spawnEpoch: 1,
+					bindingDigest: "a".repeat(64),
+					verdict: "dead",
+					observedAt: new Date().toISOString(),
+					expiresAt: new Date(Date.now() + 10000).toISOString(),
+					reason: "fixture_body",
+				};
+				const sweep = createBridgeCodexTerminalSweep({
+					store,
+					owners: { ownershipState: () => "none", requestStop: vi.fn() },
+					bodyObserver: {
+						observe: async () => observation,
+						isCurrent: () => true,
+					},
+					reapEnabled: () => false,
+					alertSink: {},
+					env: { FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT: join(root, "sockets") },
+				});
+				await sweep.tick();
+				expect(store.codexTerminalClose.get("exec-terminal")?.state).toBe(
+					mode === "only_binding" ? "closed" : "probe_unknown",
+				);
+			} finally {
+				store.close();
+			}
+		},
+	);
 
 	it("builds a bounded plain-text severe alert with a deterministic event id", () => {
 		const alert = buildCodexTerminalBodyAlert({
