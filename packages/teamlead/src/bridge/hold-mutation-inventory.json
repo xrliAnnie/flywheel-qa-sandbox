@@ -14,6 +14,15 @@
 	},
 	{
 		"store": "state",
+		"table": "workflow_run_node",
+		"file": "StateStore.ts",
+		"symbol": "getLegacyWorkflowActiveOrphanRecovery",
+		"mutationKind": "derived",
+		"shapeIds": ["legacy_active_orphan"],
+		"producerSymbols": ["resumeWorkflowHold"]
+	},
+	{
+		"store": "state",
 		"table": "workflow_run_event",
 		"file": "StateStore.ts",
 		"symbol": "resumeWorkflowHold",

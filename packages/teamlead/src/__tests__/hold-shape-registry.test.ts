@@ -8,6 +8,7 @@ import {
 
 const EXPECTED_SHAPES = [
 	"workflow_node_recovery",
+	"legacy_active_orphan",
 	"rework_activation_stalled_held",
 	"rework_pane_loss_handoff",
 	"rework_retry_exhausted",
@@ -36,7 +37,7 @@ describe("FLY-2248 sanctioned hold-shape registry", () => {
 			HOLD_SHAPE_REGISTRY.filter(
 				({ authoritativeStore }) => authoritativeStore === "state",
 			),
-		).toHaveLength(18);
+		).toHaveLength(19);
 		expect(
 			HOLD_SHAPE_REGISTRY.filter(
 				({ authoritativeStore }) => authoritativeStore === "comm",
@@ -101,7 +102,7 @@ describe("FLY-2248 sanctioned hold-shape registry", () => {
 		expect(getHoldShape("carrier_run_inactive")?.scope).toBe("run-derived");
 		expect(
 			HOLD_SHAPE_REGISTRY.filter(({ scope }) => scope === "run"),
-		).toHaveLength(17);
+		).toHaveLength(18);
 	});
 
 	it("keeps operator recovery discovery aligned with terminal registered holds", () => {

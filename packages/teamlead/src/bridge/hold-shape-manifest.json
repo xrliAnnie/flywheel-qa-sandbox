@@ -7,6 +7,13 @@
 		"resumeOwner": "recoverWorkflowNode"
 	},
 	{
+		"id": "legacy_active_orphan",
+		"authoritativeStore": "state",
+		"scope": "run",
+		"detectOwner": "workflow_run_node+workflow_side_effect_ledger+workflow_run_event",
+		"resumeOwner": "recoverWorkflowNode"
+	},
+	{
 		"id": "rework_activation_stalled_held",
 		"authoritativeStore": "state",
 		"scope": "run",

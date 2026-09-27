@@ -57685,6 +57685,102 @@ export class StateStore {
 		return result(true, `run-level hold ${input.descriptor.id} remains current`);
 	}
 
+	private getLegacyWorkflowActiveOrphanRecovery(runId: string):
+		| {
+				nodeId: string;
+				attempt: number;
+				previousExecutionId: string;
+				previousLaunchOrdinal: number;
+				holdEventUid: string;
+				reason: string;
+				since: string;
+		  }
+		| undefined {
+		const run = this.getWorkflowRun(runId);
+		if (
+			!run ||
+			run.engine_owned !== 1 ||
+			run.status !== "active" ||
+			!run.current_node_id ||
+			!run.snapshot
+		)
+			return;
+		const node = this.listWorkflowRunNodes(runId, run.current_node_id).at(-1);
+		if (
+			!node ||
+			node.state !== "pending" ||
+			node.execution_id !== null ||
+			this.getWorkflowNodeCompletion(runId, node.node_id, node.attempt)
+		)
+			return;
+		const latest = this.listWorkflowSideEffects(runId)
+			.filter(
+				(row) =>
+					row.kind === "dispatch" &&
+					row.node_id === node.node_id &&
+					row.attempt === node.attempt,
+			)
+			.sort((a, b) => b.launch_ordinal - a.launch_ordinal)[0];
+		if (
+			!latest ||
+			latest.state !== "abandoned" ||
+			!this.getWorkflowLaunchCancellation(latest.execution_id)
+		)
+			return;
+		const events = this.listWorkflowRunEvents(runId);
+		const resumed = new Set(
+			events
+				.filter((event) => event.kind === "hold_resumed")
+				.flatMap((event) => {
+					const payload =
+						event.payload &&
+						typeof event.payload === "object" &&
+						!Array.isArray(event.payload)
+							? (event.payload as Record<string, unknown>)
+							: {};
+					return typeof payload.holdEventUid === "string"
+						? [payload.holdEventUid]
+						: [];
+				}),
+		);
+		const candidates = events.filter((event) => {
+			if (
+				![
+					"unlaunched_admission_rolled_back",
+					"unlaunched_admission_held",
+					"retry_limit_escalated",
+					"environment_failure_escalated",
+				].includes(event.kind) ||
+				event.node_id !== node.node_id ||
+				event.execution_id !== latest.execution_id ||
+				!resumed.has(event.event_uid)
+			)
+				return false;
+			const payload =
+				event.payload &&
+				typeof event.payload === "object" &&
+				!Array.isArray(event.payload)
+					? (event.payload as Record<string, unknown>)
+					: {};
+			return Number(payload.attempt) === node.attempt;
+		});
+		if (candidates.length !== 1) return;
+		const source = candidates[0]!;
+		const payload = source.payload as Record<string, unknown>;
+		return {
+			nodeId: node.node_id,
+			attempt: node.attempt,
+			previousExecutionId: latest.execution_id,
+			previousLaunchOrdinal: latest.launch_ordinal,
+			holdEventUid: source.event_uid,
+			reason:
+				typeof payload.reason === "string"
+					? payload.reason
+					: "legacy_active_orphan",
+			since: source.at,
+		};
+	}
+
 	listWorkflowHolds(runId: string): WorkflowHoldRow[] {
 		const run = this.getWorkflowRun(runId);
 		if (!run) return [];
@@ -57821,6 +57917,25 @@ export class StateStore {
 					? { requiredDecision }
 					: {}),
 				preconditions,
+			});
+		}
+		const legacyActiveOrphan = this.getLegacyWorkflowActiveOrphanRecovery(runId);
+		if (legacyActiveOrphan) {
+			holds.push({
+				shape: "legacy_active_orphan",
+				scope: "run",
+				holdEventUid: legacyActiveOrphan.holdEventUid,
+				reason: legacyActiveOrphan.reason,
+				since: legacyActiveOrphan.since,
+				resumable: true,
+				runLevel: true,
+				preconditions: [
+					{
+						name: "legacy_active_orphan_current",
+						ok: true,
+						detail: `active ${legacyActiveOrphan.nodeId}/${legacyActiveOrphan.attempt} has no execution or consumable dispatch`,
+					},
+				],
 			});
 		}
 		return holds;
@@ -58619,17 +58734,24 @@ export class StateStore {
 		projectName: string;
 	} {
 		const run = this.getWorkflowRun(runId);
+		const legacyActiveOrphan =
+			run?.status === "active"
+				? this.getLegacyWorkflowActiveOrphanRecovery(runId)
+				: undefined;
 		if (
 			!run ||
 			run.engine_owned !== 1 ||
-			run.status !== "held" ||
+			(run.status !== "held" && !legacyActiveOrphan) ||
 			!run.current_node_id ||
 			!run.snapshot
 		)
 			throw new Error("engine_run_not_held");
 		const node = this.listWorkflowRunNodes(runId, run.current_node_id).at(-1);
+		const previousExecutionId =
+			node?.execution_id ?? legacyActiveOrphan?.previousExecutionId;
 		if (
-			!node?.execution_id ||
+			!node ||
+			!previousExecutionId ||
 			!["failed", "running", "admitted", "pending"].includes(node.state)
 		)
 			throw new Error("recovery_target_unavailable");
@@ -58650,7 +58772,7 @@ export class StateStore {
 					row.attempt === node.attempt,
 			)
 			.sort((a, b) => b.launch_ordinal - a.launch_ordinal)[0];
-		if (!latest || latest.execution_id !== node.execution_id)
+		if (!latest || latest.execution_id !== previousExecutionId)
 			throw new Error("recovery_dispatch_identity_missing");
 		if (
 			!landNode &&
@@ -58676,13 +58798,13 @@ export class StateStore {
 			if (
 				!event ||
 				event.node_id !== node.node_id ||
-				event.execution_id !== node.execution_id ||
+				event.execution_id !== previousExecutionId ||
 				payload?.attempt !== node.attempt
 			)
 				throw new Error("recovery_hold_evidence_missing");
 		}
-		const cancellation = this.getWorkflowLaunchCancellation(node.execution_id);
-		const owner = this.getWorkflowLaunchOwner(node.execution_id);
+		const cancellation = this.getWorkflowLaunchCancellation(previousExecutionId);
+		const owner = this.getWorkflowLaunchOwner(previousExecutionId);
 		// An uncommitted intent needs the existing cancellation/absence protocol.
 		// A liveness observation alone cannot authorize abandoning it.
 		if (
@@ -58707,7 +58829,7 @@ export class StateStore {
 			runId,
 			nodeId: node.node_id,
 			attempt: node.attempt,
-			previousExecutionId: node.execution_id,
+			previousExecutionId,
 			previousLaunchOrdinal: latest.launch_ordinal,
 			snapshotDigest: snapshot.snapshot_digest,
 			holdSetDigest: canonicalSubmissionDigest(sourceHoldEventUids),
@@ -58729,12 +58851,13 @@ export class StateStore {
 				target,
 				node,
 				latest,
+				legacyActiveOrphan: legacyActiveOrphan ?? null,
 				cancellation: cancellation ?? null,
 				owner: owner ?? null,
 				landOperation: landOperation ?? null,
 				quotaTargets: landNode
 					? []
-					: this.workflowNodeRecoveryQuotaFences(node.execution_id),
+					: this.workflowNodeRecoveryQuotaFences(previousExecutionId),
 			}),
 		};
 	}
@@ -58887,6 +59010,17 @@ export class StateStore {
 		if (run?.status === "held" && run.current_node_id === target.nodeId &&
 			node?.attempt === target.attempt && node.execution_id === target.previousExecutionId &&
 			(latest?.launch_ordinal ?? 0) === target.previousLaunchOrdinal) return undefined;
+		const legacyActiveOrphan = this.getLegacyWorkflowActiveOrphanRecovery(
+			target.runId,
+		);
+		if (
+			legacyActiveOrphan &&
+			legacyActiveOrphan.nodeId === target.nodeId &&
+			legacyActiveOrphan.attempt === target.attempt &&
+			legacyActiveOrphan.previousExecutionId === target.previousExecutionId &&
+			legacyActiveOrphan.previousLaunchOrdinal === target.previousLaunchOrdinal
+		)
+			return undefined;
 		const originalOperations = new Set<string>();
 		for (const row of this.workflowSelectAll(
 			"SELECT client_request_id FROM workflow_delivery_operation WHERE run_id = ? AND kind = 'hold_resume' AND recovery_receipt_json IS NOT NULL",
@@ -59434,12 +59568,20 @@ export class StateStore {
 						},
 					});
 				}
-				this.db.run(
-					"UPDATE workflow_run SET status = 'active' WHERE run_id = ? AND status = 'held' AND current_node_id = ?",
-					[target.runId, target.nodeId],
-				);
-				if (this.db.getRowsModified() !== 1)
-					throw new Error("recovery_run_cas_failed");
+				const currentRun = this.getWorkflowRun(target.runId);
+				if (
+					currentRun?.status === "active" &&
+					currentRun.current_node_id === target.nodeId
+				) {
+					// Historical releases may already be active but lack any dispatchable body.
+				} else {
+					this.db.run(
+						"UPDATE workflow_run SET status = 'active' WHERE run_id = ? AND status = 'held' AND current_node_id = ?",
+						[target.runId, target.nodeId],
+					);
+					if (this.db.getRowsModified() !== 1)
+						throw new Error("recovery_run_cas_failed");
+				}
 				this.reviveHeldWorkflowCarrierDeliveriesTx({
 					runId: target.runId,
 					now: input.now,
@@ -62628,11 +62770,22 @@ export class StateStore {
 		}
 		const run = this.getWorkflowRun(input.runId);
 		const node = this.listWorkflowRunNodes(input.runId, input.nodeId).at(-1);
+		const legacyActiveOrphan = input.operatorRecovery
+			? this.getLegacyWorkflowActiveOrphanRecovery(input.runId)
+			: undefined;
+		const operatorTargetCurrent = legacyActiveOrphan
+			? legacyActiveOrphan.nodeId === input.nodeId &&
+				legacyActiveOrphan.attempt === input.attempt &&
+				legacyActiveOrphan.previousExecutionId === input.deadExecutionId &&
+				node?.state === "pending" &&
+				node.execution_id === null
+			: run?.status === "held" && node?.execution_id === input.deadExecutionId;
 		if (
-			!run || run.engine_owned !== 1 || run.status !== (input.operatorRecovery ? "held" : "active") ||
+			!run || run.engine_owned !== 1 ||
+			(input.operatorRecovery ? !operatorTargetCurrent : run.status !== "active") ||
 			run.current_node_id !== input.nodeId || !node ||
 			node.attempt !== input.attempt || (!input.operatorRecovery && node.state !== "running") ||
-			node.execution_id !== input.deadExecutionId ||
+			(!input.operatorRecovery && node.execution_id !== input.deadExecutionId) ||
 			this.getWorkflowNodeCompletion(input.runId, input.nodeId, input.attempt)
 		) throw new Error("replacement_target_changed");
 		// Check the automatic budget here as well as at the producer's hold boundary.
@@ -62701,9 +62854,24 @@ export class StateStore {
 				closeKind: "replaced",
 			});
 		}
-		this.db.run(`UPDATE workflow_run_node SET state = 'pending', execution_id = ?, ended_at = NULL
-			WHERE run_id = ? AND node_id = ? AND attempt = ? AND execution_id = ? AND state = ?`,
-			[input.newExecutionId, input.runId, input.nodeId, input.attempt, input.deadExecutionId, node.state]);
+		this.db.run(
+			legacyActiveOrphan
+				? `UPDATE workflow_run_node SET state = 'pending', execution_id = ?, ended_at = NULL
+				    WHERE run_id = ? AND node_id = ? AND attempt = ?
+				      AND execution_id IS NULL AND state = 'pending'`
+				: `UPDATE workflow_run_node SET state = 'pending', execution_id = ?, ended_at = NULL
+				    WHERE run_id = ? AND node_id = ? AND attempt = ? AND execution_id = ? AND state = ?`,
+			legacyActiveOrphan
+				? [input.newExecutionId, input.runId, input.nodeId, input.attempt]
+				: [
+						input.newExecutionId,
+						input.runId,
+						input.nodeId,
+						input.attempt,
+						input.deadExecutionId,
+						node.state,
+					],
+		);
 		if (this.db.getRowsModified() !== 1) throw new Error("replacement_node_cas_failed");
 		const writerTransitionUid = `writer_replacement:${canonicalSubmissionDigest(
 			{

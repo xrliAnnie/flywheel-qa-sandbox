@@ -1246,6 +1246,171 @@ describe("FLY-2545 land recovery", () => {
 	});
 });
 
+describe("FLY-2329 legacy active orphan recovery", () => {
+	it("discovers the old null-execution release and mints a consumable dispatch", async () => {
+		const projectRoot = mkdtempSync(join(tmpdir(), "fly2329-orphan-project-"));
+		const stateRoot = mkdtempSync(join(tmpdir(), "fly2329-orphan-markers-"));
+		const store = await StateStore.create(":memory:");
+		const head = await materializePredecessor(store, projectRoot);
+		const fake = fakeStartDispatcher(store, head);
+		const engine = (now: string) =>
+			new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: fake.dispatcher,
+				stateRoot,
+				env: ENV,
+				now: () => new Date(now),
+				probeUnlaunchedExternalEvidence: async () => "absent",
+				resolveRunAlertIdentity: () => ({
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				}),
+			});
+		expect(await engine("2026-07-16T00:07:00.000Z").reconcile()).toEqual({
+			started: 0,
+			held: 1,
+		});
+		expect(await engine("2026-07-16T01:08:00.000Z").reconcile()).toEqual({
+			started: 0,
+			held: 0,
+		});
+		const rollback = store
+			.listWorkflowRunEvents(RUN_ID)
+			.find((event) => event.kind === "unlaunched_admission_rolled_back")!;
+		const raw = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		raw.run(
+			"UPDATE workflow_run_node SET state='pending',execution_id=NULL,ended_at=NULL WHERE run_id=? AND node_id='implement' AND attempt=1",
+			[RUN_ID],
+		);
+		raw.run("UPDATE workflow_run SET status='active' WHERE run_id=?", [RUN_ID]);
+		expect(
+			store
+				.listWorkflowHolds(RUN_ID)
+				.find((hold) => hold.shape === "legacy_active_orphan"),
+		).toBeUndefined();
+		store.appendWorkflowRunEvent({
+			runId: RUN_ID,
+			eventUid: `hold_resumed:unlaunched_admission_rolled_back:${rollback.event_uid}`,
+			kind: "hold_resumed",
+			nodeId: "implement",
+			payload: {
+				shape: "unlaunched_admission_rolled_back",
+				holdEventUid: rollback.event_uid,
+				operationId: "legacy-release-without-dispatch",
+			},
+		});
+		expect(store.listWorkflowHolds(RUN_ID)).toContainEqual(
+			expect.objectContaining({
+				shape: "legacy_active_orphan",
+				holdEventUid: rollback.event_uid,
+				resumable: true,
+			}),
+		);
+
+		const app = express();
+		app.use(express.json());
+		app.use(
+			"/api/runs",
+			createRunsRouter(
+				fake.dispatcher,
+				store,
+				[
+					{
+						projectName: "flywheel",
+						projectRoot,
+						leads: [{ agentId: "flywheel-eng-lead" }],
+					},
+				] as Parameters<typeof createRunsRouter>[2],
+				RunnerAdmissionController.alwaysAdmit(),
+				undefined,
+				false,
+				undefined,
+				{
+					masterToken: "test-master",
+					confirmTokens: new ConfirmTokenStore(),
+					probeRunLiveness: async () => "dead",
+				},
+			),
+		);
+		const server = createServer(app);
+		cleanups.push(async () => {
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+			store.close();
+			rmSync(projectRoot, { recursive: true, force: true });
+			rmSync(stateRoot, { recursive: true, force: true });
+		});
+		await new Promise<void>((resolve) =>
+			server.listen(0, "127.0.0.1", resolve),
+		);
+		const post = async (path: string, body: unknown) => {
+			const response = await fetch(
+				`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/runs/${RUN_ID}${path}`,
+				{
+					method: "POST",
+					headers: {
+						"content-type": "application/json",
+						authorization: "Bearer test-master",
+					},
+					body: JSON.stringify(body),
+				},
+			);
+			return { status: response.status, body: await response.json() };
+		};
+		const request = {
+			runId: RUN_ID,
+			shape: "legacy_active_orphan",
+			holdEventUid: rollback.event_uid,
+			decision: null,
+			reason: "repair the legacy release that did not mint a dispatch",
+			principal: "master",
+			clientRequestId: "fly2329-active-orphan-recovery",
+		};
+		const staged = await post("/resume/stage", request);
+		expect(staged).toMatchObject({
+			status: 200,
+			body: {
+				canonical: {
+					version: 2,
+					shape: "workflow_node_recovery",
+					target: {
+						operationKind: "redispatch_current",
+						previousExecutionId: ORIGINAL_EXECUTION,
+						previousLaunchOrdinal: 1,
+					},
+				},
+			},
+		});
+		const applied = await post("/resume", {
+			canonical: staged.body.canonical,
+			confirmToken: staged.body.confirmToken,
+		});
+		expect(applied).toMatchObject({
+			status: 200,
+			body: { state: "dispatch_recorded", launchOrdinal: 2 },
+		});
+		expect(store.getWorkflowRunNode(RUN_ID, "implement", 1)).toMatchObject({
+			state: "pending",
+			execution_id: applied.body.executionId,
+		});
+		expect(store.getWorkflowRun(RUN_ID)?.status).toBe("active");
+		fake.allowLaunch();
+		expect(await engine("2026-07-16T01:09:00.000Z").reconcile()).toEqual({
+			started: 1,
+			held: 0,
+		});
+		expect(
+			store
+				.listWorkflowSideEffects(RUN_ID)
+				.find((row) => row.id === applied.body.dispatchLedgerId)?.state,
+		).toBe("started");
+	});
+});
+
 describe("state-only recovery through the unified endpoint", () => {
 	it("resumes an operator-paused current execution without minting a replacement", async () => {
 		const projectRoot = mkdtempSync(join(tmpdir(), "fly2922-pause-project-"));

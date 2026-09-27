@@ -206,6 +206,7 @@ export function workflowRecoveryEvidenceDigest(
 export function isWorkflowNodeRecoveryFaultShape(shape: string): boolean {
 	return [
 		"workflow_node_recovery",
+		"legacy_active_orphan",
 		"unlaunched_admission_rolled_back",
 		"unlaunched_admission_held",
 		"completion_receipt_missing",

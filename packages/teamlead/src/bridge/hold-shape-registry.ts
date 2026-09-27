@@ -89,6 +89,11 @@ export const HOLD_SHAPE_REGISTRY = Object.freeze([
 		resumeAction: "redispatch_current",
 	}),
 	shape({
+		id: "legacy_active_orphan",
+		eventKind: "legacy_active_orphan",
+		resumeAction: "redispatch_current",
+	}),
+	shape({
 		id: "rework_activation_stalled_held",
 		eventKind: "rework_activation_stalled_held",
 		resumeAction: "resume_receipt_deadlock",
