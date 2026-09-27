@@ -978,42 +978,139 @@ describe("FLY-2901 root initial recovery", () => {
 	);
 });
 
-
 describe("FLY-2525 held quota recovery service", () => {
- it("delegates an exact waiting quota target through the same mint transaction and refuses an async authority loss", async () => {
-  const projectRoot=mkdtempSync(join(tmpdir(),"fly2525-held-project-"));
-  const stateRoot=mkdtempSync(join(tmpdir(),"fly2525-held-markers-"));
-  const store=await StateStore.create(":memory:");
-  cleanups.push(async()=>{store.close();rmSync(projectRoot,{recursive:true,force:true});rmSync(stateRoot,{recursive:true,force:true});});
-  const head=await materializePredecessor(store,projectRoot);
-  const fake=fakeStartDispatcher(store,head);
-  const engine=(now:string)=>new WorkflowEngineDispatcher({store,startDispatcher:fake.dispatcher,stateRoot,env:ENV,now:()=>new Date(now),probeUnlaunchedExternalEvidence:async()=>"absent",resolveRunAlertIdentity:()=>({leadId:"flywheel-eng-lead",projectName:"flywheel",leadResolution:"resolved"})});
-  expect(await engine("2026-07-16T00:07:00.000Z").reconcile()).toEqual({started:0,held:1});
-  expect(await engine("2026-07-16T01:08:00.000Z").reconcile()).toEqual({started:0,held:0});
-  const quota=store.codexQuota;
-  quota.initializeRoot({rootKey:"root",accountKey:"account",profile:"business",generation:1});
-  quota.registerBinding({bindingId:"binding",executionId:ORIGINAL_EXECUTION,runId:RUN_ID,purpose:"runner",accountKey:"account",profile:"business",generation:1,credentialRootKey:"root"});
-  quota.recordSignal({executionId:ORIGINAL_EXECUTION,bindingId:"binding",nodeId:"implement",attempt:1});
-  quota.recordInstalling({incidentId:"codex:root:1",profile:"school",accountKey:"school-account",priorAuthDigest:"prior",installedAuthDigest:"digest",recoveryMaterialPath:"/fixture/auth"});
-  quota.commitGeneration({incidentId:"codex:root:1",expectedGeneration:1,accountKey:"school-account",profile:"school",authDigest:"digest",probeResult:"ok"});
-  const expectation={target:quota.getTargetFence("codex:root:1","runner",RUN_ID)!,nodeId:"implement",attempt:1,launchOrdinal:1,permitIncidentId:"codex:root:1",installedGeneration:2};
-  const before=store.listWorkflowSideEffects(RUN_ID);
-  const {recoverQuotaHeldWorkflowNode}=await import("../bridge/workflow-quota-recovery.js");
-  let enabled=true;
-  await expect(recoverQuotaHeldWorkflowNode(store,expectation,{isEnabled:()=>enabled,probe:async()=>{enabled=false;return "dead";}})).rejects.toThrow("quota_recovery_disabled");
-  expect(store.listWorkflowSideEffects(RUN_ID)).toEqual(before);
-  expect(quota.getTargetFence("codex:root:1","runner",RUN_ID)?.state).toBe("waiting");
-  enabled=true;
-  const result=await recoverQuotaHeldWorkflowNode(store,expectation,{isEnabled:()=>enabled,probe:async()=>"dead"});
-  expect(result).toMatchObject({ok:true,state:"dispatch_recorded",launchOrdinal:2});
-  if(!result.ok || result.state!=="dispatch_recorded") throw new Error("dispatch missing");
-  expect(quota.listTargets("codex:root:1")[0]).toMatchObject({state:"abandoned",new_run_id:RUN_ID,new_execution_id:result.executionId,last_error:`delegated_to_node_recovery:${result.operationId}`});
-  expect(store.getWorkflowRun(RUN_ID)?.status).toBe("active");
-  expect(store.listWorkflowRunEvents(RUN_ID).some(event=>event.kind==="run_terminated_by_operator")).toBe(false);
-  fake.allowLaunch();
-  expect(await engine(new Date(Date.now()+60_000).toISOString()).reconcile()).toEqual({started:1,held:0});
-  expect(store.listWorkflowSideEffects(RUN_ID).find(row=>row.id===result.dispatchLedgerId)?.state).toBe("started");
- },60_000);
+	it("delegates an exact waiting quota target through the same mint transaction and refuses an async authority loss", async () => {
+		const projectRoot = mkdtempSync(join(tmpdir(), "fly2525-held-project-"));
+		const stateRoot = mkdtempSync(join(tmpdir(), "fly2525-held-markers-"));
+		const store = await StateStore.create(":memory:");
+		cleanups.push(async () => {
+			store.close();
+			rmSync(projectRoot, { recursive: true, force: true });
+			rmSync(stateRoot, { recursive: true, force: true });
+		});
+		const head = await materializePredecessor(store, projectRoot);
+		const fake = fakeStartDispatcher(store, head);
+		const engine = (now: string) =>
+			new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: fake.dispatcher,
+				stateRoot,
+				env: ENV,
+				now: () => new Date(now),
+				probeUnlaunchedExternalEvidence: async () => "absent",
+				resolveRunAlertIdentity: () => ({
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				}),
+			});
+		expect(await engine("2026-07-16T00:07:00.000Z").reconcile()).toEqual({
+			started: 0,
+			held: 1,
+		});
+		expect(await engine("2026-07-16T01:08:00.000Z").reconcile()).toEqual({
+			started: 0,
+			held: 0,
+		});
+		const quota = store.codexQuota;
+		quota.initializeRoot({
+			rootKey: "root",
+			accountKey: "account",
+			profile: "business",
+			generation: 1,
+		});
+		quota.registerBinding({
+			bindingId: "binding",
+			executionId: ORIGINAL_EXECUTION,
+			runId: RUN_ID,
+			purpose: "runner",
+			accountKey: "account",
+			profile: "business",
+			generation: 1,
+			credentialRootKey: "root",
+		});
+		quota.recordSignal({
+			executionId: ORIGINAL_EXECUTION,
+			bindingId: "binding",
+			nodeId: "implement",
+			attempt: 1,
+		});
+		quota.recordInstalling({
+			incidentId: "codex:root:1",
+			profile: "school",
+			accountKey: "school-account",
+			priorAuthDigest: "prior",
+			installedAuthDigest: "digest",
+			recoveryMaterialPath: "/fixture/auth",
+		});
+		quota.commitGeneration({
+			incidentId: "codex:root:1",
+			expectedGeneration: 1,
+			accountKey: "school-account",
+			profile: "school",
+			authDigest: "digest",
+			probeResult: "ok",
+		});
+		const expectation = {
+			target: quota.getTargetFence("codex:root:1", "runner", RUN_ID)!,
+			nodeId: "implement",
+			attempt: 1,
+			launchOrdinal: 1,
+			permitIncidentId: "codex:root:1",
+			installedGeneration: 2,
+		};
+		const before = store.listWorkflowSideEffects(RUN_ID);
+		const { recoverQuotaHeldWorkflowNode } = await import(
+			"../bridge/workflow-quota-recovery.js"
+		);
+		let enabled = true;
+		await expect(
+			recoverQuotaHeldWorkflowNode(store, expectation, {
+				isEnabled: () => enabled,
+				probe: async () => {
+					enabled = false;
+					return "dead";
+				},
+			}),
+		).rejects.toThrow("quota_recovery_disabled");
+		expect(store.listWorkflowSideEffects(RUN_ID)).toEqual(before);
+		expect(quota.getTargetFence("codex:root:1", "runner", RUN_ID)?.state).toBe(
+			"waiting",
+		);
+		enabled = true;
+		const result = await recoverQuotaHeldWorkflowNode(store, expectation, {
+			isEnabled: () => enabled,
+			probe: async () => "dead",
+		});
+		expect(result).toMatchObject({
+			ok: true,
+			state: "dispatch_recorded",
+			launchOrdinal: 2,
+		});
+		if (!result.ok || result.state !== "dispatch_recorded")
+			throw new Error("dispatch missing");
+		expect(quota.listTargets("codex:root:1")[0]).toMatchObject({
+			state: "abandoned",
+			new_run_id: RUN_ID,
+			new_execution_id: result.executionId,
+			last_error: `delegated_to_node_recovery:${result.operationId}`,
+		});
+		expect(store.getWorkflowRun(RUN_ID)?.status).toBe("active");
+		expect(
+			store
+				.listWorkflowRunEvents(RUN_ID)
+				.some((event) => event.kind === "run_terminated_by_operator"),
+		).toBe(false);
+		fake.allowLaunch();
+		expect(
+			await engine(new Date(Date.now() + 60_000).toISOString()).reconcile(),
+		).toEqual({ started: 1, held: 0 });
+		expect(
+			store
+				.listWorkflowSideEffects(RUN_ID)
+				.find((row) => row.id === result.dispatchLedgerId)?.state,
+		).toBe("started");
+	}, 60_000);
 });
 
 describe("FLY-2545 land recovery", () => {
@@ -1614,9 +1711,7 @@ describe("state-only recovery through the unified endpoint", () => {
 		expect(store.getWorkflowRun(RUN_ID)?.status).toBe("active");
 		expect(store.listWorkflowSideEffects(RUN_ID)).toEqual(beforeLedger);
 		expect(
-			store.getCurrentWorkflowGateHolderByQuestionId(
-				"fly2922-gate-question",
-			),
+			store.getCurrentWorkflowGateHolderByQuestionId("fly2922-gate-question"),
 		).toMatchObject({
 			origin_probe_attempts: 0,
 			origin_probe_last_reason: null,
@@ -1628,7 +1723,9 @@ describe("recorded workflow decisions through the unified endpoint", () => {
 	async function heldDecision(
 		shape: "loop_limit_escalated" | "rework_suppressed_idle_spin",
 	) {
-		const projectRoot = mkdtempSync(join(tmpdir(), "fly2922-decision-project-"));
+		const projectRoot = mkdtempSync(
+			join(tmpdir(), "fly2922-decision-project-"),
+		);
 		const store = await StateStore.create(":memory:");
 		const head = await materializePredecessor(store, projectRoot, true);
 		cleanups.push(async () => {
@@ -1648,12 +1745,7 @@ describe("recorded workflow decisions through the unified endpoint", () => {
 			`INSERT INTO workflow_run_node
 			 (run_id,node_id,attempt,state,execution_id,ended_at)
 			 VALUES (?, 'qa', ?, 'done', ?, ?)`,
-			[
-				RUN_ID,
-				sourceAttempt,
-				sourceExecutionId,
-				"2026-09-26T23:00:00.000Z",
-			],
+			[RUN_ID, sourceAttempt, sourceExecutionId, "2026-09-26T23:00:00.000Z"],
 		);
 		raw.run(
 			`INSERT INTO workflow_node_completion
@@ -1795,11 +1887,7 @@ describe("recorded workflow decisions through the unified endpoint", () => {
 			),
 		).toEqual(sourceCompletion);
 		expect(
-			fixture.store.getWorkflowRunNode(
-				RUN_ID,
-				"qa",
-				fixture.sourceAttempt,
-			),
+			fixture.store.getWorkflowRunNode(RUN_ID, "qa", fixture.sourceAttempt),
 		).toMatchObject({ state: "done", execution_id: fixture.sourceExecutionId });
 		expect(
 			fixture.store.getWorkflowRunNode(
