@@ -54,6 +54,10 @@ import type { DeliverySecretProvider } from "./lead-event-delivery.js";
 import { enqueueLeadEvent as enqueueEvent } from "./lead-event-queue.js";
 import { LeadInboxLoop } from "./lead-inbox-loop.js";
 import {
+	type ClaudeInterruptPane,
+	createLeadInterruptHooks,
+} from "./lead-interrupt-delivery.js";
+import {
 	type LeadLeaseReader,
 	readLeadRecipientState,
 } from "./lead-recipient-liveness.js";
@@ -107,6 +111,14 @@ export interface LeadInboxRuntimeOptions {
 		project: ProjectEntry,
 		lead: LeadConfig,
 	) => LeadDeliveryAdapter;
+	/**
+	 * FLY-2883: Claude Lead pane judge + fixed-phrase typing for controlled
+	 * interrupts. Absent = Claude interrupt letters are ordinary mail.
+	 */
+	claudeInterruptPaneForLead?: (
+		project: ProjectEntry,
+		lead: LeadConfig,
+	) => ClaudeInterruptPane | undefined;
 	runnerAdapterForProject?: (
 		project: ProjectEntry,
 		dbPath: string,
@@ -354,11 +366,41 @@ export class LeadInboxRuntime {
 						queue,
 						secretProvider,
 					});
+					const leadBackend = effectiveLeadBackend(
+						lead.backend,
+						process.env.FLYWHEEL_LEAD_BACKEND,
+					).backend;
+					const adapter = adapterForLead(project, lead);
 					const loop = new LeadInboxLoop({
 						queue,
 						leadId: lead.agentId,
 						ownerEpoch: this.ownerEpoch,
-						adapter: adapterForLead(project, lead),
+						adapter,
+						// FLY-2883: controlled interrupt letters. Codex steers through the
+						// sidecar (ordinary input when it lacks the capability); the Claude
+						// pane nudge plugs in here with the FLY-2882 pane reader, until
+						// then Claude letters are ordinary mail (recorded mailbox_only).
+						interruptHooks: createLeadInterruptHooks({
+							interrupts: () => opts.store.leadInterrupts,
+							projectName: project.projectName,
+							leadId: lead.agentId,
+							backend: leadBackend,
+							now: () => new Date().toISOString(),
+							...(leadBackend === "codex-app-server" && adapter.deliverInterrupt
+								? {
+										codexDeliverInterrupt: (batch) =>
+											adapter.deliverInterrupt!(batch),
+									}
+								: {}),
+							...(() => {
+								if (leadBackend !== "claude-code") return {};
+								const claudePane = opts.claudeInterruptPaneForLead?.(
+									project,
+									lead,
+								);
+								return claudePane ? { claudePane } : {};
+							})(),
+						}),
 						queueConfig: resolveMailboxQueueConfig,
 						recipientState: () =>
 							readLeadRecipientState({
@@ -367,10 +409,7 @@ export class LeadInboxRuntime {
 								processTupleState: this.processLeadTupleState,
 							}),
 						ackInstruction:
-							effectiveLeadBackend(
-								lead.backend,
-								process.env.FLYWHEEL_LEAD_BACKEND,
-							).backend === "codex-app-server"
+							leadBackend === "codex-app-server"
 								? "lead_actions.ack_batch"
 								: "flywheel_inbox_ack_batch",
 						hasLiveSession: () =>
@@ -993,6 +1032,11 @@ export class LeadInboxRuntime {
 			leaseReader: this.leadLeaseReader,
 			processTupleState: this.processLeadTupleState,
 		});
+	}
+
+	/** FLY-2883: the project's mailbox for the controlled interrupt route. */
+	leadInterruptMailbox(projectName: string): MailboxQueue | undefined {
+		return this.queues.get(projectName);
 	}
 
 	nudge(leadId: string, projectName?: string): boolean {

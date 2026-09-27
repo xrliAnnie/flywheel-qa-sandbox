@@ -70,6 +70,7 @@ const execFileAsync = promisify(execFile);
 
 /** Minimal CommDB surface the coordinator needs (test seam). */
 export interface ReviewCommDb {
+	getQuestionOrder?(id: string): QuestionOrder | undefined;
 	getMessageById(id: string):
 		| {
 				id: string;
@@ -188,7 +189,9 @@ export interface ReviewCoordinatorDeps {
 	markRecoveryNoticeActed?: (notice: ReviewRecoveryNotice) => void;
 	recoveryClock?: () => number;
 	recoveryIoTimeoutMs?: number;
-
+	earlyStopEnabled?: boolean | (() => boolean);
+	quietWindowMs?: number;
+	freshnessCheckIntervalMs?: number;
 	store: StateStore;
 	commDbPathFor: (projectName: string) => string;
 	openCommDb: (path: string) => ReviewCommDb;
@@ -496,6 +499,70 @@ export async function deriveRepositoryIdentity(
 	return normalizeRepoIdentity(stdout.trim());
 }
 
+export interface QuestionOrder {
+	createdAt: string;
+	rowId: number;
+}
+type ReviewRequestOrder = Pick<
+	CodexReviewJob,
+	"request_id" | "question_id" | "accept_seq" | "head_move_parent_request_id"
+>;
+type VoidTrigger =
+	| "accept"
+	| "freshness_check"
+	| "preflight"
+	| "fallback"
+	| "verdict"
+	| "reset_timer"
+	| "account_switch";
+type ReviewLane = Pick<
+	CodexReviewJob,
+	| "request_id"
+	| "execution_id"
+	| "project_name"
+	| "issue_id"
+	| "review_type"
+	| "target_repo_identity"
+>;
+interface LiveReviewRun {
+	controller: AbortController;
+	headMismatchStreak: number;
+	tickInFlight: boolean;
+	timer?: unknown;
+	loggedSharedGate?: boolean;
+}
+
+export function isStrictlyNewerGate(
+	a: QuestionOrder,
+	b: QuestionOrder,
+): boolean {
+	return (
+		a.createdAt > b.createdAt ||
+		(a.createdAt === b.createdAt && a.rowId > b.rowId)
+	);
+}
+
+// Gate order is authoritative across gates; inherited accept_seq orders requests
+// within one gate. A successor represents its parent, never replaces that lane.
+export function isNewerRequest(
+	newer: ReviewRequestOrder,
+	older: ReviewRequestOrder,
+	gateOrder: (id: string) => QuestionOrder | undefined,
+): boolean {
+	if (
+		newer.request_id === older.request_id ||
+		newer.accept_seq == null ||
+		older.accept_seq == null ||
+		newer.head_move_parent_request_id === older.request_id
+	)
+		return false;
+	if (newer.question_id === older.question_id)
+		return newer.accept_seq > older.accept_seq;
+	const a = gateOrder(newer.question_id),
+		b = gateOrder(older.question_id);
+	return !!a && !!b && isStrictlyNewerGate(a, b);
+}
+
 export class ReviewRequestCoordinator {
 	private readonly store: StateStore;
 	private readonly deps: ReviewCoordinatorDeps;
@@ -503,6 +570,14 @@ export class ReviewRequestCoordinator {
 	/** Per-execution serialization chains. */
 	private readonly execChains = new Map<string, Promise<void>>();
 	private readonly retryTimers = new Map<string, unknown>();
+	private readonly quietTimers = new Map<string, unknown>();
+	private readonly liveRuns = new Map<string, LiveReviewRun>();
+	private get earlyStopEnabled(): boolean {
+		const enabled = this.deps.earlyStopEnabled;
+		return typeof enabled === "function" ? enabled() : (enabled ?? true);
+	}
+	private readonly quietWindowMs: number;
+	private readonly freshnessCheckIntervalMs: number;
 	private readonly now: () => number;
 	private readonly setTimer: (callback: () => void, delayMs: number) => unknown;
 	private readonly clearTimer: (handle: unknown) => void;
@@ -521,6 +596,25 @@ export class ReviewRequestCoordinator {
 		this.deps = deps;
 		this.log =
 			deps.logger ?? ((m: string) => console.log(`[review-coordinator] ${m}`));
+		const duration = (
+			name: string,
+			fallback: number,
+			min: number,
+			max: number,
+		) => {
+			const value = process.env[name]?.trim();
+			if (value === undefined) return fallback;
+			if (/^\d+$/.test(value) && Number(value) >= min && Number(value) <= max)
+				return Number(value);
+			this.log(`invalid ${name}; using ${fallback}ms`);
+			return fallback;
+		};
+		this.quietWindowMs =
+			deps.quietWindowMs ??
+			duration("FLYWHEEL_REVIEW_QUIET_WINDOW_MS", 120_000, 0, 3_600_000);
+		this.freshnessCheckIntervalMs =
+			deps.freshnessCheckIntervalMs ??
+			duration("FLYWHEEL_REVIEW_FRESHNESS_INTERVAL_MS", 30_000, 5_000, 600_000);
 		const cap = process.env.FLYWHEEL_REVIEW_MAX_CONCURRENT?.trim() ?? "";
 		const parsedCap = cap === "" ? 0 : Number(cap);
 		if ((cap === "" || /^\d+$/.test(cap)) && Number.isSafeInteger(parsedCap)) {
@@ -556,6 +650,10 @@ export class ReviewRequestCoordinator {
 			});
 		}
 		this.ownedAttempts.clear();
+		for (const handle of this.quietTimers.values()) this.clearTimer(handle);
+		this.quietTimers.clear();
+		for (const run of this.liveRuns.values())
+			if (run.timer !== undefined) this.clearTimer(run.timer);
 	}
 
 	private canWriteAttempt(job: CodexReviewJob): boolean {
@@ -875,6 +973,283 @@ export class ReviewRequestCoordinator {
 		};
 	}
 
+	private questionOrder(
+		projectName: string,
+		id: string,
+	): QuestionOrder | undefined {
+		let db: ReviewCommDb | undefined;
+		try {
+			db = this.deps.openCommDb(this.deps.commDbPathFor(projectName));
+			return db.getQuestionOrder?.(id);
+		} catch (error) {
+			this.log(`cannot read review gate order for ${id}: ${String(error)}`);
+			return undefined;
+		} finally {
+			db?.close();
+		}
+	}
+
+	private newer(
+		newer: ReviewRequestOrder,
+		older: ReviewRequestOrder,
+		project: string,
+	): boolean {
+		return isNewerRequest(newer, older, (id) =>
+			this.questionOrder(project, id),
+		);
+	}
+
+	private supersededBindings(
+		newer: ReviewRequestOrder,
+		source: CodexReviewJob,
+	): string[] {
+		return this.store
+			.listCodexReviewReuseBindings(source.request_id)
+			.filter(
+				(binding) =>
+					!binding.responded_at &&
+					!binding.released_at &&
+					this.newer(
+						newer,
+						{ ...binding, accept_seq: binding.accept_seq ?? 0 },
+						source.project_name,
+					),
+			)
+			.map((binding) => binding.request_id);
+	}
+
+	private supersedeLane(lane: ReviewLane & { question_id: string }) {
+		if (!this.earlyStopEnabled) return undefined;
+		const expectedAcceptSeq = this.store.getNextCodexReviewAcceptSeq();
+		const newer = { ...lane, accept_seq: expectedAcceptSeq };
+		return {
+			nowIso: new Date(this.now()).toISOString(),
+			expectedAcceptSeq,
+			candidates: this.store
+				.listLaneJobs(lane, "voidable")
+				.filter((older) => this.newer(newer, older, lane.project_name))
+				.map((older) => ({
+					requestId: older.request_id,
+					retireBindingRequestIds: this.supersededBindings(newer, older),
+				})),
+		};
+	}
+
+	private insertAcceptedJob(
+		input: Parameters<StateStore["insertCodexReviewJob"]>[0],
+		lane: ReviewLane & { question_id: string },
+	) {
+		for (let attempt = 0; ; attempt++) {
+			try {
+				return this.store.insertCodexReviewJob({
+					...input,
+					supersedeLane: this.supersedeLane(lane),
+				});
+			} catch (error) {
+				if (
+					attempt > 0 ||
+					!(error instanceof Error) ||
+					!error.message.includes("review_accept_seq_changed")
+				)
+					throw error;
+			}
+		}
+	}
+
+	private afterVoided(job: CodexReviewJob): void {
+		for (const timers of [this.retryTimers, this.quietTimers]) {
+			const timer = timers.get(job.request_id);
+			if (timer !== undefined) this.clearTimer(timer);
+			timers.delete(job.request_id);
+		}
+		this.liveRuns.get(job.request_id)?.controller.abort();
+		this.releaseReuseBindingsForSource(job);
+		this.log(`review job ${job.request_id} voided: ${job.failure_reason}`);
+	}
+
+	private voidJob(
+		job: CodexReviewJob,
+		reason: string,
+		trigger: VoidTrigger,
+		extras: {
+			supersededByRequestId?: string;
+			gateState?: string;
+			observedHeadSha?: string;
+		} = {},
+	): void {
+		if (!this.earlyStopEnabled) return;
+		const newer = extras.supersededByRequestId
+			? this.store.getCodexReviewJob(extras.supersededByRequestId)
+			: null;
+		const result = this.store.voidCodexReviewJob({
+			requestId: job.request_id,
+			reason,
+			trigger,
+			...extras,
+			retireBindingRequestIds: newer ? this.supersededBindings(newer, job) : [],
+			nowIso: new Date(this.now()).toISOString(),
+		});
+		if (result.voided && result.job) this.afterVoided(result.job);
+	}
+
+	private settleBindingOfVoidedSource(
+		source: CodexReviewJob,
+		binding: CodexReviewReuseBinding,
+	): boolean {
+		if (
+			!source.voided_at ||
+			source.failure_reason !== "superseded_by_request" ||
+			!source.superseded_by_request_id
+		)
+			return false;
+		const newer = this.store.getCodexReviewJob(source.superseded_by_request_id);
+		if (
+			!newer ||
+			!this.newer(
+				newer,
+				{ ...binding, accept_seq: binding.accept_seq ?? 0 },
+				source.project_name,
+			)
+		)
+			return false;
+		this.store.retireCodexReviewReuseBindingForSupersede({
+			bindingRequestId: binding.request_id,
+			sourceRequestId: source.request_id,
+			supersededByRequestId: newer.request_id,
+			nowIso: new Date(this.now()).toISOString(),
+		});
+		return true;
+	}
+
+	private quietUntil(): string | undefined {
+		return this.quietWindowMs > 0
+			? new Date(this.now() + this.quietWindowMs).toISOString()
+			: undefined;
+	}
+
+	private armQuietTimer(requestId: string, dueMs: number): void {
+		if (this.stopped) return;
+		const old = this.quietTimers.get(requestId);
+		if (old !== undefined) this.clearTimer(old);
+		this.quietTimers.set(
+			requestId,
+			this.setTimer(
+				() => {
+					this.quietTimers.delete(requestId);
+					const job = this.store.getCodexReviewJob(requestId);
+					if (!this.stopped && job?.status === "pending" && !job.voided_at)
+						this.enqueue(requestId, job.execution_id);
+				},
+				Math.max(0, dueMs - this.now()),
+			),
+		);
+	}
+
+	private isLive(job: CodexReviewJob, run: LiveReviewRun): boolean {
+		const current = this.store.getCodexReviewJob(job.request_id);
+		return (
+			!this.stopped &&
+			this.liveRuns.get(job.request_id) === run &&
+			current?.status === "running" &&
+			!current.voided_at
+		);
+	}
+
+	private startFreshnessCheck(
+		job: CodexReviewJob,
+		cwd: string,
+		run: LiveReviewRun,
+	): void {
+		// A fixed false override cannot become enabled; live store callbacks can.
+		if (this.stopped || this.deps.earlyStopEnabled === false) return;
+		const schedule = () => {
+			if (this.isLive(job, run))
+				run.timer = this.setTimer(() => {
+					void tick();
+				}, this.freshnessCheckIntervalMs);
+		};
+		const tick = async () => {
+			if (run.tickInFlight || this.stopped) return;
+			run.tickInFlight = true;
+			try {
+				if (!this.earlyStopEnabled) return;
+				if (!this.isLive(job, run)) {
+					run.controller.abort();
+					return;
+				}
+				const gate = this.inspectGate(
+					job.project_name,
+					job.question_id,
+					job.execution_id,
+					job.review_type,
+				);
+				if (gate.state === "unknown") return;
+				if (gate.state !== "open") {
+					const shared = this.store
+						.listCodexReviewReuseBindings(job.request_id)
+						.some((b) => !b.responded_at && !b.released_at);
+					if (!shared) {
+						this.voidJob(
+							job,
+							runtimeGateFailureReason(gate.state),
+							"freshness_check",
+							{ gateState: gate.state },
+						);
+						return;
+					}
+					if (!run.loggedSharedGate)
+						this.log(
+							`review ${job.request_id}: closed source gate retained for active reuse bindings`,
+						);
+					run.loggedSharedGate = true;
+				}
+				if (job.review_type === "code") {
+					const current = await this.tryDeriveHead(job.execution_id, cwd);
+					if (!this.earlyStopEnabled) return;
+					if (!this.isLive(job, run)) {
+						if (!this.stopped) run.controller.abort();
+						return;
+					}
+					if (current === job.frozen_head_sha) run.headMismatchStreak = 0;
+					else if (current && ++run.headMismatchStreak >= 2) {
+						this.handleHeadMoved(job, current, undefined, {
+							trigger: "freshness_check",
+							expectStatus: "running",
+						});
+						run.controller.abort();
+					}
+				}
+			} catch (error) {
+				this.log(
+					`review freshness check ${job.request_id} failed: ${String(error)}`,
+				);
+			} finally {
+				run.tickInFlight = false;
+				schedule();
+			}
+		};
+		schedule();
+	}
+
+	private failGate(
+		job: CodexReviewJob,
+		state: ReviewGateState,
+		trigger: VoidTrigger,
+		raw?: string,
+	): void {
+		if (this.earlyStopEnabled && state !== "unknown")
+			this.voidJob(job, runtimeGateFailureReason(state), trigger, {
+				gateState: state,
+			});
+		else
+			this.failReviewJob(
+				job.request_id,
+				runtimeGateFailureReason(state),
+				raw,
+				"running",
+			);
+	}
+
 	/**
 	 * FLY-1278 supervised Lead override. The caller supplies intent and a
 	 * locator; StateStore derives every finding audit field from a delivered
@@ -1136,6 +1511,29 @@ export class ReviewRequestCoordinator {
 					return reject(409, "retry plan binding mismatch");
 				return this.acceptRetiredRetry(existing);
 			}
+			if (existing.failure_reason === "head_moved") {
+				const tip = this.store.getCodexReviewJobByQuestionId(
+					existing.question_id,
+				);
+				if (!tip || tip.request_id === existing.request_id || tip.voided_at)
+					return reject(
+						409,
+						`request ${requestId} has no usable head-move successor; submit a new request`,
+					);
+				if (tip.status === "pending")
+					this.enqueue(tip.request_id, tip.execution_id);
+				else if (
+					(tip.status === "done" || tip.status === "skipped") &&
+					!tip.responded_at
+				)
+					await this.deliverStoredResponse(tip);
+				return { accepted: true, requestId, skipped: false, duplicate: true };
+			}
+			if (existing.voided_at)
+				return reject(
+					409,
+					`request ${requestId} was voided (${existing.failure_reason}${existing.superseded_by_request_id ? `, superseded by ${existing.superseded_by_request_id}` : ""}); submit a new request for the current head`,
+				);
 			if (existing.status === "pending") {
 				this.enqueue(existing.request_id, existing.execution_id);
 			} else if (existing.status === "failed") {
@@ -1154,22 +1552,7 @@ export class ReviewRequestCoordinator {
 						`retry refused for ${requestId}: gate ${retryGate} (question ${questionId})`,
 					);
 				}
-				const lineageTip =
-					existing.failure_reason === "head_moved"
-						? this.store.getCodexReviewJobByQuestionId(existing.question_id)
-						: null;
-				if (lineageTip && lineageTip.request_id !== existing.request_id) {
-					if (lineageTip.status === "pending") {
-						this.enqueue(lineageTip.request_id, lineageTip.execution_id);
-					} else if (
-						(lineageTip.status === "done" || lineageTip.status === "skipped") &&
-						!lineageTip.responded_at
-					) {
-						await this.deliverStoredResponse(lineageTip);
-					}
-				} else {
-					this.enqueue(existing.request_id, existing.execution_id);
-				}
+				this.enqueue(existing.request_id, existing.execution_id);
 			} else if (
 				(existing.status === "done" || existing.status === "skipped") &&
 				!existing.responded_at
@@ -1298,7 +1681,7 @@ export class ReviewRequestCoordinator {
 			executionId,
 			reviewType,
 		);
-		if (gate !== "open") {
+		const rejectGate = (gate: ReviewGateState): AcceptReviewResult => {
 			const reason =
 				gate === "missing"
 					? `gate question ${questionId} not found in CommDB`
@@ -1307,6 +1690,7 @@ export class ReviewRequestCoordinator {
 						: `gate question ${questionId} is ${gate}`;
 			// durable failed job for audit + Lead alert (§7.1 fail-close)
 			this.store.insertCodexReviewJob({
+				accepted: false,
 				requestId,
 				executionId,
 				issueId: session.issue_id,
@@ -1321,7 +1705,8 @@ export class ReviewRequestCoordinator {
 				`review request ${requestId} (${session.issue_id}) rejected: ${reason}`,
 			);
 			return reject(409, reason);
-		}
+		};
+		if (gate !== "open") return rejectGate(gate);
 
 		// code review: freeze the TRUSTED head server-side (R3 #2) — BEFORE the
 		// skip lane (R12 MEDIUM: a code skip must be head-bound; an underivable
@@ -1338,25 +1723,46 @@ export class ReviewRequestCoordinator {
 			frozenHeadSha = head;
 		}
 
+		// No await from this final validation through acceptance transaction.
+		const currentGate = this.checkGate(
+			projectName,
+			questionId,
+			executionId,
+			reviewType,
+		);
+		if (currentGate !== "open") return rejectGate(currentGate);
+		const lane: ReviewLane & { question_id: string } = {
+			request_id: requestId,
+			execution_id: executionId,
+			issue_id: session.issue_id,
+			project_name: projectName,
+			review_type: reviewType,
+			target_repo_identity: reviewTarget.identity,
+			question_id: questionId,
+		};
+
 		// codex-skip snapshot (frozen at execution start — §7.1/R3 #3): no
 		// Claude job; durable skipped audit row (outbox-stamped after the
 		// response actually lands); head-bound skipped record for code.
 		if (session.codex_skip) {
-			const skipInsert = this.store.insertCodexReviewJob({
-				requestId,
-				executionId,
-				issueId: session.issue_id,
-				projectName,
-				reviewType,
-				questionId,
-				targetRepoPath: reviewTarget.path,
-				targetRepoIdentity: reviewTarget.identity,
-				reuseRepoIdentity,
-				frozenHeadSha,
-				authorFamily,
-				sameFamilySanction,
-				status: "skipped",
-			});
+			const skipInsert = this.insertAcceptedJob(
+				{
+					requestId,
+					executionId,
+					issueId: session.issue_id,
+					projectName,
+					reviewType,
+					questionId,
+					targetRepoPath: reviewTarget.path,
+					targetRepoIdentity: reviewTarget.identity,
+					reuseRepoIdentity,
+					frozenHeadSha,
+					authorFamily,
+					sameFamilySanction,
+					status: "skipped",
+				},
+				lane,
+			);
 			if (!skipInsert.inserted) {
 				// R13 MEDIUM-2 + R14 MEDIUM-1: a concurrent first POST won the
 				// insert — validate it is the SAME binding before deferring to
@@ -1378,6 +1784,7 @@ export class ReviewRequestCoordinator {
 					duplicate: true,
 				};
 			}
+			for (const job of skipInsert.voided) this.afterVoided(job);
 			if (reviewType === "code" && frozenHeadSha) {
 				this.store.markCodexReviewSkipped({
 					executionId,
@@ -1481,26 +1888,30 @@ export class ReviewRequestCoordinator {
 				);
 			}
 		}
-		const insert = this.store.insertCodexReviewJob({
-			requestId,
-			executionId,
-			issueId: session.issue_id,
-			projectName,
-			reviewType,
-			round,
-			questionId,
-			targetPath: reviewType === "design" ? planPath : undefined,
-			targetRepoPath: reviewTarget.path,
-			targetRepoIdentity: reviewTarget.identity,
-			reuseRepoIdentity,
-			frozenHeadSha,
-			reviewerSessionUuid: priorSession.sessionUuid,
-			reviewerSessionGeneration: priorSession.generation,
-			reviewerSessionFailureStreak: priorSession.failureStreak,
-			authorFamily,
-			sameFamilySanction,
-			designPlanProof,
-		});
+		const insert = this.insertAcceptedJob(
+			{
+				quietUntil: reviewType === "code" ? this.quietUntil() : undefined,
+				requestId,
+				executionId,
+				issueId: session.issue_id,
+				projectName,
+				reviewType,
+				round,
+				questionId,
+				targetPath: reviewType === "design" ? planPath : undefined,
+				targetRepoPath: reviewTarget.path,
+				targetRepoIdentity: reviewTarget.identity,
+				reuseRepoIdentity,
+				frozenHeadSha,
+				reviewerSessionUuid: priorSession.sessionUuid,
+				reviewerSessionGeneration: priorSession.generation,
+				reviewerSessionFailureStreak: priorSession.failureStreak,
+				authorFamily,
+				sameFamilySanction,
+				designPlanProof,
+			},
+			lane,
+		);
 		if (!insert.inserted) {
 			// R13 MEDIUM-2: concurrent first POST — the row already exists.
 			// Validate it is the SAME binding, then defer to the winner (who
@@ -1526,6 +1937,7 @@ export class ReviewRequestCoordinator {
 				duplicate: true,
 			};
 		}
+		for (const job of insert.voided) this.afterVoided(job);
 		this.enqueue(requestId, executionId);
 		return { accepted: true, requestId, skipped: false, duplicate: false };
 	}
@@ -1841,7 +2253,7 @@ export class ReviewRequestCoordinator {
 					`job ${requestId} crashed: ${err instanceof Error ? err.message : String(err)}`,
 				);
 				try {
-					this.failReviewJob(requestId, "internal_error");
+					this.failReviewJob(requestId, "internal_error", undefined, "running");
 				} catch {
 					/* store unavailable — job stays running, boot redrive recovers */
 				}
@@ -1986,13 +2398,54 @@ export class ReviewRequestCoordinator {
 		requestId: string,
 		claimedGeneration?: number,
 	): Promise<void> {
-		if (
-			this.stopped ||
-			(claimedGeneration === undefined &&
-				!this.store.claimCodexReviewJobRunning(requestId))
-		)
-			return;
-		const job = this.store.getCodexReviewJob(requestId);
+		if (this.stopped) return;
+		let job = this.store.getCodexReviewJob(requestId);
+		if (!job) return;
+		if (claimedGeneration === undefined) {
+			if (
+				this.quietWindowMs > 0 &&
+				job.status === "pending" &&
+				job.quiet_until &&
+				!job.voided_at
+			) {
+				const dueMs = Date.parse(job.quiet_until);
+				if (this.now() < dueMs) {
+					this.armQuietTimer(requestId, dueMs);
+					return;
+				}
+				if (job.review_type === "code") {
+					const cwd =
+						job.target_repo_path ??
+						this.store.getWorktreeBinding(job.execution_id)?.path;
+					const current = cwd
+						? await this.tryDeriveHead(job.execution_id, cwd)
+						: null;
+					if (current && current !== job.frozen_head_sha) {
+						const quietUntil = this.quietUntil()!;
+						if (
+							this.store.restartCodexReviewQuietWindow({
+								requestId,
+								expectedHeadSha: job.frozen_head_sha ?? "",
+								newHeadSha: current,
+								quietUntil,
+							})
+						)
+							this.armQuietTimer(requestId, Date.parse(quietUntil));
+						return;
+					}
+				}
+			}
+			if (
+				!this.store.claimCodexReviewJobRunning(
+					requestId,
+					this.quietWindowMs > 0
+						? new Date(this.now()).toISOString()
+						: undefined,
+				)
+			)
+				return;
+			job = this.store.getCodexReviewJob(requestId);
+		}
 		if (
 			!job ||
 			job.status !== "running" ||
@@ -2001,9 +2454,28 @@ export class ReviewRequestCoordinator {
 		)
 			return;
 		this.ownedAttempts.set(requestId, job.attempt_generation);
+		const run: LiveReviewRun = {
+			controller: new AbortController(),
+			headMismatchStreak: 0,
+			tickInFlight: false,
+		};
+		this.liveRuns.set(requestId, run);
+		try {
+			await this.runClaimedJob(job, run);
+		} finally {
+			if (run.timer !== undefined) this.clearTimer(run.timer);
+			if (this.liveRuns.get(requestId) === run) this.liveRuns.delete(requestId);
+		}
+	}
+
+	private async runClaimedJob(
+		job: CodexReviewJob,
+		run: LiveReviewRun,
+	): Promise<void> {
+		const requestId = job.request_id;
 		const session = this.store.getSession(job.execution_id);
 		if (!session) {
-			this.failReviewJob(requestId, "session_missing");
+			this.failReviewJob(requestId, "session_missing", undefined, "running");
 			this.alert(
 				`review job ${requestId} (${job.issue_id ?? job.execution_id}) failed: StateStore session ${job.execution_id} is missing; retry requires restoring or replacing the bound execution.`,
 			);
@@ -2025,11 +2497,14 @@ export class ReviewRequestCoordinator {
 				this.log(
 					`job ${requestId}: request-bound authority already committed — restoring APPROVED verdict without a re-review`,
 				);
-				this.store.completeCodexReviewJob(
-					requestId,
-					"APPROVED",
-					job.findings_json ?? "[]",
-				);
+				if (
+					!this.store.completeCodexReviewJob(
+						requestId,
+						"APPROVED",
+						job.findings_json ?? "[]",
+					)
+				)
+					return;
 				const restored = this.store.getCodexReviewJob(requestId);
 				if (restored) {
 					await this.deliverStoredResponse(restored);
@@ -2050,10 +2525,7 @@ export class ReviewRequestCoordinator {
 			job.review_type,
 		);
 		if (preflightGate.state !== "open") {
-			this.failReviewJob(
-				requestId,
-				runtimeGateFailureReason(preflightGate.state),
-			);
+			this.failGate(job, preflightGate.state, "preflight");
 			this.alert(
 				`claude review ${requestId}: gate ${job.question_id} is ${preflightGate.state} before reviewer start — no reviewer started.`,
 			);
@@ -2064,7 +2536,7 @@ export class ReviewRequestCoordinator {
 			job.target_repo_path ??
 			this.store.getWorktreeBinding(job.execution_id)?.path;
 		if (!cwd) {
-			this.failReviewJob(requestId, "worktree_missing");
+			this.failReviewJob(requestId, "worktree_missing", undefined, "running");
 			this.alert(
 				`review job ${requestId} (${job.issue_id ?? job.execution_id}) failed: no persisted worktree`,
 			);
@@ -2072,10 +2544,13 @@ export class ReviewRequestCoordinator {
 		}
 		if (job.review_type === "code") {
 			const current = await this.tryDeriveHead(job.execution_id, cwd);
-			if (!this.canWriteAttempt(job)) return;
+			if (!this.canWriteAttempt(job) || !this.isLive(job, run)) return;
 			const frozen = job.frozen_head_sha?.toLowerCase();
 			if (!current || !frozen || current !== frozen) {
-				this.handleHeadMoved(job, current);
+				this.handleHeadMoved(job, current, undefined, {
+					expectStatus: "running",
+					trigger: "preflight",
+				});
 				this.alert(
 					`claude review ${requestId}: head moved before reviewer start (frozen ${frozen ?? "?"} vs current ${current ?? "?"}) — no reviewer started.`,
 				);
@@ -2090,6 +2565,7 @@ export class ReviewRequestCoordinator {
 		let sessionUuid = job.reviewer_session_uuid;
 		let resume = true;
 		if (job.round <= 1 || !sessionUuid) {
+			if (!this.isLive(job, run)) return;
 			sessionUuid = randomUUID();
 			this.store.setCodexReviewJobReviewerSession(
 				requestId,
@@ -2125,7 +2601,7 @@ export class ReviewRequestCoordinator {
 				message: `${governancePrompt.elided} older active governance ruling(s) were elided from the bounded reviewer prompt; review whether stale rulings should be revoked.`,
 			});
 		}
-		if (!this.canWriteAttempt(job)) return;
+		if (!this.canWriteAttempt(job) || !this.isLive(job, run)) return;
 		const workflowReviewRoute = resolveWorkflowReviewRouteForExecution(
 			this.store,
 			job.execution_id,
@@ -2153,9 +2629,11 @@ export class ReviewRequestCoordinator {
 			})
 		)
 			return;
+		this.startFreshnessCheck(job, cwd, run);
 		const roundRunner = this.deps.reviewRound ?? runClaudeReviewRound;
 		const runRound = (roundResume: boolean, roundSessionUuid: string) =>
 			roundRunner({
+				signal: run.controller.signal,
 				prompt: this.buildPrompt(
 					job,
 					roundResume,
@@ -2196,7 +2674,16 @@ export class ReviewRequestCoordinator {
 				},
 			});
 		let outcome: ClaudeReviewOutcome = await runRound(resume, sessionUuid);
-		if (!this.canWriteAttempt(job)) return;
+		if (
+			(outcome.kind === "failed" && outcome.reason === "aborted") ||
+			!this.canWriteAttempt(job) ||
+			!this.isLive(job, run)
+		) {
+			this.log(
+				`review ${requestId}: result discarded after abort or state change`,
+			);
+			return;
+		}
 		const failedAttempts: FailedReviewAttempt[] = [];
 
 		if (outcome.kind === "failed") {
@@ -2211,7 +2698,7 @@ export class ReviewRequestCoordinator {
 			// A fresh fallback is bounded to once per runJob invocation. The new
 			// uuid is durable, so a crash before its spawn may redrive as a resume;
 			// that later runJob can independently fall back once and still converges.
-			if (!this.canWriteAttempt(job)) return;
+			if (!this.canWriteAttempt(job) || !this.isLive(job, run)) return;
 			const fallbackGate = this.inspectGate(
 				job.project_name,
 				job.question_id,
@@ -2219,9 +2706,10 @@ export class ReviewRequestCoordinator {
 				job.review_type,
 			);
 			if (fallbackGate.state !== "open") {
-				this.failReviewJob(
-					requestId,
-					runtimeGateFailureReason(fallbackGate.state),
+				this.failGate(
+					job,
+					fallbackGate.state,
+					"fallback",
 					composeFailureRaw(failedAttempts),
 				);
 				this.alert(
@@ -2231,10 +2719,15 @@ export class ReviewRequestCoordinator {
 			}
 			if (job.review_type === "code") {
 				const current = await this.tryDeriveHead(job.execution_id, cwd);
-				if (!this.canWriteAttempt(job)) return;
+				if (!this.canWriteAttempt(job) || !this.isLive(job, run)) return;
 				const frozen = job.frozen_head_sha?.toLowerCase();
 				if (!current || !frozen || current !== frozen) {
-					this.handleHeadMoved(job, current, composeFailureRaw(failedAttempts));
+					this.handleHeadMoved(
+						job,
+						current,
+						composeFailureRaw(failedAttempts),
+						{ expectStatus: "running", trigger: "fallback" },
+					);
 					this.alert(
 						`claude review ${requestId}: head moved before the lost-session fallback (frozen ${frozen ?? "?"} vs current ${current ?? "?"}) — no fresh reviewer started.`,
 					);
@@ -2260,7 +2753,16 @@ export class ReviewRequestCoordinator {
 			}
 			sessionUuid = freshSessionUuid;
 			outcome = await runRound(false, sessionUuid);
-			if (!this.canWriteAttempt(job)) return;
+			if (
+				(outcome.kind === "failed" && outcome.reason === "aborted") ||
+				!this.canWriteAttempt(job) ||
+				!this.isLive(job, run)
+			) {
+				this.log(
+					`review ${requestId}: fallback result discarded after abort or state change`,
+				);
+				return;
+			}
 			if (outcome.kind === "failed") {
 				failedAttempts.push({ label: "ATTEMPT 2 FRESH", outcome });
 			}
@@ -2277,7 +2779,12 @@ export class ReviewRequestCoordinator {
 				job.attempt_generation,
 			)
 		) {
-			this.failReviewJob(requestId, "repair_audit_failed");
+			this.failReviewJob(
+				requestId,
+				"repair_audit_failed",
+				undefined,
+				"running",
+			);
 			this.alert(
 				`claude review ${requestId}: repaired verdict audit could not be persisted — verdict refused.`,
 			);
@@ -2296,10 +2803,7 @@ export class ReviewRequestCoordinator {
 			job.review_type,
 		);
 		if (verdictGate.state !== "open") {
-			this.failReviewJob(
-				requestId,
-				runtimeGateFailureReason(verdictGate.state),
-			);
+			this.failGate(job, verdictGate.state, "verdict");
 			this.alert(
 				`claude review ${requestId}: gate ${job.question_id} became ${verdictGate.state} while the reviewer ran — verdict discarded (no authority written).`,
 			);
@@ -2324,7 +2828,12 @@ export class ReviewRequestCoordinator {
 					!outcome.reviewedPlanBlobSha ||
 					outcome.reviewedPlanBlobSha !== proof.expected_blob_sha
 				) {
-					this.failReviewJob(requestId, "reviewed_wrong_plan_blob");
+					this.failReviewJob(
+						requestId,
+						"reviewed_wrong_plan_blob",
+						undefined,
+						"running",
+					);
 					this.alert(
 						`claude review ${requestId}: reviewer reports plan blob ${outcome.reviewedPlanBlobSha ?? "<missing>"} but the job froze ${proof.expected_blob_sha} — approval refused.`,
 					);
@@ -2337,7 +2846,12 @@ export class ReviewRequestCoordinator {
 						)
 					: undefined;
 				if (!snapshot?.ok || snapshot.blobSha !== proof.expected_blob_sha) {
-					this.failReviewJob(requestId, "reviewed_plan_moved");
+					this.failReviewJob(
+						requestId,
+						"reviewed_plan_moved",
+						undefined,
+						"running",
+					);
 					this.alert(
 						`claude review ${requestId}: committed design plan changed after capture — approval refused.`,
 					);
@@ -2358,10 +2872,13 @@ export class ReviewRequestCoordinator {
 			// (R3 #2 + R12 MEDIUM: findings against a moved head are as
 			// misleading as a stale approval).
 			const current = await this.tryDeriveHead(job.execution_id, cwd);
-			if (!this.canWriteAttempt(job)) return;
+			if (!this.canWriteAttempt(job) || !this.isLive(job, run)) return;
 			const frozen = job.frozen_head_sha?.toLowerCase();
 			if (!current || !frozen || current !== frozen) {
-				this.handleHeadMoved(job, current);
+				this.handleHeadMoved(job, current, undefined, {
+					expectStatus: "running",
+					trigger: "verdict",
+				});
 				this.alert(
 					`claude review ${requestId}: head moved (frozen ${frozen ?? "?"} vs current ${current ?? "?"}) — verdict voided.`,
 				);
@@ -2371,7 +2888,12 @@ export class ReviewRequestCoordinator {
 				// R12 HIGH-6: the reviewer MUST echo the exact sha it reviewed —
 				// a missing/mismatching echo can never become an authority record.
 				if (!outcome.reviewedHeadSha || outcome.reviewedHeadSha !== frozen) {
-					this.failReviewJob(requestId, "reviewed_wrong_head");
+					this.failReviewJob(
+						requestId,
+						"reviewed_wrong_head",
+						undefined,
+						"running",
+					);
 					this.alert(
 						`claude review ${requestId}: reviewer reports head ${outcome.reviewedHeadSha ?? "<missing>"} but the job froze ${frozen} — approval refused.`,
 					);
@@ -2381,7 +2903,12 @@ export class ReviewRequestCoordinator {
 				outcome.reviewedHeadSha &&
 				outcome.reviewedHeadSha !== frozen
 			) {
-				this.failReviewJob(requestId, "reviewed_wrong_head");
+				this.failReviewJob(
+					requestId,
+					"reviewed_wrong_head",
+					undefined,
+					"running",
+				);
 				this.alert(
 					`claude review ${requestId}: findings claim head ${outcome.reviewedHeadSha} but the job froze ${frozen} — verdict refused.`,
 				);
@@ -2410,7 +2937,7 @@ export class ReviewRequestCoordinator {
 				: {}),
 		};
 		const responseJson = JSON.stringify(responsePayload);
-		this.store.completeCodexReviewJob(
+		const completedWritten = this.store.completeCodexReviewJob(
 			requestId,
 			policyResult.effectiveVerdict,
 			findingsJson,
@@ -2425,6 +2952,10 @@ export class ReviewRequestCoordinator {
 				: undefined,
 			job.attempt_generation,
 		);
+		if (!completedWritten) {
+			this.log(`review ${requestId}: verdict discarded after void`);
+			return;
+		}
 		if (
 			policyResult.effectiveVerdict === "APPROVED" &&
 			policyResult.advisories.length > 0
@@ -2513,6 +3044,7 @@ export class ReviewRequestCoordinator {
 		const persisted = this.store.recordCodexReviewJobFailure({
 			requestId: job.request_id,
 			expectedGeneration: job.attempt_generation,
+			expectStatus: "running",
 			reason: outcome.reason,
 			failureRaw,
 			retryAt,
@@ -2534,6 +3066,7 @@ export class ReviewRequestCoordinator {
 			this.emitReviewJobFailureAlert(persisted.job);
 			this.releaseReuseBindingsForSource(persisted.job);
 		}
+		if (!persisted.updated) return;
 		const summary = sanitizeFailureSummary(failureRaw);
 		const persistedGate = persisted.job
 			? this.inspectGate(
@@ -2638,6 +3171,9 @@ export class ReviewRequestCoordinator {
 				"bridge_restart_retired"
 		)
 			return null;
+		const source = this.store.getCodexReviewJob(job.request_id) ?? job;
+		if (this.settleBindingOfVoidedSource(source, binding)) return null;
+		if (binding.responded_at || binding.released_at) return null;
 		const existing = this.store.getCodexReviewJob(binding.request_id);
 		if (existing) {
 			if (existing.status === "pending") {
@@ -2708,12 +3244,21 @@ export class ReviewRequestCoordinator {
 			);
 			return null;
 		}
+		if (
+			this.settleBindingOfVoidedSource(
+				this.store.getCodexReviewJob(job.request_id) ?? job,
+				binding,
+			)
+		)
+			return null;
 		const released = this.store.releaseCodexReviewReuseBinding({
 			requestId: binding.request_id,
 			reason,
 			frozenHeadSha: currentHead,
+			quietUntil:
+				currentHead !== binding.frozen_head_sha ? this.quietUntil() : undefined,
 		});
-		if (released.job.status === "pending") {
+		if (released.job?.status === "pending") {
 			this.enqueue(released.job.request_id, released.job.execution_id);
 		}
 		this.log(
@@ -2744,9 +3289,18 @@ export class ReviewRequestCoordinator {
 		job: CodexReviewJob,
 		currentHead: string | null,
 		failureRaw?: string,
+		context: {
+			expectStatus?: "running" | "failed" | "pending";
+			trigger?: VoidTrigger;
+		} = {},
 	): void {
 		if (!currentHead) {
-			this.failReviewJob(job.request_id, "head_moved_unresolved", failureRaw);
+			this.failReviewJob(
+				job.request_id,
+				"head_moved_unresolved",
+				failureRaw,
+				context.expectStatus === "running" ? "running" : undefined,
+			);
 			return;
 		}
 		const result = this.store.failAndRequeueCodexReviewJobForHeadMove({
@@ -2755,8 +3309,15 @@ export class ReviewRequestCoordinator {
 			successorRequestId: randomUUID(),
 			currentHeadSha: currentHead,
 			failureRaw,
+			...context,
+			trigger: context.trigger ?? "preflight",
+			observedHeadSha: currentHead,
+			nowIso: new Date(this.now()).toISOString(),
+			quietUntil: this.quietUntil(),
+			markParentVoided: this.earlyStopEnabled,
 		});
-		if (result.outcome === "stale") return;
+		if (result.outcome === "voided" || result.outcome === "stale") return;
+		if (result.parent.voided_at) this.afterVoided(result.parent);
 		if (result.outcome === "exhausted" || !result.successor) {
 			this.emitReviewJobFailureAlert(
 				result.parent,
@@ -2779,6 +3340,10 @@ export class ReviewRequestCoordinator {
 		job: CodexReviewJob,
 		gateState: ReviewGateState,
 	): string {
+		if (job.voided_at)
+			return job.failure_reason === "superseded_by_request"
+				? `Superseded by newer request ${job.superseded_by_request_id ?? "unknown"}; no action required.`
+				: "This review request was voided. Submit a new request for an open gate and the current head.";
 		if (job.retry_trigger === "account_switch") {
 			return "automatic same-request retry is armed for the next Claude account switch; the gate remains closed.";
 		}
@@ -2830,6 +3395,7 @@ export class ReviewRequestCoordinator {
 		requestId: string,
 		reason: string,
 		failureRaw?: string,
+		expectStatus?: "running",
 	): void {
 		if (this.stopped) return;
 		const persisted = this.store.recordCodexReviewJobFailure({
@@ -2837,6 +3403,7 @@ export class ReviewRequestCoordinator {
 			expectedGeneration: this.ownedAttempts.get(requestId),
 			reason,
 			failureRaw,
+			expectStatus,
 		});
 		if (persisted.updated && persisted.job) {
 			this.emitReviewJobFailureAlert(persisted.job);
@@ -2942,7 +3509,7 @@ export class ReviewRequestCoordinator {
 	): Promise<"requeued" | "retired" | "deferred" | "skipped"> {
 		if (this.stopped) return "deferred";
 		let job = this.store.getCodexReviewJob(requestId);
-		if (!job || job.status !== "failed") return "skipped";
+		if (!job || job.status !== "failed" || job.voided_at) return "skipped";
 		if (origin === "reset_timer" && !job.retry_at) return "skipped";
 		if (origin === "account_switch" && job.retry_trigger !== "account_switch") {
 			return "skipped";
@@ -2980,8 +3547,28 @@ export class ReviewRequestCoordinator {
 			job.review_type,
 		);
 		if (gate.state !== "open") {
-			this.failReviewJob(requestId, runtimeGateFailureReason(gate.state));
+			if (this.earlyStopEnabled && gate.state !== "unknown")
+				this.voidJob(job, runtimeGateFailureReason(gate.state), origin, {
+					gateState: gate.state,
+				});
+			else this.failReviewJob(requestId, runtimeGateFailureReason(gate.state));
 			return "retired";
+		}
+		if (this.earlyStopEnabled) {
+			let newest: CodexReviewJob | undefined;
+			for (const other of this.store.listLaneJobs(job, "acceptedOthers")) {
+				if (
+					this.newer(other, job, job.project_name) &&
+					(!newest || this.newer(other, newest, job.project_name))
+				)
+					newest = other;
+			}
+			if (newest) {
+				this.voidJob(job, "superseded_by_request", origin, {
+					supersededByRequestId: newest.request_id,
+				});
+				return "retired";
+			}
 		}
 		if (job.review_type === "code") {
 			const targetPath =
@@ -2993,7 +3580,10 @@ export class ReviewRequestCoordinator {
 			if (!this.canWriteAttempt(job)) return "deferred";
 			const frozen = job.frozen_head_sha?.toLowerCase();
 			if (!current || !frozen || current !== frozen) {
-				this.handleHeadMoved(job, current);
+				this.handleHeadMoved(job, current, undefined, {
+					expectStatus: "running",
+					trigger: origin,
+				});
 				return "retired";
 			}
 		}

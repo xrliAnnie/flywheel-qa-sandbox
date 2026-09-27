@@ -19,6 +19,26 @@ describe("FLY-1314 durable gate supersession", () => {
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
+	it("FLY-2911 returns immutable question order and rejects non-question or missing ids", () => {
+		vi.useFakeTimers();
+		try {
+			vi.setSystemTime(new Date("2026-09-25T10:00:00.000Z"));
+			const first = db.insertQuestion("exec", "lead", "first");
+			const second = db.insertQuestion("exec", "lead", "second");
+			const a = db.getQuestionOrder(first)!;
+			const b = db.getQuestionOrder(second)!;
+			expect(a.createdAt).toBe(db.getMessageById(first)?.created_at);
+			expect(a.createdAt).toBe(b.createdAt);
+			expect(b.rowId).toBeGreaterThan(a.rowId);
+			db.insertResponse(first, "lead", "answer");
+			expect(db.getQuestionOrder(db.getResponse(first)!.id)).toBeUndefined();
+			expect(db.getQuestionOrder("missing")).toBeUndefined();
+			expect(db.getQuestionOrder(first)).toEqual(a);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("retire first atomically stamps the ship gate and rejects a late response", () => {
 		const oldGate = db.insertQuestion("exec-old", "lead", "old ship gate", {
 			checkpoint: "approve_to_ship",

@@ -74,7 +74,8 @@ describe("FLY-663 — StateStore better-sqlite3 migration", () => {
 				request_id TEXT PRIMARY KEY,
 				execution_id TEXT NOT NULL,
 				status TEXT NOT NULL
-			)
+			);
+			INSERT INTO codex_review_job VALUES ('legacy', 'exec', 'pending');
 		`);
 		legacy.close();
 
@@ -88,6 +89,9 @@ describe("FLY-663 — StateStore better-sqlite3 migration", () => {
 			}>;
 			expect(columns.map((column) => column.name)).toEqual(
 				expect.arrayContaining([
+					"accept_seq",
+					"voided_at",
+					"quiet_until",
 					"failure_raw",
 					"question_id",
 					"retry_at",
@@ -100,6 +104,19 @@ describe("FLY-663 — StateStore better-sqlite3 migration", () => {
 					"0",
 				);
 			}
+			const raw = (store as unknown as { db: { raw: BetterSqlite3.Database } })
+				.db.raw;
+			// This sparse historical schema cannot establish review acceptance or a lane.
+			expect(
+				raw.prepare("SELECT status, accept_seq FROM codex_review_job").get(),
+			).toEqual({ status: "pending", accept_seq: null });
+			expect(
+				raw
+					.prepare(
+						"SELECT name FROM sqlite_master WHERE name = 'idx_codex_review_job_lane'",
+					)
+					.get(),
+			).toBeUndefined();
 			store.close();
 		}
 	});

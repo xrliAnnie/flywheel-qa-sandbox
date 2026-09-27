@@ -845,7 +845,9 @@ function renderPressureSensor(
 	if (sensor.source !== "vm_stat") {
 		throw new Error("invalid pressure sensor source");
 	}
-	if (!new Set(["healthy", "pressure", "warming", "unknown"]).has(sensor.state)) {
+	if (
+		!new Set(["healthy", "pressure", "warming", "unknown"]).has(sensor.state)
+	) {
 		throw new Error("invalid pressure sensor state");
 	}
 	const sampledAt =

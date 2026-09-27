@@ -454,6 +454,12 @@ export function storeReviewQuotaAutoRetryEnabled(
 	return readBoolean(runtime, "review_quota_auto_retry");
 }
 
+export function storeReviewEarlyStopEnabled(
+	runtime: FlagStoreRuntime,
+): boolean {
+	return readBoolean(runtime, "review_early_stop");
+}
+
 export function storeCodexQuotaAutoSwitchEnabled(
 	runtime: FlagStoreRuntime,
 ): boolean {

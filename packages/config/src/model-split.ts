@@ -9,10 +9,32 @@ export const WEIGHTED_MODEL_SPLIT_NODES = [
 export type WeightedModelSplitNodeId =
 	(typeof WEIGHTED_MODEL_SPLIT_NODES)[number];
 
+/**
+ * FLY-2891: the effort ladder an arm may pin. Kept value-identical to
+ * `WorkflowEffort` in `packages/teamlead/src/workflow-template.ts`; a teamlead
+ * test asserts the two types stay mutually assignable.
+ */
+export const MODEL_SPLIT_ARM_EFFORTS = [
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+] as const;
+
+export type ModelSplitArmEffort = (typeof MODEL_SPLIT_ARM_EFFORTS)[number];
+
 export interface WeightedModelSplitArm {
 	readonly arm: string;
 	readonly model: string;
 	readonly weight: number;
+	/**
+	 * Optional dispatch effort applied when this arm is auto-assigned. Absent
+	 * means "inherit the template node's default for this model". The key is
+	 * only materialized when written, so effort-less policies keep their
+	 * pre-FLY-2891 `fly2788-v1:<sha>` version byte-identical.
+	 */
+	readonly effort?: ModelSplitArmEffort;
 }
 
 export interface WeightedModelSplitPolicy {
@@ -175,16 +197,28 @@ export function parseWeightedModelSplit(
 				throw new Error(`${path} must be an object`);
 			const rawArm = value as Record<string, unknown>;
 			const unknown = Object.keys(rawArm).find(
-				(key) => key !== "arm" && key !== "model" && key !== "weight",
+				(key) =>
+					key !== "arm" &&
+					key !== "model" &&
+					key !== "weight" &&
+					key !== "effort",
 			);
 			if (unknown) throw new Error(`${path} unknown key: ${unknown}`);
 			const arm = typeof rawArm.arm === "string" ? rawArm.arm.trim() : "";
 			const model = typeof rawArm.model === "string" ? rawArm.model.trim() : "";
 			const weight = rawArm.weight;
+			const effort = rawArm.effort;
 			if (!arm) throw new Error(`${path}.arm must be a non-empty string`);
 			if (!model) throw new Error(`${path}.model must be a non-empty string`);
 			if (!Number.isSafeInteger(weight) || (weight as number) <= 0)
 				throw new Error(`${path}.weight must be a positive safe integer`);
+			if (
+				effort !== undefined &&
+				!(MODEL_SPLIT_ARM_EFFORTS as readonly unknown[]).includes(effort)
+			)
+				throw new Error(
+					`${path}.effort must be one of ${MODEL_SPLIT_ARM_EFFORTS.join(", ")}`,
+				);
 			if (armNames.has(arm))
 				throw new Error(
 					`modelSplit.nodes.${nodeId} contains duplicate arm ${arm}`,
@@ -200,7 +234,16 @@ export function parseWeightedModelSplit(
 				throw new Error(
 					`modelSplit.nodes.${nodeId} total weight must be a safe integer`,
 				);
-			return Object.freeze({ arm, model, weight: weight as number });
+			// `effort` is appended only when written: the version hash serializes
+			// this object, and effort-less policies must keep their version.
+			return Object.freeze({
+				arm,
+				model,
+				weight: weight as number,
+				...(effort === undefined
+					? {}
+					: { effort: effort as ModelSplitArmEffort }),
+			});
 		});
 		nodes[nodeId] = Object.freeze(arms);
 	}

@@ -3545,6 +3545,17 @@ export class CommDB {
 			.get(id) as Message | undefined;
 	}
 
+	getQuestionOrder(
+		id: string,
+	): { createdAt: string; rowId: number } | undefined {
+		return this.db
+			.prepare(
+				`SELECT created_at AS createdAt, rowid AS rowId
+				 FROM mailbox_message_projection WHERE id = ? AND type = 'question'`,
+			)
+			.get(id) as { createdAt: string; rowId: number } | undefined;
+	}
+
 	listRunnerDeliveryProjectionRows(
 		now = new Date().toISOString(),
 		page?: { afterSeq?: number; limit?: number; includeInflight?: boolean },

@@ -1429,6 +1429,15 @@ globalThis.fetch = async () => {
 		});
 	});
 
+	describe("lead-interrupt", () => {
+		it("dispatches to the controlled-interrupt client (FLY-2883)", () => {
+			const result = runCliSafe(["lead-interrupt"]);
+			expect(result.exitCode).toBe(2);
+			expect(result.stderr).toContain("lead-interrupt:");
+			expect(result.stderr).not.toContain("Unknown command");
+		});
+	});
+
 	describe("sessions", () => {
 		it("should list sessions", () => {
 			// Seed session data via CommDB

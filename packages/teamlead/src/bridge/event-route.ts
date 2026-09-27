@@ -51,6 +51,7 @@ import {
 import { normalizeTerminalFailureInfo } from "../terminal-failure-info.js";
 import {
 	recordWorkflowReviewRoute,
+	resolveRequiredReviewModel,
 	resolveWorkflowReviewRouteForExecution,
 } from "../workflow-review-routing.js";
 import { nodeRequiresFounderReview } from "../workflow-run-snapshot.js";
@@ -666,6 +667,68 @@ export function handleCodexAutoTrigger(
 		);
 		return "pending";
 	}
+}
+
+/**
+ * FLY-2891: the design review request bound to THIS stage event (a replay
+ * resolves the same source event → same manifest), echoed synchronously to
+ * `stage set` so the runner starts Codex with the required reviewer model
+ * instead of racing the inbox delivery. Absent manifest → no echo (old shape).
+ */
+function designReviewEcho(
+	store: StateStore,
+	executionId: string,
+	sourceEventId: string,
+):
+	| {
+			requestId: string;
+			revision: number;
+			planPath: string;
+			reviewedPlanBlobSha: string;
+			reviewerModel?: string;
+			reviewerEffort?: string;
+	  }
+	| undefined {
+	// The echo is advisory: a lookup failure must never fail the stage event
+	// (the runner falls back to the inbox manifest).
+	let manifest: ReturnType<StateStore["getDesignReviewManifestForSourceEvent"]>;
+	try {
+		manifest = store.getDesignReviewManifestForSourceEvent(
+			executionId,
+			sourceEventId,
+		);
+	} catch (err) {
+		console.warn(
+			`[codex-trigger] design review echo unavailable for ${executionId}: ${(err as Error).message}`,
+		);
+		return undefined;
+	}
+	if (!manifest) return undefined;
+	let required: ReturnType<typeof resolveRequiredReviewModel>;
+	try {
+		required = resolveRequiredReviewModel(
+			store,
+			executionId,
+			"design",
+			manifest.request_id,
+		);
+	} catch (err) {
+		console.warn(
+			`[codex-trigger] design reviewer model unresolved for ${executionId}: ${(err as Error).message}`,
+		);
+	}
+	return {
+		requestId: manifest.request_id,
+		revision: manifest.revision,
+		planPath: manifest.expected_plan_path,
+		reviewedPlanBlobSha: manifest.expected_blob_sha,
+		...(required
+			? {
+					reviewerModel: required.reviewerModel,
+					reviewerEffort: required.reviewerEffort,
+				}
+			: {}),
+	};
 }
 
 // FLY-907: `parseIssueLabels`, `issueStatusWordEnabled`, and the two legacy
@@ -4032,6 +4095,10 @@ export function createEventRouter(
 			}
 		}
 
+		const designReview =
+			stageRecord && asString(payload.stage) === "design_review"
+				? designReviewEcho(store, event.execution_id, event.event_id)
+				: undefined;
 		res.json({
 			ok: true,
 			...(stageRecord
@@ -4039,6 +4106,7 @@ export function createEventRouter(
 						...(!isNew ? { duplicate: true } : {}),
 						applied: stagePending.size === 0,
 						...(stagePending.size ? { pending: [...stagePending] } : {}),
+						...(designReview ? { designReview } : {}),
 					}
 				: {}),
 		});

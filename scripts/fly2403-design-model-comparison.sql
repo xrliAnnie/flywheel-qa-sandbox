@@ -1,4 +1,8 @@
 -- FLY-2403: read-only Astra/Fable design-outcome comparison.
+-- FLY-2891: the Claude-line design review round count below is superseded by
+-- the workflow-scorecard review metrics (designReview/codeReview: first pass,
+-- rounds to approval, coverage) computed from review_round_record +
+-- review_gate_acceptance with one definition shared with the Astra line.
 -- Rule fly2403-v1: odd issue = A/Astra; even issue = B/Fable.
 --
 -- Optional rule_version filters immutable design_model_arm_assigned basis.ruleVersion.

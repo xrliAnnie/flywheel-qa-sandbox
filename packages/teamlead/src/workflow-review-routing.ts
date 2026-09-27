@@ -118,3 +118,67 @@ export function recordWorkflowReviewRoute(
 		},
 	});
 }
+
+/**
+ * FLY-2891: the reviewer model/effort Bridge required for an execution's
+ * review, as recorded when the instruction was issued. Design binds to the
+ * manifest request's `review_model_routed` event; code (and design without a
+ * matching request) takes the latest routed event; with no event the route is
+ * recomputed. Only Codex reviewer routes are returned — `undefined` means no
+ * Codex reviewer requirement exists (non-workflow run or a non-Codex route).
+ */
+export function resolveRequiredReviewModel(
+	store: Pick<
+		StateStore,
+		| "getWorkflowExecutionRuntime"
+		| "getWorkflowRunNodeForExecution"
+		| "getWorkflowRun"
+		| "listWorkflowRunEvents"
+	>,
+	executionId: string,
+	reviewType: "design" | "code",
+	requestId?: string,
+): { reviewerModel: string; reviewerEffort: string } | undefined {
+	const binding = store.getWorkflowRunNodeForExecution(executionId);
+	if (binding) {
+		const routed = store
+			.listWorkflowRunEvents(binding.run_id)
+			.filter(
+				(event) =>
+					event.kind === "review_model_routed" &&
+					event.execution_id === executionId,
+			)
+			.map((event) => event.payload as Record<string, unknown> | undefined)
+			.filter(
+				(payload): payload is Record<string, unknown> =>
+					!!payload &&
+					payload.reviewType === reviewType &&
+					payload.reviewerVendor === "codex" &&
+					typeof payload.reviewerModel === "string" &&
+					typeof payload.reviewerEffort === "string",
+			);
+		const exact =
+			reviewType === "design" && requestId
+				? routed.find((payload) => payload.requestId === requestId)
+				: undefined;
+		const chosen = exact ?? routed.at(-1);
+		if (chosen)
+			return {
+				reviewerModel: chosen.reviewerModel as string,
+				reviewerEffort: chosen.reviewerEffort as string,
+			};
+	}
+	// Throws on a corrupt routed snapshot; callers decide (record → unknown,
+	// gate validation → deny). Never silently read as "no requirement".
+	const route = resolveWorkflowReviewRouteForExecution(
+		store,
+		executionId,
+		reviewType,
+	);
+	return route?.reviewerVendor === "codex"
+		? {
+				reviewerModel: route.reviewerModel,
+				reviewerEffort: route.reviewerEffort,
+			}
+		: undefined;
+}

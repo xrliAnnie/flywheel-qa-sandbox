@@ -75,6 +75,7 @@ export type ClaudeReviewOutcome =
 	| {
 			kind: "failed";
 			reason:
+				| "aborted"
 				| "spawn_error"
 				| "timeout"
 				| "nonzero_exit"
@@ -115,6 +116,7 @@ export interface ClaudeReviewInvocation {
 	};
 	/** Supplemental identity only; capture or persistence failure never fabricates it. */
 	onSpawnIdentity?: (identity: ReviewProcessIdentity) => void | Promise<void>;
+	signal?: AbortSignal;
 }
 
 /**
@@ -191,6 +193,7 @@ interface SpawnResult {
 	code: number | null;
 	stdout: string;
 	stderr: string;
+	aborted: boolean;
 	timedOut: boolean;
 	overflowed: boolean;
 	spawnError: string | null;
@@ -206,14 +209,28 @@ export type ClaudeReviewSpawner = (opts: {
 	onSpawnIdentity?: (identity: ReviewProcessIdentity) => void | Promise<void>;
 	/** Injectable sensor; failure leaves identity unknown. */
 	captureSpawnIdentity?: typeof captureSpawnedReviewIdentity;
+	signal?: AbortSignal;
 }) => Promise<SpawnResult>;
 
 /** Real spawner — never rejects; every failure lands in the result shape. */
 export const defaultClaudeReviewSpawner: ClaudeReviewSpawner = (opts) =>
 	new Promise((resolve) => {
+		if (opts.signal?.aborted) {
+			resolve({
+				code: null,
+				stdout: "",
+				stderr: "",
+				aborted: true,
+				timedOut: false,
+				overflowed: false,
+				spawnError: null,
+			});
+			return;
+		}
 		let stdout = "";
 		let stderrTail = Buffer.alloc(0);
 		let done = false;
+		let aborted = false;
 		let timedOut = false;
 		let overflowed = false;
 		let spawnError: string | null = null;
@@ -253,16 +270,23 @@ export const defaultClaudeReviewSpawner: ClaudeReviewSpawner = (opts) =>
 			}
 		}
 		child.once("exit", () => identityCapture.abort());
+		const onAbort = () => {
+			if (done) return;
+			aborted = true;
+			killTree();
+		};
 		const finish = (code: number | null) => {
 			if (done) return;
 			done = true;
 			identityCapture.abort();
 			clearTimeout(timer);
+			opts.signal?.removeEventListener("abort", onAbort);
 			if (child.pid) liveChildren.delete(child.pid);
 			resolve({
 				code,
 				stdout,
 				stderr: stderrTail.toString("utf8"),
+				aborted,
 				timedOut,
 				overflowed,
 				spawnError,
@@ -301,6 +325,8 @@ export const defaultClaudeReviewSpawner: ClaudeReviewSpawner = (opts) =>
 			finish(127);
 		});
 		child.on("close", (code) => finish(code));
+		opts.signal?.addEventListener("abort", onAbort, { once: true });
+		if (opts.signal?.aborted) onAbort();
 		try {
 			// -p mode must not be left waiting on stdin (classifier precedent)
 			child.stdin.end();
@@ -573,7 +599,17 @@ export async function runClaudeReviewRound(
 					}
 				}
 			: undefined,
+		signal: inv.signal,
 	});
+	if (res.aborted) {
+		return {
+			kind: "failed",
+			reason: "aborted",
+			detail: "aborted by review coordinator",
+			exitCode: res.code,
+			timedOut: false,
+		};
+	}
 	if (res.spawnError !== null) {
 		logger(`spawn failed: ${res.spawnError}`);
 		return {

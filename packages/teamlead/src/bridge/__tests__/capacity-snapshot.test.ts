@@ -23,8 +23,8 @@ import { renderAccountQuotaPageHtml } from "../account-quota-page.js";
 import { buildAccountQuotaView } from "../account-quota-view.js";
 import {
 	buildCapacitySnapshot,
-	codexTokenState,
 	type CapacitySnapshot,
+	codexTokenState,
 } from "../capacity-snapshot.js";
 import { formatPatrolTick } from "../hook-payload.js";
 import type { LeadEventEnvelope } from "../lead-runtime.js";

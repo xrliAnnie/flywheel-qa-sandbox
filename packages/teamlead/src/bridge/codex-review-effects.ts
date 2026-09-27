@@ -1,6 +1,7 @@
 import type { AlertPayload, AlertResult } from "../LeadAlertNotifier.js";
 import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { Session } from "../StateStore.js";
+import type { WorkflowReviewRoute } from "../workflow-review-routing.js";
 import { queueCodexCodeReviewInstructionResult } from "./codex-instruction.js";
 import { buildSessionKey } from "./hook-payload.js";
 
@@ -10,6 +11,8 @@ export interface CodexReviewEffectsDeps {
 		alert: (payload: AlertPayload) => Promise<AlertResult>;
 	};
 	queueInstruction?: typeof queueCodexCodeReviewInstructionResult;
+	/** FLY-2891: the execution's Codex code-review route, if any. */
+	resolveReviewRoute?: (executionId: string) => WorkflowReviewRoute | undefined;
 }
 
 /** Neutral transport + alert effects for the permanent Codex review hold. */
@@ -19,9 +22,21 @@ export class CodexReviewEffects {
 	queueCodexInstruction(args: {
 		session: Session;
 	}): ReturnType<typeof queueCodexCodeReviewInstructionResult> {
-		return (
-			this.deps.queueInstruction ?? queueCodexCodeReviewInstructionResult
-		)(args.session.project_name, args.session.execution_id);
+		const queue =
+			this.deps.queueInstruction ?? queueCodexCodeReviewInstructionResult;
+		let reviewRoute: WorkflowReviewRoute | undefined;
+		try {
+			reviewRoute = this.deps.resolveReviewRoute?.(args.session.execution_id);
+		} catch (error) {
+			console.warn(
+				`[codex-review-effects] review route unresolved for ${args.session.execution_id}; re-queue without a model: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+		return reviewRoute
+			? queue(args.session.project_name, args.session.execution_id, {
+					reviewRoute,
+				})
+			: queue(args.session.project_name, args.session.execution_id);
 	}
 
 	async alertCodexGateBlocked(args: {

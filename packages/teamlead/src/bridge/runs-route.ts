@@ -3249,8 +3249,6 @@ export function createRunsRouter(
 			const dispatchResolution = resolveNodeDispatchAtLaunch(store, {
 				runId: generalizedSelection.runId,
 				nodeId: generalizedSelection.nodeId,
-				codexQuotaRootKey: quotaRootKey,
-				now: now.getTime(),
 			});
 			const quotaWait = store.codexQuota.getAdmissionWait(
 				generalizedSelection.idempotencyKey,

@@ -3,6 +3,10 @@ import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import BetterSqlite3 from "better-sqlite3";
 import {
+	countReviewRoundSpool,
+	reviewRoundSpoolDir,
+} from "flywheel-comm/review-round-spool";
+import {
 	parseWorkflowScorecardPoolCapacityConfig,
 	readWorkflowScorecardReport,
 	type WorkflowScorecardReport,
@@ -44,14 +48,18 @@ function text(report: WorkflowScorecardReport): string {
 	}
 	for (const group of report.groups) {
 		lines.push(
-			`${group.axis}/${group.group} policy=${group.policyVersion ?? "n/a"} issues=${group.issueCount} terminal=${group.terminalCount} open=${group.openCount} assigned_before_exclusions=${group.assignedIssueCountBeforeExclusions} degraded_from_arm=${group.degradedFromThisArm}/${group.assignedIssueCountBeforeExclusions} qa_first_pass=${group.qaFirstPass.numerator}/${group.qaFirstPass.denominator} founder_reject=${group.founderReject.numerator}/${group.founderReject.denominator} tokens_per_first_pass=${group.tokensPerFirstPassIssue ?? "missing"} mean_node_work_ms=${group.meanNodeWorkMs ?? "missing"} mean_elapsed_ms=${group.meanElapsedMs ?? "missing"}`,
+			`${group.axis}/${group.group} policy=${group.policyVersion ?? "n/a"} issues=${group.issueCount} terminal=${group.terminalCount} open=${group.openCount} assigned_before_exclusions=${group.assignedIssueCountBeforeExclusions} degraded_from_arm=${group.degradedFromThisArm}/${group.assignedIssueCountBeforeExclusions} qa_first_pass=${group.qaFirstPass.numerator}/${group.qaFirstPass.denominator} founder_reject=${group.founderReject.numerator}/${group.founderReject.denominator} tokens_per_first_pass=${group.tokensPerFirstPassIssue ?? "missing"} mean_node_work_ms=${group.meanNodeWorkMs ?? "missing"} mean_elapsed_ms=${group.meanElapsedMs ?? "missing"} design_first_pass=${group.designReviewFirstPass.numerator}/${group.designReviewFirstPass.denominator} design_rounds_mean=${group.designReviewRoundsMean ?? "missing"} design_incomplete=${group.designReviewCoverage.incomplete} code_first_pass=${group.codeReviewFirstPass.numerator}/${group.codeReviewFirstPass.denominator} code_rounds_mean=${group.codeReviewRoundsMean ?? "missing"} code_incomplete=${group.codeReviewCoverage.incomplete}`,
 		);
 	}
 	for (const issue of report.issues) {
 		lines.push(
-			`${issue.issueId} canonical=${issue.canonicalIssueId} runs=${issue.runIds.join(",")} qa_first_pass=${issue.qaFirstPass ?? "unknown"} founder_rejects=${issue.founderRejectCount ?? "missing"} tokens=${issue.totalTokens ?? "missing"} node_work_ms=${issue.nodeWorkMs ?? "missing"} elapsed_ms=${issue.elapsedMs ?? "missing"} degraded=${issue.degraded}`,
+			`${issue.issueId} canonical=${issue.canonicalIssueId} runs=${issue.runIds.join(",")} qa_first_pass=${issue.qaFirstPass ?? "unknown"} founder_rejects=${issue.founderRejectCount ?? "missing"} tokens=${issue.totalTokens ?? "missing"} node_work_ms=${issue.nodeWorkMs ?? "missing"} elapsed_ms=${issue.elapsedMs ?? "missing"} degraded=${issue.degraded} design_review=${issue.designReview.firstPass ?? issue.designReview.coverage}/${issue.designReview.roundsToApproval ?? "-"} code_review=${issue.codeReview.firstPass ?? issue.codeReview.coverage}/${issue.codeReview.roundsToApproval ?? "-"}`,
 		);
 	}
+	if (report.reviewRoundSpool)
+		lines.push(
+			`review_round_spool_pending=${report.reviewRoundSpool.pending} quarantined=${report.reviewRoundSpool.quarantined}`,
+		);
 	return `${lines.join("\n")}\n`;
 }
 
@@ -153,7 +161,7 @@ export function runWorkflowScorecardCli(
 			);
 			if (required.some((name) => !found.has(name)))
 				throw new Error("unavailable_schema");
-			const report = db.transaction(() =>
+			const dbReport = db.transaction(() =>
 				readWorkflowScorecardReport(db, {
 					project: values.project!,
 					from,
@@ -166,6 +174,11 @@ export function runWorkflowScorecardCli(
 					...(values.issue ? { issue: values.issue } : {}),
 				}),
 			)();
+			// FLY-2891: make undelivered review-round records visible.
+			const report: WorkflowScorecardReport = {
+				...dbReport,
+				reviewRoundSpool: countReviewRoundSpool(reviewRoundSpoolDir()),
+			};
 			io.stdout(
 				values.format === "json"
 					? `${JSON.stringify(report, null, 2)}\n`
