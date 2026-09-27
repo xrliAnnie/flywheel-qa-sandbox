@@ -2,18 +2,18 @@
 issue: FLY-2922
 phase: implement
 phaseCursor: 0/6
-updated: 2026-09-27T00:47:31.278Z
-nextStep: "748c118a1 closes FLY-2545 land recovery: with-op and no-op paths
-  stage canonical v2, materialize a fresh dispatch, preserve operation
-  generation/head CAS, dispatcher consumes it, and repeated failure stays
-  recoverable. Concrete 7/7 node recovery, 34/34 holds, 137/137 dispatcher, 3/3
-  contract, 4/4 registry, 2/2 receipt, 6/6 carrier-close plus affected build
-  GREEN. Next: historical projection, decision/state-only routes, and
-  FLY-2921-compatible rework."
+updated: 2026-09-27T00:58:47.699Z
+nextStep: "17f117231 routes engine-owned operator pause and gate-origin
+  preflight through canonical v2 stage/apply. resume_existing preserves
+  execution and ledger; rearm_gate_probe preserves holder/question and writes no
+  dispatch; both persist state_applied receipts and replay idempotently. Node
+  recovery 9/9, legacy holds 34/34, contract 3/3, receipts 2/2, registry 4/4,
+  package build GREEN. Next: historical active-orphan/supersession and recorded
+  loop/idle decisions; then FLY-2921-compatible rework."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2922 progress
 **phase**: implement (0/6)
-**next**: 748c118a1 closes FLY-2545 land recovery: with-op and no-op paths stage canonical v2, materialize a fresh dispatch, preserve operation generation/head CAS, dispatcher consumes it, and repeated failure stays recoverable. Concrete 7/7 node recovery, 34/34 holds, 137/137 dispatcher, 3/3 contract, 4/4 registry, 2/2 receipt, 6/6 carrier-close plus affected build GREEN. Next: historical projection, decision/state-only routes, and FLY-2921-compatible rework.
+**next**: 17f117231 routes engine-owned operator pause and gate-origin preflight through canonical v2 stage/apply. resume_existing preserves execution and ledger; rearm_gate_probe preserves holder/question and writes no dispatch; both persist state_applied receipts and replay idempotently. Node recovery 9/9, legacy holds 34/34, contract 3/3, receipts 2/2, registry 4/4, package build GREEN. Next: historical active-orphan/supersession and recorded loop/idle decisions; then FLY-2921-compatible rework.
