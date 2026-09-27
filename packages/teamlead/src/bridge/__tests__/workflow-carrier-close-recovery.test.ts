@@ -145,6 +145,41 @@ async function enrolledCarrier(status: string) {
 	return store;
 }
 
+function openReworkOnCurrentCarrier(store: StateStore) {
+	const db = (
+		store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		}
+	).db;
+	db.run(
+		`INSERT INTO workflow_rework_request
+		   (request_id, run_id, source_event_id, authority, source_node_id,
+		    source_attempt, base_revision, authority_context_json,
+		    authority_context_digest, founder_feedback_verbatim, requested_at)
+		 VALUES ('carrier-close-rework', ?, 'carrier-close-rework-source',
+		         'founder', 'qa', 1, 'unavailable', '{}', 'fixture-digest',
+		         'Retry the current design actor', '2026-08-15T08:02:00.000Z')`,
+		[RUN],
+	);
+	db.run(
+		`INSERT INTO workflow_rework_route_revision
+		   (request_id, revision, target_node_id, target_attempt,
+		    preferred_actor_execution_id, invalidation_scope_json,
+		    verification_policy_json, interpreted_by, interpretation_reason,
+		    created_at)
+		 VALUES ('carrier-close-rework', 1, 'design', 1, ?, '["design"]', '[]',
+		         'fixture', 'exercise carrier-close ownership',
+		         '2026-08-15T08:02:00.000Z')`,
+		[EXECUTION],
+	);
+	db.run(
+		`INSERT INTO workflow_rework_delivery
+		   (request_id, route_revision, state, updated_at, wake_sent_at)
+		 VALUES ('carrier-close-rework', 1, 'wake_delivered',
+		         '2026-08-15T08:02:00.000Z', '2026-08-15T08:02:00.000Z')`,
+	);
+}
+
 function close(store: StateStore, done = false) {
 	return closeRunner(
 		{
@@ -260,6 +295,59 @@ describe("FLY-2095/2181/2525 enrolled carrier close is not run termination", () 
 		).toHaveLength(0);
 		expectCurrentRecovery(store, result);
 		expect(result).toMatchObject({ completionAccepted: false });
+	}, 60_000);
+
+	it("closes an open rework actor without freezing its active run", async () => {
+		const store = await enrolledCarrier("completed");
+		openReworkOnCurrentCarrier(store);
+		const result = await close(store);
+		expect(result).toMatchObject({
+			closed: true,
+			commDbFinalized: true,
+			runTerminated: false,
+			runStatus: "active",
+			recoveryTarget: null,
+		});
+		expect(store.getSession(EXECUTION)).toMatchObject({ status: "completed" });
+		expect(store.getWorkflowRun(RUN)).toMatchObject({
+			status: "active",
+			current_node_id: "design",
+		});
+		expect(
+			store
+				.listWorkflowRunEvents(RUN)
+				.filter((event) => event.kind === "run_recovery_required"),
+		).toEqual([]);
+		expect(
+			store
+				.listWorkflowRunEvents(RUN)
+				.filter((event) => event.kind === "rework_actor_closed"),
+		).toEqual([
+			expect.objectContaining({
+				node_id: "design",
+				execution_id: EXECUTION,
+				payload: expect.objectContaining({
+					requestId: "carrier-close-rework",
+				}),
+			}),
+		]);
+		expect(
+			store.getWorkflowReworkDelivery("carrier-close-rework"),
+		).toMatchObject({
+			state: "wake_delivered",
+			route_revision: 1,
+		});
+		expect(
+			store.listWorkflowHolds(RUN).filter((hold) => hold.runLevel),
+		).toEqual([]);
+		const events = store.listWorkflowRunEvents(RUN);
+		expect(await close(store)).toMatchObject({
+			closed: true,
+			alreadyGone: true,
+			runStatus: "active",
+			recoveryTarget: null,
+		});
+		expect(store.listWorkflowRunEvents(RUN)).toEqual(events);
 	}, 60_000);
 
 	it("closing an old body without completion preserves its current replacement", async () => {

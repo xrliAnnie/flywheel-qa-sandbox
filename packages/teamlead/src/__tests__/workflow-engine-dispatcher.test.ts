@@ -1094,12 +1094,33 @@ async function storeWithLegacyHeldRework(
 		kind: shape,
 		nodeId: route.target_node_id,
 		executionId: route.preferred_actor_execution_id,
-		payload: {
-			requestId,
-			routeRevision: route.revision,
-			attempt: route.target_attempt,
-			reason: "legacy_held_rework_fixture",
-		},
+		// Preserve the exact payload families written by the retired producers.
+		// None of them persisted target attempt or route revision; recovery must
+		// derive that identity from the immutable request/route ledger.
+		payload:
+			shape === "rework_retry_exhausted"
+				? {
+						requestId,
+						holdCount: 5,
+						reason: "legacy_held_rework_fixture",
+						cleanupDisposition: "no_activation",
+						terminalCause: null,
+					}
+				: shape === "rework_pane_loss_handoff"
+					? {
+							requestId,
+							attempts: 5,
+							reason: "legacy_held_rework_fixture",
+							at: "2026-09-26T18:00:00.000Z",
+						}
+					: {
+							requestId,
+							generation: 1,
+							action: "hold",
+							reason: "legacy_held_rework_fixture",
+							sourceAt: "2026-09-26T17:00:00.000Z",
+							at: "2026-09-26T18:00:00.000Z",
+						},
 	});
 	return { store, db, requestId, route, holdEventUid };
 }
@@ -7771,44 +7792,87 @@ describe("FLY-2922 legacy held rework uses the unified replacement exit", () => 
 		}
 	});
 
-	it.each([
-		{ liveness: "alive" as const, error: "recovery_target_alive" },
-		{ liveness: "unknown" as const, error: "recovery_liveness_unknown" },
-	])(
-		"leaves an $liveness historical rework writer and its held run untouched",
-		async ({ liveness, error }) => {
-			const h = await storeWithLegacyHeldRework("rework_pane_loss_handoff");
-			try {
-				const before = h.store.listWorkflowSideEffects("run-1");
-				await expect(
-					prepareWorkflowNodeRecovery(
-						h.store,
-						{
-							runId: "run-1",
-							shape: "rework_pane_loss_handoff",
-							holdEventUid: h.holdEventUid,
-							decision: null,
-							reason: "do not replace an unproven writer",
-							principal: "master",
-							clientRequestId: `fly2922:${liveness}-writer`,
-						},
-						async () => liveness,
-					),
-				).rejects.toThrow(error);
-				expect(h.store.listWorkflowSideEffects("run-1")).toEqual(before);
-				expect(h.store.getWorkflowRun("run-1")?.status).toBe("held");
-				expect(h.store.getLatestWorkflowReworkRoute(h.requestId)).toEqual(
-					h.route,
-				);
-				expect(h.store.getWorkflowReworkDelivery(h.requestId)).toMatchObject({
-					state: "returned_to_lead",
-					route_revision: h.route.revision,
-				});
-			} finally {
-				h.store.close();
-			}
-		},
-	);
+	it("rearms the exact historical rework delivery when its preferred actor is alive", async () => {
+		const h = await storeWithLegacyHeldRework("rework_pane_loss_handoff");
+		try {
+			const before = h.store.listWorkflowSideEffects("run-1");
+			const prepared = await prepareWorkflowNodeRecovery(
+				h.store,
+				{
+					runId: "run-1",
+					shape: "rework_pane_loss_handoff",
+					holdEventUid: h.holdEventUid,
+					decision: null,
+					reason: "rearm the proven live writer",
+					principal: "master",
+					clientRequestId: "fly2922:alive-writer",
+				},
+				async () => "alive",
+			);
+			expect(prepared.canonical.target).toMatchObject({
+				operationKind: "resume_existing",
+				previousExecutionId: h.route.preferred_actor_execution_id,
+				rework: {
+					requestId: h.requestId,
+					routeRevision: h.route.revision,
+				},
+			});
+			expect(
+				h.store.recoverWorkflowNode({
+					...prepared,
+					now: new Date().toISOString(),
+				}),
+			).toMatchObject({ ok: true, state: "state_applied" });
+			expect(h.store.listWorkflowSideEffects("run-1")).toEqual(before);
+			expect(h.store.getWorkflowRun("run-1")?.status).toBe("active");
+			expect(h.store.getLatestWorkflowReworkRoute(h.requestId)).toMatchObject({
+				revision: h.route.revision + 1,
+				preferred_actor_execution_id: h.route.preferred_actor_execution_id,
+				interpreted_by: "engine:hold_resume",
+			});
+			expect(h.store.getWorkflowReworkDelivery(h.requestId)).toMatchObject({
+				state: "pending",
+				route_revision: h.route.revision + 1,
+				owner_id: null,
+				hold_count: 0,
+			});
+		} finally {
+			h.store.close();
+		}
+	});
+
+	it("leaves an unknown-liveness historical rework writer and its held run untouched", async () => {
+		const h = await storeWithLegacyHeldRework("rework_pane_loss_handoff");
+		try {
+			const before = h.store.listWorkflowSideEffects("run-1");
+			await expect(
+				prepareWorkflowNodeRecovery(
+					h.store,
+					{
+						runId: "run-1",
+						shape: "rework_pane_loss_handoff",
+						holdEventUid: h.holdEventUid,
+						decision: null,
+						reason: "do not replace an unproven writer",
+						principal: "master",
+						clientRequestId: "fly2922:unknown-writer",
+					},
+					async () => "unknown",
+				),
+			).rejects.toThrow("recovery_liveness_unknown");
+			expect(h.store.listWorkflowSideEffects("run-1")).toEqual(before);
+			expect(h.store.getWorkflowRun("run-1")?.status).toBe("held");
+			expect(h.store.getLatestWorkflowReworkRoute(h.requestId)).toEqual(
+				h.route,
+			);
+			expect(h.store.getWorkflowReworkDelivery(h.requestId)).toMatchObject({
+				state: "returned_to_lead",
+				route_revision: h.route.revision,
+			});
+		} finally {
+			h.store.close();
+		}
+	});
 
 	it("revalidates the complete rework launch context inside the materializer transaction", async () => {
 		const h = await storeWithLegacyHeldRework("rework_retry_exhausted");

@@ -53325,7 +53325,16 @@ export class StateStore {
 			.sort((a, b) => b.launch_ordinal - a.launch_ordinal)[0];
 		if (!ledger || ledger.execution_id !== executionId)
 			throw new WorkflowEngineInvariantError("close_recovery_dispatch_changed");
-		const eventUid = `run_recovery_required:carrier_close:${canonicalSubmissionDigest({ runId: run.run_id, nodeId: binding.node_id, attempt: binding.attempt, executionId, launchOrdinal: ledger.launch_ordinal })}`;
+		// FLY-2921 owns every open rework target while the run stays active. A
+		// closed carrier is evidence for that coordinator to reconcile; freezing
+		// the run here would make the coordinator release its claim and leave a
+		// generic recovery episode that intentionally refuses an open rework.
+		const openRework = this.resolveOpenWorkflowReworkTarget({
+			runId: run.run_id,
+			nodeId: binding.node_id,
+			attempt: binding.attempt,
+		});
+		const eventUid = `${openRework ? "rework_actor_closed" : "run_recovery_required:carrier_close"}:${canonicalSubmissionDigest({ runId: run.run_id, nodeId: binding.node_id, attempt: binding.attempt, executionId, launchOrdinal: ledger.launch_ordinal })}`;
 		if (
 			this.workflowSelectAll(
 				"SELECT 1 FROM workflow_run_event WHERE event_uid = ?",
@@ -53337,6 +53346,27 @@ export class StateStore {
 			executionId,
 			"current_carrier_closed_without_completion",
 		);
+		if (openRework) {
+			this.appendWorkflowRunEventCheckedTx({
+				runId: run.run_id,
+				nodeId: binding.node_id,
+				executionId,
+				eventUid,
+				kind: "rework_actor_closed",
+				payload: {
+					reason: "current_carrier_closed_without_completion",
+					attempt: binding.attempt,
+					launchOrdinal: ledger.launch_ordinal,
+					requestId: openRework.conflict ? null : openRework.requestId,
+					routeRevision: openRework.conflict
+						? null
+						: openRework.routeRevision,
+					targetConflict: openRework.conflict,
+					at: now,
+				},
+			});
+			return;
+		}
 		this.db.run(
 			"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND current_node_id = ? AND status = ?",
 			[run.run_id, binding.node_id, run.status],
@@ -61870,11 +61900,18 @@ export class StateStore {
 					(payload.routeRevision === undefined ||
 						payload.routeRevision === reworkRecovery.routeRevision)
 				: true;
+			// The retired rework producers did not persist `attempt`. Their exact
+			// request id resolves an immutable route whose target tuple is the
+			// authoritative attempt evidence; ordinary recovery events still carry
+			// and must match their explicit payload attempt.
+			const evidenceAttempt = reworkRecovery
+				? reworkRecovery.route.target_attempt
+				: payload?.attempt;
 			if (
 				!event ||
 				event.node_id !== node.node_id ||
 				event.execution_id !== previousExecutionId ||
-				payload?.attempt !== node.attempt ||
+				evidenceAttempt !== node.attempt ||
 				!reworkIdentityMatches
 			)
 				throw new Error("recovery_hold_evidence_missing");
@@ -61988,9 +62025,16 @@ export class StateStore {
 		const hold = runHolds.find(
 			(candidate) => candidate.holdEventUid === input.holdEventUid,
 		);
+		const historicalReworkShapes = new Set([
+			"rework_activation_stalled_held",
+			"rework_pane_loss_handoff",
+			"rework_retry_exhausted",
+		]);
+		const historicalRework =
+			hold !== undefined && historicalReworkShapes.has(hold.shape);
 		if (
 			!hold ||
-			!isWorkflowStateRecoveryShape(hold.shape) ||
+			(!isWorkflowStateRecoveryShape(hold.shape) && !historicalRework) ||
 			(input.expectedShape !== undefined && hold.shape !== input.expectedShape) ||
 			!hold.resumable ||
 			hold.preconditions.some(({ ok }) => !ok) ||
@@ -62004,7 +62048,9 @@ export class StateStore {
 			throw new Error("recovery_decision_required");
 		const descriptor = getHoldShape(hold.shape)!;
 		const operationKind =
-			descriptor.resumeAction === "resume_run_held_by_operator"
+			historicalRework
+				? "resume_existing"
+				: descriptor.resumeAction === "resume_run_held_by_operator"
 				? "resume_existing"
 				: descriptor.resumeAction === "resume_gate_origin_preflight"
 					? "rearm_gate_probe"
@@ -62038,6 +62084,52 @@ export class StateStore {
 			!Array.isArray(event.payload)
 				? (event.payload as Record<string, unknown>)
 				: {};
+		let reworkTarget: WorkflowRecoveryTarget["rework"] = null;
+		let authority: unknown = null;
+		if (historicalRework) {
+			const requestId =
+				typeof eventPayload.requestId === "string"
+					? eventPayload.requestId
+					: undefined;
+			const request = requestId
+				? this.getWorkflowReworkRequest(requestId)
+				: undefined;
+			const route = requestId
+				? this.getLatestWorkflowReworkRoute(requestId)
+				: undefined;
+			const delivery = requestId
+				? this.getWorkflowReworkDelivery(requestId)
+				: undefined;
+			const context = requestId
+				? this.getWorkflowReworkReplacementContextPreflight(requestId)
+				: undefined;
+			if (
+				!requestId ||
+				!request ||
+				!route ||
+				!delivery ||
+				!context?.ok ||
+				request.run_id !== input.runId ||
+				route.target_node_id !== node.node_id ||
+				route.target_attempt !== node.attempt ||
+				route.preferred_actor_execution_id !== node.execution_id ||
+				delivery.route_revision !== route.revision ||
+				delivery.state !== "returned_to_lead" ||
+				event.node_id !== node.node_id ||
+				event.execution_id !== node.execution_id
+			)
+				throw new Error("rework_recovery_target_changed");
+			reworkTarget = {
+				requestId,
+				routeRevision: route.revision,
+			};
+			authority = {
+				request,
+				route,
+				delivery,
+				preflightDigest: context.value.preflightDigest,
+			};
+		}
 		if (operationKind === "apply_recorded_decision") {
 			const sourceAttempt = Number(eventPayload.sourceAttempt);
 			const targetAttempt = Number(eventPayload.targetAttempt);
@@ -62204,7 +62296,6 @@ export class StateStore {
 				}),
 			};
 		}
-		let authority: unknown = null;
 		if (operationKind === "rearm_gate_probe") {
 			const questionId =
 				typeof eventPayload.questionId === "string"
@@ -62236,14 +62327,16 @@ export class StateStore {
 			holdSetDigest: canonicalSubmissionDigest(sourceHoldEventUids),
 			startAuthority: null,
 			sourceHoldEventUids,
-			rework: null,
+			rework: reworkTarget,
 			land: null,
 		};
 		return {
 			target,
 			projectName: run.project_name,
 			sourceShape: hold.shape,
-			resumeAction: descriptor.resumeAction,
+			resumeAction: historicalRework
+				? "resume_rework"
+				: descriptor.resumeAction,
 			stateDigest: canonicalSubmissionDigest({
 				target,
 				runStatus: run.status,
@@ -70024,8 +70117,14 @@ export class StateStore {
 			} catch {
 				return { ok: false, reason: "failure_receipt_invalid" };
 			}
+			const failureKindMatches =
+				(prior.kind === "run_recovery_required" &&
+					payload.failureKind === "completion_blocked") ||
+				(prior.kind === "rework_actor_failure_reported" &&
+					payload.failureKind === "rework_delivery_owned" &&
+					typeof payload.requestId === "string");
 			if (
-				prior.kind !== "run_recovery_required" ||
+				!failureKindMatches ||
 				prior.run_id !== activation.runId ||
 				prior.node_id !== activation.nodeId ||
 				prior.execution_id !== input.executionId ||
@@ -70052,6 +70151,14 @@ export class StateStore {
 			executionId: input.executionId,
 		});
 		if (!writer.ok) return writer;
+		if (
+			this.resolveOpenWorkflowReworkTarget({
+				runId: activation.runId,
+				nodeId: activation.nodeId,
+				attempt: activation.attempt,
+			})?.conflict
+		)
+			return { ok: false, reason: "rework_target_conflict" };
 		return { ok: true, idempotentReplay: false, ...identity };
 	}
 
@@ -70068,6 +70175,15 @@ export class StateStore {
 			const checked = this.checkEnrolledFailure(input);
 			result = checked;
 			if (!checked.ok || checked.idempotentReplay) return;
+			const openRework = this.resolveOpenWorkflowReworkTarget({
+				runId: checked.runId,
+				nodeId: checked.nodeId,
+				attempt: checked.attempt,
+			});
+			if (openRework?.conflict) {
+				result = { ok: false, reason: "rework_target_conflict" };
+				return;
+			}
 			if (input.drainProof) {
 				if (
 					!this.consumeDrainChallengeTx({
@@ -70112,21 +70228,33 @@ export class StateStore {
 				throw new WorkflowEngineInvariantError("failure_session_changed");
 			this.applyTerminalTimestamp(input.executionId, previousStatus, "failed");
 			this.bumpLifecycleRevision(input.executionId);
-			this.db.run(
-				"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND current_node_id = ? AND status IN ('active','held')",
-				[checked.runId, checked.nodeId],
-			);
-			if (this.db.getRowsModified() !== 1)
-				throw new WorkflowEngineInvariantError("failure_run_changed");
+			if (!openRework) {
+				this.db.run(
+					"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND current_node_id = ? AND status IN ('active','held')",
+					[checked.runId, checked.nodeId],
+				);
+				if (this.db.getRowsModified() !== 1)
+					throw new WorkflowEngineInvariantError("failure_run_changed");
+			}
 			this.appendWorkflowRunEventCheckedTx({
 				runId: checked.runId,
 				nodeId: checked.nodeId,
 				executionId: input.executionId,
 				eventUid: checked.eventUid,
-				kind: "run_recovery_required",
+				kind: openRework
+					? "rework_actor_failure_reported"
+					: "run_recovery_required",
 				payload: {
 					reason: input.reason.trim(),
-					failureKind: "completion_blocked",
+					failureKind: openRework
+						? "rework_delivery_owned"
+						: "completion_blocked",
+					...(openRework
+						? {
+								requestId: openRework.requestId,
+								routeRevision: openRework.routeRevision,
+							}
+						: {}),
 					sourceEventId: input.sourceEventId,
 					activationId: checked.activationId,
 					attempt: checked.attempt,

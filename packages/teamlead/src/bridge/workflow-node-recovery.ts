@@ -237,12 +237,46 @@ export async function prepareWorkflowNodeRecovery(
 		const liveness = await probe(executionId, before.projectName, {
 			allowMissingTargetHostAbsence: true,
 		});
-		if (liveness !== "dead")
-			throw new Error(
-				liveness === "alive"
-					? "recovery_target_alive"
-					: "recovery_liveness_unknown",
-			);
+		if (liveness === "alive") {
+			const state = store.inspectWorkflowStateRecovery({
+				runId: request.runId,
+				holdEventUid: request.holdEventUid,
+				decision: request.decision,
+				expectedShape: request.shape,
+			});
+			const target = state.target;
+			const sourceSessionDigest = canonicalSubmissionDigest({
+				runId: target.runId,
+				nodeId: target.nodeId,
+				attempt: target.attempt,
+				executionId: target.previousExecutionId,
+				launchOrdinal: target.previousLaunchOrdinal,
+				operationKind: target.operationKind,
+			});
+			const sourceEvidenceDigest = canonicalSubmissionDigest({
+				snapshotDigest: target.snapshotDigest,
+				holdSetDigest: target.holdSetDigest,
+				operationKind: target.operationKind,
+			});
+			const canonical = workflowRecoveryCanonicalSchema.parse({
+				...request,
+				version: 2,
+				shape: "workflow_node_recovery",
+				target,
+			});
+			return {
+				canonical,
+				preflight: {
+					target,
+					stateDigest: state.stateDigest,
+					sourceSessionDigest,
+					sourceEvidenceDigest,
+					observedAt: new Date().toISOString(),
+					liveness: "not_required",
+				},
+			};
+		}
+		if (liveness !== "dead") throw new Error("recovery_liveness_unknown");
 		const after = store.inspectWorkflowNodeRecovery(request.runId);
 		const afterRequest = store.getWorkflowReworkRequest(rework.requestId);
 		const afterRoute = store.getLatestWorkflowReworkRoute(rework.requestId);

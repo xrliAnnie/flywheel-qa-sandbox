@@ -589,6 +589,40 @@ describe("FLY-2922 enrolled blocked completion", () => {
 		});
 	}
 
+	function openReworkOnCurrentActor() {
+		const db = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		db.run(
+			`INSERT INTO workflow_rework_request
+			   (request_id, run_id, source_event_id, authority, source_node_id,
+			    source_attempt, base_revision, authority_context_json,
+			    authority_context_digest, founder_feedback_verbatim, requested_at)
+			 VALUES ('failure-rework', ?, 'failure-rework-source', 'founder',
+			         'founder_gate', 1, 'unavailable', '{}', 'fixture-digest',
+			         'Retry the current producer', ?)`,
+			[RUN, new Date().toISOString()],
+		);
+		db.run(
+			`INSERT INTO workflow_rework_route_revision
+			   (request_id, revision, target_node_id, target_attempt,
+			    preferred_actor_execution_id, invalidation_scope_json,
+			    verification_policy_json, interpreted_by, interpretation_reason,
+			    created_at)
+			 VALUES ('failure-rework', 1, 'produce', 1, ?, '["produce"]', '[]',
+			         'fixture', 'exercise blocked completion ownership', ?)`,
+			[EXEC, new Date().toISOString()],
+		);
+		db.run(
+			`INSERT INTO workflow_rework_delivery
+			   (request_id, route_revision, state, updated_at, wake_sent_at)
+			 VALUES ('failure-rework', 1, 'wake_delivered', ?, ?)`,
+			[new Date().toISOString(), new Date().toISOString()],
+		);
+	}
+
 	it("fails the current node and session, holds its run, and never creates success evidence", async () => {
 		const before = state();
 		const result = await post();
@@ -644,6 +678,50 @@ describe("FLY-2922 enrolled blocked completion", () => {
 		// Durable receipt and projections survive reopening the temporary real database.
 		store!.close();
 		store = await StateStore.create(join(root, "teamlead.db"));
+		expect(state()).toEqual(after);
+	});
+
+	it("keeps an open rework run active when its current actor reports blocked", async () => {
+		openReworkOnCurrentActor();
+		const result = await post({ eventId: "blocked-open-rework" });
+		expect(result).toMatchObject({
+			status: 200,
+			body: { ok: true, generalized: true, duplicate: false },
+		});
+		expect(store!.getWorkflowRun(RUN)).toMatchObject({
+			status: "active",
+			current_node_id: "produce",
+		});
+		expect(store!.getWorkflowRunNode(RUN, "produce", 1)).toMatchObject({
+			state: "failed",
+			execution_id: EXEC,
+		});
+		expect(store!.getSession(EXEC)).toMatchObject({ status: "failed" });
+		expect(store!.getWorkflowReworkDelivery("failure-rework")).toMatchObject({
+			state: "wake_delivered",
+			route_revision: 1,
+		});
+		const events = store!.listWorkflowRunEvents(RUN);
+		expect(
+			events.filter((event) => event.kind === "run_recovery_required"),
+		).toEqual([]);
+		expect(
+			events.filter((event) => event.kind === "rework_actor_failure_reported"),
+		).toEqual([
+			expect.objectContaining({
+				node_id: "produce",
+				execution_id: EXEC,
+				payload: expect.objectContaining({ requestId: "failure-rework" }),
+			}),
+		]);
+		expect(
+			store!.listWorkflowHolds(RUN).filter((hold) => hold.runLevel),
+		).toEqual([]);
+		const after = state();
+		expect(await post({ eventId: "blocked-open-rework" })).toMatchObject({
+			status: 200,
+			body: { duplicate: true },
+		});
 		expect(state()).toEqual(after);
 	});
 
