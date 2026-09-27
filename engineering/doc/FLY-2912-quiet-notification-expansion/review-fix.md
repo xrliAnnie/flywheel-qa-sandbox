@@ -24,3 +24,11 @@ Issue: FLY-2912
 - LOW `summary-recovered-flag-sticky-and-title-missing`：recovered 标记持续及 issue_title 展示字段。
 
 历史验收仍不完整：1,855 事件中 845 UNKNOWN（45.55%），1,010 条可重建 model→model；538 原生 turn 不是实际 idle→busy 证明，after wakes 为 null。Lead 63109e39 已确认无当日 producer 授权快照，完整来源与最小未来测量提案见 full-day-rework.md。不能用本轮摘要修复或测试通过替代该验收。
+
+## 替身体续验（2026-09-26）
+
+继承 Lead 原样提交的修复 `964b7e7e46ce88cda1555f3be83cc1037ef2a508`，重新取得 implement TURN，并确认 `origin/main` 已在本分支内。本轮没有重写修复或扩大产品范围。旧红灯日志仍保留；重新搜索 22 个路径/符号/新旧表达式，108 个既有测试匹配的选择不变，补记 6 个 fixture/helper 排除理由。
+
+21 个具体测试文件逐个运行，共 336 passed。`fly2139-query-plans.test.ts` 首次遇到原有 5 秒超时；保持代码、超时、命令不变的单独复跑 2/2 通过，两份日志同时归档。lint exit 0（25 warnings），teamlead 及依赖 build exit 0；全天回放 12 个 Python 测试通过，重算结果与已提交 JSON 逐字一致。完整记录绑定源码 blob，见 `evidence/review-fix-verification.json` 及日志归档；本次没有请求 full CI 或执行本机全包测试。
+
+受限 TypeScript related：comm 7 文件 / 124 passed；teamlead 8 文件 / 165 passed。收集检查确认配置仅包含 14 个不重复的 teamlead 候选文件；实际 related 根据改动依赖运行其中 8 个。related 与显式测试重叠，不相加。源码与测试 API/type 未变；构建覆盖受影响包及其依赖。

@@ -2,6 +2,7 @@
   "base": "b5c884029a3e7035a36f5db392b3739464c39d20",
   "searches": {
     "freezeLeadAuditSummaryOffer": [
+      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-fix-selection.json",
       "packages/flywheel-comm/src/__tests__/lead-audit-summary-receipt.fly2912.test.ts",
       "packages/flywheel-comm/src/mailbox-queue.ts",
       "packages/teamlead/src/bridge/__tests__/lead-inbox-summary.fly2912.test.ts",
@@ -9,7 +10,9 @@
     ],
     "lead-audit-summary-receipt.fly2912.test.ts": [
       "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/consumer-audit.json",
-      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/flywheel-comm-related.config.mjs"
+      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/flywheel-comm-related.config.mjs",
+      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-fix-flywheel-comm-related.config.mjs",
+      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-fix-selection.json"
     ],
     "lead-inbox-loop.ts": [
       "doc/engineer/plan/v2/codex-verdict-r6.md",
@@ -116,6 +119,7 @@
       "engineering/doc/FLY-2910-alert-wake-dedup/review/design-review-round4.md",
       "engineering/doc/FLY-2910-alert-wake-dedup/review/design-review-round5.md",
       "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/consumer-audit.json",
+      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-fix-selection.json",
       "engineering/doc/FLY-2912-quiet-notification-expansion/plan.md",
       "engineering/doc/FLY-2912-quiet-notification-expansion/research.md",
       "engineering/doc/milestones/FLY-2799.md",
@@ -126,6 +130,8 @@
     ],
     "lead-inbox-summary.fly2912.test.ts": [
       "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/consumer-audit.json",
+      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-fix-selection.json",
+      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-fix-teamlead-related.config.mjs",
       "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/teamlead-related.config.mjs",
       "engineering/doc/FLY-2912-quiet-notification-expansion/flag-split-verification.json"
     ],
@@ -233,6 +239,7 @@
       "engineering/doc/FLY-2910-alert-wake-dedup/review/design-review-round1.md",
       "engineering/doc/FLY-2910-alert-wake-dedup/review/design-review-round3.md",
       "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/consumer-audit.json",
+      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-fix-selection.json",
       "engineering/doc/FLY-2912-quiet-notification-expansion/plan.md",
       "packages/flywheel-comm/src/__tests__/mailbox-query-plans.fly2008.test.ts",
       "packages/flywheel-comm/src/__tests__/mailbox-queue-capabilities.test.ts",
@@ -242,6 +249,7 @@
       "scripts/fly1645-receipt-residue-gate.config.json"
     ],
     "matchesLeadSummaryBatch": [
+      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-fix-selection.json",
       "packages/flywheel-comm/src/mailbox-queue.ts"
     ],
     "packages/flywheel-comm/src": [
@@ -697,6 +705,7 @@
       "engineering/doc/FLY-2910-alert-wake-dedup/evidence/test-consumers.json",
       "engineering/doc/FLY-2910-alert-wake-dedup/research.md",
       "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/consumer-audit.json",
+      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-fix-selection.json",
       "engineering/doc/FLY-2912-quiet-notification-expansion/plan.md",
       "engineering/doc/FLY-2916-qa-thread-archive/test-consumers.txt",
       "engineering/doc/FLY-696-account-self-heal/plan.md",
@@ -875,6 +884,7 @@
       "engineering/doc/FLY-2681-ci-on-demand-matrix/data/paths-0916.json",
       "engineering/doc/FLY-2910-alert-wake-dedup/evidence/test-consumers.json",
       "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/consumer-audit.json",
+      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-fix-selection.json",
       "engineering/doc/FLY-827-codex-hard-gate/research.md",
       "engineering/doc/FLY-900-remove-founder-ux-gate/research.md",
       "engineering/doc/FLY-921-three-stage-turn-belt/plan.md",
@@ -886,7 +896,8 @@
       "scripts/__tests__/fly2102-flag-freeze.test.sh"
     ],
     "packages/flywheel-comm/src/__tests__/lead-audit-summary-receipt.fly2912.test.ts": [
-      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/consumer-audit.json"
+      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/consumer-audit.json",
+      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-fix-selection.json"
     ],
     "packages/flywheel-comm/src/mailbox-queue.ts": [
       "engineering/doc/FLY-1573-queue-lease-batch-deadletter/research.md",
@@ -923,6 +934,7 @@
       "engineering/doc/FLY-2910-alert-wake-dedup/evidence/test-consumers.json",
       "engineering/doc/FLY-2910-alert-wake-dedup/research.md",
       "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/consumer-audit.json",
+      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-fix-selection.json",
       "scripts/fly-2006-retention-consumer-gate.config.json",
       "scripts/fly1645-receipt-residue-gate.config.json"
     ],
@@ -1788,6 +1800,7 @@
       "engineering/doc/FLY-2910-alert-wake-dedup/review/code-review-round1.json",
       "engineering/doc/FLY-2910-alert-wake-dedup/review/design-review-round5.md",
       "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/consumer-audit.json",
+      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-fix-selection.json",
       "engineering/doc/FLY-2912-quiet-notification-expansion/implementation-verification.md",
       "engineering/doc/FLY-2912-quiet-notification-expansion/plan.md",
       "engineering/doc/FLY-2916-qa-thread-archive/test-consumers.txt",
@@ -2122,6 +2135,7 @@
       "engineering/doc/FLY-2910-alert-wake-dedup/evidence/test-consumers.json",
       "engineering/doc/FLY-2910-alert-wake-dedup/plan.md",
       "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/consumer-audit.json",
+      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-fix-selection.json",
       "engineering/doc/FLY-2916-qa-thread-archive/test-consumers.txt",
       "engineering/doc/FLY-546-headphone-mode/plan.md",
       "engineering/doc/FLY-728-per-issue-model/plan.md",
@@ -2147,7 +2161,8 @@
       "scripts/lib/path-hygiene.sh"
     ],
     "packages/teamlead/src/bridge/__tests__/lead-inbox-summary.fly2912.test.ts": [
-      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/consumer-audit.json"
+      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/consumer-audit.json",
+      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-fix-selection.json"
     ],
     "packages/teamlead/src/bridge/lead-inbox-loop.ts": [
       "doc/engineer/plan/v2/codex-verdict-r6.md",
@@ -2172,9 +2187,11 @@
       "engineering/doc/FLY-2910-alert-wake-dedup/research.md",
       "engineering/doc/FLY-2910-alert-wake-dedup/review/design-review-round5.md",
       "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/consumer-audit.json",
+      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-fix-selection.json",
       "product/doc/FLY-1782-flag-recheck/readsite-gap.json"
     ],
     "prepareAuditSummary": [
+      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-fix-selection.json",
       "packages/teamlead/src/bridge/__tests__/lead-inbox-summary.fly2912.test.ts",
       "packages/teamlead/src/bridge/lead-inbox-loop.ts",
       "packages/teamlead/src/bridge/lead-inbox-runtime.ts"
@@ -2190,6 +2207,7 @@
       "engineering/doc/FLY-1795-mailbox-ack-starvation/plan.md",
       "engineering/doc/FLY-1948-slot-lead-discord-liveness/design-review-r1.md",
       "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/consumer-audit.json",
+      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-fix-selection.json",
       "engineering/doc/FLY-2912-quiet-notification-expansion/plan.md",
       "packages/flywheel-comm/src/__tests__/lead-audit-summary-receipt.fly2912.test.ts",
       "packages/flywheel-comm/src/__tests__/mailbox-adopt-inflight.test.ts",
@@ -2212,6 +2230,7 @@
       "engineering/doc/FLY-1795-mailbox-ack-starvation/plan.md",
       "engineering/doc/FLY-2101-flag-batch1-hardcode/plan.md",
       "engineering/doc/FLY-2101-flag-batch1-hardcode/research.md",
+      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-fix-selection.json",
       "packages/flywheel-comm/src/__tests__/mailbox-queue-capabilities.test.ts",
       "packages/flywheel-comm/src/__tests__/mailbox-queue.test.ts",
       "packages/flywheel-comm/src/mailbox-queue.ts",
@@ -2352,6 +2371,9 @@
       "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/consumer-audit.json",
       "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/flywheel-comm-related.config.mjs",
       "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-approved.json",
+      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-fix-flywheel-comm-related.config.mjs",
+      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-fix-selection.json",
+      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-fix-teamlead-related.config.mjs",
       "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/teamlead-related.config.mjs",
       "engineering/doc/FLY-2912-quiet-notification-expansion/plan.md",
       "engineering/doc/FLY-2912-quiet-notification-expansion/review-followups.md",
@@ -2578,6 +2600,8 @@
       "engineering/doc/FLY-2910-alert-wake-dedup/review/design-review-round5.md",
       "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/consumer-audit.json",
       "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-approved.json",
+      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-fix-selection.json",
+      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-fix-teamlead-related.config.mjs",
       "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/teamlead-related.config.mjs",
       "engineering/doc/FLY-2912-quiet-notification-expansion/plan.md",
       "engineering/doc/FLY-2912-quiet-notification-expansion/research.md",
@@ -2608,6 +2632,7 @@
       "packages/teamlead/src/bridge/delivery-contract/projector.ts"
     ],
     "row.claimed_by === input.ownerEpoch": [
+      "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-fix-selection.json",
       "packages/flywheel-comm/src/mailbox-queue.ts"
     ]
   },
@@ -3509,6 +3534,56 @@
       "matchedTerms": [
         "packages/teamlead/src/bridge"
       ]
+    },
+    {
+      "path": "packages/config/src/__tests__/drift-scan/index.ts",
+      "selection": "excluded",
+      "reason": "Excluded helper module: registry drift scanner only matched a parent-directory literal; this repair changes no flag registry or scan rules.",
+      "matchedTerms": [
+        "packages/teamlead/src/bridge"
+      ]
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fixtures/fly2567/compatibility.json",
+      "selection": "excluded",
+      "reason": "Excluded fixture: resident-rule compatibility manifest; no resident rule, execution closure or expected scenario changed.",
+      "matchedTerms": [
+        "packages/flywheel-comm/src",
+        "packages/teamlead/src/bridge"
+      ]
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fixtures/fly2912-evening/build-fixture.py",
+      "selection": "excluded",
+      "reason": "Excluded fixture generator: historical replay authority inputs unchanged; executable replay consumer retained.",
+      "matchedTerms": [
+        "packages/teamlead/src/bridge"
+      ]
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/fixtures/fly2269-r4-reviewer-raw.txt",
+      "selection": "excluded",
+      "reason": "Excluded fixture: archived reviewer text, not executable and not a consumer of this fix.",
+      "matchedTerms": [
+        "packages/flywheel-comm/src",
+        "packages/teamlead/src/bridge"
+      ]
+    },
+    {
+      "path": "scripts/__tests__/fixtures/customer-release-reserve-worker.mjs",
+      "selection": "excluded",
+      "reason": "Excluded fixture worker: release reservation lifecycle unchanged; no dependency on edited summary methods.",
+      "matchedTerms": [
+        "packages/teamlead/src/bridge"
+      ]
+    },
+    {
+      "path": "scripts/__tests__/fixtures/fly1649-legacy-mailbox-digest.ts",
+      "selection": "excluded",
+      "reason": "Excluded fixture: legacy digest migration path unchanged; no dependency on edited summary methods.",
+      "matchedTerms": [
+        "packages/flywheel-comm/src"
+      ]
     }
   ],
   "retained": [
@@ -3538,5 +3613,11 @@
     "packages/teamlead/src/bridge/__tests__/lead-inbox-runtime-summary.fly2912.test.ts",
     "packages/teamlead/src/bridge/__tests__/lead-delivery-adapter.test.ts"
   ],
-  "guards": "No schema, StateStore, CommDB db.ts, process spawning, resident rules or SQL literals changed. FLY-1560 child-process lexical guard, sparse StateStore migration, FLY-2567 rule compatibility and FLY-2211 child-process inventory predicates are unchanged. API/export/types unchanged; affected build typechecks consumers. Existing query-plan hash guards retained."
+  "guards": "No schema, StateStore, CommDB db.ts, process spawning, resident rules or SQL literals changed. FLY-1560 child-process lexical guard, sparse StateStore migration, FLY-2567 rule compatibility and FLY-2211 child-process inventory predicates are unchanged. API/export/types unchanged; affected build typechecks consumers. Existing query-plan hash guards retained.",
+  "resumeAudit": {
+    "sourceHead": "964b7e7e46ce88cda1555f3be83cc1037ef2a508",
+    "all22TermsResearched": true,
+    "newExecutableTestMatches": [],
+    "retainedSelectionChanged": false
+  }
 }
