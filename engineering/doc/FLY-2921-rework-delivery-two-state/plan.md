@@ -84,11 +84,16 @@ stateDiagram-v2
    | # | 条件 | 动作 |
    |---|---|---|
    | a | 有内容缺失事实（C4.5） | 走第 4 步「需要核验」 |
-   | b | 当前路由版本由 Lead 重投创建，且替身尚未 started | 视为「这具替身不可用」：ledger `intent_recorded` 走现有启动取消围栏等 `abandoned`；`launch_committed` 走第 4 步核验并请求收体；之后重新换体，用新内容新铸 launch envelope（launch 内容摘要绑定路由版本，不能沿用旧信封） |
+   | b | 当前路由版本由 Lead 重投创建，且替身尚未 started | 视为「这具替身不可用」，按准入前 / 准入后两条路径处理（见下「b 行的两条路径」）；之后重新换体，用新内容新铸 launch envelope（launch 内容摘要绑定路由版本，不能沿用旧信封） |
    | c | ledger `abandoned`，或有未启动回滚事实（节点 `failed`） | 已排除外部启动，第 4 步换体 |
    | d | ledger `intent_recorded`，未超过调度器未启动阈值（含被额度或容量挡在准入前） | `deferWorkflowReworkDelivery`：30 秒后再看，不写事件、不计失败 |
    | e | ledger `intent_recorded`，超过阈值 | 计一次失败，原因 `replacement_launch_stalled:intent_recorded`，告警带 ledger 状态 |
    | f | ledger `launch_committed`，内容尚未送达 | 当作「已发」：活着就等；判不出按第 5 步计时告警；证死走第 4 步 |
+
+   **b 行的两条路径（设计评审 R1 #2）**。基线上的启动取消围栏 `beginUnlaunchedWorkflowCancellation`（40946–40967）和 `rollbackUnlaunchedWorkflowAdmission`（41130–41151）都要求节点 `admitted` 且已有 execution binding；调度器的后台未启动对账（dispatcher 1841–1849）也跳过非 admitted / 无绑定的节点。所以「被额度或容量挡在准入前」的替身（意图已持久化为 `intent_recorded`，节点仍 `pending`，无 binding）**不能**靠现有围栏走到 `abandoned`，必须拆开：
+   - **准入前**（ledger `intent_recorded`、`bindingMode` 为空、无 launch owner、该执行体无 session）：新增窄事务 `abandonUnadmittedReworkReplacementLaunch({requestId, ownerId, generation, reason, now})`。持有返工认领（owner + generation CAS）；复核投递 `pending` 且路由版本为当前版本、launch 记录属于当前 preferred actor；确认没有准入 / 启动所有者和外部启动义务；原子把旧 dispatch 意图从 `intent_recorded` 置 `abandoned`（CAS 条件含 `launch_ordinal` 与 `state='intent_recorded'`，改行数必须为 1），并结算该 launch 家族的投递 attempt（`source_terminal`）。成功即得到 `launch_abandoned` 证明，走共用换体核心，用当前路由版本新铸意图与 launch envelope。CAS 失败（并发准入胜出）时返回 `replacement_launch_not_abandonable`，转入下面的准入后路径。
+   - **准入后**（节点 `admitted` + binding `mode='replacement'`）：走现有启动取消围栏，等到 `abandoned` 或未启动回滚事实，再按第 4 步换体。`launch_committed` 走第 4 步核验并请求收体。
+   - 补测完整链路：准入前被额度挡住 → 动作表 e 耗尽交还 Lead → Lead 重投 → 旧意图被确定结算为 `abandoned` → 新意图按当前路由铸出 → 解除额度暂停后**只有一个**执行体启动并收到当前路由的返工内容；另测取消与并发准入竞争：准入先胜则窄事务被拒并落入准入后路径，绝不出现两具体。
 
    `deferWorkflowReworkDelivery({requestId, ownerId, generation, nextRetryAt, reason})` 是新增 CAS，作用于 `pending` 与**未推送的 `turn_granted`**（Lead 重投后 wake 复位返回 `busy` 时，崩溃恢复路径上投递可能已是未推送的 `turn_granted`）：释放 owner、设 `next_retry_at`，不写事件。不能复用 `releaseWorkflowReworkDelivery`（不设 `next_retry_at`，且每次追加事件，会变成每秒一次空转）。
 
@@ -126,6 +131,7 @@ stateDiagram-v2
 4. `holdUndeliverableTx`（57133）：attempt 属于返工（rework 家族，或 turn_wake 家族且 wake 的 `purpose='workflow_rework'` / wakeId 能解析为返工 wake）时不铸 hold、不冻 run，结算该 attempt 为 `recipient_terminal_rework_owned`，投递 `next_retry_at = now`，由协调器按 C2 第 4 步处理。`finalizeUndeliverableHoldTx` 的 `runHeld` 加 `family !== "rework"` 兜底断言。
 5. `openReworkContentUndeliverableTx`（64978，替身交卷缺内容回执，FLY-2472）改为 `markReworkReplacementContentMissingTx`：不铸 hold、不冻 run；交卷照旧拒绝 `rework_content_not_delivered`；同一事务撤销该替身未消费的凭据，写事实事件 `rework_replacement_content_missing:<req>:<rev>`，投递 `next_retry_at = now`（无主 CAS：`owner_id IS NULL` 或租约过期才改）。协调器看到该事实后请替身协作退出（`closeActorForReworkSupersession`，授权不放宽；内容缺失只发生在 `markStarted` 之前，节点 `admitted`、投递 `pending`，正好在授权范围内），拿到受信死亡证据之后才换体。**不能**让协调器用 wake 模式给活替身重送内容（binding `mode='replacement'` 会被 `activation_conflict` 确定性拒绝）。
 6. 暂存取消永不落地（`delivery-operations.ts:572-592`）：任何非 ok 分支一律 `markWorkflowHoldResumeFailed` 带精确原因；`cancelTurnWakeDelivery` 遇「源已被 terminal_guard 取消」按幂等成功处理；326–328 的 `!family || !rootId` 同样标记失败。
+7. **TURN 停滞冻结入口（设计评审 R1 #1，独立于「投不到」）**。基线上 `delivery-contract/sources/turn-wake.ts:20-29` 把「`sent` + `push_count >= 2` + 未 ACK」判成 `three_stage_turn_stuck`，不区分 `purpose='workflow_rework'`；`watch.ts:268-306` 把这个形状直接交给 `freezeWorkflowDelivery`，阈值 `policy.ts:13` 的 20 分钟；`hold-writers.ts:11-19` 在会话账面 running 但活动活性不是 `alive`（心跳 / 活动时间 / 出站消息过旧，`liveness.ts:15-27`）时允许冻结；`StateStore.ts:57055-57068` 写 run held。这条路不经过 `holdUndeliverableTx`，C4.3 / C4.4 拦不住，会让返工 wake 推送两次未签收的 run 在 20 分钟后被冻，协调器随后按 C2 第 1 步只释放，C2 第 5 步的两小时交还也走不到，违反 §6.1 不变式 2。**修法**：在 `freezeWorkflowDelivery` 事务入口、取到 live attempt 之后，复用 C4.4 同一个归属谓词 `reworkOwnedUndeliverableRequestId(attempt)`（rework 家族，或 turn_wake 家族且 wake 的 purpose / wakeId 解析为返工 wake）；命中即返回 `{ held:false, reason:"rework_wake_owned_by_coordinator" }`，不写 run held、不铸 hold 事件。返工 wake 的停滞完全留给协调器：已发且活着继续等；活性未知按 C2 第 5 步 30 分钟 / 2 小时两档告警，已推送未签收满 2 小时结算 `returned_to_lead`；不新增截止策略。非返工 TURN wake（三阶段普通 TURN）与 mailbox 家族的既有冻结策略不变。**只 grep 返工函数里的 held 写入发现不了这个通用入口**，§8.2 的「任何返工路径不写 held」守卫要连 `freezeWorkflowDelivery` 一起覆盖。
 
 ### C5 驻留 hold：第二次返工不再「投不到」（FLY-2821）
 
@@ -270,6 +276,8 @@ stateDiagram-v2
 - **C7 从真实 event-route 进入**：新 head + base 对象缺失；新 head + diff 超时（以 `rework_delta_unverified` 审计事件证明超时路径，不用真实耗时上限断言）；历史 `unavailable` base；head 解析失败；200 个进度文件 + 1 个产品文件；含转义字符的路径。
 - **巡检互锁**：重投复位与推进之间崩溃，巡检对仍归该执行体的返工 wake 返回 `wait` 而不取消；`wait` 不占每轮额度；游标扫描下等待的 wake 不饿死后面的队列。
 - **顺带签收自愈**：`returned_to_lead` 且已授权时体交卷，被按顺带签收接受并关闭对应的门。
+- **TURN 停滞冻结入口（C4.7）**：真实 CommDB + delivery-contract watch：返工 wake 两次推送、无 ACK、会话账面 running、活动证据未知 / 过旧，跨过 20 分钟仍无 run 级 hold，`freezeWorkflowDelivery` 返回 `rework_wake_owned_by_coordinator`；协调器在未知持续 2 小时后结算 `returned_to_lead`，run 仍 active。对照组：非返工 TURN wake 同条件仍按原策略冻结。
+- **准入前替身放弃（C2 第 3 步 b）**：准入前被额度挡住 → 耗尽交还 Lead → Lead 重投 → `abandonUnadmittedReworkReplacementLaunch` 把旧意图置 `abandoned` 并结算 launch attempt → 新意图按当前路由铸出 → 解除暂停后只有一个执行体启动并收到当前路由内容；并发准入先胜时窄事务返回 `replacement_launch_not_abandonable`，落入准入后取消路径，零双体。
 - **base 语义**：qa、founder 打回、land 冲突三种来源各断言一次 `base_revision` 等于被判的实现交付 head。
 
 ### 8.3 本机只跑相关测试（面向主仓分支执行）
@@ -324,4 +332,8 @@ pnpm --filter flywheel-teamlead exec tsc --noEmit && pnpm exec biome check <改�
 
 ## 10. 评审记录
 
-本节点（沙箱 eng_design）的设计评审在下方追加；主仓上同一设计的历史评审（Codex gpt-6-astra xhigh，design R1–R4 至 APPROVED、code R1–R9 至 APPROVED）见主仓 `engineering/doc/FLY-2921-rework-delivery-two-state/design-review-record.md` 与 `implementation.md` §6。本 plan 已吸收那些轮次的全部有效发现（受信死亡证据、准入前身份、`busy` 结果的调用方合同、巡检 `wait` 与游标、提醒一次、UID 带版本等）。
+| 轮次 | 评审方 | 结论 | 处理 |
+|---|---|---|---|
+| R1 | Codex gpt-6-astra xhigh（Bridge 指定，requestId `27b5088c`，线程 `01a0e3ea-955a-7753-bb33-98d4a4589a33`） | CHANGES REQUESTED：1 BLOCKER、1 MAJOR（原文 `codex-review-r1.md`） | **#1 BLOCKER**（`three_stage_turn_stuck → freezeWorkflowDelivery` 绕过 C4 冻 run）：采纳，新增 C4.7 冻结入口归属守卫 + §8.2 真实 watch 回归。**#2 MAJOR**（Lead 重投时准入前替身没有到 `abandoned` 的可执行出口）：采纳，C2 第 3 步 b 拆成准入前窄事务 `abandonUnadmittedReworkReplacementLaunch` 与准入后现有围栏两条路径 + 完整链路测试 |
+
+本节点（沙箱 eng_design）的设计评审记录见上表；主仓上同一设计的历史评审（Codex gpt-6-astra xhigh，design R1–R4 至 APPROVED、code R1–R9 至 APPROVED）见主仓 `engineering/doc/FLY-2921-rework-delivery-two-state/design-review-record.md` 与 `implementation.md` §6。本 plan 已吸收那些轮次的全部有效发现（受信死亡证据、准入前身份、`busy` 结果的调用方合同、巡检 `wait` 与游标、提醒一次、UID 带版本等）。
