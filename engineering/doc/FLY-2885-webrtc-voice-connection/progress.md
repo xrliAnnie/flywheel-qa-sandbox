@@ -1,13 +1,13 @@
 ---
 issue: FLY-2885
 phase: implement
-phaseCursor: 1/5
-updated: 2026-09-27T07:11:48.105Z
-nextStep: reproduce QA B5/C2 failure at 5aa2cf421 and trace readback/audio boundaries
+phaseCursor: 2/5
+updated: 2026-09-27T07:17:16.611Z
+nextStep: run affected typecheck/build/lint, record QA@4 root cause and verification
 chunks: []
 pointers: {}
 ---
 
 # FLY-2885 progress
-**phase**: implement (1/5)
-**next**: reproduce QA B5/C2 failure at 5aa2cf421 and trace readback/audio boundaries
+**phase**: implement (2/5)
+**next**: run affected typecheck/build/lint, record QA@4 root cause and verification
