@@ -33,3 +33,7 @@ request `16de6265-85ff-4760-a120-5d785dadb51d`，plan blob `ad33389ffe306853bc5c
 
 - 生产 PR #1374 正文缺最新复审 ID `92e28887`（沙箱 runner 不编辑生产 PR）。
 - Lead 问题 `0d73b791`（交卷 lane）无答复时 implement 节点按 Lane A。
+
+## 重派重绑（exec 0edcc786，2026-09-27 17:2x UTC）
+
+design 节点被以新 exec `0edcc786-726c-42e3-a310-77c5fda21351` 重派。plan.md blob 仍为 `ad33389ffe306853bc5c23d4a263f9d894491e2e`（与 Round 3 批准对象逐字一致），未重写任何交付物。`stage set design_review --plan` 为本 exec 铸出新 manifest request `1a2e90ca-b426-403f-8bbe-c9efd513280c`（reviewer 仍 gpt-6-astra/xhigh）；用 `review-round design --round 3 --verdict APPROVED --thread 01a0e2e9… --turn 01a0e3b1-7f6d-72a1-a69b-f344aaad5a96` 把 Round 3 那一 turn 绑回该 request（Bridge 回执 `model=gpt-6-astra/xhigh required=gpt-6-astra/xhigh match=yes`），`await-codex-gate design` 返回 `design review APPROVED for exec=0edcc786-…`。没有新增评审轮次：本段是同一裁决对同一 blob 的重绑，不是新的批准。

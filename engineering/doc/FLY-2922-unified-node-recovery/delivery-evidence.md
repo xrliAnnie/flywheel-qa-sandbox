@@ -38,3 +38,11 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 - 托管页核验：HTTP 200；`__CSP_NONCE__` 残留 0；单一 `<script nonce="262ad223…">`；CSP 中同 nonce 出现 1 次；标记首行 1、内联 SVG 3、外部 src/href 0。本地 SHA-256 `7df46ef3fad31ef9b947e2511b898c4c9c0fc2de2f17830ec60f8d11a2b7b2c7`；托管 SHA-256 `7034279871bd60b9ecd820b81e084f7ac1334a8bd82095668f2181e4c5698d0b`；把 minted nonce 换回占位后 `diff` 只剩 publish-report 注入的两行（`<meta name="robots" content="noindex">` 与 CSP meta），其余逐字一致。
 - Lead 报告 `DESIGN-HTML ready: <url> | repo: engineering/doc/FLY-2922-unified-node-recovery/founder-design.html | issue: FLY-2922`，durable report `efa1eee3-9630-4cdf-8818-e6da1e75cf3f`。
 - 下一步仅 `complete --route phase_design_complete`；本段不冒充该收据。
+
+## 重派轮收据（exec 0edcc786，2026-09-27）
+
+- 交付物核验：`founder-design.html` 本地 SHA-256 `7df46ef3fad31ef9b947e2511b898c4c9c0fc2de2f17830ec60f8d11a2b7b2c7`（与上轮相同）；静态检查占位 1 / script 1 / 内联事件 0 / innerHTML 0 / 自定 CSP 0 / 外链 0 / 标记 1 / SVG 3。
+- 评审门：request `1a2e90ca-b426-403f-8bbe-c9efd513280c` 重绑 Round 3 turn，`await-codex-gate design` APPROVED（见 review-result.md「重派重绑」）。
+- `publish-report --publish-only`：`{"url":"http://127.0.0.1:60111/fw-reports-9edb89/r/c836fe823b5ac62bff1c578522086f8d/","reportId":"c836fe823b5ac62bff1c578522086f8d","delivered":false,"publishOnly":true}`；托管页 HTTP 200，占位残留 0、nonce script 1、标记 1、内联 SVG 3。
+- Lead 报告 `DESIGN-HTML ready: <url> | repo: engineering/doc/FLY-2922-unified-node-recovery/founder-design.html | issue: FLY-2922`，durable report `e1ed0464-9934-4394-9f97-63cdcade5ca6`。
+- 上轮 `efa1eee3` 报告与 `c78cd567` 发布仍有效；本轮重发只为把收据绑到当前 exec。下一步 `complete --route phase_design_complete`。
