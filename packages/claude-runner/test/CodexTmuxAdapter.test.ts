@@ -3980,6 +3980,118 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(result.success).toBe(false);
 	});
 
+	it("FLY-2925: a pre-confirmation adoption failure leaves the live session, TUI, doorbell, and credential untouched", async () => {
+		await makeAdapter().execute(ctx({ prompt: "original kick" }));
+		const before = new CommDB(dbPath);
+		try {
+			before.registerSession(
+				execId,
+				"testsess:@77",
+				"proj",
+				"FLY-1188",
+				"flywheel-eng-lead",
+				"codex",
+				true,
+			);
+			expect(
+				before.activateSessionForWake({
+					executionId: execId,
+					tmuxWindow: "testsess:@77",
+					projectName: "proj",
+					issueId: "FLY-1188",
+					leadId: "flywheel-eng-lead",
+					vendor: "codex",
+				}),
+			).toMatchObject({ ok: true });
+			const instructionId = before.insertInstruction(
+				"flywheel-eng-lead",
+				execId,
+				"preserve this pending instruction",
+			);
+			const raw = (
+				before as unknown as { db: import("better-sqlite3").Database }
+			).db;
+			const delivery = raw
+				.prepare("SELECT delivery_id FROM mailbox WHERE id = ?")
+				.get(instructionId) as { delivery_id: string };
+			raw
+				.prepare(
+					`UPDATE mailbox
+					    SET state = 'LEASED', batch_id = 'mailbox-batch:preconfirm',
+					        lease_retry_count = 0, claimed_by = 'bridge:test',
+					        claim_expires_at = '2099-01-01T00:00:00.000Z'
+					  WHERE id = ?`,
+				)
+				.run(instructionId);
+			expect(
+				before.enqueueRunnerDoorbellWake(
+					execId,
+					{
+						id: "transport-preconfirm",
+						to: "runner-agent",
+						content: "transport body",
+						metadata: {
+							flywheelId: "mailbox-batch:preconfirm#r0",
+							durableBatchId: "mailbox-batch:preconfirm",
+							memberIds: [delivery.delivery_id],
+							execId,
+						},
+					},
+					1_000,
+				),
+			).toMatchObject({ kind: "queued" });
+		} finally {
+			before.close();
+		}
+
+		ensureWindowCalls = [];
+		killWindowCalls = [];
+		transcriptCloses = [];
+		const scrubCredential = vi.fn();
+		runtime = new FakeRuntime(async (input) => {
+			await input.onThreadReady?.(THREAD_ID, 0);
+			throw new Error("goal posture unavailable before adoption receipt");
+		});
+		const adapter = new CodexTmuxAdapter(
+			"testsess",
+			fake.exec,
+			25,
+			60_000,
+			undefined,
+			undefined,
+			{ ...makeDeps(), scrubCredential },
+		);
+
+		const result = await adapter.adoptLiveExecution(
+			ctx({ phaseKeepAlive: { role: "implement" } }),
+		);
+
+		expect(result.success).toBe(false);
+		expect(runtime.stopped).toBe(0);
+		expect(runtime.drainedCalls).toBe(0);
+		expect(ensureWindowCalls).toEqual([]);
+		expect(killWindowCalls).toEqual([]);
+		expect(transcriptCloses).toEqual([]);
+		expect(scrubCredential).not.toHaveBeenCalled();
+		expect(executionOwners.isExecutionOwned(execId)).toBe(false);
+		const after = new CommDB(dbPath);
+		try {
+			expect(after.getSession(execId)).toMatchObject({
+				status: "running",
+				tmux_window: "testsess:@77",
+				phase_keep_alive: 1,
+			});
+			expect(after.listRunnerPhaseWakes(execId)).toMatchObject([
+				{
+					message_id: "doorbell:mailbox-batch:preconfirm#r0",
+					state: "pending",
+				},
+			]);
+		} finally {
+			after.close();
+		}
+	});
+
 	it("FLY-2925: a dead-daemon recovery resume never re-kicks the thread's own goal", async () => {
 		await makeAdapter().execute(ctx({ prompt: "original kick" }));
 		runtime = new FakeRuntime(async (input) => {

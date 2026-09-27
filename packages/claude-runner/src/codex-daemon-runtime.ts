@@ -511,7 +511,7 @@ export interface AdoptCodexDaemonOptions extends CodexDaemonOwnershipDeps {
 	socketPath: string;
 	acquireLock?: AcquireDaemonLockFn;
 	removeStaleSocket?: (p: string) => void;
-	/** Exit-watch poll interval for the adopted group (default 500ms). */
+	/** Cheap exit-watch interval for the adopted group (default 5s). */
 	exitPollMs?: number;
 }
 
@@ -614,9 +614,14 @@ export async function adoptCodexDaemon(
 		opts.sleep ??
 		((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 	const waitMs = opts.exitWaitMs ?? codexDaemonExitWaitMs(env);
+	// Initial adoption already proved the socket holder belongs to this exact PGID
+	// twice, with the owner lock closing the race. Long-lived exit observation only
+	// needs absence proof; never repeat the synchronous lsof holder scan here.
+	const socketLive = opts.isSocketLive ?? defaultIsSocketLive;
+	const processGroupState = opts.processGroupState ?? defaultProcessGroupState;
 	const isAbsent = async (): Promise<boolean> =>
-		(await inspectCodexDaemonOwnership(opts.executionId, opts)).liveness ===
-		"absent";
+		!(await socketLive(opts.socketPath)) &&
+		processGroupState(pgid) === "absent";
 
 	let exited = false;
 	const exitListeners: Array<
@@ -648,7 +653,7 @@ export async function adoptCodexDaemon(
 			.finally(() => {
 				polling = false;
 			});
-	}, opts.exitPollMs ?? 500);
+	}, opts.exitPollMs ?? 5_000);
 	(poller as { unref?: () => void }).unref?.();
 
 	// Every signal to an adopted body goes through the audited group killer.

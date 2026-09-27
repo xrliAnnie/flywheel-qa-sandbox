@@ -2093,6 +2093,41 @@ describe("FLY-2925 adoptCodexDaemon — reconnect to a live daemon without spawn
 		}
 	});
 
+	it("observes an adopted exit without repeating the expensive socket-holder ownership proof", async () => {
+		const f = fixture();
+		let alive = true;
+		const socketHolderPids = vi.fn(() => [7654]);
+		let handle: Awaited<ReturnType<typeof adoptCodexDaemon>> | undefined;
+		try {
+			handle = await adoptCodexDaemon({
+				executionId: f.executionId,
+				socketPath: f.socketPath,
+				env: f.env,
+				isSocketLive: async () => alive,
+				socketHolderPids,
+				processGroupOf: () => 4321,
+				processGroupState: () => (alive ? "alive" : "absent"),
+				acquireLock: () => ({ release: () => {} }),
+				exitPollMs: 5,
+			});
+			expect(socketHolderPids).toHaveBeenCalledTimes(2);
+
+			await new Promise((resolve) => setTimeout(resolve, 30));
+			expect(socketHolderPids).toHaveBeenCalledTimes(2);
+
+			const exited = new Promise<void>((resolve) =>
+				handle!.child.once("exit", () => resolve()),
+			);
+			alive = false;
+			await exited;
+			expect(handle.child.exitCode).toBe(0);
+			expect(socketHolderPids).toHaveBeenCalledTimes(2);
+		} finally {
+			handle?.detach?.();
+			rmSync(f.root, { recursive: true, force: true });
+		}
+	});
+
 	it("refuses a dead daemon (not_alive) and an unproven owner (identity_unproven) without taking the lock", async () => {
 		const f = fixture();
 		const acquireLock = vi.fn(() => ({ release: () => {} }));
