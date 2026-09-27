@@ -233,7 +233,7 @@ describe("FLY-2248 sanctioned workflow hold recovery", () => {
 		}
 	});
 
-	it("repairs the authoritative land operation before closing its hold", async () => {
+	it("refuses state-only land repair without a fresh recovery dispatch", async () => {
 		const store = await StateStore.create(":memory:");
 		stores.push(store);
 		store.createWorkflowRun({
@@ -284,11 +284,10 @@ describe("FLY-2248 sanctioned workflow hold recovery", () => {
 				clientRequestId: "resume:land-operation",
 				now: "2026-09-02T06:01:00.000Z",
 			}),
-		).toMatchObject({ ok: true, state: "projected" });
+		).toEqual({ ok: false, reason: "unified_recovery_required" });
 		expect(store.getLandOperation(operation.operation_id)).toMatchObject({
-			state: "partial",
-			resume_generation: 1,
-			next_attempt_at: "2026-09-02T06:01:00.000Z",
+			state: "held",
+			resume_generation: 0,
 			owner_id: null,
 			lease_expires_at: null,
 		});

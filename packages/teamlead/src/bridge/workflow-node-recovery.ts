@@ -166,6 +166,44 @@ export async function prepareWorkflowNodeRecovery(
 			)
 	)
 		throw new Error("recovery_decision_required");
+	const run = store.getWorkflowRun(request.runId);
+	const definition = run?.snapshot
+		? parseWorkflowRunSnapshot(run.snapshot).manifest.nodes.find(
+				(node) => node.id === before.target.nodeId,
+			)
+		: undefined;
+	if (definition?.type === "land") {
+		const target = before.target;
+		const sourceSessionDigest = canonicalSubmissionDigest({
+			runId: request.runId,
+			nodeId: target.nodeId,
+			attempt: target.attempt,
+			executionId: target.previousExecutionId,
+			launchOrdinal: target.previousLaunchOrdinal,
+			land: target.land,
+		});
+		const sourceEvidenceDigest = canonicalSubmissionDigest({
+			snapshotDigest: target.snapshotDigest,
+			land: target.land,
+		});
+		const canonical = workflowRecoveryCanonicalSchema.parse({
+			...request,
+			version: 2,
+			shape: "workflow_node_recovery",
+			target,
+		});
+		return {
+			canonical,
+			preflight: {
+				target,
+				stateDigest: before.stateDigest,
+				sourceSessionDigest,
+				sourceEvidenceDigest,
+				observedAt: new Date().toISOString(),
+				liveness: "not_required",
+			},
+		};
+	}
 	const executionId = before.target.previousExecutionId!;
 	const liveness = await probe(executionId, before.projectName, {
 		allowMissingTargetHostAbsence: true,

@@ -17,6 +17,8 @@ import { WorkflowEngineDispatcher } from "../bridge/workflow-engine-dispatcher.j
 import { resolveWorkflowStartPolicy } from "../bridge/workflow-start-policy.js";
 import { StateStore } from "../StateStore.js";
 import { workflowRecoveryCanonicalSchema } from "../workflow-recovery-contract.js";
+import { buildWorkflowRunSnapshotV1 } from "../workflow-run-snapshot.js";
+import { isWorkflowManifestV1Land } from "../workflow-template.js";
 import {
 	legacyWorkflowSeeds,
 	pinLegacyWorkflowSeedAgents,
@@ -1011,4 +1013,234 @@ describe("FLY-2525 held quota recovery service", () => {
   expect(await engine(new Date(Date.now()+60_000).toISOString()).reconcile()).toEqual({started:1,held:0});
   expect(store.listWorkflowSideEffects(RUN_ID).find(row=>row.id===result.dispatchLedgerId)?.state).toBe("started");
  },60_000);
+});
+
+describe("FLY-2545 land recovery", () => {
+	it("mints a new land dispatch before resuming the same held operation", async () => {
+		const store = await StateStore.create(":memory:");
+		const seed = legacyWorkflowSeeds().find(
+			(candidate) => candidate.templateId === "tpl_eng_heavy_land_v1",
+		)!;
+		if (!isWorkflowManifestV1Land(seed.manifest))
+			throw new Error("land fixture seed is not a land manifest");
+		store.createWorkflowRun({
+			runId: "run-land-recovery",
+			issueId: "FLY-2545",
+			projectName: "flywheel",
+			snapshotJson: JSON.stringify(
+				buildWorkflowRunSnapshotV1({
+					template: { id: seed.templateId, revision: 1 },
+					manifest: seed.manifest,
+				}),
+			),
+			claimsReadEnrolled: true,
+		});
+		const raw = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		raw.run(
+			"UPDATE workflow_run SET engine_owned = 1, current_node_id = 'land' WHERE run_id = 'run-land-recovery'",
+		);
+		store.upsertWorkflowRunNode({
+			runId: "run-land-recovery",
+			nodeId: "land",
+			attempt: 1,
+			state: "pending",
+			executionId: "land-exec-1",
+		});
+		store.upsertWorkflowRunNode({
+			runId: "run-land-recovery",
+			nodeId: "implement",
+			attempt: 1,
+			state: "done",
+			executionId: "implement-land-recovery",
+		});
+		raw.run(
+			`INSERT INTO workflow_node_pr_binding
+			 (run_id,node_id,attempt,pr_number,head_sha,target_repo_identity,
+			  probe_repo_slug,target_repo_path,worktree_binding_generation,
+			  receipt_id,bound_at)
+			 VALUES ('run-land-recovery','implement',1,2545,?,'__main__',
+			  'geoforge3d/flywheel','/tmp/flywheel','generation-1',
+			  'land-recovery-binding','2026-09-26T21:59:00.000Z')`,
+			["a".repeat(40)],
+		);
+		raw.run(
+			`INSERT INTO workflow_side_effect_ledger
+			 (run_id,node_id,attempt,kind,launch_ordinal,execution_id,state)
+			 VALUES ('run-land-recovery','land',1,'dispatch',1,'land-exec-1','intent_recorded')`,
+		);
+		store.upsertSession({
+			execution_id: "qa-land-recovery",
+			issue_id: "FLY-2545",
+			project_name: "flywheel",
+			status: "awaiting_review",
+			pr_number: 2545,
+			pr_head_sha: "a".repeat(40),
+		});
+		store.ensureWorkflowGateHolder({
+			runId: "run-land-recovery",
+			gateNodeId: "founder_gate",
+			attempt: 1,
+			headSha: "a".repeat(40),
+			sourceExecutionId: "qa-land-recovery",
+			questionId: "land-recovery-question",
+			now: "2026-09-26T21:59:30.000Z",
+		});
+		store.advanceWorkflowGateHolderMaterialization({
+			questionId: "land-recovery-question",
+			stage: "card_bound",
+			cardMessageId: "land-recovery-card",
+			now: "2026-09-26T21:59:40.000Z",
+		});
+		raw.run(
+			"UPDATE workflow_gate_holder SET state='approved' WHERE question_id='land-recovery-question'",
+		);
+		const operation = store.ensureLandOperation({
+			runId: "run-land-recovery",
+			issueId: "FLY-2545",
+			projectName: "flywheel",
+			prNumber: 2545,
+			approvedHead: "a".repeat(40),
+			now: "2026-09-26T22:00:00.000Z",
+		});
+		raw.run(
+			"UPDATE land_operation SET state='held',last_error='retry_exhausted:test' WHERE operation_id=?",
+			[operation.operation_id],
+		);
+		expect(
+			store.holdWorkflowLandNode({
+				runId: "run-land-recovery",
+				nodeId: "land",
+				attempt: 1,
+				executionId: "land-exec-1",
+				operationId: operation.operation_id,
+				reason: "retry_exhausted:test",
+				now: "2026-09-26T22:01:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+		const hold = store
+			.listWorkflowHolds("run-land-recovery")
+			.find((candidate) => candidate.shape === "land_held_with_operation")!;
+
+		const fake = fakeStartDispatcher(store, "a".repeat(40));
+		const app = express();
+		app.use(express.json());
+		app.use(
+			"/api/runs",
+			createRunsRouter(
+				fake.dispatcher,
+				store,
+				[
+					{
+						projectName: "flywheel",
+						projectRoot: process.cwd(),
+						leads: [{ agentId: "flywheel-eng-lead" }],
+					},
+				] as Parameters<typeof createRunsRouter>[2],
+				RunnerAdmissionController.alwaysAdmit(),
+				undefined,
+				false,
+				undefined,
+				{
+					masterToken: "test-master",
+					confirmTokens: new ConfirmTokenStore(),
+					probeRunLiveness: async () => "unknown",
+				},
+			),
+		);
+		const server = createServer(app);
+		cleanups.push(async () => {
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+			store.close();
+		});
+		await new Promise<void>((resolve) =>
+			server.listen(0, "127.0.0.1", resolve),
+		);
+		const post = async (path: string, body: unknown) => {
+			const response = await fetch(
+				`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/runs/run-land-recovery${path}`,
+				{
+					method: "POST",
+					headers: {
+						"content-type": "application/json",
+						authorization: "Bearer test-master",
+					},
+					body: JSON.stringify(body),
+				},
+			);
+			return { status: response.status, body: await response.json() };
+		};
+		const request = {
+			runId: "run-land-recovery",
+			shape: hold.shape,
+			holdEventUid: hold.holdEventUid,
+			decision: null,
+			reason: "retry the held land operation",
+			principal: "master",
+			clientRequestId: "land-recovery-1",
+		};
+		const staged = await post("/resume/stage", request);
+		expect(staged).toMatchObject({
+			status: 200,
+			body: {
+				canonical: {
+					version: 2,
+					shape: "workflow_node_recovery",
+					target: {
+						operationKind: "redispatch_current",
+						land: {
+							operationId: operation.operation_id,
+							resumeGeneration: 0,
+							approvedHead: "a".repeat(40),
+						},
+					},
+				},
+			},
+		});
+		const applied = await post("/resume", {
+			canonical: staged.body.canonical,
+			confirmToken: staged.body.confirmToken,
+		});
+		expect(applied).toMatchObject({
+			status: 200,
+			body: { state: "dispatch_recorded", launchOrdinal: 2 },
+		});
+		expect(store.getLandOperation(operation.operation_id)).toMatchObject({
+			state: "partial",
+			resume_generation: 1,
+		});
+		expect(store.getWorkflowRun("run-land-recovery")?.status).toBe("active");
+		expect(
+			store
+				.listWorkflowSideEffects("run-land-recovery")
+				.filter((row) => row.kind === "dispatch"),
+		).toHaveLength(2);
+		const landExecutor = vi.fn(async (operationId: string) => {
+			raw.run(
+				"UPDATE land_operation SET state='held',last_error='retry_exhausted:again' WHERE operation_id=?",
+				[operationId],
+			);
+			return {
+				status: "held" as const,
+				reason: "retry_exhausted:again",
+			};
+		});
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			env: ENV,
+			now: () => new Date("2026-09-26T22:02:00.000Z"),
+			landExecutor,
+		});
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+		expect(landExecutor).toHaveBeenCalledWith(operation.operation_id);
+		expect(
+			store
+				.listWorkflowRunEvents("run-land-recovery")
+				.filter((event) => event.kind === "land_held"),
+		).toHaveLength(2);
+	});
 });

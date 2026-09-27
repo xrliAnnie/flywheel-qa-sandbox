@@ -17,6 +17,7 @@ import type {
 } from "../bridge/retry-dispatcher.js";
 import { WorkflowDocsMaterializer } from "../bridge/workflow-docs-materializer.js";
 import { WorkflowEngineDispatcher } from "../bridge/workflow-engine-dispatcher.js";
+import { prepareWorkflowNodeRecovery } from "../bridge/workflow-node-recovery.js";
 import {
 	StateStore,
 	type WorkflowDeadExecutionWatchRow,
@@ -2371,13 +2372,17 @@ describe("WorkflowEngineDispatcher", () => {
 			clientRequestId: "resume:land-target-snapshot:1",
 		});
 		expect(normalized).toBeDefined();
-		expect(
-			store.resumeWorkflowHold({
-				canonical: normalized!.canonical,
-				digest: normalized!.digest,
-				now: "2026-07-21T20:02:01.000Z",
-			}),
-		).toMatchObject({ ok: true, state: "projected" });
+		const prepared = await prepareWorkflowNodeRecovery(
+			store,
+			normalized!.canonical,
+		);
+		expect(prepared.canonical.target.land).toBeNull();
+		const recovered = store.recoverWorkflowNode({
+			...prepared,
+			now: new Date().toISOString(),
+		});
+		if (!recovered.ok) throw new Error(recovered.reason);
+		expect(recovered).toMatchObject({ ok: true, state: "dispatch_recorded" });
 		expect(store.getWorkflowRun("run-land")?.status).toBe("active");
 
 		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
@@ -2390,7 +2395,7 @@ describe("WorkflowEngineDispatcher", () => {
 		expect(holds[1]!.event_uid).not.toBe(holds[0]!.event_uid);
 		expect(holds[1]!.payload).toMatchObject({
 			missing: ["implement-land:worktree_binding_unavailable"],
-			recoveryEpisode: `hold_resumed:land_held_without_operation:${hold!.event_uid}`,
+			recoveryEpisode: `hold_resumed:workflow_node_recovery:${hold!.event_uid}`,
 		});
 		store.close();
 	});

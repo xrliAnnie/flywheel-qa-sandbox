@@ -186,7 +186,7 @@ export interface WorkflowRecoveryPreflight {
 	sourceSessionDigest: string;
 	sourceEvidenceDigest: string;
 	observedAt: string;
-	liveness: "dead";
+	liveness: "dead" | "not_required";
 }
 
 export function workflowRecoveryEvidenceDigest(
@@ -211,6 +211,8 @@ export function isWorkflowNodeRecoveryFaultShape(shape: string): boolean {
 		"completion_receipt_missing",
 		"retry_limit_escalated",
 		"environment_failure_escalated",
+		"land_held_with_operation",
+		"land_held_without_operation",
 	].includes(shape);
 }
 

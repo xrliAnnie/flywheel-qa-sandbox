@@ -58638,8 +58638,9 @@ export class StateStore {
 		const definition = snapshot.manifest.nodes.find(
 			(candidate) => candidate.id === node.node_id,
 		);
-		if (!definition || definition.type === "gate" || definition.type === "land")
+		if (!definition || definition.type === "gate")
 			throw new Error("recovery_dependency_preflight_required");
+		const landNode = definition.type === "land";
 		const latest = this.listWorkflowSideEffects(runId)
 			.filter(
 				(row) =>
@@ -58651,6 +58652,7 @@ export class StateStore {
 		if (!latest || latest.execution_id !== node.execution_id)
 			throw new Error("recovery_dispatch_identity_missing");
 		if (
+			!landNode &&
 			this.resolveOpenWorkflowReworkTarget({
 				runId,
 				nodeId: node.node_id,
@@ -58683,11 +58685,21 @@ export class StateStore {
 		// An uncommitted intent needs the existing cancellation/absence protocol.
 		// A liveness observation alone cannot authorize abandoning it.
 		if (
-			latest.state === "intent_recorded" ||
-			(latest.state === "abandoned" &&
-				(!cancellation || owner?.committed_generation != null))
+			!landNode &&
+			(latest.state === "intent_recorded" ||
+				(latest.state === "abandoned" &&
+					(!cancellation || owner?.committed_generation != null)))
 		)
 			throw new Error("unlaunched_recovery_evidence_required");
+		const landOperation = landNode ? this.getLandOperationForRun(runId) : undefined;
+		if (landOperation && landOperation.state !== "held")
+			throw new Error("recovery_land_operation_changed");
+		if (
+			landOperation &&
+			(!/^[a-f0-9]{40}$/.test(landOperation.approved_head) ||
+				landOperation.superseded_at !== null)
+		)
+			throw new Error("recovery_land_authority_invalid");
 		const sourceHoldEventUids = holds.map((hold) => hold.holdEventUid).sort();
 		const target: WorkflowRecoveryTarget = {
 			operationKind: "redispatch_current",
@@ -58701,7 +58713,13 @@ export class StateStore {
 			startAuthority: null,
 			sourceHoldEventUids,
 			rework: null,
-			land: null,
+			land: landOperation
+				? {
+						operationId: landOperation.operation_id,
+						resumeGeneration: landOperation.resume_generation,
+						approvedHead: landOperation.approved_head,
+					}
+				: null,
 		};
 		return {
 			target,
@@ -58712,7 +58730,10 @@ export class StateStore {
 				latest,
 				cancellation: cancellation ?? null,
 				owner: owner ?? null,
-				quotaTargets: this.workflowNodeRecoveryQuotaFences(node.execution_id),
+				landOperation: landOperation ?? null,
+				quotaTargets: landNode
+					? []
+					: this.workflowNodeRecoveryQuotaFences(node.execution_id),
 			}),
 		};
 	}
@@ -58866,27 +58887,56 @@ export class StateStore {
 		if (!this.db.raw.inTransaction)
 			throw new Error("replacement_transaction_required");
 		const observationAge = Date.parse(now) - Date.parse(preflight.observedAt);
+		const current = this.inspectWorkflowNodeRecovery(canonical.runId);
+		const run = this.getWorkflowRun(canonical.runId)!;
+		const definition = parseWorkflowRunSnapshot(run.snapshot!).manifest.nodes.find(
+			(node) => node.id === canonical.target.nodeId,
+		);
+		const landRecovery = definition?.type === "land";
 		if (
-			preflight.liveness !== "dead" ||
 			!Number.isFinite(observationAge) ||
 			observationAge < 0 ||
 			observationAge > 30_000 ||
-			!canonical.target.startAuthority ||
 			canonicalSubmissionDigest(canonical.target) !==
 				canonicalSubmissionDigest(preflight.target)
 		)
 			throw new Error("recovery_preflight_required");
-		if (
-			canonical.target.startAuthority.evidenceDigest !==
-			workflowRecoveryEvidenceDigest(preflight)
-		)
-			throw new Error("recovery_preflight_required");
-		if (
-			this.getWorkflowRecoveryStartBindingDigest(
-				canonical.runId, canonical.target.startAuthority,
-			) !== preflight.sourceSessionDigest
-		)
-			throw new Error("recovery_start_authority_changed");
+		if (landRecovery) {
+			const sourceSessionDigest = canonicalSubmissionDigest({
+				runId: canonical.runId,
+				nodeId: canonical.target.nodeId,
+				attempt: canonical.target.attempt,
+				executionId: canonical.target.previousExecutionId,
+				launchOrdinal: canonical.target.previousLaunchOrdinal,
+				land: canonical.target.land,
+			});
+			const sourceEvidenceDigest = canonicalSubmissionDigest({
+				snapshotDigest: canonical.target.snapshotDigest,
+				land: canonical.target.land,
+			});
+			if (
+				preflight.liveness !== "not_required" ||
+				canonical.target.startAuthority !== null ||
+				preflight.sourceSessionDigest !== sourceSessionDigest ||
+				preflight.sourceEvidenceDigest !== sourceEvidenceDigest
+			)
+				throw new Error("recovery_preflight_required");
+		} else {
+			if (
+				preflight.liveness !== "dead" ||
+				!canonical.target.startAuthority ||
+				canonical.target.startAuthority.evidenceDigest !==
+					workflowRecoveryEvidenceDigest(preflight)
+			)
+				throw new Error("recovery_preflight_required");
+			if (
+				this.getWorkflowRecoveryStartBindingDigest(
+					canonical.runId,
+					canonical.target.startAuthority,
+				) !== preflight.sourceSessionDigest
+			)
+				throw new Error("recovery_start_authority_changed");
+		}
 		if (
 			this.listWorkflowHolds(canonical.runId).some(
 				(hold) =>
@@ -58897,16 +58947,16 @@ export class StateStore {
 			)
 		)
 			throw new Error("recovery_decision_required");
-		const current = this.inspectWorkflowNodeRecovery(canonical.runId);
 		if (
 			current.stateDigest !== preflight.stateDigest ||
-			canonicalSubmissionDigest({
-				...canonical.target,
-				startAuthority: null,
-			}) !== canonicalSubmissionDigest(current.target)
+			(landRecovery
+				? canonicalSubmissionDigest(canonical.target)
+				: canonicalSubmissionDigest({
+						...canonical.target,
+						startAuthority: null,
+					})) !== canonicalSubmissionDigest(current.target)
 		)
 			throw new Error("recovery_target_changed");
-		const run = this.getWorkflowRun(canonical.runId)!;
 		if (
 			this.workflowSelectAll(
 				"SELECT run_id FROM workflow_run WHERE project_name = ? AND issue_id = ? AND status = 'active' AND run_id <> ? LIMIT 1",
@@ -58914,8 +58964,155 @@ export class StateStore {
 			).length
 		)
 			throw new Error("issue_has_active_run");
-		this.validateWorkflowNodeRecoveryQuotaTargets({runId:canonical.runId,nodeId:canonical.target.nodeId,
-			attempt:canonical.target.attempt,deadExecutionId:canonical.target.previousExecutionId!});
+		if (!landRecovery) {
+			this.validateWorkflowNodeRecoveryQuotaTargets({
+				runId: canonical.runId,
+				nodeId: canonical.target.nodeId,
+				attempt: canonical.target.attempt,
+				deadExecutionId: canonical.target.previousExecutionId!,
+			});
+		}
+	}
+
+	private materializeWorkflowLandRecoveryTx(input: {
+		canonical: WorkflowRecoveryCanonical;
+		preflight: WorkflowRecoveryPreflight;
+		newExecutionId: string;
+		now: string;
+	}): { launchOrdinal: number; dispatchLedgerId: number } {
+		if (!this.db.raw.inTransaction)
+			throw new Error("replacement_transaction_required");
+		this.assertWorkflowRecoveryPreflightTx(
+			input.canonical,
+			input.preflight,
+			input.now,
+		);
+		const target = input.canonical.target;
+		const run = this.getWorkflowRun(target.runId);
+		const node = this.getWorkflowRunNode(
+			target.runId,
+			target.nodeId,
+			target.attempt,
+		);
+		const priorDispatch = this.workflowSelectAll(
+			`SELECT id, state FROM workflow_side_effect_ledger
+			  WHERE run_id = ? AND node_id = ? AND attempt = ? AND kind = 'dispatch'
+			    AND execution_id = ? AND launch_ordinal = ?`,
+			[
+				target.runId,
+				target.nodeId,
+				target.attempt,
+				target.previousExecutionId,
+				target.previousLaunchOrdinal,
+			],
+		)[0];
+		if (
+			!run ||
+			run.status !== "held" ||
+			run.current_node_id !== target.nodeId ||
+			!node ||
+			node.state !== "pending" ||
+			node.execution_id !== target.previousExecutionId ||
+			priorDispatch?.state !== "intent_recorded"
+		)
+			throw new Error("recovery_target_changed");
+		if (target.land) {
+			const operation = this.getLandOperation(target.land.operationId);
+			if (
+				!operation ||
+				operation.run_id !== target.runId ||
+				operation.state !== "held" ||
+				operation.owner_id !== null ||
+				operation.superseded_at !== null ||
+				operation.resume_generation !== target.land.resumeGeneration ||
+				operation.approved_head !== target.land.approvedHead
+			)
+				throw new Error("recovery_land_operation_changed");
+			this.db.run(
+				`UPDATE land_operation
+				    SET state = 'partial', owner_id = NULL, lease_expires_at = NULL,
+				        retry_count = 0, retry_epoch_key = NULL,
+				        next_attempt_at = ?, resume_generation = resume_generation + 1,
+				        last_error = ?, updated_at = ?
+				  WHERE operation_id = ? AND run_id = ? AND state = 'held'
+				    AND owner_id IS NULL AND superseded_at IS NULL
+				    AND resume_generation = ? AND approved_head = ?`,
+				[
+					input.now,
+					`operator_recovery:${input.canonical.reason}`,
+					input.now,
+					target.land.operationId,
+					target.runId,
+					target.land.resumeGeneration,
+					target.land.approvedHead,
+				],
+			);
+			if (this.db.getRowsModified() !== 1)
+				throw new Error("recovery_land_operation_changed");
+		} else if (this.getLandOperationForRun(target.runId)) {
+			throw new Error("recovery_land_operation_changed");
+		}
+		this.db.run(
+			`UPDATE workflow_side_effect_ledger
+			    SET state = 'abandoned', reason = ?
+			  WHERE id = ? AND state = 'intent_recorded'`,
+			[
+				`superseded_by_node_recovery:${canonicalSubmissionDigest(input.canonical)}`,
+				priorDispatch.id,
+			],
+		);
+		if (this.db.getRowsModified() !== 1)
+			throw new Error("recovery_dispatch_cas_failed");
+		const launchOrdinal = this.allocateWorkflowLaunchOrdinalTx(
+			target.runId,
+			target.nodeId,
+			target.attempt,
+			input.newExecutionId,
+		);
+		this.db.run(
+			`UPDATE workflow_side_effect_ledger SET reason = ?
+			  WHERE run_id = ? AND node_id = ? AND attempt = ? AND kind = 'dispatch'
+			    AND execution_id = ? AND launch_ordinal = ? AND state = 'intent_recorded'`,
+			[
+				`node_recovery:hold-resume:${canonicalSubmissionDigest(input.canonical)}`,
+				target.runId,
+				target.nodeId,
+				target.attempt,
+				input.newExecutionId,
+				launchOrdinal,
+			],
+		);
+		if (this.db.getRowsModified() !== 1)
+			throw new Error("replacement_dispatch_cas_failed");
+		this.db.run(
+			`UPDATE workflow_run_node SET execution_id = ?, state = 'pending', ended_at = NULL
+			  WHERE run_id = ? AND node_id = ? AND attempt = ?
+			    AND execution_id = ? AND state = 'pending'`,
+			[
+				input.newExecutionId,
+				target.runId,
+				target.nodeId,
+				target.attempt,
+				target.previousExecutionId,
+			],
+		);
+		if (this.db.getRowsModified() !== 1)
+			throw new Error("replacement_node_cas_failed");
+		const ledger = this.workflowSelectAll(
+			`SELECT id FROM workflow_side_effect_ledger
+			  WHERE run_id = ? AND node_id = ? AND attempt = ? AND kind = 'dispatch'
+			    AND execution_id = ? AND launch_ordinal = ? AND state = 'intent_recorded'`,
+			[
+				target.runId,
+				target.nodeId,
+				target.attempt,
+				input.newExecutionId,
+				launchOrdinal,
+			],
+		)[0];
+		if (!ledger || !Number.isSafeInteger(ledger.id) || Number(ledger.id) < 1)
+			throw new Error("replacement_materialization_proof_missing");
+		return { launchOrdinal, dispatchLedgerId: Number(ledger.id) };
 	}
 
 	recoverWorkflowNode(input: {
@@ -58962,21 +59159,28 @@ export class StateStore {
 				const executionId = randomUUID();
 				const target = canonical.target;
 				const { launchOrdinal, dispatchLedgerId } =
-					this.materializeWorkflowNodeReplacementTx({
-						runId: target.runId,
-						nodeId: target.nodeId,
-						attempt: target.attempt,
-						deadExecutionId: target.previousExecutionId!,
-						newExecutionId: executionId,
-						reason: canonical.reason,
-						eventUid: `node_recovery:${digest}`,
-						now: input.now,
-						livenessEvidence: {
-							liveness: "dead",
-							observedAt: input.preflight.observedAt,
-						},
-						operatorRecovery: { canonical, preflight: input.preflight },
-					});
+					input.preflight.liveness === "not_required"
+						? this.materializeWorkflowLandRecoveryTx({
+								canonical,
+								preflight: input.preflight,
+								newExecutionId: executionId,
+								now: input.now,
+							})
+						: this.materializeWorkflowNodeReplacementTx({
+								runId: target.runId,
+								nodeId: target.nodeId,
+								attempt: target.attempt,
+								deadExecutionId: target.previousExecutionId!,
+								newExecutionId: executionId,
+								reason: canonical.reason,
+								eventUid: `node_recovery:${digest}`,
+								now: input.now,
+								livenessEvidence: {
+									liveness: "dead",
+									observedAt: input.preflight.observedAt,
+								},
+								operatorRecovery: { canonical, preflight: input.preflight },
+							});
 				const receipt = workflowRecoveryReceiptSchema.parse({
 					operationId,
 					canonicalDigest: digest,
@@ -87198,8 +87402,24 @@ export class StateStore {
 						try {
 							const payload = JSON.parse(String(event.payload)) as {
 								shape?: unknown;
+								holdEventUid?: unknown;
 							};
-							return payload.shape === "land_held_without_operation";
+							if (payload.shape === "land_held_without_operation") return true;
+							if (
+								payload.shape !== "workflow_node_recovery" ||
+								typeof payload.holdEventUid !== "string"
+							)
+								return false;
+							const source = this.workflowSelectAll(
+								`SELECT kind, payload FROM workflow_run_event
+								  WHERE run_id = ? AND event_uid = ?`,
+								[input.runId, payload.holdEventUid],
+							)[0];
+							if (source?.kind !== "land_held") return false;
+							const sourcePayload = JSON.parse(String(source.payload)) as {
+								operationId?: unknown;
+							};
+							return sourcePayload.operationId == null;
 						} catch {
 							return false;
 						}
