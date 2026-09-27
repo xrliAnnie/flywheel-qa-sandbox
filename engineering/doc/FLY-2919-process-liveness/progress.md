@@ -2,24 +2,29 @@
 issue: FLY-2919
 phase: implement
 phaseCursor: 0/6
-updated: 2026-09-27T02:20:15.111Z
-nextStep: "B7 worktree WIP: Heartbeat readoption/orphan death now uses C2
-  process convergence; removed pane/server streak, parked exemption and age
-  force-fail. Plugin wires completion-first C2, bounded pending-duty replay and
-  exhausted reown callback. New real marker11, body15, dual-db13, parked12,
-  monitor22, reclaim22, basic23, zombie30 and wiring15 have passed individually
-  across edits. Earlier migration audit54 red resolved by updated process
-  fixtures; final selected18 plus related/build/dependent-typechecks/lint still
-  required after latest source cleanup. No B7 code commit yet. Next run final B7
-  verification and durable checkpoint, then start sampler production
-  cadence/dispatcher and remaining A-F/nine-ticket consumers. Sampler not
-  started; server-loss/crash-reaper/stale-terminal/other consumers, logical
-  activation bridging, legacy binding, ordinary-rework settlement and A9 timeout
-  remain. No review/PR/full CI/QA/handoff."
+updated: 2026-09-27T02:31:59.484Z
+nextStep: "B7 checkpoint5598a18ef: production Heartbeat readoption/orphan death
+  now invokes C2 process convergence, completion first; removed pane/server
+  streak, parked exemption and age force-fail. Plugin shared observer runs
+  existing reown on recovery_active and routes exhausted callback to
+  raw-observer C2 without self-await; pending-duty replay bounded8 per Heartbeat
+  pass. Post-commit Git diagnostics cannot retain dead body; durable process
+  alert replay and literal body_death prefix tested. FINAL18 explicit files324
+  pass; bounded owning related14files285; teamlead+deps build,
+  teamlead/voice-codex typecheck and lint pass. Evidence and all migration RED
+  logs archived. NEXT DIRECTLY wire B5 sampler to production independent
+  start/stop cadence, same-pass C2 and bounded contention retries; dispatcher
+  consumes current cached BodyObservation/durable death duties without serial OS
+  awaits. Current sampler NOT started; dispatcher still terminal-first plus
+  window-derived probe. Preserve marker/reown/generation fences.
+  Server-loss/crash-reaper/stale-terminal and other direct consumers still old.
+  Full A-F/nine tickets, logical activation bridging, legacy binding,
+  ordinary/rework settlement and A9 original15s timeout remain. No final
+  review/PR/full CI/529/QA/handoff."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2919 progress
 **phase**: implement (0/6)
-**next**: B7 worktree WIP: Heartbeat readoption/orphan death now uses C2 process convergence; removed pane/server streak, parked exemption and age force-fail. Plugin wires completion-first C2, bounded pending-duty replay and exhausted reown callback. New real marker11, body15, dual-db13, parked12, monitor22, reclaim22, basic23, zombie30 and wiring15 have passed individually across edits. Earlier migration audit54 red resolved by updated process fixtures; final selected18 plus related/build/dependent-typechecks/lint still required after latest source cleanup. No B7 code commit yet. Next run final B7 verification and durable checkpoint, then start sampler production cadence/dispatcher and remaining A-F/nine-ticket consumers. Sampler not started; server-loss/crash-reaper/stale-terminal/other consumers, logical activation bridging, legacy binding, ordinary-rework settlement and A9 timeout remain. No review/PR/full CI/QA/handoff.
+**next**: B7 checkpoint5598a18ef: production Heartbeat readoption/orphan death now invokes C2 process convergence, completion first; removed pane/server streak, parked exemption and age force-fail. Plugin shared observer runs existing reown on recovery_active and routes exhausted callback to raw-observer C2 without self-await; pending-duty replay bounded8 per Heartbeat pass. Post-commit Git diagnostics cannot retain dead body; durable process alert replay and literal body_death prefix tested. FINAL18 explicit files324 pass; bounded owning related14files285; teamlead+deps build, teamlead/voice-codex typecheck and lint pass. Evidence and all migration RED logs archived. NEXT DIRECTLY wire B5 sampler to production independent start/stop cadence, same-pass C2 and bounded contention retries; dispatcher consumes current cached BodyObservation/durable death duties without serial OS awaits. Current sampler NOT started; dispatcher still terminal-first plus window-derived probe. Preserve marker/reown/generation fences. Server-loss/crash-reaper/stale-terminal and other direct consumers still old. Full A-F/nine tickets, logical activation bridging, legacy binding, ordinary/rework settlement and A9 original15s timeout remain. No final review/PR/full CI/529/QA/handoff.
