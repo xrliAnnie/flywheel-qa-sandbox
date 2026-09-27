@@ -1,13 +1,13 @@
 ---
 issue: FLY-2921
 phase: design
-phaseCursor: 5/7
-updated: 2026-09-27T17:51:10.190Z
-nextStep: codex design review R4 (resume thread 01a0e3ea)
+phaseCursor: 6/7
+updated: 2026-09-27T17:54:17.934Z
+nextStep: push, publish-report, report Lead, complete phase_design_complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-2921 progress
-**phase**: design (5/7)
-**next**: codex design review R4 (resume thread 01a0e3ea)
+**phase**: design (6/7)
+**next**: push, publish-report, report Lead, complete phase_design_complete
