@@ -361,3 +361,19 @@ FLY-2567兼容性守卫按预期发现db.ts哈希变化。逐字比对确认 fin
 C1 验证收齐：7个具体文件逐一执行106 pass；owning comm related 限定到直接finalizer文件，1文件23 pass。comm及依赖build、lint均exit0（25个既有warning）。JSON兼容性fixture变更不涉及公共API，Bridge直接消费者均用新建comm产物验证。27条逐文件排除理由、回执重放红绿、兼容性guard原红/最终绿、源文件边界字节核对和全部命令日志归档 implementation-c1-consumers.json.gz / implementation-c1-evidence.json.gz。
 
 下一批优先B/C核心：StateStore.convergeProvenDeadExecution 与既有 terminalizeProvenDeadSessionTx 接通，采样/marker对账放lease外，最终同步CAS内核对身份、generation、revision、owner/spawn、动态开关和marker；持久body_death义务保留实际完成/retirement结果，随后按epoch处理CommDB投影、TURN和founder wake。DirectEventSink/event-route/recordEnrolledTerminalSignal的execution单值查询在多activation时仍有歧义，须随同一收敛链处理。窗口清理不提供死亡授权，FLY-2921仍独占替身协调。A9 routes旧15秒导入超时与全A-F/九单、review/PR/CI/QA/handoff均保留未完成。
+
+## B3 死亡提交事务检查点（执行 bd58c685）
+
+续接 `67813247e`，TURN implement epoch 14。按批准 B/C 实现 `StateStore.convergeProvenDeadExecution`：异步 OS 采样与完成 marker 对账由调用方在事务前完成；入口本身同步拒绝待处理/不可读 marker，并核对 accepted binding、owner token、spawn epoch、generation、activation、lifecycle revision、证据时间与 observer 的动态开关/reown 判据。mutation lease 只在 SQLite IMMEDIATE 事务内使用；释放旧 revision 的 lease 后，同一写锁下终结/保留状态、关闭旧 owner 并插入 `body_death:<exec>:<generation>`，任一步异常整笔回滚。
+
+复用 `workflow_run_event` 保存原 observation、CommDB identity revision、TURN epoch、完成回执、实际终态和待投影义务，不新增生死状态表或替身调度器。事务回放先查同一不可变事件，再检查首次死亡时效；已经提交的义务可在重启、10 秒证据到期、开关关闭后返回，不能重复关闭新 owner。首次提交仍拒绝 alive/unknown、启动在途/恢复、身份或代次变化；没有窗口输入。
+
+测试使用临时真实 StateStore 与 accepted owner、注入 OS 无进程样本；workflow 身份/回执行是隔离 SQL fixture，不冒充真实 admission、Bridge 流程或529。初始 scaffold 12 RED/8 pass；最小实现20 GREEN。追加 standby 负控1 RED/23 pass，修后24 GREEN。新测试首轮 RED 先于引用清单执行，此顺序偏差已在消费者归档记录；随后回归/related前完成逐路径及字面量检索。完成后退休的组合负控与最终验证结果待下文补记。
+
+本批尚无生产死亡消费者接线，`execution-body-convergence.ts` 当前仅定义 Bridge 内部提交/义务类型。CommDB trusted finalizer、TURN/wake settlement、持久待投影扫描、异步 marker-before-sample 协调仍未完成。对同物理generation出现较新逻辑activation目前安全拒绝，后续必须沿当前逻辑归属接通，不得把永久unknown当最终修复。A9 routes原15秒导入超时及全A–F/九单、有效评审/PR/CI/QA/handoff仍未完成。
+
+B3 最终追加 completed+retiring 负控得到1 RED/24 pass，修后25 GREEN：已completed的批准退下仍提交standby，不关闭其可恢复物理记录，也不虚增lifecycle revision；已failed/blocked的不可逆结果仍保留。初始12 RED是新入口scaffold上的契约失败，其中marker/lease分类差异不计旧生产路径错误判死；九单原现象验收仍未完成。
+
+本批显式16个具体文件逐一运行，按每文件最后结果合计 **428 pass / 1既有skip**；其中新死亡事务25、FLY-2211信号清单5、generalized-execution73与Tmux生产绑定14。owning related按两个明确include清单分开运行，实际8文件 **365 pass / 1既有skip**。teamlead及依赖build、teamlead与voice-codex typecheck、lint均exit0（25既有warnings）。没有新增shell测试。原始红/绿及回归日志、相关配置、源码SHA归档 `implementation-b3-evidence.json.gz`；查询及逐路径排除理由在 `implementation-b3-consumers.json.gz`。StateStore旧代码除新增导入和本入口外逐字不变，无schema/guard放宽。
+
+下步仍须完成B/C生产接线：在lease外对账marker与采样；以当前逻辑activation接上同物理generation重入；读取/重放可信body_death义务、CommDB身份epoch CAS、TURN比较撤销和founder/rework wake结账；再接Heartbeat/dispatcher和其余窗口消费者。不得把本检查点报告为完整死亡收敛或实现交卷。上轮C1是已提交的实际进展，本轮继续推进；目标保持全部A–F与九单范围。

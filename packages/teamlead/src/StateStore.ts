@@ -1,3 +1,9 @@
+import { hasUnresolvedCompleteMarker } from "./bridge/completion-before-death.js";
+import type {
+	BodyDeathCommitInput,
+	BodyDeathCommitResult,
+	BodyDeathObligation,
+} from "./bridge/execution-body-convergence.js";
 import {
 	assertStandingAuthorityConfirmationRecord,
 	STANDING_AUTHORITY_CONFIRMATION_DDL,
@@ -16434,6 +16440,246 @@ export class StateStore {
 				[executionId],
 			);
 		}
+	}
+
+	/**
+	 * Commit a Bridge-observed physical death and its replayable projection duty.
+	 * OS sampling and completion reconciliation MUST precede this synchronous
+	 * entry. No window or parked declaration can authorize or veto this commit.
+	 */
+	convergeProvenDeadExecution(
+		input: BodyDeathCommitInput,
+	): BodyDeathCommitResult {
+		const observation = input.observation;
+		const identity = observation.identity;
+		const executionId = identity.executionId;
+		if (
+			observation.verdict !== "dead" ||
+			!identity.activationId ||
+			!Number.isSafeInteger(input.nowMs) ||
+			input.nowMs < 0 ||
+			!Number.isSafeInteger(identity.generation) ||
+			identity.generation < 1 ||
+			!input.expectedCommIdentityRevision ||
+			(input.observedTurnEpoch !== null &&
+				(!Number.isSafeInteger(input.observedTurnEpoch) ||
+					input.observedTurnEpoch < 1))
+		) {
+			return { ok: false, reason: "invalid_body_death" };
+		}
+		const obligationId = `body_death:${executionId}:${identity.generation}`;
+		const result = this.db.raw
+			.transaction((): BodyDeathCommitResult => {
+				// A durable commit survives expiry, a disabled flag and a later owner.
+				// Returning it grants no permission to mutate that later owner.
+				const prior =
+					this.workflowSelectAll(
+						"SELECT kind, payload FROM workflow_run_event WHERE event_uid = ?",
+						[obligationId],
+					)[0] ??
+					findArchivedTerminalRow(this.db.raw, "workflow_run_event", [
+						obligationId,
+					]);
+				if (prior) {
+					let obligation: BodyDeathObligation;
+					try {
+						obligation = JSON.parse(String(prior.payload));
+					} catch {
+						return { ok: false, reason: "body_death_receipt_corrupt" };
+					}
+					if (
+						prior.kind !== "body_death" ||
+						obligation?.version !== 1 ||
+						obligation.obligationId !== obligationId ||
+						canonicalSubmissionDigest(obligation.observation) !==
+							canonicalSubmissionDigest(observation) ||
+						obligation.expectedCommIdentityRevision !==
+							input.expectedCommIdentityRevision ||
+						obligation.observedTurnEpoch !== input.observedTurnEpoch
+					) {
+						return { ok: false, reason: "body_death_receipt_conflict" };
+					}
+					return { ok: true, obligation, idempotentReplay: true };
+				}
+				const session = this.getSession(executionId);
+				const owner = this.executionProcessOwners.get(executionId);
+				const body = this.getWorkflowExecutionProcessBody(executionId);
+				const activation = this.getWorkflowActivation(identity.activationId!);
+				const observedAt = Date.parse(observation.observedAt);
+				const expiresAt = Date.parse(observation.expiresAt);
+				if (
+					!session ||
+					!owner ||
+					!activation ||
+					activation.execution_id !== executionId ||
+					owner.activation_id !== identity.activationId ||
+					owner.generation !== identity.generation ||
+					(body?.generation ?? 1) !== identity.generation ||
+					owner.owner_token !== observation.ownerToken ||
+					owner.spawn_epoch !== observation.spawnEpoch ||
+					owner.binding_spawn_epoch !== observation.spawnEpoch ||
+					owner.binding_digest !== observation.bindingDigest ||
+					!this.executionProcessOwners.getBinding(executionId) ||
+					owner.spawn_inflight !== 0 ||
+					owner.restart_in_progress !== 0 ||
+					session.adapter_type !== identity.adapter ||
+					(session.lifecycle_revision ?? 0) !== identity.lifecycleRevision ||
+					!Number.isFinite(observedAt) ||
+					!Number.isFinite(expiresAt) ||
+					observedAt > input.nowMs ||
+					expiresAt <= input.nowMs ||
+					expiresAt - observedAt > 10_000
+				) {
+					return { ok: false, reason: "body_death_authority_changed" };
+				}
+				const node = this.getWorkflowRunNode(
+					activation.run_id,
+					activation.node_id,
+					activation.attempt,
+				);
+				if (
+					!node ||
+					node.execution_id !== executionId ||
+					this.listWorkflowActivationsForActor(executionId).some(
+						(other) =>
+							other.activation_id !== activation.activation_id &&
+							(other.bound_at > activation.bound_at ||
+								other.attempt > activation.attempt),
+					)
+				) {
+					return { ok: false, reason: "body_death_activation_changed" };
+				}
+				// Fail closed on unreadable evidence, including a marker created while
+				// the OS sample awaited. Do not acquire a lease around marker replay.
+				if (hasUnresolvedCompleteMarker(executionId, input.markerDir))
+					return { ok: false, reason: "completion_marker_pending" };
+				try {
+					if (input.isCurrent(observation) !== true)
+						return { ok: false, reason: "body_death_authority_changed" };
+				} catch {
+					return { ok: false, reason: "body_death_authority_changed" };
+				}
+				const claim = this.claimExecutionMutationLease(
+					executionId,
+					identity.lifecycleRevision,
+					{
+						holder: obligationId,
+						nowMs: input.nowMs,
+						ttlMs: 60_000,
+					},
+				);
+				if (!claim.ok) return { ok: false, reason: claim.reason };
+				// Release against the pre-mutation revision while the enclosing SQLite
+				// IMMEDIATE transaction still holds the write lock. Revision changes,
+				// owner fencing and event insertion below commit or roll back together.
+				const released = this.commitExecutionMutationLease(
+					executionId,
+					claim.claimToken,
+					identity.lifecycleRevision,
+					input.nowMs,
+				);
+				if (!released.ok)
+					throw new Error(`body_death_lease_commit:${released.reason}`);
+				const now = new Date(input.nowMs).toISOString();
+				const receipt = this.getWorkflowNodeCompletion(
+					activation.run_id,
+					activation.node_id,
+					activation.attempt,
+				);
+				const accepted =
+					receipt?.execution_id === executionId &&
+					receipt.activation_id === identity.activationId
+						? receipt
+						: undefined;
+				const retirementApproved = Boolean(
+					(body?.state === "retiring" || body?.state === "standby") &&
+					body.retirement_requested_at,
+				);
+				let disposition: BodyDeathObligation["disposition"];
+				if (isStateStoreIrreversibleTerminalForZombie(session.status) &&
+					!(session.status === "completed" && retirementApproved)) {
+					disposition = "terminal_preserved";
+				} else if (retirementApproved) {
+					const standby = this.confirmWorkflowExecutionStandby({
+						executionId,
+						generation: identity.generation,
+						reasonCode: "process_tree_gone",
+						now,
+					});
+					if (!standby.ok)
+						throw new Error(`body_death_standby:${standby.reason}`);
+					disposition = "standby";
+				} else if (accepted) {
+					disposition = "completion_preserved";
+				} else {
+					disposition = "failed";
+				}
+				if (disposition === "failed") {
+					this.terminalizeProvenDeadSessionTx(
+						executionId,
+						`body_death:${observation.reason}`,
+					);
+				} else if (
+					(disposition === "standby" || disposition === "completion_preserved") &&
+					session.status !== "completed"
+				) {
+					this.db.run(
+						"UPDATE sessions SET status = 'completed' WHERE execution_id = ?",
+						[executionId],
+					);
+					this.applyTerminalTimestamp(executionId, session.status, "completed");
+					this.bumpLifecycleRevision(executionId);
+				}
+				if (body && disposition !== "standby" && body.state !== "standby") {
+					this.db.run(
+						"UPDATE workflow_execution_process_body SET state = 'closed', updated_at = ?, reason_code = 'body_death' WHERE execution_id = ? AND generation = ?",
+						[now, executionId, identity.generation],
+					);
+				}
+				this.db.run(
+					`UPDATE execution_process_owner SET close_requested = 1,
+				owner_drained_at = COALESCE(owner_drained_at, ?),
+				owner_drained_receipt = COALESCE(owner_drained_receipt, ?)
+				WHERE execution_id = ? AND owner_token = ? AND spawn_epoch = ? AND spawn_inflight = 0`,
+					[
+						now,
+						canonicalSubmissionDigest(observation),
+						executionId,
+						observation.ownerToken,
+						observation.spawnEpoch,
+					],
+				);
+				if (this.db.getRowsModified() !== 1)
+					throw new Error("body_death_owner_cas_failed");
+				const terminal = this.getSession(executionId)!;
+				const obligation: BodyDeathObligation = {
+					version: 1,
+					obligationId,
+					observation: structuredClone(observation),
+					runId: activation.run_id,
+					nodeId: activation.node_id,
+					attempt: activation.attempt,
+					expectedCommIdentityRevision: input.expectedCommIdentityRevision,
+					observedTurnEpoch: input.observedTurnEpoch,
+					terminalStatus: terminal.status,
+					terminalLifecycleId: terminal.terminal_lifecycle_id ?? null,
+					completionEventId: accepted?.event_uid ?? null,
+					disposition,
+					committedAt: now,
+				};
+				this.appendWorkflowRunEventCheckedTx({
+					runId: activation.run_id,
+					eventUid: obligationId,
+					kind: "body_death",
+					nodeId: activation.node_id,
+					executionId,
+					payload: obligation,
+				});
+				return { ok: true, obligation, idempotentReplay: false };
+			})
+			.immediate();
+		if (result.ok && !result.idempotentReplay) this.save();
+		return result;
 	}
 
 	/** Close the durable runway owner after an external probe proves it dead. */
