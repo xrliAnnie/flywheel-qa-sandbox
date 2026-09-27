@@ -1,13 +1,14 @@
 ---
 issue: FLY-2974
 phase: implement
-phaseCursor: 4/6
-updated: 2026-09-27T23:21:20.751Z
-nextStep: milestone commit, push, open PR vs qa/fly-2407 base, Codex code review
+phaseCursor: 5/6
+updated: 2026-09-27T23:22:07.049Z
+nextStep: "PR #279 open; milestone last commit; Codex code review ->
+  code-review.json -> await-codex-gate code -> complete needs_review"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2974 progress
-**phase**: implement (4/6)
-**next**: milestone commit, push, open PR vs qa/fly-2407 base, Codex code review
+**phase**: implement (5/6)
+**next**: PR #279 open; milestone last commit; Codex code review -> code-review.json -> await-codex-gate code -> complete needs_review
