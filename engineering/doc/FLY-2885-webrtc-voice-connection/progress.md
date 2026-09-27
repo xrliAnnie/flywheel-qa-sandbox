@@ -1,15 +1,14 @@
 ---
 issue: FLY-2885
 phase: implement
-phaseCursor: 1/4
-updated: 2026-09-26T23:46:35.761Z
-nextStep: "Add B5/C2 replay regression fixtures and prove RED: interrupted
-  readback must not replay buffered old audio or let the remainder notice bind
-  the user's answer"
+phaseCursor: 2/4
+updated: 2026-09-27T03:34:32.382Z
+nextStep: Run the preserved codex-room-webrtc replay; add the recorded cut-final
+  then answer-final ordering as RED and fix only that readback fence
 chunks: []
 pointers: {}
 ---
 
 # FLY-2885 progress
-**phase**: implement (1/4)
-**next**: Add B5/C2 replay regression fixtures and prove RED: interrupted readback must not replay buffered old audio or let the remainder notice bind the user's answer
+**phase**: implement (2/4)
+**next**: Run the preserved codex-room-webrtc replay; add the recorded cut-final then answer-final ordering as RED and fix only that readback fence
