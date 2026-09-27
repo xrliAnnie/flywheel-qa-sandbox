@@ -1103,6 +1103,19 @@ export async function runGoalToTerminal(
 	// resident wait/retry — never as failure attribution (that stays owned-only).
 	let lastThreadTurnError: GoalRunResult["lastTurnError"];
 	let retryEpisodeOpen = false;
+	const clearUpstreamRetryEpisode = (): void => {
+		try {
+			input.writeUpstreamRetryEpisode?.(null);
+			retryEpisodeOpen = false;
+		} catch (error) {
+			// Keep retrying at later successful boundaries. A stale quota marker is
+			// also excluded from a new turn's retry count below.
+			retryEpisodeOpen = true;
+			client.logDiagnostic(
+				`upstream retry episode clear failed (kept for the next boundary): ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	};
 	let pendingTurnDispatch:
 		| { notifications: Array<{ method: string; params: unknown }> }
 		| undefined;
@@ -1134,16 +1147,7 @@ export async function runGoalToTerminal(
 		if (completion.status === "completed") {
 			lastThreadTurnError = undefined;
 			// Legitimate model progress ends the retry episode.
-			if (retryEpisodeOpen) {
-				try {
-					input.writeUpstreamRetryEpisode?.(null);
-					retryEpisodeOpen = false;
-				} catch (error) {
-					client.logDiagnostic(
-						`upstream retry episode clear failed (kept for the next boundary): ${error instanceof Error ? error.message : String(error)}`,
-					);
-				}
-			}
+			if (retryEpisodeOpen) clearUpstreamRetryEpisode();
 		}
 	};
 	const observeTurnNotification = (method: string, params: unknown): void => {
@@ -1247,6 +1251,9 @@ export async function runGoalToTerminal(
 					`quota continue progress callback failed: ${error instanceof Error ? error.message : String(error)}`,
 				);
 			}
+			// The new account produced model output: the prior quota handoff episode
+			// is over. Clear it before any later upstream failure is classified.
+			clearUpstreamRetryEpisode();
 			return;
 		}
 		if (method !== "turn/completed") return;
@@ -2029,7 +2036,8 @@ export async function runGoalToTerminal(
 		const sameEpisode =
 			prior !== null &&
 			prior.threadId === input.threadId &&
-			prior.category === category;
+			prior.category === category &&
+			prior.quotaExhausted !== true;
 		const reobserved =
 			sameEpisode &&
 			prior !== null &&

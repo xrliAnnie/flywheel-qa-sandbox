@@ -1,3 +1,4 @@
+import type { CodexQuotaResumeLifecycle } from "flywheel-core";
 import { describe, expect, it } from "vitest";
 import {
 	CodexDaemonClient,
@@ -4003,6 +4004,123 @@ describe("runGoalToTerminal — FLY-2925 quota exhaustion goes to governance, ne
 			lastFailedTurnId: "turn-1",
 			quotaExhausted: true,
 		});
+	});
+
+	it("starts a fresh retry episode when a quota-resumed thread later gets a new 429", async () => {
+		const d = new FakeDaemon();
+		let current: GoalStatus = "usageLimited";
+		let activeSets = 0;
+		d.responders.set("thread/goal/get", () => ({
+			goal: { status: current, objective: "OURS" },
+		}));
+		d.responders.set("thread/goal/set", (params) => {
+			current = (params as { status: GoalStatus }).status;
+			if (current === "active") {
+				activeSets += 1;
+				if (activeSets === 2) d.triggerClose("stop after retry proof");
+			}
+			return {};
+		});
+		d.responders.set("turn/start", () => ({ turn: { id: "turn-continue" } }));
+
+		const quotaResume: CodexQuotaResumeLifecycle = {
+			authorization: {
+				executionId: "exec-1",
+				claimId: "bridge:1:boot:c1",
+				entrySeq: 1,
+				resumeAttempt: 1,
+			},
+			continueAttemptId: "11111111-2222-4333-8444-555555555555",
+			continueAttemptFresh: true,
+			onContinueReconciled: () => ({
+				action: "abort",
+				reason: "not reached",
+			}),
+			onContinueStarted: () => true,
+			onContinueProgress: () => {},
+			onContinueFailed: () => {},
+		};
+		let episode: unknown = {
+			v: 1,
+			threadId: "t",
+			category: "rate_limited",
+			attempts: 3,
+			lastFailedTurnId: "turn-old-quota",
+			nextAt: 0,
+			quotaExhausted: true,
+		};
+		const writes: unknown[] = [];
+		const retries: Array<{ reason: string; attempt?: number }> = [];
+
+		await expect(
+			runGoalToTerminal(makeClient(d), {
+				threadId: "t",
+				objective: "OURS",
+				now: () => 0,
+				sleep: async () => {},
+				pollIntervalMs: 1,
+				phaseLifecycle: new FakePhaseLifecycle(),
+				quotaResume,
+				onGoalActive: () => {
+					if (activeSets !== 1) return;
+					d.push({
+						method: "item/completed",
+						params: {
+							threadId: "t",
+							turnId: "turn-continue",
+							item: { type: "agentMessage", id: "answer-1" },
+						},
+					});
+					d.push({
+						method: "turn/completed",
+						params: {
+							threadId: "t",
+							turn: { id: "turn-continue", status: "completed" },
+						},
+					});
+					d.push({
+						method: "turn/completed",
+						params: {
+							threadId: "t",
+							turn: {
+								id: "turn-new-429",
+								status: "failed",
+								error: {
+									message: "transient 429",
+									codexErrorInfo: {
+										httpConnectionFailed: { httpStatusCode: 429 },
+									},
+								},
+							},
+						},
+					});
+					d.push({
+						method: "thread/goal/updated",
+						params: {
+							threadId: "t",
+							goal: { status: "blocked", objective: "OURS" },
+						},
+					});
+				},
+				readUpstreamRetryEpisode: () => episode as never,
+				writeUpstreamRetryEpisode: (next) => {
+					episode = next;
+					writes.push(next);
+				},
+				onResidentWait: (observation) => retries.push(observation),
+			}),
+		).rejects.toMatchObject({ kind: "closed" });
+
+		expect(writes).toContain(null);
+		expect(episode).toMatchObject({
+			category: "rate_limited",
+			attempts: 1,
+			lastFailedTurnId: "turn-new-429",
+		});
+		expect(episode).not.toMatchObject({ quotaExhausted: true });
+		expect(retries).toContainEqual(
+			expect.objectContaining({ reason: "upstream_retry", attempt: 1 }),
+		);
 	});
 });
 
