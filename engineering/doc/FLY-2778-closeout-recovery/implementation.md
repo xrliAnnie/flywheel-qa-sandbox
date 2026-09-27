@@ -50,7 +50,7 @@ Issue: FLY-2778 (https://linear.app/geoforge3d/issue/FLY-2778/收尾清理失效
 ### 红绿与选择
 
 - RED：新具体文件 4 项中 3 fail / 1 pass，旧代码没有 scoped claim/CAS 接口；旧表迁移正对照已先通过。
-- GREEN：`StateStore.lifecycle-apply-claims.test.ts` 4/4，覆盖旧 epoch 迁移、两个独立 StateStore connection 争抢同 effect 仅一方成功、request 内容漂移拒绝、非赢家与错误前态均不能写 receipt。
+- GREEN：`StateStore.lifecycle-apply-claims.test.ts` 5/5，覆盖旧 epoch 迁移、两个独立 StateStore connection 争抢同 effect 仅一方成功、request 内容漂移拒绝、非赢家与错误前态均不能写 receipt，以及 rejected 收据保留但新 manifest/request 可重新认领同一 effect。
 - 直接受影响旧契约：`lifecycle-closeout.test.ts` 64/64、`StateStore.fly663-migration.test.ts` 11/11、`fly-2413-retention-migration.test.ts` 1/1 均分别通过。没有新增表，既有 `lifecycle_apply_claims` retention 分类继续生效。
 - 受限 related config 经 `vitest list --filesOnly` 确认为上述 4 个具体文件；`vitest related` 实际选中 3 文件，79 项中 76 pass，3 项仅因当时 host load 65–79 下超过既有 5 秒超时。相同 `lifecycle-closeout.test.ts` 已在默认超时下单独 64/64 通过，因此该轮不计绿，最终验证需在负载恢复后按原 timeout 重跑；未提高 timeout、未放宽断言。
 - `pnpm --filter "flywheel-teamlead..." build` 成功。diff 不含进程 signal/spawn/kill 字面或 FLY-1560 禁用词；因此 kill-path inventory 与 lexical guard 均记录为本批排除项，不以无关全包运行代替。
@@ -80,3 +80,13 @@ FLY-2754 的 auth pre-spawn 只提供“可能从未启动”的来源，不能�
 - RED→GREEN：normal land closeout 对完整 never-started closure 仍返回 blocked；接入同一 provider 分支后完整闭包不进入 signal path，来源/归属/socket/锁四类缺失逐一保持 blocked。`lifecycle-closeout-body-observation.test.ts` 9/9，完整 `lifecycle-closeout.test.ts` 64/64。
 - source assessor：`codex-pre-spawn-source.test.ts` 5/5；原凭证/producer/retention 回归 `StateStore.codex-pre-spawn.test.ts` 8/8、`DirectEventSink.dag-seam.test.ts` 15/15、`StateStore.fly2341-terminal-archive.test.ts` 28/28、`fly-2413-retention-migration.test.ts` 1/1。
 - 受限 related 配置先以 `vitest list --filesOnly` 核对 10 个明确文件，随后 changed-file related 实际选中 9 files / 173 tests，全绿；没有回落到包级 suite。精确 Biome 与 `git diff --check` 通过，TeamLead typecheck 通过。
+
+## 交卷前 exact-diff 自审修正
+
+逐文件比较当前分支与 `origin/main` 时又找出三处不能带进复审的边界，并各自先补失败用例：
+
+1. stock execute 的冻结目标 digest 原先没有绑定 execution run、lifecycle revision 与 adapter；新 activation/revision 即使目录、branch、generation 未变也可能沿用旧批准。现把三项加入稳定 target identity，revision 漂移在 remove 前返回 `target_identity_changed`。
+2. stock effect 的唯一索引原先覆盖 `rejected`，一次临时 unknown/CWD veto 会让该目录永久 `effect_already_claimed`。索引现只占用 `claimed|applied`；原 request 仍精确回放 rejected 审计，新 dry-run/new request 可重试。`claimed` 崩溃恢复与 `applied` 永久防重语义不变。
+3. FLY-2919 provider 模块尚不存在时，stock preview 会 unknown，但 normal land closeout 因未注入 observer 会回落旧死亡判定。生产现始终注入 fail-closed observer；provider 加载失败只返回 unknown，绝不重新启用 window/heartbeat/旧 probe 作为第二死亡真源。
+
+对应 RED→GREEN：`stock-worktree-cleanup-executor.test.ts` 7/7、`StateStore.lifecycle-apply-claims.test.ts` 5/5、`execution-body-observer-wiring.test.ts` 2/2；共同 closeout 回归 `lifecycle-closeout-body-observation.test.ts` 9/9。受限 changed-file `vitest related` 只选中这 4 个具体文件，23/23。当前代码提交 `c6f686aef` 上 `pnpm --filter "flywheel-teamlead..." build`、TeamLead typecheck、仓库 lint（5184 files，25 个既有 warning、0 error）与 `git diff --check` 均通过。
