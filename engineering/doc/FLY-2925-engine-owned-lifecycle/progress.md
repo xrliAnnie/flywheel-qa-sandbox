@@ -1,14 +1,14 @@
 ---
 issue: FLY-2925
 phase: implement
-phaseCursor: 12/13
-updated: 2026-09-27T03:10:02.659Z
-nextStep: Add RED regressions for the two blocking review findings, implement
-  minimal fixes, and re-review.
+phaseCursor: 13/13
+updated: 2026-09-27T03:28:19.618Z
+nextStep: Update milestone as the literal last commit, push the frozen head, and
+  request code review round 2.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2925 progress
-**phase**: implement (12/13)
-**next**: Add RED regressions for the two blocking review findings, implement minimal fixes, and re-review.
+**phase**: implement (13/13)
+**next**: Update milestone as the literal last commit, push the frozen head, and request code review round 2.
