@@ -172,6 +172,10 @@ export interface FinalizeStore {
 
 export interface FinalizeStaleBlockerDeps {
 	store: FinalizeStore;
+	observeBody: (
+		executionId: string,
+		projectName: string,
+	) => Promise<"alive" | "dead" | "unknown">;
 	lookupTmuxTarget: (execId: string, projectName: string) => TmuxTargetLookup;
 	killCmuxLinkedSession: (
 		tmuxWindow: string,
@@ -197,11 +201,10 @@ export interface FinalizeStaleBlockerDeps {
 
 /**
  * Fail-closed teardown → `completed` transition for a stale merged/closed-PR
- * blocker. Mirrors crash-reaper's ordering discipline: cmux kill gates window
- * kill; any real kill failure or an indeterminate tmux lookup leaves state
- * unchanged and returns `{proceed:false}` so the NEXT tick retries (never
- * releases the slot while the old runner might still be alive — Codex R1 #1).
- * Re-reads status before teardown AND before transition (Codex R1 #4).
+ * blocker. Tmux cleanup is best-effort UI work; only the shared execution body
+ * verdict may prove the runner dead and authorize communications finalization
+ * plus the lifecycle transition. Re-reads status before teardown AND before
+ * transition (Codex R1 #4).
  */
 export async function finalizeStaleBlocker(
 	blocker: Session,
@@ -241,7 +244,8 @@ export async function finalizeStaleBlocker(
 	}
 	if (!PARK_STATES.has(cur.status)) return { proceed: false }; // became running/pending → don't touch
 
-	// tmux tri-state — fail-closed on `error` (indeterminate ≠ gone).
+	// Tmux is only UI cleanup. Its absence, lookup failure, or successful kill
+	// cannot prove body death.
 	const lookup = deps.lookupTmuxTarget(execId, project);
 	let toreDown = false;
 	if (lookup.kind === "error") {
@@ -255,38 +259,57 @@ export async function finalizeStaleBlocker(
 			payload: { error: lookup.error },
 		});
 		deps.log?.(
-			`[stale-blocker] ${execId}: tmux lookup indeterminate — not finalizing, retry next tick`,
+			`[stale-blocker] ${execId}: tmux lookup indeterminate — body verdict still controls finalization`,
 		);
-		return { proceed: false };
 	}
 	if (lookup.kind === "found") {
 		const w = lookup.target.tmuxWindow;
 		const cmux = await deps.killCmuxLinkedSession(w);
 		if (!cmux.killed) {
 			deps.log?.(
-				`[stale-blocker] ${execId}: cmux kill failed (${cmux.error ?? "unknown"}) — window untouched, retry next tick`,
+				`[stale-blocker] ${execId}: cmux kill failed (${cmux.error ?? "unknown"}) — UI cleanup remains`,
 			);
-			return { proceed: false };
-		}
-		const win = await deps.killTmuxWindow(w);
-		if (!win.killed) {
-			deps.log?.(
-				`[stale-blocker] ${execId}: window kill failed (${win.error ?? "unknown"}) — retry next tick`,
-			);
-			return { proceed: false };
-		}
-		toreDown = true;
-		if (deps.closeTerminalView) {
-			try {
-				await deps.closeTerminalView(cur, w);
-			} catch (e) {
+		} else {
+			const win = await deps.killTmuxWindow(w);
+			if (!win.killed) {
 				deps.log?.(
-					`[stale-blocker] ${execId}: terminal close warn: ${(e as Error).message}`,
+					`[stale-blocker] ${execId}: window kill failed (${win.error ?? "unknown"}) — UI cleanup remains`,
 				);
+			} else {
+				toreDown = true;
+				if (deps.closeTerminalView) {
+					try {
+						await deps.closeTerminalView(cur, w);
+					} catch (e) {
+						deps.log?.(
+							`[stale-blocker] ${execId}: terminal close warn: ${(e as Error).message}`,
+						);
+					}
+				}
 			}
 		}
 	}
 	// lookup.kind === "gone" → no tmux target to clean.
+	let body: "alive" | "dead" | "unknown" = "unknown";
+	try {
+		body = await deps.observeBody(execId, project);
+	} catch (error) {
+		deps.log?.(
+			`[stale-blocker] ${execId}: body observation failed (${(error as Error).message})`,
+		);
+	}
+	if (body !== "dead") {
+		deps.store.insertEvent({
+			event_id: `cron-stale-finalize-body-${body}-${execId}`,
+			execution_id: execId,
+			issue_id: blocker.issue_id,
+			project_name: project,
+			event_type: "cron_stale_finalize_body_not_dead",
+			source: "bridge.stale-blocker-guard",
+			payload: { body, tmux: lookup.kind, uiCleanupComplete: toreDown },
+		});
+		return { proceed: false };
+	}
 
 	// FLY-1238: physical absence is not a completed teardown until unresolved
 	// founder gates and the CommDB session are retired atomically.
@@ -294,7 +317,7 @@ export async function finalizeStaleBlocker(
 	// StateStore row, terminal status, or absent CommDB target can justify
 	// idempotent ledger settlement, but none may mint a founder-facing claim that
 	// the runner was physically gone.
-	const finalized = finalizeCommunications(toreDown);
+	const finalized = finalizeCommunications(true);
 	if (!finalized.ok) {
 		deps.store.insertEvent({
 			event_id: `cron-stale-finalize-commdb-failed-${execId}`,
@@ -359,7 +382,13 @@ export async function finalizeStaleBlocker(
 		project_name: project,
 		event_type: "scheduled_run_blocker_finalized",
 		source: "bridge.stale-blocker-guard",
-		payload: { prState, statusBefore: cur2.status, tmux: lookup.kind },
+		payload: {
+			prState,
+			statusBefore: cur2.status,
+			body,
+			tmux: lookup.kind,
+			uiCleanupComplete: toreDown,
+		},
 	});
 	if (deps.archiveThread) {
 		const finalized = deps.store.getSession(execId) ?? {

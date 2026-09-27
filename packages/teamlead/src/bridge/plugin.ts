@@ -5736,6 +5736,8 @@ export function createBridgeApp(
 			finalizeBlocker: (blocker, prState) =>
 				finalizeStaleBlocker(blocker, prState, {
 					store,
+					observeBody: async (executionId, projectName) =>
+						opts?.readBodyLiveness?.(executionId, projectName) ?? "unknown",
 					lookupTmuxTarget,
 					// FLY-1185 §2.5: MCP reap piggybacks the injected cmux kill —
 					// runs BEFORE it while the pane pid is still resolvable; the
@@ -8310,6 +8312,10 @@ export async function startBridge(
 				probeRunner: probeRunnerProcessLiveness,
 				discoverTarget: discoverTmuxTargetByExecutionId,
 				probeServerGeneration: probeTmuxServerStartTime,
+				observeBody: async (executionId, bodyProjectName) =>
+					readObservedBody(executionId, bodyProjectName),
+				convergeBody: (executionId) =>
+					heartbeatService.reconcileExecutionBody(executionId),
 				isCompleteMarkerPending: (executionId) =>
 					hasPendingCompleteMarker(executionId, defaultMarkerDir()),
 				notify: (session, classification, terminalStatus) =>
@@ -9406,6 +9412,10 @@ export async function startBridge(
 			...input,
 			log: (message) => console.warn(`[delivery-contract] ${message}`),
 		});
+	let readObservedBody = (
+		_executionId: string,
+		_projectName: string,
+	): "alive" | "dead" | "unknown" => "unknown";
 	const createProjectDeliveryOperations = (
 		projectName: string,
 		commDb: CommDB,
@@ -9452,13 +9462,8 @@ export async function startBridge(
 					}
 					return { ok: true };
 				},
-				probeTarget: async (executionId, shutdownRequested) => {
-					const lookup = lookupTmuxTarget(executionId, projectName);
-					// A gone registry is actionable only after this operation's shutdown request.
-					if (lookup.kind === "gone" && shutdownRequested) return "absent";
-					if (lookup.kind !== "found") return "indeterminate";
-					return probeRunnerProcessLiveness(lookup.target.tmuxWindow);
-				},
+				observeBody: async (executionId) =>
+					readObservedBody(executionId, projectName),
 			},
 		});
 
@@ -11368,7 +11373,7 @@ export async function startBridge(
 
 	// All consumers share the sampler's original bounded observation. A settled
 	// death remains readable after projection closes the sampled owner binding.
-	const readObservedBody = (
+	readObservedBody = (
 		executionId: string,
 		projectName: string,
 	): "alive" | "dead" | "unknown" => {
@@ -12232,8 +12237,12 @@ export async function startBridge(
 		onEpicChange: epicPageRefresher.requestRefresh,
 		removeCleanWorktree: makeBridgeWorktreeCleanup(store, projects),
 		probeTurnHolderLiveness: async (session) => {
-			if (!session.tmux_session) return "indeterminate";
-			return probeRunnerProcessLiveness(session.tmux_session);
+			const body = readObservedBody(session.execution_id, session.project_name);
+			return body === "dead"
+				? "dead_pin"
+				: body === "alive"
+					? "alive"
+					: "indeterminate";
 		},
 		// FLY-1204: external merge is a real ship path — reclaim the parked
 		// DAG workflow sessions here too (shared finalizer, same as run-infra).
@@ -12887,7 +12896,10 @@ export async function startBridge(
 				return null;
 			}
 		},
-		probeProcessLiveness: probePatrolProcessLiveness,
+		probeProcessLiveness: (executionId, projectName) =>
+			probePatrolProcessLiveness(executionId, projectName, {
+				observeBody: async (id, project) => readObservedBody(id, project),
+			}),
 		inspectDeliveryState: (projectName, deliveryId) =>
 			leadInboxRuntime.getLeadEventSettlement(projectName, deliveryId),
 		enqueueLeadEvent: (envelope) => registry.enqueueLeadEvent(envelope),
@@ -13271,6 +13283,8 @@ export async function startBridge(
 		projects,
 		store,
 		runtimeRegistry: registry,
+		observeExecutionBody: async (executionId, projectName) =>
+			readObservedBody(executionId, projectName),
 		refreshShipRelevance,
 		onIssueGateSupersedeTick: issueGateSupersedeTick,
 		onReleaseReadinessTick: () => releaseReadinessRider.tick(),
@@ -14489,8 +14503,8 @@ export async function startBridge(
 			ingestToken: config.ingestToken,
 			materializedHeadAuthority,
 			transitionOpts,
-			getTmuxTarget: getTmuxTargetFromCommDb,
-			isTmuxWindowAlive,
+			observeBody: async (executionId, projectName) =>
+				readObservedBody(executionId, projectName),
 			onTerminalStatusPersisted: onMarkerTerminalStatusPersisted,
 			alertMergeWithoutApproval: (session, reason) => {
 				void reviewAuthorizationAlerts.alertMergeWithoutApproval(
@@ -14560,7 +14574,8 @@ export async function startBridge(
 						return transport === "none" ? undefined : transport;
 					},
 					discoverTmuxTarget: discoverTmuxTargetByExecutionId,
-					probeDiscoveredTarget: probeRunnerProcessLiveness,
+					observeBody: async (executionId, projectName) =>
+						readObservedBody(executionId, projectName),
 				},
 				{ session, cause },
 			);
@@ -14639,15 +14654,15 @@ export async function startBridge(
 				});
 			},
 			probeActorAlive: async (session) => {
-				const target = getTmuxTargetFromCommDb(
+				const body = readObservedBody(
 					session.execution_id,
 					session.project_name ?? "",
 				);
-				if (target) return probeRunnerProcessLiveness(target.tmuxWindow);
-				if (session.tmux_session) {
-					return probeRunnerProcessLiveness(session.tmux_session);
-				}
-				return "absent";
+				return body === "dead"
+					? "dead_pin"
+					: body === "alive"
+						? "alive"
+						: "indeterminate";
 			},
 			grantTurn: ({ issueId, execId, phase, projectName, sourceEventId }) => {
 				const db = new CommDB(commDbPathForProject(projectName));
@@ -14830,16 +14845,26 @@ export async function startBridge(
 				getActorSession: (executionId) =>
 					store.getSession(executionId) as WorkflowActorSession | undefined,
 				probeRegistered: async (session) => {
-					const target = getTmuxTargetFromCommDb(
+					const body = readObservedBody(
 						session.execution_id,
 						session.project_name ?? "",
 					);
-					if (!target) return "absent";
-					return probeRunnerProcessLiveness(target.tmuxWindow);
+					return body === "dead"
+						? "dead_pin"
+						: body === "alive"
+							? "alive"
+							: "indeterminate";
 				},
 				probePersisted: async (session) => {
-					if (!session.tmux_session) return "absent";
-					return probeRunnerProcessLiveness(session.tmux_session);
+					const body = readObservedBody(
+						session.execution_id,
+						session.project_name ?? "",
+					);
+					return body === "dead"
+						? "dead_pin"
+						: body === "alive"
+							? "alive"
+							: "indeterminate";
 				},
 				hasHostProcess: hasHostProcessByExecutionId,
 				assertWorktreeReady: assertWorkflowActorWorktreeReady,
@@ -16156,18 +16181,8 @@ export async function startBridge(
 		recoverSocket: () => tmuxRescueClient.recover(),
 		normalizedSocketPath: canonicalTmuxSocketPath,
 		targetGone: async (session) => {
-			const lookup = lookupTmuxTarget(
-				session.execution_id,
-				session.project_name,
-			);
-			if (lookup.kind === "error") return null;
-			if (lookup.kind === "gone") return true;
-			const liveness = await probeRunnerProcessLiveness(
-				lookup.target.tmuxWindow,
-			);
-			if (liveness === "alive") return false;
-			if (liveness === "absent" || liveness === "dead_pin") return true;
-			return null;
+			const body = readObservedBody(session.execution_id, session.project_name);
+			return body === "dead" ? true : body === "alive" ? false : null;
 		},
 		bodyLiveness: async (session) =>
 			readObservedBody(session.execution_id, session.project_name),

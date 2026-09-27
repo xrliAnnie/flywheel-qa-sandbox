@@ -54,7 +54,7 @@ describe("FLY-1374 holder wake activation", () => {
 					kind: "found" as const,
 					tmuxWindow: "flywheel:@42",
 				})),
-				probeDiscoveredTarget: vi.fn(async () => "alive" as const),
+				observeBody: vi.fn(async () => "alive" as const),
 			},
 		};
 	}
@@ -87,7 +87,7 @@ describe("FLY-1374 holder wake activation", () => {
 		expect(read.getSession("exec-1")?.status).toBe("running");
 		read.close();
 		expect(h.input.discoverTmuxTarget).not.toHaveBeenCalled();
-		expect(h.input.probeDiscoveredTarget).toHaveBeenCalledWith("flywheel:@42");
+		expect(h.input.observeBody).toHaveBeenCalledWith("exec-1", "flywheel");
 	});
 
 	it("repairs a missing CommDB row only from one discovered live window and revives design", async () => {
@@ -102,7 +102,7 @@ describe("FLY-1374 holder wake activation", () => {
 		).resolves.toEqual({ ok: true });
 
 		expect(h.input.discoverTmuxTarget).toHaveBeenCalledWith("exec-1");
-		expect(h.input.probeDiscoveredTarget).toHaveBeenCalledWith("flywheel:@42");
+		expect(h.input.observeBody).toHaveBeenCalledWith("exec-1", "flywheel");
 		expect(store.getSession("exec-1")?.status).toBe("running");
 		expect(h.transitions).toEqual(["running"]);
 		const read = new CommDB(commDbPath);
@@ -133,7 +133,7 @@ describe("FLY-1374 holder wake activation", () => {
 			activateHolderForWake(h.input, { session, cause: "workflow_rework" }),
 		).resolves.toEqual({ ok: true });
 		expect(h.input.discoverTmuxTarget).toHaveBeenCalledWith("exec-1");
-		expect(h.input.probeDiscoveredTarget).toHaveBeenCalledWith("flywheel:@42");
+		expect(h.input.observeBody).toHaveBeenCalledWith("exec-1", "flywheel");
 		const read = new CommDB(commDbPath);
 		expect(read.getSession("exec-1")?.tmux_window).toBe("flywheel:@42");
 		read.close();
@@ -157,14 +157,14 @@ describe("FLY-1374 holder wake activation", () => {
 			});
 			expect(store.getSession("exec-1")?.status).toBe("design_done");
 			expect(h.transitions).toEqual([]);
-			expect(h.input.probeDiscoveredTarget).not.toHaveBeenCalled();
+			expect(h.input.observeBody).not.toHaveBeenCalled();
 		},
 	);
 
-	it("holds a discovered dead target without status writes", async () => {
+	it("holds a discovered target when the shared body is dead without status writes", async () => {
 		const session = seed("design_done");
 		const first = deps();
-		first.input.probeDiscoveredTarget.mockResolvedValue("dead_pin");
+		first.input.observeBody.mockResolvedValue("dead");
 		await expect(
 			activateHolderForWake(first.input, {
 				session,
@@ -172,7 +172,7 @@ describe("FLY-1374 holder wake activation", () => {
 			}),
 		).resolves.toEqual({
 			ok: false,
-			error: "persisted_target_not_alive:dead_pin",
+			error: "execution_body_not_alive:dead",
 		});
 		expect(store.getSession("exec-1")?.status).toBe("design_done");
 		expect(first.transitions).toEqual([]);

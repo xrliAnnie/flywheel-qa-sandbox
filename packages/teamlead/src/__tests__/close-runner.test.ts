@@ -1204,11 +1204,30 @@ describe("closeRunner", () => {
 		expect(store.getCommDbFinalizeFailure("exec-1")).toBeUndefined();
 	});
 
-	it("returns alreadyGone=true when no tmux target (idempotent)", async () => {
+	it("does not treat a missing tmux target as death while the body is alive", async () => {
+		seedSession(store, "completed");
+		mockGetTmuxTarget.mockReturnValue(undefined);
+		mockProbeRunExecutionLiveness.mockResolvedValue("alive");
+
+		const result = await closeRunner(makeOpts(), store);
+
+		expect(result).toEqual({
+			closed: false,
+			physicalGone: false,
+			commDbFinalized: false,
+			retiredGateCount: 0,
+			error: "close_runner_body_alive",
+		});
+		expect(mockFinalizeCommDbSession).not.toHaveBeenCalled();
+		expect(mockKillTmuxWindow).not.toHaveBeenCalled();
+	});
+
+	it("returns alreadyGone=true when no tmux target and the body is dead", async () => {
 		// FLY-116: failed/blocked are preserved by default; use an AUTO_CLOSE
 		// status here so the alreadyGone path is exercised.
 		seedSession(store, "completed");
 		mockGetTmuxTarget.mockReturnValue(undefined);
+		mockProbeRunExecutionLiveness.mockResolvedValue("dead");
 
 		const result = await closeRunner(makeOpts(), store);
 
@@ -1223,6 +1242,34 @@ describe("closeRunner", () => {
 		const evt = events.find((e) => e.event_type === "lead_close_runner");
 		expect(evt).toBeDefined();
 		expect((evt!.payload as { alreadyGone?: boolean })?.alreadyGone).toBe(true);
+	});
+
+	it("finalizes a dead body even when its stale window cannot be removed", async () => {
+		seedSession(store, "completed");
+		mockGetTmuxTarget.mockReturnValue({
+			tmuxWindow: "runner-flywheel:@42",
+			sessionName: "runner-flywheel",
+		});
+		mockKillTmuxWindow.mockResolvedValue({
+			killed: false,
+			error: "stale window remains",
+		});
+		mockProbeRunExecutionLiveness.mockResolvedValue("dead");
+
+		const result = await closeRunner(makeOpts(), store);
+
+		expect(result).toMatchObject({
+			closed: false,
+			physicalGone: true,
+			runnerDeathProven: true,
+			commDbFinalized: true,
+		});
+		expect(result.error).toContain("stale window remains");
+		expect(mockFinalizeCommDbTerminalSession).toHaveBeenCalledWith(
+			"exec-1",
+			"flywheel",
+			"runner-flywheel:@42",
+		);
 	});
 
 	it("checks sticky collection authority before the already-gone success path", async () => {
@@ -1252,6 +1299,7 @@ describe("closeRunner", () => {
 	it("FLY-1238: fails communication finalization closed and skips archive when tmux is already gone", async () => {
 		seedSession(store, "completed");
 		mockGetTmuxTarget.mockReturnValue(undefined);
+		mockProbeRunExecutionLiveness.mockResolvedValue("dead");
 		mockFinalizeCommDbSession.mockReturnValue({
 			ok: false,
 			outcome: "failed",
@@ -1576,22 +1624,17 @@ describe("closeRunner", () => {
 			store,
 		);
 
-		// The registered target is absent, but its CommDB mapping may be stale.
-		// That can settle terminal communications only; it is not execution-death
-		// proof and therefore cannot delete the identity or archive the thread.
+		// Target-local absence is display evidence only. Without body death it
+		// cannot settle communications, delete identity, or archive the thread.
 		expect(result).toEqual({
 			closed: false,
 			physicalGone: false,
-			commDbFinalized: true,
-			retiredGateCount: 2,
-			error: "permission denied",
+			commDbFinalized: false,
+			retiredGateCount: 0,
+			error: "commdb_finalize_skipped:permission denied",
 		});
 		expect(mockFinalizeCommDbSession).not.toHaveBeenCalled();
-		expect(mockFinalizeCommDbSessionCommunications).toHaveBeenCalledWith(
-			"exec-1",
-			"flywheel",
-			"FLY-102:@0",
-		);
+		expect(mockFinalizeCommDbSessionCommunications).not.toHaveBeenCalled();
 		expect(archiveFn).not.toHaveBeenCalled();
 	});
 
@@ -1687,6 +1730,7 @@ describe("closeRunner", () => {
 		async (status) => {
 			seedSession(store, status);
 			mockGetTmuxTarget.mockReturnValue(undefined);
+			mockProbeRunExecutionLiveness.mockResolvedValue("dead");
 
 			const result = await closeRunner(makeOpts(), store);
 
@@ -1698,6 +1742,7 @@ describe("closeRunner", () => {
 	it("audit event_id is Lead-dimensional: concurrent retry → single audit row", async () => {
 		seedSession(store, "completed");
 		mockGetTmuxTarget.mockReturnValue(undefined);
+		mockProbeRunExecutionLiveness.mockResolvedValue("dead");
 
 		await Promise.all([
 			closeRunner(makeOpts(), store),
@@ -1714,6 +1759,7 @@ describe("closeRunner", () => {
 	it("different Leads each write their own audit row", async () => {
 		seedSession(store, "completed");
 		mockGetTmuxTarget.mockReturnValue(undefined);
+		mockProbeRunExecutionLiveness.mockResolvedValue("dead");
 
 		await closeRunner(makeOpts({ leadId: "lead-a" }), store);
 		await closeRunner(makeOpts({ leadId: "lead-b" }), store);
@@ -1735,6 +1781,7 @@ describe("closeRunner", () => {
 		async (status) => {
 			seedSession(store, status);
 			mockGetTmuxTarget.mockReturnValue(undefined); // tmux already gone
+			mockProbeRunExecutionLiveness.mockResolvedValue("dead");
 
 			const result = await closeRunner(
 				makeOpts({ finalizeDone: true, transitionOpts: transitionOpts() }),
@@ -1803,6 +1850,7 @@ describe("closeRunner", () => {
 			],
 		} as unknown as import("../ProjectConfig.js").ProjectEntry;
 		mockGetTmuxTarget.mockReturnValue(undefined);
+		mockProbeRunExecutionLiveness.mockResolvedValue("dead");
 		const archiveFn = vi.fn().mockResolvedValue({ archived: true });
 
 		const result = await closeRunner(
@@ -1841,6 +1889,7 @@ describe("closeRunner", () => {
 	it("finalizeDone is a no-op on a non-source state (already completed → normal close)", async () => {
 		seedSession(store, "completed");
 		mockGetTmuxTarget.mockReturnValue(undefined);
+		mockProbeRunExecutionLiveness.mockResolvedValue("dead");
 
 		const result = await closeRunner(
 			makeOpts({ finalizeDone: true, transitionOpts: transitionOpts() }),
@@ -2027,6 +2076,7 @@ describe("closeRunner C5 detection CLEARING (FLY-1048)", () => {
 		store = await StateStore.create(":memory:");
 		mockGetTmuxTarget.mockReset();
 		mockKillTmuxWindow.mockReset();
+		mockProbeRunExecutionLiveness.mockReset().mockResolvedValue("dead");
 	});
 
 	function seedEpisode(store: StateStore): void {

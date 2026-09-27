@@ -424,16 +424,16 @@ if [ "$OWNER_INDEX_COMPLETE" -eq 1 ]; then
         if [ "$binding_state" = pending ]; then
           display_target="$target"
           [ "$target" != __UNBOUND__ ] || display_target=unbound
-          roster_fact="ROSTER_EVIDENCE target=$display_target exec=$execution_id live_panes=0 findings=TARGET_PENDING"
+          roster_fact="ROSTER_EVIDENCE target=$display_target exec=$execution_id live_panes=0 findings=TARGET_PENDING body_verdict=NOT_OBSERVED liveness_authority=BODY_ONLY recommended_action=RESTORE_WINDOW_ONLY"
           STEP1_STATUS="FINDING-CANDIDATE"
           STEP1_FACTS="${STEP1_FACTS}${STEP1_FACTS:+$'\n'}$roster_fact"
           continue
         fi
         target_panes="$(printf '%s\n' "$CANONICAL_PANES" | awk -F '\t' -v target="$target" '$3 == target {print}')"
         live_count="$(printf '%s\n' "$target_panes" | awk 'NF {n++} END {print n+0}')"
-        roster_fact="ROSTER_EVIDENCE target=$target exec=$execution_id live_panes=$live_count"
-        if [ "$live_count" -eq 0 ]; then
-          roster_fact="$roster_fact findings=MISSING_PANE"
+        roster_fact="ROSTER_EVIDENCE target=$target exec=$execution_id live_panes=$live_count body_verdict=NOT_OBSERVED liveness_authority=BODY_ONLY"
+		if [ "$live_count" -eq 0 ]; then
+		  roster_fact="$roster_fact findings=MISSING_PANE recommended_action=RESTORE_WINDOW_ONLY"
           case "$STEP1_STATUS" in UNAVAILABLE*) ;; *) STEP1_STATUS="FINDING-CANDIDATE" ;; esac
         else
           roster_fact="$roster_fact findings=none"

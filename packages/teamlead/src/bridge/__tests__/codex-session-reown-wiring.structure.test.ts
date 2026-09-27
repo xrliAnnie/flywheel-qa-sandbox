@@ -50,6 +50,25 @@ describe("FLY-2211 Bridge recovery wiring", () => {
 		expect(scan).not.toContain("probeRunnerProcessLiveness(");
 	});
 
+	it("FLY-2919 state-changing wake, TURN, rework, and server-loss consumers never derive life from windows", () => {
+		for (const [start, end] of [
+			["const activateWakeHolder =", "turnBeltReconcilerHolder.current"],
+			[
+				"turnBeltReconcilerHolder.current",
+				"workflowReworkCoordinatorHolder.current",
+			],
+			["workflowReworkCoordinatorHolder.current", "const scanZombiesWired ="],
+			["serverLossHolder.current", "resolveLeadId: (session)"],
+		] as const) {
+			const wiring = source.slice(
+				source.indexOf(start),
+				source.indexOf(end, source.indexOf(start)),
+			);
+			expect(wiring).toContain("readObservedBody(");
+			expect(wiring).not.toContain("probeRunnerProcessLiveness(");
+		}
+	});
+
 	it("FLY-2919 gives the dispatcher a synchronous managed body reader", () => {
 		expect(source).toContain("let executionBodyReader:");
 		expect(source).toContain("readBodyLiveness:");

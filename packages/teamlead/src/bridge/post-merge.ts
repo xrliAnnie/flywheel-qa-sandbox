@@ -212,11 +212,22 @@ export async function postMergeTmuxCleanup(
 		const session = store.getSession(opts.executionId);
 		let phaseControllerHandled = false;
 		if (isResidentCodexPhase(session)) {
-			const shutdown = await prepareCodexPhaseShutdown({
-				executionId: opts.executionId,
-				projectName: opts.projectName,
-				getSession: () => store.getSession(opts.executionId),
-			});
+			const shutdown = await prepareCodexPhaseShutdown(
+				{
+					executionId: opts.executionId,
+					projectName: opts.projectName,
+					getSession: () => store.getSession(opts.executionId),
+				},
+				{
+					observeBody: (executionId, projectName) =>
+						probeRunExecutionLiveness(
+							store.getSession(executionId),
+							executionId,
+							projectName,
+							{ store },
+						),
+				},
+			);
 			if (shutdown.kind === "blocked") {
 				result.errors.push(`phase-shutdown: ${shutdown.error}`);
 				phaseControllerHandled = true;

@@ -1,12 +1,12 @@
 /**
  * FLY-1269: cooperative issue-terminal shutdown for resident Codex phases.
  *
- * A live phase controller owns the daemon and founder TUI. Killing its tmux
- * window from Bridge while it is draining can orphan the daemon or let Bridge
+ * A live phase controller owns the daemon and founder TUI. Killing its body
+ * while it is draining can orphan work or let Bridge
  * remove the shared worktree underneath an active process. This helper gives
  * that controller one bounded request/ack window. Direct cleanup remains the
- * backstop only when the controller is provably absent; uncertainty fails
- * closed.
+ * backstop only when the shared execution-body observation proves death;
+ * window state is UI cleanup evidence only and uncertainty fails closed.
  */
 
 import { randomUUID } from "node:crypto";
@@ -20,12 +20,6 @@ import {
 	isWorkflowManagedSession,
 	type RunnerShutdownDb,
 } from "./runner-shutdown-evidence.js";
-import {
-	lookupTmuxTarget,
-	probeRunnerProcessLiveness,
-	type RunnerLiveness,
-	type TmuxTargetLookup,
-} from "./tmux-lookup.js";
 
 export {
 	DEFAULT_ACK_TIMEOUT_MS,
@@ -46,8 +40,10 @@ export interface CodexPhaseShutdownInput {
 export interface CodexPhaseShutdownDeps {
 	resolveCommDbPath?: (projectName: string) => string | undefined;
 	openCommDb?: (dbPath: string) => RunnerShutdownDb;
-	lookupTarget?: (executionId: string, projectName: string) => TmuxTargetLookup;
-	probe?: (tmuxWindow: string) => Promise<RunnerLiveness>;
+	observeBody?: (
+		executionId: string,
+		projectName: string,
+	) => Promise<"alive" | "dead" | "unknown">;
 	now?: () => number;
 	sleep?: (ms: number) => Promise<void>;
 	randomId?: () => string;
@@ -60,21 +56,8 @@ export type CodexPhaseShutdownDecision =
 	| { kind: "not_applicable" }
 	| {
 			kind: "direct";
-			// FLY-1269 Authority Matrix: only a tmux-identity verdict that the target
-			// is provably absent licenses direct cleanup — `target_gone` / `dead_pin`
-			// / `absent`. A heartbeat signal never does: it cannot distinguish a dead
-			// controller from a live-but-wedged one, and culling the latter orphans
-			// its daemon.
-			reason:
-				| "target_gone"
-				// now unreachable by design (FLY-1269): both heartbeat-derived reasons
-				// are only ever evaluated once the pane probed ALIVE, which is exactly
-				// when direct cleanup is forbidden. Kept (not deleted) so existing
-				// referents and persisted values keep resolving.
-				| "controller_lease_stale"
-				| "controller_heartbeat_stopped"
-				| "dead_pin"
-				| "absent";
+			/** Current-generation execution-body death; never a window verdict. */
+			reason: "body_dead";
 	  }
 	| { kind: "graceful"; requestId: string }
 	| { kind: "blocked"; error: string };
@@ -89,28 +72,24 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-async function validateAcknowledgedTuiGone(
+async function validateAcknowledgedBodyGone(
 	input: CodexPhaseShutdownInput,
 	requestId: string,
-	lookupTarget: NonNullable<CodexPhaseShutdownDeps["lookupTarget"]>,
-	probe: NonNullable<CodexPhaseShutdownDeps["probe"]>,
+	observeBody: NonNullable<CodexPhaseShutdownDeps["observeBody"]>,
 ): Promise<CodexPhaseShutdownDecision> {
-	const lookup = lookupTarget(input.executionId, input.projectName);
-	if (lookup.kind === "gone") return { kind: "graceful", requestId };
-	if (lookup.kind === "error") {
+	let body: "alive" | "dead" | "unknown";
+	try {
+		body = await observeBody(input.executionId, input.projectName);
+	} catch (error) {
 		return {
 			kind: "blocked",
-			error: `phase_shutdown_post_ack_lookup_error:${lookup.error}`,
+			error: `phase_shutdown_post_ack_body_error:${errorMessage(error)}`,
 		};
 	}
-	const liveness = await probe(lookup.target.tmuxWindow);
-	if (liveness === "absent") return { kind: "graceful", requestId };
+	if (body === "dead") return { kind: "graceful", requestId };
 	return {
 		kind: "blocked",
-		error:
-			liveness === "indeterminate"
-				? "phase_shutdown_ack_tui_indeterminate"
-				: `phase_shutdown_ack_tui_${liveness}`,
+		error: `phase_shutdown_ack_body_${body}`,
 	};
 }
 
@@ -127,8 +106,11 @@ export async function prepareCodexPhaseShutdown(
 	const initialSession = input.getSession();
 	if (!isResidentCodexPhase(initialSession)) return { kind: "not_applicable" };
 
-	const lookupTarget = deps.lookupTarget ?? lookupTmuxTarget;
-	const probe = deps.probe ?? probeRunnerProcessLiveness;
+	const observeBody =
+		deps.observeBody ??
+		(async () => {
+			return "unknown" as const;
+		});
 	const now = deps.now ?? Date.now;
 	const sleep =
 		deps.sleep ??
@@ -147,47 +129,32 @@ export async function prepareCodexPhaseShutdown(
 		deps.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
 	);
 
-	const initialLookup = lookupTarget(input.executionId, input.projectName);
-	if (initialLookup.kind === "gone") {
-		return { kind: "direct", reason: "target_gone" };
-	}
-	if (initialLookup.kind === "error") {
-		return {
-			kind: "blocked",
-			error: `phase_shutdown_lookup_error:${initialLookup.error}`,
-		};
-	}
-
-	let initialLiveness: RunnerLiveness;
+	let initialBody: "alive" | "dead" | "unknown";
 	try {
-		initialLiveness = await probe(initialLookup.target.tmuxWindow);
+		initialBody = await observeBody(input.executionId, input.projectName);
 	} catch (error) {
 		return {
 			kind: "blocked",
-			error: `phase_shutdown_liveness_error:${errorMessage(error)}`,
+			error: `phase_shutdown_body_error:${errorMessage(error)}`,
 		};
 	}
-	if (initialLiveness === "dead_pin" || initialLiveness === "absent") {
-		return { kind: "direct", reason: initialLiveness };
-	}
-	if (initialLiveness === "indeterminate") {
+	if (initialBody === "dead") return { kind: "direct", reason: "body_dead" };
+	if (initialBody === "unknown") {
 		return {
 			kind: "blocked",
-			error: "phase_shutdown_liveness_indeterminate",
+			error: "phase_shutdown_body_unknown",
 		};
 	}
 
 	const startedAt = now();
 	const initialHeartbeat = initialSession?.heartbeat_at;
 	if (!isFreshControllerHeartbeat(initialHeartbeat, startedAt, leaseMaxAgeMs)) {
-		// FLY-1269: every not-alive liveness returned above, so the pane is
-		// provably LIVE here. A stale lease then means "the controller stopped
+		// The body is provably alive here. A stale lease means "the controller stopped
 		// beating" OR "we cannot read its beat" — never "provably absent", which
-		// is the only licence the header contract grants direct cleanup. Fail
-		// closed: killing a live controller's window orphans its daemon.
+		// is the only licence the header contract grants direct cleanup.
 		return {
 			kind: "blocked",
-			error: "phase_shutdown_controller_lease_stale_live_pane",
+			error: "phase_shutdown_controller_lease_stale_live_body",
 		};
 	}
 
@@ -222,11 +189,10 @@ export async function prepareCodexPhaseShutdown(
 				};
 			}
 			if (control.state === "acked") {
-				return await validateAcknowledgedTuiGone(
+				return await validateAcknowledgedBodyGone(
 					input,
 					requestId,
-					lookupTarget,
-					probe,
+					observeBody,
 				);
 			}
 			if (control.state === "failed") {
@@ -256,33 +222,20 @@ export async function prepareCodexPhaseShutdown(
 		db?.close();
 	}
 
-	const finalLookup = lookupTarget(input.executionId, input.projectName);
-	if (finalLookup.kind === "error") {
-		return {
-			kind: "blocked",
-			error: `phase_shutdown_timeout_lookup_error:${finalLookup.error}`,
-		};
-	}
-	if (finalLookup.kind === "gone") {
-		return { kind: "direct", reason: "target_gone" };
-	}
-
-	let finalLiveness: RunnerLiveness;
+	let finalBody: "alive" | "dead" | "unknown";
 	try {
-		finalLiveness = await probe(finalLookup.target.tmuxWindow);
+		finalBody = await observeBody(input.executionId, input.projectName);
 	} catch (error) {
 		return {
 			kind: "blocked",
-			error: `phase_shutdown_timeout_liveness_error:${errorMessage(error)}`,
+			error: `phase_shutdown_timeout_body_error:${errorMessage(error)}`,
 		};
 	}
-	if (finalLiveness === "dead_pin" || finalLiveness === "absent") {
-		return { kind: "direct", reason: finalLiveness };
-	}
-	if (finalLiveness === "indeterminate") {
+	if (finalBody === "dead") return { kind: "direct", reason: "body_dead" };
+	if (finalBody === "unknown") {
 		return {
 			kind: "blocked",
-			error: "phase_shutdown_timeout_liveness_indeterminate",
+			error: "phase_shutdown_timeout_body_unknown",
 		};
 	}
 
@@ -293,15 +246,13 @@ export async function prepareCodexPhaseShutdown(
 			error: "phase_shutdown_ack_timeout_live_controller",
 		};
 	}
-	// FLY-1269: the pane is provably LIVE (every other liveness returned above),
+	// The body is provably alive (every other verdict returned above),
 	// so a heartbeat that stopped advancing during the ack wait is ambiguous — a
 	// wedged-but-live controller and a dead one look identical from here, and only
 	// the latter would be safe to cull. The header contract allows direct cleanup
 	// solely when the controller is provably absent, which a live pane refutes.
-	// Fail closed and let the tmux-identity probe (gone/dead_pin/absent) be the
-	// sole authority for culling.
 	return {
 		kind: "blocked",
-		error: "phase_shutdown_ack_timeout_heartbeat_stopped_live_pane",
+		error: "phase_shutdown_ack_timeout_heartbeat_stopped_live_body",
 	};
 }

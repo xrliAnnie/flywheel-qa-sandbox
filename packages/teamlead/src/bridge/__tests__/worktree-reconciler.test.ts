@@ -98,23 +98,18 @@ describe("FLY-603 classifyWorktreeLiveness (tri-state + pathless fallback)", () 
 		mainRepoPath: MAIN,
 		sessions: [],
 		worktreeManager: wm,
-		lookupTmuxTarget: () => ({ kind: "gone" }),
-		probeTmuxWindowLiveness: async () => "dead",
+		probeExecutionBody: async () => "dead",
 		...over,
 	});
 
-	it("exact-path session with live tmux → live", async () => {
+	it("exact-path session with live body → live", async () => {
 		const deps = base({
 			sessions: [session({ execution_id: "x", worktree_path: mkWt().path })],
-			lookupTmuxTarget: () => ({
-				kind: "found",
-				target: { tmuxWindow: "w:1" },
-			}),
-			probeTmuxWindowLiveness: async () => "alive",
+			probeExecutionBody: async () => "alive",
 		});
 		expect(await classifyWorktreeLiveness(wt(), deps)).toBe("live");
 	});
-	it("pathless session (NULL worktree_path) with live tmux → live (R4 fallback)", async () => {
+	it("pathless session (NULL worktree_path) with live body → live (R4 fallback)", async () => {
 		const deps = base({
 			sessions: [
 				session({
@@ -123,36 +118,28 @@ describe("FLY-603 classifyWorktreeLiveness (tri-state + pathless fallback)", () 
 					worktree_path: undefined,
 				}),
 			],
-			lookupTmuxTarget: () => ({
-				kind: "found",
-				target: { tmuxWindow: "w:1" },
-			}),
-			probeTmuxWindowLiveness: async () => "alive",
+			probeExecutionBody: async () => "alive",
 		});
 		expect(await classifyWorktreeLiveness(wt(), deps)).toBe("live");
 	});
-	it("CommDB read error → unknown (not dead)", async () => {
+	it("body read unknown → unknown (not dead)", async () => {
 		const deps = base({
 			sessions: [session({ execution_id: "x", worktree_path: mkWt().path })],
-			lookupTmuxTarget: () => ({ kind: "error", error: "locked" }),
+			probeExecutionBody: async () => "unknown",
 		});
 		expect(await classifyWorktreeLiveness(wt(), deps)).toBe("unknown");
 	});
-	it("tmux probe indeterminate → unknown", async () => {
+	it("window state cannot override a live body", async () => {
 		const deps = base({
 			sessions: [session({ execution_id: "x", worktree_path: mkWt().path })],
-			lookupTmuxTarget: () => ({
-				kind: "found",
-				target: { tmuxWindow: "w:1" },
-			}),
-			probeTmuxWindowLiveness: async () => "indeterminate",
+			probeExecutionBody: async () => "alive",
 		});
-		expect(await classifyWorktreeLiveness(wt(), deps)).toBe("unknown");
+		expect(await classifyWorktreeLiveness(wt(), deps)).toBe("live");
 	});
-	it("gone + dead probe → dead", async () => {
+	it("dead body → dead", async () => {
 		const deps = base({
 			sessions: [session({ execution_id: "x", worktree_path: mkWt().path })],
-			lookupTmuxTarget: () => ({ kind: "gone" }),
+			probeExecutionBody: async () => "dead",
 		});
 		expect(await classifyWorktreeLiveness(wt(), deps)).toBe("dead");
 	});
@@ -162,7 +149,7 @@ describe("FLY-603 classifyWorktreeLiveness (tri-state + pathless fallback)", () 
 				session({ execution_id: "a", issue_identifier: "FLY-700" }),
 				session({ execution_id: "b", issue_identifier: "FLY-700" }),
 			],
-			// base lookupTmuxTarget → gone → both provably dead
+			// base body observation → both provably dead
 		});
 		expect(await classifyWorktreeLiveness(wt(), deps)).toBe("dead");
 	});
@@ -173,11 +160,8 @@ describe("FLY-603 classifyWorktreeLiveness (tri-state + pathless fallback)", () 
 				session({ execution_id: "a", issue_identifier: "FLY-700" }),
 				session({ execution_id: "b", issue_identifier: "FLY-700" }),
 			],
-			lookupTmuxTarget: (execId) =>
-				execId === "b"
-					? { kind: "found", target: { tmuxWindow: "w:1" } }
-					: { kind: "gone" },
-			probeTmuxWindowLiveness: async () => "indeterminate",
+			probeExecutionBody: async (execId) =>
+				execId === "b" ? "unknown" : "dead",
 		});
 		expect(await classifyWorktreeLiveness(wt(), deps)).toBe("unknown");
 	});
@@ -197,11 +181,8 @@ describe("FLY-603 classifyWorktreeLiveness (tri-state + pathless fallback)", () 
 					worktree_path: undefined,
 				}),
 			],
-			lookupTmuxTarget: (execId) =>
-				execId === "live"
-					? { kind: "found", target: { tmuxWindow: "w:1" } }
-					: { kind: "gone" },
-			probeTmuxWindowLiveness: async () => "alive",
+			probeExecutionBody: async (execId) =>
+				execId === "live" ? "alive" : "dead",
 		});
 		// pre-fix this returned "dead" (exact-only) and would delete a live runner
 		expect(await classifyWorktreeLiveness(wt(), deps)).toBe("live");
@@ -217,11 +198,8 @@ describe("FLY-603 classifyWorktreeLiveness (tri-state + pathless fallback)", () 
 					worktree_path: undefined,
 				}),
 			],
-			lookupTmuxTarget: (execId) =>
-				execId === "x"
-					? { kind: "found", target: { tmuxWindow: "w:1" } }
-					: { kind: "gone" },
-			probeTmuxWindowLiveness: async () => "indeterminate",
+			probeExecutionBody: async (execId) =>
+				execId === "x" ? "unknown" : "dead",
 		});
 		expect(await classifyWorktreeLiveness(wt(), deps)).toBe("unknown");
 	});

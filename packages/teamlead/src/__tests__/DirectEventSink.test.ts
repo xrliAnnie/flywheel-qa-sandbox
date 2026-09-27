@@ -1752,6 +1752,22 @@ describe("DirectEventSink — FLY-793: completion must not clobber a phase role 
 		expect(s?.last_error).toBe("goal ended non-complete: blocked");
 	});
 
+	it("FLY-2528: emitFailed persists an abnormal process exit as failed", async () => {
+		await new DirectEventSink(store, makeConfig(), testProjects).emitFailed(
+			makeEnvelope(),
+			"abnormal_process_exit",
+			undefined,
+			{
+				failureKind: "abnormal_process_exit",
+				failureReason: "abnormal_process_exit",
+			},
+		);
+
+		const session = store.getSession("exec-1");
+		expect(session?.status).toBe("failed");
+		expect(session?.last_error).toBe("abnormal_process_exit");
+	});
+
 	it("FLY-1066: blocked completion enqueues the DirectEventSink bypass", async () => {
 		const enqueue = vi.fn();
 		const sink = new DirectEventSink(store, makeConfig(), testProjects);

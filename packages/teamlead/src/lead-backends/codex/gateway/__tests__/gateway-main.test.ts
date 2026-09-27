@@ -10,6 +10,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	bodyPresenceFromStartedEvidence,
 	mapHttpDispatchOutcome,
 	parseGatewayConfig,
 	resolveLifecycleTarget,
@@ -96,6 +97,21 @@ describe("parseGatewayConfig (F-a boundary)", () => {
 		expect(tuned.sendRateMaxPerWindow).toBe(2);
 		expect(tuned.sendRateWindowMs).toBe(30000);
 		expect(tuned.sendIdempotencyTtlMs).toBe(45000);
+	});
+});
+
+describe("close_runner body postcondition", () => {
+	it("uses body evidence and fails closed on unknown instead of treating a missing window as gone", () => {
+		expect(bodyPresenceFromStartedEvidence({ started: true })).toBe(true);
+		expect(
+			bodyPresenceFromStartedEvidence({ started: false, reason: "body_dead" }),
+		).toBe(false);
+		expect(() =>
+			bodyPresenceFromStartedEvidence({
+				started: false,
+				reason: "lookup_error",
+			}),
+		).toThrow(/body evidence unavailable/);
 	});
 });
 

@@ -52,7 +52,10 @@ import {
 import type { CleanupPolicyByProject } from "./cleanup-policy.js";
 import { type CleanupPolicy, policyFor } from "./cleanup-policy.js";
 import type { WithRepoLock } from "./repo-mutation-lock.js";
-import { lookupTmuxTarget, probeTmuxWindowLiveness } from "./tmux-lookup.js";
+import {
+	probeRunExecutionLiveness,
+	type RunExecutionLivenessProbe,
+} from "./run-quiescence.js";
 import { worktreeAutocleanEnabled } from "./worktree-cleanup.js";
 import { quarantineWorktree } from "./worktree-quarantine.js";
 import {
@@ -152,8 +155,7 @@ export interface LifecycleSweepDeps {
 	gitExecFn?: typeof gitExec;
 	isWorktreeClean?: (wtPath: string) => Promise<boolean | "unknown">;
 	quarantineFn?: typeof quarantineWorktree;
-	lookupTarget?: typeof lookupTmuxTarget;
-	probeLiveness?: typeof probeTmuxWindowLiveness;
+	probeExecutionLiveness?: RunExecutionLivenessProbe;
 	autoclean?: boolean;
 }
 
@@ -548,8 +550,15 @@ async function sweepOneWorktree(
 		mainRepoPath,
 		sessions: ctx.allSessions,
 		worktreeManager,
-		lookupTmuxTarget: deps.lookupTarget ?? lookupTmuxTarget,
-		probeTmuxWindowLiveness: deps.probeLiveness ?? probeTmuxWindowLiveness,
+		probeExecutionBody:
+			deps.probeExecutionLiveness ??
+			((executionId, bodyProjectName) =>
+				probeRunExecutionLiveness(
+					store.getSession(executionId),
+					executionId,
+					bodyProjectName,
+					{ store },
+				)),
 	});
 	if (live !== "dead") return resetGate(`live_${live}`);
 

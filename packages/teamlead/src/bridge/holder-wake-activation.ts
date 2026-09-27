@@ -1,7 +1,6 @@
 import type { CommDB } from "flywheel-comm/db";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
 import { applyTransition } from "../applyTransition.js";
-import type { PhaseLiveness } from "./phase-actor-reentry.js";
 import type { RunnerTmuxTargetDiscovery } from "./tmux-lookup.js";
 import type { WorkflowActorSession } from "./workflow-actor-session.js";
 
@@ -15,7 +14,10 @@ export interface HolderWakeActivationDeps {
 	discoverTmuxTarget: (
 		executionId: string,
 	) => Promise<RunnerTmuxTargetDiscovery>;
-	probeDiscoveredTarget: (tmuxTarget: string) => Promise<PhaseLiveness>;
+	observeBody: (
+		executionId: string,
+		projectName: string,
+	) => Promise<"alive" | "dead" | "unknown">;
 }
 
 /**
@@ -71,11 +73,14 @@ export async function activateHolderForWake(
 			}
 			tmuxWindow = discovered.tmuxWindow;
 		}
-		const liveness = await deps.probeDiscoveredTarget(tmuxWindow);
+		const liveness = await deps.observeBody(
+			fresh.execution_id,
+			fresh.project_name,
+		);
 		if (liveness !== "alive") {
 			return {
 				ok: false,
-				error: `persisted_target_not_alive:${liveness}`,
+				error: `execution_body_not_alive:${liveness}`,
 			};
 		}
 		const activated = db.activateSessionForWake({

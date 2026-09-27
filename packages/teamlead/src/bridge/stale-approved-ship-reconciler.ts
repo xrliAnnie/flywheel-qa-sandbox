@@ -21,7 +21,6 @@
 
 import { REVIEW_BINDING_UNBOUND } from "../StateStore.js";
 import { parseSqliteUtcMs } from "./founder-notify-utils.js";
-import type { RunnerLiveness } from "./tmux-lookup.js";
 
 /** Default: a session idle in approved_to_ship this long is "stranded". */
 export const DEFAULT_REWAKE_GRACE_MS = 5 * 60_000;
@@ -135,20 +134,6 @@ export interface ReconcileStaleApprovedShipDeps {
 		session: RewakeSessionProbe,
 		reason: "indeterminate" | "probe_error",
 	) => void | Promise<void>;
-}
-
-/**
- * Translate exact-target tmux evidence into the reconciler's action vocabulary.
- * Only a persisted window whose panes are all dead is positive death evidence.
- * `absent` may instead mean a stale CommDB target, so it must stay diagnostic
- * and take the same harmless, idempotent re-wake path as an indeterminate probe.
- */
-export function classifyStaleShipRunnerLiveness(
-	verdict: RunnerLiveness,
-): "alive" | "dead" | "indeterminate" {
-	if (verdict === "alive") return "alive";
-	if (verdict === "dead_pin") return "dead";
-	return "indeterminate";
 }
 
 export function deadAlertAccepted(result: {

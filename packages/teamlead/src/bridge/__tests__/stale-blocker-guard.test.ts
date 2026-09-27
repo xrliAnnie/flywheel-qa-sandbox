@@ -157,6 +157,7 @@ function foundLookup(): TmuxTargetLookup {
 function makeFinalizeDeps(over: {
 	sessions: Session[]; // successive getSession returns
 	lookup: TmuxTargetLookup;
+	body?: "alive" | "dead" | "unknown";
 	cmuxKilled?: boolean;
 	windowKilled?: boolean;
 	transitionOk?: boolean;
@@ -176,6 +177,7 @@ function makeFinalizeDeps(over: {
 			}),
 		},
 		lookupTmuxTarget: vi.fn(() => over.lookup),
+		observeBody: vi.fn(async () => over.body ?? "dead"),
 		killCmuxLinkedSession: vi.fn(async () => ({
 			killed: over.cmuxKilled ?? true,
 		})),
@@ -209,10 +211,43 @@ function makeFinalizeDeps(over: {
 }
 
 describe("finalizeStaleBlocker (fail-closed teardown + double re-read)", () => {
+	it("missing window with a live body never finalizes or releases the slot", async () => {
+		const { deps } = makeFinalizeDeps({
+			sessions: [session({ status: "awaiting_review" })],
+			lookup: { kind: "gone" } as TmuxTargetLookup,
+			body: "alive",
+		});
+		const r = await finalizeStaleBlocker(session({}), "merged", deps);
+		expect(r.proceed).toBe(false);
+		expect(deps.applyTransition).not.toHaveBeenCalled();
+		expect(deps.finalizeCommDbSession).not.toHaveBeenCalled();
+	});
+
+	it("proven dead body finalizes even when stale window cleanup fails", async () => {
+		const { deps } = makeFinalizeDeps({
+			sessions: [
+				session({ status: "awaiting_review" }),
+				session({ status: "awaiting_review" }),
+				session({ status: "completed" }),
+			],
+			lookup: foundLookup(),
+			windowKilled: false,
+			body: "dead",
+		});
+		const r = await finalizeStaleBlocker(session({}), "merged", deps);
+		expect(r.proceed).toBe(true);
+		expect(deps.applyTransition).toHaveBeenCalledOnce();
+		expect(deps.finalizeCommDbSession).toHaveBeenCalledOnce();
+		expect(deps.store.recordCommDbFinalizeOutcome).toHaveBeenCalledWith(
+			expect.objectContaining({ runnerDeathProven: true }),
+		);
+	});
+
 	it("tmux lookup 'error' → proceed:false, no transition, audit written", async () => {
 		const { deps, events } = makeFinalizeDeps({
 			sessions: [session({ status: "awaiting_review" })],
 			lookup: { kind: "error", error: "db locked" } as TmuxTargetLookup,
+			body: "unknown",
 		});
 		const r = await finalizeStaleBlocker(session({}), "merged", deps);
 		expect(r.proceed).toBe(false);
@@ -233,7 +268,7 @@ describe("finalizeStaleBlocker (fail-closed teardown + double re-read)", () => {
 		expect(deps.killCmuxLinkedSession).not.toHaveBeenCalled();
 		expect(deps.applyTransition).toHaveBeenCalledOnce();
 		expect(deps.store.recordCommDbFinalizeOutcome).toHaveBeenCalledWith(
-			expect.objectContaining({ runnerDeathProven: false }),
+			expect.objectContaining({ runnerDeathProven: true }),
 		);
 	});
 
@@ -242,6 +277,7 @@ describe("finalizeStaleBlocker (fail-closed teardown + double re-read)", () => {
 			sessions: [session({ status: "awaiting_review" })],
 			lookup: foundLookup(),
 			cmuxKilled: false,
+			body: "alive",
 		});
 		const r = await finalizeStaleBlocker(session({}), "merged", deps);
 		expect(r.proceed).toBe(false);
@@ -254,6 +290,7 @@ describe("finalizeStaleBlocker (fail-closed teardown + double re-read)", () => {
 			sessions: [session({ status: "awaiting_review" })],
 			lookup: foundLookup(),
 			windowKilled: false,
+			body: "alive",
 		});
 		const r = await finalizeStaleBlocker(session({}), "merged", deps);
 		expect(r.proceed).toBe(false);

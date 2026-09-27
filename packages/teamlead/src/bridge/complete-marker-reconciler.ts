@@ -28,10 +28,9 @@
  * marker's payload PROVES (computed with the same mapping as `event-route.ts`),
  * and only then delete the marker. Anything ambiguous is quarantined.
  *
- * This module owns marker files + replay + verification ONLY. It does NOT probe
- * tmux and does NOT decide a session's fallback status — that is the caller's
- * job (HeartbeatService owns tmux liveness; see Codex design-review guidance #1),
- * so we never split-brain liveness decisions across the heartbeat loop.
+ * This module owns marker files + replay + verification. A quarantined marker
+ * may fall back to a terminal status only after the shared BodyObservation
+ * proves the execution body dead. Window state is never death authority.
  */
 
 import { randomUUID } from "node:crypto";
@@ -1236,12 +1235,10 @@ function safeUnlink(path: string, log: (m: string) => void): void {
 
 /**
  * Apply the fallback terminal status for a quarantined marker (Codex R2 #3).
- * Used by both boot drain and the heartbeat reconcile pass. The caller decides
- * whether tmux is alive: when dead, the session is forced to a definite terminal
- * status (route's intended status, or `failed`) with a breadcrumb to the
- * quarantine path so no dead session is left stuck in `running`. When alive, the
- * session is left running (the Runner is still working; monitor-lost advisory
- * handles it).
+ * Used by both boot drain and the heartbeat reconcile pass. Only a shared body
+ * observation of `dead` authorizes terminal fallback. `alive` and `unknown`
+ * leave the session running so a missing window or uncertain sample cannot
+ * overwrite real completed work while marker reconciliation is unresolved.
  */
 export function applyQuarantineFallback(args: {
 	store: StateStore;
@@ -1249,14 +1246,7 @@ export function applyQuarantineFallback(args: {
 	executionId: string;
 	issueId?: string;
 	projectName?: string;
-	tmuxAlive: boolean;
-	/**
-	 * FLY-1282 (code R1 #5): optional tri-state verdict for HONEST logging.
-	 * `tmuxAlive` keeps its legacy meaning ("not provably dead") byte-for-byte
-	 * for existing boolean callers; when the caller also passes the verdict,
-	 * an indeterminate probe is logged as indeterminate — never as "alive".
-	 */
-	livenessVerdict?: "alive" | "dead" | "indeterminate";
+	bodyLiveness: "alive" | "dead" | "unknown";
 	routeStatus?: string;
 	quarantinePath: string;
 	onTerminalStatusPersisted?: (
@@ -1267,11 +1257,9 @@ export function applyQuarantineFallback(args: {
 	log?: (m: string) => void;
 }): void {
 	const log = args.log ?? ((m: string) => console.log(m));
-	if (args.tmuxAlive) {
+	if (args.bodyLiveness !== "dead") {
 		log(
-			args.livenessVerdict === "indeterminate"
-				? `[complete-reconciler] ${args.executionId}: marker quarantined, liveness indeterminate — leaving running (never reaped on uncertainty)`
-				: `[complete-reconciler] ${args.executionId}: marker quarantined but tmux alive — leaving running, advisory will fire`,
+			`[complete-reconciler] ${args.executionId}: marker quarantined, body ${args.bodyLiveness} — leaving running (fallback requires proven body death)`,
 		);
 		return;
 	}
@@ -1353,17 +1341,16 @@ export function applyQuarantineFallback(args: {
  * replayed immediately so a completed Runner's status is corrected without
  * waiting for the heartbeat loop. Event-driven (boot event), no new timer.
  *
- * Quarantine fallback at boot probes tmux per-marker (boot is not the heartbeat
- * loop, so this does not split-brain the loop's single-owner liveness rule).
+ * Quarantine fallback at boot consumes the same shared body verdict as every
+ * other death-authorizing consumer.
  */
 export async function reconcileCompleteFailedMarkers(
 	deps: MarkerReconcilerDeps & {
 		transitionOpts?: ApplyTransitionOpts;
-		isTmuxWindowAlive?: (tmuxWindow: string) => Promise<boolean>;
-		getTmuxTarget?: (
+		observeBody?: (
 			executionId: string,
 			projectName: string,
-		) => { tmuxWindow: string } | undefined;
+		) => Promise<"alive" | "dead" | "unknown">;
 	},
 ): Promise<{
 	scanned: number;
@@ -1406,21 +1393,17 @@ export async function reconcileCompleteFailedMarkers(
 			result.held += 1;
 		} else if (outcome.kind === "quarantined") {
 			result.quarantined += 1;
-			// Boot fallback: probe tmux to choose a definite terminal status.
-			let tmuxAlive = false;
+			// Marker replay always comes first. Only proven body death may authorize
+			// the fallback mutation after replay has quarantined the evidence.
+			let bodyLiveness: "alive" | "dead" | "unknown" = "unknown";
 			const session = deps.store.getSession(execId);
-			if (
-				session?.project_name &&
-				deps.getTmuxTarget &&
-				deps.isTmuxWindowAlive
-			) {
-				const target = deps.getTmuxTarget(execId, session.project_name);
-				if (target) {
-					try {
-						tmuxAlive = await deps.isTmuxWindowAlive(target.tmuxWindow);
-					} catch {
-						tmuxAlive = false;
-					}
+			if (session?.project_name && deps.observeBody) {
+				try {
+					bodyLiveness = await deps.observeBody(execId, session.project_name);
+				} catch (err) {
+					log(
+						`[complete-reconciler] ${execId}: body observation failed — leaving running: ${(err as Error).message}`,
+					);
 				}
 			}
 			applyQuarantineFallback({
@@ -1429,7 +1412,7 @@ export async function reconcileCompleteFailedMarkers(
 				executionId: execId,
 				issueId: session?.issue_id,
 				projectName: session?.project_name,
-				tmuxAlive,
+				bodyLiveness,
 				routeStatus: outcome.routeStatus,
 				quarantinePath: outcome.quarantinePath,
 				onTerminalStatusPersisted: deps.onTerminalStatusPersisted,

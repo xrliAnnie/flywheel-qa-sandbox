@@ -17,6 +17,15 @@ const PATROL_PATH = join(BASE, "runner-patrol-rules.md");
 const MSG_PATH = join(BASE, "runner-messaging-rules.md");
 const README_PATH = join(BASE, "README.md");
 const SH_PATH = join(__dirname, "..", "..", "scripts", "claude-lead.sh");
+const SNAPSHOT_PATH = join(
+	__dirname,
+	"..",
+	"..",
+	"..",
+	"..",
+	"scripts",
+	"lead-patrol-snapshot.sh",
+);
 const RUNBOOK_PATH = join(
 	__dirname,
 	"..",
@@ -55,6 +64,7 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 	const msg = readFileSync(MSG_PATH, "utf8");
 	const readme = readFileSync(README_PATH, "utf8");
 	const sh = readFileSync(SH_PATH, "utf8");
+	const snapshot = readFileSync(SNAPSHOT_PATH, "utf8");
 	const runbook = readFileSync(RUNBOOK_PATH, "utf8");
 
 	it("RC-3: proactive patrol uses runner_terminal_list as the sweep starting point (NOT an acceptance oracle)", () => {
@@ -156,6 +166,13 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		}
 		expect(section0.match(/run:/g)?.length ?? 0).toBeGreaterThanOrEqual(6);
 		expect(section0).toMatch(/跳过.*不留痕.*违约|禁止静默跳过/);
+	});
+
+	it("FLY-2919: missing-window patrol evidence requests UI repair without claiming body death", () => {
+		expect(snapshot).toContain("liveness_authority=BODY_ONLY");
+		expect(snapshot).toContain("body_verdict=NOT_OBSERVED");
+		expect(snapshot).toContain("findings=MISSING_PANE");
+		expect(snapshot).toContain("recommended_action=RESTORE_WINDOW_ONLY");
 	});
 
 	it("FLY-2118: Discord truth remains, while cross-boundary roundtable routing is outside the patrol surface", () => {

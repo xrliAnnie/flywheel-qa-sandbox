@@ -84,6 +84,17 @@ describe("FLY-867 stale-terminal close (checkStaleCompleted upgrade)", () => {
 		expect(notifier.onSessionStale).not.toHaveBeenCalled();
 	});
 
+	it("closes a terminal live-body leak even when its window is missing", async () => {
+		const s = makeSession({ status: "completed" });
+		store.getStaleCompletedSessions.mockReturnValue([s]);
+		const service = makeService(staleCfg);
+
+		await service.checkStaleCompleted();
+
+		expect(closeStale).toHaveBeenCalledWith(s);
+		expect(mockIsTmuxAlive).not.toHaveBeenCalled();
+	});
+
 	it("closes failed and blocked leaks too (backstop owns the full stale-query set)", async () => {
 		const failed = makeSession({ execution_id: "e-f", status: "failed" });
 		const blocked = makeSession({ execution_id: "e-b", status: "blocked" });
@@ -156,7 +167,7 @@ describe("FLY-867 stale-terminal close (checkStaleCompleted upgrade)", () => {
 	// Counterpart: when close IS enabled, the probe DOES run every cycle (a
 	// failed close must keep retrying) — proves the byte-compat guard is
 	// close-disabled-only, not a blanket regression.
-	it("close enabled: a failed-close session IS re-probed every cycle (retry semantics)", async () => {
+	it("close enabled: a failed-close session retries without consulting window liveness", async () => {
 		const s = makeSession();
 		store.getStaleCompletedSessions.mockReturnValue([s]);
 		closeStale.mockResolvedValue({ closed: false });
@@ -167,7 +178,8 @@ describe("FLY-867 stale-terminal close (checkStaleCompleted upgrade)", () => {
 		await service.checkStaleCompleted();
 		await service.checkStaleCompleted();
 
-		expect(mockGetTmuxTarget).toHaveBeenCalledTimes(2);
+		expect(mockGetTmuxTarget).not.toHaveBeenCalled();
+		expect(mockIsTmuxAlive).not.toHaveBeenCalled();
 		expect(closeStale).toHaveBeenCalledTimes(2);
 	});
 

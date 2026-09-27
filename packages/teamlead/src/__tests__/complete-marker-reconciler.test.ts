@@ -1778,12 +1778,12 @@ describe("tryReconcileComplete", () => {
 });
 
 describe("applyQuarantineFallback (Codex R2 #3)", () => {
-	it("tmux dead → forces session to routeStatus with quarantine breadcrumb", () => {
+	it("body dead → forces session to routeStatus with quarantine breadcrumb", () => {
 		const store = makeStore({ d1: { status: "running" } });
 		applyQuarantineFallback({
 			store: store as never,
 			executionId: "d1",
-			tmuxAlive: false,
+			bodyLiveness: "dead",
 			routeStatus: "blocked",
 			quarantinePath: "/q/d1.json",
 			log: () => {},
@@ -1795,14 +1795,14 @@ describe("applyQuarantineFallback (Codex R2 #3)", () => {
 			expect.stringContaining("/q/d1.json"),
 		);
 	});
-	it("tmux dead + no routeStatus → failed", () => {
+	it("body dead + no routeStatus → failed", () => {
 		const store = makeStore({ d2: { status: "running" } });
 		const onTerminalStatusPersisted = vi.fn();
 		applyQuarantineFallback({
 			store: store as never,
 			executionId: "d2",
 			projectName: "geoforge3d",
-			tmuxAlive: false,
+			bodyLiveness: "dead",
 			quarantinePath: "/q/d2.json",
 			onTerminalStatusPersisted,
 			log: () => {},
@@ -1819,40 +1819,27 @@ describe("applyQuarantineFallback (Codex R2 #3)", () => {
 			"geoforge3d",
 		);
 	});
-	it("indeterminate verdict logs HONESTLY (never 'tmux alive'); legacy boolean-only call keeps the old line byte-for-byte (code R1 #5)", () => {
+	it("unknown body verdict logs honestly and never mutates the session", () => {
 		const store = makeStore({ d5: { status: "running" } });
 		const lines: string[] = [];
 		applyQuarantineFallback({
 			store: store as never,
 			executionId: "d5",
-			tmuxAlive: true, // legacy meaning: not-provably-dead
-			livenessVerdict: "indeterminate",
+			bodyLiveness: "unknown",
 			quarantinePath: "/q/d5.json",
 			log: (m) => lines.push(m),
 		});
 		expect(store.forceStatus).not.toHaveBeenCalled();
-		expect(lines[0]).toContain("liveness indeterminate — leaving running");
-		expect(lines[0]).not.toContain("tmux alive");
-		// Legacy boolean-only caller: byte-identical old copy.
-		const legacyLines: string[] = [];
-		applyQuarantineFallback({
-			store: store as never,
-			executionId: "d5",
-			tmuxAlive: true,
-			quarantinePath: "/q/d5.json",
-			log: (m) => legacyLines.push(m),
-		});
-		expect(legacyLines[0]).toBe(
-			"[complete-reconciler] d5: marker quarantined but tmux alive — leaving running, advisory will fire",
-		);
+		expect(lines[0]).toContain("body unknown — leaving running");
+		expect(lines[0]).not.toContain("tmux");
 	});
 
-	it("tmux alive → leaves session running (no forceStatus)", () => {
+	it("body alive leaves session running even when no window evidence exists", () => {
 		const store = makeStore({ d3: { status: "running" } });
 		applyQuarantineFallback({
 			store: store as never,
 			executionId: "d3",
-			tmuxAlive: true,
+			bodyLiveness: "alive",
 			routeStatus: "blocked",
 			quarantinePath: "/q/d3.json",
 			log: () => {},
@@ -1870,7 +1857,7 @@ describe("applyQuarantineFallback (Codex R2 #3)", () => {
 			executionId: "d4",
 			issueId: "iss-d4",
 			projectName: "geoforge3d",
-			tmuxAlive: false,
+			bodyLiveness: "dead",
 			routeStatus: "blocked",
 			quarantinePath: "/q/d4.json",
 			onTerminalStatusPersisted,
@@ -1902,7 +1889,7 @@ describe("applyQuarantineFallback (Codex R2 #3)", () => {
 			executionId: "d5",
 			issueId: "iss-d5",
 			projectName: "geoforge3d",
-			tmuxAlive: false,
+			bodyLiveness: "dead",
 			routeStatus: "blocked",
 			quarantinePath: "/q/d5.json",
 			onTerminalStatusPersisted,
@@ -1927,7 +1914,7 @@ describe("applyQuarantineFallback (Codex R2 #3)", () => {
 	// dead Runner ONLY. A non-running session must never be force-failed by a
 	// stale quarantined marker (completed→failed regression / review-gate clear).
 	it.each(["completed", "awaiting_review", "approved_to_ship", "blocked"])(
-		"tmux dead but status=%s (not running) → no mutation",
+		"body dead but status=%s (not running) → no mutation",
 		(status) => {
 			mockedApplyTransition.mockReset().mockReturnValue({ ok: true } as never);
 			const store = makeStore({ dn: { status } });
@@ -1935,7 +1922,7 @@ describe("applyQuarantineFallback (Codex R2 #3)", () => {
 				store: store as never,
 				transitionOpts: { fake: true } as never,
 				executionId: "dn",
-				tmuxAlive: false,
+				bodyLiveness: "dead",
 				quarantinePath: "/q/dn.json",
 				log: () => {},
 			});
@@ -2077,7 +2064,7 @@ describe("reconcileCompleteFailedMarkers (boot drain, Codex R1 #2)", () => {
 		expect(r2.scanned).toBe(0);
 	});
 
-	it("quarantine fallback at boot: dead tmux forces terminal status", async () => {
+	it("quarantine fallback at boot: dead body forces terminal status", async () => {
 		writeMarker(markerDir, "c", {
 			payload: { decision: { route: "blocked" }, evidence: {} },
 		});
@@ -2099,8 +2086,7 @@ describe("reconcileCompleteFailedMarkers (boot drain, Codex R1 #2)", () => {
 			markerDir,
 			quarantineDir,
 			transitionOpts: undefined,
-			getTmuxTarget: () => ({ tmuxWindow: "geoforge3d:@0" }),
-			isTmuxWindowAlive: async () => false, // dead
+			observeBody: async () => "dead",
 			onTerminalStatusPersisted,
 			log: () => {},
 		});

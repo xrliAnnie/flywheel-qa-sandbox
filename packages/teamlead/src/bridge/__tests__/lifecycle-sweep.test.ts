@@ -70,6 +70,7 @@ function sweepDeps(f: Fixture, extra: Record<string, unknown> = {}) {
 		quarantineRoot: path.join(f.root, "quarantine"),
 		bundleDir: path.join(f.root, "bundles"),
 		autoclean: true,
+		probeExecutionLiveness: async () => "dead" as const,
 		nowMs: FUTURE, // stability window elapsed for observed candidates
 		ghPrSetsFn: async () => ({
 			merged: new Map<string, Set<string>>(),
@@ -101,6 +102,39 @@ describe("sweepProjectLifecycle (real git)", () => {
 	// Codex R3#11 (plan §73): the ownership contract applies to clean+merged
 	// too — BINDING-OWNED clean+merged deletes (Layer B strength for the
 	// post-deployment population); an UNOWNED one is manual-only.
+	it(
+		"retains a clean merged worktree while its body is alive even without window evidence",
+		{ timeout: 60_000 },
+		async () => {
+			const wt = await f.wm.create({
+				mainRepoPath: f.repo,
+				projectName: "proj",
+				issueId: "FLY-9",
+				startPoint: "main",
+			});
+			f.store.upsertSession({
+				execution_id: "e9",
+				issue_id: "FLY-9",
+				project_name: "proj",
+				status: "completed",
+			});
+			f.store.bindWorktreeOnce("e9", {
+				path: wt.worktreePath,
+				branch: wt.branch,
+				generation: wt.generation,
+			});
+
+			const res = await sweepProjectLifecycle(
+				sweepDeps(f, {
+					probeExecutionLiveness: async () => "alive" as const,
+				}) as never,
+			);
+			const entry = res.entries.find((e) => e.ref === wt.worktreePath);
+			expect(entry).toMatchObject({ action: "skipped", reason: "live_live" });
+			expect(fs.existsSync(wt.worktreePath)).toBe(true);
+		},
+	);
+
 	it(
 		"clean+merged OWNED worktree removed with branch (Layer B strength for bound objects)",
 		{ timeout: 60_000 },

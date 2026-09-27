@@ -1,113 +1,81 @@
 import { describe, expect, it, vi } from "vitest";
-import { probePatrolProcessLiveness } from "../patrol-process-liveness.js";
+import {
+	observePatrolProcessLiveness,
+	probePatrolProcessLiveness,
+} from "../patrol-process-liveness.js";
 
-describe("FLY-1925 patrol process liveness", () => {
-	it("reports a registered live tmux pane as alive", async () => {
-		const probe = vi.fn(async () => "alive" as const);
-
+describe("FLY-2919 patrol process liveness", () => {
+	it("reports body alive and window missing as separate facts", async () => {
+		const observeBody = vi.fn(async () => "alive" as const);
 		await expect(
-			probePatrolProcessLiveness("exec-live", "flywheel", {
-				lookup: () => ({
-					kind: "found",
-					target: { tmuxWindow: "FLY-1925:@1", sessionName: "FLY-1925" },
-				}),
-				probe,
+			observePatrolProcessLiveness("exec-live", "flywheel", {
+				observeBody,
+				lookup: () => ({ kind: "gone" }),
+				discover: async () => ({ kind: "missing" }),
 			}),
-		).resolves.toBe("alive");
-		expect(probe).toHaveBeenCalledWith("FLY-1925:@1");
+		).resolves.toEqual({ body: "alive", window: "missing" });
+		expect(observeBody).toHaveBeenCalledWith("exec-live", "flywheel");
 	});
 
-	it("discovers a live execution marker before judging a pending CommDB target", async () => {
-		const discover = vi.fn(async () => ({
-			kind: "found" as const,
-			tmuxWindow: "FLY-1925:@7",
-		}));
-		const probe = vi.fn(async () => "alive" as const);
-		const hasHostProcess = vi.fn(async () => false);
+	it.each(["alive", "dead_pin", "absent", "indeterminate"] as const)(
+		"does not let window verdict %s change an alive body verdict",
+		async (windowVerdict) => {
+			await expect(
+				probePatrolProcessLiveness("exec-live", "flywheel", {
+					observeBody: async () => "alive",
+					lookup: () => ({
+						kind: "found",
+						target: {
+							tmuxWindow: "FLY-2919:@1",
+							sessionName: "FLY-2919",
+						},
+					}),
+					probe: async () => windowVerdict,
+				}),
+			).resolves.toBe("alive");
+		},
+	);
 
+	it("reports a dead body despite a live window", async () => {
 		await expect(
-			probePatrolProcessLiveness("exec-pending", "flywheel", {
+			observePatrolProcessLiveness("exec-dead", "flywheel", {
+				observeBody: async () => "dead",
 				lookup: () => ({
 					kind: "found",
 					target: {
-						tmuxWindow: "FLY-1925:pending",
-						sessionName: "FLY-1925",
+						tmuxWindow: "FLY-2919:@1",
+						sessionName: "FLY-2919",
 					},
 				}),
-				discover,
-				probe,
-				hasHostProcess,
+				probe: async () => "alive",
 			}),
-		).resolves.toBe("alive");
-		expect(discover).toHaveBeenCalledWith("exec-pending");
-		expect(probe).toHaveBeenCalledWith("FLY-1925:@7");
-		expect(hasHostProcess).not.toHaveBeenCalled();
+		).resolves.toEqual({ body: "dead", window: "present" });
 	});
 
-	it.each([
-		{ state: "dead_pin" as const, expected: "dead" as const },
-		{ state: "absent" as const, expected: "dead" as const },
-		{ state: "indeterminate" as const, expected: "unknown" as const },
-	])("maps a tmux $state probe to $expected", async ({ state, expected }) => {
+	it("keeps a pending target diagnostic without using it as body truth", async () => {
 		await expect(
-			probePatrolProcessLiveness("exec-probed", "flywheel", {
+			observePatrolProcessLiveness("exec-pending", "flywheel", {
+				observeBody: async () => "alive",
 				lookup: () => ({
 					kind: "found",
-					target: { tmuxWindow: "FLY-1925:@1", sessionName: "FLY-1925" },
+					target: {
+						tmuxWindow: "runner-flywheel:pending",
+						sessionName: "runner-flywheel",
+					},
 				}),
-				probe: async () => state,
-			}),
-		).resolves.toBe(expected);
-	});
-
-	it("proves the terminal FLY-1934 holder dead when every live target is absent", async () => {
-		await expect(
-			probePatrolProcessLiveness("e8180aee", "flywheel", {
-				lookup: () => ({ kind: "gone" }),
 				discover: async () => ({ kind: "missing" }),
-				hasHostProcess: async () => false,
 			}),
-		).resolves.toBe("dead");
+		).resolves.toEqual({ body: "alive", window: "pending" });
 	});
 
-	it("recognizes a host process when the CommDB and tmux marker are absent", async () => {
+	it("fails body truth closed when its shared observer throws", async () => {
 		await expect(
-			probePatrolProcessLiveness("exec-host", "flywheel", {
-				lookup: () => ({ kind: "gone" }),
-				discover: async () => ({ kind: "missing" }),
-				hasHostProcess: async () => true,
+			observePatrolProcessLiveness("exec-unknown", "flywheel", {
+				observeBody: async () => {
+					throw new Error("reader unavailable");
+				},
+				lookup: () => ({ kind: "error", error: "locked" }),
 			}),
-		).resolves.toBe("alive");
-	});
-
-	it("keeps an indeterminate host-process probe unknown", async () => {
-		await expect(
-			probePatrolProcessLiveness("exec-host-unknown", "flywheel", {
-				lookup: () => ({ kind: "gone" }),
-				discover: async () => ({ kind: "missing" }),
-				hasHostProcess: async () => "unknown",
-			}),
-		).resolves.toBe("unknown");
-	});
-
-	it.each([
-		{
-			name: "CommDB lookup error",
-			lookup: () => ({ kind: "error" as const, error: "locked" }),
-			discover: async () => ({ kind: "missing" as const }),
-		},
-		{
-			name: "ambiguous tmux markers",
-			lookup: () => ({ kind: "gone" as const }),
-			discover: async () => ({ kind: "ambiguous" as const }),
-		},
-	])("keeps a true $name unknown", async ({ lookup, discover }) => {
-		await expect(
-			probePatrolProcessLiveness("exec-unknown", "flywheel", {
-				lookup,
-				discover,
-				hasHostProcess: async () => false,
-			}),
-		).resolves.toBe("unknown");
+		).resolves.toEqual({ body: "unknown", window: "unknown" });
 	});
 });

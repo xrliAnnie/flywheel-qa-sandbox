@@ -51727,6 +51727,31 @@ export class StateStore {
 			.sort();
 	}
 
+	/**
+	 * Physical collection cannot use workflow terminal labels as liveness. Include
+	 * every attributed execution until a prior collection receipt proves that
+	 * exact execution was closed and its CommDB projection finalized.
+	 */
+	private collectibleRunAttributedExecutionsTx(runId: string): string[] {
+		const settled = new Set<string>();
+		for (const raw of this.workflowSelectAll(
+			`SELECT * FROM workflow_run_collect_receipt
+			  WHERE run_id = ? AND state = 'responded'`,
+			[runId],
+		)) {
+			const receipt = this.workflowRunCollectReceipt(raw);
+			if (!receipt) continue;
+			for (const outcome of receipt.outcomes) {
+				if (outcome.closed && outcome.commDbFinalized) {
+					settled.add(outcome.executionId);
+				}
+			}
+		}
+		return this.listRunAttributedExecutions(runId)
+			.filter((executionId) => !settled.has(executionId))
+			.sort();
+	}
+
 	private sessionlessWorkflowGateCandidateRowsTx(input: {
 		limit: number;
 		runId?: string;
@@ -52087,7 +52112,7 @@ export class StateStore {
 		const receiptKey = `episode:${input.runId}:${episode}`;
 		const targetExecutionIds = [
 			...(input.targetExecutionIds ??
-				this.liveRunAttributedExecutionsTx(input.runId)),
+				this.collectibleRunAttributedExecutionsTx(input.runId)),
 		].sort();
 		this.db.run(
 			`INSERT INTO workflow_run_collect_receipt
@@ -52128,7 +52153,7 @@ export class StateStore {
 				)[0],
 			);
 			if (receipt) return;
-			const targets = this.liveRunAttributedExecutionsTx(input.runId);
+			const targets = this.collectibleRunAttributedExecutionsTx(input.runId);
 			if (targets.length === 0) return;
 			receipt = this.createWorkflowRunCollectReceiptTx({
 				runId: input.runId,
@@ -52165,7 +52190,7 @@ export class StateStore {
 		for (const candidate of candidates) {
 			const run = this.getWorkflowRun(String(candidate.run_id));
 			if (!run) continue;
-			const executionIds = this.liveRunAttributedExecutionsTx(run.run_id);
+			const executionIds = this.collectibleRunAttributedExecutionsTx(run.run_id);
 			if (executionIds.length === 0) continue;
 			const receiptKey = this.workflowSelectAll(
 				`SELECT receipt_key FROM workflow_run_collect_receipt
@@ -52705,7 +52730,7 @@ export class StateStore {
 				}
 			}
 			const frozenExecutionIds = collectExecutions
-				? this.liveRunAttributedExecutionsTx(input.runId)
+				? this.collectibleRunAttributedExecutionsTx(input.runId)
 				: undefined;
 			this.db.run(
 				"UPDATE workflow_run SET status = ? WHERE run_id = ? AND status = ?",

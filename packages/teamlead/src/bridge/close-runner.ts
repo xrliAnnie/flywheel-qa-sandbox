@@ -45,9 +45,7 @@ import {
 import {
 	type FinalizeCommDbResult,
 	finalizeCommDbSession,
-	finalizeCommDbSessionCommunications,
 	finalizeCommDbTerminalSession,
-	hasEndedCommDbSession,
 } from "./commdb-session-prune.js";
 import {
 	type CloseArchiveDeps,
@@ -61,7 +59,6 @@ import {
 	getTmuxTargetFromCommDb,
 	killCmuxLinkedSession,
 	killTmuxWindow,
-	probeRunnerProcessLiveness,
 } from "./tmux-lookup.js";
 import { sqliteDatetime } from "./types.js";
 
@@ -673,19 +670,12 @@ async function closeRunnerInner(
 
 	type FinalizeMode =
 		| { kind: "full" }
-		| { kind: "guarded_full"; expectedTmuxWindow: string }
-		| { kind: "communications_only"; expectedTmuxWindow: string };
+		| { kind: "guarded_full"; expectedTmuxWindow: string };
 	const finalizeCommunications = (
 		mode: FinalizeMode = { kind: "full" },
 	): FinalizeCommDbResult => {
 		let finalized: FinalizeCommDbResult;
-		if (mode.kind === "communications_only") {
-			finalized = finalizeCommDbSessionCommunications(
-				opts.executionId,
-				opts.projectName,
-				mode.expectedTmuxWindow,
-			);
-		} else if (mode.kind === "guarded_full") {
+		if (mode.kind === "guarded_full") {
 			const currentStatus = store.getSession(opts.executionId)?.status;
 			const currentCrashStatus =
 				currentStatus === "failed" || currentStatus === "blocked"
@@ -723,7 +713,7 @@ async function closeRunnerInner(
 			projectName: opts.projectName,
 			ok: finalized.ok,
 			error: finalized.error,
-			runnerDeathProven: mode.kind !== "communications_only",
+			runnerDeathProven: true,
 			audit: {
 				retiredGateCount: finalized.retiredGateCount,
 				retiredAskCount: finalized.retiredAskCount,
@@ -758,11 +748,22 @@ async function closeRunnerInner(
 		if (preShutdownLost) {
 			return abortAuthorityLost("pre_phase_shutdown", preShutdownLost);
 		}
-		const shutdown = await prepareCodexPhaseShutdown({
-			executionId: opts.executionId,
-			projectName: opts.projectName,
-			getSession: () => store.getSession(opts.executionId),
-		});
+		const shutdown = await prepareCodexPhaseShutdown(
+			{
+				executionId: opts.executionId,
+				projectName: opts.projectName,
+				getSession: () => store.getSession(opts.executionId),
+			},
+			{
+				observeBody: (executionId, projectName) =>
+					probeRunExecutionLiveness(
+						store.getSession(executionId),
+						executionId,
+						projectName,
+						{ store },
+					),
+			},
+		);
 		if (shutdown.kind === "blocked") {
 			store.insertEvent({
 				event_id: `close-runner-phase-shutdown-blocked-${auditKey}`,
@@ -867,9 +868,42 @@ async function closeRunnerInner(
 	const target = getTmuxTargetFromCommDb(opts.executionId, opts.projectName);
 
 	if (!target) {
-		// CommDB has no target → tmux already gone. We don't attempt osascript
-		// close here (without target.tmuxWindow we can't reconstruct viewer
-		// identity). Orphan tabs are the boot reaper's responsibility.
+		// A missing presentation target says nothing about the process body. A live
+		// body can lose its window during Bridge/tmux recovery; only the shared body
+		// observation may authorize the already-gone lifecycle path.
+		const bodyLiveness = await probeRunExecutionLiveness(
+			session,
+			opts.executionId,
+			opts.projectName,
+			{ store },
+		);
+		if (bodyLiveness !== "dead") {
+			store.insertEvent({
+				event_id: `close-runner-failed-${auditKey}`,
+				execution_id: opts.executionId,
+				issue_id: opts.issueId,
+				project_name: opts.projectName,
+				event_type: "lead_close_runner_failed",
+				source: "bridge.close-runner",
+				payload: {
+					closed: false,
+					reason: opts.reason,
+					leadId: opts.leadId,
+					executorType: opts.executorType ?? "engineer",
+					bodyLiveness,
+					windowTarget: "missing",
+				},
+			});
+			return {
+				closed: false,
+				physicalGone: false,
+				commDbFinalized: false,
+				retiredGateCount: 0,
+				error: `close_runner_body_${bodyLiveness}`,
+			};
+		}
+		// Body death is proven. Without target.tmuxWindow we cannot reconstruct
+		// viewer identity; orphan display cleanup remains the boot reaper's job.
 		store.insertEvent({
 			event_id: `close-runner-${auditKey}`,
 			execution_id: opts.executionId,
@@ -1062,53 +1096,22 @@ async function closeRunnerInner(
 	let commDbFinalized = false;
 	let retiredGateCount = 0;
 	let finalizeError: string | undefined;
-	// Each signal has a failure mode: `res.killed` proves teardown of the
-	// registered target, not that the mapping was forever fresh; an absence
-	// probe can describe a stale target; and a terminal row can precede process
-	// exit, so a positive `alive` verdict must veto it. A `:pending` placeholder
-	// additionally needs the family-aware daemon + tmux/discovery/host policy to
-	// prove the execution dead; otherwise it stays unknown. Terminal status can
-	// authorize ledger-only cleanup for an ordinary identity, but never deleting
-	// the only session identity without positive execution-death evidence.
-	// The name is used only to reject invalid liveness evidence, never as death evidence.
-	const terminalCommDbEvidence = hasEndedCommDbSession(
-		opts.executionId,
-		opts.projectName,
-	);
-	const pendingIdentity = target.tmuxWindow.endsWith(":pending");
-	// Pre-deployment sessions can remain `running` in CommDB after their
-	// authoritative StateStore session became close-eligible. The placeholder
-	// identity is not death evidence, but it must not prevent us from gathering
-	// execution-wide daemon/window/marker/host evidence. Only the explicit
-	// `dead` result below authorizes identity deletion; alive/unknown stays
-	// fail-closed.
-	const pendingRunnerLiveness =
-		!res.killed && pendingIdentity
-			? await probeRunExecutionLiveness(
-					session,
-					opts.executionId,
-					opts.projectName,
-					{ store },
-				)
-			: undefined;
-	const runnerLiveness =
-		res.killed || pendingIdentity
-			? undefined
-			: await probeRunnerProcessLiveness(target.tmuxWindow);
-	const runnerDeathProven = pendingRunnerLiveness === "dead";
-	// A target-local absence can be a stale CommDB mapping, so it is enough to
-	// veto a live runner and settle terminal communications, but not enough to
-	// destroy the only execution identity. Pending executions use the stricter
-	// family-aware quiescence probe above; only its positive death result may
-	// substitute for a successful kill.
+	// Window cleanup and body death are separate facts. `res.killed` records a
+	// successful requested UI/process-container cleanup. When that cleanup fails,
+	// only the shared execution-body observation may authorize lifecycle and
+	// communication finalization; target-local absent/dead-pin verdicts are never
+	// promoted to body death.
+	const bodyLiveness = !res.killed
+		? await probeRunExecutionLiveness(
+				session,
+				opts.executionId,
+				opts.projectName,
+				{ store },
+			)
+		: undefined;
+	const runnerDeathProven = bodyLiveness === "dead";
 	const canDeleteSessionIdentity = res.killed || runnerDeathProven;
-	const canFinalizeCommunicationsOnly =
-		!canDeleteSessionIdentity &&
-		!pendingIdentity &&
-		(runnerLiveness === "absent" || runnerLiveness === "dead_pin") &&
-		terminalCommDbEvidence;
-	const commDbCanFinalize =
-		canDeleteSessionIdentity || canFinalizeCommunicationsOnly;
+	const commDbCanFinalize = canDeleteSessionIdentity;
 	if (commDbCanFinalize && !res.killed) {
 		// Read/refuse only: this reuses the existing authority predicate and can
 		// only stop the destructive CommDB finalizer after the kill/probe awaits.
@@ -1119,17 +1122,12 @@ async function closeRunnerInner(
 		commDbFinalized = false;
 	} else if (commDbCanFinalize) {
 		const finalized = finalizeCommunications(
-			canFinalizeCommunicationsOnly
+			runnerDeathProven && !res.killed
 				? {
-						kind: "communications_only",
+						kind: "guarded_full",
 						expectedTmuxWindow: target.tmuxWindow,
 					}
-				: runnerDeathProven && !res.killed
-					? {
-							kind: "guarded_full",
-							expectedTmuxWindow: target.tmuxWindow,
-						}
-					: { kind: "full" },
+				: { kind: "full" },
 		);
 		commDbFinalized = finalized.ok;
 		retiredGateCount = finalized.retiredGateCount;
@@ -1137,7 +1135,7 @@ async function closeRunnerInner(
 			finalizeError = `commdb_finalize_failed:${finalized.error ?? "unknown"}`;
 		}
 	} else {
-		finalizeError = `commdb_finalize_skipped:${res.error ?? `tmux_window_${runnerLiveness ?? "indeterminate"}`}`;
+		finalizeError = `commdb_finalize_skipped:${res.error ?? `body_${bodyLiveness ?? "unknown"}`}`;
 	}
 
 	// FLY-369: central close→archive cascade — only after the registered target

@@ -11,7 +11,6 @@
 
 import { describe, expect, it, vi } from "vitest";
 import {
-	classifyStaleShipRunnerLiveness,
 	deadAlertAccepted,
 	isRewakeCandidate,
 	reconcileStaleApprovedShip,
@@ -253,17 +252,6 @@ describe("reconcileStaleApprovedShip", () => {
 			expect.objectContaining({ execution_id: "E-1" }),
 			"probe_error",
 		);
-	});
-});
-
-describe("classifyStaleShipRunnerLiveness", () => {
-	it.each([
-		["alive", "alive"],
-		["dead_pin", "dead"],
-		["absent", "indeterminate"],
-		["indeterminate", "indeterminate"],
-	] as const)("maps exact-target %s evidence to %s", (evidence, expected) => {
-		expect(classifyStaleShipRunnerLiveness(evidence)).toBe(expected);
 	});
 });
 

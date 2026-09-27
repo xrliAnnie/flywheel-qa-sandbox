@@ -24,7 +24,10 @@ import {
 } from "flywheel-edge-worker";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
-import { lookupTmuxTarget, probeTmuxWindowLiveness } from "./tmux-lookup.js";
+import {
+	probeRunExecutionLiveness,
+	type RunExecutionLivenessProbe,
+} from "./run-quiescence.js";
 import {
 	gitWorktreeClean,
 	worktreeAutocleanEnabled,
@@ -83,21 +86,8 @@ export interface LivenessDeps {
 	/** All sessions for the project (any status) — candidates for this worktree. */
 	sessions: Session[];
 	worktreeManager: Pick<WorktreeManager, "parseWorktreeKeyFromBranch">;
-	/** found|gone|error per execId. */
-	lookupTmuxTarget: (
-		executionId: string,
-		projectName: string,
-	) =>
-		| { kind: "found"; target: { tmuxWindow: string } }
-		| { kind: "gone" }
-		| {
-				kind: "error";
-				error: string;
-		  };
-	/** alive|dead|indeterminate per tmux window. */
-	probeTmuxWindowLiveness: (
-		tmuxWindow: string,
-	) => Promise<"alive" | "dead" | "indeterminate">;
+	/** Current execution-body truth. Presentation targets are irrelevant. */
+	probeExecutionBody: RunExecutionLivenessProbe;
 }
 
 /**
@@ -144,18 +134,12 @@ export async function classifyWorktreeLiveness(
 	let sawUnknown = false;
 	let sawDead = false;
 	for (const s of candidates) {
-		const look = deps.lookupTmuxTarget(s.execution_id, deps.projectName);
-		if (look.kind === "error") {
-			sawUnknown = true;
-			continue;
-		}
-		if (look.kind === "gone") {
-			sawDead = true;
-			continue;
-		}
-		const probe = await deps.probeTmuxWindowLiveness(look.target.tmuxWindow);
-		if (probe === "alive") return "live"; // short-circuit
-		if (probe === "indeterminate") sawUnknown = true;
+		const body = await deps.probeExecutionBody(
+			s.execution_id,
+			deps.projectName,
+		);
+		if (body === "alive") return "live"; // short-circuit
+		if (body === "unknown") sawUnknown = true;
 		else sawDead = true;
 	}
 	if (sawUnknown) return "unknown";
@@ -444,8 +428,13 @@ export async function reconcileProjectWorktrees(
 				mainRepoPath,
 				sessions: allSessions,
 				worktreeManager,
-				lookupTmuxTarget,
-				probeTmuxWindowLiveness,
+				probeExecutionBody: (executionId, bodyProjectName) =>
+					probeRunExecutionLiveness(
+						store.getSession(executionId),
+						executionId,
+						bodyProjectName,
+						{ store },
+					),
 			}),
 		isWorktreeClean: gitWorktreeClean,
 		hasOpenPr: (branch) =>

@@ -54,27 +54,26 @@ function fakeDb(overrides: Partial<RunnerShutdownDb> = {}): RunnerShutdownDb {
 
 function harness(args: {
 	session?: Session;
-	probe?: "alive" | "dead_pin" | "absent" | "indeterminate";
+	body?: "alive" | "dead" | "unknown";
 	db?: RunnerShutdownDb;
 	afterSleep?: () => void;
 }) {
 	let session = args.session ?? phaseSession();
+	let body = args.body ?? "alive";
 	const db = args.db ?? fakeDb();
 	let nowMs = Date.parse("2026-07-14T12:00:10Z");
-	const lookupTarget = vi.fn(() => ({
-		kind: "found" as const,
-		target: { tmuxWindow: "runner:@1", sessionName: "runner" },
-	}));
-	const probe = vi.fn(async () => args.probe ?? "alive");
+	const observeBody = vi.fn(async () => body);
 	const sleep = vi.fn(async (ms: number) => {
 		nowMs += ms;
 		args.afterSleep?.();
 	});
 	return {
 		db,
-		lookupTarget,
-		probe,
+		observeBody,
 		sleep,
+		setBody(next: "alive" | "dead" | "unknown") {
+			body = next;
+		},
 		setSession(next: Session) {
 			session = next;
 		},
@@ -88,8 +87,7 @@ function harness(args: {
 				{
 					resolveCommDbPath: () => "/tmp/comm.db",
 					openCommDb: () => db,
-					lookupTarget,
-					probe,
+					observeBody,
 					now: () => nowMs,
 					sleep,
 					randomId: () => "shutdown-1",
@@ -102,6 +100,16 @@ function harness(args: {
 }
 
 describe("prepareCodexPhaseShutdown", () => {
+	it("keeps a live body and closes a dead body without consulting window state", async () => {
+		const liveMissingWindow = harness({ body: "alive" });
+		expect((await liveMissingWindow.run()).kind).toBe("blocked");
+
+		const deadLiveWindow = harness({ body: "dead" });
+		expect(await deadLiveWindow.run()).toEqual({
+			kind: "direct",
+			reason: "body_dead",
+		});
+	});
 	it("exports the exact heartbeat ruler used by the shutdown decision", () => {
 		const now = Date.parse("2026-07-14T12:00:10Z");
 		expect(DEFAULT_ACK_TIMEOUT_MS).toBe(30_000);
@@ -139,9 +147,9 @@ describe("prepareCodexPhaseShutdown", () => {
 				chat_thread_role: "main",
 				workflow_node_id: "execute",
 			}),
-			probe: "absent",
+			body: "dead",
 		});
-		expect(await h.run()).toEqual({ kind: "direct", reason: "absent" });
+		expect(await h.run()).toEqual({ kind: "direct", reason: "body_dead" });
 	});
 
 	// FLY-1269 regression: these previously asserted `direct/controller_lease_stale`
@@ -152,51 +160,43 @@ describe("prepareCodexPhaseShutdown", () => {
 		phaseSession({ heartbeat_at: undefined }),
 		phaseSession({ heartbeat_at: "2026-07-14 11:58:00" }),
 	])(
-		"fails closed when the controller lease is missing or stale but the pane is alive",
+		"fails closed when the controller lease is missing or stale but the body is alive",
 		async (session) => {
 			const h = harness({ session });
 			expect(await h.run()).toEqual({
 				kind: "blocked",
-				error: "phase_shutdown_controller_lease_stale_live_pane",
+				error: "phase_shutdown_controller_lease_stale_live_body",
 			});
 			expect(h.db.requestRunnerShutdown).not.toHaveBeenCalled();
 		},
 	);
 
-	// FLY-1269 Authority Matrix: a stale lease is NOT what licenses cleanup — the
-	// tmux-identity verdict is. Same stale/missing lease as above, but with a probe
-	// that PROVES absence, must still cull (the fix must not over-block).
-	it.each(["dead_pin", "absent"] as const)(
-		"still culls a stale-lease phase when the probe proves it is %s",
-		async (probe) => {
-			const h = harness({
-				session: phaseSession({ heartbeat_at: "2026-07-14 11:58:00" }),
-				probe,
-			});
-			expect(await h.run()).toEqual({ kind: "direct", reason: probe });
-			expect(h.db.requestRunnerShutdown).not.toHaveBeenCalled();
-		},
-	);
+	// Body death is the sole cleanup authority, independent of lease/window state.
+	it("still culls a stale-lease phase when body observation proves death", async () => {
+		const h = harness({
+			session: phaseSession({ heartbeat_at: "2026-07-14 11:58:00" }),
+			body: "dead",
+		});
+		expect(await h.run()).toEqual({ kind: "direct", reason: "body_dead" });
+		expect(h.db.requestRunnerShutdown).not.toHaveBeenCalled();
+	});
 
-	it.each(["dead_pin", "absent"] as const)(
-		"falls through to direct cleanup when the process probe is %s",
-		async (probe) => {
-			const h = harness({ probe });
-			expect(await h.run()).toEqual({ kind: "direct", reason: probe });
-			expect(h.db.requestRunnerShutdown).not.toHaveBeenCalled();
-		},
-	);
+	it("falls through to direct cleanup when body observation proves death", async () => {
+		const h = harness({ body: "dead" });
+		expect(await h.run()).toEqual({ kind: "direct", reason: "body_dead" });
+		expect(h.db.requestRunnerShutdown).not.toHaveBeenCalled();
+	});
 
-	it("fails closed when the process probe is indeterminate", async () => {
-		const h = harness({ probe: "indeterminate" });
+	it("fails closed when body observation is unknown", async () => {
+		const h = harness({ body: "unknown" });
 		expect(await h.run()).toEqual({
 			kind: "blocked",
-			error: "phase_shutdown_liveness_indeterminate",
+			error: "phase_shutdown_body_unknown",
 		});
 		expect(h.db.requestRunnerShutdown).not.toHaveBeenCalled();
 	});
 
-	it("writes a request first and accepts only a matching ack after the TUI is absent", async () => {
+	it("writes a request first and accepts only a matching ack after body death", async () => {
 		let state: "requested" | "acked" = "requested";
 		let requested = false;
 		const db = fakeDb({
@@ -228,7 +228,7 @@ describe("prepareCodexPhaseShutdown", () => {
 			db,
 			afterSleep: () => {
 				state = "acked";
-				h.lookupTarget.mockReturnValue({ kind: "gone" });
+				h.setBody("dead");
 			},
 		});
 
@@ -257,10 +257,10 @@ describe("prepareCodexPhaseShutdown", () => {
 		const h = harness({ db });
 		// FLY-1269: previously `direct/controller_heartbeat_stopped`. The pending
 		// request is still reused (no second request written), but the ack wait
-		// times out against a LIVE pane, so the decision must fail closed.
+		// times out against a LIVE body, so the decision must fail closed.
 		expect(await h.run()).toEqual({
 			kind: "blocked",
-			error: "phase_shutdown_ack_timeout_heartbeat_stopped_live_pane",
+			error: "phase_shutdown_ack_timeout_heartbeat_stopped_live_body",
 		});
 		expect(db.requestRunnerShutdown).not.toHaveBeenCalled();
 	});
@@ -283,7 +283,7 @@ describe("prepareCodexPhaseShutdown", () => {
 		});
 	});
 
-	it("blocks an ack when the adapter window is still live", async () => {
+	it("blocks an ack while the body is still alive", async () => {
 		const db = fakeDb({
 			getRunnerShutdown: vi.fn(() => ({
 				execution_id: "exec-1",
@@ -297,7 +297,7 @@ describe("prepareCodexPhaseShutdown", () => {
 		const h = harness({ db });
 		expect(await h.run()).toEqual({
 			kind: "blocked",
-			error: "phase_shutdown_ack_tui_alive",
+			error: "phase_shutdown_ack_body_alive",
 		});
 	});
 
@@ -314,25 +314,25 @@ describe("prepareCodexPhaseShutdown", () => {
 
 	// FLY-1269 regression: this previously asserted `direct/controller_heartbeat_stopped`
 	// — the "orphan fallback". But a stopped heartbeat cannot tell a DEAD controller
-	// from a live-but-wedged one, and the pane here probes ALIVE, so the fallback was
-	// culling exactly the case it must not. Absence has one authority: the tmux probe.
-	it("fails closed when the heartbeat stops during the ack wait but the pane is alive", async () => {
+	// from a live-but-wedged one, and the body here observes ALIVE, so the fallback
+	// was culling exactly the case it must not. Body death has one authority.
+	it("fails closed when the heartbeat stops during the ack wait but the body is alive", async () => {
 		const h = harness({});
 		expect(await h.run()).toEqual({
 			kind: "blocked",
-			error: "phase_shutdown_ack_timeout_heartbeat_stopped_live_pane",
+			error: "phase_shutdown_ack_timeout_heartbeat_stopped_live_body",
 		});
 	});
 
 	// FLY-1269 invariant: the whole point of the fix in one assertion — no heartbeat
-	// shape may ever yield `direct` while the pane probes ALIVE. Guards against a
+	// shape may ever yield `direct` while the body observes ALIVE. Guards against a
 	// future heartbeat-derived cull path being reintroduced anywhere in the flow.
 	it.each([
 		["missing", undefined],
 		["stale", "2026-07-14 11:58:00"],
 		["fresh-then-frozen", "2026-07-14 12:00:00"],
 	])(
-		"never returns direct on a live pane when the heartbeat is %s",
+		"never returns direct on a live body when the heartbeat is %s",
 		async (_label, heartbeat_at) => {
 			const h = harness({ session: phaseSession({ heartbeat_at }) });
 			const decision = await h.run();
@@ -355,8 +355,7 @@ describe("prepareCodexPhaseShutdown", () => {
 					openCommDb: () => {
 						throw new Error("locked");
 					},
-					lookupTarget: h.lookupTarget,
-					probe: h.probe,
+					observeBody: h.observeBody,
 					now: () => Date.parse("2026-07-14T12:00:10Z"),
 					sleep: h.sleep,
 					randomId: () => "shutdown-1",

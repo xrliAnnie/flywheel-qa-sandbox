@@ -46,10 +46,7 @@ export class DeliveryOperations {
 				terminateClaude(
 					executionId: string,
 				): Promise<{ ok: boolean; error?: string }>;
-				probeTarget(
-					executionId: string,
-					shutdownRequested?: boolean,
-				): Promise<"alive" | "dead_pin" | "absent" | "indeterminate">;
+				observeBody(executionId: string): Promise<"alive" | "dead" | "unknown">;
 			};
 		},
 	) {}
@@ -146,7 +143,7 @@ export class DeliveryOperations {
 				}
 
 				if (state === "applied") {
-					let acknowledged = false;
+					let bodyDeathAuthorized = false;
 					if (operation.vendor === "codex") {
 						let shutdown: RunnerShutdownControl | null;
 						try {
@@ -164,45 +161,28 @@ export class DeliveryOperations {
 							fail(shutdown.error ?? "runner_shutdown_failed");
 							continue;
 						}
-						acknowledged = shutdown?.state === "acked";
-						if (!acknowledged && this.deps.residentExpiry) {
-							try {
-								const registered = this.deps.commDb.getSession(
-									operation.executionId,
-								);
-								if (!registered || registered.status !== "running") {
-									const liveness = await this.deps.residentExpiry.probeTarget(
-										operation.executionId,
-										shutdown?.state === "requested",
-									);
-									acknowledged =
-										liveness === "dead_pin" || liveness === "absent";
-								}
-							} catch (error) {
-								console.warn(
-									`[delivery-operations] resident expiry ${operation.operationId} liveness deferred: ${error instanceof Error ? error.message : String(error)}`,
-								);
-								continue;
-							}
-						}
+						// The exact shutdown request is retirement authority, but neither its
+						// ACK nor CommDB registry status proves that the process is gone.
+						if (!shutdown) continue;
 					} else {
 						if (!this.deps.residentExpiry) {
 							fail("claude_resident_expiry_effects_missing");
 							continue;
 						}
-						try {
-							const liveness = await this.deps.residentExpiry.probeTarget(
-								operation.executionId,
-							);
-							acknowledged = liveness === "dead_pin" || liveness === "absent";
-						} catch (error) {
-							console.warn(
-								`[delivery-operations] resident expiry ${operation.operationId} liveness deferred: ${error instanceof Error ? error.message : String(error)}`,
-							);
-							continue;
-						}
 					}
-					if (!acknowledged) continue;
+					if (!this.deps.residentExpiry) continue;
+					try {
+						bodyDeathAuthorized =
+							(await this.deps.residentExpiry.observeBody(
+								operation.executionId,
+							)) === "dead";
+					} catch (error) {
+						console.warn(
+							`[delivery-operations] resident expiry ${operation.operationId} body observation deferred: ${error instanceof Error ? error.message : String(error)}`,
+						);
+						continue;
+					}
+					if (!bodyDeathAuthorized) continue;
 					const sent = this.deps.store.markResidentExpirySent({
 						operationId: operation.operationId,
 						now,

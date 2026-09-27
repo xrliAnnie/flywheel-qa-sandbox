@@ -1,10 +1,6 @@
 /** FLY-1628: reconcile active StateStore rows against a superseded tmux body. */
 
-import type { TransitionContext } from "flywheel-core";
-import {
-	type ApplyTransitionOpts,
-	applyTransition,
-} from "../applyTransition.js";
+import type { ApplyTransitionOpts } from "../applyTransition.js";
 import { isWakeTerminalStatus } from "../operational-terminal-status.js";
 import type { Session, StateStore } from "../StateStore.js";
 import { EXECUTOR_TO_TRANSPORT } from "./role-adapter-resolver.js";
@@ -144,8 +140,7 @@ export type PaneLossDecision =
 	| {
 			action: "advisory";
 			notificationClass: Exclude<PaneLossNotificationClass, "settlement">;
-	  }
-	| { action: "fail"; notificationClass: "settlement" };
+	  };
 
 export function isAutoMigratableClaudeTmux(
 	adapterType: string | null | undefined,
@@ -157,10 +152,10 @@ export function isAutoMigratableClaudeTmux(
 export function evaluatePaneLossEvidence(input: {
 	status: string;
 	adapterType: string | undefined;
-	body: RunnerLiveness;
+	window: RunnerLiveness;
 	generation: "superseded" | "same_generation" | "unavailable";
 }): PaneLossDecision {
-	if (input.body !== "absent") return { action: "keep" };
+	if (input.window !== "absent") return { action: "keep" };
 	if (
 		input.adapterType &&
 		Object.hasOwn(EXECUTOR_TO_TRANSPORT, input.adapterType) &&
@@ -185,9 +180,6 @@ export function evaluatePaneLossEvidence(input: {
 			notificationClass: "advisory_absence_unproven",
 		};
 	}
-	if (input.status === "running") {
-		return { action: "fail", notificationClass: "settlement" };
-	}
 	return {
 		action: "advisory",
 		notificationClass: "advisory_generation_superseded",
@@ -204,11 +196,19 @@ export interface PaneLossReconcileDeps {
 	/** Synchronous fence re-check after the final awaited generation probe. */
 	fence: () => PaneLossFaceOutcome;
 	lookupTarget: (executionId: string, projectName: string) => TmuxTargetLookup;
+	/** Window/pane probe for UI diagnostics only; never authorizes death. */
 	probeRunner: (tmuxWindow: string) => Promise<RunnerLiveness>;
 	discoverTarget: (executionId: string) => Promise<RunnerTmuxTargetDiscovery>;
 	probeServerGeneration: (
 		socketPath: string,
 	) => Promise<TmuxServerStartTimeProbe>;
+	/** Shared current-generation body truth. */
+	observeBody: (
+		executionId: string,
+		projectName: string,
+	) => Promise<"alive" | "dead" | "unknown">;
+	/** Common marker-first / identity-fenced death convergence path. */
+	convergeBody: (executionId: string) => Promise<boolean>;
 	isCompleteMarkerPending: (executionId: string) => boolean;
 	notify: (
 		session: Session,
@@ -297,29 +297,33 @@ function targetFingerprint(lookup: TmuxTargetLookup): string | undefined {
 	return undefined;
 }
 
-async function resolveBodyEvidence(
+async function resolveWindowEvidence(
 	session: Session,
 	deps: PaneLossReconcileDeps,
-): Promise<{ body: RunnerLiveness; targetFingerprint: string } | undefined> {
+): Promise<{ window: RunnerLiveness; targetFingerprint: string } | undefined> {
 	const lookup = deps.lookupTarget(session.execution_id, session.project_name);
 	const fingerprint = targetFingerprint(lookup);
 	if (!fingerprint) return undefined;
 	if (lookup.kind === "found") {
-		const body = await deps.probeRunner(lookup.target.tmuxWindow);
-		if (body === "alive" || body === "dead_pin" || body === "indeterminate") {
-			return { body, targetFingerprint: fingerprint };
+		const window = await deps.probeRunner(lookup.target.tmuxWindow);
+		if (
+			window === "alive" ||
+			window === "dead_pin" ||
+			window === "indeterminate"
+		) {
+			return { window, targetFingerprint: fingerprint };
 		}
 	}
 	const discovery = await deps.discoverTarget(session.execution_id);
 	if (discovery.kind !== "found") {
 		return discovery.kind === "missing"
-			? { body: "absent", targetFingerprint: fingerprint }
+			? { window: "absent", targetFingerprint: fingerprint }
 			: undefined;
 	}
 	const reprobe = await deps.probeRunner(discovery.tmuxWindow);
 	return reprobe === "indeterminate"
 		? undefined
-		: { body: reprobe, targetFingerprint: fingerprint };
+		: { window: reprobe, targetFingerprint: fingerprint };
 }
 
 function notifiedEventId(
@@ -403,9 +407,51 @@ export async function reconcilePaneLoss(
 				result.kept++;
 				return;
 			}
+			let body: "alive" | "dead" | "unknown" = "unknown";
+			try {
+				body = await deps.observeBody(
+					snapshot.execution_id,
+					snapshot.project_name,
+				);
+			} catch {
+				body = "unknown";
+			}
+			if (body === "dead") {
+				if (!deps.mutate) {
+					result.failed++;
+					return;
+				}
+				deps.store.insertEvent({
+					event_id: `pane-loss-${snapshot.execution_id}`,
+					execution_id: snapshot.execution_id,
+					issue_id: snapshot.issue_id,
+					project_name: snapshot.project_name,
+					event_type: "runner_body_death_observed_during_pane_sweep",
+					severity: "warning",
+					source: "bridge.pane-loss-reconcile",
+					payload: { body: "dead", deathAuthority: "body_observation" },
+				});
+				const converged = await deps.convergeBody(snapshot.execution_id);
+				const terminal = deps.store.getSession(snapshot.execution_id);
+				if (!converged || !terminal || terminal.status === "running") {
+					result.kept++;
+					return;
+				}
+				result.failed++;
+				if (terminal.terminal_lifecycle_id) {
+					attemptedSettlements.add(snapshot.execution_id);
+					await deliverNotification(
+						terminal,
+						"settlement",
+						deps,
+						terminal.terminal_lifecycle_id,
+					);
+				}
+				return;
+			}
 			const generation = readGeneration(deps.store, snapshot.execution_id);
-			const bodyEvidence = await resolveBodyEvidence(snapshot, deps);
-			if (!bodyEvidence || bodyEvidence.body !== "absent") {
+			const windowEvidence = await resolveWindowEvidence(snapshot, deps);
+			if (!windowEvidence || windowEvidence.window !== "absent") {
 				result.kept++;
 				return;
 			}
@@ -428,7 +474,7 @@ export async function reconcilePaneLoss(
 			const decision = evaluatePaneLossEvidence({
 				status: snapshot.status,
 				adapterType: snapshot.adapter_type,
-				body: bodyEvidence.body,
+				window: windowEvidence.window,
 				generation: generationVerdict,
 			});
 			if (decision.action === "keep") {
@@ -436,16 +482,14 @@ export async function reconcilePaneLoss(
 				return;
 			}
 			if (!deps.mutate) {
-				if (decision.action === "fail") result.failed++;
-				else result.advisories++;
+				result.advisories++;
 				return;
 			}
 
 			const started = startedAtMs(snapshot);
 			if (
-				decision.action === "advisory" &&
-				(started === undefined ||
-					deps.nowMs() - started < (deps.launchGraceMs ?? 10 * 60_000))
+				started === undefined ||
+				deps.nowMs() - started < (deps.launchGraceMs ?? 10 * 60_000)
 			) {
 				result.kept++;
 				return;
@@ -466,7 +510,7 @@ export async function reconcilePaneLoss(
 					readGeneration(deps.store, snapshot.execution_id),
 					generation,
 				) ||
-				targetFingerprint(currentTarget) !== bodyEvidence.targetFingerprint ||
+				targetFingerprint(currentTarget) !== windowEvidence.targetFingerprint ||
 				deps.isCompleteMarkerPending(snapshot.execution_id) ||
 				deps.fence() !== "ran"
 			) {
@@ -499,50 +543,8 @@ export async function reconcilePaneLoss(
 				return;
 			}
 
-			if (decision.action === "advisory") {
-				result.advisories++;
-				await deliverNotification(snapshot, decision.notificationClass, deps);
-				return;
-			}
-			if (!generation || currentGeneration.kind !== "found") {
-				result.kept++;
-				return;
-			}
-
-			const ctx: TransitionContext = {
-				executionId: snapshot.execution_id,
-				issueId: snapshot.issue_id,
-				projectName: snapshot.project_name,
-				trigger: "pane_loss_reconcile",
-			};
-			const transition = applyTransition(
-				deps.transitionOpts,
-				snapshot.execution_id,
-				"failed",
-				ctx,
-				{
-					last_activity_at: new Date(deps.nowMs())
-						.toISOString()
-						.replace("T", " ")
-						.replace(/\.\d+Z$/, ""),
-					last_error: `pane_loss: server generation superseded (socket=${generation.socket_path}, recorded=${generation.server_start_time}, current=${currentGeneration.startTime}); target ${bodyEvidence.targetFingerprint} absent; rediscovery missing; recovery requires Lead/founder action`,
-				},
-			);
-			if (!transition.ok) {
-				result.kept++;
-				return;
-			}
-			result.failed++;
-			const terminal = deps.store.getSession(snapshot.execution_id);
-			if (terminal?.terminal_lifecycle_id) {
-				attemptedSettlements.add(snapshot.execution_id);
-				await deliverNotification(
-					terminal,
-					"settlement",
-					deps,
-					terminal.terminal_lifecycle_id,
-				);
-			}
+			result.advisories++;
+			await deliverNotification(snapshot, decision.notificationClass, deps);
 		};
 		if (deps.lifecycleMutex) {
 			await deps.lifecycleMutex.withIssueMutex(
@@ -561,7 +563,11 @@ export async function reconcilePaneLoss(
 		for (const session of deps.store.getProjectSessions(projectName)) {
 			if (
 				session.status !== "failed" ||
-				!session.last_error?.startsWith("pane_loss:") ||
+				!hasEvent(
+					deps.store,
+					session.execution_id,
+					`pane-loss-${session.execution_id}`,
+				) ||
 				!session.terminal_lifecycle_id ||
 				attemptedSettlements.has(session.execution_id)
 			) {

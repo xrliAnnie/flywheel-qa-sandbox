@@ -2954,6 +2954,34 @@ describe("Event route", () => {
 		expect(session!.last_error).toBe("deployment timeout");
 	});
 
+	it("FLY-2528: HTTP session_failed preserves abnormal process exit semantics", async () => {
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "abnormal-process-exit-1",
+					event_type: "session_failed",
+					payload: {
+						error: "abnormal_process_exit",
+						failure: {
+							failureKind: "abnormal_process_exit",
+							failureReason: "abnormal_process_exit",
+						},
+					},
+				}),
+			),
+		});
+		expect(res.status).toBe(200);
+
+		const session = store.getSession("exec-1");
+		expect(session?.status).toBe("failed");
+		expect(session?.last_error).toBe("abnormal_process_exit");
+	});
+
 	it("FLY-1279: HTTP session_failed persists goal_blocked as blocked with its real reason", async () => {
 		const res = await fetch(`${baseUrl}/events`, {
 			method: "POST",

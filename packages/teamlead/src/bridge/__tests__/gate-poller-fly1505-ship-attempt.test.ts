@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
 	commDbPath: "",
 	sendRunnerWake: vi.fn(async () => ({ ok: true })),
-	liveness: "alive" as "alive" | "absent",
+	body: "alive" as "alive" | "dead" | "unknown",
 	serverStartTime: "1722700001",
 	alert: vi.fn(async () => ({ sent: true })),
 }));
@@ -25,7 +25,7 @@ vi.mock("../tmux-lookup.js", () => ({
 		kind: "found",
 		target: { tmuxWindow: "runner-flywheel:@1505" },
 	}),
-	probeRunnerProcessLiveness: async () => mocks.liveness,
+	probeRunnerProcessLiveness: async () => "absent" as const,
 	discoverTmuxTargetByExecutionId: async () => ({ kind: "missing" }),
 	probeTmuxServerStartTime: async () => ({
 		kind: "found",
@@ -79,6 +79,7 @@ function makePoller(session: ReturnType<typeof staleSession>): GatePoller {
 			insertEvent: vi.fn(() => true),
 		} as unknown as GatePollerConfig["store"],
 		runtimeRegistry: {} as GatePollerConfig["runtimeRegistry"],
+		observeExecutionBody: async () => mocks.body,
 		leadAlertSink: { alert: mocks.alert },
 	});
 }
@@ -93,7 +94,7 @@ describe("FLY-1505 GatePoller same-head ship-attempt suppression", () => {
 		new CommDB(mocks.commDbPath).close();
 		mocks.sendRunnerWake.mockClear();
 		mocks.alert.mockClear();
-		mocks.liveness = "alive";
+		mocks.body = "alive";
 		mocks.serverStartTime = "1722700001";
 	});
 
@@ -140,8 +141,8 @@ describe("FLY-1505 GatePoller same-head ship-attempt suppression", () => {
 		expect(mocks.sendRunnerWake).toHaveBeenCalledOnce();
 	});
 
-	it("classifies superseded-generation absence as dead once and stops re-wake noise", async () => {
-		mocks.liveness = "absent";
+	it("classifies shared body death once and stops re-wake noise", async () => {
+		mocks.body = "dead";
 		const session = staleSession(
 			JSON.stringify({
 				pane_loss_generation: {
@@ -159,8 +160,8 @@ describe("FLY-1505 GatePoller same-head ship-attempt suppression", () => {
 		expect(mocks.alert).toHaveBeenCalledOnce();
 	});
 
-	it("keeps same-generation absence fail-open to the idempotent re-wake", async () => {
-		mocks.liveness = "absent";
+	it("keeps a live body fail-open to the idempotent re-wake despite window absence", async () => {
+		mocks.body = "alive";
 		mocks.serverStartTime = "1722700000";
 		const session = staleSession(
 			JSON.stringify({
@@ -179,8 +180,8 @@ describe("FLY-1505 GatePoller same-head ship-attempt suppression", () => {
 		expect(mocks.alert).not.toHaveBeenCalled();
 	});
 
-	it("never classifies a Codex tmux absence as dead", async () => {
-		mocks.liveness = "absent";
+	it("never classifies a live Codex body as dead because its window is absent", async () => {
+		mocks.body = "alive";
 		const session = {
 			...staleSession(),
 			adapter_type: "codex-tmux",

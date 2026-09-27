@@ -70,10 +70,7 @@ function operations(
 		terminateClaude(
 			executionId: string,
 		): Promise<{ ok: boolean; error?: string }>;
-		probeTarget(
-			executionId: string,
-			shutdownRequested?: boolean,
-		): Promise<"alive" | "dead_pin" | "absent" | "indeterminate">;
+		observeBody(executionId: string): Promise<"alive" | "dead" | "unknown">;
 	},
 ) {
 	return new DeliveryOperations({
@@ -92,7 +89,7 @@ function operations(
 
 describe("FLY-2268 resident expiry driver", () => {
 	it.each([true, false])(
-		"passes current-operation shutdown proof to the gone probe (bound=%s)",
+		"requires the current operation's shutdown request before body-death projection (bound=%s)",
 		async (bound) => {
 			const { store, commDb, now, nowMs } = await fixture("codex");
 			store.applyResidentExpiry({
@@ -104,36 +101,33 @@ describe("FLY-2268 resident expiry driver", () => {
 				bound ? "resident-expiry:exec-1:r1" : "different-operation",
 				nowMs,
 			);
-			const probeTarget = vi.fn(
-				async (_executionId: string, shutdownRequested?: boolean) =>
-					shutdownRequested ? ("absent" as const) : ("indeterminate" as const),
-			);
+			const observeBody = vi.fn(async () => "dead" as const);
 			const runner = operations(store, commDb, {
 				terminateClaude: vi.fn(async () => ({ ok: true })),
-				probeTarget,
+				observeBody,
 			});
 			expect(await runner.runResidentExpiryPass(now)).toMatchObject({
 				projected: bound ? 1 : 0,
 			});
-			expect(probeTarget).toHaveBeenCalledWith("exec-1", bound);
+			expect(observeBody).toHaveBeenCalledTimes(bound ? 1 : 0);
 			expect(store.getResidentHold("exec-1")?.state).toBe(
 				bound ? "closed" : "expired",
 			);
 		},
 	);
 
-	it("leaves old indeterminate operations to maintenance and accepts a later ACK", async () => {
+	it("leaves unknown bodies to maintenance and converges after later body death", async () => {
 		const { store, commDb, now, nowMs } = await fixture("codex");
-		const probeTarget = vi.fn(async () => "indeterminate" as const);
+		const observeBody = vi.fn(async () => "unknown" as const);
 		const runner = operations(store, commDb, {
 			terminateClaude: vi.fn(async () => ({ ok: true })),
-			probeTarget,
+			observeBody,
 		});
 		expect(await runner.runResidentExpiryPass(now, now)).toMatchObject({
 			requested: 1,
 			projected: 0,
 		});
-		probeTarget.mockClear();
+		observeBody.mockClear();
 		const later = new Date(nowMs + 61_000).toISOString();
 		expect(store.listResidentExpiryFastLaneProjects(later)).toEqual([]);
 		expect(
@@ -142,13 +136,14 @@ describe("FLY-2268 resident expiry driver", () => {
 				new Date(nowMs + 1_000).toISOString(),
 			),
 		).toMatchObject({ examined: 0 });
-		expect(probeTarget).not.toHaveBeenCalled();
+		expect(observeBody).not.toHaveBeenCalled();
 		expect(store.listPendingResidentExpiryOperations()).toHaveLength(1);
 		commDb.finishAllPendingRunnerShutdowns(
 			"exec-1",
 			{ ok: true },
 			nowMs + 62_000,
 		);
+		observeBody.mockResolvedValue("dead");
 		expect(
 			await runner.runResidentExpiryPass(
 				new Date(nowMs + 300_000).toISOString(),
@@ -157,7 +152,7 @@ describe("FLY-2268 resident expiry driver", () => {
 		expect(store.getResidentHold("exec-1")?.state).toBe("closed");
 	});
 
-	it("uses its exact Codex shutdown request and converges after runtime ACK", async () => {
+	it("uses its exact Codex shutdown request and still requires body death after ACK", async () => {
 		const { store, commDb, now, nowMs } = await fixture("codex");
 		commDb.requestRunnerShutdown("exec-1", "older-requested", nowMs - 3);
 		commDb.requestRunnerShutdown("exec-1", "older-failed", nowMs - 2);
@@ -167,7 +162,11 @@ describe("FLY-2268 resident expiry driver", () => {
 			{ ok: false, error: "old failure" },
 			nowMs - 1,
 		);
-		const runner = operations(store, commDb);
+		const observeBody = vi.fn(async () => "unknown" as const);
+		const runner = operations(store, commDb, {
+			terminateClaude: vi.fn(async () => ({ ok: true })),
+			observeBody,
+		});
 		const requestId = "resident-expiry:exec-1:r1";
 
 		expect(await runner.runResidentExpiryPass(now)).toEqual({
@@ -192,93 +191,84 @@ describe("FLY-2268 resident expiry driver", () => {
 		).toBe(2);
 		expect(
 			await runner.runResidentExpiryPass(new Date(nowMs + 2).toISOString()),
+		).toMatchObject({ projected: 0, failed: 0 });
+		observeBody.mockResolvedValue("dead");
+		expect(
+			await runner.runResidentExpiryPass(new Date(nowMs + 3).toISOString()),
 		).toMatchObject({ examined: 1, requested: 0, projected: 1, failed: 0 });
 		expect(store.getResidentHold("exec-1")).toMatchObject({
 			state: "closed",
 			closed_reason: "expired",
 		});
 		expect(
-			await runner.runResidentExpiryPass(new Date(nowMs + 3).toISOString()),
+			await runner.runResidentExpiryPass(new Date(nowMs + 4).toISOString()),
 		).toEqual({ examined: 0, requested: 0, projected: 0, failed: 0 });
 	});
 
-	it("projects a requested Codex shutdown with absent registry and absent target", async () => {
+	it("projects a requested Codex shutdown only after body death", async () => {
 		const { store, commDb, now } = await fixture("codex");
-		const probeTarget = vi.fn(async () => "absent" as const);
+		const observeBody = vi.fn(async () => "dead" as const);
 		const runner = operations(store, commDb, {
 			terminateClaude: vi.fn(async () => ({ ok: true })),
-			probeTarget,
+			observeBody,
 		});
 		expect(await runner.runResidentExpiryPass(now)).toMatchObject({
 			requested: 1,
 			projected: 1,
 			failed: 0,
 		});
-		expect(probeTarget).toHaveBeenCalledWith("exec-1", true);
+		expect(observeBody).toHaveBeenCalledWith("exec-1");
 		expect(store.getResidentHold("exec-1")?.state).toBe("closed");
 	});
 
-	it.each(["absent", "dead_pin"] as const)(
-		"projects a missing shutdown with a nonrunning registry and %s target",
-		async (liveness) => {
-			const { store, commDb, now } = await fixture("codex");
-			store.applyResidentExpiry({
-				operationId: "resident-expiry:exec-1:r1",
-				now,
-			});
-			commDb.registerSession("exec-1", "pane-1", "flywheel");
-			commDb.updateSessionStatus("exec-1", "completed");
-			const probeTarget = vi.fn(async () => liveness);
-			const runner = operations(store, commDb, {
-				terminateClaude: vi.fn(async () => ({ ok: true })),
-				probeTarget,
-			});
-			expect(await runner.runResidentExpiryPass(now)).toMatchObject({
-				projected: 1,
-				failed: 0,
-			});
-			expect(probeTarget).toHaveBeenCalledOnce();
-			expect(
-				await operations(store, commDb).runResidentExpiryPass(now),
-			).toEqual({
-				examined: 0,
-				requested: 0,
-				projected: 0,
-				failed: 0,
-			});
-		},
-	);
+	it("does not project body death without the exact Codex shutdown request", async () => {
+		const { store, commDb, now } = await fixture("codex");
+		store.applyResidentExpiry({
+			operationId: "resident-expiry:exec-1:r1",
+			now,
+		});
+		commDb.registerSession("exec-1", "pane-1", "flywheel");
+		commDb.updateSessionStatus("exec-1", "completed");
+		const observeBody = vi.fn(async () => "dead" as const);
+		const runner = operations(store, commDb, {
+			terminateClaude: vi.fn(async () => ({ ok: true })),
+			observeBody,
+		});
+		expect(await runner.runResidentExpiryPass(now)).toMatchObject({
+			projected: 0,
+			failed: 0,
+		});
+		expect(observeBody).not.toHaveBeenCalled();
+	});
 
-	it("does not probe or project while the Codex registry is running", async () => {
+	it("projects a dead Codex body even while its stale CommDB registry is running", async () => {
 		const { store, commDb, now } = await fixture("codex");
 		commDb.registerSession("exec-1", "pane-1", "flywheel");
-		const probeTarget = vi.fn(async () => "absent" as const);
+		const observeBody = vi.fn(async () => "dead" as const);
 		expect(
 			await operations(store, commDb, {
 				terminateClaude: vi.fn(async () => ({ ok: true })),
-				probeTarget,
+				observeBody,
 			}).runResidentExpiryPass(now),
-		).toMatchObject({ projected: 0, failed: 0 });
-		expect(probeTarget).not.toHaveBeenCalled();
-		expect(store.listPendingResidentExpiryOperations()[0]?.state).toBe(
-			"applied",
-		);
+		).toMatchObject({ projected: 1, failed: 0 });
+		expect(observeBody).toHaveBeenCalledWith("exec-1");
+		expect(store.getResidentHold("exec-1")?.state).toBe("closed");
 	});
 
-	it.each(["alive", "indeterminate"] as const)(
-		"keeps Codex expiry pending for a nonrunning registry with %s target",
+	it.each(["alive", "unknown"] as const)(
+		"keeps Codex expiry pending for a %s body",
 		async (liveness) => {
 			const { store, commDb, now } = await fixture("codex");
 			commDb.registerSession("exec-1", "pane-1", "flywheel");
 			commDb.updateSessionStatus("exec-1", "completed");
-			const probeTarget = vi.fn(async () => liveness);
+			const observeBody = vi.fn(async () => liveness);
 			expect(
 				await operations(store, commDb, {
 					terminateClaude: vi.fn(async () => ({ ok: true })),
-					probeTarget,
+					observeBody,
 				}).runResidentExpiryPass(now),
 			).toMatchObject({ projected: 0, failed: 0 });
-			expect(probeTarget).toHaveBeenCalledOnce();
+			expect(observeBody).toHaveBeenCalledOnce();
 			expect(store.listPendingResidentExpiryOperations()[0]?.state).toBe(
 				"applied",
 			);
@@ -286,7 +276,7 @@ describe("FLY-2268 resident expiry driver", () => {
 	);
 
 	it.each(["codex", "claude"] as const)(
-		"defers a %s probe exception and retries applied state after database reopen",
+		"defers a %s body-observation exception and retries applied state after database reopen",
 		async (vendor) => {
 			const dir = mkdtempSync(join(tmpdir(), "fly2478-expiry-"));
 			tempDirs.push(dir);
@@ -295,14 +285,14 @@ describe("FLY-2268 resident expiry driver", () => {
 			const failed = vi.spyOn(store, "markResidentExpiryFailed");
 			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 			const terminateClaude = vi.fn(async () => ({ ok: true }));
-			const probeTarget = vi
-				.fn<() => Promise<"absent">>()
-				.mockRejectedValueOnce(new Error("tmux transient timeout"))
-				.mockResolvedValue("absent");
+			const observeBody = vi
+				.fn<() => Promise<"dead">>()
+				.mockRejectedValueOnce(new Error("body observation unavailable"))
+				.mockResolvedValue("dead");
 			expect(
 				await operations(store, commDb, {
 					terminateClaude,
-					probeTarget,
+					observeBody,
 				}).runResidentExpiryPass(now),
 			).toMatchObject({ projected: 0, failed: 0 });
 			expect(store.listPendingResidentExpiryOperations()[0]?.state).toBe(
@@ -320,7 +310,7 @@ describe("FLY-2268 resident expiry driver", () => {
 			expect(
 				await operations(reopened, commDb, {
 					terminateClaude,
-					probeTarget,
+					observeBody,
 				}).runResidentExpiryPass(now),
 			).toMatchObject({ requested: 0, projected: 1, failed: 0 });
 			expect(terminateClaude).toHaveBeenCalledTimes(
@@ -329,25 +319,25 @@ describe("FLY-2268 resident expiry driver", () => {
 		},
 	);
 
-	it("defers a Codex registry read exception without probing or failing", async () => {
+	it("defers an exact Codex shutdown read exception without observing or failing", async () => {
 		const { store, commDb, now } = await fixture("codex");
 		const failed = vi.spyOn(store, "markResidentExpiryFailed");
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		vi.spyOn(commDb, "getSession").mockImplementation(() => {
+		vi.spyOn(commDb, "getRunnerShutdownRequest").mockImplementation(() => {
 			throw new Error("database busy");
 		});
-		const probeTarget = vi.fn(async () => "absent" as const);
+		const observeBody = vi.fn(async () => "dead" as const);
 		expect(
 			await operations(store, commDb, {
 				terminateClaude: vi.fn(async () => ({ ok: true })),
-				probeTarget,
+				observeBody,
 			}).runResidentExpiryPass(now),
 		).toMatchObject({ projected: 0, failed: 0 });
 		expect(store.listPendingResidentExpiryOperations()[0]?.state).toBe(
 			"applied",
 		);
 		expect(failed).not.toHaveBeenCalled();
-		expect(probeTarget).not.toHaveBeenCalled();
+		expect(observeBody).not.toHaveBeenCalled();
 		expect(warn).toHaveBeenCalled();
 	});
 
@@ -360,14 +350,14 @@ describe("FLY-2268 resident expiry driver", () => {
 			{ ok: false, error: "shutdown rejected" },
 			nowMs + 1,
 		);
-		const probeTarget = vi.fn(async () => "absent" as const);
+		const observeBody = vi.fn(async () => "dead" as const);
 		expect(
 			await operations(store, commDb, {
 				terminateClaude: vi.fn(async () => ({ ok: true })),
-				probeTarget,
+				observeBody,
 			}).runResidentExpiryPass(now),
 		).toMatchObject({ projected: 0, failed: 1 });
-		expect(probeTarget).not.toHaveBeenCalled();
+		expect(observeBody).not.toHaveBeenCalled();
 		expect(store.listPendingResidentExpiryOperations()).toEqual([]);
 	});
 
@@ -400,13 +390,13 @@ describe("FLY-2268 resident expiry driver", () => {
 		expect(store.listPendingResidentExpiryOperations()).toEqual([]);
 	});
 
-	it("terminates a Claude pane and projects only after process-dead proof", async () => {
+	it("requests Claude cleanup and projects only after body-dead proof", async () => {
 		const { store, commDb, now } = await fixture("claude");
 		const terminateClaude = vi.fn(async () => ({ ok: true }));
-		const probeTarget = vi.fn(async () => "dead_pin" as const);
+		const observeBody = vi.fn(async () => "dead" as const);
 		const runner = operations(store, commDb, {
 			terminateClaude,
-			probeTarget,
+			observeBody,
 		});
 
 		expect(await runner.runResidentExpiryPass(now)).toMatchObject({
@@ -416,7 +406,7 @@ describe("FLY-2268 resident expiry driver", () => {
 			failed: 0,
 		});
 		expect(terminateClaude).toHaveBeenCalledOnce();
-		expect(probeTarget).toHaveBeenCalledOnce();
+		expect(observeBody).toHaveBeenCalledOnce();
 		expect(store.getResidentHold("exec-1")?.state).toBe("closed");
 	});
 });

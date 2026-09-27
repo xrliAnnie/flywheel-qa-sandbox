@@ -42,7 +42,10 @@ import {
 	isLifecycleAction,
 } from "../../../bridge/founder-consent/reserved-endpoints.js";
 import { matchesLead } from "../../../bridge/lead-scope.js";
-import { readStartedEvidenceFromBridge } from "../../../bridge/started-evidence.js";
+import {
+	readStartedEvidenceFromBridge,
+	type StartedEvidence,
+} from "../../../bridge/started-evidence.js";
 import {
 	isTmuxWindowAlive,
 	lookupTmuxTarget,
@@ -93,6 +96,16 @@ import {
 	makeTrustedGitRunner,
 	resolveTrustedGitPath,
 } from "./ship-preflight.js";
+
+/** Map the Bridge's shared body truth to close_runner crash recovery.
+ * Unknown evidence throws so the WAL remains fail-closed (`needs_reconfirm`). */
+export function bodyPresenceFromStartedEvidence(
+	evidence: StartedEvidence,
+): boolean {
+	if (evidence.started) return true;
+	if (evidence.reason === "body_dead") return false;
+	throw new Error(`body evidence unavailable: ${evidence.reason}`);
+}
 
 // ── Config (pure, fail-loud) ─────────────────────────────────────────────────
 
@@ -686,10 +699,12 @@ export async function gatewayMain(
 				return isTmuxWindowAlive(t.target.tmuxWindow);
 			},
 			runnerPresent: async (execId) => {
-				const t = lookupTmuxTarget(execId, row.project);
-				if (t.kind === "error") throw new Error(t.error);
-				if (t.kind === "gone") return false;
-				return isTmuxWindowAlive(t.target.tmuxWindow);
+				return bodyPresenceFromStartedEvidence(
+					await readStartedEvidenceFromBridge(execId, row.project, {
+						bridgeUrl: cfg.bridgeUrl,
+						apiToken,
+					}),
+				);
 			},
 		})(row);
 	};

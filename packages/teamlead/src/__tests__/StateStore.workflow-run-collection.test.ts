@@ -67,7 +67,7 @@ function terminate(store: StateStore, clientRequestId = "force-1") {
 }
 
 describe("FLY-1707 workflow run collection", () => {
-	it("atomically terminates, freezes only live attributed sessions, aliases the episode, and rejects false-to-true replay", async () => {
+	it("atomically terminates and freezes every attributed physical candidate, including a completed session", async () => {
 		const store = await runWithLiveSessions();
 		store.upsertSession({
 			execution_id: "exec-b",
@@ -84,7 +84,7 @@ describe("FLY-1707 workflow run collection", () => {
 			collection: {
 				receiptKey: "episode:run-1:0",
 				state: "frozen",
-				targetExecutionIds: ["exec-a"],
+				targetExecutionIds: ["exec-a", "exec-b"],
 			},
 		});
 		expect(store.getWorkflowRun("run-1")?.status).toBe("terminated");

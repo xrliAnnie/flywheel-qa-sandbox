@@ -1331,27 +1331,25 @@ export class HeartbeatService implements ReconnectController {
 			}
 
 			try {
-				const target = getTmuxTargetFromCommDb(
-					session.execution_id,
-					session.project_name,
-				);
-				if (!target) continue;
-
-				const alive = await isTmuxWindowAlive(target.tmuxWindow);
-				if (!alive) continue;
-
-				// Close the leak through the injected closeRunner
-				// chokepoint — BEFORE the notify dedup gate, so a failed close is
-				// retried every stale cycle (the dedup only suppresses repeat
-				// notifications, never a close retry). Only a CONFIRMED teardown
-				// skips the stale notification; a failed/ineligible close falls
-				// through to the existing notify path.
+				// The canonical closer owns body shutdown and its proof. A missing
+				// display window must not hide a live terminal body, so the close path
+				// never gates on tmux. Failed closes are retried every stale cycle.
 				if (closeEnabled) {
 					const res = await this.staleTerminalClose?.closeStale(session);
 					if (res && (res.closed || res.alreadyGone)) {
 						this.notifiedStale.delete(session.execution_id);
 						continue;
 					}
+				} else {
+					// Legacy notify-only mode still describes a window leak. It is not
+					// body liveness authority and performs no lifecycle mutation.
+					const target = getTmuxTargetFromCommDb(
+						session.execution_id,
+						session.project_name,
+					);
+					if (!target) continue;
+					const alive = await isTmuxWindowAlive(target.tmuxWindow);
+					if (!alive) continue;
 				}
 
 				if (this.notifiedStale.has(session.execution_id)) continue;

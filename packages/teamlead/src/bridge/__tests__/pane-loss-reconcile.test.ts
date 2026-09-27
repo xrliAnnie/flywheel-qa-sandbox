@@ -76,6 +76,16 @@ describe("pane-loss reconciler (FLY-1628)", () => {
 				kind: "found",
 				startTime: "1722700001",
 			})),
+			observeBody: vi.fn(async () => "alive"),
+			convergeBody: vi.fn(async (executionId: string) => {
+				store.forceStatus(
+					executionId,
+					"failed",
+					"2026-08-04 12:00:00",
+					"body death converged",
+				);
+				return true;
+			}),
 			isCompleteMarkerPending: vi.fn(() => false),
 			notify: vi.fn(async () => true),
 			...overrides,
@@ -87,15 +97,18 @@ describe("pane-loss reconciler (FLY-1628)", () => {
 			evaluatePaneLossEvidence({
 				status: "running",
 				adapterType: undefined,
-				body: "absent",
+				window: "absent",
 				generation: "superseded",
 			}),
-		).toEqual({ action: "fail", notificationClass: "settlement" });
+		).toEqual({
+			action: "advisory",
+			notificationClass: "advisory_generation_superseded",
+		});
 		expect(
 			evaluatePaneLossEvidence({
 				status: "running",
 				adapterType: "codex-tmux",
-				body: "absent",
+				window: "absent",
 				generation: "superseded",
 			}),
 		).toEqual({ action: "advisory", notificationClass: "advisory_codex" });
@@ -103,7 +116,7 @@ describe("pane-loss reconciler (FLY-1628)", () => {
 			evaluatePaneLossEvidence({
 				status: "running",
 				adapterType: "antigravity-tmux",
-				body: "absent",
+				window: "absent",
 				generation: "superseded",
 			}),
 		).toEqual({ action: "keep" });
@@ -111,7 +124,7 @@ describe("pane-loss reconciler (FLY-1628)", () => {
 			evaluatePaneLossEvidence({
 				status: "running",
 				adapterType: "claude-tmux",
-				body: "alive",
+				window: "alive",
 				generation: "superseded",
 			}),
 		).toEqual({ action: "keep" });
@@ -160,13 +173,15 @@ describe("pane-loss reconciler (FLY-1628)", () => {
 
 	it("moves a proven superseded running Claude body to failed and emits a settlement proposal", async () => {
 		seed("lost-running");
-		const d = deps();
+		const d = deps({ observeBody: vi.fn(async () => "dead") });
 
 		const result = await reconcilePaneLoss("flywheel", d);
 
 		expect(result).toMatchObject({ face: "ran", failed: 1 });
 		expect(store.getSession("lost-running")?.status).toBe("failed");
-		expect(store.getSession("lost-running")?.last_error).toMatch(/^pane_loss:/);
+		expect(store.getSession("lost-running")?.last_error).toBe(
+			"body death converged",
+		);
 		expect(d.notify).toHaveBeenCalledWith(
 			expect.objectContaining({ execution_id: "lost-running" }),
 			"settlement",
@@ -177,6 +192,36 @@ describe("pane-loss reconciler (FLY-1628)", () => {
 				.getEventsByExecution("lost-running")
 				.some((event) => event.event_id === "pane-loss-lost-running"),
 		).toBe(true);
+	});
+
+	it("converges a dead body immediately even when its window probe would be alive", async () => {
+		seed("dead-with-live-window");
+		const probeRunner = vi.fn(async () => "alive" as const);
+		const d = deps({
+			probeRunner,
+			observeBody: vi.fn(async () => "dead"),
+		});
+
+		const result = await reconcilePaneLoss("flywheel", d);
+
+		expect(result.failed).toBe(1);
+		expect(store.getSession("dead-with-live-window")?.status).toBe("failed");
+		expect(probeRunner).not.toHaveBeenCalled();
+	});
+
+	it("keeps a live body running when its window is absent across a server generation", async () => {
+		seed("live-without-window");
+		const d = deps({ observeBody: vi.fn(async () => "alive") });
+
+		const result = await reconcilePaneLoss("flywheel", d);
+
+		expect(result.failed).toBe(0);
+		expect(store.getSession("live-without-window")?.status).toBe("running");
+		expect(d.notify).toHaveBeenCalledWith(
+			expect.objectContaining({ execution_id: "live-without-window" }),
+			"advisory_generation_superseded",
+			undefined,
+		);
 	});
 
 	it("silences pane loss for a released completed Codex actor with no target", async () => {
@@ -405,7 +450,10 @@ describe("pane-loss reconciler (FLY-1628)", () => {
 			.fn()
 			.mockResolvedValueOnce(false)
 			.mockResolvedValueOnce(true);
-		const d = deps({ notify });
+		const d = deps({
+			notify,
+			observeBody: vi.fn(async () => "dead"),
+		});
 
 		await reconcilePaneLoss("flywheel", d);
 		await reconcilePaneLoss("flywheel", d);
@@ -441,7 +489,10 @@ describe("pane-loss reconciler (FLY-1628)", () => {
 
 	it("mutate=false performs evidence reads but no transitions, events, or notifications", async () => {
 		seed("dry-run");
-		const d = deps({ mutate: false });
+		const d = deps({
+			mutate: false,
+			observeBody: vi.fn(async () => "dead"),
+		});
 
 		const result = await reconcilePaneLoss("flywheel", d);
 
