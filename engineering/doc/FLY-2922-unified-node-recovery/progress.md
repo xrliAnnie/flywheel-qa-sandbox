@@ -1,14 +1,14 @@
 ---
 issue: FLY-2922
 phase: implement
-phaseCursor: 4/6
-updated: 2026-09-27T03:00:02.709Z
-nextStep: Reverify FLY-2921 e9a72127 refresh, update PR, and obtain exact-head
-  code review
+phaseCursor: 5/6
+updated: 2026-09-27T03:45:44.702Z
+nextStep: Add FLY-2922 milestone as literal last commit, push final head, and
+  obtain exact-head code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2922 progress
-**phase**: implement (4/6)
-**next**: Reverify FLY-2921 e9a72127 refresh, update PR, and obtain exact-head code review
+**phase**: implement (5/6)
+**next**: Add FLY-2922 milestone as literal last commit, push final head, and obtain exact-head code review
