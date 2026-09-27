@@ -177,6 +177,62 @@ describe("trusted operation broker engine", () => {
 			})?.targetKey,
 		).toBe("flywheel:discord:123:thread");
 	});
+	it("does not recursively fence resident target-lock reconciliation", async () => {
+		const store = new SqliteJournalStore(":memory:");
+		stores.push(store);
+		const operation = {
+			schemaVersion: 1,
+			operationId: "target_lock.reconcile",
+			requestId: "123e4567-e89b-42d3-a456-426614174000",
+			input: {
+				targetKey: "flywheel:linear:fly-2886",
+				lockedRequestId: "223e4567-e89b-42d3-a456-426614174000",
+				mode: "receipt",
+			},
+		};
+		const acquire = vi.fn(async () => ({
+			status: "target_pending_reconcile" as const,
+		}));
+		const broker = new LeadCapabilityBroker({
+			projectName: "flywheel",
+			leadId: "product",
+			activationId: "resident:1",
+			receipts: store.operationReceipts,
+			allowedOperationIds: () => new Set([operation.operationId]),
+			assertCurrent: async () => {},
+			secrets: [],
+			handlers: new Map([
+				[
+					operation.operationId,
+					{
+						authorize: async () => {},
+						execute: async () => ({
+							status: "succeeded" as const,
+							providerRef: "target-lock:223e4567-e89b-42d3-a456-426614174000",
+							data: {
+								status: "target_pending_reconcile",
+								targetKey: "flywheel:linear:fly-2886",
+								lockedRequestId: "223e4567-e89b-42d3-a456-426614174000",
+							},
+						}),
+					},
+				],
+			]),
+			targetLocks: {
+				actor: "resident",
+				participates: () => true,
+				acquire,
+				markDispatched: async () => true,
+				release: async () => {},
+				cancel: async () => {},
+			},
+		});
+		expect(await broker.execute(operation)).toMatchObject({
+			status: "succeeded",
+			data: { status: "target_pending_reconcile" },
+		});
+		expect(acquire).not.toHaveBeenCalled();
+	});
 	it("retains a timed-out provider success as terminal proof before allowing another writer", async () => {
 		vi.useFakeTimers();
 		const store = new SqliteJournalStore(":memory:");
@@ -239,11 +295,11 @@ describe("trusted operation broker engine", () => {
 		await broker.close();
 	});
 	it.each([
-		[undefined, "unknown"],
+		[undefined, "rejected"],
 		["provider_rejected", "rejected"],
 		["not_dispatched", "rejected"],
 	] as const)(
-		"requires explicit terminal evidence for provider refusal (%s)",
+		"settles an explicit provider refusal without leaving the target unknown (%s)",
 		async (terminalEvidence, expected) => {
 			const store = new SqliteJournalStore(":memory:");
 			stores.push(store);

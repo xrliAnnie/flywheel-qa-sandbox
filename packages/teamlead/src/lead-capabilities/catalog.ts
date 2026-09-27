@@ -41,6 +41,8 @@ export interface LeadCapabilityDefinition {
 	readonly evidenceRequirements: readonly string[];
 	/** Stable business target used by the cross-actor write fence. */
 	readonly targetKey?: (input: Readonly<Record<string, unknown>>) => string;
+	/** Recovery of an existing target fence must not recursively acquire another fence. */
+	readonly bypassesTargetLock?: true;
 }
 const id = z
 	.string()
@@ -160,6 +162,7 @@ function add(
 	input: z.ZodRawShape,
 	output: z.ZodRawShape,
 	inputSchema?: LeadCapabilityDefinition["inputSchema"],
+	options?: { bypassesTargetLock?: true },
 ) {
 	const unconditionalDenial =
 		operationId === "git.feature.push" || operationId === "github.pr.create"
@@ -193,11 +196,14 @@ function add(
 					? ["denial-receipt"]
 					: ["canonical-identity", "provider-receipt", "scope-check"],
 			),
-			...(classification === "write"
+			...(classification === "write" && !options?.bypassesTargetLock
 				? {
 						targetKey: (value: Readonly<Record<string, unknown>>) =>
 							writeTargetKey(operationId, value),
 					}
+				: {}),
+			...(options?.bypassesTargetLock
+				? { bypassesTargetLock: true as const }
 				: {}),
 		}),
 	);
@@ -947,6 +953,37 @@ add(
 		reportSha256: z.string().regex(/^[a-f0-9]{64}$/),
 		...receipt,
 	},
+);
+add(
+	"target_lock.reconcile",
+	"P07",
+	"write",
+	"bridge",
+	{
+		targetKey: z.string().min(1).max(512),
+		lockedRequestId: z.string().uuid(),
+		mode: z.enum(["receipt", "force_clear"]),
+		riskAcknowledgement: z.literal("可能被旧请求覆盖").optional(),
+	},
+	{
+		status: z.enum(["released", "not_owner", "target_pending_reconcile"]),
+		targetKey: z.string().min(1).max(512),
+		lockedRequestId: z.string().uuid(),
+	},
+	z.discriminatedUnion("mode", [
+		object({
+			targetKey: z.string().min(1).max(512),
+			lockedRequestId: z.string().uuid(),
+			mode: z.literal("receipt"),
+		}),
+		object({
+			targetKey: z.string().min(1).max(512),
+			lockedRequestId: z.string().uuid(),
+			mode: z.literal("force_clear"),
+			riskAcknowledgement: z.literal("可能被旧请求覆盖"),
+		}),
+	]),
+	{ bypassesTargetLock: true },
 );
 add(
 	"memory.add",

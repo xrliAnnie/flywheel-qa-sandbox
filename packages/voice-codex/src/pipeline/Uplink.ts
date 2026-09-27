@@ -43,6 +43,7 @@ interface UplinkOptions {
 	onGateSummary?(
 		summary: UplinkGateSummary & { utteranceId: string | null },
 	): void;
+	onGateCancelled?(cancellation: { utteranceId: string }): void;
 }
 
 export class Uplink {
@@ -94,9 +95,7 @@ export class Uplink {
 	}
 
 	cancelUtterance(): void {
-		this.options.speechGate?.cancel();
-		this.gateUtterances.clear();
-		this.completedGateUtterances.length = 0;
+		this.cancelSpeechGate();
 		this.activeGateMode = null;
 	}
 
@@ -157,7 +156,7 @@ export class Uplink {
 		if (this.micOpen === open) return;
 		this.micOpen = open;
 		if (!open) {
-			this.options.speechGate?.cancel();
+			this.cancelSpeechGate();
 			this.downmix = new Downmix48to24();
 			this.voiceFrames.flush();
 			this.frames.flush();
@@ -219,6 +218,20 @@ export class Uplink {
 				utteranceId,
 			});
 		}
+	}
+
+	private cancelSpeechGate(): void {
+		const gate = this.options.speechGate;
+		const token = gate?.token;
+		const utteranceId =
+			token === undefined
+				? this.activeUtteranceId
+				: (this.gateUtterances.get(token) ?? this.activeUtteranceId);
+		const cancelled = gate?.cancel();
+		this.gateUtterances.clear();
+		this.completedGateUtterances.length = 0;
+		if (cancelled?.opened && utteranceId)
+			this.options.onGateCancelled?.({ utteranceId });
 	}
 
 	private enqueueFrame(

@@ -338,11 +338,13 @@ export class UplinkSpeechGate {
 		this.finalize(chain, atMs);
 	}
 
-	cancel(): void {
-		if (!this.chain) return;
+	cancel(): { opened: boolean } | undefined {
+		if (!this.chain) return undefined;
+		const cancelled = { opened: this.chain.everOpened };
 		this.chain = null;
 		this.ready.length = 0;
 		this.tokenValue += 1;
+		return cancelled;
 	}
 
 	takeDue(atMs: number): UplinkGateFrame[] {

@@ -42,6 +42,7 @@ import {
 import { createReportDeliverHandlers } from "./handlers/report-deliver.js";
 import { createReportPublishHandlers } from "./handlers/report-publish.js";
 import { createReportVerifyHandlers } from "./handlers/report-verify.js";
+import { createTargetLockReconcileHandlers } from "./handlers/target-lock-reconcile.js";
 import { createUpstreamWriteDenials } from "./handlers/upstream-write-denials.js";
 import { createXhsAuthorityReadHandlers } from "./handlers/xiaohongshu-authority-read.js";
 import { createXhsWriteHandlers } from "./handlers/xiaohongshu-write.js";
@@ -307,13 +308,7 @@ export async function startLeadRuntimeParent(
 			assertCurrent: current,
 			fetchImpl: options.fetchImpl,
 		});
-		const targetLocks = createLeadTargetLockClient({
-			env,
-			activationId: options.activationId,
-			authority: options.authority,
-			assertActivationCurrent: trusted.assertActivationCurrent,
-			fetchImpl: options.fetchImpl,
-		});
+		const targetLocks = providers.targetLocks;
 		return await startLeadCapabilityParent({
 			...options.parent,
 			manifest,
@@ -477,6 +472,13 @@ export async function startLeadRuntimeProviders(
 			fetchImpl: options.fetchImpl,
 			secrets,
 		};
+		const targetLocks = createLeadTargetLockClient({
+			env,
+			activationId: options.activationId,
+			authority: options.authority,
+			assertActivationCurrent: trusted.assertActivationCurrent,
+			fetchImpl: options.fetchImpl,
+		});
 		let authorityClient: ReturnType<
 			typeof createParentXhsAuthorityClient
 		> | null = null;
@@ -591,6 +593,9 @@ export async function startLeadRuntimeProviders(
 			);
 		const [githubRead, patrol] = github ? githubGroups(github.client) : [];
 		slot(createRunnerBridgeHandlers(common));
+		if (authority.kind === "carrier")
+			slot(createTargetLockReconcileHandlers(targetLocks));
+		else omitted.add("target_lock.reconcile");
 		slot(createBridgeReadHandlers(common));
 		slot(createMemoryBridgeHandlers(common));
 		slot(createBridgeDiscordHandlers(common));
@@ -787,6 +792,7 @@ export async function startLeadRuntimeProviders(
 			});
 		return {
 			handlers: guarded,
+			targetLocks,
 			secrets,
 			browserGeneration: browser.generation,
 			proxyPort: browser.proxyPort,

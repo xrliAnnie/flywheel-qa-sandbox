@@ -215,3 +215,55 @@ it("records a voice founder-only notice at the fixed Bridge endpoint and require
 	).rejects.toThrow();
 	expect(resident.fetchImpl).not.toHaveBeenCalled();
 });
+
+it("gives a resident Lead a correlated reconciliation and force-clear entry while denying voice", async () => {
+	const resident = fixture(true);
+	resident.fetchImpl.mockImplementation(async (url, init) => {
+		const action = new URL(url).pathname.split("/").at(-1)!;
+		resident.calls.push(action);
+		const body = JSON.parse(String(init?.body));
+		return new Response(
+			JSON.stringify({
+				requestId: body.requestId,
+				status:
+					body.mode === "receipt" ? "target_pending_reconcile" : "released",
+			}),
+		);
+	});
+	const signal = new AbortController().signal;
+	expect(
+		await resident.client.reconcile!({
+			operationId: "target_lock.reconcile",
+			requestId,
+			targetKey: "flywheel:linear:fly-2886",
+			lockedRequestId: "223e4567-e89b-42d3-a456-426614174000",
+			mode: "receipt",
+			signal,
+		}),
+	).toBe("target_pending_reconcile");
+	expect(
+		await resident.client.reconcile!({
+			operationId: "target_lock.reconcile",
+			requestId,
+			targetKey: "flywheel:linear:fly-2886",
+			lockedRequestId: "223e4567-e89b-42d3-a456-426614174000",
+			mode: "force_clear",
+			riskAcknowledgement: "可能被旧请求覆盖",
+			signal,
+		}),
+	).toBe("released");
+	expect(resident.calls).toEqual(["reconcile", "reconcile"]);
+
+	const voice = fixture(true, true);
+	await expect(
+		voice.client.reconcile!({
+			operationId: "target_lock.reconcile",
+			requestId,
+			targetKey: "flywheel:linear:fly-2886",
+			lockedRequestId: "223e4567-e89b-42d3-a456-426614174000",
+			mode: "receipt",
+			signal,
+		}),
+	).rejects.toThrow("target_lock_unavailable");
+	expect(voice.fetchImpl).not.toHaveBeenCalled();
+});

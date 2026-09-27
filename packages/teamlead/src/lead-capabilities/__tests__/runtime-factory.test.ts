@@ -380,6 +380,7 @@ it("assembles every non-reserved operation and closes activation providers in re
 				!session.handlers.has(row.operationId),
 		),
 	).toEqual([]);
+	expect(session.handlers.has("target_lock.reconcile")).toBe(true);
 	expect(options.fetchImpl).not.toHaveBeenCalled();
 	expect(session.secrets).toEqual(
 		expect.arrayContaining(["BRIDGE_TOKEN", "GH_TOKEN_VALUE", "LINEAR_TOKEN"]),
@@ -404,6 +405,56 @@ it("assembles every non-reserved operation and closes activation providers in re
 			},
 		),
 	).rejects.toThrow("runtime_providers_closed");
+});
+
+it("lets a resident invoke the audited target-lock reconciliation handler", async () => {
+	const options = fixture();
+	options.fetchImpl.mockImplementation(async (url, init) => {
+		expect(new URL(url).pathname).toBe(
+			"/api/lead-capabilities/target-lock/reconcile",
+		);
+		const body = JSON.parse(String(init?.body));
+		expect(body).toMatchObject({
+			operationId: "target_lock.reconcile",
+			targetKey: "flywheel:linear:fly-2886",
+			lockedRequestId: "223e4567-e89b-42d3-a456-426614174000",
+			mode: "force_clear",
+			riskAcknowledgement: "可能被旧请求覆盖",
+		});
+		return new Response(
+			JSON.stringify({ requestId: body.requestId, status: "released" }),
+		);
+	});
+	const session = await startLeadRuntimeProviders(options);
+	try {
+		const result = await session.handlers.get("target_lock.reconcile")!.execute(
+			{
+				targetKey: "flywheel:linear:fly-2886",
+				lockedRequestId: "223e4567-e89b-42d3-a456-426614174000",
+				mode: "force_clear",
+				riskAcknowledgement: "可能被旧请求覆盖",
+			},
+			{
+				requestId: "123e4567-e89b-42d3-a456-426614174000",
+				projectName: "flywheel",
+				leadId: "eng",
+				activationId: "activation",
+				signal: new AbortController().signal,
+				assertCurrent: async () => {},
+			},
+		);
+		expect(result).toEqual({
+			status: "succeeded",
+			providerRef: "target-lock:223e4567-e89b-42d3-a456-426614174000",
+			data: {
+				status: "released",
+				targetKey: "flywheel:linear:fly-2886",
+				lockedRequestId: "223e4567-e89b-42d3-a456-426614174000",
+			},
+		});
+	} finally {
+		await session.close();
+	}
 });
 it.each(["xiaohongshu-mcp", "context7"])(
 	"cleans up earlier resources when %s startup fails",
@@ -962,9 +1013,16 @@ it.each(["founder_chrome", "off"] as const)(
 				: {}),
 		};
 		const options = fixture();
+		const sessionId = "123e4567-e89b-42d3-a456-426614174000";
 		const session = await startLeadRuntimeParent({
 			...options,
 			...OMIT,
+			activationId: `voice:${sessionId}`,
+			authority: {
+				kind: "voice_session",
+				sessionId,
+				leaseFence: "voice-lease",
+			},
 			linearToken: undefined as unknown as string,
 			browserMode,
 			operations: voiceOperations(browserMode),
@@ -999,6 +1057,7 @@ it.each(["founder_chrome", "off"] as const)(
 					false,
 				);
 			expect(manifest.operationIds).toContain("github.pr.view");
+			expect(manifest.operationIds).not.toContain("target_lock.reconcile");
 			// Positive control for the R2#3 negative assertions below.
 			expect(manifest.operationIds).toContain("github.pr.create");
 			expect(manifest.operationIds).toContain("git.feature.push");

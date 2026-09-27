@@ -18,10 +18,36 @@ describe("lead capability catalog", () => {
 		for (const op of LEAD_CAPABILITY_CATALOG) {
 			expect(op.scope).toBe("canonical-project-lead");
 			expect(op.evidenceRequirements.length).toBeGreaterThan(0);
-			if (op.classification === "write")
+			if (op.bypassesTargetLock) {
+				expect(op.operationId).toBe("target_lock.reconcile");
+				expect(op.classification).toBe("write");
+				expect(op.targetKey).toBeUndefined();
+			} else if (op.classification === "write")
 				expect(op.targetKey).toBeTypeOf("function");
 			else expect(op.targetKey).toBeUndefined();
 		}
+	});
+	it("exposes resident target-lock reconciliation without recursively fencing it", () => {
+		const reconcile = getLeadCapability("target_lock.reconcile")!;
+		expect(reconcile.classification).toBe("write");
+		expect(reconcile.credentialConsumer).toBe("bridge");
+		expect(reconcile.bypassesTargetLock).toBe(true);
+		expect(
+			reconcile.inputSchema.safeParse({
+				targetKey: "flywheel:linear:fly-2886",
+				lockedRequestId: "123e4567-e89b-42d3-a456-426614174000",
+				mode: "force_clear",
+				riskAcknowledgement: "可能被旧请求覆盖",
+			}).success,
+		).toBe(true);
+		expect(
+			reconcile.inputSchema.safeParse({
+				targetKey: "flywheel:linear:fly-2886",
+				lockedRequestId: "123e4567-e89b-42d3-a456-426614174000",
+				mode: "force_clear",
+				riskAcknowledgement: "looks safe",
+			}).success,
+		).toBe(false);
 	});
 	it("normalizes representative cross-actor write targets", () => {
 		expect(

@@ -24,6 +24,15 @@ export interface LeadTargetLockClient {
 	 * that Lead keeps the pre-voice write path (no alias lookup, no lock RPC).
 	 */
 	participates?(): boolean;
+	reconcile?(input: {
+		operationId: string;
+		requestId: string;
+		targetKey: string;
+		lockedRequestId: string;
+		mode: "receipt" | "force_clear";
+		riskAcknowledgement?: "可能被旧请求覆盖";
+		signal: AbortSignal;
+	}): Promise<"released" | "not_owner" | "target_pending_reconcile">;
 	acquire(input: {
 		operationId: string;
 		requestId: string;
@@ -123,6 +132,7 @@ export function createLeadTargetLockClient(
 			| "mark-dispatched"
 			| "release"
 			| "cancel"
+			| "reconcile"
 			| "founder-denial",
 		input: Record<string, unknown> & { requestId: string; signal: AbortSignal },
 	) {
@@ -199,6 +209,20 @@ export function createLeadTargetLockClient(
 		participates: () =>
 			authority.kind === "voice_session" ||
 			backgroundOf(trusted.assertActivationCurrent()).configured,
+		reconcile: async (input) => {
+			if (authority.kind !== "carrier") throw denied();
+			const result = await call("reconcile", input);
+			if (
+				!["released", "not_owner", "target_pending_reconcile"].includes(
+					result.status,
+				)
+			)
+				throw denied();
+			return result.status as
+				| "released"
+				| "not_owner"
+				| "target_pending_reconcile";
+		},
 		acquire: async (input) => {
 			input.signal.throwIfAborted();
 			const { configured, enabled } = backgroundOf(

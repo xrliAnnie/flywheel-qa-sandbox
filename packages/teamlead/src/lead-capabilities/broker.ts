@@ -522,16 +522,9 @@ export class LeadCapabilityBroker {
 			const outcome = await handler.execute(input, context);
 			// Terminal provider evidence remains valid after the caller times out.
 			// Settle only the original receipt/fence before checking delivery authority.
-			const evidencedOutcome =
-				dispatched &&
-				targetFence &&
-				outcome.status === "rejected" &&
-				!outcome.terminalEvidence
-					? { status: "unknown" as const }
-					: outcome;
 			const result = this.validateOutcome(
 				operation,
-				evidencedOutcome,
+				outcome,
 				request.requestId,
 				operation.classification === "write",
 			);

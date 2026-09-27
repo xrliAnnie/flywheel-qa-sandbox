@@ -213,6 +213,8 @@ export class DiscordVoiceRoom {
 				if (summary.opened && summary.utteranceId)
 					this.options.onLocalUtteranceEnded?.(summary.utteranceId);
 			},
+			onGateCancelled: ({ utteranceId }) =>
+				this.options.onLocalUtteranceEnded?.(utteranceId),
 		});
 		await this.registry.start([{ id: "voice", token: this.options.token }]);
 		await this.checkActive(signal);
