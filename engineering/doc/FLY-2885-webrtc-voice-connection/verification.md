@@ -530,3 +530,11 @@ QA 指出运行时 container 虽然校验了 0.156.1 的版本、SHA 和 realtim
 - `pnpm --filter "flywheel-voice-codex..." build`、仓库 `pnpm lint`、改动 TS 的 scoped Biome、`bash -n` 与 `git diff --check` 均通过。lint 仍只显示 25 条仓库既有 warning，exit 0。
 
 发现但排除的测试匹配：`shutdown-exit.test.ts` 只在注释提到 `--check-config`；两个 host-tmux selection 测试只把 wrapper 路径列入挂载表；`install-voice-launchd.test.mjs` 会用 `exit 0` fixture 覆盖 wrapper；`restart-voice-on-demand.test.sh` 只比较复制后的 wrapper 字节和 launchd 迁移，不执行本次启动分支。其余 `cli.ts` 命中均是同名 basename 或文档记录，不依赖 voice CLI。没有在本机运行全仓或整包测试。
+
+### QA follow-up 代码评审 R5：x64 fixture 可移植性
+
+R5 的唯一 HIGH 成立：生产 wrapper 按 `uname -m` 选择 release target，但测试 fixture 写死 `aarch64-apple-darwin`。GitHub Script Tests 运行在 x64；上一头的 scoped CI 跳过了 script shards，因此本机 arm64 的 40/40 不能证明 frozen-head CI 会绿。
+
+修复只让 fixture 复用与 wrapper 相同的 `arm64 → aarch64-apple-darwin`、`x86_64 → x86_64-apple-darwin` 映射，不改生产代码。通过 x86_64 的 `/usr/local/bin/timeout` 经 Rosetta 启动测试可稳定复现红色 36/40；修改后同一 x86_64 路径 40/40，原生 arm64 也为 40/40。`bash -n`、`git diff --check` 和仓库 `pnpm lint`（25 条既有 warning，exit 0）通过。
+
+literal/path 发现中，旧的具体 aarch64 路径只剩历史文档和手工探针；新 `CODEX_RELEASE_TARGET` 只在本测试中。`ci-structure.test.sh` 仅检查这个脚本仍被 CI shard 枚举，文件名和枚举没有变化，因此排除。R5 的两个新 LOW 与历次非阻塞 advisories 不在本轮唯一 HIGH 的锁定修复范围内。
