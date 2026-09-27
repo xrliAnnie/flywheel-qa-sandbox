@@ -1,13 +1,13 @@
 ---
 issue: FLY-2976
 phase: implement
-phaseCursor: 1/5
-updated: 2026-09-27T23:24:05.812Z
-nextStep: lock importer + baseline per-file tests
+phaseCursor: 3/5
+updated: 2026-09-27T23:25:51.618Z
+nextStep: Codex code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2976 progress
-**phase**: implement (1/5)
-**next**: lock importer + baseline per-file tests
+**phase**: implement (3/5)
+**next**: Codex code review
