@@ -2,13 +2,12 @@
 issue: FLY-2922
 phase: implement
 phaseCursor: 6/6
-updated: 2026-09-27T06:45:35.240Z
-nextStep: Refresh literal-last milestone, push final head, and obtain effective
-  code review
+updated: 2026-09-27T07:40:10.169Z
+nextStep: refresh milestone, push, and request exact-head re-review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2922 progress
 **phase**: implement (6/6)
-**next**: Refresh literal-last milestone, push final head, and obtain effective code review
+**next**: refresh milestone, push, and request exact-head re-review
