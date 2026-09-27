@@ -1,16 +1,16 @@
 ---
 issue: FLY-2912
 phase: implement
-phaseCursor: 1/3
-updated: 2026-09-27T00:28:46.418Z
-nextStep: "Review b8997e28 CHANGES_REQUESTED at 95b137b89 (CI Scope OK):
-  reproduce and fix summary attachment byte drift on OFF-to-ON/upgrade retries;
-  retain mixed ACK fix. New source tests then exact-head review. Historical wake
-  acceptance still false."
+phaseCursor: 2/3
+updated: 2026-09-27T00:35:59.723Z
+nextStep: OFF-to-ON/upgrade byte-drift HIGH reproduced (12 failures), minimal
+  helper/loop fix green (16 transport cases + 6 helper cases). Finish selected
+  tests, bounded related, build/lint/dependent typecheck; downgrade boundary
+  question f51fe18d pending; then commit/push/new review.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2912 progress
-**phase**: implement (1/3)
-**next**: Review b8997e28 CHANGES_REQUESTED at 95b137b89 (CI Scope OK): reproduce and fix summary attachment byte drift on OFF-to-ON/upgrade retries; retain mixed ACK fix. New source tests then exact-head review. Historical wake acceptance still false.
+**phase**: implement (2/3)
+**next**: OFF-to-ON/upgrade byte-drift HIGH reproduced (12 failures), minimal helper/loop fix green (16 transport cases + 6 helper cases). Finish selected tests, bounded related, build/lint/dependent typecheck; downgrade boundary question f51fe18d pending; then commit/push/new review.
