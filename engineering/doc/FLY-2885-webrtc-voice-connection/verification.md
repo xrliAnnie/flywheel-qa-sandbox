@@ -472,3 +472,15 @@ QA@3 的 B5/C2 录音和事件日志表明，问题不是 steer 文案本身：�
 - 与 `origin/main@b0da16c38` 的唯一冲突是 `voice-session-routes.ts` 相邻 import；保留 FLY-2885 的 context error details 和 main 的 Lead interrupt routes。两个直接路由文件各 23/23 通过，`pnpm --filter "flywheel-teamlead..." build` 通过。该中心文件的 `vitest related` 选到 111 文件，1348/1349；唯一失败 `lead-lease-self-check` 随即按具体文件重跑 6/6 通过，判定为并发负载偶发，不以整包重跑掩盖。
 - Biome 对 5 个 voice-codex 改动文件和冲突文件检查通过；`git diff --check` 对本轮代码范围通过。
 - 仓库级 `pnpm lint` 仍 exit 1：唯一 error 在无关的 `doc/engineer/research/new/FLY-1547-e2e/e2e-mailbox.mjs`（unused import/variable）；另有 25 条无关 warning。本轮不改这些文件。exact-head 全量 CI 仍由 QA 请求，本实现节点未请求 full CI。
+
+### QA@3 代码评审 R1 的修复（`44c9acccf`）
+
+Codex R1 提出 1 个 HIGH，成立：`OpusDownlink` 原先只在队列中仍有 `replay` 包时豁免积压裁剪。C2 的 64 个 replay 包与服务端新回答都按 20 ms 节拍一进一出；最后一个 replay 包一取走，队列里仍有 64 个随后到达的新回答包，下一次 push 会立即把它们裁到 3 个，丢掉约 1 s 的新语音。
+
+修复只在 downlink 队列中保留一位 replay debt：见到 replay 后持续豁免裁剪，直到播放或跳过静音把队列真正降到 25 包阈值以下；随后恢复普通实时积压裁剪。停止和重开流都会清掉 debt。
+
+- 红：64 个 replay 包与 64 个实时新包同速交替，旧实现最终只剩 3 个新包并记录一次 trim。
+- 绿：同一序列保留全部 64 个新包、零 trim；再播放到 23 包并追加 3 包，普通 trim 重新生效，证明豁免不会永久关闭保护。
+- 显式消费者逐文件：`opus-downlink` 10/10、`downlink-controller` 16/16、`codex-room-webrtc` 28/28、`codex-readback-replay` 2/2、`discord-room` 16/16，共 72/72。
+- `vitest related`（`OpusDownlink.ts` 与其测试）8 个文件 114/114；voice-codex typecheck、受影响包及依赖构建、两处改动文件 Biome、`git diff --check` 均通过。
+- 仓库级 `pnpm lint` 仍只因同一无关 FLY-1547 文件的 unused import/variable 而失败；本轮未改该文件。评审的 MEDIUM/LOW advisories 不阻塞此门，本轮按锁定范围未顺带改动。
