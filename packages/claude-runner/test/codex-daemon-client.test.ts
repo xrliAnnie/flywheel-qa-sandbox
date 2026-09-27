@@ -3927,6 +3927,83 @@ describe("runGoalToTerminal — FLY-2925 quota exhaustion goes to governance, ne
 			"upstream_retry",
 		]);
 	});
+
+	it("persists quota handoff when a retry transitions natively to usageLimited", async () => {
+		const d = new FakeDaemon();
+		let current: GoalStatus = "active";
+		let activeSets = 0;
+		d.responders.set("thread/goal/set", (params, _id, push) => {
+			current = (params as { status: GoalStatus }).status;
+			if (current === "active") {
+				activeSets += 1;
+				if (activeSets === 2) {
+					current = "usageLimited";
+					push({
+						method: "thread/goal/updated",
+						params: {
+							threadId: "t",
+							goal: { status: "usageLimited", objective: "OURS" },
+						},
+					});
+				}
+			}
+			return {};
+		});
+		d.responders.set("turn/start", (_p, _id, push) => {
+			push({
+				method: "turn/completed",
+				params: {
+					threadId: "t",
+					turn: {
+						id: "turn-1",
+						status: "failed",
+						error: {
+							message: "too many requests",
+							codexErrorInfo: {
+								httpConnectionFailed: { httpStatusCode: 429 },
+							},
+						},
+					},
+				},
+			});
+			current = "blocked";
+			push({
+				method: "thread/goal/updated",
+				params: {
+					threadId: "t",
+					goal: { status: "blocked", objective: "OURS" },
+				},
+			});
+			return { turn: { id: "turn-1" } };
+		});
+		d.responders.set("thread/goal/get", () => ({
+			goal: { status: current, objective: "OURS" },
+		}));
+		d.responders.set("thread/read", () => ({
+			thread: { id: "t", turns: [{ id: "turn-1", status: "failed" }] },
+		}));
+
+		let episode: unknown = null;
+		const result = await runGoalToTerminal(makeClient(d), {
+			threadId: "t",
+			objective: "OURS",
+			now: () => 0,
+			sleep: async () => {},
+			pollIntervalMs: 1,
+			phaseLifecycle: new FakePhaseLifecycle(),
+			readUpstreamRetryEpisode: () => episode as never,
+			writeUpstreamRetryEpisode: (next) => {
+				episode = next;
+			},
+		});
+
+		expect(result.status).toBe("usageLimited");
+		expect(episode).toMatchObject({
+			category: "rate_limited",
+			lastFailedTurnId: "turn-1",
+			quotaExhausted: true,
+		});
+	});
 });
 
 describe("runGoalToTerminal — FLY-2925 review R3 fixes", () => {

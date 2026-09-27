@@ -2156,6 +2156,47 @@ export async function runGoalToTerminal(
 		};
 	};
 
+	// FLY-2925: publish the quota handoff marker before returning the terminal.
+	// This is shared by blocked-turn classification and a native usageLimited
+	// goal transition, which otherwise bypasses the blocked settlement path.
+	const handToQuotaGovernance = (
+		failure: NonNullable<GoalRunResult["lastTurnError"]> | undefined,
+		category: UpstreamRetryCategory | undefined,
+	): TerminalVerdict => {
+		client.logDiagnostic(
+			"resident goal reached usage exhaustion — ending as usageLimited for quota governance",
+		);
+		if (failure) {
+			// Durable first: a crash before the terminal is published must not let a
+			// restart reinterpret this goal as a resident wait.
+			try {
+				input.writeUpstreamRetryEpisode?.({
+					v: 1,
+					threadId: input.threadId,
+					category: category ?? "rate_limited",
+					attempts: UPSTREAM_RETRY_BACKOFF_MS.length,
+					lastFailedTurnId: failure.turnId,
+					nextAt: now(),
+					quotaExhausted: true,
+				});
+				retryEpisodeOpen = true;
+			} catch (error) {
+				client.logDiagnostic(
+					`quota handoff marker write failed (handing off anyway): ${error instanceof Error ? error.message : String(error)}`,
+				);
+				observeResidentWait({
+					reason: "quota_handoff_unpersisted",
+					threadId: input.threadId,
+					turnId: failure.turnId,
+					...(category ? { category } : {}),
+					error: describeError(failure),
+				});
+			}
+		}
+		terminalSeen = "usageLimited";
+		return "terminal";
+	};
+
 	const settleResidentBlocked = async (): Promise<TerminalVerdict> => {
 		let failure = lastThreadTurnError;
 		let category = classifyRetryableUpstreamError(failure);
@@ -2168,46 +2209,13 @@ export async function runGoalToTerminal(
 		}
 		// FLY-2925: an exhausted account is quota governance's job (account switch
 		// → restart), never a body parked in place on the same exhausted account.
-		const handToQuotaGovernance = (): TerminalVerdict => {
-			client.logDiagnostic(
-				"resident goal blocked on usage exhaustion — ending as usageLimited for quota governance",
-			);
-			if (failure) {
-				// Durable first: a crash before the terminal is published must not
-				// let a restart reinterpret this blocked goal as a resident wait.
-				try {
-					input.writeUpstreamRetryEpisode?.({
-						v: 1,
-						threadId: input.threadId,
-						category: category ?? "rate_limited",
-						attempts: UPSTREAM_RETRY_BACKOFF_MS.length,
-						lastFailedTurnId: failure.turnId,
-						nextAt: now(),
-						quotaExhausted: true,
-					});
-					retryEpisodeOpen = true;
-				} catch (error) {
-					client.logDiagnostic(
-						`quota handoff marker write failed (handing off anyway): ${error instanceof Error ? error.message : String(error)}`,
-					);
-					observeResidentWait({
-						reason: "quota_handoff_unpersisted",
-						threadId: input.threadId,
-						turnId: failure.turnId,
-						...(category ? { category } : {}),
-						error: describeError(failure),
-					});
-				}
-			}
-			terminalSeen = "usageLimited";
-			return "terminal";
-		};
-		if (failure?.code === "usageLimitExceeded") return handToQuotaGovernance();
+		if (failure?.code === "usageLimitExceeded")
+			return handToQuotaGovernance(failure, category);
 		if (failure && category) {
 			const retry = await tryUpstreamRetry(failure, category);
 			if (retry === "retried") return "resident";
 			if (retry === "exhausted" && category === "rate_limited") {
-				return handToQuotaGovernance();
+				return handToQuotaGovernance(failure, category);
 			}
 			await enterResidentWait({
 				reason:
@@ -2242,6 +2250,18 @@ export async function runGoalToTerminal(
 		}
 		if (phase && status === "blocked") {
 			return settleResidentBlocked();
+		}
+		if (phase && status === "usageLimited") {
+			let failure = lastThreadTurnError;
+			let category = classifyRetryableUpstreamError(failure);
+			if (!failure) {
+				const recovered = await recoverPersistedRetryFailure();
+				if (recovered) {
+					failure = recovered.failure;
+					category = recovered.category;
+				}
+			}
+			return handToQuotaGovernance(failure, category);
 		}
 		if (phase && status === "budgetLimited") {
 			// FLY-2925: unlike usageLimited (quota governance's input), no actor
