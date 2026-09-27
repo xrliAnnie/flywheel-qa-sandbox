@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lead 忙闲只读接口</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--text:#1d1d1f;--dim:#86868b;--navy:#1a365d;--red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;--line:#e5e5ea}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,system-ui,sans-serif;line-height:1.6}
+.wrap{max-width:960px;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:26px;margin:8px 0 4px;color:var(--navy)}
+.sub{color:var(--dim);font-size:14px;margin-bottom:20px}
+.mono{font-family:'SF Mono',ui-monospace,monospace;font-size:13px}
+.card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:18px 20px;margin:16px 0;border-left:4px solid var(--blue)}
+.card.green{border-left-color:var(--green)}.card.amber{border-left-color:var(--amber)}.card.red{border-left-color:var(--red)}.card.purple{border-left-color:var(--purple)}.card.navy{border-left-color:var(--navy)}
+.card h2{font-size:18px;margin:0 0 10px;color:var(--navy)}
+.hero{font-size:17px}
+.badge{display:inline-block;font-size:12px;padding:1px 8px;border-radius:10px;margin-right:6px;color:#fff;vertical-align:middle}
+.b-busy{background:var(--amber)}.b-idle{background:var(--green)}.b-unknown{background:var(--dim)}
+table{border-collapse:collapse;width:100%;font-size:14px;margin:8px 0}
+th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+th{color:var(--dim);font-weight:600}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.diagram{overflow-x:auto;margin:10px 0;text-align:center}
+.diagram svg{max-width:100%;height:auto}
+.term{background:#f0f4fa;border-radius:6px;padding:1px 6px}
+pre{background:#f6f8fa;border-radius:8px;padding:12px;overflow-x:auto;font-size:12.5px}
+ul{padding-left:20px;margin:6px 0}
+.note{color:var(--dim);font-size:13px}
+.cbox{margin-top:12px;border-top:1px dashed var(--line);padding-top:10px}
+.cbox label{font-size:12px;color:var(--dim)}
+.cbox textarea{width:100%;min-height:54px;border:1px solid var(--line);border-radius:8px;padding:8px;font:inherit;font-size:14px;resize:vertical;background:#fbfbfd}
+.btn{background:var(--blue);color:#fff;border:0;border-radius:8px;padding:8px 14px;font-size:14px;cursor:pointer;margin:4px 6px 4px 0}
+.chunk{white-space:pre-wrap;background:#fbfbfd;border:1px solid var(--line);border-radius:8px;padding:10px;font-size:13px;margin:8px 0}
+#copyStatus{color:var(--green);font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="sub mono">FLY-2882 · 设计稿 · 2026-09-25 · 分支 flywheel-FLY-2882</div>
+<h1>「某个 Lead 现在在忙什么」只读接口</h1>
+<div class="sub">耳机模式下 Raya 替你问别的 Lead，1 分钟没回时，用它看对方是不是正在一轮活里、这轮是哪张单引起的、已经多久。</div>
+
+<div class="card green" data-section="一句话总结">
+<h2>① 一句话总结</h2>
+<p class="hero">给 Bridge 加一个<b>只看不碰</b>的接口：问一次，答「<span class="badge b-busy">忙</span>/<span class="badge b-idle">闲</span>/<span class="badge b-unknown">不知道</span>」，忙的话再答「从几点开始、已经多久、这轮是哪张单的消息引起的（答不准就明说判断不了）」。Claude 那 14 个 Lead 靠看终端底部那一行；Codex 那 3 个 Lead 靠问它们旁边的 <span class="term">sidecar</span>。</p>
+<p class="note"><b>sidecar</b>：每个 Codex Lead 身边跑着的一个小助手进程，负责替它收发消息，所以它知道 Lead 这会儿有没有在一轮对话里。</p>
+</div>
+
+<div class="card amber" data-section="实测推翻了一个前提">
+<h2>② 实测推翻了一个前提（要你知道）</h2>
+<p>上一版设计写的是「看 Claude Lead 终端底部有没有 <span class="mono">esc to interrupt</span>」。我在本机 Claude Code 2.1.282 上实测：<b>这句话已经不显示了</b>。现在的样子是：</p>
+<div class="scroll"><table>
+<tr><th>Lead 的状态</th><th>终端底部那一行（实测）</th><th>接口怎么判</th></tr>
+<tr><td>一轮活正在进行</td><td class="mono">✽ Bunning… (40s · ↓ 1.5k tokens)</td><td><span class="badge b-busy">忙</span>，已经 40 秒</td></tr>
+<tr><td>一轮刚结束</td><td class="mono">✻ Worked for 1m 17s · done 12:17 PM</td><td><span class="badge b-idle">闲</span>（这行长得很像上一行，必须专门认出来，否则会误判成忙）</td></tr>
+<tr><td>重启后还没干过活</td><td>没有这一行，只有输入框和状态栏</td><td><span class="badge b-unknown">不知道</span>（状态栏忙的时候也在，证明不了空闲；今天实测 14 个里有 1 个是这样，干完一轮就能正常答）</td></tr>
+<tr><td>出现认不出的新格式</td><td>一行没见过的状态行</td><td><span class="badge b-unknown">不知道</span>（不拿更早的旧行来猜）</td></tr>
+<tr><td>弹出菜单 / 画面认不出</td><td>输入框不见了</td><td><span class="badge b-unknown">不知道</span> + 原因</td></tr>
+</table></div>
+<p>我还专门开了一个一次性的测试会话，让它连续干 3 段活：括号里的计时<b>跨多次动作一直累加</b>，误差约 1 秒。所以「开始时间 = 现在 − 计时」是可靠的，满足你要的「误差 ≤ 30 秒」。</p>
+</div>
+
+<div class="card" data-section="核心流程">
+<h2>③ 核心流程：问一次，发生了什么</h2>
+<div class="diagram">{{SVG:flow}}</div>
+<p class="note"><b>Bridge</b>：Flywheel 的中枢服务，所有 Lead 和 runner 的消息、状态都经过它。<b>只读元数据</b>：只看「谁发的、什么类型、几点送到」，不看消息写了什么。</p>
+</div>
+
+<div class="card" data-section="Claude Lead 怎么判断">
+<h2>④ Claude Lead：怎么从终端画面判断</h2>
+<div class="diagram">{{SVG:pane}}</div>
+<ul>
+<li>截屏只在内存里解析，<b>不存文件、不写日志、不放进回答</b>；回答里只有「忙/闲/不知道」和一个时长数字。</li>
+<li>输入框<b>下方</b>那些行一律不看——那里有后台小助手（subagent）的计时，看了会把「后台在跑」错当成「Lead 本人在忙」。</li>
+<li>从输入框往上找，只跳过空行、缩进的正文和「⏺」开头的对话条目（系统提示也是这种），碰到的第一条别的行就是「状态位」；它认不出，就不许再往上拿更早的旧行来作证。今天用这条规则复查 14 个生产 Claude Lead：12 闲、1 忙、1 不知道。认不出就答「不知道」，绝不猜成「闲」。</li>
+</ul>
+</div>
+
+<div class="card purple" data-section="这轮是哪张单">
+<h2>⑤ 「这轮是哪张单引起的」怎么算</h2>
+<div class="diagram">{{SVG:attribution}}</div>
+<ul>
+<li><b>Claude Lead 这一版一律答「判断不了」</b>：只能看到「开轮前后几秒到了哪些信」，那只是时间上凑巧，证明不了就是这封信让他开的这轮（比如你在他终端里敲字的同时恰好来了一封信，就会被错算成那张单）。要证明得改 Lead 的启动链路，另开单。</li>
+<li>说法是「<b>这轮由 FLY-xxx 的消息引起</b>」，不是「他正在做 FLY-xxx」——Lead 一轮里常常顺手处理好几件事，前者我们能证，后者证不了。</li>
+<li>只有<b>唯一一张单</b>且每条投递都能对上时才给单号；否则写「判断不了」+ 原因（多张单 / Discord 聊天对不上单 / founder 自己在终端敲的）。宁可说不知道，也不给错的。Codex 这边目前只有「runner 提问」「Bridge 事件」两类信能可靠对上单。</li>
+</ul>
+</div>
+
+<div class="card navy" data-section="数据结构">
+<h2>⑥ 回答长什么样（数据结构）</h2>
+<div class="diagram">{{SVG:model}}</div>
+<p class="note">示例（数字是编的，只为说明形状）：</p><pre class="mono">{
+  "state": "busy",
+  "leadId": "raya",
+  "turn": { "startedAt": "2026-09-25T20:12:34Z", "elapsedMs": 1200000, "precision": "second" },
+  "trigger": { "kind": "issue", "issueId": "FLY-2877", "basis": "codex_journal_members" },
+  "source": "codex_sidecar",
+  "observedAt": "2026-09-25T20:32:34Z"
+}</pre>
+<p>调用入口：Bridge 路由 <span class="mono">GET /api/lead-activity</span>（单个 Lead）与 <span class="mono">/api/lead-activity/fleet</span>（全部 Lead），命令行 <span class="mono">flywheel-comm lead-activity --project … --lead …</span> 或 <span class="mono">--all</span>。只接受本机调用，要 Bridge 主令牌。</p>
+</div>
+
+<div class="card amber" data-section="取舍与否掉的方案">
+<h2>⑦ 关键取舍与否掉的方案</h2>
+<div class="scroll"><table>
+<tr><th>问题</th><th>选了</th><th>否掉了（为什么）</th></tr>
+<tr><td>Claude Lead 怎么读</td><td>看终端底部那一行</td><td>① 给 Claude 装「开始/结束」钩子：要改启动脚本、重启全部 Lead，而且按 Esc 打断时钩子不触发，会一直卡在「忙」；② 读对话记录文件：里面全是消息原文，违反「不读正文」。</td></tr>
+<tr><td>Codex Lead 怎么读</td><td>给 sidecar 加一个只读问答方法</td><td>① 扩展它现有的心跳文件：只有部分 Lead 会写、founder 自己在终端敲的那轮不记，文件还会过期；② 截 Codex 的终端窗口：sidecar 已经有结构化的「开始/结束」事件，没必要再认画面。</td></tr>
+<tr><td>「在做哪张单」</td><td>只答「这轮由哪张单的消息引起」，只在因果能证明、且唯一时才给</td><td>① 按「开轮前后几秒到了哪些信」推断（第一版这么设计过，评审指出会给错单，已删）；② 读 Lead 最近调用的工具标题当摘要：那就是正文的一部分；③ 看他名下哪个 runner 在跑：Lead 忙和 runner 忙是两回事。</td></tr>
+<tr><td>读不到时</td><td>一律「不知道 + 具体原因」</td><td>当成「闲」：会让 Raya 以为对方有空，去催一个其实在忙的人。</td></tr>
+</table></div>
+</div>
+
+<div class="card red" data-section="诚实边界">
+<h2>⑧ 诚实边界：做什么、不做什么</h2>
+<p><b>做：</b>17 个生产 Lead（14 Claude + 3 Codex）都能问；忙/闲/不知道；开始时间和时长；Codex Lead 能证时给单号。</p>
+<p><b>不做：</b>打断 Lead（另一张单 FLY-2883）；语音侧怎么调用（等核心单）；历史记录、推送、缓存。</p>
+<p><b>要你知道的限制：</b></p>
+<ul>
+<li>3 个 Codex Lead 要<b>重启一次</b>后才有新方法；在那之前接口对它们如实答「不知道：sidecar 版本太旧」。</li>
+<li>Claude Lead 重启后还没干过活时答「不知道」；Claude Lead 这一版不给单号。</li>
+<li>Claude Lead 看不出一轮是消息触发的还是你在它终端里直接敲的。</li>
+<li>Claude 主轮结束、只剩后台小助手在跑时，答「闲」（它能接新消息）。</li>
+<li>Claude Code 以后改了底部那一行的格式，接口会退化成「不知道」，不会答错；到时要跟着改识别规则。</li>
+<li>Codex 收到消息但还没开始这轮的那几秒，答「闲」；Codex 自己直接从 Discord 收的消息引起的轮，单号答「判断不了」。</li>
+</ul>
+<p class="note">QA 计划：529 测试房各起一个 Claude Lead 和一个 Codex Lead，分别在「长活进行中」「空闲」「进程不在」三种状态下对照真实状态；最后在生产只读调用一次，报告里只放状态/时间/来源，不放正文。</p>
+</div>
+
+<div class="card navy" id="summaryCard">
+<h2>意见汇总</h2>
+<p class="note">上面每一节下面都可以写意见（自动保存在你的浏览器里）。这里会实时汇总，点按钮复制后发回给我。这是修改意见，不代表通过。</p>
+<button class="btn" id="copyAll" type="button">复制全部意见</button> <span id="copyStatus"></span>
+<div id="chunks"></div>
+</div>
+</div>
+<script nonce="__CSP_NONCE__">
+(function(){
+  var MARK = '【页面意见汇总】FLY-2882';
+  var PREFIX = 'fw-comments:' + location.pathname + ':';
+  function load(k){ try { return window.localStorage.getItem(PREFIX + k) || ''; } catch (e) { return ''; } }
+  function save(k, v){ try { window.localStorage.setItem(PREFIX + k, v); } catch (e) {} }
+  var sections = Array.prototype.slice.call(document.querySelectorAll('.card[data-section]'));
+  var boxes = [];
+  sections.forEach(function(card, i){
+    var title = card.getAttribute('data-section') || ('第' + (i + 1) + '节');
+    var wrap = document.createElement('div'); wrap.className = 'cbox';
+    var lab = document.createElement('label'); lab.textContent = '对「' + title + '」的意见';
+    var ta = document.createElement('textarea'); ta.value = load('s' + i);
+    ta.setAttribute('aria-label', '对「' + title + '」的意见');
+    ta.addEventListener('input', function(){ save('s' + i, ta.value); render(); });
+    wrap.appendChild(lab); wrap.appendChild(ta); card.appendChild(wrap);
+    boxes.push({ title: title, ta: ta });
+  });
+  function buildChunks(){
+    var items = boxes.filter(function(b){ return b.ta.value.trim(); })
+      .map(function(b){ return '【' + b.title + '】' + b.ta.value.trim(); });
+    if (!items.length) return [];
+    var chunks = [], cur = MARK;
+    items.forEach(function(it){
+      if ((cur + '\n' + it).length > 1800 && cur !== MARK) { chunks.push(cur); cur = MARK; }
+      cur += '\n' + it;
+    });
+    chunks.push(cur);
+    if (chunks.length > 1) chunks = chunks.map(function(c, i){ return c.replace(MARK, MARK + '（' + (i + 1) + '/' + chunks.length + '）'); });
+    return chunks;
+  }
+  var host = document.getElementById('chunks');
+  function render(){
+    while (host.firstChild) host.removeChild(host.firstChild);
+    var cs = buildChunks();
+    if (!cs.length) { var p = document.createElement('p'); p.className = 'note'; p.textContent = '还没有意见。'; host.appendChild(p); return; }
+    cs.forEach(function(c){ var d = document.createElement('div'); d.className = 'chunk'; d.textContent = c; host.appendChild(d); });
+  }
+  function fallbackCopy(text){
+    var t = document.createElement('textarea'); t.value = text; t.setAttribute('readonly', '');
+    t.style.position = 'fixed'; t.style.top = '-1000px'; document.body.appendChild(t); t.select();
+    var ok = false; try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(t); return ok;
+  }
+  var status = document.getElementById('copyStatus');
+  document.getElementById('copyAll').addEventListener('click', function(){
+    var text = buildChunks().join('\n\n');
+    if (!text) { status.textContent = '没有可复制的意见'; return; }
+    function done(ok){ status.textContent = ok ? '已复制' : '复制失败，请手动选中上面的文字'; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function(){ done(true); }, function(){ done(fallbackCopy(text)); });
+    } else { done(fallbackCopy(text)); }
+  });
+  render();
+})();
+</script>
+</body>
+</html>
