@@ -2,22 +2,25 @@
 issue: FLY-2919
 phase: implement
 phaseCursor: 0/6
-updated: 2026-09-27T04:00:57.986Z
-nextStep: "B10 WIP on7747f1ce8: server-loss alive/unknown-window-loss causal
-  RED2 then concrete GREEN30; zombie-scan fresh/parked dead RED6 then GREEN10;
-  socket-hold GREEN; plugin common C2/read wiring RED1 then GREEN19. Uncommitted
-  source changes remain; no build/related/lint yet. Continuing crash-reaper:
-  remove independent window/age death authority; common independent body runtime
-  already commits death, reaper consumes exact projected duty for UI-only
-  cleanup, durable generation receipt and bounded restart inventory. New cleanup
-  retry/live negative tests awaiting RED result. Full A-F/nine-ticket scope
-  unchanged; B11 direct consumers and legacy/logical activation, C
-  ordinary/rework settlement, D/E/F, A9 timeout, final review/PR/frozen
-  CI/handoff remain. No gate pending or blocker."
+updated: 2026-09-27T04:16:22.237Z
+nextStep: "B10 WIP code done awaiting checks: server-loss and zombie-scan
+  consume shared process evidence; removed independent server/window death
+  transition. crash-reaper UI-only after exact current projected duty, no
+  age/dead-pin/finalizer/terminated path; persistent generation receipt and
+  bounded64 cursor preserve cleanup retries after terminal death/restart. RED
+  proofs archived in /tmp/fly2919-b10-*; final24 teamlead concretefiles
+  pluskill-inventory andretention-gate green (514Vitest passes so far). Related
+  running in owned session90025; thenbuild/typechecks/lint in same sequential
+  script /tmp/fly2919-b10-verify.py. Extra residue-harvest exact guard pending
+  after script; source hashes /tmp/fly2919-b10-source-hashes.json unchanged. No
+  commit/push yet for B10 code. Full A-F/nine-ticket scope unchanged; next B11
+  direct launch/started/quiescence consumers, legacy/logical activation, C/D/E/F
+  obligations and final review/PR/frozenCI/handoff remain; no external gate or
+  blocker."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2919 progress
 **phase**: implement (0/6)
-**next**: B10 WIP on7747f1ce8: server-loss alive/unknown-window-loss causal RED2 then concrete GREEN30; zombie-scan fresh/parked dead RED6 then GREEN10; socket-hold GREEN; plugin common C2/read wiring RED1 then GREEN19. Uncommitted source changes remain; no build/related/lint yet. Continuing crash-reaper: remove independent window/age death authority; common independent body runtime already commits death, reaper consumes exact projected duty for UI-only cleanup, durable generation receipt and bounded restart inventory. New cleanup retry/live negative tests awaiting RED result. Full A-F/nine-ticket scope unchanged; B11 direct consumers and legacy/logical activation, C ordinary/rework settlement, D/E/F, A9 timeout, final review/PR/frozen CI/handoff remain. No gate pending or blocker.
+**next**: B10 WIP code done awaiting checks: server-loss and zombie-scan consume shared process evidence; removed independent server/window death transition. crash-reaper UI-only after exact current projected duty, no age/dead-pin/finalizer/terminated path; persistent generation receipt and bounded64 cursor preserve cleanup retries after terminal death/restart. RED proofs archived in /tmp/fly2919-b10-*; final24 teamlead concretefiles pluskill-inventory andretention-gate green (514Vitest passes so far). Related running in owned session90025; thenbuild/typechecks/lint in same sequential script /tmp/fly2919-b10-verify.py. Extra residue-harvest exact guard pending after script; source hashes /tmp/fly2919-b10-source-hashes.json unchanged. No commit/push yet for B10 code. Full A-F/nine-ticket scope unchanged; next B11 direct launch/started/quiescence consumers, legacy/logical activation, C/D/E/F obligations and final review/PR/frozenCI/handoff remain; no external gate or blocker.
