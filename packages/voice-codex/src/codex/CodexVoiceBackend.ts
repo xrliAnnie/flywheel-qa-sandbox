@@ -83,8 +83,12 @@ const READBACK_NOTICE_CEILING_MS = 30_000;
  * goes in as developer text (v3 `session.context.append`, accepted in every
  * probe-8 run).
  */
-export function readbackAbandonedNote(text: string): string {
-	return `（系统提示，不要读出）用户刚刚打断了你正在朗读的 Lead 回复，原文是：「${text}」。从你被打断的地方起，这段原文一个字都不要再说——不要把没说完的词或句子补完，不要接着念，也不要复述或总结；剩下的内容用户会在频道里看到。现在只回应用户刚刚说的话。`;
+export function readbackAbandonedNote(text: string, spoken = ""): string {
+	const cut =
+		spoken !== "" && text.startsWith(spoken)
+			? `打断时已经朗读到：「${spoken}」。禁止续念的剩余原文是：「${text.slice(spoken.length)}」。`
+			: "";
+	return `（系统提示，不要读出）用户刚刚打断了你正在朗读的 Lead 回复，原文是：「${text}」。${cut}从你被打断的地方起，这段原文一个字都不要再说——尤其不要补完被截断的半个词，不要把没说完的词或句子补完，不要接着念，也不要复述或总结；剩下的内容用户会在频道里看到。现在只回应用户刚刚说的话。`;
 }
 
 interface CodexTransportLike {
@@ -257,8 +261,8 @@ class CodexVoiceSession implements ConversationSession {
 			busyReason: () => this.readAloudBusyReason(),
 			roomActive: () => this.roomActive(),
 			recovering: () => this.live && this.restarting && !this.closing,
-			abandoned: (text, generation) =>
-				this.noteAbandonedReadback(text, generation),
+			abandoned: (text, generation, spoken) =>
+				this.noteAbandonedReadback(text, generation, spoken),
 			consumedVoiced: () => options.downlink?.()?.stats().consumedVoiced ?? 0,
 			queuedVoiced: () => options.downlink?.()?.queued().voiced ?? 0,
 			interference: () => this.downlink.interference,
@@ -388,7 +392,11 @@ class CodexVoiceSession implements ConversationSession {
 	}
 
 	/** QA@2: tell the model not to finish a Lead-reply chunk she cut into. */
-	private noteAbandonedReadback(text: string, generation: number): void {
+	private noteAbandonedReadback(
+		text: string,
+		generation: number,
+		spoken?: string,
+	): void {
 		// Only into the generation that holds the text, and never while closing.
 		if (
 			this.closing ||
@@ -403,7 +411,7 @@ class CodexVoiceSession implements ConversationSession {
 			chars: Array.from(text).length,
 		});
 		void this.options.conversation.transport
-			.appendText(readbackAbandonedNote(text), "developer", generation)
+			.appendText(readbackAbandonedNote(text, spoken), "developer", generation)
 			.catch((error) =>
 				this.options.onEvidence?.({
 					kind: "codex_readback_abandoned_note_failed",
@@ -457,8 +465,8 @@ class CodexVoiceSession implements ConversationSession {
 
 	private cut(reason: "speech_interrupted" | "session_closed"): void {
 		if (this.closing || this.restarting || !this.live) return;
-		this.downlink.bargeIn();
-		this.speaker.interrupt(reason);
+		const readbackCut = this.speaker.interrupt(reason);
+		this.downlink.bargeIn({ replayBuffered: !readbackCut });
 		this.overrunTurnId = undefined;
 		this.audible = false;
 		this.options.onEvidence?.({
@@ -748,6 +756,17 @@ class CodexVoiceSession implements ConversationSession {
 				speakerUserId: soleRoomUser.userId,
 			});
 		}
+		const adjustedText =
+			transcript.role === "assistant"
+				? this.speaker.truncateAssistantFinal(transcript.text)
+				: transcript.text;
+		if (transcript.role === "assistant" && adjustedText === "") {
+			this.options.onEvidence?.({
+				kind: "codex_readback_continuation_suppressed",
+				generation: transcript.generation,
+			});
+			return;
+		}
 		const utterance: VoiceUtterance = {
 			sessionId: this.sessionId,
 			sessionGeneration: transcript.generation,
@@ -760,10 +779,7 @@ class CodexVoiceSession implements ConversationSession {
 			source: transcript.role === "user" ? "room_audio" : "engine_audio",
 			role: transcript.role,
 			// T5c ③: an overrun read-aloud is kept only up to its line.
-			text:
-				transcript.role === "assistant"
-					? this.speaker.truncateAssistantFinal(transcript.text)
-					: transcript.text,
+			text: adjustedText,
 			final: true,
 			attribution:
 				transcript.role === "assistant"

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { Readable } from "node:stream";
 import type {
 	BrainAdapter,
@@ -23,6 +24,27 @@ const brain: BrainAdapter = {
 		yield "unused";
 	},
 };
+
+interface Qa3ReadbackBargeFixture {
+	interrupt: string;
+	cases: Array<{
+		id: string;
+		reply: string;
+		spokenBeforeInterrupt: string;
+		forbiddenContinuation: string;
+		providerReplyAfterInterrupt: string;
+		cleanAnswer: string;
+		recordedGapMs: number;
+		recordedReplayMs: number;
+	}>;
+}
+
+const qa3ReadbackBarge = JSON.parse(
+	readFileSync(
+		new URL("./fixtures/fly2885-qa3-readback-barge.json", import.meta.url),
+		"utf8",
+	),
+) as Qa3ReadbackBargeFixture;
 
 afterEach(() => {
 	vi.useRealTimers();
@@ -746,6 +768,77 @@ describe("engine B says when a Lead reply could not be read to the end (FLY-2885
 				): Promise<SpeakReceipt>;
 			}
 		).readReply(text, options);
+
+	it.each(qa3ReadbackBarge.cases)(
+		"drops the recorded $id readback replay and fences its half-word continuation",
+		async (sample) => {
+			const h = await harness();
+			const receipt = readReply(h.session, sample.reply, {
+				pendingKey: `qa3-${sample.id}`,
+				verification: "required",
+			});
+			await vi.advanceTimersByTimeAsync(0);
+			h.turn("turn.created", `readback-${sample.id}`, "assistant");
+			await h.step("vvvvv");
+			h.callbacks.onTranscript({
+				generation: 1,
+				association: "unattributed",
+				role: "assistant",
+				text: sample.spokenBeforeInterrupt,
+				final: false,
+				raw: {},
+			} as never);
+
+			// The QA speaker's "好了好了，……六加六等于几" opens the gate,
+			// then pauses. The provider keeps sending the cut readback while the
+			// gate is still open; user-turn evidence lands only after it is buffered.
+			h.founder(true);
+			h.session.interrupt();
+			await vi.advanceTimersByTimeAsync(0);
+			const buffered = await h.step(
+				"s".repeat(sample.recordedGapMs / 20) +
+					"v".repeat(sample.recordedReplayMs / 20),
+			);
+			h.turn("turn.created", `user-${sample.id}`, "user");
+			h.founder(false);
+			await h.step("----------", false);
+
+			// A readback cut is terminal for its old audio. Ordinary conversation
+			// keeps the T5 replay path (covered above), but these packets never do.
+			expect(
+				h.evidence.filter(
+					(record) =>
+						record.kind === "codex_barge_in_resumed" &&
+						record.boundary === "replay",
+				),
+			).toEqual([]);
+			expect(h.heardIds().filter((id) => buffered.includes(id))).toEqual([]);
+
+			// The steer names the actual cut point, including C2's half word, so
+			// "进入" cannot become "进入了终面" in the next answer. The local
+			// transcript fence is deterministic even if the model ignores it.
+			const steer = h.appendText.mock.calls[0]?.[0] as string | undefined;
+			expect(steer).toContain(sample.spokenBeforeInterrupt);
+			expect(steer).toContain(sample.forbiddenContinuation);
+			h.callbacks.onTranscript({
+				generation: 1,
+				association: "unattributed",
+				role: "assistant",
+				text: sample.providerReplyAfterInterrupt,
+				final: true,
+				raw: {},
+			} as never);
+			await vi.advanceTimersByTimeAsync(0);
+			expect(h.persisted.at(-1)).toEqual({
+				role: "assistant",
+				text: sample.cleanAnswer,
+			});
+			await expect(receipt).resolves.toMatchObject({
+				outcome: "failed",
+				reason: "speech_interrupted",
+			});
+		},
+	);
 
 	it("says the rest is in the channel once the room pauses after her barge-in", async () => {
 		const h = await harness();

@@ -89,6 +89,8 @@ export class DownlinkController {
 	private silenceSinceDone = 0;
 	private discardForced = false;
 	private interferenceCount = 0;
+	/** Lead readback is terminal when cut; ordinary conversation may replay. */
+	private replayBuffered = true;
 
 	constructor(private readonly options: DownlinkControllerOptions) {}
 
@@ -128,7 +130,17 @@ export class DownlinkController {
 	}
 
 	/** The founder's gated speech reached the uplink while audio was audible. */
-	bargeIn(): void {
+	bargeIn(options: { replayBuffered?: boolean } = {}): void {
+		const wasBargeIn =
+			this.current === "muted" ||
+			this.current === "deciding" ||
+			this.current === "waitGap";
+		const requestedReplay = options.replayBuffered ?? true;
+		// Repeated room-level cuts during one founder utterance must not turn a
+		// terminal readback cut back into the generic replay policy.
+		this.replayBuffered = wasBargeIn
+			? this.replayBuffered && requestedReplay
+			: requestedReplay;
 		this.cut();
 		const now = this.options.now();
 		this.current = "muted";
@@ -191,6 +203,7 @@ export class DownlinkController {
 		this.silenceRun = 0;
 		this.evidenceAt = undefined;
 		this.discardForced = false;
+		this.replayBuffered = true;
 	}
 
 	private play(input: { payload: Buffer; voiced: boolean }): void {
@@ -245,6 +258,13 @@ export class DownlinkController {
 		if (this.current === "deciding") {
 			const gap = this.longestGap();
 			if (gap) {
+				if (!this.replayBuffered) {
+					// A cut Lead readback is abandoned, never reconstructed from
+					// packets collected while the founder was speaking. Live packets
+					// after this boundary still pass normally.
+					this.resume("live", gap.end - gap.start, 0, []);
+					return;
+				}
 				const first = this.buffer[0]?.index ?? this.index;
 				if (gap.end < first) {
 					this.resume("head_lost", gap.end - gap.start, 0, []);

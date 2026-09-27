@@ -118,6 +118,56 @@ export function opensWith(prefix: string, text: string): boolean {
 	return sentenceEnd(want, Array.from(canonicalSpeech(text)), 0) !== undefined;
 }
 
+export interface StrippedReadbackContinuation {
+	text: string;
+	matched: boolean;
+}
+
+/**
+ * QA@3 C2: the answer after a readback barge-in may open by completing the
+ * cut word ("进入" -> "了终面。十二。"). Find the longest leading stretch of
+ * `actual` that is still a suffix of the requested readback around the
+ * observed cut point, and remove it through its sentence terminator. A short
+ * accidental overlap without a terminator is not enough to rewrite an answer.
+ */
+export function stripReadbackContinuation(
+	expected: string,
+	spoken: string,
+	actual: string,
+): StrippedReadbackContinuation {
+	const want = canonicalSpeech(expected);
+	const heard = canonicalSpeech(spoken);
+	const gotChars = Array.from(actual);
+	const minStart = Math.max(0, heard.length - 6);
+	const maxStart = Math.min(want.length, heard.length + 6);
+	let bestRawEnd = 0;
+	let bestCanonical = 0;
+	for (let start = minStart; start <= maxStart; start += 1) {
+		const tail = want.slice(start);
+		for (let rawEnd = 1; rawEnd <= gotChars.length; rawEnd += 1) {
+			const raw = gotChars.slice(0, rawEnd).join("");
+			const prefix = canonicalSpeech(raw);
+			if (!tail.startsWith(prefix)) break;
+			if (
+				prefix.length > bestCanonical ||
+				(prefix.length === bestCanonical && rawEnd > bestRawEnd)
+			) {
+				bestCanonical = prefix.length;
+				bestRawEnd = rawEnd;
+			}
+		}
+	}
+	if (
+		bestCanonical < 2 ||
+		!/[。！？!?；;\n]/u.test(gotChars.slice(0, bestRawEnd).join(""))
+	)
+		return { text: actual, matched: false };
+	return {
+		text: gotChars.slice(bestRawEnd).join("").trimStart(),
+		matched: true,
+	};
+}
+
 /**
  * Where in `got` (from `start`) the sentence `want` ends, if a stretch there
  * reads it within tolerance; the closest such stretch wins.

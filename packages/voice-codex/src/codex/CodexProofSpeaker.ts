@@ -12,6 +12,7 @@ import {
 	type SpokenPrefix,
 	speechAlignment,
 	spokenPrefix,
+	stripReadbackContinuation,
 	unalignedText,
 } from "./SpeechOverrun.js";
 
@@ -93,7 +94,7 @@ export interface CodexSpeakerHost {
 	 * model's context as speakable text) was cut by her barge-in or preempt.
 	 * The model must be told not to finish it in its next answer.
 	 */
-	abandoned?(text: string, generation: number): void;
+	abandoned?(text: string, generation: number, spoken?: string): void;
 	/**
 	 * T5c: mute the overrunning turn (session-level discard state). The turn id
 	 * is known when the chunk was already bound, else its turn.created follows.
@@ -138,6 +139,8 @@ interface ChunkResult {
 	prefix?: SpokenPrefix;
 	/** The generation the chunk was sent on. */
 	generation?: number;
+	/** Assistant transcript observed before the readback cut. */
+	spoken?: string;
 }
 
 interface OwedFinal {
@@ -167,6 +170,8 @@ interface PendingChunk {
 	expected: string;
 	/** A Lead-reply chunk: an overrun resumes after its last read sentence. */
 	readback: boolean;
+	/** Lead text may be steered off; false for our remainder notice. */
+	abandonable: boolean;
 	verification: VoiceSpeakVerification;
 	sent: boolean;
 	sentAt: number;
@@ -257,6 +262,14 @@ export class CodexProofSpeaker {
 	 * that rest is still speakable context on `generation`.
 	 */
 	private overrunCut?: { text: string; generation: number; note: boolean };
+	/** QA@3: deterministic fence for an answer that starts with cut readback. */
+	private abandonedCut?: {
+		expected: string;
+		spoken: string;
+		generation: number;
+	};
+	/** One final rewritten by `assistantTranscript`, consumed by persistence. */
+	private abandonedFinal?: string;
 	/** Why the waiting reply must stop (her barge-in in an overrun gap). */
 	private replyStop?: string;
 	private readonly ended = new Set<string>();
@@ -436,6 +449,23 @@ export class CodexProofSpeaker {
 	assistantTranscript(input: { text: string; final: boolean }): void {
 		this.expireOwed();
 		if (input.final) this.finalOwner = undefined;
+		const abandoned = this.abandonedCut;
+		if (abandoned?.generation === this.host.sessionGeneration()) {
+			// Do not let a late user-answer final bind to the remainder notice.
+			// Deltas remain fenced; the final is either the interrupted readback
+			// itself (empty after stripping, so the fence stays) or the user's
+			// answer (possibly with the old tail removed, then the fence clears).
+			if (!input.final) return;
+			const stripped = stripReadbackContinuation(
+				abandoned.expected,
+				abandoned.spoken,
+				input.text,
+			);
+			this.abandonedFinal = stripped.text;
+			if (stripped.text !== "" || !stripped.matched)
+				this.abandonedCut = undefined;
+			return;
+		}
 		// Review R2/R3: an overrun chunk whose final was lost must not take a
 		// later turn's (her answer's). Its final opens with what its deltas
 		// showed; one that does not is someone else's: the claim is given up,
@@ -480,12 +510,14 @@ export class CodexProofSpeaker {
 		if (pending?.done && !pending.settled) this.evaluate(pending);
 	}
 
-	interrupt(reason = "speech_interrupted"): void {
+	interrupt(reason = "speech_interrupted"): boolean {
 		// A new generation or a closed session never sees the old turn's final,
 		// and holds none of the old speakable text (review R2).
 		if (reason === "generation_changed" || reason === "session_closed") {
 			this.keepOwed(() => false);
 			this.overrunCut = undefined;
+			this.abandonedCut = undefined;
+			this.abandonedFinal = undefined;
 		}
 		// Review (QA@2 rework): she barged in after an overrun cut a Lead-reply
 		// chunk and before its rest went out. The rest is still speakable
@@ -499,17 +531,39 @@ export class CodexProofSpeaker {
 		) {
 			this.overrunCut = undefined;
 			this.replyStop = reason;
-			if (cut.note) this.host.abandoned?.(cut.text, cut.generation);
+			if (cut.note) {
+				this.abandonedCut = {
+					expected: cut.text,
+					spoken: "",
+					generation: cut.generation,
+				};
+				this.host.abandoned?.(cut.text, cut.generation);
+			}
 		}
 		const pending = this.pending;
-		if (!pending || pending.settled) return;
+		const readbackCut =
+			reason === "speech_interrupted" &&
+			((pending?.sent && pending.readback && pending.abandonable) ||
+				(cut !== undefined && cut.note));
+		if (!pending || pending.settled) return readbackCut;
+		const spoken =
+			pending.accumulated || pending.finalText || pending.doneTranscript || "";
+		if (readbackCut) {
+			this.abandonedCut = {
+				expected: pending.expected,
+				spoken,
+				generation: pending.generation,
+			};
+		}
 		this.settle(pending, {
 			ok: false,
 			transport: this.consumedSince(pending) > 0 ? "submitted" : "none",
 			contentProof: "none",
 			reason,
 			...(pending.sent ? {} : { notSent: true }),
+			...(spoken ? { spoken } : {}),
 		});
+		return readbackCut;
 	}
 
 	/**
@@ -517,6 +571,11 @@ export class CodexProofSpeaker {
 	 * and mirrored only up to the line it was asked to read.
 	 */
 	truncateAssistantFinal(text: string): string {
+		if (this.abandonedFinal !== undefined) {
+			const rewritten = this.abandonedFinal;
+			this.abandonedFinal = undefined;
+			return rewritten;
+		}
 		const marker = this.truncation;
 		if (!marker) return text;
 		// A marker waiting for its own chunk's final never takes another's.
@@ -717,7 +776,7 @@ export class CodexProofSpeaker {
 				result.generation !== undefined &&
 				(reason === "speech_interrupted" || reason === "speech_preempted")
 			)
-				this.host.abandoned?.(text, result.generation);
+				this.host.abandoned?.(text, result.generation, result.spoken);
 			if (reason === "speech_overrun" && result.prefix) {
 				const { remainder, spokenSentences, totalSentences } = result.prefix;
 				this.host.evidence({
@@ -828,6 +887,7 @@ export class CodexProofSpeaker {
 					input.verification,
 					this.host.sessionGeneration(),
 					true,
+					input.noteOnAbandon,
 				);
 			}
 		}
@@ -919,6 +979,7 @@ export class CodexProofSpeaker {
 		verification: VoiceSpeakVerification,
 		generation: number,
 		readback = false,
+		abandonable = false,
 	): Promise<ChunkResult> {
 		return new Promise<ChunkResult>((resolve) => {
 			const pending: PendingChunk = {
@@ -926,6 +987,7 @@ export class CodexProofSpeaker {
 				generation,
 				expected,
 				readback,
+				abandonable,
 				verification,
 				sent: false,
 				sentAt: 0,

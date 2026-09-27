@@ -1,0 +1,26 @@
+{
+  "source": "FLY-2885 QA attempt 3 B5/C2; room recording plus Whisper and session event timeline",
+  "interrupt": "好了好了，六加六等于几",
+  "cases": [
+    {
+      "id": "B5",
+      "reply": "我总结一下今天的会议。大家同意先修朗读的问题。然后再做声线的配置。下周一再开一次会确认进度。",
+      "spokenBeforeInterrupt": "我总结一下今天的会议。大家同意先修朗读的问题。然后再做声线的配置。下",
+      "forbiddenContinuation": "周一再开一次会确认进度。",
+      "providerReplyAfterInterrupt": "下周一再开一次会确认进度。好，停，十二。",
+      "cleanAnswer": "好，停，十二。",
+      "recordedGapMs": 720,
+      "recordedReplayMs": 420
+    },
+    {
+      "id": "C2",
+      "reply": "关于招聘的进展如下。本周面试了三个人。有一个人进入了终面。另外两个还在考虑。下周会有结论。",
+      "spokenBeforeInterrupt": "关于招聘的进展如下。本周面试了三个人。有一个人进入",
+      "forbiddenContinuation": "了终面。",
+      "providerReplyAfterInterrupt": "了终面。十二。",
+      "cleanAnswer": "十二。",
+      "recordedGapMs": 460,
+      "recordedReplayMs": 1280
+    }
+  ]
+}
