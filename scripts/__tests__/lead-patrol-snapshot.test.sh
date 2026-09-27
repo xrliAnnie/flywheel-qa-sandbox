@@ -342,6 +342,7 @@ INSERT INTO codex_review_job(
  ('terminal-gate-answered','exec-review-terminal','FLY-114','flywheel','design',2,'terminal-q-3','failed','gate_answered','SECRET_TERMINAL_ANSWERED',NULL,datetime('now','-1 hour')),
  ('terminal-gate-expired','exec-review-terminal','FLY-114','flywheel','design',2,'terminal-q-4','failed','gate_expired','SECRET_TERMINAL_EXPIRED',NULL,datetime('now','-1 hour')),
  ('terminal-gate-mismatch','exec-review-terminal','FLY-114','flywheel','design',2,'terminal-q-5','failed','gate_mismatch','SECRET_TERMINAL_MISMATCH',NULL,datetime('now','-1 hour')),
+ ('terminal-superseded-request','exec-review-recent','FLY-112','flywheel','code',2,'terminal-q-request','failed','superseded_by_request','',NULL,datetime('now','-1 hour')),
  ('terminal-superseded','exec-review-recent','FLY-112','flywheel','design',2,'terminal-q-6','failed','superseded_by_revision','SECRET_TERMINAL_SUPERSEDED',NULL,datetime('now','-1 hour')),
  ('terminal-reviewed-wrong-head','exec-review-recent','FLY-112','flywheel','code',2,'terminal-q-7','failed','reviewed_wrong_head','SECRET_TERMINAL_WRONG_HEAD',NULL,datetime('now','-1 hour')),
  ('terminal-gate-missing','exec-review-recent','FLY-112','flywheel','design',2,'terminal-q-8','failed','gate_missing','SECRET_TERMINAL_MISSING',NULL,datetime('now','-1 hour')),
@@ -468,6 +469,7 @@ contains "$MAIN_OUT" "recovery=open_new_review_gate_current_head" "exhausted hea
 contains "$MAIN_OUT" "STEP 4: FINDING-CANDIDATE" "review without a CommDB owner cannot black out STEP 4"
 contains "$MAIN_OUT" "recovery=POST_/review-requests_same_requestId" "failed review exposes the idempotent replay entrance"
 not_contains "$MAIN_OUT" "request=terminal-head-moved type=" "automatically requeued head move remains excluded"
+not_contains "$MAIN_OUT" "request=terminal-superseded-request" "FLY-2911 replaced request is not an actionable failure"
 not_contains "$MAIN_OUT" "request=terminal-superseded" "benign review supersede is excluded"
 not_contains "$MAIN_OUT" "request=terminal-reviewed-wrong-head" "mismatched-head review is not replayable"
 not_contains "$MAIN_OUT" "request=terminal-gate-missing" "missing-gate review is not replayable"

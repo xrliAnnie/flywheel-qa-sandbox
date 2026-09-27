@@ -547,6 +547,7 @@ import {
 	storeFlagRetirementScanEnabled,
 	storeLoopProfilerEnabled,
 	storeNodeStandbyResumeEnabled,
+	storeReviewEarlyStopEnabled,
 	storeReviewQuotaAutoRetryEnabled,
 	storeShippedHuskForceEnabled,
 	storeSkillFrameworkModeControl,
@@ -14323,6 +14324,7 @@ export async function startBridge(
 				process.env.FLYWHEEL_CLAUDE_REVIEW_TIMEOUT_MS,
 			),
 			quotaAutoRetryEnabled: () => storeReviewQuotaAutoRetryEnabled(flagStore),
+			earlyStopEnabled: () => storeReviewEarlyStopEnabled(flagStore),
 			listActiveReviewFindingRulings: ({ projectName, issueId }) =>
 				store
 					.listActiveReviewFindingRulings(projectName, issueId)

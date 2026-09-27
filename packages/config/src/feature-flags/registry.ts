@@ -403,6 +403,30 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: FLY-2076 default-on wrapper observes an off store write without restart",
 	},
 	{
+		name: "review_early_stop",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_REVIEW_EARLY_STOP",
+		polarity: "default_on",
+		valueKind: "bool",
+		onMeans: "enables",
+		default: true,
+		description:
+			"FLY-2911: stop and audit obsolete review requests before they consume more tokens",
+		whenOn: "提前停止已被新版取代的评审，保留作废原因和接替任务记录",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"startBridge",
+				"storeReviewEarlyStopEnabled",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: FLY-2911 early stop defaults on and observes rollback without restart",
+	},
+	{
 		name: "review_quota_auto_retry",
 		category: "kill_switch",
 		source: "env",

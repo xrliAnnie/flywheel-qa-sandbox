@@ -8,6 +8,7 @@ import { StateStore } from "../../StateStore.js";
 import type { ClaudeReviewOutcome } from "../claude-review-runner.js";
 import { toReviewFindingRulingSnapshot } from "../review-governance-effects.js";
 import {
+	isNewerRequest,
 	type ReviewCommDb,
 	ReviewRequestCoordinator,
 } from "../review-request-coordinator.js";
@@ -19,6 +20,8 @@ const HEAD = "a".repeat(40);
 
 beforeEach(() => {
 	vi.stubEnv("FLYWHEEL_REVIEW_MAX_CONCURRENT", undefined);
+	// Existing protocol tests explicitly exercise the rollback configuration.
+	vi.stubEnv("FLYWHEEL_REVIEW_QUIET_WINDOW_MS", "0");
 });
 
 afterEach(() => {
@@ -45,6 +48,12 @@ class FakeCommDb implements ReviewCommDb {
 		string,
 		{ id: string; content: string; from_agent: string }
 	>();
+	getQuestionOrder(id: string) {
+		const rowId = [...this.questions.keys()].indexOf(id);
+		return rowId < 0
+			? undefined
+			: { createdAt: "2026-09-25T00:00:00.000Z", rowId };
+	}
 	getMessageById(id: string) {
 		return this.questions.get(id);
 	}
@@ -141,10 +150,14 @@ interface Harness {
 async function makeHarness(
 	// FLY-1224 (T13 ②): optional reviewerEffort override seam under test.
 	harnessOpts: {
+		earlyStopEnabled?: boolean | (() => boolean);
+		quietWindowMs?: number;
+		freshnessCheckIntervalMs?: number;
 		reviewerEffort?: "low" | "medium" | "high" | "xhigh";
 		reviewSeverityPolicyEnabled?: boolean;
 		postReviewRulingOk?: boolean;
 		reviewRound?: (invocation: {
+			signal?: AbortSignal;
 			sessionId: string;
 			resume: boolean;
 			prompt: string;
@@ -181,6 +194,9 @@ async function makeHarness(
 	const logs: string[] = [];
 	const coordinator = new ReviewRequestCoordinator({
 		store,
+		earlyStopEnabled: harnessOpts.earlyStopEnabled ?? false,
+		quietWindowMs: harnessOpts.quietWindowMs,
+		freshnessCheckIntervalMs: harnessOpts.freshnessCheckIntervalMs,
 		commDbPathFor: (p) => `/fake/${p}/comm.db`,
 		openCommDb: () => harnessOpts.openCommDb?.(comm) ?? comm,
 		...(harnessOpts.reviewerEffort && {
@@ -191,6 +207,7 @@ async function makeHarness(
 		}),
 		reviewRound: async (inv) => {
 			const invocation = {
+				signal: inv.signal,
 				sessionId: inv.sessionId,
 				resume: inv.resume,
 				prompt: inv.prompt,
@@ -427,6 +444,7 @@ describe("ReviewRequestCoordinator — FLY-1278 review-ruling authority", () => 
 		);
 
 		h.coordinator = new ReviewRequestCoordinator({
+			earlyStopEnabled: false,
 			store: h.store,
 			commDbPathFor: () => "/fake/proj/comm.db",
 			openCommDb: () => h.comm,
@@ -650,6 +668,7 @@ describe("ReviewRequestCoordinator.accept — validation (fail-close)", () => {
 		registerSession(h.store, "e1");
 		openGate(h.comm, "q1");
 		h.coordinator = new ReviewRequestCoordinator({
+			earlyStopEnabled: false,
 			store: h.store,
 			commDbPathFor: () => "/fake/proj/comm.db",
 			openCommDb: () => h.comm,
@@ -3187,6 +3206,7 @@ describe("FLY-1254 — lost reviewer session fallback", () => {
 		openGate(h.comm, "q2", "e1", "review_design");
 		let calls = 0;
 		const coordinator = new ReviewRequestCoordinator({
+			earlyStopEnabled: false,
 			store: h.store,
 			commDbPathFor: () => "/fake/proj/comm.db",
 			openCommDb: () => h.comm,
@@ -3227,6 +3247,7 @@ describe("FLY-1254 — lost reviewer session fallback", () => {
 		openGate(h.comm, "q2", "e1", "review_design");
 		let calls = 0;
 		const coordinator = new ReviewRequestCoordinator({
+			earlyStopEnabled: false,
 			store: h.store,
 			commDbPathFor: () => "/fake/proj/comm.db",
 			openCommDb: () => h.comm,
@@ -3279,6 +3300,7 @@ describe("FLY-1254 — lost reviewer session fallback", () => {
 		let calls = 0;
 		let currentHead = HEAD;
 		const coordinator = new ReviewRequestCoordinator({
+			earlyStopEnabled: false,
 			store: h.store,
 			commDbPathFor: () => "/fake/proj/comm.db",
 			openCommDb: () => h.comm,
@@ -4169,6 +4191,7 @@ describe("ReviewRequestCoordinator — scheduling", () => {
 				expect(h.store.getCodexReviewJob("r2")?.status).toBe("pending");
 				expect(h.store.getCodexReviewJob("r3")?.status).toBe("pending");
 				const restarted = new ReviewRequestCoordinator({
+					earlyStopEnabled: false,
 					store: h.store,
 					commDbPathFor: () => "/fake",
 					openCommDb: () => h.comm,
@@ -4908,6 +4931,7 @@ describe("R12 MEDIUM — code skip must be head-bound; identity is whole-binding
 		const comm = h.comm;
 		openGate(comm, "q1");
 		const coordinator = new ReviewRequestCoordinator({
+			earlyStopEnabled: false,
 			store,
 			commDbPathFor: () => "/fake/proj/comm.db",
 			openCommDb: () => comm,
@@ -5116,6 +5140,7 @@ describe("R13 — terminal-state and delivery invariants", () => {
 			resolveRound = r;
 		});
 		const coordinator = new ReviewRequestCoordinator({
+			earlyStopEnabled: false,
 			store: h.store,
 			commDbPathFor: () => "/fake/proj/comm.db",
 			openCommDb: () => h.comm,
@@ -5163,6 +5188,7 @@ describe("R13 — terminal-state and delivery invariants", () => {
 		});
 		let started = 0;
 		const coordinator = new ReviewRequestCoordinator({
+			earlyStopEnabled: false,
 			store: h.store,
 			commDbPathFor: () => "/fake/proj/comm.db",
 			openCommDb: () => h.comm,
@@ -5260,6 +5286,7 @@ describe("R14 — ownership provenance + full post-review gate re-validation", (
 			release = r;
 		});
 		const coordinator = new ReviewRequestCoordinator({
+			earlyStopEnabled: false,
 			store: h.store,
 			commDbPathFor: () => "/fake/proj/comm.db",
 			openCommDb: () => h.comm,
@@ -5308,6 +5335,7 @@ describe("R14 — ownership provenance + full post-review gate re-validation", (
 			release = r;
 		});
 		const coordinator = new ReviewRequestCoordinator({
+			earlyStopEnabled: false,
 			store: h.store,
 			commDbPathFor: () => "/fake/proj/comm.db",
 			openCommDb: () => h.comm,
@@ -5424,6 +5452,7 @@ describe("R15 — unforgeable delivery + authority-follows-delivery", () => {
 		openGate(h.comm, "q1");
 		let derives = 0;
 		const coordinator = new ReviewRequestCoordinator({
+			earlyStopEnabled: false,
 			store: h.store,
 			commDbPathFor: () => "/fake/proj/comm.db",
 			openCommDb: () => h.comm,
@@ -5703,6 +5732,7 @@ describe("FLY-1278 — canonical payload v2 outbox ownership", () => {
 			policyNote: "medium_low_findings_are_non_blocking_v1",
 			deliveryNonce: nonce,
 		});
+		h.store.claimCodexReviewJobRunning("r1");
 		h.store.completeCodexReviewJob("r1", "APPROVED", "[]", {
 			reviewerVerdict: "CHANGES_REQUESTED",
 			advisoriesJson: "[]",
@@ -5731,6 +5761,7 @@ describe("FLY-1278 — canonical payload v2 outbox ownership", () => {
 			questionId: "q1",
 			frozenHeadSha: HEAD,
 		});
+		h.store.claimCodexReviewJobRunning("r1");
 		h.store.completeCodexReviewJob("r1", "APPROVED", "[]", {
 			reviewerVerdict: "APPROVED",
 			advisoriesJson: "[]",
@@ -5776,6 +5807,7 @@ describe("FLY-1278 — canonical payload v2 outbox ownership", () => {
 			settled: [],
 			policyNote: "medium_low_findings_are_non_blocking_v1",
 		});
+		h.store.claimCodexReviewJobRunning("r1");
 		h.store.completeCodexReviewJob("r1", "APPROVED", "[]", {
 			reviewerVerdict: "APPROVED",
 			advisoriesJson: "[]",
@@ -5791,4 +5823,1179 @@ describe("FLY-1278 — canonical payload v2 outbox ownership", () => {
 		expect(h.store.getCodexReviewJob("r1")?.responded_at).toBeUndefined();
 		expect(h.alerts.some((message) => message.includes("FOREIGN"))).toBe(true);
 	});
+});
+
+describe("FLY-2911 planned recovery regressions", () => {
+	const nextHead = "b".repeat(40);
+	const verdict = (head = HEAD): ClaudeReviewOutcome => ({
+		kind: "verdict",
+		verdict: "APPROVED",
+		findings: [],
+		reviewedHeadSha: head,
+		raw: "",
+	});
+	const request = (
+		requestId: string,
+		executionId = "e1",
+		questionId = "q1",
+	) => ({
+		requestId,
+		executionId,
+		questionId,
+		reviewType: "code",
+	});
+	const sql = (store: StateStore, statement: string) =>
+		(store as unknown as { db: { run(statement: string): void } }).db.run(
+			statement,
+		);
+	const seedSource = (h: Harness, questionId = "q1") => {
+		h.store.insertCodexReviewJob({
+			requestId: "source",
+			executionId: "e1",
+			issueId: "FLY-1188",
+			projectName: "proj",
+			reviewType: "code",
+			questionId,
+			authorFamily: "codex",
+			frozenHeadSha: HEAD,
+			targetRepoPath: "/fake/e1",
+			reuseRepoIdentity: "geoforge3d/flywheel",
+		});
+		h.store.claimCodexReviewJobRunning("source");
+	};
+	beforeEach(() => {
+		vi.useFakeTimers({
+			now: Date.parse("2026-08-30T18:00:00.000Z"),
+			toFake: ["Date", "setTimeout", "clearTimeout"],
+		});
+	});
+
+	it("boot preserves a previously running source head and reviews its binding independently", async () => {
+		const h = await makeHarness({
+			earlyStopEnabled: true,
+			quietWindowMs: 120_000,
+			deriveHead: async (path) => (path === "/fake/e1" ? nextHead : HEAD),
+			reviewRound: async ({ cwd }) =>
+				verdict(cwd === "/fake/e1" ? nextHead : HEAD),
+		});
+		for (const id of ["e1", "e2"]) {
+			registerSession(h.store, id, { bindingPath: `/fake/${id}` });
+			openGate(h.comm, `q-${id}`, id);
+		}
+		seedSource(h, "q-e1");
+		h.store.insertCodexReviewReuseBinding({
+			requestId: "binding",
+			sourceRequestId: "source",
+			executionId: "e2",
+			questionId: "q-e2",
+			targetRepoPath: "/fake/e2",
+			frozenHeadSha: HEAD,
+		});
+		h.coordinator.redriveOnBoot();
+		await settle();
+		expect(h.store.getCodexReviewJob("source")).toMatchObject({
+			frozen_head_sha: HEAD,
+			quiet_until: undefined,
+			failure_reason: "head_moved",
+		});
+		const successor = h.store.getCodexReviewHeadMoveSuccessor("source")!;
+		expect(successor).toMatchObject({
+			status: "pending",
+			frozen_head_sha: nextHead,
+		});
+		expect(successor.quiet_until).toBe(
+			new Date(Date.now() + 120_000).toISOString(),
+		);
+		expect(h.store.getCodexReviewJob("binding")).toMatchObject({
+			status: "done",
+			frozen_head_sha: HEAD,
+			quiet_until: undefined,
+		});
+		expect(h.store.isCodexCodeReviewApproved("e2", HEAD)).toBe(true);
+		expect(h.store.isCodexCodeReviewApproved("e2", nextHead)).toBe(false);
+		expect(h.invocations.map((inv) => inv.cwd)).toEqual(["/fake/e2"]);
+		await vi.advanceTimersByTimeAsync(120_000);
+		await settle();
+		expect(h.store.getCodexReviewJob(successor.request_id)?.status).toBe(
+			"done",
+		);
+		expect(h.store.isCodexCodeReviewApproved("e1", nextHead)).toBe(true);
+		h.coordinator.stop();
+	});
+
+	it.each([false, true])(
+		"released binding observes a full quiet window only when its head moved (%s)",
+		async (moved) => {
+			const pending = deferred<ClaudeReviewOutcome>();
+			let bindingHead = HEAD;
+			let rounds = 0;
+			const h = await makeHarness({
+				earlyStopEnabled: true,
+				quietWindowMs: 120_000,
+				deriveHead: async (path) => (path === "/fake/e2" ? bindingHead : HEAD),
+				reviewRound: async () =>
+					++rounds === 1 ? pending.promise : verdict(bindingHead),
+			});
+			for (const id of ["e1", "e2"]) {
+				registerSession(h.store, id, { bindingPath: `/fake/${id}` });
+				openGate(h.comm, `q-${id}`, id);
+			}
+			await h.coordinator.accept(request("source", "e1", "q-e1"));
+			await settle();
+			await vi.advanceTimersByTimeAsync(120_000);
+			await settle();
+			await h.coordinator.accept(request("binding", "e2", "q-e2"));
+			if (moved) bindingHead = nextHead;
+			pending.resolve(verdict());
+			await settle();
+			if (moved) {
+				expect(h.store.getCodexReviewJob("binding")).toMatchObject({
+					status: "pending",
+					frozen_head_sha: nextHead,
+					quiet_until: new Date(Date.now() + 120_000).toISOString(),
+				});
+				expect(h.comm.responses.has("q-e2")).toBe(false);
+				await vi.advanceTimersByTimeAsync(119_999);
+				expect(h.invocations).toHaveLength(1);
+				await vi.advanceTimersByTimeAsync(1);
+				await settle();
+				expect(h.invocations).toHaveLength(2);
+			} else {
+				expect(h.store.getCodexReviewJob("binding")).toBeNull();
+				expect(h.invocations).toHaveLength(1);
+			}
+			expect(h.comm.responses.has("q-e2")).toBe(true);
+			expect(h.store.isCodexCodeReviewApproved("e2", bindingHead)).toBe(true);
+			if (moved)
+				expect(h.store.isCodexCodeReviewApproved("e2", HEAD)).toBe(false);
+			h.coordinator.stop();
+		},
+	);
+
+	it("new acceptance retires a same-gate legacy NULL-sequence binding without materializing it", async () => {
+		const h = await makeHarness({
+			earlyStopEnabled: true,
+			quietWindowMs: 120_000,
+		});
+		registerSession(h.store, "e1", { bindingPath: "/fake/e1" });
+		openGate(h.comm, "q1");
+		seedSource(h);
+		h.store.insertCodexReviewReuseBinding({
+			requestId: "binding",
+			sourceRequestId: "source",
+			executionId: "e1",
+			questionId: "q1",
+			targetRepoPath: "/fake/e1",
+			frozenHeadSha: HEAD,
+		});
+		sql(
+			h.store,
+			"UPDATE codex_review_job SET accept_seq=0 WHERE request_id='source'",
+		);
+		sql(
+			h.store,
+			"UPDATE codex_review_reuse_binding SET accept_seq=NULL WHERE request_id='binding'",
+		);
+		h.setHead(nextHead);
+		await h.coordinator.accept(request("new"));
+		await settle();
+		expect(h.store.getCodexReviewJob("new")?.accept_seq).toBeGreaterThan(0);
+		expect(h.store.getCodexReviewReuseBinding("binding")).toMatchObject({
+			release_reason: "superseded_by_request",
+			released_at: expect.any(String),
+		});
+		expect(h.store.getCodexReviewJob("binding")).toBeNull();
+		expect(
+			h.store.getEventsByType("review_reuse_binding_retired"),
+		).toMatchObject([
+			{
+				payload: { bindingRequestId: "binding", supersededByRequestId: "new" },
+			},
+		]);
+		h.coordinator.stop();
+	});
+
+	it("legacy delayed materialization and multiple successors cannot retire an equally old retry", async () => {
+		const h = await makeHarness({
+			earlyStopEnabled: true,
+			quietWindowMs: 120_000,
+		});
+		registerSession(h.store, "e1", { bindingPath: "/fake/e1" });
+		openGate(h.comm, "source-q");
+		openGate(h.comm, "q1");
+		seedSource(h, "source-q");
+		h.store.insertCodexReviewReuseBinding({
+			requestId: "binding",
+			sourceRequestId: "source",
+			executionId: "e1",
+			questionId: "q1",
+			targetRepoPath: "/fake/e1",
+			frozenHeadSha: HEAD,
+		});
+		h.store.insertCodexReviewJob({
+			requestId: "retry",
+			executionId: "e1",
+			issueId: "FLY-1188",
+			projectName: "proj",
+			reviewType: "code",
+			questionId: "q1",
+			frozenHeadSha: HEAD,
+			targetRepoPath: "/fake/e1",
+		});
+		sql(h.store, "UPDATE codex_review_job SET accept_seq=0");
+		sql(
+			h.store,
+			"UPDATE codex_review_reuse_binding SET accept_seq=NULL, created_at='2026-08-30 10:00:00'",
+		);
+		sql(
+			h.store,
+			"UPDATE codex_review_job SET created_at='2026-08-30 10:01:00' WHERE request_id='retry'",
+		);
+		h.store.recordCodexReviewJobFailure({
+			requestId: "retry",
+			reason: "nonzero_exit",
+			retryTrigger: "account_switch",
+			parkedAtMs: Date.now() - 1,
+		});
+		h.store.releaseCodexReviewReuseBinding({
+			requestId: "binding",
+			reason: "source_failed",
+			frozenHeadSha: HEAD,
+		});
+		sql(
+			h.store,
+			"UPDATE codex_review_job SET created_at='2026-08-30 10:02:00' WHERE request_id='binding'",
+		);
+		for (const [parent, child, movedHead] of [
+			["binding", "child", nextHead],
+			["child", "grandchild", HEAD],
+		] as const) {
+			h.store.failAndRequeueCodexReviewJobForHeadMove({
+				requestId: parent,
+				successorRequestId: child,
+				currentHeadSha: movedHead,
+				markParentVoided: true,
+				nowIso: new Date().toISOString(),
+			});
+		}
+		expect(h.store.getCodexReviewJob("grandchild")?.accept_seq).toBe(0);
+		h.outcomes.push(verdict());
+		expect(
+			await h.coordinator.redriveAfterAccountSwitch({
+				generation: 1,
+				atMs: Date.now(),
+			}),
+		).toMatchObject({
+			requeued: 1,
+			retired: 0,
+		});
+		await settle();
+		expect(h.store.getCodexReviewJob("retry")).toMatchObject({
+			status: "done",
+			voided_at: undefined,
+		});
+		expect(JSON.parse(h.comm.getResponse("q1")!.content)).toMatchObject({
+			requestId: "retry",
+			reviewVerdict: "APPROVED",
+		});
+		h.coordinator.stop();
+	});
+
+	it("live policy callback disables freshness check retirement and restores legacy verdict failure", async () => {
+		let enabled = true;
+		let signal: AbortSignal | undefined;
+		const pending = deferred<ClaudeReviewOutcome>();
+		const h = await makeHarness({
+			earlyStopEnabled: () => enabled,
+			quietWindowMs: 120_000,
+			freshnessCheckIntervalMs: 30_000,
+			reviewRound: async (inv) => {
+				signal = inv.signal;
+				return pending.promise;
+			},
+		});
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		await h.coordinator.accept(request("running"));
+		await settle();
+		await vi.advanceTimersByTimeAsync(120_000);
+		await settle();
+		expect(h.invocations).toHaveLength(1);
+		enabled = false;
+		h.comm.questions.get("q1")!.resolved_at = new Date().toISOString();
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(signal?.aborted).toBe(false);
+		expect(h.store.getCodexReviewJob("running")).toMatchObject({
+			status: "running",
+			voided_at: undefined,
+		});
+		pending.resolve(verdict());
+		await settle();
+		expect(h.store.getCodexReviewJob("running")).toMatchObject({
+			status: "failed",
+			failure_reason: "gate_answered_externally",
+			voided_at: undefined,
+		});
+		expect(h.store.getEventsByType("review_job_voided")).toHaveLength(0);
+		expect(h.comm.responses.size).toBe(0);
+		h.coordinator.stop();
+	});
+
+	it("live policy race rechecks disable after an awaited freshness check head read", async () => {
+		let enabled = true;
+		let signal: AbortSignal | undefined;
+		let head = HEAD;
+		let deferNextHead = false;
+		const pendingHead = deferred<string>();
+		const pendingRound = deferred<ClaudeReviewOutcome>();
+		const h = await makeHarness({
+			earlyStopEnabled: () => enabled,
+			quietWindowMs: 120_000,
+			freshnessCheckIntervalMs: 30_000,
+			deriveHead: async () => {
+				if (deferNextHead) {
+					deferNextHead = false;
+					return pendingHead.promise;
+				}
+				return head;
+			},
+			reviewRound: async (inv) => {
+				signal = inv.signal;
+				return pendingRound.promise;
+			},
+		});
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		await h.coordinator.accept(request("running"));
+		await settle();
+		await vi.advanceTimersByTimeAsync(120_000);
+		await settle();
+		head = nextHead;
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(signal?.aborted).toBe(false);
+		deferNextHead = true;
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(deferNextHead).toBe(false);
+		enabled = false;
+		pendingHead.resolve(nextHead);
+		await settle();
+		try {
+			expect(signal?.aborted).toBe(false);
+			expect(h.store.getCodexReviewHeadMoveSuccessor("running")).toBeNull();
+			expect(h.store.getCodexReviewJob("running")).toMatchObject({
+				status: "running",
+				voided_at: undefined,
+			});
+			expect(h.store.getEventsByType("review_job_voided")).toHaveLength(0);
+		} finally {
+			h.coordinator.stop();
+			head = HEAD;
+			pendingRound.resolve(verdict());
+			await settle();
+		}
+	});
+
+	it("live policy race enables freshness check for a review started while policy was off", async () => {
+		let enabled = false;
+		let signal: AbortSignal | undefined;
+		const pending = deferred<ClaudeReviewOutcome>();
+		const h = await makeHarness({
+			earlyStopEnabled: () => enabled,
+			quietWindowMs: 120_000,
+			freshnessCheckIntervalMs: 30_000,
+			reviewRound: async (inv) => {
+				signal = inv.signal;
+				return pending.promise;
+			},
+		});
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		await h.coordinator.accept(request("running"));
+		await settle();
+		await vi.advanceTimersByTimeAsync(120_000);
+		await settle();
+		h.comm.questions.get("q1")!.resolved_at = new Date().toISOString();
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(signal?.aborted).toBe(false);
+		expect(h.store.getCodexReviewJob("running")?.status).toBe("running");
+		enabled = true;
+		await vi.advanceTimersByTimeAsync(30_000);
+		try {
+			expect(signal?.aborted).toBe(true);
+			expect(h.store.getCodexReviewJob("running")).toMatchObject({
+				status: "failed",
+				failure_reason: "gate_answered_externally",
+				voided_at: expect.any(String),
+			});
+			expect(h.store.getEventsByType("review_job_voided")).toMatchObject([
+				{ payload: { trigger: "freshness_check" } },
+			]);
+		} finally {
+			h.coordinator.stop();
+			pending.resolve(verdict());
+			await settle();
+		}
+	});
+
+	it("late binding release remains retired and its superseder survives a quota retry", async () => {
+		const sourceRound = deferred<ClaudeReviewOutcome>();
+		const releaseHead = deferred<string>();
+		let blockNextHead = false;
+		let head = HEAD;
+		let rounds = 0;
+		const h = await makeHarness({
+			earlyStopEnabled: true,
+			quietWindowMs: 120_000,
+			deriveHead: async () => {
+				if (blockNextHead) {
+					blockNextHead = false;
+					return releaseHead.promise;
+				}
+				return head;
+			},
+			reviewRound: async () => {
+				if (++rounds === 1) return sourceRound.promise;
+				if (rounds === 2)
+					return {
+						kind: "failed",
+						reason: "nonzero_exit",
+						detail: "quota",
+						exitCode: 1,
+						timedOut: false,
+						raw: JSON.stringify({
+							api_error_status: 429,
+							result:
+								"You've hit your session limit · resets 11:10am (America/Los_Angeles)",
+						}),
+					};
+				return verdict(nextHead);
+			},
+		});
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		await h.coordinator.accept(request("A"));
+		await settle();
+		await vi.advanceTimersByTimeAsync(120_000);
+		await settle();
+		await h.coordinator.accept(request("B"));
+		blockNextHead = true;
+		const lateRelease = (
+			h.coordinator as unknown as {
+				releaseReuseBindingToOwnLane(
+					job: NonNullable<ReturnType<StateStore["getCodexReviewJob"]>>,
+					binding: NonNullable<
+						ReturnType<StateStore["getCodexReviewReuseBinding"]>
+					>,
+					reason: string,
+				): Promise<unknown>;
+			}
+		).releaseReuseBindingToOwnLane(
+			h.store.getCodexReviewJob("A")!,
+			h.store.getCodexReviewReuseBinding("B")!,
+			"source_failed",
+		);
+		await settle();
+		head = nextHead;
+		await h.coordinator.accept(request("C"));
+		releaseHead.resolve(nextHead);
+		expect(await lateRelease).toBeNull();
+		expect(h.store.getCodexReviewJob("B")).toBeNull();
+		expect(h.store.getCodexReviewReuseBinding("B")?.release_reason).toBe(
+			"superseded_by_request",
+		);
+		sourceRound.resolve({
+			kind: "failed",
+			reason: "nonzero_exit",
+			detail: "killed",
+			exitCode: 1,
+			timedOut: false,
+		});
+		await settle();
+		expect(h.store.getCodexReviewJob("A")).toMatchObject({
+			failure_reason: "superseded_by_request",
+			retry_at: undefined,
+		});
+		await vi.advanceTimersByTimeAsync(120_000);
+		await settle();
+		const retry = h.store.getCodexReviewJob("C")!;
+		expect(retry.status).toBe("failed");
+		expect(retry.retry_at).toBeTruthy();
+		await vi.advanceTimersByTimeAsync(Date.parse(retry.retry_at!) - Date.now());
+		await settle();
+		expect(h.store.getCodexReviewJob("C")).toMatchObject({
+			status: "done",
+			voided_at: undefined,
+		});
+		expect(JSON.parse(h.comm.getResponse("q1")!.content)).toMatchObject({
+			requestId: "C",
+			reviewVerdict: "APPROVED",
+		});
+		expect(h.store.getCodexReviewJob("B")).toBeNull();
+		expect(
+			h.store.getEventsByType("review_reuse_binding_retired"),
+		).toHaveLength(1);
+		h.coordinator.stop();
+	});
+});
+
+describe("FLY-2911 stale review lifecycle", () => {
+	const nextHead = "b".repeat(40);
+	const verdict = (head = HEAD): ClaudeReviewOutcome => ({
+		kind: "verdict",
+		verdict: "APPROVED",
+		findings: [],
+		reviewedHeadSha: head,
+		repairedTrailingBrace: false,
+		raw: "",
+	});
+	const request = (
+		requestId: string,
+		questionId = "q1",
+		reviewType = "code",
+	) => ({
+		executionId: "e1",
+		requestId,
+		questionId,
+		reviewType,
+	});
+	const events = (h: Harness, type = "review_job_voided") =>
+		h.store.getEventsByType(type);
+	beforeEach(() => {
+		vi.useFakeTimers({
+			now: Date.parse("2026-09-26T03:00:00.000Z"),
+			toFake: ["Date", "setTimeout", "clearTimeout"],
+		});
+	});
+
+	it("orders accepted requests by gate order and inherited sequence, never by materialization time", () => {
+		const req = (id: string, q: string, seq?: number, parent?: string) => ({
+			request_id: id,
+			question_id: q,
+			accept_seq: seq,
+			head_move_parent_request_id: parent,
+		});
+		const order = (id: string) =>
+			id === "missing"
+				? undefined
+				: { createdAt: "2026-09-25", rowId: id === "new" ? 2 : 1 };
+		for (const [newer, older, expected] of [
+			[req("b", "q", 0), req("a", "q", 0), false],
+			[req("b", "q", 1), req("a", "q", 0), true],
+			[req("b", "q", 0), req("a", "q", 1), false],
+			[req("b", "q"), req("a", "q", 0), false],
+			[req("b", "q", 2), req("a", "q"), false],
+			[req("b", "new", 0), req("a", "old", 9), true],
+			[req("b", "old", 9), req("a", "new", 0), false],
+			[req("b", "missing", 9), req("a", "new", 0), false],
+			[req("b", "q", 4, "a"), req("a", "q", 3), false],
+		] as const)
+			expect(isNewerRequest(newer, older, order)).toBe(expected);
+	});
+
+	it.each(["design", "code"])(
+		"quiet window disabled runs %s immediately",
+		async (reviewType) => {
+			const h = await makeHarness({
+				earlyStopEnabled: true,
+				quietWindowMs: reviewType === "design" ? 120_000 : 0,
+			});
+			registerSession(h.store, "e1");
+			openGate(h.comm, "q1", "e1", `review_${reviewType}`);
+			h.outcomes.push(verdict());
+			await h.coordinator.accept(request("immediate", "q1", reviewType));
+			await settle();
+			expect(h.invocations).toHaveLength(1);
+			expect(h.store.getCodexReviewJob("immediate")?.status).toBe("done");
+			h.coordinator.stop();
+		},
+	);
+
+	it("defaults to 120 seconds and rehydrates a persisted quiet window before running", async () => {
+		vi.stubEnv("FLYWHEEL_REVIEW_QUIET_WINDOW_MS", undefined);
+		const h = await makeHarness({ earlyStopEnabled: true });
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		await h.coordinator.accept(request("boot-quiet"));
+		await settle();
+		expect(
+			Date.parse(h.store.getCodexReviewJob("boot-quiet")!.quiet_until!),
+		).toBe(Date.now() + 120_000);
+		h.coordinator.stop();
+		const reviewRound = vi.fn(async () => verdict());
+		const reboot = new ReviewRequestCoordinator({
+			store: h.store,
+			commDbPathFor: () => "fake",
+			openCommDb: () => h.comm,
+			deriveHead: async () => HEAD,
+			reviewRound,
+			earlyStopEnabled: true,
+		});
+		reboot.redriveOnBoot();
+		await settle();
+		await vi.advanceTimersByTimeAsync(119_999);
+		expect(reviewRound).not.toHaveBeenCalled();
+		await vi.advanceTimersByTimeAsync(1);
+		await settle();
+		expect(reviewRound).toHaveBeenCalledTimes(1);
+		reboot.stop();
+	});
+
+	it("turning quiet off releases a persisted window while permanently voided ids stay retired", async () => {
+		const h = await makeHarness({
+			earlyStopEnabled: true,
+			quietWindowMs: 120_000,
+		});
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		await h.coordinator.accept(request("old"));
+		await h.coordinator.accept(request("new"));
+		await settle();
+		h.coordinator.stop();
+		const reviewRound = vi.fn(async () => verdict());
+		const reboot = new ReviewRequestCoordinator({
+			store: h.store,
+			commDbPathFor: () => "fake",
+			openCommDb: () => h.comm,
+			deriveHead: async () => HEAD,
+			reviewRound,
+			quietWindowMs: 0,
+			earlyStopEnabled: true,
+		});
+		reboot.redriveOnBoot();
+		await settle();
+		expect(reviewRound).toHaveBeenCalledTimes(1);
+		expect(h.store.getCodexReviewJob("old")?.voided_at).toBeTruthy();
+		reboot.stop();
+	});
+
+	it("new head registration aborts the running source and retires older same-gate reuse bindings", async () => {
+		const pending = deferred<ClaudeReviewOutcome>();
+		let signal: AbortSignal | undefined;
+		const h = await makeHarness({
+			earlyStopEnabled: true,
+			reviewRound: async (inv) => {
+				signal = inv.signal;
+				return pending.promise;
+			},
+		});
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		await h.coordinator.accept(request("A"));
+		await settle();
+		await h.coordinator.accept(request("B"));
+		expect(
+			h.store.getCodexReviewReuseBinding("B")?.released_at,
+		).toBeUndefined();
+		h.setHead(nextHead);
+		await h.coordinator.accept(request("C"));
+		expect(signal?.aborted).toBe(true);
+		expect(h.store.getCodexReviewJob("A")).toMatchObject({
+			failure_reason: "superseded_by_request",
+			superseded_by_request_id: "C",
+		});
+		expect(h.store.getCodexReviewReuseBinding("B")).toMatchObject({
+			release_reason: "superseded_by_request",
+		});
+		expect(h.store.getCodexReviewJob("B")).toBeNull();
+		expect(events(h, "review_reuse_binding_retired")).toHaveLength(1);
+		h.coordinator.stop();
+		pending.resolve(verdict());
+		await settle();
+		expect(h.comm.responses.size).toBe(0);
+		expect(events(h)).toHaveLength(1);
+	});
+
+	it.each(["unknown", "shared"])(
+		"freshness check retains a running review when gate is %s",
+		async (mode) => {
+			const pending = deferred<ClaudeReviewOutcome>();
+			let signal: AbortSignal | undefined;
+			let unavailable = false;
+			const h = await makeHarness({
+				earlyStopEnabled: true,
+				openCommDb: (comm) => {
+					if (unavailable) throw new Error("temporarily unavailable");
+					return comm;
+				},
+				reviewRound: async (inv) => {
+					signal = inv.signal;
+					return pending.promise;
+				},
+			});
+			registerSession(h.store, "e1");
+			openGate(h.comm, "q1");
+			await h.coordinator.accept(request("A"));
+			await settle();
+			if (mode === "unknown") unavailable = true;
+			else {
+				openGate(h.comm, "q2");
+				await h.coordinator.accept(request("B", "q2"));
+				h.comm.questions.get("q1")!.resolved_at = new Date().toISOString();
+			}
+			await vi.advanceTimersByTimeAsync(60_000);
+			expect(signal?.aborted).toBe(false);
+			expect(events(h)).toHaveLength(0);
+			h.coordinator.stop();
+			pending.resolve(verdict());
+			await settle();
+		},
+	);
+
+	it("checks gate again after awaiting head and refuses the now superseded registration", async () => {
+		const head = deferred<string>();
+		const h = await makeHarness({
+			earlyStopEnabled: true,
+			deriveHead: () => head.promise,
+		});
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		const accepting = h.coordinator.accept(request("late"));
+		await settle();
+		openGate(h.comm, "q2");
+		Object.assign(h.comm.questions.get("q1")!, {
+			superseded_at: new Date().toISOString(),
+			superseded_by: "q2",
+		});
+		head.resolve(HEAD);
+		expect(await accepting).toMatchObject({ accepted: false, httpStatus: 409 });
+		expect(h.store.getCodexReviewJob("late")?.accept_seq).toBeUndefined();
+		expect(h.invocations).toHaveLength(0);
+		h.coordinator.stop();
+	});
+
+	it.each(["reset_timer", "account_switch"] as const)(
+		"%s rechecks gate, newer requests and head; unchanged open work retries",
+		async (origin) => {
+			for (const scenario of ["gate", "newer", "head", "unchanged"]) {
+				const h = await makeHarness({
+					earlyStopEnabled: true,
+					quietWindowMs: 120_000,
+				});
+				registerSession(h.store, "e1");
+				openGate(h.comm, "q1");
+				h.store.insertCodexReviewJob({
+					requestId: "retry",
+					executionId: "e1",
+					issueId: "FLY-1188",
+					projectName: "proj",
+					reviewType: "code",
+					questionId: "q1",
+					frozenHeadSha: HEAD,
+					targetRepoPath: "/fake/worktree",
+				});
+				h.store.recordCodexReviewJobFailure({
+					requestId: "retry",
+					reason: "nonzero_exit",
+					...(origin === "reset_timer"
+						? { retryAt: new Date(Date.now() + 1000).toISOString() }
+						: {
+								retryTrigger: "account_switch" as const,
+								parkedAtMs: Date.now() - 1,
+							}),
+				});
+				if (scenario === "gate")
+					h.comm.questions.get("q1")!.resolved_at = new Date().toISOString();
+				if (scenario === "newer") {
+					h.store.insertCodexReviewJob({
+						requestId: "newer",
+						executionId: "e1",
+						issueId: "FLY-1188",
+						projectName: "proj",
+						reviewType: "code",
+						questionId: "q1",
+						status: "skipped",
+					});
+					h.store.stampCodexReviewJobResponded("newer");
+				}
+				if (scenario === "head") h.setHead(nextHead);
+				h.outcomes.push(verdict(scenario === "head" ? nextHead : HEAD));
+				if (origin === "reset_timer") {
+					h.coordinator.redriveOnBoot();
+					await vi.advanceTimersByTimeAsync(1000);
+				} else
+					await h.coordinator.redriveAfterAccountSwitch({
+						atMs: Date.now(),
+						generation: 1,
+					});
+				await settle();
+				if (scenario === "unchanged") {
+					expect(h.invocations).toHaveLength(1);
+					expect(h.store.getCodexReviewJob("retry")?.status).toBe("done");
+				} else {
+					expect(h.invocations).toHaveLength(0);
+					expect(h.store.getCodexReviewJob("retry")?.voided_at).toBeTruthy();
+					expect(events(h)).toHaveLength(1);
+					expect(h.store.getCodexReviewJob("retry")?.failure_reason).toBe(
+						scenario === "newer"
+							? "superseded_by_request"
+							: scenario === "gate"
+								? "gate_answered_externally"
+								: "head_moved",
+					);
+				}
+				if (scenario === "head") {
+					await vi.advanceTimersByTimeAsync(120_000);
+					await settle();
+					expect(h.invocations).toHaveLength(1);
+				}
+				h.coordinator.stop();
+			}
+		},
+	);
+
+	it("replays the 9-25 sequence: rejected b94193db cannot replace fc72a8e4; accepted 1ae856df cancels its timer", async () => {
+		vi.setSystemTime(new Date("2026-09-26T01:51:36.000Z"));
+		const h = await makeHarness({
+			earlyStopEnabled: true,
+			quietWindowMs: 120_000,
+		});
+		registerSession(h.store, "e1");
+		openGate(h.comm, "a0ee3883");
+		const seedRetry = (
+			id: string,
+			q: string,
+			exec: string,
+			head: string,
+			due: string,
+		) => {
+			h.store.insertCodexReviewJob({
+				requestId: id,
+				executionId: exec,
+				issueId: "FLY-1188",
+				projectName: "proj",
+				reviewType: "code",
+				questionId: q,
+				frozenHeadSha: head,
+				targetRepoPath: "/fake/worktree",
+			});
+			h.store.recordCodexReviewJobFailure({
+				requestId: id,
+				reason: "nonzero_exit",
+				retryAt: due,
+				failureRaw: "captured quota failure state",
+			});
+		};
+		seedRetry("fc72a8e4", "a0ee3883", "e1", HEAD, "2026-09-26T04:01:02.000Z");
+		h.coordinator.redriveOnBoot();
+		const advanceTo = async (iso: string) => {
+			await vi.advanceTimersByTimeAsync(Date.parse(iso) - Date.now());
+			await settle();
+		};
+		await advanceTo("2026-09-26T02:05:50.000Z");
+		openGate(h.comm, "a220381c", "e1", "question");
+		expect(
+			await h.coordinator.accept(request("b94193db", "a220381c")),
+		).toMatchObject({ accepted: false, httpStatus: 409 });
+		expect(h.store.getCodexReviewJob("b94193db")?.accept_seq).toBeUndefined();
+		expect(h.store.getCodexReviewJob("fc72a8e4")?.retry_at).toBeTruthy();
+		await advanceTo("2026-09-26T02:06:01.000Z");
+		openGate(h.comm, "9a75ffc7");
+		await advanceTo("2026-09-26T02:06:03.000Z");
+		Object.assign(h.comm.questions.get("a0ee3883")!, {
+			superseded_at: new Date().toISOString(),
+			superseded_by: "9a75ffc7",
+		});
+		await advanceTo("2026-09-26T02:06:17.000Z");
+		h.outcomes.push(verdict());
+		await h.coordinator.accept(request("1ae856df", "9a75ffc7"));
+		expect(h.store.getCodexReviewJob("fc72a8e4")).toMatchObject({
+			failure_reason: "superseded_by_request",
+			superseded_by_request_id: "1ae856df",
+			retry_at: undefined,
+		});
+		expect(events(h)[0]?.payload).toMatchObject({
+			requestId: "fc72a8e4",
+			supersededByRequestId: "1ae856df",
+			trigger: "accept",
+		});
+		await advanceTo("2026-09-26T02:53:00.000Z");
+		h.setHead(nextHead);
+		openGate(h.comm, "q73");
+		h.outcomes.push(verdict(nextHead));
+		await h.coordinator.accept(request("73ea086f", "q73"));
+		await advanceTo("2026-09-26T03:10:03.000Z");
+		registerSession(h.store, "e2");
+		openGate(h.comm, "308c69c7", "e2");
+		h.comm.questions.get("308c69c7")!.expires_at = "2026-09-26T08:00:00.000Z";
+		seedRetry(
+			"49b16a5c",
+			"308c69c7",
+			"e2",
+			nextHead,
+			"2026-09-26T06:52:00.000Z",
+		);
+		h.coordinator.redriveOnBoot();
+		await advanceTo("2026-09-26T04:01:03.000Z");
+		expect(h.invocations).toHaveLength(2);
+		h.outcomes.push(verdict(nextHead));
+		await advanceTo("2026-09-26T06:52:00.000Z");
+		expect(h.invocations).toHaveLength(3);
+		expect(h.store.getCodexReviewJob("49b16a5c")?.status).toBe("done");
+		expect(events(h)).toHaveLength(1);
+		h.coordinator.stop();
+	});
+
+	it("boot retires an older binding of a voided source instead of materializing a stale request", async () => {
+		const h = await makeHarness({
+			earlyStopEnabled: true,
+			quietWindowMs: 120_000,
+		});
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		const input = {
+			executionId: "e1",
+			issueId: "FLY-1188",
+			projectName: "proj",
+			reviewType: "code" as const,
+			questionId: "q1",
+			frozenHeadSha: HEAD,
+			targetRepoPath: "/fake/worktree",
+		};
+		h.store.insertCodexReviewJob({ ...input, requestId: "source" });
+		h.store.claimCodexReviewJobRunning("source");
+		h.store.insertCodexReviewReuseBinding({
+			requestId: "binding",
+			sourceRequestId: "source",
+			executionId: "e1",
+			questionId: "q1",
+			targetRepoPath: "/fake/worktree",
+			frozenHeadSha: HEAD,
+		});
+		h.store.insertCodexReviewJob({
+			...input,
+			requestId: "newer",
+			quietUntil: new Date(Date.now() + 120_000).toISOString(),
+		});
+		h.store.voidCodexReviewJob({
+			requestId: "source",
+			reason: "superseded_by_request",
+			trigger: "accept",
+			supersededByRequestId: "newer",
+			nowIso: new Date().toISOString(),
+		});
+		h.coordinator.redriveOnBoot();
+		await settle();
+		expect(h.store.getCodexReviewReuseBinding("binding")).toMatchObject({
+			release_reason: "superseded_by_request",
+		});
+		expect(h.store.getCodexReviewJob("binding")).toBeNull();
+		expect(events(h, "review_reuse_binding_retired")).toHaveLength(1);
+		h.coordinator.redriveOnBoot();
+		await settle();
+		expect(events(h, "review_reuse_binding_retired")).toHaveLength(1);
+		h.coordinator.stop();
+	});
+
+	it("rollback configuration creates no permanent voids or freshness check cancellations", async () => {
+		const pending = deferred<ClaudeReviewOutcome>();
+		let signal: AbortSignal | undefined;
+		const h = await makeHarness({
+			earlyStopEnabled: false,
+			quietWindowMs: 0,
+			reviewRound: async (inv) => {
+				signal = inv.signal;
+				return pending.promise;
+			},
+		});
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		await h.coordinator.accept(request("old"));
+		await settle();
+		h.setHead(nextHead);
+		await h.coordinator.accept(request("new"));
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(signal?.aborted).toBe(false);
+		expect(h.store.getCodexReviewJob("old")?.voided_at).toBeUndefined();
+		pending.resolve(verdict());
+		await settle();
+		h.coordinator.stop();
+		expect(events(h)).toHaveLength(0);
+		expect(h.store.getCodexReviewJob("old")?.voided_at).toBeUndefined();
+	});
+
+	it("waits 120 seconds, restarts a full quiet window on head movement and audits it", async () => {
+		const h = await makeHarness({
+			earlyStopEnabled: true,
+			quietWindowMs: 120_000,
+		});
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		h.outcomes.push(verdict(nextHead));
+		await h.coordinator.accept(request("quiet"));
+		await settle();
+		await vi.advanceTimersByTimeAsync(119_999);
+		expect(h.invocations).toHaveLength(0);
+		h.setHead(nextHead);
+		await vi.advanceTimersByTimeAsync(1);
+		await settle();
+		expect(h.store.getCodexReviewJob("quiet")).toMatchObject({
+			status: "pending",
+			frozen_head_sha: nextHead,
+		});
+		expect(events(h, "review_quiet_window_restarted")).toHaveLength(1);
+		await vi.advanceTimersByTimeAsync(119_999);
+		expect(h.invocations).toHaveLength(0);
+		await vi.advanceTimersByTimeAsync(1);
+		await settle();
+		expect(h.invocations).toHaveLength(1);
+		expect(h.store.getCodexReviewJob("quiet")?.status).toBe("done");
+		h.coordinator.stop();
+	});
+
+	it("new registration voids a pending request atomically and cannot resurrect its id", async () => {
+		const h = await makeHarness({
+			earlyStopEnabled: true,
+			quietWindowMs: 120_000,
+		});
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		await h.coordinator.accept(request("old"));
+		await settle();
+		await h.coordinator.accept(request("new"));
+		await settle();
+		expect(h.store.getCodexReviewJob("old")).toMatchObject({
+			status: "failed",
+			failure_reason: "superseded_by_request",
+			superseded_by_request_id: "new",
+		});
+		expect(events(h)).toHaveLength(1);
+		expect(await h.coordinator.accept(request("old"))).toMatchObject({
+			accepted: false,
+			httpStatus: 409,
+		});
+		expect(h.store.getCodexReviewJob("new")?.status).toBe("pending");
+		h.coordinator.stop();
+	});
+
+	it("a late old-gate request cannot supersede the new gate, even within the same second", async () => {
+		const h = await makeHarness({
+			earlyStopEnabled: true,
+			quietWindowMs: 120_000,
+		});
+		registerSession(h.store, "e1");
+		openGate(h.comm, "old-q");
+		openGate(h.comm, "new-q");
+		await h.coordinator.accept(request("new", "new-q"));
+		await h.coordinator.accept(request("old", "old-q"));
+		await settle();
+		expect(h.store.getCodexReviewJob("new")?.status).toBe("pending");
+		expect(events(h)).toHaveLength(0);
+		h.comm.questions.get("old-q")!.superseded_at = new Date().toISOString();
+		h.comm.questions.get("old-q")!.superseded_by = "new-q";
+		h.outcomes.push(verdict());
+		await vi.advanceTimersByTimeAsync(120_000);
+		await settle();
+		expect(h.comm.responses.has("new-q")).toBe(true);
+		expect(h.store.getCodexReviewJob("old")?.voided_at).toBeTruthy();
+		h.coordinator.stop();
+	});
+
+	it("aborts after two head mismatches, creates a quiet successor and discards late verdict", async () => {
+		const pending = deferred<ClaudeReviewOutcome>();
+		let signal: AbortSignal | undefined;
+		const h = await makeHarness({
+			earlyStopEnabled: true,
+			quietWindowMs: 120_000,
+			freshnessCheckIntervalMs: 30_000,
+			reviewRound: async (inv) => {
+				signal = inv.signal;
+				return pending.promise;
+			},
+		});
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		await h.coordinator.accept(request("running"));
+		await settle();
+		await vi.advanceTimersByTimeAsync(120_000);
+		await settle();
+		h.setHead(nextHead);
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(signal?.aborted).toBe(false);
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(signal?.aborted).toBe(true);
+		const successor = h.store.getCodexReviewHeadMoveSuccessor("running");
+		expect(successor).toMatchObject({
+			status: "pending",
+			frozen_head_sha: nextHead,
+		});
+		expect(successor?.quiet_until).toBe(
+			new Date(Date.now() + 120_000).toISOString(),
+		);
+		expect(events(h)).toHaveLength(1);
+		pending.resolve(verdict());
+		await settle();
+		expect(h.comm.responses.size).toBe(0);
+		expect(h.store.getCodexReviewRecord("e1", HEAD)).toBeUndefined();
+		expect(h.store.claimCodexReviewJobRunning("running")).toBe(false);
+		h.coordinator.stop();
+	});
+
+	it("one transient head mismatch resets and the unchanged request still completes", async () => {
+		const pending = deferred<ClaudeReviewOutcome>();
+		let signal: AbortSignal | undefined;
+		const h = await makeHarness({
+			earlyStopEnabled: true,
+			freshnessCheckIntervalMs: 30_000,
+			reviewRound: async (inv) => {
+				signal = inv.signal;
+				return pending.promise;
+			},
+		});
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		await h.coordinator.accept(request("running"));
+		await settle();
+		h.setHead(nextHead);
+		await vi.advanceTimersByTimeAsync(30_000);
+		h.setHead(HEAD);
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(signal?.aborted).toBe(false);
+		pending.resolve(verdict());
+		await settle();
+		expect(h.comm.responses.has("q1")).toBe(true);
+		expect(events(h)).toHaveLength(0);
+		h.coordinator.stop();
+	});
+
+	it.each(["freshness_check", "verdict"] as const)(
+		"gate closure is audited once when first found by %s",
+		async (trigger) => {
+			const pending = deferred<ClaudeReviewOutcome>();
+			let signal: AbortSignal | undefined;
+			const h = await makeHarness({
+				earlyStopEnabled: true,
+				freshnessCheckIntervalMs: 30_000,
+				reviewRound: async (inv) => {
+					signal = inv.signal;
+					return pending.promise;
+				},
+			});
+			registerSession(h.store, "e1");
+			openGate(h.comm, "q1");
+			await h.coordinator.accept(request("running"));
+			await settle();
+			openGate(h.comm, "q2");
+			Object.assign(h.comm.questions.get("q1")!, {
+				superseded_at: new Date().toISOString(),
+				superseded_by: "q2",
+			});
+			if (trigger === "freshness_check") {
+				await vi.advanceTimersByTimeAsync(30_000);
+				expect(signal?.aborted).toBe(true);
+			}
+			pending.resolve(verdict());
+			await settle();
+			expect(h.store.getCodexReviewJob("running")).toMatchObject({
+				failure_reason: "superseded_by_revision",
+			});
+			expect(events(h)).toHaveLength(1);
+			expect(events(h)[0]?.payload).toMatchObject({
+				trigger,
+				requestId: "running",
+			});
+			expect(h.comm.responses.size).toBe(0);
+			expect(h.reviewAlerts).toHaveLength(0);
+			h.coordinator.stop();
+		},
+	);
 });

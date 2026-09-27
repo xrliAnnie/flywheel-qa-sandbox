@@ -12,6 +12,7 @@ import { RETIRED_CONFIG_PATHS, RETIRED_FLAGS } from "../feature-flags/truth.js";
 import { auditFly1981LegacyLedger } from "./fly1981-legacy-snapshot.js";
 
 const EXPECTED_WHEN_ON = {
+	review_early_stop: "提前停止已被新版取代的评审，保留作废原因和接替任务记录",
 	auto_release_on_silence_enabled:
 		"满足启用授权、送达和健康条件后，在否决窗口到期时默认发布客户版本",
 	lead_token_savings:
