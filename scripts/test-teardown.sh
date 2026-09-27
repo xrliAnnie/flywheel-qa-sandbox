@@ -1308,8 +1308,11 @@ teardown_slot() {
   # ── Step 6b (FLY-2867): Release this slot's voice-room leases ──
   # A room torn down without `fly2655-voice-room.mjs stop` left its
   # /tmp/flywheel-voice-room-*.lock behind and blocked every other slot from
-  # that voice channel. A lease whose recorded voice daemon still runs is kept
-  # and reported; lease problems never block the slot teardown itself.
+  # that voice channel. FLY-2876: the Bridge is already gone here, so a recorded
+  # voice daemon still running would retry forever and keep writing into
+  # SLOT_DIR; it is stopped (identity-checked) before its lease is released. A
+  # lease whose daemon cannot be stopped is kept and reported; lease problems
+  # never block the slot teardown itself.
   # The CLI only runs its main() when argv[1] is its real path, so resolve
   # symlinked checkouts (e.g. under /tmp -> /private/tmp) first.
   local VOICE_ROOM_SCRIPT="" VOICE_LEASES=""

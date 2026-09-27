@@ -1166,7 +1166,7 @@ describe("DirectEventSink — FLY-493: pr_handoff → terminal completed", () =>
 				}),
 			);
 
-			expect(contexts[0]?.modelMarker).toBe("G");
+			expect(contexts[0]?.modelMarker).toBe("[O][S]");
 		},
 	);
 

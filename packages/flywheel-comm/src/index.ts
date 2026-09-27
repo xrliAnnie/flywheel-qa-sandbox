@@ -46,6 +46,7 @@ import { runLandCommand } from "./commands/land.js";
 import { runLeadActivity } from "./commands/lead-activity.js";
 import { runLeadConfig } from "./commands/lead-config.js";
 import { runLeadIdentityCommand } from "./commands/lead-identity.js";
+import { runLeadInterruptCommand } from "./commands/lead-interrupt.js";
 import { runLeadLeaseCommand } from "./commands/lead-lease.js";
 import { runLeadNote } from "./commands/lead-note.js";
 import { runLeadOperationCommand } from "./commands/lead-operation.js";
@@ -172,6 +173,8 @@ Commands:
             drain: --drain-page <read-id> --page <n> prints one unread page;
             --ack-consumed <read-id> acknowledges a read after acting on it
   message-status  Read one mailbox message's live/archive delivery evidence by exact id
+  lead-interrupt  Read and answer controlled interrupts relayed by the voice agent
+                  (pending [--json] | reply <li_id> --text-stdin)
   voice-session  Start, stop, inspect, or schedule a generic Codex realtime voice session
                  (start|stop|status|schedule-status|reschedule|cancel-schedule)
   adopt-inflight  Requeue this recipient identity's in-flight inbox batches (Lead birth use)
@@ -414,6 +417,9 @@ async function main(): Promise<void> {
 			break;
 		case "message-status":
 			process.exitCode = messageStatus(commandArgs);
+			break;
+		case "lead-interrupt":
+			process.exitCode = await runLeadInterruptCommand(commandArgs);
 			break;
 		case "voice-session":
 			process.exitCode = await runVoiceSessionCommand(commandArgs);

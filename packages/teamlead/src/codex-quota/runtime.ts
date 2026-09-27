@@ -13,6 +13,7 @@ import {
 	recoverCodexCandidateCredential,
 	withCodexInstallLock,
 } from "flywheel-claude-runner/bin/codex-account-install.mjs";
+import type { CodexQuotaResumeAuthorization } from "flywheel-core";
 import type { StateStore } from "../StateStore.js";
 import type { CodexQuotaAvailability } from "./availability.js";
 import {
@@ -519,7 +520,11 @@ export class CodexQuotaRuntime {
 		});
 	}
 
-	async beforeCodexDaemonStart(home: string, executionId: string) {
+	async beforeCodexDaemonStart(
+		home: string,
+		executionId: string,
+		authorization?: CodexQuotaResumeAuthorization,
+	) {
 		if (this.abort.signal.aborted) throw new Error("quota_runtime_stopped");
 		await this.credential();
 		const pool = this.options.pool();
@@ -527,7 +532,7 @@ export class CodexQuotaRuntime {
 			store: this.options.store,
 			canonicalHome: this.options.canonicalHome,
 			identify: codexQuotaIdentityReader(pool),
-		})(home, executionId);
+		})(home, executionId, authorization);
 	}
 	tick(): Promise<void> {
 		if (this.abort.signal.aborted) return Promise.resolve();
@@ -571,11 +576,14 @@ export interface CodexQuotaDispatcherWiring {
 	beforeCodexDaemonStart?: (
 		home: string,
 		executionId: string,
+		/** FLY-2900: present only on a quota standby relaunch. */
+		authorization?: CodexQuotaResumeAuthorization,
 	) => Promise<import("flywheel-core").CodexQuotaBindingV1 | null>;
 	executionQuotaPaused?: (executionId: string) => boolean;
 	codexQuotaAdmission?: (input: {
 		projectName: string;
 		executionId: string;
+		authorization?: CodexQuotaResumeAuthorization;
 	}) => { rootKey: string; generation: number } | undefined;
 }
 
@@ -609,10 +617,16 @@ export function wireCodexQuotaDispatcher(
 	const hasLaunchPolicy =
 		typeof (store as Partial<StateStore>).isCodexQuotaLaunchPaused ===
 		"function";
-	const launchPaused = (executionId: string) => {
+	// FLY-2900 §4.1: every gate re-decides on every call (never cached), with
+	// the explicit authorization when the launch carries one.
+	const launchPaused = (
+		executionId: string,
+		authorization?: CodexQuotaResumeAuthorization,
+	) => {
 		const policy = (store as Partial<StateStore>).isCodexQuotaLaunchPaused;
 		if (typeof policy === "function")
-			return policy.call(store, executionId, rootKey);
+			return policy.call(store, executionId, rootKey, authorization);
+		if (authorization) return true;
 		const casualty = store.codexQuota.isExecutionPaused(executionId);
 		const safety =
 			typeof store.codexQuota.hasRootSafetyGuard === "function" &&
@@ -627,23 +641,51 @@ export function wireCodexQuotaDispatcher(
 			(options.enabled() && store.codexQuota.isPaused(rootKey))
 		);
 	};
-	dispatcher.beforeCodexDaemonStart = async (home, executionId) => {
+	dispatcher.beforeCodexDaemonStart = async (
+		home,
+		executionId,
+		authorization,
+	) => {
 		const assertUnpaused = () => {
-			if (launchPaused(executionId)) throw new CodexQuotaLaunchPausedError();
+			if (launchPaused(executionId, authorization))
+				throw new CodexQuotaLaunchPausedError();
 		};
 		if (!options.enabled()) {
-			if (!hasLaunchPolicy) return null;
+			if (!hasLaunchPolicy) {
+				if (authorization) throw new CodexQuotaLaunchPausedError();
+				return null;
+			}
 			assertUnpaused();
-			return null;
+			// FLY-2900 §3.2: with auto-switch off the quota runtime never binds,
+			// so a relaunch reuses the binding its claim registered — a later
+			// wall of the resumed body is then attributed to that generation.
+			return authorization
+				? (store.codexQuota.claimedResumeBinding?.(authorization) ?? null)
+				: null;
 		}
 		try {
 			assertUnpaused();
-			if (!runtime) return null;
-			const binding = await runtime.beforeCodexDaemonStart(home, executionId);
+			if (!runtime) {
+				return authorization
+					? (store.codexQuota.claimedResumeBinding?.(authorization) ?? null)
+					: null;
+			}
+			const binding = await runtime.beforeCodexDaemonStart(
+				home,
+				executionId,
+				authorization,
+			);
 			if (!options.enabled()) return null;
 			assertUnpaused();
 			return binding;
 		} catch (cause) {
+			// FLY-2900: an authorized resume never spawns unenrolled — a binder
+			// failure could mean an unverified or wrong account.
+			if (authorization) {
+				if (!(cause instanceof CodexQuotaLaunchPausedError))
+					options.report("quota_runtime_bind_failed", cause);
+				throw cause;
+			}
 			if (!options.enabled()) return null;
 			if (cause instanceof CodexQuotaLaunchPausedError) throw cause;
 			try {
@@ -658,9 +700,11 @@ export function wireCodexQuotaDispatcher(
 	};
 	dispatcher.executionQuotaPaused = (executionId) =>
 		store.codexQuota.isExecutionPaused(executionId);
-	dispatcher.codexQuotaAdmission = () => {
-		if (!options.enabled() && !hasLaunchPolicy) return undefined;
-		if (!launchPaused("quota-admission")) return undefined;
+	dispatcher.codexQuotaAdmission = ({ executionId, authorization }) => {
+		if (!options.enabled() && !hasLaunchPolicy && !authorization)
+			return undefined;
+		// FLY-2900 §4.1: the real execution id, never a constant stand-in.
+		if (!launchPaused(executionId, authorization)) return undefined;
 		const root = store.codexQuota.getRoot(rootKey);
 		if (!root) throw new Error("quota_root_unavailable");
 		return { rootKey, generation: root.generation };

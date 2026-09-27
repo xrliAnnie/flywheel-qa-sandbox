@@ -62,6 +62,24 @@ interface SubmitBatchRequest extends CodexLeadInboxOwnerBinding {
 	auth: string;
 }
 
+/**
+ * FLY-2883: one controlled-interrupt letter. The runtime steers it into the
+ * current turn (never cancels it) or starts a turn when idle; it never runs the
+ * ordinary submitBatch path itself on a failed steer.
+ */
+interface SubmitInterruptRequest extends CodexLeadInboxOwnerBinding {
+	version: 2;
+	method: "submitInterrupt";
+	batch: LeadInputBatch;
+	auth: string;
+}
+
+export const LEAD_INTERRUPT_STEER_FEATURE = "lead_interrupt_steer_v1" as const;
+
+export type CodexLeadInterruptOutcome =
+	| { outcome: "steered" | "queued_turn" }
+	| { outcome: "steer_failed"; detail: string };
+
 interface CapabilitiesRequest {
 	version: 2;
 	method: "capabilities";
@@ -140,6 +158,7 @@ type InboxRequest =
 	| VoiceSelfFilterRequest
 	| EngageProactiveTopicRequest
 	| SubmitBatchRequest
+	| SubmitInterruptRequest
 	| CapabilitiesRequest
 	| ReadTurnStateRequest
 	| ListSubscriptionsRequest
@@ -164,6 +183,7 @@ export interface CodexLeadInboxCapabilities {
 		| "lead_runtime_config_v1"
 		| "registry_tuning_v1"
 		| "voice_self_filter_v1"
+		| typeof LEAD_INTERRUPT_STEER_FEATURE
 		| "turn_state_v1"
 	)[];
 	socketOwnerId: string;
@@ -218,6 +238,14 @@ export interface CodexLeadInboxServerOptions {
 			target: LeadRuntimeConfigTarget,
 			assertCurrentOwner: () => void,
 		): Promise<LeadRuntimeReadback>;
+	};
+
+	/**
+	 * FLY-2883: controlled interrupt handler. Injected only by a runtime that can
+	 * read its current-turn state; absent = the steer feature is not advertised.
+	 */
+	interrupt?: {
+		submit(batch: LeadInputBatch): Promise<CodexLeadInterruptOutcome>;
 	};
 
 	/** Crash seam: throw after journal commit to simulate response loss. */
@@ -477,6 +505,7 @@ export class CodexLeadInboxServer {
 						...(this.proactiveOwnerCurrent()
 							? ["roundtable_proactive_engage_v1" as const]
 							: []),
+						...(this.opts.interrupt ? [LEAD_INTERRUPT_STEER_FEATURE] : []),
 					],
 					socketOwnerId: this.socketOwnerId,
 					...(runtimeIdentity ? { runtimeIdentity } : {}),
@@ -574,6 +603,15 @@ export class CodexLeadInboxServer {
 				socket.end(`${JSON.stringify({ ok: true, ...result })}\n`);
 				return;
 			}
+			if (request.method === "submitInterrupt") {
+				const hook = this.opts.interrupt;
+				if (!hook) throw new Error("lead interrupt unavailable");
+				const result = await hook.submit(request.batch);
+				socket.end(
+					`${JSON.stringify({ ok: true, ...validInterruptOutcome(result) })}\n`,
+				);
+				return;
+			}
 			if (request.method !== "submitBatch")
 				throw new Error("unsupported inbox method");
 			const result = this.opts.router.submitBatch(request.batch);
@@ -640,6 +678,57 @@ export async function submitCodexLeadInboxBatch(args: {
 	const response = JSON.parse(raw) as SubmitBatchResponse | ErrorResponse;
 	if (!response.ok) throw new CodexLeadInboxRejectedError(response.error);
 	return { status: response.status, entryId: response.entryId };
+}
+
+function validInterruptOutcome(
+	value: CodexLeadInterruptOutcome,
+): CodexLeadInterruptOutcome {
+	if (value?.outcome === "steered" || value?.outcome === "queued_turn")
+		return { outcome: value.outcome };
+	if (
+		value?.outcome === "steer_failed" &&
+		typeof value.detail === "string" &&
+		/^[a-z_:]{1,64}$/.test(value.detail)
+	)
+		return { outcome: "steer_failed", detail: value.detail };
+	throw new Error("invalid interrupt result");
+}
+
+/** FLY-2883: hand one controlled-interrupt letter to the Codex Lead runtime. */
+export async function submitCodexLeadInterrupt(args: {
+	socketPath: string;
+	leadId: string;
+	ownerEpoch: string;
+	authSecret: string;
+	batch: LeadInputBatch;
+	timeoutMs?: number;
+}): Promise<CodexLeadInterruptOutcome> {
+	const unsigned = {
+		version: 2,
+		method: "submitInterrupt",
+		leadId: args.leadId,
+		ownerEpoch: args.ownerEpoch,
+		batch: {
+			batchId: args.batch.batchId,
+			memberIds: args.batch.memberIds,
+			payload: args.batch.payload,
+		},
+	} as const;
+	const request: SubmitInterruptRequest = {
+		...unsigned,
+		auth: signRequest(unsigned, args.authSecret),
+	};
+	const raw = await requestResponse(
+		args.socketPath,
+		`${JSON.stringify(request)}\n`,
+		args.timeoutMs ?? 10_000,
+	);
+	const response = JSON.parse(raw) as
+		| ({ ok: true } & CodexLeadInterruptOutcome)
+		| ErrorResponse;
+	if (!response.ok) throw new CodexLeadInboxRejectedError(response.error);
+	const { ok: _ok, ...outcome } = response;
+	return validInterruptOutcome(outcome as CodexLeadInterruptOutcome);
 }
 
 export async function probeCodexLeadInboxCapabilities(args: {
@@ -993,6 +1082,33 @@ function parseRequest(raw: string): InboxRequest {
 			throw new Error("malformed subscription request");
 		return value as ListSubscriptionsRequest | UnsubscribeThreadRequest;
 	}
+	if (value?.method === "submitInterrupt") {
+		const keys = ["version", "method", "leadId", "ownerEpoch", "batch", "auth"];
+		const batch = value.batch as Partial<LeadInputBatch> | undefined;
+		if (
+			value.version !== 2 ||
+			typeof value.leadId !== "string" ||
+			!value.leadId.trim() ||
+			typeof value.ownerEpoch !== "string" ||
+			!value.ownerEpoch.trim() ||
+			typeof value.auth !== "string" ||
+			!batch ||
+			typeof batch !== "object" ||
+			Object.keys(batch).some(
+				(key) => !["batchId", "memberIds", "payload"].includes(key),
+			) ||
+			typeof batch.batchId !== "string" ||
+			!batch.batchId.trim() ||
+			!Array.isArray(batch.memberIds) ||
+			batch.memberIds.length !== 1 ||
+			typeof batch.memberIds[0] !== "string" ||
+			typeof batch.payload !== "string" ||
+			!batch.payload.trim() ||
+			Object.keys(value).some((key) => !keys.includes(key))
+		)
+			throw new Error("malformed submitInterrupt request");
+		return value as SubmitInterruptRequest;
+	}
 	if (value?.method === "readTurnState") {
 		const keys = ["version", "method", "leadId", "auth"];
 		if (
@@ -1041,6 +1157,7 @@ type UnsignedInboxRequest =
 	| Omit<RuntimeConfigRequest, "auth">
 	| Omit<VoiceSelfFilterRequest, "auth">
 	| Omit<SubmitBatchRequest, "auth">
+	| Omit<SubmitInterruptRequest, "auth">
 	| Omit<CapabilitiesRequest, "auth">
 	| Omit<ReadTurnStateRequest, "auth">
 	| Omit<ListSubscriptionsRequest, "auth">
@@ -1091,6 +1208,18 @@ function canonicalRequest(request: UnsignedInboxRequest): string {
 			version: request.version,
 			method: request.method,
 			leadId: request.leadId,
+		});
+	if (request.method === "submitInterrupt")
+		return JSON.stringify({
+			version: request.version,
+			method: request.method,
+			leadId: request.leadId,
+			ownerEpoch: request.ownerEpoch,
+			batch: {
+				batchId: request.batch.batchId,
+				memberIds: request.batch.memberIds,
+				payload: request.batch.payload,
+			},
 		});
 	if (request.method !== "submitBatch")
 		throw new Error("unsupported inbox method");

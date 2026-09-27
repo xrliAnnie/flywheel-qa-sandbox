@@ -1,0 +1,541 @@
+{
+  "issue": "FLY-2912",
+  "verifiedSourceCommit": "964b7e7e46ce88cda1555f3be83cc1037ef2a508",
+  "sourceBlobs": {
+    "packages/flywheel-comm/src/mailbox-queue.ts": "d687adba68ff89f38f84a33bf40f73864e716231",
+    "packages/teamlead/src/bridge/lead-inbox-loop.ts": "8bae28e05ec872fbd5837adabc529a4026d9a1c3",
+    "packages/flywheel-comm/src/__tests__/lead-audit-summary-receipt.fly2912.test.ts": "ab62c1a72c31e18b00453f620f1a614341cdab2c",
+    "packages/teamlead/src/bridge/__tests__/lead-inbox-summary.fly2912.test.ts": "f59964d95fd8240e49b7b9775ba5e4a7c40910a1"
+  },
+  "fixFindingKey": "summary-freeze-rejects-mixed-leased-acked-batch",
+  "explicit": {
+    "files": 21,
+    "passed": 336,
+    "attempts": [
+      {
+        "path": "packages/flywheel-comm/src/__tests__/lead-audit-summary-receipt.fly2912.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-comm",
+          "exec",
+          "vitest",
+          "run",
+          "src/__tests__/lead-audit-summary-receipt.fly2912.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 1.55,
+        "log": "fly2912-resume-lead-audit-summary-receipt.fly2912.test.ts.log",
+        "logSha256": "9c6727d93b8387cd65aa94a2d059059b0ada9a0c903774f76e1c8551269c5997",
+        "sourceBlob": "ab62c1a72c31e18b00453f620f1a614341cdab2c",
+        "sha256": "9c6727d93b8387cd65aa94a2d059059b0ada9a0c903774f76e1c8551269c5997",
+        "testSummary": "28 passed (28)"
+      },
+      {
+        "path": "packages/flywheel-comm/src/__tests__/mailbox-adopt-inflight.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-comm",
+          "exec",
+          "vitest",
+          "run",
+          "src/__tests__/mailbox-adopt-inflight.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 1.46,
+        "log": "fly2912-resume-mailbox-adopt-inflight.test.ts.log",
+        "logSha256": "88ea8401e9ff3ef0fc291fcba05e41a60a2682d2d1694617bb8395fac37543db",
+        "sourceBlob": "5f51c8a86c1e425499276aa8fddf902321ce094c",
+        "sha256": "88ea8401e9ff3ef0fc291fcba05e41a60a2682d2d1694617bb8395fac37543db",
+        "testSummary": "2 passed (2)"
+      },
+      {
+        "path": "packages/flywheel-comm/src/__tests__/mailbox-queue-capabilities.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-comm",
+          "exec",
+          "vitest",
+          "run",
+          "src/__tests__/mailbox-queue-capabilities.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 1.59,
+        "log": "fly2912-resume-mailbox-queue-capabilities.test.ts.log",
+        "logSha256": "ecd4b9905a00d6768b1798c8b907f62cc2cba8316f09eee402dfb420ea3e3b37",
+        "sourceBlob": "2b6b124f8acb0e8817a1e1ffdc43fcd865515082",
+        "sha256": "ecd4b9905a00d6768b1798c8b907f62cc2cba8316f09eee402dfb420ea3e3b37",
+        "testSummary": "52 passed (52)"
+      },
+      {
+        "path": "packages/flywheel-comm/src/__tests__/mailbox-queue.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-comm",
+          "exec",
+          "vitest",
+          "run",
+          "src/__tests__/mailbox-queue.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 1.81,
+        "log": "fly2912-resume-mailbox-queue.test.ts.log",
+        "logSha256": "22171984f2ba78f88d08ebf2441577da6662968181eff78951a1367454a7a138",
+        "sourceBlob": "aef3bf15752a2643a54fa5fc9b78a5da77d00766",
+        "sha256": "22171984f2ba78f88d08ebf2441577da6662968181eff78951a1367454a7a138",
+        "testSummary": "27 passed (27)"
+      },
+      {
+        "path": "packages/flywheel-comm/src/__tests__/mailbox-settlement.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-comm",
+          "exec",
+          "vitest",
+          "run",
+          "src/__tests__/mailbox-settlement.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 1.68,
+        "log": "fly2912-resume-mailbox-settlement.test.ts.log",
+        "logSha256": "56613d78ec5516472fa1ec0057d65c538fd839c39712be4e3878da47d1fb7bc6",
+        "sourceBlob": "3923569972358b46bb754e64df8d3d752c61cede",
+        "sha256": "56613d78ec5516472fa1ec0057d65c538fd839c39712be4e3878da47d1fb7bc6",
+        "testSummary": "5 passed (5)"
+      },
+      {
+        "path": "packages/flywheel-comm/src/__tests__/mailbox-query-plans.fly2008.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-comm",
+          "exec",
+          "vitest",
+          "run",
+          "src/__tests__/mailbox-query-plans.fly2008.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 1.99,
+        "log": "fly2912-resume-mailbox-query-plans.fly2008.test.ts.log",
+        "logSha256": "1bb6f45821db105eeeb91c5d1150e5244c771cbe8758a92dcbcd609dc5559e36",
+        "sourceBlob": "c96ed301091c16c74a61a2cc1ac3a60834dc0b73",
+        "sha256": "1bb6f45821db105eeeb91c5d1150e5244c771cbe8758a92dcbcd609dc5559e36",
+        "testSummary": "6 passed (6)"
+      },
+      {
+        "path": "packages/flywheel-comm/src/__tests__/mailbox-query-plans.fly2139.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-comm",
+          "exec",
+          "vitest",
+          "run",
+          "src/__tests__/mailbox-query-plans.fly2139.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 4.38,
+        "log": "fly2912-resume-mailbox-query-plans.fly2139.test.ts.log",
+        "logSha256": "28ca7ea669c6ebccffe52563a820ff925a32846ce108c94f8277594c74639d6b",
+        "sourceBlob": "b6ed66a03af3571f7f8a16ab6b0a9e938eaa1424",
+        "sha256": "28ca7ea669c6ebccffe52563a820ff925a32846ce108c94f8277594c74639d6b",
+        "testSummary": "4 passed (4)"
+      },
+      {
+        "path": "packages/teamlead/src/__tests__/fly2912-evening-replay.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/__tests__/fly2912-evening-replay.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 35.82,
+        "log": "fly2912-resume-fly2912-evening-replay.test.ts.log",
+        "logSha256": "e65c3f1293907845b31d4308f86e334b7c9d4c9cdf966fe9dfa42236eba7d78e",
+        "sourceBlob": "d3584448ff67bb39647053bc7b152b583d2fd136",
+        "sha256": "e65c3f1293907845b31d4308f86e334b7c9d4c9cdf966fe9dfa42236eba7d78e",
+        "testSummary": "2 passed (2)"
+      },
+      {
+        "path": "packages/teamlead/src/__tests__/fly2139-query-plans.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/__tests__/fly2139-query-plans.test.ts"
+        ],
+        "exitCode": 1,
+        "seconds": 37.06,
+        "log": "fly2912-resume-fly2139-query-plans.test.ts.log",
+        "logSha256": "f4a68ba6d7985e149a06b54b40848acfec1a54279da2b6be8f2eda6d888f17b5",
+        "sourceBlob": "a0f31c09432b50b703b9540e34b15d15be8ce9f0",
+        "sha256": "f4a68ba6d7985e149a06b54b40848acfec1a54279da2b6be8f2eda6d888f17b5",
+        "testSummary": "1 failed | 1 passed (2)"
+      },
+      {
+        "path": "packages/teamlead/src/__tests__/fly2139-query-plans.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/__tests__/fly2139-query-plans.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 33.35,
+        "log": "fly2912-resume-fly2139-query-plans.test.ts-retry.log",
+        "logSha256": "4502064de2423f900586d3e8bad8f2624fa473e139ea5982182b970e680e0b10",
+        "sourceBlob": "a0f31c09432b50b703b9540e34b15d15be8ce9f0",
+        "sha256": "4502064de2423f900586d3e8bad8f2624fa473e139ea5982182b970e680e0b10",
+        "testSummary": "2 passed (2)"
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/lead-audit-summary.fly2912.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/bridge/__tests__/lead-audit-summary.fly2912.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 6.06,
+        "log": "fly2912-resume-lead-audit-summary.fly2912.test.ts.log",
+        "logSha256": "df8380cfba2568d8a643fa5e4beac92ae3f6d6c29008275fc5d7f8dc88a5cef4",
+        "sourceBlob": "539d9feabec81affe95eb236827f788d9a72a522",
+        "sha256": "df8380cfba2568d8a643fa5e4beac92ae3f6d6c29008275fc5d7f8dc88a5cef4",
+        "testSummary": "4 passed (4)"
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/lead-inbox-loop.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/bridge/__tests__/lead-inbox-loop.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 7.2,
+        "log": "fly2912-resume-lead-inbox-loop.test.ts.log",
+        "logSha256": "8495ef83a0e5b2cae5b18fdc7bd2fa2cc7dd8d93c5965ae1caee48179a6de476",
+        "sourceBlob": "fb17c164e25c9b08255dc9f9ca8f91e55dbfecf0",
+        "sha256": "8495ef83a0e5b2cae5b18fdc7bd2fa2cc7dd8d93c5965ae1caee48179a6de476",
+        "testSummary": "34 passed (34)"
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/lead-inbox-summary.fly2912.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/bridge/__tests__/lead-inbox-summary.fly2912.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 4.85,
+        "log": "fly2912-resume-lead-inbox-summary.fly2912.test.ts.log",
+        "logSha256": "dd3ab6dc30a2f3af94be95cd37324466fb015407922581ff4bc1bb6d1353fbc8",
+        "sourceBlob": "f59964d95fd8240e49b7b9775ba5e4a7c40910a1",
+        "sha256": "dd3ab6dc30a2f3af94be95cd37324466fb015407922581ff4bc1bb6d1353fbc8",
+        "testSummary": "12 passed (12)"
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/lead-inbox-runtime.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/bridge/__tests__/lead-inbox-runtime.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 24.47,
+        "log": "fly2912-resume-lead-inbox-runtime.test.ts.log",
+        "logSha256": "dd50d501d9f7d5b0c48c165cc132fb1ee78ee7a38e7983eefd33eaa667e81375",
+        "sourceBlob": "23c495285ea94eccdb847409ac60a4d60cfb5871",
+        "sha256": "dd50d501d9f7d5b0c48c165cc132fb1ee78ee7a38e7983eefd33eaa667e81375",
+        "testSummary": "47 passed (47)"
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/lead-inbox-runtime-summary.fly2912.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/bridge/__tests__/lead-inbox-runtime-summary.fly2912.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 16.96,
+        "log": "fly2912-resume-lead-inbox-runtime-summary.fly2912.test.ts.log",
+        "logSha256": "b9ed1877df835fd8d26011d62c62a680ceedc3cdf43659067848b5cbf7252cc7",
+        "sourceBlob": "0a892c1a5d97a88c0ba4dc17c9f1ff269f1caf65",
+        "sha256": "b9ed1877df835fd8d26011d62c62a680ceedc3cdf43659067848b5cbf7252cc7",
+        "testSummary": "1 passed (1)"
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/lead-inbox-batch-ack.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/bridge/__tests__/lead-inbox-batch-ack.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 7.83,
+        "log": "fly2912-resume-lead-inbox-batch-ack.test.ts.log",
+        "logSha256": "215c7eb1aabaac169ce9a23de6255a56e783d8f89d6b4aa80834e268a4e58943",
+        "sourceBlob": "1848f65d953f2a14124fdfd24f7674476dfcc60d",
+        "sha256": "215c7eb1aabaac169ce9a23de6255a56e783d8f89d6b4aa80834e268a4e58943",
+        "testSummary": "1 passed (1)"
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/mailbox-queue-config.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/bridge/__tests__/mailbox-queue-config.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 3.94,
+        "log": "fly2912-resume-mailbox-queue-config.test.ts.log",
+        "logSha256": "e449f17c138d26a4dfd5a718ee1598b19e2bbb5688bb8693719d7e89c0110224",
+        "sourceBlob": "4016ac9cc8c8706d1e52c0d7d2b5718d47748bc6",
+        "sha256": "e449f17c138d26a4dfd5a718ee1598b19e2bbb5688bb8693719d7e89c0110224",
+        "testSummary": "12 passed (12)"
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/protocol-ingress.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/bridge/__tests__/protocol-ingress.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 11.39,
+        "log": "fly2912-resume-protocol-ingress.test.ts.log",
+        "logSha256": "dad959dd220e905911e516b43f6bddca38462e88b0e206bea6d880c3bcd892b4",
+        "sourceBlob": "530984c6157c4cc7da0abc8795a1dd43c5196332",
+        "sha256": "dad959dd220e905911e516b43f6bddca38462e88b0e206bea6d880c3bcd892b4",
+        "testSummary": "12 passed (12)"
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/question-admission.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/bridge/__tests__/question-admission.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 10.74,
+        "log": "fly2912-resume-question-admission.test.ts.log",
+        "logSha256": "063e23258996d9a6ca513594645757e9e4923fedc73195c8301192f8cc095d3f",
+        "sourceBlob": "0e4363b0ca80e9541103f84e6177fc47378f5237",
+        "sha256": "063e23258996d9a6ca513594645757e9e4923fedc73195c8301192f8cc095d3f",
+        "testSummary": "40 passed (40)"
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/alert-wake-dedup.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/bridge/__tests__/alert-wake-dedup.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 12.6,
+        "log": "fly2912-resume-alert-wake-dedup.test.ts.log",
+        "logSha256": "efb29d015888fc3c8e8766fc38466981818b7532d1185b96c5f0e23db98d36a7",
+        "sourceBlob": "f62e24afbd52321243d9107cc22dab05d3b24960",
+        "sha256": "efb29d015888fc3c8e8766fc38466981818b7532d1185b96c5f0e23db98d36a7",
+        "testSummary": "27 passed (27)"
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/runner-mailbox-lane.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/bridge/__tests__/runner-mailbox-lane.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 3.61,
+        "log": "fly2912-resume-runner-mailbox-lane.test.ts.log",
+        "logSha256": "4c48994dddd669f9627055567f2de6a00d655c4d8dc532e2f04c7ca704249b1a",
+        "sourceBlob": "0a8d286788fe4283a02312040e8b359b1fff3b58",
+        "sha256": "4c48994dddd669f9627055567f2de6a00d655c4d8dc532e2f04c7ca704249b1a",
+        "testSummary": "13 passed (13)"
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/lead-delivery-adapter.test.ts",
+        "command": [
+          "pnpm",
+          "--filter",
+          "flywheel-teamlead",
+          "exec",
+          "vitest",
+          "run",
+          "src/bridge/__tests__/lead-delivery-adapter.test.ts"
+        ],
+        "exitCode": 0,
+        "seconds": 2.25,
+        "log": "fly2912-resume-lead-delivery-adapter.test.ts.log",
+        "logSha256": "eb2a17eff8435ec4a283b3932af0600bb0982baf8e8e5d63494a5220c7e8862b",
+        "sourceBlob": "d743259e8aaf2bbb855fa0bef771c157b900a433",
+        "sha256": "eb2a17eff8435ec4a283b3932af0600bb0982baf8e8e5d63494a5220c7e8862b",
+        "testSummary": "5 passed (5)"
+      }
+    ]
+  },
+  "related": [
+    {
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-comm",
+        "exec",
+        "vitest",
+        "related",
+        "src/mailbox-queue.ts",
+        "src/__tests__/lead-audit-summary-receipt.fly2912.test.ts",
+        "--run",
+        "--config",
+        "../../engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-fix-flywheel-comm-related.config.mjs",
+        "--no-file-parallelism"
+      ],
+      "exitCode": 0,
+      "seconds": 10.1,
+      "log": "fly2912-resume-flywheel-comm-related.log",
+      "logSha256": "aa0e39ecae8b4491bb1f97b170523868a2a9eaebcd233690d52e844a770a7975",
+      "sha256": "aa0e39ecae8b4491bb1f97b170523868a2a9eaebcd233690d52e844a770a7975",
+      "testSummary": "124 passed (124)"
+    },
+    {
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "related",
+        "src/bridge/lead-inbox-loop.ts",
+        "src/bridge/__tests__/lead-inbox-summary.fly2912.test.ts",
+        "--run",
+        "--config",
+        "../../engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-fix-teamlead-related.config.mjs",
+        "--no-file-parallelism"
+      ],
+      "exitCode": 0,
+      "seconds": 61.19,
+      "log": "fly2912-resume-teamlead-related.log",
+      "logSha256": "fde13b56cc042f717e4b9753c2c32d8273af43a3a505fc554faa20d286ca0e69",
+      "sha256": "fde13b56cc042f717e4b9753c2c32d8273af43a3a505fc554faa20d286ca0e69",
+      "testSummary": "165 passed (165)"
+    }
+  ],
+  "checks": [
+    {
+      "command": [
+        "pnpm",
+        "lint"
+      ],
+      "exitCode": 0,
+      "warnings": 25,
+      "log": "fly2912-resume-lint.log",
+      "sha256": "5ea85e75dc0b2eb9a87b714e6ab1bbef2091956ab2ba66256a0459653a0e09c7"
+    },
+    {
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead...",
+        "build"
+      ],
+      "exitCode": 0,
+      "log": "fly2912-resume-build.log",
+      "sha256": "b39d9fe5e7c78e248f653d2faacebff8b33b978ae601bf2e2e9425d9adf6e720"
+    },
+    {
+      "command": [
+        "python3",
+        "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/test_wake_timeline.py"
+      ],
+      "exitCode": 0,
+      "testsPassed": 12,
+      "log": "fly2912-resume-python.log",
+      "sha256": "353aaba837b341526775d2f99527db8cfdef034f2a85d4c5d541bd024c0875bd"
+    }
+  ],
+  "preFixEvidence": [
+    {
+      "origin": "Inherited pre-fix TDD output, inspected during resume",
+      "productFailures": 3,
+      "fixtureFailure": "One invalid carrier='direct' fixture error was corrected to schema-valid external; excluded from product defects.",
+      "log": "fly2912-r4-comm-red.log",
+      "sha256": "a905f39ef53d3ba69c90c232bbc00ed581118fe6d6b0456ba634bb4af6a9fdf5"
+    },
+    {
+      "origin": "Inherited pre-fix TDD output, inspected during resume",
+      "productFailures": 5,
+      "log": "fly2912-r4-loop-red.log",
+      "sha256": "78ff7cada1b4cab23399115cda155319adce5c472d6cb88cb6df9d02fdb14678"
+    }
+  ],
+  "replay": {
+    "byteIdentical": true,
+    "sha256": "b4f4290b04058a3a4c66c24e51c29cb823b456ea35c40c888c7474063707e95c",
+    "acceptanceComplete": false,
+    "afterWakes": null
+  },
+  "limitations": [
+    "fly2139-query-plans.test.ts first attempt hit its existing 5000ms timeout; unchanged isolated rerun passed. Both logs retained.",
+    "Related and explicit checks overlap; counts must not be added.",
+    "No exported APIs/types changed; affected package plus dependencies built. No local full package/repository test suite.",
+    "Historical wake savings acceptance remains false. Full frozen-head CI and QA acceptance belong to QA."
+  ]
+}

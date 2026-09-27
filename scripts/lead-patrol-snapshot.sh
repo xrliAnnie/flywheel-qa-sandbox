@@ -638,7 +638,7 @@ fi
 
 STEP2_FACTS="pane_count=$PANE_COUNT${STEP2_FACTS:+$'\n'}${STEP2_FACTS}"
 # Public quota audit projection only; existing pane findings retain their status.
-CODEX_SWITCH_FACT="$(node "$SCRIPT_DIR/lib/codex-quota-summary.mjs" --state-root "$STATE_DIR" 2>/dev/null)" || CODEX_SWITCH_FACT="CODEX_SWITCH unavailable"
+CODEX_SWITCH_FACT="$(node "$SCRIPT_DIR/lib/codex-quota-summary.mjs" --state-root "$STATE_DIR" 2>/dev/null)" || CODEX_SWITCH_FACT=$'CODEX_SWITCH unavailable\nCODEX_STANDBY unavailable reason=helper_failed'
 STEP2_FACTS="${STEP2_FACTS}${STEP2_FACTS:+$'\n'}${CODEX_SWITCH_FACT}"
 
 
@@ -889,7 +889,8 @@ failed_review_candidates AS (
     )
     AND coalesce(j.failure_reason,'') NOT IN (
       'head_moved','reviewed_wrong_head','gate_answered_externally','gate_answered',
-      'gate_expired','gate_missing','gate_mismatch','gate_unknown','superseded_by_revision'
+      'gate_expired','gate_missing','gate_mismatch','gate_unknown','superseded_by_revision',
+      'superseded_by_request'
     )
 ),
 attribution_subjects AS (

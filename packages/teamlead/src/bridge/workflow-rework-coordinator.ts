@@ -105,6 +105,8 @@ export function grantWorkflowReworkTurn(
 }
 
 export interface WorkflowReworkCoordinatorStore {
+	/** FLY-2900: parked in Codex quota standby — wait, never replace. */
+	isCodexQuotaStandby?(executionId: string): boolean;
 	getWorkflowExecutionProcessBody?(executionId: string):
 		| {
 				generation: number;
@@ -756,6 +758,18 @@ export class WorkflowReworkCoordinator {
 				ownerClaimId,
 				processGeneration: begun.generation,
 			};
+		}
+		if (
+			!standbyResume &&
+			this.deps.store.isCodexQuotaStandby?.(actor.execution_id) === true
+		) {
+			// FLY-2900 §4.2: the actor is parked on a Codex usage-limit wall; the
+			// quota resume loop relaunches it. Retry later instead of replacing.
+			return this.releaseRetryable({
+				requestId,
+				generation: claim.generation,
+				reason: "codex_quota_standby",
+			});
 		}
 		if (!standbyResume) {
 			const reentry = await classifyPhaseActorReentry({

@@ -186,6 +186,22 @@ describe("StateStore ghost reconcile (FLY-1066)", () => {
 		},
 	);
 
+	it("FLY-2900 keeps a Codex quota standby body without probing or finalizing", async () => {
+		seed("parked", {});
+		(
+			store as unknown as { isCodexQuotaStandby: (id: string) => boolean }
+		).isCodexQuotaStandby = (id) => id === "parked";
+		const deps = baseDeps();
+		const outcome = await reapStateStoreGhost(
+			store.getSession("parked")!,
+			deps,
+		);
+		expect(outcome).toBe("kept_quota_standby");
+		expect(deps.probe).not.toHaveBeenCalled();
+		expect(deps.finalizeCommDbSession).not.toHaveBeenCalled();
+		expect(store.getSession("parked")?.status).toBe("running");
+	});
+
 	it("keeps a CommDB-present active holder without probing", async () => {
 		seed("active-holder", { status: "pending" });
 		const deps = baseDeps({

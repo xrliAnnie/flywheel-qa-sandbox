@@ -1,4 +1,10 @@
 import type { HookPayload } from "./hook-payload.js";
+import {
+	matchesNotificationBinding,
+	type NotificationDecisionContext,
+	type NotificationEvidenceV2,
+	notificationPayloadIsPure,
+} from "./lead-notification-evidence.js";
 
 /**
  * FLY-47 / FLY-163: EventFilter classifies events for priority hints to Lead
@@ -231,7 +237,7 @@ export type LeadNotificationEvidence =
 export interface LeadNotificationDecision {
 	disposition: "model" | "audit_only";
 	reason: string;
-	policyVersion: "notification-v1";
+	policyVersion: "notification-v1" | "notification-v2";
 	proofRef?: string;
 }
 
@@ -276,8 +282,12 @@ function hasPayloadValue(
 export function leadNotificationDecision(
 	eventType: string,
 	payload: Record<string, unknown>,
-	evidence?: LeadNotificationEvidence,
+	evidence?: LeadNotificationEvidence | NotificationEvidenceV2,
+	context?: NotificationDecisionContext,
 ): LeadNotificationDecision {
+	if (evidence && "version" in evidence) {
+		return notificationV2Decision(eventType, payload, evidence, context);
+	}
 	if (!evidence) return notificationDecision("model", "proof_missing");
 	if (
 		payload.status !== undefined &&
@@ -362,6 +372,100 @@ export function leadNotificationDecision(
 		);
 	}
 	return notificationDecision("model", "stage_requires_action");
+}
+
+function notificationV2Decision(
+	eventType: string,
+	payload: Record<string, unknown>,
+	evidence: NotificationEvidenceV2,
+	context?: NotificationDecisionContext,
+): LeadNotificationDecision {
+	const result = (
+		disposition: "model" | "audit_only",
+		reason: string,
+	): LeadNotificationDecision => ({
+		disposition,
+		reason,
+		policyVersion: "notification-v2",
+		proofRef: evidence.proof.sourceRef,
+	});
+	if (!context?.enabled) return result("model", "policy_disabled");
+	if (
+		!matchesNotificationBinding(evidence.binding, context.binding) ||
+		evidence.proof.executionId !== context.binding.executionId ||
+		!evidence.proof.sourceRef
+	)
+		return result("model", "proof_binding_mismatch");
+	const action = evidence.proof.action;
+	if (
+		action.state === "pending" ||
+		action.state === "unknown" ||
+		(action.state === "none" && !action.checkedRefs.length) ||
+		(action.state === "resolved" && !action.resolutionRef)
+	)
+		return result("model", "action_pending");
+	if (
+		![payload, ...(context.projection ? [context.projection] : [])].every(
+			(part) => notificationPayloadIsPure(part, evidence),
+		)
+	)
+		return result("model", "actionable_payload");
+	if (eventType === "stage_changed" && evidence.kind === "stage") {
+		if (!context.categoryEnabled)
+			return result("model", "lead_stage_changed_audit_disabled");
+		if (
+			payload.stage !== evidence.stage ||
+			(context.projection?.stage !== undefined &&
+				context.projection.stage !== evidence.stage)
+		)
+			return result("model", "stage_binding_mismatch");
+		if (ROUTINE_STAGES.has(evidence.stage))
+			return result("audit_only", "routine_stage");
+		if (OWNED_REVIEW_STAGES.has(evidence.stage) && evidence.ownerRef)
+			return result("audit_only", "routine_stage_owned");
+		if (
+			["approve", "ship", "completed"].includes(evidence.stage) &&
+			action.state === "resolved"
+		)
+			return result("audit_only", "stage_action_resolved");
+		return result("model", "stage_requires_action");
+	}
+	if (eventType === "session_started" && evidence.kind === "startup") {
+		if (!context.categoryEnabled)
+			return result("model", "lead_session_started_audit_disabled");
+		return evidence.handoff === "initial_notice" &&
+			evidence.registrationRef &&
+			["not_required", "ready"].includes(evidence.threadOutcome)
+			? result("audit_only", "startup_notice")
+			: result("model", "startup_handoff_pending");
+	}
+	if (
+		eventType === "session_monitoring_reestablished" &&
+		evidence.kind === "monitoring"
+	) {
+		if (!context.categoryEnabled)
+			return result("model", "lead_monitoring_reestablished_audit_disabled");
+		return evidence.episodeRef &&
+			evidence.probeRef &&
+			(evidence.alertState === "none" ||
+				(evidence.alertState === "resolved" && evidence.resolutionRef))
+			? result("audit_only", "monitoring_reestablished_confirmed")
+			: result("model", "monitoring_alert_open");
+	}
+	if (
+		eventType === "workflow_replacement_eligibility" &&
+		evidence.kind === "replacement_notice"
+	) {
+		if (!context.categoryEnabled)
+			return result("model", "lead_replacement_notice_audit_disabled");
+		return evidence.disposition === "replacement_candidate" &&
+			evidence.attemptRef &&
+			evidence.scheduleRef &&
+			Date.parse(evidence.nextCheckAt) > Date.parse(evidence.observedAt)
+			? result("audit_only", "replacement_future_notice")
+			: result("model", "replacement_action_pending");
+	}
+	return result("model", "unsupported_event");
 }
 
 /** Compatibility projection for existing validated producer call sites. */

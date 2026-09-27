@@ -13,6 +13,11 @@ export interface CodexQuotaMaintenanceOptions {
 	 * the runtime's own tick already reconciles the canonical credential.
 	 */
 	reconcileCanonical?(): Promise<void>;
+	/**
+	 * FLY-2900: the quota standby resume loop. Always called, with or without
+	 * the auto-switch runtime, on its own error boundary before the flush.
+	 */
+	resumeLoop?(): Promise<void>;
 }
 
 /**
@@ -49,6 +54,16 @@ export function createCodexQuotaMaintenance(
 						// outbox, the audit projection or the next tick's retry.
 						console.warn(
 							"[Bridge] Codex canonical reconciliation failed",
+							error instanceof Error ? error.message : String(error),
+						);
+					}
+				}
+				if (options.resumeLoop) {
+					try {
+						await options.resumeLoop();
+					} catch (error) {
+						console.warn(
+							"[Bridge] Codex quota standby resume loop failed",
 							error instanceof Error ? error.message : String(error),
 						);
 					}

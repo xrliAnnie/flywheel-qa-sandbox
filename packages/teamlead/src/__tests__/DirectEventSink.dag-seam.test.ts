@@ -20,6 +20,7 @@ import { DirectEventSink } from "../DirectEventSink.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
 import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
+import { createCodexStandbyRun } from "./helpers/codex-quota-standby-fixture.js";
 
 const testProjects = [
 	{
@@ -667,4 +668,34 @@ it("keeps receipt writes Bridge-local and first-write stable on repeated failure
 			"utf8",
 		).match(/recordPreAdapterFailureReceipt/g),
 	).toHaveLength(1);
+});
+
+describe("FLY-2900 quota standby direct intake", () => {
+	it("parks a generalized Codex wall without a terminal CommDB status or epic change", async () => {
+		const { store, sink } = await harness();
+		const roots: string[] = [];
+		cleanups.push(() => {
+			for (const root of roots) rmSync(root, { recursive: true, force: true });
+		});
+		store.codexQuotaStandbyEnabled = () => true;
+		const { executionId, issueId } = createCodexStandbyRun(store, {
+			cleanups: roots,
+		});
+		const enqueue = vi.fn();
+		sink.terminalCommDbSync = { enqueue };
+		const epic = vi.fn();
+		(sink as unknown as { notifyEpicChanged: typeof epic }).notifyEpicChanged =
+			epic;
+		const failure = {
+			failureKind: "goal_usage_limited" as const,
+			failureReason: "goal ended non-complete: usageLimited",
+		};
+		const envelope = { executionId, issueId, projectName: "flywheel" };
+		await sink.emitFailed(envelope, "raw", undefined, failure);
+		await sink.emitFailed(envelope, "raw", undefined, failure);
+		expect(store.getSession(executionId)?.status).toBe("running");
+		expect(store.isCodexQuotaStandby(executionId)).toBe(true);
+		expect(enqueue).not.toHaveBeenCalled();
+		expect(epic).not.toHaveBeenCalled();
+	});
 });

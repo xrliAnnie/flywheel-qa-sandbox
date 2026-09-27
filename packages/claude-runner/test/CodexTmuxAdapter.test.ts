@@ -6,6 +6,7 @@
  * `codex app-server`. The runtime/window/client internals are covered by their
  * own suites; real-daemon behavior is the V5 (529) real-machine acceptance.
  */
+import { createHash } from "node:crypto";
 import {
 	appendFileSync,
 	existsSync,
@@ -53,12 +54,16 @@ import type {
 	CodexDaemonEvents,
 } from "../src/codex-daemon-client.js";
 import { GoalRunError } from "../src/codex-daemon-client.js";
-import type {
-	CodexDaemonGoalRuntimeOptions,
-	RunGoalInput,
-	RunGoalOutcome,
+import {
+	CodexDaemonGoalRuntime,
+	type CodexDaemonGoalRuntimeOptions,
+	type RunGoalInput,
+	type RunGoalOutcome,
 } from "../src/codex-daemon-goal-runtime.js";
-import { codexSessionStateDir } from "../src/codex-daemon-runtime.js";
+import {
+	codexSessionStateDir,
+	type DaemonHandle,
+} from "../src/codex-daemon-runtime.js";
 import { CodexExecutionOwnershipRegistry } from "../src/codex-execution-ownership.js";
 import {
 	admitCodexAgentHome,
@@ -3560,6 +3565,270 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			strictResumeIdentity: true,
 			failOnThreadReadyError: true,
 		});
+	});
+
+	it("FLY-2900 forwards the quota resume and binds its authorization into the daemon-start gate", async () => {
+		await makeAdapter().execute(ctx());
+		runtime = new FakeRuntime(async (input) => {
+			await (input.onThreadReady as NonNullable<RunGoalInput["onThreadReady"]>)(
+				THREAD_ID,
+				0,
+				{ threadId: THREAD_ID, model: "gpt-5.6-sol", cwd: realpathSync(dir) },
+			);
+			return complete();
+		});
+		const gate = vi.fn(async () => null);
+		const identity = vi.fn();
+		const authorization = {
+			executionId: execId,
+			claimId: "bridge:1:boot:c1",
+			entrySeq: 1,
+			resumeAttempt: 1,
+		};
+		const quotaResume = {
+			authorization,
+			continueAttemptId: "cont-1",
+			continueAttemptFresh: true,
+			onContinueReconciled: () => ({ action: "abort" as const, reason: "x" }),
+			onContinueStarted: () => true,
+			onContinueProgress: () => undefined,
+			onContinueFailed: () => undefined,
+		};
+		await makeAdapter().execute(
+			ctx({
+				previousSession: { threadId: THREAD_ID },
+				beforeCodexDaemonStart: gate,
+				processLifecycle: {
+					mode: "resume",
+					generation: 1,
+					expectedSessionId: THREAD_ID,
+					expectedCwd: realpathSync(dir),
+					onIdentityVerified: identity,
+					resumeVerificationStatus: () => "accepted",
+					quotaResume,
+				},
+			}),
+		);
+		expect(identity).toHaveBeenCalledWith(
+			expect.objectContaining({
+				sessionId: THREAD_ID,
+				authDigest: createHash("sha256")
+					.update(readFileSync(join(dir, "dotcodex", "auth.json")))
+					.digest("hex"),
+			}),
+		);
+		expect(runtime.runGoalInputs[0]?.quotaResume).toMatchObject({
+			authorization,
+			continueAttemptId: "cont-1",
+			continueAttemptFresh: true,
+		});
+		await capturedOpts!.beforeCodexDaemonStart!("/fixture/home", execId);
+		expect(gate).toHaveBeenCalledWith("/fixture/home", execId, authorization);
+	});
+
+	it.each([
+		"progress",
+		"reconciled",
+		"pending",
+		"wrong-thread",
+		"wrong-model",
+		"wrong-cwd",
+	] as const)(
+		"FLY-2900 uses the current quota claim state after transport death (%s)",
+		async (settlement) => {
+			await makeAdapter().execute(ctx({ model: "gpt-5.6-sol" }));
+			let settled = false;
+			let runs = 0;
+			const authorization = {
+				executionId: execId,
+				claimId: "bridge:1:boot:c1",
+				entrySeq: 1,
+				resumeAttempt: 1,
+			};
+			const gate = vi.fn<
+				NonNullable<AdapterExecutionContext["beforeCodexDaemonStart"]>
+			>(async (_home, _executionId, claim) => {
+				if (settled && claim) throw new Error("closed quota claim");
+				return null;
+			});
+			const verification = vi.fn(() =>
+				settled ? ("rejected" as const) : ("accepted" as const),
+			);
+			const identityVerified = vi.fn();
+			const observed = vi.fn(async (threadId: string) => ({
+				threadId:
+					runs === 1 && settlement === "wrong-thread"
+						? "foreign-thread"
+						: threadId,
+				model:
+					runs === 1 && settlement === "wrong-model"
+						? "other-model"
+						: "gpt-5.6-sol",
+				cwd:
+					runs === 1 && settlement === "wrong-cwd"
+						? realpathSync(tmpdir())
+						: realpathSync(dir),
+			}));
+			const spawnDaemon = vi.fn(async () => {
+				let onExit: (() => void) | undefined;
+				const child = {
+					pid: 1,
+					exitCode: null,
+					signalCode: null as string | null,
+					once: (_event: string, cb: () => void) => {
+						onExit = cb;
+					},
+				};
+				return {
+					child,
+					socketPath: "/tmp/quota-restart-test.sock",
+					ensureDead: async () => true,
+					stop: () => {
+						child.signalCode = "SIGTERM";
+						onExit?.();
+					},
+				} as unknown as DaemonHandle;
+			});
+			const adapter = new CodexTmuxAdapter(
+				"testsess",
+				fake.exec,
+				25,
+				60_000,
+				undefined,
+				undefined,
+				{
+					...makeDeps(),
+					runtimeFactory: (opts) =>
+						new CodexDaemonGoalRuntime({
+							...opts,
+							spawnDaemon,
+							connectTransport: async () => ({
+								send() {},
+								onMessage() {},
+								onClose() {},
+								close() {},
+							}),
+							makeClient: () =>
+								({
+									initialize: async () => {},
+									isClosed: () => false,
+									close() {},
+									resumeThreadObserved: observed,
+								}) as unknown as CodexDaemonClient,
+							sleep: async () => {},
+							runGoalFn: async (_client, input) => {
+								runs += 1;
+								if (runs === 1) {
+									if (settlement !== "pending" && settlement !== "reconciled")
+										input.quotaResume!.onContinueProgress({
+											turnId: "t-1",
+											itemType: "agentMessage",
+										});
+									if (settlement === "reconciled")
+										input.quotaResume!.onContinueReconciled({ kind: "proven" });
+									throw new GoalRunError("socket died", "transport_closed");
+								}
+								if (settlement === "pending")
+									expect(input.quotaResume?.authorization).toEqual(
+										authorization,
+									);
+								else expect(input.quotaResume).toBeUndefined();
+								return {
+									status: "complete",
+									tokensUsed: 100,
+									turns: 2,
+									succeeded: true,
+								};
+							},
+						}),
+				},
+			);
+			const result = await adapter.execute(
+				ctx({
+					model: "gpt-5.6-sol",
+					previousSession: { threadId: THREAD_ID },
+					beforeCodexDaemonStart: gate,
+					processLifecycle: {
+						mode: "resume",
+						generation: 1,
+						expectedSessionId: THREAD_ID,
+						expectedCwd: realpathSync(dir),
+						expectedModel: "gpt-5.6-sol",
+						onIdentityVerified: identityVerified,
+						resumeVerificationStatus: verification,
+						quotaResume: {
+							authorization,
+							continueAttemptId: "cont-1",
+							continueAttemptFresh: true,
+							onContinueStarted: () => true,
+							onContinueFailed: () => {},
+							onContinueProgress: () => {
+								settled = true;
+							},
+							onContinueReconciled: () => {
+								settled = true;
+								return {
+									action: "send",
+									continueAttemptId: "cont-1",
+									settled: true,
+								};
+							},
+						},
+					},
+				}),
+			);
+			expect(result.success, JSON.stringify(result)).toBe(
+				!settlement.startsWith("wrong-"),
+			);
+			expect(runs).toBe(settlement.startsWith("wrong-") ? 1 : 2);
+			expect(spawnDaemon).toHaveBeenCalledTimes(2);
+			expect(observed.mock.calls).toEqual([[THREAD_ID], [THREAD_ID]]);
+			expect(gate.mock.calls[0]).toEqual([
+				expect.any(String),
+				execId,
+				authorization,
+			]);
+			expect(gate.mock.calls[1]).toEqual(
+				settlement === "pending"
+					? [expect.any(String), execId, authorization]
+					: [expect.any(String), execId],
+			);
+			expect(verification).toHaveBeenCalledTimes(
+				settlement === "pending" ? 2 : 1,
+			);
+			expect(identityVerified).toHaveBeenCalledTimes(
+				settlement === "pending" ? 2 : 1,
+			);
+		},
+	);
+
+	it("FLY-2900 refuses a quota resume that is not a resume of this execution", async () => {
+		const res = makeAdapter().execute(
+			ctx({
+				processLifecycle: {
+					mode: "initial",
+					generation: 1,
+					quotaResume: {
+						authorization: {
+							executionId: execId,
+							claimId: "bridge:1:boot:c1",
+							entrySeq: 1,
+							resumeAttempt: 1,
+						},
+						continueAttemptId: "cont-1",
+						continueAttemptFresh: true,
+						onContinueReconciled: () => ({ action: "abort", reason: "x" }),
+						onContinueStarted: () => true,
+						onContinueProgress: () => undefined,
+						onContinueFailed: () => undefined,
+					},
+				},
+			}),
+		);
+		await expect(res).rejects.toThrow(
+			"Codex quota resume requires a resume of this execution",
+		);
+		expect(runtime.runGoalInputs).toHaveLength(0);
 	});
 
 	it("uses the frozen launch snapshot for standby resume while rework text rides the later wake", async () => {

@@ -483,3 +483,102 @@ describe("FLY-2688 — Codex accounts observer", () => {
 		await expect(observeCodexAccounts(f.options)).rejects.toThrow();
 	});
 });
+
+describe("FLY-2900 — causal request sequence on every fresh reading", () => {
+	const readonlyOk = (usedPercent: number) => ({
+		ok: {
+			observedAt: "2026-09-21T12:00:00.000Z",
+			planType: "pro",
+			fiveH: {
+				usedPercent: 3,
+				windowMinutes: 300,
+				resetAt: "2026-09-21T15:00:00.000Z",
+			},
+			weekly: {
+				usedPercent,
+				windowMinutes: 10080,
+				resetAt: "2026-09-22T12:00:00.000Z",
+			},
+			credits: {
+				known: false,
+				hasCredits: null,
+				unlimited: null,
+				balance: null,
+			},
+			resetCredits: {
+				known: false,
+				value: null,
+				availableCount: null,
+				credits: null,
+			},
+			unclassifiedWindows: 0,
+		},
+	});
+
+	it("allocates the in-use account's sequence before the readonly request is sent", async () => {
+		const f = fixture();
+		let counter = 100;
+		const allocatedBeforeRequest: number[] = [];
+		const store = await observeCodexAccounts({
+			...f.options,
+			allocateRequestSeq: () => {
+				counter += 1;
+				return counter;
+			},
+			isInUse: (_accountKey, slot) => ({ verdict: slot === "shopping" }),
+			readInUseQuota: async () => {
+				allocatedBeforeRequest.push(counter);
+				return readonlyOk(40);
+			},
+		});
+		const shopping = store.accounts.find((a) => a.name === "shopping")!;
+		expect(allocatedBeforeRequest).toHaveLength(1);
+		expect(shopping.requestSeq).toBe(allocatedBeforeRequest[0]);
+		// The idle slot read through the app-server gets its own, distinct number.
+		const school = store.accounts.find((a) => a.name === "school")!;
+		expect(school.weekly?.usedPercent).toBe(30);
+		expect(typeof school.requestSeq).toBe("number");
+		expect(school.requestSeq).not.toBe(shopping.requestSeq);
+	});
+
+	it("keeps the previous sequence when a later read fails and the reading is carried", async () => {
+		const f = fixture();
+		let counter = 10;
+		const allocate = () => {
+			counter += 1;
+			return counter;
+		};
+		const first = await observeCodexAccounts({
+			...f.options,
+			allocateRequestSeq: allocate,
+			isInUse: (_accountKey, slot) => ({ verdict: slot === "shopping" }),
+			readInUseQuota: async () => readonlyOk(40),
+		});
+		const firstShopping = first.accounts.find((a) => a.name === "shopping")!;
+		const firstSchool = first.accounts.find((a) => a.name === "school")!;
+		const second = await observeCodexAccounts({
+			...f.options,
+			previous: first,
+			allocateRequestSeq: allocate,
+			isInUse: (_accountKey, slot) => ({ verdict: slot === "shopping" }),
+			readInUseQuota: async () => ({ error: "network" as const }),
+			binary: join(f.root, "missing-binary"),
+		});
+		const shopping = second.accounts.find((a) => a.name === "shopping")!;
+		expect(shopping.note).toBe("read_failed");
+		expect(shopping.weekly?.usedPercent).toBe(40);
+		expect(shopping.requestSeq).toBe(firstShopping.requestSeq);
+		const school = second.accounts.find((a) => a.name === "school")!;
+		expect(school.note).not.toBeNull();
+		expect(school.requestSeq).toBe(firstSchool.requestSeq);
+		// Allocation happened (the request was attempted) but no fresh number leaked.
+		expect(counter).toBeGreaterThan(Number(firstSchool.requestSeq));
+	});
+
+	it("writes no sequence when no allocator is wired", async () => {
+		const f = fixture();
+		const store = await observeCodexAccounts(f.options);
+		for (const account of store.accounts)
+			expect(account.requestSeq).toBeUndefined();
+	});
+});

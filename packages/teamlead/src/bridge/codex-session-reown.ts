@@ -505,6 +505,8 @@ export class CodexSessionReowner {
 			candidate.adapter_type !== "codex-tmux" ||
 			candidate.retry_successor ||
 			this.deps.isExcluded(candidate) ||
+			// FLY-2900: an intentional standby is never "revive exhausted".
+			this.deps.isIntentionalStandby?.(executionId) === true ||
 			!(await this.deps.isCurrentBinding(candidate))
 		)
 			return false;

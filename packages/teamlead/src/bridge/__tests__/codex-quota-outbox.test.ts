@@ -694,3 +694,133 @@ describe("FLY-2869 — Codex readings stopped alert", () => {
 		expect([...byEvent.values()].every((set) => set.size === 1)).toBe(true);
 	});
 });
+
+describe("FLY-2900 — quota standby notices", () => {
+	const notice = (
+		store: StateStore,
+		eventId: string,
+		payload: Record<string, unknown>,
+	) =>
+		store.codexQuota.enqueueOutbox({
+			incidentId: null,
+			kind: "resume_notice",
+			eventId,
+			destination: "issue_thread",
+			payload,
+		});
+
+	it("posts one issue-thread line per resume and never pages the founder", async () => {
+		const store = await StateStore.create(":memory:");
+		stores.push(store);
+		notice(store, "n-1", {
+			notice: "resumed",
+			executionId: "exec-1",
+			nodeId: "implement",
+			permitKind: "switch_committed",
+			toProfile: "school",
+			standbyMs: 72 * 60_000,
+		});
+		const lines: string[] = [];
+		const send = vi.fn();
+		const deliver = createCodexQuotaOutboxDelivery({
+			store,
+			send,
+			founderUserId: "123456789012345678",
+			notifyIssueThread: async ({ text }) => {
+				lines.push(text);
+				return { kind: "posted" };
+			},
+		});
+		await deliver();
+		await deliver();
+		expect(lines).toEqual([
+			"⚙️ Codex 额度恢复：implement 已在原会话续上（已切到 school，待命 1h12m）。",
+		]);
+		expect(send).not.toHaveBeenCalled();
+		expect(
+			store.codexQuota.listOutbox().find((row) => row.event_id === "n-1")
+				?.delivery_state,
+		).toBe("delivered");
+	});
+
+	it("renders fallback lines from validated payload fields only", async () => {
+		const { codexQuotaResumeNoticeText } = await import(
+			"../../codex-quota/outbox.js"
+		);
+		expect(
+			codexQuotaResumeNoticeText({
+				notice: "fallback_claude",
+				nodeId: "implement",
+				checkpointCommit: "abc1234def",
+			}),
+		).toBe(
+			"⚙️ Codex 全部账号额度用尽，implement 改由 Claude 接手（WIP 已提交 abc1234）。",
+		);
+		expect(
+			codexQuotaResumeNoticeText({
+				notice: "fallback_codex",
+				nodeId: "<script>",
+				checkpointCommit: "not-a-sha",
+			}),
+		).toBe(
+			"⚙️ 原会话无法恢复，节点 换新 Codex 体接手（进度账本 + 已推提交保留）。",
+		);
+	});
+
+	it("turns an undeliverable line into one Lead diagnostic and retries nothing", async () => {
+		const store = await StateStore.create(":memory:");
+		stores.push(store);
+		notice(store, "n-2", {
+			notice: "fallback_codex",
+			executionId: "exec-2",
+			nodeId: "implement",
+		});
+		const sent: AlertPayload[] = [];
+		const deliver = createCodexQuotaOutboxDelivery({
+			store,
+			send: async (payload) => {
+				sent.push(payload);
+				store.recordAlertDeliveryReceipt(
+					payload.eventId,
+					"queued_durable",
+					"2026-09-25T00:00:00.000Z",
+				);
+			},
+			notifyIssueThread: async () => ({
+				kind: "undeliverable",
+				reason: "no_chat_thread",
+			}),
+		});
+		await deliver();
+		await deliver();
+		expect(sent).toHaveLength(1);
+		expect(sent[0]).toMatchObject({
+			eventType: "codex_quota_standby_diagnostic",
+			title: "Codex 额度待命",
+			deliveryStyle: "plain",
+		});
+		expect(sent[0]!.body).toBe(
+			"⚙️ Codex 额度待命：续跑/兜底的 issue thread 通知投递失败（execution exec-2） [no_chat_thread]。",
+		);
+		expect(sent[0]).not.toHaveProperty("mentionUserId");
+	});
+
+	it("keeps a line pending when the thread post should be retried", async () => {
+		const store = await StateStore.create(":memory:");
+		stores.push(store);
+		notice(store, "n-3", {
+			notice: "resumed",
+			executionId: "exec-3",
+			nodeId: "implement",
+		});
+		await createCodexQuotaOutboxDelivery({
+			store,
+			send: vi.fn(),
+			notifyIssueThread: async () => ({ kind: "retry" }),
+		})();
+		expect(
+			store.codexQuota.listOutbox().find((row) => row.event_id === "n-3")
+				?.delivery_state,
+		).toBe("pending");
+	});
+});

@@ -152,12 +152,14 @@ import { createCodexQuotaMaintenance } from "../codex-quota/maintenance.js";
 import { CodexAccountOccupancy } from "../codex-quota/occupancy.js";
 import { createCodexQuotaOutboxDelivery } from "../codex-quota/outbox.js";
 import { codexQuotaIdentityReader } from "../codex-quota/probe.js";
+import { createCodexQuotaFallbackEvaluator } from "../codex-quota/quota-fallback.js";
 import { checkCodexQuotaReadiness } from "../codex-quota/readiness.js";
 import {
 	codexNotificationWindows,
 	createCodexReadingScheduler,
 } from "../codex-quota/reading-scheduler.js";
 import { createResidentHomeEvidence } from "../codex-quota/resident-home-evidence.js";
+import { createCodexQuotaResumeLoop } from "../codex-quota/resume-loop.js";
 import { createCodexQuotaRunRecovery } from "../codex-quota/run-recovery.js";
 import {
 	type CodexQuotaDispatcherWiring,
@@ -167,6 +169,13 @@ import {
 	reconcileCodexCanonicalRoot,
 	wireCodexQuotaDispatcher,
 } from "../codex-quota/runtime.js";
+import {
+	buildCodexStandbyPageSection,
+	type CodexStandbyPageSection,
+	writeCodexStandbySummary,
+} from "../codex-quota/standby-page.js";
+import { createCodexQuotaStandbyResumer } from "../codex-quota/standby-resumer.js";
+import { checkpointWorktree } from "../codex-quota/wip-checkpoint.js";
 import type { TakeoverRescuedAlertHook } from "../DirectEventSink.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
 import {
@@ -543,11 +552,14 @@ import {
 	storeCmuxRebindDisabled,
 	storeCmuxWatcherRebuildDisabled,
 	storeCodexQuotaAutoSwitchEnabled,
+	storeCodexQuotaClaudeFallbackEnabled,
+	storeCodexQuotaStandbyEnabled,
 	storeCodexTerminalReapEnabled,
 	storeDatabaseArchiveEnabled,
 	storeFlagRetirementScanEnabled,
 	storeLoopProfilerEnabled,
 	storeNodeStandbyResumeEnabled,
+	storeReviewEarlyStopEnabled,
 	storeReviewQuotaAutoRetryEnabled,
 	storeShippedHuskForceEnabled,
 	storeSkillFrameworkModeControl,
@@ -708,6 +720,8 @@ import {
 } from "./lead-dual-active-scan.js";
 import { LeadEventDeliveryCoordinator } from "./lead-event-delivery.js";
 import { createLeadInboundAttachmentRouter } from "./lead-inbound-attachment.js";
+import { createProductionClaudeInterruptPane } from "./lead-interrupt-claude-pane-production.js";
+import { createLeadInterruptLeadRouter } from "./lead-interrupt-routes.js";
 import { createLeadLeaseDiagnosticsRouter } from "./lead-lease-diagnostics.js";
 import { createLeadLeaseSelfCheckRouter } from "./lead-lease-self-check.js";
 import { createLeadNoteRouter } from "./lead-note-route.js";
@@ -1076,15 +1090,10 @@ import {
 	GitWorkflowResumeCheckpointStore,
 	reconcileWorkflowResumeCheckpoint,
 } from "./workflow-resume-checkpoint.js";
-import {
-	buildStandbyResumeStartRequest,
-	frozenLaunchLeadId,
-	observeWorkflowResumeLaunchFailure,
-} from "./workflow-resume-identity.js";
+import { frozenLaunchLeadId } from "./workflow-resume-identity.js";
 import { runWorkflowResumeShadowTick } from "./workflow-resume-shadow.js";
 import {
 	grantWorkflowReworkTurn,
-	type WorkflowResumeFailureEvidence,
 	WorkflowReworkCoordinator,
 } from "./workflow-rework-coordinator.js";
 import { renderWorkflowReworkWakeContent } from "./workflow-rework-wake-copy.js";
@@ -1092,6 +1101,10 @@ import {
 	collectWorkflowRunReceipt,
 	reconcileWorkflowRunCollections,
 } from "./workflow-run-collector.js";
+import {
+	relaunchSameWorkflowExecution,
+	type SameExecutionRelaunchDeps,
+} from "./workflow-same-execution-relaunch.js";
 import {
 	grantWorkflowShipCarrierTurn,
 	WorkflowShipCarrierDeliveryHandler,
@@ -1722,6 +1735,8 @@ export interface BridgeAppOptions {
 		readAccountIdentityKeys?: () => Readonly<Record<string, string>>;
 		/** FLY-2830: in-process last switch (survives a failed disk write). */
 		latestSwitchRecord?: () => SwitchRecord | null;
+		/** FLY-2900: the account page's quota standby section. */
+		standbySection?: () => CodexStandbyPageSection;
 		/** FLY-2830: test seam; production uses defaultSwitchRecordPath(). */
 		switchRecordPath?: string;
 	};
@@ -1902,6 +1917,8 @@ export interface BridgeAppOptions {
 	voiceScheduleRouter?: express.Router;
 	leadVoiceCapabilityRouter?: express.Router;
 	leadVoiceCapabilityReceiptRouter?: express.Router;
+	/** FLY-2883: Lead-side controlled-interrupt read + reply. */
+	leadInterruptLeadRouter?: express.Router;
 }
 
 /** FLY-579: tolerant parse of a JSON-encoded string[] (session.issue_labels). */
@@ -2265,6 +2282,14 @@ export function createBridgeApp(
 						vercelSection,
 						{
 							lastSwitch,
+							...(() => {
+								try {
+									const codexStandby = opts?.codexQuota?.standbySection?.();
+									return codexStandby ? { codexStandby } : {};
+								} catch {
+									return {};
+								}
+							})(),
 							// FLY-2903: best effort — a ledger failure is an empty banner.
 							terminalBodies: terminalBodiesForQuotaPage(store, new Date()),
 						},
@@ -6244,6 +6269,19 @@ export function createBridgeApp(
 			opts.leadVoiceCapabilityRouter,
 		);
 	}
+	if (opts?.leadInterruptLeadRouter) {
+		app.use(
+			"/api/lead-interrupts",
+			config.apiToken
+				? tokenAuthMiddleware(config.apiToken, undefined)
+				: (((_req, res) => {
+						res.status(503).json({
+							error: "lead interrupt API requires TEAMLEAD_API_TOKEN",
+						});
+					}) as express.RequestHandler),
+			opts.leadInterruptLeadRouter,
+		);
+	}
 	if (opts?.leadVoiceCapabilityReceiptRouter && config.apiToken) {
 		app.use(
 			"/api/lead-capabilities/voice-receipt",
@@ -7347,6 +7385,13 @@ export async function startBridge(
 	const alertDutyDispatcherBotUserId = { current: null as string | null };
 	const leadInboxRuntime = new LeadInboxRuntime({
 		dispatcherUserId: () => alertDutyDispatcherBotUserId.current,
+		// FLY-2883: Claude Leads receive the fixed interrupt phrase only when
+		// the FLY-2882 pane reader proves they are busy with an empty prompt.
+		claudeInterruptPaneForLead: (project, lead) =>
+			createProductionClaudeInterruptPane({
+				projectName: project.projectName,
+				leadId: lead.agentId,
+			}),
 		leadLeaseDbPath:
 			process.env.FLYWHEEL_LEAD_LEASE_DB ??
 			join(homedir(), ".flywheel", "lead-lease.db"),
@@ -8219,6 +8264,9 @@ export async function startBridge(
 			const pruned = await pruneDeadTerminalCommDbSessions(projectName, {
 				includeCrashPreserve: true,
 				onFinalizeOutcome: recordResidueFinalizeOutcome,
+				// FLY-2900: a quota standby body's `timeout` row must survive.
+				isProtectedExecution: (executionId) =>
+					store.isCodexQuotaStandby(executionId),
 			});
 			if (pruned.pruned > 0) {
 				console.log(
@@ -9078,6 +9126,8 @@ export async function startBridge(
 			commRoot: commDbRootDir(),
 			projectNames: projects.map((p) => p.projectName),
 			approvedManifestPath: join(codexQuotaStateRoot, "readiness-receipt.json"),
+			// FLY-2900: a parked quota standby body's lease is not a fault.
+			isQuotaStandby: (executionId) => store.isCodexQuotaStandby(executionId),
 			residentEvidence: createResidentHomeEvidence({
 				getSession: (executionId) => store.getSession(executionId),
 				resolveExecutionHome: resolveExecutionCodexHome,
@@ -9135,6 +9185,12 @@ export async function startBridge(
 					}),
 	});
 	store.codexQuotaAvailability = () => codexQuotaAvailability.snapshot();
+	// FLY-2900: new usage-limit walls park in quota standby (call-time read).
+	store.codexQuotaStandbyEnabled = () =>
+		storeCodexQuotaStandbyEnabled(flagStore);
+	// FLY-2900: fully walled pool + >30 min to the earliest reset → Claude.
+	store.codexQuotaClaudeFallbackEnabled = () =>
+		storeCodexQuotaClaudeFallbackEnabled(flagStore);
 	store.currentCodexPoolMembers = () => {
 		const pool = getCodexQuotaAccountPool();
 		return pool.profiles.map((profile) => {
@@ -9148,8 +9204,31 @@ export async function startBridge(
 			};
 		});
 	};
+	// FLY-2900: constructed below once the shared reading round exists.
+	const codexQuotaResumeLoopHolder: {
+		current?: ReturnType<typeof createCodexQuotaResumeLoop>;
+	} = {};
+	const codexQuotaStandbySectionHolder: {
+		current?: () => CodexStandbyPageSection;
+	} = {};
 	const codexQuotaMaintenance = createCodexQuotaMaintenance({
 		store,
+		// FLY-2900: always on, independent of the auto-switch runtime.
+		resumeLoop: async () => {
+			if (process.env.VITEST) return;
+			try {
+				await codexQuotaResumeLoopHolder.current?.tick();
+			} finally {
+				// FLY-2900: STEP 2 reads this projection; a stale file = unavailable.
+				const section = codexQuotaStandbySectionHolder.current?.();
+				if (section)
+					writeCodexStandbySummary(
+						join(codexQuotaStateRoot, "standby-summary.json"),
+						section,
+						Date.now(),
+					);
+			}
+		},
 		refreshAvailability: () => codexQuotaAvailability.refresh(),
 		runtime: () => codexQuotaRuntime,
 		flushOutbox: async () => codexQuotaOutboxHolder.flush?.(),
@@ -9261,6 +9340,9 @@ export async function startBridge(
 				limitId: "codex",
 				previous: readCodexAccountQuotaStore(codexAccountQuotaStorePath),
 				signal,
+				// FLY-2900: every fresh per-account read carries a causal number
+				// drawn before its request, shared with usage-limit signals.
+				allocateRequestSeq: () => store.codexQuota.allocateCausalSeq(),
 				// Re-read per slot: a Lead can launch mid-round. FLY-2869: the shared
 				// occupancy works with or without the auto-switch runtime.
 				refreshInUse: () =>
@@ -9285,6 +9367,161 @@ export async function startBridge(
 			}),
 		writeCodexSubscriptionStore: (subscriptions) =>
 			writeCodexSubscriptionStore(codexSubscriptionStorePath, subscriptions),
+	});
+	// FLY-2900: same-execution relaunch for quota standby; bound below once the
+	// shared relaunch dependencies exist (the rework coordinator block).
+	const codexQuotaRelaunchHolder: {
+		current?: (
+			input: Parameters<typeof relaunchSameWorkflowExecution>[1],
+		) => ReturnType<typeof relaunchSameWorkflowExecution>;
+	} = {};
+	const codexQuotaStandbyResumer = createCodexQuotaStandbyResumer({
+		store,
+		ownerPrefix: `bridge:${process.pid}:${randomUUID().slice(0, 8)}`,
+		getSession: (executionId) =>
+			store.getSession(executionId) as WorkflowActorSession | undefined,
+		relaunch: async (input) =>
+			codexQuotaRelaunchHolder.current
+				? codexQuotaRelaunchHolder.current(input)
+				: { ok: false, error: "relaunch_unavailable", cleanupRequired: false },
+		cleanup: async (session) => {
+			const fresh = store.getSession(session.execution_id);
+			if (fresh) {
+				const reaped = await reapCodexDaemonForSession(
+					store,
+					fresh,
+					"codex-quota-standby-resume",
+				);
+				if (reaped.outcome === "residual" || reaped.outcome === "unverifiable")
+					return { ok: false, error: `daemon_${reaped.outcome}` };
+			}
+			const project = session.project_name ?? fresh?.project_name;
+			if (project) {
+				const db = new CommDB(commDbPathForProject(project));
+				try {
+					db.updateSessionStatusIfRunning(session.execution_id, "timeout");
+				} finally {
+					db.close();
+				}
+			}
+			return { ok: true };
+		},
+		reviveCommDbSession: async (session) => {
+			const project = session.project_name;
+			if (!project) return { ok: false, reason: "project_unknown" };
+			const db = new CommDB(commDbPathForProject(project));
+			try {
+				const row = db.getSession(session.execution_id);
+				// A missing row is re-registered by the launch's pre-registration.
+				if (!row || row.status === "running") return { ok: true };
+				const revived = db.activateSessionForWake({
+					executionId: session.execution_id,
+					tmuxWindow: row.tmux_window,
+					projectName: row.project_name ?? project,
+					issueId: row.issue_id ?? session.issue_id,
+					leadId: row.lead_id ?? "",
+					vendor: row.vendor ?? "codex",
+				});
+				return revived.ok
+					? { ok: true }
+					: { ok: false, reason: revived.reason };
+			} finally {
+				db.close();
+			}
+		},
+		turnHolder: async (session) => {
+			const project = session.project_name;
+			if (!project) return undefined;
+			const db = new CommDB(commDbPathForProject(project));
+			try {
+				return db.getTurn(session.issue_id)?.holder_exec_id ?? undefined;
+			} finally {
+				db.close();
+			}
+		},
+	});
+	// FLY-2900: one projection for the account page section and STEP 2.
+	codexQuotaStandbySectionHolder.current = () =>
+		buildCodexStandbyPageSection({
+			rows: store.codexQuota.listStandby(),
+			audit: store.codexQuota.listResumeAudit(),
+			issueOf: (executionId) => {
+				const session = store.getSession(executionId);
+				return session?.issue_identifier ?? session?.issue_id;
+			},
+			loop: codexQuotaResumeLoopHolder.current?.snapshot() ?? null,
+			claudeFallbackEnabled: store.codexQuotaClaudeFallbackEnabled(),
+			readings: readCodexAccountQuotaStore(codexAccountQuotaStorePath),
+			pool: (() => {
+				try {
+					return store.currentCodexPoolMembers?.() ?? [];
+				} catch {
+					return [];
+				}
+			})(),
+			nowMs: Date.now(),
+		});
+	// FLY-2900: the quota standby resume loop (never probes/installs/rotates).
+	codexQuotaResumeLoopHolder.current = createCodexQuotaResumeLoop({
+		store,
+		reconcileCanonical: () =>
+			reconcileCodexCanonicalRoot({
+				store,
+				canonicalHome: codexQuotaCanonicalHome,
+				pool: getCodexQuotaAccountPool(),
+				readingWindows: codexNotificationReadingWindows,
+			}),
+		readiness: async () => {
+			const result = await checkCodexQuotaReadiness({
+				canonicalAuthPath: join(
+					voiceRealpathSync(codexQuotaCanonicalHome),
+					"auth.json",
+				),
+				collectHomes: codexAccountOccupancy.collect,
+			});
+			return {
+				ready: result.ready,
+				...(result.failures[0]
+					? { failureCode: result.failures[0].reason }
+					: {}),
+			};
+		},
+		readReadings: () => readCodexAccountQuotaStore(codexAccountQuotaStorePath),
+		requestReadingRefresh: () => refreshCodexReadings(),
+		resumer: codexQuotaStandbyResumer,
+		fallback: createCodexQuotaFallbackEvaluator({
+			store,
+			claudeFallbackEnabled: () => store.codexQuotaClaudeFallbackEnabled(),
+			pool: () => store.currentCodexPoolMembers?.() ?? [],
+			claudeDispatch: () => {
+				const models = getModelConfigSnapshot();
+				const opus = models.getModelRegistryEntry("opus");
+				return opus?.runtimeVendor === "claude" &&
+					models.isModelSelectionSupported({
+						surface: "workflow",
+						model: opus.id,
+						effort: "xhigh",
+						runtimeVendor: "claude",
+					})
+					? { model: opus.id, effort: "xhigh" }
+					: null;
+			},
+			checkpoint: ({ executionId, entrySeq, worktree, issueId }) =>
+				checkpointWorktree({
+					cwd: worktree,
+					executionId,
+					entrySeq,
+					issueId,
+					record: (commit, updateRef) =>
+						store.recordCodexQuotaCheckpoint({
+							executionId,
+							entrySeq,
+							commit,
+							now: new Date().toISOString(),
+							updateRef,
+						}),
+				}),
+		}),
 	});
 	// FLY-2830: one Claude card/subscription reader for every refresh path.
 	const observeClaudeDetails = (signal: AbortSignal) =>
@@ -9772,6 +10009,14 @@ export async function startBridge(
 		store,
 		projects,
 		config,
+		leadInterrupts: {
+			commDbPathForProject,
+			mailboxForProject: (projectName) =>
+				leadInboxRuntime.leadInterruptMailbox(projectName),
+			nudgeLead: (projectName, leadId) => {
+				leadInboxRuntime.nudge(leadId, projectName);
+			},
+		},
 		voiceHandoffs: voiceHandoffService,
 	});
 	const xhsWriteService = createXhsBridgeWriteService({
@@ -9816,6 +10061,11 @@ export async function startBridge(
 				canRecover: codexQuotaCanRecover,
 				refreshAccountQuota: refreshCodexAccountQuota,
 				latestSwitchRecord: () => switchRefreshTrigger.latestSwitchRecord(),
+				standbySection: () => {
+					const build = codexQuotaStandbySectionHolder.current;
+					if (!build) throw new Error("codex_standby_section_unavailable");
+					return build();
+				},
 				readAccountIdentityKeys: () => {
 					const pool = getCodexQuotaAccountPool();
 					const problems = new Set(
@@ -10200,6 +10450,11 @@ export async function startBridge(
 			leadVoiceCapabilityRouter: voiceSessionServices.leadCapabilityRouter,
 			leadVoiceCapabilityReceiptRouter:
 				voiceSessionServices.leadCapabilityReceiptRouter,
+			leadInterruptLeadRouter: createLeadInterruptLeadRouter({
+				store,
+				mailboxForProject: (projectName) =>
+					leadInboxRuntime.leadInterruptMailbox(projectName),
+			}),
 			// FLY-907: unified issue-display refresher (populated post-listen).
 			issueDisplayRefresh: issueDisplayRefreshHolder,
 		},
@@ -10479,6 +10734,9 @@ export async function startBridge(
 	const codexSessionReowner = new CodexSessionReowner({
 		store,
 		isIntentionalStandby: (executionId) => {
+			// FLY-2900: a Codex quota standby body is relaunched only by the
+			// quota resume loop, never revived by the reowner.
+			if (store.isCodexQuotaStandby(executionId)) return true;
 			const state = store.getWorkflowExecutionProcessBody(executionId)?.state;
 			return (
 				state === "retiring" || state === "standby" || state === "resuming"
@@ -14082,6 +14340,46 @@ export async function startBridge(
 		},
 		enqueueLead: (envelope, content) =>
 			leadInboxRuntime.enqueueLeadEvent(envelope, content),
+		// FLY-2900 §7: one line in the issue thread for a resume or a fallback.
+		notifyIssueThread: async ({ executionId, kind, text }) => {
+			const session = store.getSession(executionId);
+			if (!session?.project_name)
+				return { kind: "undeliverable", reason: "session_missing" };
+			let lead: LeadConfig | undefined;
+			try {
+				lead = resolveLeadForIssue(
+					projects,
+					session.project_name,
+					parseJsonStringArray(session.issue_labels),
+				).lead;
+			} catch {
+				return { kind: "undeliverable", reason: "lead_unresolved" };
+			}
+			let undeliverable: string | undefined;
+			const result = await emitIssueThreadInfraNotification(
+				{
+					executionId,
+					issueId: session.issue_id,
+					issueIdentifier: session.issue_identifier,
+					projectName: session.project_name,
+					kind,
+					content: text,
+					thread: store.getChatThreadByIssue(
+						session.issue_id,
+						lead.chatChannel,
+					),
+					botToken: lead.botToken ?? config.discordBotToken,
+					onUndeliverable: (reason) => {
+						undeliverable = reason;
+					},
+				},
+				{ store },
+			);
+			if (result.kind === "posted") return { kind: "posted" };
+			return undeliverable
+				? { kind: "undeliverable", reason: undeliverable }
+				: { kind: "retry" };
+		},
 		send: (payload, attempt) => leadAlertNotifier.alert(payload, attempt),
 		founderUserId:
 			deriveCanonicalFounderId(
@@ -14376,6 +14674,7 @@ export async function startBridge(
 				process.env.FLYWHEEL_CLAUDE_REVIEW_TIMEOUT_MS,
 			),
 			quotaAutoRetryEnabled: () => storeReviewQuotaAutoRetryEnabled(flagStore),
+			earlyStopEnabled: () => storeReviewEarlyStopEnabled(flagStore),
 			listActiveReviewFindingRulings: ({ projectName, issueId }) =>
 				store
 					.listActiveReviewFindingRulings(projectName, issueId)
@@ -14788,6 +15087,55 @@ export async function startBridge(
 			return assertWorkflowWorktreeReady(worktree, expectedHeadSha, options);
 		};
 
+		// FLY-2808 / FLY-2900: one same-execution relaunch discipline shared by
+		// the rework standby resume and the Codex quota standby resume.
+		const sameExecutionRelaunchDeps: SameExecutionRelaunchDeps = {
+			startDispatcher,
+			getRuntime: (executionId) =>
+				store.getWorkflowExecutionRuntime(executionId),
+			resolveCurrentActivation: (executionId) =>
+				store.resolveCurrentWorkflowActivation(executionId),
+			manifestPath: (vendor, executionId) =>
+				vendor === "codex"
+					? join(codexSessionStateDir(executionId), "session.json")
+					: join(
+							process.env.FLYWHEEL_CLAUDE_SESSION_DIR?.trim() ||
+								join(homedir(), ".flywheel", "state", "claude-sessions"),
+							executionId,
+							"session.json",
+						),
+			readManifest: (path) =>
+				JSON.parse(ffReadFileSync(path, "utf8")) as Record<string, unknown>,
+			realpath: (path) => voiceRealpathSync(path),
+			gitIdentity: async (cwd) => {
+				const [head, status] = await Promise.all([
+					execFileP("git", ["-C", cwd, "rev-parse", "HEAD"], {
+						timeout: 5_000,
+					}),
+					execFileP("git", ["-C", cwd, "status", "--porcelain=v1", "-uno"], {
+						timeout: 5_000,
+					}),
+				]);
+				return {
+					head: head.stdout.trim(),
+					dirty: status.stdout.trim().length > 0,
+				};
+			},
+			// FLY-2808: reproduce the Lead frozen at the original registration —
+			// it owns the CommDB root and mailbox identity in the launch snapshot.
+			frozenLeadId: (session, projectName) => {
+				const leadDb = new CommDB(commDbPathForProject(projectName));
+				try {
+					return frozenLaunchLeadId(leadDb, session.execution_id);
+				} finally {
+					leadDb.close();
+				}
+			},
+		};
+
+		codexQuotaRelaunchHolder.current = (input) =>
+			relaunchSameWorkflowExecution(sameExecutionRelaunchDeps, input);
+
 		workflowReworkCoordinatorHolder.current = new WorkflowReworkCoordinator({
 			store,
 			ownerId: `bridge:${process.pid}`,
@@ -14825,283 +15173,72 @@ export async function startBridge(
 					demandId,
 					processGeneration,
 					expectedHeadSha,
-				}) => {
-					// FLY-2808: once the launch identity is known, a failed attempt
-					// still records what it expected and how long it ran.
-					const launchIdentity: {
-						current?: {
-							expectedSessionId: string;
-							expectedModel: string;
-							expectedCwd: string;
-							requestedAt: number;
-						};
-					} = {};
-					const failed = (error: string, cleanupRequired = false) => {
-						const known = launchIdentity.current;
-						const evidence: WorkflowResumeFailureEvidence | undefined =
-							known && {
-								expectedSessionId: known.expectedSessionId,
-								expectedModel: known.expectedModel,
-								expectedCwd: known.expectedCwd,
-								totalMs: Math.max(0, Date.now() - known.requestedAt),
-							};
-						return {
-							ok: false as const,
-							error,
-							cleanupRequired,
-							...(evidence ? { evidence } : {}),
-						};
-					};
-					if (!startDispatcher) {
-						return failed("start_dispatcher_unavailable");
-					}
-					const runtime = store.getWorkflowExecutionRuntime(
-						session.execution_id,
-					);
-					const binding = store.resolveCurrentWorkflowActivation(
-						session.execution_id,
-					);
-					if (!runtime || binding.kind !== "current") {
-						return failed("resume_runtime_unavailable");
-					}
-					const manifestPath =
-						runtime.vendor === "codex"
-							? join(codexSessionStateDir(session.execution_id), "session.json")
-							: join(
-									process.env.FLYWHEEL_CLAUDE_SESSION_DIR?.trim() ||
-										join(homedir(), ".flywheel", "state", "claude-sessions"),
+				}) =>
+					relaunchSameWorkflowExecution(sameExecutionRelaunchDeps, {
+						session,
+						expectedHeadSha,
+						lifecycle: () => ({
+							generation: processGeneration,
+							demandId,
+							retirementApproved: () => {
+								const current = store.getWorkflowExecutionProcessBody(
 									session.execution_id,
-									"session.json",
 								);
-					let manifest: Record<string, unknown>;
-					try {
-						manifest = JSON.parse(
-							ffReadFileSync(manifestPath, "utf8"),
-						) as Record<string, unknown>;
-					} catch {
-						return failed("resume_manifest_unavailable");
-					}
-					const expectedSessionId =
-						runtime.vendor === "codex" ? manifest.threadId : manifest.sessionId;
-					const manifestModel = manifest.resolvedModel;
-					const manifestCwd = manifest.cwd;
-					if (
-						typeof expectedSessionId !== "string" ||
-						!expectedSessionId.trim()
-					) {
-						return failed("resume_session_identity_missing");
-					}
-					if (manifestModel !== runtime.model) {
-						return failed("resume_model_mismatch");
-					}
-					if (typeof manifestCwd !== "string" || !manifestCwd.trim()) {
-						return failed("resume_cwd_missing");
-					}
-					let expectedCwd: string;
-					try {
-						expectedCwd = voiceRealpathSync(manifestCwd);
-					} catch {
-						return failed("resume_cwd_unavailable");
-					}
-					let observedWorktree: string | undefined;
-					try {
-						observedWorktree = session.worktree_path
-							? voiceRealpathSync(session.worktree_path)
-							: undefined;
-					} catch {
-						observedWorktree = undefined;
-					}
-					if (observedWorktree !== expectedCwd) {
-						return failed("resume_worktree_mismatch");
-					}
-					let currentHead = expectedHeadSha;
-					let dirty = false;
-					try {
-						const [head, status] = await Promise.all([
-							execFileP("git", ["-C", expectedCwd, "rev-parse", "HEAD"], {
-								timeout: 5_000,
-							}),
-							execFileP(
-								"git",
-								["-C", expectedCwd, "status", "--porcelain=v1", "-uno"],
-								{ timeout: 5_000 },
-							),
-						]);
-						currentHead = head.stdout.trim();
-						dirty = status.stdout.trim().length > 0;
-					} catch {
-						return failed("resume_git_identity_unavailable");
-					}
-					const priorHead =
-						typeof manifest.lastObservedHead === "string"
-							? manifest.lastObservedHead
-							: undefined;
-					const headDriftNotice =
-						priorHead && (priorHead !== currentHead || dirty)
-							? `Workflow resume context: the shared worktree moved from ${priorHead} to ${currentHead}${dirty ? " and currently has uncommitted changes" : ""}. Re-read the current files before acting; TURN remains the only write authority.`
-							: undefined;
-					// FLY-2808: reproduce the Lead frozen at the original registration —
-					// it owns the CommDB root and mailbox identity in the launch snapshot.
-					let leadId: string | undefined;
-					try {
-						const leadDb = new CommDB(
-							commDbPathForProject(
-								session.project_name ?? binding.run.project_name,
-							),
-						);
-						try {
-							leadId = frozenLaunchLeadId(leadDb, session.execution_id);
-						} finally {
-							leadDb.close();
-						}
-					} catch {
-						return failed("resume_lead_identity_unavailable");
-					}
-					const requestedAt = Date.now();
-					launchIdentity.current = {
-						expectedSessionId,
-						expectedModel: runtime.model,
-						expectedCwd,
-						requestedAt,
-					};
-					let resolveIdentity!: (value: {
-						sessionId: string;
-						model: string | null;
-						cwd: string;
-					}) => void;
-					let rejectIdentity!: (reason: Error) => void;
-					const identity = new Promise<{
-						sessionId: string;
-						model: string | null;
-						cwd: string;
-					}>((resolveIdentityPromise, rejectIdentityPromise) => {
-						resolveIdentity = resolveIdentityPromise;
-						rejectIdentity = rejectIdentityPromise;
-					});
-					let identityTimeout: ReturnType<typeof setTimeout> | undefined;
-					let cleanupRequired = false;
-					try {
-						const startResult = await startDispatcher.start(
-							buildStandbyResumeStartRequest({
-								session,
-								runProjectName: binding.run.project_name,
-								runtime,
-								leadId,
-								expectedSessionId,
-								expectedCwd,
-								currentHead,
-								lifecycle: {
-									generation: processGeneration,
-									demandId,
-									...(headDriftNotice ? { headDriftNotice } : {}),
-									retirementApproved: () => {
-										const current = store.getWorkflowExecutionProcessBody(
-											session.execution_id,
-										);
-										return isWorkflowProcessRetirementApproved(
-											current,
-											processGeneration,
-										);
-									},
-									retirementRequestedAt: () => {
-										const current = store.getWorkflowExecutionProcessBody(
-											session.execution_id,
-										);
-										return current?.generation === processGeneration &&
-											current.state === "retiring"
-											? (current.retirement_requested_at ?? undefined)
-											: undefined;
-									},
-									onIdentityVerified: resolveIdentity,
-									onIdentityVerificationFailed: (reasonCode) =>
-										rejectIdentity(new Error(reasonCode)),
-									resumeVerificationStatus: () => {
-										const current = store.getWorkflowExecutionProcessBody(
-											session.execution_id,
-										);
-										if (!current || current.generation !== processGeneration) {
-											return "rejected";
-										}
-										if (current.state === "active") return "accepted";
-										return current.state === "resuming" &&
-											current.current_demand_id === demandId
-											? "pending"
-											: "rejected";
-									},
-									onRetired: (evidence) => {
-										const retired = store.confirmWorkflowExecutionStandby({
-											executionId: session.execution_id,
-											generation: evidence.generation,
-											reasonCode: evidence.reasonCode,
-											now: evidence.retiredAt,
-										});
-										if (!retired.ok) {
-											console.warn(
-												`[workflow-rework] standby confirmation refused for ${session.execution_id}: ${retired.reason}`,
-											);
-										}
-									},
-									onRetirementFailed: (evidence) => {
-										const failed = store.failWorkflowExecutionRetirement({
-											executionId: session.execution_id,
-											generation: evidence.generation,
-											reasonCode: evidence.reasonCode,
-											now: evidence.failedAt,
-										});
-										if (!failed.ok) {
-											console.warn(
-												`[workflow-rework] retirement failure latch refused for ${session.execution_id}: ${failed.reason}`,
-											);
-										}
-									},
-								},
-							}),
-						);
-						cleanupRequired = true;
-						const launchFailure = observeWorkflowResumeLaunchFailure(
-							startResult.launchOutcome,
-						);
-						const observed = await Promise.race([
-							identity.then((value) => ({ kind: "identity" as const, value })),
-							new Promise<never>((_, reject) => {
-								identityTimeout = setTimeout(
-									() => reject(new Error("resume_identity_timeout")),
-									180_000,
+								return isWorkflowProcessRetirementApproved(
+									current,
+									processGeneration,
 								);
-							}),
-							...(launchFailure ? [launchFailure] : []),
-						]);
-						if (observed.kind === "launch") {
-							return failed(
-								observed.outcome.failure.reason,
-								observed.outcome.failure.physicalEvidence === "unknown",
-							);
-						}
-						const totalMs = Math.max(0, Date.now() - requestedAt);
-						if (observed.value.model === null) {
-							return failed("resume_observed_model_missing", true);
-						}
-						return {
-							ok: true,
-							expectedSessionId,
-							observedSessionId: observed.value.sessionId,
-							expectedModel: runtime.model,
-							observedModel: observed.value.model,
-							expectedCwd,
-							observedCwd: observed.value.cwd,
-							queueMs: 0,
-							startupMs: totalMs,
-							totalMs,
-						};
-					} catch (error) {
-						return failed(
-							error instanceof Error ? error.message : String(error),
-							cleanupRequired,
-						);
-					} finally {
-						if (identityTimeout) clearTimeout(identityTimeout);
-					}
-				},
+							},
+							retirementRequestedAt: () => {
+								const current = store.getWorkflowExecutionProcessBody(
+									session.execution_id,
+								);
+								return current?.generation === processGeneration &&
+									current.state === "retiring"
+									? (current.retirement_requested_at ?? undefined)
+									: undefined;
+							},
+							resumeVerificationStatus: () => {
+								const current = store.getWorkflowExecutionProcessBody(
+									session.execution_id,
+								);
+								if (!current || current.generation !== processGeneration) {
+									return "rejected";
+								}
+								if (current.state === "active") return "accepted";
+								return current.state === "resuming" &&
+									current.current_demand_id === demandId
+									? "pending"
+									: "rejected";
+							},
+							onRetired: (evidence) => {
+								const retired = store.confirmWorkflowExecutionStandby({
+									executionId: session.execution_id,
+									generation: evidence.generation,
+									reasonCode: evidence.reasonCode,
+									now: evidence.retiredAt,
+								});
+								if (!retired.ok) {
+									console.warn(
+										`[workflow-rework] standby confirmation refused for ${session.execution_id}: ${retired.reason}`,
+									);
+								}
+							},
+							onRetirementFailed: (evidence) => {
+								const failed = store.failWorkflowExecutionRetirement({
+									executionId: session.execution_id,
+									generation: evidence.generation,
+									reasonCode: evidence.reasonCode,
+									now: evidence.failedAt,
+								});
+								if (!failed.ok) {
+									console.warn(
+										`[workflow-rework] retirement failure latch refused for ${session.execution_id}: ${failed.reason}`,
+									);
+								}
+							},
+						}),
+					}),
 				activateActorForWake: (session) =>
 					activateWakeHolder(session, "workflow_rework"),
 				cleanupFailedStandbyResume: async ({
@@ -16098,6 +16235,7 @@ export async function startBridge(
 								? { status: s.status, heartbeat_at: s.heartbeat_at }
 								: undefined;
 						},
+						isQuotaStandby: (id) => store.isCodexQuotaStandby(id),
 						targetAlive: async (w) => {
 							const liveness = await probeRunnerProcessLiveness(w);
 							if (liveness === "alive") return true;

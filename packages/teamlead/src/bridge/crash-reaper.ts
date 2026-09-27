@@ -177,6 +177,8 @@ export async function reapCrashedRunners(
 		const execId = session.execution_id;
 		// Alive-but-detached (reconnecting / monitor-lost / marker-retry) → never reap.
 		if (deps.isSuppressed(execId)) continue;
+		// FLY-2900 §4.2: a Codex quota standby body is parked, not crashed.
+		if (deps.store.isCodexQuotaStandby?.(execId) === true) continue;
 		// FLY-172 drain owns a session with a pending complete marker.
 		if (deps.hasPendingCompleteMarker(execId)) continue;
 		if (!session.project_name) continue;

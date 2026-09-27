@@ -112,9 +112,11 @@ describe("modelShortCode (F/O/S/H)", () => {
 	});
 });
 
-describe("vendorModelShortCode (FLY-1255 Plan B — non-Claude single letters)", () => {
-	it("maps the curated codex/GPT and kimi families to G / K", () => {
-		expect(vendorModelShortCode("codex", "gpt-5.6-sol")).toBe("G");
+describe("vendorModelShortCode (FLY-2936 model-family letters)", () => {
+	it("distinguishes Astra and Sol model families before the GPT fallback", () => {
+		expect(vendorModelShortCode("codex", "gpt-6-astra")).toBe("A");
+		expect(vendorModelShortCode("codex", "gpt-5.6-sol")).toBe("S");
+		expect(vendorModelShortCode("codex", "gpt-6-sol")).toBe("S");
 		expect(vendorModelShortCode("codex", "gpt-5.6")).toBe("G");
 		expect(vendorModelShortCode("codex", "gpt-6")).toBe("G");
 		expect(vendorModelShortCode("codex", "gpt-4o")).toBe("G");
@@ -122,7 +124,8 @@ describe("vendorModelShortCode (FLY-1255 Plan B — non-Claude single letters)",
 		// kimi is family-wide (Annie: "[K]=kimi family").
 		expect(vendorModelShortCode("kimi", "kimi-k2-next")).toBe("K");
 		// case-insensitive on both family and model.
-		expect(vendorModelShortCode("CODEX", "GPT-5.6-SOL")).toBe("G");
+		expect(vendorModelShortCode("CODEX", "GPT-6-ASTRA")).toBe("A");
+		expect(vendorModelShortCode("CODEX", "GPT-5.6-SOL")).toBe("S");
 	});
 
 	it("never fabricates a letter for an unvetted vendor/model", () => {

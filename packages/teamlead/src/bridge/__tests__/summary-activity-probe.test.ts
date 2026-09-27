@@ -19,6 +19,10 @@ const unavailable = (reason: string) => ({
 });
 const notBound = { status: "not_bound" as const, count: 0 as const };
 
+it("FLY-2912 proof snapshots do not count as new business activity", () => {
+	expect(isSummaryActivityNoiseEventType("lead_notification_proof")).toBe(true);
+});
+
 describe("FLY-2634 summary activity probe", () => {
 	it("classifies only complete zero evidence as quiet", () => {
 		expect(

@@ -9,6 +9,7 @@ export const MAX_TERMINAL_ARCHIVE_PAGES_PER_CALL = 2;
 const TERMINAL_ARCHIVE_SELECT_PAGE_SIZE = 64;
 
 const SESSION_EVENT_TYPES = [
+	"lead_notification_proof",
 	"issue_thread_infra_notify_skipped",
 	"issue_thread_infra_notify_failed",
 	"founder_ship_reply_wake_skipped",

@@ -1,3 +1,8 @@
+import { NotificationAuditStore, type NotificationAuditRange } from "./bridge/notification-audit-store.js";
+import { buildSessionKey } from "./bridge/hook-payload.js";
+import { leadNotificationDecision, type LeadNotificationDecision } from "./bridge/EventFilter.js";
+import { storeLeadReplacementNoticeAuditEnabled, storeLeadTokenSavingsEnabled } from "./bridge/flag-store-runtime.js";
+import type { NotificationBinding, NotificationEvidenceV2 } from "./bridge/lead-notification-evidence.js";
 import {
 	assertStandingAuthorityConfirmationRecord,
 	STANDING_AUTHORITY_CONFIRMATION_DDL,
@@ -56,12 +61,19 @@ import { buildReworkWakeId, type ReworkWakeIdentity, type ReworkWakeRetirementPr
 import { newDrainReadId } from "flywheel-comm/completion-obligations";
 import { type CompletionDrainProof, isCompletionDrainProof } from "./bridge/completion-drain.js";
 import { BetaReleaseStore } from "./bridge/beta-release-store.js";
+import { LeadInterruptStore } from "./bridge/lead-interrupt-store.js";
 import { ReviewRoundStore } from "./bridge/review-round-store.js";
 import type { CompletionWorktreeBranchObservation } from "./bridge/worktree-binding-refresh.js";
 import { CustomerReleaseStore } from "./bridge/customer-release/store.js";
 import { isMailboxTerminalStatus, OUTCOME_STATUSES, TERMINAL_STATUSES } from "flywheel-comm/session-terminal";
 import { buildWorkflowReworkContext, renderWorkflowReworkLaunchStableSection, workflowReworkLaunchDigest } from "./bridge/workflow-rework-context.js";
-import { type CodexQuotaSignalV1, parseCodexQuotaSignalV1 } from "flywheel-core";
+import {
+	type CodexQuotaContinueDecision,
+	type CodexQuotaContinueReconciliation,
+	type CodexQuotaResumeAuthorization,
+	type CodexQuotaSignalV1,
+	parseCodexQuotaSignalV1,
+} from "flywheel-core";
 import {
 	type CodexPoolExhaustionFact,
 	type CodexQuotaPoolMember,
@@ -2055,6 +2067,11 @@ export interface DesignReviewApprovalProof {
  */
 export interface CodexReviewJob {
 	request_id: string;
+	/** NULL is rejected; 0 is accepted legacy history with unknown order. */
+	accept_seq?: number;
+	voided_at?: string;
+	superseded_by_request_id?: string;
+	quiet_until?: string;
 	execution_id: string;
 	issue_id?: string;
 	project_name: string;
@@ -2158,6 +2175,7 @@ export interface AccountSwitchActionReceipt {
  */
 export interface CodexReviewReuseBinding {
 	request_id: string;
+	accept_seq?: number;
 	source_request_id: string;
 	execution_id: string;
 	question_id: string;
@@ -3216,6 +3234,20 @@ export function openWithDatabaseIdentity<T extends { close(): void }>(
 	}
 }
 
+/** FLY-2900 §3.1: how a runner usage-limit wall is settled against standby. */
+type CodexQuotaStandbyDisposition =
+	| "enter"
+	| "refresh"
+	| "capacity_rejected"
+	| "resume_failed"
+	| "ignore";
+/** FLY-2900 §2.7: standby entries per (run,node,attempt) in any 24 hours. */
+const CODEX_QUOTA_STANDBY_ENTRY_LIMIT = 6;
+/** FLY-2900 §6: a resuming claim's lease, renewed every loop tick. */
+const CODEX_QUOTA_RESUME_LEASE_MS = 10 * 60_000;
+/** FLY-2900 §5.2: fallback bodies per standby entry before the Lead hears. */
+const CODEX_QUOTA_FALLBACK_ATTEMPTS = 2;
+
 export class StateStore {
 	private workflowScorecardStoreCache?: {
 		db: BetterDb;
@@ -3277,6 +3309,10 @@ export class StateStore {
 	get betaSchedules(): BetaReleaseStore {
 		return new BetaReleaseStore(this.db.raw);
 	}
+	/** FLY-2883: controlled Lead interrupt record + append-only audit. */
+	get leadInterrupts(): LeadInterruptStore {
+		return new LeadInterruptStore(this.db.raw);
+	}
 	/** FLY-2891: per-round local Codex review records + gate acceptances. */
 	get reviewRounds(): ReviewRoundStore {
 		return new ReviewRoundStore(this.db.raw);
@@ -3301,7 +3337,136 @@ export class StateStore {
 					revision: 0,
 					checkedAt: null,
 				};
-	isCodexQuotaLaunchPaused(executionId: string, rootKey?: string): boolean {
+	/**
+	 * FLY-2900: `codex_quota_standby` (bridge_global). Off here so unit
+	 * fixtures keep the historical failure path; the Bridge wires the flag.
+	 */
+	codexQuotaStandbyEnabled: () => boolean = () => false;
+	/** FLY-2900: `codex_quota_claude_fallback`; off in fixtures, wired by the Bridge. */
+	codexQuotaClaudeFallbackEnabled: () => boolean = () => false;
+	/** FLY-2900: an execution parked in Codex quota standby (process gone, node running). */
+	isCodexQuotaStandby(executionId: string): boolean {
+		return this.codexQuota.isCodexQuotaStandby(executionId);
+	}
+	/** FLY-2900: parked with no process — does not hold a runner slot. */
+	isCodexQuotaParkedWithoutProcess(executionId: string): boolean {
+		return this.codexQuota.isCodexQuotaParkedWithoutProcess(executionId);
+	}
+	/**
+	 * FLY-2900 §4.1: the one quota launch decision. With an authorization the
+	 * durable claim alone decides — valid → authorized (skips casualty, root
+	 * safety guard and root pause), anything else → paused; it never falls
+	 * back to the ordinary judgment. Without one, the historical judgment.
+	 */
+	codexQuotaLaunchDecision(
+		executionId: string,
+		rootKey?: string,
+		authorization?: CodexQuotaResumeAuthorization,
+	): "authorized" | "paused" | "clear" {
+		if (authorization) {
+			return authorization.executionId === executionId &&
+				this.codexQuota.activeResumeClaim(authorization)
+				? "authorized"
+				: "paused";
+		}
+		return this.codexQuotaLegacyLaunchPaused(executionId, rootKey)
+			? "paused"
+			: "clear";
+	}
+	isCodexQuotaLaunchPaused(
+		executionId: string,
+		rootKey?: string,
+		authorization?: CodexQuotaResumeAuthorization,
+	): boolean {
+		return (
+			this.codexQuotaLaunchDecision(executionId, rootKey, authorization) ===
+			"paused"
+		);
+	}
+	claimCodexQuotaResume(input: {
+		executionId: string;
+		ownerClaimId: string;
+		now: string;
+		leaseMs?: number;
+	}) {
+		const result = this.codexQuota.claimResume({
+			...input,
+			leaseMs: input.leaseMs ?? CODEX_QUOTA_RESUME_LEASE_MS,
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+	codexQuotaResumeVerificationStatus(
+		authorization: CodexQuotaResumeAuthorization,
+	): "pending" | "accepted" | "rejected" {
+		return this.codexQuota.resumeVerificationStatus(authorization);
+	}
+	markCodexQuotaResumeIdentityVerified(
+		authorization: CodexQuotaResumeAuthorization,
+		now: string,
+		evidence?: { sessionId: string; authDigest?: string },
+	): boolean {
+		return this.codexQuota.markResumeIdentityVerified(authorization, now, evidence);
+	}
+	markCodexQuotaContinueStarted(
+		authorization: CodexQuotaResumeAuthorization,
+		turnId: string,
+		now: string,
+	): boolean {
+		return this.codexQuota.markContinueStarted(authorization, turnId, now);
+	}
+	settleCodexQuotaResumeSuccess(input: {
+		authorization: CodexQuotaResumeAuthorization;
+		turnId: string;
+		now: string;
+	}): boolean {
+		const settled = this.codexQuota.settleResumeSuccess({
+			...input,
+			requireTurn: true,
+		});
+		if (settled) this.clearCodexQuotaStandbyLastError(input.authorization.executionId);
+		return settled;
+	}
+	reconcileCodexQuotaContinue(input: {
+		authorization: CodexQuotaResumeAuthorization;
+		outcome: CodexQuotaContinueReconciliation;
+		now: string;
+	}): CodexQuotaContinueDecision {
+		const decision = this.codexQuota.reconcileContinue(input);
+		if (decision.action === "send" && decision.settled)
+			this.clearCodexQuotaStandbyLastError(input.authorization.executionId);
+		return decision;
+	}
+	failCodexQuotaResume(input: {
+		authorization: CodexQuotaResumeAuthorization;
+		kind: "mechanical" | "capacity" | "neutral";
+		detailCode: string;
+		continueDetermined: boolean;
+		now: string;
+	}) {
+		return this.codexQuota.failResume(input);
+	}
+	renewCodexQuotaResumeLease(
+		authorization: CodexQuotaResumeAuthorization,
+		now: string,
+		leaseMs = CODEX_QUOTA_RESUME_LEASE_MS,
+	): boolean {
+		return this.codexQuota.renewResumeLease(authorization, now, leaseMs);
+	}
+	recoverAbandonedCodexQuotaClaims(ownerPrefix: string, now: string): string[] {
+		return this.codexQuota.recoverAbandonedClaims(ownerPrefix, now);
+	}
+	/** The resumed body is working again: drop the standby marker from the session. */
+	private clearCodexQuotaStandbyLastError(executionId: string): void {
+		this.db.run(
+			"UPDATE sessions SET last_error = NULL WHERE execution_id = ? AND last_error = 'codex_quota_standby'",
+			[executionId],
+		);
+	}
+	private codexQuotaLegacyLaunchPaused(
+		executionId: string,
+		rootKey?: string,
+	): boolean {
 		if (this.codexQuota.isExecutionPaused(executionId)) return true;
 		if (rootKey === undefined) return false;
 		if (
@@ -12091,38 +12256,67 @@ export class StateStore {
 		const reviewJobInfo = this.db.exec("PRAGMA table_info(codex_review_job)");
 		const reviewJobColumns =
 			reviewJobInfo[0]?.values.map((row) => row[1] as string) ?? [];
-		for (const [column, type] of [
-			["question_id", "TEXT"],
-			["failure_raw", "TEXT"],
-			["retry_at", "TEXT"],
-			["retry_trigger", "TEXT"],
-			["retry_parked_at_ms", "INTEGER"],
-			["auto_retry_count", "INTEGER NOT NULL DEFAULT 0"],
-			["head_move_parent_request_id", "TEXT"],
-			["head_move_retry_count", "INTEGER NOT NULL DEFAULT 0"],
-			["failure_attempt_count", "INTEGER NOT NULL DEFAULT 0"],
-			["reviewer_verdict", "TEXT"],
-			["advisories_json", "TEXT"],
-			["settled_json", "TEXT"],
-			["response_json", "TEXT"],
-			["payload_version", "INTEGER"],
-			["target_repo_path", "TEXT"],
-			["target_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
-			["reuse_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
-			["repaired_trailing_brace", "INTEGER NOT NULL DEFAULT 0"],
-			["reviewer_session_generation", "INTEGER NOT NULL DEFAULT 0"],
-			["reviewer_session_failure_streak", "INTEGER NOT NULL DEFAULT 0"],
-			["retired_reviewer_session_uuid", "TEXT"],
-			// FLY-2763: same-family sanction captured at request time
-			["same_family_sanction", "TEXT"],
-			// FLY-2891: stable review completion time (first done only)
-			["completed_at", "TEXT"],
-		] as const) {
-			if (!reviewJobColumns.includes(column)) {
-				this.db.run(
-					`ALTER TABLE codex_review_job ADD COLUMN ${column} ${type}`,
-				);
+		this.db.transaction(() => {
+			for (const [column, type] of [
+				["accept_seq", "INTEGER"],
+				["voided_at", "TEXT"],
+				["superseded_by_request_id", "TEXT"],
+				["quiet_until", "TEXT"],
+				["question_id", "TEXT"],
+				["failure_raw", "TEXT"],
+				["retry_at", "TEXT"],
+				["retry_trigger", "TEXT"],
+				["retry_parked_at_ms", "INTEGER"],
+				["auto_retry_count", "INTEGER NOT NULL DEFAULT 0"],
+				["head_move_parent_request_id", "TEXT"],
+				["head_move_retry_count", "INTEGER NOT NULL DEFAULT 0"],
+				["failure_attempt_count", "INTEGER NOT NULL DEFAULT 0"],
+				["reviewer_verdict", "TEXT"],
+				["advisories_json", "TEXT"],
+				["settled_json", "TEXT"],
+				["response_json", "TEXT"],
+				["payload_version", "INTEGER"],
+				["target_repo_path", "TEXT"],
+				["target_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
+				["reuse_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
+				["repaired_trailing_brace", "INTEGER NOT NULL DEFAULT 0"],
+				["reviewer_session_generation", "INTEGER NOT NULL DEFAULT 0"],
+				["reviewer_session_failure_streak", "INTEGER NOT NULL DEFAULT 0"],
+				["retired_reviewer_session_uuid", "TEXT"],
+				// FLY-2763: same-family sanction captured at request time
+				["same_family_sanction", "TEXT"],
+				// FLY-2891: stable review completion time (first done only)
+				["completed_at", "TEXT"],
+			] as const) {
+				if (!reviewJobColumns.includes(column)) {
+					this.db.run(
+						`ALTER TABLE codex_review_job ADD COLUMN ${column} ${type}`,
+					);
+				}
 			}
+			// Sparse legacy tables lack the evidence needed to classify acceptance.
+			// target_repo_path is added above; the other predicate columns must exist.
+			if (
+				!reviewJobColumns.includes("accept_seq") &&
+				["status", "frozen_head_sha", "target_path"].every((column) =>
+					reviewJobColumns.includes(column),
+				)
+			) {
+				this.db.run(`UPDATE codex_review_job SET accept_seq = 0
+					WHERE accept_seq IS NULL AND (status <> 'failed'
+					 OR frozen_head_sha IS NOT NULL OR target_path IS NOT NULL
+					 OR target_repo_path IS NOT NULL)`);
+			}
+		});
+		// target_repo_identity is added above, but early schemas predate lane fields.
+		if (
+			["project_name", "issue_id", "review_type"].every((column) =>
+				reviewJobColumns.includes(column),
+			)
+		) {
+			this.db.run(
+				"CREATE INDEX IF NOT EXISTS idx_codex_review_job_lane ON codex_review_job(project_name, issue_id, review_type, target_repo_identity)",
+			);
 		}
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_codex_review_job_exec ON codex_review_job(execution_id)",
@@ -12183,6 +12377,7 @@ export class StateStore {
 		const reuseBindingColumns =
 			reuseBindingInfo[0]?.values.map((row) => row[1] as string) ?? [];
 		for (const [column, type] of [
+			["accept_seq", "INTEGER"],
 			["target_repo_path", "TEXT"],
 			["target_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
 			["reuse_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
@@ -12702,6 +12897,7 @@ export class StateStore {
 		this.migrateShuttleProjection();
 		this.migrateVoiceHealthProjection();
 		this.migrateReleaseReadiness();
+		this.migrateLeadInterrupts();
 		this.db.run(`CREATE TABLE IF NOT EXISTS lead_note (
 			project_name TEXT NOT NULL,
 			issue_uuid TEXT NOT NULL,
@@ -12711,6 +12907,7 @@ export class StateStore {
 			PRIMARY KEY (project_name, issue_uuid, role)
 		)`);
 		installTerminalRowArchiveSchema(this.db.raw);
+        new NotificationAuditStore(this.db.raw).install();
 		this.db.run(`CREATE TABLE IF NOT EXISTS founder_ask (
 			ask_id TEXT PRIMARY KEY, project_name TEXT NOT NULL, issue_id TEXT NOT NULL,
 			channel_id TEXT NOT NULL, thread_id TEXT NOT NULL, lead_id TEXT NOT NULL,
@@ -13028,6 +13225,11 @@ export class StateStore {
 				updated_at TEXT NOT NULL
 			)
 		`);
+	}
+
+	/** FLY-2883: lead_interrupts + append-only lead_interrupt_audit. */
+	private migrateLeadInterrupts(): void {
+		this.leadInterrupts.migrate();
 	}
 
 	private migrateVoiceHealthProjection(): void {
@@ -22196,6 +22398,11 @@ export class StateStore {
 	private rowToCodexReviewJob(row: Record<string, unknown>): CodexReviewJob {
 		return {
 			request_id: row.request_id as string,
+			accept_seq: (row.accept_seq as number) ?? undefined,
+			voided_at: (row.voided_at as string) ?? undefined,
+			superseded_by_request_id:
+				(row.superseded_by_request_id as string) ?? undefined,
+			quiet_until: (row.quiet_until as string) ?? undefined,
 			execution_id: row.execution_id as string,
 			issue_id: (row.issue_id as string) ?? undefined,
 			project_name: row.project_name as string,
@@ -22275,6 +22482,7 @@ export class StateStore {
 	): CodexReviewReuseBinding {
 		return {
 			request_id: row.request_id as string,
+			accept_seq: (row.accept_seq as number) ?? undefined,
 			source_request_id: row.source_request_id as string,
 			execution_id: row.execution_id as string,
 			question_id: row.question_id as string,
@@ -22363,26 +22571,31 @@ export class StateStore {
 			input.reuseRepoIdentity ??
 			source?.reuse_repo_identity ??
 			targetRepoIdentity;
-		this.db.run(
-			`INSERT OR IGNORE INTO codex_review_reuse_binding
-			   (request_id, source_request_id, execution_id, question_id,
-			    target_repo_path, target_repo_identity, reuse_repo_identity,
-			    frozen_head_sha,
-			    delivery_nonce, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
-			[
-				input.requestId,
-				input.sourceRequestId,
-				input.executionId,
-				input.questionId,
-				targetRepoPath ?? null,
-				targetRepoIdentity,
-				reuseRepoIdentity,
-				frozenHeadSha ?? null,
-				randomUUID(),
-			],
-		);
-		const inserted = this.db.getRowsModified() > 0;
+		let inserted = false;
+		this.db.transaction(() => {
+			const acceptSeq = this.getNextCodexReviewAcceptSeq();
+			this.db.run(
+				`INSERT OR IGNORE INTO codex_review_reuse_binding
+				   (request_id, source_request_id, execution_id, question_id,
+				    target_repo_path, target_repo_identity, reuse_repo_identity,
+				    frozen_head_sha,
+				    delivery_nonce, accept_seq, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+				[
+					input.requestId,
+					input.sourceRequestId,
+					input.executionId,
+					input.questionId,
+					targetRepoPath ?? null,
+					targetRepoIdentity,
+					reuseRepoIdentity,
+					frozenHeadSha ?? null,
+					randomUUID(),
+					acceptSeq,
+				],
+			);
+			inserted = this.db.getRowsModified() > 0;
+		});
 		this.save();
 		const binding = this.getCodexReviewReuseBinding(input.requestId);
 		if (!binding) throw new Error(`review reuse binding ${input.requestId} vanished`);
@@ -22432,7 +22645,8 @@ export class StateStore {
 		requestId: string;
 		reason: string;
 		frozenHeadSha: string;
-	}): { released: boolean; binding: CodexReviewReuseBinding; job: CodexReviewJob } {
+		quietUntil?: string;
+	}): { released: boolean; binding: CodexReviewReuseBinding; job: CodexReviewJob | null } {
 		const frozenHeadSha = input.frozenHeadSha.trim().toLowerCase();
 		if (!/^[0-9a-f]{40}$/.test(frozenHeadSha)) {
 			throw new Error("released review binding requires a trusted 40-char SHA");
@@ -22443,6 +22657,11 @@ export class StateStore {
 			const binding = this.getCodexReviewReuseBinding(input.requestId);
 			if (!binding) {
 				throw new Error(`review reuse binding ${input.requestId} is missing`);
+			}
+			if (binding.released_at || binding.responded_at) {
+				const job = this.getCodexReviewJob(input.requestId);
+				this.db.raw.exec("ROLLBACK");
+				return { released: false, binding, job };
 			}
 			const source = this.getCodexReviewJob(binding.source_request_id);
 			if (!source) {
@@ -22472,8 +22691,8 @@ export class StateStore {
 				    target_repo_identity, reuse_repo_identity, frozen_head_sha,
 				    reviewer_session_uuid, reviewer_session_generation,
 				    reviewer_session_failure_streak, author_family, status,
-				    delivery_nonce, created_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, datetime('now'))`,
+				    delivery_nonce, accept_seq, quiet_until, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, datetime('now'))`,
 				[
 					binding.request_id,
 					binding.execution_id,
@@ -22492,6 +22711,8 @@ export class StateStore {
 					priorSession.failureStreak,
 					source.author_family ?? null,
 					randomUUID(),
+					binding.accept_seq ?? 0,
+					input.quietUntil ?? null,
 				],
 			);
 			const job = this.getCodexReviewJob(binding.request_id);
@@ -22620,6 +22841,230 @@ export class StateStore {
 		return null;
 	}
 
+	/** Accepted requests share one sequence; successors retain their origin's value. */
+	getNextCodexReviewAcceptSeq(): number {
+		const row = this.db.raw
+			.prepare(`SELECT COALESCE(MAX(accept_seq), 0) + 1 AS next
+			FROM (SELECT accept_seq FROM codex_review_job
+			      UNION ALL SELECT accept_seq FROM codex_review_reuse_binding)`)
+			.get() as { next: number };
+		return row.next;
+	}
+
+	private insertCodexReviewAudit(
+		job: CodexReviewJob,
+		eventId: string,
+		eventType: string,
+		payload: Record<string, unknown>,
+	): void {
+		if (
+			!this.insertEvent({
+				event_id: eventId,
+				event_type: eventType,
+				execution_id: job.execution_id,
+				issue_id: job.issue_id ?? job.execution_id,
+				project_name: job.project_name,
+				source: "bridge.review-coordinator",
+				severity: "info",
+				payload,
+			})
+		) {
+			throw new Error(`review_audit_insert_failed:${eventId}`);
+		}
+	}
+
+	voidCodexReviewJob(input: {
+		requestId: string;
+		reason: string;
+		trigger: string;
+		supersededByRequestId?: string;
+		retireBindingRequestIds?: string[];
+		gateState?: string;
+		observedHeadSha?: string;
+		nowIso: string;
+	}): {
+		voided: boolean;
+		priorStatus?: CodexReviewJob["status"];
+		job: CodexReviewJob | null;
+	} {
+		let voided = false;
+		let priorStatus: CodexReviewJob["status"] | undefined;
+		this.db.transaction(() => {
+			const job = this.getCodexReviewJob(input.requestId);
+			if (!job) return;
+			this.db.run(
+				`UPDATE codex_review_job
+				SET status = 'failed', failure_reason = ?, voided_at = ?,
+				    superseded_by_request_id = ?, retry_at = NULL, retry_trigger = NULL,
+				    retry_parked_at_ms = NULL, quiet_until = NULL,
+				    failure_attempt_count = failure_attempt_count + 1,
+				    updated_at = datetime('now')
+				WHERE request_id = ? AND voided_at IS NULL
+				  AND (status IN ('pending','running')
+				    OR (status = 'failed' AND (retry_at IS NOT NULL OR retry_trigger = 'account_switch')))`,
+				[
+					input.reason,
+					input.nowIso,
+					input.supersededByRequestId ?? null,
+					input.requestId,
+				],
+			);
+			voided = this.db.getRowsModified() === 1;
+			if (!voided) return;
+			priorStatus = job.status;
+			this.insertCodexReviewAudit(
+				job,
+				`review-job-voided:${job.request_id}`,
+				"review_job_voided",
+				{
+					requestId: job.request_id,
+					reason: input.reason,
+					trigger: input.trigger,
+					priorStatus,
+					questionId: job.question_id,
+					reviewType: job.review_type,
+					frozenHeadSha: job.frozen_head_sha,
+					observedHeadSha: input.observedHeadSha,
+					gateState: input.gateState,
+					supersededByRequestId: input.supersededByRequestId,
+				},
+			);
+			for (const bindingRequestId of input.retireBindingRequestIds ?? []) {
+				if (!input.supersededByRequestId)
+					throw new Error("review_binding_retirement_requires_superseder");
+				this.retireCodexReviewReuseBindingForSupersede({
+					bindingRequestId,
+					sourceRequestId: job.request_id,
+					supersededByRequestId: input.supersededByRequestId,
+					nowIso: input.nowIso,
+				});
+			}
+		});
+		this.save();
+		return {
+			voided,
+			priorStatus,
+			job: this.getCodexReviewJob(input.requestId),
+		};
+	}
+
+	retireCodexReviewReuseBindingForSupersede(input: {
+		bindingRequestId: string;
+		sourceRequestId: string;
+		supersededByRequestId: string;
+		nowIso: string;
+	}): boolean {
+		let retired = false;
+		this.db.transaction(() => {
+			const binding = this.getCodexReviewReuseBinding(input.bindingRequestId);
+			if (!binding || binding.released_at || binding.responded_at) return;
+			const source = this.getCodexReviewJob(input.sourceRequestId);
+			if (!source)
+				throw new Error(
+					`review reuse source ${input.sourceRequestId} is missing`,
+				);
+			this.db.run(
+				`UPDATE codex_review_reuse_binding
+				SET release_reason = 'superseded_by_request', released_at = ?
+				WHERE request_id = ? AND responded_at IS NULL AND released_at IS NULL`,
+				[input.nowIso, input.bindingRequestId],
+			);
+			retired = this.db.getRowsModified() === 1;
+			if (!retired) return;
+			this.insertCodexReviewAudit(
+				source,
+				`review-reuse-retired:${binding.request_id}`,
+				"review_reuse_binding_retired",
+				{
+					bindingRequestId: binding.request_id,
+					sourceRequestId: input.sourceRequestId,
+					supersededByRequestId: input.supersededByRequestId,
+					questionId: binding.question_id,
+				},
+			);
+		});
+		this.save();
+		return retired;
+	}
+
+	listLaneJobs(
+		job: Pick<
+			CodexReviewJob,
+			| "request_id"
+			| "execution_id"
+			| "project_name"
+			| "issue_id"
+			| "review_type"
+			| "target_repo_identity"
+		>,
+		filter: "voidable" | "acceptedOthers",
+	): CodexReviewJob[] {
+		const rows = this.db.raw
+			.prepare(`SELECT * FROM codex_review_job
+			WHERE project_name = ? AND review_type = ? AND target_repo_identity = ?
+			  AND (issue_id = ? OR (issue_id IS NULL AND ? IS NULL AND execution_id = ?))
+			  AND request_id <> ?
+			  AND ${
+					filter === "voidable"
+						? "voided_at IS NULL AND (status IN ('pending','running') OR (status = 'failed' AND (retry_at IS NOT NULL OR retry_trigger = 'account_switch')))"
+						: "accept_seq IS NOT NULL AND (head_move_parent_request_id IS NULL OR head_move_parent_request_id <> ?) AND NOT (voided_at IS NOT NULL AND COALESCE(failure_reason, '') = 'head_moved')"
+				}
+			ORDER BY created_at, request_id`)
+			.all(
+				job.project_name,
+				job.review_type,
+				job.target_repo_identity,
+				job.issue_id ?? null,
+				job.issue_id ?? null,
+				job.execution_id,
+				job.request_id,
+				...(filter === "acceptedOthers" ? [job.request_id] : []),
+			) as Record<string, unknown>[];
+		return rows.map((row) => this.rowToCodexReviewJob(row));
+	}
+
+	restartCodexReviewQuietWindow(input: {
+		requestId: string;
+		expectedHeadSha: string;
+		newHeadSha: string;
+		quietUntil: string;
+	}): boolean {
+		if (!/^[0-9a-f]{40}$/.test(input.newHeadSha)) {
+			throw new Error("quiet-window restart requires a trusted 40-char SHA");
+		}
+		let restarted = false;
+		this.db.transaction(() => {
+			const job = this.getCodexReviewJob(input.requestId);
+			if (!job) return;
+			this.db.run(
+				`UPDATE codex_review_job SET frozen_head_sha = ?, quiet_until = ?
+				WHERE request_id = ? AND status = 'pending' AND voided_at IS NULL
+				  AND lower(frozen_head_sha) = ?`,
+				[
+					input.newHeadSha,
+					input.quietUntil,
+					input.requestId,
+					input.expectedHeadSha.toLowerCase(),
+				],
+			);
+			restarted = this.db.getRowsModified() === 1;
+			if (!restarted) return;
+			this.insertCodexReviewAudit(
+				job,
+				`review-quiet-restart:${job.request_id}:${input.newHeadSha}:${input.quietUntil}`,
+				"review_quiet_window_restarted",
+				{
+					requestId: job.request_id,
+					previousHeadSha: job.frozen_head_sha,
+					newHeadSha: input.newHeadSha,
+					quietUntil: input.quietUntil,
+				},
+			);
+		});
+		this.save();
+		return restarted;
+	}
+
 	/**
 	 * Idempotent insert keyed by requestId (§7.1: re-POST of the same request
 	 * must return the SAME durable job, never a duplicate). Returns whether a
@@ -22627,6 +23072,13 @@ export class StateStore {
 	 */
 	insertCodexReviewJob(input: {
 		requestId: string;
+		accepted?: boolean;
+		quietUntil?: string;
+		supersedeLane?: {
+			nowIso: string;
+			expectedAcceptSeq: number;
+			candidates: Array<{ requestId: string; retireBindingRequestIds: string[] }>;
+		};
 		executionId: string;
 		issueId?: string;
 		projectName: string;
@@ -22652,9 +23104,19 @@ export class StateStore {
 		};
 		/** skip lane writes the durable skipped audit row directly. */
 		status?: "pending" | "skipped";
-	}): { inserted: boolean; job: CodexReviewJob } {
+	}): { inserted: boolean; job: CodexReviewJob; voided: CodexReviewJob[] } {
 		let inserted = false;
+		const voided: CodexReviewJob[] = [];
 		this.db.transaction(() => {
+			if (this.getCodexReviewJob(input.requestId)) return;
+			const accepted = input.accepted !== false;
+			const acceptSeq = accepted ? this.getNextCodexReviewAcceptSeq() : null;
+			if (
+				accepted && input.supersedeLane &&
+				acceptSeq !== input.supersedeLane.expectedAcceptSeq
+			) {
+				throw new Error("review_accept_seq_changed");
+			}
 			this.db.run(
 				`INSERT OR IGNORE INTO codex_review_job
 			   (request_id, execution_id, issue_id, project_name, review_type,
@@ -22662,8 +23124,8 @@ export class StateStore {
 			    target_repo_identity, reuse_repo_identity, frozen_head_sha,
 			    reviewer_session_uuid, reviewer_session_generation,
 			    reviewer_session_failure_streak, author_family, status, delivery_nonce,
-			    same_family_sanction, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+			    same_family_sanction, accept_seq, quiet_until, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
 			[
 				input.requestId,
 				input.executionId,
@@ -22684,6 +23146,8 @@ export class StateStore {
 				input.status ?? "pending",
 				randomUUID(), // R17 delivery nonce — server-only
 				input.sameFamilySanction ?? null,
+				acceptSeq,
+				input.quietUntil ?? null,
 				],
 			);
 			inserted = this.db.getRowsModified() > 0;
@@ -22701,11 +23165,24 @@ export class StateStore {
 					capturedAt: input.designPlanProof.capturedAt,
 				});
 			}
+			if (inserted && accepted && input.supersedeLane) {
+				for (const candidate of input.supersedeLane.candidates) {
+					const result = this.voidCodexReviewJob({
+						requestId: candidate.requestId,
+						reason: "superseded_by_request",
+						trigger: "accept",
+						supersededByRequestId: input.requestId,
+						retireBindingRequestIds: candidate.retireBindingRequestIds,
+						nowIso: input.supersedeLane.nowIso,
+					});
+					if (result.voided && result.job) voided.push(result.job);
+				}
+			}
 		});
 		this.save();
 		const job = this.getCodexReviewJob(input.requestId);
 		if (!job) throw new Error(`review job ${input.requestId} vanished`);
-		return { inserted, job };
+		return { inserted, job, voided };
 	}
 
 	/**
@@ -22718,8 +23195,14 @@ export class StateStore {
 		successorRequestId: string;
 		currentHeadSha: string;
 		failureRaw?: string;
+		expectStatus?: "running" | "failed" | "pending";
+		quietUntil?: string;
+		trigger?: string;
+		observedHeadSha?: string;
+		nowIso?: string;
+		markParentVoided?: boolean;
 	}): {
-		outcome: "requeued" | "existing" | "exhausted";
+		outcome: "requeued" | "existing" | "exhausted" | "voided" | "stale";
 		parent: CodexReviewJob;
 		successor?: CodexReviewJob;
 	} {
@@ -22741,6 +23224,14 @@ export class StateStore {
 				this.db.raw.exec("ROLLBACK");
 				return { outcome: "existing", parent, successor: existing };
 			}
+			if (parent.voided_at) {
+				this.db.raw.exec("ROLLBACK");
+				return { outcome: "voided", parent };
+			}
+			if (input.expectStatus && parent.status !== input.expectStatus) {
+				this.db.raw.exec("ROLLBACK");
+				return { outcome: "stale", parent };
+			}
 			if (parent.review_type !== "code") {
 				throw new Error("only code review jobs can requeue after a head move");
 			}
@@ -22751,18 +23242,27 @@ export class StateStore {
 				parent.head_move_retry_count >=
 				MAX_CODEX_REVIEW_HEAD_MOVE_REQUEUES;
 
+			const markVoided = input.markParentVoided === true && !exhausted;
 			this.db.run(
 				`UPDATE codex_review_job
 				    SET status = 'failed', failure_reason = ?,
 				        failure_raw = ?, retry_at = NULL,
+				        voided_at = CASE WHEN ? THEN ? ELSE voided_at END,
+				        superseded_by_request_id = CASE WHEN ? THEN ? ELSE superseded_by_request_id END,
+				        quiet_until = CASE WHEN ? THEN NULL ELSE quiet_until END,
 				        retry_trigger = NULL, retry_parked_at_ms = NULL,
 				        reviewer_session_failure_streak = 0,
 				        failure_attempt_count = failure_attempt_count + 1,
 				        updated_at = datetime('now')
-				  WHERE request_id = ? AND status NOT IN ('done','skipped')`,
+				  WHERE request_id = ? AND status NOT IN ('done','skipped') AND voided_at IS NULL`,
 				[
 					exhausted ? "head_moved_exhausted" : "head_moved",
 					input.failureRaw ?? null,
+					markVoided ? 1 : 0,
+					input.nowIso ?? new Date().toISOString(),
+					markVoided ? 1 : 0,
+					input.successorRequestId,
+					markVoided ? 1 : 0,
 					input.requestId,
 				],
 			);
@@ -22779,8 +23279,8 @@ export class StateStore {
 				  reviewer_session_uuid,
 				  reviewer_session_generation, reviewer_session_failure_streak,
 				  author_family, status, delivery_nonce,
-				  head_move_parent_request_id, head_move_retry_count, created_at)
-				 VALUES (?, ?, ?, ?, 'code', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', ?, ?, ?, datetime('now'))`,
+				  head_move_parent_request_id, head_move_retry_count, accept_seq, quiet_until, created_at)
+				 VALUES (?, ?, ?, ?, 'code', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', ?, ?, ?, ?, ?, datetime('now'))`,
 					[
 						input.successorRequestId,
 						parent.execution_id,
@@ -22799,7 +23299,32 @@ export class StateStore {
 						randomUUID(),
 						parent.request_id,
 						parent.head_move_retry_count + 1,
+						parent.accept_seq ?? null,
+						input.quietUntil ?? null,
 					],
+				);
+			}
+			if (input.markParentVoided) {
+				this.insertCodexReviewAudit(
+					parent,
+					exhausted
+						? `review-head-move-exhausted:${parent.request_id}:${parent.failure_attempt_count + 1}`
+						: `review-job-voided:${parent.request_id}`,
+					exhausted ? "review_head_move_exhausted" : "review_job_voided",
+					{
+						requestId: parent.request_id,
+						reason: exhausted ? "head_moved_exhausted" : "head_moved",
+						trigger: input.trigger,
+						priorStatus: parent.status,
+						questionId: parent.question_id,
+						reviewType: parent.review_type,
+						frozenHeadSha: parent.frozen_head_sha,
+						observedHeadSha: input.observedHeadSha ?? currentHeadSha,
+						...(exhausted ? {} : {
+							supersededByRequestId: input.successorRequestId,
+							successorRequestId: input.successorRequestId,
+						}),
+					},
 				);
 			}
 			this.db.raw.exec("COMMIT");
@@ -22826,15 +23351,16 @@ export class StateStore {
 	 * same-requestId retry after a reviewer failure). Returns false when the
 	 * job is already running/done/skipped — the caller must not double-run.
 	 */
-	claimCodexReviewJobRunning(requestId: string): boolean {
+	claimCodexReviewJobRunning(requestId: string, quietGateNowIso?: string): boolean {
 		this.db.run(
 			`UPDATE codex_review_job
 			   SET status = 'running', failure_reason = NULL, failure_raw = NULL,
 			       retry_at = NULL, retry_trigger = NULL,
-			       retry_parked_at_ms = NULL,
+			       retry_parked_at_ms = NULL, quiet_until = NULL,
 			       updated_at = datetime('now')
-			 WHERE request_id = ? AND status IN ('pending','failed')`,
-			[requestId],
+			 WHERE request_id = ? AND status IN ('pending','failed') AND voided_at IS NULL
+			 ${quietGateNowIso === undefined ? "" : "AND (quiet_until IS NULL OR julianday(quiet_until) <= julianday(?))"}`,
+			quietGateNowIso === undefined ? [requestId] : [requestId, quietGateNowIso],
 		);
 		const claimed = this.db.getRowsModified() > 0;
 		this.save();
@@ -22852,7 +23378,7 @@ export class StateStore {
 			responseJson: string;
 			payloadVersion: number;
 		},
-	): void {
+	): boolean {
 		this.db.run(
 			`UPDATE codex_review_job
 			   SET status = 'done', verdict = ?, reviewer_verdict = ?,
@@ -22863,7 +23389,7 @@ export class StateStore {
 			       retry_trigger = NULL, retry_parked_at_ms = NULL,
 			       updated_at = datetime('now'),
 			       completed_at = COALESCE(completed_at, datetime('now'))
-			 WHERE request_id = ?`,
+			 WHERE request_id = ? AND status = 'running' AND voided_at IS NULL`,
 			[
 				verdict,
 				details?.reviewerVerdict ?? null,
@@ -22875,7 +23401,9 @@ export class StateStore {
 				requestId,
 			],
 		);
+		const updated = this.db.getRowsModified() > 0;
 		this.save();
+		return updated;
 	}
 
 	/**
@@ -22885,6 +23413,7 @@ export class StateStore {
 	 */
 	recordCodexReviewJobFailure(input: {
 		requestId: string;
+		expectStatus?: "running";
 		reason: string;
 		failureRaw?: string;
 		retryAt?: string;
@@ -22953,7 +23482,8 @@ export class StateStore {
 			       END,
 			       failure_attempt_count = failure_attempt_count + 1,
 			       updated_at = datetime('now')
-			 WHERE request_id = ? AND status NOT IN ('done','skipped')`,
+			 WHERE request_id = ? AND status NOT IN ('done','skipped') AND voided_at IS NULL
+			 ${input.expectStatus === "running" ? "AND status = 'running'" : ""}`,
 			[
 				input.reason,
 				input.failureRaw ?? null,
@@ -26664,6 +27194,87 @@ export class StateStore {
 			(...args) => this.appendLeadEvent(...args));
 	}
 
+
+	/** Event-correlated recovery context, never a global pending-question veto. */
+	getMonitoringRecoveryContext(input: {
+		projectName: string; leadId: string; executionId: string;
+	}): { recoveredLostEventIds: string[]; openFailure: boolean; checkedRefs: string[] } {
+		const session = this.getSession(input.executionId);
+		if (!session || session.project_name !== input.projectName) {
+			return { recoveredLostEventIds: [], openFailure: true, checkedRefs: [] };
+		}
+		const rows = this.db.raw.prepare(`SELECT event_id,event_type,payload,seq,delivery_disposition FROM lead_events
+			WHERE lead_id=? AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.execution_id') END=?
+			AND (json_extract(payload,'$.project_name')=? OR json_extract(payload,'$.project_name') IS NULL)
+			ORDER BY seq DESC LIMIT 1001`).all(input.leadId, input.executionId, input.projectName) as Array<{event_id:string;event_type:string;payload:string;seq:number;delivery_disposition:string}>;
+		const lastRecovery = rows.findIndex((row) => row.event_type === "session_monitoring_reestablished" && row.delivery_disposition === "audit_only");
+		const sinceRecovery = rows.slice(0, lastRecovery < 0 ? rows.length : lastRecovery);
+		const recoveredLostEventIds = sinceRecovery.filter((row) => row.event_type === "session_monitoring_lost").map((row) => row.event_id);
+		const faultTypes = new Set(["session_zombie_detected", "session_failed", "session_stuck", "session_orphaned", "gate_timed_out"]);
+		const fault = sinceRecovery.some((row) => {
+			const payload = JSON.parse(row.payload) as Record<string, unknown>;
+			if (faultTypes.has(row.event_type)) return true;
+            // Only inspect content belonging to this recovery episode; independent ASK/founder
+            // traffic retains its original immediate route without vetoing unrelated notices.
+            if (!["session_monitoring_lost", "session_monitoring_reestablished"].includes(row.event_type)) return false;
+            return payload.status === "failed" || payload.status === "blocked" || ["last_error", "error", "failure_kind", "failureKind", "needs_action", "requires_action", "action_required", "question_id", "question", "ask", "prompt", "checkpoint", "founder_message", "messages"].some((key) => payload[key] !== undefined && payload[key] !== null && payload[key] !== "" && payload[key] !== false);
+		});
+		const sessionKey = buildSessionKey(session);
+		const alerts = this.db.raw.prepare(`SELECT correlation_key,event_id FROM alert_threads
+			WHERE project_name=? AND lead_id=? AND resolved_at IS NULL AND
+			(session_key=? OR event_id IN (SELECT event_id FROM session_events WHERE execution_id=? AND project_name=?))
+			UNION SELECT correlation_key,event_id FROM alert_mailbox_ledger
+			WHERE project_name=? AND resolved_at IS NULL AND
+			(session_key=? OR event_id IN (SELECT event_id FROM session_events WHERE execution_id=? AND project_name=?))
+			LIMIT 1`).all(input.projectName, input.leadId, sessionKey, input.executionId, input.projectName, input.projectName, sessionKey, input.executionId, input.projectName) as Array<{correlation_key:string;event_id:string}>;
+		return {
+			recoveredLostEventIds,
+			openFailure: rows.length > 1000 || fault || alerts.length > 0 || Boolean(session.last_error) || ["failed", "blocked"].includes(session.status),
+			checkedRefs: [`session:${input.executionId}`, ...sinceRecovery.map((row) => `lead-event:${row.event_id}`), ...alerts.map((row) => `alert:${row.correlation_key}:${row.event_id}`)],
+		};
+	}
+
+	/** Freeze producer evidence and delivery policy together; replays retain the first decision. */
+	appendLeadNotification(input: {
+		binding: NotificationBinding;
+		eventType: string;
+		payload: string;
+		sessionKey?: string;
+		evidence?: NotificationEvidenceV2;
+		decision: LeadNotificationDecision;
+	}): number {
+		return this.db.raw.transaction(() => {
+			const { binding } = input;
+			const existing = this.getLeadEventByLeadAndId(binding.leadId, binding.eventId);
+			if (existing) return existing.seq;
+			const archived = findArchivedTerminalRow(this.db.raw, "lead_events", [binding.leadId, binding.eventId]);
+			if (archived) return Number(archived.seq);
+			let decision = input.decision;
+			if (input.evidence) {
+				const inserted = this.insertEvent({
+					event_id: `${binding.eventId}:proof`, execution_id: binding.executionId,
+					issue_id: binding.issueId, project_name: binding.projectName,
+					event_type: "lead_notification_proof", source: "bridge-notification-policy-v2",
+					payload: input.evidence,
+				});
+                if (!inserted) {
+                    const proofId = `${binding.eventId}:proof`;
+                    const prior = this.db.raw.prepare("SELECT * FROM session_events WHERE event_id=?").get(proofId) as Record<string, unknown> | undefined
+                        ?? findArchivedTerminalRow(this.db.raw, "session_events", [proofId]);
+                    let matches = false;
+                    try {
+                        matches = Boolean(prior && prior.execution_id === binding.executionId && prior.issue_id === binding.issueId
+                            && prior.project_name === binding.projectName && prior.event_type === "lead_notification_proof"
+                            && prior.source === "bridge-notification-policy-v2"
+                            && canonicalSubmissionDigest(JSON.parse(String(prior.payload))) === canonicalSubmissionDigest(input.evidence));
+                    } catch { /* Invalid prior proof is never quiet authority. */ }
+                    if (!matches) decision = { disposition: "model", policyVersion: "notification-v2", reason: "proof_record_conflict" };
+                }
+			}
+			return this.appendLeadEvent(binding.leadId, binding.eventId, input.eventType, input.payload, input.sessionKey, decision.disposition, decision);
+		})();
+	}
+
 	/** Append a lead event. Returns seq. Dedup on (lead_id, event_id). */
 	appendLeadEvent(
 		leadId: string,
@@ -26672,6 +27283,7 @@ export class StateStore {
 		payload: string,
 		sessionKey?: string,
 		deliveryDisposition: "model" | "audit_only" = "model",
+		auditDecision?: LeadNotificationDecision,
 	): number {
 		const archived = findArchivedTerminalRow(this.db.raw, "lead_events", [
 			leadId,
@@ -26701,8 +27313,9 @@ export class StateStore {
 				`INSERT INTO lead_events (
 				   lead_id, event_id, event_type, payload, session_key,
 				   ack_required, ack_policy, ack_protocol_version,
-				   routing_snapshot, ack_owner_lead_id, delivery_disposition
-				 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				   routing_snapshot, ack_owner_lead_id, delivery_disposition,
+                   notification_policy_version, notification_reason, notification_proof_ref
+				 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					leadId,
 					eventId,
@@ -26715,6 +27328,9 @@ export class StateStore {
 					routingSnapshot,
 					leadId,
 					deliveryDisposition,
+                    auditDecision?.policyVersion ?? null,
+                    auditDecision?.reason ?? null,
+                    auditDecision?.proofRef ?? null,
 				],
 			);
 		} catch (err) {
@@ -27182,12 +27798,22 @@ export class StateStore {
 		return row?.lead_id === leadId && row?.delivery_disposition === "audit_only";
 	}
 
+    getNotificationAuditGeneration() { return new NotificationAuditStore(this.db.raw).reconcile(); }
+    readLeadAuditSummary(input: {projectName:string;leadId:string}, cursor?: {storeEpoch:string;offeredThroughSeq:number;anchorEventId:string|null}) {
+        return new NotificationAuditStore(this.db.raw).snapshot(input,cursor);
+    }
+
 	/** On-demand audit history, including retained cold rows; never a delivery input. */
 	getLeadAuditEventPage(
 		leadId: string,
 		limit = 50,
 		beforeSeq = Number.MAX_SAFE_INTEGER,
-	): { items: LeadEventRow[]; nextCursor: string | null } {
+        scope?: Omit<NotificationAuditRange, "leadId"|"limit"|"beforeSeq">,
+	): { items: LeadEventRow[]; nextCursor: string | null; storeEpoch?: string } {
+        if (scope) {
+            const page = new NotificationAuditStore(this.db.raw).page({...scope,leadId,limit,beforeSeq});
+            return {...page,items:page.items.map(mapLeadEventRow)};
+        }
 		if (
 			!Number.isSafeInteger(limit) ||
 			limit < 1 ||
@@ -30993,6 +31619,9 @@ export class StateStore {
 			);
 		}
 		const additions: Array<[string, string]> = [
+            ["notification_policy_version", "TEXT"],
+            ["notification_reason", "TEXT"],
+            ["notification_proof_ref", "TEXT"],
 			["delivery_disposition", "TEXT NOT NULL DEFAULT 'model' CHECK(delivery_disposition IN ('model','audit_only'))"],
 			["ack_required", "INTEGER NOT NULL DEFAULT 0"],
 			["ack_policy", "TEXT"],
@@ -39977,7 +40606,7 @@ export class StateStore {
 			if(candidate.root_key!==rootKey || candidate.installed_generation!==root.generation || candidate.probe_result!=="ok" || !["committed","recovering","settled"].includes(String(candidate.state)))return false;
 			const material=this.codexQuota.getInstallationMaterial(String(candidate.incident_id));
 			return material?.accountKey===root.accountKey && material.profile===root.profile && material.installedAuthDigest===candidate.installed_auth_digest;
-		});
+		}) ?? this.codexQuota.getResumeOutputRecoveryPermit(incidentId);
 	}
 
 	/** Original installation proof is immutable; token refresh observes bytes without changing identity generation. */
@@ -39985,8 +40614,9 @@ export class StateStore {
 		this.db.transaction(() => {
 			const incident = this.codexQuota.getIncident(input.incidentId);
 			const root = incident && this.codexQuota.getRoot(String(incident.root_key));
-			if (!incident || incident.probe_result !== "ok" || !["committed","recovering","settled"].includes(String(incident.state)) ||
-				!root || root.generation !== input.generation || root.generation !== incident.installed_generation || root.accountKey !== input.accountKey || root.profile !== input.profile || !/^[0-9a-f]{64}$/.test(input.authDigest))
+			const proof = this.getCodexQuotaRecoveryPermit(input.incidentId);
+			if (!incident || !proof ||
+				!root || root.generation !== input.generation || root.generation !== proof.installed_generation || root.accountKey !== input.accountKey || root.profile !== input.profile || !/^[0-9a-f]{64}$/.test(input.authDigest))
 				throw new Error("quota_canonical_observation_conflict");
 			this.db.run("CREATE TABLE IF NOT EXISTS codex_quota_canonical_observation(incident_id TEXT NOT NULL,generation INTEGER NOT NULL,auth_digest TEXT NOT NULL,reason TEXT NOT NULL,observed_at TEXT NOT NULL,PRIMARY KEY(incident_id,generation,auth_digest))");
 			this.db.run("INSERT OR IGNORE INTO codex_quota_canonical_observation VALUES(?,?,?,'same_account_refresh',?)",[input.incidentId,input.generation,input.authDigest,new Date().toISOString()]);
@@ -41804,6 +42434,8 @@ export class StateStore {
 						[input.executionId, owner.owner_generation],
 					);
 				}
+				// FLY-2900 §5.2 phase two rides the launch commit.
+				this.commitCodexQuotaFallbackTx(input.executionId, input.now);
 				this.commitWorkflowIssueDeliveryEvidenceTx({
 					executionId: input.executionId,
 					generation: marker.generation,
@@ -42060,6 +42692,12 @@ export class StateStore {
 				  WHERE execution_id = ?
 				    AND status NOT IN ('completed','cancelled','merged','superseded')`,
 				[input.now, input.executionId],
+			);
+			// FLY-2900 §5.2: a refused quota-fallback body hands the node back.
+			this.revertCodexQuotaFallbackTx(
+				input.executionId,
+				"launch_released",
+				input.now,
 			);
 			result = { ok: true, generation: input.generation };
 		});
@@ -42889,6 +43527,11 @@ export class StateStore {
 			if (this.db.getRowsModified() !== 1) {
 				throw new Error("workflow launch commit fence lost");
 			}
+			// FLY-2900 §5.2 phase two rides the launch commit.
+			this.commitCodexQuotaFallbackTx(
+				input.executionId,
+				new Date().toISOString(),
+			);
 			this.commitWorkflowIssueDeliveryEvidenceTx({
 				executionId: input.executionId,
 				generation: input.generation,
@@ -44703,6 +45346,11 @@ export class StateStore {
 				target.execution_id !== input.deadExecutionId
 			) {
 				result = { ok: false, reason: "rework_replacement_target_changed" };
+				return;
+			}
+			// FLY-2900 §4.2: a quota standby body is parked, not dead.
+			if (this.codexQuota.isCodexQuotaStandby(input.deadExecutionId)) {
+				result = { ok: false, reason: "codex_quota_standby" };
 				return;
 			}
 			this.terminalizeProvenDeadSessionTx(
@@ -46901,8 +47549,15 @@ export class StateStore {
 				| "current_config"
 				| "live_template"
 				| "pinned_snapshot"
-				| "snapshot_fallback";
+				| "snapshot_fallback"
+				| "codex_quota_demand";
 			audit: boolean;
+			/** FLY-2900: a quota-fallback body's frozen demand (either vendor). */
+			quotaFallback?: {
+				sourceExecutionId: string;
+				dispatchReason: "codex_quota_fallback" | "codex_quota_fallback_codex";
+				poolEvidenceRef: string | null;
+			};
 			modelAssignment?: WorkflowModelAssignmentReceipt;
 		};
 		env?: Record<string, string | undefined>;
@@ -47409,6 +48064,26 @@ export class StateStore {
 						...(degradationEventUid
 							? { degraded: true, degradationEventUid }
 							: {}),
+					},
+				});
+			}
+			const quotaFallback = input.dispatchResolution?.quotaFallback;
+			if (quotaFallback) {
+				// FLY-2900 §5.4: every quota fallback dispatch leaves a record the
+				// model-assignment scorecard excludes from both vendors' samples.
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId,
+					eventUid: `dispatch_quota_fallback:${input.runId}:${input.nodeId}:${input.executionId}`,
+					kind: "dispatch_quota_fallback",
+					nodeId: input.nodeId,
+					executionId: input.executionId,
+					payload: {
+						activationId,
+						sourceExecutionId: quotaFallback.sourceExecutionId,
+						dispatchReason: quotaFallback.dispatchReason,
+						resolved: resolvedDispatch,
+						poolEvidenceRef: quotaFallback.poolEvidenceRef,
+						at: now,
 					},
 				});
 			}
@@ -49729,6 +50404,8 @@ export class StateStore {
 			) as unknown as WorkflowResidentHoldRow[];
 			for (const hold of candidates) {
 				if (this.openResidentParkTx(hold.execution_id)?.reason === "runner_ship_gate_wait") continue;
+				// FLY-2900 §4.2: a parked quota standby body keeps its resident identity.
+				if (this.codexQuota.isCodexQuotaStandby(hold.execution_id)) continue;
 				const operationId = `resident-expiry:${hold.execution_id}:r${hold.revision}`;
 				const canonicalDigest = canonicalSubmissionDigest({
 					kind: "resident_expiry",
@@ -50447,13 +51124,35 @@ export class StateStore {
 			next_check_at: nextCheckAt,
 			next_check_disposition: nextCheckDisposition,
 		};
-		return this.appendLeadEvent(
-			input.leadIntent.leadId,
-			eventId,
-			"workflow_replacement_eligibility",
-			JSON.stringify(payload),
-			`wf:${context.binding.run_id}`,
-		);
+		const binding: NotificationBinding = { projectName: context.run.project_name, leadId: input.leadIntent.leadId, eventId, executionId: input.executionId, issueId: context.run.issue_id };
+        const evidence: NotificationEvidenceV2 = {
+            version: 2, kind: "replacement_notice", binding,
+            proof: { sourceRef: `session-event:${eventId}:proof`, executionId: input.executionId, action: { state: "unknown" } },
+            workflow: { runId: context.binding.run_id, nodeId: context.binding.node_id, attempt: context.binding.attempt, activationId: context.binding.activation_id, launchOrdinal, dispatchCreatedAt: sqliteCreatedAt },
+            attemptRef: context.binding.activation_id,
+            scheduleRef: `workflow-dispatch:${context.binding.run_id}:${context.binding.node_id}:${context.binding.attempt}:${launchOrdinal}:replacement-delays-v1`,
+            nextCheckAt, observedAt: input.now, disposition: nextCheckDisposition,
+        };
+        // A generalized failure may have no other Lead path. Only an independently
+        // accepted notification of this exact source can make the future check quiet.
+        try {
+            const teardowns = this.listWorkflowRunEvents(context.binding.run_id).filter((row) => row.kind === "generalized_teardown_recorded" && row.execution_id === input.executionId && row.node_id === context.binding.node_id).map((row) => row.payload as Record<string, unknown>);
+            const latestTeardown = teardowns.at(-1);
+            const required = new Set(["goal_blocked", "goal_usage_limited", "worktree_takeover_failed", "reown_exhausted"]);
+            if (Number.isFinite(parsedCreatedAt) && nextCheckDisposition === "replacement_candidate" && latestTeardown && !teardowns.some((row) => required.has(String(row.failureKind))) && typeof latestTeardown.sourceEventId === "string") {
+                const source = this.workflowSelectAll("SELECT execution_id,project_name,issue_id,payload FROM session_events WHERE event_id=?", [latestTeardown.sourceEventId])[0];
+                const accepted = this.getLeadEventByLeadAndId(binding.leadId, latestTeardown.sourceEventId);
+                const fault = accepted && JSON.parse(accepted.payload) as Record<string, unknown> | undefined;
+                const original = source && JSON.parse(String(source.payload)) as Record<string, unknown> | undefined;
+                if (source?.execution_id === binding.executionId && source.project_name === binding.projectName && source.issue_id === binding.issueId && accepted?.event_type === "session_failed" && accepted.delivery_disposition === "model" && accepted.delivered_at && fault?.execution_id === binding.executionId && fault.project_name === binding.projectName && fault.issue_id === binding.issueId && (fault.failure_kind ?? fault.failureKind ?? null) === (original?.failureKind ?? null) && (fault.last_error ?? null) === (original?.lastError ?? null)) {
+                    evidence.proof.action = { state: "none", checkedRefs: [evidence.attemptRef, evidence.scheduleRef, `accepted-lead-event:${accepted.event_id}:${accepted.seq}`] };
+                }
+            }
+        } catch {
+            // Missing or unreadable fault evidence preserves the immediate path.
+        }
+        const decision = leadNotificationDecision("workflow_replacement_eligibility", { ...payload }, evidence, { binding, enabled: storeLeadTokenSavingsEnabled({ store: this }, binding.projectName), categoryEnabled: storeLeadReplacementNoticeAuditEnabled({ store: this }, binding.projectName) });
+        return this.appendLeadNotification({ binding, eventType: "workflow_replacement_eligibility", payload: JSON.stringify(payload), sessionKey: `wf:${context.binding.run_id}`, evidence, decision });
 	}
 
 	/**
@@ -50516,6 +51215,8 @@ export class StateStore {
 				runId: string;
 				nodeId: string;
 				leadEventSeq?: number;
+				/** FLY-2900: the wall parked the execution; no terminal status was written. */
+				quotaStandby?: true;
 		  }
 		| { ok: false; reason: string } {
 		const now = input.now ?? new Date().toISOString();
@@ -50557,6 +51258,7 @@ export class StateStore {
 		let statusPreserved = false;
 		let statusChanged = false;
 		let leadEventSeq: number | undefined;
+		let quotaStandby = false;
 		const shouldPreserveSessionStatus = (currentStatus: string | undefined) => {
 			if (currentStatus === status) return false;
 			if (isNoOutEdgeTerminalStatus(currentStatus)) return true;
@@ -50602,22 +51304,75 @@ export class StateStore {
 				idempotentReplay = true;
 				const currentStatus = this.getSession(input.executionId)?.status;
 				effectiveStatus = currentStatus ?? status;
+				if (priorPayload.quotaStandby === true) {
+					quotaStandby = true;
+					return;
+				}
 				statusPreserved = shouldPreserveSessionStatus(currentStatus);
 				return;
 			} else {
+				let standbyDisposition: CodexQuotaStandbyDisposition | null = null;
+				const signalSource =
+					quotaSignal?.source === "review_exec"
+						? "review_exec"
+						: "runner_terminal";
 				if (input.failureKind === "goal_usage_limited") {
 					this.codexQuota.recordSignal({
 						executionId: input.executionId,
 						bindingId: quotaSignal?.bindingId,
 						nodeId: context.binding.node_id,
 						now,
-						source:
-							quotaSignal?.source === "review_exec"
-								? "review_exec"
-								: "runner_terminal",
+						source: signalSource,
 						sourceEventId: input.sourceEventId,
 						availability: this.codexQuotaAvailability(),
 					});
+				}
+				if (input.signal === "completed") {
+					// FLY-2900: the resumed body finished the node — that is proof it
+					// worked. Settle the carrier first, then take the normal path.
+					this.closeCodexQuotaStandbyOnCompletionTx(input.executionId, now);
+				} else if (signalSource === "runner_terminal") {
+					standbyDisposition = this.codexQuotaStandbyDispositionTx({
+						executionId: input.executionId,
+						sourceEventId: input.sourceEventId,
+						usageLimited: input.failureKind === "goal_usage_limited",
+						context,
+						now,
+					});
+				}
+				if (standbyDisposition) {
+					this.db.run(
+						`INSERT INTO session_events
+						   (event_id, execution_id, issue_id, project_name, event_type, severity, payload, source)
+						 VALUES (?, ?, ?, ?, ?, 'info', ?, ?)`,
+						[
+							input.sourceEventId,
+							input.executionId,
+							context.run.issue_id,
+							context.run.project_name,
+							eventType,
+							JSON.stringify({
+								failureKind: input.failureKind ?? null,
+								...(quotaSignal ? { quotaSignal } : {}),
+								lastError: input.lastError ?? null,
+								...(failureClassification ?? {}),
+								quotaStandby: true,
+							}),
+							input.source,
+						],
+					);
+					this.applyCodexQuotaStandbyTx({
+						disposition: standbyDisposition,
+						executionId: input.executionId,
+						sourceEventId: input.sourceEventId,
+						bindingId: quotaSignal?.bindingId,
+						context,
+						now,
+					});
+					quotaStandby = true;
+					effectiveStatus =
+						this.getSession(input.executionId)?.status ?? "running";
+					return;
 				}
 				const canonical =
 					this.getWorkflowExecutionTerminalFailureCanonical(input.executionId);
@@ -50729,7 +51484,875 @@ export class StateStore {
 			runId: context.binding.run_id,
 			nodeId: context.binding.node_id,
 			...(leadEventSeq !== undefined ? { leadEventSeq } : {}),
+			...(quotaStandby ? { quotaStandby: true as const } : {}),
 		};
+	}
+
+	/**
+	 * FLY-2900 §4.3: release parked executions (by execution or by run) inside
+	 * the caller's transaction. Idempotent; returns how many were released.
+	 */
+	releaseCodexQuotaStandbyTx(input: {
+		executionId?: string;
+		runId?: string;
+		reason: string;
+		now: string;
+	}): number {
+		const released = this.codexQuota.releaseStandby(input);
+		for (const row of released)
+			if (row.state === "fallback_prepared")
+				this.finalizeReleasedCodexQuotaStandbyTx(input.now, row.execution_id);
+		return released.length;
+	}
+
+	/**
+	 * FLY-2900 §4.3: complete releases (including trigger-flipped ones): targets
+	 * abandoned and one audit row per entry. Runs inside the caller's transaction.
+	 */
+	finalizeReleasedCodexQuotaStandbyTx(now: string, executionId?: string): number {
+		// A released carrier's prepared fallback body is voided in the same
+		// transaction: demand reverted, ledger abandoned, node back.
+		const prepared = this.workflowSelectAll(
+			`SELECT d.new_execution_id FROM codex_quota_dispatch_demand d
+			   JOIN codex_quota_standby s ON s.execution_id = d.source_execution_id
+			  WHERE d.state = 'prepared' AND s.state = 'released'
+			    AND (? IS NULL OR s.execution_id = ?)`,
+			[executionId ?? null, executionId ?? null],
+		);
+		for (const row of prepared)
+			this.revertCodexQuotaFallbackTx(
+				String(row.new_execution_id),
+				"standby_released",
+				now,
+			);
+		return this.codexQuota.finalizeReleasedStandby(now, executionId);
+	}
+
+	finalizeReleasedCodexQuotaStandby(now: string): number {
+		let finalized = 0;
+		this.db.transaction(() => {
+			finalized = this.finalizeReleasedCodexQuotaStandbyTx(now);
+		});
+		if (finalized > 0) this.save();
+		return finalized;
+	}
+
+	releaseCodexQuotaStandby(input: {
+		executionId?: string;
+		runId?: string;
+		reason: string;
+		now: string;
+	}): number {
+		let released = 0;
+		this.db.transaction(() => {
+			released = this.releaseCodexQuotaStandbyTx(input);
+		});
+		if (released > 0) this.save();
+		return released;
+	}
+
+	/**
+	 * FLY-2900 §5.4: would handing this node to `vendor` break the
+	 * same-vendor review rule? A reviewer must not share its producer's vendor,
+	 * and a producer must not share a downstream reviewer's vendor, unless the
+	 * project sanctions same-family review.
+	 */
+	codexQuotaFallbackSameVendorViolation(input: {
+		runId: string;
+		nodeId: string;
+		vendor: "codex" | "claude";
+	}): { violated: boolean; evidence: Record<string, unknown> } {
+		const run = this.getWorkflowRun(input.runId);
+		if (!run?.snapshot)
+			return { violated: true, evidence: { reason: "snapshot_missing" } };
+		const snapshot = parseWorkflowRunSnapshot(run.snapshot);
+		const sanctioned = this.reviewSameFamilyAllowedForProject(run.project_name);
+		const conflicts: string[] = [];
+		const vendorOf = (nodeId: string): string | undefined => {
+			const latest = this.listWorkflowRunNodes(input.runId, nodeId)
+				.filter((candidate) => candidate.execution_id)
+				.sort((left, right) => right.attempt - left.attempt)[0];
+			const runtime = latest?.execution_id
+				? this.getWorkflowExecutionRuntime(latest.execution_id)
+				: undefined;
+			return (
+				runtime?.vendor ??
+				snapshot.resolved.nodes.find((node) => node.id === nodeId)?.dispatch
+					?.vendor
+			);
+		};
+		const producersOf = (nodeId: string) =>
+			snapshot.manifest.edges
+				.filter((edge) => edge.to === nodeId)
+				.map((edge) => edge.from);
+		if (resolveWorkflowDecisionContract(snapshot, input.nodeId)) {
+			for (const producer of producersOf(input.nodeId))
+				if (vendorOf(producer) === input.vendor)
+					conflicts.push(`producer:${producer}`);
+		}
+		for (const node of snapshot.resolved.nodes) {
+			if (
+				node.id === input.nodeId ||
+				!resolveWorkflowDecisionContract(snapshot, node.id) ||
+				!producersOf(node.id).includes(input.nodeId)
+			)
+				continue;
+			if (node.dispatch?.vendor === input.vendor)
+				conflicts.push(`reviewer:${node.id}`);
+		}
+		return {
+			violated: conflicts.length > 0 && !sanctioned,
+			evidence: { vendor: input.vendor, conflicts, sanctioned },
+		};
+	}
+
+	/**
+	 * FLY-2900 §5.2 phase one: allocate a fallback body for a parked
+	 * execution. Replays return the original new execution; a reverted
+	 * attempt moves to the next (at most two). The original execution is not
+	 * touched until the new one's launch commits.
+	 */
+	prepareCodexQuotaFallback(input: {
+		executionId: string;
+		vendor: "codex" | "claude";
+		model: string;
+		effort: string;
+		reason: "resume_attempts_exhausted" | "codex_quota_fallback";
+		newExecutionId: string;
+		sameVendorEvidence: Record<string, unknown>;
+		poolEvidenceRef?: string | null;
+		now: string;
+	}):
+		| {
+				ok: true;
+				newExecutionId: string;
+				fallbackAttempt: number;
+				idempotentReplay: boolean;
+		  }
+		| { ok: false; reason: string } {
+		let result:
+			| {
+					ok: true;
+					newExecutionId: string;
+					fallbackAttempt: number;
+					idempotentReplay: boolean;
+			  }
+			| { ok: false; reason: string } = { ok: false, reason: "not_standby" };
+		this.db.transaction(() => {
+			const row = this.codexQuota.getStandby(input.executionId);
+			if (!row) return;
+			let attempt = row.fallback_attempt === 0 ? 1 : row.fallback_attempt;
+			const demandFor = (fallbackAttempt: number) =>
+				this.workflowSelectAll(
+					`SELECT * FROM codex_quota_dispatch_demand
+					  WHERE source_execution_id = ? AND entry_seq = ? AND fallback_attempt = ?`,
+					[input.executionId, row.entry_seq, fallbackAttempt],
+				)[0];
+			let prior = demandFor(attempt);
+			if (prior && prior.state !== "reverted") {
+				if (
+					prior.vendor !== input.vendor ||
+					prior.reason !== input.reason ||
+					prior.model !== input.model ||
+					prior.effort !== input.effort
+				) {
+					result = { ok: false, reason: "fallback_replay_conflict" };
+					return;
+				}
+				result = {
+					ok: true,
+					newExecutionId: String(prior.new_execution_id),
+					fallbackAttempt: attempt,
+					idempotentReplay: true,
+				};
+				return;
+			}
+			if (prior?.state === "reverted") {
+				attempt += 1;
+				prior = demandFor(attempt);
+				if (prior && prior.state !== "reverted") {
+					result = {
+						ok: true,
+						newExecutionId: String(prior.new_execution_id),
+						fallbackAttempt: attempt,
+						idempotentReplay: true,
+					};
+					return;
+				}
+			}
+			if (attempt > CODEX_QUOTA_FALLBACK_ATTEMPTS) {
+				this.codexQuota.enqueueOutbox({
+					incidentId: `codex-standby:${input.executionId}`,
+					kind: "lead_diagnostic",
+					eventId: `codex-standby-fallback-exhausted:${input.executionId}:${row.entry_seq}`,
+					destination: "lead",
+					payload: {
+						reason: "fallback_exhausted",
+						executionId: input.executionId,
+						runId: row.run_id,
+						nodeId: row.node_id,
+					},
+				});
+				result = { ok: false, reason: "fallback_exhausted" };
+				return;
+			}
+			if (row.state !== "standby") return;
+			const fence = this.codexQuota.standbyWorkflowFence(row);
+			if (fence) {
+				result = { ok: false, reason: fence };
+				return;
+			}
+			// One writer fence per source execution (dead-execution watch is
+			// keyed by it); a stale foreign one means another replacement owns it.
+			if (this.getWorkflowDeadExecutionWatch(input.executionId)) {
+				result = { ok: false, reason: "writer_fence_conflict" };
+				return;
+			}
+			const run = this.getWorkflowRun(row.run_id);
+			if (!run) return;
+			const session = this.getSession(input.executionId);
+			const node = this.workflowSelectAll(
+				`SELECT state FROM workflow_run_node
+				  WHERE run_id = ? AND node_id = ? AND attempt = ?`,
+				[row.run_id, row.node_id, row.attempt],
+			)[0];
+			this.db.run(
+				`UPDATE codex_quota_standby
+				    SET state = 'fallback_prepared', fallback_attempt = ?,
+				        fallback_execution_id = ?, fallback_vendor = ?, fallback_reason = ?,
+				        updated_at = ?
+				  WHERE execution_id = ? AND state = 'standby'`,
+				[
+					attempt,
+					input.newExecutionId,
+					input.vendor,
+					input.reason,
+					input.now,
+					input.executionId,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			this.db.run(
+				`INSERT INTO codex_quota_dispatch_demand
+				   (new_execution_id, source_execution_id, entry_seq, fallback_attempt,
+				    vendor, model, effort, reason, same_vendor_evidence_json,
+				    pool_evidence_ref, source_node_state, state, created_at, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', ?, ?)`,
+				[
+					input.newExecutionId,
+					input.executionId,
+					row.entry_seq,
+					attempt,
+					input.vendor,
+					input.model,
+					input.effort,
+					input.reason,
+					JSON.stringify(input.sameVendorEvidence),
+					input.poolEvidenceRef ?? null,
+					String(node?.state ?? "running"),
+					input.now,
+					input.now,
+				],
+			);
+			const launchOrdinal = this.allocateWorkflowLaunchOrdinalTx(
+				row.run_id,
+				row.node_id,
+				row.attempt,
+				input.newExecutionId,
+				"resume_fallback",
+				`codex-quota-standby:${input.executionId}:${row.entry_seq}:${attempt}`,
+			);
+			this.upsertWorkflowRunNodeTx({
+				runId: row.run_id,
+				nodeId: row.node_id,
+				attempt: row.attempt,
+				state: "pending",
+				executionId: input.newExecutionId,
+			});
+			// §5.2 (disclosed deviation): the same-attempt body resolves its
+			// delivery before launch, so the migration happens here, fenced
+			// exactly like a dead-rollback replacement (watch below) and never
+			// inheriting an attachment minted for a reverted body.
+			const revertedTransitions = new Set(
+				this.workflowSelectAll(
+					`SELECT new_execution_id FROM codex_quota_dispatch_demand
+					  WHERE source_execution_id = ? AND state = 'reverted'`,
+					[input.executionId],
+				).map((reverted) =>
+					StateStore.workflowWriterTransitionUid({
+						runId: row.run_id,
+						nodeId: row.node_id,
+						attempt: row.attempt,
+						newExecutionId: String(reverted.new_execution_id),
+					}),
+				),
+			);
+			this.migrateWorkflowWriterReplacementTx({
+				runId: row.run_id,
+				nodeId: row.node_id,
+				attempt: row.attempt,
+				deadExecutionId: input.executionId,
+				newExecutionId: input.newExecutionId,
+				launchOrdinal,
+				now: input.now,
+				excludeSourceTransitionUids: revertedTransitions,
+			});
+			const activityBaseline: WorkflowDeadExecutionActivityBaseline = {
+				commitMarker: { state: "unknown" },
+				commDbMessageCount: null,
+				tmuxTarget: session?.tmux_session ?? null,
+				tmuxOutputDigest: null,
+				sessionCommitCount:
+					typeof session?.commit_count === "number"
+						? session.commit_count
+						: null,
+			};
+			this.db.run(
+				`INSERT INTO workflow_dead_execution_watch
+				   (dead_execution_id, run_id, node_id, attempt, new_execution_id,
+				    project_name, issue_id, observed_at, baseline_json, state)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
+				[
+					input.executionId,
+					row.run_id,
+					row.node_id,
+					row.attempt,
+					input.newExecutionId,
+					run.project_name,
+					run.issue_id,
+					input.now,
+					JSON.stringify(activityBaseline),
+				],
+			);
+			this.appendWorkflowRunEventCheckedTx({
+				runId: row.run_id,
+				eventUid: `codex_quota_fallback_prepared:${input.executionId}:${row.entry_seq}:${attempt}`,
+				kind: "codex_quota_fallback_prepared",
+				nodeId: row.node_id,
+				executionId: input.executionId,
+				payload: {
+					newExecutionId: input.newExecutionId,
+					vendor: input.vendor,
+					model: input.model,
+					reason: input.reason,
+					fallbackAttempt: attempt,
+					launchOrdinal,
+					at: input.now,
+				},
+			});
+			this.codexQuota.appendResumeAudit({
+				executionId: input.executionId,
+				entrySeq: row.entry_seq,
+				action: "fallback_prepared",
+				at: input.now,
+				runId: row.run_id,
+				nodeId: row.node_id,
+				attempt: row.attempt,
+				vendor: input.vendor,
+				detailCode: input.reason,
+			});
+			result = {
+				ok: true,
+				newExecutionId: input.newExecutionId,
+				fallbackAttempt: attempt,
+				idempotentReplay: false,
+			};
+		});
+		const settled = result as
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string };
+		if (settled.ok && !settled.idempotentReplay) this.save();
+		return result;
+	}
+
+	/**
+	 * FLY-2900 §5.3 linearization point: inside one synchronous StateStore
+	 * transaction re-check every fence, run the branch CAS (`git update-ref`)
+	 * and record the checkpoint. An operator release is either wholly before
+	 * this (fence fails, ref untouched) or wholly after it.
+	 */
+	recordCodexQuotaCheckpoint(input: {
+		executionId: string;
+		entrySeq: number;
+		commit: string;
+		now: string;
+		updateRef: () => void;
+	}): { ok: true } | { ok: false; reason: string } {
+		let result: { ok: true } | { ok: false; reason: string } = {
+			ok: false,
+			reason: "not_standby",
+		};
+		this.db.transaction(() => {
+			const row = this.codexQuota.getStandby(input.executionId);
+			if (!row || row.state !== "standby" || row.entry_seq !== input.entrySeq)
+				return;
+			const fence = this.codexQuota.standbyWorkflowFence(row);
+			if (fence) {
+				result = { ok: false, reason: fence };
+				return;
+			}
+			input.updateRef();
+			this.db.run(
+				`UPDATE codex_quota_standby SET checkpoint_commit = ?, updated_at = ?
+				  WHERE execution_id = ? AND state = 'standby' AND entry_seq = ?`,
+				[input.commit, input.now, input.executionId, input.entrySeq],
+			);
+			result = { ok: true };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	/** FLY-2900 §5.4: the frozen fallback dispatch of a prepared new execution. */
+	getCodexQuotaPreparedDemand(newExecutionId: string):
+		| {
+				sourceExecutionId: string;
+				vendor: "codex" | "claude";
+				model: string;
+				effort: string;
+				reason: "resume_attempts_exhausted" | "codex_quota_fallback";
+				poolEvidenceRef: string | null;
+		  }
+		| undefined {
+		const row = this.workflowSelectAll(
+			"SELECT * FROM codex_quota_dispatch_demand WHERE new_execution_id = ? AND state = 'prepared'",
+			[newExecutionId],
+		)[0];
+		return row
+			? {
+					sourceExecutionId: String(row.source_execution_id),
+					vendor: row.vendor as "codex" | "claude",
+					model: String(row.model),
+					effort: String(row.effort),
+					reason: row.reason as
+						| "resume_attempts_exhausted"
+						| "codex_quota_fallback",
+					poolEvidenceRef:
+						row.pool_evidence_ref === null ? null : String(row.pool_evidence_ref),
+				}
+			: undefined;
+	}
+
+	/**
+	 * FLY-2900 §5.2 phase two, inside the new execution's launch-commit
+	 * transaction: the original execution becomes failed with a teardown fact,
+	 * its unconsumed credentials are revoked, the carrier closes and FLY-2465
+	 * targets are abandoned. Replay-safe (a committed demand is a no-op).
+	 */
+	private commitCodexQuotaFallbackTx(newExecutionId: string, now: string): void {
+		const demand = this.workflowSelectAll(
+			"SELECT * FROM codex_quota_dispatch_demand WHERE new_execution_id = ? AND state = 'prepared'",
+			[newExecutionId],
+		)[0];
+		if (!demand) return;
+		const sourceExecutionId = String(demand.source_execution_id);
+		const row = this.codexQuota.getStandby(sourceExecutionId);
+		this.db.run(
+			"UPDATE codex_quota_dispatch_demand SET state = 'committed', updated_at = ? WHERE new_execution_id = ? AND state = 'prepared'",
+			[now, newExecutionId],
+		);
+		const session = this.getSession(sourceExecutionId);
+		this.db.run(
+			`UPDATE sessions SET status = 'failed', last_error = 'codex_quota_fallback',
+			        last_activity_at = ? WHERE execution_id = ?`,
+			[now, sourceExecutionId],
+		);
+		if (session && session.status !== "failed") {
+			this.applyTerminalTimestamp(sourceExecutionId, session.status, "failed");
+			this.bumpLifecycleRevision(sourceExecutionId);
+		}
+		for (const table of [
+			"workflow_output_credential",
+			"workflow_submission_credential",
+		]) {
+			this.db.run(
+				`UPDATE ${table}
+				    SET revoked = 1, revoked_reason = 'codex_quota_fallback'
+				  WHERE execution_id = ? AND consumed_at IS NULL AND revoked = 0`,
+				[sourceExecutionId],
+			);
+		}
+		if (row) {
+			this.appendWorkflowRunEventCheckedTx({
+				runId: row.run_id,
+				eventUid: `teardown_recorded:${row.run_id}:${sourceExecutionId}:codex_quota_fallback:${row.entry_seq}`,
+				kind: "generalized_teardown_recorded",
+				nodeId: row.node_id,
+				executionId: sourceExecutionId,
+				payload: {
+					reason: "codex_quota_fallback",
+					newExecutionId,
+					status: "failed",
+					at: now,
+				},
+			});
+			this.db.run(
+				`UPDATE codex_quota_standby SET state = 'closed', updated_at = ?
+				  WHERE execution_id = ? AND state IN ('fallback_prepared','standby')`,
+				[now, sourceExecutionId],
+			);
+			this.codexQuota.abandonRunnerTargets(sourceExecutionId, "standby_fallback");
+			this.appendWorkflowRunEventCheckedTx({
+				runId: row.run_id,
+				eventUid: `codex_quota_fallback_committed:${newExecutionId}`,
+				kind: "codex_quota_fallback_committed",
+				nodeId: row.node_id,
+				executionId: newExecutionId,
+				payload: {
+					sourceExecutionId,
+					vendor: demand.vendor,
+					model: demand.model,
+					reason: demand.reason,
+					at: now,
+				},
+			});
+			this.codexQuota.appendResumeAudit({
+				executionId: sourceExecutionId,
+				entrySeq: row.entry_seq,
+				action: "fallback_committed",
+				at: now,
+				runId: row.run_id,
+				nodeId: row.node_id,
+				attempt: row.attempt,
+				vendor: String(demand.vendor),
+				detailCode: String(demand.reason),
+			});
+			this.codexQuota.enqueueOutbox({
+				incidentId: null,
+				kind: "resume_notice",
+				eventId: `codex-standby-fallback:${newExecutionId}`,
+				destination: "issue_thread",
+				payload: {
+					notice: demand.vendor === "claude" ? "fallback_claude" : "fallback_codex",
+					executionId: sourceExecutionId,
+					newExecutionId,
+					runId: row.run_id,
+					nodeId: row.node_id,
+					checkpointCommit: row.checkpoint_commit,
+					poolEvidenceRef: demand.pool_evidence_ref ?? null,
+				},
+			});
+		}
+	}
+
+	/**
+	 * FLY-2900 §5.2 rollback: the prepared new execution was refused before its
+	 * launch committed (or the carrier was released). The node returns to the
+	 * original execution, the new one is abandoned, and a still-prepared
+	 * carrier goes back to standby so a later permit can resume it in place.
+	 */
+	revertCodexQuotaFallbackTx(
+		newExecutionId: string,
+		reason: string,
+		now: string,
+	): boolean {
+		const demand = this.workflowSelectAll(
+			"SELECT * FROM codex_quota_dispatch_demand WHERE new_execution_id = ? AND state = 'prepared'",
+			[newExecutionId],
+		)[0];
+		if (!demand) return false;
+		const code = /^[a-z0-9_:.-]{1,60}$/.test(reason) ? reason : "refused";
+		const sourceExecutionId = String(demand.source_execution_id);
+		const row = this.codexQuota.getStandby(sourceExecutionId);
+		this.db.run(
+			"UPDATE codex_quota_dispatch_demand SET state = 'reverted', revert_reason = ?, updated_at = ? WHERE new_execution_id = ? AND state = 'prepared'",
+			[code, now, newExecutionId],
+		);
+		// The refused body's migration chain loses its writer fence with the
+		// watch, so its evidence can never resolve again.
+		this.db.run(
+			"DELETE FROM workflow_dead_execution_watch WHERE dead_execution_id = ? AND new_execution_id = ?",
+			[sourceExecutionId, newExecutionId],
+		);
+		for (const table of [
+			"workflow_output_credential",
+			"workflow_submission_credential",
+		]) {
+			this.db.run(
+				`UPDATE ${table}
+				    SET revoked = 1, revoked_reason = 'codex_quota_fallback_reverted'
+				  WHERE execution_id = ? AND consumed_at IS NULL AND revoked = 0`,
+				[newExecutionId],
+			);
+		}
+		if (!row) return true;
+		const ledger = this.workflowSelectAll(
+			`SELECT state FROM workflow_side_effect_ledger
+			  WHERE run_id = ? AND node_id = ? AND attempt = ? AND kind = 'dispatch'
+			    AND execution_id = ?`,
+			[row.run_id, row.node_id, row.attempt, newExecutionId],
+		)[0];
+		if (ledger?.state === "intent_recorded")
+			this.transitionWorkflowSideEffectTx(row.run_id, {
+				op: "side_effect",
+				node: row.node_id,
+				attempt: row.attempt,
+				executionId: newExecutionId,
+				to: "abandoned",
+				reason: `codex_quota_fallback_reverted:${code}`,
+			});
+		this.db.run(
+			`UPDATE workflow_run_node SET state = ?, execution_id = ?
+			  WHERE run_id = ? AND node_id = ? AND attempt = ? AND execution_id = ?`,
+			[
+				String(demand.source_node_state ?? "running"),
+				sourceExecutionId,
+				row.run_id,
+				row.node_id,
+				row.attempt,
+				newExecutionId,
+			],
+		);
+		this.db.run(
+			`UPDATE codex_quota_standby
+			    SET state = 'standby', fallback_execution_id = NULL,
+			        last_error_code = ?, updated_at = ?
+			  WHERE execution_id = ? AND state = 'fallback_prepared'`,
+			[`fallback_refused:${code}`.slice(0, 80), now, sourceExecutionId],
+		);
+		this.codexQuota.appendResumeAudit({
+			executionId: sourceExecutionId,
+			entrySeq: row.entry_seq,
+			action: "fallback_reverted",
+			at: now,
+			runId: row.run_id,
+			nodeId: row.node_id,
+			attempt: row.attempt,
+			vendor: String(demand.vendor),
+			detailCode: code,
+		});
+		return true;
+	}
+
+	/** FLY-2900: revert a prepared fallback outside any caller transaction. */
+	revertCodexQuotaFallback(input: {
+		newExecutionId: string;
+		reason: string;
+		now: string;
+	}): boolean {
+		let reverted = false;
+		this.db.transaction(() => {
+			reverted = this.revertCodexQuotaFallbackTx(
+				input.newExecutionId,
+				input.reason,
+				input.now,
+			);
+		});
+		if (reverted) this.save();
+		return reverted;
+	}
+
+	/**
+	 * FLY-2900 §3.1: decide, inside the terminal-signal transaction, whether a
+	 * runner usage-limit wall parks the execution in quota standby. Returns null
+	 * for every case that must keep the historical failure path unchanged.
+	 */
+	private codexQuotaStandbyDispositionTx(input: {
+		executionId: string;
+		sourceEventId: string;
+		usageLimited: boolean;
+		context: {
+			binding: WorkflowExecutionBindingRow;
+			run: WorkflowRunRow;
+		};
+		now: string;
+	}): CodexQuotaStandbyDisposition | null {
+		const existing = this.codexQuota.getStandby(input.executionId);
+		// A relaunched body that dies is a failed relaunch, never a teardown:
+		// walls are capacity rejections, anything else is a mechanical failure.
+		if (existing?.state === "resuming")
+			return input.usageLimited ? "capacity_rejected" : "resume_failed";
+		// Parked with no process: a stray terminal keeps the carrier intact.
+		if (
+			existing?.state === "standby" ||
+			existing?.state === "fallback_prepared"
+		)
+			return input.usageLimited ? "refresh" : "ignore";
+		if (existing?.state === "released") return null;
+		if (!input.usageLimited) return null;
+		if (!this.codexQuotaStandbyEnabled()) return null;
+		const { binding, run } = input.context;
+		if (run.status !== "active" || Number(run.engine_owned) !== 1) return null;
+		const node = this.workflowSelectAll(
+			`SELECT state, execution_id FROM workflow_run_node
+			  WHERE run_id = ? AND node_id = ? AND attempt = ?`,
+			[binding.run_id, binding.node_id, binding.attempt],
+		)[0];
+		if (
+			!node ||
+			node.execution_id !== input.executionId ||
+			(node.state !== "admitted" && node.state !== "running")
+		)
+			return null;
+		let current: ReturnType<StateStore["resolveCurrentWorkflowActivation"]>;
+		try {
+			current = this.resolveCurrentWorkflowActivation(input.executionId);
+		} catch {
+			return null;
+		}
+		if (
+			current.kind !== "current" ||
+			current.binding.activation_id !== binding.activation_id
+		)
+			return null;
+		const runtime = this.workflowSelectAll(
+			"SELECT vendor FROM workflow_execution_runtime WHERE execution_id = ?",
+			[input.executionId],
+		)[0];
+		if (runtime?.vendor !== "codex") return null;
+		if (
+			this.workflowSelectAll(
+				`SELECT 1 AS present FROM workflow_operator_close_intent
+				  WHERE execution_id = ? AND stage IN ('prepared','committed')`,
+				[input.executionId],
+			).length > 0
+		)
+			return null;
+		if (
+			this.workflowSelectAll(
+				`SELECT 1 AS present FROM workflow_node_completion
+				  WHERE run_id = ? AND node_id = ? AND attempt = ?`,
+				[binding.run_id, binding.node_id, binding.attempt],
+			).length > 0
+		)
+			return null;
+		const since = new Date(
+			Date.parse(input.now) - 24 * 60 * 60 * 1000,
+		).toISOString();
+		if (
+			this.codexQuota.countStandbyEntriesSince({
+				runId: binding.run_id,
+				nodeId: binding.node_id,
+				attempt: binding.attempt,
+				since,
+			}) >= CODEX_QUOTA_STANDBY_ENTRY_LIMIT
+		) {
+			this.codexQuota.enqueueOutbox({
+				incidentId: `codex-standby:${input.executionId}`,
+				kind: "lead_diagnostic",
+				eventId: `codex-standby-entry-limit:${input.executionId}:${input.sourceEventId}`,
+				destination: "lead",
+				payload: {
+					reason: "standby_entry_limit",
+					executionId: input.executionId,
+					runId: binding.run_id,
+					nodeId: binding.node_id,
+					attempt: binding.attempt,
+					issueId: run.issue_id,
+					limit: CODEX_QUOTA_STANDBY_ENTRY_LIMIT,
+				},
+			});
+			return null;
+		}
+		return "enter";
+	}
+
+	/**
+	 * FLY-2900: a completion signal closes the carrier so nothing relaunches a
+	 * finished execution. It is not first-output evidence, so a resuming
+	 * carrier closes without a `resumed` audit or thread notice (only the
+	 * first model output or a proven reconciliation settle success); a parked
+	 * one simply closes. Runs inside the terminal-signal transaction.
+	 */
+	private closeCodexQuotaStandbyOnCompletionTx(
+		executionId: string,
+		now: string,
+	): void {
+		const row = this.codexQuota.getStandby(executionId);
+		if (!row) return;
+		if (row.state === "resuming") {
+			if (this.codexQuota.closeResumingOnCompletion(executionId, now))
+				this.clearCodexQuotaStandbyLastError(executionId);
+			return;
+		}
+		if (row.state === "standby") {
+			this.db.run(
+				"UPDATE codex_quota_standby SET state='closed',last_error_code='completed_while_parked',updated_at=? WHERE execution_id=? AND state='standby'",
+				[now, executionId],
+			);
+			this.clearCodexQuotaStandbyLastError(executionId);
+		}
+	}
+
+	/** FLY-2900 §3.1: the standby writes that replace status/teardown/lead intent. */
+	private applyCodexQuotaStandbyTx(input: {
+		disposition: CodexQuotaStandbyDisposition;
+		executionId: string;
+		sourceEventId: string;
+		bindingId?: string;
+		context: {
+			binding: WorkflowExecutionBindingRow;
+			run: WorkflowRunRow;
+		};
+		now: string;
+	}): void {
+		const { binding, run } = input.context;
+		if (input.disposition === "resume_failed") {
+			const row = this.codexQuota.getStandby(input.executionId);
+			this.codexQuota.failResume({
+				executionId: input.executionId,
+				kind: "mechanical",
+				detailCode: "resumed_body_terminal_failure",
+				continueDetermined: row?.resume_phase === "continuing",
+				now: input.now,
+			});
+			return;
+		}
+		if (input.disposition === "ignore") return;
+		const signalSeq =
+			this.codexQuota.signalSeqFor(
+				"runner_terminal",
+				input.executionId,
+				input.sourceEventId,
+			) ?? 0;
+		const quotaBinding = input.bindingId
+			? this.codexQuota.getBinding(input.bindingId)
+			: undefined;
+		const settled = this.codexQuota.settleStandbyWall({
+			disposition: input.disposition,
+			executionId: input.executionId,
+			runId: binding.run_id,
+			nodeId: binding.node_id,
+			attempt: binding.attempt,
+			activationId: binding.activation_id,
+			issueId: run.issue_id,
+			sourceEventId: input.sourceEventId,
+			signalSeq,
+			rootKey: quotaBinding?.credentialRootKey ?? null,
+			generation: quotaBinding?.generation ?? null,
+			bindingId: quotaBinding?.bindingId ?? null,
+			now: input.now,
+		});
+		this.db.run(
+			`INSERT INTO sessions
+			   (execution_id, issue_id, project_name, status, last_activity_at,
+			    last_error, chat_thread_role, workflow_node_id)
+			 VALUES (?, ?, ?, 'running', ?, 'codex_quota_standby', 'main', ?)
+			 ON CONFLICT(execution_id) DO UPDATE SET
+			   last_activity_at = excluded.last_activity_at,
+			   last_error = excluded.last_error`,
+			[
+				input.executionId,
+				run.issue_id,
+				run.project_name,
+				input.now,
+				binding.node_id,
+			],
+		);
+		if (input.disposition === "enter")
+			this.appendWorkflowRunEventCheckedTx({
+				runId: binding.run_id,
+				eventUid: `codex_quota_standby_entered:${binding.run_id}:${input.executionId}:${settled.entrySeq}`,
+				kind: "codex_quota_standby_entered",
+				nodeId: binding.node_id,
+				executionId: input.executionId,
+				payload: {
+					entrySeq: settled.entrySeq,
+					sourceEventId: input.sourceEventId,
+					signalSeq,
+					at: input.now,
+				},
+			});
 	}
 
 	hasWorkflowExecutionTeardownFact(
@@ -51005,6 +52628,10 @@ export class StateStore {
 						idempotentReplay: false,
 						stage: "prepared",
 					};
+					this.finalizeReleasedCodexQuotaStandbyTx(
+						input.now,
+						input.executionId,
+					);
 				}
 				return;
 			}
@@ -51035,6 +52662,9 @@ export class StateStore {
 			);
 			changed = true;
 			result = { ok: true, idempotentReplay: false, stage: "prepared" };
+			// FLY-2900 §4.3: the insert trigger released any quota standby of this
+			// execution; settle its targets and audit in this same transaction.
+			this.finalizeReleasedCodexQuotaStandbyTx(input.now, input.executionId);
 		});
 		if (changed) this.save();
 		return result;
@@ -52311,6 +53941,13 @@ export class StateStore {
 				result = { ok: false, reason: "run_state_changed" };
 				return;
 			}
+			// FLY-2900 §4.3: an operator hold or terminate releases quota standby.
+			this.releaseCodexQuotaStandbyTx({
+				runId: input.runId,
+				reason:
+					input.target === "held" ? "operator_held" : "operator_terminated",
+				now: input.now,
+			});
 			if (input.target === "terminated") {
 				this.settleWorkflowEngineParksForRunTx(
 					input.runId,
@@ -56874,6 +58511,10 @@ export class StateStore {
 			[input.attemptId, input.rootId],
 		)[0];
 		if (!attempt) return { held: false, reason: "attempt_not_live" };
+		// FLY-2900 §4.2: a parked quota standby recipient is silent by design.
+		if (this.codexQuota.isCodexQuotaStandby(input.recipientExecutionId)) {
+			return { held: false, reason: "codex_quota_standby" };
+		}
 		const session = this.getSession(input.recipientExecutionId);
 		const evidence: LivenessEvidence = {
 			heartbeatAtMs: parseSqliteUtcMs(session?.heartbeat_at),
@@ -61598,6 +63239,194 @@ export class StateStore {
 		};
 	}
 
+	/**
+	 * Writer replacement bookkeeping shared by dead-execution rollback and the
+	 * FLY-2900 quota fallback: the writer_replacement receipt and, when the
+	 * source evidence is intact, the issue-delivery and resume-attachment
+	 * migration to the new execution. Runs inside the caller's transaction.
+	 */
+	private static workflowWriterTransitionUid(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		newExecutionId: string;
+	}): string {
+		return `writer_replacement:${canonicalSubmissionDigest({
+			runId: input.runId,
+			nodeId: input.nodeId,
+			attempt: input.attempt,
+			newExecutionId: input.newExecutionId,
+		})}`;
+	}
+
+	private migrateWorkflowWriterReplacementTx(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		deadExecutionId: string;
+		newExecutionId: string;
+		launchOrdinal: number;
+		now: string;
+		/** Attachments minted by these writer transitions are never a source. */
+		excludeSourceTransitionUids?: ReadonlySet<string>;
+	}): void {
+		const { launchOrdinal, now } = input;
+		const writerTransitionUid = StateStore.workflowWriterTransitionUid(input);
+		const writerReceipt = {
+			targetNodeId: input.nodeId,
+			targetAttempt: input.attempt,
+			deadExecutionId: input.deadExecutionId,
+			newExecutionId: input.newExecutionId,
+			launchOrdinal,
+		};
+		const sourceAttachment = this.listWorkflowResumeAttachments({
+			runId: input.runId,
+			nodeId: input.nodeId,
+			attempt: input.attempt,
+		})
+			.filter(
+				(attachment) =>
+					!input.excludeSourceTransitionUids?.has(attachment.transition_uid),
+			)
+			.at(-1);
+		const sourceState = sourceAttachment
+			? this.getWorkflowResumeAttachmentState(sourceAttachment.attachment_id)
+			: undefined;
+		const sourceDelivery = this.listWorkflowRunEvents(input.runId)
+			.filter(
+				(event) =>
+					event.kind === "issue_delivery" &&
+					event.node_id === input.nodeId &&
+					event.execution_id === input.deadExecutionId,
+			)
+			.at(-1);
+		const sourceDeliveryPayload =
+			sourceDelivery?.payload && typeof sourceDelivery.payload === "object"
+				? (sourceDelivery.payload as Record<string, unknown>)
+				: undefined;
+		let stampedBaselineDigest: string | undefined;
+		try {
+			const stamp = JSON.parse(
+				sourceState?.envelope_stamped_json ?? "null",
+			) as Record<string, unknown> | null;
+			const baseline = stamp?.issueBaseline as
+				| Record<string, unknown>
+				| undefined;
+			stampedBaselineDigest =
+				typeof baseline?.bodyDigest === "string"
+					? baseline.bodyDigest
+					: undefined;
+		} catch {
+			// Malformed resume evidence is diagnosed below without aborting recovery.
+		}
+		const sourceDeliveryDigest = sourceDelivery
+			? canonicalSubmissionDigest(sourceDelivery.payload ?? null)
+			: undefined;
+		const sourceKind = sourceDeliveryPayload?.sourceKind;
+		const canMigrate =
+			sourceAttachment !== undefined &&
+			sourceState?.state === "ready" &&
+			sourceDelivery !== undefined &&
+			sourceDeliveryPayload !== undefined &&
+			(sourceKind === "authoritative" ||
+				sourceKind === "frozen_replay" ||
+				sourceKind === "writer_migration") &&
+			typeof sourceDeliveryPayload.body === "string" &&
+			typeof sourceDeliveryPayload.bodyDigest === "string" &&
+			createHash("sha256")
+				.update(sourceDeliveryPayload.body)
+				.digest("hex") === sourceDeliveryPayload.bodyDigest &&
+			sourceDeliveryPayload.bodyDigest === stampedBaselineDigest;
+		this.recordWorkflowResumeEvidenceSafelyTx(
+			{
+				runId: input.runId,
+				targetNodeId: input.nodeId,
+				targetAttempt: input.attempt,
+				transitionUid: writerTransitionUid,
+				createdAt: now,
+			},
+			() => {
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId,
+					eventUid: writerTransitionUid,
+					kind: "writer_replacement",
+					nodeId: input.nodeId,
+					executionId: input.newExecutionId,
+					payload: writerReceipt,
+				});
+				if (!canMigrate || !sourceAttachment || !sourceDelivery) {
+					this.recordWorkflowResumeTargetUnrecoverableTx({
+						runId: input.runId,
+						targetNodeId: input.nodeId,
+						targetAttempt: input.attempt,
+						transitionUid: writerTransitionUid,
+						reason: "attachment_missing",
+						detail: { cause: "writer_source_evidence_unavailable" },
+						createdAt: now,
+					});
+					return;
+				}
+				const migrationBindingUid = `resume_writer_binding:${canonicalSubmissionDigest(
+					{
+						writerTransitionUid,
+						sourceDeliveryUid: sourceDelivery.event_uid,
+						sourceAttachmentId: sourceAttachment.attachment_id,
+					},
+				)}`;
+				const bindingPayload = {
+					targetNodeId: input.nodeId,
+					targetAttempt: input.attempt,
+					sourceExecutionId: input.deadExecutionId,
+					newExecutionId: input.newExecutionId,
+					launchOrdinal,
+					writerTransitionUid,
+					sourceAttachmentId: sourceAttachment.attachment_id,
+					sourceIssueDeliveryUid: sourceDelivery.event_uid,
+					sourceIssueDeliveryDigest: sourceDeliveryDigest,
+				};
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId,
+					eventUid: migrationBindingUid,
+					kind: "resume_writer_binding",
+					nodeId: input.nodeId,
+					executionId: input.newExecutionId,
+					payload: bindingPayload,
+				});
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId,
+					eventUid: `issue_delivery_migration:${canonicalSubmissionDigest(
+						bindingPayload,
+					)}`,
+					kind: "issue_delivery",
+					nodeId: input.nodeId,
+					executionId: input.newExecutionId,
+					payload: {
+						sourceKind: "writer_migration",
+						body: sourceDeliveryPayload.body,
+						bodyDigest: sourceDeliveryPayload.bodyDigest,
+						migrationBindingUid,
+						sourceIssueDeliveryUid: sourceDelivery.event_uid,
+						sourceIssueDeliveryDigest: sourceDeliveryDigest,
+					},
+				});
+				if (
+					!this.recordWorkflowResumeInheritedAttachmentTx({
+						source: sourceAttachment,
+						runId: input.runId,
+						targetNodeId: input.nodeId,
+						targetAttempt: input.attempt,
+						transitionUid: writerTransitionUid,
+						receiptKind: "writer_replacement",
+						receiptPayload: writerReceipt,
+						createdAt: now,
+					})
+				) {
+					throw new Error("workflow_resume_attachment_conflict");
+				}
+			},
+		);
+	}
+
 	rollbackDeadWorkflowNodeExecution(input: {
 		runId: string;
 		nodeId: string;
@@ -61635,6 +63464,12 @@ export class StateStore {
 			reason: "rollback_not_committed",
 		};
 		this.db.transaction(() => {
+			// FLY-2900 §4.2: a parked quota standby body has no process by design;
+			// the resume loop owns it. Zero writes.
+			if (this.codexQuota.isCodexQuotaStandby(input.deadExecutionId)) {
+				result = { ok: false, reason: "codex_quota_standby" };
+				return;
+			}
 			if (this.codexQuota.isExecutionPaused(input.deadExecutionId)) {
 				result = { ok: false, reason: "codex_quota_paused" };
 				return;
@@ -61945,162 +63780,15 @@ export class StateStore {
 				state: "pending",
 				executionId: input.newExecutionId,
 			});
-			const writerTransitionUid = `writer_replacement:${canonicalSubmissionDigest(
-				{
-					runId: input.runId,
-					nodeId: input.nodeId,
-					attempt: input.attempt,
-					newExecutionId: input.newExecutionId,
-				},
-			)}`;
-			const writerReceipt = {
-				targetNodeId: input.nodeId,
-				targetAttempt: input.attempt,
-				deadExecutionId: input.deadExecutionId,
-				newExecutionId: input.newExecutionId,
-				launchOrdinal,
-			};
-			const sourceAttachment = this.listWorkflowResumeAttachments({
+			this.migrateWorkflowWriterReplacementTx({
 				runId: input.runId,
 				nodeId: input.nodeId,
 				attempt: input.attempt,
-			}).at(-1);
-			const sourceState = sourceAttachment
-				? this.getWorkflowResumeAttachmentState(sourceAttachment.attachment_id)
-				: undefined;
-			const sourceDelivery = this.listWorkflowRunEvents(input.runId)
-				.filter(
-					(event) =>
-						event.kind === "issue_delivery" &&
-						event.node_id === input.nodeId &&
-						event.execution_id === input.deadExecutionId,
-				)
-				.at(-1);
-			const sourceDeliveryPayload =
-				sourceDelivery?.payload && typeof sourceDelivery.payload === "object"
-					? (sourceDelivery.payload as Record<string, unknown>)
-					: undefined;
-			let stampedBaselineDigest: string | undefined;
-			try {
-				const stamp = JSON.parse(
-					sourceState?.envelope_stamped_json ?? "null",
-				) as Record<string, unknown> | null;
-				const baseline = stamp?.issueBaseline as
-					| Record<string, unknown>
-					| undefined;
-				stampedBaselineDigest =
-					typeof baseline?.bodyDigest === "string"
-						? baseline.bodyDigest
-						: undefined;
-			} catch {
-				// Malformed resume evidence is diagnosed below without aborting recovery.
-			}
-			const sourceDeliveryDigest = sourceDelivery
-				? canonicalSubmissionDigest(sourceDelivery.payload ?? null)
-				: undefined;
-			const sourceKind = sourceDeliveryPayload?.sourceKind;
-			const canMigrate =
-				sourceAttachment !== undefined &&
-				sourceState?.state === "ready" &&
-				sourceDelivery !== undefined &&
-				sourceDeliveryPayload !== undefined &&
-				(sourceKind === "authoritative" ||
-					sourceKind === "frozen_replay" ||
-					sourceKind === "writer_migration") &&
-				typeof sourceDeliveryPayload.body === "string" &&
-				typeof sourceDeliveryPayload.bodyDigest === "string" &&
-				createHash("sha256")
-					.update(sourceDeliveryPayload.body)
-					.digest("hex") === sourceDeliveryPayload.bodyDigest &&
-				sourceDeliveryPayload.bodyDigest === stampedBaselineDigest;
-			this.recordWorkflowResumeEvidenceSafelyTx(
-				{
-					runId: input.runId,
-					targetNodeId: input.nodeId,
-					targetAttempt: input.attempt,
-					transitionUid: writerTransitionUid,
-					createdAt: now,
-				},
-				() => {
-					this.appendWorkflowRunEventCheckedTx({
-						runId: input.runId,
-						eventUid: writerTransitionUid,
-						kind: "writer_replacement",
-						nodeId: input.nodeId,
-						executionId: input.newExecutionId,
-						payload: writerReceipt,
-					});
-					if (!canMigrate || !sourceAttachment || !sourceDelivery) {
-						this.recordWorkflowResumeTargetUnrecoverableTx({
-							runId: input.runId,
-							targetNodeId: input.nodeId,
-							targetAttempt: input.attempt,
-							transitionUid: writerTransitionUid,
-							reason: "attachment_missing",
-							detail: { cause: "writer_source_evidence_unavailable" },
-							createdAt: now,
-						});
-						return;
-					}
-					const migrationBindingUid = `resume_writer_binding:${canonicalSubmissionDigest(
-						{
-							writerTransitionUid,
-							sourceDeliveryUid: sourceDelivery.event_uid,
-							sourceAttachmentId: sourceAttachment.attachment_id,
-						},
-					)}`;
-					const bindingPayload = {
-						targetNodeId: input.nodeId,
-						targetAttempt: input.attempt,
-						sourceExecutionId: input.deadExecutionId,
-						newExecutionId: input.newExecutionId,
-						launchOrdinal,
-						writerTransitionUid,
-						sourceAttachmentId: sourceAttachment.attachment_id,
-						sourceIssueDeliveryUid: sourceDelivery.event_uid,
-						sourceIssueDeliveryDigest: sourceDeliveryDigest,
-					};
-					this.appendWorkflowRunEventCheckedTx({
-						runId: input.runId,
-						eventUid: migrationBindingUid,
-						kind: "resume_writer_binding",
-						nodeId: input.nodeId,
-						executionId: input.newExecutionId,
-						payload: bindingPayload,
-					});
-					this.appendWorkflowRunEventCheckedTx({
-						runId: input.runId,
-						eventUid: `issue_delivery_migration:${canonicalSubmissionDigest(
-							bindingPayload,
-						)}`,
-						kind: "issue_delivery",
-						nodeId: input.nodeId,
-						executionId: input.newExecutionId,
-						payload: {
-							sourceKind: "writer_migration",
-							body: sourceDeliveryPayload.body,
-							bodyDigest: sourceDeliveryPayload.bodyDigest,
-							migrationBindingUid,
-							sourceIssueDeliveryUid: sourceDelivery.event_uid,
-							sourceIssueDeliveryDigest: sourceDeliveryDigest,
-						},
-					});
-					if (
-						!this.recordWorkflowResumeInheritedAttachmentTx({
-							source: sourceAttachment,
-							runId: input.runId,
-							targetNodeId: input.nodeId,
-							targetAttempt: input.attempt,
-							transitionUid: writerTransitionUid,
-							receiptKind: "writer_replacement",
-							receiptPayload: writerReceipt,
-							createdAt: now,
-						})
-					) {
-						throw new Error("workflow_resume_attachment_conflict");
-					}
-				},
-			);
+				deadExecutionId: input.deadExecutionId,
+				newExecutionId: input.newExecutionId,
+				launchOrdinal,
+				now,
+			});
 			this.appendWorkflowRunEventCheckedTx({
 				runId: input.runId,
 				eventUid,
@@ -77491,6 +79179,11 @@ export class StateStore {
 		) {
 			return { disposition: "cancel", reason: "invalid_wake_identity" };
 		}
+		// FLY-2900 §4.2: a parked quota standby body has no process to wake; the
+		// wake waits (not cancelled) until the relaunched body can take it.
+		if (this.codexQuota.isCodexQuotaStandby(input.executionId)) {
+			return { disposition: "wait", reason: "codex_quota_standby" };
+		}
 		const session = this.getSession(input.executionId);
 		if (!input.activationId) {
 			return session &&
@@ -90149,6 +91842,9 @@ export interface WorkflowLedgerBatchResult {
 }
 
 export interface LeadEventRow {
+    notification_policy_version?: string;
+    notification_reason?: string;
+    notification_proof_ref?: string;
 	delivery_disposition?: "model" | "audit_only";
 	seq: number;
 	lead_id: string;
@@ -90346,6 +92042,9 @@ export function readEpicItemFacts(
 
 function mapLeadEventRow(row: Record<string, unknown>): LeadEventRow {
 	return {
+        notification_policy_version: (row.notification_policy_version as string | null) ?? undefined,
+        notification_reason: (row.notification_reason as string | null) ?? undefined,
+        notification_proof_ref: (row.notification_proof_ref as string | null) ?? undefined,
 		delivery_disposition: row.delivery_disposition === "audit_only" ? "audit_only" : "model",
 		seq: Number(row.seq),
 		lead_id: String(row.lead_id),

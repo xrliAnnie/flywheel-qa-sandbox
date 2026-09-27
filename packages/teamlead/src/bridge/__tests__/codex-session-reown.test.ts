@@ -1222,6 +1222,15 @@ it("FLY-2505 retries durable exhaustion before probing or preflight after a sink
 	}
 });
 
+it("FLY-2900 never finalizes revive exhaustion for an intentional standby", async () => {
+	const h = harness();
+	h.deps.isIntentionalStandby = vi.fn(() => true);
+	const reowner = new CodexSessionReowner(h.deps);
+	await expect(reowner.finalizeDueExhaustion("exec-1")).resolves.toBe(false);
+	expect(h.deps.store.finalizeCodexRecoveryExhaustion).not.toHaveBeenCalled();
+	expect(h.onRecoveryExhausted).not.toHaveBeenCalled();
+});
+
 it.each([
 	"stale_revision",
 	"lease_expired",
