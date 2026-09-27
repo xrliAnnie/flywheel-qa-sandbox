@@ -449,23 +449,6 @@ export class CodexProofSpeaker {
 	assistantTranscript(input: { text: string; final: boolean }): void {
 		this.expireOwed();
 		if (input.final) this.finalOwner = undefined;
-		const abandoned = this.abandonedCut;
-		if (abandoned?.generation === this.host.sessionGeneration()) {
-			// Do not let a late user-answer final bind to the remainder notice.
-			// Deltas remain fenced; the final is either the interrupted readback
-			// itself (empty after stripping, so the fence stays) or the user's
-			// answer (possibly with the old tail removed, then the fence clears).
-			if (!input.final) return;
-			const stripped = stripReadbackContinuation(
-				abandoned.expected,
-				abandoned.spoken,
-				input.text,
-			);
-			this.abandonedFinal = stripped.text;
-			if (stripped.text !== "" || !stripped.matched)
-				this.abandonedCut = undefined;
-			return;
-		}
 		// Review R2/R3: an overrun chunk whose final was lost must not take a
 		// later turn's (her answer's). Its final opens with what its deltas
 		// showed; one that does not is someone else's: the claim is given up,
@@ -491,6 +474,29 @@ export class CodexProofSpeaker {
 			return;
 		}
 		const pending = this.pending;
+		const pendingOwnFinal =
+			input.final &&
+			pending?.sent === true &&
+			isFiniteSpeechEquivalent(pending.expected, input.text);
+		const abandoned = this.abandonedCut;
+		if (
+			abandoned?.generation === this.host.sessionGeneration() &&
+			!pendingOwnFinal
+		) {
+			// The cut readback's own final is consumed by the owed-final path
+			// above. Keep this fence for the following answer, so neither a late
+			// final nor the remainder notice can inherit the abandoned tail.
+			if (!input.final) return;
+			const stripped = stripReadbackContinuation(
+				abandoned.expected,
+				abandoned.spoken,
+				input.text,
+			);
+			this.abandonedFinal = stripped.text;
+			if (stripped.text !== "" || !stripped.matched)
+				this.abandonedCut = undefined;
+			return;
+		}
 		if (!pending?.sent || pending.settled) return;
 		if (input.final) pending.finalText = input.text;
 		else pending.accumulated += input.text;
@@ -544,7 +550,7 @@ export class CodexProofSpeaker {
 		const readbackCut =
 			reason === "speech_interrupted" &&
 			((pending?.sent && pending.readback && pending.abandonable) ||
-				(cut !== undefined && cut.note));
+				cut?.note === true);
 		if (!pending || pending.settled) return readbackCut;
 		const spoken =
 			pending.accumulated || pending.finalText || pending.doneTranscript || "";
@@ -775,8 +781,11 @@ export class CodexProofSpeaker {
 				!result.notSent &&
 				result.generation !== undefined &&
 				(reason === "speech_interrupted" || reason === "speech_preempted")
-			)
-				this.host.abandoned?.(text, result.generation, result.spoken);
+			) {
+				if (result.spoken === undefined)
+					this.host.abandoned?.(text, result.generation);
+				else this.host.abandoned?.(text, result.generation, result.spoken);
+			}
 			if (reason === "speech_overrun" && result.prefix) {
 				const { remainder, spokenSentences, totalSentences } = result.prefix;
 				this.host.evidence({
@@ -863,6 +872,7 @@ export class CodexProofSpeaker {
 			pendingKey: string;
 			sessionGeneration: number;
 			ceilingMs?: number;
+			noteOnAbandon: boolean;
 		},
 		text: string,
 	): Promise<ChunkResult> {

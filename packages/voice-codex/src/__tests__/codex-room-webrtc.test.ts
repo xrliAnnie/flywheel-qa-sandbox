@@ -799,9 +799,30 @@ describe("engine B says when a Lead reply could not be read to the end (FLY-2885
 				"s".repeat(sample.recordedGapMs / 20) +
 					"v".repeat(sample.recordedReplayMs / 20),
 			);
+			// The recorded cut readback final lands before the user's final. It
+			// consumes the old turn's owed-final slot but must leave the local
+			// continuation fence armed for the next assistant answer.
+			h.turn(
+				"turn.done",
+				`readback-${sample.id}`,
+				"assistant",
+				sample.spokenBeforeInterrupt,
+			);
+			h.final(sample.spokenBeforeInterrupt);
+			await vi.advanceTimersByTimeAsync(0);
+			expect(h.persisted.at(-1)).toEqual({
+				role: "assistant",
+				text: sample.spokenBeforeInterrupt,
+			});
 			h.turn("turn.created", `user-${sample.id}`, "user");
 			h.founder(false);
 			await h.step("----------", false);
+			h.turn(
+				"turn.done",
+				`user-${sample.id}`,
+				"user",
+				qa3ReadbackBarge.interrupt,
+			);
 
 			// A readback cut is terminal for its old audio. Ordinary conversation
 			// keeps the T5 replay path (covered above), but these packets never do.
@@ -820,6 +841,13 @@ describe("engine B says when a Lead reply could not be read to the end (FLY-2885
 			const steer = h.appendText.mock.calls[0]?.[0] as string | undefined;
 			expect(steer).toContain(sample.spokenBeforeInterrupt);
 			expect(steer).toContain(sample.forbiddenContinuation);
+			h.turn("turn.created", `answer-${sample.id}`, "assistant");
+			h.turn(
+				"turn.done",
+				`answer-${sample.id}`,
+				"assistant",
+				sample.providerReplyAfterInterrupt,
+			);
 			h.callbacks.onTranscript({
 				generation: 1,
 				association: "unattributed",
@@ -833,10 +861,26 @@ describe("engine B says when a Lead reply could not be read to the end (FLY-2885
 				role: "assistant",
 				text: sample.cleanAnswer,
 			});
+			for (let i = 0; i < 8 && h.appendSpeech.mock.calls.length < 2; i += 1)
+				await h.step("s".repeat(50));
+			expect(h.appendSpeech).toHaveBeenLastCalledWith(
+				READBACK_REMAINDER_NOTICE,
+				1,
+			);
+			h.turn("turn.created", `notice-${sample.id}`, "assistant");
+			await h.step("vvvvv");
+			h.turn(
+				"turn.done",
+				`notice-${sample.id}`,
+				"assistant",
+				READBACK_REMAINDER_NOTICE,
+			);
+			h.final(READBACK_REMAINDER_NOTICE);
 			await expect(receipt).resolves.toMatchObject({
 				outcome: "failed",
 				reason: "speech_interrupted",
 			});
+			expect(h.conversation.reconnect).not.toHaveBeenCalled();
 		},
 	);
 
