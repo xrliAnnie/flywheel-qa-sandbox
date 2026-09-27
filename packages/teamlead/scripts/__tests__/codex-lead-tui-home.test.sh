@@ -12,6 +12,7 @@ fail() { echo "  ✗ $1"; FAIL=$((FAIL+1)); }
 # global binary override, but the default-path cases below must exercise the
 # companion home and its isolated standalone binary.
 unset FLYWHEEL_CODEX_LEAD_PROFILE FLYWHEEL_CODEX_BIN \
+	FLYWHEEL_CODEX_TUI_TEST_MODEL FLYWHEEL_CODEX_TUI_TEST_REASONING_EFFORT \
   FLYWHEEL_LEAD_ID FLYWHEEL_PROJECT_NAME \
   FLYWHEEL_LEAD_CHAT_CHANNEL_ID FLYWHEEL_LEAD_CORE_CHANNEL_ID \
   FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS FLYWHEEL_ROUNDTABLE_CHANNEL_ID \
@@ -128,6 +129,35 @@ python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sys.exit
 BEFORE=$(cat "$H/config.toml")
 FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/work/dir" /bin/bash "$SUT" ensure-home >/dev/null 2>&1
 [ "$BEFORE" = "$(cat "$H/config.toml")" ] && pass "idempotent re-run (config unchanged)" || fail "re-run mutated config"
+
+# FLY-2950: the 529-room-only pin must select Sol/high while leaving the
+# production companion output byte-identical when the two test env vars are
+# absent. Compare the generated files after removing only the two test pins.
+COMPANION_PRODUCTION_SNAPSHOT=$(cat "$H/config.toml")
+H_TEST=$(fresh_home 2950-companion)
+if FLYWHEEL_CODEX_TUI_TEST_MODEL="gpt-5.6-sol" \
+   FLYWHEEL_CODEX_TUI_TEST_REASONING_EFFORT="high" \
+   FLYWHEEL_CODEX_TUI_HOME="$H_TEST" FLYWHEEL_CODEX_TUI_CWD="/work/dir" \
+   /bin/bash "$SUT" ensure-home >/dev/null 2>&1 \
+   && python3 - "$H_TEST/config.toml" <<'PY'
+import sys, tomllib
+with open(sys.argv[1], "rb") as stream:
+    config = tomllib.load(stream)
+assert config.get("model") == "gpt-5.6-sol"
+assert config.get("model_reasoning_effort") == "high"
+PY
+then
+  pass "FLY-2950: test-room companion config pins gpt-5.6-sol/high"
+else
+  fail "FLY-2950: test-room companion config must pin gpt-5.6-sol/high"
+fi
+COMPANION_TEST_WITHOUT_PINS=$(sed \
+  -e '/^model = "gpt-5\.6-sol"$/d' \
+  -e '/^model_reasoning_effort = "high"$/d' \
+  "$H_TEST/config.toml")
+[ "$COMPANION_PRODUCTION_SNAPSHOT" = "$COMPANION_TEST_WITHOUT_PINS" ] \
+  && pass "FLY-2950: production companion config snapshot is unchanged" \
+  || fail "FLY-2950: test-room pin changed production companion config bytes"
 
 # ── FLY-2357: validate both tables before appending either one ─────────────
 H=$(fresh_home 2357-readonly-atomic)
@@ -442,6 +472,9 @@ python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sys.exit
 python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sys.exit(0 if c.get('features',{}).get('memories') is True and c.get('memories',{}).get('dedicated_tools') is True else 1)" "$H/config.toml" \
   && pass "FLY-2357: full-access home pins memory master switch and dedicated tools in separate tables" \
   || fail "FLY-2357: full-access home memory pins missing or misplaced"
+python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sys.exit(0 if c.get('model') is None and c.get('model_reasoning_effort') is None else 1)" "$H/config.toml" \
+  && pass "FLY-2950: production full-access config keeps model selection unset" \
+  || fail "FLY-2950: production full-access config unexpectedly pins a model"
 FA_WHOLE_BEFORE=$(cat "$H/config.toml")
 if FLYWHEEL_CODEX_LEAD_PROFILE=full-access FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/work/dir" \
   FLYWHEEL_LEAD_ACTIONS_MAIN_JS="/dist/lead-actions/lead-actions-main.js" \
@@ -455,6 +488,50 @@ if FLYWHEEL_CODEX_LEAD_PROFILE=full-access FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL
   pass "FLY-2357: fresh full-access config is byte-identical after a second ensure"
 else
   fail "FLY-2357: fresh full-access config must be byte-identical after a second ensure"
+fi
+
+# FLY-2950: the same test-room-only pin applies to full-access Codex Leads.
+# Its removal must reproduce the production full-access snapshot byte-for-byte.
+FULL_ACCESS_PRODUCTION_SNAPSHOT=$(cat "$H/config.toml")
+H_TEST=$(fresh_home 2950-full-access)
+if FLYWHEEL_CODEX_TUI_TEST_MODEL="gpt-5.6-sol" \
+   FLYWHEEL_CODEX_TUI_TEST_REASONING_EFFORT="high" \
+   FLYWHEEL_CODEX_LEAD_PROFILE=full-access \
+   FLYWHEEL_CODEX_TUI_HOME="$H_TEST" FLYWHEEL_CODEX_TUI_CWD="/work/dir" \
+   FLYWHEEL_LEAD_ACTIONS_MAIN_JS="/dist/lead-actions/lead-actions-main.js" \
+   FLYWHEEL_LEAD_ACTIONS_NODE_BIN="/usr/local/bin/node" \
+   FLYWHEEL_LEAD_ID="mufasa-lead" FLYWHEEL_PROJECT_NAME="growth" \
+   FLYWHEEL_LEAD_CHAT_CHANNEL_ID="123" FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="456" \
+   FLYWHEEL_CODEX_LEAD_OUTBOUND="bridge" \
+   FLYWHEEL_LEAD_ACTIONS_STATE_DIR="/state/mufasa" FLYWHEEL_COMM_DB="/state/comm.db" \
+   /bin/bash "$SUT" ensure-home >/dev/null 2>&1 \
+   && python3 - "$H_TEST/config.toml" <<'PY'
+import sys, tomllib
+with open(sys.argv[1], "rb") as stream:
+    config = tomllib.load(stream)
+assert config.get("model") == "gpt-5.6-sol"
+assert config.get("model_reasoning_effort") == "high"
+PY
+then
+  pass "FLY-2950: test-room full-access config pins gpt-5.6-sol/high"
+else
+  fail "FLY-2950: test-room full-access config must pin gpt-5.6-sol/high"
+fi
+FULL_ACCESS_TEST_WITHOUT_PINS=$(sed \
+  -e '/^model = "gpt-5\.6-sol"$/d' \
+  -e '/^model_reasoning_effort = "high"$/d' \
+  "$H_TEST/config.toml")
+[ "$FULL_ACCESS_PRODUCTION_SNAPSHOT" = "$FULL_ACCESS_TEST_WITHOUT_PINS" ] \
+  && pass "FLY-2950: production full-access config snapshot is unchanged" \
+  || fail "FLY-2950: test-room pin changed production full-access config bytes"
+
+H_TEST=$(fresh_home 2950-invalid)
+if FLYWHEEL_CODEX_TUI_TEST_MODEL="gpt-5.6-sol" \
+   FLYWHEEL_CODEX_TUI_HOME="$H_TEST" FLYWHEEL_CODEX_TUI_CWD="/work/dir" \
+   /bin/bash "$SUT" ensure-home >/dev/null 2>&1; then
+  fail "FLY-2950: partial test-room model pin must fail closed"
+else
+  pass "FLY-2950: partial test-room model pin fails closed"
 fi
 
 H_DIRECT=$(fresh_home 2445-direct)

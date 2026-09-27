@@ -1049,6 +1049,19 @@ describe("FLY-2131 Codex Lead model coordinates", () => {
 	});
 });
 
+describe("FLY-2950 529-room Codex Lead model coordinates", () => {
+	it("accounts for the model and reasoning effort as test-room config values", () => {
+		for (const envVar of [
+			"FLYWHEEL_CODEX_TUI_TEST_MODEL",
+			"FLYWHEEL_CODEX_TUI_TEST_REASONING_EFFORT",
+		]) {
+			expect(NON_FLAG_ALLOWLIST[envVar], envVar).toMatch(
+				/test-room.*config value/i,
+			);
+		}
+	});
+});
+
 describe("FLY-2808 standby resume env contract", () => {
 	it("classifies Claude identity paths as plumbing, not feature flags", () => {
 		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_CLAUDE_SESSION_DIR).toMatch(/FLY-2808/);

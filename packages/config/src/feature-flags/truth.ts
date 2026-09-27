@@ -239,6 +239,10 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"FLY-2519 context: canonical Lead registry capability bundle version projected into one launcher invocation, not an independent feature toggle",
 	FLYWHEEL_CODEX_LEAD_DEV_SOURCE:
 		"FLY-2519 per-invocation development entry selection: explicit source execution instead of deployed dist; production launch requires deployed artifact verification",
+	FLYWHEEL_CODEX_TUI_TEST_MODEL:
+		"FLY-2950 test-room-only per-invocation config value: pins the 529 Codex carrier Lead model, not a persistent on/off gate",
+	FLYWHEEL_CODEX_TUI_TEST_REASONING_EFFORT:
+		"FLY-2950 test-room-only per-invocation config value: pins the 529 Codex carrier Lead reasoning effort, not a persistent on/off gate",
 	FLYWHEEL_LEAD_CAPABILITY_MANIFEST:
 		"FLY-2519 plumbing: nonsecret capability manifest file coordinate for the current Lead runtime, not an on/off gate",
 	FLYWHEEL_LEAD_CAPABILITY_ACTIVATION:
