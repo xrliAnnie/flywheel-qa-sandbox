@@ -24,6 +24,45 @@ import {
 } from "../codex-quota/pool-exhausted-alert.js";
 import type { CodexSwitchNotificationSnapshot } from "../codex-quota/switch-notification.js";
 
+/** Observed durable authority, including nullable historical attribution. */
+export interface CodexQuotaTargetFence {
+	incidentId: string;
+	targetKind: string;
+	targetId: string;
+	runId: string | null;
+	nodeId: string | null;
+	attempt: number | null;
+	oldExecutionId: string;
+	state: string;
+	incidentGeneration: number;
+	installedGeneration: number | null;
+}
+export interface CodexQuotaTargetPatch {
+	state?:
+		| "waiting"
+		| "terminating"
+		| "terminated"
+		| "starting"
+		| "queued"
+		| "recovered"
+		| "abandoned";
+	terminate_key?: string;
+	start_key?: string;
+	start_request_json?: string;
+	new_run_id?: string;
+	new_execution_id?: string;
+	last_error?: string;
+}
+export interface CodexQuotaTerminateExpectation {
+	target: CodexQuotaTargetFence;
+	nodeId: string;
+	attempt: number;
+	launchOrdinal: number;
+	/** Effective permit can belong to a later incident on the same root. */
+	permitIncidentId: string;
+	installedGeneration: number;
+}
+
 export type CodexQuotaRoot = {
 	rootKey: string;
 	accountKey: string;
@@ -794,26 +833,69 @@ export class CodexQuotaStore {
 				.run(state, failureCode ?? null, nextAttemptAt ?? null, incidentId);
 		})();
 	}
+	getTargetFence(
+		incidentId: string,
+		targetKind: string,
+		targetId: string,
+	): CodexQuotaTargetFence | undefined {
+		return this.db
+			.prepare(`SELECT t.incident_id AS incidentId,t.target_kind AS targetKind,t.target_id AS targetId,
+			t.run_id AS runId,t.node_id AS nodeId,t.attempt,t.old_execution_id AS oldExecutionId,t.state,
+			i.generation AS incidentGeneration,i.installed_generation AS installedGeneration
+			FROM codex_quota_target t JOIN codex_quota_incident i USING(incident_id)
+			WHERE t.incident_id=? AND t.target_kind=? AND t.target_id=?`)
+			.get(incidentId, targetKind, targetId) as
+			| CodexQuotaTargetFence
+			| undefined;
+	}
+
+	/** False means authority was lost; callers must stop before external effects. */
+	compareAndSwapTarget(
+		expected: CodexQuotaTargetFence,
+		patch: CodexQuotaTargetPatch,
+	): boolean {
+		const allowed = [
+			"state",
+			"terminate_key",
+			"start_key",
+			"start_request_json",
+			"new_run_id",
+			"new_execution_id",
+			"last_error",
+		];
+		const entries = Object.entries(patch);
+		if (entries.some(([key]) => !allowed.includes(key)))
+			throw new Error("invalid_quota_target_patch");
+		if (!entries.length || ["recovered", "abandoned"].includes(expected.state))
+			return false;
+		return (
+			this.db
+				.prepare(`UPDATE codex_quota_target SET ${entries.map(([key]) => `${key}=?`).join(",")}
+			WHERE incident_id=? AND target_kind=? AND target_id=?
+			AND run_id IS ? AND node_id IS ? AND attempt IS ? AND old_execution_id=? AND state=?
+			AND EXISTS(SELECT 1 FROM codex_quota_incident i WHERE i.incident_id=codex_quota_target.incident_id
+			 AND i.generation=? AND i.installed_generation IS ?)`)
+				.run(
+					...entries.map(([, value]) => value),
+					expected.incidentId,
+					expected.targetKind,
+					expected.targetId,
+					expected.runId,
+					expected.nodeId,
+					expected.attempt,
+					expected.oldExecutionId,
+					expected.state,
+					expected.incidentGeneration,
+					expected.installedGeneration,
+				).changes === 1
+		);
+	}
+
 	updateTarget(
 		incidentId: string,
 		targetKind: string,
 		targetId: string,
-		patch: {
-			state?:
-				| "waiting"
-				| "terminating"
-				| "terminated"
-				| "starting"
-				| "queued"
-				| "recovered"
-				| "abandoned";
-			terminate_key?: string;
-			start_key?: string;
-			start_request_json?: string;
-			new_run_id?: string;
-			new_execution_id?: string;
-			last_error?: string;
-		},
+		patch: CodexQuotaTargetPatch,
 	): void {
 		const allowed = [
 			"state",

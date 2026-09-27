@@ -45,9 +45,11 @@ import { resolveCommBackend } from "./plugin.js";
 import {
 	type ContinuityComputer,
 	FreshStartAuditError,
+	type InitialWorkflowStartObserver,
 	type ResumeComputer,
 	resolveWorkflowStartPolicy,
 	type WorkflowStartPolicy,
+	type WorkflowStartPolicyRequest,
 } from "./workflow-start-policy.js";
 
 export type {
@@ -1319,6 +1321,12 @@ export class RetryDispatcher implements IRetryDispatcher {
  * hardcoded N — uncapped runner count.
  */
 export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
+	async observeInitialWorkflowStart(request: WorkflowStartPolicyRequest) {
+		if (!this.initialStartObserver)
+			throw new Error("recovery_initial_start_observer_unavailable");
+		return this.initialStartObserver(request);
+	}
+
 	constructor(
 		blueprintsByProject: Map<string, ProjectRuntime>,
 		cleanupHandles: Array<() => Promise<void>>,
@@ -1357,6 +1365,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		skillFrameworkModeControl?: () => FlagStoreRawValue,
 		prelaunchWorkflowTurnGrant: GrantPrelaunchWorkflowTurn = grantPrelaunchWorkflowTurn,
 		workflowUsageRecorder?: BlueprintContext["onWorkflowUsageEvent"],
+		private initialStartObserver?: InitialWorkflowStartObserver,
 	) {
 		super(
 			blueprintsByProject,
@@ -1522,24 +1531,26 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		// A caller-pinned startPoint already carries explicit head authority.
 		let startPolicy: WorkflowStartPolicy;
 		try {
-			startPolicy = await resolveWorkflowStartPolicy(
-				{
-					issueId: req.issueId,
-					role,
-					projectName: req.projectName,
-					startPoint: req.startPoint,
-					freshStart: Boolean(req.freshStart),
-					shareParentBranch: req.shareParentBranch,
-				},
-				{
-					observeResume: this.resumeComputer
-						? (...args) => this.resumeComputer!(...args)
-						: undefined,
-					observeContinuity: this.continuityComputer
-						? (input) => this.continuityComputer!(input)
-						: undefined,
-				},
-			);
+			startPolicy =
+				req.recoveryStartPolicy ??
+				(await resolveWorkflowStartPolicy(
+					{
+						issueId: req.issueId,
+						role,
+						projectName: req.projectName,
+						startPoint: req.startPoint,
+						freshStart: Boolean(req.freshStart),
+						shareParentBranch: req.shareParentBranch,
+					},
+					{
+						observeResume: this.resumeComputer
+							? (...args) => this.resumeComputer!(...args)
+							: undefined,
+						observeContinuity: this.continuityComputer
+							? (input) => this.continuityComputer!(input)
+							: undefined,
+					},
+				));
 		} catch (error) {
 			this.abortPreLaunch(key, executionId, req.projectName);
 			throw error;

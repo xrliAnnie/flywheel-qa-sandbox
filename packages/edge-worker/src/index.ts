@@ -156,6 +156,7 @@ export {
 	canonicalizeWorktreePath,
 	deriveWorktreeKey,
 	resolveWorktreeKey,
+	resolveWorktreeStartPoint,
 	WorktreeManager,
 } from "./WorktreeManager.js";
 export type {

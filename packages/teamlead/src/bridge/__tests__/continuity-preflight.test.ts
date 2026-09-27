@@ -8,6 +8,7 @@ import {
 	type ContinuityGit,
 	lookupOpenPullRequests,
 	materializeRemoteBranch,
+	observeRemoteBranch,
 } from "../continuity-preflight.js";
 
 function git(cwd: string, ...args: string[]): string {
@@ -301,5 +302,60 @@ describe("FLY-1718 branch continuity materializer", () => {
 				},
 			),
 		).resolves.toEqual([]);
+	});
+});
+
+describe("FLY-2922 read-only continuity observation", () => {
+	it("accepts only an already materialized remote commit without fetching", async () => {
+		const sha = "a".repeat(40);
+		const runGit = vi.fn<ContinuityGit>(async (args) => {
+			if (args[0] === "ls-remote")
+				return { stdout: `${sha}\trefs/heads/topic\n` };
+			if (args[0] === "rev-parse") return { stdout: sha };
+			if (args[0] === "cat-file") return { stdout: "" };
+			throw new Error(`unexpected mutation: ${args[0]}`);
+		});
+		expect(
+			await observeRemoteBranch(
+				{ repoPath: "/repo", branch: "topic" },
+				{ runGit },
+			),
+		).toEqual({ kind: "exists", sha });
+		expect(runGit.mock.calls.map(([args]) => args[0])).toEqual([
+			"ls-remote",
+			"rev-parse",
+			"cat-file",
+		]);
+	});
+	it("refuses stale tracking evidence without fetching or treating it as missing", async () => {
+		const runGit = vi.fn<ContinuityGit>(async (args) => ({
+			stdout:
+				args[0] === "ls-remote"
+					? `${"a".repeat(40)}\trefs/heads/topic`
+					: "b".repeat(40),
+		}));
+		expect(
+			await observeRemoteBranch(
+				{ repoPath: "/repo", branch: "topic" },
+				{ runGit },
+			),
+		).toMatchObject({ kind: "indeterminate" });
+		expect(runGit).toHaveBeenCalledTimes(2);
+	});
+	it("distinguishes confirmed missing from network failure", async () => {
+		for (const code of [2, 128]) {
+			const runGit = vi
+				.fn<ContinuityGit>()
+				.mockRejectedValue(
+					Object.assign(new Error("remote failure"), { code }),
+				);
+			expect(
+				await observeRemoteBranch(
+					{ repoPath: "/repo", branch: "topic" },
+					{ runGit },
+				),
+			).toMatchObject({ kind: code === 2 ? "missing" : "indeterminate" });
+			expect(runGit).toHaveBeenCalledOnce();
+		}
 	});
 });

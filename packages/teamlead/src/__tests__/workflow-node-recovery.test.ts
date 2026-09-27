@@ -14,6 +14,7 @@ import type {
 import { RunnerAdmissionController } from "../bridge/runner-admission.js";
 import { createRunsRouter } from "../bridge/runs-route.js";
 import { WorkflowEngineDispatcher } from "../bridge/workflow-engine-dispatcher.js";
+import { resolveWorkflowStartPolicy } from "../bridge/workflow-start-policy.js";
 import { StateStore } from "../StateStore.js";
 import { workflowRecoveryCanonicalSchema } from "../workflow-recovery-contract.js";
 import {
@@ -749,4 +750,265 @@ describe("FLY-2295/2914 started root recovery", () => {
 			oldExecutionId = applied.body.executionId;
 		}
 	}, 60_000);
+});
+
+describe("FLY-2901 root initial recovery", () => {
+	it.each(["continuity", "resume", "default"] as const)(
+		"freezes %s without an old worktree and carries its context into launch",
+		async (mode) => {
+			const projectRoot = mkdtempSync(join(tmpdir(), "fly2901-root-initial-"));
+			const stateRoot = mkdtempSync(join(tmpdir(), "fly2901-root-markers-"));
+			const store = await StateStore.create(":memory:");
+			const server = createServer();
+			cleanups.push(async () => {
+				if (server.listening) {
+					server.closeAllConnections();
+					await new Promise<void>((resolve, reject) =>
+						server.close((error) => (error ? reject(error) : resolve())),
+					);
+				}
+				store.close();
+				rmSync(projectRoot, { recursive: true, force: true });
+				rmSync(stateRoot, { recursive: true, force: true });
+			});
+			const head = await materializePredecessor(store, projectRoot, true);
+			const git = (...args: string[]) =>
+				execFileSync("git", ["-C", projectRoot, ...args], {
+					encoding: "utf8",
+					stdio: ["ignore", "pipe", "pipe"],
+				}).trim();
+			git("update-ref", "refs/remotes/origin/main", head);
+			const priorDefault = process.env.FLYWHEEL_RUNNER_START_POINT;
+			delete process.env.FLYWHEEL_RUNNER_START_POINT;
+			cleanups.push(async () => {
+				if (priorDefault === undefined)
+					delete process.env.FLYWHEEL_RUNNER_START_POINT;
+				else process.env.FLYWHEEL_RUNNER_START_POINT = priorDefault;
+			});
+			const expectedPolicy =
+				mode === "continuity"
+					? { continuityInherit: { prNumber: 19, sha: head } }
+					: mode === "resume"
+						? {
+								resume: {
+									progressPath: "engineering/doc/FLY-2329/progress.md",
+									priorExecutionId: "earlier-run",
+									startPoint: head,
+									effectiveStage: "implement",
+									shareParentBranch: true,
+								},
+							}
+						: { resume: null };
+			const fake = fakeStartDispatcher(store, head, projectRoot);
+			fake.dispatcher.observeInitialWorkflowStart = async (request) => ({
+				repositoryPath: projectRoot,
+				branch: "recovery-fixture",
+				policy: await resolveWorkflowStartPolicy(request, {
+					observeResume: async () =>
+						mode === "resume"
+							? {
+									progressPath: "engineering/doc/FLY-2329/progress.md",
+									priorExecutionId: "earlier-run",
+									startPoint: git("rev-parse", "HEAD"),
+									resumeKind: "restart",
+									effectiveStage: "implement",
+									shareParentBranch: true,
+								}
+							: null,
+					observeContinuity: async () =>
+						mode === "default"
+							? { kind: "missing", branch: "recovery-fixture" }
+							: {
+									kind: "found",
+									branch: "recovery-fixture",
+									sha: execFileSync(
+										"git",
+										["-C", projectRoot, "rev-parse", "HEAD"],
+										{
+											encoding: "utf8",
+										},
+									).trim(),
+									prNumber: 19,
+									prUrl: "https://example.invalid/pr/19",
+								},
+				}),
+			});
+			const engine = (now: string) =>
+				new WorkflowEngineDispatcher({
+					store,
+					startDispatcher: fake.dispatcher,
+					stateRoot,
+					env: ENV,
+					now: () => new Date(now),
+					probeUnlaunchedExternalEvidence: async () => "absent",
+					resolveRunAlertIdentity: () => ({
+						leadId: "flywheel-eng-lead",
+						projectName: "flywheel",
+						leadResolution: "resolved",
+					}),
+				});
+			expect(await engine("2026-07-16T00:07:00.000Z").reconcile()).toEqual({
+				started: 0,
+				held: 1,
+			});
+			expect(await engine("2026-07-16T01:08:00.000Z").reconcile()).toEqual({
+				started: 0,
+				held: 0,
+			});
+			expect(store.getSession(PREDECESSOR)).toBeUndefined();
+			const hold = store.listWorkflowHolds(RUN_ID).find((row) => row.runLevel)!;
+			const app = express();
+			app.use(express.json());
+			app.use(
+				"/api/runs",
+				createRunsRouter(
+					fake.dispatcher,
+					store,
+					[
+						{
+							projectName: "flywheel",
+							projectRoot,
+							leads: [{ agentId: "flywheel-eng-lead" }],
+						},
+					] as Parameters<typeof createRunsRouter>[2],
+					RunnerAdmissionController.alwaysAdmit(),
+					undefined,
+					false,
+					undefined,
+					{
+						masterToken: "test-master",
+						confirmTokens: new ConfirmTokenStore(),
+						probeRunLiveness: async () => "dead",
+					},
+				),
+			);
+			server.on("request", app);
+			await new Promise<void>((resolve) =>
+				server.listen(0, "127.0.0.1", resolve),
+			);
+			const post = async (path: string, body: unknown) => {
+				const response = await fetch(
+					`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/runs/${RUN_ID}${path}`,
+					{
+						method: "POST",
+						headers: {
+							"content-type": "application/json",
+							authorization: "Bearer test-master",
+						},
+						body: JSON.stringify(body),
+					},
+				);
+				return { status: response.status, body: await response.json() };
+			};
+			const request = {
+				runId: RUN_ID,
+				principal: "master",
+				shape: hold.shape,
+				holdEventUid: hold.holdEventUid,
+				decision: null,
+				reason: "retry root with preserved initial policy",
+				clientRequestId: "root-initial-recovery",
+			};
+			const staged = await post("/resume/stage", request);
+			expect(staged).toMatchObject({
+				status: 200,
+				body: {
+					canonical: {
+						target: {
+							startAuthority: {
+								mode: "root_initial",
+								headSha: head,
+								provenance: "legacy_initial_policy_resolution",
+								initialPolicy: expectedPolicy,
+							},
+						},
+					},
+				},
+			});
+			const beforeConflict = store.listWorkflowSideEffects(RUN_ID);
+			git(
+				"-c",
+				"user.name=Recovery Fixture",
+				"-c",
+				"user.email=recovery@example.invalid",
+				"-c",
+				"commit.gpgsign=false",
+				"commit",
+				"--allow-empty",
+				"-m",
+				"changed before confirmation",
+			);
+			git("update-ref", "refs/remotes/origin/main", git("rev-parse", "HEAD"));
+			expect(
+				await post("/resume", {
+					canonical: staged.body.canonical,
+					confirmToken: staged.body.confirmToken,
+				}),
+			).toMatchObject({ status: 409 });
+			expect(store.listWorkflowSideEffects(RUN_ID)).toEqual(beforeConflict);
+			git("reset", "--hard", head);
+			git("update-ref", "refs/remotes/origin/main", head);
+			const applied = await post("/resume", {
+				canonical: staged.body.canonical,
+				confirmToken: staged.body.confirmToken,
+			});
+			expect(applied).toMatchObject({
+				status: 200,
+				body: { state: "dispatch_recorded", launchOrdinal: 2 },
+			});
+			fake.allowLaunch();
+			expect(
+				await engine(new Date(Date.now() + 60_000).toISOString()).reconcile(),
+			).toEqual({ started: 1, held: 0 });
+			expect(fake.requests.at(-1)).toMatchObject({
+				startPoint: head,
+				recoveryStartPolicy: expectedPolicy,
+				generalizedExecution: { executionId: applied.body.executionId },
+			});
+			expect(
+				store
+					.listWorkflowSideEffects(RUN_ID)
+					.find((row) => row.id === applied.body.dispatchLedgerId)?.state,
+			).toBe("started");
+		},
+		60_000,
+	);
+});
+
+
+describe("FLY-2525 held quota recovery service", () => {
+ it("delegates an exact waiting quota target through the same mint transaction and refuses an async authority loss", async () => {
+  const projectRoot=mkdtempSync(join(tmpdir(),"fly2525-held-project-"));
+  const stateRoot=mkdtempSync(join(tmpdir(),"fly2525-held-markers-"));
+  const store=await StateStore.create(":memory:");
+  cleanups.push(async()=>{store.close();rmSync(projectRoot,{recursive:true,force:true});rmSync(stateRoot,{recursive:true,force:true});});
+  const head=await materializePredecessor(store,projectRoot);
+  const fake=fakeStartDispatcher(store,head);
+  const engine=(now:string)=>new WorkflowEngineDispatcher({store,startDispatcher:fake.dispatcher,stateRoot,env:ENV,now:()=>new Date(now),probeUnlaunchedExternalEvidence:async()=>"absent",resolveRunAlertIdentity:()=>({leadId:"flywheel-eng-lead",projectName:"flywheel",leadResolution:"resolved"})});
+  expect(await engine("2026-07-16T00:07:00.000Z").reconcile()).toEqual({started:0,held:1});
+  expect(await engine("2026-07-16T01:08:00.000Z").reconcile()).toEqual({started:0,held:0});
+  const quota=store.codexQuota;
+  quota.initializeRoot({rootKey:"root",accountKey:"account",profile:"business",generation:1});
+  quota.registerBinding({bindingId:"binding",executionId:ORIGINAL_EXECUTION,runId:RUN_ID,purpose:"runner",accountKey:"account",profile:"business",generation:1,credentialRootKey:"root"});
+  quota.recordSignal({executionId:ORIGINAL_EXECUTION,bindingId:"binding",nodeId:"implement",attempt:1});
+  quota.recordInstalling({incidentId:"codex:root:1",profile:"school",accountKey:"school-account",priorAuthDigest:"prior",installedAuthDigest:"digest",recoveryMaterialPath:"/fixture/auth"});
+  quota.commitGeneration({incidentId:"codex:root:1",expectedGeneration:1,accountKey:"school-account",profile:"school",authDigest:"digest",probeResult:"ok"});
+  const expectation={target:quota.getTargetFence("codex:root:1","runner",RUN_ID)!,nodeId:"implement",attempt:1,launchOrdinal:1,permitIncidentId:"codex:root:1",installedGeneration:2};
+  const before=store.listWorkflowSideEffects(RUN_ID);
+  const {recoverQuotaHeldWorkflowNode}=await import("../bridge/workflow-quota-recovery.js");
+  let enabled=true;
+  await expect(recoverQuotaHeldWorkflowNode(store,expectation,{isEnabled:()=>enabled,probe:async()=>{enabled=false;return "dead";}})).rejects.toThrow("quota_recovery_disabled");
+  expect(store.listWorkflowSideEffects(RUN_ID)).toEqual(before);
+  expect(quota.getTargetFence("codex:root:1","runner",RUN_ID)?.state).toBe("waiting");
+  enabled=true;
+  const result=await recoverQuotaHeldWorkflowNode(store,expectation,{isEnabled:()=>enabled,probe:async()=>"dead"});
+  expect(result).toMatchObject({ok:true,state:"dispatch_recorded",launchOrdinal:2});
+  if(!result.ok || result.state!=="dispatch_recorded") throw new Error("dispatch missing");
+  expect(quota.listTargets("codex:root:1")[0]).toMatchObject({state:"abandoned",new_run_id:RUN_ID,new_execution_id:result.executionId,last_error:`delegated_to_node_recovery:${result.operationId}`});
+  expect(store.getWorkflowRun(RUN_ID)?.status).toBe("active");
+  expect(store.listWorkflowRunEvents(RUN_ID).some(event=>event.kind==="run_terminated_by_operator")).toBe(false);
+  fake.allowLaunch();
+  expect(await engine(new Date(Date.now()+60_000).toISOString()).reconcile()).toEqual({started:1,held:0});
+  expect(store.listWorkflowSideEffects(RUN_ID).find(row=>row.id===result.dispatchLedgerId)?.state).toBe("started");
+ },60_000);
 });

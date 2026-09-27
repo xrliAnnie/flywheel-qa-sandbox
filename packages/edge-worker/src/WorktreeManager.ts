@@ -19,6 +19,11 @@ import {
 
 export { canonicalizeWorktreePath } from "./worktree-paths.js";
 
+/** Shared initial worktree default; recovery freezes the resolved commit. */
+export function resolveWorktreeStartPoint(startPoint?: string): string {
+	return startPoint ?? process.env.FLYWHEEL_RUNNER_START_POINT ?? "origin/main";
+}
+
 const logger = createLogger({ component: "WorktreeManager" });
 const RESUME_GIT_SAFE_CONFIG = [
 	"-c",
@@ -1219,10 +1224,7 @@ export class WorktreeManager {
 			// by the caller, fall back to the FLYWHEEL_RUNNER_START_POINT env var so
 			// test-deploy.sh can pin Runner worktrees to a PR branch on the sandbox
 			// fork. Unset in prod → falls through to origin/main (unchanged).
-			const startPoint =
-				opts.startPoint ??
-				process.env.FLYWHEEL_RUNNER_START_POINT ??
-				"origin/main";
+			const startPoint = resolveWorktreeStartPoint(opts.startPoint);
 
 			// git worktree add
 			// FLY-99: -B (reset-or-create) replaces -b (create-only) so a stale

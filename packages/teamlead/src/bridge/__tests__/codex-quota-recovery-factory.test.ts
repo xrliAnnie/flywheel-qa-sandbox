@@ -7,6 +7,10 @@ import { codexInstallAccountKey } from "flywheel-claude-runner/bin/codex-account
 import { afterEach, expect, it, vi } from "vitest";
 import { createCodexQuotaRunRecovery } from "../../codex-quota/run-recovery.js";
 import type { StateStore } from "../../StateStore.js";
+import type {
+	CodexQuotaTargetFence,
+	CodexQuotaTargetPatch,
+} from "../codex-quota-store.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -67,6 +71,8 @@ async function fixture() {
 		run_id: "old-run",
 		old_execution_id: "old",
 		state: "waiting",
+		node_id: "implement",
+		attempt: 2,
 	};
 	const waits: Record<string, unknown>[] = [];
 	const quota = {
@@ -84,6 +90,31 @@ async function fixture() {
 		}),
 		listTargets: () => [target],
 		updateTarget: vi.fn((_i, _k, _t, patch) => Object.assign(target, patch)),
+		getTargetFence: vi.fn(
+			(): CodexQuotaTargetFence => ({
+				incidentId: "incident",
+				targetKind: "runner",
+				targetId: "old-run",
+				runId: String(target.run_id),
+				nodeId: String(target.node_id),
+				attempt: Number(target.attempt),
+				oldExecutionId: String(target.old_execution_id),
+				state: String(target.state),
+				incidentGeneration: incident.generation,
+				installedGeneration: incident.installed_generation,
+			}),
+		),
+		compareAndSwapTarget: vi.fn(
+			(expected: CodexQuotaTargetFence, patch: CodexQuotaTargetPatch) => {
+				if (
+					["recovered", "abandoned"].includes(expected.state) ||
+					JSON.stringify(expected) !== JSON.stringify(quota.getTargetFence())
+				)
+					return false;
+				Object.assign(target, patch);
+				return true;
+			},
+		),
 		enqueueOutbox: vi.fn(),
 		getRunnerBindings: () => [
 			{
@@ -119,6 +150,20 @@ async function fixture() {
 			},
 			operatorStopped: false,
 		}),
+		getWorkflowRunNode: () => ({
+			node_id: "implement",
+			attempt: 2,
+			execution_id: "old",
+		}),
+		listWorkflowSideEffects: () => [
+			{
+				kind: "dispatch",
+				node_id: "implement",
+				attempt: 2,
+				execution_id: "old",
+				launch_ordinal: 3,
+			},
+		],
 		getActiveWorkflowRunForIssue: () => undefined,
 		getSession: () => ({ status: "running" }),
 		getWorkflowRun: () => ({
@@ -137,6 +182,7 @@ async function fixture() {
 		id === "old" ? ("dead" as const) : ("alive" as const),
 	);
 	const readiness = vi.fn(async () => true);
+	const recoverHeldWorkflowNode = vi.fn(async () => {});
 	const factory = createCodexQuotaRunRecovery({
 		store,
 		canonicalHome: home,
@@ -145,9 +191,11 @@ async function fixture() {
 		apiToken: "fixture-secret",
 		verifyLiveness: liveness,
 		readiness,
+		recoverHeldWorkflowNode,
 	});
 	return {
 		factory,
+		recoverHeldWorkflowNode,
 		incident,
 		target,
 		quota,
@@ -496,4 +544,124 @@ it("reconstructs the saved legacy role and dispatch model without replacing its 
 		idempotencyKey: "wait-key",
 	});
 	expect(f.waits[0]?.state).toBe("released");
+});
+
+it.each(["active", "held"])(
+	"engine-owned waiting %s target never takes legacy terminate/start",
+	async (status) => {
+		const f = await fixture();
+		const context = f.store.getCodexQuotaRecoveryContext("id");
+		vi.spyOn(f.store, "getCodexQuotaRecoveryContext").mockReturnValue({
+			...context,
+			run: { ...context.run, engine_owned: 1, status },
+		} as never);
+		const fetcher = vi.fn();
+		vi.stubGlobal("fetch", fetcher);
+		await f.factory.recover(f.incident);
+		expect(fetcher).not.toHaveBeenCalled();
+		expect(f.quota.updateTarget).not.toHaveBeenCalled();
+		expect(f.recoverHeldWorkflowNode).toHaveBeenCalledTimes(
+			status === "held" ? 1 : 0,
+		);
+		if (status === "held")
+			expect(f.recoverHeldWorkflowNode).toHaveBeenCalledWith({
+				target: f.quota.getTargetFence(),
+				nodeId: "implement",
+				attempt: 2,
+				launchOrdinal: 3,
+				permitIncidentId: "incident",
+				installedGeneration: 2,
+			});
+	},
+);
+it("refreshes a delegated target before requesting its now-stale recovery context", async () => {
+	const f = await fixture();
+	const stale = { ...f.target };
+	f.target.state = "abandoned";
+	f.target.last_error = "delegated_to_node_recovery:op";
+	vi.spyOn(f.quota, "listTargets").mockReturnValue([stale]);
+	const context = vi
+		.spyOn(f.store, "getCodexQuotaRecoveryContext")
+		.mockImplementation(() => {
+			throw new Error("quota_recovery_source_advanced");
+		});
+	await f.factory.recover(f.incident);
+	expect(context).not.toHaveBeenCalled();
+	expect(f.target.last_error).toBe("delegated_to_node_recovery:op");
+});
+it("losing authority during liveness suppresses both legacy POST and diagnostics overwrite", async () => {
+	const f = await fixture();
+	const fetcher = vi.fn();
+	vi.stubGlobal("fetch", fetcher);
+	f.liveness.mockImplementation(async () => {
+		f.target.state = "abandoned";
+		f.target.last_error = "delegated_to_node_recovery:op";
+		return "dead";
+	});
+	await f.factory.recover(f.incident);
+	expect(fetcher).not.toHaveBeenCalled();
+	expect(f.target.state).toBe("abandoned");
+	expect(f.target.last_error).toBe("delegated_to_node_recovery:op");
+	expect(f.quota.updateTarget).not.toHaveBeenCalled();
+});
+it("catch cannot overwrite delegation committed while context lookup throws", async () => {
+	const f = await fixture();
+	vi.spyOn(f.store, "getCodexQuotaRecoveryContext").mockImplementation(() => {
+		f.target.state = "abandoned";
+		f.target.last_error = "delegated_to_node_recovery:op";
+		throw new Error("source advanced");
+	});
+	await f.factory.recover(f.incident);
+	expect(f.target.last_error).toBe("delegated_to_node_recovery:op");
+	expect(f.quota.updateTarget).not.toHaveBeenCalled();
+});
+it("legacy terminate binds original target generations separately from the effective permit", async () => {
+	const f = await fixture();
+	const permit = {
+		...f.incident,
+		incident_id: "later-permit",
+		installed_generation: 2,
+	};
+	f.incident.installed_generation = 1;
+	vi.spyOn(f.store, "getCodexQuotaRecoveryPermit").mockReturnValue(permit);
+	const fetcher = vi.fn(
+		async (_input: unknown, _init?: RequestInit) =>
+			new Response(JSON.stringify({ success: false }), { status: 409 }),
+	);
+	vi.stubGlobal("fetch", fetcher);
+	await f.factory.recover(f.incident);
+	expect(
+		JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body)).quotaRecovery,
+	).toEqual({
+		target: { ...f.quota.getTargetFence(), state: "terminating" },
+		nodeId: "implement",
+		attempt: 2,
+		launchOrdinal: 3,
+		permitIncidentId: "later-permit",
+		installedGeneration: 2,
+	});
+});
+
+it("refreshes workflow authority after liveness before delegating a held target", async () => {
+	const f = await fixture();
+	const context = {
+		...f.store.getCodexQuotaRecoveryContext("id"),
+		run: {
+			run_id: "old-run",
+			issue_id: "FLY-1",
+			project_name: "fixture",
+			engine_owned: 1,
+			status: "held",
+		},
+	};
+	vi.spyOn(f.store, "getCodexQuotaRecoveryContext").mockImplementation(
+		() => context as never,
+	);
+	f.liveness.mockImplementation(async () => {
+		context.run.status = "active";
+		return "dead";
+	});
+	await f.factory.recover(f.incident);
+	expect(f.recoverHeldWorkflowNode).not.toHaveBeenCalled();
+	expect(f.target.state).toBe("waiting");
 });

@@ -7,6 +7,35 @@ const head = z.string().regex(/^[a-f0-9]{40}$/);
 const ordinal = z.number().int().safe().nonnegative();
 const positiveOrdinal = ordinal.min(1);
 
+const initialPolicy = z
+	.object({
+		resume: z
+			.object({
+				progressPath: identity,
+				priorExecutionId: identity,
+				resumeKind: z.enum(["restart", "terminate", "reboot", "handoff"]),
+				effectiveStage: z.enum(["design", "implement", "qa"]).optional(),
+				startPoint: head,
+				shareParentBranch: z.literal(true),
+			})
+			.strict()
+			.nullable(),
+		continuityInherit: z
+			.object({
+				branch: identity,
+				sha: head,
+				prNumber: positiveOrdinal.optional(),
+				prUrl: identity.optional(),
+			})
+			.strict()
+			.optional(),
+		continuityBranch: identity.optional(),
+		skippedOriginTip: head.optional(),
+		startPoint: identity.optional(),
+		shareParentBranch: z.boolean().optional(),
+	})
+	.strict();
+
 const startAuthority = z
 	.object({
 		mode: z.enum(["root_initial", "execution_head", "resume_anchor"]),
@@ -17,6 +46,7 @@ const startAuthority = z
 		headSha: head,
 		evidenceDigest: digest,
 		provenance: identity,
+		initialPolicy: initialPolicy.optional(),
 	})
 	.strict();
 

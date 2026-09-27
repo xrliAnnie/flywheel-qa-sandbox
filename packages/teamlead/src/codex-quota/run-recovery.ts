@@ -1,4 +1,9 @@
 import type { CodexAccountPool } from "flywheel-claude-runner/bin/codex-account-core.mjs";
+import type {
+	CodexQuotaTargetFence,
+	CodexQuotaTargetPatch,
+	CodexQuotaTerminateExpectation,
+} from "../bridge/codex-quota-store.js";
 import { codexQuotaAdmissionRequest } from "./admission-replay.js";
 import { codexQuotaIdentityReader } from "./probe.js";
 export type CodexRunRecoveryState =
@@ -19,6 +24,7 @@ export interface CodexRunRecoveryTarget {
 	startRequest: Record<string, unknown>;
 	newRunId?: string;
 	newExecutionId?: string;
+	quotaRecovery?: CodexQuotaTerminateExpectation;
 }
 export interface CodexRunRecoveryPorts {
 	readAuthority(target: CodexRunRecoveryTarget): Promise<{
@@ -34,7 +40,7 @@ export interface CodexRunRecoveryPorts {
 		path: string,
 		body: Record<string, unknown>,
 	): Promise<{ status: number; body: Record<string, unknown> }>;
-	persist(patch: Partial<CodexRunRecoveryTarget>): Promise<void>;
+	persist(patch: Partial<CodexRunRecoveryTarget>): Promise<boolean>;
 	verifyRunning(executionId: string, generation: number): Promise<boolean>;
 }
 
@@ -53,30 +59,42 @@ export async function advanceCodexQuotaRunRecovery(
 	)
 		return "waiting";
 	const persist = async (patch: Partial<CodexRunRecoveryTarget>) => {
-		await ports.persist(patch);
+		if (!(await ports.persist(patch))) return false;
 		Object.assign(target, patch);
+		return true;
 	};
 	if (
 		authority.operatorStopped ||
 		authority.healthySuccessor ||
 		!authority.quotaProvenance
 	) {
-		await persist({ state: "abandoned" });
+		if (!(await persist({ state: "abandoned" }))) return target.state;
 		return "abandoned";
 	}
 	if (authority.liveOldExecution) return "waiting";
 	if (target.state === "waiting" || target.state === "terminating") {
-		await persist({ state: "terminating" });
+		if (!(await persist({ state: "terminating" }))) return target.state;
 		const terminated = await ports.post(
 			`/api/runs/${encodeURIComponent(target.runId)}/terminate`,
 			{
 				reason: `codex quota recovery ${target.incidentId}`,
 				clientRequestId: `codex-quota:${target.incidentId}:${target.runId}:terminate`,
+				...(target.quotaRecovery
+					? {
+							quotaRecovery: {
+								...target.quotaRecovery,
+								target: {
+									...target.quotaRecovery.target,
+									state: "terminating",
+								},
+							},
+						}
+					: {}),
 			},
 		);
 		if (terminated.status !== 200 || terminated.body.success !== true)
 			return target.state;
-		await persist({ state: "terminated" });
+		if (!(await persist({ state: "terminated" }))) return target.state;
 	}
 	if (
 		target.state === "terminated" ||
@@ -96,16 +114,16 @@ export async function advanceCodexQuotaRunRecovery(
 			current.healthySuccessor ||
 			!current.quotaProvenance
 		) {
-			await persist({ state: "abandoned" });
+			if (!(await persist({ state: "abandoned" }))) return target.state;
 			return "abandoned";
 		}
-		await persist({ state: "starting" });
+		if (!(await persist({ state: "starting" }))) return target.state;
 		const started = await ports.post("/api/runs/start", {
 			...target.startRequest,
 			idempotencyKey: `codex-quota:${target.incidentId}:${target.runId}:start`,
 		});
 		if (started.status === 202) {
-			await persist({ state: "queued" });
+			if (!(await persist({ state: "queued" }))) return target.state;
 			return "queued";
 		}
 		// Generalized runs/start names its durable run workflowRunId. Older callers
@@ -121,10 +139,13 @@ export async function advanceCodexQuotaRunRecovery(
 			typeof started.body.executionId !== "string"
 		)
 			return target.state;
-		await persist({
-			newRunId,
-			newExecutionId: started.body.executionId,
-		});
+		if (
+			!(await persist({
+				newRunId,
+				newExecutionId: started.body.executionId,
+			}))
+		)
+			return target.state;
 		if (
 			await ports.verifyRunning(
 				started.body.executionId,
@@ -143,6 +164,10 @@ export interface CodexQuotaRunRecoveryOptions {
 	bridgeUrl: string;
 	apiToken: string;
 	readiness?(): Promise<boolean>;
+	/** Internal same-service delegation; never an HTTP authority upgrade. */
+	recoverHeldWorkflowNode?(
+		input: CodexQuotaTerminateExpectation,
+	): Promise<void>;
 	verifyLiveness?(
 		executionId: string,
 		projectName: string,
@@ -256,14 +281,51 @@ export function createCodexQuotaRunRecovery(
 		row: Record<string, unknown>,
 		pool: CodexAccountPool,
 	) => {
-		if (
-			row.target_kind !== "runner" ||
-			["recovered", "abandoned"].includes(String(row.state))
-		)
+		if (row.target_kind !== "runner") return;
+		let expected = quota.getTargetFence(
+			incidentId,
+			"runner",
+			String(row.target_id),
+		);
+		if (!expected || ["recovered", "abandoned"].includes(expected.state))
 			return;
+		const fenceCurrent = () => {
+			const current = quota.getTargetFence(
+				incidentId,
+				"runner",
+				String(row.target_id),
+			);
+			return (
+				!!current &&
+				!!expected &&
+				Object.entries(expected).every(
+					([key, value]) =>
+						current[key as keyof CodexQuotaTargetFence] === value,
+				)
+			);
+		};
+		const persistTarget = (patch: CodexQuotaTargetPatch): boolean => {
+			if (!expected || !quota.compareAndSwapTarget(expected, patch))
+				return false;
+			expected = {
+				...expected,
+				...(patch.state ? { state: patch.state } : {}),
+			};
+			return true;
+		};
 		const recoveryId = `${incidentId}:runner:${String(row.target_id)}`;
 		try {
+			row =
+				quota
+					.listTargets(incidentId)
+					.find(
+						(candidate) =>
+							candidate.target_kind === "runner" &&
+							candidate.target_id === expected!.targetId,
+					) ?? row;
+			if (!fenceCurrent()) return;
 			const context = store.getCodexQuotaRecoveryContext(recoveryId);
+			if (!fenceCurrent()) return;
 			const source = store.getSession(String(row.old_execution_id));
 			const startRequest: Record<string, unknown> =
 				typeof row.start_request_json === "string"
@@ -290,7 +352,7 @@ export function createCodexQuotaRunRecovery(
 				installedGeneration: Number(
 					store.getCodexQuotaRecoveryPermit(incidentId)?.installed_generation,
 				),
-				state: String(row.state) as CodexRunRecoveryState,
+				state: expected.state as CodexRunRecoveryState,
 				startRequest,
 				...(typeof row.new_run_id === "string"
 					? { newRunId: row.new_run_id }
@@ -299,40 +361,94 @@ export function createCodexQuotaRunRecovery(
 					? { newExecutionId: row.new_execution_id }
 					: {}),
 			};
-			quota.updateTarget(incidentId, "runner", String(row.target_id), {
-				start_request_json: JSON.stringify(target.startRequest),
-				terminate_key: `codex-quota:${incidentId}:${target.runId}:terminate`,
-				start_key: `codex-quota:${incidentId}:${target.runId}:start`,
-			});
-
-			await advanceCodexQuotaRunRecovery(target, {
+			const nodeId = expected.nodeId ?? context.node?.id;
+			const dispatch = store
+				.listWorkflowSideEffects(target.runId)
+				.filter(
+					(effect) =>
+						effect.kind === "dispatch" &&
+						effect.node_id === nodeId &&
+						effect.execution_id === target.oldExecutionId &&
+						(expected!.attempt === null ||
+							effect.attempt === expected!.attempt),
+				)
+				.sort((a, b) => b.launch_ordinal - a.launch_ordinal)[0];
+			const node =
+				nodeId && dispatch
+					? store.getWorkflowRunNode(target.runId, nodeId, dispatch.attempt)
+					: undefined;
+			if (
+				!nodeId ||
+				!dispatch ||
+				!node ||
+				node.execution_id !== target.oldExecutionId
+			)
+				throw new Error("quota_recovery_source_advanced");
+			const expectation = (): CodexQuotaTerminateExpectation => {
+				const permit = store.getCodexQuotaRecoveryPermit(incidentId);
+				if (
+					!permit ||
+					Number(permit.installed_generation) !== target.installedGeneration
+				)
+					throw new Error("quota_recovery_permit_changed");
+				return {
+					target: { ...expected! },
+					nodeId,
+					attempt: dispatch.attempt,
+					launchOrdinal: dispatch.launch_ordinal,
+					permitIncidentId: String(permit.incident_id),
+					installedGeneration: target.installedGeneration,
+				};
+			};
+			target.quotaRecovery = expectation();
+			const engineWaiting =
+				context.run.engine_owned === 1 && target.state === "waiting";
+			if (
+				!engineWaiting &&
+				!persistTarget({
+					start_request_json: JSON.stringify(target.startRequest),
+					terminate_key: `codex-quota:${incidentId}:${target.runId}:terminate`,
+					start_key: `codex-quota:${incidentId}:${target.runId}:start`,
+				})
+			)
+				return;
+			const ports: CodexRunRecoveryPorts = {
 				readAuthority: async () => {
+					if (!fenceCurrent()) throw new Error("quota_recovery_target_changed");
 					const current = store.getCodexQuotaRecoveryContext(recoveryId);
+					const canonicalMatches = await canRecoverWithPool(incidentId, pool);
+					if (!fenceCurrent()) throw new Error("quota_recovery_target_changed");
+					const liveOldExecution =
+						(await liveness(
+							target.oldExecutionId,
+							current.run.project_name,
+						)) !== "dead";
+					if (!fenceCurrent()) throw new Error("quota_recovery_target_changed");
+					const refreshed = store.getCodexQuotaRecoveryContext(recoveryId);
 					const active = store.getActiveWorkflowRunForIssue(
-						current.run.issue_id,
+						refreshed.run.issue_id,
 					);
 					const healthySuccessor =
 						!!active &&
 						active.run_id !== target.runId &&
-						active.run_id !== current.target.new_run_id;
+						active.run_id !== refreshed.target.new_run_id;
 					return {
 						committed: !!store.getCodexQuotaRecoveryPermit(incidentId),
 						generation:
 							quota.getRoot(String(current.incident.root_key))?.generation ?? 0,
-						canonicalMatches: await canRecoverWithPool(incidentId, pool),
+						canonicalMatches,
 						quotaProvenance: true,
-						operatorStopped: current.operatorStopped,
+						operatorStopped: refreshed.operatorStopped,
 						healthySuccessor,
-						liveOldExecution:
-							(await liveness(
-								target.oldExecutionId,
-								current.run.project_name,
-							)) !== "dead",
+						liveOldExecution,
 					};
 				},
-				post,
+				post: async (path, body) => {
+					if (!fenceCurrent()) throw new Error("quota_recovery_target_changed");
+					return post(path, body);
+				},
 				persist: async (patch) => {
-					quota.updateTarget(incidentId, "runner", String(row.target_id), {
+					return persistTarget({
 						...(patch.state ? { state: patch.state } : {}),
 						...(patch.newRunId ? { new_run_id: patch.newRunId } : {}),
 						...(patch.newExecutionId
@@ -341,7 +457,8 @@ export function createCodexQuotaRunRecovery(
 					});
 				},
 				verifyRunning: async (executionId, generation) => {
-					if (!(await canRecoverWithPool(incidentId, pool))) return false;
+					if (!(await canRecoverWithPool(incidentId, pool)) || !fenceCurrent())
+						return false;
 					const root = quota.getRoot(String(context.incident.root_key));
 					const bindings = quota.getRunnerBindings(executionId);
 					const currentSession = store.getSession(executionId);
@@ -379,11 +496,33 @@ export function createCodexQuotaRunRecovery(
 						(await liveness(executionId, context.run.project_name)) === "alive"
 					);
 				},
-			});
+			};
+			if (engineWaiting) {
+				if (context.run.status !== "held" || !options.recoverHeldWorkflowNode)
+					return;
+				if (!(await options.readiness?.()) || !fenceCurrent()) return;
+				const authority = await ports.readAuthority(target);
+				if (
+					!authority.committed ||
+					!authority.canonicalMatches ||
+					authority.generation !== target.installedGeneration ||
+					authority.liveOldExecution ||
+					authority.operatorStopped ||
+					authority.healthySuccessor ||
+					!authority.quotaProvenance
+				)
+					return;
+				if (
+					!fenceCurrent() ||
+					store.getCodexQuotaRecoveryContext(recoveryId).run.status !== "held"
+				)
+					return;
+				await options.recoverHeldWorkflowNode(expectation());
+				return;
+			}
+			await advanceCodexQuotaRunRecovery(target, ports);
 		} catch {
-			quota.updateTarget(incidentId, "runner", String(row.target_id), {
-				last_error: "quota_recovery_unavailable",
-			});
+			if (!persistTarget({ last_error: "quota_recovery_unavailable" })) return;
 			quota.enqueueOutbox({
 				eventId: `${incidentId}:recovery:${String(row.target_id)}`,
 				incidentId,

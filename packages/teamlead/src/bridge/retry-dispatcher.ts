@@ -1,3 +1,7 @@
+import type {
+	InitialWorkflowStartObserver,
+	WorkflowStartPolicy,
+} from "./workflow-start-policy.js";
 /** GEO-168: IRetryDispatcher interface — retry creates a new execution. */
 
 import type {
@@ -175,6 +179,8 @@ export interface IRetryDispatcher {
 
 /** GEO-267: Start a new Runner execution (no predecessor session) */
 export interface StartRequest {
+	/** Bridge-internal verified recovery policy; never read from HTTP input. */
+	recoveryStartPolicy?: WorkflowStartPolicy;
 	issueId: string;
 	projectName: string;
 	/**
@@ -327,6 +333,7 @@ export interface StartResult {
 }
 
 export interface IStartDispatcher {
+	observeInitialWorkflowStart?: InitialWorkflowStartObserver;
 	start(req: StartRequest): Promise<StartResult>;
 	/** FLY-1279: fail-closed recovery gate; production RunDispatcher implements it. */
 	hasInflightForRole?(issueId: string, role: string): boolean;

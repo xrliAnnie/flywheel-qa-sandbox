@@ -24,6 +24,7 @@ function fixture() {
 	});
 	const persist = vi.fn(async (patch: Partial<CodexRunRecoveryTarget>) => {
 		Object.assign(target, patch);
+		return true;
 	});
 	const ports: CodexRunRecoveryPorts = {
 		readAuthority: vi.fn(async () => ({
@@ -186,4 +187,47 @@ describe("Codex quota run recovery", () => {
 		expect(target.newRunId).toBe("actual-run");
 		expect(ports.verifyRunning).toHaveBeenCalledWith("actual-exec", 2);
 	});
+});
+
+const permitted = {
+	committed: true,
+	generation: 2,
+	canonicalMatches: true,
+	quotaProvenance: true,
+	liveOldExecution: false,
+	operatorStopped: false,
+	healthySuccessor: false,
+};
+it.each(["waiting", "terminated"] as const)(
+	"stops before POST and local mutation when %s CAS loses",
+	async (state) => {
+		const { target, ports, post, persist } = fixture();
+		target.state = state;
+		vi.mocked(ports.readAuthority).mockResolvedValue(permitted);
+		persist.mockResolvedValue(false);
+		expect(await advanceCodexQuotaRunRecovery(target, ports)).toBe(state);
+		expect(target.state).toBe(state);
+		expect(post).not.toHaveBeenCalled();
+	},
+);
+it("stops after terminate when receipt CAS loses without issuing start", async () => {
+	const { target, ports, post, persist } = fixture();
+	vi.mocked(ports.readAuthority).mockResolvedValue(permitted);
+	persist.mockResolvedValueOnce(true).mockResolvedValue(false);
+	expect(await advanceCodexQuotaRunRecovery(target, ports)).toBe("terminating");
+	expect(post).toHaveBeenCalledTimes(1);
+	expect(target.state).toBe("terminating");
+});
+it("does not verify a start whose returned identity CAS was rejected", async () => {
+	const { target, ports, post, persist } = fixture();
+	target.state = "terminated";
+	vi.mocked(ports.readAuthority).mockResolvedValue(permitted);
+	persist.mockResolvedValueOnce(true).mockResolvedValue(false);
+	post.mockResolvedValue({
+		status: 200,
+		body: { workflowRunId: "new-run", executionId: "new" },
+	});
+	expect(await advanceCodexQuotaRunRecovery(target, ports)).toBe("starting");
+	expect(target.newExecutionId).toBeUndefined();
+	expect(ports.verifyRunning).not.toHaveBeenCalled();
 });

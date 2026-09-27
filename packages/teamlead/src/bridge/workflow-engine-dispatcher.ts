@@ -71,7 +71,10 @@ import { RESIDENT_EXPIRY_FAST_RETRY_MS } from "./resident-hold.js";
 import type { IStartDispatcher, StartResult } from "./retry-dispatcher.js";
 import type { AdmissionDecision } from "./runner-admission.js";
 import { waitForWorkflowLaunchOutcome } from "./workflow-launch-outcome.js";
-import { resolveRecoveryExecutionStartAuthority } from "./workflow-node-recovery.js";
+import {
+	resolveRecoveryExecutionStartAuthority,
+	resolveRecoveryInitialStartAuthority,
+} from "./workflow-node-recovery.js";
 import { isWorkflowProcessRetirementApproved } from "./workflow-process-retirement.js";
 import { resolveWorkflowResumeTarget } from "./workflow-resume-resolver.js";
 import {
@@ -2785,29 +2788,40 @@ export class WorkflowEngineDispatcher {
 			store.getWorkflowNodeRecoveryDispatchAuthority(intent);
 		const recoveryAuthority = recoveryProof?.authority;
 		if (recoveryAuthority) {
-			if (
-				recoveryAuthority.mode !== "execution_head" ||
-				!recoveryAuthority.sourceExecutionId
-			)
-				throw new Error("recovery_start_authority_unsupported");
-			const observed = await resolveRecoveryExecutionStartAuthority(
-				store,
-				recoveryAuthority.sourceExecutionId,
-			);
+			let observed: typeof recoveryAuthority;
+			if (recoveryAuthority.mode === "root_initial") {
+				observed = await resolveRecoveryInitialStartAuthority(
+					store,
+					intent.run_id,
+					this.options.startDispatcher.observeInitialWorkflowStart?.bind(
+						this.options.startDispatcher,
+					),
+					recoveryAuthority,
+				);
+			} else if (
+				recoveryAuthority.mode === "execution_head" &&
+				recoveryAuthority.sourceExecutionId
+			) {
+				observed = await resolveRecoveryExecutionStartAuthority(
+					store,
+					recoveryAuthority.sourceExecutionId,
+				);
+			} else throw new Error("recovery_start_authority_unsupported");
 			if (
 				canonicalSubmissionDigest({
 					...observed,
 					evidenceDigest: recoveryAuthority.evidenceDigest,
 				}) !== canonicalSubmissionDigest(recoveryAuthority) ||
 				observed.evidenceDigest !== recoveryProof!.sourceEvidenceDigest ||
-				store.getWorkflowRecoverySourceBindingDigest(
-					recoveryAuthority.sourceExecutionId,
+				store.getWorkflowRecoveryStartBindingDigest(
+					intent.run_id,
+					recoveryAuthority,
 				) !== recoveryProof!.sourceSessionDigest
 			)
 				throw new Error("recovery_start_authority_changed");
 		}
 		let startPoint: string | undefined;
-		if (recoveryAuthority && isRootPhaseFirstAttempt && !transition) {
+		if (recoveryAuthority && !transition) {
 			// The exact current root may have advanced beyond the first root body's
 			// HEAD. Its immutable recovery proof was revalidated above.
 			startPoint = recoveryAuthority.headSha;
@@ -3113,6 +3127,12 @@ export class WorkflowEngineDispatcher {
 					? { loopTarget: { nodeId: node.id } }
 					: {}),
 				...(startPoint && { startPoint }),
+				...(recoveryAuthority?.initialPolicy && {
+					recoveryStartPolicy: {
+						...recoveryAuthority.initialPolicy,
+						startPoint: recoveryAuthority.headSha,
+					},
+				}),
 				...(workflowResume && { workflowResume }),
 				ignoreRunnerLabelSelection: true,
 				...(predecessor?.issue_identifier && {

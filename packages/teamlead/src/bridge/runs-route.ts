@@ -475,6 +475,7 @@ export function createRunsRouter(
 					store,
 					normalized.canonical,
 					auth?.probeRunLiveness,
+					startDispatcher.observeInitialWorkflowStart?.bind(startDispatcher),
 				);
 				const digest = canonicalSubmissionDigest(prepared.canonical);
 				res.status(200).json({
@@ -574,6 +575,7 @@ export function createRunsRouter(
 					store,
 					normalized.canonical,
 					auth?.probeRunLiveness,
+					startDispatcher.observeInitialWorkflowStart?.bind(startDispatcher),
 				);
 				if (
 					canonicalSubmissionDigest(prepared.canonical) !== normalized.digest

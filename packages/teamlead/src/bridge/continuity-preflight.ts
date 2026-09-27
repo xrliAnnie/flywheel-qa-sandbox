@@ -121,6 +121,51 @@ function parseLsRemote(stdout: string, branch: string): string | null {
 	return COMMIT_SHA.test(sha) ? sha : null;
 }
 
+/** Confirm the same remote authority without fetching or changing local refs.
+ * An unmaterialized/stale remote is an evidence gap, never a missing branch.
+ */
+export async function observeRemoteBranch(
+	input: MaterializeRemoteBranchInput,
+	deps: Pick<MaterializeRemoteBranchDeps, "runGit"> = {},
+): Promise<ContinuityProbe> {
+	const runGit = deps.runGit ?? defaultRunGit;
+	let remoteSha: string | null;
+	try {
+		remoteSha = parseLsRemote(
+			(
+				await runGit(
+					["ls-remote", "--exit-code", "--heads", "origin", input.branch],
+					input.repoPath,
+				)
+			).stdout,
+			input.branch,
+		);
+	} catch (error) {
+		return exitStatus(error) === 2
+			? { kind: "missing" }
+			: { kind: "indeterminate", error: errorDetail(error) };
+	}
+	if (!remoteSha)
+		return { kind: "indeterminate", error: "invalid remote branch evidence" };
+	try {
+		const tracking = (
+			await runGit(
+				["rev-parse", `refs/remotes/origin/${input.branch}^{commit}`],
+				input.repoPath,
+			)
+		).stdout.trim();
+		if (tracking !== remoteSha)
+			return {
+				kind: "indeterminate",
+				error: "remote branch requires materialization",
+			};
+		await runGit(["cat-file", "-e", `${remoteSha}^{commit}`], input.repoPath);
+		return { kind: "exists", sha: remoteSha };
+	} catch (error) {
+		return { kind: "indeterminate", error: errorDetail(error) };
+	}
+}
+
 /**
  * FLY-1718: reconcile a managed branch with origin before a fresh dispatch.
  *

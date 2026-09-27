@@ -128,3 +128,12 @@ export async function resolveWorkflowStartPolicy(
 		shareParentBranch: request.shareParentBranch ?? (resume ? true : undefined),
 	};
 }
+
+export interface InitialWorkflowStartObservation {
+	repositoryPath: string;
+	branch: string;
+	policy: WorkflowStartPolicy;
+}
+export type InitialWorkflowStartObserver = (
+	request: WorkflowStartPolicyRequest,
+) => Promise<InitialWorkflowStartObservation>;
