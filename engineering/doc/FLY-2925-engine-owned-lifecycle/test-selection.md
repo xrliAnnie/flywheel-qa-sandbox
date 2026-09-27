@@ -278,3 +278,61 @@ socket 达 106 bytes、超过 SUN_LEN 103。精确回归、goal runtime 与 adap
 `usageLimited` 的 daemon adapter、goal runtime、quota preflight 等直接消费者已由上述
 逐文件测试和 related 选择覆盖。新 head 的 exact-head full CI 与真房 quota 场景复测
 仍由 QA 执行。
+
+## 12. QA@4 代码复审 + fault stub 回收返工（2026-09-27）
+
+代码复审在 head `f42ace7c1` 指出一条 HIGH：额度恢复成功后，已落盘的
+`{attempts:3, quotaExhausted:true}` episode 没有清除；同 thread 之后第一次新的 429
+会被误算为第 4 次并再次终态移交。新增回归先观察到错误的 `usageLimited`，最小修复
+在额度恢复产生模型输出时清除旧 episode；如果清除本身失败，则保留边界清理机会，
+同时明确禁止把 `quotaExhausted:true` 的旧标记认作新的同一 episode。这样新失败从
+attempt 1 开始，未改变额度终态或既有退避间隔。
+
+Lead instruction `dcc869b9-3bff-4821-8afe-bf51b7eea4ec` 同轮要求修复 529 fault stub
+泄漏。根因是 deploy 先发布权威 `receipt.json`，完成 source-home 准备后才另写 PID
+sidecar；两步之间被中断时，teardown 虽看见 receipt，却因缺 sidecar fail closed，
+stub 因而继续监听。修复删除第二份 PID authority：deploy 不再写 sidecar，teardown
+只从 0600 receipt 读取 PID，并在发信号前继续复验精确 slot 根、room identity、
+loopback host/port/base URL、receipt room path 与 live argv。旧 sidecar 只作为“存在
+清理残留”的兼容触发器，不参与身份决定。
+
+### 12.1 RED → GREEN 与相关验证
+
+| 所有者 | 测试 / 检查 | 结果 |
+|---|---|---|
+| claude-runner | `test/codex-daemon-client.test.ts`（RED） | 新的“额度恢复后再遇 429”场景错误终态；109/110 通过 |
+| claude-runner | `test/codex-daemon-client.test.ts`（GREEN） | 110/110 |
+| claude-runner | `test/codex-quota-resume-preflight.test.ts` | 16/16 |
+| claude-runner | `test/codex-daemon-goal-runtime.test.ts` | 65/65 |
+| claude-runner | `test/CodexTmuxAdapter.test.ts` | 189/189 |
+| scripts | `qa-generalized-codex-stub.test.mjs`（RED） | receipt-only teardown helper 不存在；5/6 通过 |
+| scripts | `qa-generalized-codex-stub.test.mjs`（GREEN） | 6/6；真实 loopback stub 被 teardown，随后 PID 不可观察 |
+| scripts | `test-deploy-generalized.test.sh` | 全部通过 |
+| claude-runner | `kill-path-inventory.test.ts` | 5/5；没有新增未登记 signal 路径 |
+| claude-runner + dependencies | `pnpm --filter "flywheel-claude-runner..." build` | 通过 |
+| changed files | `bash -n`、Biome、`git diff --check` | 通过 |
+| repository | `pnpm lint` | exit 0；仅未改文件的既存 warning |
+
+changed-TypeScript `vitest related` 选中 11 个文件：10 个文件、573 项通过；唯一非绿
+仍是 `codex-daemon-runtime.test.ts` 的 6 个宿主限制（2 个 `spawnSync ps EPERM`，4 个
+默认 macOS TMPDIR 令 socket path 超过 SUN_LEN）。直接消费者均全绿，没有以目录、
+glob 或包别名补跑任何全包测试。
+
+### 12.2 discovery 排除记录
+
+对旧/新 retry marker 字面量、`CODEX_FAULT_PID_FILE` / 新
+`CODEX_FAULT_LEGACY_PID_FILE`、`qa_teardown_codex_fault_stub`，以及三份改动脚本的全
+路径、basename、父目录均执行 `git grep -lF`。保留并运行上表中的直接动态消费者。
+其余测试命中按以下原因排除：
+
+- `test-deploy-fly1389`、launch-boundary、multilead、QA-room、Discord pointer、Lead
+  coordinates、slot-pool、cmux ownership/lease/live-watcher 与 worktree-removal：只消费
+  通用 deploy/teardown 路径，不创建 `state/codex-fault/receipt.json`；本轮分支只有该
+  receipt 存在才激活，默认路径已由 generalized 合同测试覆盖。
+- edge-worker、flywheel-comm 与 teamlead 的脚本路径 fixture：只把路径写进 prompt、
+  evidence 或 strength-two 静态合同，不执行 fault lifecycle。
+- `.github/workflows/ci.yml`、kill-path golden 与历史文档：分别是 exact-head CI 枚举、
+  机械清单或旧证据；kill-path 的实际 scanner 测试已单独 5/5。
+
+本地证明只覆盖可控 QA seam 与 daemon retry 语义；exact-head full CI、529 房七场景和
+真实 provider 链仍由 QA 在冻结头执行。
