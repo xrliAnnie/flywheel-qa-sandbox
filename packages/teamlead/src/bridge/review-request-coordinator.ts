@@ -2072,8 +2072,8 @@ export class ReviewRequestCoordinator {
 				resume: roundResume,
 				cwd,
 				binary: this.deps.reviewerBinary,
-				// FLY-2763: a sanctioned same-family job must be reviewed by a
-				// DIFFERENT Claude model than the author's.
+				// FLY-2949: every Claude review uses Opus, including sanctioned
+				// same-family reviews.
 				model: job.same_family_sanction
 					? this.sameFamilyReviewerModel(job.execution_id)
 					: workflowReviewRoute?.reviewerVendor === "claude"
@@ -2990,14 +2990,12 @@ export class ReviewRequestCoordinator {
 	}
 
 	/**
-	 * FLY-2763: reviewer model for a sanctioned same-family job. The author
-	 * model comes from the execution runtime row; the reviewer is always the
-	 * OTHER heavy Claude alias (Opus author → Fable reviewer, otherwise Opus).
+	 * FLY-2949: sanctioned same-family reviews use Opus regardless of the
+	 * author's Claude model. The founder explicitly retired the Opus→Fable
+	 * inversion for both design and code review.
 	 */
-	private sameFamilyReviewerModel(executionId: string): string {
-		const authorModel =
-			this.store.getWorkflowExecutionRuntime(executionId)?.model ?? "";
-		return /opus/i.test(authorModel) ? "fable" : "opus";
+	private sameFamilyReviewerModel(_executionId: string): string {
+		return "opus";
 	}
 
 	private buildPrompt(

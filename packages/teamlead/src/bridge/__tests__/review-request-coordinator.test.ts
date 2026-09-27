@@ -4655,7 +4655,7 @@ describe("FLY-2763 — sanctioned same-family lane (review_same_family_allowed)"
 		expect(ok).toBe(true);
 	}
 
-	it("flag on: claude-tmux author is accepted, the job carries the sanction, the reviewer is a different Claude model, and the APPROVED record satisfies the gate", async () => {
+	it("flag on: claude-tmux author is accepted, the job carries the sanction, and the APPROVED record satisfies the gate", async () => {
 		const h = await makeHarness();
 		enableSameFamily(h);
 		registerSession(h.store, "e1", { adapterType: "claude-tmux" });
@@ -4688,6 +4688,50 @@ describe("FLY-2763 — sanctioned same-family lane (review_same_family_allowed)"
 		).toBe("review_same_family_allowed");
 		expect(h.store.isCodexCodeReviewApproved("e1", HEAD)).toBe(true);
 	});
+
+	it.each([
+		["code", "claude-opus-5-5"],
+		["code", "claude-fable-5-1"],
+		["code", ""],
+		["design", "claude-opus-5-5"],
+		["design", "claude-fable-5-1"],
+		["design", ""],
+	] as const)(
+		"routes sanctioned same-family %s review for author model %j to Opus",
+		async (reviewType, authorModel) => {
+			const h = await makeHarness();
+			enableSameFamily(h);
+			registerSession(h.store, "e1", { adapterType: "claude-tmux" });
+			vi.spyOn(h.store, "getWorkflowExecutionRuntime").mockReturnValue({
+				model: authorModel,
+				vendor: "claude",
+			} as never);
+			openGate(
+				h.comm,
+				"q1",
+				"e1",
+				reviewType === "design" ? "review_design" : "review_code",
+			);
+			h.outcomes.push({
+				kind: "failed",
+				reason: "timeout",
+				detail: "test stopped after routing",
+				exitCode: null,
+				timedOut: true,
+			});
+
+			const result = await h.coordinator.accept({
+				executionId: "e1",
+				requestId: "r1",
+				reviewType,
+				questionId: "q1",
+			});
+
+			expect(result).toMatchObject({ accepted: true });
+			await settle();
+			expect(h.invocations[0]?.model).toBe("opus");
+		},
+	);
 
 	it("flag off: claude-tmux author still gets the R12 HIGH-3 409 and nothing is stamped", async () => {
 		const h = await makeHarness();
