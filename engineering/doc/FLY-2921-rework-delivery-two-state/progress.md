@@ -1,15 +1,14 @@
 ---
 issue: FLY-2921
 phase: implement
-phaseCursor: 1/4
-updated: 2026-09-27T08:22:58.352Z
-nextStep: Merge origin/main 975822f5d into the repaired head, resolve the three
-  StateStore.ts overlap blocks by preserving FLY-2921 invariants and FLY-2900
-  quota-standby guards
+phaseCursor: 2/4
+updated: 2026-09-27T09:15:14.695Z
+nextStep: "Update FLY-2921 milestone as the literal last commit, push PR #1364,
+  then request exact-head code review"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2921 progress
-**phase**: implement (1/4)
-**next**: Merge origin/main 975822f5d into the repaired head, resolve the three StateStore.ts overlap blocks by preserving FLY-2921 invariants and FLY-2900 quota-standby guards
+**phase**: implement (2/4)
+**next**: Update FLY-2921 milestone as the literal last commit, push PR #1364, then request exact-head code review
