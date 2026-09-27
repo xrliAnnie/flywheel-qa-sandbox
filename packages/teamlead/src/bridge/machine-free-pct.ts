@@ -24,6 +24,7 @@ export const CAPACITY_UNAVAILABLE_TOKENS: ReadonlySet<string> = new Set([
 	"structural: memory_pressure_missing",
 	"transient: memory_pressure_timeout",
 	"transient: memory_pressure_parse_failed",
+	"transient: pressure_evidence_unavailable",
 	"structural: admission_controller_absent",
 	"transient: load_probe_failed",
 	"transient: state_store_unreadable",

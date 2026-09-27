@@ -839,6 +839,36 @@ function capacityUnavailable(value: unknown): string {
 	return tokens[0]!;
 }
 
+function renderPressureSensor(
+	sensor: NonNullable<CapacitySnapshot["brakes"]["pressureHold"]["sensor"]>,
+): string {
+	if (sensor.source !== "vm_stat") {
+		throw new Error("invalid pressure sensor source");
+	}
+	if (!new Set(["healthy", "pressure", "warming", "unknown"]).has(sensor.state)) {
+		throw new Error("invalid pressure sensor state");
+	}
+	const sampledAt =
+		sensor.sampledAtMs === null
+			? "n/a"
+			: capacityInstant(
+					new Date(
+						capacityNumber(sensor.sampledAtMs, { integer: true }),
+					).toISOString(),
+				);
+	const freePct =
+		sensor.freePct === null
+			? "n/a"
+			: `${boundedDecimalCapacityNumber(
+					capacityNumber(sensor.freePct, { max: 100 }),
+				)}%`;
+	const delta =
+		sensor.swapoutDeltaPages === null
+			? "n/a"
+			: String(capacityNumber(sensor.swapoutDeltaPages, { integer: true }));
+	return `传感器 vm_stat; reason=${canonicalCapacityToken(sensor.reason)}; sample=${sampledAt}; free=${freePct}; Δ=${delta} pages/tick`;
+}
+
 function renderValidCapacityLines(capacity: CapacitySnapshot): string[] {
 	if (capacity.schemaVersion !== 1) throw new Error("invalid capacity schema");
 	const generatedAt = capacityInstant(capacity.generatedAt);
@@ -913,12 +943,18 @@ function renderValidCapacityLines(capacity: CapacitySnapshot): string[] {
 	if (hold.active === null) {
 		pressureHold = `?(${capacityUnavailable(hold.unavailable)})`;
 	} else if (hold.active === true) {
-		if (typeof hold.setBy !== "string") {
+		if (typeof hold.setBy === "string") {
+			pressureHold = `置位(${canonicalCapacityToken(hold.setBy)} 自 ${capacityInstant(hold.setAt)})`;
+		} else if (hold.sensor !== undefined) {
+			pressureHold = `置位(${renderPressureSensor(hold.sensor)})`;
+		} else {
 			throw new Error("invalid pressure hold setter");
 		}
-		pressureHold = `置位(${canonicalCapacityToken(hold.setBy)} 自 ${capacityInstant(hold.setAt)})`;
 	} else if (hold.active === false) {
-		pressureHold = "无";
+		pressureHold =
+			hold.sensor === undefined
+				? "无"
+				: `无(${renderPressureSensor(hold.sensor)})`;
 	} else {
 		throw new Error("invalid pressure hold state");
 	}

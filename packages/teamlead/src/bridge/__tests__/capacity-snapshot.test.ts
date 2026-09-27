@@ -24,7 +24,10 @@ import { buildAccountQuotaView } from "../account-quota-view.js";
 import {
 	buildCapacitySnapshot,
 	codexTokenState,
+	type CapacitySnapshot,
 } from "../capacity-snapshot.js";
+import { formatPatrolTick } from "../hook-payload.js";
+import type { LeadEventEnvelope } from "../lead-runtime.js";
 import { MemoryPressureMonitor } from "../machine-watermark.js";
 import { RunnerAdmissionController } from "../runner-admission.js";
 
@@ -69,6 +72,25 @@ function missingAccountStorePath(): string {
 afterEach(() => {
 	while (scratch.length > 0) rmSync(scratch.pop()!, { recursive: true });
 });
+
+function patrolEnvelope(capacity: CapacitySnapshot): LeadEventEnvelope {
+	return {
+		seq: 1,
+		eventId: "tick-pressure-sensor",
+		event: {
+			event_type: "patrol_tick",
+			execution_id: "patrol:flywheel:flywheel-eng-lead",
+			issue_id: "",
+			project_name: "flywheel",
+			roster: [],
+			capacity,
+			generated_at: capacity.generatedAt,
+		},
+		sessionKey: "patrol:flywheel:flywheel-eng-lead",
+		leadId: "flywheel-eng-lead",
+		timestamp: capacity.generatedAt,
+	};
+}
 
 function writeCodexAccountStore(value: unknown): string {
 	const dir = mkdtempSync(join(tmpdir(), "fly2688-codex-capacity-"));
@@ -2003,6 +2025,71 @@ describe("FLY-2864 — research responses end to end", () => {
 });
 
 describe("FLY-2920 current sensor evidence", () => {
+	it.each([
+		{
+			state: "pressure" as const,
+			reason: "confirmed_pressure",
+			sampledAtMs: 1_000,
+			freePct: 5,
+			swapoutDeltaPages: 40,
+			baselineAtMs: 0,
+			evidenceValidUntilMs: 91_000,
+		},
+		{
+			state: "warming" as const,
+			reason: "sampling_warmup",
+			sampledAtMs: null,
+			freePct: null,
+			swapoutDeltaPages: null,
+			baselineAtMs: null,
+			evidenceValidUntilMs: null,
+		},
+		{
+			state: "unknown" as const,
+			reason: "pressure_evidence_unavailable",
+			sampledAtMs: null,
+			freePct: null,
+			swapoutDeltaPages: null,
+			baselineAtMs: null,
+			evidenceValidUntilMs: null,
+		},
+	])(
+		"round-trips a $state sampler snapshot through the patrol renderer",
+		async (pressure) => {
+			const snapshot = await buildCapacitySnapshot({
+				now: () => 2_000,
+				store: {
+					getActiveSessions: () => [] as never,
+					getFleetPressureHold: () => undefined,
+					getAdmissionPause: () => undefined,
+				},
+				pressureSnapshot: () => ({ ...pressure, source: "vm_stat" }),
+				readMemoryFreePct: vi.fn(),
+				accountStorePath: missingAccountStorePath(),
+				codexAccountStorePath: missingAccountStorePath(),
+			});
+
+			const body = formatPatrolTick(patrolEnvelope(snapshot));
+
+			expect(body).not.toContain("invalid_capacity_snapshot");
+			expect(body).toContain("传感器 vm_stat");
+			expect(body).toContain(`reason=${pressure.reason}`);
+			expect(body).toContain(
+				pressure.sampledAtMs === null
+					? "sample=n/a"
+					: `sample=${new Date(pressure.sampledAtMs).toISOString()}`,
+			);
+			expect(body).toContain(
+				pressure.freePct === null ? "free=n/a" : `free=${pressure.freePct}%`,
+			);
+			expect(body).toContain(
+				pressure.swapoutDeltaPages === null
+					? "Δ=n/a pages/tick"
+					: `Δ=${pressure.swapoutDeltaPages} pages/tick`,
+			);
+		},
+	);
+
 	it("ignores legacy sensor holds and exposes the same reason/time/source/delta as admission", async () => {
 		const pressure = {
 			sampledAtMs: 1000,
