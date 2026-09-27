@@ -2,17 +2,16 @@
 issue: FLY-2922
 phase: implement
 phaseCursor: 0/6
-updated: 2026-09-26T21:28:23.549Z
-nextStep: 95cdd39ea terminal boundary confirmed21 GREEN; 2e180d6d4 stale
-  recovery current identity confirmed2 GREEN; affected build and lint green.
-  008ef48bc shared initial policy extracted; implementing readonly root start
-  observers/frozen authority and quota transactional CAS. Historical
-  projection/rework/land/decision and retained verification remain unfinished;
-  no PR/review/CI/handoff.
+updated: 2026-09-27T00:26:30.097Z
+nextStep: "ad6e2945d closes rescued root-initial/quota adapter batch: five WIP
+  files plus public recovery 6 GREEN, quota factory 20 GREEN, scoped Biome clean
+  except 2 pre-existing plugin warnings, teamlead+deps build GREEN. Remaining:
+  historical hold projection, rework and land recovery, decision/state-only
+  routes, nine-case matrix, retained explicit verification, review/PR/handoff."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2922 progress
 **phase**: implement (0/6)
-**next**: 95cdd39ea terminal boundary confirmed21 GREEN; 2e180d6d4 stale recovery current identity confirmed2 GREEN; affected build and lint green. 008ef48bc shared initial policy extracted; implementing readonly root start observers/frozen authority and quota transactional CAS. Historical projection/rework/land/decision and retained verification remain unfinished; no PR/review/CI/handoff.
+**next**: ad6e2945d closes rescued root-initial/quota adapter batch: five WIP files plus public recovery 6 GREEN, quota factory 20 GREEN, scoped Biome clean except 2 pre-existing plugin warnings, teamlead+deps build GREEN. Remaining: historical hold projection, rework and land recovery, decision/state-only routes, nine-case matrix, retained explicit verification, review/PR/handoff.
