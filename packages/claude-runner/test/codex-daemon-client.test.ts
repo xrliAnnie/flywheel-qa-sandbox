@@ -4075,3 +4075,61 @@ describe("runGoalToTerminal — FLY-2925 review R3 fixes", () => {
 		expect(episode).toBeNull();
 	});
 });
+
+describe("runGoalToTerminal — FLY-2925 review R4 (Lead ruling B)", () => {
+	it("an unpersistable quota marker is made visible (quota_handoff_unpersisted) and the handoff still proceeds", async () => {
+		const d = new FakeDaemon();
+		let current: GoalStatus = "active";
+		d.responders.set("thread/goal/get", () => ({
+			goal: { status: current, objective: "OURS" },
+		}));
+		d.responders.set("thread/goal/set", (params) => {
+			current = (params as { status: GoalStatus }).status;
+			return {};
+		});
+		d.responders.set("turn/start", (_p, _id, push) => {
+			push({
+				method: "turn/completed",
+				params: {
+					threadId: "t",
+					turn: {
+						id: "turn-q",
+						status: "failed",
+						error: {
+							message: "Add credits",
+							codexErrorInfo: "usageLimitExceeded",
+						},
+					},
+				},
+			});
+			current = "blocked";
+			push({
+				method: "thread/goal/updated",
+				params: {
+					threadId: "t",
+					goal: { status: "blocked", objective: "OURS" },
+				},
+			});
+			return { turn: { id: "turn-q" } };
+		});
+		const observations: Array<{ reason: string; turnId?: string }> = [];
+		const result = await runGoalToTerminal(makeClient(d), {
+			threadId: "t",
+			objective: "OURS",
+			now: () => 0,
+			sleep: async () => {},
+			pollIntervalMs: 1,
+			phaseLifecycle: new FakePhaseLifecycle(),
+			readUpstreamRetryEpisode: () => null,
+			writeUpstreamRetryEpisode: () => {
+				throw new Error("ENOSPC");
+			},
+			onResidentWait: (o) =>
+				observations.push({ reason: o.reason, turnId: o.turnId }),
+		});
+		expect(result.status).toBe("usageLimited");
+		expect(observations).toEqual([
+			{ reason: "quota_handoff_unpersisted", turnId: "turn-q" },
+		]);
+	});
+});

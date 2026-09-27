@@ -166,7 +166,14 @@ export type ResidentWaitReason =
 	/** A goal someone paused (not a Flywheel latch) stays paused across restarts. */
 	| "manual_pause"
 	/** Native budgetLimited: no governance consumes it; the body waits for a decision. */
-	| "budget_limited";
+	| "budget_limited"
+	/**
+	 * The quota handoff proceeded but its crash-recovery marker could not be
+	 * persisted — visible so a Lead can act if a crash follows (fail-open by
+	 * Lead ruling: failing closed would turn the handoff into a signal-less
+	 * failure that re-runs on the same exhausted account).
+	 */
+	| "quota_handoff_unpersisted";
 
 export interface ResidentWaitObservation {
 	reason: ResidentWaitReason;
@@ -2015,6 +2022,13 @@ export async function runGoalToTerminal(
 					client.logDiagnostic(
 						`quota handoff marker write failed (handing off anyway): ${error instanceof Error ? error.message : String(error)}`,
 					);
+					observeResidentWait({
+						reason: "quota_handoff_unpersisted",
+						threadId: input.threadId,
+						turnId: failure.turnId,
+						...(category ? { category } : {}),
+						error: describeError(failure),
+					});
 				}
 			}
 			terminalSeen = "usageLimited";
