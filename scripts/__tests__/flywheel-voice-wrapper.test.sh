@@ -272,8 +272,13 @@ run_codex_wrapper() {
 mkdir -p "$ROOT/home/.codex"
 printf '{}\n' > "$ROOT/home/.codex/auth.json"
 chmod 600 "$ROOT/home/.codex/auth.json"
-PINNED_RELEASE="$ROOT/home/.codex-infra-bot/packages/standalone/releases/0.156.1-aarch64-apple-darwin"
-CURRENT_RELEASE="$ROOT/home/.codex-infra-bot/packages/standalone/releases/0.157.1-aarch64-apple-darwin"
+case "$(uname -m)" in
+  arm64) CODEX_RELEASE_TARGET="aarch64-apple-darwin" ;;
+  x86_64) CODEX_RELEASE_TARGET="x86_64-apple-darwin" ;;
+  *) CODEX_RELEASE_TARGET="unsupported" ;;
+esac
+PINNED_RELEASE="$ROOT/home/.codex-infra-bot/packages/standalone/releases/0.156.1-$CODEX_RELEASE_TARGET"
+CURRENT_RELEASE="$ROOT/home/.codex-infra-bot/packages/standalone/releases/0.157.1-$CODEX_RELEASE_TARGET"
 PINNED_BIN="$PINNED_RELEASE/bin/codex"
 mkdir -p "$PINNED_RELEASE/bin" "$CURRENT_RELEASE/bin"
 printf '#!/bin/bash\nexit 0\n' > "$PINNED_BIN"
