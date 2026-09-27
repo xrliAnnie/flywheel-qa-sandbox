@@ -276,11 +276,12 @@ async function seedLaunchedReplacement(): Promise<{
 		         'fixture', 'fixture', ?)`,
 		[REQUEST_ID, DEAD_EXECUTION_ID, at(-2)],
 	);
+	// FLY-2921 C1: a dead target is replaced in place from `pending`.
 	dbRun(
 		store,
 		`INSERT INTO workflow_rework_delivery
 		   (request_id, route_revision, state, updated_at)
-		 VALUES (?, 1, 'replacement_pending', ?)`,
+		 VALUES (?, 1, 'pending', ?)`,
 		[REQUEST_ID, at(-2)],
 	);
 	dbRun(
@@ -292,18 +293,49 @@ async function seedLaunchedReplacement(): Promise<{
 		[REQUEST_ID, at(-2)],
 	);
 	store.baselineWorkflowDeliveryContracts(at(-2));
+	// FLY-2921 C2 step 4: the replacement transaction only accepts an exact
+	// death proof (the unlaunched-rollback fact, in the non-hold shape written
+	// for a replacement binding) inside the coordinator's own claim.
+	store.appendWorkflowRunEvent({
+		runId: "run-1",
+		eventUid: `unlaunched_rollback:run-1:qa:2:${DEAD_EXECUTION_ID}`,
+		kind: "rework_replacement_launch_rolled_back",
+		nodeId: "qa",
+		executionId: DEAD_EXECUTION_ID,
+		payload: {
+			attempt: 2,
+			reason: "unlaunched_admission_rolled_back",
+			at: at(-1.5),
+		},
+	});
+	const claim = store.claimWorkflowReworkDelivery({
+		requestId: REQUEST_ID,
+		ownerId: "coordinator",
+		now: at(-1.2),
+		leaseExpiresAt: at(10),
+	});
+	if (!claim.ok) throw new Error(JSON.stringify(claim));
 	expect(
-		store.materializeWorkflowReworkReplacement({
+		store.replaceWorkflowReworkActor({
 			requestId: REQUEST_ID,
+			ownerId: "coordinator",
+			generation: claim.generation,
 			deadExecutionId: DEAD_EXECUTION_ID,
 			newExecutionId: REPLACEMENT_ID,
+			proof: { kind: "unlaunched_rollback" },
 			reason: "persisted_target_dead",
 			observedAt: at(-1),
 		}),
 	).toMatchObject({
 		ok: true,
 		executionId: REPLACEMENT_ID,
+		routeRevision: 2,
 		idempotentReplay: false,
+	});
+	expect(store.getWorkflowReworkDelivery(REQUEST_ID)).toMatchObject({
+		state: "pending",
+		route_revision: 2,
+		owner_id: null,
 	});
 	expect(
 		store.admitGeneralizedWorkflowExecution({

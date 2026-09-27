@@ -1,0 +1,27 @@
+erDiagram
+  workflow_run ||--o{ workflow_rework_request : "一条任务链可有多次返工"
+  workflow_rework_request ||--|{ workflow_rework_route_revision : "每换一次投递对象追加一版"
+  workflow_rework_request ||--|| workflow_rework_delivery : "一次返工一行投递"
+  workflow_rework_route_revision }o--|| workflow_actor : "指定要交给哪个执行体"
+  workflow_actor ||--o| workflow_resident_hold : "交卷后停驻等下一轮"
+  workflow_run {
+    text status "active 或 held 本单不再因投递写 held"
+  }
+  workflow_rework_request {
+    text base_revision "被判 FAIL 的 git head"
+  }
+  workflow_rework_route_revision {
+    int revision "版本号 换体和重投都加一"
+    text preferred_actor_execution_id "投给谁"
+    text interpreted_by "谁铸的这一版"
+  }
+  workflow_rework_delivery {
+    text state "5 态 pending turn_granted wake_delivered completed returned_to_lead"
+    text wake_sent_at "新增 推送时间 取代 awaiting_receipt"
+    int hold_count "失败计数 满 5 交还 Lead"
+    text liveness_unknown_since "新增 活性判不出的起点 用于告警"
+  }
+  workflow_resident_hold {
+    text state "resident woken expired closed"
+    text activation_id "本单 返工交卷后更新为当前激活"
+  }

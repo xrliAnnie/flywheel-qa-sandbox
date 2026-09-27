@@ -41,7 +41,6 @@ scripts/__tests__/test-deploy-qa-room.test.sh
 # Fleet/deploy suites that mutate a managed host or require an operator fixture.
 scripts/__tests__/daily-digest-env-override.test.sh
 scripts/__tests__/deploy-build-identity.test.sh
-scripts/__tests__/fly-1648-hot-loop-closeout.test.sh
 scripts/__tests__/fly1446-cmux-roster.test.sh
 scripts/__tests__/flywheel-fleet-apply-batch.test.sh
 scripts/__tests__/flywheel-fleet-batch.test.sh

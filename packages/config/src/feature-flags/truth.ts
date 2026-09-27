@@ -886,6 +886,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"numeric tuning: bounded cadence for checking running review head and gate validity (FLY-2911)",
 	FLYWHEEL_CLAUDE_REVIEW_TIMEOUT_MS:
 		"tuning knob: active Claude review subprocess timeout (FLY-1254)",
+	FLYWHEEL_REWORK_DELTA_TIMEOUT_MS:
+		"tuning knob: server-side rework completion diff timeout; a timeout degrades to an audited unverified delta (FLY-2921 C7)",
 	FLYWHEEL_CRASH_REAP_GRACE_MIN: "tuning knob: crash reap grace minutes",
 	FLYWHEEL_PARKED_PHASE_STALE_HOURS:
 		"tuning knob: parked DAG workflow reclaim time backstop hours (FLY-1204)",

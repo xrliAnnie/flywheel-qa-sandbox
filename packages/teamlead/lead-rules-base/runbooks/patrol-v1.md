@@ -604,17 +604,35 @@ END {
 
    失败就没有完成;无法理解本段也必须记 UNAVAILABLE,禁止静默跳过。
 
-### FLY-2080 附录 A — receipt 死结完整配方
+### FLY-2080 附录 A — receipt 死结（FLY-2921 后停用）与修复共享配管
 
-只在步骤 A 已证明“目标 execution 已真实收到并完成 rework，但 receipt 剧本漏记”时
-执行。核心不是单拨一行：`workflow_rework_delivery held→wake_delivered` 与
-`workflow_run held→active` 必须同一 transaction；否则下一轮会撞 chain CAS。route、
-target `workflow_run_node`、可选 `workflow_rework_verification_path` 与
-`rework_delivery_wake_delivered` event 也必须一起闭合。
+**FLY-2921 之后本配方不再执行。** `workflow_rework_delivery` 只剩 `pending`、
+`turn_granted`、`wake_delivered`、`completed`、`returned_to_lead` 五个状态，旧的四个
+中间态已经删除，遗留行已由迁移映射进这五态（迁移来的 hold UID 带 `migrated:` 前缀）。
+一次返工投递只有两种结局：送达（`wake_delivered`，交卷后 `completed`）或交还 Lead
+（`returned_to_lead`）。投递失败不再冻结 run，所以不会再出现「体已完成、receipt 漏记、
+delivery 与 run 一起被冻住」的死结账；投给死体也不是失败，返工协调器在同一事务里换替身
+重投。巡检不再手工 SQL 修返工投递表，更不得手工把 delivery 拨成 `wake_delivered` 或补写
+`rework_delivery_wake_delivered` event——没有体自己的真实签收就是伪造 receipt，按防篡改类
+停手。
 
-先从只读错误现场取得精确 id，验证 id 字符集，保存 0600 backup 和 engine event
-baseline。`TARGET_PANE` 继续用于事务前真实性证明或 event 为空后的有界诊断，不为
-pane 输出建立 baseline 指纹：
+遇到 `returned_to_lead`：run 上有一条 delivery 级 hold event，kind 与 shape 都是
+`rework_returned_to_lead`，UID `rework_returned_to_lead:<requestId>:<routeRevision>`。run
+本身仍 active，这个 hold 不冻结任何别的东西。要原样再投一次，走 hold 门，引擎会在新的
+route revision 上重投：
+
+```sh
+flywheel-comm hold resume --run <runId> --shape rework_returned_to_lead --hold-event <eventUid> --reason "<你核过或改过什么>"
+```
+
+要改返工内容走 founder `/rework`；放弃就 terminate 该 run。巡检对它只记「已交还 Lead」
+与下一动作，不补账。`workflow_carrier_delivery`（ship 载体）与
+`workflow_rework_verification_path` 各有自己的状态机，本说明只针对返工投递表。
+
+下面的共享配管仍供本节其余 recipe（目前只剩附录 B 末尾 `engine_predecessor_unavailable`
+的 predecessor 事件分支）使用。先从只读错误现场取得精确 id，验证 id 字符集，保存 0600
+backup 和 engine event baseline。`TARGET_PANE` 只用于事务前真实性证明或 event 为空后的
+有界诊断，不为 pane 输出建立 baseline 指纹：
 
 ```sh
 STATE_DB="${FLYWHEEL_STATE_DB_PATH:-${TEAMLEAD_DB_PATH:-$HOME/.flywheel/teamlead.db}}"
@@ -631,153 +649,13 @@ BACKUP_PATH="$(printf '%s' "$BACKUP_JSON" | jq -er 'if .ok == true and (.path | 
 BASELINE_SEQ="$(sqlite3 -bail "$STATE_DB" "PRAGMA busy_timeout=5000; SELECT COALESCE(MAX(e.seq),0) FROM workflow_run_event e JOIN workflow_rework_request q ON q.run_id=e.run_id WHERE q.request_id='$REQUEST_ID';")"
 ```
 
-先 run 此 read-only probe，并把输出逐字段写入报告。它必须恰好一行，且：delivery
-`state='held' AND last_error='delivery_awaiting_receipt'`；run
-`engine_owned=1 AND status='held'`；route 是 latest；target node 恰为 `admitted` 且
-execution 等于 route actor；path 不存在或恰为 `pending`；同 run 没有
-`workflow_carrier_delivery state='held' AND last_error LIKE 'run_inactive:%'`：
-
-```sh
-sqlite3 -bail -header -column "$STATE_DB" <<SQL
-PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
-SELECT d.request_id,q.run_id,d.generation,d.route_revision,d.state AS delivery_state,
-       d.last_error,r.status AS run_status,r.engine_owned,
-       rr.target_node_id,rr.target_attempt,rr.preferred_actor_execution_id,
-       n.state AS node_state,n.execution_id,p.state AS path_state,
-       (SELECT MAX(x.revision) FROM workflow_rework_route_revision x
-         WHERE x.request_id=d.request_id) AS latest_revision,
-       (SELECT COUNT(*) FROM workflow_carrier_delivery c WHERE c.run_id=q.run_id
-         AND c.state='held' AND c.last_error LIKE 'run_inactive:%') AS held_carriers
-  FROM workflow_rework_delivery d
-  JOIN workflow_rework_request q ON q.request_id=d.request_id
-  JOIN workflow_run r ON r.run_id=q.run_id
-  JOIN workflow_rework_route_revision rr
-    ON rr.request_id=d.request_id AND rr.revision=d.route_revision
-  JOIN workflow_run_node n ON n.run_id=q.run_id
-    AND n.node_id=rr.target_node_id AND n.attempt=rr.target_attempt
-  LEFT JOIN workflow_rework_verification_path p ON p.request_id=d.request_id
- WHERE d.request_id='$REQUEST_ID'
-   AND d.state='held' AND d.last_error='delivery_awaiting_receipt'
-   AND r.engine_owned=1 AND r.status='held'
-   AND d.route_revision=(SELECT MAX(x.revision) FROM workflow_rework_route_revision x
-                          WHERE x.request_id=d.request_id)
-   AND n.state='admitted' AND n.execution_id=rr.preferred_actor_execution_id
-   AND (p.request_id IS NULL OR (p.route_revision=d.route_revision AND p.state='pending'))
-   AND NOT EXISTS (SELECT 1 FROM workflow_carrier_delivery c WHERE c.run_id=q.run_id
-                    AND c.state='held' AND c.last_error LIKE 'run_inactive:%');
-SQL
-```
-
-pane/commit/TURN 必须另行证明 `preferred_actor_execution_id` 已完成这次 rework；不成立
-就是伪造 receipt，按防篡改类停手。若 pane 参与这项事务前真实性证明，只 run
+若 pane 参与事务前真实性证明，只 run
 `TMUX= tmux capture-pane -p -S -40 -t "$TARGET_PANE" | tail -40`；不落原文、不做
 哈希、不与事务前后的输出做前后比较，只在报告写非敏感 `pane_marker=<state>` 与
-`observed_at=<UTC>`。probe 恰好一行后才可 run 下列
-`BEGIN IMMEDIATE`。每个 `patrol_assert_*` 都用 `CHECK(v=1)` 把竞态变成 rollback；新
-route revision 还会重新武装以 revision 为键的 stall watchdog：
+`observed_at=<UTC>`。任何 recipe 的 `BEGIN IMMEDIATE` 事务里，每个 `patrol_assert_*` 都用
+`CHECK(v=1)` 把竞态变成 rollback。
 
-```sh
-sqlite3 -bail "$STATE_DB" <<SQL
-PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
-BEGIN IMMEDIATE;
-CREATE TEMP TABLE patrol_ctx AS
-SELECT d.request_id,q.run_id,d.generation,d.route_revision AS old_revision,
-       d.route_revision+1 AS new_revision,rr.target_node_id,rr.target_attempt,
-       rr.preferred_actor_execution_id,
-       (SELECT COUNT(*) FROM workflow_rework_verification_path p
-         WHERE p.request_id=d.request_id AND p.route_revision=d.route_revision
-           AND p.state='pending') AS path_count
-  FROM workflow_rework_delivery d
-  JOIN workflow_rework_request q ON q.request_id=d.request_id
-  JOIN workflow_run r ON r.run_id=q.run_id
-  JOIN workflow_rework_route_revision rr
-    ON rr.request_id=d.request_id AND rr.revision=d.route_revision
-  JOIN workflow_run_node n ON n.run_id=q.run_id AND n.node_id=rr.target_node_id
-    AND n.attempt=rr.target_attempt AND n.execution_id=rr.preferred_actor_execution_id
- WHERE d.request_id='$REQUEST_ID'
-   AND d.state='held' AND d.last_error='delivery_awaiting_receipt'
-   AND r.engine_owned=1 AND r.status='held' AND n.state='admitted'
-   AND d.route_revision=(SELECT MAX(x.revision) FROM workflow_rework_route_revision x
-                          WHERE x.request_id=d.request_id)
-   AND NOT EXISTS (SELECT 1 FROM workflow_carrier_delivery c WHERE c.run_id=q.run_id
-                    AND c.state='held' AND c.last_error LIKE 'run_inactive:%');
-CREATE TEMP TABLE patrol_assert_preflight(v INTEGER CHECK(v=1));
-INSERT INTO patrol_assert_preflight SELECT COUNT(*) FROM patrol_ctx;
-CREATE TEMP TABLE patrol_assert_path_shape(v INTEGER CHECK(v=1));
-INSERT INTO patrol_assert_path_shape SELECT CASE WHEN path_count IN (0,1) THEN 1 ELSE 0 END FROM patrol_ctx;
-
-INSERT INTO workflow_rework_route_revision
- (request_id,revision,target_node_id,target_attempt,preferred_actor_execution_id,
-  invalidation_scope_json,verification_policy_json,interpreted_by,
-  interpretation_reason,created_at)
-SELECT old.request_id,c.new_revision,old.target_node_id,old.target_attempt,
-       old.preferred_actor_execution_id,old.invalidation_scope_json,
-       old.verification_policy_json,'patrol:FLY-2080',
-       'receipt ledger repair after exact guard proof',datetime('now')
-  FROM patrol_ctx c JOIN workflow_rework_route_revision old
-    ON old.request_id=c.request_id AND old.revision=c.old_revision;
-CREATE TEMP TABLE patrol_assert_route(v INTEGER CHECK(v=1));
-INSERT INTO patrol_assert_route VALUES(changes());
-
-UPDATE workflow_rework_delivery
-   SET route_revision=(SELECT new_revision FROM patrol_ctx),
-       state='wake_delivered',hold_count=0,owner_id=NULL,lease_expires_at=NULL,
-       next_retry_at=NULL,last_error=NULL,updated_at=datetime('now')
- WHERE request_id=(SELECT request_id FROM patrol_ctx)
-   AND route_revision=(SELECT old_revision FROM patrol_ctx)
-   AND state='held' AND last_error='delivery_awaiting_receipt';
-CREATE TEMP TABLE patrol_assert_delivery(v INTEGER CHECK(v=1));
-INSERT INTO patrol_assert_delivery VALUES(changes());
-
-UPDATE workflow_run_node SET state='running'
- WHERE run_id=(SELECT run_id FROM patrol_ctx)
-   AND node_id=(SELECT target_node_id FROM patrol_ctx)
-   AND attempt=(SELECT target_attempt FROM patrol_ctx)
-   AND execution_id=(SELECT preferred_actor_execution_id FROM patrol_ctx)
-   AND state='admitted';
-CREATE TEMP TABLE patrol_assert_node(v INTEGER CHECK(v=1));
-INSERT INTO patrol_assert_node VALUES(changes());
-
-UPDATE workflow_rework_verification_path
-   SET route_revision=(SELECT new_revision FROM patrol_ctx),state='active',updated_at=datetime('now')
- WHERE request_id=(SELECT request_id FROM patrol_ctx)
-   AND route_revision=(SELECT old_revision FROM patrol_ctx) AND state='pending';
-CREATE TEMP TABLE patrol_assert_path(v INTEGER CHECK(v=1));
-INSERT INTO patrol_assert_path
-SELECT CASE WHEN changes()=(SELECT path_count FROM patrol_ctx) THEN 1 ELSE 0 END;
-
-UPDATE workflow_run SET status='active'
- WHERE run_id=(SELECT run_id FROM patrol_ctx) AND engine_owned=1 AND status='held'
-   AND EXISTS (SELECT 1 FROM workflow_rework_delivery d JOIN patrol_ctx c
-                ON c.request_id=d.request_id
-                WHERE d.route_revision=c.new_revision AND d.state='wake_delivered')
-   AND EXISTS (SELECT 1 FROM workflow_run_node n JOIN patrol_ctx c ON c.run_id=n.run_id
-                WHERE n.node_id=c.target_node_id AND n.attempt=c.target_attempt
-                  AND n.execution_id=c.preferred_actor_execution_id AND n.state='running')
-   AND NOT EXISTS (SELECT 1 FROM workflow_rework_verification_path p JOIN patrol_ctx c
-                    ON c.request_id=p.request_id
-                    WHERE p.route_revision<>c.new_revision OR p.state<>'active');
-CREATE TEMP TABLE patrol_assert_run(v INTEGER CHECK(v=1));
-INSERT INTO patrol_assert_run VALUES(changes());
-
-INSERT INTO workflow_run_event(run_id,seq,event_uid,kind,node_id,execution_id,payload,at)
-SELECT run_id,(SELECT COALESCE(MAX(e.seq),0)+1 FROM workflow_run_event e WHERE e.run_id=c.run_id),
-       'patrol:FLY-2080:receipt:'||request_id||':rev'||new_revision,
-       'rework_delivery_wake_delivered',target_node_id,preferred_actor_execution_id,
-       json_object('requestId',request_id,'generation',generation,'from','held',
-         'fromReason','delivery_awaiting_receipt','to','wake_delivered',
-         'routeRevision',new_revision),datetime('now')
-  FROM patrol_ctx c
- WHERE NOT EXISTS (SELECT 1 FROM workflow_run_event e
-                    WHERE e.event_uid='patrol:FLY-2080:receipt:'||c.request_id||':rev'||c.new_revision);
-CREATE TEMP TABLE patrol_assert_event(v INTEGER CHECK(v=1));
-INSERT INTO patrol_assert_event VALUES(changes());
-COMMIT;
-SQL
-```
-
-事务后必须静态复核 delivery=`wake_delivered`、node=`running`、path absent/`active`、
-run=`active`，再等至少一个 reconcile tick 并 run：
+事务后必须静态复核目标账已闭合，再等至少一个 reconcile tick 并 run：
 
 ```sh
 sleep 10
@@ -793,158 +671,19 @@ event”解释为修复失败；仍用上方已校验的 `TARGET_PANE` 做同一
 `next=inspect|repair|retry:<token>`。pane_marker 不能单独支持 `fixed|advanced`。
 predecessor 分支也只认 baseline 后的新非 patrol engine event。
 
-### FLY-2080 附录 B — replacement 铸造漏账完整配方
+### FLY-2080 附录 B — replacement 铸造漏账（FLY-2921 后停用）
 
-输入必须是引擎已经 reserve 的 `NEW_EXECUTION_ID`；本配方绝不创建
-`workflow_actor`、execution、authority、approval 或 claim。先执行与附录 A 相同的
-DB path、受管 repair snapshot 与 event baseline；如需 pane 参与事务前真实性证明或事后
-诊断，也复用附录 A 的字符校验、40 行读取与不落原文合同。再设置并校验：
-
-```sh
-REQUEST_ID='<exact request_id from the read-only probe>'
-NEW_EXECUTION_ID='<engine-reserved replacement execution id>'
-case "$REQUEST_ID:$NEW_EXECUTION_ID" in *[!A-Za-z0-9._:%-]*) exit 64;; esac
-```
-
-read-only probe 必须恰好一组：request/run 存在且 `engine_owned=1`、run
-`status IN ('active','held')`、`base_revision` 是 lowercase 40-hex；latest route 仍
-指旧 execution；delivery 指 latest 非终态 revision；`workflow_actor` 与同
-run/node/attempt 的 `workflow_run_node` 已指向新 execution，node state 在
-`pending|admitted|running`；新 execution 恰好一条且为该 attempt 最大
-`launch_ordinal` 的 dispatch `workflow_side_effect_ledger`，state 是
-`intent_recorded|launch_committed`、reason empty；没有 route 已指向新 execution。
-任一身份事实不存在都按真实性类停手，禁止人工铸造：
-
-```sh
-sqlite3 -bail -header -column "$STATE_DB" <<SQL
-PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
-SELECT q.request_id,q.run_id,q.base_revision,r.engine_owned,r.status AS run_status,
-       d.route_revision,d.state AS delivery_state,d.last_error,
-       old.target_node_id,old.target_attempt,
-       old.preferred_actor_execution_id AS old_execution_id,
-       a.execution_id AS new_execution_id,n.state AS new_node_state,
-       l.launch_ordinal,l.state AS ledger_state,l.reason
-  FROM workflow_rework_request q JOIN workflow_run r ON r.run_id=q.run_id
-  JOIN workflow_rework_delivery d ON d.request_id=q.request_id
-  JOIN workflow_rework_route_revision old ON old.request_id=q.request_id
-    AND old.revision=d.route_revision
-  JOIN workflow_actor a ON a.execution_id='$NEW_EXECUTION_ID'
-    AND a.project_name=r.project_name AND a.issue_id=r.issue_id
-  JOIN workflow_run_node n ON n.run_id=q.run_id AND n.node_id=old.target_node_id
-    AND n.attempt=old.target_attempt AND n.execution_id=a.execution_id
-  JOIN workflow_side_effect_ledger l ON l.run_id=q.run_id
-    AND l.node_id=n.node_id AND l.attempt=n.attempt AND l.kind='dispatch'
-    AND l.execution_id=a.execution_id
- WHERE q.request_id='$REQUEST_ID' AND r.engine_owned=1
-   AND r.status IN ('active','held')
-   AND length(q.base_revision)=40 AND q.base_revision NOT GLOB '*[^0-9a-f]*'
-   AND d.route_revision=(SELECT MAX(x.revision) FROM workflow_rework_route_revision x
-                          WHERE x.request_id=q.request_id)
-   AND d.state NOT IN ('completed','needs_lead')
-   AND n.state IN ('pending','admitted','running')
-   AND l.launch_ordinal=(SELECT MAX(x.launch_ordinal) FROM workflow_side_effect_ledger x
-                         WHERE x.run_id=l.run_id AND x.node_id=l.node_id
-                           AND x.attempt=l.attempt AND x.kind='dispatch')
-   AND l.state IN ('intent_recorded','launch_committed')
-   AND (l.reason IS NULL OR trim(l.reason)='')
-   AND NOT EXISTS (SELECT 1 FROM workflow_rework_route_revision x
-                    WHERE x.request_id=q.request_id
-                      AND x.preferred_actor_execution_id=a.execution_id);
-SQL
-```
-
-只有恰好一行才 run 主事务。它将 dispatch reason 补为
-`rework_replacement:<requestId>`，append 指向新 execution 的 route revision，
-delivery→`replacement_pending`，同步可选 path；仅当同一 delivery
-`last_error='delivery_replacement_pending'` 导致 run held 才恢复 active。held carrier
-存在则 preflight 为零行、整单 rollback：
-
-```sh
-sqlite3 -bail "$STATE_DB" <<SQL
-PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
-BEGIN IMMEDIATE;
-CREATE TEMP TABLE patrol_ctx AS
-SELECT q.request_id,q.run_id,q.base_revision,d.route_revision AS old_revision,
-       d.route_revision+1 AS new_revision,d.state AS old_delivery_state,d.last_error,
-       old.target_node_id,old.target_attempt,'$NEW_EXECUTION_ID' AS new_execution_id,
-       l.launch_ordinal,l.state AS ledger_state,
-       (SELECT COUNT(*) FROM workflow_rework_verification_path p
-         WHERE p.request_id=q.request_id AND p.route_revision=d.route_revision
-           AND p.state IN ('pending','active')) AS path_count,
-       CASE WHEN r.status='held' AND d.last_error='delivery_replacement_pending' THEN 1 ELSE 0 END AS wake_run
-  FROM workflow_rework_request q JOIN workflow_run r ON r.run_id=q.run_id
-  JOIN workflow_rework_delivery d ON d.request_id=q.request_id
-  JOIN workflow_rework_route_revision old ON old.request_id=q.request_id AND old.revision=d.route_revision
-  JOIN workflow_actor a ON a.execution_id='$NEW_EXECUTION_ID'
-    AND a.project_name=r.project_name AND a.issue_id=r.issue_id
-  JOIN workflow_run_node n ON n.run_id=q.run_id AND n.node_id=old.target_node_id
-    AND n.attempt=old.target_attempt AND n.execution_id=a.execution_id
-  JOIN workflow_side_effect_ledger l ON l.run_id=q.run_id AND l.node_id=n.node_id
-    AND l.attempt=n.attempt AND l.kind='dispatch' AND l.execution_id=a.execution_id
- WHERE q.request_id='$REQUEST_ID' AND r.engine_owned=1 AND r.status IN ('active','held')
-   AND length(q.base_revision)=40 AND q.base_revision NOT GLOB '*[^0-9a-f]*'
-   AND d.route_revision=(SELECT MAX(x.revision) FROM workflow_rework_route_revision x WHERE x.request_id=q.request_id)
-   AND d.state NOT IN ('completed','needs_lead') AND n.state IN ('pending','admitted','running')
-   AND l.launch_ordinal=(SELECT MAX(x.launch_ordinal) FROM workflow_side_effect_ledger x
-                         WHERE x.run_id=l.run_id AND x.node_id=l.node_id AND x.attempt=l.attempt AND x.kind='dispatch')
-   AND l.state IN ('intent_recorded','launch_committed') AND (l.reason IS NULL OR trim(l.reason)='')
-   AND NOT EXISTS (SELECT 1 FROM workflow_rework_route_revision x WHERE x.request_id=q.request_id AND x.preferred_actor_execution_id=a.execution_id)
-   AND NOT EXISTS (SELECT 1 FROM workflow_carrier_delivery c WHERE c.run_id=q.run_id AND c.state='held');
-CREATE TEMP TABLE patrol_assert_preflight(v INTEGER CHECK(v=1));
-INSERT INTO patrol_assert_preflight SELECT COUNT(*) FROM patrol_ctx;
-CREATE TEMP TABLE patrol_assert_path_shape(v INTEGER CHECK(v=1));
-INSERT INTO patrol_assert_path_shape SELECT CASE WHEN path_count IN (0,1) THEN 1 ELSE 0 END FROM patrol_ctx;
-
-UPDATE workflow_side_effect_ledger SET reason='rework_replacement:'||'$REQUEST_ID',updated_at=datetime('now')
- WHERE run_id=(SELECT run_id FROM patrol_ctx) AND node_id=(SELECT target_node_id FROM patrol_ctx)
-   AND attempt=(SELECT target_attempt FROM patrol_ctx) AND kind='dispatch'
-   AND launch_ordinal=(SELECT launch_ordinal FROM patrol_ctx)
-   AND execution_id=(SELECT new_execution_id FROM patrol_ctx)
-   AND state=(SELECT ledger_state FROM patrol_ctx) AND (reason IS NULL OR trim(reason)='');
-CREATE TEMP TABLE patrol_assert_ledger(v INTEGER CHECK(v=1));
-INSERT INTO patrol_assert_ledger VALUES(changes());
-
-INSERT INTO workflow_rework_route_revision
- (request_id,revision,target_node_id,target_attempt,preferred_actor_execution_id,
-  invalidation_scope_json,verification_policy_json,interpreted_by,interpretation_reason,created_at)
-SELECT old.request_id,c.new_revision,old.target_node_id,old.target_attempt,c.new_execution_id,
-       old.invalidation_scope_json,old.verification_policy_json,'patrol:FLY-2080',
-       'replacement ledger repair after exact guard proof',datetime('now')
-  FROM patrol_ctx c JOIN workflow_rework_route_revision old
-    ON old.request_id=c.request_id AND old.revision=c.old_revision;
-CREATE TEMP TABLE patrol_assert_route(v INTEGER CHECK(v=1));
-INSERT INTO patrol_assert_route VALUES(changes());
-
-UPDATE workflow_rework_delivery
-   SET route_revision=(SELECT new_revision FROM patrol_ctx),state='replacement_pending',
-       hold_count=0,owner_id=NULL,lease_expires_at=NULL,next_retry_at=NULL,
-       last_error=NULL,updated_at=datetime('now')
- WHERE request_id=(SELECT request_id FROM patrol_ctx)
-   AND route_revision=(SELECT old_revision FROM patrol_ctx)
-   AND state=(SELECT old_delivery_state FROM patrol_ctx);
-CREATE TEMP TABLE patrol_assert_delivery(v INTEGER CHECK(v=1));
-INSERT INTO patrol_assert_delivery VALUES(changes());
-
-UPDATE workflow_rework_verification_path
-   SET route_revision=(SELECT new_revision FROM patrol_ctx),updated_at=datetime('now')
- WHERE request_id=(SELECT request_id FROM patrol_ctx)
-   AND route_revision=(SELECT old_revision FROM patrol_ctx) AND state IN ('pending','active');
-CREATE TEMP TABLE patrol_assert_path(v INTEGER CHECK(v=1));
-INSERT INTO patrol_assert_path SELECT CASE WHEN changes()=(SELECT path_count FROM patrol_ctx) THEN 1 ELSE 0 END;
-
-UPDATE workflow_run SET status='active'
- WHERE run_id=(SELECT run_id FROM patrol_ctx) AND engine_owned=1 AND status='held'
-   AND (SELECT wake_run FROM patrol_ctx)=1;
-CREATE TEMP TABLE patrol_assert_run(v INTEGER CHECK(v=1));
-INSERT INTO patrol_assert_run SELECT CASE WHEN changes()=(SELECT wake_run FROM patrol_ctx) THEN 1 ELSE 0 END;
-COMMIT;
-SQL
-```
-
-主事务后重读 dispatcher replacement guard：reason prefix、request/run、route
-node/attempt/execution、delivery revision/state 与 base SHA 必须同时成立。再用附录 A 的
-baseline event gate 验证 Bridge launch/advance；只见 rows changed 不算接力。同步遵守
-附录 A 的 event-empty 诊断合同：pane_marker 只能决定下一动作，不能单独过完成门。
+**FLY-2921 之后本配方不再执行。** 投给死体不再是失败：返工协调器在认领该行的同一次处理里
+自己铸好替身（终结死会话、撤凭据、分配启动序号 reason=`rework_replacement:<requestId>`、
+节点换新 execution、追加指向新体的 route revision），再把投递拨回 `pending` 重投。
+「替身已铸、待引擎接上」这个中间态不存在了，遗留行已由迁移映射为 `pending`，「引擎已
+reserve 新 execution、route/delivery 却没跟上」的漏账也不会再产生。重试或换体预算用完时，
+协调器只会结算成 `returned_to_lead`，处置按附录 A：
+`flywheel-comm hold resume --run <runId> --shape rework_returned_to_lead --hold-event <eventUid> --reason "<note>"`
+重投；要改返工内容走 founder `/rework`；放弃则 terminate。巡检绝不手工创建
+`workflow_actor`、execution、route revision 或 dispatch ledger reason，也不手工改
+`workflow_rework_delivery`。附录 A 的共享配管（受管 DB path、id 字符集校验、受管 repair
+snapshot、event baseline、有界 pane 诊断合同）仍供下面的 predecessor 事件分支使用。
 
 #### 仅限 `engine_predecessor_unavailable` 的 predecessor 事件分支
 

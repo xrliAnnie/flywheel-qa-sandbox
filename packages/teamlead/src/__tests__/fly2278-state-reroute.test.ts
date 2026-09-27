@@ -107,9 +107,9 @@ async function setupRework(
 	);
 	db.prepare(
 		`INSERT INTO workflow_rework_delivery
-		   (request_id, route_revision, state, updated_at)
-		 VALUES (?, 1, 'awaiting_receipt', ?)`,
-	).run(requestId, "2026-09-03T17:00:00.000Z");
+		   (request_id, route_revision, state, wake_sent_at, updated_at)
+		 VALUES (?, 1, 'turn_granted', ?, ?)`,
+	).run(requestId, "2026-09-03T17:00:00.000Z", "2026-09-03T17:00:00.000Z");
 	expect(store.baselineWorkflowDeliveryContracts(now).minted).toBe(1);
 	const attempt = store
 		.listLiveWorkflowDeliveryAttempts()

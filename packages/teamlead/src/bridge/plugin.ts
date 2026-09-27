@@ -15197,6 +15197,16 @@ export async function startBridge(
 			ownerId: `bridge:${process.pid}`,
 			nodeStandbyResumeEnabled: () => storeNodeStandbyResumeEnabled(flagStore),
 			reentryEnabled: () => storeWorkflowReworkReentryEnabled(flagStore),
+			// FLY-2921: a minted replacement that never launches counts as a
+			// stall after the dispatcher's own unlaunched-rollback threshold.
+			replacementLaunchStallMs: () => {
+				const configured = Number(
+					process.env.FLYWHEEL_ENGINE_UNLAUNCHED_ROLLBACK_MS,
+				);
+				return Number.isFinite(configured) && configured > 0
+					? configured
+					: 10 * 60_000;
+			},
 			resolveAlertIdentity: (run) =>
 				resolveWorkflowRunAlertIdentity({
 					store,
@@ -15363,6 +15373,19 @@ export async function startBridge(
 						ok: result.closed || result.alreadyGone === true,
 						...(result.error ? { error: result.error } : {}),
 					};
+				},
+				rearmReworkWake: async ({ projectName, wakeId, receiptId }) => {
+					const db = new CommDB(commDbPathForProject(projectName));
+					try {
+						const rearmed = db.resumeTurnWakeHold({
+							sourceId: wakeId,
+							receiptId,
+							nowMs: Date.now(),
+						});
+						return { kind: rearmed.kind };
+					} finally {
+						db.close();
+					}
 				},
 				hasTurnSource: async ({ issueId, projectName, sourceEventId }) => {
 					const db = new CommDB(commDbPathForProject(projectName));

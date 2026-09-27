@@ -324,6 +324,13 @@ export class DeliveryOperations {
 						}
 						if (operation.shape === "delivery_undeliverable_no_recipient") {
 							if (!operation.family || !operation.rootId) {
+								// FLY-2921 C4.6: an operation whose source cannot be resolved
+								// would otherwise be skipped on every pass and sit staged forever.
+								this.deps.store.markWorkflowHoldResumeFailed({
+									operationId: operation.operationId,
+									now: _now,
+									error: "delivery_operation_source_unresolved",
+								});
 								continue;
 							}
 							if (operation.state === "applied") {
@@ -581,14 +588,37 @@ export class DeliveryOperations {
 											: operation.family === "turn_wake"
 												? this.deps.commDb.cancelTurnWakeDelivery(cancellation)
 												: undefined;
-									if (!cancelled) continue;
-									if (!cancelled.ok) continue;
+									// FLY-2921 C4.6: a staged cancel must land applied or failed
+									// with a precise reason within one pass; never stay staged.
+									if (!cancelled) {
+										this.deps.store.markWorkflowHoldResumeFailed({
+											operationId: operation.operationId,
+											now: _now,
+											error: `delivery_cancel_unsupported_for_family:${operation.family}`,
+										});
+										continue;
+									}
+									if (!cancelled.ok) {
+										this.deps.store.markWorkflowHoldResumeFailed({
+											operationId: operation.operationId,
+											now: _now,
+											error: `delivery_cancel_rejected:${cancelled.reason}`,
+										});
+										continue;
+									}
 									const applied =
 										this.deps.store.applyWorkflowDeliveryCancellation({
 											operationId: operation.operationId,
 											now: _now,
 										});
-									if (!applied.ok) continue;
+									if (!applied.ok) {
+										this.deps.store.markWorkflowHoldResumeFailed({
+											operationId: operation.operationId,
+											now: _now,
+											error: `delivery_cancel_apply_rejected:${applied.reason}`,
+										});
+										continue;
+									}
 								}
 							}
 							this.deps.store.projectWorkflowHoldResume({
@@ -607,12 +637,25 @@ export class DeliveryOperations {
 										now: _now,
 									});
 									break;
-								case "three_stage_turn_stuck":
-									this.deps.commDb.resumeTurnWakeHold({
+								case "three_stage_turn_stuck": {
+									const resumed = this.deps.commDb.resumeTurnWakeHold({
 										sourceId: operation.physicalId,
 										receiptId: operation.operationId,
+										nowMs: Date.parse(_now),
 									});
+									if (resumed.kind === "busy") {
+										// FLY-2921: a live patrol push claim owns the row and the
+										// reset did not execute. Keep the operation staged (no
+										// applied/projected this pass) so the next pass retries;
+										// settling now would mark the door handled without the
+										// reset ever happening.
+										console.warn(
+											`[delivery-operations] hold resume ${operation.operationId} deferred: turn_wake_push_claim_live`,
+										);
+										continue;
+									}
 									break;
+								}
 								default:
 									continue;
 							}

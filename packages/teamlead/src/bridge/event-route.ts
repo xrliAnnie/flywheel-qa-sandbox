@@ -47,6 +47,7 @@ import {
 	type Session,
 	type StateStore,
 	type WorkflowCompletionActivationContext,
+	type WorkflowReworkCompletionEvidence,
 } from "../StateStore.js";
 import { normalizeTerminalFailureInfo } from "../terminal-failure-info.js";
 import {
@@ -131,6 +132,10 @@ import { handleProofShotAutoTrigger } from "./proofshot-trigger.js";
 import { resolveBoundRepositoryAuthority } from "./repository-authority.js";
 import type { ReviewAuthorizationAlerts } from "./review-authorization-alerts.js";
 import { isReviewHeld } from "./review-hold.js";
+import {
+	buildReworkCompletionEvidence,
+	reworkDeltaTimeoutMs,
+} from "./rework-completion-evidence.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import {
 	parseDeclaredPrEvidence,
@@ -2217,6 +2222,39 @@ export function createEventRouter(
 						}
 					}
 				}
+				// FLY-2921 C7 (FLY-2202 / FLY-2472): when this completion closes an
+				// open rework target on a needs_review node via its success route,
+				// prove server-side that the captured head is a new commit with a
+				// product change. `completionHead` above is the immutable capture
+				// the transition also binds as `subjectDigest`; the evidence never
+				// reads anything from the runner payload.
+				let reworkEvidence: WorkflowReworkCompletionEvidence | undefined;
+				if (
+					generalizedContext &&
+					completionRoute === "needs_review" &&
+					generalizedContext.node.capabilities.completion_route ===
+						"needs_review"
+				) {
+					const openTarget = store.resolveOpenWorkflowReworkTarget({
+						runId: generalizedContext.run.run_id,
+						nodeId: generalizedContext.binding.node_id,
+						attempt: generalizedContext.binding.attempt,
+					});
+					if (openTarget && !openTarget.conflict) {
+						reworkEvidence = await buildReworkCompletionEvidence({
+							requestId: openTarget.requestId,
+							baseRevision: openTarget.request.base_revision,
+							head: completionHead,
+							repoPath: completionRepoPath,
+							timeoutMs: reworkDeltaTimeoutMs(),
+						});
+						if (reworkEvidence.delta === "unverified") {
+							console.warn(
+								`[event-route] rework delta for ${event.execution_id} (${openTarget.requestId}) is unverified: head ${reworkEvidence.head ?? "unresolved"} vs base ${openTarget.request.base_revision}`,
+							);
+						}
+					}
+				}
 				const drainEnvelope = parseCompletionDrainEnvelope(event.payload);
 				if (!drainEnvelope.ok) {
 					res.status(409).json({
@@ -2236,6 +2274,7 @@ export function createEventRouter(
 						completionSubmission: drainEnvelope.completionSubmission,
 						...(drainProof ? { drainProof } : {}),
 						...(completionHead ? { subjectDigest: completionHead } : {}),
+						...(reworkEvidence ? { reworkEvidence } : {}),
 						...(workflowActivation ? { workflowActivation } : {}),
 						...(prBinding ? { prBinding } : {}),
 						...(worktreeBranchObservation ? { worktreeBranchObservation } : {}),

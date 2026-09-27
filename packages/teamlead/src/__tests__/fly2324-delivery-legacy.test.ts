@@ -1221,11 +1221,13 @@ describe("FLY-2324 legacy delivery reachability", () => {
 			         'versionless-rework-recipient', '[]', '{}', 'test',
 			         'legacy fixture', '2026-09-01T00:00:00.000Z')`,
 		).run();
+		// FLY-2921: "wake pushed, receipt outstanding" is `turn_granted` plus the
+		// `wake_sent_at` fact (the old `awaiting_receipt` state is gone).
 		db.prepare(
 			`INSERT INTO workflow_rework_delivery
-			   (request_id, route_revision, state, updated_at)
-			 VALUES ('versionless-rework', 1, 'awaiting_receipt',
-			         '2026-09-01T00:00:00.000Z')`,
+			   (request_id, route_revision, state, wake_sent_at, updated_at)
+			 VALUES ('versionless-rework', 1, 'turn_granted',
+			         '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z')`,
 		).run();
 		const rootId = "flywheel:FLY-2324:rework:versionless-rework";
 		const attemptId = `${rootId}:g1:a1`;

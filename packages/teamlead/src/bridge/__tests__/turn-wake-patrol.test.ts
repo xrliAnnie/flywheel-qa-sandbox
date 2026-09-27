@@ -166,6 +166,78 @@ describe("drainTurnWakeOutbox", () => {
 		db.close();
 	});
 
+	it("FLY-2921: waiting wakes never starve a later due wake, pass after pass", async () => {
+		// Codex code review R3: rows that wait for a Lead resume used to spend
+		// the per-project budget, so maxPerProject old waiting rows blocked
+		// every later wake of the project forever.
+		const dir = mkdtempSync(join(tmpdir(), "fly2921-wake-no-starve-"));
+		dirs.push(dir);
+		const path = join(dir, "comm.db");
+		const seed = new CommDB(path);
+		// Far more waiting rows than one pass's delivery budget: the pass scans
+		// forward past them (no threshold at which waits start to count).
+		const waiting = Array.from(
+			{ length: 25 },
+			(_, index) => `wake-wait-${String(index).padStart(2, "0")}`,
+		);
+		for (const [index, wakeId] of waiting.entries()) {
+			seed.enqueueTurnWake({
+				wakeId,
+				executionId: `exec-${wakeId}`,
+				issueId: "FLY-2921",
+				epoch: 1,
+				purpose: "workflow_rework",
+				envelope: { fromAgent: "bridge", content: wakeId },
+				backend: "codex",
+				createdAtMs: 1_700_000_000_000 + index,
+			});
+		}
+		seed.enqueueTurnWake({
+			wakeId: "wake-ready",
+			executionId: "exec-wake-ready",
+			issueId: "FLY-2921",
+			epoch: 1,
+			purpose: "workflow_rework",
+			envelope: { fromAgent: "bridge", content: "wake-ready" },
+			backend: "codex",
+			createdAtMs: 1_700_000_000_100,
+		});
+		seed.close();
+		const wake = vi.fn(async () => ({ ok: true }));
+		const canDeliver = async (row: TurnWakeOutboxRow) => ({
+			disposition: waiting.includes(row.wake_id)
+				? ("wait" as const)
+				: ("deliver" as const),
+		});
+		for (const nowMs of [1_700_000_000_200, 1_700_000_400_000]) {
+			await drainTurnWakeOutbox({
+				projectNames: ["flywheel"],
+				commDbPathForProject: () => path,
+				wake,
+				nowMs,
+				maxPerProject: 3,
+				canDeliver,
+			});
+		}
+		// The ready wake got its first push and, past the retry delay, its second.
+		expect(
+			wake.mock.calls.map((call) => (call[0] as { execId: string }).execId),
+		).toEqual(["exec-wake-ready", "exec-wake-ready"]);
+		const db = new CommDB(path);
+		try {
+			expect(db.getTurnWake("wake-ready")).toMatchObject({ push_count: 2 });
+			for (const wakeId of waiting) {
+				expect(db.getTurnWake(wakeId)).toMatchObject({
+					state: "pending",
+					push_count: 0,
+					claim_token: null,
+				});
+			}
+		} finally {
+			db.close();
+		}
+	});
+
 	it("at T+180s performs the one verified retry, one Codex pointer, and alerts immediately when the pointer fails", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "fly1940-turn-pointer-"));
 		dirs.push(dir);
