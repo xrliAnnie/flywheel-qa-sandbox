@@ -246,3 +246,35 @@ socket 达到 106 bytes（超过 SUN_LEN 103）；改用任务专用短临时根
 与 teardown 在发信号前复验同一房间身份和 receipt/PID/argv。普通部署没有这些开关，
 本轮 QA seam 提交也没有修改 `packages/*/src`。exact-head 全量 CI 与 529 真房七场景
 仍由 QA 冻结头执行。
+
+## 11. QA@4 native usageLimited 移交标记返工（2026-09-27）
+
+QA 在 exact head `e20b0c440` 的真实 529 房通过其余 release-N 生命周期场景后发现：
+第一次 HTTP 429 已持久化 `upstreamRetryEpisode.attempts=1`，重试过程中引擎直接把
+goal 更新为 `usageLimited` 时，client 从通用终态分支直接返回，未走只挂在
+`blocked` 分支下的 quota handoff，因此既有 episode 没有升级为
+`quotaExhausted=true`。修复把 quota handoff 提升为两个终态入口共用的持久化路径；
+native `usageLimited` 会先按现有 crash-recovery 规则核对持久 episode 与 thread 最后
+失败回合，再写移交标记并交额度治理。没有改变其他终态、退避或额度治理语义。
+
+TDD 与本地相关验证：
+
+| 所有者 | 测试 / 检查 | 结果 |
+|---|---|---|
+| claude-runner | `test/codex-daemon-client.test.ts`（RED） | 新场景缺 `quotaExhausted:true`，108/109 通过 |
+| claude-runner | `test/codex-daemon-client.test.ts`（GREEN） | 109/109 通过 |
+| claude-runner | `test/codex-daemon-goal-runtime.test.ts` | 65/65 通过 |
+| claude-runner | `test/CodexTmuxAdapter.test.ts` | 189/189 通过 |
+| claude-runner + dependencies | `pnpm --filter "flywheel-claude-runner..." build` | 通过 |
+| changed files | Biome、`git diff --check` | 通过 |
+| repository | `pnpm lint` | exit 0；仅未改文件的既存 warning |
+
+changed-TypeScript `vitest related` 选中 11 个文件：10 个文件、572 项通过；唯一非绿
+文件 `codex-daemon-runtime.test.ts` 有 6 个与本次逻辑无关的宿主环境失败，其中 2 个
+真实进程探针为 `spawnSync ps EPERM`，4 个 adoption fixture 因默认 macOS 临时根令
+socket 达 106 bytes、超过 SUN_LEN 103。精确回归、goal runtime 与 adapter 均全绿；
+未把环境失败冒充产品回归，也未改这些无关路径。字面量/路径 discovery 命中的历史
+设计文档与 `claude-profile.test.ts` 的 `quotaExhaustedUntil` 属不同账号池合同，排除；
+`usageLimited` 的 daemon adapter、goal runtime、quota preflight 等直接消费者已由上述
+逐文件测试和 related 选择覆盖。新 head 的 exact-head full CI 与真房 quota 场景复测
+仍由 QA 执行。
