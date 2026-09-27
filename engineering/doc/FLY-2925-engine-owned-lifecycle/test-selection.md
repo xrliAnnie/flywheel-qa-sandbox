@@ -52,3 +52,19 @@ Issue: FLY-2925 (https://linear.app/geoforge3d/issue/FLY-2925/病根修复-7-cod
 - `pnpm --filter "flywheel-teamlead..." build` 通过；claude-runner 与 teamlead `tsc --noEmit` 通过；`pnpm lint` 改动文件干净（仓库其余错误在未改动文件中）。
 - 本机负载在验证期间为 80–117（多 runner 并发）。时间敏感的 Bridge 启动类用例（`runs-route-registration`）与部分 event-route completion 用例出现超时；它们不经过本 PR 改动的分支，最终以精确 head CI 为准。
 - 需要真实 Codex 的验收（活 daemon 被接管、blocked/429 不判死、旧 goal_blocked 重放不判终态）未在本机执行，交 QA 在 Codex 房间验证，见 PR test plan。
+
+## 6. QA@1 返工（2026-09-26，attempt 2）
+
+QA 判决：精确 head f8f0ba0c9 的全量 CI 仅 `Unit (heavy)` 中 `packages/claude-runner/test/kill-path-inventory.test.ts` 两条断言失败——`adoptCodexDaemon` 新增的两处 `child.kill(...)` 文本调用未落在审计出口。修复：两处改为直接调用同一个审计过的 `createDefaultKillGroup` 包装（`signalGroup`），清单保持 773 条、无需改 golden。529 真实 Codex 场景因 slot 2 launcher 所有权记录与实际监听不一致而未执行（QA 判为台架问题，由 Lead 修 slot）。
+
+同步合并 origin/main（2 个提交，无冲突、锁文件未变），重建 `flywheel-teamlead...`，逐文件复跑：
+
+| 包 | 测试文件 | 结果 |
+|---|---|---|
+| claude-runner | kill-path-inventory | 5/5 |
+| claude-runner | codex-daemon-client / goal-runtime / runtime / CodexTmuxAdapter / forward-compat | 108 / 65 / 125 / 180 / 5 全过 |
+| teamlead | event-route / event-route.codex-trigger / runs-route-generalized-pending | 114 / 30 / 11 全过 |
+| teamlead | runs-route.dag-entry | 74/74（负载 110–152 时一次 73/74，失败用例单跑两次通过、整文件复跑全过） |
+| teamlead | codex-session-reown / wiring / run-infra-codex-recovery / HeartbeatService.zombie-reconcile / DirectEventSink.dag-seam | 59 / 10 / 10 / 43 / 13 全过 |
+
+claude-runner 与 teamlead `tsc --noEmit` 干净。
