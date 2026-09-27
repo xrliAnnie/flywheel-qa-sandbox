@@ -23,6 +23,13 @@ request `d2c3ca1b-d42d-4405-8d3c-6103af5152e2`，plan blob `d427730d18dda2a2350a
 1. MEDIUM A8 把 gh 不可用一边记 unverifiable 一边写 `A1-A8 PASS`，空响应又误判成 head 不匹配 → A8 三态（PASS / UNVERIFIABLE / BLOCKED），JSON 与字段形态逐项检查，所有输出统一 `A1-A7 PASS; A8=<状态>`。
 2. LOW 报告把 409 reason 写成兜底值 `recovery_preflight_failed` → 改为「HTTP 409 保留具体 reason；上下文无效为 `engine_rework_replacement_context_invalid`」。
 
-## Round 3
+## Round 3 — APPROVED（有效评审）
 
-结果在收到后追加。
+request `16de6265-85ff-4760-a120-5d785dadb51d`，plan blob `ad33389ffe306853bc5c23d4a263f9d894491e2e`（提交 9dad40707），turn `01a0e3b1-7f6d-72a1-a69b-f344aaad5a96`；findings 全零。R2 两项 CLOSED：A8 三态在 8 个隔离场景下分类正确；409 reason 与实现头源码一致。Codex 本轮独立跑了完整 DRY_RUN（A1–A7 与 A8 PASS，生产 PR 正文缺 `92e28887` 如实列出）。
+
+批准的是「按该 verify-then-submit 合同进入 implement」，不是对生产实现的 QA、CI 或可合并性批准。
+
+## 非阻塞 Follow-ups（交 Lead）
+
+- 生产 PR #1374 正文缺最新复审 ID `92e28887`（沙箱 runner 不编辑生产 PR）。
+- Lead 问题 `0d73b791`（交卷 lane）无答复时 implement 节点按 Lane A。

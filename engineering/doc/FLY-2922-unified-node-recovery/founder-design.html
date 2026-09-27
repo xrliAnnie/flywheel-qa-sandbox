@@ -122,7 +122,7 @@ th{background:#f5f5f7}
 <p><b>做了：</b>审计沙箱基线与镜像分支；把 Lead 的交接写成一个可直接执行的脚本（八条只读断言在本机今天以 DRY_RUN 全部 PASS）；把 QA 三条判据与四条 MEDIUM 处置写明；三张图本地渲染。</p>
 <p><b>没做：</b>没有改任何代码；没有跑任何实现测试；没有在沙箱开 PR；没有验证九张原单的修复行为——那是实现头自己的复审与 QA 的事，本页不替它们背书。</p>
 <p><b>已知不确定：</b>向 Lead 提了一个非阻塞问题（交卷的 PR 证据用生产 PR 还是沙箱另开），无答复时按 Lane A 执行；<span class="term">full CI</span>（整套自动化测试）只能在生产仓对精确头跑，取证命令必须在生产仓目录下执行，由有该权限的一侧（QA 或 Lead 宿主侧）完成；拿不到证据不判 PASS；<span class="term">529 N-to-N</span>（在隔离测试房里用真实执行体和真实 Discord 走一遍）由 Lead 在宿主侧起房代跑。</p>
-<p class="muted">评审记录：设计评审门请求 023e256d，评审模型 gpt-6-astra / xhigh；轮次与结论见同文件夹 review-result.md。</p>
+<p class="muted">评审记录：设计评审由 Bridge 指定的 gpt-6-astra / xhigh 做了 3 轮（第 1 轮 1 HIGH 5 MEDIUM、第 2 轮 1 MEDIUM 1 LOW、第 3 轮 APPROVED 零 finding），有效请求 16de6265；逐条处置见同文件夹 review-result.md 与 plan.md §9–§10。</p>
 <label for="c-boundary">这一节的意见</label>
 <textarea id="c-boundary" data-comment="boundary" placeholder="写下意见，自动保存在本浏览器"></textarea>
 </section>

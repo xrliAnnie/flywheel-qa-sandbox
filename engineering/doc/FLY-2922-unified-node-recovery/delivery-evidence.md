@@ -24,8 +24,12 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 
 - 首轮 request `023e256d-3188-44b1-9a59-a5848b7b547b`，thread `01a0e2e9-4f98-7502-b116-d377dd2fd8d6`，round 1 CHANGES_REQUESTED（high=1, medium=5），处置见 plan §9。
 - 第二轮 request `d2c3ca1b-d42d-4405-8d3c-6103af5152e2`（plan blob `d427730d1`）CHANGES_REQUESTED（medium=1 low=1），处置见 plan §10。
-- 第三轮结果在收到后追加于 review-result.md。
+- 第三轮 request `16de6265-85ff-4760-a120-5d785dadb51d`（plan blob `ad33389ff`）APPROVED，findings 全零；`design-review.json` 已按 manifest :4 写入，`await-codex-gate design` 结果见下方「门与发布」。
 
 ## 边界
 
 未运行实现测试、未验证九类修复行为、未在沙箱开 PR、未改任何代码；生产 PR #1374 只读核对。托管发布与报告在评审通过后追加。
+
+## 门与发布
+
+（await-codex-gate / publish-report / 报告收据在执行后追加。）
