@@ -555,3 +555,15 @@ Bridge 的 `createLegacyProcessBindingPreparer` 读取既有 Claude session.json
 B12 最终本地验证：25个具体文件640 pass；retention guard10 pass；claude-runner bounded related5文件168 pass、teamlead bounded related12文件399 pass（合计17文件567 pass）。`pnpm --filter flywheel-teamlead... build`、teamlead tsc、voice-codex typecheck 全0；lint首轮1处新增 owner 测试格式错误，格式化该处后最终0错误/26既有warnings，该文件再跑45 pass。格式化前后 TypeScript AST结构及字面值相同（trailing comma 导致token序列变化，不伪称token相同）；其余11份TS源码hash未变。`implementation-b12-evidence.json.gz` 保存12文件当前hash、格式化映射、命令/退出码和红绿原始日志；`implementation-b12-consumers.json.gz` 保存26项保留文件及300项排除命中与原因。无本机全套测试、PR CI或529证据。
 
 后续只读审计：`run-quiescence.ts` 的生产调用包括 close-runner 三处、lifecycle-closeout、post-merge、plugin close-tmux/pane-loss/quota、runs-route 三处、codex-quota/run-recovery、workflow-template-selection。`StateStore.validateRunQuiescenceEvidenceTx` 已由既有 founder 指令停用；本单不得顺手重启普通 gate。真正 needs_lead rework 的严格校验为旁边独立方法，后续必须把最终死亡事实/无体受信例外接到其现有事务边界，而非追加平行 gate。此段是未实施库存，不是完成声明。
+
+### B13：同物理代次的逻辑 activation 重入
+
+定位到四个断点：共同观测器直接用 owner 的启动 activation；convergence 也从该启动 activation 捕获初始 run；StateStore 死亡事务与已投影死亡读取要求 owner.activation 等于当前死亡 activation；CommDB 投影 verifier 同样要求二者相等。这把启动时的物理接纳身份误当作永久逻辑归属，使同进程进入下一次 wake activation 后可靠死亡无法结账，且采样期间重入仍得到旧逻辑 dead 样本。
+
+保留物理 owner 的原 activation、token、spawn_epoch、binding digest，不改凭证、不重新 spawn、不放松 beginSpawn/restart/close 的原物理身份守卫。新增只读 `resolveExecutionBodyActivation`：原接纳 binding 必须仍属于本 execution，所有时间必须可解释，按不可变绑定解析唯一最新归属；同一节点同一时刻用 attempt 定序，不同节点同一时刻或时间/attempt 互相矛盾则拒绝。只读归属同时供 observer 的前后快照、最终死亡事务、持久死亡事实读取和投影复核使用。终态 run/session 标签不删除物理收体所需身份；最终死亡仍要求 current node/attempt/execution、generation、owner/spawn/binding、生命周期版本、开关、marker 和 TURN/Comm 身份守卫。
+
+因果 RED 两项：同物理体 reentry 后观测仍为 activation-1；OS await 中发生 reentry 后旧样本仍 dead。实现后同断言 GREEN。追加时间精度负控发现同节点同一时刻的合法高 attempt 被误拒绝，1 RED→GREEN，仅为该节点按 attempt 定序。31项跨库集成文件全部通过，覆盖旧逻辑 completion 不保住新任务、当前 completion 保留、采样/marker 对账期间重入拒绝、活 worker 仍 alive、原物理身份不重写、投影/replay及缺失/歧义拒绝。另在既有 generalized-execution 文件新增真实 admission→completion→wake 用例，确认实际接纳第二 activation 后 resolver 指向新逻辑，而原 owner 行不变；该测试不是 OS/529 验证。完整19文件定向、related/build/types/lint 尚在本批执行，最终结果见后文。
+
+本批未解决旧 Codex 从未登记的 controller、ordinary/rework 的剩余结账路径或其它窗口消费者；不会用无 binding / 无内存 handle 作为死亡证明。后续仍是原 A–F/九单范围，非实现交卷。
+
+B13 最终验证：19个具体文件566 pass，bounded related11文件468 pass，retention10 pass，affected+dependencies build、teamlead tsc、voice-codex typecheck、lint全0（26既有warnings）。另将此前未解决的 A9 `runs-route-registration.test.ts` 按原15秒限制完整单文件重跑：1 pass，测试耗时13.089秒；未修改测试/timeout，不推测此前超时原因，仅记录当前代码已通过。因此本批具体文件合计20个567 pass。6份当前TS源码hash一致；证据、命令和全部红绿日志存于 `implementation-b13-evidence.json.gz`，检索/保留项和589项排除原因存于 `implementation-b13-consumers.json.gz`。没有本机全套测试、PR CI或529声明。

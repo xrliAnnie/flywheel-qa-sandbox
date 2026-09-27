@@ -17,6 +17,7 @@ type BodyStore = Pick<
 	| "getSession"
 	| "getWorkflowActor"
 	| "getWorkflowActivation"
+	| "resolveExecutionBodyActivation"
 	| "getWorkflowExecutionProcessBody"
 	| "executionProcessOwners"
 >;
@@ -103,6 +104,11 @@ export function createExecutionBodyObserver(
 						executionId
 			)
 				return undefined;
+			const activationId =
+				row.activation_id === null
+					? null
+					: store.resolveExecutionBodyActivation(executionId)?.activation_id;
+			if (activationId === undefined) return undefined;
 			const binding =
 				row.binding_spawn_epoch === row.spawn_epoch
 					? store.executionProcessOwners.getBinding(executionId)
@@ -110,7 +116,7 @@ export function createExecutionBodyObserver(
 			const input: ExecutionProcessObservationInput = {
 				identity: {
 					executionId,
-					activationId: row.activation_id,
+					activationId,
 					generation,
 					lifecycleRevision: session.lifecycle_revision ?? 0,
 					adapter: session.adapter_type as ExecutionAdapter,

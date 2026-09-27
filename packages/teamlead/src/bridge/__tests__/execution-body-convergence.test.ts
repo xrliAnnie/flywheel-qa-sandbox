@@ -162,6 +162,165 @@ describe("FLY-2919 body death across StateStore and CommDB", () => {
 		rmSync(root, { recursive: true, force: true });
 	});
 
+	function reenter(attempt = 2, boundAt = "1970-01-01T00:00:00.500Z") {
+		store.upsertWorkflowRunNode({
+			runId: "run-1",
+			nodeId: "implement",
+			attempt,
+			state: "running",
+			executionId: "exec-1",
+		});
+		raw()
+			.prepare(
+				"INSERT INTO workflow_execution_binding VALUES (?, 'exec-1','run-1','implement',?,'wake',NULL,?)",
+			)
+			.run(`activation-${attempt}`, attempt, boundAt);
+	}
+	it("FLY-2919 settles the current logical activation without changing the physical owner", async () => {
+		const physical = store.executionProcessOwners.get("exec-1")!;
+		reenter();
+		const observed = await deps.observer.observe("exec-1");
+		expect(observed).toMatchObject({
+			verdict: "dead",
+			identity: { activationId: "activation-2", generation: 1 },
+			ownerToken: physical.owner_token,
+			spawnEpoch: physical.spawn_epoch,
+			bindingDigest: physical.binding_digest,
+		});
+		const result = await convergeExecutionBody(deps, "exec-1");
+		expect(result).toMatchObject({
+			kind: "committed",
+			obligation: {
+				attempt: 2,
+				observation: { identity: { activationId: "activation-2" } },
+			},
+			projection: { projected: true },
+		});
+		expect(store.executionProcessOwners.get("exec-1")).toMatchObject({
+			activation_id: "activation-1",
+			owner_token: physical.owner_token,
+			spawn_epoch: physical.spawn_epoch,
+			binding_digest: physical.binding_digest,
+			close_requested: 1,
+		});
+		expect(store.getCurrentProjectedExecutionBodyDeath("exec-1")?.attempt).toBe(
+			2,
+		);
+		clock += 60000;
+		expect(replay()).toMatchObject({ projected: true });
+	});
+	it("FLY-2919 invalidates an old logical observation during OS capture and resamples the same body", async () => {
+		const original = capture.getMockImplementation()!;
+		capture.mockImplementationOnce(async () => {
+			reenter();
+			return original();
+		});
+		const stale = await deps.observer.observe("exec-1");
+		expect(stale?.verdict).toBe("unknown");
+		expect(deps.observer.isCurrent(stale!)).toBe(false);
+		expect(store.getSession("exec-1")?.status).toBe("running");
+		expect(await convergeExecutionBody(deps, "exec-1")).toMatchObject({
+			kind: "committed",
+			obligation: { attempt: 2 },
+		});
+	});
+	it.each(["same_time", "invalid_time", "missing_admission"])(
+		"FLY-2919 refuses unresolved logical attribution: %s",
+		async (mode) => {
+			reenter(
+				2,
+				mode === "same_time"
+					? "1970-01-01T00:00:00.000Z"
+					: mode === "invalid_time"
+						? "invalid"
+						: "1970-01-01T00:00:00.500Z",
+			);
+			if (mode === "same_time")
+				raw()
+					.prepare(
+						"INSERT INTO workflow_execution_binding VALUES ('other-node','exec-1','run-1','other',2,'wake',NULL,'1970-01-01T00:00:00Z')",
+					)
+					.run();
+			if (mode === "missing_admission")
+				raw()
+					.prepare(
+						"UPDATE execution_process_owner SET activation_id = 'missing'",
+					)
+					.run();
+			expect(await deps.observer.observe("exec-1")).toBeUndefined();
+			expect(await convergeExecutionBody(deps, "exec-1")).toMatchObject({
+				kind: "deferred",
+			});
+			expect(store.getSession("exec-1")?.status).toBe("running");
+		},
+	);
+	it("FLY-2919 orders same-node re-entry by attempt when bound timestamps share an instant", async () => {
+		reenter(2, "1970-01-01T00:00:00.000Z");
+		expect(await convergeExecutionBody(deps, "exec-1")).toMatchObject({
+			kind: "committed",
+			obligation: { attempt: 2 },
+		});
+	});
+	it("FLY-2919 retains live physical evidence across logical re-entry", async () => {
+		reenter();
+		capture.mockResolvedValue({
+			sampledAtMs: clock,
+			hostBootId: "boot",
+			writersComplete: true,
+			viewers: [],
+			processes: [
+				{
+					pid: 200,
+					ppid: 1,
+					pgid: 200,
+					startIdentity: "worker",
+					state: "running",
+				},
+			],
+			worker: { executable: binding.executable, cwd: binding.cwd },
+			daemon: "alive",
+		});
+		expect(await deps.observer.observe("exec-1")).toMatchObject({
+			verdict: "alive",
+			identity: { activationId: "activation-2" },
+		});
+		expect(await convergeExecutionBody(deps, "exec-1")).toEqual({
+			kind: "deferred",
+			reason: "body_alive",
+		});
+		expect(store.executionProcessOwners.get("exec-1")?.close_requested).toBe(0);
+	});
+	it.each([1, 2])(
+		"FLY-2919 preserves only the current activation completion (receipt for %s)",
+		async (receiptAttempt) => {
+			reenter();
+			raw()
+				.prepare(
+					"INSERT INTO workflow_node_completion VALUES (?, 'run-1','implement',?,'exec-1','needs_review','completion-1','source-1','digest','1970-01-01T00:00:00.500Z')",
+				)
+				.run(`activation-${receiptAttempt}`, receiptAttempt);
+			expect(await convergeExecutionBody(deps, "exec-1")).toMatchObject({
+				kind: "committed",
+				obligation: {
+					attempt: 2,
+					disposition: receiptAttempt === 2 ? "completion_preserved" : "failed",
+					terminalStatus: receiptAttempt === 2 ? "completed" : "failed",
+				},
+				projection: { projected: true },
+			});
+		},
+	);
+	it("FLY-2919 rejects logical re-entry during completion reconciliation before the death CAS", async () => {
+		deps.completionBlocksDeath = async () => {
+			reenter();
+			return false;
+		};
+		expect(await convergeExecutionBody(deps, "exec-1")).toMatchObject({
+			kind: "deferred",
+		});
+		expect(store.getSession("exec-1")?.status).toBe("running");
+		expect(store.executionProcessOwners.get("exec-1")?.close_requested).toBe(0);
+	});
 	it("FLY-2919 projected death stays terminal through UI failure and restart cleanup", async () => {
 		const death = await convergeExecutionBody(deps, "exec-1");
 		expect(death).toMatchObject({

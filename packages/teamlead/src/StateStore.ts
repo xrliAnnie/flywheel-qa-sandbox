@@ -16474,6 +16474,52 @@ export class StateStore {
 		}
 	}
 
+	/** The physical owner retains its original admission. Logical re-entry may
+	 * bind that same body to a later activation without spawning a new writer.
+	 * Resolve only a unique latest immutable binding; business/run terminality
+	 * must not erase the identity needed to collect an already dead body. */
+	resolveExecutionBodyActivation(
+		executionId: string,
+	): WorkflowExecutionBindingRow | undefined {
+		const owner = this.executionProcessOwners.get(executionId);
+		if (!owner?.activation_id) return undefined;
+		const admission = this.getWorkflowActivation(owner.activation_id);
+		if (admission?.execution_id !== executionId) return undefined;
+		const bindings = this.listWorkflowActivationsForActor(executionId);
+		if (
+			!bindings.some(
+				(binding) => binding.activation_id === admission.activation_id,
+			)
+		)
+			return undefined;
+		let latest: WorkflowExecutionBindingRow | undefined;
+		let latestTime = Number.NEGATIVE_INFINITY;
+		let highestAttempt = 0;
+		let tied = false;
+		for (const binding of bindings) {
+			const time = Date.parse(binding.bound_at);
+			if (!Number.isFinite(time)) return undefined;
+			highestAttempt = Math.max(highestAttempt, binding.attempt);
+			if (time > latestTime) {
+				latest = binding;
+				latestTime = time;
+				tied = false;
+			} else if (time === latestTime) {
+				// Attempts order one logical node even when timestamp precision ties.
+				// Different nodes at the same instant remain ambiguous.
+				if (
+					latest &&
+					latest.run_id === binding.run_id &&
+					latest.node_id === binding.node_id &&
+					latest.attempt !== binding.attempt
+				) {
+					if (binding.attempt > latest.attempt) latest = binding;
+				} else tied = true;
+			}
+		}
+		return !tied && latest?.attempt === highestAttempt ? latest : undefined;
+	}
+
 	/** Read current physical death after its cross-store duty is settled. This is
 	 * an immutable committed fact, not a refreshed ten-second OS observation. */
 	getCurrentProjectedExecutionBodyDeath(
@@ -16500,7 +16546,8 @@ export class StateStore {
 			session.status !== duty.terminalStatus ||
 			session.terminal_lifecycle_id !== duty.terminalLifecycleId ||
 			session.adapter_type !== identity.adapter ||
-			owner.activation_id !== identity.activationId ||
+			this.resolveExecutionBodyActivation(executionId)?.activation_id !==
+				identity.activationId ||
 			owner.generation !== identity.generation ||
 			body.generation !== identity.generation ||
 			(body.state !== "closed" && body.state !== "standby") ||
@@ -16516,13 +16563,7 @@ export class StateStore {
 			activation.execution_id !== executionId ||
 			activation.run_id !== duty.runId ||
 			activation.node_id !== duty.nodeId ||
-			activation.attempt !== duty.attempt ||
-			this.listWorkflowActivationsForActor(executionId).some(
-				(other) =>
-					other.activation_id !== activation.activation_id &&
-					(other.bound_at >= activation.bound_at ||
-						other.attempt > activation.attempt),
-			)
+			activation.attempt !== duty.attempt
 		)
 			return undefined;
 		const receiptId = `${duty.obligationId}:projected`;
@@ -16728,7 +16769,6 @@ export class StateStore {
 					!owner ||
 					!activation ||
 					activation.execution_id !== executionId ||
-					owner.activation_id !== identity.activationId ||
 					owner.generation !== identity.generation ||
 					(body?.generation ?? 1) !== identity.generation ||
 					owner.owner_token !== observation.ownerToken ||
@@ -16756,12 +16796,8 @@ export class StateStore {
 				if (
 					!node ||
 					node.execution_id !== executionId ||
-					this.listWorkflowActivationsForActor(executionId).some(
-						(other) =>
-							other.activation_id !== activation.activation_id &&
-							(other.bound_at > activation.bound_at ||
-								other.attempt > activation.attempt),
-					)
+					this.resolveExecutionBodyActivation(executionId)?.activation_id !==
+						identity.activationId
 				) {
 					return { ok: false, reason: "body_death_activation_changed" };
 				}

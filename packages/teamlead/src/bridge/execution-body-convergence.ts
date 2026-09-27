@@ -172,7 +172,8 @@ export function projectCommittedExecutionBodyDeath(input: {
 					currentSession.terminal_lifecycle_id === duty.terminalLifecycleId &&
 					owner &&
 					owner.generation === proof.generation &&
-					owner.activation_id === proof.activationId &&
+					store.resolveExecutionBodyActivation(proof.executionId)
+						?.activation_id === proof.activationId &&
 					owner.owner_token === proof.ownerToken &&
 					owner.spawn_epoch === proof.spawnEpoch &&
 					owner.binding_digest === proof.bindingDigest &&
@@ -211,10 +212,8 @@ export async function convergeExecutionBody(
 	executionId: string,
 ): Promise<ExecutionBodyConvergenceResult> {
 	const initial = deps.comm.getSessionCloseoutIdentity(executionId);
-	const initialOwner = deps.store.executionProcessOwners.get(executionId);
-	const initialActivation = initialOwner?.activation_id
-		? deps.store.getWorkflowActivation(initialOwner.activation_id)
-		: undefined;
+	const initialActivation =
+		deps.store.resolveExecutionBodyActivation(executionId);
 	const initialRun = initialActivation
 		? deps.store.getWorkflowRun(initialActivation.run_id)
 		: undefined;

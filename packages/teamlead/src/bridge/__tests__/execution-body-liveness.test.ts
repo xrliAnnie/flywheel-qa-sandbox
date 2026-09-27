@@ -70,6 +70,7 @@ describe("FLY-2919 current execution body observations", () => {
 			getWorkflowExecutionProcessBody: () => body,
 			getWorkflowActor: () => ({ execution_id: "exec-1" }),
 			getWorkflowActivation: () => ({ execution_id: "exec-1" }),
+			resolveExecutionBodyActivation: () => ({ activation_id: "activation-1" }),
 			executionProcessOwners: {
 				get: () => row,
 				getBinding: () => binding,

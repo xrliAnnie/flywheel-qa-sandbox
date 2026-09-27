@@ -4498,6 +4498,89 @@ describe("generalized execution admission and terminal contracts", () => {
 		store.close();
 	});
 
+	it("FLY-2919 resolves an admitted wake on the original physical owner", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			createRun(store);
+			const admission = {
+				runId: "run-1",
+				nodeId: "execute",
+				executionId: "exec-1",
+				expiresAt: "2026-07-15T00:20:00.000Z",
+				absoluteDeadlineAt: "2026-07-15T01:00:00.000Z",
+				env: enabled,
+			};
+			expect(
+				store.admitGeneralizedWorkflowExecution({
+					...admission,
+					attempt: 1,
+					activationId: "activation-1",
+					now: "2026-07-15T00:00:00.000Z",
+				}),
+			).toMatchObject({ ok: true });
+			store.upsertSession({
+				execution_id: "exec-1",
+				issue_id: "FLY-X",
+				project_name: "flywheel",
+				status: "running",
+				workflow_node_id: "execute",
+				adapter_type: "codex-tmux",
+			});
+			expect(
+				store.executionProcessOwners.claim({
+					executionId: "exec-1",
+					activationId: "activation-1",
+					generation:
+						store.getWorkflowExecutionProcessBody("exec-1")?.generation ?? 1,
+					ownerToken: "same-physical-owner",
+					lifecycleRevision: store.getLifecycleRevision("exec-1"),
+					nowMs: Date.parse("2026-07-15T00:00:00.000Z"),
+					controller: { pid: 100, startIdentity: "start", hostBootId: "boot" },
+				}),
+			).toMatchObject({ ok: true });
+			const physical = store.executionProcessOwners.get("exec-1");
+			expect(
+				store.resolveExecutionBodyActivation("exec-1")?.activation_id,
+			).toBe("activation-1");
+			expect(
+				store.commitEnrolledCompletion({
+					nodeReuseEnabled: false,
+					executionId: "exec-1",
+					route: "needs_review",
+					sourceEventId: "complete-1",
+					completionSubmission: {
+						decision: { route: "needs_review" },
+						round: 1,
+					},
+					now: "2026-07-15T00:01:00.000Z",
+				}),
+			).toMatchObject({ ok: true });
+			store.upsertWorkflowRunNode({
+				runId: "run-1",
+				nodeId: "execute",
+				attempt: 2,
+				state: "pending",
+				executionId: "exec-1",
+			});
+			expect(
+				store.admitGeneralizedWorkflowExecution({
+					...admission,
+					attempt: 2,
+					activationId: "activation-2",
+					activationMode: "wake",
+					reworkRequestId: "request-1",
+					now: "2026-07-15T00:02:00.000Z",
+				}),
+			).toMatchObject({ ok: true });
+			expect(
+				store.resolveExecutionBodyActivation("exec-1")?.activation_id,
+			).toBe("activation-2");
+			expect(store.executionProcessOwners.get("exec-1")).toEqual(physical);
+		} finally {
+			store.close();
+		}
+	});
+
 	it("refuses a terminal actor's later attempt even with the exact activation epoch", async () => {
 		const store = await StateStore.create(":memory:");
 		createRun(store);
