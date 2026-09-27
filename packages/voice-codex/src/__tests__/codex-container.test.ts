@@ -781,6 +781,46 @@ describe("Codex voice container", () => {
 		expect(h.parent.close).toHaveBeenCalledTimes(1);
 	});
 
+	it("interrupts a rejected system-speech turn before granting parent delivery context", async () => {
+		const h = harness();
+		const started = vi.fn();
+		const terminal = vi.fn();
+		const opened = await h.container.open({
+			sessionId: "session-system-tell",
+			voice: "marin",
+			loadContext: async () => context("session-system-tell"),
+			background: {
+				enabled: true,
+				acceptTurnStarted: () => false,
+				onTurnStarted: started,
+				onTurnTerminal: terminal,
+			},
+		});
+		const process = h.processes[0]!;
+		process.emit("turn/started", {
+			threadId: opened.threadId,
+			turn: { id: "turn-from-lead-tell", status: "inProgress" },
+		});
+		await vi.waitFor(() =>
+			expect(process.requests).toContainEqual({
+				method: "turn/interrupt",
+				params: {
+					threadId: opened.threadId,
+					turnId: "turn-from-lead-tell",
+				},
+			}),
+		);
+		expect(h.parent.beginTurn).not.toHaveBeenCalled();
+		expect(started).not.toHaveBeenCalled();
+		process.emit("turn/completed", {
+			threadId: opened.threadId,
+			turn: { id: "turn-from-lead-tell", status: "interrupted" },
+		});
+		expect(h.parent.endTurn).not.toHaveBeenCalled();
+		expect(terminal).not.toHaveBeenCalled();
+		await opened.close();
+	});
+
 	it.each([
 		"background_api_account",
 		"scribe_api_account",

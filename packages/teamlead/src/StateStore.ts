@@ -7445,6 +7445,93 @@ export class StateStore {
 		return result;
 	}
 
+	/**
+	 * Reserve every Discord post authored by this live voice session so the
+	 * outbound poller cannot mistake it for a new Lead tell. Registration may
+	 * race the poller: a still-queued row is withdrawn, but an in-flight claim
+	 * fails closed instead of pretending it was never spoken.
+	 */
+	recordVoiceSessionThreadPost(input: {
+		sessionId: string;
+		leaseToken: string;
+		messageId: string;
+		text: string;
+		now: string;
+	}): "recorded" | "replayed" | "conflict" | "lease_conflict" {
+		let result: "recorded" | "replayed" | "conflict" | "lease_conflict" =
+			"lease_conflict";
+		let changed = false;
+		this.db.transaction(() => {
+			const session = this.getActiveVoiceLease(
+				input.sessionId,
+				input.leaseToken,
+				input.now,
+			);
+			if (!session) return;
+			const existing = this.workflowSelectAll(
+				`SELECT session_id, text, phase, terminal_reason
+				 FROM voice_outbound WHERE message_id = ? LIMIT 1`,
+				[input.messageId],
+			)[0] as
+				| {
+						session_id: string;
+						text: string;
+						phase: VoiceOutboundPhase;
+						terminal_reason: string | null;
+				  }
+				| undefined;
+			if (existing) {
+				if (existing.session_id !== input.sessionId) {
+					result = "conflict";
+					return;
+				}
+				// The poller scrubs accepted Discord text before durable insertion;
+				// message id plus current lease is the source identity for this race.
+				if (existing.phase === "queued") {
+					this.db.run(
+						`UPDATE voice_outbound
+						 SET phase = 'dropped', finished_at = ?, terminal_reason = 'session_self_post'
+						 WHERE session_id = ? AND message_id = ? AND phase = 'queued'`,
+						[input.now, input.sessionId, input.messageId],
+					);
+					result = "recorded";
+					changed = true;
+					return;
+				}
+				if (
+					existing.phase === "dropped" &&
+					existing.terminal_reason === "session_self_post" &&
+					existing.text === input.text
+				) {
+					result = "replayed";
+					return;
+				}
+				result = "conflict";
+				return;
+			}
+			this.db.run(
+				`INSERT INTO voice_outbound
+				 (session_id, message_id, channel_id, author_id, text, observed_at,
+				  delivery_class, source, phase, finished_at, terminal_reason)
+				 VALUES (?, ?, ?, ?, ?, ?, 'tell', 'discord', 'dropped', ?,
+				         'session_self_post')`,
+				[
+					input.sessionId,
+					input.messageId,
+					session.threadId ?? session.voiceChannelId,
+					session.voiceBotUserId ?? "flywheel-runtime",
+					input.text,
+					input.now,
+					input.now,
+				],
+			);
+			result = "recorded";
+			changed = true;
+		});
+		if (changed) this.save();
+		return result;
+	}
+
 	listVoiceOutbound(
 		sessionId: string,
 		leaseToken: string,

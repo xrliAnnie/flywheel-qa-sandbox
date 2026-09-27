@@ -95,6 +95,11 @@ export class CodexProofSpeaker {
 		},
 	) {}
 
+	/** True from transport submission until proof/failure settles. */
+	get busy(): boolean {
+		return this.pending !== undefined;
+	}
+
 	speak(
 		text: string,
 		kind: VoiceSpeakKind,

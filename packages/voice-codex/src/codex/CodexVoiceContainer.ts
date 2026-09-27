@@ -971,6 +971,8 @@ export interface CodexVoiceOpenInput {
 	};
 	background?: {
 		enabled: true;
+		/** Reject system-speech turns before the capability parent gets authority. */
+		acceptTurnStarted?(turnId: string): boolean;
 		onTurnStarted(turnId: string): void;
 		onTurnTerminal(turn: BackgroundTurnTerminal): void;
 		onItemCompleted?(item: ThreadCompletedItem): void;
@@ -1280,11 +1282,28 @@ export class CodexVoiceContainer {
 				assertThreadReceipt(opened.result, opened.id, workdir);
 			}
 			const background = input.background;
+			const rejectedBackgroundTurns = new Set<string>();
 			const unregisterBackground =
 				admitted && background
 					? threadEventRouter.register(opened.id, {
 							onTurnStarted: (turnId) => {
 								try {
+									if (background.acceptTurnStarted?.(turnId) === false) {
+										rejectedBackgroundTurns.add(turnId);
+										this.evidence({
+											kind: "codex_background_turn_rejected",
+											threadId: opened.id,
+											turnId,
+											reason: "founder_authority_missing",
+										});
+										void process
+											.request("turn/interrupt", {
+												threadId: opened.id,
+												turnId,
+											})
+											.catch(() => undefined);
+										return;
+									}
 									parent?.beginTurn(opened.id, turnId);
 									background.onTurnStarted(turnId);
 								} catch (error) {
@@ -1302,6 +1321,7 @@ export class CodexVoiceContainer {
 								}
 							},
 							onTurnTerminal: (turn) => {
+								if (rejectedBackgroundTurns.delete(turn.turnId)) return;
 								try {
 									parent?.endTurn(turn.turnId, turn.outcome);
 								} catch (error) {
@@ -1317,7 +1337,12 @@ export class CodexVoiceContainer {
 								background.onTurnTerminal(turn);
 							},
 							...(background.onItemCompleted
-								? { onItemCompleted: background.onItemCompleted }
+								? {
+										onItemCompleted: (item: ThreadCompletedItem) => {
+											if (!rejectedBackgroundTurns.has(item.turnId))
+												background.onItemCompleted?.(item);
+										},
+									}
 								: {}),
 						})
 					: undefined;

@@ -209,6 +209,29 @@ describe("BridgeVoiceClient safe request diagnostics", () => {
 		});
 	});
 
+	it("registers a session-authored thread post before the outbound poller can read it", async () => {
+		const fetchImpl = vi
+			.fn<typeof fetch>()
+			.mockResolvedValueOnce(response('{"status":"recorded"}', 201));
+		const bridge = client(fetchImpl);
+		const lease = new VoiceLease(() => 100);
+		lease.install(100, 15_000, 2_000);
+		expect(
+			await bridge.recordSessionThreadPost("session-a", "lease-a", lease, {
+				messageId: "100000000000000060",
+				text: "工具原始结果：PR #1360",
+			}),
+		).toEqual({ status: "recorded" });
+		const [url, request] = fetchImpl.mock.calls[0]!;
+		expect(String(url)).toBe(
+			`${LOOPBACK_URL}/api/voice/sessions/session-a/thread-posts`,
+		);
+		expect(JSON.parse(String(request?.body))).toEqual({
+			messageId: "100000000000000060",
+			text: "工具原始结果：PR #1360",
+		});
+	});
+
 	it("exposes an explicit handoffToLead seam without forwarding transcripts by itself", async () => {
 		const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
 			response(

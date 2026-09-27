@@ -256,8 +256,9 @@ it("does not read 过了十分钟 / 没过多久 as a yes/no outcome", () => {
 // source; the guard re-scanned the whole text per token match (quadratic) and
 // blocked the daemon's event loop for 13 s, fencing the voice lease.
 it("checks a paraphrase against a large tool output in linear time", () => {
+	const rows = 1500;
 	const big = JSON.stringify({
-		items: Array.from({ length: 1500 }, (_, i) => ({
+		items: Array.from({ length: rows }, (_, i) => ({
 			id: i,
 			n: `PR #${1000 + i}`,
 			t: "2026-09-26T21:14:44Z",
@@ -265,7 +266,12 @@ it("checks a paraphrase against a large tool output in linear time", () => {
 		})),
 	});
 	expect(big.length).toBeGreaterThan(100_000);
-	const started = performance.now();
+	const work = {
+		sourceScans: 0,
+		sourceCodeUnits: 0,
+		boundaryChecks: 0,
+		boundaryCodeUnitsRead: 0,
+	};
 	const repaired = repairSpokenScript({
 		spoken: "PR #1360 过了。CI 全绿。20:19 合并的。Tadashi 确认了。",
 		sources: [
@@ -274,7 +280,17 @@ it("checks a paraphrase against a large tool output in linear time", () => {
 		],
 		rosterNames: ["Tadashi"],
 		mode: "background_result",
+		work,
 	});
-	expect(performance.now() - started).toBeLessThan(500);
+	// State/operation-count proof, not a host-speed threshold: each source is
+	// indexed once, and every token boundary reads only its two neighbours.
+	expect(work.sourceScans).toBe(2);
+	expect(work.sourceCodeUnits).toBe(
+		big.length + "PR #1360 passed, merged 20:19 by Tadashi".length,
+	);
+	expect(work.boundaryChecks).toBeLessThan(rows * 20);
+	expect(work.boundaryCodeUnitsRead).toBeLessThanOrEqual(
+		work.boundaryChecks * 2,
+	);
 	expect(repaired.needsThread).toBe(false);
 });

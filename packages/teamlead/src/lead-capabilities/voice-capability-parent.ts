@@ -1,11 +1,13 @@
 import { execFile } from "node:child_process";
 import {
 	existsSync,
+	type FSWatcher,
 	lstatSync,
 	mkdirSync,
 	mkdtempSync,
 	realpathSync,
 	rmSync,
+	watch,
 } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
@@ -23,7 +25,7 @@ import {
 	leadBrokerSocketBytes,
 } from "./broker-socket.js";
 import { leadCredentialAliases } from "./credential-paths.js";
-import { verifyLeadDeployment } from "./deployment.js";
+import { LEAD_DEPLOYMENT_ENTRIES, verifyLeadDeployment } from "./deployment.js";
 import { preparePinnedNativeSkillHome } from "./native-home.js";
 import {
 	leadNodeRuntimeReadPaths,
@@ -212,6 +214,7 @@ export async function startVoiceCapabilityParent(
 	let native: ReturnType<typeof preparePinnedNativeSkillHome> | undefined;
 	let artifacts: LeadArtifactStore | undefined;
 	let parent: Awaited<ReturnType<typeof startLeadRuntimeParent>> | undefined;
+	let preparationWatchers: FSWatcher[] = [];
 	/**
 	 * Synchronous authority revocation (plan v12 §14.2): every provider handler and
 	 * broker call fails from here on. No socket, provider or directory is touched,
@@ -231,6 +234,8 @@ export async function startVoiceCapabilityParent(
 				await parent?.close();
 			}
 		} finally {
+			for (const watcher of preparationWatchers) watcher.close();
+			preparationWatchers = [];
 			try {
 				try {
 					finalActionLedger = actionLedger();
@@ -300,7 +305,42 @@ export async function startVoiceCapabilityParent(
 			projectRoot,
 			leadId: input.leadId,
 		}).map((menu) => menu.shape);
-		const assertPreparedCurrent = async () => {
+		let preparationInvalidated = false;
+		const preparationPaths = new Set<string>([
+			projectsPath,
+			join(hostHome, ".flywheel/deployed-sha"),
+			join(deploymentRoot, ".git/HEAD"),
+			join(deploymentRoot, ".git/refs"),
+			join(deploymentRoot, ".git/refs/heads"),
+			...LEAD_DEPLOYMENT_ENTRIES.map((entry) =>
+				join(deploymentRoot, "packages/teamlead/dist", entry),
+			),
+			...sources.records.flatMap((record) =>
+				[record.sourcePath, record.realSourcePath, record.adapterPath].filter(
+					(path): path is string => path !== null,
+				),
+			),
+			...sources.skillInventory.map((entry) => entry.source),
+			join(hostHome, ".claude/settings.json"),
+			join(hostHome, ".claude/plugins/installed_plugins.json"),
+			join(hostHome, ".claude/skills"),
+			join(hostHome, ".flywheel/lead-workspace", input.leadId, ".claude"),
+		]);
+		for (const path of preparationPaths) {
+			if (!existsSync(path)) continue;
+			try {
+				const watcher = watch(path, { persistent: false }, () => {
+					preparationInvalidated = true;
+				});
+				watcher.on("error", () => {
+					preparationInvalidated = true;
+				});
+				preparationWatchers.push(watcher);
+			} catch {
+				preparationInvalidated = true;
+			}
+		}
+		const verifyPreparedSnapshot = () => {
 			current();
 			const deployment = verifyLeadDeployment({
 				checkoutRoot: deploymentRoot,
@@ -314,6 +354,13 @@ export async function startVoiceCapabilityParent(
 				}) !== deploymentIdentity ||
 				JSON.stringify(discover()) !== JSON.stringify(sources)
 			)
+				throw new Error("voice_capability_preparation_changed");
+		};
+		// Close the admission-to-watch race once, before any model child starts.
+		verifyPreparedSnapshot();
+		const assertPreparedCurrent = async () => {
+			current();
+			if (preparationInvalidated)
 				throw new Error("voice_capability_preparation_changed");
 		};
 		const require = createRequire(import.meta.url);

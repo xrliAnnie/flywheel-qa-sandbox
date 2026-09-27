@@ -424,6 +424,21 @@ export async function main(): Promise<void> {
 			token,
 			timeoutMs: config.discordTimeoutMs,
 		});
+		const postSessionThread = async (text: string, nonce = discordNonce()) => {
+			context.lease.assert();
+			const posted = await mirror.post(
+				context.projection.threadId,
+				text,
+				nonce,
+			);
+			await bridge.recordSessionThreadPost(
+				context.sessionId,
+				context.leaseToken,
+				context.lease,
+				{ messageId: posted.messageId, text },
+			);
+			return posted;
+		};
 		const transcriptPath = join(
 			config.voiceRoot,
 			"sessions",
@@ -565,15 +580,13 @@ export async function main(): Promise<void> {
 									},
 									onBackgroundDegraded: (reason) => {
 										const text = `这场语音后台没接上（${VOICE_BACKGROUND_DEGRADED_REASON_TEXT[reason]}），我先只陪你聊，要查的事转给 ${context.projection.displayName}。`;
-										void mirror
-											.post(context.projection.threadId, text, discordNonce())
-											.catch(() =>
-												evidence.appendBuffered({
-													ts: new Date().toISOString(),
-													voiceSessionId: context.sessionId,
-													kind: "codex_voice_degraded_notice_failed",
-												}),
-											);
+										void postSessionThread(text).catch(() =>
+											evidence.appendBuffered({
+												ts: new Date().toISOString(),
+												voiceSessionId: context.sessionId,
+												kind: "codex_voice_degraded_notice_failed",
+											}),
+										);
 									},
 								}
 							: {}),
@@ -592,12 +605,7 @@ export async function main(): Promise<void> {
 						() => context.lease.assert(),
 						async (text) => {
 							if (room) await room.status(text);
-							else
-								await mirror.post(
-									context.projection.threadId,
-									text,
-									discordNonce(),
-								);
+							else await postSessionThread(text);
 						},
 					);
 		return new GenericVoiceSession({
@@ -621,9 +629,7 @@ export async function main(): Promise<void> {
 						},
 						handlers,
 						onUnavailable: (text) =>
-							mirror
-								.post(context.projection.threadId, text, discordNonce())
-								.then(() => undefined),
+							postSessionThread(text).then(() => undefined),
 					});
 				}
 				return new RealtimeFrontend({
@@ -699,17 +705,13 @@ export async function main(): Promise<void> {
 			confirmationMs: config.confirmationMs,
 			assertLease: () => context.lease.assert(),
 			postStatus: async (text) => {
-				await mirror.post(context.projection.threadId, text, discordNonce());
+				await postSessionThread(text);
 			},
 			...(codexBackend && voiceBackground.enabled
 				? {
 						speechCoordination: {
 							postThread: async ({ text }: { text: string }) => {
-								await mirror.post(
-									context.projection.threadId,
-									text,
-									discordNonce(),
-								);
+								await postSessionThread(text);
 							},
 							active: () => codexBackend?.effectiveBackground() === "enabled",
 						},
@@ -815,10 +817,17 @@ export async function main(): Promise<void> {
 							token,
 							() => lease.assert(),
 							async (text) => {
-								await mirror.post(
+								lease.assert();
+								const posted = await mirror.post(
 									validated.projection.threadId,
 									text,
 									discordNonce(),
+								);
+								await bridge.recordSessionThreadPost(
+									validated.sessionId,
+									validated.leaseToken,
+									lease,
+									{ messageId: posted.messageId, text },
 								);
 							},
 						).recover();

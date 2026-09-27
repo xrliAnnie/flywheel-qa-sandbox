@@ -533,6 +533,41 @@ export function createVoiceSessionRouter(
 			);
 	});
 
+	// Every post authored by the live voice session is registered by Discord id;
+	// content prefixes are not identity and cannot prevent self-feeding loops.
+	router.post("/:sessionId/thread-posts", masterOnly(), (req, res) => {
+		const messageId = req.body?.messageId;
+		const text = req.body?.text;
+		if (
+			typeof messageId !== "string" ||
+			!/^\d{1,32}$/.test(messageId) ||
+			typeof text !== "string" ||
+			!text ||
+			[...text].length > 2_000
+		) {
+			res.status(400).json({ error: "voice_thread_post_invalid" });
+			return;
+		}
+		const result = deps.store.recordVoiceSessionThreadPost({
+			sessionId: param(req.params.sessionId),
+			leaseToken: lease(req),
+			messageId,
+			text,
+			now: now(),
+		});
+		if (result === "recorded" || result === "replayed") {
+			res.status(result === "recorded" ? 201 : 200).json({ status: result });
+			return;
+		}
+		res
+			.status(409)
+			.json(
+				result === "conflict"
+					? { error: "voice_thread_post_conflict" }
+					: LEASE_CONFLICT,
+			);
+	});
+
 	router.post("/:sessionId/handoffs", masterOnly(), async (req, res) => {
 		if (!deps.voiceHandoffs) {
 			res.status(503).json({

@@ -452,4 +452,36 @@ describe("voice transcript mirrors are excluded by source", () => {
 			}),
 		).toBe("lease_conflict");
 	});
+
+	it("excludes every session-authored thread post by message id, including the poller race", () => {
+		const leaseToken = liveWithUtterance();
+		const first = "100000000000000061";
+		expect(
+			store.recordVoiceSessionThreadPost({
+				sessionId: SESSION_ID,
+				leaseToken,
+				messageId: first,
+				text: "工具原始结果：PR #1360",
+				now: T0,
+			}),
+		).toBe("recorded");
+		expect(page(leaseToken, first, "工具原始结果：PR #1360")).toBe(true);
+		expect(store.listVoiceOutbound(SESSION_ID, leaseToken, T0)).toEqual([]);
+
+		const raced = "100000000000000062";
+		expect(page(leaseToken, raced, "这条我发到 thread 了")).toBe(true);
+		expect(store.listVoiceOutbound(SESSION_ID, leaseToken, T0)).toHaveLength(1);
+		expect(
+			store.recordVoiceSessionThreadPost({
+				sessionId: SESSION_ID,
+				leaseToken,
+				messageId: raced,
+				// Poller scrubbing may differ from the original Discord post text;
+				// the Discord id remains the authoritative self-post identity.
+				text: "<@123456789012345678> 这条我发到 thread 了",
+				now: T0,
+			}),
+		).toBe("recorded");
+		expect(store.listVoiceOutbound(SESSION_ID, leaseToken, T0)).toEqual([]);
+	});
 });

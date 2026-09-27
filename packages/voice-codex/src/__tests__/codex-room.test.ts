@@ -635,6 +635,7 @@ describe("Codex room composition", () => {
 	it("registers an enabled handoff locally and forwards process-level turn terminals", async () => {
 		let realtimeCallbacks!: Record<string, (...args: never[]) => void>;
 		let backgroundCallbacks!: {
+			acceptTurnStarted(turnId: string): boolean;
 			onTurnStarted(turnId: string): void;
 			onTurnTerminal(turn: {
 				turnId: string;
@@ -731,6 +732,66 @@ describe("Codex room composition", () => {
 		]);
 
 		finishPersist();
+		await session.close();
+	});
+
+	it("does not authorize a background turn created while reading a Lead tell", async () => {
+		let realtimeCallbacks!: Record<string, (...args: never[]) => void>;
+		let backgroundCallbacks!: {
+			acceptTurnStarted(turnId: string): boolean;
+		};
+		const actual = new CodexVoiceBackend({
+			sessionId: "session-lead-tell",
+			voice: "marin",
+			backgroundEnabled: true,
+			container: {
+				open: vi.fn(
+					async (input: {
+						realtime: typeof realtimeCallbacks;
+						background: typeof backgroundCallbacks;
+					}) => {
+						realtimeCallbacks = input.realtime;
+						backgroundCallbacks = input.background;
+						return {
+							generation: 1,
+							transport: {
+								appendAudio: vi.fn(() => "sent" as const),
+								appendSpeech: vi.fn(async () => undefined),
+								appendText: vi.fn(async () => undefined),
+								cancel: vi.fn(async () => undefined),
+							},
+							close: vi.fn(async () => undefined),
+						};
+					},
+				),
+			},
+			loadContext: vi.fn(),
+			resolveSoleRoomUser: () => ({ userId: "founder", name: "Annie" }),
+		});
+		const session = await actual.createConversation({ brain });
+		realtimeCallbacks.onTranscript({
+			generation: 1,
+			itemId: "founder-smalltalk",
+			association: "provider_item",
+			role: "user",
+			text: "好",
+			final: true,
+			raw: {},
+		} as never);
+		expect(backgroundCallbacks.acceptTurnStarted("turn-founder")).toBe(true);
+
+		const speech = session.speak!("Lead 说 PR #1360 已经全绿。", "readback", {
+			pendingKey: "outbound:1:attempt:0",
+			verification: "best_effort",
+		});
+		expect(backgroundCallbacks.acceptTurnStarted("turn-from-lead-tell")).toBe(
+			false,
+		);
+		session.interrupt();
+		await expect(speech).resolves.toMatchObject({
+			outcome: "failed",
+			reason: "speech_interrupted",
+		});
 		await session.close();
 	});
 

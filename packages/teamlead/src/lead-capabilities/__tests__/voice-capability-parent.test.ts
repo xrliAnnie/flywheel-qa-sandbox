@@ -10,6 +10,8 @@ const state = vi.hoisted(() => ({
 	parentClosed: 0,
 	events: [] as string[],
 	projectRoot: "",
+	deploymentChecks: 0,
+	ruleDiscoveries: 0,
 }));
 vi.mock("node:child_process", async (original) => ({
 	...(await original<object>()),
@@ -37,11 +39,15 @@ vi.mock("../voice-resolve.js", () => ({
 	}),
 }));
 vi.mock("../deployment.js", () => ({
-	verifyLeadDeployment: () => ({
-		checkoutRoot: "fixture",
-		headSha: "a".repeat(40),
-		entrySha256: { a: "b" },
-	}),
+	LEAD_DEPLOYMENT_ENTRIES: [],
+	verifyLeadDeployment: () => {
+		state.deploymentChecks += 1;
+		return {
+			checkoutRoot: "fixture",
+			headSha: "a".repeat(40),
+			entrySha256: { a: "b" },
+		};
+	},
 }));
 vi.mock("../native-home.js", () => ({
 	preparePinnedNativeSkillHome: () => ({
@@ -70,7 +76,10 @@ vi.mock("../voice-capability-session.js", () => ({
 	}),
 }));
 vi.mock("../skill-discovery.js", () => ({
-	discoverLeadRuleSources: () => ({ records: [], skillInventory: [] }),
+	discoverLeadRuleSources: () => {
+		state.ruleDiscoveries += 1;
+		return { records: [], skillInventory: [] };
+	},
 }));
 vi.mock("../../workflow-menu.js", () => ({ resolveLeadMenus: () => [] }));
 vi.mock("../node-runtime-closure.js", () => ({
@@ -118,6 +127,8 @@ afterEach(() => {
 	state.options = undefined;
 	state.parentClosed = 0;
 	state.events = [];
+	state.deploymentChecks = 0;
+	state.ruleDiscoveries = 0;
 });
 
 async function start(env: NodeJS.ProcessEnv, activationRoot = activation) {
@@ -239,6 +250,27 @@ it("close() revokes before it tears anything down", async () => {
 	}) as typeof state.events.push;
 	await parent.close();
 	expect(revokedFirst).toBe(true);
+});
+
+it("keeps deployment and rule discovery out of per-operation authority checks", async () => {
+	const parent = await start({
+		FLYWHEEL_BRIDGE_URL: "http://127.0.0.1:1",
+		FLYWHEEL_API_TOKEN: "token",
+	});
+	try {
+		const admittedCounts = {
+			deployment: state.deploymentChecks,
+			rules: state.ruleDiscoveries,
+		};
+		for (let call = 0; call < 8; call += 1)
+			await state.options!.assertPreparedCurrent();
+		expect({
+			deployment: state.deploymentChecks,
+			rules: state.ruleDiscoveries,
+		}).toEqual(admittedCounts);
+	} finally {
+		await parent.close();
+	}
 });
 
 // QA@5 B2: at load 95–180 the synchronous `codex --version` blocked the voice

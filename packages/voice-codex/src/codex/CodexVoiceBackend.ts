@@ -227,6 +227,8 @@ export class CodexVoiceBackend implements VoiceBackend {
 				? {
 						background: {
 							enabled: true as const,
+							acceptTurnStarted: (turnId: string) =>
+								callbacks.session?.acceptProcessTurnStarted(turnId) ?? false,
 							onTurnStarted: (turnId: string) =>
 								callbacks.session?.observeProcessTurnStarted(turnId),
 							onItemCompleted: (item: ThreadCompletedItem) =>
@@ -405,6 +407,10 @@ class CodexVoiceSession implements ConversationSession {
 	}
 
 	speak(text: string, kind: VoiceSpeakKind, options: VoiceSpeakOptions) {
+		// System-controlled speech (Lead tell/readback/cue) is not founder input.
+		// Retire any stale attributed utterance before the shared model thread sees
+		// this text, so a late tool decision cannot borrow old authority.
+		this.latestKnownUser = undefined;
 		return this.speaker.speak(text, kind, options).then((receipt) => {
 			this.options.onEvidence?.({
 				kind: "codex_speak_receipt",
@@ -991,6 +997,21 @@ class CodexVoiceSession implements ConversationSession {
 			kind: "codex_background_turn_started",
 			turnId,
 		});
+	}
+
+	/**
+	 * `turn/started` precedes the realtime handoff event in Codex 0.156.1.
+	 * Admit only a founder-attributed request while no system readback is using
+	 * the same model thread; otherwise the parent must never receive authority.
+	 */
+	acceptProcessTurnStarted(_turnId: string): boolean {
+		return (
+			!this.closing &&
+			!this.restarting &&
+			this.live &&
+			!this.speaker.busy &&
+			this.latestKnownUser !== undefined
+		);
 	}
 
 	observeProcessTurnTerminal(turn: BackgroundTurnTerminal): void {

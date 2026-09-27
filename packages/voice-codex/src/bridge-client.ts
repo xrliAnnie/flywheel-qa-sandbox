@@ -582,6 +582,26 @@ export class BridgeVoiceClient {
 		);
 	}
 
+	/** Register a Discord post authored by this session before it can loop back. */
+	async recordSessionThreadPost(
+		sessionId: string,
+		leaseToken: string,
+		lease: VoiceLease,
+		input: { messageId: string; text: string },
+	): Promise<{ status: "recorded" | "replayed" }> {
+		lease.assert();
+		return this.request(
+			`/api/voice/sessions/${encodeURIComponent(sessionId)}/thread-posts`,
+			{
+				operation: "utterance",
+				routeTemplate: "/api/voice/sessions/:sessionId/thread-posts",
+				method: "POST",
+				leaseToken,
+				body: input,
+			},
+		);
+	}
+
 	/**
 	 * FLY-2886 plan v12 §14.2: the background could not be admitted. Bridge then
 	 * serves the foreground context and revokes the session's Lead authority.

@@ -956,6 +956,73 @@ describe("voice transcript mirror receipts (FLY-2799 qa6)", () => {
 			}),
 		).toMatchObject({ status: 409 });
 	});
+
+	it("registers every session-authored thread post and fences stale leases", async () => {
+		const { base } = await start();
+		await call(base, "", {
+			method: "POST",
+			token: INGEST,
+			body: { meetingId: "20000000-0000-4000-8000-000000000001" },
+		});
+		const claimed = await call(base, `/${SESSION_ID}/claim`, {
+			method: "POST",
+			token: MASTER,
+			body: { daemonBootId: "boot-a" },
+		});
+		const lease = (claimed.body as { leaseToken: string }).leaseToken;
+		for (const state of ["warming", "live"]) {
+			await call(base, `/${SESSION_ID}/state`, {
+				method: "POST",
+				token: MASTER,
+				lease,
+				body: { state },
+			});
+		}
+		const body = {
+			messageId: "100000000000000060",
+			text: "工具原始结果：PR #1360",
+		};
+		expect(
+			await call(base, `/${SESSION_ID}/thread-posts`, {
+				method: "POST",
+				token: MASTER,
+				lease,
+				body,
+			}),
+		).toEqual({ status: 201, body: { status: "recorded" } });
+		expect(
+			await call(base, `/${SESSION_ID}/thread-posts`, {
+				method: "POST",
+				token: MASTER,
+				lease,
+				body,
+			}),
+		).toEqual({ status: 200, body: { status: "replayed" } });
+		expect(
+			await call(base, `/${SESSION_ID}/thread-posts`, {
+				method: "POST",
+				token: MASTER,
+				lease,
+				body: { ...body, text: "不同内容" },
+			}),
+		).toMatchObject({ status: 409 });
+		expect(
+			await call(base, `/${SESSION_ID}/thread-posts`, {
+				method: "POST",
+				token: MASTER,
+				lease: "stale-lease",
+				body,
+			}),
+		).toMatchObject({ status: 409 });
+		expect(
+			await call(base, `/${SESSION_ID}/thread-posts`, {
+				method: "POST",
+				token: MASTER,
+				lease,
+				body: { messageId: "not-a-snowflake", text: "x" },
+			}),
+		).toMatchObject({ status: 400 });
+	});
 });
 
 describe("voice background degraded receipt (FLY-2886 §14.2)", () => {
