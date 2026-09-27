@@ -1,0 +1,226 @@
+{
+  "baseHead": "4173903b4cbb527ebcdfee811d9a936962320ac4",
+  "main": "b0da16c38b75beb8634dac7d24c52914c9f1e19f",
+  "mergeCommit": "103e93c259f75f30f339aa26596aa864b79fbdf0",
+  "execution": "aed7b5ac-5791-4326-af12-5a154d942a5c",
+  "focused": [
+    {
+      "file": "packages/teamlead/src/bridge/__tests__/claude-review-runner.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/claude-review-runner.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 4.35,
+      "passedTests": 47,
+      "logSha256": "56c6ecc35c9e07befa224dbd9479b3de5f7afdebc599f0fafaba48b6f2b7954b"
+    },
+    {
+      "file": "packages/teamlead/src/bridge/__tests__/review-request-coordinator.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/review-request-coordinator.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 70.83,
+      "passedTests": 184,
+      "logSha256": "c21a06fa42a791f1a0920acdbf3cd322b53b061679a5d372e1d8fc9f914c2e68"
+    },
+    {
+      "file": "packages/teamlead/src/bridge/__tests__/review-prefix-profile.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/review-prefix-profile.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 4.66,
+      "passedTests": 9,
+      "logSha256": "de1e7a0aef298cd44e94291281c9e2c5d57f66c5c3b941f434bd2102c0ebd6b6"
+    },
+    {
+      "file": "packages/teamlead/src/bridge/__tests__/land-content-review.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/land-content-review.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 13.68,
+      "passedTests": 4,
+      "logSha256": "443fa521926cb0e0f6204515a6d0abef25097d489ce48cf1a8ad6245457628f6"
+    },
+    {
+      "file": "packages/teamlead/src/bridge/__tests__/review-target-containment.fly2901.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/review-target-containment.fly2901.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 7.3,
+      "passedTests": 2,
+      "logSha256": "da7cfa910c72ca4dcefc385a864ad3f54bb1ffd136b98aa827ccafe92d4b0c50"
+    },
+    {
+      "file": "packages/teamlead/src/bridge/__tests__/fly1560-teardown-guard.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/fly1560-teardown-guard.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 4.71,
+      "passedTests": 7,
+      "logSha256": "674fe621239d69068c3146d75d54db975559e94c8bf332a93d99f16bff73658b"
+    },
+    {
+      "file": "packages/claude-runner/test/kill-path-inventory.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-claude-runner",
+        "exec",
+        "vitest",
+        "run",
+        "test/kill-path-inventory.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 8.16,
+      "passedTests": 5,
+      "logSha256": "9b69cf7f118d0010509aacd33a7e5cc6a90ced79cbc1f016ab0752061f276e55"
+    },
+    {
+      "file": "packages/config/src/__tests__/feature-flags-drift.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-config",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/feature-flags-drift.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 15.85,
+      "passedTests": 14,
+      "logSha256": "a2889c97953ca4f9bfb4f645ac9b05c730c8e89b1bb3f752355a656b5e6d5608"
+    },
+    {
+      "file": "packages/config/src/__tests__/feature-flags-registry.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-config",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/feature-flags-registry.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 3.1,
+      "passedTests": 58,
+      "logSha256": "3dd4be5697eff7c5a7a80cb90f885acb5d1076803d061cc026d6ef520e8a8d2d"
+    },
+    {
+      "file": "packages/teamlead/src/__tests__/StateStore.fly663-migration.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/StateStore.fly663-migration.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 14.56,
+      "passedTests": 11,
+      "logSha256": "f5c36e786f134745541700b7aee207d5b5eee9851016371bc9b1df5a46ed165e"
+    },
+    {
+      "file": "packages/teamlead/src/__tests__/lead-token-savings-drift.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/lead-token-savings-drift.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 3.58,
+      "passedTests": 17,
+      "logSha256": "5ff34b2c4899f40110f43773a3692ee92aa2fcb76705791f99518e7c9455cc1a"
+    }
+  ],
+  "focusedPassedTests": 358,
+  "related": {
+    "command": "pnpm --filter flywheel-teamlead exec vitest related src/bridge/claude-review-runner.ts src/bridge/review-request-coordinator.ts src/bridge/plugin.ts src/bridge/__tests__/claude-review-runner.test.ts --run --config /tmp/fly2913-rework-related.config.mts",
+    "config": "import base from '/Users/xiaorongli/Dev/flywheel-FLY-2913/packages/teamlead/vitest.config.ts';\nexport default { ...base, test: { ...base.test, projects: undefined, include: [\"src/bridge/__tests__/claude-review-runner.test.ts\", \"src/bridge/__tests__/review-request-coordinator.test.ts\", \"src/bridge/__tests__/review-prefix-profile.test.ts\", \"src/bridge/__tests__/land-content-review.test.ts\", \"src/bridge/__tests__/review-target-containment.fly2901.test.ts\", \"src/bridge/__tests__/fly1560-teardown-guard.test.ts\", \"src/__tests__/StateStore.fly663-migration.test.ts\", \"src/__tests__/lead-token-savings-drift.test.ts\"] } };\n",
+    "files": 4,
+    "tests": 237,
+    "exitCode": 0,
+    "logSha256": "ebdb1839b384c2f40af7ebb2219deef2e86629eb3f11cae9d0366ee7c271e532"
+  },
+  "checks": {
+    "build": {
+      "command": "pnpm --workspace-concurrency=1 --filter flywheel-teamlead... build",
+      "exitCode": 0,
+      "logSha256": "a1a38655289cfbc04da345fbbf223dca830f839fb0a397b75eec1fa04ab530a7"
+    },
+    "typecheck": {
+      "command": "pnpm --workspace-concurrency=1 --filter ...flywheel-teamlead typecheck",
+      "exitCode": 0,
+      "logSha256": "69325313ba81ffdad150bbc1409c803a4bcf57a04b63c13ce873597012879145"
+    },
+    "lint": {
+      "command": "pnpm lint",
+      "exitCode": 0,
+      "logSha256": "fc2f2bdff6831e69806406097c7361170e484b306f49ad0c3ee54521d50d271b",
+      "warnings": 25
+    }
+  },
+  "sourceHashes": {
+    "packages/teamlead/src/bridge/claude-review-runner.ts": "64f4062b9856e0607ed6233b38bd3149e1216bd60bda87296eda1981b6f44a5a",
+    "packages/teamlead/src/bridge/review-request-coordinator.ts": "746224fa803ef37f0f5c79f5f470e9e14ded92ebb6682c911b89ad7d975671ff",
+    "packages/teamlead/src/bridge/plugin.ts": "e25692768806b7e9341db9a05b7d79dd877d77f4845eaff67d22c010fb337bac",
+    "packages/teamlead/src/bridge/__tests__/claude-review-runner.test.ts": "7e414c81ebc6738a0e562043f009173778b7f48e08127c9cdf5af0311e0fd07a"
+  },
+  "fullCI": "Not requested: QA owns frozen-head ensure.",
+  "review": "Pending fresh exact-head review.",
+  "logs": "/Users/xiaorongli/.flywheel/qa-evidence/FLY-2913-implement-aed7b5ac",
+  "memoryCloseout": "No new reusable judgment beyond already documented conflict merge and exact-head handoff rules; no memory write.",
+  "consumerDiscovery": {
+    "path": "engineering/doc/FLY-2913-role-prefix/evidence/qa-conflict-consumers.json.gz",
+    "sha256": "9333307cbecad477353a86d05e8b4d8364394665fb87e5cdbc9f1c7d41e15e94",
+    "testDecisions": 161
+  }
+}
