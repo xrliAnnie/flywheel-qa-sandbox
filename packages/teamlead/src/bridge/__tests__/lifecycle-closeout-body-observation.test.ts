@@ -16,6 +16,7 @@ afterEach(() => {
 });
 
 function observation(verdict: "alive" | "dead" | "unknown") {
+	const observedAt = Date.now();
 	return {
 		identity: {
 			executionId: "exec-1",
@@ -27,8 +28,8 @@ function observation(verdict: "alive" | "dead" | "unknown") {
 		ownerToken: "owner-1",
 		spawnEpoch: 1,
 		verdict,
-		observedAt: "2026-09-26T23:00:00.000Z",
-		expiresAt: "2026-09-26T23:00:10.000Z",
+		observedAt: new Date(observedAt).toISOString(),
+		expiresAt: new Date(observedAt + 10_000).toISOString(),
 		bindingDigest: "a".repeat(64),
 		reason: `${verdict}_fixture`,
 	};
@@ -37,6 +38,7 @@ function observation(verdict: "alive" | "dead" | "unknown") {
 async function fixture(verdicts: Array<"alive" | "dead" | "unknown">) {
 	const store = await StateStore.create(":memory:");
 	stores.push(store);
+	const now = Date.now();
 	store.upsertSession({
 		execution_id: "exec-1",
 		issue_id: ISSUE,
@@ -50,13 +52,13 @@ async function fixture(verdicts: Array<"alive" | "dead" | "unknown">) {
 		projectName: "proj",
 		prNumber: 2778,
 		approvedHead: "b".repeat(40),
-		now: "2026-09-26T22:59:00.000Z",
+		now: new Date(now - 60_000).toISOString(),
 	});
 	const claim = store.claimLandOperation({
 		operationId: operation.operation_id,
 		ownerId: "land-worker",
-		now: "2026-09-26T22:59:01.000Z",
-		leaseExpiresAt: "2026-09-27T00:00:00.000Z",
+		now: new Date(now).toISOString(),
+		leaseExpiresAt: new Date(now + 60 * 60_000).toISOString(),
 	});
 	expect(claim).toBeDefined();
 	const closeRunnerFn = vi.fn(async () => ({
