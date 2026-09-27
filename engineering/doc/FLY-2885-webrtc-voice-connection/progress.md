@@ -1,13 +1,13 @@
 ---
 issue: FLY-2885
 phase: implement
-phaseCursor: 2/5
-updated: 2026-09-27T07:17:16.611Z
-nextStep: run affected typecheck/build/lint, record QA@4 root cause and verification
+phaseCursor: 3/5
+updated: 2026-09-27T07:20:56.085Z
+nextStep: update literal-last milestone, push exact head, request code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2885 progress
-**phase**: implement (2/5)
-**next**: run affected typecheck/build/lint, record QA@4 root cause and verification
+**phase**: implement (3/5)
+**next**: update literal-last milestone, push exact head, request code review
