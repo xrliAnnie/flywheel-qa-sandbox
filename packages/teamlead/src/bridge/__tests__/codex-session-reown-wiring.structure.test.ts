@@ -46,7 +46,7 @@ describe("FLY-2211 Bridge recovery wiring", () => {
 			source.indexOf("const scanZombiesWired ="),
 			source.indexOf("fleetSensorsHolder.current = new FleetSensors"),
 		);
-		expect(scan).toContain("readObservedBody(");
+		expect(scan).toContain("observeBodyOnDemand(");
 		expect(scan).not.toContain("probeRunnerProcessLiveness(");
 	});
 
@@ -64,7 +64,7 @@ describe("FLY-2211 Bridge recovery wiring", () => {
 				source.indexOf(start),
 				source.indexOf(end, source.indexOf(start)),
 			);
-			expect(wiring).toContain("readObservedBody(");
+			expect(wiring).toContain("observeBodyOnDemand(");
 			expect(wiring).not.toContain("probeRunnerProcessLiveness(");
 		}
 	});

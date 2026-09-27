@@ -1715,6 +1715,10 @@ export class SseBroadcaster {
 /** GEO-294 + FLY-91 Round 3: Options object for new Bridge dependencies. */
 export interface BridgeAppOptions {
 	readBodyLiveness?: ExecutionBodyLivenessReader;
+	observeBody?: (
+		executionId: string,
+		projectName: string,
+	) => Promise<"alive" | "dead" | "unknown">;
 	leadConfigService?: LeadConfigService;
 	processResources?: { snapshot(): FdHealth };
 	codexQuota?: {
@@ -1928,6 +1932,10 @@ function parseJsonStringArray(raw: string | undefined): string[] {
 function createWorkflowRunCollector(
 	store: StateStore,
 	transitionOpts: ApplyTransitionOpts,
+	observeBody?: (
+		executionId: string,
+		projectName: string,
+	) => Promise<"alive" | "dead" | "unknown">,
 ): (receiptKey: string) => Promise<WorkflowRunCollectReceiptRow> {
 	return (receiptKey) =>
 		collectWorkflowRunReceipt({
@@ -1954,6 +1962,7 @@ function createWorkflowRunCollector(
 						forcePreserved: true,
 						issueTerminalOverride: true,
 						authorityCheck,
+						observeBody,
 					},
 					store,
 				);
@@ -3096,6 +3105,7 @@ export function createBridgeApp(
 				executionId,
 				issueId: session.issue_id,
 				projectName: session.project_name,
+				observeBody: opts?.observeBody,
 			},
 			store,
 		).catch((err) => {
@@ -4324,6 +4334,7 @@ export function createBridgeApp(
 						globalBotToken: opts?.globalBotToken,
 						discordOwnerUserId: config.discordOwnerUserId,
 					},
+					observeBody: opts?.observeBody,
 				},
 				store,
 			);
@@ -5697,7 +5708,7 @@ export function createBridgeApp(
 	);
 
 	const workflowRunCollector = transitionOpts
-		? createWorkflowRunCollector(store, transitionOpts)
+		? createWorkflowRunCollector(store, transitionOpts, opts?.observeBody)
 		: undefined;
 	// GEO-267: /api/runs — start new Runner executions
 	if (startDispatcher) {
@@ -5737,7 +5748,9 @@ export function createBridgeApp(
 				finalizeStaleBlocker(blocker, prState, {
 					store,
 					observeBody: async (executionId, projectName) =>
-						opts?.readBodyLiveness?.(executionId, projectName) ?? "unknown",
+						(await opts?.observeBody?.(executionId, projectName)) ??
+						opts?.readBodyLiveness?.(executionId, projectName) ??
+						"unknown",
 					lookupTmuxTarget,
 					// FLY-1185 §2.5: MCP reap piggybacks the injected cmux kill —
 					// runs BEFORE it while the pane pid is still resolvable; the
@@ -6730,9 +6743,14 @@ export async function startBridge(
 			terminalCommDbSync.enqueue(executionId, targetStatus, ctx.projectName);
 		},
 	};
+	let observeBodyOnDemand = async (
+		_executionId: string,
+		_projectName: string,
+	): Promise<"alive" | "dead" | "unknown"> => "unknown";
 	const workflowRunCollector = createWorkflowRunCollector(
 		store,
 		transitionOpts,
+		(executionId, projectName) => observeBodyOnDemand(executionId, projectName),
 	);
 	// FLY-247: fleet config snapshot provider (hot fleet-field overlay onto
 	// the boot topology; structural change → restart-required, R3#4) + the
@@ -7850,6 +7868,7 @@ export async function startBridge(
 		transitionOpts,
 		(issueId) =>
 			issueDisplayRefreshHolder.current?.refresh(issueId) ?? Promise.resolve(),
+		(executionId, projectName) => observeBodyOnDemand(executionId, projectName),
 	);
 
 	// ── FLY-1185: unified lifecycle-closeout infrastructure, built ONCE ──
@@ -7974,6 +7993,8 @@ export async function startBridge(
 			closeoutOpts,
 		);
 	const lifecycleInfra: LifecycleShipInfra = {
+		observeBody: (executionId, projectName) =>
+			observeBodyOnDemand(executionId, projectName),
 		forceShippedHusks: (input, stateStore, deps = {}) =>
 			forceShippedHusks(input, stateStore, {
 				...deps,
@@ -8313,7 +8334,7 @@ export async function startBridge(
 				discoverTarget: discoverTmuxTargetByExecutionId,
 				probeServerGeneration: probeTmuxServerStartTime,
 				observeBody: async (executionId, bodyProjectName) =>
-					readObservedBody(executionId, bodyProjectName),
+					observeBodyOnDemand(executionId, bodyProjectName),
 				convergeBody: (executionId) =>
 					heartbeatService.reconcileExecutionBody(executionId),
 				isCompleteMarkerPending: (executionId) =>
@@ -9412,10 +9433,6 @@ export async function startBridge(
 			...input,
 			log: (message) => console.warn(`[delivery-contract] ${message}`),
 		});
-	let readObservedBody = (
-		_executionId: string,
-		_projectName: string,
-	): "alive" | "dead" | "unknown" => "unknown";
 	const createProjectDeliveryOperations = (
 		projectName: string,
 		commDb: CommDB,
@@ -9463,7 +9480,7 @@ export async function startBridge(
 					return { ok: true };
 				},
 				observeBody: async (executionId) =>
-					readObservedBody(executionId, projectName),
+					observeBodyOnDemand(executionId, projectName),
 			},
 		});
 
@@ -9760,6 +9777,7 @@ export async function startBridge(
 		{
 			readBodyLiveness: (id, project) =>
 				executionBodyReader?.read(id, project) ?? "unknown",
+			observeBody: (id, project) => observeBodyOnDemand(id, project),
 			leadConfigService,
 			leadEventDelivery,
 			leadGithub: leadGithubProvider.get,
@@ -10327,7 +10345,7 @@ export async function startBridge(
 	const cachedExecutionBodyObserver = {
 		...executionBodyObserver,
 		observe: async (executionId: string) =>
-			executionBodyRuntime?.read(executionId),
+			executionBodyRuntime?.observe(executionId),
 	};
 	const codexTerminalSweep = !executionBodyProbesEnabled
 		? undefined
@@ -10787,6 +10805,7 @@ export async function startBridge(
 							globalBotToken: config.discordBotToken,
 							discordOwnerUserId: config.discordOwnerUserId,
 						},
+						observeBody: observeBodyOnDemand,
 					},
 					store,
 				);
@@ -10822,6 +10841,7 @@ export async function startBridge(
 						executorType: "phase",
 						finalizeDone: true,
 						transitionOpts,
+						observeBody: observeBodyOnDemand,
 						// NO archive (Codex R1 BLOCKER-3): orphan reclaim only frees the
 						// process; a shipped issue's thread teardown is post-ship's job.
 					},
@@ -11371,12 +11391,7 @@ export async function startBridge(
 		isEnabled: () => storeExecutionBodyDeathEnabled(flagStore),
 	});
 
-	// All consumers share the sampler's original bounded observation. A settled
-	// death remains readable after projection closes the sampled owner binding.
-	readObservedBody = (
-		executionId: string,
-		projectName: string,
-	): "alive" | "dead" | "unknown" => {
+	observeBodyOnDemand = async (executionId, projectName) => {
 		if (
 			!storeExecutionBodyDeathEnabled(flagStore) ||
 			store.getSession(executionId)?.project_name !== projectName
@@ -11385,10 +11400,11 @@ export async function startBridge(
 		const settled =
 			executionBodyReader?.read(executionId, projectName) ?? "unknown";
 		if (settled !== "unknown") return settled;
-		const observation = executionBodyRuntime?.read(executionId);
-		return observation?.verdict === "alive" || observation?.verdict === "dead"
-			? observation.verdict
-			: "unknown";
+		const observation = await executionBodyRuntime?.observe(executionId);
+		if (observation?.verdict === "alive") return "alive";
+		// Raw dead evidence queues convergence but is not destructive authority.
+		// Only its same-generation projected receipt may answer dead to consumers.
+		return executionBodyReader?.read(executionId, projectName) ?? "unknown";
 	};
 
 	heartbeatServiceRef.current = heartbeatService;
@@ -12237,7 +12253,10 @@ export async function startBridge(
 		onEpicChange: epicPageRefresher.requestRefresh,
 		removeCleanWorktree: makeBridgeWorktreeCleanup(store, projects),
 		probeTurnHolderLiveness: async (session) => {
-			const body = readObservedBody(session.execution_id, session.project_name);
+			const body = await observeBodyOnDemand(
+				session.execution_id,
+				session.project_name,
+			);
 			return body === "dead"
 				? "dead_pin"
 				: body === "alive"
@@ -12898,7 +12917,7 @@ export async function startBridge(
 		},
 		probeProcessLiveness: (executionId, projectName) =>
 			probePatrolProcessLiveness(executionId, projectName, {
-				observeBody: async (id, project) => readObservedBody(id, project),
+				observeBody: (id, project) => observeBodyOnDemand(id, project),
 			}),
 		inspectDeliveryState: (projectName, deliveryId) =>
 			leadInboxRuntime.getLeadEventSettlement(projectName, deliveryId),
@@ -13284,7 +13303,7 @@ export async function startBridge(
 		store,
 		runtimeRegistry: registry,
 		observeExecutionBody: async (executionId, projectName) =>
-			readObservedBody(executionId, projectName),
+			observeBodyOnDemand(executionId, projectName),
 		refreshShipRelevance,
 		onIssueGateSupersedeTick: issueGateSupersedeTick,
 		onReleaseReadinessTick: () => releaseReadinessRider.tick(),
@@ -14504,7 +14523,7 @@ export async function startBridge(
 			materializedHeadAuthority,
 			transitionOpts,
 			observeBody: async (executionId, projectName) =>
-				readObservedBody(executionId, projectName),
+				observeBodyOnDemand(executionId, projectName),
 			onTerminalStatusPersisted: onMarkerTerminalStatusPersisted,
 			alertMergeWithoutApproval: (session, reason) => {
 				void reviewAuthorizationAlerts.alertMergeWithoutApproval(
@@ -14575,7 +14594,7 @@ export async function startBridge(
 					},
 					discoverTmuxTarget: discoverTmuxTargetByExecutionId,
 					observeBody: async (executionId, projectName) =>
-						readObservedBody(executionId, projectName),
+						observeBodyOnDemand(executionId, projectName),
 				},
 				{ session, cause },
 			);
@@ -14654,7 +14673,7 @@ export async function startBridge(
 				});
 			},
 			probeActorAlive: async (session) => {
-				const body = readObservedBody(
+				const body = await observeBodyOnDemand(
 					session.execution_id,
 					session.project_name ?? "",
 				);
@@ -14845,7 +14864,7 @@ export async function startBridge(
 				getActorSession: (executionId) =>
 					store.getSession(executionId) as WorkflowActorSession | undefined,
 				probeRegistered: async (session) => {
-					const body = readObservedBody(
+					const body = await observeBodyOnDemand(
 						session.execution_id,
 						session.project_name ?? "",
 					);
@@ -14856,7 +14875,7 @@ export async function startBridge(
 							: "indeterminate";
 				},
 				probePersisted: async (session) => {
-					const body = readObservedBody(
+					const body = await observeBodyOnDemand(
 						session.execution_id,
 						session.project_name ?? "",
 					);
@@ -15211,6 +15230,7 @@ export async function startBridge(
 							executorType: "phase",
 							reason: `rework_supersession:${requestId}`,
 							authorityCheck,
+							observeBody: observeBodyOnDemand,
 						},
 						store,
 					);
@@ -15715,6 +15735,7 @@ export async function startBridge(
 							leadId: resolveRescueLeadId(s) ?? undefined,
 							reason: "login_expired_rescue",
 							forcePreserved: true,
+							observeBody: observeBodyOnDemand,
 						},
 						store,
 					);
@@ -16147,7 +16168,7 @@ export async function startBridge(
 								: undefined;
 						},
 						bodyLiveness: async (id, projectName) =>
-							readObservedBody(id, projectName),
+							observeBodyOnDemand(id, projectName),
 					})),
 				);
 			} catch (err) {
@@ -16181,11 +16202,14 @@ export async function startBridge(
 		recoverSocket: () => tmuxRescueClient.recover(),
 		normalizedSocketPath: canonicalTmuxSocketPath,
 		targetGone: async (session) => {
-			const body = readObservedBody(session.execution_id, session.project_name);
+			const body = await observeBodyOnDemand(
+				session.execution_id,
+				session.project_name,
+			);
 			return body === "dead" ? true : body === "alive" ? false : null;
 		},
 		bodyLiveness: async (session) =>
-			readObservedBody(session.execution_id, session.project_name),
+			observeBodyOnDemand(session.execution_id, session.project_name),
 		migrate: async (session) => {
 			await heartbeatService.reconcileExecutionBody(session.execution_id);
 			return (

@@ -174,13 +174,17 @@ export class ExecutionProcessOwnerStore {
 		return (
 			this.db
 				.prepare(`SELECT owner.execution_id FROM execution_process_owner owner
-			LEFT JOIN workflow_execution_process_body body
-			ON body.execution_id = owner.execution_id AND body.generation = owner.generation
-			WHERE owner.close_requested = 0 OR owner.owner_drained_receipt IS NULL
-			OR owner.spawn_inflight = 1 OR owner.restart_in_progress = 1
-			OR body.state IS NULL OR body.state NOT IN ('closed', 'standby')
+			WHERE NOT (owner.close_requested = 1
+			AND owner.owner_drained_receipt IS NOT NULL
+			AND owner.spawn_inflight = 0 AND owner.restart_in_progress = 0
+			AND (EXISTS (SELECT 1 FROM workflow_run_event projected
+				WHERE projected.event_uid = 'body_death:' || owner.execution_id || ':' || owner.generation || ':projected')
+			OR EXISTS (SELECT 1 FROM workflow_terminal_archive projected
+				WHERE projected.source_table = 'workflow_run_event'
+				AND json_extract(projected.row_json,'$.event_uid') = 'body_death:' || owner.execution_id || ':' || owner.generation || ':projected')))
 			UNION SELECT session.execution_id FROM sessions session
 			WHERE session.adapter_type = 'claude-tmux'
+			AND session.status IN ('running', 'ship_parked', 'awaiting_review', 'design_done', 'approved_to_ship', 'pending')
 			AND NOT EXISTS (SELECT 1 FROM execution_process_owner owner WHERE owner.execution_id = session.execution_id)
 			ORDER BY execution_id`)
 				.all() as Array<{ execution_id: string }>

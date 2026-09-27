@@ -39,7 +39,8 @@ export interface ExecutionProcessControllerOptions {
 	pendingAbsence?: typeof capturePendingExecutionSpawnAbsence;
 }
 type MutationResult = { ok: true } | { ok: false; reason: string };
-const RETRY_DELAYS = [25, 50, 100, 200] as const;
+const MUTATION_LEASE_TTL_MS = 60_000;
+const MAX_CONTENTION_DELAY_MS = 5_000;
 
 type ProcessControllerStore = Pick<
 	StateStore,
@@ -201,15 +202,15 @@ export function createExecutionProcessOwnerFactory(
 	async function mutate<T extends MutationResult>(
 		operation: () => T,
 	): Promise<T> {
-		for (let attempt = 0; ; attempt++) {
+		const deadline = now() + MUTATION_LEASE_TTL_MS;
+		let delayMs = 25;
+		for (;;) {
 			const result = operation();
-			if (
-				result.ok ||
-				result.reason !== "lease_held" ||
-				attempt === RETRY_DELAYS.length
-			)
-				return result;
-			await sleep(RETRY_DELAYS[attempt]!);
+			if (result.ok || result.reason !== "lease_held") return result;
+			const remainingMs = deadline - now();
+			if (remainingMs <= 0) return result;
+			await sleep(Math.min(delayMs, remainingMs));
+			delayMs = Math.min(delayMs * 2, MAX_CONTENTION_DELAY_MS);
 		}
 	}
 	function requireAccepted(result: MutationResult): void {

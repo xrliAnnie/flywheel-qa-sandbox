@@ -35,6 +35,7 @@ type Row = {
 	argv?: string;
 	env?: string;
 	start?: string;
+	state?: string;
 };
 function fixture(rows: Row[] = [{ pid: 42 }]) {
 	const calls: Array<{
@@ -55,7 +56,8 @@ function fixture(rows: Row[] = [{ pid: 42 }]) {
 				return {
 					stdout: rows
 						.map(
-							(r) => `${r.pid} 1 ${r.pgid ?? r.pid} 501 S ${r.start ?? start}`,
+							(r) =>
+								`${r.pid} 1 ${r.pgid ?? r.pid} 501 ${r.state ?? "S"} ${r.start ?? start}`,
 						)
 						.join("\n"),
 				};
@@ -344,6 +346,24 @@ describe("execution process inspector", () => {
 			hostBootId: boot,
 		});
 	});
+	it("does not let an unrelated same-uid process with hidden environment invalidate the binding census", async () => {
+		const { options } = fixture([{ pid: 42 }, { pid: 90, pgid: 90, env: "" }]);
+		const sample = await captureExecutionProcessSample(binding, options);
+		expect(sample?.writersComplete).toBe(true);
+		expect(sample?.worker).toEqual({ executable: "/bin/claude", cwd: "/work" });
+	});
+	it.each(["?", "?s", "?E", "?Es"])(
+		"accepts the macOS ps question state %s as a live census row",
+		async (state) => {
+			const { options } = fixture([{ pid: 42, state }]);
+			await expect(
+				readExecutionProcessIdentity(42, options),
+			).resolves.toMatchObject({
+				pid: 42,
+				pgid: 42,
+			});
+		},
+	);
 	it("retains previously bound detached writers even after their nonce disappears", async () => {
 		const { options } = fixture([{ pid: 90, env: "PATH=/bin" }]);
 		const sample = await captureExecutionProcessSample(
@@ -562,14 +582,22 @@ describe("execution process inspector", () => {
 			kill: vi.fn(() => true),
 		});
 		let settled = false;
+		const spawnProbe = vi.fn(() => child);
 		const promise = runExecutionProbeCommand(
 			"/bin/ps",
 			[],
 			{ timeoutMs: 5 },
-			(() => child) as never,
+			spawnProbe as never,
 		).catch(() => {
 			settled = true;
 		});
+		expect(spawnProbe).toHaveBeenCalledWith(
+			"/bin/ps",
+			[],
+			expect.objectContaining({
+				env: expect.objectContaining({ TZ: "UTC0" }),
+			}),
+		);
 		await new Promise((r) => setTimeout(r, 15));
 		expect(child.kill).toHaveBeenCalledWith("SIGKILL");
 		expect(settled).toBe(false);
@@ -628,7 +656,11 @@ describe("FLY-2919 failed native spawn absence", () => {
 				socketProbe: async () => mode === "socket_alive",
 			},
 		);
-		if (mode === "empty" || mode === "argv_spoof")
+		if (
+			mode === "empty" ||
+			mode === "argv_spoof" ||
+			mode === "environment_unknown"
+		)
 			expect(result).toEqual({
 				hostBootId: boot,
 				nonce: "nonce-42",

@@ -20,7 +20,7 @@ const LEGACY_EXEC_KEY = "FLYWHEEL_EXEC_ID";
 const DATE =
 	"((?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\\s+\\d{1,2} \\d{2}:\\d{2}:\\d{2} \\d{4})";
 const CENSUS_LINE = new RegExp(
-	`^\\s*(\\d+)\\s+(\\d+)\\s+(\\d+)\\s+(\\d+)\\s+([RSDTtWZIU][<N+slLWE]*)\\s+${DATE}\\s*$`,
+	`^\\s*(\\d+)\\s+(\\d+)\\s+(\\d+)\\s+(\\d+)\\s+([RSDTtWZIU?][<N+slLWE]*)\\s+${DATE}\\s*$`,
 );
 const ARGS_LINE = new RegExp(`^\\s*(\\d+)\\s+${DATE}\\s+(.*)$`);
 const CENSUS_FIELDS = "pid=,ppid=,pgid=,uid=,stat=,lstart=";
@@ -312,45 +312,32 @@ export async function capturePendingExecutionSpawnAbsence(
 			return null;
 		const after = await c.processes();
 		if ((await c.boot()) !== hostBootId) return null;
-		const stable = (rows: ProcessRow[]) =>
-			rows
-				.filter((row) => !c.owned.has(row.pid))
-				.map((row) => JSON.stringify(row))
-				.sort()
-				.join("\n");
-		if (stable(before) !== stable(after)) return null;
 		const uid = options.uid ?? process.getuid?.();
 		if (uid === undefined) return null;
-		for (const row of after) {
+		const rowsByIdentity = new Map(
+			[...before, ...after].map((row) => [
+				`${row.pid}:${row.startIdentity}`,
+				row,
+			]),
+		);
+		for (const row of rowsByIdentity.values()) {
 			if (row.state === "zombie" || c.owned.has(row.pid)) continue;
 			// A reused group is also a refusal: absence must be independently certain.
 			if (pending.pgid !== null && row.pgid === pending.pgid) return null;
 			if (row.uid !== uid) continue;
-			const a = argvBefore.get(row.pid),
-				e = environment.get(row.pid),
-				z = argvAfter.get(row.pid);
-			if (
-				!a ||
-				!e ||
-				!z ||
-				a.start !== row.startIdentity ||
-				e.start !== row.startIdentity ||
-				z.start !== row.startIdentity ||
-				a.text !== z.text ||
-				!e.text.startsWith(`${a.text} `)
-			)
-				return null;
-			const tokens = e.text
-				.slice(a.text.length + 1)
-				.trim()
-				.split(/\s+/);
-			if (!tokens.some((token) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(token)))
-				return null;
+			const tokens = stableEnvironmentTokens(
+				row,
+				argvBefore,
+				environment,
+				argvAfter,
+			);
+			// A same-uid process outside the failed launch's group is not a writer
+			// candidate merely because macOS hides its environment.
+			if (!tokens) continue;
 			const nonces = tokens.filter((token) =>
 				token.startsWith(`${NONCE_KEY}=`),
 			);
-			if (nonces.length > 1 || nonces[0] === `${NONCE_KEY}=${pending.nonce}`)
-				return null;
+			if (nonces.includes(`${NONCE_KEY}=${pending.nonce}`)) return null;
 		}
 		c.control();
 		return {
@@ -380,7 +367,7 @@ export function runExecutionProbeCommand(
 		try {
 			child = spawnProbe(file, [...args], {
 				stdio: ["ignore", "pipe", "pipe"],
-				env: { ...process.env, LC_ALL: "C", LANG: "C" },
+				env: { ...process.env, LC_ALL: "C", LANG: "C", TZ: "UTC0" },
 			});
 		} catch {
 			fail();
@@ -513,6 +500,66 @@ function argvIndex(text: string): Map<number, { start: string; text: string }> {
 		rows.set(pid, { start: m[2]!, text: m[3]! });
 	}
 	return rows;
+}
+function stableEnvironmentTokens(
+	row: ProcessRow,
+	argvBefore: Map<number, { start: string; text: string }>,
+	environment: Map<number, { start: string; text: string }>,
+	argvAfter: Map<number, { start: string; text: string }>,
+): string[] | undefined {
+	const before = argvBefore.get(row.pid);
+	const env = environment.get(row.pid);
+	const after = argvAfter.get(row.pid);
+	if (
+		!before ||
+		!env ||
+		!after ||
+		before.start !== row.startIdentity ||
+		env.start !== row.startIdentity ||
+		after.start !== row.startIdentity ||
+		before.text !== after.text ||
+		!env.text.startsWith(`${before.text} `)
+	)
+		return undefined;
+	const tokens = env.text
+		.slice(before.text.length + 1)
+		.trim()
+		.split(/\s+/);
+	return tokens.some((token) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(token))
+		? tokens
+		: undefined;
+}
+function writerCandidatePids(
+	rows: ProcessRow[],
+	binding: ExecutionProcessBinding,
+	hostBootId: string,
+	isViewer: (row: ProcessRow) => boolean,
+): Set<number> {
+	const candidates = new Set<number>();
+	for (const row of rows) {
+		if (row.state === "zombie" || isViewer(row)) continue;
+		if (
+			row.pgid === binding.pgid ||
+			binding.writers.some((writer) => matches(row, writer, hostBootId))
+		)
+			candidates.add(row.pid);
+	}
+	let changed = true;
+	while (changed) {
+		changed = false;
+		for (const row of rows) {
+			if (
+				row.state !== "zombie" &&
+				!isViewer(row) &&
+				candidates.has(row.ppid) &&
+				!candidates.has(row.pid)
+			) {
+				candidates.add(row.pid);
+				changed = true;
+			}
+		}
+	}
+	return candidates;
 }
 function identity(
 	row: ProcessRow,
@@ -741,6 +788,18 @@ export async function captureExecutionProcessSample(
 		);
 		const isViewer = (row: ProcessRow) =>
 			viewers.some((viewer) => matches(row, viewer, hostBootId));
+		const scopedWriterPids = writerCandidatePids(
+			rows,
+			binding,
+			hostBootId,
+			isViewer,
+		);
+		const initialScopedWriterPids = writerCandidatePids(
+			before,
+			binding,
+			hostBootId,
+			isViewer,
+		);
 		const discovered = new Map<number, ExecutionProcessIdentity>();
 		const nonceWriters = new Map<number, ExecutionProcessIdentity>();
 		let legacyWorkerAttributed = false;
@@ -749,41 +808,28 @@ export async function captureExecutionProcessSample(
 		if (uid === undefined) writersComplete = false;
 		for (const row of rows) {
 			if (row.state === "zombie" || c.owned.has(row.pid)) continue;
-			if (
-				(row.pgid === binding.pgid && !isViewer(row)) ||
-				binding.writers.some((writer) => matches(row, writer, hostBootId))
-			)
+			if (scopedWriterPids.has(row.pid))
 				discovered.set(row.pid, identity(row, hostBootId));
 			if (row.uid !== uid) continue;
-			const a = argvBefore.get(row.pid),
-				e = environment.get(row.pid),
-				z = argvAfter.get(row.pid);
-			if (
-				!a ||
-				!e ||
-				!z ||
-				a.start !== row.startIdentity ||
-				e.start !== row.startIdentity ||
-				z.start !== row.startIdentity ||
-				a.text !== z.text ||
-				!e.text.startsWith(`${a.text} `)
-			) {
-				writersComplete = false;
-				continue;
-			}
-			const tokens = e.text
-				.slice(a.text.length + 1)
-				.trim()
-				.split(/\s+/);
-			if (!tokens.some((token) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(token))) {
-				writersComplete = false;
+			const tokens = stableEnvironmentTokens(
+				row,
+				argvBefore,
+				environment,
+				argvAfter,
+			);
+			if (!tokens) {
+				if (scopedWriterPids.has(row.pid)) writersComplete = false;
 				continue;
 			}
 			const nonces = tokens.filter((token) =>
 				token.startsWith(`${attributionKey}=`),
 			);
 			if (nonces.length > 1) {
-				writersComplete = false;
+				if (
+					scopedWriterPids.has(row.pid) ||
+					nonces.includes(`${attributionKey}=${attributionValue}`)
+				)
+					writersComplete = false;
 				continue;
 			}
 			if (nonces[0] === `${attributionKey}=${attributionValue}`) {
@@ -801,6 +847,7 @@ export async function captureExecutionProcessSample(
 					row.uid === uid &&
 					row.state === "running" &&
 					!c.owned.has(row.pid) &&
+					initialScopedWriterPids.has(row.pid) &&
 					!rows.some(
 						(after) =>
 							after.pid === row.pid &&

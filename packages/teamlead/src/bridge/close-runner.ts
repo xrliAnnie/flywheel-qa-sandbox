@@ -145,6 +145,12 @@ export interface CloseRunnerOpts {
 	 * failures never affect the close result.
 	 */
 	archive?: CloseArchiveDeps;
+	/** Fresh bounded process-body observation for cooperative resident shutdown.
+	 * Bridge production callers inject the shared sampler; absence stays fail-closed. */
+	observeBody?: (
+		executionId: string,
+		projectName: string,
+	) => Promise<"alive" | "dead" | "unknown">;
 }
 
 export interface RunCloseAuthority {
@@ -483,6 +489,15 @@ async function closeRunnerInner(
 
 	// FLY-102 Round 3 QA finding: audit event_id is Lead-dimensional.
 	const auditKey = `${opts.executionId}-${opts.leadId ?? "unknown"}`;
+	const observeCurrentBody = () =>
+		opts.observeBody
+			? opts.observeBody(opts.executionId, opts.projectName)
+			: probeRunExecutionLiveness(
+					store.getSession(opts.executionId),
+					opts.executionId,
+					opts.projectName,
+					{ store },
+				);
 	// FLY-1707: collector ownership is sticky for the entire close, including
 	// paths that return before tmux lookup (already-gone and graceful shutdown).
 	let authorityStickyLost: string | undefined;
@@ -755,13 +770,7 @@ async function closeRunnerInner(
 				getSession: () => store.getSession(opts.executionId),
 			},
 			{
-				observeBody: (executionId, projectName) =>
-					probeRunExecutionLiveness(
-						store.getSession(executionId),
-						executionId,
-						projectName,
-						{ store },
-					),
+				observeBody: () => observeCurrentBody(),
 			},
 		);
 		if (shutdown.kind === "blocked") {
@@ -871,12 +880,7 @@ async function closeRunnerInner(
 		// A missing presentation target says nothing about the process body. A live
 		// body can lose its window during Bridge/tmux recovery; only the shared body
 		// observation may authorize the already-gone lifecycle path.
-		const bodyLiveness = await probeRunExecutionLiveness(
-			session,
-			opts.executionId,
-			opts.projectName,
-			{ store },
-		);
+		const bodyLiveness = await observeCurrentBody();
 		if (bodyLiveness !== "dead") {
 			store.insertEvent({
 				event_id: `close-runner-failed-${auditKey}`,
@@ -1101,14 +1105,7 @@ async function closeRunnerInner(
 	// only the shared execution-body observation may authorize lifecycle and
 	// communication finalization; target-local absent/dead-pin verdicts are never
 	// promoted to body death.
-	const bodyLiveness = !res.killed
-		? await probeRunExecutionLiveness(
-				session,
-				opts.executionId,
-				opts.projectName,
-				{ store },
-			)
-		: undefined;
+	const bodyLiveness = !res.killed ? await observeCurrentBody() : undefined;
 	const runnerDeathProven = bodyLiveness === "dead";
 	const canDeleteSessionIdentity = res.killed || runnerDeathProven;
 	const commDbCanFinalize = canDeleteSessionIdentity;

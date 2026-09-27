@@ -16538,10 +16538,16 @@ export class StateStore {
 		const activation = identity.activationId
 			? this.getWorkflowActivation(identity.activationId)
 			: undefined;
+		const bodyMatchesProjection =
+			duty.disposition === "standby"
+				? body?.generation === identity.generation && body.state === "standby"
+				: !body ||
+					(body.generation === identity.generation &&
+						(body.state === "closed" || body.state === "standby"));
 		if (
 			!session ||
-			!body ||
 			!activation ||
+			!bodyMatchesProjection ||
 			!duty.terminalLifecycleId ||
 			session.status !== duty.terminalStatus ||
 			session.terminal_lifecycle_id !== duty.terminalLifecycleId ||
@@ -16549,8 +16555,6 @@ export class StateStore {
 			this.resolveExecutionBodyActivation(executionId)?.activation_id !==
 				identity.activationId ||
 			owner.generation !== identity.generation ||
-			body.generation !== identity.generation ||
-			(body.state !== "closed" && body.state !== "standby") ||
 			owner.owner_token !== observation.ownerToken ||
 			owner.spawn_epoch !== observation.spawnEpoch ||
 			owner.binding_spawn_epoch !== observation.spawnEpoch ||

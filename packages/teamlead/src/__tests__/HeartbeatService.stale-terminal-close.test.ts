@@ -39,6 +39,7 @@ describe("FLY-867 stale-terminal close (checkStaleCompleted upgrade)", () => {
 	let store: {
 		getStaleCompletedSessions: ReturnType<typeof vi.fn>;
 		getSession: ReturnType<typeof vi.fn>;
+		executionProcessOwners: { get: ReturnType<typeof vi.fn> };
 	};
 	let notifier: { onSessionStale: ReturnType<typeof vi.fn> };
 	let closeStale: ReturnType<typeof vi.fn>;
@@ -63,9 +64,14 @@ describe("FLY-867 stale-terminal close (checkStaleCompleted upgrade)", () => {
 	}
 
 	beforeEach(() => {
+		mockGetTmuxTarget.mockReset().mockReturnValue({
+			tmuxWindow: "runner-p:FLY-1-claude-x",
+		});
+		mockIsTmuxAlive.mockReset().mockResolvedValue(true);
 		store = {
 			getStaleCompletedSessions: vi.fn().mockReturnValue([]),
 			getSession: vi.fn().mockReturnValue(undefined),
+			executionProcessOwners: { get: vi.fn().mockReturnValue(undefined) },
 		};
 		notifier = { onSessionStale: vi.fn().mockResolvedValue(undefined) };
 		closeStale = vi.fn().mockResolvedValue({ closed: true });
@@ -87,12 +93,27 @@ describe("FLY-867 stale-terminal close (checkStaleCompleted upgrade)", () => {
 	it("closes a terminal live-body leak even when its window is missing", async () => {
 		const s = makeSession({ status: "completed" });
 		store.getStaleCompletedSessions.mockReturnValue([s]);
+		store.executionProcessOwners.get.mockReturnValue({
+			execution_id: s.execution_id,
+		});
 		const service = makeService(staleCfg);
 
 		await service.checkStaleCompleted();
 
 		expect(closeStale).toHaveBeenCalledWith(s);
 		expect(mockIsTmuxAlive).not.toHaveBeenCalled();
+	});
+
+	it("skips historical terminal rows that have neither an owner nor a live presentation target", async () => {
+		const s = makeSession({ status: "completed" });
+		store.getStaleCompletedSessions.mockReturnValue([s]);
+		mockGetTmuxTarget.mockReturnValue(undefined);
+		const service = makeService(staleCfg);
+
+		await service.checkStaleCompleted();
+
+		expect(closeStale).not.toHaveBeenCalled();
+		expect(notifier.onSessionStale).not.toHaveBeenCalled();
 	});
 
 	it("closes failed and blocked leaks too (backstop owns the full stale-query set)", async () => {
@@ -170,6 +191,9 @@ describe("FLY-867 stale-terminal close (checkStaleCompleted upgrade)", () => {
 	it("close enabled: a failed-close session retries without consulting window liveness", async () => {
 		const s = makeSession();
 		store.getStaleCompletedSessions.mockReturnValue([s]);
+		store.executionProcessOwners.get.mockReturnValue({
+			execution_id: s.execution_id,
+		});
 		closeStale.mockResolvedValue({ closed: false });
 		mockGetTmuxTarget.mockClear();
 		mockIsTmuxAlive.mockClear();
@@ -181,6 +205,7 @@ describe("FLY-867 stale-terminal close (checkStaleCompleted upgrade)", () => {
 		expect(mockGetTmuxTarget).not.toHaveBeenCalled();
 		expect(mockIsTmuxAlive).not.toHaveBeenCalled();
 		expect(closeStale).toHaveBeenCalledTimes(2);
+		expect(notifier.onSessionStale).not.toHaveBeenCalled();
 	});
 
 	it("a successful close clears the notify dedup so a same-exec reincarnation re-notifies", async () => {

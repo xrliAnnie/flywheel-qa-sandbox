@@ -418,11 +418,16 @@ export type LifecycleShipInfra = Pick<
 	| "preArbitrate"
 	| "withIssueLifecycleMutex"
 	| "forceShippedHusks"
+	| "observeBody"
 >;
 
 export interface PostShipDeps {
 	store: StateStore;
 	projects: ProjectEntry[];
+	observeBody?: (
+		executionId: string,
+		projectName: string,
+	) => Promise<"alive" | "dead" | "unknown">;
 	/**
 	 * FLY-603 Layer A: optional worktree-cleanup closure, built at the Bridge
 	 * composition root and threaded into all three finalization call sites so
@@ -822,6 +827,10 @@ export function makeFinalizeWorkflowPhaseRoles(
 	store: StateStore,
 	transitionOpts: ApplyTransitionOpts,
 	refreshPhaseStatusLine?: (issueId: string) => Promise<void>,
+	observeBody?: (
+		executionId: string,
+		projectName: string,
+	) => Promise<"alive" | "dead" | "unknown">,
 ): (
 	issueId: string,
 	projectName: string,
@@ -866,6 +875,7 @@ export function makeFinalizeWorkflowPhaseRoles(
 						executorType: p.chat_thread_role === "main" ? "workflow" : "phase",
 						finalizeDone: true,
 						transitionOpts,
+						observeBody,
 						// R5#3: when the post-ship DAG already holds the issue mutex,
 						// skip the non-re-entrant lifecycle close guard (else the
 						// inner closeRunner re-acquires the SAME lock → deadlock).
@@ -1245,6 +1255,7 @@ async function runPostShipFinalizationInner(
 					executionId: sourceExecutionId!,
 					issueId: opts.issueId,
 					projectName: opts.projectName,
+					observeBody: deps.observeBody,
 				},
 				store,
 			).catch((err) => {

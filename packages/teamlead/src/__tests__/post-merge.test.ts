@@ -161,6 +161,34 @@ describe("postMergeTmuxCleanup", () => {
 		);
 	});
 
+	it("uses the injected point-in-time body observer for resident Codex shutdown", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "GEO-280",
+			project_name: "geoforge3d",
+			status: "completed",
+			adapter_type: "codex-tmux",
+			chat_thread_role: "qa",
+		});
+		store.patchSessionMetadata("exec-1", {
+			adapter_type: "codex-tmux",
+			chat_thread_role: "qa",
+		});
+		const observeBody = vi.fn(async () => "alive" as const);
+		mockPrepareCodexPhaseShutdown.mockImplementation(
+			async (_input, deps: { observeBody: typeof observeBody }) =>
+				(await deps.observeBody("exec-1", "geoforge3d")) === "alive"
+					? { kind: "graceful", requestId: "shutdown-live" }
+					: { kind: "blocked", error: "phase_shutdown_body_unknown" },
+		);
+
+		const result = await postMergeTmuxCleanup(makeOpts({ observeBody }), store);
+
+		expect(result.tmuxClosed).toBe(true);
+		expect(observeBody).toHaveBeenCalledWith("exec-1", "geoforge3d");
+		expect(mockProbeRunExecutionLiveness).not.toHaveBeenCalled();
+	});
+
 	it("FLY-1269: shipping preserves a live Codex QA when the handshake fails", async () => {
 		store.upsertSession({
 			execution_id: "exec-1",

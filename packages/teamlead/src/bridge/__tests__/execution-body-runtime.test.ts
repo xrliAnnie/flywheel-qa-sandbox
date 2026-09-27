@@ -56,6 +56,21 @@ describe("FLY-2919 independent body lifecycle runtime", () => {
 		await f.runtime.stop();
 		expect(vi.getTimerCount()).toBe(0);
 	});
+	it("serves an awaited point-in-time demand after a cold cache miss", async () => {
+		const f = fixture(Array.from({ length: 100 }, (_, i) => `exec-${i}`));
+		f.observe.mockImplementation(async (id) => observation(id, "alive"));
+
+		const result = await f.runtime.observe("target");
+
+		expect(result).toMatchObject({
+			verdict: "alive",
+			identity: { executionId: "target" },
+		});
+		expect(f.observe).toHaveBeenCalledWith(
+			"target",
+			expect.objectContaining({ signal: expect.any(AbortSignal) }),
+		);
+	});
 	it("keeps OS sampling bounded and moving while lifecycle consumers await", async () => {
 		const ids = Array.from(
 			{ length: 20 },

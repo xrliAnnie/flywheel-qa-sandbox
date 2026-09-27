@@ -343,6 +343,7 @@ describe("FLY-2302 dead workflow body CommDB convergence", () => {
 					executorType: "lifecycle",
 					forcePreserved: true,
 					skipLifecycleGuard: true,
+					observeBody: async () => "dead",
 				},
 				store,
 			),

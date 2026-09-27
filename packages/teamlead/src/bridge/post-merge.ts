@@ -46,6 +46,10 @@ export interface PostMergeOpts {
 	executionId: string;
 	issueId: string;
 	projectName: string;
+	observeBody?: (
+		executionId: string,
+		projectName: string,
+	) => Promise<"alive" | "dead" | "unknown">;
 }
 
 export interface PostMergeResult {
@@ -219,13 +223,15 @@ export async function postMergeTmuxCleanup(
 					getSession: () => store.getSession(opts.executionId),
 				},
 				{
-					observeBody: (executionId, projectName) =>
-						probeRunExecutionLiveness(
-							store.getSession(executionId),
-							executionId,
-							projectName,
-							{ store },
-						),
+					observeBody:
+						opts.observeBody ??
+						((executionId, projectName) =>
+							probeRunExecutionLiveness(
+								store.getSession(executionId),
+								executionId,
+								projectName,
+								{ store },
+							)),
 				},
 			);
 			if (shutdown.kind === "blocked") {
@@ -262,12 +268,14 @@ export async function postMergeTmuxCleanup(
 					// family-aware quiescence policy: Codex first proves detached-daemon
 					// absence, then every family must prove tmux/discovery/host absence.
 					physicalGone =
-						(await probeRunExecutionLiveness(
-							session,
-							opts.executionId,
-							opts.projectName,
-							{ store },
-						)) === "dead";
+						(await (opts.observeBody
+							? opts.observeBody(opts.executionId, opts.projectName)
+							: probeRunExecutionLiveness(
+									session,
+									opts.executionId,
+									opts.projectName,
+									{ store },
+								))) === "dead";
 					if (physicalGone) {
 						// The placeholder refusal remains a safety success: an independent
 						// execution-level probe, not the placeholder name, proved closure.

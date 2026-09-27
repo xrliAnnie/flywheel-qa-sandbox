@@ -45,6 +45,19 @@ async function makeStore() {
 	return { store, transitionOpts };
 }
 
+function makeFinalizer(
+	store: StateStore,
+	transitionOpts: ApplyTransitionOpts,
+	refreshPhaseStatusLine?: (issueId: string) => Promise<void>,
+) {
+	return makeFinalizeWorkflowPhaseRoles(
+		store,
+		transitionOpts,
+		refreshPhaseStatusLine,
+		async () => "dead",
+	);
+}
+
 function seed(
 	store: StateStore,
 	o: {
@@ -123,7 +136,7 @@ describe("makeFinalizeWorkflowPhaseRoles (FLY-887)", () => {
 		db.grantTurn("FLY-1", "q", "qa", 1_700_000_000_000);
 		db.close();
 
-		const finalize = makeFinalizeWorkflowPhaseRoles(store, transitionOpts);
+		const finalize = makeFinalizer(store, transitionOpts);
 		await finalize("FLY-1", "flywheel");
 
 		expect(store.getSession("d")?.status).toBe("completed");
@@ -147,7 +160,7 @@ describe("makeFinalizeWorkflowPhaseRoles (FLY-887)", () => {
 			chat_thread_role: "qa",
 			session_role: "qa",
 		});
-		const finalize = makeFinalizeWorkflowPhaseRoles(store, transitionOpts);
+		const finalize = makeFinalizer(store, transitionOpts);
 		await finalize("FLY-1", "flywheel");
 
 		// completed is terminal (no FSM transition) — the observable proof that
@@ -171,7 +184,7 @@ describe("makeFinalizeWorkflowPhaseRoles (FLY-887)", () => {
 			status: "awaiting_review",
 			chat_thread_role: "main",
 		});
-		const finalize = makeFinalizeWorkflowPhaseRoles(store, transitionOpts);
+		const finalize = makeFinalizer(store, transitionOpts);
 		await expect(finalize("FLY-2", "flywheel")).resolves.toBeUndefined();
 		// the main session is untouched
 		expect(store.getSession("main-1")?.status).toBe("awaiting_review");
@@ -214,7 +227,7 @@ describe("makeFinalizeWorkflowPhaseRoles (FLY-887)", () => {
 			nodeId: "execute",
 		});
 
-		const finalize = makeFinalizeWorkflowPhaseRoles(store, transitionOpts);
+		const finalize = makeFinalizer(store, transitionOpts);
 		await finalize("FLY-1", "flywheel", undefined, "run-current");
 
 		expect(store.getSession("generic-current")?.status).toBe("completed");
@@ -238,7 +251,7 @@ describe("makeFinalizeWorkflowPhaseRoles (FLY-887)", () => {
 			nodeId: "execute",
 		});
 
-		const finalize = makeFinalizeWorkflowPhaseRoles(store, transitionOpts);
+		const finalize = makeFinalizer(store, transitionOpts);
 		await finalize("FLY-1", "flywheel");
 
 		expect(store.getSession("generic")?.status).toBe("ship_parked");
@@ -269,7 +282,7 @@ describe("makeFinalizeWorkflowPhaseRoles (FLY-887)", () => {
 			statusesAtRefreshTime.push(store.getSession("i")?.status);
 			expect(issueId).toBe("FLY-1");
 		});
-		const finalize = makeFinalizeWorkflowPhaseRoles(
+		const finalize = makeFinalizer(
 			store,
 			transitionOpts,
 			refreshPhaseStatusLine,
@@ -291,7 +304,7 @@ describe("makeFinalizeWorkflowPhaseRoles (FLY-887)", () => {
 		const refreshPhaseStatusLine = vi.fn(async () => {
 			throw new Error("discord boom");
 		});
-		const finalize = makeFinalizeWorkflowPhaseRoles(
+		const finalize = makeFinalizer(
 			store,
 			transitionOpts,
 			refreshPhaseStatusLine,
@@ -308,7 +321,7 @@ describe("makeFinalizeWorkflowPhaseRoles (FLY-887)", () => {
 			chat_thread_role: "design",
 			session_role: "design",
 		});
-		const finalize = makeFinalizeWorkflowPhaseRoles(store, transitionOpts);
+		const finalize = makeFinalizer(store, transitionOpts);
 		await expect(finalize("FLY-1", "flywheel")).resolves.toBeUndefined();
 		expect(store.getSession("d")?.status).toBe("completed");
 	});

@@ -86,6 +86,17 @@ export function createExecutionBodyRuntime(
 		read: sampler.read,
 		request: sampler.request,
 		runPass: sampler.runPass,
+		async observe(executionId: string): Promise<BodyObservation | undefined> {
+			const cached = sampler.read(executionId);
+			if (cached) return cached;
+			await sampler.runPass();
+			const sampled = sampler.read(executionId);
+			if (sampled) return sampled;
+			// A demand added while another pass was already active may have missed
+			// that pass's fixed priority snapshot. Give it one owned bounded pass.
+			await sampler.runPass();
+			return sampler.read(executionId);
+		},
 		start() {
 			if (stopping) throw new Error("body_runtime_stopping");
 			closing = false;

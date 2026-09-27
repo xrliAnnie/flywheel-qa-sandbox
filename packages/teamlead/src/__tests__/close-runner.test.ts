@@ -319,6 +319,29 @@ describe("closeRunner", () => {
 		);
 	});
 
+	it("uses the injected point-in-time body observer for resident Codex shutdown", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-102",
+			project_name: "flywheel",
+			status: "completed",
+			adapter_type: "codex-tmux",
+			chat_thread_role: "qa",
+		});
+		const observeBody = vi.fn(async () => "alive" as const);
+		mockPrepareCodexPhaseShutdown.mockImplementation(
+			async (_input, deps: { observeBody: typeof observeBody }) =>
+				(await deps.observeBody("exec-1", "flywheel")) === "alive"
+					? { kind: "graceful", requestId: "shutdown-live" }
+					: { kind: "blocked", error: "phase_shutdown_body_unknown" },
+		);
+
+		const result = await closeRunner(makeOpts({ observeBody }), store);
+
+		expect(result.closed).toBe(true);
+		expect(observeBody).toHaveBeenCalledWith("exec-1", "flywheel");
+	});
+
 	it("defers CommDB finalization after physical shutdown until worktree settlement", async () => {
 		store.upsertSession({
 			execution_id: "exec-1",
@@ -1207,9 +1230,9 @@ describe("closeRunner", () => {
 	it("does not treat a missing tmux target as death while the body is alive", async () => {
 		seedSession(store, "completed");
 		mockGetTmuxTarget.mockReturnValue(undefined);
-		mockProbeRunExecutionLiveness.mockResolvedValue("alive");
+		const observeBody = vi.fn(async () => "alive" as const);
 
-		const result = await closeRunner(makeOpts(), store);
+		const result = await closeRunner(makeOpts({ observeBody }), store);
 
 		expect(result).toEqual({
 			closed: false,
@@ -1220,6 +1243,8 @@ describe("closeRunner", () => {
 		});
 		expect(mockFinalizeCommDbSession).not.toHaveBeenCalled();
 		expect(mockKillTmuxWindow).not.toHaveBeenCalled();
+		expect(observeBody).toHaveBeenCalledOnce();
+		expect(mockProbeRunExecutionLiveness).not.toHaveBeenCalled();
 	});
 
 	it("returns alreadyGone=true when no tmux target and the body is dead", async () => {
@@ -1227,9 +1252,9 @@ describe("closeRunner", () => {
 		// status here so the alreadyGone path is exercised.
 		seedSession(store, "completed");
 		mockGetTmuxTarget.mockReturnValue(undefined);
-		mockProbeRunExecutionLiveness.mockResolvedValue("dead");
+		const observeBody = vi.fn(async () => "dead" as const);
 
-		const result = await closeRunner(makeOpts(), store);
+		const result = await closeRunner(makeOpts({ observeBody }), store);
 
 		expect(result).toEqual({
 			closed: true,
@@ -1238,6 +1263,7 @@ describe("closeRunner", () => {
 			retiredGateCount: 2,
 		});
 		expect(mockKillTmuxWindow).not.toHaveBeenCalled();
+		expect(mockProbeRunExecutionLiveness).not.toHaveBeenCalled();
 		const events = store.getEventsByExecution("exec-1");
 		const evt = events.find((e) => e.event_type === "lead_close_runner");
 		expect(evt).toBeDefined();

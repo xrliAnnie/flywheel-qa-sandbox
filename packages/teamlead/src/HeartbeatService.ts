@@ -1332,14 +1332,32 @@ export class HeartbeatService implements ReconnectController {
 
 			try {
 				// The canonical closer owns body shutdown and its proof. A missing
-				// display window must not hide a live terminal body, so the close path
-				// never gates on tmux. Failed closes are retried every stale cycle.
+				// display window must not hide a live terminal body. Historical rows
+				// without an owner are presentation-cleanup candidates only when their
+				// exact target is still alive; otherwise skip them without a false alert.
 				if (closeEnabled) {
+					const owner = this.store.executionProcessOwners.get(
+						session.execution_id,
+					);
+					let presentationAlive = false;
+					if (!owner) {
+						const target = getTmuxTargetFromCommDb(
+							session.execution_id,
+							session.project_name,
+						);
+						if (!target) continue;
+						presentationAlive = await isTmuxWindowAlive(target.tmuxWindow);
+						if (!presentationAlive) continue;
+					}
 					const res = await this.staleTerminalClose?.closeStale(session);
 					if (res && (res.closed || res.alreadyGone)) {
 						this.notifiedStale.delete(session.execution_id);
 						continue;
 					}
+					// Owner-backed body uncertainty is retried on the next stale sweep. It
+					// is not evidence that a tmux window is alive and must not produce the
+					// legacy presentation-leak notification.
+					if (!presentationAlive) continue;
 				} else {
 					// Legacy notify-only mode still describes a window leak. It is not
 					// body liveness authority and performs no lifecycle mutation.

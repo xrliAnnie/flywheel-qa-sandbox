@@ -195,6 +195,23 @@ describe("FLY-2919 durable production process owner", () => {
 		expect(await lease.beginRestart()).toBe(true);
 		expect(retry).toHaveBeenCalledTimes(3);
 	});
+	it("keeps lease contention retryable through the mutation lease TTL", async () => {
+		const lease = await acquire();
+		await lease.prepareSpawn();
+		await lease.acceptSpawn(200);
+		const original = store.executionProcessOwners.beginRestart.bind(
+			store.executionProcessOwners,
+		);
+		const retry = vi
+			.spyOn(store.executionProcessOwners, "beginRestart")
+			.mockImplementation((input) =>
+				clock < 61_000 ? { ok: false, reason: "lease_held" } : original(input),
+			);
+
+		expect(await lease.beginRestart()).toBe(true);
+		expect(clock).toBeGreaterThanOrEqual(61_000);
+		expect(retry.mock.calls.length).toBeGreaterThan(5);
+	});
 	it("bounds contention retries and never retries a semantic close refusal", async () => {
 		const lease = await acquire();
 		await lease.prepareSpawn();
@@ -203,7 +220,8 @@ describe("FLY-2919 durable production process owner", () => {
 			.spyOn(store.executionProcessOwners, "beginRestart")
 			.mockReturnValue({ ok: false, reason: "lease_held" });
 		expect(await lease.beginRestart()).toBe(false);
-		expect(retry).toHaveBeenCalledTimes(5);
+		expect(clock).toBe(61_000);
+		expect(retry.mock.calls.length).toBeGreaterThan(5);
 		retry.mockClear().mockReturnValue({ ok: false, reason: "close_requested" });
 		expect(await lease.beginRestart()).toBe(false);
 		expect(retry).toHaveBeenCalledOnce();

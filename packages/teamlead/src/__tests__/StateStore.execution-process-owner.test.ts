@@ -68,7 +68,7 @@ describe("FLY-2919 execution process owner", () => {
 			execution_id: "legacy",
 			issue_id: "FLY-2919",
 			project_name: "fixture",
-			status: "failed",
+			status: "running",
 			adapter_type: "claude-tmux",
 		});
 		expect(owners().listObservationCandidates()).toContain("legacy");
@@ -175,7 +175,7 @@ describe("FLY-2919 execution process owner", () => {
 		).toEqual({ ok: false, reason: "legacy_binding_requires_adoption" });
 	});
 
-	it("samples terminal-labelled owners until the same-generation physical body is settled too", () => {
+	it("samples terminal-labelled owners until the exact body-death projection is settled", () => {
 		claim();
 		store.createWorkflowRun({
 			runId: "inventory-run",
@@ -209,11 +209,16 @@ describe("FLY-2919 execution process owner", () => {
 			db.prepare(
 				"UPDATE workflow_execution_process_body SET state='closed' WHERE execution_id=?",
 			).run("exec-1");
+			expect(owners().listObservationCandidates()).toEqual(["exec-1"]);
+			db.prepare(
+				`INSERT INTO workflow_run_event(run_id,seq,event_uid,kind,node_id,execution_id,payload,at)
+				 VALUES('inventory-run',1,'body_death:exec-1:1:projected','body_death_projected','implement','exec-1','{}','2026-09-26T00:00:01Z')`,
+			).run();
 			expect(owners().listObservationCandidates()).toEqual([]);
 			db.prepare(
 				"UPDATE workflow_execution_process_body SET generation=2 WHERE execution_id=?",
 			).run("exec-1");
-			expect(owners().listObservationCandidates()).toEqual(["exec-1"]);
+			expect(owners().listObservationCandidates()).toEqual([]);
 			db.prepare(
 				"UPDATE workflow_execution_process_body SET generation=1 WHERE execution_id=?",
 			).run("exec-1");

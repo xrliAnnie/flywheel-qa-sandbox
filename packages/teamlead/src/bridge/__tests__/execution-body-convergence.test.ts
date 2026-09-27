@@ -209,6 +209,27 @@ describe("FLY-2919 body death across StateStore and CommDB", () => {
 		clock += 60000;
 		expect(replay()).toMatchObject({ projected: true });
 	});
+	it("keeps projected death readable for default non-standby executions with no body row", async () => {
+		raw()
+			.prepare(
+				"DELETE FROM workflow_execution_process_body WHERE execution_id = ?",
+			)
+			.run("exec-1");
+
+		await expect(convergeExecutionBody(deps, "exec-1")).resolves.toMatchObject({
+			kind: "committed",
+			projection: { projected: true },
+		});
+		expect(store.getCurrentProjectedExecutionBodyDeath("exec-1")).toMatchObject(
+			{
+				obligationId: "body_death:exec-1:1",
+				disposition: "failed",
+			},
+		);
+		expect(
+			store.executionProcessOwners.listObservationCandidates(),
+		).not.toContain("exec-1");
+	});
 	it("FLY-2919 invalidates an old logical observation during OS capture and resamples the same body", async () => {
 		const original = capture.getMockImplementation()!;
 		capture.mockImplementationOnce(async () => {
