@@ -378,66 +378,121 @@ async function createHarness(
 	};
 }
 
+async function createBlockedWakeDeliveredRework(priorReplacementCount = 0) {
+	let current = NOW;
+	const harness = await createHarness({ now: () => current });
+	const { store, comm, coordinator, baseHead } = harness;
+	try {
+		const failed = store.commitWorkflowTransitionTx({
+			nodeReuseEnabled: false,
+			runId: "run-e2e",
+			nodeId: "qa",
+			attempt: 1,
+			executionId: "qa-exec",
+			outcome: "qa_fail",
+			subjectDigest: baseHead,
+			now: "2026-07-23T00:10:00.000Z",
+		});
+		if (!failed.ok || !failed.reworkRequestId) {
+			throw new Error("QA fail did not create a rework request");
+		}
+		const requestId = failed.reworkRequestId;
+		if (priorReplacementCount > 0) {
+			const route = store.getLatestWorkflowReworkRoute(requestId);
+			if (!route) throw new Error("rework route missing");
+			const rawStore = store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			};
+			for (let index = 1; index <= priorReplacementCount; index += 1) {
+				const revision = index + 1;
+				rawStore.db.run(
+					`INSERT INTO workflow_rework_route_revision
+					   (request_id, revision, target_node_id, target_attempt,
+					    preferred_actor_execution_id, invalidation_scope_json,
+					    verification_policy_json, interpreted_by,
+					    interpretation_reason, created_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, 'engine:proven_dead_replacement',
+					         'seed exhausted replacement budget', ?)`,
+					[
+						requestId,
+						revision,
+						route.target_node_id,
+						route.target_attempt,
+						"implement-exec",
+						JSON.stringify(route.invalidation_scope),
+						JSON.stringify(route.verification_policy),
+						new Date(
+							NOW.getTime() - (priorReplacementCount - index) * 1000,
+						).toISOString(),
+					],
+				);
+			}
+			const latestRevision = priorReplacementCount + 1;
+			rawStore.db.run(
+				"UPDATE workflow_rework_delivery SET route_revision = ? WHERE request_id = ?",
+				[latestRevision, requestId],
+			);
+			rawStore.db.run(
+				"UPDATE workflow_rework_verification_path SET route_revision = ? WHERE request_id = ?",
+				[latestRevision, requestId],
+			);
+		}
+
+		expect(await coordinator.reconcile(requestId)).toMatchObject({
+			kind: "wake_sent",
+			executionId: "implement-exec",
+		});
+		const activation =
+			comm.getCurrentRunnerWorkflowActivation("implement-exec");
+		if (!activation) throw new Error("implement activation missing");
+		expect(
+			store.recordWorkflowReworkWakeReceipt({
+				activationId: activation.activation_id,
+				executionId: "implement-exec",
+				epoch: activation.epoch,
+				ackedAt: "2026-07-23T00:20:01.000Z",
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+			}),
+		).toEqual({ ok: true, idempotentReplay: false });
+		expect(
+			store.commitEnrolledFailure({
+				executionId: "implement-exec",
+				sourceEventId: "blocked-open-rework-e2e",
+				reason: "Required implementation dependency is unavailable",
+				completionSubmission: { decision: { route: "blocked" } },
+				workflowActivation: {
+					activationId: activation.activation_id,
+					runId: "run-e2e",
+					nodeId: "implement",
+					attempt: 2,
+					turnEpoch: activation.epoch,
+				},
+				now: "2026-07-23T00:20:02.000Z",
+			}),
+		).toMatchObject({ ok: true, idempotentReplay: false });
+		return {
+			...harness,
+			requestId,
+			setNow(value: Date) {
+				current = value;
+			},
+		};
+	} catch (error) {
+		store.close();
+		comm.close();
+		throw error;
+	}
+}
+
 describe("FLY-1423 capability-level rework flow", () => {
 	it("mints a replacement after a wake-delivered actor records an enrolled failure", async () => {
-		let current = NOW;
-		const { store, comm, coordinator, baseHead } = await createHarness({
-			now: () => current,
-		});
+		const { store, comm, coordinator, requestId, setNow } =
+			await createBlockedWakeDeliveredRework();
 		try {
-			const failed = store.commitWorkflowTransitionTx({
-				nodeReuseEnabled: false,
-				runId: "run-e2e",
-				nodeId: "qa",
-				attempt: 1,
-				executionId: "qa-exec",
-				outcome: "qa_fail",
-				subjectDigest: baseHead,
-				now: "2026-07-23T00:10:00.000Z",
-			});
-			if (!failed.ok || !failed.reworkRequestId) {
-				throw new Error("QA fail did not create a rework request");
-			}
-			const requestId = failed.reworkRequestId;
-
-			expect(await coordinator.reconcile(requestId)).toMatchObject({
-				kind: "wake_sent",
-				executionId: "implement-exec",
-			});
-			const activation =
-				comm.getCurrentRunnerWorkflowActivation("implement-exec");
-			if (!activation) throw new Error("implement activation missing");
-			expect(
-				store.recordWorkflowReworkWakeReceipt({
-					activationId: activation.activation_id,
-					executionId: "implement-exec",
-					epoch: activation.epoch,
-					ackedAt: "2026-07-23T00:20:01.000Z",
-					alertIdentity: {
-						leadId: "flywheel-eng-lead",
-						projectName: "flywheel",
-						leadResolution: "resolved",
-					},
-				}),
-			).toEqual({ ok: true, idempotentReplay: false });
-			expect(
-				store.commitEnrolledFailure({
-					executionId: "implement-exec",
-					sourceEventId: "blocked-open-rework-e2e",
-					reason: "Required implementation dependency is unavailable",
-					completionSubmission: {
-						decision: { route: "blocked" },
-					},
-					workflowActivation: {
-						activationId: activation.activation_id,
-						runId: "run-e2e",
-						nodeId: "implement",
-						attempt: 2,
-						turnEpoch: activation.epoch,
-					},
-					now: "2026-07-23T00:20:02.000Z",
-				}),
-			).toMatchObject({ ok: true, idempotentReplay: false });
 			expect(store.getWorkflowRun("run-e2e")).toMatchObject({
 				status: "active",
 			});
@@ -448,7 +503,7 @@ describe("FLY-1423 capability-level rework flow", () => {
 				},
 			);
 
-			current = new Date("2026-07-23T00:24:00.000Z");
+			setNow(new Date("2026-07-23T00:24:00.000Z"));
 			const replacement = await coordinator.reconcile(requestId);
 			expect(replacement).toMatchObject({
 				kind: "replacement_minted",
@@ -480,6 +535,67 @@ describe("FLY-1423 capability-level rework flow", () => {
 					ledgerState: "intent_recorded",
 				},
 			);
+		} finally {
+			store.close();
+			comm.close();
+		}
+	});
+
+	it("returns a blocked wake-delivered actor to Lead when its replacement budget is exhausted", async () => {
+		const { store, comm, coordinator, requestId, setNow } =
+			await createBlockedWakeDeliveredRework(3);
+		try {
+			setNow(new Date("2026-07-23T00:24:00.000Z"));
+			expect(await coordinator.reconcile(requestId)).toEqual({
+				kind: "settled",
+				state: "returned_to_lead",
+			});
+			expect(store.getWorkflowRun("run-e2e")).toMatchObject({
+				status: "active",
+			});
+			expect(store.getWorkflowRunNode("run-e2e", "implement", 2)).toMatchObject(
+				{
+					state: "failed",
+					execution_id: "implement-exec",
+				},
+			);
+			expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
+				state: "returned_to_lead",
+				route_revision: 4,
+				hold_count: 1,
+				next_retry_at: null,
+				owner_id: null,
+			});
+			expect(store.listWorkflowHolds("run-e2e")).toEqual([
+				expect.objectContaining({
+					shape: "rework_returned_to_lead",
+					holdEventUid: `rework_returned_to_lead:${requestId}:4`,
+				}),
+			]);
+			expect(
+				store
+					.listWorkflowRunEvents("run-e2e")
+					.find((event) => event.kind === "rework_returned_to_lead"),
+			).toMatchObject({
+				event_uid: `rework_returned_to_lead:${requestId}:4`,
+				payload: expect.objectContaining({
+					holdCount: 1,
+					replacementCount: 3,
+					reason: "replacement_budget_exhausted",
+				}),
+			});
+			expect(store.listWorkflowAlertOutbox()).toEqual([
+				expect.objectContaining({
+					escalation_uid: `rework_returned_to_lead:${requestId}:4`,
+					payload: expect.objectContaining({
+						metadata: {
+							workflowEngine: expect.objectContaining({
+								disposition: "rework_returned_to_lead",
+							}),
+						},
+					}),
+				}),
+			]);
 		} finally {
 			store.close();
 			comm.close();

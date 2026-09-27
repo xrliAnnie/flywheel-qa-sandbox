@@ -47340,12 +47340,16 @@ export class StateStore {
 		const leaseLive =
 			delivery.lease_expires_at !== null &&
 			Date.parse(delivery.lease_expires_at) > Date.parse(input.now);
+		const deliveryCanSettle =
+			delivery.state === "pending" ||
+			delivery.state === "turn_granted" ||
+			(input.forceReturn === true && delivery.state === "wake_delivered");
 		if (
 			(fence === "unowned"
 				? delivery.owner_id !== null && leaseLive
 				: delivery.owner_id !== fence.ownerId ||
 					delivery.generation !== fence.generation) ||
-			!(delivery.state === "pending" || delivery.state === "turn_granted")
+			!deliveryCanSettle
 		) {
 			return { ok: false, reason: "stale_delivery_owner" };
 		}
@@ -47356,7 +47360,11 @@ export class StateStore {
 			: new Date(
 					Date.parse(input.now) + 60_000 * 2 ** (holdCount - 1),
 				).toISOString();
-		const nextState = exhausted ? "returned_to_lead" : delivery.state;
+		const nextState = exhausted
+			? "returned_to_lead"
+			: delivery.state === "pending"
+				? "pending"
+				: "turn_granted";
 		this.db.run(
 			`UPDATE workflow_rework_delivery
 			    SET state = ?, owner_id = NULL, lease_expires_at = NULL,
