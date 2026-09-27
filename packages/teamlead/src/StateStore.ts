@@ -61876,7 +61876,10 @@ export class StateStore {
 	}
 
 	/** Read-only CAS material for trusted service preflight; no recovery is applied here. */
-	inspectWorkflowNodeRecovery(runId: string): {
+	inspectWorkflowNodeRecovery(
+		runId: string,
+		operatorConsentHoldEventUid?: string,
+	): {
 		target: WorkflowRecoveryTarget;
 		stateDigest: string;
 		projectName: string;
@@ -61957,16 +61960,37 @@ export class StateStore {
 				reworkRecovery.route.target_attempt !== node.attempt)
 		)
 			throw new Error("rework_recovery_target_changed");
+		const faultHolds = holds.filter((hold) =>
+			isWorkflowNodeRecoveryFaultShape(hold.shape),
+		);
+		const operatorHolds = holds.filter(
+			(hold) => hold.shape === "run_held_by_operator",
+		);
 		if (
-			!holds.length ||
-			holds.some((hold) => !isWorkflowNodeRecoveryFaultShape(hold.shape))
+			faultHolds.length === 0 ||
+			holds.some(
+				(hold) =>
+					!isWorkflowNodeRecoveryFaultShape(hold.shape) &&
+					hold.shape !== "run_held_by_operator",
+			)
 		)
 			throw new Error("recovery_dependency_unresolved");
+		if (
+			operatorHolds.length > 0 &&
+			(operatorHolds.length !== 1 ||
+				operatorHolds[0]!.holdEventUid !== operatorConsentHoldEventUid)
+		)
+			throw new Error("recovery_operator_consent_required");
 		const events = this.listWorkflowRunEvents(runId);
 		for (const hold of holds) {
 			const event = events.find(
 				(candidate) => candidate.event_uid === hold.holdEventUid,
 			);
+			if (hold.shape === "run_held_by_operator") {
+				if (!event || event.kind !== "run_held_by_operator")
+					throw new Error("recovery_hold_evidence_missing");
+				continue;
+			}
 			const payload = event?.payload as Record<string, unknown> | undefined;
 			const reworkIdentityMatches = reworkRecovery
 				? payload?.requestId === reworkRecovery.requestId &&
@@ -62616,7 +62640,10 @@ export class StateStore {
 					holdEventUid: canonical.holdEventUid,
 					decision: canonical.decision,
 				})
-			: this.inspectWorkflowNodeRecovery(canonical.runId);
+			: this.inspectWorkflowNodeRecovery(
+					canonical.runId,
+					canonical.holdEventUid,
+				);
 		const run = this.getWorkflowRun(canonical.runId)!;
 		const definition = parseWorkflowRunSnapshot(run.snapshot!).manifest.nodes.find(
 			(node) => node.id === canonical.target.nodeId,
@@ -88148,6 +88175,12 @@ export class StateStore {
 				result = { ok: false, reason: "carryover_departure_horizon_pending" };
 				return;
 			}
+			const recoveryNode = run.current_node_id
+				? this.listWorkflowRunNodes(run.run_id, run.current_node_id).at(-1)
+				: undefined;
+			if (!recoveryNode?.execution_id) {
+				throw new Error("carryover departure recovery tuple missing");
+			}
 			const activationTable = this.workflowCarryoverActivationTable(
 				input.carryoverReceiptId,
 			);
@@ -88190,10 +88223,12 @@ export class StateStore {
 				runId: run.run_id,
 				eventUid: escalationUid,
 				kind: "land_held",
-				nodeId: run.current_node_id ?? undefined,
+				nodeId: recoveryNode.node_id,
+				executionId: recoveryNode.execution_id,
 				payload: {
 					operationId: input.operationId,
 					carryoverReceiptId: input.carryoverReceiptId,
+					attempt: recoveryNode.attempt,
 					reason: "carryover_activation_horizon_exceeded",
 					firstObservedAt: activation.first_observed_at,
 					at: input.now,

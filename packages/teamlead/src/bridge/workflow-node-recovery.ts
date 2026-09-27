@@ -10,6 +10,7 @@ import { resolveWorktreeStartPoint } from "flywheel-edge-worker/dist/WorktreeMan
 import type { StateStore, WorkflowHoldResumeCanonical } from "../StateStore.js";
 import { resolveWorkflowDispatchLineage } from "../workflow-dispatch-lineage.js";
 import {
+	isWorkflowNodeRecoveryFaultShape,
 	isWorkflowStateRecoveryShape,
 	type WorkflowRecoveryCanonical,
 	type WorkflowRecoveryPreflight,
@@ -152,8 +153,15 @@ export async function prepareWorkflowNodeRecovery(
 	canonical: WorkflowRecoveryCanonical;
 	preflight: WorkflowRecoveryPreflight;
 }> {
+	const operatorFaultRecovery =
+		request.shape === "run_held_by_operator" &&
+		store
+			.listWorkflowHolds(request.runId)
+			.some(
+				(hold) => hold.runLevel && isWorkflowNodeRecoveryFaultShape(hold.shape),
+			);
 	if (
-		isWorkflowStateRecoveryShape(request.shape) ||
+		(isWorkflowStateRecoveryShape(request.shape) && !operatorFaultRecovery) ||
 		(request.version === 2 &&
 			request.target?.operationKind !== "redispatch_current")
 	) {
@@ -197,7 +205,10 @@ export async function prepareWorkflowNodeRecovery(
 			},
 		};
 	}
-	const before = store.inspectWorkflowNodeRecovery(request.runId);
+	const before = store.inspectWorkflowNodeRecovery(
+		request.runId,
+		request.holdEventUid,
+	);
 	if (!before.target.sourceHoldEventUids.includes(request.holdEventUid))
 		throw new Error("recovery_target_changed");
 	if (
@@ -277,7 +288,10 @@ export async function prepareWorkflowNodeRecovery(
 			};
 		}
 		if (liveness !== "dead") throw new Error("recovery_liveness_unknown");
-		const after = store.inspectWorkflowNodeRecovery(request.runId);
+		const after = store.inspectWorkflowNodeRecovery(
+			request.runId,
+			request.holdEventUid,
+		);
 		const afterRequest = store.getWorkflowReworkRequest(rework.requestId);
 		const afterRoute = store.getLatestWorkflowReworkRoute(rework.requestId);
 		const afterContext =
@@ -364,15 +378,13 @@ export async function prepareWorkflowNodeRecovery(
 		Date.parse(owner.lease_expires_at) > Date.now()
 	)
 		throw new Error("recovery_launch_owner_live");
-	const lineage = resolveWorkflowDispatchLineage(
-		store.listWorkflowRunEvents(request.runId),
-		{
-			runId: request.runId,
-			nodeId: before.target.nodeId,
-			attempt: before.target.attempt,
-			executionId,
-		},
-	);
+	const runEvents = store.listWorkflowRunEvents(request.runId);
+	const lineage = resolveWorkflowDispatchLineage(runEvents, {
+		runId: request.runId,
+		nodeId: before.target.nodeId,
+		attempt: before.target.attempt,
+		executionId,
+	});
 	let sourceExecutionId = lineage.transition?.execution_id;
 	let startAuthority:
 		| NonNullable<WorkflowRecoveryTarget["startAuthority"]>
@@ -389,27 +401,51 @@ export async function prepareWorkflowNodeRecovery(
 			snapshot.manifest.edges.some((edge) => edge.to === before.target.nodeId)
 		)
 			throw new Error("workflow_lineage_missing");
-		const dispatch = store
+		const nodeDispatches = store
 			.listWorkflowSideEffects(request.runId)
-			.find(
+			.filter(
 				(row) =>
 					row.kind === "dispatch" &&
 					row.node_id === before.target.nodeId &&
-					row.attempt === before.target.attempt &&
-					row.execution_id === executionId &&
-					row.launch_ordinal === before.target.previousLaunchOrdinal,
+					row.attempt === before.target.attempt,
 			);
+		const dispatch = nodeDispatches.find(
+			(row) =>
+				row.execution_id === executionId &&
+				row.launch_ordinal === before.target.previousLaunchOrdinal,
+		);
 		// A previously launched root owns work in its own persisted worktree.
 		// An unlaunched root must instead resolve the original initial-start policy.
 		if (dispatch?.state === "abandoned") {
-			const prior = store.getWorkflowNodeRecoveryDispatchAuthority(dispatch);
-			startAuthority = await resolveRecoveryInitialStartAuthority(
-				store,
-				request.runId,
-				observeInitialStart,
-				prior?.authority.mode === "root_initial" ? prior.authority : undefined,
-			);
-			sourceExecutionId = reservation.execution_id;
+			const startedAncestorExecutionId = lineage.replacementEventUids
+				.map(
+					(eventUid) =>
+						runEvents.find((event) => event.event_uid === eventUid)
+							?.execution_id,
+				)
+				.find(
+					(candidate): candidate is string =>
+						typeof candidate === "string" &&
+						nodeDispatches.some(
+							(row) =>
+								row.execution_id === candidate &&
+								["started", "launch_committed"].includes(row.state),
+						),
+				);
+			if (startedAncestorExecutionId) {
+				sourceExecutionId = startedAncestorExecutionId;
+			} else {
+				const prior = store.getWorkflowNodeRecoveryDispatchAuthority(dispatch);
+				startAuthority = await resolveRecoveryInitialStartAuthority(
+					store,
+					request.runId,
+					observeInitialStart,
+					prior?.authority.mode === "root_initial"
+						? prior.authority
+						: undefined,
+				);
+				sourceExecutionId = reservation.execution_id;
+			}
 		} else if (
 			dispatch?.state === "started" ||
 			dispatch?.state === "launch_committed"
@@ -424,7 +460,10 @@ export async function prepareWorkflowNodeRecovery(
 		store,
 		sourceExecutionId!,
 	);
-	const after = store.inspectWorkflowNodeRecovery(request.runId);
+	const after = store.inspectWorkflowNodeRecovery(
+		request.runId,
+		request.holdEventUid,
+	);
 	if (
 		before.stateDigest !== after.stateDigest ||
 		sourceSessionDigest !==

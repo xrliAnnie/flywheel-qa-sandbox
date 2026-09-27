@@ -9,6 +9,7 @@ import {
 import { describe, expect, it } from "vitest";
 import { drainWorkflowSourceEvents } from "../bridge/founder-approval-projector.js";
 import { approvedContentFingerprintRoot } from "../bridge/land-content-proof.js";
+import { prepareWorkflowNodeRecovery } from "../bridge/workflow-node-recovery.js";
 import { StateStore } from "../StateStore.js";
 import { buildWorkflowRunSnapshotV1 } from "../workflow-run-snapshot.js";
 
@@ -691,6 +692,40 @@ describe("equivalent-head carryover authority", () => {
 				}),
 			).toMatchObject({ ok: true, idempotentReplay: true });
 			expect(store.listWorkflowAlertOutbox()).toHaveLength(1);
+
+			const hold = store
+				.listWorkflowHolds("run-carryover")
+				.find((candidate) => candidate.shape === "land_held_with_operation")!;
+			const prepared = await prepareWorkflowNodeRecovery(
+				store,
+				{
+					runId: "run-carryover",
+					shape: hold.shape,
+					holdEventUid: hold.holdEventUid,
+					decision: null,
+					reason: "retry the carryover land operation",
+					principal: "master",
+					clientRequestId: "recover:carryover-land",
+				},
+				async () => "unknown",
+			);
+			expect(prepared.canonical.target).toMatchObject({
+				operationKind: "redispatch_current",
+				land: { operationId: committed.operation.operation_id },
+			});
+			const recovered = store.recoverWorkflowNode({
+				canonical: prepared.canonical,
+				preflight: prepared.preflight,
+				now: new Date().toISOString(),
+			});
+			expect(recovered).toMatchObject({
+				ok: true,
+				state: "dispatch_recorded",
+			});
+			expect(store.getWorkflowRun("run-carryover")?.status).toBe("active");
+			expect(
+				store.getLandOperation(committed.operation.operation_id),
+			).toMatchObject({ state: "partial", resume_generation: 1 });
 		} finally {
 			store.close();
 		}

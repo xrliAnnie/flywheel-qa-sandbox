@@ -753,6 +753,261 @@ describe("FLY-2295/2914 started root recovery", () => {
 			oldExecutionId = applied.body.executionId;
 		}
 	}, 60_000);
+
+	it("uses the last started root body when its unlaunched replacement is held", async () => {
+		const projectRoot = mkdtempSync(join(tmpdir(), "fly2295-root-lineage-"));
+		const stateRoot = mkdtempSync(
+			join(tmpdir(), "fly2295-root-lineage-markers-"),
+		);
+		const store = await StateStore.create(":memory:");
+		cleanups.push(async () => {
+			store.close();
+			rmSync(projectRoot, { recursive: true, force: true });
+			rmSync(stateRoot, { recursive: true, force: true });
+		});
+		const initialHead = await materializePredecessor(store, projectRoot, true);
+		const fake = fakeStartDispatcher(store, initialHead, projectRoot);
+		fake.allowLaunch();
+		const engine = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			stateRoot,
+			env: ENV,
+			now: () => new Date("2026-09-27T15:00:00.000Z"),
+		});
+		expect(await engine.reconcile()).toEqual({ started: 1, held: 0 });
+		execFileSync("git", [
+			"-C",
+			projectRoot,
+			"commit",
+			"--allow-empty",
+			"-m",
+			"root work before automatic replacement",
+		]);
+		const startedHead = execFileSync(
+			"git",
+			["-C", projectRoot, "rev-parse", "HEAD"],
+			{ encoding: "utf8" },
+		).trim();
+		expect(startedHead).not.toBe(initialHead);
+		expect(
+			store.recordEnrolledTerminalSignal({
+				executionId: PREDECESSOR,
+				sourceEventId: "root-lineage-terminal",
+				signal: "failed",
+				failureKind: "runner_zombie",
+				lastError: "root body exited",
+				source: "test",
+				now: "2026-09-27T15:01:00.000Z",
+			}),
+		).toMatchObject({ ok: true, status: "failed" });
+		const replacementExecutionId = "design-root-unlaunched-replacement";
+		expect(
+			store.rollbackDeadWorkflowNodeExecution({
+				runId: RUN_ID,
+				nodeId: "design",
+				attempt: 1,
+				deadExecutionId: PREDECESSOR,
+				newExecutionId: replacementExecutionId,
+				reason: "terminal_session_and_dead_probe",
+				livenessEvidence: {
+					liveness: "dead",
+					observedAt: "2026-09-27T15:01:01.000Z",
+				},
+				now: "2026-09-27T15:01:01.000Z",
+			}),
+		).toMatchObject({ ok: true, launchOrdinal: 2 });
+		expect(
+			store.recordWorkflowPreAdmissionFailure({
+				runId: RUN_ID,
+				nodeId: "design",
+				attempt: 1,
+				executionId: replacementExecutionId,
+				launchOrdinal: 2,
+				errorCode: "lineage_missing",
+				rollbackMs: 1_000,
+				now: "2026-09-27T15:01:02.000Z",
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+				noStartEvidence: {
+					markerPath: join(stateRoot, replacementExecutionId),
+					externalEvidence: "absent",
+					observedAt: "2026-09-27T15:01:02.000Z",
+				},
+			}),
+		).toEqual({ ok: true, held: true });
+		const hold = store.listWorkflowHolds(RUN_ID).find((row) => row.runLevel)!;
+		const observeInitialStart = vi.fn(async () => {
+			throw new Error("must not re-resolve the initial root start");
+		});
+		const prepared = await prepareWorkflowNodeRecovery(
+			store,
+			{
+				runId: RUN_ID,
+				shape: hold.shape,
+				holdEventUid: hold.holdEventUid,
+				decision: null,
+				reason: "recover from the last started root body",
+				principal: "master",
+				clientRequestId: "root-lineage-recovery",
+			},
+			async () => "dead",
+			observeInitialStart,
+		);
+		expect(observeInitialStart).not.toHaveBeenCalled();
+		expect(prepared.canonical.target.startAuthority).toMatchObject({
+			mode: "execution_head",
+			sourceExecutionId: PREDECESSOR,
+			headSha: startedHead,
+		});
+		const recovered = store.recoverWorkflowNode({
+			canonical: prepared.canonical,
+			preflight: prepared.preflight,
+			now: new Date().toISOString(),
+		});
+		expect(recovered).toMatchObject({
+			ok: true,
+			state: "dispatch_recorded",
+			launchOrdinal: 3,
+		});
+		if (!recovered.ok || recovered.state !== "dispatch_recorded") {
+			throw new Error("root replacement dispatch missing");
+		}
+		expect(await engine.reconcile()).toEqual({ started: 1, held: 0 });
+		expect(fake.requests.at(-1)).toMatchObject({
+			startPoint: startedHead,
+			generalizedExecution: {
+				executionId: recovered.executionId,
+			},
+		});
+	}, 60_000);
+});
+
+describe("operator pause plus execution fault recovery", () => {
+	it("uses the selected operator hold as consent to redispatch and consumes both holds", async () => {
+		const projectRoot = mkdtempSync(join(tmpdir(), "fly2922-pause-fault-"));
+		const stateRoot = mkdtempSync(
+			join(tmpdir(), "fly2922-pause-fault-markers-"),
+		);
+		const store = await StateStore.create(":memory:");
+		cleanups.push(async () => {
+			store.close();
+			rmSync(projectRoot, { recursive: true, force: true });
+			rmSync(stateRoot, { recursive: true, force: true });
+		});
+		const head = await materializePredecessor(store, projectRoot);
+		const fake = fakeStartDispatcher(store, head, projectRoot);
+		fake.allowLaunch();
+		const engine = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			stateRoot,
+			env: ENV,
+		});
+		expect(await engine.reconcile()).toEqual({ started: 1, held: 0 });
+		const activation = store.getWorkflowActivationForAttempt({
+			runId: RUN_ID,
+			nodeId: "implement",
+			attempt: 1,
+			executionId: ORIGINAL_EXECUTION,
+		})!;
+		expect(
+			store.recordWorkflowActivationTurn({
+				activationId: activation.activation_id,
+				issueId: ISSUE_ID,
+				executionId: ORIGINAL_EXECUTION,
+				epoch: 1,
+				sourceEventId: "pause-fault-turn",
+				grantedAt: "2026-09-27T15:59:59.000Z",
+			}),
+		).toMatchObject({ ok: true });
+		expect(
+			store.holdWorkflowRunByOperator({
+				runId: RUN_ID,
+				reason: "pause before inspecting the current runner",
+				clientRequestId: "pause-before-fault",
+				principal: "master",
+				evidence: [],
+				now: "2026-09-27T16:00:00.000Z",
+			}),
+		).toMatchObject({ ok: true, status: "held" });
+		expect(
+			store.commitEnrolledFailure({
+				executionId: ORIGINAL_EXECUTION,
+				sourceEventId: "pause-fault-blocked",
+				reason:
+					"runner cannot continue while the inspected dependency is absent",
+				completionSubmission: { decision: { route: "blocked" } },
+				workflowActivation: {
+					activationId: activation.activation_id,
+					runId: RUN_ID,
+					nodeId: "implement",
+					attempt: 1,
+					turnEpoch: 1,
+				},
+				now: "2026-09-27T16:00:01.000Z",
+			}),
+		).toMatchObject({ ok: true, idempotentReplay: false });
+		const holds = store.listWorkflowHolds(RUN_ID).filter((row) => row.runLevel);
+		const operatorHold = holds.find(
+			(row) => row.shape === "run_held_by_operator",
+		)!;
+		const faultHold = holds.find(
+			(row) => row.shape !== "run_held_by_operator",
+		)!;
+		expect(holds).toHaveLength(2);
+		await expect(
+			prepareWorkflowNodeRecovery(
+				store,
+				{
+					runId: RUN_ID,
+					shape: faultHold.shape,
+					holdEventUid: faultHold.holdEventUid,
+					decision: null,
+					reason: "fault-only selection must not clear the operator pause",
+					principal: "master",
+					clientRequestId: "reject-fault-without-pause-consent",
+				},
+				async () => "dead",
+			),
+		).rejects.toThrow("recovery_operator_consent_required");
+		const prepared = await prepareWorkflowNodeRecovery(
+			store,
+			{
+				runId: RUN_ID,
+				shape: operatorHold.shape,
+				holdEventUid: operatorHold.holdEventUid,
+				decision: null,
+				reason:
+					"operator approves clearing the pause and replacing the dead body",
+				principal: "master",
+				clientRequestId: "recover-pause-plus-fault",
+			},
+			async () => "dead",
+		);
+		expect(prepared.canonical.target).toMatchObject({
+			operationKind: "redispatch_current",
+			sourceHoldEventUids: expect.arrayContaining(
+				holds.map((hold) => hold.holdEventUid),
+			),
+		});
+		const recovered = store.recoverWorkflowNode({
+			canonical: prepared.canonical,
+			preflight: prepared.preflight,
+			now: new Date().toISOString(),
+		});
+		expect(recovered).toMatchObject({
+			ok: true,
+			state: "dispatch_recorded",
+		});
+		expect(
+			store.listWorkflowHolds(RUN_ID).filter((row) => row.runLevel),
+		).toEqual([]);
+		expect(store.getWorkflowRun(RUN_ID)?.status).toBe("active");
+	}, 60_000);
 });
 
 describe("FLY-2901 root initial recovery", () => {
