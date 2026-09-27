@@ -24,6 +24,7 @@ import {
 } from "./codex/CodexRoomFrontend.js";
 import { CodexVoiceBackend } from "./codex/CodexVoiceBackend.js";
 import {
+	assertCodexVoiceBinary,
 	CodexVoiceContainer,
 	type CodexVoiceContextSnapshot,
 	type CodexVoiceConversation,
@@ -177,13 +178,23 @@ export async function main(): Promise<void> {
 	// FLY-2885: second line of defence after the wrapper. Engine B never holds
 	// a platform key, so nothing below can hand one to a Codex child.
 	if (config.backendId === "codex-realtime") scrubVoiceApiKeys(process.env);
+	if (process.argv.length === 3 && process.argv[2] === "--check-codex-binary") {
+		if (config.backendId !== "codex-realtime") {
+			throw new Error("Codex binary preflight requires codex-realtime");
+		}
+		await assertCodexVoiceBinary(config.codexBin);
+		console.log("[voice] Codex binary ok");
+		return;
+	}
 	const projects = loadVoiceProjects(config);
 	if (process.argv.length === 3 && process.argv[2] === "--check-config") {
 		console.log(`[voice] config ok: ${projects.length} project(s)`);
 		return;
 	}
 	if (process.argv.length > 2)
-		throw new Error("usage: flywheel-voice [--check-config]");
+		throw new Error(
+			"usage: flywheel-voice [--check-config|--check-codex-binary]",
+		);
 	mkdirSync(config.voiceRoot, { recursive: true, mode: 0o700 });
 	const lock = await acquireProcessLifetimeFileLock(
 		join(config.voiceRoot, "voice.lock"),

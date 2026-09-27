@@ -25,6 +25,7 @@ import { getEncoding } from "js-tiktoken";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BridgeVoiceHttpError } from "../bridge-client.js";
 import {
+	assertCodexVoiceBinary,
 	CODEX_VOICE_BINARY_SHA256,
 	CODEX_VOICE_BINARY_VERSION,
 	CodexVoiceContainer,
@@ -1238,6 +1239,23 @@ describe("Codex voice container", () => {
 			expect(h.processes).toHaveLength(0);
 		},
 	);
+
+	it("shares the fixed binary fence with startup preflight", async () => {
+		await expect(
+			assertCodexVoiceBinary("/fixed/codex", async () => ({
+				version: CODEX_VOICE_BINARY_VERSION,
+				sha256: CODEX_VOICE_BINARY_SHA256,
+				realtimeFeatureEnabled: true,
+			})),
+		).resolves.toMatchObject({ sha256: CODEX_VOICE_BINARY_SHA256 });
+		await expect(
+			assertCodexVoiceBinary("/upgraded/current/codex", async () => ({
+				version: "codex-cli 0.157.1",
+				sha256: "0".repeat(64),
+				realtimeFeatureEnabled: true,
+			})),
+		).rejects.toMatchObject({ reason: "codex_binary_mismatch" });
+	});
 
 	it("refreshes a stale snapshot once, but does not reopen when a 59-second snapshot ages during open", async () => {
 		let now = Date.parse("2026-09-23T10:00:59.000Z");

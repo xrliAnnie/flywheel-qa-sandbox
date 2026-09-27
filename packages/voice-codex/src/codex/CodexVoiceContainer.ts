@@ -137,7 +137,7 @@ export interface CodexVoiceProcessFactoryOptions {
 	maxJsonLineBytes: number;
 }
 
-interface BinaryEvidence {
+export interface BinaryEvidence {
 	version: string;
 	sha256: string;
 	realtimeFeatureEnabled: boolean;
@@ -266,6 +266,22 @@ export async function inspectCodexVoiceBinary(
 		if (error instanceof CodexVoiceContainerError) throw error;
 		throw new CodexVoiceContainerError("codex_binary_mismatch");
 	}
+}
+
+/** Keep wrapper preflight and session startup on the same fixed binary fence. */
+export async function assertCodexVoiceBinary(
+	binaryPath: string,
+	inspect: (path: string) => Promise<BinaryEvidence> = inspectCodexVoiceBinary,
+): Promise<BinaryEvidence> {
+	const binary = await inspect(binaryPath);
+	if (
+		binary.version !== CODEX_VOICE_BINARY_VERSION ||
+		binary.sha256 !== CODEX_VOICE_BINARY_SHA256 ||
+		!binary.realtimeFeatureEnabled
+	) {
+		throw new CodexVoiceContainerError("codex_binary_mismatch");
+	}
+	return binary;
 }
 
 function positiveChildEnv(
@@ -1045,15 +1061,11 @@ export class CodexVoiceContainer {
 				throw new CodexVoiceContainerError("codex_open_failed");
 			}
 		};
-		const binary = await this.inspectBinary(this.options.binaryPath);
+		const binary = await assertCodexVoiceBinary(
+			this.options.binaryPath,
+			this.inspectBinary,
+		);
 		assertActive();
-		if (
-			binary.version !== CODEX_VOICE_BINARY_VERSION ||
-			binary.sha256 !== CODEX_VOICE_BINARY_SHA256 ||
-			!binary.realtimeFeatureEnabled
-		) {
-			throw new CodexVoiceContainerError("codex_binary_mismatch");
-		}
 
 		const loadContext = () =>
 			input.loadContext().catch((error: unknown) => {

@@ -20,7 +20,7 @@ fail_loud() {
   local bounded_run="${alert_root}/scripts/lib/bounded-run.sh"
   local meta_alert="${FLYWHEEL_META_ALERT_BIN:-${alert_root}/scripts/meta-alert.sh}"
   case "$reason" in
-    voice_config_unavailable|voice_config_invalid|voice_api_key_unset|voice_codex_auth_unavailable)
+    voice_config_unavailable|voice_config_invalid|voice_api_key_unset|voice_codex_auth_unavailable|voice_codex_binary_unavailable)
       record_startup_spool startup_config_invalid
       ;;
     *)
@@ -90,6 +90,40 @@ if [[ -z "${TEAMLEAD_API_TOKEN:-}" || ! -f "$VOICE_ENTRY" ]] || ! command -v nod
   fail_loud voice_config_invalid "Voice configuration invalid" \
     "TEAMLEAD_API_TOKEN, node, or the built voice entrypoint is unavailable."
   exit 0
+fi
+
+if [[ "${FLYWHEEL_VOICE_BACKEND:-}" == "codex-realtime" ]]; then
+  CODEX_BINARY_CANDIDATE="${FLYWHEEL_CODEX_BIN:-}"
+  if [[ -z "$CODEX_BINARY_CANDIDATE" ]]; then
+    CODEX_INSTALL_HOME="${CODEX_HOME:-${HOME}/.codex-infra-bot}"
+    case "$(uname -m)" in
+      arm64) CODEX_BINARY_TARGET="aarch64-apple-darwin" ;;
+      x86_64) CODEX_BINARY_TARGET="x86_64-apple-darwin" ;;
+      *) CODEX_BINARY_TARGET="unsupported" ;;
+    esac
+    CODEX_BINARY_CANDIDATE="${CODEX_INSTALL_HOME}/packages/standalone/releases/0.156.1-${CODEX_BINARY_TARGET}/bin/codex"
+  fi
+  case "$CODEX_BINARY_CANDIDATE" in
+    /*) : ;;
+    *) CODEX_BINARY_CANDIDATE="" ;;
+  esac
+  if [[ -z "$CODEX_BINARY_CANDIDATE" || ! -f "$CODEX_BINARY_CANDIDATE" || -L "$CODEX_BINARY_CANDIDATE" || ! -x "$CODEX_BINARY_CANDIDATE" ]]; then
+    fail_loud voice_codex_binary_unavailable "Voice Codex binary unavailable" \
+      "The pinned Codex 0.156.1 binary is missing or is not a regular executable file."
+    exit 0
+  fi
+  if ! CODEX_BINARY_DIR="$(cd -P "$(dirname "$CODEX_BINARY_CANDIDATE")" && pwd)"; then
+    fail_loud voice_codex_binary_unavailable "Voice Codex binary unavailable" \
+      "The pinned Codex 0.156.1 binary parent could not be resolved."
+    exit 0
+  fi
+  CODEX_BINARY_CANDIDATE="${CODEX_BINARY_DIR}/$(basename "$CODEX_BINARY_CANDIDATE")"
+  if [[ ! -f "$CODEX_BINARY_CANDIDATE" || -L "$CODEX_BINARY_CANDIDATE" || ! -x "$CODEX_BINARY_CANDIDATE" ]]; then
+    fail_loud voice_codex_binary_unavailable "Voice Codex binary unavailable" \
+      "The pinned Codex 0.156.1 binary could not be resolved to a regular executable file."
+    exit 0
+  fi
+  export FLYWHEEL_CODEX_BIN="$CODEX_BINARY_CANDIDATE"
 fi
 
 HOST_TMUX_GATE_DEFAULT="${FLYWHEEL_STATE_DIR}/bin/host-tmux-selection-gate.sh"
@@ -176,6 +210,12 @@ if [[ "$ON_DEMAND_CONTRACT" != true ]]; then
 fi
 
 cd "$FLYWHEEL_DIR"
+if [[ "${FLYWHEEL_VOICE_BACKEND:-}" == "codex-realtime" ]] && \
+    ! node packages/voice-codex/dist/cli.js --check-codex-binary >/dev/null 2>&1; then
+  fail_loud voice_codex_binary_unavailable "Voice Codex binary unavailable" \
+    "The pinned Codex binary failed its version, digest, or realtime feature check."
+  exit 0
+fi
 if ! node packages/voice-codex/dist/cli.js --check-config >/dev/null 2>&1; then
   fail_loud voice_config_invalid "Voice configuration invalid" \
     "The voice daemon rejected its startup configuration."
