@@ -496,3 +496,14 @@ R2 证明 R1 只覆盖了无抖动锁步：replay debt 在队列刚降到 24 包
 - 显式消费者逐文件：`opus-downlink` 11/11、`downlink-controller` 16/16、`codex-room-webrtc` 28/28、`codex-readback-replay` 2/2、`discord-room` 16/16，共 73/73。
 - `vitest related`（两处改动 TS 文件）8 个文件 115/115；voice-codex typecheck、受影响包及依赖构建、两处改动文件 Biome、`git diff --check` 均通过。
 - 仓库级 `pnpm lint` 仍 exit 1：同一无关 FLY-1547 research script 的 unused import/variable；另有 25 条无关 warning。本轮不改这些文件，也不处理 R1/R2 的非阻塞 advisories。
+
+### QA exact-head CI 返工：fixture 格式（`d14152f1f`）
+
+QA 的 exact-head full CI（run `36296581785`）里所有 unit 分片、heavy、6 个 script 分片和 payload distribution 都通过；唯一红项是 Quick Gate 的 `pnpm lint`，`CI OK` 只因该 job 红而汇总失败。前一个 scoped run `36296270940` 的 Quick Gate 同样报 `Found 1 error / 25 warnings`。默认诊断上限先打印了 25 条无关 warning，把唯一 error 隐藏在 `Diagnostics not shown` 后面；本地用 Biome JSON reporter 过滤 `severity=error` 后定位到本 PR 的 `packages/voice-codex/src/__tests__/fixtures/fly2885-qa3-readback-barge.json`：内容正确，但缩进不是仓库格式。
+
+修复只让 Biome 格式化该 fixture，不改任何字段和值。
+
+- 文件名和完整路径发现到唯一直接消费者 `codex-room-webrtc.test.ts`，逐文件运行 28/28。
+- 仓库 `pnpm lint` exit 0（仍显示同一批 25 条非阻塞 warning）；fixture scoped Biome 与 `git diff --check` 通过。
+- `pnpm --filter "flywheel-voice-codex..." build` exit 0。
+- 没有改生产代码、语音行为、测试期望或 QA 录音数据；full CI 仍由 QA 在新冻结头请求。
