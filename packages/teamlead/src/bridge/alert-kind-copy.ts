@@ -403,6 +403,8 @@ export function titleFor(kind: AlertEventType): string {
 			return "Codex 自动切号关着";
 		case "codex_quota_reading_stale":
 			return "Codex 额度读数停更";
+		case "codex_quota_standby_diagnostic":
+			return "Codex 额度待命";
 		case "quota_no_target":
 			return "No Claude account has quota";
 		case "quota_blocked_recovered":
@@ -693,6 +695,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "Codex 自动切号不可用；本次额度事件已交 Lead 手工处理。";
 		case "codex_quota_reading_stale":
 			return "Codex 额度读数超过 30 分钟没有刷新成功；各号读数按过期处理，不据此判断无号可切。";
+		case "codex_quota_standby_diagnostic":
+			return "Codex 额度待命的自动续上遇到需要 Lead 查看的情况（放行前提、对账、兜底或通知投递）。";
 		case "quota_no_target":
 			return "The external quota monitor found no fresh, usable target account under the configured thresholds.";
 		case "quota_blocked_recovered":

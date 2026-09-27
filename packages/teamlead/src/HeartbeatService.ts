@@ -856,6 +856,11 @@ export class HeartbeatService implements ReconnectController {
 			this.zombieDeadStreak.delete(execId);
 			return;
 		}
+		// FLY-2900 §4.2: never declare a parked quota standby body a zombie.
+		if (this.isCodexQuotaStandby(execId)) {
+			this.zombieDeadStreak.delete(execId);
+			return;
+		}
 
 		// 1) Marker-first. A valid terminal marker proves the Runner finished.
 		const outcome = await tryReconcileComplete(execId, deps);
@@ -1161,6 +1166,15 @@ export class HeartbeatService implements ReconnectController {
 		}
 	}
 
+	/** FLY-2900: parked in Codex quota standby (fails open on a store error). */
+	private isCodexQuotaStandby(executionId: string): boolean {
+		try {
+			return this.store.isCodexQuotaStandby?.(executionId) === true;
+		} catch {
+			return false;
+		}
+	}
+
 	private isCodexRecoveryProtected(
 		executionId: string,
 		includeExpiredGrace = true,
@@ -1229,7 +1243,8 @@ export class HeartbeatService implements ReconnectController {
 				current.status !== "running" ||
 				current.retry_successor ||
 				current.lifecycle_revision !== fresh.lifecycle_revision ||
-				this.isCodexRecoveryProtected(execId)
+				this.isCodexRecoveryProtected(execId) ||
+				this.isCodexQuotaStandby(execId)
 			) {
 				this.zombieDeadStreak.delete(execId);
 				return false;
@@ -2100,7 +2115,8 @@ export class HeartbeatService implements ReconnectController {
 				isSuppressed: (id) =>
 					this.isMonitorSuppressed(id) ||
 					this.markerRetryPending.has(id) ||
-					tmuxHeld.has(id),
+					tmuxHeld.has(id) ||
+					this.isCodexQuotaStandby(id),
 				hasPendingCompleteMarker: (id) => hasPendingCompleteMarker(id),
 			});
 			if (
@@ -2139,6 +2155,9 @@ export class HeartbeatService implements ReconnectController {
 			// reaped there (→ terminated + teardown + archive); reapOrphans must NOT
 			// force-fail it to `failed` (a CRASH_PRESERVE state that never archives).
 			if (deadPinOwned.has(session.execution_id)) continue;
+			// FLY-2900 §4.2: a Codex quota standby body is running without a
+			// process by design; the resume loop owns it.
+			if (this.isCodexQuotaStandby(session.execution_id)) continue;
 			// FLY-172 + FLY-623: skip sessions the reconcile pass classified this
 			// cycle as alive-but-detached (monitor-lost / re-adopted) or as having a
 			// marker pending retry. reapOrphans does NOT probe tmux itself — the

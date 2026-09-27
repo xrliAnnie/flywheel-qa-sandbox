@@ -220,6 +220,7 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 		arc: "human_by_design",
 	},
 	codex_quota_reading_stale: { owner: "claude", arc: "human_by_design" },
+	codex_quota_standby_diagnostic: { owner: "claude", arc: "human_by_design" },
 	quota_no_target: { owner: "claude", arc: "human_by_design" },
 	quota_blocked_recovered: { owner: "claude", arc: "human_by_design" },
 	quota_read_blind: { owner: "claude", arc: "human_by_design" },

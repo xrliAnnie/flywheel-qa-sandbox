@@ -1751,6 +1751,14 @@ export class DirectEventSink implements ExecutionEventEmitter {
 					throw new Error(`quota_persistence_refused:${recorded.reason}`);
 				return;
 			}
+			if (recorded.quotaStandby) {
+				// FLY-2900: the wall parked the execution in quota standby. The node
+				// stays running; the resume loop relaunches it once capacity returns.
+				console.log(
+					`[DirectEventSink] FLY-2900 quota standby: ${env.executionId} parked on a Codex usage-limit wall`,
+				);
+				return;
+			}
 			await this.alertWorktreeTakeoverFailure(
 				env.executionId,
 				normalizedFailure,

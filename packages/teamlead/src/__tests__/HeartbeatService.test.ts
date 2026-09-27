@@ -196,6 +196,23 @@ describe("HeartbeatService", () => {
 		);
 	});
 
+	it("FLY-2900 reapOrphans() leaves a Codex quota standby body running", async () => {
+		const parked = makeSession({
+			execution_id: "exec-parked",
+			heartbeat_at: "2026-03-06 08:00:00",
+			adapter_type: "codex-tmux",
+		});
+		store.getOrphanSessions.mockReturnValue([parked]);
+		(store as { isCodexQuotaStandby?: unknown }).isCodexQuotaStandby = vi.fn(
+			(id: string) => id === "exec-parked",
+		);
+
+		await service.reapOrphans();
+
+		expect(store.forceStatus).not.toHaveBeenCalled();
+		expect(notifier.onSessionOrphaned).not.toHaveBeenCalled();
+	});
+
 	it("reapOrphans() skips already-notified orphans", async () => {
 		const orphan = makeSession({
 			execution_id: "exec-orphan",

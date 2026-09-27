@@ -1,0 +1,16 @@
+flowchart TB
+  S["codex_quota_standby<br/>一行 = 一个待命执行体<br/>——————<br/>execution_id 主键<br/>run · node · attempt · activation<br/>entered_at · entry_seq<br/>state 待命/恢复中/兜底准备中/已释放/结束<br/>trigger_signal_seq 撞墙序号<br/>permit_id · attempts_for_permit<br/>fallback_execution_id · vendor"]
+  P["codex_quota_capacity_permit<br/>一行 = 某账号代的放行证据<br/>——————<br/>kind 切号成功 / 读数确认有额度<br/>root_key · generation<br/>account_key · profile<br/>covers_signal_seq 覆盖到的撞墙序号<br/>evidence_ref"]
+  A["codex_quota_resume_audit<br/>只增不改的审计<br/>——————<br/>action 进入/开始/续上/失败/兜底/释放<br/>from_profile · to_profile · vendor<br/>detail_code"]
+  D["codex_quota_dispatch_demand<br/>兜底派发要求<br/>——————<br/>new_execution_id 主键<br/>vendor codex 或 claude<br/>reason codex_quota_fallback<br/>state 准备 / 已提交 / 已回滚"]
+  R["codex-accounts.json<br/>只读额度读数(已存在)"]
+  X["resolveNodeDispatchAtLaunch<br/>唯一派发解析(已存在)"]
+  R -->|"回血 / 手动切号的证据"| P
+  P -->|"覆盖序号 ≥ 撞墙序号才放行"| S
+  S -->|"每一步"| A
+  S -->|"兜底时写"| D
+  D -->|"launch 时读"| X
+  classDef t fill:#ffffff,stroke:#007aff,stroke-width:1.5px,text-align:left
+  classDef e fill:#f5f5f7,stroke:#86868b,stroke-dasharray:4 3
+  class S,P,A,D t
+  class R,X e

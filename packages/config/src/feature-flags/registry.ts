@@ -475,6 +475,57 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: FLY-2465 defaults Codex rotation on and observes store off and restore immediately",
 	},
 	{
+		name: "codex_quota_standby",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_CODEX_QUOTA_STANDBY",
+		polarity: "default_on",
+		valueKind: "bool",
+		onMeans: "enables",
+		default: true,
+		description:
+			"FLY-2900: park a Codex runner that hit a usage-limit wall in quota standby and resume the same execution on its original thread once capacity returns",
+		whenOn:
+			"Codex 撞额度墙时让节点原地待命，额度恢复或切号成功后按原会话自动续上；关闭后新撞墙走原失败路径",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"startBridge",
+				"storeCodexQuotaStandbyEnabled",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: FLY-2900 defaults Codex quota standby and Claude fallback on and observes store off immediately",
+		note: "Turning it off only stops new standby entries; executions already parked are still resumed or released by the resume loop.",
+	},
+	{
+		name: "codex_quota_claude_fallback",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_CODEX_QUOTA_CLAUDE_FALLBACK",
+		polarity: "default_on",
+		valueKind: "bool",
+		onMeans: "enables",
+		default: true,
+		description:
+			"FLY-2900: hand a quota-standby node to Claude when every Codex account is walled and the earliest reset is more than 30 minutes away",
+		whenOn:
+			"所有 Codex 号都撞墙且最早恢复超过 30 分钟时，把待命节点改派 Claude 接手；关闭后保持排队并在额度页标出",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"startBridge",
+				"storeCodexQuotaClaudeFallbackEnabled",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: FLY-2900 defaults Codex quota standby and Claude fallback on and observes store off immediately",
+	},
+	{
 		name: "account_switch_wake_sweep",
 		category: "kill_switch",
 		source: "env",

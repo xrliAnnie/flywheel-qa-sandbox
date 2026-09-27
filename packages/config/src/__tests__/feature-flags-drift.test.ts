@@ -428,6 +428,8 @@ describe("feature-flag drift guard", () => {
 				["review_early_stop", "storeReviewEarlyStopEnabled"],
 				["review_quota_auto_retry", "storeReviewQuotaAutoRetryEnabled"],
 				["codex_quota_auto_switch", "storeCodexQuotaAutoSwitchEnabled"],
+				["codex_quota_standby", "storeCodexQuotaStandbyEnabled"],
+				["codex_quota_claude_fallback", "storeCodexQuotaClaudeFallbackEnabled"],
 				["account_switch_wake_sweep", "storeAccountSwitchWakeSweepEnabled"],
 				["loop_profiler", "storeLoopProfilerEnabled"],
 				["shipped_husk_force", "storeShippedHuskForceEnabled"],

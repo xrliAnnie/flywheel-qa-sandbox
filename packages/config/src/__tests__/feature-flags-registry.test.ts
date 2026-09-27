@@ -39,6 +39,10 @@ const EXPECTED_WHEN_ON = {
 	review_quota_auto_retry: "Claude 额度恢复后，自动重试仍然有效的跨模型评审",
 	codex_quota_auto_switch:
 		"Codex 额度耗尽后自动切换可用账号，并恢复受影响的任务",
+	codex_quota_standby:
+		"Codex 撞额度墙时让节点原地待命，额度恢复或切号成功后按原会话自动续上；关闭后新撞墙走原失败路径",
+	codex_quota_claude_fallback:
+		"所有 Codex 号都撞墙且最早恢复超过 30 分钟时，把待命节点改派 Claude 接手；关闭后保持排队并在额度页标出",
 	account_switch_wake_sweep:
 		"Claude 死号切换成功后，自动唤醒切号前已在运行的 Claude 节点继续工作",
 	loop_profiler: "Bridge 卡顿时自动抓取一份限时 CPU 分析，方便排查原因",
@@ -525,6 +529,38 @@ describe("feature-flag registry invariants", () => {
 			"workflowDecisionRoutes",
 		]);
 		expect(flag?.directToggleProof).toMatch(/flag-store-runtime/i);
+	});
+
+	it("FLY-2900 registers Codex quota standby and its Claude fallback as default-on kill switches", () => {
+		for (const [name, envVar, resolverSymbol] of [
+			[
+				"codex_quota_standby",
+				"FLYWHEEL_CODEX_QUOTA_STANDBY",
+				"storeCodexQuotaStandbyEnabled",
+			],
+			[
+				"codex_quota_claude_fallback",
+				"FLYWHEEL_CODEX_QUOTA_CLAUDE_FALLBACK",
+				"storeCodexQuotaClaudeFallbackEnabled",
+			],
+		] as const) {
+			const flag = FEATURE_FLAGS.find((candidate) => candidate.name === name);
+			expect(flag).toMatchObject({
+				envVar,
+				category: "kill_switch",
+				scope: "bridge_global",
+				polarity: "default_on",
+				default: true,
+				toggleable: "direct",
+			});
+			expect(flag?.readSites).toEqual([
+				expect.objectContaining({
+					file: "packages/teamlead/src/bridge/plugin.ts",
+					symbol: "startBridge",
+					resolverSymbol,
+				}),
+			]);
+		}
 	});
 
 	it("FLY-2808 registers new-actor standby resume as a default-off live feature", () => {

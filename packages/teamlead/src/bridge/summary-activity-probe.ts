@@ -12,6 +12,7 @@ export const SUMMARY_ACTIVITY_NOISE_EVENT_TYPES = [
 	"quota_switch_confirmation",
 	"codex_quota_automation_disabled",
 	"codex_quota_reading_stale",
+	"codex_quota_standby_diagnostic",
 	"usage_limit",
 	"session_monitoring_lost",
 	"session_monitoring_reestablished",

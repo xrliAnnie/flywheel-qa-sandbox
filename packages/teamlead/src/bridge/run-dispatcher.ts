@@ -29,6 +29,7 @@ import {
 	SKILL_FRAMEWORK_SPLIT,
 } from "flywheel-config";
 import {
+	type CodexQuotaResumeAuthorization,
 	type LaunchPrecommitFailure,
 	type LaunchPrecommitOutcome,
 	openTmuxViewer,
@@ -571,6 +572,8 @@ export class RetryDispatcher implements IRetryDispatcher {
 	codexQuotaAdmission?: (input: {
 		projectName: string;
 		executionId: string;
+		/** FLY-2900: a quota standby relaunch's explicit authorization. */
+		authorization?: CodexQuotaResumeAuthorization;
 	}) => { rootKey: string; generation: number } | undefined;
 	executionQuotaPaused?: (executionId: string) => boolean;
 	beforeCodexDaemonStart?: BlueprintContext["beforeCodexDaemonStart"];
@@ -1529,9 +1532,12 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			runnerSpawn.runnerBackend &&
 			adapterTypeToFamily(runnerSpawn.runnerBackend) === "codex"
 		) {
+			const quotaResume = req.processLifecycle?.quotaResume;
 			const quota = this.codexQuotaAdmission?.({
 				projectName: req.projectName,
 				executionId,
+				// FLY-2900 §4.1: the explicit relaunch authorization, never inferred.
+				...(quotaResume ? { authorization: quotaResume.authorization } : {}),
 			});
 			if (quota)
 				throw new CodexQuotaQueuedError(

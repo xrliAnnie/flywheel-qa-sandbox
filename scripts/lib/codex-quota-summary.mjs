@@ -74,8 +74,40 @@ function summary(stateRoot) {
 			? "CODEX_SWITCH unavailable"
 			: "CODEX_SWITCH none";
 }
+// FLY-2900: the Bridge projects quota standby counts every maintenance tick.
+// A missing, stale or malformed projection is reported as unavailable — never 0.
+const STANDBY_STALE_MS = 15 * 60_000;
+function standby(stateRoot, nowMs = Date.now()) {
+	const path = join(stateRoot, "codex-quota", "standby-summary.json");
+	let row;
+	try {
+		const stat = lstatSync(path);
+		if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024)
+			return "CODEX_STANDBY unavailable reason=invalid";
+		row = JSON.parse(readFileSync(path, "utf8"));
+	} catch (error) {
+		return error?.code === "ENOENT"
+			? "CODEX_STANDBY unavailable reason=missing"
+			: "CODEX_STANDBY unavailable reason=invalid";
+	}
+	const generated =
+		typeof row?.generatedAt === "string" ? Date.parse(row.generatedAt) : NaN;
+	if (
+		row?.schemaVersion !== 1 ||
+		!Number.isFinite(generated) ||
+		!count(row.count) ||
+		!(row.oldestMinutes === null || count(row.oldestMinutes)) ||
+		!count(row.resumed24h) ||
+		!count(row.fallback24hCodex) ||
+		!count(row.fallback24hClaude)
+	)
+		return "CODEX_STANDBY unavailable reason=invalid";
+	if (nowMs - generated > STANDBY_STALE_MS)
+		return "CODEX_STANDBY unavailable reason=stale";
+	return `CODEX_STANDBY count=${row.count} oldest=${row.oldestMinutes === null ? "-" : `${row.oldestMinutes}m`} resumed_24h=${row.resumed24h} fallback_24h=${row.fallback24hCodex}/${row.fallback24hClaude}`;
+}
 const args = process.argv.slice(2);
 if (args.length !== 2 || args[0] !== "--state-root" || !args[1]) {
 	console.log("CODEX_SWITCH unavailable");
 	process.exitCode = 2;
-} else console.log(summary(args[1]));
+} else console.log(`${summary(args[1])}\n${standby(args[1])}`);

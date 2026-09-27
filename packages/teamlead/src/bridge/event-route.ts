@@ -2258,6 +2258,17 @@ export function createEventRouter(
 					});
 					return;
 				}
+				if (recorded.quotaStandby) {
+					// FLY-2900: parked in quota standby; no teardown, no lead intent.
+					res.json({
+						ok: true,
+						generalized: true,
+						teardown: "quota_standby",
+						quotaStandby: true,
+						duplicate: recorded.idempotentReplay,
+					});
+					return;
+				}
 				if (recorded.statusChanged) {
 					notifyEpicChanged(event.project_name, "session_failed");
 				}

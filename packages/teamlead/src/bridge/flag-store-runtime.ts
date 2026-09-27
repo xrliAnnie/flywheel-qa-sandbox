@@ -466,6 +466,20 @@ export function storeCodexQuotaAutoSwitchEnabled(
 	return readBoolean(runtime, "codex_quota_auto_switch");
 }
 
+/** FLY-2900: park Codex usage-limit walls in quota standby (default on). */
+export function storeCodexQuotaStandbyEnabled(
+	runtime: FlagStoreRuntime,
+): boolean {
+	return readBoolean(runtime, "codex_quota_standby");
+}
+
+/** FLY-2900: Claude fallback for a fully walled Codex pool (default on). */
+export function storeCodexQuotaClaudeFallbackEnabled(
+	runtime: FlagStoreRuntime,
+): boolean {
+	return readBoolean(runtime, "codex_quota_claude_fallback");
+}
+
 export function storeAccountSwitchWakeSweepEnabled(
 	runtime: FlagStoreRuntime,
 ): boolean {

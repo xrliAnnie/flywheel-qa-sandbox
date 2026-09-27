@@ -1918,3 +1918,43 @@ it("FLY-2465 pauses resolved Codex fresh starts before lifecycle or Blueprint", 
 	).rejects.toMatchObject({ name: "CodexQuotaQueuedError", rootKey: "root" });
 	expect(runtimes.get("TestProject")!.blueprint.run).not.toHaveBeenCalled();
 });
+it("FLY-2900 hands a quota standby relaunch's explicit authorization to Codex admission with the real execution id", async () => {
+	const runtimes = new Map([makeRuntime("TestProject")]);
+	const dispatcher = new RunDispatcher(runtimes, []);
+	const seen: unknown[] = [];
+	dispatcher.codexQuotaAdmission = (input) => {
+		seen.push(input);
+		return { rootKey: "root", generation: 1 };
+	};
+	const authorization = {
+		executionId: "exec-standby",
+		claimId: "bridge:1:boot:c1",
+		entrySeq: 1,
+		resumeAttempt: 1,
+	};
+	await expect(
+		dispatcher.start({
+			issueId: "FLY-2900",
+			projectName: "TestProject",
+			successorExecutionId: "exec-standby",
+			dispatchVendor: "codex",
+			dispatchModel: "gpt-5.6-sol",
+			processLifecycle: {
+				mode: "resume",
+				generation: 1,
+				quotaResume: {
+					authorization,
+					continueAttemptId: "cont-1",
+					continueAttemptFresh: true,
+					onContinueReconciled: () => ({ action: "abort", reason: "x" }),
+					onContinueStarted: () => true,
+					onContinueProgress: () => undefined,
+					onContinueFailed: () => undefined,
+				},
+			},
+		}),
+	).rejects.toMatchObject({ name: "CodexQuotaQueuedError" });
+	expect(seen).toEqual([
+		{ projectName: "TestProject", executionId: "exec-standby", authorization },
+	]);
+});

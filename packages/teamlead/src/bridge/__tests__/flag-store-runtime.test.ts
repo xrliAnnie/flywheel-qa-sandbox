@@ -16,6 +16,8 @@ import {
 	storeCodexLeadThreadRotationEnabled,
 	storeCodexMemoryDistillEnabled,
 	storeCodexQuotaAutoSwitchEnabled,
+	storeCodexQuotaClaudeFallbackEnabled,
+	storeCodexQuotaStandbyEnabled,
 	storeCodexTerminalReapEnabled,
 	storeDatabaseArchiveEnabled,
 	storeDocFlowEnabled,
@@ -281,6 +283,26 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			expect(storeCodexQuotaAutoSwitchEnabled(runtime)).toBe(rawTo === null);
 		}
 	});
+	it("FLY-2900 defaults Codex quota standby and Claude fallback on and observes store off immediately", () => {
+		const runtime = initializeFlagStore(store, {});
+		for (const [name, read] of [
+			["codex_quota_standby", storeCodexQuotaStandbyEnabled],
+			["codex_quota_claude_fallback", storeCodexQuotaClaudeFallbackEnabled],
+		] as const) {
+			expect(read(runtime)).toBe(true);
+			expect(
+				store.applyFlagValueChange({
+					name,
+					rawTo: "0",
+					expectedRevision: store.getFlagValueRow(name)!.revision,
+					actor: "bridge-local-operator",
+					reason: "test quota standby toggle",
+				}),
+			).toMatchObject({ ok: true });
+			expect(read(runtime)).toBe(false);
+		}
+	});
+
 	it.each(["0", "off", "false"])(
 		"FLY-2911 early stop defaults on and observes rollback %s without restart",
 		(rawTo) => {
@@ -299,7 +321,6 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			expect(storeReviewEarlyStopEnabled(runtime)).toBe(false);
 		},
 	);
-
 	it("FLY-2177 keeps quota retry default-on and observes an off write without restart", () => {
 		const runtime = initializeFlagStore(store, {});
 		expect(storeReviewQuotaAutoRetryEnabled(runtime)).toBe(true);
