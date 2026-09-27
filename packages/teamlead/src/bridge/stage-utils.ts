@@ -316,12 +316,13 @@ export function stripStatusEmojiPrefix(name: string): string {
 }
 
 /**
- * FLY-755/1255: the model marker is stamped as a LEADING bracket marker placed
+ * FLY-755/1255/2936: the model marker is stamped as LEADING bracket markers placed
  * after the FLY-560 stage badge and before the issue key, e.g.
- * `🧠规划 [F] [FLY-755] Title` or `🔨实现 [G] [FLY-1255] Title`.
+ * `🧠规划 [A][F] [FLY-755] Title` or `🔨实现 [O][G] [FLY-1255] Title`.
  *
- * FLY-1255 (Plan B — Annie): every vendor folds to a single letter — Claude
- * keeps F/O/S/H, codex/GPT-5.6 → `G`, kimi → `K`. An UNvetted vendor/model that
+ * FLY-2936: the first bracket identifies the vendor and the second identifies
+ * the model. Anthropic uses A + F/O/S/H, OpenAI uses O + A/S/G, and kimi uses
+ * K + K. An unvetted vendor/model that
  * has no curated letter (gemini, antigravity, or another unlisted family) is
  * still stamped with the human-readable `Model <safe-id>` namespace rather
  * than a fabricated letter, so the grammar keeps recognizing that long form
@@ -341,15 +342,20 @@ export function stripStatusEmojiPrefix(name: string): string {
  * marker on their next re-stamp; no proactive mass rename.
  */
 const ISSUE_KEY_HEAD_RE = /^\[[A-Z][A-Z0-9]*-\d+\](?:\s|$)/;
-// FLY-1255 (Plan B): the curated single-letter codes across every vendor —
-// Claude F/O/S/H + codex `G` + kimi `K`. Maintained in lockstep with the
-// `flywheel-config` short-code tables (`modelShortCode` + `vendorModelShortCode`).
-const MODEL_MARKER_CODE_CLASS = "[FGHKOS]";
+// Legacy single markers remain readable so existing titles migrate on their
+// next normal refresh. New renderers always produce a vendor/model pair.
+const MODEL_MARKER_CODE_CLASS = "[AFGHKOS]";
 const MODEL_MARKER_PAYLOAD_RE = `[A-Za-z0-9][A-Za-z0-9._+-]{0,${RUNNER_MODEL_MARKER_PAYLOAD_MAX - 1}}`;
-const MODEL_MARKER_VALUE_RE = new RegExp(
+const PAIRED_MODEL_MARKER_VALUE_RE = new RegExp(
+	`^\\[[A-Z]\\]\\[(?:${MODEL_MARKER_CODE_CLASS}|Model ${MODEL_MARKER_PAYLOAD_RE})\\]$`,
+);
+const PAIRED_MODEL_MARKER_RE = new RegExp(
+	`^(\\[[A-Z]\\]\\[(?:${MODEL_MARKER_CODE_CLASS}|Model ${MODEL_MARKER_PAYLOAD_RE})\\]) (?=\\[[A-Z][A-Z0-9]*-\\d+\\](?:\\s|$))`,
+);
+const LEGACY_MODEL_MARKER_VALUE_RE = new RegExp(
 	`^(?:${MODEL_MARKER_CODE_CLASS}|Model ${MODEL_MARKER_PAYLOAD_RE})$`,
 );
-const MODEL_MARKER_RE = new RegExp(
+const LEGACY_MODEL_MARKER_RE = new RegExp(
 	`^\\[((?:${MODEL_MARKER_CODE_CLASS}|Model ${MODEL_MARKER_PAYLOAD_RE}))\\] (?=\\[[A-Z][A-Z0-9]*-\\d+\\](?:\\s|$))`,
 );
 // Legacy FLY-728 tail (` ·F`) is Claude-only — `G`/`K` never shipped as a tail,
@@ -366,7 +372,10 @@ export function hasIssueKeyHead(base: string): boolean {
  * FLY-728 tail suffix (` ·F`), if present. Idempotent.
  */
 export function stripModelMarker(base: string): string {
-	return base.replace(MODEL_MARKER_RE, "").replace(LEGACY_MODEL_SUFFIX_RE, "");
+	return base
+		.replace(PAIRED_MODEL_MARKER_RE, "")
+		.replace(LEGACY_MODEL_MARKER_RE, "")
+		.replace(LEGACY_MODEL_SUFFIX_RE, "");
 }
 
 /**
@@ -374,7 +383,9 @@ export function stripModelMarker(base: string): string {
  * suffix is the fallback (preserve path on threads not yet migrated).
  */
 export function modelMarkerLabel(base: string): string | undefined {
-	const front = base.match(MODEL_MARKER_RE);
+	const paired = base.match(PAIRED_MODEL_MARKER_RE);
+	if (paired) return paired[1];
+	const front = base.match(LEGACY_MODEL_MARKER_RE);
 	if (front) return front[1];
 	const tail = base.match(LEGACY_MODEL_SUFFIX_RE);
 	return tail?.[1];
@@ -383,17 +394,21 @@ export function modelMarkerLabel(base: string): string | undefined {
 /**
  * Ensure `base` carries exactly the given model marker at the front. Strips any
  * existing marker/legacy suffix first (idempotent + churn-safe under
- * re-stamping), then prepends `[<marker>] ` — but ONLY in front of an issue-key
- * base (see the paired contract above). Only legacy F/O/S/H or the explicit
- * `Model <safe-token>` namespace are accepted. `undefined` → no marker. Keyless
- * bases are returned marker-free either way.
+ * re-stamping), then prepends the marker — but ONLY in front of an issue-key
+ * base (see the paired contract above). Paired markers, legacy single-letter
+ * codes, and the explicit `Model <safe-token>` namespace are accepted.
+ * `undefined` → no marker. Keyless bases are returned marker-free either way.
  */
 export function applyModelMarker(
 	base: string,
 	marker: string | undefined,
 ): string {
 	const bare = stripModelMarker(base);
-	return marker && MODEL_MARKER_VALUE_RE.test(marker) && hasIssueKeyHead(bare)
-		? `[${marker}] ${bare}`
+	const validMarker =
+		marker &&
+		(PAIRED_MODEL_MARKER_VALUE_RE.test(marker) ||
+			LEGACY_MODEL_MARKER_VALUE_RE.test(marker));
+	return validMarker && hasIssueKeyHead(bare)
+		? `${marker.startsWith("[") ? marker : `[${marker}]`} ${bare}`
 		: bare;
 }

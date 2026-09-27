@@ -440,6 +440,45 @@ describe("buildCapacitySnapshot", () => {
 		expect(JSON.stringify(snapshot)).not.toContain("accessToken");
 	});
 
+	it("FLY-2900 counts a quota-standby body as parked, not as a running slot", async () => {
+		const accountStorePath = join(
+			mkdtempSync(join(tmpdir(), "fly2900-cap-")),
+			"claude-accounts.json",
+		);
+		const snapshot = await buildCapacitySnapshot({
+			now: () => Date.parse("2026-09-23T00:00:00.000Z"),
+			accountStorePath,
+			readMemoryFreePct: async () => ({
+				freePct: 40,
+				observedAt: "2026-09-23T00:00:00.000Z",
+			}),
+			store: {
+				getActiveSessions: () =>
+					[
+						{
+							execution_id: "parked",
+							status: "running",
+							project_name: "flywheel",
+						},
+						{
+							execution_id: "working",
+							status: "running",
+							project_name: "flywheel",
+						},
+					] as never,
+				getFleetPressureHold: () => undefined,
+				getAdmissionPause: () => undefined,
+				isCodexQuotaParkedWithoutProcess: (id: string) => id === "parked",
+			},
+		});
+		expect(snapshot.runners).toMatchObject({
+			running: 1,
+			parked: 1,
+			total: 2,
+			byProject: { flywheel: { running: 1, parked: 1 } },
+		});
+	});
+
 	it("does not trust an explicit manual prepaid file outside the configured state directory", async () => {
 		const accountStorePath = writeAccountStore({
 			generation: 1,

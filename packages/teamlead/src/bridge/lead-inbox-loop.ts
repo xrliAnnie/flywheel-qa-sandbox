@@ -12,6 +12,7 @@ import {
 	parseDiscordChatRoute,
 } from "flywheel-comm/discord-chat-ingest";
 import type {
+	LeadAuditSummaryReceipt,
 	MailboxAuditDecision,
 	MailboxQueue,
 	MailboxRecipientState,
@@ -77,6 +78,15 @@ export interface LeadInboxLoopOptions {
 	/** Durable audit mirror update, called only after the adapter receipt. */
 	markAuditDelivered?: (row: MailboxRow) => Promise<void> | void;
 	renderModelBatch?: (rows: readonly MailboxRow[]) => string;
+	/** Freeze a read-only summary for this existing transport batch. */
+	prepareAuditSummary?: (input: {
+		batchId: string;
+		transportBatchId: string;
+		memberIds: readonly string[];
+		/** True only before a new batch's first possible transport handoff. */
+		canBuildSummary: boolean;
+		now: string;
+	}) => { content: string; receipt: LeadAuditSummaryReceipt } | undefined;
 	/** FLY-1573: resolved exactly once at the beginning of a tick. */
 	queueConfig?: () => MailboxQueueConfig;
 	/** Process-incarnation liveness; unknown holds expired batches in place. */
@@ -428,7 +438,7 @@ export class LeadInboxLoop {
 				}
 
 				if (deliverable.length > 0) {
-					await this.deliverModelBatch(deliverable, queueConfig);
+					await this.deliverModelBatch(deliverable, queueConfig, freshBatch);
 					modelConsumed = deliverable.length;
 				}
 			}
@@ -452,6 +462,7 @@ export class LeadInboxLoop {
 	private async deliverModelBatch(
 		rows: MailboxRow[],
 		queueConfig: MailboxQueueConfig,
+		freshBatch: boolean,
 	): Promise<void> {
 		const batchId = rows[0]?.batch_id;
 		if (!batchId || rows.some((row) => row.batch_id !== batchId)) {
@@ -535,6 +546,23 @@ export class LeadInboxLoop {
 			interrupt = await this.decideInterrupt(rows[0]!, batch);
 			if (!interrupt) return;
 		}
+		// Freeze the attachment before entering transport failure accounting. A
+		// local preparation/fencing failure has not attempted a send and must
+		// not exhaust real tasks or quarantine founder messages.
+		const summary = this.opts.prepareAuditSummary?.({
+			batchId,
+			transportBatchId,
+			memberIds: transportMemberIds,
+			// A resumed batch may have reached the adapter even if a crash left
+			// retry_count at zero. Only the claim's new batch can add new bytes.
+			canBuildSummary: freshBatch && rows.every((row) => row.retry_count === 0),
+			now: this.isoNow(),
+		});
+		if (summary?.content) {
+			const lastMember = batch.members.at(-1)!;
+			lastMember.content += `\n\n${summary.content}`;
+			batch.modelPayload += `\n\n${summary.content}`;
+		}
 		try {
 			let receipt: Awaited<ReturnType<LeadDeliveryAdapter["deliverBatch"]>>;
 			if (interrupt?.kind === "custom") {
@@ -587,6 +615,7 @@ export class LeadInboxLoop {
 					ownerEpoch: this.opts.ownerEpoch,
 					now: this.isoNow(),
 					ackLeaseTtlMs: queueConfig.ackLeaseMs,
+					auditSummaryReceipt: summary?.receipt,
 				}) === "lost_race"
 			) {
 				throw new Error("owner fence lost before queue delivery receipt");

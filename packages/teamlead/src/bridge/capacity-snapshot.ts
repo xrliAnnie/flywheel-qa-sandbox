@@ -411,7 +411,8 @@ export interface CapacitySnapshotDeps {
 	store: Pick<
 		StateStore,
 		"getActiveSessions" | "getFleetPressureHold" | "getAdmissionPause"
-	>;
+	> &
+		Partial<Pick<StateStore, "isCodexQuotaParkedWithoutProcess">>;
 	admission?: Pick<RunnerAdmissionController, "probe">;
 	pressureSnapshot?: () => PressureSnapshot | undefined;
 	readMemoryFreePct: () => Promise<MemoryFreePctReading>;
@@ -628,7 +629,13 @@ export async function buildCapacitySnapshot(
 			running: 0,
 			parked: 0,
 		};
-		if (session.status === "running") {
+		// FLY-2900: a quota-standby body has no process and holds no runner slot
+		// until its relaunch (resuming) starts one.
+		if (
+			session.status === "running" &&
+			deps.store.isCodexQuotaParkedWithoutProcess?.(session.execution_id) !==
+				true
+		) {
 			running++;
 			bucket.running++;
 		} else {

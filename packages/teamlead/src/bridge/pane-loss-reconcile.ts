@@ -393,8 +393,10 @@ export async function reconcilePaneLoss(
 				snapshot.execution_id,
 			);
 			if (
-				processBody &&
-				["retiring", "standby", "resuming"].includes(processBody.state)
+				(processBody &&
+					["retiring", "standby", "resuming"].includes(processBody.state)) ||
+				// FLY-2900: a Codex quota standby body has no pane by design.
+				deps.store.isCodexQuotaStandby?.(snapshot.execution_id) === true
 			) {
 				result.kept++;
 				return;

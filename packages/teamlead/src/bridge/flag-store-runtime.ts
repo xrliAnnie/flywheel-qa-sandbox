@@ -466,6 +466,20 @@ export function storeCodexQuotaAutoSwitchEnabled(
 	return readBoolean(runtime, "codex_quota_auto_switch");
 }
 
+/** FLY-2900: park Codex usage-limit walls in quota standby (default on). */
+export function storeCodexQuotaStandbyEnabled(
+	runtime: FlagStoreRuntime,
+): boolean {
+	return readBoolean(runtime, "codex_quota_standby");
+}
+
+/** FLY-2900: Claude fallback for a fully walled Codex pool (default on). */
+export function storeCodexQuotaClaudeFallbackEnabled(
+	runtime: FlagStoreRuntime,
+): boolean {
+	return readBoolean(runtime, "codex_quota_claude_fallback");
+}
+
 export function storeAccountSwitchWakeSweepEnabled(
 	runtime: FlagStoreRuntime,
 ): boolean {
@@ -742,4 +756,64 @@ export function storeSwapPressureSensorEnabled(
 	runtime: FlagStoreRuntime,
 ): boolean {
 	return readBoolean(runtime, "swap_pressure_sensor");
+}
+
+/** Invalid or unavailable notification controls restore immediate delivery. */
+function readNotificationFlagSafely(
+	runtime: { store: ScopedFlagStore },
+	read: (safe: { store: ScopedFlagStore }) => boolean,
+): boolean {
+	try {
+		return read({
+			store: {
+				getFlagValueRow(name, scope) {
+					const row = runtime.store.getFlagValueRow(name, scope);
+					if (row?.hasOverride && row.raw !== "0" && row.raw !== "1")
+						throw new Error(`invalid ${name} value`);
+					return row;
+				},
+			},
+		});
+	} catch (error) {
+		console.warn(
+			`[lead-notification] flag unavailable; restoring immediate delivery: ${error instanceof Error ? error.message : String(error)}`,
+		);
+		return false;
+	}
+}
+
+export function storeLeadStageChangedAuditEnabled(
+	runtime: { store: ScopedFlagStore },
+	projectName: string,
+): boolean {
+	return readNotificationFlagSafely(runtime, (safe) =>
+		readScopedBoolean(safe, "lead_stage_changed_audit", projectName),
+	);
+}
+
+export function storeLeadSessionStartedAuditEnabled(
+	runtime: { store: ScopedFlagStore },
+	projectName: string,
+): boolean {
+	return readNotificationFlagSafely(runtime, (safe) =>
+		readScopedBoolean(safe, "lead_session_started_audit", projectName),
+	);
+}
+
+export function storeLeadMonitoringReestablishedAuditEnabled(
+	runtime: { store: ScopedFlagStore },
+	projectName: string,
+): boolean {
+	return readNotificationFlagSafely(runtime, (safe) =>
+		readScopedBoolean(safe, "lead_monitoring_reestablished_audit", projectName),
+	);
+}
+
+export function storeLeadReplacementNoticeAuditEnabled(
+	runtime: { store: ScopedFlagStore },
+	projectName: string,
+): boolean {
+	return readNotificationFlagSafely(runtime, (safe) =>
+		readScopedBoolean(safe, "lead_replacement_notice_audit", projectName),
+	);
 }

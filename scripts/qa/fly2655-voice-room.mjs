@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 // FLY-2655: QA-owned lifecycle for one generalized 529 slot voice process.
 // This script never installs launchd state and never targets the production bot/room.
 import {
@@ -830,25 +830,51 @@ function slotDirAliases(slotDir) {
 	return aliases;
 }
 
-// A recorded daemon counts as alive only while the same process (pid plus
+// A recorded process counts as alive only while the same process (pid plus
 // start time and argv) still runs; a malformed record is treated as alive.
-function recordedDaemonAlive(owner) {
-	const daemon = owner.daemon;
-	if (daemon === undefined) return false;
+function recordedProcessAlive(record) {
+	if (record === undefined) return false;
 	if (
-		!Number.isInteger(daemon?.pid) ||
-		daemon.pid <= 1 ||
-		typeof daemon.processIdentity !== "string" ||
-		!daemon.processIdentity
+		!Number.isInteger(record?.pid) ||
+		record.pid <= 1 ||
+		typeof record.processIdentity !== "string" ||
+		!record.processIdentity
 	) {
 		return true;
 	}
-	if (!processAlive(daemon.pid)) return false;
+	if (!processAlive(record.pid)) return false;
 	try {
-		return processIdentity(daemon.pid) === daemon.processIdentity;
+		return processIdentity(record.pid) === record.processIdentity;
 	} catch {
 		return false;
 	}
+}
+
+function recordedDaemonAlive(owner) {
+	return recordedProcessAlive(owner.daemon);
+}
+
+// FLY-2876: a run receipt vouches for its lease until `stop` marks it STOPPED,
+// even after its daemon exited on its own: that is the state an in-flight
+// `stop` runs in, so only `stop` (or teardown) may close such a run. A receipt
+// that cannot be read or trusted is treated as alive.
+function liveRunReceipt(slotDir) {
+	try {
+		return (
+			json(trusted(slotDir, join(slotDir, "voice-run-receipt.json"))).status !==
+			"STOPPED"
+		);
+	} catch (error) {
+		return error?.code !== "ENOENT";
+	}
+}
+
+// FLY-2876: the same slot redeployed after a teardown that never ran `stop`
+// finds its own old lease. It is an orphan only when neither the start that
+// created it nor its recorded daemon remains; an unstopped run receipt already
+// stops `acquireVoiceRoomLease` before any lease is looked at.
+function orphanedSameSlotLease(owner) {
+	return !recordedProcessAlive(owner.holder) && !recordedDaemonAlive(owner);
 }
 
 // FLY-2867: a teardown that never ran `stop` leaves the lease behind. It is
@@ -871,7 +897,7 @@ function staleVoiceRoomOwner(owner) {
 
 // Move the stale lease aside before deleting it so two reclaimers cannot both
 // win; if what was moved turns out not to be stale, put it back.
-function reclaimStaleVoiceRoomLease(path) {
+function reclaimStaleVoiceRoomLease(path, stillStale, reason) {
 	const tombstone = `${path}.stale-${process.pid}-${Date.now()}`;
 	try {
 		renameSync(path, tombstone);
@@ -879,16 +905,30 @@ function reclaimStaleVoiceRoomLease(path) {
 		if (error?.code === "ENOENT") return;
 		throw error;
 	}
-	if (!staleVoiceRoomOwner(json(join(tombstone, "owner.json")))) {
+	if (!stillStale(json(join(tombstone, "owner.json")))) {
 		renameSync(tombstone, path);
-		check(false, "voice_room_lease_conflict");
+		check(false, reason);
 	}
 	rmSync(tombstone, { recursive: true, force: true });
 }
 
 export function acquireVoiceRoomLease(topology, options = {}) {
 	const path = roomLeasePath(topology, options.root);
+	// FLY-2876: record this start so a concurrent one keeps honouring the lease
+	// before the daemon and the run receipt exist.
+	const holder = {
+		pid: process.pid,
+		processIdentity: processIdentity(process.pid),
+	};
+	const orphaned = (owner) =>
+		owner?.slotDir === topology.slotDir && orphanedSameSlotLease(owner);
 	for (let attempt = 0; attempt < 2; attempt += 1) {
+		// FLY-2876: `stop` releases the lease before it records STOPPED; until
+		// then the slot's last run still owns the room even with no lease left.
+		if (liveRunReceipt(topology.slotDir)) return { path, created: false };
+		// FLY-2876: a generation per created lease, so a stop from an earlier run
+		// of the same slot can never release a lease this start reclaimed.
+		const leaseId = randomUUID();
 		try {
 			mkdirSync(path, { mode: 0o700 });
 			privateWrite(join(path, "owner.json"), {
@@ -897,17 +937,31 @@ export function acquireVoiceRoomLease(topology, options = {}) {
 				projectName: topology.projectName,
 				leadId: topology.leadId,
 				voiceChannelId: topology.voiceChannelId,
+				leaseId,
+				holder,
 			});
-			return { path, created: true };
+			return { path, created: true, leaseId };
 		} catch (error) {
 			if (error?.code !== "EEXIST") throw error;
 			const owner = json(join(path, "owner.json"));
-			if (owner.slotDir === topology.slotDir) return { path, created: false };
+			if (owner.slotDir === topology.slotDir) {
+				if (attempt > 0 || !orphaned(owner)) return { path, created: false };
+				reclaimStaleVoiceRoomLease(
+					path,
+					orphaned,
+					"voice_room_lease_already_owned",
+				);
+				continue;
+			}
 			check(
 				attempt === 0 && staleVoiceRoomOwner(owner),
 				"voice_room_lease_conflict",
 			);
-			reclaimStaleVoiceRoomLease(path);
+			reclaimStaleVoiceRoomLease(
+				path,
+				staleVoiceRoomOwner,
+				"voice_room_lease_conflict",
+			);
 		}
 	}
 	check(false, "voice_room_lease_conflict");
@@ -928,16 +982,196 @@ export function releaseVoiceRoomLease(topology, options = {}) {
 	if (!existsSync(path)) return false;
 	const owner = json(join(path, "owner.json"));
 	check(owner.slotDir === topology.slotDir, "voice_room_lease_not_owned");
+	// FLY-2876: only the generation that created the lease releases it; a lease
+	// and run from before generations existed both carry none and still pair up.
+	if (owner.leaseId !== options.leaseId) return false;
 	rmSync(path, { recursive: true });
 	return true;
 }
 
-// FLY-2867: teardown removes every lease its slot still owns unless the
-// recorded voice daemon is alive (that lease is reported, never deleted).
+// FLY-2876: finish `stop` without touching a newer run of the same slot. After
+// this stop read its receipt, a start may have reclaimed the lease and written
+// its own receipt; the lease generation and session id tell the runs apart.
+export function settleStoppedVoiceRun(
+	topology,
+	runPath,
+	run,
+	sessionState,
+	options = {},
+) {
+	releaseVoiceRoomLease(topology, { root: options.root, leaseId: run.leaseId });
+	const stopped = {
+		...run,
+		status: "STOPPED",
+		stoppedAt: new Date().toISOString(),
+		sessionState,
+	};
+	let current;
+	try {
+		current = json(runPath);
+	} catch (error) {
+		if (error?.code !== "ENOENT") throw error;
+	}
+	if (
+		current?.sessionId === run.sessionId &&
+		current?.leaseId === run.leaseId
+	) {
+		privateWrite(runPath, stopped);
+	}
+	return stopped;
+}
+
+const VOICE_DAEMON_CLI = "/packages/voice-codex/dist/cli.js";
+
+function sleepSync(ms) {
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// pid -> process group of every running process; null when ps fails.
+function readProcessGroups() {
+	let output;
+	try {
+		output = execFileSync("ps", ["-A", "-o", "pid=,pgid="], {
+			encoding: "utf8",
+			maxBuffer: 16 * 1024 * 1024,
+		});
+	} catch {
+		return null;
+	}
+	const groups = new Map();
+	for (const line of output.split("\n")) {
+		const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
+		if (match) groups.set(Number(match[1]), Number(match[2]));
+	}
+	return groups;
+}
+
+// A process's identity now: null once it is gone, undefined when unknown.
+function readProcessIdentity(pid) {
+	try {
+		return processIdentity(pid);
+	} catch {
+		return processAlive(pid) ? undefined : null;
+	}
+}
+
+const SYSTEM_PROCESSES = {
+	groups: readProcessGroups,
+	identity: readProcessIdentity,
+	signal: (pid, signal) => process.kill(pid, signal),
+};
+
+// FLY-2876: the start that took a lease, while it still runs. Unlike
+// recordedProcessAlive, a live pid whose identity cannot be read counts as
+// that start.
+function liveHolder(record, processes) {
+	if (record === undefined) return false;
+	if (
+		!Number.isInteger(record?.pid) ||
+		record.pid <= 1 ||
+		typeof record.processIdentity !== "string" ||
+		!record.processIdentity
+	) {
+		return true;
+	}
+	const identity = processes.identity(record.pid);
+	return identity === undefined || identity === record.processIdentity;
+}
+
+// FLY-2876: teardown runs after the slot Bridge is gone, where a voice daemon
+// retries forever and keeps writing into the slot directory. Stop the recorded
+// daemon (same pid, start time and argv, running the voice-codex CLI) with
+// SIGTERM, then SIGKILL. `start` spawns it detached, so it leads a process
+// group its Codex children join; those children are stopped with it. Every
+// signal goes to one pid whose identity was re-read just before, never to a
+// bare group id; a member is enrolled only while the verified daemon still
+// leads the group. Anything that cannot be proven (ps failing, an unknown
+// process in the group, a group outliving its daemon) returns false: the
+// lease is reported as retained.
+function stopRecordedVoiceDaemon(record, timeoutMs, processes) {
+	if (record === undefined) return true;
+	if (
+		!Number.isInteger(record?.pid) ||
+		record.pid <= 1 ||
+		typeof record.processIdentity !== "string" ||
+		!record.processIdentity
+	) {
+		return false;
+	}
+	const current = processes.identity(record.pid);
+	if (current === undefined) return false;
+	// Another process on the pid: a pid is never reused while it still names a
+	// process group, so the daemon's group is gone with it.
+	if (current !== null && current !== record.processIdentity) return true;
+	if (current === null) {
+		// The daemon is gone, but a Codex child may still hold its group and
+		// the slot directory; nothing in it can be verified any more.
+		const groups = processes.groups();
+		return groups !== null && ![...groups.values()].includes(record.pid);
+	}
+	if (!record.processIdentity.includes(VOICE_DAEMON_CLI)) return false;
+	const members = new Map([[record.pid, record.processIdentity]]);
+	const survey = () => {
+		const groups = processes.groups();
+		if (!groups) return null;
+		const leader = processes.identity(record.pid);
+		if (leader === undefined) return null;
+		const enrolling =
+			leader === record.processIdentity &&
+			groups.get(record.pid) === record.pid;
+		const live = [];
+		let unproven = false;
+		const candidates = new Set([record.pid]);
+		for (const [pid, pgid] of groups) {
+			if (pgid === record.pid) candidates.add(pid);
+		}
+		for (const pid of candidates) {
+			const identity = pid === record.pid ? leader : processes.identity(pid);
+			if (identity === null) continue;
+			if (identity === undefined) {
+				unproven = true;
+				continue;
+			}
+			if (!members.has(pid) && enrolling) members.set(pid, identity);
+			if (members.get(pid) === identity) live.push(pid);
+			else if (groups.get(pid) === record.pid) unproven = true;
+		}
+		return { live, unproven };
+	};
+	for (const signal of ["SIGTERM", "SIGKILL"]) {
+		const before = survey();
+		if (!before) return false;
+		if (before.live.length === 0) return !before.unproven;
+		for (const pid of before.live) {
+			// Re-read right before signalling: an earlier signal of this round
+			// may already have ended this member and freed its pid.
+			if (processes.identity(pid) !== members.get(pid)) continue;
+			try {
+				processes.signal(pid, signal);
+			} catch (error) {
+				if (error?.code !== "ESRCH") return false;
+			}
+		}
+		for (let waited = 0; waited < timeoutMs; waited += 100) {
+			sleepSync(100);
+			const after = survey();
+			if (!after) return false;
+			if (after.live.length === 0) return !after.unproven;
+		}
+	}
+	const last = survey();
+	return last !== null && last.live.length === 0 && !last.unproven;
+}
+
+// FLY-2867: teardown removes every lease its slot still owns. FLY-2876: a
+// recorded voice daemon still running is stopped first; a lease whose start
+// is still running, whose daemon cannot be stopped, or that was replaced
+// meanwhile is reported as retained, never deleted.
 export function releaseVoiceRoomLeasesForSlot(slotDir, options = {}) {
 	check(SLOT_RE.test(slotDir), "529_slot_directory_required");
 	const root = options.root ?? VOICE_ROOM_LEASE_ROOT;
 	const aliases = slotDirAliases(slotDir);
+	const processes = options.processes ?? SYSTEM_PROCESSES;
 	const released = [];
 	const retained = [];
 	for (const name of readdirSync(root).sort()) {
@@ -952,11 +1186,32 @@ export function releaseVoiceRoomLeasesForSlot(slotDir, options = {}) {
 		if (typeof owner?.slotDir !== "string" || !aliases.has(owner.slotDir)) {
 			continue;
 		}
-		if (recordedDaemonAlive(owner)) {
+		// FLY-2876: a start still running owns the lease; teardown never takes
+		// it from under that start.
+		if (
+			liveHolder(owner.holder, processes) ||
+			!stopRecordedVoiceDaemon(
+				owner.daemon,
+				options.daemonStopTimeoutMs ?? 10_000,
+				processes,
+			)
+		) {
 			retained.push(path);
 			continue;
 		}
-		rmSync(path, { recursive: true, force: true });
+		// Stopping can take seconds, during which a `stop` and a new `start` may
+		// have replaced the lease; remove only the generation read above.
+		try {
+			reclaimStaleVoiceRoomLease(
+				path,
+				(current) => isDeepStrictEqual(current, owner),
+				"voice_room_lease_changed",
+			);
+		} catch (error) {
+			if (error?.message !== "voice_room_lease_changed") throw error;
+			retained.push(path);
+			continue;
+		}
 		released.push(path);
 	}
 	return { released, retained };
@@ -1014,7 +1269,13 @@ async function start(args) {
 			},
 		);
 		child.unref();
+		// FLY-2876: record the daemon before anything else can fail, so a crash
+		// of this start never leaves a daemon that teardown cannot find.
+		check(child.pid, "voice_spawn_failed");
+		recordVoiceRoomDaemon(lease, child.pid);
 	} catch (error) {
+		if (child?.pid && processAlive(child.pid))
+			process.kill(child.pid, "SIGTERM");
 		if (lease.created) rmSync(lease.path, { recursive: true, force: true });
 		throw error;
 	} finally {
@@ -1046,7 +1307,6 @@ async function start(args) {
 		check(child?.pid, "voice_spawn_failed");
 		await new Promise((resolvePromise) => setTimeout(resolvePromise, 1000));
 		check(processAlive(child.pid), "voice_process_exited_early");
-		recordVoiceRoomDaemon(lease, child.pid);
 		session = parseCliJson(
 			execFileSync(process.execPath, command, {
 				cwd: repo,
@@ -1129,6 +1389,7 @@ async function start(args) {
 		pid: child.pid,
 		processIdentity: processIdentity(child.pid),
 		leasePath: lease.path,
+		leaseId: lease.leaseId,
 		logPath,
 		evidencePath: evidenceDir
 			? join(evidenceDir, "voice-evidence", "events.jsonl")
@@ -1197,12 +1458,7 @@ async function stop(args) {
 		process.kill(run.pid, "SIGTERM");
 		await waitForProcessExit(run.pid);
 	}
-	releaseVoiceRoomLease(context.topology);
-	run.status = "STOPPED";
-	run.stoppedAt = new Date().toISOString();
-	run.sessionState = terminal.state;
-	privateWrite(runPath, run);
-	return run;
+	return settleStoppedVoiceRun(context.topology, runPath, run, terminal.state);
 }
 
 async function verify(args) {

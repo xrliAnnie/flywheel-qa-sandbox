@@ -1,0 +1,2581 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "fileName": "e051d32f-92e3-4b1b-ab18-6f0a83471413.jsonl",
+    "completePrefixBytes": 46097731,
+    "completePrefixSha256": "301fa46be7b24c83754f8501cb61a29880cdd5cb9f49c820a2c1f1a06038a3ca"
+  },
+  "window": {
+    "start": "2026-09-26T01:30:00Z",
+    "endExclusive": "2026-09-26T04:00:00Z"
+  },
+  "method": "Only user string inputs containing exact known mailbox-batch IDs or [Event #seq] join to frozen inputs. Model requests follow actual parentUuid ancestry to the nearest user string. No text/tool arguments/credentials retained. System turn_duration counts cover the entire Lead, not just these 257 rows. These are consumed inputs and requests, not inferred sleep-to-awake transitions.",
+  "counts": {
+    "sourceEvents": 257,
+    "historicalModelRows": 169,
+    "userStringInputs": 99,
+    "userInputsWithKnownSources": 87,
+    "knownSourceInputsWithAssistantDescendant": 86,
+    "exactSourceEventSeqMatches": 150,
+    "exactSourceBatchMatches": 180,
+    "allLeadCompletedTurnMarkers": 94,
+    "allLeadDistinctModelRequests": 553
+  },
+  "inputTimeline": [
+    {
+      "uuid": "f53eff19-bb09-4374-ac4d-80a80b911093",
+      "timestamp": "2026-09-26T01:32:13.145Z",
+      "knownMailboxBatchIds": [
+        "1f5645f7-ab42-4188-87e9-23987cd2eb63",
+        "443f524e-886b-4cf1-8bb2-48880e8e36fb",
+        "607e0347-66bb-4623-9e43-d72e02d888e2",
+        "7a8d6484-7770-4d3c-8839-9b4b28fb3e3f",
+        "fddd9a9d-38bf-4df7-9fe8-4c3b126cbba3"
+      ],
+      "sourceEventSeqs": [
+        129498,
+        129501,
+        129502
+      ],
+      "assistantRequestIds": [
+        "req_011CfRBsSXRrkZKoruUwLF84",
+        "req_011CfRBvs8cD5zjAphVsxz4G",
+        "req_011CfRBwWGWwdjhDob4CVefb",
+        "req_011CfRBwzFWuKWVEr285jpNE",
+        "req_011CfRBxT3pTH48PqaP79ZY2",
+        "req_011CfRByNAfWmZ2JAnsmEWkE",
+        "req_011CfRBywxenuXajnSCAff3J",
+        "req_011CfRBzbHULeAVHonetkDZb",
+        "req_011CfRBzzB8g6JUHWXx6qMyN",
+        "req_011CfRC1YX4j88uiheUEJvZf",
+        "req_011CfRC1x3BAXVLHVBj25xTb",
+        "req_011CfRC2NMAPNfpcfQY1533J",
+        "req_011CfRC2mKH7udFH3v3sAxMQ",
+        "req_011CfRC8VBLrEKoRhGQ3sTCN",
+        "req_011CfRC9T76pV8BusTPjFbRD",
+        "req_011CfRCAoCN4r8eK7uLRS913",
+        "req_011CfRCBtoytgpCY3K1j7FvK"
+      ]
+    },
+    {
+      "uuid": "40cc7721-02dd-4361-916d-7eaa0a417372",
+      "timestamp": "2026-09-26T01:36:37.037Z",
+      "knownMailboxBatchIds": [
+        "536f5f4d-6c43-40ee-b86e-9250c5ff4b56",
+        "56751a67-e7fa-4f20-b887-023d207a1565",
+        "594f4de8-3000-4502-b563-24397cbcb23f",
+        "c65f39dc-6237-47b8-adc3-9a986527c552",
+        "d33d24b0-7921-4997-8424-d1c67da92ce1",
+        "f4f77c51-8217-4690-a03e-e4a8b2814580"
+      ],
+      "sourceEventSeqs": [
+        129504,
+        129505,
+        129506,
+        129507,
+        129508,
+        129509
+      ],
+      "assistantRequestIds": [
+        "req_011CfRCCuPjKrRksh2HBnNBT",
+        "req_011CfRCGHHwnpkqBZDwkHU84",
+        "req_011CfRCHN9RebKJEZiHyykdk",
+        "req_011CfRCKLXzYrN9D64cV43BD",
+        "req_011CfRCLW8DxGEfiFSsZLqDZ",
+        "req_011CfRCM3RuBb24WzY8ndBTc"
+      ]
+    },
+    {
+      "uuid": "773547f7-1e32-4461-a545-c76ef385deb7",
+      "timestamp": "2026-09-26T01:38:37.372Z",
+      "knownMailboxBatchIds": [
+        "01d70109-7557-4335-b65e-f762ed7d2095",
+        "1f7d4673-fb2c-4262-887f-e93c74d32192",
+        "51f4a47f-91fd-4a05-8fbf-c4273b874226",
+        "7f5b4085-c06a-47d8-85f6-686850059baf",
+        "cef3d069-440a-41fc-91f5-706c6bc47465",
+        "f9e316e2-f052-4092-9279-375de8234acc"
+      ],
+      "sourceEventSeqs": [
+        129511,
+        129514,
+        129515,
+        129516
+      ],
+      "assistantRequestIds": [
+        "req_011CfRCMmk78NyeQvdS81v6p",
+        "req_011CfRCNmsKruQUi1yMaotKG",
+        "req_011CfRCPgJVL4eyLPHmAFJfn",
+        "req_011CfRCQYE6K5zZQnhsNJbv9",
+        "req_011CfRCRHnxiQ34M9L4h5oFP",
+        "req_011CfRCSDRZLLdgESw6s5ST4",
+        "req_011CfRCTNKd3LS28fQmPLAfn",
+        "req_011CfRCUme6m2HoEA9K6nYXw"
+      ]
+    },
+    {
+      "uuid": "b9299c64-b629-4aa1-ab1e-e3924bebcb72",
+      "timestamp": "2026-09-26T01:40:21.930Z",
+      "knownMailboxBatchIds": [
+        "7e361644-271c-422c-a727-3b70c71bab38",
+        "c490a04a-a67e-4d2d-9185-86365715f6ce",
+        "fd477a66-839e-49ce-9a63-8171ac62df96"
+      ],
+      "sourceEventSeqs": [
+        129517
+      ],
+      "assistantRequestIds": [
+        "req_011CfRCVV5E7XZsUfQBUB3HD",
+        "req_011CfRCWjrW6Nn4XdBH2trva",
+        "req_011CfRCX6TjwEfurA3dU1rV1",
+        "req_011CfRCYJLta9g7ohbBoEb5v",
+        "req_011CfRCZ8fFfZ9wHX6jXmY2A",
+        "req_011CfRCZjbxG6wjL3vm6zVeq"
+      ]
+    },
+    {
+      "uuid": "ba2906e0-7cca-49fc-8ad5-a9cf81ccbb73",
+      "timestamp": "2026-09-26T01:41:31.643Z",
+      "knownMailboxBatchIds": [
+        "55caf296-a9c7-4464-99ae-812676ffded1"
+      ],
+      "sourceEventSeqs": [
+        129518
+      ],
+      "assistantRequestIds": [
+        "req_011CfRCacPQLwMgALutthcbD",
+        "req_011CfRCbFQ7wh9JxAauXL9BK"
+      ]
+    },
+    {
+      "uuid": "b56ce611-f99d-4df7-958e-89cd417493ef",
+      "timestamp": "2026-09-26T01:42:03.475Z",
+      "knownMailboxBatchIds": [
+        "60091482-09e3-4d50-81bf-26a047b83ea9"
+      ],
+      "sourceEventSeqs": [
+        129519
+      ],
+      "assistantRequestIds": [
+        "req_011CfRCg34c6t6xegpYYzMdj",
+        "req_011CfRCgbnMgxAPRhE2LRatt"
+      ]
+    },
+    {
+      "uuid": "4b880181-96ea-4858-a3c8-dabe87db661c",
+      "timestamp": "2026-09-26T01:42:58.198Z",
+      "knownMailboxBatchIds": [
+        "9028be00-3f52-4706-a72d-d082d2bec8fa",
+        "93d9c63a-1d53-473f-9234-64f3847d313c"
+      ],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": [
+        "req_011CfRCgzWqbyxkfGrpwcjc3",
+        "req_011CfRCiJ44TMWof13cjgoTv",
+        "req_011CfRCiuifYMPUfJyLeVxJ8",
+        "req_011CfRCjygKSDmsxPyTrLzm1"
+      ]
+    },
+    {
+      "uuid": "3b28e34c-a848-4242-81da-721e37b46438",
+      "timestamp": "2026-09-26T01:43:45.548Z",
+      "knownMailboxBatchIds": [
+        "a9b93aa4-7c7b-4629-aa63-bf19088ba7a6"
+      ],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": [
+        "req_011CfRCkUpGVvFaZEVkamaSn",
+        "req_011CfRCkwvBCwUfPqEFQ9UDa"
+      ]
+    },
+    {
+      "uuid": "857c64f7-19fb-4d7c-b928-4165399c3fba",
+      "timestamp": "2026-09-26T01:45:36.715Z",
+      "knownMailboxBatchIds": [
+        "d2b13d65-76ff-47f1-aa3e-b73e82c03e41"
+      ],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": [
+        "req_011CfRCtgSyrYVZxAYzZMnf1",
+        "req_011CfRCyEWA6uUxzB6uwgCQV",
+        "req_011CfRCz4VBMjALzE1bJQ62z",
+        "req_011CfRD2Vd5bJ57SstLipvtn",
+        "req_011CfRD3Cp4qB4H2yMuscs25",
+        "req_011CfRD412gCdLs6Q1CbWHtJ",
+        "req_011CfRD4mQABEeAiCr1pk6o5",
+        "req_011CfRD5oh73FDbR2dwsCGau",
+        "req_011CfRD8B8WBQKSoWg1hBwPj",
+        "req_011CfRD9yfFCZJ63JpFQKrLe",
+        "req_011CfRDAcdEjDQwSj9L2VB2f"
+      ]
+    },
+    {
+      "uuid": "7b0fffbc-0d00-4223-9b54-6039c5c61fc8",
+      "timestamp": "2026-09-26T01:49:22.716Z",
+      "knownMailboxBatchIds": [
+        "1abf5a10-c1ae-4cac-a651-d411f4d577f8",
+        "8834680c-91cd-4601-9bab-2fe1d0d89f67",
+        "b4be092f-e347-4e86-b710-17d61e142d16",
+        "fbd6ad9e-600f-437c-99cd-9c448632beca"
+      ],
+      "sourceEventSeqs": [
+        129522,
+        129524,
+        129525,
+        129526
+      ],
+      "assistantRequestIds": [
+        "req_011CfRDBLPhjAdopURxCRZuo",
+        "req_011CfRDD6ijYBF11U5GQzd2H",
+        "req_011CfRDDkhVdipVsqrTaqxkq",
+        "req_011CfRDFL5TsBcYGiQ1g5QqB"
+      ]
+    },
+    {
+      "uuid": "79aefa8c-c996-4877-9fc2-6ffcb3d56652",
+      "timestamp": "2026-09-26T01:50:25.591Z",
+      "knownMailboxBatchIds": [
+        "56feb108-22c6-4469-ae5b-438aaed61fea"
+      ],
+      "sourceEventSeqs": [
+        129527
+      ],
+      "assistantRequestIds": [
+        "req_011CfRDFyuYU69B4PVYQSHXk",
+        "req_011CfRDGdEcgcSMHrFR2M3Ck"
+      ]
+    },
+    {
+      "uuid": "5e71f8b0-3713-4812-89ae-22e99655f76a",
+      "timestamp": "2026-09-26T01:50:45.106Z",
+      "knownMailboxBatchIds": [
+        "953e7c5b-9a34-47aa-b833-794b356cebdd"
+      ],
+      "sourceEventSeqs": [
+        129529
+      ],
+      "assistantRequestIds": [
+        "req_011CfRDKKJwEsKFr3gPJEdMM",
+        "req_011CfRDL7xbK8EToFVw5R9k7"
+      ]
+    },
+    {
+      "uuid": "532474bc-6222-4285-be0c-9b229bfba82b",
+      "timestamp": "2026-09-26T01:51:26.017Z",
+      "knownMailboxBatchIds": [
+        "2d68b825-b4bf-48b8-9581-ab31d254ab44"
+      ],
+      "sourceEventSeqs": [
+        129530
+      ],
+      "assistantRequestIds": [
+        "req_011CfRDLRJsXjxs7q9kL2qCq",
+        "req_011CfRDMAaNuuVXQH6HQc6UF",
+        "req_011CfRDTLdnW1o39FGwMHS5Q"
+      ]
+    },
+    {
+      "uuid": "ccd41bf8-0335-4988-9c96-e6dcf8081860",
+      "timestamp": "2026-09-26T01:53:08.238Z",
+      "knownMailboxBatchIds": [],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": [
+        "req_011CfRDU1EkPNciky9Ft7URK",
+        "req_011CfRDUqYNd6QnLCQf7ncct",
+        "req_011CfRDVr6dcSZXNVYe9JiLM",
+        "req_011CfRDWb9FM9DHzKYqW3ANu",
+        "req_011CfRDX2Rmi5bP6m3zkGmZL",
+        "req_011CfRDXnmWpqUuweYenJxEG",
+        "req_011CfRDYgEPrum1Y2BJVLpsX",
+        "req_011CfRDZhhDuNHmiAqXKRjmA",
+        "req_011CfRDavK2XEonbJjGqMZ6D",
+        "req_011CfRDdcCBzjFp14kfjZ9PM",
+        "req_011CfRDe62mT8iMHx8fLKpFE",
+        "req_011CfRDeTtQckjYUoTRhBHd9",
+        "req_011CfRDfGgFLpduwGpF2Hfti",
+        "req_011CfRDfym3Jm4L1rhvuLmE7"
+      ]
+    },
+    {
+      "uuid": "5bee66e6-2456-4f18-a5e9-32608de9f52d",
+      "timestamp": "2026-09-26T01:55:58.206Z",
+      "knownMailboxBatchIds": [],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": [
+        "req_011CfRDgcAnnJiZigbAA568K",
+        "req_011CfRDhP1JnjbDF7D7aLMAN",
+        "req_011CfRDhpnbLNdh3aghQEZEi",
+        "req_011CfRDiM32FSVN8nwa7vDAy",
+        "req_011CfRDjBeFBFgHPxocQ1Da2",
+        "req_011CfRDjVeDhFEzYbM4Wm8oR",
+        "req_011CfRDjw6uipRmd2oWg9EDg"
+      ]
+    },
+    {
+      "uuid": "a3af265a-e9d7-47b8-9ecc-1a987287c38e",
+      "timestamp": "2026-09-26T01:56:50.356Z",
+      "knownMailboxBatchIds": [
+        "00dd6ea0-86a0-4d00-baf9-e11cf8b0946c",
+        "04e44ea3-0e1d-48f7-bfe0-b24fac427525",
+        "20951937-749c-40c0-b6a9-086f49ac41e3",
+        "3633ddee-2ca3-475f-9c23-27af7089a873",
+        "3aab6e26-eeb9-4f34-a007-ff7a3c87ace2",
+        "a03b263e-9859-4702-92b3-01f9a9fa4ea7",
+        "e97d59d5-c999-4ede-885c-1c338774876c",
+        "f4e77968-2d0f-4660-8547-8bd519dbad37"
+      ],
+      "sourceEventSeqs": [
+        129532,
+        129533,
+        129534,
+        129535,
+        129536,
+        129537,
+        129538,
+        129539
+      ],
+      "assistantRequestIds": []
+    },
+    {
+      "uuid": "28275212-b939-43ea-af22-a774a399ea28",
+      "timestamp": "2026-09-26T01:58:28.691Z",
+      "knownMailboxBatchIds": [],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": [
+        "req_011CfRDsfY14SrPKc9x6wcCK",
+        "req_011CfRDuEszjB4Qpo62w34mp",
+        "req_011CfRDv48NE8ysmE4YmN7UJ",
+        "req_011CfRDvK4XbX5bPR8UZHYXC",
+        "req_011CfRDvrxgTvpVKMWMXPvWP",
+        "req_011CfRDw3o3ns6wPDxv4K4rb",
+        "req_011CfRDwZNHWmeKCJzRbjXJc",
+        "req_011CfRDyohJkw7LgF4MrpMVj",
+        "req_011CfRDzP6jLc4ujMVdiiSzN",
+        "req_011CfRDzqL4qY97VGYenm6AW",
+        "req_011CfRE1Sa7bAgcYQ9GAvPhP",
+        "req_011CfREEikpXvavFtRq6FWKt",
+        "req_011CfREFMAa3X9hK6zdEX4dz",
+        "req_011CfREHg3RrBuqBoWhSPMop",
+        "req_011CfREJU5suiam8LjEuhykQ",
+        "req_011CfREJyesW65R64H5KEPfU",
+        "req_011CfREKEqRwTP1wYRLhk3gD",
+        "req_011CfREKSEHHgf742XXUhW2m",
+        "req_011CfREL1TJ618Pogq8GWNmj",
+        "req_011CfRELG4dCb8cSfxpgFbSV",
+        "req_011CfRELcpnUbwMJavc7WJsT",
+        "req_011CfREM5Jzu9XLHouFRNZXV",
+        "req_011CfREMJdBobV4TFeXNjHTc",
+        "req_011CfREMWmgM4gGDJhjDihyN",
+        "req_011CfREN8KM4Tm9PYWWY6mNM",
+        "req_011CfRENrFV7GPwnhz1eRorp",
+        "req_011CfREPVAk8ZcxS9oKYrWQs",
+        "req_011CfREPfJh4HZNoMuvH3sr3",
+        "req_011CfREQfoEuWvJhwEoLneBH",
+        "req_011CfRERNg94D6yijreUMiLG",
+        "req_011CfRERamQdtioKGKmAYugH",
+        "req_011CfRESFdzR2RHSbN5zDwKf"
+      ]
+    },
+    {
+      "uuid": "4b737b6b-faf6-4aca-aade-f5d73a6ec63d",
+      "timestamp": "2026-09-26T02:06:01.654Z",
+      "knownMailboxBatchIds": [
+        "295f0bee-7d0f-4370-a30e-6925ffb30f45",
+        "538f9a02-11d7-4533-8a1a-eb37d83807a5",
+        "61087375-f421-467d-a3b4-dcc6a99e8616",
+        "63be6dd0-2934-448d-9119-2c921c95b1bc",
+        "6d39690e-34ae-488f-bf09-bbe68a054721",
+        "8b2891fa-c492-43df-a289-8a52fe0e7846",
+        "c2d63e7e-2a2d-43e0-87b5-35a8d3b3eadf",
+        "f5502a28-06bd-4218-a9e8-83d028cd9810"
+      ],
+      "sourceEventSeqs": [
+        129540,
+        129541,
+        129542,
+        129543,
+        129544,
+        129545
+      ],
+      "assistantRequestIds": [
+        "req_011CfRESyCYvtFgNciu3fteN",
+        "req_011CfREUkxA6X6wF3EEfRiSi",
+        "req_011CfREVPBG5oHwuFtHLztEf",
+        "req_011CfREVaQgf3Lc125mSLwD6",
+        "req_011CfREWhf2muo7XyAgR2QJ1",
+        "req_011CfREXSFrTazUVBNMCTdsH",
+        "req_011CfREXthKgTRvCTeZb5AFg",
+        "req_011CfREY7PKeFNsbr9krEb3C",
+        "req_011CfREYdXYMcQdmpvsycGxc",
+        "req_011CfREYtPFzcDuucHq8Lwfx",
+        "req_011CfREZhCL7uJDhLmNDDaaD"
+      ]
+    },
+    {
+      "uuid": "94870751-6431-47c4-92bf-5033818279b7",
+      "timestamp": "2026-09-26T02:07:39.283Z",
+      "knownMailboxBatchIds": [
+        "a54599f4-0705-4e59-940c-b68f9c384a82",
+        "e5e27ba4-bf75-4829-8294-f69d6109726b"
+      ],
+      "sourceEventSeqs": [
+        129546,
+        129547
+      ],
+      "assistantRequestIds": [
+        "req_011CfREaAjYLhWT9S6CCuacC",
+        "req_011CfREaWyhNTU9CMHS3Rynt"
+      ]
+    },
+    {
+      "uuid": "962b3bea-770c-4330-aec3-b179e6a13c89",
+      "timestamp": "2026-09-26T02:07:52.275Z",
+      "knownMailboxBatchIds": [
+        "176fe581-af35-4b54-92a2-8c605daf1ebe"
+      ],
+      "sourceEventSeqs": [
+        129550
+      ],
+      "assistantRequestIds": [
+        "req_011CfREb84LSRWS2EmVysZrs",
+        "req_011CfREcoUSmKxqhM7VACUUD",
+        "req_011CfREdPCDhvfCkzuZdZwFU",
+        "req_011CfREdudoa29kk72Hg9CRa",
+        "req_011CfREe7nJdSdPkwgxn8gnG"
+      ]
+    },
+    {
+      "uuid": "713b701d-e073-4abf-ab6d-4e04fc53e994",
+      "timestamp": "2026-09-26T02:09:06.680Z",
+      "knownMailboxBatchIds": [
+        "1b87a995-91c0-434c-9cdb-a6c2e8c5048f"
+      ],
+      "sourceEventSeqs": [
+        129551
+      ],
+      "assistantRequestIds": [
+        "req_011CfREgcNZxZpAeCwwVU5mx",
+        "req_011CfREgxGdif1U68XucVXUZ"
+      ]
+    },
+    {
+      "uuid": "540c734e-1ad6-4e33-85e4-79f2c08fa8f5",
+      "timestamp": "2026-09-26T02:09:52.476Z",
+      "knownMailboxBatchIds": [],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": [
+        "req_011CfREkBK37dMaJcmMhBJRn",
+        "req_011CfREkUzQxZ2AVT3xdeLcD",
+        "req_011CfREm7wAYdZYLG97Je7dA",
+        "req_011CfREmUVw9og4bqf3MbRAM",
+        "req_011CfREmqwXQPkHcqna9JMvs",
+        "req_011CfREnvAZJtQR7UEJFvrqB",
+        "req_011CfREoP9HFMigsxEFmqFkT"
+      ]
+    },
+    {
+      "uuid": "bbf1fbdd-86a6-4616-8fa9-e56e589c884e",
+      "timestamp": "2026-09-26T02:11:22.085Z",
+      "knownMailboxBatchIds": [
+        "60959fff-fbfb-49a3-9f2b-68dcd10b13b1"
+      ],
+      "sourceEventSeqs": [
+        129552
+      ],
+      "assistantRequestIds": [
+        "req_011CfRErb8Ru7MEjhujehuut",
+        "req_011CfREtdY6LBMfTWxybmita",
+        "req_011CfREu5UZgDX7kAzSZkT8u",
+        "req_011CfREuS63RuqQYyEEEvVWP"
+      ]
+    },
+    {
+      "uuid": "17b89b6a-d274-4c97-96a0-4dd170f73c77",
+      "timestamp": "2026-09-26T02:12:50.232Z",
+      "knownMailboxBatchIds": [
+        "a5d6df67-69db-467e-9f1d-5a1c111258fb"
+      ],
+      "sourceEventSeqs": [
+        129553
+      ],
+      "assistantRequestIds": [
+        "req_011CfREy5uiLLDmRngWC2Rzz",
+        "req_011CfREyVWYJQq34HxWkvXjJ",
+        "req_011CfREykLWtMHaEwqZg4ugq",
+        "req_011CfREyxkt7UbrdqBbRh44p",
+        "req_011CfREz9sd4kZkcA37USRp2",
+        "req_011CfREzkPm5P5kFXaq1GAZW"
+      ]
+    },
+    {
+      "uuid": "215c96b8-848d-4477-a239-d19dca33a4c6",
+      "timestamp": "2026-09-26T02:13:17.354Z",
+      "knownMailboxBatchIds": [
+        "39b3ae8a-d32c-479b-8c2b-96633e18d00f"
+      ],
+      "sourceEventSeqs": [
+        129554
+      ],
+      "assistantRequestIds": [
+        "req_011CfRF15roEkyUDGV7FiUG4",
+        "req_011CfRF1G3igScMwZtC88Ad7"
+      ]
+    },
+    {
+      "uuid": "57a2fcc2-687f-40d9-a365-4ce3c6e2afbd",
+      "timestamp": "2026-09-26T02:13:37.303Z",
+      "knownMailboxBatchIds": [
+        "ce52f467-0087-4d6a-a4ac-edfe7ad9042f"
+      ],
+      "sourceEventSeqs": [
+        129555
+      ],
+      "assistantRequestIds": [
+        "req_011CfRF2ZDcHZx9E67fBF6DZ",
+        "req_011CfRF2w9EAkQswBxcYEbfk",
+        "req_011CfRF3BnJVdjyhSnaxavAS",
+        "req_011CfRF3NkrEWvRzyiJ4VPYd",
+        "req_011CfRF3wVbABdnXHEGTxVkc",
+        "req_011CfRF4Xxm19CVzhmTaPmxE",
+        "req_011CfRF4xNDDTRmK7jt9FcDN"
+      ]
+    },
+    {
+      "uuid": "e876196e-8564-44c1-9b1d-856b554baca8",
+      "timestamp": "2026-09-26T02:14:14.961Z",
+      "knownMailboxBatchIds": [
+        "a8288081-4100-4ab2-9c0a-00f0ff79aaf9"
+      ],
+      "sourceEventSeqs": [
+        129556
+      ],
+      "assistantRequestIds": [
+        "req_011CfRF5LKoRBwqPzauhUZLM",
+        "req_011CfRF5XVkqqDiwidesVgjm"
+      ]
+    },
+    {
+      "uuid": "6505491a-c20b-4a36-b540-c80fac23eeb1",
+      "timestamp": "2026-09-26T02:14:28.378Z",
+      "knownMailboxBatchIds": [
+        "c0e708a1-0b81-45a6-9670-59b235e0d004"
+      ],
+      "sourceEventSeqs": [
+        129557
+      ],
+      "assistantRequestIds": [
+        "req_011CfRF6KYx7Qrfv8sST1RPQ",
+        "req_011CfRF6rQL2MFCvRZk9k4CM",
+        "req_011CfRF7HG4K3EJHysfjuutH",
+        "req_011CfRF81nuuNQ8kgeeRNCga",
+        "req_011CfRF8YQR2FjmuWuJ6uuhK",
+        "req_011CfRF9Zk4WmDR76aWyecY5",
+        "req_011CfRFA3n2U3RQzSYNZEDkx",
+        "req_011CfRFAUZoAfQdbYEeBuKGX",
+        "req_011CfRFB127Qtvw6BhZv3oY3",
+        "req_011CfRFBQB9XePMnhdaUSEnE",
+        "req_011CfRFBo6nU4yKhvwvDmiDs",
+        "req_011CfRFCH5Y4jmM28jTnaayR",
+        "req_011CfRFCeSRVFtkFcqGLLvSs",
+        "req_011CfRFCqdNbNHBt3pCMvxmf",
+        "req_011CfRFDYZUgg5ELwk2VaNAL",
+        "req_011CfRFDzL2HLxoidGHJB9bX",
+        "req_011CfRFENcy5VB9d92T34Qg6",
+        "req_011CfRFFECEGHySGP5dEvMFJ",
+        "req_011CfRFFnEKW4h25A3oxY2jc",
+        "req_011CfRFG3fFk9noMTvSKrqeH",
+        "req_011CfRFGP73HeBDfvTHkkrg5"
+      ]
+    },
+    {
+      "uuid": "9fb65d2a-c19c-4f6e-bd16-ceb8a949528b",
+      "timestamp": "2026-09-26T02:16:51.405Z",
+      "knownMailboxBatchIds": [
+        "76a1f6d5-b6cb-4b90-9a5b-5d5df560e2d3"
+      ],
+      "sourceEventSeqs": [
+        129560
+      ],
+      "assistantRequestIds": [
+        "req_011CfRFGssfQzJYBpJNinUv1",
+        "req_011CfRFH81ienrTkFMTQyCrc"
+      ]
+    },
+    {
+      "uuid": "1e377d79-9031-4c8b-9709-9c9bf2e5faf5",
+      "timestamp": "2026-09-26T02:17:15.886Z",
+      "knownMailboxBatchIds": [
+        "097a83ad-b594-4b21-8c14-f66d281dc4ba"
+      ],
+      "sourceEventSeqs": [
+        129561
+      ],
+      "assistantRequestIds": [
+        "req_011CfRFJg83cL9oo76VbKQEk",
+        "req_011CfRFJwbTXtg3XQFuMtbuV"
+      ]
+    },
+    {
+      "uuid": "c147942b-0c79-4b9b-abfb-c3b0a1cd1a18",
+      "timestamp": "2026-09-26T02:18:38.202Z",
+      "knownMailboxBatchIds": [
+        "6d5aa5fa-3837-4abb-9c65-fa90b05a8c88"
+      ],
+      "sourceEventSeqs": [
+        129562
+      ],
+      "assistantRequestIds": [
+        "req_011CfRFQjrBkB2oYvzb37WPe",
+        "req_011CfRFQwEo8TAwLr4neSAaH"
+      ]
+    },
+    {
+      "uuid": "524ab73a-f681-4ea9-8baf-549fd313bc7a",
+      "timestamp": "2026-09-26T02:19:50.208Z",
+      "knownMailboxBatchIds": [],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": [
+        "req_011CfRFWCLnnJWjtSRjWWbdV",
+        "req_011CfRFWTrS4vvMZPoXCS4zv",
+        "req_011CfRFXYNKRQWz2AaEAX1CD",
+        "req_011CfRFXusdxokuutu3hJC15",
+        "req_011CfRFYods67sCwMz9TBiAP",
+        "req_011CfRFZKgtZXjVQ8rDCG3fw"
+      ]
+    },
+    {
+      "uuid": "fd792397-f4bd-495e-840b-f99d2f8318a1",
+      "timestamp": "2026-09-26T02:21:47.293Z",
+      "knownMailboxBatchIds": [],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": [
+        "req_011CfRFenYJP53e37aDhUawV",
+        "req_011CfRFf2hqnnxEDahYpitGZ",
+        "req_011CfRFfqdcud1kHMV993hTa",
+        "req_011CfRFgMaSQZktEX5G57uMH"
+      ]
+    },
+    {
+      "uuid": "4d8626de-01da-4875-aa55-d6314922f04d",
+      "timestamp": "2026-09-26T02:27:43.469Z",
+      "knownMailboxBatchIds": [
+        "5acc66ac-ef28-461f-9694-df2d55fffdee"
+      ],
+      "sourceEventSeqs": [
+        129565
+      ],
+      "assistantRequestIds": [
+        "req_011CfRG6w12WmfaB7anN6H4s",
+        "req_011CfRG7bKNWt8UqFi6c3HNi",
+        "req_011CfRG7w1nujREpmDDQZifz",
+        "req_011CfRG8ZggbEKvrLwwkB8dC",
+        "req_011CfRG9H1beJYg6GuJYDUoJ",
+        "req_011CfRGBU8t9ZAypAXvpKpNg",
+        "req_011CfRGHFvb4zEGEkVQSxpk6",
+        "req_011CfRGJGpwBYs4UAA8bDjWB",
+        "req_011CfRGKGsSZB4D26d55mibm",
+        "req_011CfRGKsLNSCrroSmUAYPf2"
+      ]
+    },
+    {
+      "uuid": "19aca2d0-4304-4131-a497-34d87fece356",
+      "timestamp": "2026-09-26T02:30:45.085Z",
+      "knownMailboxBatchIds": [
+        "43a73a66-4a66-4300-9510-31da249373cb",
+        "c4ba3dcb-b930-4a97-989c-48992ccfc32e"
+      ],
+      "sourceEventSeqs": [
+        129566,
+        129567
+      ],
+      "assistantRequestIds": [
+        "req_011CfRGLKJpRhj7GuhPVkYMs",
+        "req_011CfRGLcEoD8PDn72cM6ffZ"
+      ]
+    },
+    {
+      "uuid": "2443d8ac-daef-4e19-ab9f-3d1697dd00e4",
+      "timestamp": "2026-09-26T02:31:34.855Z",
+      "knownMailboxBatchIds": [
+        "fbcab93d-f29c-47d4-b883-11da14b796d9"
+      ],
+      "sourceEventSeqs": [
+        129569
+      ],
+      "assistantRequestIds": [
+        "req_011CfRGPzEDS6pVBdKvWdQAg",
+        "req_011CfRGRQ3E4Kqhq53TfDsqn",
+        "req_011CfRGRzyAkuYv1fJp1h6n7",
+        "req_011CfRGSRNs8yBkUwMnWV6jG"
+      ]
+    },
+    {
+      "uuid": "776b0cfb-a5f1-4d49-97b3-107bb9950a05",
+      "timestamp": "2026-09-26T02:33:04.015Z",
+      "knownMailboxBatchIds": [
+        "29671964-a80a-441c-8ac3-7f5c2b08b2e3"
+      ],
+      "sourceEventSeqs": [
+        129572
+      ],
+      "assistantRequestIds": [
+        "req_011CfRGWZpUEonoe8Q4GftWj",
+        "req_011CfRGWmsGNZwtat34xsrgv"
+      ]
+    },
+    {
+      "uuid": "7d8490fd-9bd5-48f5-a03d-5294af247155",
+      "timestamp": "2026-09-26T02:34:26.125Z",
+      "knownMailboxBatchIds": [
+        "3d8764bf-877f-4d64-9cd3-7c71f4c0ebc7"
+      ],
+      "sourceEventSeqs": [
+        129573
+      ],
+      "assistantRequestIds": [
+        "req_011CfRGccdodt5NhubixTr1R",
+        "req_011CfRGcoszAXVzrN3wvjfhj"
+      ]
+    },
+    {
+      "uuid": "8adb08f6-7138-4ef6-b53d-958af7a12254",
+      "timestamp": "2026-09-26T02:35:06.176Z",
+      "knownMailboxBatchIds": [
+        "2b0dfc35-6ca4-4dc7-9d70-bd79e5438108"
+      ],
+      "sourceEventSeqs": [
+        129574
+      ],
+      "assistantRequestIds": [
+        "req_011CfRGfagZTL1E6uMMxRSAm",
+        "req_011CfRGfoXjpWfFcMhdrPW4M"
+      ]
+    },
+    {
+      "uuid": "2026ebec-5236-4fac-bcec-42f1e5d6e5b7",
+      "timestamp": "2026-09-26T02:35:17.187Z",
+      "knownMailboxBatchIds": [
+        "ee9d16a3-1ea9-4f66-b712-11f2ccfc9047"
+      ],
+      "sourceEventSeqs": [
+        129575
+      ],
+      "assistantRequestIds": [
+        "req_011CfRGgNi1dKgw3ahiXdxb8",
+        "req_011CfRGguYf7VoFgxWhCJh4c"
+      ]
+    },
+    {
+      "uuid": "c963af16-8b2d-4994-9205-3cd8a1584b21",
+      "timestamp": "2026-09-26T02:39:18.670Z",
+      "knownMailboxBatchIds": [
+        "6c26e962-c464-4274-85a9-c5cdbb03b5d5"
+      ],
+      "sourceEventSeqs": [
+        129579
+      ],
+      "assistantRequestIds": [
+        "req_011CfRGzBX4fMehUAA3mHzSd",
+        "req_011CfRGzP7LLZhADFuLuPUhZ"
+      ]
+    },
+    {
+      "uuid": "2cd81c78-a40c-4747-a928-731d83594da7",
+      "timestamp": "2026-09-26T02:42:49.998Z",
+      "knownMailboxBatchIds": [
+        "53c36cdd-5983-4070-b7e6-27a990e98d47"
+      ],
+      "sourceEventSeqs": [
+        129580
+      ],
+      "assistantRequestIds": [
+        "req_011CfRHFkdoDNCiqxtfNjUqL",
+        "req_011CfRHGZoTKpFg7VFr52Bn5",
+        "req_011CfRHHPfnt2aGVNcCesgkx",
+        "req_011CfRHHezHHWmPVzXauEcPZ",
+        "req_011CfRHJ4kHN928a4mu5RJsB"
+      ]
+    },
+    {
+      "uuid": "348d9304-cb2a-4d94-ab72-928adb3472d7",
+      "timestamp": "2026-09-26T02:43:31.085Z",
+      "knownMailboxBatchIds": [
+        "b03e30ec-029b-40bf-af70-55128e5f8983",
+        "dca89f7d-7396-4a49-8242-9b271b116d42"
+      ],
+      "sourceEventSeqs": [
+        129581,
+        129582
+      ],
+      "assistantRequestIds": [
+        "req_011CfRHJn9fHbZvcvyEo7mHG",
+        "req_011CfRHKdMrXeCBBAnUiL4m1",
+        "req_011CfRHLoDTrb2XCR4dFHHJA",
+        "req_011CfRHM7gidpCzcseq4HiuW",
+        "req_011CfRHMJZp68ffKYxkyKH9v",
+        "req_011CfRHMV471UZmq8sXoX3fv",
+        "req_011CfRHN7Kfj4EBGv5AWhqvu",
+        "req_011CfRHNy75pRRTdA2D1SSWp",
+        "req_011CfRHPkdH5K5GNc1tE39Qr",
+        "req_011CfRHPuiU21pdSxi6cKgZs"
+      ]
+    },
+    {
+      "uuid": "17a01c42-fbc5-481e-968e-33b055bd4461",
+      "timestamp": "2026-09-26T02:44:46.769Z",
+      "knownMailboxBatchIds": [
+        "430c58ae-cf90-4974-b9a9-acee77994cfd",
+        "46736ae1-4f99-4333-b795-c0e6345fbe03",
+        "edafff5d-ba86-4fcc-8e4d-5438dae356c1"
+      ],
+      "sourceEventSeqs": [
+        129583,
+        129584,
+        129585
+      ],
+      "assistantRequestIds": [
+        "req_011CfRHQMtpZ72ToJAyC4ktt",
+        "req_011CfRHRMcjPqVCvhme3ScAm",
+        "req_011CfRHRy6Bh59jubtFDMrwp",
+        "req_011CfRHSbs1WmGRJ1HeARQjT"
+      ]
+    },
+    {
+      "uuid": "cd0585b4-2818-4d6b-bf3d-9ce3a5ab01ae",
+      "timestamp": "2026-09-26T02:45:27.257Z",
+      "knownMailboxBatchIds": [
+        "45375e8b-ac86-43e8-8cda-65e8f1c8ff19"
+      ],
+      "sourceEventSeqs": [
+        129586
+      ],
+      "assistantRequestIds": [
+        "req_011CfRHTLy68keTbo9Xnxs17",
+        "req_011CfRHTrKgju7r4Q8db9Gqt",
+        "req_011CfRHUFYgc2P7HjjYb5yQ6",
+        "req_011CfRHUx8xyzJYQgssBg5yN",
+        "req_011CfRHVBxvDzwR6xNcFXBkj",
+        "req_011CfRHVuT1eHVNstad4CasU",
+        "req_011CfRHWFJ7jDRPKbwPuMMdP",
+        "req_011CfRHWb4VquGbaKTuFCqSJ",
+        "req_011CfRHWrqH5Ao1avfWTNL3Z",
+        "req_011CfRHXaSaWF1zryX6yccs4",
+        "req_011CfRHXqQjtiuzaVgEfN28g",
+        "req_011CfRHYMo6NxRN71sWnSV29",
+        "req_011CfRHZ4W4TzQAkU4xyJdof"
+      ]
+    },
+    {
+      "uuid": "080aece8-3044-46c9-b3bb-4f40bc53b0f5",
+      "timestamp": "2026-09-26T02:46:50.036Z",
+      "knownMailboxBatchIds": [
+        "6961ad58-d416-41a5-8d78-71d357b5154d",
+        "70fb3656-9cdb-43e4-b85c-acf507450827",
+        "da3357eb-bdb2-431b-86c0-fee96df14cba"
+      ],
+      "sourceEventSeqs": [
+        129588,
+        129589
+      ],
+      "assistantRequestIds": [
+        "req_011CfRHZTCZ7GDzuCmgoKFL1",
+        "req_011CfRHaBdDmgth4NmMvVUjN",
+        "req_011CfRHaQnyZqW3c2oiA3PLe",
+        "req_011CfRHaZTssEivnFiyX8J8o",
+        "req_011CfRHgBpXzGNfLpKrcqaqz",
+        "req_011CfRHgS9kQSvzSy9n8Pqm2",
+        "req_011CfRHhq9e1dZfB7mmg8tj3",
+        "req_011CfRHiJHXb5bhSMBAGUSMV",
+        "req_011CfRHibNwKrigHY4JruBd1",
+        "req_011CfRHj1XVj2gdRAYB2ac52",
+        "req_011CfRHjJrYYLh7xo5i5cR5y",
+        "req_011CfRHjcr1r74sj8EVsoKXN",
+        "req_011CfRHjzz2f51gdhUx3qeWR",
+        "req_011CfRHmQm3y6wko9Y1BhKHL",
+        "req_011CfRHnYXeLSCiDuGipj4SJ",
+        "req_011CfRHo1bKzWrPzLAByE5pJ",
+        "req_011CfRHoqnWFbFELRzBVuvNN",
+        "req_011CfRHpnFhsSDuvzkcoyjcz",
+        "req_011CfRHq8i2KtrWnBSKkwZtR",
+        "req_011CfRHqkz5wn4cfPnkv6GtA",
+        "req_011CfRHrCENRJYUCazrJZmLS",
+        "req_011CfRHrQLdrg9g2oKa6SZ7V",
+        "req_011CfRHs9BqZeU2JYRtNsNk6",
+        "req_011CfRHsmZsQKFt52a7Sy8Nt",
+        "req_011CfRHt6d6N27CuvBA9Wo1z",
+        "req_011CfRHtasCjxR9GLnE2Vasv",
+        "req_011CfRHuHJZ1Uc1HppJqicpx",
+        "req_011CfRHv1y6okHnXiqXwbWcG",
+        "req_011CfRHvHdRpsgaT3ABZh4q1",
+        "req_011CfRHvaaefknNRg4nvX7qG",
+        "req_011CfRHw5H46HGyzLEYdRzeV",
+        "req_011CfRHwTV3fkuzeq8h5hFDq",
+        "req_011CfRHwstj3AhiM6m4U5P1Q",
+        "req_011CfRHxJYoFmpwnG5MzZgCj",
+        "req_011CfRHyENJjtcAUXiBffqn1",
+        "req_011CfRHymzKoXZVwL6F7gisN",
+        "req_011CfRJ2FYqYfv4kvGzNKqBB",
+        "req_011CfRJ2XpswLbLmYrZ2bWee",
+        "req_011CfRJ3BhC3DXiZvy17wh6z",
+        "req_011CfRJ3aabZzVZncuLjv8hK",
+        "req_011CfRJ4Sesrub5VxvW9JRSa",
+        "req_011CfRJ4kxhhkm3AfSb4XiQh",
+        "req_011CfRJ59ASFxvaqHEr6TCap"
+      ]
+    },
+    {
+      "uuid": "70ec117f-c450-4fcd-b5f1-200715ae51bf",
+      "timestamp": "2026-09-26T02:53:41.861Z",
+      "knownMailboxBatchIds": [
+        "201e7453-7ecb-4313-ad27-5439f0e7d1c8",
+        "44001e74-a8b9-4684-a3b6-39956b1caea5",
+        "44671950-1cb9-4eaa-8f43-35a92f27f5a3",
+        "73dfdf0a-e44f-4136-9e9f-405160c566ec"
+      ],
+      "sourceEventSeqs": [
+        129590,
+        129592,
+        129594,
+        129596
+      ],
+      "assistantRequestIds": [
+        "req_011CfRJ5p7F43mWafzLZazD3",
+        "req_011CfRJ6nEQZwi3mubS8hpzh",
+        "req_011CfRJ77fxa8j1jSgBaSUKx",
+        "req_011CfRJ7QJ5DDVTrioDQcdTP",
+        "req_011CfRJ872n5Eo7ZqQ7GGHhu"
+      ]
+    },
+    {
+      "uuid": "9fed602f-5ef0-436f-aa8d-62880c7bdb08",
+      "timestamp": "2026-09-26T02:54:36.058Z",
+      "knownMailboxBatchIds": [
+        "7d32b501-d428-4e95-a561-56fd5d52b9e9"
+      ],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": [
+        "req_011CfRJ9pFnwuuwTWJaePbTi",
+        "req_011CfRJAKadxkFxgGXqqoZew",
+        "req_011CfRJAbf2aPjDLoYcJnyMR",
+        "req_011CfRJB3VYTCwXF8toTyf6E",
+        "req_011CfRJBUQzSVgEmtBSkQhUE",
+        "req_011CfRJBxf78xFqhLci94ZTe",
+        "req_011CfRJC8edLPM28YGQMWFJy"
+      ]
+    },
+    {
+      "uuid": "7fe3dd26-4248-4862-a888-5372819ddfcd",
+      "timestamp": "2026-09-26T02:55:12.419Z",
+      "knownMailboxBatchIds": [
+        "98a6ce48-a40e-4a19-9f53-ae37f6caabbb"
+      ],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": [
+        "req_011CfRJCVEt9ahFfg3nULtu2",
+        "req_011CfRJD2x6rywtr43QfcqTq"
+      ]
+    },
+    {
+      "uuid": "74c22fad-89ed-4662-9467-59df2947fa06",
+      "timestamp": "2026-09-26T02:56:11.242Z",
+      "knownMailboxBatchIds": [
+        "777f39d3-e691-4610-b90e-751f6494bf84"
+      ],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": [
+        "req_011CfRJGqGzgxjzVN9BjPikw",
+        "req_011CfRJHhaRmkBDY9bi4wxWQ",
+        "req_011CfRJJ8V8MmhuoTi9555x1"
+      ]
+    },
+    {
+      "uuid": "3f1edf72-74ee-422f-8269-1b118f3e1cd8",
+      "timestamp": "2026-09-26T02:56:50.296Z",
+      "knownMailboxBatchIds": [
+        "ab2ac6bf-29ea-4056-aa89-f87c14b3e45a"
+      ],
+      "sourceEventSeqs": [
+        129597
+      ],
+      "assistantRequestIds": [
+        "req_011CfRJKhhfVMWmcZfBodKJt",
+        "req_011CfRJKyYQgVtT1KbLTvcY4",
+        "req_011CfRJLEVLnswfSr1Htypu7",
+        "req_011CfRJM1Ag8TEQ8gkMv2Lx8",
+        "req_011CfRJMRRvmmLPmGG6T9DNT"
+      ]
+    },
+    {
+      "uuid": "8b4d8e23-e44c-43f6-8627-4ded501e72c7",
+      "timestamp": "2026-09-26T02:57:20.340Z",
+      "knownMailboxBatchIds": [
+        "8cc3c051-79da-4e9d-8515-e7f6cbb391dd"
+      ],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": [
+        "req_011CfRJMucb96GWr9y6hHoL1",
+        "req_011CfRJNPf3fzz1ZAYpqEz68",
+        "req_011CfRJNez2sJC7MV1GifdET",
+        "req_011CfRJNyQKHidU85eUzARTU",
+        "req_011CfRJPjEZDgsBmhhfLa15v",
+        "req_011CfRJQbra2wk8x7Cr3U69f",
+        "req_011CfRJR9TcSZh1BMM2VjjSy",
+        "req_011CfRJRWxfr9MN6fctKsdGt",
+        "req_011CfRJRmLMq8cn98WGVxDos",
+        "req_011CfRJS5FNyuZbmDLi94Jnr",
+        "req_011CfRJTxk1gfpX4846EUfU5",
+        "req_011CfRJUTBJeG729gafVcwJq"
+      ]
+    },
+    {
+      "uuid": "9855af29-4300-4f8a-bbc6-49200cffa7e6",
+      "timestamp": "2026-09-26T02:58:54.145Z",
+      "knownMailboxBatchIds": [
+        "3c162439-af9d-46fc-bd4c-3709d5697fe9",
+        "a416658a-762b-4140-aa83-4e8717daacf4"
+      ],
+      "sourceEventSeqs": [
+        129600,
+        129601
+      ],
+      "assistantRequestIds": [
+        "req_011CfRJUqUjEDs3JicpzWbA9",
+        "req_011CfRJVAt3mHgXSzjuroU4u",
+        "req_011CfRJVNp8xCyrSDyxrtuWR",
+        "req_011CfRJVq1V8jyAKEf4QP92f",
+        "req_011CfRJWTrHqriuDx6vSsFkt",
+        "req_011CfRJWnFpcmc6YTEmmoF2c"
+      ]
+    },
+    {
+      "uuid": "daf057ff-a6f4-408f-bf93-d99f69699d04",
+      "timestamp": "2026-09-26T02:59:44.652Z",
+      "knownMailboxBatchIds": [
+        "d38642eb-b5a8-4121-8568-c9459d0aaeae"
+      ],
+      "sourceEventSeqs": [
+        129603
+      ],
+      "assistantRequestIds": [
+        "req_011CfRJYZWAStYgQ48uQPnZd",
+        "req_011CfRJaWd6CshyfHibDHCNb",
+        "req_011CfRJbDHpMu7VsyoQGNsU5",
+        "req_011CfRJbXt2BWo9gExvNEk6e",
+        "req_011CfRJcx6pfd1PnwHwXyEUa",
+        "req_011CfRJds2Fn73MgpvqEGifV",
+        "req_011CfRJeZ4J2tvSfDvM5aaSM",
+        "req_011CfRJeuiWZVfPWFDJBHV5s",
+        "req_011CfRJfB6DcsmGNyouTPL9a",
+        "req_011CfRJfhCUBVcgPMR6MPxth",
+        "req_011CfRJgpiS6uCXxjwKV7o6Q",
+        "req_011CfRJhaLWgEt4CeFR9fSC5",
+        "req_011CfRJhzET4ti7TnDPRTfLh",
+        "req_011CfRJibP3eDiGBjYQ1QTV2",
+        "req_011CfRJixH9ag6V24shBwQWk",
+        "req_011CfRJjNSTjRhLE2Jo4U1QX",
+        "req_011CfRJji9cwHdNeVJ7Tyki7",
+        "req_011CfRJjxAjt3mYQb8SxmEwk",
+        "req_011CfRJk9gnSSNZiSLfqJ8oy",
+        "req_011CfRJkQfw7DEb8V1dwCBZv",
+        "req_011CfRJkkdyA3C5qn32kSKti",
+        "req_011CfRJmqbAWJe9AtK2cemWV",
+        "req_011CfRJnVRF2kt6Z8dV6vvrM",
+        "req_011CfRJni7UdKT4kzEQLrBvG",
+        "req_011CfRJqPwfQBKcF8V8nC5ox",
+        "req_011CfRJrcyGwm3QcW23e9pJm",
+        "req_011CfRJsKEhkxPbi6LTAWNjb",
+        "req_011CfRJsbxHZ8sELS3p67LU6",
+        "req_011CfRJt79TdxR4mDuwvqtjc",
+        "req_011CfRJuJB1hFbiTG8fFfoA6",
+        "req_011CfRK1Tw4QT9MsbDa8WEL4",
+        "req_011CfRK2VYKyhPsEeccdTUR5",
+        "req_011CfRK9XUrLTnJMPh4ScQof",
+        "req_011CfRKAeVZAbTuDy3nDhsia",
+        "req_011CfRKBHaEpsjVLhUQiFZEs",
+        "req_011CfRKBtCqTsMxwDpiYBMzh",
+        "req_011CfRKCPLnxSyNcTD7hmDLr"
+      ]
+    },
+    {
+      "uuid": "c155501d-ca56-49e0-8e05-a841b9e66b23",
+      "timestamp": "2026-09-26T03:08:23.913Z",
+      "knownMailboxBatchIds": [
+        "a2194d97-06de-4098-85d9-5ddde2c2bf78",
+        "b3fa9475-b1ef-419e-a0b1-395b38d004b1",
+        "b59b973f-9774-4fac-8e97-d29f6e5a8b82",
+        "e59d03ad-4d52-4a3c-ba4d-3b6cc2a8c91b",
+        "f1118ede-192c-4abb-b1d5-afdf6bc1e4b0",
+        "f3ffd2c1-b499-4a59-95ea-395b0ac0d704"
+      ],
+      "sourceEventSeqs": [
+        129604,
+        129605,
+        129607,
+        129608,
+        129609,
+        129611
+      ],
+      "assistantRequestIds": [
+        "req_011CfRKCqdaiG5efqaqCvvy9",
+        "req_011CfRKDs7uN5ELPeRucQFKB",
+        "req_011CfRKE88HwnMR3bFJWzosN",
+        "req_011CfRKErfuECcxv1jLNfLhe"
+      ]
+    },
+    {
+      "uuid": "fd8a4e22-55c6-40ee-9d2d-09631b21cfdf",
+      "timestamp": "2026-09-26T03:08:57.768Z",
+      "knownMailboxBatchIds": [
+        "f4f8e59e-be19-419a-829b-ea25ecbf2ec3"
+      ],
+      "sourceEventSeqs": [
+        129614
+      ],
+      "assistantRequestIds": [
+        "req_011CfRKFKtGCy21AhJkDeQRi",
+        "req_011CfRKFZM8fkhRNMjEzYzKV"
+      ]
+    },
+    {
+      "uuid": "22532050-1551-4fca-aa2c-0c08b1ebc6d5",
+      "timestamp": "2026-09-26T03:09:58.077Z",
+      "knownMailboxBatchIds": [
+        "67a2e0b9-0ca7-406e-bd3b-1c4ae5f3b89c",
+        "880990b7-d8c6-4895-805d-4bfff6ce5c93"
+      ],
+      "sourceEventSeqs": [
+        129617,
+        129618
+      ],
+      "assistantRequestIds": [
+        "req_011CfRKKmXUWmrRYnMMaNSBm",
+        "req_011CfRKLpPQPCttk68njGxKi",
+        "req_011CfRKMMVAxNvQ7wsh2Dexz"
+      ]
+    },
+    {
+      "uuid": "32fd7329-ed5e-4281-bd6c-7820fcbf2077",
+      "timestamp": "2026-09-26T03:10:24.814Z",
+      "knownMailboxBatchIds": [
+        "08d4442a-0c9e-4f8c-8813-9b2ce9050b7c"
+      ],
+      "sourceEventSeqs": [
+        129620
+      ],
+      "assistantRequestIds": [
+        "req_011CfRKMkcDcNYEUPrkdYjSJ",
+        "req_011CfRKN5ndachJ664YPvtq4"
+      ]
+    },
+    {
+      "uuid": "af595f03-543b-4b89-abb9-594b4c0e0b8e",
+      "timestamp": "2026-09-26T03:11:18.221Z",
+      "knownMailboxBatchIds": [
+        "40e62425-2ae7-441a-b0bc-5af0dc482cba"
+      ],
+      "sourceEventSeqs": [
+        129621
+      ],
+      "assistantRequestIds": [
+        "req_011CfRKRhjRx3ds38Uk1EDMA",
+        "req_011CfRKSe7gUuxYph8RDNJ4B"
+      ]
+    },
+    {
+      "uuid": "8f67de0e-a360-4520-a40f-45b1b3871290",
+      "timestamp": "2026-09-26T03:11:35.582Z",
+      "knownMailboxBatchIds": [
+        "5520ff1a-172e-4e40-a438-afb83c6ecf79"
+      ],
+      "sourceEventSeqs": [
+        129622
+      ],
+      "assistantRequestIds": [
+        "req_011CfRKSxSzJmsgcf2y5aGTk",
+        "req_011CfRKTGMGYQFMjUYLnTGJk"
+      ]
+    },
+    {
+      "uuid": "02d8a0f9-1365-45e9-9cfe-b0fdad077dd0",
+      "timestamp": "2026-09-26T03:11:57.281Z",
+      "knownMailboxBatchIds": [
+        "35a9c9b3-4077-4431-bb45-73a480da5e42"
+      ],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": [
+        "req_011CfRKUZ4siXbbMR7f13sF5"
+      ]
+    },
+    {
+      "uuid": "abb31227-8a4f-49f2-b491-e02bb7b9e6eb",
+      "timestamp": "2026-09-26T03:11:59.283Z",
+      "knownMailboxBatchIds": [
+        "e06210ba-9792-4b4c-a811-71b9b56412f3"
+      ],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": [
+        "req_011CfRKUhWNbPNFZWxQVuBhJ"
+      ]
+    },
+    {
+      "uuid": "82ed8da4-66bb-4e60-b776-56f5ea4e359c",
+      "timestamp": "2026-09-26T03:12:03.290Z",
+      "knownMailboxBatchIds": [
+        "7f417d3a-f38c-4e8c-8603-288428c98c93"
+      ],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": [
+        "req_011CfRKUzz77qNF2k7upVFmG"
+      ]
+    },
+    {
+      "uuid": "cb320bf2-0abb-4f10-9cde-92233da9e213",
+      "timestamp": "2026-09-26T03:12:08.487Z",
+      "knownMailboxBatchIds": [],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": [
+        "req_011CfRKVTM7oscWxzc7irmK9"
+      ]
+    },
+    {
+      "uuid": "c08ab029-3e88-4c60-bbf8-670cd7c7cf21",
+      "timestamp": "2026-09-26T03:13:01.366Z",
+      "knownMailboxBatchIds": [
+        "1dba2f85-45b3-49d9-8ce0-b6aaba130729"
+      ],
+      "sourceEventSeqs": [
+        129624
+      ],
+      "assistantRequestIds": [
+        "req_011CfRKZJ95ideudBU7pm9RR"
+      ]
+    },
+    {
+      "uuid": "600b8301-5550-479d-8b03-a062bb435c00",
+      "timestamp": "2026-09-26T03:13:33.394Z",
+      "knownMailboxBatchIds": [
+        "fc68d019-e7ef-41ae-a000-8d6c99008c57"
+      ],
+      "sourceEventSeqs": [
+        129625
+      ],
+      "assistantRequestIds": [
+        "req_011CfRKbep6SzH6WoRpCUXbs"
+      ]
+    },
+    {
+      "uuid": "a6f6c17d-c3b9-44d3-b177-482435183e16",
+      "timestamp": "2026-09-26T03:14:11.439Z",
+      "knownMailboxBatchIds": [
+        "b9f6ca18-a58d-4def-b4cf-3f90c1717495"
+      ],
+      "sourceEventSeqs": [
+        129626
+      ],
+      "assistantRequestIds": [
+        "req_011CfRKeTEAi8Phsz6dBfDK9"
+      ]
+    },
+    {
+      "uuid": "1b3e1ae6-6d5e-497c-8a5d-626b371b67d2",
+      "timestamp": "2026-09-26T03:15:05.506Z",
+      "knownMailboxBatchIds": [
+        "7543380d-d905-45f1-b595-afdf3eb7d359"
+      ],
+      "sourceEventSeqs": [
+        129627
+      ],
+      "assistantRequestIds": [
+        "req_011CfRKiSKxhexupaHVn5oAT"
+      ]
+    },
+    {
+      "uuid": "6fc7b5d3-e41b-4607-9cd0-ffbb913c3520",
+      "timestamp": "2026-09-26T03:15:45.556Z",
+      "knownMailboxBatchIds": [
+        "83c23c45-f04c-4369-93c0-bd9129c39e20"
+      ],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": [
+        "req_011CfRKmPf4BuXAeKN2CS9jC"
+      ]
+    },
+    {
+      "uuid": "2c9d6954-ac4f-491d-a6e1-5d0e44d63d01",
+      "timestamp": "2026-09-26T03:15:50.561Z",
+      "knownMailboxBatchIds": [
+        "65ebb376-20fa-414a-ae4a-d9194a1f219c"
+      ],
+      "sourceEventSeqs": [
+        129628
+      ],
+      "assistantRequestIds": [
+        "req_011CfRKmkib7AUtgeUB6Trrn"
+      ]
+    },
+    {
+      "uuid": "f7cbb12b-9619-4db5-a6ab-e71b4d34d105",
+      "timestamp": "2026-09-26T03:16:28.654Z",
+      "knownMailboxBatchIds": [
+        "ed2b5cb8-d244-433a-b07d-e4e8c74e5b98"
+      ],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": [
+        "req_011CfRKpZBsS287pxWwQEUW2"
+      ]
+    },
+    {
+      "uuid": "3b2dcc05-acda-48e1-b421-9d6d905ad483",
+      "timestamp": "2026-09-26T03:16:57.862Z",
+      "knownMailboxBatchIds": [],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": [
+        "req_011CfRKrp7crH4wzkgYb5ztR"
+      ]
+    },
+    {
+      "uuid": "cb23bf27-c599-45b6-aa65-54157ab38b84",
+      "timestamp": "2026-09-26T03:17:56.012Z",
+      "knownMailboxBatchIds": [],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": []
+    },
+    {
+      "uuid": "d8797c3f-4dc1-464b-9a1f-8d27fac90d88",
+      "timestamp": "2026-09-26T03:17:56.011Z",
+      "knownMailboxBatchIds": [],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": []
+    },
+    {
+      "uuid": "365756d2-e1c1-4146-8ed1-594399e012f2",
+      "timestamp": "2026-09-26T03:18:20.777Z",
+      "knownMailboxBatchIds": [
+        "5de7e589-f7d8-4534-86ba-5157cc846799",
+        "dcafb107-090f-41f7-888c-261d11d92f27"
+      ],
+      "sourceEventSeqs": [
+        129629,
+        129630
+      ],
+      "assistantRequestIds": [
+        "req_011CfRKxpoTALKZadZjAg3U7"
+      ]
+    },
+    {
+      "uuid": "6df19ca9-7d0f-4490-9ea0-506cf8af8542",
+      "timestamp": "2026-09-26T03:18:27.782Z",
+      "knownMailboxBatchIds": [
+        "cb7fd176-81e7-4b4f-b140-ad4e27769ce5"
+      ],
+      "sourceEventSeqs": [
+        129631
+      ],
+      "assistantRequestIds": [
+        "req_011CfRKyLzAKBpHUPwDyAr5V"
+      ]
+    },
+    {
+      "uuid": "c3728789-8eac-4394-8c81-f1087dc348cc",
+      "timestamp": "2026-09-26T03:18:50.804Z",
+      "knownMailboxBatchIds": [
+        "b698b934-b719-4e92-8e39-ba5ec88b888a"
+      ],
+      "sourceEventSeqs": [
+        129632
+      ],
+      "assistantRequestIds": [
+        "req_011CfRL13XyTrmHegHpsQjK2"
+      ]
+    },
+    {
+      "uuid": "dbb54031-4d71-4841-9fc2-29ccc98b3817",
+      "timestamp": "2026-09-26T03:19:43.386Z",
+      "knownMailboxBatchIds": [],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": []
+    },
+    {
+      "uuid": "f33e2402-e40e-4b47-ac60-a0cf015e8f9f",
+      "timestamp": "2026-09-26T03:19:43.386Z",
+      "knownMailboxBatchIds": [],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": []
+    },
+    {
+      "uuid": "3f835522-feae-4d2b-aef4-8f077c15c65d",
+      "timestamp": "2026-09-26T03:19:58.889Z",
+      "knownMailboxBatchIds": [
+        "2b4ab68e-0867-4433-b438-b871ee6662ff"
+      ],
+      "sourceEventSeqs": [
+        129633
+      ],
+      "assistantRequestIds": [
+        "req_011CfRL63yuTYJVHajz4hzWa"
+      ]
+    },
+    {
+      "uuid": "1cb56806-e08e-490b-8f0f-1e34657723cf",
+      "timestamp": "2026-09-26T03:20:21.911Z",
+      "knownMailboxBatchIds": [
+        "ec547d3b-dba0-472e-ade1-fc77443ab002"
+      ],
+      "sourceEventSeqs": [
+        129634
+      ],
+      "assistantRequestIds": [
+        "req_011CfRL7kbwj3MfAfU3crfCo"
+      ]
+    },
+    {
+      "uuid": "60569d19-89df-48b9-98be-b2a4f6453535",
+      "timestamp": "2026-09-26T03:21:44.983Z",
+      "knownMailboxBatchIds": [
+        "f0fc7e4c-e196-4c04-9a79-12236dae8e47"
+      ],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": [
+        "req_011CfRLDsfGGgBzdS13BbuGM",
+        "req_011CfRLFmdBfumXsdW44hKpk",
+        "req_011CfRLGRkNfBq8WtZrttr6z",
+        "req_011CfRLGkHqNe9kXeWnQgvdL",
+        "req_011CfRLGzLBxRm2BaEGbdVaL",
+        "req_011CfRLHD4uVQdE4hx7yCU6D",
+        "req_011CfRLHTFwhpyYBw2ibbhm9",
+        "req_011CfRLJQU2ykiyo3kidxHB8",
+        "req_011CfRLK37ga761V72QKATm6",
+        "req_011CfRLKjERfFKTQysokdwHy",
+        "req_011CfRLMjyseg3vqqbv7UQkA",
+        "req_011CfRLNdZhXn2sEwCPn9xUS",
+        "req_011CfRLNyQ3divzFcqTrhwAS",
+        "req_011CfRLPVZGhhMSDQN81U9eR",
+        "req_011CfRLPuhLcLehJddzFPohF",
+        "req_011CfRLRcToDXHqCaZqkbRwK",
+        "req_011CfRLSoYaNCFgrudQDtfGD",
+        "req_011CfRLTNgddrxSyrvDv2kHr",
+        "req_011CfRLU5UZbTDEtvQ3VVCFu",
+        "req_011CfRLVATijGGgWfo9kikPu",
+        "req_011CfRLWJCLfYC5TXmgoFgfF",
+        "req_011CfRLX3FCpbDKAgwfdCM1Y"
+      ]
+    },
+    {
+      "uuid": "81aa277a-f86c-410c-9ba0-7120e1ad38ac",
+      "timestamp": "2026-09-26T03:25:45.663Z",
+      "knownMailboxBatchIds": [
+        "226b4d4a-1b73-44a1-8985-201a04d6473e",
+        "d3a37b2f-3914-44e8-a0f4-83b268c6d740",
+        "d87c1679-e5c0-475d-801b-696b549d4ed4",
+        "f03e007a-f63b-4ce6-afb5-2addb41d2ba0",
+        "f7299000-8e1b-4d6b-80a7-92b4b6a23aa5",
+        "fdc355da-dce4-4bbd-8b36-cb7990d0d22a"
+      ],
+      "sourceEventSeqs": [
+        129635,
+        129636,
+        129640,
+        129641,
+        129642
+      ],
+      "assistantRequestIds": [
+        "req_011CfRLXd1TPH6XdCSFPAP64",
+        "req_011CfRLYHidAg4V4fmArNFwu",
+        "req_011CfRLZ1qg4zW7DT796WNL4",
+        "req_011CfRLZj2Av8pvR46hppe5R",
+        "req_011CfRLa6GbqydrviEVU4r4J",
+        "req_011CfRLaWS9zvMTziQUoM4yL",
+        "req_011CfRLapXajQT1W2DZ6UxWy",
+        "req_011CfRLc288BcevP8TevmRdC",
+        "req_011CfRLco5L6EkgAytfFKeWg"
+      ]
+    },
+    {
+      "uuid": "d93e694d-2718-4477-b8f0-9c7feb7a7d0f",
+      "timestamp": "2026-09-26T03:27:01.964Z",
+      "knownMailboxBatchIds": [
+        "3d86c056-bfad-4260-a34d-c3116236849f",
+        "6b1e38b1-40ab-44ec-aadc-ad43de6bf3e5"
+      ],
+      "sourceEventSeqs": [
+        129643,
+        129644
+      ],
+      "assistantRequestIds": [
+        "req_011CfRLdFSb1ZqGTdJeKjecU",
+        "req_011CfRLdtfiQNQjhZaDU5hRr",
+        "req_011CfRLeQhjnsoGZNk4cCys5",
+        "req_011CfRLgwGZrUmjVuTJZwkgX",
+        "req_011CfRLjr3NiXdd1U2XM9zkh",
+        "req_011CfRLm1XeVV72aZB2UXqn3",
+        "req_011CfRLmbpAawk1LBdBZ9zhE",
+        "req_011CfRLmuYWjGV6k9Yn5izBn",
+        "req_011CfRLoY7iya1rSW8Vj2Mv8",
+        "req_011CfRLp7sz8DdX2XSe7QPfN"
+      ]
+    },
+    {
+      "uuid": "b69d8479-5dfb-449e-9e5e-a11509844fc1",
+      "timestamp": "2026-09-26T03:29:34.470Z",
+      "knownMailboxBatchIds": [
+        "088c45ed-a4e6-4dd8-8f2b-39b622a54562",
+        "1781ff16-80cf-41d2-a659-48f80eba150f",
+        "5f067967-4984-453b-8163-546e9cd80924",
+        "6b13771f-4aaa-40f4-bc74-2c33e916344a",
+        "9010f107-3a81-42d2-a338-ba1a9053e7b3",
+        "eb4f2e79-3110-4f2f-a600-1a98d7b74b8c",
+        "f8b19dc1-9619-4900-a848-cf2cd404ead7"
+      ],
+      "sourceEventSeqs": [
+        129645,
+        129646,
+        129648,
+        129649
+      ],
+      "assistantRequestIds": [
+        "req_011CfRLpV9QhAbXj2SaJhy6x",
+        "req_011CfRLqT3gZWPagjTFYNJMi",
+        "req_011CfRLqoaxHvmdfUDVpRm5z",
+        "req_011CfRLruBqF7dUJsuLtXqax",
+        "req_011CfRLsigLXazSawrT6YncP",
+        "req_011CfRLt3Kkibf6gfeibr8vw",
+        "req_011CfRLv8FUB45iXL7yCg7rB",
+        "req_011CfRLvSseVBvDB8nB2iKh4",
+        "req_011CfRLviuJQ27EyudvCuby4",
+        "req_011CfRLxXLqEaiH1YXjXm8R8",
+        "req_011CfRM75ogTYhDtLSZpT3z6",
+        "req_011CfRM8t6nuYkUc1ZHR4Djg",
+        "req_011CfRM9kNyBrkSfcqKsYmS6",
+        "req_011CfRMA7zV8bTLwwJUbrU22",
+        "req_011CfRMB2hGeRDkVnMa4YSR9",
+        "req_011CfRMBt5d6dgSKKMgRcbca"
+      ]
+    },
+    {
+      "uuid": "df73a033-d959-40e3-9302-43bcc4164ddb",
+      "timestamp": "2026-09-26T03:34:33.495Z",
+      "knownMailboxBatchIds": [
+        "04759b39-929c-4cf1-b6a1-402189afeb5f",
+        "4cbc988c-da21-4688-aa4a-c033adadbfb5",
+        "7ac09294-92ac-4f98-a5cd-1a3edba883d9",
+        "7cdde426-641a-4894-88b6-941d4e9323b5",
+        "807e0484-bce5-42a4-9b61-5a6bc026f546",
+        "82f02b98-3225-4cdd-8a5b-005410d76818",
+        "962cb4b8-aeb0-4b9b-bd81-68735ea2dd25",
+        "b482e33e-f220-4646-8a90-09baa0cb3bc0",
+        "e1736d8a-bb40-481f-8a7f-509fb4351e7e"
+      ],
+      "sourceEventSeqs": [
+        129651,
+        129652,
+        129657,
+        129658,
+        129660,
+        129661,
+        129663,
+        129664
+      ],
+      "assistantRequestIds": [
+        "req_011CfRMCXgZXx1ZDcf6YVEYQ",
+        "req_011CfRMDLkGqvoBdLfxXwJcq",
+        "req_011CfRMEcXKraY1uCujQvKxC",
+        "req_011CfRMFe9bXzzc5PUZZ7Ezw"
+      ]
+    },
+    {
+      "uuid": "29afe34a-b66e-4381-b648-394f6b3c7da2",
+      "timestamp": "2026-09-26T03:35:21.600Z",
+      "knownMailboxBatchIds": [
+        "adb9279b-9346-4237-bc3d-31e530fcd8a4"
+      ],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": [
+        "req_011CfRMG5oSXx741MjB3ugAo",
+        "req_011CfRMHnDpCy2MbtC1f8LSN",
+        "req_011CfRMSve5V6yexiBVgvRGA",
+        "req_011CfRMU2FwvndS99nxBTPt2",
+        "req_011CfRMUgPPugwi2c1qCjBV4",
+        "req_011CfRMV8XWj2e2uL9LgHiCu",
+        "req_011CfRMVxhwSwDkWYt8iepUm"
+      ]
+    },
+    {
+      "uuid": "72dda097-befc-4a1c-9c28-72a008381fce",
+      "timestamp": "2026-09-26T03:38:35.197Z",
+      "knownMailboxBatchIds": [
+        "6827fb84-aa88-4d45-9a3c-1a7f9ee25d21",
+        "d562469e-81ee-4931-9e97-79e421320df4"
+      ],
+      "sourceEventSeqs": [
+        129670,
+        129671
+      ],
+      "assistantRequestIds": [
+        "req_011CfRMWMAJZnCx991qZf35T",
+        "req_011CfRMXkCvCHWn16fTdBWhn",
+        "req_011CfRMYSbn4TqAa6WhTyVVx"
+      ]
+    },
+    {
+      "uuid": "a77d9cff-a479-4f35-9e34-05c9dd60134f",
+      "timestamp": "2026-09-26T03:39:08.870Z",
+      "knownMailboxBatchIds": [
+        "cf82dfc8-4322-44d5-b818-84ff74903f25"
+      ],
+      "sourceEventSeqs": [
+        129672
+      ],
+      "assistantRequestIds": [
+        "req_011CfRMYq3uHFmcVhUdaTjN4",
+        "req_011CfRMZ5L8wcc1pre6SUGJp"
+      ]
+    },
+    {
+      "uuid": "8a54a571-19da-4a0c-a731-ebb539de076a",
+      "timestamp": "2026-09-26T03:40:41.233Z",
+      "knownMailboxBatchIds": [
+        "9a85ace2-1d50-4c0a-891f-639d23868a00"
+      ],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": [
+        "req_011CfRMfeXKvbxKrSkm7q4yP",
+        "req_011CfRMj5X5YYkPsntawvAmU",
+        "req_011CfRMkNc1aMRehuHKKdG91",
+        "req_011CfRMpPUxEqKn9rWSfG5Cm",
+        "req_011CfRMprTvvTSebrii98DpD",
+        "req_011CfRMqSkgZcxLRwRuQ6Vam"
+      ]
+    },
+    {
+      "uuid": "40859abb-7e6e-4e47-842a-e7cc8397fd4e",
+      "timestamp": "2026-09-26T03:43:02.598Z",
+      "knownMailboxBatchIds": [
+        "1aafcea8-5091-4507-8f8f-147609720c42",
+        "9c5eac2d-b81c-41c9-8422-c892675e750e"
+      ],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": [
+        "req_011CfRMr4ncSh6Gc3soytDKR",
+        "req_011CfRMryHVmukNaURj1y3Bf",
+        "req_011CfRMshdwEsXQFoenZSBxS",
+        "req_011CfRMtKKXyCYik7gzvHWqF",
+        "req_011CfRMvhFTZvoh91g2U92qU",
+        "req_011CfRMw5johqESVRfsBKnKL",
+        "req_011CfRMxNiJH5hgfgzhmMiep",
+        "req_011CfRMys595dJFtLM2jXknj",
+        "req_011CfRMzdYaDmffM5DnzBQmU"
+      ]
+    },
+    {
+      "uuid": "4d6ff3b3-72a8-43ff-82a4-c143f4bf9314",
+      "timestamp": "2026-09-26T03:45:07.016Z",
+      "knownMailboxBatchIds": [
+        "0b7391c0-e32f-4e91-b66d-1e07e998378f",
+        "835474fc-4140-47eb-a627-fca133a21656",
+        "9a12d274-0ec3-4407-afc3-c840b565e1e3",
+        "c38132c4-63d5-4d20-b965-6989c039a50c",
+        "d125f9bb-4ac8-49ad-848e-bbf1e62ce2dd",
+        "d8d8ddfa-b1bd-4312-9087-f3fbb09dbcdc"
+      ],
+      "sourceEventSeqs": [
+        129675,
+        129676,
+        129678,
+        129679,
+        129680,
+        129682
+      ],
+      "assistantRequestIds": [
+        "req_011CfRN1E6wxix4UAzZKDwEg",
+        "req_011CfRN2aGvpTTjuHvP8fsEg",
+        "req_011CfRN32oN7i6x2sBF8DDyC",
+        "req_011CfRN4212A1N7uJQM54AAW",
+        "req_011CfRN4mn3C1wg8WfiFGUvs",
+        "req_011CfRN74Qy7QQiM4Dr5gZdf",
+        "req_011CfRN984nnnUAxpk6nmGZ9",
+        "req_011CfRN9XfN3isXCcKpqBoZj",
+        "req_011CfRNA8oTiKmH2dbFNnsSE"
+      ]
+    },
+    {
+      "uuid": "3b01cac2-b6b4-497c-a2b8-82a068506d33",
+      "timestamp": "2026-09-26T03:47:16.265Z",
+      "knownMailboxBatchIds": [
+        "15cbf087-a693-4886-b2d7-075b76df978f",
+        "45f484a8-907d-4773-a5cc-123896e5d662",
+        "76a05267-e5b6-45e8-a99e-8f936320c018"
+      ],
+      "sourceEventSeqs": [
+        129684,
+        129685,
+        129686
+      ],
+      "assistantRequestIds": [
+        "req_011CfRNAm8G9YKf9sLwSoJ34",
+        "req_011CfRNBYZzDktxcUJTm4wvR"
+      ]
+    },
+    {
+      "uuid": "a8d21ca4-6f0a-43ed-874a-1d0023d1b1f3",
+      "timestamp": "2026-09-26T03:47:56.963Z",
+      "knownMailboxBatchIds": [
+        "cec65901-1eb7-41b2-b21d-f9e6e98cd33f"
+      ],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": [
+        "req_011CfRNDmWujxNhYs3gZkYNZ",
+        "req_011CfRNEvBLVkM2U56fmhsmq",
+        "req_011CfRNFSmLuLg45JNTiJZ4c",
+        "req_011CfRNFqHvnGam4qgEwhGb2",
+        "req_011CfRNGkfepEdFdVHMnFanr",
+        "req_011CfRNHzJxJzpz6xkKaRrD7",
+        "req_011CfRNJV7KGeQPAFwDKzQia"
+      ]
+    },
+    {
+      "uuid": "c19289f7-2664-4ad5-b3ee-b71ef366f058",
+      "timestamp": "2026-09-26T03:49:07.187Z",
+      "knownMailboxBatchIds": [
+        "7247fcec-6788-4e32-b7fd-a5191d030702"
+      ],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": [
+        "req_011CfRNJx4K7Zd55EmLU3xft",
+        "req_011CfRNLAoHvqbSguVDMzZMd",
+        "req_011CfRNLZNMZXrbMoCKDd6Fb"
+      ]
+    },
+    {
+      "uuid": "b90d2f39-2f72-47f6-91c6-be32130bf791",
+      "timestamp": "2026-09-26T03:50:30.927Z",
+      "knownMailboxBatchIds": [
+        "4cc9b431-6418-44c2-8bc6-59d1e6cfaf61"
+      ],
+      "sourceEventSeqs": [
+        129694
+      ],
+      "assistantRequestIds": [
+        "req_011CfRNR8YkUSgKwNBXiLWb6",
+        "req_011CfRNRQbQAXze3bq8LeYoE"
+      ]
+    },
+    {
+      "uuid": "606be58e-30b0-4804-afb9-083dd6ab86b4",
+      "timestamp": "2026-09-26T03:53:33.286Z",
+      "knownMailboxBatchIds": [
+        "53ca87ae-bbb1-4a64-8bd4-2d4da09c322d"
+      ],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": [
+        "req_011CfRNeZkvQ4AGoHFk7rMNC",
+        "req_011CfRNstCYmvCRHfzoTkWEe",
+        "req_011CfRNtGv3etYghcDrgF37d",
+        "req_011CfRNtnqNH6ER5X4n6BELa",
+        "req_011CfRNv7AiUYaErTKPYkcHC",
+        "req_011CfRNvfeLBG8He72vZw48S"
+      ]
+    },
+    {
+      "uuid": "f1ca18f0-7ec4-4191-a039-d444789b1815",
+      "timestamp": "2026-09-26T03:57:36.737Z",
+      "knownMailboxBatchIds": [
+        "18a7fc2b-3848-4867-a653-13921ecc855d"
+      ],
+      "sourceEventSeqs": [],
+      "assistantRequestIds": [
+        "req_011CfRNxXQJMgeKtBn6wC7yv",
+        "req_011CfRNyjV6EppFCiaka5EjY",
+        "req_011CfRNzCTpv2RTuSLW2UvSi",
+        "req_011CfRP1URXokYYrHqAJhoXj",
+        "req_011CfRP3HcxsTLP882J99CRQ",
+        "req_011CfRP3okCHKRyjzxZsnE1j"
+      ]
+    },
+    {
+      "uuid": "4ece672f-27e0-4667-9e26-350ffa49238c",
+      "timestamp": "2026-09-26T03:58:55.508Z",
+      "knownMailboxBatchIds": [
+        "0acd6ff1-d9c1-4697-aba7-2a8fb7bff18e",
+        "15ebe500-0a9f-40f4-9015-a4554e6df92f",
+        "2cb5bbdc-8f71-444c-8d9b-20d08c8be809",
+        "520f449c-1ceb-494b-8ef3-9164775e6e93",
+        "578f1890-e8a2-4cab-b52b-2955fd0fd8ee",
+        "6c0ec5d0-4ffa-41d1-8d4d-27e34ff61c31",
+        "72893d2b-4214-40d6-9e24-7773bbfe435b",
+        "73f40384-c850-482a-b071-05130d7e1733",
+        "801ae833-8be9-41fe-a4c4-a2581ad3ff5c",
+        "96f5de3f-407a-453c-ab5c-3c6168c6174f",
+        "a6166359-39aa-4b64-9e11-6807601a225b",
+        "b36ae1ef-a2de-4d6e-a070-d8ed08243a0c",
+        "e6f62efd-7d7c-423c-9bde-4b2a1cac2512"
+      ],
+      "sourceEventSeqs": [
+        129696,
+        129698,
+        129699,
+        129701,
+        129702,
+        129704,
+        129705,
+        129706,
+        129707,
+        129708,
+        129709,
+        129712,
+        129713,
+        129714,
+        129715,
+        129716,
+        129717,
+        129718,
+        129719
+      ],
+      "assistantRequestIds": [
+        "req_011CfRP4KtvFkCSQogsRseAt",
+        "req_011CfRP5dikRZWgiDRrJCEEd",
+        "req_011CfRP6FAi92L2he2daU5M1",
+        "req_011CfRP6fwj8iyyUPT4LHJXv",
+        "req_011CfRP7c7onaZiUEmTXmaRs"
+      ]
+    }
+  ],
+  "completedTurnMarkers": [
+    {
+      "uuid": "dfc1e728-8910-4d49-8fbe-3814167531b1",
+      "timestamp": "2026-09-26T01:32:13.137Z",
+      "durationMs": 139090
+    },
+    {
+      "uuid": "d1c9ad0e-8056-4bc4-86fd-e9d7c47545a9",
+      "timestamp": "2026-09-26T01:36:37.020Z",
+      "durationMs": 263873
+    },
+    {
+      "uuid": "35f5b938-8078-4760-aee0-803372e26fc9",
+      "timestamp": "2026-09-26T01:38:37.363Z",
+      "durationMs": 120324
+    },
+    {
+      "uuid": "cd665393-ca65-458e-97db-e86295d19919",
+      "timestamp": "2026-09-26T01:40:21.915Z",
+      "durationMs": 104540
+    },
+    {
+      "uuid": "0c0011c8-2bf2-4e9e-a078-b844cb2b97f5",
+      "timestamp": "2026-09-26T01:41:31.636Z",
+      "durationMs": 69705
+    },
+    {
+      "uuid": "b64ad04e-0a8d-4bc5-9295-7e86b67c1c81",
+      "timestamp": "2026-09-26T01:41:47.110Z",
+      "durationMs": 15465
+    },
+    {
+      "uuid": "8e8dae0c-d1d6-48e0-8a5e-954abfb48c3a",
+      "timestamp": "2026-09-26T01:42:58.188Z",
+      "durationMs": 54711
+    },
+    {
+      "uuid": "40640f39-cdca-4404-92ec-52037e71ed29",
+      "timestamp": "2026-09-26T01:43:45.539Z",
+      "durationMs": 47340
+    },
+    {
+      "uuid": "1a7801e2-c076-4060-91cb-15bbe6d5884c",
+      "timestamp": "2026-09-26T01:43:59.697Z",
+      "durationMs": 14148
+    },
+    {
+      "uuid": "64ec2fce-2e39-4d4f-9326-0f7065c1edfa",
+      "timestamp": "2026-09-26T01:49:22.709Z",
+      "durationMs": 225993
+    },
+    {
+      "uuid": "da3bba7e-f3f2-43f9-8b65-bfaf42d5cd83",
+      "timestamp": "2026-09-26T01:50:25.577Z",
+      "durationMs": 62858
+    },
+    {
+      "uuid": "fae305d4-a68a-4101-ae80-0855333eb765",
+      "timestamp": "2026-09-26T01:50:38.985Z",
+      "durationMs": 13393
+    },
+    {
+      "uuid": "a9e17c74-766f-4006-92f7-a08edf0b6916",
+      "timestamp": "2026-09-26T01:51:26.010Z",
+      "durationMs": 40903
+    },
+    {
+      "uuid": "878b8033-926f-4adf-acb0-608bed4bc401",
+      "timestamp": "2026-09-26T01:53:08.218Z",
+      "durationMs": 102200
+    },
+    {
+      "uuid": "2efaff90-dee8-4334-a7b3-467966331bde",
+      "timestamp": "2026-09-26T01:55:58.170Z",
+      "durationMs": 169938
+    },
+    {
+      "uuid": "1530b3e5-64ff-4a7a-b64e-a60e82efff35",
+      "timestamp": "2026-09-26T01:56:50.342Z",
+      "durationMs": 52147
+    },
+    {
+      "uuid": "d37f17d2-5b26-42ef-876e-87ac7f0a3eef",
+      "timestamp": "2026-09-26T02:06:01.644Z",
+      "durationMs": 551287
+    },
+    {
+      "uuid": "86c4a553-1eb0-486d-b743-4d9dc4deda41",
+      "timestamp": "2026-09-26T02:07:39.273Z",
+      "durationMs": 97617
+    },
+    {
+      "uuid": "65260fbe-8577-4bdf-962b-3db3f53bf4cc",
+      "timestamp": "2026-09-26T02:07:47.483Z",
+      "durationMs": 8199
+    },
+    {
+      "uuid": "2e9b7cac-9fb3-4ba3-87a5-b4695a181e67",
+      "timestamp": "2026-09-26T02:08:38.203Z",
+      "durationMs": 45926
+    },
+    {
+      "uuid": "ac81ad5b-d937-4af1-9aa5-7b5a4ed19e43",
+      "timestamp": "2026-09-26T02:09:14.584Z",
+      "durationMs": 7901
+    },
+    {
+      "uuid": "deafa412-9d24-4fe6-b61d-cdae7d777ec1",
+      "timestamp": "2026-09-26T02:10:43.677Z",
+      "durationMs": 51286
+    },
+    {
+      "uuid": "4cf8b13c-032c-4086-b71d-ef12f8d90ef4",
+      "timestamp": "2026-09-26T02:12:04.170Z",
+      "durationMs": 42077
+    },
+    {
+      "uuid": "9d99821b-f2c4-4c5d-b71e-40a3bdb1eabf",
+      "timestamp": "2026-09-26T02:13:17.343Z",
+      "durationMs": 27109
+    },
+    {
+      "uuid": "82203585-9d27-4810-bfe8-9444ae4e1c47",
+      "timestamp": "2026-09-26T02:13:21.500Z",
+      "durationMs": 4146
+    },
+    {
+      "uuid": "f9bb7f70-4949-499d-888e-7d85d7f1196c",
+      "timestamp": "2026-09-26T02:14:14.947Z",
+      "durationMs": 37642
+    },
+    {
+      "uuid": "136a062a-c688-4582-8dca-45c594633a48",
+      "timestamp": "2026-09-26T02:14:19.523Z",
+      "durationMs": 4560
+    },
+    {
+      "uuid": "911c905e-c5c8-4d4e-903b-4dcb57da76f2",
+      "timestamp": "2026-09-26T02:16:51.379Z",
+      "durationMs": 142997
+    },
+    {
+      "uuid": "a792bea0-8040-4657-a33b-d95a8d58ab75",
+      "timestamp": "2026-09-26T02:16:57.902Z",
+      "durationMs": 6492
+    },
+    {
+      "uuid": "d2934383-a53a-4b2d-b106-1c173afa84aa",
+      "timestamp": "2026-09-26T02:17:22.392Z",
+      "durationMs": 6502
+    },
+    {
+      "uuid": "36a67aea-2856-4b17-b646-4dd8602828f0",
+      "timestamp": "2026-09-26T02:18:43.775Z",
+      "durationMs": 5565
+    },
+    {
+      "uuid": "ef1bc498-278d-4cd7-a6e3-b55d0730eb7e",
+      "timestamp": "2026-09-26T02:20:42.274Z",
+      "durationMs": 52086
+    },
+    {
+      "uuid": "c5c900da-8e5f-4d3a-9f76-1c363509be20",
+      "timestamp": "2026-09-26T02:22:16.359Z",
+      "durationMs": 29083
+    },
+    {
+      "uuid": "ac3e4120-941a-4004-9080-df0a4b8a981d",
+      "timestamp": "2026-09-26T02:30:45.072Z",
+      "durationMs": 181600
+    },
+    {
+      "uuid": "51e50168-ed89-4f0a-bc4a-bdeeb1edc351",
+      "timestamp": "2026-09-26T02:30:51.851Z",
+      "durationMs": 6765
+    },
+    {
+      "uuid": "6bc763b5-9b70-4712-9bca-3562f6c734bf",
+      "timestamp": "2026-09-26T02:32:12.428Z",
+      "durationMs": 37571
+    },
+    {
+      "uuid": "d327f7da-d8f5-4b5a-9a6b-65b10ed8a4a9",
+      "timestamp": "2026-09-26T02:33:08.806Z",
+      "durationMs": 4780
+    },
+    {
+      "uuid": "c6b836d6-a082-491c-a7fe-57094fa23c9d",
+      "timestamp": "2026-09-26T02:34:32.453Z",
+      "durationMs": 6325
+    },
+    {
+      "uuid": "eefa91df-298d-4f55-9727-d9c731039bd9",
+      "timestamp": "2026-09-26T02:35:11.259Z",
+      "durationMs": 5079
+    },
+    {
+      "uuid": "13b827ce-bcab-4893-880b-304d5bfaca53",
+      "timestamp": "2026-09-26T02:35:27.657Z",
+      "durationMs": 10469
+    },
+    {
+      "uuid": "cf169432-7317-41e4-abe2-a9dc6ecf87f9",
+      "timestamp": "2026-09-26T02:39:23.750Z",
+      "durationMs": 5077
+    },
+    {
+      "uuid": "8d0085e0-8f2b-4615-a48d-c035883d406a",
+      "timestamp": "2026-09-26T02:43:27.353Z",
+      "durationMs": 37353
+    },
+    {
+      "uuid": "10af6a50-2bd3-4e01-8b36-5a10a3305899",
+      "timestamp": "2026-09-26T02:44:46.757Z",
+      "durationMs": 75671
+    },
+    {
+      "uuid": "bc97c594-9df4-447c-afec-95053afa6584",
+      "timestamp": "2026-09-26T02:45:23.408Z",
+      "durationMs": 36638
+    },
+    {
+      "uuid": "2b7d5654-4b43-49cd-b070-80fd3d8028ff",
+      "timestamp": "2026-09-26T02:46:50.024Z",
+      "durationMs": 82765
+    },
+    {
+      "uuid": "89421673-d5d5-48e1-ab4f-66c7d93e94e5",
+      "timestamp": "2026-09-26T02:53:41.847Z",
+      "durationMs": 411810
+    },
+    {
+      "uuid": "569535a4-c991-48bb-806a-9838d76d68b0",
+      "timestamp": "2026-09-26T02:54:19.410Z",
+      "durationMs": 37548
+    },
+    {
+      "uuid": "f234d240-ce41-4832-ade2-f792f5664565",
+      "timestamp": "2026-09-26T02:55:12.392Z",
+      "durationMs": 36329
+    },
+    {
+      "uuid": "f1037c99-64f1-454e-8bdf-54cb4ecb5430",
+      "timestamp": "2026-09-26T02:55:22.596Z",
+      "durationMs": 10174
+    },
+    {
+      "uuid": "b8e3822c-8062-4df2-8c60-754cc67af5fd",
+      "timestamp": "2026-09-26T02:56:32.238Z",
+      "durationMs": 20993
+    },
+    {
+      "uuid": "af6cbf92-3c8a-4a6b-8353-5be2cb2ec0bf",
+      "timestamp": "2026-09-26T02:57:18.786Z",
+      "durationMs": 28489
+    },
+    {
+      "uuid": "bfaadea1-82ae-43fd-8d3d-60460ab6375f",
+      "timestamp": "2026-09-26T02:58:54.125Z",
+      "durationMs": 93784
+    },
+    {
+      "uuid": "7a79ece2-b9d1-4305-8041-af4ba950b23e",
+      "timestamp": "2026-09-26T02:59:26.163Z",
+      "durationMs": 32014
+    },
+    {
+      "uuid": "9bfad203-d479-482d-9279-21c1bdbb29a5",
+      "timestamp": "2026-09-26T03:08:23.897Z",
+      "durationMs": 519243
+    },
+    {
+      "uuid": "20b58784-4a95-4069-b141-241e3ebbf042",
+      "timestamp": "2026-09-26T03:08:57.756Z",
+      "durationMs": 33841
+    },
+    {
+      "uuid": "aeb3df51-fa95-414e-aa07-f934eecc5026",
+      "timestamp": "2026-09-26T03:09:03.400Z",
+      "durationMs": 5619
+    },
+    {
+      "uuid": "e022d36c-90b5-4e8e-b84f-016db54833f2",
+      "timestamp": "2026-09-26T03:10:24.799Z",
+      "durationMs": 26720
+    },
+    {
+      "uuid": "b03e724c-6f78-4cc1-bd10-c3e7511a521a",
+      "timestamp": "2026-09-26T03:10:32.282Z",
+      "durationMs": 7467
+    },
+    {
+      "uuid": "dc2a12e2-dad5-4100-b45f-4a654710c550",
+      "timestamp": "2026-09-26T03:11:35.574Z",
+      "durationMs": 17348
+    },
+    {
+      "uuid": "db177c1c-a11a-44e5-87dd-2b270ec08fd3",
+      "timestamp": "2026-09-26T03:11:42.068Z",
+      "durationMs": 6485
+    },
+    {
+      "uuid": "8db926ce-0253-40bb-8141-3c7bc1ed38dd",
+      "timestamp": "2026-09-26T03:11:57.941Z",
+      "durationMs": 659
+    },
+    {
+      "uuid": "83386d08-9f17-4431-aafb-5ad43780f351",
+      "timestamp": "2026-09-26T03:12:00.067Z",
+      "durationMs": 782
+    },
+    {
+      "uuid": "9e6f2f18-0846-4274-9760-d12d69c69b9c",
+      "timestamp": "2026-09-26T03:12:03.988Z",
+      "durationMs": 696
+    },
+    {
+      "uuid": "1c8abbb2-8782-4d28-b6f9-4fe991029b79",
+      "timestamp": "2026-09-26T03:12:10.109Z",
+      "durationMs": 1633
+    },
+    {
+      "uuid": "42d90251-276f-4ce9-ac11-61fc26db8b66",
+      "timestamp": "2026-09-26T03:13:02.239Z",
+      "durationMs": 870
+    },
+    {
+      "uuid": "01aa4326-cbbf-456a-b9b6-b87d32d20f3a",
+      "timestamp": "2026-09-26T03:13:34.607Z",
+      "durationMs": 1212
+    },
+    {
+      "uuid": "d2d2c41c-679b-45a0-9e03-d9f945394898",
+      "timestamp": "2026-09-26T03:14:12.846Z",
+      "durationMs": 1405
+    },
+    {
+      "uuid": "f9ce0ebc-d9d3-456f-8188-2850ac46fa08",
+      "timestamp": "2026-09-26T03:15:06.720Z",
+      "durationMs": 1211
+    },
+    {
+      "uuid": "5656d0ad-6308-49be-a779-3a82dddcca6d",
+      "timestamp": "2026-09-26T03:15:46.708Z",
+      "durationMs": 1150
+    },
+    {
+      "uuid": "1f45eab7-5eca-44c2-a185-7919596aa6f1",
+      "timestamp": "2026-09-26T03:15:51.536Z",
+      "durationMs": 973
+    },
+    {
+      "uuid": "2ea4e123-abc6-403c-abb2-464aff51b372",
+      "timestamp": "2026-09-26T03:16:29.439Z",
+      "durationMs": 784
+    },
+    {
+      "uuid": "65542b60-2595-47e5-9d5a-53210863efe4",
+      "timestamp": "2026-09-26T03:16:59.848Z",
+      "durationMs": 1999
+    },
+    {
+      "uuid": "0e5b0e9c-0b43-466a-85fe-5a663e0d8898",
+      "timestamp": "2026-09-26T03:18:21.700Z",
+      "durationMs": 922
+    },
+    {
+      "uuid": "3de07b48-0778-40c4-a1b6-0d70e5cc0773",
+      "timestamp": "2026-09-26T03:18:28.876Z",
+      "durationMs": 1092
+    },
+    {
+      "uuid": "8f7dfc48-6144-4923-ac76-18818fb5b3a1",
+      "timestamp": "2026-09-26T03:18:51.719Z",
+      "durationMs": 914
+    },
+    {
+      "uuid": "59b4a42b-8c6d-41bb-a6d4-51a862a64731",
+      "timestamp": "2026-09-26T03:19:59.841Z",
+      "durationMs": 951
+    },
+    {
+      "uuid": "5b1e9a25-2d3b-4d0a-ab73-768fe33e7e3f",
+      "timestamp": "2026-09-26T03:20:23.076Z",
+      "durationMs": 1164
+    },
+    {
+      "uuid": "40c0590a-6e21-40b3-ad98-948d739f72e0",
+      "timestamp": "2026-09-26T03:25:45.643Z",
+      "durationMs": 240657
+    },
+    {
+      "uuid": "66e58785-3a78-4711-9bdf-7a1e75184816",
+      "timestamp": "2026-09-26T03:27:01.941Z",
+      "durationMs": 76277
+    },
+    {
+      "uuid": "10020414-9df1-463d-be9d-4afd0fabec66",
+      "timestamp": "2026-09-26T03:29:34.452Z",
+      "durationMs": 152486
+    },
+    {
+      "uuid": "0b03b522-99c0-4659-929a-4b9c4afb7ab4",
+      "timestamp": "2026-09-26T03:34:33.479Z",
+      "durationMs": 299007
+    },
+    {
+      "uuid": "aea108e0-bd48-43db-8928-dcaa43e65927",
+      "timestamp": "2026-09-26T03:35:21.572Z",
+      "durationMs": 48070
+    },
+    {
+      "uuid": "22d77ae2-e866-4818-8be5-ed3a26229028",
+      "timestamp": "2026-09-26T03:38:35.181Z",
+      "durationMs": 193578
+    },
+    {
+      "uuid": "c018046f-7dca-4cde-83fe-923e1dbc9d4a",
+      "timestamp": "2026-09-26T03:39:08.847Z",
+      "durationMs": 33648
+    },
+    {
+      "uuid": "02ca54af-78f2-4e6e-8272-4e4368f4eb22",
+      "timestamp": "2026-09-26T03:39:15.480Z",
+      "durationMs": 6609
+    },
+    {
+      "uuid": "1d488484-0f11-4045-8270-cc6eed6d4def",
+      "timestamp": "2026-09-26T03:43:02.567Z",
+      "durationMs": 141328
+    },
+    {
+      "uuid": "31fd19f2-0487-42e0-b61a-a6052ffd9d4c",
+      "timestamp": "2026-09-26T03:45:06.995Z",
+      "durationMs": 124394
+    },
+    {
+      "uuid": "e9b05a17-f3c9-481f-a0f9-51ba9d8acca8",
+      "timestamp": "2026-09-26T03:47:16.239Z",
+      "durationMs": 129220
+    },
+    {
+      "uuid": "2ac2968d-604b-4b20-b82d-800f9d7a868d",
+      "timestamp": "2026-09-26T03:47:32.767Z",
+      "durationMs": 16499
+    },
+    {
+      "uuid": "6ffe8e40-cbca-4571-9966-a50f7a5fd0ba",
+      "timestamp": "2026-09-26T03:49:07.162Z",
+      "durationMs": 70195
+    },
+    {
+      "uuid": "8eb2a9b9-42a6-46af-9a7b-cdba5e18914d",
+      "timestamp": "2026-09-26T03:49:36.128Z",
+      "durationMs": 28938
+    },
+    {
+      "uuid": "0e744745-7df3-4dfb-ac49-0061164265ff",
+      "timestamp": "2026-09-26T03:50:37.817Z",
+      "durationMs": 6884
+    },
+    {
+      "uuid": "ac9bf98a-0f9e-42f3-b281-2efd2b59886f",
+      "timestamp": "2026-09-26T03:57:16.241Z",
+      "durationMs": 222948
+    },
+    {
+      "uuid": "bb8eb3ed-093e-43b1-b3ea-e315fd753d43",
+      "timestamp": "2026-09-26T03:58:55.475Z",
+      "durationMs": 78734
+    }
+  ],
+  "matchedSourceSeqs": [
+    129498,
+    129501,
+    129502,
+    129504,
+    129505,
+    129506,
+    129507,
+    129508,
+    129509,
+    129511,
+    129514,
+    129515,
+    129516,
+    129517,
+    129518,
+    129519,
+    129522,
+    129524,
+    129525,
+    129526,
+    129527,
+    129529,
+    129530,
+    129532,
+    129533,
+    129534,
+    129535,
+    129536,
+    129537,
+    129538,
+    129539,
+    129540,
+    129541,
+    129542,
+    129543,
+    129544,
+    129545,
+    129546,
+    129547,
+    129550,
+    129551,
+    129552,
+    129553,
+    129554,
+    129555,
+    129556,
+    129557,
+    129560,
+    129561,
+    129562,
+    129565,
+    129566,
+    129567,
+    129569,
+    129572,
+    129573,
+    129574,
+    129575,
+    129579,
+    129580,
+    129581,
+    129582,
+    129583,
+    129584,
+    129585,
+    129586,
+    129588,
+    129589,
+    129590,
+    129592,
+    129594,
+    129596,
+    129597,
+    129600,
+    129601,
+    129603,
+    129604,
+    129605,
+    129607,
+    129608,
+    129609,
+    129611,
+    129614,
+    129617,
+    129618,
+    129620,
+    129621,
+    129622,
+    129624,
+    129625,
+    129626,
+    129627,
+    129628,
+    129629,
+    129630,
+    129631,
+    129632,
+    129633,
+    129634,
+    129635,
+    129636,
+    129640,
+    129641,
+    129642,
+    129643,
+    129644,
+    129645,
+    129646,
+    129648,
+    129649,
+    129651,
+    129652,
+    129657,
+    129658,
+    129660,
+    129661,
+    129663,
+    129664,
+    129670,
+    129671,
+    129672,
+    129675,
+    129676,
+    129678,
+    129679,
+    129680,
+    129682,
+    129684,
+    129685,
+    129686,
+    129694,
+    129696,
+    129698,
+    129699,
+    129701,
+    129702,
+    129704,
+    129705,
+    129706,
+    129707,
+    129708,
+    129709,
+    129712,
+    129713,
+    129714,
+    129715,
+    129716,
+    129717,
+    129718,
+    129719
+  ],
+  "unmatchedSourceSeqs": [
+    129497,
+    129499,
+    129500,
+    129503,
+    129510,
+    129512,
+    129513,
+    129520,
+    129521,
+    129523,
+    129528,
+    129531,
+    129548,
+    129549,
+    129558,
+    129559,
+    129563,
+    129564,
+    129568,
+    129570,
+    129571,
+    129576,
+    129577,
+    129578,
+    129587,
+    129591,
+    129593,
+    129595,
+    129598,
+    129599,
+    129602,
+    129606,
+    129610,
+    129612,
+    129613,
+    129615,
+    129616,
+    129619,
+    129623,
+    129637,
+    129638,
+    129639,
+    129647,
+    129650,
+    129653,
+    129654,
+    129655,
+    129656,
+    129659,
+    129662,
+    129665,
+    129666,
+    129667,
+    129668,
+    129669,
+    129673,
+    129674,
+    129677,
+    129681,
+    129683,
+    129687,
+    129688,
+    129689,
+    129690,
+    129691,
+    129692,
+    129693,
+    129695,
+    129697,
+    129700,
+    129703,
+    129710,
+    129711,
+    129720,
+    129721,
+    129722,
+    129723,
+    129724,
+    129725,
+    129726,
+    129727,
+    129728,
+    129729,
+    129730,
+    129731,
+    129732,
+    129733,
+    129734,
+    129735,
+    129736,
+    129737,
+    129738,
+    129739,
+    129740,
+    129741,
+    129742,
+    129743,
+    129744,
+    129745,
+    129746,
+    129747,
+    129748,
+    129749,
+    129750,
+    129751,
+    129752,
+    129753
+  ],
+  "limitations": [
+    "Assistant API requests are not independent Lead wakeups.",
+    "A known event may be embedded into an already running turn or queued alongside unrelated work.",
+    "No prior idle state or per-source first-action latency inferred.",
+    "This historical baseline does not prove revised ON/OFF model consumption."
+  ]
+}

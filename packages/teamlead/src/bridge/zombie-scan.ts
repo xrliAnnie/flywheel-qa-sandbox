@@ -46,6 +46,8 @@ export interface ZombieScanInputs {
 	nowMs: number;
 	/** Heartbeat staleness floor for shape ③ (default 24h). */
 	staleTargetMs?: number;
+	/** FLY-2900: parked in Codex quota standby — never a zombie finding. */
+	isQuotaStandby?: (executionId: string) => boolean;
 }
 
 const TERMINAL_STATUSES = new Set([
@@ -71,6 +73,7 @@ export async function scanZombies(
 	const staleMs = inputs.staleTargetMs ?? 24 * 60 * 60 * 1000;
 	const out: ZombieFinding[] = [];
 	for (const row of inputs.commRunning) {
+		if (inputs.isQuotaStandby?.(row.execution_id) === true) continue;
 		const session = inputs.storeSession(row.execution_id);
 		if (!session) {
 			out.push({

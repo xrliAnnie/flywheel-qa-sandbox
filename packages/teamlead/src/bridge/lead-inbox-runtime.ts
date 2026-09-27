@@ -45,6 +45,7 @@ import {
 	ALERT_DUTY_LEAD_ID,
 	classifyInfraLetter,
 } from "./infra-event-router.js";
+import { buildLeadAuditSummaryOffer } from "./lead-audit-summary.js";
 import {
 	ClaudeLeadDeliveryAdapter,
 	CodexLeadDeliveryAdapter,
@@ -376,6 +377,15 @@ export class LeadInboxRuntime {
 						leadId: lead.agentId,
 						ownerEpoch: this.ownerEpoch,
 						adapter,
+						prepareAuditSummary: (input) =>
+							buildLeadAuditSummaryOffer({
+								store: opts.store,
+								queue,
+								projectName: project.projectName,
+								leadId: lead.agentId,
+								ownerEpoch: this.ownerEpoch,
+								...input,
+							}),
 						// FLY-2883: controlled interrupt letters. Codex steers through the
 						// sidecar (ordinary input when it lacks the capability); the Claude
 						// pane nudge plugs in here with the FLY-2882 pane reader, until

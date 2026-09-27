@@ -66,6 +66,13 @@ export interface CodexAccountReading {
 	/** Field-level provenance; optional only for version-1 legacy stores. */
 	resetCreditsObservedAt?: string | null;
 	unclassifiedWindows: number;
+	/**
+	 * FLY-2900: the shared quota causal number allocated before this reading's
+	 * request was sent. Only a freshly read entry carries a new number; a
+	 * carried entry keeps its old one. Absent on legacy readings, which can
+	 * never serve as recovery evidence.
+	 */
+	requestSeq?: number;
 }
 
 export interface CodexAccountQuotaStore {
@@ -251,7 +258,10 @@ function validReading(value: unknown): value is CodexAccountReading {
 			value.resetCreditsObservedAt === null ||
 			instant(value.resetCreditsObservedAt)) &&
 		Number.isInteger(value.unclassifiedWindows) &&
-		(value.unclassifiedWindows as number) >= 0
+		(value.unclassifiedWindows as number) >= 0 &&
+		(value.requestSeq === undefined ||
+			(Number.isSafeInteger(value.requestSeq) &&
+				(value.requestSeq as number) > 0))
 	);
 }
 

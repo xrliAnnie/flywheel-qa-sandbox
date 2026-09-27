@@ -1,0 +1,2668 @@
+{
+  "changedTypeScript": [
+    "packages/teamlead/src/__tests__/fly2912-evening-replay.test.ts"
+  ],
+  "discovery": "git grep -lF per full path, basename and parent directory",
+  "matches": [
+    {
+      "path": "doc/engineer/exploration/archive/FLY-163-remove-forum-channel-concept.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/exploration/archive/FLY-27-triage-deep-optimization.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/exploration/archive/GEO-169-completed-post-auto-cleanup.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/exploration/archive/GEO-204-fix-mem0-entity-mapping.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/exploration/archive/GEO-262-lead-tmux-visibility.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/exploration/archive/GEO-276-pm-auto-triage.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/exploration/new/FLY-159-gate-timeout-rethink.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/exploration/new/FLY-161-runner-ask-bridge-event.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/exploration/new/FLY-21-simba-triage-perf.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v0.4-step1-teamlead-agent.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v0.4-step2-teamlead-brain.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v0.5-step1-openclaw-bridge.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.0-GEO-155-disable-auto-approve.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.11.0-GEO-259-lead-data-isolation.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.11.0-GEO-262-lead-tmux-visibility.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.13.0-GEO-267-lead-auto-start-runner.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.14.0-GEO-270-stale-session-patrol.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.15.0-GEO-275-pm-lead-simba-core-channel.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.16.0-GEO-276-pm-auto-triage.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.17.0-GEO-200-forum-thread-link-fix.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.17.0-GEO-280-sprint-closing.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.17.0-GEO-288-daily-standup.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.17.0-GEO-294-triage-html-report.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.17.0-GEO-298-linear-team-reorg.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.18.0-FLY-27-triage-html-template.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.18.0-GEO-203-claude-lead-mem0-memory.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.2.0-GEO-149-cipher-decision-memory.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.2.0-GEO-158-jido-directive-fsm.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.22.0-FLY-92-runner-idle-watchdog.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.23.0-FLY-102-lead-driven-runner-lifecycle.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.23.0-FLY-108-session-status-flip.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.23.0-FLY-109-lead-resume-inbox.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.24.2-FLY-115-test-env-gaps.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.25.0-FLY-60-hard-gate-e2e.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.25.0-FLY-77-remove-discord-control-channel.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.27.0-FLY-152-lead-reply-discipline.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.27.2-FLY-137-runner-agent-dispatch.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.28.0-FLY-159-gate-timeout-48h.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.28.0-FLY-162-lead-thread-routing.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.28.0-FLY-163-remove-forum-concept.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.28.0-GEO-151-proofshot-integration.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.29.0-FLY-173-routing-guard-core-exempt.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.29.x-FLY-175-founder-consent-hard-gate.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.3.0-GEO-149-cipher-decision-memory.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.3.0-GEO-167-runtime-forum-tag-update.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.3.0-GEO-168-retry-api-requeue.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.3.0-GEO-169-completed-post-auto-cleanup.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.3.0-GEO-204-fix-mem0-entity-mapping.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.4.0-GEO-152-multi-lead-routing.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.5.0-GEO-198-fix-mem0-memory-layer.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/archive/v1.7.0-GEO-203-claude-lead-mem0-memory.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/backlog/v0.6-step2-dashboard.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/backlog/v1.27.1-FLY-137-runner-agent-dispatch.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/inprogress/v1.22.0-FLY-44-lead-force-close.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/inprogress/v1.23.0-FLY-95-runner-worktree-isolation.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/inprogress/v1.28.1-FLY-161-runner-question-event.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/inprogress/v1.31.0-FLY-182-queue-delivery.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/inprogress/v1.49.0-FLY-307-gatepoller-wedge-fix.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/inprogress/v1.52.0-FLY-371-projectname-linear-mapping.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/inprogress/v1.56.0-FLY-516-bridge-restart-port-hardening.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/inprogress/v1.63.0-FLY-720-crash-runner-liveness-reaper.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/new/v1.23.0-FLY-83-lead-daemon-stuck.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/new/v1.48.0-FLY-282-roundtable-allowbots-selfheal.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/new/v1.51.0-FLY-360-lead-1m-context-tier.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/plan/new/v1.58.0-FLY-663-statestore-better-sqlite3-migration.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/research/archive/GEO-152-multi-lead-routing.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/research/archive/GEO-267-lead-auto-start-runner.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/engineer/research/archive/GEO-292-lead-orchestration-patterns.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/qa/reports/v1.24.0-FLY-108-round2-qa-report.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "doc/qa/reports/v1.27.0-FLY-127-r3-replay-test.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1070-qa-respawn-verify/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1081-restart-notify-infra-bot/exploration.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1081-restart-notify-infra-bot/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1117-forensics-0709-failure-chain/evidence/transcripts/step3-suspect-matrix-static-batch2.txt",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "historical text evidence names the directory; no executable dependency"
+    },
+    {
+      "path": "engineering/doc/FLY-1165-done-thread-archive-reconcile/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1182-quota-switch-ignition/evidence/rev2-isolated-qa.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1182-quota-switch-ignition/qa-report-phase3.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1182-quota-switch-ignition/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1201-account-switch-stale-active/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1225-thread-badge-false-done/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1232-pr1-claims-substrate/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1234-watchdog-stuck-false-positives/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1238-founder-message-gate-guard/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1242-delete-lead-pane-readiness/exploration.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1244-enforcement-claims-templates/exploration.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1244-enforcement-claims-templates/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1255-vendor-neutral-model-display/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1257-codex-runtime-retry-defects/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1259-design-backend-override/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1259-design-backend-override/qa-report.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1259-design-backend-override/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1262-unified-management-dashboard/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1262-unified-management-dashboard/qa-report.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1264-reconnect-title-restore/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1269-codex-phase-keepalive/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1282-zombie-session-liveness/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1309-lead-identity-mutex/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1319-founder-local-timezone/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1338-ci-tiered-parallel/exploration.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1338-ci-tiered-parallel/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1344-flag-console-cold-switches/qa-report.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1364-cmux-dead-tab-cleanup/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1366-quota-probe-panorama-fix/qa-report.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1385-dag-dead-exec-wedge/qa-report.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1389-qa-room-repair-batch/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1402-rules-bundle-concat/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1417-dead-exec-clock-flake/exploration.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1417-dead-exec-clock-flake/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1423-qa-kickback-deadlock/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1423-qa-retry-ghost-admit/codex-rescue-design-feedback-flywheel-FLY-1423-plan-round1.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1423-qa-retry-ghost-admit/codex-rescue-design-feedback-flywheel-FLY-1423-plan-round2.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1466-strip-three-flags/exploration.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1466-strip-three-flags/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1505-ship-poll-window/qa-report.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1586-inbox-loop-poison-isolation/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1608-lead-cwd-marker-drain/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1608-lead-cwd-marker-drain/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1648-hot-loop-closeout/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1674-three-stage-removal-opus46/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1715-runner-no-discord-plugin/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1772-rework-new-card-loop/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1810-doc-flow-rollout/audit.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1811-resolver-state-recheck/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1855-patrol-rules-executable/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1863-post-ship-flaky-tests/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1863-post-ship-flaky-tests/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1870-script-tests-timeout-cliff/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1883-fetch-stub-hygiene/design.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1905-ci-apt-hang-fix/claude-design-feedback-FLY-1905-round1.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1905-ci-apt-hang-fix/codex-design-feedback-round1.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1905-ci-apt-hang-fix/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1912-rework-chain-fresh-dispatch/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1925-patrol-tick-loop-dimension/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1927-duplicate-issue-threads/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1929-kernel-panic-voucher-leak/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1942-comm-defense-trio/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1945-patrol-evidence-gate/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1945-patrol-evidence-gate/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1987-actions-cost-audit/data/raw/prfiles.tsv",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "historical text evidence names the directory; no executable dependency"
+    },
+    {
+      "path": "engineering/doc/FLY-1998-database-retention-sweep/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-1999-runner-env-isolation/qa-report.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2006-30-day-retention-sweep/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2008-founder-reply-deliver-stall/design-review-codex-round2.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2008-founder-reply-deliver-stall/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2017-runner-stop-edge/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2027-generalized-land-closeout/qa-report-attempt-2.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2027-generalized-land-closeout/qa-report.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2045-milestone-table-conflict/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2051-quota-switch-routing/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2054-dashboard-visual-alignment/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2075-alert-hub-starvation/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2076-claw-duty-seat/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2080-patrol-action-ledger/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2080-patrol-action-ledger/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2094-unbounded-qa-loop/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2094-unbounded-qa-loop/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2096-rework-stall-hold/exploration.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2096-rework-stall-hold/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2100-flag-scope-per-project/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2101-flag-batch1-hardcode/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2102-flag-b2-startup-freeze/progress.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2104-weekly-flag-scan/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2111-pane-sha-safeguard/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2112-sessionless-founder-gate-closeout/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2139-periodic-cleanup-index-audit/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2140-epic-page-content-model/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2142-dependency-ledger/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2142-dependency-ledger/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2144-dispatch-capacity-inputs/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2144-dispatch-capacity-inputs/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2148-runner-memory-landing/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2148-runner-memory-landing/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2152-verdict-delivery-patrol/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2165-mailbox-torn-identity/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2166-pre-cutover-audit-fix/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2166-pre-cutover-audit-fix/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2182-replacement-commdb-path/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2228-review-head-self-heal/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2240-atomic-account-switch/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2245-ci-hygiene-sharding/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2248-generic-delivery-contract/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2264-arm64-tmux-gate/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2265-manual-switch-diagnostics/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2268-worker-resident-receiver/codex-review/round1.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2268-worker-resident-receiver/codex-review/round2.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2268-worker-resident-receiver/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2268-worker-resident-receiver/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2270-qa-slot-bench-gaps/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2271-daemon-switch-evidence/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2276-inline-script-csp/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2283-report-retention-14d/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2283-report-retention-14d/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2288-identifier-filter-guard/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2288-identifier-filter-guard/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2293-linear-start-state/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2298-founder-review-dwell/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2302-dead-body-commdb-residue/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2302-dead-body-commdb-residue/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2307-launch-episode-closeout/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2313-pending-closeout-finalization/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2324-delivery-alert-storm/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2331-bridge-async-subprocess/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2332-replay-credential-rotation/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2337-dead-mail-terminalization/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2339-bounded-delivery-watch/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2341-db-retention-hygiene/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2349-shutdown-poison-view/exploration.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2351-snapshot-disk-guard/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2352-codex-reown-capability-drift/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2352-codex-reown-capability-drift/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2364-console-polish-backport/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2366-shape-model-allowlist/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2368-flag-copy-humanization/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2377-ship-immediate-archive/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2385-raya-shuttle-deploy/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2390-criteria-c-aggregator/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2393-project-beta-cadence/review-r1.json",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2395-docs-only-all-repos/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2396-founder-gate-head-origin/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2396-founder-gate-head-origin/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2398-auto-merge-shadow-run/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2399-auto-approve-learning/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2403-astra-fable-split/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2408-ship-gate-title-marker/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2413-retention-registry-fragments/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2413-retention-registry-fragments/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2430-lead-rework-attribution/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2446-generic-voice-process/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2452-dead-account-switch/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2453-auto-merge-narrow-gate/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2454-test-slot-isolation/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2454-test-slot-isolation/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2455-slot-lead-bootstrap/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2461-chinese-founder-approval/plan-r2.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2461-chinese-founder-approval/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2465-codex-fleet-rotation/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2478-resident-grace-qa-bound/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2485-lead-judgment-cell/evidence/rework-lint.txt",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "historical text evidence names the directory; no executable dependency"
+    },
+    {
+      "path": "engineering/doc/FLY-2485-lead-judgment-cell/implementation.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2485-lead-judgment-cell/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2490-closeout-never-launched-node/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2490-closeout-never-launched-node/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2498-design-holder-commdb-residue/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2504-rework-replacement-receipt/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2504-rework-replacement-receipt/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2505-recovery-owner-diagnostics/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2508-updater-beta-alignment/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2519-codex-lead-parity/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2519-codex-lead-parity/review-code-r3.json",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2533-snapshot-phase-protocol/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2542-direct-event-flake/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2548-sleep-attribution-race/exploration.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2548-sleep-attribution-race/verification.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2560-trial-judgment-evidence/replay-evidence.json",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2563-bridge-loop-fd/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2563-bridge-loop-fd/review-r1.json",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2567-lead-token-savings/capture-legacy-bundle.py",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "fixture/export utility references other files in the directory; no import or invocation of the modified replay test"
+    },
+    {
+      "path": "engineering/doc/FLY-2567-lead-token-savings/code-review-receipt.json",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2567-lead-token-savings/evidence/code-review-final.json",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2567-lead-token-savings/evidence/rework-design-review-r2.json",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2597-thread-title-needs-you/capture-rule-evolution.py",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "fixture/export utility references other files in the directory; no import or invocation of the modified replay test"
+    },
+    {
+      "path": "engineering/doc/FLY-2597-thread-title-needs-you/gemini-review-round1.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2597-thread-title-needs-you/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2612-linear-reparent/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2616-proven-closeout/evidence/review-r1.json",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2655-voice-receive-recovery/realtime-design-review-r2.json",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2661-manual-history-render/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2663-observation-clock-flake/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2669-shuttle-failure-visibility/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2676-readiness-manual-fallback/design-review-r2.json",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2680-raya-merge-plan/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2680-raya-merge-plan/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2681-ci-on-demand-matrix/data/paths-0916.json",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2681-ci-on-demand-matrix/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2693-voice-failure-alerts/review-r1.json",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2693-voice-failure-alerts/review-r5.json",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2693-voice-failure-alerts/review-r6.json",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2751-epic-page-blob-budget/design-correction.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2751-epic-page-blob-budget/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2752-patrol-queue-evidence/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2752-patrol-queue-evidence/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2753-targeted-local-tests/implementation.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2755-script-tests-rebalance/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2789-workflow-scorecard/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2860-legacy-voice-removal/impl-notes.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2860-legacy-voice-removal/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2860-legacy-voice-removal/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2860-legacy-voice-removal/residue-allowlist.txt",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "historical text evidence names the directory; no executable dependency"
+    },
+    {
+      "path": "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/consumer-audit.json",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__/fly2912-evening-replay.test.ts",
+        "fly2912-evening-replay.test.ts",
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/extract-carrier-observation.py",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "fixture/export utility references other files in the directory; no import or invocation of the modified replay test"
+    },
+    {
+      "path": "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-approved.json",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/review-round1.json",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/teamlead-related.config.mjs",
+      "matchedTerms": [
+        "fly2912-evening-replay.test.ts"
+      ],
+      "decision": "excluded",
+      "reason": "existing bounded test-selection config includes this test; rerun the changed test via vitest related, other selected modules are unchanged"
+    },
+    {
+      "path": "engineering/doc/FLY-2912-quiet-notification-expansion/plan.md",
+      "matchedTerms": [
+        "fly2912-evening-replay.test.ts",
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-546-headphone-mode/qa-report.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-728-per-issue-model/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-728-per-issue-model/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-754-viewer-session-leak/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-754-viewer-session-leak/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-755-model-code-front/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-812-chrome-default-on/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-812-chrome-default-on/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-817-runner-cmux-cleanup-gap/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-817-runner-cmux-cleanup-gap/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-825-cmux-dual-attach-restart/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-846-auto-qa-spawn-guards/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-865-account-switch-identity/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-865-account-switch-identity/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-889-ci-job-timeout-mitigation/qa-report.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-900-remove-founder-ux-gate/qa-report.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-913-restart-guard-hook/qa-report.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-921-three-stage-turn-belt/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-927-alert-ticket-queue/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/FLY-944-shared-channel-mention-gating/plan.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "engineering/doc/milestones/FLY-2799.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "packages/claude-runner/test/fixtures/kill-path-inventory.json",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "packages/config/src/__tests__/flag-truth.test.ts",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "directory-only match; inspected references name other tests, not an importer of this test module"
+    },
+    {
+      "path": "packages/qa-framework/suites/fly-102-lead-driven-runner-lifecycle.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "packages/teamlead/lead-rules-base/README.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fixtures/fly2567/compatibility.json",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fixtures/fly2912-evening/README.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fixtures/loop-guard/attribution-probe.mts",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "directory-only match; inspected references name other tests, not an importer of this test module"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fly247-bash-suites.test.ts",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "directory-only match; inspected references name other tests, not an importer of this test module"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fly2912-evening-replay.test.ts",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "retained",
+      "reason": "changed replay test retained"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fly574-bash-suites.test.ts",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "directory-only match; inspected references name other tests, not an importer of this test module"
+    },
+    {
+      "path": "product/doc/FLY-1866-actions-cost-investigation/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "product/doc/FLY-2779-model-selection/research.md",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "documentation reference only; no executable dependency on the replay harness"
+    },
+    {
+      "path": "scripts/__tests__/ci-structure.test.sh",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "directory-only match; inspected references name other tests, not an importer of this test module"
+    },
+    {
+      "path": "scripts/__tests__/fly1674-residue.test.sh",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "directory-only match; inspected references name other tests, not an importer of this test module"
+    },
+    {
+      "path": "scripts/__tests__/fly2102-flag-freeze.test.sh",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "directory-only match; inspected references name other tests, not an importer of this test module"
+    },
+    {
+      "path": "scripts/__tests__/v2-retirement-cleanup.test.sh",
+      "matchedTerms": [
+        "packages/teamlead/src/__tests__"
+      ],
+      "decision": "excluded",
+      "reason": "directory-only match; inspected references name other tests, not an importer of this test module"
+    }
+  ],
+  "retainedTests": [
+    "packages/teamlead/src/__tests__/fly2912-evening-replay.test.ts",
+    "packages/teamlead/src/__tests__/fly2139-query-plans.test.ts"
+  ],
+  "extraQaFailureChecks": [
+    "packages/teamlead/src/__tests__/fly-1998-database-retention-sweep.test.ts (two named cases only)",
+    "scripts/__tests__/qa-fly-1986-load-probe.test.sh"
+  ],
+  "noApiOrExportChanges": true
+}

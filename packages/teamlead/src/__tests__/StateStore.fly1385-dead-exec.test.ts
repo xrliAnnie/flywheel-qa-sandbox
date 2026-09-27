@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { canonicalSubmissionDigest } from "flywheel-config";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { RuntimeRegistry } from "../bridge/runtime-registry.js";
+import { enqueueWorkflowReplacementLeadEvent } from "../bridge/workflow-replacement-lead-event.js";
 import { StateStore } from "../StateStore.js";
 import {
 	legacyWorkflowSeeds,
@@ -1630,5 +1632,149 @@ describe("FLY-1385 dead workflow execution recovery", () => {
 				.filter((event) => event.kind === "workflow_node_session_divergence"),
 		).toHaveLength(1);
 		store.close();
+	});
+});
+
+describe("FLY-2912 replacement notice policy", () => {
+	async function notice(
+		options: {
+			enabled?: boolean;
+			flagName?: string;
+			acceptedFault?: boolean;
+			failureKind?:
+				| "goal_blocked"
+				| "goal_usage_limited"
+				| "worktree_takeover_failed"
+				| "reown_exhausted";
+		} = {},
+	) {
+		const store = await engineRunWithImplement("running");
+		store.applyScopedFlagValueChange({
+			name: options.flagName ?? "lead_token_savings",
+			scope: "flywheel",
+			op: "set",
+			rawTo: options.enabled === false ? "0" : "1",
+			expectedChangeSeq: store.getFlagValueChangeSeq(
+				options.flagName ?? "lead_token_savings",
+				"flywheel",
+			),
+			actor: "fixture",
+			reason: "replacement notice test",
+		});
+		const sourceEventId = "independent-terminal-signal";
+		if (options.acceptedFault) {
+			const seq = store.appendLeadEvent(
+				"flywheel-eng-lead",
+				sourceEventId,
+				"session_failed",
+				JSON.stringify({
+					execution_id: "implement-dead",
+					project_name: "flywheel",
+					issue_id: "FLY-1335",
+					failure_kind: options.failureKind ?? null,
+				}),
+			);
+			store.markLeadEventDelivered(seq);
+		}
+		const latest = store.listWorkflowSideEffects("run-1").at(-1)!;
+		const createdAt = latest.created_at.includes("T")
+			? latest.created_at
+			: `${latest.created_at.replace(" ", "T")}Z`;
+		const result = store.recordEnrolledTerminalSignal({
+			executionId: "implement-dead",
+			sourceEventId,
+			signal: "failed",
+			failureKind: options.failureKind,
+			source: "direct-event-sink",
+			now: new Date(Date.parse(createdAt) + 100).toISOString(),
+			leadIntent: {
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved",
+			},
+		});
+		expect(result).toMatchObject({
+			ok: true,
+			leadEventSeq: expect.any(Number),
+		});
+		const row =
+			result.ok && result.leadEventSeq !== undefined
+				? store.getLeadEventBySeq(result.leadEventSeq)!
+				: undefined;
+		return { store, row };
+	}
+	it("audits a future check whose exact underlying fault already reached the independent path", async () => {
+		const { store, row } = await notice({ acceptedFault: true });
+		try {
+			expect(row).toMatchObject({
+				delivery_disposition: "audit_only",
+				notification_policy_version: "notification-v2",
+				notification_reason: "replacement_future_notice",
+			});
+			expect(row?.delivered_at).toBeUndefined();
+			const enqueueLeadEvent = vi.fn(() => {
+				throw new Error("audit enqueue forbidden");
+			});
+			expect(
+				enqueueWorkflowReplacementLeadEvent({
+					store,
+					seq: row!.seq,
+					registry: { enqueueLeadEvent } as unknown as RuntimeRegistry,
+				}),
+			).toBeUndefined();
+			expect(enqueueLeadEvent).not.toHaveBeenCalled();
+		} finally {
+			store.close();
+		}
+	});
+	it("category OFF keeps the proven future notice immediate", async () => {
+		const { store, row } = await notice({
+			acceptedFault: true,
+			enabled: false,
+			flagName: "lead_replacement_notice_audit",
+		});
+		try {
+			expect(row).toMatchObject({
+				delivery_disposition: "model",
+				notification_reason: "lead_replacement_notice_audit_disabled",
+			});
+		} finally {
+			store.close();
+		}
+	});
+	it("keeps an otherwise unreported unknown fault immediate", async () => {
+		const { store, row } = await notice();
+		try {
+			expect(row?.delivery_disposition).toBe("model");
+		} finally {
+			store.close();
+		}
+	});
+	it.each([
+		"goal_blocked",
+		"goal_usage_limited",
+		"worktree_takeover_failed",
+		"reown_exhausted",
+	] as const)(
+		"keeps %s immediate even with another accepted notification",
+		async (failureKind) => {
+			const { store, row } = await notice({ acceptedFault: true, failureKind });
+			try {
+				expect(row?.delivery_disposition).toBe("model");
+			} finally {
+				store.close();
+			}
+		},
+	);
+	it("restores OFF future check delivery", async () => {
+		const { store, row } = await notice({
+			acceptedFault: true,
+			enabled: false,
+		});
+		try {
+			expect(row?.delivery_disposition).toBe("model");
+		} finally {
+			store.close();
+		}
 	});
 });

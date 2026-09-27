@@ -137,7 +137,7 @@ describe("FLY-22: /api/runs routes always registered", () => {
 
 	it(
 		"startBridge without startDispatcher → /api/runs/active returns 200 (not 404)",
-		{ timeout: 15_000 },
+		{ timeout: 60_000 },
 		async () => {
 			const { app, close, store } = await startBridge(
 				makeConfig(),

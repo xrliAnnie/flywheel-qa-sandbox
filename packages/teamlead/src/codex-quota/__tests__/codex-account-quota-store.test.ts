@@ -229,3 +229,35 @@ describe("FLY-2830 — occupancy reason detail", () => {
 		},
 	);
 });
+
+describe("FLY-2900 — reading request sequence", () => {
+	it("round-trips an optional requestSeq and still accepts readings without one", () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly2900-store-"));
+		const path = join(dir, "codex-accounts.json");
+		const value = store();
+		value.accounts[0] = { ...value.accounts[0]!, requestSeq: 42 };
+		writeCodexAccountQuotaStore(path, value);
+		const read = readCodexAccountQuotaStore(path);
+		expect(read?.accounts[0]?.requestSeq).toBe(42);
+		expect(read?.accounts[1]?.requestSeq).toBeUndefined();
+	});
+
+	it.each([
+		["zero", 0],
+		["negative", -3],
+		["fractional", 1.5],
+		["a string", "7"],
+		["unsafe", Number.MAX_SAFE_INTEGER + 1],
+	])("rejects a requestSeq that is %s", (_n, requestSeq) => {
+		const dir = mkdtempSync(join(tmpdir(), "fly2900-store-"));
+		const path = join(dir, "codex-accounts.json");
+		const value = store();
+		value.accounts[0] = {
+			...value.accounts[0]!,
+			requestSeq: requestSeq as number,
+		};
+		expect(() => writeCodexAccountQuotaStore(path, value)).toThrow();
+		writeFileSync(path, JSON.stringify(value));
+		expect(readCodexAccountQuotaStore(path)).toBeNull();
+	});
+});

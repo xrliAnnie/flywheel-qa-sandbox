@@ -1350,7 +1350,7 @@ describe("IssueDisplayRefresher — lifecycle matrix (plan Step 5)", () => {
 		const { refresher, log } = makeRefresher(store);
 		await refresher.refresh(ISSUE);
 
-		expect(log.titleMarkers[0]).toBe("G");
+		expect(log.titleMarkers[0]).toBe("[O][S]");
 	});
 
 	it("pending implement without a recorded model gets no guessed marker", async () => {
