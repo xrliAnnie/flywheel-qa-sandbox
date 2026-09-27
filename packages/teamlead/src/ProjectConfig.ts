@@ -11,7 +11,13 @@ import {
 import { SAFE_IDENTIFIER_RE } from "flywheel-core";
 import type { LeadBackendId } from "./lead-backends/lead-backend.js";
 import { isLeadEffort, type LeadEffort } from "./lead-effort.js";
-import { isRealtimeV2Voice, type RealtimeV2Voice } from "./realtime-voices.js";
+import {
+	isLiveV3Voice,
+	isRealtimeV2Voice,
+	LIVE_V3_VOICES,
+	type LiveV3Voice,
+	type RealtimeV2Voice,
+} from "./realtime-voices.js";
 
 export type LeadCarrier = "v2";
 
@@ -233,6 +239,11 @@ export interface LeadConfig {
 	voiceModes?: { meeting?: boolean; rg?: boolean };
 	/** Codex Realtime v2 voice. Consumers default an absent value to marin. */
 	realtimeVoice?: RealtimeV2Voice;
+	/**
+	 * FLY-2885: engine B's voice (Codex realtime v3, gpt-live-1-codex). Engine B
+	 * defaults an absent value to cove; it never falls back to realtimeVoice.
+	 */
+	liveVoice?: LiveV3Voice;
 	/**
 	 * FLY-671: per-Lead reasoning-effort override (`low|medium|high|xhigh|max`).
 	 * Mirrors `model`: Claude consumes it as `claude-lead.sh --effort`; Codex maps
@@ -705,6 +716,11 @@ export function parseAndValidateProjects(
 			) {
 				throw new Error(
 					`Project "${entry.projectName}" leads[${i}].realtimeVoice: must be a Realtime v2 voice`,
+				);
+			}
+			if (lead.liveVoice !== undefined && !isLiveV3Voice(lead.liveVoice)) {
+				throw new Error(
+					`Project "${entry.projectName}" leads[${i}].liveVoice: must be one of ${LIVE_V3_VOICES.join(", ")}`,
 				);
 			}
 

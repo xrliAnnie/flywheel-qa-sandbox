@@ -4,6 +4,7 @@ import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import type express from "express";
 import type { ProjectEntry } from "../ProjectConfig.js";
+import { DEFAULT_LIVE_V3_VOICE } from "../realtime-voices.js";
 import type { StateStore, VoiceSessionRow } from "../StateStore.js";
 import { loadVoiceHostConfig } from "../voice-host-config.js";
 import { generateBootstrap } from "./bootstrap-generator.js";
@@ -254,6 +255,8 @@ export function createVoiceSessionServices(input: {
 			leadId: session.leadId,
 			displayName: lead.agentId,
 			realtimeVoice: lead.realtimeVoice ?? "marin",
+			// FLY-2885: engine B only; never derived from realtimeVoice.
+			liveVoice: lead.liveVoice ?? DEFAULT_LIVE_V3_VOICE,
 			guildId: session.guildId,
 			voiceBotUserId: session.voiceBotUserId,
 			voiceChannelId: session.voiceChannelId,

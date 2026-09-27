@@ -1,0 +1,21 @@
+{"t":17.6,"kind":"items_shape","data":{"role":"developer","layout":"sized","count":3,"itemBytes":[9493,9430,9430],"totalBytes":28353,"codexEstimatedTokens":7089}}
+{"t":251.8,"kind":"response","data":{"method":"initialize","error":null}}
+{"t":592.8,"kind":"response","data":{"method":"account/read","error":null}}
+{"t":593,"kind":"account","data":{"type":"chatgpt"}}
+{"t":1964.1,"kind":"response","data":{"method":"thread/start","error":null}}
+{"t":2129.2,"kind":"response","data":{"method":"thread/realtime/start","error":null}}
+{"t":2129.4,"kind":"start_response","data":{"error":null}}
+{"t":2670.5,"kind":"started","data":{"version":"v3"}}
+{"t":2672.3,"kind":"pc_state","data":{"s":"connecting"}}
+{"t":3283.8,"kind":"pc_state","data":{"s":"connected"}}
+{"t":3381.6,"kind":"dc_event","data":{"type":"session.started"}}
+{"t":6322.9,"kind":"watch_window_done","data":{"errors":0,"closed":0}}
+{"t":6327,"kind":"question_sent","data":{"ms":2340}}
+{"t":10347.9,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"user","transcript":"你好,请问暗号 是什么?"}}}
+{"t":10368.3,"kind":"transcript_done","data":{"role":"user","text":"你好,请问暗号 是什么?"}}
+{"t":12622.8,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"assistant","transcript":"暗号是蓝色风铃。"}}}
+{"t":12626.9,"kind":"transcript_done","data":{"role":"assistant","text":"暗号是蓝色风铃。"}}
+{"t":13136,"kind":"response","data":{"method":"thread/realtime/stop","error":null}}
+{"t":13136.6,"kind":"pc_state","data":{"s":"closed"}}
+{"t":13137.2,"kind":"realtime_closed","data":{"reason":"requested"}}
+{"t":13194.4,"kind":"summary","data":{"why":"done","role":"developer","layout":"sized","itemBytes":[9493,9430,9430],"totalBytes":28353,"errors":[],"closed":[{"t":13137.2,"reason":"requested"}],"transcripts":[{"t":10368.3,"role":"user","text":"你好,请问暗号 是什么?"},{"t":12626.9,"role":"assistant","text":"暗号是蓝色风铃。"}],"dc":{"session.started":1,"input_transcript.added":6,"turn.created":2,"turn.delta":6,"output_transcript.added":6,"turn.done":2},"codeWordAnswered":false,"verdict":"NOT_ACCEPTED","authSourceStillFile":true}}

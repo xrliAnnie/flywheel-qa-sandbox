@@ -38,6 +38,7 @@ import {
 	validateDiscordVoicePermissions,
 	validateDiscordVoiceTarget,
 	validatePreparedTopology,
+	voiceCredentialInput,
 } from "../qa/fly2655-voice-room.mjs";
 
 const snowflake = (last) => `12345678901234567${last}`;
@@ -443,6 +444,78 @@ test("voice process env is an allowlist and binds the slot registry and CommDB",
 			"TEST_BOT_TOKEN_2",
 			"TMPDIR",
 		].sort(),
+	);
+});
+
+test("codex voice env carries no API key and binds the subscription credential source (FLY-2885)", () => {
+	const slotDir = "/tmp/flywheel-test-slot-2";
+	const base = {
+		slotDir,
+		repoRoot: "/work/flywheel",
+		bridgeUrl: "http://127.0.0.1:9202",
+		apiToken: "slot-master",
+		botTokenEnv: "TEST_BOT_TOKEN_2",
+		botToken: "test-bot-secret",
+		projectsPath: `${slotDir}/flywheel-projects.json`,
+		projectsJson: '[{"projectName":"test-slot-2"}]',
+		projectName: "test-slot-2",
+		buildSha: "a".repeat(40),
+		voiceHostPath: `${slotDir}/state/voice-host.json`,
+		meetingNotesPath: `${slotDir}/state/meeting-notes.yaml`,
+		backendId: "codex-realtime",
+		codexBin: "/opt/codex-0.156.1/codex",
+		baseEnv: { PATH: "/usr/bin", HOME: "/Users/qa" },
+	};
+	const env = buildVoiceProcessEnv({
+		...base,
+		// Even a caller that still passes a key must not leak it to engine B.
+		openAiApiKey: "realtime-secret",
+		codexAuthSource: "/Users/qa/.codex/auth.json",
+	});
+	assert.equal(env.OPENAI_API_KEY, undefined);
+	assert.equal(env.CODEX_API_KEY, undefined);
+	assert.equal(env.FLYWHEEL_VOICE_BACKEND, "codex-realtime");
+	assert.equal(
+		env.FLYWHEEL_VOICE_CODEX_AUTH_SOURCE,
+		"/Users/qa/.codex/auth.json",
+	);
+	assert.throws(
+		() => buildVoiceProcessEnv({ ...base, codexAuthSource: "auth.json" }),
+		/voice_codex_auth_source_absolute_required/,
+	);
+	assert.throws(
+		() => buildVoiceProcessEnv(base),
+		/voice_codex_auth_source_absolute_required/,
+	);
+	const readKey = () => {
+		throw new Error("codex launch must not read the platform key");
+	};
+	assert.deepEqual(
+		voiceCredentialInput({
+			backendId: "codex-realtime",
+			homeDir: "/Users/qa",
+			env: {},
+			readManagedKey: readKey,
+		}),
+		{ codexAuthSource: "/Users/qa/.codex/auth.json" },
+	);
+	assert.deepEqual(
+		voiceCredentialInput({
+			backendId: "codex-realtime",
+			homeDir: "/Users/qa",
+			env: { FLYWHEEL_VOICE_CODEX_AUTH_SOURCE: "/srv/auth.json" },
+			readManagedKey: readKey,
+		}),
+		{ codexAuthSource: "/srv/auth.json" },
+	);
+	assert.deepEqual(
+		voiceCredentialInput({
+			backendId: undefined,
+			homeDir: "/Users/qa",
+			env: {},
+			readManagedKey: () => "engine-a-key",
+		}),
+		{ openAiApiKey: "engine-a-key" },
 	);
 });
 

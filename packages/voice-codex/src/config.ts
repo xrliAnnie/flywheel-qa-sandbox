@@ -19,7 +19,8 @@ export interface VoiceBotBinding {
 export interface VoiceDaemonConfig {
 	backendId: "openai-realtime" | "codex-realtime";
 	buildSha: string | null;
-	realtimeApiKey: string;
+	/** Engine A's platform key; always null for codex-realtime (FLY-2885). */
+	realtimeApiKey: string | null;
 	apiToken: string;
 	bridgeUrl: string;
 	voiceRoot: string;
@@ -27,6 +28,11 @@ export interface VoiceDaemonConfig {
 	voiceHealthHelperPath: string;
 	codexHome: string;
 	codexBin: string;
+	/**
+	 * FLY-2885: the fleet's ChatGPT subscription credential. Engine B's temporary
+	 * CODEX_HOME only symlinks to it; it is never copied or read here.
+	 */
+	codexAuthSource: string;
 	commCliPath: string;
 	commDbPath?: string;
 	projectsPath: string;
@@ -40,6 +46,15 @@ export interface VoiceDaemonConfig {
 	speechChunkTokens: number;
 	/** Uplink VAD pre-roll for the room's speech gate; see FLY-2798/FLY-2799. */
 	uplinkPrerollMs: number;
+	/**
+	 * FLY-2885 T6: sentence-level peak gate for WebRTC rooms; null turns it off.
+	 * Far-away voices peaked at -34.1 dBFS, the founder's softest line at -26.2.
+	 */
+	uplinkMinOnsetDbfs: number | null;
+	/** FLY-2885 T2: ICE servers for the WebRTC leg; empty means host candidates only. */
+	webrtcStunUrls: string[];
+	/** FLY-2885 QA-3a fault switch; the production wrapper never sets it. */
+	qaFaults: boolean;
 	confirmationMs: number;
 	discordTimeoutMs: number;
 	mirrorRetries: number;
@@ -117,6 +132,47 @@ const VOICE_CODEX_ENV_NAMES = [
 	"SSL_CERT_DIR",
 ] as const;
 
+/** FLY-2885: engine B must not carry either key into its own process. */
+export function scrubVoiceApiKeys(env: NodeJS.ProcessEnv): void {
+	delete env.OPENAI_API_KEY;
+	delete env.CODEX_API_KEY;
+}
+
+function onsetDbfs(
+	env: Readonly<Record<string, string | undefined>>,
+): number | null {
+	const raw = env.FLYWHEEL_VOICE_UPLINK_MIN_ONSET_DBFS?.trim();
+	if (raw === undefined || raw === "") return -30;
+	if (raw === "off") return null;
+	const value = Number(raw);
+	if (!/^-?\d+(?:\.\d+)?$/u.test(raw) || value > 0 || value < -90) {
+		throw new Error(
+			"FLYWHEEL_VOICE_UPLINK_MIN_ONSET_DBFS must be off or a dBFS value between -90 and 0",
+		);
+	}
+	return value;
+}
+
+function stunUrls(env: Readonly<Record<string, string | undefined>>): string[] {
+	const raw = env.FLYWHEEL_VOICE_WEBRTC_STUN;
+	if (raw === undefined) return ["stun:stun.l.google.com:19302"];
+	const urls = raw
+		.split(",")
+		.map((value) => value.trim())
+		.filter(Boolean);
+	if (urls.some((url) => !/^stuns?:[^\s/]+$/u.test(url))) {
+		throw new Error("FLYWHEEL_VOICE_WEBRTC_STUN must list stun: URLs");
+	}
+	return urls;
+}
+
+function qaFaults(env: Readonly<Record<string, string | undefined>>): boolean {
+	const raw = env.FLYWHEEL_VOICE_QA_FAULTS;
+	if (raw === undefined || raw === "" || raw === "0") return false;
+	if (raw === "1") return true;
+	throw new Error("FLYWHEEL_VOICE_QA_FAULTS must be 0 or 1");
+}
+
 export function voiceCodexEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 	return Object.fromEntries(
 		VOICE_CODEX_ENV_NAMES.flatMap((name) =>
@@ -134,8 +190,6 @@ export function loadVoiceDaemonConfig(
 	);
 	const apiToken = env.TEAMLEAD_API_TOKEN?.trim();
 	if (!apiToken) throw new Error("TEAMLEAD_API_TOKEN is required");
-	const realtimeApiKey = env.OPENAI_API_KEY?.trim();
-	if (!realtimeApiKey) throw new Error("OPENAI_API_KEY is required");
 	const flywheelDir = env.FLYWHEEL_DIR ?? join(homeDir, "Dev", "flywheel");
 	const stateDir = env.FLYWHEEL_STATE_DIR ?? join(homeDir, ".flywheel");
 	const voiceRoot = env.FLYWHEEL_VOICE_STATE_DIR ?? join(stateDir, "voice");
@@ -144,6 +198,21 @@ export function loadVoiceDaemonConfig(
 	const backendId = env.FLYWHEEL_VOICE_BACKEND?.trim() || "openai-realtime";
 	if (!new Set(["openai-realtime", "codex-realtime"]).has(backendId)) {
 		throw new Error("voice backend must be openai-realtime or codex-realtime");
+	}
+	// FLY-2885: engine B authenticates with the ChatGPT subscription over
+	// WebRTC. Only engine A still needs the platform key.
+	let realtimeApiKey: string | null = null;
+	if (backendId !== "codex-realtime") {
+		realtimeApiKey = env.OPENAI_API_KEY?.trim() || null;
+		if (!realtimeApiKey) throw new Error("OPENAI_API_KEY is required");
+	}
+	const codexAuthSource =
+		env.FLYWHEEL_VOICE_CODEX_AUTH_SOURCE?.trim() ||
+		join(homeDir, ".codex", "auth.json");
+	if (!isAbsolute(codexAuthSource) || resolve(codexAuthSource) === sep) {
+		throw new Error(
+			"FLYWHEEL_VOICE_CODEX_AUTH_SOURCE must be an absolute file path",
+		);
 	}
 	const codexBin = env.FLYWHEEL_CODEX_BIN ?? "codex";
 	if (backendId === "codex-realtime" && !isAbsolute(codexBin)) {
@@ -192,6 +261,7 @@ export function loadVoiceDaemonConfig(
 		),
 		codexHome: env.FLYWHEEL_VOICE_CODEX_HOME ?? join(voiceRoot, "codex-home"),
 		codexBin,
+		codexAuthSource,
 		commCliPath:
 			env.FLYWHEEL_COMM_CLI ??
 			join(flywheelDir, "packages", "flywheel-comm", "dist", "index.js"),
@@ -221,6 +291,9 @@ export function loadVoiceDaemonConfig(
 			200,
 			1_000,
 		),
+		uplinkMinOnsetDbfs: onsetDbfs(env),
+		webrtcStunUrls: stunUrls(env),
+		qaFaults: qaFaults(env),
 		confirmationMs: integer(env, "FLYWHEEL_VOICE_CONFIRMATION_MS", 15_000),
 		discordTimeoutMs: integer(env, "FLYWHEEL_VOICE_DISCORD_TIMEOUT_MS", 10_000),
 		mirrorRetries: integer(env, "FLYWHEEL_VOICE_MIRROR_ATTEMPTS", 2) - 1,

@@ -1,0 +1,29 @@
+{"t":3.8,"kind":"arm","data":{"arm":"steer2","bargeAfterMs":4500}}
+{"t":343.8,"kind":"response","data":{"method":"initialize","error":null}}
+{"t":779.8,"kind":"response","data":{"method":"account/read","error":null}}
+{"t":780,"kind":"account","data":{"type":"chatgpt"}}
+{"t":1734,"kind":"response","data":{"method":"thread/start","error":null}}
+{"t":1962.7,"kind":"response","data":{"method":"thread/realtime/start","error":null}}
+{"t":1963,"kind":"start_response","data":{"error":null}}
+{"t":2555.1,"kind":"started","data":{"version":"v3"}}
+{"t":2558.4,"kind":"pc_state","data":{"s":"connecting"}}
+{"t":3147.3,"kind":"pc_state","data":{"s":"connected"}}
+{"t":3220.1,"kind":"dc_event","data":{"type":"session.started"}}
+{"t":4764.1,"kind":"response","data":{"method":"thread/realtime/appendSpeech","error":null}}
+{"t":4764.3,"kind":"append_speech","data":{"error":null}}
+{"t":5463.3,"kind":"dc_event","data":{"type":"turn.created","turn":{"role":"assistant","transcript":"我把"}}}
+{"t":9956.6,"kind":"barge_in","data":{"ms":2570}}
+{"t":9972.4,"kind":"response","data":{"method":"thread/realtime/appendText","error":null}}
+{"t":9972.5,"kind":"steer_appended","data":{"error":null}}
+{"t":11644.9,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"assistant","transcript":"我把三个风险点列一下。第一个是测试房负载太高。第二个是额度可能不够用。嗯。"}}}
+{"t":11655.3,"kind":"transcript_done","data":{"role":"assistant","text":"我把三个风险点列一下。第一个是测试房负载太高。第二个是额度可能不够用。嗯。"}}
+{"t":11658.2,"kind":"dc_event","data":{"type":"turn.created","turn":{"role":"user","transcript":"打断"}}}
+{"t":14242.1,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"user","transcript":"打断一下,4 加 4 等于 几?"}}}
+{"t":14242.5,"kind":"dc_event","data":{"type":"turn.created","turn":{"role":"assistant","transcript":"4 加 4 等于 8。"}}}
+{"t":14251.1,"kind":"transcript_done","data":{"role":"user","text":"打断一下,4 加 4 等于 几?"}}
+{"t":16130,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"assistant","transcript":"4 加 4 等于 8。"}}}
+{"t":16151.8,"kind":"transcript_done","data":{"role":"assistant","text":"4 加 4 等于 8。"}}
+{"t":16980.3,"kind":"response","data":{"method":"thread/realtime/stop","error":null}}
+{"t":16981.5,"kind":"pc_state","data":{"s":"closed"}}
+{"t":16982.6,"kind":"realtime_closed","data":{"reason":"requested"}}
+{"t":17279.1,"kind":"summary","data":{"why":"done","arm":"steer2","bargeAtMs":9956.5,"errors":[],"closed":[{"t":16982.6,"reason":"requested"}],"transcripts":[{"t":11655.3,"role":"assistant","text":"我把三个风险点列一下。第一个是测试房负载太高。第二个是额度可能不够用。嗯。"},{"t":14251.1,"role":"user","text":"打断一下,4 加 4 等于 几?"},{"t":16151.8,"role":"assistant","text":"4 加 4 等于 8。"}],"assistantTurnsAfterBarge":["我把三个风险点列一下。第一个是测试房负载太高。第二个是额度可能不够用。嗯。","4 加 4 等于 8。"],"answerText":"4 加 4 等于 8。","answeredEight":true,"resumedMarkers":[],"verdict":"CLEAN","authSourceStillFile":true}}

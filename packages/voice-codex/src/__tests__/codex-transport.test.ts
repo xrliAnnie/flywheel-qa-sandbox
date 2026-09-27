@@ -5,10 +5,40 @@ import {
 	CodexVoiceBackend,
 } from "../codex/CodexVoiceBackend.js";
 import {
-	CODEX_REALTIME_INPUT_QUEUE_BYTES,
 	type CodexRealtimeRpc,
 	CodexRealtimeTransport,
 } from "../codex/RealtimeTransport.js";
+import type { RealtimeMediaLeg } from "../codex/WebRtcLeg.js";
+
+/** Stands in for the WebRTC leg: records what the transport hands it. */
+class FakeLeg implements RealtimeMediaLeg {
+	writable = true;
+	readonly frames: Buffer[] = [];
+	readonly answers: string[] = [];
+	answerError?: Error;
+	closeCount = 0;
+
+	async prepareOffer(): Promise<string> {
+		return "v=0\r\no=fake-offer";
+	}
+
+	async acceptAnswer(sdp: string): Promise<void> {
+		this.answers.push(sdp);
+		if (this.answerError) throw this.answerError;
+	}
+
+	writePcm24(frame: Buffer): boolean {
+		if (!this.writable) return false;
+		this.frames.push(Buffer.from(frame));
+		return true;
+	}
+
+	async close(): Promise<void> {
+		this.closeCount += 1;
+	}
+}
+
+const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 function deferred<T>() {
 	let resolve!: (value: T) => void;
@@ -86,7 +116,7 @@ class FakeRpc implements CodexRealtimeRpc {
 
 function harness(generation = 7) {
 	const rpc = new FakeRpc();
-	const audio = vi.fn();
+	const leg = new FakeLeg();
 	const transcript = vi.fn();
 	const gaps = vi.fn();
 	const violations = vi.fn();
@@ -99,16 +129,15 @@ function harness(generation = 7) {
 		sessionId: "session-a",
 		threadId: "thread-a",
 		generation,
+		leg,
 		start: {
 			outputModality: "audio",
 			clientManagedHandoffs: true,
 			includeStartupContext: false,
 			prompt: "identity and state snapshot",
-			transport: { type: "websocket" },
-			model: "gpt-realtime-2.1",
-			voice: "marin",
+			model: "gpt-live-1-codex",
+			voice: "cove",
 		},
-		onAudio: audio,
 		onTranscript: transcript,
 		onInputGap: gaps,
 		onCapabilityViolation: violations,
@@ -119,8 +148,8 @@ function harness(generation = 7) {
 	});
 	return {
 		rpc,
+		leg,
 		transport,
-		audio,
 		transcript,
 		gaps,
 		violations,
@@ -133,57 +162,156 @@ function harness(generation = 7) {
 
 async function start(h: ReturnType<typeof harness>): Promise<void> {
 	const opening = h.transport.start();
+	await flush();
 	h.rpc.emit("thread/realtime/started", {
 		threadId: "thread-a",
 		realtimeSessionId: "realtime-a",
-		version: "v2",
+		version: "v3",
+	});
+	h.rpc.emit("thread/realtime/sdp", {
+		threadId: "thread-a",
+		sdp: "v=0\r\no=fake-answer",
 	});
 	await opening;
 }
 
-describe("Codex V2 realtime transport", () => {
-	it("becomes ready only after both the start RPC and matching started receipt", async () => {
+describe("Codex V3 realtime transport over WebRTC", () => {
+	it("becomes ready only after the start RPC, started (v3) and the answer SDP, then connects the leg", async () => {
 		const h = harness();
 		const reply = h.rpc.defer("thread/realtime/start");
 		let ready = false;
 		const opening = h.transport.start().then(() => {
 			ready = true;
 		});
+		await flush();
+		expect(h.rpc.requests[0]).toEqual({
+			method: "thread/realtime/start",
+			params: {
+				outputModality: "audio",
+				clientManagedHandoffs: true,
+				includeStartupContext: false,
+				prompt: "identity and state snapshot",
+				model: "gpt-live-1-codex",
+				voice: "cove",
+				threadId: "thread-a",
+				version: "v3",
+				transport: { type: "webrtc", sdp: "v=0\r\no=fake-offer" },
+			},
+		});
+		expect(h.transport.startRequested).toBe(true);
 
 		h.rpc.emit("thread/realtime/started", {
 			threadId: "other-thread",
 			realtimeSessionId: "wrong",
-			version: "v2",
+			version: "v3",
 		});
-		h.rpc.emit("thread/realtime/started", {
-			threadId: "thread-a",
-			realtimeSessionId: "realtime-a",
-			version: "v2",
-		});
-		await Promise.resolve();
-		expect(ready).toBe(false);
-		reply.resolve({ result: {} });
-		await opening;
-
-		expect(h.rpc.requests[0]).toEqual({
-			method: "thread/realtime/start",
-			params: expect.objectContaining({
-				threadId: "thread-a",
-				version: "v2",
-				model: "gpt-realtime-2.1",
-			}),
-		});
-	});
-
-	it("rejects a matching started receipt for any version other than V2", async () => {
-		const h = harness();
-		const opening = h.transport.start();
+		// Pinned 0.156.1 order: started first, sdp right after.
 		h.rpc.emit("thread/realtime/started", {
 			threadId: "thread-a",
 			realtimeSessionId: "realtime-a",
 			version: "v3",
 		});
+		reply.resolve({ result: {} });
+		await flush();
+		expect(ready).toBe(false);
+		expect(h.leg.answers).toEqual([]);
+		h.rpc.emit("thread/realtime/sdp", {
+			threadId: "other-thread",
+			sdp: "v=0\r\no=wrong",
+		});
+		h.rpc.emit("thread/realtime/sdp", {
+			threadId: "thread-a",
+			sdp: "v=0\r\no=fake-answer",
+		});
+		await opening;
+		expect(h.leg.answers).toEqual(["v=0\r\no=fake-answer"]);
+		expect(ready).toBe(true);
+	});
+
+	it("rejects a started receipt for any version other than V3 without waiting for the SDP", async () => {
+		const h = harness();
+		const opening = h.transport.start();
+		await flush();
+		h.rpc.emit("thread/realtime/started", {
+			threadId: "thread-a",
+			realtimeSessionId: "realtime-a",
+			version: "v2",
+		});
 		await expect(opening).rejects.toThrow("realtime_version_mismatch");
+		expect(h.leg.answers).toEqual([]);
+	});
+
+	it("fails the open on an asynchronous server error after the start RPC succeeded", async () => {
+		// research R2: an unsupported v3 voice is accepted by the RPC and only
+		// then rejected by thread/realtime/error.
+		const h = harness();
+		const opening = h.transport.start();
+		await flush();
+		h.rpc.emit("thread/realtime/started", {
+			threadId: "thread-a",
+			realtimeSessionId: "realtime-a",
+			version: "v3",
+		});
+		h.rpc.emit("thread/realtime/error", {
+			threadId: "thread-a",
+			message:
+				"realtime voice 'marin' is not supported for v3; supported voices: juniper, maple, spruce, ember, vale, breeze, arbor, sol, cove",
+		});
+		await expect(opening).rejects.toMatchObject({
+			name: "CodexRealtimeServerError",
+		});
+		expect(h.leg.answers).toEqual([]);
+	});
+
+	it.each([
+		["closed", { reason: "error" }, "error"],
+		["an empty sdp", { sdp: "" }, "realtime_sdp_invalid"],
+	] as const)("fails the open on %s", async (_name, params, message) => {
+		const h = harness();
+		const opening = h.transport.start();
+		await flush();
+		h.rpc.emit("thread/realtime/started", {
+			threadId: "thread-a",
+			realtimeSessionId: "realtime-a",
+			version: "v3",
+		});
+		h.rpc.emit(
+			"sdp" in params ? "thread/realtime/sdp" : "thread/realtime/closed",
+			{ threadId: "thread-a", ...params },
+		);
+		await expect(opening).rejects.toThrow(message);
+	});
+
+	it("fails the open when the leg cannot connect with the answer", async () => {
+		const h = harness();
+		h.leg.answerError = new Error("webrtc_connect_timeout");
+		const opening = h.transport.start();
+		await flush();
+		h.rpc.emit("thread/realtime/started", {
+			threadId: "thread-a",
+			realtimeSessionId: "realtime-a",
+			version: "v3",
+		});
+		h.rpc.emit("thread/realtime/sdp", {
+			threadId: "thread-a",
+			sdp: "v=0\r\no=fake-answer",
+		});
+		await expect(opening).rejects.toThrow("webrtc_connect_timeout");
+		expect(
+			h.transport.appendAudio(Buffer.alloc(960), 7, {
+				utteranceId: "late",
+				ownerUserId: "founder",
+			}),
+		).toBe("dropped:closed");
+	});
+
+	it("stops waiting as soon as the attempt is aborted", async () => {
+		const h = harness();
+		const controller = new AbortController();
+		const opening = h.transport.start(controller.signal);
+		await flush();
+		controller.abort(new Error("reconnect_attempt_timeout"));
+		await expect(opening).rejects.toThrow("reconnect_attempt_timeout");
 	});
 
 	it("rejects opening with the original realtime server error", async () => {
@@ -230,7 +358,7 @@ describe("Codex V2 realtime transport", () => {
 		});
 	});
 
-	it("sends only bounded 24 kHz mono PCM16 frames with owner metadata", async () => {
+	it("writes whole 20 ms 24 kHz mono frames straight to the WebRTC leg", async () => {
 		const h = harness();
 		await start(h);
 		const frame = Buffer.alloc(4_800, 3);
@@ -240,19 +368,19 @@ describe("Codex V2 realtime transport", () => {
 				ownerUserId: "founder",
 			}),
 		).toBe("sent");
-		await h.transport.drain();
-		expect(h.rpc.requests.at(-1)).toEqual({
-			method: "thread/realtime/appendAudio",
-			params: {
-				threadId: "thread-a",
-				audio: {
-					data: frame.toString("base64"),
-					sampleRate: 24_000,
-					numChannels: 1,
-					samplesPerChannel: 2_400,
-				},
-			},
-		});
+		expect(h.leg.frames).toHaveLength(5);
+		expect(Buffer.concat(h.leg.frames)).toEqual(frame);
+		expect(
+			h.rpc.requests.some(
+				(request) => request.method === "thread/realtime/appendAudio",
+			),
+		).toBe(false);
+		expect(() =>
+			h.transport.appendAudio(Buffer.alloc(1_000), 7, {
+				utteranceId: "partial",
+				ownerUserId: "founder",
+			}),
+		).toThrow("realtime_audio_frame_invalid");
 		expect(() =>
 			h.transport.appendAudio(Buffer.alloc(4_802), 7, {
 				utteranceId: "too-long",
@@ -300,21 +428,10 @@ describe("Codex V2 realtime transport", () => {
 		]);
 	});
 
-	it("marks a whole input frame as a gap when the one-second queue is full", async () => {
+	it("marks a whole input frame as a gap when the leg cannot take it", async () => {
 		const h = harness();
 		await start(h);
-		const held = h.rpc.defer("thread/realtime/appendAudio");
-		const frame = Buffer.alloc(4_800);
-		for (
-			let bytes = 0;
-			bytes < CODEX_REALTIME_INPUT_QUEUE_BYTES;
-			bytes += frame.length
-		) {
-			h.transport.appendAudio(frame, 7, {
-				utteranceId: "utterance-full",
-				ownerUserId: "founder",
-			});
-		}
+		h.leg.writable = false;
 		expect(
 			h.transport.appendAudio(Buffer.alloc(960), 7, {
 				utteranceId: "utterance-overflow",
@@ -328,11 +445,35 @@ describe("Codex V2 realtime transport", () => {
 			droppedBytes: 960,
 			reason: "backpressure",
 		});
-		held.resolve({ result: {} });
-		await h.transport.drain();
 	});
 
-	it("preserves raw item correlation on audio and transcript callbacks", async () => {
+	it("fences JSON-RPC output audio: under WebRTC it can only be a duplicate of the RTP audio", async () => {
+		const h = harness();
+		await start(h);
+		h.rpc.emit("thread/realtime/outputAudio/delta", {
+			threadId: "thread-a",
+			audio: {
+				data: Buffer.from([1, 2, 3, 4]).toString("base64"),
+				sampleRate: 24_000,
+				numChannels: 1,
+				samplesPerChannel: null,
+				itemId: "item-assistant",
+			},
+		});
+		expect(h.violations).toHaveBeenCalledWith({
+			generation: 7,
+			method: "thread/realtime/outputAudio/delta:webrtc_duplicate_audio",
+			params: { threadId: "thread-a", bytes: 4 },
+		});
+		expect(
+			h.transport.appendAudio(Buffer.alloc(960), 7, {
+				utteranceId: "after",
+				ownerUserId: "founder",
+			}),
+		).toBe("dropped:closed");
+	});
+
+	it("keeps the preceding assistant item association on transcripts", async () => {
 		const h = harness();
 		await start(h);
 		h.rpc.emit("thread/realtime/itemAdded", {
@@ -345,29 +486,11 @@ describe("Codex V2 realtime transport", () => {
 				content: [],
 			},
 		});
-		h.rpc.emit("thread/realtime/outputAudio/delta", {
-			threadId: "thread-a",
-			audio: {
-				data: Buffer.from([1, 2, 3, 4]).toString("base64"),
-				sampleRate: 24_000,
-				numChannels: 1,
-				samplesPerChannel: null,
-				itemId: "item-assistant",
-			},
-		});
 		h.rpc.emit("thread/realtime/transcript/done", {
 			threadId: "thread-a",
 			role: "assistant",
 			text: "hello",
 		});
-
-		expect(h.audio).toHaveBeenCalledWith(
-			expect.objectContaining({
-				generation: 7,
-				itemId: "item-assistant",
-				pcm24Mono: Buffer.from([1, 2, 3, 4]),
-			}),
-		);
 		expect(h.transcript).toHaveBeenCalledWith(
 			expect.objectContaining({
 				generation: 7,
@@ -390,7 +513,6 @@ describe("Codex V2 realtime transport", () => {
 		};
 		h.transport.appendAudio(Buffer.alloc(960), 7, owner);
 		h.transport.appendAudio(Buffer.alloc(960), 7, owner);
-		await h.transport.drain();
 		h.rpc.emit("thread/realtime/itemAdded", {
 			threadId: "thread-a",
 			item: {
@@ -432,7 +554,6 @@ describe("Codex V2 realtime transport", () => {
 			ownerUserId: "guest",
 			ownerName: "Guest",
 		});
-		await h.transport.drain();
 		h.rpc.emit("thread/realtime/itemAdded", {
 			threadId: "thread-a",
 			item: {
@@ -455,7 +576,6 @@ describe("Codex V2 realtime transport", () => {
 			ownerUserId: "founder",
 			ownerName: "Annie",
 		});
-		await h.transport.drain();
 		h.rpc.emit("thread/realtime/itemAdded", {
 			threadId: "thread-a",
 			item: {
@@ -708,7 +828,6 @@ describe("Codex V2 realtime transport", () => {
 			ownerUserId: "guest",
 			ownerName: "Guest",
 		});
-		await h.transport.drain();
 		h.rpc.emit("thread/realtime/itemAdded", {
 			threadId: "thread-a",
 			item: {
@@ -730,18 +849,12 @@ describe("Codex V2 realtime transport", () => {
 			expect.not.objectContaining({ inputOwner: expect.anything() }),
 		);
 
-		const held = h.rpc.defer("thread/realtime/appendAudio");
-		for (
-			let bytes = 0;
-			bytes < CODEX_REALTIME_INPUT_QUEUE_BYTES;
-			bytes += 4_800
-		) {
-			h.transport.appendAudio(Buffer.alloc(4_800), 7, {
-				utteranceId: "utterance-gap",
-				ownerUserId: "founder",
-				ownerName: "Annie",
-			});
-		}
+		h.transport.appendAudio(Buffer.alloc(960), 7, {
+			utteranceId: "utterance-gap",
+			ownerUserId: "founder",
+			ownerName: "Annie",
+		});
+		h.leg.writable = false;
 		h.transport.appendAudio(Buffer.alloc(960), 7, {
 			utteranceId: "utterance-gap",
 			ownerUserId: "founder",
@@ -767,8 +880,6 @@ describe("Codex V2 realtime transport", () => {
 		expect(h.transcript).toHaveBeenLastCalledWith(
 			expect.not.objectContaining({ inputOwner: expect.anything() }),
 		);
-		held.resolve({ result: {} });
-		await h.transport.drain();
 	});
 
 	it("fences audio, transcript, and capability effects before cancellation awaits close", async () => {
@@ -777,22 +888,12 @@ describe("Codex V2 realtime transport", () => {
 		const stop = h.rpc.defer("thread/realtime/stop");
 		const cancelling = h.transport.cancel();
 
-		h.rpc.emit("thread/realtime/outputAudio/delta", {
-			threadId: "thread-a",
-			audio: {
-				data: Buffer.from([1, 2]).toString("base64"),
-				sampleRate: 24_000,
-				numChannels: 1,
-				itemId: "late-item",
-			},
-		});
 		h.rpc.emit("thread/realtime/transcript/done", {
 			threadId: "thread-a",
 			role: "assistant",
 			text: "late words",
 		});
 		h.rpc.emit("turn/started", { threadId: "thread-a" });
-		expect(h.audio).not.toHaveBeenCalled();
 		expect(h.transcript).not.toHaveBeenCalled();
 		expect(h.violations).not.toHaveBeenCalled();
 		expect(
@@ -821,7 +922,14 @@ describe("Codex V2 realtime transport", () => {
  * request, the model's spoken acknowledgement, the provider handoff_request,
  * then the background delegation turn that can only fail with 401.
  */
-function emitRecordedHandoffTrace(rpc: FakeRpc): void {
+type DataEvent = (event: {
+	type: "turn.created" | "turn.done";
+	turnId: string;
+	role: "user" | "assistant";
+	transcript: string | null;
+}) => void;
+
+function emitRecordedHandoffTrace(rpc: FakeRpc, data: DataEvent): void {
 	const threadId = "thread-real";
 	rpc.emit("thread/realtime/itemAdded", {
 		threadId,
@@ -854,10 +962,23 @@ function emitRecordedHandoffTrace(rpc: FakeRpc): void {
 		threadId,
 		item: { type: "function_call", status: "in_progress" },
 	});
+	// v3 reports the spoken acknowledgement as a data-channel turn.
+	data({
+		type: "turn.created",
+		turnId: "turn-ack",
+		role: "assistant",
+		transcript: null,
+	});
 	rpc.emit("thread/realtime/transcript/done", {
 		threadId,
 		role: "assistant",
 		text: "好的，我来把你的这个请求转给后台代理，请它去查状态。",
+	});
+	data({
+		type: "turn.done",
+		turnId: "turn-ack",
+		role: "assistant",
+		transcript: "好的，我来把你的这个请求转给后台代理，请它去查状态。",
 	});
 	rpc.emit("thread/realtime/itemAdded", {
 		threadId,
@@ -911,6 +1032,7 @@ function emitSpokenUserTurn(rpc: FakeRpc, itemId: string, text: string): void {
 /** The recorded delegation tail: spoken acknowledgement, handoff, 401 turn. */
 function emitHandoffRequest(
 	rpc: FakeRpc,
+	data: DataEvent,
 	handoffId: string,
 	turnId: string,
 ): void {
@@ -919,10 +1041,22 @@ function emitHandoffRequest(
 		threadId,
 		item: { type: "function_call", status: "in_progress" },
 	});
+	data({
+		type: "turn.created",
+		turnId: `ack-${handoffId}`,
+		role: "assistant",
+		transcript: null,
+	});
 	rpc.emit("thread/realtime/transcript/done", {
 		threadId,
 		role: "assistant",
 		text: "好的，我先把这个请求交给后台代理，让它按你的原话去处理。",
+	});
+	data({
+		type: "turn.done",
+		turnId: `ack-${handoffId}`,
+		role: "assistant",
+		transcript: "好的，我先把这个请求交给后台代理，让它按你的原话去处理。",
 	});
 	rpc.emit("thread/realtime/itemAdded", {
 		threadId,
@@ -945,6 +1079,8 @@ async function realHandoffSession(
 	options: { handoffError?: Error } = {},
 ) {
 	const rpc = new FakeRpc();
+	const legs: FakeLeg[] = [];
+	let realtime!: { onDataEvent?: (input: unknown) => void };
 	const evidence = vi.fn();
 	const handoffToLead = vi.fn(async () => {
 		if (options.handoffError) throw options.handoffError;
@@ -963,20 +1099,29 @@ async function realHandoffSession(
 		voice: "marin",
 		container: {
 			open: async (input) => {
+				realtime = input.realtime as typeof realtime;
 				const createTransport = async (generation: number) => {
+					const leg = new FakeLeg();
+					legs.push(leg);
 					const transport = new CodexRealtimeTransport({
 						rpc,
 						sessionId: input.sessionId,
 						threadId: "thread-real",
 						generation,
+						leg,
 						start: { outputModality: "audio", clientManagedHandoffs: true },
 						...input.realtime,
 					});
 					const opening = transport.start();
+					await flush();
 					rpc.emit("thread/realtime/started", {
 						threadId: "thread-real",
 						realtimeSessionId: `realtime-real-${generation}`,
-						version: "v2",
+						version: "v3",
+					});
+					rpc.emit("thread/realtime/sdp", {
+						threadId: "thread-real",
+						sdp: "v=0\r\no=fake-answer",
 					});
 					await opening;
 					return transport;
@@ -1031,12 +1176,29 @@ async function realHandoffSession(
 			ownerUserId: "founder",
 			ownerName: "Annie",
 		});
+	/** The uplink's next tick after she stops: an unowned silence frame. */
+	const sendSilence = () =>
+		session.sendAudio(Buffer.alloc(960), {
+			encoding: "pcm16",
+			sampleRateHz: 24_000,
+			channels: 1,
+		});
+	const data: DataEvent = (event) =>
+		realtime.onDataEvent?.({
+			generation: 1,
+			event: { ...event, startMs: null, endMs: null },
+		});
 	const spokenPrompts = () =>
 		rpc.requests
 			.filter((request) => request.method === "thread/realtime/appendSpeech")
 			.map((request) => (request.params as { text: string }).text);
+	const uplinkFrames = () =>
+		legs.reduce((total, leg) => total + leg.frames.length, 0);
 	return {
 		rpc,
+		data,
+		sendSilence,
+		uplinkFrames,
 		evidence,
 		handoffToLead,
 		session,
@@ -1052,7 +1214,8 @@ describe("Codex 0.156.1 handoff_request end to end", () => {
 		const real = await realHandoffSession({ userId: "founder", name: "Annie" });
 		real.sendFounderAudio("discord-founder-request");
 
-		emitRecordedHandoffTrace(real.rpc);
+		real.sendSilence();
+		emitRecordedHandoffTrace(real.rpc, real.data);
 
 		await vi.waitFor(() => expect(real.handoffToLead).toHaveBeenCalledOnce());
 		expect(real.handoffToLead).toHaveBeenCalledWith({
@@ -1087,17 +1250,9 @@ describe("Codex 0.156.1 handoff_request end to end", () => {
 		});
 		expect(real.errors).not.toHaveBeenCalled();
 
-		const appendsBefore = real.rpc.requests.filter(
-			(request) => request.method === "thread/realtime/appendAudio",
-		).length;
+		const appendsBefore = real.uplinkFrames();
 		real.sendFounderAudio("discord-founder-next-turn");
-		await vi.waitFor(() =>
-			expect(
-				real.rpc.requests.filter(
-					(request) => request.method === "thread/realtime/appendAudio",
-				),
-			).toHaveLength(appendsBefore + 1),
-		);
+		expect(real.uplinkFrames()).toBe(appendsBefore + 1);
 		await real.session.close();
 	});
 
@@ -1105,7 +1260,8 @@ describe("Codex 0.156.1 handoff_request end to end", () => {
 		const real = await realHandoffSession(null);
 		real.sendFounderAudio("discord-ambiguous-request");
 
-		emitRecordedHandoffTrace(real.rpc);
+		real.sendSilence();
+		emitRecordedHandoffTrace(real.rpc, real.data);
 
 		await vi.waitFor(() =>
 			expect(real.evidence).toHaveBeenCalledWith(
@@ -1135,7 +1291,8 @@ describe("Codex 0.156.1 handoff_request end to end", () => {
 		);
 		real.sendFounderAudio("discord-founder-request", true);
 
-		emitRecordedHandoffTrace(real.rpc);
+		real.sendSilence();
+		emitRecordedHandoffTrace(real.rpc, real.data);
 
 		await vi.waitFor(() => expect(real.handoffToLead).toHaveBeenCalledOnce());
 		await vi.waitFor(() =>
@@ -1149,7 +1306,8 @@ describe("Codex 0.156.1 handoff_request end to end", () => {
 		const real = await realHandoffSession({ userId: "founder", name: "Annie" });
 		real.sendFounderAudio("discord-founder-request", true);
 
-		emitRecordedHandoffTrace(real.rpc);
+		real.sendSilence();
+		emitRecordedHandoffTrace(real.rpc, real.data);
 		await vi.waitFor(() => expect(real.handoffToLead).toHaveBeenCalledOnce());
 		real.rpc.emit("item/started", {
 			threadId: "thread-real",
@@ -1172,10 +1330,8 @@ describe("Codex 0.156.1 handoff_request end to end", () => {
 	});
 });
 
-describe("Codex 0.156.1 barge-in followed by a handoff", () => {
-	it("keeps sole-room attribution across a barge-in that lost no speech and hands off the next request", async () => {
-		// QA qa5 run5/run6 shape: the model is answering, the founder barges in
-		// with no untranscribed speech in the old generation, then delegates.
+describe("Codex 0.156.1 local barge-in followed by a handoff (FLY-2885 T5)", () => {
+	it("keeps the generation and sole-room attribution across a barge-in and hands off the next request", async () => {
 		const real = await realHandoffSession({ userId: "founder", name: "Annie" });
 		real.sendFounderAudio("discord-hello", true);
 		emitSpokenUserTurn(
@@ -1183,31 +1339,34 @@ describe("Codex 0.156.1 barge-in followed by a handoff", () => {
 			"item_user_1",
 			"你好,你是谁?你手上现在有什么事?",
 		);
-		real.sendFounderAudio("discord-hello-tail-silence");
-		real.rpc.emit("thread/realtime/itemAdded", {
-			threadId: "thread-real",
-			item: {
-				type: "message",
-				id: "item_bot_1",
-				role: "assistant",
-				status: "in_progress",
-			},
+		real.sendSilence();
+		real.data({
+			type: "turn.created",
+			turnId: "answer-1",
+			role: "assistant",
+			transcript: null,
 		});
 
 		real.session.interrupt();
-		await vi.waitFor(() => expect(real.realtimeStarts()).toBe(2));
+		expect(real.realtimeStarts()).toBe(1);
 		real.sendFounderAudio("discord-ask", true);
 		emitSpokenUserTurn(
 			real.rpc,
 			"item_user_2",
 			"你帮我去看一下2799现在是什么状态。",
 		);
-		emitHandoffRequest(real.rpc, "call_after_barge", "turn-after-barge");
+		real.sendSilence();
+		emitHandoffRequest(
+			real.rpc,
+			real.data,
+			"call_after_barge",
+			"turn-after-barge",
+		);
 
 		await vi.waitFor(() => expect(real.handoffToLead).toHaveBeenCalledOnce());
 		expect(real.handoffToLead).toHaveBeenCalledWith({
 			utterance: expect.objectContaining({
-				sessionGeneration: 2,
+				sessionGeneration: 1,
 				text: "你帮我去看一下2799现在是什么状态。",
 				attribution: { kind: "known", speakerUserId: "founder" },
 			}),
@@ -1219,9 +1378,7 @@ describe("Codex 0.156.1 barge-in followed by a handoff", () => {
 		expect(real.evidence).toHaveBeenCalledWith({
 			kind: "codex_barge_in",
 			generation: 1,
-			droppedBytes: 0,
-			providerInputPending: false,
-			inputGap: false,
+			local: true,
 		});
 		expect(real.evidence).not.toHaveBeenCalledWith(
 			expect.objectContaining({ kind: "codex_input_gap" }),
@@ -1231,7 +1388,7 @@ describe("Codex 0.156.1 barge-in followed by a handoff", () => {
 		await real.session.close();
 	});
 
-	it("treats a barge-in over speech the old generation never transcribed as a real gap and asks aloud for a repeat", async () => {
+	it("loses no founder speech: an utterance still being transcribed at the barge-in binds and hands off", async () => {
 		const real = await realHandoffSession({ userId: "founder", name: "Annie" });
 		real.sendFounderAudio("discord-unfinished", true);
 		real.rpc.emit("thread/realtime/itemAdded", {
@@ -1243,30 +1400,16 @@ describe("Codex 0.156.1 barge-in followed by a handoff", () => {
 		});
 
 		real.session.interrupt();
-		await vi.waitFor(() => expect(real.realtimeStarts()).toBe(2));
-		expect(real.evidence).toHaveBeenCalledWith({
-			kind: "codex_input_gap",
-			reason: "generation_changed",
-			generation: 1,
-			droppedBytes: 960,
-			providerInputPending: true,
-		});
-		real.sendFounderAudio("discord-ask", true);
-		emitSpokenUserTurn(real.rpc, "item_user_2", "那就 ship 2808。");
-		emitHandoffRequest(real.rpc, "call_after_gap", "turn-after-gap");
+		expect(real.realtimeStarts()).toBe(1);
+		emitSpokenUserTurn(real.rpc, "item_user_1", "那就 ship 2808。");
+		real.sendSilence();
+		emitHandoffRequest(real.rpc, real.data, "call_after_cut", "turn-after-cut");
 
-		await vi.waitFor(() =>
-			expect(real.evidence).toHaveBeenCalledWith(
-				expect.objectContaining({
-					kind: "codex_execution_handoff_skipped",
-					reason: "known_user_missing",
-				}),
-			),
+		await vi.waitFor(() => expect(real.handoffToLead).toHaveBeenCalledOnce());
+		expect(real.evidence).not.toHaveBeenCalledWith(
+			expect.objectContaining({ kind: "codex_input_gap" }),
 		);
-		expect(real.handoffToLead).not.toHaveBeenCalled();
-		await vi.waitFor(() =>
-			expect(real.spokenPrompts()).toEqual([CODEX_HANDOFF_UNCONFIRMED_PROMPT]),
-		);
+		expect(real.spokenPrompts()).toEqual([]);
 		expect(real.errors).not.toHaveBeenCalled();
 		await real.session.close();
 	});

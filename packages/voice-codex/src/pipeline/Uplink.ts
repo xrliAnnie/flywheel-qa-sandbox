@@ -43,6 +43,12 @@ interface UplinkOptions {
 	onGateSummary?(
 		summary: UplinkGateSummary & { utteranceId: string | null },
 	): void;
+	/**
+	 * FLY-2885 T6 (WebRTC rooms): while more than this many frames wait, a
+	 * tick sends one extra frame, so the onset backlog is caught up within
+	 * about half a second. FLY-2884 used the same rule without issue.
+	 */
+	catchUpAboveFrames?: number;
 }
 
 export class Uplink {
@@ -166,6 +172,14 @@ export class Uplink {
 
 	tick(): AppendOutcome {
 		this.drainSpeechGate((this.options.now ?? Date.now)());
+		const outcome = this.sendNext();
+		const catchUp = this.options.catchUpAboveFrames;
+		if (catchUp !== undefined && this.micOpen && this.jitter.depth() > catchUp)
+			this.sendNext();
+		return outcome;
+	}
+
+	private sendNext(): AppendOutcome {
 		const tagged = this.micOpen
 			? this.jitter.takeTagged()
 			: { frame: Buffer.from(PCM24_MONO_SILENCE), metadata: undefined };

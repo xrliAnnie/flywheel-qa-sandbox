@@ -9,3 +9,12 @@ the archived real-room QA material:
 
 The fixture is copied byte-for-byte. It is not a substitute for the C7.5
 founder-microphone calibration corpus.
+
+## fly2884-uplink-levels.json
+
+FLY-2885 T6 fixture. Per-20 ms uplink frame levels (RMS of the mono mix, dBFS,
+0.1 dB) copied from the FLY-2884 prototype evidence on branch
+`flywheel-FLY-2884` (`evidence/s4` and `evidence/s7` `frames-bridge.json.gz`):
+`farVoice` is the 60 s far-away-voice run of s4 (peak −34.1 dBFS, one false
+trigger in 2884); `founderSentences` are the founder's seven real sentences of
+s7 (softest peak −26.2 dBFS). No audio is stored, only levels.

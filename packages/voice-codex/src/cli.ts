@@ -24,18 +24,25 @@ import {
 } from "./codex/CodexRoomFrontend.js";
 import { CodexVoiceBackend } from "./codex/CodexVoiceBackend.js";
 import {
+	assertCodexVoiceBinary,
 	CodexVoiceContainer,
 	type CodexVoiceContextSnapshot,
+	type CodexVoiceConversation,
 } from "./codex/CodexVoiceContainer.js";
 import {
 	buildCodexDelegateHandoff,
 	CodexTranscriptPublisher,
 } from "./codex/CodexVoiceHandoff.js";
 import {
+	listProcessCwds,
+	sweepStaleCodexContainers,
+} from "./codex/stale-roots.js";
+import {
 	loadVoiceDaemonConfig,
 	loadVoiceProjects,
 	resolveLeadVoiceToken,
 	resolveVoiceCommDbPath,
+	scrubVoiceApiKeys,
 } from "./config.js";
 import { VoiceDaemon, type VoiceSessionContext } from "./daemon.js";
 import { VoiceDelivery } from "./delivery.js";
@@ -50,7 +57,7 @@ import { VoiceHealthAlertDispatcher } from "./health-alert.js";
 import { SessionJournal } from "./journal.js";
 import { probeVoiceLaunchdOwner } from "./launchd-owner.js";
 import { writeMeetingVoiceSignal } from "./meeting-voice-signal.js";
-import { parseVoiceProjection } from "./projection.js";
+import { engineBVoice, parseVoiceProjection } from "./projection.js";
 import { RealtimeFrontend } from "./realtime.js";
 import {
 	VOICE_CODEX_RECEIVE_POLICY,
@@ -59,6 +66,7 @@ import {
 import { recoverPinnedVoiceSession } from "./recovery.js";
 import { GenericVoiceSession } from "./session.js";
 import { type SavedVoiceSession, SessionStateStore } from "./session-state.js";
+import { createShutdownExit, superviseDaemon } from "./shutdown-exit.js";
 import {
 	reportFatalStartupFailure,
 	reportStartupRefusal,
@@ -167,13 +175,26 @@ const SESSION_START_DEADLINE_MS = 120_000;
 
 export async function main(): Promise<void> {
 	const config = loadVoiceDaemonConfig(process.env, homedir());
+	// FLY-2885: second line of defence after the wrapper. Engine B never holds
+	// a platform key, so nothing below can hand one to a Codex child.
+	if (config.backendId === "codex-realtime") scrubVoiceApiKeys(process.env);
+	if (process.argv.length === 3 && process.argv[2] === "--check-codex-binary") {
+		if (config.backendId !== "codex-realtime") {
+			throw new Error("Codex binary preflight requires codex-realtime");
+		}
+		await assertCodexVoiceBinary(config.codexBin);
+		console.log("[voice] Codex binary ok");
+		return;
+	}
 	const projects = loadVoiceProjects(config);
 	if (process.argv.length === 3 && process.argv[2] === "--check-config") {
 		console.log(`[voice] config ok: ${projects.length} project(s)`);
 		return;
 	}
 	if (process.argv.length > 2)
-		throw new Error("usage: flywheel-voice [--check-config]");
+		throw new Error(
+			"usage: flywheel-voice [--check-config|--check-codex-binary]",
+		);
 	mkdirSync(config.voiceRoot, { recursive: true, mode: 0o700 });
 	const lock = await acquireProcessLifetimeFileLock(
 		join(config.voiceRoot, "voice.lock"),
@@ -204,6 +225,24 @@ export async function main(): Promise<void> {
 			body: VOICE_LOCK_UNAVAILABLE_BODY,
 		});
 		return;
+	}
+
+	if (config.backendId === "codex-realtime") {
+		// FLY-2885 T7: the lock proves no other daemon runs and this one has
+		// opened nothing yet, so any container root here is a leftover.
+		await sweepStaleCodexContainers(
+			join(config.voiceRoot, "codex-containers"),
+			{
+				listCwds: listProcessCwds,
+				evidence: (record) => console.log(`[voice] ${JSON.stringify(record)}`),
+			},
+		);
+	}
+	// QA-3a only: the production wrapper never sets FLYWHEEL_VOICE_QA_FAULTS.
+	let qaConversation: CodexVoiceConversation | undefined;
+	if (config.qaFaults) {
+		console.log("[voice] QA fault hook armed: SIGUSR2 drops the WebRTC leg");
+		process.on("SIGUSR2", () => qaConversation?.qaDropLeg());
 	}
 
 	const discordDeps = await createDiscordDeps(VOICE_CODEX_RECEIVE_POLICY);
@@ -408,8 +447,16 @@ export async function main(): Promise<void> {
 			const container = new CodexVoiceContainer({
 				binaryPath: config.codexBin,
 				scratchRoot: join(config.voiceRoot, "codex-containers"),
-				openAiApiKey: config.realtimeApiKey,
+				authSource: config.codexAuthSource,
+				stunUrls: config.webrtcStunUrls,
 				processEnv: process.env,
+				...(config.qaFaults
+					? {
+							onOpened: (conversation: CodexVoiceConversation) => {
+								qaConversation = conversation;
+							},
+						}
+					: {}),
 				onEvidence: (record) =>
 					evidence.appendBuffered({
 						ts: new Date().toISOString(),
@@ -422,7 +469,7 @@ export async function main(): Promise<void> {
 				() =>
 					new CodexVoiceBackend({
 						sessionId: context.sessionId,
-						voice: context.projection.realtimeVoice,
+						voice: engineBVoice(context.projection),
 						container,
 						loadContext: async () => {
 							const snapshot = await bridge.context<CodexVoiceContextSnapshot>(
@@ -433,11 +480,8 @@ export async function main(): Promise<void> {
 							contextDigest = snapshot.snapshotDigest;
 							return snapshot;
 						},
-						openAudio: ({ itemId }) => {
-							context.lease.assert();
-							if (!room) throw new Error("speech_room_not_ready");
-							return room.openSpeech(itemId);
-						},
+						// FLY-2885 T4: WebRTC Opus goes straight into the room.
+						downlink: () => room?.opusDownlink,
 						persistUtterance: async (utterance, captureDigest) => {
 							const {
 								sessionId: _sessionId,
@@ -469,6 +513,15 @@ export async function main(): Promise<void> {
 							);
 						},
 						resolveSoleRoomUser: () => room?.soleHuman() ?? null,
+						postStatus: async (text) => {
+							if (room) await room.status(text);
+							else
+								await mirror.post(
+									context.projection.threadId,
+									text,
+									discordNonce(),
+								);
+						},
 						onEvidence: (record) =>
 							evidence.appendBuffered({
 								ts: new Date().toISOString(),
@@ -509,7 +562,7 @@ export async function main(): Promise<void> {
 						backend: codexBackend,
 						conversationOptions: {
 							brain: CODEX_VOICE_BRAIN,
-							voice: context.projection.realtimeVoice,
+							voice: engineBVoice(context.projection),
 							transcriptSink: new JsonlTranscriptSink(transcriptPath),
 						},
 						handlers,
@@ -519,6 +572,8 @@ export async function main(): Promise<void> {
 								.then(() => undefined),
 					});
 				}
+				if (!config.realtimeApiKey)
+					throw new Error("OPENAI_API_KEY is required");
 				return new RealtimeFrontend({
 					apiKey: config.realtimeApiKey,
 					voice: context.projection.realtimeVoice,
@@ -553,6 +608,12 @@ export async function main(): Promise<void> {
 					founderUserId: context.projection.founderUserId,
 					qaAllowUserIds: context.projection.qaAllowUserIds,
 					uplinkPrerollMs: config.uplinkPrerollMs,
+					...(config.backendId === "codex-realtime"
+						? {
+								downlink: "opus-passthrough" as const,
+								uplinkMinOnsetDbfs: config.uplinkMinOnsetDbfs,
+							}
+						: {}),
 					...handlers,
 				});
 				return room;
@@ -700,28 +761,44 @@ export async function main(): Promise<void> {
 			speechChunkTokens: config.speechChunkTokens,
 		},
 	});
-	const shutdown = () => daemon.shutdown();
-	process.once("SIGINT", shutdown);
-	process.once("SIGTERM", shutdown);
-	try {
-		await minutesQueue.drainAll().catch((error) => {
-			console.error(
-				`[voice] pending voice minutes deferred: ${
-					error instanceof Error ? error.message : "unknown_error"
-				}`,
-			);
-		});
-		await daemon.run();
-	} finally {
-		process.off("SIGINT", shutdown);
-		process.off("SIGTERM", shutdown);
-		health.stop();
-		await health.whenSettled();
-		await lock.handle.close();
-	}
+	// A forced exit never leaves a lead alert's shell or curl behind.
+	shutdownExit.onForcedExit(() => healthAlerts.killNow());
+	await superviseDaemon({
+		shutdownExit,
+		requestStop: () => daemon.shutdown(),
+		run: async () => {
+			await minutesQueue.drainAll().catch((error) => {
+				console.error(
+					`[voice] pending voice minutes deferred: ${
+						error instanceof Error ? error.message : "unknown_error"
+					}`,
+				);
+			});
+			await daemon.run();
+		},
+		cleanup: async () => {
+			health.stop();
+			await health.whenSettled();
+			await lock.handle.close();
+			// An in-flight lead alert gets a bounded chance to finish, then its
+			// sender's process group is stopped: the exit never cuts one off
+			// or leaves a shell behind (FLY-2885 QA@1 review).
+			if (!(await healthAlerts.shutdown(HEALTH_ALERT_DRAIN_MS)))
+				console.error(
+					"[voice] health alert still in flight at shutdown; sender stopped",
+				);
+		},
+	});
 }
 
-main().catch((error) => {
-	reportFatalStartupFailure(error);
-	process.exitCode = 1;
-});
+/** FLY-2885 QA@1: the daemon exits within a bounded grace, leaks or not. */
+const shutdownExit = createShutdownExit();
+/** After the lock is released; counted in SHUTDOWN_EXIT_GRACE_MS. */
+const HEALTH_ALERT_DRAIN_MS = 8_000;
+
+main()
+	.catch((error) => {
+		reportFatalStartupFailure(error);
+		process.exitCode = 1;
+	})
+	.finally(() => shutdownExit.finish(process.exitCode));

@@ -1,0 +1,40 @@
+{
+ "init": "ok",
+ "account": {
+  "type": "chatgpt",
+  "planType": "pro",
+  "error": null
+ },
+ "listVoices": {
+  "voices": {
+   "v1": [
+    "juniper",
+    "maple",
+    "spruce",
+    "ember",
+    "vale",
+    "breeze",
+    "arbor",
+    "sol",
+    "cove"
+   ],
+   "v2": [
+    "alloy",
+    "ash",
+    "ballad",
+    "coral",
+    "echo",
+    "sage",
+    "shimmer",
+    "verse",
+    "marin",
+    "cedar"
+   ],
+   "defaultV1": "cove",
+   "defaultV2": "marin"
+  }
+ },
+ "authStillSymlink": true,
+ "sourceSurvivesRm": true,
+ "sourceMtimeChanged": false
+}

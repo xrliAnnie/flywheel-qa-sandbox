@@ -1788,6 +1788,24 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/voice-codex/src/__tests__/process-probes.ts:process.kill(pid, 0);#1",
+		"path": "packages/voice-codex/src/__tests__/process-probes.ts",
+		"code": "process.kill(pid, 0);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/voice-codex/src/__tests__/process-probes.ts:process.kill(pid, signal);#1",
+		"path": "packages/voice-codex/src/__tests__/process-probes.ts",
+		"code": "process.kill(pid, signal);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/voice-codex/src/health-alert.ts:process.kill(-pid, signal);#1",
+		"path": "packages/voice-codex/src/health-alert.ts",
+		"code": "process.kill(-pid, signal);",
+		"classification": "out-of-scope"
+	},
+	{
 		"key": "packages/voice-core/src/__tests__/process-resident.test.ts:handle.kill(\"SIGKILL\");#1",
 		"path": "packages/voice-core/src/__tests__/process-resident.test.ts",
 		"code": "handle.kill(\"SIGKILL\");",

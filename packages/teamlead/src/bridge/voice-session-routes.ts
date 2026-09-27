@@ -7,6 +7,7 @@ import type {
 	VoiceSessionReservation,
 	VoiceSessionRow,
 } from "../StateStore.js";
+import { voiceContextErrorDetails } from "../voice-context-contract.js";
 import type { LeadInterruptVoiceHandlers } from "./lead-interrupt-routes.js";
 import {
 	VoiceHandoffError,
@@ -402,11 +403,26 @@ export function createVoiceSessionRouter(
 				}),
 			);
 		} catch (error) {
-			const reason =
-				error instanceof VoiceSessionContextError
-					? error.code
-					: "context_state_unavailable";
-			res.status(503).json({ error: "voice_unavailable", reason });
+			if (!(error instanceof VoiceSessionContextError)) {
+				res.status(503).json({
+					error: "voice_unavailable",
+					reason: "context_state_unavailable",
+				});
+				return;
+			}
+			// FLY-2885 plan §12.5: only whitelisted numbers and identifiers leave
+			// the Bridge — never memory text, paths or file contents.
+			const details = voiceContextErrorDetails(error.details);
+			console.warn(
+				`[voice-session] context unavailable session=${sessionId} reason=${error.code}${Object.entries(
+					details,
+				)
+					.map(([key, value]) => ` ${key}=${value}`)
+					.join("")}`,
+			);
+			res
+				.status(503)
+				.json({ error: "voice_unavailable", reason: error.code, details });
 		}
 	});
 

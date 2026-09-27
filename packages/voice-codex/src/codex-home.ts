@@ -5,12 +5,19 @@ import {
 	lstatSync,
 	openSync,
 	readFileSync,
+	readlinkSync,
+	realpathSync,
 } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
+/**
+ * FLY-2885: engine B authenticates with the fleet's ChatGPT subscription.
+ * `file` is the only store that reads the linked auth.json (`ephemeral` does
+ * not); `chatgpt` refuses any API-key login.
+ */
 export const VOICE_CODEX_HOME_CONFIG =
-	'forced_login_method = "api"\n' +
-	'cli_auth_credentials_store = "ephemeral"\n' +
+	'forced_login_method = "chatgpt"\n' +
+	'cli_auth_credentials_store = "file"\n' +
 	'web_search = "disabled"\n' +
 	"[features]\n" +
 	"realtime_conversation = true\n" +
@@ -29,8 +36,35 @@ export const VOICE_CODEX_HOME_CONFIG =
 	"hooks = false\n" +
 	"skip_host_skill_discovery = true\n";
 
+/**
+ * The shared credential is linked, never copied: a copy forks the refresh
+ * token and the fleet's original then fails with refresh_token_reused
+ * (FLY-2404). Returns the real path every home must link to.
+ */
+export function pinVoiceCodexAuthSource(source: string): string {
+	try {
+		if (!isAbsolute(source)) throw new Error("relative");
+		const metadata = lstatSync(source);
+		const uid = process.getuid?.();
+		if (
+			!metadata.isFile() ||
+			metadata.isSymbolicLink() ||
+			(metadata.mode & 0o777) !== 0o600 ||
+			(uid !== undefined && metadata.uid !== uid)
+		)
+			throw new Error("file");
+		const pinned = realpathSync(source);
+		const resolved = lstatSync(pinned);
+		if (resolved.ino !== metadata.ino || resolved.dev !== metadata.dev)
+			throw new Error("moved");
+		return pinned;
+	} catch {
+		throw new Error("voice_codex_auth_source_invalid");
+	}
+}
+
 /** Read-only admission. The host preparation step owns creation and rollback. */
-export function assertVoiceCodexHome(home: string): void {
+export function assertVoiceCodexHome(home: string, authSource: string): void {
 	let fd: number | undefined;
 	try {
 		const directory = lstatSync(home);
@@ -42,13 +76,10 @@ export function assertVoiceCodexHome(home: string): void {
 			(uid !== undefined && directory.uid !== uid)
 		)
 			throw new Error("directory");
-		// An existing subscription/file credential is never reused or removed here.
-		try {
-			lstatSync(join(home, "auth.json"));
-			throw new Error("existing_auth");
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-		}
+		// The only credential form allowed here is a link to the pinned source.
+		const auth = join(home, "auth.json");
+		if (!lstatSync(auth).isSymbolicLink() || readlinkSync(auth) !== authSource)
+			throw new Error("auth");
 		fd = openSync(
 			join(home, "config.toml"),
 			constants.O_RDONLY | constants.O_NOFOLLOW,

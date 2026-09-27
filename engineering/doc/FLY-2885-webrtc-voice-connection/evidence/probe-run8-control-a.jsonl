@@ -1,0 +1,27 @@
+{"t":25.4,"kind":"arm","data":{"arm":"control"}}
+{"t":955.6,"kind":"response","data":{"method":"initialize","error":null}}
+{"t":1338.1,"kind":"response","data":{"method":"account/read","error":null}}
+{"t":1338.3,"kind":"account","data":{"type":"chatgpt"}}
+{"t":2129.6,"kind":"response","data":{"method":"thread/start","error":null}}
+{"t":2381.4,"kind":"response","data":{"method":"thread/realtime/start","error":null}}
+{"t":2381.7,"kind":"start_response","data":{"error":null}}
+{"t":3588.3,"kind":"started","data":{"version":"v3"}}
+{"t":3597.3,"kind":"pc_state","data":{"s":"connecting"}}
+{"t":4259.3,"kind":"pc_state","data":{"s":"connected"}}
+{"t":4353.9,"kind":"dc_event","data":{"type":"session.started"}}
+{"t":5860.2,"kind":"response","data":{"method":"thread/realtime/appendSpeech","error":null}}
+{"t":5860.5,"kind":"append_speech","data":{"error":null}}
+{"t":6685.3,"kind":"dc_event","data":{"type":"turn.created","turn":{"role":"assistant","transcript":"测试助手"}}}
+{"t":9672.3,"kind":"barge_in","data":{"ms":2570}}
+{"t":11280.1,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"assistant","transcript":"测试助手B号为你同步:今天有五件事要对齐,设计评审已过,"}}}
+{"t":11289.1,"kind":"dc_event","data":{"type":"turn.created","turn":{"role":"user","transcript":"打断"}}}
+{"t":11305.2,"kind":"transcript_done","data":{"role":"assistant","text":"测试助手B号为你同步:今天有五件事要对齐,设计评审已过,"}}
+{"t":14046,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"user","transcript":"打断一下,4 加 4 等 于 几"}}}
+{"t":14050.4,"kind":"dc_event","data":{"type":"turn.created","turn":{"role":"assistant","transcript":"嗯,你说,要问什么?4加4等"}}}
+{"t":14051.7,"kind":"transcript_done","data":{"role":"user","text":"打断一下,4 加 4 等 于 几"}}
+{"t":16427.2,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"assistant","transcript":"嗯,你说,要问什么?4加4等于8。"}}}
+{"t":16433.5,"kind":"transcript_done","data":{"role":"assistant","text":"嗯,你说,要问什么?4加4等于8。"}}
+{"t":17270.2,"kind":"response","data":{"method":"thread/realtime/stop","error":null}}
+{"t":17273,"kind":"pc_state","data":{"s":"closed"}}
+{"t":17274,"kind":"realtime_closed","data":{"reason":"requested"}}
+{"t":17480,"kind":"summary","data":{"why":"done","arm":"control","bargeAtMs":9672.2,"errors":[],"closed":[{"t":17274,"reason":"requested"}],"transcripts":[{"t":11305.2,"role":"assistant","text":"测试助手B号为你同步:今天有五件事要对齐,设计评审已过,"},{"t":14051.7,"role":"user","text":"打断一下,4 加 4 等 于 几"},{"t":16433.5,"role":"assistant","text":"嗯,你说,要问什么?4加4等于8。"}],"assistantTurnsAfterBarge":["测试助手B号为你同步:今天有五件事要对齐,设计评审已过,","嗯,你说,要问什么?4加4等于8。"],"answerText":"嗯,你说,要问什么?4加4等于8。","answeredEight":true,"resumedMarkers":[],"verdict":"CLEAN","authSourceStillFile":true}}

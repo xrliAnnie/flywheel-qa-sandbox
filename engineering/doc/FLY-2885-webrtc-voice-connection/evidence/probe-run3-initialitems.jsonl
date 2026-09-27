@@ -1,0 +1,34 @@
+{"t":815.9,"kind":"response","data":{"method":"initialize","error":null}}
+{"t":1171.3,"kind":"response","data":{"method":"account/read","error":null}}
+{"t":1171.5,"kind":"account","data":{"type":"chatgpt"}}
+{"t":1791.7,"kind":"response","data":{"method":"thread/start","error":null}}
+{"t":1903.4,"kind":"marin_attempt","data":{"error":"skipped","accepted":false}}
+{"t":1903.6,"kind":"mark","data":{"k":"start_sent","ms":1903.6}}
+{"t":1903.6,"kind":"start_params_shape","data":{"itemMode":true,"promptBytes":220,"itemBytes":16461}}
+{"t":1905.3,"kind":"response","data":{"method":"thread/realtime/start","error":null}}
+{"t":2590.4,"kind":"notify","data":{"method":"thread/realtime/started","params":{"threadId":"01a0daa7-015a-7a41-9ceb-93bec6f60e4e","realtimeSessionId":"01a0daa7-015a-7a41-9ceb-93bec6f60e4e","version":"v3"}}}
+{"t":2591,"kind":"mark","data":{"k":"answer_sdp","ms":2591}}
+{"t":2594.5,"kind":"pc_state","data":{"s":"connecting"}}
+{"t":3167.9,"kind":"pc_state","data":{"s":"connected"}}
+{"t":3168,"kind":"mark","data":{"k":"pc_connected","ms":3168}}
+{"t":3241.4,"kind":"dc_event","data":{"type":"session.started","session":{"id":"rtc_u2_ES8YQp3oMnJT9BabJmNE94ayhDzgUDIt","status":"active","expires_at":1790381974}}}
+{"t":3807.2,"kind":"mark","data":{"k":"first_rtp_in","ms":3807.2}}
+{"t":4014.8,"kind":"mark","data":{"k":"question_start","ms":4014.8}}
+{"t":5543.8,"kind":"dc_event","data":{"type":"turn.created","turn":{"id":"turn_ES8YT7d5Yy8fD2j5NxFjg","end_ms":2000,"role":"user","start_ms":1800,"transcript":"你好"}}}
+{"t":8321.8,"kind":"mark","data":{"k":"first_voice_in","ms":8321.8}}
+{"t":9289.5,"kind":"dc_event","data":{"type":"turn.done","turn":{"id":"turn_ES8YT7d5Yy8fD2j5NxFjg","end_ms":5600,"role":"user","start_ms":1800,"transcript":"你好,你叫什么名字?你的暗号 是什么?"}}}
+{"t":9289.7,"kind":"dc_event","data":{"type":"turn.created","turn":{"id":"turn_ES8YV92PV5eyUesVVZLuf","end_ms":5600,"role":"assistant","start_ms":5400,"transcript":"你好,我叫测试助手"}}}
+{"t":9366.8,"kind":"transcript_done","data":{"role":"user","text":"你好,你叫什么名字?你的暗号 是什么?"}}
+{"t":13298.9,"kind":"dc_event","data":{"type":"turn.done","turn":{"id":"turn_ES8YV92PV5eyUesVVZLuf","end_ms":9800,"role":"assistant","start_ms":5400,"transcript":"你好,我叫测试助手B号,暗号是青柠七号。"}}}
+{"t":13308.6,"kind":"transcript_done","data":{"role":"assistant","text":"你好,我叫测试助手B号,暗号是青柠七号。"}}
+{"t":13308.8,"kind":"mark","data":{"k":"answer_done","ms":13308.7}}
+{"t":14810,"kind":"mark","data":{"k":"append_speech_sent","ms":14810}}
+{"t":14814,"kind":"response","data":{"method":"thread/realtime/appendSpeech","error":null}}
+{"t":15431.6,"kind":"dc_event","data":{"type":"turn.created","turn":{"id":"turn_ES8Yc2OOWn3p6AlKYlfNE","end_ms":11800,"role":"assistant","start_ms":11600,"transcript":"测试已经"}}}
+{"t":19055,"kind":"dc_event","data":{"type":"turn.done","turn":{"id":"turn_ES8Yc2OOWn3p6AlKYlfNE","end_ms":15600,"role":"assistant","start_ms":11600,"transcript":"测试已经完成,谢谢你的配合。"}}}
+{"t":19067.3,"kind":"transcript_done","data":{"role":"assistant","text":"测试已经完成,谢谢你的配合。"}}
+{"t":19067.4,"kind":"mark","data":{"k":"append_speech_done","ms":19067.4}}
+{"t":20570,"kind":"response","data":{"method":"thread/realtime/stop","error":null}}
+{"t":20570.7,"kind":"pc_state","data":{"s":"closed"}}
+{"t":20571.3,"kind":"notify","data":{"method":"thread/realtime/closed","params":{"threadId":"01a0daa7-015a-7a41-9ceb-93bec6f60e4e","reason":"requested"}}}
+{"t":20668,"kind":"summary","data":{"why":"done","marks":{"start_sent":1903.6,"answer_sdp":2591,"pc_connected":3168,"first_rtp_in":3807.2,"question_start":4014.8,"first_voice_in":8321.8,"answer_done":13308.7,"append_speech_sent":14810,"append_speech_done":19067.4},"counts":{"outputAudioDelta":0,"dc":{"session.started":1,"input_transcript.added":8,"turn.created":3,"turn.delta":22,"output_transcript.added":20,"turn.done":3,"session.context.appended":1,"session.usage.updated":1},"notify":{"remoteControl/status/changed":1,"account/updated":1,"thread/started":1,"mcpServer/startupStatus/updated":3,"thread/realtime/started":1,"thread/realtime/sdp":1,"thread/realtime/transcript/delta":28,"thread/realtime/transcript/done":3,"thread/realtime/closed":1}},"downPkts":824,"down960":824,"voicedDown":229,"transcripts":[{"t":9366.8,"role":"user","text":"你好,你叫什么名字?你的暗号 是什么?"},{"t":13308.6,"role":"assistant","text":"你好,我叫测试助手B号,暗号是青柠七号。"},{"t":19067.3,"role":"assistant","text":"测试已经完成,谢谢你的配合。"}],"promptBytes":20583,"authSourceStillFile":true}}

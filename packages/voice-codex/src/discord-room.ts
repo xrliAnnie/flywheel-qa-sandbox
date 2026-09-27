@@ -7,6 +7,7 @@ import {
 } from "flywheel-voice-bridge";
 import type { ReceiveHealth } from "flywheel-voice-core";
 import { AudioClock } from "./audio/AudioClock.js";
+import { OpusDownlink } from "./audio/OpusDownlink.js";
 import { type SpeechStream, WaitingMouth } from "./audio.js";
 import {
 	createInitialSileroState,
@@ -67,6 +68,17 @@ export interface DiscordVoiceRoomOptions {
 	 * (default DEFAULT_UPLINK_PREROLL_MS); it also delays founder audio by the
 	 * same amount. */
 	uplinkPrerollMs?: number;
+	/**
+	 * FLY-2885 T4: "opus-passthrough" plays engine B's WebRTC Opus directly
+	 * (no PCM mouth, no waiting bed). The default keeps engine A unchanged.
+	 */
+	downlink?: "pcm-mouth" | "opus-passthrough";
+	/**
+	 * FLY-2885 T6: sentence-level onset peak gate in dBFS (null = off). Only
+	 * the opus-passthrough room applies it, with release-when-open and uplink
+	 * catch-up; the engine A room keeps its gate byte-for-byte.
+	 */
+	uplinkMinOnsetDbfs?: number | null;
 	deps: RoomDeps;
 	token: string;
 	expectedBotUserId: string;
@@ -102,6 +114,7 @@ export class DiscordVoiceRoom {
 	private capture?: Capture;
 	private activeSpeaker?: string;
 	private mouth?: WaitingMouth;
+	private downlink?: OpusDownlink;
 	private vad?: Pick<SileroVad, "score" | "close">;
 	private uplink?: Uplink;
 	private clock?: AudioClock;
@@ -166,6 +179,7 @@ export class DiscordVoiceRoom {
 		)();
 		await this.checkActive(signal);
 		const vad = this.vad;
+		const webrtc = this.options.downlink === "opus-passthrough";
 		const gate = new UplinkSpeechGate({
 			score: (samples, state) => vad.score(samples, state as SileroState),
 			initialState: createInitialSileroState,
@@ -173,6 +187,17 @@ export class DiscordVoiceRoom {
 			threshold: 0.5,
 			prerollMs: this.options.uplinkPrerollMs ?? DEFAULT_UPLINK_PREROLL_MS,
 			now: this.now,
+			...(webrtc
+				? {
+						releaseWhenOpen: true,
+						minOnsetPeakDbfs: this.options.uplinkMinOnsetDbfs ?? null,
+						onRejectedQuiet: ({ peakDbfs }: { peakDbfs: number }) =>
+							this.options.onDiagnostic?.({
+								kind: "uplink_gate_rejected_quiet",
+								peakDbfs,
+							}),
+					}
+				: {}),
 			onDegraded: ({ reason, consecutive, sessionPermanent }) =>
 				this.options.onDiagnostic?.({
 					kind: "uplink_gate_degraded",
@@ -194,6 +219,7 @@ export class DiscordVoiceRoom {
 			sessionGeneration: 1,
 			prebufferFrames: 3,
 			maxQueueFrames: 100,
+			...(webrtc ? { catchUpAboveFrames: 3 } : {}),
 			speechGate: gate,
 			now: this.now,
 			record: () => {},
@@ -231,14 +257,25 @@ export class DiscordVoiceRoom {
 		this.subscribeConnectionDiagnostics();
 		this.options.onReceiveHealth?.(this.receiveHealth.current());
 		const player = this.options.deps.createPlayer(this.connection);
-		this.mouth = new WaitingMouth({
-			player,
-			createResource: this.options.deps.createResource,
-			assertLease: this.options.assertLease,
-			onError: this.options.onError,
-			onDiagnostic: (record) => this.options.onDiagnostic?.({ ...record }),
-		});
-		this.mouth.start();
+		if (this.options.downlink === "opus-passthrough") {
+			this.downlink = new OpusDownlink({
+				player,
+				createResource: this.options.deps.createResource,
+				assertLease: this.options.assertLease,
+				onError: this.options.onError,
+				onDiagnostic: (record) => this.options.onDiagnostic?.({ ...record }),
+			});
+			this.downlink.start();
+		} else {
+			this.mouth = new WaitingMouth({
+				player,
+				createResource: this.options.deps.createResource,
+				assertLease: this.options.assertLease,
+				onError: this.options.onError,
+				onDiagnostic: (record) => this.options.onDiagnostic?.({ ...record }),
+			});
+			this.mouth.start();
+		}
 		this.clock = new AudioClock({
 			intervalMs: 20,
 			now: this.now,
@@ -359,7 +396,14 @@ export class DiscordVoiceRoom {
 		return userId ? { userId, name: this.names.get(userId) ?? userId } : null;
 	}
 
+	/** Engine B's session-level downlink; present only in opus-passthrough. */
+	get opusDownlink(): OpusDownlink | undefined {
+		return this.downlink;
+	}
+
 	playSpeech(speechId: string, pcm24Mono: Buffer): Promise<void> {
+		if (this.options.downlink === "opus-passthrough")
+			return Promise.reject(new Error("speech_room_opus_passthrough"));
 		return (
 			this.mouth?.playSpeech(speechId, pcm24Mono) ??
 			Promise.reject(new Error("speech_room_not_ready"))
@@ -368,6 +412,8 @@ export class DiscordVoiceRoom {
 
 	/** Streamed playback: audio is appended while the speech already plays. */
 	openSpeech(speechId: string): SpeechStream {
+		if (this.options.downlink === "opus-passthrough")
+			throw new Error("speech_room_opus_passthrough");
 		if (!this.mouth) throw new Error("speech_room_not_ready");
 		return this.mouth.openSpeech(speechId);
 	}
@@ -378,6 +424,7 @@ export class DiscordVoiceRoom {
 
 	cancelAllSpeech(): void {
 		this.mouth?.cancelAllSpeech();
+		this.downlink?.cut();
 	}
 
 	setWaiting(waiting: boolean): void {
@@ -422,6 +469,8 @@ export class DiscordVoiceRoom {
 		if (this.capture) this.disposeCapture(this.capture);
 		this.mouth?.stop();
 		this.mouth = undefined;
+		this.downlink?.stop();
+		this.downlink = undefined;
 		if (this.connection) this.options.deps.leaveVoice(this.connection);
 		this.connection = undefined;
 		await this.registry.destroyAll();

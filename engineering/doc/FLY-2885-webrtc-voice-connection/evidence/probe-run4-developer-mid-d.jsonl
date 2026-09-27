@@ -1,0 +1,21 @@
+{"t":4.7,"kind":"items_shape","data":{"role":"developer","position":"mid","count":3,"itemBytes":[10474,10248,10474],"totalBytes":31196,"codexEstimatedTokens":7799}}
+{"t":136.3,"kind":"response","data":{"method":"initialize","error":null}}
+{"t":623.4,"kind":"response","data":{"method":"account/read","error":null}}
+{"t":623.6,"kind":"account","data":{"type":"chatgpt"}}
+{"t":930.1,"kind":"response","data":{"method":"thread/start","error":null}}
+{"t":1009.5,"kind":"response","data":{"method":"thread/realtime/start","error":null}}
+{"t":1009.8,"kind":"start_response","data":{"error":null}}
+{"t":1782.7,"kind":"started","data":{"version":"v3"}}
+{"t":1787.1,"kind":"pc_state","data":{"s":"connecting"}}
+{"t":2268.3,"kind":"pc_state","data":{"s":"connected"}}
+{"t":2354.7,"kind":"dc_event","data":{"type":"session.started"}}
+{"t":5334.4,"kind":"watch_window_done","data":{"errors":0,"closed":0}}
+{"t":5349.7,"kind":"question_sent","data":{"ms":2340}}
+{"t":9359.4,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"user","transcript":"你好,请问暗号 是什么"}}}
+{"t":9360.4,"kind":"transcript_done","data":{"role":"user","text":"你好,请问暗号 是什么"}}
+{"t":11619.7,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"assistant","transcript":"暗号在你心里。"}}}
+{"t":11633.7,"kind":"transcript_done","data":{"role":"assistant","text":"暗号在你心里。"}}
+{"t":12135.1,"kind":"response","data":{"method":"thread/realtime/stop","error":null}}
+{"t":12135.6,"kind":"pc_state","data":{"s":"closed"}}
+{"t":12136.5,"kind":"realtime_closed","data":{"reason":"requested"}}
+{"t":12226.5,"kind":"summary","data":{"why":"done","role":"developer","position":"mid","itemBytes":[10474,10248,10474],"totalBytes":31196,"errors":[],"closed":[{"t":12136.5,"reason":"requested"}],"transcripts":[{"t":9360.4,"role":"user","text":"你好,请问暗号 是什么"},{"t":11633.7,"role":"assistant","text":"暗号在你心里。"}],"dc":{"session.started":1,"input_transcript.added":6,"turn.created":2,"turn.delta":6,"output_transcript.added":6,"turn.done":2},"codeWordAnswered":false,"verdict":"NOT_ACCEPTED","authSourceStillFile":true}}

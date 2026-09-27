@@ -1,0 +1,70 @@
+GREEN-DUMP {
+ "sent": [
+  {
+   "text": "我有 Peter 的角色背景,但没有读取他的完整 memory。",
+   "atMs": 0
+  },
+  {
+   "text": "知道他是产品负责人,主要负责产品需求、优先级和与 Annie 沟通;他最近具体在做什么,需要查记录,不能凭角色猜。",
+   "atMs": 25266
+  }
+ ],
+ "receipts": [
+  "unconfirmed"
+ ],
+ "statuses": [],
+ "admission": [
+  {
+   "kind": "codex_readback_continue",
+   "pendingKey": "d9a70eb7-e3b3-4cbf-90bb-ae00ac5f3a3e",
+   "chunk": 0,
+   "spokenSentences": 1,
+   "totalSentences": 1
+  },
+  {
+   "kind": "codex_speak_receipt",
+   "speechKind": "readback",
+   "pendingKey": "d9a70eb7-e3b3-4cbf-90bb-ae00ac5f3a3e",
+   "requestDigest": "01d376abbcaa6b91f66793655b4bc7a191494d14968eb4db889d6a4aa53bd32a",
+   "outcome": "failed",
+   "transport": "submitted",
+   "contentProof": "none",
+   "reason": "speech_overrun"
+  }
+ ],
+ "overrun": [
+  {
+   "kind": "codex_speech_overrun",
+   "pendingKey": "d9a70eb7-e3b3-4cbf-90bb-ae00ac5f3a3e",
+   "turnId": "turn_ESP3BYyuD6D5SIa4HpRh0",
+   "expectedChars": 27,
+   "unalignedChars": 9,
+   "extraTextSha256": "082fcea9d0d91ce7ccaa723ead27bf3c788c3ab448f257d87b9aaa825c734bfc",
+   "detectedAtMs": 4266,
+   "stopLatencyMs": 0
+  },
+  {
+   "generation": 1,
+   "kind": "codex_speech_overrun_resumed",
+   "discardMs": 4974
+  }
+ ],
+ "mirror": [
+  {
+   "role": "assistant",
+   "text": "我有 Peter 的角色背景,但没有读取他的完整 memory。（已截断越界内容）"
+  },
+  {
+   "role": "user",
+   "text": "所以他的完整 memory,你是没有的"
+  },
+  {
+   "role": "assistant",
+   "text": "对,我这边没有他的完整 memory,只有当前这份系统给到的摘要和快照,而且摘要里也没有更多细节。要继续查的话我可以再确认。逐句文字会发到当前语音会话的 Discord thread。"
+  },
+  {
+   "role": "assistant",
+   "text": "知道他是产品负责人,主要负责产品需求、优先级和与 Annie 沟通;他最近具体在做什么,需要查记录,不能凭角色猜。"
+  }
+ ]
+}

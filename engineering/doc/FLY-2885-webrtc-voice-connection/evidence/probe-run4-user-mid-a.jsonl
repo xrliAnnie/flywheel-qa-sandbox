@@ -1,0 +1,21 @@
+{"t":20,"kind":"items_shape","data":{"role":"user","position":"mid","count":3,"itemBytes":[10493,10267,10493],"totalBytes":31253,"codexEstimatedTokens":7814}}
+{"t":141.7,"kind":"response","data":{"method":"initialize","error":null}}
+{"t":439,"kind":"response","data":{"method":"account/read","error":null}}
+{"t":439.2,"kind":"account","data":{"type":"chatgpt"}}
+{"t":1218.2,"kind":"response","data":{"method":"thread/start","error":null}}
+{"t":1311.7,"kind":"response","data":{"method":"thread/realtime/start","error":null}}
+{"t":1312,"kind":"start_response","data":{"error":null}}
+{"t":1951.4,"kind":"started","data":{"version":"v3"}}
+{"t":1956.5,"kind":"pc_state","data":{"s":"connecting"}}
+{"t":2605.6,"kind":"pc_state","data":{"s":"connected"}}
+{"t":2693,"kind":"dc_event","data":{"type":"session.started"}}
+{"t":5666.2,"kind":"watch_window_done","data":{"errors":0,"closed":0}}
+{"t":5669.9,"kind":"question_sent","data":{"ms":2340}}
+{"t":9604.9,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"user","transcript":"你好,请问暗号 是什么?"}}}
+{"t":9633.2,"kind":"transcript_done","data":{"role":"user","text":"你好,请问暗号 是什么?"}}
+{"t":11403.5,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"assistant","transcript":"蓝莓派。"}}}
+{"t":11407.2,"kind":"transcript_done","data":{"role":"assistant","text":"蓝莓派。"}}
+{"t":11910,"kind":"response","data":{"method":"thread/realtime/stop","error":null}}
+{"t":11910.6,"kind":"pc_state","data":{"s":"closed"}}
+{"t":11912.1,"kind":"realtime_closed","data":{"reason":"requested"}}
+{"t":12037.6,"kind":"summary","data":{"why":"done","role":"user","position":"mid","itemBytes":[10493,10267,10493],"totalBytes":31253,"errors":[],"closed":[{"t":11912.1,"reason":"requested"}],"transcripts":[{"t":9633.2,"role":"user","text":"你好,请问暗号 是什么?"},{"t":11407.2,"role":"assistant","text":"蓝莓派。"}],"dc":{"session.started":1,"input_transcript.added":6,"turn.created":2,"turn.delta":5,"output_transcript.added":3,"turn.done":2},"codeWordAnswered":false,"verdict":"NOT_ACCEPTED","authSourceStillFile":true}}
