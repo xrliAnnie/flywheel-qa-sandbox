@@ -177,7 +177,8 @@ export function createCodexQuotaRunRecovery(
 				!["committed", "recovering", "settled"].includes(
 					String(incident.state),
 				) ||
-				incident.probe_result !== "ok"
+				(incident.probe_result !== "ok" &&
+					incident.recovery_proof_kind !== "resume_output")
 			)
 				return false;
 			const { readFile, realpath } = await import("node:fs/promises");
@@ -261,6 +262,21 @@ export function createCodexQuotaRunRecovery(
 			["recovered", "abandoned"].includes(String(row.state))
 		)
 			return;
+		// FLY-2900 §4.2: a quota standby carrier recovers this execution in
+		// place (same exec, same thread); never terminate the run or start a
+		// new one for it. A settled carrier implies the target's settlement.
+		const standby = quota.standbyTargetDisposition?.(
+			incidentId,
+			String(row.old_execution_id),
+		);
+		if (standby === "carrier") return;
+		if (standby) {
+			quota.updateTarget(incidentId, "runner", String(row.target_id), {
+				state: standby,
+				last_error: `standby_${standby}`,
+			});
+			return;
+		}
 		const recoveryId = `${incidentId}:runner:${String(row.target_id)}`;
 		try {
 			const context = store.getCodexQuotaRecoveryContext(recoveryId);

@@ -4,7 +4,15 @@ import {
 	leadEventDeliveryDisposition,
 	leadNotificationDecision,
 } from "../bridge/EventFilter.js";
+import {
+	storeLeadMonitoringReestablishedAuditEnabled,
+	storeLeadReplacementNoticeAuditEnabled,
+	storeLeadSessionStartedAuditEnabled,
+	storeLeadStageChangedAuditEnabled,
+	storeLeadTokenSavingsEnabled,
+} from "../bridge/flag-store-runtime.js";
 import type { HookPayload } from "../bridge/hook-payload.js";
+import { StateStore } from "../StateStore.js";
 
 function makePayload(
 	overrides: Partial<HookPayload> = {},
@@ -380,5 +388,347 @@ describe("routine event delivery disposition", () => {
 				"model",
 			);
 		}
+	});
+});
+
+describe("FLY-2912 notification v2", () => {
+	const binding = {
+		projectName: "flywheel",
+		leadId: "lead",
+		eventId: "notice",
+		executionId: "exec",
+		issueId: "issue",
+	};
+	const base = {
+		binding,
+		proof: {
+			sourceRef: "record:notice",
+			executionId: "exec",
+			action: { state: "none", checkedRefs: ["record:notice"] },
+		},
+		version: 2,
+	};
+	const cases = [
+		[
+			"stage_changed",
+			{ stage: "code_review" },
+			{
+				...base,
+				kind: "stage",
+				stage: "code_review",
+				ownerRef: "runner-review-contract:activation",
+			},
+		],
+		[
+			"session_started",
+			{},
+			{
+				...base,
+				kind: "startup",
+				registrationRef: "session:exec",
+				handoff: "initial_notice",
+				threadOutcome: "not_required",
+			},
+		],
+		[
+			"session_monitoring_reestablished",
+			{ status: "ship_parked" },
+			{
+				...base,
+				kind: "monitoring",
+				episodeRef: "episode",
+				probeRef: "probe",
+				alertState: "none",
+				legalPark: true,
+			},
+		],
+		[
+			"workflow_replacement_eligibility",
+			{},
+			{
+				...base,
+				kind: "replacement_notice",
+				attemptRef: "attempt",
+				scheduleRef: "dispatch",
+				nextCheckAt: "2026-09-26T05:00:00Z",
+				observedAt: "2026-09-26T04:59:00Z",
+				disposition: "replacement_candidate",
+			},
+		],
+	] as const;
+	const decide = (
+		eventType: string,
+		payload: Record<string, unknown>,
+		evidence: unknown,
+		options = {},
+	) =>
+		leadNotificationDecision(eventType, payload, evidence as never, {
+			binding,
+			enabled: true,
+			categoryEnabled: true,
+			...options,
+		});
+
+	it.each([
+		["stage_changed", "lead_stage_changed_audit"],
+		["session_started", "lead_session_started_audit"],
+		["session_monitoring_reestablished", "lead_monitoring_reestablished_audit"],
+		["workflow_replacement_eligibility", "lead_replacement_notice_audit"],
+	])("disabling %s restores only that category", (disabledType, flag) => {
+		for (const [type, payload, evidence] of cases) {
+			expect(
+				decide(type, { ...payload }, evidence, {
+					categoryEnabled: type !== disabledType,
+				}),
+			).toMatchObject(
+				type === disabledType
+					? {
+							disposition: "model",
+							reason: `${flag}_disabled`,
+						}
+					: { disposition: "audit_only" },
+			);
+		}
+	});
+
+	it.each([
+		["lead_stage_changed_audit", storeLeadStageChangedAuditEnabled],
+		["lead_session_started_audit", storeLeadSessionStartedAuditEnabled],
+		[
+			"lead_monitoring_reestablished_audit",
+			storeLeadMonitoringReestablishedAuditEnabled,
+		],
+		["lead_replacement_notice_audit", storeLeadReplacementNoticeAuditEnabled],
+	] as const)(
+		"hot reads %s with project isolation and master override",
+		async (name, reader) => {
+			const store = await StateStore.create(":memory:");
+			const readers = [
+				storeLeadStageChangedAuditEnabled,
+				storeLeadSessionStartedAuditEnabled,
+				storeLeadMonitoringReestablishedAuditEnabled,
+				storeLeadReplacementNoticeAuditEnabled,
+			];
+			const set = (flag: string, enabled: boolean) =>
+				expect(
+					store.applyScopedFlagValueChange({
+						name: flag,
+						scope: "flywheel",
+						op: "set",
+						rawTo: enabled ? "1" : "0",
+						expectedChangeSeq: store.getFlagValueChangeSeq(flag, "flywheel"),
+						actor: "test",
+						reason: "hot notification switch",
+					}).ok,
+				).toBe(true);
+			try {
+				for (const enabled of [true, false, true]) {
+					set(name, enabled);
+					for (const [index, [type, payload, evidence]] of cases.entries()) {
+						const category = readers[index]!;
+						expect(
+							decide(type, { ...payload }, evidence, {
+								enabled: storeLeadTokenSavingsEnabled({ store }, "flywheel"),
+								categoryEnabled: category({ store }, "flywheel"),
+							}).disposition,
+						).toBe(category === reader && !enabled ? "model" : "audit_only");
+					}
+					expect(reader({ store }, "other-project")).toBe(true);
+				}
+				set("lead_token_savings", false);
+				for (const [index, [type, payload, evidence]] of cases.entries()) {
+					expect(
+						decide(type, { ...payload }, evidence, {
+							enabled: storeLeadTokenSavingsEnabled({ store }, "flywheel"),
+							categoryEnabled: readers[index]!({ store }, "flywheel"),
+						}),
+					).toMatchObject({ disposition: "model", reason: "policy_disabled" });
+				}
+				for (const raw of ["false", "bad", null]) {
+					expect(
+						reader(
+							{
+								store: { getFlagValueRow: () => ({ hasOverride: true, raw }) },
+							},
+							"flywheel",
+						),
+					).toBe(false);
+				}
+				expect(
+					reader(
+						{
+							store: {
+								getFlagValueRow() {
+									throw new Error("unavailable");
+								},
+							},
+						},
+						"flywheel",
+					),
+				).toBe(false);
+			} finally {
+				store.close();
+			}
+		},
+	);
+
+	it.each(cases)("audits a proven pure %s", (type, payload, evidence) => {
+		expect(decide(type, { ...payload }, evidence)).toMatchObject({
+			disposition: "audit_only",
+			policyVersion: "notification-v2",
+			proofRef: "record:notice",
+		});
+	});
+	it.each(cases)(
+		"retains every actionable or malformed %s ingress and projection",
+		(type, payload, evidence) => {
+			for (const mixed of [
+				{ question_id: "q" },
+				{ question: "Please decide" },
+				{ ask: "help" },
+				{ prompt: "reply" },
+				{ messages: [] },
+				{ founder_message: {} },
+				{ needs_action: [] },
+				{ requires_action: "false" },
+				{ error: "failed" },
+				{ blocked: true },
+				{ failureKind: "goal_blocked" },
+				{ checkpoint: "approve_to_ship" },
+				{ extension: {} },
+				{ summary: "FYI can you decide?" },
+				{ notification_context: "all good; please restart" },
+			]) {
+				expect(
+					decide(type, { ...payload, ...mixed }, evidence).disposition,
+				).toBe("model");
+				expect(
+					decide(type, { ...payload }, evidence, {
+						projection: { ...payload, ...mixed },
+					}).disposition,
+				).toBe("model");
+			}
+		},
+	);
+	it.each(cases)(
+		"restores model delivery for %s when disabled or unbound",
+		(type, payload, evidence) => {
+			expect(
+				decide(type, { ...payload }, evidence, { enabled: false }).disposition,
+			).toBe("model");
+			expect(
+				decide(type, { ...payload }, evidence, {
+					binding: { ...binding, executionId: "other" },
+				}).disposition,
+			).toBe("model");
+			expect(
+				decide(type, { ...payload, execution_id: "other" }, evidence)
+					.disposition,
+			).toBe("model");
+			expect(
+				decide(
+					type,
+					{ ...payload },
+					{
+						...evidence,
+						proof: { ...base.proof, action: { state: "unknown" } },
+					},
+				).disposition,
+			).toBe("model");
+		},
+	);
+	it("validates producer-bound monitoring details and numeric PR metadata", () => {
+		const probe = {
+			method: "tmux_pane_probe",
+			target: "runner:0",
+			result: "alive" as const,
+			probed_at: "2026-09-26T04:59:00Z",
+		};
+		const evidence = { ...cases[2][2], livenessProbe: probe };
+		const payload = {
+			status: "approved_to_ship",
+			liveness_probe: probe,
+			minutes_since_activity: 1.5,
+			concurrent_reestablished: 2,
+		};
+		expect(decide(cases[2][0], payload, evidence).disposition).toBe(
+			"audit_only",
+		);
+		expect(
+			decide(
+				cases[2][0],
+				{ ...payload, liveness_probe: { ...probe, target: "other" } },
+				evidence,
+			).disposition,
+		).toBe("model");
+		expect(
+			decide(
+				cases[2][0],
+				{ ...payload, liveness_probe: { ...probe, question: "reply" } },
+				evidence,
+			).disposition,
+		).toBe("model");
+		expect(
+			decide(cases[0][0], { ...cases[0][1], pr_number: 123 }, cases[0][2])
+				.disposition,
+		).toBe("audit_only");
+		expect(
+			decide(cases[0][0], { ...cases[0][1], pr_number: "123" }, cases[0][2])
+				.disposition,
+		).toBe("model");
+	});
+
+	it("does not resolve an inherited decision from running or unrelated receipt", () => {
+		const [type, payload, evidence] = cases[0];
+		const mixed = {
+			...payload,
+			status: "running",
+			decision_route: "needs_review",
+		};
+		expect(decide(type, mixed, evidence).disposition).toBe("model");
+		const resolved = {
+			...evidence,
+			proof: {
+				...base.proof,
+				action: {
+					state: "resolved",
+					resolutionRef: "receipt",
+					decisionRoute: "needs_review",
+				},
+			},
+		};
+		expect(decide(type, mixed, resolved).disposition).toBe("audit_only");
+		expect(
+			decide(type, { ...mixed, decision_route: "blocked" }, resolved)
+				.disposition,
+		).toBe("model");
+	});
+	it("keeps missing ownership, handoff, open alerts and overdue replacement actionable", () => {
+		expect(
+			decide(
+				cases[0][0],
+				{ ...cases[0][1] },
+				{ ...cases[0][2], ownerRef: undefined },
+			).disposition,
+		).toBe("model");
+		expect(
+			decide(cases[1][0], {}, { ...cases[1][2], handoff: "lead_required" })
+				.disposition,
+		).toBe("model");
+		expect(
+			decide(cases[1][0], {}, { ...cases[1][2], threadOutcome: "failed" })
+				.disposition,
+		).toBe("model");
+		expect(
+			decide(cases[2][0], {}, { ...cases[2][2], alertState: "open" })
+				.disposition,
+		).toBe("model");
+		expect(
+			decide(
+				cases[3][0],
+				{},
+				{ ...cases[3][2], nextCheckAt: "2026-09-26T04:58:00Z" },
+			).disposition,
+		).toBe("model");
 	});
 });

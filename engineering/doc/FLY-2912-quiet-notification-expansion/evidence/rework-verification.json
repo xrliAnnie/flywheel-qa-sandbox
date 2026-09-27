@@ -1,0 +1,54 @@
+{
+  "baseHead": "6ca5af36a77cff6d2ce400c305829f866d1f2e34",
+  "scope": "QA rework attempt 2; test harness and evidence only; no production behavior changes",
+  "logs": {
+    "queryRed": {
+      "path": "/tmp/fly2912-rework-query-red.log",
+      "result": "1 failed / 1 passed; stale evidence",
+      "sha256": "766bbc19482ad62e95ed07a9822296e550423259df6a3e9fcbcdbb1bc3250015",
+      "bytes": 4915
+    },
+    "queryGreen": {
+      "path": "/tmp/fly2912-rework-replay-green.log",
+      "result": "query-plans 2 passed; this combined exploratory run still had the replay receipt failure",
+      "sha256": "30bb6fd2b8659ca75b5c6acf822a157b09b3ae0233ea01b2d9378abfefbfae95",
+      "bytes": 46158
+    },
+    "replayRed": {
+      "path": "/tmp/fly2912-rework-replay-red.log",
+      "result": "payload equality fails because old harness injected a field",
+      "sha256": "9b2578a2986b8a56a1680cd23b0704e0438dd27b875d8e4ff3475c59588ca01b",
+      "bytes": 135899
+    },
+    "replayRelated": {
+      "path": "/tmp/fly2912-rework-replay-related-r2.log",
+      "result": "2 passed; exit 0",
+      "sha256": "6f8680c17da1ed4518ce26dc7be41f16ee9eddea2ee38aefca58634584412444",
+      "bytes": 133484
+    },
+    "retention": {
+      "path": "/tmp/fly2912-rework-retention.log",
+      "result": "2 passed, 12 not selected; original timeouts",
+      "sha256": "2ffaa3c5be18a31b65f94d0713af6f3626d449d06d88646be74a01c196831146",
+      "bytes": 621
+    },
+    "loadProbe": {
+      "path": "/tmp/fly2912-rework-load-probe.log",
+      "result": "environment failure: process identity unavailable; interrupted exit 130",
+      "sha256": "23ad37dde000da45ad99e29d2f0bd672665d074127d8e4683d323c6b3d3522bd",
+      "bytes": 2966
+    },
+    "build": {
+      "path": "/tmp/fly2912-rework-build.log",
+      "result": "exit 0",
+      "sha256": "d32f84cebce7ca9f6206a969fd0b576cfd0e1b59b2e60a02aac97cbfb0d53490",
+      "bytes": 3961
+    },
+    "lint": {
+      "path": "/tmp/fly2912-rework-lint-final.log",
+      "result": "exit 0; 25 existing warnings",
+      "sha256": "95da978bb080879490e6f3ee5cee51c1efd1773a04a70f0b3bd9673a0d83de13",
+      "bytes": 36804
+    }
+  }
+}

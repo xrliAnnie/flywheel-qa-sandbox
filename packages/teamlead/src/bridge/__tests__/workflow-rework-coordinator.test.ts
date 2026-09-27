@@ -1513,6 +1513,20 @@ describe("WorkflowReworkCoordinator", () => {
 		});
 	});
 
+	it("FLY-2900 retries later instead of replacing a Codex quota standby actor", async () => {
+		const parked = makeHarness({ registered: "absent", persisted: "absent" });
+		(
+			parked.store as unknown as {
+				isCodexQuotaStandby: (id: string) => boolean;
+			}
+		).isCodexQuotaStandby = (id) => id === "implement-exec";
+		const outcome = await parked.coordinator.reconcile("rework-1");
+		expect(outcome).not.toMatchObject({ kind: "replacement_pending" });
+		expect(parked.getDelivery().state).not.toBe("replacement_pending");
+		expect(parked.effects.grantTurn).not.toHaveBeenCalled();
+		expect(parked.effects.probeRegistered).not.toHaveBeenCalled();
+	});
+
 	it("replays the same activation and source grant after a projection crash", async () => {
 		const h = makeHarness({
 			registered: "alive",

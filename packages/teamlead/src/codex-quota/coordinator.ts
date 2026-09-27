@@ -90,12 +90,21 @@ export class CodexQuotaCoordinator {
 						waiter.root_key === rootKey &&
 						Number(waiter.generation) === Number(incident.generation),
 				);
-			if (incident.state === "settled") {
-				if (!pendingTargets && !pendingWaiters) continue;
-				this.options.store.setIncidentState(id, "recovering");
-				incident.state = "recovering";
-			}
 			try {
+				if (incident.state === "settled") {
+					if (!pendingTargets && !pendingWaiters) continue;
+					// Old reading permits could persist settled without any success proof.
+					// Let guarded recovery look for today's proof; never reopen blindly.
+					if (
+						incident.probe_result !== "ok" &&
+						!this.options.store.getResumeOutputRecoveryPermit(id)
+					) {
+						await this.options.recover(incident);
+						continue;
+					}
+					this.options.store.setIncidentState(id, "recovering");
+					incident.state = "recovering";
+				}
 				if (
 					now - Date.parse(String(incident.first_seen_at)) >=
 						CODEX_QUOTA_MAX_PAUSE_MS &&

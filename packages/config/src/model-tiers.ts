@@ -1,5 +1,6 @@
 import {
 	BUILTIN_MODEL_TIERS,
+	MODEL_ALIASES,
 	MODEL_IDS,
 	type ModelTier,
 	type ModelTierSpec,
@@ -55,10 +56,22 @@ export function modelShortCode(
 interface VendorShortCodeEntry {
 	family: string;
 	matches: (lowerModel: string) => boolean;
-	code: "G" | "K";
+	code: "A" | "S" | "G" | "K";
 }
 
 const VENDOR_SHORT_CODES: readonly VendorShortCodeEntry[] = [
+	{
+		family: "codex",
+		matches: (model) =>
+			model.startsWith("gpt-") && model.endsWith(`-${MODEL_ALIASES.ASTRA}`),
+		code: "A",
+	},
+	{
+		family: "codex",
+		matches: (model) =>
+			model.startsWith("gpt-") && model.endsWith(`-${MODEL_ALIASES.SOL}`),
+		code: "S",
+	},
 	{ family: "codex", matches: (model) => model.startsWith("gpt-"), code: "G" },
 	{ family: "kimi", matches: (model) => model.startsWith("kimi-"), code: "K" },
 ];
@@ -66,7 +79,7 @@ const VENDOR_SHORT_CODES: readonly VendorShortCodeEntry[] = [
 export function vendorModelShortCode(
 	family: string | null | undefined,
 	model: string | null | undefined,
-): "G" | "K" | undefined {
+): "A" | "S" | "G" | "K" | undefined {
 	const normalizedFamily = family?.toLowerCase();
 	const normalizedModel = model?.toLowerCase() ?? "";
 	if (!normalizedFamily || !normalizedModel) return undefined;

@@ -397,6 +397,12 @@
 			"disposition": "FLY-2465 isolated quota reader/probe only: async raw Codex child, sanitized environment, account lease, bounded deadline and output, abort process-group drain before credential persistence"
 		},
 		{
+			"file": "packages/teamlead/src/codex-quota/wip-checkpoint.ts",
+			"sync_child": 1,
+			"sync_marker": 1,
+			"disposition": "bridge_sync_marker_timeout: Codex quota fallback WIP checkpoint (rare: walled pool or exhausted resumes); local git plumbing only, every call under the sync-operation marker with a 5 s timeout and the whole checkpoint capped at 20 s (WIP_CHECKPOINT_BUDGET_MS); synchronous on purpose so no relaunch interleaves between the branch CAS and the index sync"
+		},
+		{
 			"file": "packages/teamlead/src/lead-auto-compact.ts",
 			"sync_child": 2,
 			"disposition": "FLY-2567 separate launcher probe process only; two CLI probes bounded by 5s timeout and 16KiB output each; not imported by Bridge"

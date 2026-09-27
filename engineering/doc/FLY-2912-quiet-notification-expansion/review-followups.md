@@ -1,0 +1,62 @@
+# FLY-2912 评审交接 — 调研
+Issue: FLY-2912 (https://linear.app/geoforge3d/issue/FLY-2912)
+日期: 2026-09-25
+基于: plan.md
+
+R2 effective reviewVerdict=APPROVED；reviewerVerdict=APPROVED。请求52e0e9a4-a162-442d-a558-705bd631eef4，question aaceefb4-073f-4544-a93f-12c52fda24c4。以下均非阻塞；完整结构化收据在evidence/review-approved.json。plan.md保持被审查版本的字节，Status: review-pending是提交时标记，有效结论以本收据为准。
+
+### review-owner-proof-unreachable-at-stage-time
+
+严重级别：MEDIUM。已部分修复：stage 时刻的职责证据依赖一个代码里不存在的「Runner contract v3」
+
+R2 正确承认了 stage→gate→request-review 的先后顺序，改用「Runner 自行提交评审的职责」作为证据，方向对。但 packages/edge-worker 与 teamlead 中都搜不到「Runner contract v3」或任何带版本号的 runner 合同标识。request-review 义务目前只以 prompt 文本的形式存在于 Blueprint.ts：design 在约 2348 行，条件是 isCodexRunner && tier!=='none'；code 在约 2690 行的 approve_to_ship 分支（FLY-1224）。建议把 `runner-review-contract:<activation>` 的判定钉到可持久读取的字段上：sessions.adapter_type、doc_tier/codex_skip、冻结 snapshot 中该节点的 checkpoint，并给这组条件一个显式的版本常量。否则实现方要么自造标识，要么退回 model。另外应写明兜底：Runner 没有照做时，靠 node dwell 或 stuck 检测发现（Blueprint 注释提到缺评审会导致 founder gate 永久拒绝、流水线死锁），不要让静默的 stage 成为唯一线索。
+
+处置：Follow-up：由Lead/实施节点按建议裁定并保留验证证据；非阻塞，不将建议文字冒充已实现。
+
+### monitoring-recovery-after-delivered-lost-silenced
+
+严重级别：MEDIUM。monitoring_lost 已发给 Lead 后，被它覆盖的恢复通知仍会被静默；ship_parked 的规则也前后矛盾
+
+§11.2 允许在本轮 probe 为 alive 时，把同一 exec 此前以 model 发出的 monitoring_lost 记进 proof，然后让恢复通知 audit。问题在于：monitoring_lost 属于 guardrail，文案要求 Lead 去 tmux 核查。如果它已投递或仍在队列里而 Lead 尚未处理，这条恢复正是 Lead 在等的解除信号，不是纯播报。静默之后，Lead 可能按过时的丢失信息继续排查，甚至上报 founder。这与现状（openAlert 固定为 false）相比不算回退，所以不阻塞。建议：同 exec 存在未 ACK 或近期已投递的 model lost 时，恢复保持 model；或者在摘要中强制把两者配对显示。另外，§2 表把「park 上有未处理 gate」列为 model，而 §11.2 又说无异常的 ship_parked 恢复可以 audit。ship_parked 按定义一定挂着 approve_to_ship 的 founder gate，两处要统一口径，写明 founder gate 不算 Lead 待办。
+
+处置：Follow-up：由Lead/实施节点按建议裁定并保留验证证据；非阻塞，不将建议文字冒充已实现。
+
+### startup-proof-session-events-row-consumers
+
+严重级别：MEDIUM。新增的 session_events proof 行没有定 event_type，也没有审计下游消费者
+
+§11.1.4 要往 session_events 插入 `<notificationId>:proof` 行，但没有规定它的 event_type。已知会受影响的地方：(1) 有 27 处直接查 session_events，其中 getEventsByExecution 会遍历同一 exec 的全部事件（dispatcher qaFixSummary、shipped-husk-escalation、gate-materializer、post-ship-finalization、gate-poller 等）；(2) terminal-row-archive 的类型清单；(3) summary-activity-probe 的 business/noise 分类；(4) FLY-2006 的 retention 分类。如果复用 'session_started'，会重复计入启动次数；如果用新类型，需要逐一登记分类。plan 已经给 lead_events 增加了 notification_proof_ref 列，更简单的做法是把 proof 快照放进这一列（或新增一个 JSON 列），不去改 session_events 的语义。若坚持用 session_events，至少要写明类型名和上述消费者的核查清单。
+
+处置：Follow-up：由Lead/实施节点按建议裁定并保留验证证据；非阻塞，不将建议文字冒充已实现。
+
+### registry-missing-append-changes-off-baseline
+
+严重级别：MEDIUM。没有 registry 时也 append，会改变 OFF 基线
+
+现状是 DirectEventSink.pushNotification 在没有 registry 时直接 return，不写 lead_events。§11.1.5 改成「有可解析的 Lead 和 session 就先 append」，而且没有按开关区分。结果是在 registry 缺失的场景（run-infra 中 registry 是可选参数）下，会新增 delivered_at 为 NULL 的 model 行，之后可能被 boot reconciler 或 pending 消费者补投，产生基线里没有的 Lead 唤醒。这与 §9 的「OFF 对新事件的发送内容和次序与旧 OFF 同等」冲突。建议只在开关 ON 且判为 audit_only 时才补记账；或者把这一行为变更写入 §9 的例外清单，并补测试。
+
+处置：Follow-up：由Lead/实施节点按建议裁定并保留验证证据；非阻塞，不将建议文字冒充已实现。
+
+### stable-started-id-dedup-off-behavior
+
+严重级别：LOW。稳定的 started ID 在 OFF 下也会吞掉同一 activation 的重复通知
+
+改用 `direct-started:<exec>:<activation>` 后，appendLeadEvent 会按 (lead_id, event_id) 去重，且 ON/OFF 两态都生效。今天 Blueprint 每次运行只调用一次 emitStarted，所以风险不大。但 standby/resume 如果在同一 activation 下再次启动，Lead 以前会收到新的 started 通知，现在会被去重。建议在 §8.4 的「重复 emitStarted/进程重启」用例中，明确 resume 场景的预期结果。
+
+处置：Follow-up：由Lead/实施节点按建议裁定并保留验证证据；非阻塞，不将建议文字冒充已实现。
+
+### verify-script-hardcoded-local-path
+
+严重级别：LOW。核验脚本写死了本机主仓的 node_modules 绝对路径
+
+脚本里 import 的是 '/Users/xiaorongli/Dev/flywheel/packages/teamlead/node_modules/happy-dom/...'，而且指向主仓而不是本 worktree，换一台机器或换一个 checkout 就跑不起来，也把本机路径提交进了仓库。这是设计附件，不影响 plan 本身，建议改为按包名解析，或通过参数传入路径。
+
+处置：已处理（仅附件）：改用happy-dom包名或FLY2912_HAPPY_DOM_MODULE显式覆盖，不再提交本机绝对依赖路径；controller复测。
+
+### tests_incomplete
+
+严重级别：LOW。tests_incomplete
+
+本轮提交只改 engineering/doc，没有改 packages 或 scripts。worktree 仍然没有 node_modules，相关单包测试（EventFilter/DirectEventSink/HeartbeatService/lead-inbox-loop/reply-obligation/mailbox-queue）都无法运行。判断依据是源码核对：已确认 upsert 在 try 之外、readoptParkedPhase 会丢掉 probe 结果、failureKind 有四个枚举值、下一次检查由 dispatcher 推导、bootstrap 路由为 masterOnly，引用的测试文件也都存在。
+
+处置：验证边界：设计节点未改生产代码；未安装依赖/未跑实现测试。实施节点安装锁定依赖后仅跑相关测试。

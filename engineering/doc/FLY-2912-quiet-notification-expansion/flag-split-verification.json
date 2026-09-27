@@ -1,0 +1,783 @@
+{
+  "codeCommit": "1277a4438e59cf0e90a623d4d3a106f6adf62742",
+  "mergedMainCommit": "53245dbbe",
+  "red": {
+    "categoryTests": "4 failed, 37 passed before implementation; expected model but audit_only returned",
+    "registry": "1 failed, 56 passed before registry entries existed"
+  },
+  "explicitFiles": 34,
+  "explicitPassed": 779,
+  "explicit": [
+    {
+      "package": "flywheel-config",
+      "file": "src/__tests__/feature-flags-registry.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-config-feature-flags-registry.test.ts.log",
+      "tests": "57 passed (57)",
+      "passed": 57,
+      "logSha256": "594426f84acf1462a74252467604044c29890a6434b6e2d901d98500be3b7979",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-config",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/feature-flags-registry.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-config",
+      "file": "src/__tests__/feature-flags-drift.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-config-feature-flags-drift.test.ts.log",
+      "tests": "14 passed (14)",
+      "passed": 14,
+      "logSha256": "389b4d58710bfb3b43489018c848067edd91674014fe059c8c24440d6ba3cffc",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-config",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/feature-flags-drift.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-config",
+      "file": "src/__tests__/feature-flags-store-policy.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-config-feature-flags-store-policy.test.ts.log",
+      "tests": "22 passed (22)",
+      "passed": 22,
+      "logSha256": "bc27bbb850319abaf4c1da985f3d2ee8b19862183b34e73f9c865ee8728e26ff",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-config",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/feature-flags-store-policy.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-config",
+      "file": "src/__tests__/feature-flags-resolve.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-config-feature-flags-resolve.test.ts.log",
+      "tests": "10 passed (10)",
+      "passed": 10,
+      "logSha256": "37facfd5f0b7a8c3ab754420d47f7dde216e5e656c9ca51dddec6476888c8519",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-config",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/feature-flags-resolve.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-config",
+      "file": "src/__tests__/feature-flags-direct-toggle.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-config-feature-flags-direct-toggle.test.ts.log",
+      "tests": "24 passed (24)",
+      "passed": 24,
+      "logSha256": "ce7b80c5af15493809dd87b2f5c328dbf956eefb26f753c8bfb7a5eb4afd48e5",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-config",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/feature-flags-direct-toggle.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-config",
+      "file": "src/__tests__/feature-flags-scan.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-config-feature-flags-scan.test.ts.log",
+      "tests": "24 passed (24)",
+      "passed": 24,
+      "logSha256": "d931dffc8c43aaeaca5455d954809734f2cb14a751cdb9489e302116db808b87",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-config",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/feature-flags-scan.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-config",
+      "file": "src/__tests__/flag-truth.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-config-flag-truth.test.ts.log",
+      "tests": "43 passed (43)",
+      "passed": 43,
+      "logSha256": "38f0f4c0d0778b8055a9fd5dc49b640a4da4d5c6d089c727da3a066ecef68813",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-config",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/flag-truth.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-teamlead",
+      "file": "src/__tests__/EventFilter.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-teamlead-EventFilter.test.ts.log",
+      "tests": "45 passed (45)",
+      "passed": 45,
+      "logSha256": "b3d99c132ff1d06120805ec4f2a4eaae985acb63bd392e78a7a7b7953358ae78",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/EventFilter.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-teamlead",
+      "file": "src/__tests__/fly2912-notification-producers.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-teamlead-fly2912-notification-producers.test.ts.log",
+      "tests": "14 passed (14)",
+      "passed": 14,
+      "logSha256": "b4b2c0f1176b276746d5fe57866f72cba2d99d1bec91595e1a6af000cc56509e",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/fly2912-notification-producers.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-teamlead",
+      "file": "src/__tests__/fly2912-event-route.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-teamlead-fly2912-event-route.test.ts.log",
+      "tests": "33 passed (33)",
+      "passed": 33,
+      "logSha256": "016abe336e2fe7f2b201f8ff768e3a740e28b3eb4251f9842d83a5c77aed9dc2",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/fly2912-event-route.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-teamlead",
+      "file": "src/__tests__/HeartbeatService.fly2912-quiet-recovery.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-teamlead-HeartbeatService.fly2912-quiet-recovery.test.ts.log",
+      "tests": "21 passed (21)",
+      "passed": 21,
+      "logSha256": "bf8a4a2c37a77cbe0115ae6733b376f8adadfcaaf86c4c31efd763d0b8c053b4",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/HeartbeatService.fly2912-quiet-recovery.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-teamlead",
+      "file": "src/__tests__/StateStore.fly1385-dead-exec.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-teamlead-StateStore.fly1385-dead-exec.test.ts.log",
+      "tests": "32 passed | 1 skipped (33)",
+      "passed": 32,
+      "logSha256": "46a1013de7428e1b7d699cb24ba5d57a3c11e9fc8b3051d2e0277a8117b0b7b8",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/StateStore.fly1385-dead-exec.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-teamlead",
+      "file": "src/__tests__/fly2912-evening-replay.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-teamlead-fly2912-evening-replay.test.ts.log",
+      "tests": "2 passed (2)",
+      "passed": 2,
+      "logSha256": "6b606f00307c7f7df041e38f28f8c550cfa0bba8ddd6527a49ba7bd57bb2bcf2",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/fly2912-evening-replay.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-teamlead",
+      "file": "src/__tests__/flag-routes.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-teamlead-flag-routes.test.ts.log",
+      "tests": "40 passed (40)",
+      "passed": 40,
+      "logSha256": "0de92967f9130e9a49eb63da8a4fc3925e9f31ddcd21e593421443114d8d2b11",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/flag-routes.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-teamlead",
+      "file": "src/bridge/__tests__/flag-store-runtime.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-teamlead-flag-store-runtime.test.ts.log",
+      "tests": "45 passed (45)",
+      "passed": 45,
+      "logSha256": "c9afb24b120bafa9f424c7cd1957f3e65ec9d51d02d78f1dd4880d81e64682a3",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/flag-store-runtime.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-teamlead",
+      "file": "src/__tests__/StateStore.flag-value-store.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-teamlead-StateStore.flag-value-store.test.ts.log",
+      "tests": "12 passed (12)",
+      "passed": 12,
+      "logSha256": "fd282f84ad88b630912f5abcab3356bf54439ab4bd9556445d08bf5285d0af15",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/StateStore.flag-value-store.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-teamlead",
+      "file": "src/__tests__/StateStore.flag-value-scope.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-teamlead-StateStore.flag-value-scope.test.ts.log",
+      "tests": "5 passed (5)",
+      "passed": 5,
+      "logSha256": "27df6d31d0c7f4af6ba6da2b90414d984aba55162c8934295d515fd822571712",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/StateStore.flag-value-scope.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-teamlead",
+      "file": "src/__tests__/feature-flag-render.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-teamlead-feature-flag-render.test.ts.log",
+      "tests": "31 passed (31)",
+      "passed": 31,
+      "logSha256": "2c46a26ad307d0fa50419feeceefb856ac4bc7af9e6c7dead1793ccb3f05f025",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/feature-flag-render.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-teamlead",
+      "file": "src/__tests__/feature-flag-config-source.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-teamlead-feature-flag-config-source.test.ts.log",
+      "tests": "12 passed (12)",
+      "passed": 12,
+      "logSha256": "bb6a14ebd5b0cdfe3f9494abeaecac366441011b33f6b6f616520c36b2139d7c",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/feature-flag-config-source.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-teamlead",
+      "file": "src/bridge/__tests__/flag-provenance.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-teamlead-flag-provenance.test.ts.log",
+      "tests": "10 passed (10)",
+      "passed": 10,
+      "logSha256": "b6d6dd574bef2faabd72ef2386c70a31ffd5927f99be6fd205cb8f8a1ebb241a",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/flag-provenance.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-teamlead",
+      "file": "src/__tests__/DirectEventSink.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-teamlead-DirectEventSink.test.ts.log",
+      "tests": "67 passed (67)",
+      "passed": 67,
+      "logSha256": "84ecc42b474f17f1d20d5470158f307e0392002b4cf15c970836807c784415ec",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/DirectEventSink.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-teamlead",
+      "file": "src/__tests__/DirectEventSink.dag-seam.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-teamlead-DirectEventSink.dag-seam.test.ts.log",
+      "tests": "13 passed (13)",
+      "passed": 13,
+      "logSha256": "e583930442d53248e9636318486eb8e856d829128893f7268fc8526ff29c845a",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/DirectEventSink.dag-seam.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-teamlead",
+      "file": "src/__tests__/event-route.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-teamlead-event-route.test.ts.log",
+      "tests": "112 passed (112)",
+      "passed": 112,
+      "logSha256": "99b018406b5f9ba206b14c8a195b18241d8c7f5ace661ed7f8dd0578f7664a46",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/event-route.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-teamlead",
+      "file": "src/__tests__/HeartbeatService.monitor-loss.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-teamlead-HeartbeatService.monitor-loss.test.ts.log",
+      "tests": "22 passed (22)",
+      "passed": 22,
+      "logSha256": "2a86213936707e8f6a8029639d56c310b8197466fa040588f0c29441b4007bda",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/HeartbeatService.monitor-loss.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-teamlead",
+      "file": "src/__tests__/HeartbeatService.fly1329-readopt-parked.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-teamlead-HeartbeatService.fly1329-readopt-parked.test.ts.log",
+      "tests": "12 passed (12)",
+      "passed": 12,
+      "logSha256": "0d0fe85fd046665e7d125f5b4a7443cb7587c99c2101de62a2f5e84188f87a73",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/HeartbeatService.fly1329-readopt-parked.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-teamlead",
+      "file": "src/bridge/__tests__/notification-audit-store.fly2912.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-teamlead-notification-audit-store.fly2912.test.ts.log",
+      "tests": "6 passed (6)",
+      "passed": 6,
+      "logSha256": "90d8d4615cf650fd62aaf5a6e097f333a904ebb4ce76fdae3bbe838afa21bd46",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/notification-audit-store.fly2912.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-teamlead",
+      "file": "src/bridge/__tests__/lead-audit-summary.fly2912.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-teamlead-lead-audit-summary.fly2912.test.ts.log",
+      "tests": "4 passed (4)",
+      "passed": 4,
+      "logSha256": "621a77bbd4a9990282e026a56323a48a8a0bc310ad97f5fa7255693d28457c47",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/lead-audit-summary.fly2912.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-teamlead",
+      "file": "src/bridge/__tests__/lead-inbox-summary.fly2912.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-teamlead-lead-inbox-summary.fly2912.test.ts.log",
+      "tests": "8 passed (8)",
+      "passed": 8,
+      "logSha256": "59bd1e2e6045572e97eb83e243d943975ab55d995263608de3caf5d49b9f8624",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/lead-inbox-summary.fly2912.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-teamlead",
+      "file": "src/bridge/__tests__/lead-inbox-runtime-summary.fly2912.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-teamlead-lead-inbox-runtime-summary.fly2912.test.ts.log",
+      "tests": "1 passed (1)",
+      "passed": 1,
+      "logSha256": "b88a484952a0c357293e22400df77c5c6a74fdbe4ad33853d31aaf3c48d0bf6f",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/lead-inbox-runtime-summary.fly2912.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-teamlead",
+      "file": "src/bridge/__tests__/fly1560-teardown-guard.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-teamlead-fly1560-teardown-guard.test.ts.log",
+      "tests": "7 passed (7)",
+      "passed": 7,
+      "logSha256": "ce68928105940423d4ad818425f59367bc38c120e8362fd18279c331df1b0199",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/fly1560-teardown-guard.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-teamlead",
+      "file": "src/__tests__/fly2567-rule-budget.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-teamlead-fly2567-rule-budget.test.ts.log",
+      "tests": "2 passed (2)",
+      "passed": 2,
+      "logSha256": "5d9d6f64137622c9608c7c6bdd3dbed11720227104563c30d9713e8d6a2fc524",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/fly2567-rule-budget.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-teamlead",
+      "file": "src/__tests__/fly2139-query-plans.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-flags-tests/flywheel-teamlead-fly2139-query-plans.test.ts.log",
+      "tests": "2 passed (2)",
+      "passed": 2,
+      "logSha256": "7dd322b5c34f8baa10bbb9355451f42d4e30521a22a1e8bcce6995e0d2f48dff",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/fly2139-query-plans.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-teamlead",
+      "file": "src/__tests__/lead-token-savings-drift.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-extra-drift.log",
+      "tests": "17 passed (17)",
+      "passed": 17,
+      "logSha256": "f59d1f5b3b69c048883d65602dea24b61fcdbcfe698724ac3498c5b495cb2a55",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/lead-token-savings-drift.test.ts"
+      ]
+    },
+    {
+      "package": "flywheel-teamlead",
+      "file": "src/bridge/__tests__/codex-session-reown-wiring.structure.test.ts",
+      "exit": 0,
+      "log": "/tmp/fly2912-extra-wiring.log",
+      "tests": "10 passed (10)",
+      "passed": 10,
+      "logSha256": "5e8470af063da3872ea373994210cb0bf54c2fbaae51ad5fde89701864842ed1",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/codex-session-reown-wiring.structure.test.ts"
+      ]
+    }
+  ],
+  "related": [
+    {
+      "package": "config",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-config",
+        "exec",
+        "vitest",
+        "related",
+        "src/__tests__/feature-flags-drift.test.ts",
+        "src/__tests__/feature-flags-registry.test.ts",
+        "src/feature-flags/registry.ts",
+        "--run",
+        "--config",
+        "/tmp/fly2912-config-related.config.ts"
+      ],
+      "collection": [
+        "src/__tests__/feature-flags-direct-toggle.test.ts",
+        "src/__tests__/feature-flags-drift.test.ts",
+        "src/__tests__/feature-flags-registry.test.ts",
+        "src/__tests__/feature-flags-resolve.test.ts",
+        "src/__tests__/feature-flags-scan.test.ts",
+        "src/__tests__/feature-flags-store-policy.test.ts",
+        "src/__tests__/flag-truth.test.ts"
+      ],
+      "exit": 0,
+      "log": "/tmp/fly2912-related-config.log",
+      "summary": [
+        "Test Files  6 passed (6)",
+        "Tests  170 passed (170)",
+        "Duration  17.28s (transform 3ms, setup 0ms, collect 12.66s, tests 1.57s, environment 1ms, prepare 660ms)"
+      ],
+      "logSha256": "b723f950f5e7b605e76e8273ca735ff3cdb3a4794026fa95460180fabd5ca685",
+      "boundedConfig": "import base from \"/Users/xiaorongli/Dev/flywheel-FLY-2912/packages/config/vitest.config.ts\";\nexport default {...base, test: {...base.test, projects: undefined, include: [\"src/__tests__/feature-flags-registry.test.ts\", \"src/__tests__/feature-flags-drift.test.ts\", \"src/__tests__/feature-flags-store-policy.test.ts\", \"src/__tests__/feature-flags-resolve.test.ts\", \"src/__tests__/feature-flags-direct-toggle.test.ts\", \"src/__tests__/feature-flags-scan.test.ts\", \"src/__tests__/flag-truth.test.ts\"], pool: \"forks\", poolOptions: {forks:{minForks:1,maxForks:1}}}};\n"
+    },
+    {
+      "package": "teamlead",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "related",
+        "src/DirectEventSink.ts",
+        "src/HeartbeatService.ts",
+        "src/StateStore.ts",
+        "src/__tests__/EventFilter.test.ts",
+        "src/__tests__/HeartbeatService.fly2912-quiet-recovery.test.ts",
+        "src/__tests__/StateStore.fly1385-dead-exec.test.ts",
+        "src/__tests__/flag-routes.test.ts",
+        "src/__tests__/fly2912-evening-replay.test.ts",
+        "src/__tests__/fly2912-event-route.test.ts",
+        "src/__tests__/fly2912-notification-producers.test.ts",
+        "src/bridge/EventFilter.ts",
+        "src/bridge/event-route.ts",
+        "src/bridge/flag-store-runtime.ts",
+        "src/bridge/lead-notification-evidence.ts",
+        "--run",
+        "--config",
+        "/tmp/fly2912-teamlead-related.config.ts"
+      ],
+      "collection": [
+        "src/__tests__/DirectEventSink.dag-seam.test.ts",
+        "src/__tests__/DirectEventSink.test.ts",
+        "src/__tests__/EventFilter.test.ts",
+        "src/__tests__/HeartbeatService.fly1329-readopt-parked.test.ts",
+        "src/__tests__/HeartbeatService.fly2912-quiet-recovery.test.ts",
+        "src/__tests__/HeartbeatService.monitor-loss.test.ts",
+        "src/__tests__/StateStore.flag-value-scope.test.ts",
+        "src/__tests__/StateStore.flag-value-store.test.ts",
+        "src/__tests__/StateStore.fly1385-dead-exec.test.ts",
+        "src/__tests__/event-route.test.ts",
+        "src/__tests__/feature-flag-config-source.test.ts",
+        "src/__tests__/feature-flag-render.test.ts",
+        "src/__tests__/flag-routes.test.ts",
+        "src/__tests__/fly2139-query-plans.test.ts",
+        "src/__tests__/fly2567-rule-budget.test.ts",
+        "src/__tests__/fly2912-evening-replay.test.ts",
+        "src/__tests__/fly2912-event-route.test.ts",
+        "src/__tests__/fly2912-notification-producers.test.ts",
+        "src/__tests__/lead-token-savings-drift.test.ts",
+        "src/bridge/__tests__/codex-session-reown-wiring.structure.test.ts",
+        "src/bridge/__tests__/flag-provenance.test.ts",
+        "src/bridge/__tests__/flag-store-runtime.test.ts",
+        "src/bridge/__tests__/fly1560-teardown-guard.test.ts",
+        "src/bridge/__tests__/lead-audit-summary.fly2912.test.ts",
+        "src/bridge/__tests__/lead-inbox-runtime-summary.fly2912.test.ts",
+        "src/bridge/__tests__/lead-inbox-summary.fly2912.test.ts",
+        "src/bridge/__tests__/notification-audit-store.fly2912.test.ts"
+      ],
+      "exit": 0,
+      "log": "/tmp/fly2912-related-teamlead.log",
+      "summary": [
+        "Test Files  18 passed (18)",
+        "Tests  482 passed | 1 skipped (483)",
+        "Duration  183.84s (transform 63ms, setup 152ms, collect 45.66s, tests 123.75s, environment 3ms, prepare 1.34s)"
+      ],
+      "logSha256": "2fd40e430e49e87e2b44949f8a46f2ec39504a9c0903150f6f95f70bcb360881",
+      "boundedConfig": "import base from \"/Users/xiaorongli/Dev/flywheel-FLY-2912/packages/teamlead/vitest.config.ts\";\nexport default {...base, test: {...base.test, projects: undefined, include: [\"src/__tests__/EventFilter.test.ts\", \"src/__tests__/fly2912-notification-producers.test.ts\", \"src/__tests__/fly2912-event-route.test.ts\", \"src/__tests__/HeartbeatService.fly2912-quiet-recovery.test.ts\", \"src/__tests__/StateStore.fly1385-dead-exec.test.ts\", \"src/__tests__/fly2912-evening-replay.test.ts\", \"src/__tests__/flag-routes.test.ts\", \"src/bridge/__tests__/flag-store-runtime.test.ts\", \"src/__tests__/StateStore.flag-value-store.test.ts\", \"src/__tests__/StateStore.flag-value-scope.test.ts\", \"src/__tests__/feature-flag-render.test.ts\", \"src/__tests__/feature-flag-config-source.test.ts\", \"src/bridge/__tests__/flag-provenance.test.ts\", \"src/__tests__/DirectEventSink.test.ts\", \"src/__tests__/DirectEventSink.dag-seam.test.ts\", \"src/__tests__/event-route.test.ts\", \"src/__tests__/HeartbeatService.monitor-loss.test.ts\", \"src/__tests__/HeartbeatService.fly1329-readopt-parked.test.ts\", \"src/bridge/__tests__/notification-audit-store.fly2912.test.ts\", \"src/bridge/__tests__/lead-audit-summary.fly2912.test.ts\", \"src/bridge/__tests__/lead-inbox-summary.fly2912.test.ts\", \"src/bridge/__tests__/lead-inbox-runtime-summary.fly2912.test.ts\", \"src/bridge/__tests__/fly1560-teardown-guard.test.ts\", \"src/__tests__/fly2567-rule-budget.test.ts\", \"src/__tests__/fly2139-query-plans.test.ts\", \"src/__tests__/lead-token-savings-drift.test.ts\", \"src/bridge/__tests__/codex-session-reown-wiring.structure.test.ts\"], pool: \"forks\", poolOptions: {forks:{minForks:1,maxForks:1}}}};\n"
+    }
+  ],
+  "checks": [
+    {
+      "command": "pnpm install --frozen-lockfile",
+      "exit": 0,
+      "logSha256": "9662143eaec034d264b742a7c34b04dbcbc4713779cc99d6d58373a0df25ea12",
+      "tail": [
+        "Already up to date",
+        "",
+        ". prepare$ husky",
+        ". prepare: Done",
+        "Done in 6.8s using pnpm v10.13.1"
+      ]
+    },
+    {
+      "command": "pnpm lint",
+      "exit": 0,
+      "logSha256": "24c7ee699973989c7bfeb2f3409ca140dce874123ae53f8e4b5b7f6470e119bd",
+      "tail": [
+        "",
+        "The number of diagnostics exceeds the limit allowed. Use --max-diagnostics to increase it.",
+        "Diagnostics not shown: 143.",
+        "Checked 5125 files in 8s. No fixes applied.",
+        "Found 25 warnings."
+      ]
+    },
+    {
+      "command": "pnpm --filter \"flywheel-teamlead...\" build",
+      "exit": 0,
+      "logSha256": "209ce72defcea6cda674940e5d2ca0b91146f8cc4fcc3478d9fb6bb9a999b884",
+      "tail": [
+        "packages/teamlead prebuild: phase protocols: 9 projections checked",
+        "packages/teamlead prebuild: Done",
+        "packages/teamlead build$ tsc && node dist/bin/write-build-identity.js && rm -f dist/__tests__/StateStore.fly939-stranded-implement.test.* dist/__tests__/StateStore.three-stage-qa.test.* dist/__tests__/actions-fly1050-terminate-qa-loss.test.* dist/__tests__/event-route-fly859-three-stage-qa.test.* dist/__tests__/phase-orchestrator.fly921-adversarial.test.* dist/__tests__/three-stage-dedup.test.* dist/bridge/__tests__/phase-orchestrator*.test.* dist/bridge/__tests__/retest-head-delta.test.* dist/bridge/__tests__/run-dispatcher.fly887-label-bypass.test.* dist/bridge/__tests__/runs-route.dag-recovery.test.* dist/bridge/__tests__/three-stage-policy.test.* dist/bridge/__tests__/workflow-b11-freshspawn.test.* dist/bridge/__tests__/workflow-shadow-wiring.test.* dist/bridge/__tests__/workflow-shadow-writer.test.* dist/bridge/phase-orchestrator.* dist/bridge/retest-head-delta.* dist/bridge/three-stage-policy.* dist/bridge/workflow-shadow-writer.* && rm -rf dist/static dist/workflow-seeds dist/bridge/publish-broker && cp -r static dist/static && node scripts/build-reclose-peer-native.mjs",
+        "packages/teamlead build: [reclose-peer-native] built /Users/xiaorongli/Dev/flywheel-FLY-2912/packages/teamlead/dist/native/reclose-peer-darwin-arm64.node",
+        "packages/teamlead build: Done"
+      ]
+    },
+    {
+      "command": "pnpm --filter \"...flywheel-config\" typecheck",
+      "exit": 0,
+      "logSha256": "eedd0089b0e649b2b53b6cce19a095e045a1c92ef0ffed4b86124c6f06aa76a8",
+      "tail": [
+        "packages/edge-worker typecheck: Done",
+        "packages/teamlead typecheck$ tsc --noEmit",
+        "packages/teamlead typecheck: Done",
+        "packages/voice-codex typecheck$ tsc --noEmit",
+        "packages/voice-codex typecheck: Done"
+      ]
+    }
+  ],
+  "limitations": [
+    "Existing skipped test remains skipped. Related checks overlap explicit checks; do not add the totals.",
+    "lint succeeds with 25 warnings; no new warning treatment or guard weakening.",
+    "No local full suite, no full CI request, no QA dispatch, no merge or deploy.",
+    "Historical replay remains subject to rework.md and the recorded Lead ruling; this flag split proves no measured token savings."
+  ]
+}

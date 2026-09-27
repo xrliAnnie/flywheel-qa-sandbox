@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "notification_audit_generation",
+	"classification": "protectedCurrentOrReference"
+}

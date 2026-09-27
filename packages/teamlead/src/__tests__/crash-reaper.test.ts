@@ -108,6 +108,18 @@ describe("reapCrashedRunners (FLY-720)", () => {
 		);
 	});
 
+	it("FLY-2900: never reaps a Codex quota standby body", async () => {
+		seedRunning("z1", 120);
+		(
+			store as unknown as { isCodexQuotaStandby: (id: string) => boolean }
+		).isCodexQuotaStandby = (id) => id === "z1";
+		const deps = baseDeps();
+		const res = await reapCrashedRunners(deps);
+		expect(res.reaped).toBe(0);
+		expect(deps.probeLiveness).not.toHaveBeenCalled();
+		expect(store.getSession("z1")?.status).toBe("running");
+	});
+
 	it("suppresses :pending metadata without probing or reaping it", async () => {
 		seedRunning("pending-window", 120);
 		const deps = baseDeps({

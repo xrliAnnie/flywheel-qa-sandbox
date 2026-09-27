@@ -51,7 +51,11 @@ export function enqueueWorkflowReplacementLeadEvent(input: {
 	seq: number;
 }): DurableQueueReceipt | undefined {
 	const row = input.store.getLeadEventBySeq(input.seq);
-	if (!row || row.event_type !== "workflow_replacement_eligibility") {
+	if (
+		!row ||
+		row.event_type !== "workflow_replacement_eligibility" ||
+		row.delivery_disposition === "audit_only"
+	) {
 		return undefined;
 	}
 	return input.registry.enqueueLeadEvent(

@@ -368,6 +368,112 @@ async function seedUnlaunchedWriterReplacement() {
 	return seeded;
 }
 
+/** FLY-2900: exec-1 parked in Codex quota standby (session still running). */
+async function seedQuotaFallbackSource() {
+	const seeded = await seedTarget("execution");
+	seeded.store.upsertSession({
+		execution_id: "exec-1",
+		issue_id: "FLY-1707",
+		project_name: "flywheel",
+		status: "running",
+	});
+	seeded.db.run(
+		`INSERT INTO workflow_side_effect_ledger
+		   (run_id, node_id, attempt, kind, launch_ordinal, execution_id, state)
+		 VALUES ('run-1', 'execute', 1, 'dispatch', 1, 'exec-1', 'started')`,
+	);
+	seeded.db.run(
+		`INSERT INTO codex_quota_standby
+		   (execution_id, run_id, node_id, attempt, entry_seq, trigger_signal_seq,
+		    source_event_id, state, entered_at, updated_at)
+		 VALUES ('exec-1', 'run-1', 'execute', 1, 1, 1, 'wall-1', 'standby', ?, ?)`,
+		[at, at],
+	);
+	const prepare = (newExecutionId: string) =>
+		seeded.store.prepareCodexQuotaFallback({
+			executionId: "exec-1",
+			vendor: "codex",
+			model: "gpt-5.6-sol",
+			effort: "low",
+			reason: "resume_attempts_exhausted",
+			newExecutionId,
+			sameVendorEvidence: {},
+			now: at,
+		});
+	const resolve = () =>
+		resolveWorkflowResumeTarget(seeded.store, {
+			runId: "run-1",
+			envelopeObservation: { source: "issue_body", digest: issueDigest },
+			verifyAnchor: () => true,
+			env: {},
+		});
+	const binding = (executionId: string) =>
+		seeded.store
+			.listWorkflowRunEvents("run-1")
+			.find(
+				(event) =>
+					event.kind === "resume_writer_binding" &&
+					event.execution_id === executionId,
+			)?.payload as Record<string, unknown> | undefined;
+	return { ...seeded, prepare, resolve, binding };
+}
+
+describe("FLY-2900 — quota fallback writer migration", () => {
+	it("fences a prepared fallback body so its migrated delivery resolves before launch", async () => {
+		const { store, prepare, resolve } = await seedQuotaFallbackSource();
+		expect(prepare("exec-fb-1")).toMatchObject({ ok: true });
+		expect(store.getWorkflowDeadExecutionWatch("exec-1")).toMatchObject({
+			run_id: "run-1",
+			node_id: "execute",
+			attempt: 1,
+			new_execution_id: "exec-fb-1",
+		});
+		expect(resolve()).toMatchObject({
+			ok: true,
+			targetNodeId: "execute",
+			targetAttempt: 1,
+		});
+		store.close();
+	});
+
+	it("drops the fence on revert and migrates attempt 2 from the original evidence", async () => {
+		const { store, prepare, resolve, binding } =
+			await seedQuotaFallbackSource();
+		expect(prepare("exec-fb-1")).toMatchObject({ ok: true });
+		expect(
+			store.revertCodexQuotaFallback({
+				newExecutionId: "exec-fb-1",
+				reason: "admission_refused",
+				now: at,
+			}),
+		).toBe(true);
+		expect(store.getWorkflowDeadExecutionWatch("exec-1")).toBeUndefined();
+		expect(
+			store.isUnlaunchedWorkflowResumeReplacement({
+				runId: "run-1",
+				nodeId: "execute",
+				attempt: 1,
+				sourceExecutionId: "exec-1",
+				newExecutionId: "exec-fb-1",
+				launchOrdinal: Number(binding("exec-fb-1")?.launchOrdinal),
+			}),
+		).toBe(false);
+		expect(prepare("exec-fb-2")).toMatchObject({
+			ok: true,
+			fallbackAttempt: 2,
+		});
+		expect(binding("exec-fb-2")).toMatchObject({
+			sourceExecutionId: "exec-1",
+			sourceAttachmentId: "attachment-1",
+		});
+		expect(store.getWorkflowDeadExecutionWatch("exec-1")).toMatchObject({
+			new_execution_id: "exec-fb-2",
+		});
+		expect(resolve()).toMatchObject({ ok: true, targetNodeId: "execute" });
+		store.close();
+	});
+});
+
 describe("resolveWorkflowResumeTarget", () => {
 	it("proposes a ready executable target with exact delivery and terminal writer evidence", async () => {
 		const { store } = await seedTarget("execution");

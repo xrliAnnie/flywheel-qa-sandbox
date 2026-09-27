@@ -1,0 +1,70 @@
+{
+  "baseReworkHead": "82344f98c949d74840bcb9d0d2230248f0ab411d",
+  "mainMergeHead": "18e447c12",
+  "checks": [
+    {
+      "command": "pnpm lint",
+      "exitCode": 0,
+      "passed": null,
+      "logFile": "fly2912-r3-lint.log",
+      "logSha256": "3e39052ad05570c6aed56ebb6b4778e9bf0d1bff120d0c8c5026c5db69b10f72"
+    },
+    {
+      "command": "pnpm --filter \"flywheel-teamlead...\" build",
+      "exitCode": 0,
+      "passed": null,
+      "logFile": "fly2912-r3-build.log",
+      "logSha256": "1060cade3d3c548d296a04b3cf469756db1e1d4286705f49f4825413c7429821"
+    },
+    {
+      "command": "pnpm --filter flywheel-config exec vitest run src/__tests__/feature-flags-registry.test.ts",
+      "exitCode": 0,
+      "passed": 57,
+      "logFile": "fly2912-r3-registry.log",
+      "logSha256": "208dff19b8b69f1ae56563a50ca22ad0b6b38fb4881d982c496ca6d9ff0b7bff"
+    },
+    {
+      "command": "pnpm --filter flywheel-teamlead exec vitest run src/__tests__/fly2912-evening-replay.test.ts",
+      "exitCode": 0,
+      "passed": 2,
+      "logFile": "fly2912-r3-replay.log",
+      "logSha256": "847ce39ad6297e614a04b4ca7dc8ed640cc646ed392654ee549ce946e83d4540"
+    },
+    {
+      "command": "pnpm --filter flywheel-teamlead exec vitest run src/__tests__/EventFilter.test.ts",
+      "exitCode": 0,
+      "passed": 45,
+      "logFile": "fly2912-r3-eventfilter.log",
+      "logSha256": "b054c4031f82389e08fc7083344ff797e764a8cc920d4cf557652ac39e576787"
+    },
+    {
+      "command": "pnpm --filter flywheel-teamlead exec vitest run src/__tests__/fly2139-query-plans.test.ts",
+      "exitCode": 0,
+      "passed": 2,
+      "logFile": "fly2912-r3-query-plans.log",
+      "logSha256": "df1c1c3b89ef13580526243a30123e1c134c7cf51cd6e15a123a406f6949c3d6"
+    },
+    {
+      "command": "python3 engineering/doc/FLY-2912-quiet-notification-expansion/evidence/test_wake_timeline.py",
+      "exitCode": 0,
+      "passed": 12,
+      "logFile": "fly2912-full-day-green.log",
+      "logSha256": "d26765b14513aa017d7225eec227ccf9bf6a0901bafd2867e932d6b9a055315d"
+    }
+  ],
+  "targetedVitestPassed": 106,
+  "pythonPassed": 12,
+  "lintWarnings": 25,
+  "localFullSuite": false,
+  "typescriptChangedInThisRework": false,
+  "replayByteIdentical": true,
+  "artifactSha256": {
+    "reconstruct-wake-timeline.py": "86847e65cc5078e57482c2c9b16f52dbc5e8b040fbd008f1ed1af1484be152c9",
+    "test_wake_timeline.py": "31e3283bf6dc59f5d7c1a04f17169b1f14bc32a6c4dad9d320d17b63482b302c",
+    "full-day-turn-input.json.gz": "8146ac83a31378b8841b632e4c77cd0f36dc8a07abbdb53c95d3e78a4eff2c64",
+    "full-day-turn-result.json": "b4f4290b04058a3a4c66c24e51c29cb823b456ea35c40c888c7474063707e95c"
+  },
+  "logArchiveSha256": "bb2603654dab974437c8662371c5a6ed13fa5314359c0b6fd535b405e21ae573",
+  "acceptanceComplete": false,
+  "leadGuidanceQuestion": "63109e39-9fb3-4ada-8464-e08476cf4f2a"
+}

@@ -19,8 +19,18 @@ export interface WorkflowDispatchResolution {
 		model: string;
 		effort?: WorkflowEffort;
 	};
-	source: "live_template" | "pinned_snapshot" | "snapshot_fallback";
+	source:
+		| "live_template"
+		| "pinned_snapshot"
+		| "snapshot_fallback"
+		| "codex_quota_demand";
 	audit: boolean;
+	/** FLY-2900: the frozen dispatch of a quota-fallback body (either vendor). */
+	quotaFallback?: {
+		sourceExecutionId: string;
+		dispatchReason: "codex_quota_fallback" | "codex_quota_fallback_codex";
+		poolEvidenceRef: string | null;
+	};
 	modelAssignment?: WorkflowModelAssignmentReceipt;
 }
 
@@ -121,8 +131,38 @@ function narrowEffort(dispatch: {
  */
 export function resolveNodeDispatchAtLaunch(
 	store: StateStore,
-	input: { runId: string; nodeId: string },
+	input: {
+		runId: string;
+		nodeId: string;
+		/** FLY-2900: a prepared quota-fallback body resolves to its frozen demand. */
+		executionId?: string;
+	},
 ): WorkflowDispatchResolution {
+	// FLY-2900 §5.4: one dispatch path, no bypass. A prepared demand freezes
+	// the fallback dispatch for either vendor and skips every generic
+	// degradation and the live template (FLY-2895 later replaces this step).
+	const demand = input.executionId
+		? store.getCodexQuotaPreparedDemand?.(input.executionId)
+		: undefined;
+	if (demand) {
+		return {
+			dispatch: {
+				vendor: demand.vendor,
+				model: demand.model,
+				effort: demand.effort as WorkflowEffort,
+			},
+			source: "codex_quota_demand",
+			audit: true,
+			quotaFallback: {
+				sourceExecutionId: demand.sourceExecutionId,
+				dispatchReason:
+					demand.vendor === "claude"
+						? "codex_quota_fallback"
+						: "codex_quota_fallback_codex",
+				poolEvidenceRef: demand.poolEvidenceRef,
+			},
+		};
+	}
 	const run = store.getWorkflowRun(input.runId);
 	if (!run?.snapshot) throw new Error("workflow_dispatch_run_snapshot_missing");
 	const snapshot = parseWorkflowRunSnapshot(run.snapshot);
