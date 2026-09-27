@@ -484,3 +484,15 @@ Codex R1 提出 1 个 HIGH，成立：`OpusDownlink` 原先只在队列中仍有
 - 显式消费者逐文件：`opus-downlink` 10/10、`downlink-controller` 16/16、`codex-room-webrtc` 28/28、`codex-readback-replay` 2/2、`discord-room` 16/16，共 72/72。
 - `vitest related`（`OpusDownlink.ts` 与其测试）8 个文件 114/114；voice-codex typecheck、受影响包及依赖构建、两处改动文件 Biome、`git diff --check` 均通过。
 - 仓库级 `pnpm lint` 仍只因同一无关 FLY-1547 文件的 unused import/variable 而失败；本轮未改该文件。评审的 MEDIUM/LOW advisories 不阻塞此门，本轮按锁定范围未顺带改动。
+
+### QA@3 代码评审 R2 的修复（`e7576c247`）
+
+R2 证明 R1 只覆盖了无抖动锁步：replay debt 在队列刚降到 24 包时清掉；新回答仍在播放时，只要随后两包在同一播放周期到达，26 包就会被裁到 3 包，丢 23 个有声包（约 460 ms）。
+
+修复把 debt 的清除点从裁剪阈值附近收紧到正常实时深度 `TRIM_TO_PACKETS`（3 包）：24 包后的 catch-up burst 仍受保护；只有播放器真正消化到 3 包后，普通 runaway-backlog trim 才重新启用。
+
+- 红：32 个 replay 包；新回答前 8 包延迟，随后恢复每 20 ms 一包；最后一个 replay 出队后两包 catch-up。旧实现把预期的 26 个有声包裁成 3 个。
+- 绿：同一序列保留 26/26、零 trim；再播放到 3 包并追加 23 包，队列按普通保护裁回 3 包且只记一次 trim。
+- 显式消费者逐文件：`opus-downlink` 11/11、`downlink-controller` 16/16、`codex-room-webrtc` 28/28、`codex-readback-replay` 2/2、`discord-room` 16/16，共 73/73。
+- `vitest related`（两处改动 TS 文件）8 个文件 115/115；voice-codex typecheck、受影响包及依赖构建、两处改动文件 Biome、`git diff --check` 均通过。
+- 仓库级 `pnpm lint` 仍 exit 1：同一无关 FLY-1547 research script 的 unused import/variable；另有 25 条无关 warning。本轮不改这些文件，也不处理 R1/R2 的非阻塞 advisories。
