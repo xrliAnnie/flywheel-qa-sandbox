@@ -585,7 +585,7 @@ describe("RegistryHeartbeatNotifier", () => {
 
 		expect(stampStatusBadge).toHaveBeenCalledTimes(1);
 		expect(stampStatusBadge.mock.calls[0]?.[0]).toMatchObject({
-			modelMarker: "G",
+			modelMarker: "[O][S]",
 		});
 		expect(stampStatusBadge.mock.calls[0]?.[2]).toBe("⚠️重连中");
 		hbStore.close();
