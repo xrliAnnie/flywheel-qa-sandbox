@@ -193,6 +193,11 @@ export interface PostDiscordOptions {
 	nonce?: string;
 	/** Ask Discord to return the existing message when the nonce repeats. */
 	enforceNonce?: boolean;
+	/**
+	 * FLY-2896: the only user ids a `<@id>` in the text may ping. Absent keeps
+	 * the historical `allowed_mentions: { parse: [] }` (nothing pings).
+	 */
+	allowedUserIds?: string[];
 }
 
 /** Build the unsent-suffix recovery text from the chunk list. */
@@ -238,7 +243,9 @@ export async function postDiscordMessageToChannel(
 		const body: Record<string, unknown> = {
 			content: chunks[i],
 			// FLY-162 Codex R2 #7: never let user-supplied text trigger pings
-			allowed_mentions: { parse: [] },
+			allowed_mentions: options.allowedUserIds
+				? { parse: [], users: options.allowedUserIds }
+				: { parse: [] },
 			...(options.nonce ? { nonce: options.nonce } : {}),
 			...(options.enforceNonce ? { enforce_nonce: true } : {}),
 		};
@@ -321,7 +328,38 @@ export async function postDiscordMessageToChannel(
 
 export type EditDiscordResult =
 	| { ok: true }
-	| { ok: false; status?: number; error: string };
+	| {
+			ok: false;
+			status?: number;
+			error: string;
+			/** FLY-2896: set on a 429 when Discord says how long to wait. */
+			retryAfterMs?: number;
+	  };
+
+const MAX_RETRY_AFTER_MS = 60_000;
+
+/** Discord's 429 wait: body `retry_after` (seconds), else `Retry-After`. */
+async function discordRetryAfterMs(
+	response: Response,
+): Promise<number | undefined> {
+	let seconds: number | undefined;
+	try {
+		const body = (await response.json()) as { retry_after?: unknown };
+		if (typeof body?.retry_after === "number") seconds = body.retry_after;
+	} catch {
+		// No JSON body; fall back to the header.
+	}
+	if (seconds === undefined) {
+		const header = Number(response.headers.get("retry-after"));
+		if (response.headers.has("retry-after") && Number.isFinite(header)) {
+			seconds = header;
+		}
+	}
+	if (seconds === undefined || !Number.isFinite(seconds) || seconds < 0) {
+		return undefined;
+	}
+	return Math.min(MAX_RETRY_AFTER_MS, Math.ceil(seconds * 1000));
+}
 
 /**
  * FLY-887 (founder-visibility status line): edit an existing Discord message
@@ -483,13 +521,15 @@ export async function reactDiscordMessageInChannel(
 				signal: options.signal,
 			},
 		);
-		return response.ok
-			? { ok: true }
-			: {
-					ok: false,
-					status: response.status,
-					error: "discord_reaction_failed",
-				};
+		if (response.ok) return { ok: true };
+		const retryAfterMs =
+			response.status === 429 ? await discordRetryAfterMs(response) : undefined;
+		return {
+			ok: false,
+			status: response.status,
+			error: "discord_reaction_failed",
+			...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+		};
 	} catch {
 		return { ok: false, error: "discord_reaction_failed" };
 	}

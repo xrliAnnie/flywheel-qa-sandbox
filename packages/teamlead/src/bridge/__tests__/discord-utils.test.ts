@@ -246,6 +246,45 @@ describe("postDiscordMessageToChannel (FLY-162 P2)", () => {
 		});
 	});
 
+	it("FLY-2896: allowedUserIds narrows allowed_mentions to exactly those users", async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(okResponse({ id: "msg-1" }));
+		const result = await postDiscordMessageToChannel(
+			"thread-consent",
+			"<@111111111111111111> card",
+			"bot-token",
+			{ origin: "automation", allowedUserIds: ["111111111111111111"] },
+			fetchMock as unknown as typeof fetch,
+		);
+		expect(result.ok).toBe(true);
+		const body = JSON.parse(
+			(fetchMock.mock.calls[0]![1] as RequestInit).body as string,
+		);
+		expect(body.allowed_mentions).toEqual({
+			parse: [],
+			users: ["111111111111111111"],
+		});
+	});
+
+	it("FLY-2896: without allowedUserIds the allowed_mentions body is unchanged", async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(okResponse({ id: "msg-1" }));
+		await postDiscordMessageToChannel(
+			"thread-consent",
+			"<@111111111111111111> card",
+			"bot-token",
+			{ origin: "automation" },
+			fetchMock as unknown as typeof fetch,
+		);
+		const body = JSON.parse(
+			(fetchMock.mock.calls[0]![1] as RequestInit).body as string,
+		);
+		expect(body.allowed_mentions).toEqual({ parse: [] });
+		expect(Object.keys(body.allowed_mentions)).toEqual(["parse"]);
+	});
+
 	it("rejects invalid or multi-chunk nonces before posting", async () => {
 		const fetchMock = vi.fn<typeof fetch>();
 		await expect(
@@ -558,4 +597,53 @@ it("rejects unsafe identifiers and unbounded/control emoji before a reaction req
 		).toBe(false);
 		expect(fetch).not.toHaveBeenCalled();
 	}
+});
+
+describe("reactDiscordMessageInChannel 429 (FLY-2896 QA rework)", () => {
+	const react = (response: Response) =>
+		reactDiscordMessageInChannel(
+			"111111111111111111",
+			"222222222222222222",
+			"❌",
+			"SYNTHETIC_TOKEN",
+			{},
+			(async () => response) as unknown as typeof fetch,
+		);
+
+	it("reports Discord's retry_after (seconds, body) as retryAfterMs", async () => {
+		await expect(
+			react(
+				new Response(JSON.stringify({ retry_after: 0.4, global: false }), {
+					status: 429,
+					headers: { "Content-Type": "application/json" },
+				}),
+			),
+		).resolves.toEqual({
+			ok: false,
+			status: 429,
+			error: "discord_reaction_failed",
+			retryAfterMs: 400,
+		});
+	});
+
+	it("falls back to the Retry-After header and bounds the wait", async () => {
+		await expect(
+			react(
+				new Response(null, { status: 429, headers: { "Retry-After": "2" } }),
+			),
+		).resolves.toMatchObject({ status: 429, retryAfterMs: 2000 });
+		await expect(
+			react(
+				new Response(JSON.stringify({ retry_after: 9999 }), { status: 429 }),
+			),
+		).resolves.toMatchObject({ status: 429, retryAfterMs: 60_000 });
+	});
+
+	it("leaves non-429 failures unchanged", async () => {
+		await expect(react(new Response(null, { status: 403 }))).resolves.toEqual({
+			ok: false,
+			status: 403,
+			error: "discord_reaction_failed",
+		});
+	});
 });

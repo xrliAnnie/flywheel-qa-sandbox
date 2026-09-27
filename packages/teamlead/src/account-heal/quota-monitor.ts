@@ -55,6 +55,17 @@ import {
 	type ValidatedUsagePayload,
 } from "./quota-usage-api.js";
 import type { QuotaWitnessReadResult } from "./quota-witness.js";
+import {
+	evaluateResetCardAsk,
+	executeApprovedResetCard,
+	type MonitorOps,
+	type ResetCardContext,
+	type ResetCardRuntime,
+	recoverResetCard,
+	resetCardExecutionPending,
+	resetCardSwitchPending,
+	reviewResetCardProposal,
+} from "./reset-card-flow.js";
 import type { SweepRequest } from "./sweep-request.js";
 import type {
 	ApplyProfileReport,
@@ -185,6 +196,8 @@ export interface QuotaMonitorDeps {
 	) => Promise<QuotaMonitorState>;
 	alert: (alert: QuotaMonitorAlert) => Promise<DeliveryReport>;
 	log: (message: string) => void;
+	/** FLY-2896: reset-card flow; absent = feature off (tests, legacy callers). */
+	resetCard?: ResetCardRuntime;
 	/**
 	 * FLY-2830: the Bridge's "re-read every account now" request (written after
 	 * any account switch). Absent = request mode off.
@@ -351,7 +364,7 @@ async function commitSuccessfulObservation(
 	});
 }
 
-async function readCandidateCredential(
+export async function readCandidateCredential(
 	deps: QuotaMonitorDeps,
 	snapshot: AccountSnapshot,
 	name: string,
@@ -874,7 +887,7 @@ async function attemptIdentityDeliveries(
 	}
 }
 
-async function consumeApplyIdentityReports(
+export async function consumeApplyIdentityReports(
 	deps: QuotaMonitorDeps,
 	state: QuotaMonitorState,
 	reports: SwitchResult["applyReports"],
@@ -1324,21 +1337,27 @@ export async function attemptSwitchWithDriftRecovery(
 	};
 }
 
-async function refreshNewActive(
+export type RefreshNewActiveResult =
+	| { status: "updated"; usage: SuccessfulUsage }
+	| { status: "skipped" }
+	| { status: "failed" };
+
+/** Existing callers ignore the result; FLY-2896 reads it as the post-switch proof. */
+export async function refreshNewActive(
 	deps: QuotaMonitorDeps,
 	state: QuotaMonitorState,
 	expectedName: string,
-): Promise<void> {
+): Promise<RefreshNewActiveResult> {
 	const snapshot = await deps.withAccountsLock(() => deps.readSnapshot());
 	if (
 		snapshot.activeName !== expectedName ||
 		snapshot.activeCredential === null ||
 		snapshot.activeCredential.expiresAt <= deps.now()
 	) {
-		return;
+		return { status: "skipped" };
 	}
 	const observed = await deps.fetchUsage(snapshot.activeCredential.accessToken);
-	if (!("ok" in observed)) return;
+	if (!("ok" in observed)) return { status: "failed" };
 	state.tier =
 		observed.ok.fiveH.pct > deps.config.config.acceleratePct
 			? "accelerated"
@@ -1357,6 +1376,79 @@ async function refreshNewActive(
 			snapshot.store.generation,
 		);
 	}
+	return committed
+		? { status: "updated", usage: observed.ok }
+		: { status: "skipped" };
+}
+
+export interface SettleSwitchInput {
+	now: number;
+	generation: number;
+	from: string;
+	to: string;
+	scope: "5h" | "weekly" | "both";
+	resetAt: string;
+	/** FLY-2896 crash recovery: the episode the state loader cleared. */
+	restoreBlockedEpisode?: BlockedEpisode | null;
+}
+
+/**
+ * The bookkeeping after an account-level quota switch committed. Shared by the
+ * ordinary switch path and the FLY-2896 reset-card path. Idempotent per
+ * generation: when revive/observed already carry `generation`, the state write
+ * is skipped (openedAt/panes are not reset) and only the recovery delivery,
+ * itself idempotent, is retried.
+ */
+export async function settleSuccessfulSwitch(
+	deps: QuotaMonitorDeps,
+	/**
+	 * A getter, not a value: `afterPersist` may run the local revive scan,
+	 * which replaces pollOnce's state object; the recovery delivery must see
+	 * the replacement, exactly as the inline code did before the extraction.
+	 */
+	currentState: () => QuotaMonitorState,
+	input: SettleSwitchInput,
+	attemptedKinds: Set<QuotaMonitorAlertKind>,
+	hooks: {
+		clampReviveRetirement: () => void;
+		afterPersist: () => Promise<unknown>;
+	},
+): Promise<void> {
+	const state = currentState();
+	const alreadySettled =
+		state.reviveEpoch?.generation === input.generation &&
+		state.observedGeneration === input.generation;
+	if (!alreadySettled) {
+		if (
+			state.blockedEpisode === null &&
+			input.restoreBlockedEpisode !== undefined &&
+			input.restoreBlockedEpisode !== null
+		) {
+			state.blockedEpisode = structuredClone(input.restoreBlockedEpisode);
+		}
+		state.lastSwitchAt = input.now;
+		state.observedGeneration = input.generation;
+		state.confirmation = null;
+		state.confirmDueAt = null;
+		state.pendingSwitchFailure = null;
+		state.reviveEpoch = {
+			open: true,
+			sourceAccount: input.from,
+			generation: input.generation,
+			openedAt: input.now,
+			expiresAt: Date.parse(input.resetAt) + REVIVE_GRACE_MS,
+			panes: {},
+		};
+		hooks.clampReviveRetirement();
+		await deps.persistState(state);
+	}
+	await hooks.afterPersist();
+	await openBlockedRecovery(
+		deps,
+		currentState(),
+		attemptedKinds,
+		`${input.from}->${input.to}; scope=${input.scope}; account switch succeeded`,
+	);
 }
 
 const EMPTY_REVIVE_SUMMARY: ReviveScanSummary = {
@@ -1646,6 +1738,32 @@ async function handleAccountDead(
 	return "switch_failed";
 }
 
+const resetCardOps: MonitorOps = {
+	verifyAndRankCandidates: (deps, snapshot) =>
+		verifyAndRankCandidates(deps, snapshot),
+	readCandidateCredential,
+	attemptSwitch: attemptSwitchWithDriftRecovery,
+	consumeApplyReports: consumeApplyIdentityReports,
+	settle: settleSuccessfulSwitch,
+	refreshNewActive,
+};
+
+/** FLY-2896: a reset-card fault must never stop polling or ordinary switching. */
+async function guardedResetCard<T>(
+	deps: QuotaMonitorDeps,
+	label: string,
+	fn: () => Promise<T>,
+): Promise<T | undefined> {
+	try {
+		return await fn();
+	} catch (error) {
+		deps.log(
+			`reset_card_error step=${label} error=${error instanceof Error ? error.name : "unknown"}`,
+		);
+		return undefined;
+	}
+}
+
 export async function pollOnce(
 	inputDeps: QuotaMonitorDeps,
 ): Promise<PollOnceResult> {
@@ -1770,6 +1888,61 @@ export async function pollOnce(
 		}
 		return result(outcome, state, deps.config.config);
 	};
+
+	const resetCardContext = (
+		hooks: ResetCardContext["hooks"],
+	): ResetCardContext | null =>
+		deps.resetCard === undefined
+			? null
+			: {
+					deps,
+					rc: deps.resetCard,
+					ops: resetCardOps,
+					getState: () => state,
+					attemptedKinds,
+					hooks,
+				};
+	// Pending redemption owns switching, but must leave a future wake deadline.
+	// Pane scans may wake us sooner; they must not trigger more Anthropic reads.
+	const deferResetCardSwitch = async (): Promise<PollOnceResult> => {
+		const retryAt = deps.now() + 60_000;
+		if (state.nextUsageDueAt <= deps.now()) state.nextUsageDueAt = retryAt;
+		deps.log("reset_card in_progress; ordinary switch deferred");
+		const deferred = await finish("observed");
+		if (state.confirmDueAt !== null && state.confirmDueAt <= deps.now()) {
+			state.confirmDueAt = deps.now() + 60_000;
+		}
+		if (state.nextPaneScanDueAt <= deps.now()) {
+			state.nextPaneScanDueAt =
+				deps.now() + deps.config.config.paneScanSeconds * 1_000;
+		}
+		await deps.persistState(state);
+		return deferred;
+	};
+	// FLY-2896: reconcile any post-redeem state a crash left behind, before the
+	// ordinary reconciliation and independent of resetCardEnabled.
+	const recoveryContext = resetCardContext({
+		clampReviveRetirement: () => undefined,
+		afterPersist: async () => undefined,
+	});
+	if (recoveryContext !== null) {
+		if (
+			!resetCardSwitchPending(recoveryContext.rc) ||
+			state.nextUsageDueAt <= now
+		) {
+			await guardedResetCard(deps, "recover", () =>
+				recoverResetCard(recoveryContext),
+			);
+		}
+		if (resetCardSwitchPending(recoveryContext.rc)) {
+			return deferResetCardSwitch();
+		}
+	}
+	const resetCardUsageDue =
+		deps.resetCard !== undefined &&
+		!deps.config.monitorOnly &&
+		deps.config.config.resetCardEnabled &&
+		resetCardExecutionPending(deps.resetCard);
 
 	const reconciled = await deps.reconcileActive();
 	if (
@@ -1920,7 +2093,8 @@ export async function pollOnce(
 	if (
 		state.nextUsageDueAt > now &&
 		detectedModels.length === 0 &&
-		!witnessDue
+		!witnessDue &&
+		!resetCardUsageDue
 	) {
 		await processLocalSnapshot();
 		await deps.persistState(state);
@@ -1982,7 +2156,7 @@ export async function pollOnce(
 		await deps.persistState(state);
 	}
 
-	if (state.backoffUntilMs > now && !witnessDue) {
+	if (state.backoffUntilMs > now && !witnessDue && !resetCardUsageDue) {
 		state.nextUsageDueAt = state.backoffUntilMs;
 		await deps.persistState(state);
 		return finish("backoff");
@@ -2131,6 +2305,35 @@ export async function pollOnce(
 		modelDetection = null;
 		await deps.persistState(state);
 	}
+	const liveResetCard = resetCardContext({
+		clampReviveRetirement,
+		afterPersist: processLocalSnapshot,
+	});
+	if (liveResetCard !== null && !deps.config.monitorOnly) {
+		await guardedResetCard(deps, "review", () =>
+			reviewResetCardProposal(liveResetCard, snapshot, currentUsage.ok),
+		);
+		if (
+			accountTrigger !== null &&
+			modelDetection === null &&
+			deps.config.config.resetCardEnabled
+		) {
+			const trigger = accountTrigger;
+			const executed = await guardedResetCard(deps, "execute", () =>
+				executeApprovedResetCard(
+					liveResetCard,
+					snapshot,
+					currentUsage.ok,
+					trigger,
+				),
+			);
+			if (executed === "switched") return finish("switched");
+			if (resetCardSwitchPending(liveResetCard.rc)) {
+				state.nextUsageDueAt = deps.now();
+				return deferResetCardSwitch();
+			}
+		}
+	}
 	const sweepDue =
 		state.lastCandidateSweepAt === null ||
 		now - state.lastCandidateSweepAt >=
@@ -2163,6 +2366,24 @@ export async function pollOnce(
 			);
 			await deps.persistState(state);
 		}
+	}
+	if (
+		liveResetCard !== null &&
+		scope === null &&
+		modelDetection === null &&
+		!deps.config.monitorOnly &&
+		deps.config.config.resetCardEnabled &&
+		deps.config.config.resetCardAskPct < deps.config.config.trigger5hPct &&
+		Math.max(currentUsage.ok.fiveH.pct, currentUsage.ok.sevenD.pct) >=
+			deps.config.config.resetCardAskPct
+	) {
+		await guardedResetCard(deps, "ask_early", () =>
+			evaluateResetCardAsk(liveResetCard, {
+				snapshot,
+				usage: currentUsage.ok,
+				candidates: null,
+			}),
+		);
 	}
 	if (scope === null && modelDetection === null) {
 		if (state.pendingSwitchFailure !== null) {
@@ -2267,8 +2488,22 @@ export async function pollOnce(
 		);
 		if (modelDetection === null) {
 			if (scope === null) throw new Error("missing quota trigger scope");
+			const resetCardLine =
+				liveResetCard !== null && deps.config.config.resetCardEnabled
+					? await guardedResetCard(deps, "ask_blocked", () =>
+							evaluateResetCardAsk(liveResetCard, {
+								snapshot,
+								usage: currentUsage.ok,
+								candidates,
+							}),
+						)
+					: undefined;
 			await openBlockedEpisode(deps, state, scope, attemptedKinds, {
-				detail: panoramaBody(candidates.panorama, snapshot),
+				// First line, so the 4000-byte cap can never cut the ask status.
+				detail:
+					resetCardLine === undefined
+						? panoramaBody(candidates.panorama, snapshot)
+						: `${resetCardLine}\n${panoramaBody(candidates.panorama, snapshot)}`,
 				...(fallbackAttempt === null
 					? {}
 					: {
@@ -2468,27 +2703,19 @@ export async function pollOnce(
 	// Only the account-level path reaches here — the model-cap path returned above
 	// — so the same guarded trigger backs the revive deadline. No cast, no NaN.
 	if (accountTrigger === null) throw new Error("missing quota trigger scope");
-	state.lastSwitchAt = now;
-	state.observedGeneration = switched.generation;
-	state.confirmation = null;
-	state.confirmDueAt = null;
-	state.pendingSwitchFailure = null;
-	state.reviveEpoch = {
-		open: true,
-		sourceAccount: switched.from,
-		generation: switched.generation,
-		openedAt: now,
-		expiresAt: Date.parse(accountTrigger.resetAt) + REVIVE_GRACE_MS,
-		panes: {},
-	};
-	clampReviveRetirement();
-	await deps.persistState(state);
-	await processLocalSnapshot();
-	await openBlockedRecovery(
+	await settleSuccessfulSwitch(
 		deps,
-		state,
+		() => state,
+		{
+			now,
+			generation: switched.generation,
+			from: switched.from,
+			to: switched.to,
+			scope: accountTrigger.scope,
+			resetAt: accountTrigger.resetAt,
+		},
 		attemptedKinds,
-		`${switched.from}->${switched.to}; scope=${scope}; account switch succeeded`,
+		{ clampReviveRetirement, afterPersist: processLocalSnapshot },
 	);
 
 	await refreshNewActive(deps, state, switched.to);

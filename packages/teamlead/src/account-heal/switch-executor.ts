@@ -65,6 +65,12 @@ interface SwitchInputBase {
 	notificationContext?: SwitchNotificationContext;
 	/** Terminal exclusion committed with an account-dead transition. */
 	markUnavailable?: { name: string; mark: AccountUnavailableMark };
+	/**
+	 * FLY-2896: the founder approved a reset card for exactly this account and
+	 * the card has been verified to have refilled it. Only this one target may
+	 * ignore its switch cooldown; every other selection rule still applies.
+	 */
+	resetCardTarget?: { name: string };
 }
 
 export interface SwitchNotificationContext {
@@ -219,6 +225,7 @@ type SwitchOutcome =
 				| "invalid_model_trigger"
 				| "invalid_manual_overrides"
 				| "invalid_cooldown_fallbacks"
+				| "invalid_reset_card_target"
 				| "keychain_readback_mismatch"
 				| "identity_rollback_failed"
 				| "lock_lease_lost"
@@ -831,6 +838,29 @@ export async function switchAccount(
 			cooldownFallbacks === undefined
 				? undefined
 				: new Map([[cooldownFallbacks[0] as string, { ignoreCooldown: true }]]);
+		const resetCardTarget = input.resetCardTarget;
+		if (
+			resetCardTarget !== undefined &&
+			(trigger.kind !== "quota" ||
+				input.preferredOrder?.length !== 1 ||
+				input.preferredOrder[0] !== resetCardTarget.name ||
+				input.quotaPreverified !== true ||
+				input.verifiedAt === undefined ||
+				!Number.isFinite(Date.parse(input.verifiedAt)) ||
+				manualOverrides !== undefined ||
+				cooldownFallbacks !== undefined)
+		) {
+			return {
+				outcome: "failed",
+				reason:
+					"reset-card target requires a live-verified quota trigger naming exactly that one account",
+				reasonCode: "invalid_reset_card_target",
+			};
+		}
+		const resetCardOverrides =
+			resetCardTarget === undefined
+				? undefined
+				: new Map([[resetCardTarget.name, { ignoreCooldown: true }]]);
 		const outgoing = store.accounts.find(
 			(account) => account.name === input.observedAccount,
 		);
@@ -1015,7 +1045,8 @@ export async function switchAccount(
 				preferredOrder: input.preferredOrder,
 				verifiedAt: input.verifiedAt,
 				excludeNames: attemptedNames,
-				eligibilityOverrides: manualOverrides ?? cooldownFallbackOverrides,
+				eligibilityOverrides:
+					manualOverrides ?? cooldownFallbackOverrides ?? resetCardOverrides,
 			});
 			if (next === null) {
 				if (keychainReadbackSeen) {

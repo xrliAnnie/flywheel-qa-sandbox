@@ -25,6 +25,7 @@ import {
 	type AccountStore,
 	ackSwitchNotification,
 	applyObservation,
+	commitResetCardRecoveryInStore,
 	earliestReset,
 	emptyStore,
 	enqueueSwitchNotification,
@@ -1267,5 +1268,106 @@ describe("retirement store persistence and rollback", () => {
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("commitResetCardRecoveryInStore (FLY-2896)", () => {
+	let tmp: string;
+	let path: string;
+	const observation = {
+		fiveHPct: 0,
+		sevenDPct: 0,
+		fiveHResetAt: null,
+		sevenDResetAt: "2026-10-01T02:00:00.000Z",
+		fableSevenDPct: null,
+		fableSevenDResetAt: null,
+		observedAt: "2026-09-25T23:50:00.000Z",
+	};
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "fly2896-store-"));
+		path = join(tmp, "claude-accounts.json");
+		writeStore(
+			{
+				generation: 7,
+				activeAccount: "personal",
+				accounts: [
+					{ name: "personal", quotaExhaustedUntil: null, weeklyResetAt: null },
+					{
+						name: "business",
+						quotaExhaustedUntil: "2026-10-01T02:00:00.000Z",
+						switchCooldownUntil: "2026-10-01T02:00:00.000Z",
+						weeklyResetAt: "2026-10-01T02:00:00.000Z",
+						observedSevenDPct: 100,
+						observedFiveHPct: 12,
+						lastObservedAt: "2026-09-25T20:00:00.000Z",
+					},
+					{
+						name: "school",
+						quotaExhaustedUntil: "2026-09-29T02:00:00.000Z",
+						switchCooldownUntil: "2026-09-29T02:00:00.000Z",
+						weeklyResetAt: "2026-09-29T02:00:00.000Z",
+					},
+				],
+			},
+			path,
+		);
+	});
+	afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+
+	it("projects the observation and clears only the target's two gates in one write", () => {
+		const before = readStoreStrict(path) as AccountStore;
+		expect(
+			commitResetCardRecoveryInStore(path, {
+				name: "business",
+				observation,
+				expectedGeneration: 7,
+				expectedActive: "personal",
+			}),
+		).toBe("updated");
+		const after = readStoreStrict(path) as AccountStore;
+		const business = after.accounts.find((a) => a.name === "business");
+		expect(business).toMatchObject({
+			quotaExhaustedUntil: null,
+			observedSevenDPct: 0,
+			observedFiveHPct: 0,
+			lastObservedAt: observation.observedAt,
+		});
+		expect(business?.switchCooldownUntil).toBeUndefined();
+		expect(after.generation).toBe(7);
+		expect(after.activeAccount).toBe("personal");
+		expect(after.accounts.filter((a) => a.name !== "business")).toEqual(
+			before.accounts.filter((a) => a.name !== "business"),
+		);
+	});
+
+	it.each([
+		[{ expectedGeneration: 8 }, "stale_generation"],
+		[{ expectedActive: "school" }, "active_changed"],
+		[{ name: "ghost" }, "missing_account"],
+	])("a failed CAS %j leaves the store byte-identical", (patch, verdict) => {
+		const bytes = readFileSync(path, "utf8");
+		expect(
+			commitResetCardRecoveryInStore(path, {
+				name: "business",
+				observation,
+				expectedGeneration: 7,
+				expectedActive: "personal",
+				...patch,
+			}),
+		).toBe(verdict);
+		expect(readFileSync(path, "utf8")).toBe(bytes);
+	});
+
+	it("refuses an invalid store without manufacturing one", () => {
+		writeFileSync(path, "{broken");
+		expect(
+			commitResetCardRecoveryInStore(path, {
+				name: "business",
+				observation,
+				expectedGeneration: 7,
+				expectedActive: "personal",
+			}),
+		).toBe("invalid_store");
+		expect(readFileSync(path, "utf8")).toBe("{broken");
 	});
 });

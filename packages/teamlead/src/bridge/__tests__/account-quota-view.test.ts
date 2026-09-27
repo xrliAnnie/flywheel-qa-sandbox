@@ -5,6 +5,7 @@ import {
 	formatAccountQuotaTickLines,
 	renderAccountsPageHtml,
 } from "../account-quota-view.js";
+import type { ResetCardDecision } from "../reset-card-decision.js";
 
 const generatedAt = "2026-09-18T00:45:00.000Z";
 
@@ -1132,6 +1133,46 @@ describe("FLY-2864 — Codex next charge date", () => {
 			personal1: "已取消 · 10/14 周三 到期",
 			shopping: "读不到（接口未返回）",
 		});
+	});
+});
+
+describe("FLY-2896 §5.8 — reset-card decision is a display-only pass-through", () => {
+	const decision: ResetCardDecision = {
+		proposalId: "3f1c2b4a-5d6e-4f70-8a91-b2c3d4e5f607",
+		active: "shopping",
+		activePct: 91,
+		target: "business",
+		state: { kind: "approved" },
+		chip: "approved",
+	};
+
+	it("renders the banner and chip when given, and the baseline page otherwise", () => {
+		const view = buildAccountQuotaView({ generatedAt, quota: quota() });
+		const baseline = renderAccountsPageHtml(view);
+		expect(baseline).not.toContain("reset-card");
+		expect(
+			renderAccountsPageHtml(view, undefined, { resetCardDecision: null }),
+		).toBe(baseline);
+
+		const html = renderAccountsPageHtml(view, undefined, {
+			resetCardDecision: decision,
+		});
+		expect(html).toContain(
+			"Claude 在用号 shopping 已用 91%，没有能直接切的号 · 建议给 business 用卡 · <strong>已满、等你决定</strong> · 你已同意，等到切号线执行",
+		);
+		expect(html).toContain(
+			'business<span class="reset-card-chip">已同意 · 等切号线</span>',
+		);
+	});
+
+	it("leaves the view itself, its order and the patrol tick untouched", () => {
+		const view = buildAccountQuotaView({ generatedAt, quota: quota() });
+		const before = JSON.stringify(view);
+		const tick = formatAccountQuotaTickLines(view);
+		renderAccountsPageHtml(view, undefined, { resetCardDecision: decision });
+		expect(JSON.stringify(view)).toBe(before);
+		expect(formatAccountQuotaTickLines(view)).toEqual(tick);
+		expect(tick.join("\n")).not.toContain("等你决定");
 	});
 });
 

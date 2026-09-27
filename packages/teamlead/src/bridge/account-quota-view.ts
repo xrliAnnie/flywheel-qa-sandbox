@@ -1509,6 +1509,11 @@ export function formatAccountQuotaTickLines(view: AccountQuotaView): string[] {
 	return ["- 额度 Claude", claude, `- Codex ${view.codexSourceLabel}`, codex];
 }
 
+/**
+ * FLY-2896: `options.resetCardDecision` is display only (same treatment as
+ * `nextCharge`): it never enters grouping, ordering or switch logic, and null
+ * renders the page exactly as before.
+ */
 export function renderAccountsPageHtml(
 	view: AccountQuotaView,
 	vercel?: VercelQuotaSection,

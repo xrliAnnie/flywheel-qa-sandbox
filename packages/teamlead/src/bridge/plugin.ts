@@ -103,6 +103,8 @@ import {
 } from "../account-heal/detection-classifier.js";
 import { defaultMachinePoolDir } from "../account-heal/machine-account.js";
 import { quarantinePendingSwitches } from "../account-heal/pending-store.js";
+import { loadQuotaMonitorConfig } from "../account-heal/quota-monitor-config.js";
+import { makeResetCardFiles } from "../account-heal/reset-card-files.js";
 import { writeSweepRequest } from "../account-heal/sweep-request.js";
 import {
 	type ApplyTransitionOpts,
@@ -199,6 +201,7 @@ import {
 	LeadAlertNotifier,
 } from "../LeadAlertNotifier.js";
 import { CodexLeadOutboundHandler } from "../lead-backends/codex/CodexLeadOutboundHandler.js";
+import { checkReactionConfirmation } from "../lead-backends/codex/gateway/founder-confirmation.js";
 import { FileInboundCursorStore } from "../lead-backends/codex/InboundCursorStore.js";
 import { buildLeadDiscordSend } from "../lead-backends/codex/leadDiscordSend.js";
 import { SqliteOutboundDedupStore } from "../lead-backends/codex/SqliteOutboundDedupStore.js";
@@ -454,9 +457,11 @@ import {
 	resolveInfraDiscordIdentity,
 } from "./discord-guild-active-threads.js";
 import {
+	DISCORD_API,
 	editDiscordMessageInChannel,
 	fetchDiscordMessageFromChannel,
 	postDiscordMessageToChannel,
+	reactDiscordMessageInChannel,
 	removeDiscordMessageReactionInChannel,
 } from "./discord-utils.js";
 import { createDispositionReceiptPass } from "./disposition-receipt.js";
@@ -881,6 +886,15 @@ import {
 	makeRunnerRevalidate,
 	type RescueRuntime,
 } from "./rescue-runtime.js";
+import {
+	createResetCardConsentTicker,
+	withResetCardTick,
+} from "./reset-card-consent.js";
+import {
+	activeClaudeMaxPct,
+	DEFAULT_RESET_CARD_ASK_PCT,
+	loadResetCardDecision,
+} from "./reset-card-decision.js";
 import { createHostResidentCodexLeadPatrol } from "./resident-codex-lead-patrol.js";
 import { RESIDENT_EXPIRY_FAST_WINDOW_MS } from "./resident-hold.js";
 import { ResidentReceiverSupervisor } from "./resident-receiver-supervisor.js";
@@ -2281,6 +2295,22 @@ export function createBridgeApp(
 						vercelSection,
 						{
 							lastSwitch,
+							// FLY-2896: display-only; any read failure renders the page as before.
+							resetCardDecision: loadResetCardDecision({
+								files: makeResetCardFiles(join(manualStateDir, "claude-quota")),
+								askPct: (() => {
+									try {
+										return loadQuotaMonitorConfig().config.resetCardAskPct;
+									} catch {
+										return DEFAULT_RESET_CARD_ASK_PCT;
+									}
+								})(),
+								activeAccount: accountStore?.activeAccount ?? null,
+								activeGeneration: accountStore?.generation ?? null,
+								activeMaxPct: activeClaudeMaxPct(
+									snapshot.quota.claude.accounts,
+								),
+							}),
 							...(() => {
 								try {
 									const codexStandby = opts?.codexQuota?.standbySection?.();
@@ -9616,6 +9646,78 @@ export async function startBridge(
 		observePipeline: (report) =>
 			store.codexQuota.observeCodexReadingPipeline(report),
 	});
+	// FLY-2896: founder consent card for a Claude reset card ("充值卡"). Rides
+	// the same tick (see onLandOperationTick). The Bridge only posts/reads
+	// Discord, writes the consent file and wakes the daemon (invariant I3).
+	const resetCardDaemonWake = createQuotaDaemonWaker();
+	const resetCardConsent = createResetCardConsentTicker({
+		files: makeResetCardFiles(),
+		now: Date.now,
+		founderId: () =>
+			deriveCanonicalFounderId(
+				config.discordOwnerUserId,
+				config.founderConsent?.founderUserId,
+			),
+		channelId: () =>
+			process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID?.trim() || null,
+		botToken: () =>
+			projects
+				.find((project) => project.projectName === "flywheel")
+				?.leads.find((lead) => lead.agentId === "flywheel-eng-lead")
+				?.botToken ??
+			config.discordBotToken ??
+			null,
+		discord: {
+			post: async ({ channelId, botToken, text, nonce, allowedUserIds }) => {
+				const result = await postDiscordMessageToChannel(
+					channelId,
+					text,
+					botToken,
+					{
+						origin: "automation",
+						nonce,
+						enforceNonce: true,
+						allowedUserIds,
+						signal: AbortSignal.timeout(10_000),
+					},
+				);
+				if (!result.ok) return { ok: false, error: result.error };
+				const messageId = result.messageIds[0];
+				return messageId
+					? { ok: true, messageId }
+					: { ok: false, error: "missing_message_id" };
+			},
+			edit: ({ channelId, messageId, botToken, text }) =>
+				editDiscordMessageInChannel(channelId, messageId, text, botToken, {
+					origin: "automation",
+					signal: AbortSignal.timeout(10_000),
+				}),
+			react: ({ channelId, messageId, botToken, emoji }) =>
+				reactDiscordMessageInChannel(channelId, messageId, emoji, botToken, {
+					signal: AbortSignal.timeout(10_000),
+				}),
+			checkReaction: ({ channelId, messageId, botToken, founderId, emoji }) =>
+				checkReactionConfirmation(
+					async (page) => {
+						const response = await fetch(
+							`${DISCORD_API}/channels/${encodeURIComponent(page.channelId)}/messages/${encodeURIComponent(page.messageId)}/reactions/${encodeURIComponent(page.emoji)}?limit=100${page.after ? `&after=${encodeURIComponent(page.after)}` : ""}`,
+							{
+								headers: { Authorization: `Bot ${botToken}` },
+								signal: AbortSignal.timeout(10_000),
+							},
+						);
+						return {
+							status: response.status,
+							body: response.status === 200 ? await response.json() : undefined,
+						};
+					},
+					{ channelId, messageId, founderId, emoji },
+				),
+		},
+		wake: resetCardDaemonWake,
+		timezone: resolveFounderTimezone,
+		log: (message) => console.warn(message),
+	});
 
 	for (const dispatcher of new Set([startDispatcher, retryDispatcher]))
 		if (dispatcher)
@@ -13448,26 +13550,33 @@ export async function startBridge(
 		onIssueGateSupersedeTick: issueGateSupersedeTick,
 		onReleaseReadinessTick: () => releaseReadinessRider.tick(),
 		onWorkflowGateMaterializeTick: workflowGateMaterializeTick,
-		onLandOperationTick: async () => {
-			await landOperationTick();
-			if (process.env.VITEST) return;
-			try {
-				await codexQuotaMaintenance.tick();
-			} finally {
-				// FLY-2869: never let the maintenance chain short-circuit the readings.
-				codexReadingScheduler.tick();
-				// FLY-2830: after the maintenance reconcile, so a manual
-				// `codex-profile use` is seen in the same tick.
-				switchRefreshTrigger.tick();
-				// FLY-2897: daily receipt round; its own try so it can never
-				// skip the triggers above.
+		onLandOperationTick: withResetCardTick(
+			() => {
+				// FLY-2896: never under VITEST (it would read the real HOME's files).
+				if (!process.env.VITEST) resetCardConsent.tick();
+			},
+			async () => {
+				await landOperationTick();
+				if (process.env.VITEST) return;
 				try {
-					claudeChargeScheduler.tick();
-				} catch {
-					console.warn("[claude-charge] scheduler tick failed");
+					await codexQuotaMaintenance.tick();
+				} finally {
+					// FLY-2869: never let the maintenance chain short-circuit the readings.
+					codexReadingScheduler.tick();
+					// FLY-2830: after the maintenance reconcile, so a manual
+					// `codex-profile use` is seen in the same tick.
+					switchRefreshTrigger.tick();
+					// FLY-2897: daily receipt round; its own try so it can never
+					// skip the triggers above.
+					try {
+						claudeChargeScheduler.tick();
+					} catch {
+						console.warn("[claude-charge] scheduler tick failed");
+					}
 				}
-			}
-		},
+			},
+			(message) => console.warn(message),
+		),
 		onAutoNarrowGateTick: async () => {
 			const mode = readAutoNarrowRuntimeControl(flagStore, "flywheel").mode;
 			if (mode === "auto") {

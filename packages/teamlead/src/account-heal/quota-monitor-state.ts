@@ -507,7 +507,7 @@ function parseEpisodeDelivery(
 	};
 }
 
-function parseBlockedEpisode(
+export function parseBlockedEpisode(
 	value: unknown,
 ): BlockedEpisode | null | undefined {
 	if (value === undefined || value === null) return null;

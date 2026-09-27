@@ -1,0 +1,21 @@
+flowchart TB
+  subgraph M["quota-monitor 守护进程（唯一会切号、唯一会花卡）"]
+    M1["评估：选号 + 写提议"]
+    M2["执行：复核 → 用卡 → 验证 → 切号"]
+  end
+  subgraph B["Bridge（只负责问你）"]
+    B1["发征询卡、读 ✅ ❌"]
+  end
+  P[("提议 reset-card-proposal.json<br/>只有守护进程写")]
+  C[("你的决定 reset-card-consent.json<br/>只有 Bridge 写")]
+  A[("审计 reset-card-audit.jsonl<br/>只追加")]
+  S[("账号库 claude-accounts.json<br/>格式不变")]
+  M1 --> P
+  P --> B1
+  B1 --> C
+  C --> M2
+  M2 --> A
+  M2 --> S
+  B1 -. 唤醒 .-> M2
+  P -. 额度页横幅 .-> PG["额度页「已满、等你决定」"]
+  C -.-> PG
