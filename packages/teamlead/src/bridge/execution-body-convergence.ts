@@ -58,6 +58,27 @@ export type ExecutionBodyConvergenceResult =
 			projection: ReturnType<typeof projectCommittedExecutionBodyDeath>;
 	  };
 
+/** Temporary lease contention is scheduling, not a semantic death refusal.
+ * Each attempt reacquires/revalidates independently; no lease is held while waiting. */
+export async function retryExecutionBodyConvergence(
+	attempt: () => Promise<ExecutionBodyConvergenceResult>,
+	wait: (ms: number) => Promise<void> = (ms) =>
+		new Promise((resolve) => setTimeout(resolve, ms)),
+): Promise<ExecutionBodyConvergenceResult> {
+	const delays = [25, 75];
+	for (let index = 0; ; index++) {
+		const result = await attempt();
+		const delay = delays[index];
+		if (
+			result.kind !== "deferred" ||
+			result.reason !== "lease_held" ||
+			delay === undefined
+		)
+			return result;
+		await wait(delay);
+	}
+}
+
 function projectionProof(
 	store: StateStore,
 	duty: BodyDeathObligation,

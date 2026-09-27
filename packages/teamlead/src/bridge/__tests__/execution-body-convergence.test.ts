@@ -11,8 +11,10 @@ import {
 	convergeExecutionBody,
 	type ExecutionBodyConvergenceDeps,
 	projectCommittedExecutionBodyDeath,
+	retryExecutionBodyConvergence,
 } from "../execution-body-convergence.js";
 import { createExecutionBodyObserver } from "../execution-body-liveness.js";
+import { createExecutionBodyRuntime } from "../execution-body-runtime.js";
 
 describe("FLY-2919 body death across StateStore and CommDB", () => {
 	let root: string;
@@ -157,6 +159,110 @@ describe("FLY-2919 body death across StateStore and CommDB", () => {
 		store.close();
 		comm.close();
 		rmSync(root, { recursive: true, force: true });
+	});
+
+	it("retries a transient mutation lease outside the lease and commits after release", async () => {
+		const claim = store.claimExecutionMutationLease(
+			"exec-1",
+			store.getLifecycleRevision("exec-1"),
+			{ holder: "other", nowMs: clock, ttlMs: 60000 },
+		);
+		if (!claim.ok) throw new Error(claim.reason);
+		const wait = vi.fn(async () => {
+			expect(store.getSession("exec-1")?.status).toBe("running");
+			store.commitExecutionMutationLease(
+				"exec-1",
+				claim.claimToken,
+				store.getLifecycleRevision("exec-1"),
+				clock,
+			);
+		});
+		expect(
+			await retryExecutionBodyConvergence(
+				() => convergeExecutionBody(deps, "exec-1"),
+				wait,
+			),
+		).toMatchObject({ kind: "committed" });
+		expect(wait).toHaveBeenCalledExactlyOnceWith(25);
+	});
+	it("bounds contention retries and never retries semantic refusal", async () => {
+		const busy = vi.fn(async () => ({
+			kind: "deferred" as const,
+			reason: "lease_held",
+		}));
+		const wait = vi.fn(async () => {});
+		expect(await retryExecutionBodyConvergence(busy, wait)).toEqual({
+			kind: "deferred",
+			reason: "lease_held",
+		});
+		expect(busy).toHaveBeenCalledTimes(3);
+		expect(wait.mock.calls).toEqual([[25], [75]]);
+		const stale = vi.fn(async () => ({
+			kind: "deferred" as const,
+			reason: "body_death_authority_changed",
+		}));
+		wait.mockClear();
+		expect(await retryExecutionBodyConvergence(stale, wait)).toEqual({
+			kind: "deferred",
+			reason: "body_death_authority_changed",
+		});
+		expect(stale).toHaveBeenCalledOnce();
+		expect(wait).not.toHaveBeenCalled();
+	});
+	it("independent sampling commits a fresh-heartbeat death through both ledgers with one OS sample", async () => {
+		const heartbeat = new HeartbeatService(
+			store,
+			{
+				prepareSessionZombieDetected: vi.fn(),
+				clearReconnectStamp: vi.fn(),
+			} as never,
+			15,
+			300000,
+			60,
+			undefined,
+			24,
+			21600000,
+			{
+				bridgeBaseUrl: "http://localhost",
+				ingestToken: "fixture",
+				markerDir: root,
+			},
+		);
+		let runtime: ReturnType<typeof createExecutionBodyRuntime>;
+		const cached = {
+			...deps.observer,
+			observe: async (id: string) => runtime.read(id),
+		};
+		heartbeat.setExecutionBodyLifecycle({
+			observe: cached.observe,
+			converge: (id) =>
+				convergeExecutionBody({ ...deps, observer: cached }, id),
+		});
+		runtime = createExecutionBodyRuntime({
+			listCandidates: () =>
+				store.executionProcessOwners.listObservationCandidates(),
+			observer: deps.observer,
+			now: () => clock,
+			onDead: async (id) => {
+				await heartbeat.reconcileExecutionBody(id);
+			},
+			onRecoveryActive: async () => {},
+			replayPending: async () => {},
+		});
+		try {
+			expect(store.getOrphanSessions(60)).toEqual([]);
+			runtime.start();
+			await runtime.runPass();
+			await vi.waitFor(() =>
+				expect(comm.getSession("exec-1")?.status).toBe("failed"),
+			);
+			expect(store.getSession("exec-1")?.status).toBe("failed");
+			expect(capture).toHaveBeenCalledOnce();
+			expect(comm.getTurn("FLY-2919")).toBeNull();
+		} finally {
+			await runtime.stop();
+			heartbeat.stop();
+		}
 	});
 	it("commits both ledgers for dead parked bodies despite a present window", async () => {
 		comm.enqueueRunnerPhaseWake(

@@ -463,3 +463,25 @@ HIGH marker-before-death 的原测试把 marker 放在旧 Git 取证 await；取
 边界仍未完成：server-loss/crash-reaper/stale-terminal 和其余直接窗口消费者仍有旧权威；dispatcher 尚未消费 C2/缓存，独立采样器未启动；同物理 generation 的逻辑 activation、legacy binding、ordinary/rework 义务与身份退休、D/E/F 和九单验收继续实施。A9 routes 原15秒超时仍未关闭。无有效最终 review、PR、full CI、529/QA 或 needs_review 交卷声明。
 
 B7 最终验证收齐：18个具体文件依次324 pass；限定发现范围的owning related为14文件285 pass。最终源码teamlead及依赖build、teamlead/voice-codex typecheck、lint全部exit0；测试期间13个改动源码的SHA256保持一致。相关测试发现/逐匹配排除理由归档implementation-b7-consumers.json.gz；命令、全部红绿/迁移诊断、related配置与源码hash归档implementation-b7-evidence.json.gz。没有整库/整包测试、真实宿主机探活或529证明；这是B7检查点，不是完整实现完成。
+
+## B8 独立生产采样与同轮收敛（执行 bd58c685）
+
+在 B7 `1c4b1a8ca` 上接通已批准的独立节奏。唯一 OS producer 仍是原 BodyObserver，唯一短期证据缓存仍是 B5 sampler；增加采样完成后的同步通知，先存原始观测、再通知消费者，不延长10秒期限。通知异常不删除有效观测，取消/到期后的结果不通知。unknown recovery_active 只作既有 reown 的调度信号，不作为死亡授权或可读缓存。新增三项在旧 sampler 上3 RED/10 pass，实现后13 GREEN。
+
+新 runtime 只调度 execution id：每5秒启动 sampler（每轮最多8个开始、OS并发2、5秒采样窗），生命处理另用最多2个在途工作；慢 marker/reown 不占 OS worker 或停止下一轮采样。death 信号立即排入共同 Heartbeat/C2；消费时从同一缓存取原观测并在CAS重新核当前身份/flag/期限。没有第二份 alive/dead 判断缓存。一个 execution 的重复采样不会重复开在途处理；stop 先停/取消并等待采样 drain，再等待已开始的生命工作和义务重放，丢弃未开始队列。未知库存下一轮重试；空库存也每轮重放原已提交义务。runtime 8项覆盖心跳外5秒节奏、同轮调用、热读不发探针、8/2预算、慢工作不阻采样、去重、reown后新采样、关闭drain、空库存重放与库存恢复。
+
+`ExecutionProcessOwnerStore.listObservationCandidates` 只列调度库存，不断言生命；completed/failed 等业务标签不能隐藏未结账的 owner；只有 close+drained 且同 generation 物理记录 closed/standby 才移出库存，spawn/restart 未结账仍入列。无 schema/保留策略改动。新库存测试旧实现1 RED/36 pass，增加只读查询后37 GREEN。legacy 未绑定的进程仍需后续补采迁移，本库存不冒称覆盖它们。
+
+plugin 在既有 boot reown barrier 后、Heartbeat start 前启动 independent runtime；原注入 dispatcher/VITEST 的 native-probe 禁用边界保留。Heartbeat 与 C2、Codex terminal sweep 均改读缓存，消费者不再二次 OS await；boot 库存失败保持未知，记录并让下一次5秒轮次重试。onRecoveryActive 仍先对账完成 marker，再调用原 reowner；耗尽回调只读缓存，因此不会等待自己正在运行的恢复 pass。shutdown 等待 runtime drain。生产结构约束2 RED/15 pass →17 GREEN。
+
+真实临时双库集成新增“heartbeat 新鲜、无孤儿候选”原现象：启动 independent sampler 后，两库和 TURN 在首次采样后收敛，OS capture 恰好一次，没有等5分钟 Heartbeat。C2 的 lease_held 额外最多重试2次（25ms/75ms），每次都重新走原身份/marker/flag/CAS；等待时不持有 lease。语义拒绝不重试，仍争用则返回deferred并由下一轮继续；不写假失败。两个新 retry 用例先2 RED/14 pass，补实现后双库文件16 GREEN。本 helper 只覆盖死亡收敛；原 restartGate 的争用处理仍须随剩余 owner/restart 消费者核查，不能因此宣称该 Lead 义务全部结束。
+
+延迟说明：正常无等待路径不再以5分钟心跳为下限，确定死亡的样本在同轮启动 C2；不是每个执行都5秒必结账。快速探针、无优先请求、无慢生命周期工作时，N个候选至多ceil(N/8)轮、每轮间隔5秒；持续优先请求仍留稳定游标推进容量。慢探针每轮可只启动2个，OS取消后必须等待子进程 drain；marker 未对账完或生命周期工作占满时仍保持未知/排队，并受10秒消费有效期约束。529实际库存、OS drain 和端到端延迟尚未测量，不从fake timers推断生产硬上界。
+
+重要下一步：dispatcher 仍使用 terminal-first + window-derived liveness。C2 一旦提交，会改变生命周期和owner状态，使采样前观测正确失效；因此不能简单把旧 probe 替换为缓存read而让已证死节点永久unknown。下一批必须增加“当前generation的不可变死亡义务+已投影回执”只读验证，再让 dispatcher 热 tick 消费该证据，缺证据只入采样队列而不串行等待OS。剩余 A–F/九单、其它直接窗口消费者、逻辑activation、legacy补采、ordinary/rework结账和A9原15秒timeout均未完成，无review/PR/full CI/QA/handoff声明。
+
+B8 库存补强：审查发现仅凭 owner drain 会在原生 stop 已出收据、物理账仍 active 时过早移出库存。补负控在第一版查询上1 RED/36 pass（应继续返回 exec-1 却为空）；只读查询连接同 generation 物理账后37 GREEN，另测物理代次不匹配仍保留。无生产状态修补。
+
+B8 验证诊断：最终14个具体文件逐一273 pass。限定 owning related 的首轮9文件中8文件通过，owner 文件5项 beforeEach 超过原10秒，并伴随 worker onTaskUpdate timeout；当时日志同时出现大量250–800ms slow-SQL。只对失败 owner 文件重跑 related，保留原期限与断言，37项全绿（18.23秒）。因此 related 覆盖为9文件219项跨两次执行，不伪报一次全绿；完整失败/重试日志保留。
+
+B8 最终源码的 teamlead及依赖build、teamlead/voice-codex typecheck、lint均exit0（25既有warning）。10个源码SHA256已核一致；明确文件/限定related/失败与重试日志、命令及配置归档 implementation-b8-evidence.json.gz，检索与排除理由归档 implementation-b8-consumers.json.gz。无整库/整包测试、新shell测试、真实OS/529、最终review/PR/full CI/QA/handoff声明。

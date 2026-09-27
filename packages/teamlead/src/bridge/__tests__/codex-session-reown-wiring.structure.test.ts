@@ -160,6 +160,32 @@ describe("FLY-2268 resident receiver wiring", () => {
 		);
 		expect(exhausted).not.toContain("runtime.failExhausted");
 	});
+
+	it("starts independent sampling after the reown barrier and drains it on close", () => {
+		expect(source).toContain("createExecutionBodyRuntime({");
+		expect(source).toContain(
+			"store.executionProcessOwners.listObservationCandidates()",
+		);
+		const boot = source.indexOf('withSyncOpMarker("boot:readopt-candidates"');
+		const start = source.indexOf("executionBodyRuntime.start()", boot);
+		expect(start).toBeGreaterThan(boot);
+		expect(start).toBeLessThan(
+			source.indexOf("heartbeatService.start();", boot),
+		);
+		expect(source).toContain("await executionBodyRuntime.stop()");
+	});
+	it("Heartbeat and terminal sweep consume cached observations, never resampling in consumers", () => {
+		const wiring = source.slice(
+			source.indexOf("heartbeatService.setExecutionBodyLifecycle({"),
+			source.indexOf("heartbeatServiceRef.current = heartbeatService"),
+		);
+		expect(wiring).toContain("observe: cachedExecutionBodyObserver.observe");
+		expect(wiring).toContain("observer: cachedExecutionBodyObserver");
+		expect(source).toContain("bodyObserver: cachedExecutionBodyObserver");
+		expect(source).toContain("onDead: async (executionId)");
+		expect(source).toContain("onRecoveryActive: async (executionId)");
+		expect(source).not.toContain("const heartbeatBodyObserver =");
+	});
 	it("keeps injected dispatchers and Vitest away from native process capture", () => {
 		expect(source).toMatch(
 			/executionBodyProbesEnabled\s*=\s*!\(\s*opts\?\.startDispatcher \|\| process\.env\.VITEST\s*\)/,

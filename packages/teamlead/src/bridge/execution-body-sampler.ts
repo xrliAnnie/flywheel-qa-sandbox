@@ -13,6 +13,9 @@ export interface ExecutionBodySamplerOptions {
 	listCandidates(): readonly string[];
 	observer: BodySamplingObserver;
 	now?: () => number;
+	/** Synchronous notification only; lifecycle awaits must not hold OS workers. */
+	onObservation?(observation: BodyObservation): void;
+	onPassComplete?(): void;
 }
 const PASS_LIMIT = 8;
 const CONCURRENCY = 2;
@@ -115,6 +118,20 @@ export function createExecutionBodySampler(
 						) {
 							observations.set(id, observation);
 						} else observations.delete(id);
+						if (
+							!cancellation.signal.aborted &&
+							now() < deadline &&
+							observation?.identity.executionId === id &&
+							Date.parse(observation.observedAt) <= now() &&
+							now() < Date.parse(observation.expiresAt) &&
+							(observations.has(id) || observation.verdict === "unknown")
+						) {
+							try {
+								options.onObservation?.(structuredClone(observation));
+							} catch {
+								/* Consumer failure never changes the sampled authority. */
+							}
+						}
 					} catch {
 						observations.delete(id);
 					}
@@ -126,6 +143,11 @@ export function createExecutionBodySampler(
 		} finally {
 			clearTimeout(timeout);
 			if (controller === cancellation) controller = undefined;
+			try {
+				options.onPassComplete?.();
+			} catch {
+				/* A duty-replay failure must not strand the sampling timer. */
+			}
 		}
 	}
 	function runPass(): Promise<void> {

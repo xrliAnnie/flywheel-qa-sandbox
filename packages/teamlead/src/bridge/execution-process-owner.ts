@@ -156,6 +156,23 @@ export class ExecutionProcessOwnerStore {
 		);
 	}
 
+	/** Scheduling inventory, never a liveness verdict. Business-terminal labels
+	 * cannot hide an owner until close/drain and the same-generation physical
+	 * body settlement are recorded. Owner drain alone still needs convergence. */
+	listObservationCandidates(): string[] {
+		return (
+			this.db
+				.prepare(`SELECT owner.execution_id FROM execution_process_owner owner
+			LEFT JOIN workflow_execution_process_body body
+			ON body.execution_id = owner.execution_id AND body.generation = owner.generation
+			WHERE owner.close_requested = 0 OR owner.owner_drained_receipt IS NULL
+			OR owner.spawn_inflight = 1 OR owner.restart_in_progress = 1
+			OR body.state IS NULL OR body.state NOT IN ('closed', 'standby')
+			ORDER BY owner.execution_id`)
+				.all() as Array<{ execution_id: string }>
+		).map((row) => row.execution_id);
+	}
+
 	get(executionId: string): ExecutionProcessOwnerRow | undefined {
 		return this.db
 			.prepare("SELECT * FROM execution_process_owner WHERE execution_id = ?")

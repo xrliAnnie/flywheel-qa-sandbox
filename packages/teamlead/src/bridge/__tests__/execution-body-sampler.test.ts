@@ -31,6 +31,57 @@ describe("FLY-2919 bounded body sampling", () => {
 		vi.setSystemTime(100_000);
 	});
 	afterEach(() => vi.useRealTimers());
+
+	it("publishes the original observation before notifying same-pass consumers", async () => {
+		const value = observation("exec");
+		const received: BodyObservation[] = [];
+		const sampler = createExecutionBodySampler({
+			listCandidates: () => ["exec"],
+			observer: { observe: async () => value, isCurrent: () => true },
+			onObservation: (item: BodyObservation) => {
+				received.push(item);
+				expect(sampler.read("exec")).toEqual(value);
+			},
+		});
+		await sampler.runPass();
+		expect(received).toEqual([value]);
+	});
+	it("notifies recovery signals without caching unknown as death authority", async () => {
+		const observed = {
+			...observation("exec"),
+			verdict: "unknown" as const,
+			reason: "recovery_active",
+		};
+		const onObservation = vi.fn();
+		const sampler = createExecutionBodySampler({
+			listCandidates: () => ["exec"],
+			observer: { observe: async () => observed, isCurrent: () => false },
+			onObservation,
+		});
+		await sampler.runPass();
+		expect(onObservation).toHaveBeenCalledWith(observed);
+		expect(sampler.read("exec")).toBeUndefined();
+	});
+	it("isolates notification failure and runs pass maintenance with no candidates", async () => {
+		let ids = ["exec"];
+		const onPassComplete = vi.fn();
+		const sampler = createExecutionBodySampler({
+			listCandidates: () => ids,
+			observer: {
+				observe: async (id) => observation(id),
+				isCurrent: () => true,
+			},
+			onObservation: () => {
+				throw new Error("consumer unavailable");
+			},
+			onPassComplete,
+		});
+		await sampler.runPass();
+		expect(sampler.read("exec")?.verdict).toBe("dead");
+		ids = [];
+		await sampler.runPass();
+		expect(onPassComplete).toHaveBeenCalledTimes(2);
+	});
 	it("starts at most eight probes per pass, with two in flight, and visits all 100 candidates", async () => {
 		let active = 0;
 		let peak = 0;
@@ -158,14 +209,17 @@ describe("FLY-2919 bounded body sampling", () => {
 					);
 				}),
 		);
+		const onObservation = vi.fn();
 		const sampler = createExecutionBodySampler({
 			listCandidates: () => ["exec"],
+			onObservation,
 			observer: { observe, isCurrent: () => true },
 		});
 		const pass = sampler.runPass();
 		await vi.advanceTimersByTimeAsync(5000);
 		await pass;
 		expect(sampler.read("exec")).toBeUndefined();
+		expect(onObservation).not.toHaveBeenCalled();
 	});
 	it("a probe failure does not stop other candidates or strand single-flight state", async () => {
 		const observe = vi.fn(async (id: string) => {

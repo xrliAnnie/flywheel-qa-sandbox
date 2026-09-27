@@ -508,8 +508,10 @@ import { createEventRouter } from "./event-route.js";
 import {
 	convergeExecutionBody,
 	projectCommittedExecutionBodyDeath,
+	retryExecutionBodyConvergence,
 } from "./execution-body-convergence.js";
 import { createStoredExecutionBodyObserver } from "./execution-body-liveness.js";
+import { createExecutionBodyRuntime } from "./execution-body-runtime.js";
 import { withExecutionMutationLease } from "./execution-mutation-lease.js";
 import {
 	checkPrMergeViaGh,
@@ -10295,11 +10297,17 @@ export async function startBridge(
 				),
 		},
 	);
+	let executionBodyRuntime: ReturnType<typeof createExecutionBodyRuntime>;
+	const cachedExecutionBodyObserver = {
+		...executionBodyObserver,
+		observe: async (executionId: string) =>
+			executionBodyRuntime?.read(executionId),
+	};
 	const codexTerminalSweep = !executionBodyProbesEnabled
 		? undefined
 		: createBridgeCodexTerminalSweep({
 				store,
-				bodyObserver: executionBodyObserver,
+				bodyObserver: cachedExecutionBodyObserver,
 				owners: codexExecutionOwners,
 				reapEnabled: () => storeCodexTerminalReapEnabled(flagStore),
 				alertSink: codexTerminalSweepAlertHolder,
@@ -11243,60 +11251,45 @@ export async function startBridge(
 			);
 		},
 	);
-	const heartbeatBodyObserver = {
-		...executionBodyObserver,
-		observe: async (executionId: string) => {
-			const observed = await executionBodyObserver.observe(executionId);
-			if (
-				observed?.verdict !== "unknown" ||
-				observed.reason !== "recovery_active"
-			)
-				return observed;
-			if (await heartbeatService.reconcileCompletionBeforeDeath(executionId))
-				return observed;
-			const session = store.getSession(executionId);
-			if (session) await codexSessionReowner.runPass([session]);
-			return executionBodyObserver.observe(executionId);
-		},
-	};
 
 	let bodyDeathReplayCursor = "";
-	heartbeatService.setExecutionBodyLifecycle({
-		observe: heartbeatBodyObserver.observe,
-		replayPending: async () => {
-			let pending = store.listPendingExecutionBodyDeaths({
-				limit: 8,
-				afterId: bodyDeathReplayCursor,
-			});
-			if (!pending.length && bodyDeathReplayCursor) {
-				bodyDeathReplayCursor = "";
-				pending = store.listPendingExecutionBodyDeaths({ limit: 8 });
-			}
-			for (const duty of pending) {
-				bodyDeathReplayCursor = duty.obligationId;
+	const replayExecutionBodyDeaths = async () => {
+		let pending = store.listPendingExecutionBodyDeaths({
+			limit: 8,
+			afterId: bodyDeathReplayCursor,
+		});
+		if (!pending.length && bodyDeathReplayCursor) {
+			bodyDeathReplayCursor = "";
+			pending = store.listPendingExecutionBodyDeaths({ limit: 8 });
+		}
+		for (const duty of pending) {
+			bodyDeathReplayCursor = duty.obligationId;
+			try {
+				const project = store.getWorkflowRun(duty.runId)?.project_name;
+				if (!project) continue;
+				const path = commDbPathForProject(project);
+				if (!ffExistsSync(path)) continue;
+				const comm = new CommDB(path);
 				try {
-					const project = store.getWorkflowRun(duty.runId)?.project_name;
-					if (!project) continue;
-					const path = commDbPathForProject(project);
-					if (!ffExistsSync(path)) continue;
-					const comm = new CommDB(path);
-					try {
-						projectCommittedExecutionBodyDeath({
-							store,
-							comm,
-							obligationId: duty.obligationId,
-							nowMs: Date.now(),
-						});
-					} finally {
-						comm.close();
-					}
-				} catch (error) {
-					console.warn(
-						`[body-death] replay ${duty.obligationId} deferred: ${error instanceof Error ? error.message : String(error)}`,
-					);
+					projectCommittedExecutionBodyDeath({
+						store,
+						comm,
+						obligationId: duty.obligationId,
+						nowMs: Date.now(),
+					});
+				} finally {
+					comm.close();
 				}
+			} catch (error) {
+				console.warn(
+					`[body-death] replay ${duty.obligationId} deferred: ${error instanceof Error ? error.message : String(error)}`,
+				);
 			}
-		},
+		}
+	};
+	heartbeatService.setExecutionBodyLifecycle({
+		observe: cachedExecutionBodyObserver.observe,
+		replayPending: replayExecutionBodyDeaths,
 		converge: async (executionId) => {
 			const session = store.getSession(executionId);
 			if (!session?.project_name)
@@ -11306,21 +11299,42 @@ export async function startBridge(
 				return { kind: "deferred", reason: "comm_identity_missing" };
 			const comm = new CommDB(path);
 			try {
-				return await convergeExecutionBody(
-					{
-						store,
-						comm,
-						observer: executionBodyObserver,
-						now: Date.now,
-						completionBlocksDeath: (id) =>
-							heartbeatService.reconcileCompletionBeforeDeath(id),
-					},
-					executionId,
+				return await retryExecutionBodyConvergence(() =>
+					convergeExecutionBody(
+						{
+							store,
+							comm,
+							observer: cachedExecutionBodyObserver,
+							now: Date.now,
+							completionBlocksDeath: (id) =>
+								heartbeatService.reconcileCompletionBeforeDeath(id),
+						},
+						executionId,
+					),
 				);
 			} finally {
 				comm.close();
 			}
 		},
+	});
+	executionBodyRuntime = createExecutionBodyRuntime({
+		listCandidates: () =>
+			store.executionProcessOwners.listObservationCandidates(),
+		observer: executionBodyObserver,
+		onDead: async (executionId) => {
+			await heartbeatService.reconcileExecutionBody(executionId);
+		},
+		onRecoveryActive: async (executionId) => {
+			if (await heartbeatService.reconcileCompletionBeforeDeath(executionId))
+				return;
+			const session = store.getSession(executionId);
+			if (session) await codexSessionReowner.runPass([session]);
+		},
+		replayPending: replayExecutionBodyDeaths,
+		report: (error) =>
+			console.warn(
+				`[body-runtime] lifecycle work deferred: ${error instanceof Error ? error.message : String(error)}`,
+			),
 	});
 
 	heartbeatServiceRef.current = heartbeatService;
@@ -11737,6 +11751,16 @@ export async function startBridge(
 		console.error(
 			`[Bridge] resident receiver boot pass failed closed: ${err instanceof Error ? err.message : String(err)}`,
 		);
+	}
+	if (executionBodyProbesEnabled) {
+		executionBodyRuntime.start();
+		try {
+			await executionBodyRuntime.runPass();
+		} catch (error) {
+			console.warn(
+				`[body-runtime] boot inventory unavailable: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
 	}
 	let bootReconnectExecutionIds: string[] = [];
 	try {
@@ -16507,6 +16531,7 @@ export async function startBridge(
 		workflowDocsMaterializer.stop();
 		await landOwnerLivenessMonitor.stop();
 		heartbeatService?.stop();
+		await executionBodyRuntime.stop();
 		await residentReceiverSupervisor.stop();
 		gatePoller.stop();
 		await shipJudgmentRuntime?.stop();

@@ -63,6 +63,60 @@ describe("FLY-2919 execution process owner", () => {
 		rmSync(root, { recursive: true, force: true });
 	});
 
+	it("samples terminal-labelled owners until the same-generation physical body is settled too", () => {
+		claim();
+		store.createWorkflowRun({
+			runId: "inventory-run",
+			issueId: "FLY-2919",
+			projectName: "fixture",
+			claimsReadEnrolled: true,
+		});
+		const db = new Database(join(root, "fixture.db"));
+		try {
+			db.prepare(
+				"INSERT INTO workflow_actor VALUES ('exec-1','fixture','FLY-2919','implement','2026-09-26T00:00:00Z')",
+			).run();
+			db.prepare(
+				"INSERT INTO workflow_execution_runtime VALUES ('exec-1','inventory-run','implement',1,'codex','codex','high','implement','digest','2026-09-26T00:00:00Z')",
+			).run();
+			db.prepare(
+				"INSERT INTO workflow_execution_process_body(execution_id,generation,state,started_at,updated_at) VALUES ('exec-1',1,'active','2026-09-26T00:00:00Z','2026-09-26T00:00:00Z')",
+			).run();
+			db.prepare(
+				"UPDATE sessions SET status='completed' WHERE execution_id=?",
+			).run("exec-1");
+			expect(owners().listObservationCandidates()).toEqual(["exec-1"]);
+			db.prepare(
+				"UPDATE execution_process_owner SET close_requested=1 WHERE execution_id=?",
+			).run("exec-1");
+			expect(owners().listObservationCandidates()).toEqual(["exec-1"]);
+			db.prepare(
+				"UPDATE execution_process_owner SET owner_drained_receipt='receipt' WHERE execution_id=?",
+			).run("exec-1");
+			expect(owners().listObservationCandidates()).toEqual(["exec-1"]);
+			db.prepare(
+				"UPDATE workflow_execution_process_body SET state='closed' WHERE execution_id=?",
+			).run("exec-1");
+			expect(owners().listObservationCandidates()).toEqual([]);
+			db.prepare(
+				"UPDATE workflow_execution_process_body SET generation=2 WHERE execution_id=?",
+			).run("exec-1");
+			expect(owners().listObservationCandidates()).toEqual(["exec-1"]);
+			db.prepare(
+				"UPDATE workflow_execution_process_body SET generation=1 WHERE execution_id=?",
+			).run("exec-1");
+			db.prepare(
+				"UPDATE execution_process_owner SET spawn_inflight=1 WHERE execution_id=?",
+			).run("exec-1");
+			expect(owners().listObservationCandidates()).toEqual(["exec-1"]);
+			db.prepare(
+				"UPDATE execution_process_owner SET spawn_inflight=0, restart_in_progress=1 WHERE execution_id=?",
+			).run("exec-1");
+			expect(owners().listObservationCandidates()).toEqual(["exec-1"]);
+		} finally {
+			db.close();
+		}
+	});
 	it("retains an in-flight spawn after reopen and past mutation-lease TTL", async () => {
 		expect(claim()).toMatchObject({ ok: true });
 		const result = spawn();
