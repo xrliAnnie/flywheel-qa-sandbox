@@ -1,13 +1,13 @@
 ---
 issue: FLY-2922
 phase: implement
-phaseCursor: 2/4
-updated: 2026-09-27T10:09:56.487Z
-nextStep: refresh milestone, push exact head, and request code review
+phaseCursor: 2/5
+updated: 2026-09-27T11:41:31.677Z
+nextStep: add failing regressions for the three review-blocking recovery boundaries
 chunks: []
 pointers: {}
 ---
 
 # FLY-2922 progress
-**phase**: implement (2/4)
-**next**: refresh milestone, push exact head, and request code review
+**phase**: implement (2/5)
+**next**: add failing regressions for the three review-blocking recovery boundaries
