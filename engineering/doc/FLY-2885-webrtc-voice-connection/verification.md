@@ -507,3 +507,26 @@ QA 的 exact-head full CI（run `36296581785`）里所有 unit 分片、heavy、
 - 仓库 `pnpm lint` exit 0（仍显示同一批 25 条非阻塞 warning）；fixture scoped Biome 与 `git diff --check` 通过。
 - `pnpm --filter "flywheel-voice-codex..." build` exit 0。
 - 没有改生产代码、语音行为、测试期望或 QA 录音数据；full CI 仍由 QA 在新冻结头请求。
+
+### QA follow-up：生产 wrapper 钉死 Codex 0.156.1
+
+QA 指出运行时 container 虽然校验了 0.156.1 的版本、SHA 和 realtime feature，但生产 wrapper 没有设置 `FLYWHEEL_CODEX_BIN`；`config.ts` 对 codex-realtime 又拒绝相对默认值 `codex`。同时宿主的 `packages/standalone/current` 已指向 0.157.1，不能把 voice 悄悄跟随宿主升级。
+
+修复保持原来的 container fence，并让启动前检查复用同一个 `assertCodexVoiceBinary`：
+
+- 未显式配置时，wrapper 按宿主架构只选 `${CODEX_HOME:-$HOME/.codex-infra-bot}/packages/standalone/releases/0.156.1-<target>/bin/codex`，不读 `current`。`FLYWHEEL_VOICE_CODEX_HOME` 仍只是每场会话的隔离 home，不参与安装目录选择。
+- 也可显式提供绝对路径 `FLYWHEEL_CODEX_BIN`；wrapper 要求最终入口是普通可执行文件，并用物理父目录把 `current` 之类的目录软链固化为具体 release 路径。
+- CLI 的 `--check-codex-binary` 与每场 container 打开共用同一个校验：版本必须为 `codex-cli 0.156.1`、SHA-256 必须为 `0196e89fe5a7598f816ee54232c3d7c26d75e502ab5cfe2c9240e81d90f7255a`，且 `realtime_conversation` 必须启用。
+- 缺文件、非普通可执行文件、版本/SHA/feature 不符时均在 daemon 启动前以 `voice_codex_binary_unavailable` fail-loud，并归入 `startup_config_invalid`；不会回退到 `current` 或别的引擎。
+
+**部署配置**：生产默认 home 必须保留上述 0.156.1 release；若安装在别处，在 `.env` 中设置绝对的 `FLYWHEEL_CODEX_BIN`，或设置指向 standalone 安装 home 的 `CODEX_HOME`。宿主 Codex 升级可以移动 `current`，但不得删除 voice 钉住的 release，除非同时经本合同重新验证并更新代码常量。
+
+**红→绿与本机定向验证**：
+
+- wrapper 新增的三条边界先红（钉死 release、validator 拒绝、release 缺失），实现后 `flywheel-voice-wrapper.test.sh` 40/40；测试还把 `FLYWHEEL_VOICE_CODEX_HOME` 指向毒值，证明它不会被误当安装 home。
+- `codex-container.test.ts` 61/61；changed-TS `vitest related` 只选择 4 个 voice-codex 文件，104/104。
+- `qa-fly1501-brake-missing-alert.test.sh` 49/49；`package-onboard-smoke.test.sh` 26/26（第一次仅因宿主 `~/.npm` 不可写未进入断言，改用 `/tmp/flywheel-FLY-2885-npm-cache` 后同一具体文件全绿）。
+- 真实安装的 0.156.1 执行 `--check-codex-binary` 通过；宿主 `current`（0.157.1）按同一入口被拒绝。
+- `pnpm --filter "flywheel-voice-codex..." build`、仓库 `pnpm lint`、改动 TS 的 scoped Biome、`bash -n` 与 `git diff --check` 均通过。lint 仍只显示 25 条仓库既有 warning，exit 0。
+
+发现但排除的测试匹配：`shutdown-exit.test.ts` 只在注释提到 `--check-config`；两个 host-tmux selection 测试只把 wrapper 路径列入挂载表；`install-voice-launchd.test.mjs` 会用 `exit 0` fixture 覆盖 wrapper；`restart-voice-on-demand.test.sh` 只比较复制后的 wrapper 字节和 launchd 迁移，不执行本次启动分支。其余 `cli.ts` 命中均是同名 basename 或文档记录，不依赖 voice CLI。没有在本机运行全仓或整包测试。
