@@ -1,17 +1,17 @@
 ---
 issue: FLY-2919
 phase: implement
-phaseCursor: 0/6
-updated: 2026-09-27T09:15:49.803Z
-nextStep: "B14 quiescence/closeout migration verified: 15 concrete files 600
-  pass, 3 existing skips; affected build/typechecks green; Lead stopped broad
-  related expansion and forbade rerun. Continue approved C-D-E-F direct
-  window-authority inventory, old Codex binding/ordinary-rework settlement, and
-  nine-ticket matrix; no final review/PR/CI/QA/handoff claim."
+phaseCursor: 3/6
+updated: 2026-09-27T09:57:48.913Z
+nextStep: "C3 body-truth convergence complete: 16 concrete files 410 pass;
+  affected build green; QA real-tmux fixture not run locally. Continue approved
+  D/E exit-expiry-collection-shutdown-close-runner paths, then F
+  inventory/nine-ticket matrix and exact-head review/PR/CI; no QA or completion
+  claim."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2919 progress
-**phase**: implement (0/6)
-**next**: B14 quiescence/closeout migration verified: 15 concrete files 600 pass, 3 existing skips; affected build/typechecks green; Lead stopped broad related expansion and forbade rerun. Continue approved C-D-E-F direct window-authority inventory, old Codex binding/ordinary-rework settlement, and nine-ticket matrix; no final review/PR/CI/QA/handoff claim.
+**phase**: implement (3/6)
+**next**: C3 body-truth convergence complete: 16 concrete files 410 pass; affected build green; QA real-tmux fixture not run locally. Continue approved D/E exit-expiry-collection-shutdown-close-runner paths, then F inventory/nine-ticket matrix and exact-head review/PR/CI; no QA or completion claim.
