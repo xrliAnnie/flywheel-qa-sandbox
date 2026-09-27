@@ -2,23 +2,19 @@
 issue: FLY-2919
 phase: implement
 phaseCursor: 0/6
-updated: 2026-09-26T23:57:52.855Z
-nextStep: D1/A10/C1 checkpoints done locally, full A-F not done. C1 moves
-  existing CommDB expiry after durable receipt lookup; reopen/new
-  identity/expired new request/conflict negative controls green,
-  finalizer-external bytes unchanged and FLY2567 hash rationale refreshed. 7
-  explicit files/106 pass; comm related1/23; comm+deps build/lint pass; evidence
-  archived. Next prioritize core B/C StateStore convergeProvenDeadExecution +
-  trusted crossDB body_death obligation, marker reconciliation and sampling
-  outside lease/final synchronous identity-CAS, receipt/retirement preservation,
-  TURN/wake settlement. Integrate Direct/HTTP sinks and multi-activation
-  terminal signals into same path; remaining all consumers/reown/cadence/legacy
-  migration/restart transient contention/nine tickets. A9 routes original15s
-  import timeout remains. No review/PR/full CI/QA/handoff.
+updated: 2026-09-27T00:12:27.077Z
+nextStep: "B3 WIP: added synchronous StateStore.convergeProvenDeadExecution with
+  exact owner/activation/revision CAS, marker veto, completion/standby
+  preservation and body_death event duty. 24 new tests green after 12 initial
+  RED and 1 standby RED; 13 concrete regression files running sequentially,
+  related/build/lint pending. Not wired to production; CommDB trusted
+  projection/TURN/wake settlement and full A-F/nine tickets remain. Inspect
+  completed+retiring disposition before freezing B3. No
+  review/PR/CI/QA/handoff."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2919 progress
 **phase**: implement (0/6)
-**next**: D1/A10/C1 checkpoints done locally, full A-F not done. C1 moves existing CommDB expiry after durable receipt lookup; reopen/new identity/expired new request/conflict negative controls green, finalizer-external bytes unchanged and FLY2567 hash rationale refreshed. 7 explicit files/106 pass; comm related1/23; comm+deps build/lint pass; evidence archived. Next prioritize core B/C StateStore convergeProvenDeadExecution + trusted crossDB body_death obligation, marker reconciliation and sampling outside lease/final synchronous identity-CAS, receipt/retirement preservation, TURN/wake settlement. Integrate Direct/HTTP sinks and multi-activation terminal signals into same path; remaining all consumers/reown/cadence/legacy migration/restart transient contention/nine tickets. A9 routes original15s import timeout remains. No review/PR/full CI/QA/handoff.
+**next**: B3 WIP: added synchronous StateStore.convergeProvenDeadExecution with exact owner/activation/revision CAS, marker veto, completion/standby preservation and body_death event duty. 24 new tests green after 12 initial RED and 1 standby RED; 13 concrete regression files running sequentially, related/build/lint pending. Not wired to production; CommDB trusted projection/TURN/wake settlement and full A-F/nine tickets remain. Inspect completed+retiring disposition before freezing B3. No review/PR/CI/QA/handoff.
