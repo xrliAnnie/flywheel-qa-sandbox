@@ -17,9 +17,9 @@ Lead 注入的实现裁定优先于原计划的三处 advisory：启动/过期�
 | C / FLY-2617 | 本地完成 `3efa4ba6d` | 见 acceptance-C.md；600ms 尾输出/总 deadline、两 vendor、admitted/claim 正负例 |
 | D / FLY-2328 | 本地完成 `8e4598710`；留存补核 `b538e0638` | 见 acceptance-D.md；持久真实恢复链 8 项、同原门得结论、嵌套 repo、保护性留存 guard |
 | E / FLY-2323 | 本地完成 `8ed70dc09` | 见 acceptance-E.md；A/B 一次退休、换代/race/unknown；两项 ps EPERM 与一项环境 skip 留 QA |
-| F / FLY-2620 | 本地完成，待提交 | 见 acceptance-F.md 与 verification-F.json；三条 Lead 裁定、采样/缓存/短真实接线/通知均有相关证据 |
-| G / FLY-2084 | 未实现 | stopped/节点绑定/本地 tip/description/ledger 连续性及真实 boot 负控 |
-| 联合验证 / 交卷 | 未开始 | 相关消费者、lint/build/typecheck、有效 code review、PR、needs_review 收据 |
+| F / FLY-2620 | 本地完成 `ed7b9251d` | 见 acceptance-F.md 与 verification-F.json；三条 Lead 裁定、采样/缓存/短真实接线/通知均有相关证据 |
+| G / FLY-2084 | 本地完成 `9b84697f1` + `5ccb661f4` | 见 acceptance-G.md；真实 Git+StateStore+engine 重启、终态、坏绑定、local-only tip/description/ledger 与人工负控；16 文件 432 tests + 1 shell guard |
+| 联合验证 / 交卷 | 进行中 | G 消费者及最终 lint/build/typecheck 已验证；仍需有效 code review、PR、needs_review 收据 |
 
 ## C 开工时调用方源码核对（历史）
 
@@ -46,6 +46,8 @@ Lead 注入的实现裁定优先于原计划的三处 advisory：启动/过期�
 
 - 已执行 `pnpm install --frozen-lockfile`，成功；初次无 dist 的 workspace bin 警告属于构建前置条件。
 - 开工基线 `pnpm --filter "flywheel-teamlead..." build` 成功。修改后的构建另行记录，不能继承基线结果。
+- 代码头 `5ccb661f4` 后执行 `pnpm lint` 成功；Biome 报 25 个仓库既有 warning，未自动修改无关文件。
+- 同头执行 `pnpm --filter "flywheel-teamlead..." build` 成功，含 teamlead 及依赖 TypeScript 构建。
 - 本机仅具体相关测试文件；真实负载用受控延迟夹具，不制造宿主高负载，不操作生产数据库/服务。
 
-B–F 的检查证据分别记录在 acceptance-B.md 至 acceptance-F.md。G 与联合验证/正式代码评审/PR/交卷尚未完成。
+B–G 的检查证据分别记录在 acceptance-B.md 至 acceptance-G.md。G 与联合 lint/build 已完成本地相关验证；正式代码评审、PR 与交卷尚未完成。

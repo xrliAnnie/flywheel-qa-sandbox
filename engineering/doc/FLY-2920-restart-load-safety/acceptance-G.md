@@ -5,7 +5,23 @@ Issue: FLY-2920 (https://linear.app/geoforge3d/issue/FLY-2920)
 
 ## 当前状态
 
-G 尚未实现。此页记录按已批准计划进行的只读核对，不是测试通过、QA 或交卷收据。F 完成后才修改 G 源码。
+G 已在代码头 `5ccb661f4` 完成本地相关验证；生产实现来自恢复提交
+`9b84697f1`，真实持久 workflow fixture 的最终修正在 `5ccb661f4`。这是实现节点的
+相关测试证据，不是 full CI、QA、生产或 ship 证明。
+
+## 实施结果
+
+- `assertWorkflowResumeAuthority` 对 engine-owned 恢复逐项校验 active run、当前
+  run/node/attempt/execution、activation、无更高 attempt、持久 snapshot 中的节点角色；
+  读取异常、损坏 snapshot、终态或身份冲突统一拒绝，不能退入 legacy fresh start。
+- `createProgressResumeComputer` 在读 Git 前后及 dispatcher 进入 lifecycle admission 前复验
+  同一身份；QA/no-ledger 早退也不能绕过绑定校验。相位来自当前持久节点 type，旧
+  `session_stage` 只保留给人工 legacy start。
+- 恢复内容仍从同一 local-first branch ref 的固定 SHA 读取，保留本地独有 commit、
+  progress ledger、branch description；停止的 engine run 重启两次均零起体，人工授权
+  legacy start 负控制仍可工作。
+- 真实 StateStore 关闭/重开后，已证实死亡的旧 execution 由 engine 产生一个新绑定；
+  同一 reconcile 后续不重复 dispatch。合法 generic 与 QA 节点仍保留原行为。
 
 ## 已确认的调用边界
 
@@ -16,11 +32,22 @@ G 尚未实现。此页记录按已批准计划进行的只读核对，不是测
 - `computeProgressResumeAcrossRefs` 已优先 local ref，并先解析一次 commit，再用同一 SHA 读取目录、文件和 tip。该保护以及 branch description/未推提交必须保留。
 - `rescue-runtime.ts:makeCloseAndDispatchSuccessor` 是现有登录失效救援：读取 engine ownership 失败或确属 engine-owned 均在破坏性步骤前拒绝；只有 running session 才能 terminate/close/start。批准计划明确保留这一功能，不能用删除它代替证明历史 boot fallback 已不可达。
 
-## 待补的可执行证据
+## 可执行证据
 
-1. 真实持久 workflow run/node/snapshot 绑定与恢复入口联动，覆盖 stopped session、stale session stage、领先 ledger、本地独有 commit；恢复相位由当前有效节点决定，内容仍取原 branch tip。
-2. 缺节点、执行绑定冲突、未知读取和 terminal run/node 均有明确拒绝；不退入 legacy fresh/produce，不产生无绑定 successor。
-3. 人工授权 start/retry 的负控制仍能工作；既有登录救援、local-first、同 ref pin、description 与未推提交保护保留。
-4. 精确 sweep `makeCloseAndDispatchSuccessor`、`startSuccessor`、`session_stage` 的生产消费者，逐项区分显示/人工路径与自动恢复权威；消费者选集列出每个排除原因，并补 changed-TypeScript related 检查。
+消费者发现记录见 `consumers-G.json`：42 个 query 得到 128 个测试命中，保留 17 个
+具体文件、逐项排除 111 个并保存原因。Lead 明确禁止覆盖整张 teamlead 图的
+`vitest related`，因此没有运行该命令；17 个保留文件均逐个执行。
 
-组合 fixture 必须驱动真实 boot/recovery 调用链；纯字符串“不包含 produce”或仅 mocked git 的单元测试不作为完整验收。
+- `progress-resume-workflow.test.ts`: 8/8，真实临时 Git + StateStore + engine，覆盖
+  stale phase、停止/重启、DB reopen/dead replacement、generic/QA、坏绑定、await 后终态。
+- `progress-resume.test.ts`: 13/13；`run-dispatcher-resume.test.ts`: 15/15。
+- 其余 13 个 Vitest 文件 396/396：`bridge-child-process-census`、`rescue-runtime`、
+  `run-dispatcher`、`runs-route-generalized-pending`、`workflow-engine-dispatcher`、
+  `fly1560-teardown-guard`、两个 dispatcher seam、pre-registration、prebound、
+  `run-infra-continuity`、`runs-route.dag-entry`、`workflow-engine.fly2302-dead-body-commdb`。
+- `scripts/__tests__/runtime-role-auto-qa-retirement.test.sh`: PASS。
+- 合计 16 个 Vitest 文件 432/432，另 1 个 shell guard；每条命令均带一个具体文件，
+  `--maxWorkers=1 --minWorkers=1`。
+
+组合 fixture 驱动真实 boot/recovery 调用链；字符串“不包含 produce”和消费者 sweep
+只作范围证据，不替代上述持久库、真实 Git 本地独有提交与 engine 负控制。

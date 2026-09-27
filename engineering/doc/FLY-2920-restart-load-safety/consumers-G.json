@@ -1,7 +1,7 @@
 {
-  "status": "refreshed-G-implementation-awaiting-freeze",
-  "asOfHead": "d8365f3d01107c7d1655828be50a928a3c6cdebc",
-  "observedAt": "2026-09-26T21:36:20.671397+00:00",
+  "status": "G-targeted-verification-pass",
+  "asOfHead": "5ccb661f4a848cd3beff5cd8aa7d40777a571d50",
+  "observedAt": "2026-09-27T00:30:34Z",
   "sourceHashesBefore": {
     "packages/teamlead/src/bridge/progress-resume.ts": "fdffe971a79561ca6322baa428472a2414258c7c8d705ce81d011dd1a6a45e7d",
     "packages/teamlead/src/bridge/run-infra.ts": "9a2485850f928c850f8f7d70bc8df836d58c2cc3be8d68155ccf70e2ed36df72",
@@ -11,12 +11,12 @@
     "packages/teamlead/src/bridge/__tests__/progress-resume-workflow.test.ts": "5d9a7d4d33c8da0b205c3815a7a8f8327d721ce252c23a9497eb9e7019239166"
   },
   "sourceHashesAfter": {
-    "packages/teamlead/src/bridge/progress-resume.ts": "136e2cb0abb3bc837c45a4cd52935928e54e47b8ba143e3accf14ae0553d7a88",
-    "packages/teamlead/src/bridge/run-infra.ts": "9a2485850f928c850f8f7d70bc8df836d58c2cc3be8d68155ccf70e2ed36df72",
-    "packages/teamlead/src/bridge/run-dispatcher.ts": "45f95e3f1f3f21562bc22a499a607ccd9ff08a9698d23cac25597609d786b16d",
+    "packages/teamlead/src/bridge/progress-resume.ts": "744e10ed8d1dd3f5ed8defeeca62aa9804114744e0f3f0b0ba236f5da9e60a3e",
+    "packages/teamlead/src/bridge/run-infra.ts": "87e7508cc0ed08dc77b821ea8f24c249e14186be35c23120cdff35a6f05fc7b4",
+    "packages/teamlead/src/bridge/run-dispatcher.ts": "3b2ca36bd6ea30a3d8fd3f010f33e60867f737d97b9dd3171b1468c4e2e11ef5",
     "packages/teamlead/src/bridge/__tests__/progress-resume.test.ts": "51ad6bde17bbe0af812ad26f88655220b7a0b0b55b946c25149fb0df9c3b0311",
     "packages/teamlead/src/bridge/__tests__/run-dispatcher-resume.test.ts": "fdb15168095fbdcc7a8f7c897040e942c4a459afa37a623637c71dfef932bb27",
-    "packages/teamlead/src/bridge/__tests__/progress-resume-workflow.test.ts": "9034c53feb68cb19e990f89ad1454e3a7222ece093cef5d4c9e318b864eff0fc"
+    "packages/teamlead/src/bridge/__tests__/progress-resume-workflow.test.ts": "29d6680a51f6dbe8fcefd7dc33f1fa915e693187b03a1641434d260b11923f2e"
   },
   "changedDuringScan": [
     "packages/teamlead/src/bridge/progress-resume.ts",
@@ -30,7 +30,7 @@
     "packages/teamlead/src/bridge/__tests__/run-dispatcher-resume.test.ts",
     "packages/teamlead/src/bridge/__tests__/progress-resume-workflow.test.ts"
   ],
-  "method": "Each query separately git grep -lF, plus explicit six changed candidate files read to include untracked test. Prior retained16 merged. Every match gets current titles/comment scope and exact matching line excerpts for exclusion inspection. No tests run.",
+  "method": "Each query separately git grep -lF, plus explicit six changed candidate files read to include the then-untracked test. Prior retained16 merged. Every match has title/comment scope and exact line evidence for exclusion inspection. After source freeze, all 17 retained files ran individually.",
   "queries": [
     "PriorSessionRow",
     "ProgressResumeDeps",
@@ -8058,7 +8058,14 @@
     }
   ],
   "sourceSweepDocument": "engineering/doc/FLY-2920-restart-load-safety/legacy-revival-sweep.md",
-  "testsRun": false,
+  "testsRun": {
+    "vitestFiles": 16,
+    "vitestPassed": 432,
+    "vitestFailed": 0,
+    "shellFiles": 1,
+    "shellPassed": 1,
+    "selection": "each retained concrete file run separately; no package suite and no vitest related per Lead instruction"
+  },
   "count": {
     "queries": 42,
     "testMatches": 128,
@@ -8113,20 +8120,20 @@
     }
   },
   "sourceHashesAtHandoff": {
-    "packages/teamlead/src/bridge/progress-resume.ts": "136e2cb0abb3bc837c45a4cd52935928e54e47b8ba143e3accf14ae0553d7a88",
-    "packages/teamlead/src/bridge/run-infra.ts": "9a2485850f928c850f8f7d70bc8df836d58c2cc3be8d68155ccf70e2ed36df72",
-    "packages/teamlead/src/bridge/run-dispatcher.ts": "45f95e3f1f3f21562bc22a499a607ccd9ff08a9698d23cac25597609d786b16d",
+    "packages/teamlead/src/bridge/progress-resume.ts": "744e10ed8d1dd3f5ed8defeeca62aa9804114744e0f3f0b0ba236f5da9e60a3e",
+    "packages/teamlead/src/bridge/run-infra.ts": "87e7508cc0ed08dc77b821ea8f24c249e14186be35c23120cdff35a6f05fc7b4",
+    "packages/teamlead/src/bridge/run-dispatcher.ts": "3b2ca36bd6ea30a3d8fd3f010f33e60867f737d97b9dd3171b1468c4e2e11ef5",
     "packages/teamlead/src/bridge/__tests__/progress-resume.test.ts": "51ad6bde17bbe0af812ad26f88655220b7a0b0b55b946c25149fb0df9c3b0311",
     "packages/teamlead/src/bridge/__tests__/run-dispatcher-resume.test.ts": "fdb15168095fbdcc7a8f7c897040e942c4a459afa37a623637c71dfef932bb27",
-    "packages/teamlead/src/bridge/__tests__/progress-resume-workflow.test.ts": "9034c53feb68cb19e990f89ad1454e3a7222ece093cef5d4c9e318b864eff0fc"
+    "packages/teamlead/src/bridge/__tests__/progress-resume-workflow.test.ts": "29d6680a51f6dbe8fcefd7dc33f1fa915e693187b03a1641434d260b11923f2e"
   },
-  "handoffTime": "2026-09-26T21:37:06.385617+00:00",
+  "handoffTime": "2026-09-27T00:30:34Z",
   "changedSinceScanEnd": [],
   "limits": [
-    "No tests, formal review, gate/report or source edits performed.",
-    "Sources remain actively edited; hashes label observed bytes, not frozen-head verification.",
-    "Final new symbols introduced after this scan require another exact literal/path refresh.",
-    "Retained 16 from prior audit preserved plus one new direct integration file; do not translate selection into a full package suite."
+    "No formal code-review gate, PR CI, QA, production or ship evidence is claimed here.",
+    "Source hashes bind the tested G implementation bytes at code head 5ccb661f4.",
+    "Retained 16 from prior audit plus one new direct integration file; selection was not translated into a full package suite.",
+    "Lead explicitly prohibited vitest related across the teamlead graph; every retained file instead ran directly."
   ],
   "finalSymbolRefresh": {
     "atUtc": "2026-09-26T21:42:54.345919+00:00",
