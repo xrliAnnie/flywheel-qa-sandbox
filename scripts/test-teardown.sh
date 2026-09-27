@@ -1107,6 +1107,61 @@ teardown_slot() {
     fi
   fi
 
+  # FLY-2925: the opt-in provider fault stub is not a Bridge child. Retire it
+  # only from its slot-local receipt and exact argv identity; a malformed or
+  # recycled PID fails closed instead of signalling an unrelated host process.
+  local CODEX_FAULT_ROOT="${SLOT_DIR}/state/codex-fault"
+  local CODEX_FAULT_PID_FILE="${CODEX_FAULT_ROOT}/pid"
+  local CODEX_FAULT_RECEIPT="${CODEX_FAULT_ROOT}/receipt.json"
+  if [[ -e "$CODEX_FAULT_PID_FILE" || -e "$CODEX_FAULT_RECEIPT" ]]; then
+    local CODEX_FAULT_PID="" CODEX_FAULT_COMMAND="" CODEX_FAULT_SCRIPT=""
+    local CODEX_FAULT_ROOM_INFO="${SLOT_DIR}/room-info.json"
+    local CODEX_FAULT_EXPECTED_SLOT_DIR="$(cd /tmp && pwd -P)/flywheel-test-slot-${SLOT}"
+    if [[ "$CANONICAL_SLOT_DIR" != "$CODEX_FAULT_EXPECTED_SLOT_DIR" \
+        || ! -d "$CODEX_FAULT_ROOT" || -L "$CODEX_FAULT_ROOT" \
+        || "$(qa_slot_bridge_mode "$CODEX_FAULT_ROOT")" != "700" \
+        || "$(cd "$CODEX_FAULT_ROOT" 2>/dev/null && pwd -P || true)" != "${CANONICAL_SLOT_DIR}/state/codex-fault" \
+        || ! -f "$CODEX_FAULT_ROOM_INFO" || -L "$CODEX_FAULT_ROOM_INFO" \
+        || "$(qa_slot_bridge_mode "$CODEX_FAULT_ROOM_INFO")" != "600" ]] \
+        || ! jq -e --argjson slot "$SLOT" \
+          '.schemaVersion == 1 and .slot == $slot and .mode == "slot"' \
+          "$CODEX_FAULT_ROOM_INFO" >/dev/null \
+        || [[ ! -f "$CODEX_FAULT_PID_FILE" || -L "$CODEX_FAULT_PID_FILE" \
+        || ! -f "$CODEX_FAULT_RECEIPT" || -L "$CODEX_FAULT_RECEIPT" \
+        || "$(qa_slot_bridge_mode "$CODEX_FAULT_PID_FILE")" != "600" \
+        || "$(qa_slot_bridge_mode "$CODEX_FAULT_RECEIPT")" != "600" ]]; then
+      log "ERROR: Codex fault stub identity mismatch: unsafe slot, room, receipt, or PID file"
+      qa_slot_bridge_guard_release
+      return 1
+    fi
+    CODEX_FAULT_PID="$(cat "$CODEX_FAULT_PID_FILE" 2>/dev/null || true)"
+    if [[ ! "$CODEX_FAULT_PID" =~ ^[1-9][0-9]*$ ]] \
+        || ! jq -e --argjson slot "$SLOT" --argjson pid "$CODEX_FAULT_PID" '
+          .schemaVersion == 1 and .slot == $slot and .pid == $pid and
+          .host == "127.0.0.1" and
+          (.baseUrl | test("^http://127\\.0\\.0\\.1:[1-9][0-9]*/v1$"))
+        ' "$CODEX_FAULT_RECEIPT" >/dev/null; then
+      log "ERROR: Codex fault stub identity mismatch: receipt content"
+      qa_slot_bridge_guard_release
+      return 1
+    fi
+    if kill -0 "$CODEX_FAULT_PID" 2>/dev/null; then
+      CODEX_FAULT_COMMAND="$(ps -o command= -p "$CODEX_FAULT_PID" 2>/dev/null || true)"
+      CODEX_FAULT_SCRIPT="$(cd "${TEARDOWN_SCRIPT_DIR}/qa" && pwd -P)/codex-upstream-fault-stub.mjs"
+      if [[ " $CODEX_FAULT_COMMAND " != *" $CODEX_FAULT_SCRIPT serve --slot $SLOT "* ]]; then
+        log "ERROR: Codex fault stub identity mismatch: live PID argv"
+        qa_slot_bridge_guard_release
+        return 1
+      fi
+      log "Killing slot-local Codex fault stub PID ${CODEX_FAULT_PID}"
+      if ! qa_generalized_terminate_pid "$CODEX_FAULT_PID"; then
+        log "ERROR: Codex fault stub cleanup did not converge; retaining slot lock"
+        qa_slot_bridge_guard_release
+        return 1
+      fi
+    fi
+  fi
+
   # FLY-1999: test-deploy binds its Bridge and runners to this native per-slot
   # default socket. Retire that server after the Bridge is down; never sweep by
   # name on the resident default server.

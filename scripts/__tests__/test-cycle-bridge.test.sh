@@ -329,6 +329,10 @@ write_spec() {
     }
   ' > "$SPEC"
   chmod 600 "$SPEC"
+  jq -n --argjson slot "$SLOT" \
+    '{schemaVersion:1,slot:$slot,mode:"slot",generalized:true,runnerMode:"real"}' \
+    > "$SLOT_DIR/room-info.json"
+  chmod 600 "$SLOT_DIR/room-info.json"
   printf '%s\n' claiming > "$OWNER_LOCK/pid"
   printf '%s\n' claiming > "$BORROWED_LOCK/pid"
   jq -n --argjson owner "$SLOT" '{ownerSlot:$owner,campaignId:"fly2237",borrowed:false}' \
@@ -377,7 +381,7 @@ run_cycle() {
   FLY2237_REAL_PS="$REAL_PS" \
   FLY2237_SLOT_DIR="$SLOT_DIR" \
   PATH="$CYCLE_PATH" \
-    bash "$TMP/scripts/test-cycle-bridge.sh" "$SLOT"
+    bash "$TMP/scripts/test-cycle-bridge.sh" "$@" "$SLOT"
 }
 
 run_cycle_without_lsof() {
@@ -1325,6 +1329,71 @@ if [[ "$N26_LOCKF" == "lockf" && "$N26_FLOCK" == "flock" \
   pass "N26: cycle guard selects lockf, flock, then Python fcntl fail-closed"
 else
   fail "N26: cycle guard lacks the portable advisory-lock backend chain"
+fi
+
+# H4: the QA-only split cycle leaves the campaign protected while Bridge is
+# down, then starts from the same immutable launch spec under the same guard.
+reset_slot
+write_spec healthy 200
+if start_fixture; then
+  H4_OLD_PID="$BRIDGE_PID"
+  if run_cycle --stop-only > "$TMP/h4-stop.out" 2> "$TMP/h4-stop.err"; then
+    BRIDGE_PID=""
+    if kill -0 "$H4_OLD_PID" 2>/dev/null \
+        || [[ "$(cat "$SLOT_DIR/bridge.pid" 2>/dev/null || true)" != "cycle-failed" \
+          || "$(cat "$OWNER_LOCK/pid" 2>/dev/null || true)" != "cycle-failed" \
+          || "$(cat "$BORROWED_LOCK/pid" 2>/dev/null || true)" != "cycle-failed" ]] \
+        || ! jq -e '.mode == "stop-only" and .newBridgePid == null' \
+          "$TMP/h4-stop.out" >/dev/null; then
+      fail "H4: stop-only did not leave a protected Bridge-down gap"
+    elif run_cycle --start-only > "$TMP/h4-start.out" 2> "$TMP/h4-start.err"; then
+      H4_NEW_PID="$(cat "$SLOT_DIR/bridge.pid" 2>/dev/null || true)"
+      BRIDGE_PID="$H4_NEW_PID"
+      if [[ "$H4_NEW_PID" =~ ^[1-9][0-9]*$ && "$H4_NEW_PID" != "$H4_OLD_PID" \
+          && "$(cat "$OWNER_LOCK/pid")" == "$H4_NEW_PID" \
+          && "$(cat "$BORROWED_LOCK/pid")" == "$H4_NEW_PID" ]] \
+          && kill -0 "$H4_NEW_PID" 2>/dev/null \
+          && jq -e '.mode == "start-only" and (.newBridgePid | type == "number")' \
+            "$TMP/h4-start.out" >/dev/null; then
+        pass "H4: stop-only/start-only preserves slot ownership and launch identity"
+      else
+        fail "H4: start-only did not restore one owned Bridge"
+      fi
+    else
+      fail "H4: start-only could not resume the protected slot"
+      tail -20 "$TMP/h4-start.err"
+    fi
+  else
+    fail "H4: stop-only could not create the Bridge-down gap"
+    tail -20 "$TMP/h4-stop.err"
+  fi
+else
+  fail "H4: fixture Bridge did not become healthy"
+fi
+
+# N29: every split-cycle entry refuses a slot without a mode=slot room receipt
+# before signaling the live Bridge or changing campaign ownership.
+reset_slot
+write_spec healthy 200
+if start_fixture; then
+  N29_OLD_PID="$BRIDGE_PID"
+  jq '.mode = "mirror"' "$SLOT_DIR/room-info.json" \
+    > "$SLOT_DIR/room-info.json.tmp"
+  mv "$SLOT_DIR/room-info.json.tmp" "$SLOT_DIR/room-info.json"
+  chmod 600 "$SLOT_DIR/room-info.json"
+  if run_cycle --stop-only > "$TMP/n29.out" 2> "$TMP/n29.err"; then
+    fail "N29: stop-only accepted a non-slot room"
+  elif kill -0 "$N29_OLD_PID" 2>/dev/null \
+      && [[ "$(cat "$SLOT_DIR/bridge.pid")" == "$N29_OLD_PID" \
+        && "$(cat "$OWNER_LOCK/pid")" == "$N29_OLD_PID" \
+        && "$(cat "$BORROWED_LOCK/pid")" == "$N29_OLD_PID" ]] \
+      && grep -Fq 'room-info.json must identify this mode=slot room' "$TMP/n29.err"; then
+    pass "N29: split cycle refuses non-slot room-info before mutation"
+  else
+    fail "N29: room-info refusal mutated the live room"
+  fi
+else
+  fail "N29: fixture Bridge did not become healthy"
 fi
 
 echo "=================================="

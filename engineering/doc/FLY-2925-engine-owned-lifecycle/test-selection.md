@@ -134,3 +134,78 @@ exit watcher 用例均通过。路径 / basename / parent discovery 命中的历
 kill inventory 与 child census 只记录源码路径或旧证据，本改动没有新增 kill
 出口，故不重复运行或改写；保留直接消费者 adapter、daemon runtime、goal runtime
 与 teamlead reown 测试。精确 head 全量 CI 与真房仍交 QA。
+
+## 9. QA@3 真房可控接缝返工（2026-09-26，attempt 4）
+
+Lead 授权仅补 529 QA 接缝，不改 `packages/*/src` 产品语义：Bridge 重启脚本增加
+`--stop-only` / `--start-only`，沿用同一个 launch spec、cycle lock、guard 与
+`cycle-failed` 所有权哨兵；新增只监听 `127.0.0.1` 的 Codex upstream fault stub，
+按显式序列返回 429 / 5xx / capacity / quota / 401。只有
+`--generalized --codex-runner --mode slot --codex-fault-sequence ...` 会把该 slot 的
+Bridge `FLYWHEEL_CODEX_SOURCE_HOME` 指向 slot 内 source home；宿主 auth 仅以同 inode
+hardlink 暴露给既有 slot reconcile，宿主 `config.toml` 不写、不 chmod。stub、split
+cycle 和 teardown fault 分支在监听或发信号前均校验精确
+`/tmp/flywheel-test-slot-N`、0600 `room-info.json` 与 `mode == "slot"`。
+
+### 9.1 RED → GREEN
+
+- RED：旧 `test-cycle-bridge.sh` 对 `--stop-only` / `--start-only` 只返回 usage；新增
+  H4/N29 后先失败。GREEN：33/33。
+- RED：fault stub 不存在、随后缺 `prepare-source`、再缺 deploy 显式开关；逐步补最小
+  实现后 `qa-generalized-codex-stub.test.mjs` 6/6。
+- RED：默认 cycle stdout 多了 `mode`，`test-deploy-fly1389.test.sh` 的 FLY-2237
+  公共合同 1 项失败；恢复默认 JSON 原样，新字段只出现在 split 模式，29/29。
+- RED：kill-path inventory 识别 6 个新增 QA-only probe/signal，779 != 773；登记到
+  golden 后 5/5。没有新增 runner-affecting mutation。
+
+### 9.2 保留并逐文件运行
+
+| 所有者 | 测试 / 检查 | 结果 |
+|---|---|---|
+| scripts | `node --test scripts/__tests__/qa-generalized-codex-stub.test.mjs` | 6/6 |
+| scripts | `bash scripts/__tests__/test-cycle-bridge.test.sh` | 33/33 |
+| scripts | `bash scripts/__tests__/test-deploy-fly1389.test.sh` | 29/29 |
+| scripts | `bash scripts/__tests__/test-deploy-generalized.test.sh` | 全部通过 |
+| scripts | `bash scripts/__tests__/qa-slot-env-contract.test.sh` | 通过 |
+| claude-runner | `vitest run test/kill-path-inventory.test.ts` | 5/5 |
+| repository | `pnpm lint` | exit 0；仅报告未改文件的既存 warning |
+| claude-runner + dependencies | `pnpm --filter "flywheel-claude-runner..." build` | 通过 |
+| changed files | `bash -n`、`node --check`、Biome changed-file check、`git diff --check` | 通过 |
+
+本轮没有改 TypeScript，故不运行 `vitest related`。没有运行本地全仓或全包测试；
+精确 head 全量 CI 仍由 QA 冻结头执行。
+
+### 9.3 discovery 命中但排除的测试
+
+已对旧/新 usage、`--codex-fault-sequence`、stub 文件名、`cycle-failed`、
+`openai_base_url` 运行 `git grep -lF`，并对每个改动文件的全路径、basename 与父目录
+运行路径搜索。父目录命中大量仅列举 `scripts/` / `scripts/__tests__/` 的历史文档和
+suite enumerator；它们不是运行时消费者，按目录级非消费者整体排除。测试文件命中
+逐项处置如下：
+
+- `qa-fly-2456-dry-run.test.mjs`：只检查既有 cycle/reown 事件报表，事件名未改。
+- `codex-home-reconcile-cadence.test.sh`：fault 开关明确禁止与 reconcile drill 同开；
+  cadence 路径未改。
+- `fly1663-qa-launchd-mutants.test.sh`、`fly1679-dev-channels-v2.test.sh`、
+  `fly2655-voice-room.test.mjs`、`fly2867-claude-lead-inbox-lease.test.sh`、
+  `qa-lead-coordinates.test.sh`、`qa-room-env.test.sh`、
+  `runner-test-discipline-deploy.test.sh`、`test-auto-approve-identity.test.sh`、
+  `test-deploy-discord-pointer.test.sh`、`test-deploy-launch-boundary.test.sh`、
+  `test-deploy-multilead.test.sh`、`test-deploy-preflight-github.test.sh`、
+  `test-deploy-qa-room.test.sh`、`test-qa-executor-529-nton-contract.sh`：命中通用
+  `test-deploy.sh` 文本，但不进入新增的显式 real-Codex fault flag；其通用默认合同由
+  `test-deploy-fly1389`、generalized 合同由 `test-deploy-generalized`、env 隔离由
+  `qa-slot-env-contract` 覆盖。
+- `fly2874-slot-pool.test.sh`、`qa-teardown-finalize.test.sh`、
+  `restart-cmux-watcher.test.sh`、`test-teardown-cmux-ownership.test.sh`、
+  `test-teardown-lease-contract.test.sh`、`test-teardown-live-watcher-e2e.test.sh`、
+  `test-worktree-removal-contract.test.sh`：新增 teardown 分支仅在精确 fault receipt/pid
+  同时存在时激活；原 cmux、lease、watcher、worktree 路径未改，默认 teardown 已由
+  `test-deploy-fly1389` 覆盖。
+- edge-worker `resolveBridgeUrl.test.ts` / prompt fixtures、flywheel-comm
+  `strength-two-contract.test.ts`、teamlead `StateStore.strength-two-evidence-record.test.ts`：
+  只把脚本路径当静态证据或 prompt 文本，不执行新增分支。
+
+真 Codex 生命周期 7 场景与 fault 序列的产品级分类仍须 QA 在 Lead 提供的 529
+real-runner slot 1/3/5 执行；本地结果只证明接缝本身及默认路径没有回归，不冒充真房
+或全量 CI 证据。
