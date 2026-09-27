@@ -3928,3 +3928,150 @@ describe("runGoalToTerminal — FLY-2925 quota exhaustion goes to governance, ne
 		]);
 	});
 });
+
+describe("runGoalToTerminal — FLY-2925 review R3 fixes", () => {
+	function restartedBlocked(lastTurn: { id: string; status: string }) {
+		const d = new FakeDaemon();
+		let current: GoalStatus = "blocked";
+		d.responders.set("thread/goal/get", () => ({
+			goal: { status: current, objective: "OURS" },
+		}));
+		d.responders.set("thread/goal/set", (params) => {
+			current = (params as { status: GoalStatus }).status;
+			return {};
+		});
+		d.responders.set("thread/read", () => ({
+			thread: { id: "t", turns: [lastTurn] },
+		}));
+		return d;
+	}
+
+	it("a quota handoff persists before ending, so a crash-restart on the same failed turn hands off again instead of parking", async () => {
+		// First run: usageLimitExceeded → handoff; the marker is persisted.
+		const first = new FakeDaemon();
+		let current: GoalStatus = "active";
+		first.responders.set("thread/goal/get", () => ({
+			goal: { status: current, objective: "OURS" },
+		}));
+		first.responders.set("thread/goal/set", (params) => {
+			current = (params as { status: GoalStatus }).status;
+			return {};
+		});
+		first.responders.set("turn/start", (_p, _id, push) => {
+			push({
+				method: "turn/completed",
+				params: {
+					threadId: "t",
+					turn: {
+						id: "turn-q",
+						status: "failed",
+						error: {
+							message: "Add credits",
+							codexErrorInfo: "usageLimitExceeded",
+						},
+					},
+				},
+			});
+			current = "blocked";
+			push({
+				method: "thread/goal/updated",
+				params: {
+					threadId: "t",
+					goal: { status: "blocked", objective: "OURS" },
+				},
+			});
+			return { turn: { id: "turn-q" } };
+		});
+		let episode: unknown = null;
+		const io = {
+			readUpstreamRetryEpisode: () => episode as never,
+			writeUpstreamRetryEpisode: (next: unknown) => {
+				episode = next;
+			},
+		};
+		const firstResult = await runGoalToTerminal(makeClient(first), {
+			threadId: "t",
+			objective: "OURS",
+			now: () => 0,
+			sleep: async () => {},
+			pollIntervalMs: 1,
+			phaseLifecycle: new FakePhaseLifecycle(),
+			...io,
+		});
+		expect(firstResult.status).toBe("usageLimited");
+		expect(episode).toMatchObject({
+			quotaExhausted: true,
+			lastFailedTurnId: "turn-q",
+		});
+
+		// Crash before the terminal was published; the restart adopts the blocked goal.
+		const second = restartedBlocked({ id: "turn-q", status: "failed" });
+		const reasons: string[] = [];
+		const secondResult = await runGoalToTerminal(makeClient(second), {
+			threadId: "t",
+			objective: "OURS",
+			now: () => 0,
+			sleep: async () => {},
+			pollIntervalMs: 1,
+			adoptExisting: true,
+			phaseLifecycle: new FakePhaseLifecycle(),
+			onResidentWait: (o) => reasons.push(o.reason),
+			...io,
+		});
+		expect(secondResult.status).toBe("usageLimited");
+		expect(reasons).toEqual([]);
+	});
+
+	it("a restored episode is cleared by the next successful turn even when a newer failed turn made the body wait", async () => {
+		const d = restartedBlocked({ id: "turn-10", status: "failed" });
+		const phase = new FakePhaseLifecycle();
+		let waits = 0;
+		phase.onWait = () => {
+			waits += 1;
+			if (waits === 1) {
+				phase.observations.push({
+					kind: "wake",
+					message: { id: "doorbell:fix", content: "inbox" },
+				});
+			} else {
+				d.triggerClose("engine stop");
+			}
+		};
+		d.responders.set("turn/start", (_p, _id, push) => {
+			push({
+				method: "turn/completed",
+				params: {
+					threadId: "t",
+					turn: { id: "wake-turn", status: "completed", error: null },
+				},
+			});
+			return { turn: { id: "wake-turn" } };
+		});
+		let episode: unknown = {
+			v: 1,
+			threadId: "t",
+			category: "rate_limited",
+			attempts: 3,
+			lastFailedTurnId: "turn-9",
+			nextAt: 0,
+		};
+		await expect(
+			runGoalToTerminal(makeClient(d), {
+				threadId: "t",
+				objective: "OURS",
+				now: () => 0,
+				sleep: async () => {
+					d.triggerClose("engine stop");
+				},
+				pollIntervalMs: 1,
+				adoptExisting: true,
+				phaseLifecycle: phase,
+				readUpstreamRetryEpisode: () => episode as never,
+				writeUpstreamRetryEpisode: (next) => {
+					episode = next;
+				},
+			}),
+		).rejects.toMatchObject({ kind: "transport_closed" });
+		expect(episode).toBeNull();
+	});
+});

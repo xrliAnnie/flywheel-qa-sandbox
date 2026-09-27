@@ -198,6 +198,12 @@ export interface UpstreamRetryEpisode {
 	/** The failed turn the latest retry answered; a re-observation is not a new attempt. */
 	lastFailedTurnId: string;
 	nextAt: number;
+	/**
+	 * FLY-2925: the body already decided this failed turn is usage exhaustion
+	 * and handed it to quota governance. A crash-restart that re-observes the
+	 * same failed turn hands off again instead of parking.
+	 */
+	quotaExhausted?: true;
 }
 
 /** FLY-2925: bounded same-thread backoff for capacity / 429 / 5xx. */
@@ -252,7 +258,8 @@ function parseUpstreamRetryEpisode(
 		e.attempts < 0 ||
 		typeof e.lastFailedTurnId !== "string" ||
 		typeof e.nextAt !== "number" ||
-		!Number.isFinite(e.nextAt)
+		!Number.isFinite(e.nextAt) ||
+		(e.quotaExhausted !== undefined && e.quotaExhausted !== true)
 	) {
 		return null;
 	}
@@ -1921,6 +1928,8 @@ export async function runGoalToTerminal(
 			return undefined;
 		}
 		if (!episode || episode.threadId !== input.threadId) return undefined;
+		// A restored episode must be cleared by the next legitimate progress.
+		retryEpisodeOpen = true;
 		let last: ThreadReadTurn | undefined;
 		try {
 			last = parseThreadReadTurns(
@@ -1946,6 +1955,15 @@ export async function runGoalToTerminal(
 			return undefined;
 		}
 		if (last.status !== "failed") return undefined;
+		if (episode.quotaExhausted && last.id === episode.lastFailedTurnId) {
+			return {
+				failure: {
+					turnId: last.id,
+					message: "usage exhaustion restored from the persisted quota handoff",
+					code: "usageLimitExceeded",
+				},
+			};
+		}
 		// Only the SAME failed turn inherits the episode's category (a replay).
 		// A newer failed turn has no structured error evidence here — it may be
 		// unauthorized or a bad request — so it waits instead of retrying.
@@ -1979,6 +1997,26 @@ export async function runGoalToTerminal(
 			client.logDiagnostic(
 				"resident goal blocked on usage exhaustion — ending as usageLimited for quota governance",
 			);
+			if (failure) {
+				// Durable first: a crash before the terminal is published must not
+				// let a restart reinterpret this blocked goal as a resident wait.
+				try {
+					input.writeUpstreamRetryEpisode?.({
+						v: 1,
+						threadId: input.threadId,
+						category: category ?? "rate_limited",
+						attempts: UPSTREAM_RETRY_BACKOFF_MS.length,
+						lastFailedTurnId: failure.turnId,
+						nextAt: now(),
+						quotaExhausted: true,
+					});
+					retryEpisodeOpen = true;
+				} catch (error) {
+					client.logDiagnostic(
+						`quota handoff marker write failed (handing off anyway): ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
+			}
 			terminalSeen = "usageLimited";
 			return "terminal";
 		};
