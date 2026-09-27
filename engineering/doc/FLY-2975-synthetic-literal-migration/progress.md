@@ -1,13 +1,13 @@
 ---
 issue: FLY-2975
 phase: implement
-phaseCursor: 3/5
-updated: 2026-09-27T23:27:03.900Z
-nextStep: push the verified head and request code review
+phaseCursor: 4/5
+updated: 2026-09-27T23:30:04.789Z
+nextStep: write the milestone as the final commit, push, and open the PR
 chunks: []
 pointers: {}
 ---
 
 # FLY-2975 progress
-**phase**: implement (3/5)
-**next**: push the verified head and request code review
+**phase**: implement (4/5)
+**next**: write the milestone as the final commit, push, and open the PR
