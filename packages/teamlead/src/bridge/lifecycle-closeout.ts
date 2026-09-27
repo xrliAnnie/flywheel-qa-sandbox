@@ -43,6 +43,7 @@ import {
 import type {
 	BodyObservation,
 	ExecutionBodyObserver,
+	NeverStartedBodyObservation,
 } from "./execution-body-observation-contract.js";
 import {
 	type CloseoutEvidence,
@@ -1340,13 +1341,25 @@ async function closeoutOneNode(
 	};
 	const sharedBodySelected = Boolean(input.landOperation && deps.bodyObserver);
 	const observeSharedBody = async (): Promise<{
-		observation?: BodyObservation;
+		observation?: BodyObservation | NeverStartedBodyObservation;
 		current: boolean;
+		neverStarted?: boolean;
 	}> => {
 		if (!sharedBodySelected || !deps.bodyObserver) return { current: false };
-		let observation: BodyObservation | undefined;
+		let observation: BodyObservation | NeverStartedBodyObservation | undefined;
+		let neverStarted = false;
 		try {
 			observation = await deps.bodyObserver.observe(node.executionId);
+			if (
+				!observation &&
+				deps.bodyObserver.observeNeverStarted &&
+				deps.bodyObserver.isCurrentNeverStarted
+			) {
+				observation = await deps.bodyObserver.observeNeverStarted(
+					node.executionId,
+				);
+				neverStarted = Boolean(observation);
+			}
 		} catch {
 			return { current: false };
 		}
@@ -1362,16 +1375,48 @@ async function closeoutOneNode(
 					(session.lifecycle_revision ?? 0) &&
 				observation.identity.adapter === session.adapter_type,
 		);
+		const digest = /^[0-9a-f]{64}$/i;
+		const neverStartedClosure = !neverStarted
+			? true
+			: "source" in observation &&
+				(observation.source.origin === "live_preflight" ||
+					observation.source.origin === "legacy_compat") &&
+				observation.source.projectName === node.projectName &&
+				observation.source.issueId === session?.issue_id &&
+				observation.source.executionRunId === activation?.run_id &&
+				Boolean(observation.source.sourceEventId) &&
+				digest.test(observation.source.proofDigest) &&
+				observation.source.launchClaimState === "closed" &&
+				(observation.source.origin === "legacy_compat"
+					? observation.source.daemonLedger === "no_group" &&
+						observation.source.daemonLedgerShape === "prelaunch_home_only"
+					: (observation.source.daemonLedger === "missing" &&
+							observation.source.daemonLedgerShape === "missing") ||
+						(observation.source.daemonLedger === "no_group" &&
+							observation.source.daemonLedgerShape ===
+								"prelaunch_home_only")) &&
+				observation.ownership.state === "absent" &&
+				observation.ownership.spawnInflight === false &&
+				observation.ownership.restartInProgress === false &&
+				digest.test(observation.ownership.censusDigest) &&
+				observation.socket.state === "absent" &&
+				digest.test(observation.socket.evidenceDigest) &&
+				observation.lock.state === "absent" &&
+				digest.test(observation.lock.evidenceDigest) &&
+				digest.test(observation.bindingDigest);
 		let current = false;
 		try {
 			current =
 				identityMatches &&
+				neverStartedClosure &&
 				observation.verdict !== "unknown" &&
-				deps.bodyObserver.isCurrent(observation);
+				(neverStarted && "source" in observation
+					? Boolean(deps.bodyObserver.isCurrentNeverStarted?.(observation))
+					: deps.bodyObserver.isCurrent(observation as BodyObservation));
 		} catch {
 			current = false;
 		}
-		return { observation, current };
+		return { observation, current, neverStarted };
 	};
 
 	if (!fresh) {
@@ -2005,7 +2050,13 @@ async function closeoutOneNode(
 			try {
 				stillCurrent = Boolean(
 					bodyCapture.observation?.verdict === "dead" &&
-						deps.bodyObserver?.isCurrent(bodyCapture.observation),
+						(bodyCapture.neverStarted && "source" in bodyCapture.observation
+							? deps.bodyObserver?.isCurrentNeverStarted?.(
+									bodyCapture.observation,
+								)
+							: deps.bodyObserver?.isCurrent(
+									bodyCapture.observation as BodyObservation,
+								)),
 				);
 			} catch {
 				stillCurrent = false;

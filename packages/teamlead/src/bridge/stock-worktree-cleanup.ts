@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
-import type { BodyObservation } from "./execution-body-observation-contract.js";
+import type {
+	BodyObservation,
+	NeverStartedBodyObservation,
+} from "./execution-body-observation-contract.js";
 
 export type StockCleanupPrState = "MERGED" | "CLOSED" | "OPEN" | "UNKNOWN";
 
@@ -29,11 +32,15 @@ export interface StockCleanupObservedTarget {
 	bindings: Array<{
 		executionId: string;
 		activationId?: string;
+		executionRunId?: string;
+		lifecycleRevision?: number;
+		adapter?: string;
 		path: string;
 		branch: string;
 		generation: string;
 	}>;
 	bodyObservations: BodyObservation[];
+	neverStartedBodyObservations?: NeverStartedBodyObservation[];
 	bindinglessProviderProof?: {
 		source: string | null;
 		ownership: string | null;
@@ -120,6 +127,7 @@ export interface StockCleanupManifest {
 const PROTECTED_BRANCHES = new Set(["main", "master", "develop", "production"]);
 const PRESERVED_ISSUES = new Set(["FLY-2688", "FLY-2751"]);
 const SHA = /^[0-9a-f]{40}$/i;
+const DIGEST = /^[0-9a-f]{64}$/i;
 
 function push(
 	reasons: StockCleanupExclusionReason[],
@@ -142,7 +150,75 @@ function bodyReasons(
 					candidate.identity.activationId === binding.activationId),
 		);
 		if (!observation) {
-			push(reasons, "body_unknown");
+			const neverStarted = target.neverStartedBodyObservations?.find(
+				(candidate) =>
+					candidate.identity.executionId === binding.executionId &&
+					(!binding.activationId ||
+						candidate.identity.activationId === binding.activationId),
+			);
+			const daemonSourceClosed =
+				neverStarted?.source.origin === "legacy_compat"
+					? neverStarted.source.daemonLedger === "no_group" &&
+						neverStarted.source.daemonLedgerShape === "prelaunch_home_only"
+					: neverStarted?.source.origin === "live_preflight" &&
+						((neverStarted.source.daemonLedger === "missing" &&
+							neverStarted.source.daemonLedgerShape === "missing") ||
+							(neverStarted.source.daemonLedger === "no_group" &&
+								neverStarted.source.daemonLedgerShape ===
+									"prelaunch_home_only"));
+			let complete = Boolean(neverStarted);
+			if (
+				(neverStarted?.source.origin !== "live_preflight" &&
+					neverStarted?.source.origin !== "legacy_compat") ||
+				neverStarted.source.projectName !== target.projectName ||
+				!target.issueId ||
+				neverStarted.source.issueId !== target.issueId ||
+				!binding.executionRunId ||
+				neverStarted.source.executionRunId !== binding.executionRunId ||
+				!neverStarted.source.sourceEventId ||
+				!DIGEST.test(neverStarted.source.proofDigest) ||
+				neverStarted.source.launchClaimState !== "closed" ||
+				!daemonSourceClosed ||
+				binding.adapter !== "codex-tmux" ||
+				neverStarted.identity.adapter !== binding.adapter ||
+				binding.lifecycleRevision === undefined ||
+				neverStarted.identity.lifecycleRevision !== binding.lifecycleRevision
+			) {
+				push(reasons, "bindingless_provider_source_missing");
+				complete = false;
+			}
+			if (
+				neverStarted?.ownership.state !== "absent" ||
+				neverStarted.ownership.spawnInflight !== false ||
+				neverStarted.ownership.restartInProgress !== false ||
+				!DIGEST.test(neverStarted.ownership.censusDigest)
+			) {
+				push(reasons, "bindingless_provider_ownership_missing");
+				complete = false;
+			}
+			if (
+				neverStarted?.socket.state !== "absent" ||
+				!DIGEST.test(neverStarted.socket.evidenceDigest)
+			) {
+				push(reasons, "bindingless_provider_socket_missing");
+				complete = false;
+			}
+			if (
+				neverStarted?.lock.state !== "absent" ||
+				!DIGEST.test(neverStarted.lock.evidenceDigest)
+			) {
+				push(reasons, "bindingless_provider_lock_missing");
+				complete = false;
+			}
+			if (
+				!complete ||
+				neverStarted?.verdict !== "dead" ||
+				!DIGEST.test(neverStarted.bindingDigest) ||
+				!neverStarted.expiresAt ||
+				neverStarted.expiresAt <= observedAt
+			) {
+				push(reasons, "body_unknown");
+			}
 			continue;
 		}
 		if (observation.verdict === "alive") push(reasons, "body_alive");

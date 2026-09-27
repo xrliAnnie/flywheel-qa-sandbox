@@ -86,6 +86,59 @@ describe("stock worktree cleanup observer", () => {
 		});
 		const authorityCheck = vi.fn();
 		const isCurrent = vi.fn(() => true);
+		const observe = vi.fn(async () => ({
+			identity: {
+				executionId: "execution-3000",
+				activationId: "activation-3000",
+				generation: 1,
+				lifecycleRevision: 0,
+				adapter: "codex-tmux" as const,
+			},
+			ownerToken: "owner-3000",
+			spawnEpoch: 1,
+			verdict: "dead" as const,
+			observedAt: "2026-09-26T20:00:00.000Z",
+			expiresAt: "2026-09-26T20:01:00.000Z",
+			bindingDigest: "c".repeat(64),
+			reason: "writers_and_controller_gone",
+		}));
+		const observeNeverStarted = vi.fn(async () => ({
+			identity: {
+				executionId: "execution-3000",
+				activationId: "activation-3000",
+				generation: 1,
+				lifecycleRevision: 0,
+				adapter: "codex-tmux" as const,
+			},
+			source: {
+				origin: "live_preflight" as const,
+				projectName: "flywheel",
+				issueId: "issue-3000",
+				executionRunId: "run-3000",
+				sourceEventId: "event-3000",
+				proofDigest: "d".repeat(64),
+				launchClaimState: "closed" as const,
+				daemonLedger: "no_group" as const,
+				daemonLedgerShape: "prelaunch_home_only" as const,
+			},
+			ownership: {
+				state: "absent" as const,
+				spawnInflight: false as const,
+				restartInProgress: false as const,
+				censusDigest: "e".repeat(64),
+			},
+			socket: {
+				state: "absent" as const,
+				evidenceDigest: "f".repeat(64),
+			},
+			lock: { state: "absent" as const, evidenceDigest: "1".repeat(64) },
+			verdict: "dead" as const,
+			observedAt: "2026-09-26T20:00:00.000Z",
+			expiresAt: "2026-09-26T20:01:00.000Z",
+			bindingDigest: "2".repeat(64),
+			reason: "trusted_pre_spawn_body_absent",
+		}));
+		const isCurrentNeverStarted = vi.fn(() => true);
 		const previewer = createStockCleanupPreviewer({
 			projects: [
 				{
@@ -110,11 +163,14 @@ describe("stock worktree cleanup observer", () => {
 					issue_identifier: "FLY-3000",
 					project_name: "flywheel",
 					status: "completed",
+					adapter_type: "codex-tmux",
+					lifecycle_revision: 0,
 					pr_number: 3000,
 					pr_head_sha: head,
 				}),
 				getWorkflowExecutionBinding: () => ({
 					activation_id: "activation-3000",
+					run_id: "run-3000",
 				}),
 			},
 			gitExec,
@@ -130,23 +186,10 @@ describe("stock worktree cleanup observer", () => {
 			}),
 			compareCommits: async () => "identical",
 			bodyObserver: {
-				observe: async () => ({
-					identity: {
-						executionId: "execution-3000",
-						activationId: "activation-3000",
-						generation: 1,
-						lifecycleRevision: 0,
-						adapter: "codex-tmux",
-					},
-					ownerToken: "owner-3000",
-					spawnEpoch: 1,
-					verdict: "dead",
-					observedAt: "2026-09-26T20:00:00.000Z",
-					expiresAt: "2026-09-26T20:01:00.000Z",
-					bindingDigest: "c".repeat(64),
-					reason: "writers_and_controller_gone",
-				}),
+				observe,
 				isCurrent,
+				observeNeverStarted,
+				isCurrentNeverStarted,
 			},
 			listCwds: async () => [],
 			resolveTerminalAuthority: async () => ({
@@ -174,6 +217,31 @@ describe("stock worktree cleanup observer", () => {
 		expect(gitCalls.flat()).not.toEqual(
 			expect.arrayContaining(["fetch", "remove", "prune", "reset", "clean"]),
 		);
+
+		observe.mockImplementationOnce(async () => undefined);
+		const neverStartedResult = await previewer.preview({
+			projectName: "flywheel",
+			actor: "lead:eng",
+			authorityCheck,
+		});
+		expect(neverStartedResult.manifest.targets[0]).toMatchObject({
+			eligible: true,
+			exclusionReasons: [],
+		});
+		expect(observeNeverStarted).toHaveBeenCalledWith("execution-3000");
+		expect(isCurrentNeverStarted).toHaveBeenCalledTimes(2);
+
+		observe.mockImplementationOnce(async () => undefined);
+		isCurrentNeverStarted.mockReturnValueOnce(false);
+		const driftedResult = await previewer.preview({
+			projectName: "flywheel",
+			actor: "lead:eng",
+			authorityCheck,
+		});
+		expect(driftedResult.manifest.targets[0]).toMatchObject({
+			eligible: false,
+			exclusionReasons: expect.arrayContaining(["body_unknown"]),
+		});
 	});
 
 	it("finds an ignored nested repository without following symlinks", async () => {

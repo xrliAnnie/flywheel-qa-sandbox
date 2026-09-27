@@ -77,6 +77,44 @@ function eligibleTarget(): StockCleanupObservedTarget {
 	};
 }
 
+function neverStartedProof(): NonNullable<
+	StockCleanupObservedTarget["neverStartedBodyObservations"]
+>[number] {
+	return {
+		identity: {
+			executionId: "execution-3000",
+			activationId: "activation-3000",
+			generation: 1,
+			lifecycleRevision: 0,
+			adapter: "codex-tmux",
+		},
+		source: {
+			origin: "live_preflight",
+			projectName: "flywheel",
+			issueId: "issue-3000",
+			executionRunId: "run-3000",
+			sourceEventId: "event-3000",
+			proofDigest: "d".repeat(64),
+			launchClaimState: "closed",
+			daemonLedger: "no_group",
+			daemonLedgerShape: "prelaunch_home_only",
+		},
+		ownership: {
+			state: "absent",
+			spawnInflight: false,
+			restartInProgress: false,
+			censusDigest: "e".repeat(64),
+		},
+		socket: { state: "absent", evidenceDigest: "f".repeat(64) },
+		lock: { state: "absent", evidenceDigest: "1".repeat(64) },
+		verdict: "dead",
+		observedAt: "2026-09-26T20:00:00.000Z",
+		expiresAt: "2026-09-26T20:01:00.000Z",
+		bindingDigest: "2".repeat(64),
+		reason: "trusted_pre_spawn_body_absent",
+	};
+}
+
 describe("stock worktree cleanup preview", () => {
 	it("emits a canonical eligible manifest without invoking destructive effects", () => {
 		const remove = vi.fn();
@@ -140,6 +178,102 @@ describe("stock worktree cleanup preview", () => {
 			bindinglessCohort: 1,
 		});
 	});
+
+	it("accepts a bound execution only when the shared provider closes every never-started proof", () => {
+		const target = eligibleTarget();
+		target.bodyObservations = [];
+		Object.assign(target.bindings[0]!, {
+			executionRunId: "run-3000",
+			lifecycleRevision: 0,
+			adapter: "codex-tmux",
+		});
+		target.neverStartedBodyObservations = [neverStartedProof()];
+
+		const preview = buildStockCleanupPreview({
+			projectName: "flywheel",
+			observedAt: "2026-09-26T20:00:00.000Z",
+			targets: [target],
+		});
+
+		expect(preview.manifest.targets[0]).toMatchObject({
+			eligible: true,
+			exclusionReasons: [],
+		});
+	});
+
+	it.each([
+		[
+			"source",
+			(proof: ReturnType<typeof neverStartedProof>) => {
+				(proof.source as { origin: string }).origin = "forged";
+			},
+			"bindingless_provider_source_missing",
+		],
+		[
+			"legacy daemon shape",
+			(proof: ReturnType<typeof neverStartedProof>) => {
+				Object.assign(proof.source, {
+					origin: "legacy_compat",
+					daemonLedger: "missing",
+					daemonLedgerShape: "missing",
+				});
+			},
+			"bindingless_provider_source_missing",
+		],
+		[
+			"execution run identity",
+			(proof: ReturnType<typeof neverStartedProof>) => {
+				proof.source.executionRunId = "run-replaced";
+			},
+			"bindingless_provider_source_missing",
+		],
+		[
+			"ownership",
+			(proof: ReturnType<typeof neverStartedProof>) => {
+				proof.ownership.state = "unknown";
+			},
+			"bindingless_provider_ownership_missing",
+		],
+		[
+			"socket",
+			(proof: ReturnType<typeof neverStartedProof>) => {
+				proof.socket.state = "unknown";
+			},
+			"bindingless_provider_socket_missing",
+		],
+		[
+			"lock",
+			(proof: ReturnType<typeof neverStartedProof>) => {
+				proof.lock.state = "unknown";
+			},
+			"bindingless_provider_lock_missing",
+		],
+	] as const)(
+		"refuses a never-started proof with missing %s closure",
+		(_name, mutate, reason) => {
+			const target = eligibleTarget();
+			target.bodyObservations = [];
+			Object.assign(target.bindings[0]!, {
+				executionRunId: "run-3000",
+				lifecycleRevision: 0,
+				adapter: "codex-tmux",
+			});
+			const proof = neverStartedProof();
+			mutate(proof);
+			target.neverStartedBodyObservations = [proof];
+
+			const preview = buildStockCleanupPreview({
+				projectName: "flywheel",
+				observedAt: "2026-09-26T20:00:00.000Z",
+				targets: [target],
+			});
+
+			expect(preview.manifest.targets[0]).toMatchObject({
+				eligible: false,
+				exclusionReasons: [reason, "body_unknown"],
+			});
+		},
+	);
 
 	it("keeps every negative guard visible and preserves named reproduction samples", () => {
 		const target = eligibleTarget();

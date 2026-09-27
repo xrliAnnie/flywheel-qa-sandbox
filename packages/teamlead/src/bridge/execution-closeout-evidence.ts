@@ -58,7 +58,7 @@ export interface CloseoutEvidence extends CloseoutEvidenceIdentity {
 	liveVetoes: string[];
 	unknownReasons: string[];
 	verdict: CloseoutEvidenceVerdict;
-	bodyObservation?: BodyObservation;
+	bodyObservation?: BodyObservation | NeverStartedBodyObservation;
 }
 
 type ObservationProbeResult = Pick<Observation, "state" | "reason"> &
@@ -90,7 +90,7 @@ export interface ExecutionCloseoutFacts {
 		| undefined;
 	launchClaimState: string | undefined;
 	/** Presence selects the FLY-2919 seam; null means unavailable and forbids fallback. */
-	bodyObservation?: BodyObservation | null;
+	bodyObservation?: BodyObservation | NeverStartedBodyObservation | null;
 }
 
 export interface ExecutionCloseoutProbeDeps {
@@ -612,7 +612,10 @@ import { CommDB } from "flywheel-comm/db";
 import { isOperationalTerminalStatus } from "../operational-terminal-status.js";
 import type { Session } from "../StateStore.js";
 import { resolveCommDbPath } from "./commdb-session-prune.js";
-import type { BodyObservation } from "./execution-body-observation-contract.js";
+import type {
+	BodyObservation,
+	NeverStartedBodyObservation,
+} from "./execution-body-observation-contract.js";
 import {
 	type HostProcessByExecutionIdProbe,
 	probeHostProcessByExecutionId,

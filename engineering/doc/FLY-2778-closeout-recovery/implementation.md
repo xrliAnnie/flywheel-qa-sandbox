@@ -5,7 +5,7 @@ Issue: FLY-2778 (https://linear.app/geoforge3d/issue/FLY-2778/收尾清理失效
 
 ## 当前依赖边界
 
-- 当前 `origin/main` 为 `fdd1b404d`。FLY-2919 尚未合入；远端头 `a84a07854` 的进度明确写着 A 组未完成、B–F 未实施、当前头未全绿。因此本单不把整条 WIP 分支当作已发布的共同生命 provider，也不复制第二套死亡判定。
+- 本轮审计时 `origin/main` 为 `570fdb56d`。FLY-2919 尚未合入；远端头 `da14f1f89` 的进度仍明确写着 B11 及后续范围、最终审查/PR 未完成。因此本单不把整条 WIP 分支当作已发布的共同生命 provider，也不复制第二套死亡判定；provider 缺席时 A/C 均保持 unknown 拒删。
 - FLY-2754 远端头 `3f89b8a76` 尚未完成实现审查。本单只按已批准计划逐项重取其受信来源凭证设计，并重新做当前头红绿；不整分支 cherry-pick。
 
 ## C1：stock cleanup 的零信号删除原语
@@ -59,7 +59,7 @@ Issue: FLY-2778 (https://linear.app/geoforge3d/issue/FLY-2778/收尾清理失效
 
 实现新增版本化、哈希绑定的 stock cleanup manifest，以及 Claude reclose peer、Codex lifecycle route、`flywheel-comm land cleanup` 三条认证入口。preview 只枚举已注册 worktree，并逐项证明项目归属、目录 inode/realpath 身份、StateStore 绑定、PR 状态、远端提交包含关系、干净状态、嵌套仓库扫描、只读 CWD census 与 land target snapshot 权限。FLY-2688 / FLY-2751 固定保留；OPEN、无 PR、dirty、未推送、活体、未知或权限漂移一律排除。
 
-无绑定目标即使 PR 已终结，也必须具备受信来源、归属、socket 与锁四项证明；当前生产没有共同 body provider，因此这类目标额外标记 `untrusted_binding`，所有已绑定目标也保守标记 `body_unknown`。execute 入口验证认证上下文和 manifest/request tuple 后明确返回 `stock_cleanup_execute_disabled`，没有任何删除或 signal 路径；待 FLY-2919 导出同一生命真源后才能接通 apply。这保证 stock reclose 在任何发信号能力之前完成全量 cwd/process census，本批本身不含 signal API。
+无工作树绑定目标即使 PR 已终结，也必须具备受信来源、归属、socket 与锁四项证明；它们仍额外标记 `untrusted_binding`，不会因 provider 字符串自行放行。已绑定但从未产生进程 binding 的 execution 只接受共同 provider 的 typed never-started closure；provider 缺席或四项任一未知均为 `body_unknown`。生产 execute 已接入 scoped claim/CAS：在认证上下文、manifest/request tuple、临删前 authority/identity/body/CWD 二次校验全部通过后，才调用 `processHandling: "refuse"` 的无信号、无 `--force` 删除；任一漂移逐项拒绝，不把空执行冒充成功。
 
 ### 红绿、选择与构建
 
@@ -67,3 +67,16 @@ Issue: FLY-2778 (https://linear.app/geoforge3d/issue/FLY-2778/收尾清理失效
 - TeamLead 受限 related config 仅含上述 5 个具体文件，33/33；flywheel-comm 受限 related 仅含 `land.test.ts`，6/6。没有新增 `scripts/__tests__/*.test.sh`。
 - 12 个改动文件的精确 Biome check exit 0，仅报告 `plugin.ts` 两条既有 `useConst` warning。仓库级 `pnpm lint` 当前 exit 1（5117 files，10 errors / 26 warnings），错误均在本单未改的 FLY-1563/config/core/scripts 等文件；未越权修改。
 - `pnpm --filter flywheel-comm build`、`pnpm --filter flywheel-teamlead typecheck`、`pnpm --filter "flywheel-teamlead..." build` 均通过；`git diff --check` 通过。
+
+## A1/A2：从未启动来源与共同 provider 闭包
+
+FLY-2754 的 auth pre-spawn 只提供“可能从未启动”的来源，不能自行证明体已死。本批新增 source-only assessor：live receipt 必须来自 Bridge 内部原子终态链；legacy 只接受冻结 cutoff 前、同一 `DirectEventSink` 终态与 teardown 锚定的两种 auth 失败族。普通 `Child stdio timeout`、cutoff 后事件、项目/activation/revision 漂移、活动 launch owner 或 receipt 身份不一致全部拒绝。dry-run 只报 candidate；正常路径才按 snapshot digest CAS 落 `legacy_compat` receipt。assessor 不调用 pgrep/tmux/window，也不产生独立死亡 verdict。
+
+共同 provider 契约新增 typed `NeverStartedBodyObservation`，把来源、owner/spawn/restart、daemon ledger shape、socket、spawn lock、TTL 与 digest 放在同一 observation。legacy 必须是 `no_group + prelaunch_home_only`；live 只允许 `missing` 或同一 prelaunch shape。正常 land closeout 与 stock preview 都只在常规 `observe()` 没有 process binding 时查询这个可选分支，并在 effect 前调用 provider 的同步 current check。两条消费者都核对 execution/project/issue/run/activation/lifecycle/adapter；来源、归属、socket、锁任一缺失都保持 unknown，不归档、不删 worktree。FLY-2919 factory 尚未合入时可选分支不存在，生产保持 fail-closed。
+
+### 红绿与验证
+
+- RED→GREEN：stock preview 的 legacy daemon shape 与 execution-run 漂移各自先被错误放行为 eligible；补 exact identity/shape 校验后 `stock-worktree-cleanup.test.ts` 10/10。
+- RED→GREEN：normal land closeout 对完整 never-started closure 仍返回 blocked；接入同一 provider 分支后完整闭包不进入 signal path，来源/归属/socket/锁四类缺失逐一保持 blocked。`lifecycle-closeout-body-observation.test.ts` 9/9，完整 `lifecycle-closeout.test.ts` 64/64。
+- source assessor：`codex-pre-spawn-source.test.ts` 5/5；原凭证/producer/retention 回归 `StateStore.codex-pre-spawn.test.ts` 8/8、`DirectEventSink.dag-seam.test.ts` 15/15、`StateStore.fly2341-terminal-archive.test.ts` 28/28、`fly-2413-retention-migration.test.ts` 1/1。
+- 受限 related 配置先以 `vitest list --filesOnly` 核对 10 个明确文件，随后 changed-file related 实际选中 9 files / 173 tests，全绿；没有回落到包级 suite。精确 Biome 与 `git diff --check` 通过，TeamLead typecheck 通过。

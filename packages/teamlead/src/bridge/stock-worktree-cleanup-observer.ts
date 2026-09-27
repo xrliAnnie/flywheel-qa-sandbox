@@ -6,6 +6,7 @@ import type { ProjectEntry } from "../ProjectConfig.js";
 import type {
 	BodyObservation,
 	ExecutionBodyObserver,
+	NeverStartedBodyObservation,
 } from "./execution-body-observation-contract.js";
 import {
 	buildStockCleanupPreview,
@@ -46,13 +47,15 @@ interface StockCleanupStore {
 				issue_identifier?: string;
 				project_name: string;
 				status: string;
+				adapter_type?: string | null;
+				lifecycle_revision?: number;
 				pr_number?: number;
 				pr_head_sha?: string;
 		  }
 		| undefined;
 	getWorkflowExecutionBinding(
 		executionId: string,
-	): { activation_id: string } | undefined;
+	): { activation_id: string; run_id?: string } | undefined;
 }
 
 export interface StockCleanupPullObservation {
@@ -395,14 +398,20 @@ export function createStockCleanupPreviewer(deps: StockCleanupPreviewerDeps): {
 					generation = undefined;
 				}
 				const bodyObservations: BodyObservation[] = [];
+				const neverStartedBodyObservations: NeverStartedBodyObservation[] = [];
 				const boundTargets: StockCleanupObservedTarget["bindings"] = [];
 				for (const binding of targetBindings) {
-					const activationId =
-						deps.store.getWorkflowExecutionBinding(binding.execution_id)
-							?.activation_id ?? "";
+					const activation = deps.store.getWorkflowExecutionBinding(
+						binding.execution_id,
+					);
+					const activationId = activation?.activation_id ?? "";
+					const boundSession = deps.store.getSession(binding.execution_id);
 					boundTargets.push({
 						executionId: binding.execution_id,
 						activationId,
+						executionRunId: activation?.run_id,
+						lifecycleRevision: boundSession?.lifecycle_revision ?? undefined,
+						adapter: boundSession?.adapter_type ?? undefined,
 						path: binding.canonicalPath,
 						branch: binding.branch,
 						generation: binding.generation,
@@ -421,6 +430,24 @@ export function createStockCleanupPreviewer(deps: StockCleanupPreviewerDeps): {
 								deps.bodyObserver.isCurrent(observation))
 						) {
 							bodyObservations.push(observation);
+							continue;
+						}
+						if (
+							observation === undefined &&
+							deps.bodyObserver.observeNeverStarted &&
+							deps.bodyObserver.isCurrentNeverStarted
+						) {
+							const neverStarted = await deps.bodyObserver.observeNeverStarted(
+								binding.execution_id,
+							);
+							if (
+								neverStarted?.identity.executionId === binding.execution_id &&
+								neverStarted.identity.activationId === activationId &&
+								(neverStarted.verdict === "unknown" ||
+									deps.bodyObserver.isCurrentNeverStarted(neverStarted))
+							) {
+								neverStartedBodyObservations.push(neverStarted);
+							}
 						}
 					} catch {
 						// Missing or indeterminate shared evidence remains body_unknown.
@@ -536,6 +563,7 @@ export function createStockCleanupPreviewer(deps: StockCleanupPreviewerDeps): {
 					pr,
 					bindings: boundTargets,
 					bodyObservations,
+					neverStartedBodyObservations,
 					clean,
 					nestedRepository,
 					remoteProof,
@@ -561,6 +589,13 @@ export function createStockCleanupPreviewer(deps: StockCleanupPreviewerDeps): {
 						(observation) =>
 							observation.verdict === "unknown" ||
 							deps.bodyObserver!.isCurrent(observation),
+					);
+					target.neverStartedBodyObservations = (
+						target.neverStartedBodyObservations ?? []
+					).filter(
+						(observation) =>
+							observation.verdict === "unknown" ||
+							Boolean(deps.bodyObserver!.isCurrentNeverStarted?.(observation)),
 					);
 				}
 			}

@@ -910,6 +910,48 @@ export interface CodexPreSpawnFailureReceipt {
 	invalidatedAt: string | null;
 }
 
+/** Source-only snapshot for the FLY-2754 never-started branch.
+ * Physical owner/socket/lock absence remains the shared body provider's job. */
+export interface CodexPreSpawnSourceSnapshot {
+	executionId: string;
+	session:
+		| {
+				status: string;
+				adapterType: string | null;
+				projectName: string;
+				issueId: string;
+				lastError: string | null;
+				lifecycleRevision: number;
+		  }
+		| undefined;
+	activation:
+		| {
+				activationId: string;
+				executionRunId: string;
+				nodeId: string;
+				attempt: number;
+		  }
+		| undefined;
+	activationState: "current" | "none" | "ambiguous";
+	launchClaimState: string | undefined;
+	launchOwner: WorkflowLaunchOwnerRow | undefined;
+	receipt: CodexPreSpawnFailureReceipt | undefined;
+	policy: { singleton: 1; cutoffAt: string; createdAt: string } | undefined;
+	terminal:
+		| {
+				sourceEventId: string;
+				issueId: string;
+				projectName: string;
+				sessionEventSource: string;
+				sessionEventTs: string | undefined;
+				sessionPayload: unknown;
+				teardownAt: string;
+				teardownPayload: unknown;
+		  }
+		| undefined;
+	snapshotDigest: string;
+}
+
 /** FLY-2118: durable Bridge-owned continuity for one unclaimed tmux target. */
 export interface PatrolOrphanWatch {
 	target: string;
@@ -28084,6 +28126,166 @@ export class StateStore {
 		return this.getCodexPreSpawnFailureReceipts(executionId).find(
 			(receipt) => receipt.invalidatedAt === null,
 		);
+	}
+
+	getCodexPreSpawnSourceSnapshot(
+		executionId: string,
+	): CodexPreSpawnSourceSnapshot {
+		const current = this.resolveCurrentWorkflowActivation(executionId);
+		const activation =
+			current.kind === "current"
+				? {
+						activationId: current.binding.activation_id,
+						executionRunId: current.binding.run_id,
+						nodeId: current.binding.node_id,
+						attempt: current.binding.attempt,
+					}
+				: undefined;
+		const sessionRow = this.getSession(executionId);
+		const session = sessionRow
+			? {
+					status: sessionRow.status,
+					adapterType: sessionRow.adapter_type ?? null,
+					projectName: sessionRow.project_name,
+					issueId: sessionRow.issue_id,
+					lastError: sessionRow.last_error ?? null,
+					lifecycleRevision: sessionRow.lifecycle_revision ?? 0,
+				}
+			: undefined;
+		const sessionEvents = this.getEventsByExecution(executionId);
+		const teardownEvents = activation
+			? this.listWorkflowRunEvents(activation.executionRunId)
+					.filter(
+						(event) =>
+							event.kind === "generalized_teardown_recorded" &&
+							event.execution_id === executionId,
+					)
+					.reverse()
+			: [];
+		let terminal: CodexPreSpawnSourceSnapshot["terminal"];
+		for (const teardown of teardownEvents) {
+			const payload =
+				typeof teardown.payload === "object" &&
+				teardown.payload !== null &&
+				!Array.isArray(teardown.payload)
+					? (teardown.payload as Record<string, unknown>)
+					: undefined;
+			const sourceEventId =
+				typeof payload?.sourceEventId === "string"
+					? payload.sourceEventId
+					: undefined;
+			const event = sourceEventId
+				? sessionEvents.find(
+						(candidate) =>
+							candidate.event_id === sourceEventId &&
+							candidate.event_type === "session_failed",
+					)
+				: undefined;
+			if (!sourceEventId || !event) continue;
+			terminal = {
+				sourceEventId,
+				issueId: event.issue_id,
+				projectName: event.project_name,
+				sessionEventSource: event.source,
+				sessionEventTs: event.ts,
+				sessionPayload: event.payload,
+				teardownAt: teardown.at,
+				teardownPayload: teardown.payload,
+			};
+			break;
+		}
+		const snapshot = {
+			executionId,
+			session,
+			activation,
+			activationState: current.kind,
+			launchClaimState: this.getLaunchClaim(executionId)?.state,
+			launchOwner: this.getWorkflowLaunchOwner(executionId),
+			receipt: this.getCodexPreSpawnFailureReceipt(executionId),
+			policy: this.getCodexPreSpawnCompatPolicy(),
+			terminal,
+		};
+		return {
+			...snapshot,
+			snapshotDigest: canonicalSubmissionDigest(snapshot),
+		};
+	}
+
+	recordLegacyCodexPreSpawnFailureReceipt(input: {
+		executionId: string;
+		expectedSnapshotDigest: string;
+		failureCode: "source_auth_unavailable" | "source_identity_unknown";
+		terminalAt: string;
+		now: string;
+	}):
+		| { ok: true; receipt: CodexPreSpawnFailureReceipt }
+		| { ok: false; reason: string } {
+		let result:
+			| { ok: true; receipt: CodexPreSpawnFailureReceipt }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "proof_snapshot_changed",
+		};
+		this.db.transaction(() => {
+			const snapshot = this.getCodexPreSpawnSourceSnapshot(input.executionId);
+			if (snapshot.snapshotDigest !== input.expectedSnapshotDigest) return;
+			if (
+				!snapshot.session ||
+				!snapshot.activation ||
+				!snapshot.terminal ||
+				!snapshot.policy ||
+				snapshot.receipt
+			) {
+				result = { ok: false, reason: "proof_context_incomplete" };
+				return;
+			}
+			const proof = {
+				executionId: input.executionId,
+				projectName: snapshot.session.projectName,
+				issueId: snapshot.session.issueId,
+				executionRunId: snapshot.activation.executionRunId,
+				activationId: snapshot.activation.activationId,
+				lifecycleRevision: snapshot.session.lifecycleRevision,
+				sourceEventId: snapshot.terminal.sourceEventId,
+				failureCode: input.failureCode,
+				origin: "legacy_compat" as const,
+				terminalAt: input.terminalAt,
+				sessionPayloadDigest: canonicalSubmissionDigest(
+					snapshot.terminal.sessionPayload,
+				),
+				teardownPayloadDigest: canonicalSubmissionDigest(
+					snapshot.terminal.teardownPayload,
+				),
+				cutoffAt: snapshot.policy.cutoffAt,
+			};
+			this.db.raw
+				.prepare(
+					`INSERT INTO codex_pre_spawn_failure_receipt
+					 (execution_id, project_name, issue_id, execution_run_id,
+					  activation_id, lifecycle_revision, source_event_id, failure_code,
+					  origin, proof_digest, terminal_at, recorded_at, invalidated_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'legacy_compat', ?, ?, ?, NULL)`,
+				)
+				.run(
+					proof.executionId,
+					proof.projectName,
+					proof.issueId,
+					proof.executionRunId,
+					proof.activationId,
+					proof.lifecycleRevision,
+					proof.sourceEventId,
+					proof.failureCode,
+					canonicalSubmissionDigest(proof),
+					proof.terminalAt,
+					input.now,
+				);
+			const receipt = this.getCodexPreSpawnFailureReceipt(input.executionId);
+			result = receipt
+				? { ok: true, receipt }
+				: { ok: false, reason: "receipt_insert_missing" };
+		});
+		if (result.ok) this.save();
+		return result;
 	}
 
 	private invalidateCodexPreSpawnReceiptTx(

@@ -20,8 +20,46 @@ export interface BodyObservation {
 	reason: string;
 }
 
+/**
+ * Provider-owned proof for an execution that failed before a process binding
+ * could be persisted.  The source receipt alone is never a death verdict: the
+ * shared provider must also close launch/owner, socket, and spawn-lock state.
+ */
+export interface NeverStartedBodyObservation {
+	identity: BodyObservation["identity"];
+	source: {
+		origin: "live_preflight" | "legacy_compat";
+		projectName: string;
+		issueId: string;
+		executionRunId: string;
+		sourceEventId: string;
+		proofDigest: string;
+		launchClaimState: "closed" | "unknown";
+		daemonLedger: "missing" | "no_group" | "unknown";
+		daemonLedgerShape: "missing" | "prelaunch_home_only" | "unknown";
+	};
+	ownership: {
+		state: "absent" | "unknown";
+		spawnInflight: false | null;
+		restartInProgress: false | null;
+		censusDigest: string;
+	};
+	socket: { state: "absent" | "unknown"; evidenceDigest: string };
+	lock: { state: "absent" | "unknown"; evidenceDigest: string };
+	verdict: "dead" | "unknown";
+	observedAt: string;
+	expiresAt: string;
+	bindingDigest: string;
+	reason: string;
+}
+
 export interface ExecutionBodyObserver {
 	observe(executionId: string): Promise<BodyObservation | undefined>;
 	/** Synchronous identity/owner/epoch/TTL check adjacent to a consumer CAS. */
 	isCurrent(observation: BodyObservation): boolean;
+	/** Optional FLY-2754 source branch; absent support must remain unknown. */
+	observeNeverStarted?(
+		executionId: string,
+	): Promise<NeverStartedBodyObservation | undefined>;
+	isCurrentNeverStarted?(observation: NeverStartedBodyObservation): boolean;
 }

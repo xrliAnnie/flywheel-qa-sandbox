@@ -35,6 +35,49 @@ function observation(verdict: "alive" | "dead" | "unknown") {
 	};
 }
 
+function neverStartedObservation() {
+	const observedAt = Date.now();
+	return {
+		identity: {
+			executionId: "exec-1",
+			activationId: "activation-1",
+			generation: 1,
+			lifecycleRevision: 0,
+			adapter: "codex-tmux" as const,
+		},
+		source: {
+			origin: "live_preflight" as const,
+			projectName: "proj",
+			issueId: ISSUE,
+			executionRunId: "run-1",
+			sourceEventId: "event-1",
+			proofDigest: "b".repeat(64),
+			launchClaimState: "closed" as const,
+			daemonLedger: "missing" as const,
+			daemonLedgerShape: "missing" as const,
+		},
+		ownership: {
+			state: "absent" as "absent" | "unknown",
+			spawnInflight: false as false | null,
+			restartInProgress: false as false | null,
+			censusDigest: "c".repeat(64),
+		},
+		socket: {
+			state: "absent" as "absent" | "unknown",
+			evidenceDigest: "d".repeat(64),
+		},
+		lock: {
+			state: "absent" as "absent" | "unknown",
+			evidenceDigest: "e".repeat(64),
+		},
+		verdict: "dead" as const,
+		observedAt: new Date(observedAt).toISOString(),
+		expiresAt: new Date(observedAt + 10_000).toISOString(),
+		bindingDigest: "f".repeat(64),
+		reason: "trusted_pre_spawn_body_absent",
+	};
+}
+
 async function fixture(verdicts: Array<"alive" | "dead" | "unknown">) {
 	const store = await StateStore.create(":memory:");
 	stores.push(store);
@@ -128,10 +171,87 @@ async function fixture(verdicts: Array<"alive" | "dead" | "unknown">) {
 		},
 		deferRecordFinalization: true,
 	};
-	return { deps, input, closeRunnerFn, observe, collectCloseoutEvidenceFn };
+	return {
+		store,
+		deps,
+		input,
+		closeRunnerFn,
+		observe,
+		collectCloseoutEvidenceFn,
+	};
 }
 
 describe("FLY-2778 shared BodyObservation closeout seam", () => {
+	it("accepts a current never-started closure without entering the signal path", async () => {
+		const f = await fixture([]);
+		vi.spyOn(f.store, "getWorkflowExecutionBinding").mockReturnValue({
+			activation_id: "activation-1",
+			run_id: "run-1",
+		} as never);
+		const observeNeverStarted = vi.fn(async () => neverStartedObservation());
+		f.deps.bodyObserver!.observe = vi.fn(async () => undefined);
+		f.deps.bodyObserver!.observeNeverStarted = observeNeverStarted;
+		f.deps.bodyObserver!.isCurrentNeverStarted = () => true;
+
+		const report = await closeoutIssue(f.deps, f.input);
+
+		expect(report.outcome).toBe("complete");
+		expect(report.nodes[0]).toMatchObject({
+			confirmedGone: true,
+			communicationsFinalized: true,
+			evidenceVerdict: "gone",
+		});
+		expect(observeNeverStarted).toHaveBeenCalledWith("exec-1");
+		expect(f.closeRunnerFn).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		[
+			"source",
+			(value: ReturnType<typeof neverStartedObservation>) => {
+				value.source.proofDigest = "";
+			},
+		],
+		[
+			"ownership",
+			(value: ReturnType<typeof neverStartedObservation>) => {
+				value.ownership.state = "unknown";
+			},
+		],
+		[
+			"socket",
+			(value: ReturnType<typeof neverStartedObservation>) => {
+				value.socket.state = "unknown";
+			},
+		],
+		[
+			"lock",
+			(value: ReturnType<typeof neverStartedObservation>) => {
+				value.lock.state = "unknown";
+			},
+		],
+	] as const)(
+		"refuses a never-started closure missing %s proof",
+		async (_name, mutate) => {
+			const f = await fixture([]);
+			vi.spyOn(f.store, "getWorkflowExecutionBinding").mockReturnValue({
+				activation_id: "activation-1",
+				run_id: "run-1",
+			} as never);
+			const value = neverStartedObservation();
+			mutate(value);
+			f.deps.bodyObserver!.observe = vi.fn(async () => undefined);
+			f.deps.bodyObserver!.observeNeverStarted = vi.fn(async () => value);
+			f.deps.bodyObserver!.isCurrentNeverStarted = () => true;
+
+			const report = await closeoutIssue(f.deps, f.input);
+
+			expect(report.outcome).toBe("blocked");
+			expect(report.nodes[0]).toMatchObject({ confirmedGone: false });
+			expect(f.collectCloseoutEvidenceFn).not.toHaveBeenCalled();
+		},
+	);
+
 	it("uses current dead evidence before any closeRunner signal path", async () => {
 		const f = await fixture(["dead"]);
 		const report = await closeoutIssue(f.deps, f.input);
