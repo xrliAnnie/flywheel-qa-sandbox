@@ -1,14 +1,14 @@
 ---
 issue: FLY-2946
 phase: implement
-phaseCursor: 2/5
-updated: 2026-09-27T11:38:22.649Z
-nextStep: Replace only the eight scoped production constants, preserving
-  claude-opus-50 and claude-sonnet-5.
+phaseCursor: 3/5
+updated: 2026-09-27T11:40:19.265Z
+nextStep: Run literal/path discovery, lint/build checks, inspect the diff, then
+  commit and request code review.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2946 progress
-**phase**: implement (2/5)
-**next**: Replace only the eight scoped production constants, preserving claude-opus-50 and claude-sonnet-5.
+**phase**: implement (3/5)
+**next**: Run literal/path discovery, lint/build checks, inspect the diff, then commit and request code review.
