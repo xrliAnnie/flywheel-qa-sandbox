@@ -56,6 +56,7 @@ import { buildReworkWakeId, type ReworkWakeIdentity, type ReworkWakeRetirementPr
 import { newDrainReadId } from "flywheel-comm/completion-obligations";
 import { type CompletionDrainProof, isCompletionDrainProof } from "./bridge/completion-drain.js";
 import { BetaReleaseStore } from "./bridge/beta-release-store.js";
+import { ReviewRoundStore } from "./bridge/review-round-store.js";
 import type { CompletionWorktreeBranchObservation } from "./bridge/worktree-binding-refresh.js";
 import { CustomerReleaseStore } from "./bridge/customer-release/store.js";
 import { isMailboxTerminalStatus, OUTCOME_STATUSES, TERMINAL_STATUSES } from "flywheel-comm/session-terminal";
@@ -107,7 +108,6 @@ import {
 	isDesignBackend,
 	isSkillFrameworkMode,
 	isSkillFrameworkVia,
-	MODEL_IDS,
 	type ModelConfigSnapshot,
 	type ProposedFlagScan,
 	PROJECT_STORE_MANAGED_FLAGS,
@@ -3276,6 +3276,10 @@ export class StateStore {
 	private observationZeroProgress = { verdict: 0, closeout: 0, clarification: 0, archive: 0 };
 	get betaSchedules(): BetaReleaseStore {
 		return new BetaReleaseStore(this.db.raw);
+	}
+	/** FLY-2891: per-round local Codex review records + gate acceptances. */
+	get reviewRounds(): ReviewRoundStore {
+		return new ReviewRoundStore(this.db.raw);
 	}
 	private db: CompatDb;
 	private dbPath: string;
@@ -10373,6 +10377,7 @@ export class StateStore {
 	migrate(): void {
 		this.betaSchedules.migrate();
 		this.customerReleases.migrate();
+		this.reviewRounds.migrate();
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS discord_config (
 				singleton_key TEXT PRIMARY KEY CHECK (singleton_key = 'discord'),
@@ -12059,7 +12064,8 @@ export class StateStore {
 				created_at            TEXT NOT NULL DEFAULT (datetime('now')),
 				updated_at            TEXT,
 				responded_at          TEXT,
-				delivery_nonce        TEXT
+				delivery_nonce        TEXT,
+				completed_at          TEXT
 			)
 		`);
 		// R12 HIGH-4 outbox column on databases created before it existed.
@@ -12109,6 +12115,8 @@ export class StateStore {
 			["retired_reviewer_session_uuid", "TEXT"],
 			// FLY-2763: same-family sanction captured at request time
 			["same_family_sanction", "TEXT"],
+			// FLY-2891: stable review completion time (first done only)
+			["completed_at", "TEXT"],
 		] as const) {
 			if (!reviewJobColumns.includes(column)) {
 				this.db.run(
@@ -22853,7 +22861,8 @@ export class StateStore {
 			       reviewer_session_failure_streak = 0,
 			       failure_reason = NULL, failure_raw = NULL, retry_at = NULL,
 			       retry_trigger = NULL, retry_parked_at_ms = NULL,
-			       updated_at = datetime('now')
+			       updated_at = datetime('now'),
+			       completed_at = COALESCE(completed_at, datetime('now'))
 			 WHERE request_id = ?`,
 			[
 				verdict,
@@ -27229,6 +27238,14 @@ export class StateStore {
 			.prepare("SELECT * FROM lead_events WHERE seq = ?")
 			.get(seq) as Record<string, unknown> | undefined;
 		return row ? mapLeadEventRow(row) : null;
+	}
+
+	/** FLY-2882: metadata-only lookup (never reads `payload`). */
+	getLeadEventSessionKeyBySeq(seq: number): string | null {
+		const row = this.db.raw
+			.prepare("SELECT session_key FROM lead_events WHERE seq = ?")
+			.get(seq) as { session_key: unknown } | undefined;
+		return typeof row?.session_key === "string" ? row.session_key : null;
 	}
 
 	/** FLY-1687: exact per-(project, Lead) patrol chain head; no SQL LIKE. */
@@ -46887,14 +46904,6 @@ export class StateStore {
 				| "snapshot_fallback";
 			audit: boolean;
 			modelAssignment?: WorkflowModelAssignmentReceipt;
-			degradation?: {
-				assignedDispatch: {
-					vendor: "claude" | "codex";
-					model: string;
-					effort?: "low" | "medium" | "high" | "xhigh" | "max";
-				};
-				quotaEvidence: CodexPoolExhaustionFact;
-			};
 		};
 		env?: Record<string, string | undefined>;
 		standbyResumeEnabled?: boolean;
@@ -46941,7 +46950,6 @@ export class StateStore {
 		if (!node.dispatch || node.type === "gate") {
 			return { ok: false, reason: "not_start_node" };
 		}
-		const degradation = input.dispatchResolution?.degradation;
 		const wakeRuntime =
 			activationMode === "wake"
 				? this.getWorkflowExecutionRuntime(input.executionId)
@@ -47015,49 +47023,6 @@ export class StateStore {
 				};
 			}
 		}
-		const currentDegradationEvidence = () => {
-			if (!degradation) return false;
-			const current = this.codexQuota.getCurrentPoolExhaustionFact(
-				degradation.quotaEvidence.rootKey,
-				Date.parse(now),
-			);
-			return (
-				current !== undefined &&
-				canonicalSubmissionDigest(current) ===
-					canonicalSubmissionDigest(degradation.quotaEvidence)
-			);
-		};
-		const validDegradationProposal = () => {
-			if (!degradation) return false;
-			const assignment = input.dispatchResolution?.modelAssignment;
-			const opus = getModelConfigSnapshot().getModelRegistryEntry("opus");
-			return (
-				input.nodeId === "implement" &&
-				assignment?.basis.rule === "issue_node_weighted" &&
-				assignment.basis.nodeId === "implement" &&
-				(assignment.arm === "impl_sol56" || assignment.arm === "impl_sol6") &&
-				degradation.assignedDispatch.vendor === "codex" &&
-				degradation.assignedDispatch.model === assignment.model &&
-				degradation.assignedDispatch.effort === "xhigh" &&
-				input.dispatchResolution?.dispatch.vendor === "claude" &&
-				input.dispatchResolution.dispatch.model === MODEL_IDS.OPUS_55 &&
-				input.dispatchResolution.dispatch.effort === "xhigh" &&
-				assignment.basis.nodes.implement.some(
-					(arm) => arm.arm === "impl_opus" && arm.model === "opus",
-				) &&
-				opus?.id === MODEL_IDS.OPUS_55 &&
-				opus.runtimeVendor === "claude" &&
-				getModelConfigSnapshot().isModelSelectionSupported({
-					surface: "workflow",
-					model: opus.id,
-					effort: "xhigh",
-					runtimeVendor: "claude",
-				})
-			);
-		};
-		if (degradation && !validDegradationProposal())
-			return { ok: false, reason: "model_arm_degradation_invalid" };
-		const proposedDegradationApplied = currentDegradationEvidence();
 		const selectedDispatch = wakeRuntime
 			? {
 					vendor: wakeRuntime.vendor as "claude" | "codex",
@@ -47073,27 +47038,13 @@ export class StateStore {
 							}
 						: {}),
 				}
-			: proposedDegradationApplied
-				? (input.dispatchResolution?.dispatch ?? node.dispatch)
-				: (degradation?.assignedDispatch ??
-					input.dispatchResolution?.dispatch ??
-					node.dispatch);
+			: (input.dispatchResolution?.dispatch ?? node.dispatch);
 		const resolvedDispatch = {
 			...selectedDispatch,
 			model:
 				getModelConfigSnapshot().getModelRegistryEntry(selectedDispatch.model)
 					?.id ?? selectedDispatch.model,
 		};
-		const degradationAssignment =
-			inheritedDegradation?.assignment ??
-			(proposedDegradationApplied
-				? input.dispatchResolution?.modelAssignment
-				: undefined);
-		if (
-			(proposedDegradationApplied || inheritedDegradation) &&
-			!degradationAssignment
-		)
-			return { ok: false, reason: "model_arm_degradation_invalid" };
 		if (
 			node.capabilities.qa_verdict_emitter &&
 			node.capabilities.produces_output
@@ -47255,19 +47206,9 @@ export class StateStore {
 		}
 
 		let quotaRefused = false;
-		let degradationStale = false;
-		let degradationInvalid = false;
 		let outputCredential: string | undefined;
 		let submissionCredential: string | undefined;
 		this.db.transaction(() => {
-			if (proposedDegradationApplied && !validDegradationProposal()) {
-				degradationInvalid = true;
-				return;
-			}
-			if (proposedDegradationApplied && !currentDegradationEvidence()) {
-				degradationStale = true;
-				return;
-			}
 			if(quotaPaused()) {quotaRefused=true;return;}
 			this.appendWorkflowEngineParkEventTx({
 				eventId: `engine-park-clear:${activationId}`,
@@ -47362,10 +47303,12 @@ export class StateStore {
 					);
 				}
 			}
-			const degradationEventUid = degradationAssignment
+			// FLY-2891: new admissions never degrade; only a wake of an execution that
+			// was degraded before the removal re-records its inherited receipt.
+			const degradationEventUid = inheritedDegradation
 				? `model_arm_degraded:${input.runId}:${input.nodeId}:${activationId}`
 				: undefined;
-			if (degradationAssignment) {
+			if (inheritedDegradation) {
 				this.appendWorkflowRunEventCheckedTx({
 					runId: input.runId,
 					eventUid: degradationEventUid!,
@@ -47378,25 +47321,17 @@ export class StateStore {
 						nodeId: input.nodeId,
 						activationId,
 						assignmentEventUid: `model_arm_assigned:${input.runId}:${input.nodeId}`,
-						arm: degradationAssignment.arm,
+						arm: inheritedDegradation.assignment.arm,
 						degraded: true,
-						assignedModel: degradationAssignment.model,
+						assignedModel: inheritedDegradation.assignment.model,
 						actualModel: resolvedDispatch.model,
 						reason: "codex_pool_exhausted",
 						degradedAt: now,
-						quotaEvidence:
-							inheritedDegradation?.quotaEvidence ??
-							degradation!.quotaEvidence,
-						assignedEffort:
-							inheritedDegradation?.assignedEffort ??
-							degradation?.assignedDispatch.effort,
+						quotaEvidence: inheritedDegradation.quotaEvidence,
+						assignedEffort: inheritedDegradation.assignedEffort,
 						actualEffort: resolvedDispatch.effort,
-						...(inheritedDegradation
-							? {
-									originalDegradationEventUid:
-										inheritedDegradation.originalDegradationEventUid,
-								}
-							: {}),
+						originalDegradationEventUid:
+							inheritedDegradation.originalDegradationEventUid,
 					},
 				});
 			}
@@ -47649,10 +47584,6 @@ export class StateStore {
 				);
 			}
 		});
-		if (degradationInvalid)
-			return { ok: false, reason: "model_arm_degradation_invalid" };
-		if (degradationStale)
-			return { ok: false, reason: "model_arm_degradation_stale" };
 		if(quotaRefused) return {ok:false,reason:"codex_quota_paused"};
 		this.save();
 		return {
@@ -89265,8 +89196,6 @@ export type GeneralizedWorkflowAdmissionResult =
 			ok: false;
 			reason:
 				| "codex_quota_paused"
-				| "model_arm_degradation_stale"
-				| "model_arm_degradation_invalid"
 				| "wake_runtime_invalid"
 				| "wake_degradation_invalid"
 				| "invalid_expiry"

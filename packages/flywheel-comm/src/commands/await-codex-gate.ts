@@ -22,12 +22,23 @@
  *     "reviewType": "design" | "code",
  *     "status": "APPROVED",
  *     "reviewedTarget": "<plan-path-or-pr-url>",
- *     "requestId": "<Bridge design manifest request id>",
- *     "reviewedPlanBlobSha": "<committed plan blob sha>",
+ *     "requestId": "<Bridge design manifest request id>",      (design)
+ *     "reviewedPlanBlobSha": "<committed plan blob sha>",      (design)
+ *     "reviewedHeadSha": "<reviewed commit, 40-hex>",          (code)
  *     "timestamp": "<ISO-8601>",
- *     "rounds": <integer>,
- *     "codexThreadId": "<string>"
+ *     "rounds": <total rounds across all threads, 1..200>,
+ *     "finalRound": <APPROVED round's number within its thread>,
+ *     "codexThreadId": "<thread of the APPROVED round>",
+ *     "codexTurnId": "<turn of the APPROVED round>",
+ *     "reviewerModel": "<model that turn ran>",
+ *     "reviewerEffort": "<effort that turn ran>"
  *   }
+ *
+ * FLY-2891: the last five fields come from the `flywheel-comm review-round`
+ * receipt of the APPROVED round. The gate re-reads that exact turn from the
+ * Codex rollout (declared model must equal what ran), then requires the Bridge
+ * to confirm the model matches the route's required reviewer model
+ * (`reviewerModelChecked: true`) for BOTH review types.
  *
  * Skip schema (written by Bridge when codex-skip label present):
  *
@@ -41,8 +52,14 @@
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { resolve as resolvePath } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
+import {
+	CODEX_ID_RE,
+	readCodexTurnEvidence,
+	resolveCodexHome,
+} from "../codex-rollout.js";
 import { emitCodexReviewResult } from "./codex-review-result.js";
+import { deliverReviewRecord } from "./review-round.js";
 
 const VALID_REVIEW_TYPES = new Set(["design", "code"]);
 const FULL_SHA_RE = /^[0-9a-f]{40}$/;
@@ -79,6 +96,28 @@ interface ResultPayload {
 	timestamp?: unknown;
 	rounds?: unknown;
 	codexThreadId?: unknown;
+	/** FLY-2891: the APPROVED round's Codex turn and the model it ran. */
+	codexTurnId?: unknown;
+	finalRound?: unknown;
+	reviewerModel?: unknown;
+	reviewerEffort?: unknown;
+}
+
+const SCHEMA_HINT =
+	"rewrite the result per the Bridge instruction schema using the APPROVED round's `flywheel-comm review-round` receipt";
+
+function isRoundCount(value: unknown): value is number {
+	return (
+		Number.isSafeInteger(value) &&
+		(value as number) >= 1 &&
+		(value as number) <= 200
+	);
+}
+
+function nonEmpty(value: unknown, max = 128): value is string {
+	return (
+		typeof value === "string" && value.trim() !== "" && value.length <= max
+	);
 }
 
 /** Current git HEAD (40-hex, lower-case), or undefined if not resolvable. */
@@ -215,6 +254,44 @@ function validateResult(
 			return `reviewedHeadSha ${reviewedHead.slice(0, 8)} != current HEAD ${head.slice(0, 8)} — the PR moved since Codex reviewed; re-run /codex-code-review for the new head`;
 		}
 	}
+	// FLY-2891: bind the approval to one Codex turn and the model it ran.
+	for (const field of ["reviewerModel", "reviewerEffort"] as const) {
+		if (!nonEmpty(payload[field]))
+			return `${opts.reviewType} review result missing/invalid ${field} — ${SCHEMA_HINT}`;
+	}
+	for (const field of ["codexThreadId", "codexTurnId"] as const) {
+		const value = payload[field];
+		if (typeof value !== "string" || !CODEX_ID_RE.test(value))
+			return `${opts.reviewType} review result missing/invalid ${field} — ${SCHEMA_HINT}`;
+	}
+	for (const field of ["finalRound", "rounds"] as const) {
+		if (!isRoundCount(payload[field]))
+			return `${opts.reviewType} review result missing/invalid ${field} (integer 1..200) — ${SCHEMA_HINT}`;
+	}
+	if ((payload.finalRound as number) > (payload.rounds as number))
+		return `finalRound ${String(payload.finalRound)} exceeds rounds ${String(payload.rounds)} — ${SCHEMA_HINT}`;
+	return null;
+}
+
+/**
+ * FLY-2891: the declared reviewer model must be what the named Codex turn
+ * actually ran. Never falls back to "the thread's last turn".
+ */
+function verifyReviewerTurn(
+	opts: AwaitCodexGateOpts,
+	payload: ResultPayload,
+): string | null {
+	const env = opts.env ?? process.env;
+	const threadId = payload.codexThreadId as string;
+	const turnId = payload.codexTurnId as string;
+	const evidence = readCodexTurnEvidence({ threadId, turnId, env });
+	if (!evidence.ok) {
+		const home = resolveCodexHome(env);
+		return `cannot verify reviewer model for Codex turn ${turnId} (thread ${threadId}) under ${join(home, "{sessions,archived_sessions}")} (${evidence.reason}) — run the gate with the same CODEX_HOME as the review`;
+	}
+	const { model, effort } = evidence.evidence;
+	if (model !== payload.reviewerModel || effort !== payload.reviewerEffort)
+		return `result declares ${String(payload.reviewerModel)}/${String(payload.reviewerEffort)} but Codex turn ${turnId} ran ${model}/${effort} — rewrite the result from the review-round receipt`;
 	return null;
 }
 
@@ -254,7 +331,8 @@ function readResult(
 			error: `failed to parse ${path}: ${(err as Error).message}`,
 		};
 	}
-	const error = validateResult(opts, parsed);
+	const error =
+		validateResult(opts, parsed) ?? verifyReviewerTurn(opts, parsed);
 	if (error) {
 		return { ok: false, fatal: true, error };
 	}
@@ -263,23 +341,51 @@ function readResult(
 
 /**
  * FLY-1718 P3: Bridge is the sole authority for design path/blob freshness.
- * The client sends only its already-local-validated result projection and
- * fails closed on missing credentials, transport errors, old servers, or a
- * denial. Response data can explain a denial but can never supply authority.
+ * FLY-2891: for BOTH review types the Bridge also compares the verified
+ * reviewer model with the route's required model. The client sends only its
+ * already-local-validated result projection and fails closed on missing
+ * credentials, transport errors, old servers (no `reviewerModelChecked`), or
+ * a denial. Response data can explain a denial but never supplies authority.
  */
-async function validateDesignProjectionWithBridge(
+async function validateProjectionWithBridge(
 	opts: AwaitCodexGateOpts,
 	payload: ResultPayload,
 ): Promise<string | null> {
-	if (opts.reviewType !== "design") {
-		return null;
-	}
 	const env = opts.env ?? process.env;
 	const bridgeUrl = env.FLYWHEEL_BRIDGE_URL?.trim().replace(/\/+$/, "");
 	const ingestToken = env.FLYWHEEL_INGEST_TOKEN?.trim();
 	if (!bridgeUrl || !ingestToken) {
-		return `FLYWHEEL_BRIDGE_URL and FLYWHEEL_INGEST_TOKEN are required for design review validation`;
+		return `FLYWHEEL_BRIDGE_URL and FLYWHEEL_INGEST_TOKEN are required for ${opts.reviewType} review validation`;
 	}
+	const modelProjection = {
+		reviewerModel: payload.reviewerModel,
+		reviewerEffort: payload.reviewerEffort,
+		codexThreadId: payload.codexThreadId,
+		codexTurnId: payload.codexTurnId,
+	};
+	const [path, body] =
+		opts.reviewType === "design"
+			? [
+					"design-review-validation",
+					{
+						executionId: payload.executionId,
+						reviewType: payload.reviewType,
+						status: payload.status,
+						reviewedTarget: payload.reviewedTarget,
+						requestId: payload.requestId,
+						reviewedPlanBlobSha: payload.reviewedPlanBlobSha,
+						...modelProjection,
+					},
+				]
+			: [
+					"code-review-validation",
+					{
+						executionId: payload.executionId,
+						reviewType: payload.reviewType,
+						reviewedHeadSha: String(payload.reviewedHeadSha).toLowerCase(),
+						...modelProjection,
+					},
+				];
 
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), 20_000);
@@ -287,42 +393,88 @@ async function validateDesignProjectionWithBridge(
 	let response: Response;
 	try {
 		response = await (opts.fetchImpl ?? globalThis.fetch)(
-			`${bridgeUrl}/design-review-validation`,
+			`${bridgeUrl}/${path}`,
 			{
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
 					Authorization: `Bearer ${ingestToken}`,
 				},
-				body: JSON.stringify({
-					executionId: payload.executionId,
-					reviewType: payload.reviewType,
-					status: payload.status,
-					reviewedTarget: payload.reviewedTarget,
-					requestId: payload.requestId,
-					reviewedPlanBlobSha: payload.reviewedPlanBlobSha,
-				}),
+				body: JSON.stringify(body),
 				signal: controller.signal,
 			},
 		);
 	} catch (error) {
-		return `Bridge design review validation failed: ${error instanceof Error ? error.message : String(error)}`;
+		return `Bridge ${opts.reviewType} review validation failed: ${error instanceof Error ? error.message : String(error)}`;
 	} finally {
 		clearTimeout(timeout);
 	}
 
-	let body: Record<string, unknown> | undefined;
+	let parsed: Record<string, unknown> | undefined;
 	try {
-		body = (await response.json()) as Record<string, unknown>;
+		parsed = (await response.json()) as Record<string, unknown>;
 	} catch {
-		return `Bridge design review validation returned HTTP ${response.status} with an invalid response`;
+		return `Bridge ${opts.reviewType} review validation returned HTTP ${response.status} with an invalid response`;
 	}
-	if (response.ok && body.allowed === true) return null;
+	if (response.ok && parsed.allowed === true) {
+		if (parsed.reviewerModelChecked === true) return null;
+		return `Bridge did not confirm reviewer-model validation (Bridge not upgraded?) — ${opts.reviewType} review not accepted`;
+	}
 	const reason =
-		typeof body.reason === "string" && body.reason.trim()
-			? body.reason.trim()
+		typeof parsed.reason === "string" && parsed.reason.trim()
+			? parsed.reason.trim()
 			: `HTTP ${response.status}`;
-	return `Bridge denied design review: ${reason}`;
+	return `Bridge denied ${opts.reviewType} review: ${reason}`;
+}
+
+/**
+ * FLY-2891: record the gate's acceptance of the final round (one row per
+ * accepted turn). Every field comes from the already-validated result JSON
+ * and the verified turn, never from the current worktree. Best-effort: a
+ * failed write-back is spooled for the Bridge and never changes the verdict.
+ */
+async function recordGateAcceptance(
+	opts: AwaitCodexGateOpts,
+	payload: ResultPayload,
+): Promise<void> {
+	const env = opts.env ?? process.env;
+	const projectName = env.FLYWHEEL_PROJECT_NAME?.trim();
+	const body: Record<string, unknown> = {
+		kind: "gate_acceptance",
+		executionId: opts.execId,
+		reviewType: opts.reviewType,
+		codexThreadId: payload.codexThreadId,
+		codexTurnId: payload.codexTurnId,
+		finalRound: payload.finalRound,
+		roundsTotal: payload.rounds,
+		observedModel: payload.reviewerModel,
+		observedEffort: payload.reviewerEffort,
+		...(opts.reviewType === "design"
+			? {
+					requestId: payload.requestId,
+					reviewedPlanBlobSha: String(
+						payload.reviewedPlanBlobSha,
+					).toLowerCase(),
+				}
+			: { reviewedHeadSha: String(payload.reviewedHeadSha).toLowerCase() }),
+		reviewedTarget: payload.reviewedTarget,
+		acceptedAt: payload.timestamp,
+		...(projectName ? { projectName } : {}),
+	};
+	try {
+		const delivery = await deliverReviewRecord(body, {
+			env,
+			fetchImpl: opts.fetchImpl,
+		});
+		if (delivery.status === "spooled")
+			console.log(
+				"[await-codex-gate] WARN gate acceptance not delivered — queued for Bridge pickup",
+			);
+	} catch (error) {
+		console.error(
+			`[await-codex-gate] gate acceptance write-back failed: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
 }
 
 /**
@@ -363,6 +515,16 @@ async function reportCodeApproval(opts: AwaitCodexGateOpts): Promise<void> {
 		codexThreadId:
 			typeof payload.codexThreadId === "string"
 				? payload.codexThreadId
+				: undefined,
+		codexTurnId:
+			typeof payload.codexTurnId === "string" ? payload.codexTurnId : undefined,
+		reviewerModel:
+			typeof payload.reviewerModel === "string"
+				? payload.reviewerModel
+				: undefined,
+		reviewerEffort:
+			typeof payload.reviewerEffort === "string"
+				? payload.reviewerEffort
 				: undefined,
 	});
 }
@@ -411,7 +573,7 @@ export async function awaitCodexGate(opts: AwaitCodexGateOpts): Promise<void> {
 
 		const result = readResult(opts);
 		if (result.ok) {
-			const bridgeError = await validateDesignProjectionWithBridge(
+			const bridgeError = await validateProjectionWithBridge(
 				opts,
 				result.payload,
 			);
@@ -420,8 +582,10 @@ export async function awaitCodexGate(opts: AwaitCodexGateOpts): Promise<void> {
 				process.exit(1);
 			}
 			console.log(
-				`[await-codex-gate] ${opts.reviewType} review APPROVED for exec=${opts.execId}`,
+				`[await-codex-gate] ${opts.reviewType} review APPROVED for exec=${opts.execId} (reviewer ${String(result.payload.reviewerModel)}/${String(result.payload.reviewerEffort)}, turn ${String(result.payload.codexTurnId)})`,
 			);
+			// FLY-2891: durable acceptance record (best-effort, spooled on failure).
+			await recordGateAcceptance(opts, result.payload);
 			// FLY-827: report the code-review verdict to the Bridge (best-effort; a
 			// delivery failure never fails the local gate).
 			await reportCodeApproval(opts);
