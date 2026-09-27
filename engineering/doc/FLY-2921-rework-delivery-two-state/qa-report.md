@@ -54,7 +54,7 @@ changed-file related 或下列显式文件验证。
 
 ### FLY-2921 显式文件（一文件一命令）
 
-- teamlead：416/416
+- teamlead：440/440（FLY-2921 行为 416；兼容消费者 24）
   - `fly2921-undeliverable-rework-owned` 5/5
   - `fly2921-resident-rewake` 5/5
   - `fly2921-rework-completion-head` 13/13
@@ -66,38 +66,45 @@ changed-file related 或下列显式文件验证。
   - `workflow-rework.e2e` 9/9
   - `fly2921-event-route-rework-evidence` 10/10
   - `fly2921-resident-wake-fence` 6/6
-- flywheel-comm：166/166
+- 兼容消费者：`workflow-engine-dispatcher.fly2531-legacy-staged-cancel` 17/17、
+  `fly2567-compatibility-matrix` 2/2、`StateStore.fly2567-contract` 5/5
+- flywheel-comm：167/167
   - acceptance：`complete` 78/78、delivery reroute 8/8、turn-wake rearm 9/9
-  - related-run failure isolation：runner-stop race 5/5、qa-result lock 5/5、CLI 61/61
-- scripts：`qa-generalized-e2e-lib` 55/55；`qa-fly-2456-rework-adopt` 51/51；
-  `fly1674-residue.test.sh` 89 assertions PASS。
+  - related-run failure isolation：runner-stop race 5/5、qa-result lock 5/5、CLI 62/62
+- scripts：205 个测试/断言全部通过：retention consumer gate 10/10、
+  `qa-generalized-e2e-lib` 55/55、`qa-fly-2456-rework-adopt` 51/51、
+  `fly1674-residue.test.sh` 89 assertions PASS；实际 retention gate 对当前配置返回 `ok:true`。
 
 ### Changed-TypeScript related
 
-- teamlead related：652 files，9462 passed，4 skipped，0 failed。
-- flywheel-comm related：1239 passed / 4 failed under three-package concurrent load；三个失败文件
-  随后逐文件隔离为 71/71 green（race 5、qa-result lock 5、CLI 61）。
-- config related：326 passed / 3 failed；两个 `fly1981-final-ledgers` timeout 隔离为 12/12 green。
-  剩余 deterministic failure 是 `feature-flags-registry.test.ts` 的旧硬编码 `36`，本分支实际 38；
-  当前 main 已由 FLY-2934 删除该断言。它不覆盖 FLY-2921 行为，且 PR merge-ref 的完整 CI 已绿。
+- teamlead related：663 files；656 files / 9658 tests passed，7 files / 27 tests failed，5 skipped，
+  另有一次 worker RPC timeout。该本机相关图扩张到 9690 tests、运行约 99 分钟；失败集中于
+  5 秒超时和本 sandbox 的 `spawnSync ps EPERM`。逐文件隔离复验中，
+  `StateStore.workflow-ship-ready` 10/10、`flag-routes` 36/36、`fly2478-resident-release` 31/31、
+  `codex-quota-route` 5/5、`epic-residual-plugin-wiring` 3/3、
+  `StateStore.fly2341-terminal-archive` 27/27 均 green（合计 112/112）。
+  `lead-activity-service.real-tmux` 仍在调用 `ps` 时被 sandbox 以 `EPERM` 拒绝，测试体未执行；
+  这是环境边界，未作为产品通过证据。相同 head 的远端完整 CI 全绿。
+- flywheel-comm related：81 files，1245/1245 passed。
+- config related：18 files，329/329 passed。
 
 ### 静态门、构建与类型
 
 - `pnpm lint`：exit 0；25 warnings，均为未改动的仓库现存告警。
 - `pnpm --filter "flywheel-teamlead..." build`：13 个相关包 exit 0。
-- teamlead `tsc --noEmit`：green。
-- dependent typecheck：teamlead green，随后 `voice-codex` 因现存的
-  `flywheel-voice-bridge` declarations 缺失与同文件 strictness errors 退出 2；该包/文件不在 diff。
-- `git diff --check` 的唯一提示是 plan.md 的既有 EOF 空行，不是本轮产品改动。
+- dependent typecheck：`pnpm --filter "...flywheel-comm" --filter "...flywheel-config" typecheck`
+  全部 green。
+- 本报告提交前再次执行 `git diff --check`。
 
 ## 评审与 CI
 
-- R7 对产品 head `6a20c5bf5` 做了完整 cross-family re-review，结论 APPROVED；之后到
-  `1e548a316` 只有 review/milestone 文档。
-- PR #1364 的 exact product-head full CI run `36270893053` 为 `CI OK`，所有 quick gate、
-  teamlead/unit/script/payload jobs 成功。
-- 本 QA 报告与 progress ledger 会形成新的 docs-only PR head。正式 PASS 前必须在该不变 head 上
-  再运行 `ci-full ensure` 并取得 exit 0；旧 CI 只作历史证据，不替代最终硬门。
+- R8 对合并 main、解决唯一夹具冲突后的产品 head 做了完整 cross-family re-review，结论
+  APPROVED，0 findings。
+- PR #1364 的 exact product-head `e9a72127f146ecde109fb002091b9df844f050e1` full CI run
+  `36287077917` 为 `full_green`，所有 quick gate、teamlead/unit/script/payload jobs 成功：
+  https://github.com/xrliAnnie/flywheel/actions/runs/36287077917
+- 本 QA 报告会形成新的 docs-only PR head。正式 PASS 前必须在该不变 head 上再运行
+  `ci-full ensure` 并取得 exit 0；上述 CI 只作报告提交前的产品证据，不替代最终硬门。
 
 ## 529 硬门与诚实边界
 
