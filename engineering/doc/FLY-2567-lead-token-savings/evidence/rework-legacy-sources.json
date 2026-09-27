@@ -42,8 +42,8 @@
     {
       "path": "packages/teamlead/lead-rules-base/department-lead-rules.md",
       "revision": "41947cec9e157d9be5faf0eae8260bc3272d2def",
-      "bytes": 42534,
-      "sha256": "4d0e1216ec71b50c2e4999f4597dccdbb37171ac72f7c3052818029cb8a822df"
+      "bytes": 42040,
+      "sha256": "c640932bb09ef9c61927919cefff89a6ef76f7ff592cad4765e22c7655e1d679"
     },
     {
       "path": "packages/teamlead/lead-rules-base/runner-messaging-rules.md",
@@ -108,5 +108,11 @@
     "beforeSourceSha256": "bcee374943e5807eff632cc23786667cf630e7c6628b0145109a5226e4c32dd9",
     "afterSourceSha256": "2a634cb185ed9d909e74a877d778c46e29d407432ed6907e92ef9539cde00511",
     "meaning": "The historical patrol procedure retires only the FLY-2080 appendix A receipt-deadlock and appendix B replacement-ledger manual SQL recipes, replaced by the FLY-2921 hold-resume note shared with the current runbook; the shared repair plumbing and the engine_predecessor_unavailable branch are preserved."
+  },
+  "unifiedNodeRecoveryEvolution": {
+    "issue": "FLY-2922",
+    "beforeSourceSha256": "4d0e1216ec71b50c2e4999f4597dccdbb37171ac72f7c3052818029cb8a822df",
+    "afterSourceSha256": "c640932bb09ef9c61927919cefff89a6ef76f7ff592cad4765e22c7655e1d679",
+    "meaning": "The historical department rules adopt the same execution-scoped close, completion-receipt, and explicit run-termination contract as the current rules."
   }
 }

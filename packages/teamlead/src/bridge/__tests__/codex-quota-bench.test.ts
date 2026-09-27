@@ -418,6 +418,25 @@ async function fixture(
 				env: process.env,
 			}),
 		).toMatchObject({ ok: true });
+		store.applyWorkflowLedgerBatch({
+			projectName: "QuotaBench",
+			issueId,
+			ops: [
+				{
+					op: "dispatch",
+					node: "execute",
+					attempt: 1,
+					executionId,
+				},
+				{
+					op: "side_effect",
+					node: "execute",
+					attempt: 1,
+					executionId,
+					to: "started",
+				},
+			],
+		});
 		store.upsertSession({
 			execution_id: executionId,
 			issue_id: issueId,

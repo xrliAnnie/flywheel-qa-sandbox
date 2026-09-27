@@ -64710,7 +64710,6 @@ export class StateStore {
 			reason: "rollback_not_committed",
 		};
 		this.db.transaction(() => {
-
 			const eventUid = `dead_rollback:${input.runId}:${input.nodeId}:${input.attempt}:${input.deadExecutionId}`;
 			const prior = this.workflowSelectAll(
 				"SELECT kind, payload FROM workflow_run_event WHERE event_uid = ?",
@@ -64807,7 +64806,12 @@ export class StateStore {
 			}
 			const run = this.getWorkflowRun(input.runId);
 			if (!run || run.engine_owned !== 1 || run.status !== "active") {
-				result = { ok: false, reason: "engine_run_not_active" };
+				result = {
+					ok: false,
+					reason: this.codexQuota.isExecutionPaused(input.deadExecutionId)
+						? "codex_quota_paused"
+						: "engine_run_not_active",
+				};
 				return;
 			}
 			const enqueueAlert = (
