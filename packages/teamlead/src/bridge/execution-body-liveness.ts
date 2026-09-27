@@ -28,6 +28,10 @@ export interface ExecutionBodyObserverOptions {
 	now?: () => number;
 	sample?: typeof captureExecutionProcessSample;
 }
+export interface ExecutionBodySampleControl {
+	signal?: AbortSignal;
+	deadlineMs?: number;
+}
 type Snapshot = {
 	input: ExecutionProcessObservationInput;
 	key: string;
@@ -50,7 +54,10 @@ export function createExecutionBodyObserver(
 	options: ExecutionBodyObserverOptions,
 ) {
 	const now = options.now ?? Date.now;
-	const inflight = new Map<string, Promise<BodyObservation>>();
+	const inflight = new Map<
+		string,
+		{ pending: Promise<BodyObservation>; cancel: AbortController }
+	>();
 	function enabled(): boolean {
 		try {
 			return options.isEnabled() === true;
@@ -129,7 +136,12 @@ export function createExecutionBodyObserver(
 			reason,
 		};
 	}
-	async function capture(initial: Snapshot): Promise<BodyObservation> {
+	async function capture(
+		initial: Snapshot,
+		control: ExecutionBodySampleControl,
+	): Promise<BodyObservation> {
+		if (control.signal?.aborted)
+			return unknown(initial, "process_sampling_cancelled");
 		if (!enabled())
 			return unknown(initial, "body_death_authorization_disabled");
 		if (!initial.input.binding)
@@ -137,8 +149,10 @@ export function createExecutionBodyObserver(
 		try {
 			const sample = await (options.sample ?? captureExecutionProcessSample)(
 				initial.input.binding,
-				{ executionId: initial.input.identity.executionId, deadlineMs: 5_000 },
+				{ executionId: initial.input.identity.executionId, ...control },
 			);
+			if (control.signal?.aborted)
+				return unknown(initial, "process_sampling_cancelled");
 			if (!enabled())
 				return unknown(initial, "body_death_authorization_disabled");
 			const current = snapshot(initial.input.identity.executionId);
@@ -150,20 +164,47 @@ export function createExecutionBodyObserver(
 				nowMs: now(),
 			});
 		} catch {
-			return unknown(initial, "process_evidence_unavailable");
+			return unknown(
+				initial,
+				control.signal?.aborted
+					? "process_sampling_cancelled"
+					: "process_evidence_unavailable",
+			);
 		}
 	}
 	return {
-		observe(executionId: string): Promise<BodyObservation | undefined> {
+		observe(
+			executionId: string,
+			control: ExecutionBodySampleControl = {},
+		): Promise<BodyObservation | undefined> {
 			const initial = snapshot(executionId);
 			if (!initial) return Promise.resolve(undefined);
-			const existing = inflight.get(initial.key);
-			if (existing) return existing;
-			const pending = capture(initial).finally(() => {
-				if (inflight.get(initial.key) === pending) inflight.delete(initial.key);
+			const budget = Math.min(5_000, control.deadlineMs ?? 5_000);
+			if (control.signal?.aborted || !Number.isFinite(budget) || budget <= 0)
+				return Promise.resolve(unknown(initial, "process_sampling_cancelled"));
+			let entry = inflight.get(initial.key);
+			if (!entry) {
+				const cancel = new AbortController();
+				const pending = capture(initial, {
+					signal: cancel.signal,
+					deadlineMs: budget,
+				}).finally(() => {
+					if (inflight.get(initial.key)?.pending === pending)
+						inflight.delete(initial.key);
+				});
+				entry = { pending, cancel };
+				inflight.set(initial.key, entry);
+			}
+			// A cancelled coalesced sample is unknown for every consumer. Never
+			// return early: all subscribers wait for the shared OS children to drain.
+			const cancel = () => entry.cancel.abort();
+			control.signal?.addEventListener("abort", cancel, { once: true });
+			const timeout = setTimeout(cancel, budget);
+			if (control.signal?.aborted) cancel();
+			return entry.pending.finally(() => {
+				clearTimeout(timeout);
+				control.signal?.removeEventListener("abort", cancel);
 			});
-			inflight.set(initial.key, pending);
-			return pending;
 		},
 		isCurrent(observation: BodyObservation): boolean {
 			if (!enabled() || observation.verdict === "unknown") return false;

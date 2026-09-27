@@ -222,4 +222,59 @@ describe("FLY-2919 current execution body observations", () => {
 			).observe("exec-1"),
 		).toMatchObject({ verdict: "unknown" });
 	});
+	it("passes cancellation and the remaining budget into OS capture, waiting for drain", async () => {
+		const cancel = new AbortController();
+		let release!: () => void;
+		let observedSignal: AbortSignal | undefined;
+		const capture = vi.fn(async (_binding: unknown, control: any) => {
+			observedSignal = control.signal;
+			await new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			return sample;
+		});
+		const probe = observer(capture as never);
+		let settled = false;
+		const pending = probe
+			.observe("exec-1", { signal: cancel.signal, deadlineMs: 250 })
+			.then((result) => {
+				settled = true;
+				return result;
+			});
+		expect(capture.mock.calls[0][1].deadlineMs).toBe(250);
+		cancel.abort();
+		expect(observedSignal?.aborted).toBe(true);
+		await Promise.resolve();
+		expect(settled).toBe(false);
+		release();
+		expect(await pending).toMatchObject({
+			verdict: "unknown",
+			reason: "process_sampling_cancelled",
+		});
+	});
+	it("does not start a probe for an already cancelled request", async () => {
+		const cancel = new AbortController();
+		cancel.abort();
+		const capture = vi.fn(async () => sample);
+		expect(
+			await observer(capture).observe("exec-1", { signal: cancel.signal }),
+		).toMatchObject({ verdict: "unknown" });
+		expect(capture).not.toHaveBeenCalled();
+	});
+	it("a joining sampler can cancel the shared capture; all consumers get unknown after drain", async () => {
+		const cancel = new AbortController();
+		const capture = vi.fn(async (_binding: unknown, control: any) => {
+			await new Promise<void>((resolve) =>
+				control.signal.addEventListener("abort", resolve, { once: true }),
+			);
+			return sample;
+		});
+		const probe = observer(capture as never);
+		const first = probe.observe("exec-1");
+		const second = probe.observe("exec-1", { signal: cancel.signal });
+		expect(capture).toHaveBeenCalledTimes(1);
+		cancel.abort();
+		expect(await first).toMatchObject({ verdict: "unknown" });
+		expect(await second).toMatchObject({ verdict: "unknown" });
+	});
 });

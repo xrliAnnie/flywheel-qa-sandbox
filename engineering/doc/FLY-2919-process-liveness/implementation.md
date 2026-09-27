@@ -5,7 +5,7 @@ Issue: FLY-2919 (https://linear.app/geoforge3d/issue/FLY-2919/病根修复-2-体
 
 ## 当前范围与游标
 
-当前执行 `bd58c685-54d1-4ceb-9240-20611b35b895`，implement 0/6；最新精确提交与下一步以同目录 progress.md 为准。A1–A10、B1/B2/B3、C1/C2 与 D1 已有分批证据；B4 接入终态 Codex sweep。全部 A–F 与九单目标不变，生产 Heartbeat/dispatcher 死亡提交、独立 cadence、逻辑重入、legacy 与最终验收仍未完成。没有有效最终代码复审、PR、full CI、QA 或 handoff 声明。以下保留各次检查点历史，文末是最近批次。
+当前执行 `bd58c685-54d1-4ceb-9240-20611b35b895`，implement 0/6；最新精确提交与下一步以同目录 progress.md 为准。A1–A10、B1/B2/B3、C1/C2 与 D1 已有分批证据；B4 接入终态 Codex sweep，B5 完成独立采样核心但未接生产启动。全部 A–F 与九单目标不变，生产 Heartbeat/dispatcher 死亡提交、独立 cadence、逻辑重入、legacy 与最终验收仍未完成。没有有效最终代码复审、PR、full CI、QA 或 handoff 声明。以下保留各次检查点历史，文末是最近批次。
 
 ## 首次开工范围与游标（历史）
 
@@ -415,3 +415,19 @@ RED/GREEN：最初5项新增契约在旧路径全部 RED（24旧测pass），证
 B4 最后追加 unknown+诊断进程列表负控：1 RED/37 pass，移除该列表对生命 verdict 的覆盖后38 GREEN；进程列表只用于发现候选和诊断，unknown一律probe_unknown。该追加不改变公共接口或关停原语。
 
 B4 最终验证：9个明确文件逐一167pass，限定发现文件的 owning related 4文件111pass（含53项reown）；FLY-2211 inventory5项和FLY-1560守卫7项保留未弱化。最终源码teamlead及依赖build、teamlead/voice-codex typecheck、lint均exit0（25既有warning）；无整库/整包测试、新shell测试、真实OS探活或529声明。命令、全部红/绿及中间诊断、related配置和源码hash归档 implementation-b4-evidence.json.gz；逐查询匹配/排除理由归档 implementation-b4-consumers.json.gz。
+
+## B5 有界独立采样核心（执行 bd58c685）
+
+从 B4 `4a0bef3e4` 续接，TURN implement epoch14。审计确认 Heartbeat 的 declareZombie 仍用 pane/server 写 failed、reapOrphans 仍可按心跳超时强制 failed、parked 分流仍未删除；这些入口尚未修复。本批先完成批准计划 §4 的独立采样核心及现有 observer 的取消透传，尚未在 plugin 启动采样器，不能据此声称生产 cadence 或死亡收敛已接通。
+
+新增 execution-body-sampler：每轮最多开始8个候选、并发2、5秒采样窗口；独立5秒定时入口与立即按需 runPass，不依赖5分钟 heartbeat。相同轮次共享Promise。优先请求与稳定游标从第一对请求就交替，避免两条慢优先探针占满每轮导致普通候选永远采不到；游标只随实际启动的普通候选推进。dispatcher 将来可用同步 read，缺观测仅排队、不发起OS await；存储的是带原身份/期限的 BodyObservation，消费前再核 isCurrent 和10秒有效期，不延长寿命、不按未采样推断死亡。
+
+observer.observe 增加可选 signal/deadlineMs，保留原调用兼容；同身份采样仍只一份进行中Promise。任一共用请求取消时，该次共用采样对所有消费者都为unknown，所有订阅者等OS采样的子进程drain完成后才返回。已经取消的请求不启动探针，取消后即便底层返回dead也丢弃。stop取消并等待当前轮退出，清除排队和证据，支持后续重新start；未新增杀进程原语。
+
+RED/GREEN：采样器初始缺模块RED；取消透传新增测试在旧observer上2 RED/21 pass（250ms预算仍收到5000；已取消请求仍返回dead）。慢优先探针负控在第一版调度上1 RED/9 pass，三轮实际普通候选列表为空；交替后GREEN，实际依次exec-000/001/002。最终核心10项包含100候选遍历、每轮8/并发2、总窗取消与等待drain、同步read、持续优先请求公平性、过期/身份变化、取消后拒绝dead、单探针错误隔离、停止重启、独立cadence。observer原20项加3项取消契约。
+
+延迟边界：单轮在开始后5秒发取消，不在此之后启动新采样；返回必须再等待拥有的探针退出（测试刻意延迟20ms验证不假装已drain）。独立定时器每5秒触发，未drain时coalesce，不并发叠加轮次；因此慢探针的全量候选轮转延迟随库存规模及OS drain增长，不能宣称每具执行5秒必被观测。持续优先流量下每个至少能启动两个探针的完整轮次至少推进一个普通候选。生产库存选择、同轮可靠死亡提交以及真实负载/529延迟验收仍待接线，不从单测推出生产上界。
+
+下一批必须把 Heartbeat/dispatcher 接至 C2 的共同 StateStore+CommDB事务，先实现 Codex有效binding且复活预算未耗尽时reown优先；当前isRecoveryActive仅识别现有deferral，不能把它当完整预算判据。完成 marker 必须先对账，pane/server/心跳年龄不得再授权failed；保留死亡告警及崩溃后义务/告警重放。同物理generation新逻辑activation、legacy绑定、ordinary/rework结账和剩余直接窗口消费者仍未完成。全A–F/九单范围不变，A9 routes原15秒超时、有效review/PR/full CI/QA/handoff仍未完成。
+
+B5 最终验证：9个具体文件逐一最终147 pass；其中feature-flags-drift首跑13 pass/1项原5秒timeout，在其他检查结束后同一命令、同一期限重跑14 pass（断言757ms）。保留原失败日志，不更改守卫或超时。限定发现文件的owning related为4文件70 pass。最终teamlead及依赖build、teamlead/voice-codex typecheck、lint均exit0（25既有warning）；首次build发现新增索引的undefined类型未缩窄，已修复。FLY-1560/2211守卫保留。未跑整库/整包测试、无新shell测试、未验证真实OS或529。命令、红绿、首次失败/重试及源码hash归档implementation-b5-evidence.json.gz；匹配与排除理由归档implementation-b5-consumers.json.gz。
