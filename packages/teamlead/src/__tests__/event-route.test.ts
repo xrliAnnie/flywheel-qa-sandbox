@@ -3746,7 +3746,7 @@ describe("Event route — PM lead routed via chat_channel (FLY-163)", () => {
 		).toBe(true);
 	});
 
-	it("does not reawaken the Lead for a fresh routine stage carrying an inherited decision", async () => {
+	it("keeps an inherited decision immediate without an exact resolution receipt", async () => {
 		store.upsertSession({
 			execution_id: "exec-stale-decision",
 			issue_id: "issue-stale-decision",
@@ -3778,12 +3778,12 @@ describe("Event route — PM lead routed via chat_channel (FLY-163)", () => {
 					"SELECT delivery_disposition FROM lead_events WHERE event_id=?",
 				)
 				.get("routine-inherited-decision"),
-		).toEqual({ delivery_disposition: "audit_only" });
+		).toEqual({ delivery_disposition: "model" });
 		expect(
 			capturedEnvelopes.find(
 				(envelope) => envelope.eventId === "routine-inherited-decision",
 			),
-		).toBeUndefined();
+		).toBeDefined();
 	});
 
 	it("keeps persisted session_started immediate with savings enabled or disabled", async () => {

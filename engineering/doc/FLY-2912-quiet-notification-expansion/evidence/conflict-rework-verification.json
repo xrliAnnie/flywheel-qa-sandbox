@@ -1,0 +1,570 @@
+{
+  "issue": "FLY-2912",
+  "base": "f858696e717d0f3fa0ba0f14a466a51e597c5660",
+  "mergedMain": "b0da16c38b75beb8634dac7d24c52914c9f1e19f",
+  "scope": "Conflict-only merge; preserve FLY-2912 summary and FLY-2883 controlled interrupts. No notification rule change.",
+  "sourceBlobs": {
+    "packages/teamlead/src/bridge/lead-inbox-loop.ts": "8db78d5177706f40e8a33984ccfb8468ae19976e",
+    "packages/teamlead/src/bridge/lead-inbox-runtime.ts": "c0177a6fd0dd0014106297fd3728adbb345bfcb4",
+    "packages/teamlead/src/bridge/__tests__/lead-inbox-summary.fly2912.test.ts": "9ea949c3362cb1f1db2c35d1bb8a0462f94dbd5d",
+    "packages/teamlead/src/StateStore.ts": "4070f65fbd0922fc8e5654934796dc1d5134bd42",
+    "packages/teamlead/src/bridge/flag-store-runtime.ts": "32e9f1415d476d6fb342a7e77edda6fc517aad5a",
+    "packages/config/src/feature-flags/registry.ts": "977d4047f78aafa21d6a349871b0bc91342f93f7",
+    "packages/config/src/__tests__/feature-flags-registry.test.ts": "c20a486525a6fea0fb51935b8ee50d60383060ac",
+    "packages/config/src/__tests__/feature-flags-drift.test.ts": "a9687ff42e8a7a8293b45c73332cfd247d295bcd"
+  },
+  "explicit": [
+    {
+      "file": "packages/config/src/__tests__/drift-scan.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-config",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/drift-scan.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 9.18,
+      "summary": [
+        "Test Files  1 passed (1)",
+        "Tests  27 passed (27)"
+      ],
+      "log": "fly2912-merge-flywheel-config-drift-scan.test.ts.log",
+      "sha256": "748385ca30aefb5bbad8b55406b026b3c221180734c89a1e81cba2db91690bb7"
+    },
+    {
+      "file": "packages/config/src/__tests__/feature-flags-drift.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-config",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/feature-flags-drift.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 17.54,
+      "summary": [
+        "Test Files  1 passed (1)",
+        "Tests  14 passed (14)"
+      ],
+      "log": "fly2912-merge-flywheel-config-feature-flags-drift.test.ts.log",
+      "sha256": "1f0ca61206df0de72eaba182dc38606b144df215b76b3b640fee4006aa368895"
+    },
+    {
+      "file": "packages/config/src/__tests__/feature-flags-registry.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-config",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/feature-flags-registry.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 5.78,
+      "summary": [
+        "Test Files  1 passed (1)",
+        "Tests  57 passed (57)"
+      ],
+      "log": "fly2912-merge-flywheel-config-feature-flags-registry.test.ts.log",
+      "sha256": "b4267b7ee076bba233b478081733150ec59eab0a080f4159d617a2aa6d66c7c6"
+    },
+    {
+      "file": "packages/config/src/__tests__/feature-flags-store-policy.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-config",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/feature-flags-store-policy.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 6.57,
+      "summary": [
+        "Test Files  1 passed (1)",
+        "Tests  22 passed (22)"
+      ],
+      "log": "fly2912-merge-flywheel-config-feature-flags-store-policy.test.ts.log",
+      "sha256": "9736eb028aa5119492568651fdb793e8a14161b1cb03248c5c49179ab37e8130"
+    },
+    {
+      "file": "packages/flywheel-comm/src/__tests__/lead-audit-summary-receipt.fly2912.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-comm",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/lead-audit-summary-receipt.fly2912.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 15.34,
+      "summary": [
+        "Test Files  1 passed (1)",
+        "Tests  28 passed (28)"
+      ],
+      "log": "fly2912-merge-flywheel-comm-lead-audit-summary-receipt.fly2912.test.ts.log",
+      "sha256": "503603b092e5ce3b974dfeef6f4a6711d6a1fbe72e24ce15cd2cc90a3c2c8e2b"
+    },
+    {
+      "file": "packages/teamlead/src/__tests__/fly2139-query-plans.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/fly2139-query-plans.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 33.53,
+      "summary": [
+        "Test Files  1 passed (1)",
+        "Tests  2 passed (2)"
+      ],
+      "log": "fly2912-merge-flywheel-teamlead-fly2139-query-plans.test.ts.log",
+      "sha256": "d6453e0629a0b6f937c1ae30befc233d5edd1639ce94bf6f62ceb7c640325192"
+    },
+    {
+      "file": "packages/teamlead/src/__tests__/fly2912-evening-replay.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/fly2912-evening-replay.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 108.06,
+      "summary": [
+        "Test Files  1 passed (1)",
+        "Tests  2 passed (2)"
+      ],
+      "log": "fly2912-merge-flywheel-teamlead-fly2912-evening-replay.test.ts.log",
+      "sha256": "655c69e870a73e7ec9f9b34d3c8ee55810b5dabced3079701a13711068d7e318"
+    },
+    {
+      "file": "packages/teamlead/src/bridge/__tests__/alert-wake-dedup.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/alert-wake-dedup.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 33.21,
+      "summary": [
+        "Test Files  1 passed (1)",
+        "Tests  27 passed (27)"
+      ],
+      "log": "fly2912-merge-flywheel-teamlead-alert-wake-dedup.test.ts.log",
+      "sha256": "03d8f50295e18ddd6b9b493c835328a56836bbaed8d756fd71719626d60766e1"
+    },
+    {
+      "file": "packages/teamlead/src/bridge/__tests__/commdb-lifetime.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/commdb-lifetime.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 21.53,
+      "summary": [
+        "Test Files  1 passed (1)",
+        "Tests  4 passed (4)"
+      ],
+      "log": "fly2912-merge-flywheel-teamlead-commdb-lifetime.test.ts.log",
+      "sha256": "c380896289d0b6028d18a5a2cfbc9a28281d8eb3e5697748f68b11fd4f106416"
+    },
+    {
+      "file": "packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/flag-store-runtime.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 34.21,
+      "summary": [
+        "Test Files  1 passed (1)",
+        "Tests  48 passed (48)"
+      ],
+      "log": "fly2912-merge-flywheel-teamlead-flag-store-runtime.test.ts.log",
+      "sha256": "224be61c238c01606ce71460b7755aa0c4277be7873fe3ce282775f367366e81"
+    },
+    {
+      "file": "packages/teamlead/src/bridge/__tests__/infra-alert-wiring.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/infra-alert-wiring.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 33.81,
+      "summary": [
+        "Test Files  1 passed (1)",
+        "Tests  22 passed (22)"
+      ],
+      "log": "fly2912-merge-flywheel-teamlead-infra-alert-wiring.test.ts.log",
+      "sha256": "69ace3e4b0b5c39d085db5024a01324adffd9590b6902b04959eac6cbe121ef7"
+    },
+    {
+      "file": "packages/teamlead/src/bridge/__tests__/lead-audit-summary.fly2912.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/lead-audit-summary.fly2912.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 11.76,
+      "summary": [
+        "Test Files  1 passed (1)",
+        "Tests  6 passed (6)"
+      ],
+      "log": "fly2912-merge-flywheel-teamlead-lead-audit-summary.fly2912.test.ts.log",
+      "sha256": "f39a9feded4ff2fe99278d8794c3db6f240f0e05f89d25d19c89c4fb627d0604"
+    },
+    {
+      "file": "packages/teamlead/src/bridge/__tests__/lead-delivery-adapter.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/lead-delivery-adapter.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 7.74,
+      "summary": [
+        "Test Files  1 passed (1)",
+        "Tests  5 passed (5)"
+      ],
+      "log": "fly2912-merge-flywheel-teamlead-lead-delivery-adapter.test.ts.log",
+      "sha256": "f44ae0e6c53556e4a43f1873b2648209c1f47f6f3f66178f5e5559f403757626"
+    },
+    {
+      "file": "packages/teamlead/src/bridge/__tests__/lead-inbox-batch-ack.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/lead-inbox-batch-ack.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 14.27,
+      "summary": [
+        "Test Files  1 passed (1)",
+        "Tests  1 passed (1)"
+      ],
+      "log": "fly2912-merge-flywheel-teamlead-lead-inbox-batch-ack.test.ts.log",
+      "sha256": "5dd40f26d17665fd964ba6091e7a2ea1f857022899785eec191b7cd3c7751c40"
+    },
+    {
+      "file": "packages/teamlead/src/bridge/__tests__/lead-inbox-loop.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/lead-inbox-loop.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 15.95,
+      "summary": [
+        "Test Files  1 passed (1)",
+        "Tests  34 passed (34)"
+      ],
+      "log": "fly2912-merge-flywheel-teamlead-lead-inbox-loop.test.ts.log",
+      "sha256": "714143c7cfe85be836567dbbc558665e15e253a76a66367b15f99b5bfd6690d7"
+    },
+    {
+      "file": "packages/teamlead/src/bridge/__tests__/lead-inbox-runtime-summary.fly2912.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/lead-inbox-runtime-summary.fly2912.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 25.84,
+      "summary": [
+        "Test Files  1 passed (1)",
+        "Tests  1 passed (1)"
+      ],
+      "log": "fly2912-merge-flywheel-teamlead-lead-inbox-runtime-summary.fly2912.test.ts.log",
+      "sha256": "b7d2ee90ee050e7190d570f779438f8c6014e1ae5cbf5ad3774d3ad70122c826"
+    },
+    {
+      "file": "packages/teamlead/src/bridge/__tests__/lead-inbox-runtime.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/lead-inbox-runtime.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 36.58,
+      "summary": [
+        "Test Files  1 passed (1)",
+        "Tests  49 passed (49)"
+      ],
+      "log": "fly2912-merge-flywheel-teamlead-lead-inbox-runtime.test.ts.log",
+      "sha256": "94714278b9072b8b3de638d6991d88bd403a370e55fbb85fb86ceb8e61b7b464"
+    },
+    {
+      "file": "packages/teamlead/src/bridge/__tests__/lead-inbox-summary.fly2912.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/lead-inbox-summary.fly2912.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 10.12,
+      "summary": [
+        "Test Files  1 passed (1)",
+        "Tests  16 passed (16)"
+      ],
+      "log": "fly2912-merge-flywheel-teamlead-lead-inbox-summary.fly2912.test.ts.log",
+      "sha256": "58080ad9de05572ffae08f86f734d9de518f5e6b15cf3b202b2fa0198b52143a"
+    },
+    {
+      "file": "packages/teamlead/src/bridge/__tests__/lead-interrupt-delivery.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/lead-interrupt-delivery.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 35.99,
+      "summary": [
+        "Test Files  1 passed (1)",
+        "Tests  39 passed (39)"
+      ],
+      "log": "fly2912-merge-flywheel-teamlead-lead-interrupt-delivery.test.ts.log",
+      "sha256": "307a5f066f61de3188062215fe2380bcdacf7e537c5f180bcd20b2e6d254f834"
+    },
+    {
+      "file": "packages/teamlead/src/bridge/__tests__/lead-summary-retry.fly2912.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/lead-summary-retry.fly2912.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 7.61,
+      "summary": [
+        "Test Files  1 passed (1)",
+        "Tests  20 passed (20)"
+      ],
+      "log": "fly2912-merge-flywheel-teamlead-lead-summary-retry.fly2912.test.ts.log",
+      "sha256": "bf3167618789f9696359e63cd53ab2e7c744d132a556b91e9e0a73e2a685d551"
+    },
+    {
+      "file": "packages/teamlead/src/bridge/__tests__/question-admission.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/question-admission.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 17.0,
+      "summary": [
+        "Test Files  1 passed (1)",
+        "Tests  40 passed (40)"
+      ],
+      "log": "fly2912-merge-flywheel-teamlead-question-admission.test.ts.log",
+      "sha256": "f93ccb3ab0feeff7133654849b51ec4f2507b5f4173791ff33a5b9bd712f3af3"
+    }
+  ],
+  "explicitTotals": {
+    "files": 21,
+    "passed": 464
+  },
+  "explicitTestEnvironment": {
+    "unset": [
+      "TEAMLEAD_REPLY_BY_ISSUE_ENABLED",
+      "FLYWHEEL_ROUNDTABLE_CHANNEL_ID"
+    ]
+  },
+  "related": {
+    "command": [
+      "env",
+      "-u",
+      "TEAMLEAD_REPLY_BY_ISSUE_ENABLED",
+      "-u",
+      "FLYWHEEL_ROUNDTABLE_CHANNEL_ID",
+      "pnpm",
+      "--filter",
+      "flywheel-teamlead",
+      "exec",
+      "vitest",
+      "related",
+      "src/bridge/lead-inbox-loop.ts",
+      "src/bridge/lead-inbox-runtime.ts",
+      "src/bridge/__tests__/lead-inbox-summary.fly2912.test.ts",
+      "--run",
+      "--config",
+      "../../engineering/doc/FLY-2912-quiet-notification-expansion/evidence/conflict-rework-related.config.mjs",
+      "--no-file-parallelism"
+    ],
+    "exitCode": 0,
+    "candidateFiles": 16,
+    "uniqueCollectionVerified": true,
+    "actualFiles": 12,
+    "passed": 256,
+    "overlapsExplicit": true,
+    "log": "fly2912-merge-related.log",
+    "sha256": "fead4669f2ce72cfe04db99255ecaf253a421b779932f36919f5b77d00c21d29"
+  },
+  "checks": [
+    {
+      "command": [
+        "pnpm",
+        "install",
+        "--frozen-lockfile"
+      ],
+      "exitCode": 0,
+      "log": "fly2912-merge-install.log",
+      "sha256": "2c9f23888338a00e353656b5d1c99f704d496072a958d9db35675eadaf06475f"
+    },
+    {
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead^...",
+        "build"
+      ],
+      "exitCode": 0,
+      "log": "fly2912-merge-deps-build.log",
+      "sha256": "abeac9f59f31b9b616f6f42c8520700f5265e50c69103efc5f5fc6cf6f27c284"
+    },
+    {
+      "command": [
+        "pnpm",
+        "lint"
+      ],
+      "exitCode": 0,
+      "log": "fly2912-merge-lint-final.log",
+      "sha256": "329968357d130bc4c647ac89b06a79cf643e93ed63309ca7978e1a27a5cda649"
+    },
+    {
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead...",
+        "build"
+      ],
+      "exitCode": 0,
+      "log": "fly2912-merge-build.log",
+      "sha256": "c420773be5db549261e98e7998b002da4240823f8edf1a2ef0bed7a6fb4a32f3"
+    },
+    {
+      "command": [
+        "pnpm",
+        "--filter",
+        "...flywheel-teamlead",
+        "typecheck"
+      ],
+      "exitCode": 0,
+      "log": "fly2912-merge-typecheck.log",
+      "sha256": "a4a7b641d6563d2bce7376ac1c5956c505d97465bf029950a36ff2f08805a5e4"
+    }
+  ],
+  "negativeControl": {
+    "log": "fly2912-merge-seam-red.log",
+    "exitCode": 1,
+    "result": "main-only conflict resolution: 2 interrupt summary cases fail on missing summary; dead/hold pass; 12 unrelated cases skipped"
+  },
+  "testCorrection": {
+    "log": "fly2912-merge-seam-green.log",
+    "exitCode": 1,
+    "result": "Corrected new assertion from delivered_at to notified_at, per existing Lead mailbox contract. No product fix for this assertion."
+  },
+  "seamFinal": {
+    "log": "fly2912-merge-seam-green-final.log",
+    "exitCode": 0,
+    "passed": 16
+  },
+  "formatCorrection": {
+    "log": "fly2912-merge-lint.log",
+    "exitCode": 1,
+    "result": "Only error was formatting in the new test; targeted biome format fixed it, final pnpm lint passed with 25 warnings."
+  },
+  "logArchive": {
+    "path": "engineering/doc/FLY-2912-quiet-notification-expansion/evidence/conflict-rework-verification-logs.json.gz",
+    "sha256": "633a691de8d91f393046358641fb0b702496470719b7a72a19827c91e85cd643",
+    "logs": 32
+  },
+  "limits": [
+    "No local full package/repository suite.",
+    "Fixture regression is not post-launch savings measurement.",
+    "Code review and new-head full CI still pending; no QA or ship claim."
+  ],
+  "diffCheck": {
+    "authoredConflictFiles": "passed",
+    "inheritedMainTrailingWhitespace": [
+      "engineering/doc/FLY-2883-controlled-lead-interrupt/diagrams/build_founder_html.py",
+      "engineering/doc/FLY-2883-controlled-lead-interrupt/founder-design.html"
+    ],
+    "handling": "Both blobs exactly match merged origin/main; retained without unrelated edits."
+  }
+}

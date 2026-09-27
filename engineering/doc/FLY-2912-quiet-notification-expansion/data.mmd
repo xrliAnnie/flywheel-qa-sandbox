@@ -1,0 +1,16 @@
+erDiagram
+  accTitle: 原始账与汇总收据分开
+  accDescr: 原事件账保留所有记录，汇总收据关联真实投递批次，展示游标只记录已提供的概览范围。
+  EVENT_LEDGER ||--o{ SUMMARY_OFFER : "范围引用"
+  REAL_BATCH ||--o| SUMMARY_OFFER : "附带"
+  SUMMARY_OFFER }o--|| DISPLAY_CURSOR : "成功提交后推进"
+  EVENT_LEDGER {
+    string event_id "稳定事件编号"
+    string disposition "即时或只记账"
+    string proof_ref "权威证据"
+  }
+  SUMMARY_OFFER {
+    string batch_id "真实批次编号"
+    int through_seq "覆盖到的账目序号"
+    string content_hash "冻结内容校验值"
+  }

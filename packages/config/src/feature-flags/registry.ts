@@ -913,6 +913,102 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
+		name: "lead_stage_changed_audit",
+		configKey: "lead.stage_changed_audit_enabled",
+		category: "feature",
+		source: "project_config",
+		scope: "project",
+		polarity: "default_on",
+		valueKind: "bool",
+		onMeans: "enables",
+		default: true,
+		description:
+			"FLY-2912: audit pure stage_changed notifications without a separate Lead wake",
+		whenOn:
+			"例行阶段变化只记账，等 Lead 下次处理任务时汇总查看；需要处理的仍立即通知",
+		note: "总开关 lead_token_savings 关闭时本开关不生效。每条新事件读取当前值，无需重启；关闭只恢复本类新事件的即时通知，历史记录不补投。",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/event-route.ts",
+				"createEventRouter",
+				"storeLeadStageChangedAuditEnabled",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "lead_session_started_audit",
+		configKey: "lead.session_started_audit_enabled",
+		category: "feature",
+		source: "project_config",
+		scope: "project",
+		polarity: "default_on",
+		valueKind: "bool",
+		onMeans: "enables",
+		default: true,
+		description:
+			"FLY-2912: audit pure session_started notifications without a separate Lead wake",
+		whenOn:
+			"Runner 正常开工只记账，等 Lead 下次处理任务时汇总查看；需要接手的仍立即通知",
+		note: "总开关 lead_token_savings 关闭时本开关不生效。每条新事件读取当前值，无需重启；关闭只恢复本类新事件的即时通知，历史记录不补投。",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/DirectEventSink.ts",
+				"DirectEventSink.pushNotification",
+				"storeLeadSessionStartedAuditEnabled",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "lead_monitoring_reestablished_audit",
+		configKey: "lead.monitoring_reestablished_audit_enabled",
+		category: "feature",
+		source: "project_config",
+		scope: "project",
+		polarity: "default_on",
+		valueKind: "bool",
+		onMeans: "enables",
+		default: true,
+		description:
+			"FLY-2912: audit pure monitoring_reestablished notifications without a separate Lead wake",
+		whenOn:
+			"监控恢复只记账，等 Lead 下次处理任务时汇总查看；仍有告警或待办的立即通知",
+		note: "总开关 lead_token_savings 关闭时本开关不生效。每条新事件读取当前值，无需重启；关闭只恢复本类新事件的即时通知，历史记录不补投。",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/HeartbeatService.ts",
+				"RegistryHeartbeatNotifier.deliverHook",
+				"storeLeadMonitoringReestablishedAuditEnabled",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "lead_replacement_notice_audit",
+		configKey: "lead.replacement_notice_audit_enabled",
+		category: "feature",
+		source: "project_config",
+		scope: "project",
+		polarity: "default_on",
+		valueKind: "bool",
+		onMeans: "enables",
+		default: true,
+		description:
+			"FLY-2912: audit pure replacement_notice notifications without a separate Lead wake",
+		whenOn:
+			"未来换体预告只记账，等 Lead 下次处理任务时汇总查看；需要处理的仍立即通知",
+		note: "总开关 lead_token_savings 关闭时本开关不生效。每条新事件读取当前值，无需重启；关闭只恢复本类新事件的即时通知，历史记录不补投。",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/StateStore.ts",
+				"StateStore.appendWorkflowReplacementLeadIntentTx",
+				"storeLeadReplacementNoticeAuditEnabled",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
 		name: "node_dwell",
 		category: "feature",
 		source: "project_config",

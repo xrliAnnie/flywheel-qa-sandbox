@@ -751,3 +751,63 @@ export function storeAutoReleaseOnSilenceEnabled(
 		projectName,
 	);
 }
+
+/** Invalid or unavailable notification controls restore immediate delivery. */
+function readNotificationFlagSafely(
+	runtime: { store: ScopedFlagStore },
+	read: (safe: { store: ScopedFlagStore }) => boolean,
+): boolean {
+	try {
+		return read({
+			store: {
+				getFlagValueRow(name, scope) {
+					const row = runtime.store.getFlagValueRow(name, scope);
+					if (row?.hasOverride && row.raw !== "0" && row.raw !== "1")
+						throw new Error(`invalid ${name} value`);
+					return row;
+				},
+			},
+		});
+	} catch (error) {
+		console.warn(
+			`[lead-notification] flag unavailable; restoring immediate delivery: ${error instanceof Error ? error.message : String(error)}`,
+		);
+		return false;
+	}
+}
+
+export function storeLeadStageChangedAuditEnabled(
+	runtime: { store: ScopedFlagStore },
+	projectName: string,
+): boolean {
+	return readNotificationFlagSafely(runtime, (safe) =>
+		readScopedBoolean(safe, "lead_stage_changed_audit", projectName),
+	);
+}
+
+export function storeLeadSessionStartedAuditEnabled(
+	runtime: { store: ScopedFlagStore },
+	projectName: string,
+): boolean {
+	return readNotificationFlagSafely(runtime, (safe) =>
+		readScopedBoolean(safe, "lead_session_started_audit", projectName),
+	);
+}
+
+export function storeLeadMonitoringReestablishedAuditEnabled(
+	runtime: { store: ScopedFlagStore },
+	projectName: string,
+): boolean {
+	return readNotificationFlagSafely(runtime, (safe) =>
+		readScopedBoolean(safe, "lead_monitoring_reestablished_audit", projectName),
+	);
+}
+
+export function storeLeadReplacementNoticeAuditEnabled(
+	runtime: { store: ScopedFlagStore },
+	projectName: string,
+): boolean {
+	return readNotificationFlagSafely(runtime, (safe) =>
+		readScopedBoolean(safe, "lead_replacement_notice_audit", projectName),
+	);
+}

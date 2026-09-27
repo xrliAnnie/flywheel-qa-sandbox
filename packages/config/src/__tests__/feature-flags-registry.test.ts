@@ -15,6 +15,14 @@ const EXPECTED_WHEN_ON = {
 	review_early_stop: "提前停止已被新版取代的评审，保留作废原因和接替任务记录",
 	auto_release_on_silence_enabled:
 		"满足启用授权、送达和健康条件后，在否决窗口到期时默认发布客户版本",
+	lead_stage_changed_audit:
+		"例行阶段变化只记账，等 Lead 下次处理任务时汇总查看；需要处理的仍立即通知",
+	lead_session_started_audit:
+		"Runner 正常开工只记账，等 Lead 下次处理任务时汇总查看；需要接手的仍立即通知",
+	lead_monitoring_reestablished_audit:
+		"监控恢复只记账，等 Lead 下次处理任务时汇总查看；仍有告警或待办的立即通知",
+	lead_replacement_notice_audit:
+		"未来换体预告只记账，等 Lead 下次处理任务时汇总查看；需要处理的仍立即通知",
 	lead_token_savings:
 		"恢复时先给摘要与分页入口，例行进度保留审计但不唤醒 Lead；常驻规则精简，巡检细节按需读取。",
 	lead_alert_wake_dedup:
