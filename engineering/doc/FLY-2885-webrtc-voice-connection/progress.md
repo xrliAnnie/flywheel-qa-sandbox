@@ -1,14 +1,14 @@
 ---
 issue: FLY-2885
 phase: implement
-phaseCursor: 2/4
-updated: 2026-09-27T03:34:32.382Z
-nextStep: Run the preserved codex-room-webrtc replay; add the recorded cut-final
-  then answer-final ordering as RED and fix only that readback fence
+phaseCursor: 3/4
+updated: 2026-09-27T03:57:06.587Z
+nextStep: Commit the verified QA@3 fix, sync origin/main, rerun only affected
+  checks, then request exact-head code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2885 progress
-**phase**: implement (2/4)
-**next**: Run the preserved codex-room-webrtc replay; add the recorded cut-final then answer-final ordering as RED and fix only that readback fence
+**phase**: implement (3/4)
+**next**: Commit the verified QA@3 fix, sync origin/main, rerun only affected checks, then request exact-head code review
