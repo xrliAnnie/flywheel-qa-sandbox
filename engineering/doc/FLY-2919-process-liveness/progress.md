@@ -2,15 +2,15 @@
 issue: FLY-2919
 phase: implement
 phaseCursor: 5/6
-updated: 2026-09-27T10:49:23.396Z
-nextStep: A-F and nine-ticket local matrix complete at a7349581d; implementation
-  evidence committed. Push exact head, obtain effective code review APPROVED,
-  open PR, run explicitly frozen-head CI, then complete needs_review; do not
-  dispatch QA or merge.
+updated: 2026-09-27T12:34:46.310Z
+nextStep: "R1 blocking fixes implemented: six targeted RED files are GREEN;
+  post-merge observer test and affected teamlead dependency build GREEN. Finish
+  shell regression, discovery/related/lint, commit/push, then request new
+  exact-head code review."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2919 progress
 **phase**: implement (5/6)
-**next**: A-F and nine-ticket local matrix complete at a7349581d; implementation evidence committed. Push exact head, obtain effective code review APPROVED, open PR, run explicitly frozen-head CI, then complete needs_review; do not dispatch QA or merge.
+**next**: R1 blocking fixes implemented: six targeted RED files are GREEN; post-merge observer test and affected teamlead dependency build GREEN. Finish shell regression, discovery/related/lint, commit/push, then request new exact-head code review.
