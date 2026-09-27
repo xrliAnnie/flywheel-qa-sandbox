@@ -1,0 +1,41 @@
+erDiagram
+  APPROVED_DESIGN ||--|| IMPLEMENTED_HEAD : realized_by
+  IMPLEMENTED_HEAD ||--|| CODE_REVIEW : approved_by
+  IMPLEMENTED_HEAD ||--|| MIRROR_BRANCH : mirrored_as
+  IMPLEMENTED_HEAD ||--|| PROD_CHECKOUT : checked_out_at
+  VERIFY_CONTRACT }|--|| IMPLEMENTED_HEAD : asserts
+  VERIFY_CONTRACT ||--|| SUBMIT_RECEIPT : ends_in
+  SUBMIT_RECEIPT ||--|| QA_CRITERIA : judged_by
+  APPROVED_DESIGN {
+    string gate_id "d9ab4f85"
+    string plan_commit "c4d40fbed"
+    string plan_sha256 "7de9bef9"
+  }
+  IMPLEMENTED_HEAD {
+    string sha "2dd29e027"
+    string branch "flywheel-FLY-2922"
+  }
+  CODE_REVIEW {
+    string review_id "92e28887"
+    string verdict "APPROVED"
+  }
+  MIRROR_BRANCH {
+    string remote "sandbox origin"
+  }
+  PROD_CHECKOUT {
+    string path "Dev/flywheel-FLY-2922"
+    string tree "clean"
+  }
+  VERIFY_CONTRACT {
+    string assertions "A1-A7"
+    string on_fail "ask Lead and stop"
+  }
+  SUBMIT_RECEIPT {
+    string route "needs_review"
+    int pr "1374"
+  }
+  QA_CRITERIA {
+    string ci "exact-head full CI"
+    string order "FLY-2921 first"
+    string e2e "529 N-to-N"
+  }

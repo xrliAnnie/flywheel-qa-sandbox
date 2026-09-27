@@ -1,0 +1,10 @@
+flowchart TD
+  A[implement 节点拿到 TURN] --> B[跑已提交的核对脚本\n八条只读断言 A1-A8\n镜像头 = 生产头 = 远端头 = 2dd29e027\n两处树干净 生产 PR 指向同一头]
+  B --> C{每一步都 PASS}
+  C -->|否| D[发一次 BLOCKED 报告给 Lead 然后退出\n不改代码 不 reset 不重推 不循环等待]
+  C -->|是| E[写进度账本 3/3 并 push 沙箱分支\n核对远端后只读]
+  E --> F[向 Lead 发 DONE 报告\n含 4 条 MEDIUM 处置与 PR 正文核对]
+  F --> G[complete --route needs_review\n默认不带 PR 号 报告里引用复审 92e28887 与 PR 1374]
+  G --> H[QA 节点 三条判据\n生产仓 full CI 绿 / merge-tree 顺序可落地 / 529 真 runner]
+  H -->|PASS| I[founder 审批门]
+  H -->|FAIL| J[交回作者头 不改产品代码]

@@ -27,10 +27,10 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 ## 不变量
 
 - 已批准设计正文与已复审的实现头一个字节都不改：本轮所有文档只在 `engineering/doc/FLY-2922-unified-node-recovery/` 下新增，不触碰 `packages/`。
-- 交卷引用的头必须是完整 40 位 SHA `2dd29e0276617cf21e31ce4bfe2a4df792d8cf0a`，核对对象是**镜像分支与生产 checkout 两处**，任一不等即停。
+- 交卷引用的头必须是完整 40 位 SHA `2dd29e0276617cf21e31ce4bfe2a4df792d8cf0a`，核对对象是**镜像分支、生产 checkout、GitHub 远端三处**，任一不等即停；生产 checkout 只读（不 fetch）。
 - 不伪造 PR、不在沙箱开一个「假装能合」的 PR：`origin/flywheel-FLY-2922` 与沙箱 main 的 `merge-tree` 冲突（两棵不同的树），这是已知事实，写进 QA 边界而不是掩盖。
 - 沙箱 design 节点自身的硬门（design_review 绑定、Codex 评审、founder HTML、publish、report、`phase_design_complete`）一个都不跳。
 
 ## 未决事项（非阻塞）
 
-问 Lead `0d73b791-401b-40a3-b14a-68207eecfd03`：① implement 交卷的 PR 证据用生产 PR #1374 还是要在沙箱另开 PR；② QA 节点在沙箱要验什么。无答复时按 ① = 生产 PR #1374（`--pr 1374 --target-repo` 指向生产 checkout）、② = Lead 交接原文三条判据写入 plan。slot-4 上一具 design 体的同类问题 `d26e7f85` 同样无答复，本轮不重复提问。
+问 Lead `0d73b791-401b-40a3-b14a-68207eecfd03`：① implement 交卷的 PR 证据用生产 PR #1374 还是要在沙箱另开 PR；② QA 节点在沙箱要验什么。无答复时按 ① = Lane A：交卷不传 `--pr`（R1 评审证实 `complete` 的 `--target-repo`/`--declare-pr` 不能指向沙箱 worktree 之外，生产 checkout 绑不进 completion 证据），生产 PR #1374 与复审 ID 写进 DONE 报告；② = Lead 交接原文三条判据写入 plan，full CI 取证放到生产仓上下文。slot-4 上一具 design 体的同类问题 `d26e7f85` 同样无答复，本轮不重复提问。
