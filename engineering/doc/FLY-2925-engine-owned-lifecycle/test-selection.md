@@ -209,3 +209,40 @@ suite enumerator；它们不是运行时消费者，按目录级非消费者整�
 真 Codex 生命周期 7 场景与 fault 序列的产品级分类仍须 QA 在 Lead 提供的 529
 real-runner slot 1/3/5 执行；本地结果只证明接缝本身及默认路径没有回归，不冒充真房
 或全量 CI 证据。
+
+## 10. 接管与 main 技术同步（2026-09-27）
+
+接管 `ad0687350` 后先重建 frozen dependencies，并在原样 WIP 上逐文件验证第 9 节
+接缝。为消除 PR conflict，又将 `origin/main@975822f5d` 合入：三处人工冲突均只做
+并集整合——daemon client 同时保留 resident/reown 与 quota-resume 观察和 preflight，
+Heartbeat crash reaper 同时保护 live Codex body 与 quota standby，adapter 测试同时
+保留 daemon handle 与 session-state import。没有扩展 QA-only seam 的生产作用域。
+
+最终合并头的直接覆盖：
+
+| 所有者 | 测试 / 检查 | 结果 |
+|---|---|---|
+| claude-runner | `codex-daemon-client` / `codex-quota-resume-preflight` / `CodexTmuxAdapter` / `codex-daemon-goal-runtime` | 378/378 |
+| teamlead | `codex-session-reown` / `HeartbeatService.zombie-reconcile` | 104/104 |
+| teamlead | `HeartbeatService.fly2912-quiet-recovery` | 21/21；首次运行的 8 项红来自合并后尚未重建的旧 `config/dist`，按依赖链 build 后同文件全绿 |
+| scripts | `qa-generalized-codex-stub.test.mjs` | 6/6 |
+| scripts | `test-cycle-bridge.test.sh` | 33/33 |
+| scripts | `test-deploy-fly1389.test.sh` | 29/29 |
+| scripts | `test-deploy-generalized.test.sh` / `qa-slot-env-contract.test.sh` | 全部通过 / 通过 |
+| claude-runner | `kill-path-inventory.test.ts` | 5/5 |
+| teamlead + dependencies | `pnpm --filter "flywheel-teamlead..." build` | 13 个相关包构建通过 |
+
+Claude runner 的 changed-TypeScript `vitest related` 选中 11 个文件：10 个文件、571
+项通过。`codex-daemon-runtime.test.ts` 的默认 macOS 临时根先让 4 个 adoption fixture
+socket 达到 106 bytes（超过 SUN_LEN 103）；改用任务专用短临时根复跑同一具体文件后，
+这 4 项及其余 120 项通过，只剩既有的 2 个 FLY-2830 真实 `ps` 探针因宿主
+`spawnSync ps EPERM` 非绿。Teamlead `HeartbeatService.ts` 的 `vitest related` 会展开到
+近全包，按第 5/7 节已记录的选择规则不重跑；保留上述三个直接消费者文件，避免把
+本地全包测试伪装成相关测试。
+
+生产不可达证明保持不变：fault stub 只监听 `127.0.0.1`，入口同时要求显式
+`--generalized --codex-runner --mode slot --codex-fault-sequence`、精确
+`/tmp/flywheel-test-slot-N` 根、0600 `room-info.json` 和 `mode == "slot"`；split cycle
+与 teardown 在发信号前复验同一房间身份和 receipt/PID/argv。普通部署没有这些开关，
+本轮 QA seam 提交也没有修改 `packages/*/src`。exact-head 全量 CI 与 529 真房七场景
+仍由 QA 冻结头执行。
