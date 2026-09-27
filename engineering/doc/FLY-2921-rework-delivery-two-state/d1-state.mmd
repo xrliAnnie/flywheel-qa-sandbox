@@ -1,0 +1,13 @@
+stateDiagram-v2
+  [*] --> pending: 打开返工
+  pending --> turn_granted: 授写入权并推送唤醒
+  turn_granted --> wake_delivered: 体签收 或 交卷顺带证明
+  pending --> wake_delivered: 替身带着返工内容启动
+  wake_delivered --> completed: 节点交卷 关账
+  pending --> pending: 目标体证死 同一事务换替身
+  turn_granted --> pending: 目标体证死 同一事务换替身
+  wake_delivered --> pending: 目标体证死 同一事务换替身
+  pending --> returned_to_lead: 重试5次或换体3次用完
+  turn_granted --> returned_to_lead: 重试5次或未知满2小时
+  returned_to_lead --> pending: Lead 一键重投
+  completed --> [*]

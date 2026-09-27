@@ -1,0 +1,13 @@
+flowchart LR
+  A[实现体返工交卷] --> B[服务端取交卷 head 与被判 FAIL 的 base]
+  B --> C{head 解析得出}
+  C -->|否| R1[拒收 rework_head_unavailable]
+  C -->|是| D{head 等于 base}
+  D -->|是| R2[拒收 rework_head_unchanged]
+  D -->|否| E{除进度账本外有改动}
+  E -->|只有进度账本| R3[拒收 rework_no_product_change]
+  E -->|算不出来| P1[放行 记审计 rework_delta_unverified]
+  E -->|有产品改动| P2[放行 派 QA]
+  R1 --> N[不改任何状态 体带新提交重新交卷]
+  R2 --> N
+  R3 --> N
