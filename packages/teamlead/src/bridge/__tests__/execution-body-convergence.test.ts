@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { Database } from "better-sqlite3";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { HeartbeatService } from "../../HeartbeatService.js";
 import { StateStore } from "../../StateStore.js";
 import { hasUnresolvedCompleteMarker } from "../completion-before-death.js";
 import {
@@ -375,5 +376,60 @@ describe("FLY-2919 body death across StateStore and CommDB", () => {
 		});
 		expect(comm.getSession("exec-1")?.status).toBe("running");
 		expect(store.listPendingExecutionBodyDeaths({ limit: 10 })).toHaveLength(1);
+	});
+	it("Heartbeat commits the real double-ledger path and preserves process evidence for alert retry", async () => {
+		const prepare = vi.fn(() => ({ eventId: "zombie-exec-1" }));
+		const persist = vi.fn(async () => false);
+		const heartbeat = new HeartbeatService(
+			store,
+			{
+				prepareSessionZombieDetected: prepare,
+				persistPreparedZombieDetected: persist,
+				clearReconnectStamp: vi.fn(),
+			} as never,
+			15,
+			300000,
+			60,
+			undefined,
+			24,
+			21600000,
+			{
+				bridgeBaseUrl: "http://localhost",
+				ingestToken: "fixture",
+				markerDir: root,
+			},
+		);
+		heartbeat.setExecutionBodyLifecycle({
+			observe: deps.observer.observe,
+			converge: (id) => convergeExecutionBody(deps, id),
+		});
+		expect(await heartbeat.reconcileExecutionBody("exec-1")).toBe(true);
+		expect(store.getSession("exec-1")?.status).toBe("failed");
+		expect(comm.getSession("exec-1")?.status).toBe("failed");
+		expect(
+			store.getZombieAlertBacklog("", 20).map((s) => s.execution_id),
+		).toContain("exec-1");
+		expect(prepare.mock.calls[0]?.[1]).toMatchObject({
+			kind: "process",
+			observation: {
+				identity: { executionId: "exec-1", generation: 1 },
+				verdict: "dead",
+			},
+		});
+		// A restarted Heartbeat can recover from the immutable obligation even
+		// after its ten-second mutation authority expires.
+		clock += 60_000;
+		await (heartbeat as any).reconcileZombieAlertBacklog();
+		expect(prepare).toHaveBeenCalledTimes(2);
+		expect(prepare.mock.calls[1]?.[1]).toEqual(prepare.mock.calls[0]?.[1]);
+	});
+	it("requires the literal body-death marker when scheduling alert replay", () => {
+		store.forceStatus(
+			"exec-1",
+			"failed",
+			new Date(clock).toISOString(),
+			"bodyXdeath:not-a-body-death",
+		);
+		expect(store.getZombieAlertBacklog("", 20)).toEqual([]);
 	});
 });

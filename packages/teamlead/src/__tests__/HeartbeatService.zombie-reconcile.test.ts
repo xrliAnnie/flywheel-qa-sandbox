@@ -1,11 +1,5 @@
-/**
- * FLY-1282 M2/M3/M4: zombie-ON tri-state consumption + declaration + backfill.
- *
- * These are the NEW-behavior tests (the OFF-path contract lives in
- * HeartbeatService.zombie-offpath-golden.test.ts; the FLY-623 legacy
- * consumption stays frozen in HeartbeatService.monitor-loss.test.ts under
- * ZOMBIE_RECONCILE=0).
- */
+/** FLY-1282/2919: process authority, ordered alerts, replay and readoption aggregation. */
+import type { BodyObservation } from "flywheel-claude-runner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../bridge/tmux-lookup.js", () => {
@@ -78,6 +72,56 @@ const mockedServer = vi.mocked(probeTmuxServer);
 const mockedLookup = vi.mocked(lookupTmuxTarget);
 const mockedInspect = vi.mocked(inspectWorktreeForUnpushedWork);
 
+function observation(
+	executionId = "exec-z1",
+	verdict: BodyObservation["verdict"] = "alive",
+): BodyObservation {
+	return {
+		identity: {
+			executionId,
+			activationId: "activation",
+			generation: 1,
+			lifecycleRevision: 0,
+			adapter: "claude-tmux",
+		},
+		ownerToken: "owner",
+		spawnEpoch: 1,
+		bindingDigest: "a".repeat(64),
+		verdict,
+		observedAt: new Date().toISOString(),
+		expiresAt: new Date(Date.now() + 10000).toISOString(),
+		reason: "fixture_process_evidence",
+	};
+}
+const bodyObserve = vi.fn(async (id: string) => observation(id));
+const bodyConverge =
+	vi.fn<import("../HeartbeatService.js").HeartbeatBodyLifecycle["converge"]>();
+function primeDead() {
+	store.getOrphanSessions.mockReturnValue([sess()]);
+	bodyObserve.mockImplementation(async (id) => observation(id, "dead"));
+}
+function commitFixture() {
+	// Only the orchestration seam is mocked here; real CAS/replay assertions live
+	// in execution-body-convergence, StateStore.body-death and completion-before-death.
+	bodyConverge.mockImplementation(async (id) => {
+		const fresh = {
+			...store.getSession(id),
+			status: "failed",
+			last_error: "body_death:process_writers_absent",
+		};
+		store.getSession.mockReturnValue(fresh);
+		store.getOrphanSessions.mockReturnValue([]);
+		return {
+			kind: "committed",
+			obligation: {
+				observation: observation(id, "dead"),
+				disposition: "failed",
+			},
+			projection: { projected: true },
+		} as never;
+	});
+}
+
 function sess(overrides: Partial<Session> = {}): Session {
 	return {
 		execution_id: "exec-z1",
@@ -147,7 +191,7 @@ function makeService(
 	livenessTracker?: { started(): number; completed(token: number): void },
 	onZombieDeclared?: (session: Session, reason: string) => void,
 ): HeartbeatService {
-	return new HeartbeatService(
+	const instance = new HeartbeatService(
 		store as never,
 		notifier as never,
 		15,
@@ -168,6 +212,11 @@ function makeService(
 		undefined,
 		onZombieDeclared,
 	);
+	instance.setExecutionBodyLifecycle({
+		observe: bodyObserve,
+		converge: bodyConverge,
+	});
+	return instance;
 }
 
 let store: MockStore;
@@ -175,6 +224,10 @@ let notifier: MockNotifier;
 let service: HeartbeatService;
 
 beforeEach(() => {
+	bodyObserve.mockReset().mockImplementation(async (id) => observation(id));
+	bodyConverge
+		.mockReset()
+		.mockResolvedValue({ kind: "deferred", reason: "body_unknown" });
 	mockedTry.mockReset().mockResolvedValue({ kind: "absent" });
 	mockedProbe.mockReset().mockResolvedValue("alive");
 	mockedServer.mockReset().mockResolvedValue("up");
@@ -185,7 +238,9 @@ beforeEach(() => {
 			sessionName: "runner-flywheel",
 		},
 	});
-	mockedInspect.mockClear();
+	mockedInspect
+		.mockReset()
+		.mockResolvedValue({ ok: false, reason: "fixture" } as never);
 	store = makeStore();
 	notifier = makeNotifier();
 	service = makeService(store, notifier);
@@ -195,317 +250,187 @@ afterEach(() => {
 	service.stop();
 });
 
-describe("M2 tri-state dispatch", () => {
-	it("settled ship-attempt marker is fully consumed before the tri-state liveness chain", async () => {
+describe("M2 process verdict dispatch", () => {
+	it("settled completion wins before observing the body", async () => {
 		mockedTry.mockResolvedValue({
 			kind: "settled_ship_attempt_failed",
 			settle: "marked",
 		});
 		store.getOrphanSessions.mockReturnValue([sess()]);
 		await service.reconcileMonitorLoss();
-		expect(mockedProbe).not.toHaveBeenCalled();
+		expect(bodyObserve).not.toHaveBeenCalled();
+		expect(bodyConverge).not.toHaveBeenCalled();
 		expect(store.updateHeartbeat).not.toHaveBeenCalled();
-		expect(notifier.onSessionMonitoringReestablished).not.toHaveBeenCalled();
 	});
-
-	it("alive → re-adopt with probe evidence (heartbeat refresh + one aggregated notice)", async () => {
+	it("alive readoption reports process evidence without a fabricated pane target", async () => {
 		store.getOrphanSessions.mockReturnValue([sess()]);
 		await service.reconcileMonitorLoss();
 		expect(store.updateHeartbeat).toHaveBeenCalledWith("exec-z1");
-		expect(notifier.onSessionMonitoringReestablished).toHaveBeenCalledTimes(1);
 		const details = notifier.onSessionMonitoringReestablished.mock.calls[0][2];
 		expect(details.livenessProbe).toMatchObject({
-			target: "runner-flywheel:@829",
+			method: "execution_process",
+			probedAt: expect.any(String),
 		});
-		expect(typeof details.livenessProbe.probedAt).toBe("string");
-		// below-cohort: no concurrent count key at all
-		expect("concurrentCount" in details).toBe(false);
+		expect(details.livenessProbe.target).toBeUndefined();
+		expect(details.concurrentCount).toBeUndefined();
 	});
-
-	it("pane-probe indeterminate → honest monitor-lost advisory: no celebration, no heartbeat refresh, suppression holds", async () => {
-		mockedProbe.mockResolvedValue("indeterminate");
-		const s = sess();
-		store.getOrphanSessions.mockReturnValue([s]);
-		await service.check();
-		expect(notifier.onSessionMonitoringReestablished).not.toHaveBeenCalled();
-		expect(store.updateHeartbeat).not.toHaveBeenCalled();
-		expect(notifier.onSessionMonitoringLost).toHaveBeenCalledTimes(1);
-		expect(notifier.onSessionMonitoringLost).toHaveBeenCalledWith(
-			s,
-			expect.any(Number),
-			{ unverified: true },
-		);
-		// suppression: no orphan force-fail
+	it.each(["unknown", "throw"])(
+		"%s observation never refreshes or forces death",
+		async (mode) => {
+			if (mode === "throw")
+				bodyObserve.mockRejectedValue(new Error("sample failed"));
+			else
+				bodyObserve.mockImplementation(async (id) =>
+					observation(id, "unknown"),
+				);
+			store.getOrphanSessions.mockReturnValue([sess()]);
+			await service.check();
+			expect(notifier.onSessionMonitoringLost).toHaveBeenCalledWith(
+				expect.anything(),
+				expect.any(Number),
+				{ unverified: true },
+			);
+			expect(store.updateHeartbeat).not.toHaveBeenCalled();
+			expect(store.forceStatus).not.toHaveBeenCalled();
+			expect(notifier.prepareSessionZombieDetected).not.toHaveBeenCalled();
+		},
+	);
+	it("one dead observation immediately invokes common CAS; no two-pane streak", async () => {
+		primeDead();
+		await service.reconcileMonitorLoss();
+		expect(bodyConverge).toHaveBeenCalledExactlyOnceWith("exec-z1");
+		expect(mockedProbe).not.toHaveBeenCalled();
+		expect(mockedServer).not.toHaveBeenCalled();
 		expect(store.forceStatus).not.toHaveBeenCalled();
 	});
-
-	it("CommDB error → same honest indeterminate treatment (never celebrated)", async () => {
-		mockedLookup.mockReturnValue({ kind: "error", error: "SQLITE_BUSY" });
-		store.getOrphanSessions.mockReturnValue([sess()]);
+	it("CAS refusal releases the candidate for a later freshly observed attempt", async () => {
+		primeDead();
 		await service.reconcileMonitorLoss();
-		expect(notifier.onSessionMonitoringReestablished).not.toHaveBeenCalled();
-		expect(store.updateHeartbeat).not.toHaveBeenCalled();
-		expect(notifier.onSessionMonitoringLost).toHaveBeenCalledTimes(1);
-	});
-
-	it("absent x1 → zombieHeld suppression: even past orphan threshold, NOT generic-reaped", async () => {
-		mockedProbe.mockResolvedValue("absent");
-		const s = sess({ heartbeat_at: "2026-07-15 06:00:00" }); // hours stale
-		store.getOrphanSessions.mockReturnValue([s]);
-		await service.check(); // one full pass: absent#1
-		expect(store.forceStatus).not.toHaveBeenCalled();
-		expect(notifier.onSessionOrphaned).not.toHaveBeenCalled();
-		expect(notifier.prepareSessionZombieDetected).not.toHaveBeenCalled();
-	});
-
-	it("absent → alive → absent resets the streak (no declaration on the 3rd probe)", async () => {
-		const s = sess();
-		store.getOrphanSessions.mockReturnValue([s]);
-		mockedProbe.mockResolvedValueOnce("absent");
-		await service.reconcileMonitorLoss(); // streak 1
-		mockedProbe.mockResolvedValueOnce("alive");
-		await service.reconcileMonitorLoss(); // clears streak
-		mockedProbe.mockResolvedValueOnce("absent");
-		await service.reconcileMonitorLoss(); // streak 1 again — no declare
-		expect(notifier.prepareSessionZombieDetected).not.toHaveBeenCalled();
-		expect(store.forceStatus).not.toHaveBeenCalled();
-	});
-
-	it("indeterminate → dead_pin: monitor-lost suppression released to the crash-reaper owner", async () => {
-		const s = sess();
-		store.getOrphanSessions.mockReturnValue([s]);
-		mockedProbe.mockResolvedValueOnce("indeterminate");
-		await service.reconcileMonitorLoss();
-		expect(notifier.onSessionMonitoringLost).toHaveBeenCalledTimes(1);
-		mockedProbe.mockResolvedValue("dead_pin");
-		await service.reconcileMonitorLoss();
-		// suppression marker cleared → generic orphan path can act again
-		await service.reapOrphans();
-		expect(store.forceStatus).toHaveBeenCalledTimes(1);
-	});
-
-	it("exit-then-reenter the candidate union restarts the streak at 1", async () => {
-		const s = sess();
-		mockedProbe.mockResolvedValue("absent");
-		store.getOrphanSessions.mockReturnValue([s]);
-		await service.reconcileMonitorLoss(); // streak 1
-		store.getOrphanSessions.mockReturnValue([]); // left the union
-		await service.reconcileMonitorLoss(); // prune
-		store.getOrphanSessions.mockReturnValue([s]); // re-entered
-		await service.reconcileMonitorLoss(); // streak restarts at 1 → no declare
-		expect(notifier.prepareSessionZombieDetected).not.toHaveBeenCalled();
-	});
-});
-
-describe("M3 declaration", () => {
-	function primeTwoAbsentPasses(s: Session = sess()) {
-		mockedProbe.mockResolvedValue("absent");
-		store.getOrphanSessions.mockReturnValue([s]);
-	}
-
-	it("absent x2 (server up) → full order: forensics, re-proof, prepare, transition, persist", async () => {
-		primeTwoAbsentPasses();
-		await service.reconcileMonitorLoss(); // streak 1
-		await service.reconcileMonitorLoss(); // streak 2 → declare
-		expect(mockedInspect).toHaveBeenCalledWith("/tmp/wt");
-		expect(notifier.prepareSessionZombieDetected).toHaveBeenCalledTimes(1);
-		const evidence = notifier.prepareSessionZombieDetected.mock.calls[0][1];
-		expect(evidence.kind).toBe("verified");
-		expect(evidence.liveness.target).toBe("runner-flywheel:@829");
-		expect(evidence.streak).toBe(2);
-		expect(notifier.persistPreparedZombieDetected).toHaveBeenCalledTimes(1);
-		// no transitionOpts in this fixture → legacy forceStatus seam
-		expect(store.forceStatus).toHaveBeenCalledWith(
-			"exec-z1",
-			"failed",
-			expect.any(String),
-			expect.stringMatching(/^zombie: tmux window runner-flywheel:@829 dead/),
-		);
-	});
-
-	it("captures a death snapshot after a Codex zombie declaration", async () => {
-		const onZombieDeclared = vi.fn();
-		service.stop();
-		service = makeService(store, notifier, undefined, onZombieDeclared);
-		const codex = sess({ adapter_type: "codex-tmux" });
-		store.getSession.mockReturnValue(codex);
-		primeTwoAbsentPasses(codex);
-
-		await service.reconcileMonitorLoss();
-		await service.reconcileMonitorLoss();
-
-		expect(onZombieDeclared).toHaveBeenCalledWith(
-			expect.objectContaining({
-				execution_id: "exec-z1",
-				adapter_type: "codex-tmux",
-			}),
-			expect.stringMatching(/^zombie: tmux window /),
-		);
-	});
-
-	it("server sequence down,down,up,up → declares only after the SECOND server-up absent", async () => {
-		primeTwoAbsentPasses();
-		mockedServer.mockResolvedValueOnce("down");
-		await service.reconcileMonitorLoss(); // absent + down → reset
-		mockedServer.mockResolvedValueOnce("down");
-		await service.reconcileMonitorLoss(); // absent + down → reset
-		mockedServer.mockResolvedValue("up");
-		await service.reconcileMonitorLoss(); // absent + up → streak 1
-		expect(notifier.prepareSessionZombieDetected).not.toHaveBeenCalled();
-		await service.reconcileMonitorLoss(); // absent + up → streak 2 → declare
-		expect(notifier.prepareSessionZombieDetected).toHaveBeenCalledTimes(1);
-	});
-
-	it("server sequence unknown,up,up → same: only the two server-up absents count", async () => {
-		primeTwoAbsentPasses();
-		mockedServer.mockResolvedValueOnce("unknown");
-		await service.reconcileMonitorLoss();
-		mockedServer.mockResolvedValue("up");
-		await service.reconcileMonitorLoss();
-		expect(notifier.prepareSessionZombieDetected).not.toHaveBeenCalled();
-		await service.reconcileMonitorLoss();
-		expect(notifier.prepareSessionZombieDetected).toHaveBeenCalledTimes(1);
-	});
-
-	it("re-proof re-runs the FULL probe incl. fresh CommDB lookup: remapped-to-live window aborts (zero transition, zero alert)", async () => {
-		primeTwoAbsentPasses();
-		await service.reconcileMonitorLoss(); // streak 1
-		// During the declaration's forensics the CommDB mapping moves to a NEW
-		// live window (rescue). The re-proof's fresh lookup must see it.
-		mockedInspect.mockImplementationOnce(async () => {
-			mockedLookup.mockReturnValue({
-				kind: "found",
-				target: {
-					tmuxWindow: "runner-flywheel:@900",
-					sessionName: "runner-flywheel",
-				},
-			});
-			mockedProbe.mockResolvedValue("alive");
-			return { ok: true, worktreePath: "/tmp/wt" };
-		});
-		await service.reconcileMonitorLoss(); // streak 2 → declare → re-proof aborts
-		expect(store.forceStatus).not.toHaveBeenCalled();
-		expect(notifier.persistPreparedZombieDetected).not.toHaveBeenCalled();
-	});
-
-	it("re-proof aborts when the session terminalized during forensics", async () => {
-		primeTwoAbsentPasses();
-		await service.reconcileMonitorLoss();
-		mockedInspect.mockImplementationOnce(async () => {
-			store.getSession.mockReturnValue(sess({ status: "completed" }));
-			return { ok: true, worktreePath: "/tmp/wt" };
-		});
-		await service.reconcileMonitorLoss();
-		expect(store.forceStatus).not.toHaveBeenCalled();
-		expect(notifier.persistPreparedZombieDetected).not.toHaveBeenCalled();
-	});
-
-	it("re-proof aborts when the server flips down during forensics", async () => {
-		primeTwoAbsentPasses();
-		await service.reconcileMonitorLoss();
-		mockedInspect.mockImplementationOnce(async () => {
-			mockedServer.mockResolvedValue("down");
-			return { ok: true, worktreePath: "/tmp/wt" };
-		});
-		await service.reconcileMonitorLoss();
-		expect(store.forceStatus).not.toHaveBeenCalled();
-	});
-
-	it("FSM-rejected transition → loud abort: no event, no force override", async () => {
-		const persistTransition = vi.fn();
-		const rejectingOpts = {
-			store: { ...store, persistTransition } as never,
-			fsm: { transition: vi.fn(() => ({ ok: false, error: "illegal" })) },
-		};
-		const svc = new HeartbeatService(
-			store as never,
-			notifier as never,
-			15,
-			60_000,
-			60,
-			rejectingOpts as never,
-			24,
-			6 * 3_600_000,
-			{ bridgeBaseUrl: "http://127.0.0.1:9876", ingestToken: "tok" },
-		);
-		mockedProbe.mockResolvedValue("absent");
-		store.getOrphanSessions.mockReturnValue([sess()]);
-		await svc.reconcileMonitorLoss();
-		await svc.reconcileMonitorLoss();
-		expect(persistTransition).not.toHaveBeenCalled();
-		expect(store.forceStatus).not.toHaveBeenCalled();
-		expect(notifier.persistPreparedZombieDetected).not.toHaveBeenCalled();
-		svc.stop();
-	});
-
-	it("declaration fires exactly once (post-transition the session leaves running candidates)", async () => {
-		primeTwoAbsentPasses();
-		await service.reconcileMonitorLoss();
-		await service.reconcileMonitorLoss(); // declares; fixture keeps returning the row
-		store.getSession.mockReturnValue(sess({ status: "failed" }));
 		store.getOrphanSessions.mockReturnValue([]);
 		await service.reconcileMonitorLoss();
-		expect(notifier.persistPreparedZombieDetected).toHaveBeenCalledTimes(1);
+		store.getOrphanSessions.mockReturnValue([sess()]);
+		await service.reconcileMonitorLoss();
+		expect(bodyConverge).toHaveBeenCalledTimes(2);
+		expect(notifier.prepareSessionZombieDetected).not.toHaveBeenCalled();
 	});
-
-	it("worktree inspection failure degrades but never eats the alert", async () => {
-		mockedInspect.mockResolvedValue({
-			ok: false,
-			error: "git exploded",
-		});
-		primeTwoAbsentPasses();
-		await service.reconcileMonitorLoss();
-		await service.reconcileMonitorLoss();
-		expect(notifier.prepareSessionZombieDetected).toHaveBeenCalledTimes(1);
-		const inspection = notifier.prepareSessionZombieDetected.mock.calls[0][2];
-		expect(inspection.ok).toBe(false);
-		expect(notifier.persistPreparedZombieDetected).toHaveBeenCalledTimes(1);
-	});
-
-	it("lead unresolvable (prepare → null) → transition still happens + deterministic session_events audit", async () => {
-		notifier.prepareSessionZombieDetected.mockReturnValue(null);
-		primeTwoAbsentPasses();
-		await service.reconcileMonitorLoss();
-		await service.reconcileMonitorLoss();
-		expect(store.forceStatus).toHaveBeenCalledTimes(1); // state truth first
-		expect(store.insertEvent).toHaveBeenCalledWith(
-			expect.objectContaining({
-				event_id: "zombie-alert-unroutable-exec-z1",
-				event_type: "session_zombie_detected",
-				source: "bridge.zombie-reconcile",
-				// Code R1 #7: the audit records the FRESH zombie last_error — the
-				// pre-transition snapshot's (stale) value must never be frozen in
-				// by the deterministic event id.
-				payload: expect.objectContaining({
-					last_error: expect.stringMatching(
-						/^zombie: tmux window .* dead \(pane probe absent x\d+, server up, at /,
-					),
-				}),
-			}),
-		);
-		expect(notifier.persistPreparedZombieDetected).not.toHaveBeenCalled();
-	});
-});
-
-describe("M2 quarantine wiring", () => {
-	it("passes the tri-state verdict to applyQuarantineFallback (mutation guard — deleting the param must fail HERE, code R3)", async () => {
+	it("quarantined completion never authorizes the old window fallback", async () => {
 		mockedTry.mockResolvedValue({
 			kind: "quarantined",
 			routeStatus: "blocked",
 			quarantinePath: "/q/exec-z1.json",
 		});
-		mockedProbe.mockResolvedValue("indeterminate");
+		bodyObserve.mockImplementation(async (id) => observation(id, "unknown"));
 		store.getOrphanSessions.mockReturnValue([sess()]);
 		await service.reconcileMonitorLoss();
 		const { applyQuarantineFallback } = await import(
 			"../bridge/complete-marker-reconciler.js"
 		);
-		expect(vi.mocked(applyQuarantineFallback)).toHaveBeenCalledWith(
+		expect(applyQuarantineFallback).not.toHaveBeenCalled();
+		expect(bodyConverge).not.toHaveBeenCalled();
+		expect(store.forceStatus).not.toHaveBeenCalled();
+	});
+});
+describe("M3 death declaration and alert ordering", () => {
+	it("commits common death before diagnostic inspection, preparation and persistence", async () => {
+		primeDead();
+		commitFixture();
+		await service.reconcileMonitorLoss();
+		expect(
+			notifier.prepareSessionZombieDetected,
+		).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ status: "failed" }),
 			expect.objectContaining({
-				executionId: "exec-z1",
-				tmuxAlive: true, // legacy meaning: not-provably-dead
-				livenessVerdict: "indeterminate",
+				kind: "process",
+				observation: expect.objectContaining({ verdict: "dead" }),
 			}),
+			expect.anything(),
+		);
+		expect(bodyConverge.mock.invocationCallOrder[0]).toBeLessThan(
+			mockedInspect.mock.invocationCallOrder[0],
+		);
+		expect(mockedInspect.mock.invocationCallOrder[0]).toBeLessThan(
+			notifier.prepareSessionZombieDetected.mock.invocationCallOrder[0],
+		);
+		expect(
+			notifier.prepareSessionZombieDetected.mock.invocationCallOrder[0],
+		).toBeLessThan(
+			notifier.persistPreparedZombieDetected.mock.invocationCallOrder[0],
+		);
+		expect(store.forceStatus).not.toHaveBeenCalled();
+	});
+	it("captures Codex death only after the durable death result", async () => {
+		const snapshot = vi.fn();
+		service = makeService(store, notifier, undefined, snapshot);
+		store.getSession.mockReturnValue(sess({ adapter_type: "codex-tmux" }));
+		primeDead();
+		commitFixture();
+		await service.reconcileMonitorLoss();
+		expect(snapshot).toHaveBeenCalledWith(
+			expect.objectContaining({ adapter_type: "codex-tmux", status: "failed" }),
+			"body_death:process_writers_absent",
+		);
+	});
+	it.each(["down", "unknown"])(
+		"server %s cannot veto independently proven process death",
+		async (state) => {
+			mockedServer.mockResolvedValue(state as never);
+			primeDead();
+			commitFixture();
+			await service.reconcileMonitorLoss();
+			expect(bodyConverge).toHaveBeenCalledOnce();
+			expect(notifier.persistPreparedZombieDetected).toHaveBeenCalledOnce();
+			expect(mockedServer).not.toHaveBeenCalled();
+			expect(mockedLookup).not.toHaveBeenCalled();
+		},
+	);
+	it("a changed identity or recovery decision at common CAS produces no alert", async () => {
+		primeDead();
+		bodyConverge.mockResolvedValue({
+			kind: "deferred",
+			reason: "observation_stale",
+		});
+		await service.reconcileMonitorLoss();
+		expect(bodyConverge).toHaveBeenCalledOnce();
+		expect(mockedInspect).not.toHaveBeenCalled();
+		expect(notifier.persistPreparedZombieDetected).not.toHaveBeenCalled();
+		expect(store.forceStatus).not.toHaveBeenCalled();
+	});
+	it("terminal preservation does not emit a false failed-body alert", async () => {
+		primeDead();
+		bodyConverge.mockResolvedValue({
+			kind: "committed",
+			obligation: { disposition: "completion_preserved" },
+			projection: { projected: true },
+		} as never);
+		await service.reconcileMonitorLoss();
+		expect(bodyConverge).toHaveBeenCalledOnce();
+		expect(mockedInspect).not.toHaveBeenCalled();
+		expect(notifier.persistPreparedZombieDetected).not.toHaveBeenCalled();
+	});
+	it("removed candidates do not produce a second declaration", async () => {
+		primeDead();
+		commitFixture();
+		await service.reconcileMonitorLoss();
+		await service.reconcileMonitorLoss();
+		expect(bodyConverge).toHaveBeenCalledOnce();
+		expect(notifier.persistPreparedZombieDetected).toHaveBeenCalledOnce();
+	});
+	it("inspection failure leaves committed death for durable alert replay", async () => {
+		primeDead();
+		commitFixture();
+		mockedInspect.mockRejectedValueOnce(new Error("git unavailable"));
+		await service.reconcileMonitorLoss();
+		expect(store.getSession("exec-z1").status).toBe("failed");
+		expect(notifier.persistPreparedZombieDetected).not.toHaveBeenCalled();
+	});
+	it("an unresolvable Lead records a deterministic audit after death", async () => {
+		primeDead();
+		commitFixture();
+		notifier.prepareSessionZombieDetected.mockReturnValue(null);
+		await service.reconcileMonitorLoss();
+		expect(store.getSession("exec-z1").status).toBe("failed");
+		expect(store.insertEvent).toHaveBeenCalledWith(
+			expect.objectContaining({ event_id: "zombie-alert-unroutable-exec-z1" }),
 		);
 	});
 });
@@ -584,10 +509,15 @@ describe("M3 backfill wiring", () => {
 		const gate = new Promise<void>((r) => {
 			release = r;
 		});
+		let entered!: () => void;
+		const inReconcile = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
 		let firstCall = true;
 		mockedTry.mockImplementation(async () => {
 			if (firstCall) {
 				firstCall = false;
+				entered();
 				await gate;
 			}
 			return { kind: "absent" };
@@ -598,9 +528,9 @@ describe("M3 backfill wiring", () => {
 				"zombie: tmux window runner-flywheel:@829 dead (pane probe absent x2, server up, at 2026-07-15T05:20:00.000Z)",
 		});
 		store.getOrphanSessions.mockReturnValue([sess()]);
-		store.getZombieAlertBacklog.mockReturnValueOnce([failedZombie]);
 		const p1 = service.check(); // hangs in reconcile
-		await new Promise((r) => setTimeout(r, 0));
+		await inReconcile;
+		store.getZombieAlertBacklog.mockReturnValueOnce([failedZombie]);
 		await service.check(); // trio skipped — but backfill runs
 		expect(notifier.prepareSessionZombieDetected).toHaveBeenCalledWith(
 			failedZombie,
@@ -737,123 +667,33 @@ describe("M4 cohort aggregation + flush ownership", () => {
 	});
 });
 
-describe("FLY-2505 bounded recovery protection", () => {
-	it.each(["pending_reservation", "readiness"])(
-		"protects %s from dead probes and direct orphan reap without refreshing heartbeat",
+describe("FLY-2505 shared recovery authority", () => {
+	it.each(["pending_reservation", "readiness", "expired_readiness"])(
+		"does not reinterpret %s as permission to fail",
 		async (reason) => {
-			const candidate = sess({ adapter_type: "codex-tmux" });
-			store.getSession.mockReturnValue(candidate);
-			store.getOrphanSessions.mockReturnValue([candidate]);
 			store.getCodexRecoveryDeferral = vi.fn(() => ({
-				episodeId: "episode",
-				untilMs: Date.now() + 60000,
 				reason,
+				untilMs: Date.now() - 300001,
 			}));
-			mockedProbe.mockResolvedValue("absent");
-			await service.reconcileMonitorLoss();
+			store.getOrphanSessions.mockReturnValue([
+				sess({ adapter_type: "codex-tmux" }),
+			]);
+			bodyObserve.mockImplementation(async (id) => ({
+				...observation(id, "unknown"),
+				reason: "recovery_active",
+			}));
+			bodyConverge.mockResolvedValue({
+				kind: "deferred",
+				reason: "body_unknown",
+			});
 			await service.reconcileMonitorLoss();
 			await service.reapOrphans();
+			expect(store.getCodexRecoveryDeferral).not.toHaveBeenCalled();
 			expect(store.forceStatus).not.toHaveBeenCalled();
 			expect(store.updateHeartbeat).not.toHaveBeenCalled();
 			expect(mockedInspect).not.toHaveBeenCalled();
 		},
 	);
-	it("rechecks recovery protection after slow zombie forensics", async () => {
-		const candidate = sess({ adapter_type: "codex-tmux" });
-		store.getSession.mockReturnValue(candidate);
-		store.getOrphanSessions.mockReturnValue([candidate]);
-		let recovering = false;
-		store.getCodexRecoveryDeferral = vi.fn(() =>
-			recovering
-				? {
-						episodeId: "episode",
-						untilMs: Date.now() + 60000,
-						reason: "pending_reservation",
-					}
-				: false,
-		);
-		mockedProbe.mockResolvedValue("absent");
-		mockedInspect.mockImplementationOnce(async () => {
-			recovering = true;
-			return { ok: false, reason: "test" } as never;
-		});
-		await service.reconcileMonitorLoss();
-		await service.reconcileMonitorLoss();
-		expect(mockedInspect).toHaveBeenCalledTimes(1);
-		expect(store.forceStatus).not.toHaveBeenCalled();
-	});
-});
-
-describe("FLY-2505 readiness deadline handoff", () => {
-	function expired(deadline = Date.now() - 1000) {
-		const candidate = sess({
-			adapter_type: "codex-tmux",
-			lifecycle_revision: 0,
-		});
-		store.getSession.mockReturnValue(candidate);
-		store.getOrphanSessions.mockReturnValue([candidate]);
-		store.getCodexRecoveryDeferral = vi.fn(() => ({
-			episodeId: "episode",
-			reason: "expired_readiness",
-			untilMs: deadline,
-			lastFailureEventId: "last-failure",
-			lastFailure: {
-				code: "daemon_socket_not_ready",
-				stage: "daemon_spawn",
-				summary: "Daemon socket not ready",
-			},
-		}));
-		mockedProbe.mockResolvedValue("absent");
-		return candidate;
-	}
-	it("runs exhaustion before forensics and re-proves the pane after a successful resume", async () => {
-		const candidate = expired();
-		const handler = vi.fn(async () => {
-			store.getSession.mockReturnValue({ ...candidate, lifecycle_revision: 1 });
-			store.getCodexRecoveryDeferral.mockReturnValue(false);
-			mockedProbe.mockResolvedValue("alive");
-		});
-		service.setCodexRecoveryExhaustionHandler(handler);
-		await service.reconcileMonitorLoss();
-		await service.reconcileMonitorLoss();
-		expect(handler).toHaveBeenCalledWith("exec-z1");
-		expect(mockedInspect.mock.invocationCallOrder[0]).toBeGreaterThan(
-			handler.mock.invocationCallOrder[0],
-		);
-		expect(store.forceStatus).not.toHaveBeenCalled();
-	});
-	it("re-reads heartbeat after direct orphan exhaustion await", async () => {
-		const candidate = expired();
-		service.setCodexRecoveryExhaustionHandler(async () => {
-			store.getSession.mockReturnValue({
-				...candidate,
-				heartbeat_at: new Date().toISOString().slice(0, 19).replace("T", " "),
-			});
-			store.getCodexRecoveryDeferral.mockReturnValue(false);
-		});
-		await service.reapOrphans();
-		expect(store.forceStatus).not.toHaveBeenCalled();
-	});
-	it("bounds missing-handler grace by the persisted deadline and retains the diagnostic on fallback", async () => {
-		expired();
-		await service.reapOrphans();
-		expect(store.forceStatus).not.toHaveBeenCalled();
-		store.getCodexRecoveryDeferral.mockReturnValue({
-			...store.getCodexRecoveryDeferral(),
-			untilMs: Date.now() - 300001,
-		});
-		await service.reapOrphans();
-		expect(store.forceStatus).toHaveBeenCalledWith(
-			"exec-z1",
-			"failed",
-			expect.any(String),
-			expect.stringContaining("readiness_retry_exhausted"),
-		);
-		expect(store.forceStatus.mock.calls[0][3]).toContain("last-failure");
-		expect(notifier.onSessionOrphaned.mock.calls[0][0].last_error).toContain(
-			"daemon_socket_not_ready",
-		);
-	});
 });
 
 it("FLY-2505 zombie fallback retains parseable probe evidence alongside the recovery diagnostic", async () => {
@@ -870,45 +710,4 @@ it("FLY-2505 zombie fallback retains parseable probe evidence alongside the reco
 			`${marker}; readiness_retry_exhausted: daemon_socket_not_ready/daemon_spawn; lastFailureEventId=event-1`,
 		),
 	).toEqual(parseZombieLastError(marker));
-});
-
-it("FLY-2505 rejects a successor installed during the final server probe", async () => {
-	const candidate = sess({ adapter_type: "codex-tmux", lifecycle_revision: 0 });
-	store.getSession.mockReturnValue(candidate);
-	store.getOrphanSessions.mockReturnValue([candidate]);
-	mockedProbe.mockResolvedValue("absent");
-	mockedServer
-		.mockResolvedValueOnce("up")
-		.mockResolvedValueOnce("up")
-		.mockImplementationOnce(async () => {
-			store.getSession.mockReturnValue({
-				...candidate,
-				retry_successor: "exec-successor",
-			});
-			return "up";
-		});
-	await service.reconcileMonitorLoss();
-	await service.reconcileMonitorLoss();
-	expect(store.forceStatus).not.toHaveBeenCalled();
-});
-
-it("FLY-2505 throwing deadline handler still re-proves liveness before fallback", async () => {
-	const candidate = sess({ adapter_type: "codex-tmux" });
-	store.getSession.mockReturnValue(candidate);
-	store.getOrphanSessions.mockReturnValue([candidate]);
-	store.getCodexRecoveryDeferral = vi.fn(() => ({
-		episodeId: "episode",
-		reason: "expired_readiness",
-		untilMs: Date.now() - 300001,
-	}));
-	mockedProbe.mockResolvedValue("absent");
-	service.setCodexRecoveryExhaustionHandler(async () => {
-		mockedProbe.mockResolvedValue("alive");
-		throw new Error("sink unavailable");
-	});
-	await service.reconcileMonitorLoss();
-	await service.reconcileMonitorLoss();
-	expect(mockedInspect).toHaveBeenCalledTimes(1);
-	expect(mockedProbe).toHaveBeenCalledTimes(3);
-	expect(store.forceStatus).not.toHaveBeenCalled();
 });

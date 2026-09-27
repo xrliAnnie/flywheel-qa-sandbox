@@ -1,22 +1,5 @@
-/**
- * FLY-1329 (A3, Codex R1 HIGH-1): widening the boot re-adopt CANDIDATE query is a
- * no-op unless the CONSUMERS also stop discarding non-`running` rows.
- *
- * `seedReconnecting` now pulls `getReadoptCandidateSessions` (running +
- * awaiting_review + design_done + approved_to_ship). But both consumers —
- * `reconcileCandidateReadopt` (legacy) and `reconcileCandidateReadoptV2`
- * (zombie-ON) — opened with `if (status !== "running") { clearReconnecting; return }`.
- * So every parked candidate was dropped on entry and the widened query bought
- * nothing: the FLY-1319 parked implement was STILL never re-adopted.
- *
- * A parked phase (awaiting_review / design_done / approved_to_ship) is a
- * keep-alive runner intentionally waiting for the pipeline, NOT a terminalized
- * session. It must be re-adopted: monitoring restored if its tmux is alive,
- * alert-only if not — and NEVER a status change or close.
- *
- * Mocks mirror monitor-loss.test.ts so the two consumers are exercised
- * deterministically.
- */
+/** FLY-1329/2919: parked readoption consumes process evidence, with no death exemption. */
+import type { BodyObservation } from "flywheel-claude-runner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../bridge/tmux-lookup.js", () => {
@@ -70,6 +53,47 @@ const FOUND_TARGET = {
 	target: { tmuxWindow: "flywheel:@0", sessionName: "flywheel" },
 };
 
+const bodyObserve = vi.fn(
+	async (executionId: string): Promise<BodyObservation> => ({
+		identity: {
+			executionId,
+			activationId: "activation",
+			generation: 1,
+			lifecycleRevision: 0,
+			adapter: "claude-tmux",
+		},
+		ownerToken: "owner",
+		spawnEpoch: 1,
+		bindingDigest: "a".repeat(64),
+		verdict: "alive",
+		observedAt: new Date().toISOString(),
+		expiresAt: new Date(Date.now() + 10000).toISOString(),
+		reason: "process_alive",
+	}),
+);
+const bodyConverge = vi.fn(async () => ({
+	kind: "deferred" as const,
+	reason: "fixture_cas_refused",
+}));
+function bodyVerdict(verdict: BodyObservation["verdict"]) {
+	bodyObserve.mockImplementation(async (executionId) => ({
+		identity: {
+			executionId,
+			activationId: "activation",
+			generation: 1,
+			lifecycleRevision: 0,
+			adapter: "claude-tmux",
+		},
+		ownerToken: "owner",
+		spawnEpoch: 1,
+		bindingDigest: "a".repeat(64),
+		verdict,
+		observedAt: new Date().toISOString(),
+		expiresAt: new Date(Date.now() + 10000).toISOString(),
+		reason: "fixture_process_evidence",
+	}));
+}
+
 /** The 532c634b shape: a parked implement at awaiting_review. */
 function parkedImplement(over: Partial<Session> = {}): Session {
 	return {
@@ -122,7 +146,7 @@ function makeService(
 	store: MockStore,
 	notifier: MockNotifier,
 ): HeartbeatService {
-	return new HeartbeatService(
+	const service = new HeartbeatService(
 		store as never,
 		notifier as never,
 		15,
@@ -133,9 +157,17 @@ function makeService(
 		6 * 3_600_000,
 		{ bridgeBaseUrl: "http://127.0.0.1:9876", ingestToken: "tok" },
 	);
+	service.setExecutionBodyLifecycle({
+		observe: bodyObserve,
+		converge: bodyConverge,
+	});
+	return service;
 }
 
 beforeEach(() => {
+	bodyObserve.mockReset();
+	bodyConverge.mockClear();
+	bodyVerdict("alive");
 	mockedAlive.mockReset().mockResolvedValue(true);
 	// Restore the default "found + derives from isTmuxWindowAlive" tri-state so a
 	// per-test override (lookup error / probe throw) never leaks to the next test.
@@ -156,7 +188,7 @@ describe("FLY-1329 A3 — parked readopt", () => {
 		service?.stop();
 	});
 
-	it("RE-ADOPTS a parked awaiting_review implement whose tmux is alive (FLY-1319 shape)", async () => {
+	it("RE-ADOPTS a parked awaiting_review implement whose process is alive (FLY-1319 shape)", async () => {
 		store = makeStore(parkedImplement());
 		notifier = makeNotifier();
 		service = makeService(store, notifier);
@@ -195,9 +227,10 @@ describe("FLY-1329 A3 — parked readopt", () => {
 		expect(store.forceStatus).not.toHaveBeenCalled();
 	});
 
-	it("treats durable workflow standby as healthy absence without probing or alerting", async () => {
+	it("requires independent process evidence even for a durable standby row", async () => {
 		store = makeStore(parkedImplement({ status: "ship_parked" }));
 		store.getWorkflowExecutionProcessBody.mockReturnValue({ state: "standby" });
+		bodyVerdict("unknown");
 		notifier = makeNotifier();
 		service = makeService(store, notifier);
 
@@ -205,10 +238,15 @@ describe("FLY-1329 A3 — parked readopt", () => {
 
 		expect(mockedProbe).not.toHaveBeenCalled();
 		expect(store.updateHeartbeat).not.toHaveBeenCalled();
-		expect(notifier.onSessionMonitoringLost).not.toHaveBeenCalled();
+		expect(bodyObserve).toHaveBeenCalled();
+		expect(notifier.onSessionMonitoringLost).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.any(Number),
+			{ unverified: true },
+		);
 	});
 
-	it("a parked implement whose tmux is DEAD → alert-only, never a status change or re-adopt", async () => {
+	it("a parked implement with no window but a live process is re-adopted", async () => {
 		store = makeStore(parkedImplement());
 		notifier = makeNotifier();
 		service = makeService(store, notifier);
@@ -216,18 +254,19 @@ describe("FLY-1329 A3 — parked readopt", () => {
 
 		await service.seedReconnecting();
 
-		expect(notifier.onSessionMonitoringLost).toHaveBeenCalledTimes(1);
-		expect(notifier.onSessionMonitoringReestablished).not.toHaveBeenCalled();
+		expect(notifier.onSessionMonitoringLost).not.toHaveBeenCalled();
+		expect(notifier.onSessionMonitoringReestablished).toHaveBeenCalledOnce();
+		expect(bodyConverge).not.toHaveBeenCalled();
 		expect(store.forceStatus).not.toHaveBeenCalled();
-		expect(store.updateHeartbeat).not.toHaveBeenCalled();
+		expect(store.updateHeartbeat).toHaveBeenCalled();
 	});
 
 	// Codex R2 MEDIUM: the boolean isSessionTmuxAlive folded `indeterminate`
 	// (probe/CommDB failure) into "alive". A probe failure must ONLY alert
 	// (unverified), never refresh the heartbeat or announce re-establishment —
 	// otherwise a dead parked session is life-supported forever.
-	it("indeterminate via a CommDB lookup error → unverified alert, NOT a re-adopt", async () => {
-		mockedLookup.mockReturnValue({ kind: "error", error: "db locked" });
+	it("unknown process evidence → unverified alert, NOT a re-adopt", async () => {
+		bodyVerdict("unknown");
 		store = makeStore(parkedImplement());
 		notifier = makeNotifier();
 		service = makeService(store, notifier);
@@ -245,8 +284,8 @@ describe("FLY-1329 A3 — parked readopt", () => {
 		expect(store.forceStatus).not.toHaveBeenCalled();
 	});
 
-	it("indeterminate via a probe throw → unverified alert, never enterReconnecting", async () => {
-		mockedProbe.mockRejectedValue(new Error("tmux probe blew up"));
+	it("process observation failure → unverified alert, never re-adopt", async () => {
+		bodyObserve.mockRejectedValue(new Error("process sample failed"));
 		store = makeStore(parkedImplement());
 		notifier = makeNotifier();
 		service = makeService(store, notifier);
@@ -262,22 +301,18 @@ describe("FLY-1329 A3 — parked readopt", () => {
 		expect(store.updateHeartbeat).not.toHaveBeenCalled();
 	});
 
-	it("a dead-pin corpse → alert carries the death verdict (NOT unverified, NOT 'still alive'), never a re-adopt", async () => {
-		mockedProbe.mockResolvedValue("dead_pin");
+	it("a proven-dead parked process is sent to common death convergence on the first pass", async () => {
+		bodyVerdict("dead");
 		store = makeStore(parkedImplement());
 		notifier = makeNotifier();
 		service = makeService(store, notifier);
 
 		await service.seedReconnecting();
 
-		// dead_pin is provable death, not a probe failure: the alert must carry
-		// the death verdict (so the notifier renders honest death copy, not the
-		// legacy "still alive"), and never the re-established notice / heartbeat.
-		expect(notifier.onSessionMonitoringLost).toHaveBeenCalledWith(
-			expect.objectContaining({ execution_id: "parked-impl" }),
-			expect.any(Number),
-			{ parkedLiveness: "dead_pin" },
-		);
+		expect(bodyConverge).toHaveBeenCalledExactlyOnceWith("parked-impl");
+		expect(mockedProbe).not.toHaveBeenCalled();
+		expect(mockedLookup).not.toHaveBeenCalled();
+		expect(notifier.onSessionMonitoringLost).not.toHaveBeenCalled();
 		expect(notifier.onSessionMonitoringReestablished).not.toHaveBeenCalled();
 		expect(store.updateHeartbeat).not.toHaveBeenCalled();
 	});

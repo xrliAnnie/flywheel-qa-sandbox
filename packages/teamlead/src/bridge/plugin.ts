@@ -505,6 +505,10 @@ import {
 	yieldToEventLoop,
 } from "./event-loop-yield.js";
 import { createEventRouter } from "./event-route.js";
+import {
+	convergeExecutionBody,
+	projectCommittedExecutionBodyDeath,
+} from "./execution-body-convergence.js";
 import { createStoredExecutionBodyObserver } from "./execution-body-liveness.js";
 import { withExecutionMutationLease } from "./execution-mutation-lease.js";
 import {
@@ -10270,10 +10274,14 @@ export async function startBridge(
 	// body is still owned; an injected dispatcher does not share it. Disabled
 	// under VITEST (same boundary as the codex health probe): general Bridge
 	// suites must never read the host's process table or its real socket root.
+	const executionBodyProbesEnabled = !(
+		opts?.startDispatcher || process.env.VITEST
+	);
 	const executionBodyObserver = createStoredExecutionBodyObserver(
 		store,
 		flagStore,
 		{
+			sample: executionBodyProbesEnabled ? undefined : async () => null,
 			isRecoveryActive: (executionId) => {
 				const deferral = store.getCodexRecoveryDeferral(
 					executionId,
@@ -10287,16 +10295,15 @@ export async function startBridge(
 				),
 		},
 	);
-	const codexTerminalSweep =
-		opts?.startDispatcher || process.env.VITEST
-			? undefined
-			: createBridgeCodexTerminalSweep({
-					store,
-					bodyObserver: executionBodyObserver,
-					owners: codexExecutionOwners,
-					reapEnabled: () => storeCodexTerminalReapEnabled(flagStore),
-					alertSink: codexTerminalSweepAlertHolder,
-				});
+	const codexTerminalSweep = !executionBodyProbesEnabled
+		? undefined
+		: createBridgeCodexTerminalSweep({
+				store,
+				bodyObserver: executionBodyObserver,
+				owners: codexExecutionOwners,
+				reapEnabled: () => storeCodexTerminalReapEnabled(flagStore),
+				alertSink: codexTerminalSweepAlertHolder,
+			});
 	const codexSessionReowner = new CodexSessionReowner({
 		store,
 		isIntentionalStandby: (executionId) => {
@@ -10555,13 +10562,7 @@ export async function startBridge(
 				].includes(fresh.status)
 			)
 				return;
-			const runtime = codexRecoveryRuntimes.get(session.project_name);
-			if (!runtime) {
-				throw new Error(
-					`Codex recovery runtime unavailable for ${session.project_name}`,
-				);
-			}
-			await runtime.failExhausted(session, attempts);
+			await heartbeatService.reconcileExecutionBody(session.execution_id);
 		},
 		record: (event, session, payload) => {
 			store.insertEvent({
@@ -11242,9 +11243,86 @@ export async function startBridge(
 			);
 		},
 	);
-	heartbeatService.setCodexRecoveryExhaustionHandler((executionId) =>
-		codexSessionReowner.finalizeDueExhaustion(executionId),
-	);
+	const heartbeatBodyObserver = {
+		...executionBodyObserver,
+		observe: async (executionId: string) => {
+			const observed = await executionBodyObserver.observe(executionId);
+			if (
+				observed?.verdict !== "unknown" ||
+				observed.reason !== "recovery_active"
+			)
+				return observed;
+			if (await heartbeatService.reconcileCompletionBeforeDeath(executionId))
+				return observed;
+			const session = store.getSession(executionId);
+			if (session) await codexSessionReowner.runPass([session]);
+			return executionBodyObserver.observe(executionId);
+		},
+	};
+
+	let bodyDeathReplayCursor = "";
+	heartbeatService.setExecutionBodyLifecycle({
+		observe: heartbeatBodyObserver.observe,
+		replayPending: async () => {
+			let pending = store.listPendingExecutionBodyDeaths({
+				limit: 8,
+				afterId: bodyDeathReplayCursor,
+			});
+			if (!pending.length && bodyDeathReplayCursor) {
+				bodyDeathReplayCursor = "";
+				pending = store.listPendingExecutionBodyDeaths({ limit: 8 });
+			}
+			for (const duty of pending) {
+				bodyDeathReplayCursor = duty.obligationId;
+				try {
+					const project = store.getWorkflowRun(duty.runId)?.project_name;
+					if (!project) continue;
+					const path = commDbPathForProject(project);
+					if (!ffExistsSync(path)) continue;
+					const comm = new CommDB(path);
+					try {
+						projectCommittedExecutionBodyDeath({
+							store,
+							comm,
+							obligationId: duty.obligationId,
+							nowMs: Date.now(),
+						});
+					} finally {
+						comm.close();
+					}
+				} catch (error) {
+					console.warn(
+						`[body-death] replay ${duty.obligationId} deferred: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
+			}
+		},
+		converge: async (executionId) => {
+			const session = store.getSession(executionId);
+			if (!session?.project_name)
+				return { kind: "deferred", reason: "session_missing" };
+			const path = commDbPathForProject(session.project_name);
+			if (!ffExistsSync(path))
+				return { kind: "deferred", reason: "comm_identity_missing" };
+			const comm = new CommDB(path);
+			try {
+				return await convergeExecutionBody(
+					{
+						store,
+						comm,
+						observer: executionBodyObserver,
+						now: Date.now,
+						completionBlocksDeath: (id) =>
+							heartbeatService.reconcileCompletionBeforeDeath(id),
+					},
+					executionId,
+				);
+			} finally {
+				comm.close();
+			}
+		},
+	});
+
 	heartbeatServiceRef.current = heartbeatService;
 	livenessWiring.liveness = true;
 

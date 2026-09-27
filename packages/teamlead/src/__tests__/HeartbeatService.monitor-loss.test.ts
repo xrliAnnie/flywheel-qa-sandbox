@@ -7,6 +7,7 @@
  * complete-marker-reconciler.test.ts; here we mock that module + tmux-lookup to
  * test the orchestration deterministically.
  */
+import type { BodyObservation } from "flywheel-claude-runner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../bridge/tmux-lookup.js", () => {
@@ -65,6 +66,47 @@ const mockedTarget = vi.mocked(getTmuxTargetFromCommDb);
 const mockedLookup = vi.mocked(lookupTmuxTarget);
 const mockedDetailedProbe = vi.mocked(probeRunnerProcessLivenessDetailed);
 
+const bodyObserve = vi.fn(
+	async (executionId: string): Promise<BodyObservation> => ({
+		identity: {
+			executionId,
+			activationId: "activation",
+			generation: 1,
+			lifecycleRevision: 0,
+			adapter: "claude-tmux",
+		},
+		ownerToken: "owner",
+		spawnEpoch: 1,
+		bindingDigest: "a".repeat(64),
+		verdict: "alive",
+		observedAt: new Date().toISOString(),
+		expiresAt: new Date(Date.now() + 10000).toISOString(),
+		reason: "process_alive",
+	}),
+);
+const bodyConverge = vi.fn(async () => ({
+	kind: "deferred" as const,
+	reason: "fixture_cas_refused",
+}));
+function bodyVerdict(verdict: BodyObservation["verdict"]) {
+	bodyObserve.mockImplementation(async (executionId) => ({
+		identity: {
+			executionId,
+			activationId: "activation",
+			generation: 1,
+			lifecycleRevision: 0,
+			adapter: "claude-tmux",
+		},
+		ownerToken: "owner",
+		spawnEpoch: 1,
+		bindingDigest: "a".repeat(64),
+		verdict,
+		observedAt: new Date().toISOString(),
+		expiresAt: new Date(Date.now() + 10000).toISOString(),
+		reason: "fixture_process_evidence",
+	}));
+}
+
 function sess(overrides: Partial<Session> = {}): Session {
 	return {
 		execution_id: "exec-1",
@@ -119,7 +161,7 @@ function makeService(
 	store: MockStore,
 	notifier: MockNotifier,
 ): HeartbeatService {
-	return new HeartbeatService(
+	const service = new HeartbeatService(
 		store as never,
 		notifier as never,
 		15,
@@ -130,9 +172,17 @@ function makeService(
 		6 * 3_600_000,
 		{ bridgeBaseUrl: "http://127.0.0.1:9876", ingestToken: "tok" },
 	);
+	service.setExecutionBodyLifecycle({
+		observe: bodyObserve,
+		converge: bodyConverge,
+	});
+	return service;
 }
 
 beforeEach(() => {
+	bodyObserve.mockReset();
+	bodyConverge.mockClear();
+	bodyVerdict("alive");
 	mockedTry.mockReset().mockResolvedValue({ kind: "absent" });
 	mockedFallback.mockReset();
 	mockedAlive.mockReset().mockResolvedValue(true);
@@ -165,7 +215,7 @@ describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
 		service.stop();
 	});
 
-	it("no marker + tmux alive → re-adopt (updateHeartbeat) + one-time re-established advisory", async () => {
+	it("no marker + process alive → re-adopt (updateHeartbeat) + one-time re-established advisory", async () => {
 		store.getOrphanSessions.mockReturnValue([sess()]);
 		await service.reconcileMonitorLoss();
 		await service.reconcileMonitorLoss(); // stay cycle
@@ -221,7 +271,7 @@ describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
 		expect(notifier.clearReconnectStamp).not.toHaveBeenCalled();
 	});
 
-	it("valid marker wins over tmux alive (marker-first): reconciled, no re-adopt", async () => {
+	it("valid marker wins over process alive (marker-first): reconciled, no re-adopt", async () => {
 		mockedTry.mockResolvedValue({
 			kind: "reconciled",
 			status: "awaiting_review",
@@ -230,10 +280,10 @@ describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
 		await service.reconcileMonitorLoss();
 		expect(notifier.onSessionMonitoringReestablished).not.toHaveBeenCalled();
 		expect(store.updateHeartbeat).not.toHaveBeenCalled();
-		expect(mockedAlive).not.toHaveBeenCalled();
+		expect(bodyObserve).not.toHaveBeenCalled();
 	});
 
-	it("settled ship-attempt marker is fully consumed: no tmux probe or re-adopt fallthrough", async () => {
+	it("settled ship-attempt marker is fully consumed: no process probe or re-adopt fallthrough", async () => {
 		mockedTry.mockResolvedValue({
 			kind: "settled_ship_attempt_failed",
 			settle: "marked",
@@ -242,7 +292,7 @@ describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
 		await service.reconcileMonitorLoss();
 		expect(notifier.onSessionMonitoringReestablished).not.toHaveBeenCalled();
 		expect(store.updateHeartbeat).not.toHaveBeenCalled();
-		expect(mockedAlive).not.toHaveBeenCalled();
+		expect(bodyObserve).not.toHaveBeenCalled();
 	});
 
 	it("propagates every review-authorization alert into periodic marker replay", async () => {
@@ -291,13 +341,13 @@ describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
 		await service.reconcileMonitorLoss();
 		await service.reapOrphans();
 
-		expect(mockedAlive).not.toHaveBeenCalled();
+		expect(bodyObserve).not.toHaveBeenCalled();
 		expect(store.updateHeartbeat).not.toHaveBeenCalled();
 		expect(store.forceStatus).not.toHaveBeenCalled();
 		expect(notifier.onSessionOrphaned).not.toHaveBeenCalled();
 	});
 
-	it("quarantined + tmux alive → re-adopt + reapOrphans skips (FLY-172 R1 HIGH parity)", async () => {
+	it("quarantined + process alive → re-adopt + reapOrphans skips (FLY-172 R1 HIGH parity)", async () => {
 		mockedTry.mockResolvedValue({
 			kind: "quarantined",
 			reason: "invalid",
@@ -306,9 +356,7 @@ describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
 		mockedAlive.mockResolvedValue(true);
 		store.getOrphanSessions.mockReturnValue([sess()]);
 		await service.reconcileMonitorLoss();
-		expect(mockedFallback).toHaveBeenCalledWith(
-			expect.objectContaining({ executionId: "exec-1", tmuxAlive: true }),
-		);
+		expect(mockedFallback).not.toHaveBeenCalled();
 		expect(store.updateHeartbeat).toHaveBeenCalledWith("exec-1");
 		expect(service.isReconnecting("exec-1")).toBe(true);
 		await service.reapOrphans();
@@ -453,114 +501,66 @@ describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
 		});
 	});
 
-	it("records lookup errors without changing the indeterminate verdict", async () => {
+	it("records unknown process authority without inventing a lookup failure", async () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		mockedLookup.mockReturnValue({
-			kind: "error",
-			error: "database is locked",
-		});
+		bodyVerdict("unknown");
 		store.getOrphanSessions.mockReturnValue([sess()]);
-
 		await service.reconcileMonitorLoss();
-
 		expect(service.probeForensicsSnapshot()).toMatchObject({
-			lookup_error: 1,
+			lookup_error: 0,
 			probe_throw: 0,
-			probe_unclear: 0,
+			probe_unclear: 1,
 			pending_sentinel: 0,
 			last_at: expect.any(String),
 		});
 		expect(warn).toHaveBeenCalledWith(
-			expect.stringContaining('[fly2008-probe] {"source":"lookup_error"'),
+			expect.stringContaining('[fly2008-probe] {"source":"probe_unclear"'),
 		);
 		expect(store.updateHeartbeat).not.toHaveBeenCalled();
+		expect(mockedLookup).not.toHaveBeenCalled();
 		warn.mockRestore();
 	});
-
-	it("separates tmux throws from unclear probe output", async () => {
-		vi.spyOn(console, "warn").mockImplementation(() => {});
+	it("treats thrown and missing process observations as unknown", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		store.getOrphanSessions.mockReturnValue([sess()]);
-		mockedDetailedProbe
-			.mockResolvedValueOnce({
-				liveness: "indeterminate",
-				failure: {
-					stage: "tmux-throw",
-					errorType: "Error",
-					message: "timeout",
-					timedOut: true,
-					durationMs: 5_001,
-				},
-			})
-			.mockResolvedValueOnce({
-				liveness: "indeterminate",
-				failure: {
-					stage: "empty-output",
-					errorType: "EmptyOutput",
-					message: "empty",
-					timedOut: false,
-					durationMs: 3,
-				},
-			});
-
+		bodyObserve
+			.mockRejectedValueOnce(new Error("sample timeout"))
+			.mockResolvedValueOnce(undefined as never);
 		await service.reconcileMonitorLoss();
 		await service.reconcileMonitorLoss();
-
 		expect(service.probeForensicsSnapshot()).toMatchObject({
-			probe_throw: 1,
-			probe_unclear: 1,
+			probe_throw: 0,
+			probe_unclear: 2,
 		});
 		expect(store.updateHeartbeat).not.toHaveBeenCalled();
-		vi.mocked(console.warn).mockRestore();
+		expect(bodyConverge).not.toHaveBeenCalled();
+		warn.mockRestore();
 	});
-
-	it("keeps pending-target absence, timeout, and success verdicts while counting each probe", async () => {
+	it("ignores pending-window state while process authority recovers from unknown to alive", async () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		mockedLookup.mockReturnValue({
 			kind: "found",
 			target: { tmuxWindow: "geoforge3d:pending", sessionName: "geoforge3d" },
 		});
-		mockedDetailedProbe
-			.mockResolvedValueOnce({ liveness: "absent" })
-			.mockResolvedValueOnce({
-				liveness: "indeterminate",
-				failure: {
-					stage: "tmux-throw",
-					errorType: "Error",
-					message: "timeout",
-					timedOut: true,
-					durationMs: 5_001,
-				},
-			})
-			.mockResolvedValueOnce({ liveness: "alive" });
+		const alive = await bodyObserve("exec-1");
+		bodyObserve.mockClear();
+		bodyObserve
+			.mockResolvedValueOnce({ ...alive, verdict: "unknown" })
+			.mockRejectedValueOnce(new Error("timeout"))
+			.mockResolvedValueOnce(alive);
 		store.getOrphanSessions.mockReturnValue([sess()]);
-
 		await service.reconcileMonitorLoss();
 		await service.reconcileMonitorLoss();
 		await service.reconcileMonitorLoss();
-
 		expect(service.probeForensicsSnapshot()).toMatchObject({
-			pending_sentinel: 3,
-			probe_throw: 1,
-			probe_unclear: 0,
+			pending_sentinel: 0,
+			probe_throw: 0,
+			probe_unclear: 2,
 		});
-		expect(store.updateHeartbeat).toHaveBeenCalledWith("exec-1");
-		expect(store.updateHeartbeat).toHaveBeenCalledTimes(1);
-		expect(mockedDetailedProbe).toHaveBeenNthCalledWith(
-			1,
-			"geoforge3d:pending",
-		);
-		expect(mockedDetailedProbe).toHaveBeenNthCalledWith(
-			2,
-			"geoforge3d:pending",
-		);
-		expect(mockedDetailedProbe).toHaveBeenNthCalledWith(
-			3,
-			"geoforge3d:pending",
-		);
-		expect(warn.mock.calls.flat().join("\n")).toContain(
-			'"source":"probe_throw"',
-		);
-		expect(warn.mock.calls.flat().join("\n")).toContain('"pendingTarget":true');
+		expect(store.updateHeartbeat).toHaveBeenCalledExactlyOnceWith("exec-1");
+		expect(bodyObserve).toHaveBeenCalledTimes(3);
+		expect(mockedLookup).not.toHaveBeenCalled();
+		expect(mockedDetailedProbe).not.toHaveBeenCalled();
 		warn.mockRestore();
 	});
 });

@@ -21100,7 +21100,7 @@ export class StateStore {
 		const stmt = this.db.prepare(
 			`SELECT * FROM sessions s
 			 WHERE s.status = 'failed'
-			   AND s.last_error LIKE 'zombie: %'
+			   AND (s.last_error LIKE 'zombie: %' OR s.last_error GLOB 'body_death:*')
 			   AND s.execution_id > ?
 			   AND NOT EXISTS (
 			     SELECT 1 FROM lead_events le

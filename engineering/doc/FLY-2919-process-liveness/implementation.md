@@ -445,3 +445,21 @@ RED/GREEN：旧observer新增两项均RED（23旧项pass）：尚有预算的dea
 本批是死亡消费者接线前必需的复活优先判据。生产共用observer已接该判据，但Heartbeat declareZombie/reapOrphans及dispatcher仍未接C2事务，不能称主账误判已消除。下一批直接接这些入口，删除pane/server/心跳年龄的死亡授权和parked分流，保留marker-before-death、当前身份CAS和死亡告警重放，并启动B5 sampler。同generation逻辑重入、legacy与剩余消费者/九单验收仍待完成；无review/PR/full CI/QA/handoff声明。
 
 B6 最终验证：13个具体文件逐一240 pass；限定发现文件的owning related为9文件212 pass。teamlead及依赖build、teamlead/voice-codex typecheck、lint均exit0（25既有warning）。FLY-1560、FLY-2211、FLY-2567、FLY-2006与StateStore既有migration/reopen负控保留；无整库/整包测试、新shell测试或真实OS/529证明。全部红绿与中间诊断、命令、related配置及源码SHA256归档implementation-b6-evidence.json.gz；匹配/排除理由归档implementation-b6-consumers.json.gz。
+
+## B7 Heartbeat 生产死亡入口（执行 bd58c685）
+
+在 B6 `77b1a02c2` 上接入 C2，不改变已批准范围。Heartbeat 的 running/parked readoption 共用 BodyObservation；dead 首轮进入 `convergeExecutionBody`，alive 才刷新心跳，unknown 只给未核实提示。`reapOrphans` 的年龄只选候选，不再授权 failed。删除 `zombieDeadStreak`、server-up 双轮门槛、`readoptParkedPhase` 死亡豁免、`notifiedOrphans` 及按年龄直接 forceStatus；从此入口移除 pane/window 查询和 quarantine 的窗状态 fallback。`dead_pin/gone` 不再是此入口生命 verdict。旧告警解析保留用于历史记录重放，不能作为新死亡证据。
+
+生产 plugin 注入共用 C2 和 managed feature flag observer；无 CommDB 文件时只返回未知，不创建新身份。复活资格返回 recovery_active 时先对账 marker，再调用既有 CodexSessionReowner，采样后重新判定。耗尽回调不再直接 `runtime.failExhausted`，改走 Heartbeat/C2；C2 使用原始 observer，避免在 reowner 自己的回调中 await 自己的 runPass。保留既有当前 revision/status/successor 检查。测试及注入 dispatcher 时禁止新增 native OS 采样，与原 terminal sweep 边界一致。独立 sampler 尚未 start，本批仍依赖 Heartbeat 节奏，不能称 cadence 验收通过。
+
+C2 提交后再做 Git 诊断、准备/投递死亡告警；诊断失败不得把已证明死亡的执行留在 running。该负控先 1 RED/14 pass，再15 GREEN。新告警携原始 process observation；StateStore backlog 增加字面 `body_death:` 前缀，重放读取不可变义务，绝不伪造 pane 证据。前缀负控发现 SQL LIKE 的下划线可匹配其他字符（1 RED/12 pass），改为字面 GLOB 后13 GREEN。pending-duty replay 每轮最多8条、稳定游标并逐条隔离异常；独立于活跃执行候选，从旧已提交义务投影，不重新采样或延长10秒期限。真实临时双库 Heartbeat 集成覆盖告警 append 失败后的补投与 process 证据保留。
+
+HIGH marker-before-death 的原测试把 marker 放在旧 Git 取证 await；取证迁到死亡提交后，该注入点已不再是授权边界。重写为真实 StateStore/CommDB/accepted-owner fixture，在 OS sample 和同步 `convergeProvenDeadExecution` 边界注入。11项含无 marker 确实提交的正控、采样中真实完成、transient/held、陈旧 absent 回答而磁盘仍 pending、直接 orphan、目录读取未知、CAS 前到达、quarantine move 失败、replay throw、await 后 lifecycle 变化；不靠未注入 observer 的空转通过。
+
+旧测试首次迁移审计18文件274 pass/54 fail，保留日志，不算最终证据。将旧 tmux mock 驱动生命的 fixture 改为独立 process observation；保留 monitoring/title episode、批量提示、single-flight、marker、告警重放/毒行游标、parked cleanup 的 ship/TURN/working/grace/budget 约束。取消原 pane 双轮、server-up 和 expired-readiness 按年龄 force-fail 的预期，替为首轮共同 CAS、未知不失败、CAS 拒绝不告警、已完成结果不告警及窗口/server 无权覆盖进程死亡。恢复预算/身份/采样 await 竞争由 B6 observer、StateStore recovery-proof 和 reown 测试继续负责；不重新加一套 Heartbeat 预算解释器。保留 FLY-2505 历史错误字符串解析负控。
+
+告警 backfill 的并发测试旧写法仅等 setTimeout(0)，动态 import 尚未完成时第二轮可能抢先进入并自己等住 gate；保留失败日志，改为明确等待第一轮进入 reconciler，再交给第二轮 backlog，验证真正的独立性。基础 orphan throw 测试改为核查既有 catch/日志后可重试，不要求 Bridge 抛出。此前单文件已分别绿；最终源码的18个选定文件、owning related、build/typecheck/lint正在收齐，以下补最终结果。
+
+边界仍未完成：server-loss/crash-reaper/stale-terminal 和其余直接窗口消费者仍有旧权威；dispatcher 尚未消费 C2/缓存，独立采样器未启动；同物理 generation 的逻辑 activation、legacy binding、ordinary/rework 义务与身份退休、D/E/F 和九单验收继续实施。A9 routes 原15秒超时仍未关闭。无有效最终 review、PR、full CI、529/QA 或 needs_review 交卷声明。
+
+B7 最终验证收齐：18个具体文件依次324 pass；限定发现范围的owning related为14文件285 pass。最终源码teamlead及依赖build、teamlead/voice-codex typecheck、lint全部exit0；测试期间13个改动源码的SHA256保持一致。相关测试发现/逐匹配排除理由归档implementation-b7-consumers.json.gz；命令、全部红绿/迁移诊断、related配置与源码hash归档implementation-b7-evidence.json.gz。没有整库/整包测试、真实宿主机探活或529证明；这是B7检查点，不是完整实现完成。

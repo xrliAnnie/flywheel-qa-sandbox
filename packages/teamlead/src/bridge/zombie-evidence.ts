@@ -1,3 +1,5 @@
+import type { BodyObservation } from "flywheel-claude-runner";
+
 /**
  * FLY-1282: zombie-declaration evidence — the single codec between the
  * `last_error` marker written at declaration time and the recurring backfill
@@ -19,6 +21,7 @@ export interface ZombieLiveness {
 }
 
 export type ZombieEvidence =
+	| { kind: "process"; observation: BodyObservation }
 	| { kind: "verified"; liveness: ZombieLiveness; streak: number }
 	| { kind: "unparseable"; rawLastError: string };
 

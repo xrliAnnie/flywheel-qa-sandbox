@@ -150,4 +150,22 @@ describe("FLY-2268 resident receiver wiring", () => {
 	it("does not mistake expired readiness for an in-flight recovery", () => {
 		expect(source).toContain('deferral.reason === "pending_reservation"');
 	});
+	it("routes exhausted recovery through current process death evidence", () => {
+		const exhausted = source.slice(
+			source.indexOf("onRecoveryExhausted:"),
+			source.indexOf("\n\t\trecord:", source.indexOf("onRecoveryExhausted:")),
+		);
+		expect(exhausted).toContain(
+			"heartbeatService.reconcileExecutionBody(session.execution_id)",
+		);
+		expect(exhausted).not.toContain("runtime.failExhausted");
+	});
+	it("keeps injected dispatchers and Vitest away from native process capture", () => {
+		expect(source).toMatch(
+			/executionBodyProbesEnabled\s*=\s*!\(\s*opts\?\.startDispatcher \|\| process\.env\.VITEST\s*\)/,
+		);
+		expect(source).toContain(
+			"sample: executionBodyProbesEnabled ? undefined : async () => null",
+		);
+	});
 });

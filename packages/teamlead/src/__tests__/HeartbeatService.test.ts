@@ -175,96 +175,67 @@ describe("HeartbeatService", () => {
 
 	// --- Orphan reaping ---
 
-	it("reapOrphans() detects orphan, force-fails, and notifies", async () => {
+	function primeOrphan() {
 		const orphan = makeSession({
 			execution_id: "exec-orphan",
 			heartbeat_at: "2026-03-06 08:00:00",
 		});
 		store.getOrphanSessions.mockReturnValue([orphan]);
-
+		const converge = vi.fn(async () => ({
+			kind: "deferred" as const,
+			reason: "body_unknown",
+		}));
+		service.setExecutionBodyLifecycle({
+			observe: async () => undefined,
+			converge,
+		});
+		return converge;
+	}
+	it("reapOrphans delegates death authority instead of force-failing by age", async () => {
+		const converge = primeOrphan();
 		await service.reapOrphans();
-
-		expect(store.forceStatus).toHaveBeenCalledWith(
-			"exec-orphan",
-			"failed",
-			expect.any(String),
-			expect.stringContaining("Orphaned"),
-		);
-		expect(notifier.onSessionOrphaned).toHaveBeenCalledWith(
-			orphan,
-			expect.any(Number),
-		);
+		expect(converge).toHaveBeenCalledExactlyOnceWith("exec-orphan");
+		expect(store.forceStatus).not.toHaveBeenCalled();
+		expect(notifier.onSessionOrphaned).not.toHaveBeenCalled();
 	});
-
-	it("reapOrphans() skips already-notified orphans", async () => {
-		const orphan = makeSession({
-			execution_id: "exec-orphan",
-			heartbeat_at: "2026-03-06 08:00:00",
+	it("reapOrphans serializes convergence for the same execution", async () => {
+		const converge = primeOrphan();
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
 		});
-		store.getOrphanSessions.mockReturnValue([orphan]);
-
+		converge.mockImplementation(async () => {
+			await gate;
+			return { kind: "deferred", reason: "lease_held" };
+		});
+		const first = service.reapOrphans();
+		await vi.waitFor(() => expect(converge).toHaveBeenCalledOnce());
 		await service.reapOrphans();
-		await service.reapOrphans();
-
-		expect(notifier.onSessionOrphaned).toHaveBeenCalledTimes(1);
-		expect(store.forceStatus).toHaveBeenCalledTimes(1);
+		expect(converge).toHaveBeenCalledOnce();
+		release();
+		await first;
 	});
-
-	it("reapOrphans() re-notifies if session leaves and re-enters orphan state", async () => {
-		const orphan = makeSession({
-			execution_id: "exec-orphan",
-			heartbeat_at: "2026-03-06 08:00:00",
-		});
-		store.getOrphanSessions.mockReturnValue([orphan]);
+	it("reapOrphans retries deferred authority without a permanent notification suppression", async () => {
+		const converge = primeOrphan();
 		await service.reapOrphans();
-
-		store.getOrphanSessions.mockReturnValue([]);
 		await service.reapOrphans();
-
-		store.getOrphanSessions.mockReturnValue([orphan]);
-		await service.reapOrphans();
-
-		expect(notifier.onSessionOrphaned).toHaveBeenCalledTimes(2);
+		expect(converge).toHaveBeenCalledTimes(2);
+		expect(store.forceStatus).not.toHaveBeenCalled();
 	});
-
-	it("reapOrphans() does not dedup if notification fails", async () => {
-		const orphan = makeSession({
-			execution_id: "exec-orphan",
-			heartbeat_at: "2026-03-06 08:00:00",
-		});
-		store.getOrphanSessions.mockReturnValue([orphan]);
-		notifier.onSessionOrphaned.mockRejectedValueOnce(
-			new Error("notify failed"),
-		);
-
+	it("reapOrphans releases its local guard after convergence throws", async () => {
+		const converge = primeOrphan();
+		converge.mockRejectedValueOnce(new Error("store unavailable"));
+		await expect(service.reapOrphans()).resolves.toBeUndefined();
 		await service.reapOrphans();
-		// Notification failed — should retry next cycle
-		notifier.onSessionOrphaned.mockResolvedValue(undefined);
-		// forceStatus will be called again since notify failed and we retry
-		await service.reapOrphans();
-
-		expect(notifier.onSessionOrphaned).toHaveBeenCalledTimes(2);
+		expect(converge).toHaveBeenCalledTimes(2);
+		expect(store.forceStatus).not.toHaveBeenCalled();
 	});
-
-	it("check() reaps orphans", async () => {
-		const orphan = makeSession({
-			execution_id: "exec-orphan",
-			heartbeat_at: "2026-03-06 08:00:00",
-		});
-		store.getOrphanSessions.mockReturnValue([orphan]);
-
+	it("check routes orphan candidates through common process convergence", async () => {
+		const converge = primeOrphan();
 		await service.check();
-
-		expect(notifier.onSessionOrphaned).toHaveBeenCalledWith(
-			orphan,
-			expect.any(Number),
-		);
-		expect(store.forceStatus).toHaveBeenCalledWith(
-			"exec-orphan",
-			"failed",
-			expect.any(String),
-			expect.stringContaining("Orphaned"),
-		);
+		expect(converge).toHaveBeenCalledExactlyOnceWith("exec-orphan");
+		expect(store.forceStatus).not.toHaveBeenCalled();
+		expect(notifier.onSessionOrphaned).not.toHaveBeenCalled();
 	});
 
 	it("durable tmux holds suppress orphan actions in the same cycle", async () => {

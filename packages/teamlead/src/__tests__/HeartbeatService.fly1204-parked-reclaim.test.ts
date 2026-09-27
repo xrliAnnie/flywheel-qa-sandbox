@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { BodyObservation } from "flywheel-claude-runner";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { commDbPathForProject } from "../bridge/commdb-path.js";
@@ -15,36 +16,38 @@ import {
 } from "../HeartbeatService.js";
 import { StateStore } from "../StateStore.js";
 
-/**
- * FLY-1204: the periodic parked-phase reclaim patrol. These are safety
- * counter-examples FIRST — the whole point is to reclaim leaked phase sessions
- * WITHOUT ever killing a healthy parked context-holder.
- *
- * `tmuxState` (keyed by execution_id) drives the mocked tmux liveness so a phase
- * can be alive / dead / read-error / indeterminate deterministically.
- */
-const { tmuxState } = vi.hoisted(() => ({
-	tmuxState: new Map<string, string>(),
-}));
+/** FLY-1204/2919: reclaim safety uses independent process evidence. */
+const processState = new Map<string, string>();
 vi.mock("../bridge/tmux-lookup.js", () => ({
 	getTmuxTargetFromCommDb: vi.fn(),
 	isTmuxWindowAlive: vi.fn(),
-	lookupTmuxTarget: vi.fn((execId: string) => {
-		const st = tmuxState.get(execId) ?? "dead";
-		if (st === "error") return { kind: "error", error: "boom" };
-		if (st === "dead") return { kind: "gone" };
-		return {
-			kind: "found",
-			target: { tmuxWindow: execId, sessionName: execId },
-		};
+	lookupTmuxTarget: vi.fn(() => {
+		throw new Error("window authority forbidden");
 	}),
-	probeRunnerProcessLiveness: vi.fn(async (tmuxWindow: string) => {
-		const st = tmuxState.get(tmuxWindow) ?? "dead";
-		if (st === "indeterminate") return "indeterminate";
-		if (st === "alive") return "alive";
-		return "absent";
+	probeRunnerProcessLiveness: vi.fn(() => {
+		throw new Error("pane authority forbidden");
 	}),
 }));
+async function observe(executionId: string): Promise<BodyObservation> {
+	const state = processState.get(executionId) ?? "dead";
+	return {
+		identity: {
+			executionId,
+			activationId: "activation",
+			generation: 1,
+			lifecycleRevision: 0,
+			adapter: "claude-tmux",
+		},
+		ownerToken: "owner",
+		spawnEpoch: 1,
+		bindingDigest: "a".repeat(64),
+		verdict:
+			state === "alive" ? "alive" : state === "dead" ? "dead" : "unknown",
+		observedAt: new Date().toISOString(),
+		expiresAt: new Date(Date.now() + 10000).toISOString(),
+		reason: "fixture_process_evidence",
+	};
+}
 
 const PROJECT = "flywheel";
 const OLD_TS = "2026-01-01 00:00:00"; // well past the 24h grace vs the real clock
@@ -55,11 +58,13 @@ let commDir: string;
 beforeEach(() => {
 	commDir = mkdtempSync(join(tmpdir(), "fly1204-parked-"));
 	process.env.FLYWHEEL_COMM_DIR = commDir;
-	tmuxState.clear();
+	processState.clear();
 	vi.mocked(lookupTmuxTarget).mockClear();
 	vi.mocked(probeRunnerProcessLiveness).mockClear();
 });
 afterEach(() => {
+	expect(lookupTmuxTarget).not.toHaveBeenCalled();
+	expect(probeRunnerProcessLiveness).not.toHaveBeenCalled();
 	process.env.FLYWHEEL_COMM_DIR = undefined;
 	rmSync(commDir, { recursive: true, force: true });
 });
@@ -111,7 +116,7 @@ function makeService(
 	// interval exercises the independent throttle (plan §C2 / test plan §259).
 	intervalMs = 0,
 ): HeartbeatService {
-	return new HeartbeatService(
+	const service = new HeartbeatService(
 		store as never,
 		{} as never, // notifier — checkStaleParkedPhases never calls it
 		15,
@@ -128,6 +133,11 @@ function makeService(
 		undefined, // serverLoss
 		cfg,
 	);
+	service.setExecutionBodyLifecycle({
+		observe,
+		converge: async () => ({ kind: "deferred", reason: "unused" }),
+	});
+	return service;
 }
 
 function makeConfig(over?: Partial<StaleParkedCloseConfig>): {
@@ -173,7 +183,7 @@ describe("FLY-1204 parked-phase reclaim — safety boundaries", () => {
 			event_type: "post_ship_finalization_claim",
 			source: "test",
 		});
-		tmuxState.set("generic", "alive");
+		processState.set("generic", "alive");
 		const { cfg, closeParked } = makeConfig();
 		await makeService(store, cfg).checkStaleParkedPhases();
 		expect(closedIds(closeParked)).toEqual(["generic"]);
@@ -217,7 +227,7 @@ describe("FLY-1204 parked-phase reclaim — safety boundaries", () => {
 			workflow_node_id: "review",
 		});
 		declareParked("parked");
-		tmuxState.set("working", "alive");
+		processState.set("working", "alive");
 		const { cfg, closeParked, alertOrphan } = makeConfig();
 		await makeService(store, cfg).checkStaleParkedPhases();
 		expect(closeParked).not.toHaveBeenCalled();
@@ -233,7 +243,7 @@ describe("FLY-1204 parked-phase reclaim — safety boundaries", () => {
 			chat_thread_role: "main",
 		});
 		declareParked("ordinary");
-		tmuxState.set("ordinary", "alive");
+		processState.set("ordinary", "alive");
 		const { cfg, closeParked, alertOrphan } = makeConfig();
 		await makeService(store, cfg).checkStaleParkedPhases();
 		expect(closeParked).not.toHaveBeenCalled();
@@ -255,8 +265,8 @@ describe("FLY-1204 parked-phase reclaim — safety boundaries", () => {
 			chat_thread_role: "implement",
 		});
 		declareParked("d");
-		// implement is genuinely working: NOT parked + tmux alive.
-		tmuxState.set("i", "alive");
+		// implement is genuinely working: NOT parked + process alive.
+		processState.set("i", "alive");
 		const { cfg, closeParked, alertOrphan } = makeConfig();
 		await makeService(store, cfg).checkStaleParkedPhases();
 		expect(closeParked).not.toHaveBeenCalled();
@@ -287,8 +297,8 @@ describe("FLY-1204 parked-phase reclaim — safety boundaries", () => {
 			source: "test",
 		});
 		// both alive so the cleanup revalidate closes them.
-		tmuxState.set("d", "alive");
-		tmuxState.set("q", "alive");
+		processState.set("d", "alive");
+		processState.set("q", "alive");
 		const { cfg, closeParked, alertOrphan } = makeConfig();
 		await makeService(store, cfg).checkStaleParkedPhases();
 		expect(closedIds(closeParked)).toEqual(["d", "q"]);
@@ -315,7 +325,7 @@ describe("FLY-1204 parked-phase reclaim — safety boundaries", () => {
 		});
 		declareParked("d");
 		// no ship claim; pipeline is quiet (design parked, qa terminal) → clean.
-		tmuxState.set("q", "alive"); // completed qa leaked alive → revalidate closes it
+		processState.set("q", "alive"); // completed qa leaked alive → revalidate closes it
 		const { cfg, closeParked, alertOrphan } = makeConfig();
 		await makeService(store, cfg).checkStaleParkedPhases();
 		expect(closedIds(closeParked)).toEqual(["q"]);
@@ -341,7 +351,7 @@ describe("FLY-1204 parked-phase reclaim — safety boundaries", () => {
 			chat_thread_role: "qa",
 		});
 		// no declared_state row → not parked; probe dead so classify=clean.
-		tmuxState.set("q", "dead");
+		processState.set("q", "dead");
 		const { cfg, closeParked, alertOrphan } = makeConfig();
 		await makeService(store, cfg).checkStaleParkedPhases();
 		expect(closeParked).not.toHaveBeenCalled();
@@ -359,7 +369,7 @@ describe("FLY-1204 parked-phase reclaim — safety boundaries", () => {
 			chat_thread_role: "qa",
 		});
 		declareParked("q");
-		tmuxState.set("q", "dead"); // parked → classify skips the probe anyway
+		processState.set("q", "dead"); // parked → classify skips the probe anyway
 		const a = makeConfig();
 		await makeService(storeA, a.cfg).checkStaleParkedPhases();
 		expect(a.closeParked).not.toHaveBeenCalled(); // running (non-terminal) → alert, not auto-kill
@@ -373,7 +383,7 @@ describe("FLY-1204 parked-phase reclaim — safety boundaries", () => {
 			status: "running",
 			chat_thread_role: "qa",
 		});
-		tmuxState.set("q2", "alive");
+		processState.set("q2", "alive");
 		const b = makeConfig();
 		await makeService(storeB, b.cfg).checkStaleParkedPhases();
 		expect(b.closeParked).not.toHaveBeenCalled();
@@ -388,7 +398,7 @@ describe("FLY-1204 parked-phase reclaim — safety boundaries", () => {
 			status: "completed",
 			chat_thread_role: "qa",
 		});
-		tmuxState.set("q", "alive");
+		processState.set("q", "alive");
 		// A fresh TURN pointing at an unregistered holder = a spawn in progress.
 		withCommDb((db) =>
 			db.grantTurn("FLY-7", "not-yet-registered", "implement", Date.now()),
@@ -407,7 +417,7 @@ describe("FLY-1204 parked-phase reclaim — safety boundaries", () => {
 			status: "completed",
 			chat_thread_role: "qa",
 		});
-		tmuxState.set("q", "alive");
+		processState.set("q", "alive");
 		// TURN holder IS the (terminal) completed qa row → row exists → stale, not in-flight.
 		withCommDb((db) => db.grantTurn("FLY-8", "q", "qa", 1_700_000_000_000));
 		const { cfg, closeParked } = makeConfig();
@@ -424,7 +434,7 @@ describe("FLY-1204 parked-phase reclaim — safety boundaries", () => {
 			chat_thread_role: "implement",
 		});
 		// non-parked + lookup error → classifyIssueWorking returns defer.
-		tmuxState.set("i", "error");
+		processState.set("i", "error");
 		const { cfg, closeParked, alertOrphan } = makeConfig();
 		await makeService(store, cfg).checkStaleParkedPhases();
 		expect(closeParked).not.toHaveBeenCalled();
@@ -447,7 +457,7 @@ describe("FLY-1204 parked-phase reclaim — safety boundaries", () => {
 			event_type: "post_ship_finalization_claim",
 			source: "test",
 		});
-		tmuxState.set("q", "dead"); // already gone → revalidate skips the close
+		processState.set("q", "dead"); // already gone → revalidate skips the close
 		const { cfg, closeParked } = makeConfig();
 		await makeService(store, cfg).checkStaleParkedPhases();
 		expect(closeParked).not.toHaveBeenCalled();
@@ -470,7 +480,7 @@ describe("FLY-1204 parked-phase reclaim — safety boundaries", () => {
 			chat_thread_role: "qa",
 			last_activity_at: "2026-06-02 00:00:00",
 		});
-		tmuxState.set("q-old", "alive"); // the older, non-terminal, non-parked row is working
+		processState.set("q-old", "alive"); // the older, non-terminal, non-parked row is working
 		const { cfg, closeParked, alertOrphan } = makeConfig();
 		await makeService(store, cfg).checkStaleParkedPhases();
 		// has_working (from q-old) → keep everything; the completed q-new is NOT reclaimed.
@@ -530,7 +540,7 @@ describe("FLY-1204 parked-phase reclaim — safety boundaries", () => {
 			chat_thread_role: "qa",
 			last_activity_at: FRESH_TS,
 		});
-		tmuxState.set("q", "alive");
+		processState.set("q", "alive");
 		const { cfg, closeParked, alertOrphan } = makeConfig();
 		await makeService(store, cfg).checkStaleParkedPhases();
 		expect(closeParked).not.toHaveBeenCalled();
@@ -558,7 +568,7 @@ describe("FLY-1204 parked-phase reclaim — safety boundaries", () => {
 			event_type: "post_ship_finalization_claim",
 			source: "test",
 		});
-		tmuxState.set("q", "alive");
+		processState.set("q", "alive");
 
 		let releaseClose!: () => void;
 		const closeGate = new Promise<void>((r) => {
@@ -605,7 +615,7 @@ describe("FLY-1204 parked-phase reclaim — safety boundaries", () => {
 			event_type: "post_ship_finalization_claim",
 			source: "test",
 		});
-		tmuxState.set("q", "alive");
+		processState.set("q", "alive");
 		const { cfg, closeParked } = makeConfig();
 		const svc = makeService(store, cfg, 3_600_000); // 1h throttle window
 
@@ -628,7 +638,7 @@ describe("FLY-1204 parked-phase reclaim — safety boundaries", () => {
 				status: "completed",
 				chat_thread_role: "qa",
 			});
-			tmuxState.set(id, "alive");
+			processState.set(id, "alive");
 		}
 		// A ship claim → every completed candidate is auto-reclaimable.
 		store.insertEvent({
@@ -669,7 +679,7 @@ describe("FLY-1204 parked-phase reclaim — safety boundaries", () => {
 					status: "completed",
 					chat_thread_role: "qa",
 				});
-				tmuxState.set(id, "alive");
+				processState.set(id, "alive");
 				// a ship claim per issue → all its candidates are auto-reclaimable.
 				store.insertEvent({
 					event_id: `claim-${issueId}-${j}`,
