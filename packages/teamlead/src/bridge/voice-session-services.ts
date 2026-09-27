@@ -16,14 +16,14 @@ import {
 } from "./discord-utils.js";
 import { readFounderAttentionFacts } from "./founder-attention-facts.js";
 import { createLeadCapabilityVoiceRouter } from "./lead-capability-voice.js";
-import type { LeadBootstrap } from "./lead-runtime.js";
-import { filterSessionsByLead } from "./lead-scope.js";
 import {
 	createCommDbFounderQuoteVerifier,
 	createLeadInterruptVoiceHandlers,
 	createProjectLeadTargetResolver,
 	type LeadInterruptMailbox,
 } from "./lead-interrupt-routes.js";
+import type { LeadBootstrap } from "./lead-runtime.js";
+import { filterSessionsByLead } from "./lead-scope.js";
 import type { BridgeConfig } from "./types.js";
 import type { VoiceHandoffService } from "./voice-handoff.js";
 import { createVoiceHealthDemandRecorder } from "./voice-health-demand-recorder.js";
