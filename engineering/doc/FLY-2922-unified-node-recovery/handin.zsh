@@ -56,25 +56,36 @@ remote_line=$(git -C "$PROD" ls-remote --exit-code origin refs/heads/flywheel-FL
 git -C "$PROD" cat-file -e "${EXPECT}:engineering/doc/milestones/FLY-2922.md" 2>/dev/null || fail A6 "milestone file missing in $EXPECT"
 sb_status=$(git status --porcelain 2>&1) || fail A7 "$sb_status"
 [[ -z $sb_status ]] || fail A7 "sandbox tree dirty: ${sb_status//$'\n'/ ; }"
-# A8: production PR head + body markers (read-only; gh may be unreachable -> recorded, not fatal)
-PR_NOTE=""
+# A8: production PR head + body markers (read-only). Outcomes: PASS | UNVERIFIABLE (gh unreachable / empty / unparsable) | BLOCKED (valid head that differs)
+A8_STATUS=UNVERIFIABLE; A8_REASON=""; MISSING=""
 if pr_json=$(gh pr view "$PROD_PR" --repo "$PROD_REPO" --json state,headRefOid,body 2>&1); then
-  pr_head=$(print -r -- "$pr_json" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);process.stdout.write(String(j.headRefOid||""))})' 2>/dev/null)
-  [[ $pr_head == $EXPECT ]] || fail A8 "PR $PROD_REPO#$PROD_PR head=$pr_head expected=$EXPECT"
-  typeset -a missing; missing=()
-  for m in 'FLY-2921 must land first' preadmission-producer-rework-carveout merge-order-dependency-unstated shared-materializer-preconditions rework-replacement-context-not-preflighted exhausted-return-alert-advertises-refused-door "$REVIEW_ID"; do
-    print -r -- "$pr_json" | grep -qF -- "$m" || missing+=("$m")
-  done
-  PR_NOTE="PR body checked; missing markers: ${(j:,:)missing:-none} (sandbox does not edit the prod PR; missing items are host-side Lead work)"
+  if pr_parsed=$(print -r -- "$pr_json" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let j;try{j=JSON.parse(s)}catch(e){process.exit(2)}if(!/^[0-9a-f]{40}$/.test(String(j.headRefOid||""))||typeof j.body!=="string"){process.exit(3)}process.stdout.write(j.headRefOid+"\n"+j.body)})' 2>/dev/null); then
+    pr_head=${pr_parsed%%$'\n'*}
+    pr_body=${pr_parsed#*$'\n'}
+    [[ $pr_head == $EXPECT ]] || fail A8 "PR $PROD_REPO#$PROD_PR head=$pr_head expected=$EXPECT"
+    typeset -a missing; missing=()
+    for m in 'FLY-2921 must land first' preadmission-producer-rework-carveout merge-order-dependency-unstated shared-materializer-preconditions rework-replacement-context-not-preflighted exhausted-return-alert-advertises-refused-door "$REVIEW_ID"; do
+      print -r -- "$pr_body" | grep -qF -- "$m" || missing+=("$m")
+    done
+    A8_STATUS=PASS; MISSING="${(j:,:)missing:-none}"
+  else
+    A8_REASON="gh output empty or unparsable (parse exit $?)"
+  fi
 else
-  PR_NOTE="PR body unverifiable here (gh: ${pr_json:0:100})"
+  A8_REASON="gh exit $? : ${pr_json:0:100}"
 fi
-DONE_STEPS+=(A1-A8)
-if [[ $DRY_RUN == 1 ]]; then print -- "DRY_RUN OK: A1-A8 PASS on $EXPECT | $PR_NOTE"; exit 0; fi
+if [[ $A8_STATUS == PASS ]]; then
+  PR_NOTE="A8=PASS (PR $PROD_REPO#$PROD_PR head == $EXPECT; body missing markers: $MISSING; sandbox never edits the prod PR — missing items are host-side Lead work)"
+else
+  PR_NOTE="A8=UNVERIFIABLE ($A8_REASON); prod PR head/body not observed from the sandbox"
+fi
+ASSERT_NOTE="A1-A7 PASS; $PR_NOTE"
+DONE_STEPS+=(A1-A7 "A8=$A8_STATUS")
+if [[ $DRY_RUN == 1 ]]; then print -- "DRY_RUN OK: $ASSERT_NOTE | head $EXPECT"; exit 0; fi
 
 # ---- Task 2: ledger, push, freeze ---------------------------------------------
 node "$FLYWHEEL_COMM_CLI" progress --exec-id "$FLYWHEEL_EXEC_ID" --file "$LEDGER" --phase implement --cursor 3/3 \
-  --next "A1-A8 PASS on $EXPECT; lane $LANE; $PR_NOTE; next: report + complete needs_review" || fail ledger "progress exit $?"
+  --next "$ASSERT_NOTE; head $EXPECT; lane $LANE; next: report + complete needs_review" || fail ledger "progress exit $?"
 DONE_STEPS+=(ledger)
 post=$(git status --porcelain 2>&1) || fail ledger "$post"
 [[ -z $post ]] || fail ledger "tree dirty after progress: ${post//$'\n'/ ; }"
@@ -96,7 +107,7 @@ if [[ $LANE == B ]]; then
 fi
 
 # ---- Task 3: report, complete ---------------------------------------------------
-report="DONE: FLY-2922 verify-then-submit | verified implementation head: $EXPECT (sandbox origin/flywheel-FLY-2922 = prod checkout $PROD @flywheel-FLY-2922 = GitHub $PROD_REPO refs/heads/flywheel-FLY-2922; both trees clean; A1-A8 PASS) | sandbox hand-in HEAD (docs only, $SANDBOX_BRANCH): $local_head | code review: $REVIEW_ID APPROVED (Lead hand-off 2026-09-27 12:09:19Z) | prod PR: $PROD_REPO#$PROD_PR; $PR_NOTE | MEDIUM dispositions (as in PR body): carveout=landed (rework_delivery_owned); merge-order=stated (FLY-2921 lands first, 5357dd5ce merged); shared-materializer=landed (materializeReworkReplacementCoreTx revalidates tx/run status/tuple/writer/owner/budget); context-preflight=landed (stage+apply 409 recovery_preflight_failed, digest rechecked in tx) | LOW follow-ups: PR body sections Follow-ups + Follow-ups from effective code review round 4 | commits: none to code | lane: $LANE${SANDBOX_PR:+ sandbox PR #$SANDBOX_PR}"
+report="DONE: FLY-2922 verify-then-submit | verified implementation head: $EXPECT (sandbox origin/flywheel-FLY-2922 = prod checkout $PROD @flywheel-FLY-2922 = GitHub $PROD_REPO refs/heads/flywheel-FLY-2922; both trees clean; $ASSERT_NOTE) | sandbox hand-in HEAD (docs only, $SANDBOX_BRANCH): $local_head | code review: $REVIEW_ID APPROVED (Lead hand-off 2026-09-27 12:09:19Z) | prod PR: $PROD_REPO#$PROD_PR | MEDIUM dispositions (as in PR body): carveout=landed (rework_delivery_owned); merge-order=stated (FLY-2921 lands first, 5357dd5ce merged); shared-materializer=landed (materializeReworkReplacementCoreTx revalidates tx/run status/tuple/writer/owner/budget); context-preflight=landed (stage+apply return HTTP 409 with the specific reason, invalid context = engine_rework_replacement_context_invalid; digest rechecked in tx) | LOW follow-ups: PR body sections Follow-ups + Follow-ups from effective code review round 4 | commits: none to code | lane: $LANE${SANDBOX_PR:+ sandbox PR #$SANDBOX_PR}"
 node "$FLYWHEEL_COMM_CLI" ask --lead flywheel-test-2 --exec-id "$FLYWHEEL_EXEC_ID" --report "$report" || fail report "ask --report exit $?"
 DONE_STEPS+=(report)
 summary="FLY-2922: verified implementation head $EXPECT (code review $REVIEW_ID APPROVED, prod PR $PROD_REPO#$PROD_PR); sandbox hand-in is docs-only; no code changes; submit to QA"

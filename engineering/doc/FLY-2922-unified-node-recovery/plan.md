@@ -3,7 +3,7 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 日期: 2026-09-27
 基于: research.md
 
-状态：R1 CHANGES_REQUESTED（1 HIGH / 5 MEDIUM）已全部采纳并修订，待 R2 设计评审。design 节点，不含实现或生产验证。沙箱基线 `1855f7a1a`；被核验的实现头 `2dd29e0276617cf21e31ce4bfe2a4df792d8cf0a`。
+状态：R1（1 HIGH / 5 MEDIUM）与 R2（1 MEDIUM / 1 LOW）全部采纳并修订，待 R3 设计评审。design 节点，不含实现或生产验证。沙箱基线 `1855f7a1a`；被核验的实现头 `2dd29e0276617cf21e31ce4bfe2a4df792d8cf0a`。
 
 ## 1. 给 founder 的结论
 
@@ -59,7 +59,7 @@ LANE=A zsh engineering/doc/FLY-2922-unified-node-recovery/handin.zsh    # Lead �
 | A5 | 生产 `ls-remote --exit-code origin refs/heads/flywheel-FLY-2922` == EXPECT | BLOCKED，不 push |
 | A6 | `cat-file -e ${EXPECT}:engineering/doc/milestones/FLY-2922.md` | BLOCKED |
 | A7 | 沙箱 `status --porcelain` 成功且为空 | BLOCKED，列出差异，不自删 |
-| A8 | `gh pr view 1374 --repo xrliAnnie/flywheel`：head == EXPECT；正文含 7 个标记（`FLY-2921 must land first`、四个 advisory 名、`exhausted-return-alert-advertises-refused-door`、`92e28887`），缺失只记录不编辑 | head 不等 → BLOCKED；gh 不可用 → 记为 unverifiable，继续 |
+| A8 | `gh pr view 1374 --repo xrliAnnie/flywheel`：gh 成功且 JSON 含 40 位 `headRefOid` 与字符串 `body` 才算取得证据；head == EXPECT；正文含 7 个标记（`FLY-2921 must land first`、四个 advisory 名、`exhausted-return-alert-advertises-refused-door`、`92e28887`），缺失只记录不编辑。结果三态：`A8=PASS` / `A8=UNVERIFIABLE`（gh 非零、空输出、坏 JSON、字段形态不对，记原因继续）/ BLOCKED（合法 head 但 ≠ EXPECT） | 只有合法 head 不等才 BLOCKED；UNVERIFIABLE 不冒充 PASS，账本/DONE/completed steps 统一写 `A1-A7 PASS; A8=<状态>` |
 | DRY_RUN=1 | 到此为止打印 `DRY_RUN OK`，零写入 | — |
 | ledger | `progress --phase implement --cursor 3/3`，之后工作树必须干净 | BLOCKED（completed steps 如实含 ledger） |
 | push | `git push -u origin project-slot-2-FLY-2922`；`ls-remote` 远端 == 本地 HEAD | BLOCKED，不重推 |
@@ -134,25 +134,36 @@ remote_line=$(git -C "$PROD" ls-remote --exit-code origin refs/heads/flywheel-FL
 git -C "$PROD" cat-file -e "${EXPECT}:engineering/doc/milestones/FLY-2922.md" 2>/dev/null || fail A6 "milestone file missing in $EXPECT"
 sb_status=$(git status --porcelain 2>&1) || fail A7 "$sb_status"
 [[ -z $sb_status ]] || fail A7 "sandbox tree dirty: ${sb_status//$'\n'/ ; }"
-# A8: production PR head + body markers (read-only; gh may be unreachable -> recorded, not fatal)
-PR_NOTE=""
+# A8: production PR head + body markers (read-only). Outcomes: PASS | UNVERIFIABLE (gh unreachable / empty / unparsable) | BLOCKED (valid head that differs)
+A8_STATUS=UNVERIFIABLE; A8_REASON=""; MISSING=""
 if pr_json=$(gh pr view "$PROD_PR" --repo "$PROD_REPO" --json state,headRefOid,body 2>&1); then
-  pr_head=$(print -r -- "$pr_json" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);process.stdout.write(String(j.headRefOid||""))})' 2>/dev/null)
-  [[ $pr_head == $EXPECT ]] || fail A8 "PR $PROD_REPO#$PROD_PR head=$pr_head expected=$EXPECT"
-  typeset -a missing; missing=()
-  for m in 'FLY-2921 must land first' preadmission-producer-rework-carveout merge-order-dependency-unstated shared-materializer-preconditions rework-replacement-context-not-preflighted exhausted-return-alert-advertises-refused-door "$REVIEW_ID"; do
-    print -r -- "$pr_json" | grep -qF -- "$m" || missing+=("$m")
-  done
-  PR_NOTE="PR body checked; missing markers: ${(j:,:)missing:-none} (sandbox does not edit the prod PR; missing items are host-side Lead work)"
+  if pr_parsed=$(print -r -- "$pr_json" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let j;try{j=JSON.parse(s)}catch(e){process.exit(2)}if(!/^[0-9a-f]{40}$/.test(String(j.headRefOid||""))||typeof j.body!=="string"){process.exit(3)}process.stdout.write(j.headRefOid+"\n"+j.body)})' 2>/dev/null); then
+    pr_head=${pr_parsed%%$'\n'*}
+    pr_body=${pr_parsed#*$'\n'}
+    [[ $pr_head == $EXPECT ]] || fail A8 "PR $PROD_REPO#$PROD_PR head=$pr_head expected=$EXPECT"
+    typeset -a missing; missing=()
+    for m in 'FLY-2921 must land first' preadmission-producer-rework-carveout merge-order-dependency-unstated shared-materializer-preconditions rework-replacement-context-not-preflighted exhausted-return-alert-advertises-refused-door "$REVIEW_ID"; do
+      print -r -- "$pr_body" | grep -qF -- "$m" || missing+=("$m")
+    done
+    A8_STATUS=PASS; MISSING="${(j:,:)missing:-none}"
+  else
+    A8_REASON="gh output empty or unparsable (parse exit $?)"
+  fi
 else
-  PR_NOTE="PR body unverifiable here (gh: ${pr_json:0:100})"
+  A8_REASON="gh exit $? : ${pr_json:0:100}"
 fi
-DONE_STEPS+=(A1-A8)
-if [[ $DRY_RUN == 1 ]]; then print -- "DRY_RUN OK: A1-A8 PASS on $EXPECT | $PR_NOTE"; exit 0; fi
+if [[ $A8_STATUS == PASS ]]; then
+  PR_NOTE="A8=PASS (PR $PROD_REPO#$PROD_PR head == $EXPECT; body missing markers: $MISSING; sandbox never edits the prod PR — missing items are host-side Lead work)"
+else
+  PR_NOTE="A8=UNVERIFIABLE ($A8_REASON); prod PR head/body not observed from the sandbox"
+fi
+ASSERT_NOTE="A1-A7 PASS; $PR_NOTE"
+DONE_STEPS+=(A1-A7 "A8=$A8_STATUS")
+if [[ $DRY_RUN == 1 ]]; then print -- "DRY_RUN OK: $ASSERT_NOTE | head $EXPECT"; exit 0; fi
 
 # ---- Task 2: ledger, push, freeze ---------------------------------------------
 node "$FLYWHEEL_COMM_CLI" progress --exec-id "$FLYWHEEL_EXEC_ID" --file "$LEDGER" --phase implement --cursor 3/3 \
-  --next "A1-A8 PASS on $EXPECT; lane $LANE; $PR_NOTE; next: report + complete needs_review" || fail ledger "progress exit $?"
+  --next "$ASSERT_NOTE; head $EXPECT; lane $LANE; next: report + complete needs_review" || fail ledger "progress exit $?"
 DONE_STEPS+=(ledger)
 post=$(git status --porcelain 2>&1) || fail ledger "$post"
 [[ -z $post ]] || fail ledger "tree dirty after progress: ${post//$'\n'/ ; }"
@@ -174,7 +185,7 @@ if [[ $LANE == B ]]; then
 fi
 
 # ---- Task 3: report, complete ---------------------------------------------------
-report="DONE: FLY-2922 verify-then-submit | verified implementation head: $EXPECT (sandbox origin/flywheel-FLY-2922 = prod checkout $PROD @flywheel-FLY-2922 = GitHub $PROD_REPO refs/heads/flywheel-FLY-2922; both trees clean; A1-A8 PASS) | sandbox hand-in HEAD (docs only, $SANDBOX_BRANCH): $local_head | code review: $REVIEW_ID APPROVED (Lead hand-off 2026-09-27 12:09:19Z) | prod PR: $PROD_REPO#$PROD_PR; $PR_NOTE | MEDIUM dispositions (as in PR body): carveout=landed (rework_delivery_owned); merge-order=stated (FLY-2921 lands first, 5357dd5ce merged); shared-materializer=landed (materializeReworkReplacementCoreTx revalidates tx/run status/tuple/writer/owner/budget); context-preflight=landed (stage+apply 409 recovery_preflight_failed, digest rechecked in tx) | LOW follow-ups: PR body sections Follow-ups + Follow-ups from effective code review round 4 | commits: none to code | lane: $LANE${SANDBOX_PR:+ sandbox PR #$SANDBOX_PR}"
+report="DONE: FLY-2922 verify-then-submit | verified implementation head: $EXPECT (sandbox origin/flywheel-FLY-2922 = prod checkout $PROD @flywheel-FLY-2922 = GitHub $PROD_REPO refs/heads/flywheel-FLY-2922; both trees clean; $ASSERT_NOTE) | sandbox hand-in HEAD (docs only, $SANDBOX_BRANCH): $local_head | code review: $REVIEW_ID APPROVED (Lead hand-off 2026-09-27 12:09:19Z) | prod PR: $PROD_REPO#$PROD_PR | MEDIUM dispositions (as in PR body): carveout=landed (rework_delivery_owned); merge-order=stated (FLY-2921 lands first, 5357dd5ce merged); shared-materializer=landed (materializeReworkReplacementCoreTx revalidates tx/run status/tuple/writer/owner/budget); context-preflight=landed (stage+apply return HTTP 409 with the specific reason, invalid context = engine_rework_replacement_context_invalid; digest rechecked in tx) | LOW follow-ups: PR body sections Follow-ups + Follow-ups from effective code review round 4 | commits: none to code | lane: $LANE${SANDBOX_PR:+ sandbox PR #$SANDBOX_PR}"
 node "$FLYWHEEL_COMM_CLI" ask --lead flywheel-test-2 --exec-id "$FLYWHEEL_EXEC_ID" --report "$report" || fail report "ask --report exit $?"
 DONE_STEPS+=(report)
 summary="FLY-2922: verified implementation head $EXPECT (code review $REVIEW_ID APPROVED, prod PR $PROD_REPO#$PROD_PR); sandbox hand-in is docs-only; no code changes; submit to QA"
@@ -205,7 +216,7 @@ QA 只验、不改产品代码；FAIL 交回作者头。implement 节点不跑�
 | preadmission-producer-rework-carveout | `StateStore.ts:65063–65076` 对 rework delivery owner 提前返回 `rework_delivery_owned`（在 permanent-error 判断之前），`:46300/:70224` 失败事件同名 | landed |
 | merge-order-dependency-unstated | milestone 与 PR body「FLY-2921 merge dependency」：FLY-2921 先合，`5357dd5ce` 已合入 | stated |
 | shared-materializer-preconditions | rework 恢复走 `StateStore.ts:63086 → materializeWorkflowReworkRecoveryTx:62919 → materializeReworkReplacementCoreTx:45593`，内核 `:45625–45656` 校验事务存在、run 状态、route/delivery/node/actor tuple、materialized writer、owner/generation、替身预算；`:63099 materializeWorkflowNodeReplacementTx` 是非 rework 分支 | landed |
-| rework-replacement-context-not-preflighted | `bridge/workflow-node-recovery.ts:243–246` 调 `getWorkflowReworkReplacementContextPreflight` 失败即抛；`runs-route.ts` stage `:535–542` / apply `:671–677` 返回 409 `recovery_preflight_failed`；`StateStore.ts:62704–62725` 事务内复查 preflight digest，变化即 `recovery_preflight_required` 回滚零派发 | landed |
+| rework-replacement-context-not-preflighted | `bridge/workflow-node-recovery.ts:243–246` 调 `getWorkflowReworkReplacementContextPreflight`，失败 `throw new Error(context.reason)`（上下文无效即 `engine_rework_replacement_context_invalid`，`StateStore.ts:44217–44225`）；`runs-route.ts` stage `:535–542` / apply `:671–677` 对 Error 返回 HTTP 409 并保留该具体 reason（`recovery_preflight_failed` 只是非 Error 的兜底值）；`StateStore.ts:62704–62725` 事务内复查 preflight digest，变化即 `recovery_preflight_required` 回滚零派发 | landed |
 | LOW ×4 | PR body「Follow-ups」+「Follow-ups from effective code review round 4」 | 已在 PR body；本轮不改代码 |
 
 ## 7. 风险与取舍
@@ -233,3 +244,10 @@ QA 只验、不改产品代码；FAIL 交回作者头。implement 节点不跑�
 - MEDIUM follow-ups/Lane B：接受。§3.3 核对 PR #1374 正文实况、A8 机器核对 7 个标记、`handin-body.md` 已提交、Lane B 捕获真实 PR 号、所有占位符消除。
 - MEDIUM ci-full-repo：接受。§5 取证命令改到生产仓上下文并明确责任侧。
 - 附带修正：research §1「0 命中」收窄为「缺少本次 hold/recovery API（沙箱已有旧 `workflow_side_effect_ledger` 基础设施）」。
+
+## 10. R2 审阅处置
+
+有效 verdict：CHANGES_REQUESTED，request `d2c3ca1b-d42d-4405-8d3c-6103af5152e2`，turn `01a0e3aa-3a14-7da1-aa06-dc8026302ebb`，round 2，findings medium=1 low=1。R1 六项全部 CLOSED。
+
+- MEDIUM A8 三态不分：接受。A8 改为 `PASS | UNVERIFIABLE | BLOCKED`：gh 退出码、JSON 可解析、`headRefOid` 40 位、`body` 为字符串逐项检查；只有合法 head ≠ EXPECT 才 BLOCKED；gh 非零/空/坏 JSON 记原因进 UNVERIFIABLE；DRY_RUN 输出、账本、DONE、completed steps 统一 `A1-A7 PASS; A8=<状态>`，不再写 `A1-A8 PASS`。
+- LOW 409 reason 写成兜底值：接受。脚本 DONE 文本、§6、research §2 改为「HTTP 409 并保留具体 reason，上下文无效为 `engine_rework_replacement_context_invalid`」。
