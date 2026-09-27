@@ -187,6 +187,7 @@ jobs:
           node --test scripts/__tests__/fly2074-founder-disclosure-guard.test.mjs
           node --test scripts/__tests__/fly-2413-retention-mutations.test.mjs
           node --test scripts/__tests__/qa-codex-lead-parity-drill.test.mjs
+          node --test scripts/__tests__/qa-lead-activity-long-turn.test.mjs
           node --test scripts/__tests__/qa-fly-2519-529-drill.test.mjs scripts/__tests__/qa-fly-2519-browser-node.test.mjs scripts/__tests__/qa-fly-2519-browser-process.test.mjs
           node --test scripts/__tests__/raya-cos-cli-dist.test.mjs
           node --test scripts/__tests__/fly2799-codex-container.test.mjs
@@ -371,6 +372,11 @@ jobs:
           bash scripts/__tests__/v2-retirement-cleanup.test.sh
           bash scripts/__tests__/test-deploy-fly1389.test.sh
           bash scripts/__tests__/test-deploy-preflight-github.test.sh
+
+      - name: Test — FLY-2874 six-slot pool contract
+        run: |
+          bash scripts/__tests__/fly2874-slot-pool.test.sh
+          node --test scripts/__tests__/fly2874-test-slot-capacity.test.mjs
 
       - name: Test — FLY-2598 voice host configuration
         run: |
@@ -1490,6 +1496,15 @@ jobs:
           node --test scripts/__tests__/qa-generalized-helper.test.mjs
           node --test scripts/__tests__/qa-generalized-e2e-lib.test.mjs
           node --test scripts/__tests__/qa-generalized-codex-stub.test.mjs
+
+      # FLY-2802: prompt policy consistency, command-event semantics, and the
+      # explicit real-room deployment mode are hermetic here. The four live
+      # model cells remain a 529 exact-head acceptance artifact.
+      - name: Test — FLY-2802 Runner local-test discipline
+        run: |
+          node --test scripts/__tests__/runner-test-discipline.test.mjs
+          node --test scripts/__tests__/runner-test-policy.test.mjs
+          bash scripts/__tests__/runner-test-discipline-deploy.test.sh
 
       # FLY-1649: hermetic r4 whole-state rollback and forward-window lifecycle
       # contracts. Explicitly registered because script-tests does not glob.

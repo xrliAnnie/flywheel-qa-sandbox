@@ -141,6 +141,12 @@ const nodeDwellThresholdHoursCodec: FlagStoreCodec = {
 };
 
 export function getFlagStoreCodec(name: string): FlagStoreCodec | undefined {
+	if (name === "review_early_stop")
+		return {
+			parse: ({ hasOverride, raw }) =>
+				!hasOverride || !/^(0|off|false)$/i.test(raw?.trim() ?? ""),
+			canonicalEffective: String,
+		};
 	if (name === "auto_merge_narrow_gate") return autoNarrowModeCodec;
 	if (name === "summary_absorption_cadence_ms") {
 		return summaryAbsorptionCadenceCodec;
@@ -157,6 +163,7 @@ export function getFlagStoreCodec(name: string): FlagStoreCodec | undefined {
 		name === "codex_quota_auto_switch" ||
 		name === "loop_profiler" ||
 		name === "shipped_husk_force" ||
+		name === "codex_terminal_reap_enabled" ||
 		name === "flag_retirement_scan" ||
 		name === "summary_due_activity_gate" ||
 		name === "workflow_rework_reentry"
@@ -167,6 +174,7 @@ export function getFlagStoreCodec(name: string): FlagStoreCodec | undefined {
 		name === "cmux_watcher_rebuild_disabled" ||
 		name === "cmux_rebind_disabled" ||
 		name === "opus_model_sync_disabled" ||
+		name === "worktree_takeover_rescue_disabled" ||
 		name === "workflow_turn_divergence_alerts" ||
 		name === "workflow_node_reuse" ||
 		name === "node_standby_resume"

@@ -1,0 +1,138 @@
+{
+ "model": "strict-equivalence-v2",
+ "gen_mode": "verified",
+ "caveat": "ticket generation approximated by correlation key; resolve->recur inside a window is not visible",
+ "window_utc": [
+  "2026-09-25T07:00:00Z",
+  "2026-09-26T04:00:00Z"
+ ],
+ "letters": 154,
+ "before_wake_batches": 152,
+ "before_by_lead": {
+  "claude-infra-bot-lead": 138,
+  "flywheel-eng-lead": 14
+ },
+ "after_wake_batches": 134,
+ "after_by_lead": {
+  "claude-infra-bot-lead": 120,
+  "flywheel-eng-lead": 14
+ },
+ "reasons": {
+  "digest:info": 18,
+  "wake:no_ticket_generation": 136
+ },
+ "per_key": [
+  {
+   "lead": "claude-infra-bot-lead",
+   "carrier": "A",
+   "kind": "zombie_session_backlog",
+   "title": "跨 Lead 僵尸 session 积压（<n> 个）",
+   "wake:no_ticket_generation": 29
+  },
+  {
+   "lead": "claude-infra-bot-lead",
+   "carrier": "B",
+   "kind": "workflow_engine_escalation",
+   "title": "FLY-<n> delivery contract stalled",
+   "wake:no_ticket_generation": 27
+  },
+  {
+   "lead": "claude-infra-bot-lead",
+   "carrier": "B",
+   "kind": "workflow_engine_escalation",
+   "title": "Workflow land cleanup needs attention for FLY-<n>",
+   "wake:no_ticket_generation": 27
+  },
+  {
+   "lead": "claude-infra-bot-lead",
+   "carrier": "A",
+   "kind": "review_advisory_pass",
+   "title": "Review passed with non-blocking advisories",
+   "digest:info": 18
+  },
+  {
+   "lead": "claude-infra-bot-lead",
+   "carrier": "A",
+   "kind": "cmux_watcher_stalled",
+   "title": "cmux watcher unhealthy (event_backlog)",
+   "wake:no_ticket_generation": 13
+  },
+  {
+   "lead": "flywheel-eng-lead",
+   "carrier": "A",
+   "kind": "review_job_failed",
+   "title": "Cross-family review job failed",
+   "wake:no_ticket_generation": 10
+  },
+  {
+   "lead": "claude-infra-bot-lead",
+   "carrier": "A",
+   "kind": "external_merge_suspect",
+   "title": "Unverified external merge — FLY-<n>",
+   "wake:no_ticket_generation": 7
+  },
+  {
+   "lead": "claude-infra-bot-lead",
+   "carrier": "B",
+   "kind": "workflow_engine_escalation",
+   "title": "Rework retry budget exhausted for FLY-<n>",
+   "wake:no_ticket_generation": 5
+  },
+  {
+   "lead": "flywheel-eng-lead",
+   "carrier": "A",
+   "kind": "workflow_engine_escalation",
+   "title": "FLY-<n> delivery contract stalled",
+   "wake:no_ticket_generation": 5
+  },
+  {
+   "lead": "claude-infra-bot-lead",
+   "carrier": "A",
+   "kind": "bridge_abnormal_exit",
+   "title": "Bridge 非正常退出 — 复活对账中",
+   "wake:no_ticket_generation": 3
+  },
+  {
+   "lead": "claude-infra-bot-lead",
+   "carrier": "B",
+   "kind": "workflow_engine_escalation",
+   "title": "Land operation held for FLY-<n>",
+   "wake:no_ticket_generation": 3
+  },
+  {
+   "lead": "claude-infra-bot-lead",
+   "carrier": "B",
+   "kind": "workflow_engine_escalation",
+   "title": "Runner admission pause has remained active for <n> minutes",
+   "wake:no_ticket_generation": 2
+  },
+  {
+   "lead": "claude-infra-bot-lead",
+   "carrier": "B",
+   "kind": "workflow_engine_escalation",
+   "title": "Workflow liveness is unknown for FLY-<n>",
+   "wake:no_ticket_generation": 2
+  },
+  {
+   "lead": "claude-infra-bot-lead",
+   "carrier": "B",
+   "kind": "workflow_engine_escalation",
+   "title": "FLY-<n> delivery operation stalled",
+   "wake:no_ticket_generation": 1
+  },
+  {
+   "lead": "claude-infra-bot-lead",
+   "carrier": "A",
+   "kind": "ship_judgment_observation_unavailable",
+   "title": "Ship-judgment observation unavailable or starved",
+   "wake:no_ticket_generation": 1
+  },
+  {
+   "lead": "claude-infra-bot-lead",
+   "carrier": "A",
+   "kind": "bridge_boot_stale_checkout",
+   "title": "Bridge running a STALE checkout — merged work is NOT live",
+   "wake:no_ticket_generation": 1
+  }
+ ]
+}

@@ -1,0 +1,9 @@
+%%{init: {'theme':'base','themeVariables':{'fontFamily':'system-ui','primaryColor':'#eef5ff','primaryTextColor':'#1d1d1f','primaryBorderColor':'#007aff','lineColor':'#86868b'}}}%%
+flowchart TB
+    A[一份测试规则] --> B[注入真实 runner]
+    B --> C[529 隔离房：字面量迁移任务]
+    C --> D[保存原始命令与任务结果]
+    D --> E{独立检查}
+    E -->|出现整包命令| F[失败]
+    E -->|任务完成、定向验证完整| G[通过]
+    E -->|日志缺失或无法判断| H[不能通过]

@@ -30,7 +30,7 @@ metadata:
 - 每个 PR 必须关联 Linear issue
 
 ### Commands
-- Test: \`{{testCommand}}\`
+- Test entry: \`{{testCommand}}\` (never execute bare; the injected local-test policy requires concrete related-file selection)
 - Lint: \`{{lintCommand}}\`
 - Build: \`{{buildCommand}}\`
 

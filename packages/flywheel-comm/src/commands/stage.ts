@@ -12,8 +12,14 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
-import { isAbsolute, resolve as resolvePath } from "node:path";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	writeFileSync,
+} from "node:fs";
+import { dirname, isAbsolute, resolve as resolvePath } from "node:path";
 import { normalizeOptionalBearer } from "flywheel-config";
 import { printBridgePressure } from "../bridge-pressure-snapshot.js";
 import {
@@ -72,6 +78,95 @@ function readLandingStatus(execId: string): LandingStatus | null {
 		const msg = err instanceof Error ? err.message : String(err);
 		console.warn(`[stage] failed to parse land-status.json: ${msg}`);
 		return null;
+	}
+}
+
+interface DesignReviewEcho {
+	requestId: string;
+	revision: number;
+	planPath: string;
+	reviewedPlanBlobSha: string;
+	reviewerModel?: string;
+	reviewerEffort?: string;
+}
+
+/** FLY-2891: accept only a well-formed Bridge echo; anything else is ignored. */
+function parseDesignReviewEcho(value: unknown): DesignReviewEcho | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value))
+		return undefined;
+	const raw = value as Record<string, unknown>;
+	const text = (field: unknown, max: number): field is string =>
+		typeof field === "string" &&
+		field.trim() !== "" &&
+		field.length <= max &&
+		!/[\0\r\n\t]/.test(field);
+	if (
+		!text(raw.requestId, 256) ||
+		!Number.isSafeInteger(raw.revision) ||
+		(raw.revision as number) < 1 ||
+		!text(raw.planPath, 512) ||
+		isAbsolute(raw.planPath) ||
+		raw.planPath.split(/[\\/]/).includes("..") ||
+		typeof raw.reviewedPlanBlobSha !== "string" ||
+		!/^[0-9a-f]{40}$/.test(raw.reviewedPlanBlobSha) ||
+		(raw.reviewerModel !== undefined && !text(raw.reviewerModel, 128)) ||
+		(raw.reviewerEffort !== undefined && !text(raw.reviewerEffort, 128))
+	)
+		return undefined;
+	return {
+		requestId: raw.requestId,
+		revision: raw.revision as number,
+		planPath: raw.planPath,
+		reviewedPlanBlobSha: raw.reviewedPlanBlobSha,
+		...(raw.reviewerModel !== undefined
+			? { reviewerModel: raw.reviewerModel as string }
+			: {}),
+		...(raw.reviewerEffort !== undefined
+			? { reviewerEffort: raw.reviewerEffort as string }
+			: {}),
+	};
+}
+
+/**
+ * FLY-2891: print the design review request the Bridge bound to this stage
+ * event and persist it for `flywheel-comm review-round` (plan path +
+ * requestId). Printing the required reviewer model here closes the race
+ * where Codex started before the inbox manifest arrived.
+ */
+function reportDesignReviewEcho(execId: string, value: unknown): void {
+	const echo = parseDesignReviewEcho(value);
+	if (!echo) {
+		console.log(
+			"Design review request pending — check inbox before starting Codex",
+		);
+		return;
+	}
+	const reviewer =
+		echo.reviewerModel && echo.reviewerEffort
+			? `${echo.reviewerModel}/${echo.reviewerEffort}`
+			: "none";
+	console.log(
+		`Design review request: requestId=${echo.requestId} blob=${echo.reviewedPlanBlobSha} reviewer=${reviewer}`,
+	);
+	const path = resolvePath(
+		process.cwd(),
+		".flywheel",
+		"runs",
+		execId,
+		"codex",
+		"design-request.json",
+	);
+	try {
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(path, `${JSON.stringify(echo, null, 2)}\n`, {
+			encoding: "utf8",
+			mode: 0o600,
+		});
+		chmodSync(path, 0o600);
+	} catch (error) {
+		console.error(
+			`[flywheel-comm stage] could not write design-request.json: ${error instanceof Error ? error.message : String(error)}`,
+		);
 	}
 }
 
@@ -226,6 +321,8 @@ export async function stage(opts: {
 			console.log(
 				`Stage: ${opts.stageName}${receipt === "replayed" || receipt === "superseded" ? ` (${receipt})` : ""}`,
 			);
+			if (opts.stageName === "design_review")
+				reportDesignReviewEcho(execId, result.designReviews[queuedPath]);
 		} else {
 			console.error(
 				`[flywheel-comm stage] DEFERRED: ${opts.stageName} queued; replayed before the next flywheel-comm command`,

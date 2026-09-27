@@ -45,7 +45,10 @@ import {
 	closeRunner,
 	type RunCloseAuthority,
 } from "./close-runner.js";
-import { reapCodexDaemonForSession } from "./codex-daemon-teardown.js";
+import {
+	codexTerminalTeardownDeps,
+	reapCodexDaemonForSession,
+} from "./codex-daemon-teardown.js";
 import { commDbPathForProject } from "./commdb-path.js";
 import { finalizeCommDbSession } from "./commdb-session-prune.js";
 import type { EventFilter } from "./EventFilter.js";
@@ -980,8 +983,6 @@ async function handleRetry(
 		const dispatchResolution = resolveNodeDispatchAtLaunch(store, {
 			runId: predecessorBinding.run_id,
 			nodeId: predecessorBinding.node_id,
-			codexQuotaRootKey: quotaRootKey,
-			now: now.getTime(),
 		});
 		const admitted = store.admitGeneralizedWorkflowExecution({
 			codexQuotaRootKey: quotaRootKey,
@@ -1638,7 +1639,14 @@ export async function handleTerminate(
 	// as cleanup-pending rather than a false success.
 	let cleanupError: string | undefined;
 	let physicalGone = false;
-	await reapCodexDaemonForSession(store, session, "bridge.terminate");
+	// FLY-2903: stop the in-process goal runtime first so this kill is never
+	// resumed as a mid-goal crash.
+	await reapCodexDaemonForSession(
+		store,
+		session,
+		"bridge.terminate",
+		codexTerminalTeardownDeps("terminate"),
+	);
 	const lookup = session.project_name
 		? lookupTmuxTarget(executionId, session.project_name)
 		: ({ kind: "gone" } as const);

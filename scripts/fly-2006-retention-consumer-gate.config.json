@@ -529,6 +529,13 @@
 			"disposition": "candidate_guarded"
 		},
 		{
+			"file": "scripts/qa-lead-activity-long-turn.mjs",
+			"relation": "mailbox",
+			"baseTable": "mailbox",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
 			"file": "scripts/qa/fly2446-two-lead-run.mjs",
 			"relation": "mailbox",
 			"baseTable": "mailbox",
@@ -733,6 +740,20 @@
 		},
 		{
 			"file": "scripts/replay-ship-judgment-cards.mjs",
+			"relation": "workflow_run_event",
+			"baseTable": "workflow_run_event",
+			"usage": "read",
+			"disposition": "protect"
+		},
+		{
+			"file": "packages/teamlead/src/bridge/lead-activity/turn-trigger-attribution.ts",
+			"relation": "mailbox",
+			"baseTable": "mailbox",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "scripts/qa-529-generalized-e2e.mjs",
 			"relation": "workflow_run_event",
 			"baseTable": "workflow_run_event",
 			"usage": "read",

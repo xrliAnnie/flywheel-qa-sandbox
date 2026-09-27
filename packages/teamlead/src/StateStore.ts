@@ -15,6 +15,7 @@ import {
 	type SummaryPresentationStaleSignal,
 } from "./bridge/summary-presentation-store.js";
 import { SUMMARY_ACTIVITY_NOISE_EVENT_TYPES } from "./bridge/summary-activity-probe.js";
+import { CodexTerminalCloseStore } from "./bridge/codex-terminal-close-ledger.js";
 import { readEpicIntakeRefreshState, recordEpicIntakeRefreshResult, readEpicIntake, migrateEpicIntakes, hasEpicDispatchRecord, recordEpicIntake, beginEpicIntakeScan, completeEpicIntakeScan, type EpicIntakeScan, type EpicIntakeInput, type EpicIntakeRecord } from "./bridge/epic-intake-store.js";
 import {
 	assertPercentageModelAssignment,
@@ -52,7 +53,11 @@ import {
 	RECOVERY_PRECOMMIT_OBSERVATION_MS,
 } from "flywheel-core";
 import { buildReworkWakeId, type ReworkWakeIdentity, type ReworkWakeRetirementProof } from "flywheel-comm/db";
+import { newDrainReadId } from "flywheel-comm/completion-obligations";
+import { type CompletionDrainProof, isCompletionDrainProof } from "./bridge/completion-drain.js";
 import { BetaReleaseStore } from "./bridge/beta-release-store.js";
+import { LeadInterruptStore } from "./bridge/lead-interrupt-store.js";
+import { ReviewRoundStore } from "./bridge/review-round-store.js";
 import type { CompletionWorktreeBranchObservation } from "./bridge/worktree-binding-refresh.js";
 import { CustomerReleaseStore } from "./bridge/customer-release/store.js";
 import { isMailboxTerminalStatus, OUTCOME_STATUSES, TERMINAL_STATUSES } from "flywheel-comm/session-terminal";
@@ -104,7 +109,6 @@ import {
 	isDesignBackend,
 	isSkillFrameworkMode,
 	isSkillFrameworkVia,
-	MODEL_IDS,
 	type ModelConfigSnapshot,
 	type ProposedFlagScan,
 	PROJECT_STORE_MANAGED_FLAGS,
@@ -2052,6 +2056,11 @@ export interface DesignReviewApprovalProof {
  */
 export interface CodexReviewJob {
 	request_id: string;
+	/** NULL is rejected; 0 is accepted legacy history with unknown order. */
+	accept_seq?: number;
+	voided_at?: string;
+	superseded_by_request_id?: string;
+	quiet_until?: string;
 	execution_id: string;
 	issue_id?: string;
 	project_name: string;
@@ -2155,6 +2164,7 @@ export interface AccountSwitchActionReceipt {
  */
 export interface CodexReviewReuseBinding {
 	request_id: string;
+	accept_seq?: number;
 	source_request_id: string;
 	execution_id: string;
 	question_id: string;
@@ -3240,6 +3250,25 @@ export class StateStore {
 		}
 		return this.customerReleaseStoreCache.store;
 	}
+	private codexTerminalCloseStoreCache?: {
+		db: BetterDb;
+		store: CodexTerminalCloseStore;
+	};
+	/** FLY-2903: terminal Codex close verdicts (single writer: codex-terminal-close-ledger). */
+	get codexTerminalClose(): CodexTerminalCloseStore {
+		const db = this.db.raw;
+		if (this.codexTerminalCloseStoreCache?.db !== db) {
+			this.codexTerminalCloseStoreCache = {
+				db,
+				store: new CodexTerminalCloseStore(db),
+			};
+		}
+		return this.codexTerminalCloseStoreCache.store;
+	}
+	/** FLY-2903: run `fn` in one transaction on this store's connection. */
+	runInTransaction(fn: () => void): void {
+		this.db.transaction(fn);
+	}
 	get summaryPresentations(): SummaryPresentationStore {
 		const db = this.db.raw;
 		if (this.summaryPresentationStoreCache?.db !== db) {
@@ -3254,6 +3283,14 @@ export class StateStore {
 	private observationZeroProgress = { verdict: 0, closeout: 0, clarification: 0, archive: 0 };
 	get betaSchedules(): BetaReleaseStore {
 		return new BetaReleaseStore(this.db.raw);
+	}
+	/** FLY-2883: controlled Lead interrupt record + append-only audit. */
+	get leadInterrupts(): LeadInterruptStore {
+		return new LeadInterruptStore(this.db.raw);
+	}
+	/** FLY-2891: per-round local Codex review records + gate acceptances. */
+	get reviewRounds(): ReviewRoundStore {
+		return new ReviewRoundStore(this.db.raw);
 	}
 	private db: CompatDb;
 	private dbPath: string;
@@ -10351,6 +10388,7 @@ export class StateStore {
 	migrate(): void {
 		this.betaSchedules.migrate();
 		this.customerReleases.migrate();
+		this.reviewRounds.migrate();
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS discord_config (
 				singleton_key TEXT PRIMARY KEY CHECK (singleton_key = 'discord'),
@@ -10923,6 +10961,7 @@ export class StateStore {
 			"CREATE UNIQUE INDEX IF NOT EXISTS idx_lead_events_dedup ON lead_events(lead_id, event_id)",
 		);
 		this.summaryPresentations.migrate();
+		this.codexTerminalClose.migrate();
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS patrol_orphan_watch (
 				target TEXT PRIMARY KEY,
@@ -11557,6 +11596,36 @@ export class StateStore {
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_alert_mailbox_ledger_event ON alert_mailbox_ledger(event_id)",
 		);
+		// FLY-2910: only adapter-confirmed deliveries authorize wake suppression.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS alert_wake_dedup_state (
+				lead_id TEXT NOT NULL,
+				fingerprint TEXT NOT NULL,
+				project_name TEXT NOT NULL,
+				event_type TEXT NOT NULL,
+				category_key TEXT NOT NULL,
+				category_title TEXT NOT NULL,
+				info_only INTEGER NOT NULL DEFAULT 0 CHECK (info_only IN (0,1)),
+				window_started_at TEXT NOT NULL,
+				delivered_delivery_id TEXT,
+				max_severity INTEGER NOT NULL DEFAULT 0,
+				ticket_generation TEXT,
+				occurrences INTEGER NOT NULL DEFAULT 0,
+				suppressed INTEGER NOT NULL DEFAULT 0,
+				digest_pending INTEGER NOT NULL DEFAULT 0,
+				last_seen_at TEXT NOT NULL,
+				PRIMARY KEY (lead_id, fingerprint)
+			);
+			CREATE INDEX IF NOT EXISTS alert_wake_dedup_state_category
+				ON alert_wake_dedup_state(lead_id, category_key, window_started_at);
+			CREATE TABLE IF NOT EXISTS alert_wake_letter (
+				delivery_id TEXT PRIMARY KEY,
+				correlation_key TEXT,
+				canonical_event_id TEXT,
+				recorded_at TEXT NOT NULL,
+				evidence_recorded_at TEXT
+			);
+		`);
 
 		// FLY-1082 (Task 2.2): the fleet pressure-hold — a SINGLE durable row
 		// (id=1 enforced). While present, runner admission defers every new
@@ -12006,7 +12075,8 @@ export class StateStore {
 				created_at            TEXT NOT NULL DEFAULT (datetime('now')),
 				updated_at            TEXT,
 				responded_at          TEXT,
-				delivery_nonce        TEXT
+				delivery_nonce        TEXT,
+				completed_at          TEXT
 			)
 		`);
 		// R12 HIGH-4 outbox column on databases created before it existed.
@@ -12032,36 +12102,67 @@ export class StateStore {
 		const reviewJobInfo = this.db.exec("PRAGMA table_info(codex_review_job)");
 		const reviewJobColumns =
 			reviewJobInfo[0]?.values.map((row) => row[1] as string) ?? [];
-		for (const [column, type] of [
-			["question_id", "TEXT"],
-			["failure_raw", "TEXT"],
-			["retry_at", "TEXT"],
-			["retry_trigger", "TEXT"],
-			["retry_parked_at_ms", "INTEGER"],
-			["auto_retry_count", "INTEGER NOT NULL DEFAULT 0"],
-			["head_move_parent_request_id", "TEXT"],
-			["head_move_retry_count", "INTEGER NOT NULL DEFAULT 0"],
-			["failure_attempt_count", "INTEGER NOT NULL DEFAULT 0"],
-			["reviewer_verdict", "TEXT"],
-			["advisories_json", "TEXT"],
-			["settled_json", "TEXT"],
-			["response_json", "TEXT"],
-			["payload_version", "INTEGER"],
-			["target_repo_path", "TEXT"],
-			["target_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
-			["reuse_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
-			["repaired_trailing_brace", "INTEGER NOT NULL DEFAULT 0"],
-			["reviewer_session_generation", "INTEGER NOT NULL DEFAULT 0"],
-			["reviewer_session_failure_streak", "INTEGER NOT NULL DEFAULT 0"],
-			["retired_reviewer_session_uuid", "TEXT"],
-			// FLY-2763: same-family sanction captured at request time
-			["same_family_sanction", "TEXT"],
-		] as const) {
-			if (!reviewJobColumns.includes(column)) {
-				this.db.run(
-					`ALTER TABLE codex_review_job ADD COLUMN ${column} ${type}`,
-				);
+		this.db.transaction(() => {
+			for (const [column, type] of [
+				["accept_seq", "INTEGER"],
+				["voided_at", "TEXT"],
+				["superseded_by_request_id", "TEXT"],
+				["quiet_until", "TEXT"],
+				["question_id", "TEXT"],
+				["failure_raw", "TEXT"],
+				["retry_at", "TEXT"],
+				["retry_trigger", "TEXT"],
+				["retry_parked_at_ms", "INTEGER"],
+				["auto_retry_count", "INTEGER NOT NULL DEFAULT 0"],
+				["head_move_parent_request_id", "TEXT"],
+				["head_move_retry_count", "INTEGER NOT NULL DEFAULT 0"],
+				["failure_attempt_count", "INTEGER NOT NULL DEFAULT 0"],
+				["reviewer_verdict", "TEXT"],
+				["advisories_json", "TEXT"],
+				["settled_json", "TEXT"],
+				["response_json", "TEXT"],
+				["payload_version", "INTEGER"],
+				["target_repo_path", "TEXT"],
+				["target_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
+				["reuse_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
+				["repaired_trailing_brace", "INTEGER NOT NULL DEFAULT 0"],
+				["reviewer_session_generation", "INTEGER NOT NULL DEFAULT 0"],
+				["reviewer_session_failure_streak", "INTEGER NOT NULL DEFAULT 0"],
+				["retired_reviewer_session_uuid", "TEXT"],
+				// FLY-2763: same-family sanction captured at request time
+				["same_family_sanction", "TEXT"],
+				// FLY-2891: stable review completion time (first done only)
+				["completed_at", "TEXT"],
+			] as const) {
+				if (!reviewJobColumns.includes(column)) {
+					this.db.run(
+						`ALTER TABLE codex_review_job ADD COLUMN ${column} ${type}`,
+					);
+				}
 			}
+			// Sparse legacy tables lack the evidence needed to classify acceptance.
+			// target_repo_path is added above; the other predicate columns must exist.
+			if (
+				!reviewJobColumns.includes("accept_seq") &&
+				["status", "frozen_head_sha", "target_path"].every((column) =>
+					reviewJobColumns.includes(column),
+				)
+			) {
+				this.db.run(`UPDATE codex_review_job SET accept_seq = 0
+					WHERE accept_seq IS NULL AND (status <> 'failed'
+					 OR frozen_head_sha IS NOT NULL OR target_path IS NOT NULL
+					 OR target_repo_path IS NOT NULL)`);
+			}
+		});
+		// target_repo_identity is added above, but early schemas predate lane fields.
+		if (
+			["project_name", "issue_id", "review_type"].every((column) =>
+				reviewJobColumns.includes(column),
+			)
+		) {
+			this.db.run(
+				"CREATE INDEX IF NOT EXISTS idx_codex_review_job_lane ON codex_review_job(project_name, issue_id, review_type, target_repo_identity)",
+			);
 		}
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_codex_review_job_exec ON codex_review_job(execution_id)",
@@ -12122,6 +12223,7 @@ export class StateStore {
 		const reuseBindingColumns =
 			reuseBindingInfo[0]?.values.map((row) => row[1] as string) ?? [];
 		for (const [column, type] of [
+			["accept_seq", "INTEGER"],
 			["target_repo_path", "TEXT"],
 			["target_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
 			["reuse_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
@@ -12641,6 +12743,7 @@ export class StateStore {
 		this.migrateShuttleProjection();
 		this.migrateVoiceHealthProjection();
 		this.migrateReleaseReadiness();
+		this.migrateLeadInterrupts();
 		this.db.run(`CREATE TABLE IF NOT EXISTS lead_note (
 			project_name TEXT NOT NULL,
 			issue_uuid TEXT NOT NULL,
@@ -12967,6 +13070,11 @@ export class StateStore {
 				updated_at TEXT NOT NULL
 			)
 		`);
+	}
+
+	/** FLY-2883: lead_interrupts + append-only lead_interrupt_audit. */
+	private migrateLeadInterrupts(): void {
+		this.leadInterrupts.migrate();
 	}
 
 	private migrateVoiceHealthProjection(): void {
@@ -22135,6 +22243,11 @@ export class StateStore {
 	private rowToCodexReviewJob(row: Record<string, unknown>): CodexReviewJob {
 		return {
 			request_id: row.request_id as string,
+			accept_seq: (row.accept_seq as number) ?? undefined,
+			voided_at: (row.voided_at as string) ?? undefined,
+			superseded_by_request_id:
+				(row.superseded_by_request_id as string) ?? undefined,
+			quiet_until: (row.quiet_until as string) ?? undefined,
 			execution_id: row.execution_id as string,
 			issue_id: (row.issue_id as string) ?? undefined,
 			project_name: row.project_name as string,
@@ -22214,6 +22327,7 @@ export class StateStore {
 	): CodexReviewReuseBinding {
 		return {
 			request_id: row.request_id as string,
+			accept_seq: (row.accept_seq as number) ?? undefined,
 			source_request_id: row.source_request_id as string,
 			execution_id: row.execution_id as string,
 			question_id: row.question_id as string,
@@ -22302,26 +22416,31 @@ export class StateStore {
 			input.reuseRepoIdentity ??
 			source?.reuse_repo_identity ??
 			targetRepoIdentity;
-		this.db.run(
-			`INSERT OR IGNORE INTO codex_review_reuse_binding
-			   (request_id, source_request_id, execution_id, question_id,
-			    target_repo_path, target_repo_identity, reuse_repo_identity,
-			    frozen_head_sha,
-			    delivery_nonce, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
-			[
-				input.requestId,
-				input.sourceRequestId,
-				input.executionId,
-				input.questionId,
-				targetRepoPath ?? null,
-				targetRepoIdentity,
-				reuseRepoIdentity,
-				frozenHeadSha ?? null,
-				randomUUID(),
-			],
-		);
-		const inserted = this.db.getRowsModified() > 0;
+		let inserted = false;
+		this.db.transaction(() => {
+			const acceptSeq = this.getNextCodexReviewAcceptSeq();
+			this.db.run(
+				`INSERT OR IGNORE INTO codex_review_reuse_binding
+				   (request_id, source_request_id, execution_id, question_id,
+				    target_repo_path, target_repo_identity, reuse_repo_identity,
+				    frozen_head_sha,
+				    delivery_nonce, accept_seq, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+				[
+					input.requestId,
+					input.sourceRequestId,
+					input.executionId,
+					input.questionId,
+					targetRepoPath ?? null,
+					targetRepoIdentity,
+					reuseRepoIdentity,
+					frozenHeadSha ?? null,
+					randomUUID(),
+					acceptSeq,
+				],
+			);
+			inserted = this.db.getRowsModified() > 0;
+		});
 		this.save();
 		const binding = this.getCodexReviewReuseBinding(input.requestId);
 		if (!binding) throw new Error(`review reuse binding ${input.requestId} vanished`);
@@ -22371,7 +22490,8 @@ export class StateStore {
 		requestId: string;
 		reason: string;
 		frozenHeadSha: string;
-	}): { released: boolean; binding: CodexReviewReuseBinding; job: CodexReviewJob } {
+		quietUntil?: string;
+	}): { released: boolean; binding: CodexReviewReuseBinding; job: CodexReviewJob | null } {
 		const frozenHeadSha = input.frozenHeadSha.trim().toLowerCase();
 		if (!/^[0-9a-f]{40}$/.test(frozenHeadSha)) {
 			throw new Error("released review binding requires a trusted 40-char SHA");
@@ -22382,6 +22502,11 @@ export class StateStore {
 			const binding = this.getCodexReviewReuseBinding(input.requestId);
 			if (!binding) {
 				throw new Error(`review reuse binding ${input.requestId} is missing`);
+			}
+			if (binding.released_at || binding.responded_at) {
+				const job = this.getCodexReviewJob(input.requestId);
+				this.db.raw.exec("ROLLBACK");
+				return { released: false, binding, job };
 			}
 			const source = this.getCodexReviewJob(binding.source_request_id);
 			if (!source) {
@@ -22411,8 +22536,8 @@ export class StateStore {
 				    target_repo_identity, reuse_repo_identity, frozen_head_sha,
 				    reviewer_session_uuid, reviewer_session_generation,
 				    reviewer_session_failure_streak, author_family, status,
-				    delivery_nonce, created_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, datetime('now'))`,
+				    delivery_nonce, accept_seq, quiet_until, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, datetime('now'))`,
 				[
 					binding.request_id,
 					binding.execution_id,
@@ -22431,6 +22556,8 @@ export class StateStore {
 					priorSession.failureStreak,
 					source.author_family ?? null,
 					randomUUID(),
+					binding.accept_seq ?? 0,
+					input.quietUntil ?? null,
 				],
 			);
 			const job = this.getCodexReviewJob(binding.request_id);
@@ -22559,6 +22686,230 @@ export class StateStore {
 		return null;
 	}
 
+	/** Accepted requests share one sequence; successors retain their origin's value. */
+	getNextCodexReviewAcceptSeq(): number {
+		const row = this.db.raw
+			.prepare(`SELECT COALESCE(MAX(accept_seq), 0) + 1 AS next
+			FROM (SELECT accept_seq FROM codex_review_job
+			      UNION ALL SELECT accept_seq FROM codex_review_reuse_binding)`)
+			.get() as { next: number };
+		return row.next;
+	}
+
+	private insertCodexReviewAudit(
+		job: CodexReviewJob,
+		eventId: string,
+		eventType: string,
+		payload: Record<string, unknown>,
+	): void {
+		if (
+			!this.insertEvent({
+				event_id: eventId,
+				event_type: eventType,
+				execution_id: job.execution_id,
+				issue_id: job.issue_id ?? job.execution_id,
+				project_name: job.project_name,
+				source: "bridge.review-coordinator",
+				severity: "info",
+				payload,
+			})
+		) {
+			throw new Error(`review_audit_insert_failed:${eventId}`);
+		}
+	}
+
+	voidCodexReviewJob(input: {
+		requestId: string;
+		reason: string;
+		trigger: string;
+		supersededByRequestId?: string;
+		retireBindingRequestIds?: string[];
+		gateState?: string;
+		observedHeadSha?: string;
+		nowIso: string;
+	}): {
+		voided: boolean;
+		priorStatus?: CodexReviewJob["status"];
+		job: CodexReviewJob | null;
+	} {
+		let voided = false;
+		let priorStatus: CodexReviewJob["status"] | undefined;
+		this.db.transaction(() => {
+			const job = this.getCodexReviewJob(input.requestId);
+			if (!job) return;
+			this.db.run(
+				`UPDATE codex_review_job
+				SET status = 'failed', failure_reason = ?, voided_at = ?,
+				    superseded_by_request_id = ?, retry_at = NULL, retry_trigger = NULL,
+				    retry_parked_at_ms = NULL, quiet_until = NULL,
+				    failure_attempt_count = failure_attempt_count + 1,
+				    updated_at = datetime('now')
+				WHERE request_id = ? AND voided_at IS NULL
+				  AND (status IN ('pending','running')
+				    OR (status = 'failed' AND (retry_at IS NOT NULL OR retry_trigger = 'account_switch')))`,
+				[
+					input.reason,
+					input.nowIso,
+					input.supersededByRequestId ?? null,
+					input.requestId,
+				],
+			);
+			voided = this.db.getRowsModified() === 1;
+			if (!voided) return;
+			priorStatus = job.status;
+			this.insertCodexReviewAudit(
+				job,
+				`review-job-voided:${job.request_id}`,
+				"review_job_voided",
+				{
+					requestId: job.request_id,
+					reason: input.reason,
+					trigger: input.trigger,
+					priorStatus,
+					questionId: job.question_id,
+					reviewType: job.review_type,
+					frozenHeadSha: job.frozen_head_sha,
+					observedHeadSha: input.observedHeadSha,
+					gateState: input.gateState,
+					supersededByRequestId: input.supersededByRequestId,
+				},
+			);
+			for (const bindingRequestId of input.retireBindingRequestIds ?? []) {
+				if (!input.supersededByRequestId)
+					throw new Error("review_binding_retirement_requires_superseder");
+				this.retireCodexReviewReuseBindingForSupersede({
+					bindingRequestId,
+					sourceRequestId: job.request_id,
+					supersededByRequestId: input.supersededByRequestId,
+					nowIso: input.nowIso,
+				});
+			}
+		});
+		this.save();
+		return {
+			voided,
+			priorStatus,
+			job: this.getCodexReviewJob(input.requestId),
+		};
+	}
+
+	retireCodexReviewReuseBindingForSupersede(input: {
+		bindingRequestId: string;
+		sourceRequestId: string;
+		supersededByRequestId: string;
+		nowIso: string;
+	}): boolean {
+		let retired = false;
+		this.db.transaction(() => {
+			const binding = this.getCodexReviewReuseBinding(input.bindingRequestId);
+			if (!binding || binding.released_at || binding.responded_at) return;
+			const source = this.getCodexReviewJob(input.sourceRequestId);
+			if (!source)
+				throw new Error(
+					`review reuse source ${input.sourceRequestId} is missing`,
+				);
+			this.db.run(
+				`UPDATE codex_review_reuse_binding
+				SET release_reason = 'superseded_by_request', released_at = ?
+				WHERE request_id = ? AND responded_at IS NULL AND released_at IS NULL`,
+				[input.nowIso, input.bindingRequestId],
+			);
+			retired = this.db.getRowsModified() === 1;
+			if (!retired) return;
+			this.insertCodexReviewAudit(
+				source,
+				`review-reuse-retired:${binding.request_id}`,
+				"review_reuse_binding_retired",
+				{
+					bindingRequestId: binding.request_id,
+					sourceRequestId: input.sourceRequestId,
+					supersededByRequestId: input.supersededByRequestId,
+					questionId: binding.question_id,
+				},
+			);
+		});
+		this.save();
+		return retired;
+	}
+
+	listLaneJobs(
+		job: Pick<
+			CodexReviewJob,
+			| "request_id"
+			| "execution_id"
+			| "project_name"
+			| "issue_id"
+			| "review_type"
+			| "target_repo_identity"
+		>,
+		filter: "voidable" | "acceptedOthers",
+	): CodexReviewJob[] {
+		const rows = this.db.raw
+			.prepare(`SELECT * FROM codex_review_job
+			WHERE project_name = ? AND review_type = ? AND target_repo_identity = ?
+			  AND (issue_id = ? OR (issue_id IS NULL AND ? IS NULL AND execution_id = ?))
+			  AND request_id <> ?
+			  AND ${
+					filter === "voidable"
+						? "voided_at IS NULL AND (status IN ('pending','running') OR (status = 'failed' AND (retry_at IS NOT NULL OR retry_trigger = 'account_switch')))"
+						: "accept_seq IS NOT NULL AND (head_move_parent_request_id IS NULL OR head_move_parent_request_id <> ?) AND NOT (voided_at IS NOT NULL AND COALESCE(failure_reason, '') = 'head_moved')"
+				}
+			ORDER BY created_at, request_id`)
+			.all(
+				job.project_name,
+				job.review_type,
+				job.target_repo_identity,
+				job.issue_id ?? null,
+				job.issue_id ?? null,
+				job.execution_id,
+				job.request_id,
+				...(filter === "acceptedOthers" ? [job.request_id] : []),
+			) as Record<string, unknown>[];
+		return rows.map((row) => this.rowToCodexReviewJob(row));
+	}
+
+	restartCodexReviewQuietWindow(input: {
+		requestId: string;
+		expectedHeadSha: string;
+		newHeadSha: string;
+		quietUntil: string;
+	}): boolean {
+		if (!/^[0-9a-f]{40}$/.test(input.newHeadSha)) {
+			throw new Error("quiet-window restart requires a trusted 40-char SHA");
+		}
+		let restarted = false;
+		this.db.transaction(() => {
+			const job = this.getCodexReviewJob(input.requestId);
+			if (!job) return;
+			this.db.run(
+				`UPDATE codex_review_job SET frozen_head_sha = ?, quiet_until = ?
+				WHERE request_id = ? AND status = 'pending' AND voided_at IS NULL
+				  AND lower(frozen_head_sha) = ?`,
+				[
+					input.newHeadSha,
+					input.quietUntil,
+					input.requestId,
+					input.expectedHeadSha.toLowerCase(),
+				],
+			);
+			restarted = this.db.getRowsModified() === 1;
+			if (!restarted) return;
+			this.insertCodexReviewAudit(
+				job,
+				`review-quiet-restart:${job.request_id}:${input.newHeadSha}:${input.quietUntil}`,
+				"review_quiet_window_restarted",
+				{
+					requestId: job.request_id,
+					previousHeadSha: job.frozen_head_sha,
+					newHeadSha: input.newHeadSha,
+					quietUntil: input.quietUntil,
+				},
+			);
+		});
+		this.save();
+		return restarted;
+	}
+
 	/**
 	 * Idempotent insert keyed by requestId (§7.1: re-POST of the same request
 	 * must return the SAME durable job, never a duplicate). Returns whether a
@@ -22566,6 +22917,13 @@ export class StateStore {
 	 */
 	insertCodexReviewJob(input: {
 		requestId: string;
+		accepted?: boolean;
+		quietUntil?: string;
+		supersedeLane?: {
+			nowIso: string;
+			expectedAcceptSeq: number;
+			candidates: Array<{ requestId: string; retireBindingRequestIds: string[] }>;
+		};
 		executionId: string;
 		issueId?: string;
 		projectName: string;
@@ -22591,9 +22949,19 @@ export class StateStore {
 		};
 		/** skip lane writes the durable skipped audit row directly. */
 		status?: "pending" | "skipped";
-	}): { inserted: boolean; job: CodexReviewJob } {
+	}): { inserted: boolean; job: CodexReviewJob; voided: CodexReviewJob[] } {
 		let inserted = false;
+		const voided: CodexReviewJob[] = [];
 		this.db.transaction(() => {
+			if (this.getCodexReviewJob(input.requestId)) return;
+			const accepted = input.accepted !== false;
+			const acceptSeq = accepted ? this.getNextCodexReviewAcceptSeq() : null;
+			if (
+				accepted && input.supersedeLane &&
+				acceptSeq !== input.supersedeLane.expectedAcceptSeq
+			) {
+				throw new Error("review_accept_seq_changed");
+			}
 			this.db.run(
 				`INSERT OR IGNORE INTO codex_review_job
 			   (request_id, execution_id, issue_id, project_name, review_type,
@@ -22601,8 +22969,8 @@ export class StateStore {
 			    target_repo_identity, reuse_repo_identity, frozen_head_sha,
 			    reviewer_session_uuid, reviewer_session_generation,
 			    reviewer_session_failure_streak, author_family, status, delivery_nonce,
-			    same_family_sanction, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+			    same_family_sanction, accept_seq, quiet_until, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
 			[
 				input.requestId,
 				input.executionId,
@@ -22623,6 +22991,8 @@ export class StateStore {
 				input.status ?? "pending",
 				randomUUID(), // R17 delivery nonce — server-only
 				input.sameFamilySanction ?? null,
+				acceptSeq,
+				input.quietUntil ?? null,
 				],
 			);
 			inserted = this.db.getRowsModified() > 0;
@@ -22640,11 +23010,24 @@ export class StateStore {
 					capturedAt: input.designPlanProof.capturedAt,
 				});
 			}
+			if (inserted && accepted && input.supersedeLane) {
+				for (const candidate of input.supersedeLane.candidates) {
+					const result = this.voidCodexReviewJob({
+						requestId: candidate.requestId,
+						reason: "superseded_by_request",
+						trigger: "accept",
+						supersededByRequestId: input.requestId,
+						retireBindingRequestIds: candidate.retireBindingRequestIds,
+						nowIso: input.supersedeLane.nowIso,
+					});
+					if (result.voided && result.job) voided.push(result.job);
+				}
+			}
 		});
 		this.save();
 		const job = this.getCodexReviewJob(input.requestId);
 		if (!job) throw new Error(`review job ${input.requestId} vanished`);
-		return { inserted, job };
+		return { inserted, job, voided };
 	}
 
 	/**
@@ -22657,8 +23040,14 @@ export class StateStore {
 		successorRequestId: string;
 		currentHeadSha: string;
 		failureRaw?: string;
+		expectStatus?: "running" | "failed" | "pending";
+		quietUntil?: string;
+		trigger?: string;
+		observedHeadSha?: string;
+		nowIso?: string;
+		markParentVoided?: boolean;
 	}): {
-		outcome: "requeued" | "existing" | "exhausted";
+		outcome: "requeued" | "existing" | "exhausted" | "voided" | "stale";
 		parent: CodexReviewJob;
 		successor?: CodexReviewJob;
 	} {
@@ -22680,6 +23069,14 @@ export class StateStore {
 				this.db.raw.exec("ROLLBACK");
 				return { outcome: "existing", parent, successor: existing };
 			}
+			if (parent.voided_at) {
+				this.db.raw.exec("ROLLBACK");
+				return { outcome: "voided", parent };
+			}
+			if (input.expectStatus && parent.status !== input.expectStatus) {
+				this.db.raw.exec("ROLLBACK");
+				return { outcome: "stale", parent };
+			}
 			if (parent.review_type !== "code") {
 				throw new Error("only code review jobs can requeue after a head move");
 			}
@@ -22690,18 +23087,27 @@ export class StateStore {
 				parent.head_move_retry_count >=
 				MAX_CODEX_REVIEW_HEAD_MOVE_REQUEUES;
 
+			const markVoided = input.markParentVoided === true && !exhausted;
 			this.db.run(
 				`UPDATE codex_review_job
 				    SET status = 'failed', failure_reason = ?,
 				        failure_raw = ?, retry_at = NULL,
+				        voided_at = CASE WHEN ? THEN ? ELSE voided_at END,
+				        superseded_by_request_id = CASE WHEN ? THEN ? ELSE superseded_by_request_id END,
+				        quiet_until = CASE WHEN ? THEN NULL ELSE quiet_until END,
 				        retry_trigger = NULL, retry_parked_at_ms = NULL,
 				        reviewer_session_failure_streak = 0,
 				        failure_attempt_count = failure_attempt_count + 1,
 				        updated_at = datetime('now')
-				  WHERE request_id = ? AND status NOT IN ('done','skipped')`,
+				  WHERE request_id = ? AND status NOT IN ('done','skipped') AND voided_at IS NULL`,
 				[
 					exhausted ? "head_moved_exhausted" : "head_moved",
 					input.failureRaw ?? null,
+					markVoided ? 1 : 0,
+					input.nowIso ?? new Date().toISOString(),
+					markVoided ? 1 : 0,
+					input.successorRequestId,
+					markVoided ? 1 : 0,
 					input.requestId,
 				],
 			);
@@ -22718,8 +23124,8 @@ export class StateStore {
 				  reviewer_session_uuid,
 				  reviewer_session_generation, reviewer_session_failure_streak,
 				  author_family, status, delivery_nonce,
-				  head_move_parent_request_id, head_move_retry_count, created_at)
-				 VALUES (?, ?, ?, ?, 'code', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', ?, ?, ?, datetime('now'))`,
+				  head_move_parent_request_id, head_move_retry_count, accept_seq, quiet_until, created_at)
+				 VALUES (?, ?, ?, ?, 'code', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', ?, ?, ?, ?, ?, datetime('now'))`,
 					[
 						input.successorRequestId,
 						parent.execution_id,
@@ -22738,7 +23144,32 @@ export class StateStore {
 						randomUUID(),
 						parent.request_id,
 						parent.head_move_retry_count + 1,
+						parent.accept_seq ?? null,
+						input.quietUntil ?? null,
 					],
+				);
+			}
+			if (input.markParentVoided) {
+				this.insertCodexReviewAudit(
+					parent,
+					exhausted
+						? `review-head-move-exhausted:${parent.request_id}:${parent.failure_attempt_count + 1}`
+						: `review-job-voided:${parent.request_id}`,
+					exhausted ? "review_head_move_exhausted" : "review_job_voided",
+					{
+						requestId: parent.request_id,
+						reason: exhausted ? "head_moved_exhausted" : "head_moved",
+						trigger: input.trigger,
+						priorStatus: parent.status,
+						questionId: parent.question_id,
+						reviewType: parent.review_type,
+						frozenHeadSha: parent.frozen_head_sha,
+						observedHeadSha: input.observedHeadSha ?? currentHeadSha,
+						...(exhausted ? {} : {
+							supersededByRequestId: input.successorRequestId,
+							successorRequestId: input.successorRequestId,
+						}),
+					},
 				);
 			}
 			this.db.raw.exec("COMMIT");
@@ -22765,15 +23196,16 @@ export class StateStore {
 	 * same-requestId retry after a reviewer failure). Returns false when the
 	 * job is already running/done/skipped — the caller must not double-run.
 	 */
-	claimCodexReviewJobRunning(requestId: string): boolean {
+	claimCodexReviewJobRunning(requestId: string, quietGateNowIso?: string): boolean {
 		this.db.run(
 			`UPDATE codex_review_job
 			   SET status = 'running', failure_reason = NULL, failure_raw = NULL,
 			       retry_at = NULL, retry_trigger = NULL,
-			       retry_parked_at_ms = NULL,
+			       retry_parked_at_ms = NULL, quiet_until = NULL,
 			       updated_at = datetime('now')
-			 WHERE request_id = ? AND status IN ('pending','failed')`,
-			[requestId],
+			 WHERE request_id = ? AND status IN ('pending','failed') AND voided_at IS NULL
+			 ${quietGateNowIso === undefined ? "" : "AND (quiet_until IS NULL OR julianday(quiet_until) <= julianday(?))"}`,
+			quietGateNowIso === undefined ? [requestId] : [requestId, quietGateNowIso],
 		);
 		const claimed = this.db.getRowsModified() > 0;
 		this.save();
@@ -22791,7 +23223,7 @@ export class StateStore {
 			responseJson: string;
 			payloadVersion: number;
 		},
-	): void {
+	): boolean {
 		this.db.run(
 			`UPDATE codex_review_job
 			   SET status = 'done', verdict = ?, reviewer_verdict = ?,
@@ -22800,8 +23232,9 @@ export class StateStore {
 			       reviewer_session_failure_streak = 0,
 			       failure_reason = NULL, failure_raw = NULL, retry_at = NULL,
 			       retry_trigger = NULL, retry_parked_at_ms = NULL,
-			       updated_at = datetime('now')
-			 WHERE request_id = ?`,
+			       updated_at = datetime('now'),
+			       completed_at = COALESCE(completed_at, datetime('now'))
+			 WHERE request_id = ? AND status = 'running' AND voided_at IS NULL`,
 			[
 				verdict,
 				details?.reviewerVerdict ?? null,
@@ -22813,7 +23246,9 @@ export class StateStore {
 				requestId,
 			],
 		);
+		const updated = this.db.getRowsModified() > 0;
 		this.save();
+		return updated;
 	}
 
 	/**
@@ -22823,6 +23258,7 @@ export class StateStore {
 	 */
 	recordCodexReviewJobFailure(input: {
 		requestId: string;
+		expectStatus?: "running";
 		reason: string;
 		failureRaw?: string;
 		retryAt?: string;
@@ -22891,7 +23327,8 @@ export class StateStore {
 			       END,
 			       failure_attempt_count = failure_attempt_count + 1,
 			       updated_at = datetime('now')
-			 WHERE request_id = ? AND status NOT IN ('done','skipped')`,
+			 WHERE request_id = ? AND status NOT IN ('done','skipped') AND voided_at IS NULL
+			 ${input.expectStatus === "running" ? "AND status = 'running'" : ""}`,
 			[
 				input.reason,
 				input.failureRaw ?? null,
@@ -24690,6 +25127,251 @@ export class StateStore {
 
 	// ── FLY-368: alert_threads (unified-alert per-error thread, active-mapping) ──
 
+	/** First enqueue mapping wins, including retries after a ticket reopens. */
+	recordAlertWakeLetter(input: {
+		deliveryId: string;
+		correlationKey: string;
+		canonicalEventId: string;
+		recordedAt: string;
+	}): boolean {
+		return (
+			this.db.raw
+				.prepare(
+					`INSERT OR IGNORE INTO alert_wake_letter
+			 (delivery_id, correlation_key, canonical_event_id, recorded_at)
+			 VALUES (?, ?, ?, ?)`,
+				)
+				.run(
+					input.deliveryId,
+					input.correlationKey,
+					input.canonicalEventId,
+					input.recordedAt,
+				).changes === 1
+		);
+	}
+
+	getAlertWakeLetter(deliveryId: string): AlertWakeLetter | undefined {
+		const row = this.db.raw
+			.prepare("SELECT * FROM alert_wake_letter WHERE delivery_id = ?")
+			.get(deliveryId) as Record<string, unknown> | undefined;
+		return row
+			? {
+					deliveryId: row.delivery_id as string,
+					correlationKey: row.correlation_key as string | null,
+					canonicalEventId: row.canonical_event_id as string | null,
+					recordedAt: row.recorded_at as string,
+					evidenceRecordedAt: row.evidence_recorded_at as string | null,
+				}
+			: undefined;
+	}
+
+	getAlertWakeDedupRecord(
+		leadId: string,
+		fingerprint: string,
+	): AlertWakeDedupRecord | undefined {
+		const row = this.db.raw
+			.prepare(
+				"SELECT * FROM alert_wake_dedup_state WHERE lead_id = ? AND fingerprint = ?",
+			)
+			.get(leadId, fingerprint) as Record<string, unknown> | undefined;
+		return row ? rowToAlertWakeDedupRecord(row) : undefined;
+	}
+
+	/** Marker and evidence commit together; a frozen delivery replay is a no-op. */
+	recordAlertWakeDelivered(input: AlertWakeDeliveredInput): boolean {
+		return this.db.raw.transaction(() => {
+			const marked =
+				input.sourceKind === "infra_alert"
+					? this.db.raw
+							.prepare(
+								`UPDATE alert_wake_letter SET evidence_recorded_at = ?
+					 WHERE delivery_id = ? AND evidence_recorded_at IS NULL
+					 AND canonical_event_id = ?`,
+							)
+							.run(input.nowIso, input.deliveryId, input.ticketGeneration)
+							.changes
+					: this.db.raw
+							.prepare(
+								`INSERT OR IGNORE INTO alert_wake_letter
+					 (delivery_id, evidence_recorded_at, recorded_at) VALUES (?, ?, ?)`,
+							)
+							.run(input.deliveryId, input.nowIso, input.nowIso).changes;
+			if (marked !== 1) return false;
+			const previous = this.getAlertWakeDedupRecord(
+				input.leadId,
+				input.fingerprint,
+			);
+			const reset =
+				!previous ||
+				Date.parse(input.nowIso) - Date.parse(previous.windowStartedAt) >
+					ALERT_WAKE_WINDOW_MS;
+			const maxSeverity =
+				reset || previous.ticketGeneration !== input.ticketGeneration
+					? input.severityRank
+					: Math.max(previous.maxSeverity, input.severityRank);
+			this.db.raw
+				.prepare(
+					`INSERT INTO alert_wake_dedup_state
+				 (lead_id, fingerprint, project_name, event_type, category_key, category_title,
+				  info_only, window_started_at, delivered_delivery_id, max_severity,
+				  ticket_generation, occurrences, suppressed, digest_pending, last_seen_at)
+				 VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+				 ON CONFLICT(lead_id, fingerprint) DO UPDATE SET
+				  project_name = excluded.project_name, event_type = excluded.event_type,
+				  category_key = excluded.category_key, category_title = excluded.category_title,
+				  info_only = 0, window_started_at = excluded.window_started_at,
+				  delivered_delivery_id = excluded.delivered_delivery_id,
+				  max_severity = excluded.max_severity, ticket_generation = excluded.ticket_generation,
+				  occurrences = excluded.occurrences, suppressed = excluded.suppressed,
+				  last_seen_at = excluded.last_seen_at`,
+				)
+				.run(
+					input.leadId,
+					input.fingerprint,
+					input.projectName,
+					input.eventType,
+					input.categoryKey,
+					input.categoryTitle,
+					reset ? input.nowIso : previous.windowStartedAt,
+					input.deliveryId,
+					maxSeverity,
+					input.ticketGeneration,
+					reset ? 1 : previous.occurrences + 1,
+					reset ? 0 : previous.suppressed,
+					previous?.digestPending ?? 0,
+					input.nowIso,
+				);
+			const cutoff = new Date(
+				Date.parse(input.nowIso) - 48 * 3_600_000,
+			).toISOString();
+			this.db.raw
+				.prepare(
+					`DELETE FROM alert_wake_dedup_state WHERE rowid IN
+				 (SELECT rowid FROM alert_wake_dedup_state
+				  WHERE last_seen_at < ? AND digest_pending = 0 LIMIT 200)`,
+				)
+				.run(cutoff);
+			this.db.raw
+				.prepare(
+					`DELETE FROM alert_wake_letter WHERE rowid IN
+				 (SELECT rowid FROM alert_wake_letter WHERE recorded_at < ? LIMIT 200)`,
+				)
+				.run(cutoff);
+			return true;
+		})();
+	}
+
+	bumpAlertWakeSuppressed(input: {
+		leadId: string;
+		fingerprint: string;
+		nowIso: string;
+	}): boolean {
+		return (
+			this.db.raw
+				.prepare(
+					`UPDATE alert_wake_dedup_state SET occurrences = occurrences + 1,
+			 suppressed = suppressed + 1, digest_pending = digest_pending + 1, last_seen_at = ?
+			 WHERE lead_id = ? AND fingerprint = ? AND info_only = 0
+			 AND delivered_delivery_id IS NOT NULL`,
+				)
+				.run(input.nowIso, input.leadId, input.fingerprint).changes === 1
+		);
+	}
+
+	bumpAlertWakeInfo(input: AlertWakeIdentityInput & { nowIso: string }): void {
+		this.db.raw.transaction(() => {
+			const previous = this.getAlertWakeDedupRecord(
+				input.leadId,
+				input.fingerprint,
+			);
+			const reset =
+				!previous ||
+				Date.parse(input.nowIso) - Date.parse(previous.windowStartedAt) >
+					ALERT_WAKE_WINDOW_MS;
+			this.db.raw
+				.prepare(
+					`INSERT INTO alert_wake_dedup_state
+				 (lead_id, fingerprint, project_name, event_type, category_key, category_title,
+				  info_only, window_started_at, occurrences, suppressed, digest_pending, last_seen_at)
+				 VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+				 ON CONFLICT(lead_id, fingerprint) DO UPDATE SET
+				  window_started_at = excluded.window_started_at, occurrences = excluded.occurrences,
+				  suppressed = excluded.suppressed, digest_pending = excluded.digest_pending,
+				  last_seen_at = excluded.last_seen_at`,
+				)
+				.run(
+					input.leadId,
+					input.fingerprint,
+					input.projectName,
+					input.eventType,
+					input.categoryKey,
+					input.categoryTitle,
+					reset ? input.nowIso : previous.windowStartedAt,
+					reset ? 1 : previous.occurrences + 1,
+					reset ? 1 : previous.suppressed + 1,
+					(previous?.digestPending ?? 0) + 1,
+					input.nowIso,
+				);
+		})();
+	}
+
+	sumAlertWakeCategory(
+		leadId: string,
+		categoryKey: string,
+		sinceIso: string,
+	): { occurrences: number; suppressed: number } {
+		return this.db.raw
+			.prepare(
+				`SELECT COALESCE(SUM(occurrences), 0) AS occurrences, COALESCE(SUM(suppressed), 0) AS suppressed
+			 FROM alert_wake_dedup_state WHERE lead_id = ? AND category_key = ? AND window_started_at >= ?`,
+			)
+			.get(leadId, categoryKey, sinceIso) as {
+			occurrences: number;
+			suppressed: number;
+		};
+	}
+
+	takeAlertWakeDigest(
+		leadId: string,
+		limit: number,
+	): {
+		entries: AlertWakeDedupRecord[];
+		total: number;
+		remainingCategories: number;
+	} {
+		return this.db.raw.transaction(() => {
+			const rows = (
+				this.db.raw
+					.prepare(
+						`SELECT * FROM alert_wake_dedup_state WHERE lead_id = ? AND digest_pending > 0
+				 ORDER BY digest_pending DESC, category_key ASC, fingerprint ASC`,
+					)
+					.all(leadId) as Record<string, unknown>[]
+			).map(rowToAlertWakeDedupRecord);
+			this.db.raw
+				.prepare(
+					"UPDATE alert_wake_dedup_state SET digest_pending = 0 WHERE lead_id = ? AND digest_pending > 0",
+				)
+				.run(leadId);
+			const entries = rows.slice(0, Math.max(0, Math.floor(limit)));
+			return {
+				entries,
+				total: rows.reduce((total, row) => total + row.digestPending, 0),
+				remainingCategories: rows.length - entries.length,
+			};
+		})();
+	}
+
+	listAlertWakeDedup(sinceIso: string): AlertWakeDedupRecord[] {
+		return (
+			this.db.raw
+				.prepare(
+					"SELECT * FROM alert_wake_dedup_state WHERE last_seen_at >= ? ORDER BY last_seen_at DESC, lead_id ASC, fingerprint ASC",
+				)
+				.all(sinceIso) as Record<string, unknown>[]
+		).map(rowToAlertWakeDedupRecord);
+	}
+
 	/** Open the first mailbox-lane alert episode for a correlation key. */
 	upsertAlertMailboxLedger(
 		input: AlertMailboxLedgerInput,
@@ -24714,6 +25396,7 @@ export class StateStore {
 		) {
 			return {
 				disposition: "replayed_same",
+				canonicalEventId: null,
 				deliveryProjection: deliveryProjectionFromLedger(existing),
 				};
 		}
@@ -24748,12 +25431,14 @@ export class StateStore {
 					this.save();
 					return {
 						disposition: "reseeded",
+						canonicalEventId: input.eventId,
 						deliveryProjection: deliveryProjectionFromInput(input),
 					};
 				}
 			}
 			return {
 				disposition: "locked_canonical",
+				canonicalEventId: existing.event_id,
 				deliveryProjection: deliveryProjectionFromLedger(existing),
 			};
 		}
@@ -24770,6 +25455,7 @@ export class StateStore {
 			this.save();
 			return {
 				disposition: "merged",
+				canonicalEventId: existing.event_id,
 				deliveryProjection: deliveryProjectionFromInput(input),
 				};
 		}
@@ -24807,6 +25493,7 @@ export class StateStore {
 			this.save();
 			return {
 				disposition: "new_episode",
+				canonicalEventId: input.eventId,
 				deliveryProjection: deliveryProjectionFromInput(input),
 			};
 		}
@@ -24853,6 +25540,7 @@ export class StateStore {
 		this.save();
 		return {
 				disposition: "inserted",
+			canonicalEventId: input.eventId,
 			deliveryProjection: deliveryProjectionFromInput(input),
 		};
 	}
@@ -26925,6 +27613,14 @@ export class StateStore {
 			.prepare("SELECT * FROM lead_events WHERE seq = ?")
 			.get(seq) as Record<string, unknown> | undefined;
 		return row ? mapLeadEventRow(row) : null;
+	}
+
+	/** FLY-2882: metadata-only lookup (never reads `payload`). */
+	getLeadEventSessionKeyBySeq(seq: number): string | null {
+		const row = this.db.raw
+			.prepare("SELECT session_key FROM lead_events WHERE seq = ?")
+			.get(seq) as { session_key: unknown } | undefined;
+		return typeof row?.session_key === "string" ? row.session_key : null;
 	}
 
 	/** FLY-1687: exact per-(project, Lead) patrol chain head; no SQL LIKE. */
@@ -33422,6 +34118,31 @@ export class StateStore {
 			ON workflow_completion_drain_challenge(
 				execution_id, activation_id, business_digest
 			) WHERE state = 'issued'
+		`);
+		// FLY-2373: a v2 challenge is a read envelope — the exact unread subject
+		// set, its carrier-safe pages and which pages the runner was shown.
+		this.addColumnIfMissing(
+			"workflow_completion_drain_challenge",
+			"protocol_version",
+			"INTEGER NOT NULL DEFAULT 1",
+		);
+		for (const column of [
+			"read_id",
+			"read_set_digest",
+			"read_set_json",
+			"pages_json",
+			"pages_served_json",
+		]) {
+			this.addColumnIfMissing(
+				"workflow_completion_drain_challenge",
+				column,
+				"TEXT",
+			);
+		}
+		this.db.run(`
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_wcdc_read_id
+			ON workflow_completion_drain_challenge(read_id)
+			WHERE read_id IS NOT NULL
 		`);
 		// FLY-1375: approval authority survives the QA process lifecycle. The
 		// source execution is attribution only; materialization and founder
@@ -46558,14 +47279,6 @@ export class StateStore {
 				| "snapshot_fallback";
 			audit: boolean;
 			modelAssignment?: WorkflowModelAssignmentReceipt;
-			degradation?: {
-				assignedDispatch: {
-					vendor: "claude" | "codex";
-					model: string;
-					effort?: "low" | "medium" | "high" | "xhigh" | "max";
-				};
-				quotaEvidence: CodexPoolExhaustionFact;
-			};
 		};
 		env?: Record<string, string | undefined>;
 		standbyResumeEnabled?: boolean;
@@ -46612,7 +47325,6 @@ export class StateStore {
 		if (!node.dispatch || node.type === "gate") {
 			return { ok: false, reason: "not_start_node" };
 		}
-		const degradation = input.dispatchResolution?.degradation;
 		const wakeRuntime =
 			activationMode === "wake"
 				? this.getWorkflowExecutionRuntime(input.executionId)
@@ -46686,49 +47398,6 @@ export class StateStore {
 				};
 			}
 		}
-		const currentDegradationEvidence = () => {
-			if (!degradation) return false;
-			const current = this.codexQuota.getCurrentPoolExhaustionFact(
-				degradation.quotaEvidence.rootKey,
-				Date.parse(now),
-			);
-			return (
-				current !== undefined &&
-				canonicalSubmissionDigest(current) ===
-					canonicalSubmissionDigest(degradation.quotaEvidence)
-			);
-		};
-		const validDegradationProposal = () => {
-			if (!degradation) return false;
-			const assignment = input.dispatchResolution?.modelAssignment;
-			const opus = getModelConfigSnapshot().getModelRegistryEntry("opus");
-			return (
-				input.nodeId === "implement" &&
-				assignment?.basis.rule === "issue_node_weighted" &&
-				assignment.basis.nodeId === "implement" &&
-				(assignment.arm === "impl_sol56" || assignment.arm === "impl_sol6") &&
-				degradation.assignedDispatch.vendor === "codex" &&
-				degradation.assignedDispatch.model === assignment.model &&
-				degradation.assignedDispatch.effort === "xhigh" &&
-				input.dispatchResolution?.dispatch.vendor === "claude" &&
-				input.dispatchResolution.dispatch.model === MODEL_IDS.OPUS_55 &&
-				input.dispatchResolution.dispatch.effort === "xhigh" &&
-				assignment.basis.nodes.implement.some(
-					(arm) => arm.arm === "impl_opus" && arm.model === "opus",
-				) &&
-				opus?.id === MODEL_IDS.OPUS_55 &&
-				opus.runtimeVendor === "claude" &&
-				getModelConfigSnapshot().isModelSelectionSupported({
-					surface: "workflow",
-					model: opus.id,
-					effort: "xhigh",
-					runtimeVendor: "claude",
-				})
-			);
-		};
-		if (degradation && !validDegradationProposal())
-			return { ok: false, reason: "model_arm_degradation_invalid" };
-		const proposedDegradationApplied = currentDegradationEvidence();
 		const selectedDispatch = wakeRuntime
 			? {
 					vendor: wakeRuntime.vendor as "claude" | "codex",
@@ -46744,27 +47413,13 @@ export class StateStore {
 							}
 						: {}),
 				}
-			: proposedDegradationApplied
-				? (input.dispatchResolution?.dispatch ?? node.dispatch)
-				: (degradation?.assignedDispatch ??
-					input.dispatchResolution?.dispatch ??
-					node.dispatch);
+			: (input.dispatchResolution?.dispatch ?? node.dispatch);
 		const resolvedDispatch = {
 			...selectedDispatch,
 			model:
 				getModelConfigSnapshot().getModelRegistryEntry(selectedDispatch.model)
 					?.id ?? selectedDispatch.model,
 		};
-		const degradationAssignment =
-			inheritedDegradation?.assignment ??
-			(proposedDegradationApplied
-				? input.dispatchResolution?.modelAssignment
-				: undefined);
-		if (
-			(proposedDegradationApplied || inheritedDegradation) &&
-			!degradationAssignment
-		)
-			return { ok: false, reason: "model_arm_degradation_invalid" };
 		if (
 			node.capabilities.qa_verdict_emitter &&
 			node.capabilities.produces_output
@@ -46926,19 +47581,9 @@ export class StateStore {
 		}
 
 		let quotaRefused = false;
-		let degradationStale = false;
-		let degradationInvalid = false;
 		let outputCredential: string | undefined;
 		let submissionCredential: string | undefined;
 		this.db.transaction(() => {
-			if (proposedDegradationApplied && !validDegradationProposal()) {
-				degradationInvalid = true;
-				return;
-			}
-			if (proposedDegradationApplied && !currentDegradationEvidence()) {
-				degradationStale = true;
-				return;
-			}
 			if(quotaPaused()) {quotaRefused=true;return;}
 			this.appendWorkflowEngineParkEventTx({
 				eventId: `engine-park-clear:${activationId}`,
@@ -47033,10 +47678,12 @@ export class StateStore {
 					);
 				}
 			}
-			const degradationEventUid = degradationAssignment
+			// FLY-2891: new admissions never degrade; only a wake of an execution that
+			// was degraded before the removal re-records its inherited receipt.
+			const degradationEventUid = inheritedDegradation
 				? `model_arm_degraded:${input.runId}:${input.nodeId}:${activationId}`
 				: undefined;
-			if (degradationAssignment) {
+			if (inheritedDegradation) {
 				this.appendWorkflowRunEventCheckedTx({
 					runId: input.runId,
 					eventUid: degradationEventUid!,
@@ -47049,25 +47696,17 @@ export class StateStore {
 						nodeId: input.nodeId,
 						activationId,
 						assignmentEventUid: `model_arm_assigned:${input.runId}:${input.nodeId}`,
-						arm: degradationAssignment.arm,
+						arm: inheritedDegradation.assignment.arm,
 						degraded: true,
-						assignedModel: degradationAssignment.model,
+						assignedModel: inheritedDegradation.assignment.model,
 						actualModel: resolvedDispatch.model,
 						reason: "codex_pool_exhausted",
 						degradedAt: now,
-						quotaEvidence:
-							inheritedDegradation?.quotaEvidence ??
-							degradation!.quotaEvidence,
-						assignedEffort:
-							inheritedDegradation?.assignedEffort ??
-							degradation?.assignedDispatch.effort,
+						quotaEvidence: inheritedDegradation.quotaEvidence,
+						assignedEffort: inheritedDegradation.assignedEffort,
 						actualEffort: resolvedDispatch.effort,
-						...(inheritedDegradation
-							? {
-									originalDegradationEventUid:
-										inheritedDegradation.originalDegradationEventUid,
-								}
-							: {}),
+						originalDegradationEventUid:
+							inheritedDegradation.originalDegradationEventUid,
 					},
 				});
 			}
@@ -47320,10 +47959,6 @@ export class StateStore {
 				);
 			}
 		});
-		if (degradationInvalid)
-			return { ok: false, reason: "model_arm_degradation_invalid" };
-		if (degradationStale)
-			return { ok: false, reason: "model_arm_degradation_stale" };
 		if(quotaRefused) return {ok:false,reason:"codex_quota_paused"};
 		this.save();
 		return {
@@ -48751,19 +49386,38 @@ export class StateStore {
 		)[0] as WorkflowResidentHoldRow | undefined;
 	}
 
+	/**
+	 * FLY-2373: issue (or reuse) the v2 read envelope for one completion
+	 * submission. The envelope freezes the exact unread subject set and its
+	 * carrier-safe pages; page 1 is shown by the 409 itself. A changed unread
+	 * set supersedes the previous envelope — reads of its exact versions stay
+	 * acknowledgeable, new content stays unread.
+	 */
 	issueDrainChallenge(input: {
 		executionId: string;
 		activationId: string;
 		businessDigest: string;
+		readSetDigest: string;
+		subjects: ReadonlyArray<{
+			subjectKind: string;
+			subjectId: string;
+			contentSha256: string;
+		}>;
 		mailSet: { mailbox: string[]; phaseWakes: string[] };
-		watermark: Record<string, unknown>;
+		pages: readonly string[];
 		now?: string;
-	}): { challengeId: string; mailbox: string[]; phaseWakes: string[] } {
+	}): {
+		challengeId: string;
+		readId: string;
+		pageCount: number;
+		reused: boolean;
+	} {
 		const now = input.now ?? new Date().toISOString();
 		if (
 			!input.executionId ||
 			!input.activationId ||
 			!/^[0-9a-f]{64}$/.test(input.businessDigest) ||
+			!/^[0-9a-f]{64}$/.test(input.readSetDigest) ||
 			!StateStore.workflowFiniteTimestamp(now)
 		) {
 			throw new Error("invalid drain challenge input");
@@ -48772,48 +49426,84 @@ export class StateStore {
 		if (!binding || binding.execution_id !== input.executionId) {
 			throw new Error("invalid drain challenge identity");
 		}
-		const mailbox = [...new Set(input.mailSet.mailbox)].sort();
-		const phaseWakes = [...new Set(input.mailSet.phaseWakes)].sort();
+		const subjects = input.subjects
+			.map((subject) => ({
+				subjectKind: subject.subjectKind,
+				subjectId: subject.subjectId,
+				contentSha256: subject.contentSha256,
+			}))
+			.sort((left, right) =>
+				`${left.subjectKind}\u0000${left.subjectId}\u0000${left.contentSha256}` <
+				`${right.subjectKind}\u0000${right.subjectId}\u0000${right.contentSha256}`
+					? -1
+					: 1,
+			);
 		if (
-			mailbox.some((id) => !id) ||
-			phaseWakes.some((id) => !id) ||
-			mailbox.length + phaseWakes.length === 0
+			subjects.length === 0 ||
+			input.pages.length === 0 ||
+			input.pages.some((page) => typeof page !== "string" || !page) ||
+			subjects.some(
+				(subject) =>
+					(subject.subjectKind !== "mailbox" &&
+						subject.subjectKind !== "inline_wake") ||
+					!subject.subjectId ||
+					!/^[0-9a-f]{64}$/.test(subject.contentSha256),
+			)
 		) {
-			throw new Error("invalid drain challenge mail set");
+			throw new Error("invalid drain challenge read set");
 		}
 		const existing = this.workflowSelectAll(
-			`SELECT challenge_id, mail_set_json
+			`SELECT challenge_id, read_id, protocol_version, read_set_digest, pages_json
 			   FROM workflow_completion_drain_challenge
 			  WHERE execution_id = ? AND activation_id = ? AND business_digest = ?
 			    AND state = 'issued'`,
 			[input.executionId, input.activationId, input.businessDigest],
 		)[0];
-		if (existing) {
-			const prior = JSON.parse(existing.mail_set_json as string) as {
-				mailbox: string[];
-				phaseWakes: string[];
-			};
+		if (
+			existing &&
+			Number(existing.protocol_version) === 2 &&
+			existing.read_set_digest === input.readSetDigest &&
+			typeof existing.read_id === "string"
+		) {
 			return {
 				challengeId: existing.challenge_id as string,
-				mailbox: prior.mailbox,
-				phaseWakes: prior.phaseWakes,
+				readId: existing.read_id,
+				pageCount: (JSON.parse(existing.pages_json as string) as string[])
+					.length,
+				reused: true,
 			};
 		}
-		const challengeId = `drain:${input.executionId}:${input.activationId}:${input.businessDigest.slice(0, 16)}`;
+		const challengeId = `drain2:${randomUUID()}`;
+		const readId = newDrainReadId();
+		const mailbox = [...new Set(input.mailSet.mailbox)].sort();
+		const phaseWakes = [...new Set(input.mailSet.phaseWakes)].sort();
 		this.db.transaction(() => {
+			if (existing) {
+				this.db.run(
+					`UPDATE workflow_completion_drain_challenge
+					    SET state = 'superseded'
+					  WHERE challenge_id = ? AND state = 'issued'`,
+					[existing.challenge_id],
+				);
+			}
 			this.db.run(
 				`INSERT INTO workflow_completion_drain_challenge (
 				   challenge_id, execution_id, activation_id, business_digest,
-				   mail_set_json, watermark_json, state, issued_at
-				 ) VALUES (?, ?, ?, ?, ?, ?, 'issued', ?)`,
+				   mail_set_json, watermark_json, state, issued_at,
+				   protocol_version, read_id, read_set_digest, read_set_json,
+				   pages_json, pages_served_json
+				 ) VALUES (?, ?, ?, ?, ?, '{}', 'issued', ?, 2, ?, ?, ?, ?, '[1]')`,
 				[
 					challengeId,
 					input.executionId,
 					input.activationId,
 					input.businessDigest,
 					canonicalJsonString({ mailbox, phaseWakes }),
-					canonicalJsonString(input.watermark),
 					now,
+					readId,
+					input.readSetDigest,
+					canonicalJsonString(subjects),
+					JSON.stringify(input.pages),
 				],
 			);
 			this.appendWorkflowRunEventCheckedTx({
@@ -48823,18 +49513,121 @@ export class StateStore {
 				nodeId: binding.node_id,
 				executionId: input.executionId,
 				payload: {
+					protocolVersion: 2,
 					challengeId,
 					activationId: input.activationId,
 					businessDigest: input.businessDigest,
-					mailbox,
-					phaseWakes,
-					watermark: input.watermark,
+					readSetDigest: input.readSetDigest,
+					subjects,
+					pageCount: input.pages.length,
+					...(existing
+						? { supersedes: existing.challenge_id as string }
+						: {}),
 					issuedAt: now,
 				},
 			});
 		});
 		this.save();
-		return { challengeId, mailbox, phaseWakes };
+		return {
+			challengeId,
+			readId,
+			pageCount: input.pages.length,
+			reused: false,
+		};
+	}
+
+	/** FLY-2373: the persisted v2 read envelope behind one runner read id. */
+	getDrainReadEnvelope(readId: string):
+		| {
+				challengeId: string;
+				executionId: string;
+				activationId: string;
+				businessDigest: string;
+				state: "issued" | "consumed" | "superseded";
+				subjects: Array<{
+					subjectKind: "mailbox" | "inline_wake";
+					subjectId: string;
+					contentSha256: string;
+				}>;
+				pages: string[];
+				pagesServed: number[];
+		  }
+		| undefined {
+		const row = this.workflowSelectAll(
+			`SELECT * FROM workflow_completion_drain_challenge
+			  WHERE read_id = ? AND protocol_version = 2`,
+			[readId],
+		)[0];
+		if (!row) return undefined;
+		try {
+			return {
+				challengeId: row.challenge_id as string,
+				executionId: row.execution_id as string,
+				activationId: row.activation_id as string,
+				businessDigest: row.business_digest as string,
+				state: row.state as "issued" | "consumed" | "superseded",
+				subjects: JSON.parse(row.read_set_json as string),
+				pages: JSON.parse(row.pages_json as string),
+				pagesServed: JSON.parse(row.pages_served_json as string),
+			};
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
+	 * FLY-2373: a ship-carrier runner deliberately sends no workflowActivation
+	 * (its env activation is the carrier, not the node). It proves itself the
+	 * same way its carrier wake receipt does: the carrier activation maps to
+	 * this source execution at exactly this TURN epoch.
+	 */
+	isShipCarrierReader(input: {
+		executionId: string;
+		carrierActivationId: string;
+		turnEpoch: number;
+	}): boolean {
+		if (
+			!input.executionId ||
+			!input.carrierActivationId ||
+			!Number.isInteger(input.turnEpoch) ||
+			input.turnEpoch < 1
+		) {
+			return false;
+		}
+		const row = this.workflowSelectAll(
+			`SELECT source_execution_id, turn_epoch FROM workflow_carrier_delivery
+			  WHERE carrier_activation_id = ?`,
+			[input.carrierActivationId],
+		)[0];
+		return (
+			row !== undefined &&
+			row.source_execution_id === input.executionId &&
+			Number(row.turn_epoch) === input.turnEpoch
+		);
+	}
+
+	/** Record that one page of a read envelope was shown to its runner. */
+	markDrainReadPageServed(readId: string, pageIndex: number): string {
+		const envelope = this.getDrainReadEnvelope(readId);
+		if (
+			!envelope ||
+			!Number.isSafeInteger(pageIndex) ||
+			pageIndex < 1 ||
+			pageIndex > envelope.pages.length
+		) {
+			throw new Error("drain read page not found");
+		}
+		const served = [...new Set([...envelope.pagesServed, pageIndex])].sort(
+			(left, right) => left - right,
+		);
+		this.db.run(
+			`UPDATE workflow_completion_drain_challenge
+			    SET pages_served_json = ?
+			  WHERE read_id = ? AND protocol_version = 2`,
+			[JSON.stringify(served), readId],
+		);
+		this.save();
+		return envelope.pages[pageIndex - 1]!;
 	}
 
 	getIssuedDrainChallenge(input: {
@@ -48902,81 +49695,94 @@ export class StateStore {
 		}
 	}
 
+	/**
+	 * FLY-2373: bind the server-built drain proof to this completion. The
+	 * Bridge re-resolved every obligation under the CommDB lock; this step only
+	 * consumes the submission's issued envelope (if any) and records the proof
+	 * so a crash between the two databases can re-apply wake settlement.
+	 * Wake run-state is deliberately not an input here.
+	 */
 	private consumeDrainChallengeTx(input: {
-		challengeId: string;
 		executionId: string;
 		activationId: string;
 		businessDigest: string;
-		verification: {
-			mailbox: Record<string, string>;
-			phaseWakes: Record<string, string>;
-		};
+		proof: CompletionDrainProof;
 		now: string;
 	}): boolean {
-		const row = this.workflowSelectAll(
-			`SELECT * FROM workflow_completion_drain_challenge
-			  WHERE challenge_id = ? AND execution_id = ? AND activation_id = ?
+		if (!isCompletionDrainProof(input.proof)) return false;
+		const issued = this.workflowSelectAll(
+			`SELECT challenge_id FROM workflow_completion_drain_challenge
+			  WHERE execution_id = ? AND activation_id = ?
 			    AND business_digest = ? AND state = 'issued'`,
-			[
-				input.challengeId,
-				input.executionId,
-				input.activationId,
-				input.businessDigest,
-			],
-		)[0];
-		if (!row) return false;
-		let mailSet: { mailbox: string[]; phaseWakes: string[] };
-		try {
-			mailSet = JSON.parse(row.mail_set_json as string) as typeof mailSet;
-		} catch {
-			return false;
+			[input.executionId, input.activationId, input.businessDigest],
+		)[0] as { challenge_id: string } | undefined;
+		if (!issued && input.proof.settledWakes.length === 0) return true;
+		if (issued) {
+			this.db.run(
+				`UPDATE workflow_completion_drain_challenge
+				    SET state = 'consumed', consumed_at = ?
+				  WHERE challenge_id = ? AND state = 'issued'`,
+				[input.now, issued.challenge_id],
+			);
+			if (this.db.getRowsModified() !== 1) return false;
 		}
-		if (
-			!Array.isArray(mailSet.mailbox) ||
-			!Array.isArray(mailSet.phaseWakes) ||
-			!mailSet.mailbox.every(
-				(id) => input.verification.mailbox[id] === "ACKED",
-			) ||
-			!mailSet.phaseWakes.every((id) =>
-				["started", "finished"].includes(input.verification.phaseWakes[id] ?? ""),
-			)
-		) {
-			return false;
-		}
-		this.db.run(
-			`UPDATE workflow_completion_drain_challenge
-			    SET state = 'consumed', consumed_at = ?
-			  WHERE challenge_id = ? AND execution_id = ? AND activation_id = ?
-			    AND business_digest = ? AND state = 'issued'`,
-			[
-				input.now,
-				input.challengeId,
-				input.executionId,
-				input.activationId,
-				input.businessDigest,
-			],
-		);
-		if (this.db.getRowsModified() !== 1) return false;
 		const binding = this.getWorkflowActivation(input.activationId);
 		if (!binding || binding.execution_id !== input.executionId) {
 			throw new WorkflowEngineInvariantError(
-				`completion_drain_activation_conflict:${input.challengeId}`,
+				`completion_drain_activation_conflict:${input.activationId}`,
 			);
 		}
+		const proofKey =
+			issued?.challenge_id ??
+			`proof:${input.executionId}:${input.activationId}:${input.businessDigest.slice(0, 16)}`;
 		this.appendWorkflowRunEventCheckedTx({
 			runId: binding.run_id,
-			eventUid: `completion_drain_consumed:${input.challengeId}`,
+			eventUid: `completion_drain_consumed:${proofKey}`,
 			kind: "completion_drain_consumed",
 			nodeId: binding.node_id,
 			executionId: input.executionId,
 			payload: {
-				challengeId: input.challengeId,
+				protocolVersion: 2,
+				...(issued ? { challengeId: issued.challenge_id } : {}),
 				activationId: input.activationId,
 				businessDigest: input.businessDigest,
+				proofDigest: input.proof.proofDigest,
+				settledWakes: input.proof.settledWakes,
+				receiptIds: input.proof.receiptIds,
 				consumedAt: input.now,
 			},
 		});
 		return true;
+	}
+
+	/** FLY-2373: recorded v2 drain proofs for one activation (replay reconcile). */
+	listCompletionDrainProofs(input: {
+		runId: string;
+		executionId: string;
+		activationId: string;
+	}): CompletionDrainProof["settledWakes"] {
+		return this.listWorkflowRunEvents(input.runId)
+			.filter(
+				(event) =>
+					event.kind === "completion_drain_consumed" &&
+					event.execution_id === input.executionId,
+			)
+			.flatMap((event) => {
+				const payload = event.payload as Record<string, unknown> | undefined;
+				if (
+					payload?.protocolVersion !== 2 ||
+					payload.activationId !== input.activationId ||
+					!isCompletionDrainProof({
+						protocolVersion: 2,
+						proofDigest: payload.proofDigest,
+						settledWakes: payload.settledWakes,
+						receiptIds: payload.receiptIds,
+					})
+				) {
+					return [];
+				}
+				return payload.settledWakes as CompletionDrainProof["settledWakes"];
+			});
 	}
 
 	enterResidentHold(input: {
@@ -64669,13 +65475,11 @@ export class StateStore {
 		route: string;
 		sourceEventId: string;
 		completionSubmission: unknown;
-		drainChallenge?: {
-			challengeId: string;
-			verification: {
-				mailbox: Record<string, string>;
-				phaseWakes: Record<string, string>;
-			};
-		};
+		/**
+		 * FLY-2373: Bridge-built proof that every completion obligation was
+		 * consumed, derived under the CommDB lock; never decoded from payload.
+		 */
+		drainProof?: CompletionDrainProof;
 		/** Current completion head carried by the trusted event envelope. */
 		subjectDigest?: string;
 		workflowActivation?: WorkflowCompletionActivationContext;
@@ -65168,13 +65972,12 @@ export class StateStore {
 					});
 				}
 				if (
-					input.drainChallenge &&
+					input.drainProof &&
 					!this.consumeDrainChallengeTx({
-						challengeId: input.drainChallenge.challengeId,
 						executionId: input.executionId,
 						activationId: context.binding.activation_id,
 						businessDigest: digest,
-						verification: input.drainChallenge.verification,
+						proof: input.drainProof,
 						now,
 					})
 				) {
@@ -65407,7 +66210,7 @@ export class StateStore {
 			});
 		} catch (error) {
 			if (drainChallengeRefused) {
-				return { ok: false, reason: "drain_challenge_not_issued" };
+				return { ok: false, reason: "drain_proof_invalid" };
 			}
 			if (terminalImmuneRefusal) {
 				return { ok: false, reason: "terminal_status_immune" };
@@ -88768,8 +89571,6 @@ export type GeneralizedWorkflowAdmissionResult =
 			ok: false;
 			reason:
 				| "codex_quota_paused"
-				| "model_arm_degradation_stale"
-				| "model_arm_degradation_invalid"
 				| "wake_runtime_invalid"
 				| "wake_degradation_invalid"
 				| "invalid_expiry"
@@ -88852,7 +89653,7 @@ export type WorkflowCompletionResult =
 				| "no_code_artifact_present"
 				| "no_code_attestation_missing"
 				| "no_code_attestation_stale"
-				| "drain_challenge_not_issued"
+				| "drain_proof_invalid"
 				| "terminal_status_immune"
 				| "stale_resubmission_identity_missing"
 				| "land_head_unavailable"
@@ -90090,6 +90891,68 @@ export interface AlertMailboxLedgerUpsertResult {
 		| "merged"
 		| "new_episode";
 	deliveryProjection: AlertMailboxDeliveryProjection;
+	canonicalEventId: string | null;
+}
+
+const ALERT_WAKE_WINDOW_MS = 6 * 3_600_000;
+
+export interface AlertWakeIdentityInput {
+	leadId: string;
+	fingerprint: string;
+	projectName: string;
+	eventType: string;
+	categoryKey: string;
+	categoryTitle: string;
+}
+
+export interface AlertWakeDeliveredInput extends AlertWakeIdentityInput {
+	deliveryId: string;
+	severityRank: number;
+	ticketGeneration: string;
+	nowIso: string;
+	sourceKind: "infra_alert" | "discord_chat";
+}
+
+export interface AlertWakeDedupRecord extends AlertWakeIdentityInput {
+	infoOnly: boolean;
+	windowStartedAt: string;
+	deliveredDeliveryId: string | null;
+	maxSeverity: number;
+	ticketGeneration: string | null;
+	occurrences: number;
+	suppressed: number;
+	digestPending: number;
+	lastSeenAt: string;
+}
+
+export interface AlertWakeLetter {
+	deliveryId: string;
+	correlationKey: string | null;
+	canonicalEventId: string | null;
+	recordedAt: string;
+	evidenceRecordedAt: string | null;
+}
+
+function rowToAlertWakeDedupRecord(
+	row: Record<string, unknown>,
+): AlertWakeDedupRecord {
+	return {
+		leadId: row.lead_id as string,
+		fingerprint: row.fingerprint as string,
+		projectName: row.project_name as string,
+		eventType: row.event_type as string,
+		categoryKey: row.category_key as string,
+		categoryTitle: row.category_title as string,
+		infoOnly: row.info_only === 1,
+		windowStartedAt: row.window_started_at as string,
+		deliveredDeliveryId: row.delivered_delivery_id as string | null,
+		maxSeverity: row.max_severity as number,
+		ticketGeneration: row.ticket_generation as string | null,
+		occurrences: row.occurrences as number,
+		suppressed: row.suppressed as number,
+		digestPending: row.digest_pending as number,
+		lastSeenAt: row.last_seen_at as string,
+	};
 }
 
 export type AlertDraftBindResult =

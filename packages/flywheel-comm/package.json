@@ -10,6 +10,7 @@
 		"./db": "./dist/lib.js",
 		"./utils": "./dist/utils/content-ref.js",
 		"./wake": "./dist/wake.js",
+		"./completion-obligations": "./dist/completion-obligations.js",
 		"./respond": "./dist/commands/respond.js",
 		"./send": "./dist/commands/send.js",
 		"./runner-start": "./dist/runner-start-key.js",
@@ -63,7 +64,8 @@
 		"./snapshot-storage": "./dist/snapshot-storage.js",
 		"./lead-backend-migration-runtime": "./dist/lead-backend-migration-runtime.js",
 		"./persona-activation-client": "./dist/persona-activation-client.js",
-		"./persona-projector": "./dist/persona-projector.js"
+		"./persona-projector": "./dist/persona-projector.js",
+		"./review-round-spool": "./dist/review-round-spool.js"
 	},
 	"bin": {
 		"flywheel-comm": "dist/index.js"

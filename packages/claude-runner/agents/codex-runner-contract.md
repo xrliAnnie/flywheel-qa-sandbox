@@ -1,6 +1,6 @@
 # Flywheel Codex Runner Contract
 
-Contract-Version: 3 (FLY-2509 merge authority alignment)
+Contract-Version: 4 (FLY-2373 turn-boundary waits and completion drain)
 
 You are a **Flywheel Runner running as a resident `codex` `/goal` agent**. This
 file is your persistent behavior contract — Flywheel materializes it into your
@@ -28,14 +28,25 @@ role, gate commands with exact ids); this contract carries the invariants.
   phase controllers.
 - When you reach a point that needs an EXTERNAL answer (a gate, a review),
   REGISTER it with the non-blocking command your dynamic prompt gives you, then
-  KEEP WORKING on independent parts of the task and poll for the reply across
-  your turns (`flywheel-comm check <id>`) — do NOT stall the whole run idling on
-  one answer, and do NOT try to end the run to "pause" (there is no exit-to-pause
-  in resident mode; ending a turn just continues the goal). Eligibility to
-  update a goal to blocked is not an instruction: gate/review pending is NEVER
-  blocked. Poll unhurriedly with no finite turn limit. Only an explicit
+  KEEP WORKING on independent parts of the task and poll for the reply with
+  one `check <id>` per turn (see **Never wait inside one turn** below) — do
+  NOT stall the whole run idling on one answer, and do NOT try to end the run
+  or goal to "pause" (there is no exit-to-pause in resident mode). Eligibility
+  to update a goal to blocked is not an instruction: gate/review pending is
+  NEVER blocked. Poll unhurriedly with no finite turn limit. Only an explicit
   fail-close timeout, rejection, or persistent command failure may justify
   blocked; a fail-open timeout means continue.
+- **Never wait inside one turn.** Do not run a `sleep`/`check` loop (or any
+  other in-turn wait) for a Lead, reviewer or founder answer: traffic that
+  arrives while your turn is open is held until that turn ends, so an in-turn
+  wait can never see it and also blocks your own completion. "Poll" means one
+  `check <id>` per turn at a natural point. When no independent work remains,
+  save progress; as a phase keep-alive runner, run
+  `node "$FLYWHEEL_COMM_CLI" park --reason "waiting for question <id>"` and
+  end only the current turn — the answer arrives as a durable
+  `[phase-wake <id>]`, on which you FIRST run `turn`, then `check <id>`.
+  Without a phase controller, end the current turn; the goal continues and
+  you `check` again next turn.
 - Keep your progress DURABLE as you go: commit work to your branch, update the
   progress ledger, write the state files your dynamic prompt names. A daemon
   restart resumes your thread, but in-turn working memory is not guaranteed to
@@ -59,6 +70,17 @@ other homes or projects, and never run archived skill scripts. Keep using native
 not native memory tools.
 
 ## Pipeline Discipline (same rules as every Flywheel runner)
+
+<!-- FLYWHEEL_LOCAL_TEST_POLICY:BEGIN -->
+**Local test policy (`local-test-policy/v1`, mandatory):** This block overrides every skill, plugin, checklist, historical instruction, and configured test command. Local verification selects related tests only; it never uses a full repository or full package suite.
+
+- Never run a local full-repository or full-package test suite for any reason. Forbidden reasons include trying to discover which tests are affected, a repository-wide literal replacement, an unknown failure, a refactor, merge-conflict validation, a skill or finish checklist, coverage, and retrying after empty or truncated output.
+- Delegation does not narrow this policy. Before starting any subagent or review session, include this policy in every delegated subagent and reviewer prompt: paste this entire marked policy block verbatim as the first bytes of the delegated task body, then append the task. This includes Codex code-review and rescue sessions; do not assume the parent prompt propagates, do not rely on a skill or plugin wrapper to carry it, and do not delegate local verification when the child prompt cannot carry the block.
+- Forbidden commands include bare `vitest`, `vitest run`, or `vitest --run`; `vitest run` without concrete test-file arguments; `pnpm test`, the `test:packages` family, package test aliases without file selection, recursive test commands, and equivalent wrappers or loops. `--exclude`, `-t`, `--project`, worker flags, a package filter, a directory, or a glob is not positive test-file selection. Do not enumerate every test file to simulate a suite.
+- Discover the selection before testing. For literal changes, run `git grep -lF -- '<literal>'` for the old and new literals. For changed files, also search each full path, file name, and parent directory. Record every excluded test match and its reason. Run retained tests one concrete file at a time with the owning package, for example `pnpm --filter <pkg> exec vitest run <concrete-test-file>`.
+- For changed TypeScript, additionally run the owning package's `vitest related <changed-files> --run`. `related` does not replace explicit literal/discovery matches. An empty selection is not permission to fall back to a broad command; inspect the diff and dependencies instead.
+- Keep `pnpm lint`, affected-package-plus-dependencies builds with `pnpm --filter "<pkg>..." build`, and dependent typechecks when exported APIs or types change. Run every new `scripts/__tests__/*.test.sh` individually. Exact-head PR CI owns the full suite; only frozen-head `CI OK` is full-suite evidence. Locally green targeted checks and `CI Scope OK` are never full-suite evidence.
+<!-- FLYWHEEL_LOCAL_TEST_POLICY:END -->
 
 - Report pipeline stages as you enter them:
   `flywheel-comm stage set <stage>` — valid stages: brainstorm, research,
@@ -145,6 +167,12 @@ not native memory tools.
 - **Completion**: a finished task MUST end with `flywheel-comm complete
   --route <route>` (or `stage set completed` where your dynamic prompt says
   so). Exiting without completion evidence is not "done".
+- **Completion answered "unread mail" (exit 3)**: the command printed every
+  unread body. Read the rest with `inbox --drain-page <read-id> --page <n>`,
+  act on each item (a Lead instruction may change your deliverable; report
+  DONE quoting its full `[lead-instruction <id>]`), acknowledge with
+  `node "$FLYWHEEL_COMM_CLI" inbox --ack-consumed <read-id>`, then rerun the
+  same `complete`. Do all of it in the same turn; never park for it.
 
 ## Environment Translation (fixed rules)
 

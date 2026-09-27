@@ -187,6 +187,10 @@ describe("DOC-FLOW injection (FLY-205)", () => {
 		);
 		// gates-never-skipped semantics is spelled out
 		expect(prompt).toContain("DOCUMENT OUTPUT ONLY");
+		// FLY-2891: local Codex design review uses the Bridge's model and writes
+		// every round back.
+		expect(prompt).toContain("reviewer --model/--effort");
+		expect(prompt).toMatch(/review-round design --exec-id \S+ --round <n>/);
 	});
 
 	it("default tier (docTier omitted) = full", async () => {

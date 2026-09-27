@@ -18,6 +18,7 @@ describe("runtime material assembly", () => {
 				questionId: "rq",
 				targetPath: "engineering/doc/FLY-2399-x/plan.md",
 			});
+			store.claimCodexReviewJobRunning("review");
 			store.completeCodexReviewJob("review", "APPROVED");
 			store.stampCodexReviewJobResponded("review");
 			const body = "<p>R1 test PASS</p>";

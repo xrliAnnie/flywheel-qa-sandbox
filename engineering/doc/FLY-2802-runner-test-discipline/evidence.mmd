@@ -1,0 +1,21 @@
+%%{init: {'theme':'base','themeVariables':{'fontFamily':'system-ui','primaryColor':'#f5f5f7','primaryTextColor':'#1d1d1f','primaryBorderColor':'#86868b','lineColor':'#86868b'}}}%%
+classDiagram
+    class 本次验收 {
+      候选代码版本
+      规则和技能内容指纹
+      房间与运行身份
+      模型与角色
+    }
+    class 原始记录 {
+      工具调用与结果
+      关联子会话
+      文件选择依据
+    }
+    class 判定 {
+      通过或失败或证据不足
+      违规调用位置
+      任务完成证据
+    }
+    本次验收 "1" --> "多" 原始记录 : 对应
+    本次验收 "1" --> "1" 判定 : 得到
+    原始记录 --> 判定 : 复核依据

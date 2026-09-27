@@ -109,6 +109,101 @@ describe("neutral Codex review services", () => {
 		expect(store.isCodexCodeReviewApproved("main-1", SHA)).toBe(true);
 	});
 
+	describe("FLY-2891 reviewer model on routed executions", () => {
+		const routeCode = (model = "gpt-5.6-sol", effort = "xhigh") => {
+			vi.spyOn(store, "getWorkflowRunNodeForExecution").mockReturnValue({
+				run_id: "run-1",
+				node_id: "implement",
+			} as never);
+			vi.spyOn(store, "listWorkflowRunEvents").mockReturnValue([
+				{
+					run_id: "run-1",
+					seq: 1,
+					event_uid: "review_model_routed:run-1:implement:code:e1",
+					kind: "review_model_routed",
+					node_id: "implement",
+					edge_id: null,
+					execution_id: "main-1",
+					payload: {
+						reviewType: "code",
+						requestId: "e1",
+						reviewerVendor: "codex",
+						reviewerModel: model,
+						reviewerEffort: effort,
+					},
+					at: "2026-09-25T10:00:00.000Z",
+				},
+			]);
+		};
+		const verdict = (payload: Record<string, unknown>) => ({
+			event_id: `codex-verdict-${Math.random()}`,
+			execution_id: "main-1",
+			issue_id: "FLY-1981",
+			project_name: "flywheel",
+			event_type: "codex_review_result",
+			payload: {
+				reviewType: "code",
+				status: "APPROVED",
+				prHeadSha: SHA,
+				targetExecutionId: "main-1",
+				...payload,
+			},
+		});
+		afterEach(() => vi.restoreAllMocks());
+
+		it("does not record a legacy (model-less) approval on a routed execution and keeps the hold", async () => {
+			routeCode();
+			const warn = vi.fn();
+			const ingest = new CodexReviewIngest({
+				store,
+				logger: { log: vi.fn(), warn },
+			});
+			await ingest.onCodexReviewResult(verdict({}));
+			expect(store.isCodexCodeReviewApproved("main-1", SHA)).toBe(false);
+			expect(warn).toHaveBeenCalledWith(
+				expect.stringContaining("gate predates FLY-2891"),
+			);
+		});
+
+		it("does not record a wrong-model approval", async () => {
+			routeCode();
+			const ingest = new CodexReviewIngest({ store });
+			await ingest.onCodexReviewResult(
+				verdict({ reviewerModel: "gpt-6-astra", reviewerEffort: "xhigh" }),
+			);
+			expect(store.isCodexCodeReviewApproved("main-1", SHA)).toBe(false);
+			await ingest.onCodexReviewResult(
+				verdict({ reviewerModel: "gpt-5.6-sol", reviewerEffort: "high" }),
+			);
+			expect(store.isCodexCodeReviewApproved("main-1", SHA)).toBe(false);
+		});
+
+		it("records a matching-model approval", async () => {
+			routeCode();
+			const ingest = new CodexReviewIngest({ store });
+			await ingest.onCodexReviewResult(
+				verdict({ reviewerModel: "gpt-5.6-sol", reviewerEffort: "xhigh" }),
+			);
+			expect(store.isCodexCodeReviewApproved("main-1", SHA)).toBe(true);
+		});
+
+		it("fails closed when the route cannot be resolved", async () => {
+			vi.spyOn(store, "getWorkflowRunNodeForExecution").mockReturnValue({
+				run_id: "run-1",
+				node_id: "implement",
+			} as never);
+			vi.spyOn(store, "listWorkflowRunEvents").mockReturnValue([]);
+			vi.spyOn(store, "getWorkflowRun").mockReturnValue({
+				snapshot: "{corrupt",
+			} as never);
+			const ingest = new CodexReviewIngest({ store });
+			await ingest.onCodexReviewResult(
+				verdict({ reviewerModel: "gpt-5.6-sol", reviewerEffort: "xhigh" }),
+			);
+			expect(store.isCodexCodeReviewApproved("main-1", SHA)).toBe(false);
+		});
+	});
+
 	it("owns the neutral instruction queue and missing-head Lead alert effects", async () => {
 		const queueInstruction = vi.fn(() => ({ queued: true }));
 		const alert = vi.fn(async () => ({ sent: true }));

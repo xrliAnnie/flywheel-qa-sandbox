@@ -21,13 +21,23 @@
  */
 
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import {
+	appendRunnerTestPolicyHookSettings,
 	buildNonLeadClaudeSettings,
+	buildRunnerTestPolicyHookCommand,
 	getModelConfigSnapshot,
 	type RoleEffort,
 	resolveAllowedCanonicalModel,
 	resolveAllowedEffort,
 } from "flywheel-config";
+
+const RUNNER_TEST_POLICY_HOOK = fileURLToPath(
+	new URL(
+		"../../../../scripts/hooks/inject-runner-test-policy.mjs",
+		import.meta.url,
+	),
+);
 
 const washReviewEnv = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>
 	Object.fromEntries(
@@ -60,6 +70,7 @@ export type ClaudeReviewOutcome =
 	| {
 			kind: "failed";
 			reason:
+				| "aborted"
 				| "spawn_error"
 				| "timeout"
 				| "nonzero_exit"
@@ -92,6 +103,7 @@ export interface ClaudeReviewInvocation {
 	maxStdoutBytes?: number;
 	env?: NodeJS.ProcessEnv;
 	binary?: string;
+	signal?: AbortSignal;
 }
 
 /**
@@ -151,7 +163,16 @@ export function buildClaudeReviewArgv(
 		canonicalModel,
 		...(effort ? (["--effort", effort] as const) : []),
 		"--settings",
-		JSON.stringify(buildNonLeadClaudeSettings()),
+		JSON.stringify(
+			appendRunnerTestPolicyHookSettings(
+				buildNonLeadClaudeSettings(),
+				inv.prompt,
+				buildRunnerTestPolicyHookCommand(
+					process.execPath,
+					RUNNER_TEST_POLICY_HOOK,
+				),
+			),
+		),
 	];
 }
 
@@ -159,6 +180,7 @@ interface SpawnResult {
 	code: number | null;
 	stdout: string;
 	stderr: string;
+	aborted: boolean;
 	timedOut: boolean;
 	overflowed: boolean;
 	spawnError: string | null;
@@ -171,14 +193,28 @@ export type ClaudeReviewSpawner = (opts: {
 	env: NodeJS.ProcessEnv;
 	timeoutMs: number;
 	maxStdoutBytes: number;
+	signal?: AbortSignal;
 }) => Promise<SpawnResult>;
 
 /** Real spawner — never rejects; every failure lands in the result shape. */
 export const defaultClaudeReviewSpawner: ClaudeReviewSpawner = (opts) =>
 	new Promise((resolve) => {
+		if (opts.signal?.aborted) {
+			resolve({
+				code: null,
+				stdout: "",
+				stderr: "",
+				aborted: true,
+				timedOut: false,
+				overflowed: false,
+				spawnError: null,
+			});
+			return;
+		}
 		let stdout = "";
 		let stderrTail = Buffer.alloc(0);
 		let done = false;
+		let aborted = false;
 		let timedOut = false;
 		let overflowed = false;
 		let spawnError: string | null = null;
@@ -201,15 +237,22 @@ export const defaultClaudeReviewSpawner: ClaudeReviewSpawner = (opts) =>
 			}
 		};
 		if (child.pid) liveChildren.set(child.pid, killTree);
+		const onAbort = () => {
+			if (done) return;
+			aborted = true;
+			killTree();
+		};
 		const finish = (code: number | null) => {
 			if (done) return;
 			done = true;
 			clearTimeout(timer);
+			opts.signal?.removeEventListener("abort", onAbort);
 			if (child.pid) liveChildren.delete(child.pid);
 			resolve({
 				code,
 				stdout,
 				stderr: stderrTail.toString("utf8"),
+				aborted,
 				timedOut,
 				overflowed,
 				spawnError,
@@ -248,6 +291,8 @@ export const defaultClaudeReviewSpawner: ClaudeReviewSpawner = (opts) =>
 			finish(127);
 		});
 		child.on("close", (code) => finish(code));
+		opts.signal?.addEventListener("abort", onAbort, { once: true });
+		if (opts.signal?.aborted) onAbort();
 		try {
 			// -p mode must not be left waiting on stdin (classifier precedent)
 			child.stdin.end();
@@ -506,7 +551,17 @@ export async function runClaudeReviewRound(
 		},
 		timeoutMs: inv.timeoutMs ?? DEFAULT_TIMEOUT_MS,
 		maxStdoutBytes: inv.maxStdoutBytes ?? DEFAULT_MAX_STDOUT_BYTES,
+		signal: inv.signal,
 	});
+	if (res.aborted) {
+		return {
+			kind: "failed",
+			reason: "aborted",
+			detail: "aborted by review coordinator",
+			exitCode: res.code,
+			timedOut: false,
+		};
+	}
 	if (res.spawnError !== null) {
 		logger(`spawn failed: ${res.spawnError}`);
 		return {

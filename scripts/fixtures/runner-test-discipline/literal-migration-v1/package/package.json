@@ -1,0 +1,13 @@
+{
+	"name": "@flywheel/runner-test-discipline-fixture",
+	"version": "1.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"test": "vitest run",
+		"test:packages": "pnpm test"
+	},
+	"devDependencies": {
+		"vitest": "^3.1.4"
+	}
+}

@@ -27,6 +27,8 @@ source "${TEARDOWN_SCRIPT_DIR}/lib/qa-launchd-lead.sh"
 source "${TEARDOWN_SCRIPT_DIR}/lib/qa-generalized.sh"
 # shellcheck source=lib/qa-slot-bridge.sh
 source "${TEARDOWN_SCRIPT_DIR}/lib/qa-slot-bridge.sh"
+# shellcheck source=lib/qa-slot-pool.sh
+source "${TEARDOWN_SCRIPT_DIR}/lib/qa-slot-pool.sh"
 # shellcheck source=lib/runner-workspace-trust.sh
 source "${TEARDOWN_SCRIPT_DIR}/lib/runner-workspace-trust.sh"
 _CMUX_PROCESS_CENSUS_LIB="${TEARDOWN_SCRIPT_DIR}/lib/cmux-mutator-process-census.sh"
@@ -1251,8 +1253,11 @@ teardown_slot() {
   # ── Step 6b (FLY-2867): Release this slot's voice-room leases ──
   # A room torn down without `fly2655-voice-room.mjs stop` left its
   # /tmp/flywheel-voice-room-*.lock behind and blocked every other slot from
-  # that voice channel. A lease whose recorded voice daemon still runs is kept
-  # and reported; lease problems never block the slot teardown itself.
+  # that voice channel. FLY-2876: the Bridge is already gone here, so a recorded
+  # voice daemon still running would retry forever and keep writing into
+  # SLOT_DIR; it is stopped (identity-checked) before its lease is released. A
+  # lease whose daemon cannot be stopped is kept and reported; lease problems
+  # never block the slot teardown itself.
   # The CLI only runs its main() when argv[1] is its real path, so resolve
   # symlinked checkouts (e.g. under /tmp -> /private/tmp) first.
   local VOICE_ROOM_SCRIPT="" VOICE_LEASES=""
@@ -1347,7 +1352,10 @@ test_teardown_main() {
 
   if [[ "$target" == "all" ]]; then
     SLOTS_FILE="${HOME}/.flywheel/test-slots.json"
-    TOTAL_SLOTS=$(jq '.slots | length' "$SLOTS_FILE" 2>/dev/null || echo 4)
+    if ! TOTAL_SLOTS="$(qa_slot_pool_count "$SLOTS_FILE")"; then
+      log "ERROR: invalid slot sequence in ${SLOTS_FILE}; no teardown action taken (use explicit per-slot teardown only after verifying the target)"
+      return 1
+    fi
     for i in $(seq 1 "$TOTAL_SLOTS"); do
       # FLY-1189: a borrowed slot returns non-zero (guard above) — its lock is
       # released when the loop reaches the OWNER slot's manifest. Don't let one

@@ -1,0 +1,920 @@
+{
+  "gitVersion": "git version 2.39.5 (Apple Git-154)",
+  "results": [
+    {
+      "case": "r6-ignore-removed",
+      "expected": "blocked",
+      "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r3-2b38itsm/r6-ignore-removed-ttzf7z",
+      "H": "6a5642dd5f52b8ae157e1fecdca7c1c72b374b0b",
+      "S": "ff66504bdf776c14c7075abbbc3a2c2845638a6e",
+      "beforeStatus": "",
+      "ignoredBefore": [
+        "drafts/unpublished.md"
+      ],
+      "guards": [
+        {
+          "phase": "before-any-rescue-write",
+          "allowed": false,
+          "I": [
+            "drafts/"
+          ],
+          "P": [
+            ".flywheel/anchor",
+            ".gitignore",
+            "tracked"
+          ],
+          "collision": [],
+          "G": [
+            ".gitignore"
+          ],
+          "ignoreCase": true,
+          "ignoreChanged": [
+            ".gitignore"
+          ],
+          "ignoreComparisons": [
+            {
+              "path": ".gitignore",
+              "current": "c0d4819356e994b063403f22cd8a30b09056dc22",
+              "target": "17f20c829ffc6c63f93e24fa58e296302e95b3c4",
+              "changed": true
+            }
+          ]
+        }
+      ],
+      "outcome": "refused-by-plan-model",
+      "class": null,
+      "snapshotCalls": 0,
+      "snapshot": null,
+      "rescueRefs": [],
+      "events": [],
+      "steps": [],
+      "originalPreserved": true,
+      "originalBlobStored": false,
+      "afterBytes": "UNIQUE LOCAL WORK NEVER COMMITTED: r6-ignore-removed\n",
+      "finalStatus": ""
+    },
+    {
+      "case": "r6-target-overwrite",
+      "expected": "blocked",
+      "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r3-2b38itsm/r6-target-overwrite-bB8usr",
+      "H": "9232f77eb24c07e950aff31c93a9ef5248741bd7",
+      "S": "9ddd3ba020f5100f46cf9cbf394f0490fa6fbb82",
+      "beforeStatus": "",
+      "ignoredBefore": [
+        "drafts/unpublished.md"
+      ],
+      "guards": [
+        {
+          "phase": "before-any-rescue-write",
+          "allowed": false,
+          "I": [
+            "drafts/"
+          ],
+          "P": [
+            ".flywheel/anchor",
+            ".gitignore",
+            "drafts/unpublished.md",
+            "tracked"
+          ],
+          "collision": [
+            "drafts/"
+          ],
+          "G": [
+            ".gitignore"
+          ],
+          "ignoreCase": true,
+          "ignoreChanged": [],
+          "ignoreComparisons": [
+            {
+              "path": ".gitignore",
+              "current": "c0d4819356e994b063403f22cd8a30b09056dc22",
+              "target": "c0d4819356e994b063403f22cd8a30b09056dc22",
+              "changed": false
+            }
+          ]
+        }
+      ],
+      "outcome": "refused-by-plan-model",
+      "class": null,
+      "snapshotCalls": 0,
+      "snapshot": null,
+      "rescueRefs": [],
+      "events": [],
+      "steps": [],
+      "originalPreserved": true,
+      "originalBlobStored": false,
+      "afterBytes": "UNIQUE LOCAL WORK NEVER COMMITTED: r6-target-overwrite\n",
+      "finalStatus": ""
+    },
+    {
+      "case": "dirty-ignore-target-H",
+      "expected": "blocked",
+      "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r3-2b38itsm/dirty-ignore-target-H-JQEzyH",
+      "H": "01357042406e83d88875937f3c331e2198958270",
+      "S": "01357042406e83d88875937f3c331e2198958270",
+      "beforeStatus": "1 .M N... 100644 100644 100644 62a0161c9eab0d2d827a7795cc8831d1324e3bd9 62a0161c9eab0d2d827a7795cc8831d1324e3bd9 .gitignore\u0000",
+      "ignoredBefore": [
+        "drafts/unpublished.md"
+      ],
+      "guards": [
+        {
+          "phase": "before-any-rescue-write",
+          "allowed": false,
+          "I": [
+            "drafts/"
+          ],
+          "P": [
+            ".flywheel/anchor",
+            ".gitignore",
+            "tracked"
+          ],
+          "collision": [],
+          "G": [
+            ".gitignore"
+          ],
+          "ignoreCase": true,
+          "ignoreChanged": [
+            ".gitignore"
+          ],
+          "ignoreComparisons": [
+            {
+              "path": ".gitignore",
+              "current": "c0d4819356e994b063403f22cd8a30b09056dc22",
+              "target": "62a0161c9eab0d2d827a7795cc8831d1324e3bd9",
+              "changed": true
+            }
+          ]
+        }
+      ],
+      "outcome": "refused-by-plan-model",
+      "class": null,
+      "snapshotCalls": 0,
+      "snapshot": null,
+      "rescueRefs": [],
+      "events": [],
+      "steps": [],
+      "originalPreserved": true,
+      "originalBlobStored": false,
+      "afterBytes": "UNIQUE LOCAL WORK NEVER COMMITTED: dirty-ignore-target-H\n",
+      "finalStatus": "1 .M N... 100644 100644 100644 62a0161c9eab0d2d827a7795cc8831d1324e3bd9 62a0161c9eab0d2d827a7795cc8831d1324e3bd9 .gitignore"
+    },
+    {
+      "case": "dirty-ignore-target-S",
+      "expected": "blocked",
+      "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r3-2b38itsm/dirty-ignore-target-S-s4pZDw",
+      "H": "6a395ae56640be01e7dd518c231758882481dd53",
+      "S": "3441d4e1f48baec486629f60e5c9b971ade21b73",
+      "beforeStatus": "1 .M N... 100644 100644 100644 62a0161c9eab0d2d827a7795cc8831d1324e3bd9 62a0161c9eab0d2d827a7795cc8831d1324e3bd9 .gitignore\u0000",
+      "ignoredBefore": [
+        "drafts/unpublished.md"
+      ],
+      "guards": [
+        {
+          "phase": "before-any-rescue-write",
+          "allowed": false,
+          "I": [
+            "drafts/"
+          ],
+          "P": [
+            ".flywheel/anchor",
+            ".gitignore",
+            "tracked"
+          ],
+          "collision": [],
+          "G": [
+            ".gitignore"
+          ],
+          "ignoreCase": true,
+          "ignoreChanged": [
+            ".gitignore"
+          ],
+          "ignoreComparisons": [
+            {
+              "path": ".gitignore",
+              "current": "c0d4819356e994b063403f22cd8a30b09056dc22",
+              "target": "62a0161c9eab0d2d827a7795cc8831d1324e3bd9",
+              "changed": true
+            }
+          ]
+        }
+      ],
+      "outcome": "refused-by-plan-model",
+      "class": null,
+      "snapshotCalls": 0,
+      "snapshot": null,
+      "rescueRefs": [],
+      "events": [],
+      "steps": [],
+      "originalPreserved": true,
+      "originalBlobStored": false,
+      "afterBytes": "UNIQUE LOCAL WORK NEVER COMMITTED: dirty-ignore-target-S\n",
+      "finalStatus": "1 .M N... 100644 100644 100644 62a0161c9eab0d2d827a7795cc8831d1324e3bd9 62a0161c9eab0d2d827a7795cc8831d1324e3bd9 .gitignore"
+    },
+    {
+      "case": "paired-negation",
+      "expected": "blocked",
+      "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r3-2b38itsm/paired-negation-9jSj0I",
+      "H": "959c4ccc20d5e3c50a5e44d7f4c3a3054beb4340",
+      "S": "9baa764bda813ddfdc7730eeba4e079108c56c57",
+      "beforeStatus": "",
+      "ignoredBefore": [
+        "paired/unpublished.md"
+      ],
+      "guards": [
+        {
+          "phase": "before-any-rescue-write",
+          "allowed": false,
+          "I": [
+            "paired/"
+          ],
+          "P": [
+            ".flywheel/anchor",
+            ".gitignore",
+            "tracked"
+          ],
+          "collision": [],
+          "G": [
+            ".gitignore"
+          ],
+          "ignoreCase": true,
+          "ignoreChanged": [
+            ".gitignore"
+          ],
+          "ignoreComparisons": [
+            {
+              "path": ".gitignore",
+              "current": "37c806ceec666ad00e6e2333c995490f293627e4",
+              "target": "664dbd362ac32c88cd5eb234b69eee3ee9e11f50",
+              "changed": true
+            }
+          ]
+        }
+      ],
+      "outcome": "refused-by-plan-model",
+      "class": null,
+      "snapshotCalls": 0,
+      "snapshot": null,
+      "rescueRefs": [],
+      "events": [],
+      "steps": [],
+      "originalPreserved": true,
+      "originalBlobStored": false,
+      "afterBytes": "UNIQUE LOCAL WORK NEVER COMMITTED: paired-negation\n",
+      "finalStatus": ""
+    },
+    {
+      "case": "runs-negation",
+      "expected": "blocked",
+      "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r3-2b38itsm/runs-negation-RNUcRi",
+      "H": "0de5b40ccdfc3979ad68ee36ad64682a60541df1",
+      "S": "7e08c496664c648d9ac8504c6b889bec846652f5",
+      "beforeStatus": "",
+      "ignoredBefore": [
+        ".flywheel/runs/unpublished.md"
+      ],
+      "guards": [
+        {
+          "phase": "before-any-rescue-write",
+          "allowed": false,
+          "I": [
+            ".flywheel/runs/"
+          ],
+          "P": [
+            ".flywheel/anchor",
+            ".gitignore",
+            "tracked"
+          ],
+          "collision": [],
+          "G": [
+            ".gitignore"
+          ],
+          "ignoreCase": true,
+          "ignoreChanged": [
+            ".gitignore"
+          ],
+          "ignoreComparisons": [
+            {
+              "path": ".gitignore",
+              "current": "62a0161c9eab0d2d827a7795cc8831d1324e3bd9",
+              "target": "f9a57c5bb89f6ec61d135c9e0be00be933a3f2a6",
+              "changed": true
+            }
+          ]
+        }
+      ],
+      "outcome": "refused-by-plan-model",
+      "class": null,
+      "snapshotCalls": 0,
+      "snapshot": null,
+      "rescueRefs": [],
+      "events": [],
+      "steps": [],
+      "originalPreserved": true,
+      "originalBlobStored": false,
+      "afterBytes": "UNIQUE LOCAL WORK NEVER COMMITTED: runs-negation\n",
+      "finalStatus": ""
+    },
+    {
+      "case": "review-targets-negation",
+      "expected": "blocked",
+      "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r3-2b38itsm/review-targets-negation-RSmOuJ",
+      "H": "93e83fe4bf099956f93e020da778f880935356fb",
+      "S": "60cecd6334033415ff3cf24194cf73d79de07cee",
+      "beforeStatus": "",
+      "ignoredBefore": [
+        ".flywheel/review-targets/unpublished.md"
+      ],
+      "guards": [
+        {
+          "phase": "before-any-rescue-write",
+          "allowed": false,
+          "I": [
+            ".flywheel/review-targets/"
+          ],
+          "P": [
+            ".flywheel/anchor",
+            ".gitignore",
+            "tracked"
+          ],
+          "collision": [],
+          "G": [
+            ".gitignore"
+          ],
+          "ignoreCase": true,
+          "ignoreChanged": [
+            ".gitignore"
+          ],
+          "ignoreComparisons": [
+            {
+              "path": ".gitignore",
+              "current": "62a0161c9eab0d2d827a7795cc8831d1324e3bd9",
+              "target": "412220a6c98700c8be90f4248aea52b8e0a51e7c",
+              "changed": true
+            }
+          ]
+        }
+      ],
+      "outcome": "refused-by-plan-model",
+      "class": null,
+      "snapshotCalls": 0,
+      "snapshot": null,
+      "rescueRefs": [],
+      "events": [],
+      "steps": [],
+      "originalPreserved": true,
+      "originalBlobStored": false,
+      "afterBytes": "UNIQUE LOCAL WORK NEVER COMMITTED: review-targets-negation\n",
+      "finalStatus": ""
+    },
+    {
+      "case": "control-dirty-stable-ignore",
+      "expected": "preserved",
+      "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r3-2b38itsm/control-dirty-stable-ignore-bwlMwv",
+      "H": "6980df91d2f36e805d85b214f1bf3664d770e617",
+      "S": "6980df91d2f36e805d85b214f1bf3664d770e617",
+      "beforeStatus": "1 .M N... 100644 100644 100644 df967b96a579e45a18b8251732d16804b2e56a55 df967b96a579e45a18b8251732d16804b2e56a55 tracked\u0000",
+      "ignoredBefore": [
+        "node_modules/local-work.txt"
+      ],
+      "guards": [
+        {
+          "phase": "before-any-rescue-write",
+          "allowed": true,
+          "I": [
+            "node_modules/"
+          ],
+          "P": [
+            ".flywheel/anchor",
+            ".gitignore",
+            "tracked"
+          ],
+          "collision": [],
+          "G": [
+            ".gitignore"
+          ],
+          "ignoreCase": true,
+          "ignoreChanged": [],
+          "ignoreComparisons": [
+            {
+              "path": ".gitignore",
+              "current": "c2658d7d1b31848c3b71960543cb0368e56cd4c7",
+              "target": "c2658d7d1b31848c3b71960543cb0368e56cd4c7",
+              "changed": false
+            }
+          ]
+        },
+        {
+          "phase": "before-destructive-reset",
+          "allowed": true,
+          "I": [
+            "node_modules/"
+          ],
+          "P": [
+            ".flywheel/anchor",
+            ".gitignore",
+            "tracked"
+          ],
+          "collision": [],
+          "G": [
+            ".gitignore"
+          ],
+          "ignoreCase": true,
+          "ignoreChanged": [],
+          "ignoreComparisons": [
+            {
+              "path": ".gitignore",
+              "current": "c2658d7d1b31848c3b71960543cb0368e56cd4c7",
+              "target": "c2658d7d1b31848c3b71960543cb0368e56cd4c7",
+              "changed": false
+            }
+          ]
+        }
+      ],
+      "outcome": "rescued",
+      "class": "dirty",
+      "snapshotCalls": 1,
+      "snapshot": {
+        "stagedCommit": "6980df91d2f36e805d85b214f1bf3664d770e617",
+        "worktreeCommit": "30a180a327b3ea76a6604a444edcba09434a91cc"
+      },
+      "rescueRefs": [
+        {
+          "kind": "dirty",
+          "tip": "30a180a327b3ea76a6604a444edcba09434a91cc",
+          "localRef": "refs/flywheel/rescue/run-review-2901/predecessor-review/successor-review-2901/20260926T063034Z/dirty",
+          "remoteBranch": "flywheel-rescue/FLY-2901/predeces-successo-20260926T063034Z-dirty"
+        }
+      ],
+      "events": [
+        "rescued",
+        "cleaned"
+      ],
+      "steps": [
+        {
+          "step": "fingerprinted",
+          "victimExists": true
+        },
+        {
+          "step": "pushed",
+          "victimExists": true
+        },
+        {
+          "step": "manifest_written",
+          "victimExists": true
+        },
+        {
+          "step": "event_recorded",
+          "victimExists": true
+        },
+        {
+          "step": "reset_done",
+          "victimExists": true
+        },
+        {
+          "step": "clean_done",
+          "victimExists": true,
+          "status": ""
+        },
+        {
+          "step": "mirror_written",
+          "victimExists": true
+        },
+        {
+          "step": "cleaned_recorded",
+          "victimExists": true
+        }
+      ],
+      "originalPreserved": true,
+      "originalBlobStored": false,
+      "afterBytes": "UNIQUE LOCAL WORK NEVER COMMITTED: control-dirty-stable-ignore\n",
+      "finalStatus": ""
+    },
+    {
+      "case": "control-runs-stable",
+      "expected": "preserved",
+      "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r3-2b38itsm/control-runs-stable-8IRQOP",
+      "H": "8ea9a0a45197e45c1cb9ba368e3b592c3e193737",
+      "S": "9f489130f5aa1babdf112d90dc5fbdba8e01c872",
+      "beforeStatus": "",
+      "ignoredBefore": [
+        ".flywheel/runs/unpublished.md"
+      ],
+      "guards": [
+        {
+          "phase": "before-any-rescue-write",
+          "allowed": true,
+          "I": [
+            ".flywheel/runs/"
+          ],
+          "P": [
+            ".flywheel/anchor",
+            ".gitignore",
+            "tracked"
+          ],
+          "collision": [],
+          "G": [
+            ".gitignore"
+          ],
+          "ignoreCase": true,
+          "ignoreChanged": [],
+          "ignoreComparisons": [
+            {
+              "path": ".gitignore",
+              "current": "62a0161c9eab0d2d827a7795cc8831d1324e3bd9",
+              "target": "62a0161c9eab0d2d827a7795cc8831d1324e3bd9",
+              "changed": false
+            }
+          ]
+        },
+        {
+          "phase": "before-destructive-reset",
+          "allowed": true,
+          "I": [
+            ".flywheel/runs/"
+          ],
+          "P": [
+            ".flywheel/anchor",
+            ".gitignore",
+            "tracked"
+          ],
+          "collision": [],
+          "G": [
+            ".gitignore"
+          ],
+          "ignoreCase": true,
+          "ignoreChanged": [],
+          "ignoreComparisons": [
+            {
+              "path": ".gitignore",
+              "current": "62a0161c9eab0d2d827a7795cc8831d1324e3bd9",
+              "target": "62a0161c9eab0d2d827a7795cc8831d1324e3bd9",
+              "changed": false
+            }
+          ]
+        }
+      ],
+      "outcome": "rescued",
+      "class": "head_behind",
+      "snapshotCalls": 0,
+      "snapshot": null,
+      "rescueRefs": [],
+      "events": [
+        "rescued",
+        "cleaned"
+      ],
+      "steps": [
+        {
+          "step": "fingerprinted",
+          "victimExists": true
+        },
+        {
+          "step": "manifest_written",
+          "victimExists": true
+        },
+        {
+          "step": "event_recorded",
+          "victimExists": true
+        },
+        {
+          "step": "reset_done",
+          "victimExists": true
+        },
+        {
+          "step": "clean_done",
+          "victimExists": true,
+          "status": ""
+        },
+        {
+          "step": "mirror_written",
+          "victimExists": true
+        },
+        {
+          "step": "cleaned_recorded",
+          "victimExists": true
+        }
+      ],
+      "originalPreserved": true,
+      "originalBlobStored": false,
+      "afterBytes": "UNIQUE LOCAL WORK NEVER COMMITTED: control-runs-stable\n",
+      "finalStatus": ""
+    },
+    {
+      "case": "control-paired-stable",
+      "expected": "preserved",
+      "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r3-2b38itsm/control-paired-stable-w8NBEI",
+      "H": "97e05378fd83f89664d10f0a4994fe7750445c4f",
+      "S": "632e3465fec836fe56e96e6082e483f66da8d026",
+      "beforeStatus": "",
+      "ignoredBefore": [
+        "paired/unpublished.md"
+      ],
+      "guards": [
+        {
+          "phase": "before-any-rescue-write",
+          "allowed": true,
+          "I": [
+            "paired/"
+          ],
+          "P": [
+            ".flywheel/anchor",
+            ".gitignore",
+            "tracked"
+          ],
+          "collision": [],
+          "G": [
+            ".gitignore"
+          ],
+          "ignoreCase": true,
+          "ignoreChanged": [],
+          "ignoreComparisons": [
+            {
+              "path": ".gitignore",
+              "current": "37c806ceec666ad00e6e2333c995490f293627e4",
+              "target": "37c806ceec666ad00e6e2333c995490f293627e4",
+              "changed": false
+            }
+          ]
+        },
+        {
+          "phase": "before-destructive-reset",
+          "allowed": true,
+          "I": [
+            "paired/"
+          ],
+          "P": [
+            ".flywheel/anchor",
+            ".gitignore",
+            "tracked"
+          ],
+          "collision": [],
+          "G": [
+            ".gitignore"
+          ],
+          "ignoreCase": true,
+          "ignoreChanged": [],
+          "ignoreComparisons": [
+            {
+              "path": ".gitignore",
+              "current": "37c806ceec666ad00e6e2333c995490f293627e4",
+              "target": "37c806ceec666ad00e6e2333c995490f293627e4",
+              "changed": false
+            }
+          ]
+        }
+      ],
+      "outcome": "rescued",
+      "class": "head_behind",
+      "snapshotCalls": 0,
+      "snapshot": null,
+      "rescueRefs": [],
+      "events": [
+        "rescued",
+        "cleaned"
+      ],
+      "steps": [
+        {
+          "step": "fingerprinted",
+          "victimExists": true
+        },
+        {
+          "step": "manifest_written",
+          "victimExists": true
+        },
+        {
+          "step": "event_recorded",
+          "victimExists": true
+        },
+        {
+          "step": "reset_done",
+          "victimExists": true
+        },
+        {
+          "step": "clean_done",
+          "victimExists": true,
+          "status": ""
+        },
+        {
+          "step": "mirror_written",
+          "victimExists": true
+        },
+        {
+          "step": "cleaned_recorded",
+          "victimExists": true
+        }
+      ],
+      "originalPreserved": true,
+      "originalBlobStored": false,
+      "afterBytes": "UNIQUE LOCAL WORK NEVER COMMITTED: control-paired-stable\n",
+      "finalStatus": ""
+    },
+    {
+      "case": "control-paired-removed",
+      "expected": "blocked",
+      "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r3-2b38itsm/control-paired-removed-aQlX8n",
+      "H": "21e2bf462e09703c496ee4c1eeb26961b01fed8c",
+      "S": "352421ab789ee6762a13a6371cdab90d8548818a",
+      "beforeStatus": "",
+      "ignoredBefore": [
+        "paired/unpublished.md"
+      ],
+      "guards": [
+        {
+          "phase": "before-any-rescue-write",
+          "allowed": false,
+          "I": [
+            "paired/"
+          ],
+          "P": [
+            ".flywheel/anchor",
+            ".gitignore",
+            "tracked"
+          ],
+          "collision": [],
+          "G": [
+            ".gitignore"
+          ],
+          "ignoreCase": true,
+          "ignoreChanged": [
+            ".gitignore"
+          ],
+          "ignoreComparisons": [
+            {
+              "path": ".gitignore",
+              "current": "37c806ceec666ad00e6e2333c995490f293627e4",
+              "target": "17f20c829ffc6c63f93e24fa58e296302e95b3c4",
+              "changed": true
+            }
+          ]
+        }
+      ],
+      "outcome": "refused-by-plan-model",
+      "class": null,
+      "snapshotCalls": 0,
+      "snapshot": null,
+      "rescueRefs": [],
+      "events": [],
+      "steps": [],
+      "originalPreserved": true,
+      "originalBlobStored": false,
+      "afterBytes": "UNIQUE LOCAL WORK NEVER COMMITTED: control-paired-removed\n",
+      "finalStatus": ""
+    },
+    {
+      "case": "casefold-target-overwrite",
+      "expected": "blocked",
+      "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r3-2b38itsm/casefold-target-overwrite-ECCZao",
+      "H": "3e2180a27bd761daea8ef2950f67b343ea074341",
+      "S": "1e76fbef0f372c73868a73b6cb3d8df47cadffce",
+      "beforeStatus": "",
+      "ignoredBefore": [
+        "drafts/x.md"
+      ],
+      "guards": [
+        {
+          "phase": "before-any-rescue-write",
+          "allowed": false,
+          "I": [
+            "drafts/"
+          ],
+          "P": [
+            ".flywheel/anchor",
+            ".gitignore",
+            "Drafts/x.md",
+            "tracked"
+          ],
+          "collision": [
+            "drafts/"
+          ],
+          "G": [
+            ".gitignore"
+          ],
+          "ignoreCase": true,
+          "ignoreChanged": [],
+          "ignoreComparisons": [
+            {
+              "path": ".gitignore",
+              "current": "c0d4819356e994b063403f22cd8a30b09056dc22",
+              "target": "c0d4819356e994b063403f22cd8a30b09056dc22",
+              "changed": false
+            }
+          ]
+        }
+      ],
+      "outcome": "refused-by-plan-model",
+      "class": null,
+      "snapshotCalls": 0,
+      "snapshot": null,
+      "rescueRefs": [],
+      "events": [],
+      "steps": [],
+      "originalPreserved": true,
+      "originalBlobStored": false,
+      "afterBytes": "UNIQUE LOCAL WORK NEVER COMMITTED: casefold-target-overwrite\n",
+      "finalStatus": ""
+    },
+    {
+      "case": "staged-ignore-target-H",
+      "expected": "blocked",
+      "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r3-2b38itsm/staged-ignore-target-H-4pTChu",
+      "H": "764d2efbc567ff5c9a56b357d0b5c7f4d304baaf",
+      "S": "764d2efbc567ff5c9a56b357d0b5c7f4d304baaf",
+      "beforeStatus": "1 M. N... 100644 100644 100644 62a0161c9eab0d2d827a7795cc8831d1324e3bd9 c0d4819356e994b063403f22cd8a30b09056dc22 .gitignore\u0000",
+      "ignoredBefore": [
+        "drafts/unpublished.md"
+      ],
+      "guards": [
+        {
+          "phase": "before-any-rescue-write",
+          "allowed": false,
+          "I": [
+            "drafts/"
+          ],
+          "P": [
+            ".flywheel/anchor",
+            ".gitignore",
+            "tracked"
+          ],
+          "collision": [],
+          "G": [
+            ".gitignore"
+          ],
+          "ignoreCase": true,
+          "ignoreChanged": [
+            ".gitignore"
+          ],
+          "ignoreComparisons": [
+            {
+              "path": ".gitignore",
+              "current": "c0d4819356e994b063403f22cd8a30b09056dc22",
+              "target": "62a0161c9eab0d2d827a7795cc8831d1324e3bd9",
+              "changed": true
+            }
+          ]
+        }
+      ],
+      "outcome": "refused-by-plan-model",
+      "class": null,
+      "snapshotCalls": 0,
+      "snapshot": null,
+      "rescueRefs": [],
+      "events": [],
+      "steps": [],
+      "originalPreserved": true,
+      "originalBlobStored": false,
+      "afterBytes": "UNIQUE LOCAL WORK NEVER COMMITTED: staged-ignore-target-H\n",
+      "finalStatus": "1 M. N... 100644 100644 100644 62a0161c9eab0d2d827a7795cc8831d1324e3bd9 c0d4819356e994b063403f22cd8a30b09056dc22 .gitignore"
+    },
+    {
+      "case": "untracked-ignore-removed",
+      "expected": "blocked",
+      "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r3-2b38itsm/untracked-ignore-removed-2kIoUt",
+      "H": "da06d7d39edf6dae1f6a932f6e0369121e47d11c",
+      "S": "9a215fd87bc574723f860e82a481379766ff017c",
+      "beforeStatus": "1 D. N... 100644 000000 000000 c0d4819356e994b063403f22cd8a30b09056dc22 0000000000000000000000000000000000000000 .gitignore\u0000? .gitignore\u0000",
+      "ignoredBefore": [
+        "drafts/unpublished.md"
+      ],
+      "guards": [
+        {
+          "phase": "before-any-rescue-write",
+          "allowed": false,
+          "I": [
+            "drafts/"
+          ],
+          "P": [
+            ".flywheel/anchor",
+            ".gitignore",
+            "tracked"
+          ],
+          "collision": [],
+          "G": [
+            ".gitignore"
+          ],
+          "ignoreCase": true,
+          "ignoreChanged": [
+            ".gitignore"
+          ],
+          "ignoreComparisons": [
+            {
+              "path": ".gitignore",
+              "current": "c0d4819356e994b063403f22cd8a30b09056dc22",
+              "target": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+              "changed": true
+            }
+          ]
+        }
+      ],
+      "outcome": "refused-by-plan-model",
+      "class": null,
+      "snapshotCalls": 0,
+      "snapshot": null,
+      "rescueRefs": [],
+      "events": [],
+      "steps": [],
+      "originalPreserved": true,
+      "originalBlobStored": false,
+      "afterBytes": "UNIQUE LOCAL WORK NEVER COMMITTED: untracked-ignore-removed\n",
+      "finalStatus": "1 D. N... 100644 000000 000000 c0d4819356e994b063403f22cd8a30b09056dc22 0000000000000000000000000000000000000000 .gitignore\n? .gitignore"
+    }
+  ]
+}

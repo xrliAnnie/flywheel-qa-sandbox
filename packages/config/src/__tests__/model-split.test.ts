@@ -1,12 +1,21 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdtempSync,
+	renameSync,
+	rmSync,
+	statSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import {
 	getModelConfigSnapshot,
 	resetModelConfigCacheForTests,
+	validateModelConfigDocument,
 } from "../model-config.js";
 import {
+	MODEL_SPLIT_ARM_EFFORTS,
 	ModelSplitBalanceInputUnavailableError,
 	parseWeightedModelSplit,
 	resolveWeightedModelSplit,
@@ -403,4 +412,296 @@ it("accepts a weighted policy only when every arm model is workflow-capable", ()
 			[sol],
 		).runtimeModelSplitStatus,
 	).toBe("invalid");
+});
+
+// FLY-2891: optional per-arm effort on the weighted split.
+const PRODUCTION_WEIGHTED_POLICY = {
+	enabled: true,
+	rule: "issue_node_weighted",
+	balance: { enabled: false },
+	nodes: {
+		eng_design: [
+			{ arm: "design_astra", model: "astra", weight: 1 },
+			{ arm: "design_opus", model: "opus", weight: 1 },
+			{ arm: "design_fable", model: "fable", weight: 1 },
+		],
+		implement: [
+			{ arm: "impl_opus", model: "opus", weight: 2 },
+			{ arm: "impl_sol56", model: "codex", weight: 2 },
+		],
+		qa: [
+			{ arm: "qa_sol56", model: "codex", weight: 3 },
+			{ arm: "qa_opus", model: "opus", weight: 1 },
+		],
+	},
+};
+// Computed with the pre-FLY-2891 parser against the production shape above.
+const PRODUCTION_WEIGHTED_VERSION =
+	"fly2788-v1:f427633f6186f59dccaef1e474d009891f4daa54a0ec19bb8f545357d4481618";
+const effortPolicy = () => ({
+	...weightedPolicy(),
+	nodes: {
+		...weightedPolicy().nodes,
+		implement: [
+			{ arm: "impl_opus", model: "opus", weight: 2, effort: "high" },
+			{ arm: "impl_sol56", model: "codex", weight: 1 },
+			{ arm: "impl_sol6", model: "sol", weight: 1, effort: "xhigh" },
+		],
+	},
+});
+
+it("keeps the production weighted policy version byte-identical without arm efforts", () => {
+	const parsed = parseWeightedModelSplit(PRODUCTION_WEIGHTED_POLICY);
+	expect(parsed.version).toBe(PRODUCTION_WEIGHTED_VERSION);
+	for (const arms of Object.values(parsed.nodes)) {
+		for (const arm of arms) {
+			expect(Object.keys(arm)).toEqual(["arm", "model", "weight"]);
+		}
+	}
+	expect(snapshot(PRODUCTION_WEIGHTED_POLICY).modelSplit?.version).toBe(
+		PRODUCTION_WEIGHTED_VERSION,
+	);
+});
+
+it("accepts an optional per-arm effort and folds it into the policy version", () => {
+	expect([...MODEL_SPLIT_ARM_EFFORTS]).toEqual([
+		"low",
+		"medium",
+		"high",
+		"xhigh",
+		"max",
+	]);
+	const parsed = parseWeightedModelSplit(effortPolicy());
+	expect(parsed.nodes.implement).toEqual([
+		{ arm: "impl_opus", model: "opus", weight: 2, effort: "high" },
+		{ arm: "impl_sol56", model: "codex", weight: 1 },
+		{ arm: "impl_sol6", model: "sol", weight: 1, effort: "xhigh" },
+	]);
+	expect(Object.keys(parsed.nodes.implement[1]!)).toEqual([
+		"arm",
+		"model",
+		"weight",
+	]);
+	expect(parsed.version).not.toBe(
+		parseWeightedModelSplit(weightedPolicy()).version,
+	);
+	// Replaying the frozen arms (as a persisted basis does) reproduces the version.
+	expect(
+		parseWeightedModelSplit({
+			enabled: true,
+			rule: "issue_node_weighted",
+			balance: { enabled: false },
+			nodes: parsed.nodes,
+		}).version,
+	).toBe(parsed.version);
+	for (const effort of MODEL_SPLIT_ARM_EFFORTS) {
+		expect(
+			parseWeightedModelSplit({
+				...weightedPolicy(),
+				nodes: {
+					...weightedPolicy().nodes,
+					qa: [
+						{ arm: "qa_sol56", model: "codex", weight: 1, effort },
+						{ arm: "qa_opus", model: "opus", weight: 1 },
+					],
+				},
+			}).nodes.qa[0],
+		).toEqual({ arm: "qa_sol56", model: "codex", weight: 1, effort });
+	}
+});
+
+it("rejects an arm effort outside the workflow effort ladder", () => {
+	for (const effort of ["ultra", "", " high", "HIGH", 1, null, true, {}]) {
+		expect(() =>
+			parseWeightedModelSplit({
+				...weightedPolicy(),
+				nodes: {
+					...weightedPolicy().nodes,
+					qa: [
+						{ arm: "qa_sol56", model: "codex", weight: 1, effort },
+						{ arm: "qa_opus", model: "opus", weight: 1 },
+					],
+				},
+			}),
+		).toThrow(
+			"modelSplit.nodes.qa[0].effort must be one of low, medium, high, xhigh, max",
+		);
+	}
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	const invalid = snapshot({
+		...weightedPolicy(),
+		nodes: {
+			...weightedPolicy().nodes,
+			qa: [
+				{ arm: "qa_sol56", model: "codex", weight: 1, effort: "ultra" },
+				{ arm: "qa_opus", model: "opus", weight: 1 },
+			],
+		},
+	});
+	expect(invalid.runtimeModelSplitStatus).toBe("invalid");
+	expect(invalid.modelSplit).toBeUndefined();
+	expect(warn).toHaveBeenCalledWith(
+		expect.stringContaining(
+			"modelSplit segment ignored: modelSplit.nodes.qa[0].effort must be one of low, medium, high, xhigh, max",
+		),
+	);
+	warn.mockRestore();
+});
+
+it("rejects an arm effort the arm model does not support on the workflow surface", () => {
+	// Opus 4.6 is a built-in pilot workflow model whose ladder excludes xhigh.
+	const unsupported = {
+		...weightedPolicy(),
+		nodes: {
+			...weightedPolicy().nodes,
+			qa: [
+				{ arm: "qa_opus46", model: "opus-4-6", weight: 1, effort: "xhigh" },
+				{ arm: "qa_sol56", model: "codex", weight: 1 },
+			],
+		},
+	};
+	expect(parseWeightedModelSplit(unsupported).nodes.qa[0]?.effort).toBe(
+		"xhigh",
+	);
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	const invalid = snapshot(unsupported);
+	expect(invalid.runtimeModelSplitStatus).toBe("invalid");
+	expect(warn).toHaveBeenCalledWith(
+		expect.stringMatching(
+			/modelSplit segment ignored: modelSplit\.nodes\.qa\[0\]\.effort xhigh is not supported by claude-opus-4-6 on the workflow surface/,
+		),
+	);
+	warn.mockRestore();
+	expect(() =>
+		validateModelConfigDocument({ version: 1, modelSplit: unsupported }),
+	).toThrow(/modelSplit\.nodes\.qa\[0\]\.effort xhigh is not supported/);
+	const supported = {
+		...unsupported,
+		nodes: {
+			...unsupported.nodes,
+			qa: [
+				{ arm: "qa_opus46", model: "opus-4-6", weight: 1, effort: "high" },
+				{ arm: "qa_sol56", model: "codex", weight: 1 },
+			],
+		},
+	};
+	expect(snapshot(supported).runtimeModelSplitStatus).toBe("valid");
+});
+
+it("judges an arm effort by the candidate document's own registry, not the live table", () => {
+	const opusXhigh = {
+		...weightedPolicy(),
+		nodes: {
+			...weightedPolicy().nodes,
+			qa: [
+				{ arm: "qa_opus", model: "opus", weight: 1, effort: "xhigh" },
+				{ arm: "qa_sol56", model: "codex", weight: 1 },
+			],
+		},
+	};
+	// Live table binds `opus` to 4.6 (no xhigh): the live split is invalid...
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	const dir = mkdtempSync(join(tmpdir(), "fly2891-candidate-"));
+	dirs.push(dir);
+	process.env.FLYWHEEL_MODELS_CONFIG = join(dir, "models.json");
+	writeFileSync(
+		process.env.FLYWHEEL_MODELS_CONFIG,
+		JSON.stringify({
+			version: 1,
+			bindings: { opus: "opus-4-6" },
+			modelSplit: opusXhigh,
+		}),
+	);
+	const live = getModelConfigSnapshot();
+	expect(live.bindings.opus).toBe("claude-opus-4-6");
+	expect(live.runtimeModelSplitStatus).toBe("invalid");
+	// ...yet a candidate with the default binding is valid under ITS registry.
+	const candidate = validateModelConfigDocument({
+		version: 1,
+		modelSplit: opusXhigh,
+	});
+	expect(candidate.runtimeModelSplitStatus).toBe("valid");
+	expect(
+		candidate.modelSplit?.rule === "issue_node_weighted"
+			? candidate.modelSplit.nodes.qa[0]
+			: undefined,
+	).toEqual({ arm: "qa_opus", model: "opus", weight: 1, effort: "xhigh" });
+	// And the reverse: a valid live table does not vouch for a candidate that
+	// rebinds `opus` to a model without xhigh.
+	writeFileSync(
+		process.env.FLYWHEEL_MODELS_CONFIG,
+		JSON.stringify({ version: 1, modelSplit: opusXhigh }),
+	);
+	resetModelConfigCacheForTests();
+	expect(getModelConfigSnapshot().runtimeModelSplitStatus).toBe("valid");
+	expect(() =>
+		validateModelConfigDocument({
+			version: 1,
+			bindings: { opus: "opus-4-6" },
+			modelSplit: opusXhigh,
+		}),
+	).toThrow(
+		/modelSplit\.nodes\.qa\[0\]\.effort xhigh is not supported by claude-opus-4-6/,
+	);
+	warn.mockRestore();
+});
+
+it("loads an effort-bearing split from a cold cache and across a hot reload", () => {
+	// A parser that consulted getModelConfigSnapshot() would recurse without
+	// bound here: the cache is empty (or stale) for the whole of loadSnapshot.
+	resetModelConfigCacheForTests();
+	const dir = mkdtempSync(join(tmpdir(), "fly2891-reload-"));
+	dirs.push(dir);
+	const configPath = join(dir, "models.json");
+	process.env.FLYWHEEL_MODELS_CONFIG = configPath;
+	writeFileSync(
+		configPath,
+		JSON.stringify({ version: 1, modelSplit: effortPolicy() }),
+	);
+	const implementArms = (
+		snapshot: ReturnType<typeof getModelConfigSnapshot>,
+	) =>
+		snapshot.modelSplit?.rule === "issue_node_weighted"
+			? snapshot.modelSplit.nodes.implement.map(({ arm, effort }) => ({
+					arm,
+					effort,
+				}))
+			: undefined;
+	const cold = getModelConfigSnapshot();
+	expect(cold.runtimeModelSplitStatus).toBe("valid");
+	expect(implementArms(cold)).toEqual([
+		{ arm: "impl_opus", effort: "high" },
+		{ arm: "impl_sol56", effort: undefined },
+		{ arm: "impl_sol6", effort: "xhigh" },
+	]);
+	expect(getModelConfigSnapshot()).toBe(cold);
+
+	const replacement = join(dir, "models.next");
+	writeFileSync(
+		replacement,
+		JSON.stringify({
+			version: 1,
+			modelSplit: {
+				...effortPolicy(),
+				nodes: {
+					...effortPolicy().nodes,
+					implement: [
+						{ arm: "impl_opus", model: "opus", weight: 2, effort: "low" },
+						{ arm: "impl_sol56", model: "codex", weight: 1, effort: "max" },
+					],
+				},
+			},
+		}),
+	);
+	renameSync(replacement, configPath);
+	const stat = statSync(configPath);
+	utimesSync(configPath, stat.atime, new Date(stat.mtimeMs + 5));
+	const hot = getModelConfigSnapshot();
+	expect(hot).not.toBe(cold);
+	expect(hot.runtimeModelSplitStatus).toBe("valid");
+	expect(implementArms(hot)).toEqual([
+		{ arm: "impl_opus", effort: "low" },
+		{ arm: "impl_sol56", effort: "max" },
+	]);
+	expect(hot.modelSplit?.version).not.toBe(cold.modelSplit?.version);
 });

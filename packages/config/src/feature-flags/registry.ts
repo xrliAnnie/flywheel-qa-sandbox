@@ -278,6 +278,32 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "Read at each updater run by the sync CLI through a read-only teamlead.db handle (the lead_token_savings launch-reader pattern). Unset/default false lets the sync run; on skips discovery, admission and every authority write while version-change alerts are still derived from models.json and delivered. Rollback = turn it on, then pin bindings.opus/opus1m in models.json.",
 	},
 	{
+		name: "worktree_takeover_rescue_disabled",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_WORKTREE_TAKEOVER_RESCUE_DISABLED",
+		polarity: "opt_in",
+		valueKind: "bool",
+		onMeans: "disables",
+		default: false,
+		description:
+			"FLY-2901: emergency stop for the automatic preserve-and-clean rescue when a registered shared branch-B worktree cannot be reused as-is",
+		whenOn:
+			"接棒时发现共享工作树有脏改动、HEAD 分叉或目录丢失，不再自动保全并清理重建，而是像以前一样拒绝接棒并告警；防止丢工作的两道硬拒绝照常生效",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"workflowEngineDispatcher",
+				"storeWorktreeTakeoverRescueDisabled",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: FLY-2901 opt-in takeover rescue disable observes the next store write",
+		note: "Unset/default false keeps preserve+clean enabled. =1 returns registered dirty / diverged / directory-missing shared worktrees to today's takeover refusal (failureKind and held semantics unchanged; the refusal copy may still add dirty-path diagnostics). Not controlled by this flag: the non-disableable loss guards (unregistered-but-present, unregistered branch with unique commits still refuse), the dispatcher head fallback + its alert, and the FLY-2122 exclude repair. Read through the flag store at each handoff dispatch and carried into the successor's Blueprint ctx.",
+	},
+	{
 		name: "cmux_rebind_disabled",
 		category: "kill_switch",
 		source: "env",
@@ -375,6 +401,30 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "direct",
 		directToggleProof:
 			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: FLY-2076 default-on wrapper observes an off store write without restart",
+	},
+	{
+		name: "review_early_stop",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_REVIEW_EARLY_STOP",
+		polarity: "default_on",
+		valueKind: "bool",
+		onMeans: "enables",
+		default: true,
+		description:
+			"FLY-2911: stop and audit obsolete review requests before they consume more tokens",
+		whenOn: "提前停止已被新版取代的评审，保留作废原因和接替任务记录",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"startBridge",
+				"storeReviewEarlyStopEnabled",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: FLY-2911 early stop defaults on and observes rollback without restart",
 	},
 	{
 		name: "review_quota_auto_retry",
@@ -499,6 +549,33 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		directToggleProof:
 			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: read-on-use wrapper observes the next store write",
 		note: "Only disables new forced teardown intents; strict land-lease and tmux execution-identity fences remain mandatory when enabled.",
+	},
+	// ─── FLY-2903: terminal Codex body sweep actions ───
+	{
+		name: "codex_terminal_reap_enabled",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_CODEX_TERMINAL_REAP_ENABLED",
+		polarity: "default_on",
+		valueKind: "bool",
+		onMeans: "enables",
+		default: true,
+		description:
+			"FLY-2903: lets the terminal Codex body sweep ask a still-owned terminal body to stop and reap an identity-proven live daemon; =0 keeps the sweep to observe, record and alert",
+		whenOn:
+			"已经结束的 Codex 任务如果还在后台运行，自动让它停下并收掉；关闭后只记录和告警",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"startBridge",
+				"storeCodexTerminalReapEnabled",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: FLY-2903 terminal reap switch observes the next store write",
+		note: "Controls only the sweep's stop request and reap. Terminal paths always stop the in-process runtime before reaping, and the restart gate never resurrects a stopped body, whatever this switch says.",
 	},
 	// ─── FLY-1781: weekly retirement candidate scan ───
 	{
@@ -717,6 +794,29 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				"packages/teamlead/src/bridge/plugin.ts",
 				"databaseArchiveEnabled",
 				"storeDatabaseArchiveEnabled",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "lead_alert_wake_dedup",
+		configKey: "lead.alert_wake_dedup_enabled",
+		category: "feature",
+		source: "project_config",
+		scope: "project",
+		polarity: "default_on",
+		valueKind: "bool",
+		onMeans: "enables",
+		default: true,
+		description:
+			"Lead alert wake deduplication. Disable: feature-flags set --name lead_alert_wake_dedup --to off --project <p> --reason <r>. Changes apply to the next letter.",
+		whenOn:
+			"同一 Lead 6 小时内与已送达告警完全等价（同类别、同标题、同对象与处理要求、未升级、同代工单）的告警只记账不叫醒；info（带待办的除外）进下一次叫醒的摘要。",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/alert-wake-dedup.ts",
+				"AlertWakeDedup.revalidate",
+				"storeLeadAlertWakeDedupEnabled",
 			),
 		],
 		toggleable: "conversational",

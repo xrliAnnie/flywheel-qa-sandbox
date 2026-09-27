@@ -141,6 +141,11 @@
 			"disposition": "one_shot_cli"
 		},
 		{
+			"file": "packages/flywheel-comm/src/commands/review-round.ts",
+			"sync_child": 1,
+			"disposition": "one_shot_cli"
+		},
+		{
 			"file": "packages/flywheel-comm/src/commands/summary-registry.ts",
 			"sync_child": 2,
 			"disposition": "one_shot_cli"

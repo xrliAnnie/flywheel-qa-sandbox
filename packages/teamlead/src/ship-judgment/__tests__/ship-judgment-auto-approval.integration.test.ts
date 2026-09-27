@@ -174,6 +174,7 @@ describe("StateStore three-point auto writer", () => {
 					capturedAt: at,
 				},
 			});
+			store.claimCodexReviewJobRunning("design-r1");
 			store.completeCodexReviewJob("design-r1", "APPROVED", "[]");
 			const proof = store.getDesignReviewProofForReviewJob("design-r1")!;
 			store.validateDesignReviewApprovalProof({

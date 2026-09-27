@@ -25,6 +25,10 @@ import { codexResume } from "./commands/codex-resume.js";
 import { emitCodexReviewResult } from "./commands/codex-review-result.js";
 import { complete } from "./commands/complete.js";
 import {
+	acknowledgeCompletionDrain,
+	readCompletionDrainPage,
+} from "./commands/completion-drain.js";
+import {
 	type DeclareStateOpts,
 	declareState,
 	parseDuration,
@@ -39,8 +43,10 @@ import { gate } from "./commands/gate.js";
 import { runHoldCommand } from "./commands/hold.js";
 import { inbox, renderInboxInstruction } from "./commands/inbox.js";
 import { runLandCommand } from "./commands/land.js";
+import { runLeadActivity } from "./commands/lead-activity.js";
 import { runLeadConfig } from "./commands/lead-config.js";
 import { runLeadIdentityCommand } from "./commands/lead-identity.js";
+import { runLeadInterruptCommand } from "./commands/lead-interrupt.js";
 import { runLeadLeaseCommand } from "./commands/lead-lease.js";
 import { runLeadNote } from "./commands/lead-note.js";
 import { runLeadOperationCommand } from "./commands/lead-operation.js";
@@ -60,6 +66,7 @@ import { runReleaseBugTag } from "./commands/release-bug-tag.js";
 import { reportDeployed } from "./commands/report-deployed.js";
 import { requestReview } from "./commands/request-review.js";
 import { respond } from "./commands/respond.js";
+import { reviewRound } from "./commands/review-round.js";
 import { reviewRuling } from "./commands/review-ruling.js";
 import { runRunnerConfig } from "./commands/runner-config.js";
 import {
@@ -162,8 +169,12 @@ Commands:
             [--expected-head <sha>] [--method <merge|squash|rebase>] [--dry-run] atomically binds an
             allowed summary merge to that verified head
   lead-lease  Manage the Lead identity lease (acquire|bind|verify-bound|progress-snapshot|status|set-mode|resolve|carrier-self-check|readiness)
-  inbox     Check for instructions from Lead (Runner use)
+  inbox     Check for instructions from Lead (Runner use). FLY-2373 completion
+            drain: --drain-page <read-id> --page <n> prints one unread page;
+            --ack-consumed <read-id> acknowledges a read after acting on it
   message-status  Read one mailbox message's live/archive delivery evidence by exact id
+  lead-interrupt  Read and answer controlled interrupts relayed by the voice agent
+                  (pending [--json] | reply <li_id> --text-stdin)
   voice-session  Start, stop, inspect, or schedule a generic Codex realtime voice session
                  (start|stop|status|schedule-status|reschedule|cancel-schedule)
   adopt-inflight  Requeue this recipient identity's in-flight inbox batches (Lead birth use)
@@ -176,12 +187,19 @@ Commands:
             Prints yours|not-yours|no-turn (exit 0). Touch the worktree ONLY on
             a 'yours' answer; the wake message text is never authority.
             --exec-id <id> (defaults to FLYWHEEL_EXEC_ID).
-  complete  Emit session_completed terminal event to Bridge (Runner use;
-            retry deferred mail with --drain-receipt <challengeId>)
+  complete  Emit session_completed terminal event to Bridge (Runner use).
+            Unread mail answers exit 3 with the bodies; read, act, run
+            inbox --ack-consumed <read-id>, then rerun the same complete
   runner-stopped  Emit a reasoned Runner turn-end report to its Lead (hook use)
   runner-wake-sweep  Ring a durable Codex phase-hold doorbell when unread
             Runner traffic exists (turn-ended hook use; never ACKs mailbox rows)
   await-codex-gate  Block until Bridge-written Codex review JSON or skip marker appears (Runner use)
+  review-round  FLY-2891: write one local Codex review round back to the Bridge
+            (run right after EACH round, before editing files). <design|code>
+            --exec-id <id> --round <n> --verdict APPROVED|CHANGES_REQUESTED
+            --thread <codexThreadId> [--turn <turnId>]
+            [--findings critical=N,high=N,medium=N,low=N] [--target <plan|pr-url>]
+            Never blocks: undeliverable rounds are spooled for the Bridge.
   qa-result  Emit a QA verdict (pass|fail) that gates the founder ship notification (QA Runner use)
   workflow-output  Submit a generalized node's JSON output before completion
   workflow-usage-source  Import an authenticated native Runner usage boundary (hook use)
@@ -222,6 +240,10 @@ Commands:
 	            render --project flywheel --out <file.html>. Local output may be
 	            up to 32MiB; publish-report rejects HTML over 512KiB.
 	  ship-judgment-ref  Re-fetch a referenced founder explanation (Lead only; no approval).
+	  lead-activity  Read-only: is a Lead in a turn right now (busy/idle/unknown),
+	            since when, and which issue opened it when provable:
+	            --project P --lead ID | --all [--bridge-url <loopback-url>].
+	            One JSON line; exit 0 = answered. Requires TEAMLEAD_API_TOKEN.
 	  lead-config    Set Lead model/effort for subsequent turns without restart:
 	            set --project P --lead ID [--model ID] [--effort VALUE] --reason TEXT
 	            rollback --operation-id OLD --reason TEXT | status --operation-id UUID
@@ -324,6 +346,9 @@ async function main(): Promise<void> {
 			"stage",
 			"ci-full",
 			"workflow-usage-source",
+			// FLY-2891: a review-round write-back must stay bounded (<2s) even
+			// when the Bridge is down; it never waits on stage replay.
+			"review-round",
 		].includes(command)
 	) {
 		await preflightStageQueue(process.env.FLYWHEEL_EXEC_ID);
@@ -388,10 +413,13 @@ async function main(): Promise<void> {
 			process.exitCode = await runLeadLeaseCommand(commandArgs);
 			break;
 		case "inbox":
-			runInbox(commandArgs);
+			await runInbox(commandArgs);
 			break;
 		case "message-status":
 			process.exitCode = messageStatus(commandArgs);
+			break;
+		case "lead-interrupt":
+			process.exitCode = await runLeadInterruptCommand(commandArgs);
 			break;
 		case "voice-session":
 			process.exitCode = await runVoiceSessionCommand(commandArgs);
@@ -442,6 +470,9 @@ async function main(): Promise<void> {
 			break;
 		case "await-codex-gate":
 			await runAwaitCodexGate(commandArgs);
+			break;
+		case "review-round":
+			process.exitCode = await runReviewRound(commandArgs);
 			break;
 		case "qa-result":
 			await runQaResult(commandArgs);
@@ -496,6 +527,9 @@ async function main(): Promise<void> {
 			break;
 		case "ship-judgment-ref":
 			process.exitCode = await runShipJudgmentRef(commandArgs);
+			break;
+		case "lead-activity":
+			process.exitCode = await runLeadActivity(commandArgs);
 			break;
 		case "feature-flags":
 			await runFeatureFlags(commandArgs);
@@ -1051,7 +1085,7 @@ async function runSend(args: string[]): Promise<void> {
 	}
 }
 
-function runInbox(args: string[]): void {
+async function runInbox(args: string[]): Promise<void> {
 	const { values } = parseArgs({
 		args,
 		options: {
@@ -1059,6 +1093,9 @@ function runInbox(args: string[]): void {
 			db: { type: "string" },
 			project: { type: "string" },
 			json: { type: "boolean", default: false },
+			"ack-consumed": { type: "string" },
+			"drain-page": { type: "string" },
+			page: { type: "string" },
 		},
 		allowPositionals: false,
 	});
@@ -1072,6 +1109,37 @@ function runInbox(args: string[]): void {
 	}
 	const debugExecOverride =
 		Boolean(values["exec-id"]) && values["exec-id"] !== envExecId;
+	// FLY-2373: completion-drain reads act for the calling runner only.
+	const drainReadId = values["ack-consumed"] ?? values["drain-page"];
+	if (drainReadId !== undefined) {
+		if (values["ack-consumed"] && values["drain-page"]) {
+			throw new Error("use either --ack-consumed or --drain-page, not both");
+		}
+		if (debugExecOverride || !envExecId) {
+			throw new Error(
+				"completion-drain reads require the runner's own FLYWHEEL_EXEC_ID (no --exec-id override)",
+			);
+		}
+		const result = values["ack-consumed"]
+			? await acknowledgeCompletionDrain({
+					executionId: envExecId,
+					readId: drainReadId,
+				})
+			: await readCompletionDrainPage({
+					executionId: envExecId,
+					readId: drainReadId,
+					page: Number(values.page ?? "1"),
+				});
+		if (result.ok) console.log(result.output);
+		else {
+			console.error(result.output);
+			process.exitCode = 1;
+		}
+		return;
+	}
+	if (values.page !== undefined) {
+		throw new Error("--page requires --drain-page <read-id>");
+	}
 	if (debugExecOverride) {
 		console.error(
 			`[flywheel-comm inbox] WARNING: --exec-id override (${values["exec-id"]}) — use only for debug/test.`,
@@ -1786,6 +1854,41 @@ async function runAwaitCodexGate(args: string[]): Promise<void> {
 		pollIntervalMs: values["poll-interval"]
 			? Number.parseInt(values["poll-interval"], 10)
 			: undefined,
+	});
+}
+
+async function runReviewRound(args: string[]): Promise<number> {
+	const reviewType = args[0] ?? "";
+	let values: Record<string, string | undefined>;
+	try {
+		({ values } = parseArgs({
+			args: args.slice(1),
+			options: {
+				"exec-id": { type: "string" },
+				round: { type: "string" },
+				verdict: { type: "string" },
+				thread: { type: "string" },
+				turn: { type: "string" },
+				findings: { type: "string" },
+				target: { type: "string" },
+			},
+			allowPositionals: false,
+		}) as { values: Record<string, string | undefined> });
+	} catch (error) {
+		console.error(
+			`[review-round] ${error instanceof Error ? error.message : String(error)}`,
+		);
+		return 2;
+	}
+	return reviewRound({
+		reviewType,
+		execId: values["exec-id"] ?? process.env.FLYWHEEL_EXEC_ID ?? "",
+		round: values.round ?? "",
+		verdict: values.verdict ?? "",
+		thread: values.thread ?? "",
+		turn: values.turn,
+		findings: values.findings,
+		target: values.target,
 	});
 }
 

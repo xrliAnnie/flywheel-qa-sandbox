@@ -57,6 +57,7 @@ done
 pass "all three Bridge launches share one contract-rendered coordinate projection"
 
 claude_runner_build_line="$(line 'pnpm --filter flywheel-claude-runner build' "$DEPLOY")"
+inbox_mcp_build_line="$(line 'pnpm --filter flywheel-inbox-mcp build' "$DEPLOY" || true)"
 teamlead_build_line="$(line 'pnpm --filter flywheel-teamlead build' "$DEPLOY")"
 boundary_freshness_line="$(line "packages/claude-runner/dist/isolation-boundary\\.js" "$DEPLOY")"
 boundary_export_line="$(line "packages/claude-runner/dist/index\\.js" "$DEPLOY")"
@@ -67,6 +68,10 @@ boundary_export_line="$(line "packages/claude-runner/dist/index\\.js" "$DEPLOY")
 	|| fail "preflight must build and verify claude-runner isolation exports before teamlead"
 pass "preflight builds and verifies the claude-runner isolation dependency"
 
+[[ -n "$inbox_mcp_build_line" && "$inbox_mcp_build_line" -lt "$teamlead_build_line" ]] \
+	|| fail "preflight must build inbox-mcp before starting a Lead that requires its dist"
+pass "preflight materializes the Lead inbox-mcp runtime"
+
 slot_line="$(line '^SLOT_DIR=' "$DEPLOY")"
 node_line="$(line '^QA_SLOT_BRIDGE_NODE=' "$DEPLOY")"
 arrays_line="$(line '^LEAD_EXTRA_ENV=\(\)' "$DEPLOY")"
@@ -76,7 +81,9 @@ token_line="$(line '^GENERALIZED_API_TOKEN_PATH=' "$DEPLOY")"
 	|| fail "Node/bash resolution and env arrays must precede token setup"
 pass "launch prerequisites are declared before API-token setup"
 
-api_block="$(sed -n '/^if \[\[ "$GENERALIZED" == "1" || "${TEST_REPLY_BY_ISSUE:-0}" == "1" \]\]; then$/,/^if \[\[ "$GENERALIZED" == "1" \]\]; then$/p' "$DEPLOY")"
+api_block="$(sed -n \
+	'/^# FLYWHEEL_API_TOKEN_MODES_BEGIN$/,/^# FLYWHEEL_API_TOKEN_MODES_END$/p' \
+	"$DEPLOY")"
 [[ "$api_block" == *'env -i HOME="$HOME" PATH="$PATH" "$QA_SLOT_BRIDGE_NODE"'* ]] \
 	|| fail "report token minting must use an env-isolated Node process"
 [[ "$api_block" == *'REPORT_HOST_WRAPPER_ARGS=('*'qa-report-host-bridge-wrapper.sh'* ]] \

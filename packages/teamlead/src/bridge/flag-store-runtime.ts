@@ -236,6 +236,33 @@ export function storeNodeDwellThresholdHours(
 	return value;
 }
 
+export function storeLeadAlertWakeDedupEnabled(
+	runtime: { store: ScopedFlagStore },
+	projectName: string,
+): boolean {
+	try {
+		return readScopedBoolean(
+			{
+				store: {
+					getFlagValueRow(name, scope) {
+						const row = runtime.store.getFlagValueRow(name, scope);
+						if (row?.hasOverride && row.raw !== "0" && row.raw !== "1")
+							throw new Error("invalid lead_alert_wake_dedup value");
+						return row;
+					},
+				},
+			},
+			"lead_alert_wake_dedup",
+			projectName,
+		);
+	} catch (error) {
+		console.warn(
+			`[alert-wake-dedup] flag unavailable; restoring per-letter delivery: ${error instanceof Error ? error.message : String(error)}`,
+		);
+		return false;
+	}
+}
+
 export function storeLeadTokenSavingsEnabled(
 	runtime: { store: ScopedFlagStore },
 	projectName: string,
@@ -410,10 +437,27 @@ export function storeOpusModelSyncDisabled(runtime: FlagStoreRuntime): boolean {
 	return readBoolean(runtime, "opus_model_sync_disabled");
 }
 
+/**
+ * FLY-2901: emergency stop for the shared worktree takeover preserve+clean
+ * rescue. true → a registered-but-not-reusable shared branch-B worktree gets
+ * today's takeover refusal instead; the non-disableable loss guards still apply.
+ */
+export function storeWorktreeTakeoverRescueDisabled(
+	runtime: FlagStoreRuntime,
+): boolean {
+	return readBoolean(runtime, "worktree_takeover_rescue_disabled");
+}
+
 export function storeReviewQuotaAutoRetryEnabled(
 	runtime: FlagStoreRuntime,
 ): boolean {
 	return readBoolean(runtime, "review_quota_auto_retry");
+}
+
+export function storeReviewEarlyStopEnabled(
+	runtime: FlagStoreRuntime,
+): boolean {
+	return readBoolean(runtime, "review_early_stop");
 }
 
 export function storeCodexQuotaAutoSwitchEnabled(
@@ -436,6 +480,13 @@ export function storeFlagRetirementScanEnabled(
 
 export function storeLoopProfilerEnabled(runtime: FlagStoreRuntime): boolean {
 	return readBoolean(runtime, "loop_profiler");
+}
+
+/** FLY-2903: the terminal-body sweep's requestStop + reap (read on use). */
+export function storeCodexTerminalReapEnabled(
+	runtime: FlagStoreRuntime,
+): boolean {
+	return readBoolean(runtime, "codex_terminal_reap_enabled");
 }
 
 export function storeShippedHuskForceEnabled(

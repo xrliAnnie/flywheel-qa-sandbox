@@ -1,0 +1,144 @@
+{
+  "gitVersion": "git version 2.39.5 (Apple Git-154)",
+  "results": [
+    {
+      "case": "index-file-now-ignored-directory",
+      "expected": "blocked",
+      "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r4-_xsud_65/index-file-now-ignored-directory-1PZDCU",
+      "H": "4ece3874024402524b6b18627537ea587ebb8dfc",
+      "S": "4ece3874024402524b6b18627537ea587ebb8dfc",
+      "beforeStatus": "1 .D N... 100644 100644 000000 b8df7bd89be1f68287d4b5f4c74ac90341714ad5 b8df7bd89be1f68287d4b5f4c74ac90341714ad5 drafts\u0000",
+      "ignoredBefore": [
+        "drafts/unpublished.md"
+      ],
+      "checkIgnore": ".gitignore:1:drafts/\tdrafts/unpublished.md",
+      "guards": [
+        {
+          "phase": "before-any-rescue-write",
+          "allowed": false,
+          "D": [
+            "drafts"
+          ],
+          "index": [
+            ".flywheel/anchor",
+            ".gitignore",
+            "drafts",
+            "tracked"
+          ],
+          "ignoreCase": true,
+          "excludesFile": null,
+          "conflicts": [
+            {
+              "rule": "a",
+              "path": "drafts"
+            }
+          ]
+        }
+      ],
+      "outcome": "refused-by-plan-model",
+      "class": null,
+      "snapshotCalls": 0,
+      "snapshot": null,
+      "rescueRefs": [],
+      "events": [],
+      "steps": [],
+      "originalPreserved": true,
+      "originalBlobStored": false,
+      "afterBytes": "UNIQUE LOCAL WORK NEVER COMMITTED: index-file-now-ignored-directory\n",
+      "finalStatus": "1 .D N... 100644 100644 000000 b8df7bd89be1f68287d4b5f4c74ac90341714ad5 b8df7bd89be1f68287d4b5f4c74ac90341714ad5 drafts"
+    },
+    {
+      "case": "uppercase-ignore-changes",
+      "expected": "blocked",
+      "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r4-_xsud_65/uppercase-ignore-changes-Ij6Beo",
+      "H": "82eaa1a15298f80c21381615eb5dfd0a397d7e22",
+      "S": "b63f02f3a8d56a2e3672a90caede89fb640a2786",
+      "beforeStatus": "",
+      "ignoredBefore": [
+        "drafts/unpublished.md"
+      ],
+      "checkIgnore": ".gitignore:1:drafts/\tdrafts/unpublished.md",
+      "guards": [
+        {
+          "phase": "before-any-rescue-write",
+          "allowed": false,
+          "D": [
+            ".GITIGNORE",
+            "tracked"
+          ],
+          "index": [
+            ".GITIGNORE",
+            ".flywheel/anchor",
+            "tracked"
+          ],
+          "ignoreCase": true,
+          "excludesFile": null,
+          "conflicts": [
+            {
+              "rule": "d",
+              "path": ".GITIGNORE"
+            }
+          ]
+        }
+      ],
+      "outcome": "refused-by-plan-model",
+      "class": null,
+      "snapshotCalls": 0,
+      "snapshot": null,
+      "rescueRefs": [],
+      "events": [],
+      "steps": [],
+      "originalPreserved": true,
+      "originalBlobStored": false,
+      "afterBytes": "UNIQUE LOCAL WORK NEVER COMMITTED: uppercase-ignore-changes\n",
+      "finalStatus": ""
+    },
+    {
+      "case": "excludes-file-in-worktree-changes",
+      "expected": "blocked",
+      "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r4-_xsud_65/excludes-file-in-worktree-changes-DlrRRP",
+      "H": "65f9e7692247817a628cb728280a025427ded10f",
+      "S": "666b19043794403230fb041fe8cd8931fcfdfbde",
+      "beforeStatus": "",
+      "ignoredBefore": [
+        "drafts/unpublished.md"
+      ],
+      "checkIgnore": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r4-_xsud_65/excludes-file-in-worktree-changes-DlrRRP/shared/project.ignore:1:drafts/\tdrafts/unpublished.md",
+      "guards": [
+        {
+          "phase": "before-any-rescue-write",
+          "allowed": false,
+          "D": [
+            "project.ignore",
+            "tracked"
+          ],
+          "index": [
+            ".flywheel/anchor",
+            ".gitignore",
+            "project.ignore",
+            "tracked"
+          ],
+          "ignoreCase": true,
+          "excludesFile": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r4-_xsud_65/excludes-file-in-worktree-changes-DlrRRP/shared/project.ignore",
+          "conflicts": [
+            {
+              "rule": "e",
+              "path": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r4-_xsud_65/excludes-file-in-worktree-changes-DlrRRP/shared/project.ignore"
+            }
+          ]
+        }
+      ],
+      "outcome": "refused-by-plan-model",
+      "class": null,
+      "snapshotCalls": 0,
+      "snapshot": null,
+      "rescueRefs": [],
+      "events": [],
+      "steps": [],
+      "originalPreserved": true,
+      "originalBlobStored": false,
+      "afterBytes": "UNIQUE LOCAL WORK NEVER COMMITTED: excludes-file-in-worktree-changes\n",
+      "finalStatus": ""
+    }
+  ]
+}
