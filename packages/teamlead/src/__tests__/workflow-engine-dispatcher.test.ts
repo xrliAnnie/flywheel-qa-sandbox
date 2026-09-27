@@ -6557,24 +6557,16 @@ describe("FLY-2901 takeover rescue permit + predecessor head fallback", () => {
 		}
 	});
 
-	it("allows the quota-wall dead body: tmux target gone and no host process for the exec id", async () => {
+	it("allows the quota-wall dead body only after shared process death settles", async () => {
 		const h = await harness({
 			predecessorStatus: "failed",
 			worktreePath: "",
 			resolvePredecessorHead: async () => HEAD,
-			// The exact shape the dead-exec scan proves for the 21/40 quota-wall
-			// bodies: CommDB target gone, no discoverable tmux window, host
-			// process table absent — through the real probe with the terminal
-			// caller's allowMissingTargetHostAbsence.
+			// FLY-2919: takeover consumes the same settled physical-body verdict
+			// as the dead-exec sweep; presentation/host heuristics are not proof.
 			probeLaunchLiveness: (executionId, projectName) =>
 				probeGeneralizedLaunchLiveness(executionId, projectName, {
-					allowMissingTargetHostAbsence: true,
-					lookup: () => ({ kind: "gone" }),
-					discover: async () => ({ kind: "missing" }),
-					probeHostProcess: async () => ({
-						verdict: "absent",
-						source: "process-environment",
-					}),
+					readBodyLiveness: () => "dead",
 				}),
 		});
 		try {
@@ -6591,6 +6583,44 @@ describe("FLY-2901 takeover rescue permit + predecessor head fallback", () => {
 						executionId: "design-1",
 						sessionStatus: "failed",
 						liveness: "dead",
+						pathSource: "session",
+					},
+				],
+			});
+		} finally {
+			h.cleanup();
+		}
+	});
+
+	it("denies takeover when only a missing window and host process suggest death", async () => {
+		const h = await harness({
+			predecessorStatus: "failed",
+			worktreePath: "",
+			resolvePredecessorHead: async () => HEAD,
+			probeLaunchLiveness: (executionId, projectName) =>
+				probeGeneralizedLaunchLiveness(executionId, projectName, {
+					lookup: () => ({ kind: "gone" }),
+					discover: async () => ({ kind: "missing" }),
+					probeHostProcess: async () => ({
+						verdict: "absent",
+						source: "process-environment",
+					}),
+				} as never),
+		});
+		try {
+			setPredecessor(h.store, {
+				status: "failed",
+				worktreePath: h.shared!.path,
+			});
+			expect(await h.dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+			expect(h.fake.requests[0]?.takeoverRescuePermit).toEqual({
+				allowed: false,
+				reason: "permit_indeterminate",
+				predecessors: [
+					{
+						executionId: "design-1",
+						sessionStatus: "failed",
+						liveness: "unknown",
 						pathSource: "session",
 					},
 				],

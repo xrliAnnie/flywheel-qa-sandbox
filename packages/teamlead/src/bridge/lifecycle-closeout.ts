@@ -50,11 +50,7 @@ import {
 	probeRunExecutionLiveness,
 	type RunExecutionLivenessProbe,
 } from "./run-quiescence.js";
-import {
-	lookupTmuxTarget,
-	probeRunnerProcessLiveness,
-	type RunnerLiveness,
-} from "./tmux-lookup.js";
+import { lookupTmuxTarget, type RunnerLiveness } from "./tmux-lookup.js";
 import { sqliteDatetime } from "./types.js";
 
 export type IssueDisposition = "shipped" | "canceled" | "founder_parked";
@@ -972,8 +968,6 @@ async function closeoutIssueLocked(
 	audit: (event: string, detail: Record<string, unknown>) => void,
 ): Promise<ClosureReport> {
 	const { store } = deps;
-	const log =
-		deps.log ?? ((m: string) => console.log(`[lifecycle-closeout] ${m}`));
 	const rootKey = resolution.rootKey;
 	const baseReport = (outcome: ClosureReport["outcome"]): ClosureReport => ({
 		rootKey,
@@ -1126,7 +1120,6 @@ async function closeoutIssueLocked(
 			attributionDigest,
 			closeoutReservation,
 			audit,
-			log,
 		);
 		report.nodes.push(nodeReport);
 		if (
@@ -1295,7 +1288,6 @@ async function closeoutOneNode(
 	attributionDigest: string,
 	closeoutReservation: ActiveCloseoutReservation | undefined,
 	audit: (event: string, detail: Record<string, unknown>) => void,
-	log: (msg: string) => void,
 ): Promise<NodeClosureReport> {
 	const { store } = deps;
 	const closeRunnerFn = deps.closeRunnerFn ?? closeRunner;
@@ -1306,7 +1298,6 @@ async function closeoutOneNode(
 	const finalizeProvenGoneCommDbSessionFn =
 		deps.finalizeProvenGoneCommDbSessionFn ?? finalizeProvenGoneCommDbSession;
 	const lookupTarget = deps.lookupTarget ?? lookupTmuxTarget;
-	const probeLiveness = deps.probeLiveness ?? probeRunnerProcessLiveness;
 	const probeExecutionLiveness =
 		deps.probeExecutionLiveness ??
 		((executionId: string, projectName: string) =>
@@ -1326,6 +1317,20 @@ async function closeoutOneNode(
 		teardown: { state: "skipped", reason: "not_reached" },
 		confirmedGone: false,
 		communicationsFinalized: false,
+	};
+	const observeExecutionBody = async (): Promise<
+		"alive" | "dead" | "unknown"
+	> => {
+		try {
+			return await probeExecutionLiveness(node.executionId, node.projectName);
+		} catch (error) {
+			audit("closeout_node_liveness_error", {
+				executionId: node.executionId,
+				projectName: node.projectName,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return "unknown";
+		}
 	};
 
 	if (!fresh) {
@@ -1528,6 +1533,18 @@ async function closeoutOneNode(
 			result.confirmedGone = true;
 			return result;
 		}
+		// FLY-2919: absence from StateStore is not proof that the execution body
+		// is absent. A runner may outlive its session row, so non-land closeout
+		// must consult the same process-authoritative observation before retiring
+		// its communication identity.
+		const bodyLiveness = await observeExecutionBody();
+		if (bodyLiveness !== "dead") {
+			result.teardown = {
+				state: "blocked",
+				prerequisite: `no_session_row_body_${bodyLiveness}`,
+			};
+			return result;
+		}
 		const finalized = finalizeCommDbSessionFn(
 			node.executionId,
 			node.projectName,
@@ -1661,7 +1678,6 @@ async function closeoutOneNode(
 	}
 	if (!consume("teardown")) return result;
 	let preserved = false;
-	let closeRunnerDeathProven = false;
 	let executionDeathProven = false;
 	let executionDeathTarget: string | undefined;
 	try {
@@ -1710,13 +1726,10 @@ async function closeoutOneNode(
 			store,
 		);
 		executionDeathProven = closeRes.runnerDeathProven === true;
-		closeRunnerDeathProven = Boolean(
-			closeRes.closed || closeRes.alreadyGone || executionDeathProven,
-		);
 		result.communicationsFinalized = input.deferRecordFinalization
-			? closeRunnerDeathProven
+			? Boolean(closeRes.closed || closeRes.alreadyGone || executionDeathProven)
 			: closeRes.commDbFinalized;
-		if (closeRunnerDeathProven) {
+		if (closeRes.closed || closeRes.alreadyGone || executionDeathProven) {
 			result.teardown = result.communicationsFinalized
 				? {
 						state: "done",
@@ -1755,63 +1768,29 @@ async function closeoutOneNode(
 		result.confirmedGone = false;
 		return result;
 	}
-	if (!closeRunnerDeathProven && preserved) {
-		const liveness = await probeExecutionLiveness(
-			node.executionId,
-			node.projectName,
-		).catch(() => "unknown" as const);
+	// FLY-2919: presentation cleanup is not process-death authority. A tmux
+	// window can be closed or absent while its runner daemon remains alive, so
+	// every closeout without an explicit body-death proof must consult the shared
+	// execution-body observation before confirming the node gone.
+	if (!executionDeathProven) {
+		const liveness = await observeExecutionBody();
 		if (liveness === "dead") {
+			executionDeathProven = true;
 			const look = lookupTarget(node.executionId, node.projectName);
 			if (look.kind === "found") {
 				executionDeathTarget = look.target.tmuxWindow;
-				closeRunnerDeathProven = true;
-				executionDeathProven = true;
-			} else if (look.kind === "gone") {
-				// Independent execution-level death proof is sufficient when the
-				// identity row is already absent. There is no target left to CAS or
-				// delete; the idempotent full finalizer only retires orphaned ledgers.
-				closeRunnerDeathProven = true;
-				executionDeathProven = true;
 			}
 		}
 	}
-	// FLY-2313: only a successful close/already-gone result or explicit
-	// execution-level death proof may reach the confirmation/finalization step.
-	// Missing optional proof fields are fail-closed: a preserved return or throw
-	// must not let a later lookup of a stale/pending target manufacture death.
-	if (!closeRunnerDeathProven) {
+	// FLY-2313/FLY-2919: only explicit execution-body death proof may reach the
+	// confirmation/finalization step. Window lookup and close results are merely
+	// presentation evidence and must never manufacture death.
+	if (!executionDeathProven) {
 		result.confirmedGone = false;
 		return result;
 	}
-	// (4) confirmed gone — FRESH liveness, never a status set (triple-veto
-	// family: status all-terminal while a window is alive is NOT gone).
-	if (executionDeathProven) {
-		result.confirmedGone = true;
-	} else
-		try {
-			const look = lookupTarget(node.executionId, node.projectName);
-			if (look.kind === "gone") {
-				result.confirmedGone = true;
-			} else if (look.kind === "found") {
-				const live = await probeLiveness(look.target.tmuxWindow);
-				// A dead pin preserves the forensic window, but its process is provably dead.
-				result.confirmedGone = live === "absent" || live === "dead_pin";
-				if (!result.confirmedGone) {
-					log(
-						`node ${node.executionId} teardown ran but window still ${live} — blocked`,
-					);
-				}
-			} else {
-				result.confirmedGone = false; // lookup error → fail-closed
-			}
-		} catch (err) {
-			audit("closeout_node_liveness_error", {
-				executionId: node.executionId,
-				projectName: node.projectName,
-				error: err instanceof Error ? err.message : String(err),
-			});
-			result.confirmedGone = false;
-		}
+	// (4) confirmed gone — shared process liveness is the sole authority.
+	result.confirmedGone = true;
 	// Physical crash evidence stays intact; only its communication ledger closes.
 	if (
 		preserved &&

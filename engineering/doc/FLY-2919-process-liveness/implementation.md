@@ -567,3 +567,19 @@ B12 最终本地验证：25个具体文件640 pass；retention guard10 pass；cl
 本批未解决旧 Codex 从未登记的 controller、ordinary/rework 的剩余结账路径或其它窗口消费者；不会用无 binding / 无内存 handle 作为死亡证明。后续仍是原 A–F/九单范围，非实现交卷。
 
 B13 最终验证：19个具体文件566 pass，bounded related11文件468 pass，retention10 pass，affected+dependencies build、teamlead tsc、voice-codex typecheck、lint全0（26既有warnings）。另将此前未解决的 A9 `runs-route-registration.test.ts` 按原15秒限制完整单文件重跑：1 pass，测试耗时13.089秒；未修改测试/timeout，不推测此前超时原因，仅记录当前代码已通过。因此本批具体文件合计20个567 pass。6份当前TS源码hash一致；证据、命令和全部红绿日志存于 `implementation-b13-evidence.json.gz`，检索/保留项和589项排除原因存于 `implementation-b13-consumers.json.gz`。没有本机全套测试、PR CI或529声明。
+
+### B14：quiescence / closeout 窗口判死迁移（恢复体检查点）
+
+从 WIP `4f2e05e72` 恢复，未重做 B1–B13。`run-quiescence`、generalized launch recovery、StateStore workflow rework、close-runner/post-merge、runs/quota/template 入口已改为消费共同 `BodyObservation` 或持久死亡事实；pane/window 只保留定位与展示清理用途。受信 pre-adapter 例外保持窄化，最终 rework/quiescence CAS 仍在既有 StateStore 事务边界，不新增平行 gate。
+
+本次恢复补齐 lifecycle closeout：`closeRes.closed` / `alreadyGone` 不再等价于身体死亡；每个没有显式 `runnerDeathProven` 的节点均读取共同身体证据，只有 `dead` 可进入最终收敛。无 session row 的非 land QA residue 也不能绕过该证明；alive/unknown 均以 `no_session_row_body_<verdict>` 阻止 finalize。窗口查询只在身体已证死后用于定位 CommDB target，探针异常审计为 `closeout_node_liveness_error` 并 fail closed。land 仍沿用其已持久化的多源 evidence，不在此处改变批准语义。
+
+因果 RED/GREEN：新增“窗口已关但身体 alive”用例在旧实现误报 complete，改动后 blocked；新增“session row 缺失但身体 alive”用例在旧实现直接 finalize，改动后 blocked。dispatcher 的旧 FLY-2901 fixture 仍把缺窗当 dead，改为显式 `readBodyLiveness=dead`，并增加“窗口缺失且 host absent 仍 unknown”的负控。最终 lifecycle-closeout 单文件 66 pass，dispatcher 单文件 146 pass。
+
+B14 最终逐文件证据：9个直接改动测试文件共340 pass（execution-body-reader6、generalized-launch-recovery15、run-quiescence absence4、run-quiescence41、StateStore workflow-rework96、close-runner83、post-merge19、close-tmux10、lifecycle-closeout66）；6个不改动直接消费者共260 pass、3个既有 skip（workflow-engine-dispatcher146、runs-route management21/1 skip、runs-route quota16、quota recovery factory13、workflow-template-selection34/2 skip、execution-closeout-evidence30）。合计15个具体文件600 pass、3个既有 skip；均逐文件运行，没有整库或整包测试。
+
+`vitest related` 曾按改动源文件启动，但 StateStore/plugin 根扩张到600多个测试文件并造成机器负载；Lead 以 `[lead-instruction e9cfb5af-ae02-489f-8d7a-6eb0aeb848a4]` 明确停止，要求不重跑 teamlead full-graph related，改以上述具体文件证据交接，full suite 留给 PR CI/QA。该运行被终止于 `ERR_IPC_CHANNEL_CLOSED`，不把其部分结果或负载超时冒充当前代码失败/成功。
+
+受影响包及依赖 build、teamlead typecheck、voice-codex dependent typecheck 均退出0。根 `pnpm lint` 检查5141文件后因范围外既有债务退出1（2 errors、26 warnings；可见项位于历史 doc/scripts/config/core 测试），未顺手修改；B14当前三份恢复体改动文件的 scoped Biome 检查为0错误。全量20份B14 TS范围另有3个 useConst warning及超大 StateStore 跳过提示，没有格式错误；生命周期文件格式化后再次单文件66 pass。`git diff --check` 为0。
+
+本检查点仍不是整单完成。剩余工作继续按批准计划清除 C/D/E/F 的直接窗口死亡授权、补旧 Codex binding/普通与 rework 结账及九单矩阵，然后同头评审、PR、冻结头 CI 与 needs_review 交卷；不在 B14 停止或声明 QA/生产证明。

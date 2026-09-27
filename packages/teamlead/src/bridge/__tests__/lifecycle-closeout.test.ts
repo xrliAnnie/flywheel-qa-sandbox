@@ -62,9 +62,9 @@ function baseDeps(
 		})),
 		lookupTarget: (() => ({ kind: "gone" }) as const) as never,
 		probeLiveness: async () => "absent" as const,
-		// Unit tests must never inherit the production tmux/pgrep probe. Individual
-		// death-proof cases opt in explicitly through this seam.
-		probeExecutionLiveness: async () => "unknown" as const,
+		// Successful-close fixtures model a body that has independently settled.
+		// Safety cases override this with alive/unknown observations explicitly.
+		probeExecutionLiveness: async () => "dead" as const,
 		log: () => {},
 		...over,
 	};
@@ -222,6 +222,7 @@ describe("closeoutIssue — canceled disposition", () => {
 		const report = await closeoutIssue(
 			baseDeps(store, {
 				closeRunnerFn: closeRunnerFn as never,
+				probeExecutionLiveness: async () => "unknown" as const,
 				// An adversarial later lookup must not override closeRunner's
 				// explicit lack of physical-death proof.
 				lookupTarget: (() => ({ kind: "gone" }) as const) as never,
@@ -266,6 +267,7 @@ describe("closeoutIssue — canceled disposition", () => {
 		const report = await closeoutIssue(
 			baseDeps(store, {
 				closeRunnerFn: closeRunnerFn as never,
+				probeExecutionLiveness: async () => "unknown" as const,
 				lookupTarget: (() => ({ kind: "gone" }) as const) as never,
 				archiveThreads,
 				linearConsistency,
@@ -304,6 +306,7 @@ describe("closeoutIssue — canceled disposition", () => {
 		const report = await closeoutIssue(
 			baseDeps(store, {
 				closeRunnerFn: closeRunnerFn as never,
+				probeExecutionLiveness: async () => "unknown" as const,
 				lookupTarget: (() => ({ kind: "gone" }) as const) as never,
 				archiveThreads,
 				linearConsistency,
@@ -382,15 +385,53 @@ describe("closeoutIssue — canceled disposition", () => {
 				confirmedGone: false,
 				communicationsFinalized: false,
 			});
-			expect(probeExecutionLiveness).toHaveBeenCalledTimes(
-				closeOutcome === "preserved" ? 1 : 0,
-			);
+			expect(probeExecutionLiveness).toHaveBeenCalledTimes(1);
 			expect(probeLiveness).not.toHaveBeenCalled();
 			expect(finalizeCommDbSessionFn).not.toHaveBeenCalled();
 			expect(archiveThreads).not.toHaveBeenCalled();
 			expect(linearConsistency).not.toHaveBeenCalled();
 		},
 	);
+
+	it("FLY-2919: a closed or absent window cannot override a live execution body", async () => {
+		const store = await freshStore();
+		seedSession(store, "e1", "failed");
+		const probeExecutionLiveness = vi.fn(async () => "alive" as const);
+		const probeLiveness = vi.fn(async () => "absent" as const);
+		const archiveThreads = vi.fn(async () => undefined);
+		const linearConsistency = vi.fn(async () => undefined);
+
+		const report = await closeoutIssue(
+			baseDeps(store, {
+				closeRunnerFn: vi.fn(async () => ({
+					closed: true,
+					commDbFinalized: true,
+					retiredGateCount: 1,
+				})) as never,
+				probeExecutionLiveness,
+				lookupTarget: (() => ({ kind: "gone" }) as const) as never,
+				probeLiveness,
+				archiveThreads,
+				linearConsistency,
+			}),
+			{
+				issueKey: UUID,
+				projectName: "proj",
+				disposition: "shipped",
+				authority: "ship_complete",
+			},
+		);
+
+		expect(report.outcome).toBe("blocked");
+		expect(report.nodes[0]).toMatchObject({
+			confirmedGone: false,
+			communicationsFinalized: true,
+		});
+		expect(probeExecutionLiveness).toHaveBeenCalledWith("e1", "proj");
+		expect(probeLiveness).not.toHaveBeenCalled();
+		expect(archiveThreads).not.toHaveBeenCalled();
+		expect(linearConsistency).not.toHaveBeenCalled();
+	});
 
 	it.each(["failed", "blocked"] as const)(
 		"FLY-2313: independently proven crash death finalizes preserved status=%s without probing pending",
@@ -678,6 +719,54 @@ describe("closeoutIssue — canceled disposition", () => {
 		});
 	});
 
+	it("FLY-2919: a missing session row cannot finalize while its execution body is alive", async () => {
+		const store = await freshStore();
+		seedSession(store, "parent", "completed");
+		insertHistoricalAutoQaRecord(store, {
+			parentExecutionId: "parent",
+			targetPrHeadSha: "head-a",
+			issueId: UUID,
+			projectName: "proj",
+			qaExecutionId: "qa-no-row",
+		});
+		const finalizeCommDbSessionFn = vi.fn(() => ({
+			ok: true,
+			outcome: "finalized" as const,
+			retiredGateCount: 1,
+			deletedSessionCount: 1,
+		}));
+		const probeExecutionLiveness = vi.fn(async (executionId: string) =>
+			executionId === "qa-no-row" ? ("alive" as const) : ("dead" as const),
+		);
+
+		const report = await closeoutIssue(
+			baseDeps(store, {
+				finalizeCommDbSessionFn,
+				probeExecutionLiveness,
+			}),
+			{
+				issueKey: UUID,
+				projectName: "proj",
+				disposition: "canceled",
+				authority: "linear_reconcile",
+			},
+		);
+
+		expect(probeExecutionLiveness).toHaveBeenCalledWith("qa-no-row", "proj");
+		expect(finalizeCommDbSessionFn).not.toHaveBeenCalled();
+		expect(
+			report.nodes.find((node) => node.node.executionId === "qa-no-row"),
+		).toMatchObject({
+			confirmedGone: false,
+			communicationsFinalized: false,
+			teardown: {
+				state: "blocked",
+				prerequisite: "no_session_row_body_alive",
+			},
+		});
+		expect(report.outcome).toBe("blocked");
+	});
+
 	it.each(["gone", "alive"] as const)(
 		"requires persisted multi-source %s evidence before a land closeout retires a missing session",
 		async (verdict) => {
@@ -959,6 +1048,7 @@ describe("closeoutIssue — shipped disposition", () => {
 			const report = await closeoutIssue(
 				baseDeps(store, {
 					closeRunnerFn: closeRunnerFn as never,
+					probeExecutionLiveness: async () => "unknown" as const,
 					finalizeCommDbSessionFn,
 					lookupTarget: ((executionId: string) =>
 						executionId === "failed-e" && evidence !== "gone"
@@ -1083,7 +1173,8 @@ describe("issue-level items (plan §4 #32)", () => {
 								target: { tmuxWindow: "w:1" },
 							}
 						: { kind: "gone" }) as never,
-				probeLiveness: async () => "alive" as const,
+				probeExecutionLiveness: async (executionId: string) =>
+					executionId === "e-gone" ? ("alive" as const) : ("dead" as const),
 			}),
 			{
 				issueKey: UUID,
@@ -1125,11 +1216,7 @@ describe("issue-level items (plan §4 #32)", () => {
 		const report = await closeoutIssue(
 			baseDeps(store, {
 				audit,
-				lookupTarget: (() => ({
-					kind: "found",
-					target: { tmuxWindow: "w:probe" },
-				})) as never,
-				probeLiveness: async () => {
+				probeExecutionLiveness: async () => {
 					throw new Error("probe exploded");
 				},
 			}),
