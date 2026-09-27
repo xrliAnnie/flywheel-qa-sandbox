@@ -379,6 +379,113 @@ async function createHarness(
 }
 
 describe("FLY-1423 capability-level rework flow", () => {
+	it("mints a replacement after a wake-delivered actor records an enrolled failure", async () => {
+		let current = NOW;
+		const { store, comm, coordinator, baseHead } = await createHarness({
+			now: () => current,
+		});
+		try {
+			const failed = store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
+				runId: "run-e2e",
+				nodeId: "qa",
+				attempt: 1,
+				executionId: "qa-exec",
+				outcome: "qa_fail",
+				subjectDigest: baseHead,
+				now: "2026-07-23T00:10:00.000Z",
+			});
+			if (!failed.ok || !failed.reworkRequestId) {
+				throw new Error("QA fail did not create a rework request");
+			}
+			const requestId = failed.reworkRequestId;
+
+			expect(await coordinator.reconcile(requestId)).toMatchObject({
+				kind: "wake_sent",
+				executionId: "implement-exec",
+			});
+			const activation =
+				comm.getCurrentRunnerWorkflowActivation("implement-exec");
+			if (!activation) throw new Error("implement activation missing");
+			expect(
+				store.recordWorkflowReworkWakeReceipt({
+					activationId: activation.activation_id,
+					executionId: "implement-exec",
+					epoch: activation.epoch,
+					ackedAt: "2026-07-23T00:20:01.000Z",
+					alertIdentity: {
+						leadId: "flywheel-eng-lead",
+						projectName: "flywheel",
+						leadResolution: "resolved",
+					},
+				}),
+			).toEqual({ ok: true, idempotentReplay: false });
+			expect(
+				store.commitEnrolledFailure({
+					executionId: "implement-exec",
+					sourceEventId: "blocked-open-rework-e2e",
+					reason: "Required implementation dependency is unavailable",
+					completionSubmission: {
+						decision: { route: "blocked" },
+					},
+					workflowActivation: {
+						activationId: activation.activation_id,
+						runId: "run-e2e",
+						nodeId: "implement",
+						attempt: 2,
+						turnEpoch: activation.epoch,
+					},
+					now: "2026-07-23T00:20:02.000Z",
+				}),
+			).toMatchObject({ ok: true, idempotentReplay: false });
+			expect(store.getWorkflowRun("run-e2e")).toMatchObject({
+				status: "active",
+			});
+			expect(store.getWorkflowRunNode("run-e2e", "implement", 2)).toMatchObject(
+				{
+					state: "failed",
+					execution_id: "implement-exec",
+				},
+			);
+
+			current = new Date("2026-07-23T00:24:00.000Z");
+			const replacement = await coordinator.reconcile(requestId);
+			expect(replacement).toMatchObject({
+				kind: "replacement_minted",
+				reason: "enrolled_failure",
+				executionId: expect.not.stringMatching(/^implement-exec$/),
+			});
+			if (replacement.kind !== "replacement_minted") {
+				throw new Error("replacement was not minted");
+			}
+			expect(store.getLatestWorkflowReworkRoute(requestId)).toMatchObject({
+				revision: 2,
+				preferred_actor_execution_id: replacement.executionId,
+				interpreted_by: "engine:proven_dead_replacement",
+			});
+			expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
+				state: "pending",
+				route_revision: 2,
+				hold_count: 0,
+			});
+			expect(store.getWorkflowRunNode("run-e2e", "implement", 2)).toMatchObject(
+				{
+					state: "pending",
+					execution_id: replacement.executionId,
+				},
+			);
+			expect(store.getWorkflowReworkReplacementLaunch(requestId)).toMatchObject(
+				{
+					executionId: replacement.executionId,
+					ledgerState: "intent_recorded",
+				},
+			);
+		} finally {
+			store.close();
+			comm.close();
+		}
+	});
+
 	it("preserves an already-granted submission credential across a wake retry", async () => {
 		let current = new Date("2026-07-23T00:20:00.000Z");
 		const { store, comm, coordinator, baseHead } = await createHarness({

@@ -45949,7 +45949,9 @@ export class StateStore {
 	 * coordinator's own claim. Only verifiable death proofs are accepted, and
 	 * they are re-verified here at commit time (fail-closed):
 	 * - `unlaunched_rollback`: an exact unlaunched-rollback fact exists;
-	 * - `launch_abandoned`: the actor's dispatch intent is `abandoned`.
+	 * - `launch_abandoned`: the actor's dispatch intent is `abandoned`;
+	 * - `enrolled_failure`: the exact rework actor atomically recorded a
+	 *   generalized failure receipt.
 	 * Liveness-based replacement consumes FLY-2919's trusted process evidence
 	 * and is deliberately not accepted until that lands; terminal session
 	 * labels, expired resident holds, and missing panes are never proof.
@@ -45963,7 +45965,7 @@ export class StateStore {
 		generation: number;
 		deadExecutionId: string;
 		newExecutionId: string;
-		proof: { kind: "unlaunched_rollback" } | { kind: "launch_abandoned" };
+		proof: { kind: WorkflowReworkDeathProof };
 		reason: string;
 		observedAt: string;
 		expectedSessionLifecycleRevision?: number | null;
@@ -45986,8 +45988,11 @@ export class StateStore {
 			input.deadExecutionId === input.newExecutionId ||
 			!input.reason.trim() ||
 			!StateStore.workflowFiniteTimestamp(input.observedAt) ||
-			(input.proof?.kind !== "unlaunched_rollback" &&
-				input.proof?.kind !== "launch_abandoned")
+			!([
+				"unlaunched_rollback",
+				"launch_abandoned",
+				"enrolled_failure",
+			] as const).includes(input.proof?.kind)
 		) {
 			return { ok: false, reason: "invalid_rework_replacement" };
 		}
@@ -46072,6 +46077,15 @@ export class StateStore {
 				route.target_node_id,
 				input.deadExecutionId,
 			);
+			const enrolledFailure = this.hasWorkflowReworkTerminalFact({
+				requestId: input.requestId,
+				runId: request.run_id,
+				nodeId: route.target_node_id,
+				attempt: route.target_attempt,
+				executionId: input.deadExecutionId,
+				routeRevision: route.revision,
+				kind: "rework_actor_failure_reported",
+			});
 			if (
 				!target ||
 				target.execution_id !== input.deadExecutionId ||
@@ -46079,7 +46093,7 @@ export class StateStore {
 					target.state === "pending" ||
 					target.state === "admitted" ||
 					target.state === "running" ||
-					(target.state === "failed" && rolledBack)
+					(target.state === "failed" && (rolledBack || enrolledFailure))
 				)
 			) {
 				result = { ok: false, reason: "rework_replacement_target_changed" };
@@ -46103,7 +46117,11 @@ export class StateStore {
 				],
 			)[0];
 			const proven =
-				input.proof.kind === "unlaunched_rollback" ? rolledBack : !!abandoned;
+				input.proof.kind === "unlaunched_rollback"
+					? rolledBack
+					: input.proof.kind === "launch_abandoned"
+						? !!abandoned
+						: enrolledFailure;
 			if (!proven) {
 				result = { ok: false, reason: "rework_replacement_death_unproven" };
 				return;
@@ -46210,16 +46228,29 @@ export class StateStore {
 	}
 
 	/**
-	 * FLY-2921 C2 step 4: the only death proofs accepted before FLY-2919's
-	 * process evidence lands — the preferred actor's launch was rolled back
-	 * unlaunched, or its dispatch intent was abandoned before commit.
+	 * FLY-2921 C2 step 4: the preferred actor either has a pre-launch rollback
+	 * fact or an exact terminal receipt produced by the enrolled execution.
+	 * Process labels, pane absence, and elapsed time remain insufficient.
 	 */
 	workflowReworkDeathProof(
 		requestId: string,
-	): "unlaunched_rollback" | "launch_abandoned" | undefined {
+	): WorkflowReworkDeathProof | undefined {
 		const request = this.getWorkflowReworkRequest(requestId);
 		const route = this.getLatestWorkflowReworkRoute(requestId);
 		if (!request || !route) return undefined;
+		if (
+			this.hasWorkflowReworkTerminalFact({
+				requestId,
+				runId: request.run_id,
+				nodeId: route.target_node_id,
+				attempt: route.target_attempt,
+				executionId: route.preferred_actor_execution_id,
+				routeRevision: route.revision,
+				kind: "rework_actor_failure_reported",
+			})
+		) {
+			return "enrolled_failure";
+		}
 		if (
 			this.hasUnlaunchedWorkflowRollbackFact(
 				request.run_id,
@@ -46241,6 +46272,40 @@ export class StateStore {
 			],
 		)[0];
 		return abandoned ? "launch_abandoned" : undefined;
+	}
+
+	private hasWorkflowReworkTerminalFact(input: {
+		requestId: string;
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+		routeRevision: number;
+		kind: "rework_actor_failure_reported";
+	}): boolean {
+		return this.workflowSelectAll(
+			`SELECT payload FROM workflow_run_event
+			  WHERE run_id = ? AND node_id = ? AND execution_id = ? AND kind = ?`,
+			[input.runId, input.nodeId, input.executionId, input.kind],
+		).some((row) => {
+			try {
+				const payload = JSON.parse(String(row.payload)) as Record<
+					string,
+					unknown
+				>;
+				return (
+					payload.requestId === input.requestId &&
+					payload.routeRevision === input.routeRevision &&
+					payload.attempt === input.attempt &&
+					payload.failureKind === "rework_delivery_owned" &&
+					typeof payload.activationId === "string" &&
+					typeof payload.sourceEventId === "string" &&
+					typeof payload.businessDigest === "string"
+				);
+			} catch {
+				return false;
+			}
+		});
 	}
 
 	/**
@@ -94233,6 +94298,11 @@ export interface WorkflowReworkRouteRevisionRow {
 	interpretation_reason: string;
 	created_at: string;
 }
+
+export type WorkflowReworkDeathProof =
+	| "unlaunched_rollback"
+	| "launch_abandoned"
+	| "enrolled_failure";
 
 export type WorkflowReworkFailureSettlement =
 	| {

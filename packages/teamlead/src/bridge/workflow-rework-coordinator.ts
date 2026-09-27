@@ -3,6 +3,7 @@ import { buildReworkWakeId, type CommDB } from "flywheel-comm/db";
 import type {
 	GeneralizedWorkflowAdmissionResult,
 	WorkflowEngineAlertIdentity,
+	WorkflowReworkDeathProof,
 	WorkflowReworkDeliveryClaimResult,
 	WorkflowReworkDeliveryRow,
 	WorkflowReworkFailureSettlement,
@@ -235,7 +236,7 @@ export interface WorkflowReworkCoordinatorStore {
 		generation: number;
 		deadExecutionId: string;
 		newExecutionId: string;
-		proof: { kind: "unlaunched_rollback" } | { kind: "launch_abandoned" };
+		proof: { kind: WorkflowReworkDeathProof };
 		reason: string;
 		observedAt: string;
 		expectedSessionLifecycleRevision?: number | null;
@@ -250,7 +251,7 @@ export interface WorkflowReworkCoordinatorStore {
 		| { ok: false; reason: string };
 	workflowReworkDeathProof(
 		requestId: string,
-	): "unlaunched_rollback" | "launch_abandoned" | undefined;
+	): WorkflowReworkDeathProof | undefined;
 	getWorkflowReworkReplacementLaunch(requestId: string):
 		| {
 				executionId: string;
@@ -766,7 +767,7 @@ export class WorkflowReworkCoordinator {
 		requestId: string;
 		generation: number;
 		route: WorkflowReworkRouteRevisionRow;
-		proof: "unlaunched_rollback" | "launch_abandoned";
+		proof: WorkflowReworkDeathProof;
 		reason: string;
 	}): WorkflowReworkCoordinatorOutcome {
 		const replaced = this.deps.store.replaceWorkflowReworkActor({
