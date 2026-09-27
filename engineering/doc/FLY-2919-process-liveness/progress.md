@@ -2,29 +2,27 @@
 issue: FLY-2919
 phase: implement
 phaseCursor: 0/6
-updated: 2026-09-27T04:58:26.941Z
-nextStep: "B11 committed 06447f65e: started/committed launch and gateway replay
-  consume shared body reader; remove row/window liveness and reject legacy
-  no_row/pending_only/tmux_dead retry authority. Bridge reuses authenticated
-  session GET coarse verdict, exact identity, 5s/64KiB bounds; raw observations
-  never HTTP mutation authority. Final delivery repair transaction revalidates
-  exact projected death/current flag. Concrete25files final778pass plus
-  retention10; bounded related20files723pass;
-  dependenciesbuild/teamlead+voice-codex types/lint0 with26existingwarnings.18
-  source hashes and61logs archived in implementation-b11-evidence.json.gz; all
-  selection/exclusions archived. NEXT B12: legacy/unregistered/pre-adapter
-  binding evidence and same physical generation logical activation; do not leave
-  normal restart permanently unknown. run-quiescence.ts old daemon/window/host
-  policy, generalized-launch-recovery.ts140-196 and direct callers
-  close-runner/lifecycle-closeout/post-merge/workflow-template-selection/plugin
-  pane-loss+close-tmux/runs management/quota still pending. Then remaining C
-  ordinary/rework wake+TURN settlement, D/E/F, nine-ticket matrix and A9
-  original15s routes import timeout. No final review/PR/fullCI/529/QA/handoff.
-  Full A-F objective remains active; no blocker or pending external gate."
+updated: 2026-09-27T05:05:28.106Z
+nextStep: "B12 WIP on pushed B11 9c037e0b6. Legacy Claude OS discovery
+  primitive: exact native session association plus independent
+  exe/cwd/PID/start/boot; explicit nullable nonce with legacyExecutionId
+  attribution via existing FLYWHEEL_EXEC_ID, never invented launch nonce.
+  Inspector RED9 (one existing capture behavior,8 absent interface); first GREEN
+  attempt5 failures from wrong replacement corrected; full inspector52 nowpass.
+  Owner adoption tests currently RED pending: final current
+  activation/generation/lifecycle/flag CAS, no overwrite existing owner, expiry
+  rejection, normal spawn cannot use legacy binding. Code uncommitted, full
+  verification/build not yet run. Continue owner method then production bounded
+  migration admission into shared observer/sampler and diagnostics; legacy
+  unknown does not count complete. B12 still needs Codex old-controller
+  evidence/pre-adapter exception/same physical logical activation. Then
+  quiescence full callers, remaining C/D/E/F,nine-ticket matrix,A9 original15s
+  timeout,final review/PR/frozenCI/handoff. Full objective active, no blocker or
+  gate."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2919 progress
 **phase**: implement (0/6)
-**next**: B11 committed 06447f65e: started/committed launch and gateway replay consume shared body reader; remove row/window liveness and reject legacy no_row/pending_only/tmux_dead retry authority. Bridge reuses authenticated session GET coarse verdict, exact identity, 5s/64KiB bounds; raw observations never HTTP mutation authority. Final delivery repair transaction revalidates exact projected death/current flag. Concrete25files final778pass plus retention10; bounded related20files723pass; dependenciesbuild/teamlead+voice-codex types/lint0 with26existingwarnings.18 source hashes and61logs archived in implementation-b11-evidence.json.gz; all selection/exclusions archived. NEXT B12: legacy/unregistered/pre-adapter binding evidence and same physical generation logical activation; do not leave normal restart permanently unknown. run-quiescence.ts old daemon/window/host policy, generalized-launch-recovery.ts140-196 and direct callers close-runner/lifecycle-closeout/post-merge/workflow-template-selection/plugin pane-loss+close-tmux/runs management/quota still pending. Then remaining C ordinary/rework wake+TURN settlement, D/E/F, nine-ticket matrix and A9 original15s routes import timeout. No final review/PR/fullCI/529/QA/handoff. Full A-F objective remains active; no blocker or pending external gate.
+**next**: B12 WIP on pushed B11 9c037e0b6. Legacy Claude OS discovery primitive: exact native session association plus independent exe/cwd/PID/start/boot; explicit nullable nonce with legacyExecutionId attribution via existing FLYWHEEL_EXEC_ID, never invented launch nonce. Inspector RED9 (one existing capture behavior,8 absent interface); first GREEN attempt5 failures from wrong replacement corrected; full inspector52 nowpass. Owner adoption tests currently RED pending: final current activation/generation/lifecycle/flag CAS, no overwrite existing owner, expiry rejection, normal spawn cannot use legacy binding. Code uncommitted, full verification/build not yet run. Continue owner method then production bounded migration admission into shared observer/sampler and diagnostics; legacy unknown does not count complete. B12 still needs Codex old-controller evidence/pre-adapter exception/same physical logical activation. Then quiescence full callers, remaining C/D/E/F,nine-ticket matrix,A9 original15s timeout,final review/PR/frozenCI/handoff. Full objective active, no blocker or gate.
