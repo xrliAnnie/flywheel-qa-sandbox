@@ -83,9 +83,13 @@ async function fixture(kind: "design" | "generic" = "design") {
 			'"writer-custom"',
 		),
 	);
-	if (kind === "design")
-		manifest.nodes.find((n: { id: string }) => n.id === "writer-custom").type =
-			"implement";
+	if (kind === "design") {
+		const customWriter = manifest.nodes.find(
+			(n: { id: string }) => n.id === "writer-custom",
+		);
+		customWriter.type = "implement";
+		customWriter.role = "implement";
+	}
 	const seed = { ...original, manifest };
 	seed.contentHash = workflowSeedContentHash(seed);
 	store.importWorkflowTemplateSeed(seed);
@@ -238,7 +242,7 @@ describe("FLY-2920 persisted workflow boot resume", () => {
 	it("uses current custom node phase, preserving stopped prior local-only tip, ledger and description", async () => {
 		const f = await fixture();
 		const w = wiring(f);
-		expect(await w.engine.reconcile()).toEqual({ started: 1, held: 0 });
+		expect(await w.engine.reconcile()).toEqual({ started: 2, held: 0 });
 		await w.dispatcher.drain();
 		expect(w.capture).toHaveLength(1);
 		expect(w.capture[0]?.progressResume).toMatchObject({
@@ -262,7 +266,7 @@ describe("FLY-2920 persisted workflow boot resume", () => {
 	it("replaces a previously bound dead execution after database reopen without losing its local cursor", async () => {
 		const f = await fixture();
 		const initial = wiring(f);
-		expect(await initial.engine.reconcile()).toEqual({ started: 1, held: 0 });
+		expect(await initial.engine.reconcile()).toEqual({ started: 2, held: 0 });
 		await initial.dispatcher.drain();
 		const old = initial.requests[0]!.generalizedExecution!;
 		f.store.upsertSession({
@@ -530,7 +534,7 @@ describe("FLY-2920 persisted workflow boot resume", () => {
 	it("a persisted terminal run stays stopped across repeated boot and manual resume preserves its own authority", async () => {
 		const f = await fixture();
 		const initial = wiring(f);
-		expect(await initial.engine.reconcile()).toEqual({ started: 1, held: 0 });
+		expect(await initial.engine.reconcile()).toEqual({ started: 2, held: 0 });
 		await initial.dispatcher.drain();
 		const activation = initial.requests[0]!.generalizedExecution!;
 		f.store.upsertSession({
