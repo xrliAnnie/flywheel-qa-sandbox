@@ -14,7 +14,8 @@
  * so `git worktree add -B <branch> <tip>` rebuilds the worktree WITH progress.md
  * (no separate "don't branch -D" mode needed — align with 793, don't build two).
  *
- * `effectiveStage` is derived from the StateStore stage AUTHORITY and cross-checked
+ * `effectiveStage` is derived from the current persisted engine node (or the
+ * prior session stage for manual legacy starts) and cross-checked
  * against the ledger's `phase`; on mismatch it is `undefined` = "suppress no gates"
  * (Codex R2 #4 fail-closed) — a stale / tampered ledger can never skip a mandatory
  * brainstorm/design gate.
@@ -22,10 +23,13 @@
 
 import type { WorkflowPhaseRole } from "flywheel-config";
 import {
+	isWorkflowPhaseRole,
 	parseProgress,
 	resolveProgressPath,
 	stageToPhase,
 } from "flywheel-config";
+import type { StateStore } from "../StateStore.js";
+import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
 
 export type ResumeKind = "restart" | "terminate" | "reboot" | "handoff";
 
@@ -50,7 +54,78 @@ export interface PriorSessionRow {
 
 export type MaybePromise<T> = T | Promise<T>;
 
+/** Credentials deliberately excluded from resume authority. */
+export interface WorkflowResumeIdentity {
+	engineOwned?: boolean;
+	executionId: string;
+	activationId?: string;
+	runId: string;
+	nodeId: string;
+	attempt: number;
+}
+
+export function assertWorkflowResumeAuthority(
+	store: Pick<
+		StateStore,
+		| "getWorkflowRun"
+		| "getWorkflowRunNode"
+		| "getWorkflowActivation"
+		| "listWorkflowRunNodes"
+	>,
+	identity: WorkflowResumeIdentity,
+	issueId: string,
+	projectName: string,
+	role: string,
+): { phase?: WorkflowPhaseRole } {
+	const refuse = () => new Error("workflow_resume_authority_refused");
+	try {
+		const run = store.getWorkflowRun(identity.runId);
+		const node = store.getWorkflowRunNode(
+			identity.runId,
+			identity.nodeId,
+			identity.attempt,
+		);
+		const activation = identity.activationId
+			? store.getWorkflowActivation(identity.activationId)
+			: undefined;
+		if (
+			!run ||
+			run.engine_owned !== 1 ||
+			run.status !== "active" ||
+			run.issue_id !== issueId ||
+			run.project_name !== projectName ||
+			!run.snapshot ||
+			!node ||
+			!["pending", "admitted", "running"].includes(node.state) ||
+			node.execution_id !== identity.executionId ||
+			store
+				.listWorkflowRunNodes(identity.runId, identity.nodeId)
+				.some((candidate) => candidate.attempt > identity.attempt) ||
+			!activation ||
+			activation.run_id !== identity.runId ||
+			activation.node_id !== identity.nodeId ||
+			activation.attempt !== identity.attempt ||
+			activation.execution_id !== identity.executionId
+		)
+			throw refuse();
+		const resolved = parseWorkflowRunSnapshot(run.snapshot).resolved.nodes.find(
+			(candidate) => candidate.id === identity.nodeId,
+		);
+		if (!resolved) throw refuse();
+		const phase = isWorkflowPhaseRole(resolved.type)
+			? resolved.type
+			: undefined;
+		if (role !== (phase ?? "main")) throw refuse();
+		return { phase };
+	} catch {
+		// No database exception or unknown binding may become a fresh legacy start.
+		throw refuse();
+	}
+}
+
 export interface ProgressResumeDeps {
+	/** Presence distinguishes engine authority (including non-phase nodes) from legacy manual resume. */
+	workflowPhase?: { phase?: WorkflowPhaseRole };
 	docBaseDir: string;
 	issueIdentifier: string;
 	/** branch B name for the issue/role — MUST match WorktreeManager.worktreeName. */
@@ -121,11 +196,14 @@ export async function computeProgressResume(
 	const tip = await deps.branchTip(branch);
 	if (!tip) return null;
 
-	// effectiveStage authority = StateStore stage; suppress only when it AGREES
+	// Engine phase authority never comes from the prior content-source session.
+	// Suppress only when current authority AGREES
 	// with the ledger phase (else undefined = suppress nothing, fail-closed).
-	const statePhase = prior.session_stage
-		? stageToPhase(prior.session_stage)
-		: undefined;
+	const statePhase = deps.workflowPhase
+		? deps.workflowPhase.phase
+		: prior.session_stage
+			? stageToPhase(prior.session_stage)
+			: undefined;
 	const effectiveStage =
 		statePhase && statePhase === ledgerPhase ? statePhase : undefined;
 

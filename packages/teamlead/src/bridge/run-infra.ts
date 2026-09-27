@@ -117,6 +117,7 @@ import {
 } from "./phase-branch-tip.js";
 import type { LifecycleShipInfra } from "./post-ship-finalization.js";
 import {
+	assertWorkflowResumeAuthority,
 	computeProgressResume,
 	type ProgressResumeDeps,
 	type ProgressResumeInfo,
@@ -351,8 +352,135 @@ export async function runCodexRecoveryOwner(input: {
 	return result;
 }
 
+/** Production resume computation shared with restart integration tests. */
+export function createProgressResumeComputer(
+	store: StateStore,
+	projectRuntimes: ReadonlyMap<string, Pick<ProjectRuntime, "projectRoot">>,
+	docDeptByProject: ReadonlyMap<string, string | undefined>,
+	withRepoLock?: NonNullable<
+		Parameters<typeof materializeRemoteBranch>[1]
+	>["withRepoLock"],
+	readGit: typeof runInfraResumeGitRead = runInfraResumeGitRead,
+): ResumeComputer {
+	const computer: ResumeComputer = async (
+		issueId,
+		role,
+		projectName,
+		identity,
+	) => {
+		const validate = () =>
+			identity?.engineOwned
+				? assertWorkflowResumeAuthority(
+						store,
+						identity,
+						issueId,
+						projectName,
+						role,
+					)
+				: undefined;
+		const workflowPhase = validate();
+		try {
+			// A QA runner (auto-QA, FLY-579) pins its own worktree to the reviewed commit
+			// and writes NO progress ledger — it must never be resumed from a prior
+			// ledger (code-review MED-3). Only writer roles resume.
+			if (role === "qa") return null;
+			const runtime = projectRuntimes.get(projectName);
+			if (!runtime) return null;
+			const projectRoot = runtime.projectRoot;
+
+			// The latest RESUMABLE prior session for THIS issue AND role — role/status
+			// scoped (code-review MED-3): excludes completed/shelved (never resume merged
+			// or parked work) and the wrong role's latest session. `issueId` may be the
+			// UUID or the identifier; the query matches either.
+			const prior = store.getResumableSessionForIssueRole(issueId, role);
+			if (!prior) return null;
+
+			const identifier = prior.issue_identifier ?? issueId;
+			const dept = docDeptByProject.get(projectName);
+			const docBaseDir = dept ? `${dept}/doc` : "doc";
+			const repoSlug = basename(projectRoot).toLowerCase();
+			// Branch B ground truth: the persisted branch, else the worktree dir name
+			// (WorktreeManager names the worktree dir identically to branch B), else a
+			// deterministic recompute matching WorktreeManager.worktreeName.
+			const branchB =
+				prior.branch ||
+				(prior.worktree_path ? basename(prior.worktree_path) : undefined) ||
+				`${repoSlug}-${deriveWorktreeKey(identifier, role)}`;
+
+			// shareParentBranch key-drift guard (code-review MED-3): a computed resume
+			// always sets shareParentBranch:true, so the rebuilt worktree lands on the
+			// MAIN-key branch (`<repoSlug>-<identifier>`). That is correct for role="main"
+			// and for FLY-793 phases (they already share the main-key branch), but a
+			// role-aware branch (`<repoSlug>-<identifier>-<role>`) would drift onto the
+			// main-key branch. If branch B is not the main-key branch, do NOT resume
+			// (fresh is safe) rather than continue the runner's work on the wrong branch.
+			const mainKeyBranch = `${repoSlug}-${deriveWorktreeKey(identifier, "main")}`;
+			if (branchB !== mainKeyBranch) return null;
+
+			// FLY-1718 P1: refresh the remote-tracking ref before reading the branch
+			// blob. An indeterminate origin must fall through to continuity's hard
+			// preflight (which will reject the launch); a confirmed missing origin can
+			// still resume a surviving local branch with unpushed progress.
+			const remoteDecision = await materializeRemoteBranch(
+				{ repoPath: projectRoot, branch: branchB },
+				{
+					runGit: (args, cwd) => runInfraEvidenceCommand("git", args, cwd),
+					withRepoLock,
+				},
+			);
+			validate();
+			if (remoteDecision.kind === "indeterminate") return null;
+
+			const git = async (args: string[]) => {
+				validate();
+				const result = await readGit(projectRoot, args);
+				validate();
+				return result;
+			};
+
+			const branchRefs = (branch: string) => [
+				`refs/heads/${branch}`,
+				`refs/remotes/origin/${branch}`,
+			];
+			// Resolve one ref for the entire snapshot: tip, doc discovery, and ledger
+			// bytes may never independently fall through to different histories.
+			return await computeProgressResumeAcrossRefs({
+				workflowPhase,
+				issueId,
+				role,
+				docBaseDir,
+				issueIdentifier: identifier,
+				branch: branchB,
+				refs: branchRefs(branchB),
+				prior: {
+					execution_id: prior.execution_id,
+					...(prior.plan_path && { plan_path: prior.plan_path }),
+					...(prior.session_stage && {
+						session_stage: prior.session_stage,
+					}),
+				},
+				git,
+			});
+		} finally {
+			validate();
+		}
+	};
+	computer.assertAuthority = (issueId, role, projectName, identity) => {
+		if (identity?.engineOwned)
+			assertWorkflowResumeAuthority(
+				store,
+				identity,
+				issueId,
+				projectName,
+				role,
+			);
+	};
+	return computer;
+}
+
 /** FLY-1718: compute one resume snapshot from one Git ref at a time. */
 export async function computeProgressResumeAcrossRefs(input: {
+	workflowPhase?: ProgressResumeDeps["workflowPhase"];
 	issueId: string;
 	role: string;
 	docBaseDir: string;
@@ -370,6 +498,7 @@ export async function computeProgressResumeAcrossRefs(input: {
 		const tip = (await input.git(["rev-parse", `${ref}^{commit}`]))?.trim();
 		if (!tip) continue;
 		const deps: ProgressResumeDeps = {
+			workflowPhase: input.workflowPhase,
 			docBaseDir: input.docBaseDir,
 			issueIdentifier: input.issueIdentifier,
 			branchName: () => input.branch,
@@ -1669,82 +1798,12 @@ export async function setupRunInfrastructure(
 	//     never recomputed from a trusted-key string.
 	//   - reads the BRANCH BLOB via `git show` (never the worktree fs — it may be
 	//     gone on reboot); non-zero git exit ⇒ null ⇒ start fresh (fail-safe).
-	const resumeComputer: ResumeComputer = async (issueId, role, projectName) => {
-		// A QA runner (auto-QA, FLY-579) pins its own worktree to the reviewed commit
-		// and writes NO progress ledger — it must never be resumed from a prior
-		// ledger (code-review MED-3). Only writer roles resume.
-		if (role === "qa") return null;
-		const runtime = projectRuntimes.get(projectName);
-		if (!runtime) return null;
-		const projectRoot = runtime.projectRoot;
-
-		// The latest RESUMABLE prior session for THIS issue AND role — role/status
-		// scoped (code-review MED-3): excludes completed/shelved (never resume merged
-		// or parked work) and the wrong role's latest session. `issueId` may be the
-		// UUID or the identifier; the query matches either.
-		const prior = store.getResumableSessionForIssueRole(issueId, role);
-		if (!prior) return null;
-
-		const identifier = prior.issue_identifier ?? issueId;
-		const dept = docDeptByProject.get(projectName);
-		const docBaseDir = dept ? `${dept}/doc` : "doc";
-		const repoSlug = basename(projectRoot).toLowerCase();
-		// Branch B ground truth: the persisted branch, else the worktree dir name
-		// (WorktreeManager names the worktree dir identically to branch B), else a
-		// deterministic recompute matching WorktreeManager.worktreeName.
-		const branchB =
-			prior.branch ||
-			(prior.worktree_path ? basename(prior.worktree_path) : undefined) ||
-			`${repoSlug}-${deriveWorktreeKey(identifier, role)}`;
-
-		// shareParentBranch key-drift guard (code-review MED-3): a computed resume
-		// always sets shareParentBranch:true, so the rebuilt worktree lands on the
-		// MAIN-key branch (`<repoSlug>-<identifier>`). That is correct for role="main"
-		// and for FLY-793 phases (they already share the main-key branch), but a
-		// role-aware branch (`<repoSlug>-<identifier>-<role>`) would drift onto the
-		// main-key branch. If branch B is not the main-key branch, do NOT resume
-		// (fresh is safe) rather than continue the runner's work on the wrong branch.
-		const mainKeyBranch = `${repoSlug}-${deriveWorktreeKey(identifier, "main")}`;
-		if (branchB !== mainKeyBranch) return null;
-
-		// FLY-1718 P1: refresh the remote-tracking ref before reading the branch
-		// blob. An indeterminate origin must fall through to continuity's hard
-		// preflight (which will reject the launch); a confirmed missing origin can
-		// still resume a surviving local branch with unpushed progress.
-		const remoteDecision = await materializeRemoteBranch(
-			{ repoPath: projectRoot, branch: branchB },
-			{
-				runGit: (args, cwd) => runInfraEvidenceCommand("git", args, cwd),
-				withRepoLock: runInfraOpts?.withRepoLock,
-			},
-		);
-		if (remoteDecision.kind === "indeterminate") return null;
-
-		const git = (args: string[]) => runInfraResumeGitRead(projectRoot, args);
-
-		const branchRefs = (branch: string) => [
-			`refs/heads/${branch}`,
-			`refs/remotes/origin/${branch}`,
-		];
-		// Resolve one ref for the entire snapshot: tip, doc discovery, and ledger
-		// bytes may never independently fall through to different histories.
-		return await computeProgressResumeAcrossRefs({
-			issueId,
-			role,
-			docBaseDir,
-			issueIdentifier: identifier,
-			branch: branchB,
-			refs: branchRefs(branchB),
-			prior: {
-				execution_id: prior.execution_id,
-				...(prior.plan_path && { plan_path: prior.plan_path }),
-				...(prior.session_stage && {
-					session_stage: prior.session_stage,
-				}),
-			},
-			git,
-		});
-	};
+	const resumeComputer = createProgressResumeComputer(
+		store,
+		projectRuntimes,
+		docDeptByProject,
+		runInfraOpts?.withRepoLock,
+	);
 
 	// FLY-1257 M3: phase retries recover branch B's own tip, using the same
 	// WorktreeManager path/branch authority as Blueprint. This runs for every

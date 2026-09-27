@@ -42,6 +42,24 @@ function makeDeps(over: Partial<ProgressResumeDeps> = {}): ProgressResumeDeps {
 }
 
 describe("computeProgressResume (FLY-795)", () => {
+	it("FLY-2920: current engine phase outranks stale prior session stage", async () => {
+		const result = await computeProgressResume(
+			"issue-uuid",
+			"implement",
+			"restart",
+			{
+				...makeDeps({
+					priorSession: () => ({
+						execution_id: "stopped-prior",
+						session_stage: "brainstorm",
+					}),
+				}),
+				workflowPhase: { phase: "implement" },
+			} as ProgressResumeDeps,
+		);
+		expect(result?.effectiveStage).toBe("implement");
+	});
+
 	it("awaits asynchronous branch reads before deciding resume", async () => {
 		const result = await computeProgressResume(
 			"issue-uuid",

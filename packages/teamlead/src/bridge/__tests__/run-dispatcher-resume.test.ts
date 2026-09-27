@@ -87,6 +87,34 @@ describe("RunDispatcher restart-resume wiring (FLY-795)", () => {
 		vi.restoreAllMocks();
 	});
 
+	it("FLY-2920: forwards only current engine identity even with pinned startPoint", async () => {
+		const resumeComputer = vi.fn(() => {
+			throw new Error("identity-observed");
+		});
+		const dispatcher = makeDispatcher({ resumeComputer });
+		const identity = {
+			engineOwned: true,
+			executionId: "current",
+			activationId: "activation",
+			runId: "run",
+			nodeId: "custom",
+			attempt: 2,
+		};
+		await expect(
+			dispatcher.start({
+				issueId: "i",
+				projectName: "proj",
+				startPoint: "pinned",
+				generalizedExecution: {
+					...identity,
+					submissionCredential: "must-not-forward",
+					dispatch: { vendor: "claude", model: "claude-fable-5" },
+				},
+			} as Parameters<RunDispatcher["start"]>[0]),
+		).rejects.toThrow("identity-observed");
+		expect(resumeComputer).toHaveBeenCalledWith("i", "main", "proj", identity);
+	});
+
 	it("threads progressResume + startPoint + shareParentBranch when a resume is computed", async () => {
 		const dispatcher = makeDispatcher({ resumeComputer: () => RESUME });
 		await dispatcher.start({

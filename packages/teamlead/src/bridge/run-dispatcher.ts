@@ -42,7 +42,10 @@ import type {
 import type { AdmissionCrossingBarrier } from "./admission-crossing-barrier.js";
 import type { LaunchClaimStore } from "./launch-claim-store.js";
 import { resolveCommBackend } from "./plugin.js";
-import type { ProgressResumeInfo } from "./progress-resume.js";
+import type {
+	ProgressResumeInfo,
+	WorkflowResumeIdentity,
+} from "./progress-resume.js";
 import type {
 	IRetryDispatcher,
 	IStartDispatcher,
@@ -162,11 +165,19 @@ function createLaunchOutcomeDeferred(
  * branch B are found; null ⇒ start fresh. Injected into RunDispatcher so the
  * live git/StateStore lookups stay out of the generic dispatcher.
  */
-export type ResumeComputer = (
+export type ResumeComputer = ((
 	issueId: string,
 	role: string,
 	projectName: string,
-) => ProgressResumeInfo | null | Promise<ProgressResumeInfo | null>;
+	identity?: WorkflowResumeIdentity,
+) => ProgressResumeInfo | null | Promise<ProgressResumeInfo | null>) & {
+	assertAuthority?: (
+		issueId: string,
+		role: string,
+		projectName: string,
+		identity?: WorkflowResumeIdentity,
+	) => void;
+};
 
 /** FLY-1718 P1: explanatory metadata for a structurally inherited branch. */
 export interface ContinuityInherit {
@@ -1567,11 +1578,26 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				"freshStart cannot be combined with a caller-pinned start",
 			);
 		}
+		const resumeIdentity: WorkflowResumeIdentity | undefined =
+			req.generalizedExecution
+				? {
+						engineOwned: req.generalizedExecution.engineOwned,
+						executionId: req.generalizedExecution.executionId,
+						activationId: req.generalizedExecution.activationId,
+						runId: req.generalizedExecution.runId,
+						nodeId: req.generalizedExecution.nodeId,
+						attempt: req.generalizedExecution.attempt,
+					}
+				: undefined;
 		let computedResume: ProgressResumeInfo | null;
 		try {
 			computedResume =
-				(await this.resumeComputer?.(req.issueId, role, req.projectName)) ??
-				null;
+				(await this.resumeComputer?.(
+					req.issueId,
+					role,
+					req.projectName,
+					resumeIdentity,
+				)) ?? null;
 		} catch (error) {
 			this.abortPreLaunch(key, executionId, req.projectName);
 			throw error;
@@ -1635,6 +1661,20 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				throw new FreshStartAuditError("durable audit write failed");
 			}
 		}
+		try {
+			// Continuity also awaits Git when no ledger exists. Recheck before any
+			// lifecycle admission, CommDB registration, TURN, or worktree mutation.
+			this.resumeComputer?.assertAuthority?.(
+				req.issueId,
+				role,
+				req.projectName,
+				resumeIdentity,
+			);
+		} catch (error) {
+			this.abortPreLaunch(key, executionId, req.projectName);
+			throw error;
+		}
+
 		// FLY-1185 (R11#1): lifecycle admission at the single spawn chokepoint —
 		// every surface (HTTP start / phase handoff / auto-QA / rescue) flows
 		// through here. Fresh founder-park tombstone check + durable `starting`
