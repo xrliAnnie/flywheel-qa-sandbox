@@ -122,6 +122,7 @@ import {
 	assertFullAccessSandboxConfig,
 	buildFullAccessLeadActionsMcpServerConfig,
 } from "./lead-actions/mcp-config.js";
+import { createCodexLeadInterruptHandler } from "./lead-interrupt-handler.js";
 import {
 	createLeadReplyFailureReporter,
 	resolveReplyFailureBridge,
@@ -1677,6 +1678,18 @@ export function buildTuiGeneration(
 							turnState: {
 								snapshot: () => generationTurnState.snapshot(),
 							},
+							// FLY-2883: controlled interrupts steer into this generation's
+							// live turn (never cancel it) or start one when idle. Only this
+							// windowed runtime owns a turn-state tracker, so only it
+							// advertises lead_interrupt_steer_v1.
+							interrupt: createCodexLeadInterruptHandler({
+								threadId,
+								tracker: generationTurnState,
+								router,
+								steer: (steerArgs) => p.steerTurn(steerArgs),
+								journal,
+								log: (message) => logger.warn(message),
+							}),
 							socketPath: resolveCodexLeadInboxSocketPath(config.stateDir),
 							leadId: config.leadId,
 							router,

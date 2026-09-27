@@ -56,6 +56,7 @@ import { buildReworkWakeId, type ReworkWakeIdentity, type ReworkWakeRetirementPr
 import { newDrainReadId } from "flywheel-comm/completion-obligations";
 import { type CompletionDrainProof, isCompletionDrainProof } from "./bridge/completion-drain.js";
 import { BetaReleaseStore } from "./bridge/beta-release-store.js";
+import { LeadInterruptStore } from "./bridge/lead-interrupt-store.js";
 import { ReviewRoundStore } from "./bridge/review-round-store.js";
 import type { CompletionWorktreeBranchObservation } from "./bridge/worktree-binding-refresh.js";
 import { CustomerReleaseStore } from "./bridge/customer-release/store.js";
@@ -3282,6 +3283,10 @@ export class StateStore {
 	private observationZeroProgress = { verdict: 0, closeout: 0, clarification: 0, archive: 0 };
 	get betaSchedules(): BetaReleaseStore {
 		return new BetaReleaseStore(this.db.raw);
+	}
+	/** FLY-2883: controlled Lead interrupt record + append-only audit. */
+	get leadInterrupts(): LeadInterruptStore {
+		return new LeadInterruptStore(this.db.raw);
 	}
 	/** FLY-2891: per-round local Codex review records + gate acceptances. */
 	get reviewRounds(): ReviewRoundStore {
@@ -12738,6 +12743,7 @@ export class StateStore {
 		this.migrateShuttleProjection();
 		this.migrateVoiceHealthProjection();
 		this.migrateReleaseReadiness();
+		this.migrateLeadInterrupts();
 		this.db.run(`CREATE TABLE IF NOT EXISTS lead_note (
 			project_name TEXT NOT NULL,
 			issue_uuid TEXT NOT NULL,
@@ -13064,6 +13070,11 @@ export class StateStore {
 				updated_at TEXT NOT NULL
 			)
 		`);
+	}
+
+	/** FLY-2883: lead_interrupts + append-only lead_interrupt_audit. */
+	private migrateLeadInterrupts(): void {
+		this.leadInterrupts.migrate();
 	}
 
 	private migrateVoiceHealthProjection(): void {

@@ -708,6 +708,8 @@ import {
 } from "./lead-dual-active-scan.js";
 import { LeadEventDeliveryCoordinator } from "./lead-event-delivery.js";
 import { createLeadInboundAttachmentRouter } from "./lead-inbound-attachment.js";
+import { createProductionClaudeInterruptPane } from "./lead-interrupt-claude-pane-production.js";
+import { createLeadInterruptLeadRouter } from "./lead-interrupt-routes.js";
 import { createLeadLeaseDiagnosticsRouter } from "./lead-lease-diagnostics.js";
 import { createLeadLeaseSelfCheckRouter } from "./lead-lease-self-check.js";
 import { createLeadNoteRouter } from "./lead-note-route.js";
@@ -1902,6 +1904,8 @@ export interface BridgeAppOptions {
 	voiceScheduleRouter?: express.Router;
 	leadVoiceCapabilityRouter?: express.Router;
 	leadVoiceCapabilityReceiptRouter?: express.Router;
+	/** FLY-2883: Lead-side controlled-interrupt read + reply. */
+	leadInterruptLeadRouter?: express.Router;
 }
 
 /** FLY-579: tolerant parse of a JSON-encoded string[] (session.issue_labels). */
@@ -6244,6 +6248,19 @@ export function createBridgeApp(
 			opts.leadVoiceCapabilityRouter,
 		);
 	}
+	if (opts?.leadInterruptLeadRouter) {
+		app.use(
+			"/api/lead-interrupts",
+			config.apiToken
+				? tokenAuthMiddleware(config.apiToken, undefined)
+				: (((_req, res) => {
+						res.status(503).json({
+							error: "lead interrupt API requires TEAMLEAD_API_TOKEN",
+						});
+					}) as express.RequestHandler),
+			opts.leadInterruptLeadRouter,
+		);
+	}
 	if (opts?.leadVoiceCapabilityReceiptRouter && config.apiToken) {
 		app.use(
 			"/api/lead-capabilities/voice-receipt",
@@ -7347,6 +7364,13 @@ export async function startBridge(
 	const alertDutyDispatcherBotUserId = { current: null as string | null };
 	const leadInboxRuntime = new LeadInboxRuntime({
 		dispatcherUserId: () => alertDutyDispatcherBotUserId.current,
+		// FLY-2883: Claude Leads receive the fixed interrupt phrase only when
+		// the FLY-2882 pane reader proves they are busy with an empty prompt.
+		claudeInterruptPaneForLead: (project, lead) =>
+			createProductionClaudeInterruptPane({
+				projectName: project.projectName,
+				leadId: lead.agentId,
+			}),
 		leadLeaseDbPath:
 			process.env.FLYWHEEL_LEAD_LEASE_DB ??
 			join(homedir(), ".flywheel", "lead-lease.db"),
@@ -9772,6 +9796,14 @@ export async function startBridge(
 		store,
 		projects,
 		config,
+		leadInterrupts: {
+			commDbPathForProject,
+			mailboxForProject: (projectName) =>
+				leadInboxRuntime.leadInterruptMailbox(projectName),
+			nudgeLead: (projectName, leadId) => {
+				leadInboxRuntime.nudge(leadId, projectName);
+			},
+		},
 		voiceHandoffs: voiceHandoffService,
 	});
 	const xhsWriteService = createXhsBridgeWriteService({
@@ -10200,6 +10232,11 @@ export async function startBridge(
 			leadVoiceCapabilityRouter: voiceSessionServices.leadCapabilityRouter,
 			leadVoiceCapabilityReceiptRouter:
 				voiceSessionServices.leadCapabilityReceiptRouter,
+			leadInterruptLeadRouter: createLeadInterruptLeadRouter({
+				store,
+				mailboxForProject: (projectName) =>
+					leadInboxRuntime.leadInterruptMailbox(projectName),
+			}),
 			// FLY-907: unified issue-display refresher (populated post-listen).
 			issueDisplayRefresh: issueDisplayRefreshHolder,
 		},
