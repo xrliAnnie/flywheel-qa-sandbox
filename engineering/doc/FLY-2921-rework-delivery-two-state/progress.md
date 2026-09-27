@@ -1,15 +1,14 @@
 ---
 issue: FLY-2921
 phase: implement
-phaseCursor: 5/6
-updated: 2026-09-27T01:55:21.441Z
-nextStep: 合并 b69ebc639 + 评审 R8 APPROVED + 本地目标验证全绿（52 文件 1570 条、脚本 4
-  项、lint/build/typecheck）；下一步：里程碑作最后提交、推送、ask --report、complete --route
-  needs_review --pr 1364
+phaseCursor: 2/4
+updated: 2026-09-27T09:15:14.695Z
+nextStep: "Update FLY-2921 milestone as the literal last commit, push PR #1364,
+  then request exact-head code review"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2921 progress
-**phase**: implement (5/6)
-**next**: 合并 b69ebc639 + 评审 R8 APPROVED + 本地目标验证全绿（52 文件 1570 条、脚本 4 项、lint/build/typecheck）；下一步：里程碑作最后提交、推送、ask --report、complete --route needs_review --pr 1364
+**phase**: implement (2/4)
+**next**: Update FLY-2921 milestone as the literal last commit, push PR #1364, then request exact-head code review

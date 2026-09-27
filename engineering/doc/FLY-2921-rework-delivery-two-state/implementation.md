@@ -156,3 +156,102 @@ QA 依据：PR #1364 对 origin/main `1f5626254` 为 CONFLICTING/DIRTY，唯一�
 两 Lead 529 复测由 QA 在新 head 上负责。
 
 代码评审：对合并提交做只读 Codex 评审 R8（`codex:rescue`），结论 **APPROVED**，0 finding，原文见 `codex-code-review-r8.md`。
+
+## 9. QA 返工 3（QA FAIL @ 72be5fc30：exact-head CI Script Tests 1/6 红）
+
+QA 依据：exact-head 全量 CI run `36292915296` 只有 Script Tests 1/6 失败，失败项是
+`scripts/__tests__/test-claude-lead-session-start-adopt.test.sh` 的
+`repeated installer convergence blocked or failed under a tty`（17 passed / 1 failed）。另一项是两 Lead 529 在
+step 0-1 后中止，属 QA 复测范围，实现侧无法补跑。
+
+本 diff 没有改这个测试，也没有改它测的 `claude-lead.sh` 安装函数。这是测试 harness 本来就有的竞态：
+
+- 日志时间：上一条 PASS 在 `04:11:04.6917`，`installer pty attempt 1 timed out` 在 `04:11:04.7630`，
+  只隔 71ms；harness 的 deadline 是 30s，而且报错里已经捕获到安装器的成功行（`hook installed`）。
+- 读循环只有三个出口：`poll()` 非 None、deadline 到、`os.read` 抛 `OSError` 后 `break`。71ms 排除 deadline；
+  若是第一个出口，后面的 `poll()` 不会返回 None。所以只能是：Linux 上子进程最后一个 slave fd 关闭时，
+  master 的 read 抛 EIO，而这时子进程还不能被回收，紧接着的 `poll()` 仍为 None，被当成超时 SIGKILL。
+- 修复（`2b8ef4a7f`，测试文件 +5/-2）：读循环后用剩余 deadline 调 `process.wait(timeout=…)`，只有
+  `TimeoutExpired` 才判超时；非零退出仍照报。产品代码零改动。Lead 对问题 `6f359a0b` 裁定在本 PR 内修，不另开单。
+
+复现与验证（本机是 macOS，pty 挂断语义和 Linux 不同，没有另起 Linux 虚拟机）：
+
+| 项 | 结果 |
+|---|---|
+| 同构 harness + 「master 空读改抛 EIO」模拟 Linux，子进程关 pty 后 0.3s 才退出 | 旧逻辑：9ms 报 `attempt 1 timed out`，输出含 `installed`（与 CI 同形）；新逻辑通过 |
+| 反例（新逻辑） | 真挂死仍在 deadline 超时；关 pty 后挂死仍超时；关 pty 后 `exit 3` 仍报 `exited 3` |
+| 真实文件里的 harness 原样提取 + 真实安装器，建模「EIO 后下一次 `poll()` 仍为 None」 | 基线 `72be5fc30` 走进超时分支失败；修复后通过；探针确认竞态窗口各触发 1 次；不建模的对照也通过 |
+| 改动的测试文件本机连跑 6 次 | 每次 18 passed, 0 failed |
+| `bash -n`、`git diff --check` | 通过 |
+| `pnpm lint` | exit 0（25 条仓库既有 warning） |
+
+另外做过一次「加宽窗口」实验（安装器后 `exec 0<&- 1>&- 2>&-; sleep 0.3`），但真实安装器那一路在 macOS 上
+直到进程退出才收到挂断，旧 harness 也通过了。所以它不算 RED 证据，上表没有用它。
+
+消费者发现：按全路径 / 文件名 `git grep -lF` 只命中 `.github/workflows/ci.yml`（调用方，未改）和
+FLY-1751 / FLY-2562 / FLY-2799 的历史文档（排除）；父目录 `scripts/__tests__` 的 903 处命中只是路径同目录，
+不依赖本文件行为（排除）。没有改包源码或 TypeScript，所以不需要 build、typecheck 和 `vitest related`。
+exact-head 全量 CI 与两 Lead 529 复测由 QA 在新 head 上负责。
+
+代码评审：对 `2b8ef4a7f` 做只读 Codex 评审 R9（`codex:rescue`，xhigh），结论 **APPROVED**，0 finding，原文见 `codex-code-review-r9.md`。
+
+## 10. QA 返工 4（QA FAIL @ b74dff7ae：PR 与 main 再次冲突）
+
+QA 依据：PR #1364 的 head `b74dff7ae` 对 `origin/main` `975822f5d` 为 DIRTY；唯一内容冲突在
+`packages/teamlead/src/StateStore.ts`。本轮合并 main，不重做 FLY-2921 产品设计。
+
+冲突来自 FLY-2921 的返工换体重构与 main 的 FLY-2900 quota-standby 保护落在同一段：
+
+- FLY-2921 已把公开的 `materializeWorkflowReworkReplacement` 收进私有共用核心
+  `materializeReworkReplacementCoreTx`；该核心既服务「证明旧体死亡后换体」，也服务合法的 resume fallback。
+- main 在旧公开入口上新增 `codexQuota.isCodexQuotaStandby(deadExecutionId)` 零写保护。把它机械塞进共用核心会
+  错杀 resume fallback，所以保护落在新的公开死亡换体入口 `replaceWorkflowReworkActor`：quota standby 直接返回
+  `codex_quota_standby`，由 quota resume/fallback lane 接管，数据库零写。
+- `freezeRunTx` 同时保留两道保护：返工 TURN wake 先交还 coordinator，普通 quota-standby recipient 再交给 quota
+  resume lane；两者都不把 run 打 held。
+- 文件尾部同时保留 FLY-2921 的 `handOffDeadReworkTargetToCoordinator` 与 FLY-2900 的 writer migration helper。
+
+新增回归 `leaves a quota-standby rework actor to the quota resume lane`：构造 pending rework、未启动回滚死亡证明和
+同一 execution 的 standby carrier，调用 `replaceWorkflowReworkActor`，断言返回 `codex_quota_standby`，并对所有用户表
+做前后快照相等断言。
+
+本地验证（合并中工作树；只跑相关测试）：
+
+| 项 | 结果 |
+|---|---|
+| `pnpm --filter "flywheel-teamlead..." build` | exit 0；13 个受影响包及依赖构建成功 |
+| 六个显式行为文件（一文件一命令） | 6/6 文件、402/402：workflow-rework 110、workflow-engine-transition 75、quota-standby 49、no-freeze 2、dispatcher 150、quota-fallback 16 |
+| `vitest related src/StateStore.ts src/__tests__/StateStore.workflow-rework.test.ts --run` | **不计通过**：它把 StateStore 展开成 600+ 文件；Lead 因并发 Runner 令主机负载升至 130–185 而中止（指令 `42bf9d72-e9d6-47ff-84a6-e496aafb3ffa`），本轮不再运行 |
+| related timeout 复核 | dispatcher 150/150、workflow-rework E2E 9/9、retention 29/29；post-ship 58/58（同一具体文件，`--testTimeout=20000`；默认 5s 下失败用例每轮漂移，均为 timeout、无断言差异） |
+| `pnpm lint` | exit 0（25 条仓库既有 warning） |
+| `git diff --check` / `git diff --cached --check` | exit 0 |
+
+格式补充：默认 Biome 因 `StateStore.ts` 为 3.0 MiB（仓库上限 1.0 MiB）跳过它；强制 4 MiB 检查会要求重排
+整份文件的既有 imports/format，并报 main 新增段的既有 `useTemplate`，本轮没有为两处冲突做 3 MiB 机械重排。
+新增测试文件的默认 Biome 检查通过，TypeScript 则由上述 build 完整检查。
+
+测试发现与排除记录：
+
+- 字面值 `rework_wake_owned_by_coordinator` 唯一测试命中
+  `fly2921-rework-wake-no-freeze.test.ts`，已跑。
+- 字面值 `codex_quota_standby` 的保留行为文件：`StateStore.codex-quota-standby.test.ts`、
+  `StateStore.workflow-rework.test.ts`、`workflow-engine-dispatcher.test.ts`、`quota-fallback.test.ts`，已跑。
+  排除 `feature-flags-drift.test.ts`、`feature-flags-registry.test.ts`（配置登记）、
+  `workflow-resume-resolver.test.ts`（resume resolver）、`codex-quota-outbox.test.ts`（通知 outbox）、
+  `flag-store-runtime.test.ts` / `kind-contract.test.ts`（静态登记）、`capacity-permit.test.ts`、
+  `resume-loop.test.ts`、`standby-bench.test.ts`（未触及的 quota 子系统）；其中 StateStore 的传递消费者另由
+  `vitest related` 覆盖。
+- `StateStore.workflow-rework.test.ts` 的全路径/文件名搜索只命中文档、证据清单和
+  `packages/teamlead/ci-test-costs.json`，没有另一份可执行测试消费者。
+- `StateStore.ts` 的全路径/文件名搜索命中的可执行静态守卫
+  `feature-flags-drift`、`fly1808-wave-a`、`fly2396-authorship-boundary`、`fly2398-narrow-boundary`、
+  `StateStore.land-carryover`、`StateStore.workflow-gate-card-lifecycle`、`fly2248-mechanism-guards`、
+  `fly2278-retirement`、`fly2278-settle`、`hold-shape-registry`、`workflow-dispatch-seams.structure`、
+  `ship-judgment-history-disabled`、`workflow-gate-fence-wiring` 以及 `auto-narrow-rollback-precheck.test.sh`、
+  `fly1674-residue.test.sh`、`fly2403-design-model-comparison.test.sh`、`qa-fly-2456-*` 都只消费文件路径、
+  结构或库存，不依赖这次 quota/rework 冲突语义，故不纳入显式集合；部分真实传递消费者已由 related 自动执行。
+- 父目录字面值 `packages/teamlead/src` / `packages/teamlead/src/__tests__` 命中整个包的共址文件，不能证明依赖；
+  这些目录共址命中全部按「仅父目录相同」排除，没有用它们枚举整包来模拟全套测试。
+
+exact-head 全量 CI 与两 Lead 529 复测仍由 QA 在新 head 上负责；本轮没有请求 full CI，也没有把被 Lead
+中止的 related 图当成绿证据。

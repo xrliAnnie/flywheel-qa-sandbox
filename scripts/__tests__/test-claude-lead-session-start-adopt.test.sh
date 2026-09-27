@@ -292,7 +292,11 @@ for attempt in range(2):
         except OSError:
             break
 
-    if process.poll() is None:
+    # Linux fails the master read with EIO once the child's last pty fd closes,
+    # which can precede the child becoming reapable; only the deadline times out.
+    try:
+        return_code = process.wait(timeout=max(0.0, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired:
         os.killpg(process.pid, signal.SIGKILL)
         process.wait()
         os.close(master_fd)
@@ -302,7 +306,6 @@ for attempt in range(2):
         )
         sys.exit(1)
 
-    return_code = process.wait()
     os.close(master_fd)
     if return_code != 0:
         sys.stderr.write(

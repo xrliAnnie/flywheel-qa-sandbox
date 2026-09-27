@@ -46099,8 +46099,8 @@ export class StateStore {
 				result = { ok: false, reason: "rework_replacement_target_changed" };
 				return;
 			}
-			// A quota-standby actor is parked for same-execution resume; it is not
-			// admissible proven-dead evidence for the rework replacement path.
+			// FLY-2900 §4.2: quota standby is a parked process body, not a
+			// proven-dead actor. The quota resume/fallback lane owns it.
 			if (this.codexQuota.isCodexQuotaStandby(input.deadExecutionId)) {
 				result = { ok: false, reason: "codex_quota_standby" };
 				return;

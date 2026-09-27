@@ -6988,6 +6988,50 @@ describe("FLY-2921 C2 in-place replacement", () => {
 		}
 	});
 
+	it("leaves a quota-standby rework actor to the quota resume lane", async () => {
+		const { store, requestId } = await createPendingHeavyRework();
+		try {
+			fly2921ProveUnlaunched(store, "implement-exec");
+			const raw = (store as unknown as { db: { raw: Database.Database } }).db
+				.raw;
+			raw
+				.prepare(
+					"INSERT INTO codex_quota_standby(execution_id,run_id,node_id,attempt,entry_seq,trigger_signal_seq,source_event_id,state,resume_phase,entered_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+				)
+				.run(
+					"implement-exec",
+					"run-heavy",
+					"implement",
+					2,
+					1,
+					1,
+					"quota-wall",
+					"standby",
+					null,
+					fly2921At(0),
+					fly2921At(0),
+				);
+			const generation = fly2921Claim(store, requestId, fly2921At(0));
+			const before = snapshotUserTables(store);
+
+			expect(
+				store.replaceWorkflowReworkActor({
+					requestId,
+					ownerId: "coordinator",
+					generation,
+					deadExecutionId: "implement-exec",
+					newExecutionId: "replacement-standby",
+					proof: { kind: "unlaunched_rollback" },
+					reason: "unlaunched_rollback",
+					observedAt: fly2921At(0),
+				}),
+			).toEqual({ ok: false, reason: "codex_quota_standby" });
+			expect(snapshotUserTables(store)).toBe(before);
+		} finally {
+			store.close();
+		}
+	});
+
 	it("refuses a replacement outside the caller's claim", async () => {
 		const { store, requestId } = await createPendingHeavyRework();
 		try {
