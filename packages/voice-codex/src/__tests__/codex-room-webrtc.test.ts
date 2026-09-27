@@ -401,7 +401,7 @@ describe("engine B barge-in through the room session (FLY-2885 T5)", () => {
 				threadId: "thread",
 				boundChannelIds: ["thread"],
 				founderUserId: "founder",
-				qaAllowUserIds: [],
+				qaAllowUserIds: ["qa-speaker"],
 			},
 			delivery: { capture: vi.fn(async () => false) },
 			createFrontend: (handlers) => {
@@ -443,23 +443,36 @@ describe("engine B barge-in through the room session (FLY-2885 T5)", () => {
 				ownerUserId: "founder",
 				ownerName: "Annie",
 			});
+		const qaSpeaks = () =>
+			roomHandlers.onAudio(Buffer.alloc(960, 1), {
+				utteranceId: "qa-barge-in",
+				ownerUserId: "qa-speaker",
+				ownerName: "QA speaker",
+			});
 		const founderSilent = () =>
 			roomHandlers.onAudio(Buffer.alloc(960), {
 				utteranceId: null,
 				ownerUserId: null,
 				ownerName: null,
 			});
-		return { ...h, session, founderSpeaks, founderSilent, ended: () => ended };
+		return {
+			...h,
+			session,
+			founderSpeaks,
+			qaSpeaks,
+			founderSilent,
+			ended: () => ended,
+		};
 	}
 
-	it("steers the model off a Lead reply when the founder's voice barges in through the room (QA@2)", async () => {
+	it("steers the model off a Lead reply when an authorized QA speaker barges in through the room", async () => {
 		const h = await roomSession();
 		const reply = h.session.speakReply!("第一句。第二句。", 4);
 		await vi.advanceTimersByTimeAsync(0);
 		expect(h.appendSpeech).toHaveBeenCalledWith("第一句。", 1);
 		h.turn("turn.created", "r1", "assistant");
 		await h.step("vvvvv");
-		h.founderSpeaks();
+		h.qaSpeaks();
 		await vi.advanceTimersByTimeAsync(0);
 		expect(h.appendText).toHaveBeenCalledOnce();
 		expect(h.appendText).toHaveBeenCalledWith(

@@ -160,7 +160,11 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 					if (this.prewarmGated()) return;
 					if (
 						this.frontendResponseActive &&
-						metadata.ownerUserId === this.options.projection.founderUserId
+						metadata.ownerUserId !== null &&
+						(metadata.ownerUserId === this.options.projection.founderUserId ||
+							this.options.projection.qaAllowUserIds.includes(
+								metadata.ownerUserId,
+							))
 					) {
 						this.frontendResponseActive = false;
 						this.frontend.cancelSpeech("__conversation__");
