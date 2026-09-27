@@ -1,0 +1,15 @@
+flowchart TB
+    a["18:51 fc72a8e4 登记 4 秒后撞额度 排到 21:01 重试"]
+    b["19:05 b94193db 绑错 gate 被拒 不算有效请求"]
+    c["19:06 新 gate 取代旧 gate 并登记 1ae856df"]
+    d["19:12 1ae856df 评完"]
+    e["20:10 新执行的 49b16a5c 撞额度 排到 23:52 重试"]
+    a --> b --> c --> d --> e
+    a -. "今天" .-> n1["fc72a8e4 挂着重试计划 2 小时 10 分 到 21:01 才被 gate 复查退役"]
+    c -. "改后" .-> m1["1ae856df 登记的同一事务里作废 fc72a8e4 清掉定时器 审计写明被 1ae856df 取代"]
+    b -. "改后" .-> m0["拒绝行没有受理时间 不作废任何任务"]
+    e -. "改后 也是今天" .-> m2["49b16a5c 是最新请求 gate 开 head 未变 到点照常重跑"]
+    classDef now fill:#fff4e5,stroke:#ff9500
+    classDef new fill:#e9f9ee,stroke:#34c759
+    class n1 now
+    class m0,m1,m2 new

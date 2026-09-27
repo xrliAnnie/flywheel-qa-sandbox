@@ -868,6 +868,10 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"secret value: FLY-2632 Ed25519 signing credential for single-use land merge tickets, never a feature toggle",
 	FLYWHEEL_REVIEW_MAX_CONCURRENT:
 		"numeric tuning: optional review concurrency cap; zero is unlimited (FLY-1949)",
+	FLYWHEEL_REVIEW_QUIET_WINDOW_MS:
+		"numeric tuning: review head stability delay in milliseconds; zero removes the delay without skipping review (FLY-2911)",
+	FLYWHEEL_REVIEW_FRESHNESS_INTERVAL_MS:
+		"numeric tuning: bounded cadence for checking running review head and gate validity (FLY-2911)",
 	FLYWHEEL_CLAUDE_REVIEW_TIMEOUT_MS:
 		"tuning knob: active Claude review subprocess timeout (FLY-1254)",
 	FLYWHEEL_REWORK_DELTA_TIMEOUT_MS:

@@ -1,0 +1,15 @@
+stateDiagram-v2
+    [*] --> pending
+    pending --> pending : 静默期内 head 变了 换 head 重新计时
+    pending --> running : 静默期满 head 未变
+    pending --> voided : 同线出现更新请求
+    running --> done : 结论写入 仍在跑才算
+    running --> voided : 看门狗 gate 已关 或 同线更新请求
+    running --> head_moved : 看门狗 连续两次 head 不符
+    running --> failed_retry : 撞额度或账号失效
+    failed_retry --> running : 到点核验全过
+    failed_retry --> voided : 到点 gate 已关 或 有更新请求
+    failed_retry --> head_moved : 到点 head 已变
+    head_moved --> [*] : 继任任务评新 head
+    voided --> [*]
+    done --> [*]

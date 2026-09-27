@@ -123,3 +123,36 @@ QA 依据：exact-head CI 36268153912 在 Quick Gate、teamlead 分片、light�
 | Script Tests 4/6 容量护栏（1038s/1020s，86%） | 与 main 同一分片对比：增量来自 `test-cmux-sync.sh`（+88s）与 `pnpm build`（+37s），均非本改动 | 未自行 rerun，报 Lead 裁定 |
 
 教训：这几处都不在我当初的「相关测试」清单里。改动 CHECK 字面值、被钉哈希的共享文件、环境变量和 CI 门配置时，要按字面值 / 路径做全仓 `git grep`，再把命中的测试与门都纳入本地验证。
+
+## 8. QA 返工 2（QA FAIL @ 55592737f：PR 与 main 冲突）
+
+QA 依据：PR #1364 对 origin/main `1f5626254` 为 CONFLICTING/DIRTY，唯一内容冲突在
+`packages/teamlead/src/__tests__/fixtures/fly2567/compatibility.json`。本轮只做技术同步，不改产品代码。
+
+- 合并提交 `b69ebc639`（`Merge origin/main (1f5626254) …`），merge-base `d52df7841`。
+- 冲突只在 `bootstrap-generator` 一组：main（FLY-2911）在 rationale 中插入 `getQuestionOrder` 说明并重钉
+  `flywheel-comm/src/db.ts`；本分支追加 FLY-2921 TURN wake 原语说明并重钉同一文件。解法：保留 main 的
+  rationale 原文，末尾追加本单那句；db.ts 钉到合并后的字节 `a150357b…`。合并后的 db.ts 恰好等于
+  base + FLY-2911 的 11 行 `getQuestionOrder` + 本单已评审的 TURN wake 改动。
+  `runner-patrol-rules.md` / `patrol-runbook` 两组 main 未动，保留本分支条目。7 组成员哈希逐个对合并树复核一致。
+- 双方都改、git 自动合并的文件：`db.ts`、`StateStore.ts`、`event-route.ts`、`plugin.ts`、
+  `workflow-engine-dispatcher.ts`、`truth.ts`、`fly-2006-retention-consumer-gate.config.json`。
+  main 侧改动（FLY-2911 / 2883 / 2891 / 2882 / 2941 / 2934）不读写退役的返工投递状态，也不调用本单删改的函数。
+- 上一轮 QA 记录的 `feature-flags-registry` 旧硬编码断言（36 vs 38）随 main 的 FLY-2934 一起消失，合并后 57/57。
+
+本地验证（合并 head `b69ebc639`）：
+
+| 项 | 结果 |
+|---|---|
+| `pnpm lint` | exit 0，0 error（25 条仓库既有 warning） |
+| `pnpm --filter "flywheel-teamlead..." build` | exit 0 |
+| `pnpm --filter "...flywheel-comm" --filter "...flywheel-config" typecheck` | exit 0（先补建 `voice-codex` 依赖的 `flywheel-voice-bridge` dist） |
+| 显式 vitest（一文件一命令，52 个文件） | 52/52 文件、1570 条全绿：本单改动的全部测试文件 + fixture 三个消费者 + 重叠文件上 main 新增/修改的测试 |
+| 脚本 | retention consumer gate 测试 10/10 + 门本身 `ok:true`；`qa-generalized-e2e-lib` 55/55；`qa-fly-2456-rework-adopt` 51/51；`fly1674-residue` 89 断言 PASS |
+
+未跑 `vitest related`：本轮我写的唯一文件是 JSON fixture，`git grep` 按全路径 / 文件名 / 父目录只命中
+`lead-token-savings-drift`、`-generator-oracle`、`-launch` 三个测试（已跑）；其余 diff 是 main 已在自身 CI
+验过的代码，对 `StateStore.ts` 等枢纽文件跑 related 等于整包全量，不在本地范围。exact-head 全量 CI 与
+两 Lead 529 复测由 QA 在新 head 上负责。
+
+代码评审：对合并提交做只读 Codex 评审 R8（`codex:rescue`），结论 **APPROVED**，0 finding，原文见 `codex-code-review-r8.md`。

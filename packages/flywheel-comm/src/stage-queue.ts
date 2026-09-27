@@ -110,11 +110,14 @@ type DeliveryOutcome =
 interface StageFlushResult {
 	refused: string[];
 	receipts: Record<string, "landed" | "replayed" | "superseded">;
+	/** FLY-2891: raw `designReview` echo from the Bridge receipt, per file. */
+	designReviews: Record<string, unknown>;
 }
 
 async function postStageEvent(
 	body: StageEvent,
 	transport: StageTransport,
+	onReceipt?: (receipt: Record<string, unknown>) => void,
 ): Promise<DeliveryOutcome> {
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), 10_000);
@@ -145,6 +148,7 @@ async function postStageEvent(
 			return "transient";
 		const ack = receipt as Record<string, unknown>;
 		if (ack.ok !== true || ack.warning) return "transient";
+		onReceipt?.(ack);
 		if (
 			ack.applied === false ||
 			(ack.duplicate === true &&
@@ -175,6 +179,7 @@ async function flushStageQueueLocked(
 	cleanupStageTemps(dir);
 	const refused: string[] = [];
 	const receipts: StageFlushResult["receipts"] = {};
+	const designReviews: StageFlushResult["designReviews"] = {};
 	const files = readdirSync(dir)
 		.filter((name) => /^\d{6}-.+\.json$/.test(name))
 		.sort()
@@ -192,7 +197,10 @@ async function flushStageQueueLocked(
 		const attempts = path === transport.retryPath ? 3 : 1;
 		let outcome: DeliveryOutcome = "transient";
 		for (let attempt = 0; attempt < attempts; attempt++) {
-			outcome = await postStageEvent(body, transport);
+			outcome = await postStageEvent(body, transport, (ack) => {
+				if (ack.designReview !== undefined)
+					designReviews[path] = ack.designReview;
+			});
 			if (outcome !== "transient") break;
 			if (attempt + 1 < attempts)
 				await new Promise((resolve) =>
@@ -211,7 +219,7 @@ async function flushStageQueueLocked(
 			refused.push(path);
 		} else break;
 	}
-	return { refused, receipts };
+	return { refused, receipts, designReviews };
 }
 
 export async function flushStageQueue(

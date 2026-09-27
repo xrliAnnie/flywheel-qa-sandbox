@@ -1260,6 +1260,18 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/teamlead/src/bridge/__tests__/claude-review-runner.test.ts:expect(() => process.kill(pid, 0)).toThrow(/ESRCH/);#1",
+		"path": "packages/teamlead/src/bridge/__tests__/claude-review-runner.test.ts",
+		"code": "expect(() => process.kill(pid, 0)).toThrow(/ESRCH/);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/__tests__/claude-review-runner.test.ts:process.kill(pid, \"SIGKILL\");#1",
+		"path": "packages/teamlead/src/bridge/__tests__/claude-review-runner.test.ts",
+		"code": "process.kill(pid, \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/teamlead/src/bridge/__tests__/codex-quota-bench.test.ts:child.kill(\"SIGKILL\");#1",
 		"path": "packages/teamlead/src/bridge/__tests__/codex-quota-bench.test.ts",
 		"code": "child.kill(\"SIGKILL\");",

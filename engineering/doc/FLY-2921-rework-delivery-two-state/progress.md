@@ -1,14 +1,15 @@
 ---
 issue: FLY-2921
 phase: implement
-phaseCursor: 6/8
-updated: 2026-09-26T20:31:43.276Z
-nextStep: Codex 全量复核新 head → 里程碑更新为最后提交 → 推送 → ask --report（含 shard4 容量护栏）→
-  complete needs_review
+phaseCursor: 5/6
+updated: 2026-09-27T01:55:21.441Z
+nextStep: 合并 b69ebc639 + 评审 R8 APPROVED + 本地目标验证全绿（52 文件 1570 条、脚本 4
+  项、lint/build/typecheck）；下一步：里程碑作最后提交、推送、ask --report、complete --route
+  needs_review --pr 1364
 chunks: []
 pointers: {}
 ---
 
 # FLY-2921 progress
-**phase**: implement (6/8)
-**next**: Codex 全量复核新 head → 里程碑更新为最后提交 → 推送 → ask --report（含 shard4 容量护栏）→ complete needs_review
+**phase**: implement (5/6)
+**next**: 合并 b69ebc639 + 评审 R8 APPROVED + 本地目标验证全绿（52 文件 1570 条、脚本 4 项、lint/build/typecheck）；下一步：里程碑作最后提交、推送、ask --report、complete --route needs_review --pr 1364

@@ -227,6 +227,8 @@ export {
 	resolveCurrentModel,
 } from "./model-registry.js";
 export {
+	MODEL_SPLIT_ARM_EFFORTS,
+	type ModelSplitArmEffort,
 	ModelSplitBalanceInputUnavailableError,
 	type PercentageModelSplitPolicy,
 	parsePercentageModelSplit,

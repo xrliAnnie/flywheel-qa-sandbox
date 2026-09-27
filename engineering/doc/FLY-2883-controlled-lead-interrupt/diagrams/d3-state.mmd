@@ -1,0 +1,9 @@
+stateDiagram-v2
+  [*] --> requested: 审计写进
+  requested --> queued: 信进了信箱
+  requested --> failed: 信箱写入报错
+  queued --> delivered: 已插入 / 已提示 / 已投递
+  queued --> replied: 扣信期间就回了
+  delivered --> replied: Lead 回信
+  replied --> [*]
+  failed --> [*]
