@@ -63,3 +63,24 @@ export interface ExecutionBodyObserver {
 	): Promise<NeverStartedBodyObservation | undefined>;
 	isCurrentNeverStarted?(observation: NeverStartedBodyObservation): boolean;
 }
+
+/**
+ * Missing provider support is an unknown observation, never permission to use
+ * a second physical-death authority. Production injects this until the shared
+ * provider factory is available.
+ */
+export const FAIL_CLOSED_EXECUTION_BODY_OBSERVER: ExecutionBodyObserver =
+	Object.freeze({
+		async observe() {
+			return undefined;
+		},
+		isCurrent() {
+			return false;
+		},
+		async observeNeverStarted() {
+			return undefined;
+		},
+		isCurrentNeverStarted() {
+			return false;
+		},
+	});

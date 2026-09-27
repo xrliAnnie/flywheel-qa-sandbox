@@ -115,6 +115,32 @@ describe("FLY-2778 scoped lifecycle apply claims", () => {
 		).toEqual({ outcome: "conflict", reason: "request_content_mismatch" });
 	});
 
+	it("preserves a rejected receipt while allowing a fresh request to retry the effect", async () => {
+		const [store] = await openPair();
+		expect(store.claimApplyEffect(baseClaim).outcome).toBe("claimed");
+		expect(
+			store.casApplyEffect({
+				...baseClaim,
+				fromStatus: "claimed",
+				toStatus: "rejected",
+				reportJson: '{"removed":false}',
+			}),
+		).toBe(true);
+
+		expect(store.claimApplyEffect(baseClaim)).toMatchObject({
+			outcome: "replay",
+			claim: { status: "rejected", reportJson: '{"removed":false}' },
+		});
+		expect(
+			store.claimApplyEffect({
+				...baseClaim,
+				approvedHash: "approved-hash-retry",
+				requestId: "44444444-4444-4444-8444-444444444444",
+				targetDigest: "target-digest-retry",
+			}),
+		).toMatchObject({ outcome: "claimed", claim: { status: "claimed" } });
+	});
+
 	it("CASes the receipt only for the exact winning request and prior state", async () => {
 		const [store] = await openPair();
 		expect(store.claimApplyEffect(baseClaim).outcome).toBe("claimed");

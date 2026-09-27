@@ -7468,10 +7468,12 @@ export class StateStore {
 				);
 			});
 		}
+		this.db.run("DROP INDEX IF EXISTS idx_apply_claim_stock_effect");
 		this.db.run(`
 			CREATE UNIQUE INDEX IF NOT EXISTS idx_apply_claim_stock_effect
 			ON lifecycle_apply_claims(effect_scope, effect_key)
 			WHERE effect_scope = 'stock_worktree_cleanup'
+			  AND status IN ('claimed', 'applied')
 		`);
 		this.db.run(`
 			CREATE UNIQUE INDEX IF NOT EXISTS idx_apply_claim_stock_request

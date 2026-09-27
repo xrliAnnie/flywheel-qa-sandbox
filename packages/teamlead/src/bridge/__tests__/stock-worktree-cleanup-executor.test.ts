@@ -49,6 +49,9 @@ function target(
 			{
 				executionId: "execution-3000",
 				activationId: "activation-3000",
+				executionRunId: "run-3000",
+				lifecycleRevision: 0,
+				adapter: "codex-tmux",
 				path: "/srv/worktrees/flywheel-FLY-3000",
 				branch: "flywheel-FLY-3000",
 				generation: "generation-1",
@@ -91,10 +94,13 @@ function target(
 	};
 }
 
-function previewFor(value: StockCleanupObservedTarget) {
+function previewFor(
+	value: StockCleanupObservedTarget,
+	observedAt = "2026-09-26T20:00:00.000Z",
+) {
 	return buildStockCleanupPreview({
 		projectName: "flywheel",
-		observedAt: "2026-09-26T20:00:00.000Z",
+		observedAt,
 		targets: [value],
 	});
 }
@@ -110,6 +116,7 @@ async function setup(options: {
 	const store = await StateStore.create(":memory:");
 	stores.push(store);
 	const approved = previewFor(target());
+	let fresh = options.fresh ?? target();
 	let removed = false;
 	const remove = vi.fn(
 		options.remove ??
@@ -122,7 +129,7 @@ async function setup(options: {
 		store,
 		projectRoot: (projectName) =>
 			projectName === "flywheel" ? "/srv/flywheel" : undefined,
-		preview: vi.fn(async () => previewFor(options.fresh ?? target())),
+		preview: vi.fn(async () => previewFor(fresh)),
 		withIssueMutex: createIssueMutex(),
 		withRepoLock: createRepoMutationLock().withRepoLock,
 		worktreeManager: {
@@ -131,7 +138,15 @@ async function setup(options: {
 		} as never,
 		pathState: async () => (removed ? "absent" : "present"),
 	});
-	return { store, approved, executor, remove };
+	return {
+		store,
+		approved,
+		executor,
+		remove,
+		setFresh(value: StockCleanupObservedTarget) {
+			fresh = value;
+		},
+	};
 }
 
 const input = (
@@ -191,6 +206,42 @@ describe("FLY-2778 stock cleanup executor", () => {
 				}),
 			]),
 		);
+	});
+
+	it("allows a new request to retry a target after a rejected observation", async () => {
+		const f = await setup({ fresh: target("unknown") });
+		const first = await f.executor.execute(input(f.approved));
+		expect(first.items[0]).toMatchObject({
+			status: "rejected",
+			reason: "fresh_target_ineligible",
+		});
+
+		f.setFresh(target("dead"));
+		const retryApproved = previewFor(
+			target("dead"),
+			"2026-09-26T20:00:01.000Z",
+		);
+		const retry = await f.executor.execute(
+			input(retryApproved, "44444444-4444-4444-8444-444444444444"),
+		);
+
+		expect(retry.items[0]).toMatchObject({ status: "removed" });
+		expect(f.remove).toHaveBeenCalledOnce();
+	});
+
+	it("rejects a binding identity change before removal", async () => {
+		const fresh = target("dead");
+		fresh.bindings[0]!.lifecycleRevision = 1;
+		fresh.bodyObservations[0]!.identity.lifecycleRevision = 1;
+		const f = await setup({ fresh });
+
+		const result = await f.executor.execute(input(f.approved));
+
+		expect(result.items[0]).toMatchObject({
+			status: "rejected",
+			reason: "target_identity_changed",
+		});
+		expect(f.remove).not.toHaveBeenCalled();
 	});
 
 	it.each([

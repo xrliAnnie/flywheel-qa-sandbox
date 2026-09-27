@@ -87,6 +87,9 @@ function targetIdentity(target: StockCleanupManifestTarget): string {
 			.map((binding) => ({
 				executionId: binding.executionId,
 				activationId: binding.activationId ?? null,
+				executionRunId: binding.executionRunId ?? null,
+				lifecycleRevision: binding.lifecycleRevision ?? null,
+				adapter: binding.adapter ?? null,
 				path: binding.path,
 				branch: binding.branch,
 				generation: binding.generation,

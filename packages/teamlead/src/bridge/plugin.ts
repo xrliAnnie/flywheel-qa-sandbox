@@ -506,7 +506,10 @@ import {
 	yieldToEventLoop,
 } from "./event-loop-yield.js";
 import { createEventRouter } from "./event-route.js";
-import type { ExecutionBodyObserver } from "./execution-body-observation-contract.js";
+import {
+	type ExecutionBodyObserver,
+	FAIL_CLOSED_EXECUTION_BODY_OBSERVER,
+} from "./execution-body-observation-contract.js";
 import { withExecutionMutationLease } from "./execution-mutation-lease.js";
 import {
 	checkPrMergeViaGh,
@@ -8007,7 +8010,8 @@ export async function startBridge(
 	// FLY-2778 is merge-ordered after FLY-2919. Load only that branch's shared
 	// provider factory when present; an absent/failed provider leaves both A and C
 	// fail-closed and never activates a local window/pgrep fallback.
-	let executionBodyObserver: ExecutionBodyObserver | undefined;
+	let executionBodyObserver: ExecutionBodyObserver =
+		FAIL_CLOSED_EXECUTION_BODY_OBSERVER;
 	try {
 		const bodyModulePath = "./execution-body-liveness.js";
 		const bodyModule = (await import(bodyModulePath)) as {
@@ -8036,7 +8040,7 @@ export async function startBridge(
 		transitionOpts,
 		withIssueMutex: issueMutex,
 		withRepoLock: repoMutationLock.withRepoLock,
-		...(executionBodyObserver ? { bodyObserver: executionBodyObserver } : {}),
+		bodyObserver: executionBodyObserver,
 		openPrDisposal: makeCanceledPrDisposal({
 			store,
 			resolveProjectRoot: resolveProjectRootByName,
