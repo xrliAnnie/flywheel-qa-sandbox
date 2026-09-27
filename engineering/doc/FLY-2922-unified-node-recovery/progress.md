@@ -2,16 +2,18 @@
 issue: FLY-2922
 phase: implement
 phaseCursor: 0/6
-updated: 2026-09-27T00:26:30.097Z
-nextStep: "ad6e2945d closes rescued root-initial/quota adapter batch: five WIP
-  files plus public recovery 6 GREEN, quota factory 20 GREEN, scoped Biome clean
-  except 2 pre-existing plugin warnings, teamlead+deps build GREEN. Remaining:
-  historical hold projection, rework and land recovery, decision/state-only
-  routes, nine-case matrix, retained explicit verification, review/PR/handoff."
+updated: 2026-09-27T00:47:31.278Z
+nextStep: "748c118a1 closes FLY-2545 land recovery: with-op and no-op paths
+  stage canonical v2, materialize a fresh dispatch, preserve operation
+  generation/head CAS, dispatcher consumes it, and repeated failure stays
+  recoverable. Concrete 7/7 node recovery, 34/34 holds, 137/137 dispatcher, 3/3
+  contract, 4/4 registry, 2/2 receipt, 6/6 carrier-close plus affected build
+  GREEN. Next: historical projection, decision/state-only routes, and
+  FLY-2921-compatible rework."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2922 progress
 **phase**: implement (0/6)
-**next**: ad6e2945d closes rescued root-initial/quota adapter batch: five WIP files plus public recovery 6 GREEN, quota factory 20 GREEN, scoped Biome clean except 2 pre-existing plugin warnings, teamlead+deps build GREEN. Remaining: historical hold projection, rework and land recovery, decision/state-only routes, nine-case matrix, retained explicit verification, review/PR/handoff.
+**next**: 748c118a1 closes FLY-2545 land recovery: with-op and no-op paths stage canonical v2, materialize a fresh dispatch, preserve operation generation/head CAS, dispatcher consumes it, and repeated failure stays recoverable. Concrete 7/7 node recovery, 34/34 holds, 137/137 dispatcher, 3/3 contract, 4/4 registry, 2/2 receipt, 6/6 carrier-close plus affected build GREEN. Next: historical projection, decision/state-only routes, and FLY-2921-compatible rework.
