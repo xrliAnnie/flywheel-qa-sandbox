@@ -207,6 +207,9 @@ export function isWorkflowNodeRecoveryFaultShape(shape: string): boolean {
 	return [
 		"workflow_node_recovery",
 		"legacy_active_orphan",
+		"rework_activation_stalled_held",
+		"rework_pane_loss_handoff",
+		"rework_retry_exhausted",
 		"unlaunched_admission_rolled_back",
 		"unlaunched_admission_held",
 		"completion_receipt_missing",

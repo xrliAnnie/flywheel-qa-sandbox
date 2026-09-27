@@ -130,3 +130,136 @@ export function renderWorkflowReworkLaunchSection(input: {
 }
 
 export const WORKFLOW_AGENT_CONTENT_BUDGET = 40_000;
+
+export interface WorkflowReworkReplacementContextPreflight {
+	context: WorkflowReworkContext;
+	stableSection: string;
+	fullSection: string;
+	stableDigest: string;
+	preflightDigest: string;
+	startPoint: string;
+	leadAttribution?: {
+		actor: string;
+		founderQuote: { message_id: string; text: string } | null;
+		leadFeedback: string;
+	};
+	founderFeedback?: string;
+}
+
+/**
+ * One fail-closed launch-context predicate shared by recovery staging and the
+ * dispatcher. A replacement is not materializable merely because its route
+ * tuple exists: its frozen base and authority payload must already be capable
+ * of producing the launch envelope, including exact persisted Lead
+ * attribution and the content budget.
+ */
+export function preflightWorkflowReworkReplacementContext(input: {
+	request: Pick<
+		WorkflowReworkRequestRow,
+		| "request_id"
+		| "authority"
+		| "authority_context_json"
+		| "base_revision"
+		| "actor_id"
+		| "founder_quote"
+		| "lead_feedback"
+		| "founder_feedback_verbatim"
+	>;
+	route: Pick<
+		WorkflowReworkRouteRevisionRow,
+		| "revision"
+		| "target_node_id"
+		| "target_attempt"
+		| "invalidation_scope"
+		| "verification_policy"
+	>;
+	qaSummary?: string;
+}):
+	| { ok: true; value: WorkflowReworkReplacementContextPreflight }
+	| { ok: false; reason: "engine_rework_replacement_context_invalid" } {
+	const invalid = () => ({
+		ok: false as const,
+		reason: "engine_rework_replacement_context_invalid" as const,
+	});
+	const baseRevision = input.request.base_revision.trim().toLowerCase();
+	if (!/^[0-9a-f]{40}$/.test(baseRevision)) return invalid();
+	const built = buildWorkflowReworkContext(input);
+	if (!built.ok) return invalid();
+	const stableSection = renderWorkflowReworkLaunchStableSection({
+		context: built.context,
+		baseRevision,
+	});
+	const fullSection = renderWorkflowReworkLaunchSection({
+		stableSection,
+		qaSummary: input.qaSummary,
+	});
+	if (fullSection.length > WORKFLOW_AGENT_CONTENT_BUDGET) return invalid();
+
+	let leadAttribution:
+		| WorkflowReworkReplacementContextPreflight["leadAttribution"]
+		| undefined;
+	if (input.request.authority === "lead") {
+		const authorityContext = built.context.authorityContext;
+		if (
+			!input.request.actor_id ||
+			!input.request.lead_feedback ||
+			!authorityContext ||
+			typeof authorityContext !== "object" ||
+			Array.isArray(authorityContext)
+		) {
+			return invalid();
+		}
+		const persisted = authorityContext as {
+			authority?: unknown;
+			actor?: unknown;
+			founder_quote?: unknown;
+			lead_feedback?: unknown;
+		};
+		if (
+			persisted.authority !== "lead" ||
+			persisted.actor !== input.request.actor_id ||
+			persisted.lead_feedback !== input.request.lead_feedback ||
+			canonicalSubmissionDigest(persisted.founder_quote ?? null) !==
+				canonicalSubmissionDigest(input.request.founder_quote)
+		) {
+			return invalid();
+		}
+		leadAttribution = {
+			actor: input.request.actor_id,
+			founderQuote: input.request.founder_quote,
+			leadFeedback: input.request.lead_feedback,
+		};
+	}
+
+	const stableDigest = workflowReworkLaunchDigest({
+		requestId: input.request.request_id,
+		routeRevision: input.route.revision,
+		stableSection,
+	});
+	const founderFeedback =
+		input.request.authority === "founder" &&
+		typeof input.request.founder_feedback_verbatim === "string" &&
+		input.request.founder_feedback_verbatim.length > 0
+			? input.request.founder_feedback_verbatim
+			: undefined;
+	return {
+		ok: true,
+		value: {
+			context: built.context,
+			stableSection,
+			fullSection,
+			stableDigest,
+			preflightDigest: canonicalSubmissionDigest({
+				requestId: input.request.request_id,
+				routeRevision: input.route.revision,
+				startPoint: baseRevision,
+				fullSection,
+				leadAttribution: leadAttribution ?? null,
+				founderFeedback: founderFeedback ?? null,
+			}),
+			startPoint: baseRevision,
+			...(leadAttribution ? { leadAttribution } : {}),
+			...(founderFeedback ? { founderFeedback } : {}),
+		},
+	};
+}

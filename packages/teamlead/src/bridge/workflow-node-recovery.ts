@@ -218,6 +218,68 @@ export async function prepareWorkflowNodeRecovery(
 				(node) => node.id === before.target.nodeId,
 			)
 		: undefined;
+	if (before.target.rework) {
+		const rework = before.target.rework;
+		const reworkRequest = store.getWorkflowReworkRequest(rework.requestId);
+		const route = store.getLatestWorkflowReworkRoute(rework.requestId);
+		if (
+			!reworkRequest ||
+			!route ||
+			reworkRequest.run_id !== request.runId ||
+			route.revision !== rework.routeRevision
+		)
+			throw new Error("rework_recovery_target_changed");
+		const context = store.getWorkflowReworkReplacementContextPreflight(
+			rework.requestId,
+		);
+		if (!context.ok) throw new Error(context.reason);
+		const executionId = before.target.previousExecutionId!;
+		const liveness = await probe(executionId, before.projectName, {
+			allowMissingTargetHostAbsence: true,
+		});
+		if (liveness !== "dead")
+			throw new Error(
+				liveness === "alive"
+					? "recovery_target_alive"
+					: "recovery_liveness_unknown",
+			);
+		const after = store.inspectWorkflowNodeRecovery(request.runId);
+		const afterRequest = store.getWorkflowReworkRequest(rework.requestId);
+		const afterRoute = store.getLatestWorkflowReworkRoute(rework.requestId);
+		const afterContext =
+			afterRequest && afterRoute
+				? store.getWorkflowReworkReplacementContextPreflight(rework.requestId)
+				: undefined;
+		if (
+			before.stateDigest !== after.stateDigest ||
+			!afterContext?.ok ||
+			afterContext.value.preflightDigest !== context.value.preflightDigest
+		)
+			throw new Error("recovery_target_changed");
+		const target = before.target;
+		const sourceSessionDigest = canonicalSubmissionDigest({
+			target,
+			preflightDigest: context.value.preflightDigest,
+		});
+		const sourceEvidenceDigest = context.value.preflightDigest;
+		const canonical = workflowRecoveryCanonicalSchema.parse({
+			...request,
+			version: 2,
+			shape: "workflow_node_recovery",
+			target,
+		});
+		return {
+			canonical,
+			preflight: {
+				target,
+				stateDigest: before.stateDigest,
+				sourceSessionDigest,
+				sourceEvidenceDigest,
+				observedAt: new Date().toISOString(),
+				liveness: "dead",
+			},
+		};
+	}
 	if (definition?.type === "land") {
 		const target = before.target;
 		const sourceSessionDigest = canonicalSubmissionDigest({

@@ -71,7 +71,13 @@ import { BetaReleaseStore } from "./bridge/beta-release-store.js";
 import type { CompletionWorktreeBranchObservation } from "./bridge/worktree-binding-refresh.js";
 import { CustomerReleaseStore } from "./bridge/customer-release/store.js";
 import { isMailboxTerminalStatus, OUTCOME_STATUSES, TERMINAL_STATUSES } from "flywheel-comm/session-terminal";
-import { buildWorkflowReworkContext, renderWorkflowReworkLaunchStableSection, workflowReworkLaunchDigest } from "./bridge/workflow-rework-context.js";
+import {
+	buildWorkflowReworkContext,
+	preflightWorkflowReworkReplacementContext,
+	renderWorkflowReworkLaunchStableSection,
+	type WorkflowReworkReplacementContextPreflight,
+	workflowReworkLaunchDigest,
+} from "./bridge/workflow-rework-context.js";
 import { type CodexQuotaSignalV1, parseCodexQuotaSignalV1 } from "flywheel-core";
 import {
 	type CodexPoolExhaustionFact,
@@ -43548,6 +43554,55 @@ export class StateStore {
 		};
 	}
 
+	getWorkflowReworkReplacementContextPreflight(requestId: string):
+		| { ok: true; value: WorkflowReworkReplacementContextPreflight }
+		| { ok: false; reason: "engine_rework_replacement_context_invalid" } {
+		const request = this.getWorkflowReworkRequest(requestId);
+		const route = this.getLatestWorkflowReworkRoute(requestId);
+		if (!request || !route) {
+			return {
+				ok: false,
+				reason: "engine_rework_replacement_context_invalid",
+			};
+		}
+		let qaSummary: string | undefined;
+		if (request.authority === "qa") {
+			const built = buildWorkflowReworkContext({ request, route });
+			if (built.ok) {
+				const authorityContext = built.context.authorityContext;
+				const sourceExecutionId =
+					authorityContext && typeof authorityContext === "object"
+						? (authorityContext as { sourceExecutionId?: unknown })
+								.sourceExecutionId
+						: undefined;
+				if (typeof sourceExecutionId === "string") {
+					qaSummary = "(no QA summary provided)";
+					for (const event of [
+						...this.getEventsByExecution(sourceExecutionId),
+					].reverse()) {
+						if (event.event_type !== "workflow_decision") continue;
+						const payload = event.payload as
+							| { status?: unknown; summary?: unknown }
+							| undefined;
+						if (payload?.status !== "fail") continue;
+						if (
+							typeof payload.summary === "string" &&
+							payload.summary.trim()
+						) {
+							qaSummary = payload.summary.trim().slice(0, 1_000);
+							break;
+						}
+					}
+				}
+			}
+		}
+		return preflightWorkflowReworkReplacementContext({
+			request,
+			route,
+			qaSummary,
+		});
+	}
+
 	private static workflowFounderGateVerdictFromRow(
 		row: Record<string, unknown>,
 	): WorkflowFounderGateVerdictRow {
@@ -43661,7 +43716,8 @@ export class StateStore {
 			// revision; receipts written before FLY-2921 are per request.
 			const kind =
 				route.interpreted_by === "engine:proven_dead_replacement" ||
-				route.interpreted_by === "engine:resume_fallback"
+				route.interpreted_by === "engine:resume_fallback" ||
+				route.interpreted_by === "engine:operator_recovery"
 					? "rework_replacement_materialized"
 					: route.interpreted_by === "engine:writer_replacement_convergence"
 						? "rework_writer_replacement_converged" : null;
@@ -44882,14 +44938,63 @@ export class StateStore {
 		newExecutionId: string;
 		reason: string;
 		observedAt: string;
-		interpretedBy: "engine:proven_dead_replacement" | "engine:resume_fallback";
+		interpretedBy:
+			| "engine:proven_dead_replacement"
+			| "engine:resume_fallback"
+			| "engine:operator_recovery";
 		interpretationReason: string;
 		provenDead: boolean;
+		expectedRunStatus: "active" | "held";
+		expectedDeliveryState: WorkflowReworkDeliveryRow["state"];
 		launchPurpose?: { purpose: "resume_fallback"; sourceDemandId: string };
 		ownerFence?: { ownerId: string; generation: number };
 	}): { launchOrdinal: number; routeRevision: number } {
+		if (!this.db.raw.inTransaction)
+			throw new Error("rework_replacement_transaction_required");
 		const { request, route, run } = input;
 		const requestId = request.request_id;
+		const currentRequest = this.getWorkflowReworkRequest(requestId);
+		const currentRoute = this.getLatestWorkflowReworkRoute(requestId);
+		const currentDelivery = this.getWorkflowReworkDelivery(requestId);
+		const currentRun = this.getWorkflowRun(request.run_id);
+		const target = this.getWorkflowRunNode(
+			request.run_id,
+			route.target_node_id,
+			route.target_attempt,
+		);
+		const writer = this.getWorkflowActor(input.deadExecutionId);
+		if (
+			!currentRequest ||
+			!currentRoute ||
+			!currentDelivery ||
+			!currentRun ||
+			currentRequest.run_id !== request.run_id ||
+			currentRoute.revision !== route.revision ||
+			currentRoute.target_node_id !== route.target_node_id ||
+			currentRoute.target_attempt !== route.target_attempt ||
+			currentRoute.preferred_actor_execution_id !== input.deadExecutionId ||
+			currentDelivery.route_revision !== route.revision ||
+			currentDelivery.state !== input.expectedDeliveryState ||
+			currentRun.engine_owned !== 1 ||
+			currentRun.status !== input.expectedRunStatus ||
+			currentRun.project_name !== run.project_name ||
+			currentRun.issue_id !== run.issue_id ||
+			!target ||
+			target.execution_id !== input.deadExecutionId ||
+			!["pending", "admitted", "running", "failed"].includes(target.state) ||
+			writer?.project_name !== run.project_name ||
+			writer.issue_id !== run.issue_id ||
+			writer.role !== route.target_node_id ||
+			(input.ownerFence
+				? currentDelivery.owner_id !== input.ownerFence.ownerId ||
+					currentDelivery.generation !== input.ownerFence.generation
+				: currentDelivery.owner_id !== null)
+		) {
+			throw new Error("workflow_rework_replacement_context_changed");
+		}
+		if (this.countReworkReplacementsSinceLeadResumeTx(requestId) >= 3) {
+			throw new Error("replacement_budget_exhausted");
+		}
 		const deadSession = this.getSession(input.deadExecutionId);
 		if (input.provenDead) {
 			this.terminalizeProvenDeadSessionTx(
@@ -44996,15 +45101,15 @@ export class StateStore {
 			        lease_expires_at = NULL, next_retry_at = NULL, hold_count = 0,
 			        grant_started_at = NULL, wake_sent_at = NULL,
 			        liveness_unknown_since = NULL, last_error = ?, updated_at = ?
-			  WHERE request_id = ? AND route_revision = ?
-			    AND state IN ('pending','turn_granted','wake_delivered')
-			    ${input.ownerFence ? "AND owner_id = ? AND generation = ?" : ""}`,
+			  WHERE request_id = ? AND route_revision = ? AND state = ?
+			    ${input.ownerFence ? "AND owner_id = ? AND generation = ?" : "AND owner_id IS NULL"}`,
 			[
 				nextRevision,
 				input.reason,
 				input.observedAt,
 				requestId,
 				route.revision,
+				input.expectedDeliveryState,
 				...(input.ownerFence
 					? [input.ownerFence.ownerId, input.ownerFence.generation]
 					: []),
@@ -45362,6 +45467,8 @@ export class StateStore {
 				interpretedBy: "engine:proven_dead_replacement",
 				interpretationReason: input.reason,
 				provenDead: true,
+				expectedRunStatus: "active",
+				expectedDeliveryState: delivery.state,
 				ownerFence: { ownerId: input.ownerId, generation: input.generation },
 			});
 			result = {
@@ -46387,7 +46494,7 @@ export class StateStore {
 			`SELECT COUNT(*) AS n
 			   FROM workflow_rework_route_revision
 			  WHERE request_id = ?
-			    AND interpreted_by IN ('engine:proven_dead_replacement','engine:resume_fallback')
+			    AND interpreted_by IN ('engine:proven_dead_replacement','engine:resume_fallback','engine:operator_recovery')
 			    AND revision > COALESCE((
 			      SELECT MAX(revision) FROM workflow_rework_route_revision
 			       WHERE request_id = ? AND interpreted_by = 'engine:hold_resume'
@@ -49355,6 +49462,8 @@ export class StateStore {
 						interpretedBy: "engine:resume_fallback",
 						interpretationReason: "original_session_unavailable",
 						provenDead: false,
+						expectedRunStatus: "active",
+						expectedDeliveryState: delivery.state,
 						launchPurpose: {
 							purpose: "resume_fallback",
 							sourceDemandId: input.demandId,
@@ -59666,8 +59775,6 @@ export class StateStore {
 		};
 
 		switch (input.resumeAction) {
-			case "resume_receipt_deadlock":
-			case "retrigger_replacement":
 			case "resume_rework":
 			case "repair_replacement_leak": {
 				const requestId =
@@ -60129,6 +60236,30 @@ export class StateStore {
 		if (!definition || definition.type === "gate")
 			throw new Error("recovery_dependency_preflight_required");
 		const landNode = definition.type === "land";
+		const holds = this.listWorkflowHolds(runId).filter((hold) => hold.runLevel);
+		const historicalReworkShapes = new Set([
+			"rework_activation_stalled_held",
+			"rework_pane_loss_handoff",
+			"rework_retry_exhausted",
+		]);
+		const historicalReworkRecovery =
+			!landNode &&
+			holds.length > 0 &&
+			holds.every((hold) => historicalReworkShapes.has(hold.shape));
+		const openRework = !landNode
+			? this.resolveOpenWorkflowReworkTarget({
+					runId,
+					nodeId: node.node_id,
+					attempt: node.attempt,
+				})
+			: undefined;
+		if (openRework?.conflict) throw new Error("rework_recovery_target_conflict");
+		const reworkRecovery =
+			historicalReworkRecovery && openRework && !openRework.conflict
+				? openRework
+				: undefined;
+		if (openRework && !reworkRecovery)
+			throw new Error("rework_recovery_preflight_required");
 		const latest = this.listWorkflowSideEffects(runId)
 			.filter(
 				(row) =>
@@ -60137,18 +60268,19 @@ export class StateStore {
 					row.attempt === node.attempt,
 			)
 			.sort((a, b) => b.launch_ordinal - a.launch_ordinal)[0];
-		if (!latest || latest.execution_id !== previousExecutionId)
+		if (
+			!reworkRecovery &&
+			(!latest || latest.execution_id !== previousExecutionId)
+		)
 			throw new Error("recovery_dispatch_identity_missing");
 		if (
-			!landNode &&
-			this.resolveOpenWorkflowReworkTarget({
-				runId,
-				nodeId: node.node_id,
-				attempt: node.attempt,
-			})
+			reworkRecovery &&
+			(reworkRecovery.deliveryState !== "returned_to_lead" ||
+				reworkRecovery.preferredActorExecutionId !== previousExecutionId ||
+				reworkRecovery.route.target_node_id !== node.node_id ||
+				reworkRecovery.route.target_attempt !== node.attempt)
 		)
-			throw new Error("rework_recovery_preflight_required");
-		const holds = this.listWorkflowHolds(runId).filter((hold) => hold.runLevel);
+			throw new Error("rework_recovery_target_changed");
 		if (
 			!holds.length ||
 			holds.some((hold) => !isWorkflowNodeRecoveryFaultShape(hold.shape))
@@ -60160,11 +60292,17 @@ export class StateStore {
 				(candidate) => candidate.event_uid === hold.holdEventUid,
 			);
 			const payload = event?.payload as Record<string, unknown> | undefined;
+			const reworkIdentityMatches = reworkRecovery
+				? payload?.requestId === reworkRecovery.requestId &&
+					(payload.routeRevision === undefined ||
+						payload.routeRevision === reworkRecovery.routeRevision)
+				: true;
 			if (
 				!event ||
 				event.node_id !== node.node_id ||
 				event.execution_id !== previousExecutionId ||
-				payload?.attempt !== node.attempt
+				payload?.attempt !== node.attempt ||
+				!reworkIdentityMatches
 			)
 				throw new Error("recovery_hold_evidence_missing");
 		}
@@ -60174,11 +60312,23 @@ export class StateStore {
 		// A liveness observation alone cannot authorize abandoning it.
 		if (
 			!landNode &&
+			!reworkRecovery &&
+			latest &&
 			(latest.state === "intent_recorded" ||
 				(latest.state === "abandoned" &&
 					(!cancellation || owner?.committed_generation != null)))
 		)
 			throw new Error("unlaunched_recovery_evidence_required");
+		const reworkWriter = reworkRecovery
+			? this.getWorkflowActor(previousExecutionId)
+			: undefined;
+		if (
+			reworkRecovery &&
+			(reworkWriter?.project_name !== run.project_name ||
+				reworkWriter.issue_id !== run.issue_id ||
+				reworkWriter.role !== node.node_id)
+		)
+			throw new Error("rework_recovery_writer_proof_missing");
 		const landOperation = landNode ? this.getLandOperationForRun(runId) : undefined;
 		if (landOperation && landOperation.state !== "held")
 			throw new Error("recovery_land_operation_changed");
@@ -60195,12 +60345,17 @@ export class StateStore {
 			nodeId: node.node_id,
 			attempt: node.attempt,
 			previousExecutionId,
-			previousLaunchOrdinal: latest.launch_ordinal,
+			previousLaunchOrdinal: latest?.launch_ordinal ?? 0,
 			snapshotDigest: snapshot.snapshot_digest,
 			holdSetDigest: canonicalSubmissionDigest(sourceHoldEventUids),
 			startAuthority: null,
 			sourceHoldEventUids,
-			rework: null,
+			rework: reworkRecovery
+				? {
+						requestId: reworkRecovery.requestId,
+						routeRevision: reworkRecovery.routeRevision,
+					}
+				: null,
 			land: landOperation
 				? {
 						operationId: landOperation.operation_id,
@@ -60215,7 +60370,13 @@ export class StateStore {
 			stateDigest: canonicalSubmissionDigest({
 				target,
 				node,
-				latest,
+				latest: latest ?? null,
+				reworkRequest: reworkRecovery?.request ?? null,
+				reworkRoute: reworkRecovery?.route ?? null,
+				reworkDelivery: reworkRecovery
+					? this.getWorkflowReworkDelivery(reworkRecovery.requestId)
+					: null,
+				reworkWriter: reworkWriter ?? null,
 				legacyActiveOrphan: legacyActiveOrphan ?? null,
 				cancellation: cancellation ?? null,
 				owner: owner ?? null,
@@ -60723,6 +60884,8 @@ export class StateStore {
 		);
 		const landRecovery =
 			!stateRecovery && definition?.type === "land";
+		const reworkRecovery =
+			!stateRecovery && !landRecovery && canonical.target.rework !== null;
 		if (
 			!Number.isFinite(observationAge) ||
 			observationAge < 0 ||
@@ -60772,6 +60935,28 @@ export class StateStore {
 				preflight.sourceEvidenceDigest !== sourceEvidenceDigest
 			)
 				throw new Error("recovery_preflight_required");
+		} else if (reworkRecovery) {
+			const rework = canonical.target.rework!;
+			const route = this.getLatestWorkflowReworkRoute(rework.requestId);
+			const context =
+				this.getWorkflowReworkReplacementContextPreflight(rework.requestId);
+			const sourceEvidenceDigest = context?.ok
+				? context.value.preflightDigest
+				: null;
+			const sourceSessionDigest = sourceEvidenceDigest
+				? canonicalSubmissionDigest({
+						target: canonical.target,
+						preflightDigest: sourceEvidenceDigest,
+					})
+				: null;
+			if (
+				preflight.liveness !== "dead" ||
+				canonical.target.startAuthority !== null ||
+				route?.revision !== rework.routeRevision ||
+				preflight.sourceSessionDigest !== sourceSessionDigest ||
+				preflight.sourceEvidenceDigest !== sourceEvidenceDigest
+			)
+				throw new Error("recovery_preflight_required");
 		} else {
 			if (
 				preflight.liveness !== "dead" ||
@@ -60814,7 +60999,7 @@ export class StateStore {
 			).length
 		)
 			throw new Error("issue_has_active_run");
-		if (!stateRecovery && !landRecovery) {
+		if (!stateRecovery && !landRecovery && !reworkRecovery) {
 			this.validateWorkflowNodeRecoveryQuotaTargets({
 				runId: canonical.runId,
 				nodeId: canonical.target.nodeId,
@@ -60965,6 +61150,85 @@ export class StateStore {
 		return { launchOrdinal, dispatchLedgerId: Number(ledger.id) };
 	}
 
+	private materializeWorkflowReworkRecoveryTx(input: {
+		canonical: WorkflowRecoveryCanonical;
+		preflight: WorkflowRecoveryPreflight;
+		newExecutionId: string;
+		now: string;
+	}): { launchOrdinal: number; dispatchLedgerId: number } {
+		if (!this.db.raw.inTransaction)
+			throw new Error("replacement_transaction_required");
+		this.assertWorkflowRecoveryPreflightTx(
+			input.canonical,
+			input.preflight,
+			input.now,
+		);
+		const target = input.canonical.target;
+		const rework = target.rework;
+		const request = rework
+			? this.getWorkflowReworkRequest(rework.requestId)
+			: undefined;
+		const route = rework
+			? this.getLatestWorkflowReworkRoute(rework.requestId)
+			: undefined;
+		const delivery = rework
+			? this.getWorkflowReworkDelivery(rework.requestId)
+			: undefined;
+		const run = this.getWorkflowRun(target.runId);
+		if (
+			!rework ||
+			!request ||
+			!route ||
+			!delivery ||
+			!run ||
+			request.run_id !== target.runId ||
+			route.revision !== rework.routeRevision ||
+			route.target_node_id !== target.nodeId ||
+			route.target_attempt !== target.attempt ||
+			route.preferred_actor_execution_id !== target.previousExecutionId ||
+			delivery.route_revision !== route.revision ||
+			delivery.state !== "returned_to_lead" ||
+			delivery.owner_id !== null ||
+			run.status !== "held" ||
+			run.current_node_id !== target.nodeId
+		)
+			throw new Error("rework_recovery_target_changed");
+		const minted = this.materializeReworkReplacementCoreTx({
+			request,
+			route,
+			run,
+			deadExecutionId: target.previousExecutionId!,
+			newExecutionId: input.newExecutionId,
+			reason: input.canonical.reason,
+			observedAt: input.now,
+			interpretedBy: "engine:operator_recovery",
+			interpretationReason: `operator_recovery:${input.canonical.reason}`,
+			provenDead: true,
+			expectedRunStatus: "held",
+			expectedDeliveryState: "returned_to_lead",
+		});
+		const ledger = this.workflowSelectAll(
+			`SELECT id FROM workflow_side_effect_ledger
+			  WHERE run_id = ? AND node_id = ? AND attempt = ? AND kind = 'dispatch'
+			    AND execution_id = ? AND launch_ordinal = ?
+			    AND state = 'intent_recorded' AND reason = ?`,
+			[
+				target.runId,
+				target.nodeId,
+				target.attempt,
+				input.newExecutionId,
+				minted.launchOrdinal,
+				`rework_replacement:${rework.requestId}`,
+			],
+		)[0];
+		if (!ledger || !Number.isSafeInteger(ledger.id) || Number(ledger.id) < 1)
+			throw new Error("rework_replacement_materialization_proof_missing");
+		return {
+			launchOrdinal: minted.launchOrdinal,
+			dispatchLedgerId: Number(ledger.id),
+		};
+	}
+
 	recoverWorkflowNode(input: {
 		canonical: WorkflowRecoveryCanonical;
 		preflight: WorkflowRecoveryPreflight;
@@ -61052,14 +61316,21 @@ export class StateStore {
 				} else {
 					const executionId = randomUUID();
 					const materialized =
-						input.preflight.liveness === "not_required"
-							? this.materializeWorkflowLandRecoveryTx({
+						target.rework
+							? this.materializeWorkflowReworkRecoveryTx({
 									canonical,
 									preflight: input.preflight,
 									newExecutionId: executionId,
 									now: input.now,
 								})
-							: this.materializeWorkflowNodeReplacementTx({
+							: input.preflight.liveness === "not_required"
+								? this.materializeWorkflowLandRecoveryTx({
+										canonical,
+										preflight: input.preflight,
+										newExecutionId: executionId,
+										now: input.now,
+									})
+								: this.materializeWorkflowNodeReplacementTx({
 									runId: target.runId,
 									nodeId: target.nodeId,
 									attempt: target.attempt,

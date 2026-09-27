@@ -96,17 +96,17 @@ export const HOLD_SHAPE_REGISTRY = Object.freeze([
 	shape({
 		id: "rework_activation_stalled_held",
 		eventKind: "rework_activation_stalled_held",
-		resumeAction: "resume_receipt_deadlock",
+		resumeAction: "redispatch_current",
 	}),
 	shape({
 		id: "rework_pane_loss_handoff",
 		eventKind: "rework_pane_loss_handoff",
-		resumeAction: "retrigger_replacement",
+		resumeAction: "redispatch_current",
 	}),
 	shape({
 		id: "rework_retry_exhausted",
 		eventKind: "rework_retry_exhausted",
-		resumeAction: "resume_rework",
+		resumeAction: "redispatch_current",
 	}),
 	// FLY-2921: the only failure ending of a rework delivery. Delivery scope:
 	// the run stays active; resuming re-delivers on a fresh route revision.

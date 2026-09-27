@@ -1062,6 +1062,48 @@ async function storeWithQaFailKickback() {
 	return store;
 }
 
+async function storeWithLegacyHeldRework(
+	shape:
+		| "rework_retry_exhausted"
+		| "rework_activation_stalled_held"
+		| "rework_pane_loss_handoff",
+) {
+	const store = await storeWithQaFailKickback();
+	const requestId = store.listWorkflowReworkDeliveries()[0]!.request_id;
+	const route = store.getLatestWorkflowReworkRoute(requestId)!;
+	const holdEventUid = `legacy:${shape}:${requestId}`;
+	const db = (
+		store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		}
+	).db;
+	db.run(
+		`UPDATE workflow_rework_delivery
+		    SET state = 'returned_to_lead', owner_id = NULL,
+		        lease_expires_at = NULL, updated_at = ?
+		  WHERE request_id = ? AND route_revision = ?`,
+		["2026-09-26T18:00:00.000Z", requestId, route.revision],
+	);
+	db.run(
+		"UPDATE workflow_run SET status = 'held', current_node_id = ? WHERE run_id = 'run-1'",
+		[route.target_node_id],
+	);
+	store.appendWorkflowRunEvent({
+		runId: "run-1",
+		eventUid: holdEventUid,
+		kind: shape,
+		nodeId: route.target_node_id,
+		executionId: route.preferred_actor_execution_id,
+		payload: {
+			requestId,
+			routeRevision: route.revision,
+			attempt: route.target_attempt,
+			reason: "legacy_held_rework_fixture",
+		},
+	});
+	return { store, db, requestId, route, holdEventUid };
+}
+
 async function storeWithFreshVerificationIntent(): Promise<{
 	store: StateStore;
 	requestId: string;
@@ -1496,7 +1538,9 @@ describe("WorkflowEngineDispatcher", () => {
 				effects: store.listWorkflowSideEffects("run-1"),
 				node: store.getWorkflowRunNode("run-1", "implement", 1),
 			}).toEqual(before);
-			expect(store.getWorkflowLaunchCancellation("implement-1")).toBeUndefined();
+			expect(
+				store.getWorkflowLaunchCancellation("implement-1"),
+			).toBeUndefined();
 			expect(store.listWorkflowAlertOutbox()).toHaveLength(0);
 		} finally {
 			store.close();
@@ -1521,7 +1565,9 @@ describe("WorkflowEngineDispatcher", () => {
 			expect(store.getWorkflowRunNode("run-1", "implement", 1)?.state).toBe(
 				"pending",
 			);
-			expect(store.getWorkflowLaunchCancellation("implement-1")).toBeUndefined();
+			expect(
+				store.getWorkflowLaunchCancellation("implement-1"),
+			).toBeUndefined();
 			expect(
 				store
 					.listWorkflowRunEvents("run-1")
@@ -1533,7 +1579,9 @@ describe("WorkflowEngineDispatcher", () => {
 	});
 
 	it("FLY-2922 refuses pre-admission recovery while a launch marker exists", async () => {
-		const stateRoot = mkdtempSync(join(tmpdir(), "fly2922-pre-admission-marker-"));
+		const stateRoot = mkdtempSync(
+			join(tmpdir(), "fly2922-pre-admission-marker-"),
+		);
 		const store = await storeWithIntent("implement");
 		try {
 			writeFileSync(join(stateRoot, "implement-1"), "committed");
@@ -1550,7 +1598,9 @@ describe("WorkflowEngineDispatcher", () => {
 			});
 			await dispatcher.reconcile();
 			expect(store.getWorkflowRun("run-1")?.status).toBe("active");
-			expect(store.getWorkflowLaunchCancellation("implement-1")).toBeUndefined();
+			expect(
+				store.getWorkflowLaunchCancellation("implement-1"),
+			).toBeUndefined();
 		} finally {
 			store.close();
 			rmSync(stateRoot, { recursive: true, force: true });
@@ -7251,6 +7301,265 @@ describe("FLY-2901 takeover rescue permit + predecessor head fallback", () => {
 		} finally {
 			h.cleanup();
 			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("FLY-2922 legacy held rework uses the unified replacement exit", () => {
+	it.each([
+		"rework_retry_exhausted",
+		"rework_activation_stalled_held",
+		"rework_pane_loss_handoff",
+	] as const)(
+		"recovers %s by minting one new preferred actor and a consumable dispatch",
+		async (shape) => {
+			const h = await storeWithLegacyHeldRework(shape);
+			try {
+				const probe = vi.fn(async () => "dead" as const);
+				const prepared = await prepareWorkflowNodeRecovery(
+					h.store,
+					{
+						runId: "run-1",
+						shape,
+						holdEventUid: h.holdEventUid,
+						decision: null,
+						reason: `recover historical ${shape}`,
+						principal: "master",
+						clientRequestId: `fly2922:${shape}`,
+					},
+					probe,
+				);
+				expect(probe).toHaveBeenCalledWith(
+					h.route.preferred_actor_execution_id,
+					"flywheel",
+					{ allowMissingTargetHostAbsence: true },
+				);
+				expect(prepared.canonical.target).toMatchObject({
+					operationKind: "redispatch_current",
+					runId: "run-1",
+					nodeId: h.route.target_node_id,
+					attempt: h.route.target_attempt,
+					previousExecutionId: h.route.preferred_actor_execution_id,
+					rework: {
+						requestId: h.requestId,
+						routeRevision: h.route.revision,
+					},
+					startAuthority: null,
+				});
+
+				const applied = h.store.recoverWorkflowNode({
+					...prepared,
+					now: new Date().toISOString(),
+				});
+				expect(applied).toMatchObject({
+					ok: true,
+					idempotentReplay: false,
+					state: "dispatch_recorded",
+					executionId: expect.any(String),
+					launchOrdinal: expect.any(Number),
+					dispatchLedgerId: expect.any(Number),
+				});
+				if (!applied.ok || applied.state !== "dispatch_recorded") {
+					throw new Error("legacy rework replacement was not materialized");
+				}
+				expect(applied.executionId).not.toBe(
+					h.route.preferred_actor_execution_id,
+				);
+				expect(h.store.getWorkflowRun("run-1")?.status).toBe("active");
+				expect(
+					h.store.getWorkflowRunNode("run-1", "implement", 2),
+				).toMatchObject({
+					state: "pending",
+					execution_id: applied.executionId,
+				});
+				expect(h.store.getLatestWorkflowReworkRoute(h.requestId)).toMatchObject(
+					{
+						revision: h.route.revision + 1,
+						preferred_actor_execution_id: applied.executionId,
+						interpreted_by: "engine:operator_recovery",
+					},
+				);
+				expect(h.store.getWorkflowReworkDelivery(h.requestId)).toMatchObject({
+					state: "pending",
+					route_revision: h.route.revision + 1,
+					owner_id: null,
+				});
+				expect(
+					h.store
+						.listWorkflowSideEffects("run-1")
+						.find((row) => row.id === applied.dispatchLedgerId),
+				).toMatchObject({
+					node_id: h.route.target_node_id,
+					attempt: h.route.target_attempt,
+					execution_id: applied.executionId,
+					state: "intent_recorded",
+					reason: `rework_replacement:${h.requestId}`,
+				});
+				expect(
+					h.store
+						.listWorkflowRunEvents("run-1")
+						.filter(
+							(event) => event.kind === "rework_replacement_materialized",
+						),
+				).toEqual([
+					expect.objectContaining({
+						execution_id: h.route.preferred_actor_execution_id,
+						payload: expect.objectContaining({
+							requestId: h.requestId,
+							newExecutionId: applied.executionId,
+							interpretedBy: "engine:operator_recovery",
+						}),
+					}),
+				]);
+
+				const fake = fakeStartDispatcher(h.store);
+				const dispatcher = new WorkflowEngineDispatcher({
+					store: h.store,
+					startDispatcher: fake.dispatcher,
+					env: WORKFLOW_ON,
+					now: () => new Date("2026-09-26T18:01:00.000Z"),
+					resolvePredecessorHead: async () => HEAD,
+					resolveLeadId: () => "flywheel-eng-lead",
+					reconcileWorkflowRework: async () => ({ kind: "busy" as const }),
+				});
+				expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+				expect(fake.requests).toHaveLength(1);
+				expect(fake.requests[0]).toMatchObject({
+					startPoint: HEAD,
+					generalizedExecution: { executionId: applied.executionId },
+				});
+				expect(fake.requests[0]?.generalizedExecution?.agentContent).toMatch(
+					/^## Rework context \(replacement launch\)/,
+				);
+				expect(h.store.getWorkflowReworkDelivery(h.requestId)).toMatchObject({
+					state: "wake_delivered",
+					route_revision: h.route.revision + 1,
+				});
+			} finally {
+				h.store.close();
+			}
+		},
+	);
+
+	it("rejects an unlaunchable historical rework base before liveness or ledger writes", async () => {
+		const h = await storeWithLegacyHeldRework("rework_retry_exhausted");
+		try {
+			// Simulate a pre-immutability historical row; current writers cannot
+			// create this shape, but recovery still has to fail closed on it.
+			h.db.run("DROP TRIGGER workflow_rework_request_no_update");
+			h.db.run(
+				"UPDATE workflow_rework_request SET base_revision = 'unavailable' WHERE request_id = ?",
+				[h.requestId],
+			);
+			const probe = vi.fn(async () => "dead" as const);
+			const before = h.store.listWorkflowSideEffects("run-1");
+			await expect(
+				prepareWorkflowNodeRecovery(
+					h.store,
+					{
+						runId: "run-1",
+						shape: "rework_retry_exhausted",
+						holdEventUid: h.holdEventUid,
+						decision: null,
+						reason: "must not launch without a pinned rework base",
+						principal: "master",
+						clientRequestId: "fly2922:invalid-rework-base",
+					},
+					probe,
+				),
+			).rejects.toThrow("engine_rework_replacement_context_invalid");
+			expect(probe).not.toHaveBeenCalled();
+			expect(h.store.listWorkflowSideEffects("run-1")).toEqual(before);
+			expect(h.store.getWorkflowRun("run-1")?.status).toBe("held");
+			expect(h.store.getLatestWorkflowReworkRoute(h.requestId)).toEqual(
+				h.route,
+			);
+		} finally {
+			h.store.close();
+		}
+	});
+
+	it.each([
+		{ liveness: "alive" as const, error: "recovery_target_alive" },
+		{ liveness: "unknown" as const, error: "recovery_liveness_unknown" },
+	])(
+		"leaves an $liveness historical rework writer and its held run untouched",
+		async ({ liveness, error }) => {
+			const h = await storeWithLegacyHeldRework("rework_pane_loss_handoff");
+			try {
+				const before = h.store.listWorkflowSideEffects("run-1");
+				await expect(
+					prepareWorkflowNodeRecovery(
+						h.store,
+						{
+							runId: "run-1",
+							shape: "rework_pane_loss_handoff",
+							holdEventUid: h.holdEventUid,
+							decision: null,
+							reason: "do not replace an unproven writer",
+							principal: "master",
+							clientRequestId: `fly2922:${liveness}-writer`,
+						},
+						async () => liveness,
+					),
+				).rejects.toThrow(error);
+				expect(h.store.listWorkflowSideEffects("run-1")).toEqual(before);
+				expect(h.store.getWorkflowRun("run-1")?.status).toBe("held");
+				expect(h.store.getLatestWorkflowReworkRoute(h.requestId)).toEqual(
+					h.route,
+				);
+				expect(h.store.getWorkflowReworkDelivery(h.requestId)).toMatchObject({
+					state: "returned_to_lead",
+					route_revision: h.route.revision,
+				});
+			} finally {
+				h.store.close();
+			}
+		},
+	);
+
+	it("revalidates the complete rework launch context inside the materializer transaction", async () => {
+		const h = await storeWithLegacyHeldRework("rework_retry_exhausted");
+		try {
+			const prepared = await prepareWorkflowNodeRecovery(
+				h.store,
+				{
+					runId: "run-1",
+					shape: "rework_retry_exhausted",
+					holdEventUid: h.holdEventUid,
+					decision: null,
+					reason: "freeze the exact replacement context",
+					principal: "master",
+					clientRequestId: "fly2922:context-race",
+				},
+				async () => "dead",
+			);
+			const before = h.store.listWorkflowSideEffects("run-1");
+			h.store.insertEvent({
+				event_id: "workflow-decision:qa-1:fail:context-race",
+				execution_id: "qa-1",
+				issue_id: "FLY-1307",
+				project_name: "flywheel",
+				event_type: "workflow_decision",
+				source: "bridge.workflow-decision",
+				payload: {
+					status: "fail",
+					summary: "a newer QA summary must invalidate the staged envelope",
+				},
+			});
+			expect(
+				h.store.recoverWorkflowNode({
+					...prepared,
+					now: new Date().toISOString(),
+				}),
+			).toMatchObject({ ok: false, reason: "recovery_preflight_required" });
+			expect(h.store.listWorkflowSideEffects("run-1")).toEqual(before);
+			expect(h.store.getWorkflowRun("run-1")?.status).toBe("held");
+			expect(h.store.getLatestWorkflowReworkRoute(h.requestId)).toEqual(
+				h.route,
+			);
+		} finally {
+			h.store.close();
 		}
 	});
 });

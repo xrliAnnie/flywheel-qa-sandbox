@@ -87,13 +87,7 @@ import {
 } from "./workflow-node-recovery.js";
 import { isWorkflowProcessRetirementApproved } from "./workflow-process-retirement.js";
 import { resolveWorkflowResumeTarget } from "./workflow-resume-resolver.js";
-import {
-	buildWorkflowReworkContext,
-	renderWorkflowReworkLaunchSection,
-	renderWorkflowReworkLaunchStableSection,
-	WORKFLOW_AGENT_CONTENT_BUDGET,
-	workflowReworkLaunchDigest,
-} from "./workflow-rework-context.js";
+import { WORKFLOW_AGENT_CONTENT_BUDGET } from "./workflow-rework-context.js";
 import type { WorkflowReworkCoordinatorOutcome } from "./workflow-rework-coordinator.js";
 import {
 	drainWorkflowShipCarrierDeliveries,
@@ -2761,7 +2755,6 @@ export class WorkflowEngineDispatcher {
 					const delivery = store.getWorkflowReworkDelivery(
 						reworkReplacementRequestId,
 					);
-					const baseRevision = request?.base_revision?.trim().toLowerCase();
 					if (
 						!request ||
 						!route ||
@@ -2771,96 +2764,22 @@ export class WorkflowEngineDispatcher {
 						route.target_attempt !== intent.attempt ||
 						route.preferred_actor_execution_id !== intent.execution_id ||
 						delivery.route_revision !== route.revision ||
-						delivery.state !== "pending" ||
-						!baseRevision ||
-						!/^[0-9a-f]{40}$/.test(baseRevision)
+						delivery.state !== "pending"
 					) {
 						throw new Error("engine_rework_replacement_context_invalid");
 					}
-					const built = buildWorkflowReworkContext({ request, route });
-					if (!built.ok)
+					const preflight = store.getWorkflowReworkReplacementContextPreflight(
+						reworkReplacementRequestId,
+					);
+					if (!preflight.ok)
 						throw new Error("engine_rework_replacement_context_invalid");
-					const stableSection = renderWorkflowReworkLaunchStableSection({
-						context: built.context,
-						baseRevision,
-					});
-					const authorityContext = built.context.authorityContext;
-					const sourceExecutionId =
-						authorityContext && typeof authorityContext === "object"
-							? (authorityContext as { sourceExecutionId?: unknown })
-									.sourceExecutionId
-							: undefined;
-					const fullSection = renderWorkflowReworkLaunchSection({
-						stableSection,
-						qaSummary:
-							request.authority === "qa" &&
-							typeof sourceExecutionId === "string"
-								? this.qaFixSummary(sourceExecutionId)
-								: undefined,
-					});
-					if (fullSection.length > WORKFLOW_AGENT_CONTENT_BUDGET)
-						throw new Error("engine_rework_replacement_context_invalid");
-					const stableDigest = workflowReworkLaunchDigest({
-						requestId: request.request_id,
-						routeRevision: route.revision,
-						stableSection,
-					});
-					let leadAttribution:
-						| {
-								actor: string;
-								founderQuote: { message_id: string; text: string } | null;
-								leadFeedback: string;
-						  }
-						| undefined;
-					if (request.authority === "lead") {
-						let authorityContext: unknown;
-						try {
-							authorityContext = JSON.parse(request.authority_context_json);
-						} catch {
-							throw new Error("engine_rework_replacement_context_invalid");
-						}
-						if (
-							!request.actor_id ||
-							!request.lead_feedback ||
-							!authorityContext ||
-							typeof authorityContext !== "object" ||
-							Array.isArray(authorityContext)
-						) {
-							throw new Error("engine_rework_replacement_context_invalid");
-						}
-						const persisted = authorityContext as {
-							authority?: unknown;
-							actor?: unknown;
-							founder_quote?: unknown;
-							lead_feedback?: unknown;
-						};
-						if (
-							persisted.authority !== "lead" ||
-							persisted.actor !== request.actor_id ||
-							persisted.lead_feedback !== request.lead_feedback ||
-							canonicalSubmissionDigest(persisted.founder_quote ?? null) !==
-								canonicalSubmissionDigest(request.founder_quote)
-						) {
-							throw new Error("engine_rework_replacement_context_invalid");
-						}
-						leadAttribution = {
-							actor: request.actor_id,
-							founderQuote: request.founder_quote,
-							leadFeedback: request.lead_feedback,
-						};
-					}
 					return {
 						requestId: reworkReplacementRequestId,
-						fullSection,
-						stableDigest,
-						startPoint: baseRevision,
-						leadAttribution,
-						founderFeedback:
-							request.authority === "founder" &&
-							typeof request.founder_feedback_verbatim === "string" &&
-							request.founder_feedback_verbatim.length > 0
-								? request.founder_feedback_verbatim
-								: undefined,
+						fullSection: preflight.value.fullSection,
+						stableDigest: preflight.value.stableDigest,
+						startPoint: preflight.value.startPoint,
+						leadAttribution: preflight.value.leadAttribution,
+						founderFeedback: preflight.value.founderFeedback,
 					};
 				})()
 			: undefined;

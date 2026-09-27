@@ -96,6 +96,15 @@ describe("FLY-2248 sanctioned hold-shape registry", () => {
 	});
 
 	it("classifies delivery and run-derived holds alongside the unified recovery descriptor and historical aliases", () => {
+		for (const legacyReworkShape of [
+			"rework_activation_stalled_held",
+			"rework_pane_loss_handoff",
+			"rework_retry_exhausted",
+		]) {
+			expect(getHoldShape(legacyReworkShape)?.resumeAction).toBe(
+				"redispatch_current",
+			);
+		}
 		expect(getHoldShape("carrier_needs_lead")?.scope).toBe("delivery");
 		// FLY-2921: returning a rework to the Lead never freezes the run.
 		expect(getHoldShape("rework_returned_to_lead")?.scope).toBe("delivery");
