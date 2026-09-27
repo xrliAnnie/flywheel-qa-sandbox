@@ -45,7 +45,7 @@ node "$FLYWHEEL_COMM_CLI" check 0d73b791-401b-40a3-b14a-68207eecfd03    # design
 LANE=A zsh engineering/doc/FLY-2922-unified-node-recovery/handin.zsh    # Lead 明确要求沙箱 PR 时改 LANE=B
 ```
 
-`diff` 非空 → 不跑脚本，按 §5 报 BLOCKED（脚本与批准计划漂移）。`check` 若返回 Lead 要求沙箱 PR 的明确答复才用 `LANE=B`；任何其他答复或 `not yet` 都是 Lane A。
+`diff` 非空 → 不跑脚本，按 §4 报 BLOCKED（脚本与批准计划漂移）。`check` 若返回 Lead 要求沙箱 PR 的明确答复才用 `LANE=B`；任何其他答复或 `not yet` 都是 Lane A。
 
 ### 3.2 脚本各步与退出语义
 
