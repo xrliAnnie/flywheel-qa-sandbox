@@ -14,13 +14,54 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
 	canonicalModelAuthorityPath,
+	loadBundledRegistry,
 	parsePercentageModelSplit,
 	parseWeightedModelSplit,
 	validateModelConfigDocument,
 	withModelAuthorityLock,
 } from "../packages/config/dist/index.js";
+
+const BUNDLED_REGISTRY_PATH = fileURLToPath(
+	new URL("../.flywheel/agents/registry.yaml", import.meta.url),
+);
+
+/**
+ * FLY-2891: an arm without `effort` inherits the template node's default for
+ * its model. That default lives in the bundled registry graphs; resolve it
+ * best-effort for display only, and say so when it cannot be read.
+ */
+function templateDefaultEfforts(snapshot) {
+	try {
+		const registry = loadBundledRegistry(BUNDLED_REGISTRY_PATH, snapshot);
+		return {
+			available: true,
+			resolve(nodeId, model) {
+				const byGraph = new Map();
+				for (const [graph, spec] of Object.entries(registry.graphs)) {
+					const policy = spec.policies[nodeId]?.models.find(
+						(candidate) => candidate.model === model,
+					);
+					if (policy) byGraph.set(graph, policy.defaultEffort);
+				}
+				const distinct = [...new Set(byGraph.values())];
+				if (distinct.length === 1) return distinct[0];
+				if (distinct.length === 0) return "template default";
+				return [...byGraph]
+					.map(([graph, effort]) => `${graph}=${effort}`)
+					.join(",");
+			},
+		};
+	} catch (error) {
+		return {
+			available: false,
+			reason: error.message,
+			resolve: () => "template default",
+		};
+	}
+}
 
 function parseArgs(args) {
 	const [command, ...rest] = args;
@@ -115,6 +156,7 @@ function describe(path, document) {
 		source: policy ? "runtime" : "registry v1 parity fallback",
 	};
 	if (policy?.rule === "issue_node_weighted") {
+		const templateDefaults = templateDefaultEfforts(snapshot);
 		return {
 			...common,
 			rule: policy.rule,
@@ -127,10 +169,17 @@ function describe(path, document) {
 						arms.map((arm) => ({
 							...arm,
 							percent: (arm.weight / total) * 100,
+							// Effective dispatch effort when this arm is auto-assigned.
+							effort:
+								arm.effort ??
+								`inherit(${templateDefaults.resolve(nodeId, arm.model)})`,
 						})),
 					];
 				}),
 			),
+			...(templateDefaults.available
+				? {}
+				: { templateDefaults: `unavailable: ${templateDefaults.reason}` }),
 			appliesTo:
 				"code/simple_code weighted nodes; next new workflow admission; existing assignments stay frozen",
 		};

@@ -1260,6 +1260,18 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/teamlead/src/bridge/__tests__/claude-review-runner.test.ts:expect(() => process.kill(pid, 0)).toThrow(/ESRCH/);#1",
+		"path": "packages/teamlead/src/bridge/__tests__/claude-review-runner.test.ts",
+		"code": "expect(() => process.kill(pid, 0)).toThrow(/ESRCH/);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/__tests__/claude-review-runner.test.ts:process.kill(pid, \"SIGKILL\");#1",
+		"path": "packages/teamlead/src/bridge/__tests__/claude-review-runner.test.ts",
+		"code": "process.kill(pid, \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/teamlead/src/bridge/__tests__/codex-quota-bench.test.ts:child.kill(\"SIGKILL\");#1",
 		"path": "packages/teamlead/src/bridge/__tests__/codex-quota-bench.test.ts",
 		"code": "child.kill(\"SIGKILL\");",
@@ -2268,6 +2280,30 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/__tests__/fly2655-voice-room.test.mjs:if (fly2876Alive(daemon.pid)) process.kill(daemon.pid, \"SIGKILL\");#1",
+		"path": "scripts/__tests__/fly2655-voice-room.test.mjs",
+		"code": "if (fly2876Alive(daemon.pid)) process.kill(daemon.pid, \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly2655-voice-room.test.mjs:if (fly2876Alive(pid)) process.kill(pid, \"SIGKILL\");#1",
+		"path": "scripts/__tests__/fly2655-voice-room.test.mjs",
+		"code": "if (fly2876Alive(pid)) process.kill(pid, \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly2655-voice-room.test.mjs:if (fly2876Alive(pid)) process.kill(pid, \"SIGKILL\");#2",
+		"path": "scripts/__tests__/fly2655-voice-room.test.mjs",
+		"code": "if (fly2876Alive(pid)) process.kill(pid, \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly2655-voice-room.test.mjs:if (fly2876Alive(pid)) process.kill(pid, \"SIGKILL\");#3",
+		"path": "scripts/__tests__/fly2655-voice-room.test.mjs",
+		"code": "if (fly2876Alive(pid)) process.kill(pid, \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/__tests__/fly2655-voice-room.test.mjs:process.kill(daemon.pid, \"SIGTERM\");#1",
 		"path": "scripts/__tests__/fly2655-voice-room.test.mjs",
 		"code": "process.kill(daemon.pid, \"SIGTERM\");",
@@ -2277,6 +2313,24 @@
 		"key": "scripts/__tests__/fly2655-voice-room.test.mjs:process.kill(daemon.pid, \"SIGTERM\");#2",
 		"path": "scripts/__tests__/fly2655-voice-room.test.mjs",
 		"code": "process.kill(daemon.pid, \"SIGTERM\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly2655-voice-room.test.mjs:process.kill(holder.pid, \"SIGTERM\");#1",
+		"path": "scripts/__tests__/fly2655-voice-room.test.mjs",
+		"code": "process.kill(holder.pid, \"SIGTERM\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly2655-voice-room.test.mjs:process.kill(live.pid, \"SIGTERM\");#1",
+		"path": "scripts/__tests__/fly2655-voice-room.test.mjs",
+		"code": "process.kill(live.pid, \"SIGTERM\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly2655-voice-room.test.mjs:process.kill(pid, 0);#1",
+		"path": "scripts/__tests__/fly2655-voice-room.test.mjs",
+		"code": "process.kill(pid, 0);",
 		"classification": "qa-only"
 	},
 	{
@@ -4146,6 +4200,12 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/qa/fly2655-voice-room.mjs:process.kill(child.pid, \"SIGTERM\");#2",
+		"path": "scripts/qa/fly2655-voice-room.mjs",
+		"code": "process.kill(child.pid, \"SIGTERM\");",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/qa/fly2655-voice-room.mjs:process.kill(pid, 0);#1",
 		"path": "scripts/qa/fly2655-voice-room.mjs",
 		"code": "process.kill(pid, 0);",
@@ -4155,6 +4215,12 @@
 		"key": "scripts/qa/fly2655-voice-room.mjs:process.kill(run.pid, \"SIGTERM\");#1",
 		"path": "scripts/qa/fly2655-voice-room.mjs",
 		"code": "process.kill(run.pid, \"SIGTERM\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa/fly2655-voice-room.mjs:signal: (pid, signal) => process.kill(pid, signal),#1",
+		"path": "scripts/qa/fly2655-voice-room.mjs",
+		"code": "signal: (pid, signal) => process.kill(pid, signal),",
 		"classification": "qa-only"
 	},
 	{

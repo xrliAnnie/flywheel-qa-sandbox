@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import {
 	buildClaudeReviewArgv,
 	type ClaudeReviewSpawner,
@@ -431,6 +431,7 @@ describe("runClaudeReviewRound (stubbed spawner)", () => {
 		code: number | null;
 		stdout: string;
 		stderr?: string;
+		aborted?: boolean;
 		timedOut?: boolean;
 		overflowed?: boolean;
 		spawnError?: string | null;
@@ -439,6 +440,7 @@ describe("runClaudeReviewRound (stubbed spawner)", () => {
 			code: result.code,
 			stdout: result.stdout,
 			stderr: result.stderr ?? "",
+			aborted: result.aborted ?? false,
 			timedOut: result.timedOut ?? false,
 			overflowed: result.overflowed ?? false,
 			spawnError: result.spawnError ?? null,
@@ -457,6 +459,55 @@ describe("runClaudeReviewRound (stubbed spawner)", () => {
 		if (out.kind === "verdict") expect(out.verdict).toBe("APPROVED");
 	});
 
+	it("forwards the coordinator abort signal to the spawner", async () => {
+		const controller = new AbortController();
+		let receivedSignal: AbortSignal | undefined;
+		await runClaudeReviewRound(
+			{ ...base, signal: controller.signal },
+			{
+				spawner: async (opts) => {
+					receivedSignal = opts.signal;
+					return stub({ code: 0, stdout: "" })(opts);
+				},
+				logger: () => {},
+			},
+		);
+		expect(receivedSignal).toBe(controller.signal);
+	});
+
+	it.each([
+		{ label: "spawn error", code: 127, spawnError: "quota exhausted" },
+		{ label: "timeout", code: null, timedOut: true },
+		{ label: "overflow", code: null, overflowed: true },
+		{ label: "nonzero exit", code: 1 },
+		{ label: "invalid output", code: 0 },
+		{
+			label: "valid verdict",
+			code: 0,
+			stdout: JSON.stringify({ verdict: "APPROVED", findings: [] }),
+		},
+	])(
+		"aborted takes precedence over $label and omits quota text",
+		async (result) => {
+			const out = await runClaudeReviewRound(base, {
+				spawner: stub({
+					stdout: "quota exhausted",
+					stderr: "quota exhausted",
+					...result,
+					aborted: true,
+				}),
+				logger: () => {},
+			});
+			expect(out).toEqual({
+				kind: "failed",
+				reason: "aborted",
+				detail: "aborted by review coordinator",
+				exitCode: result.code,
+				timedOut: false,
+			});
+		},
+	);
+
 	it("washes Bridge credentials and fixes the reviewer vitest worker bounds", async () => {
 		let capturedEnv: NodeJS.ProcessEnv | undefined;
 		const capture: ClaudeReviewSpawner = async (opts) => {
@@ -464,6 +515,8 @@ describe("runClaudeReviewRound (stubbed spawner)", () => {
 			return {
 				code: 0,
 				stdout: JSON.stringify({ verdict: "APPROVED", findings: [] }),
+				stderr: "",
+				aborted: false,
 				timedOut: false,
 				overflowed: false,
 				spawnError: null,
@@ -596,6 +649,115 @@ describe("runClaudeReviewRound (stubbed spawner)", () => {
 describe("defaultClaudeReviewSpawner (real subprocess)", () => {
 	const dir = mkdtempSync(join(tmpdir(), "fly1188-review-"));
 	afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+	it("a pre-aborted signal does not spawn a subprocess", async () => {
+		const controller = new AbortController();
+		controller.abort();
+		const marker = join(dir, "pre-abort-spawned");
+		const res = await defaultClaudeReviewSpawner({
+			binary: process.execPath,
+			argv: [
+				"-e",
+				'require("node:fs").writeFileSync(process.argv[1], "spawned")',
+				marker,
+			],
+			cwd: dir,
+			env: process.env,
+			timeoutMs: 5_000,
+			maxStdoutBytes: 1024,
+			signal: controller.signal,
+		});
+		expect(existsSync(marker)).toBe(false);
+		expect(res).toEqual({
+			code: null,
+			stdout: "",
+			stderr: "",
+			aborted: true,
+			timedOut: false,
+			overflowed: false,
+			spawnError: null,
+		});
+	});
+
+	it("abort kills the running child and its descendant before timeout", async () => {
+		const controller = new AbortController();
+		const pidFile = join(dir, "abort-tree-pids");
+		const pending = defaultClaudeReviewSpawner({
+			binary: "/bin/sh",
+			argv: ["-c", 'sleep 60 & echo "$$ $!" > "$1"; wait', "sh", pidFile],
+			cwd: dir,
+			env: process.env,
+			timeoutMs: 3_000,
+			maxStdoutBytes: 1024,
+			signal: controller.signal,
+		});
+		let pids: number[] = [];
+		try {
+			await vi.waitFor(
+				() => {
+					const recordedPids = readFileSync(pidFile, "utf8")
+						.trim()
+						.split(" ")
+						.map(Number);
+					expect(recordedPids).toHaveLength(2);
+					for (const pid of recordedPids) expect(pid).toBeGreaterThan(0);
+					pids = recordedPids;
+				},
+				{ timeout: 2_000, interval: 10 },
+			);
+			controller.abort();
+			const res = await pending;
+			expect(res.aborted).toBe(true);
+			expect(res.timedOut).toBe(false);
+			expect(res.code).toBeNull();
+			await vi.waitFor(() => {
+				for (const pid of pids) {
+					expect(() => process.kill(pid, 0)).toThrow(/ESRCH/);
+				}
+			});
+		} finally {
+			controller.abort();
+			for (const pid of pids) {
+				try {
+					process.kill(pid, "SIGKILL");
+				} catch {
+					// The process tree was already reaped.
+				}
+			}
+			await pending;
+		}
+	});
+
+	it("removes the abort listener on finish so late abort cannot kill or change the result", async () => {
+		const controller = new AbortController();
+		const removeListener = vi.spyOn(controller.signal, "removeEventListener");
+		const res = await defaultClaudeReviewSpawner({
+			binary: "/bin/sh",
+			argv: ["-c", "echo finished"],
+			cwd: dir,
+			env: process.env,
+			timeoutMs: 5_000,
+			maxStdoutBytes: 1024,
+			signal: controller.signal,
+		});
+		const kill = vi.spyOn(process, "kill");
+		try {
+			controller.abort();
+			expect(res).toMatchObject({
+				code: 0,
+				stdout: "finished\n",
+				aborted: false,
+			});
+			expect(removeListener).toHaveBeenCalledWith(
+				"abort",
+				expect.any(Function),
+			);
+			expect(kill).not.toHaveBeenCalled();
+		} finally {
+			kill.mockRestore();
+			removeListener.mockRestore();
+		}
+	});
 
 	it("closes stdin (a stdin-reading child exits instead of hanging) and captures stdout", async () => {
 		// `cat` exits only when stdin is closed — proves the -p hang guard.

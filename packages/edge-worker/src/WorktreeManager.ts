@@ -181,6 +181,9 @@ export function resolveWorktreeKey(
 // ─── Default exec ────────────────────────────────
 
 export const WORKTREE_EXEC_TIMEOUT_MS = 120_000;
+// Whole-repository probes such as status and ls-files grow with the checkout;
+// keep them bounded without inheriting defaultAsyncExecFile's one-MiB ceiling.
+const WORKTREE_EXEC_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
 
 // Uses array args and the shared process-group runner — safe from shell
 // injection and bounded even when a descendant inherits stdout/stderr.
@@ -189,6 +192,7 @@ function createDefaultExec(timeoutMs: number): WorktreeExecFn {
 		const { stdout } = await defaultAsyncExecFile(cmd, args, {
 			cwd,
 			timeoutMs: options?.timeoutMs ?? timeoutMs,
+			maxBuffer: WORKTREE_EXEC_MAX_BUFFER_BYTES,
 			...(options?.env && {
 				env: options.env,
 				envMode: "replace" as const,

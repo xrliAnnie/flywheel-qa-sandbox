@@ -265,6 +265,11 @@ export class LeadInputRouter {
 		this.paused = true;
 	}
 
+	/** FLY-2883: read-only view of the rotation fence (no state change). */
+	isPaused(): boolean {
+		return this.paused;
+	}
+
 	resume(): void {
 		this.paused = false;
 		void this.pump();

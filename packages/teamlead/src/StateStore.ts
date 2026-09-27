@@ -56,6 +56,8 @@ import { buildReworkWakeId, type ReworkWakeIdentity, type ReworkWakeRetirementPr
 import { newDrainReadId } from "flywheel-comm/completion-obligations";
 import { type CompletionDrainProof, isCompletionDrainProof } from "./bridge/completion-drain.js";
 import { BetaReleaseStore } from "./bridge/beta-release-store.js";
+import { LeadInterruptStore } from "./bridge/lead-interrupt-store.js";
+import { ReviewRoundStore } from "./bridge/review-round-store.js";
 import type { CompletionWorktreeBranchObservation } from "./bridge/worktree-binding-refresh.js";
 import { CustomerReleaseStore } from "./bridge/customer-release/store.js";
 import { isMailboxTerminalStatus, OUTCOME_STATUSES, TERMINAL_STATUSES } from "flywheel-comm/session-terminal";
@@ -107,7 +109,6 @@ import {
 	isDesignBackend,
 	isSkillFrameworkMode,
 	isSkillFrameworkVia,
-	MODEL_IDS,
 	type ModelConfigSnapshot,
 	type ProposedFlagScan,
 	PROJECT_STORE_MANAGED_FLAGS,
@@ -2074,6 +2075,11 @@ export interface DesignReviewApprovalProof {
  */
 export interface CodexReviewJob {
 	request_id: string;
+	/** NULL is rejected; 0 is accepted legacy history with unknown order. */
+	accept_seq?: number;
+	voided_at?: string;
+	superseded_by_request_id?: string;
+	quiet_until?: string;
 	execution_id: string;
 	issue_id?: string;
 	project_name: string;
@@ -2177,6 +2183,7 @@ export interface AccountSwitchActionReceipt {
  */
 export interface CodexReviewReuseBinding {
 	request_id: string;
+	accept_seq?: number;
 	source_request_id: string;
 	execution_id: string;
 	question_id: string;
@@ -3295,6 +3302,14 @@ export class StateStore {
 	private observationZeroProgress = { verdict: 0, closeout: 0, clarification: 0, archive: 0 };
 	get betaSchedules(): BetaReleaseStore {
 		return new BetaReleaseStore(this.db.raw);
+	}
+	/** FLY-2883: controlled Lead interrupt record + append-only audit. */
+	get leadInterrupts(): LeadInterruptStore {
+		return new LeadInterruptStore(this.db.raw);
+	}
+	/** FLY-2891: per-round local Codex review records + gate acceptances. */
+	get reviewRounds(): ReviewRoundStore {
+		return new ReviewRoundStore(this.db.raw);
 	}
 	private db: CompatDb;
 	private dbPath: string;
@@ -10441,6 +10456,7 @@ export class StateStore {
 	migrate(): void {
 		this.betaSchedules.migrate();
 		this.customerReleases.migrate();
+		this.reviewRounds.migrate();
 		this.db.raw.transaction(() => {
 			this.db.raw.exec(`
 				CREATE TABLE IF NOT EXISTS codex_pre_spawn_failure_receipt (
@@ -12186,7 +12202,8 @@ export class StateStore {
 				created_at            TEXT NOT NULL DEFAULT (datetime('now')),
 				updated_at            TEXT,
 				responded_at          TEXT,
-				delivery_nonce        TEXT
+				delivery_nonce        TEXT,
+				completed_at          TEXT
 			)
 		`);
 		// R12 HIGH-4 outbox column on databases created before it existed.
@@ -12212,36 +12229,67 @@ export class StateStore {
 		const reviewJobInfo = this.db.exec("PRAGMA table_info(codex_review_job)");
 		const reviewJobColumns =
 			reviewJobInfo[0]?.values.map((row) => row[1] as string) ?? [];
-		for (const [column, type] of [
-			["question_id", "TEXT"],
-			["failure_raw", "TEXT"],
-			["retry_at", "TEXT"],
-			["retry_trigger", "TEXT"],
-			["retry_parked_at_ms", "INTEGER"],
-			["auto_retry_count", "INTEGER NOT NULL DEFAULT 0"],
-			["head_move_parent_request_id", "TEXT"],
-			["head_move_retry_count", "INTEGER NOT NULL DEFAULT 0"],
-			["failure_attempt_count", "INTEGER NOT NULL DEFAULT 0"],
-			["reviewer_verdict", "TEXT"],
-			["advisories_json", "TEXT"],
-			["settled_json", "TEXT"],
-			["response_json", "TEXT"],
-			["payload_version", "INTEGER"],
-			["target_repo_path", "TEXT"],
-			["target_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
-			["reuse_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
-			["repaired_trailing_brace", "INTEGER NOT NULL DEFAULT 0"],
-			["reviewer_session_generation", "INTEGER NOT NULL DEFAULT 0"],
-			["reviewer_session_failure_streak", "INTEGER NOT NULL DEFAULT 0"],
-			["retired_reviewer_session_uuid", "TEXT"],
-			// FLY-2763: same-family sanction captured at request time
-			["same_family_sanction", "TEXT"],
-		] as const) {
-			if (!reviewJobColumns.includes(column)) {
-				this.db.run(
-					`ALTER TABLE codex_review_job ADD COLUMN ${column} ${type}`,
-				);
+		this.db.transaction(() => {
+			for (const [column, type] of [
+				["accept_seq", "INTEGER"],
+				["voided_at", "TEXT"],
+				["superseded_by_request_id", "TEXT"],
+				["quiet_until", "TEXT"],
+				["question_id", "TEXT"],
+				["failure_raw", "TEXT"],
+				["retry_at", "TEXT"],
+				["retry_trigger", "TEXT"],
+				["retry_parked_at_ms", "INTEGER"],
+				["auto_retry_count", "INTEGER NOT NULL DEFAULT 0"],
+				["head_move_parent_request_id", "TEXT"],
+				["head_move_retry_count", "INTEGER NOT NULL DEFAULT 0"],
+				["failure_attempt_count", "INTEGER NOT NULL DEFAULT 0"],
+				["reviewer_verdict", "TEXT"],
+				["advisories_json", "TEXT"],
+				["settled_json", "TEXT"],
+				["response_json", "TEXT"],
+				["payload_version", "INTEGER"],
+				["target_repo_path", "TEXT"],
+				["target_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
+				["reuse_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
+				["repaired_trailing_brace", "INTEGER NOT NULL DEFAULT 0"],
+				["reviewer_session_generation", "INTEGER NOT NULL DEFAULT 0"],
+				["reviewer_session_failure_streak", "INTEGER NOT NULL DEFAULT 0"],
+				["retired_reviewer_session_uuid", "TEXT"],
+				// FLY-2763: same-family sanction captured at request time
+				["same_family_sanction", "TEXT"],
+				// FLY-2891: stable review completion time (first done only)
+				["completed_at", "TEXT"],
+			] as const) {
+				if (!reviewJobColumns.includes(column)) {
+					this.db.run(
+						`ALTER TABLE codex_review_job ADD COLUMN ${column} ${type}`,
+					);
+				}
 			}
+			// Sparse legacy tables lack the evidence needed to classify acceptance.
+			// target_repo_path is added above; the other predicate columns must exist.
+			if (
+				!reviewJobColumns.includes("accept_seq") &&
+				["status", "frozen_head_sha", "target_path"].every((column) =>
+					reviewJobColumns.includes(column),
+				)
+			) {
+				this.db.run(`UPDATE codex_review_job SET accept_seq = 0
+					WHERE accept_seq IS NULL AND (status <> 'failed'
+					 OR frozen_head_sha IS NOT NULL OR target_path IS NOT NULL
+					 OR target_repo_path IS NOT NULL)`);
+			}
+		});
+		// target_repo_identity is added above, but early schemas predate lane fields.
+		if (
+			["project_name", "issue_id", "review_type"].every((column) =>
+				reviewJobColumns.includes(column),
+			)
+		) {
+			this.db.run(
+				"CREATE INDEX IF NOT EXISTS idx_codex_review_job_lane ON codex_review_job(project_name, issue_id, review_type, target_repo_identity)",
+			);
 		}
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_codex_review_job_exec ON codex_review_job(execution_id)",
@@ -12302,6 +12350,7 @@ export class StateStore {
 		const reuseBindingColumns =
 			reuseBindingInfo[0]?.values.map((row) => row[1] as string) ?? [];
 		for (const [column, type] of [
+			["accept_seq", "INTEGER"],
 			["target_repo_path", "TEXT"],
 			["target_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
 			["reuse_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
@@ -12828,6 +12877,7 @@ export class StateStore {
 		this.migrateShuttleProjection();
 		this.migrateVoiceHealthProjection();
 		this.migrateReleaseReadiness();
+		this.migrateLeadInterrupts();
 		this.db.run(`CREATE TABLE IF NOT EXISTS lead_note (
 			project_name TEXT NOT NULL,
 			issue_uuid TEXT NOT NULL,
@@ -13154,6 +13204,11 @@ export class StateStore {
 				updated_at TEXT NOT NULL
 			)
 		`);
+	}
+
+	/** FLY-2883: lead_interrupts + append-only lead_interrupt_audit. */
+	private migrateLeadInterrupts(): void {
+		this.leadInterrupts.migrate();
 	}
 
 	private migrateVoiceHealthProjection(): void {
@@ -22322,6 +22377,11 @@ export class StateStore {
 	private rowToCodexReviewJob(row: Record<string, unknown>): CodexReviewJob {
 		return {
 			request_id: row.request_id as string,
+			accept_seq: (row.accept_seq as number) ?? undefined,
+			voided_at: (row.voided_at as string) ?? undefined,
+			superseded_by_request_id:
+				(row.superseded_by_request_id as string) ?? undefined,
+			quiet_until: (row.quiet_until as string) ?? undefined,
 			execution_id: row.execution_id as string,
 			issue_id: (row.issue_id as string) ?? undefined,
 			project_name: row.project_name as string,
@@ -22401,6 +22461,7 @@ export class StateStore {
 	): CodexReviewReuseBinding {
 		return {
 			request_id: row.request_id as string,
+			accept_seq: (row.accept_seq as number) ?? undefined,
 			source_request_id: row.source_request_id as string,
 			execution_id: row.execution_id as string,
 			question_id: row.question_id as string,
@@ -22489,26 +22550,31 @@ export class StateStore {
 			input.reuseRepoIdentity ??
 			source?.reuse_repo_identity ??
 			targetRepoIdentity;
-		this.db.run(
-			`INSERT OR IGNORE INTO codex_review_reuse_binding
-			   (request_id, source_request_id, execution_id, question_id,
-			    target_repo_path, target_repo_identity, reuse_repo_identity,
-			    frozen_head_sha,
-			    delivery_nonce, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
-			[
-				input.requestId,
-				input.sourceRequestId,
-				input.executionId,
-				input.questionId,
-				targetRepoPath ?? null,
-				targetRepoIdentity,
-				reuseRepoIdentity,
-				frozenHeadSha ?? null,
-				randomUUID(),
-			],
-		);
-		const inserted = this.db.getRowsModified() > 0;
+		let inserted = false;
+		this.db.transaction(() => {
+			const acceptSeq = this.getNextCodexReviewAcceptSeq();
+			this.db.run(
+				`INSERT OR IGNORE INTO codex_review_reuse_binding
+				   (request_id, source_request_id, execution_id, question_id,
+				    target_repo_path, target_repo_identity, reuse_repo_identity,
+				    frozen_head_sha,
+				    delivery_nonce, accept_seq, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+				[
+					input.requestId,
+					input.sourceRequestId,
+					input.executionId,
+					input.questionId,
+					targetRepoPath ?? null,
+					targetRepoIdentity,
+					reuseRepoIdentity,
+					frozenHeadSha ?? null,
+					randomUUID(),
+					acceptSeq,
+				],
+			);
+			inserted = this.db.getRowsModified() > 0;
+		});
 		this.save();
 		const binding = this.getCodexReviewReuseBinding(input.requestId);
 		if (!binding) throw new Error(`review reuse binding ${input.requestId} vanished`);
@@ -22558,7 +22624,8 @@ export class StateStore {
 		requestId: string;
 		reason: string;
 		frozenHeadSha: string;
-	}): { released: boolean; binding: CodexReviewReuseBinding; job: CodexReviewJob } {
+		quietUntil?: string;
+	}): { released: boolean; binding: CodexReviewReuseBinding; job: CodexReviewJob | null } {
 		const frozenHeadSha = input.frozenHeadSha.trim().toLowerCase();
 		if (!/^[0-9a-f]{40}$/.test(frozenHeadSha)) {
 			throw new Error("released review binding requires a trusted 40-char SHA");
@@ -22569,6 +22636,11 @@ export class StateStore {
 			const binding = this.getCodexReviewReuseBinding(input.requestId);
 			if (!binding) {
 				throw new Error(`review reuse binding ${input.requestId} is missing`);
+			}
+			if (binding.released_at || binding.responded_at) {
+				const job = this.getCodexReviewJob(input.requestId);
+				this.db.raw.exec("ROLLBACK");
+				return { released: false, binding, job };
 			}
 			const source = this.getCodexReviewJob(binding.source_request_id);
 			if (!source) {
@@ -22598,8 +22670,8 @@ export class StateStore {
 				    target_repo_identity, reuse_repo_identity, frozen_head_sha,
 				    reviewer_session_uuid, reviewer_session_generation,
 				    reviewer_session_failure_streak, author_family, status,
-				    delivery_nonce, created_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, datetime('now'))`,
+				    delivery_nonce, accept_seq, quiet_until, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, datetime('now'))`,
 				[
 					binding.request_id,
 					binding.execution_id,
@@ -22618,6 +22690,8 @@ export class StateStore {
 					priorSession.failureStreak,
 					source.author_family ?? null,
 					randomUUID(),
+					binding.accept_seq ?? 0,
+					input.quietUntil ?? null,
 				],
 			);
 			const job = this.getCodexReviewJob(binding.request_id);
@@ -22746,6 +22820,230 @@ export class StateStore {
 		return null;
 	}
 
+	/** Accepted requests share one sequence; successors retain their origin's value. */
+	getNextCodexReviewAcceptSeq(): number {
+		const row = this.db.raw
+			.prepare(`SELECT COALESCE(MAX(accept_seq), 0) + 1 AS next
+			FROM (SELECT accept_seq FROM codex_review_job
+			      UNION ALL SELECT accept_seq FROM codex_review_reuse_binding)`)
+			.get() as { next: number };
+		return row.next;
+	}
+
+	private insertCodexReviewAudit(
+		job: CodexReviewJob,
+		eventId: string,
+		eventType: string,
+		payload: Record<string, unknown>,
+	): void {
+		if (
+			!this.insertEvent({
+				event_id: eventId,
+				event_type: eventType,
+				execution_id: job.execution_id,
+				issue_id: job.issue_id ?? job.execution_id,
+				project_name: job.project_name,
+				source: "bridge.review-coordinator",
+				severity: "info",
+				payload,
+			})
+		) {
+			throw new Error(`review_audit_insert_failed:${eventId}`);
+		}
+	}
+
+	voidCodexReviewJob(input: {
+		requestId: string;
+		reason: string;
+		trigger: string;
+		supersededByRequestId?: string;
+		retireBindingRequestIds?: string[];
+		gateState?: string;
+		observedHeadSha?: string;
+		nowIso: string;
+	}): {
+		voided: boolean;
+		priorStatus?: CodexReviewJob["status"];
+		job: CodexReviewJob | null;
+	} {
+		let voided = false;
+		let priorStatus: CodexReviewJob["status"] | undefined;
+		this.db.transaction(() => {
+			const job = this.getCodexReviewJob(input.requestId);
+			if (!job) return;
+			this.db.run(
+				`UPDATE codex_review_job
+				SET status = 'failed', failure_reason = ?, voided_at = ?,
+				    superseded_by_request_id = ?, retry_at = NULL, retry_trigger = NULL,
+				    retry_parked_at_ms = NULL, quiet_until = NULL,
+				    failure_attempt_count = failure_attempt_count + 1,
+				    updated_at = datetime('now')
+				WHERE request_id = ? AND voided_at IS NULL
+				  AND (status IN ('pending','running')
+				    OR (status = 'failed' AND (retry_at IS NOT NULL OR retry_trigger = 'account_switch')))`,
+				[
+					input.reason,
+					input.nowIso,
+					input.supersededByRequestId ?? null,
+					input.requestId,
+				],
+			);
+			voided = this.db.getRowsModified() === 1;
+			if (!voided) return;
+			priorStatus = job.status;
+			this.insertCodexReviewAudit(
+				job,
+				`review-job-voided:${job.request_id}`,
+				"review_job_voided",
+				{
+					requestId: job.request_id,
+					reason: input.reason,
+					trigger: input.trigger,
+					priorStatus,
+					questionId: job.question_id,
+					reviewType: job.review_type,
+					frozenHeadSha: job.frozen_head_sha,
+					observedHeadSha: input.observedHeadSha,
+					gateState: input.gateState,
+					supersededByRequestId: input.supersededByRequestId,
+				},
+			);
+			for (const bindingRequestId of input.retireBindingRequestIds ?? []) {
+				if (!input.supersededByRequestId)
+					throw new Error("review_binding_retirement_requires_superseder");
+				this.retireCodexReviewReuseBindingForSupersede({
+					bindingRequestId,
+					sourceRequestId: job.request_id,
+					supersededByRequestId: input.supersededByRequestId,
+					nowIso: input.nowIso,
+				});
+			}
+		});
+		this.save();
+		return {
+			voided,
+			priorStatus,
+			job: this.getCodexReviewJob(input.requestId),
+		};
+	}
+
+	retireCodexReviewReuseBindingForSupersede(input: {
+		bindingRequestId: string;
+		sourceRequestId: string;
+		supersededByRequestId: string;
+		nowIso: string;
+	}): boolean {
+		let retired = false;
+		this.db.transaction(() => {
+			const binding = this.getCodexReviewReuseBinding(input.bindingRequestId);
+			if (!binding || binding.released_at || binding.responded_at) return;
+			const source = this.getCodexReviewJob(input.sourceRequestId);
+			if (!source)
+				throw new Error(
+					`review reuse source ${input.sourceRequestId} is missing`,
+				);
+			this.db.run(
+				`UPDATE codex_review_reuse_binding
+				SET release_reason = 'superseded_by_request', released_at = ?
+				WHERE request_id = ? AND responded_at IS NULL AND released_at IS NULL`,
+				[input.nowIso, input.bindingRequestId],
+			);
+			retired = this.db.getRowsModified() === 1;
+			if (!retired) return;
+			this.insertCodexReviewAudit(
+				source,
+				`review-reuse-retired:${binding.request_id}`,
+				"review_reuse_binding_retired",
+				{
+					bindingRequestId: binding.request_id,
+					sourceRequestId: input.sourceRequestId,
+					supersededByRequestId: input.supersededByRequestId,
+					questionId: binding.question_id,
+				},
+			);
+		});
+		this.save();
+		return retired;
+	}
+
+	listLaneJobs(
+		job: Pick<
+			CodexReviewJob,
+			| "request_id"
+			| "execution_id"
+			| "project_name"
+			| "issue_id"
+			| "review_type"
+			| "target_repo_identity"
+		>,
+		filter: "voidable" | "acceptedOthers",
+	): CodexReviewJob[] {
+		const rows = this.db.raw
+			.prepare(`SELECT * FROM codex_review_job
+			WHERE project_name = ? AND review_type = ? AND target_repo_identity = ?
+			  AND (issue_id = ? OR (issue_id IS NULL AND ? IS NULL AND execution_id = ?))
+			  AND request_id <> ?
+			  AND ${
+					filter === "voidable"
+						? "voided_at IS NULL AND (status IN ('pending','running') OR (status = 'failed' AND (retry_at IS NOT NULL OR retry_trigger = 'account_switch')))"
+						: "accept_seq IS NOT NULL AND (head_move_parent_request_id IS NULL OR head_move_parent_request_id <> ?) AND NOT (voided_at IS NOT NULL AND COALESCE(failure_reason, '') = 'head_moved')"
+				}
+			ORDER BY created_at, request_id`)
+			.all(
+				job.project_name,
+				job.review_type,
+				job.target_repo_identity,
+				job.issue_id ?? null,
+				job.issue_id ?? null,
+				job.execution_id,
+				job.request_id,
+				...(filter === "acceptedOthers" ? [job.request_id] : []),
+			) as Record<string, unknown>[];
+		return rows.map((row) => this.rowToCodexReviewJob(row));
+	}
+
+	restartCodexReviewQuietWindow(input: {
+		requestId: string;
+		expectedHeadSha: string;
+		newHeadSha: string;
+		quietUntil: string;
+	}): boolean {
+		if (!/^[0-9a-f]{40}$/.test(input.newHeadSha)) {
+			throw new Error("quiet-window restart requires a trusted 40-char SHA");
+		}
+		let restarted = false;
+		this.db.transaction(() => {
+			const job = this.getCodexReviewJob(input.requestId);
+			if (!job) return;
+			this.db.run(
+				`UPDATE codex_review_job SET frozen_head_sha = ?, quiet_until = ?
+				WHERE request_id = ? AND status = 'pending' AND voided_at IS NULL
+				  AND lower(frozen_head_sha) = ?`,
+				[
+					input.newHeadSha,
+					input.quietUntil,
+					input.requestId,
+					input.expectedHeadSha.toLowerCase(),
+				],
+			);
+			restarted = this.db.getRowsModified() === 1;
+			if (!restarted) return;
+			this.insertCodexReviewAudit(
+				job,
+				`review-quiet-restart:${job.request_id}:${input.newHeadSha}:${input.quietUntil}`,
+				"review_quiet_window_restarted",
+				{
+					requestId: job.request_id,
+					previousHeadSha: job.frozen_head_sha,
+					newHeadSha: input.newHeadSha,
+					quietUntil: input.quietUntil,
+				},
+			);
+		});
+		this.save();
+		return restarted;
+	}
+
 	/**
 	 * Idempotent insert keyed by requestId (§7.1: re-POST of the same request
 	 * must return the SAME durable job, never a duplicate). Returns whether a
@@ -22753,6 +23051,13 @@ export class StateStore {
 	 */
 	insertCodexReviewJob(input: {
 		requestId: string;
+		accepted?: boolean;
+		quietUntil?: string;
+		supersedeLane?: {
+			nowIso: string;
+			expectedAcceptSeq: number;
+			candidates: Array<{ requestId: string; retireBindingRequestIds: string[] }>;
+		};
 		executionId: string;
 		issueId?: string;
 		projectName: string;
@@ -22778,9 +23083,19 @@ export class StateStore {
 		};
 		/** skip lane writes the durable skipped audit row directly. */
 		status?: "pending" | "skipped";
-	}): { inserted: boolean; job: CodexReviewJob } {
+	}): { inserted: boolean; job: CodexReviewJob; voided: CodexReviewJob[] } {
 		let inserted = false;
+		const voided: CodexReviewJob[] = [];
 		this.db.transaction(() => {
+			if (this.getCodexReviewJob(input.requestId)) return;
+			const accepted = input.accepted !== false;
+			const acceptSeq = accepted ? this.getNextCodexReviewAcceptSeq() : null;
+			if (
+				accepted && input.supersedeLane &&
+				acceptSeq !== input.supersedeLane.expectedAcceptSeq
+			) {
+				throw new Error("review_accept_seq_changed");
+			}
 			this.db.run(
 				`INSERT OR IGNORE INTO codex_review_job
 			   (request_id, execution_id, issue_id, project_name, review_type,
@@ -22788,8 +23103,8 @@ export class StateStore {
 			    target_repo_identity, reuse_repo_identity, frozen_head_sha,
 			    reviewer_session_uuid, reviewer_session_generation,
 			    reviewer_session_failure_streak, author_family, status, delivery_nonce,
-			    same_family_sanction, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+			    same_family_sanction, accept_seq, quiet_until, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
 			[
 				input.requestId,
 				input.executionId,
@@ -22810,6 +23125,8 @@ export class StateStore {
 				input.status ?? "pending",
 				randomUUID(), // R17 delivery nonce — server-only
 				input.sameFamilySanction ?? null,
+				acceptSeq,
+				input.quietUntil ?? null,
 				],
 			);
 			inserted = this.db.getRowsModified() > 0;
@@ -22827,11 +23144,24 @@ export class StateStore {
 					capturedAt: input.designPlanProof.capturedAt,
 				});
 			}
+			if (inserted && accepted && input.supersedeLane) {
+				for (const candidate of input.supersedeLane.candidates) {
+					const result = this.voidCodexReviewJob({
+						requestId: candidate.requestId,
+						reason: "superseded_by_request",
+						trigger: "accept",
+						supersededByRequestId: input.requestId,
+						retireBindingRequestIds: candidate.retireBindingRequestIds,
+						nowIso: input.supersedeLane.nowIso,
+					});
+					if (result.voided && result.job) voided.push(result.job);
+				}
+			}
 		});
 		this.save();
 		const job = this.getCodexReviewJob(input.requestId);
 		if (!job) throw new Error(`review job ${input.requestId} vanished`);
-		return { inserted, job };
+		return { inserted, job, voided };
 	}
 
 	/**
@@ -22844,8 +23174,14 @@ export class StateStore {
 		successorRequestId: string;
 		currentHeadSha: string;
 		failureRaw?: string;
+		expectStatus?: "running" | "failed" | "pending";
+		quietUntil?: string;
+		trigger?: string;
+		observedHeadSha?: string;
+		nowIso?: string;
+		markParentVoided?: boolean;
 	}): {
-		outcome: "requeued" | "existing" | "exhausted";
+		outcome: "requeued" | "existing" | "exhausted" | "voided" | "stale";
 		parent: CodexReviewJob;
 		successor?: CodexReviewJob;
 	} {
@@ -22867,6 +23203,14 @@ export class StateStore {
 				this.db.raw.exec("ROLLBACK");
 				return { outcome: "existing", parent, successor: existing };
 			}
+			if (parent.voided_at) {
+				this.db.raw.exec("ROLLBACK");
+				return { outcome: "voided", parent };
+			}
+			if (input.expectStatus && parent.status !== input.expectStatus) {
+				this.db.raw.exec("ROLLBACK");
+				return { outcome: "stale", parent };
+			}
 			if (parent.review_type !== "code") {
 				throw new Error("only code review jobs can requeue after a head move");
 			}
@@ -22877,18 +23221,27 @@ export class StateStore {
 				parent.head_move_retry_count >=
 				MAX_CODEX_REVIEW_HEAD_MOVE_REQUEUES;
 
+			const markVoided = input.markParentVoided === true && !exhausted;
 			this.db.run(
 				`UPDATE codex_review_job
 				    SET status = 'failed', failure_reason = ?,
 				        failure_raw = ?, retry_at = NULL,
+				        voided_at = CASE WHEN ? THEN ? ELSE voided_at END,
+				        superseded_by_request_id = CASE WHEN ? THEN ? ELSE superseded_by_request_id END,
+				        quiet_until = CASE WHEN ? THEN NULL ELSE quiet_until END,
 				        retry_trigger = NULL, retry_parked_at_ms = NULL,
 				        reviewer_session_failure_streak = 0,
 				        failure_attempt_count = failure_attempt_count + 1,
 				        updated_at = datetime('now')
-				  WHERE request_id = ? AND status NOT IN ('done','skipped')`,
+				  WHERE request_id = ? AND status NOT IN ('done','skipped') AND voided_at IS NULL`,
 				[
 					exhausted ? "head_moved_exhausted" : "head_moved",
 					input.failureRaw ?? null,
+					markVoided ? 1 : 0,
+					input.nowIso ?? new Date().toISOString(),
+					markVoided ? 1 : 0,
+					input.successorRequestId,
+					markVoided ? 1 : 0,
 					input.requestId,
 				],
 			);
@@ -22905,8 +23258,8 @@ export class StateStore {
 				  reviewer_session_uuid,
 				  reviewer_session_generation, reviewer_session_failure_streak,
 				  author_family, status, delivery_nonce,
-				  head_move_parent_request_id, head_move_retry_count, created_at)
-				 VALUES (?, ?, ?, ?, 'code', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', ?, ?, ?, datetime('now'))`,
+				  head_move_parent_request_id, head_move_retry_count, accept_seq, quiet_until, created_at)
+				 VALUES (?, ?, ?, ?, 'code', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', ?, ?, ?, ?, ?, datetime('now'))`,
 					[
 						input.successorRequestId,
 						parent.execution_id,
@@ -22925,7 +23278,32 @@ export class StateStore {
 						randomUUID(),
 						parent.request_id,
 						parent.head_move_retry_count + 1,
+						parent.accept_seq ?? null,
+						input.quietUntil ?? null,
 					],
+				);
+			}
+			if (input.markParentVoided) {
+				this.insertCodexReviewAudit(
+					parent,
+					exhausted
+						? `review-head-move-exhausted:${parent.request_id}:${parent.failure_attempt_count + 1}`
+						: `review-job-voided:${parent.request_id}`,
+					exhausted ? "review_head_move_exhausted" : "review_job_voided",
+					{
+						requestId: parent.request_id,
+						reason: exhausted ? "head_moved_exhausted" : "head_moved",
+						trigger: input.trigger,
+						priorStatus: parent.status,
+						questionId: parent.question_id,
+						reviewType: parent.review_type,
+						frozenHeadSha: parent.frozen_head_sha,
+						observedHeadSha: input.observedHeadSha ?? currentHeadSha,
+						...(exhausted ? {} : {
+							supersededByRequestId: input.successorRequestId,
+							successorRequestId: input.successorRequestId,
+						}),
+					},
 				);
 			}
 			this.db.raw.exec("COMMIT");
@@ -22952,15 +23330,16 @@ export class StateStore {
 	 * same-requestId retry after a reviewer failure). Returns false when the
 	 * job is already running/done/skipped — the caller must not double-run.
 	 */
-	claimCodexReviewJobRunning(requestId: string): boolean {
+	claimCodexReviewJobRunning(requestId: string, quietGateNowIso?: string): boolean {
 		this.db.run(
 			`UPDATE codex_review_job
 			   SET status = 'running', failure_reason = NULL, failure_raw = NULL,
 			       retry_at = NULL, retry_trigger = NULL,
-			       retry_parked_at_ms = NULL,
+			       retry_parked_at_ms = NULL, quiet_until = NULL,
 			       updated_at = datetime('now')
-			 WHERE request_id = ? AND status IN ('pending','failed')`,
-			[requestId],
+			 WHERE request_id = ? AND status IN ('pending','failed') AND voided_at IS NULL
+			 ${quietGateNowIso === undefined ? "" : "AND (quiet_until IS NULL OR julianday(quiet_until) <= julianday(?))"}`,
+			quietGateNowIso === undefined ? [requestId] : [requestId, quietGateNowIso],
 		);
 		const claimed = this.db.getRowsModified() > 0;
 		this.save();
@@ -22978,7 +23357,7 @@ export class StateStore {
 			responseJson: string;
 			payloadVersion: number;
 		},
-	): void {
+	): boolean {
 		this.db.run(
 			`UPDATE codex_review_job
 			   SET status = 'done', verdict = ?, reviewer_verdict = ?,
@@ -22987,8 +23366,9 @@ export class StateStore {
 			       reviewer_session_failure_streak = 0,
 			       failure_reason = NULL, failure_raw = NULL, retry_at = NULL,
 			       retry_trigger = NULL, retry_parked_at_ms = NULL,
-			       updated_at = datetime('now')
-			 WHERE request_id = ?`,
+			       updated_at = datetime('now'),
+			       completed_at = COALESCE(completed_at, datetime('now'))
+			 WHERE request_id = ? AND status = 'running' AND voided_at IS NULL`,
 			[
 				verdict,
 				details?.reviewerVerdict ?? null,
@@ -23000,7 +23380,9 @@ export class StateStore {
 				requestId,
 			],
 		);
+		const updated = this.db.getRowsModified() > 0;
 		this.save();
+		return updated;
 	}
 
 	/**
@@ -23010,6 +23392,7 @@ export class StateStore {
 	 */
 	recordCodexReviewJobFailure(input: {
 		requestId: string;
+		expectStatus?: "running";
 		reason: string;
 		failureRaw?: string;
 		retryAt?: string;
@@ -23078,7 +23461,8 @@ export class StateStore {
 			       END,
 			       failure_attempt_count = failure_attempt_count + 1,
 			       updated_at = datetime('now')
-			 WHERE request_id = ? AND status NOT IN ('done','skipped')`,
+			 WHERE request_id = ? AND status NOT IN ('done','skipped') AND voided_at IS NULL
+			 ${input.expectStatus === "running" ? "AND status = 'running'" : ""}`,
 			[
 				input.reason,
 				input.failureRaw ?? null,
@@ -27363,6 +27747,14 @@ export class StateStore {
 			.prepare("SELECT * FROM lead_events WHERE seq = ?")
 			.get(seq) as Record<string, unknown> | undefined;
 		return row ? mapLeadEventRow(row) : null;
+	}
+
+	/** FLY-2882: metadata-only lookup (never reads `payload`). */
+	getLeadEventSessionKeyBySeq(seq: number): string | null {
+		const row = this.db.raw
+			.prepare("SELECT session_key FROM lead_events WHERE seq = ?")
+			.get(seq) as { session_key: unknown } | undefined;
+		return typeof row?.session_key === "string" ? row.session_key : null;
 	}
 
 	/** FLY-1687: exact per-(project, Lead) patrol chain head; no SQL LIKE. */
@@ -47243,14 +47635,6 @@ export class StateStore {
 				| "snapshot_fallback";
 			audit: boolean;
 			modelAssignment?: WorkflowModelAssignmentReceipt;
-			degradation?: {
-				assignedDispatch: {
-					vendor: "claude" | "codex";
-					model: string;
-					effort?: "low" | "medium" | "high" | "xhigh" | "max";
-				};
-				quotaEvidence: CodexPoolExhaustionFact;
-			};
 		};
 		env?: Record<string, string | undefined>;
 		standbyResumeEnabled?: boolean;
@@ -47297,7 +47681,6 @@ export class StateStore {
 		if (!node.dispatch || node.type === "gate") {
 			return { ok: false, reason: "not_start_node" };
 		}
-		const degradation = input.dispatchResolution?.degradation;
 		const wakeRuntime =
 			activationMode === "wake"
 				? this.getWorkflowExecutionRuntime(input.executionId)
@@ -47371,49 +47754,6 @@ export class StateStore {
 				};
 			}
 		}
-		const currentDegradationEvidence = () => {
-			if (!degradation) return false;
-			const current = this.codexQuota.getCurrentPoolExhaustionFact(
-				degradation.quotaEvidence.rootKey,
-				Date.parse(now),
-			);
-			return (
-				current !== undefined &&
-				canonicalSubmissionDigest(current) ===
-					canonicalSubmissionDigest(degradation.quotaEvidence)
-			);
-		};
-		const validDegradationProposal = () => {
-			if (!degradation) return false;
-			const assignment = input.dispatchResolution?.modelAssignment;
-			const opus = getModelConfigSnapshot().getModelRegistryEntry("opus");
-			return (
-				input.nodeId === "implement" &&
-				assignment?.basis.rule === "issue_node_weighted" &&
-				assignment.basis.nodeId === "implement" &&
-				(assignment.arm === "impl_sol56" || assignment.arm === "impl_sol6") &&
-				degradation.assignedDispatch.vendor === "codex" &&
-				degradation.assignedDispatch.model === assignment.model &&
-				degradation.assignedDispatch.effort === "xhigh" &&
-				input.dispatchResolution?.dispatch.vendor === "claude" &&
-				input.dispatchResolution.dispatch.model === MODEL_IDS.OPUS_55 &&
-				input.dispatchResolution.dispatch.effort === "xhigh" &&
-				assignment.basis.nodes.implement.some(
-					(arm) => arm.arm === "impl_opus" && arm.model === "opus",
-				) &&
-				opus?.id === MODEL_IDS.OPUS_55 &&
-				opus.runtimeVendor === "claude" &&
-				getModelConfigSnapshot().isModelSelectionSupported({
-					surface: "workflow",
-					model: opus.id,
-					effort: "xhigh",
-					runtimeVendor: "claude",
-				})
-			);
-		};
-		if (degradation && !validDegradationProposal())
-			return { ok: false, reason: "model_arm_degradation_invalid" };
-		const proposedDegradationApplied = currentDegradationEvidence();
 		const selectedDispatch = wakeRuntime
 			? {
 					vendor: wakeRuntime.vendor as "claude" | "codex",
@@ -47429,27 +47769,13 @@ export class StateStore {
 							}
 						: {}),
 				}
-			: proposedDegradationApplied
-				? (input.dispatchResolution?.dispatch ?? node.dispatch)
-				: (degradation?.assignedDispatch ??
-					input.dispatchResolution?.dispatch ??
-					node.dispatch);
+			: (input.dispatchResolution?.dispatch ?? node.dispatch);
 		const resolvedDispatch = {
 			...selectedDispatch,
 			model:
 				getModelConfigSnapshot().getModelRegistryEntry(selectedDispatch.model)
 					?.id ?? selectedDispatch.model,
 		};
-		const degradationAssignment =
-			inheritedDegradation?.assignment ??
-			(proposedDegradationApplied
-				? input.dispatchResolution?.modelAssignment
-				: undefined);
-		if (
-			(proposedDegradationApplied || inheritedDegradation) &&
-			!degradationAssignment
-		)
-			return { ok: false, reason: "model_arm_degradation_invalid" };
 		if (
 			node.capabilities.qa_verdict_emitter &&
 			node.capabilities.produces_output
@@ -47611,19 +47937,9 @@ export class StateStore {
 		}
 
 		let quotaRefused = false;
-		let degradationStale = false;
-		let degradationInvalid = false;
 		let outputCredential: string | undefined;
 		let submissionCredential: string | undefined;
 		this.db.transaction(() => {
-			if (proposedDegradationApplied && !validDegradationProposal()) {
-				degradationInvalid = true;
-				return;
-			}
-			if (proposedDegradationApplied && !currentDegradationEvidence()) {
-				degradationStale = true;
-				return;
-			}
 			if(quotaPaused()) {quotaRefused=true;return;}
 			this.invalidateCodexPreSpawnReceiptTx(input.executionId, now);
 			this.appendWorkflowEngineParkEventTx({
@@ -47719,10 +48035,12 @@ export class StateStore {
 					);
 				}
 			}
-			const degradationEventUid = degradationAssignment
+			// FLY-2891: new admissions never degrade; only a wake of an execution that
+			// was degraded before the removal re-records its inherited receipt.
+			const degradationEventUid = inheritedDegradation
 				? `model_arm_degraded:${input.runId}:${input.nodeId}:${activationId}`
 				: undefined;
-			if (degradationAssignment) {
+			if (inheritedDegradation) {
 				this.appendWorkflowRunEventCheckedTx({
 					runId: input.runId,
 					eventUid: degradationEventUid!,
@@ -47735,25 +48053,17 @@ export class StateStore {
 						nodeId: input.nodeId,
 						activationId,
 						assignmentEventUid: `model_arm_assigned:${input.runId}:${input.nodeId}`,
-						arm: degradationAssignment.arm,
+						arm: inheritedDegradation.assignment.arm,
 						degraded: true,
-						assignedModel: degradationAssignment.model,
+						assignedModel: inheritedDegradation.assignment.model,
 						actualModel: resolvedDispatch.model,
 						reason: "codex_pool_exhausted",
 						degradedAt: now,
-						quotaEvidence:
-							inheritedDegradation?.quotaEvidence ??
-							degradation!.quotaEvidence,
-						assignedEffort:
-							inheritedDegradation?.assignedEffort ??
-							degradation?.assignedDispatch.effort,
+						quotaEvidence: inheritedDegradation.quotaEvidence,
+						assignedEffort: inheritedDegradation.assignedEffort,
 						actualEffort: resolvedDispatch.effort,
-						...(inheritedDegradation
-							? {
-									originalDegradationEventUid:
-										inheritedDegradation.originalDegradationEventUid,
-								}
-							: {}),
+						originalDegradationEventUid:
+							inheritedDegradation.originalDegradationEventUid,
 					},
 				});
 			}
@@ -48006,10 +48316,6 @@ export class StateStore {
 				);
 			}
 		});
-		if (degradationInvalid)
-			return { ok: false, reason: "model_arm_degradation_invalid" };
-		if (degradationStale)
-			return { ok: false, reason: "model_arm_degradation_stale" };
 		if(quotaRefused) return {ok:false,reason:"codex_quota_paused"};
 		this.save();
 		return {
@@ -89760,8 +90066,6 @@ export type GeneralizedWorkflowAdmissionResult =
 			ok: false;
 			reason:
 				| "codex_quota_paused"
-				| "model_arm_degradation_stale"
-				| "model_arm_degradation_invalid"
 				| "wake_runtime_invalid"
 				| "wake_degradation_invalid"
 				| "invalid_expiry"

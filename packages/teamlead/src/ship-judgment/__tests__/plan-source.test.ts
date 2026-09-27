@@ -15,6 +15,7 @@ describe("reviewed plan source", () => {
 				questionId: "review-q1",
 				targetPath: "engineering/doc/FLY-2399-learning/plan.md",
 			});
+			store.claimCodexReviewJobRunning("review1");
 			store.completeCodexReviewJob("review1", "APPROVED");
 			expect(
 				store.readShipJudgmentPlanReference("r", "__main__"),

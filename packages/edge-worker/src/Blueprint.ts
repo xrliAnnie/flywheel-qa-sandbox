@@ -2361,6 +2361,14 @@ export class Blueprint {
 				// (event-route.ts), so "follow the existing gate flow" starts NO
 				// reviewer. Point them at the request-review lane explicitly, with the
 				// absolute CLI (bare `flywheel-comm` is not guaranteed on PATH).
+				// FLY-2891: the Claude-author local Codex design review must use the
+				// Bridge's reviewer model and write each round back to the Bridge.
+				if (!isCodexRunner && tier !== "none") {
+					docFlowLines.push(
+						"  During the Codex design review pass the Bridge's reviewer --model/--effort",
+						`  (printed by \`stage set design_review\`) to EVERY codex-companion call, and right after each round run \`node ${commCliPath} review-round design --exec-id ${executionId} --round <n> --verdict <APPROVED|CHANGES_REQUESTED> --thread <codexThreadId>\`.`,
+					);
+				}
 				if (isCodexRunner && tier !== "none") {
 					docFlowLines.push(
 						"  NOTE (codex author): the legacy design-review gate flow is SKIPPED for",
@@ -2701,7 +2709,7 @@ export class Blueprint {
 							// verify-approval merge gate), so surface the Codex status in the
 							// handoff so the founder isn't blind — they must NOT ship a PR whose
 							// current head hasn't passed Codex code review.
-							`a. Codex code review is REQUIRED (FLY-827). Run \`/codex-code-review\`, then \`node ${commCliPath} await-codex-gate code --exec-id ${executionId}\` (it verifies reviewedHeadSha === HEAD and reports the verdict). Only after it exits 0 is this PR eligible for the founder to ship.`,
+							`a. Codex code review is REQUIRED (FLY-827). Run \`/codex-code-review\` (pass the Bridge's reviewer --model to every codex-companion call and run \`node ${commCliPath} review-round code --exec-id ${executionId} --round <n> --verdict <APPROVED|CHANGES_REQUESTED> --thread <codexThreadId>\` right after each round — FLY-2891), then \`node ${commCliPath} await-codex-gate code --exec-id ${executionId}\` (it verifies reviewedHeadSha === HEAD and the reviewer model, and reports the verdict). Only after it exits 0 is this PR eligible for the founder to ship.`,
 							`b. Tell your Lead the PR is ready + its Codex status (non-blocking): \`node ${commCliPath} ask --lead ${ctx.leadId} --exec-id ${executionId} --report "DONE: PR <url> ready for human ship (no-transport runner). Codex code review: PASSED for head <sha> (or: NOT run — founder must NOT ship until it passes)."\``,
 							`c. Record the open PR as the landing signal: \`jq -n --argjson n <NUMBER> '{status:"ready_to_merge",prNumber:$n}' > ${landSignalPath}\``,
 							`d. Complete the session: \`node ${commCliPath} complete --route pr_handoff --pr <NUMBER>\` — this terminalizes you as 'completed' with the PR recorded (it never enters the approve/ship loop).`,
