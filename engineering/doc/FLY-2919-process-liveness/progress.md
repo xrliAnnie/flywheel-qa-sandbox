@@ -2,28 +2,24 @@
 issue: FLY-2919
 phase: implement
 phaseCursor: 0/6
-updated: 2026-09-27T01:45:37.634Z
-nextStep: "B6 checkpoint79c76da59: production common observer now protects
-  current Codex recovery-eligible bindings before first claim, until durable
-  current exhaustion; alive remains alive. Added read-only StateStore proof with
-  revision/episode/reservation/settlement validation; pending-reservation active
-  separated from expired-readiness. Existing budget/restart/owner admission and
-  mutation-commit reset unchanged. 13 explicit files240 pass, bounded owning
-  related9files212, affected deps build, teamlead/voice-codex typecheck and lint
-  pass; evidence archived. NEXT DIRECTLY implement production Heartbeat
-  declareZombie/reapOrphans and dispatcher C2 StateStore+CommDB convergence,
-  removing pane/server/age death authority and parked exemption. Reuse B5
-  bounded sampler, start/stop it and ensure same-pass death handling; invoke
-  existing reowner on demand outside mutation lease when recovery has priority.
-  Preserve completion-marker-first and death alert/duty replay. Sampler not
-  started and Heartbeat main-account path still old. Full A-F/nine tickets,
-  logical activation bridging, legacy binding, ordinary/rework settlement and
-  other direct consumers remain. A9 routes original15s timeout unresolved. No
-  review/PR/full CI/QA/handoff."
+updated: 2026-09-27T02:20:15.111Z
+nextStep: "B7 worktree WIP: Heartbeat readoption/orphan death now uses C2
+  process convergence; removed pane/server streak, parked exemption and age
+  force-fail. Plugin wires completion-first C2, bounded pending-duty replay and
+  exhausted reown callback. New real marker11, body15, dual-db13, parked12,
+  monitor22, reclaim22, basic23, zombie30 and wiring15 have passed individually
+  across edits. Earlier migration audit54 red resolved by updated process
+  fixtures; final selected18 plus related/build/dependent-typechecks/lint still
+  required after latest source cleanup. No B7 code commit yet. Next run final B7
+  verification and durable checkpoint, then start sampler production
+  cadence/dispatcher and remaining A-F/nine-ticket consumers. Sampler not
+  started; server-loss/crash-reaper/stale-terminal/other consumers, logical
+  activation bridging, legacy binding, ordinary-rework settlement and A9 timeout
+  remain. No review/PR/full CI/QA/handoff."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2919 progress
 **phase**: implement (0/6)
-**next**: B6 checkpoint79c76da59: production common observer now protects current Codex recovery-eligible bindings before first claim, until durable current exhaustion; alive remains alive. Added read-only StateStore proof with revision/episode/reservation/settlement validation; pending-reservation active separated from expired-readiness. Existing budget/restart/owner admission and mutation-commit reset unchanged. 13 explicit files240 pass, bounded owning related9files212, affected deps build, teamlead/voice-codex typecheck and lint pass; evidence archived. NEXT DIRECTLY implement production Heartbeat declareZombie/reapOrphans and dispatcher C2 StateStore+CommDB convergence, removing pane/server/age death authority and parked exemption. Reuse B5 bounded sampler, start/stop it and ensure same-pass death handling; invoke existing reowner on demand outside mutation lease when recovery has priority. Preserve completion-marker-first and death alert/duty replay. Sampler not started and Heartbeat main-account path still old. Full A-F/nine tickets, logical activation bridging, legacy binding, ordinary/rework settlement and other direct consumers remain. A9 routes original15s timeout unresolved. No review/PR/full CI/QA/handoff.
+**next**: B7 worktree WIP: Heartbeat readoption/orphan death now uses C2 process convergence; removed pane/server streak, parked exemption and age force-fail. Plugin wires completion-first C2, bounded pending-duty replay and exhausted reown callback. New real marker11, body15, dual-db13, parked12, monitor22, reclaim22, basic23, zombie30 and wiring15 have passed individually across edits. Earlier migration audit54 red resolved by updated process fixtures; final selected18 plus related/build/dependent-typechecks/lint still required after latest source cleanup. No B7 code commit yet. Next run final B7 verification and durable checkpoint, then start sampler production cadence/dispatcher and remaining A-F/nine-ticket consumers. Sampler not started; server-loss/crash-reaper/stale-terminal/other consumers, logical activation bridging, legacy binding, ordinary-rework settlement and A9 timeout remain. No review/PR/full CI/QA/handoff.
