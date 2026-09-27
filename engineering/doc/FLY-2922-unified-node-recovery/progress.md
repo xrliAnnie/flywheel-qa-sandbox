@@ -1,13 +1,13 @@
 ---
 issue: FLY-2922
 phase: implement
-phaseCursor: 1/6
-updated: 2026-09-27T01:49:29.156Z
-nextStep: Implement pre-admission failure projection back into unified recovery
+phaseCursor: 2/6
+updated: 2026-09-27T02:02:55.821Z
+nextStep: Audit and verify enrolled failure completion and carrier-close recovery
 chunks: []
 pointers: {}
 ---
 
 # FLY-2922 progress
-**phase**: implement (1/6)
-**next**: Implement pre-admission failure projection back into unified recovery
+**phase**: implement (2/6)
+**next**: Audit and verify enrolled failure completion and carrier-close recovery
