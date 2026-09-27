@@ -187,6 +187,34 @@ describe("Opus downlink", () => {
 		expect(h.downlink.queued().total).toBe(41);
 	});
 
+	it("keeps live voiced audio queued after the final replay packet drains", () => {
+		const h = harness();
+		for (let index = 0; index < 64; index += 1)
+			h.downlink.push(packet(index), { voiced: true, replay: true });
+
+		// Player and server both advance one 20 ms packet per cycle. Once the
+		// last replay packet is taken, the queue still contains the live answer
+		// that arrived behind it; none of that answer may be backlog-trimmed.
+		for (let index = 0; index < 64; index += 1) {
+			h.tickFor(1);
+			h.downlink.push(packet(100 + index), { voiced: true });
+		}
+
+		expect(h.downlink.queued()).toEqual({ total: 64, voiced: 64 });
+		expect(h.downlink.stats().trims).toBe(0);
+		expect(h.diagnostics).not.toContainEqual(
+			expect.objectContaining({ kind: "downlink_queue_trim" }),
+		);
+
+		// Once a pause lets the replay-derived debt fall below the live-backlog
+		// threshold, ordinary runaway-backlog trimming is armed again.
+		h.tickFor(41);
+		for (let index = 0; index < 3; index += 1)
+			h.downlink.push(packet(200 + index), { voiced: true });
+		expect(h.downlink.queued().total).toBe(3);
+		expect(h.downlink.stats().trims).toBe(1);
+	});
+
 	it("stops, cuts and reports when the lease is gone before a push", () => {
 		let leased = true;
 		const h = harness({

@@ -94,6 +94,8 @@ class OpusPacketStream extends Readable {
 export class OpusDownlink {
 	private stream?: OpusPacketStream;
 	private readonly queue: QueuedPacket[] = [];
+	/** Replay debt is digested only by playback and skipped silence. */
+	private replayBacklog = false;
 	private lastVoicedTakenAt?: number;
 	private voicedTaken = 0;
 	private trims = 0;
@@ -132,11 +134,9 @@ export class OpusDownlink {
 			silenceFill: meta.silenceFill === true,
 			pushedAt: this.now(),
 		});
+		this.replayBacklog ||= meta.replay === true;
 		this.stream.push(Buffer.from(payload));
-		if (
-			this.queue.length > TRIM_ABOVE_PACKETS &&
-			!this.queue.some((packet) => packet.replay)
-		)
+		if (this.queue.length > TRIM_ABOVE_PACKETS && !this.replayBacklog)
 			this.trim();
 		return true;
 	}
@@ -193,6 +193,7 @@ export class OpusDownlink {
 		if (this.stopped) return;
 		this.stopped = true;
 		this.queue.length = 0;
+		this.replayBacklog = false;
 		if (this.stream) {
 			this.stream.retired = true;
 			this.stream.destroy();
@@ -207,6 +208,7 @@ export class OpusDownlink {
 		const stream = new OpusPacketStream(() => this.taken(stream));
 		this.stream = stream;
 		this.queue.length = 0;
+		this.replayBacklog = false;
 		this.options.player.play(
 			this.options.createResource({ kind: "opus-stream", stream }),
 		);
@@ -217,6 +219,12 @@ export class OpusDownlink {
 		if (stream !== this.stream) return;
 		const packet = this.queue.shift();
 		if (!packet) return;
+		if (
+			this.replayBacklog &&
+			!this.queue.some((queued) => queued.replay) &&
+			this.queue.length < TRIM_ABOVE_PACKETS
+		)
+			this.replayBacklog = false;
 		const at = this.now();
 		if (packet.voiced && !packet.silenceFill) {
 			this.lastVoicedTakenAt = at;
