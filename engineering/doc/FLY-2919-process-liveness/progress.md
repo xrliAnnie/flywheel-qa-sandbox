@@ -2,23 +2,24 @@
 issue: FLY-2919
 phase: implement
 phaseCursor: 0/6
-updated: 2026-09-27T05:32:27.179Z
-nextStep: "B12 Claude legacy migration committed 63297be34. Unique native
-  session + independent OS identity, explicit null nonce/exec env, final CAS and
-  existing sampler integration; unresolved audit. Final local25 files640pass,
-  retention10pass, bounded related17 files567pass, affected+deps
-  build/types/lint0(26warnings); B12 evidence and discovery archived,12 current
-  TS hashes. Next B13: old Codex controller/accepted binding evidence and
-  same-physical logical activation, then common-reader migration of full
-  quiescence/closeout callers preserving trusted pre-adapter zero-evidence
-  exception. Do NOT re-enable neutralized ordinary StateStore quiescence gate;
-  extend existing strict needs_lead final transaction. C/D/E/F,nine-ticket
-  matrix,A9 original15s timeout,final effective review/PR/frozen-head CI/handoff
-  remain. Full goal active; no blocker/gate; no QA/full CI/completion claim."
+updated: 2026-09-27T05:44:58.902Z
+nextStep: "B13 WIP on pushed bbd61e384: found same physical generation was
+  observed/settled against original logical activation. Added read-only unique
+  latest immutable attribution; original owner/token/binding remain unchanged.
+  Common observer, final StateStore death CAS, committed proof reader and Comm
+  projection now share latest attribution. 2 causal RED -> GREEN; same-node
+  equal-instant attempt ordering1 additional RED -> GREEN. Convergence31pass,
+  real admitted wake integration1pass, initial StateStore body-death28pass.
+  Full19 selected files + retention + bounded related/build/types/lint now
+  running (/tmp/fly2919-b13-verify.py);6 TS files uncommitted. Next checkpoint
+  after validation, then old Codex controller evidence and full
+  quiescence/closeout caller migration with trusted pre-adapter exception,
+  remaining C/D/E/F/nine-ticket/A9 timeout/final review/PR/frozenCI/handoff.
+  Goal active, no blocker/gate."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2919 progress
 **phase**: implement (0/6)
-**next**: B12 Claude legacy migration committed 63297be34. Unique native session + independent OS identity, explicit null nonce/exec env, final CAS and existing sampler integration; unresolved audit. Final local25 files640pass, retention10pass, bounded related17 files567pass, affected+deps build/types/lint0(26warnings); B12 evidence and discovery archived,12 current TS hashes. Next B13: old Codex controller/accepted binding evidence and same-physical logical activation, then common-reader migration of full quiescence/closeout callers preserving trusted pre-adapter zero-evidence exception. Do NOT re-enable neutralized ordinary StateStore quiescence gate; extend existing strict needs_lead final transaction. C/D/E/F,nine-ticket matrix,A9 original15s timeout,final effective review/PR/frozen-head CI/handoff remain. Full goal active; no blocker/gate; no QA/full CI/completion claim.
+**next**: B13 WIP on pushed bbd61e384: found same physical generation was observed/settled against original logical activation. Added read-only unique latest immutable attribution; original owner/token/binding remain unchanged. Common observer, final StateStore death CAS, committed proof reader and Comm projection now share latest attribution. 2 causal RED -> GREEN; same-node equal-instant attempt ordering1 additional RED -> GREEN. Convergence31pass, real admitted wake integration1pass, initial StateStore body-death28pass. Full19 selected files + retention + bounded related/build/types/lint now running (/tmp/fly2919-b13-verify.py);6 TS files uncommitted. Next checkpoint after validation, then old Codex controller evidence and full quiescence/closeout caller migration with trusted pre-adapter exception, remaining C/D/E/F/nine-ticket/A9 timeout/final review/PR/frozenCI/handoff. Goal active, no blocker/gate.
