@@ -63,10 +63,17 @@ source/state/reason/sample/free/delta；真实 `buildCapacitySnapshot` 到
 随后技术合并 `origin/main@1f5626254`。FLY-2920 的 attempt generation、一次退休与
 ready retry 语义，和 FLY-2911 的 `accept_seq`、void/quiet-window/AbortSignal 语义均保留；
 claim 后 head-move CAS 明确期待 `running`，启动恢复仍退休旧 running source 而不自动
-materialize follower。合并交汇及 R1 共保留 23 个具体文件、667/667 tests；完整选择与
+materialize follower。合并交汇及 R1 共保留 24 个具体文件、672/672 tests；完整选择与
 排除理由见 `consumers-review-r1.json`。`capacity-route.test.ts` 的一次执行未返回最终
 receipt，按本地策略没有因输出截断而宽泛重跑，也不计为通过。
 
 合并后的 `pnpm lint` 成功（25 个仓库既有 warning），定向 Biome 成功；
 `pnpm --filter "flywheel-teamlead..." build` 成功。按 Lead 明示未运行覆盖整张
 teamlead 图的 `vitest related`，未运行整仓/整包测试，也未请求 full CI、QA 或 ship。
+
+精确头 `df3513ffd` 的 scoped Quick Gate 暴露一项仓库 guard 漏登记：
+`review-recovery-notice-sink.ts` 是绑定原 review question 的受审计消费者，但 FLY-1645
+允许清单尚未包含它。`a1ec4f914` 以红/绿 fixture 将该精确路径加入 allowlist；
+`node --test scripts/__tests__/fly1645-receipt-residue-gate.test.mjs` 5/5、真实
+`--main-only` 扫描 3040 文件通过，lint 同头通过。该修复会触发新一轮 exact-head
+Quick Gate 与代码复审；旧头的 APPROVED 不继承。

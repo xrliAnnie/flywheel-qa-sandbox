@@ -2,7 +2,7 @@
   "issue": "FLY-2920",
   "phase": "implement",
   "recordedAt": "2026-09-26T19:00:00-07:00",
-  "scope": "R1 blocking pressure-render fix plus origin/main review-lifecycle merge resolution",
+  "scope": "R1 blocking pressure-render fix, origin/main review-lifecycle merge resolution, and exact-head Quick Gate repair",
   "policy": "local-test-policy/v1",
   "discovery": {
     "commands": [
@@ -53,14 +53,16 @@
     { "file": "packages/teamlead/src/bridge/__tests__/review-target-containment.fly2901.test.ts", "tests": 2, "result": "passed" },
     { "file": "packages/teamlead/src/bridge/__tests__/review-recovery-target-repo.test.ts", "tests": 3, "result": "passed" },
     { "file": "packages/teamlead/src/__tests__/StateStore.review-rulings.test.ts", "tests": 11, "result": "passed" },
-    { "file": "packages/teamlead/src/bridge/__tests__/review-recovery-notice-sink.test.ts", "tests": 13, "result": "passed" }
+    { "file": "packages/teamlead/src/bridge/__tests__/review-recovery-notice-sink.test.ts", "tests": 13, "result": "passed" },
+    { "file": "scripts/__tests__/fly1645-receipt-residue-gate.test.mjs", "tests": 5, "result": "passed", "runner": "node:test" }
   ],
-  "retainedTotal": 667,
+  "retainedTotal": 672,
   "otherChecks": [
     { "command": "pnpm lint", "result": "passed_with_25_existing_warnings" },
     { "command": "pnpm exec biome check <10 changed review/pressure files>", "result": "passed" },
     { "command": "pnpm --filter \"flywheel-teamlead...\" build", "result": "passed" },
-    { "command": "git diff --cached --check -- <merge-resolution paths>", "result": "passed" }
+    { "command": "git diff --cached --check -- <merge-resolution paths>", "result": "passed" },
+    { "command": "node scripts/fly1645-receipt-residue-gate.mjs --main-only", "result": "passed_3040_files" }
   ],
   "excludedMatches": [
     {
