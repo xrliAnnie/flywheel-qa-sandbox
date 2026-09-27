@@ -364,4 +364,44 @@ describe("FLY-2919 atomic proven body death", () => {
 		db.exec("DROP TRIGGER fail_death");
 		expect(commit().ok).toBe(true);
 	});
+	it("lists a durable unprojected death after restart and marks only its exact duty", async () => {
+		const result = commit();
+		if (!result.ok) throw new Error(result.reason);
+		store.close();
+		store = await StateStore.create(join(root, "state.db"));
+		expect(
+			store.getExecutionBodyDeathObligation(result.obligation.obligationId),
+		).toEqual(result.obligation);
+		expect(store.listPendingExecutionBodyDeaths({ limit: 1 })).toEqual([
+			result.obligation,
+		]);
+		expect(
+			store.markExecutionBodyDeathProjected(
+				{ ...result.obligation, expectedCommIdentityRevision: "new-identity" },
+				new Date(clock).toISOString(),
+			),
+		).toBe(false);
+		expect(store.listPendingExecutionBodyDeaths({ limit: 1 })).toHaveLength(1);
+		expect(
+			store.markExecutionBodyDeathProjected(
+				result.obligation,
+				new Date(clock).toISOString(),
+			),
+		).toBe(true);
+		expect(
+			store.markExecutionBodyDeathProjected(
+				result.obligation,
+				new Date(clock + 1000).toISOString(),
+			),
+		).toBe(true);
+		expect(store.listPendingExecutionBodyDeaths({ limit: 1 })).toEqual([]);
+		expect(
+			store.getExecutionBodyDeathObligation(result.obligation.obligationId),
+		).toEqual(result.obligation);
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((e) => e.kind === "body_death_projected"),
+		).toHaveLength(1);
+	});
 });

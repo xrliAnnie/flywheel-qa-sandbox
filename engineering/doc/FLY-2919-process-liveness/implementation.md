@@ -377,3 +377,19 @@ B3 最终追加 completed+retiring 负控得到1 RED/24 pass，修后25 GREEN：
 本批显式16个具体文件逐一运行，按每文件最后结果合计 **428 pass / 1既有skip**；其中新死亡事务25、FLY-2211信号清单5、generalized-execution73与Tmux生产绑定14。owning related按两个明确include清单分开运行，实际8文件 **365 pass / 1既有skip**。teamlead及依赖build、teamlead与voice-codex typecheck、lint均exit0（25既有warnings）。没有新增shell测试。原始红/绿及回归日志、相关配置、源码SHA归档 `implementation-b3-evidence.json.gz`；查询及逐路径排除理由在 `implementation-b3-consumers.json.gz`。StateStore旧代码除新增导入和本入口外逐字不变，无schema/guard放宽。
 
 下步仍须完成B/C生产接线：在lease外对账marker与采样；以当前逻辑activation接上同物理generation重入；读取/重放可信body_death义务、CommDB身份epoch CAS、TURN比较撤销和founder/rework wake结账；再接Heartbeat/dispatcher和其余窗口消费者。不得把本检查点报告为完整死亡收敛或实现交卷。上轮C1是已提交的实际进展，本轮继续推进；目标保持全部A–F与九单范围。
+
+## C2 双库死亡投影与崩溃重放（执行 bd58c685）
+
+在 B3 `0902cc61f` 上继续，TURN implement epoch14。新增 Bridge 内部协调入口：采样与 complete-marker 对账均在 mutation lease 外；采样前记下 CommDB identity revision 与 TURN holder/epoch，await 后重新核对，再调用 B3 同步死亡 CAS。采样期间同 execution 被颁发新 TURN 的负控先得到 1 RED/10 pass（旧实现错误返回 committed），增加采样前后 epoch 核对后 11 GREEN；不能用“仍是同 execution”覆盖新授权。
+
+StateStore 的不可变 `body_death` event 是待投影义务。新增有界读取游标（1–64）及 `body_death_projected` 幂等回执，不新增表；首次投影只能由 Bridge 重新读到的原义务授权。短 mutation lease 只覆盖同步跨库核对、CommDB 投影和 StateStore 回执；异常保留 lease 至 TTL，下一次重放仍用同义务。新物理 generation 未提交投影时拒绝旧证据，不把旧死亡重绑到新 writer。真正提交过的死亡义务允许 10 秒证据过期后投影；没有实际提交的旧采样仍拒绝。
+
+CommDB 新 `projectProvenBodyDeath` 独立于 land reservation，使用既有 closeout receipt 表。一次事务内核 identity epoch、精确 TURN compare-delete、founder wake terminal receipt/原始来源与 durable wake_failed 告警、终态镜像和 parked 声明清除。失败/blocked 保留原结局；已完成保持 completed，显式结束映射保留具体 terminalReason。已有 review gate、近期 report 与普通/rework wake 保留。**普通/rework wake 仍须由既有 replacement/retirement receipt 路径结账，当前 identity row 保留；projected 回执不表示所有 wake 或物理清理已完成。**未新增 Runner HTTP/CLI 接受 proof 的入口。
+
+CommDB 的既有方法按字节保持不变（剥除新 import 与新 method 后等于 B3 HEAD）；FLY-2567 manifest 只刷新 db.ts 成员并写明两种 token-savings mode 的既有查询/分页/bootstrap 行为均未变，独立 legacy generator oracle 保留。第一次 guard 为 5 RED/12 pass，精确更新依据后17 GREEN；没有放宽 guard。
+
+新入口的 scaffold RED：CommDB15 fail/1 pass、StateStore reader1 fail/25 pass、双库协调8 fail/1 pass；这些只算契约缺口，不冒称九单生产原现象。双库真实临时 SQLite fixture 覆盖 StateStore 已提交/CommDB 未提交，以及 CommDB 已提交/StateStore 未回执两个崩溃切点，关闭重开并经过61秒再用原义务恢复；核对关闭开关仍可补旧已提交义务、重复投影不触碰新身份、回执插入失败全事务回滚、lease争用先拒绝后重试、marker/开关/身份/TURN在await中变化时零死亡写。
+
+本批仍未接生产 Heartbeat/dispatcher/其余窗口消费者；同物理generation的新逻辑activation桥接、独立采样节奏、reown生产保护、legacy迁移、普通/rework义务及完整A–F/九单均未完成。A9 routes原15秒导入超时未在本批关闭。没有review/PR/full CI/QA/handoff完成声明。
+
+C2 验证收齐：16个具体文件依次执行337 pass；限定发现文件的 owning related 为 comm7文件130 pass、teamlead6文件181 pass。teamlead及依赖build、teamlead/voice-codex typecheck、lint均exit0（25条既有warning）。初次build缺lib.ts类型导出及owner缩窄、初次lint导入分隔错误均已修复并重跑通过；不算产品行为RED。无整库/整包测试，无新shell测试。全部红绿、初次失败和最终检查日志、命令、related配置、现有db方法字节核对及源码SHA256归档 implementation-c2-evidence.json.gz；逐查询消费者/排除理由归档 implementation-c2-consumers.json.gz。

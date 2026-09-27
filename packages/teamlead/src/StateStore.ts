@@ -16442,6 +16442,116 @@ export class StateStore {
 		}
 	}
 
+	/** Read only the immutable death event, never a caller-supplied obligation. */
+	getExecutionBodyDeathObligation(
+		obligationId: string,
+	): BodyDeathObligation | undefined {
+		const event =
+			this.workflowSelectAll(
+				"SELECT * FROM workflow_run_event WHERE event_uid = ?",
+				[obligationId],
+			)[0] ??
+			findArchivedTerminalRow(this.db.raw, "workflow_run_event", [
+				obligationId,
+			]);
+		if (!event || event.kind !== "body_death") return undefined;
+		try {
+			const value = JSON.parse(String(event.payload)) as BodyDeathObligation;
+			if (
+				value.version !== 1 ||
+				value.obligationId !== obligationId ||
+				obligationId !==
+					`body_death:${value.observation.identity.executionId}:${value.observation.identity.generation}` ||
+				value.observation.verdict !== "dead" ||
+				event.execution_id !== value.observation.identity.executionId ||
+				event.run_id !== value.runId ||
+				event.node_id !== value.nodeId
+			)
+				return undefined;
+			return value;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/** Bounded restart cursor; the event is the duty, its projection event the receipt. */
+	listPendingExecutionBodyDeaths(input: {
+		limit: number;
+		afterId?: string;
+	}): BodyDeathObligation[] {
+		if (
+			!Number.isSafeInteger(input.limit) ||
+			input.limit < 1 ||
+			input.limit > 64
+		)
+			throw new Error("invalid_body_death_page");
+		return this.workflowSelectAll(
+			`SELECT death.event_uid FROM workflow_run_event death
+			WHERE death.kind = 'body_death' AND death.event_uid > ?
+			AND NOT EXISTS (SELECT 1 FROM workflow_run_event projected WHERE projected.event_uid = death.event_uid || ':projected')
+			ORDER BY death.event_uid LIMIT ?`,
+			[input.afterId ?? "", input.limit],
+		)
+			.map((row) => this.getExecutionBodyDeathObligation(String(row.event_uid)))
+			.filter((value): value is BodyDeathObligation => value !== undefined);
+	}
+
+	/** Called only after the exact CommDB projection returned its durable receipt. */
+	markExecutionBodyDeathProjected(
+		obligation: BodyDeathObligation,
+		now: string,
+	): boolean {
+		if (!StateStore.workflowFiniteTimestamp(now)) return false;
+		const result = this.db.raw
+			.transaction(() => {
+				const stored = this.getExecutionBodyDeathObligation(
+					obligation.obligationId,
+				);
+				if (
+					!stored ||
+					canonicalSubmissionDigest(stored) !==
+						canonicalSubmissionDigest(obligation)
+				)
+					return false;
+				const eventUid = `${obligation.obligationId}:projected`;
+				const payload = {
+					obligationId: obligation.obligationId,
+					obligationDigest: canonicalSubmissionDigest(obligation),
+					commReceiptId: `${obligation.obligationId}:projection`,
+				};
+				const prior =
+					this.workflowSelectAll(
+						"SELECT payload FROM workflow_run_event WHERE event_uid = ?",
+						[eventUid],
+					)[0] ??
+					findArchivedTerminalRow(this.db.raw, "workflow_run_event", [
+						eventUid,
+					]);
+				if (prior) {
+					try {
+						return (
+							canonicalSubmissionDigest(JSON.parse(String(prior.payload))) ===
+							canonicalSubmissionDigest(payload)
+						);
+					} catch {
+						return false;
+					}
+				}
+				this.appendWorkflowRunEventCheckedTx({
+					runId: obligation.runId,
+					eventUid,
+					kind: "body_death_projected",
+					nodeId: obligation.nodeId,
+					executionId: obligation.observation.identity.executionId,
+					payload,
+				});
+				return true;
+			})
+			.immediate();
+		if (result) this.save();
+		return result;
+	}
+
 	/**
 	 * Commit a Bridge-observed physical death and its replayable projection duty.
 	 * OS sampling and completion reconciliation MUST precede this synchronous

@@ -16,6 +16,11 @@ import {
 	installSqlTiming,
 } from "flywheel-config";
 import { AUTO_NARROW_ACTOR } from "./auto-narrow-contract.js";
+import {
+	type BodyDeathProjectionProof,
+	type BodyDeathProjectionResult,
+	isBodyDeathProjectionProof,
+} from "./body-death-proof.js";
 import { openCommDbWritable } from "./commdb-open-gate.js";
 import {
 	COMPLETION_DRAIN_PROTOCOL_VERSION,
@@ -10141,6 +10146,128 @@ export class CommDB {
 			revision: `epoch:${epoch}`,
 			contentDigest: canonicalSubmissionDigest(identity),
 		};
+	}
+
+	/** Project a verified StateStore death duty, retaining identities and unretired
+	 * wakes for their existing recovery protocols. This is not a land reservation.
+	 * Only an in-process Bridge verifier can authorize the first projection. */
+	projectProvenBodyDeath(
+		proof: BodyDeathProjectionProof,
+		options: {
+			nowMs: number;
+			verifyCommitted(proof: BodyDeathProjectionProof): boolean;
+		},
+	): BodyDeathProjectionResult {
+		if (!isBodyDeathProjectionProof(proof, options.nowMs))
+			return { projected: false, reason: "invalid_body_death_proof" };
+		const receiptId = `${proof.obligationId}:projection`;
+		const digest = canonicalSubmissionDigest(proof);
+		return this.db
+			.transaction((): BodyDeathProjectionResult => {
+				const prior = this.db
+					.prepare(
+						"SELECT input_digest, result_json FROM closeout_finalization_receipt WHERE reservation_id = ?",
+					)
+					.get(receiptId) as
+					| { input_digest: string; result_json: string }
+					| undefined;
+				if (prior) {
+					if (prior.input_digest !== digest)
+						return { projected: false, reason: "closeout_receipt_conflict" };
+					return {
+						projected: true,
+						idempotentReplay: true,
+						result: JSON.parse(prior.result_json),
+					};
+				}
+				// Unlike a fresh OS observation, a StateStore-committed duty does not
+				// expire while the Bridge is down. Verify the immutable commit itself.
+				try {
+					if (options.verifyCommitted(proof) !== true)
+						return { projected: false, reason: "body_death_unverified" };
+				} catch {
+					return { projected: false, reason: "body_death_unverified" };
+				}
+				const identity = this.getSessionCloseoutIdentity(proof.executionId);
+				if (
+					identity.revision !== proof.expectedIdentityRevision ||
+					(identity.session &&
+						(identity.session.projectName !== proof.projectName ||
+							identity.session.issueId !== proof.issueId))
+				)
+					return { projected: false, reason: "closeout_identity_changed" };
+				const heldTurns = this.db
+					.prepare(
+						"SELECT issue_id, epoch FROM three_stage_turn WHERE holder_exec_id = ?",
+					)
+					.all(proof.executionId) as { issue_id: string; epoch: number }[];
+				if (
+					heldTurns.some(
+						(turn) =>
+							turn.issue_id !== proof.issueId ||
+							turn.epoch !== proof.observedTurnEpoch,
+					)
+				)
+					return { projected: false, reason: "turn_changed" };
+				let turnRevoked = false;
+				if (heldTurns.length) {
+					turnRevoked = this.deleteTurnIfCurrent(
+						proof.issueId,
+						proof.executionId,
+						proof.observedTurnEpoch!,
+					);
+					if (!turnRevoked) throw new Error("body_death_turn_cas_failed");
+				}
+				const founderWakeIds: string[] = [];
+				for (const wake of this.listRunnerPhaseWakes(proof.executionId)) {
+					if (
+						wake.state !== "pending" ||
+						runnerWakeMetadata(wake).origin !== "founder"
+					)
+						continue;
+					const settled = this.completeRunnerPhaseWakeTerminal({
+						executionId: proof.executionId,
+						messageId: wake.message_id,
+						terminalLifecycleId: proof.terminalLifecycleId,
+						reason: "body_gone_before_started",
+						nowMs: options.nowMs,
+					});
+					if (!settled) throw new Error("body_death_founder_wake_unsettled");
+					founderWakeIds.push(wake.message_id);
+				}
+				this.db
+					.prepare(
+						"UPDATE sessions SET status = ?, ended_at = COALESCE(ended_at, ?) WHERE execution_id = ?",
+					)
+					.run(proof.terminalStatus, proof.committedAt, proof.executionId);
+				this.db
+					.prepare("DELETE FROM runner_declared_states WHERE execution_id = ?")
+					.run(proof.executionId);
+				const effects = this.finalizeSessionEffects(proof.executionId, false);
+				const result = {
+					...effects,
+					turnRevoked,
+					founderWakeIds,
+					pendingWakeIds: this.listRunnerPhaseWakes(proof.executionId)
+						.filter((wake) => wake.state === "pending")
+						.map((wake) => wake.message_id),
+				};
+				this.db
+					.prepare(`INSERT INTO closeout_finalization_receipt
+				(reservation_id,evidence_id,execution_id,expected_identity_digest,input_digest,result_json,finalized_at)
+				VALUES (?,?,?,?,?,?,?)`)
+					.run(
+						receiptId,
+						proof.evidenceId,
+						proof.executionId,
+						proof.expectedIdentityRevision,
+						digest,
+						canonicalJsonString(result),
+						new Date(options.nowMs).toISOString(),
+					);
+				return { projected: true, idempotentReplay: false, result };
+			})
+			.immediate();
 	}
 
 	/**

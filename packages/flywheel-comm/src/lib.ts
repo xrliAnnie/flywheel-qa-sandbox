@@ -1,3 +1,7 @@
+export type {
+	BodyDeathProjectionProof,
+	BodyDeathProjectionResult,
+} from "./body-death-proof.js";
 export type { CleanupOptions, CleanupResult } from "./cleanup.js";
 export { cleanupStaleSessions } from "./cleanup.js";
 export type { CaptureArgs } from "./commands/capture.js";
