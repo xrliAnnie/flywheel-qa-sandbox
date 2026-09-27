@@ -161,6 +161,163 @@ describe("FLY-2919 body death across StateStore and CommDB", () => {
 		rmSync(root, { recursive: true, force: true });
 	});
 
+	it("reads settled current-generation death after observation expiry and restart without another OS probe", async () => {
+		const result = await convergeExecutionBody(deps, "exec-1");
+		if (result.kind !== "committed") throw new Error(result.reason);
+		expect(result.projection.projected).toBe(true);
+		clock += 60_000;
+		expect(deps.observer.isCurrent(result.obligation.observation)).toBe(false);
+		expect(store.getCurrentProjectedExecutionBodyDeath("exec-1")).toEqual(
+			result.obligation,
+		);
+		store.close();
+		store = await StateStore.create(join(root, "state.db"));
+		expect(store.getCurrentProjectedExecutionBodyDeath("exec-1")).toEqual(
+			result.obligation,
+		);
+		expect(capture).toHaveBeenCalledOnce();
+	});
+	it("requires the exact projection receipt before exposing durable death", async () => {
+		const acknowledge = vi
+			.spyOn(store, "markExecutionBodyDeathProjected")
+			.mockReturnValue(true);
+		const result = await convergeExecutionBody(deps, "exec-1");
+		if (result.kind !== "committed") throw new Error(result.reason);
+		acknowledge.mockRestore();
+		expect(
+			store.getCurrentProjectedExecutionBodyDeath("exec-1"),
+		).toBeUndefined();
+		expect(
+			store.markExecutionBodyDeathProjected(
+				result.obligation,
+				new Date(clock).toISOString(),
+			),
+		).toBe(true);
+		const id = `${result.obligation.obligationId}:projected`;
+		const reads = store as unknown as {
+			workflowSelectAll(
+				sql: string,
+				parameters: unknown[],
+			): Record<string, unknown>[];
+		};
+		const original = reads.workflowSelectAll.bind(store);
+		const row = original(
+			"SELECT * FROM workflow_run_event WHERE event_uid = ?",
+			[id],
+		)[0]!;
+		// Events are append-only. Inject corrupt reads without disabling that guard.
+		const read = vi.spyOn(reads, "workflowSelectAll");
+		for (const payload of [
+			"{",
+			"{}",
+			JSON.stringify({
+				...JSON.parse(String(row.payload)),
+				obligationDigest: "stale",
+			}),
+		]) {
+			read.mockImplementation((sql, parameters) =>
+				parameters[0] === id
+					? [{ ...row, payload }]
+					: original(sql, parameters),
+			);
+			expect(
+				store.getCurrentProjectedExecutionBodyDeath("exec-1"),
+			).toBeUndefined();
+		}
+		read.mockRestore();
+		expect(store.getCurrentProjectedExecutionBodyDeath("exec-1")).toEqual(
+			result.obligation,
+		);
+	});
+	it("refuses resurrected or rebound state without changing any stored evidence", async () => {
+		const result = await convergeExecutionBody(deps, "exec-1");
+		if (result.kind !== "committed") throw new Error(result.reason);
+		const mutations = [
+			"UPDATE execution_process_owner SET generation = generation + 1",
+			"UPDATE execution_process_owner SET owner_token = 'different'",
+			"UPDATE execution_process_owner SET spawn_epoch = spawn_epoch + 1",
+			"UPDATE execution_process_owner SET binding_spawn_epoch = 99",
+			"UPDATE execution_process_owner SET binding_digest = 'different'",
+			"UPDATE execution_process_owner SET binding_json = '{}'",
+			"UPDATE execution_process_owner SET activation_id = 'different'",
+			"UPDATE execution_process_owner SET close_requested = 0",
+			"UPDATE execution_process_owner SET owner_drained_receipt = NULL",
+			"UPDATE execution_process_owner SET spawn_inflight = 1",
+			"UPDATE execution_process_owner SET restart_in_progress = 1",
+			"UPDATE workflow_execution_process_body SET generation = generation + 1",
+			"UPDATE workflow_execution_process_body SET state = 'active'",
+			"UPDATE sessions SET status = 'running'",
+			"UPDATE sessions SET terminal_lifecycle_id = 'different'",
+		];
+		const rollback = new Error("test-rollback");
+		for (const sql of mutations) {
+			try {
+				raw().transaction(() => {
+					raw().prepare(sql).run();
+					expect(
+						store.getCurrentProjectedExecutionBodyDeath("exec-1"),
+						sql,
+					).toBeUndefined();
+					throw rollback;
+				})();
+			} catch (error) {
+				if (error !== rollback) throw error;
+			}
+			expect(store.getCurrentProjectedExecutionBodyDeath("exec-1")).toEqual(
+				result.obligation,
+			);
+		}
+		// A successor occupying the workflow slot does not revive the old physical body.
+		raw()
+			.prepare("UPDATE workflow_run_node SET execution_id = 'successor'")
+			.run();
+		expect(store.getCurrentProjectedExecutionBodyDeath("exec-1")).toEqual(
+			result.obligation,
+		);
+	});
+
+	it("revalidates settled death inside the replacement transaction", async () => {
+		const death = await convergeExecutionBody(deps, "exec-1");
+		expect(death.kind).toBe("committed");
+		raw()
+			.prepare(
+				"UPDATE workflow_run SET engine_owned = 1 WHERE run_id = 'run-1'",
+			)
+			.run();
+		const input = {
+			runId: "run-1",
+			nodeId: "implement",
+			attempt: 1,
+			deadExecutionId: "exec-1",
+			newExecutionId: "successor",
+			reason: "body_death",
+			livenessEvidence: {
+				liveness: "dead" as const,
+				observedAt: new Date(clock).toISOString(),
+			},
+			now: new Date(clock).toISOString(),
+		};
+		expect(
+			store.rollbackDeadWorkflowNodeExecution({
+				...input,
+				isBodyDeathCurrent: () => false,
+			}),
+		).toMatchObject({ ok: false, reason: "body_death_authority_changed" });
+		raw()
+			.prepare(
+				"UPDATE execution_process_owner SET spawn_epoch = spawn_epoch + 1 WHERE execution_id = 'exec-1'",
+			)
+			.run();
+		expect(
+			store.rollbackDeadWorkflowNodeExecution({
+				...input,
+				isBodyDeathCurrent: () => true,
+			}),
+		).toMatchObject({ ok: false, reason: "body_death_authority_changed" });
+		expect(
+			store.getWorkflowRunNode("run-1", "implement", 1)?.execution_id,
+		).toBe("exec-1");
+	});
 	it("retries a transient mutation lease outside the lease and commits after release", async () => {
 		const claim = store.claimExecutionMutationLease(
 			"exec-1",

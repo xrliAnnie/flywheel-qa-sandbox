@@ -10,6 +10,17 @@ const runInfraSource = readFileSync(
 );
 
 describe("FLY-2211 Bridge recovery wiring", () => {
+	it("FLY-2919 gives the dispatcher a synchronous managed body reader", () => {
+		expect(source).toContain("let executionBodyReader:");
+		expect(source).toContain("readBodyLiveness:");
+		expect(source).toContain(
+			"executionBodyReader = createExecutionBodyReader(",
+		);
+		expect(source).toContain(
+			"isEnabled: () => storeExecutionBodyDeathEnabled(flagStore)",
+		);
+	});
+
 	it("FLY-2919 injects the durable process owner into the shared dispatch/rescue factory", () => {
 		expect(runInfraSource).toContain(
 			"createExecutionProcessOwnerFactory(store)",

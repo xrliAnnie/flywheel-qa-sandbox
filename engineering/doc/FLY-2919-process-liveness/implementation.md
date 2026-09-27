@@ -485,3 +485,25 @@ B8 库存补强：审查发现仅凭 owner drain 会在原生 stop 已出收据�
 B8 验证诊断：最终14个具体文件逐一273 pass。限定 owning related 的首轮9文件中8文件通过，owner 文件5项 beforeEach 超过原10秒，并伴随 worker onTaskUpdate timeout；当时日志同时出现大量250–800ms slow-SQL。只对失败 owner 文件重跑 related，保留原期限与断言，37项全绿（18.23秒）。因此 related 覆盖为9文件219项跨两次执行，不伪报一次全绿；完整失败/重试日志保留。
 
 B8 最终源码的 teamlead及依赖build、teamlead/voice-codex typecheck、lint均exit0（25既有warning）。10个源码SHA256已核一致；明确文件/限定related/失败与重试日志、命令及配置归档 implementation-b8-evidence.json.gz，检索与排除理由归档 implementation-b8-consumers.json.gz。无整库/整包测试、新shell测试、真实OS/529、最终review/PR/full CI/QA/handoff声明。
+
+## B9 dispatcher 共同死亡证据（执行 bd58c685）
+
+从已推送 B8 `8b63b9bac` 续接。新增只读 getCurrentProjectedExecutionBodyDeath，查同generation不可变死亡义务与精确 projected回执，核 owner token/spawn epoch/binding digest及binding内容、close/drain、物理closed/standby、terminal lifecycle及不可变activation。不能用10秒采样过期阻挡已结账义务，但任何新物理身份或新activation均拒绝。采样前证据仍按原期限使用；没有给原BodyObservation延寿。
+
+新增首批3项在旧接口上3 RED/16 pass；实现后18 pass，剩1项测试错误地试图更新append-only事件而被现有trigger挡住。未删除守卫，改为真实缺失ack + 损坏读取注入后19 GREEN。随后补后继已占节点负控：旧物理死亡事实不能因此消失（后继启动同样需要读前身体已死），第一版方法1 RED/18 pass；删除的是物理事实读取器的当前node槽限制，替换事务本身仍核当前run/node/attempt/execution。该修正及后续CAS测试的最终结果见本节末尾。
+
+新同步reader只有两个可用来源：原sampler可读alive、或上述已投影的当前物理死亡事实。未投影dead样本/缺证据/读失败只返回unknown并请求采样；每次读managed flag，关闭或异常返回unknown。5项reader测试先缺模块RED，补实现5 GREEN。该reader是调度入口，不独立授权事务写入。
+
+dispatcher新增同步readBodyLiveness并优先使用；默认不再调用窗口探针，未接reader时unknown。删除dead sweep的账面终态前置；普通缓存miss不伪装成三次OS探针告警。plugin注入共同reader，仍使用原runtime唯一缓存。StateStore替换事务对已登记owner或新reader调用者，要求同run/node/attempt已结账物理死亡证明，并在同步事务内执行managed flag/身份复核。尚未登记的legacy调用保留原兼容入口，后续legacy迁移必须继续消除；不能据本批声称所有死亡消费者完成。
+
+因果负控：新dispatcher五个用例在旧实现5 RED（新read从未调用，包括working/awaiting_review）；CAS用例先RED，授权回调false时旧代码竟返回ok:true并提交替换。最小修复后正在验证正常单一替换、活动基线await期间关flag/变generation零替换、旧死亡事实在节点移交后仍可读。三组production结构、相关守卫、完整具体文件/owning related/build/typecheck/lint尚未完成。该阶段B9尚未提交；A–F/九单及所有之前记录的剩余范围不变。
+
+B9 继续验证：追加CAS guard后，共同收敛具体文件20项全绿（/tmp/fly2919-b9-proof-final.log）。dispatcher首轮绿测暴露3项新fixture未seed activation，以及2项原测试在主机load约256时原5秒timeout；补fixture不改生产逻辑/超时，保留日志，正在跑完整dispatcher文件。同期只读inbox的SQL曾耗时9.8/36.3秒，未因资源等待声明blocked或修改服务。
+
+下一组已定位但未修改：plugin.ts 的 ServerLossCoordinator.targetGone 仍将 registry gone / pane absent/dead_pin 映成死亡，migrate仍applyTransition或forceStatus failed（本批约161xx行）；crash-reaper.ts仍以dead-pin+心跳年龄取得ownership并在窗口kill后改terminated；zombie-scan仍接受targetAlive窗口布尔值。这些不能因B9接通dispatcher而漏掉，必须继续统一BodyObservation/C2并让窗口清理不再决定生命。
+
+B9 fixture诊断更正：完整dispatcher首轮142 pass/3失败，三项为重复绑定UNIQUE约束。到行核实getWorkflowActivationForAttempt要求executionId；新测试漏参导致原查询为空，并非activation不存在。已撤回错误的seed补丁，只补必填executionId，正在重跑三项。保留两轮诊断日志；未改activation生产逻辑或放松约束。
+
+B9 最终验证进度：完整dispatcher已145 GREEN；首批14个具体文件全部通过，限定related为8文件304 pass/1个既有skip。受影响依赖build与teamlead/voice-codex typecheck均通过。首次lint仅因新let类型声明需换行而exit1；只调整类型注解空白，原/新源码hash及精确替换归档候选为format-only proof。接线结构18项复验通过，完整lint exit0（26 warnings，较既有25项多一条晚赋值let的useConst提示，未禁用规则）。进一步字面检索替换事务直接调用者，补留quota/rework/resume的5文件及对应bounded related，正在逐文件执行；未运行整库/整包suite。
+
+B9 最终检查点：19个明确选择文件逐一480 pass，保留StateStore.fly1385-dead-exec既有1个operator管理skip（未修改该文件）；两组限定owning related分别8文件304 pass/1既有skip与5文件104 pass。依赖build、teamlead及voice-codex typecheck、完整lint最终exit0。8个源码SHA256已核一致；唯一在语义验证后发生的源码变化是plugin类型注解换行，before/after hash与精确替换已单独归档，并复验18项接线结构与lint。全部命令、红绿、中间fixture/格式诊断和配置归档implementation-b9-evidence.json.gz；直接调用者、完整匹配及逐项排除理由归档implementation-b9-consumers.json.gz。无整库/整包suite、新shell测试、真实OS/529或最终review/PR/CI/QA/handoff声明。下一批直接迁移已定位的server-loss/crash-reaper/zombie-scan等旧消费者，继续完整A–F/九单，不停在本检查点。

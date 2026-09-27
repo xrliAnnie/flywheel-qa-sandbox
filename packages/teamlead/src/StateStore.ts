@@ -16474,6 +16474,87 @@ export class StateStore {
 		}
 	}
 
+	/** Read current physical death after its cross-store duty is settled. This is
+	 * an immutable committed fact, not a refreshed ten-second OS observation. */
+	getCurrentProjectedExecutionBodyDeath(
+		executionId: string,
+	): BodyDeathObligation | undefined {
+		const owner = this.executionProcessOwners.get(executionId);
+		if (!owner) return undefined;
+		const duty = this.getExecutionBodyDeathObligation(
+			`body_death:${executionId}:${owner.generation}`,
+		);
+		if (!duty) return undefined;
+		const observation = duty.observation;
+		const identity = observation.identity;
+		const session = this.getSession(executionId);
+		const body = this.getWorkflowExecutionProcessBody(executionId);
+		const activation = identity.activationId
+			? this.getWorkflowActivation(identity.activationId)
+			: undefined;
+		if (
+			!session ||
+			!body ||
+			!activation ||
+			!duty.terminalLifecycleId ||
+			session.status !== duty.terminalStatus ||
+			session.terminal_lifecycle_id !== duty.terminalLifecycleId ||
+			session.adapter_type !== identity.adapter ||
+			owner.activation_id !== identity.activationId ||
+			owner.generation !== identity.generation ||
+			body.generation !== identity.generation ||
+			(body.state !== "closed" && body.state !== "standby") ||
+			owner.owner_token !== observation.ownerToken ||
+			owner.spawn_epoch !== observation.spawnEpoch ||
+			owner.binding_spawn_epoch !== observation.spawnEpoch ||
+			owner.binding_digest !== observation.bindingDigest ||
+			!this.executionProcessOwners.getBinding(executionId) ||
+			owner.close_requested !== 1 ||
+			owner.spawn_inflight !== 0 ||
+			owner.restart_in_progress !== 0 ||
+			!owner.owner_drained_receipt ||
+			activation.execution_id !== executionId ||
+			activation.run_id !== duty.runId ||
+			activation.node_id !== duty.nodeId ||
+			activation.attempt !== duty.attempt ||
+			this.listWorkflowActivationsForActor(executionId).some(
+				(other) =>
+					other.activation_id !== activation.activation_id &&
+					(other.bound_at >= activation.bound_at ||
+						other.attempt > activation.attempt),
+			)
+		)
+			return undefined;
+		const receiptId = `${duty.obligationId}:projected`;
+		const receipt =
+			this.workflowSelectAll(
+				"SELECT * FROM workflow_run_event WHERE event_uid = ?",
+				[receiptId],
+			)[0] ??
+			findArchivedTerminalRow(this.db.raw, "workflow_run_event", [receiptId]);
+		if (
+			!receipt ||
+			receipt.kind !== "body_death_projected" ||
+			receipt.execution_id !== executionId ||
+			receipt.run_id !== duty.runId ||
+			receipt.node_id !== duty.nodeId
+		)
+			return undefined;
+		try {
+			const expected = {
+				obligationId: duty.obligationId,
+				obligationDigest: canonicalSubmissionDigest(duty),
+				commReceiptId: `${duty.obligationId}:projection`,
+			};
+			return canonicalSubmissionDigest(JSON.parse(String(receipt.payload))) ===
+				canonicalSubmissionDigest(expected)
+				? duty
+				: undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
 	/** Bounded restart cursor; the event is the duty, its projection event the receipt. */
 	listPendingExecutionBodyDeaths(input: {
 		limit: number;
@@ -61789,6 +61870,8 @@ export class StateStore {
 		newExecutionId: string;
 		reason: string;
 		livenessEvidence: { liveness: "dead"; observedAt: string };
+		/** Bridge-only synchronous managed-switch and body-proof recheck at CAS. */
+		isBodyDeathCurrent?: () => boolean;
 		activityBaseline?: WorkflowDeadExecutionActivityBaseline;
 		alertIdentity?: WorkflowEngineAlertIdentity;
 		now?: string;
@@ -61948,6 +62031,29 @@ export class StateStore {
 			}
 			const session = this.getSession(input.deadExecutionId);
 			if (
+				input.isBodyDeathCurrent ||
+				this.executionProcessOwners.get(input.deadExecutionId)
+			) {
+				let current = false;
+				try {
+					const duty = this.getCurrentProjectedExecutionBodyDeath(
+						input.deadExecutionId,
+					);
+					current = Boolean(
+						duty &&
+							duty.runId === input.runId &&
+							duty.nodeId === input.nodeId &&
+							duty.attempt === input.attempt &&
+							input.isBodyDeathCurrent?.() === true,
+					);
+				} catch {
+					/* Unknown authority cannot authorize a successor. */
+				}
+				if (!current) {
+					result = { ok: false, reason: "body_death_authority_changed" };
+					return;
+				}
+			} else if (
 				!isStateStoreIrreversibleTerminalForZombie(session?.status) &&
 				!this.hasWorkflowExecutionTeardownFact(
 					input.runId,

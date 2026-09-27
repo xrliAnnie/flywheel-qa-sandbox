@@ -511,6 +511,7 @@ import {
 	retryExecutionBodyConvergence,
 } from "./execution-body-convergence.js";
 import { createStoredExecutionBodyObserver } from "./execution-body-liveness.js";
+import { createExecutionBodyReader } from "./execution-body-reader.js";
 import { createExecutionBodyRuntime } from "./execution-body-runtime.js";
 import { withExecutionMutationLease } from "./execution-mutation-lease.js";
 import {
@@ -550,6 +551,7 @@ import {
 	storeCodexQuotaAutoSwitchEnabled,
 	storeCodexTerminalReapEnabled,
 	storeDatabaseArchiveEnabled,
+	storeExecutionBodyDeathEnabled,
 	storeFlagRetirementScanEnabled,
 	storeLoopProfilerEnabled,
 	storeNodeStandbyResumeEnabled,
@@ -9483,10 +9485,15 @@ export async function startBridge(
 			}
 		}
 	};
+	let executionBodyReader:
+		| ReturnType<typeof createExecutionBodyReader>
+		| undefined;
 	const workflowEngineDispatcher = startDispatcher
 		? new WorkflowEngineDispatcher({
 				store,
 				startDispatcher,
+				readBodyLiveness: (executionId, projectName) =>
+					executionBodyReader?.read(executionId, projectName) ?? "unknown",
 				resumeDisabledCodexQuotaAdmissions,
 				runResidentExpiryPass: async (now, projectNames) => {
 					const createdAfter = new Date(
@@ -11335,6 +11342,12 @@ export async function startBridge(
 			console.warn(
 				`[body-runtime] lifecycle work deferred: ${error instanceof Error ? error.message : String(error)}`,
 			),
+	});
+
+	executionBodyReader = createExecutionBodyReader({
+		store,
+		sampler: () => executionBodyRuntime,
+		isEnabled: () => storeExecutionBodyDeathEnabled(flagStore),
 	});
 
 	heartbeatServiceRef.current = heartbeatService;

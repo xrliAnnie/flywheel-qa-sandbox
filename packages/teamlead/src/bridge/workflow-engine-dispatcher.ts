@@ -59,7 +59,6 @@ import { parseSqliteUtcMs } from "./founder-notify-utils.js";
 import {
 	type GeneralizedLaunchLiveness,
 	getGeneralizedLaunchDelivery,
-	probeGeneralizedLaunchLiveness,
 	waitForGeneralizedLaunchDelivery,
 } from "./generalized-launch-recovery.js";
 import { resolveWorkflowHeadAuthority } from "./head-authority.js";
@@ -138,6 +137,11 @@ interface WorkflowEngineDispatcherOptions {
 		sourceExecutionId: string | undefined,
 	) => WorkflowReplacementLeadIntent | undefined;
 	materializedHeadAuthority?: MaterializedHeadAuthority;
+	/** Synchronous shared process evidence; a miss only schedules sampling. */
+	readBodyLiveness?: (
+		executionId: string,
+		projectName: string,
+	) => GeneralizedLaunchLiveness;
 	probeLaunchLiveness?: (
 		executionId: string,
 		projectName: string,
@@ -347,11 +351,7 @@ export class WorkflowEngineDispatcher {
 		executionId: string,
 		projectName: string,
 	): Promise<GeneralizedLaunchLiveness> {
-		return this.options.probeLaunchLiveness
-			? this.probeLaunchLiveness(executionId, projectName)
-			: probeGeneralizedLaunchLiveness(executionId, projectName, {
-					allowMissingTargetHostAbsence: true,
-				});
+		return this.probeLaunchLiveness(executionId, projectName);
 	}
 
 	/**
@@ -647,8 +647,10 @@ export class WorkflowEngineDispatcher {
 			options.resolveReplacementLeadIntent ?? (() => undefined);
 		this.materializedHeadAuthority =
 			options.materializedHeadAuthority ?? unavailableMaterializedHeadAuthority;
-		this.probeLaunchLiveness =
-			options.probeLaunchLiveness ?? probeGeneralizedLaunchLiveness;
+		this.probeLaunchLiveness = options.readBodyLiveness
+			? async (executionId, projectName) =>
+					options.readBodyLiveness!(executionId, projectName)
+			: (options.probeLaunchLiveness ?? (async () => "unknown"));
 		this.probeUnlaunchedExternalEvidence =
 			options.probeUnlaunchedExternalEvidence ?? (async () => "unknown");
 		this.cleanupUnlaunchedWorkflowWindow =
@@ -2325,16 +2327,6 @@ export class WorkflowEngineDispatcher {
 					if (node.state !== "running" || !node.execution_id) continue;
 					const session = store.getSession(node.execution_id);
 					if (
-						!isStateStoreIrreversibleTerminalForZombie(session?.status) &&
-						!store.hasWorkflowExecutionTeardownFact(
-							run.run_id,
-							workflowNode.id,
-							node.execution_id,
-						)
-					) {
-						continue;
-					}
-					if (
 						store.getWorkflowNodeCompletion(
 							run.run_id,
 							workflowNode.id,
@@ -2436,7 +2428,10 @@ export class WorkflowEngineDispatcher {
 						continue;
 					}
 					if (liveness !== "dead") {
-						if (liveness === "unknown") {
+						if (
+							liveness === "unknown" &&
+							isStateStoreIrreversibleTerminalForZombie(session?.status)
+						) {
 							const key = `${run.run_id}:${workflowNode.id}:${node.attempt}:${node.execution_id}`;
 							const count = (this.unknownLivenessCounts.get(key) ?? 0) + 1;
 							this.unknownLivenessCounts.set(key, count);
@@ -2525,6 +2520,13 @@ export class WorkflowEngineDispatcher {
 							run.run_id,
 						),
 						livenessEvidence: { liveness: "dead", observedAt },
+						isBodyDeathCurrent: this.options.readBodyLiveness
+							? () =>
+									this.options.readBodyLiveness!(
+										node.execution_id!,
+										run.project_name,
+									) === "dead"
+							: undefined,
 						now: observedAt,
 					});
 					if (!recovered.ok) {

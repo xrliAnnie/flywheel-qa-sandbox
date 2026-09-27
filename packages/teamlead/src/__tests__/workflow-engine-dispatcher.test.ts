@@ -13,6 +13,9 @@ import { fileURLToPath } from "node:url";
 import { CommDB } from "flywheel-comm/db";
 import { canonicalSubmissionDigest } from "flywheel-config";
 import { describe, expect, it, vi } from "vitest";
+import { convergeExecutionBody } from "../bridge/execution-body-convergence.js";
+import { createExecutionBodyObserver } from "../bridge/execution-body-liveness.js";
+import { createExecutionBodyReader } from "../bridge/execution-body-reader.js";
 import { probeGeneralizedLaunchLiveness } from "../bridge/generalized-launch-recovery.js";
 import { executeLandOperation } from "../bridge/land-executor.js";
 import {
@@ -3725,12 +3728,179 @@ describe("WorkflowEngineDispatcher", () => {
 		store.close();
 	});
 
+	it.each(["none", "disable", "generation"] as const)(
+		"FLY-2919 consumes settled process death and rechecks %s at replacement CAS",
+		async (race) => {
+			const store = await storeWithIntent("implement");
+			const fake = fakeStartDispatcher(store);
+			const root = mkdtempSync(join(tmpdir(), "fly2919-dispatcher-body-"));
+			const comm = new CommDB(join(root, "comm.db"));
+			const clock = deadExecEngineClockBaseMs();
+			let enabled = true;
+			const request = vi.fn();
+			const reader = createExecutionBodyReader({
+				store,
+				sampler: () => ({ read: () => undefined, request }),
+				isEnabled: () => enabled,
+			});
+			const readBodyLiveness = vi.fn(reader.read);
+			const legacyProbe = vi.fn(async () => {
+				throw new Error("window probe forbidden");
+			});
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: fake.dispatcher,
+				stateRoot: root,
+				env: WORKFLOW_ON,
+				now: () => new Date(clock),
+				resolvePredecessorHead: async () => HEAD,
+				readBodyLiveness,
+				probeLaunchLiveness: legacyProbe,
+				captureDeadExecutionActivityBaseline: async () => {
+					if (race === "disable") enabled = false;
+					if (race === "generation")
+						(store as unknown as { db: { run(sql: string): void } }).db.run(
+							"UPDATE workflow_execution_process_body SET generation = generation + 1 WHERE execution_id = 'implement-1'",
+						);
+					return {
+						commitMarker: { state: "absent" },
+						commDbMessageCount: 0,
+						tmuxTarget: null,
+						tmuxOutputDigest: null,
+						sessionCommitCount: 0,
+					};
+				},
+			});
+			try {
+				expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+				store.upsertSession({
+					execution_id: "implement-1",
+					issue_id: "FLY-1307",
+					project_name: "flywheel",
+					status: "awaiting_review",
+					adapter_type: "claude-tmux",
+				});
+				await dispatcher.reconcile();
+				expect(readBodyLiveness).toHaveBeenCalledWith(
+					"implement-1",
+					"flywheel",
+				);
+				expect(fake.requests).toHaveLength(1);
+				const activation = store.getWorkflowActivationForAttempt({
+					executionId: "implement-1",
+					runId: "run-1",
+					nodeId: "implement",
+					attempt: 1,
+				});
+				if (!activation) throw new Error("fixture activation missing");
+				const db = (store as unknown as { db: { run(sql: string): void } }).db;
+				if (!store.getWorkflowExecutionProcessBody("implement-1"))
+					db.run(
+						"INSERT INTO workflow_execution_process_body(execution_id,generation,state,started_at,updated_at) VALUES('implement-1',1,'active','2026-07-16T00:00:00Z','2026-07-16T00:00:00Z')",
+					);
+				const owner = {
+					executionId: "implement-1",
+					activationId: activation.activation_id,
+					generation:
+						store.getWorkflowExecutionProcessBody("implement-1")!.generation,
+					ownerToken: "test-owner",
+					lifecycleRevision: store.getLifecycleRevision("implement-1"),
+					nowMs: clock,
+				};
+				expect(
+					store.executionProcessOwners.claim({
+						...owner,
+						controller: {
+							pid: 100,
+							startIdentity: "controller",
+							hostBootId: "boot",
+						},
+					}).ok,
+				).toBe(true);
+				const spawn = store.executionProcessOwners.beginSpawn({
+					...owner,
+					spawnEpoch: 0,
+				});
+				if (!spawn.ok) throw new Error(spawn.reason);
+				expect(
+					store.executionProcessOwners.acceptSpawn({
+						...spawn.permit,
+						lifecycleRevision: owner.lifecycleRevision,
+						nowMs: clock,
+						binding: {
+							version: 1,
+							adapter: "claude-tmux",
+							pid: 200,
+							pgid: 200,
+							startIdentity: "worker",
+							hostBootId: "boot",
+							executable: "/bin/claude",
+							cwd: "/work",
+							nonce: "nonce",
+							nativeSessionId: null,
+							writers: [],
+						},
+					}).ok,
+				).toBe(true);
+				comm.registerSession(
+					"implement-1",
+					"present:@1",
+					"flywheel",
+					"FLY-1307",
+					"lead",
+				);
+				const observer = createExecutionBodyObserver(store, {
+					isEnabled: () => enabled,
+					isRecoveryActive: () => false,
+					now: () => clock,
+					sample: async () => ({
+						sampledAtMs: clock,
+						hostBootId: "boot",
+						processes: [],
+						worker: null,
+						daemon: "absent",
+						writersComplete: true,
+						viewers: [],
+					}),
+				});
+				const result = await convergeExecutionBody(
+					{
+						store,
+						comm,
+						observer,
+						completionBlocksDeath: async () => false,
+						markerDir: root,
+						now: () => clock,
+					},
+					"implement-1",
+				);
+				expect(result).toMatchObject({
+					kind: "committed",
+					projection: { projected: true },
+				});
+				expect(store.getSession("implement-1")?.status).toBe("failed");
+				await dispatcher.reconcile();
+				expect(fake.requests).toHaveLength(race === "none" ? 2 : 1);
+				expect(legacyProbe).not.toHaveBeenCalled();
+				if (race === "none") {
+					expect(reader.read("implement-1", "flywheel")).toBe("dead");
+					await dispatcher.reconcile();
+					expect(fake.requests).toHaveLength(2);
+				}
+			} finally {
+				comm.close();
+				store.close();
+				rmSync(root, { recursive: true, force: true });
+			}
+		},
+	);
+
 	it.each(["working", "awaiting_review"])(
-		"never probes or replaces a slow live runner in %s",
+		"samples but never replaces a slow live runner in %s",
 		async (status) => {
 			const store = await storeWithIntent("implement");
 			const fake = fakeStartDispatcher(store);
-			const probeLaunchLiveness = vi.fn(async () => "dead" as const);
+			const probeLaunchLiveness = vi.fn(async () => "alive" as const);
 			const dispatcher = new WorkflowEngineDispatcher({
 				store,
 				startDispatcher: fake.dispatcher,
@@ -3751,7 +3921,7 @@ describe("WorkflowEngineDispatcher", () => {
 			});
 
 			expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 0 });
-			expect(probeLaunchLiveness).not.toHaveBeenCalled();
+			expect(probeLaunchLiveness).toHaveBeenCalledOnce();
 			expect(fake.requests).toHaveLength(1);
 			expect(store.getWorkflowRunNode("run-1", "implement", 1)).toMatchObject({
 				state: "running",
@@ -3761,7 +3931,7 @@ describe("WorkflowEngineDispatcher", () => {
 		},
 	);
 
-	it("does not replace a terminal session while any runner pane remains alive", async () => {
+	it("does not replace a terminal session while its process remains alive", async () => {
 		const store = await storeWithIntent("implement");
 		const fake = fakeStartDispatcher(store);
 		const probeLaunchLiveness = vi.fn(async () => "alive" as const);
