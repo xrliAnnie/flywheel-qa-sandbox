@@ -367,8 +367,8 @@ import {
 	createHostCmuxWatcherPatrol,
 	projectCmuxRebindDisabled,
 } from "./cmux-watcher-patrol.js";
-import { codexBodyRecoveryPending } from "./codex-body-recovery.js";
 import { validateCodeReviewProjection } from "./code-review-validation.js";
+import { codexBodyRecoveryPending } from "./codex-body-recovery.js";
 import {
 	codexTerminalTeardownDeps,
 	reapCodexDaemonForSession,

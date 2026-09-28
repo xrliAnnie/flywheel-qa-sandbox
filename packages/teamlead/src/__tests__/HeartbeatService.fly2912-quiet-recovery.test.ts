@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { BodyObservation } from "flywheel-claude-runner";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -30,6 +31,32 @@ import {
 } from "../HeartbeatService.js";
 import type { Session } from "../StateStore.js";
 import { StateStore } from "../StateStore.js";
+
+// FLY-2919: recovery is proven by the execution-process observation only.
+// The pane probe stays mocked so any regression back to it is visible.
+function observation(
+	verdict: BodyObservation["verdict"] = "alive",
+): BodyObservation {
+	return {
+		identity: {
+			executionId: "exec-current",
+			activationId: null,
+			generation: 1,
+			lifecycleRevision: 0,
+			adapter: "claude-tmux",
+		},
+		ownerToken: "owner",
+		spawnEpoch: 1,
+		bindingDigest: "a".repeat(64),
+		verdict,
+		observedAt: new Date().toISOString(),
+		expiresAt: new Date(Date.now() + 10_000).toISOString(),
+		reason: "fixture_process_evidence",
+	};
+}
+const bodyObserve = vi.fn<(id: string) => Promise<BodyObservation | undefined>>(
+	async () => observation(),
+);
 
 const lead = {
 	agentId: "test-lead",
@@ -105,6 +132,13 @@ async function fixture(status: Session["status"] = "running", enabled = true) {
 		6 * 3_600_000,
 		{ bridgeBaseUrl: "http://127.0.0.1:9", ingestToken: "fixture" },
 	);
+	service.setExecutionBodyLifecycle({
+		observe: bodyObserve,
+		converge: vi.fn(async () => ({
+			kind: "deferred" as const,
+			reason: "body_unknown",
+		})),
+	});
 	services.push(service);
 	vi.spyOn(store, "getReadoptCandidateSessions").mockImplementation(() => [
 		store.getSession(session.execution_id)!,
@@ -120,12 +154,12 @@ function proof(store: StateStore): NotificationEvidenceV2 | undefined {
 		| undefined;
 }
 
-beforeEach(() =>
-	vi
-		.mocked(probeRunnerProcessLivenessDetailed)
+beforeEach(() => {
+	vi.mocked(probeRunnerProcessLivenessDetailed)
 		.mockReset()
-		.mockResolvedValue({ liveness: "alive" }),
-);
+		.mockResolvedValue({ liveness: "alive" });
+	bodyObserve.mockReset().mockImplementation(async () => observation());
+});
 afterEach(() => {
 	for (const service of services.splice(0)) service.stop();
 	for (const store of stores.splice(0)) store.close();
@@ -141,9 +175,8 @@ describe("FLY-2912 actual monitoring recovery producer", () => {
 		async (status) => {
 			const { store, service, deliver } = await fixture(status);
 			await service.seedReconnecting();
-			expect(
-				probeRunnerProcessLivenessDetailed,
-			).toHaveBeenCalledExactlyOnceWith("test:@1");
+			expect(bodyObserve).toHaveBeenCalledExactlyOnceWith("exec-current");
+			expect(probeRunnerProcessLivenessDetailed).not.toHaveBeenCalled();
 			expect(service.isReconnecting("exec-current")).toBe(true);
 			expect(deliver).not.toHaveBeenCalled();
 			const row = store.getLeadEventBySeq(1)!;
@@ -170,8 +203,17 @@ describe("FLY-2912 actual monitoring recovery producer", () => {
 			if (evidence?.kind !== "monitoring")
 				throw new Error("missing monitoring proof");
 			expect(evidence.episodeRef).toContain("exec-current");
-			expect(evidence.probeRef).toContain("test:@1");
-			expect(JSON.parse(row.payload).liveness_probe.result).toBe("alive");
+			expect(evidence.probeRef).toContain("execution_process:exec-current");
+			expect(evidence.livenessProbe).toMatchObject({
+				method: "execution_process",
+				target: "exec-current",
+			});
+			// Process evidence is never dressed up as a tmux_pane_probe payload.
+			const payload = JSON.parse(row.payload);
+			expect(payload.liveness_probe).toBeUndefined();
+			expect(payload.notification_context).toContain(
+				"independent process evidence",
+			);
 		},
 	);
 	it("pairs covered monitoring_lost events without acknowledging or resolving them", async () => {
@@ -293,15 +335,16 @@ describe("FLY-2912 actual monitoring recovery producer", () => {
 		unlinkSync(commDbPath);
 		await service.seedReconnecting();
 		expect(deliver).toHaveBeenCalledTimes(1);
-		expect(probeRunnerProcessLivenessDetailed).toHaveBeenCalledTimes(1);
+		expect(bodyObserve).toHaveBeenCalledTimes(1);
+		expect(probeRunnerProcessLivenessDetailed).not.toHaveBeenCalled();
 	});
-	it.each(["indeterminate", "absent"] as const)(
-		"%s parked probe never emits recovery",
-		async (liveness) => {
+	it.each(["unknown", "missing"] as const)(
+		"%s parked observation never emits recovery",
+		async (kind) => {
 			const { store, service } = await fixture("ship_parked");
-			vi.mocked(probeRunnerProcessLivenessDetailed).mockResolvedValueOnce({
-				liveness,
-			});
+			bodyObserve.mockResolvedValueOnce(
+				kind === "unknown" ? observation("unknown") : undefined,
+			);
 			await service.seedReconnecting();
 			expect(store.getLeadEventBySeq(1)?.event_type).toBe(
 				"session_monitoring_lost",

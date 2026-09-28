@@ -182,6 +182,25 @@ describe("FLY-2919 atomic proven body death", () => {
 		expect(store.executionProcessOwners.get("exec-1")?.close_requested).toBe(0);
 		expect(deathEvents()).toHaveLength(0);
 	});
+	it.each([
+		["standby", null],
+		["resuming", "launching"],
+		["fallback_prepared", null],
+	])(
+		"FLY-2900 leaves a Codex quota %s execution to its resume lane",
+		(state, resumePhase) => {
+			// Entered while the OS sample awaited: the final fence must still hold.
+			db.prepare(
+				"INSERT INTO codex_quota_standby(execution_id,run_id,node_id,attempt,entry_seq,trigger_signal_seq,source_event_id,state,resume_phase,entered_at,updated_at) VALUES('exec-1','run-1','implement',1,1,1,'quota-wall',?,?,'1970-01-01T00:00:00Z','1970-01-01T00:00:00Z')",
+			).run(state, resumePhase);
+			expect(commit()).toEqual({ ok: false, reason: "codex_quota_standby" });
+			expect(store.getSession("exec-1")?.status).toBe("running");
+			expect(store.executionProcessOwners.get("exec-1")?.close_requested).toBe(
+				0,
+			);
+			expect(deathEvents()).toHaveLength(0);
+		},
+	);
 	it.each(["completed", "blocked", "failed"])(
 		"preserves irreversible %s",
 		async (status) => {

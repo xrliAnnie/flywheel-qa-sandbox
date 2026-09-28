@@ -859,10 +859,7 @@ export class HeartbeatService implements ReconnectController {
 			return;
 		}
 		// FLY-2900 §4.2: never declare a parked quota standby body a zombie.
-		if (this.isCodexQuotaStandby(execId)) {
-			this.zombieDeadStreak.delete(execId);
-			return;
-		}
+		if (this.isCodexQuotaStandby(execId)) return;
 
 		// 1) Marker-first. A valid terminal marker proves the Runner finished.
 		const outcome = await tryReconcileComplete(execId, deps);

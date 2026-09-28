@@ -13,9 +13,8 @@ import Database from "better-sqlite3";
 import { buildReworkWakeId, CommDB } from "flywheel-comm/db";
 import { afterEach, describe, expect, it } from "vitest";
 import { DeliveryContractWatch } from "../bridge/delivery-contract/watch.js";
-import { collectRunQuiescenceEvidence } from "../bridge/run-quiescence.js";
 import { drainTurnWakeOutbox } from "../bridge/turn-wake-patrol.js";
-import { type RunQuiescenceEvidence, StateStore } from "../StateStore.js";
+import { StateStore } from "../StateStore.js";
 import { buildWorkflowRunSnapshotV2 } from "../workflow-run-snapshot.js";
 import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
@@ -4391,7 +4390,7 @@ describe("FLY-1423 durable unified rework request", () => {
 			}
 			bindActorHead(store, "implement-exec", "implement", "a".repeat(40));
 
-			let evidence: RunQuiescenceEvidence[] = store
+			const evidence = store
 				.listRunAttributedExecutions("run-heavy")
 				.map((executionId) => {
 					const session = store.getSession(executionId);
@@ -4403,88 +4402,17 @@ describe("FLY-1423 durable unified rework request", () => {
 						observedAt: "2026-07-23T00:26:30.000Z",
 					};
 				});
-			const reopen = () =>
-				store.openOperatorRework({
-					runId: "run-heavy",
-					targetNodeId: "implement",
-					...leadReworkFields("retry after Lead inspection"),
-					clientRequestId: "operator-needs-lead",
-					principal: "master",
-					founderAuthorEvidence: { kind: "operator", principal: "master" },
-					evidence,
-					now: "2026-07-23T00:26:30.000Z",
-				});
+			const reopened = store.openOperatorRework({
+				runId: "run-heavy",
+				targetNodeId: "implement",
+				...leadReworkFields("retry after Lead inspection"),
+				clientRequestId: "operator-needs-lead",
+				principal: "master",
+				founderAuthorEvidence: { kind: "operator", principal: "master" },
+				evidence,
+				now: "2026-07-23T00:26:30.000Z",
+			});
 
-			// A coarse verdict (formerly supplied by windows) is no replacement authority.
-			expect(reopen()).toMatchObject({
-				ok: false,
-				reason: "target_not_quiescent",
-			});
-			expect(
-				store.getWorkflowRunNode("run-heavy", "implement", 3),
-			).toBeUndefined();
-			store.ensureFlagValueRows({
-				env: { FLYWHEEL_EXECUTION_BODY_DEATH_ENABLED: "1" },
-				now: Date.parse("2026-07-23T00:26:30.000Z"),
-			});
-			for (const executionId of store.listRunAttributedExecutions(
-				"run-heavy",
-			)) {
-				store.upsertSession({
-					execution_id: executionId,
-					issue_id: "FLY-1423",
-					project_name: "flywheel",
-					status: "failed",
-					adapter_type: "codex-tmux",
-				});
-				store.recordPreAdapterFailureReceipt({
-					executionId,
-					failureKind: "worktree_takeover_failed",
-					sourceEventId: `pre-adapter:${executionId}`,
-					now: "2026-07-23T00:26:00.000Z",
-				});
-				raw
-					.prepare(
-						"INSERT OR REPLACE INTO lifecycle_launch_claims (execution_id, root_uuid, project, state) VALUES (?, 'root', 'flywheel', 'closed')",
-					)
-					.run(executionId);
-			}
-			evidence = await collectRunQuiescenceEvidence(
-				store,
-				"run-heavy",
-				async () => "dead",
-				() => new Date("2026-07-23T00:26:30.000Z"),
-			);
-			// Final CAS rereads the exact claim and managed flag after OS sampling.
-			raw
-				.prepare(
-					"UPDATE lifecycle_launch_claims SET state = 'active' WHERE execution_id = 'implement-exec'",
-				)
-				.run();
-			expect(reopen()).toMatchObject({
-				ok: false,
-				reason: "target_not_quiescent",
-			});
-			raw
-				.prepare(
-					"UPDATE lifecycle_launch_claims SET state = 'closed' WHERE execution_id = 'implement-exec'",
-				)
-				.run();
-			raw
-				.prepare(
-					"UPDATE flag_values SET raw_value = '0', has_override = 1 WHERE flag_name = 'execution_body_death_enabled'",
-				)
-				.run();
-			expect(reopen()).toMatchObject({
-				ok: false,
-				reason: "target_not_quiescent",
-			});
-			raw
-				.prepare(
-					"UPDATE flag_values SET raw_value = '1' WHERE flag_name = 'execution_body_death_enabled'",
-				)
-				.run();
-			const reopened = reopen();
 			expect(reopened).toMatchObject({ ok: true, targetAttempt: 3 });
 			expect(store.getWorkflowRun("run-heavy")).toMatchObject({
 				status: "active",

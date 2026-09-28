@@ -428,12 +428,12 @@ describe("commdb-session-prune (FLY-638)", () => {
 	});
 
 	describe("pruneDeadTerminalCommDbSessions", () => {
-		it("FLY-2900 keeps a quota standby body's timeout row even when its target is dead", async () => {
+		it("FLY-2900 keeps a quota standby body's timeout row even when its body is dead", async () => {
 			seed("parked", "timeout", "base:@1");
 			seed("dead", "timeout", "base:@2");
 			const res = await pruneDeadTerminalCommDbSessions("flywheel", {
 				dbPath,
-				probe: async () => "dead",
+				readBodyLiveness: () => "dead",
 				isProtectedExecution: (id) => id === "parked",
 			});
 			expect(res.pruned).toBe(1);

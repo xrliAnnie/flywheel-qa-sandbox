@@ -74,8 +74,8 @@ describe("scanZombies (three shapes)", () => {
 				{ execution_id: "c", project_name: "fw", tmux_window: "s:@2" },
 			],
 			storeSession: () => ({ status: "running", heartbeat_at: STALE }),
-			targetAlive: async () => false,
-			nowMs: NOW,
+			// Even proven process death leaves a standby to its resume lane.
+			bodyLiveness: async () => "dead",
 			isQuotaStandby: (id) => id === "c",
 		});
 		expect(out).toEqual([]);

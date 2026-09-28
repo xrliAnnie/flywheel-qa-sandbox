@@ -56,7 +56,7 @@ describe("FLY-1066 B2 Layer 1 × Layer 2 flag interactions", () => {
 		const harvestCommDb = (projectName: string) =>
 			reconcileCommDbRunningAgainstFsm(projectName, () => "failed", {
 				dbPath,
-				probe: async () => "dead",
+				executionAbsence: async () => "dead",
 				harvest: { orphanMinAgeMs: 72 * 3_600_000, nowMs: () => Date.now() },
 			});
 		const pruneCommDb = (includeCrashPreserve: boolean) =>

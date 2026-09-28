@@ -17231,6 +17231,10 @@ export class StateStore {
 					}
 					return { ok: true, obligation, idempotentReplay: true };
 				}
+				// FLY-2900: a quota standby runs without a process by design; its
+				// resume lane owns it even if standby began while the sample awaited.
+				if (this.codexQuota.isCodexQuotaStandby(executionId))
+					return { ok: false, reason: "codex_quota_standby" };
 				const session = this.getSession(executionId);
 				const owner = this.executionProcessOwners.get(executionId);
 				const body = this.getWorkflowExecutionProcessBody(executionId);
@@ -53617,79 +53621,6 @@ export class StateStore {
 			generation:
 				this.getWorkflowExecutionProcessBody(executionId)?.generation ?? 0,
 		});
-	}
-
-	/** Strict proof used only before replacing a fenced needs_lead activation. */
-	private validateNeedsLeadReworkQuiescenceTx(
-		runId: string,
-		evidence: RunQuiescenceEvidence[],
-		now: string,
-	): { ok: true } | { ok: false; executionIds: string[] } {
-		const attributed = this.listRunAttributedExecutions(runId);
-		const byExecution = new Map(
-			evidence.map((item) => [item.executionId, item]),
-		);
-		const live = new Set<string>();
-		let deathEnabled = false;
-		try {
-			const row = this.getFlagValueRow("execution_body_death_enabled");
-			deathEnabled = !!row &&
-				getFlagStoreCodec("execution_body_death_enabled")?.parse(row) === true;
-		} catch {
-			/* Unreadable controls cannot authorize replacement. */
-		}
-		for (const executionId of attributed) {
-			const observed = byExecution.get(executionId);
-			const session = this.getSession(executionId);
-			const duty = this.getCurrentProjectedExecutionBodyDeath(executionId);
-			const preAdapter = session &&
-				this.getPreAdapterQuiescenceSnapshot(executionId, session.project_name);
-			if (
-				!deathEnabled ||
-				!observed ||
-				observed.liveness !== "dead" ||
-				(!(duty && duty.obligationId === observed.bodyDeathObligationId) &&
-					!(preAdapter && preAdapter === observed.preAdapterSnapshot))
-			) {
-				live.add(executionId);
-				continue;
-			}
-			const observedMs = observed ? Date.parse(observed.observedAt) : NaN;
-			const ageMs = Date.parse(now) - observedMs;
-			if (
-				!observed ||
-				!Number.isFinite(observedMs) ||
-				ageMs < 0 ||
-				ageMs > 30_000
-			) {
-				live.add(executionId);
-				continue;
-			}
-			if (!session) {
-				if (
-					observed.sessionStatus !== null ||
-					observed.lifecycleRevision !== null ||
-					observed.liveness !== "dead"
-				) {
-					live.add(executionId);
-				}
-				continue;
-			}
-			if (
-				observed.sessionStatus !== session.status ||
-				observed.lifecycleRevision !== session.lifecycle_revision ||
-				!isStateStoreIrreversibleTerminalForZombie(session.status) ||
-				observed.liveness !== "dead"
-			) {
-				live.add(executionId);
-			}
-		}
-		for (const executionId of byExecution.keys()) {
-			if (!attributed.includes(executionId)) live.add(executionId);
-		}
-		return live.size === 0
-			? { ok: true }
-			: { ok: false, executionIds: [...live].sort() };
 	}
 
 	private reviveHeldWorkflowCarrierDeliveriesTx(input: {

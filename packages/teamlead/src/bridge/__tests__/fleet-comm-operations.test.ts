@@ -89,8 +89,8 @@ describe("fleet short-lived CommDB ownership", () => {
 			db.close();
 		}
 		const close = vi.spyOn(CommDB.prototype, "close");
-		let release!: (alive: boolean) => void;
-		const probe = new Promise<boolean>((resolve) => {
+		let release!: (verdict: "alive" | "dead" | "unknown") => void;
+		const probe = new Promise<"alive" | "dead" | "unknown">((resolve) => {
 			release = resolve;
 		});
 		const scan = scanZombies({
@@ -99,14 +99,13 @@ describe("fleet short-lived CommDB ownership", () => {
 				status: "running",
 				heartbeat_at: "2026-01-01 00:00:00",
 			}),
-			targetAlive: () => {
+			bodyLiveness: () => {
 				expect(close).toHaveBeenCalledTimes(1);
 				return probe;
 			},
-			nowMs: Date.parse("2026-01-03T00:00:00Z"),
 		});
 		expect(close).toHaveBeenCalledTimes(1);
-		release(false);
+		release("dead");
 		expect(await scan).toEqual([
 			expect.objectContaining({ shape: "stale_target" }),
 		]);
