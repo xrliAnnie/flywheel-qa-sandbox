@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>FLY-3030 换体续干探针</title>
+<title>FLY-3030 换体续干探针 第2轮</title>
 <style>
   * { box-sizing: border-box; }
   body { margin: 0; background: #f5f5f7; color: #1d1d1f; font-family: -apple-system, system-ui, sans-serif; line-height: 1.6; }
@@ -41,15 +41,15 @@
 <body>
 <div class="wrap">
   <div class="sub"><a class="issue-id" href="https://linear.app/geoforge3d/issue/FLY-3030">FLY-3030</a> · 设计节点交付 · 2026-09-28</div>
-  <h1>FLY-2919 换体续干探针：一行 README，写成「随时可杀、随时可续」的合同</h1>
+  <h1>FLY-2919 换体续干探针（第 2 轮 · claude-body）：先睡 13 分钟，再加一行 README</h1>
   <div class="sub">合成单 · 仅 529 测试房 slot 2 使用 · 生产不派单</div>
 
   <div class="section" data-section="一句话总结">
     <div class="section-title"><span style="color:#34c759;">●</span> 一句话总结</div>
     <div class="card green">
-      下游执行体只需在沙箱仓 <code>README.md</code> 末尾加一行 <code>FLY-2919 N-to-N codex-body probe</code> 并交卷；本设计把每一步都写成<b>幂等</b>的
+      下游执行体先在前台<b>睡满 780 秒</b>（让测试驱动器有完整的 660 秒窗口去拿掉它的窗口、确认它没被误判为死），然后在沙箱仓 <code>README.md</code> 第 1 轮那行 <code>codex-body</code> 后面再加一行 <code>FLY-2919 N-to-N claude-body probe</code> 并交卷；每一步都写成<b>幂等</b>的
       <span class="term">（幂等 = 同一步做一次和做十次结果一样，已经做过的会自动跳过）</span>，
-      所以不管执行体在哪一步被杀、换成新体从头重跑，最后都只会有 1 行字、1 个提交、1 个 PR，正好配合 FLY-2919 去检验「死体换体、同一对话续干」。
+      所以不管执行体在哪一步被杀、换成新体从头重跑，最后都只会有这 1 行新字、1 个新提交、同 1 个 PR。
       <div class="cbox"><label>对这一节的意见</label><textarea data-k="summary" data-title="一句话总结"></textarea></div>
     </div>
   </div>
@@ -69,10 +69,26 @@
     </div>
   </div>
 
+  <div class="section" data-section="第 2 轮变了什么">
+    <div class="section-title"><span style="color:#ff9500;">●</span> 第 2 轮变了什么</div>
+    <div class="card amber">
+      <p>这张单在同一个分支上已经跑过一轮（加了 <code>codex-body</code> 那行，PR 299 已开）。本轮任务文本改了三处：</p>
+      <div class="tablewrap"><table>
+        <tr><th>项</th><th>第 1 轮</th><th>第 2 轮（本轮）</th></tr>
+        <tr><td>测试房代码版本</td><td><code>bfdea677</code></td><td><code>68eab069e</code></td></tr>
+        <tr><td>第一步</td><td>无</td><td>前台 <code>sleep 780</code>，不许跳过 / 放后台 / 缩短</td></tr>
+        <tr><td>要加的行</td><td><code>codex-body probe</code></td><td><code>claude-body probe</code>（加在 codex 行后面）</td></tr>
+      </table></div>
+      <p><b>关键坑</b>：第 1 轮用「里程碑文件在不在」判断是否已<b>冻结</b><span class="term">（冻结 = 交卷前最后一份说明已提交，之后分支不再写任何东西）</span>。这个判断在本分支上已经为真——照抄旧合同，新体会以为全做完了，永远不会加新行。所以本轮改成「里程碑里<b>提到了本轮这行字</b>才算冻结」。</p>
+      <p>设计节点自己也在前台睡满了 780 秒（15:20:59 → 15:33:59）才开始干活，因为驱动器观察的可能是任何一个正在跑的执行体。</p>
+      <div class="cbox"><label>对这一节的意见</label><textarea data-k="round2" data-title="第 2 轮变了什么"></textarea></div>
+    </div>
+  </div>
+
   <div class="section" data-section="核心流程图">
     <div class="section-title"><span style="color:#af52de;">●</span> 核心流程图：执行体走的状态机</div>
     <div class="card purple">
-      <p><b>状态机</b><span class="term">——把任务切成几个可检查的状态，每步先看「现在处在哪个状态」再决定做什么</span>。每个状态都有 git 上看得见的判据；被杀后新体从「Task 0 预检」重新判断即可。</p>
+      <p><b>状态机</b><span class="term">——把任务切成几个可检查的状态，每步先看「现在处在哪个状态」再决定做什么</span>。每个状态都有 git 上看得见的判据；被杀后新体从「Task S」重新判断即可——README 已含新行说明前体一定睡满过，就不再睡。</p>
       <div class="diagram">{{D1}}</div>
       <p><b>冻结</b><span class="term">——里程碑文件（milestone，交卷前的最后一份说明）一旦提交，分支就不再写任何东西，只剩对这个最终提交做代码评审、等 CI、交卷</span>。这保证 milestone 永远是最后一个提交，代码评审也只针对这个冻结后的最终提交，批准不会因为之后又有提交而失效。</p>
       <div class="cbox"><label>对这一节的意见</label><textarea data-k="flow" data-title="核心流程图"></textarea></div>
@@ -93,9 +109,9 @@
     <div class="card navy">
       <div class="diagram">{{D3}}</div>
       <ul>
-        <li><b>README.md</b>：现在 44 字节 3 行，末尾已有换行；追加后应为 77 字节 4 行。</li>
+        <li><b>README.md</b>：现在 77 字节 4 行（第 4 行是第 1 轮的 codex 行）；追加后应为 111 字节 5 行，相对主分支 +2/−0。</li>
         <li><b>progress.md 账本</b><span class="term">（进度记事本，方便重启后看做到哪）</span>：只作提示，是否跳过某一步只看 git 判据。</li>
-        <li><b>PR</b><span class="term">（Pull Request，请求把改动合进主分支的申请单）</span>：同一分支只允许 1 个 OPEN 的。</li>
+        <li><b>PR</b><span class="term">（Pull Request，请求把改动合进主分支的申请单）</span>：同一分支只允许 1 个 OPEN 的——本轮复用 PR 299，只更新标题正文。</li>
         <li><b>精确头 CI</b><span class="term">（CI = 自动跑的构建与测试；精确头 = 就是 PR 最新那个提交）</span>：全量测试证据只认它。</li>
       </ul>
       <div class="cbox"><label>对这一节的意见</label><textarea data-k="model" data-title="数据 / 结构模型"></textarea></div>
@@ -107,13 +123,16 @@
     <div class="card red">
       <div class="tablewrap"><table>
         <tr><th>方案</th><th>结论</th><th>理由</th></tr>
-        <tr><td><b>A. 幂等状态机</b></td><td><span class="badge blue">采用</span></td><td>任意时刻被杀都收敛到同一终态；设计阶段在临时仓演练 17 个场景全部符合预期</td></tr>
-        <tr><td>B. 直接「追加 → 提交 → 推送」顺序跑</td><td><span class="badge gray">否决</span></td><td>换体重跑会追加第二行、第二个提交，正好污染 FLY-2919 要看的「续干」证据</td></tr>
+        <tr><td><b>A2. 保留 codex 行、其后追加 claude 行、复用 PR 299（幂等状态机）</b></td><td><span class="badge blue">采用</span></td><td>与「末尾追加」字面一致；不改写第 1 轮已被取证过的提交；任意时刻被杀都收敛到同一终态（临时仓演练 19 个场景全部符合预期）</td></tr>
+        <tr><td>B2. 用 claude 行替换 codex 行</td><td><span class="badge gray">否决</span></td><td>要删改历史行，与「追加」不符，还抹掉第 1 轮证据</td></tr>
+        <tr><td>C2. 新开分支 / 新 PR</td><td><span class="badge gray">否决</span></td><td>本次运行绑定的就是这个分支；同分支多 PR 违反唯一性判据</td></tr>
+        <tr><td>F. 用账本记「睡过了」</td><td><span class="badge gray">否决</span></td><td>写账本要落提交、要拿 TURN；「README 已含新行」天然说明前体睡满过，判据来自文件本身</td></tr>
+        <tr><td>B. 直接「睡 → 追加 → 提交 → 推送」顺序跑</td><td><span class="badge gray">否决</span></td><td>换体重跑会追加第二行、第二个提交，正好污染 FLY-2919 要看的「续干」证据</td></tr>
         <tr><td>C. 重写整个 README</td><td><span class="badge gray">否决</span></td><td>改动面变大、diff 不止一行，没有收益</td></tr>
         <tr><td>E. 先评审、后写 milestone</td><td><span class="badge gray">否决</span></td><td>评审批准绑定的是「当时的最新提交」；之后再提交 milestone 会让批准失效（Codex 设计评审第 1 轮指出）</td></tr>
         <tr><td>D. 用账本文字决定跳过哪步</td><td><span class="badge gray">否决</span></td><td>账本本身也会在半路被杀时停在旧值；git 状态才可靠</td></tr>
       </table></div>
-      <p>演练中抓到并修掉的真问题：完工后换体重跑时，中间步骤的账本更新会在 milestone 之后再落提交 → 加了「冻结后账本更新自动跳过」。独立的 Codex 设计评审（gpt-6-astra，最高推理强度）跑了 4 轮才批准：先后指出「评审后又提交导致批准失效」「CI 失败仍交卷」「越界文件先推送后才发现」「跨步骤变量丢失」「受限沙箱里临时文件失败会让守卫静默放行」等问题，全部改掉，并在临时仓演练 17 个场景验证。</p>
+      <p>第 1 轮的合同骨架（先冻结后评审、冻结后账本自动跳过、每块自己重新推导变量、不用临时文件）经 Codex 4 轮评审批准，本轮原样沿用；本轮新增的是 sleep 步骤、按轮次的冻结判据、5 行断言和 PR 复用。{{REVIEW}}</p>
       <div class="cbox"><label>对这一节的意见</label><textarea data-k="tradeoffs" data-title="关键取舍与否决方案"></textarea></div>
     </div>
   </div>
@@ -129,7 +148,8 @@
       <p><b>这份设计不做 / 不保证的：</b></p>
       <ul>
         <li>不负责「死体判定、换体、丢窗口不判死、同 thread 续干」本身——那是引擎的行为，由 FLY-2919 QA 按驱动器回执判定。</li>
-        <li>设计阶段的演练用的是替身命令（假的 flywheel-comm / gh），真实推送、真实 PR、真实 CI 要到实现节点才发生。</li>
+        <li>设计阶段的演练用的是替身命令（假的 flywheel-comm / gh / sleep），真实推送、真实 PR 更新、真实 CI、真实 780 秒睡眠要到实现节点才发生（设计节点自己真睡过一次）。</li>
+        <li>「README 已含新行 ⇒ 前体睡满过」是保守判据：若某体睡满后、追加前被杀，下一个体会再睡一次（宁可多睡，不可少睡）。</li>
         <li>不跑任何本地全量测试；这是纯文档改动，全量证据只认 PR 精确头 CI。</li>
         <li>不合并、不上线、不碰生产。</li>
       </ul>
