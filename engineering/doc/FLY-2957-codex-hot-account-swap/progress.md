@@ -1,13 +1,14 @@
 ---
 issue: FLY-2957
-phase: design
-phaseCursor: 5/5
-updated: 2026-09-28T21:48:37.152Z
-nextStep: report hosted design HTML and complete phase_design_complete
+phase: implement
+phaseCursor: 1/1
+updated: 2026-09-28T21:55:12.744Z
+nextStep: "blocked: reopen-verify precondition mismatch in 529 QA room (sandbox
+  has no PR #1377; real PR head ff6c5c29 != 071f7017); no code changed"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2957 progress
-**phase**: design (5/5)
-**next**: report hosted design HTML and complete phase_design_complete
+**phase**: implement (1/1)
+**next**: blocked: reopen-verify precondition mismatch in 529 QA room (sandbox has no PR #1377; real PR head ff6c5c29 != 071f7017); no code changed
