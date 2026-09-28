@@ -1,13 +1,13 @@
 ---
 issue: FLY-3025
 phase: design
-phaseCursor: 3/5
-updated: 2026-09-28T17:41:29.677Z
-nextStep: design_review (Codex)
+phaseCursor: 4/5
+updated: 2026-09-28T17:48:49.892Z
+nextStep: founder HTML + publish + complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-3025 progress
-**phase**: design (3/5)
-**next**: design_review (Codex)
+**phase**: design (4/5)
+**next**: founder HTML + publish + complete
