@@ -73,3 +73,10 @@ scoped gate `0f29f815-f140-4e68-ac08-073a9a996389` 有效 reviewVerdict=APPROVED
 - SVG 内无 `<script>`、无 href/xlink:href 外链；mermaid 自身在同图内对边 path 与 label group 复用同一 id，跨图通过 svgId 前缀隔离。
 - 本 HTML SHA-256: `52dfe2e77a0f8bfbd5df1f54de19dd7b005f30acf3dbe36f0525332998853ca6`。
 - 本轮设计评审门、托管发布与报告回执在下方追加；不沿用生产 Bridge 的旧门 d9ab4f85 / 0f29f815 冒充本 Bridge 的有效裁定。
+
+### 2026-09-27 沙箱重开：评审门、托管与报告回执
+
+- 本 Bridge 设计门 request `3043249d-c594-4d8e-8566-0557d38bcbbd`、plan blob `24413428775c482bdcd16cabcbfa9d5f619acf77`：Codex 第 1 轮 APPROVED（gpt-6-astra/xhigh，thread `01a0e61d-ff71-7912-a009-c45b22957acb`，turn `01a0e61e-04b2-7612-8571-5183b02a9744`），review-round 回写 match=yes，`await-codex-gate design` 通过。全文见 review-result.md 末节。
+- HTML 已发布（publishOnly=true，messageId=null，delivered=false 为预期）：http://127.0.0.1:58038/fw-reports-d300b5/r/64394691fcd8da12b1080288c8bab089/ 。verify-report ok=true，HTTP 200，noncePlaceholder/scriptCsp/scriptNonce 均 pass，hasInlineSvg=true；线上页 `__CSP_NONCE__` 残留 0、SVG 2、占位 0、脚本 1、外链 0。
+- DESIGN-HTML ready 报告 receipt `a147c03e-706f-49ba-af7d-e9ed43c9019a`；lead-instruction design-review-manifest 的 DONE 回执 `4ebad22d-8adb-4411-bf01-7aeb497ac4e4`。
+- 本节点未实现、未运行实现测试、未派发后继、未申请 ship、未 merge/部署。下一步仅执行 `complete --route phase_design_complete`。
