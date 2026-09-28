@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
-phase: implement
-phaseCursor: 6/6
-updated: 2026-09-26T22:58:46.517Z
-nextStep: Obtain final exact-head code review and submit needs_review handoff for PR 267
+phase: design
+phaseCursor: 1/7
+updated: 2026-09-28T22:00:53.008Z
+nextStep: "Refresh exploration.md for re-dispatch context (PR #267 preserved)"
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: implement (6/6)
-**next**: Obtain final exact-head code review and submit needs_review handoff for PR 267
+**phase**: design (1/7)
+**next**: Refresh exploration.md for re-dispatch context (PR #267 preserved)
