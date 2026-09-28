@@ -179,6 +179,8 @@ describe("Blueprint approve_to_ship instruction (FLY-191 Phase 2)", () => {
 		// FLY-827: the pr_handoff finish surfaces the Codex code-review status so the
 		// founder isn't blind when shipping a no-transport PR by hand.
 		expect(prompt).toContain("Codex code review is REQUIRED");
+		// FLY-2891: per-round write-back + model on every companion call.
+		expect(prompt).toMatch(/review-round code --exec-id \S+ --round <n>/);
 		expect(prompt).toContain(
 			"the founder reviews Codex status and ships the PR",
 		);

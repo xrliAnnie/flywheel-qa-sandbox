@@ -1,0 +1,16 @@
+{
+  "url": "https://fw-reports-6da062.vercel.app/r/feb2a3171f3c67fca31d46494d64fcaf/",
+  "httpStatus": 200,
+  "bodySha256": "2fb3851b1538915ec4907a7b33e2b1cc616d301705166a3a0bd6296f3685f1e7",
+  "scriptCount": 1,
+  "mintedNonceMatchesCsp": true,
+  "sectionCommentInputs": 7,
+  "marker": true,
+  "pathnameStorage": true,
+  "clipboardFallback": true,
+  "externalResourceTags": 0,
+  "diagramStatus": "DIAGRAM PENDING LOCAL RENDER",
+  "browserQa": false,
+  "browserLimitation": "tool requires approval; current policy never",
+  "artifactCommit": "863fbdf61"
+}

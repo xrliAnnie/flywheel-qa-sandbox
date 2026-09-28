@@ -1934,6 +1934,198 @@ test("stub must own TURN and successfully consume mail and wakes before retry", 
 	assert.throws(() => lib.completeStubWithDrain(args, other), /TURN/);
 });
 
+// FLY-2921: verbatim `complete` output from the slot 6 stub drill
+// (qa-evidence/FLY-2921/slot6-stub-drill-20260927 step-6.json, 2026-09-27
+// 21:07:39Z). FLY-2373 protocol v2: read every page, ack-consume the read,
+// then rerun the same completion without a receipt.
+const v2Deferred = {
+	ok: false,
+	output:
+		'[complete] needs_review WITHOUT --question-id: if this session was already approved_to_ship (re-review after a head move), the Bridge will NOT re-open the review window — open a NEW `gate approve_to_ship --no-block` and pass its questionId via --question-id.\n[complete] completion deferred: 1 unread item(s) must be read before this completion commits (read read_b096af50db9674831b60e6683be8b522, page 1/1).\n=== BEGIN [1/1] Wake turn-wake:rework-wake:rework:24800298b2598c6b5c3613d9761f946b3b12c1f3c7a43327acf8635874d72d43:activation:rework:24800298b2598c6b5c3613d9761f946b3b12c1f3c7a43327acf8635874d72d43:epoch:4 from bridge (sha256 ee26c13bc687)\n[phase-wake rework-wake:rework:24800298b2598c6b5c3613d9761f946b3b12c1f3c7a43327acf8635874d72d43:activation:rework:24800298b2598c6b5c3613d9761f946b3b12c1f3c7a43327acf8635874d72d43:epoch:4] Workflow rework activation activation:rework:24800298b2598c6b5c3613d9761f946b3b12c1f3c7a43327acf8635874d72d43 is ready at TURN epoch 4. FIRST run flywheel-comm turn --exec-id b2e2ecfa-28e5-4c05-b89f-696ee207e255; proceed only if it answers yours. Rework context: {"requestId":"rework:24800298b2598c6b5c3613d9761f946b3b12c1f3c7a43327acf8635874d72d43","authority":"qa","authorityContext":{"authority":"qa","outcome":"qa_fail","sourceNodeId":"qa","sourceAttempt":1,"sourceExecutionId":"9bd14005-a1ec-4ea5-9e4a-a75d6ab693e8","edgeId":"qa_retry","targetNodeId":"implement","targetAttempt":2,"baseRevision":"464605294f38c05c1497cc05e656a18b03cedb7a"},"target":{"nodeId":"implement","attempt":2,"invalidationScope":["implement","qa"],"verificationPolicy":["code_review","qa_retest"]}}\n=== END [1/1]\n[complete] Next steps, all inside this same turn (do not park or end the turn to wait):\n  1. Act on every item. A Lead instruction may change your deliverable: do the work (re-run any affected review) and report DONE quoting its full [lead-instruction <id>].\n  2. Acknowledge the read: node "$FLYWHEEL_COMM_CLI" inbox --ack-consumed read_b096af50db9674831b60e6683be8b522\n  3. Rerun the same completion (no --drain-receipt needed):\n     node "$FLYWHEEL_COMM_CLI" complete --route needs_review --pr 277 --session-role \'implement\' --summary \'529 generalized stub implement attempt 2\'',
+};
+const v2ReadId = "read_b096af50db9674831b60e6683be8b522";
+
+function v2Harness(completions, overrides = {}) {
+	const calls = [];
+	const reads = [];
+	return {
+		calls,
+		reads,
+		runComm(command) {
+			calls.push(command);
+			if (command[0] === "complete") return completions.shift();
+			if (command[0] === "inbox" && command[1] === "--drain-page")
+				return (
+					overrides.page?.(command) ?? {
+						ok: true,
+						output: `page ${command[4]} body\n[inbox] read ${command[2]} page ${command[4]}/2`,
+					}
+				);
+			if (command[0] === "inbox" && command[1] === "--ack-consumed")
+				return (
+					overrides.ack?.(command) ?? {
+						ok: true,
+						output: `[inbox] acknowledged 1 item(s) of read ${command[2]}. Rerun your complete command now.`,
+					}
+				);
+			if (command[0] === "inbox")
+				return { ok: true, output: "No instructions." };
+			if (command[0] === "turn")
+				return (
+					overrides.turn?.() ?? {
+						ok: true,
+						output: "yours phase=implement epoch=4",
+					}
+				);
+			return ok;
+		},
+		acknowledgeWakes(ids) {
+			calls.push(["ack-wakes", ...ids]);
+		},
+		recordDrainRead(read) {
+			calls.push(["record-read", read.readId]);
+			reads.push(read);
+		},
+	};
+}
+
+test("stub consumes a FLY-2373 v2 deferred read and reruns the same completion", () => {
+	const h = v2Harness([v2Deferred, ok]);
+	assert.deepEqual(lib.completeStubWithDrain(args, h), ok);
+	assert.deepEqual(h.calls, [
+		["inbox"],
+		args,
+		["inbox", "--drain-page", v2ReadId, "--page", "1"],
+		["inbox"],
+		["turn"],
+		["record-read", v2ReadId],
+		["inbox", "--ack-consumed", v2ReadId],
+		args,
+	]);
+	assert.equal(h.reads.length, 1);
+	assert.deepEqual(h.reads[0].pages, [
+		`page 1 body\n[inbox] read ${v2ReadId} page 1/2`,
+	]);
+});
+
+test("stub records a served v2 page in full even when its body mimics CLI guidance", () => {
+	const body = [
+		"[lead-instruction li-1] first half",
+		"[complete] Next steps, all inside this same turn:",
+		"second half that must still be recorded",
+	].join("\n");
+	const h = v2Harness([v2Deferred, ok], {
+		page: () => ({
+			ok: true,
+			output: `${body}\n[inbox] read ${v2ReadId} page 1/1`,
+		}),
+	});
+	assert.deepEqual(lib.completeStubWithDrain(args, h), ok);
+	assert.match(h.reads[0].pages[0], /second half that must still be recorded/);
+	assert.ok(
+		h.calls.findIndex((c) => c[0] === "record-read") <
+			h.calls.findIndex((c) => c[1] === "--ack-consumed"),
+	);
+});
+
+test("stub reads every remaining v2 page before acknowledging", () => {
+	const twoPages = {
+		ok: false,
+		output: v2Deferred.output.replace("page 1/1)", "page 1/2)"),
+	};
+	const h = v2Harness([twoPages, ok]);
+	assert.deepEqual(lib.completeStubWithDrain(args, h), ok);
+	const page = h.calls.findIndex(
+		(c) => c[1] === "--drain-page" && c[4] === "2",
+	);
+	const ack = h.calls.findIndex((c) => c[1] === "--ack-consumed");
+	assert.deepEqual(h.calls[page], [
+		"inbox",
+		"--drain-page",
+		v2ReadId,
+		"--page",
+		"2",
+	]);
+	assert.ok(page < ack);
+	assert.deepEqual(
+		h.calls.filter((c) => c[1] === "--drain-page").map((c) => c[4]),
+		["1", "2"],
+	);
+	assert.equal(h.reads[0].pages.length, 2);
+	assert.match(h.reads[0].pages[1], /page 2 body/);
+});
+
+test("stub v2 drain fails closed without acknowledging or retrying", () => {
+	const failures = [
+		[
+			"bad read id",
+			v2Harness([
+				{
+					ok: false,
+					output: v2Deferred.output.replace(
+						`(read ${v2ReadId}`,
+						"(read read_bad;rm",
+					),
+				},
+				ok,
+			]),
+			/read id/,
+		],
+		[
+			"page",
+			v2Harness(
+				[
+					{
+						ok: false,
+						output: v2Deferred.output.replace("page 1/1)", "page 1/2)"),
+					},
+					ok,
+				],
+				{ page: () => ({ ok: false, output: "drain page 2 unavailable" }) },
+			),
+			/unavailable/,
+		],
+		[
+			"turn",
+			v2Harness([v2Deferred, ok], {
+				turn: () => ({ ok: true, output: "not-yours holder=other" }),
+			}),
+			/TURN/,
+		],
+		[
+			"ack",
+			v2Harness([v2Deferred, ok], {
+				ack: () => ({
+					ok: false,
+					output: "[inbox] acknowledged 0 item(s); refused x (content_changed)",
+				}),
+			}),
+			/refused/,
+		],
+	];
+	for (const [name, h, pattern] of failures) {
+		assert.throws(() => lib.completeStubWithDrain(args, h), pattern, name);
+		assert.equal(h.calls.filter((c) => c[0] === "complete").length, 1, name);
+		if (name !== "ack")
+			assert.equal(
+				h.calls.some((c) => c[1] === "--ack-consumed"),
+				false,
+				name,
+			);
+		assert.equal(
+			h.calls.some((c) => c[0] === "ack-wakes"),
+			false,
+			name,
+		);
+	}
+});
+
+test("stub bounds a v2 rerun that is deferred again", () => {
+	const h = v2Harness([v2Deferred, v2Deferred]);
+	assert.deepEqual(lib.completeStubWithDrain(args, h), v2Deferred);
+	assert.equal(h.calls.filter((c) => c[0] === "complete").length, 2);
+});
+
 test("stub wake receipt consumes only its own exact durable wake and is replay safe", async () => {
 	const { CommDB } = await import("../../packages/flywheel-comm/dist/db.js");
 	const db = new CommDB(":memory:");
@@ -2076,7 +2268,7 @@ async function replayStep6({
 		);
 		db.prepare("INSERT INTO workflow_rework_delivery VALUES (?, ?)").run(
 			qaFailRequestId,
-			"awaiting_receipt",
+			"turn_granted",
 		);
 		// The poller sees only the committed snapshot, never wake_delivered
 		// between these updates in the completion transaction.
@@ -2106,7 +2298,7 @@ async function replayStep6({
 			);
 			db.prepare("INSERT INTO workflow_rework_delivery VALUES (?, ?)").run(
 				qaVerifyRequestId,
-				"awaiting_receipt",
+				"turn_granted",
 			);
 		})();
 		const driver = readFileSync(
@@ -2175,11 +2367,11 @@ test("step 6 rejects missing or unrelated receipts, wrong source, and unsafe run
 		{ eventRequestId: qaVerifyRequestId },
 		{ eventRunId: "another-run" },
 		{ eventKind: "node_completed" },
-		{ state: "awaiting_receipt" },
-		{ state: "held" },
-		{ state: "needs_lead" },
+		{ state: "turn_granted" },
+		{ state: "returned_to_lead" },
+		{ state: "pending" },
 		{ runStatus: "held" },
-		{ dangerous: [{ state: "needs_lead" }] },
+		{ dangerous: [{ state: "returned_to_lead" }] },
 		{ sourceAttempt: 2 },
 		{ sourceExecutionId: "another-qa" },
 		{ outcome: "qa_pass" },
@@ -2188,5 +2380,159 @@ test("step 6 rejects missing or unrelated receipts, wrong source, and unsafe run
 			replayStep6(input),
 			/step 6 QA fail rework wake timed out/,
 		);
+	}
+});
+
+// FLY-2921: the step 6 danger predicate. A rework delivery ends only in
+// wake_delivered/completed or returned_to_lead; a run frozen by an open rework
+// hold is the other danger signal. This runs the real driver function.
+function loadDangerousReworkRows() {
+	const driver = readFileSync(
+		new URL("../qa-529-generalized-e2e.mjs", import.meta.url),
+		"utf8",
+	);
+	const start = driver.indexOf("\nconst REWORK_HOLD_EVENT_KINDS = [");
+	const end = driver.indexOf("\nfunction latestStub(", start);
+	assert.ok(start >= 0 && end > start);
+	return new Function(
+		"tableExists",
+		"all",
+		"one",
+		`${driver.slice(start, end)}; return dangerousReworkRows;`,
+	)(
+		(db, table) =>
+			Boolean(
+				db
+					.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?")
+					.get(table),
+			),
+		(db, sql, ...params) => db.prepare(sql).all(...params),
+		(db, sql, ...params) => db.prepare(sql).get(...params),
+	);
+}
+
+function reworkDangerFixture({
+	runStatus = "active",
+	deliveryState = "wake_delivered",
+	lastError = null,
+	events = [],
+} = {}) {
+	const require = createRequire(
+		new URL("../../packages/teamlead/package.json", import.meta.url),
+	);
+	const Database = require("better-sqlite3");
+	const db = new Database(":memory:");
+	db.exec(`
+		CREATE TABLE workflow_run (run_id TEXT, status TEXT);
+		CREATE TABLE workflow_rework_request (request_id TEXT, run_id TEXT);
+		CREATE TABLE workflow_rework_delivery (request_id TEXT, state TEXT, last_error TEXT);
+		CREATE TABLE workflow_run_event (run_id TEXT, event_uid TEXT, kind TEXT, payload TEXT);
+	`);
+	db.prepare("INSERT INTO workflow_run VALUES (?, ?)").run("run", runStatus);
+	db.prepare("INSERT INTO workflow_rework_request VALUES (?, ?)").run(
+		"req",
+		"run",
+	);
+	db.prepare("INSERT INTO workflow_rework_delivery VALUES (?, ?, ?)").run(
+		"req",
+		deliveryState,
+		lastError,
+	);
+	for (const [uid, kind, payload] of events)
+		db.prepare("INSERT INTO workflow_run_event VALUES (?, ?, ?, ?)").run(
+			"run",
+			uid,
+			kind,
+			payload,
+		);
+	return db;
+}
+
+const reworkHoldUid = "rework_returned_to_lead:req:3";
+const reworkHoldEvent = [
+	reworkHoldUid,
+	"rework_returned_to_lead",
+	JSON.stringify({ requestId: "req", routeRevision: 3 }),
+];
+const reworkHoldResumedEvent = [
+	`hold_resumed:rework_returned_to_lead:${reworkHoldUid}`,
+	"hold_resumed",
+	JSON.stringify({
+		shape: "rework_returned_to_lead",
+		holdEventUid: reworkHoldUid,
+	}),
+];
+
+test("dangerousReworkRows flags returned_to_lead and poisoned errors, never the live states", () => {
+	const dangerousReworkRows = loadDangerousReworkRows();
+	for (const deliveryState of [
+		"pending",
+		"turn_granted",
+		"wake_delivered",
+		"completed",
+	]) {
+		const db = reworkDangerFixture({ deliveryState });
+		try {
+			assert.deepEqual(dangerousReworkRows(db, "run"), []);
+		} finally {
+			db.close();
+		}
+	}
+	const returned = reworkDangerFixture({
+		deliveryState: "returned_to_lead",
+		lastError: "replacement_budget_exhausted",
+	});
+	try {
+		assert.deepEqual(dangerousReworkRows(returned, "run"), [
+			{
+				request_id: "req",
+				state: "returned_to_lead",
+				last_error: "replacement_budget_exhausted",
+			},
+		]);
+	} finally {
+		returned.close();
+	}
+	const poisoned = reworkDangerFixture({
+		lastError: "holder_activation_failed:stale",
+	});
+	try {
+		assert.equal(dangerousReworkRows(poisoned, "run").length, 1);
+	} finally {
+		poisoned.close();
+	}
+});
+
+test("dangerousReworkRows flags a run frozen by an open rework hold and clears it once resumed", () => {
+	const dangerousReworkRows = loadDangerousReworkRows();
+	const frozen = reworkDangerFixture({
+		runStatus: "held",
+		events: [reworkHoldEvent],
+	});
+	try {
+		assert.deepEqual(dangerousReworkRows(frozen, "run"), [
+			{
+				request_id: "req",
+				state: "run_held_by_rework_hold",
+				last_error: `rework_returned_to_lead:${reworkHoldUid}`,
+			},
+		]);
+	} finally {
+		frozen.close();
+	}
+	for (const input of [
+		// Resumed: the run may still be settling, but rework froze nothing.
+		{ runStatus: "held", events: [reworkHoldEvent, reworkHoldResumedEvent] },
+		// A delivery-scoped hold on an active run is returned_to_lead's business.
+		{ runStatus: "active", events: [reworkHoldEvent] },
+		// A run held for a non-rework reason is outside this predicate.
+		{ runStatus: "held", events: [["land_held:run", "land_held", "{}"]] },
+	]) {
+		const db = reworkDangerFixture(input);
+		try {
+			assert.deepEqual(dangerousReworkRows(db, "run"), []);
+		} finally {
+			db.close();
+		}
 	}
 });

@@ -1,3 +1,4 @@
+import type { CodexStandbyPageSection } from "../codex-quota/standby-page.js";
 import type {
 	VercelQuotaRow,
 	VercelQuotaSection,
@@ -7,8 +8,18 @@ import type {
 	AccountQuotaView,
 	QuotaCell,
 } from "./account-quota-view.js";
+import type {
+	ResetCardDecision,
+	ResetCardDecisionState,
+} from "./reset-card-decision.js";
 
 const PAGE_TIMEZONE = "America/Los_Angeles";
+
+/** FLY-2896: chip beside the target row while the founder's answer matters. */
+interface ResetCardChipSlot {
+	target: string;
+	label: string;
+}
 
 export type AccountQuotaPageGroup = "available" | "full" | "unavailable";
 
@@ -284,7 +295,28 @@ export interface AccountQuotaPageTerminalBody {
 
 export interface AccountQuotaPageOptions {
 	lastSwitch?: AccountQuotaPageSwitch | null;
+	/**
+	 * FLY-2896: display only (same treatment as `nextCharge`): never enters
+	 * grouping, ordering or switch logic; null renders the page as before.
+	 */
+	resetCardDecision?: ResetCardDecision | null;
+	/** FLY-2900: executions parked in Codex quota standby. */
+	codexStandby?: CodexStandbyPageSection;
 	terminalBodies?: readonly AccountQuotaPageTerminalBody[];
+}
+
+/** FLY-2900 §7: "额度待命中的节点" — every string escaped. */
+function renderCodexStandbySection(section: CodexStandbyPageSection): string {
+	const summary = `<div class="section-caption">近 14 天因额度改派 Claude：${section.claudeFallbacks14d} 次</div>`;
+	if (section.rows.length === 0)
+		return `<section class="provider-table provider-codex-standby"><h2>额度待命中的节点</h2>${summary}<div class="section-caption">当前没有待命节点</div></section>`;
+	const rows = section.rows
+		.map(
+			(row) =>
+				`<tr><td>${escapeHtml(row.issue)}</td><td>${escapeHtml(row.node)}</td><td><span class="reset-time">${escapeHtml(formatAccountQuotaPageInstant(row.enteredAt))}</span></td><td>${escapeHtml(row.status)}</td><td><span class="reset-time">${row.earliestResetAt ? escapeHtml(formatAccountQuotaPageInstant(row.earliestResetAt)) : "—"}</span></td></tr>`,
+		)
+		.join("");
+	return `<section class="provider-table provider-codex-standby"><h2>额度待命中的节点</h2>${summary}<div class="table-wrap"><table class="vercel-table"><thead><tr><th>Issue</th><th>节点</th><th>待命起点</th><th>状态</th><th>预计最早恢复</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
 }
 
 const TERMINAL_BODY_STATE_TEXT: Readonly<Record<string, string>> = {
@@ -369,6 +401,8 @@ function cellOf(row: AccountQuotaRow, key: MarkedCell): QuotaCell {
 interface MarkContext {
 	lastSwitch: AccountQuotaPageSwitch | null;
 	generatedAt: string;
+	/** FLY-2896: only set for the Claude table while a decision is shown. */
+	resetCardChip?: ResetCardChipSlot | null;
 }
 
 /**
@@ -453,7 +487,12 @@ function renderIdentity(
 	const note = row.note
 		? `<span class="account-note">${escapeHtml(row.note)}</span>`
 		: "";
-	return `<td class="account-cell"><div class="account-name">${active}${escapeHtml(row.name)}</div><div class="account-tier">${escapeHtml(row.subscriptionTier.display)}</div>${renderMark(row, "tier", context)}${renderReadingTime(row, context.generatedAt)}${accountMissing}${note}</td>`;
+	const chip = context.resetCardChip;
+	const resetCardChip =
+		chip !== undefined && chip !== null && chip.target === row.name
+			? `<span class="reset-card-chip">${escapeHtml(chip.label)}</span>`
+			: "";
+	return `<td class="account-cell"><div class="account-name">${active}${escapeHtml(row.name)}${resetCardChip}</div><div class="account-tier">${escapeHtml(row.subscriptionTier.display)}</div>${renderMark(row, "tier", context)}${renderReadingTime(row, context.generatedAt)}${accountMissing}${note}</td>`;
 }
 
 function renderInstant(value: string | null, display: string | null): string {
@@ -545,11 +584,69 @@ function renderSectionRows(
 		.join(spacer);
 }
 
+/** FLY-2896 §5.8: the suffix after 「已满、等你决定」, by state. */
+function resetCardStateCopy(
+	state: ResetCardDecisionState,
+	generatedAt: string,
+): string {
+	switch (state.kind) {
+		case "not_posted":
+			return "征询卡还没发出";
+		case "posted": {
+			if (state.postedAt === null) return "征询卡已发出";
+			try {
+				return `征询卡 ${formatAccountQuotaPageClock(state.postedAt, generatedAt)} 发出`;
+			} catch {
+				return "征询卡已发出";
+			}
+		}
+		case "approved":
+			return "你已同意，等到切号线执行";
+		case "in_progress":
+			return "正在用卡并切号";
+		case "rejected":
+			return "你已拒绝";
+		case "expired":
+			return "已过期未用卡";
+		case "post_failed":
+			return `征询卡没发出去（${state.reason ?? "unknown"}）`;
+		case "cancelled":
+			return "已取消未用卡";
+		case "failed":
+			return "用卡失败，请看告警";
+		case "ambiguous":
+			return "用卡后状态不确定，请人工核对";
+	}
+}
+
+function resetCardChipSlot(
+	decision: ResetCardDecision,
+): ResetCardChipSlot | null {
+	switch (decision.chip) {
+		case "awaiting":
+			return { target: decision.target, label: "有卡 · 等你决定" };
+		case "approved":
+			return { target: decision.target, label: "已同意 · 等切号线" };
+		default:
+			return null;
+	}
+}
+
+/** Display only: every dynamic value is escaped; never throws. */
+function renderResetCardBanner(
+	decision: ResetCardDecision,
+	generatedAt: string,
+): string {
+	const lead = `Claude 在用号 ${escapeHtml(decision.active)} 已用 ${escapeHtml(formatPct(decision.activePct))}，没有能直接切的号 · 建议给 ${escapeHtml(decision.target)} 用卡 · <strong>已满、等你决定</strong>`;
+	return `<div class="reset-card-banner" role="status" data-proposal="${escapeHtml(decision.proposalId)}">${lead} · ${escapeHtml(resetCardStateCopy(decision.state, generatedAt))}</div>`;
+}
+
 function renderTable(
 	provider: "Claude" | "Codex",
 	rows: readonly AccountQuotaRow[],
 	unavailable: readonly string[],
 	context: MarkContext,
+	resetCard: ResetCardDecision | null = null,
 ): string {
 	const claude = provider === "Claude";
 	// 账号 · 周重置日 · 5h reset · 周用量 · [Fable 周用量] · 卡 · 下次扣费日
@@ -564,7 +661,15 @@ function renderTable(
 				]
 					.map((reason) => `<span>${escapeHtml(reason)}</span>`)
 					.join("")}</td></tr></tbody>`;
-	return `<section class="provider-table provider-${provider.toLowerCase()}"><h2>${provider}</h2><div class="table-wrap"><table><thead><tr><th>账号</th><th>周重置日</th><th>5h reset</th><th>周用量</th>${fableHeader}<th>${cardHeader}</th><th>下次扣费日</th></tr></thead>${unavailableRows}${renderSectionRows(buildAccountQuotaPageSections(rows), columnCount, context)}</table></div></section>`;
+	const banner =
+		claude && resetCard !== null
+			? renderResetCardBanner(resetCard, context.generatedAt)
+			: "";
+	const tableContext: MarkContext =
+		claude && resetCard !== null
+			? { ...context, resetCardChip: resetCardChipSlot(resetCard) }
+			: context;
+	return `<section class="provider-table provider-${provider.toLowerCase()}"><h2>${provider}</h2>${banner}<div class="table-wrap"><table><thead><tr><th>账号</th><th>周重置日</th><th>5h reset</th><th>周用量</th>${fableHeader}<th>${cardHeader}</th><th>下次扣费日</th></tr></thead>${unavailableRows}${renderSectionRows(buildAccountQuotaPageSections(rows), columnCount, tableContext)}</table></div></section>`;
 }
 
 function renderVercelRow(row: VercelQuotaRow): string {
@@ -601,11 +706,16 @@ function renderVercelTable(section: VercelQuotaSection): string {
 	return `<section class="provider-table provider-vercel"><h2>Vercel</h2>${caption}<div class="table-wrap"><table class="vercel-table"><thead><tr><th>账号</th><th>下次扣费日</th><th>报告托管 Blob</th></tr></thead><tbody class="quota-group" data-group="vercel">${section.rows.map(renderVercelRow).join("")}</tbody></table></div></section>`;
 }
 
+/** FLY-2896: only emitted with a decision, so a null decision leaves the page byte-identical. */
+const RESET_CARD_STYLE =
+	".reset-card-banner{margin:0 0 10px;padding:10px 13px;border:1px solid #f0c9a0;border-left:4px solid #c8781e;border-radius:8px;background:#fff6ea;font-size:13px;line-height:1.55}.reset-card-banner strong{color:var(--full)}.reset-card-chip{font-size:10px;font-weight:650;color:#8a4b00;background:#fde7c8;border-radius:5px;padding:1px 6px;white-space:nowrap}";
+
 export function renderAccountQuotaPageHtml(
 	view: AccountQuotaView,
 	vercel?: VercelQuotaSection,
 	options: AccountQuotaPageOptions = {},
 ): string {
+	const resetCardDecision = options.resetCardDecision ?? null;
 	const context: MarkContext = {
 		lastSwitch: options.lastSwitch ?? null,
 		generatedAt: view.generatedAt,
@@ -618,9 +728,9 @@ export function renderAccountQuotaPageHtml(
 	<title>账号额度一览</title>
 	<style>
 		:root{color-scheme:light;--ink:#1d1d1f;--muted:#6e6e73;--line:#e3e1dc;--paper:#fbfaf7;--page:#f0efec;--ok:#1f7a68;--active-bg:#e3f4ec;--full:#c0392b;--full-bg:#fdf0ee;--track:#e9e7e2}
-		*{box-sizing:border-box}body{margin:0;background:var(--page);color:var(--ink);font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",system-ui,sans-serif}main{max-width:1280px;margin:0 auto;background:var(--paper);min-height:100vh;padding:38px 28px 48px}header{display:flex;align-items:baseline;justify-content:space-between;gap:16px;border-bottom:2px solid var(--ink);padding-bottom:14px}h1{margin:0;font-size:25px;letter-spacing:-.02em}.generated{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)}section{margin-top:30px}h2{font-size:17px;margin:0 0 8px}.table-wrap{overflow-x:auto}table{width:100%;min-width:990px;border-collapse:collapse;border:1px solid var(--line)}th,td{text-align:left;padding:12px 13px;border-bottom:1px solid var(--line);vertical-align:middle}th{font-size:11px;letter-spacing:.06em;color:var(--muted);white-space:nowrap}.provider-unavailable td{color:var(--muted);font-size:12px}.provider-unavailable span{display:block}.quota-group-spacer td{height:10px;padding:0;border:0;background:var(--paper)}.quota-group[data-group="full"] .quota-row td{background:var(--full-bg)}.group-title td{background:var(--paper);color:var(--muted);font-size:12px;font-weight:650;letter-spacing:.04em;padding-top:15px;padding-bottom:6px}.active-account td{background:var(--active-bg)!important}.active-account td:first-child{box-shadow:inset 4px 0 0 var(--ok)}.account-name{display:flex;align-items:center;gap:7px;font-weight:700}.active-dot{width:8px;height:8px;border-radius:50%;background:var(--ok);flex:none}.active-chip{font-size:10px;color:var(--ok);background:#d8eee6;border-radius:5px;padding:1px 6px}.account-tier,.account-note{display:block;color:var(--muted);font-size:11px;margin-top:4px;max-width:240px;white-space:normal}.reset-time,.card-lines{font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}.card-lines{display:flex;flex-direction:column}.quota-na{color:#a1a1a6}.quota-meter{min-width:118px}.meter-copy{display:flex;align-items:baseline;gap:6px;margin-bottom:5px}.quota-pct{font:650 13px ui-monospace,SFMono-Regular,Menlo,monospace}.dimension-label{font-size:10px;color:var(--muted)}.dimension-full{font-size:10px;font-weight:700;color:var(--full)}progress{display:block;width:100%;height:6px;border:0;border-radius:3px;overflow:hidden;background:var(--track);accent-color:var(--ok)}progress::-webkit-progress-bar{background:var(--track)}progress::-webkit-progress-value{background:var(--ok)}progress::-moz-progress-bar{background:var(--ok)}.dimension-is-full progress{accent-color:var(--full)}.dimension-is-full progress::-webkit-progress-value{background:var(--full)}.dimension-is-full progress::-moz-progress-bar{background:var(--full)}.dimension-is-full .quota-pct{color:var(--full)}.next-charge{white-space:nowrap}.charge-note,.charge-read-time{display:block;color:var(--muted);font-size:11px;margin-top:4px;white-space:nowrap}table.vercel-table{min-width:640px}.section-caption{font-size:12px;color:var(--muted);margin:-4px 0 8px}.retired-account td{color:var(--muted)}.reading-time{display:block;color:var(--muted);font-size:11px;margin-top:4px}.switch-stale{display:block;color:#b25e00;font-size:11px;margin-top:4px;white-space:normal}.switch-banner{margin-top:14px;padding:8px 12px;border-left:4px solid #ff9500;background:#fff6e8;font-size:13px}.terminal-body-banner{margin-top:14px;padding:8px 12px;border-left:4px solid #ff3b30;background:#fff0ef;font-size:13px}.terminal-body-banner ul{margin:6px 0 0;padding-left:18px}.terminal-body-banner li{font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-all}@media(max-width:700px){main{padding:26px 14px 40px}header{display:block}.generated{margin-top:8px}h1{font-size:23px}}
+		*{box-sizing:border-box}body{margin:0;background:var(--page);color:var(--ink);font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",system-ui,sans-serif}main{max-width:1280px;margin:0 auto;background:var(--paper);min-height:100vh;padding:38px 28px 48px}header{display:flex;align-items:baseline;justify-content:space-between;gap:16px;border-bottom:2px solid var(--ink);padding-bottom:14px}h1{margin:0;font-size:25px;letter-spacing:-.02em}.generated{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)}section{margin-top:30px}h2{font-size:17px;margin:0 0 8px}.table-wrap{overflow-x:auto}table{width:100%;min-width:990px;border-collapse:collapse;border:1px solid var(--line)}th,td{text-align:left;padding:12px 13px;border-bottom:1px solid var(--line);vertical-align:middle}th{font-size:11px;letter-spacing:.06em;color:var(--muted);white-space:nowrap}.provider-unavailable td{color:var(--muted);font-size:12px}.provider-unavailable span{display:block}.quota-group-spacer td{height:10px;padding:0;border:0;background:var(--paper)}.quota-group[data-group="full"] .quota-row td{background:var(--full-bg)}.group-title td{background:var(--paper);color:var(--muted);font-size:12px;font-weight:650;letter-spacing:.04em;padding-top:15px;padding-bottom:6px}.active-account td{background:var(--active-bg)!important}.active-account td:first-child{box-shadow:inset 4px 0 0 var(--ok)}.account-name{display:flex;align-items:center;gap:7px;font-weight:700}.active-dot{width:8px;height:8px;border-radius:50%;background:var(--ok);flex:none}.active-chip{font-size:10px;color:var(--ok);background:#d8eee6;border-radius:5px;padding:1px 6px}.account-tier,.account-note{display:block;color:var(--muted);font-size:11px;margin-top:4px;max-width:240px;white-space:normal}.reset-time,.card-lines{font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}.card-lines{display:flex;flex-direction:column}.quota-na{color:#a1a1a6}.quota-meter{min-width:118px}.meter-copy{display:flex;align-items:baseline;gap:6px;margin-bottom:5px}.quota-pct{font:650 13px ui-monospace,SFMono-Regular,Menlo,monospace}.dimension-label{font-size:10px;color:var(--muted)}.dimension-full{font-size:10px;font-weight:700;color:var(--full)}progress{display:block;width:100%;height:6px;border:0;border-radius:3px;overflow:hidden;background:var(--track);accent-color:var(--ok)}progress::-webkit-progress-bar{background:var(--track)}progress::-webkit-progress-value{background:var(--ok)}progress::-moz-progress-bar{background:var(--ok)}.dimension-is-full progress{accent-color:var(--full)}.dimension-is-full progress::-webkit-progress-value{background:var(--full)}.dimension-is-full progress::-moz-progress-bar{background:var(--full)}.dimension-is-full .quota-pct{color:var(--full)}.next-charge{white-space:nowrap}.charge-note,.charge-read-time{display:block;color:var(--muted);font-size:11px;margin-top:4px;white-space:nowrap}table.vercel-table{min-width:640px}.section-caption{font-size:12px;color:var(--muted);margin:-4px 0 8px}.retired-account td{color:var(--muted)}.reading-time{display:block;color:var(--muted);font-size:11px;margin-top:4px}.switch-stale{display:block;color:#b25e00;font-size:11px;margin-top:4px;white-space:normal}.switch-banner{margin-top:14px;padding:8px 12px;border-left:4px solid #ff9500;background:#fff6e8;font-size:13px}.terminal-body-banner{margin-top:14px;padding:8px 12px;border-left:4px solid #ff3b30;background:#fff0ef;font-size:13px}.terminal-body-banner ul{margin:6px 0 0;padding-left:18px}.terminal-body-banner li{font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-all}@media(max-width:700px){main{padding:26px 14px 40px}header{display:block}.generated{margin-top:8px}h1{font-size:23px}}${resetCardDecision === null ? "" : RESET_CARD_STYLE}
 	</style>
 </head>
-<body><main><header><h1>账号额度一览</h1><div class="generated">${escapeHtml(formatAccountQuotaPageInstant(view.generatedAt))}</div></header>${renderSwitchBanner(view, context)}${renderTerminalBodyBanner(options.terminalBodies ?? [], view.generatedAt)}${renderTable("Claude", view.claude, view.claudeUnavailable, context)}${renderTable("Codex", view.codex, view.codexUnavailable, context)}${vercel === undefined ? "" : renderVercelTable(vercel)}</main></body>
+<body><main><header><h1>账号额度一览</h1><div class="generated">${escapeHtml(formatAccountQuotaPageInstant(view.generatedAt))}</div></header>${renderSwitchBanner(view, context)}${renderTerminalBodyBanner(options.terminalBodies ?? [], view.generatedAt)}${renderTable("Claude", view.claude, view.claudeUnavailable, context, resetCardDecision)}${renderTable("Codex", view.codex, view.codexUnavailable, context)}${options.codexStandby ? renderCodexStandbySection(options.codexStandby) : ""}${vercel === undefined ? "" : renderVercelTable(vercel)}</main></body>
 </html>`;
 }

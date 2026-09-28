@@ -1,9 +1,4 @@
-import {
-	getModelConfigSnapshot,
-	MODEL_IDS,
-	resolveAllowedEffort,
-} from "flywheel-config";
-import type { CodexPoolExhaustionFact } from "./bridge/codex-quota-store.js";
+import { resolveAllowedEffort } from "flywheel-config";
 import type { StateStore } from "./StateStore.js";
 import type { WorkflowModelAssignmentReceipt } from "./workflow-menu.js";
 import {
@@ -24,57 +19,19 @@ export interface WorkflowDispatchResolution {
 		model: string;
 		effort?: WorkflowEffort;
 	};
-	source: "live_template" | "pinned_snapshot" | "snapshot_fallback";
+	source:
+		| "live_template"
+		| "pinned_snapshot"
+		| "snapshot_fallback"
+		| "codex_quota_demand";
 	audit: boolean;
+	/** FLY-2900: the frozen dispatch of a quota-fallback body (either vendor). */
+	quotaFallback?: {
+		sourceExecutionId: string;
+		dispatchReason: "codex_quota_fallback" | "codex_quota_fallback_codex";
+		poolEvidenceRef: string | null;
+	};
 	modelAssignment?: WorkflowModelAssignmentReceipt;
-	degradation?: {
-		assignedDispatch: WorkflowDispatchResolution["dispatch"];
-		quotaEvidence: CodexPoolExhaustionFact;
-	};
-}
-
-function applyImplementQuotaDegradation(
-	store: StateStore,
-	input: { nodeId: string; codexQuotaRootKey?: string; now?: number },
-	resolution: WorkflowDispatchResolution,
-): WorkflowDispatchResolution {
-	const assignment = resolution.modelAssignment;
-	if (
-		input.nodeId !== "implement" ||
-		!input.codexQuotaRootKey ||
-		assignment?.basis.rule !== "issue_node_weighted" ||
-		assignment.basis.nodeId !== "implement" ||
-		!(assignment.arm === "impl_sol56" || assignment.arm === "impl_sol6") ||
-		!assignment.basis.nodes.implement.some(
-			(arm) => arm.arm === "impl_opus" && arm.model === "opus",
-		)
-	)
-		return resolution;
-	const quotaEvidence = store.codexQuota.getCurrentPoolExhaustionFact(
-		input.codexQuotaRootKey,
-		input.now,
-	);
-	const model = getModelConfigSnapshot().getModelRegistryEntry("opus");
-	if (
-		!quotaEvidence ||
-		model?.id !== MODEL_IDS.OPUS_55 ||
-		model.runtimeVendor !== "claude" ||
-		!getModelConfigSnapshot().isModelSelectionSupported({
-			surface: "workflow",
-			model: model.id,
-			effort: "xhigh",
-			runtimeVendor: "claude",
-		})
-	)
-		return resolution;
-	return {
-		...resolution,
-		dispatch: { vendor: "claude", model: model.id, effort: "xhigh" },
-		degradation: {
-			assignedDispatch: resolution.dispatch,
-			quotaEvidence,
-		},
-	};
 }
 
 function resolveModelAssignment(
@@ -177,10 +134,35 @@ export function resolveNodeDispatchAtLaunch(
 	input: {
 		runId: string;
 		nodeId: string;
-		codexQuotaRootKey?: string;
-		now?: number;
+		/** FLY-2900: a prepared quota-fallback body resolves to its frozen demand. */
+		executionId?: string;
 	},
 ): WorkflowDispatchResolution {
+	// FLY-2900 §5.4: one dispatch path, no bypass. A prepared demand freezes
+	// the fallback dispatch for either vendor and skips every generic
+	// degradation and the live template (FLY-2895 later replaces this step).
+	const demand = input.executionId
+		? store.getCodexQuotaPreparedDemand?.(input.executionId)
+		: undefined;
+	if (demand) {
+		return {
+			dispatch: {
+				vendor: demand.vendor,
+				model: demand.model,
+				effort: demand.effort as WorkflowEffort,
+			},
+			source: "codex_quota_demand",
+			audit: true,
+			quotaFallback: {
+				sourceExecutionId: demand.sourceExecutionId,
+				dispatchReason:
+					demand.vendor === "claude"
+						? "codex_quota_fallback"
+						: "codex_quota_fallback_codex",
+				poolEvidenceRef: demand.poolEvidenceRef,
+			},
+		};
+	}
 	const run = store.getWorkflowRun(input.runId);
 	if (!run?.snapshot) throw new Error("workflow_dispatch_run_snapshot_missing");
 	const snapshot = parseWorkflowRunSnapshot(run.snapshot);
@@ -195,12 +177,12 @@ export function resolveNodeDispatchAtLaunch(
 		model: pinned.model,
 	});
 	if (node.dispatchPinned) {
-		return applyImplementQuotaDegradation(store, input, {
+		return {
 			dispatch: narrowEffort(pinned),
 			source: "pinned_snapshot",
 			audit: true,
 			...(modelAssignment ? { modelAssignment } : {}),
-		});
+		};
 	}
 
 	try {
@@ -216,7 +198,7 @@ export function resolveNodeDispatchAtLaunch(
 			(candidate) => candidate.id === input.nodeId,
 		);
 		if (!live?.vendor || !live.model) throw new Error("node_dispatch_missing");
-		return applyImplementQuotaDegradation(store, input, {
+		return {
 			dispatch: narrowEffort({
 				vendor: live.vendor,
 				model: live.model,
@@ -225,13 +207,13 @@ export function resolveNodeDispatchAtLaunch(
 			source: "live_template",
 			audit: true,
 			...(modelAssignment ? { modelAssignment } : {}),
-		});
+		};
 	} catch {
-		return applyImplementQuotaDegradation(store, input, {
+		return {
 			dispatch: narrowEffort(pinned),
 			source: "snapshot_fallback",
 			audit: true,
 			...(modelAssignment ? { modelAssignment } : {}),
-		});
+		};
 	}
 }

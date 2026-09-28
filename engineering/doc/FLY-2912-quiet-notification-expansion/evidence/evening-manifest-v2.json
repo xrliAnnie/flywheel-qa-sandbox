@@ -1,0 +1,100 @@
+{
+  "version": 2,
+  "authorityQuestion": "5fbba693-8282-4690-9a9c-0020b7aff927",
+  "windowUtc": [
+    "2026-09-26T01:30:00Z",
+    "2026-09-26T04:00:00Z"
+  ],
+  "project": "flywheel",
+  "lead": "flywheel-eng-lead",
+  "source": "bounded read-only SQLite queries; no database copied",
+  "files": [
+    {
+      "path": "/Users/xiaorongli/.flywheel/artifacts/FLY-2912/lead-events-v2.jsonl",
+      "rows": 257,
+      "sha256": "828f36983f7f504b92cd11ba67d61af188144ec62f73e80ab09bff549f4251b7"
+    },
+    {
+      "path": "/Users/xiaorongli/.flywheel/artifacts/FLY-2912/session-events-v2.jsonl",
+      "rows": 80,
+      "sha256": "a809c204b22f89da92d66cad502ed27e4928d28749dec6bc5952f20c974476a2"
+    },
+    {
+      "path": "/Users/xiaorongli/.flywheel/artifacts/FLY-2912/mailbox-v2.jsonl",
+      "rows": 206,
+      "sha256": "d2c4aabfd60f020fd36215fc2884928e117d32ca892702bcc1789d16e8cce31e"
+    }
+  ],
+  "counts": [
+    {
+      "type": "epic_intake",
+      "disposition": "model",
+      "count": 2
+    },
+    {
+      "type": "founder_reply",
+      "disposition": "model",
+      "count": 5
+    },
+    {
+      "type": "gate_question",
+      "disposition": "model",
+      "count": 7
+    },
+    {
+      "type": "patrol_tick",
+      "disposition": "model",
+      "count": 2
+    },
+    {
+      "type": "runner_question",
+      "disposition": "model",
+      "count": 91
+    },
+    {
+      "type": "session_monitoring_reestablished",
+      "disposition": "audit_only",
+      "count": 26
+    },
+    {
+      "type": "session_monitoring_reestablished",
+      "disposition": "model",
+      "count": 12
+    },
+    {
+      "type": "session_started",
+      "disposition": "model",
+      "count": 21
+    },
+    {
+      "type": "stage_changed",
+      "disposition": "audit_only",
+      "count": 62
+    },
+    {
+      "type": "stage_changed",
+      "disposition": "model",
+      "count": 18
+    },
+    {
+      "type": "workflow_claim_recorded",
+      "disposition": "model",
+      "count": 2
+    },
+    {
+      "type": "workflow_engine_escalation",
+      "disposition": "model",
+      "count": 7
+    },
+    {
+      "type": "workflow_replacement_eligibility",
+      "disposition": "model",
+      "count": 2
+    }
+  ],
+  "limits": [
+    "Journal rows do not prove actual wakes.",
+    "Historical obligation/review/timer authority and carrier turn timeline are not yet recovered.",
+    "session_events join may be absent for internal producer events; retain every lead row."
+  ]
+}

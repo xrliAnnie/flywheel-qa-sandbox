@@ -1101,7 +1101,7 @@ describe("FLY-1925 patrol loop red-light predicate", () => {
 				reworkDeliveries: [
 					{
 						runId: "run-1",
-						state: "replacement_pending",
+						state: "returned_to_lead",
 						targetNodeId: "implement",
 						targetAttempt: 3,
 					},
@@ -1136,7 +1136,7 @@ describe("FLY-1925 patrol loop red-light predicate", () => {
 		expect(entry.openLoops).toEqual([
 			{
 				kind: "rework",
-				state: "replacement_pending",
+				state: "returned_to_lead",
 				target: "implement@3",
 			},
 			{ kind: "land", state: "partial", step: "merge" },

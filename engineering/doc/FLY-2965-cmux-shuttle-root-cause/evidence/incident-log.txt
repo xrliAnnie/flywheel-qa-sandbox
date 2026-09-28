@@ -1,0 +1,49 @@
+Source: /tmp/flywheel-updater.log; captured 2026-09-27; selected lines only
+1480: [2026-09-27 00:01:01] [restart] Build identity requires rebuild (mode=built artifact=fdd1b404d40129f9e5345d325f1c687e52a682e9)
+1481: [2026-09-27 00:01:01] [restart] Starting full restart: fdd1b40 → 975822f (reason=updater)
+1482: [2026-09-27 00:01:02] [restart] WARNING: non-production tmux server audit pid=19596 socket=/Users/xiaorongli/.flywheel/sock/fw-flywheel-claude-infr-a64677d0f712ca3b.sock sessions=main
+1483: [2026-09-27 00:01:02] [restart] WARNING: non-production tmux server audit pid=24271 socket=/Users/xiaorongli/.flywheel/sock/fw-flywheel-flywheel-co-9d22d6f755a2c9ae.sock sessions=main
+1484: [2026-09-27 00:01:02] [restart] WARNING: non-production tmux server audit pid=26203 socket=/Users/xiaorongli/.flywheel/sock/fw-flywheel-flywheel-en-97a3783099afee93.sock sessions=main
+1485: [2026-09-27 00:01:03] [restart] WARNING: non-production tmux server audit pid=33588 socket=/Users/xiaorongli/.flywheel/sock/fw-personal-assistant-b-fb1358a030a83e9e.sock sessions=main
+1486: [2026-09-27 00:01:03] [restart] WARNING: non-production tmux server audit pid=38789 socket=/Users/xiaorongli/.flywheel/sock/fw-tidal-echo-sub-lead-f730c5babd40c1eb.sock sessions=main
+1487: [2026-09-27 00:01:03] [restart] WARNING: non-production tmux server audit pid=39603 socket=/Users/xiaorongli/.flywheel/sock/fw-tidal-echo-tidal-ech-5a26bc72c7008234.sock sessions=main
+1488: [2026-09-27 00:01:03] [restart] WARNING: non-production tmux server audit pid=44141 socket=/private/tmp/flywheel-test-slot-3/tmux-501/default sessions=flywheel
+1489: [lead-alert] 00:01:04 sent lead=deploy kind=deploy_failed channel=1518793447165661254 (HTTP 200)
+1490: [2026-09-27 00:01:04] [restart] WARNING: non-production tmux server audit pid=55321 socket=/Users/xiaorongli/.flywheel/sock/fw-flywheel-flywheel-pr-e76a69077823e6f5.sock sessions=main
+1491: [2026-09-27 00:01:04] [restart] WARNING: non-production tmux server audit pid=55699 socket=/Users/xiaorongli/.flywheel/sock/fw-geoforge3d-cos-lead-13f3418412f5ecb9.sock sessions=main
+1492: [2026-09-27 00:01:05] [restart] WARNING: non-production tmux server audit pid=56169 socket=/Users/xiaorongli/.flywheel/sock/fw-geoforge3d-ops-lead-4f6ff936768743e1.sock sessions=main
+1493: [2026-09-27 00:01:05] [restart] WARNING: non-production tmux server audit pid=56610 socket=/Users/xiaorongli/.flywheel/sock/fw-geoforge3d-product-l-250e15fa2e2e6230.sock sessions=main
+1494: [2026-09-27 00:01:05] [restart] WARNING: non-production tmux server audit pid=62863 socket=/private/tmp/flywheel-test-slot-1/tmux-501/default sessions=flywheel
+1495: [lead-alert] 00:01:05 delivery receipt already sent event_id=08ea9f58733f1a7185fbd5eaf9aca54a7d2f96e3
+1496: [2026-09-27 00:01:05] [restart] WARNING: non-production tmux server audit pid=74087 socket=/Users/xiaorongli/.flywheel/sock/fw-tidal-echo-tidal-ech-0150ace5cbae1418.sock sessions=main
+1497: [2026-09-27 00:01:05] [restart] WARNING: non-production tmux server audit pid=97869 socket=/Users/xiaorongli/.flywheel/sock/fw-growth-rafiki-lead-d7720336bc6311d7.sock sessions=main
+1498: [2026-09-27 00:01:06] [restart] WARNING: non-production tmux server audit pid=98506 socket=/Users/xiaorongli/.flywheel/sock/fw-growth-reflection-le-da6fc9c713ddc5f6.sock sessions=main
+1499: [2026-09-27 00:01:06] [restart] WARNING: non-production tmux server audit pid=99045 socket=/Users/xiaorongli/.flywheel/sock/fw-joycon-typeless-joyc-3adda1a9ff3a733b.sock sessions=main
+1500: [2026-09-27 08:54:42] [restart] WARNING: non-production tmux server audit pid=50474 socket=/tmp/cmux.sock sessions=<unreadable>
+1501: [2026-09-27 08:54:43] [restart] Bridge admission paused for 1800s with owner lease
+1502: [2026-09-27 08:54:43] [restart] Stopping Bridge (port :9876, PIDs: 63360 63247 60262 )...
+1503: [2026-09-27 08:54:44] [restart] Bridge stopped (PIDs: 63360 63247 60262 , waited 1s)
+1617: [2026-09-27 09:02:58] [restart] ERROR: post-bootstrap watcher probe failed after 20 attempts: no watcher process
+1618: [2026-09-27 09:02:58] [restart] cmux refresh scheduled (background, 5s delay)
+1619: [2026-09-27 09:02:58] [restart] cmux refresh-surfaces scheduled (background, 10s delay)
+1620: /Users/xiaorongli/.flywheel/bin/lib/bounded-run.sh: child setpgid (24579 to 24579): Operation not permitted
+1621: /Users/xiaorongli/.flywheel/bin/lib/bounded-run.sh: child setpgid (69554 to 69554): Operation not permitted
+1622: /Users/xiaorongli/.flywheel/bin/lib/bounded-run.sh: child setpgid (34978 to 34978): Operation not permitted
+1623: /Users/xiaorongli/.flywheel/bin/lib/bounded-run.sh: child setpgid (61510 to 61510): Operation not permitted
+1624: /Users/xiaorongli/.flywheel/bin/lib/bounded-run.sh: child setpgid (7534 to 7534): Operation not permitted
+1625: /Users/xiaorongli/.flywheel/bin/lib/bounded-run.sh: child setpgid (62462 to 62462): Operation not permitted
+1626: /Users/xiaorongli/.flywheel/bin/lib/bounded-run.sh: child setpgid (72839 to 72839): Operation not permitted
+1627: /Users/xiaorongli/.flywheel/bin/lib/bounded-run.sh: child setpgid (73755 to 73755): Operation not permitted
+1628: /Users/xiaorongli/.flywheel/bin/lib/bounded-run.sh: child setpgid (84614 to 84614): Operation not permitted
+1629: /Users/xiaorongli/.flywheel/bin/lib/bounded-run.sh: child setpgid (91785 to 91785): Operation not permitted
+1630: /Users/xiaorongli/.flywheel/bin/lib/bounded-run.sh: child setpgid (91909 to 91909): Operation not permitted
+1631: /Users/xiaorongli/.flywheel/bin/lib/bounded-run.sh: child setpgid (16748 to 16748): Operation not permitted
+1632: /Users/xiaorongli/.flywheel/bin/lib/bounded-run.sh: child setpgid (53594 to 53594): Operation not permitted
+1633: /Users/xiaorongli/.flywheel/bin/lib/bounded-run.sh: child setpgid (89696 to 89696): Operation not permitted
+1634: [2026-09-27 09:20:29] [restart] Lead visibility barrier: candidates=17 confirmed_missing=3 unproven=0
+1635: [2026-09-27 09:20:30] [restart] deployed-sha updated to 975822f
+1636: [2026-09-27 09:20:30] [restart] Project flywheel: deployed-sha updated to 975822f
+1653: [2026-09-27 09:20:55] [restart] WARNING: code deployed; full restart result is degraded — visible-window missing: flywheel-codex-infra-bot-lead, growth-mufasa-lead, raya-raya；cmux watcher=probe_failed: post-bootstrap watcher probe failed after 20 attempts: no watcher process
+1654: [lead-alert] 09:20:56 sent lead=deploy kind=deploy_degraded channel=1518793447165661254 (HTTP 200)
+1655: [2026-09-27 09:20:56] [restart] Bridge admission resumed
+1656: [2026-09-27 09:20:56] [restart] Done.

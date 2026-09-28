@@ -218,6 +218,15 @@ function runComm(args) {
 function completeWithDrain(args) {
 	return completeStubWithDrain(args, {
 		runComm,
+		recordDrainRead: ({ readId, pages }) => {
+			state.consumedDrainReads = [
+				...(state.consumedDrainReads ?? []).filter(
+					(item) => item.readId !== readId,
+				),
+				{ readId, pages, readAt: new Date().toISOString() },
+			];
+			writeJsonAtomic(statePath, state);
+		},
 		acknowledgeWakes: (ids) => {
 			const db = new CommDB(
 				resolveDbPath({ project: requiredEnv("FLYWHEEL_PROJECT_NAME") }),

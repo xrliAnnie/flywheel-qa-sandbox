@@ -1856,6 +1856,8 @@ qa_slot_start_lead() {
       "FLYWHEEL_CODEX_BIN=${codex_bin}"
       "FLYWHEEL_CODEX_LEAD_MODE=tui"
       "FLYWHEEL_CODEX_TUI_CWD=${workspace}"
+      "FLYWHEEL_CODEX_TUI_TEST_MODEL=gpt-5.6-sol"
+      "FLYWHEEL_CODEX_TUI_TEST_REASONING_EFFORT=high"
       "FLYWHEEL_CODEX_LEAD_STATE_DIRS=${codex_state_dirs}"
       "FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE=${SLOT_DIR}/state/lead-carrier-evidence.json"
       "FLYWHEEL_LEAD_CARRIER_ASSERTION_DIR=${SLOT_DIR}/state/carrier-assertions"

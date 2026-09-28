@@ -606,7 +606,9 @@ const PATROL_LOOP_STATES = new Set([
 	"held",
 	"turn_granted",
 	"wake_delivered",
-	"replacement_pending",
+	// FLY-2921: rework deliveries end in `returned_to_lead`; `needs_lead`
+	// stays for the ship carrier.
+	"returned_to_lead",
 	"needs_lead",
 	"intent",
 	"partial",

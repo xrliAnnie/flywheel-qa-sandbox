@@ -5,10 +5,12 @@ import type {
 	WorkflowEngineAlertIdentity,
 	WorkflowReworkDeliveryClaimResult,
 	WorkflowReworkDeliveryRow,
+	WorkflowReworkFailureSettlement,
 	WorkflowReworkRequestRow,
 	WorkflowReworkRouteRevisionRow,
 	WorkflowRunNodeRow,
 	WorkflowRunRow,
+	WorkflowSideEffectState,
 } from "../StateStore.js";
 import {
 	isStateStoreIrreversibleTerminalForZombie,
@@ -105,6 +107,8 @@ export function grantWorkflowReworkTurn(
 }
 
 export interface WorkflowReworkCoordinatorStore {
+	/** FLY-2900: parked in Codex quota standby — wait, never replace. */
+	isCodexQuotaStandby?(executionId: string): boolean;
 	getWorkflowExecutionProcessBody?(executionId: string):
 		| {
 				generation: number;
@@ -170,6 +174,8 @@ export interface WorkflowReworkCoordinatorStore {
 		demandId: string;
 		newExecutionId: string;
 		now: string;
+		ownerId?: string;
+		generation?: number;
 	}):
 		| {
 				ok: true;
@@ -193,11 +199,6 @@ export interface WorkflowReworkCoordinatorStore {
 		nodeId: string,
 		attempt: number,
 	): WorkflowRunNodeRow | undefined;
-	hasUnlaunchedWorkflowRollbackFact(
-		runId: string,
-		nodeId: string,
-		executionId: string,
-	): boolean;
 	convergeWorkflowReworkWriterReplacement(input: {
 		requestId: string;
 		ownerId: string;
@@ -226,16 +227,80 @@ export interface WorkflowReworkCoordinatorStore {
 		reason: string;
 		alertIdentity: WorkflowEngineAlertIdentity;
 		now: string;
-		onExhausted?: "needs_lead" | "handoff_held_pane_loss";
-		terminal?: { kind: "irreversible_actor"; status: string; cause: string };
+		forceReturn?: boolean;
+	}): WorkflowReworkFailureSettlement;
+	replaceWorkflowReworkActor(input: {
+		requestId: string;
+		ownerId: string;
+		generation: number;
+		deadExecutionId: string;
+		newExecutionId: string;
+		proof: { kind: "unlaunched_rollback" } | { kind: "launch_abandoned" };
+		reason: string;
+		observedAt: string;
+		expectedSessionLifecycleRevision?: number | null;
 	}):
 		| {
 				ok: true;
-				holdCount: number;
-				state: "pending" | "turn_granted" | "held" | "needs_lead";
-				nextRetryAt: string | null;
+				executionId: string;
+				launchOrdinal: number;
+				routeRevision: number;
+				idempotentReplay: boolean;
 		  }
 		| { ok: false; reason: string };
+	workflowReworkDeathProof(
+		requestId: string,
+	): "unlaunched_rollback" | "launch_abandoned" | undefined;
+	getWorkflowReworkReplacementLaunch(requestId: string):
+		| {
+				executionId: string;
+				launchOrdinal: number;
+				ledgerState: WorkflowSideEffectState;
+				createdAt: string;
+				bindingMode: string | null;
+				launchOwnerPresent: boolean;
+		  }
+		| undefined;
+	abandonUnadmittedReworkReplacementLaunch(input: {
+		requestId: string;
+		ownerId: string;
+		generation: number;
+		reason: string;
+		now: string;
+	}): { ok: true } | { ok: false; reason: string };
+	hasReworkReplacementContentMissingFact(input: {
+		runId: string;
+		requestId: string;
+		routeRevision: number;
+	}): boolean;
+	deferWorkflowReworkDelivery(input: {
+		requestId: string;
+		ownerId: string;
+		generation: number;
+		nextRetryAt: string;
+		reason: string;
+	}): { ok: true } | { ok: false; reason: string };
+	noteWorkflowReworkLiveness(input: {
+		requestId: string;
+		ownerId: string;
+		generation: number;
+		known: boolean;
+		reason: string;
+		now: string;
+		alertIdentity?: WorkflowEngineAlertIdentity;
+	}):
+		| {
+				ok: true;
+				unknownSince: string | null;
+				alerted: "warn" | "severe" | null;
+		  }
+		| { ok: false; reason: string };
+	markWorkflowReworkWakeSent(input: {
+		requestId: string;
+		ownerId: string;
+		generation: number;
+		now: string;
+	}): { ok: true } | { ok: false; reason: string };
 	markWorkflowReworkGrantStarted(input: {
 		requestId: string;
 		ownerId: string;
@@ -251,8 +316,6 @@ export interface WorkflowReworkCoordinatorStore {
 		now: string;
 		error?: string;
 		releaseOwner?: boolean;
-		nextRetryAt?: string;
-		alertIdentity?: WorkflowEngineAlertIdentity;
 	}): { ok: true } | { ok: false; reason: string };
 	scheduleWorkflowReworkReceiptProbe(input: {
 		requestId: string;
@@ -380,27 +443,54 @@ export interface WorkflowReworkCoordinatorEffects {
 		epoch: number;
 		context: unknown;
 	}): Promise<{ ok: boolean; error?: string }>;
+	/**
+	 * FLY-2921: after a Lead resume, reset the SAME durable wake (its push
+	 * budget is spent) exactly once per resume receipt. `busy` means a push
+	 * claim is live: nothing was executed, retry later.
+	 */
+	rearmReworkWake?(input: {
+		projectName: string;
+		wakeId: string;
+		receiptId: string;
+	}): Promise<
+		{ kind: "reset" | "idempotent_replay" | "noop" } | { kind: "busy" }
+	>;
 }
 
 export type WorkflowReworkCoordinatorOutcome =
 	| {
-			kind: "awaiting_receipt";
+			kind: "wake_sent";
 			executionId: string;
 			activationId: string;
 			epoch: number;
 	  }
 	| {
 			kind: "receipt_pending";
-			state: "awaiting_receipt" | "wake_delivered";
+			state: "turn_granted" | "wake_delivered";
 			executionId: string;
 	  }
-	| { kind: "replacement_pending"; executionId: string; reason: string }
-	| { kind: "replacement_converged"; executionId: string }
+	| { kind: "replacement_minted"; executionId: string; reason: string }
+	| { kind: "replacement_launching"; executionId: string; reason: string }
 	| { kind: "disabled"; reason: "rework_reentry_disabled" }
 	| { kind: "retryable"; reason: string }
 	| { kind: "busy" }
-	| { kind: "settled"; state: WorkflowReworkDeliveryRow["state"] }
+	| {
+			kind: "settled";
+			state: "wake_delivered" | "completed" | "returned_to_lead";
+	  }
 	| { kind: "invalid"; reason: string };
+
+/** FLY-2921: a launching replacement is looked at again after this long. */
+const REPLACEMENT_LAUNCH_DEFER_MS = 30_000;
+/** Matches the dispatcher's unlaunched-rollback threshold default. */
+const DEFAULT_REPLACEMENT_LAUNCH_STALL_MS = 10 * 60_000;
+/**
+ * FLY-2921 (FLY-2919 not merged): a delivered-but-unacknowledged wake whose
+ * actor has been unobservable this long is returned to the Lead instead of
+ * waiting forever, because liveness-based replacement is closed until
+ * FLY-2919's process evidence is available.
+ */
+const SENT_LIVENESS_UNKNOWN_RETURN_MS = 2 * 60 * 60_000;
 
 export class WorkflowReworkCoordinator {
 	private readonly leaseMs: number;
@@ -422,6 +512,7 @@ export class WorkflowReworkCoordinator {
 			) => { expiresAt: string; absoluteDeadlineAt: string };
 			nodeStandbyResumeEnabled?: () => boolean;
 			reentryEnabled?: () => boolean;
+			replacementLaunchStallMs?: () => number;
 		},
 	) {
 		this.leaseMs = deps.leaseMs ?? 30_000;
@@ -431,12 +522,16 @@ export class WorkflowReworkCoordinator {
 		return this.deps.now?.() ?? new Date();
 	}
 
+	/**
+	 * Count one retryable failure (1/2/4/8 minute backoff; the fifth — or
+	 * `forceReturn` — returns the rework to the Lead). A run that is no
+	 * longer active is only released: its rows belong to that run's owner.
+	 */
 	private releaseRetryable(input: {
 		requestId: string;
 		generation: number;
 		reason: string;
-		onExhausted?: "needs_lead" | "handoff_held_pane_loss";
-		terminal?: { kind: "irreversible_actor"; status: string; cause: string };
+		forceReturn?: boolean;
 	}): WorkflowReworkCoordinatorOutcome {
 		const request = this.deps.store.getWorkflowReworkRequest(input.requestId);
 		const run = request
@@ -450,14 +545,43 @@ export class WorkflowReworkCoordinator {
 				reason: input.reason,
 				alertIdentity: this.deps.resolveAlertIdentity(run),
 				now: this.now().toISOString(),
-				...(input.onExhausted ? { onExhausted: input.onExhausted } : {}),
-				...(input.terminal ? { terminal: input.terminal } : {}),
+				...(input.forceReturn ? { forceReturn: true } : {}),
 			});
 			if (settled.ok) {
-				return settled.state === "needs_lead" || settled.state === "held"
-					? { kind: "settled", state: settled.state }
+				return settled.state === "returned_to_lead"
+					? { kind: "settled", state: "returned_to_lead" }
 					: { kind: "retryable", reason: input.reason };
 			}
+		}
+		this.releaseOnly({
+			requestId: input.requestId,
+			generation: input.generation,
+			reason: input.reason,
+		});
+		return { kind: "retryable", reason: input.reason };
+	}
+
+	/** Give the claim back without counting a failure. */
+	private releaseOnly(input: {
+		requestId: string;
+		generation: number;
+		reason: string;
+	}): void {
+		const delivery = this.deps.store.getWorkflowReworkDelivery(input.requestId);
+		const sent =
+			delivery?.state === "wake_delivered" ||
+			(delivery?.state === "turn_granted" && delivery.wake_sent_at !== null);
+		if (sent) {
+			this.deps.store.scheduleWorkflowReworkReceiptProbe({
+				requestId: input.requestId,
+				ownerId: this.deps.ownerId,
+				generation: input.generation,
+				nextRetryAt: workflowDeliveryReceiptNextRetryAt(
+					this.now().toISOString(),
+				),
+				reason: input.reason,
+			});
+			return;
 		}
 		this.deps.store.releaseWorkflowReworkDelivery({
 			requestId: input.requestId,
@@ -466,13 +590,12 @@ export class WorkflowReworkCoordinator {
 			error: input.reason,
 			now: this.now().toISOString(),
 		});
-		return { kind: "retryable", reason: input.reason };
 	}
 
 	private deferReceiptProbe(input: {
 		requestId: string;
 		generation: number;
-		state: "awaiting_receipt" | "wake_delivered";
+		state: "turn_granted" | "wake_delivered";
 		executionId: string;
 		reason: string;
 	}): WorkflowReworkCoordinatorOutcome {
@@ -492,6 +615,405 @@ export class WorkflowReworkCoordinator {
 			: { kind: "retryable", reason: scheduled.reason };
 	}
 
+	/** Look again later without counting and without an event. */
+	private defer(input: {
+		requestId: string;
+		generation: number;
+		executionId: string;
+		reason: string;
+		delayMs: number;
+	}): WorkflowReworkCoordinatorOutcome {
+		const deferred = this.deps.store.deferWorkflowReworkDelivery({
+			requestId: input.requestId,
+			ownerId: this.deps.ownerId,
+			generation: input.generation,
+			nextRetryAt: new Date(this.now().getTime() + input.delayMs).toISOString(),
+			reason: input.reason,
+		});
+		return deferred.ok
+			? {
+					kind: "replacement_launching",
+					executionId: input.executionId,
+					reason: input.reason,
+				}
+			: { kind: "retryable", reason: deferred.reason };
+	}
+
+	/**
+	 * C2 step 5: liveness that cannot be decided. It starts (or continues) the
+	 * per-revision unknown clock, which raises the 30-minute and 2-hour
+	 * alerts. A wake already sent only waits (FLY-2919 absent: a sent
+	 * `turn_granted` is returned to the Lead after two unknown hours); an
+	 * unsent delivery counts one failure.
+	 */
+	private livenessUnknown(input: {
+		requestId: string;
+		generation: number;
+		run: WorkflowRunRow;
+		delivery: WorkflowReworkDeliveryRow;
+		executionId: string;
+		reason: string;
+		treatAsSent?: boolean;
+	}): WorkflowReworkCoordinatorOutcome {
+		const now = this.now();
+		const noted = this.deps.store.noteWorkflowReworkLiveness({
+			requestId: input.requestId,
+			ownerId: this.deps.ownerId,
+			generation: input.generation,
+			known: false,
+			reason: input.reason,
+			now: now.toISOString(),
+			alertIdentity: this.deps.resolveAlertIdentity(input.run),
+		});
+		const sent =
+			input.delivery.state === "wake_delivered" ||
+			(input.delivery.state === "turn_granted" &&
+				input.delivery.wake_sent_at !== null);
+		if (input.treatAsSent) {
+			return this.defer({
+				requestId: input.requestId,
+				generation: input.generation,
+				executionId: input.executionId,
+				reason: input.reason,
+				delayMs: 3 * 60_000,
+			});
+		}
+		if (!sent) {
+			return this.releaseRetryable({
+				requestId: input.requestId,
+				generation: input.generation,
+				reason: input.reason,
+			});
+		}
+		if (
+			input.delivery.state === "turn_granted" &&
+			noted.ok &&
+			noted.unknownSince !== null &&
+			now.getTime() - Date.parse(noted.unknownSince) >=
+				SENT_LIVENESS_UNKNOWN_RETURN_MS
+		) {
+			return this.releaseRetryable({
+				requestId: input.requestId,
+				generation: input.generation,
+				reason: `liveness_unknown_timeout:${input.reason}`,
+				forceReturn: true,
+			});
+		}
+		return this.deferReceiptProbe({
+			requestId: input.requestId,
+			generation: input.generation,
+			state: input.delivery.state as "turn_granted" | "wake_delivered",
+			executionId: input.executionId,
+			reason: input.reason,
+		});
+	}
+
+	/**
+	 * C2 step 4, without a trusted death proof: a terminal label, a missing
+	 * session/pane, an expired resident hold, or missing replacement content
+	 * is only a reason to verify. Ask the actor to exit where the existing
+	 * supersession authority allows (never widened here), then treat its
+	 * liveness as unknown; replacement waits for proof.
+	 */
+	private async unverifiedDeath(input: {
+		requestId: string;
+		generation: number;
+		run: WorkflowRunRow;
+		delivery: WorkflowReworkDeliveryRow;
+		route: WorkflowReworkRouteRevisionRow;
+		actor: WorkflowActorSession | undefined;
+		reason: string;
+		treatAsSent?: boolean;
+	}): Promise<WorkflowReworkCoordinatorOutcome> {
+		let reason = input.reason;
+		if (
+			input.actor &&
+			(input.delivery.state === "pending" ||
+				(input.delivery.state === "turn_granted" &&
+					input.delivery.wake_sent_at === null))
+		) {
+			try {
+				const close = await this.deps.effects.closeActorForReworkSupersession({
+					session: input.actor,
+					requestId: input.requestId,
+					ownerId: this.deps.ownerId,
+					generation: input.generation,
+					routeRevision: input.route.revision,
+					executionId: input.actor.execution_id,
+				});
+				if (!close.ok) {
+					reason += `:supersession_close_failed:${close.error ?? "unknown"}`;
+				}
+			} catch (error) {
+				reason += `:supersession_close_failed:${
+					error instanceof Error ? error.message : String(error)
+				}`;
+			}
+		}
+		return this.livenessUnknown({
+			requestId: input.requestId,
+			generation: input.generation,
+			run: input.run,
+			delivery: input.delivery,
+			executionId: input.route.preferred_actor_execution_id,
+			reason,
+			...(input.treatAsSent ? { treatAsSent: true } : {}),
+		});
+	}
+
+	/** C2 step 4 with a trusted proof: replace in place, inside this claim. */
+	private replaceActor(input: {
+		requestId: string;
+		generation: number;
+		route: WorkflowReworkRouteRevisionRow;
+		proof: "unlaunched_rollback" | "launch_abandoned";
+		reason: string;
+	}): WorkflowReworkCoordinatorOutcome {
+		const replaced = this.deps.store.replaceWorkflowReworkActor({
+			requestId: input.requestId,
+			ownerId: this.deps.ownerId,
+			generation: input.generation,
+			deadExecutionId: input.route.preferred_actor_execution_id,
+			newExecutionId: randomUUID(),
+			proof: { kind: input.proof },
+			reason: input.reason,
+			observedAt: this.now().toISOString(),
+		});
+		if (replaced.ok) {
+			return {
+				kind: "replacement_minted",
+				executionId: replaced.executionId,
+				reason: input.reason,
+			};
+		}
+		if (replaced.reason === "replacement_budget_exhausted") {
+			return this.releaseRetryable({
+				requestId: input.requestId,
+				generation: input.generation,
+				reason: "replacement_budget_exhausted",
+				forceReturn: true,
+			});
+		}
+		// The observation went stale between classification and commit: give
+		// the claim back and look again, without counting.
+		this.releaseOnly({
+			requestId: input.requestId,
+			generation: input.generation,
+			reason: `replacement_not_committed:${replaced.reason}`,
+		});
+		return {
+			kind: "retryable",
+			reason: `replacement_not_committed:${replaced.reason}`,
+		};
+	}
+
+	/**
+	 * C2 step 3: a `pending` delivery that waits on a replacement launch
+	 * (exact dispatch intent `rework_replacement:<req>` for the preferred
+	 * actor). The rows are mutually exclusive, first match wins.
+	 */
+	private async reconcileLaunchingReplacement(input: {
+		requestId: string;
+		generation: number;
+		run: WorkflowRunRow;
+		delivery: WorkflowReworkDeliveryRow;
+		route: WorkflowReworkRouteRevisionRow;
+		launch: NonNullable<
+			ReturnType<
+				WorkflowReworkCoordinatorStore["getWorkflowReworkReplacementLaunch"]
+			>
+		>;
+	}): Promise<WorkflowReworkCoordinatorOutcome> {
+		const { requestId, generation, run, delivery, route, launch } = input;
+		const actor = this.deps.effects.getActorSession(launch.executionId);
+		// (a) content missing: the replacement is unusable.
+		if (
+			this.deps.store.hasReworkReplacementContentMissingFact({
+				runId: run.run_id,
+				requestId,
+				routeRevision: route.revision,
+			})
+		) {
+			return this.unverifiedDeath({
+				requestId,
+				generation,
+				run,
+				delivery,
+				route,
+				actor,
+				reason: "replacement_content_missing",
+			});
+		}
+		// (b) a Lead resume re-versioned the route: an unstarted replacement's
+		// launch envelope is bound to the old revision and can never prove
+		// the content.
+		if (
+			route.interpreted_by === "engine:hold_resume" &&
+			launch.ledgerState !== "started"
+		) {
+			if (launch.ledgerState === "intent_recorded") {
+				if (launch.bindingMode === null && !launch.launchOwnerPresent) {
+					const abandoned =
+						this.deps.store.abandonUnadmittedReworkReplacementLaunch({
+							requestId,
+							ownerId: this.deps.ownerId,
+							generation,
+							reason: "rework_replacement_superseded_by_lead_resume",
+							now: this.now().toISOString(),
+						});
+					if (abandoned.ok) {
+						return this.replaceActor({
+							requestId,
+							generation,
+							route,
+							proof: "launch_abandoned",
+							reason: "replacement_superseded_by_lead_resume",
+						});
+					}
+				}
+				// Admitted: the dispatcher's unlaunched fence rolls it back; the
+				// rollback fact then proves it unlaunched (row c). The wait is
+				// bounded from this resume: if the fence cannot complete (e.g. a
+				// leftover marker or unknown external evidence), the stall is
+				// counted against the budget and the rework returns to the Lead.
+				const waitingSinceMs = Date.parse(route.created_at);
+				const stallMs =
+					this.deps.replacementLaunchStallMs?.() ??
+					DEFAULT_REPLACEMENT_LAUNCH_STALL_MS;
+				if (
+					Number.isFinite(waitingSinceMs) &&
+					this.now().getTime() - waitingSinceMs >= stallMs
+				) {
+					return this.releaseRetryable({
+						requestId,
+						generation,
+						reason: "replacement_launch_stalled:awaiting_cancellation",
+					});
+				}
+				return this.defer({
+					requestId,
+					generation,
+					executionId: launch.executionId,
+					reason: "replacement_awaiting_launch_cancellation",
+					delayMs: REPLACEMENT_LAUNCH_DEFER_MS,
+				});
+			}
+			if (launch.ledgerState === "launch_committed") {
+				return this.unverifiedDeath({
+					requestId,
+					generation,
+					run,
+					delivery,
+					route,
+					actor,
+					reason: "replacement_envelope_superseded_by_lead_resume",
+				});
+			}
+		}
+		// (c) the launch is proven not to have happened.
+		const proof = this.deps.store.workflowReworkDeathProof(requestId);
+		if (proof) {
+			return this.replaceActor({
+				requestId,
+				generation,
+				route,
+				proof,
+				reason: `replacement_${proof}`,
+			});
+		}
+		// (d)/(e) not launched yet: wait, then count a stall.
+		if (launch.ledgerState === "intent_recorded") {
+			const stallMs =
+				this.deps.replacementLaunchStallMs?.() ??
+				DEFAULT_REPLACEMENT_LAUNCH_STALL_MS;
+			const createdMs = Date.parse(launch.createdAt);
+			if (
+				!Number.isFinite(createdMs) ||
+				this.now().getTime() - createdMs < stallMs
+			) {
+				return this.defer({
+					requestId,
+					generation,
+					executionId: launch.executionId,
+					reason: "replacement_launching",
+					delayMs: REPLACEMENT_LAUNCH_DEFER_MS,
+				});
+			}
+			return this.releaseRetryable({
+				requestId,
+				generation,
+				reason: "replacement_launch_stalled:intent_recorded",
+			});
+		}
+		// (f) committed (or started) without the content receipt yet: treat it
+		// as sent — alive waits; unobservable waits with alerts; only a proof
+		// replaces it.
+		if (!actor) {
+			return this.livenessUnknown({
+				requestId,
+				generation,
+				run,
+				delivery,
+				executionId: launch.executionId,
+				reason: `replacement_${launch.ledgerState}:actor_session_missing`,
+				treatAsSent: true,
+			});
+		}
+		const reentry = await classifyPhaseActorReentry({
+			session: actor,
+			probeRegistered: this.deps.effects.probeRegistered,
+			probePersisted: this.deps.effects.probePersisted,
+			hasHostProcess: this.deps.effects.hasHostProcess,
+		});
+		if (reentry.kind === "hold") {
+			return this.livenessUnknown({
+				requestId,
+				generation,
+				run,
+				delivery,
+				executionId: launch.executionId,
+				reason: `replacement_${launch.ledgerState}:${reentry.reason}`,
+				treatAsSent: true,
+			});
+		}
+		if (reentry.kind === "replace") {
+			return this.unverifiedDeath({
+				requestId,
+				generation,
+				run,
+				delivery,
+				route,
+				actor,
+				reason: `replacement_${launch.ledgerState}:${reentry.reason}`,
+				treatAsSent: true,
+			});
+		}
+		this.noteKnownLiveness(requestId, generation, delivery);
+		return this.defer({
+			requestId,
+			generation,
+			executionId: launch.executionId,
+			reason: `replacement_${launch.ledgerState}:alive`,
+			delayMs: 3 * 60_000,
+		});
+	}
+
+	private noteKnownLiveness(
+		requestId: string,
+		generation: number,
+		delivery: WorkflowReworkDeliveryRow,
+	): void {
+		if (delivery.liveness_unknown_since === null) return;
+		this.deps.store.noteWorkflowReworkLiveness({
+			requestId,
+			ownerId: this.deps.ownerId,
+			generation,
+			known: true,
+			reason: "liveness_known",
+			now: this.now().toISOString(),
+		});
+	}
+
 	async reconcile(
 		requestId: string,
 	): Promise<WorkflowReworkCoordinatorOutcome> {
@@ -507,7 +1029,10 @@ export class WorkflowReworkCoordinator {
 		});
 		if (!claim.ok) {
 			if (claim.reason === "delivery_busy") return { kind: "busy" };
-			if (claim.reason === "delivery_settled" && claim.state) {
+			if (
+				claim.reason === "delivery_settled" &&
+				(claim.state === "completed" || claim.state === "returned_to_lead")
+			) {
 				return { kind: "settled", state: claim.state };
 			}
 			return { kind: "invalid", reason: claim.reason };
@@ -519,13 +1044,22 @@ export class WorkflowReworkCoordinator {
 		const run = request
 			? this.deps.store.getWorkflowRun(request.run_id)
 			: undefined;
+		// Step 1: incomplete context. A row on a run that is no longer active
+		// is a leftover for that run's owner: release it, never count it.
+		if (run && delivery && run.status !== "active") {
+			this.releaseOnly({
+				requestId,
+				generation: claim.generation,
+				reason: "rework_run_not_active",
+			});
+			return { kind: "retryable", reason: "rework_run_not_active" };
+		}
 		if (
 			!request ||
 			!route ||
 			!delivery ||
 			!run ||
-			delivery.route_revision !== route.revision ||
-			run.status !== "active"
+			delivery.route_revision !== route.revision
 		) {
 			return this.releaseRetryable({
 				requestId,
@@ -533,14 +1067,15 @@ export class WorkflowReworkCoordinator {
 				reason: "rework_context_unavailable",
 			});
 		}
-		const observingReceipt =
-			delivery.state === "awaiting_receipt" ||
-			delivery.state === "wake_delivered";
+		const sent =
+			delivery.state === "wake_delivered" ||
+			(delivery.state === "turn_granted" && delivery.wake_sent_at !== null);
 		const target = this.deps.store.getWorkflowRunNode(
 			request.run_id,
 			route.target_node_id,
 			route.target_attempt,
 		);
+		// Step 2: converge a writer replacement minted by the legacy lane.
 		if (
 			target?.state === "pending" &&
 			target.execution_id &&
@@ -556,22 +1091,47 @@ export class WorkflowReworkCoordinator {
 			);
 			if (converged.ok) {
 				return {
-					kind: "replacement_converged",
+					kind: "replacement_minted",
 					executionId: converged.executionId,
+					reason: "writer_replacement_converged",
 				};
 			}
+		}
+		// Step 3: the delivery waits on a replacement launch.
+		if (delivery.state === "pending") {
+			const launch =
+				this.deps.store.getWorkflowReworkReplacementLaunch(requestId);
+			if (
+				launch &&
+				(launch.bindingMode === null || launch.bindingMode === "replacement")
+			) {
+				return this.reconcileLaunchingReplacement({
+					requestId,
+					generation: claim.generation,
+					run,
+					delivery,
+					route,
+					launch,
+				});
+			}
+		}
+		// Step 4: a trusted death proof replaces the actor in place.
+		const proof = this.deps.store.workflowReworkDeathProof(requestId);
+		if (proof) {
+			return this.replaceActor({
+				requestId,
+				generation: claim.generation,
+				route,
+				proof,
+				reason: proof,
+			});
 		}
 		if (
 			!target ||
 			target.execution_id !== route.preferred_actor_execution_id ||
 			!(
-				(observingReceipt &&
-					delivery.state === "wake_delivered" &&
-					target.state === "running") ||
-				(observingReceipt &&
-					delivery.state === "awaiting_receipt" &&
-					target.state === "admitted") ||
-				(!observingReceipt &&
+				(delivery.state === "wake_delivered" && target.state === "running") ||
+				(delivery.state !== "wake_delivered" &&
 					(target.state === "pending" || target.state === "admitted"))
 			)
 		) {
@@ -581,63 +1141,29 @@ export class WorkflowReworkCoordinator {
 				reason: "rework_target_not_reserved",
 			});
 		}
-		const markReplacementPending = (
-			executionId: string,
-			reason: string,
-			from: WorkflowReworkDeliveryRow["state"] = delivery.state,
-		): WorkflowReworkCoordinatorOutcome => {
-			const moved = this.deps.store.advanceWorkflowReworkDelivery({
-				requestId,
-				ownerId: this.deps.ownerId,
-				generation: claim.generation,
-				from,
-				to: "replacement_pending",
-				now: this.now().toISOString(),
-				error: reason,
-				releaseOwner: true,
-			});
-			return moved.ok
-				? {
-						kind: "replacement_pending",
-						executionId,
-						reason,
-					}
-				: { kind: "retryable", reason: moved.reason };
-		};
 		const actor = this.deps.effects.getActorSession(
 			route.preferred_actor_execution_id,
 		);
-		const rolledBack = this.deps.store.hasUnlaunchedWorkflowRollbackFact(
-			request.run_id,
-			route.target_node_id,
-			route.preferred_actor_execution_id,
-		);
-		if (rolledBack) {
-			return markReplacementPending(
-				route.preferred_actor_execution_id,
-				"unlaunched_admission_rolled_back",
-			);
-		}
-		if (actor && isStateStoreIrreversibleTerminalForZombie(actor.status)) {
-			return markReplacementPending(
-				actor.execution_id,
-				`actor_session_terminal:${actor.status}`,
-			);
-		}
 		if (!actor) {
-			if (observingReceipt) {
-				return this.deferReceiptProbe({
-					requestId,
-					generation: claim.generation,
-					state: delivery.state as "awaiting_receipt" | "wake_delivered",
-					executionId: route.preferred_actor_execution_id,
-					reason: "actor_session_missing",
-				});
-			}
-			return this.releaseRetryable({
+			return this.unverifiedDeath({
 				requestId,
 				generation: claim.generation,
+				run,
+				delivery,
+				route,
+				actor,
 				reason: "actor_session_missing",
+			});
+		}
+		if (isStateStoreIrreversibleTerminalForZombie(actor.status)) {
+			return this.unverifiedDeath({
+				requestId,
+				generation: claim.generation,
+				run,
+				delivery,
+				route,
+				actor,
+				reason: `actor_session_terminal:${actor.status}`,
 			});
 		}
 		let worktreeReady = false;
@@ -647,7 +1173,7 @@ export class WorkflowReworkCoordinator {
 		let processBody = this.deps.store.getWorkflowExecutionProcessBody?.(
 			actor.execution_id,
 		);
-		if (!observingReceipt && processBody?.state === "retiring") {
+		if (!sent && processBody?.state === "retiring") {
 			if (!this.deps.store.cancelWorkflowExecutionRetirementForRework) {
 				return this.releaseRetryable({
 					requestId,
@@ -684,7 +1210,7 @@ export class WorkflowReworkCoordinator {
 			}
 		}
 		if (
-			!observingReceipt &&
+			!sent &&
 			(processBody?.state === "standby" ||
 				processBody?.state === "resuming" ||
 				processBody?.state === "resume_failed")
@@ -728,22 +1254,33 @@ export class WorkflowReworkCoordinator {
 					this.deps.store.allocateWorkflowResumeFallback
 				) {
 					const fallbackExecutionId = randomUUID();
+					// FLY-2921 C6.3: the fallback shares the replacement core and
+					// runs inside this claim; it counts against the same budget.
 					const fallback = this.deps.store.allocateWorkflowResumeFallback({
 						executionId: actor.execution_id,
 						demandId: requestId,
 						newExecutionId: fallbackExecutionId,
 						now: this.now().toISOString(),
+						ownerId: this.deps.ownerId,
+						generation: claim.generation,
 					});
 					if (fallback.ok) {
 						return {
-							kind: "replacement_converged",
+							kind: "replacement_minted",
 							executionId: fallback.executionId,
+							reason: "resume_fallback",
 						};
 					}
 					return this.releaseRetryable({
 						requestId,
 						generation: claim.generation,
-						reason: `standby_fallback_failed:${fallback.reason}`,
+						reason:
+							fallback.reason === "replacement_budget_exhausted"
+								? "replacement_budget_exhausted"
+								: `standby_fallback_failed:${fallback.reason}`,
+						...(fallback.reason === "replacement_budget_exhausted"
+							? { forceReturn: true }
+							: {}),
 					});
 				}
 				return this.releaseRetryable({
@@ -757,6 +1294,18 @@ export class WorkflowReworkCoordinator {
 				processGeneration: begun.generation,
 			};
 		}
+		if (
+			!standbyResume &&
+			this.deps.store.isCodexQuotaStandby?.(actor.execution_id) === true
+		) {
+			// FLY-2900 §4.2: the actor is parked on a Codex usage-limit wall; the
+			// quota resume loop relaunches it. Retry later instead of replacing.
+			return this.releaseRetryable({
+				requestId,
+				generation: claim.generation,
+				reason: "codex_quota_standby",
+			});
+		}
 		if (!standbyResume) {
 			const reentry = await classifyPhaseActorReentry({
 				session: actor,
@@ -765,36 +1314,37 @@ export class WorkflowReworkCoordinator {
 				hasHostProcess: this.deps.effects.hasHostProcess,
 			});
 			if (reentry.kind === "hold") {
-				if (observingReceipt) {
-					return this.deferReceiptProbe({
-						requestId,
-						generation: claim.generation,
-						state: delivery.state as "awaiting_receipt" | "wake_delivered",
-						executionId: actor.execution_id,
-						reason: reentry.reason,
-					});
-				}
-				return this.releaseRetryable({
+				return this.livenessUnknown({
 					requestId,
 					generation: claim.generation,
+					run,
+					delivery,
+					executionId: actor.execution_id,
 					reason: reentry.reason,
-					...(reentry.reason === "persisted_target_missing"
-						? { onExhausted: "handoff_held_pane_loss" as const }
-						: {}),
 				});
 			}
 			if (reentry.kind === "replace") {
-				return markReplacementPending(actor.execution_id, reentry.reason);
+				// A dead pane/pin is not a death proof (FLY-2919 owns that).
+				return this.unverifiedDeath({
+					requestId,
+					generation: claim.generation,
+					run,
+					delivery,
+					route,
+					actor,
+					reason: reentry.reason,
+				});
 			}
+			this.noteKnownLiveness(requestId, claim.generation, delivery);
 		}
-		if (observingReceipt) {
+		if (sent) {
 			return this.deferReceiptProbe({
 				requestId,
 				generation: claim.generation,
-				state: delivery.state as "awaiting_receipt" | "wake_delivered",
+				state: delivery.state as "turn_granted" | "wake_delivered",
 				executionId: actor.execution_id,
 				reason:
-					delivery.state === "awaiting_receipt"
+					delivery.state === "turn_granted"
 						? "receipt_not_observed"
 						: "actor_alive_after_receipt",
 			});
@@ -1138,6 +1688,52 @@ export class WorkflowReworkCoordinator {
 			const activationFailure = await activateHolder();
 			if (activationFailure) return activationFailure;
 		}
+		const wakeId = buildReworkWakeId({
+			requestId,
+			activationId,
+			epoch: turn.epoch,
+		});
+		// FLY-2921: a Lead resume keeps the same wake identity (same request,
+		// activation, epoch), so the durable wake's spent push budget is reset
+		// once per resume receipt before this revision's first push.
+		if (
+			route.interpreted_by === "engine:hold_resume" &&
+			delivery.wake_sent_at === null &&
+			this.deps.effects.rearmReworkWake
+		) {
+			let rearmed: Awaited<
+				ReturnType<
+					NonNullable<WorkflowReworkCoordinatorEffects["rearmReworkWake"]>
+				>
+			>;
+			try {
+				rearmed = await this.deps.effects.rearmReworkWake({
+					projectName: run.project_name,
+					wakeId,
+					receiptId: `rework-rearm:${requestId}:${route.revision}`,
+				});
+			} catch (error) {
+				return this.releaseRetryable({
+					requestId,
+					generation: claim.generation,
+					reason: `wake_rearm_failed:${(error as Error).message}`,
+				});
+			}
+			if (rearmed.kind === "busy") {
+				// Not executed: a push claim is live. Look again shortly; this
+				// is neither a failure nor a re-arm.
+				const deferred = this.defer({
+					requestId,
+					generation: claim.generation,
+					executionId: actor.execution_id,
+					reason: "wake_rearm_busy",
+					delayMs: REPLACEMENT_LAUNCH_DEFER_MS,
+				});
+				return deferred.kind === "replacement_launching"
+					? { kind: "retryable", reason: "wake_rearm_busy" }
+					: deferred;
+			}
+		}
 		if (delivery.state === "pending") {
 			const advanced = this.deps.store.advanceWorkflowReworkDelivery({
 				requestId,
@@ -1151,12 +1747,6 @@ export class WorkflowReworkCoordinator {
 				return { kind: "retryable", reason: advanced.reason };
 			}
 		}
-
-		const wakeId = buildReworkWakeId({
-			requestId,
-			activationId,
-			epoch: turn.epoch,
-		});
 		const woke = await this.deps.effects.wakeActor({
 			session: actor,
 			wakeId,
@@ -1166,11 +1756,18 @@ export class WorkflowReworkCoordinator {
 		});
 		if (!woke.ok) {
 			if (woke.error === "resident_hold_expired") {
-				return markReplacementPending(
-					actor.execution_id,
-					"resident_hold_expired",
-					"turn_granted",
-				);
+				// A retired resident body is a reason to verify, not a proof.
+				const current =
+					this.deps.store.getWorkflowReworkDelivery(requestId) ?? delivery;
+				return this.unverifiedDeath({
+					requestId,
+					generation: claim.generation,
+					run,
+					delivery: current,
+					route,
+					actor,
+					reason: "resident_hold_expired",
+				});
 			}
 			return this.releaseRetryable({
 				requestId,
@@ -1178,21 +1775,17 @@ export class WorkflowReworkCoordinator {
 				reason: `wake_failed:${woke.error ?? "unknown"}`,
 			});
 		}
-		const awaitingReceipt = this.deps.store.advanceWorkflowReworkDelivery({
+		const wakeSent = this.deps.store.markWorkflowReworkWakeSent({
 			requestId,
 			ownerId: this.deps.ownerId,
 			generation: claim.generation,
-			from: "turn_granted",
-			to: "awaiting_receipt",
 			now: this.now().toISOString(),
-			nextRetryAt: workflowDeliveryReceiptNextRetryAt(this.now().toISOString()),
-			releaseOwner: true,
 		});
-		if (!awaitingReceipt.ok) {
-			return { kind: "retryable", reason: awaitingReceipt.reason };
+		if (!wakeSent.ok) {
+			return { kind: "retryable", reason: wakeSent.reason };
 		}
 		return {
-			kind: "awaiting_receipt",
+			kind: "wake_sent",
 			executionId: actor.execution_id,
 			activationId,
 			epoch: turn.epoch,

@@ -430,3 +430,41 @@ describe("Uplink", () => {
 		expect(onVoiceFrame).toHaveBeenCalledWith(accepted, 123);
 	});
 });
+
+describe("Uplink catch-up for WebRTC rooms (FLY-2885 T6)", () => {
+	function burst(catchUpAboveFrames?: number) {
+		const sent: Array<string | null> = [];
+		const uplink = new Uplink({
+			appendAudio: (_frame, _generation, meta) => {
+				sent.push(meta.ownerUserId);
+				return "sent";
+			},
+			sessionGeneration: 1,
+			prebufferFrames: 3,
+			maxQueueFrames: 100,
+			record: () => {},
+			...(catchUpAboveFrames === undefined ? {} : { catchUpAboveFrames }),
+		});
+		uplink.speakingStart("founder", true);
+		// A 10-frame burst, as when the gate opens and releases its pre-roll.
+		for (let index = 0; index < 10; index += 1)
+			uplink.pushPcm48Stereo("founder", stereoFrame(2_000));
+		const perTick: number[] = [];
+		for (let tick = 0; tick < 8; tick += 1) {
+			const before = sent.length;
+			uplink.tick();
+			perTick.push(sent.length - before);
+		}
+		return { sent, perTick };
+	}
+
+	it("sends at most one extra frame per tick while more than three are queued", () => {
+		const { perTick, sent } = burst(3);
+		expect(perTick).toEqual([2, 2, 2, 1, 1, 1, 1, 1]);
+		expect(sent.slice(0, 10).every((owner) => owner === "founder")).toBe(true);
+	});
+
+	it("keeps one frame per tick when catch-up is not configured", () => {
+		expect(burst().perTick).toEqual([1, 1, 1, 1, 1, 1, 1, 1]);
+	});
+});

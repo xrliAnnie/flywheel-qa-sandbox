@@ -78,6 +78,20 @@ interface UplinkSpeechGateOptions {
 	startupFailure?: string;
 	onOpened?(event: { token: number; openAtMs: number }): void;
 	onDegraded?(event: UplinkGateDegradedEvent): void;
+	/**
+	 * FLY-2885 T6: once the chain is open, frames whose decision is known leave
+	 * at once instead of waiting out the whole delay line. After it closes the
+	 * fixed delay returns, so the next onset still gets its full pre-roll.
+	 */
+	releaseWhenOpen?: boolean;
+	/**
+	 * FLY-2885 T6: sentence-level peak gate. When the chain would open, the
+	 * loudest frame in the delay line (pre-roll included) must reach this RMS
+	 * level in dBFS; otherwise it stays closed and later frames decide again.
+	 * Per-frame gating would chop the founder's soft sentences (research R8).
+	 */
+	minOnsetPeakDbfs?: number | null;
+	onRejectedQuiet?(event: { peakDbfs: number }): void;
 }
 
 interface DelayedFrame {
@@ -85,6 +99,7 @@ interface DelayedFrame {
 	metadata?: unknown;
 	requiredChunk: number;
 	backfilled: boolean;
+	levelDbfs: number;
 }
 
 interface PendingChunk {
@@ -105,6 +120,8 @@ interface Chain {
 	nextChunk: number;
 	opened: boolean;
 	everOpened: boolean;
+	/** One quiet-onset report per attempt; a negative chunk re-arms it. */
+	quietRejected: boolean;
 	openAtMs?: number;
 	positiveChunks: number;
 	negativeMs: number;
@@ -160,6 +177,18 @@ function percentile(values: readonly number[], proportion: number): number {
 	if (values.length === 0) return 0;
 	const sorted = [...values].sort((left, right) => left - right);
 	return sorted[Math.ceil(proportion * sorted.length) - 1] ?? 0;
+}
+
+/** RMS of the frame's mono mix in dBFS; the FLY-2884 uplink-levels metric. */
+function frameLevelDbfs(frame: Buffer): number {
+	let sum = 0;
+	const samples = frame.length / 4;
+	for (let index = 0; index < samples; index += 1) {
+		const mono =
+			(frame.readInt16LE(index * 4) + frame.readInt16LE(index * 4 + 2)) / 2;
+		sum += mono * mono;
+	}
+	return 20 * Math.log10(Math.max(1, Math.sqrt(sum / samples)) / 32_768);
 }
 
 function downsampleFrame(frame: Buffer, history: Float32Array): Float32Array {
@@ -256,6 +285,7 @@ export class UplinkSpeechGate {
 			nextChunk: 0,
 			opened: mode === "passthrough",
 			everOpened: mode === "passthrough",
+			quietRejected: false,
 			positiveChunks: 0,
 			negativeMs: 0,
 			maxProb: 0,
@@ -301,6 +331,8 @@ export class UplinkSpeechGate {
 			metadata,
 			requiredChunk: Math.floor((sampleEnd - 1) / SILERO_CHUNK_SAMPLES),
 			backfilled: false,
+			levelDbfs:
+				this.options.minOnsetPeakDbfs == null ? 0 : frameLevelDbfs(frame),
 		});
 		while (chain.sampleResidue.length >= SILERO_CHUNK_SAMPLES) {
 			if (
@@ -356,15 +388,19 @@ export class UplinkSpeechGate {
 		}
 		const active = this.chain;
 		if (active && active.endedAtMs === undefined && active.mode === "gated") {
-			while (active.delay.length > this.delayFrames) {
-				const delayed = active.delay.shift();
-				if (!delayed) break;
+			while (active.delay.length > 0) {
+				const delayed = active.delay[0]!;
 				const committed = active.decisions.get(delayed.requiredChunk);
-				if (committed === undefined) {
-					active.delay.unshift(delayed);
+				const early =
+					this.options.releaseWhenOpen === true &&
+					active.opened &&
+					(delayed.backfilled || committed !== undefined);
+				if (!early && active.delay.length <= this.delayFrames) break;
+				if (!early && committed === undefined) {
 					this.markDegraded(active, "inference_lag");
 					break;
 				}
+				active.delay.shift();
 				this.emitFrame(
 					active,
 					delayed.frame,
@@ -431,6 +467,7 @@ export class UplinkSpeechGate {
 					chain.negativeMs = 0;
 				} else {
 					chain.positiveChunks = 0;
+					chain.quietRejected = false;
 					if (result.probability < this.options.threshold - 0.15) {
 						chain.negativeMs += 32;
 					} else {
@@ -439,7 +476,8 @@ export class UplinkSpeechGate {
 				}
 				if (
 					!chain.opened &&
-					chain.positiveChunks >= this.positiveChunksRequired
+					chain.positiveChunks >= this.positiveChunksRequired &&
+					this.onsetLoudEnough(chain)
 				) {
 					chain.opened = true;
 					if (!chain.everOpened) {
@@ -469,6 +507,24 @@ export class UplinkSpeechGate {
 					);
 				}
 			});
+	}
+
+	/** The sentence-level peak gate; always true when it is off. */
+	private onsetLoudEnough(chain: Chain): boolean {
+		const floor = this.options.minOnsetPeakDbfs;
+		if (floor == null || chain.delay.length === 0) return true;
+		const peak = Math.max(...chain.delay.map((delayed) => delayed.levelDbfs));
+		if (peak >= floor) {
+			chain.quietRejected = false;
+			return true;
+		}
+		if (!chain.quietRejected) {
+			chain.quietRejected = true;
+			this.options.onRejectedQuiet?.({
+				peakDbfs: Math.round(peak * 10) / 10,
+			});
+		}
+		return false;
 	}
 
 	private finalize(chain: Chain, atMs: number): void {

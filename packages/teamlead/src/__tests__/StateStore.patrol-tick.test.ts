@@ -182,7 +182,7 @@ describe("FLY-1687 StateStore patrol read models", () => {
 		db.run(
 			`INSERT INTO workflow_rework_delivery
 			   (request_id, route_revision, state, updated_at)
-			 VALUES ('request-1', 1, 'held', ?)`,
+			 VALUES ('request-1', 1, 'returned_to_lead', ?)`,
 			[now],
 		);
 		for (const [operationId, projectName, supersededAt] of [
@@ -267,7 +267,7 @@ describe("FLY-1687 StateStore patrol read models", () => {
 		expect(store.listOpenReworkDeliveries("run-active")).toEqual([
 			{
 				runId: "run-active",
-				state: "held",
+				state: "returned_to_lead",
 				targetNodeId: "implement",
 				targetAttempt: 2,
 				preferredActorExecutionId: "exec-current",
@@ -287,14 +287,14 @@ describe("FLY-1687 StateStore patrol read models", () => {
 		db.run(
 			`INSERT INTO workflow_rework_delivery
 			   (request_id, route_revision, state, updated_at)
-			 VALUES ('request-orphan', 7, 'held', ?)`,
+			 VALUES ('request-orphan', 7, 'returned_to_lead', ?)`,
 			[now],
 		);
 		db.run("PRAGMA foreign_keys = ON");
 		expect(store.listOpenReworkDeliveries("run-active")).toEqual([
 			{
 				runId: "run-active",
-				state: "held",
+				state: "returned_to_lead",
 				targetNodeId: "implement",
 				targetAttempt: 2,
 				preferredActorExecutionId: "exec-current",
@@ -302,7 +302,7 @@ describe("FLY-1687 StateStore patrol read models", () => {
 			},
 			{
 				runId: "run-active",
-				state: "held",
+				state: "returned_to_lead",
 				targetNodeId: null,
 				targetAttempt: null,
 				preferredActorExecutionId: null,

@@ -241,7 +241,6 @@
 		"src/__tests__/fleet-progress.test.ts": 268,
 		"src/__tests__/fleet-routes-mount.test.ts": 4482,
 		"src/__tests__/fleet-routes.test.ts": 392,
-		"src/__tests__/fly-1648-hot-loop-closeout.test.ts": 4133,
 		"src/__tests__/fly-1693-rollback-retirement.test.ts": 1308,
 		"src/__tests__/fly-1995-session-events-residue-surgery.test.ts": 857,
 		"src/__tests__/fly-1998-database-retention-sweep.test.ts": 3054,

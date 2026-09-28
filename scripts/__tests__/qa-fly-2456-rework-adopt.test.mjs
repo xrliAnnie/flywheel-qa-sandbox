@@ -241,14 +241,13 @@ test("request without consumed credential fails closed", (t) => {
 		"conflict",
 	);
 });
+// FLY-2921: workflow_rework_delivery.state is pending | turn_granted |
+// wake_delivered | completed | returned_to_lead; only wake_delivered adopts.
 for (const state of [
 	"pending",
 	"turn_granted",
-	"awaiting_receipt",
-	"replacement_pending",
 	"completed",
-	"held",
-	"needs_lead",
+	"returned_to_lead",
 ])
 	test(`intermediate or advanced ${state} conflicts`, (t) => {
 		assert.equal(

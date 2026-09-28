@@ -216,11 +216,24 @@ function parseRuntimeModelSplit(
 			const policy = parseWeightedModelSplit(value);
 			for (const [nodeId, arms] of Object.entries(policy.nodes)) {
 				for (const [index, arm] of arms.entries()) {
+					const path = `modelSplit.nodes.${nodeId}[${index}]`;
 					parseRuntimeModelSplitArm(
 						{ arm: arm.arm, model: arm.model },
-						`modelSplit.nodes.${nodeId}[${index}]`,
+						path,
 						lookup,
 					);
+					if (arm.effort === undefined) continue;
+					// FLY-2891: judged against THIS document's registry (the lookup
+					// passed in), never the live snapshot — createSnapshot runs both
+					// for the cold/hot load and for candidate validation, and calling
+					// getModelConfigSnapshot() here would re-enter the loader.
+					const entry = lookup.get(arm.model.toLowerCase())!;
+					const supported = entry.effortsBySurface.workflow ?? [];
+					if (!supported.includes(arm.effort)) {
+						throw new Error(
+							`${path}.effort ${arm.effort} is not supported by ${entry.id} on the workflow surface (supported: ${supported.join(", ") || "none"})`,
+						);
+					}
 				}
 			}
 			return policy;

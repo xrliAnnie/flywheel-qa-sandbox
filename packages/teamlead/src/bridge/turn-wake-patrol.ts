@@ -83,16 +83,22 @@ export async function drainTurnWakeOutbox(input: {
 	for (const projectName of input.projectNames) {
 		const db = new CommDB(input.commDbPathForProject(projectName));
 		try {
-			const deferredWakeIds = new Set<string>();
 			const failedPointerWakeIds = new Set<string>();
+			// FLY-2921: one pass scans the queue forward from a cursor. A wake
+			// that waits (e.g. a rework returned to the Lead, kept for the
+			// resume's re-arm) is released and stepped over without spending
+			// the delivery budget, so old waiting rows can never starve later
+			// due wakes; the cursor only moves forward, so the pass ends.
+			let cursor: { createdAt: number; wakeId: string } | undefined;
 			for (let index = 0; index < maxPerProject; index += 1) {
 				const claim = db.claimDueTurnWake({
 					nowMs,
 					retryAfterMs,
 					leaseMs,
-					excludeWakeIds: [...deferredWakeIds],
+					...(cursor ? { after: cursor } : {}),
 				});
 				if (!claim) break;
+				cursor = { createdAt: claim.created_at, wakeId: claim.wake_id };
 				if (input.canDeliver) {
 					const guard = await input.canDeliver(claim);
 					if (guard.disposition === "cancel") {
@@ -105,7 +111,7 @@ export async function drainTurnWakeOutbox(input: {
 					}
 					if (guard.disposition === "wait") {
 						db.releaseTurnWakeClaim(claim.wake_id, claim.claim_token!);
-						deferredWakeIds.add(claim.wake_id);
+						index -= 1;
 						continue;
 					}
 				}

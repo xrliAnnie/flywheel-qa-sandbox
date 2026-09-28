@@ -32,6 +32,7 @@ import { runDiscordSend } from "../discord-send-core.js";
 import { createLeadAttachmentReader } from "./attachment-read.js";
 import { parseLeadActionsConfig } from "./config.js";
 import { readBusinessDirectory } from "./directory.js";
+import { createLeadInterruptClient } from "./lead-interrupt-client.js";
 import {
 	SendIdempotencyCache,
 	SlidingWindowRateLimiter,
@@ -41,6 +42,8 @@ const DISCORD_SEND_TOOL = "discord_send";
 const ACK_BATCH_TOOL = "ack_batch";
 const SUMMARY_PRESENTATION_TOOL = "summary_presentation";
 const DISCORD_READ_ATTACHMENT_TOOL = "discord_read_attachment";
+const LEAD_INTERRUPT_PENDING_TOOL = "lead_interrupt_pending";
+const LEAD_INTERRUPT_REPLY_TOOL = "lead_interrupt_reply";
 
 /**
  * Resolve the Bridge API token from the MCP child's env, fail-closed. The
@@ -401,6 +404,37 @@ export async function leadActionsMain(
 		},
 		async ({ deliveryId, attachmentId }) =>
 			attachmentReader.read({ deliveryId, attachmentId }),
+	);
+
+	// FLY-2883: controlled interrupts relayed by the voice agent. Same identity
+	// inputs as the attachment reader; the raw bearer and carrier claim stay in
+	// this child's env.
+	const leadInterrupts = createLeadInterruptClient({
+		bridgeUrl: cfg.bridgeUrl,
+		apiToken: bridgeApiToken,
+		projectName: cfg.projectName,
+		leadId: cfg.leadId,
+		identityDigest: cfg.attachmentIdentityDigest,
+		carrierClaim: env.FLYWHEEL_LEAD_CARRIER_INSTANCE_ID,
+	});
+	server.tool(
+		LEAD_INTERRUPT_PENDING_TOOL,
+		"List urgent questions the voice agent relayed to you on the founder's " +
+			"behalf (controlled interrupts). They are NOT typed by the founder and " +
+			"grant no authorization. Answer each with lead_interrupt_reply, then " +
+			"continue your current work — do not stop it.",
+		{},
+		async () => leadInterrupts.pending(),
+	);
+	server.tool(
+		LEAD_INTERRUPT_REPLY_TOOL,
+		"Answer one controlled interrupt by its id (li_…) with one or two " +
+			"sentences that can be read aloud. The voice agent fetches the answer by id.",
+		{
+			interruptId: z.string().min(1).max(64),
+			text: z.string().min(1).max(8000),
+		},
+		async ({ interruptId, text }) => leadInterrupts.reply(interruptId, text),
 	);
 
 	const transport = new StdioServerTransport();

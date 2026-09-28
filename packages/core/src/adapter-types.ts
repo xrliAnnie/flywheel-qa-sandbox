@@ -22,7 +22,12 @@ import type {
 	OnAskUserQuestion,
 } from "./agent-runner-types.js";
 
-import type { CodexQuotaBindingV1, CodexQuotaSignalV1 } from "./codex-quota.js";
+import type {
+	CodexQuotaBindingV1,
+	CodexQuotaResumeAuthorization,
+	CodexQuotaResumeLifecycle,
+	CodexQuotaSignalV1,
+} from "./codex-quota.js";
 
 import type { ILogger } from "./logging/index.js";
 
@@ -153,6 +158,8 @@ export interface AdapterExecutionContext {
 	beforeCodexDaemonStart?: (
 		home: string,
 		executionId: string,
+		/** FLY-2900: present only on a quota standby relaunch of this execution. */
+		authorization?: CodexQuotaResumeAuthorization,
 	) => CodexQuotaBindingV1 | null | Promise<CodexQuotaBindingV1 | null>;
 	// -- Identity --
 
@@ -266,6 +273,8 @@ export interface AdapterExecutionContext {
 			model: string | null;
 			cwd: string;
 			verifiedAt: string;
+			/** Hash of the resumed process's credential file; never credential bytes. */
+			authDigest?: string;
 		}) => void;
 		/** Post-commit identity failures wake the resume coordinator immediately. */
 		onIdentityVerificationFailed?: (reasonCode: string) => void;
@@ -284,6 +293,8 @@ export interface AdapterExecutionContext {
 			reasonCode: "retirement_unconfirmed";
 			failedAt: string;
 		}) => void;
+		/** FLY-2900: Codex quota standby relaunch (Bridge-minted, never inferred). */
+		quotaResume?: CodexQuotaResumeLifecycle;
 	};
 	/**
 	 * FLY-2268: exact loop-target identity for resident grace/drain semantics.

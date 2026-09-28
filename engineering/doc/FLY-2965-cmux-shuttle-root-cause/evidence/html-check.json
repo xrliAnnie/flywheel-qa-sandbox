@@ -1,0 +1,9 @@
+{
+  "validation": "Node VM with DOM stand-ins; not browser QA",
+  "syntax": true,
+  "pathnameIsolation": true,
+  "escapedAsText": true,
+  "longCommentChunks": 3,
+  "clipboardRejectionFallback": true,
+  "storageFailureHandled": true
+}

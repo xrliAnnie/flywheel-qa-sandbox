@@ -10,6 +10,11 @@ const engineFlags = {
 	FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
 };
 const HEAD = "c".repeat(40);
+/**
+ * FLY-2921 C7: a rework target must hand over a NEW head. The operator rework
+ * base is the bound actor head (HEAD), so the reworked implement delivers this.
+ */
+const REWORKED_HEAD = "d".repeat(40);
 const ALERT_IDENTITY = {
 	leadId: "flywheel-eng-lead",
 	projectName: "flywheel",
@@ -143,21 +148,24 @@ async function createActiveOperatorRework(): Promise<{
 		grantedAt: "2026-08-20T00:04:30.000Z",
 	});
 	if (!turnRecorded.ok) throw new Error(turnRecorded.reason);
-	for (const [from, to] of [
-		["pending", "turn_granted"],
-		["turn_granted", "awaiting_receipt"],
-	] as const) {
-		const advanced = store.advanceWorkflowReworkDelivery({
-			requestId: opened.requestId,
-			ownerId: "fly1912-coordinator",
-			generation: claimed.generation,
-			from,
-			to,
-			now: "2026-08-20T00:05:00.000Z",
-			...(to === "awaiting_receipt" ? { releaseOwner: true } : {}),
-		});
-		if (!advanced.ok) throw new Error(advanced.reason);
-	}
+	const advanced = store.advanceWorkflowReworkDelivery({
+		requestId: opened.requestId,
+		ownerId: "fly1912-coordinator",
+		generation: claimed.generation,
+		from: "pending",
+		to: "turn_granted",
+		now: "2026-08-20T00:05:00.000Z",
+	});
+	if (!advanced.ok) throw new Error(advanced.reason);
+	// FLY-2921: the pushed wake is a fact (`wake_sent_at`) on `turn_granted`;
+	// it releases the owner and stamps the delivery clock's `sent_at`.
+	const sent = store.markWorkflowReworkWakeSent({
+		requestId: opened.requestId,
+		ownerId: "fly1912-coordinator",
+		generation: claimed.generation,
+		now: "2026-08-20T00:05:00.000Z",
+	});
+	if (!sent.ok) throw new Error(sent.reason);
 	const receipt = store.recordWorkflowReworkWakeReceipt({
 		activationId: admitted.activationId,
 		executionId: "implement-exec",
@@ -190,12 +198,17 @@ async function createFreshQa(): Promise<{
 		attempt: 2,
 		executionId: "implement-exec",
 		outcome: "implement_done",
+		subjectDigest: REWORKED_HEAD,
 		now: "2026-08-20T00:06:00.000Z",
 	});
 	if (!completed.ok || !completed.successorExecutionId) {
 		fixture.store.close();
 		throw new Error("fresh QA dispatch missing");
 	}
+	// The producer now ships the reworked head; fresh QA judges exactly it.
+	fixture.store.patchSessionMetadata("implement-exec", {
+		pr_head_sha: REWORKED_HEAD,
+	});
 	const qa = fixture.store.admitGeneralizedWorkflowExecution({
 		runId: "run-heavy",
 		nodeId: "qa",
@@ -243,7 +256,7 @@ function submitQaPass(
 		credential: fixture.submissionCredential,
 		clientRequestId: options.clientRequestId ?? "fly1912-qa-pass",
 		predicate: "qa_passed",
-		subjectDigest: HEAD,
+		subjectDigest: REWORKED_HEAD,
 		issuerVendor: "claude",
 		issuerModel: "claude-opus-4-8",
 		subjectProducerExecutionId: "implement-exec",
@@ -374,7 +387,7 @@ describe("FLY-1912 workflow engine invariants", () => {
 					route: "needs_review",
 					sourceEventId: "fly1912-completion",
 					completionSubmission: { decision: { route: "needs_review" } },
-					subjectDigest: HEAD,
+					subjectDigest: REWORKED_HEAD,
 					workflowActivation: {
 						activationId: fixture.activationId,
 						runId: "run-heavy",
@@ -468,6 +481,7 @@ describe("FLY-1912 workflow engine invariants", () => {
 					attempt: 2,
 					executionId: "implement-exec",
 					outcome: "implement_done",
+					subjectDigest: REWORKED_HEAD,
 					now: "2026-08-20T00:06:00.000Z",
 				}),
 			).toThrow("injected non-invariant failure");
@@ -490,6 +504,7 @@ describe("FLY-1912 workflow engine invariants", () => {
 						attempt: 2,
 						executionId: "implement-exec",
 						outcome: "implement_done",
+						subjectDigest: REWORKED_HEAD,
 						now: "2026-08-20T00:06:00.000Z",
 					}),
 				).toEqual({

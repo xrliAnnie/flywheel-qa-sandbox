@@ -615,3 +615,196 @@ describe("DiscordVoiceRoom uplink pre-roll (FLY-2798 on the engine B room path)"
 		}
 	});
 });
+
+describe("DiscordVoiceRoom downlink modes (FLY-2885)", () => {
+	function roomWith(downlink?: "pcm-mouth" | "opus-passthrough") {
+		const createResource = vi.fn((source: { kind: string }) => source);
+		const player = { play: vi.fn(), stop: vi.fn(), on: vi.fn() };
+		const diagnostics: Array<Record<string, unknown>> = [];
+		const room = new DiscordVoiceRoom({
+			createVad: async () => ({
+				score: async (_samples, state) => ({ probability: 1, next: state }),
+				close: async () => {},
+			}),
+			deps: {
+				createClient: () => ({
+					user: { id: "voice-bot" },
+					login: vi.fn(async () => {}),
+					isReady: () => true,
+					once: vi.fn(),
+					destroy: vi.fn(async () => {}),
+				}),
+				joinVoice: vi.fn(async () => ({})),
+				subscribeManual: () => vi.fn(() => new PassThrough()),
+				createDecoder: () => new PassThrough(),
+				createPlayer: () => player,
+				createResource: createResource as never,
+				speakingEvents: () => ({ on: () => undefined }),
+				memberDisplayName: vi.fn(async () => "Annie"),
+				voiceChannelHumanCount: vi.fn(async () => 1),
+				userVoiceChannelId: vi.fn(async () => "voice-channel"),
+				onVoiceStateUpdate: () => () => {},
+				sendMessage: vi.fn(async () => {}),
+				leaveVoice: vi.fn(),
+			},
+			token: "token",
+			expectedBotUserId: "voice-bot",
+			guildId: "guild",
+			voiceChannelId: "voice-channel",
+			threadId: "thread",
+			founderUserId: "founder",
+			qaAllowUserIds: [],
+			...(downlink ? { downlink } : {}),
+			onAudio: vi.fn(),
+			onFounderPresence: vi.fn(),
+			onDiagnostic: (record) => diagnostics.push(record),
+			onError: vi.fn(),
+		});
+		return { room, createResource, player, diagnostics };
+	}
+
+	it("keeps the PCM mouth by default so engine A is unchanged", async () => {
+		const test = roomWith();
+		await test.room.start();
+		try {
+			expect(test.room.opusDownlink).toBeUndefined();
+			expect(
+				test.createResource.mock.calls.map(([source]) => source.kind),
+			).toEqual(["raw-stream"]);
+		} finally {
+			await test.room.stop();
+		}
+	});
+
+	it("plays WebRTC Opus directly and cuts it on cancelAllSpeech", async () => {
+		const test = roomWith("opus-passthrough");
+		await test.room.start();
+		try {
+			expect(
+				test.createResource.mock.calls.map(([source]) => source.kind),
+			).toEqual(["opus-stream"]);
+			const downlink = test.room.opusDownlink!;
+			expect(downlink.push(Buffer.from([0xf8, 1, 1]), { voiced: true })).toBe(
+				true,
+			);
+			test.room.cancelAllSpeech();
+			expect(test.diagnostics).toContainEqual({
+				kind: "downlink_flushed",
+				droppedPackets: 1,
+				droppedVoiced: 1,
+			});
+			await expect(
+				test.room.playSpeech("speech-1", Buffer.alloc(960)),
+			).rejects.toThrow("speech_room_opus_passthrough");
+			expect(() => test.room.openSpeech("speech-2")).toThrow(
+				"speech_room_opus_passthrough",
+			);
+		} finally {
+			await test.room.stop();
+		}
+		expect(test.player.stop).toHaveBeenCalled();
+	});
+});
+
+describe("DiscordVoiceRoom WebRTC uplink gate (FLY-2885 T6)", () => {
+	async function speak(
+		level: number,
+		options: {
+			downlink?: "opus-passthrough";
+			uplinkMinOnsetDbfs?: number | null;
+		},
+	) {
+		vi.useFakeTimers();
+		const speaking = new Map<string, (userId: string) => void>();
+		const opus = new PassThrough();
+		const decoder = new PassThrough();
+		const diagnostics: Array<Record<string, unknown>> = [];
+		const founderFrames: Buffer[] = [];
+		const room = new DiscordVoiceRoom({
+			createVad: async () => ({
+				score: async (_samples, state) => ({ probability: 1, next: state }),
+				close: async () => {},
+			}),
+			deps: {
+				createClient: () => ({
+					user: { id: "voice-bot" },
+					login: vi.fn(async () => {}),
+					isReady: () => true,
+					once: vi.fn(),
+					destroy: vi.fn(async () => {}),
+				}),
+				joinVoice: vi.fn(async () => ({})),
+				subscribeManual: () => vi.fn(() => opus),
+				createDecoder: () => decoder,
+				createPlayer: () => ({ play: vi.fn(), stop: vi.fn(), on: vi.fn() }),
+				createResource: vi.fn((source) => source),
+				speakingEvents: () => ({
+					on: (event, callback) => speaking.set(event, callback),
+				}),
+				memberDisplayName: vi.fn(async () => "Annie"),
+				voiceChannelHumanCount: vi.fn(async () => 1),
+				userVoiceChannelId: vi.fn(async () => "voice-channel"),
+				onVoiceStateUpdate: () => () => {},
+				sendMessage: vi.fn(async () => {}),
+				leaveVoice: vi.fn(),
+			},
+			token: "token",
+			expectedBotUserId: "voice-bot",
+			guildId: "guild",
+			voiceChannelId: "voice-channel",
+			threadId: "thread",
+			founderUserId: "founder",
+			qaAllowUserIds: [],
+			...options,
+			onAudio: (frame, metadata) => {
+				if (metadata.ownerUserId === "founder") founderFrames.push(frame);
+			},
+			onFounderPresence: vi.fn(),
+			onDiagnostic: (record) => diagnostics.push(record),
+			onError: vi.fn(),
+		});
+		try {
+			await room.start();
+			speaking.get("start")?.("founder");
+			for (let frame = 0; frame < 60; frame += 1) {
+				opus.write(pcm16(Array(1_920).fill(level)));
+				await vi.advanceTimersByTimeAsync(20);
+			}
+			speaking.get("end")?.("founder");
+			await vi.advanceTimersByTimeAsync(2_000);
+			return { founderFrames, diagnostics };
+		} finally {
+			await room.stop();
+			vi.useRealTimers();
+		}
+	}
+
+	it("keeps a far-away voice below the onset peak out of the WebRTC room", async () => {
+		const result = await speak(650, {
+			downlink: "opus-passthrough",
+			uplinkMinOnsetDbfs: -30,
+		});
+		expect(result.founderFrames).toHaveLength(0);
+		expect(result.diagnostics).toContainEqual(
+			expect.objectContaining({ kind: "uplink_gate_rejected_quiet" }),
+		);
+	});
+
+	it("passes normal speech in the WebRTC room", async () => {
+		const result = await speak(4_000, {
+			downlink: "opus-passthrough",
+			uplinkMinOnsetDbfs: -30,
+		});
+		expect(result.founderFrames.length).toBeGreaterThan(40);
+	});
+
+	it("leaves the engine A room's gate without the peak gate", async () => {
+		const result = await speak(650, { uplinkMinOnsetDbfs: -30 });
+		expect(result.founderFrames.length).toBeGreaterThan(0);
+		expect(
+			result.diagnostics.some(
+				(record) => record.kind === "uplink_gate_rejected_quiet",
+			),
+		).toBe(false);
+	});
+});

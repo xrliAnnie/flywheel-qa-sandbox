@@ -46,9 +46,24 @@ export function buildCodexInstruction(
 ): string {
 	if (reviewRoute && reviewRoute.reviewerVendor !== "codex")
 		throw new Error("Codex instruction requires a codex reviewer route");
+	// FLY-2891: the companion defaults to its own model, so the route must be
+	// passed explicitly on every call, and every round is written back.
 	const routeInstruction = reviewRoute
-		? `Use the server-selected reviewer model ${reviewRoute.reviewerModel} at ${reviewRoute.reviewerEffort} effort; do not substitute another model.`
+		? [
+				`Use the server-selected reviewer model ${reviewRoute.reviewerModel} at ${reviewRoute.reviewerEffort} effort; do not substitute another model.`,
+				`Pass --model ${reviewRoute.reviewerModel} --effort ${reviewRoute.reviewerEffort} on EVERY codex-companion task call (the /codex-design-review and /codex-code-review skills omit --model — add it).`,
+				"If a round already ran on another model, start a fresh thread (--fresh) with the right model.",
+			].join(" ")
 		: "";
+	const roundWriteBack = [
+		`Immediately after EACH Codex round, before editing any file, run: flywheel-comm review-round ${reviewType} --exec-id ${executionId} --round <n> --verdict <APPROVED|CHANGES_REQUESTED> --thread <codexThreadId> [--findings critical=N,high=N,medium=N,low=N]`,
+		"(it records the round and prints turn=/thread=/round= for the result JSON).",
+	].join(" ");
+	const approvedTurnSchema = [
+		"rounds:<total rounds across all threads>, finalRound:<APPROVED round number within its thread>,",
+		"codexThreadId:<thread of the APPROVED round>, codexTurnId:<turn of the APPROVED round>,",
+		"reviewerModel:<model of the APPROVED round>, reviewerEffort:<effort of the APPROVED round>",
+	].join(" ");
 	if (reviewType === "design") {
 		if (!planPath) {
 			throw new Error(
@@ -58,10 +73,11 @@ export function buildCodexInstruction(
 		const target = planPath;
 		const schemaTail = designBinding
 			? [
-					`codexThreadId:<string>, requestId:"${designBinding.requestId}",`,
-					`reviewedPlanBlobSha:"${designBinding.reviewedPlanBlobSha}"}.`,
+					`${approvedTurnSchema}, requestId:"${designBinding.requestId}",`,
+					`reviewedPlanBlobSha:"${designBinding.reviewedPlanBlobSha}"}`,
+					"(the last six fields come from the APPROVED round's review-round receipt).",
 				]
-			: [`codexThreadId:<string>}.`];
+			: [`${approvedTurnSchema}}.`];
 		const gateTail = designBinding
 			? [
 					`fail-closed and asks Bridge to verify the request id, path, committed`,
@@ -74,11 +90,13 @@ export function buildCodexInstruction(
 		return [
 			`[FLY-137] Codex design review required for exec=${executionId}.`,
 			`Run: /codex-design-review ${target}`,
+			`Run flywheel-comm stage set design_review --plan ${target} BEFORE round 1 and read the printed reviewer model; re-run it after the final plan commit.`,
 			routeInstruction,
+			roundWriteBack,
 			`Iterate on findings until Codex returns APPROVED. Write the approved`,
 			`result to .flywheel/runs/${executionId}/codex/design-review.json with`,
 			`schema {executionId, reviewType:"design", status:"APPROVED",`,
-			`reviewedTarget:"${target}", timestamp:<ISO-8601>, rounds:<int>,`,
+			`reviewedTarget:"${target}", timestamp:<ISO-8601>,`,
 			...schemaTail,
 			`Then call \`flywheel-comm await-codex-gate design --exec-id ${executionId}\``,
 			`before \`flywheel-comm stage set implement\`. The gate command is`,
@@ -92,11 +110,12 @@ export function buildCodexInstruction(
 		`founder review and merge will be BLOCKED until it passes for the`,
 		`current PR head. Run: /codex-code-review`,
 		routeInstruction,
+		roundWriteBack,
 		`Iterate on findings until Codex returns APPROVED. Write the approved`,
 		`result to .flywheel/runs/${executionId}/codex/code-review.json with`,
 		`schema {executionId, reviewType:"code", status:"APPROVED",`,
 		`reviewedTarget:"<pr-url>", reviewedHeadSha:"<git rev-parse HEAD at review`,
-		`time, 40-hex>", timestamp:<ISO-8601>, rounds:<int>, codexThreadId:<string>}.`,
+		`time, 40-hex>", timestamp:<ISO-8601>, ${approvedTurnSchema}}.`,
 		`Then call \`flywheel-comm await-codex-gate code --exec-id ${executionId}\``,
 		`before \`flywheel-comm stage set approve\`. The gate verifies reviewedHeadSha`,
 		`=== current HEAD (fail-closed) and reports the APPROVED verdict to the`,
@@ -150,6 +169,8 @@ export function queueCodexCodeReviewInstructionResult(
 	opts: {
 		instructionId?: string;
 		logger?: { warn(m: string): void; log(m: string): void };
+		/** FLY-2891: Codex reviewer route so a re-queue names the model. */
+		reviewRoute?: WorkflowReviewRoute;
 	} = {},
 ): QueueCodexInstructionResult {
 	const logger = opts.logger ?? console;
@@ -158,7 +179,13 @@ export function queueCodexCodeReviewInstructionResult(
 		mkdirSync(dirname(dbPath), { recursive: true });
 		const commDb = new CommDB(dbPath);
 		try {
-			const content = buildCodexInstruction("code", undefined, executionId);
+			const content = buildCodexInstruction(
+				"code",
+				undefined,
+				executionId,
+				undefined,
+				opts.reviewRoute,
+			);
 			if (opts.instructionId) {
 				const inserted = commDb.insertInstructionWithId(
 					opts.instructionId,

@@ -68,6 +68,15 @@ export interface ActiveVoiceSession {
 	speak(
 		speech: PreparedSpeech,
 	): Promise<"confirmed" | "unconfirmed" | "failed">;
+	/**
+	 * FLY-2885 founder rework: a runtime that reads a whole Lead reply itself
+	 * (waiting for the conversation, resuming after an overrun, saying what was
+	 * left unread). Without it, the reply is spoken chunk by chunk.
+	 */
+	speakReply?(
+		text: string,
+		chunkCharacters: number,
+	): Promise<"confirmed" | "unconfirmed" | "failed">;
 	notify?(text: string): void | Promise<void>;
 	stop(outcome?: VoiceEnd): Promise<void>;
 }
@@ -914,13 +923,22 @@ export class VoiceDaemon {
 					await lifetime.wait(() =>
 						Promise.resolve(session.notify?.("📻 没有可朗读内容，请看文字")),
 					);
-				}
-				for (const speech of speeches) {
+				} else if (session.speakReply) {
 					context.lease.assert();
-					const spoken = await lifetime.wait(() => session.speak(speech));
-					if (spoken === "failed") status = "failed";
-					else if (spoken === "unconfirmed" && status === "confirmed") {
-						status = "unconfirmed";
+					status = await lifetime.wait(() =>
+						session.speakReply!(
+							item.text,
+							this.options.timing.speechChunkTokens,
+						),
+					);
+				} else {
+					for (const speech of speeches) {
+						context.lease.assert();
+						const spoken = await lifetime.wait(() => session.speak(speech));
+						if (spoken === "failed") status = "failed";
+						else if (spoken === "unconfirmed" && status === "confirmed") {
+							status = "unconfirmed";
+						}
 					}
 				}
 			} catch (error) {

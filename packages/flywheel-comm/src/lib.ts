@@ -50,6 +50,7 @@ export type {
 	RunnerShutdownControl,
 	RunnerTurnWakeProjectionRow,
 	SessionCloseoutIdentity,
+	TurnWakeHoldResumeResult,
 	TurnWakeOutboxRow,
 } from "./db.js";
 export {

@@ -2,10 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import { deliverResidentWake } from "../resident-wake-fence.js";
 
 describe("deliverResidentWake", () => {
+	// FLY-2921 C5: `woken` is deliverable (see fly2921-resident-wake-fence.test.ts);
+	// only the two retired states are classified before transport.
 	it.each([
 		["expired", "resident_hold_expired"],
 		["closed", "resident_hold_expired"],
-		["woken", "resident_hold_already_woken"],
 	])(
 		"classifies %s before transport without inventing release",
 		async (state, error) => {

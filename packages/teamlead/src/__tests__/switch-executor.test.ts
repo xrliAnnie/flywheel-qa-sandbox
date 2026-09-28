@@ -12,6 +12,7 @@ import {
 	type AccountStore,
 	MAX_SWITCH_NOTIFICATION_OUTBOX,
 	readStore,
+	readStoreStrict,
 	type SwitchNotificationIntent,
 	writeStore,
 } from "../account-heal/account-store.js";
@@ -2014,5 +2015,129 @@ describe("switchAccount", () => {
 			applyEvidence: evidence,
 		});
 		expect(readStore(storePath).generation).toBe(1);
+	});
+});
+
+describe("resetCardTarget (FLY-2896)", () => {
+	const WEEK_RESET = "2026-07-10T02:30:00.000Z";
+	function seedWithCooledTarget(): void {
+		seed({
+			generation: 1,
+			activeAccount: "personal",
+			accounts: [
+				{ name: "personal", quotaExhaustedUntil: null, weeklyResetAt: null },
+				{
+					name: "business",
+					quotaExhaustedUntil: null,
+					switchCooldownUntil: "2026-07-04T02:30:00.000Z",
+					weeklyResetAt: WEEK_RESET,
+				},
+				{ name: "school", quotaExhaustedUntil: null, weeklyResetAt: null },
+			],
+		});
+	}
+	const valid = {
+		trigger: {
+			kind: "quota" as const,
+			scope: "5h" as const,
+			resetAt: "2026-07-04T02:30:00.000Z",
+		},
+		observedAccount: "personal",
+		observedGeneration: 1,
+		now: NOW,
+		preferredOrder: ["business"],
+		verifiedAt: NOW.toISOString(),
+		quotaPreverified: true,
+		resetCardTarget: { name: "business" },
+	};
+
+	it("admits the consented target despite its cooldown and records a quota switch", async () => {
+		seedWithCooledTarget();
+		const d = deps();
+		const result = await switchAccount(valid, d);
+		expect(result).toMatchObject({
+			outcome: "switched",
+			from: "personal",
+			to: "business",
+			generation: 2,
+		});
+		expect(d.applyProfile).toHaveBeenCalledTimes(1);
+		const after = readStore(storePath);
+		expect(after.lastSwitch).toMatchObject({
+			generation: 2,
+			triggerKind: "quota",
+			from: "personal",
+			to: "business",
+		});
+		// A pre-FLY-2896 strict reader still accepts the store it wrote.
+		expect(readStoreStrict(storePath)).not.toBeNull();
+	});
+
+	it("without resetCardTarget the same cooled target stays ineligible", async () => {
+		seedWithCooledTarget();
+		const { resetCardTarget: _omit, ...plain } = valid;
+		const result = await switchAccount(plain, deps());
+		expect(result.outcome).toBe("no_account");
+	});
+
+	it.each([
+		{
+			label: "non-quota trigger",
+			patch: { trigger: { kind: "manual", mode: "use" } },
+		},
+		{
+			label: "repair trigger",
+			patch: {
+				trigger: { kind: "repair", scope: "5h", resetAt: WEEK_RESET },
+			},
+		},
+		{
+			label: "preferredOrder has two names",
+			patch: { preferredOrder: ["business", "school"] },
+		},
+		{
+			label: "preferredOrder names someone else",
+			patch: { preferredOrder: ["school"] },
+		},
+		{ label: "not preverified", patch: { quotaPreverified: false } },
+		{ label: "no verifiedAt", patch: { verifiedAt: undefined } },
+		{ label: "bad verifiedAt", patch: { verifiedAt: "soon" } },
+		{
+			label: "with cooldown fallbacks (otherwise valid on a weekly trigger)",
+			patch: {
+				trigger: { kind: "quota", scope: "weekly", resetAt: WEEK_RESET },
+				cooldownFallbacks: ["business"],
+			},
+		},
+	])("rejects $label", async ({ patch }) => {
+		seedWithCooledTarget();
+		const d = deps();
+		const result = await switchAccount(
+			{ ...valid, ...patch } as Parameters<typeof switchAccount>[0],
+			d,
+		);
+		expect(result).toMatchObject({
+			outcome: "failed",
+			reasonCode: "invalid_reset_card_target",
+		});
+		expect(d.applyProfile).not.toHaveBeenCalled();
+		expect(readStore(storePath).generation).toBe(1);
+	});
+
+	it("manual overrides are refused before the reset-card check", async () => {
+		seedWithCooledTarget();
+		const d = deps();
+		const result = await switchAccount(
+			{
+				...valid,
+				manualOverrides: new Map([["business", { ignoreCooldown: true }]]),
+			} as Parameters<typeof switchAccount>[0],
+			d,
+		);
+		expect(result).toMatchObject({
+			outcome: "failed",
+			reasonCode: "invalid_manual_overrides",
+		});
+		expect(d.applyProfile).not.toHaveBeenCalled();
 	});
 });

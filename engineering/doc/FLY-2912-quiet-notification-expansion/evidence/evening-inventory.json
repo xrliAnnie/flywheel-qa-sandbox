@@ -1,0 +1,70 @@
+{
+  "source": "read-only bounded SQL export; no DB copy",
+  "lead": "flywheel-eng-lead",
+  "windowUtc": [
+    "2026-09-26 01:00:00",
+    "2026-09-26 03:45:00"
+  ],
+  "windowLocal": "2026-09-25 18:00–20:45 America/Los_Angeles; provisional pending Lead",
+  "rows": 239,
+  "sha256": "1106a8ea1cef48c38eb85b24d1991b9c084245529b78c9ab6dae6c7203cbdb29",
+  "localRawPath": "/tmp/FLY-2912-evening-lead-events.jsonl",
+  "counts": [
+    {
+      "eventType": "epic_intake",
+      "disposition": "model",
+      "count": 2
+    },
+    {
+      "eventType": "founder_reply",
+      "disposition": "model",
+      "count": 2
+    },
+    {
+      "eventType": "gate_question",
+      "disposition": "model",
+      "count": 13
+    },
+    {
+      "eventType": "patrol_tick",
+      "disposition": "model",
+      "count": 2
+    },
+    {
+      "eventType": "runner_question",
+      "disposition": "model",
+      "count": 110
+    },
+    {
+      "eventType": "session_monitoring_reestablished",
+      "disposition": "audit_only",
+      "count": 2
+    },
+    {
+      "eventType": "session_started",
+      "disposition": "model",
+      "count": 20
+    },
+    {
+      "eventType": "stage_changed",
+      "disposition": "audit_only",
+      "count": 61
+    },
+    {
+      "eventType": "stage_changed",
+      "disposition": "model",
+      "count": 18
+    },
+    {
+      "eventType": "workflow_claim_recorded",
+      "disposition": "model",
+      "count": 2
+    },
+    {
+      "eventType": "workflow_engine_escalation",
+      "disposition": "model",
+      "count": 7
+    }
+  ],
+  "limits": "Journal rows and delivered_at are not actual Lead wake counts; original source payloads and historical authority state still needed for counterfactual replay."
+}

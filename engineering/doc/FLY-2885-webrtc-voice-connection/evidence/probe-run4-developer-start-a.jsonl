@@ -1,0 +1,22 @@
+{"t":4.5,"kind":"items_shape","data":{"role":"developer","position":"start","count":3,"itemBytes":[10474,10189,10474],"totalBytes":31137,"codexEstimatedTokens":7785}}
+{"t":682.7,"kind":"response","data":{"method":"initialize","error":null}}
+{"t":1047.9,"kind":"response","data":{"method":"account/read","error":null}}
+{"t":1048.1,"kind":"account","data":{"type":"chatgpt"}}
+{"t":3316.2,"kind":"response","data":{"method":"thread/start","error":null}}
+{"t":3493.7,"kind":"response","data":{"method":"thread/realtime/start","error":null}}
+{"t":3493.9,"kind":"start_response","data":{"error":null}}
+{"t":4116.5,"kind":"started","data":{"version":"v3"}}
+{"t":4120.6,"kind":"pc_state","data":{"s":"connecting"}}
+{"t":5435.1,"kind":"pc_state","data":{"s":"connected"}}
+{"t":5510.6,"kind":"dc_event","data":{"type":"session.started"}}
+{"t":8452.8,"kind":"watch_window_done","data":{"errors":0,"closed":0}}
+{"t":8485.6,"kind":"question_sent","data":{"ms":2340}}
+{"t":12394.3,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"user","transcript":"你好,请问暗号 是什么?"}}}
+{"t":12409.3,"kind":"transcript_done","data":{"role":"user","text":"你好,请问暗号 是什么?"}}
+{"t":13103.7,"kind":"response","data":{"method":"turn/interrupt","error":null}}
+{"t":16472.3,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"assistant","transcript":"嗯,让我确认一下。稍等一下,我查一下记录。"}}}
+{"t":16480.8,"kind":"transcript_done","data":{"role":"assistant","text":"嗯,让我确认一下。稍等一下,我查一下记录。"}}
+{"t":16985.7,"kind":"response","data":{"method":"thread/realtime/stop","error":null}}
+{"t":16986.7,"kind":"pc_state","data":{"s":"closed"}}
+{"t":16987.9,"kind":"realtime_closed","data":{"reason":"requested"}}
+{"t":17163.6,"kind":"summary","data":{"why":"done","role":"developer","position":"start","itemBytes":[10474,10189,10474],"totalBytes":31137,"errors":[],"closed":[{"t":16987.9,"reason":"requested"}],"transcripts":[{"t":12409.3,"role":"user","text":"你好,请问暗号 是什么?"},{"t":16480.8,"role":"assistant","text":"嗯,让我确认一下。稍等一下,我查一下记录。"}],"dc":{"session.started":1,"input_transcript.added":5,"turn.created":2,"turn.delta":10,"output_transcript.added":10,"turn.done":2,"delegation.created":1},"codeWordAnswered":false,"verdict":"NOT_ACCEPTED","authSourceStillFile":true}}

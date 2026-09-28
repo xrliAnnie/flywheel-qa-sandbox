@@ -977,7 +977,10 @@ export function validateQaShipPreconditions(input) {
 
 // Exercise the same completion protocol as a resident runner. Retry only the
 // server-issued drain challenge; never evaluate the printed shell command.
-export function completeStubWithDrain(args, { runComm, acknowledgeWakes }) {
+export function completeStubWithDrain(
+	args,
+	{ runComm, acknowledgeWakes, recordDrainRead },
+) {
 	const checked = (command) => {
 		const result = runComm(command);
 		if (!result.ok)
@@ -993,8 +996,37 @@ export function completeStubWithDrain(args, { runComm, acknowledgeWakes }) {
 	};
 	readInbox();
 	const result = runComm(args);
-	if (result.ok || !result.output.includes("consume_pending_mail"))
-		return result;
+	if (result.ok) return result;
+	// FLY-2373 protocol v2: read every served page, acknowledge the read
+	// envelope, then rerun the same completion (no receipt) exactly once.
+	// Only the header is trusted; page bodies carry arbitrary mail text, so
+	// every page (page 1 included) is fetched whole through --drain-page.
+	const deferred = result.output.match(
+		/\[complete\] completion deferred: \d+ unread item\(s\) must be read before this completion commits \(read ([^\s,]+), page 1\/(\d+)\)\./,
+	);
+	if (deferred) {
+		const readId = deferred[1];
+		const pageCount = Number(deferred[2]);
+		if (!/^read_[0-9a-f]{32}$/.test(readId))
+			throw new Error("stub completion has invalid drain read id");
+		if (!Number.isSafeInteger(pageCount) || pageCount < 1 || pageCount > 64)
+			throw new Error("stub completion has invalid drain page count");
+		const pages = [];
+		for (let page = 1; page <= pageCount; page += 1)
+			pages.push(
+				checked(["inbox", "--drain-page", readId, "--page", String(page)])
+					.output,
+			);
+		readInbox();
+		const turn = checked(["turn"]);
+		if (!/^yours(?:\s|$)/.test(turn.output))
+			throw new Error("stub completion lost TURN");
+		// Persist what this fixture actor consumed before its acknowledgement.
+		recordDrainRead?.({ readId, pages });
+		checked(["inbox", "--ack-consumed", readId]);
+		return runComm(args);
+	}
+	if (!result.output.includes("consume_pending_mail")) return result;
 	const guidance = result.output.match(
 		/\(mailbox (\[[^\n]*?\]) \/ phase-wake (\[[^\n]*?\])\), then retry the exact challenge:\n[^\n]* --drain-receipt ([A-Za-z0-9:._-]{1,512})(?=\r?\n|$)/,
 	);

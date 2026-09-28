@@ -222,7 +222,7 @@ it("migrates legacy model rows and preserves audit-only across restart", async (
 		store.close();
 		const db = new Database(path);
 		db.exec(
-			"DROP INDEX idx_lead_events_model_pending; DROP INDEX idx_lead_events_archive_keyset; ALTER TABLE lead_events DROP COLUMN delivery_disposition",
+			"DROP INDEX idx_lead_events_model_pending; DROP INDEX idx_lead_events_archive_keyset; DROP INDEX idx_lead_events_notification_range; ALTER TABLE lead_events DROP COLUMN delivery_disposition",
 		);
 		db.close();
 		store = await StateStore.create(path);

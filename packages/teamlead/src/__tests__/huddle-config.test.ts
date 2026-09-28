@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { parseAndValidateProjects } from "../ProjectConfig.js";
-import { REALTIME_V2_VOICES } from "../realtime-voices.js";
+import { LIVE_V3_VOICES, REALTIME_V2_VOICES } from "../realtime-voices.js";
 
 function lead(over: Record<string, unknown> = {}) {
 	return {
@@ -155,6 +155,39 @@ describe("generic realtime voice registry fields", () => {
 				entry({ leads: [lead({ realtimeVoice: "nova" })] }),
 			]),
 		).toThrow(/realtimeVoice/);
+	});
+
+	it("keeps engine B's liveVoice separate from realtimeVoice and names the nine v3 voices on error (FLY-2885)", () => {
+		expect(LIVE_V3_VOICES).toEqual([
+			"juniper",
+			"maple",
+			"spruce",
+			"ember",
+			"vale",
+			"breeze",
+			"arbor",
+			"sol",
+			"cove",
+		]);
+		const absent = parseAndValidateProjects([entry()])[0]!.leads[0]!;
+		expect("liveVoice" in absent).toBe(false);
+		for (const liveVoice of LIVE_V3_VOICES) {
+			const parsed = parseAndValidateProjects([
+				entry({ leads: [lead({ liveVoice, realtimeVoice: "marin" })] }),
+			])[0]!.leads[0]!;
+			expect(parsed.liveVoice).toBe(liveVoice);
+			// Neither field falls back to the other.
+			expect(parsed.realtimeVoice).toBe("marin");
+		}
+		for (const liveVoice of ["marin", "alloy", "Cove", "", 7]) {
+			expect(() =>
+				parseAndValidateProjects([
+					entry({ leads: [lead({ liveVoice } as never)] }),
+				]),
+			).toThrow(
+				/leads\[0\]\.liveVoice: must be one of juniper, maple, spruce, ember, vale, breeze, arbor, sol, cove/,
+			);
+		}
 	});
 });
 

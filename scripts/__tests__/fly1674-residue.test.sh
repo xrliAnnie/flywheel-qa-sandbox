@@ -65,6 +65,8 @@ allowed_hits=(
   'packages/teamlead/src/StateStore.ts|three_stage_turn_stuck'
   'packages/teamlead/src/__tests__/StateStore.workflow-holds.test.ts|three_stage_turn_stuck'
   'packages/teamlead/src/__tests__/fly2278-hold-writers.test.ts|three_stage_turn_stuck'
+  'packages/teamlead/src/__tests__/fly2921-delivery-operations.test.ts|three_stage_turn_stuck'
+  'packages/teamlead/src/__tests__/fly2921-rework-wake-no-freeze.test.ts|three_stage_turn_stuck'
   'packages/teamlead/src/__tests__/hold-shape-registry.test.ts|three_stage_turn_stuck'
   'packages/teamlead/src/bridge/alert-kind-copy.ts|three_stage_turn_stuck'
   'packages/teamlead/src/bridge/delivery-contract/sources/turn-wake.ts|three_stage_turn_stuck'

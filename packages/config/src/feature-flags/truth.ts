@@ -193,7 +193,6 @@ const FLY1455_NON_FLAG_ENV = [
 	"FLYWHEEL_SYSTEM_HEALTH_DIR",
 	"FLYWHEEL_TEAMLEAD_PROJECTS_VALIDATOR",
 	"FLYWHEEL_TEAMLEAD_DB",
-	"FLYWHEEL_TMUX_AUDIT_ALLOWLIST",
 	"FLYWHEEL_TMUX_ENSURE_ATTEMPT_TIMEOUT_MS",
 	"FLYWHEEL_TMUX_ENSURE_DEADLINE_MS",
 	"FLYWHEEL_TMUX_MASS_LOSS_MIN",
@@ -239,6 +238,10 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"FLY-2519 context: canonical Lead registry capability bundle version projected into one launcher invocation, not an independent feature toggle",
 	FLYWHEEL_CODEX_LEAD_DEV_SOURCE:
 		"FLY-2519 per-invocation development entry selection: explicit source execution instead of deployed dist; production launch requires deployed artifact verification",
+	FLYWHEEL_CODEX_TUI_TEST_MODEL:
+		"FLY-2950 test-room-only per-invocation config value: pins the 529 Codex carrier Lead model, not a persistent on/off gate",
+	FLYWHEEL_CODEX_TUI_TEST_REASONING_EFFORT:
+		"FLY-2950 test-room-only per-invocation config value: pins the 529 Codex carrier Lead reasoning effort, not a persistent on/off gate",
 	FLYWHEEL_LEAD_CAPABILITY_MANIFEST:
 		"FLY-2519 plumbing: nonsecret capability manifest file coordinate for the current Lead runtime, not an on/off gate",
 	FLYWHEEL_LEAD_CAPABILITY_ACTIVATION:
@@ -353,6 +356,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"FLY-2643 plumbing: packaged restart-wave visibility verifier path override for hermetic tests, not an on/off gate",
 	FLYWHEEL_VISIBILITY_SAMPLE_SECONDS:
 		"FLY-2643 numeric tuning: observation interval for stable agent-visibility identity sampling, not an on/off gate",
+	FLYWHEEL_VISIBILITY_CMUX_SYNC:
+		"FLY-2643/FLY-2965 plumbing: executable path override for flywheel-cmux-sync, read by scripts/lib/agent-visibility.sh (per-Lead cmux half) and scripts/restart-services.sh (restart batch proof; the rollback pin keeps an explicit override), so hermetic tests and a rollback can name the verifier; not an on/off gate",
 	FLYWHEEL_MEETING_NOTES_CONFIG:
 		"config value: trusted meeting-notes YAML path override for hermetic QA and deployment (FLY-2033), not an on/off gate",
 	FLYWHEEL_LEAD_IGNORED_AUTHOR_IDS:
@@ -407,6 +412,14 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"FLY-2799 per-invocation voice backend selector for an explicitly requested session, not an on/off gate",
 	FLYWHEEL_VOICE_UPLINK_PREROLL_MS:
 		"FLY-2798/FLY-2799 bounded uplink VAD pre-roll duration in milliseconds, not an on/off gate",
+	FLYWHEEL_VOICE_CODEX_AUTH_SOURCE:
+		"FLY-2885 plumbing: path of the subscription credential engine B symlinks into its temporary CODEX_HOME, not an on/off gate",
+	FLYWHEEL_VOICE_UPLINK_MIN_ONSET_DBFS:
+		"FLY-2885 numeric tuning: sentence-level onset peak level in dBFS for the WebRTC room's uplink gate ('off' = no level floor), not a feature gate",
+	FLYWHEEL_VOICE_WEBRTC_STUN:
+		"FLY-2885 config value: comma-separated STUN URLs for engine B's WebRTC leg (empty = host candidates only), not an on/off gate",
+	FLYWHEEL_VOICE_QA_FAULTS:
+		"FLY-2885 QA-only fault seam (SIGUSR2 drops the WebRTC leg for QA-3a); the production voice wrapper never sets it, not a runtime feature toggle",
 	FLYWHEEL_CODEX_LEAD_STATE_DIRS:
 		"FLY-2301 slot-injected Lead identity-to-state-directory path map, not an on/off gate",
 	FLYWHEEL_CODEX_ACCOUNT_REGISTRY_PATH:
@@ -868,8 +881,14 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"secret value: FLY-2632 Ed25519 signing credential for single-use land merge tickets, never a feature toggle",
 	FLYWHEEL_REVIEW_MAX_CONCURRENT:
 		"numeric tuning: optional review concurrency cap; zero is unlimited (FLY-1949)",
+	FLYWHEEL_REVIEW_QUIET_WINDOW_MS:
+		"numeric tuning: review head stability delay in milliseconds; zero removes the delay without skipping review (FLY-2911)",
+	FLYWHEEL_REVIEW_FRESHNESS_INTERVAL_MS:
+		"numeric tuning: bounded cadence for checking running review head and gate validity (FLY-2911)",
 	FLYWHEEL_CLAUDE_REVIEW_TIMEOUT_MS:
 		"tuning knob: active Claude review subprocess timeout (FLY-1254)",
+	FLYWHEEL_REWORK_DELTA_TIMEOUT_MS:
+		"tuning knob: server-side rework completion diff timeout; a timeout degrades to an audited unverified delta (FLY-2921 C7)",
 	FLYWHEEL_CRASH_REAP_GRACE_MIN: "tuning knob: crash reap grace minutes",
 	FLYWHEEL_PARKED_PHASE_STALE_HOURS:
 		"tuning knob: parked DAG workflow reclaim time backstop hours (FLY-1204)",
@@ -923,6 +942,9 @@ export const RETIRED_CONFIG_PATHS = [
 ] as const;
 
 export const RETIRED_FLAGS = [
+	// The foreign-socket tmux audit it tuned was deleted: a held descriptor never
+	// proved a tmux listener, and the probe pinned the 2026-09-27 shuttle.
+	{ envVar: "FLYWHEEL_TMUX_AUDIT_ALLOWLIST", retiredBy: "FLY-2965" },
 	{ envVar: "FLYWHEEL_ALERT_COPY_TO_CHANNEL", retiredBy: "FLY-2075" },
 	{ envVar: "FLYWHEEL_FLAG_STORE", retiredBy: "FLY-2102" },
 	{ envVar: "FLYWHEEL_GHOST_GUARD_WAIT_MS", retiredBy: "FLY-2102" },

@@ -5,8 +5,10 @@
  * and hands every fact to this function. Only two kinds of fact are terminal
  * (`not_applicable`): a stale immutable identity (epoch / route revision /
  * actor already superseded, so the old ACK can never become valid) and a
- * delivery parked behind a Lead or replacement decision (`held`, `needs_lead`,
- * `replacement_pending` only ever leave via a new route revision). Everything
+ * delivery parked behind a Lead decision (FLY-2921: `returned_to_lead` only
+ * ever leaves via a new route revision). A late ACK from an actor that was
+ * replaced is refused before any write by the projector's identity check
+ * (preferred actor / binding / TURN execution), not here. Everything
  * else retries into the bounded quarantine lane so an unsettled StateStore
  * obligation ends in a durable Lead question instead of a silent
  * `receipt_projected_at`.
@@ -20,12 +22,9 @@ export type TurnWakeReceiptOutcome =
 export type TurnWakeReceiptDeliveryState =
 	| "pending"
 	| "turn_granted"
-	| "awaiting_receipt"
 	| "wake_delivered"
-	| "replacement_pending"
 	| "completed"
-	| "held"
-	| "needs_lead";
+	| "returned_to_lead";
 
 const PROJECTABLE_PURPOSES = new Set([
 	"workflow_rework",
@@ -36,9 +35,7 @@ const TERMINAL_IDENTITY_REASONS = new Set([
 	"carrier_wake_receipt_identity_conflict",
 ]);
 const LEAD_PARKED_DELIVERY_STATES = new Set<TurnWakeReceiptDeliveryState>([
-	"held",
-	"needs_lead",
-	"replacement_pending",
+	"returned_to_lead",
 ]);
 
 export function classifyTurnWakeReceiptProjection(input: {

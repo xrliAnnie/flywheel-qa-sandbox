@@ -1,0 +1,44 @@
+{
+  "sourceHead": "8b29f69cd337fedf0052e34f1180926942e4ff26",
+  "followupChange": "lead-events.test.ts drops the new range index before simulating the legacy schema",
+  "uniqueFiles": 59,
+  "passed": 992,
+  "existingSkipped": 1,
+  "logs": {
+    "lint-final": {
+      "path": "/tmp/fly2912-lint-final.log",
+      "sha256": "8c95c2ca4bd4641d348bbc7aef5205e99087401df71568841f701224fe8645dd",
+      "bytes": 36805
+    },
+    "build": {
+      "path": "/tmp/fly2912-build.log",
+      "sha256": "ac81dc6ed6a7568f608099626e8b43f77d66580d22ad85ed09fdc5024eea975a",
+      "bytes": 3961
+    },
+    "dependent-typecheck-r2": {
+      "path": "/tmp/fly2912-dependent-typecheck-r2.log",
+      "sha256": "3c7620cf956193e898a7269e082aa88b1b8b52550252517af20596f2fe456cfd",
+      "bytes": 608
+    },
+    "comm-related": {
+      "path": "/tmp/fly2912-comm-related.log",
+      "sha256": "b506107b6ae05cb6e75173a2f53c10e506381b5c4d72d4a8d6451668eff2e92e",
+      "bytes": 910
+    },
+    "teamlead-related-r2": {
+      "path": "/tmp/fly2912-teamlead-related-r2.log",
+      "sha256": "e085e00d28d55c0f7ad5b40fa280335eb7b8bf8f96d667933cc6665ed999f90d",
+      "bytes": 273374
+    },
+    "journal-migration-green": {
+      "path": "/tmp/fly2912-journal-migration-green.log",
+      "sha256": "db5bb2101daa1df847c34cf55d96c2ac02428a186091183b186a91ccfae0f678",
+      "bytes": 1598
+    },
+    "retained-extra": {
+      "path": "/tmp/fly2912-retained-extra.log",
+      "sha256": "3de0aa57bf5828c1df5fe38b338161e4f48d14a74422e6fae4400472c7b04e6f",
+      "bytes": 3351
+    }
+  }
+}

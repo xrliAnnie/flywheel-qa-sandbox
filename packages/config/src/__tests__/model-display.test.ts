@@ -1,24 +1,46 @@
 import { describe, expect, it } from "vitest";
 import { renderRunnerModelDisplay } from "../model-display.js";
 
-describe("renderRunnerModelDisplay (FLY-1255 Plan B — single-letter codes)", () => {
+describe("renderRunnerModelDisplay (FLY-2936 — vendor + model codes)", () => {
 	it.each([
 		[
 			"claude",
 			"claude-fable-5",
-			{ threadMarker: "F", windowLabel: "claude-Fable" },
+			{ threadMarker: "[A][F]", windowLabel: "claude-AF" },
 		],
 		[
 			"claude",
 			"claude-opus-4-8[1m]",
-			{ threadMarker: "O", windowLabel: "claude-Opus" },
+			{ threadMarker: "[A][O]", windowLabel: "claude-AO" },
 		],
-		// Plan B: codex/GPT-5.6 folds to the single letter `G` (was `Model GPT-5.6`).
-		["codex", "gpt-5.6-sol", { threadMarker: "G", windowLabel: "codex-G" }],
-		// The code is family-wide: future GPT versions keep the same `G` marker.
-		["codex", "gpt-6", { threadMarker: "G", windowLabel: "codex-G" }],
-		// Plan B: kimi folds to the single letter `K` (was `Model kimi-for-coding`).
-		["kimi", "kimi-for-coding", { threadMarker: "K", windowLabel: "kimi-K" }],
+		[
+			"claude",
+			"claude-sonnet-5",
+			{ threadMarker: "[A][S]", windowLabel: "claude-AS" },
+		],
+		[
+			"claude",
+			"claude-haiku-4-5-20251001",
+			{ threadMarker: "[A][H]", windowLabel: "claude-AH" },
+		],
+		[
+			"codex",
+			"gpt-6-astra",
+			{ threadMarker: "[O][A]", windowLabel: "codex-OA" },
+		],
+		[
+			"codex",
+			"gpt-5.6-sol",
+			{ threadMarker: "[O][S]", windowLabel: "codex-OS" },
+		],
+		["codex", "gpt-6-sol", { threadMarker: "[O][S]", windowLabel: "codex-OS" }],
+		// Unnamed GPT families keep the generic fallback marker.
+		["codex", "gpt-6", { threadMarker: "[O][G]", windowLabel: "codex-OG" }],
+		[
+			"kimi",
+			"kimi-for-coding",
+			{ threadMarker: "[K][K]", windowLabel: "kimi-KK" },
+		],
 	] as const)("renders %s/%s", (vendor, model, expected) => {
 		expect(renderRunnerModelDisplay({ vendor, model })).toEqual(expected);
 	});
@@ -30,47 +52,48 @@ describe("renderRunnerModelDisplay (FLY-1255 Plan B — single-letter codes)", (
 				model: "claude-fable-5",
 			}),
 		).toEqual({
-			threadMarker: "Model claude-fable-5",
-			windowLabel: "codex-claude-fable-5",
+			threadMarker: "[O][Model claude-fable-5]",
+			windowLabel: "codex-O-claude-fable-5",
 		});
 	});
 
 	it("infers a known family only when vendor metadata is absent", () => {
-		// Missing backend metadata stays honest: a gpt-5.6 row is still `G`
+		// Missing backend metadata still follows the model id family.
 		// (codex), never a Claude letter and never a fabricated one.
 		expect(
 			renderRunnerModelDisplay({ vendor: undefined, model: "gpt-5.6-sol" }),
 		).toEqual({
-			threadMarker: "G",
-			windowLabel: "codex-G",
+			threadMarker: "[O][S]",
+			windowLabel: "codex-OS",
 		});
 		expect(
 			renderRunnerModelDisplay({ vendor: undefined, model: "future-v9" }),
 		).toEqual({
-			threadMarker: "Model future-v9",
-			windowLabel: "unknown-future-v9",
+			threadMarker: "[U][Model future-v9]",
+			windowLabel: "unknown-U-future-v9",
 		});
 		expect(
 			renderRunnerModelDisplay({ vendor: undefined, model: "opus" }),
 		).toEqual({
-			threadMarker: "O",
-			windowLabel: "claude-Opus",
+			threadMarker: "[A][O]",
+			windowLabel: "claude-AO",
 		});
 	});
 
-	it("never fabricates a letter for an unvetted vendor/model (Plan B ③)", () => {
-		// Uncurated families (gemini, antigravity) never get a letter.
+	it("uses a vendor initial but preserves an honest model-id fallback", () => {
+		// Uncurated families get the founder-specified vendor initial, while the
+		// model stays explicit instead of receiving a fabricated family code.
 		expect(
 			renderRunnerModelDisplay({ vendor: "gemini", model: "gemini-3-pro" }),
 		).toEqual({
-			threadMarker: "Model gemini-3-pro",
-			windowLabel: "gemini-gemini-3-pro",
+			threadMarker: "[G][Model gemini-3-pro]",
+			windowLabel: "gemini-G-gemini-3-pro",
 		});
 		expect(
 			renderRunnerModelDisplay({ vendor: "antigravity", model: "agy-1" }),
 		).toEqual({
-			threadMarker: "Model agy-1",
-			windowLabel: "antigravity-agy-1",
+			threadMarker: "[A][Model agy-1]",
+			windowLabel: "antigravity-A-agy-1",
 		});
 	});
 
@@ -79,14 +102,14 @@ describe("renderRunnerModelDisplay (FLY-1255 Plan B — single-letter codes)", (
 		expect(
 			renderRunnerModelDisplay({ vendor: "gemini", model: " bad] model🔥 " }),
 		).toEqual({
-			threadMarker: "Model bad-model",
-			windowLabel: "gemini-bad-model",
+			threadMarker: "[G][Model bad-model]",
+			windowLabel: "gemini-G-bad-model",
 		});
 		const long = renderRunnerModelDisplay({
 			vendor: "future",
 			model: "x".repeat(80),
 		});
-		expect(long?.threadMarker).toBe(`Model ${"x".repeat(24)}`);
+		expect(long?.threadMarker).toBe(`[F][Model ${"x".repeat(24)}]`);
 		expect(long?.windowLabel.length).toBeLessThanOrEqual(32);
 	});
 

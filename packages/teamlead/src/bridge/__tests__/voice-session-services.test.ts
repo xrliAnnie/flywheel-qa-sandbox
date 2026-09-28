@@ -237,6 +237,42 @@ it("projects the persisted tuple and permits token rotation with unchanged bot i
 	});
 });
 
+it("projects engine B's liveVoice, defaulting to cove without borrowing realtimeVoice (FLY-2885)", () => {
+	const factory = vi.spyOn(routes, "createVoiceSessionRouter");
+	const project = configuredProject();
+	createVoiceSessionServices({
+		probeSelfFilter: validProbe,
+		store,
+		projects: [project],
+		env: { LEAD_TOKEN: "token" },
+		homeDir: root,
+		cwd: root,
+		config: {} as BridgeConfig,
+	});
+	const unset = factory.mock.calls[0]![0].projectSession(
+		store.getVoiceSession(SESSION_ID)!,
+	);
+	expect(unset).toMatchObject({ realtimeVoice: "marin", liveVoice: "cove" });
+
+	const chosen = configuredProject();
+	chosen.leads[0]!.liveVoice = "sol";
+	chosen.leads[0]!.realtimeVoice = "verse";
+	createVoiceSessionServices({
+		probeSelfFilter: validProbe,
+		store,
+		projects: [chosen],
+		env: { LEAD_TOKEN: "token" },
+		homeDir: root,
+		cwd: root,
+		config: {} as BridgeConfig,
+	});
+	expect(
+		factory.mock.calls[1]![0].projectSession(
+			store.getVoiceSession(SESSION_ID)!,
+		),
+	).toMatchObject({ realtimeVoice: "verse", liveVoice: "sol" });
+});
+
 it("projects authoritative demand into the durable voice health store", async () => {
 	const now = new Date().toISOString();
 	const db = new Database(join(root, "teamlead.db"));

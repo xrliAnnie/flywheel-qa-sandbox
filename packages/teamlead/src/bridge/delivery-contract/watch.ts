@@ -136,10 +136,6 @@ export class DeliveryContractWatch {
 					attempt.family === "rework" && typeof ref.pk === "string"
 						? this.deps.store.getLatestWorkflowReworkRoute(ref.pk)
 						: undefined;
-				const reworkDelivery =
-					attempt.family === "rework" && typeof ref.pk === "string"
-						? this.deps.store.getWorkflowReworkDelivery(ref.pk)
-						: undefined;
 				const carrierDelivery =
 					attempt.family === "carrier" && typeof ref.pk === "string"
 						? this.deps.store.getWorkflowCarrierDelivery(ref.pk)
@@ -217,12 +213,11 @@ export class DeliveryContractWatch {
 								"",
 						)
 					: false;
+				// FLY-2921 C4.3: a rework delivery never becomes "undeliverable"
+				// here — a dead recipient is the rework coordinator's to replace.
+				// Only the carrier half remains.
 				const stateNativeUndeliverable =
-					((reworkDelivery?.state === "awaiting_receipt" ||
-						reworkDelivery?.state === "replacement_pending") &&
-						!stateRecipientLive) ||
-					(carrierDelivery?.state === "awaiting_receipt" &&
-						!stateRecipientLive);
+					carrierDelivery?.state === "awaiting_receipt" && !stateRecipientLive;
 				const phaseWakeUndeliverable = Boolean(
 					phaseWakeRow &&
 						phaseWakeRow.started_at === null &&

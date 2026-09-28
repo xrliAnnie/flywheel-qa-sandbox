@@ -13157,20 +13157,11 @@ VERIFY_SIDEBAR_REPORT=""
 VERIFY_SIDEBAR_EVIDENCE=""
 VERIFY_AGENT_VISIBLE_SUBJECT_EVIDENCE=""
 
-_verify_sidebar_once() {
-  local targets="$1" authority_mode="${2:-global}" proof_mode="${3:-interactive}"
-  local cmux_generation tmux_generation raw canonical_json
-  local agent_snapshot restored_snapshot roster_snapshot authority_snapshot="" births birth_target_b64
-  local ledger_bytes="" title source_rows live_count source wid canonical_raw row_shape named_count mapped_count ref
-  local report="" evidence="" failures=0 probe_unavailable=0
-  local view pane_source pane_view source_name source_dead view_name view_dead view_matches
-  local source_pid view_pid clients receipt receipt_uuid birth_uuid rows_count marker_count current_cmux current_tmux
-  local surface_ref screen render_state title_failures_before roster_count
-  local roster_row roster_carrier roster_socket pane_private private_client_rows
-  # Fleet admission does not require the tab to be selected, but it does require
-  # the managed cmux surface to have an attached tmux client and a readable,
-  # non-empty render. A durable row/receipt alone can describe a bare shell.
-  [[ "$proof_mode" == interactive || "$proof_mode" == durable ]] || return 2
+# One complete fleet-wide read shared by every subject judged in a sample.
+# Sets cmux_generation, tmux_generation, canonical_json, births,
+# agent_snapshot, and restored_snapshot in the caller's scope.
+_verify_sidebar_collect() {
+  local raw
   cmux_generation=$(cmux_socket_identity) || return 2
   [[ -n "$cmux_generation" ]] || return 2
   tmux_generation=$(tmux_server_generation) || return 2
@@ -13191,6 +13182,232 @@ print(json.dumps(data, sort_keys=True, separators=(",", ":")))
   }
   agent_snapshot=$(strict_agent_window_snapshot | sort) || return 2
   restored_snapshot=$(_restored_parse_records | sort) || return 2
+}
+
+# One subject's terminal-state judgment against an already collected sample.
+# Called with the sample (cmux_generation, tmux_generation, canonical_json,
+# births, agent_snapshot, restored_snapshot, roster_snapshot, proof_mode) and
+# the accumulators (report, evidence, failures, probe_unavailable) in the
+# caller's scope. Returns 2 when the subject cannot be judged.
+_verify_sidebar_judge_title() {
+  local title="$1"
+  local source_rows live_count source wid canonical_raw row_shape named_count mapped_count ref
+  local birth_target_b64 view pane_source pane_view source_name source_dead view_name view_dead view_matches
+  local source_pid view_pid clients receipt receipt_uuid birth_uuid rows_count marker_count
+  local surface_ref screen render_state title_failures_before roster_count
+  local roster_row roster_carrier roster_socket pane_private private_client_rows
+  case "$title" in *'|'*|*$'\t'*|*$'\n'*) return 2 ;; esac
+  title_failures_before=$failures
+  roster_count=$(printf '%s\n' "$roster_snapshot" | awk -F'|' -v t="$title" '$3 == t { n++ } END { print n+0 }')
+  roster_row=$(printf '%s\n' "$roster_snapshot" | awk -F'|' -v t="$title" '$3 == t { print; exit }')
+  IFS='|' read -r roster_carrier _ _ roster_socket _ < <(printf '%s\n' "$roster_row")
+  if [[ "$roster_carrier" == "claude-private" ]]; then
+    canonical_raw=$(build_lead_attach_command "$roster_socket") || return 2
+    birth_target_b64=$(printf '%s' "$roster_socket" | base64 | tr -d '\n') || return 2
+    row_shape=$(workspace_candidate_shape "$canonical_json" "$title" "$canonical_raw" \
+      "$births" lead "$birth_target_b64") || return 2
+    IFS='|' read -r named_count mapped_count ref < <(printf '%s\n' "$row_shape")
+    if [[ "$named_count" != "1" || "$mapped_count" != "1" || "$ref" != workspace:* ]]; then
+      report+="${report:+$'\n'}FAIL $title rule=v2-row expected=one-named observed=named:$named_count,mapped:$mapped_count"
+      failures=$((failures + 1))
+    fi
+    pane_private="unavailable"
+    if pane_private=$(tmux -S "$roster_socket" list-panes -t '%0' \
+        -F '#{pane_id}|#{session_name}|#{pane_dead}|#{pane_pid}' 2>/dev/null); then
+      if [[ "$pane_private" != '%0|main|0|'* ]]; then
+        report+="${report:+$'\n'}FAIL $title rule=v2-pane observed=$pane_private"
+        failures=$((failures + 1))
+      fi
+    else
+      report+="${report:+$'\n'}FAIL $title rule=v2-pane observed=unavailable"
+      failures=$((failures + 1))
+    fi
+    clients=0
+    if private_client_rows=$(tmux -S "$roster_socket" list-clients -t '=main' \
+        -F '#{client_pid}' 2>/dev/null); then
+      clients=$(printf '%s\n' "$private_client_rows" | grep -c . || true)
+    fi
+    if (( clients < 1 )); then
+      report+="${report:+$'\n'}FAIL $title rule=v2-client-count observed=$clients"
+      failures=$((failures + 1))
+    fi
+    surface_ref="unavailable"; render_state="unavailable"
+    if [[ "$named_count" == "1" && "$mapped_count" == "1" && "$ref" == workspace:* ]]; then
+      surface_ref=$(workspace_terminal_surface_ref "$ref") || return 2
+      if screen=$(cmux_call read-screen --workspace "$ref" --surface "$surface_ref"); then
+        if printf '%s\n' "$screen" | grep -q '[^[:space:]]'; then
+          render_state="nonempty"
+        else
+          render_state="empty"
+        fi
+      elif [[ "$proof_mode" == durable ]]; then
+        probe_unavailable=1
+      fi
+    fi
+    if [[ "$render_state" != "nonempty" ]]; then
+      report+="${report:+$'\n'}FAIL $title rule=v2-render observed=$render_state"
+      failures=$((failures + 1))
+    fi
+    receipt=$(ledger_candidate_receipt_state "$cmux_generation" "$ref" "$title") || receipt=conflict
+    receipt_uuid=$(ledger_exact_receipt_uuid "$cmux_generation" "$ref" "$title" 2>/dev/null || true)
+    birth_uuid=$(printf '%s\n' "$births" | awk -F'|' -v r="$ref" -v t="$birth_target_b64" \
+      '$1==r && $5=="lead" && $6==t {n++; u=$2} END {if(n==1) print u}')
+    rows_count=$(printf '%s\n' "$(ledger_rows_for_title "$cmux_generation" "$title")" | grep -c . || true)
+    if [[ "$receipt" != "committed" || "$rows_count" != "1" ]]; then
+      report+="${report:+$'\n'}FAIL $title rule=v2-receipt observed=$receipt,count:$rows_count"
+      failures=$((failures + 1))
+    fi
+    if [[ -z "$birth_uuid" ]]; then
+      report+="${report:+$'\n'}WARN $title rule=receipt-uuid-unattributable observed=${receipt_uuid:-missing},birth:missing"
+    elif [[ "$receipt_uuid" == __LEGACY__ || "$receipt_uuid" != "$birth_uuid" ]]; then
+      report+="${report:+$'\n'}FAIL $title rule=v2-receipt-uuid observed=${receipt_uuid:-missing},birth:${birth_uuid:-missing}"
+      failures=$((failures + 1))
+    fi
+    marker_count=$(printf '%s\n' "$restored_snapshot" | awk -F'\t' -v t="$title" '$4 == t { n++ } END { print n+0 }')
+    if (( marker_count > 0 )); then
+      report+="${report:+$'\n'}FAIL $title rule=v2-restored-marker observed=$marker_count"
+      failures=$((failures + 1))
+    fi
+    if [[ "$failures" -eq "$title_failures_before" ]]; then
+      report+="${report:+$'\n'}PASS $title live-v2 ref=$ref socket=$roster_socket"
+    fi
+    # FLY-2965: the receipt/birth UUIDs bind both samples to one workspace
+    # instance; a same-ref replacement with a fresh receipt is drift.
+    evidence+="${evidence:+$'\n'}$title|live-v2|$row_shape|$pane_private|$clients|$receipt|$rows_count|$marker_count|$surface_ref|render:$render_state|receipt-uuid:${receipt_uuid:-missing}|birth-uuid:${birth_uuid:-missing}"
+    return 0
+  fi
+  source_rows=$(printf '%s\n' "$agent_snapshot" | awk -F'|' -v t="$title" '$3 == t && $4 == "0" { print }')
+  live_count=$(printf '%s\n' "$source_rows" | grep -c . || true)
+  canonical_raw=$(managed_view_command_variants "${VIEW_PREFIX}${title}") || return 2
+  birth_target_b64=$(printf '%s' "${VIEW_PREFIX}${title}" | base64 | tr -d '\n') || return 2
+  row_shape=$(workspace_candidate_shape "$canonical_json" "$title" "$canonical_raw" \
+    "$births" view "$birth_target_b64") || return 2
+  IFS='|' read -r named_count mapped_count ref < <(printf '%s\n' "$row_shape")
+  view="${VIEW_PREFIX}${title}"
+  if [[ "$live_count" == "1" ]]; then
+    IFS='|' read -r source wid _ _ < <(printf '%s\n' "$(printf '%s\n' "$source_rows" | head -1)")
+    if [[ "$named_count" != "1" || "$mapped_count" != "1" \
+        || "$ref" != workspace:* ]]; then
+      report+="${report:+$'\n'}FAIL $title rule=row-live expected=one-named observed=named:$named_count,mapped:$mapped_count"
+      failures=$((failures + 1))
+    fi
+    view_matches=0
+    if _linked_view_matches "$view" "$wid" "$source" "" "$title"; then
+      view_matches=1
+    else
+      report+="${report:+$'\n'}FAIL $title rule=a1-topology"
+      failures=$((failures + 1))
+    fi
+    pane_source=$(tmux display-message -p -t "=${source}:${wid}" '#{window_name}|#{pane_dead}' 2>/dev/null) || return 2
+    source_pid=$(tmux display-message -p -t "=${source}:${wid}" '#{pane_pid}' 2>/dev/null) || return 2
+    IFS='|' read -r source_name source_dead < <(printf '%s\n' "$pane_source")
+    pane_view="unavailable"; view_name=""; view_dead=""; view_pid=""; clients="not-measured"
+    if [[ "$view_matches" == 1 ]]; then
+      pane_view=$(tmux display-message -p -t "=${view}:${wid}" '#{window_name}|#{pane_dead}' 2>/dev/null) || return 2
+      view_pid=$(tmux display-message -p -t "=${view}:${wid}" '#{pane_pid}' 2>/dev/null) || return 2
+      IFS='|' read -r view_name view_dead < <(printf '%s\n' "$pane_view")
+      clients=$(view_session_client_count "$view") || return 2
+    fi
+    if [[ "$source_name" != "$title" || "$source_dead" != "0" || -z "$source_pid" \
+        || "$view_matches" != 1 || "$view_name" != "$title" || "$view_dead" != "0" \
+        || "$source_pid" != "$view_pid" ]]; then
+      report+="${report:+$'\n'}FAIL $title rule=pane-identity"
+      failures=$((failures + 1))
+    fi
+    if [[ "$clients" == "not-measured" ]]; then
+      report+="${report:+$'\n'}FAIL $title rule=client-count observed=not-measured"
+      failures=$((failures + 1))
+    elif (( clients < 1 )); then
+      report+="${report:+$'\n'}FAIL $title rule=client-count observed=$clients"
+      failures=$((failures + 1))
+    fi
+    surface_ref="not-applicable"; screen=""; render_state="unavailable"
+    if [[ "$named_count" == "1" && "$mapped_count" == "1" && "$ref" == workspace:* ]]; then
+      surface_ref=$(workspace_terminal_surface_ref "$ref") || return 2
+      if screen=$(cmux_call read-screen --workspace "$ref" --surface "$surface_ref"); then
+        if printf '%s\n' "$screen" | grep -q '[^[:space:]]'; then
+          render_state="nonempty"
+        else
+          render_state="empty"
+          report+="${report:+$'\n'}FAIL $title rule=render observed=empty"
+          failures=$((failures + 1))
+        fi
+      else
+        report+="${report:+$'\n'}FAIL $title rule=render observed=unavailable"
+        failures=$((failures + 1))
+        [[ "$proof_mode" != durable ]] || probe_unavailable=1
+      fi
+    fi
+    receipt=$(ledger_candidate_receipt_state "$cmux_generation" "$ref" "$title") || receipt=conflict
+    receipt_uuid=$(ledger_exact_receipt_uuid "$cmux_generation" "$ref" "$title" 2>/dev/null || true)
+    birth_uuid=$(printf '%s\n' "$births" | awk -F'|' -v r="$ref" -v t="$birth_target_b64" \
+      '$1==r && $5=="view" && $6==t {n++; u=$2} END {if(n==1) print u}')
+    rows_count=$(printf '%s\n' "$(ledger_rows_for_title "$cmux_generation" "$title")" | grep -c . || true)
+    if [[ "$receipt" != "committed" || "$rows_count" != "1" ]]; then
+      report+="${report:+$'\n'}FAIL $title rule=receipt observed=$receipt,count:$rows_count"
+      failures=$((failures + 1))
+    fi
+    if [[ -z "$birth_uuid" ]]; then
+      report+="${report:+$'\n'}WARN $title rule=receipt-uuid-unattributable observed=${receipt_uuid:-missing},birth:missing"
+    elif [[ "$receipt_uuid" == __LEGACY__ || "$receipt_uuid" != "$birth_uuid" ]]; then
+      report+="${report:+$'\n'}FAIL $title rule=receipt-uuid observed=${receipt_uuid:-missing},birth:${birth_uuid:-missing}"
+      failures=$((failures + 1))
+    fi
+    marker_count=$(printf '%s\n' "$restored_snapshot" | awk -F'\t' -v t="$title" '$4 == t { n++ } END { print n+0 }')
+    if (( marker_count > 0 )); then
+      report+="${report:+$'\n'}FAIL $title rule=restored-marker observed=$marker_count"
+      failures=$((failures + 1))
+    fi
+    if [[ "$failures" -eq "$title_failures_before" ]]; then
+      report+="${report:+$'\n'}PASS $title live ref=$ref source=$source:$wid"
+    fi
+    evidence+="${evidence:+$'\n'}$title|live|$source|$wid|$row_shape|$pane_source|$pane_view|$source_pid|$view_pid|$clients|$receipt|$rows_count|$marker_count|$surface_ref|render:$render_state|receipt-uuid:${receipt_uuid:-missing}|birth-uuid:${birth_uuid:-missing}"
+  elif [[ "$live_count" == "0" ]]; then
+    if (( roster_count > 0 )); then
+      report+="${report:+$'\n'}FAIL $title rule=roster-lead-absent"
+      failures=$((failures + 1))
+    fi
+    if [[ "$mapped_count" != "0" ]]; then
+      report+="${report:+$'\n'}FAIL $title rule=row-dead observed=$mapped_count"
+      failures=$((failures + 1))
+    fi
+    if linked_session_exists "$view"; then
+      report+="${report:+$'\n'}FAIL $title rule=view-dead-present"
+      failures=$((failures + 1))
+    fi
+    rows_count=$(printf '%s\n' "$(ledger_rows_for_title "$cmux_generation" "$title")" | grep -c . || true)
+    if [[ "$rows_count" != "0" ]]; then
+      report+="${report:+$'\n'}FAIL $title rule=receipt-dead observed=$rows_count"
+      failures=$((failures + 1))
+    fi
+    marker_count=$(printf '%s\n' "$restored_snapshot" | awk -F'\t' -v t="$title" '$4 == t { n++ } END { print n+0 }')
+    if (( marker_count > 0 )); then
+      report+="${report:+$'\n'}FAIL $title rule=restored-marker-dead observed=$marker_count"
+      failures=$((failures + 1))
+    fi
+    if [[ "$failures" -eq "$title_failures_before" ]]; then
+      report+="${report:+$'\n'}PASS $title absent"
+    fi
+    evidence+="${evidence:+$'\n'}$title|absent|$row_shape|$rows_count|$marker_count"
+  else
+    report+="${report:+$'\n'}FAIL $title rule=source-unique observed=$live_count"
+    failures=$((failures + 1))
+    evidence+="${evidence:+$'\n'}$title|ambiguous-source|$live_count|$row_shape"
+  fi
+  return 0
+}
+
+_verify_sidebar_once() {
+  local targets="$1" authority_mode="${2:-global}" proof_mode="${3:-interactive}"
+  local cmux_generation tmux_generation canonical_json
+  local agent_snapshot restored_snapshot roster_snapshot authority_snapshot="" births
+  local ledger_bytes="" title current_cmux current_tmux
+  local report="" evidence="" failures=0 probe_unavailable=0
+  # Fleet admission does not require the tab to be selected, but it does require
+  # the managed cmux surface to have an attached tmux client and a readable,
+  # non-empty render. A durable row/receipt alone can describe a bare shell.
+  [[ "$proof_mode" == interactive || "$proof_mode" == durable ]] || return 2
+  _verify_sidebar_collect || return 2
   if [[ "$authority_mode" == "target" ]]; then
     VERIFY_SIDEBAR_CAVEATS=""
     _derive_sidebar_target_authority "$targets" "$agent_snapshot" || return 2
@@ -13216,202 +13433,7 @@ print(json.dumps(data, sort_keys=True, separators=(",", ":")))
 
   while IFS= read -r title; do
     [[ -n "$title" ]] || continue
-    case "$title" in *'|'*|*$'\t'*|*$'\n'*) return 2 ;; esac
-    title_failures_before=$failures
-    roster_count=$(printf '%s\n' "$roster_snapshot" | awk -F'|' -v t="$title" '$3 == t { n++ } END { print n+0 }')
-    roster_row=$(printf '%s\n' "$roster_snapshot" | awk -F'|' -v t="$title" '$3 == t { print; exit }')
-    IFS='|' read -r roster_carrier _ _ roster_socket _ < <(printf '%s\n' "$roster_row")
-    if [[ "$roster_carrier" == "claude-private" ]]; then
-      canonical_raw=$(build_lead_attach_command "$roster_socket") || return 2
-      birth_target_b64=$(printf '%s' "$roster_socket" | base64 | tr -d '\n') || return 2
-      row_shape=$(workspace_candidate_shape "$canonical_json" "$title" "$canonical_raw" \
-        "$births" lead "$birth_target_b64") || return 2
-      IFS='|' read -r named_count mapped_count ref < <(printf '%s\n' "$row_shape")
-      if [[ "$named_count" != "1" || "$mapped_count" != "1" || "$ref" != workspace:* ]]; then
-        report+="${report:+$'\n'}FAIL $title rule=v2-row expected=one-named observed=named:$named_count,mapped:$mapped_count"
-        failures=$((failures + 1))
-      fi
-      pane_private="unavailable"
-      if pane_private=$(tmux -S "$roster_socket" list-panes -t '%0' \
-          -F '#{pane_id}|#{session_name}|#{pane_dead}|#{pane_pid}' 2>/dev/null); then
-        if [[ "$pane_private" != '%0|main|0|'* ]]; then
-          report+="${report:+$'\n'}FAIL $title rule=v2-pane observed=$pane_private"
-          failures=$((failures + 1))
-        fi
-      else
-        report+="${report:+$'\n'}FAIL $title rule=v2-pane observed=unavailable"
-        failures=$((failures + 1))
-      fi
-      clients=0
-      if private_client_rows=$(tmux -S "$roster_socket" list-clients -t '=main' \
-          -F '#{client_pid}' 2>/dev/null); then
-        clients=$(printf '%s\n' "$private_client_rows" | grep -c . || true)
-      fi
-      if (( clients < 1 )); then
-        report+="${report:+$'\n'}FAIL $title rule=v2-client-count observed=$clients"
-        failures=$((failures + 1))
-      fi
-      surface_ref="unavailable"; render_state="unavailable"
-      if [[ "$named_count" == "1" && "$mapped_count" == "1" && "$ref" == workspace:* ]]; then
-        surface_ref=$(workspace_terminal_surface_ref "$ref") || return 2
-        if screen=$(cmux_call read-screen --workspace "$ref" --surface "$surface_ref"); then
-          if printf '%s\n' "$screen" | grep -q '[^[:space:]]'; then
-            render_state="nonempty"
-          else
-            render_state="empty"
-          fi
-        elif [[ "$proof_mode" == durable ]]; then
-          probe_unavailable=1
-        fi
-      fi
-      if [[ "$render_state" != "nonempty" ]]; then
-        report+="${report:+$'\n'}FAIL $title rule=v2-render observed=$render_state"
-        failures=$((failures + 1))
-      fi
-      receipt=$(ledger_candidate_receipt_state "$cmux_generation" "$ref" "$title") || receipt=conflict
-      receipt_uuid=$(ledger_exact_receipt_uuid "$cmux_generation" "$ref" "$title" 2>/dev/null || true)
-      birth_uuid=$(printf '%s\n' "$births" | awk -F'|' -v r="$ref" -v t="$birth_target_b64" \
-        '$1==r && $5=="lead" && $6==t {n++; u=$2} END {if(n==1) print u}')
-      rows_count=$(printf '%s\n' "$(ledger_rows_for_title "$cmux_generation" "$title")" | grep -c . || true)
-      if [[ "$receipt" != "committed" || "$rows_count" != "1" ]]; then
-        report+="${report:+$'\n'}FAIL $title rule=v2-receipt observed=$receipt,count:$rows_count"
-        failures=$((failures + 1))
-      fi
-      if [[ -z "$birth_uuid" ]]; then
-        report+="${report:+$'\n'}WARN $title rule=receipt-uuid-unattributable observed=${receipt_uuid:-missing},birth:missing"
-      elif [[ "$receipt_uuid" == __LEGACY__ || "$receipt_uuid" != "$birth_uuid" ]]; then
-        report+="${report:+$'\n'}FAIL $title rule=v2-receipt-uuid observed=${receipt_uuid:-missing},birth:${birth_uuid:-missing}"
-        failures=$((failures + 1))
-      fi
-      marker_count=$(printf '%s\n' "$restored_snapshot" | awk -F'\t' -v t="$title" '$4 == t { n++ } END { print n+0 }')
-      if (( marker_count > 0 )); then
-        report+="${report:+$'\n'}FAIL $title rule=v2-restored-marker observed=$marker_count"
-        failures=$((failures + 1))
-      fi
-      if [[ "$failures" -eq "$title_failures_before" ]]; then
-        report+="${report:+$'\n'}PASS $title live-v2 ref=$ref socket=$roster_socket"
-      fi
-      evidence+="${evidence:+$'\n'}$title|live-v2|$row_shape|$pane_private|$clients|$receipt|$rows_count|$marker_count|$surface_ref|render:$render_state"
-      continue
-    fi
-    source_rows=$(printf '%s\n' "$agent_snapshot" | awk -F'|' -v t="$title" '$3 == t && $4 == "0" { print }')
-    live_count=$(printf '%s\n' "$source_rows" | grep -c . || true)
-    canonical_raw=$(managed_view_command_variants "${VIEW_PREFIX}${title}") || return 2
-    birth_target_b64=$(printf '%s' "${VIEW_PREFIX}${title}" | base64 | tr -d '\n') || return 2
-    row_shape=$(workspace_candidate_shape "$canonical_json" "$title" "$canonical_raw" \
-      "$births" view "$birth_target_b64") || return 2
-    IFS='|' read -r named_count mapped_count ref < <(printf '%s\n' "$row_shape")
-    view="${VIEW_PREFIX}${title}"
-    if [[ "$live_count" == "1" ]]; then
-      IFS='|' read -r source wid _ _ < <(printf '%s\n' "$(printf '%s\n' "$source_rows" | head -1)")
-      if [[ "$named_count" != "1" || "$mapped_count" != "1" \
-          || "$ref" != workspace:* ]]; then
-        report+="${report:+$'\n'}FAIL $title rule=row-live expected=one-named observed=named:$named_count,mapped:$mapped_count"
-        failures=$((failures + 1))
-      fi
-      view_matches=0
-      if _linked_view_matches "$view" "$wid" "$source" "" "$title"; then
-        view_matches=1
-      else
-        report+="${report:+$'\n'}FAIL $title rule=a1-topology"
-        failures=$((failures + 1))
-      fi
-      pane_source=$(tmux display-message -p -t "=${source}:${wid}" '#{window_name}|#{pane_dead}' 2>/dev/null) || return 2
-      source_pid=$(tmux display-message -p -t "=${source}:${wid}" '#{pane_pid}' 2>/dev/null) || return 2
-      IFS='|' read -r source_name source_dead < <(printf '%s\n' "$pane_source")
-      pane_view="unavailable"; view_name=""; view_dead=""; view_pid=""; clients="not-measured"
-      if [[ "$view_matches" == 1 ]]; then
-        pane_view=$(tmux display-message -p -t "=${view}:${wid}" '#{window_name}|#{pane_dead}' 2>/dev/null) || return 2
-        view_pid=$(tmux display-message -p -t "=${view}:${wid}" '#{pane_pid}' 2>/dev/null) || return 2
-        IFS='|' read -r view_name view_dead < <(printf '%s\n' "$pane_view")
-        clients=$(view_session_client_count "$view") || return 2
-      fi
-      if [[ "$source_name" != "$title" || "$source_dead" != "0" || -z "$source_pid" \
-          || "$view_matches" != 1 || "$view_name" != "$title" || "$view_dead" != "0" \
-          || "$source_pid" != "$view_pid" ]]; then
-        report+="${report:+$'\n'}FAIL $title rule=pane-identity"
-        failures=$((failures + 1))
-      fi
-      if [[ "$clients" == "not-measured" ]]; then
-        report+="${report:+$'\n'}FAIL $title rule=client-count observed=not-measured"
-        failures=$((failures + 1))
-      elif (( clients < 1 )); then
-        report+="${report:+$'\n'}FAIL $title rule=client-count observed=$clients"
-        failures=$((failures + 1))
-      fi
-      surface_ref="not-applicable"; screen=""; render_state="unavailable"
-      if [[ "$named_count" == "1" && "$mapped_count" == "1" && "$ref" == workspace:* ]]; then
-        surface_ref=$(workspace_terminal_surface_ref "$ref") || return 2
-        if screen=$(cmux_call read-screen --workspace "$ref" --surface "$surface_ref"); then
-          if printf '%s\n' "$screen" | grep -q '[^[:space:]]'; then
-            render_state="nonempty"
-          else
-            render_state="empty"
-            report+="${report:+$'\n'}FAIL $title rule=render observed=empty"
-            failures=$((failures + 1))
-          fi
-        else
-          report+="${report:+$'\n'}FAIL $title rule=render observed=unavailable"
-          failures=$((failures + 1))
-          [[ "$proof_mode" != durable ]] || probe_unavailable=1
-        fi
-      fi
-      receipt=$(ledger_candidate_receipt_state "$cmux_generation" "$ref" "$title") || receipt=conflict
-      receipt_uuid=$(ledger_exact_receipt_uuid "$cmux_generation" "$ref" "$title" 2>/dev/null || true)
-      birth_uuid=$(printf '%s\n' "$births" | awk -F'|' -v r="$ref" -v t="$birth_target_b64" \
-        '$1==r && $5=="view" && $6==t {n++; u=$2} END {if(n==1) print u}')
-      rows_count=$(printf '%s\n' "$(ledger_rows_for_title "$cmux_generation" "$title")" | grep -c . || true)
-      if [[ "$receipt" != "committed" || "$rows_count" != "1" ]]; then
-        report+="${report:+$'\n'}FAIL $title rule=receipt observed=$receipt,count:$rows_count"
-        failures=$((failures + 1))
-      fi
-      if [[ -z "$birth_uuid" ]]; then
-        report+="${report:+$'\n'}WARN $title rule=receipt-uuid-unattributable observed=${receipt_uuid:-missing},birth:missing"
-      elif [[ "$receipt_uuid" == __LEGACY__ || "$receipt_uuid" != "$birth_uuid" ]]; then
-        report+="${report:+$'\n'}FAIL $title rule=receipt-uuid observed=${receipt_uuid:-missing},birth:${birth_uuid:-missing}"
-        failures=$((failures + 1))
-      fi
-      marker_count=$(printf '%s\n' "$restored_snapshot" | awk -F'\t' -v t="$title" '$4 == t { n++ } END { print n+0 }')
-      if (( marker_count > 0 )); then
-        report+="${report:+$'\n'}FAIL $title rule=restored-marker observed=$marker_count"
-        failures=$((failures + 1))
-      fi
-      if [[ "$failures" -eq "$title_failures_before" ]]; then
-        report+="${report:+$'\n'}PASS $title live ref=$ref source=$source:$wid"
-      fi
-      evidence+="${evidence:+$'\n'}$title|live|$source|$wid|$row_shape|$pane_source|$pane_view|$source_pid|$view_pid|$clients|$receipt|$rows_count|$marker_count|$surface_ref|render:$render_state"
-    elif [[ "$live_count" == "0" ]]; then
-      if (( roster_count > 0 )); then
-        report+="${report:+$'\n'}FAIL $title rule=roster-lead-absent"
-        failures=$((failures + 1))
-      fi
-      if [[ "$mapped_count" != "0" ]]; then
-        report+="${report:+$'\n'}FAIL $title rule=row-dead observed=$mapped_count"
-        failures=$((failures + 1))
-      fi
-      if linked_session_exists "$view"; then
-        report+="${report:+$'\n'}FAIL $title rule=view-dead-present"
-        failures=$((failures + 1))
-      fi
-      rows_count=$(printf '%s\n' "$(ledger_rows_for_title "$cmux_generation" "$title")" | grep -c . || true)
-      if [[ "$rows_count" != "0" ]]; then
-        report+="${report:+$'\n'}FAIL $title rule=receipt-dead observed=$rows_count"
-        failures=$((failures + 1))
-      fi
-      marker_count=$(printf '%s\n' "$restored_snapshot" | awk -F'\t' -v t="$title" '$4 == t { n++ } END { print n+0 }')
-      if (( marker_count > 0 )); then
-        report+="${report:+$'\n'}FAIL $title rule=restored-marker-dead observed=$marker_count"
-        failures=$((failures + 1))
-      fi
-      if [[ "$failures" -eq "$title_failures_before" ]]; then
-        report+="${report:+$'\n'}PASS $title absent"
-      fi
-      evidence+="${evidence:+$'\n'}$title|absent|$row_shape|$rows_count|$marker_count"
-    else
-      report+="${report:+$'\n'}FAIL $title rule=source-unique observed=$live_count"
-      failures=$((failures + 1))
-      evidence+="${evidence:+$'\n'}$title|ambiguous-source|$live_count|$row_shape"
-    fi
+    _verify_sidebar_judge_title "$title" || return 2
   done < <(printf '%s\n' "$targets")
   current_cmux=$(cmux_socket_identity) || return 2
   current_tmux=$(tmux_server_generation) || return 2
@@ -13505,6 +13527,205 @@ run_verify_agent_visible() {
     printf 'usage: flywheel-cmux-sync --verify-agent-visible --target TITLE [--json]\n' >&2
   else
     printf '%s\n' "${second_report:-$first_report}"
+  fi
+  return "$rc"
+}
+
+# FLY-2965: several subjects share each sample's fleet-wide read. The restart
+# barrier used to run --verify-agent-visible once per Lead, so every one of 17
+# subjects re-enumerated every workspace's surfaces twice (2*N*W cmux calls
+# per wave). A batch sample reads the fleet once and judges each subject with
+# the unchanged single-subject rules; a subject whose authority, pane, or
+# render is unavailable affects only itself, while an unreadable fleet input
+# or a generation change affects every subject that depends on it.
+VAV_TITLES=()
+VAV_SAMPLE_RC=()
+VAV_SAMPLE_REPORT=()
+VAV_SAMPLE_REASONS=()
+VAV_SAMPLE_EVIDENCE=()
+
+_verify_agents_visible_sample() {
+  local cmux_generation tmux_generation canonical_json births agent_snapshot restored_snapshot
+  local roster_snapshot authority_snapshot ledger_bytes="" global_rc=0 global_reasons=""
+  local report evidence failures probe_unavailable proof_mode=durable
+  local index title judge_rc current_cmux current_tmux
+  VERIFY_SIDEBAR_REASONS=""
+  VERIFY_SIDEBAR_CAVEATS=""
+  # A sample is one fresh fleet read; nothing is reused across samples.
+  CMUX_ATTACH_BIRTH_CACHE_READY=0
+  _verify_sidebar_collect || global_rc=2
+  if [[ "$global_rc" == 0 ]]; then
+    if ! derive_lead_roster || [[ "$LEAD_ROSTER_STATE" != "ok" ]]; then
+      _verify_sidebar_append_unique VERIFY_SIDEBAR_CAVEATS \
+        "${LEAD_ROSTER_REASONS:-roster-authority-unavailable: roster derivation failed}"
+    fi
+    if [[ ! -e "$VIEW_LEDGER" || (-f "$VIEW_LEDGER" && ! -L "$VIEW_LEDGER") ]]; then
+      [[ -f "$VIEW_LEDGER" ]] && ledger_bytes=$(cat "$VIEW_LEDGER") || true
+    else
+      global_rc=2
+    fi
+  fi
+  global_reasons="$VERIFY_SIDEBAR_REASONS"
+  for index in "$@"; do
+    title="${VAV_TITLES[$index]}"
+    VAV_SAMPLE_REPORT[$index]=""
+    VAV_SAMPLE_EVIDENCE[$index]=""
+    if [[ "$global_rc" != 0 ]]; then
+      VAV_SAMPLE_RC[$index]=2
+      VAV_SAMPLE_REASONS[$index]="$global_reasons"
+      continue
+    fi
+    VERIFY_SIDEBAR_REASONS=""
+    report=""; evidence=""; failures=0; probe_unavailable=0; judge_rc=0
+    roster_snapshot=""; authority_snapshot=""
+    if _derive_sidebar_target_authority "$title" "$agent_snapshot"; then
+      roster_snapshot="$SIDEBAR_TARGET_ROSTER_ROWS"
+      authority_snapshot="$SIDEBAR_TARGET_AUTHORITY"
+      _verify_sidebar_judge_title "$title" || judge_rc=2
+    else
+      judge_rc=2
+    fi
+    if [[ "$judge_rc" != 0 || "$probe_unavailable" != 0 ]]; then
+      VAV_SAMPLE_RC[$index]=2
+    elif [[ "$failures" != 0 ]]; then
+      VAV_SAMPLE_RC[$index]=1
+    else
+      VAV_SAMPLE_RC[$index]=0
+    fi
+    VAV_SAMPLE_REPORT[$index]="$report"
+    VAV_SAMPLE_REASONS[$index]="$VERIFY_SIDEBAR_REASONS"
+    VAV_SAMPLE_EVIDENCE[$index]="$cmux_generation
+$tmux_generation
+$authority_snapshot
+$roster_snapshot
+$VERIFY_SIDEBAR_CAVEATS
+$evidence"
+  done
+  [[ "$global_rc" == 0 ]] || return 0
+  if ! current_cmux=$(cmux_socket_identity) || ! current_tmux=$(tmux_server_generation) \
+      || [[ "$current_cmux" != "$cmux_generation" || "$current_tmux" != "$tmux_generation" ]]; then
+    for index in "$@"; do VAV_SAMPLE_RC[$index]=2; done
+  fi
+  return 0
+}
+
+# Classify one subject after a sample with the single-subject gate's rules.
+# Prints nothing; sets VAV_VERDICT_RC (0 = still eligible) and appends the
+# decisive reason to VAV_VERDICT_REASONS.
+_verify_agents_visible_classify() {
+  local index="$1" title="${VAV_TITLES[$1]}" report="${VAV_SAMPLE_REPORT[$1]}"
+  VAV_VERDICT_RC=0
+  VAV_VERDICT_REASONS="${VAV_SAMPLE_REASONS[$index]}"
+  if [[ "${VAV_SAMPLE_RC[$index]}" == 2 ]]; then
+    VAV_VERDICT_RC=2; _verify_sidebar_append_unique VAV_VERDICT_REASONS "probe_unavailable"
+  elif [[ -n "$VAV_SAMPLE_CAVEATS" || "$report" == *"WARN "* ]]; then
+    VAV_VERDICT_RC=2; _verify_sidebar_append_unique VAV_VERDICT_REASONS "ownership_unproven"
+  elif [[ "$report" == *"PASS $title absent"* ]]; then
+    VAV_VERDICT_RC=1; _verify_sidebar_append_unique VAV_VERDICT_REASONS "missing_surface"
+  elif [[ "${VAV_SAMPLE_RC[$index]}" == 1 ]]; then
+    VAV_VERDICT_RC=1; _verify_sidebar_append_unique VAV_VERDICT_REASONS "surface_mismatch"
+  elif [[ "$report" != *"PASS $title live"* ]]; then
+    VAV_VERDICT_RC=2; _verify_sidebar_append_unique VAV_VERDICT_REASONS "verdict_unrecognized"
+  fi
+}
+
+run_verify_agents_visible() {
+  local json=0 rc=0 target index count=0 status
+  local -a eligible=() final_rc=() final_reasons=() final_report=() first_evidence=() first_report=()
+  local -a json_args=()
+  VAV_TITLES=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --target)
+        [[ $# -ge 2 ]] || { rc=64; break; }
+        target="$2"; shift 2
+        _ops_title_valid "$target" \
+          && [[ "$target" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+          || { rc=64; break; }
+        index=0
+        while (( index < count )); do
+          [[ "${VAV_TITLES[$index]}" != "$target" ]] || { rc=64; break 2; }
+          index=$((index + 1))
+        done
+        VAV_TITLES[$count]="$target"; count=$((count + 1))
+        ;;
+      --json) [[ "$json" == 0 ]] || { rc=64; break; }; json=1; shift ;;
+      *) rc=64; break ;;
+    esac
+  done
+  [[ "$rc" != 0 || "$count" -gt 0 ]] || rc=64
+  if [[ "$rc" == 64 ]]; then
+    printf 'usage: flywheel-cmux-sync --verify-agents-visible --target TITLE [--target TITLE ...] [--json]\n' >&2
+    return 64
+  fi
+
+  index=0
+  while (( index < count )); do eligible+=("$index"); index=$((index + 1)); done
+  VAV_SAMPLE_CAVEATS=""
+  _verify_agents_visible_sample "${eligible[@]}"
+  VAV_SAMPLE_CAVEATS="$VERIFY_SIDEBAR_CAVEATS"
+  eligible=()
+  index=0
+  while (( index < count )); do
+    _verify_agents_visible_classify "$index"
+    final_rc[$index]="$VAV_VERDICT_RC"
+    final_reasons[$index]="$VAV_VERDICT_REASONS"
+    final_report[$index]="${VAV_SAMPLE_REPORT[$index]}"
+    first_evidence[$index]="${VAV_SAMPLE_EVIDENCE[$index]}"
+    first_report[$index]="${VAV_SAMPLE_REPORT[$index]}"
+    [[ "$VAV_VERDICT_RC" != 0 ]] || eligible+=("$index")
+    index=$((index + 1))
+  done
+
+  if [[ "${#eligible[@]}" -gt 0 ]]; then
+    sleep 5
+    VAV_SAMPLE_CAVEATS=""
+    _verify_agents_visible_sample "${eligible[@]}"
+    VAV_SAMPLE_CAVEATS="$VERIFY_SIDEBAR_CAVEATS"
+    for index in "${eligible[@]}"; do
+      _verify_agents_visible_classify "$index"
+      if [[ "$VAV_VERDICT_RC" == 0 ]] \
+          && [[ "${first_evidence[$index]}" != "${VAV_SAMPLE_EVIDENCE[$index]}" \
+            || "${first_report[$index]}" != "${VAV_SAMPLE_REPORT[$index]}" ]]; then
+        VAV_VERDICT_RC=2
+        _verify_sidebar_append_unique VAV_VERDICT_REASONS "subject_drift"
+      fi
+      final_rc[$index]="$VAV_VERDICT_RC"
+      final_reasons[$index]="$VAV_VERDICT_REASONS"
+      [[ -z "${VAV_SAMPLE_REPORT[$index]}" ]] || final_report[$index]="${VAV_SAMPLE_REPORT[$index]}"
+    done
+  fi
+
+  rc=0
+  index=0
+  while (( index < count )); do
+    case "${final_rc[$index]}" in
+      0) status=pass ;;
+      1) status=fail; [[ "$rc" == 2 ]] || rc=1 ;;
+      *) status=inconclusive; rc=2 ;;
+    esac
+    json_args+=("${VAV_TITLES[$index]}" "$status" "${final_reasons[$index]}" "${final_report[$index]}")
+    if [[ "$json" != 1 ]]; then
+      printf '%s %s reasons=%s\n' "$(printf '%s' "$status" | tr '[:lower:]' '[:upper:]')" \
+        "${VAV_TITLES[$index]}" "$(printf '%s\n' "${final_reasons[$index]}" | sed '/^$/d' | paste -sd, -)"
+    fi
+    index=$((index + 1))
+  done
+  if [[ "$json" == 1 ]]; then
+    python3 -c '
+import json, sys
+values = sys.argv[1:]
+results = []
+for offset in range(0, len(values), 4):
+    target, status, reasons, report = values[offset:offset + 4]
+    results.append({
+        "target": target,
+        "status": status,
+        "reasons": [line for line in reasons.splitlines() if line],
+        "report": [line for line in report.splitlines() if line],
+    })
+print(json.dumps({"schemaVersion": 1, "results": results}, sort_keys=True))
+' "${json_args[@]}" || return 2
   fi
   return "$rc"
 }
@@ -15433,6 +15654,10 @@ case "${1:-}" in
     shift
     run_verify_agent_visible "$@"
     ;;
+  --verify-agents-visible)
+    shift
+    run_verify_agents_visible "$@"
+    ;;
   --probe-lease)
     # Read-only migration gate: absent passes; a live owner waits within the
     # configured budget; malformed/stale-present state fails closed and is
@@ -15440,7 +15665,7 @@ case "${1:-}" in
     probe_mutator_lease
     ;;
   *)
-    echo "Usage: flywheel-cmux-sync [--once|--watch|--refresh|--probe-lease|--wait-for-watcher-exit|--list-lead-refs|--list-orphan-pins|--reap-orphan-pins|--converge-runners|--rebuild-views|--verify-sidebar|--verify-agent-visible]"
+    echo "Usage: flywheel-cmux-sync [--once|--watch|--refresh|--probe-lease|--wait-for-watcher-exit|--list-lead-refs|--list-orphan-pins|--reap-orphan-pins|--converge-runners|--rebuild-views|--verify-sidebar|--verify-agent-visible|--verify-agents-visible]"
     echo "  --once              Full sync with aggressive cleanup; fails if another mutator is active."
     echo "  --watch             Event-signaled polling (hooks + 15s drain + 60s additive). From inside cmux."
     echo "  --refresh           linked-session repair; also completes pending title migrations"
@@ -15455,6 +15680,7 @@ case "${1:-}" in
     echo "                      Add --execute to mutate; add --handover to make the resident watcher yield."
     echo "  --verify-sidebar    FLY-1596: read-only terminal-state judge; accepts repeated --target T and --json."
     echo "  --verify-agent-visible  FLY-2643: read-only stable single-subject visibility gate."
+    echo "  --verify-agents-visible FLY-2965: the same gate for repeated --target T, sharing each sample's fleet read."
     exit 1
     ;;
 esac

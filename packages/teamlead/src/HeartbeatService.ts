@@ -11,6 +11,7 @@ import type {
 	ChatThreadCreator,
 } from "./bridge/ChatThreadCreator.js";
 import { resolveChatThreadId } from "./bridge/chat-thread-utils.js";
+import { commDbPathForProject } from "./bridge/commdb-path.js";
 import {
 	applyQuarantineFallback,
 	type CompleteMarkerHeldAlert,
@@ -25,11 +26,20 @@ import {
 import { hasPendingCompleteMarker } from "./bridge/done-running-reconciler.js";
 import {
 	type EventFilter,
+	type LeadNotificationDecision,
 	leadEventDeliveryDisposition,
+	leadNotificationDecision,
 } from "./bridge/EventFilter.js";
-import { storeLeadTokenSavingsEnabled } from "./bridge/flag-store-runtime.js";
+import {
+	storeLeadMonitoringReestablishedAuditEnabled,
+	storeLeadTokenSavingsEnabled,
+} from "./bridge/flag-store-runtime.js";
 import { buildSessionKey, type HookPayload } from "./bridge/hook-payload.js";
 import type { IssueDisplayRefreshHolder } from "./bridge/issue-display-refresher.js";
+import type {
+	NotificationBinding,
+	NotificationEvidenceV2,
+} from "./bridge/lead-notification-evidence.js";
 import {
 	GUARDRAIL_EVENT_TYPES,
 	type LeadEventEnvelope,
@@ -118,6 +128,15 @@ interface ReestablishedNoticeIntent {
 	session: Session;
 	minutesSince: number;
 	livenessProbe: { target?: string; probedAt: string };
+	recovery: MonitoringRecoveryObservation;
+}
+
+/** Producer-only observation; current membership cannot be supplied by an event payload. */
+interface MonitoringRecoveryObservation {
+	executionId: string;
+	episodeRef: string;
+	liveness: SessionLiveness;
+	isCurrentEpisode(): boolean;
 }
 
 /** FLY-1282: pass-local state for one zombie-ON readopt reconcile pass. */
@@ -274,6 +293,7 @@ export interface HeartbeatNotifier {
 			 * (monitoring-side-interruption suspicion — observation, not diagnosis).
 			 */
 			concurrentCount?: number;
+			recovery?: MonitoringRecoveryObservation;
 		},
 	): Promise<void>;
 	/**
@@ -424,6 +444,7 @@ export class HeartbeatService implements ReconnectController {
 	 * readopt path.
 	 */
 	private reconnecting = new Set<string>();
+	private reconnectingEpisodes = new Map<string, string>();
 	/**
 	 * FLY-1264: founder-facing title ownership has a shorter lifetime than the
 	 * fallback-monitoring protection above. It starts with a reconnect episode and
@@ -856,6 +877,11 @@ export class HeartbeatService implements ReconnectController {
 			this.zombieDeadStreak.delete(execId);
 			return;
 		}
+		// FLY-2900 §4.2: never declare a parked quota standby body a zombie.
+		if (this.isCodexQuotaStandby(execId)) {
+			this.zombieDeadStreak.delete(execId);
+			return;
+		}
 
 		// 1) Marker-first. A valid terminal marker proves the Runner finished.
 		const outcome = await tryReconcileComplete(execId, deps);
@@ -1045,7 +1071,7 @@ export class HeartbeatService implements ReconnectController {
 		}
 		const liveness = await this.probeSessionLiveness(session);
 		if (liveness.verdict === "alive") {
-			await this.enterReconnecting(session);
+			await this.enterReconnecting(session, liveness);
 			return;
 		}
 		// Alert-only, never a status change. But the ALERT COPY must be honest
@@ -1082,6 +1108,8 @@ export class HeartbeatService implements ReconnectController {
 		this.store.updateHeartbeat(execId);
 		if (this.reconnecting.has(execId)) return null; // stay (same episode)
 		this.reconnecting.add(execId);
+		const episodeRef = `reconnect:${execId}:${randomUUID()}`;
+		this.reconnectingEpisodes.set(execId, episodeRef);
 		if (!this.reconnectTitleRefresherReady) {
 			this.reconnectTitleActive.add(execId);
 		}
@@ -1089,6 +1117,14 @@ export class HeartbeatService implements ReconnectController {
 			session,
 			minutesSince,
 			livenessProbe: { target: liveness.target, probedAt: liveness.probedAt },
+			recovery: {
+				executionId: execId,
+				episodeRef,
+				liveness,
+				isCurrentEpisode: () =>
+					this.reconnecting.has(execId) &&
+					this.reconnectingEpisodes.get(execId) === episodeRef,
+			},
 		};
 	}
 
@@ -1108,7 +1144,7 @@ export class HeartbeatService implements ReconnectController {
 		}
 		for (const intent of ctx.intents) {
 			const execId = intent.session.execution_id;
-			if (!this.reconnecting.has(execId)) continue; // episode already over
+			if (!intent.recovery.isCurrentEpisode()) continue; // exact episode already over
 			const stampNow = this.reconnectTitleActive.has(execId);
 			try {
 				await this.notifier.onSessionMonitoringReestablished(
@@ -1117,6 +1153,7 @@ export class HeartbeatService implements ReconnectController {
 					{
 						stampReconnectTitle: stampNow,
 						livenessProbe: intent.livenessProbe,
+						recovery: intent.recovery,
 						...(k >= 3 ? { concurrentCount: k } : {}),
 					},
 				);
@@ -1158,6 +1195,15 @@ export class HeartbeatService implements ReconnectController {
 			console.warn(
 				`[HeartbeatService] recovery exhaustion handler failed for ${executionId}; fixed deadline grace applies`,
 			);
+		}
+	}
+
+	/** FLY-2900: parked in Codex quota standby (fails open on a store error). */
+	private isCodexQuotaStandby(executionId: string): boolean {
+		try {
+			return this.store.isCodexQuotaStandby?.(executionId) === true;
+		} catch {
+			return false;
 		}
 	}
 
@@ -1229,7 +1275,8 @@ export class HeartbeatService implements ReconnectController {
 				current.status !== "running" ||
 				current.retry_successor ||
 				current.lifecycle_revision !== fresh.lifecycle_revision ||
-				this.isCodexRecoveryProtected(execId)
+				this.isCodexRecoveryProtected(execId) ||
+				this.isCodexQuotaStandby(execId)
 			) {
 				this.zombieDeadStreak.delete(execId);
 				return false;
@@ -1456,34 +1503,25 @@ export class HeartbeatService implements ReconnectController {
 	 * cycle (tmux-liveness IS the heartbeat now), and ONCE per reconnecting episode
 	 * emit the low-priority "re-established" advisory + stamp the "⚠️重连中" title.
 	 */
-	private async enterReconnecting(session: Session): Promise<void> {
-		const execId = session.execution_id;
-		// minutesSince from the (pre-refresh) heartbeat — informational only.
-		let minutesSince = this.thresholdMinutes;
-		if (session.heartbeat_at) {
-			minutesSince = Math.round(
-				(Date.now() -
-					new Date(`${session.heartbeat_at.replace(" ", "T")}Z`).getTime()) /
-					60_000,
-			);
-		}
-		// Re-adopt: refresh heartbeat so the session reads healthy (no false
-		// stuck/orphan/idle) — every cycle while tmux is alive.
-		this.store.updateHeartbeat(execId);
-		if (this.reconnecting.has(execId)) return; // stay (already this episode)
-		this.reconnecting.add(execId);
-		// Only the startup window owns the visible ⚠️ title. Once the canonical
-		// refresher is ready, runtime re-entries keep the already-correct phase title
-		// and spend zero Discord renames (hard budget: ~2 per 10 minutes/thread).
-		const stampReconnectTitle = !this.reconnectTitleRefresherReady;
-		if (stampReconnectTitle) this.reconnectTitleActive.add(execId);
+	private async enterReconnecting(
+		session: Session,
+		liveness: SessionLiveness,
+	): Promise<void> {
+		const intent = this.bookkeepReconnecting(session, liveness);
+		if (!intent || !intent.recovery.isCurrentEpisode()) return;
 		// Once-per-episode FYI + Display-A stamp. Best-effort — a failed FYI must
 		// not block re-adopt, and it is NOT retried (non-guardrail event type).
 		try {
 			await this.notifier.onSessionMonitoringReestablished(
 				session,
-				minutesSince,
-				{ stampReconnectTitle },
+				intent.minutesSince,
+				{
+					stampReconnectTitle: this.reconnectTitleActive.has(
+						session.execution_id,
+					),
+					livenessProbe: intent.livenessProbe,
+					recovery: intent.recovery,
+				},
 			);
 		} catch {
 			// best-effort advisory
@@ -1505,6 +1543,7 @@ export class HeartbeatService implements ReconnectController {
 	 */
 	clearReconnecting(executionId: string): void {
 		const wasReconnecting = this.reconnecting.delete(executionId);
+		this.reconnectingEpisodes.delete(executionId);
 		const wasTitleActive = this.reconnectTitleActive.delete(executionId);
 		if (!wasReconnecting && !wasTitleActive) return;
 		if (!wasTitleActive) return;
@@ -2100,7 +2139,8 @@ export class HeartbeatService implements ReconnectController {
 				isSuppressed: (id) =>
 					this.isMonitorSuppressed(id) ||
 					this.markerRetryPending.has(id) ||
-					tmuxHeld.has(id),
+					tmuxHeld.has(id) ||
+					this.isCodexQuotaStandby(id),
 				hasPendingCompleteMarker: (id) => hasPendingCompleteMarker(id),
 			});
 			if (
@@ -2139,6 +2179,9 @@ export class HeartbeatService implements ReconnectController {
 			// reaped there (→ terminated + teardown + archive); reapOrphans must NOT
 			// force-fail it to `failed` (a CRASH_PRESERVE state that never archives).
 			if (deadPinOwned.has(session.execution_id)) continue;
+			// FLY-2900 §4.2: a Codex quota standby body is running without a
+			// process by design; the resume loop owns it.
+			if (this.isCodexQuotaStandby(session.execution_id)) continue;
 			// FLY-172 + FLY-623: skip sessions the reconcile pass classified this
 			// cycle as alive-but-detached (monitor-lost / re-adopted) or as having a
 			// marker pending retry. reapOrphans does NOT probe tmux itself — the
@@ -2328,9 +2371,9 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 	/**
 	 * FLY-623: readopt-ON happy path. The Bridge re-adopted a live detached Runner
 	 * after a restart. Stamp the Display-A reconnecting title and
-	 * deliver a one-time, low-priority, NON-retryable FYI to the Lead. Best-effort:
-	 * `session_monitoring_reestablished` is not in GUARDRAIL/RETRYABLE sets, so
-	 * deliverHook marks it delivered regardless and it is never re-delivered.
+	 * record the recovery. FLY-2912 keeps a verified, action-free recovery in the
+	 * audit journal when savings are enabled. Model-visible recoveries retain the
+	 * existing one-time, best-effort delivery behavior.
 	 */
 	async onSessionMonitoringReestablished(
 		session: Session,
@@ -2339,6 +2382,7 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 			stampReconnectTitle?: boolean;
 			livenessProbe?: { target?: string; probedAt: string };
 			concurrentCount?: number;
+			recovery?: MonitoringRecoveryObservation;
 		},
 	): Promise<void> {
 		const label = session.issue_identifier ?? session.issue_id;
@@ -2384,7 +2428,7 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 		if (details?.stampReconnectTitle !== false) {
 			this.stampReconnect(session, "enter");
 		}
-		await this.deliverHook(session, hookPayload);
+		await this.deliverHook(session, hookPayload, details?.recovery);
 	}
 
 	/**
@@ -2475,7 +2519,9 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 	private async deliverHook(
 		session: Session,
 		hookPayload: HookPayload,
+		recovery?: MonitoringRecoveryObservation,
 	): Promise<boolean> {
+		const rawPayload = { ...hookPayload };
 		let agentId: string;
 		let chatChannel: string;
 		let runtime: import("./bridge/lead-runtime.js").LeadRuntime;
@@ -2522,6 +2568,49 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 
 		const sessionKey = buildSessionKey(session);
 		const eventId = `heartbeat-${session.execution_id}-${Date.now()}-${randomUUID()}`;
+		let notification:
+			| {
+					binding: NotificationBinding;
+					evidence?: NotificationEvidenceV2;
+					decision: LeadNotificationDecision;
+			  }
+			| undefined;
+		if (hookPayload.event_type === "session_monitoring_reestablished") {
+			const binding: NotificationBinding = {
+				projectName: session.project_name,
+				leadId: agentId,
+				eventId,
+				executionId: session.execution_id,
+				issueId: session.issue_id,
+			};
+			const evidence = this.monitoringRecoveryEvidence(
+				session,
+				binding,
+				rawPayload,
+				recovery,
+			);
+			notification = {
+				binding,
+				evidence,
+				decision: leadNotificationDecision(
+					hookPayload.event_type,
+					rawPayload,
+					evidence,
+					{
+						binding,
+						categoryEnabled: storeLeadMonitoringReestablishedAuditEnabled(
+							{ store: this.store },
+							binding.projectName,
+						),
+						enabled: storeLeadTokenSavingsEnabled(
+							{ store: this.store },
+							session.project_name,
+						),
+						projection: { ...hookPayload },
+					},
+				),
+			};
+		}
 		// FLY-1282 (R2 #3/R3 #5): shared append→deliver lifecycle. The legacy
 		// hook keeps "propagate" — a deliver() throw escapes to the caller with
 		// the appended row left untouched (attempt=0), exactly as before.
@@ -2534,11 +2623,131 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 			payloadForEnvelope: hookPayload,
 			runtime,
 			onDeliverThrow: "propagate",
+			notification,
 		});
 		// FLY-637 R1 #2: the event row IS in lead_events (guardrail retry owns
 		// redelivery), so this counts as persisted regardless of the immediate
 		// transport outcome.
 		return true;
+	}
+
+	private pendingMonitoringParkGate(binding: NotificationBinding): {
+		pending: boolean;
+		checkedRefs: string[];
+	} {
+		if (/[/\\]|\.\./.test(binding.projectName))
+			throw new Error("invalid monitoring project");
+		const comm = CommDB.openReadonly(commDbPathForProject(binding.projectName));
+		try {
+			const checkedRefs = [
+				`commdb-gates:${binding.projectName}:${binding.leadId}:${binding.executionId}`,
+			];
+			let cursor: { created_at: string; id: string } | undefined;
+			for (let page = 0; page < 4; page++) {
+				const questions = comm.getPendingQuestions(binding.leadId, {
+					kind: "gate",
+					limit: 50,
+					cursor,
+				});
+				for (const question of questions) {
+					if (
+						question.from_agent !== binding.executionId ||
+						question.superseded_at
+					)
+						continue;
+					checkedRefs.push(`gate:${question.id}:${question.checkpoint}`);
+					// A founder ship decision has its own durable delivery lane.
+					if (question.checkpoint !== "approve_to_ship")
+						return { pending: true, checkedRefs };
+				}
+				if (questions.length < 50) return { pending: false, checkedRefs };
+				const last = questions.at(-1)!;
+				cursor = { created_at: last.created_at, id: last.id };
+			}
+			throw new Error("monitoring gate read overflow");
+		} finally {
+			comm.close();
+		}
+	}
+
+	private monitoringRecoveryEvidence(
+		session: Session,
+		binding: NotificationBinding,
+		payload: Record<string, unknown>,
+		recovery?: MonitoringRecoveryObservation,
+	): NotificationEvidenceV2 | undefined {
+		if (!recovery) return undefined;
+		let legalPark = false;
+		let alertState: "none" | "open" | "unknown" = "unknown";
+		let recoveredLostEventIds: string[] = [];
+		let checkedRefs: string[] = [];
+		try {
+			const current = this.store.getSession(session.execution_id);
+			legalPark = Boolean(current && isReadoptParkedStatus(current.status));
+			if (
+				recovery.executionId === session.execution_id &&
+				recovery.isCurrentEpisode() &&
+				recovery.liveness.verdict === "alive" &&
+				recovery.liveness.target &&
+				Number.isFinite(Date.parse(recovery.liveness.probedAt)) &&
+				current?.project_name === session.project_name &&
+				current.issue_id === session.issue_id &&
+				current.status === session.status &&
+				(current.status === "running" || legalPark)
+			) {
+				const context = this.store.getMonitoringRecoveryContext({
+					projectName: binding.projectName,
+					leadId: binding.leadId,
+					executionId: binding.executionId,
+				});
+				alertState =
+					context.openFailure || Boolean(current.last_error?.trim())
+						? "open"
+						: "none";
+				recoveredLostEventIds = context.recoveredLostEventIds;
+				checkedRefs = [
+					`session:${session.execution_id}`,
+					recovery.episodeRef,
+					...context.checkedRefs,
+				];
+				if (legalPark && alertState === "none") {
+					const gates = this.pendingMonitoringParkGate(binding);
+					checkedRefs.push(...gates.checkedRefs);
+					if (gates.pending) alertState = "open";
+				}
+			}
+		} catch {
+			// Missing/corrupt correlation evidence restores delivery; it never hides a task.
+			alertState = "unknown";
+		}
+		return {
+			version: 2,
+			kind: "monitoring",
+			binding,
+			proof: {
+				sourceRef: `session-event:${binding.eventId}:proof`,
+				executionId: session.execution_id,
+				action:
+					alertState === "none"
+						? { state: "none", checkedRefs }
+						: { state: alertState === "open" ? "pending" : "unknown" },
+			},
+			episodeRef: recovery.episodeRef,
+			probeRef: `tmux-pane:${session.execution_id}:${recovery.liveness.probedAt}:${recovery.liveness.target ?? ""}`,
+			livenessProbe: {
+				method: "tmux_pane_probe",
+				target: recovery.liveness.target ?? "",
+				result: "alive",
+				probed_at: recovery.liveness.probedAt,
+			},
+			alertState,
+			legalPark,
+			recoveredLostEventIds,
+			templates:
+				typeof payload.notification_context === "string"
+					? { notification_context: payload.notification_context }
+					: undefined,
+		};
 	}
 
 	/**
@@ -2564,24 +2773,36 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 		payloadForEnvelope: HookPayload;
 		runtime: LeadRuntime | undefined;
 		onDeliverThrow: "propagate" | "record";
+		notification?: {
+			binding: NotificationBinding;
+			evidence?: NotificationEvidenceV2;
+			decision: LeadNotificationDecision;
+		};
 	}): Promise<number> {
-		const seq = this.store.appendLeadEvent(
-			row.leadId,
-			row.eventId,
-			row.eventType,
-			row.payloadJson,
-			row.sessionKey,
-			storeLeadTokenSavingsEnabled(
-				{ store: this.store },
-				row.payloadForEnvelope.project_name ?? "",
-			)
-				? leadEventDeliveryDisposition(
-						row.eventType,
-						{ ...row.payloadForEnvelope },
-						true,
+		const seq = row.notification
+			? this.store.appendLeadNotification({
+					...row.notification,
+					eventType: row.eventType,
+					payload: row.payloadJson,
+					sessionKey: row.sessionKey,
+				})
+			: this.store.appendLeadEvent(
+					row.leadId,
+					row.eventId,
+					row.eventType,
+					row.payloadJson,
+					row.sessionKey,
+					storeLeadTokenSavingsEnabled(
+						{ store: this.store },
+						row.payloadForEnvelope.project_name ?? "",
 					)
-				: "model",
-		);
+						? leadEventDeliveryDisposition(
+								row.eventType,
+								{ ...row.payloadForEnvelope },
+								true,
+							)
+						: "model",
+				);
 		if (this.store.isLeadEventAuditOnly(seq, row.leadId)) return seq;
 		const isGuardrail = GUARDRAIL_EVENT_TYPES.has(row.eventType);
 		if (!row.runtime) {

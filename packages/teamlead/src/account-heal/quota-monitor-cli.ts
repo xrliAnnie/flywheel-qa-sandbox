@@ -25,6 +25,8 @@ import {
 } from "./quota-monitor-config.js";
 import { makeQuotaMonitorRuntime } from "./quota-monitor-runtime.js";
 import type { QuotaMonitorState } from "./quota-monitor-state.js";
+import { defaultResetCardDir } from "./reset-card-files.js";
+import { makeResetCardRuntime } from "./reset-card-probe.js";
 import { runtimeTreeSha256 } from "./runtime-tree-hash.js";
 
 export type {
@@ -265,6 +267,13 @@ export async function main(): Promise<void> {
 		handler: wake,
 	});
 	const runtime = makeQuotaMonitorRuntime({
+		// FLY-2896: the production daemon owns the reset-card flow.
+		resetCard: (paths) =>
+			makeResetCardRuntime({
+				dir: defaultResetCardDir(),
+				poolDir: paths.poolDir,
+				storePath: paths.storePath,
+			}),
 		alert: (alert) => sendQuotaMonitorAlert(alert),
 		deliverAlert: async (alert) => {
 			const { primary } = await sendQuotaMonitorAlert(alert);

@@ -2006,6 +2006,8 @@ PY
       set +a
       [[ "$FLYWHEEL_BRIDGE_URL" == "$(jq -r '.bridgeUrl' <<<"$CX_JSON")" \
         && -n "$FLYWHEEL_API_TOKEN" \
+        && "$FLYWHEEL_CODEX_TUI_TEST_MODEL" == "gpt-5.6-sol" \
+        && "$FLYWHEEL_CODEX_TUI_TEST_REASONING_EFFORT" == "high" \
         && "$(jq -r '.TEAMLEAD_API_TOKEN // ""' "$CX_SLOT_DIR/bridge-env.json")" == "$FLYWHEEL_API_TOKEN" \
         && "$(jq -r '.FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE // ""' "$CX_SLOT_DIR/bridge-env.json")" == "$FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE" \
         && "$(jq -r '.FLYWHEEL_LEAD_CARRIER_ASSERTION_DIR // ""' "$CX_SLOT_DIR/bridge-env.json")" == "$FLYWHEEL_LEAD_CARRIER_ASSERTION_DIR" \

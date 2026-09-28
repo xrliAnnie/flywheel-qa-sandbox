@@ -1,0 +1,10 @@
+flowchart LR
+  S["一场语音会话<br/>sessionId · Lead · 租约"] --> K["容器(每场新建)<br/>临时目录 0700<br/>auth.json = 指向订阅凭据的软链<br/>Codex 0.156.1 固定校验"]
+  K --> G1["第 1 代连接<br/>WebRTC 腿 + realtime/start"]
+  K -.断线.-> G2["第 2~4 代连接<br/>同一容器 · 同一份开场资料<br/>最多换 3 次"]
+  S --> X["开场资料快照 v2"]
+  X --> P1["prompt ≤ 15,500 token<br/>身份 · 边界 · 状态 · 协议"]
+  X --> P2["initialItems ≤ 32 KB<br/>记忆文件(放不下的回填 prompt)"]
+  L["projects.json 每个 Lead"] --> V1["realtimeVoice<br/>旧引擎用(marin 等)"]
+  L --> V2["liveVoice(新)<br/>引擎 B 用 · 9 选 1 · 缺省 cove"]
+  V2 --> G1

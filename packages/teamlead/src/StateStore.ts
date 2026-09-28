@@ -1,3 +1,8 @@
+import { NotificationAuditStore, type NotificationAuditRange } from "./bridge/notification-audit-store.js";
+import { buildSessionKey } from "./bridge/hook-payload.js";
+import { leadNotificationDecision, type LeadNotificationDecision } from "./bridge/EventFilter.js";
+import { storeLeadReplacementNoticeAuditEnabled, storeLeadTokenSavingsEnabled } from "./bridge/flag-store-runtime.js";
+import type { NotificationBinding, NotificationEvidenceV2 } from "./bridge/lead-notification-evidence.js";
 import {
 	assertStandingAuthorityConfirmationRecord,
 	STANDING_AUTHORITY_CONFIRMATION_DDL,
@@ -56,11 +61,19 @@ import { buildReworkWakeId, type ReworkWakeIdentity, type ReworkWakeRetirementPr
 import { newDrainReadId } from "flywheel-comm/completion-obligations";
 import { type CompletionDrainProof, isCompletionDrainProof } from "./bridge/completion-drain.js";
 import { BetaReleaseStore } from "./bridge/beta-release-store.js";
+import { LeadInterruptStore } from "./bridge/lead-interrupt-store.js";
+import { ReviewRoundStore } from "./bridge/review-round-store.js";
 import type { CompletionWorktreeBranchObservation } from "./bridge/worktree-binding-refresh.js";
 import { CustomerReleaseStore } from "./bridge/customer-release/store.js";
 import { isMailboxTerminalStatus, OUTCOME_STATUSES, TERMINAL_STATUSES } from "flywheel-comm/session-terminal";
 import { buildWorkflowReworkContext, renderWorkflowReworkLaunchStableSection, workflowReworkLaunchDigest } from "./bridge/workflow-rework-context.js";
-import { type CodexQuotaSignalV1, parseCodexQuotaSignalV1 } from "flywheel-core";
+import {
+	type CodexQuotaContinueDecision,
+	type CodexQuotaContinueReconciliation,
+	type CodexQuotaResumeAuthorization,
+	type CodexQuotaSignalV1,
+	parseCodexQuotaSignalV1,
+} from "flywheel-core";
 import {
 	type CodexPoolExhaustionFact,
 	type CodexQuotaPoolMember,
@@ -107,7 +120,6 @@ import {
 	isDesignBackend,
 	isSkillFrameworkMode,
 	isSkillFrameworkVia,
-	MODEL_IDS,
 	type ModelConfigSnapshot,
 	type ProposedFlagScan,
 	PROJECT_STORE_MANAGED_FLAGS,
@@ -2055,6 +2067,11 @@ export interface DesignReviewApprovalProof {
  */
 export interface CodexReviewJob {
 	request_id: string;
+	/** NULL is rejected; 0 is accepted legacy history with unknown order. */
+	accept_seq?: number;
+	voided_at?: string;
+	superseded_by_request_id?: string;
+	quiet_until?: string;
 	execution_id: string;
 	issue_id?: string;
 	project_name: string;
@@ -2158,6 +2175,7 @@ export interface AccountSwitchActionReceipt {
  */
 export interface CodexReviewReuseBinding {
 	request_id: string;
+	accept_seq?: number;
 	source_request_id: string;
 	execution_id: string;
 	question_id: string;
@@ -3216,6 +3234,20 @@ export function openWithDatabaseIdentity<T extends { close(): void }>(
 	}
 }
 
+/** FLY-2900 §3.1: how a runner usage-limit wall is settled against standby. */
+type CodexQuotaStandbyDisposition =
+	| "enter"
+	| "refresh"
+	| "capacity_rejected"
+	| "resume_failed"
+	| "ignore";
+/** FLY-2900 §2.7: standby entries per (run,node,attempt) in any 24 hours. */
+const CODEX_QUOTA_STANDBY_ENTRY_LIMIT = 6;
+/** FLY-2900 §6: a resuming claim's lease, renewed every loop tick. */
+const CODEX_QUOTA_RESUME_LEASE_MS = 10 * 60_000;
+/** FLY-2900 §5.2: fallback bodies per standby entry before the Lead hears. */
+const CODEX_QUOTA_FALLBACK_ATTEMPTS = 2;
+
 export class StateStore {
 	private workflowScorecardStoreCache?: {
 		db: BetterDb;
@@ -3277,6 +3309,14 @@ export class StateStore {
 	get betaSchedules(): BetaReleaseStore {
 		return new BetaReleaseStore(this.db.raw);
 	}
+	/** FLY-2883: controlled Lead interrupt record + append-only audit. */
+	get leadInterrupts(): LeadInterruptStore {
+		return new LeadInterruptStore(this.db.raw);
+	}
+	/** FLY-2891: per-round local Codex review records + gate acceptances. */
+	get reviewRounds(): ReviewRoundStore {
+		return new ReviewRoundStore(this.db.raw);
+	}
 	private db: CompatDb;
 	private dbPath: string;
 	private openedDatabaseIdentity: OpenedDatabaseIdentity | null;
@@ -3297,7 +3337,136 @@ export class StateStore {
 					revision: 0,
 					checkedAt: null,
 				};
-	isCodexQuotaLaunchPaused(executionId: string, rootKey?: string): boolean {
+	/**
+	 * FLY-2900: `codex_quota_standby` (bridge_global). Off here so unit
+	 * fixtures keep the historical failure path; the Bridge wires the flag.
+	 */
+	codexQuotaStandbyEnabled: () => boolean = () => false;
+	/** FLY-2900: `codex_quota_claude_fallback`; off in fixtures, wired by the Bridge. */
+	codexQuotaClaudeFallbackEnabled: () => boolean = () => false;
+	/** FLY-2900: an execution parked in Codex quota standby (process gone, node running). */
+	isCodexQuotaStandby(executionId: string): boolean {
+		return this.codexQuota.isCodexQuotaStandby(executionId);
+	}
+	/** FLY-2900: parked with no process — does not hold a runner slot. */
+	isCodexQuotaParkedWithoutProcess(executionId: string): boolean {
+		return this.codexQuota.isCodexQuotaParkedWithoutProcess(executionId);
+	}
+	/**
+	 * FLY-2900 §4.1: the one quota launch decision. With an authorization the
+	 * durable claim alone decides — valid → authorized (skips casualty, root
+	 * safety guard and root pause), anything else → paused; it never falls
+	 * back to the ordinary judgment. Without one, the historical judgment.
+	 */
+	codexQuotaLaunchDecision(
+		executionId: string,
+		rootKey?: string,
+		authorization?: CodexQuotaResumeAuthorization,
+	): "authorized" | "paused" | "clear" {
+		if (authorization) {
+			return authorization.executionId === executionId &&
+				this.codexQuota.activeResumeClaim(authorization)
+				? "authorized"
+				: "paused";
+		}
+		return this.codexQuotaLegacyLaunchPaused(executionId, rootKey)
+			? "paused"
+			: "clear";
+	}
+	isCodexQuotaLaunchPaused(
+		executionId: string,
+		rootKey?: string,
+		authorization?: CodexQuotaResumeAuthorization,
+	): boolean {
+		return (
+			this.codexQuotaLaunchDecision(executionId, rootKey, authorization) ===
+			"paused"
+		);
+	}
+	claimCodexQuotaResume(input: {
+		executionId: string;
+		ownerClaimId: string;
+		now: string;
+		leaseMs?: number;
+	}) {
+		const result = this.codexQuota.claimResume({
+			...input,
+			leaseMs: input.leaseMs ?? CODEX_QUOTA_RESUME_LEASE_MS,
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+	codexQuotaResumeVerificationStatus(
+		authorization: CodexQuotaResumeAuthorization,
+	): "pending" | "accepted" | "rejected" {
+		return this.codexQuota.resumeVerificationStatus(authorization);
+	}
+	markCodexQuotaResumeIdentityVerified(
+		authorization: CodexQuotaResumeAuthorization,
+		now: string,
+		evidence?: { sessionId: string; authDigest?: string },
+	): boolean {
+		return this.codexQuota.markResumeIdentityVerified(authorization, now, evidence);
+	}
+	markCodexQuotaContinueStarted(
+		authorization: CodexQuotaResumeAuthorization,
+		turnId: string,
+		now: string,
+	): boolean {
+		return this.codexQuota.markContinueStarted(authorization, turnId, now);
+	}
+	settleCodexQuotaResumeSuccess(input: {
+		authorization: CodexQuotaResumeAuthorization;
+		turnId: string;
+		now: string;
+	}): boolean {
+		const settled = this.codexQuota.settleResumeSuccess({
+			...input,
+			requireTurn: true,
+		});
+		if (settled) this.clearCodexQuotaStandbyLastError(input.authorization.executionId);
+		return settled;
+	}
+	reconcileCodexQuotaContinue(input: {
+		authorization: CodexQuotaResumeAuthorization;
+		outcome: CodexQuotaContinueReconciliation;
+		now: string;
+	}): CodexQuotaContinueDecision {
+		const decision = this.codexQuota.reconcileContinue(input);
+		if (decision.action === "send" && decision.settled)
+			this.clearCodexQuotaStandbyLastError(input.authorization.executionId);
+		return decision;
+	}
+	failCodexQuotaResume(input: {
+		authorization: CodexQuotaResumeAuthorization;
+		kind: "mechanical" | "capacity" | "neutral";
+		detailCode: string;
+		continueDetermined: boolean;
+		now: string;
+	}) {
+		return this.codexQuota.failResume(input);
+	}
+	renewCodexQuotaResumeLease(
+		authorization: CodexQuotaResumeAuthorization,
+		now: string,
+		leaseMs = CODEX_QUOTA_RESUME_LEASE_MS,
+	): boolean {
+		return this.codexQuota.renewResumeLease(authorization, now, leaseMs);
+	}
+	recoverAbandonedCodexQuotaClaims(ownerPrefix: string, now: string): string[] {
+		return this.codexQuota.recoverAbandonedClaims(ownerPrefix, now);
+	}
+	/** The resumed body is working again: drop the standby marker from the session. */
+	private clearCodexQuotaStandbyLastError(executionId: string): void {
+		this.db.run(
+			"UPDATE sessions SET last_error = NULL WHERE execution_id = ? AND last_error = 'codex_quota_standby'",
+			[executionId],
+		);
+	}
+	private codexQuotaLegacyLaunchPaused(
+		executionId: string,
+		rootKey?: string,
+	): boolean {
 		if (this.codexQuota.isExecutionPaused(executionId)) return true;
 		if (rootKey === undefined) return false;
 		if (
@@ -7040,9 +7209,11 @@ export class StateStore {
 			}
 			if (
 				table === "workflow_rework_delivery" &&
-				!String(tableRow.sql).includes("'needs_lead'")
+				!String(tableRow.sql).includes("'returned_to_lead'")
 			) {
-				mismatches.push("workflow_rework_delivery.state:needs_lead_missing");
+				mismatches.push(
+					"workflow_rework_delivery.state:returned_to_lead_missing",
+				);
 			}
 		}
 		if (mismatches.length > 0) {
@@ -7408,12 +7579,13 @@ export class StateStore {
 			.get() as { sql?: string } | undefined;
 		if (!table?.sql) return;
 		const columns = this.workflowTableColumns("workflow_rework_delivery");
+		// FLY-2921: column-based skip. The state literals moved on in
+		// migrateWorkflowReworkDeliveryTwoState; checking them here would
+		// rebuild the new table back to the legacy eight-state CHECK.
 		if (
 			columns.has("hold_count") &&
 			columns.has("next_retry_at") &&
-			columns.has("grant_started_at") &&
-			table.sql.includes("needs_lead") &&
-			table.sql.includes("awaiting_receipt")
+			columns.has("grant_started_at")
 		) {
 			return;
 		}
@@ -7455,6 +7627,128 @@ export class StateStore {
 					DROP TABLE workflow_rework_delivery;
 					ALTER TABLE workflow_rework_delivery_next RENAME TO workflow_rework_delivery;
 				`);
+			})();
+		} finally {
+			if (foreignKeys === 1) this.db.raw.pragma("foreign_keys = ON");
+		}
+	}
+
+	/**
+	 * FLY-2921: rework delivery has two outcomes — delivered, or returned to
+	 * the Lead. The intermediate states are folded into facts or into the two
+	 * endings; no run is unfrozen here. Rows that land on `returned_to_lead`
+	 * while their run is active get the one delivery-scoped door they would
+	 * otherwise lack (held runs keep their existing run-level door).
+	 */
+	private migrateWorkflowReworkDeliveryTwoState(): void {
+		const table = this.db.raw
+			.prepare(
+				"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'workflow_rework_delivery'",
+			)
+			.get() as { sql?: string } | undefined;
+		if (!table?.sql) return;
+		const columns = this.workflowTableColumns("workflow_rework_delivery");
+		if (
+			table.sql.includes("returned_to_lead") &&
+			!table.sql.includes("awaiting_receipt") &&
+			columns.has("wake_sent_at") &&
+			columns.has("liveness_unknown_since")
+		) {
+			return;
+		}
+		const wakeSentAt = columns.has("wake_sent_at") ? "wake_sent_at" : "NULL";
+		const unknownSince = columns.has("liveness_unknown_since")
+			? "liveness_unknown_since"
+			: "NULL";
+		const foreignKeys = Number(
+			this.db.raw.pragma("foreign_keys", { simple: true }),
+		);
+		this.db.raw.pragma("foreign_keys = OFF");
+		try {
+			this.db.raw.transaction(() => {
+				const returnedOnActiveRuns = this.db.raw
+					.prepare(
+						`SELECT d.request_id, d.route_revision, d.state, d.hold_count,
+						        d.last_error, r.run_id, route.target_node_id,
+						        route.preferred_actor_execution_id
+						   FROM workflow_rework_delivery d
+						   JOIN workflow_rework_request r ON r.request_id = d.request_id
+						   JOIN workflow_run run ON run.run_id = r.run_id
+						   LEFT JOIN workflow_rework_route_revision route
+						     ON route.request_id = d.request_id
+						    AND route.revision = d.route_revision
+						  WHERE d.state IN ('needs_lead','held')
+						    AND run.status = 'active'`,
+					)
+					.all() as Array<Record<string, unknown>>;
+				this.db.raw.exec(`
+					DROP TABLE IF EXISTS workflow_rework_delivery_next;
+					CREATE TABLE workflow_rework_delivery_next (
+						request_id TEXT PRIMARY KEY,
+						owner_id TEXT,
+						generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
+						lease_expires_at TEXT,
+						route_revision INTEGER NOT NULL CHECK (route_revision > 0),
+						state TEXT NOT NULL CHECK (state IN
+						 ('pending','turn_granted','wake_delivered','completed','returned_to_lead')),
+						hold_count INTEGER NOT NULL DEFAULT 0 CHECK (hold_count >= 0),
+						next_retry_at TEXT,
+						grant_started_at TEXT,
+						last_error TEXT,
+						updated_at TEXT NOT NULL,
+						wake_sent_at TEXT,
+						liveness_unknown_since TEXT,
+						FOREIGN KEY (request_id, route_revision)
+							REFERENCES workflow_rework_route_revision(request_id, revision)
+					);
+					INSERT INTO workflow_rework_delivery_next
+						(request_id, owner_id, generation, lease_expires_at, route_revision,
+						 state, hold_count, next_retry_at, grant_started_at, last_error,
+						 updated_at, wake_sent_at, liveness_unknown_since)
+					SELECT request_id, owner_id, generation, lease_expires_at, route_revision,
+					       CASE state
+					         WHEN 'awaiting_receipt' THEN 'turn_granted'
+					         WHEN 'replacement_pending' THEN 'pending'
+					         WHEN 'needs_lead' THEN 'returned_to_lead'
+					         WHEN 'held' THEN 'returned_to_lead'
+					         ELSE state END,
+					       hold_count, next_retry_at, grant_started_at,
+					       CASE state
+					         WHEN 'replacement_pending'
+					           THEN 'migrated:replacement_pending:' || COALESCE(last_error, '')
+					         WHEN 'held' THEN 'migrated:held:' || COALESCE(last_error, '')
+					         ELSE last_error END,
+					       updated_at,
+					       CASE WHEN state = 'awaiting_receipt'
+					         THEN COALESCE(${wakeSentAt}, updated_at) ELSE ${wakeSentAt} END,
+					       ${unknownSince}
+					  FROM workflow_rework_delivery;
+					DROP TABLE workflow_rework_delivery;
+					ALTER TABLE workflow_rework_delivery_next RENAME TO workflow_rework_delivery;
+				`);
+				for (const row of returnedOnActiveRuns) {
+					const requestId = String(row.request_id);
+					const routeRevision = Number(row.route_revision);
+					this.appendWorkflowRunEventTx({
+						runId: String(row.run_id),
+						eventUid: `migrated:rework_returned_to_lead:${requestId}:${routeRevision}`,
+						kind: "rework_returned_to_lead",
+						...(row.target_node_id
+							? { nodeId: String(row.target_node_id) }
+							: {}),
+						...(row.preferred_actor_execution_id
+							? { executionId: String(row.preferred_actor_execution_id) }
+							: {}),
+						payload: {
+							requestId,
+							routeRevision,
+							reason: `migrated:${String(row.state)}:${String(row.last_error ?? "")}`,
+							holdCount: Number(row.hold_count),
+							replacementCount: 0,
+							cleanupDisposition: "migrated",
+						},
+					});
+				}
 			})();
 		} finally {
 			if (foreignKeys === 1) this.db.raw.pragma("foreign_keys = ON");
@@ -10373,6 +10667,7 @@ export class StateStore {
 	migrate(): void {
 		this.betaSchedules.migrate();
 		this.customerReleases.migrate();
+		this.reviewRounds.migrate();
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS discord_config (
 				singleton_key TEXT PRIMARY KEY CHECK (singleton_key = 'discord'),
@@ -12059,7 +12354,8 @@ export class StateStore {
 				created_at            TEXT NOT NULL DEFAULT (datetime('now')),
 				updated_at            TEXT,
 				responded_at          TEXT,
-				delivery_nonce        TEXT
+				delivery_nonce        TEXT,
+				completed_at          TEXT
 			)
 		`);
 		// R12 HIGH-4 outbox column on databases created before it existed.
@@ -12085,36 +12381,67 @@ export class StateStore {
 		const reviewJobInfo = this.db.exec("PRAGMA table_info(codex_review_job)");
 		const reviewJobColumns =
 			reviewJobInfo[0]?.values.map((row) => row[1] as string) ?? [];
-		for (const [column, type] of [
-			["question_id", "TEXT"],
-			["failure_raw", "TEXT"],
-			["retry_at", "TEXT"],
-			["retry_trigger", "TEXT"],
-			["retry_parked_at_ms", "INTEGER"],
-			["auto_retry_count", "INTEGER NOT NULL DEFAULT 0"],
-			["head_move_parent_request_id", "TEXT"],
-			["head_move_retry_count", "INTEGER NOT NULL DEFAULT 0"],
-			["failure_attempt_count", "INTEGER NOT NULL DEFAULT 0"],
-			["reviewer_verdict", "TEXT"],
-			["advisories_json", "TEXT"],
-			["settled_json", "TEXT"],
-			["response_json", "TEXT"],
-			["payload_version", "INTEGER"],
-			["target_repo_path", "TEXT"],
-			["target_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
-			["reuse_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
-			["repaired_trailing_brace", "INTEGER NOT NULL DEFAULT 0"],
-			["reviewer_session_generation", "INTEGER NOT NULL DEFAULT 0"],
-			["reviewer_session_failure_streak", "INTEGER NOT NULL DEFAULT 0"],
-			["retired_reviewer_session_uuid", "TEXT"],
-			// FLY-2763: same-family sanction captured at request time
-			["same_family_sanction", "TEXT"],
-		] as const) {
-			if (!reviewJobColumns.includes(column)) {
-				this.db.run(
-					`ALTER TABLE codex_review_job ADD COLUMN ${column} ${type}`,
-				);
+		this.db.transaction(() => {
+			for (const [column, type] of [
+				["accept_seq", "INTEGER"],
+				["voided_at", "TEXT"],
+				["superseded_by_request_id", "TEXT"],
+				["quiet_until", "TEXT"],
+				["question_id", "TEXT"],
+				["failure_raw", "TEXT"],
+				["retry_at", "TEXT"],
+				["retry_trigger", "TEXT"],
+				["retry_parked_at_ms", "INTEGER"],
+				["auto_retry_count", "INTEGER NOT NULL DEFAULT 0"],
+				["head_move_parent_request_id", "TEXT"],
+				["head_move_retry_count", "INTEGER NOT NULL DEFAULT 0"],
+				["failure_attempt_count", "INTEGER NOT NULL DEFAULT 0"],
+				["reviewer_verdict", "TEXT"],
+				["advisories_json", "TEXT"],
+				["settled_json", "TEXT"],
+				["response_json", "TEXT"],
+				["payload_version", "INTEGER"],
+				["target_repo_path", "TEXT"],
+				["target_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
+				["reuse_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
+				["repaired_trailing_brace", "INTEGER NOT NULL DEFAULT 0"],
+				["reviewer_session_generation", "INTEGER NOT NULL DEFAULT 0"],
+				["reviewer_session_failure_streak", "INTEGER NOT NULL DEFAULT 0"],
+				["retired_reviewer_session_uuid", "TEXT"],
+				// FLY-2763: same-family sanction captured at request time
+				["same_family_sanction", "TEXT"],
+				// FLY-2891: stable review completion time (first done only)
+				["completed_at", "TEXT"],
+			] as const) {
+				if (!reviewJobColumns.includes(column)) {
+					this.db.run(
+						`ALTER TABLE codex_review_job ADD COLUMN ${column} ${type}`,
+					);
+				}
 			}
+			// Sparse legacy tables lack the evidence needed to classify acceptance.
+			// target_repo_path is added above; the other predicate columns must exist.
+			if (
+				!reviewJobColumns.includes("accept_seq") &&
+				["status", "frozen_head_sha", "target_path"].every((column) =>
+					reviewJobColumns.includes(column),
+				)
+			) {
+				this.db.run(`UPDATE codex_review_job SET accept_seq = 0
+					WHERE accept_seq IS NULL AND (status <> 'failed'
+					 OR frozen_head_sha IS NOT NULL OR target_path IS NOT NULL
+					 OR target_repo_path IS NOT NULL)`);
+			}
+		});
+		// target_repo_identity is added above, but early schemas predate lane fields.
+		if (
+			["project_name", "issue_id", "review_type"].every((column) =>
+				reviewJobColumns.includes(column),
+			)
+		) {
+			this.db.run(
+				"CREATE INDEX IF NOT EXISTS idx_codex_review_job_lane ON codex_review_job(project_name, issue_id, review_type, target_repo_identity)",
+			);
 		}
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_codex_review_job_exec ON codex_review_job(execution_id)",
@@ -12175,6 +12502,7 @@ export class StateStore {
 		const reuseBindingColumns =
 			reuseBindingInfo[0]?.values.map((row) => row[1] as string) ?? [];
 		for (const [column, type] of [
+			["accept_seq", "INTEGER"],
 			["target_repo_path", "TEXT"],
 			["target_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
 			["reuse_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
@@ -12694,6 +13022,7 @@ export class StateStore {
 		this.migrateShuttleProjection();
 		this.migrateVoiceHealthProjection();
 		this.migrateReleaseReadiness();
+		this.migrateLeadInterrupts();
 		this.db.run(`CREATE TABLE IF NOT EXISTS lead_note (
 			project_name TEXT NOT NULL,
 			issue_uuid TEXT NOT NULL,
@@ -12703,6 +13032,7 @@ export class StateStore {
 			PRIMARY KEY (project_name, issue_uuid, role)
 		)`);
 		installTerminalRowArchiveSchema(this.db.raw);
+        new NotificationAuditStore(this.db.raw).install();
 		this.db.run(`CREATE TABLE IF NOT EXISTS founder_ask (
 			ask_id TEXT PRIMARY KEY, project_name TEXT NOT NULL, issue_id TEXT NOT NULL,
 			channel_id TEXT NOT NULL, thread_id TEXT NOT NULL, lead_id TEXT NOT NULL,
@@ -13020,6 +13350,11 @@ export class StateStore {
 				updated_at TEXT NOT NULL
 			)
 		`);
+	}
+
+	/** FLY-2883: lead_interrupts + append-only lead_interrupt_audit. */
+	private migrateLeadInterrupts(): void {
+		this.leadInterrupts.migrate();
 	}
 
 	private migrateVoiceHealthProjection(): void {
@@ -22188,6 +22523,11 @@ export class StateStore {
 	private rowToCodexReviewJob(row: Record<string, unknown>): CodexReviewJob {
 		return {
 			request_id: row.request_id as string,
+			accept_seq: (row.accept_seq as number) ?? undefined,
+			voided_at: (row.voided_at as string) ?? undefined,
+			superseded_by_request_id:
+				(row.superseded_by_request_id as string) ?? undefined,
+			quiet_until: (row.quiet_until as string) ?? undefined,
 			execution_id: row.execution_id as string,
 			issue_id: (row.issue_id as string) ?? undefined,
 			project_name: row.project_name as string,
@@ -22267,6 +22607,7 @@ export class StateStore {
 	): CodexReviewReuseBinding {
 		return {
 			request_id: row.request_id as string,
+			accept_seq: (row.accept_seq as number) ?? undefined,
 			source_request_id: row.source_request_id as string,
 			execution_id: row.execution_id as string,
 			question_id: row.question_id as string,
@@ -22355,26 +22696,31 @@ export class StateStore {
 			input.reuseRepoIdentity ??
 			source?.reuse_repo_identity ??
 			targetRepoIdentity;
-		this.db.run(
-			`INSERT OR IGNORE INTO codex_review_reuse_binding
-			   (request_id, source_request_id, execution_id, question_id,
-			    target_repo_path, target_repo_identity, reuse_repo_identity,
-			    frozen_head_sha,
-			    delivery_nonce, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
-			[
-				input.requestId,
-				input.sourceRequestId,
-				input.executionId,
-				input.questionId,
-				targetRepoPath ?? null,
-				targetRepoIdentity,
-				reuseRepoIdentity,
-				frozenHeadSha ?? null,
-				randomUUID(),
-			],
-		);
-		const inserted = this.db.getRowsModified() > 0;
+		let inserted = false;
+		this.db.transaction(() => {
+			const acceptSeq = this.getNextCodexReviewAcceptSeq();
+			this.db.run(
+				`INSERT OR IGNORE INTO codex_review_reuse_binding
+				   (request_id, source_request_id, execution_id, question_id,
+				    target_repo_path, target_repo_identity, reuse_repo_identity,
+				    frozen_head_sha,
+				    delivery_nonce, accept_seq, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+				[
+					input.requestId,
+					input.sourceRequestId,
+					input.executionId,
+					input.questionId,
+					targetRepoPath ?? null,
+					targetRepoIdentity,
+					reuseRepoIdentity,
+					frozenHeadSha ?? null,
+					randomUUID(),
+					acceptSeq,
+				],
+			);
+			inserted = this.db.getRowsModified() > 0;
+		});
 		this.save();
 		const binding = this.getCodexReviewReuseBinding(input.requestId);
 		if (!binding) throw new Error(`review reuse binding ${input.requestId} vanished`);
@@ -22424,7 +22770,8 @@ export class StateStore {
 		requestId: string;
 		reason: string;
 		frozenHeadSha: string;
-	}): { released: boolean; binding: CodexReviewReuseBinding; job: CodexReviewJob } {
+		quietUntil?: string;
+	}): { released: boolean; binding: CodexReviewReuseBinding; job: CodexReviewJob | null } {
 		const frozenHeadSha = input.frozenHeadSha.trim().toLowerCase();
 		if (!/^[0-9a-f]{40}$/.test(frozenHeadSha)) {
 			throw new Error("released review binding requires a trusted 40-char SHA");
@@ -22435,6 +22782,11 @@ export class StateStore {
 			const binding = this.getCodexReviewReuseBinding(input.requestId);
 			if (!binding) {
 				throw new Error(`review reuse binding ${input.requestId} is missing`);
+			}
+			if (binding.released_at || binding.responded_at) {
+				const job = this.getCodexReviewJob(input.requestId);
+				this.db.raw.exec("ROLLBACK");
+				return { released: false, binding, job };
 			}
 			const source = this.getCodexReviewJob(binding.source_request_id);
 			if (!source) {
@@ -22464,8 +22816,8 @@ export class StateStore {
 				    target_repo_identity, reuse_repo_identity, frozen_head_sha,
 				    reviewer_session_uuid, reviewer_session_generation,
 				    reviewer_session_failure_streak, author_family, status,
-				    delivery_nonce, created_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, datetime('now'))`,
+				    delivery_nonce, accept_seq, quiet_until, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, datetime('now'))`,
 				[
 					binding.request_id,
 					binding.execution_id,
@@ -22484,6 +22836,8 @@ export class StateStore {
 					priorSession.failureStreak,
 					source.author_family ?? null,
 					randomUUID(),
+					binding.accept_seq ?? 0,
+					input.quietUntil ?? null,
 				],
 			);
 			const job = this.getCodexReviewJob(binding.request_id);
@@ -22612,6 +22966,230 @@ export class StateStore {
 		return null;
 	}
 
+	/** Accepted requests share one sequence; successors retain their origin's value. */
+	getNextCodexReviewAcceptSeq(): number {
+		const row = this.db.raw
+			.prepare(`SELECT COALESCE(MAX(accept_seq), 0) + 1 AS next
+			FROM (SELECT accept_seq FROM codex_review_job
+			      UNION ALL SELECT accept_seq FROM codex_review_reuse_binding)`)
+			.get() as { next: number };
+		return row.next;
+	}
+
+	private insertCodexReviewAudit(
+		job: CodexReviewJob,
+		eventId: string,
+		eventType: string,
+		payload: Record<string, unknown>,
+	): void {
+		if (
+			!this.insertEvent({
+				event_id: eventId,
+				event_type: eventType,
+				execution_id: job.execution_id,
+				issue_id: job.issue_id ?? job.execution_id,
+				project_name: job.project_name,
+				source: "bridge.review-coordinator",
+				severity: "info",
+				payload,
+			})
+		) {
+			throw new Error(`review_audit_insert_failed:${eventId}`);
+		}
+	}
+
+	voidCodexReviewJob(input: {
+		requestId: string;
+		reason: string;
+		trigger: string;
+		supersededByRequestId?: string;
+		retireBindingRequestIds?: string[];
+		gateState?: string;
+		observedHeadSha?: string;
+		nowIso: string;
+	}): {
+		voided: boolean;
+		priorStatus?: CodexReviewJob["status"];
+		job: CodexReviewJob | null;
+	} {
+		let voided = false;
+		let priorStatus: CodexReviewJob["status"] | undefined;
+		this.db.transaction(() => {
+			const job = this.getCodexReviewJob(input.requestId);
+			if (!job) return;
+			this.db.run(
+				`UPDATE codex_review_job
+				SET status = 'failed', failure_reason = ?, voided_at = ?,
+				    superseded_by_request_id = ?, retry_at = NULL, retry_trigger = NULL,
+				    retry_parked_at_ms = NULL, quiet_until = NULL,
+				    failure_attempt_count = failure_attempt_count + 1,
+				    updated_at = datetime('now')
+				WHERE request_id = ? AND voided_at IS NULL
+				  AND (status IN ('pending','running')
+				    OR (status = 'failed' AND (retry_at IS NOT NULL OR retry_trigger = 'account_switch')))`,
+				[
+					input.reason,
+					input.nowIso,
+					input.supersededByRequestId ?? null,
+					input.requestId,
+				],
+			);
+			voided = this.db.getRowsModified() === 1;
+			if (!voided) return;
+			priorStatus = job.status;
+			this.insertCodexReviewAudit(
+				job,
+				`review-job-voided:${job.request_id}`,
+				"review_job_voided",
+				{
+					requestId: job.request_id,
+					reason: input.reason,
+					trigger: input.trigger,
+					priorStatus,
+					questionId: job.question_id,
+					reviewType: job.review_type,
+					frozenHeadSha: job.frozen_head_sha,
+					observedHeadSha: input.observedHeadSha,
+					gateState: input.gateState,
+					supersededByRequestId: input.supersededByRequestId,
+				},
+			);
+			for (const bindingRequestId of input.retireBindingRequestIds ?? []) {
+				if (!input.supersededByRequestId)
+					throw new Error("review_binding_retirement_requires_superseder");
+				this.retireCodexReviewReuseBindingForSupersede({
+					bindingRequestId,
+					sourceRequestId: job.request_id,
+					supersededByRequestId: input.supersededByRequestId,
+					nowIso: input.nowIso,
+				});
+			}
+		});
+		this.save();
+		return {
+			voided,
+			priorStatus,
+			job: this.getCodexReviewJob(input.requestId),
+		};
+	}
+
+	retireCodexReviewReuseBindingForSupersede(input: {
+		bindingRequestId: string;
+		sourceRequestId: string;
+		supersededByRequestId: string;
+		nowIso: string;
+	}): boolean {
+		let retired = false;
+		this.db.transaction(() => {
+			const binding = this.getCodexReviewReuseBinding(input.bindingRequestId);
+			if (!binding || binding.released_at || binding.responded_at) return;
+			const source = this.getCodexReviewJob(input.sourceRequestId);
+			if (!source)
+				throw new Error(
+					`review reuse source ${input.sourceRequestId} is missing`,
+				);
+			this.db.run(
+				`UPDATE codex_review_reuse_binding
+				SET release_reason = 'superseded_by_request', released_at = ?
+				WHERE request_id = ? AND responded_at IS NULL AND released_at IS NULL`,
+				[input.nowIso, input.bindingRequestId],
+			);
+			retired = this.db.getRowsModified() === 1;
+			if (!retired) return;
+			this.insertCodexReviewAudit(
+				source,
+				`review-reuse-retired:${binding.request_id}`,
+				"review_reuse_binding_retired",
+				{
+					bindingRequestId: binding.request_id,
+					sourceRequestId: input.sourceRequestId,
+					supersededByRequestId: input.supersededByRequestId,
+					questionId: binding.question_id,
+				},
+			);
+		});
+		this.save();
+		return retired;
+	}
+
+	listLaneJobs(
+		job: Pick<
+			CodexReviewJob,
+			| "request_id"
+			| "execution_id"
+			| "project_name"
+			| "issue_id"
+			| "review_type"
+			| "target_repo_identity"
+		>,
+		filter: "voidable" | "acceptedOthers",
+	): CodexReviewJob[] {
+		const rows = this.db.raw
+			.prepare(`SELECT * FROM codex_review_job
+			WHERE project_name = ? AND review_type = ? AND target_repo_identity = ?
+			  AND (issue_id = ? OR (issue_id IS NULL AND ? IS NULL AND execution_id = ?))
+			  AND request_id <> ?
+			  AND ${
+					filter === "voidable"
+						? "voided_at IS NULL AND (status IN ('pending','running') OR (status = 'failed' AND (retry_at IS NOT NULL OR retry_trigger = 'account_switch')))"
+						: "accept_seq IS NOT NULL AND (head_move_parent_request_id IS NULL OR head_move_parent_request_id <> ?) AND NOT (voided_at IS NOT NULL AND COALESCE(failure_reason, '') = 'head_moved')"
+				}
+			ORDER BY created_at, request_id`)
+			.all(
+				job.project_name,
+				job.review_type,
+				job.target_repo_identity,
+				job.issue_id ?? null,
+				job.issue_id ?? null,
+				job.execution_id,
+				job.request_id,
+				...(filter === "acceptedOthers" ? [job.request_id] : []),
+			) as Record<string, unknown>[];
+		return rows.map((row) => this.rowToCodexReviewJob(row));
+	}
+
+	restartCodexReviewQuietWindow(input: {
+		requestId: string;
+		expectedHeadSha: string;
+		newHeadSha: string;
+		quietUntil: string;
+	}): boolean {
+		if (!/^[0-9a-f]{40}$/.test(input.newHeadSha)) {
+			throw new Error("quiet-window restart requires a trusted 40-char SHA");
+		}
+		let restarted = false;
+		this.db.transaction(() => {
+			const job = this.getCodexReviewJob(input.requestId);
+			if (!job) return;
+			this.db.run(
+				`UPDATE codex_review_job SET frozen_head_sha = ?, quiet_until = ?
+				WHERE request_id = ? AND status = 'pending' AND voided_at IS NULL
+				  AND lower(frozen_head_sha) = ?`,
+				[
+					input.newHeadSha,
+					input.quietUntil,
+					input.requestId,
+					input.expectedHeadSha.toLowerCase(),
+				],
+			);
+			restarted = this.db.getRowsModified() === 1;
+			if (!restarted) return;
+			this.insertCodexReviewAudit(
+				job,
+				`review-quiet-restart:${job.request_id}:${input.newHeadSha}:${input.quietUntil}`,
+				"review_quiet_window_restarted",
+				{
+					requestId: job.request_id,
+					previousHeadSha: job.frozen_head_sha,
+					newHeadSha: input.newHeadSha,
+					quietUntil: input.quietUntil,
+				},
+			);
+		});
+		this.save();
+		return restarted;
+	}
+
 	/**
 	 * Idempotent insert keyed by requestId (§7.1: re-POST of the same request
 	 * must return the SAME durable job, never a duplicate). Returns whether a
@@ -22619,6 +23197,13 @@ export class StateStore {
 	 */
 	insertCodexReviewJob(input: {
 		requestId: string;
+		accepted?: boolean;
+		quietUntil?: string;
+		supersedeLane?: {
+			nowIso: string;
+			expectedAcceptSeq: number;
+			candidates: Array<{ requestId: string; retireBindingRequestIds: string[] }>;
+		};
 		executionId: string;
 		issueId?: string;
 		projectName: string;
@@ -22644,9 +23229,19 @@ export class StateStore {
 		};
 		/** skip lane writes the durable skipped audit row directly. */
 		status?: "pending" | "skipped";
-	}): { inserted: boolean; job: CodexReviewJob } {
+	}): { inserted: boolean; job: CodexReviewJob; voided: CodexReviewJob[] } {
 		let inserted = false;
+		const voided: CodexReviewJob[] = [];
 		this.db.transaction(() => {
+			if (this.getCodexReviewJob(input.requestId)) return;
+			const accepted = input.accepted !== false;
+			const acceptSeq = accepted ? this.getNextCodexReviewAcceptSeq() : null;
+			if (
+				accepted && input.supersedeLane &&
+				acceptSeq !== input.supersedeLane.expectedAcceptSeq
+			) {
+				throw new Error("review_accept_seq_changed");
+			}
 			this.db.run(
 				`INSERT OR IGNORE INTO codex_review_job
 			   (request_id, execution_id, issue_id, project_name, review_type,
@@ -22654,8 +23249,8 @@ export class StateStore {
 			    target_repo_identity, reuse_repo_identity, frozen_head_sha,
 			    reviewer_session_uuid, reviewer_session_generation,
 			    reviewer_session_failure_streak, author_family, status, delivery_nonce,
-			    same_family_sanction, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+			    same_family_sanction, accept_seq, quiet_until, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
 			[
 				input.requestId,
 				input.executionId,
@@ -22676,6 +23271,8 @@ export class StateStore {
 				input.status ?? "pending",
 				randomUUID(), // R17 delivery nonce — server-only
 				input.sameFamilySanction ?? null,
+				acceptSeq,
+				input.quietUntil ?? null,
 				],
 			);
 			inserted = this.db.getRowsModified() > 0;
@@ -22693,11 +23290,24 @@ export class StateStore {
 					capturedAt: input.designPlanProof.capturedAt,
 				});
 			}
+			if (inserted && accepted && input.supersedeLane) {
+				for (const candidate of input.supersedeLane.candidates) {
+					const result = this.voidCodexReviewJob({
+						requestId: candidate.requestId,
+						reason: "superseded_by_request",
+						trigger: "accept",
+						supersededByRequestId: input.requestId,
+						retireBindingRequestIds: candidate.retireBindingRequestIds,
+						nowIso: input.supersedeLane.nowIso,
+					});
+					if (result.voided && result.job) voided.push(result.job);
+				}
+			}
 		});
 		this.save();
 		const job = this.getCodexReviewJob(input.requestId);
 		if (!job) throw new Error(`review job ${input.requestId} vanished`);
-		return { inserted, job };
+		return { inserted, job, voided };
 	}
 
 	/**
@@ -22710,8 +23320,14 @@ export class StateStore {
 		successorRequestId: string;
 		currentHeadSha: string;
 		failureRaw?: string;
+		expectStatus?: "running" | "failed" | "pending";
+		quietUntil?: string;
+		trigger?: string;
+		observedHeadSha?: string;
+		nowIso?: string;
+		markParentVoided?: boolean;
 	}): {
-		outcome: "requeued" | "existing" | "exhausted";
+		outcome: "requeued" | "existing" | "exhausted" | "voided" | "stale";
 		parent: CodexReviewJob;
 		successor?: CodexReviewJob;
 	} {
@@ -22733,6 +23349,14 @@ export class StateStore {
 				this.db.raw.exec("ROLLBACK");
 				return { outcome: "existing", parent, successor: existing };
 			}
+			if (parent.voided_at) {
+				this.db.raw.exec("ROLLBACK");
+				return { outcome: "voided", parent };
+			}
+			if (input.expectStatus && parent.status !== input.expectStatus) {
+				this.db.raw.exec("ROLLBACK");
+				return { outcome: "stale", parent };
+			}
 			if (parent.review_type !== "code") {
 				throw new Error("only code review jobs can requeue after a head move");
 			}
@@ -22743,18 +23367,27 @@ export class StateStore {
 				parent.head_move_retry_count >=
 				MAX_CODEX_REVIEW_HEAD_MOVE_REQUEUES;
 
+			const markVoided = input.markParentVoided === true && !exhausted;
 			this.db.run(
 				`UPDATE codex_review_job
 				    SET status = 'failed', failure_reason = ?,
 				        failure_raw = ?, retry_at = NULL,
+				        voided_at = CASE WHEN ? THEN ? ELSE voided_at END,
+				        superseded_by_request_id = CASE WHEN ? THEN ? ELSE superseded_by_request_id END,
+				        quiet_until = CASE WHEN ? THEN NULL ELSE quiet_until END,
 				        retry_trigger = NULL, retry_parked_at_ms = NULL,
 				        reviewer_session_failure_streak = 0,
 				        failure_attempt_count = failure_attempt_count + 1,
 				        updated_at = datetime('now')
-				  WHERE request_id = ? AND status NOT IN ('done','skipped')`,
+				  WHERE request_id = ? AND status NOT IN ('done','skipped') AND voided_at IS NULL`,
 				[
 					exhausted ? "head_moved_exhausted" : "head_moved",
 					input.failureRaw ?? null,
+					markVoided ? 1 : 0,
+					input.nowIso ?? new Date().toISOString(),
+					markVoided ? 1 : 0,
+					input.successorRequestId,
+					markVoided ? 1 : 0,
 					input.requestId,
 				],
 			);
@@ -22771,8 +23404,8 @@ export class StateStore {
 				  reviewer_session_uuid,
 				  reviewer_session_generation, reviewer_session_failure_streak,
 				  author_family, status, delivery_nonce,
-				  head_move_parent_request_id, head_move_retry_count, created_at)
-				 VALUES (?, ?, ?, ?, 'code', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', ?, ?, ?, datetime('now'))`,
+				  head_move_parent_request_id, head_move_retry_count, accept_seq, quiet_until, created_at)
+				 VALUES (?, ?, ?, ?, 'code', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', ?, ?, ?, ?, ?, datetime('now'))`,
 					[
 						input.successorRequestId,
 						parent.execution_id,
@@ -22791,7 +23424,32 @@ export class StateStore {
 						randomUUID(),
 						parent.request_id,
 						parent.head_move_retry_count + 1,
+						parent.accept_seq ?? null,
+						input.quietUntil ?? null,
 					],
+				);
+			}
+			if (input.markParentVoided) {
+				this.insertCodexReviewAudit(
+					parent,
+					exhausted
+						? `review-head-move-exhausted:${parent.request_id}:${parent.failure_attempt_count + 1}`
+						: `review-job-voided:${parent.request_id}`,
+					exhausted ? "review_head_move_exhausted" : "review_job_voided",
+					{
+						requestId: parent.request_id,
+						reason: exhausted ? "head_moved_exhausted" : "head_moved",
+						trigger: input.trigger,
+						priorStatus: parent.status,
+						questionId: parent.question_id,
+						reviewType: parent.review_type,
+						frozenHeadSha: parent.frozen_head_sha,
+						observedHeadSha: input.observedHeadSha ?? currentHeadSha,
+						...(exhausted ? {} : {
+							supersededByRequestId: input.successorRequestId,
+							successorRequestId: input.successorRequestId,
+						}),
+					},
 				);
 			}
 			this.db.raw.exec("COMMIT");
@@ -22818,15 +23476,16 @@ export class StateStore {
 	 * same-requestId retry after a reviewer failure). Returns false when the
 	 * job is already running/done/skipped — the caller must not double-run.
 	 */
-	claimCodexReviewJobRunning(requestId: string): boolean {
+	claimCodexReviewJobRunning(requestId: string, quietGateNowIso?: string): boolean {
 		this.db.run(
 			`UPDATE codex_review_job
 			   SET status = 'running', failure_reason = NULL, failure_raw = NULL,
 			       retry_at = NULL, retry_trigger = NULL,
-			       retry_parked_at_ms = NULL,
+			       retry_parked_at_ms = NULL, quiet_until = NULL,
 			       updated_at = datetime('now')
-			 WHERE request_id = ? AND status IN ('pending','failed')`,
-			[requestId],
+			 WHERE request_id = ? AND status IN ('pending','failed') AND voided_at IS NULL
+			 ${quietGateNowIso === undefined ? "" : "AND (quiet_until IS NULL OR julianday(quiet_until) <= julianday(?))"}`,
+			quietGateNowIso === undefined ? [requestId] : [requestId, quietGateNowIso],
 		);
 		const claimed = this.db.getRowsModified() > 0;
 		this.save();
@@ -22844,7 +23503,7 @@ export class StateStore {
 			responseJson: string;
 			payloadVersion: number;
 		},
-	): void {
+	): boolean {
 		this.db.run(
 			`UPDATE codex_review_job
 			   SET status = 'done', verdict = ?, reviewer_verdict = ?,
@@ -22853,8 +23512,9 @@ export class StateStore {
 			       reviewer_session_failure_streak = 0,
 			       failure_reason = NULL, failure_raw = NULL, retry_at = NULL,
 			       retry_trigger = NULL, retry_parked_at_ms = NULL,
-			       updated_at = datetime('now')
-			 WHERE request_id = ?`,
+			       updated_at = datetime('now'),
+			       completed_at = COALESCE(completed_at, datetime('now'))
+			 WHERE request_id = ? AND status = 'running' AND voided_at IS NULL`,
 			[
 				verdict,
 				details?.reviewerVerdict ?? null,
@@ -22866,7 +23526,9 @@ export class StateStore {
 				requestId,
 			],
 		);
+		const updated = this.db.getRowsModified() > 0;
 		this.save();
+		return updated;
 	}
 
 	/**
@@ -22876,6 +23538,7 @@ export class StateStore {
 	 */
 	recordCodexReviewJobFailure(input: {
 		requestId: string;
+		expectStatus?: "running";
 		reason: string;
 		failureRaw?: string;
 		retryAt?: string;
@@ -22944,7 +23607,8 @@ export class StateStore {
 			       END,
 			       failure_attempt_count = failure_attempt_count + 1,
 			       updated_at = datetime('now')
-			 WHERE request_id = ? AND status NOT IN ('done','skipped')`,
+			 WHERE request_id = ? AND status NOT IN ('done','skipped') AND voided_at IS NULL
+			 ${input.expectStatus === "running" ? "AND status = 'running'" : ""}`,
 			[
 				input.reason,
 				input.failureRaw ?? null,
@@ -26655,6 +27319,87 @@ export class StateStore {
 			(...args) => this.appendLeadEvent(...args));
 	}
 
+
+	/** Event-correlated recovery context, never a global pending-question veto. */
+	getMonitoringRecoveryContext(input: {
+		projectName: string; leadId: string; executionId: string;
+	}): { recoveredLostEventIds: string[]; openFailure: boolean; checkedRefs: string[] } {
+		const session = this.getSession(input.executionId);
+		if (!session || session.project_name !== input.projectName) {
+			return { recoveredLostEventIds: [], openFailure: true, checkedRefs: [] };
+		}
+		const rows = this.db.raw.prepare(`SELECT event_id,event_type,payload,seq,delivery_disposition FROM lead_events
+			WHERE lead_id=? AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.execution_id') END=?
+			AND (json_extract(payload,'$.project_name')=? OR json_extract(payload,'$.project_name') IS NULL)
+			ORDER BY seq DESC LIMIT 1001`).all(input.leadId, input.executionId, input.projectName) as Array<{event_id:string;event_type:string;payload:string;seq:number;delivery_disposition:string}>;
+		const lastRecovery = rows.findIndex((row) => row.event_type === "session_monitoring_reestablished" && row.delivery_disposition === "audit_only");
+		const sinceRecovery = rows.slice(0, lastRecovery < 0 ? rows.length : lastRecovery);
+		const recoveredLostEventIds = sinceRecovery.filter((row) => row.event_type === "session_monitoring_lost").map((row) => row.event_id);
+		const faultTypes = new Set(["session_zombie_detected", "session_failed", "session_stuck", "session_orphaned", "gate_timed_out"]);
+		const fault = sinceRecovery.some((row) => {
+			const payload = JSON.parse(row.payload) as Record<string, unknown>;
+			if (faultTypes.has(row.event_type)) return true;
+            // Only inspect content belonging to this recovery episode; independent ASK/founder
+            // traffic retains its original immediate route without vetoing unrelated notices.
+            if (!["session_monitoring_lost", "session_monitoring_reestablished"].includes(row.event_type)) return false;
+            return payload.status === "failed" || payload.status === "blocked" || ["last_error", "error", "failure_kind", "failureKind", "needs_action", "requires_action", "action_required", "question_id", "question", "ask", "prompt", "checkpoint", "founder_message", "messages"].some((key) => payload[key] !== undefined && payload[key] !== null && payload[key] !== "" && payload[key] !== false);
+		});
+		const sessionKey = buildSessionKey(session);
+		const alerts = this.db.raw.prepare(`SELECT correlation_key,event_id FROM alert_threads
+			WHERE project_name=? AND lead_id=? AND resolved_at IS NULL AND
+			(session_key=? OR event_id IN (SELECT event_id FROM session_events WHERE execution_id=? AND project_name=?))
+			UNION SELECT correlation_key,event_id FROM alert_mailbox_ledger
+			WHERE project_name=? AND resolved_at IS NULL AND
+			(session_key=? OR event_id IN (SELECT event_id FROM session_events WHERE execution_id=? AND project_name=?))
+			LIMIT 1`).all(input.projectName, input.leadId, sessionKey, input.executionId, input.projectName, input.projectName, sessionKey, input.executionId, input.projectName) as Array<{correlation_key:string;event_id:string}>;
+		return {
+			recoveredLostEventIds,
+			openFailure: rows.length > 1000 || fault || alerts.length > 0 || Boolean(session.last_error) || ["failed", "blocked"].includes(session.status),
+			checkedRefs: [`session:${input.executionId}`, ...sinceRecovery.map((row) => `lead-event:${row.event_id}`), ...alerts.map((row) => `alert:${row.correlation_key}:${row.event_id}`)],
+		};
+	}
+
+	/** Freeze producer evidence and delivery policy together; replays retain the first decision. */
+	appendLeadNotification(input: {
+		binding: NotificationBinding;
+		eventType: string;
+		payload: string;
+		sessionKey?: string;
+		evidence?: NotificationEvidenceV2;
+		decision: LeadNotificationDecision;
+	}): number {
+		return this.db.raw.transaction(() => {
+			const { binding } = input;
+			const existing = this.getLeadEventByLeadAndId(binding.leadId, binding.eventId);
+			if (existing) return existing.seq;
+			const archived = findArchivedTerminalRow(this.db.raw, "lead_events", [binding.leadId, binding.eventId]);
+			if (archived) return Number(archived.seq);
+			let decision = input.decision;
+			if (input.evidence) {
+				const inserted = this.insertEvent({
+					event_id: `${binding.eventId}:proof`, execution_id: binding.executionId,
+					issue_id: binding.issueId, project_name: binding.projectName,
+					event_type: "lead_notification_proof", source: "bridge-notification-policy-v2",
+					payload: input.evidence,
+				});
+                if (!inserted) {
+                    const proofId = `${binding.eventId}:proof`;
+                    const prior = this.db.raw.prepare("SELECT * FROM session_events WHERE event_id=?").get(proofId) as Record<string, unknown> | undefined
+                        ?? findArchivedTerminalRow(this.db.raw, "session_events", [proofId]);
+                    let matches = false;
+                    try {
+                        matches = Boolean(prior && prior.execution_id === binding.executionId && prior.issue_id === binding.issueId
+                            && prior.project_name === binding.projectName && prior.event_type === "lead_notification_proof"
+                            && prior.source === "bridge-notification-policy-v2"
+                            && canonicalSubmissionDigest(JSON.parse(String(prior.payload))) === canonicalSubmissionDigest(input.evidence));
+                    } catch { /* Invalid prior proof is never quiet authority. */ }
+                    if (!matches) decision = { disposition: "model", policyVersion: "notification-v2", reason: "proof_record_conflict" };
+                }
+			}
+			return this.appendLeadEvent(binding.leadId, binding.eventId, input.eventType, input.payload, input.sessionKey, decision.disposition, decision);
+		})();
+	}
+
 	/** Append a lead event. Returns seq. Dedup on (lead_id, event_id). */
 	appendLeadEvent(
 		leadId: string,
@@ -26663,6 +27408,7 @@ export class StateStore {
 		payload: string,
 		sessionKey?: string,
 		deliveryDisposition: "model" | "audit_only" = "model",
+		auditDecision?: LeadNotificationDecision,
 	): number {
 		const archived = findArchivedTerminalRow(this.db.raw, "lead_events", [
 			leadId,
@@ -26692,8 +27438,9 @@ export class StateStore {
 				`INSERT INTO lead_events (
 				   lead_id, event_id, event_type, payload, session_key,
 				   ack_required, ack_policy, ack_protocol_version,
-				   routing_snapshot, ack_owner_lead_id, delivery_disposition
-				 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				   routing_snapshot, ack_owner_lead_id, delivery_disposition,
+                   notification_policy_version, notification_reason, notification_proof_ref
+				 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					leadId,
 					eventId,
@@ -26706,6 +27453,9 @@ export class StateStore {
 					routingSnapshot,
 					leadId,
 					deliveryDisposition,
+                    auditDecision?.policyVersion ?? null,
+                    auditDecision?.reason ?? null,
+                    auditDecision?.proofRef ?? null,
 				],
 			);
 		} catch (err) {
@@ -27173,12 +27923,22 @@ export class StateStore {
 		return row?.lead_id === leadId && row?.delivery_disposition === "audit_only";
 	}
 
+    getNotificationAuditGeneration() { return new NotificationAuditStore(this.db.raw).reconcile(); }
+    readLeadAuditSummary(input: {projectName:string;leadId:string}, cursor?: {storeEpoch:string;offeredThroughSeq:number;anchorEventId:string|null}) {
+        return new NotificationAuditStore(this.db.raw).snapshot(input,cursor);
+    }
+
 	/** On-demand audit history, including retained cold rows; never a delivery input. */
 	getLeadAuditEventPage(
 		leadId: string,
 		limit = 50,
 		beforeSeq = Number.MAX_SAFE_INTEGER,
-	): { items: LeadEventRow[]; nextCursor: string | null } {
+        scope?: Omit<NotificationAuditRange, "leadId"|"limit"|"beforeSeq">,
+	): { items: LeadEventRow[]; nextCursor: string | null; storeEpoch?: string } {
+        if (scope) {
+            const page = new NotificationAuditStore(this.db.raw).page({...scope,leadId,limit,beforeSeq});
+            return {...page,items:page.items.map(mapLeadEventRow)};
+        }
 		if (
 			!Number.isSafeInteger(limit) ||
 			limit < 1 ||
@@ -27229,6 +27989,14 @@ export class StateStore {
 			.prepare("SELECT * FROM lead_events WHERE seq = ?")
 			.get(seq) as Record<string, unknown> | undefined;
 		return row ? mapLeadEventRow(row) : null;
+	}
+
+	/** FLY-2882: metadata-only lookup (never reads `payload`). */
+	getLeadEventSessionKeyBySeq(seq: number): string | null {
+		const row = this.db.raw
+			.prepare("SELECT session_key FROM lead_events WHERE seq = ?")
+			.get(seq) as { session_key: unknown } | undefined;
+		return typeof row?.session_key === "string" ? row.session_key : null;
 	}
 
 	/** FLY-1687: exact per-(project, Lead) patrol chain head; no SQL LIKE. */
@@ -30976,6 +31744,9 @@ export class StateStore {
 			);
 		}
 		const additions: Array<[string, string]> = [
+            ["notification_policy_version", "TEXT"],
+            ["notification_reason", "TEXT"],
+            ["notification_proof_ref", "TEXT"],
 			["delivery_disposition", "TEXT NOT NULL DEFAULT 'model' CHECK(delivery_disposition IN ('model','audit_only'))"],
 			["ack_required", "INTEGER NOT NULL DEFAULT 0"],
 			["ack_policy", "TEXT"],
@@ -35145,17 +35916,20 @@ export class StateStore {
 				lease_expires_at TEXT,
 				route_revision INTEGER NOT NULL CHECK (route_revision > 0),
 				state TEXT NOT NULL CHECK (state IN
-				 ('pending','turn_granted','awaiting_receipt','wake_delivered','replacement_pending','completed','held','needs_lead')),
+				 ('pending','turn_granted','wake_delivered','completed','returned_to_lead')),
 				hold_count INTEGER NOT NULL DEFAULT 0 CHECK (hold_count >= 0),
 				next_retry_at TEXT,
 				grant_started_at TEXT,
 				last_error TEXT,
 				updated_at TEXT NOT NULL,
+				wake_sent_at TEXT,
+				liveness_unknown_since TEXT,
 				FOREIGN KEY (request_id, route_revision)
 					REFERENCES workflow_rework_route_revision(request_id, revision)
 			)
 		`);
 		this.migrateWorkflowReworkDeliveryBudget();
+		this.migrateWorkflowReworkDeliveryTwoState();
 		this.db.run(`CREATE INDEX IF NOT EXISTS idx_rework_wake_replacement_backfill
 			ON workflow_run_event(run_id, seq)
 			WHERE kind IN ('rework_replacement_materialized','rework_writer_replacement_converged')`);
@@ -39960,7 +40734,7 @@ export class StateStore {
 			if(candidate.root_key!==rootKey || candidate.installed_generation!==root.generation || candidate.probe_result!=="ok" || !["committed","recovering","settled"].includes(String(candidate.state)))return false;
 			const material=this.codexQuota.getInstallationMaterial(String(candidate.incident_id));
 			return material?.accountKey===root.accountKey && material.profile===root.profile && material.installedAuthDigest===candidate.installed_auth_digest;
-		});
+		}) ?? this.codexQuota.getResumeOutputRecoveryPermit(incidentId);
 	}
 
 	/** Original installation proof is immutable; token refresh observes bytes without changing identity generation. */
@@ -39968,8 +40742,9 @@ export class StateStore {
 		this.db.transaction(() => {
 			const incident = this.codexQuota.getIncident(input.incidentId);
 			const root = incident && this.codexQuota.getRoot(String(incident.root_key));
-			if (!incident || incident.probe_result !== "ok" || !["committed","recovering","settled"].includes(String(incident.state)) ||
-				!root || root.generation !== input.generation || root.generation !== incident.installed_generation || root.accountKey !== input.accountKey || root.profile !== input.profile || !/^[0-9a-f]{64}$/.test(input.authDigest))
+			const proof = this.getCodexQuotaRecoveryPermit(input.incidentId);
+			if (!incident || !proof ||
+				!root || root.generation !== input.generation || root.generation !== proof.installed_generation || root.accountKey !== input.accountKey || root.profile !== input.profile || !/^[0-9a-f]{64}$/.test(input.authDigest))
 				throw new Error("quota_canonical_observation_conflict");
 			this.db.run("CREATE TABLE IF NOT EXISTS codex_quota_canonical_observation(incident_id TEXT NOT NULL,generation INTEGER NOT NULL,auth_digest TEXT NOT NULL,reason TEXT NOT NULL,observed_at TEXT NOT NULL,PRIMARY KEY(incident_id,generation,auth_digest))");
 			this.db.run("INSERT OR IGNORE INTO codex_quota_canonical_observation VALUES(?,?,?,'same_account_refresh',?)",[input.incidentId,input.generation,input.authDigest,new Date().toISOString()]);
@@ -41075,7 +41850,10 @@ export class StateStore {
 				[eventUid],
 			)[0];
 			if (prior) {
-				if (prior.kind !== "unlaunched_admission_rolled_back") {
+				if (
+					prior.kind !== "unlaunched_admission_rolled_back" &&
+					prior.kind !== "rework_replacement_launch_rolled_back"
+				) {
 					result = { ok: false, reason: "rollback_receipt_conflict" };
 					return;
 				}
@@ -41266,21 +42044,23 @@ export class StateStore {
 				reason: "source_terminal",
 				now: input.now,
 			});
-			this.db.run(
-				"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND status = 'active'",
-				[input.runId],
-			);
-			if (binding.mode === "replacement" && binding.rework_request_id) {
+			// FLY-2921 C4.1: an unlaunched rework replacement is the coordinator's
+			// to replace again (within its budget); the run is never frozen and
+			// no run-level hold is written for it.
+			const reworkReplacement =
+				binding.mode === "replacement" && !!binding.rework_request_id;
+			if (!reworkReplacement) {
+				this.db.run(
+					"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND status = 'active'",
+					[input.runId],
+				);
+			} else {
 				this.db.run(
 					`UPDATE workflow_rework_delivery
-					    SET state = 'held', owner_id = NULL, lease_expires_at = NULL,
-					        last_error = 'replacement_launch_rolled_back', updated_at = ?
-					  WHERE request_id = ? AND state = 'replacement_pending'`,
-					[input.now, binding.rework_request_id],
+					    SET next_retry_at = ?, updated_at = ?
+					  WHERE request_id = ? AND state = 'pending'`,
+					[input.now, input.now, binding.rework_request_id],
 				);
-				if (this.db.getRowsModified() !== 1) {
-					throw new Error("workflow_rework_replacement_rollback_cas_failed");
-				}
 			}
 			const eventPayload = {
 				attempt: input.attempt,
@@ -41288,35 +42068,61 @@ export class StateStore {
 				fenceGeneration: input.fenceGeneration,
 				reason: "unlaunched_admission_rolled_back",
 				at: input.now,
+				...(reworkReplacement
+					? { requestId: binding.rework_request_id }
+					: {}),
 			};
 			this.appendWorkflowRunEventCheckedTx({
 				runId: input.runId,
 				eventUid,
-				kind: "unlaunched_admission_rolled_back",
+				kind: reworkReplacement
+					? "rework_replacement_launch_rolled_back"
+					: "unlaunched_admission_rolled_back",
 				nodeId: input.nodeId,
 				executionId: input.executionId,
 				payload: eventPayload,
 			});
-			const alertPayload: WorkflowEngineAlertPayload = {
-				leadId: input.alertIdentity.leadId,
-				projectName: input.alertIdentity.projectName,
-				eventId: eventUid,
-				eventType: "workflow_engine_escalation",
-				severity: "severe",
-				sessionKey: `wf:${input.runId}`,
-				title: `Unlaunched workflow admission rolled back for ${run.issue_id}`,
-				body: `Execution ${input.executionId} never produced launch evidence. The engine installed cancellation fence ${input.fenceGeneration}, revoked its unused credentials, abandoned the dispatch intent, and held run ${input.runId}. Re-open a new run after inspecting the launch failure.`,
-				metadata: {
-					workflowEngine: {
-						runId: input.runId,
-						issueId: run.issue_id,
-						nodeId: input.nodeId,
-						executionId: input.executionId,
-						disposition: "held",
-						leadResolution: input.alertIdentity.leadResolution,
-					},
-				},
-			};
+			const alertPayload: WorkflowEngineAlertPayload = reworkReplacement
+				? {
+						leadId: input.alertIdentity.leadId,
+						projectName: input.alertIdentity.projectName,
+						eventId: eventUid,
+						eventType: "workflow_engine_escalation",
+						severity: "warning",
+						sessionKey: `wf:${input.runId}`,
+						title: `Rework replacement launch rolled back for ${run.issue_id}`,
+						body: `Replacement ${input.executionId} for rework ${binding.rework_request_id} never produced launch evidence. The engine installed cancellation fence ${input.fenceGeneration}, revoked its unused credentials, and abandoned the dispatch intent. The run stays active; the rework coordinator mints another replacement within its budget, or returns the rework to you.`,
+						metadata: {
+							workflowEngine: {
+								runId: input.runId,
+								issueId: run.issue_id,
+								nodeId: input.nodeId,
+								executionId: input.executionId,
+								disposition: "rework_replacement_launch_rolled_back",
+								leadResolution: input.alertIdentity.leadResolution,
+							},
+						},
+					}
+				: {
+						leadId: input.alertIdentity.leadId,
+						projectName: input.alertIdentity.projectName,
+						eventId: eventUid,
+						eventType: "workflow_engine_escalation",
+						severity: "severe",
+						sessionKey: `wf:${input.runId}`,
+						title: `Unlaunched workflow admission rolled back for ${run.issue_id}`,
+						body: `Execution ${input.executionId} never produced launch evidence. The engine installed cancellation fence ${input.fenceGeneration}, revoked its unused credentials, abandoned the dispatch intent, and held run ${input.runId}. Re-open a new run after inspecting the launch failure.`,
+						metadata: {
+							workflowEngine: {
+								runId: input.runId,
+								issueId: run.issue_id,
+								nodeId: input.nodeId,
+								executionId: input.executionId,
+								disposition: "held",
+								leadResolution: input.alertIdentity.leadResolution,
+							},
+						},
+					};
 			this.enqueueWorkflowEngineAlertTx({
 				escalationUid: eventUid,
 				runId: input.runId,
@@ -41366,10 +42172,35 @@ export class StateStore {
 		const prefix =
 			input.action === "alert" ? "unlaunched_admission" : "unlaunched_hold";
 		const eventUid = `${prefix}:${input.runId}:${input.nodeId}:${input.attempt}:${input.executionId}`;
+		// FLY-2921 C4.2: a stalled rework replacement is never a run-level
+		// hold. Its unresolved launch is counted against the rework delivery
+		// budget (returned to the Lead when spent); "no rollback without proof,
+		// no guessing death" still holds — nothing is rolled back here.
+		const replacementBinding = this.getWorkflowActivationForAttempt({
+			executionId: input.executionId,
+			runId: input.runId,
+			nodeId: input.nodeId,
+			attempt: input.attempt,
+		});
+		const reworkTarget = this.resolveOpenWorkflowReworkTarget({
+			runId: input.runId,
+			nodeId: input.nodeId,
+			attempt: input.attempt,
+		});
+		const reworkReplacement =
+			input.action === "hold" &&
+			replacementBinding?.mode === "replacement" &&
+			!!replacementBinding.rework_request_id &&
+			reworkTarget !== undefined &&
+			!reworkTarget.conflict &&
+			reworkTarget.requestId === replacementBinding.rework_request_id &&
+			reworkTarget.preferredActorExecutionId === input.executionId;
 		const eventKind =
 			input.action === "alert"
 				? "unlaunched_admission_alerted"
-				: "unlaunched_admission_held";
+				: reworkReplacement
+					? "rework_replacement_launch_unresolved"
+					: "unlaunched_admission_held";
 		let result:
 			| { ok: true; eventUid: string; idempotentReplay: boolean }
 			| { ok: false; reason: string } = {
@@ -41427,7 +42258,18 @@ export class StateStore {
 				result = { ok: false, reason: "unlaunched_intent_identity_changed" };
 				return;
 			}
-			if (input.action === "hold") {
+			let reworkFailure: WorkflowReworkFailureSettlement | undefined;
+			if (reworkReplacement) {
+				// A live coordinator claim means the coordinator is looking at
+				// this row right now and counts the stall itself.
+				reworkFailure = this.settleWorkflowReworkFailureTx({
+					requestId: replacementBinding!.rework_request_id!,
+					reason: `replacement_launch_unresolved:${input.reason}`,
+					alertIdentity: input.alertIdentity,
+					now: input.now,
+					fence: "unowned",
+				});
+			} else if (input.action === "hold") {
 				this.db.run(
 					"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND status = 'active'",
 					[input.runId],
@@ -41445,6 +42287,17 @@ export class StateStore {
 				reason: input.reason,
 				sourceAt: input.sourceAt,
 				at: input.now,
+				...(reworkReplacement
+					? {
+							requestId: replacementBinding!.rework_request_id,
+							reworkFailure: reworkFailure?.ok
+								? {
+										holdCount: reworkFailure.holdCount,
+										state: reworkFailure.state,
+									}
+								: { refused: reworkFailure?.reason ?? "unknown" },
+						}
+					: {}),
 			};
 			this.appendWorkflowRunEventCheckedTx({
 				runId: input.runId,
@@ -41455,7 +42308,28 @@ export class StateStore {
 				payload,
 			});
 			const branchLabel = "unlaunched admission";
-			const alertPayload: WorkflowEngineAlertPayload = {
+			const alertPayload: WorkflowEngineAlertPayload = reworkReplacement
+				? {
+						leadId: input.alertIdentity.leadId,
+						projectName: input.alertIdentity.projectName,
+						eventId: eventUid,
+						eventType: "workflow_engine_escalation",
+						severity: "warning",
+						sessionKey: `wf:${input.runId}`,
+						title: `Rework replacement launch unresolved for ${run.issue_id}`,
+						body: `Replacement ${input.executionId} remained stalled at launch ordinal ${input.launchOrdinal} and could not be safely rolled back. Reason: ${input.reason}. The run stays active; this counts against the rework delivery budget, and the rework returns to you if the budget is spent.`,
+						metadata: {
+							workflowEngine: {
+								runId: input.runId,
+								issueId: run.issue_id,
+								nodeId: input.nodeId,
+								executionId: input.executionId,
+								disposition: "rework_replacement_launch_unresolved",
+								leadResolution: input.alertIdentity.leadResolution,
+							},
+						},
+					}
+				: {
 				leadId: input.alertIdentity.leadId,
 				projectName: input.alertIdentity.projectName,
 				eventId: eventUid,
@@ -41787,6 +42661,8 @@ export class StateStore {
 						[input.executionId, owner.owner_generation],
 					);
 				}
+				// FLY-2900 §5.2 phase two rides the launch commit.
+				this.commitCodexQuotaFallbackTx(input.executionId, input.now);
 				this.commitWorkflowIssueDeliveryEvidenceTx({
 					executionId: input.executionId,
 					generation: marker.generation,
@@ -42043,6 +42919,12 @@ export class StateStore {
 				  WHERE execution_id = ?
 				    AND status NOT IN ('completed','cancelled','merged','superseded')`,
 				[input.now, input.executionId],
+			);
+			// FLY-2900 §5.2: a refused quota-fallback body hands the node back.
+			this.revertCodexQuotaFallbackTx(
+				input.executionId,
+				"launch_released",
+				input.now,
 			);
 			result = { ok: true, generation: input.generation };
 		});
@@ -42872,6 +43754,11 @@ export class StateStore {
 			if (this.db.getRowsModified() !== 1) {
 				throw new Error("workflow launch commit fence lost");
 			}
+			// FLY-2900 §5.2 phase two rides the launch commit.
+			this.commitCodexQuotaFallbackTx(
+				input.executionId,
+				new Date().toISOString(),
+			);
 			this.commitWorkflowIssueDeliveryEvidenceTx({
 				executionId: input.executionId,
 				generation: input.generation,
@@ -43398,18 +44285,34 @@ export class StateStore {
 			if (replacementExecutionId === identity.executionId ||
 				replacement?.project_name !== run.project_name ||
 				replacement.issue_id !== run.issue_id || replacement.role !== binding.node_id) continue;
-			const kind = route.interpreted_by === "engine:proven_dead_replacement"
-				? "rework_replacement_materialized"
-				: route.interpreted_by === "engine:writer_replacement_convergence"
-					? "rework_writer_replacement_converged" : null;
+			// FLY-2921: the shared replacement core (proven-dead replacement and
+			// resume fallback) writes one materialized receipt per dead route
+			// revision; receipts written before FLY-2921 are per request.
+			const kind =
+				route.interpreted_by === "engine:proven_dead_replacement" ||
+				route.interpreted_by === "engine:resume_fallback"
+					? "rework_replacement_materialized"
+					: route.interpreted_by === "engine:writer_replacement_convergence"
+						? "rework_writer_replacement_converged" : null;
 			if (!kind) continue;
-			const replacementEventUid = kind === "rework_replacement_materialized"
-				? `${kind}:${request.request_id}`
-				: `${kind}:${request.request_id}:${route.new_revision}`;
-			const event = this.workflowSelectAll(
-				"SELECT kind, node_id, execution_id, payload FROM workflow_run_event WHERE run_id = ? AND event_uid = ?",
-				[run.run_id, replacementEventUid],
-			)[0];
+			const candidateUids = kind === "rework_replacement_materialized"
+				? [
+						`${kind}:${request.request_id}:${route.old_revision}`,
+						`${kind}:${request.request_id}`,
+					]
+				: [`${kind}:${request.request_id}:${route.new_revision}`];
+			let replacementEventUid = candidateUids[0]!;
+			let event: Record<string, unknown> | undefined;
+			for (const uid of candidateUids) {
+				event = this.workflowSelectAll(
+					"SELECT kind, node_id, execution_id, payload FROM workflow_run_event WHERE run_id = ? AND event_uid = ?",
+					[run.run_id, uid],
+				)[0];
+				if (event) {
+					replacementEventUid = uid;
+					break;
+				}
+			}
 			if (!event || event.kind !== kind || event.node_id !== binding.node_id ||
 				event.execution_id !== identity.executionId) continue;
 			let payload: Record<string, unknown>;
@@ -43920,10 +44823,16 @@ export class StateStore {
 		if (delivery.state === "wake_delivered" || delivery.state === "completed") {
 			return { ok: true, idempotentReplay: true };
 		}
+		// FLY-2921: a receipt is accepted straight from `turn_granted` (with or
+		// without `wake_sent_at`: an actor may ack before the push result is
+		// recorded). The completion-implied proof additionally self-heals a
+		// `returned_to_lead` row whose grant had started: the actor did hold
+		// the write TURN and submitted, so the obligation was delivered.
 		const allowedStartStates: Array<WorkflowReworkDeliveryRow["state"]> =
-			input.source === "completion_implied"
-				? ["turn_granted", "awaiting_receipt"]
-				: ["awaiting_receipt"];
+			input.source === "completion_implied" &&
+			delivery.grant_started_at !== null
+				? ["turn_granted", "returned_to_lead"]
+				: ["turn_granted"];
 		if (!allowedStartStates.includes(delivery.state)) {
 			return { ok: false, reason: "rework_wake_receipt_not_ready" };
 		}
@@ -43960,11 +44869,14 @@ export class StateStore {
 			`UPDATE workflow_rework_delivery
 			    SET state = 'wake_delivered', owner_id = NULL,
 			        lease_expires_at = NULL, next_retry_at = ?,
+			        wake_sent_at = COALESCE(wake_sent_at, ?),
+			        liveness_unknown_since = NULL,
 			        last_error = NULL, updated_at = ?
 			  WHERE request_id = ? AND route_revision = ?
 			    AND state IN (${allowedStartStates.map(() => "?").join(",")})`,
 			[
 				workflowDeliveryReceiptNextRetryAt(input.ackedAt),
+				input.ackedAt,
 				input.ackedAt,
 				requestId,
 				route.revision,
@@ -43973,6 +44885,14 @@ export class StateStore {
 		);
 		if (this.db.getRowsModified() !== 1) {
 			return { ok: false, reason: "rework_wake_receipt_race" };
+		}
+		if (delivery.state === "returned_to_lead") {
+			this.closeReworkReturnedToLeadHoldTx({
+				runId: request.run_id,
+				requestId,
+				routeRevision: route.revision,
+				reason: "completion_implied_receipt",
+			});
 		}
 		this.projectWorkflowDeliveryClockTx({
 			family: "rework",
@@ -44045,9 +44965,11 @@ export class StateStore {
 	 * completing wake activation, before the transition proceeds.
 	 *
 	 * (A) no wake rework binding → nothing happens.
-	 * (B) delivery `turn_granted|awaiting_receipt` on the current revision →
-	 *     the completion itself proves the wake was delivered, so the receipt
-	 *     is projected inline; the transition then settles path and delivery.
+	 * (B) delivery `turn_granted` on the current revision → the completion
+	 *     itself proves the wake was delivered, so the receipt is projected
+	 *     inline; the transition then settles path and delivery. FLY-2921: a
+	 *     `returned_to_lead` row whose grant had started is healed the same
+	 *     way, and its Lead door is closed in the same transaction.
 	 * (B′) delivery `wake_delivered` (path must be `active`) or `completed` →
 	 *     already projected; nothing happens.
 	 * (C) anything else → structured refusal with zero writes. Only the
@@ -44133,9 +45055,13 @@ export class StateStore {
 		if (delivery.route_revision !== latestRoute.revision) {
 			return refuse(false);
 		}
+		// FLY-2921: `returned_to_lead` with a started grant self-heals below.
+		const impliedSelfHeal =
+			delivery.state === "returned_to_lead" &&
+			delivery.grant_started_at !== null;
 		if (
 			(delivery.state === "turn_granted" ||
-				delivery.state === "awaiting_receipt" ||
+				impliedSelfHeal ||
 				delivery.state === "wake_delivered") &&
 			(path.route_revision !== latestRoute.revision ||
 				path.current_node_id !== latestRoute.target_node_id ||
@@ -44145,10 +45071,7 @@ export class StateStore {
 				"rework_receipt_implied_context_corrupt:path_target",
 			);
 		}
-		if (
-			delivery.state === "turn_granted" ||
-			delivery.state === "awaiting_receipt"
-		) {
+		if (delivery.state === "turn_granted" || impliedSelfHeal) {
 			const projected = this.projectWorkflowReworkWakeReceiptTx({
 				activationId: binding.activation_id,
 				executionId: input.executionId,
@@ -44230,6 +45153,9 @@ export class StateStore {
 			grant_started_at: (row.grant_started_at as string | null) ?? null,
 			last_error: (row.last_error as string | null) ?? null,
 			updated_at: row.updated_at as string,
+			wake_sent_at: (row.wake_sent_at as string | null) ?? null,
+			liveness_unknown_since:
+				(row.liveness_unknown_since as string | null) ?? null,
 		};
 	}
 
@@ -44292,9 +45218,7 @@ export class StateStore {
 		const states = input?.states ?? [
 			"pending",
 			"turn_granted",
-			"awaiting_receipt",
 			"wake_delivered",
-			"replacement_pending",
 		];
 		if (states.length === 0) return [];
 		const placeholders = states.map(() => "?").join(", ");
@@ -44363,13 +45287,7 @@ export class StateStore {
 				delivery.route_revision !== route.revision ||
 				delivery.owner_id !== input.ownerId ||
 				delivery.generation !== input.generation ||
-				![
-					"pending",
-					"turn_granted",
-					"awaiting_receipt",
-					"wake_delivered",
-					"replacement_pending",
-				].includes(delivery.state)
+				!["pending", "turn_granted", "wake_delivered"].includes(delivery.state)
 			) {
 				result = { ok: false, reason: "writer_replacement_context_changed" };
 				return;
@@ -44508,15 +45426,19 @@ export class StateStore {
 					input.now,
 				],
 			);
+			// FLY-2921: converged writers land on `pending` + a new revision,
+			// the same shape as any other replacement; the dispatcher launches
+			// the converged intent (reason `rework_replacement:<req>`).
 			this.db.run(
 				`UPDATE workflow_rework_delivery
-				    SET route_revision = ?, state = 'replacement_pending',
+				    SET route_revision = ?, state = 'pending',
 				        owner_id = NULL, lease_expires_at = NULL, next_retry_at = NULL,
+				        hold_count = 0, grant_started_at = NULL, wake_sent_at = NULL,
+				        liveness_unknown_since = NULL,
 				        last_error = 'writer_replacement_converged', updated_at = ?
 				  WHERE request_id = ? AND route_revision = ? AND owner_id = ?
 				    AND generation = ?
-				    AND state IN ('pending','turn_granted','awaiting_receipt',
-				                  'wake_delivered','replacement_pending')`,
+				    AND state IN ('pending','turn_granted','wake_delivered')`,
 				[
 					nextRevision,
 					input.now,
@@ -44572,263 +45494,167 @@ export class StateStore {
 	}
 
 	/**
-	 * Convert a proven-dead rework actor reservation into one ordinary fresh
-	 * dispatch. The request and prior route remain immutable; a new route
-	 * revision records the replacement actor, while launch recognition still
-	 * flows through the existing fenced dispatcher path.
+	 * FLY-2921 C2/C6: the ONE transaction core that swaps a rework target's
+	 * actor. Both the coordinator's proven-dead replacement and the standby
+	 * resume fallback go through here, so every replacement gets the same
+	 * dispatch reason (`rework_replacement:<req>`, which the dispatcher's
+	 * launch fence requires), a fresh route revision, a re-minted delivery
+	 * attempt, wake-retirement obligations, and resume lineage. The delivery
+	 * always lands on `pending` pointing at the new actor; the dispatcher
+	 * launches it with the rework content in the launch envelope.
 	 */
-	materializeWorkflowReworkReplacement(input: {
-		requestId: string;
+	private materializeReworkReplacementCoreTx(input: {
+		request: WorkflowReworkRequestRow;
+		route: WorkflowReworkRouteRevisionRow;
+		run: WorkflowRunRow;
 		deadExecutionId: string;
 		newExecutionId: string;
 		reason: string;
 		observedAt: string;
-		recoverHeldPaneLoss?: boolean;
-	}):
-		| {
-				ok: true;
-				executionId: string;
-				launchOrdinal: number;
-				idempotentReplay: boolean;
-		  }
-		| { ok: false; reason: string } {
-		if (
-			!input.requestId ||
-			!input.deadExecutionId ||
-			!input.newExecutionId ||
-			!input.reason.trim() ||
-			!StateStore.workflowFiniteTimestamp(input.observedAt)
-		) {
-			return { ok: false, reason: "invalid_rework_replacement" };
-		}
-		let result:
-			| {
-					ok: true;
-					executionId: string;
-					launchOrdinal: number;
-					idempotentReplay: boolean;
-			  }
-			| { ok: false; reason: string } = {
-			ok: false,
-			reason: "rework_replacement_not_materialized",
-		};
-		this.db.transaction(() => {
-			const eventUid = `rework_replacement_materialized:${input.requestId}`;
-			const prior = this.workflowSelectAll(
-				"SELECT kind, payload FROM workflow_run_event WHERE event_uid = ?",
-				[eventUid],
-			)[0];
-			if (prior) {
-				let payload: Record<string, unknown>;
-				try {
-					payload = JSON.parse(prior.payload as string) as Record<
-						string,
-						unknown
-					>;
-				} catch {
-					result = { ok: false, reason: "rework_replacement_receipt_corrupt" };
-					return;
-				}
-				if (
-					prior.kind !== "rework_replacement_materialized" ||
-					typeof payload.newExecutionId !== "string" ||
-					!Number.isInteger(payload.launchOrdinal)
-				) {
-					result = { ok: false, reason: "rework_replacement_receipt_conflict" };
-					return;
-				}
-				result = {
-					ok: true,
-					executionId: payload.newExecutionId,
-					launchOrdinal: Number(payload.launchOrdinal),
-					idempotentReplay: true,
-				};
-				return;
-			}
-			const request = this.getWorkflowReworkRequest(input.requestId);
-			const route = this.getLatestWorkflowReworkRoute(input.requestId);
-			const delivery = this.getWorkflowReworkDelivery(input.requestId);
-			const run = request ? this.getWorkflowRun(request.run_id) : undefined;
-			const deadSession = this.getSession(input.deadExecutionId);
-			const heldPaneLossRecovery =
-				input.recoverHeldPaneLoss === true &&
-				run?.status === "held" &&
-				delivery?.state === "held" &&
-				delivery.last_error === "persisted_target_missing" &&
-				isStateStoreIrreversibleTerminalForZombie(deadSession?.status);
-			if (
-				!request ||
-				!route ||
-				!delivery ||
-				!run ||
-				run.engine_owned !== 1 ||
-				(!heldPaneLossRecovery &&
-					(run.status !== "active" ||
-						delivery.state !== "replacement_pending")) ||
-				delivery.route_revision !== route.revision ||
-				route.preferred_actor_execution_id !== input.deadExecutionId
-			) {
-				result = { ok: false, reason: "rework_replacement_context_changed" };
-				return;
-			}
-			const target = this.getWorkflowRunNode(
-				request.run_id,
-				route.target_node_id,
-				route.target_attempt,
-			);
-			if (
-				!target ||
-				!(
-					target.state === "pending" ||
-					target.state === "admitted" ||
-					target.state === "running"
-				) ||
-				target.execution_id !== input.deadExecutionId
-			) {
-				result = { ok: false, reason: "rework_replacement_target_changed" };
-				return;
-			}
+		interpretedBy: "engine:proven_dead_replacement" | "engine:resume_fallback";
+		interpretationReason: string;
+		provenDead: boolean;
+		launchPurpose?: { purpose: "resume_fallback"; sourceDemandId: string };
+		ownerFence?: { ownerId: string; generation: number };
+	}): { launchOrdinal: number; routeRevision: number } {
+		const { request, route, run } = input;
+		const requestId = request.request_id;
+		const deadSession = this.getSession(input.deadExecutionId);
+		if (input.provenDead) {
 			this.terminalizeProvenDeadSessionTx(
 				input.deadExecutionId,
 				`rework_actor_proven_dead:${input.reason}`,
 			);
-			// Superseding the old exact actor also settles any rework-reachable
-			// completion park in this transaction. A crash cannot commit the new
-			// route while leaving stale wake/park evidence for the replaced actor.
-			this.settleWorkflowEngineParksForRunTx(
-				request.run_id,
-				input.observedAt,
-				REWORK_REPLACEMENT_PARK_SETTLEMENT_REASONS,
-			);
-			if (heldPaneLossRecovery) {
-				this.db.run(
-					"UPDATE workflow_run SET status = 'active' WHERE run_id = ? AND status = 'held'",
-					[request.run_id],
-				);
-				if (this.db.getRowsModified() !== 1) {
-					throw new Error("workflow_rework_pane_loss_run_cas_failed");
-				}
-				this.db.run(
-					`UPDATE workflow_rework_delivery
-					    SET state = 'replacement_pending', hold_count = 0,
-					        next_retry_at = NULL, last_error = ?, updated_at = ?
-					  WHERE request_id = ? AND route_revision = ? AND state = 'held'
-					    AND last_error = 'persisted_target_missing'`,
-					[input.reason, input.observedAt, input.requestId, route.revision],
-				);
-				if (this.db.getRowsModified() !== 1) {
-					throw new Error("workflow_rework_pane_loss_delivery_cas_failed");
-				}
-				this.reviveHeldWorkflowCarrierDeliveriesTx({
-					runId: request.run_id,
-					now: input.observedAt,
-					reason: `pane_loss_recovery:${input.reason}`,
-				});
-			}
-			for (const table of [
-				"workflow_output_credential",
-				"workflow_submission_credential",
-			]) {
-				this.db.run(
-					`UPDATE ${table}
-					    SET revoked = 1, revoked_reason = 'rework_actor_proven_dead'
-					  WHERE run_id = ? AND node_id = ? AND attempt = ?
-					    AND execution_id = ? AND consumed_at IS NULL AND revoked = 0`,
-					[
-						request.run_id,
-						route.target_node_id,
-						route.target_attempt,
-						input.deadExecutionId,
-					],
-				);
-			}
-			const launchOrdinal = this.allocateWorkflowLaunchOrdinalTx(
-				request.run_id,
-				route.target_node_id,
-				route.target_attempt,
-				input.newExecutionId,
-			);
+		}
+		// Superseding the old exact actor also settles any rework-reachable
+		// completion park in this transaction. A crash cannot commit the new
+		// route while leaving stale wake/park evidence for the replaced actor.
+		this.settleWorkflowEngineParksForRunTx(
+			request.run_id,
+			input.observedAt,
+			REWORK_REPLACEMENT_PARK_SETTLEMENT_REASONS,
+		);
+		for (const table of [
+			"workflow_output_credential",
+			"workflow_submission_credential",
+		]) {
 			this.db.run(
-				`UPDATE workflow_side_effect_ledger
-				    SET reason = ?
+				`UPDATE ${table}
+				    SET revoked = 1, revoked_reason = 'rework_actor_replaced'
 				  WHERE run_id = ? AND node_id = ? AND attempt = ?
-				    AND kind = 'dispatch' AND launch_ordinal = ? AND execution_id = ?`,
+				    AND execution_id = ? AND consumed_at IS NULL AND revoked = 0`,
 				[
-					`rework_replacement:${input.requestId}`,
 					request.run_id,
 					route.target_node_id,
 					route.target_attempt,
-					launchOrdinal,
-					input.newExecutionId,
+					input.deadExecutionId,
 				],
 			);
-			this.upsertWorkflowRunNodeTx({
-				runId: request.run_id,
-				nodeId: route.target_node_id,
-				attempt: route.target_attempt,
-				state: "pending",
-				executionId: input.newExecutionId,
-			});
-			this.db.run(
-				`INSERT OR IGNORE INTO workflow_actor
-				   (execution_id, project_name, issue_id, role, created_at)
-				 VALUES (?, ?, ?, ?, ?)`,
-				[
-					input.newExecutionId,
-					run.project_name,
-					run.issue_id,
-					route.target_node_id,
-					input.observedAt,
-				],
-			);
-			const nextRevision = route.revision + 1;
-			this.db.run(
-				`INSERT INTO workflow_rework_route_revision
-				   (request_id, revision, target_node_id, target_attempt,
-				    preferred_actor_execution_id, invalidation_scope_json,
-				    verification_policy_json, interpreted_by,
-				    interpretation_reason, created_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, 'engine:proven_dead_replacement', ?, ?)`,
-				[
-					input.requestId,
-					nextRevision,
-					route.target_node_id,
-					route.target_attempt,
-					input.newExecutionId,
-					JSON.stringify(route.invalidation_scope),
-					JSON.stringify(route.verification_policy),
-					input.reason,
-					input.observedAt,
-				],
-			);
-			this.db.run(
-				`UPDATE workflow_rework_delivery
-				    SET route_revision = ?, updated_at = ?, last_error = ?
-				  WHERE request_id = ? AND route_revision = ?
-				    AND state = 'replacement_pending'`,
-				[
-					nextRevision,
-					input.observedAt,
-					input.reason,
-					input.requestId,
-					route.revision,
-				],
-			);
-			if (this.db.getRowsModified() !== 1) {
-				throw new Error("workflow_rework_replacement_delivery_cas_failed");
-			}
-			this.remintWorkflowReworkDeliveryAttemptTx({
-				requestId: input.requestId,
-				runId: request.run_id,
-				now: input.observedAt,
-			});
-			this.db.run(
-				`UPDATE workflow_rework_verification_path
-				    SET route_revision = ?, updated_at = ?
-				  WHERE request_id = ? AND route_revision = ?
-				    AND state IN ('pending','active')`,
-				[nextRevision, input.observedAt, input.requestId, route.revision],
-			);
+		}
+		const launchOrdinal = this.allocateWorkflowLaunchOrdinalTx(
+			request.run_id,
+			route.target_node_id,
+			route.target_attempt,
+			input.newExecutionId,
+			input.launchPurpose?.purpose,
+			input.launchPurpose?.sourceDemandId,
+		);
+		this.db.run(
+			`UPDATE workflow_side_effect_ledger
+			    SET reason = ?
+			  WHERE run_id = ? AND node_id = ? AND attempt = ?
+			    AND kind = 'dispatch' AND launch_ordinal = ? AND execution_id = ?`,
+			[
+				`rework_replacement:${requestId}`,
+				request.run_id,
+				route.target_node_id,
+				route.target_attempt,
+				launchOrdinal,
+				input.newExecutionId,
+			],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			throw new Error("workflow_rework_replacement_launch_reason_cas_failed");
+		}
+		this.upsertWorkflowRunNodeTx({
+			runId: request.run_id,
+			nodeId: route.target_node_id,
+			attempt: route.target_attempt,
+			state: "pending",
+			executionId: input.newExecutionId,
+		});
+		this.db.run(
+			`INSERT OR IGNORE INTO workflow_actor
+			   (execution_id, project_name, issue_id, role, created_at)
+			 VALUES (?, ?, ?, ?, ?)`,
+			[
+				input.newExecutionId,
+				run.project_name,
+				run.issue_id,
+				route.target_node_id,
+				input.observedAt,
+			],
+		);
+		const nextRevision = route.revision + 1;
+		this.db.run(
+			`INSERT INTO workflow_rework_route_revision
+			   (request_id, revision, target_node_id, target_attempt,
+			    preferred_actor_execution_id, invalidation_scope_json,
+			    verification_policy_json, interpreted_by,
+			    interpretation_reason, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			[
+				requestId,
+				nextRevision,
+				route.target_node_id,
+				route.target_attempt,
+				input.newExecutionId,
+				JSON.stringify(route.invalidation_scope),
+				JSON.stringify(route.verification_policy),
+				input.interpretedBy,
+				input.interpretationReason,
+				input.observedAt,
+			],
+		);
+		// Every new route revision starts clean: no owner, no push fact, no
+		// liveness-unknown clock inherited from the replaced actor, a fresh
+		// transport budget (the replacement budget is counted separately).
+		this.db.run(
+			`UPDATE workflow_rework_delivery
+			    SET route_revision = ?, state = 'pending', owner_id = NULL,
+			        lease_expires_at = NULL, next_retry_at = NULL, hold_count = 0,
+			        grant_started_at = NULL, wake_sent_at = NULL,
+			        liveness_unknown_since = NULL, last_error = ?, updated_at = ?
+			  WHERE request_id = ? AND route_revision = ?
+			    AND state IN ('pending','turn_granted','wake_delivered')
+			    ${input.ownerFence ? "AND owner_id = ? AND generation = ?" : ""}`,
+			[
+				nextRevision,
+				input.reason,
+				input.observedAt,
+				requestId,
+				route.revision,
+				...(input.ownerFence
+					? [input.ownerFence.ownerId, input.ownerFence.generation]
+					: []),
+			],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			throw new Error("workflow_rework_replacement_delivery_cas_failed");
+		}
+		this.remintWorkflowReworkDeliveryAttemptTx({
+			requestId,
+			runId: request.run_id,
+			now: input.observedAt,
+		});
+		this.db.run(
+			`UPDATE workflow_rework_verification_path
+			    SET route_revision = ?, updated_at = ?
+			  WHERE request_id = ? AND route_revision = ?
+			    AND state IN ('pending','active')`,
+			[nextRevision, input.observedAt, requestId, route.revision],
+		);
+		if (input.provenDead) {
 			this.db.run(
 				`INSERT OR IGNORE INTO workflow_dead_execution_watch
 				   (dead_execution_id, run_id, node_id, attempt, new_execution_id,
@@ -44871,116 +45697,689 @@ export class StateStore {
 					at: input.observedAt,
 				},
 			});
-			this.appendWorkflowRunEventCheckedTx({
+		}
+		// Receipts are per route revision: one request may be replaced more
+		// than once, and each replacement must be separately provable.
+		this.appendWorkflowRunEventCheckedTx({
+			runId: request.run_id,
+			eventUid: `rework_replacement_materialized:${requestId}:${route.revision}`,
+			kind: "rework_replacement_materialized",
+			nodeId: route.target_node_id,
+			executionId: input.deadExecutionId,
+			payload: {
+				requestId,
+				deadExecutionId: input.deadExecutionId,
+				newExecutionId: input.newExecutionId,
+				launchOrdinal,
+				routeRevision: nextRevision,
+				reason: input.reason,
+				interpretedBy: input.interpretedBy,
+			},
+		});
+		this.recordReworkWakeRetirementsTx({
+			requestId,
+			executionId: input.deadExecutionId,
+			nodeId: route.target_node_id,
+			attempt: route.target_attempt,
+			now: input.observedAt,
+		});
+		const resumeTransitionUid = `rework_replacement:${requestId}:${nextRevision}`;
+		const resumeReceipt = {
+			requestId,
+			targetNodeId: route.target_node_id,
+			targetAttempt: route.target_attempt,
+			newExecutionId: input.newExecutionId,
+			routeRevision: nextRevision,
+		};
+		let resumeNode:
+			| ReturnType<
+					typeof parseWorkflowRunSnapshot
+			  >["resolved"]["nodes"][number]
+			| undefined;
+		let resumeSnapshotDigest: string | undefined;
+		try {
+			const parsed = run.snapshot
+				? parseWorkflowRunSnapshot(run.snapshot)
+				: undefined;
+			resumeNode = parsed?.resolved.nodes.find(
+				(candidate) => candidate.id === route.target_node_id,
+			);
+			resumeSnapshotDigest = parsed?.snapshot_digest;
+		} catch {
+			// Legacy replacement remains healthy; missing resume evidence is explicit below.
+		}
+		const sourceAttachment = this.listWorkflowResumeAttachments({
+			runId: request.run_id,
+			nodeId: route.target_node_id,
+			attempt: route.target_attempt,
+		}).at(-1);
+		this.recordWorkflowResumeEvidenceSafelyTx(
+			{
 				runId: request.run_id,
-				eventUid,
-				kind: "rework_replacement_materialized",
-				nodeId: route.target_node_id,
-				executionId: input.deadExecutionId,
-				payload: {
-					requestId: input.requestId,
-					deadExecutionId: input.deadExecutionId,
-					newExecutionId: input.newExecutionId,
-					launchOrdinal,
-					routeRevision: nextRevision,
-					reason: input.reason,
-					heldPaneLossRecovery,
-				},
-			});
-			this.recordReworkWakeRetirementsTx({
-				requestId: input.requestId, executionId: input.deadExecutionId,
-				nodeId: route.target_node_id, attempt: route.target_attempt, now: input.observedAt,
-			});
-			const resumeTransitionUid = `rework_replacement:${input.requestId}`;
-			const resumeReceipt = {
-				requestId: input.requestId,
 				targetNodeId: route.target_node_id,
 				targetAttempt: route.target_attempt,
-				newExecutionId: input.newExecutionId,
-				routeRevision: nextRevision,
-			};
-			let resumeNode:
-				| ReturnType<
-						typeof parseWorkflowRunSnapshot
-				  >["resolved"]["nodes"][number]
-				| undefined;
-			let resumeSnapshotDigest: string | undefined;
-			try {
-				const parsed = run.snapshot
-					? parseWorkflowRunSnapshot(run.snapshot)
-					: undefined;
-				resumeNode = parsed?.resolved.nodes.find(
-					(candidate) => candidate.id === route.target_node_id,
-				);
-				resumeSnapshotDigest = parsed?.snapshot_digest;
-			} catch {
-				// Legacy replacement remains healthy; missing resume evidence is explicit below.
-			}
-			const sourceAttachment = this.listWorkflowResumeAttachments({
-				runId: request.run_id,
-				nodeId: route.target_node_id,
-				attempt: route.target_attempt,
-			}).at(-1);
-			this.recordWorkflowResumeEvidenceSafelyTx(
-				{
+				transitionUid: resumeTransitionUid,
+				createdAt: input.observedAt,
+			},
+			() => {
+				this.appendWorkflowRunEventCheckedTx({
 					runId: request.run_id,
-					targetNodeId: route.target_node_id,
-					targetAttempt: route.target_attempt,
-					transitionUid: resumeTransitionUid,
-					createdAt: input.observedAt,
-				},
-				() => {
-					this.appendWorkflowRunEventCheckedTx({
+					eventUid: resumeTransitionUid,
+					kind: "rework_replacement",
+					nodeId: route.target_node_id,
+					executionId: input.newExecutionId,
+					payload: resumeReceipt,
+				});
+				if (resumeNode && resumeSnapshotDigest) {
+					this.recordWorkflowResumeAttachmentTx({
 						runId: request.run_id,
-						eventUid: resumeTransitionUid,
-						kind: "rework_replacement",
-						nodeId: route.target_node_id,
-						executionId: input.newExecutionId,
-						payload: resumeReceipt,
+						targetNodeId: route.target_node_id,
+						targetAttempt: route.target_attempt,
+						transitionUid: resumeTransitionUid,
+						receiptKind: "rework_replacement",
+						receiptPayload: resumeReceipt,
+						carrierKind: "git_checkpoint",
+						anchorCommit: request.base_revision,
+						repoIdentity: sourceAttachment?.repo_identity ?? run.project_name,
+						snapshotDigest: resumeSnapshotDigest,
+						resolvedNodeDigest: canonicalSubmissionDigest(resumeNode),
+						reworkAuthorityDigest: request.authority_context_digest,
+						envelopeJson:
+							sourceAttachment?.envelope_json ??
+							JSON.stringify({
+								schemaVersion: 1,
+								issueBaselineUid: `issue_input_baseline:${request.run_id}`,
+							}),
+						createdAt: input.observedAt,
 					});
-					if (resumeNode && resumeSnapshotDigest) {
-						this.recordWorkflowResumeAttachmentTx({
-							runId: request.run_id,
-							targetNodeId: route.target_node_id,
-							targetAttempt: route.target_attempt,
-							transitionUid: resumeTransitionUid,
-							receiptKind: "rework_replacement",
-							receiptPayload: resumeReceipt,
-							carrierKind: "git_checkpoint",
-							anchorCommit: request.base_revision,
-							repoIdentity: sourceAttachment?.repo_identity ?? run.project_name,
-							snapshotDigest: resumeSnapshotDigest,
-							resolvedNodeDigest: canonicalSubmissionDigest(resumeNode),
-							reworkAuthorityDigest: request.authority_context_digest,
-							envelopeJson:
-								sourceAttachment?.envelope_json ??
-								JSON.stringify({
-									schemaVersion: 1,
-									issueBaselineUid: `issue_input_baseline:${request.run_id}`,
-								}),
-							createdAt: input.observedAt,
-						});
-					} else {
-						this.recordWorkflowResumeTargetUnrecoverableTx({
-							runId: request.run_id,
-							targetNodeId: route.target_node_id,
-							targetAttempt: route.target_attempt,
-							transitionUid: resumeTransitionUid,
-							reason: "snapshot_mismatch",
-							detail: { cause: "replacement_snapshot_unavailable" },
-							createdAt: input.observedAt,
-						});
+				} else {
+					this.recordWorkflowResumeTargetUnrecoverableTx({
+						runId: request.run_id,
+						targetNodeId: route.target_node_id,
+						targetAttempt: route.target_attempt,
+						transitionUid: resumeTransitionUid,
+						reason: "snapshot_mismatch",
+						detail: { cause: "replacement_snapshot_unavailable" },
+						createdAt: input.observedAt,
+					});
+				}
+			},
+		);
+		return { launchOrdinal, routeRevision: nextRevision };
+	}
+
+	/**
+	 * FLY-2921 C2: replace a rework target's actor in place, inside the
+	 * coordinator's own claim. Only verifiable death proofs are accepted, and
+	 * they are re-verified here at commit time (fail-closed):
+	 * - `unlaunched_rollback`: an exact unlaunched-rollback fact exists;
+	 * - `launch_abandoned`: the actor's dispatch intent is `abandoned`.
+	 * Liveness-based replacement consumes FLY-2919's trusted process evidence
+	 * and is deliberately not accepted until that lands; terminal session
+	 * labels, expired resident holds, and missing panes are never proof.
+	 * Budget: three replacements since the last Lead resume; the fourth is
+	 * refused with `replacement_budget_exhausted` (the caller returns the
+	 * rework to the Lead).
+	 */
+	replaceWorkflowReworkActor(input: {
+		requestId: string;
+		ownerId: string;
+		generation: number;
+		deadExecutionId: string;
+		newExecutionId: string;
+		proof: { kind: "unlaunched_rollback" } | { kind: "launch_abandoned" };
+		reason: string;
+		observedAt: string;
+		expectedSessionLifecycleRevision?: number | null;
+	}):
+		| {
+				ok: true;
+				executionId: string;
+				launchOrdinal: number;
+				routeRevision: number;
+				idempotentReplay: boolean;
+		  }
+		| { ok: false; reason: string } {
+		if (
+			!input.requestId ||
+			!input.ownerId ||
+			!Number.isInteger(input.generation) ||
+			input.generation < 1 ||
+			!input.deadExecutionId ||
+			!input.newExecutionId ||
+			input.deadExecutionId === input.newExecutionId ||
+			!input.reason.trim() ||
+			!StateStore.workflowFiniteTimestamp(input.observedAt) ||
+			(input.proof?.kind !== "unlaunched_rollback" &&
+				input.proof?.kind !== "launch_abandoned")
+		) {
+			return { ok: false, reason: "invalid_rework_replacement" };
+		}
+		let result:
+			| {
+					ok: true;
+					executionId: string;
+					launchOrdinal: number;
+					routeRevision: number;
+					idempotentReplay: boolean;
+			  }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "rework_replacement_not_materialized",
+		};
+		this.db.transaction(() => {
+			const request = this.getWorkflowReworkRequest(input.requestId);
+			const route = this.getLatestWorkflowReworkRoute(input.requestId);
+			const delivery = this.getWorkflowReworkDelivery(input.requestId);
+			const run = request ? this.getWorkflowRun(request.run_id) : undefined;
+			if (!request || !route || !delivery || !run) {
+				result = { ok: false, reason: "rework_replacement_context_changed" };
+				return;
+			}
+			const prior = this.workflowSelectAll(
+				`SELECT payload FROM workflow_run_event
+				  WHERE run_id = ? AND kind = 'rework_replacement_materialized'
+				    AND execution_id = ? AND event_uid LIKE ?`,
+				[
+					request.run_id,
+					input.deadExecutionId,
+					`rework_replacement_materialized:${input.requestId}:%`,
+				],
+			)[0];
+			if (prior && route.preferred_actor_execution_id !== input.deadExecutionId) {
+				try {
+					const payload = JSON.parse(String(prior.payload)) as Record<
+						string,
+						unknown
+					>;
+					if (
+						payload.newExecutionId === input.newExecutionId &&
+						Number.isInteger(payload.launchOrdinal) &&
+						Number.isInteger(payload.routeRevision)
+					) {
+						result = {
+							ok: true,
+							executionId: input.newExecutionId,
+							launchOrdinal: Number(payload.launchOrdinal),
+							routeRevision: Number(payload.routeRevision),
+							idempotentReplay: true,
+						};
+						return;
 					}
-				},
+				} catch {
+					/* A corrupt receipt falls through to the context check. */
+				}
+			}
+			if (
+				run.engine_owned !== 1 ||
+				run.status !== "active" ||
+				delivery.owner_id !== input.ownerId ||
+				delivery.generation !== input.generation ||
+				!(
+					delivery.state === "pending" ||
+					delivery.state === "turn_granted" ||
+					delivery.state === "wake_delivered"
+				) ||
+				delivery.route_revision !== route.revision ||
+				route.preferred_actor_execution_id !== input.deadExecutionId
+			) {
+				result = { ok: false, reason: "rework_replacement_context_changed" };
+				return;
+			}
+			const target = this.getWorkflowRunNode(
+				request.run_id,
+				route.target_node_id,
+				route.target_attempt,
 			);
+			const rolledBack = this.hasUnlaunchedWorkflowRollbackFact(
+				request.run_id,
+				route.target_node_id,
+				input.deadExecutionId,
+			);
+			if (
+				!target ||
+				target.execution_id !== input.deadExecutionId ||
+				!(
+					target.state === "pending" ||
+					target.state === "admitted" ||
+					target.state === "running" ||
+					(target.state === "failed" && rolledBack)
+				)
+			) {
+				result = { ok: false, reason: "rework_replacement_target_changed" };
+				return;
+			}
+			// FLY-2900 §4.2: quota standby is a parked process body, not a
+			// proven-dead actor. The quota resume/fallback lane owns it.
+			if (this.codexQuota.isCodexQuotaStandby(input.deadExecutionId)) {
+				result = { ok: false, reason: "codex_quota_standby" };
+				return;
+			}
+			const abandoned = this.workflowSelectAll(
+				`SELECT 1 AS present FROM workflow_side_effect_ledger
+				  WHERE run_id = ? AND node_id = ? AND attempt = ?
+				    AND kind = 'dispatch' AND execution_id = ? AND state = 'abandoned'`,
+				[
+					request.run_id,
+					route.target_node_id,
+					route.target_attempt,
+					input.deadExecutionId,
+				],
+			)[0];
+			const proven =
+				input.proof.kind === "unlaunched_rollback" ? rolledBack : !!abandoned;
+			if (!proven) {
+				result = { ok: false, reason: "rework_replacement_death_unproven" };
+				return;
+			}
+			if (input.expectedSessionLifecycleRevision !== undefined) {
+				const session = this.getSession(input.deadExecutionId);
+				if (
+					(session?.lifecycle_revision ?? null) !==
+					input.expectedSessionLifecycleRevision
+				) {
+					result = { ok: false, reason: "rework_replacement_observation_stale" };
+					return;
+				}
+			}
+			if (this.countReworkReplacementsSinceLeadResumeTx(input.requestId) >= 3) {
+				result = { ok: false, reason: "replacement_budget_exhausted" };
+				return;
+			}
+			const minted = this.materializeReworkReplacementCoreTx({
+				request,
+				route,
+				run,
+				deadExecutionId: input.deadExecutionId,
+				newExecutionId: input.newExecutionId,
+				reason: input.reason,
+				observedAt: input.observedAt,
+				interpretedBy: "engine:proven_dead_replacement",
+				interpretationReason: input.reason,
+				provenDead: true,
+				ownerFence: { ownerId: input.ownerId, generation: input.generation },
+			});
 			result = {
 				ok: true,
 				executionId: input.newExecutionId,
-				launchOrdinal,
+				launchOrdinal: minted.launchOrdinal,
+				routeRevision: minted.routeRevision,
 				idempotentReplay: false,
 			};
 		});
-		if (result.ok) this.save();
+		const settled = result as
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string };
+		if (settled.ok && !settled.idempotentReplay) this.save();
+		return result;
+	}
+
+	/**
+	 * FLY-2921 C2 step 3: the replacement launch a `pending` delivery waits on,
+	 * identified by the exact dispatch intent (reason
+	 * `rework_replacement:<req>`, current target tuple, preferred actor). The
+	 * execution binding only exists after the dispatcher admits it.
+	 */
+	getWorkflowReworkReplacementLaunch(requestId: string):
+		| {
+				executionId: string;
+				launchOrdinal: number;
+				ledgerState: WorkflowSideEffectState;
+				createdAt: string;
+				bindingMode: string | null;
+				launchOwnerPresent: boolean;
+		  }
+		| undefined {
+		const request = this.getWorkflowReworkRequest(requestId);
+		const route = this.getLatestWorkflowReworkRoute(requestId);
+		if (!request || !route) return undefined;
+		const node = this.getWorkflowRunNode(
+			request.run_id,
+			route.target_node_id,
+			route.target_attempt,
+		);
+		if (node?.execution_id !== route.preferred_actor_execution_id) {
+			return undefined;
+		}
+		const row = this.workflowSelectAll(
+			`SELECT launch_ordinal, state, created_at
+			   FROM workflow_side_effect_ledger
+			  WHERE run_id = ? AND node_id = ? AND attempt = ? AND kind = 'dispatch'
+			    AND execution_id = ? AND reason = ?
+			  ORDER BY launch_ordinal DESC LIMIT 1`,
+			[
+				request.run_id,
+				route.target_node_id,
+				route.target_attempt,
+				route.preferred_actor_execution_id,
+				`rework_replacement:${requestId}`,
+			],
+		)[0];
+		if (!row) return undefined;
+		const binding = this.getWorkflowExecutionBinding(
+			route.preferred_actor_execution_id,
+		);
+		return {
+			executionId: route.preferred_actor_execution_id,
+			launchOrdinal: Number(row.launch_ordinal),
+			ledgerState: row.state as WorkflowSideEffectState,
+			createdAt: String(row.created_at),
+			bindingMode: binding?.mode ?? null,
+			launchOwnerPresent: !!this.getWorkflowLaunchOwner(
+				route.preferred_actor_execution_id,
+			),
+		};
+	}
+
+	/**
+	 * FLY-2921 C2 step 4: the only death proofs accepted before FLY-2919's
+	 * process evidence lands — the preferred actor's launch was rolled back
+	 * unlaunched, or its dispatch intent was abandoned before commit.
+	 */
+	workflowReworkDeathProof(
+		requestId: string,
+	): "unlaunched_rollback" | "launch_abandoned" | undefined {
+		const request = this.getWorkflowReworkRequest(requestId);
+		const route = this.getLatestWorkflowReworkRoute(requestId);
+		if (!request || !route) return undefined;
+		if (
+			this.hasUnlaunchedWorkflowRollbackFact(
+				request.run_id,
+				route.target_node_id,
+				route.preferred_actor_execution_id,
+			)
+		) {
+			return "unlaunched_rollback";
+		}
+		const abandoned = this.workflowSelectAll(
+			`SELECT 1 AS present FROM workflow_side_effect_ledger
+			  WHERE run_id = ? AND node_id = ? AND attempt = ?
+			    AND kind = 'dispatch' AND execution_id = ? AND state = 'abandoned'`,
+			[
+				request.run_id,
+				route.target_node_id,
+				route.target_attempt,
+				route.preferred_actor_execution_id,
+			],
+		)[0];
+		return abandoned ? "launch_abandoned" : undefined;
+	}
+
+	/**
+	 * FLY-2921 C2 row b: a replacement minted before a Lead resume carries a
+	 * launch envelope bound to the old route revision. While it is still an
+	 * unadmitted intent (no binding, no launch owner, no session) it is
+	 * abandoned here — the coordinator then replaces it with a fresh intent.
+	 */
+	abandonUnadmittedReworkReplacementLaunch(input: {
+		requestId: string;
+		ownerId: string;
+		generation: number;
+		reason: string;
+		now: string;
+	}): { ok: true } | { ok: false; reason: string } {
+		if (
+			!input.requestId ||
+			!input.ownerId ||
+			!Number.isInteger(input.generation) ||
+			input.generation < 1 ||
+			!input.reason.trim() ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_replacement_abandon" };
+		}
+		let result: { ok: true } | { ok: false; reason: string } = {
+			ok: false,
+			reason: "replacement_abandon_not_committed",
+		};
+		this.db.transaction(() => {
+			const delivery = this.getWorkflowReworkDelivery(input.requestId);
+			const request = this.getWorkflowReworkRequest(input.requestId);
+			const route = this.getLatestWorkflowReworkRoute(input.requestId);
+			const launch = this.getWorkflowReworkReplacementLaunch(input.requestId);
+			if (
+				!delivery ||
+				!request ||
+				!route ||
+				delivery.owner_id !== input.ownerId ||
+				delivery.generation !== input.generation ||
+				delivery.state !== "pending" ||
+				delivery.route_revision !== route.revision
+			) {
+				result = { ok: false, reason: "stale_delivery_owner" };
+				return;
+			}
+			if (
+				!launch ||
+				launch.ledgerState !== "intent_recorded" ||
+				launch.bindingMode !== null ||
+				launch.launchOwnerPresent ||
+				this.getSession(launch.executionId)
+			) {
+				result = { ok: false, reason: "replacement_launch_not_abandonable" };
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_side_effect_ledger
+				    SET state = 'abandoned', reason = ?, abandoned_at = ?, updated_at = ?
+				  WHERE run_id = ? AND node_id = ? AND attempt = ? AND kind = 'dispatch'
+				    AND execution_id = ? AND launch_ordinal = ? AND state = 'intent_recorded'`,
+				[
+					input.reason,
+					input.now,
+					input.now,
+					request.run_id,
+					route.target_node_id,
+					route.target_attempt,
+					launch.executionId,
+					launch.launchOrdinal,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = { ok: false, reason: "replacement_launch_not_abandonable" };
+				return;
+			}
+			this.settleWorkflowDeliveryAttemptIfPresentTx({
+				family: "launch",
+				table: "workflow_execution_binding",
+				pk: launch.executionId,
+				reason: "source_terminal",
+				now: input.now,
+			});
+			result = { ok: true };
+		});
+		return result;
+	}
+
+	/**
+	 * FLY-2921 C2: "not yet" for a claimed row that has not pushed its wake
+	 * (`pending`, or `turn_granted` without `wake_sent_at`) — the replacement
+	 * is still launching, or a wake re-arm found the push claim busy. Releases the
+	 * owner and schedules the next look without counting a failure and
+	 * without an event (a release would append one per tick).
+	 */
+	deferWorkflowReworkDelivery(input: {
+		requestId: string;
+		ownerId: string;
+		generation: number;
+		nextRetryAt: string;
+		reason: string;
+	}): { ok: true } | { ok: false; reason: string } {
+		if (
+			!input.requestId ||
+			!input.ownerId ||
+			!Number.isInteger(input.generation) ||
+			input.generation < 1 ||
+			!StateStore.workflowFiniteTimestamp(input.nextRetryAt) ||
+			!input.reason.trim()
+		) {
+			return { ok: false, reason: "invalid_delivery_defer" };
+		}
+		this.db.run(
+			`UPDATE workflow_rework_delivery
+			    SET owner_id = NULL, lease_expires_at = NULL, next_retry_at = ?,
+			        last_error = ?
+			  WHERE request_id = ? AND owner_id = ? AND generation = ?
+			    AND (state = 'pending'
+			         OR (state = 'turn_granted' AND wake_sent_at IS NULL))`,
+			[
+				input.nextRetryAt,
+				input.reason,
+				input.requestId,
+				input.ownerId,
+				input.generation,
+			],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			return { ok: false, reason: "stale_delivery_owner" };
+		}
+		this.save();
+		return { ok: true };
+	}
+
+	/**
+	 * FLY-2921 C2 step 5: liveness that cannot be decided must not become a
+	 * silent stall. The first unknown observation on a route revision starts
+	 * the clock; 30 minutes raises one warning and 2 hours one severe alert,
+	 * each once per (request, revision). A known observation clears it.
+	 */
+	noteWorkflowReworkLiveness(input: {
+		requestId: string;
+		ownerId: string;
+		generation: number;
+		known: boolean;
+		reason: string;
+		now: string;
+		alertIdentity?: WorkflowEngineAlertIdentity;
+	}):
+		| { ok: true; unknownSince: string | null; alerted: "warn" | "severe" | null }
+		| { ok: false; reason: string } {
+		if (
+			!input.requestId ||
+			!input.ownerId ||
+			!Number.isInteger(input.generation) ||
+			input.generation < 1 ||
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			(!input.known &&
+				(!input.alertIdentity ||
+					!StateStore.workflowAlertIdentityValid(input.alertIdentity)))
+		) {
+			return { ok: false, reason: "invalid_liveness_note" };
+		}
+		let result:
+			| {
+					ok: true;
+					unknownSince: string | null;
+					alerted: "warn" | "severe" | null;
+			  }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "stale_delivery_owner",
+		};
+		let wrote = false;
+		this.db.transaction(() => {
+			const delivery = this.getWorkflowReworkDelivery(input.requestId);
+			if (
+				!delivery ||
+				delivery.owner_id !== input.ownerId ||
+				delivery.generation !== input.generation
+			) {
+				return;
+			}
+			if (input.known) {
+				if (delivery.liveness_unknown_since !== null) {
+					this.db.run(
+						`UPDATE workflow_rework_delivery SET liveness_unknown_since = NULL
+						  WHERE request_id = ? AND owner_id = ? AND generation = ?`,
+						[input.requestId, input.ownerId, input.generation],
+					);
+					wrote = true;
+				}
+				result = { ok: true, unknownSince: null, alerted: null };
+				return;
+			}
+			const since = delivery.liveness_unknown_since ?? input.now;
+			if (delivery.liveness_unknown_since === null) {
+				this.db.run(
+					`UPDATE workflow_rework_delivery SET liveness_unknown_since = ?
+					  WHERE request_id = ? AND owner_id = ? AND generation = ?`,
+					[since, input.requestId, input.ownerId, input.generation],
+				);
+				wrote = true;
+			}
+			const elapsedMs = Date.parse(input.now) - Date.parse(since);
+			const tier =
+				elapsedMs >= 2 * 60 * 60_000
+					? "severe"
+					: elapsedMs >= 30 * 60_000
+						? "warn"
+						: null;
+			let alerted: "warn" | "severe" | null = null;
+			if (tier) {
+				const request = this.getWorkflowReworkRequest(input.requestId);
+				const route = this.getLatestWorkflowReworkRoute(input.requestId);
+				const run = request ? this.getWorkflowRun(request.run_id) : undefined;
+				if (request && route && run) {
+					const eventUid = `rework_liveness_unknown:${tier}:${input.requestId}:${delivery.route_revision}`;
+					const existing = this.workflowSelectAll(
+						"SELECT 1 FROM workflow_run_event WHERE event_uid = ?",
+						[eventUid],
+					)[0];
+					if (!existing) {
+						const minutes = Math.floor(elapsedMs / 60_000);
+						this.appendWorkflowRunEventCheckedTx({
+							runId: request.run_id,
+							eventUid,
+							kind: "rework_liveness_unknown",
+							nodeId: route.target_node_id,
+							executionId: route.preferred_actor_execution_id,
+							payload: {
+								requestId: input.requestId,
+								routeRevision: delivery.route_revision,
+								tier,
+								unknownSince: since,
+								reason: input.reason,
+								deliveryState: delivery.state,
+							},
+						});
+						this.enqueueWorkflowEngineAlertTx({
+							escalationUid: eventUid,
+							runId: request.run_id,
+							now: input.now,
+							payload: {
+								leadId: input.alertIdentity!.leadId,
+								projectName: input.alertIdentity!.projectName,
+								eventId: eventUid,
+								eventType: "workflow_engine_escalation",
+								severity: tier === "severe" ? "severe" : "warning",
+								sessionKey: `wf:${request.run_id}`,
+								title: `Rework delivery cannot see its actor for ${run.issue_id}`,
+								body: [
+									`Rework ${input.requestId} is ${delivery.state} for ${route.target_node_id}, but whether actor ${route.preferred_actor_execution_id} is alive has been unknown for ${minutes} minutes (${input.reason}).`,
+									"The engine will not replace an actor it cannot prove dead; it keeps probing.",
+									"Check the actor's pane/process. If it is gone, the engine replaces it once death is proven; if the delivery later gives up it returns to you with a resume door.",
+									`Alert: ${eventUid}`,
+								].join("\n"),
+								metadata: {
+									workflowEngine: {
+										runId: request.run_id,
+										issueId: run.issue_id,
+										nodeId: route.target_node_id,
+										executionId: route.preferred_actor_execution_id,
+										disposition: "rework_liveness_unknown",
+										leadResolution: input.alertIdentity!.leadResolution,
+									},
+								},
+							},
+						});
+						alerted = tier;
+						wrote = true;
+					}
+				}
+			}
+			result = { ok: true, unknownSince: since, alerted };
+		});
+		if (wrote) this.save();
 		return result;
 	}
 
@@ -45201,7 +46600,9 @@ export class StateStore {
 					: { ok: false, reason: "rework_replacement_launch_content_missing" };
 				return;
 			}
-			if (delivery.state !== "replacement_pending") {
+			// FLY-2921: a minted replacement waits on `pending` (pointing at
+			// this actor) until its launch envelope proves the content.
+			if (delivery.state !== "pending") {
 				result = { ok: false, reason: "rework_replacement_delivery_changed" };
 				return;
 			}
@@ -45277,11 +46678,14 @@ export class StateStore {
 				`UPDATE workflow_rework_delivery
 					    SET state = 'wake_delivered', owner_id = NULL,
 					        lease_expires_at = NULL, next_retry_at = ?,
+					        wake_sent_at = COALESCE(wake_sent_at, ?),
+					        liveness_unknown_since = NULL,
 					        last_error = NULL, updated_at = ?
 					  WHERE request_id = ? AND route_revision = ?
-					    AND state = 'replacement_pending'`,
+					    AND state = 'pending'`,
 				[
 					workflowDeliveryReceiptNextRetryAt(input.now),
+					input.now,
 					input.now,
 					requestId,
 					route.revision,
@@ -45371,7 +46775,7 @@ export class StateStore {
 			   FROM workflow_rework_delivery d
 			   JOIN workflow_rework_request r ON r.request_id = d.request_id
 			  WHERE r.run_id = ?
-			    AND d.state IN ('pending','turn_granted','awaiting_receipt','wake_delivered','replacement_pending')
+			    AND d.state IN ('pending','turn_granted','wake_delivered')
 			 UNION ALL
 			 SELECT p.request_id AS request_id, 'verification_path' AS source, p.state AS state
 			   FROM workflow_rework_verification_path p
@@ -45435,14 +46839,9 @@ export class StateStore {
 			const delivery = this.getWorkflowReworkDelivery(input.requestId);
 			if (!delivery) return;
 			if (
-				!(
-					[
-						"pending",
-						"turn_granted",
-						"awaiting_receipt",
-						"wake_delivered",
-					] as const
-				).includes(delivery.state as never)
+				!(["pending", "turn_granted", "wake_delivered"] as const).includes(
+					delivery.state as never,
+				)
 			) {
 				result = {
 					ok: false,
@@ -45483,7 +46882,8 @@ export class StateStore {
 				    SET owner_id = ?, generation = ?, lease_expires_at = ?,
 				        next_retry_at = NULL, last_error = NULL,
 				        updated_at = CASE
-				          WHEN state IN ('awaiting_receipt','wake_delivered')
+				          WHEN state = 'wake_delivered'
+				            OR (state = 'turn_granted' AND wake_sent_at IS NOT NULL)
 				          THEN updated_at ELSE ? END
 				  WHERE request_id = ? AND generation = ? AND state = ?`,
 				[
@@ -45541,7 +46941,8 @@ export class StateStore {
 			    SET owner_id = NULL, lease_expires_at = NULL, next_retry_at = ?,
 			        last_error = ?
 			  WHERE request_id = ? AND owner_id = ? AND generation = ?
-			    AND state IN ('awaiting_receipt','wake_delivered')`,
+			    AND (state = 'wake_delivered'
+			         OR (state = 'turn_granted' AND wake_sent_at IS NOT NULL))`,
 			[
 				input.nextRetryAt,
 				input.reason,
@@ -45611,221 +47012,70 @@ export class StateStore {
 		return { ok: true };
 	}
 
-	settleHeldReworkRecoveryFailure(input: {
-		requestId: string;
-		reason: string;
-		alertIdentity: WorkflowEngineAlertIdentity;
-		now: string;
-		forceTerminal?: {
-			expectedRunId: string;
-			expectedRouteRevision: number;
-			expectedTargetNodeId: string;
-			expectedTargetAttempt: number;
-			expectedTargetExecutionId: string;
-			operator: string;
-		};
-	}):
-		| {
-				ok: true;
-				state: "held" | "needs_lead";
-				holdCount: number;
-				nextRetryAt: string | null;
-		  }
-		| { ok: false; reason: string } {
-		if (
-			!input.requestId.trim() ||
-			!input.reason.trim() ||
-			!StateStore.workflowFiniteTimestamp(input.now) ||
-			(input.forceTerminal !== undefined &&
-				(!input.forceTerminal.expectedRunId.trim() ||
-					!Number.isSafeInteger(input.forceTerminal.expectedRouteRevision) ||
-					input.forceTerminal.expectedRouteRevision < 1 ||
-					!input.forceTerminal.expectedTargetNodeId.trim() ||
-					!Number.isSafeInteger(input.forceTerminal.expectedTargetAttempt) ||
-					input.forceTerminal.expectedTargetAttempt < 1 ||
-					!input.forceTerminal.expectedTargetExecutionId.trim() ||
-					!input.forceTerminal.operator.trim()))
-		) {
-			return { ok: false, reason: "invalid_held_recovery_failure" };
-		}
-		let result:
-			| {
-					ok: true;
-					state: "held" | "needs_lead";
-					holdCount: number;
-					nextRetryAt: string | null;
-			  }
-			| { ok: false; reason: string } = {
-			ok: false,
-			reason: "held_recovery_failure_not_settled",
-		};
-		this.db.transaction(() => {
-			const delivery = this.getWorkflowReworkDelivery(input.requestId);
-			const request = this.getWorkflowReworkRequest(input.requestId);
-			const route = this.getLatestWorkflowReworkRoute(input.requestId);
-			const run = request ? this.getWorkflowRun(request.run_id) : undefined;
-			if (
-				!delivery ||
-				!request ||
-				!route ||
-				!run ||
-				delivery.state !== "held" ||
-				delivery.last_error !== "persisted_target_missing" ||
-				delivery.route_revision !== route.revision ||
-				run.engine_owned !== 1 ||
-				run.status !== "held"
-			) {
-				result = { ok: false, reason: "held_recovery_context_changed" };
-				return;
-			}
-			if (input.forceTerminal) {
-				const expected = input.forceTerminal;
-				if (
-					request.run_id !== expected.expectedRunId ||
-					route.revision !== expected.expectedRouteRevision ||
-					route.target_node_id !== expected.expectedTargetNodeId ||
-					route.target_attempt !== expected.expectedTargetAttempt ||
-					route.preferred_actor_execution_id !==
-						expected.expectedTargetExecutionId
-				) {
-					result = { ok: false, reason: "force_terminal_context_changed" };
-					return;
-				}
-				const target = this.getWorkflowRunNode(
-					request.run_id,
-					route.target_node_id,
-					route.target_attempt,
-				);
-				if (
-					target &&
-					(target.state === "pending" || target.state === "admitted") &&
-					target.execution_id === expected.expectedTargetExecutionId
-				) {
-					result = {
-						ok: false,
-						reason: "force_terminal_target_still_recoverable",
-					};
-					return;
-				}
-			}
-
-			const holdCount = delivery.hold_count + 1;
-			const exhausted = input.forceTerminal !== undefined || holdCount >= 5;
-			const nextRetryAt = exhausted
-				? null
-				: new Date(
-						Date.parse(input.now) + 60_000 * 2 ** (holdCount - 1),
-					).toISOString();
-			if (!exhausted) {
-				this.db.run(
-					`UPDATE workflow_rework_delivery
-					    SET hold_count = ?, next_retry_at = ?, updated_at = ?
-					  WHERE request_id = ? AND state = 'held'
-					    AND last_error = 'persisted_target_missing'
-					    AND hold_count = ? AND route_revision = ?`,
-					[
-						holdCount,
-						nextRetryAt,
-						input.now,
-						input.requestId,
-						delivery.hold_count,
-						route.revision,
-					],
-				);
-				if (this.db.getRowsModified() !== 1) {
-					result = { ok: false, reason: "held_recovery_settle_raced" };
-					return;
-				}
-				this.appendWorkflowRunEventCheckedTx({
-					runId: request.run_id,
-					eventUid: `rework_held_recovery_failure:${input.requestId}:${holdCount}`,
-					kind: "rework_held_recovery_failure",
-					nodeId: route.target_node_id,
-					executionId: route.preferred_actor_execution_id,
-					payload: {
-						requestId: input.requestId,
-						holdCount,
-						reason: input.reason,
-						nextRetryAt,
-					},
-				});
-				result = { ok: true, state: "held", holdCount, nextRetryAt };
-				return;
-			}
-
-			this.db.run(
-				`UPDATE workflow_rework_delivery
-				    SET state = 'needs_lead', owner_id = NULL,
-				        lease_expires_at = NULL, hold_count = ?, next_retry_at = NULL,
-				        last_error = ?, updated_at = ?
-				  WHERE request_id = ? AND state = 'held'
-				    AND last_error = 'persisted_target_missing'
-				    AND hold_count = ? AND route_revision = ?`,
-				[
-					holdCount,
-					input.reason,
-					input.now,
-					input.requestId,
-					delivery.hold_count,
-					route.revision,
-				],
-			);
-			if (this.db.getRowsModified() !== 1) {
-				result = { ok: false, reason: "held_recovery_settle_raced" };
-				return;
-			}
-			this.db.run(
-				`UPDATE workflow_rework_verification_path
-				    SET state = 'needs_lead', updated_at = ?
-				  WHERE request_id = ? AND route_revision = ?
-				    AND state IN ('pending','active')`,
-				[input.now, input.requestId, route.revision],
-			);
-			const escalationUid = `rework_held_recovery_exhausted:${input.requestId}`;
-			this.appendWorkflowRunEventCheckedTx({
-				runId: request.run_id,
-				eventUid: escalationUid,
-				kind: "rework_held_recovery_exhausted",
-				nodeId: route.target_node_id,
-				executionId: route.preferred_actor_execution_id,
-				payload: {
-					requestId: input.requestId,
-					holdCount,
-					reason: input.reason,
-					forceTerminal: input.forceTerminal ?? null,
-				},
-			});
-			this.enqueueWorkflowEngineAlertTx({
-				escalationUid,
-				runId: request.run_id,
-				now: input.now,
-				payload: {
-					leadId: input.alertIdentity.leadId,
-					projectName: input.alertIdentity.projectName,
-					eventId: escalationUid,
-					eventType: "workflow_engine_escalation",
-					severity: "severe",
-					sessionKey: `wf:${request.run_id}`,
-					title: `Held rework recovery exhausted for ${run.issue_id}`,
-					body: `Run ${request.run_id} rework ${input.requestId} could not recover after ${holdCount} attempts (${input.reason}). It is now needs_lead, automatic retries have stopped, and recovery must use operator rework.`,
-					metadata: {
-						workflowEngine: {
-							runId: request.run_id,
-							issueId: run.issue_id,
-							nodeId: route.target_node_id,
-							executionId: route.preferred_actor_execution_id,
-							disposition: "rework_held_recovery_exhausted",
-							leadResolution: input.alertIdentity.leadResolution,
-						},
-					},
-				},
-			});
-			result = { ok: true, state: "needs_lead", holdCount, nextRetryAt: null };
-		});
-		if (result.ok) this.save();
-		return result;
+	/**
+	 * FLY-2921 C2: replacements minted for one request since the last Lead
+	 * resume (or since it opened). Derived from the immutable route ledger —
+	 * no counter column exists to drift.
+	 */
+	private countReworkReplacementsSinceLeadResumeTx(requestId: string): number {
+		const row = this.workflowSelectAll(
+			`SELECT COUNT(*) AS n
+			   FROM workflow_rework_route_revision
+			  WHERE request_id = ?
+			    AND interpreted_by IN ('engine:proven_dead_replacement','engine:resume_fallback')
+			    AND revision > COALESCE((
+			      SELECT MAX(revision) FROM workflow_rework_route_revision
+			       WHERE request_id = ? AND interpreted_by = 'engine:hold_resume'
+			    ), 0)`,
+			[requestId, requestId],
+		)[0];
+		return Number(row?.n ?? 0);
 	}
 
+	/**
+	 * FLY-2921 C3: close the delivery-scoped Lead door for one route revision
+	 * (both the native and the migrated hold identity), e.g. when a
+	 * completion proves the returned rework was in fact delivered.
+	 */
+	private closeReworkReturnedToLeadHoldTx(input: {
+		runId: string;
+		requestId: string;
+		routeRevision: number;
+		reason: string;
+	}): void {
+		for (const holdEventUid of [
+			`rework_returned_to_lead:${input.requestId}:${input.routeRevision}`,
+			`migrated:rework_returned_to_lead:${input.requestId}:${input.routeRevision}`,
+		]) {
+			const hold = this.workflowSelectAll(
+				"SELECT 1 FROM workflow_run_event WHERE run_id = ? AND event_uid = ? AND kind = 'rework_returned_to_lead'",
+				[input.runId, holdEventUid],
+			)[0];
+			if (!hold) continue;
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				eventUid: `hold_resumed:rework_returned_to_lead:${holdEventUid}`,
+				kind: "hold_resumed",
+				payload: {
+					shape: "rework_returned_to_lead",
+					holdEventUid,
+					operationId: null,
+					decision: null,
+					reason: input.reason,
+					principal: "engine",
+					remainingRunHolds: [],
+				},
+			});
+		}
+	}
+
+	/**
+	 * FLY-2921 C3: every retryable rework delivery failure lands here. Backoff
+	 * is 1/2/4/8 minutes; the fifth failure (or `forceReturn`, e.g. the
+	 * replacement budget) settles `returned_to_lead`. Nothing else moves: the
+	 * run stays active, the target node stays reserved, the verification path
+	 * is untouched. The Lead gets exactly one delivery-scoped door.
+	 */
 	settleWorkflowReworkFailure(input: {
 		requestId: string;
 		ownerId: string;
@@ -45833,315 +47083,207 @@ export class StateStore {
 		reason: string;
 		alertIdentity: WorkflowEngineAlertIdentity;
 		now: string;
-		onExhausted?: "needs_lead" | "handoff_held_pane_loss";
-		terminal?: { kind: "irreversible_actor"; status: string; cause: string };
-	}):
-		| {
-				ok: true;
-				holdCount: number;
-				state: "pending" | "turn_granted" | "held" | "needs_lead";
-				nextRetryAt: string | null;
-		  }
-		| { ok: false; reason: string } {
-		const terminalValid =
-			input.terminal === undefined ||
-			Boolean(input.terminal.status.trim() && input.terminal.cause.trim());
-		const handoffRequested = input.onExhausted === "handoff_held_pane_loss";
+		forceReturn?: boolean;
+	}): WorkflowReworkFailureSettlement {
 		if (
 			!input.requestId ||
 			!input.ownerId ||
 			!Number.isInteger(input.generation) ||
 			input.generation < 1 ||
 			!input.reason.trim() ||
-			!StateStore.workflowFiniteTimestamp(input.now) ||
-			!terminalValid ||
-			(handoffRequested &&
-				(input.reason !== "persisted_target_missing" ||
-					input.terminal !== undefined))
+			!StateStore.workflowFiniteTimestamp(input.now)
 		) {
 			return { ok: false, reason: "invalid_rework_failure" };
 		}
-		let result:
-			| {
-					ok: true;
-					holdCount: number;
-					state: "pending" | "turn_granted" | "held" | "needs_lead";
-					nextRetryAt: string | null;
-			  }
-			| { ok: false; reason: string } = {
+		let result: WorkflowReworkFailureSettlement = {
 			ok: false,
 			reason: "rework_failure_not_settled",
 		};
 		this.db.transaction(() => {
-			const delivery = this.getWorkflowReworkDelivery(input.requestId);
-			const request = this.getWorkflowReworkRequest(input.requestId);
-			const route = this.getLatestWorkflowReworkRoute(input.requestId);
-			const run = request ? this.getWorkflowRun(request.run_id) : undefined;
-			if (!delivery || !request || !route || !run) {
-				result = { ok: false, reason: "rework_context_unavailable" };
-				return;
+			result = this.settleWorkflowReworkFailureTx({
+				...input,
+				fence: { ownerId: input.ownerId, generation: input.generation },
+			});
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	/**
+	 * FLY-2921 C3/C4.2 transaction core. `fence` is either the caller's claim
+	 * (owner + generation) or `unowned`: a producer outside the coordinator
+	 * (the dispatcher's unlaunched-stall escalation) may count a failure only
+	 * while nobody holds a live claim on the row.
+	 */
+	private settleWorkflowReworkFailureTx(input: {
+		requestId: string;
+		reason: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+		now: string;
+		forceReturn?: boolean;
+		fence: { ownerId: string; generation: number } | "unowned";
+	}): WorkflowReworkFailureSettlement {
+		const delivery = this.getWorkflowReworkDelivery(input.requestId);
+		const request = this.getWorkflowReworkRequest(input.requestId);
+		const route = this.getLatestWorkflowReworkRoute(input.requestId);
+		const run = request ? this.getWorkflowRun(request.run_id) : undefined;
+		if (!delivery || !request || !route || !run) {
+			return { ok: false, reason: "rework_context_unavailable" };
+		}
+		if (run.engine_owned !== 1 || run.status !== "active") {
+			return { ok: false, reason: "engine_run_not_active" };
+		}
+		const fence = input.fence;
+		const leaseLive =
+			delivery.lease_expires_at !== null &&
+			Date.parse(delivery.lease_expires_at) > Date.parse(input.now);
+		if (
+			(fence === "unowned"
+				? delivery.owner_id !== null && leaseLive
+				: delivery.owner_id !== fence.ownerId ||
+					delivery.generation !== fence.generation) ||
+			!(delivery.state === "pending" || delivery.state === "turn_granted")
+		) {
+			return { ok: false, reason: "stale_delivery_owner" };
+		}
+		const holdCount = delivery.hold_count + 1;
+		const exhausted = input.forceReturn === true || holdCount >= 5;
+		const nextRetryAt = exhausted
+			? null
+			: new Date(
+					Date.parse(input.now) + 60_000 * 2 ** (holdCount - 1),
+				).toISOString();
+		const nextState = exhausted ? "returned_to_lead" : delivery.state;
+		this.db.run(
+			`UPDATE workflow_rework_delivery
+			    SET state = ?, owner_id = NULL, lease_expires_at = NULL,
+			        hold_count = ?, next_retry_at = ?, last_error = ?, updated_at = ?
+			  WHERE request_id = ? AND generation = ? AND state = ?
+			    AND owner_id IS ?`,
+			[
+				nextState,
+				holdCount,
+				nextRetryAt,
+				input.reason,
+				input.now,
+				input.requestId,
+				delivery.generation,
+				delivery.state,
+				delivery.owner_id,
+			],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			return { ok: false, reason: "stale_delivery_owner" };
+		}
+		this.appendWorkflowRunEventCheckedTx({
+			runId: request.run_id,
+			eventUid:
+				fence === "unowned"
+					? `rework_delivery_failure:${input.requestId}:unowned:${route.revision}:${holdCount}`
+					: `rework_delivery_failure:${input.requestId}:${fence.generation}`,
+			kind: "rework_delivery_failure",
+			nodeId: route.target_node_id,
+			executionId: route.preferred_actor_execution_id,
+			payload: {
+				requestId: input.requestId,
+				generation: fence === "unowned" ? null : fence.generation,
+				routeRevision: route.revision,
+				holdCount,
+				reason: input.reason,
+				nextRetryAt,
+				returnedToLead: exhausted,
+			},
+		});
+		if (exhausted) {
+			const activation = this.getWorkflowActivationForAttempt({
+				executionId: route.preferred_actor_execution_id,
+				runId: request.run_id,
+				nodeId: route.target_node_id,
+				attempt: route.target_attempt,
+			});
+			const turn = activation
+				? this.getWorkflowActivationTurn(activation.activation_id)
+				: undefined;
+			// A started or recorded grant is ambiguous: the actor may hold
+			// the write TURN, so its credentials stay. An ungranted
+			// activation's credentials are revoked; a Lead resume rotates
+			// fresh ones on re-admission.
+			const cleanupDisposition =
+				delivery.grant_started_at !== null || turn
+					? "retain_ambiguous_grant"
+					: activation
+						? "revoke_ungranted_activation"
+						: "no_activation";
+			if (cleanupDisposition === "revoke_ungranted_activation") {
+				for (const table of [
+					"workflow_output_credential",
+					"workflow_submission_credential",
+				]) {
+					this.db.run(
+						`UPDATE ${table}
+						    SET revoked = 1, revoked_reason = 'rework_returned_to_lead_before_grant'
+						  WHERE activation_id = ? AND consumed_at IS NULL AND revoked = 0`,
+						[activation!.activation_id],
+					);
+				}
 			}
-			if (run.engine_owned !== 1 || run.status !== "active") {
-				result = { ok: false, reason: "engine_run_not_active" };
-				return;
-			}
-			if (
-				delivery.owner_id !== input.ownerId ||
-				delivery.generation !== input.generation ||
-				!(delivery.state === "pending" || delivery.state === "turn_granted")
-			) {
-				result = { ok: false, reason: "stale_delivery_owner" };
-				return;
-			}
-			const holdCount = delivery.hold_count + 1;
-			const exhausted = input.terminal !== undefined || holdCount >= 5;
-			const paneLossHandoff = exhausted && handoffRequested;
-			const nextRetryAt = exhausted
-				? null
-				: new Date(
-						Date.parse(input.now) + 60_000 * 2 ** (holdCount - 1),
-					).toISOString();
-			const nextState = paneLossHandoff
-				? "held"
-				: exhausted
-					? "needs_lead"
-					: delivery.state;
-			const storedHoldCount = paneLossHandoff ? 0 : holdCount;
-			this.db.run(
-				`UPDATE workflow_rework_delivery
-				    SET state = ?, owner_id = NULL, lease_expires_at = NULL,
-				        hold_count = ?, next_retry_at = ?, last_error = ?, updated_at = ?
-				  WHERE request_id = ? AND owner_id = ? AND generation = ? AND state = ?`,
-				[
-					nextState,
-					storedHoldCount,
-					nextRetryAt,
-					input.reason,
-					input.now,
-					input.requestId,
-					input.ownerId,
-					input.generation,
-					delivery.state,
-				],
+			const replacementCount = this.countReworkReplacementsSinceLeadResumeTx(
+				input.requestId,
 			);
-			if (this.db.getRowsModified() !== 1) {
-				result = { ok: false, reason: "stale_delivery_owner" };
-				return;
-			}
+			const holdEventUid = `rework_returned_to_lead:${input.requestId}:${route.revision}`;
 			this.appendWorkflowRunEventCheckedTx({
 				runId: request.run_id,
-				eventUid: `rework_delivery_failure:${input.requestId}:${input.generation}`,
-				kind: "rework_delivery_failure",
+				eventUid: holdEventUid,
+				kind: "rework_returned_to_lead",
 				nodeId: route.target_node_id,
 				executionId: route.preferred_actor_execution_id,
 				payload: {
 					requestId: input.requestId,
-					generation: input.generation,
-					holdCount,
+					routeRevision: route.revision,
 					reason: input.reason,
-					nextRetryAt,
-					terminal: input.terminal ?? null,
-					onExhausted: input.onExhausted ?? "needs_lead",
+					holdCount,
+					replacementCount,
+					cleanupDisposition,
 				},
 			});
-			if (paneLossHandoff) {
-				this.db.run(
-					"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND status = 'active'",
-					[request.run_id],
-				);
-				if (this.db.getRowsModified() !== 1) {
-					throw new Error("workflow_rework_pane_loss_handoff_run_cas_failed");
-				}
-				const escalationUid = `rework_pane_loss_handoff:${input.requestId}`;
-				this.appendWorkflowRunEventCheckedTx({
-					runId: request.run_id,
-					eventUid: escalationUid,
-					kind: "rework_pane_loss_handoff",
-					nodeId: route.target_node_id,
-					executionId: route.preferred_actor_execution_id,
-					payload: {
-						requestId: input.requestId,
-						attempts: holdCount,
-						reason: input.reason,
-						at: input.now,
-					},
-				});
-				this.enqueueWorkflowEngineAlertTx({
-					escalationUid,
-					runId: request.run_id,
-					now: input.now,
-					payload: {
-						leadId: input.alertIdentity.leadId,
-						projectName: input.alertIdentity.projectName,
-						eventId: escalationUid,
-						eventType: "workflow_engine_escalation",
-						severity: "severe",
-						sessionKey: `wf:${request.run_id}`,
-						title: `Rework handed to pane-loss recovery for ${run.issue_id}`,
-						body: `Run ${request.run_id} rework ${input.requestId} could not find actor ${route.preferred_actor_execution_id} after ${holdCount} attempts. It was handed to pane-loss recovery with its activation and verification state preserved.`,
-						metadata: {
-							workflowEngine: {
-								runId: request.run_id,
-								issueId: run.issue_id,
-								nodeId: route.target_node_id,
-								executionId: route.preferred_actor_execution_id,
-								disposition: "rework_pane_loss_handoff",
-								leadResolution: input.alertIdentity.leadResolution,
-							},
+			this.enqueueWorkflowEngineAlertTx({
+				escalationUid: holdEventUid,
+				runId: request.run_id,
+				now: input.now,
+				payload: {
+					leadId: input.alertIdentity.leadId,
+					projectName: input.alertIdentity.projectName,
+					eventId: holdEventUid,
+					eventType: "workflow_engine_escalation",
+					severity: "severe",
+					sessionKey: `wf:${request.run_id}`,
+					title: `Rework returned to Lead for ${run.issue_id}`,
+					body: [
+						`Automatic delivery of rework ${input.requestId} to ${route.target_node_id} gave up after ${holdCount} attempt(s) and ${replacementCount} replacement(s) (last error: ${input.reason}).`,
+						"The run stays active; nothing else is frozen.",
+						`To deliver it again: flywheel-comm hold resume --run ${request.run_id} --shape rework_returned_to_lead --hold-event ${holdEventUid} --reason "<what you checked or changed>"`,
+						"To change the rework content use the founder /rework; to abandon it, terminate the run.",
+						`Hold event: ${holdEventUid}`,
+					].join("\n"),
+					metadata: {
+						workflowEngine: {
+							runId: request.run_id,
+							issueId: run.issue_id,
+							nodeId: route.target_node_id,
+							executionId: route.preferred_actor_execution_id,
+							disposition: "rework_returned_to_lead",
+							leadResolution: input.alertIdentity.leadResolution,
 						},
 					},
-				});
-				result = {
-					ok: true,
-					holdCount: storedHoldCount,
-					state: "held",
-					nextRetryAt: null,
-				};
-				return;
-			}
-			if (exhausted) {
-				const target = this.getWorkflowRunNode(
-					request.run_id,
-					route.target_node_id,
-					route.target_attempt,
-				);
-				const activation = this.getWorkflowActivationForAttempt({
-					executionId: route.preferred_actor_execution_id,
-					runId: request.run_id,
-					nodeId: route.target_node_id,
-					attempt: route.target_attempt,
-				});
-				const turn = activation
-					? this.getWorkflowActivationTurn(activation.activation_id)
-					: undefined;
-				const cleanupDisposition =
-					delivery.grant_started_at !== null || turn
-						? "retain_ambiguous_grant"
-						: !activation &&
-								target?.state === "pending" &&
-								target.execution_id === route.preferred_actor_execution_id
-							? "rollback_pre_admission"
-							: activation &&
-									(target?.state === "admitted" ||
-										target?.state === "pending") &&
-									target.execution_id === route.preferred_actor_execution_id
-								? "abandon_ungranted_activation"
-								: "retain_ambiguous_grant";
-				if (cleanupDisposition !== "retain_ambiguous_grant") {
-					if (activation) {
-						for (const table of [
-							"workflow_output_credential",
-							"workflow_submission_credential",
-						]) {
-							this.db.run(
-								`UPDATE ${table}
-								    SET revoked = 1, revoked_reason = 'rework_retry_exhausted_before_grant'
-								  WHERE activation_id = ? AND consumed_at IS NULL AND revoked = 0`,
-								[activation.activation_id],
-							);
-						}
-					}
-					this.db.run(
-						`UPDATE workflow_run_node
-						    SET state = 'superseded', ended_at = COALESCE(ended_at, ?)
-						  WHERE run_id = ? AND node_id = ? AND attempt = ?
-						    AND execution_id = ? AND state IN ('pending','admitted')`,
-						[
-							input.now,
-							request.run_id,
-							route.target_node_id,
-							route.target_attempt,
-							route.preferred_actor_execution_id,
-						],
-					);
-					if (this.db.getRowsModified() !== 1) {
-						throw new Error(
-							"workflow_rework_budget_reservation_cleanup_cas_failed",
-						);
-					}
-					this.db.run(
-						`UPDATE workflow_rework_verification_path
-						    SET state = 'needs_lead', updated_at = ?
-						  WHERE request_id = ? AND route_revision = ?
-						    AND state IN ('pending','active')`,
-						[input.now, input.requestId, route.revision],
-					);
-					this.appendWorkflowRunEventCheckedTx({
-						runId: request.run_id,
-						eventUid: `rework_retry_cleanup:${input.requestId}`,
-						kind: "rework_retry_cleanup",
-						nodeId: route.target_node_id,
-						executionId: route.preferred_actor_execution_id,
-						payload: {
-							requestId: input.requestId,
-							activationId: activation?.activation_id ?? null,
-							disposition: cleanupDisposition,
-						},
-					});
-				}
-				this.db.run(
-					"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND status = 'active'",
-					[request.run_id],
-				);
-				if (this.db.getRowsModified() !== 1) {
-					throw new Error("workflow_rework_budget_run_hold_cas_failed");
-				}
-				const escalationUid = `rework_retry_exhausted:${input.requestId}`;
-				this.appendWorkflowRunEventCheckedTx({
-					runId: request.run_id,
-					eventUid: escalationUid,
-					kind: "rework_retry_exhausted",
-					nodeId: route.target_node_id,
-					executionId: route.preferred_actor_execution_id,
-					payload: {
-						requestId: input.requestId,
-						holdCount,
-						reason: input.reason,
-						cleanupDisposition,
-						terminalCause: input.terminal ?? null,
-					},
-				});
-				const terminalTitle = input.terminal
-					? `Rework activation cannot succeed for ${run.issue_id}`
-					: `Rework retry budget exhausted for ${run.issue_id}`;
-				const terminalBody = input.terminal
-					? `Run ${request.run_id} rework ${input.requestId} target actor is ${input.terminal.status} (irreversible); settled needs_lead after ${holdCount} attempt(s): ${input.terminal.cause}.`
-					: `Run ${request.run_id} rework ${input.requestId} failed five retryable deliveries (${input.reason}). It is now needs_lead and no further automatic retry will run.`;
-				this.enqueueWorkflowEngineAlertTx({
-					escalationUid,
-					runId: request.run_id,
-					now: input.now,
-					payload: {
-						leadId: input.alertIdentity.leadId,
-						projectName: input.alertIdentity.projectName,
-						eventId: escalationUid,
-						eventType: "workflow_engine_escalation",
-						severity: "severe",
-						sessionKey: `wf:${request.run_id}`,
-						title: terminalTitle,
-						body: terminalBody,
-						metadata: {
-							workflowEngine: {
-								runId: request.run_id,
-								issueId: run.issue_id,
-								nodeId: route.target_node_id,
-								executionId: route.preferred_actor_execution_id,
-								disposition: "rework_retry_exhausted",
-								leadResolution: input.alertIdentity.leadResolution,
-							},
-						},
-					},
-				});
-			}
-			result = {
-				ok: true,
-				holdCount: storedHoldCount,
-				state: nextState,
-				nextRetryAt,
-			};
-		});
-		if (result.ok) this.save();
-		return result;
+				},
+			});
+		}
+		return {
+			ok: true,
+			holdCount,
+			state: nextState,
+			nextRetryAt,
+		};
 	}
 
 	markWorkflowReworkGrantStarted(input: {
@@ -46173,6 +47315,12 @@ export class StateStore {
 		return { ok: true };
 	}
 
+	/**
+	 * FLY-2921: the generic CAS only opens the two owner-driven hops.
+	 * `turn_granted → wake_delivered` is written solely by the receipt
+	 * projection (or a replacement launch); every other edge that used to
+	 * exist here (→awaiting_receipt, →replacement_pending, →held) is gone.
+	 */
 	advanceWorkflowReworkDelivery(input: {
 		requestId: string;
 		ownerId: string;
@@ -46182,40 +47330,16 @@ export class StateStore {
 		now: string;
 		error?: string;
 		releaseOwner?: boolean;
-		nextRetryAt?: string;
-		alertIdentity?: WorkflowEngineAlertIdentity;
 	}): { ok: true } | { ok: false; reason: string } {
-		const nextRetryAt =
-			input.to === "awaiting_receipt"
-				? (input.nextRetryAt ?? workflowDeliveryReceiptNextRetryAt(input.now))
-				: null;
 		const allowed =
-			(input.from === "pending" &&
-				(["turn_granted", "replacement_pending", "held"] as const).includes(
-					input.to as never,
-				)) ||
-			(input.from === "turn_granted" &&
-				(["awaiting_receipt", "replacement_pending", "held"] as const).includes(
-					input.to as never,
-				)) ||
-			(input.from === "awaiting_receipt" &&
-				(["replacement_pending", "held"] as const).includes(input.to as never)) ||
-			(input.from === "wake_delivered" &&
-				(["replacement_pending", "completed", "held"] as const).includes(
-					input.to as never,
-				)) ||
-			(input.from === "replacement_pending" && input.to === "completed");
+			(input.from === "pending" && input.to === "turn_granted") ||
+			(input.from === "wake_delivered" && input.to === "completed");
 		if (
 			!input.requestId ||
 			!input.ownerId ||
 			!Number.isInteger(input.generation) ||
 			input.generation < 1 ||
 			!StateStore.workflowFiniteTimestamp(input.now) ||
-			(input.to === "awaiting_receipt" &&
-				(!StateStore.workflowFiniteTimestamp(nextRetryAt!) ||
-					Date.parse(nextRetryAt!) <= Date.parse(input.now))) ||
-			(input.to === "wake_delivered" &&
-				!StateStore.workflowAlertIdentityValid(input.alertIdentity)) ||
 			!allowed
 		) {
 			return { ok: false, reason: "invalid_delivery_transition" };
@@ -46224,7 +47348,7 @@ export class StateStore {
 		this.db.transaction(() => {
 			this.db.run(
 				`UPDATE workflow_rework_delivery
-				    SET state = ?, last_error = ?, updated_at = ?, next_retry_at = ?,
+				    SET state = ?, last_error = ?, updated_at = ?, next_retry_at = NULL,
 				        owner_id = CASE WHEN ? THEN NULL ELSE owner_id END,
 				        lease_expires_at = CASE WHEN ? THEN NULL ELSE lease_expires_at END
 				  WHERE request_id = ? AND owner_id = ? AND generation = ? AND state = ?`,
@@ -46232,7 +47356,6 @@ export class StateStore {
 					input.to,
 					input.error ?? null,
 					input.now,
-					nextRetryAt,
 					input.releaseOwner ? 1 : 0,
 					input.releaseOwner ? 1 : 0,
 					input.requestId,
@@ -46243,28 +47366,15 @@ export class StateStore {
 			);
 			advanced = this.db.getRowsModified() === 1;
 			if (!advanced) return;
+			const routeRevision = this.getWorkflowReworkDelivery(input.requestId)!
+				.route_revision;
 			if (input.to === "turn_granted") {
 				this.projectWorkflowDeliveryClockTx({
 					family: "rework",
 					table: "workflow_rework_delivery",
 					pk: input.requestId,
-					version: {
-						routeRevision:
-							this.getWorkflowReworkDelivery(input.requestId)!.route_revision,
-					},
+					version: { routeRevision },
 					clock: "granted_at",
-					at: input.now,
-				});
-			} else if (input.to === "awaiting_receipt") {
-				this.projectWorkflowDeliveryClockTx({
-					family: "rework",
-					table: "workflow_rework_delivery",
-					pk: input.requestId,
-					version: {
-						routeRevision:
-							this.getWorkflowReworkDelivery(input.requestId)!.route_revision,
-					},
-					clock: "sent_at",
 					at: input.now,
 				});
 			}
@@ -46273,65 +47383,83 @@ export class StateStore {
 			if (!request || !route) {
 				throw new Error("workflow_rework_context_missing_after_advance");
 			}
-			if (input.to === "wake_delivered") {
-				this.db.run(
-					`UPDATE workflow_run_node SET state = 'running'
-					  WHERE run_id = ? AND node_id = ? AND attempt = ?
-					    AND execution_id = ? AND state = 'admitted'`,
-					[
-						request.run_id,
-						route.target_node_id,
-						route.target_attempt,
-						route.preferred_actor_execution_id,
-					],
-				);
-				if (this.db.getRowsModified() !== 1) {
-					throw new Error("workflow_rework_activation_not_admitted");
-				}
-				const path = this.getWorkflowReworkVerificationPath(input.requestId);
-				if (path) {
-					this.db.run(
-						`UPDATE workflow_rework_verification_path
-						    SET state = 'active', updated_at = ?
-						  WHERE request_id = ? AND route_revision = ? AND state = 'pending'`,
-						[input.now, input.requestId, route.revision],
-					);
-					if (this.db.getRowsModified() !== 1) {
-						throw new Error(
-							"workflow_rework_verification_activation_cas_failed",
-						);
-					}
-				}
-			}
 			this.appendWorkflowRunEventCheckedTx({
 				runId: request.run_id,
-				eventUid: `rework_delivery_${input.to}:${input.requestId}`,
+				// FLY-2921: a request is re-delivered on every new route revision
+				// (replacement, Lead resume), so the hop receipt is per revision.
+				eventUid: `rework_delivery_${input.to}:${input.requestId}:${routeRevision}`,
 				kind: `rework_delivery_${input.to}`,
 				nodeId: route.target_node_id,
 				executionId: route.preferred_actor_execution_id,
 				payload: {
 					requestId: input.requestId,
 					generation: input.generation,
+					routeRevision,
 					from: input.from,
 					to: input.to,
 					...(input.error ? { error: input.error } : {}),
 				},
 			});
-			if (input.to === "wake_delivered") {
-				const run = this.getWorkflowRun(request.run_id);
-				if (!run) throw new Error("workflow_rework_run_missing_after_advance");
-				this.enqueueReworkRecoveredIfAlertedTx({
-					requestId: input.requestId,
-					runId: request.run_id,
-					issueId: run.issue_id,
-					nodeId: route.target_node_id,
-					executionId: route.preferred_actor_execution_id,
-					alertIdentity: input.alertIdentity!,
-					now: input.now,
-				});
-			}
 		});
 		if (!advanced) return { ok: false, reason: "stale_delivery_owner" };
+		this.save();
+		return { ok: true };
+	}
+
+	/**
+	 * FLY-2921: a successful push is a fact on the `turn_granted` row, not a
+	 * state. Records `wake_sent_at` (the CAS-visible twin of the delivery
+	 * clock `sent_at`, written in the same transaction), schedules the receipt
+	 * probe, and releases the owner.
+	 */
+	markWorkflowReworkWakeSent(input: {
+		requestId: string;
+		ownerId: string;
+		generation: number;
+		now: string;
+	}): { ok: true } | { ok: false; reason: string } {
+		if (
+			!input.requestId ||
+			!input.ownerId ||
+			!Number.isInteger(input.generation) ||
+			input.generation < 1 ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_wake_sent" };
+		}
+		let marked = false;
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE workflow_rework_delivery
+				    SET wake_sent_at = COALESCE(wake_sent_at, ?), next_retry_at = ?,
+				        owner_id = NULL, lease_expires_at = NULL, last_error = NULL,
+				        updated_at = ?
+				  WHERE request_id = ? AND owner_id = ? AND generation = ?
+				    AND state = 'turn_granted'`,
+				[
+					input.now,
+					workflowDeliveryReceiptNextRetryAt(input.now),
+					input.now,
+					input.requestId,
+					input.ownerId,
+					input.generation,
+				],
+			);
+			marked = this.db.getRowsModified() === 1;
+			if (!marked) return;
+			this.projectWorkflowDeliveryClockTx({
+				family: "rework",
+				table: "workflow_rework_delivery",
+				pk: input.requestId,
+				version: {
+					routeRevision:
+						this.getWorkflowReworkDelivery(input.requestId)!.route_revision,
+				},
+				clock: "sent_at",
+				at: input.now,
+			});
+		});
+		if (!marked) return { ok: false, reason: "stale_delivery_owner" };
 		this.save();
 		return { ok: true };
 	}
@@ -46884,17 +48012,16 @@ export class StateStore {
 				| "current_config"
 				| "live_template"
 				| "pinned_snapshot"
-				| "snapshot_fallback";
+				| "snapshot_fallback"
+				| "codex_quota_demand";
 			audit: boolean;
-			modelAssignment?: WorkflowModelAssignmentReceipt;
-			degradation?: {
-				assignedDispatch: {
-					vendor: "claude" | "codex";
-					model: string;
-					effort?: "low" | "medium" | "high" | "xhigh" | "max";
-				};
-				quotaEvidence: CodexPoolExhaustionFact;
+			/** FLY-2900: a quota-fallback body's frozen demand (either vendor). */
+			quotaFallback?: {
+				sourceExecutionId: string;
+				dispatchReason: "codex_quota_fallback" | "codex_quota_fallback_codex";
+				poolEvidenceRef: string | null;
 			};
+			modelAssignment?: WorkflowModelAssignmentReceipt;
 		};
 		env?: Record<string, string | undefined>;
 		standbyResumeEnabled?: boolean;
@@ -46941,7 +48068,6 @@ export class StateStore {
 		if (!node.dispatch || node.type === "gate") {
 			return { ok: false, reason: "not_start_node" };
 		}
-		const degradation = input.dispatchResolution?.degradation;
 		const wakeRuntime =
 			activationMode === "wake"
 				? this.getWorkflowExecutionRuntime(input.executionId)
@@ -47015,49 +48141,6 @@ export class StateStore {
 				};
 			}
 		}
-		const currentDegradationEvidence = () => {
-			if (!degradation) return false;
-			const current = this.codexQuota.getCurrentPoolExhaustionFact(
-				degradation.quotaEvidence.rootKey,
-				Date.parse(now),
-			);
-			return (
-				current !== undefined &&
-				canonicalSubmissionDigest(current) ===
-					canonicalSubmissionDigest(degradation.quotaEvidence)
-			);
-		};
-		const validDegradationProposal = () => {
-			if (!degradation) return false;
-			const assignment = input.dispatchResolution?.modelAssignment;
-			const opus = getModelConfigSnapshot().getModelRegistryEntry("opus");
-			return (
-				input.nodeId === "implement" &&
-				assignment?.basis.rule === "issue_node_weighted" &&
-				assignment.basis.nodeId === "implement" &&
-				(assignment.arm === "impl_sol56" || assignment.arm === "impl_sol6") &&
-				degradation.assignedDispatch.vendor === "codex" &&
-				degradation.assignedDispatch.model === assignment.model &&
-				degradation.assignedDispatch.effort === "xhigh" &&
-				input.dispatchResolution?.dispatch.vendor === "claude" &&
-				input.dispatchResolution.dispatch.model === MODEL_IDS.OPUS_55 &&
-				input.dispatchResolution.dispatch.effort === "xhigh" &&
-				assignment.basis.nodes.implement.some(
-					(arm) => arm.arm === "impl_opus" && arm.model === "opus",
-				) &&
-				opus?.id === MODEL_IDS.OPUS_55 &&
-				opus.runtimeVendor === "claude" &&
-				getModelConfigSnapshot().isModelSelectionSupported({
-					surface: "workflow",
-					model: opus.id,
-					effort: "xhigh",
-					runtimeVendor: "claude",
-				})
-			);
-		};
-		if (degradation && !validDegradationProposal())
-			return { ok: false, reason: "model_arm_degradation_invalid" };
-		const proposedDegradationApplied = currentDegradationEvidence();
 		const selectedDispatch = wakeRuntime
 			? {
 					vendor: wakeRuntime.vendor as "claude" | "codex",
@@ -47073,27 +48156,13 @@ export class StateStore {
 							}
 						: {}),
 				}
-			: proposedDegradationApplied
-				? (input.dispatchResolution?.dispatch ?? node.dispatch)
-				: (degradation?.assignedDispatch ??
-					input.dispatchResolution?.dispatch ??
-					node.dispatch);
+			: (input.dispatchResolution?.dispatch ?? node.dispatch);
 		const resolvedDispatch = {
 			...selectedDispatch,
 			model:
 				getModelConfigSnapshot().getModelRegistryEntry(selectedDispatch.model)
 					?.id ?? selectedDispatch.model,
 		};
-		const degradationAssignment =
-			inheritedDegradation?.assignment ??
-			(proposedDegradationApplied
-				? input.dispatchResolution?.modelAssignment
-				: undefined);
-		if (
-			(proposedDegradationApplied || inheritedDegradation) &&
-			!degradationAssignment
-		)
-			return { ok: false, reason: "model_arm_degradation_invalid" };
 		if (
 			node.capabilities.qa_verdict_emitter &&
 			node.capabilities.produces_output
@@ -47255,19 +48324,9 @@ export class StateStore {
 		}
 
 		let quotaRefused = false;
-		let degradationStale = false;
-		let degradationInvalid = false;
 		let outputCredential: string | undefined;
 		let submissionCredential: string | undefined;
 		this.db.transaction(() => {
-			if (proposedDegradationApplied && !validDegradationProposal()) {
-				degradationInvalid = true;
-				return;
-			}
-			if (proposedDegradationApplied && !currentDegradationEvidence()) {
-				degradationStale = true;
-				return;
-			}
 			if(quotaPaused()) {quotaRefused=true;return;}
 			this.appendWorkflowEngineParkEventTx({
 				eventId: `engine-park-clear:${activationId}`,
@@ -47362,10 +48421,12 @@ export class StateStore {
 					);
 				}
 			}
-			const degradationEventUid = degradationAssignment
+			// FLY-2891: new admissions never degrade; only a wake of an execution that
+			// was degraded before the removal re-records its inherited receipt.
+			const degradationEventUid = inheritedDegradation
 				? `model_arm_degraded:${input.runId}:${input.nodeId}:${activationId}`
 				: undefined;
-			if (degradationAssignment) {
+			if (inheritedDegradation) {
 				this.appendWorkflowRunEventCheckedTx({
 					runId: input.runId,
 					eventUid: degradationEventUid!,
@@ -47378,25 +48439,17 @@ export class StateStore {
 						nodeId: input.nodeId,
 						activationId,
 						assignmentEventUid: `model_arm_assigned:${input.runId}:${input.nodeId}`,
-						arm: degradationAssignment.arm,
+						arm: inheritedDegradation.assignment.arm,
 						degraded: true,
-						assignedModel: degradationAssignment.model,
+						assignedModel: inheritedDegradation.assignment.model,
 						actualModel: resolvedDispatch.model,
 						reason: "codex_pool_exhausted",
 						degradedAt: now,
-						quotaEvidence:
-							inheritedDegradation?.quotaEvidence ??
-							degradation!.quotaEvidence,
-						assignedEffort:
-							inheritedDegradation?.assignedEffort ??
-							degradation?.assignedDispatch.effort,
+						quotaEvidence: inheritedDegradation.quotaEvidence,
+						assignedEffort: inheritedDegradation.assignedEffort,
 						actualEffort: resolvedDispatch.effort,
-						...(inheritedDegradation
-							? {
-									originalDegradationEventUid:
-										inheritedDegradation.originalDegradationEventUid,
-								}
-							: {}),
+						originalDegradationEventUid:
+							inheritedDegradation.originalDegradationEventUid,
 					},
 				});
 			}
@@ -47474,6 +48527,26 @@ export class StateStore {
 						...(degradationEventUid
 							? { degraded: true, degradationEventUid }
 							: {}),
+					},
+				});
+			}
+			const quotaFallback = input.dispatchResolution?.quotaFallback;
+			if (quotaFallback) {
+				// FLY-2900 §5.4: every quota fallback dispatch leaves a record the
+				// model-assignment scorecard excludes from both vendors' samples.
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId,
+					eventUid: `dispatch_quota_fallback:${input.runId}:${input.nodeId}:${input.executionId}`,
+					kind: "dispatch_quota_fallback",
+					nodeId: input.nodeId,
+					executionId: input.executionId,
+					payload: {
+						activationId,
+						sourceExecutionId: quotaFallback.sourceExecutionId,
+						dispatchReason: quotaFallback.dispatchReason,
+						resolved: resolvedDispatch,
+						poolEvidenceRef: quotaFallback.poolEvidenceRef,
+						at: now,
 					},
 				});
 			}
@@ -47649,10 +48722,6 @@ export class StateStore {
 				);
 			}
 		});
-		if (degradationInvalid)
-			return { ok: false, reason: "model_arm_degradation_invalid" };
-		if (degradationStale)
-			return { ok: false, reason: "model_arm_degradation_stale" };
 		if(quotaRefused) return {ok:false,reason:"codex_quota_paused"};
 		this.save();
 		return {
@@ -48711,6 +49780,9 @@ export class StateStore {
 		demandId: string;
 		newExecutionId: string;
 		now: string;
+		/** FLY-2921: the coordinator's claim on the rework delivery (required when the demand is a rework). */
+		ownerId?: string;
+		generation?: number;
 	}):
 		| {
 				ok: true;
@@ -48788,21 +49860,35 @@ export class StateStore {
 					route.target_attempt !== runtime.attempt ||
 					route.preferred_actor_execution_id !== input.executionId ||
 					delivery.route_revision !== route.revision ||
-					!["pending", "turn_granted", "awaiting_receipt", "wake_delivered"].includes(
+					!["pending", "turn_granted", "wake_delivered"].includes(
 						delivery.state,
-					))
+					) ||
+					// FLY-2921: the fallback runs inside the coordinator's claim;
+					// it must never clear someone else's.
+					!input.ownerId ||
+					delivery.owner_id !== input.ownerId ||
+					delivery.generation !== input.generation)
 			) {
 				result = { ok: false, reason: "resume_fallback_context_changed" };
 				return;
 			}
-			const launchOrdinal = this.allocateWorkflowLaunchOrdinalTx(
-				runtime.run_id,
-				runtime.node_id,
-				runtime.attempt,
-				input.newExecutionId,
-				"resume_fallback",
-				input.demandId,
-			);
+			if (
+				hasReworkContext &&
+				this.countReworkReplacementsSinceLeadResumeTx(input.demandId) >= 3
+			) {
+				result = { ok: false, reason: "replacement_budget_exhausted" };
+				return;
+			}
+			const launchOrdinal = hasReworkContext
+				? undefined
+				: this.allocateWorkflowLaunchOrdinalTx(
+							runtime.run_id,
+							runtime.node_id,
+							runtime.attempt,
+							input.newExecutionId,
+							"resume_fallback",
+							input.demandId,
+						);
 			this.db.run(
 				`INSERT INTO workflow_execution_resume_attempt
 				   (execution_id, demand_id, generation, kind, attempt, state,
@@ -48827,63 +49913,45 @@ export class StateStore {
 			if (this.db.getRowsModified() !== 1) {
 				throw new Error("resume_fallback_cas_failed");
 			}
+			let allocatedOrdinal = launchOrdinal;
 			if (request && route && delivery && run) {
-				this.upsertWorkflowRunNodeTx({
-					runId: runtime.run_id,
-					nodeId: runtime.node_id,
-					attempt: runtime.attempt,
-					state: "pending",
-					executionId: input.newExecutionId,
-				});
-				this.db.run(
-				`INSERT OR IGNORE INTO workflow_actor
-				   (execution_id, project_name, issue_id, role, created_at)
-				 VALUES (?, ?, ?, ?, ?)`,
-				[
-					input.newExecutionId,
-					run.project_name,
-					run.issue_id,
-					runtime.node_id,
-					input.now,
-				],
-				);
-				const nextRevision = route.revision + 1;
-				this.db.run(
-				`INSERT INTO workflow_rework_route_revision
-				   (request_id, revision, target_node_id, target_attempt,
-				    preferred_actor_execution_id, invalidation_scope_json,
-				    verification_policy_json, interpreted_by,
-				    interpretation_reason, created_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, 'engine:resume_fallback',
-				         'original_session_unavailable', ?)`,
-				[
-					input.demandId,
-					nextRevision,
-					runtime.node_id,
-					runtime.attempt,
-					input.newExecutionId,
-					JSON.stringify(route.invalidation_scope),
-					JSON.stringify(route.verification_policy),
-					input.now,
-				],
-				);
-				this.db.run(
-				`UPDATE workflow_rework_delivery
-				    SET route_revision = ?, state = 'replacement_pending',
-				        owner_id = NULL, lease_expires_at = NULL, next_retry_at = NULL,
-				        last_error = 'resume_fallback_allocated', updated_at = ?
-				  WHERE request_id = ? AND route_revision = ?
-				    AND state IN ('pending','turn_granted','awaiting_receipt','wake_delivered')`,
-					[nextRevision, input.now, input.demandId, route.revision],
-				);
-				if (this.db.getRowsModified() !== 1) {
-					throw new Error("resume_fallback_delivery_cas_failed");
+				// FLY-2921 C6.3: the rework branch shares the replacement core,
+				// so the fallback launch carries `rework_replacement:<req>` (its
+				// own launch fence would otherwise block it forever), a fresh
+				// route revision, wake retirement, and resume lineage.
+				try {
+					allocatedOrdinal = this.materializeReworkReplacementCoreTx({
+						request,
+						route,
+						run,
+						deadExecutionId: input.executionId,
+						newExecutionId: input.newExecutionId,
+						reason: "resume_fallback_allocated",
+						observedAt: input.now,
+						interpretedBy: "engine:resume_fallback",
+						interpretationReason: "original_session_unavailable",
+						provenDead: false,
+						launchPurpose: {
+							purpose: "resume_fallback",
+							sourceDemandId: input.demandId,
+						},
+						ownerFence: {
+							ownerId: input.ownerId!,
+							generation: input.generation!,
+						},
+					}).launchOrdinal;
+				} catch (error) {
+					if (
+						error instanceof Error &&
+						error.message === "workflow_rework_replacement_delivery_cas_failed"
+					) {
+						throw new Error("resume_fallback_delivery_cas_failed");
+					}
+					throw error;
 				}
-				this.remintWorkflowReworkDeliveryAttemptTx({
-					requestId: input.demandId,
-					runId: runtime.run_id,
-					now: input.now,
-				});
+			}
+			if (allocatedOrdinal === undefined) {
+				throw new Error("resume_fallback_launch_not_allocated");
 			}
 			this.appendWorkflowRunEventCheckedTx({
 				runId: runtime.run_id,
@@ -48894,7 +49962,7 @@ export class StateStore {
 				payload: {
 					demandId: input.demandId,
 					newExecutionId: input.newExecutionId,
-					launchOrdinal,
+					launchOrdinal: allocatedOrdinal,
 					contextLoss: true,
 					at: input.now,
 				},
@@ -48902,7 +49970,7 @@ export class StateStore {
 			result = {
 				ok: true,
 				executionId: input.newExecutionId,
-				launchOrdinal,
+				launchOrdinal: allocatedOrdinal,
 				idempotentReplay: false,
 			};
 			});
@@ -49798,6 +50866,8 @@ export class StateStore {
 			) as unknown as WorkflowResidentHoldRow[];
 			for (const hold of candidates) {
 				if (this.openResidentParkTx(hold.execution_id)?.reason === "runner_ship_gate_wait") continue;
+				// FLY-2900 §4.2: a parked quota standby body keeps its resident identity.
+				if (this.codexQuota.isCodexQuotaStandby(hold.execution_id)) continue;
 				const operationId = `resident-expiry:${hold.execution_id}:r${hold.revision}`;
 				const canonicalDigest = canonicalSubmissionDigest({
 					kind: "resident_expiry",
@@ -50516,13 +51586,35 @@ export class StateStore {
 			next_check_at: nextCheckAt,
 			next_check_disposition: nextCheckDisposition,
 		};
-		return this.appendLeadEvent(
-			input.leadIntent.leadId,
-			eventId,
-			"workflow_replacement_eligibility",
-			JSON.stringify(payload),
-			`wf:${context.binding.run_id}`,
-		);
+		const binding: NotificationBinding = { projectName: context.run.project_name, leadId: input.leadIntent.leadId, eventId, executionId: input.executionId, issueId: context.run.issue_id };
+        const evidence: NotificationEvidenceV2 = {
+            version: 2, kind: "replacement_notice", binding,
+            proof: { sourceRef: `session-event:${eventId}:proof`, executionId: input.executionId, action: { state: "unknown" } },
+            workflow: { runId: context.binding.run_id, nodeId: context.binding.node_id, attempt: context.binding.attempt, activationId: context.binding.activation_id, launchOrdinal, dispatchCreatedAt: sqliteCreatedAt },
+            attemptRef: context.binding.activation_id,
+            scheduleRef: `workflow-dispatch:${context.binding.run_id}:${context.binding.node_id}:${context.binding.attempt}:${launchOrdinal}:replacement-delays-v1`,
+            nextCheckAt, observedAt: input.now, disposition: nextCheckDisposition,
+        };
+        // A generalized failure may have no other Lead path. Only an independently
+        // accepted notification of this exact source can make the future check quiet.
+        try {
+            const teardowns = this.listWorkflowRunEvents(context.binding.run_id).filter((row) => row.kind === "generalized_teardown_recorded" && row.execution_id === input.executionId && row.node_id === context.binding.node_id).map((row) => row.payload as Record<string, unknown>);
+            const latestTeardown = teardowns.at(-1);
+            const required = new Set(["goal_blocked", "goal_usage_limited", "worktree_takeover_failed", "reown_exhausted"]);
+            if (Number.isFinite(parsedCreatedAt) && nextCheckDisposition === "replacement_candidate" && latestTeardown && !teardowns.some((row) => required.has(String(row.failureKind))) && typeof latestTeardown.sourceEventId === "string") {
+                const source = this.workflowSelectAll("SELECT execution_id,project_name,issue_id,payload FROM session_events WHERE event_id=?", [latestTeardown.sourceEventId])[0];
+                const accepted = this.getLeadEventByLeadAndId(binding.leadId, latestTeardown.sourceEventId);
+                const fault = accepted && JSON.parse(accepted.payload) as Record<string, unknown> | undefined;
+                const original = source && JSON.parse(String(source.payload)) as Record<string, unknown> | undefined;
+                if (source?.execution_id === binding.executionId && source.project_name === binding.projectName && source.issue_id === binding.issueId && accepted?.event_type === "session_failed" && accepted.delivery_disposition === "model" && accepted.delivered_at && fault?.execution_id === binding.executionId && fault.project_name === binding.projectName && fault.issue_id === binding.issueId && (fault.failure_kind ?? fault.failureKind ?? null) === (original?.failureKind ?? null) && (fault.last_error ?? null) === (original?.lastError ?? null)) {
+                    evidence.proof.action = { state: "none", checkedRefs: [evidence.attemptRef, evidence.scheduleRef, `accepted-lead-event:${accepted.event_id}:${accepted.seq}`] };
+                }
+            }
+        } catch {
+            // Missing or unreadable fault evidence preserves the immediate path.
+        }
+        const decision = leadNotificationDecision("workflow_replacement_eligibility", { ...payload }, evidence, { binding, enabled: storeLeadTokenSavingsEnabled({ store: this }, binding.projectName), categoryEnabled: storeLeadReplacementNoticeAuditEnabled({ store: this }, binding.projectName) });
+        return this.appendLeadNotification({ binding, eventType: "workflow_replacement_eligibility", payload: JSON.stringify(payload), sessionKey: `wf:${context.binding.run_id}`, evidence, decision });
 	}
 
 	/**
@@ -50585,6 +51677,8 @@ export class StateStore {
 				runId: string;
 				nodeId: string;
 				leadEventSeq?: number;
+				/** FLY-2900: the wall parked the execution; no terminal status was written. */
+				quotaStandby?: true;
 		  }
 		| { ok: false; reason: string } {
 		const now = input.now ?? new Date().toISOString();
@@ -50626,6 +51720,7 @@ export class StateStore {
 		let statusPreserved = false;
 		let statusChanged = false;
 		let leadEventSeq: number | undefined;
+		let quotaStandby = false;
 		const shouldPreserveSessionStatus = (currentStatus: string | undefined) => {
 			if (currentStatus === status) return false;
 			if (isNoOutEdgeTerminalStatus(currentStatus)) return true;
@@ -50671,22 +51766,75 @@ export class StateStore {
 				idempotentReplay = true;
 				const currentStatus = this.getSession(input.executionId)?.status;
 				effectiveStatus = currentStatus ?? status;
+				if (priorPayload.quotaStandby === true) {
+					quotaStandby = true;
+					return;
+				}
 				statusPreserved = shouldPreserveSessionStatus(currentStatus);
 				return;
 			} else {
+				let standbyDisposition: CodexQuotaStandbyDisposition | null = null;
+				const signalSource =
+					quotaSignal?.source === "review_exec"
+						? "review_exec"
+						: "runner_terminal";
 				if (input.failureKind === "goal_usage_limited") {
 					this.codexQuota.recordSignal({
 						executionId: input.executionId,
 						bindingId: quotaSignal?.bindingId,
 						nodeId: context.binding.node_id,
 						now,
-						source:
-							quotaSignal?.source === "review_exec"
-								? "review_exec"
-								: "runner_terminal",
+						source: signalSource,
 						sourceEventId: input.sourceEventId,
 						availability: this.codexQuotaAvailability(),
 					});
+				}
+				if (input.signal === "completed") {
+					// FLY-2900: the resumed body finished the node — that is proof it
+					// worked. Settle the carrier first, then take the normal path.
+					this.closeCodexQuotaStandbyOnCompletionTx(input.executionId, now);
+				} else if (signalSource === "runner_terminal") {
+					standbyDisposition = this.codexQuotaStandbyDispositionTx({
+						executionId: input.executionId,
+						sourceEventId: input.sourceEventId,
+						usageLimited: input.failureKind === "goal_usage_limited",
+						context,
+						now,
+					});
+				}
+				if (standbyDisposition) {
+					this.db.run(
+						`INSERT INTO session_events
+						   (event_id, execution_id, issue_id, project_name, event_type, severity, payload, source)
+						 VALUES (?, ?, ?, ?, ?, 'info', ?, ?)`,
+						[
+							input.sourceEventId,
+							input.executionId,
+							context.run.issue_id,
+							context.run.project_name,
+							eventType,
+							JSON.stringify({
+								failureKind: input.failureKind ?? null,
+								...(quotaSignal ? { quotaSignal } : {}),
+								lastError: input.lastError ?? null,
+								...(failureClassification ?? {}),
+								quotaStandby: true,
+							}),
+							input.source,
+						],
+					);
+					this.applyCodexQuotaStandbyTx({
+						disposition: standbyDisposition,
+						executionId: input.executionId,
+						sourceEventId: input.sourceEventId,
+						bindingId: quotaSignal?.bindingId,
+						context,
+						now,
+					});
+					quotaStandby = true;
+					effectiveStatus =
+						this.getSession(input.executionId)?.status ?? "running";
+					return;
 				}
 				const canonical =
 					this.getWorkflowExecutionTerminalFailureCanonical(input.executionId);
@@ -50798,7 +51946,875 @@ export class StateStore {
 			runId: context.binding.run_id,
 			nodeId: context.binding.node_id,
 			...(leadEventSeq !== undefined ? { leadEventSeq } : {}),
+			...(quotaStandby ? { quotaStandby: true as const } : {}),
 		};
+	}
+
+	/**
+	 * FLY-2900 §4.3: release parked executions (by execution or by run) inside
+	 * the caller's transaction. Idempotent; returns how many were released.
+	 */
+	releaseCodexQuotaStandbyTx(input: {
+		executionId?: string;
+		runId?: string;
+		reason: string;
+		now: string;
+	}): number {
+		const released = this.codexQuota.releaseStandby(input);
+		for (const row of released)
+			if (row.state === "fallback_prepared")
+				this.finalizeReleasedCodexQuotaStandbyTx(input.now, row.execution_id);
+		return released.length;
+	}
+
+	/**
+	 * FLY-2900 §4.3: complete releases (including trigger-flipped ones): targets
+	 * abandoned and one audit row per entry. Runs inside the caller's transaction.
+	 */
+	finalizeReleasedCodexQuotaStandbyTx(now: string, executionId?: string): number {
+		// A released carrier's prepared fallback body is voided in the same
+		// transaction: demand reverted, ledger abandoned, node back.
+		const prepared = this.workflowSelectAll(
+			`SELECT d.new_execution_id FROM codex_quota_dispatch_demand d
+			   JOIN codex_quota_standby s ON s.execution_id = d.source_execution_id
+			  WHERE d.state = 'prepared' AND s.state = 'released'
+			    AND (? IS NULL OR s.execution_id = ?)`,
+			[executionId ?? null, executionId ?? null],
+		);
+		for (const row of prepared)
+			this.revertCodexQuotaFallbackTx(
+				String(row.new_execution_id),
+				"standby_released",
+				now,
+			);
+		return this.codexQuota.finalizeReleasedStandby(now, executionId);
+	}
+
+	finalizeReleasedCodexQuotaStandby(now: string): number {
+		let finalized = 0;
+		this.db.transaction(() => {
+			finalized = this.finalizeReleasedCodexQuotaStandbyTx(now);
+		});
+		if (finalized > 0) this.save();
+		return finalized;
+	}
+
+	releaseCodexQuotaStandby(input: {
+		executionId?: string;
+		runId?: string;
+		reason: string;
+		now: string;
+	}): number {
+		let released = 0;
+		this.db.transaction(() => {
+			released = this.releaseCodexQuotaStandbyTx(input);
+		});
+		if (released > 0) this.save();
+		return released;
+	}
+
+	/**
+	 * FLY-2900 §5.4: would handing this node to `vendor` break the
+	 * same-vendor review rule? A reviewer must not share its producer's vendor,
+	 * and a producer must not share a downstream reviewer's vendor, unless the
+	 * project sanctions same-family review.
+	 */
+	codexQuotaFallbackSameVendorViolation(input: {
+		runId: string;
+		nodeId: string;
+		vendor: "codex" | "claude";
+	}): { violated: boolean; evidence: Record<string, unknown> } {
+		const run = this.getWorkflowRun(input.runId);
+		if (!run?.snapshot)
+			return { violated: true, evidence: { reason: "snapshot_missing" } };
+		const snapshot = parseWorkflowRunSnapshot(run.snapshot);
+		const sanctioned = this.reviewSameFamilyAllowedForProject(run.project_name);
+		const conflicts: string[] = [];
+		const vendorOf = (nodeId: string): string | undefined => {
+			const latest = this.listWorkflowRunNodes(input.runId, nodeId)
+				.filter((candidate) => candidate.execution_id)
+				.sort((left, right) => right.attempt - left.attempt)[0];
+			const runtime = latest?.execution_id
+				? this.getWorkflowExecutionRuntime(latest.execution_id)
+				: undefined;
+			return (
+				runtime?.vendor ??
+				snapshot.resolved.nodes.find((node) => node.id === nodeId)?.dispatch
+					?.vendor
+			);
+		};
+		const producersOf = (nodeId: string) =>
+			snapshot.manifest.edges
+				.filter((edge) => edge.to === nodeId)
+				.map((edge) => edge.from);
+		if (resolveWorkflowDecisionContract(snapshot, input.nodeId)) {
+			for (const producer of producersOf(input.nodeId))
+				if (vendorOf(producer) === input.vendor)
+					conflicts.push(`producer:${producer}`);
+		}
+		for (const node of snapshot.resolved.nodes) {
+			if (
+				node.id === input.nodeId ||
+				!resolveWorkflowDecisionContract(snapshot, node.id) ||
+				!producersOf(node.id).includes(input.nodeId)
+			)
+				continue;
+			if (node.dispatch?.vendor === input.vendor)
+				conflicts.push(`reviewer:${node.id}`);
+		}
+		return {
+			violated: conflicts.length > 0 && !sanctioned,
+			evidence: { vendor: input.vendor, conflicts, sanctioned },
+		};
+	}
+
+	/**
+	 * FLY-2900 §5.2 phase one: allocate a fallback body for a parked
+	 * execution. Replays return the original new execution; a reverted
+	 * attempt moves to the next (at most two). The original execution is not
+	 * touched until the new one's launch commits.
+	 */
+	prepareCodexQuotaFallback(input: {
+		executionId: string;
+		vendor: "codex" | "claude";
+		model: string;
+		effort: string;
+		reason: "resume_attempts_exhausted" | "codex_quota_fallback";
+		newExecutionId: string;
+		sameVendorEvidence: Record<string, unknown>;
+		poolEvidenceRef?: string | null;
+		now: string;
+	}):
+		| {
+				ok: true;
+				newExecutionId: string;
+				fallbackAttempt: number;
+				idempotentReplay: boolean;
+		  }
+		| { ok: false; reason: string } {
+		let result:
+			| {
+					ok: true;
+					newExecutionId: string;
+					fallbackAttempt: number;
+					idempotentReplay: boolean;
+			  }
+			| { ok: false; reason: string } = { ok: false, reason: "not_standby" };
+		this.db.transaction(() => {
+			const row = this.codexQuota.getStandby(input.executionId);
+			if (!row) return;
+			let attempt = row.fallback_attempt === 0 ? 1 : row.fallback_attempt;
+			const demandFor = (fallbackAttempt: number) =>
+				this.workflowSelectAll(
+					`SELECT * FROM codex_quota_dispatch_demand
+					  WHERE source_execution_id = ? AND entry_seq = ? AND fallback_attempt = ?`,
+					[input.executionId, row.entry_seq, fallbackAttempt],
+				)[0];
+			let prior = demandFor(attempt);
+			if (prior && prior.state !== "reverted") {
+				if (
+					prior.vendor !== input.vendor ||
+					prior.reason !== input.reason ||
+					prior.model !== input.model ||
+					prior.effort !== input.effort
+				) {
+					result = { ok: false, reason: "fallback_replay_conflict" };
+					return;
+				}
+				result = {
+					ok: true,
+					newExecutionId: String(prior.new_execution_id),
+					fallbackAttempt: attempt,
+					idempotentReplay: true,
+				};
+				return;
+			}
+			if (prior?.state === "reverted") {
+				attempt += 1;
+				prior = demandFor(attempt);
+				if (prior && prior.state !== "reverted") {
+					result = {
+						ok: true,
+						newExecutionId: String(prior.new_execution_id),
+						fallbackAttempt: attempt,
+						idempotentReplay: true,
+					};
+					return;
+				}
+			}
+			if (attempt > CODEX_QUOTA_FALLBACK_ATTEMPTS) {
+				this.codexQuota.enqueueOutbox({
+					incidentId: `codex-standby:${input.executionId}`,
+					kind: "lead_diagnostic",
+					eventId: `codex-standby-fallback-exhausted:${input.executionId}:${row.entry_seq}`,
+					destination: "lead",
+					payload: {
+						reason: "fallback_exhausted",
+						executionId: input.executionId,
+						runId: row.run_id,
+						nodeId: row.node_id,
+					},
+				});
+				result = { ok: false, reason: "fallback_exhausted" };
+				return;
+			}
+			if (row.state !== "standby") return;
+			const fence = this.codexQuota.standbyWorkflowFence(row);
+			if (fence) {
+				result = { ok: false, reason: fence };
+				return;
+			}
+			// One writer fence per source execution (dead-execution watch is
+			// keyed by it); a stale foreign one means another replacement owns it.
+			if (this.getWorkflowDeadExecutionWatch(input.executionId)) {
+				result = { ok: false, reason: "writer_fence_conflict" };
+				return;
+			}
+			const run = this.getWorkflowRun(row.run_id);
+			if (!run) return;
+			const session = this.getSession(input.executionId);
+			const node = this.workflowSelectAll(
+				`SELECT state FROM workflow_run_node
+				  WHERE run_id = ? AND node_id = ? AND attempt = ?`,
+				[row.run_id, row.node_id, row.attempt],
+			)[0];
+			this.db.run(
+				`UPDATE codex_quota_standby
+				    SET state = 'fallback_prepared', fallback_attempt = ?,
+				        fallback_execution_id = ?, fallback_vendor = ?, fallback_reason = ?,
+				        updated_at = ?
+				  WHERE execution_id = ? AND state = 'standby'`,
+				[
+					attempt,
+					input.newExecutionId,
+					input.vendor,
+					input.reason,
+					input.now,
+					input.executionId,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			this.db.run(
+				`INSERT INTO codex_quota_dispatch_demand
+				   (new_execution_id, source_execution_id, entry_seq, fallback_attempt,
+				    vendor, model, effort, reason, same_vendor_evidence_json,
+				    pool_evidence_ref, source_node_state, state, created_at, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', ?, ?)`,
+				[
+					input.newExecutionId,
+					input.executionId,
+					row.entry_seq,
+					attempt,
+					input.vendor,
+					input.model,
+					input.effort,
+					input.reason,
+					JSON.stringify(input.sameVendorEvidence),
+					input.poolEvidenceRef ?? null,
+					String(node?.state ?? "running"),
+					input.now,
+					input.now,
+				],
+			);
+			const launchOrdinal = this.allocateWorkflowLaunchOrdinalTx(
+				row.run_id,
+				row.node_id,
+				row.attempt,
+				input.newExecutionId,
+				"resume_fallback",
+				`codex-quota-standby:${input.executionId}:${row.entry_seq}:${attempt}`,
+			);
+			this.upsertWorkflowRunNodeTx({
+				runId: row.run_id,
+				nodeId: row.node_id,
+				attempt: row.attempt,
+				state: "pending",
+				executionId: input.newExecutionId,
+			});
+			// §5.2 (disclosed deviation): the same-attempt body resolves its
+			// delivery before launch, so the migration happens here, fenced
+			// exactly like a dead-rollback replacement (watch below) and never
+			// inheriting an attachment minted for a reverted body.
+			const revertedTransitions = new Set(
+				this.workflowSelectAll(
+					`SELECT new_execution_id FROM codex_quota_dispatch_demand
+					  WHERE source_execution_id = ? AND state = 'reverted'`,
+					[input.executionId],
+				).map((reverted) =>
+					StateStore.workflowWriterTransitionUid({
+						runId: row.run_id,
+						nodeId: row.node_id,
+						attempt: row.attempt,
+						newExecutionId: String(reverted.new_execution_id),
+					}),
+				),
+			);
+			this.migrateWorkflowWriterReplacementTx({
+				runId: row.run_id,
+				nodeId: row.node_id,
+				attempt: row.attempt,
+				deadExecutionId: input.executionId,
+				newExecutionId: input.newExecutionId,
+				launchOrdinal,
+				now: input.now,
+				excludeSourceTransitionUids: revertedTransitions,
+			});
+			const activityBaseline: WorkflowDeadExecutionActivityBaseline = {
+				commitMarker: { state: "unknown" },
+				commDbMessageCount: null,
+				tmuxTarget: session?.tmux_session ?? null,
+				tmuxOutputDigest: null,
+				sessionCommitCount:
+					typeof session?.commit_count === "number"
+						? session.commit_count
+						: null,
+			};
+			this.db.run(
+				`INSERT INTO workflow_dead_execution_watch
+				   (dead_execution_id, run_id, node_id, attempt, new_execution_id,
+				    project_name, issue_id, observed_at, baseline_json, state)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
+				[
+					input.executionId,
+					row.run_id,
+					row.node_id,
+					row.attempt,
+					input.newExecutionId,
+					run.project_name,
+					run.issue_id,
+					input.now,
+					JSON.stringify(activityBaseline),
+				],
+			);
+			this.appendWorkflowRunEventCheckedTx({
+				runId: row.run_id,
+				eventUid: `codex_quota_fallback_prepared:${input.executionId}:${row.entry_seq}:${attempt}`,
+				kind: "codex_quota_fallback_prepared",
+				nodeId: row.node_id,
+				executionId: input.executionId,
+				payload: {
+					newExecutionId: input.newExecutionId,
+					vendor: input.vendor,
+					model: input.model,
+					reason: input.reason,
+					fallbackAttempt: attempt,
+					launchOrdinal,
+					at: input.now,
+				},
+			});
+			this.codexQuota.appendResumeAudit({
+				executionId: input.executionId,
+				entrySeq: row.entry_seq,
+				action: "fallback_prepared",
+				at: input.now,
+				runId: row.run_id,
+				nodeId: row.node_id,
+				attempt: row.attempt,
+				vendor: input.vendor,
+				detailCode: input.reason,
+			});
+			result = {
+				ok: true,
+				newExecutionId: input.newExecutionId,
+				fallbackAttempt: attempt,
+				idempotentReplay: false,
+			};
+		});
+		const settled = result as
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string };
+		if (settled.ok && !settled.idempotentReplay) this.save();
+		return result;
+	}
+
+	/**
+	 * FLY-2900 §5.3 linearization point: inside one synchronous StateStore
+	 * transaction re-check every fence, run the branch CAS (`git update-ref`)
+	 * and record the checkpoint. An operator release is either wholly before
+	 * this (fence fails, ref untouched) or wholly after it.
+	 */
+	recordCodexQuotaCheckpoint(input: {
+		executionId: string;
+		entrySeq: number;
+		commit: string;
+		now: string;
+		updateRef: () => void;
+	}): { ok: true } | { ok: false; reason: string } {
+		let result: { ok: true } | { ok: false; reason: string } = {
+			ok: false,
+			reason: "not_standby",
+		};
+		this.db.transaction(() => {
+			const row = this.codexQuota.getStandby(input.executionId);
+			if (!row || row.state !== "standby" || row.entry_seq !== input.entrySeq)
+				return;
+			const fence = this.codexQuota.standbyWorkflowFence(row);
+			if (fence) {
+				result = { ok: false, reason: fence };
+				return;
+			}
+			input.updateRef();
+			this.db.run(
+				`UPDATE codex_quota_standby SET checkpoint_commit = ?, updated_at = ?
+				  WHERE execution_id = ? AND state = 'standby' AND entry_seq = ?`,
+				[input.commit, input.now, input.executionId, input.entrySeq],
+			);
+			result = { ok: true };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	/** FLY-2900 §5.4: the frozen fallback dispatch of a prepared new execution. */
+	getCodexQuotaPreparedDemand(newExecutionId: string):
+		| {
+				sourceExecutionId: string;
+				vendor: "codex" | "claude";
+				model: string;
+				effort: string;
+				reason: "resume_attempts_exhausted" | "codex_quota_fallback";
+				poolEvidenceRef: string | null;
+		  }
+		| undefined {
+		const row = this.workflowSelectAll(
+			"SELECT * FROM codex_quota_dispatch_demand WHERE new_execution_id = ? AND state = 'prepared'",
+			[newExecutionId],
+		)[0];
+		return row
+			? {
+					sourceExecutionId: String(row.source_execution_id),
+					vendor: row.vendor as "codex" | "claude",
+					model: String(row.model),
+					effort: String(row.effort),
+					reason: row.reason as
+						| "resume_attempts_exhausted"
+						| "codex_quota_fallback",
+					poolEvidenceRef:
+						row.pool_evidence_ref === null ? null : String(row.pool_evidence_ref),
+				}
+			: undefined;
+	}
+
+	/**
+	 * FLY-2900 §5.2 phase two, inside the new execution's launch-commit
+	 * transaction: the original execution becomes failed with a teardown fact,
+	 * its unconsumed credentials are revoked, the carrier closes and FLY-2465
+	 * targets are abandoned. Replay-safe (a committed demand is a no-op).
+	 */
+	private commitCodexQuotaFallbackTx(newExecutionId: string, now: string): void {
+		const demand = this.workflowSelectAll(
+			"SELECT * FROM codex_quota_dispatch_demand WHERE new_execution_id = ? AND state = 'prepared'",
+			[newExecutionId],
+		)[0];
+		if (!demand) return;
+		const sourceExecutionId = String(demand.source_execution_id);
+		const row = this.codexQuota.getStandby(sourceExecutionId);
+		this.db.run(
+			"UPDATE codex_quota_dispatch_demand SET state = 'committed', updated_at = ? WHERE new_execution_id = ? AND state = 'prepared'",
+			[now, newExecutionId],
+		);
+		const session = this.getSession(sourceExecutionId);
+		this.db.run(
+			`UPDATE sessions SET status = 'failed', last_error = 'codex_quota_fallback',
+			        last_activity_at = ? WHERE execution_id = ?`,
+			[now, sourceExecutionId],
+		);
+		if (session && session.status !== "failed") {
+			this.applyTerminalTimestamp(sourceExecutionId, session.status, "failed");
+			this.bumpLifecycleRevision(sourceExecutionId);
+		}
+		for (const table of [
+			"workflow_output_credential",
+			"workflow_submission_credential",
+		]) {
+			this.db.run(
+				`UPDATE ${table}
+				    SET revoked = 1, revoked_reason = 'codex_quota_fallback'
+				  WHERE execution_id = ? AND consumed_at IS NULL AND revoked = 0`,
+				[sourceExecutionId],
+			);
+		}
+		if (row) {
+			this.appendWorkflowRunEventCheckedTx({
+				runId: row.run_id,
+				eventUid: `teardown_recorded:${row.run_id}:${sourceExecutionId}:codex_quota_fallback:${row.entry_seq}`,
+				kind: "generalized_teardown_recorded",
+				nodeId: row.node_id,
+				executionId: sourceExecutionId,
+				payload: {
+					reason: "codex_quota_fallback",
+					newExecutionId,
+					status: "failed",
+					at: now,
+				},
+			});
+			this.db.run(
+				`UPDATE codex_quota_standby SET state = 'closed', updated_at = ?
+				  WHERE execution_id = ? AND state IN ('fallback_prepared','standby')`,
+				[now, sourceExecutionId],
+			);
+			this.codexQuota.abandonRunnerTargets(sourceExecutionId, "standby_fallback");
+			this.appendWorkflowRunEventCheckedTx({
+				runId: row.run_id,
+				eventUid: `codex_quota_fallback_committed:${newExecutionId}`,
+				kind: "codex_quota_fallback_committed",
+				nodeId: row.node_id,
+				executionId: newExecutionId,
+				payload: {
+					sourceExecutionId,
+					vendor: demand.vendor,
+					model: demand.model,
+					reason: demand.reason,
+					at: now,
+				},
+			});
+			this.codexQuota.appendResumeAudit({
+				executionId: sourceExecutionId,
+				entrySeq: row.entry_seq,
+				action: "fallback_committed",
+				at: now,
+				runId: row.run_id,
+				nodeId: row.node_id,
+				attempt: row.attempt,
+				vendor: String(demand.vendor),
+				detailCode: String(demand.reason),
+			});
+			this.codexQuota.enqueueOutbox({
+				incidentId: null,
+				kind: "resume_notice",
+				eventId: `codex-standby-fallback:${newExecutionId}`,
+				destination: "issue_thread",
+				payload: {
+					notice: demand.vendor === "claude" ? "fallback_claude" : "fallback_codex",
+					executionId: sourceExecutionId,
+					newExecutionId,
+					runId: row.run_id,
+					nodeId: row.node_id,
+					checkpointCommit: row.checkpoint_commit,
+					poolEvidenceRef: demand.pool_evidence_ref ?? null,
+				},
+			});
+		}
+	}
+
+	/**
+	 * FLY-2900 §5.2 rollback: the prepared new execution was refused before its
+	 * launch committed (or the carrier was released). The node returns to the
+	 * original execution, the new one is abandoned, and a still-prepared
+	 * carrier goes back to standby so a later permit can resume it in place.
+	 */
+	revertCodexQuotaFallbackTx(
+		newExecutionId: string,
+		reason: string,
+		now: string,
+	): boolean {
+		const demand = this.workflowSelectAll(
+			"SELECT * FROM codex_quota_dispatch_demand WHERE new_execution_id = ? AND state = 'prepared'",
+			[newExecutionId],
+		)[0];
+		if (!demand) return false;
+		const code = /^[a-z0-9_:.-]{1,60}$/.test(reason) ? reason : "refused";
+		const sourceExecutionId = String(demand.source_execution_id);
+		const row = this.codexQuota.getStandby(sourceExecutionId);
+		this.db.run(
+			"UPDATE codex_quota_dispatch_demand SET state = 'reverted', revert_reason = ?, updated_at = ? WHERE new_execution_id = ? AND state = 'prepared'",
+			[code, now, newExecutionId],
+		);
+		// The refused body's migration chain loses its writer fence with the
+		// watch, so its evidence can never resolve again.
+		this.db.run(
+			"DELETE FROM workflow_dead_execution_watch WHERE dead_execution_id = ? AND new_execution_id = ?",
+			[sourceExecutionId, newExecutionId],
+		);
+		for (const table of [
+			"workflow_output_credential",
+			"workflow_submission_credential",
+		]) {
+			this.db.run(
+				`UPDATE ${table}
+				    SET revoked = 1, revoked_reason = 'codex_quota_fallback_reverted'
+				  WHERE execution_id = ? AND consumed_at IS NULL AND revoked = 0`,
+				[newExecutionId],
+			);
+		}
+		if (!row) return true;
+		const ledger = this.workflowSelectAll(
+			`SELECT state FROM workflow_side_effect_ledger
+			  WHERE run_id = ? AND node_id = ? AND attempt = ? AND kind = 'dispatch'
+			    AND execution_id = ?`,
+			[row.run_id, row.node_id, row.attempt, newExecutionId],
+		)[0];
+		if (ledger?.state === "intent_recorded")
+			this.transitionWorkflowSideEffectTx(row.run_id, {
+				op: "side_effect",
+				node: row.node_id,
+				attempt: row.attempt,
+				executionId: newExecutionId,
+				to: "abandoned",
+				reason: `codex_quota_fallback_reverted:${code}`,
+			});
+		this.db.run(
+			`UPDATE workflow_run_node SET state = ?, execution_id = ?
+			  WHERE run_id = ? AND node_id = ? AND attempt = ? AND execution_id = ?`,
+			[
+				String(demand.source_node_state ?? "running"),
+				sourceExecutionId,
+				row.run_id,
+				row.node_id,
+				row.attempt,
+				newExecutionId,
+			],
+		);
+		this.db.run(
+			`UPDATE codex_quota_standby
+			    SET state = 'standby', fallback_execution_id = NULL,
+			        last_error_code = ?, updated_at = ?
+			  WHERE execution_id = ? AND state = 'fallback_prepared'`,
+			[`fallback_refused:${code}`.slice(0, 80), now, sourceExecutionId],
+		);
+		this.codexQuota.appendResumeAudit({
+			executionId: sourceExecutionId,
+			entrySeq: row.entry_seq,
+			action: "fallback_reverted",
+			at: now,
+			runId: row.run_id,
+			nodeId: row.node_id,
+			attempt: row.attempt,
+			vendor: String(demand.vendor),
+			detailCode: code,
+		});
+		return true;
+	}
+
+	/** FLY-2900: revert a prepared fallback outside any caller transaction. */
+	revertCodexQuotaFallback(input: {
+		newExecutionId: string;
+		reason: string;
+		now: string;
+	}): boolean {
+		let reverted = false;
+		this.db.transaction(() => {
+			reverted = this.revertCodexQuotaFallbackTx(
+				input.newExecutionId,
+				input.reason,
+				input.now,
+			);
+		});
+		if (reverted) this.save();
+		return reverted;
+	}
+
+	/**
+	 * FLY-2900 §3.1: decide, inside the terminal-signal transaction, whether a
+	 * runner usage-limit wall parks the execution in quota standby. Returns null
+	 * for every case that must keep the historical failure path unchanged.
+	 */
+	private codexQuotaStandbyDispositionTx(input: {
+		executionId: string;
+		sourceEventId: string;
+		usageLimited: boolean;
+		context: {
+			binding: WorkflowExecutionBindingRow;
+			run: WorkflowRunRow;
+		};
+		now: string;
+	}): CodexQuotaStandbyDisposition | null {
+		const existing = this.codexQuota.getStandby(input.executionId);
+		// A relaunched body that dies is a failed relaunch, never a teardown:
+		// walls are capacity rejections, anything else is a mechanical failure.
+		if (existing?.state === "resuming")
+			return input.usageLimited ? "capacity_rejected" : "resume_failed";
+		// Parked with no process: a stray terminal keeps the carrier intact.
+		if (
+			existing?.state === "standby" ||
+			existing?.state === "fallback_prepared"
+		)
+			return input.usageLimited ? "refresh" : "ignore";
+		if (existing?.state === "released") return null;
+		if (!input.usageLimited) return null;
+		if (!this.codexQuotaStandbyEnabled()) return null;
+		const { binding, run } = input.context;
+		if (run.status !== "active" || Number(run.engine_owned) !== 1) return null;
+		const node = this.workflowSelectAll(
+			`SELECT state, execution_id FROM workflow_run_node
+			  WHERE run_id = ? AND node_id = ? AND attempt = ?`,
+			[binding.run_id, binding.node_id, binding.attempt],
+		)[0];
+		if (
+			!node ||
+			node.execution_id !== input.executionId ||
+			(node.state !== "admitted" && node.state !== "running")
+		)
+			return null;
+		let current: ReturnType<StateStore["resolveCurrentWorkflowActivation"]>;
+		try {
+			current = this.resolveCurrentWorkflowActivation(input.executionId);
+		} catch {
+			return null;
+		}
+		if (
+			current.kind !== "current" ||
+			current.binding.activation_id !== binding.activation_id
+		)
+			return null;
+		const runtime = this.workflowSelectAll(
+			"SELECT vendor FROM workflow_execution_runtime WHERE execution_id = ?",
+			[input.executionId],
+		)[0];
+		if (runtime?.vendor !== "codex") return null;
+		if (
+			this.workflowSelectAll(
+				`SELECT 1 AS present FROM workflow_operator_close_intent
+				  WHERE execution_id = ? AND stage IN ('prepared','committed')`,
+				[input.executionId],
+			).length > 0
+		)
+			return null;
+		if (
+			this.workflowSelectAll(
+				`SELECT 1 AS present FROM workflow_node_completion
+				  WHERE run_id = ? AND node_id = ? AND attempt = ?`,
+				[binding.run_id, binding.node_id, binding.attempt],
+			).length > 0
+		)
+			return null;
+		const since = new Date(
+			Date.parse(input.now) - 24 * 60 * 60 * 1000,
+		).toISOString();
+		if (
+			this.codexQuota.countStandbyEntriesSince({
+				runId: binding.run_id,
+				nodeId: binding.node_id,
+				attempt: binding.attempt,
+				since,
+			}) >= CODEX_QUOTA_STANDBY_ENTRY_LIMIT
+		) {
+			this.codexQuota.enqueueOutbox({
+				incidentId: `codex-standby:${input.executionId}`,
+				kind: "lead_diagnostic",
+				eventId: `codex-standby-entry-limit:${input.executionId}:${input.sourceEventId}`,
+				destination: "lead",
+				payload: {
+					reason: "standby_entry_limit",
+					executionId: input.executionId,
+					runId: binding.run_id,
+					nodeId: binding.node_id,
+					attempt: binding.attempt,
+					issueId: run.issue_id,
+					limit: CODEX_QUOTA_STANDBY_ENTRY_LIMIT,
+				},
+			});
+			return null;
+		}
+		return "enter";
+	}
+
+	/**
+	 * FLY-2900: a completion signal closes the carrier so nothing relaunches a
+	 * finished execution. It is not first-output evidence, so a resuming
+	 * carrier closes without a `resumed` audit or thread notice (only the
+	 * first model output or a proven reconciliation settle success); a parked
+	 * one simply closes. Runs inside the terminal-signal transaction.
+	 */
+	private closeCodexQuotaStandbyOnCompletionTx(
+		executionId: string,
+		now: string,
+	): void {
+		const row = this.codexQuota.getStandby(executionId);
+		if (!row) return;
+		if (row.state === "resuming") {
+			if (this.codexQuota.closeResumingOnCompletion(executionId, now))
+				this.clearCodexQuotaStandbyLastError(executionId);
+			return;
+		}
+		if (row.state === "standby") {
+			this.db.run(
+				"UPDATE codex_quota_standby SET state='closed',last_error_code='completed_while_parked',updated_at=? WHERE execution_id=? AND state='standby'",
+				[now, executionId],
+			);
+			this.clearCodexQuotaStandbyLastError(executionId);
+		}
+	}
+
+	/** FLY-2900 §3.1: the standby writes that replace status/teardown/lead intent. */
+	private applyCodexQuotaStandbyTx(input: {
+		disposition: CodexQuotaStandbyDisposition;
+		executionId: string;
+		sourceEventId: string;
+		bindingId?: string;
+		context: {
+			binding: WorkflowExecutionBindingRow;
+			run: WorkflowRunRow;
+		};
+		now: string;
+	}): void {
+		const { binding, run } = input.context;
+		if (input.disposition === "resume_failed") {
+			const row = this.codexQuota.getStandby(input.executionId);
+			this.codexQuota.failResume({
+				executionId: input.executionId,
+				kind: "mechanical",
+				detailCode: "resumed_body_terminal_failure",
+				continueDetermined: row?.resume_phase === "continuing",
+				now: input.now,
+			});
+			return;
+		}
+		if (input.disposition === "ignore") return;
+		const signalSeq =
+			this.codexQuota.signalSeqFor(
+				"runner_terminal",
+				input.executionId,
+				input.sourceEventId,
+			) ?? 0;
+		const quotaBinding = input.bindingId
+			? this.codexQuota.getBinding(input.bindingId)
+			: undefined;
+		const settled = this.codexQuota.settleStandbyWall({
+			disposition: input.disposition,
+			executionId: input.executionId,
+			runId: binding.run_id,
+			nodeId: binding.node_id,
+			attempt: binding.attempt,
+			activationId: binding.activation_id,
+			issueId: run.issue_id,
+			sourceEventId: input.sourceEventId,
+			signalSeq,
+			rootKey: quotaBinding?.credentialRootKey ?? null,
+			generation: quotaBinding?.generation ?? null,
+			bindingId: quotaBinding?.bindingId ?? null,
+			now: input.now,
+		});
+		this.db.run(
+			`INSERT INTO sessions
+			   (execution_id, issue_id, project_name, status, last_activity_at,
+			    last_error, chat_thread_role, workflow_node_id)
+			 VALUES (?, ?, ?, 'running', ?, 'codex_quota_standby', 'main', ?)
+			 ON CONFLICT(execution_id) DO UPDATE SET
+			   last_activity_at = excluded.last_activity_at,
+			   last_error = excluded.last_error`,
+			[
+				input.executionId,
+				run.issue_id,
+				run.project_name,
+				input.now,
+				binding.node_id,
+			],
+		);
+		if (input.disposition === "enter")
+			this.appendWorkflowRunEventCheckedTx({
+				runId: binding.run_id,
+				eventUid: `codex_quota_standby_entered:${binding.run_id}:${input.executionId}:${settled.entrySeq}`,
+				kind: "codex_quota_standby_entered",
+				nodeId: binding.node_id,
+				executionId: input.executionId,
+				payload: {
+					entrySeq: settled.entrySeq,
+					sourceEventId: input.sourceEventId,
+					signalSeq,
+					at: input.now,
+				},
+			});
 	}
 
 	hasWorkflowExecutionTeardownFact(
@@ -50825,7 +52841,8 @@ export class StateStore {
 			this.workflowSelectAll(
 				`SELECT 1 AS present FROM workflow_run_event
 				  WHERE run_id = ? AND node_id = ? AND execution_id = ?
-				    AND kind = 'unlaunched_admission_rolled_back' LIMIT 1`,
+				    AND kind IN ('unlaunched_admission_rolled_back',
+				                 'rework_replacement_launch_rolled_back') LIMIT 1`,
 				[runId, nodeId, executionId],
 			)[0],
 		);
@@ -50859,58 +52876,6 @@ export class StateStore {
 		// re-dispatch. Always pass until the rework path is redesigned; the
 		// original validator body lives in git history (added by 0169206a).
 		return { ok: true };
-	}
-
-	/** Strict proof used only before replacing a fenced needs_lead activation. */
-	private validateNeedsLeadReworkQuiescenceTx(
-		runId: string,
-		evidence: RunQuiescenceEvidence[],
-		now: string,
-	): { ok: true } | { ok: false; executionIds: string[] } {
-		const attributed = this.listRunAttributedExecutions(runId);
-		const byExecution = new Map(
-			evidence.map((item) => [item.executionId, item]),
-		);
-		const live = new Set<string>();
-		for (const executionId of attributed) {
-			const observed = byExecution.get(executionId);
-			const observedMs = observed ? Date.parse(observed.observedAt) : NaN;
-			const ageMs = Date.parse(now) - observedMs;
-			if (
-				!observed ||
-				!Number.isFinite(observedMs) ||
-				ageMs < 0 ||
-				ageMs > 30_000
-			) {
-				live.add(executionId);
-				continue;
-			}
-			const session = this.getSession(executionId);
-			if (!session) {
-				if (
-					observed.sessionStatus !== null ||
-					observed.lifecycleRevision !== null ||
-					observed.liveness !== "dead"
-				) {
-					live.add(executionId);
-				}
-				continue;
-			}
-			if (
-				observed.sessionStatus !== session.status ||
-				observed.lifecycleRevision !== session.lifecycle_revision ||
-				!isStateStoreIrreversibleTerminalForZombie(session.status) ||
-				observed.liveness !== "dead"
-			) {
-				live.add(executionId);
-			}
-		}
-		for (const executionId of byExecution.keys()) {
-			if (!attributed.includes(executionId)) live.add(executionId);
-		}
-		return live.size === 0
-			? { ok: true }
-			: { ok: false, executionIds: [...live].sort() };
 	}
 
 	private reviveHeldWorkflowCarrierDeliveriesTx(input: {
@@ -51074,6 +53039,10 @@ export class StateStore {
 						idempotentReplay: false,
 						stage: "prepared",
 					};
+					this.finalizeReleasedCodexQuotaStandbyTx(
+						input.now,
+						input.executionId,
+					);
 				}
 				return;
 			}
@@ -51104,6 +53073,9 @@ export class StateStore {
 			);
 			changed = true;
 			result = { ok: true, idempotentReplay: false, stage: "prepared" };
+			// FLY-2900 §4.3: the insert trigger released any quota standby of this
+			// execution; settle its targets and audit in this same transaction.
+			this.finalizeReleasedCodexQuotaStandbyTx(input.now, input.executionId);
 		});
 		if (changed) this.save();
 		return result;
@@ -51271,7 +53243,7 @@ export class StateStore {
 					   FROM workflow_rework_delivery d
 					   JOIN workflow_rework_request r ON r.request_id = d.request_id
 					  WHERE r.run_id = ?
-					    AND d.state IN ('pending','turn_granted','awaiting_receipt','wake_delivered','replacement_pending')
+					    AND d.state IN ('pending','turn_granted','wake_delivered')
 					  LIMIT 1`,
 					[runId],
 				).length > 0
@@ -51440,10 +53412,7 @@ export class StateStore {
 			    JOIN workflow_rework_request request
 			      ON request.request_id = delivery.request_id
 			   WHERE request.run_id = run.run_id
-			     AND delivery.state IN (
-			       'pending','turn_granted','awaiting_receipt','wake_delivered',
-			       'replacement_pending'
-			     )
+			     AND delivery.state IN ('pending','turn_granted','wake_delivered')
 			)`,
 			`NOT EXISTS (
 			  SELECT 1 FROM workflow_run_node running
@@ -51548,10 +53517,8 @@ export class StateStore {
 				   JOIN workflow_rework_request request
 				     ON request.request_id = delivery.request_id
 				  WHERE request.run_id = ?
-				    AND delivery.state IN (
-				      'pending','turn_granted','awaiting_receipt','wake_delivered',
-				      'replacement_pending'
-				    ) LIMIT 1`,
+				    AND delivery.state IN ('pending','turn_granted','wake_delivered')
+				    LIMIT 1`,
 				[input.runId],
 			).length > 0
 		) {
@@ -52380,6 +54347,13 @@ export class StateStore {
 				result = { ok: false, reason: "run_state_changed" };
 				return;
 			}
+			// FLY-2900 §4.3: an operator hold or terminate releases quota standby.
+			this.releaseCodexQuotaStandbyTx({
+				runId: input.runId,
+				reason:
+					input.target === "held" ? "operator_held" : "operator_terminated",
+				now: input.now,
+			});
 			if (input.target === "terminated") {
 				this.settleWorkflowEngineParksForRunTx(
 					input.runId,
@@ -52655,7 +54629,7 @@ export class StateStore {
 				     JOIN workflow_rework_request AS request
 				       ON request.request_id = delivery.request_id
 				    WHERE request.run_id = ?
-				      AND delivery.state IN ('pending','turn_granted','awaiting_receipt','wake_delivered','replacement_pending')
+				      AND delivery.state IN ('pending','turn_granted','wake_delivered')
 				   UNION ALL
 				   SELECT request_id FROM workflow_rework_verification_path
 				    WHERE run_id = ? AND state IN ('pending','active')
@@ -53002,7 +54976,7 @@ export class StateStore {
 				   SELECT d.request_id FROM workflow_rework_delivery d
 				   JOIN workflow_rework_request r ON r.request_id = d.request_id
 				  WHERE r.run_id = ?
-				    AND d.state IN ('pending','turn_granted','awaiting_receipt','wake_delivered','replacement_pending')
+				    AND d.state IN ('pending','turn_granted','wake_delivered')
 				   UNION ALL
 				   SELECT p.request_id FROM workflow_rework_verification_path p
 				    WHERE p.run_id = ? AND p.state IN ('pending','active')
@@ -53727,20 +55701,26 @@ export class StateStore {
 				};
 				return;
 			}
-			const needsLeadRow = this.workflowSelectAll(
+			// FLY-2921 C3.6: a rework returned to the Lead can be replaced by a
+			// founder /rework on an active run (the normal case now) or on a
+			// legacy held run. Safety comes from revoking the returned
+			// activation in this transaction, not from proving every actor dead.
+			const returnedRow = this.workflowSelectAll(
 				`SELECT d.request_id
 				   FROM workflow_rework_delivery d
 				   JOIN workflow_rework_request r ON r.request_id = d.request_id
-				  WHERE r.run_id = ? AND d.state = 'needs_lead'
+				  WHERE r.run_id = ? AND d.state = 'returned_to_lead'
 				  ORDER BY d.updated_at DESC, d.request_id DESC LIMIT 1`,
 				[input.runId],
 			)[0];
-			const needsLeadRequestId = needsLeadRow?.request_id as string | undefined;
-			const needsLeadRoute = needsLeadRequestId
-				? this.getLatestWorkflowReworkRoute(needsLeadRequestId)
+			const returnedRequestId = returnedRow?.request_id as string | undefined;
+			const returnedRoute = returnedRequestId
+				? this.getLatestWorkflowReworkRoute(returnedRequestId)
 				: undefined;
-			const heldNeedsLead =
-				run?.status === "held" && needsLeadRequestId && needsLeadRoute;
+			const returnedToLead =
+				(run?.status === "held" || run?.status === "active") &&
+				!!returnedRequestId &&
+				!!returnedRoute;
 			let heldTerminalLand = false;
 			if (run?.status === "held" && run.snapshot) {
 				try {
@@ -53760,7 +55740,7 @@ export class StateStore {
 				run.engine_owned !== 1 ||
 				(run.status !== "active" &&
 					run.status !== "completed" &&
-					!heldNeedsLead &&
+					!returnedToLead &&
 					!heldTerminalLand &&
 					!heldUnlaunchedRollback &&
 					!heldLoopLimit)
@@ -53776,17 +55756,11 @@ export class StateStore {
 				result = { ok: false, reason: "issue_has_active_run" };
 				return;
 			}
-			const quiescence = heldNeedsLead
-				? this.validateNeedsLeadReworkQuiescenceTx(
-						input.runId,
-						input.evidence,
-						input.now,
-					)
-				: this.validateRunQuiescenceEvidenceTx(
-						input.runId,
-						input.evidence,
-						input.now,
-					);
+			const quiescence = this.validateRunQuiescenceEvidenceTx(
+				input.runId,
+				input.evidence,
+				input.now,
+			);
 			if (!quiescence.ok) {
 				result = {
 					ok: false,
@@ -53881,12 +55855,16 @@ export class StateStore {
 			} else if (input.founderAuthorEvidence.kind === "founder_message") {
 				throw new OperatorReworkRejected("founder_gate_holder_changed");
 			}
-			if (heldNeedsLead && needsLeadRequestId && needsLeadRoute) {
+			// FLY-2921: from here on the transaction may already have cleaned the
+			// returned request (and the unlaunched rollback tuple). Every later
+			// refusal throws OperatorReworkRejected so the whole transaction rolls
+			// back — a refused /rework must not cost the Lead its returned door.
+			if (returnedToLead && returnedRequestId && returnedRoute) {
 				const activation = this.getWorkflowActivationForAttempt({
-					executionId: needsLeadRoute.preferred_actor_execution_id,
+					executionId: returnedRoute.preferred_actor_execution_id,
 					runId: input.runId,
-					nodeId: needsLeadRoute.target_node_id,
-					attempt: needsLeadRoute.target_attempt,
+					nodeId: returnedRoute.target_node_id,
+					attempt: returnedRoute.target_attempt,
 				});
 				if (activation) {
 					const consumed = this.workflowSelectAll(
@@ -53898,9 +55876,11 @@ export class StateStore {
 						[activation.activation_id, activation.activation_id],
 					)[0];
 					if (consumed) {
+						// Formerly `needs_lead_activation_already_consumed` (no
+						// consumer matches on the string).
 						result = {
 							ok: false,
-							reason: "needs_lead_activation_already_consumed",
+							reason: "returned_activation_already_consumed",
 						};
 						return;
 					}
@@ -53910,7 +55890,7 @@ export class StateStore {
 					]) {
 						this.db.run(
 							`UPDATE ${table}
-							    SET revoked = 1, revoked_reason = 'operator_replaced_needs_lead_activation'
+							    SET revoked = 1, revoked_reason = 'operator_replaced_returned_activation'
 							  WHERE activation_id = ? AND consumed_at IS NULL AND revoked = 0`,
 							[activation.activation_id],
 						);
@@ -53924,9 +55904,9 @@ export class StateStore {
 					[
 						input.now,
 						input.runId,
-						needsLeadRoute.target_node_id,
-						needsLeadRoute.target_attempt,
-						needsLeadRoute.preferred_actor_execution_id,
+						returnedRoute.target_node_id,
+						returnedRoute.target_attempt,
+						returnedRoute.preferred_actor_execution_id,
 					],
 				);
 				this.db.run(
@@ -53934,19 +55914,28 @@ export class StateStore {
 					    SET state = 'needs_lead', updated_at = ?
 					  WHERE request_id = ? AND route_revision = ?
 					    AND state IN ('pending','active')`,
-					[input.now, needsLeadRequestId, needsLeadRoute.revision],
+					[input.now, returnedRequestId, returnedRoute.revision],
 				);
+				// The receipt kind keeps its historical name for event continuity.
 				this.appendWorkflowRunEventCheckedTx({
 					runId: input.runId,
-					eventUid: `rework_needs_lead_cleaned:${needsLeadRequestId}:${input.clientRequestId}`,
+					eventUid: `rework_needs_lead_cleaned:${returnedRequestId}:${input.clientRequestId}`,
 					kind: "rework_needs_lead_cleaned",
-					nodeId: needsLeadRoute.target_node_id,
-					executionId: needsLeadRoute.preferred_actor_execution_id,
+					nodeId: returnedRoute.target_node_id,
+					executionId: returnedRoute.preferred_actor_execution_id,
 					payload: {
-						requestId: needsLeadRequestId,
+						requestId: returnedRequestId,
 						activationId: activation?.activation_id ?? null,
 						principal: input.principal,
 					},
+				});
+				// The replaced request's Lead door closes with it: one open door
+				// per returned row, never a ghost after /rework superseded it.
+				this.closeReworkReturnedToLeadHoldTx({
+					runId: input.runId,
+					requestId: returnedRequestId,
+					routeRevision: returnedRoute.revision,
+					reason: "superseded_by_operator_rework",
 				});
 			}
 			if (rollbackHoldTuple) {
@@ -53960,11 +55949,9 @@ export class StateStore {
 					rolledBackNode.execution_id !== rollbackHoldTuple.executionId ||
 					!(rolledBackNode.state === "admitted" || rolledBackNode.state === "failed")
 				) {
-					result = {
-						ok: false,
-						reason: "unlaunched_rollback_receipt_invalid",
-					};
-					return;
+					throw new OperatorReworkRejected(
+						"unlaunched_rollback_receipt_invalid",
+					);
 				}
 				if (rolledBackNode.state === "admitted") {
 					this.db.run(
@@ -53988,8 +55975,7 @@ export class StateStore {
 				}
 			}
 			if (this.findOpenWorkflowReworkForRun(input.runId).length > 0) {
-				result = { ok: false, reason: "rework_already_open" };
-				return;
+				throw new OperatorReworkRejected("rework_already_open");
 			}
 			const targetAttempts = this.listWorkflowRunNodes(input.runId, target.id);
 			const latestTarget = [...targetAttempts].sort(
@@ -54002,16 +55988,14 @@ export class StateStore {
 					latestTarget.state,
 				)
 			) {
-				result = { ok: false, reason: "target_attempt_already_reserved" };
-				return;
+				throw new OperatorReworkRejected("target_attempt_already_reserved");
 			}
 			const preferredActorExecutionId = this.selectPreferredWorkflowActorTx(
 				input.runId,
 				target.id,
 			)?.executionId;
 			if (!preferredActorExecutionId) {
-				result = { ok: false, reason: "target_actor_history_missing" };
-				return;
+				throw new OperatorReworkRejected("target_actor_history_missing");
 			}
 			const base = this.resolveOperatorReworkBaseRevisionTx({
 				runId: input.runId,
@@ -54020,8 +56004,7 @@ export class StateStore {
 				snapshot,
 			});
 			if (!base) {
-				result = { ok: false, reason: "base_revision_unavailable" };
-				return;
+				throw new OperatorReworkRejected("base_revision_unavailable");
 			}
 			const { baseRevision, baseRevisionSource } = base;
 			const targetAttempt =
@@ -54035,8 +56018,7 @@ export class StateStore {
 					0,
 				) || latestTarget?.attempt;
 			if (!sourceAttempt) {
-				result = { ok: false, reason: "source_attempt_missing" };
-				return;
+				throw new OperatorReworkRejected("source_attempt_missing");
 			}
 
 			const reachable = new Set<string>();
@@ -54714,7 +56696,10 @@ export class StateStore {
 		const candidates = this.workflowSelectAll(
 			`SELECT 'rework' AS family, 'workflow_rework_delivery' AS table_name,
 			        delivery.request_id AS pk, request.run_id,
-			        run.project_name, run.issue_id, delivery.state,
+			        run.project_name, run.issue_id,
+			        CASE WHEN delivery.state = 'turn_granted'
+			              AND delivery.wake_sent_at IS NOT NULL
+			             THEN 'wake_sent' ELSE delivery.state END AS state,
 			        0 AS has_receipt, 0 AS has_business_event,
 			        delivery.route_revision, NULL AS redrive_generation
 			   FROM workflow_rework_delivery delivery
@@ -54796,7 +56781,9 @@ export class StateStore {
 					"granted_at" | "sent_at" | "received_at" | "consumed_at"
 				> = [];
 				if (
-					(family === "rework" && state !== "pending") ||
+					(family === "rework" &&
+						state !== "pending" &&
+						state !== "returned_to_lead") ||
 					(family === "carrier" && state !== "pending") ||
 					family === "launch" ||
 					(family === "gate_holder" && state !== "question_intent")
@@ -54804,8 +56791,9 @@ export class StateStore {
 					clocks.push("granted_at");
 				}
 				if (
+					// FLY-2921: `wake_sent` = `turn_granted` with `wake_sent_at`.
 					(family === "rework" &&
-						["awaiting_receipt", "wake_delivered", "completed"].includes(state)) ||
+						["wake_sent", "wake_delivered", "completed"].includes(state)) ||
 					(family === "carrier" &&
 						["awaiting_receipt", "receipt_started", "completed"].includes(state)) ||
 					(family === "launch" && state === "started") ||
@@ -55774,13 +57762,9 @@ export class StateStore {
 					request.run_id !== row.run_id ||
 					delivery.route_revision !== reworkRoute.revision ||
 					ref.routeRevision !== reworkRoute.revision ||
-					![
-						"pending",
-						"turn_granted",
-						"awaiting_receipt",
-						"wake_delivered",
-						"replacement_pending",
-					].includes(delivery.state)
+					!["pending", "turn_granted", "wake_delivered"].includes(
+						delivery.state,
+					)
 				) {
 					result = { ok: false, reason: "delivery_reroute_rework_changed" };
 					return;
@@ -55832,10 +57816,10 @@ export class StateStore {
 					    SET route_revision = ?, state = 'pending', owner_id = NULL,
 					        generation = 0, lease_expires_at = NULL, hold_count = 0,
 					        next_retry_at = NULL, grant_started_at = NULL,
+					        wake_sent_at = NULL, liveness_unknown_since = NULL,
 					        last_error = ?, updated_at = ?
 					  WHERE request_id = ? AND route_revision = ?
-					    AND state IN ('pending','turn_granted','awaiting_receipt',
-					                  'wake_delivered','replacement_pending')`,
+					    AND state IN ('pending','turn_granted','wake_delivered')`,
 					[
 						nextRevision,
 						`delivery_reroute:${operationId}`,
@@ -56408,13 +58392,9 @@ export class StateStore {
 					!delivery ||
 					request.run_id !== operation.run_id ||
 					delivery.route_revision !== route.revision ||
-					![
-						"pending",
-						"turn_granted",
-						"awaiting_receipt",
-						"wake_delivered",
-						"replacement_pending",
-					].includes(delivery.state)
+					!["pending", "turn_granted", "wake_delivered"].includes(
+						delivery.state,
+					)
 				) {
 					result = { ok: false, reason: "delivery_reroute_rework_changed" };
 					return;
@@ -56473,10 +58453,10 @@ export class StateStore {
 					    SET route_revision = ?, state = 'pending', owner_id = NULL,
 					        generation = 0, lease_expires_at = NULL, hold_count = 0,
 					        next_retry_at = NULL, grant_started_at = NULL,
+					        wake_sent_at = NULL, liveness_unknown_since = NULL,
 					        last_error = ?, updated_at = ?
 					  WHERE request_id = ? AND route_revision = ?
-					    AND state IN ('pending','turn_granted','awaiting_receipt',
-					                  'wake_delivered','replacement_pending')`,
+					    AND state IN ('pending','turn_granted','wake_delivered')`,
 					[
 						nextRevision,
 						`delivery_reroute:${input.operationId}`,
@@ -56936,13 +58916,29 @@ export class StateStore {
 			return { held: false, reason: "run_not_active" };
 		}
 		const attempt = this.workflowSelectAll(
-			`SELECT attempt_id FROM workflow_delivery_attempt
+			`SELECT attempt_id, family, contract_ref_json FROM workflow_delivery_attempt
 			  WHERE attempt_id = ? AND root_id = ?
 			    AND superseded_by_attempt_id IS NULL
 			    AND settlement_reason IS NULL`,
 			[input.attemptId, input.rootId],
 		)[0];
 		if (!attempt) return { held: false, reason: "attempt_not_live" };
+		// FLY-2921: a stuck rework TURN wake (pushed twice, never acked) belongs
+		// to the rework coordinator — it probes the actor, raises the
+		// unknown-liveness alerts, and returns the rework to the Lead. It never
+		// freezes the run.
+		if (
+			this.reworkOwnedUndeliverableRequestId({
+				...attempt,
+				run_id: input.runId,
+			}) !== undefined
+		) {
+			return { held: false, reason: "rework_wake_owned_by_coordinator" };
+		}
+		// FLY-2900 §4.2: a parked quota standby recipient is silent by design.
+		if (this.codexQuota.isCodexQuotaStandby(input.recipientExecutionId)) {
+			return { held: false, reason: "codex_quota_standby" };
+		}
 		const session = this.getSession(input.recipientExecutionId);
 		const evidence: LivenessEvidence = {
 			heartbeatAtMs: parseSqliteUtcMs(session?.heartbeat_at),
@@ -57227,7 +59223,107 @@ export class StateStore {
 		if (row.family === "mailbox" && input.terminalMailboxReason === undefined) {
 			return { held: false, reason: "source_not_terminal" };
 		}
+		// FLY-2921 C4.4: a rework-owned attempt whose recipient is terminal is
+		// the rework coordinator's to re-deliver (replacing the actor once its
+		// death is proven). No hold, no frozen run.
+		const reworkRequestId = this.reworkOwnedUndeliverableRequestId(row);
+		if (reworkRequestId !== undefined) {
+			this.settleReworkOwnedUndeliverableAttemptTx({
+				row,
+				requestId: reworkRequestId,
+				recipientExecutionId: input.recipientExecutionId,
+				now: input.now,
+			});
+			return { held: false, reason: "recipient_terminal_rework_owned" };
+		}
 		return this.finalizeUndeliverableHoldTx({ ...input, row, liveness, evidence, ageMs, terminalRecipientWarningAlreadyRecorded });
+	}
+
+	/**
+	 * FLY-2921 C4.4: the rework request an undeliverable attempt belongs to —
+	 * the rework family itself, or a TURN/phase wake whose identity resolves
+	 * to a rework wake binding. Undefined for everything else.
+	 */
+	private reworkOwnedUndeliverableRequestId(
+		row: Record<string, unknown>,
+	): string | undefined {
+		let ref: Record<string, unknown>;
+		try {
+			ref = JSON.parse(String(row.contract_ref_json)) as Record<string, unknown>;
+		} catch {
+			return undefined;
+		}
+		if (row.family === "rework") {
+			return ref.table === "workflow_rework_delivery" && typeof ref.pk === "string"
+				? ref.pk
+				: undefined;
+		}
+		if (row.family !== "turn_wake" && row.family !== "phase_wake") {
+			return undefined;
+		}
+		const wake = ref.reworkWake as ReworkWakeIdentity | undefined;
+		if (
+			!wake ||
+			typeof ref.projectName !== "string" ||
+			typeof ref.issueId !== "string"
+		) {
+			return undefined;
+		}
+		const identity = this.resolveProjectedReworkWakeIdentity({
+			identity: wake,
+			projectName: ref.projectName,
+			issueId: ref.issueId,
+		});
+		if (!identity || identity.runId !== row.run_id) return undefined;
+		return (
+			this.getWorkflowActivation(identity.activationId)?.rework_request_id ??
+			undefined
+		);
+	}
+
+	private settleReworkOwnedUndeliverableAttemptTx(input: {
+		row: Record<string, unknown>;
+		requestId: string;
+		recipientExecutionId: string;
+		now: string;
+	}): void {
+		const attemptId = String(input.row.attempt_id);
+		this.db.run(
+			`UPDATE workflow_delivery_attempt
+			    SET settlement_reason = 'recipient_terminal_rework_owned'
+			  WHERE attempt_id = ? AND settlement_reason IS NULL
+			    AND superseded_by_attempt_id IS NULL`,
+			[attemptId],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			throw new WorkflowEngineInvariantError(
+				`rework_owned_undeliverable_settlement_cas_failed:${attemptId}`,
+			);
+		}
+		this.db.run(
+			`UPDATE workflow_delivery_contract_episode
+			    SET closed_at = ?, closed_reason = 'terminal:settled:recipient_terminal_rework_owned'
+			  WHERE attempt_id = ? AND closed_at IS NULL`,
+			[input.now, attemptId],
+		);
+		this.db.run(
+			`UPDATE workflow_rework_delivery SET next_retry_at = ?
+			  WHERE request_id = ? AND state IN ('pending','turn_granted','wake_delivered')`,
+			[input.now, input.requestId],
+		);
+		this.appendWorkflowRunEventCheckedTx({
+			runId: String(input.row.run_id),
+			eventUid: `rework_recipient_terminal:${attemptId}`,
+			kind: "rework_recipient_terminal",
+			executionId: input.recipientExecutionId,
+			payload: {
+				requestId: input.requestId,
+				attemptId,
+				family: input.row.family,
+				rootId: input.row.root_id,
+				disposition: "recipient_terminal_rework_owned",
+			},
+		});
 	}
 
 	private finalizeUndeliverableHoldTx(input: {
@@ -57251,6 +59347,12 @@ export class StateStore {
 			terminalRecipientWarningAlreadyRecorded,
 		} = input;
 		const eventUid = `delivery_reroute_operator_required:${input.episodeId}`;
+		// FLY-2921 invariant: no rework delivery failure ever freezes a run.
+		if (row.family === "rework") {
+			throw new WorkflowEngineInvariantError(
+				`undeliverable_hold_rework_family_forbidden:${row.attempt_id}`,
+			);
+		}
 		const runHeld = row.family !== "mailbox";
 		if (runHeld) {
 			this.db.run(
@@ -57882,6 +59984,63 @@ export class StateStore {
 		}
 	}
 
+	/**
+	 * FLY-2921 C3.4: a returned rework can only be re-delivered while its
+	 * target node is still reserved by this request — pending/admitted/running
+	 * on the preferred actor — or that actor is proven unlaunched (rolled back
+	 * to `failed`), which the coordinator replaces. Legacy rows whose target
+	 * was superseded by the retired cleanup must go through founder /rework.
+	 */
+	private reworkTargetStillReservedTx(
+		runId: string,
+		route: WorkflowReworkRouteRevisionRow,
+	): boolean {
+		const node = this.getWorkflowRunNode(
+			runId,
+			route.target_node_id,
+			route.target_attempt,
+		);
+		if (!node || node.execution_id !== route.preferred_actor_execution_id) {
+			return false;
+		}
+		if (
+			node.state === "pending" ||
+			node.state === "admitted" ||
+			node.state === "running"
+		) {
+			return true;
+		}
+		return (
+			node.state === "failed" &&
+			this.hasUnlaunchedWorkflowRollbackFact(
+				runId,
+				route.target_node_id,
+				route.preferred_actor_execution_id,
+			)
+		);
+	}
+
+	private reworkResumeTargetPrecondition(
+		requestId: string,
+		result: (
+			ok: boolean,
+			detail: string,
+		) => { name: string; ok: boolean; detail: string },
+	): { name: string; ok: boolean; detail: string } {
+		const request = this.getWorkflowReworkRequest(requestId);
+		const route = this.getLatestWorkflowReworkRoute(requestId);
+		const reserved =
+			!!request &&
+			!!route &&
+			this.reworkTargetStillReservedTx(request.run_id, route);
+		return result(
+			reserved,
+			reserved
+				? `rework ${requestId} remains returned_to_lead on its reserved target`
+				: `rework_target_superseded: rework ${requestId} no longer owns its target node; use the founder /rework instead`,
+		);
+	}
+
 	private workflowHoldAuthoritativePrecondition(input: {
 		runId: string;
 		descriptor: HoldShapeDescriptor;
@@ -57899,13 +60058,39 @@ export class StateStore {
 			ok,
 			detail,
 		});
+		if (input.descriptor.id === "rework_returned_to_lead") {
+			// FLY-2921 C3.2: the door is current only for the exact revision it
+			// was minted on; a resumed, replaced, or healed delivery makes it
+			// stale here (a clean stage refusal) instead of a 500 at apply time.
+			const requestId = payloadId("requestId");
+			const routeRevision = Number(input.payload.routeRevision);
+			const delivery = requestId
+				? this.getWorkflowReworkDelivery(requestId)
+				: undefined;
+			const request = requestId
+				? this.getWorkflowReworkRequest(requestId)
+				: undefined;
+			const current =
+				request?.run_id === input.runId &&
+				delivery?.state === "returned_to_lead" &&
+				Number.isSafeInteger(routeRevision) &&
+				delivery.route_revision === routeRevision;
+			if (!current) {
+				return result(
+					false,
+					`rework ${requestId ?? "missing"} is ${delivery?.state ?? "missing"} at revision ${delivery?.route_revision ?? "missing"}, expected returned_to_lead at revision ${input.payload.routeRevision ?? "missing"}`,
+				);
+			}
+			return this.reworkResumeTargetPrecondition(requestId!, result);
+		}
 		const reworkShapes = new Set([
 			"rework_activation_stalled_held",
 			"rework_pane_loss_handoff",
 			"rework_retry_exhausted",
 		]);
 		if (reworkShapes.has(input.descriptor.id)) {
-			const expectedState = "held";
+			// FLY-2921: legacy shapes decode against the migrated literal.
+			const expectedState = "returned_to_lead";
 			const requestId =
 				payloadId("requestId") ??
 				(this.workflowSelectAll(
@@ -57921,12 +60106,13 @@ export class StateStore {
 				? this.getWorkflowReworkDelivery(requestId)
 				: undefined;
 			const current = delivery?.state === expectedState;
-			return result(
-				current,
-				current
-					? `rework ${requestId} remains ${expectedState}`
-					: `rework ${requestId ?? "missing"} is ${delivery?.state ?? "missing"}, expected ${expectedState}`,
-			);
+			if (!current) {
+				return result(
+					false,
+					`rework ${requestId ?? "missing"} is ${delivery?.state ?? "missing"}, expected ${expectedState}`,
+				);
+			}
+			return this.reworkResumeTargetPrecondition(requestId!, result);
 		}
 		if (
 			input.descriptor.id === "carrier_run_inactive" ||
@@ -58471,7 +60657,7 @@ export class StateStore {
 				   JOIN workflow_rework_request request
 				     ON request.request_id = delivery.request_id
 				  WHERE request.run_id = ?
-				    AND delivery.state IN ('held','needs_lead') LIMIT 1`,
+				    AND delivery.state = 'returned_to_lead' LIMIT 1`,
 				[input.runId],
 			)[0]
 		) {
@@ -58642,7 +60828,7 @@ export class StateStore {
 						   JOIN workflow_rework_request request
 						     ON request.request_id = delivery.request_id
 						  WHERE request.run_id = ?
-						    AND delivery.state IN ('held','needs_lead')
+						    AND delivery.state = 'returned_to_lead'
 						  ORDER BY delivery.updated_at DESC, delivery.request_id DESC LIMIT 1`,
 						[input.runId],
 					)[0]?.request_id as string | undefined);
@@ -58659,9 +60845,18 @@ export class StateStore {
 						`workflow_hold_rework_changed:${requestId}`,
 					);
 				}
-				if (delivery.state !== "held" && delivery.state !== "needs_lead") {
+				if (delivery.state !== "returned_to_lead") {
 					throw new WorkflowEngineInvariantError(
 						`workflow_hold_rework_changed:${requestId}`,
+					);
+				}
+				// FLY-2921 C3.4: re-delivery only makes sense while the target
+				// is still this request's reservation (or its actor is proven
+				// unlaunched, which the coordinator replaces). The stage-time
+				// precondition refuses this cleanly; this is the apply fence.
+				if (!this.reworkTargetStillReservedTx(request.run_id, route)) {
+					throw new WorkflowEngineInvariantError(
+						`rework_target_superseded:${requestId}`,
 					);
 				}
 				const nextRevision = route.revision + 1;
@@ -58689,9 +60884,10 @@ export class StateStore {
 					    SET route_revision = ?, state = 'pending', owner_id = NULL,
 					        lease_expires_at = NULL, hold_count = 0,
 					        next_retry_at = NULL, grant_started_at = NULL,
+					        wake_sent_at = NULL, liveness_unknown_since = NULL,
 					        last_error = ?, updated_at = ?
 					  WHERE request_id = ? AND route_revision = ?
-					    AND state IN ('held','needs_lead')`,
+					    AND state = 'returned_to_lead'`,
 					[
 						nextRevision,
 						`operator_resume:${input.shape}`,
@@ -59140,8 +61336,8 @@ export class StateStore {
 				        next_retry_at = NULL, last_error = 'cancelled_by_operator',
 				        updated_at = ?
 				  WHERE request_id = ? AND route_revision = ?
-				    AND state IN ('pending','turn_granted','awaiting_receipt',
-				                  'wake_delivered','replacement_pending','held','needs_lead')`,
+				    AND state IN ('pending','turn_granted','wake_delivered',
+				                  'returned_to_lead')`,
 				[input.now, ref.pk, ref.routeRevision],
 			);
 		} else {
@@ -61667,6 +63863,259 @@ export class StateStore {
 		};
 	}
 
+	/**
+	 * FLY-2921 C6.1/C6.2: generic dead-execution recovery must leave an open
+	 * rework's target to the coordinator (the one replacement path that
+	 * carries the rework content). Returns true when the node is such a
+	 * target; the delivery is nudged once per (request, revision, execution)
+	 * so a repeating scan cannot erase the coordinator's backoff.
+	 */
+	handOffDeadReworkTargetToCoordinator(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+		now: string;
+	}): boolean {
+		let owned = false;
+		this.db.transaction(() => {
+			owned = this.handOffReworkTargetToCoordinatorTx(input);
+		});
+		return owned;
+	}
+
+	private handOffReworkTargetToCoordinatorTx(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+		now: string;
+	}): boolean {
+		const target = this.resolveOpenWorkflowReworkTarget({
+			runId: input.runId,
+			nodeId: input.nodeId,
+			attempt: input.attempt,
+		});
+		if (target === undefined) return false;
+		if (target.conflict) return true;
+		const eventUid = `rework_dead_target_handoff:${target.requestId}:${target.routeRevision}:${input.executionId}`;
+		if (
+			this.workflowSelectAll(
+				"SELECT 1 AS present FROM workflow_run_event WHERE event_uid = ?",
+				[eventUid],
+			)[0]
+		) {
+			return true;
+		}
+		this.appendWorkflowRunEventCheckedTx({
+			runId: input.runId,
+			eventUid,
+			kind: "rework_dead_target_handoff",
+			nodeId: input.nodeId,
+			executionId: input.executionId,
+			payload: {
+				requestId: target.requestId,
+				routeRevision: target.routeRevision,
+				attempt: input.attempt,
+			},
+		});
+		this.db.run(
+			`UPDATE workflow_rework_delivery SET next_retry_at = ?
+			  WHERE request_id = ?
+			    AND state IN ('pending','turn_granted','wake_delivered')`,
+			[input.now, target.requestId],
+		);
+		return true;
+	}
+
+	/**
+	 * Writer replacement bookkeeping shared by dead-execution rollback and the
+	 * FLY-2900 quota fallback: the writer_replacement receipt and, when the
+	 * source evidence is intact, the issue-delivery and resume-attachment
+	 * migration to the new execution. Runs inside the caller's transaction.
+	 */
+	private static workflowWriterTransitionUid(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		newExecutionId: string;
+	}): string {
+		return `writer_replacement:${canonicalSubmissionDigest({
+			runId: input.runId,
+			nodeId: input.nodeId,
+			attempt: input.attempt,
+			newExecutionId: input.newExecutionId,
+		})}`;
+	}
+
+	private migrateWorkflowWriterReplacementTx(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		deadExecutionId: string;
+		newExecutionId: string;
+		launchOrdinal: number;
+		now: string;
+		/** Attachments minted by these writer transitions are never a source. */
+		excludeSourceTransitionUids?: ReadonlySet<string>;
+	}): void {
+		const { launchOrdinal, now } = input;
+		const writerTransitionUid = StateStore.workflowWriterTransitionUid(input);
+		const writerReceipt = {
+			targetNodeId: input.nodeId,
+			targetAttempt: input.attempt,
+			deadExecutionId: input.deadExecutionId,
+			newExecutionId: input.newExecutionId,
+			launchOrdinal,
+		};
+		const sourceAttachment = this.listWorkflowResumeAttachments({
+			runId: input.runId,
+			nodeId: input.nodeId,
+			attempt: input.attempt,
+		})
+			.filter(
+				(attachment) =>
+					!input.excludeSourceTransitionUids?.has(attachment.transition_uid),
+			)
+			.at(-1);
+		const sourceState = sourceAttachment
+			? this.getWorkflowResumeAttachmentState(sourceAttachment.attachment_id)
+			: undefined;
+		const sourceDelivery = this.listWorkflowRunEvents(input.runId)
+			.filter(
+				(event) =>
+					event.kind === "issue_delivery" &&
+					event.node_id === input.nodeId &&
+					event.execution_id === input.deadExecutionId,
+			)
+			.at(-1);
+		const sourceDeliveryPayload =
+			sourceDelivery?.payload && typeof sourceDelivery.payload === "object"
+				? (sourceDelivery.payload as Record<string, unknown>)
+				: undefined;
+		let stampedBaselineDigest: string | undefined;
+		try {
+			const stamp = JSON.parse(
+				sourceState?.envelope_stamped_json ?? "null",
+			) as Record<string, unknown> | null;
+			const baseline = stamp?.issueBaseline as
+				| Record<string, unknown>
+				| undefined;
+			stampedBaselineDigest =
+				typeof baseline?.bodyDigest === "string"
+					? baseline.bodyDigest
+					: undefined;
+		} catch {
+			// Malformed resume evidence is diagnosed below without aborting recovery.
+		}
+		const sourceDeliveryDigest = sourceDelivery
+			? canonicalSubmissionDigest(sourceDelivery.payload ?? null)
+			: undefined;
+		const sourceKind = sourceDeliveryPayload?.sourceKind;
+		const canMigrate =
+			sourceAttachment !== undefined &&
+			sourceState?.state === "ready" &&
+			sourceDelivery !== undefined &&
+			sourceDeliveryPayload !== undefined &&
+			(sourceKind === "authoritative" ||
+				sourceKind === "frozen_replay" ||
+				sourceKind === "writer_migration") &&
+			typeof sourceDeliveryPayload.body === "string" &&
+			typeof sourceDeliveryPayload.bodyDigest === "string" &&
+			createHash("sha256")
+				.update(sourceDeliveryPayload.body)
+				.digest("hex") === sourceDeliveryPayload.bodyDigest &&
+			sourceDeliveryPayload.bodyDigest === stampedBaselineDigest;
+		this.recordWorkflowResumeEvidenceSafelyTx(
+			{
+				runId: input.runId,
+				targetNodeId: input.nodeId,
+				targetAttempt: input.attempt,
+				transitionUid: writerTransitionUid,
+				createdAt: now,
+			},
+			() => {
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId,
+					eventUid: writerTransitionUid,
+					kind: "writer_replacement",
+					nodeId: input.nodeId,
+					executionId: input.newExecutionId,
+					payload: writerReceipt,
+				});
+				if (!canMigrate || !sourceAttachment || !sourceDelivery) {
+					this.recordWorkflowResumeTargetUnrecoverableTx({
+						runId: input.runId,
+						targetNodeId: input.nodeId,
+						targetAttempt: input.attempt,
+						transitionUid: writerTransitionUid,
+						reason: "attachment_missing",
+						detail: { cause: "writer_source_evidence_unavailable" },
+						createdAt: now,
+					});
+					return;
+				}
+				const migrationBindingUid = `resume_writer_binding:${canonicalSubmissionDigest(
+					{
+						writerTransitionUid,
+						sourceDeliveryUid: sourceDelivery.event_uid,
+						sourceAttachmentId: sourceAttachment.attachment_id,
+					},
+				)}`;
+				const bindingPayload = {
+					targetNodeId: input.nodeId,
+					targetAttempt: input.attempt,
+					sourceExecutionId: input.deadExecutionId,
+					newExecutionId: input.newExecutionId,
+					launchOrdinal,
+					writerTransitionUid,
+					sourceAttachmentId: sourceAttachment.attachment_id,
+					sourceIssueDeliveryUid: sourceDelivery.event_uid,
+					sourceIssueDeliveryDigest: sourceDeliveryDigest,
+				};
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId,
+					eventUid: migrationBindingUid,
+					kind: "resume_writer_binding",
+					nodeId: input.nodeId,
+					executionId: input.newExecutionId,
+					payload: bindingPayload,
+				});
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId,
+					eventUid: `issue_delivery_migration:${canonicalSubmissionDigest(
+						bindingPayload,
+					)}`,
+					kind: "issue_delivery",
+					nodeId: input.nodeId,
+					executionId: input.newExecutionId,
+					payload: {
+						sourceKind: "writer_migration",
+						body: sourceDeliveryPayload.body,
+						bodyDigest: sourceDeliveryPayload.bodyDigest,
+						migrationBindingUid,
+						sourceIssueDeliveryUid: sourceDelivery.event_uid,
+						sourceIssueDeliveryDigest: sourceDeliveryDigest,
+					},
+				});
+				if (
+					!this.recordWorkflowResumeInheritedAttachmentTx({
+						source: sourceAttachment,
+						runId: input.runId,
+						targetNodeId: input.nodeId,
+						targetAttempt: input.attempt,
+						transitionUid: writerTransitionUid,
+						receiptKind: "writer_replacement",
+						receiptPayload: writerReceipt,
+						createdAt: now,
+					})
+				) {
+					throw new Error("workflow_resume_attachment_conflict");
+				}
+			},
+		);
+	}
+
 	rollbackDeadWorkflowNodeExecution(input: {
 		runId: string;
 		nodeId: string;
@@ -61704,6 +64153,12 @@ export class StateStore {
 			reason: "rollback_not_committed",
 		};
 		this.db.transaction(() => {
+			// FLY-2900 §4.2: a parked quota standby body has no process by design;
+			// the resume loop owns it. Zero writes.
+			if (this.codexQuota.isCodexQuotaStandby(input.deadExecutionId)) {
+				result = { ok: false, reason: "codex_quota_standby" };
+				return;
+			}
 			if (this.codexQuota.isExecutionPaused(input.deadExecutionId)) {
 				result = { ok: false, reason: "codex_quota_paused" };
 				return;
@@ -61742,6 +64197,22 @@ export class StateStore {
 					idempotentReplay: true,
 					launchOrdinal: Number(payload.launchOrdinal),
 				};
+				return;
+			}
+			// FLY-2921 C6.2: an open rework's target has exactly one replacement
+			// path (the coordinator, carrying the rework content). Generic dead
+			// recovery would mint a context-free actor; it hands the row back
+			// to the coordinator instead.
+			if (
+				this.handOffReworkTargetToCoordinatorTx({
+					runId: input.runId,
+					nodeId: input.nodeId,
+					attempt: input.attempt,
+					executionId: input.deadExecutionId,
+					now,
+				})
+			) {
+				result = { ok: false, reason: "rework_target_owned_by_coordinator" };
 				return;
 			}
 			const environmentCandidate =
@@ -62014,162 +64485,15 @@ export class StateStore {
 				state: "pending",
 				executionId: input.newExecutionId,
 			});
-			const writerTransitionUid = `writer_replacement:${canonicalSubmissionDigest(
-				{
-					runId: input.runId,
-					nodeId: input.nodeId,
-					attempt: input.attempt,
-					newExecutionId: input.newExecutionId,
-				},
-			)}`;
-			const writerReceipt = {
-				targetNodeId: input.nodeId,
-				targetAttempt: input.attempt,
-				deadExecutionId: input.deadExecutionId,
-				newExecutionId: input.newExecutionId,
-				launchOrdinal,
-			};
-			const sourceAttachment = this.listWorkflowResumeAttachments({
+			this.migrateWorkflowWriterReplacementTx({
 				runId: input.runId,
 				nodeId: input.nodeId,
 				attempt: input.attempt,
-			}).at(-1);
-			const sourceState = sourceAttachment
-				? this.getWorkflowResumeAttachmentState(sourceAttachment.attachment_id)
-				: undefined;
-			const sourceDelivery = this.listWorkflowRunEvents(input.runId)
-				.filter(
-					(event) =>
-						event.kind === "issue_delivery" &&
-						event.node_id === input.nodeId &&
-						event.execution_id === input.deadExecutionId,
-				)
-				.at(-1);
-			const sourceDeliveryPayload =
-				sourceDelivery?.payload && typeof sourceDelivery.payload === "object"
-					? (sourceDelivery.payload as Record<string, unknown>)
-					: undefined;
-			let stampedBaselineDigest: string | undefined;
-			try {
-				const stamp = JSON.parse(
-					sourceState?.envelope_stamped_json ?? "null",
-				) as Record<string, unknown> | null;
-				const baseline = stamp?.issueBaseline as
-					| Record<string, unknown>
-					| undefined;
-				stampedBaselineDigest =
-					typeof baseline?.bodyDigest === "string"
-						? baseline.bodyDigest
-						: undefined;
-			} catch {
-				// Malformed resume evidence is diagnosed below without aborting recovery.
-			}
-			const sourceDeliveryDigest = sourceDelivery
-				? canonicalSubmissionDigest(sourceDelivery.payload ?? null)
-				: undefined;
-			const sourceKind = sourceDeliveryPayload?.sourceKind;
-			const canMigrate =
-				sourceAttachment !== undefined &&
-				sourceState?.state === "ready" &&
-				sourceDelivery !== undefined &&
-				sourceDeliveryPayload !== undefined &&
-				(sourceKind === "authoritative" ||
-					sourceKind === "frozen_replay" ||
-					sourceKind === "writer_migration") &&
-				typeof sourceDeliveryPayload.body === "string" &&
-				typeof sourceDeliveryPayload.bodyDigest === "string" &&
-				createHash("sha256")
-					.update(sourceDeliveryPayload.body)
-					.digest("hex") === sourceDeliveryPayload.bodyDigest &&
-				sourceDeliveryPayload.bodyDigest === stampedBaselineDigest;
-			this.recordWorkflowResumeEvidenceSafelyTx(
-				{
-					runId: input.runId,
-					targetNodeId: input.nodeId,
-					targetAttempt: input.attempt,
-					transitionUid: writerTransitionUid,
-					createdAt: now,
-				},
-				() => {
-					this.appendWorkflowRunEventCheckedTx({
-						runId: input.runId,
-						eventUid: writerTransitionUid,
-						kind: "writer_replacement",
-						nodeId: input.nodeId,
-						executionId: input.newExecutionId,
-						payload: writerReceipt,
-					});
-					if (!canMigrate || !sourceAttachment || !sourceDelivery) {
-						this.recordWorkflowResumeTargetUnrecoverableTx({
-							runId: input.runId,
-							targetNodeId: input.nodeId,
-							targetAttempt: input.attempt,
-							transitionUid: writerTransitionUid,
-							reason: "attachment_missing",
-							detail: { cause: "writer_source_evidence_unavailable" },
-							createdAt: now,
-						});
-						return;
-					}
-					const migrationBindingUid = `resume_writer_binding:${canonicalSubmissionDigest(
-						{
-							writerTransitionUid,
-							sourceDeliveryUid: sourceDelivery.event_uid,
-							sourceAttachmentId: sourceAttachment.attachment_id,
-						},
-					)}`;
-					const bindingPayload = {
-						targetNodeId: input.nodeId,
-						targetAttempt: input.attempt,
-						sourceExecutionId: input.deadExecutionId,
-						newExecutionId: input.newExecutionId,
-						launchOrdinal,
-						writerTransitionUid,
-						sourceAttachmentId: sourceAttachment.attachment_id,
-						sourceIssueDeliveryUid: sourceDelivery.event_uid,
-						sourceIssueDeliveryDigest: sourceDeliveryDigest,
-					};
-					this.appendWorkflowRunEventCheckedTx({
-						runId: input.runId,
-						eventUid: migrationBindingUid,
-						kind: "resume_writer_binding",
-						nodeId: input.nodeId,
-						executionId: input.newExecutionId,
-						payload: bindingPayload,
-					});
-					this.appendWorkflowRunEventCheckedTx({
-						runId: input.runId,
-						eventUid: `issue_delivery_migration:${canonicalSubmissionDigest(
-							bindingPayload,
-						)}`,
-						kind: "issue_delivery",
-						nodeId: input.nodeId,
-						executionId: input.newExecutionId,
-						payload: {
-							sourceKind: "writer_migration",
-							body: sourceDeliveryPayload.body,
-							bodyDigest: sourceDeliveryPayload.bodyDigest,
-							migrationBindingUid,
-							sourceIssueDeliveryUid: sourceDelivery.event_uid,
-							sourceIssueDeliveryDigest: sourceDeliveryDigest,
-						},
-					});
-					if (
-						!this.recordWorkflowResumeInheritedAttachmentTx({
-							source: sourceAttachment,
-							runId: input.runId,
-							targetNodeId: input.nodeId,
-							targetAttempt: input.attempt,
-							transitionUid: writerTransitionUid,
-							receiptKind: "writer_replacement",
-							receiptPayload: writerReceipt,
-							createdAt: now,
-						})
-					) {
-						throw new Error("workflow_resume_attachment_conflict");
-					}
-				},
-			);
+				deadExecutionId: input.deadExecutionId,
+				newExecutionId: input.newExecutionId,
+				launchOrdinal,
+				now,
+			});
 			this.appendWorkflowRunEventCheckedTx({
 				runId: input.runId,
 				eventUid,
@@ -64640,6 +66964,45 @@ export class StateStore {
 		return { state: "invalid" };
 	}
 
+	/**
+	 * FLY-2921 C5: a binding is the execution's current activation for its
+	 * node when it owns the node's latest attempt in this run. Mirrors the
+	 * currency core of `classifyCurrentWorkflowWriterTx` without its run /
+	 * cancellation gates, so the resident hold decides on identity alone.
+	 */
+	private residentHoldActivationIsCurrentTx(binding: {
+		run_id: string;
+		node_id: string;
+		attempt: number;
+		execution_id: string;
+		activation_id: string;
+	}): boolean {
+		return Boolean(
+			this.workflowSelectAll(
+				`SELECT 1 AS present
+				   FROM workflow_run_node node
+				   JOIN workflow_execution_binding binding
+				     ON binding.run_id = node.run_id AND binding.node_id = node.node_id
+				    AND binding.attempt = node.attempt
+				    AND binding.execution_id = node.execution_id
+				  WHERE node.run_id = ? AND node.node_id = ? AND node.attempt = ?
+				    AND node.execution_id = ? AND binding.activation_id = ?
+				    AND NOT EXISTS (
+				      SELECT 1 FROM workflow_run_node newer
+				       WHERE newer.run_id = node.run_id AND newer.node_id = node.node_id
+				         AND newer.attempt > node.attempt
+				    )`,
+				[
+					binding.run_id,
+					binding.node_id,
+					binding.attempt,
+					binding.execution_id,
+					binding.activation_id,
+				],
+			)[0],
+		);
+	}
+
 	private enterResidentHoldForCompletionTx(
 		context: NonNullable<
 			ReturnType<StateStore["generalizedExecutionContextForActivation"]>
@@ -64659,14 +67022,19 @@ export class StateStore {
 		}
 		const existing = this.getResidentHold(context.binding.execution_id);
 		if (existing) {
-			if (
-				existing.activation_id !== context.binding.activation_id ||
-				existing.node_id !== context.binding.node_id
-			) {
+			if (existing.node_id !== context.binding.node_id) return false;
+			const sameActivation =
+				existing.activation_id === context.binding.activation_id;
+			if (existing.state === "resident") return sameActivation;
+			if (existing.state !== "woken") {
 				return false;
 			}
-			if (existing.state === "resident") return true;
-			if (existing.state !== "woken") {
+			// FLY-2921 C5 (FLY-2821): a woken hold re-parks for the execution's
+			// CURRENT activation. A rework wake mints a new activation (next
+			// attempt) on the same body, so the hold's activation moves with the
+			// completion; a late completion from a superseded activation must
+			// never revive the hold. K04 keeps this invariant.
+			if (!this.residentHoldActivationIsCurrentTx(context.binding)) {
 				return false;
 			}
 			const revision = existing.revision + 1;
@@ -64677,6 +67045,7 @@ export class StateStore {
 			this.db.run(
 				`UPDATE workflow_resident_hold
 				    SET revision = ?, boundary_seq = ?, state = 'resident',
+				        activation_id = ?, attempt = ?,
 				        grace_started_at = ?, grace_expires_at = ?,
 				        release_cause = NULL, release_source = NULL,
 				        closed_reason = NULL, updated_at = ?
@@ -64684,6 +67053,8 @@ export class StateStore {
 				[
 					revision,
 					boundarySeq,
+					context.binding.activation_id,
+					context.binding.attempt,
 					now,
 					graceExpiresAt,
 					now,
@@ -64923,10 +67294,14 @@ export class StateStore {
 			};
 			const { reason, detail } = input.refusal;
 			if (reason === "rework_content_not_delivered") {
-				this.openReworkContentUndeliverableTx({
-					...input,
-					...detail,
-					alertIdentity: identity,
+				this.markReworkReplacementContentMissingTx({
+					runId: input.runId,
+					nodeId: input.nodeId,
+					attempt: input.attempt,
+					requestId: detail.requestId,
+					routeRevision: detail.routeRevision,
+					executionId: input.executionId,
+					now: input.now,
 				});
 			}
 			this.appendWorkflowRunEventCheckedTx({
@@ -64953,7 +67328,7 @@ export class StateStore {
 					severity: "warning",
 					sessionKey: `wf:${input.runId}`,
 					title: `Rework completion refused for ${run.issue_id}`,
-					body: `Execution ${input.executionId} tried to complete ${input.nodeId}#${input.attempt} for rework ${detail.requestId} (route revision ${detail.routeRevision}) while delivery is ${detail.deliveryState}: ${reason === "rework_content_not_delivered" ? "replacement launch content has no delivery receipt. The run is now held as delivery_undeliverable_no_recipient; resume it with cancel or reroute." : "the execution does not match the current rework delivery identity. The current delivery has not been changed."}`,
+					body: `Execution ${input.executionId} tried to complete ${input.nodeId}#${input.attempt} for rework ${detail.requestId} (route revision ${detail.routeRevision}) while delivery is ${detail.deliveryState}: ${reason === "rework_content_not_delivered" ? "replacement launch content has no delivery receipt. Its unused credentials were revoked; the rework coordinator asks it to exit and replaces it once its death is proven (or returns the rework to you). The run stays active." : "the execution does not match the current rework delivery identity. The current delivery has not been changed."}`,
 					metadata: {
 						workflowEngine: {
 							runId: input.runId,
@@ -64970,73 +67345,118 @@ export class StateStore {
 		this.save();
 	}
 
+	/**
+	 * FLY-2921 C7: audit one refused rework-target completion AFTER the
+	 * transition savepoint rolled back. Written at the same layer as
+	 * `recordReworkDeliveryRefusal` because anything appended inside the
+	 * transition is erased by `WorkflowTransitionRollback`. Idempotent on
+	 * request + head + reason; no hold, no alert, no completion marker: the
+	 * body simply has to `complete` again with a new head.
+	 */
+	private recordReworkCompletionHeadRefusal(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+		reason: WorkflowReworkCompletionHeadRefusalReason;
+		requestId: string | undefined;
+		head: string | undefined;
+		evidence: WorkflowReworkCompletionEvidence | undefined;
+	}): void {
+		const requestId = input.requestId ?? input.evidence?.requestId ?? "unknown";
+		const head = (input.head ?? input.evidence?.head ?? "unresolved")
+			.trim()
+			.toLowerCase();
+		const baseRevision =
+			this.getWorkflowReworkRequest(requestId)?.base_revision ?? null;
+		// Payload is a pure function of the uid key so a replay dedupes instead
+		// of raising a uid conflict (delta / headSource may differ per attempt).
+		this.appendWorkflowRunEventChecked({
+			runId: input.runId,
+			eventUid: `rework_completion_refused:${requestId}:${head}:${input.reason}`,
+			kind: "rework_completion_refused",
+			nodeId: input.nodeId,
+			executionId: input.executionId,
+			payload: {
+				attempt: input.attempt,
+				transitionReason: input.reason,
+				requestId,
+				head,
+				baseRevision,
+			},
+		});
+	}
+
 	private static reworkContentEpisodeId(attemptId: string): string {
 		return `rework-content:${canonicalSubmissionDigest({ attemptId, cause: "rework_content_not_delivered" })}`;
 	}
 
-	private openReworkContentUndeliverableTx(input: {
+	/**
+	 * FLY-2921 C4.5: a replacement that submits without its launch-envelope
+	 * content receipt is an unusable replacement, not an undeliverable run.
+	 * The completion is still refused (retryable); here its unconsumed
+	 * credentials are revoked, a fact is recorded for the coordinator (which
+	 * asks the actor to exit and replaces it once death is proven), and the
+	 * delivery is nudged — only when nobody holds a live claim on it. The
+	 * actor is never booked terminal while its process may still be alive.
+	 */
+	private markReworkReplacementContentMissingTx(input: {
 		runId: string;
+		nodeId: string;
+		attempt: number;
 		requestId: string;
 		routeRevision: number;
 		executionId: string;
 		now: string;
-		alertIdentity: WorkflowEngineAlertIdentity;
 	}): void {
-		const rows = this.workflowSelectAll(
-			`SELECT attempt.*, run.run_id, run.status AS run_status, run.issue_id, run.project_name
-			 FROM workflow_delivery_attempt attempt
-			 JOIN workflow_rework_request request ON request.request_id = json_extract(attempt.contract_ref_json, '$.pk')
-			 JOIN workflow_run run ON run.run_id = request.run_id
-			 WHERE run.run_id = ? AND attempt.family = 'rework'
-			   AND json_extract(attempt.contract_ref_json, '$.table') = 'workflow_rework_delivery'
-			   AND json_extract(attempt.contract_ref_json, '$.pk') = ?
-			   AND json_extract(attempt.contract_ref_json, '$.routeRevision') = ?
-			   AND attempt.superseded_by_attempt_id IS NULL AND attempt.settlement_reason IS NULL`,
-			[input.runId, input.requestId, input.routeRevision],
-		);
-		if (rows.length !== 1)
-			throw new Error("rework_refusal_live_attempt_missing");
-		const row = rows[0]!;
-		if (row.run_status !== "active")
-			throw new Error("rework_refusal_run_not_active");
-		const episodeId = StateStore.reworkContentEpisodeId(String(row.attempt_id));
-		this.db.run(
-			// An open episode may still belong to a superseded attempt of this root.
-			`UPDATE workflow_delivery_contract_episode SET closed_at = ?, closed_reason = 'superseded_by_undeliverable'
-			WHERE family = 'rework' AND root_id = ? AND closed_at IS NULL`,
-			[input.now, row.root_id],
-		);
-		this.db.run(
-			`INSERT INTO workflow_delivery_contract_episode
-			(episode_id, family, root_id, attempt_id, run_id, stage, stage_entered_at, opened_at, escalation_uid)
-			VALUES (?, 'rework', ?, ?, ?, 'undeliverable', ?, ?, ?)`,
-			[
-				episodeId,
-				row.root_id,
-				row.attempt_id,
-				input.runId,
-				input.now,
-				input.now,
-				`delivery_contract_stalled:${episodeId}`,
-			],
-		);
-		this.finalizeUndeliverableHoldTx({
-			episodeId,
-			recipientExecutionId: input.executionId,
-			now: input.now,
-			alertIdentity: input.alertIdentity,
-			row,
-			liveness: "unknown",
-			evidence: {
-				heartbeatAtMs: null,
-				lastActivityAtMs: null,
-				recentOutboundInWindow: false,
-				observedAtMs: Date.parse(input.now),
+		for (const table of [
+			"workflow_output_credential",
+			"workflow_submission_credential",
+		]) {
+			this.db.run(
+				`UPDATE ${table}
+				    SET revoked = 1, revoked_reason = 'rework_replacement_content_missing'
+				  WHERE run_id = ? AND node_id = ? AND attempt = ?
+				    AND execution_id = ? AND consumed_at IS NULL AND revoked = 0`,
+				[input.runId, input.nodeId, input.attempt, input.executionId],
+			);
+		}
+		this.appendWorkflowRunEventCheckedTx({
+			runId: input.runId,
+			eventUid: `rework_replacement_content_missing:${input.requestId}:${input.routeRevision}`,
+			kind: "rework_replacement_content_missing",
+			nodeId: input.nodeId,
+			executionId: input.executionId,
+			payload: {
+				requestId: input.requestId,
+				routeRevision: input.routeRevision,
+				attempt: input.attempt,
 			},
-			ageMs: 0,
-			terminalRecipientWarningAlreadyRecorded: false,
-			reworkContentRefusal: true,
 		});
+		this.db.run(
+			`UPDATE workflow_rework_delivery SET next_retry_at = ?
+			  WHERE request_id = ? AND route_revision = ?
+			    AND state IN ('pending','turn_granted','wake_delivered')
+			    AND (owner_id IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= ?)`,
+			[input.now, input.requestId, input.routeRevision, input.now],
+		);
+	}
+
+	/** FLY-2921 C4.5: the coordinator's view of the content-missing fact. */
+	hasReworkReplacementContentMissingFact(input: {
+		runId: string;
+		requestId: string;
+		routeRevision: number;
+	}): boolean {
+		return Boolean(
+			this.workflowSelectAll(
+				"SELECT 1 AS present FROM workflow_run_event WHERE run_id = ? AND event_uid = ?",
+				[
+					input.runId,
+					`rework_replacement_content_missing:${input.requestId}:${input.routeRevision}`,
+				],
+			)[0],
+		);
 	}
 
 	private workflowReworkTargetRows(input: {
@@ -65155,6 +67575,71 @@ export class StateStore {
 		return undefined;
 	}
 
+	/**
+	 * FLY-2921 C7 decision table (plan order). Pure: no reads, no writes.
+	 *
+	 * 1. no evidence → head-only compare on `subjectDigest`; missing → unavailable
+	 * 2. evidence for another request / base → stale
+	 * 3. base not 40-hex (historical `unavailable`) → allow, audit skipped
+	 * 4. head unresolved → unavailable
+	 * 5. head == base → unchanged
+	 * 6. delta ledger_only → no_product_change
+	 * 7. delta unverified → allow, audit unverified (fail-open: a missing base
+	 *    object would otherwise make every re-completion refuse forever)
+	 * 8. product_change → allow
+	 */
+	private workflowReworkCompletionHeadCheck(input: {
+		evidence: WorkflowReworkCompletionEvidence | undefined;
+		subjectDigest: string | undefined;
+		request: WorkflowReworkRequestRow;
+	}):
+		| { ok: true; audit?: WorkflowReworkCompletionHeadAudit }
+		| { ok: false; reason: WorkflowReworkCompletionHeadRefusalReason } {
+		const sha = /^[0-9a-f]{40}$/;
+		const base = input.request.base_revision.trim().toLowerCase();
+		const baseIsSha = sha.test(base);
+		const subject = input.subjectDigest?.trim().toLowerCase();
+		const evidence = input.evidence;
+		if (!evidence) {
+			if (!subject || !sha.test(subject)) {
+				return { ok: false, reason: "rework_head_unavailable" };
+			}
+			if (!baseIsSha) return { ok: true, audit: "rework_head_check_skipped" };
+			if (subject === base) {
+				return { ok: false, reason: "rework_head_unchanged" };
+			}
+			return { ok: true };
+		}
+		const evidenceHead = evidence.head?.trim().toLowerCase();
+		if (
+			evidence.requestId !== input.request.request_id ||
+			evidence.baseRevision.trim().toLowerCase() !== base ||
+			(evidence.headSource === "server" &&
+				subject !== undefined &&
+				evidenceHead !== subject)
+		) {
+			return { ok: false, reason: "rework_evidence_stale" };
+		}
+		if (!baseIsSha) return { ok: true, audit: "rework_head_check_skipped" };
+		if (
+			evidence.headSource !== "server" ||
+			!evidenceHead ||
+			!sha.test(evidenceHead)
+		) {
+			return { ok: false, reason: "rework_head_unavailable" };
+		}
+		if (evidenceHead === base) {
+			return { ok: false, reason: "rework_head_unchanged" };
+		}
+		if (evidence.delta === "ledger_only") {
+			return { ok: false, reason: "rework_no_product_change" };
+		}
+		if (evidence.delta === "unverified") {
+			return { ok: true, audit: "rework_delta_unverified" };
+		}
+		return { ok: true };
+	}
+
 	private reworkCompletionRefusalUid(input: {
 		executionId: string;
 		refusal: WorkflowReworkCompletionRefusal;
@@ -65176,6 +67661,8 @@ export class StateStore {
 		drainProof?: CompletionDrainProof;
 		/** Current completion head carried by the trusted event envelope. */
 		subjectDigest?: string;
+		/** FLY-2921 C7: Bridge-built rework head/delta evidence; never from payload. */
+		reworkEvidence?: WorkflowReworkCompletionEvidence;
 		workflowActivation?: WorkflowCompletionActivationContext;
 		alertIdentity?: WorkflowEngineAlertIdentity;
 		prBinding?: {
@@ -65846,6 +68333,9 @@ export class StateStore {
 							...(completionSubjectDigest
 								? { subjectDigest: completionSubjectDigest }
 								: {}),
+							...(input.reworkEvidence
+								? { reworkEvidence: input.reworkEvidence }
+								: {}),
 							alertIdentity: input.alertIdentity,
 							now,
 						});
@@ -65915,6 +68405,43 @@ export class StateStore {
 					this.recordReworkDeliveryRefusal({ runId: context.binding.run_id, nodeId: context.binding.node_id, attempt: context.binding.attempt,
 						executionId: context.binding.execution_id, refusal, now, alertIdentity: input.alertIdentity });
 					return { ...refusal, retryable: false };
+				}
+
+				if (isWorkflowReworkCompletionHeadRefusalReason(transitionRefusal)) {
+					// FLY-2921 C7: the savepoint already rolled back (implied receipt
+					// included); write exactly one idempotent audit here, outside it.
+					this.recordReworkCompletionHeadRefusal({
+						runId: context.binding.run_id,
+						nodeId: context.binding.node_id,
+						attempt: context.binding.attempt,
+						executionId: context.binding.execution_id,
+						reason: transitionRefusal,
+						requestId: transitionRefusalDetail?.requestId,
+						head: completionSubjectDigest,
+						evidence: input.reworkEvidence,
+					});
+					// The in-transaction detail may carry the implied receipt's state;
+					// report the durable state the rollback left behind.
+					const durableDelivery = transitionRefusalDetail
+						? this.getWorkflowReworkDelivery(transitionRefusalDetail.requestId)
+						: undefined;
+					return {
+						ok: false,
+						reason: "transition_refused",
+						retryable: true,
+						detail: {
+							transitionReason: transitionRefusal,
+							...(transitionRefusalDetail
+								? {
+										requestId: transitionRefusalDetail.requestId,
+										deliveryState:
+											durableDelivery?.state ??
+											transitionRefusalDetail.deliveryState,
+										routeRevision: transitionRefusalDetail.routeRevision,
+									}
+								: {}),
+						},
+					};
 				}
 
 				if (transitionRefusal === "land_head_unavailable") {
@@ -67627,6 +70154,12 @@ export class StateStore {
 		/** Legacy name: this is also the authoritative rework base Git head, not
 		 * an arbitrary subject digest. Keep the public field stable. */
 		subjectDigest?: string;
+		/**
+		 * FLY-2921 C7: Bridge-built evidence that a rework-target completion
+		 * carries a new commit. Callers without it fall back to a head-only
+		 * compare against `subjectDigest`.
+		 */
+		reworkEvidence?: WorkflowReworkCompletionEvidence;
 		/** Trusted founder feedback carried to the kickback successor receipt. */
 		founderFeedback?: string;
 		/** Resolved Lead target for fail-loud Gate-carrier alerts. */
@@ -67976,6 +70509,68 @@ export class StateStore {
 					return;
 				}
 				selectedId = `rework_verify:${activePath.request_id}:${input.nodeId}:${target.id}`;
+			}
+			// FLY-2921 C7 (FLY-2202 / FLY-2472): a rework target that hands its
+			// work to review must hand over a NEW commit with a product change.
+			// Only the target itself (path index 0) on a needs_review node taking
+			// its success edge is judged; verification nodes downstream re-test
+			// the same head by design. Refusals are retryable and write nothing;
+			// the implied receipt above is rolled back by the savepoint.
+			if (
+				activePath &&
+				activeRoute &&
+				activeRequest &&
+				edge &&
+				activePathCurrentIndex === 0 &&
+				source.capabilities.completion_route === "needs_review"
+			) {
+				const check = this.workflowReworkCompletionHeadCheck({
+					evidence: input.reworkEvidence,
+					subjectDigest: input.subjectDigest,
+					request: activeRequest,
+				});
+				if (!check.ok) {
+					const delivery = this.getWorkflowReworkDelivery(
+						activePath.request_id,
+					);
+					result = {
+						ok: false,
+						reason: check.reason,
+						retryable: true,
+						...(delivery
+							? {
+									detail: {
+										requestId: activePath.request_id,
+										deliveryState: delivery.state,
+										routeRevision: activeRoute.revision,
+									},
+								}
+							: {}),
+					};
+					return;
+				}
+				if (check.audit) {
+					// Payload is a pure function of (kind, request, revision, head) so
+					// a replay of the same completion dedupes instead of conflicting.
+					const auditHead =
+						input.reworkEvidence?.head ??
+						input.subjectDigest?.trim().toLowerCase() ??
+						"unresolved";
+					this.appendWorkflowRunEventCheckedTx({
+						runId: input.runId,
+						eventUid: `${check.audit}:${activePath.request_id}:${activeRoute.revision}:${auditHead}`,
+						kind: check.audit,
+						nodeId: input.nodeId,
+						executionId: input.executionId,
+						payload: {
+							attempt: input.attempt,
+							requestId: activePath.request_id,
+							routeRevision: activeRoute.revision,
+							baseRevision: activeRequest.base_revision,
+							head: auditHead,
+						},
+					});
+				}
 			}
 			const completesConflictResolution = Boolean(
 				activePath &&
@@ -76830,7 +79425,6 @@ export class StateStore {
 			const openRework =
 				row.rework_request_id != null &&
 				(row.rework_delivery_state === "turn_granted" ||
-					row.rework_delivery_state === "awaiting_receipt" ||
 					row.rework_delivery_state === "wake_delivered");
 			if (!phaseNode && !openRework) continue;
 			expectations.push({
@@ -77560,6 +80154,11 @@ export class StateStore {
 		) {
 			return { disposition: "cancel", reason: "invalid_wake_identity" };
 		}
+		// FLY-2900 §4.2: a parked quota standby body has no process to wake; the
+		// wake waits (not cancelled) until the relaunched body can take it.
+		if (this.codexQuota.isCodexQuotaStandby(input.executionId)) {
+			return { disposition: "wait", reason: "codex_quota_standby" };
+		}
 		const session = this.getSession(input.executionId);
 		if (!input.activationId) {
 			return session &&
@@ -77626,14 +80225,13 @@ export class StateStore {
 		const reworkDelivery = binding.rework_request_id
 			? this.getWorkflowReworkDelivery(binding.rework_request_id)
 			: undefined;
-		// FLY-2828 C6: see the carrier branch above; `held|needs_lead|pending`
-		// stay with the no-receipt alert because a resume may revive them.
+		// FLY-2828 C6: see the carrier branch above. FLY-2921: a
+		// `returned_to_lead|pending` obligation still owned by this actor waits
+		// (below) because a Lead resume re-arms this same wake.
 		if (reworkDelivery?.state === "completed") {
 			return { disposition: "cancel", reason: "rework_obligation_completed" };
 		}
-		const activeReworkObligation =
-			reworkDelivery?.state === "turn_granted" ||
-			reworkDelivery?.state === "awaiting_receipt";
+		const activeReworkObligation = reworkDelivery?.state === "turn_granted";
 		const run = this.getWorkflowRun(binding.run_id);
 		const node = this.getWorkflowRunNode(
 			binding.run_id,
@@ -77651,6 +80249,25 @@ export class StateStore {
 			return { disposition: "cancel", reason: "activation_target_terminal" };
 		}
 		if (binding.rework_request_id && !activeReworkObligation) {
+			// FLY-2921 (Codex code review R2): a rework that is still this
+			// actor's to receive — re-delivery pending after a Lead resume, or
+			// returned to the Lead and awaiting one — keeps its wake. A Lead
+			// resume re-arms this same wake id (push budget reset) before the
+			// coordinator moves the delivery to `turn_granted`; cancelling here
+			// in that window would turn every later resume into a noop on a
+			// cancelled wake. The coordinator pushes once it has granted.
+			const route = this.getLatestWorkflowReworkRoute(binding.rework_request_id);
+			if (
+				(reworkDelivery?.state === "pending" ||
+					reworkDelivery?.state === "returned_to_lead") &&
+				route !== undefined &&
+				reworkDelivery.route_revision === route.revision &&
+				route.preferred_actor_execution_id === input.executionId &&
+				route.target_node_id === binding.node_id &&
+				route.target_attempt === binding.attempt
+			) {
+				return { disposition: "wait", reason: "rework_awaiting_redelivery" };
+			}
 			return { disposition: "cancel", reason: "rework_obligation_settled" };
 		}
 		if (
@@ -88615,6 +91232,50 @@ export interface WorkflowTransitionRefusalDetail {
 	routeRevision: number;
 }
 
+/** FLY-2921 C7: what `git diff <base> <head>` minus the progress ledger showed. */
+export type WorkflowReworkCompletionDelta =
+	| "product_change"
+	| "ledger_only"
+	| "unverified";
+
+/**
+ * FLY-2921 C7: server-side evidence that a rework-target completion carries a
+ * new commit. Built by the Bridge event route from the immutable captured
+ * completion head; never decoded from a runner payload.
+ */
+export interface WorkflowReworkCompletionEvidence {
+	requestId: string;
+	baseRevision: string;
+	/** Lower-case 40-hex when `headSource` is `server`; absent otherwise. */
+	head?: string;
+	headSource: "server" | "unresolved";
+	delta: WorkflowReworkCompletionDelta;
+}
+
+/** FLY-2921 C7: retryable refusals of a rework-target completion. */
+export const WORKFLOW_REWORK_COMPLETION_HEAD_REFUSAL_REASONS = [
+	"rework_head_unavailable",
+	"rework_evidence_stale",
+	"rework_head_unchanged",
+	"rework_no_product_change",
+] as const;
+
+export type WorkflowReworkCompletionHeadRefusalReason =
+	(typeof WORKFLOW_REWORK_COMPLETION_HEAD_REFUSAL_REASONS)[number];
+
+export function isWorkflowReworkCompletionHeadRefusalReason(
+	reason: string,
+): reason is WorkflowReworkCompletionHeadRefusalReason {
+	return (
+		WORKFLOW_REWORK_COMPLETION_HEAD_REFUSAL_REASONS as readonly string[]
+	).includes(reason);
+}
+
+/** FLY-2921 C7: audit kinds written when the head check lets a completion through. */
+export type WorkflowReworkCompletionHeadAudit =
+	| "rework_head_check_skipped"
+	| "rework_delta_unverified";
+
 export type WorkflowTransitionResult =
 	| {
 			ok: true;
@@ -88925,26 +91586,41 @@ export interface WorkflowReworkRouteRevisionRow {
 	created_at: string;
 }
 
+export type WorkflowReworkFailureSettlement =
+	| {
+			ok: true;
+			holdCount: number;
+			state: "pending" | "turn_granted" | "returned_to_lead";
+			nextRetryAt: string | null;
+	  }
+	| { ok: false; reason: string };
+
 export interface WorkflowReworkDeliveryRow {
 	request_id: string;
 	owner_id: string | null;
 	generation: number;
 	lease_expires_at: string | null;
 	route_revision: number;
+	/**
+	 * FLY-2921: two outcomes. `wake_delivered` → `completed` is the success
+	 * chain; `returned_to_lead` is the only failure ending (the run stays
+	 * active; the Lead gets one delivery-scoped door).
+	 */
 	state:
 		| "pending"
 		| "turn_granted"
-		| "awaiting_receipt"
 		| "wake_delivered"
-		| "replacement_pending"
 		| "completed"
-		| "held"
-		| "needs_lead";
+		| "returned_to_lead";
 	hold_count: number;
 	next_retry_at: string | null;
 	grant_started_at: string | null;
 	last_error: string | null;
 	updated_at: string;
+	/** Fact, not state: the wake was pushed (mirrors the delivery clock `sent_at`, kept here for CAS). */
+	wake_sent_at: string | null;
+	/** Fact: since when the target actor's liveness could not be decided on this route revision. */
+	liveness_unknown_since: string | null;
 }
 
 export interface WorkflowCarrierDeliveryRow {
@@ -89265,8 +91941,6 @@ export type GeneralizedWorkflowAdmissionResult =
 			ok: false;
 			reason:
 				| "codex_quota_paused"
-				| "model_arm_degradation_stale"
-				| "model_arm_degradation_invalid"
 				| "wake_runtime_invalid"
 				| "wake_degradation_invalid"
 				| "invalid_expiry"
@@ -89674,6 +92348,12 @@ export interface WorkflowEngineAlertPayload {
 				| "rework_retry_exhausted"
 				| "rework_pane_loss_handoff"
 				| "rework_stall_recovered"
+				// FLY-2921: the only rework delivery failure ending, and the
+				// unknown-liveness escalation that replaced the frozen-run alerts.
+				| "rework_returned_to_lead"
+				| "rework_liveness_unknown"
+				| "rework_replacement_launch_rolled_back"
+				| "rework_replacement_launch_unresolved"
 				| "rework_completion_refused"
 				| "rework_reentry_paused"
 				| "rework_reentry_resumed"
@@ -90220,6 +92900,9 @@ export interface WorkflowLedgerBatchResult {
 }
 
 export interface LeadEventRow {
+    notification_policy_version?: string;
+    notification_reason?: string;
+    notification_proof_ref?: string;
 	delivery_disposition?: "model" | "audit_only";
 	seq: number;
 	lead_id: string;
@@ -90417,6 +93100,9 @@ export function readEpicItemFacts(
 
 function mapLeadEventRow(row: Record<string, unknown>): LeadEventRow {
 	return {
+        notification_policy_version: (row.notification_policy_version as string | null) ?? undefined,
+        notification_reason: (row.notification_reason as string | null) ?? undefined,
+        notification_proof_ref: (row.notification_proof_ref as string | null) ?? undefined,
 		delivery_disposition: row.delivery_disposition === "audit_only" ? "audit_only" : "model",
 		seq: Number(row.seq),
 		lead_id: String(row.lead_id),

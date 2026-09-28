@@ -16,7 +16,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { delimiter, dirname, join, relative } from "node:path";
 import { canonicalJsonString } from "flywheel-config";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type WorktreeExecFn, WorktreeManager } from "../WorktreeManager.js";
@@ -1364,6 +1364,36 @@ function execWith(opts: {
 	};
 }
 
+const OVERSIZED_GIT_OUTPUT_BYTES = 1024 * 1024 + 1;
+
+/**
+ * Keep every Git behavior real, but make the takeover index-membership probe
+ * cross Node's default one-MiB child-output ceiling.
+ */
+function useOversizedCachedIndexProbe(): void {
+	const realGit = process.env.PATH?.split(delimiter)
+		.map((entry) => join(entry, "git"))
+		.find((entry) => existsSync(entry));
+	if (!realGit) throw new Error("git_not_found_on_path");
+	const fakeBin = tempDir("fly2941-large-git-");
+	const fakeGit = join(fakeBin, "git");
+	writeFileSync(
+		fakeGit,
+		[
+			"#!/bin/sh",
+			'case " $* " in',
+			'  *" ls-files -z --cached -v "*)',
+			`    ${JSON.stringify(realGit)} "$@" || exit $?`,
+			`    exec ${JSON.stringify(process.execPath)} -e 'process.stdout.write("H " + "x".repeat(${OVERSIZED_GIT_OUTPUT_BYTES}) + "\\0")'`,
+			"    ;;",
+			`  *) exec ${JSON.stringify(realGit)} "$@" ;;`,
+			"esac",
+		].join("\n"),
+	);
+	chmodSync(fakeGit, 0o700);
+	vi.stubEnv("PATH", `${fakeBin}${delimiter}${process.env.PATH ?? ""}`);
+}
+
 function probesLocalBranch(branch: string) {
 	return (args: string[]) =>
 		(args.includes("rev-parse") || args.includes("for-each-ref")) &&
@@ -1665,6 +1695,33 @@ describe("v5.2 ignored content guard", { timeout: 180_000 }, () => {
 			"ordinary target change",
 		);
 	}
+
+	it("rescues a dirty worktree when the cached-index probe exceeds one MiB", async () => {
+		const f = await fixture("# base\n");
+		dirty(f);
+		useOversizedCachedIndexProbe();
+
+		const result = expectRescued(
+			await f.repo.manager.runTakeoverTransaction(
+				input(f.repo, f.rec.recorder, { startPoint: f.H }),
+			),
+		);
+
+		expect(result.evidence.manifest.class).toBe("dirty");
+		expect(git(f.dir, "status", "--porcelain")).toBe("");
+	});
+
+	it("still refuses a hidden index flag when the cached-index probe exceeds one MiB", async () => {
+		const f = await fixture("# base\n");
+		git(f.dir, "update-index", "--skip-worktree", ".gitignore");
+		put(f.dir, ".gitignore", "drafts/\n");
+		put(f.dir, "drafts/unpublished.md");
+		dirty(f);
+		useOversizedCachedIndexProbe();
+
+		const result = await refused(f, f.H, "f", ".gitignore");
+		expect(result.detail).not.toContain("maxBuffer");
+	});
 
 	it("refuses head_behind removing ignore rules before any preservation", async () => {
 		const f = await fixture();

@@ -221,3 +221,51 @@ describe("TurnDemux — R3 MED-1 rejected-claim tombstone", () => {
 		expect(logs.some((l) => l.includes("released turn t1"))).toBe(true);
 	});
 });
+
+describe("TurnDemux — observer provenance (FLY-2882 design-correction C1)", () => {
+	function provenanceHarness(heldCap?: number) {
+		const seen: Array<[string, string | undefined, string]> = [];
+		const demux = new TurnDemux(
+			{
+				toExecutor: () => {},
+				toObserver: (method, params, provenance) =>
+					seen.push([method, extractTurnId(params), provenance]),
+			},
+			heldCap === undefined ? undefined : { heldCap },
+		);
+		return { demux, seen };
+	}
+
+	it("a foreign turn routed outside any dispatch window is 'foreign'", () => {
+		const { demux, seen } = provenanceHarness();
+		demux.route("turn/started", { turn: { id: "founder" } });
+		expect(seen).toEqual([["turn/started", "founder", "foreign"]]);
+	});
+
+	it("held events for other turns flushed by a successful claim are 'foreign'", () => {
+		const { demux, seen } = provenanceHarness();
+		demux.beginDispatch();
+		demux.route("turn/started", { turn: { id: "founder" } });
+		demux.claimTurn("ours");
+		expect(seen).toEqual([["turn/started", "founder", "foreign"]]);
+	});
+
+	it("an abort flush proves nothing about ownership: 'unproven'", () => {
+		const { demux, seen } = provenanceHarness();
+		demux.beginDispatch();
+		demux.route("turn/started", { turn: { id: "maybe-ours" } });
+		demux.abortDispatch();
+		expect(seen).toEqual([["turn/started", "maybe-ours", "unproven"]]);
+	});
+
+	it("an overflow flush and the overflowing event are 'unproven'", () => {
+		const { demux, seen } = provenanceHarness(1);
+		demux.beginDispatch();
+		demux.route("turn/started", { turn: { id: "a" } });
+		demux.route("item/agentMessage/delta", { turnId: "a" });
+		expect(seen).toEqual([
+			["turn/started", "a", "unproven"],
+			["item/agentMessage/delta", "a", "unproven"],
+		]);
+	});
+});

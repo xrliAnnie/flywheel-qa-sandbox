@@ -1023,7 +1023,7 @@ describe("RetryDispatcher", () => {
 		});
 
 		const ctx = vi.mocked(runtime.blueprint.run).mock.calls[0]?.[2];
-		expect(ctx?.runnerName).toBe("implement-codex-G");
+		expect(ctx?.runnerName).toBe("implement-codex-OS");
 	});
 
 	it("dispatch() returns old and new execution IDs", async () => {
@@ -1602,33 +1602,33 @@ describe("runnerDisplayName + cmux window label (FLY-793 phase visibility)", () 
 	it("includes the vendor-neutral model label when a model was resolved", () => {
 		expect(
 			runnerDisplayName("implement", true, {
-				threadMarker: "G",
-				windowLabel: "codex-G",
+				threadMarker: "[O][G]",
+				windowLabel: "codex-OG",
 			}),
-		).toBe("implement-codex-G");
+		).toBe("implement-codex-OG");
 		expect(
 			runnerDisplayName("main", false, {
-				threadMarker: "K",
-				windowLabel: "kimi-K",
+				threadMarker: "[K][K]",
+				windowLabel: "kimi-KK",
 			}),
-		).toBe("runner-kimi-K");
+		).toBe("runner-kimi-KK");
 		expect(
 			runnerDisplayName("qa", true, {
-				threadMarker: "O",
-				windowLabel: "claude-Opus",
+				threadMarker: "[A][O]",
+				windowLabel: "claude-AO",
 			}),
-		).toBe("qa-claude-Opus");
+		).toBe("qa-claude-AO");
 		expect(
 			runnerDisplayName("main", false, {
-				threadMarker: "F",
-				windowLabel: "claude-Fable",
+				threadMarker: "[A][F]",
+				windowLabel: "claude-AF",
 			}),
-		).toBe("runner-claude-Fable");
+		).toBe("runner-claude-AF");
 	});
 
 	it("infers Codex defensively when backend metadata is absent", () => {
 		const display = renderRunnerModelDisplay({ model: "gpt-5.6-sol" });
-		expect(runnerDisplayName("main", false, display)).toBe("runner-codex-G");
+		expect(runnerDisplayName("main", false, display)).toBe("runner-codex-OS");
 	});
 
 	it("keeps legacy names when no model was resolved", () => {
@@ -1917,4 +1917,44 @@ it("FLY-2465 pauses resolved Codex fresh starts before lifecycle or Blueprint", 
 		}),
 	).rejects.toMatchObject({ name: "CodexQuotaQueuedError", rootKey: "root" });
 	expect(runtimes.get("TestProject")!.blueprint.run).not.toHaveBeenCalled();
+});
+it("FLY-2900 hands a quota standby relaunch's explicit authorization to Codex admission with the real execution id", async () => {
+	const runtimes = new Map([makeRuntime("TestProject")]);
+	const dispatcher = new RunDispatcher(runtimes, []);
+	const seen: unknown[] = [];
+	dispatcher.codexQuotaAdmission = (input) => {
+		seen.push(input);
+		return { rootKey: "root", generation: 1 };
+	};
+	const authorization = {
+		executionId: "exec-standby",
+		claimId: "bridge:1:boot:c1",
+		entrySeq: 1,
+		resumeAttempt: 1,
+	};
+	await expect(
+		dispatcher.start({
+			issueId: "FLY-2900",
+			projectName: "TestProject",
+			successorExecutionId: "exec-standby",
+			dispatchVendor: "codex",
+			dispatchModel: "gpt-5.6-sol",
+			processLifecycle: {
+				mode: "resume",
+				generation: 1,
+				quotaResume: {
+					authorization,
+					continueAttemptId: "cont-1",
+					continueAttemptFresh: true,
+					onContinueReconciled: () => ({ action: "abort", reason: "x" }),
+					onContinueStarted: () => true,
+					onContinueProgress: () => undefined,
+					onContinueFailed: () => undefined,
+				},
+			},
+		}),
+	).rejects.toMatchObject({ name: "CodexQuotaQueuedError" });
+	expect(seen).toEqual([
+		{ projectName: "TestProject", executionId: "exec-standby", authorization },
+	]);
 });

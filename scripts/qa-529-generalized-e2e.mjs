@@ -315,18 +315,56 @@ function probeExecution(slotDir, commDb, executionId) {
 	};
 }
 
+// FLY-2921: a rework delivery ends only in wake_delivered/completed or
+// returned_to_lead, and a failed delivery never freezes the run. Danger is a
+// delivery returned to the Lead, a poisoned last_error, or a run frozen
+// (status held) while a rework hold event has no hold_resumed receipt.
+const REWORK_HOLD_EVENT_KINDS = [
+	"rework_returned_to_lead",
+	"rework_retry_exhausted",
+];
+
 function dangerousReworkRows(db, runId) {
 	if (!tableExists(db, "workflow_rework_delivery")) return [];
-	return all(
+	const rows = all(
 		db,
 		`SELECT d.request_id, d.state, d.last_error
 		   FROM workflow_rework_delivery d
 		   JOIN workflow_rework_request r ON r.request_id = d.request_id
 		  WHERE r.run_id = ? AND (
-		        d.state IN ('held','needs_lead') OR
+		        d.state = 'returned_to_lead' OR
 		        lower(COALESCE(d.last_error, '')) LIKE '%state_not_revivable%' OR
 		        lower(COALESCE(d.last_error, '')) LIKE '%holder_activation_failed%')`,
 		runId,
+	);
+	const run = one(
+		db,
+		"SELECT status FROM workflow_run WHERE run_id = ?",
+		runId,
+	);
+	if (run?.status !== "held" || !tableExists(db, "workflow_run_event"))
+		return rows;
+	const kinds = REWORK_HOLD_EVENT_KINDS.map(() => "?").join(",");
+	const openHolds = all(
+		db,
+		`SELECT h.event_uid, h.kind,
+		        CASE WHEN json_valid(h.payload)
+		             THEN json_extract(h.payload, '$.requestId') END AS request_id
+		   FROM workflow_run_event h
+		  WHERE h.run_id = ? AND h.kind IN (${kinds})
+		    AND NOT EXISTS (
+		        SELECT 1 FROM workflow_run_event r
+		         WHERE r.run_id = h.run_id
+		           AND r.event_uid = 'hold_resumed:' || h.kind || ':' || h.event_uid)`,
+		runId,
+		...REWORK_HOLD_EVENT_KINDS,
+	);
+	return rows.concat(
+		openHolds.map((hold) => ({
+			request_id: hold.request_id ?? null,
+			state: "run_held_by_rework_hold",
+			last_error: `${hold.kind}:${hold.event_uid}`,
+		})),
 	);
 }
 
@@ -1103,7 +1141,7 @@ async function runDrillSteps(context) {
 	);
 	writeStep(
 		6,
-		"QA FAIL request has a durable wake receipt without held/needs_lead",
+		"QA FAIL request has a durable wake receipt without returned_to_lead or a rework-held run",
 		rework,
 	);
 

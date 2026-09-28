@@ -1,0 +1,76 @@
+{
+	"source": "~/.flywheel/artifacts/FLY-2885-qa/founder-live/readback-evidence.json + thread-1553434824373444639.txt (founder live test, 2026-09-26)",
+	"session": "1043b4a4-2009-461f-b699-b5507adc8232",
+	"reply": {
+		"seq": 1,
+		"text": "我有 Peter 的角色背景，但没有读取他的完整 memory。知道他是产品负责人，主要负责产品需求、优先级和与 Annie 沟通；他最近具体在做什么，需要查记录，不能凭角色猜。\n\n关联 Handoff ID：9cd193a6-7a84-45da-b4af-dcce7d9d3954",
+		"claimedAt": "2026-09-26T15:56:24.442Z",
+		"finishedAt": "2026-09-26T15:56:48.785Z",
+		"phase": "failed"
+	},
+	"recorded": {
+		"overrun": {
+			"ts": "2026-09-26T15:56:28.713Z",
+			"turnId": "turn_ESP3BYyuD6D5SIa4HpRh0",
+			"expectedChars": 27,
+			"unalignedChars": 9,
+			"detectedAtMs": 4266
+		},
+		"overrunResumed": { "ts": "2026-09-26T15:56:33.706Z", "discardMs": 4994 },
+		"admissionTimeouts": [
+			{ "ts": "2026-09-26T15:56:38.736Z", "busy": "assistant_turn_open" },
+			{ "ts": "2026-09-26T15:56:48.779Z", "busy": "assistant_turn_open" }
+		],
+		"threadMirror": [
+			{
+				"at": "15:56:33",
+				"role": "assistant",
+				"text": "我有 Peter 的角色背景,但没有读取他的完整 memory。（已截断越界内容）"
+			},
+			{
+				"at": "15:56:36",
+				"role": "user",
+				"text": "所以他的完整 memory,你是没有的"
+			},
+			{
+				"at": "15:56:49",
+				"role": "assistant",
+				"text": "对,我这边没有他的完整 memory,只有当前这份系统给到的摘要和快照,而且摘要里也没有更多细节。要继续查的话我可以再确认。逐句文字会发到当前语音会话的 Discord thread。"
+			}
+		]
+	},
+	"timeline": {
+		"note": "Milliseconds after the first read-aloud chunk was sent (T1 = 15:56:28.713 - 4266 ms = 15:56:24.447). Event times come from the evidence above; audio edges between them are estimates that keep every recorded time (overrun at 4266, resume 4994 ms later, both admission timeouts inside the answer turn). She starts her follow-up before the discard ends (at 8650), which is why the old path never found the room idle for the second chunk; the provider ends the overrun turn once she speaks (done 9020).",
+		"overrunTurn": {
+			"createdAt": 600,
+			"voicedFrom": 700,
+			"voicedTo": 8950,
+			"deltas": [
+				{ "at": 900, "text": "我有" },
+				{ "at": 1300, "text": " Peter" },
+				{ "at": 1800, "text": " 的角色背景," },
+				{ "at": 2400, "text": "但没有读取" },
+				{ "at": 2900, "text": "他的完整" },
+				{ "at": 3400, "text": " memory。" },
+				{ "at": 3900, "text": "目前还在推进" },
+				{ "at": 4266, "text": "三件事" }
+			],
+			"doneAt": 9020,
+			"finalText": "我有 Peter 的角色背景,但没有读取他的完整 memory。目前还在推进三件事,下周会给出结论。"
+		},
+		"founderQuestion": {
+			"speakingFrom": 8650,
+			"speakingTo": 11300,
+			"userTurnAt": 8900,
+			"finalAt": 11550,
+			"text": "所以他的完整 memory,你是没有的"
+		},
+		"answerTurn": {
+			"createdAt": 12150,
+			"voicedFrom": 12400,
+			"voicedTo": 24350,
+			"doneAt": 24400,
+			"text": "对,我这边没有他的完整 memory,只有当前这份系统给到的摘要和快照,而且摘要里也没有更多细节。要继续查的话我可以再确认。逐句文字会发到当前语音会话的 Discord thread。"
+		}
+	}
+}

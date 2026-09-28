@@ -31,6 +31,15 @@
 		"shapeIds": ["carrier_run_inactive", "carrier_needs_lead"]
 	},
 	{
+		"store": "state",
+		"table": "workflow_rework_delivery",
+		"file": "StateStore.ts",
+		"symbol": "resumeWorkflowHold",
+		"mutationKind": "returned_to_lead",
+		"shapeIds": ["rework_returned_to_lead"],
+		"producerSymbols": ["settleWorkflowReworkFailure"]
+	},
+	{
 		"store": "comm",
 		"table": "mailbox",
 		"file": "delivery-operations.ts",
