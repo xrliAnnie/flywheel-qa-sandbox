@@ -1,14 +1,14 @@
 ---
 issue: FLY-3002
 phase: qa
-phaseCursor: 1/5
-updated: 2026-09-28T10:00:38.510Z
-nextStep: fetch reviewed PR head and ensure exact-head CI
+phaseCursor: 3/5
+updated: 2026-09-28T10:04:26.703Z
+nextStep: confirm exact-head CI, publish required report, submit workflow verdict
 chunks: []
 pointers:
   pr: https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/287
 ---
 
 # FLY-3002 progress
-**phase**: qa (1/5)
-**next**: fetch reviewed PR head and ensure exact-head CI
+**phase**: qa (3/5)
+**next**: confirm exact-head CI, publish required report, submit workflow verdict
