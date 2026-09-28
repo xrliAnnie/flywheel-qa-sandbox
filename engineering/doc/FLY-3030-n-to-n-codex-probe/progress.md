@@ -1,13 +1,13 @@
 ---
 issue: FLY-3030
 phase: implement
-phaseCursor: 1/3
-updated: 2026-09-28T21:33:26.807Z
-nextStep: "Task 3: push + 开 PR"
+phaseCursor: 2/3
+updated: 2026-09-28T21:33:39.287Z
+nextStep: "Task 4: 账本 3/3 → milestone 末提交（冻结）→ push"
 chunks: []
 pointers: {}
 ---
 
 # FLY-3030 progress
-**phase**: implement (1/3)
-**next**: Task 3: push + 开 PR
+**phase**: implement (2/3)
+**next**: Task 4: 账本 3/3 → milestone 末提交（冻结）→ push
