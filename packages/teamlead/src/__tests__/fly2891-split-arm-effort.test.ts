@@ -518,10 +518,10 @@ describe("FLY-2891 weighted split arm effort — run snapshot and rollback", () 
 		}
 	});
 
-	// A re-run of the same issue (terminate → start again, or code →
-	// simple_code narrowing) reuses the prior assignment; it must keep the
-	// arm's pinned effort instead of falling back to the template default.
-	it("reuses a prior assignment's arm effort on a re-run of the same issue", async () => {
+	// FLY-3018: a re-run of the same issue (terminate → start again, or code →
+	// simple_code narrowing) is a fresh run and takes the arm effort in
+	// today's config; the original run's replay keeps its frozen effort.
+	it("takes today's arm effort on a fresh re-run while the original run replays frozen", async () => {
 		const configRoot = mkdtempSync(join(tmpdir(), "fly2891-rerun-config-"));
 		roots.push(configRoot);
 		const configPath = join(configRoot, "models.json");
@@ -586,6 +586,16 @@ describe("FLY-2891 weighted split arm effort — run snapshot and rollback", () 
 					now: "2026-09-25T10:01:00.000Z",
 				}),
 			).toMatchObject({ ok: true });
+			// Edit only the arm efforts: every implement arm moves to `high`,
+			// which differs from each arm's previous pin.
+			const edited = allArmsPinned();
+			for (const arm of edited.nodes.implement) arm.effort = "high";
+			expect(armEffort).not.toBe("high");
+			writeFileSync(
+				configPath,
+				JSON.stringify({ version: 1, modelSplit: edited }),
+			);
+			resetModelConfigCacheForTests();
 			const second = await resolveWorkflowTemplateSelection(store, {
 				...input,
 				taskCategory: "simple_code",
@@ -600,9 +610,20 @@ describe("FLY-2891 weighted split arm effort — run snapshot and rollback", () 
 					nodeId: "implement",
 				}),
 			).toMatchObject({
-				dispatch: { effort: armEffort },
-				modelAssignment: { arm: expect.stringMatching(/^impl_/) },
+				dispatch: { effort: "high" },
+				modelAssignment: {
+					arm: expectedArm(edited, issueKey, "implement").arm,
+				},
 			});
+			// The original reservation still replays its own frozen run.
+			const replay = await resolveWorkflowTemplateSelection(store, input);
+			expect(replay).toMatchObject({ runId: first!.runId, replayed: true });
+			expect(
+				resolveNodeDispatchAtLaunch(store, {
+					runId: first!.runId,
+					nodeId: "implement",
+				}).dispatch.effort,
+			).toBe(armEffort);
 		} finally {
 			store.close();
 			if (previousPath === undefined) delete process.env.FLYWHEEL_MODELS_CONFIG;

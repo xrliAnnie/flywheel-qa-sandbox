@@ -2315,6 +2315,8 @@ it("FLY-2788 keeps manual model overrides separate from stable weighted arms", a
 			}),
 		).toMatchObject({ ok: true, status: "terminated" });
 
+		// FLY-3018: a fresh run follows today's weights, not the terminated
+		// run of the same issue; an effort-only override keeps the auto arm.
 		writePolicy(100);
 		const second = await post(h.url, {
 			...request,
@@ -2330,7 +2332,20 @@ it("FLY-2788 keeps manual model overrides separate from stable weighted arms", a
 					nodeId: event.node_id,
 					arm: (event.payload as { arm: string }).arm,
 				})),
-		).toEqual(firstAssignments);
+		).toEqual(
+			firstAssignments.map((assignment) =>
+				assignment.nodeId === "implement"
+					? { nodeId: "implement", arm: "impl_opus" }
+					: assignment,
+			),
+		);
+		expect(second.json).toMatchObject({
+			resolved: {
+				nodeModels: {
+					implement: { model: "opus (= claude-opus-5-5)" },
+				},
+			},
+		});
 	} finally {
 		if (previous === undefined) delete process.env.FLYWHEEL_MODELS_CONFIG;
 		else process.env.FLYWHEEL_MODELS_CONFIG = previous;
