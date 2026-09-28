@@ -1,13 +1,13 @@
 ---
 issue: FLY-3009
 phase: implement
-phaseCursor: 1/6
-updated: 2026-09-28T10:14:40.229Z
-nextStep: Update one dependency-based exact assertion and verify RED
+phaseCursor: 2/6
+updated: 2026-09-28T10:15:22.897Z
+nextStep: Migrate the eight production constants and remaining exact assertions
 chunks: []
 pointers: {}
 ---
 
 # FLY-3009 progress
-**phase**: implement (1/6)
-**next**: Update one dependency-based exact assertion and verify RED
+**phase**: implement (2/6)
+**next**: Migrate the eight production constants and remaining exact assertions
