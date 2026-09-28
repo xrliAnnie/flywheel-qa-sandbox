@@ -1,14 +1,14 @@
 ---
 issue: FLY-2919
 phase: qa
-phaseCursor: 1/4
-updated: 2026-09-28T14:51:48.077Z
-nextStep: Audit exact-head acceptance evidence; then run Lead-owned 529 Discord
-  N-to-N on the rebound candidate head
+phaseCursor: 2/4
+updated: 2026-09-28T14:54:37.008Z
+nextStep: Freeze this head; require exact-head full_green and Lead-owned 529
+  Discord N-to-N before report and qa-result
 chunks: []
 pointers: {}
 ---
 
 # FLY-2919 progress
-**phase**: qa (1/4)
-**next**: Audit exact-head acceptance evidence; then run Lead-owned 529 Discord N-to-N on the rebound candidate head
+**phase**: qa (2/4)
+**next**: Freeze this head; require exact-head full_green and Lead-owned 529 Discord N-to-N before report and qa-result
