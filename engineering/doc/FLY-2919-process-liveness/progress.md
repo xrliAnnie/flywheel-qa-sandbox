@@ -1,13 +1,14 @@
 ---
 issue: FLY-2919
-phase: implement
-phaseCursor: 3/3
-updated: 2026-09-28T12:22:37.864Z
-nextStep: push QA CI-gate fix, update PR 1379, request exact-head code review
+phase: qa
+phaseCursor: 1/4
+updated: 2026-09-28T14:51:48.077Z
+nextStep: Audit exact-head acceptance evidence; then run Lead-owned 529 Discord
+  N-to-N on the rebound candidate head
 chunks: []
 pointers: {}
 ---
 
 # FLY-2919 progress
-**phase**: implement (3/3)
-**next**: push QA CI-gate fix, update PR 1379, request exact-head code review
+**phase**: qa (1/4)
+**next**: Audit exact-head acceptance evidence; then run Lead-owned 529 Discord N-to-N on the rebound candidate head
