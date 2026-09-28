@@ -1,57 +1,67 @@
-# FLY-2922 529 外层证据边界 — 探索
+# FLY-2922 QA stub 身份隔离 — 探索
 Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-held-回滚之后有出口只留一个统一恢复口放行必须真铸出派发关死体不连带终结-run9-张-37)
 日期: 2026-09-28
 基于: 无
 
 ## Problem
 
-本轮不重新设计 FLY-2922 的产品行为。统一恢复口、真实派发账本、completion 顺序和 carrier-close 边界已经在既有设计与实现评审中通过；当前唯一缺口是 QA harness 的递归证据等待。
+本轮不重新设计 FLY-2922 的产品恢复行为。统一恢复口、真实派发账本、complete 顺序和 carrier-close 边界已经完成实现与复审；当前缺口在 529 generalized QA harness。
 
-外层 `scripts/qa-529-generalized-e2e.mjs --real` 驱动负责完成一整轮 529 真房并在结束后形成宿主侧证据。房内 QA 又按通用 QA 角色要求自行等待“宿主侧 529 最终回执”。于是出现闭环：外层驱动等房内 QA 给 verdict，房内 QA 等外层驱动结束后才存在的回执，双方都不能前进。2026-09-28 的 slot 6 + extra Lead 演练因此在 step 3 后停住；这不是 FLY-2922 产品恢复链失败，而是测试的证据所有权没有明确到单一主体。
+为解除房内 QA 等待外层 529 最终证据造成的递归等待，candidate 增加了 `--qa-stub-runner`。但装房把包含 `claude` stub 的 `stub-bin` 前置到整个 Bridge 的 `PATH`。Bridge 的跨家族设计评审也以默认 `binary=claude` 启动，并继承同一环境；评审进程没有 `FLYWHEEL_EXEC_ID`，于是误进 `scripts/qa-529-generalized-stub.mjs`，在身份前置条件处退出。结果是设计节点等不到真实 Claude 评审，外层 driver 空等。
 
-成功定义：只有显式开启测试控制时，房内 QA 得到一条绑定当前 run / QA execution 的 Lead 指令，知道“外层 driver 是本轮唯一 529 证据生产者”；房内 QA 仍做节点内独立验证并提交真实 `qa-result`，外层 driver 仍必须跑完全部步骤并在房外记录最终证据。不开控制时保持现状，递归等待仍可被测试观察到。生产 QA 规则、产品状态机和证据判定都不放松。
+成功定义：同一组 `--generalized --codex-runner --qa-stub-runner` 参数下，设计/实现仍是真 Codex，跨家族评审仍是真 Claude，只有 QA execution 进入 deterministic stub。QA standby 恢复后仍应落入 stub；任何模糊、伪造或跨 execution 的 QA 身份都不得误路由。生产 QA prompt、产品状态机、review coordinator 和 evidence judge 不改。
 
 ## Constraints
 
-- 只改 529 generalized harness；不改 `StateStore`、workflow dispatcher、QA 通用角色文件、strength-two judge 或生产 evidence API。
-- 该控制必须显式 opt-in，只允许 generalized + real-runner 房；stub lane、普通生产 run、非 QA 节点和 tuple 不匹配全部 fail closed。
-- 边界指令本身不是 PASS、不是 evidence receipt，也不能替代 driver 的 step 1–9 或最终 `evidence-run record`。
-- 使用现有 Lead → Runner mailbox 通道和 slot-local 身份；不得伪造 founder、生产 Lead 或跨房身份。
-- 所有测试按本仓 local-test-policy 逐个 concrete file 运行；不跑全仓/全包测试，不用 `vitest related` 扫整张 teamlead 图。
+- 只改 QA harness、其定点测试和操作手册；不改 `StateStore` 产品事务、workflow dispatcher、review coordinator、runner adapter 或 QA 角色文件。
+- `--qa-stub-runner` 保持显式 opt-in，且只能与 `--generalized --codex-runner` 合用；不能用去掉该 flag 回避递归等待。
+- selector 必须在装房时钉死真实 Claude 的绝对路径，不能在运行时再次从已被 shim 前置的 `PATH` 解析自己。
+- `codex` 不能出现在 QA-only shim 目录；producer 节点继续使用真实 Codex。
+- 当前 activation 可直接按 exact tuple 分类；same-execution standby resume 没有 activation 时，只能从 slot-local StateStore 的 `workflow_execution_binding` 只读判定。
+- 所有输入都在边界校验。shell/SQL 不拼入未验证的 execution id；模糊 QA 归属 fail closed。
+- 本地只跑具体相关测试文件、lint 和受影响 build；不跑全仓或全包测试。
 
 ## Options
 
-### A. 由外层 driver 发送 tuple-bound Lead 指令（推荐）
+### A. 身份选择型 `claude` shim（推荐）
 
-driver 在观察到当前 QA execution 后，用房间现有 Lead 身份经 `flywheel-comm send` 写入一条 durable instruction。正文固定说明外层 driver 是唯一 529 证据边界，并携带 `{issue, runId, qaExecutionId, slot, evidenceDir}`。driver 等到消息进入该 execution 的 mailbox 后再继续 QA readiness 观察。
+安装一个 owner-only `claude` selector，而不是把 raw QA stub 直接伪装成所有 Claude 调用。selector 的规则是：
 
-优点：房内 QA 仍是真 Runner；复用已经存在的授权、recipient resolution、wake 和 inbox 机制；没有生产规则分支。缺点：需要把消息的幂等、归属和 delivery 失败写成 harness 前置条件。
+1. 没有 Runner 身份：原参数 `exec` 装房前钉死的真实 Claude；
+2. 有 exact `activation:<same-exec>:<run>:qa:<attempt>`：进入 QA stub；
+3. 只有 execution id 的 standby resume：只读 slot StateStore；唯一节点为 `qa` 才进 stub，非 QA 回真实 Claude，QA 与其它节点并存或查询失败则拒绝；
+4. malformed / foreign activation 绝不进入 stub。
 
-### B. 允许 QA-only stub、其他节点保持真 Runner
+优点：修改集中在 harness；评审、版本探测和 producer fallback 都保留真实 Claude；standby resume 有持久归属证据；无生产协议变化。缺点：selector 需要严格处理真实二进制自引用、StateStore 不可读和多节点歧义。
 
-在 real room 中按 nodeId 只把 QA 进程替换成 deterministic stub。
+### B. 给 runner adapter 增加 per-node binary override
 
-优点：容易避免递归等待，执行确定。缺点：这轮证据不再验证真实 QA Runner 如何接收边界、执行局部验证和给 verdict；还要扩大 `test-deploy` 的 mixed-runner 合同。作为故障诊断 fallback 可以保留讨论，但不作为本轮主方案。
+Bridge 把 QA node 的绝对 stub binary 传给 adapter，其他节点和 review coordinator 不变。
 
-### C. 在生产 QA prompt / evidence judge 中增加“外层证据”开关
+优点：进程边界最纯。缺点：需要修改生产 `AdapterExecutionContext`、Blueprint/run-infra 和 Claude/Codex adapter，只为测试房引入一条产品级 binary seam；范围和回归面明显更大。拒绝。
 
-优点：看似直接。缺点：把测试拓扑概念带入生产协议，并可能让普通 QA 绕过自持证据规则；违反“只改 harness、生产 QA 规则不变”。拒绝。
+### C. 去掉 QA stub 或让 review coordinator 使用特殊绝对路径
+
+去掉 stub 会回到 inner-QA 递归等待；只钉 review binary 则仍让版本探测、Claude producer fallback 等所有非 QA 调用暴露在 raw stub 下，并保留错误的全局语义。拒绝。
 
 ## Chosen Direction
 
-选择 A。外层 driver 已经使用 slot Lead 身份开 question gate、读 slot CommDB 并绑定 run execution；它是最窄且已有权限的责任主体。新控制命名为 `--outer-evidence-boundary`，不设默认值。
+选择 A。`stub-bin/claude` 是 selector，不是无条件 QA stub。它只在正向证明当前调用属于 QA execution 后 `exec node <qa-stub>`；所有明确的非 QA 调用都用原 argv `exec <pinned-real-claude>`。`stub-bin/codex` 必须缺席。
 
-边界消息只改变“谁产出这一轮 529 最终证据”，不改变“房内 QA 是否要验证候选 head”。房内 QA 的职责是：核对 exact head、执行本单相关检查、提交 `qa-result`；外层 driver 的职责是：驱动所有 workflow step、保留逐步证据、最后由宿主侧形成 strength-two receipt。任何一半失败都不能出 PASS 证据。
+当前 activation 是第一身份来源，因为它同时绑定 execution、run、node 和 attempt。standby resume 的 activation 缺席是允许的既有形态，因此用装房时钉死的 slot `teamlead.db` 查询 exact execution 的 distinct node ids；只有唯一 `qa` 可放行。selector 不把“有 `FLYWHEEL_EXEC_ID`”等同于 QA。
 
 ## Negative Guards
 
-1. `--outer-evidence-boundary` 与非 `--real` 同用：参数解析立即拒绝。
-2. room-info 不是 generalized real topology：启动前拒绝。
-3. QA execution 尚未出现、已换代或不属于当前 run：不发送；重新解析当前 tuple。
-4. mailbox recipient 解析不到 exact execution、Lead 身份不匹配或消息写入失败：driver fail closed，不继续等待假成功。
-5. driver 重启：先查 owner/evidence state 和 mailbox 中同 tuple 的既有指令；存在则复用，不产生相互矛盾的第二条边界。
-6. 外层流程未跑完：不得记录最终 evidence；边界消息永远不参与 PASS 判定。
+1. identity-free review / `claude --version`：必须进入真实 Claude。
+2. design / implement activation：必须进入真实 Claude。
+3. activation 的 execution 与 `FLYWHEEL_EXEC_ID` 不同：不得进入 stub。
+4. `qa-extra`、attempt 0、非法字符：不得被正则近似命中。
+5. standby execution 仅绑定 `qa`：进入 stub；仅绑定 producer 或无 binding：进入真实 Claude。
+6. standby execution 同时绑定 `qa` 与其它节点、DB 不可读：exit 70，不能猜。
+7. 真实 Claude 必须是绝对、可执行、位于 shim 目录外且不是 shim 的 symlink、hardlink 或带 marker 的 copy。
+8. QA-only 目录已有 `codex` 文件或链接：安装失败。
+9. selector 以原 argv `exec` 目标，不能吞参数、衍生第二个 model process 或留下 wrapper parent。
 
 ## Honest Boundary
 
-本设计解决“真房套真房”的递归证据死锁，使 FLY-2922 的统一恢复行为可以在一个外层 529 campaign 内被完整观察。它不证明产品修复本身正确，不替代 exact-head CI，也不允许普通 QA 跳过 Discord/529 验证。产品正确性仍由现有测试、外层 driver 全步骤、派发账本和下一轮独立 QA 共同证明。
+本设计只修复 529 测试房的 binary 选择，使真实评审与 QA stub 可以共存。它不证明 FLY-2922 产品行为正确，不把 stub 结果算作 strength-two evidence，也不放松生产 QA 的 529 要求。下一轮 QA 仍需在 exact head、mergeable、full CI 绿的前提下，用两个真实 Lead 跑完整 driver，并证明设计评审由真实 Claude 完成、held → unified recovery → new dispatch 全链走通。

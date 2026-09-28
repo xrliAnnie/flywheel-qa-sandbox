@@ -1,34 +1,45 @@
-# FLY-2922 529 外层证据边界 — 实施计划
+# FLY-2922 QA stub 身份隔离 — 实施计划
 Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-held-回滚之后有出口只留一个统一恢复口放行必须真铸出派发关死体不连带终结-run9-张-37)
 日期: 2026-09-28
 基于: research.md
 
-> **For agentic workers:** 按本计划逐项 TDD 实施。当前 DAG 的 Implement 节点拥有执行权；不要由 Design 节点派发子 agent，也不要扩大到产品恢复状态机。
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:test-driven-development, then execute this plan task-by-task. The Implement DAG node owns code changes; the Design node must not implement or dispatch successors.
 
-**Goal:** 给 generalized 529 real-runner driver 增加一个显式、tuple-bound 的外层证据责任边界，解除房内 QA 等待外层最终回执造成的递归死锁，同时保持生产 QA 与 strength-two 规则原样。
+**Goal:** 让 `--generalized --codex-runner --qa-stub-runner` 只把 exact QA execution 送入 deterministic stub，同时保证跨家族评审、版本探测和所有非 QA execution 使用真实 Claude。
 
-**Architecture:** driver 在看到每个 current QA execution 后，以 slot Lead 的既有授权通过 `flywheel-comm send` 投递 durable instruction；只有消息绑定 exact run/attempt/execution 且已投递，driver 才进入该 QA attempt 的 verdict wait。边界消息只规定证据 owner，不产生 PASS；外层 driver 仍必须跑完所有步骤并另行记录最终证据。
+**Architecture:** `stub-bin/claude` 从无条件 stub 改为 identity selector。它在安装时钉死真实 Claude 和 slot StateStore；fresh launch 用 exact activation tuple 选择，same-execution standby resume 用只读 binding 选择。缺少 Runner 身份直接 passthrough；模糊 QA 归属 fail closed。`codex` 不被 QA-only 模式遮蔽，生产协议和 review coordinator 不变。
 
-**Tech Stack:** Node.js ESM、`better-sqlite3` 只读检查、`flywheel-comm` mailbox CLI、`node:test`、现有 generalized 529 shell harness。
+**Tech Stack:** Bash、SQLite CLI、Node.js ESM stub、现有 generalized 529 shell harness、GitHub Actions exact-head CI。
 
 ---
 
 ## 1. Scope and File Map
 
-只允许修改 harness：
+只修改 harness 与说明：
 
-- Modify: `scripts/qa-529-generalized-e2e.mjs` — CLI flag、QA attempt 边界调用、owner/step evidence。
-- Modify: `scripts/lib/qa-generalized-e2e-lib.mjs` — canonical tuple、正文、重入分类和 delivery 判定的纯函数。
-- Create: `scripts/__tests__/qa-529-generalized-outer-evidence.test.mjs` — 递归等待 RED、边界 GREEN、stale/foreign/dead 负控与完整 step trace。
-- Modify: `scripts/__tests__/qa-generalized-e2e-lib.test.mjs` — helper 合同单测。
-- Modify: `scripts/__tests__/test-deploy-generalized.test.sh` — CLI/help/real-only 兼容守卫。
-- Modify if the repo playbook currently documents this driver: `doc/qa/framework/529-room-playbook.md` — 新 flag、责任边界和“不算 PASS”说明。
+- Modify: `scripts/__tests__/test-deploy-generalized.test.sh` — RED/GREEN route matrix、anti-recursion guards、CLI wiring assertions。
+- Modify: `scripts/lib/qa-generalized.sh` — real-Claude resolver、shim marker/alias guards、QA-only selector installer。
+- Modify: `scripts/test-deploy.sh` — 安装 selector 前钉死真实 Claude 与 slot DB；保留 full-stub 旧路径。
+- Modify: `doc/qa/framework/529-room-playbook.md` — 明示真实评审、QA-only route 和 evidence 边界。
 
-禁止修改：`packages/teamlead/src/StateStore.ts`、workflow dispatcher、`.flywheel/agents/nodes/qa.md`、`packages/edge-worker/src/Blueprint.ts`、strength-two judge/evidence route、产品 feature flags。若实现发现必须改这些文件，停止并向 Lead 报告设计假设失效，不自行扩范围。
+禁止修改：
 
-## 2. Preconditions and Baseline
+- `packages/teamlead/src/bridge/review-request-coordinator.ts`
+- `packages/teamlead/src/bridge/claude-review-runner.ts`
+- `packages/claude-runner/**`
+- `packages/teamlead/src/StateStore.ts`
+- `.flywheel/agents/nodes/qa.md`
+- evidence judge / `qa-result` / workflow dispatcher
 
-- [ ] **Step 1: Acquire TURN and sync without rebase**
+如果 exact implementation head 证明必须触碰上述文件，停止并向 Lead 报告设计假设失效；不要把 test-only binary seam 加进产品层。
+
+## 2. Preconditions and Test Discovery
+
+### Task 1: Acquire TURN, sync main, and inventory affected tests
+
+**Files:** none
+
+- [ ] **Step 1: Acquire the injected TURN and merge main without rebase**
 
 Run:
 
@@ -38,332 +49,363 @@ git fetch origin
 git merge origin/main
 ```
 
-Expected: `turn` prints `yours`; merge preserves the approved FLY-2922 product behavior. Resolve only merge conflicts required by current main. Do not rebase or force-push.
+Expected: `turn` prints `yours`; merge completes or conflicts are resolved by retaining both current generalized harness behavior and main. Do not rebase or force-push.
 
-- [ ] **Step 2: Verify exact starting head and no product delta**
+- [ ] **Step 2: Record exact baseline**
 
 Run:
 
 ```bash
 git status --short --branch
-git diff --name-only origin/main...HEAD
+git rev-parse HEAD
 git log --oneline -10
+git diff --name-only origin/main...HEAD
 ```
 
-Expected: the starting branch includes the existing FLY-2922 implementation; this task adds harness/docs only. Record the exact SHA in progress/evidence.
+Expected: clean tree before TDD edits. Record the SHA and existing candidate files in the implementation evidence.
 
-- [ ] **Step 3: Discover related tests before testing**
+- [ ] **Step 3: Discover tests before running any test**
 
-Run every search and save the matches in the implementation report:
+Run every search:
 
 ```bash
-git grep -lF -- 'qa-529-generalized-e2e.mjs'
-git grep -lF -- '--real'
-git grep -lF -- 'qaFailReady'
-git grep -lF -- 'qaReady'
-git grep -lF -- '--outer-evidence-boundary'
-git grep -lF -- 'scripts/lib/qa-generalized-e2e-lib.mjs'
+git grep -lF -- '--qa-stub-runner'
+git grep -lF -- 'qa_generalized_install_qa_stub'
+git grep -lF -- 'qa-529-generalized-stub.mjs'
+git grep -lF -- 'stub-bin'
+git grep -lF -- 'FLYWHEEL_WORKFLOW_ACTIVATION_ID'
+git grep -lF -- 'scripts/test-deploy.sh'
+git grep -lF -- 'scripts/lib/qa-generalized.sh'
+git grep -lF -- 'scripts/__tests__/test-deploy-generalized.test.sh'
+git grep -lF -- 'doc/qa/framework/529-room-playbook.md'
 ```
 
-Expected: enumerate retained concrete tests and explicitly list every excluded match with reason. An empty new-literal result before implementation is expected and is not permission for a broad suite.
+Expected retained test: `scripts/__tests__/test-deploy-generalized.test.sh`. Record every other test match and a specific exclusion reason. An empty match never authorizes a broad suite.
 
-## 3. Task 1 — Write the Failing Boundary Tests
+## 3. TDD: Reproduce the Review Interception
 
-### Files
+### Task 2: Add failing routing tests
 
-- Create: `scripts/__tests__/qa-529-generalized-outer-evidence.test.mjs`
-- Modify: `scripts/__tests__/qa-generalized-e2e-lib.test.mjs`
+**Files:**
+
 - Modify: `scripts/__tests__/test-deploy-generalized.test.sh`
+- Test: `scripts/__tests__/test-deploy-generalized.test.sh`
 
-- [ ] **Step 1: Add the recursive-wait RED case**
+- [ ] **Step 1: Create hermetic real-Claude and slot-DB fixtures**
 
-Build a deterministic fake real QA transport around the same attempt sequence used by the driver. The fake starts in `awaiting_host_529_receipt`; it only emits its normal QA verdict after receiving an exact boundary instruction. Assert that boundary disabled preserves the wait and never invents a verdict:
-
-```js
-test("real inner QA recursively waits when no outer evidence boundary is enabled", async () => {
-  const result = await runBoundaryScenario({ enabled: false });
-  assert.deepEqual(result.steps, [1, 2, 3]);
-  assert.equal(result.qaState, "awaiting_host_529_receipt");
-  assert.equal(result.driverState, "waiting_for_qa_verdict");
-  assert.equal(result.instructions.length, 0);
-  assert.equal(result.finalEvidenceRecorded, false);
-});
-```
-
-The fixture must call the same exported boundary orchestrator used by `scripts/qa-529-generalized-e2e.mjs`; a test-only duplicate implementation is not acceptable.
-
-- [ ] **Step 2: Add the enabled GREEN expectation before code exists**
-
-```js
-test("explicit outer boundary lets the driver finish all nine steps", async () => {
-  const result = await runBoundaryScenario({ enabled: true });
-  assert.deepEqual(result.steps, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-  assert.deepEqual(result.qaAttempts.map((x) => x.verdict), ["fail", "pass"]);
-  assert.equal(result.instructions.length, 2);
-  assert.equal(result.instructions[0].tuple.qaAttempt, 1);
-  assert.equal(result.instructions[1].tuple.qaAttempt, 2);
-  assert.notEqual(
-    result.instructions[0].tuple.qaExecutionId,
-    result.instructions[1].tuple.qaExecutionId,
-  );
-  assert.equal(result.finalEvidenceRecorded, true);
-});
-```
-
-The final fixture transition may only set `finalEvidenceRecorded=true` after step 9; receiving the instruction itself must leave it false.
-
-- [ ] **Step 3: Add fail-closed negative cases**
-
-Cover, as separate table rows: stub mode + flag, non-generalized room, foreign run, nodeId other than `qa`, wrong attempt, stale/replaced execution, `resolved_to` mismatch, mailbox `DEAD`, `torn`, timeout before `delivered_at`, duplicate matching row, and conflicting multiple rows. Expected result is a named error and zero QA verdict/final evidence.
-
-- [ ] **Step 4: Add CLI compatibility assertions**
-
-Extend `test-deploy-generalized.test.sh`:
+Add an owner-executable fake real Claude that echoes argv, plus a slot-local SQLite fixture:
 
 ```bash
-assert_contains "$driver_help" '--outer-evidence-boundary' \
-  'real generalized driver publishes the explicit outer evidence boundary'
+qa_real_claude_dir="$TMP_ROOT/real-claude-bin"
+mkdir -p "$qa_real_claude_dir"
+qa_real_claude="$qa_real_claude_dir/claude"
+cat > "$qa_real_claude" <<'EOF'
+#!/usr/bin/env bash
+printf 'REAL-CLAUDE'
+printf ' [%s]' "$@"
+printf '\n'
+EOF
+chmod 700 "$qa_real_claude"
 
-if node "$ROOT/scripts/qa-529-generalized-e2e.mjs" 2 \
-  --issue FLY-2922 --outer-evidence-boundary >/tmp/fly2922.out 2>&1; then
-  echo 'FAIL: outer evidence boundary accepted without --real' >&2
-  failures=$((failures + 1))
-else
-  assert_contains "$(</tmp/fly2922.out)" \
-    '--outer-evidence-boundary requires --real' \
-    'outer evidence boundary is real-runner-only'
-fi
+qa_state_dir="$TMP_ROOT/qa-state"
+mkdir -p "$qa_state_dir"
+qa_state_db="$qa_state_dir/teamlead.db"
+sqlite3 "$qa_state_db" '
+CREATE TABLE workflow_execution_binding (
+  activation_id TEXT PRIMARY KEY,
+  execution_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  node_id TEXT NOT NULL,
+  attempt INTEGER NOT NULL
+);
+INSERT INTO workflow_execution_binding VALUES
+  ("activation:exec-q:run-1:qa:1", "exec-q", "run-1", "qa", 1),
+  ("activation:exec-q:run-1:qa:2", "exec-q", "run-1", "qa", 2),
+  ("activation:exec-p:run-1:implement:1", "exec-p", "run-1", "implement", 1),
+  ("activation:exec-m:run-1:qa:1", "exec-m", "run-1", "qa", 1),
+  ("activation:exec-m:run-1:implement:1", "exec-m", "run-1", "implement", 1);
+'
 ```
 
-Use a test-specific temp directory, not a shared `/tmp/fly2922.out`, in the implementation; the snippet shows only the required assertion shape.
+Use the repository test's existing temp root and cleanup; do not use a shared `/tmp/fly2922-*` path.
 
-- [ ] **Step 5: Run the new concrete test files and confirm RED**
+- [ ] **Step 2: Add the exact RED reproduction**
 
-Run one file at a time:
+Install the candidate QA-only stub and invoke a review-shaped, identity-free call:
 
 ```bash
-node --test scripts/__tests__/qa-529-generalized-outer-evidence.test.mjs
-node --test scripts/__tests__/qa-generalized-e2e-lib.test.mjs
+assert_eq \
+  "$(env -u FLYWHEEL_EXEC_ID -u FLYWHEEL_WORKFLOW_ACTIVATION_ID \
+    "$qa_stub_bin/claude" -p --model opus 'review this diff' 2>&1)" \
+  'REAL-CLAUDE [-p] [--model] [opus] [review this diff]' \
+  'QA-only route keeps identity-free design review on the real Claude'
+```
+
+Expected before the fix: FAIL because the raw stub requires `FLYWHEEL_EXEC_ID` instead of printing the real-Claude marker.
+
+- [ ] **Step 3: Add the full routing matrix before implementation**
+
+Use a small fake QA stub that prints `QA-STUB` and assert:
+
+```bash
+# identity-free review and --version -> REAL-CLAUDE
+# activation:exec-a:run-1:eng_design:1 -> REAL-CLAUDE
+# activation:exec-a:run-1:implement:1 -> REAL-CLAUDE
+# activation:exec-a:run-1:qa:1 with FLYWHEEL_EXEC_ID=exec-a -> QA-STUB
+# activation:exec-b:run-1:qa:1 with FLYWHEEL_EXEC_ID=exec-a -> REAL-CLAUDE
+# activation:exec-a:run-1:qa-extra:1 -> REAL-CLAUDE
+# exec-q without activation -> QA-STUB
+# exec-p without activation -> REAL-CLAUDE
+# unbound execution without activation -> REAL-CLAUDE
+# exec-m without activation -> exit 70 (qa + implement is ambiguous)
+# malformed execution id -> exit 70
+# missing/unreadable DB for an exec-only potential QA -> exit 70
+```
+
+Also assert exact argv preservation for both `exec` branches and that `qa_stub_bin/codex` does not exist.
+
+- [ ] **Step 4: Add installer failure cases**
+
+Require failure for:
+
+- relative, missing, or non-executable real Claude;
+- real Claude inside the target shim directory;
+- symlink, hardlink, or marker-bearing copy of an existing selector;
+- relative StateStore path or missing parent directory;
+- unavailable `sqlite3`;
+- pre-existing `stub-bin/codex` file or symlink.
+
+- [ ] **Step 5: Run the one concrete test and confirm RED**
+
+Run:
+
+```bash
 bash scripts/__tests__/test-deploy-generalized.test.sh
 ```
 
-Expected before implementation: failures identify missing exports/flag/boundary transition, not fixture syntax or unrelated environment failures.
+Expected: the new review passthrough and route assertions fail for the missing selector behavior; fixture setup and unrelated existing assertions pass.
 
 - [ ] **Step 6: Commit the RED tests**
 
 ```bash
-git add scripts/__tests__/qa-529-generalized-outer-evidence.test.mjs \
-  scripts/__tests__/qa-generalized-e2e-lib.test.mjs \
-  scripts/__tests__/test-deploy-generalized.test.sh
-git commit -m "test(FLY-2922): reproduce nested 529 evidence wait"
+git add scripts/__tests__/test-deploy-generalized.test.sh
+git commit -m "test(FLY-2922): reproduce QA stub intercepting real review"
 ```
 
-## 4. Task 2 — Add Pure Boundary Contracts
+## 4. Implement the Identity Selector
 
-### Files
+### Task 3: Add real-Claude resolution and alias guards
 
-- Modify: `scripts/lib/qa-generalized-e2e-lib.mjs`
-- Test: `scripts/__tests__/qa-generalized-e2e-lib.test.mjs`
+**Files:**
 
-- [ ] **Step 1: Add canonical tuple validation**
-
-Implement one pure constructor with strict fields and no secret-bearing free text:
-
-```js
-export function buildOuterEvidenceBoundaryTuple(input) {
-  if (input.runnerMode !== "real") {
-    throw new Error("--outer-evidence-boundary requires --real");
-  }
-  if (input.nodeId !== "qa") throw new Error("outer evidence boundary requires qa node");
-  if (!Number.isInteger(input.qaAttempt) || input.qaAttempt < 1) {
-    throw new Error("outer evidence boundary requires a positive QA attempt");
-  }
-  return {
-    schemaVersion: 1,
-    kind: "qa529_outer_evidence_boundary",
-    issue: requiredString(input.issue, "boundary.issue", "outer evidence boundary"),
-    slot: input.slot,
-    runId: requiredString(input.runId, "boundary.runId", "outer evidence boundary"),
-    qaExecutionId: requiredString(
-      input.qaExecutionId,
-      "boundary.qaExecutionId",
-      "outer evidence boundary",
-    ),
-    qaAttempt: input.qaAttempt,
-    evidenceDir: requiredString(
-      input.evidenceDir,
-      "boundary.evidenceDir",
-      "outer evidence boundary",
-    ),
-  };
-}
-```
-
-Also validate `slot` as a positive integer and `issue` as canonical `[A-Z]+-\d+`.
-
-- [ ] **Step 2: Add deterministic instruction rendering**
-
-```js
-export function renderOuterEvidenceBoundaryInstruction(tuple) {
-  return `[qa529-outer-evidence-boundary/v1] This QA execution is inside the generalized real-runner campaign named below. The outer driver is the sole producer of the campaign's final 529 evidence. Do not start or wait for a nested 529 campaign. Still verify the exact head and this node's required scenarios, then submit the normal qa-result. This instruction is not PASS and is not an evidence receipt. tuple=${JSON.stringify(tuple)}`;
-}
-```
-
-Tests must assert deterministic bytes, exact tuple, absence of token/credential values, and explicit `not PASS` / `not an evidence receipt` language.
-
-- [ ] **Step 3: Add read-only reconciliation helpers**
-
-Add pure classification for existing mailbox rows:
-
-```js
-export function classifyOuterEvidenceBoundaryRows(rows, expected) {
-  const exact = rows.filter((row) =>
-    row.type === "instruction" &&
-    row.from_agent === expected.fromAgent &&
-    row.to_agent === expected.toAgent &&
-    row.content === expected.content
-  );
-  if (exact.length > 1) throw new Error("outer evidence boundary is ambiguous");
-  if (exact.length === 0) return { kind: "missing" };
-  const row = exact[0];
-  if (row.state === "DEAD") throw new Error("outer evidence boundary delivery is dead");
-  if (row.state === "ACKED" || row.delivered_at) return { kind: "delivered", row };
-  return { kind: "pending", row };
-}
-```
-
-Foreign/stale rows never count. A current execution replacement yields a different expected tuple and therefore a new instruction.
-
-- [ ] **Step 4: Run the concrete lib test GREEN**
-
-```bash
-node --test scripts/__tests__/qa-generalized-e2e-lib.test.mjs
-```
-
-Expected: all tests in that single file pass.
-
-- [ ] **Step 5: Commit the pure contract**
-
-```bash
-git add scripts/lib/qa-generalized-e2e-lib.mjs \
-  scripts/__tests__/qa-generalized-e2e-lib.test.mjs
-git commit -m "feat(FLY-2922): define outer 529 evidence boundary"
-```
-
-## 5. Task 3 — Wire the Real Driver
-
-### Files
-
-- Modify: `scripts/qa-529-generalized-e2e.mjs`
-- Test: `scripts/__tests__/qa-529-generalized-outer-evidence.test.mjs`
+- Modify: `scripts/lib/qa-generalized.sh`
 - Test: `scripts/__tests__/test-deploy-generalized.test.sh`
 
-- [ ] **Step 1: Parse an explicit real-only flag**
+- [ ] **Step 1: Add a stable marker and alias detector**
 
-Extend args with `outerEvidenceBoundary: false`; set true on `--outer-evidence-boundary`; after parsing reject it unless `runnerMode === "real"`. Update help with one sentence saying it is an evidence-owner boundary, not PASS.
+Implement:
 
-- [ ] **Step 2: Implement send-or-reuse with exact recipient proof**
+```bash
+QA_GENERALIZED_SHIM_MARKER='# flywheel-qa-529-qa-only-shim'
 
-Add `ensureOuterEvidenceBoundary(context, qaNode, attempt)` in the driver. It must:
+qa_generalized_is_qa_shim() {
+  local candidate="${1:-}" head_bytes
+  [[ -f "$candidate" ]] || return 1
+  head_bytes="$(head -c 512 "$candidate" 2>/dev/null | tr -d '\000')"
+  [[ "$head_bytes" == *"$QA_GENERALIZED_SHIM_MARKER"* ]]
+}
 
-1. rebuild the current tuple from StateStore;
-2. query slot `mailbox` read-only for exact `from_agent`, `to_agent`, `type='instruction'`, and deterministic content;
-3. reuse one exact row, reject more than one;
-4. if missing, call existing `runComm(... ["send", "--from", room.agentId, "--to", executionId, "--json", content])`;
-5. parse JSON and require `resolved_to === executionId`;
-6. persist `{tuple,instructionId}` to `owner.outerEvidenceBoundaries` immediately;
-7. poll `message-status <id> --json` until `delivered_at` or `state==='ACKED'`; reject DEAD/torn/absent after send or timeout.
-
-Do not mark the instruction consumed and do not synthesize the inner QA's DONE report.
-
-- [ ] **Step 3: Place the boundary before each QA verdict wait**
-
-For QA attempt 1 and attempt 2, resolve current execution first, then:
-
-```js
-if (context.outerEvidenceBoundary) {
-  await ensureOuterEvidenceBoundary(context, qaNode, qaAttempt);
+qa_generalized_is_shim_alias() {
+  local candidate="${1:-}" shim_file="${2:-}"
+  if [[ -n "$shim_file" && -e "$shim_file" && "$candidate" -ef "$shim_file" ]]; then
+    return 0
+  fi
+  qa_generalized_is_qa_shim "$candidate"
 }
 ```
 
-Only after this returns may the driver wait for that attempt's normal QA outcome. If a dead-exec replacement changes `execution_id`, loop back and bind the new execution; never reuse the old instruction as authority.
+The marker check must catch copies; `-ef` catches symlink and hardlink aliases.
 
-- [ ] **Step 4: Preserve evidence semantics**
+- [ ] **Step 2: Resolve the real Claude before installing the shim**
 
-Write a step attachment such as `qa-outer-evidence-boundary-attempt-<n>.json` containing only tuple, instruction id, delivery state and timestamps. Do not change step numbers 1–9, `qa-result`, founder approval, land, or final evidence recording logic. The driver exit code remains non-zero on any boundary failure.
+Implement `qa_generalized_resolve_real_claude <shim-dir>` to iterate absolute `PATH` entries, skip the shim directory and its realpath aliases, require a regular executable `claude`, reject shim aliases, and print the first valid absolute candidate. If none exists, print one diagnostic and return non-zero.
 
-- [ ] **Step 5: Run focused tests GREEN**
+Do not call `command -v claude` after the shim directory may already be first on `PATH`.
+
+- [ ] **Step 3: Run the concrete shell test**
 
 ```bash
-node --test scripts/__tests__/qa-529-generalized-outer-evidence.test.mjs
-node --test scripts/__tests__/qa-generalized-e2e-lib.test.mjs
 bash scripts/__tests__/test-deploy-generalized.test.sh
 ```
 
-Expected: disabled trace stops at the modeled recursive wait; enabled trace reaches steps 1–9; every negative guard fails closed; existing generalized shell assertions remain green.
+Expected: resolver/alias cases pass; routing cases remain RED until the installer is updated.
 
-- [ ] **Step 6: Commit driver wiring**
+### Task 4: Replace the raw QA stub with an exact selector
+
+**Files:**
+
+- Modify: `scripts/lib/qa-generalized.sh`
+- Test: `scripts/__tests__/test-deploy-generalized.test.sh`
+
+- [ ] **Step 1: Change the installer signature**
+
+Use the concrete call shape:
 
 ```bash
-git add scripts/qa-529-generalized-e2e.mjs \
-  scripts/__tests__/qa-529-generalized-outer-evidence.test.mjs \
-  scripts/__tests__/test-deploy-generalized.test.sh
-git commit -m "fix(FLY-2922): bound nested QA evidence to outer driver"
+qa_generalized_install_qa_stub \
+  "${SLOT_DIR}/stub-bin" \
+  "${REPO_ROOT}/scripts/qa-529-generalized-stub.mjs" \
+  "$QA_REAL_CLAUDE_BIN" \
+  "${SLOT_DIR}/teamlead.db"
 ```
 
-## 6. Task 4 — Document the Operator Contract
+Validate all four arguments, require `sqlite3`, require the DB parent directory, and refuse any `codex` entry in the target directory.
 
-### Files
+- [ ] **Step 2: Generate an owner-only selector atomically**
 
-- Modify if present: `doc/qa/framework/529-room-playbook.md`
+Write `claude.tmp.$$`, `chmod 700`, then `mv` to `stub-bin/claude`. The generated script must contain the following decision core:
 
-- [ ] **Step 1: Add the exact real-room invocation**
+```bash
+exec_id="${FLYWHEEL_EXEC_ID:-}"
+[[ -n "$exec_id" ]] || exec "$real" "$@"
+if [[ ! "$exec_id" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo '[qa-529-shim] refusing a malformed FLYWHEEL_EXEC_ID' >&2
+  exit 70
+fi
+
+activation="${FLYWHEEL_WORKFLOW_ACTIVATION_ID:-}"
+if [[ -n "$activation" ]]; then
+  prefix="activation:${exec_id}:"
+  if [[ "$activation" == "$prefix"* \
+    && "${activation#"$prefix"}" =~ ^[A-Za-z0-9._-]+:qa:[1-9][0-9]*$ ]]; then
+    exec node "$stub" "$@"
+  fi
+  exec "$real" "$@"
+fi
+```
+
+For the standby branch, run read-only SQLite with `.timeout 5000` and a bound `@exec` parameter to select distinct node ids. Route only the exact single result `qa` to the stub. Zero rows or only non-QA rows use real Claude. Query failure or a result containing both `qa` and another node exits 70 with a `[qa-529-shim]` diagnostic.
+
+- [ ] **Step 3: Preserve process and argv semantics**
+
+Both branches must use `exec`; do not spawn a wrapper child or reinterpret argv. No secret, token, prompt, or user-derived text is embedded in the generated selector.
+
+- [ ] **Step 4: Run the concrete shell test GREEN**
+
+```bash
+bash scripts/__tests__/test-deploy-generalized.test.sh
+```
+
+Expected: all route, ambiguity, resolver, alias, permission and no-Codex-shadow assertions pass.
+
+- [ ] **Step 5: Commit the helper**
+
+```bash
+git add scripts/lib/qa-generalized.sh \
+  scripts/__tests__/test-deploy-generalized.test.sh
+git commit -m "fix(qa): route only QA execution into generalized stub"
+```
+
+## 5. Wire the Room and Document the Contract
+
+### Task 5: Install the selector without changing full-stub mode
+
+**Files:**
+
+- Modify: `scripts/test-deploy.sh`
+- Test: `scripts/__tests__/test-deploy-generalized.test.sh`
+
+- [ ] **Step 1: Keep the full-stub branch byte-compatible**
+
+The `STUB_RUNNER=1` branch continues installing both `claude` and `codex` stubs. Do not reuse the QA-only selector there.
+
+- [ ] **Step 2: Pin and install in QA-only mode**
+
+In the mutually exclusive `QA_STUB_RUNNER=1` branch:
+
+```bash
+QA_REAL_CLAUDE_BIN="$(qa_generalized_resolve_real_claude "${SLOT_DIR}/stub-bin")" \
+  || campaign_abort "QA-only stub needs a real Claude executable on PATH"
+qa_generalized_install_qa_stub "${SLOT_DIR}/stub-bin" \
+  "${REPO_ROOT}/scripts/qa-529-generalized-stub.mjs" \
+  "$QA_REAL_CLAUDE_BIN" "${SLOT_DIR}/teamlead.db" \
+  || campaign_abort "QA-only stub installation failed"
+BRIDGE_EXTRA_ENV+=("PATH=${SLOT_DIR}/stub-bin:${PATH}")
+```
+
+At this point the Bridge-wide path contains the selector, not the raw stub. Identity-free review and all proven non-QA calls immediately `exec` the pinned real Claude; only positive QA identity reaches the stub.
+
+- [ ] **Step 3: Assert wiring literals**
+
+Extend the focused shell test to require the resolver call, pinned StateStore argument, mutually exclusive flags, `qaRunnerMode=stub`, and no QA-only `codex` install.
+
+- [ ] **Step 4: Run focused test GREEN**
+
+```bash
+bash scripts/__tests__/test-deploy-generalized.test.sh
+```
+
+Expected: exit 0.
+
+### Task 6: Update the operator playbook
+
+**Files:**
+
+- Modify: `doc/qa/framework/529-room-playbook.md`
+
+- [ ] **Step 1: Document the exact invocation and boundary**
 
 Document:
 
 ```bash
-node scripts/qa-529-generalized-e2e.mjs <slot> \
-  --issue FLY-2922 \
-  --real \
-  --outer-evidence-boundary
+bash scripts/test-deploy.sh "$SLOT" \
+  --generalized \
+  --codex-runner \
+  --qa-stub-runner \
+  --extra-lead 1:PM-Test
 ```
 
-State plainly: the flag is valid only for an outer generalized real campaign; inner QA still verifies and emits `qa-result`; only the outer QA/operator records final strength-two evidence after successful driver exit.
+State plainly:
 
-- [ ] **Step 2: Document failure diagnostics**
+- design/implement are real Codex;
+- design/code review is real Claude;
+- only exact QA execution is stubbed;
+- same-execution QA standby uses the slot DB fallback;
+- the inner stub cannot create PASS or final evidence;
+- the outer driver/QA owner remains the only final 529 evidence owner.
 
-List instruction id, exact tuple, `message-status`, QA execution replacement, step trace and evidence directory as required diagnostics. Never print token or submission credential.
-
-- [ ] **Step 3: Commit docs**
+- [ ] **Step 2: Commit wiring and docs**
 
 ```bash
-git add doc/qa/framework/529-room-playbook.md
-git commit -m "docs(FLY-2922): explain outer 529 evidence ownership"
+git add scripts/test-deploy.sh \
+  scripts/__tests__/test-deploy-generalized.test.sh \
+  doc/qa/framework/529-room-playbook.md
+git commit -m "docs(FLY-2922): define QA-only stub routing boundary"
 ```
 
-If the playbook path is absent on the exact implementation head, record that fact and do not create a duplicate guide elsewhere.
+## 6. Targeted Verification and Handoff
 
-## 7. Task 5 — Targeted Verification and Review
+### Task 7: Verify only the affected surface
 
-- [ ] **Step 1: Re-run discovery after the literal change**
+- [ ] **Step 1: Re-run discovery after literal changes**
+
+Repeat every Task 1 search, plus:
 
 ```bash
-git grep -lF -- '--outer-evidence-boundary'
-git grep -lF -- '[qa529-outer-evidence-boundary/v1]'
+git grep -lF -- 'flywheel-qa-529-qa-only-shim'
+git grep -lF -- 'QA_REAL_CLAUDE_BIN'
 git diff --name-only origin/main...HEAD
 ```
 
-Compare against the pre-change inventory. Record all excluded test matches and why they do not exercise the changed harness.
+Record retained and excluded matches. Confirm the new commits touch only the four allowed files plus issue process docs/progress.
 
-- [ ] **Step 2: Run retained tests one concrete file at a time**
+- [ ] **Step 2: Run the existing shell test individually**
 
 ```bash
-node --test scripts/__tests__/qa-529-generalized-outer-evidence.test.mjs
-node --test scripts/__tests__/qa-generalized-e2e-lib.test.mjs
 bash scripts/__tests__/test-deploy-generalized.test.sh
 ```
 
-Do not invoke bare `vitest`, package test aliases, directories, globs, full repository suites, or `vitest related` across teamlead.
+Expected: exit 0, including review-shaped real-Claude passthrough and QA/standby/negative route assertions. This is targeted evidence, not a full suite.
 
 - [ ] **Step 3: Run lint and affected build**
 
@@ -372,46 +414,55 @@ pnpm lint
 pnpm --filter "flywheel-teamlead..." build
 ```
 
-Expected: both exit 0. This is not full-suite evidence.
+Expected: both exit 0. There is no changed TypeScript file, so local-test-policy does not require `vitest related`; do not run it as a broad fallback.
 
-- [ ] **Step 4: Verify no product-code drift**
+- [ ] **Step 4: Verify forbidden production paths are unchanged by this repair**
 
 ```bash
-git diff --name-only origin/main...HEAD | rg -v '^(scripts/qa-529-generalized-e2e\.mjs|scripts/lib/qa-generalized-e2e-lib\.mjs|scripts/__tests__/qa-529-generalized-outer-evidence\.test\.mjs|scripts/__tests__/qa-generalized-e2e-lib\.test\.mjs|scripts/__tests__/test-deploy-generalized\.test\.sh|doc/qa/framework/529-room-playbook\.md|engineering/doc/FLY-2922-unified-node-recovery/)'
+git diff --name-only HEAD~3..HEAD | rg \
+  '^(packages/|\.flywheel/agents/nodes/qa\.md$)'
 ```
 
-Expected: no output. Existing pre-task product files already on the branch are compared separately; the new commits themselves must remain harness/docs-only.
+Expected: no output. Inspect the actual diff rather than relying on this guard alone.
 
-- [ ] **Step 5: Push and request exact-head code review**
+- [ ] **Step 5: Push normally and request exact-head code review**
 
-Push normally, never `--no-verify` or force-push. Register a new code review gate/request bound to the pushed exact head, fix blocking findings only, and require effective APPROVED before completion.
+Push without `--no-verify` and without force. Open a new `review_code` gate and `request-review` bound to the pushed exact head. Fix blocking findings only and re-request until the effective `reviewVerdict` is `APPROVED`.
 
 - [ ] **Step 6: Hand off to QA**
 
-Run the injected completion route `complete --route needs_review --pr 1374` only after exact-head review APPROVED. QA then runs a fresh room with two real Leads and the new flag; required evidence is all driver steps, held → unified recovery → new dispatch, dispatch ledger proof, exact-head CI, mergeable state and final outer strength-two receipt.
+After exact-head review approval, run the injected `complete --route needs_review` command. QA@3 must prove on that exact head:
 
-## 8. Rollback and Tradeoffs
+1. full CI green and PR mergeable;
+2. room starts with `--generalized --codex-runner --qa-stub-runner --extra-lead 1:PM-Test`;
+3. design review is completed by real Claude, not the QA stub;
+4. driver completes all steps, including held → unified recovery → new dispatch;
+5. final outer evidence is recorded by the authorized owner, never synthesized by the inner stub.
 
-Rollback is one harness commit revert: removing the CLI flag and boundary send restores byte-compatible prior behavior, including the known recursive wait. No database migration, production config, state vocabulary or product rollback is involved.
+## 7. Rollback and Tradeoffs
 
-Rejected hybrid QA-only stub remains a fallback only if a future QA proves mailbox delivery cannot wake the real inner QA. It is not implemented now because it weakens the exact behavior this campaign needs to observe and expands mixed-runner deployment state.
+Rollback reverts the selector/install/docs commits and restores the prior QA-only raw stub behavior; that behavior is known to break real review and must not be used as a passing QA path. No database migration, product feature flag, StateStore vocabulary or production deployment is involved.
 
-## 9. Acceptance Matrix
+The selector is less architecturally pure than a first-class per-node adapter binary, but it preserves the harness-only scope and default-off production behavior. The strict identity matrix, pinned absolute passthrough, alias rejection and standby DB proof keep this compromise bounded.
 
-| Requirement | Proof |
+## 8. Acceptance Matrix
+
+| Requirement | Authoritative proof |
 |---|---|
-| 无开关仍可复现递归等待 | focused harness test stops at step 3/QA verdict boundary with zero invented evidence |
-| 有开关 driver 完整结束 | focused scenario traces 1–9; fresh real room exits 0 |
-| 房内 QA 仍是真 Runner | real room actor/session evidence and normal `qa-result`; no QA stub process |
-| 生产 QA 规则不变 | forbidden-file diff guard; no role/judge/evidence-route changes |
-| 边界不等于 PASS | message text + negative tests + no final evidence before step 9 |
-| replacement 安全 | attempt/execution-specific messages; stale execution negative test |
-| 真正验证 FLY-2922 | fresh room shows held → unified recovery → new dispatch and dispatch ledger receipt |
-| 回归受控 | three concrete related tests, lint, affected build, exact-head CI |
+| 真实设计评审不再被 stub 截获 | focused identity-free review test; QA@3 Bridge log/review verdict from real Claude |
+| 只有 QA execution 走 stub | exact activation matrix + standby binding matrix + room actor evidence |
+| 非 QA execution 保持真实 | design/implement activation passthrough tests; no `stub-bin/codex` |
+| QA standby 仍可继续 | exec-only unique-qa DB test and QA@3 recovery step |
+| foreign / ambiguous 身份不误放 | mismatch, `qa-extra`, malformed, multi-node, unreadable-DB negative tests |
+| selector 不自递归 | absolute resolver plus symlink/hardlink/copy alias tests |
+| 产品 QA 规则未放松 | four-file repair diff; no product/role/judge changes |
+| 不用去 flag 规避 | documented QA@3 command retains `--qa-stub-runner` |
+| FLY-2922 行为真正被验 | exact-head real room completes held → unified recovery → new dispatch with dispatch-ledger proof |
 
-## 10. Follow-ups Not in This Change
+## 9. Out of Scope
 
-- 不把 outer-evidence 概念推广成通用生产 flag。
-- 不重写 QA role 的 529 ownership 规则。
-- 不增加 mixed real/stub node selection。
-- 不把之前 INCONCLUSIVE campaign 追认成 PASS；必须在新 exact head 上重跑。
+- 不把 QA-only selector 做成生产 feature flag。
+- 不修改 review coordinator binary policy。
+- 不让 raw QA stub 接受缺失身份。
+- 不推广 mixed node stubbing 到普通 run。
+- 不把 focused shell test、inner stub verdict 或旧 INCONCLUSIVE 房追认为 strength-two PASS。
