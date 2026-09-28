@@ -236,7 +236,7 @@ describe("StateStore ghost reconcile (FLY-1066)", () => {
 			deps,
 		);
 		expect(outcome).toBe("kept_quota_standby");
-		expect(deps.probe).not.toHaveBeenCalled();
+		expect(deps.readBodyLiveness).not.toHaveBeenCalled();
 		expect(deps.finalizeCommDbSession).not.toHaveBeenCalled();
 		expect(store.getSession("parked")?.status).toBe("running");
 	});
