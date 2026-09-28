@@ -1,0 +1,17 @@
+sequenceDiagram
+    autonumber
+    participant D as FLY-2919 驱动器
+    participant E as 引擎 / Bridge
+    participant A as 执行体 A（旧体）
+    participant B as 执行体 B（新体）
+    participant G as git + GitHub（唯一真相）
+    E->>A: 派 implement 节点
+    A->>G: Task 1–2：追加行并提交
+    D-->>A: 杀掉进程（模拟死体）
+    E->>E: 判死体 → 终结 A
+    E->>B: 换体，同一 Codex thread 续干
+    B->>G: Task 0：读分支 / 远端 / PR 状态
+    G-->>B: 行已在、commit 已在
+    B->>B: Task 1–2 判据命中 → 跳过
+    B->>G: Task 3–5：推送、开 PR、评审、milestone
+    B->>E: ask --report + complete needs_review（交卷回 thread）

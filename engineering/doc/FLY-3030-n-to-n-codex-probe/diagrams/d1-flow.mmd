@@ -1,0 +1,21 @@
+stateDiagram-v2
+    direction TB
+    [*] --> T0
+    T0: Task 0 预检<br/>TURN / 分支 / hooksPath / 远端祖先
+    T0 --> S0: 目标行 0 次
+    T0 --> S1: 目标行 1 次且在末行
+    T0 --> STOP: 重复 / 不在末行 / 分叉
+    S0: S0 未动
+    S0 --> S1: printf 追加一行
+    S1: S1 已追加
+    S1 --> S2: 提交 README（已提交则跳过）
+    S2: S2 已提交
+    S2 --> S4: 推送 + 开 PR（已有 OPEN PR 则跳过）
+    S4: S4 PR 已开
+    S4 --> RV: 代码评审门
+    RV: 评审 APPROVED
+    RV --> FZ: 账本 4/4 → milestone 末提交
+    FZ: 冻结（milestone 已在 HEAD）
+    FZ --> DONE: push → 等精确头 CI → ask --report → complete needs_review
+    DONE --> [*]
+    STOP: STOP → ask Lead
