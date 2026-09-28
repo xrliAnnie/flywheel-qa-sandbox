@@ -1,14 +1,14 @@
 ---
 issue: FLY-3018
 phase: qa
-phaseCursor: 1/7
-updated: 2026-09-28T18:40:14.361Z
-nextStep: "Audit PR #1381 implementation and focused test coverage at exact
-  reviewed head 463a88c0"
+phaseCursor: 2/7
+updated: 2026-09-28T18:50:23.448Z
+nextStep: Freeze candidate; deploy generalized real-runner slot; run no-override
+  old/new routing matrix including a code run reaching implement
 chunks: []
 pointers: {}
 ---
 
 # FLY-3018 progress
-**phase**: qa (1/7)
-**next**: Audit PR #1381 implementation and focused test coverage at exact reviewed head 463a88c0
+**phase**: qa (2/7)
+**next**: Freeze candidate; deploy generalized real-runner slot; run no-override old/new routing matrix including a code run reaching implement
