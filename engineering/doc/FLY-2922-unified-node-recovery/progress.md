@@ -1,15 +1,15 @@
 ---
 issue: FLY-2922
 phase: design
-phaseCursor: 3/6
-updated: 2026-09-28T14:54:38.945Z
-nextStep: "Research mapped the existing generalized driver and durable
-  Lead-to-Runner mailbox. Next: write an implementation-ready TDD plan for the
-  explicit real-only outer-evidence boundary."
+phaseCursor: 4/6
+updated: 2026-09-28T14:57:37.100Z
+nextStep: "Exploration/research/plan self-reviewed: explicit real-only mailbox
+  boundary, harness-only scope, TDD and targeted verification. Next: commit/push
+  docs and open required design review request."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2922 progress
-**phase**: design (3/6)
-**next**: Research mapped the existing generalized driver and durable Lead-to-Runner mailbox. Next: write an implementation-ready TDD plan for the explicit real-only outer-evidence boundary.
+**phase**: design (4/6)
+**next**: Exploration/research/plan self-reviewed: explicit real-only mailbox boundary, harness-only scope, TDD and targeted verification. Next: commit/push docs and open required design review request.
