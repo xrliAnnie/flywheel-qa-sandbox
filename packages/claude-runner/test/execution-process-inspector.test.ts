@@ -470,21 +470,29 @@ describe("execution process inspector", () => {
 		expect(sample?.viewers).toEqual([]);
 		expect(sample?.discoveredWriters).toEqual([viewer]);
 	});
-	it.each(["boot", "start", "pgid"])(
+	it.each(["start", "pgid"])(
 		"rejects a changed accepted %s identity",
 		async (mismatch) => {
 			const { options } = fixture();
 			const bad = {
 				...binding,
-				...(mismatch === "boot"
-					? { hostBootId: "other" }
-					: mismatch === "start"
-						? { startIdentity: "other" }
-						: { pgid: 99 }),
+				...(mismatch === "start" ? { startIdentity: "other" } : { pgid: 99 }),
 			};
 			expect(await captureExecutionProcessSample(bad, options)).toBeNull();
 		},
 	);
+	it("captures a current census after reboot so the old binding can settle", async () => {
+		const { options } = fixture([{ pid: 90, pgid: 90, env: "PATH=/bin" }]);
+		const sample = await captureExecutionProcessSample(
+			{ ...binding, hostBootId: "old-boot" },
+			options,
+		);
+		expect(sample).toMatchObject({
+			hostBootId: boot,
+			worker: null,
+			writersComplete: true,
+		});
+	});
 	it("fails closed on permissions, malformed and duplicate census rows", async () => {
 		const { options } = fixture();
 		for (const output of [

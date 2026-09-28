@@ -336,38 +336,50 @@ export function createExecutionProcessOwnerFactory(
 			)
 				throw new Error("process_recovery_authority_unavailable");
 			const binding = owners.getBinding(ctx.executionId);
-			if (!binding) throw new Error("process_recovery_binding_unavailable");
 			const previousController = {
 				pid: prior.controller_pid,
 				startIdentity: prior.controller_start,
 				hostBootId: prior.host_boot_id,
 			};
-			const sample = await (options.sample ?? captureExecutionProcessSample)(
-				binding,
-				{ executionId: ctx.executionId },
+			const drainedWithoutBinding = Boolean(
+				!binding &&
+					prior.close_requested &&
+					prior.owner_drained_receipt &&
+					!prior.spawn_inflight &&
+					!prior.restart_in_progress &&
+					prior.binding_digest === null,
 			);
-			const observation = observeExecutionProcesses({
-				identity: {
-					executionId: ctx.executionId,
-					activationId: prior.activation_id,
-					generation: prior.generation,
-					lifecycleRevision: initial.lifecycleRevision,
-					adapter: binding.adapter,
-				},
-				ownerToken: prior.owner_token,
-				spawnEpoch: prior.spawn_epoch,
-				binding,
-				bindingDigest: prior.binding_digest!,
-				controller: previousController,
-				spawnInflight: Boolean(prior.spawn_inflight),
-				restartInProgress: Boolean(prior.restart_in_progress),
-				ownerDrained: Boolean(prior.owner_drained_receipt),
-				ownerClosed: Boolean(prior.close_requested),
-				recoveryActive: false,
-				sample,
-				nowMs: now(),
-			});
-			if (observation.verdict !== "dead")
+			if (!binding && !drainedWithoutBinding)
+				throw new Error("process_recovery_binding_unavailable");
+			const sample = binding
+				? await (options.sample ?? captureExecutionProcessSample)(binding, {
+						executionId: ctx.executionId,
+					})
+				: null;
+			const observation = binding
+				? observeExecutionProcesses({
+						identity: {
+							executionId: ctx.executionId,
+							activationId: prior.activation_id,
+							generation: prior.generation,
+							lifecycleRevision: initial.lifecycleRevision,
+							adapter: binding.adapter,
+						},
+						ownerToken: prior.owner_token,
+						spawnEpoch: prior.spawn_epoch,
+						binding,
+						bindingDigest: prior.binding_digest!,
+						controller: previousController,
+						spawnInflight: Boolean(prior.spawn_inflight),
+						restartInProgress: Boolean(prior.restart_in_progress),
+						ownerDrained: Boolean(prior.owner_drained_receipt),
+						ownerClosed: Boolean(prior.close_requested),
+						recoveryActive: false,
+						sample,
+						nowMs: now(),
+					})
+				: null;
+			if (observation && observation.verdict !== "dead")
 				throw new Error("process_recovery_drain_unconfirmed");
 			const old = () => ({
 				executionId: ctx.executionId,
@@ -379,28 +391,30 @@ export function createExecutionProcessOwnerFactory(
 				nowMs: now(),
 				recoveryClaimToken: claim.claimToken!,
 			});
-			requireAccepted(await mutate(() => owners.requestClose(old())));
-			const observedAtMs = Date.parse(observation.observedAt);
-			requireAccepted(
-				await mutate(() =>
-					owners.recordDrained({
-						...old(),
-						reason: "recovery_controller_gone",
-						evidence: {
+			if (observation) {
+				requireAccepted(await mutate(() => owners.requestClose(old())));
+				const observedAtMs = Date.parse(observation.observedAt);
+				requireAccepted(
+					await mutate(() =>
+						owners.recordDrained({
 							...old(),
-							controller: previousController,
-							bindingDigest: prior.binding_digest,
-							controllerState: prior.owner_drained_receipt
-								? "stopped"
-								: "absent",
-							groupState: "absent",
-							writersState: "absent",
-							observedAtMs,
-							expiresAtMs: observedAtMs + 10_000,
-						},
-					}),
-				),
-			);
+							reason: "recovery_controller_gone",
+							evidence: {
+								...old(),
+								controller: previousController,
+								bindingDigest: prior.binding_digest,
+								controllerState: prior.owner_drained_receipt
+									? "stopped"
+									: "absent",
+								groupState: "absent",
+								writersState: "absent",
+								observedAtMs,
+								expiresAtMs: observedAtMs + 10_000,
+							},
+						}),
+					),
+				);
+			}
 			recovery = {
 				claimToken: claim.claimToken,
 				priorOwnerToken: prior.owner_token,

@@ -1685,6 +1685,7 @@ async function closeoutOneNode(
 	if (!consume("teardown")) return result;
 	let preserved = false;
 	let executionDeathProven = false;
+	let terminalResidueAbsent = false;
 	let executionDeathTarget: string | undefined;
 	try {
 		const closeRes = await closeRunnerFn(
@@ -1733,6 +1734,7 @@ async function closeoutOneNode(
 			store,
 		);
 		executionDeathProven = closeRes.runnerDeathProven === true;
+		terminalResidueAbsent = closeRes.terminalResidueAbsent === true;
 		result.communicationsFinalized = input.deferRecordFinalization
 			? Boolean(closeRes.closed || closeRes.alreadyGone || executionDeathProven)
 			: closeRes.commDbFinalized;
@@ -1773,6 +1775,13 @@ async function closeoutOneNode(
 	// owns the born runner via its binding-owned residue.
 	if (node.claimInFlight) {
 		result.confirmedGone = false;
+		return result;
+	}
+	// Historical/failed-launch rows can have neither an accepted body identity nor
+	// a presentation. A terminal cleanup may settle that residue without turning
+	// presentation absence into a process-death claim.
+	if (terminalResidueAbsent) {
+		result.confirmedGone = true;
 		return result;
 	}
 	// FLY-2919: presentation cleanup is not process-death authority. A tmux

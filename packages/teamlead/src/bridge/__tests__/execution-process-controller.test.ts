@@ -350,6 +350,51 @@ describe("FLY-2919 durable production process owner", () => {
 			}
 		},
 	);
+	it("allows a later rescue after a pre-spawn rescue failure drained an unbound owner", async () => {
+		const first = await acquire();
+		await first.prepareSpawn();
+		await first.acceptSpawn(200);
+		const revision = store.getLifecycleRevision(ctx.executionId);
+		const initialRecovery = store.claimCodexRecovery(
+			ctx.executionId,
+			revision,
+			{
+				holder: "reowner",
+				nowMs: clock,
+				ttlMs: 1_000,
+			},
+		);
+		if (!initialRecovery.ok) throw new Error("initial recovery claim refused");
+		options.readController = async () => ({ ...controller, pid: 101 });
+		const failedRescue = await createExecutionProcessOwnerFactory(
+			store,
+			options,
+		)(ctx, "owner-2", "rescue");
+		await failedRescue.finish();
+		expect(store.executionProcessOwners.get(ctx.executionId)).toMatchObject({
+			owner_token: "owner-2",
+			binding_json: null,
+			owner_drained_receipt: expect.any(String),
+		});
+		expect(
+			store.abortCodexRecovery(ctx.executionId, initialRecovery.claimToken),
+		).toBe(true);
+		clock += 1;
+		const retryRecovery = store.claimCodexRecovery(ctx.executionId, revision, {
+			holder: "reowner",
+			nowMs: clock,
+			ttlMs: 1_000,
+		});
+		if (!retryRecovery.ok) throw new Error("retry recovery claim refused");
+		options.readController = async () => ({ ...controller, pid: 102 });
+		await expect(
+			createExecutionProcessOwnerFactory(store, options)(
+				ctx,
+				"owner-3",
+				"rescue",
+			),
+		).resolves.toBeDefined();
+	});
 	it.each(["no_child", "binding_failed", "writers_unknown", "previous_writer"])(
 		"settles %s only after independent failed-spawn absence",
 		async (mode) => {

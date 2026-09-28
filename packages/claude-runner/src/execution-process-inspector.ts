@@ -720,17 +720,33 @@ export async function captureExecutionProcessSample(
 		const hostBootId = await c.boot();
 		const legacy = binding.legacyExecutionId !== undefined;
 		if (
-			binding.hostBootId !== hostBootId ||
-			(legacy
+			legacy
 				? binding.adapter !== "claude-tmux" ||
 					binding.nonce !== null ||
 					!binding.nativeSessionId ||
 					!/^[A-Za-z0-9_-]{1,256}$/.test(binding.legacyExecutionId!) ||
 					options.executionId !== binding.legacyExecutionId
 				: binding.nonce === null ||
-					!/^[A-Za-z0-9_-]{1,256}$/.test(binding.nonce))
+					!/^[A-Za-z0-9_-]{1,256}$/.test(binding.nonce)
 		)
 			return null;
+		if (binding.hostBootId !== hostBootId) {
+			const rows = await c.processes();
+			if ((await c.boot()) !== hostBootId) return null;
+			return {
+				sampledAtMs: c.sampledAtMs,
+				hostBootId,
+				processes: rows.map(({ uid: _uid, ...row }) => row),
+				worker: null,
+				...(binding.adapter === "codex-tmux"
+					? { daemon: "absent" as const }
+					: {}),
+				writersComplete: true,
+				viewers: [],
+				discoveredWriters: [],
+				nonceWriters: [],
+			};
+		}
 		const attributionKey = legacy ? LEGACY_EXEC_KEY : NONCE_KEY;
 		const attributionValue = legacy ? binding.legacyExecutionId : binding.nonce;
 		const before = await c.processes();

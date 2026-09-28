@@ -220,7 +220,7 @@ describe("FLY-2268 resident receiver wiring", () => {
 	it("does not mistake expired readiness for an in-flight recovery", () => {
 		expect(source).toContain('deferral.reason === "pending_reservation"');
 	});
-	it("routes exhausted recovery through current process death evidence", () => {
+	it("tries current process death evidence before the controlled exhaustion fallback", () => {
 		const exhausted = source.slice(
 			source.indexOf("onRecoveryExhausted:"),
 			source.indexOf("\n\t\trecord:", source.indexOf("onRecoveryExhausted:")),
@@ -228,7 +228,16 @@ describe("FLY-2268 resident receiver wiring", () => {
 		expect(exhausted).toContain(
 			"heartbeatService.reconcileExecutionBody(session.execution_id)",
 		);
-		expect(exhausted).not.toContain("runtime.failExhausted");
+		expect(exhausted).toContain("runtime.failExhausted(session, attempts)");
+		const firstMarker = exhausted.indexOf("reconcileCompletionBeforeDeath");
+		const body = exhausted.indexOf("reconcileExecutionBody");
+		const secondMarker = exhausted.lastIndexOf(
+			"reconcileCompletionBeforeDeath",
+		);
+		const fallback = exhausted.indexOf("runtime.failExhausted");
+		expect(firstMarker).toBeLessThan(body);
+		expect(body).toBeLessThan(secondMarker);
+		expect(secondMarker).toBeLessThan(fallback);
 	});
 
 	it("starts independent sampling after the reown barrier and drains it on close", () => {

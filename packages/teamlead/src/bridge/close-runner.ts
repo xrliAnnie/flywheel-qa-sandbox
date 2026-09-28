@@ -26,6 +26,7 @@ import {
 	type ApplyTransitionOpts,
 	applyTransition,
 } from "../applyTransition.js";
+import { isOperationalTerminalStatus } from "../operational-terminal-status.js";
 import type { StateStore } from "../StateStore.js";
 import {
 	AUTO_CLOSE_STATES,
@@ -61,6 +62,19 @@ import {
 	killTmuxWindow,
 } from "./tmux-lookup.js";
 import { sqliteDatetime } from "./types.js";
+
+function hasManagedProcessResidue(
+	store: StateStore,
+	executionId: string,
+): boolean {
+	const owner = store.executionProcessOwners.get(executionId);
+	if (!owner) return false;
+	return Boolean(
+		owner.binding_json ||
+			owner.spawn_inflight ||
+			(owner.spawn_epoch > 0 && !owner.owner_drained_receipt),
+	);
+}
 
 export {
 	AUTO_CLOSE_STATES,
@@ -209,6 +223,9 @@ export interface CloseRunnerResult {
 	commDbFinalized: boolean;
 	retiredGateCount: number;
 	alreadyGone?: boolean;
+	/** Logical terminal cleanup only: no accepted/pending managed process identity
+	 * and no presentation remain. This never claims physical body death. */
+	terminalResidueAbsent?: true;
 	/** FLY-116: true when crash status preserved tmux + tab. */
 	preserved?: boolean;
 	/** FLY-116: "crash_preserve" when preserved=true. */
@@ -881,7 +898,11 @@ async function closeRunnerInner(
 		// body can lose its window during Bridge/tmux recovery; only the shared body
 		// observation may authorize the already-gone lifecycle path.
 		const bodyLiveness = await observeCurrentBody();
-		if (bodyLiveness !== "dead") {
+		const terminalResidueAbsent =
+			bodyLiveness === "unknown" &&
+			isOperationalTerminalStatus(session.status) &&
+			!hasManagedProcessResidue(store, opts.executionId);
+		if (bodyLiveness !== "dead" && !terminalResidueAbsent) {
 			store.insertEvent({
 				event_id: `close-runner-failed-${auditKey}`,
 				execution_id: opts.executionId,
@@ -922,6 +943,7 @@ async function closeRunnerInner(
 				leadId: opts.leadId,
 				executorType: opts.executorType ?? "engineer",
 				forcedPreserved: forceClose || undefined,
+				terminalResidueAbsent: terminalResidueAbsent || undefined,
 			},
 		});
 		// FLY-1048 PR-C (C5): the runner is entering cleanup — mute its detection
@@ -932,7 +954,10 @@ async function closeRunnerInner(
 			return {
 				closed: true,
 				alreadyGone: true,
-				physicalGone: true,
+				physicalGone: !terminalResidueAbsent,
+				...(terminalResidueAbsent && {
+					terminalResidueAbsent: true as const,
+				}),
 				commDbFinalized: false,
 				retiredGateCount: 0,
 			};
@@ -959,6 +984,10 @@ async function closeRunnerInner(
 		return {
 			closed: true,
 			alreadyGone: true,
+			...(terminalResidueAbsent && {
+				physicalGone: false,
+				terminalResidueAbsent: true as const,
+			}),
 			commDbFinalized: true,
 			retiredGateCount: finalized.retiredGateCount,
 		};

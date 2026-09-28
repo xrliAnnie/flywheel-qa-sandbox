@@ -1713,6 +1713,36 @@ describe("Codex R1 fixes", () => {
 		expect(store.getLaunchClaim("completed-stale-claim")?.state).toBe("closed");
 	});
 
+	it("completes an already-terminal unbound residue without manufacturing death", async () => {
+		const store = await freshStore();
+		seedSession(store, "legacy-completed", "completed");
+		const report = await closeoutIssue(
+			baseDeps(store, {
+				closeRunnerFn: vi.fn(async () => ({
+					closed: true,
+					alreadyGone: true,
+					terminalResidueAbsent: true,
+					physicalGone: false,
+					commDbFinalized: true,
+					retiredGateCount: 1,
+				})),
+				probeExecutionLiveness: async () => "unknown",
+			}),
+			{
+				issueKey: UUID,
+				projectName: "proj",
+				disposition: "canceled",
+				authority: "linear_reconcile",
+			},
+		);
+
+		expect(report.outcome).toBe("complete");
+		expect(report.nodes[0]).toMatchObject({
+			confirmedGone: true,
+			communicationsFinalized: true,
+		});
+	});
+
 	it("R1#5: parkIssue is atomic — tombstone + authority + closeout under one mutex hold", async () => {
 		const store = await freshStore();
 		seedSession(store, "e-run", "running");

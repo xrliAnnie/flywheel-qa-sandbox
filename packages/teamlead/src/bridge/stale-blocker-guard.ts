@@ -176,6 +176,8 @@ export interface FinalizeStaleBlockerDeps {
 		executionId: string,
 		projectName: string,
 	) => Promise<"alive" | "dead" | "unknown">;
+	/** True when an accepted body, pending spawn, or undrained owner still exists. */
+	hasManagedProcessResidue: (executionId: string) => boolean;
 	lookupTmuxTarget: (execId: string, projectName: string) => TmuxTargetLookup;
 	killCmuxLinkedSession: (
 		tmuxWindow: string,
@@ -298,7 +300,11 @@ export async function finalizeStaleBlocker(
 			`[stale-blocker] ${execId}: body observation failed (${(error as Error).message})`,
 		);
 	}
-	if (body !== "dead") {
+	const terminalResidueAbsent =
+		body === "unknown" &&
+		(lookup.kind === "gone" || toreDown) &&
+		!deps.hasManagedProcessResidue(execId);
+	if (body !== "dead" && !terminalResidueAbsent) {
 		deps.store.insertEvent({
 			event_id: `cron-stale-finalize-body-${body}-${execId}`,
 			execution_id: execId,
@@ -317,7 +323,7 @@ export async function finalizeStaleBlocker(
 	// StateStore row, terminal status, or absent CommDB target can justify
 	// idempotent ledger settlement, but none may mint a founder-facing claim that
 	// the runner was physically gone.
-	const finalized = finalizeCommunications(true);
+	const finalized = finalizeCommunications(body === "dead");
 	if (!finalized.ok) {
 		deps.store.insertEvent({
 			event_id: `cron-stale-finalize-commdb-failed-${execId}`,
@@ -386,6 +392,7 @@ export async function finalizeStaleBlocker(
 			prState,
 			statusBefore: cur2.status,
 			body,
+			terminalResidueAbsent: terminalResidueAbsent || undefined,
 			tmux: lookup.kind,
 			uiCleanupComplete: toreDown,
 		},

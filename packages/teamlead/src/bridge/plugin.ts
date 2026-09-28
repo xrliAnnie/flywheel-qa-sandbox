@@ -5885,6 +5885,15 @@ export function createBridgeApp(
 						(await opts?.observeBody?.(executionId, projectName)) ??
 						opts?.readBodyLiveness?.(executionId, projectName) ??
 						"unknown",
+					hasManagedProcessResidue: (executionId) => {
+						const owner = store.executionProcessOwners.get(executionId);
+						if (!owner) return false;
+						return Boolean(
+							owner.binding_json ||
+								owner.spawn_inflight ||
+								(owner.spawn_epoch > 0 && !owner.owner_drained_receipt),
+						);
+					},
 					lookupTmuxTarget,
 					// FLY-1185 §2.5: MCP reap piggybacks the injected cmux kill —
 					// runs BEFORE it while the pane pid is still resolvable; the
@@ -11071,7 +11080,26 @@ export async function startBridge(
 				].includes(fresh.status)
 			)
 				return;
-			await heartbeatService.reconcileExecutionBody(session.execution_id);
+			if (
+				await heartbeatService.reconcileCompletionBeforeDeath(
+					session.execution_id,
+				)
+			)
+				return;
+			if (await heartbeatService.reconcileExecutionBody(session.execution_id))
+				return;
+			if (
+				await heartbeatService.reconcileCompletionBeforeDeath(
+					session.execution_id,
+				)
+			)
+				return;
+			const runtime = codexRecoveryRuntimes.get(session.project_name);
+			if (!runtime)
+				throw new Error(
+					`Codex recovery runtime unavailable for ${session.project_name}`,
+				);
+			await runtime.failExhausted(session, attempts);
 		},
 		record: (event, session, payload) => {
 			store.insertEvent({

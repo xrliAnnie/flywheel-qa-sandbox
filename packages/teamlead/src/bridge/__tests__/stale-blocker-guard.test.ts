@@ -162,6 +162,7 @@ function makeFinalizeDeps(over: {
 	windowKilled?: boolean;
 	transitionOk?: boolean;
 	finalizeOk?: boolean;
+	hasManagedProcessResidue?: boolean;
 }) {
 	const seq = [...over.sessions];
 	const events: string[] = [];
@@ -178,6 +179,9 @@ function makeFinalizeDeps(over: {
 		},
 		lookupTmuxTarget: vi.fn(() => over.lookup),
 		observeBody: vi.fn(async () => over.body ?? "dead"),
+		hasManagedProcessResidue: vi.fn(
+			() => over.hasManagedProcessResidue ?? true,
+		),
 		killCmuxLinkedSession: vi.fn(async () => ({
 			killed: over.cmuxKilled ?? true,
 		})),
@@ -211,6 +215,25 @@ function makeFinalizeDeps(over: {
 }
 
 describe("finalizeStaleBlocker (fail-closed teardown + double re-read)", () => {
+	it("settles an unbound parked row with no presentation without claiming death", async () => {
+		const { deps } = makeFinalizeDeps({
+			sessions: [
+				session({ status: "awaiting_review" }),
+				session({ status: "awaiting_review" }),
+			],
+			lookup: { kind: "gone" } as TmuxTargetLookup,
+			body: "unknown",
+			hasManagedProcessResidue: false,
+		});
+
+		const result = await finalizeStaleBlocker(session({}), "merged", deps);
+
+		expect(result.proceed).toBe(true);
+		expect(deps.applyTransition).toHaveBeenCalledOnce();
+		expect(deps.store.recordCommDbFinalizeOutcome).toHaveBeenCalledWith(
+			expect.objectContaining({ runnerDeathProven: false }),
+		);
+	});
 	it("missing window with a live body never finalizes or releases the slot", async () => {
 		const { deps } = makeFinalizeDeps({
 			sessions: [session({ status: "awaiting_review" })],

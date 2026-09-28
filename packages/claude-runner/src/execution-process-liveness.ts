@@ -119,6 +119,7 @@ export function observeExecutionProcesses(
 	)
 		return result("unknown", "process_sample_expired");
 	if (!binding || !sample) return observation;
+	const hostReboot = binding.hostBootId !== sample.hostBootId;
 	const writers = [...binding.writers, ...(sample.discoveredWriters ?? [])];
 	if (
 		binding.version !== 1 ||
@@ -132,8 +133,9 @@ export function observeExecutionProcesses(
 		!validIdentity(binding) ||
 		!validPid(binding.pgid) ||
 		!validIdentity(input.controller) ||
-		binding.hostBootId !== sample.hostBootId ||
-		input.controller.hostBootId !== sample.hostBootId ||
+		(hostReboot
+			? input.controller.hostBootId !== binding.hostBootId
+			: input.controller.hostBootId !== sample.hostBootId) ||
 		!Number.isSafeInteger(input.spawnEpoch) ||
 		input.spawnEpoch < 1 ||
 		!Number.isSafeInteger(input.identity.generation) ||
@@ -149,7 +151,9 @@ export function observeExecutionProcesses(
 		sample.processes.length > 100_000 ||
 		writers.some(
 			(writer) =>
-				!validIdentity(writer) || writer.hostBootId !== sample.hostBootId,
+				!validIdentity(writer) ||
+				writer.hostBootId !==
+					(hostReboot ? binding.hostBootId : sample.hostBootId),
 		) ||
 		sample.viewers.some(
 			(viewer) =>
@@ -176,17 +180,22 @@ export function observeExecutionProcesses(
 			return mismatch();
 		processes.set(process.pid, process);
 	}
-	for (const identity of [binding, input.controller, ...writers]) {
-		const found = processes.get(identity.pid);
-		if (found && found.startIdentity !== identity.startIdentity)
-			return mismatch();
-	}
+	if (!hostReboot)
+		for (const identity of [binding, ...writers]) {
+			const found = processes.get(identity.pid);
+			if (found && found.startIdentity !== identity.startIdentity)
+				return mismatch();
+		}
 	if (
 		input.spawnInflight ||
 		(input.restartInProgress && !input.ownerClosed) ||
 		input.recoveryActive
 	)
 		return result("unknown", "controller_recovery_active");
+	if (hostReboot) {
+		if (!sample.writersComplete) return observation;
+		return result("dead", "host_reboot");
+	}
 	const worker = processes.get(binding.pid);
 	if (worker?.state === "running") {
 		if (
@@ -200,7 +209,11 @@ export function observeExecutionProcesses(
 			return observation;
 		return result("alive", "accepted_worker_alive");
 	}
-	const controller = processes.get(input.controller.pid);
+	const controllerCandidate = processes.get(input.controller.pid);
+	const controller =
+		controllerCandidate?.startIdentity === input.controller.startIdentity
+			? controllerCandidate
+			: undefined;
 	// Only the Codex resident controller can restart an accepted worker in
 	// place. Tmux carriers launch once; durable spawn/restart fences above
 	// still protect every carrier, but the shared Bridge PID is not a writer.

@@ -257,7 +257,6 @@ describe("FLY-2919 execution process truth", () => {
 
 	it.each([
 		"pid_reused",
-		"boot",
 		"executable",
 		"cwd",
 		"adapter",
@@ -267,7 +266,6 @@ describe("FLY-2919 execution process truth", () => {
 		const input = fixture();
 		if (kind === "pid_reused")
 			input.sample!.processes[1]!.startIdentity = "foreign-start";
-		if (kind === "boot") input.sample!.hostBootId = "boot-2";
 		if (kind === "executable") input.sample!.worker!.executable = "/foreign";
 		if (kind === "cwd") input.sample!.worker!.cwd = "/foreign";
 		if (kind === "adapter") input.binding!.adapter = "claude-tmux";
@@ -277,6 +275,30 @@ describe("FLY-2919 execution process truth", () => {
 		expect(observeExecutionProcesses(input)).toMatchObject({
 			verdict: "unknown",
 			reason: "process_identity_mismatch",
+		});
+	});
+
+	it("proves the old body dead after a host reboot", () => {
+		const input = gone();
+		input.sample!.hostBootId = "boot-2";
+		expect(observeExecutionProcesses(input)).toMatchObject({
+			verdict: "dead",
+			reason: "host_reboot",
+		});
+	});
+
+	it("treats a reused controller pid as absence of the old controller", () => {
+		const input = gone();
+		input.sample!.processes.push({
+			pid: 100,
+			ppid: 1,
+			pgid: 100,
+			startIdentity: "reused-controller",
+			state: "running",
+		});
+		expect(observeExecutionProcesses(input)).toMatchObject({
+			verdict: "dead",
+			reason: "writers_and_controller_gone",
 		});
 	});
 

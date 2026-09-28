@@ -1247,6 +1247,23 @@ describe("closeRunner", () => {
 		expect(mockProbeRunExecutionLiveness).not.toHaveBeenCalled();
 	});
 
+	it("settles a terminal unbound session with no presentation without claiming body death", async () => {
+		seedSession(store, "completed");
+		mockGetTmuxTarget.mockReturnValue(undefined);
+		const observeBody = vi.fn(async () => "unknown" as const);
+
+		const result = await closeRunner(makeOpts({ observeBody }), store);
+
+		expect(result).toMatchObject({
+			closed: true,
+			alreadyGone: true,
+			terminalResidueAbsent: true,
+			physicalGone: false,
+			commDbFinalized: true,
+		});
+		expect(result).not.toHaveProperty("runnerDeathProven");
+	});
+
 	it("returns alreadyGone=true when no tmux target and the body is dead", async () => {
 		// FLY-116: failed/blocked are preserved by default; use an AUTO_CLOSE
 		// status here so the alreadyGone path is exercised.
