@@ -224,6 +224,7 @@ export {
 	MODEL_IDS,
 	MODEL_PROVIDERS,
 	MODEL_REGISTRY,
+	modelFamilyCode,
 	resolveCurrentModel,
 } from "./model-registry.js";
 export {

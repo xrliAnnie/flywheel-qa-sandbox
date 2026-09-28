@@ -698,7 +698,8 @@ describe("workflow dispatch resolution at launch", () => {
 				dispatch: { model: "claude-opus-5" },
 				source: "pinned_snapshot",
 			});
-			// A menu receipt computed one generation later is rebuilt from the run.
+			// A menu receipt computed one generation later is rebuilt from the
+			// run: with no assignment the Opus family alias survives (FLY-3018).
 			expect(
 				pinMenuReceiptsToRun(
 					{
@@ -709,8 +710,13 @@ describe("workflow dispatch resolution at launch", () => {
 						},
 					},
 					window,
-				).work?.model,
-			).toBe("opus (= claude-opus-5)");
+					{},
+				).work,
+			).toEqual({
+				model: "opus (= claude-opus-5)",
+				effort: "high",
+				overridden: false,
+			});
 
 			// The sync advances the binding: new runs follow, the old one does not.
 			writeFileSync(
@@ -843,3 +849,148 @@ it.each(["valid", "bucket", "version", "arm", "issue", "duplicate"])(
 		}
 	},
 );
+
+describe("FLY-3018 start receipts are rebuilt from the run's own frozen record", () => {
+	const pinned = (
+		nodes: Record<
+			string,
+			{
+				vendor: "claude" | "codex";
+				model: string;
+				effort?: "low" | "high" | "xhigh";
+			}
+		>,
+	) => ({
+		resolved: {
+			nodes: Object.entries(nodes).map(([id, dispatch]) => ({ id, dispatch })),
+		},
+	});
+	const menu = (model: string) => ({
+		model,
+		effort: "high" as const,
+		overridden: true,
+	});
+
+	it("names the frozen assignment instead of the current menu alias", () => {
+		expect(
+			pinMenuReceiptsToRun(
+				{ implement: menu("opus (= claude-opus-5-5)") },
+				pinned({
+					implement: { vendor: "codex", model: "gpt-6-astra", effort: "xhigh" },
+				}),
+				{ implement: { modelAlias: "astra", model: "gpt-6-astra" } },
+			),
+		).toEqual({
+			implement: {
+				model: "astra (= gpt-6-astra)",
+				effort: "xhigh",
+				overridden: true,
+			},
+		});
+		// A frozen Opus-5 assignment keeps its own alias under today's binding.
+		expect(
+			pinMenuReceiptsToRun(
+				{ implement: menu("opus (= claude-opus-5-5)") },
+				pinned({
+					implement: {
+						vendor: "claude",
+						model: "claude-opus-5",
+						effort: "low",
+					},
+				}),
+				{ implement: { modelAlias: "opus", model: "claude-opus-5" } },
+			).implement,
+		).toEqual({
+			model: "opus (= claude-opus-5)",
+			effort: "low",
+			overridden: true,
+		});
+	});
+
+	it("keeps a menu alias only for the same model family, else labels the exact id", () => {
+		const project = (menuModel: string, model: string) =>
+			pinMenuReceiptsToRun(
+				{ implement: menu(menuModel) },
+				pinned({
+					implement: {
+						vendor: model.startsWith("gpt-") ? "codex" : "claude",
+						model,
+						effort: "high",
+					},
+				}),
+				{},
+			).implement!.model;
+		expect(project("opus (= claude-opus-5-5)", "claude-opus-5")).toBe(
+			"opus (= claude-opus-5)",
+		);
+		expect(project("fable (= claude-fable-5-1)", "claude-fable-5")).toBe(
+			"fable (= claude-fable-5)",
+		);
+		expect(project("codex (= gpt-5.6-sol)", "gpt-5.6-sol")).toBe(
+			"codex (= gpt-5.6-sol)",
+		);
+		// Cross-vendor, same-vendor-other-family, context variant, unprovable.
+		expect(project("opus (= claude-opus-5-5)", "gpt-6-astra")).toBe(
+			"gpt-6-astra (= gpt-6-astra)",
+		);
+		expect(project("opus (= claude-opus-5-5)", "gpt-5.6-sol")).toBe(
+			"gpt-5.6-sol (= gpt-5.6-sol)",
+		);
+		expect(project("opus (= claude-opus-5-5)", "claude-sonnet-5")).toBe(
+			"claude-sonnet-5 (= claude-sonnet-5)",
+		);
+		expect(project("opus (= claude-opus-5-5)", "claude-opus-5[1m]")).toBe(
+			"claude-opus-5[1m] (= claude-opus-5[1m])",
+		);
+		expect(project("codex (= gpt-5.6-sol)", "gpt-6-sol")).toBe(
+			"gpt-6-sol (= gpt-6-sol)",
+		);
+	});
+
+	it("projects the pinned effort through the launch narrowing rule", () => {
+		expect(
+			pinMenuReceiptsToRun(
+				{ qa: menu("opus (= claude-opus-5-5)") },
+				pinned({
+					qa: { vendor: "claude", model: "claude-opus-5-5", effort: "low" },
+				}),
+				{},
+			).qa,
+		).toEqual({
+			model: "opus (= claude-opus-5-5)",
+			effort: "low",
+			overridden: true,
+		});
+		const narrowed = pinMenuReceiptsToRun(
+			{ qa: menu("claude-opus-4-6 (= claude-opus-4-6)") },
+			pinned({
+				qa: { vendor: "claude", model: "claude-opus-4-6", effort: "xhigh" },
+			}),
+			{},
+		).qa!;
+		expect(narrowed).toEqual({
+			model: "claude-opus-4-6 (= claude-opus-4-6)",
+			overridden: true,
+		});
+		expect(narrowed).not.toHaveProperty("effort");
+	});
+
+	it("refuses a receipt without a pinned dispatch or with a conflicting assignment", () => {
+		expect(() =>
+			pinMenuReceiptsToRun(
+				{ implement: menu("opus (= claude-opus-5-5)") },
+				pinned({}),
+				{},
+			),
+		).toThrow("workflow start receipt has no pinned dispatch:implement");
+		expect(() =>
+			pinMenuReceiptsToRun(
+				{ implement: menu("opus (= claude-opus-5-5)") },
+				pinned({ implement: { vendor: "claude", model: "claude-opus-5-5" } }),
+				{ implement: { modelAlias: "astra", model: "gpt-6-astra" } },
+			),
+		).toThrow(
+			"workflow start receipt assignment conflicts with pinned dispatch:implement",
+		);
+	});
+});

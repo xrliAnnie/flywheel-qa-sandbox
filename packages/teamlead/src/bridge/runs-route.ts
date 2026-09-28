@@ -82,6 +82,7 @@ import {
 } from "../workflow-run-snapshot.js";
 import { credentialWindowForNode } from "../workflow-submission-expiry.js";
 import {
+	readFrozenRunModelAssignments,
 	recoverWorkflowStartSelection,
 	resolveWorkflowTemplateCandidateSchema,
 	resolveWorkflowTemplateSelection,
@@ -3277,16 +3278,31 @@ export function createRunsRouter(
 				});
 				return;
 			}
-			// FLY-2775 R2: receipts name what the run pinned, not what the menu
-			// saw one model-config generation earlier.
-			if (menuResolution) {
-				menuResolution = {
-					...menuResolution,
-					receipts: pinMenuReceiptsToRun(
+			// FLY-3018: every start path (fresh, replay, recovery) refuses a run
+			// whose own frozen model assignments are inconsistent BEFORE
+			// admission — the same reason a same-key replay gets from selection.
+			// The fresh menu receipt is rebuilt from that record (FLY-2775 R2:
+			// what the run pinned, not what the menu saw a generation earlier).
+			let nodeModels: ReturnType<typeof pinMenuReceiptsToRun> | undefined;
+			try {
+				const frozen = readFrozenRunModelAssignments(
+					store,
+					generalizedSelection.runId,
+				);
+				if (menuResolution) {
+					nodeModels = pinMenuReceiptsToRun(
 						menuResolution.receipts,
 						selectedSnapshot,
-					),
-				};
+						frozen.assignments,
+					);
+				}
+			} catch (error) {
+				res.status(409).json({
+					success: false,
+					code: "GENERALIZED_WORKFLOW_REJECTED",
+					reason: (error as Error).message,
+				});
+				return;
 			}
 			const credentialWindow = credentialWindowForNode(
 				selectedSnapshot,
@@ -4018,9 +4034,7 @@ export function createRunsRouter(
 					workflowNodeId: generalizedSelection.nodeId,
 					// FLY-1372: 202 carries the same advisory echo as the 200.
 					...dagAuthority,
-					...(menuResolution
-						? { resolved: { nodeModels: menuResolution.receipts } }
-						: {}),
+					...(nodeModels ? { resolved: { nodeModels } } : {}),
 					...(generalizedSelection.categorySource
 						? {
 								workKind: {
@@ -4091,9 +4105,7 @@ export function createRunsRouter(
 				workflowRunId: generalizedSelection.runId,
 				workflowNodeId: generalizedSelection.nodeId,
 				...dagAuthority,
-				...(menuResolution
-					? { resolved: { nodeModels: menuResolution.receipts } }
-					: {}),
+				...(nodeModels ? { resolved: { nodeModels } } : {}),
 				...(generalizedSelection.categorySource
 					? {
 							workKind: {

@@ -8,6 +8,7 @@ import {
 	loadBundledRegistry,
 	type ModelConfigSnapshot,
 	ModelSplitBalanceInputUnavailableError,
+	modelFamilyCode,
 	type PercentageModelSplitPolicy,
 	type RegistryModelSplitPolicy,
 	resolvePercentageModelSplit,
@@ -17,6 +18,7 @@ import {
 } from "flywheel-config";
 import { parse } from "yaml";
 import type { StateStore } from "./StateStore.js";
+import { narrowEffort } from "./workflow-dispatch-resolution.js";
 import {
 	FOLLOW_LATEST_MODEL_ALIASES,
 	type LoadedWorkflowSeed,
@@ -1083,11 +1085,20 @@ function formatReceiptModel(alias: string, model: string): string {
 }
 
 /**
- * FLY-2775 (code review R2): menu resolution and run materialization each
- * capture a model-config generation. If the Opus sync advances the binding
- * between the two, the menu's `alias (= exact)` receipt would name a model the
- * run never pinned. The run snapshot is the immutable truth the launch uses,
- * so the returned receipt is rebuilt from it.
+ * FLY-3018 (supersedes the FLY-2775 R2 prefix rewrite): a start receipt is
+ * rebuilt from the run it created, so `alias (= exact)` can never pair one
+ * model's alias with another model's id.
+ *
+ * - With a frozen assignment of THIS run, the alias is the assignment's own.
+ * - Without one, the menu alias survives only when its model is the pinned
+ *   model or the same registry model family (an Opus binding that advanced
+ *   between menu resolution and materialization); otherwise the exact id
+ *   labels itself.
+ * - Effort is the pinned effort after the launch-time narrowing rule; a
+ *   narrowed-away effort is omitted rather than claimed.
+ *
+ * Throws when a receipt node has no pinned dispatch or its assignment names
+ * a different model, so the caller refuses before admission.
  */
 export function pinMenuReceiptsToRun<
 	R extends { model: string; effort: WorkflowEffort; overridden: boolean },
@@ -1095,21 +1106,61 @@ export function pinMenuReceiptsToRun<
 	receipts: Record<string, R>,
 	snapshot: {
 		resolved: {
-			nodes: ReadonlyArray<{ id: string; dispatch?: { model: string } }>;
+			nodes: ReadonlyArray<{
+				id: string;
+				dispatch?: {
+					vendor: "claude" | "codex";
+					model: string;
+					effort?: WorkflowEffort;
+				};
+			}>;
 		};
 	},
-): Record<string, R> {
-	const pinned = new Map(
-		snapshot.resolved.nodes.map((node) => [node.id, node.dispatch?.model]),
-	);
-	const out: Record<string, R> = {};
+	assignments: Readonly<
+		Record<string, Pick<WorkflowModelAssignmentReceipt, "modelAlias" | "model">>
+	>,
+): Record<string, Omit<R, "effort"> & { effort?: WorkflowEffort }> {
+	const out: Record<string, Omit<R, "effort"> & { effort?: WorkflowEffort }> =
+		{};
 	for (const [nodeId, receipt] of Object.entries(receipts)) {
-		const model = pinned.get(nodeId);
-		const match = /^(.*) \(= (.*)\)$/.exec(receipt.model);
-		out[nodeId] =
-			model !== undefined && match !== null && match[2] !== model
-				? { ...receipt, model: formatReceiptModel(match[1]!, model) }
-				: receipt;
+		const dispatch = snapshot.resolved.nodes.find(
+			(node) => node.id === nodeId,
+		)?.dispatch;
+		if (!dispatch) {
+			throw new Error(
+				`workflow start receipt has no pinned dispatch:${nodeId}`,
+			);
+		}
+		const assignment = assignments[nodeId];
+		let alias = dispatch.model;
+		if (assignment) {
+			if (assignment.model !== dispatch.model) {
+				throw new Error(
+					`workflow start receipt assignment conflicts with pinned dispatch:${nodeId}`,
+				);
+			}
+			alias = assignment.modelAlias;
+		} else {
+			const menu = /^(.*) \(= (.*)\)$/.exec(receipt.model);
+			const menuModel = menu?.[2];
+			const family = menuModel ? modelFamilyCode(menuModel) : undefined;
+			if (
+				menu &&
+				(menuModel === dispatch.model ||
+					(family !== undefined &&
+						family === modelFamilyCode(dispatch.model) &&
+						menuModel!.endsWith("[1m]") === dispatch.model.endsWith("[1m]")))
+			) {
+				alias = menu[1]!;
+			}
+		}
+		const { effort: _menuEffort, ...rest } = receipt;
+		const effective = narrowEffort(dispatch);
+		out[nodeId] = {
+			...rest,
+			model: formatReceiptModel(alias, dispatch.model),
+			...(effective.effort ? { effort: effective.effort } : {}),
+		};
 	}
 	return out;
 }

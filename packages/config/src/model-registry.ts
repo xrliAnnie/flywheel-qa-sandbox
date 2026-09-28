@@ -16,6 +16,7 @@ import {
 	type ModelRegistryEntry,
 	type ModelRuntimeVendor,
 	type ModelSurface,
+	modelFamilyCode,
 } from "./model-builtins.js";
 import {
 	type CurrentModelView,
@@ -44,6 +45,7 @@ export {
 	MODEL_IDS,
 	MODEL_PROVIDERS,
 	MODEL_REGISTRY,
+	modelFamilyCode,
 };
 
 /**

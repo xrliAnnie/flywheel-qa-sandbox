@@ -110,7 +110,7 @@ function resolveModelAssignment(
  * node byte-identical (its workflow surface carries the full effort ladder,
  * unlike its runner surface) and narrows only models with a declared gap.
  */
-function narrowEffort(dispatch: {
+export function narrowEffort(dispatch: {
 	vendor: WorkflowVendor;
 	model: string;
 	effort?: WorkflowEffort;
