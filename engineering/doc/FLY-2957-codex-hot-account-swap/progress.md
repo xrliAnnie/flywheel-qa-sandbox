@@ -1,13 +1,13 @@
 ---
 issue: FLY-2957
 phase: design
-phaseCursor: 3/5
-updated: 2026-09-28T21:29:59.736Z
-nextStep: commit plan and request explicit design review
+phaseCursor: 4/5
+updated: 2026-09-28T21:33:20.257Z
+nextStep: receive APPROVED design review, push, publish and report founder HTML
 chunks: []
 pointers: {}
 ---
 
 # FLY-2957 progress
-**phase**: design (3/5)
-**next**: commit plan and request explicit design review
+**phase**: design (4/5)
+**next**: receive APPROVED design review, push, publish and report founder HTML
