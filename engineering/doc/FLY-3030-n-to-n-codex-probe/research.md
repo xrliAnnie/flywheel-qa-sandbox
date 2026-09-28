@@ -60,3 +60,13 @@ Issue: FLY-3030 (https://linear.app/geoforge3d/issue/FLY-3030/529-合成单勿�
 - 不在生产（`~/Dev/flywheel`）或生产 Bridge 上做任何事；不派单、不起房间（房间由 FLY-2919 driver 管）。
 - 不改 `packages/`、CI、脚本。
 - 不合并、不 ship。
+
+## R7. 第 2 轮（claude-body）新增事实（2026-09-28 实测）
+
+- 当前 README：77 字节 / 4 行，末字节 `\n`，第 4 行 = `FLY-2919 N-to-N codex-body probe`。
+- 新目标行 `FLY-2919 N-to-N claude-body probe` = 33 字符 + 换行 = **34 字节**（`printf … | wc -c` = 34）。追加后 README = **111 字节 / 5 行**，相对 `origin/main`（`1855f7a1a`，未漂移）numstat = `2<TAB>0<TAB>README.md`。
+- 两个目标行互不为子串（`grep -xF` 整行匹配），计数各自独立。
+- 旧冻结判据失效：`git cat-file -e HEAD:engineering/doc/milestones/FLY-3030.md` 现在已成立。新判据：`HEAD:<milestone>` 的内容包含 claude-body 行（`git show HEAD:$MS | grep -qF -- "$LINE"`），第 1 轮 milestone 不含它 → 未冻结；本轮 milestone 写入后 → 冻结。
+- 本轮 README commit 判据：`origin/main..HEAD -- README.md` 共 **2** 个 commit（codex 轮 1 + claude 轮 1），且 subject 含 `claude-body` 的恰 1 个。
+- PR #299 已 OPEN、head = 本地 HEAD、`statusCheckRollup` 非空（2 项，属第 1 轮头）。本轮复用它：push 新头后 CI 对新头重跑；标题/正文用 `gh pr edit` 幂等更新为覆盖两轮。
+- `sleep 780` 的幂等判据：sleep 是「追加」之前的一步，因此**工作区 README 已含 claude 行** ⇒ 某个前体一定已睡满 780 秒 ⇒ 可跳过；否则（包括睡到一半被杀）新体必须重新完整前台睡 780 秒。判据来自文件本身，不依赖账本文字、进程或窗口。

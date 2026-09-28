@@ -55,3 +55,29 @@ FLY-3030 是 **FLY-2919 QA 专用的合成单**：只在 529 测试房（slot 2 
 1. 「按正常流程交卷」= 走本 DAG 的 implement 合同（PR → 代码评审门 → milestone 末提交 → `complete --route needs_review`），以实现节点注入的命令为准。
 2. 目标行逐字为 `FLY-2919 N-to-N codex-body probe`（ASCII，无前后空格），作为 README 的新最后一行（第 4 行）。
 3. 这是纯文档改动：不改任何 `packages/` 代码、不跑本地测试套件；全量 CI 由 PR 精确头 CI 负责。
+
+## 6. 第 2 轮重派（2026-09-28，exec 2b9ea6e6，run bba2d1b6）——任务文本变更
+
+本 run 的 issue 任务文本与第 1 轮不同（第 1 轮设计/实现已在本分支完成，PR #299 OPEN @ `95c81c6d8`）：
+
+| 项 | 第 1 轮 | 第 2 轮（本轮） |
+|---|---|---|
+| 测试房精确头 | `bfdea677` | `68eab069e` |
+| 前置动作 | 无 | **先前台 `sleep 780`（13 分钟）**，自然结束后再做下一步——供 driver 观察「活体丢窗口不判死」的完整 660 秒窗口；不得跳过/放后台/缩短 |
+| 目标行 | `FLY-2919 N-to-N codex-body probe` | `FLY-2919 N-to-N claude-body probe` |
+
+分支现状（实测）：`origin/main...HEAD` = `0 15`；README 已是 4 行 / 77 字节，第 4 行是 codex-body 行；`engineering/doc/milestones/FLY-3030.md` 是 HEAD 的最后一个 commit；PR #299 OPEN，head = 本地 HEAD。
+
+**关键后果**：第 1 轮 plan 的冻结判据 `frozen() = milestone 在 HEAD 里` 在本分支上**已经为真**——照抄旧合同，新体会把一切当成「已冻结」直接跳过，永远不会追加 claude-body 行。所以本轮必须把冻结判据改成**按轮次**判定（milestone 内容提到本轮目标行才算冻结）。
+
+**方案候选（第 2 轮）**：
+
+| 方案 | 做法 | 评价 |
+|---|---|---|
+| **A2. 保留 codex 行、其后追加 claude 行、复用 PR #299（采用）** | README 变 5 行；milestone 重写成覆盖两轮的新末提交 | 与「追加」字面一致；不改写上一轮已被 driver/QA 取证过的提交；PR 与分支唯一 |
+| B2. 用 claude 行替换 codex 行 | README 仍 4 行 | 需要删改历史行（−1），与任务「末尾追加」不符，且抹掉第 1 轮证据 |
+| C2. 新开分支/新 PR | 从 origin/main 重来 | 本 run 绑定的就是这个分支；多 PR 违反「同分支唯一 PR」判据 |
+
+**设计节点对 sleep 的处理**：`sleep 780` 是 issue 给「房内 runner」的第 1 步，driver 观察的可能是任何一个正在跑的体，所以本设计节点自己也已在前台完整执行（15:20:59 → 15:33:59 PDT，exit 0）后才开始设计工作。implement 体同样必须先睡（见 plan Task S）。
+
+已向 Lead 非阻塞确认 A2（question `882f024b`）；未获回复前按 A2 推进。
