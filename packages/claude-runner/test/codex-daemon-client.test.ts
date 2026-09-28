@@ -1,3 +1,4 @@
+import type { CodexQuotaResumeLifecycle } from "flywheel-core";
 import { describe, expect, it } from "vitest";
 import {
 	CodexDaemonClient,
@@ -1224,7 +1225,7 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 						params: {
 							threadId: "t",
 							goal: {
-								status: "blocked",
+								status: "usageLimited",
 								objective: "phase objective",
 							},
 						},
@@ -1257,7 +1258,7 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 			phaseLifecycle: phase,
 		});
 
-		expect(result.status).toBe("blocked");
+		expect(result.status).toBe("usageLimited");
 		expect(phase.entered).toHaveLength(1);
 		expect(phase.confirmed).toBe(1);
 		expect(phase.finished).toEqual(["park-wake"]);
@@ -1276,7 +1277,7 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 					params: {
 						threadId: "t",
 						goal: {
-							status: "blocked",
+							status: "usageLimited",
 							objective: "phase objective",
 						},
 					},
@@ -1303,7 +1304,7 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 			phaseLifecycle: phase,
 		});
 
-		expect(result.status).toBe("blocked");
+		expect(result.status).toBe("usageLimited");
 		expect(phase.entered).toHaveLength(1);
 		const statuses = d.sent
 			.filter((frame) => frame.method === "thread/goal/set")
@@ -1330,7 +1331,7 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 						method: "goal/updated",
 						params: {
 							threadId: "t",
-							goal: { status: "blocked", objective: "phase objective" },
+							goal: { status: "usageLimited", objective: "phase objective" },
 						},
 					});
 				}
@@ -1379,7 +1380,7 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 			phaseControlPollIntervalMs: 1,
 		});
 
-		expect(result.status).toBe("blocked");
+		expect(result.status).toBe("usageLimited");
 		expect(phase.entered).toHaveLength(1);
 		expect(phase.confirmed).toBe(1);
 		expect(phase.started).toEqual(["wake-1"]);
@@ -1424,7 +1425,7 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 									? "paused"
 									: activeSets === 1
 										? "complete"
-										: "blocked",
+										: "usageLimited",
 							objective: "phase objective",
 						},
 					}
@@ -1444,7 +1445,7 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 			pollIntervalMs: 1,
 			phaseLifecycle: phase,
 		});
-		expect(result.status).toBe("blocked");
+		expect(result.status).toBe("usageLimited");
 		expect(phase.entered).toHaveLength(1);
 		expect(phase.finished).toEqual(["poll-wake"]);
 	});
@@ -1459,7 +1460,7 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 					method: "goal/updated",
 					params: {
 						threadId: "t",
-						goal: { status: "blocked", objective: "phase objective" },
+						goal: { status: "usageLimited", objective: "phase objective" },
 					},
 				});
 			}
@@ -1492,7 +1493,7 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 			phaseLifecycle: phase,
 			onRecoveryOwnershipEstablished: recoveryCommit,
 		});
-		expect(result.status).toBe("blocked");
+		expect(result.status).toBe("usageLimited");
 		expect(phase.entered).toHaveLength(0);
 		expect(recoveryCommit).toHaveBeenCalledTimes(1);
 		expect(recoveryCommit).toHaveBeenCalledWith({
@@ -1523,7 +1524,7 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 						params: {
 							threadId: "t",
 							goal: {
-								status: activeSets === 2 ? "complete" : "blocked",
+								status: activeSets === 2 ? "complete" : "usageLimited",
 								objective: "phase objective",
 							},
 						},
@@ -1569,7 +1570,7 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 			sleep: async () => {},
 			phaseLifecycle: phase,
 		});
-		expect(result.status).toBe("blocked");
+		expect(result.status).toBe("usageLimited");
 		expect(phase.entered).toHaveLength(2);
 		expect(phase.finished).toEqual(["wake-a", "wake-b"]);
 	});
@@ -1644,7 +1645,7 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 						method: "goal/updated",
 						params: {
 							threadId: "t",
-							goal: { status: "blocked", objective: "phase objective" },
+							goal: { status: "usageLimited", objective: "phase objective" },
 						},
 					});
 				}
@@ -1686,7 +1687,7 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 			phaseLifecycle: phase,
 		});
 
-		expect(result.status).toBe("blocked");
+		expect(result.status).toBe("usageLimited");
 		expect(turns).toBe(2);
 		expect(phase.started).toEqual(["bookkeeping-wake"]);
 		expect(phase.finished).toEqual(["bookkeeping-wake"]);
@@ -1753,25 +1754,33 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 		});
 		let gateOpen = true;
 		const latchWrites: boolean[] = [];
+		const residentWaits: string[] = [];
+		phase.onWait = () => {
+			if (residentWaits.length > 0) d.triggerClose("engine stop");
+		};
 
-		const result = await runGoalToTerminal(makeClient(d), {
-			threadId: "t",
-			objective: "phase objective",
-			now: () => 0,
-			// Mid-run: the Lead answers the gate, and phase 1 hands off (parks) —
-			// the ordinary flow, which reaches the phase hold with the gate episode
-			// still latched.
-			sleep: async () => {
-				gateOpen = false;
-				phase.boundary = { kind: "parked", reason: "phase handoff" };
-			},
-			isWaiting: () => gateOpen,
-			writeGateHoldLatch: (v: boolean) => latchWrites.push(v),
-			phaseLifecycle: phase,
-		});
+		await expect(
+			runGoalToTerminal(makeClient(d), {
+				threadId: "t",
+				objective: "phase objective",
+				now: () => 0,
+				// Mid-run: the Lead answers the gate, and phase 1 hands off (parks) —
+				// the ordinary flow, which reaches the phase hold with the gate episode
+				// still latched.
+				sleep: async () => {
+					gateOpen = false;
+					phase.boundary = { kind: "parked", reason: "phase handoff" };
+				},
+				isWaiting: () => gateOpen,
+				writeGateHoldLatch: (v: boolean) => latchWrites.push(v),
+				phaseLifecycle: phase,
+				onResidentWait: (o) => residentWaits.push(o.reason),
+			}),
+		).rejects.toMatchObject({ kind: "transport_closed" });
 
-		// Phase 2's blocked is a REAL terminal — never masked by phase 1's episode.
-		expect(result.status).toBe("blocked");
+		// Phase 2's blocked is its OWN observation — never masked by phase 1's
+		// episode — and FLY-2925 keeps the resident body waiting instead of dying.
+		expect(residentWaits).toEqual(["native_blocked"]);
 		// Entering the phase hold released the durable gate latch, so a crash
 		// leaves the phase hold as the single durable hold.
 		expect(latchWrites).toEqual([true, false]);
@@ -3043,5 +3052,1279 @@ describe("runGoalToTerminal — FLY-2018 owned turn failures", () => {
 		});
 
 		expect(result.lastTurnError).toBeUndefined();
+	});
+});
+
+// ── FLY-2925: goal observation never decides a resident body's death ─────
+describe("runGoalToTerminal — FLY-2925 resident goal observation", () => {
+	type Scripted = {
+		daemon: FakeDaemon;
+		statuses: () => GoalStatus[];
+		starts: () => string[];
+	};
+
+	/**
+	 * A daemon that streams `steps[0]` from the kick turn and `steps[n]` from
+	 * the nth later `goal/set(active)` (a retry resume or a wake activation): a
+	 * goal status, optionally preceded by a failure of the latest turn. Every
+	 * turn/start gets a distinct turn id.
+	 */
+	function scriptedDaemon(
+		steps: Array<{
+			status: GoalStatus;
+			error?: { message: string; codexErrorInfo: unknown };
+		}>,
+	): Scripted {
+		const daemon = new FakeDaemon();
+		let current: GoalStatus = "active";
+		let activeSets = 0;
+		let stepIndex = 0;
+		let turnSeq = 0;
+		let lastTurn = "none";
+		const emitNext = (push: (n: unknown) => void): void => {
+			const step = steps[stepIndex];
+			stepIndex += 1;
+			if (!step) return;
+			if (step.error) {
+				push({
+					method: "turn/completed",
+					params: {
+						threadId: "t",
+						turn: { id: lastTurn, status: "failed", error: step.error },
+					},
+				});
+			}
+			current = step.status;
+			push({
+				method: "thread/goal/updated",
+				params: {
+					threadId: "t",
+					goal: { status: step.status, objective: "OURS" },
+				},
+			});
+		};
+		daemon.responders.set("thread/goal/set", (params, _id, push) => {
+			current = (params as { status: GoalStatus }).status;
+			if (current !== "active") return {};
+			activeSets += 1;
+			if (activeSets > 1) {
+				// A resumed native goal continues in its own autonomous turn.
+				lastTurn = `auto-${activeSets}`;
+				emitNext(push);
+			}
+			return {};
+		});
+		daemon.responders.set("turn/start", (_params, _id, push) => {
+			turnSeq += 1;
+			lastTurn = `turn-${turnSeq}`;
+			if (turnSeq === 1) emitNext(push);
+			return { turn: { id: lastTurn } };
+		});
+		daemon.responders.set("thread/goal/get", () => ({
+			goal: { status: current, objective: "OURS" },
+		}));
+		return {
+			daemon,
+			statuses: () =>
+				daemon.sent
+					.filter((frame) => frame.method === "thread/goal/set")
+					.map((frame) => (frame.params as { status: GoalStatus }).status),
+			starts: () =>
+				daemon.sent
+					.filter((frame) => frame.method === "turn/start")
+					.map(
+						(frame) =>
+							(
+								(frame.params as { input: Array<{ text: string }> })
+									.input[0] ?? { text: "" }
+							).text,
+					),
+		};
+	}
+
+	it("keeps a resident body alive on blocked-without-gate and resumes the SAME thread on a doorbell wake", async () => {
+		const { daemon, statuses, starts } = scriptedDaemon([
+			{ status: "blocked" },
+			{ status: "complete" },
+		]);
+		const phase = new FakePhaseLifecycle();
+		const observations: string[] = [];
+		let waits = 0;
+		phase.onWait = () => {
+			waits += 1;
+			if (waits === 1) {
+				phase.observations.push({
+					kind: "wake",
+					message: { id: "doorbell:1", content: "run flywheel-comm inbox" },
+				});
+			}
+			if (phase.hold) daemon.triggerClose("engine stop");
+		};
+
+		await expect(
+			runGoalToTerminal(makeClient(daemon), {
+				threadId: "t",
+				objective: "OURS",
+				now: () => 0,
+				sleep: async () => {},
+				pollIntervalMs: 1,
+				phaseLifecycle: phase,
+				onResidentWait: (o) => observations.push(o.reason),
+			}),
+		).rejects.toMatchObject({ kind: "transport_closed" });
+
+		// blocked parked the body without an engine resident hold; the wake reused
+		// the thread (no fresh thread, no generic kick) and only a later native
+		// complete entered the phase hold.
+		expect(observations).toEqual(["native_blocked"]);
+		expect(starts()).toEqual([
+			"Begin working toward the goal now.",
+			"[phase-wake doorbell:1] run flywheel-comm inbox",
+		]);
+		expect(phase.started).toEqual(["doorbell:1"]);
+		expect(phase.finished).toEqual(["doorbell:1"]);
+		expect(phase.entered).toHaveLength(1);
+		expect(statuses()).toEqual(["active", "paused", "active", "paused"]);
+	});
+
+	it("retries a capacity failure on the same thread with 10s/30s/120s backoff, then waits", async () => {
+		const overloaded = {
+			message: "Selected model is at capacity",
+			codexErrorInfo: "serverOverloaded",
+		};
+		const { daemon, statuses, starts } = scriptedDaemon([
+			{ status: "blocked", error: overloaded },
+			{ status: "blocked", error: overloaded },
+			{ status: "blocked", error: overloaded },
+			{ status: "blocked", error: overloaded },
+		]);
+		const phase = new FakePhaseLifecycle();
+		phase.onWait = () => daemon.triggerClose("engine stop");
+		const sleeps: number[] = [];
+		let episode: unknown = null;
+		const observations: Array<{ reason: string; attempt?: number }> = [];
+
+		await expect(
+			runGoalToTerminal(makeClient(daemon), {
+				threadId: "t",
+				objective: "OURS",
+				now: () => 0,
+				sleep: async (ms) => {
+					sleeps.push(ms);
+				},
+				pollIntervalMs: 1,
+				phaseLifecycle: phase,
+				readUpstreamRetryEpisode: () => episode as never,
+				writeUpstreamRetryEpisode: (next) => {
+					episode = next;
+				},
+				onResidentWait: (o) =>
+					observations.push({ reason: o.reason, attempt: o.attempt }),
+			}),
+		).rejects.toMatchObject({ kind: "transport_closed" });
+
+		expect(sleeps.filter((ms) => ms >= 10_000)).toEqual([
+			10_000, 30_000, 120_000,
+		]);
+		// Retries resume the native goal; they never start a new turn or thread.
+		expect(starts()).toHaveLength(1);
+		expect(statuses()).toEqual([
+			"active",
+			"active",
+			"active",
+			"active",
+			"paused",
+		]);
+		expect(observations.map((o) => o.reason)).toEqual([
+			"upstream_retry",
+			"upstream_retry",
+			"upstream_retry",
+			"upstream_retry_exhausted",
+		]);
+		expect(episode).toMatchObject({
+			threadId: "t",
+			category: "server_overloaded",
+			attempts: 3,
+		});
+	});
+
+	it("parses object-form codexErrorInfo: HTTP 429 is retryable, HTTP 400 waits without retry", async () => {
+		for (const [status, retried] of [
+			[429, true],
+			[400, false],
+		] as const) {
+			const failure = {
+				message: `upstream ${status}`,
+				codexErrorInfo: { httpConnectionFailed: { httpStatusCode: status } },
+			};
+			const { daemon, statuses } = scriptedDaemon([
+				{ status: "blocked", error: failure },
+				{ status: "blocked" },
+			]);
+			const phase = new FakePhaseLifecycle();
+			let waits = 0;
+			phase.onWait = () => {
+				waits += 1;
+				daemon.triggerClose("engine stop");
+			};
+			await expect(
+				runGoalToTerminal(makeClient(daemon), {
+					threadId: "t",
+					objective: "OURS",
+					now: () => 0,
+					sleep: async () => {},
+					pollIntervalMs: 1,
+					phaseLifecycle: phase,
+					readUpstreamRetryEpisode: () => null,
+					writeUpstreamRetryEpisode: () => {},
+				}),
+			).rejects.toMatchObject({ kind: "transport_closed" });
+			expect(waits).toBe(1);
+			expect(statuses()[1]).toBe(retried ? "active" : "paused");
+		}
+	});
+
+	it("never blind-retries unauthorized; the body waits for correction instead of dying", async () => {
+		const { daemon, statuses } = scriptedDaemon([
+			{
+				status: "blocked",
+				error: { message: "token revoked", codexErrorInfo: "unauthorized" },
+			},
+		]);
+		const phase = new FakePhaseLifecycle();
+		phase.onWait = () => daemon.triggerClose("engine stop");
+		const sleeps: number[] = [];
+		const reasons: string[] = [];
+		await expect(
+			runGoalToTerminal(makeClient(daemon), {
+				threadId: "t",
+				objective: "OURS",
+				now: () => 0,
+				sleep: async (ms) => {
+					sleeps.push(ms);
+				},
+				pollIntervalMs: 1,
+				phaseLifecycle: phase,
+				readUpstreamRetryEpisode: () => null,
+				writeUpstreamRetryEpisode: () => {},
+				onResidentWait: (o) => reasons.push(o.reason),
+			}),
+		).rejects.toMatchObject({ kind: "transport_closed" });
+		expect(sleeps.some((ms) => ms >= 10_000)).toBe(false);
+		expect(statuses()).toEqual(["active", "paused"]);
+		expect(reasons).toEqual(["upstream_error_wait"]);
+	});
+
+	it("a persisted exhausted episode is not reset by a restart re-observing the same failure", async () => {
+		const overloaded = {
+			message: "at capacity",
+			codexErrorInfo: "serverOverloaded",
+		};
+		const { daemon, statuses } = scriptedDaemon([
+			{ status: "blocked", error: overloaded },
+		]);
+		const phase = new FakePhaseLifecycle();
+		phase.onWait = () => daemon.triggerClose("engine stop");
+		const sleeps: number[] = [];
+		await expect(
+			runGoalToTerminal(makeClient(daemon), {
+				threadId: "t",
+				objective: "OURS",
+				now: () => 0,
+				sleep: async (ms) => {
+					sleeps.push(ms);
+				},
+				pollIntervalMs: 1,
+				phaseLifecycle: phase,
+				readUpstreamRetryEpisode: () => ({
+					v: 1,
+					threadId: "t",
+					category: "server_overloaded",
+					attempts: 3,
+					lastFailedTurnId: "turn-0",
+					nextAt: 0,
+				}),
+				writeUpstreamRetryEpisode: () => {},
+			}),
+		).rejects.toMatchObject({ kind: "transport_closed" });
+		expect(sleeps.some((ms) => ms >= 10_000)).toBe(false);
+		expect(statuses()).toEqual(["active", "paused"]);
+	});
+
+	it("a restart re-observing the failure it already scheduled replays that retry without consuming another attempt", async () => {
+		const overloaded = {
+			message: "at capacity",
+			codexErrorInfo: "serverOverloaded",
+		};
+		const { daemon, statuses } = scriptedDaemon([
+			{ status: "blocked", error: overloaded },
+			{ status: "blocked" },
+		]);
+		const phase = new FakePhaseLifecycle();
+		phase.onWait = () => daemon.triggerClose("engine stop");
+		const sleeps: number[] = [];
+		let episode: unknown = {
+			v: 1,
+			threadId: "t",
+			category: "server_overloaded",
+			attempts: 1,
+			lastFailedTurnId: "turn-1",
+			nextAt: 10_000,
+		};
+		await expect(
+			runGoalToTerminal(makeClient(daemon), {
+				threadId: "t",
+				objective: "OURS",
+				now: () => 0,
+				sleep: async (ms) => {
+					sleeps.push(ms);
+				},
+				pollIntervalMs: 1,
+				phaseLifecycle: phase,
+				readUpstreamRetryEpisode: () => episode as never,
+				writeUpstreamRetryEpisode: (next) => {
+					episode = next;
+				},
+			}),
+		).rejects.toMatchObject({ kind: "transport_closed" });
+		expect(sleeps.filter((ms) => ms >= 10_000)).toEqual([10_000]);
+		expect(episode).toMatchObject({ attempts: 1, lastFailedTurnId: "turn-1" });
+		expect(statuses()).toEqual(["active", "active", "paused"]);
+	});
+
+	it("sends no wake or retry input once the engine withdrew the body (mayProceed=false)", async () => {
+		const { daemon, starts, statuses } = scriptedDaemon([
+			{ status: "blocked" },
+		]);
+		const phase = new FakePhaseLifecycle();
+		let waits = 0;
+		phase.onWait = () => {
+			waits += 1;
+			if (waits === 1) {
+				phase.observations.push({
+					kind: "wake",
+					message: { id: "doorbell:late", content: "late" },
+				});
+			}
+			if (waits >= 3) daemon.triggerClose("engine stop");
+		};
+		let proceed = true;
+		await expect(
+			runGoalToTerminal(makeClient(daemon), {
+				threadId: "t",
+				objective: "OURS",
+				now: () => 0,
+				sleep: async () => {},
+				pollIntervalMs: 1,
+				phaseLifecycle: phase,
+				mayProceed: () => proceed,
+				onResidentWait: () => {
+					proceed = false;
+				},
+			}),
+		).rejects.toMatchObject({ kind: "transport_closed" });
+		expect(starts()).toHaveLength(1);
+		expect(phase.started).toEqual([]);
+		expect(statuses()).toEqual(["active", "paused"]);
+	});
+
+	it("a non-resident run keeps the legacy blocked terminal", async () => {
+		const { daemon } = scriptedDaemon([{ status: "blocked" }]);
+		const result = await runGoalToTerminal(makeClient(daemon), {
+			threadId: "t",
+			objective: "OURS",
+			now: () => 0,
+			sleep: async () => {},
+			pollIntervalMs: 1,
+		});
+		expect(result.status).toBe("blocked");
+	});
+});
+
+describe("runGoalToTerminal — FLY-2925 resident wait survives restart", () => {
+	it("a persisted resident-wait latch re-parks an adopted paused goal without resuming it; only a wake resumes", async () => {
+		const d = new FakeDaemon();
+		let current: GoalStatus = "paused";
+		d.responders.set("thread/goal/get", () => ({
+			goal: { status: current, objective: "OURS" },
+		}));
+		d.responders.set("thread/goal/set", (params) => {
+			current = (params as { status: GoalStatus }).status;
+			return {};
+		});
+		d.responders.set("turn/start", () => ({ turn: { id: "wake-turn" } }));
+		const phase = new FakePhaseLifecycle();
+		let latch = true;
+		const writes: boolean[] = [];
+		let waits = 0;
+		phase.onWait = () => {
+			waits += 1;
+			if (waits === 1) {
+				phase.observations.push({
+					kind: "wake",
+					message: { id: "doorbell:after-restart", content: "inbox" },
+				});
+			}
+			if (waits >= 2) d.triggerClose("engine stop");
+		};
+		const receipts: string[] = [];
+		await expect(
+			runGoalToTerminal(makeClient(d), {
+				threadId: "t",
+				objective: "OURS",
+				now: () => 0,
+				sleep: async () => {
+					d.triggerClose("engine stop");
+				},
+				pollIntervalMs: 1,
+				phaseLifecycle: phase,
+				readResidentWaitLatch: () => latch,
+				writeResidentWaitLatch: (held) => {
+					writes.push(held);
+					latch = held;
+				},
+				onRecoveryOwnershipEstablished: (r) => {
+					receipts.push(r.kind);
+				},
+			}),
+		).rejects.toMatchObject({ kind: "transport_closed" });
+		const sets = d.sent
+			.filter((f) => f.method === "thread/goal/set")
+			.map((f) => (f.params as { status: GoalStatus }).status);
+		// Re-parked first (no self-resume), resumed only by the wake.
+		expect(sets[0]).toBe("paused");
+		expect(sets).toContain("active");
+		expect(sets.indexOf("active")).toBeGreaterThan(0);
+		const starts = d.sent.filter((f) => f.method === "turn/start");
+		expect(starts).toHaveLength(1);
+		expect(receipts).toEqual(["resident_wait_confirmed"]);
+		expect(writes).toEqual([false]);
+		expect(latch).toBe(false);
+	});
+
+	it("entering a resident wait persists the latch before pausing", async () => {
+		const d = new FakeDaemon();
+		let current: GoalStatus = "active";
+		d.responders.set("thread/goal/get", () => ({
+			goal: { status: current, objective: "OURS" },
+		}));
+		d.responders.set("thread/goal/set", (params) => {
+			current = (params as { status: GoalStatus }).status;
+			return {};
+		});
+		d.responders.set("turn/start", (_p, _id, push) => {
+			push({
+				method: "thread/goal/updated",
+				params: {
+					threadId: "t",
+					goal: { status: "blocked", objective: "OURS" },
+				},
+			});
+			return { turn: { id: "kick" } };
+		});
+		const phase = new FakePhaseLifecycle();
+		const order: string[] = [];
+		phase.onWait = () => d.triggerClose("engine stop");
+		const originalSend = d.send.bind(d);
+		d.send = (frame: unknown) => {
+			const f = frame as { method?: string; params?: { status?: string } };
+			if (f.method === "thread/goal/set") order.push(`set:${f.params?.status}`);
+			originalSend(frame);
+		};
+		await expect(
+			runGoalToTerminal(makeClient(d), {
+				threadId: "t",
+				objective: "OURS",
+				now: () => 0,
+				sleep: async () => {},
+				pollIntervalMs: 1,
+				phaseLifecycle: phase,
+				readResidentWaitLatch: () => false,
+				writeResidentWaitLatch: (held) => order.push(`latch:${held}`),
+			}),
+		).rejects.toMatchObject({ kind: "transport_closed" });
+		expect(order).toEqual(["set:active", "latch:true", "set:paused"]);
+	});
+});
+
+describe("runGoalToTerminal — FLY-2925 adopt existing goal (no re-activation, no kick)", () => {
+	function adoptDaemon(goal: unknown) {
+		const d = new FakeDaemon();
+		let current = goal;
+		d.responders.set("thread/goal/get", () => ({ goal: current }));
+		d.responders.set("thread/goal/set", () => ({}));
+		d.responders.set("turn/start", () => ({ turn: { id: "kick" } }));
+		return {
+			d,
+			setGoal: (g: unknown) => {
+				current = g;
+			},
+		};
+	}
+
+	it("observes an adopted active own goal until its native terminal — zero goal/set, zero turn/start", async () => {
+		const { d, setGoal } = adoptDaemon({ status: "active", objective: "OURS" });
+		const receipts: string[] = [];
+		const result = await runGoalToTerminal(makeClient(d), {
+			threadId: "t",
+			objective: "OURS",
+			now: () => 0,
+			sleep: async () => {
+				setGoal({ status: "complete", objective: "OURS" });
+			},
+			pollIntervalMs: 1,
+			adoptExisting: true,
+			onRecoveryOwnershipEstablished: (r) => {
+				receipts.push(r.kind);
+			},
+		});
+		expect(result.status).toBe("complete");
+		expect(d.sentMethods()).not.toContain("thread/goal/set");
+		expect(d.sentMethods()).not.toContain("turn/start");
+		expect(receipts).toEqual(["goal_resumed"]);
+	});
+
+	it("fails closed on a foreign goal instead of overwriting it", async () => {
+		const { d } = adoptDaemon({ status: "active", objective: "SOMEONE ELSE" });
+		await expect(
+			runGoalToTerminal(makeClient(d), {
+				threadId: "t",
+				objective: "OURS",
+				now: () => 0,
+				sleep: async () => {},
+				adoptExisting: true,
+			}),
+		).rejects.toMatchObject({ kind: "setup_failed" });
+		expect(d.sentMethods()).not.toContain("thread/goal/set");
+		expect(d.sentMethods()).not.toContain("turn/start");
+	});
+
+	it("a thread that never had a goal still gets its first activation", async () => {
+		const { d, setGoal } = adoptDaemon(null);
+		d.responders.set("turn/start", () => {
+			setGoal({ status: "complete", objective: "OURS" });
+			return { turn: { id: "kick" } };
+		});
+		const result = await runGoalToTerminal(makeClient(d), {
+			threadId: "t",
+			objective: "OURS",
+			now: () => 0,
+			sleep: async () => {},
+			pollIntervalMs: 1,
+			adoptExisting: true,
+		});
+		expect(result.status).toBe("complete");
+		expect(d.sentMethods()).toContain("turn/start");
+	});
+});
+
+describe("runGoalToTerminal — FLY-2925 review R1 fixes", () => {
+	it("a restart/adoption never resumes a goal someone paused (no Flywheel latch)", async () => {
+		const d = new FakeDaemon();
+		d.responders.set("thread/goal/get", () => ({
+			goal: { status: "paused", objective: "OURS" },
+		}));
+		d.responders.set("thread/goal/set", () => ({}));
+		const phase = new FakePhaseLifecycle();
+		phase.onWait = () => d.triggerClose("engine stop");
+		const latch: boolean[] = [];
+		const reasons: string[] = [];
+		const receipts: string[] = [];
+		await expect(
+			runGoalToTerminal(makeClient(d), {
+				threadId: "t",
+				objective: "OURS",
+				now: () => 0,
+				sleep: async () => {},
+				adoptExisting: true,
+				phaseLifecycle: phase,
+				readGateHoldLatch: () => false,
+				readResidentWaitLatch: () => false,
+				writeResidentWaitLatch: (held) => latch.push(held),
+				onResidentWait: (o) => reasons.push(o.reason),
+				onRecoveryOwnershipEstablished: (r) => {
+					receipts.push(r.kind);
+				},
+			}),
+		).rejects.toMatchObject({ kind: "transport_closed" });
+		expect(d.sentMethods()).not.toContain("thread/goal/set");
+		expect(d.sentMethods()).not.toContain("turn/start");
+		expect(reasons).toEqual(["manual_pause"]);
+		expect(latch).toEqual([true]);
+		expect(receipts).toEqual(["resident_wait_confirmed"]);
+	});
+
+	it.each([{ lastTurn: "turn-9", expectAttempts: 1, expectDelay: 25_000 }])(
+		"after a restart the persisted episode resumes from the thread's last failed turn ($lastTurn)",
+		async ({ lastTurn, expectAttempts, expectDelay }) => {
+			const d = new FakeDaemon();
+			let current: GoalStatus = "blocked";
+			d.responders.set("thread/goal/get", () => ({
+				goal: { status: current, objective: "OURS" },
+			}));
+			d.responders.set("thread/goal/set", (params) => {
+				current = (params as { status: GoalStatus }).status;
+				return {};
+			});
+			d.responders.set("thread/read", () => ({
+				thread: {
+					id: "t",
+					turns: [
+						{ id: "turn-1", status: "completed" },
+						{ id: lastTurn, status: "failed" },
+					],
+				},
+			}));
+			const phase = new FakePhaseLifecycle();
+			phase.onWait = () => d.triggerClose("engine stop");
+			let episode: unknown = {
+				v: 1,
+				threadId: "t",
+				category: "rate_limited",
+				attempts: 1,
+				lastFailedTurnId: "turn-9",
+				nextAt: 25_000,
+			};
+			const sleeps: number[] = [];
+			await expect(
+				runGoalToTerminal(makeClient(d), {
+					threadId: "t",
+					objective: "OURS",
+					now: () => 0,
+					sleep: async (ms) => {
+						sleeps.push(ms);
+						if (current === "active") d.triggerClose("engine stop");
+					},
+					pollIntervalMs: 1,
+					adoptExisting: true,
+					phaseLifecycle: phase,
+					readUpstreamRetryEpisode: () => episode as never,
+					writeUpstreamRetryEpisode: (next) => {
+						episode = next;
+					},
+				}),
+			).rejects.toMatchObject({ kind: "transport_closed" });
+			expect(sleeps.filter((ms) => ms >= 10_000)).toEqual([expectDelay]);
+			expect(episode).toMatchObject({
+				attempts: expectAttempts,
+				lastFailedTurnId: lastTurn,
+			});
+			expect(
+				d.sent
+					.filter((f) => f.method === "thread/goal/set")
+					.map((f) => (f.params as { status: GoalStatus }).status),
+			).toEqual(["active"]);
+		},
+	);
+});
+
+describe("runGoalToTerminal — FLY-2925 review R2 fixes", () => {
+	it("a newer failed turn after a restart has no structured evidence: it waits instead of inheriting the old category", async () => {
+		const d = new FakeDaemon();
+		let current: GoalStatus = "blocked";
+		d.responders.set("thread/goal/get", () => ({
+			goal: { status: current, objective: "OURS" },
+		}));
+		d.responders.set("thread/goal/set", (params) => {
+			current = (params as { status: GoalStatus }).status;
+			return {};
+		});
+		d.responders.set("thread/read", () => ({
+			thread: { id: "t", turns: [{ id: "turn-10", status: "failed" }] },
+		}));
+		const phase = new FakePhaseLifecycle();
+		phase.onWait = () => d.triggerClose("engine stop");
+		let episode: unknown = {
+			v: 1,
+			threadId: "t",
+			category: "rate_limited",
+			attempts: 1,
+			lastFailedTurnId: "turn-9",
+			nextAt: 25_000,
+		};
+		const reasons: string[] = [];
+		await expect(
+			runGoalToTerminal(makeClient(d), {
+				threadId: "t",
+				objective: "OURS",
+				now: () => 0,
+				sleep: async () => {},
+				pollIntervalMs: 1,
+				adoptExisting: true,
+				phaseLifecycle: phase,
+				readUpstreamRetryEpisode: () => episode as never,
+				writeUpstreamRetryEpisode: (next) => {
+					episode = next;
+				},
+				onResidentWait: (o) => reasons.push(o.reason),
+			}),
+		).rejects.toMatchObject({ kind: "transport_closed" });
+		expect(reasons).toEqual(["upstream_error_wait"]);
+		expect(episode).toMatchObject({ attempts: 1, lastFailedTurnId: "turn-9" });
+		expect(
+			d.sent
+				.filter((f) => f.method === "thread/goal/set")
+				.map((f) => (f.params as { status: GoalStatus }).status),
+		).toEqual(["paused"]);
+	});
+
+	it("a manual pause stays manual even while a gate marker is open (no Flywheel latch)", async () => {
+		const d = new FakeDaemon();
+		d.responders.set("thread/goal/get", () => ({
+			goal: { status: "paused", objective: "OURS" },
+		}));
+		d.responders.set("thread/goal/set", () => ({}));
+		const phase = new FakePhaseLifecycle();
+		phase.onWait = () => d.triggerClose("engine stop");
+		const gateLatch: boolean[] = [];
+		const reasons: string[] = [];
+		await expect(
+			runGoalToTerminal(makeClient(d), {
+				threadId: "t",
+				objective: "OURS",
+				now: () => 0,
+				sleep: async () => {},
+				adoptExisting: true,
+				phaseLifecycle: phase,
+				isWaiting: () => true,
+				readGateHoldLatch: () => false,
+				writeGateHoldLatch: (v) => gateLatch.push(v),
+				readResidentWaitLatch: () => false,
+				writeResidentWaitLatch: () => {},
+				onResidentWait: (o) => reasons.push(o.reason),
+			}),
+		).rejects.toMatchObject({ kind: "transport_closed" });
+		expect(reasons).toEqual(["manual_pause"]);
+		expect(gateLatch).toEqual([]);
+		expect(d.sentMethods()).not.toContain("thread/goal/set");
+	});
+
+	it("a resident budgetLimited goal waits (no governance consumes it) instead of ending", async () => {
+		const d = new FakeDaemon();
+		let current: GoalStatus = "active";
+		d.responders.set("thread/goal/get", () => ({
+			goal: { status: current, objective: "OURS" },
+		}));
+		d.responders.set("thread/goal/set", (params) => {
+			current = (params as { status: GoalStatus }).status;
+			return {};
+		});
+		d.responders.set("turn/start", (_p, _id, push) => {
+			current = "budgetLimited";
+			push({
+				method: "thread/goal/updated",
+				params: {
+					threadId: "t",
+					goal: { status: "budgetLimited", objective: "OURS" },
+				},
+			});
+			return { turn: { id: "kick" } };
+		});
+		const phase = new FakePhaseLifecycle();
+		phase.onWait = () => d.triggerClose("engine stop");
+		const reasons: string[] = [];
+		await expect(
+			runGoalToTerminal(makeClient(d), {
+				threadId: "t",
+				objective: "OURS",
+				now: () => 0,
+				sleep: async () => {},
+				pollIntervalMs: 1,
+				phaseLifecycle: phase,
+				onResidentWait: (o) => reasons.push(o.reason),
+			}),
+		).rejects.toMatchObject({ kind: "transport_closed" });
+		expect(reasons).toEqual(["budget_limited"]);
+	});
+});
+
+describe("runGoalToTerminal — FLY-2925 quota exhaustion goes to governance, never a resident wait", () => {
+	function blockedWith(errorInfo: unknown, repeats = 1) {
+		const d = new FakeDaemon();
+		let current: GoalStatus = "active";
+		let activeSets = 0;
+		let turn = 0;
+		const emit = (push: (n: unknown) => void) => {
+			turn += 1;
+			push({
+				method: "turn/completed",
+				params: {
+					threadId: "t",
+					turn: {
+						id: `turn-${turn}`,
+						status: "failed",
+						error: { message: "usage limit", codexErrorInfo: errorInfo },
+					},
+				},
+			});
+			current = "blocked";
+			push({
+				method: "thread/goal/updated",
+				params: {
+					threadId: "t",
+					goal: { status: "blocked", objective: "OURS" },
+				},
+			});
+		};
+		d.responders.set("thread/goal/set", (params, _id, push) => {
+			current = (params as { status: GoalStatus }).status;
+			if (current === "active") {
+				activeSets += 1;
+				if (activeSets > 1 && activeSets <= repeats) emit(push);
+			}
+			return {};
+		});
+		d.responders.set("turn/start", (_p, _id, push) => {
+			emit(push);
+			return { turn: { id: `turn-${turn}` } };
+		});
+		d.responders.set("thread/goal/get", () => ({
+			goal: { status: current, objective: "OURS" },
+		}));
+		return d;
+	}
+
+	it("usageLimitExceeded ends the resident run as usageLimited (quota governance input)", async () => {
+		const d = blockedWith("usageLimitExceeded");
+		const phase = new FakePhaseLifecycle();
+		const reasons: string[] = [];
+		const result = await runGoalToTerminal(makeClient(d), {
+			threadId: "t",
+			objective: "OURS",
+			now: () => 0,
+			sleep: async () => {},
+			pollIntervalMs: 1,
+			phaseLifecycle: phase,
+			readUpstreamRetryEpisode: () => null,
+			writeUpstreamRetryEpisode: () => {},
+			onResidentWait: (o) => reasons.push(o.reason),
+		});
+		expect(result.status).toBe("usageLimited");
+		expect(reasons).toEqual([]);
+	});
+
+	it("HTTP 429 that survives every bounded retry is handed to quota governance, not parked", async () => {
+		const d = blockedWith({ httpConnectionFailed: { httpStatusCode: 429 } }, 4);
+		const phase = new FakePhaseLifecycle();
+		let episode: unknown = null;
+		const reasons: string[] = [];
+		const result = await runGoalToTerminal(makeClient(d), {
+			threadId: "t",
+			objective: "OURS",
+			now: () => 0,
+			sleep: async () => {},
+			pollIntervalMs: 1,
+			phaseLifecycle: phase,
+			readUpstreamRetryEpisode: () => episode as never,
+			writeUpstreamRetryEpisode: (next) => {
+				episode = next;
+			},
+			onResidentWait: (o) => reasons.push(o.reason),
+		});
+		expect(result.status).toBe("usageLimited");
+		expect(reasons).toEqual([
+			"upstream_retry",
+			"upstream_retry",
+			"upstream_retry",
+		]);
+	});
+
+	it("persists quota handoff when a retry transitions natively to usageLimited", async () => {
+		const d = new FakeDaemon();
+		let current: GoalStatus = "active";
+		let activeSets = 0;
+		d.responders.set("thread/goal/set", (params, _id, push) => {
+			current = (params as { status: GoalStatus }).status;
+			if (current === "active") {
+				activeSets += 1;
+				if (activeSets === 2) {
+					current = "usageLimited";
+					push({
+						method: "thread/goal/updated",
+						params: {
+							threadId: "t",
+							goal: { status: "usageLimited", objective: "OURS" },
+						},
+					});
+				}
+			}
+			return {};
+		});
+		d.responders.set("turn/start", (_p, _id, push) => {
+			push({
+				method: "turn/completed",
+				params: {
+					threadId: "t",
+					turn: {
+						id: "turn-1",
+						status: "failed",
+						error: {
+							message: "too many requests",
+							codexErrorInfo: {
+								httpConnectionFailed: { httpStatusCode: 429 },
+							},
+						},
+					},
+				},
+			});
+			current = "blocked";
+			push({
+				method: "thread/goal/updated",
+				params: {
+					threadId: "t",
+					goal: { status: "blocked", objective: "OURS" },
+				},
+			});
+			return { turn: { id: "turn-1" } };
+		});
+		d.responders.set("thread/goal/get", () => ({
+			goal: { status: current, objective: "OURS" },
+		}));
+		d.responders.set("thread/read", () => ({
+			thread: { id: "t", turns: [{ id: "turn-1", status: "failed" }] },
+		}));
+
+		let episode: unknown = null;
+		const result = await runGoalToTerminal(makeClient(d), {
+			threadId: "t",
+			objective: "OURS",
+			now: () => 0,
+			sleep: async () => {},
+			pollIntervalMs: 1,
+			phaseLifecycle: new FakePhaseLifecycle(),
+			readUpstreamRetryEpisode: () => episode as never,
+			writeUpstreamRetryEpisode: (next) => {
+				episode = next;
+			},
+		});
+
+		expect(result.status).toBe("usageLimited");
+		expect(episode).toMatchObject({
+			category: "rate_limited",
+			lastFailedTurnId: "turn-1",
+			quotaExhausted: true,
+		});
+	});
+
+	it("starts a fresh retry episode when a quota-resumed thread later gets a new 429", async () => {
+		const d = new FakeDaemon();
+		let current: GoalStatus = "usageLimited";
+		let activeSets = 0;
+		d.responders.set("thread/goal/get", () => ({
+			goal: { status: current, objective: "OURS" },
+		}));
+		d.responders.set("thread/goal/set", (params) => {
+			current = (params as { status: GoalStatus }).status;
+			if (current === "active") {
+				activeSets += 1;
+				if (activeSets === 2) d.triggerClose("stop after retry proof");
+			}
+			return {};
+		});
+		d.responders.set("turn/start", () => ({ turn: { id: "turn-continue" } }));
+
+		const quotaResume: CodexQuotaResumeLifecycle = {
+			authorization: {
+				executionId: "exec-1",
+				claimId: "bridge:1:boot:c1",
+				entrySeq: 1,
+				resumeAttempt: 1,
+			},
+			continueAttemptId: "11111111-2222-4333-8444-555555555555",
+			continueAttemptFresh: true,
+			onContinueReconciled: () => ({
+				action: "abort",
+				reason: "not reached",
+			}),
+			onContinueStarted: () => true,
+			onContinueProgress: () => {},
+			onContinueFailed: () => {},
+		};
+		let episode: unknown = {
+			v: 1,
+			threadId: "t",
+			category: "rate_limited",
+			attempts: 3,
+			lastFailedTurnId: "turn-old-quota",
+			nextAt: 0,
+			quotaExhausted: true,
+		};
+		const writes: unknown[] = [];
+		const retries: Array<{ reason: string; attempt?: number }> = [];
+
+		await expect(
+			runGoalToTerminal(makeClient(d), {
+				threadId: "t",
+				objective: "OURS",
+				now: () => 0,
+				sleep: async () => {},
+				pollIntervalMs: 1,
+				phaseLifecycle: new FakePhaseLifecycle(),
+				quotaResume,
+				onGoalActive: () => {
+					if (activeSets !== 1) return;
+					d.push({
+						method: "item/completed",
+						params: {
+							threadId: "t",
+							turnId: "turn-continue",
+							item: { type: "agentMessage", id: "answer-1" },
+						},
+					});
+					d.push({
+						method: "turn/completed",
+						params: {
+							threadId: "t",
+							turn: { id: "turn-continue", status: "completed" },
+						},
+					});
+					d.push({
+						method: "turn/completed",
+						params: {
+							threadId: "t",
+							turn: {
+								id: "turn-new-429",
+								status: "failed",
+								error: {
+									message: "transient 429",
+									codexErrorInfo: {
+										httpConnectionFailed: { httpStatusCode: 429 },
+									},
+								},
+							},
+						},
+					});
+					d.push({
+						method: "thread/goal/updated",
+						params: {
+							threadId: "t",
+							goal: { status: "blocked", objective: "OURS" },
+						},
+					});
+				},
+				readUpstreamRetryEpisode: () => episode as never,
+				writeUpstreamRetryEpisode: (next) => {
+					episode = next;
+					writes.push(next);
+				},
+				onResidentWait: (observation) => retries.push(observation),
+			}),
+		).rejects.toMatchObject({ kind: "closed" });
+
+		expect(writes).toContain(null);
+		expect(episode).toMatchObject({
+			category: "rate_limited",
+			attempts: 1,
+			lastFailedTurnId: "turn-new-429",
+		});
+		expect(episode).not.toMatchObject({ quotaExhausted: true });
+		expect(retries).toContainEqual(
+			expect.objectContaining({ reason: "upstream_retry", attempt: 1 }),
+		);
+	});
+});
+
+describe("runGoalToTerminal — FLY-2925 review R3 fixes", () => {
+	function restartedBlocked(lastTurn: { id: string; status: string }) {
+		const d = new FakeDaemon();
+		let current: GoalStatus = "blocked";
+		d.responders.set("thread/goal/get", () => ({
+			goal: { status: current, objective: "OURS" },
+		}));
+		d.responders.set("thread/goal/set", (params) => {
+			current = (params as { status: GoalStatus }).status;
+			return {};
+		});
+		d.responders.set("thread/read", () => ({
+			thread: { id: "t", turns: [lastTurn] },
+		}));
+		return d;
+	}
+
+	it("a quota handoff persists before ending, so a crash-restart on the same failed turn hands off again instead of parking", async () => {
+		// First run: usageLimitExceeded → handoff; the marker is persisted.
+		const first = new FakeDaemon();
+		let current: GoalStatus = "active";
+		first.responders.set("thread/goal/get", () => ({
+			goal: { status: current, objective: "OURS" },
+		}));
+		first.responders.set("thread/goal/set", (params) => {
+			current = (params as { status: GoalStatus }).status;
+			return {};
+		});
+		first.responders.set("turn/start", (_p, _id, push) => {
+			push({
+				method: "turn/completed",
+				params: {
+					threadId: "t",
+					turn: {
+						id: "turn-q",
+						status: "failed",
+						error: {
+							message: "Add credits",
+							codexErrorInfo: "usageLimitExceeded",
+						},
+					},
+				},
+			});
+			current = "blocked";
+			push({
+				method: "thread/goal/updated",
+				params: {
+					threadId: "t",
+					goal: { status: "blocked", objective: "OURS" },
+				},
+			});
+			return { turn: { id: "turn-q" } };
+		});
+		let episode: unknown = null;
+		const io = {
+			readUpstreamRetryEpisode: () => episode as never,
+			writeUpstreamRetryEpisode: (next: unknown) => {
+				episode = next;
+			},
+		};
+		const firstResult = await runGoalToTerminal(makeClient(first), {
+			threadId: "t",
+			objective: "OURS",
+			now: () => 0,
+			sleep: async () => {},
+			pollIntervalMs: 1,
+			phaseLifecycle: new FakePhaseLifecycle(),
+			...io,
+		});
+		expect(firstResult.status).toBe("usageLimited");
+		expect(episode).toMatchObject({
+			quotaExhausted: true,
+			lastFailedTurnId: "turn-q",
+		});
+
+		// Crash before the terminal was published; the restart adopts the blocked goal.
+		const second = restartedBlocked({ id: "turn-q", status: "failed" });
+		const reasons: string[] = [];
+		const secondResult = await runGoalToTerminal(makeClient(second), {
+			threadId: "t",
+			objective: "OURS",
+			now: () => 0,
+			sleep: async () => {},
+			pollIntervalMs: 1,
+			adoptExisting: true,
+			phaseLifecycle: new FakePhaseLifecycle(),
+			onResidentWait: (o) => reasons.push(o.reason),
+			...io,
+		});
+		expect(secondResult.status).toBe("usageLimited");
+		expect(reasons).toEqual([]);
+	});
+
+	it("a restored episode is cleared by the next successful turn even when a newer failed turn made the body wait", async () => {
+		const d = restartedBlocked({ id: "turn-10", status: "failed" });
+		const phase = new FakePhaseLifecycle();
+		let waits = 0;
+		phase.onWait = () => {
+			waits += 1;
+			if (waits === 1) {
+				phase.observations.push({
+					kind: "wake",
+					message: { id: "doorbell:fix", content: "inbox" },
+				});
+			} else {
+				d.triggerClose("engine stop");
+			}
+		};
+		d.responders.set("turn/start", (_p, _id, push) => {
+			push({
+				method: "turn/completed",
+				params: {
+					threadId: "t",
+					turn: { id: "wake-turn", status: "completed", error: null },
+				},
+			});
+			return { turn: { id: "wake-turn" } };
+		});
+		let episode: unknown = {
+			v: 1,
+			threadId: "t",
+			category: "rate_limited",
+			attempts: 3,
+			lastFailedTurnId: "turn-9",
+			nextAt: 0,
+		};
+		await expect(
+			runGoalToTerminal(makeClient(d), {
+				threadId: "t",
+				objective: "OURS",
+				now: () => 0,
+				sleep: async () => {
+					d.triggerClose("engine stop");
+				},
+				pollIntervalMs: 1,
+				adoptExisting: true,
+				phaseLifecycle: phase,
+				readUpstreamRetryEpisode: () => episode as never,
+				writeUpstreamRetryEpisode: (next) => {
+					episode = next;
+				},
+			}),
+		).rejects.toMatchObject({ kind: "transport_closed" });
+		expect(episode).toBeNull();
+	});
+});
+
+describe("runGoalToTerminal — FLY-2925 review R4 (Lead ruling B)", () => {
+	it("an unpersistable quota marker is made visible (quota_handoff_unpersisted) and the handoff still proceeds", async () => {
+		const d = new FakeDaemon();
+		let current: GoalStatus = "active";
+		d.responders.set("thread/goal/get", () => ({
+			goal: { status: current, objective: "OURS" },
+		}));
+		d.responders.set("thread/goal/set", (params) => {
+			current = (params as { status: GoalStatus }).status;
+			return {};
+		});
+		d.responders.set("turn/start", (_p, _id, push) => {
+			push({
+				method: "turn/completed",
+				params: {
+					threadId: "t",
+					turn: {
+						id: "turn-q",
+						status: "failed",
+						error: {
+							message: "Add credits",
+							codexErrorInfo: "usageLimitExceeded",
+						},
+					},
+				},
+			});
+			current = "blocked";
+			push({
+				method: "thread/goal/updated",
+				params: {
+					threadId: "t",
+					goal: { status: "blocked", objective: "OURS" },
+				},
+			});
+			return { turn: { id: "turn-q" } };
+		});
+		const observations: Array<{ reason: string; turnId?: string }> = [];
+		const result = await runGoalToTerminal(makeClient(d), {
+			threadId: "t",
+			objective: "OURS",
+			now: () => 0,
+			sleep: async () => {},
+			pollIntervalMs: 1,
+			phaseLifecycle: new FakePhaseLifecycle(),
+			readUpstreamRetryEpisode: () => null,
+			writeUpstreamRetryEpisode: () => {
+				throw new Error("ENOSPC");
+			},
+			onResidentWait: (o) =>
+				observations.push({ reason: o.reason, turnId: o.turnId }),
+		});
+		expect(result.status).toBe("usageLimited");
+		expect(observations).toEqual([
+			{ reason: "quota_handoff_unpersisted", turnId: "turn-q" },
+		]);
 	});
 });

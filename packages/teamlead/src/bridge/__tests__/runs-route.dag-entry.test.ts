@@ -890,10 +890,21 @@ describe("FLY-1385 schema-v2 entry compatibility", () => {
 
 		const first = await post(h.url, request);
 		expect(first.status).toBe(202);
+		// FLY-2925 / FLY-2689: the run is already admitted, so a pending first
+		// launch reports the run fact (accepted, launch pending) — never a failure.
 		expect(first.json).toMatchObject({
+			success: true,
+			pending: true,
 			code: "LAUNCH_PENDING",
+			launchState: "pending",
+			retryable: false,
 			workflowNodeId: "eng_design",
+			executionId: expect.any(String),
+			workflowRunId: expect.any(String),
 		});
+		expect(first.json.statusPath).toBe(
+			`/api/runs/${first.json.workflowRunId as string}/diagnostic`,
+		);
 		expect(onEpicChange).toHaveBeenCalledOnce();
 		const run = h.store.getWorkflowRun(first.json.workflowRunId as string)!;
 		expect(run).toMatchObject({ engine_owned: 1, entry_kind: "workflow_v2" });

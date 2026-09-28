@@ -1,0 +1,14 @@
+{
+  "url": "https://fw-reports-6da062.vercel.app/r/3b8bf00438af9e5385a4b1469fcacd3a/",
+  "status": 200,
+  "sourceMatch": "exact after publisher noindex/CSP/nonce injection",
+  "localHtmlSha256": "768cd4c5181df8c8b7281413138c1601a665b10a28cd0dae18fa7cf10f45b81f",
+  "hostedHtmlSha256": "c56a4be5dbc2bfdcc5787a5a7ecf8b858c89edf5e0ebb02de08d466c469c3ee9",
+  "singleScriptNonceMatchesCsp": true,
+  "noncePlaceholderRemaining": 0,
+  "externalAssets": 0,
+  "inlineHandlers": 0,
+  "commentInputs": 9,
+  "diagramPending": 3,
+  "scope": "HTTP/source/CSP contract only; no browser visual or production validation"
+}

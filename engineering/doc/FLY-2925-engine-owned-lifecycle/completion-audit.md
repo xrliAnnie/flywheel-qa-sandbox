@@ -1,0 +1,49 @@
+# FLY-2925 引擎统一体生命周期 — 调研
+Issue: FLY-2925 (https://linear.app/geoforge3d/issue/FLY-2925/病根修复-7-codex-体生死只认引擎一侧goal-结束不等于死引擎终结后-goal-不得自续重启只按原会话续接6-张-43)
+日期: 2026-09-26
+基于: plan.md
+
+## 当前结论（重开执行 926640ee）
+
+本次 TURN 已核为 design epoch 3；分支从交接指定 b00dafc81 继续。onboard 已重新报告并完成，已进入 brainstorm/research/plan，按明确指令不请求 brainstorm 或 ship gate。旧执行的 422 仅保留为历史，不复用其 gate/request 身份。当前无 unread instruction。
+
+| 要求 | 当前证据 / 状态 |
+|---|---|
+| 沿用既有三份设计与统计 | exploration/research/plan、冻结 evidence 保留；无实现改动、无产品测试或生产操作 |
+| 对齐最新 Lead 裁定 | plan §13；FLY-2902 已批准原槽合同替代旧在飞切换硬要求；六单 A1–A6、A7/A8 仍保留 |
+| 独立宿主首选比较与可见 TUI | plan §1–4；HTML 首屏明确选择、原因、代价 |
+| 近两周统计 | 冻结 458 事件、100 个报错体、62 个明确失败；分母限制不变 |
+| 设计正式评审 | 本执行 request 9b8acb0b-8a17-4726-8d52-4e1eafef51ad 已 accepted；gate 3d0bd288-23a3-46e2-a652-86e1fb8e9b88 待有效 verdict；plan blob acfadbf46b5252dafa1b30d5a38fa02ec75f6d8a。旧 b01b1efa 的 422 只属历史 |
+| reviewer 测试政策 | 当前生产 producer 首字节加载 policy；SHA256 69b512badb5fdd37ebe6db6dd3f9f22ca7db577c6539c69252b10ff87858c363 与注入政策一致 |
+| HTML 与图 | 草稿已对齐最新账号边界；原 3 图各两次本地失败记录保留，明确 pending；不远程渲染 |
+| 发布与交接 | 等有效 APPROVED 后最终提交推送、静默发布、HTTP/CSP/源核验、DESIGN-HTML ready、complete phase_design_complete、park |
+
+旧执行 0e6daf78 的 immutable binding 缺失由本次重开替代，不能自行改库或伪造 HTTP worktree_ready 修补。新评审 accepted 回执才证明注册成功。没有当前 APPROVED 与发布/完成回执，不将设计标完成；阶段交卷也不终结常驻 goal。
+
+## R1 返工状态
+
+question 3d0bd288-23a3-46e2-a652-86e1fb8e9b88 已返回有效 CHANGES_REQUESTED（2 HIGH、7 MEDIUM）。plan §4.4/6.1/9/14 已补快照、真实首次接管与两步发布/回滚守卫，全部九项有处置与验收；待新请求评审，不沿用旧 accepted 当批准。HTML 已补首屏成本和首次失败的诚实边界；无实现/构建/重启。
+
+复审 accepted：question 01a03f19-f1f8-44cb-92b9-ac4794b9c2b8，request f15d927d-4fb8-47f7-aaf7-eb441069a0d1，提交 3eaefd08e，plan blob af0f4fee21ff85424d2aa509ba80fa08997474a7。待有效 verdict，未发布。
+
+## R2 返工状态
+
+有效 CHANGES_REQUESTED：新增 HIGH pinned-snapshot-cross-version-contracts；R1 两项 HIGH 已获 reviewer 确认修复。plan §4.5 增全部固定消费者的跨版本合同、最旧在用部署门、无迁移 writer、原会话升级和 A9。§15 保留两个非阻塞 Follow-ups（人工 reset 绕过 wrapper、快照容量优化），其他三项建议已修订。等待新复审；未发布或交卷。
+
+第三次评审 accepted：question 475e1488-63cf-4948-bb03-87b325b0b7f9，request b797be09-535e-4a2e-9635-f95e99a0035c，提交 79c03027c，plan blob 989780531149c2bd73c37bb3da1fe1a08ba60e62；未获 verdict，未发布。
+
+## R3 获批核验
+
+有效 APPROVED，四项 MEDIUM 已记录 review-followups.md 并报告 Lead；只读核 engine approval proof.state=approved，expected_blob_sha 与当前 HEAD plan 均为 989780531149c2bd73c37bb3da1fe1a08ba60e62。正式凭证在 evidence/review-approved.json。plan 字节冻结；HTML 状态与 Follow-ups 已同步。剩余：最终提交/推送、静默发布、托管页核验、DESIGN-HTML ready、complete、park。
+
+Lead 回复 cf0ed513-7653-42e2-b856-656286d86a14 已消费：四项 MEDIUM 均为实施 must-fix acceptance，不重开设计；人工 reset 限制进后续 PR。交接附件与 HTML 已同步，首屏补首次失败边界，plan blob 不变。
+
+## 发布与交卷前最终核对
+
+- 最终 HTML 已在提交 a12c2e75c 推送后静默发布：https://fw-reports-6da062.vercel.app/r/3b8bf00438af9e5385a4b1469fcacd3a/ 。publishOnly=true、messageId=null、delivered=false 符合不发送频道消息要求。
+- verify-report 通过 HTTP 200、placeholder=0、CSP/script nonce 与首屏预期内容；独立 fetch 对照 report-registry 注入规则后与本地源逐字一致。evidence/hosted-validation.json、publish-receipt.json 保存证据。
+- 九节/九输入、单 nonce 脚本、无 inline handlers/外部资产；controller 脚本 hash 与既有模拟 DOM 四场景通过版本一致。无浏览器视觉或生产修后验证；三图各两次本地渲染失败后保留 Mermaid 源与明确 pending，符合允许降级。
+- DESIGN-HTML ready 已发送到 flywheel-eng-lead，持久报告 id 2bec8807-0eb3-4192-9b18-728c1ed12af1；doorbell 提醒超时不代表持久报告丢失，也不声称 Lead 已读。
+- 有效 R3 APPROVED proof/current plan blob 一致；获批 plan 无修改。四项建议按 Lead 回复升级为实施必须验收，人工 reset 限制留给后续 PR。
+- 设计阶段无实现、无全仓/全包测试、无生产重启、无账号变更、无后继派发、无 ship/merge。角色记忆无新通用条目，本轮保持 unchanged，已报告。
+- 本核对表及发布证据推送后执行 complete --route phase_design_complete；如返回 unread mail 当轮消费/ack/重试，然后 park。阶段完成不将常驻 goal 终结。

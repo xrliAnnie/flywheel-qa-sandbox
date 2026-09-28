@@ -1,0 +1,21 @@
+{
+  "executionId": "0e6daf78-4d2a-4b32-85df-eaa57342e879",
+  "questionId": "fc8484c6-f03d-4feb-b0a3-aef4d81e894c",
+  "requestId": "b01b1efa-c985-4fb0-995f-c1d8056d5173",
+  "registrationStatus": "rejected",
+  "httpStatus": 422,
+  "reviewerStarted": false,
+  "reason": "execution has no immutable worktree binding",
+  "planCommit": "b583efc4fbdf9dfcf6f7b484dd9e9cf780a4863d",
+  "planBlob": "673bf7090020589e6bd7168a8d444918348f61a6",
+  "observedBinding": {
+    "worktree_path": "/Users/xiaorongli/Dev/flywheel-FLY-2925",
+    "branch": null,
+    "worktree_binding_path": null,
+    "worktree_binding_branch": null,
+    "worktree_binding_generation": null,
+    "worktree_binding_locked_at": null
+  },
+  "leadReportId": "caaec9a2-9bb4-4ddb-b0f5-bd166cc1ae97",
+  "recovery": "After authoritative binding repair and TURN check, verify original gate open and retry request-review using this same requestId. Do not treat pending gate as an active review."
+}

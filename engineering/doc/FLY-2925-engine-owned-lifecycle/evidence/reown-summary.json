@@ -1,0 +1,32 @@
+{
+  "start": "2026-09-12T20:24:44+00:00",
+  "end": "2026-09-26T20:24:44+00:00",
+  "max_session_event_id": 11160650,
+  "raw_sha256": "70e5dd171fa61002931ddc2d33e4f4ca4db47f550ad8b92721dcaeb330c3fa00",
+  "failure_event_rows": 458,
+  "affected_executions": 100,
+  "issues": 72,
+  "cause_counts": {
+    "launch_snapshot_mismatch": 41,
+    "active_turn_mismatch": 25,
+    "exhausted_unspecified": 1,
+    "owner_failure_unspecified": 17,
+    "home_arm_mismatch": 16
+  },
+  "limitations": [
+    "Failure evidence only; no restart denominator or causal attribution to a specific Bridge restart.",
+    "Specific event codes override generic terminal summaries. Multiple different failure reasons on one execution count once by documented priority.",
+    "This event-window census includes older executions; it differs from FLY-2893's creation-window cohort.",
+    "Structured codes do not prove root cause. Unspecified failures remain unspecified.",
+    "No matching session_failed does not prove recovery succeeded; an execution may remain held or fail under another code."
+  ],
+  "executions_with_recovery_session_failed": 62,
+  "terminal_failure_cause_counts": {
+    "launch_snapshot_mismatch": 26,
+    "active_turn_mismatch": 19,
+    "exhausted_unspecified": 1,
+    "home_arm_mismatch": 11,
+    "owner_failure_unspecified": 5
+  },
+  "executions_without_recovery_session_failed": 38
+}

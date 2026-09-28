@@ -2407,8 +2407,11 @@ describe("Event route", () => {
 					event_type: "session_failed",
 					source: "direct-event-sink",
 					payload: {
-						error: "blocked",
-						failure: { failureKind: "goal_blocked", failureReason: "blocked" },
+						error: "exhausted",
+						failure: {
+							failureKind: "reown_exhausted",
+							failureReason: "exhausted",
+						},
 					},
 				}),
 			),
@@ -2417,7 +2420,7 @@ describe("Event route", () => {
 		expect(record).toHaveBeenCalledWith(
 			expect.objectContaining({
 				source: "http-events",
-				failureKind: "goal_blocked",
+				failureKind: "reown_exhausted",
 			}),
 		);
 		expect(store.getPreAdapterFailureReceipt("exec-1")).toBeUndefined();
@@ -2666,7 +2669,7 @@ describe("Event route", () => {
 					payload: {
 						error: "legacy error",
 						failure: {
-							failureKind: "goal_blocked",
+							failureKind: "reown_exhausted",
 							failureReason: "refresh token revoked",
 							failureClass: "environment",
 							failureCode: "codex:unauthorized",
@@ -2678,8 +2681,8 @@ describe("Event route", () => {
 
 		expect(res.status).toBe(200);
 		expect(store.getEventPayloadById("unauthorized-terminal-http")).toEqual({
-			failureKind: "goal_blocked",
-			lastError: "refresh token revoked",
+			failureKind: "reown_exhausted",
+			lastError: "legacy error",
 			failureClass: "environment",
 			failureCode: "codex:unauthorized",
 		});
@@ -2698,8 +2701,9 @@ describe("Event route", () => {
 					event_id: "unknown-terminal-http",
 					event_type: "session_failed",
 					payload: {
+						error: "unknown environment failure",
 						failure: {
-							failureKind: "goal_blocked",
+							failureKind: "reown_exhausted",
 							failureReason: "unknown environment failure",
 							failureClass: "environment",
 							failureCode: "codex:future_code",
@@ -2711,7 +2715,7 @@ describe("Event route", () => {
 
 		expect(res.status).toBe(200);
 		expect(store.getEventPayloadById("unknown-terminal-http")).toEqual({
-			failureKind: "goal_blocked",
+			failureKind: "reown_exhausted",
 			lastError: "unknown environment failure",
 		});
 	});
@@ -3009,7 +3013,7 @@ describe("Event route", () => {
 		expect(session!.last_error).toBe("deployment timeout");
 	});
 
-	it("FLY-1279: HTTP session_failed persists goal_blocked as blocked with its real reason", async () => {
+	it("FLY-2925: an HTTP goal_blocked failure is observation only — never a terminal", async () => {
 		const res = await fetch(`${baseUrl}/events`, {
 			method: "POST",
 			headers: {
@@ -3018,6 +3022,7 @@ describe("Event route", () => {
 			},
 			body: JSON.stringify(
 				makeEvent({
+					event_id: "goal-blocked-http",
 					event_type: "session_failed",
 					payload: {
 						error: "legacy error",
@@ -3030,10 +3035,74 @@ describe("Event route", () => {
 			),
 		});
 		expect(res.status).toBe(200);
+		expect(await res.json()).toMatchObject({
+			ok: true,
+			observationOnly: true,
+		});
 
 		const session = store.getSession("exec-1");
-		expect(session?.status).toBe("blocked");
-		expect(session?.last_error).toBe("goal ended non-complete: blocked");
+		expect(session?.status).not.toBe("blocked");
+		expect(session?.status).not.toBe("failed");
+		expect(
+			store.getEventPayloadById("goal-blocked-observed:goal-blocked-http"),
+		).toMatchObject({ failureReason: "goal ended non-complete: blocked" });
+	});
+
+	it("FLY-2925: a codex_resident_wait observation is persisted through the unchanged generic path and never changes the session", async () => {
+		bindGeneralizedExecution(store, "exec-1");
+		const before = store.getSession("exec-1")?.status;
+		const record = vi.spyOn(store, "recordEnrolledTerminalSignal");
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "resident-wait-1",
+					event_type: "codex_resident_wait",
+					source: "codex-tmux-adapter",
+					payload: {
+						reason: "native_blocked",
+						threadId: "thread-live",
+						observedAt: "2026-09-26T00:00:00.000Z",
+					},
+				}),
+			),
+		});
+		expect(res.status).toBe(200);
+		expect(store.getEventPayloadById("resident-wait-1")).toMatchObject({
+			reason: "native_blocked",
+		});
+		expect(store.getSession("exec-1")?.status).toBe(before);
+		expect(record).not.toHaveBeenCalled();
+	});
+
+	it("FLY-2925: a replayed goal_blocked never tears down an enrolled resident body", async () => {
+		bindGeneralizedExecution(store, "exec-1");
+		const record = vi.spyOn(store, "recordEnrolledTerminalSignal");
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "replayed-goal-blocked",
+					event_type: "session_failed",
+					payload: {
+						failure: {
+							failureKind: "goal_blocked",
+							failureReason: "goal ended non-complete: blocked",
+						},
+					},
+				}),
+			),
+		});
+		expect(res.status).toBe(200);
+		expect(record).not.toHaveBeenCalled();
 	});
 
 	it("POST /events with duplicate event_id returns ok + duplicate", async () => {

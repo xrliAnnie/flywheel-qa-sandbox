@@ -1,0 +1,75 @@
+{
+  "checks": [
+    {
+      "execution_id": "04cd13a3-1567-40f7-93c7-e6cded84609d",
+      "proof_event_id": 8698213,
+      "cause": "active_turn_mismatch",
+      "source_identity_matches": true,
+      "source_reason_matches": true
+    },
+    {
+      "execution_id": "13366ff6-55db-441e-8777-ec7fd62bb1c5",
+      "proof_event_id": 8070909,
+      "cause": "active_turn_mismatch",
+      "source_identity_matches": true,
+      "source_reason_matches": true
+    },
+    {
+      "execution_id": "09d77f2a-eaac-4802-b6a2-fbc2c4d8d5a3",
+      "proof_event_id": 7844082,
+      "cause": "exhausted_unspecified",
+      "source_identity_matches": true,
+      "source_reason_matches": true
+    },
+    {
+      "execution_id": "18113ed4-c675-49c0-8eea-64d1b9d615b3",
+      "proof_event_id": 8960890,
+      "cause": "home_arm_mismatch",
+      "source_identity_matches": true,
+      "source_reason_matches": true
+    },
+    {
+      "execution_id": "1880ed71-0ac9-423d-9009-203f3b06ba35",
+      "proof_event_id": 8962991,
+      "cause": "home_arm_mismatch",
+      "source_identity_matches": true,
+      "source_reason_matches": true
+    },
+    {
+      "execution_id": "03e9aa3e-96be-41ed-a1bb-7c6f2cf8f3de",
+      "proof_event_id": 8236720,
+      "cause": "launch_snapshot_mismatch",
+      "source_identity_matches": true,
+      "source_reason_matches": true
+    },
+    {
+      "execution_id": "08a1b50f-16d9-467e-8ce2-dc25461b9969",
+      "proof_event_id": 10983092,
+      "cause": "launch_snapshot_mismatch",
+      "source_identity_matches": true,
+      "source_reason_matches": true
+    },
+    {
+      "execution_id": "0f7e51d4-a3ac-4bcd-aed9-3d93ea726470",
+      "proof_event_id": 8446873,
+      "cause": "owner_failure_unspecified",
+      "source_identity_matches": true,
+      "source_reason_matches": true
+    },
+    {
+      "execution_id": "25d55e7d-6427-4475-9180-1384cf762773",
+      "proof_event_id": 11112330,
+      "cause": "owner_failure_unspecified",
+      "source_identity_matches": true,
+      "source_reason_matches": true
+    }
+  ],
+  "distinct_executions": 100,
+  "rows": 100,
+  "replay_byte_identical": true,
+  "derived_sha256": {
+    "reown-summary.json": "4c4a6fdcf698c9881027d8fb12bbd0c86f56049cf4b5e53f77143e603f51624e",
+    "reown-incidents.csv": "bdabc831ef2ff480730ccd83dbc472ea38af22eac1a1ef49f5b85379080a1b11"
+  },
+  "scope": "Read-only stratified source spotcheck; all five buckets covered, up to two each (one exhausted-only record exists). Not repair acceptance."
+}

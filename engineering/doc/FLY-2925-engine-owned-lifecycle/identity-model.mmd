@@ -1,0 +1,36 @@
+classDiagram
+    class EngineBinding {
+        runId
+        nodeId
+        attempt
+        activationId
+        executionId
+        terminalAuthority
+    }
+    class ProcessBody {
+        generation
+        state
+        currentDemandId
+        ownerClaimId
+    }
+    class NativeSession {
+        threadId
+        model
+        cwd
+        goalAndUsage
+    }
+    class HostManifest {
+        protocolVersion
+        processStartIdentity
+        endpoint
+        eventCursor
+    }
+    class CredentialBinding {
+        originalSlot
+        admissionReceipt
+        legacyCutoverReceipt
+    }
+    EngineBinding "1" --> "1" ProcessBody : 决定物理代数
+    ProcessBody "1" --> "1" HostManifest : 定位载体
+    HostManifest "1" --> "1" NativeSession : 核对原会话
+    EngineBinding "1" --> "1" CredentialBinding : 记录首次账号归属

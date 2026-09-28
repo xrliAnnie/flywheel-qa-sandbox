@@ -14,10 +14,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+	adoptCodexDaemon,
 	assertSocketPathFitsSunLen,
 	buildDaemonAppsApprovalArgs,
 	buildDaemonEffortArgs,
 	buildDaemonSandboxArgs,
+	CodexDaemonAdoptionError,
 	codexDaemonExitWaitMs,
 	codexSessionStateDir,
 	createDefaultKillGroup,
@@ -2022,6 +2024,179 @@ describe("FLY-2830 symlinked daemon socket (Codex 0.157 --listen)", () => {
 			).resolves.toMatchObject({ bound: false });
 		} finally {
 			await f.close();
+		}
+	});
+});
+
+describe("FLY-2925 adoptCodexDaemon — reconnect to a live daemon without spawning", () => {
+	function fixture() {
+		const root = mkdtempSync(join(tmpdir(), "flywheel-codex-adopt-"));
+		const env = {
+			FLYWHEEL_CODEX_SESSION_DIR: join(root, "sessions"),
+			FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT: join(root, "sockets"),
+		};
+		const executionId = "exec-adopt";
+		mkdirSync(codexSessionStateDir(executionId, env), { recursive: true });
+		writeFileSync(
+			join(codexSessionStateDir(executionId, env), "session.json"),
+			JSON.stringify({ executionId, daemonPgid: 4321 }),
+		);
+		return {
+			root,
+			env,
+			executionId,
+			socketPath: resolveDaemonSocketPath(executionId, env),
+		};
+	}
+
+	it("adopts a proven live group: no spawn, no signal, lock held until proven dead", async () => {
+		const f = fixture();
+		const signals: NodeJS.Signals[] = [];
+		const lockEvents: string[] = [];
+		let alive = true;
+		try {
+			const handle = await adoptCodexDaemon({
+				executionId: f.executionId,
+				socketPath: f.socketPath,
+				env: f.env,
+				isSocketLive: async () => alive,
+				socketHolderPids: () => (alive ? [7654] : []),
+				processGroupOf: () => 4321,
+				processGroupState: () => (alive ? "alive" : "absent"),
+				killGroup: (_pgid, signal) => {
+					signals.push(signal);
+					if (signal === "SIGTERM") alive = false;
+				},
+				acquireLock: () => {
+					lockEvents.push("acquire");
+					return { release: () => lockEvents.push("release") };
+				},
+				removeStaleSocket: () => lockEvents.push("unlink"),
+				exitWaitMs: 0,
+				exitPollMs: 60_000,
+			});
+			expect(signals).toEqual([]);
+			expect(handle.child.pid).toBe(4321);
+			expect(handle.child.exitCode).toBeNull();
+			expect(lockEvents).toEqual(["acquire"]);
+
+			const exited = new Promise<void>((resolve) =>
+				handle.child.once("exit", () => resolve()),
+			);
+			handle.stop();
+			expect(await handle.ensureDead()).toBe(true);
+			await exited;
+			expect(signals).toEqual(["SIGTERM"]);
+			expect(lockEvents).toEqual(["acquire", "unlink", "release"]);
+		} finally {
+			rmSync(f.root, { recursive: true, force: true });
+		}
+	});
+
+	it("observes an adopted exit without repeating the expensive socket-holder ownership proof", async () => {
+		const f = fixture();
+		let alive = true;
+		const socketHolderPids = vi.fn(() => [7654]);
+		let handle: Awaited<ReturnType<typeof adoptCodexDaemon>> | undefined;
+		try {
+			handle = await adoptCodexDaemon({
+				executionId: f.executionId,
+				socketPath: f.socketPath,
+				env: f.env,
+				isSocketLive: async () => alive,
+				socketHolderPids,
+				processGroupOf: () => 4321,
+				processGroupState: () => (alive ? "alive" : "absent"),
+				acquireLock: () => ({ release: () => {} }),
+				exitPollMs: 5,
+			});
+			expect(socketHolderPids).toHaveBeenCalledTimes(2);
+
+			await new Promise((resolve) => setTimeout(resolve, 30));
+			expect(socketHolderPids).toHaveBeenCalledTimes(2);
+
+			const exited = new Promise<void>((resolve) =>
+				handle!.child.once("exit", () => resolve()),
+			);
+			alive = false;
+			await exited;
+			expect(handle.child.exitCode).toBe(0);
+			expect(socketHolderPids).toHaveBeenCalledTimes(2);
+		} finally {
+			handle?.detach?.();
+			rmSync(f.root, { recursive: true, force: true });
+		}
+	});
+
+	it("refuses a dead daemon (not_alive) and an unproven owner (identity_unproven) without taking the lock", async () => {
+		const f = fixture();
+		const acquireLock = vi.fn(() => ({ release: () => {} }));
+		try {
+			await expect(
+				adoptCodexDaemon({
+					executionId: f.executionId,
+					socketPath: f.socketPath,
+					env: f.env,
+					isSocketLive: async () => false,
+					processGroupState: () => "absent",
+					acquireLock,
+				}),
+			).rejects.toMatchObject({ reason: "not_alive" });
+			await expect(
+				adoptCodexDaemon({
+					executionId: f.executionId,
+					socketPath: f.socketPath,
+					env: f.env,
+					isSocketLive: async () => true,
+					socketHolderPids: () => [9999],
+					processGroupOf: () => 1111,
+					processGroupState: () => "alive",
+					acquireLock,
+				}),
+			).rejects.toBeInstanceOf(CodexDaemonAdoptionError);
+			expect(acquireLock).not.toHaveBeenCalled();
+		} finally {
+			rmSync(f.root, { recursive: true, force: true });
+		}
+	});
+
+	it("never steals the lock from a live owner", async () => {
+		const f = fixture();
+		const killGroup = vi.fn();
+		try {
+			await expect(
+				adoptCodexDaemon({
+					executionId: f.executionId,
+					socketPath: f.socketPath,
+					env: f.env,
+					isSocketLive: async () => true,
+					socketHolderPids: () => [7654],
+					processGroupOf: () => 4321,
+					processGroupState: () => "alive",
+					killGroup,
+					acquireLock: () => {
+						throw new Error("lock held by live pid 555");
+					},
+				}),
+			).rejects.toMatchObject({ reason: "owner_alive" });
+			expect(killGroup).not.toHaveBeenCalled();
+		} finally {
+			rmSync(f.root, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects a socket path that is not the execution's own socket", async () => {
+		const f = fixture();
+		try {
+			await expect(
+				adoptCodexDaemon({
+					executionId: f.executionId,
+					socketPath: join(f.root, "sockets", "other.sock"),
+					env: f.env,
+				}),
+			).rejects.toMatchObject({ reason: "socket_mismatch" });
+		} finally {
+			rmSync(f.root, { recursive: true, force: true });
 		}
 	});
 });

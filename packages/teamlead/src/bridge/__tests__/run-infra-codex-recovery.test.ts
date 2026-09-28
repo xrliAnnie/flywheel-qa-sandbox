@@ -265,3 +265,72 @@ it.each([false, true])(
 		expect(sink.emitFailed).toHaveBeenCalledTimes(commitFirst ? 1 : 0);
 	},
 );
+
+describe("FLY-2925 run-infra adoption owner", () => {
+	it("emits the adopted owner's terminal through the canonical sink only after the thread attached", async () => {
+		const emitCompleted = vi.fn(async () => undefined);
+		const emitFailed = vi.fn(async () => undefined);
+		const adoptLiveExecution = vi.fn(
+			async (
+				_ctx: AdapterExecutionContext,
+				_options: unknown,
+				hooks?: { onAdopted?: (threadId: string) => void },
+			) => {
+				hooks?.onAdopted?.("thread-live");
+				return {
+					success: true,
+					sessionId: "thread-live",
+					durationMs: 5,
+					timedOut: false,
+				};
+			},
+		);
+		const runtime = createCodexRecoveryRuntime({
+			adapter: { resumeExistingExecution: vi.fn(), adoptLiveExecution },
+			sink: { emitCompleted, emitFailed },
+		});
+		const adopted: string[] = [];
+
+		await runtime.adopt(
+			context,
+			{ onAdopted: (threadId) => adopted.push(threadId) },
+			{ founderWindow: "suppressed" },
+		);
+
+		expect(adopted).toEqual(["thread-live"]);
+		expect(adoptLiveExecution).toHaveBeenCalledWith(
+			context,
+			{ founderWindow: "suppressed" },
+			expect.objectContaining({ onAdopted: expect.any(Function) }),
+		);
+		expect(emitCompleted).toHaveBeenCalledWith(
+			expect.objectContaining({
+				executionId: "exec-recovery",
+				sessionRole: "implement",
+			}),
+			expect.objectContaining({ success: true, sessionId: "thread-live" }),
+			undefined,
+		);
+		expect(emitFailed).not.toHaveBeenCalled();
+	});
+
+	it("a pre-attach adoption failure emits nothing (the live body was never touched)", async () => {
+		const emitCompleted = vi.fn();
+		const emitFailed = vi.fn();
+		const runtime = createCodexRecoveryRuntime({
+			adapter: {
+				resumeExistingExecution: vi.fn(),
+				adoptLiveExecution: vi.fn(async () => {
+					throw new Error("daemon lock held by a live owner");
+				}),
+			},
+			sink: { emitCompleted, emitFailed },
+		});
+
+		const result = await runtime.adopt(context, { onAdopted: vi.fn() });
+
+		expect(result.success).toBe(false);
+		expect(emitCompleted).not.toHaveBeenCalled();
+		expect(emitFailed).not.toHaveBeenCalled();
+	});
+});

@@ -921,3 +921,71 @@ it("FLY-2505 throwing deadline handler still re-proves liveness before fallback"
 	expect(mockedProbe).toHaveBeenCalledTimes(3);
 	expect(store.forceStatus).not.toHaveBeenCalled();
 });
+
+describe("FLY-2925 a live Codex daemon is never declared dead by window/heartbeat", () => {
+	it("a stale-heartbeat Codex session whose daemon is alive is neither zombie-declared nor orphan-reaped", async () => {
+		const candidate = sess({ adapter_type: "codex-tmux" });
+		store.getSession.mockReturnValue(candidate);
+		store.getOrphanSessions.mockReturnValue([candidate]);
+		mockedProbe.mockResolvedValue("absent"); // the TUI window is gone
+		const probe = vi.fn(async () => ({
+			liveness: "alive" as const,
+			socketLive: true,
+		}));
+		service.setCodexBodyProbe(probe);
+		await service.refreshLiveCodexBodies();
+		await service.reconcileMonitorLoss();
+		await service.reconcileMonitorLoss();
+		await service.reapOrphans();
+		expect(probe).toHaveBeenCalledWith(candidate.execution_id);
+		expect(store.forceStatus).not.toHaveBeenCalled();
+		expect(mockedInspect).not.toHaveBeenCalled();
+	});
+
+	it("an unknown ledger with a listening socket, or a throwing probe, still protects", async () => {
+		const candidate = sess({ adapter_type: "codex-tmux" });
+		store.getSession.mockReturnValue(candidate);
+		store.getOrphanSessions.mockReturnValue([candidate]);
+		mockedProbe.mockResolvedValue("absent");
+		for (const probe of [
+			async () => ({ liveness: "unknown" as const, socketLive: true }),
+			async () => {
+				throw new Error("ps unavailable");
+			},
+		]) {
+			service.setCodexBodyProbe(probe);
+			await service.refreshLiveCodexBodies();
+			await service.reconcileMonitorLoss();
+			await service.reconcileMonitorLoss();
+			await service.reapOrphans();
+			expect(store.forceStatus).not.toHaveBeenCalled();
+		}
+	});
+
+	it("a proven-absent daemon keeps the existing zombie path", async () => {
+		const candidate = sess({ adapter_type: "codex-tmux" });
+		store.getSession.mockReturnValue(candidate);
+		store.getOrphanSessions.mockReturnValue([candidate]);
+		mockedProbe.mockResolvedValue("absent");
+		service.setCodexBodyProbe(async () => ({
+			liveness: "absent",
+			socketLive: false,
+		}));
+		await service.refreshLiveCodexBodies();
+		await service.reconcileMonitorLoss();
+		await service.reconcileMonitorLoss();
+		expect(mockedInspect).toHaveBeenCalledTimes(1);
+	});
+
+	it("non-Codex sessions are never probed", async () => {
+		const candidate = sess({ adapter_type: "claude-tmux" });
+		store.getOrphanSessions.mockReturnValue([candidate]);
+		const probe = vi.fn(async () => ({
+			liveness: "alive" as const,
+			socketLive: true,
+		}));
+		service.setCodexBodyProbe(probe);
+		await service.refreshLiveCodexBodies();
+		expect(probe).not.toHaveBeenCalled();
+	});
+});

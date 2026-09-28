@@ -114,6 +114,7 @@ describe("FLY-1336 generalized launch accepted-pending route", () => {
 	let commitLaunch: (() => { ok: boolean; reason?: string }) | undefined;
 	let dispatchMode: "session_only" | "delivered" | "ghost" | "tmux_hold";
 	let precommitFailure: LaunchPrecommitFailure | undefined;
+	let terminateRunDuringStart = false;
 	let savedFlags: Record<(typeof workflowFlags)[number], string | undefined>;
 	let savedLinearApiKey: string | undefined;
 
@@ -141,6 +142,7 @@ describe("FLY-1336 generalized launch accepted-pending route", () => {
 		});
 		dispatchMode = "session_only";
 		precommitFailure = undefined;
+		terminateRunDuringStart = false;
 		commitLaunch = undefined;
 		waitMocks.waitForDelivery.mockReset().mockResolvedValue(undefined);
 		waitMocks.waitForSession
@@ -154,6 +156,16 @@ describe("FLY-1336 generalized launch accepted-pending route", () => {
 				return { executionId: `classic-${req.issueId}`, issueId: req.issueId };
 			}
 			commitLaunch = generalized.commitWorkflowLaunch;
+			if (terminateRunDuringStart) {
+				(
+					store as unknown as {
+						db: { run(sql: string, params?: unknown[]): void };
+					}
+				).db.run(
+					"UPDATE workflow_run SET status = 'cancelled' WHERE run_id = ?",
+					[generalized.runId],
+				);
+			}
 			if (dispatchMode !== "ghost" && dispatchMode !== "tmux_hold") {
 				store.upsertSession({
 					execution_id: generalized.executionId,
@@ -311,6 +323,63 @@ describe("FLY-1336 generalized launch accepted-pending route", () => {
 		expect(await response.json()).toMatchObject({
 			success: false,
 			code: "GENERALIZED_START_NOT_LIVE",
+		});
+	});
+
+	it("FLY-2689: an admitted run whose first launch is unresolved reports the run fact, not a failure", async () => {
+		precommitFailure = {
+			code: "LAUNCH_PRECOMMIT_FAILED",
+			reason: "codex agent home lease missing",
+			physicalEvidence: "unknown",
+		} as unknown as LaunchPrecommitFailure;
+		const response = await postStart("FLY-2689-LEASE", "lease-key");
+		expect(response.status).toBe(202);
+		const body = (await response.json()) as Record<string, unknown>;
+		expect(body).toMatchObject({
+			success: true,
+			pending: true,
+			code: "LAUNCH_PENDING",
+			launchState: "pending",
+			reason: "codex agent home lease missing",
+			retryable: false,
+			executionId: expect.any(String),
+			issueId: "FLY-2689-LEASE",
+			workflowRunId: expect.any(String),
+			workflowNodeId: "research",
+		});
+		expect(body.statusPath).toBe(
+			`/api/runs/${body.workflowRunId as string}/diagnostic`,
+		);
+		// The run really is admitted — the response must not contradict it.
+		expect(store.getWorkflowRun(body.workflowRunId as string)).toBeDefined();
+	});
+
+	it("FLY-2689: a run the engine already finished answers with the terminal fact, never success:true", async () => {
+		precommitFailure = {
+			code: "LAUNCH_PRECOMMIT_FAILED",
+			reason: "codex agent home lease missing",
+			physicalEvidence: "unknown",
+		} as unknown as LaunchPrecommitFailure;
+		terminateRunDuringStart = true;
+		const response = await postStart("FLY-2689-DONE", "done-key");
+		expect(response.status).toBe(409);
+		expect(await response.json()).toMatchObject({
+			success: false,
+			code: "RUN_TERMINAL",
+			runStatus: "cancelled",
+			workflowRunId: expect.any(String),
+			retryable: false,
+		});
+	});
+
+	it("FLY-2925: a run finished while delivery was pending answers RUN_TERMINAL, not 202 success", async () => {
+		terminateRunDuringStart = true;
+		const response = await postStart("FLY-2689-LATE", "late-key");
+		expect(response.status).toBe(409);
+		expect(await response.json()).toMatchObject({
+			success: false,
+			code: "RUN_TERMINAL",
+			runStatus: "cancelled",
 		});
 	});
 

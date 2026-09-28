@@ -1,0 +1,194 @@
+#!/usr/bin/env python3
+"""Build the self-contained founder artifact; no network, no publication."""
+import html
+import json
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+esc = html.escape
+stats = json.loads((ROOT / 'evidence/reown-summary.json').read_text())
+
+def diagram(name):
+    svg = ROOT / (name + '.svg')
+    if svg.exists():
+        return '<div class="diagram">' + svg.read_text() + '</div>'
+    source = (ROOT / (name + '.mmd')).read_text()
+    return ('<div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong>'
+            '<p>本地图形程序启动被系统限制；已重试一次。保留原始图稿，尚未取得渲染图。</p>'
+            '<details><summary>查看 Mermaid 图稿（描述节点与连线的文本）</summary><pre>'
+            + esc(source) + '</pre></details></div>')
+
+def comment(key, title):
+    return (f'<div class="comment"><label for="note-{esc(key)}">这部分的意见</label>'
+            f'<textarea id="note-{esc(key)}" data-comment="{esc(key)}" data-title="{esc(title)}" '
+            f'aria-label="{esc(title)}的意见" placeholder="意见自动保存在本机浏览器；不会自动发送。"></textarea></div>')
+
+def card(key, title, content, extra=''):
+    return (f'<section class="card {esc(extra)}" id="{esc(key)}"><h2>{esc(title)}</h2>'
+            + content + comment(key, title) + '</section>')
+
+cards = []
+cards.append(card('decision', '让 Codex 独立运行，调度重启只重新连接', '''
+<span class="badge">FLY-2925 · 设计评审已通过</span>
+<p class="lead">选独立 runner 宿主 + 可见终端：把每个工程师的运行控制搬出 Bridge，保留现有程序通信能力。</p>
+<p>Bridge 是接单、调度与汇报的服务。宿主是守着一个 Codex 工程师的独立程序。今天终端已经可见，但运行控制还在 Bridge 里；服务重启时这部分控制需要重建。</p>
+<p><strong>为什么选它：</strong>调度服务重启时，原工程师继续工作；卡住不再等于死亡，明确结束后也不会自动复活。</p>
+<p><strong>代价：</strong>增加独立宿主、固定版本的运行文件和重连通道；需要分两次上线，先让旧系统认识新宿主，再启用它，避免回滚时误杀正在工作的工程师。</p>
+<p class="notice">账号边界：沿用已批准的按账号固定归属方案；工作中的工程师保留原账号，切换默认账号只影响新工程师。独立宿主不需要在飞换号。本页对应第三轮已批准设计；四项评审建议已由 Lead 定为实施必须验收项，尚未实施或部署。</p>
+<p><strong>首次上线失败边界：</strong>兼容版先过服务健康检查再接管；健康检查前失败仍回旧版，这段失败路径不保证原工程师连续运行。接管后保留兼容管理版本，不能退回会误认原体的旧版。</p>
+<p class="meta">2026-09-26 · 依据：本单探索、调研与实施计划 · 设计阶段，未实施或部署</p>
+''', 'hero'))
+cards.append(card('flow', '工作继续，生死由引擎决定',
+    '<p>工作流引擎记录任务、当前执行者和终结决定。goal 是 Codex 自己记录的持续目标；它卡住、暂停或完成，都不直接证明执行体死亡。</p>'
+    + diagram('core-flow')
+    + '<p>程序通信接口仍用 app-server，即让宿主控制同一 Codex 会话的接口。它留在每个独立宿主内部，Bridge 不再持有每个回合的运行控制。</p>'))
+cards.append(card('comparison', '为什么没有直接换成一个裸终端', '''
+<div class="table-wrap"><table><thead><tr><th>选项</th><th>能保留什么</th><th>取舍</th></tr></thead><tbody>
+<tr><td>原生 Codex 独立终端</td><td>原生持续目标、原会话恢复、人工操作</td><td>作为首选评估；尚未证实现有机器投信、回合边界与账号回执可完整接入</td></tr>
+<tr><td><strong>独立宿主 + 真实终端</strong></td><td>复用现有通信接口、邮箱、回合观察和目标状态</td><td><strong>建议选它</strong>；需要增加独立宿主、重连和关闭的验证</td></tr>
+<tr><td>继续由 Bridge 驱动</td><td>现有能力、较小的局部补丁</td><td>每次重启仍重建控制者；只修错误分支不能消除这条依赖</td></tr>
+</tbody></table></div>
+<p>原生终端有持续目标能力，所以“没有 goal”不是拒绝它的理由。窗口存在也不等于已实现独立运行。</p>
+'''))
+counts = stats['terminal_failure_cause_counts']
+rows = ''.join('<tr><td>' + esc(label) + '</td><td>' + str(counts.get(code, 0)) + '</td></tr>' for code, label in [
+    ('launch_snapshot_mismatch', '恢复配置与启动快照不符'),
+    ('active_turn_mismatch', '回合身份不符'),
+    ('home_arm_mismatch', '会话目录绑定不符'),
+    ('owner_failure_unspecified', '控制者失败，未给出具体原因'),
+    ('exhausted_unspecified', '只记录了恢复次数耗尽'),
+])
+cards.append(card('evidence', '近两周：62 个执行体有明确恢复失败记录',
+    '<p>统计窗口：2026-09-12 20:24:44 UTC 至 09-26 20:24:44 UTC。只读生产记录，每个执行体最多计一次。</p>'
+    f'<div class="metrics"><div><b>{stats["executions_with_recovery_session_failed"]}</b><span>有恢复相关终态失败</span></div><div><b>{stats["affected_executions"]}</b><span>曾出现恢复错误的体</span></div><div><b>{stats["issues"]}</b><span>涉及任务单</span></div></div>'
+    '<div class="table-wrap"><table><thead><tr><th>该体最具体的错误证据</th><th>明确失败执行体</th></tr></thead><tbody>' + rows + '</tbody></table></div>'
+    '<p>原始记录 458 条，不是 458 次死亡。其余 38 个体只证明曾报错，不能据此说它们最后死亡或已恢复成功。错误分组也不等于已经证实每次失败的最终根因。</p>'
+    '<p class="meta">旧普查是不同时间窗口和入组规则：64 个 Codex 体、48 张单、56.4 节点小时。不能与本页直接相减计算改善率。没有成功恢复分母，暂不报失败率。</p>'))
+cards.append(card('model', '记住身份，不凭窗口名字找人',
+    '<p>每个工程师有执行编号；每段原生对话有会话编号；实际程序重建时才增加进程代数，即这具身体的版本号。Bridge 重新连接不改变这些身份。</p>'
+    + diagram('identity-model')
+    + '<div class="table-wrap"><table><thead><tr><th>数据</th><th>作用</th></tr></thead><tbody><tr><td>任务绑定</td><td>由引擎决定谁能继续工作、谁已结束</td></tr><tr><td>原会话与目标</td><td>保留上下文、目标、预算和已用额度</td></tr><tr><td>宿主与事件游标</td><td>找到正确程序，补齐断线期间的记录</td></tr><tr><td>原账号归属与切号回执</td><td>证明旧工程师仍用原账号、新工程师采用新默认账号</td></tr></tbody></table></div>'
+    '<p>账号归属沿用 FLY-2902：每个账号的凭据只有一份，工程师固定使用出生时选定的账号。本单不新增凭据副本或在飞换号接口。发送成功不等于模型已看到，改了配置也不等于实际请求已换号。</p>'))
+cards.append(card('restart', '重启后的三种处理',
+    diagram('reconnect')
+    + '<ol><li>原宿主还活着：只重连、补记录，不重发任务，不更换工程师。</li><li>载体确证消失：先由引擎授予唯一恢复权，再恢复精确的原会话。</li><li>身份不明、原会话损坏或引擎已结束：显示问题或清理，不偷偷创建新对话。</li></ol>'))
+cards.append(card('acceptance', '怎样证明真的修好了', '''
+<p>529 房是隔离的真实运行验收环境。以下必须用真实 Codex 的进程、回合和模型消费记录证明，不能只靠模拟测试。</p>
+<div class="table-wrap"><table><thead><tr><th>原现象</th><th>必须看到的结果</th></tr></thead><tbody>
+<tr><td>FLY-2586：工作中重启调度</td><td>原宿主、执行编号、会话保持；没有恢复提交或新任务注入</td></tr>
+<tr><td>FLY-2344：交卷受拒后目标卡住</td><td>原体收到纠正信件，下一回合真正回应，不换体</td></tr>
+<tr><td>FLY-2814：结束与掉线同时发生</td><td>停止并清理，之后没有新拉起或自动续接；无关体不被误杀</td></tr>
+<tr><td>FLY-2630：模型短暂满载</td><td>同一会话有限重试；权限错误留体等待纠正</td></tr>
+<tr><td>FLY-2689：首次启动缺少租约</td><td>拒绝无授权启动；接口准确显示任务已接纳但正在等待</td></tr>
+<tr><td>FLY-2893：普查中的旧失败链</td><td>重建具体旧现象并核对修后行为，不扩成修所有普查类别</td></tr>
+<tr><td>新架构的额外风险</td><td>真实更新代码并重新构建、首次接管、失败回滚、宿主重启、工作中切默认号但原体不换号、信件重复、确认丢失、账号绑定冲突，逐项注入故障</td></tr>
+</tbody></table></div>
+<p>已完成的是静态调研和冻结统计：9 条分层原始事件核对，五类全部覆盖；重复计算结果一致。尚未执行上表真实验收。</p>
+'''))
+cards.append(card('boundary', '做什么、尚未证明什么', '''
+<p><strong>做：</strong>独立运行控制、按原会话恢复、目标状态与体生死分离、复用 FLY-2903 的停止保护，以及最小启动返回值修正。</p>
+<p><strong>不扩展：</strong>凭据存储重做、全部额度故障、全部工作目录接管故障、Claude 架构重写。</p>
+<p><strong>当前限制：</strong>第三轮设计评审已通过（四项非阻塞建议）；账号合同已按 Lead 最新裁定对齐，实际接入仍待验证；本地 Mermaid 图形启动失败，已按要求重试并保留图稿。没有部署或生产修后证明。</p>
+<p><strong>上线代价：</strong>第一次兼容版先通过服务健康检查再接管；健康检查失败仍可回旧版，接管后和后续启用失败则保留已经验证的兼容管理版本。运行文件要保留在独立快照中；每次更新必须兼容仍在工作的旧版本，否则先完成原会话升级。空间不足时停止新发布，不能删除正在使用的版本；容量数字与超预算回收已列为实施必须验收项。</p>
+<p>当前回滚保护覆盖受管自动部署，不保证人为把启动脚本退到旧版时仍有效。此限制已列后续项。
+</p><p><strong>四项实施必须验收项：</strong>日常更新中新版本开始接单的时点；首次健康检查期间的终态清理与等待上限；命令遇到数据库忙时的重试和适用范围；固定版本文件的容量与保留集。Lead 已裁定全部纳入本单实施与验收，不重开设计；本页不声称这些问题已修复。</p>
+<p class="meta">批准凭证：第三轮，2026-09-26；对应实施计划版本 989780531149c2bd73c37bb3da1fe1a08ba60e62。</p>
+<p>本页意见用于修改设计，不代表允许上线。</p>
+<p class="meta">参考：<a href="https://github.com/xrliAnnie/flywheel/pull/1343">FLY-2903 停止保护</a> · <a href="https://github.com/xrliAnnie/flywheel/pull/1352">FLY-2902 当前依赖</a> · <a href="https://learn.chatgpt.com/docs/app-server">Codex 程序接口</a> · <a href="https://developers.openai.com/cookbook/examples/codex/using_goals_in_codex">原生持续目标</a></p>
+'''))
+cards.append(card('summary', '页面意见汇总', '''
+<p>下方汇总每一节的非空意见。长意见自动拆分，每段都带本任务标记；复制后可发给 Lead。</p>
+<button type="button" id="copy-all">复制全部意见</button><span id="copy-status" role="status" aria-live="polite"></span>
+<div id="comment-summary"></div>
+'''))
+
+script = r'''
+(() => {
+  'use strict';
+  const marker = '【页面意见汇总】FLY-2925';
+  const prefix = 'flywheel-report:' + location.pathname + ':FLY-2925:';
+  const notes = Array.from(document.querySelectorAll('[data-comment]'));
+  const output = document.getElementById('comment-summary');
+  const status = document.getElementById('copy-status');
+  let chunks = [];
+  function makeChunks(parts) {
+    const limit = 1800 - marker.length - 1;
+    const result = [];
+    let body = '';
+    for (const part of parts) {
+      let rest = part;
+      while (rest.length) {
+        const room = limit - body.length - (body ? 2 : 0);
+        if (room <= 0) { result.push(marker + '\n' + body); body = ''; continue; }
+        let take = Math.min(room, rest.length);
+        const last = rest.charCodeAt(take - 1);
+        if (take < rest.length && last >= 0xD800 && last <= 0xDBFF) take -= 1;
+        if (take === 0) { result.push(marker + '\n' + body); body = ''; continue; }
+        body += (body ? '\n\n' : '') + rest.slice(0, take);
+        rest = rest.slice(take);
+        if (rest.length) { result.push(marker + '\n' + body); body = ''; }
+      }
+    }
+    if (body) result.push(marker + '\n' + body);
+    return result;
+  }
+  async function copy(text) {
+    let copied = false;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text); copied = true;
+      }
+    } catch (_) {}
+    if (!copied) {
+      const temporary = document.createElement('textarea');
+      temporary.value = text;
+      temporary.setAttribute('aria-label', '待复制意见');
+      temporary.style.position = 'fixed'; temporary.style.opacity = '0';
+      document.body.appendChild(temporary); temporary.select();
+      try { copied = document.execCommand('copy'); } catch (_) { copied = false; }
+      temporary.remove();
+    }
+    status.textContent = copied ? ' 已复制' : ' 复制未成功，请手动选择下方文字。';
+  }
+  function render() {
+    const parts = notes.filter(n => n.value.trim()).map(n => '【' + n.dataset.title + '】\n' + n.value.trim());
+    chunks = makeChunks(parts);
+    output.replaceChildren();
+    if (!chunks.length) {
+      const empty = document.createElement('p'); empty.textContent = '还没有填写意见。'; output.appendChild(empty);
+    }
+    chunks.forEach((chunk, index) => {
+      const pre = document.createElement('pre'); pre.textContent = chunk; output.appendChild(pre);
+      const button = document.createElement('button'); button.type = 'button';
+      button.textContent = '复制第 ' + (index + 1) + ' 段';
+      button.addEventListener('click', () => copy(chunk)); output.appendChild(button);
+    });
+  }
+  notes.forEach(note => {
+    try { note.value = localStorage.getItem(prefix + note.dataset.comment) || ''; } catch (_) {}
+    note.addEventListener('input', () => {
+      try { localStorage.setItem(prefix + note.dataset.comment, note.value); }
+      catch (_) { status.textContent = ' 本地保存不可用；仍可复制意见。'; }
+      render();
+    });
+  });
+  document.getElementById('copy-all').addEventListener('click', () => {
+    if (chunks.length) copy(chunks.join('\n\n'));
+    else status.textContent = ' 请先填写意见。';
+  });
+  render();
+})();
+'''
+# Raw Python strings keep JavaScript escapes; convert doubled literal backslashes once.
+script = script.replace('\\\\n', '\\n')
+style = '''
+:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#1d1d1f;background:#f5f5f7;color-scheme:light}
+*{box-sizing:border-box}body{margin:0;padding:32px 18px 72px}main{max-width:1000px;margin:auto}h1{font-size:15px;color:#6e6e73;margin:0 0 22px}h2{font-size:25px;line-height:1.3;margin:0 0 18px}.card{background:#fff;border:1px solid #e7e7eb;border-radius:20px;padding:30px;margin-bottom:22px;box-shadow:0 3px 15px #00000004}.hero{border-top:5px solid #007aff}.hero h2{font-size:35px;max-width:780px}.lead{font-size:21px;line-height:1.55}.badge{display:inline-block;border-radius:20px;background:#eaf2ff;color:#0757b4;padding:5px 12px;font-size:13px}p,li{line-height:1.75}p{margin:12px 0}.meta{font-size:13px;color:#6e6e73}.notice,.pending{background:#fff6e6;border:1px solid #ffe1a4;border-radius:12px;padding:16px}.pending strong{font-size:14px;color:#8b5300}.diagram{overflow:auto}.diagram svg{max-width:100%;height:auto;display:block}.table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:14px}td,th{padding:13px 9px;text-align:left;vertical-align:top;border-bottom:1px solid #eee;line-height:1.6}th{color:#6e6e73;font-weight:600}.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:22px 0}.metrics b{display:block;font-size:43px;color:#007aff}.metrics span{font-size:13px;color:#6e6e73}.comment{margin-top:24px;padding-top:18px;border-top:1px solid #eee}label{display:block;color:#6e6e73;font-size:13px;margin-bottom:7px}textarea{width:100%;min-height:76px;border:1px solid #d2d2d7;border-radius:10px;padding:12px;font:inherit;font-size:14px;resize:vertical}textarea:focus{outline:2px solid #007aff;outline-offset:2px}button{border:0;border-radius:9px;padding:11px 16px;background:#007aff;color:white;font:inherit;font-size:14px;cursor:pointer;margin:8px 8px 8px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f5f5f7;padding:15px;border-radius:10px;font-size:13px;line-height:1.6}a{color:#006ad4}summary{cursor:pointer}#copy-status{font-size:13px;color:#6e6e73}@media(max-width:600px){body{padding:20px 10px 48px}.card{padding:21px 17px;border-radius:16px}.hero h2{font-size:28px}h2{font-size:22px}.lead{font-size:18px}.metrics{gap:10px}.metrics b{font-size:34px}td,th{padding:10px 5px;min-width:90px}}
+'''
+page = ('<!doctype html>\n<html lang="zh-CN"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<title>FLY-2925 · Codex 独立运行与原会话续接</title><style>' + style + '</style></head>'
+        '<body><main><h1>FLY-2925 · 引擎统一体生命周期 — 设计说明</h1>'
+        + ''.join(cards) + '</main><script nonce="__CSP_NONCE__">' + script + '</script></body></html>\n')
+(ROOT / 'founder-design.html').write_text(page)
+print(str(ROOT / 'founder-design.html'), len(page.encode()), 'bytes')

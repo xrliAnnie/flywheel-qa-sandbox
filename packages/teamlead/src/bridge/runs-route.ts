@@ -238,6 +238,58 @@ function inspectWorkflowStartReplay(
  */
 export const GHOST_GUARD_SESSION_WAIT_MS = 90_000;
 
+/**
+ * FLY-2925 / FLY-2689: once the engine admitted the run, `/api/runs/start`
+ * reports the RUN fact. A first launch that is still unresolved is
+ * `launchState: "pending"` with `success: true` — never a failure the caller
+ * would misread while the engine keeps driving the run. `retryable: false`
+ * only means "do not POST this admitted run again". A run the engine already
+ * finished answers with that terminal fact instead.
+ */
+function admittedRunLaunchPending(
+	store: Pick<StateStore, "getWorkflowRun">,
+	input: {
+		runId: string;
+		nodeId: string;
+		executionId: string;
+		issueId: string;
+		reason: string;
+	},
+): { status: number; body: Record<string, unknown> } {
+	const run = store.getWorkflowRun(input.runId);
+	if (run && run.status !== "active" && run.status !== "held") {
+		return {
+			status: 409,
+			body: {
+				success: false,
+				code: "RUN_TERMINAL",
+				runStatus: run.status,
+				executionId: input.executionId,
+				issueId: input.issueId,
+				workflowRunId: input.runId,
+				workflowNodeId: input.nodeId,
+				retryable: false,
+			},
+		};
+	}
+	return {
+		status: 202,
+		body: {
+			success: true,
+			pending: true,
+			code: "LAUNCH_PENDING",
+			launchState: "pending",
+			reason: input.reason,
+			retryable: false,
+			executionId: input.executionId,
+			issueId: input.issueId,
+			workflowRunId: input.runId,
+			workflowNodeId: input.nodeId,
+			statusPath: `/api/runs/${encodeURIComponent(input.runId)}/diagnostic`,
+		},
+	};
+}
+
 function secureTokenEqual(
 	actual: string | undefined,
 	expected: string | undefined,
@@ -3829,13 +3881,14 @@ export function createRunsRouter(
 							},
 						});
 						if (!outcome) {
-							res.status(202).json({
-								success: false,
-								code: "LAUNCH_PENDING",
-								reason: "precommit outcome is still pending",
+							const pending = admittedRunLaunchPending(store, {
+								runId: generalizedSelection.runId,
+								nodeId: generalizedSelection.nodeId,
 								executionId: generalizedSelection.executionId,
-								retryable: false,
+								issueId,
+								reason: "precommit outcome is still pending",
 							});
+							res.status(pending.status).json(pending.body);
 							return;
 						}
 						if (outcome.status === "precommit_failed") {
@@ -3850,13 +3903,14 @@ export function createRunsRouter(
 								return;
 							}
 							if (outcome.failure.physicalEvidence === "unknown") {
-								res.status(202).json({
-									success: false,
-									code: "LAUNCH_PENDING",
-									reason: outcome.failure.reason,
+								const pending = admittedRunLaunchPending(store, {
+									runId: generalizedSelection.runId,
+									nodeId: generalizedSelection.nodeId,
 									executionId: generalizedSelection.executionId,
-									retryable: false,
+									issueId,
+									reason: outcome.failure.reason,
 								});
+								res.status(pending.status).json(pending.body);
 								return;
 							}
 							const released = store.releaseFailedWorkflowLaunch({
@@ -3869,13 +3923,14 @@ export function createRunsRouter(
 								physicalEvidence: outcome.failure.physicalEvidence,
 							});
 							if (!released.ok) {
-								res.status(202).json({
-									success: false,
-									code: "LAUNCH_PENDING",
-									reason: released.reason,
+								const pending = admittedRunLaunchPending(store, {
+									runId: generalizedSelection.runId,
+									nodeId: generalizedSelection.nodeId,
 									executionId: generalizedSelection.executionId,
-									retryable: false,
+									issueId,
+									reason: released.reason,
 								});
+								res.status(pending.status).json(pending.body);
 								return;
 							}
 							const status =
@@ -3931,6 +3986,19 @@ export function createRunsRouter(
 				);
 			}
 			if (!committedOwner) {
+				// FLY-2925 / FLY-2689: the engine may have finished the run while we
+				// waited for delivery; that terminal fact wins over "pending".
+				const settled = admittedRunLaunchPending(store, {
+					runId: generalizedSelection.runId,
+					nodeId: generalizedSelection.nodeId,
+					executionId: generalizedSelection.executionId,
+					issueId,
+					reason: "launch delivery confirmation is pending",
+				});
+				if (settled.status !== 202) {
+					res.status(settled.status).json(settled.body);
+					return;
+				}
 				// The run and launch owner are already durable, so reporting failure here
 				// invites a duplicate caller retry. Do not cache this transitional reply:
 				// the same idempotency key must be able to upgrade to the delivered 200.
@@ -3938,6 +4006,10 @@ export function createRunsRouter(
 					success: true,
 					pending: true,
 					code: "LAUNCH_PENDING",
+					// FLY-2925 / FLY-2689: same run-fact envelope as the precommit
+					// pending replies (launch pending, run admitted).
+					launchState: "pending",
+					statusPath: `/api/runs/${encodeURIComponent(generalizedSelection.runId)}/diagnostic`,
 					executionId: generalizedSelection.executionId,
 					reason: "launch delivery confirmation is pending",
 					retryable: false,

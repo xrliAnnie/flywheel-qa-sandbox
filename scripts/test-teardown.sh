@@ -770,6 +770,68 @@ qa_archive_slot_isolation_evidence() {
   return "$failed"
 }
 
+qa_teardown_codex_fault_stub() {
+  local SLOT="${1:-}"
+  if ! [[ "$SLOT" =~ ^[1-9][0-9]*$ ]]; then
+    log "ERROR: invalid Codex fault stub slot '${SLOT}'"
+    return 1
+  fi
+  local SLOT_DIR="/tmp/flywheel-test-slot-${SLOT}"
+  local CANONICAL_SLOT_DIR
+  CANONICAL_SLOT_DIR=$(cd "$SLOT_DIR" 2>/dev/null && pwd -P || true)
+  local CODEX_FAULT_ROOT="${SLOT_DIR}/state/codex-fault"
+  local CODEX_FAULT_LEGACY_PID_FILE="${CODEX_FAULT_ROOT}/pid"
+  local CODEX_FAULT_RECEIPT="${CODEX_FAULT_ROOT}/receipt.json"
+  [[ -e "$CODEX_FAULT_LEGACY_PID_FILE" || -L "$CODEX_FAULT_LEGACY_PID_FILE" \
+      || -e "$CODEX_FAULT_RECEIPT" || -L "$CODEX_FAULT_RECEIPT" ]] || return 0
+
+  local CODEX_FAULT_PID="" CODEX_FAULT_COMMAND="" CODEX_FAULT_SCRIPT=""
+  local CODEX_FAULT_ROOM_INFO="${SLOT_DIR}/room-info.json"
+  local CODEX_FAULT_EXPECTED_SLOT_DIR="$(cd /tmp && pwd -P)/flywheel-test-slot-${SLOT}"
+  if [[ "$CANONICAL_SLOT_DIR" != "$CODEX_FAULT_EXPECTED_SLOT_DIR" \
+      || ! -d "$CODEX_FAULT_ROOT" || -L "$CODEX_FAULT_ROOT" \
+      || "$(qa_slot_bridge_mode "$CODEX_FAULT_ROOT")" != "700" \
+      || "$(cd "$CODEX_FAULT_ROOT" 2>/dev/null && pwd -P || true)" != "${CANONICAL_SLOT_DIR}/state/codex-fault" \
+      || ! -f "$CODEX_FAULT_ROOM_INFO" || -L "$CODEX_FAULT_ROOM_INFO" \
+      || "$(qa_slot_bridge_mode "$CODEX_FAULT_ROOM_INFO")" != "600" ]] \
+      || ! jq -e --argjson slot "$SLOT" \
+        '.schemaVersion == 1 and .slot == $slot and .mode == "slot"' \
+        "$CODEX_FAULT_ROOM_INFO" >/dev/null \
+      || [[ ! -f "$CODEX_FAULT_RECEIPT" || -L "$CODEX_FAULT_RECEIPT" \
+      || "$(qa_slot_bridge_mode "$CODEX_FAULT_RECEIPT")" != "600" ]]; then
+    log "ERROR: Codex fault stub identity mismatch: unsafe slot, room, or receipt"
+    return 1
+  fi
+  if ! CODEX_FAULT_PID=$(jq -er \
+      --argjson slot "$SLOT" --arg roomInfoPath "$CODEX_FAULT_ROOM_INFO" '
+        if .schemaVersion == 1 and .slot == $slot and
+          (.pid | type) == "number" and .pid == (.pid | floor) and
+          .pid > 0 and .pid <= 2147483647 and
+          .host == "127.0.0.1" and
+          (.port | type) == "number" and .port == (.port | floor) and
+          .port > 0 and .port <= 65535 and
+          .baseUrl == ("http://127.0.0.1:" + (.port | tostring) + "/v1") and
+          .roomInfoPath == $roomInfoPath
+        then (.pid | tostring) else empty end
+      ' "$CODEX_FAULT_RECEIPT"); then
+    log "ERROR: Codex fault stub identity mismatch: receipt content"
+    return 1
+  fi
+  if kill -0 "$CODEX_FAULT_PID" 2>/dev/null; then
+    CODEX_FAULT_COMMAND="$(ps -o command= -p "$CODEX_FAULT_PID" 2>/dev/null || true)"
+    CODEX_FAULT_SCRIPT="$(cd "${TEARDOWN_SCRIPT_DIR}/qa" && pwd -P)/codex-upstream-fault-stub.mjs"
+    if [[ " $CODEX_FAULT_COMMAND " != *" $CODEX_FAULT_SCRIPT serve --slot $SLOT "* ]]; then
+      log "ERROR: Codex fault stub identity mismatch: live PID argv"
+      return 1
+    fi
+    log "Killing slot-local Codex fault stub PID ${CODEX_FAULT_PID}"
+    if ! qa_generalized_terminate_pid "$CODEX_FAULT_PID"; then
+      log "ERROR: Codex fault stub cleanup did not converge; retaining slot lock"
+      return 1
+    fi
+  fi
+}
+
 teardown_slot() {
   local SLOT="$1"
   # FLY-115 fix (Codex R7 #1): Validate SLOT is a positive integer. Without
@@ -1105,6 +1167,14 @@ teardown_slot() {
         kill -9 "$BRIDGE_PID" 2>/dev/null || true
       fi
     fi
+  fi
+
+  # FLY-2925: the opt-in provider fault stub is not a Bridge child. Retire it
+  # only from its slot-local receipt and exact argv identity; a malformed or
+  # recycled PID fails closed instead of signalling an unrelated host process.
+  if ! qa_teardown_codex_fault_stub "$SLOT"; then
+    qa_slot_bridge_guard_release
+    return 1
   fi
 
   # FLY-1999: test-deploy binds its Bridge and runners to this native per-slot

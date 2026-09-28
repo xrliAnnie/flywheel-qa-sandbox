@@ -9,12 +9,22 @@ source "${SCRIPT_DIR}/lib/qa-slot-bridge.sh"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
+CYCLE_MODE="cycle"
+if [[ $# -eq 2 ]]; then
+	case "$1" in
+		--stop-only) CYCLE_MODE="stop-only" ;;
+		--start-only) CYCLE_MODE="start-only" ;;
+		*) die "usage: scripts/test-cycle-bridge.sh [--stop-only|--start-only] <slot>" ;;
+	esac
+	shift
+fi
 [[ $# -eq 1 && "$1" =~ ^[1-9][0-9]*$ ]] \
-	|| die "usage: scripts/test-cycle-bridge.sh <slot>"
+	|| die "usage: scripts/test-cycle-bridge.sh [--stop-only|--start-only] <slot>"
 SLOT="$1"
 SLOT_DIR="/tmp/flywheel-test-slot-${SLOT}"
 SPEC="${SLOT_DIR}/bridge-launch.json"
 BRIDGE_PID_FILE="${SLOT_DIR}/bridge.pid"
+ROOM_INFO="${SLOT_DIR}/room-info.json"
 CYCLE_LOCK="${SLOT_DIR}/.bridge-cycle.lock"
 CYCLE_LOCK_OWNED=0
 CYCLE_GUARD_OWNED=0
@@ -156,6 +166,48 @@ server.listen({ host, port: Number(rawPort), exclusive: true }, () => {
 NODE
 }
 
+verify_built_isolation_boundary() {
+	local artifact="${REPO_ROOT}/packages/claude-runner/dist/isolation-boundary.js"
+	local node_bin
+	node_bin="$(command -v node)" || return 1
+	[[ -f "$artifact" && ! -L "$artifact" ]] || return 1
+	"$node_bin" --input-type=module - "$artifact" "$SLOT_DIR" <<'NODE'
+import { pathToFileURL } from "node:url";
+import { join } from "node:path";
+
+const [artifact, slotDir] = process.argv.slice(2);
+const boundaryModule = await import(pathToFileURL(artifact).href);
+if (
+  typeof boundaryModule.resolveIsolationRoot !== "function" ||
+  typeof boundaryModule.checkBoundaryEvidence !== "function"
+) {
+  process.exit(1);
+}
+const root = boundaryModule.resolveIsolationRoot({
+  FLYWHEEL_ISOLATION_ROOT: slotDir,
+});
+const result = boundaryModule.checkBoundaryEvidence(root, {
+  socketPath: join(slotDir, "state", "cdx-sock", "qa-cycle-probe.sock"),
+  ledgerPath: join(
+    slotDir,
+    "state",
+    "codex-sessions",
+    "qa-cycle-probe",
+    "session.json",
+  ),
+  codexHome: join(
+    slotDir,
+    "state",
+    "codex-homes",
+    "agents",
+    "test-slot",
+    "implement",
+  ),
+});
+if (result.ok !== true || result.mode !== "isolated") process.exit(1);
+NODE
+}
+
 wait_isolated_new_group() {
 	local iteration
 	for (( iteration=0; iteration<50; iteration++ )); do
@@ -268,69 +320,106 @@ old_bridge_recoverable() {
 
 [[ -d "$SLOT_DIR" && ! -L "$SLOT_DIR" && "$(qa_slot_bridge_mode "$SLOT_DIR")" == "700" ]] \
 	|| die "slot directory must be a mode-0700 regular directory"
+if [[ "$CYCLE_MODE" != "cycle" ]]; then
+	[[ -f "$ROOM_INFO" && ! -L "$ROOM_INFO" && "$(qa_slot_bridge_mode "$ROOM_INFO")" == "600" ]] \
+		|| die "room-info.json must identify this mode=slot room"
+	jq -e --argjson slot "$SLOT" \
+		'.schemaVersion == 1 and .slot == $slot and .mode == "slot"' \
+		"$ROOM_INFO" >/dev/null \
+		|| die "room-info.json must identify this mode=slot room"
+fi
 acquire_cycle_lock
 [[ -f "$SPEC" && ! -L "$SPEC" && "$(qa_slot_bridge_mode "$SPEC")" == "600" ]] \
 	|| die "Bridge launch spec is missing or unsafe"
 qa_slot_bridge_validate_spec "$SPEC" "$SLOT" "$REPO_ROOT" \
 	|| die "Bridge launch spec is invalid or unsafe for slot ${SLOT}"
+verify_built_isolation_boundary \
+	|| die "built isolation boundary rejects lexical slot paths; redeploy the room to rebuild current artifacts"
 
 PORT="$(jq -r '.port' "$SPEC")"
 BRIDGE_URL="$(jq -r '.bridgeUrl' "$SPEC")"
 HOST="$(jq -r '.host' "$SPEC")"
 LOG_PATH="$(jq -r '.logPath' "$SPEC")"
 OLD_PID="$(cat "$BRIDGE_PID_FILE" 2>/dev/null || true)"
-[[ "$OLD_PID" =~ ^[1-9][0-9]*$ ]] && kill -0 "$OLD_PID" 2>/dev/null \
-	|| die "bridge.pid is not a live numeric PID"
 while IFS= read -r -d '' path; do OWNERSHIP_PID_FILES+=("$path"); done \
 	< <(jq -j '.ownershipPidFiles[] | ., "\u0000"' "$SPEC")
 (( ${#OWNERSHIP_PID_FILES[@]} > 0 )) || die "launch spec has no ownership PID files"
-for path in "${OWNERSHIP_PID_FILES[@]}"; do
-	[[ -f "$path" && ! -L "$path" && "$(cat "$path")" == "$OLD_PID" ]] \
-		|| die "ownership PID mismatch before cycle"
-done
-health_ok "$BRIDGE_URL" || die "old Bridge health control failed"
-OLD_LISTENER="$(one_listener "$PORT")" || die "expected exactly one old Bridge listener"
-read_chain "$OLD_LISTENER" "$OLD_PID" || die "old listener ancestry does not reach bridge.pid"
-OLD_CHAIN_PIDS=("${CHAIN_PIDS[@]}")
-OLD_CHAIN_STARTS=("${CHAIN_STARTS[@]}")
+if [[ "$CYCLE_MODE" == "start-only" ]]; then
+	[[ "$OLD_PID" == "cycle-failed" ]] \
+		|| die "start-only requires the protected Bridge-down sentinel"
+	for path in "${OWNERSHIP_PID_FILES[@]}"; do
+		[[ -f "$path" && ! -L "$path" && "$(cat "$path")" == "cycle-failed" ]] \
+			|| die "start-only requires protected campaign ownership"
+	done
+	SENTINEL_PUBLICATION_STARTED=1
+	RELEASED_LISTENERS="$(strict_listeners "$PORT")" \
+		|| die "start-only listener census failed"
+	[[ -z "$RELEASED_LISTENERS" ]] || die "start-only found a live Bridge listener"
+	bind_probe "$HOST" "$PORT" || die "start-only port bind probe failed"
+else
+	[[ "$OLD_PID" =~ ^[1-9][0-9]*$ ]] && kill -0 "$OLD_PID" 2>/dev/null \
+		|| die "bridge.pid is not a live numeric PID"
+	for path in "${OWNERSHIP_PID_FILES[@]}"; do
+		[[ -f "$path" && ! -L "$path" && "$(cat "$path")" == "$OLD_PID" ]] \
+			|| die "ownership PID mismatch before cycle"
+	done
+	health_ok "$BRIDGE_URL" || die "old Bridge health control failed"
+	OLD_LISTENER="$(one_listener "$PORT")" || die "expected exactly one old Bridge listener"
+	read_chain "$OLD_LISTENER" "$OLD_PID" || die "old listener ancestry does not reach bridge.pid"
+	OLD_CHAIN_PIDS=("${CHAIN_PIDS[@]}")
+	OLD_CHAIN_STARTS=("${CHAIN_STARTS[@]}")
+fi
 
 TERM_TIMEOUT="$(qa_slot_bridge_timeout "${FLYWHEEL_QA_BRIDGE_TERM_TIMEOUT_SEC:-}" 30 300)" \
 	|| die "invalid FLYWHEEL_QA_BRIDGE_TERM_TIMEOUT_SEC"
 HEALTH_TIMEOUT="$(qa_slot_bridge_timeout "${FLYWHEEL_QA_BRIDGE_HEALTH_TIMEOUT_SEC:-}" 60 300)" \
 	|| die "invalid FLYWHEEL_QA_BRIDGE_HEALTH_TIMEOUT_SEC"
 
-SENTINEL_PUBLICATION_STARTED=1
-for path in "${OWNERSHIP_PID_FILES[@]}"; do
-	qa_slot_bridge_atomic_write "$path" cycle-failed || die "cannot protect ownership lock"
-done
+if [[ "$CYCLE_MODE" != "start-only" ]]; then
+	SENTINEL_PUBLICATION_STARTED=1
+	for path in "${OWNERSHIP_PID_FILES[@]}"; do
+		qa_slot_bridge_atomic_write "$path" cycle-failed || die "cannot protect ownership lock"
+	done
 
-# Signal ancestors before descendants so a wrapper exiting from its own TERM
-# cannot make an intermediate disappear before it receives the one intended
-# signal. Every target is rebound to its measured start identity first.
-for (( index=${#OLD_CHAIN_PIDS[@]}-1; index>=0; index-- )); do
-	pid="${OLD_CHAIN_PIDS[$index]}"
-	if qa_slot_bridge_pid_matches "$pid" "${OLD_CHAIN_STARTS[$index]}"; then
-		if ! kill -TERM "$pid"; then
-			kill -0 "$pid" 2>/dev/null \
-				&& die "failed to SIGTERM old Bridge PID"
+	# Signal ancestors before descendants so a wrapper exiting from its own TERM
+	# cannot make an intermediate disappear before it receives the one intended
+	# signal. Every target is rebound to its measured start identity first.
+	for (( index=${#OLD_CHAIN_PIDS[@]}-1; index>=0; index-- )); do
+		pid="${OLD_CHAIN_PIDS[$index]}"
+		if qa_slot_bridge_pid_matches "$pid" "${OLD_CHAIN_STARTS[$index]}"; then
+			if ! kill -TERM "$pid"; then
+				kill -0 "$pid" 2>/dev/null \
+					&& die "failed to SIGTERM old Bridge PID"
+			fi
+		elif kill -0 "$pid" 2>/dev/null; then
+			# A live PID with a different start identity may be a recycled foreign
+			# process. Never signal it. A measured member that is already gone is
+			# expected when an ancestor (for example tsx) forwards SIGTERM.
+			die "old Bridge PID identity changed before TERM"
 		fi
-	elif kill -0 "$pid" 2>/dev/null; then
-		# A live PID with a different start identity may be a recycled foreign
-		# process. Never signal it. A measured member that is already gone is
-		# expected when an ancestor (for example tsx) forwards SIGTERM.
-		die "old Bridge PID identity changed before TERM"
+	done
+	if ! wait_all_gone "$TERM_TIMEOUT" "${OLD_CHAIN_PIDS[@]}"; then
+		if old_bridge_recoverable; then
+			for path in "${OWNERSHIP_PID_FILES[@]}"; do qa_slot_bridge_atomic_write "$path" "$OLD_PID"; done
+		fi
+		die "old Bridge process chain did not exit after SIGTERM"
 	fi
-done
-if ! wait_all_gone "$TERM_TIMEOUT" "${OLD_CHAIN_PIDS[@]}"; then
-	if old_bridge_recoverable; then
-		for path in "${OWNERSHIP_PID_FILES[@]}"; do qa_slot_bridge_atomic_write "$path" "$OLD_PID"; done
+	RELEASED_LISTENERS="$(strict_listeners "$PORT")" \
+		|| die "post-TERM listener census failed"
+	[[ -z "$RELEASED_LISTENERS" ]] || die "old Bridge still owns the port"
+	bind_probe "$HOST" "$PORT" || die "positive port release bind probe failed"
+	if [[ "$CYCLE_MODE" == "stop-only" ]]; then
+		qa_slot_bridge_atomic_write "$BRIDGE_PID_FILE" cycle-failed \
+			|| die "cannot protect bridge.pid while Bridge is stopped"
+		SUCCESS=1
+		release_cycle_lock
+		CYCLE_LOCK_OWNED=0
+		jq -n --argjson slot "$SLOT" --arg bridgeUrl "$BRIDGE_URL" \
+			--argjson oldBridgePid "$OLD_PID" --arg launchSpec "$SPEC" \
+			'{mode:"stop-only",slot:$slot,bridgeUrl:$bridgeUrl,oldBridgePid:$oldBridgePid,newBridgePid:null,launchSpec:$launchSpec}'
+		exit 0
 	fi
-	die "old Bridge process chain did not exit after SIGTERM"
 fi
-RELEASED_LISTENERS="$(strict_listeners "$PORT")" \
-	|| die "post-TERM listener census failed"
-[[ -z "$RELEASED_LISTENERS" ]] || die "old Bridge still owns the port"
-bind_probe "$HOST" "$PORT" || die "positive port release bind probe failed"
 
 printf '[test-cycle-bridge] cycle boundary oldPid=%s at=%s\n' "$OLD_PID" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> "$LOG_PATH"
 (
@@ -378,7 +467,14 @@ SUCCESS=1
 release_cycle_lock
 CYCLE_LOCK_OWNED=0
 
-jq -n --argjson slot "$SLOT" --arg bridgeUrl "$BRIDGE_URL" \
-	--argjson oldBridgePid "$OLD_PID" --argjson newBridgePid "$NEW_PID" \
-	--arg launchSpec "$SPEC" \
-	'{slot:$slot,bridgeUrl:$bridgeUrl,oldBridgePid:$oldBridgePid,newBridgePid:$newBridgePid,launchSpec:$launchSpec}'
+if [[ "$CYCLE_MODE" == "cycle" ]]; then
+	jq -n --argjson slot "$SLOT" --arg bridgeUrl "$BRIDGE_URL" \
+		--argjson oldBridgePid "$OLD_PID" --argjson newBridgePid "$NEW_PID" \
+		--arg launchSpec "$SPEC" \
+		'{slot:$slot,bridgeUrl:$bridgeUrl,oldBridgePid:$oldBridgePid,newBridgePid:$newBridgePid,launchSpec:$launchSpec}'
+else
+	jq -n --argjson slot "$SLOT" --arg bridgeUrl "$BRIDGE_URL" \
+		--argjson newBridgePid "$NEW_PID" --arg launchSpec "$SPEC" \
+		'{mode:"start-only",slot:$slot,bridgeUrl:$bridgeUrl,
+		  oldBridgePid:null,newBridgePid:$newBridgePid,launchSpec:$launchSpec}'
+fi

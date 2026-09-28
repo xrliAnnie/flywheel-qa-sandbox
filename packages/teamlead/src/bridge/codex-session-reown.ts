@@ -46,7 +46,11 @@ export type CodexReownEvent =
 	| "reown_skipped_not_turn_holder"
 	| "reown_probe_unknown"
 	| "reown_fence_lost"
-	| "reown_turn_reconcile_failed";
+	| "reown_turn_reconcile_failed"
+	/** FLY-2925: live-daemon reconnect (no recovery budget, no respawn). */
+	| "reown_adopt_started"
+	| "reown_adopt_succeeded"
+	| "reown_adopt_failed";
 
 export function acceptReownTurnReconciliation(result: {
 	ok: boolean;
@@ -98,6 +102,17 @@ export interface CodexSessionReownDeps {
 		input: CodexRecoveryReceiptHook & {
 			capabilities: PreparedCodexRecoveryCapabilities;
 		},
+	): Promise<AdapterExecutionResult>;
+	/**
+	 * FLY-2925 §6.1: take control of the execution's STILL-RUNNING daemon on its
+	 * original thread (no spawn, no reap, no recovery claim/commit, no kick).
+	 * `onAdopted` fires once the exact thread is attached; before that the
+	 * attempt left the body untouched. Resolves with the adopted owner's result.
+	 * Absent → legacy watch-only / reap-and-revive posture.
+	 */
+	adopt?(
+		session: Session,
+		hooks: { onAdopted(threadId: string): void },
 	): Promise<AdapterExecutionResult>;
 	reconcileTurn(session: Session, threadId?: string): Promise<void>;
 	readTurnHolder(session: Session): Promise<string | null>;
@@ -382,7 +397,8 @@ export async function prepareCodexRecoveryAgentHome(
 }
 
 /**
- * The 529 room is an isolated stub topology, not production daemon authority.
+ * A 529 generalized room can use either stub or real runners. Only the stub
+ * topology lacks production daemon authority; real runners must be re-owned.
  * Keep the predicate narrow and data-derived so ordinary tests are unaffected.
  */
 export function isCodexReownExcluded(
@@ -405,6 +421,7 @@ export function isCodexReownExcluded(
 	}
 	return (
 		(roomInfo as { generalized: boolean }).generalized === true &&
+		(roomInfo as { runnerMode?: unknown }).runnerMode !== "real" &&
 		(roomInfo as { projectName: string }).projectName === session.project_name
 	);
 }
@@ -569,6 +586,16 @@ export class CodexSessionReowner {
 			return;
 		}
 
+		// FLY-2925 §6.1: a live daemon is the same body — re-control it on its
+		// original thread in every posture (running, gate-held, parked). Never
+		// watch it uncontrolled and never reap it to respawn a replacement.
+		if (liveness === "alive" && this.deps.adopt) {
+			this.watched.delete(session.execution_id);
+			this.rolloutByExecution.delete(session.execution_id);
+			await this.beginAdoption(session, gateHeld);
+			return;
+		}
+
 		if (liveness === "alive" && !gateHeld && !isParked(session)) {
 			let rolloutMtimeMs: number | undefined;
 			if (this.deps.probeRolloutMtime) {
@@ -635,6 +662,106 @@ export class CodexSessionReowner {
 		this.rolloutByExecution.delete(session.execution_id);
 
 		await this.beginRecovery(session, { liveness, gateHeld });
+	}
+
+	/**
+	 * FLY-2925: reconnect a live body. Turn state is reconciled first; a
+	 * conflict HOLDS (recorded, retried next pass) instead of judging the body
+	 * dead. Nothing here charges the recovery budget or commits a recovery.
+	 */
+	private async beginAdoption(
+		session: Session,
+		gateHeld: boolean,
+	): Promise<void> {
+		const adopt = this.deps.adopt;
+		if (!adopt) return;
+		if (this.deps.owners.isExecutionOwned(session.execution_id)) return;
+		if (!(await this.reconcileBeforeArm(session))) return;
+		if (
+			this.deps.owners.isExecutionOwned(session.execution_id) ||
+			!(await this.deps.isCurrentBinding(session))
+		) {
+			this.record("reown_skipped_superseded", session, {
+				reason: "owner_or_binding_changed_before_adoption",
+			});
+			return;
+		}
+		this.record("reown_adopt_started", session, {
+			gateHeld,
+			posture: isParked(session) ? "parked" : "running",
+		});
+		let adopted = false;
+		let terminal: Promise<AdapterExecutionResult>;
+		try {
+			terminal = adopt(session, {
+				onAdopted: (threadId) => {
+					if (adopted) return;
+					adopted = true;
+					this.unknownStreak.delete(session.execution_id);
+					this.record("reown_adopt_succeeded", session, {
+						threadId,
+						gateHeld,
+					});
+				},
+			});
+		} catch (error) {
+			await this.recordAdoptionFailure(
+				session,
+				normalizeCodexRecoveryFailure(error, { stage: "owner_admission" }),
+			);
+			return;
+		}
+		void terminal
+			.then(
+				async (result) => {
+					if (adopted) return;
+					await this.recordAdoptionFailure(
+						session,
+						normalizeCodexRecoveryFailure(result.recoveryFailure, {
+							failureReason:
+								result.failure?.failureReason ??
+								"adoption ended before the thread was attached",
+							resultText: result.resultText,
+							stage: "owner_admission",
+						}),
+					);
+				},
+				async (error) => {
+					if (!adopted)
+						await this.recordAdoptionFailure(
+							session,
+							normalizeCodexRecoveryFailure(error, {
+								stage: "owner_admission",
+							}),
+						);
+				},
+			)
+			.catch(() => {
+				console.warn(
+					"[codex-session-reown] adoption failure could not be recorded",
+				);
+			});
+	}
+
+	private async recordAdoptionFailure(
+		session: Session,
+		failure: ReturnType<typeof normalizeCodexRecoveryFailure>,
+	): Promise<void> {
+		// Pre-attach: the body was never touched. The next pass re-probes — a
+		// daemon that died meanwhile takes the same-thread revive path.
+		this.record("reown_adopt_failed", session, {
+			reason: failure.summary,
+			failure,
+			accounting: false,
+		});
+		const streak = (this.unknownStreak.get(session.execution_id) ?? 0) + 1;
+		this.unknownStreak.set(session.execution_id, streak);
+		if (streak === 2) {
+			await this.deps.alert(
+				session,
+				`Live Codex daemon could not be re-controlled for two passes: ${failure.summary}`,
+			);
+		}
 	}
 
 	private async recordUnknown(
@@ -926,9 +1053,13 @@ export class CodexSessionReowner {
 							);
 						}
 						committed = true;
+						// FLY-2925: the owner already runs the original thread. A turn
+						// reconciliation conflict is recorded evidence, never a reason
+						// to judge the recovered body dead.
 						if (!(await this.reconcileBeforeArm(session, threadId))) {
-							throw new Error(
-								"turn reconciliation failed after recovery commit",
+							await this.deps.alert(
+								session,
+								"Recovered Codex body kept running; turn reconciliation conflict recorded for review",
 							);
 						}
 						this.record("reown_revive_succeeded", session, {

@@ -217,10 +217,19 @@ export interface CodexRecoveryRuntime {
 		session: Session,
 		attempts: number | CodexRecoveryExhaustion,
 	): Promise<void>;
+	/** FLY-2925 §6.1: re-control a live daemon on its original thread. */
+	adopt(
+		context: AdapterExecutionContext,
+		hooks: { onAdopted(threadId: string): void },
+		options?: CodexRecoveryOptions,
+	): Promise<AdapterExecutionResult>;
 }
 
 type CodexRecoveryRuntimeInput = {
-	adapter: Pick<CodexTmuxAdapter, "resumeExistingExecution">;
+	adapter: Pick<
+		CodexTmuxAdapter,
+		"resumeExistingExecution" | "adoptLiveExecution"
+	>;
 	sink: Pick<DirectEventSink, "emitCompleted" | "emitFailed">;
 };
 
@@ -228,6 +237,14 @@ export function createCodexRecoveryRuntime(
 	input: CodexRecoveryRuntimeInput,
 ): CodexRecoveryRuntime {
 	return {
+		adopt: (context, hooks, options) =>
+			runCodexAdoptionOwner({
+				adapter: input.adapter,
+				sink: input.sink,
+				context,
+				hooks,
+				options,
+			}),
 		resume: (context, hooks, options) =>
 			runCodexRecoveryOwner({
 				adapter: input.adapter,
@@ -344,6 +361,79 @@ export async function runCodexRecoveryOwner(input: {
 		await input.sink.emitFailed(
 			env,
 			result.resultText ?? "Codex recovery owner failed after commit",
+			undefined,
+			result.failure,
+		);
+	}
+	return result;
+}
+
+/**
+ * FLY-2925 §6.1: run the owner of an ADOPTED live daemon. Once the original
+ * thread is attached the adopted body is the execution's authoritative owner,
+ * so its terminal result travels the same DirectEventSink path as a first
+ * dispatch. An attempt that never attached touched nothing and emits nothing
+ * (the re-owner decides the next pass).
+ */
+export async function runCodexAdoptionOwner(input: {
+	adapter: Pick<CodexTmuxAdapter, "adoptLiveExecution">;
+	sink: Pick<DirectEventSink, "emitCompleted" | "emitFailed">;
+	context: AdapterExecutionContext;
+	hooks: { onAdopted(threadId: string): void };
+	options?: CodexRecoveryOptions;
+}): Promise<AdapterExecutionResult> {
+	let adopted = false;
+	let result: AdapterExecutionResult;
+	try {
+		result = await input.adapter.adoptLiveExecution(
+			input.context,
+			input.options,
+			{
+				onAdopted: (threadId) => {
+					adopted = true;
+					input.hooks.onAdopted(threadId);
+				},
+			},
+		);
+	} catch (error) {
+		const recoveryFailure = normalizeCodexRecoveryFailure(error);
+		result = {
+			success: false,
+			sessionId: input.context.executionId,
+			recoveryFailure,
+			resultText: recoveryFailure.summary,
+		};
+	}
+	if (!adopted) return result;
+	const role = input.context.sessionRole ?? input.context.phaseKeepAlive?.role;
+	const env = {
+		executionId: input.context.executionId,
+		issueId: input.context.issueId,
+		projectName: input.context.projectName ?? "",
+		issueIdentifier: input.context.issueId,
+		...(role ? { sessionRole: role, chatThreadRole: role } : {}),
+		runnerBackend: "codex-tmux",
+		...(input.context.model ? { runnerModel: input.context.model } : {}),
+		...(input.context.skillFrameworkMode
+			? { skillFrameworkMode: input.context.skillFrameworkMode }
+			: {}),
+	};
+	if (result.success) {
+		await input.sink.emitCompleted(
+			env,
+			{
+				success: true,
+				sessionId: result.sessionId,
+				durationMs: result.durationMs,
+				tmuxWindow: result.tmuxWindow,
+				sessionParams: result.sessionParams,
+			},
+			undefined,
+		);
+	} else {
+		await input.sink.emitFailed(
+			env,
+			result.resultText ?? "adopted Codex owner failed",
 			undefined,
 			result.failure,
 		);

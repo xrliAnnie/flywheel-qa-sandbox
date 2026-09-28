@@ -1,0 +1,116 @@
+[
+  {
+    "diagram": "core-flow",
+    "attempt": 1,
+    "command": [
+      "mmdc",
+      "-i",
+      "engineering/doc/FLY-2925-engine-owned-lifecycle/core-flow.mmd",
+      "-o",
+      "engineering/doc/FLY-2925-engine-owned-lifecycle/core-flow.svg",
+      "-w",
+      "1000",
+      "-b",
+      "white",
+      "--svgId",
+      "FLY-2925-d1"
+    ],
+    "exit_code": 1,
+    "output": "Generating single mermaid chart\n\nError: Failed to launch the browser process!\n[0926/133920.495500:ERROR:thermal_state_observer_mac.mm(88)] ThermalStateObserverMac unable to register to power notifications. Result: 9\n[0926/133920.510479:ERROR:dns_config_service_posix.cc(142)] DNS config watch failed to start.\n[0926/133920.562386:FATAL:mach_port_rendezvous.cc(399)] Check failed: kr == KERN_SUCCESS. bootstrap_check_in org.chromium.Chromium.MachPortRendezvousServer.90741: Permission denied (1100)\n\n\nTROUBLESHOOTING: https://pptr.dev/troubleshooting\n\n    at Interface.onClose (file:///opt/homebrew/Cellar/mermaid-cli/11.12.0/libexec/lib/node_modules/@mermaid-js/mermaid-cli/node_modules/@puppeteer/browsers/lib/esm/launch.js:303:24)\n    at Interface.emit (node:events:520:22)\n    at Interface.close (node:internal/readline/interface:555:10)\n    at Socket.onend (node:internal/readline/interface:273:10)\n    at Socket.emit (node:events:520:22)\n    at endReadableNT (node:internal/streams/readable:1729:12)\n    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)\n\n"
+  },
+  {
+    "diagram": "core-flow",
+    "attempt": 2,
+    "command": [
+      "mmdc",
+      "-i",
+      "engineering/doc/FLY-2925-engine-owned-lifecycle/core-flow.mmd",
+      "-o",
+      "engineering/doc/FLY-2925-engine-owned-lifecycle/core-flow.svg",
+      "-w",
+      "1000",
+      "-b",
+      "white",
+      "--svgId",
+      "FLY-2925-d1"
+    ],
+    "exit_code": 1,
+    "output": "Generating single mermaid chart\n\nError: Failed to launch the browser process!\n[0926/133921.190033:ERROR:thermal_state_observer_mac.mm(88)] ThermalStateObserverMac unable to register to power notifications. Result: 9\n[0926/133921.221420:ERROR:dns_config_service_posix.cc(142)] DNS config watch failed to start.\n[0926/133921.247558:FATAL:mach_port_rendezvous.cc(399)] Check failed: kr == KERN_SUCCESS. bootstrap_check_in org.chromium.Chromium.MachPortRendezvousServer.91059: Permission denied (1100)\n\n\nTROUBLESHOOTING: https://pptr.dev/troubleshooting\n\n    at ChildProcess.onClose (file:///opt/homebrew/Cellar/mermaid-cli/11.12.0/libexec/lib/node_modules/@mermaid-js/mermaid-cli/node_modules/@puppeteer/browsers/lib/esm/launch.js:303:24)\n    at ChildProcess.emit (node:events:520:22)\n    at ChildProcess._handle.onexit (node:internal/child_process:293:12)\n\n"
+  },
+  {
+    "diagram": "identity-model",
+    "attempt": 1,
+    "command": [
+      "mmdc",
+      "-i",
+      "engineering/doc/FLY-2925-engine-owned-lifecycle/identity-model.mmd",
+      "-o",
+      "engineering/doc/FLY-2925-engine-owned-lifecycle/identity-model.svg",
+      "-w",
+      "1000",
+      "-b",
+      "white",
+      "--svgId",
+      "FLY-2925-d2"
+    ],
+    "exit_code": 1,
+    "output": "Generating single mermaid chart\n\nError: Failed to launch the browser process!\n[0926/133921.762481:ERROR:thermal_state_observer_mac.mm(88)] ThermalStateObserverMac unable to register to power notifications. Result: 9\n[0926/133921.765444:ERROR:dns_config_service_posix.cc(142)] DNS config watch failed to start.\n[0926/133921.804019:FATAL:mach_port_rendezvous.cc(399)] Check failed: kr == KERN_SUCCESS. bootstrap_check_in org.chromium.Chromium.MachPortRendezvousServer.91151: Permission denied (1100)\n\n\nTROUBLESHOOTING: https://pptr.dev/troubleshooting\n\n    at ChildProcess.onClose (file:///opt/homebrew/Cellar/mermaid-cli/11.12.0/libexec/lib/node_modules/@mermaid-js/mermaid-cli/node_modules/@puppeteer/browsers/lib/esm/launch.js:303:24)\n    at ChildProcess.emit (node:events:520:22)\n    at ChildProcess._handle.onexit (node:internal/child_process:293:12)\n\n"
+  },
+  {
+    "diagram": "identity-model",
+    "attempt": 2,
+    "command": [
+      "mmdc",
+      "-i",
+      "engineering/doc/FLY-2925-engine-owned-lifecycle/identity-model.mmd",
+      "-o",
+      "engineering/doc/FLY-2925-engine-owned-lifecycle/identity-model.svg",
+      "-w",
+      "1000",
+      "-b",
+      "white",
+      "--svgId",
+      "FLY-2925-d2"
+    ],
+    "exit_code": 1,
+    "output": "Generating single mermaid chart\n\nError: Failed to launch the browser process!\n[0926/133922.548577:ERROR:thermal_state_observer_mac.mm(88)] ThermalStateObserverMac unable to register to power notifications. Result: 9\n[0926/133922.560529:ERROR:dns_config_service_posix.cc(142)] DNS config watch failed to start.\n[0926/133922.564542:FATAL:mach_port_rendezvous.cc(399)] Check failed: kr == KERN_SUCCESS. bootstrap_check_in org.chromium.Chromium.MachPortRendezvousServer.91219: Permission denied (1100)\n\n\nTROUBLESHOOTING: https://pptr.dev/troubleshooting\n\n    at Interface.onClose (file:///opt/homebrew/Cellar/mermaid-cli/11.12.0/libexec/lib/node_modules/@mermaid-js/mermaid-cli/node_modules/@puppeteer/browsers/lib/esm/launch.js:303:24)\n    at Interface.emit (node:events:520:22)\n    at Interface.close (node:internal/readline/interface:555:10)\n    at Socket.onend (node:internal/readline/interface:273:10)\n    at Socket.emit (node:events:520:22)\n    at endReadableNT (node:internal/streams/readable:1729:12)\n    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)\n\n"
+  },
+  {
+    "diagram": "reconnect",
+    "attempt": 1,
+    "command": [
+      "mmdc",
+      "-i",
+      "engineering/doc/FLY-2925-engine-owned-lifecycle/reconnect.mmd",
+      "-o",
+      "engineering/doc/FLY-2925-engine-owned-lifecycle/reconnect.svg",
+      "-w",
+      "1000",
+      "-b",
+      "white",
+      "--svgId",
+      "FLY-2925-d3"
+    ],
+    "exit_code": 1,
+    "output": "Generating single mermaid chart\n\nError: Failed to launch the browser process!\n[0926/133923.518434:ERROR:thermal_state_observer_mac.mm(88)] ThermalStateObserverMac unable to register to power notifications. Result: 9\n[0926/133923.522271:ERROR:dns_config_service_posix.cc(142)] DNS config watch failed to start.\n[0926/133923.525850:FATAL:mach_port_rendezvous.cc(399)] Check failed: kr == KERN_SUCCESS. bootstrap_check_in org.chromium.Chromium.MachPortRendezvousServer.91527: Permission denied (1100)\n\n\nTROUBLESHOOTING: https://pptr.dev/troubleshooting\n\n    at Interface.onClose (file:///opt/homebrew/Cellar/mermaid-cli/11.12.0/libexec/lib/node_modules/@mermaid-js/mermaid-cli/node_modules/@puppeteer/browsers/lib/esm/launch.js:303:24)\n    at Interface.emit (node:events:520:22)\n    at Interface.close (node:internal/readline/interface:555:10)\n    at Socket.onend (node:internal/readline/interface:273:10)\n    at Socket.emit (node:events:520:22)\n    at endReadableNT (node:internal/streams/readable:1729:12)\n    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)\n\n"
+  },
+  {
+    "diagram": "reconnect",
+    "attempt": 2,
+    "command": [
+      "mmdc",
+      "-i",
+      "engineering/doc/FLY-2925-engine-owned-lifecycle/reconnect.mmd",
+      "-o",
+      "engineering/doc/FLY-2925-engine-owned-lifecycle/reconnect.svg",
+      "-w",
+      "1000",
+      "-b",
+      "white",
+      "--svgId",
+      "FLY-2925-d3"
+    ],
+    "exit_code": 1,
+    "output": "Generating single mermaid chart\n\nError: Failed to launch the browser process!\n[0926/133925.387884:ERROR:thermal_state_observer_mac.mm(88)] ThermalStateObserverMac unable to register to power notifications. Result: 9\n[0926/133925.392288:ERROR:dns_config_service_posix.cc(142)] DNS config watch failed to start.\n[0926/133925.395303:FATAL:mach_port_rendezvous.cc(399)] Check failed: kr == KERN_SUCCESS. bootstrap_check_in org.chromium.Chromium.MachPortRendezvousServer.91765: Permission denied (1100)\n\n\nTROUBLESHOOTING: https://pptr.dev/troubleshooting\n\n    at Interface.onClose (file:///opt/homebrew/Cellar/mermaid-cli/11.12.0/libexec/lib/node_modules/@mermaid-js/mermaid-cli/node_modules/@puppeteer/browsers/lib/esm/launch.js:303:24)\n    at Interface.emit (node:events:520:22)\n    at Interface.close (node:internal/readline/interface:555:10)\n    at Socket.onend (node:internal/readline/interface:273:10)\n    at Socket.emit (node:events:520:22)\n    at endReadableNT (node:internal/streams/readable:1729:12)\n    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)\n\n"
+  }
+]

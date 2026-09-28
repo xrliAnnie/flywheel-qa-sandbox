@@ -1,0 +1,42 @@
+{
+  "staticChecks": "passed",
+  "commentCards": 9,
+  "checks": [
+    {
+      "path": "/report-a",
+      "storageFails": false,
+      "clipboardMode": "ok",
+      "chunks": 4,
+      "fallback": 0,
+      "restored": 0
+    },
+    {
+      "path": "/report-b",
+      "storageFails": false,
+      "clipboardMode": "reject",
+      "chunks": 4,
+      "fallback": 1,
+      "restored": 0
+    },
+    {
+      "path": "/report-a",
+      "storageFails": false,
+      "clipboardMode": "absent",
+      "chunks": 4,
+      "fallback": 1,
+      "restored": 6029
+    },
+    {
+      "path": "/report-c",
+      "storageFails": true,
+      "clipboardMode": "reject",
+      "chunks": 4,
+      "fallback": 1,
+      "restored": 0
+    }
+  ],
+  "scope": "Static HTML and mocked DOM interaction validation only; no browser render or hosted CSP execution proof. Local diagram render failed twice per diagram.",
+  "validatedScriptSha256": "e7c76c4ff0b59fb6882e6868374214949a70c91a2eb4ccc19e7434215d70d693",
+  "currentHtmlSha256": "de47d06f5bcfbeee678bc96c02ffd620194d21a551c447954d347f0919e055a7",
+  "currentHtmlBytes": 20196
+}

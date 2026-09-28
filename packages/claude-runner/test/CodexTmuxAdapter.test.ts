@@ -60,7 +60,10 @@ import {
 	type RunGoalInput,
 	type RunGoalOutcome,
 } from "../src/codex-daemon-goal-runtime.js";
-import type { DaemonHandle } from "../src/codex-daemon-runtime.js";
+import {
+	codexSessionStateDir,
+	type DaemonHandle,
+} from "../src/codex-daemon-runtime.js";
 import { CodexExecutionOwnershipRegistry } from "../src/codex-execution-ownership.js";
 import {
 	admitCodexAgentHome,
@@ -4199,6 +4202,178 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(executionOwners.isExecutionOwned(execId)).toBe(false);
 	});
 
+	it("FLY-2925: adoptLiveExecution reconnects to the live daemon on the SAME thread — no spawn/reap, no commit, no re-kick", async () => {
+		await makeAdapter().execute(ctx({ prompt: "original kick" }));
+		const snapshot = readCodexLaunchSnapshot(execId);
+		runtime = new FakeRuntime(async (input) => {
+			input.onThreadReady?.(THREAD_ID, 0);
+			// Attach alone is not adoption; the goal-posture receipt is.
+			await input.onRecoveryOwnershipEstablished?.({
+				kind: "goal_resumed",
+				threadId: THREAD_ID,
+				goalStatus: "active",
+			});
+			return complete();
+		});
+
+		const adopted: string[] = [];
+		const result = await makeAdapter().adoptLiveExecution(
+			ctx({ prompt: "must not reconstruct this kick", model: "drifted-model" }),
+			undefined,
+			{ onAdopted: (threadId) => adopted.push(threadId) },
+		);
+
+		expect(result.success).toBe(true);
+		expect(adopted).toEqual([THREAD_ID]);
+		const input = runtime.runGoalInputs[0]!;
+		expect(input.adoptLiveDaemon).toBe(true);
+		expect(input.adoptExistingGoal).toBe(true);
+		expect(input.resumeThreadId).toBe(THREAD_ID);
+		expect(input.reapOrphanPid).toBeUndefined();
+		expect(input.onRecoveryOwnershipEstablished).toBeTypeOf("function");
+		expect(input.objective).toBe(snapshot.objective);
+		expect(executionOwners.isExecutionOwned(execId)).toBe(false);
+	});
+
+	it("FLY-2925: an attached thread whose goal posture is never confirmed is not reported as adopted", async () => {
+		await makeAdapter().execute(ctx({ prompt: "original kick" }));
+		runtime = new FakeRuntime(async (input) => {
+			input.onThreadReady?.(THREAD_ID, 0);
+			throw new Error("adopted thread carries a goal that is not this run's");
+		});
+		const adopted: string[] = [];
+		const result = await makeAdapter().adoptLiveExecution(ctx(), undefined, {
+			onAdopted: (threadId) => adopted.push(threadId),
+		});
+		expect(adopted).toEqual([]);
+		expect(result.success).toBe(false);
+	});
+
+	it("FLY-2925: a pre-confirmation adoption failure leaves the live session, TUI, doorbell, and credential untouched", async () => {
+		await makeAdapter().execute(ctx({ prompt: "original kick" }));
+		const before = new CommDB(dbPath);
+		try {
+			before.registerSession(
+				execId,
+				"testsess:@77",
+				"proj",
+				"FLY-1188",
+				"flywheel-eng-lead",
+				"codex",
+				true,
+			);
+			expect(
+				before.activateSessionForWake({
+					executionId: execId,
+					tmuxWindow: "testsess:@77",
+					projectName: "proj",
+					issueId: "FLY-1188",
+					leadId: "flywheel-eng-lead",
+					vendor: "codex",
+				}),
+			).toMatchObject({ ok: true });
+			const instructionId = before.insertInstruction(
+				"flywheel-eng-lead",
+				execId,
+				"preserve this pending instruction",
+			);
+			const raw = (
+				before as unknown as { db: import("better-sqlite3").Database }
+			).db;
+			const delivery = raw
+				.prepare("SELECT delivery_id FROM mailbox WHERE id = ?")
+				.get(instructionId) as { delivery_id: string };
+			raw
+				.prepare(
+					`UPDATE mailbox
+					    SET state = 'LEASED', batch_id = 'mailbox-batch:preconfirm',
+					        lease_retry_count = 0, claimed_by = 'bridge:test',
+					        claim_expires_at = '2099-01-01T00:00:00.000Z'
+					  WHERE id = ?`,
+				)
+				.run(instructionId);
+			expect(
+				before.enqueueRunnerDoorbellWake(
+					execId,
+					{
+						id: "transport-preconfirm",
+						to: "runner-agent",
+						content: "transport body",
+						metadata: {
+							flywheelId: "mailbox-batch:preconfirm#r0",
+							durableBatchId: "mailbox-batch:preconfirm",
+							memberIds: [delivery.delivery_id],
+							execId,
+						},
+					},
+					1_000,
+				),
+			).toMatchObject({ kind: "queued" });
+		} finally {
+			before.close();
+		}
+
+		ensureWindowCalls = [];
+		killWindowCalls = [];
+		transcriptCloses = [];
+		const scrubCredential = vi.fn();
+		runtime = new FakeRuntime(async (input) => {
+			await input.onThreadReady?.(THREAD_ID, 0);
+			throw new Error("goal posture unavailable before adoption receipt");
+		});
+		const adapter = new CodexTmuxAdapter(
+			"testsess",
+			fake.exec,
+			25,
+			60_000,
+			undefined,
+			undefined,
+			{ ...makeDeps(), scrubCredential },
+		);
+
+		const result = await adapter.adoptLiveExecution(
+			ctx({ phaseKeepAlive: { role: "implement" } }),
+		);
+
+		expect(result.success).toBe(false);
+		expect(runtime.stopped).toBe(0);
+		expect(runtime.drainedCalls).toBe(0);
+		expect(ensureWindowCalls).toEqual([]);
+		expect(killWindowCalls).toEqual([]);
+		expect(transcriptCloses).toEqual([]);
+		expect(scrubCredential).not.toHaveBeenCalled();
+		expect(executionOwners.isExecutionOwned(execId)).toBe(false);
+		const after = new CommDB(dbPath);
+		try {
+			expect(after.getSession(execId)).toMatchObject({
+				status: "running",
+				tmux_window: "testsess:@77",
+				phase_keep_alive: 1,
+			});
+			expect(after.listRunnerPhaseWakes(execId)).toMatchObject([
+				{
+					message_id: "doorbell:mailbox-batch:preconfirm#r0",
+					state: "pending",
+				},
+			]);
+		} finally {
+			after.close();
+		}
+	});
+
+	it("FLY-2925: a dead-daemon recovery resume never re-kicks the thread's own goal", async () => {
+		await makeAdapter().execute(ctx({ prompt: "original kick" }));
+		runtime = new FakeRuntime(async (input) => {
+			input.onThreadReady?.(THREAD_ID, 0);
+			return complete();
+		});
+		await makeAdapter().resumeExistingExecution(ctx(), {
+			onRecoveryOwnershipEstablished: vi.fn(async () => undefined),
+		});
+		expect(runtime.runGoalInputs[0]?.adoptExistingGoal).toBe(true);
+		expect(runtime.runGoalInputs[0]?.adoptLiveDaemon).toBeUndefined();
+	});
+
 	it("FLY-2170: recovery preserves an already-sanitized live window name byte-for-byte", async () => {
 		await makeAdapter().execute(ctx({ prompt: "original recovery kick" }));
 		ensureWindowCalls = [];
@@ -5000,6 +5175,51 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			await execution;
 
 			expect(harness.restarts()).toBe(0);
+			await expect(stopped).resolves.toBe("stopped");
+		});
+
+		it("FLY-2925: the resident continuation predicate withdraws on requestStop; waits and retry episodes persist", async () => {
+			const harness = blockingRuntime();
+			runtime = harness.rt;
+			const execution = makeAdapter().execute(ctx());
+			await vi.waitFor(() => expect(runtime.runGoalInputs).toHaveLength(1));
+			const input = runtime.runGoalInputs[0]!;
+			expect(input.mayProceed?.()).toBe(true);
+
+			input.onResidentWait?.({
+				reason: "native_blocked",
+				threadId: THREAD_ID,
+			});
+			const episode = {
+				v: 1 as const,
+				threadId: THREAD_ID,
+				category: "server_overloaded" as const,
+				attempts: 2,
+				lastFailedTurnId: "turn-9",
+				nextAt: 123,
+			};
+			expect(input.readResidentWaitLatch?.()).toBe(false);
+			input.writeResidentWaitLatch?.(true);
+			expect(input.readResidentWaitLatch?.()).toBe(true);
+			input.writeUpstreamRetryEpisode?.(episode);
+			expect(input.readUpstreamRetryEpisode?.()).toEqual(episode);
+			const state = JSON.parse(
+				readFileSync(
+					join(codexSessionStateDir(execId), "session.json"),
+					"utf-8",
+				),
+			) as { residentWait?: { reason?: string; threadId?: string } };
+			expect(state.residentWait).toMatchObject({
+				reason: "native_blocked",
+				threadId: THREAD_ID,
+			});
+
+			const stopped = executionOwners.requestStop(execId, "terminate", {
+				timeoutMs: 5_000,
+			});
+			expect(input.mayProceed?.()).toBe(false);
+			harness.killDaemon();
+			await execution;
 			await expect(stopped).resolves.toBe("stopped");
 		});
 

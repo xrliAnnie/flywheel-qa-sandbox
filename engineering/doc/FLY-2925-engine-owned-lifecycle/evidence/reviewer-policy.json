@@ -1,0 +1,7 @@
+{
+  "policyExactMatch": true,
+  "policySha256": "69b512badb5fdd37ebe6db6dd3f9f22ca7db577c6539c69252b10ff87858c363",
+  "reviewerProducer": "/Users/xiaorongli/Dev/flywheel/packages/teamlead/dist/bridge/review-request-coordinator.js",
+  "firstBytes": "loadLocalTestPolicy().trim() + newline + reviewer task",
+  "scope": "Verified exact marked policy is prepended by deployed request-review prompt producer before registration; no local verification delegated."
+}

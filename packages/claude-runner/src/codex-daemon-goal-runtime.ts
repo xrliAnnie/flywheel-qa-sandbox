@@ -33,9 +33,13 @@ import {
 	type GoalStatus,
 	type GoalTurnLifecycle,
 	type RecoveryOwnershipReceipt,
+	type ResidentWaitObservation,
 	runGoalToTerminal,
+	type UpstreamRetryEpisode,
 } from "./codex-daemon-client.js";
 import {
+	type AdoptCodexDaemonOptions,
+	adoptCodexDaemon,
 	type DaemonHandle,
 	resolveDaemonSocketPath,
 	type SpawnCodexDaemonOptions,
@@ -121,6 +125,8 @@ export interface CodexDaemonGoalRuntimeOptions {
 
 	// ── injected collaborators (default to the real ones) ────────────────
 	spawnDaemon?: (opts: SpawnCodexDaemonOptions) => Promise<DaemonHandle>;
+	/** FLY-2925: take control of a live daemon without spawning (default adoptCodexDaemon). */
+	adoptDaemon?: (opts: AdoptCodexDaemonOptions) => Promise<DaemonHandle>;
 	connectTransport?: (
 		opts: ConnectDaemonTransportOptions,
 	) => Promise<DaemonTransport>;
@@ -151,6 +157,18 @@ export interface RunGoalInput {
 	tokenBudget?: number;
 	/** Resume an existing thread instead of starting a fresh one. */
 	resumeThreadId?: string;
+	/**
+	 * FLY-2925 §6.1: the execution's daemon is STILL RUNNING (Bridge restart).
+	 * Take control of it without spawning or reaping, attach to `resumeThreadId`
+	 * and observe its goal — no goal/set(active), no kick. A later transport
+	 * death falls back to the ordinary same-thread restart.
+	 */
+	adoptLiveDaemon?: boolean;
+	/**
+	 * FLY-2925: the thread already carries this run's goal (recovery of an
+	 * existing execution): never re-activate or re-kick an existing own goal.
+	 */
+	adoptExistingGoal?: boolean;
 	/** Require thread/resume to report the exact requested identity. */
 	strictResumeIdentity?: boolean;
 	/** Propagate an authoritative identity-hook error before any goal input. */
@@ -230,12 +248,30 @@ export interface RunGoalInput {
 	mayRestartAfterTransportDeath?: () => boolean;
 	/** FLY-2903: observes each restart decision; a throwing handler is swallowed. */
 	onRestartDecision?: (decision: RestartDecision) => void;
+	/**
+	 * FLY-2925: engine continuation predicate for a resident body, forwarded to
+	 * the goal loop (checked before any wake/resume/retry input).
+	 */
+	mayProceed?: () => boolean;
+	/** FLY-2925: resident wait/retry observations, forwarded across restarts. */
+	onResidentWait?: (observation: ResidentWaitObservation) => void;
+	/** FLY-2925: durable upstream retry episode, shared across daemon restarts. */
+	readUpstreamRetryEpisode?: () => UpstreamRetryEpisode | null;
+	writeUpstreamRetryEpisode?: (episode: UpstreamRetryEpisode | null) => void;
+	/** FLY-2925: durable resident-wait latch, shared across daemon restarts. */
+	readResidentWaitLatch?: () => boolean;
+	writeResidentWaitLatch?: (held: boolean) => void;
 }
 
 export interface RestartDecision {
 	restarts: number;
 	allowed: boolean;
-	reason: "allowed" | "refused_by_owner" | "predicate_threw";
+	reason:
+		| "allowed"
+		| "refused_by_owner"
+		| "predicate_threw"
+		/** FLY-2925: a resident body must carry an engine restart gate. */
+		| "missing_resident_gate";
 }
 
 export interface RunGoalOutcome {
@@ -266,6 +302,9 @@ export class CodexDaemonGoalRuntime {
 	private readonly opts: CodexDaemonGoalRuntimeOptions;
 	private readonly log: (m: string) => void;
 	private readonly socketPath: string;
+	private readonly adoptDaemon: NonNullable<
+		CodexDaemonGoalRuntimeOptions["adoptDaemon"]
+	>;
 	private readonly spawnDaemon: NonNullable<
 		CodexDaemonGoalRuntimeOptions["spawnDaemon"]
 	>;
@@ -304,6 +343,7 @@ export class CodexDaemonGoalRuntime {
 		this.socketPath =
 			opts.socketPath ?? resolveDaemonSocketPath(opts.executionId);
 		this.spawnDaemon = opts.spawnDaemon ?? spawnCodexDaemon;
+		this.adoptDaemon = opts.adoptDaemon ?? adoptCodexDaemon;
 		this.connectTransport = opts.connectTransport ?? connectDaemonTransport;
 		this.makeClient =
 			opts.makeClient ??
@@ -349,6 +389,52 @@ export class CodexDaemonGoalRuntime {
 	 * still-dying daemon on the same socket, and a stop() that raced startup
 	 * leaves no live daemon.
 	 */
+	/**
+	 * FLY-2925: connect to the execution's live daemon (see adoptCodexDaemon).
+	 * No spawn, no quota admission (the launch binding stands), no reap. A
+	 * failure after adoption releases ownership WITHOUT signalling the body.
+	 */
+	private async adoptSession(): Promise<DaemonSession> {
+		if (this.stopped) throw new Error("runtime stopped before daemon adoption");
+		const codexHome = this.selectedCodexHome();
+		const handle = await this.adoptDaemon({
+			executionId: this.opts.executionId,
+			socketPath: this.socketPath,
+			logger: this.log,
+		});
+		const exited = this.makeExitPromise(handle);
+		const giveUp = (
+			err: unknown,
+			...closables: Array<{ close(): void } | undefined>
+		): never => {
+			for (const c of closables) safeClose(c);
+			try {
+				handle.detach?.();
+			} catch {
+				/* ownership release is best-effort; the body is untouched */
+			}
+			throw err;
+		};
+		let transport: DaemonTransport | undefined;
+		let client: CodexDaemonClient | undefined;
+		try {
+			transport = await this.connectTransport({ socketPath: this.socketPath });
+			client = this.makeClient(transport);
+			await client.initialize();
+		} catch (err) {
+			return giveUp(err, client, transport);
+		}
+		if (this.stopped) {
+			return giveUp(
+				new Error("runtime stopped during daemon adoption"),
+				client,
+			);
+		}
+		const session: DaemonSession = { handle, client, codexHome, exited };
+		this.session = session;
+		return session;
+	}
+
 	private async startSession(
 		reapOrphanPid?: number,
 		onSpawnIdentity?: (pgid: number) => void,
@@ -642,7 +728,17 @@ export class CodexDaemonGoalRuntime {
 			// HIGH-3/FLY-1940: reap a prior orphan only on the FIRST spawn of this
 			// run. Every new spawn persists its group before the socket wait through
 			// the hard onSpawnIdentity contract.
-			let reapPid = input.reapOrphanPid;
+			let reapPid = input.adoptLiveDaemon ? undefined : input.reapOrphanPid;
+			let adoptPending = input.adoptLiveDaemon === true;
+			// FLY-2925: until the goal loop confirms the adopted goal posture, the
+			// adopted daemon is NOT ours to signal — any failure detaches only.
+			let adoptedHandle: DaemonHandle | undefined;
+			let adoptionConfirmed = false;
+			if (adoptPending && !input.resumeThreadId) {
+				throw new Error(
+					"adopting a live daemon requires the original thread id",
+				);
+			}
 			// MED-7 R2 (Codex full-PR review): arm the RUN's start ONCE. Every
 			// restart's runGoalToTerminal gets this SAME anchor, so the active +
 			// waiting ceilings are absolute for the run — a daemon
@@ -661,7 +757,11 @@ export class CodexDaemonGoalRuntime {
 				try {
 					const session =
 						this.session ??
-						(await this.startSession(reapPid, input.onSpawnIdentity));
+						(adoptPending
+							? await this.adoptSession()
+							: await this.startSession(reapPid, input.onSpawnIdentity));
+					if (adoptPending) adoptedHandle = session.handle;
+					adoptPending = false; // adoption applies only to the first session
 					reapPid = undefined; // reap applies only to the first spawn
 					if (
 						input.beforeFirstThread &&
@@ -688,7 +788,9 @@ export class CodexDaemonGoalRuntime {
 					const readyThread = await this.ensureThread(
 						session,
 						threadId,
-						input.strictResumeIdentity === true,
+						// FLY-2925: an adopted body must attach to its exact thread.
+						input.strictResumeIdentity === true ||
+							input.adoptLiveDaemon === true,
 					);
 					threadId = readyThread.threadId;
 					// AUTHORITATIVE own-thread signal (FLY-1188 M4d): the thread is
@@ -768,11 +870,47 @@ export class CodexDaemonGoalRuntime {
 							...(input.onGoalActive
 								? { onGoalActive: input.onGoalActive }
 								: {}),
-							...(input.onRecoveryOwnershipEstablished
+							...(adoptedHandle && !adoptionConfirmed
 								? {
-										onRecoveryOwnershipEstablished:
-											input.onRecoveryOwnershipEstablished,
+										// FLY-2925: an adopted body is OURS only once the goal
+										// loop confirmed this run's goal posture (the receipt).
+										onRecoveryOwnershipEstablished: async (
+											receipt: RecoveryOwnershipReceipt,
+										) => {
+											await input.onRecoveryOwnershipEstablished?.(receipt);
+											adoptionConfirmed = true;
+										},
 									}
+								: input.onRecoveryOwnershipEstablished
+									? {
+											onRecoveryOwnershipEstablished:
+												input.onRecoveryOwnershipEstablished,
+										}
+									: {}),
+							...(input.mayProceed ? { mayProceed: input.mayProceed } : {}),
+							...(input.onResidentWait
+								? { onResidentWait: input.onResidentWait }
+								: {}),
+							...(input.readUpstreamRetryEpisode
+								? { readUpstreamRetryEpisode: input.readUpstreamRetryEpisode }
+								: {}),
+							...(input.writeUpstreamRetryEpisode
+								? {
+										writeUpstreamRetryEpisode: input.writeUpstreamRetryEpisode,
+									}
+								: {}),
+							...(input.readResidentWaitLatch
+								? { readResidentWaitLatch: input.readResidentWaitLatch }
+								: {}),
+							// FLY-2925: a resumed/adopted thread keeps its own goal —
+							// never re-activated or re-kicked (restarts included).
+							...(input.adoptExistingGoal ||
+							input.adoptLiveDaemon ||
+							restarts > 0
+								? { adoptExisting: true }
+								: {}),
+							...(input.writeResidentWaitLatch
+								? { writeResidentWaitLatch: input.writeResidentWaitLatch }
 								: {}),
 						},
 						events,
@@ -784,6 +922,25 @@ export class CodexDaemonGoalRuntime {
 						...(this.quotaBinding ? { quotaBinding: this.quotaBinding } : {}),
 					};
 				} catch (err) {
+					// FLY-2925: a pre-confirmation failure on an adopted body (attach,
+					// identity, foreign goal, persistence, transport) leaves the live
+					// body exactly as found: release ownership, never signal, never
+					// restart a second daemon next to it.
+					if (
+						adoptedHandle &&
+						!adoptionConfirmed &&
+						this.session?.handle === adoptedHandle
+					) {
+						const adopted = this.session;
+						this.session = null;
+						safeClose(adopted.client);
+						try {
+							adopted.handle.detach?.();
+						} catch {
+							/* best-effort ownership release; the body is untouched */
+						}
+						throw err;
+					}
 					// ANY failure tears the (possibly dead) session down first and
 					// WAITS for the daemon to exit — so we never leak a daemon and a
 					// restart never races the dying one on the same socket. (A
@@ -860,7 +1017,13 @@ export class CodexDaemonGoalRuntime {
 		input: RunGoalInput,
 	): { allowed: true } | { allowed: false; reason: RestartDecision["reason"] } {
 		const predicate = input.mayRestartAfterTransportDeath;
-		if (!predicate) return { allowed: true };
+		if (!predicate) {
+			// FLY-2925: a resident (DAG) body never inherits "missing predicate
+			// means allowed"; only the engine's gate may authorize a restart.
+			return input.phaseLifecycle
+				? { allowed: false, reason: "missing_resident_gate" }
+				: { allowed: true };
+		}
 		try {
 			return predicate() === true
 				? { allowed: true }

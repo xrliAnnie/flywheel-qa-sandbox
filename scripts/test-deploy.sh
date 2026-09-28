@@ -4,7 +4,7 @@
 # Usage: scripts/test-deploy.sh [slot-number] [--digest <channel-id>]
 #        [--alerts [--codex-home-reconcile]]
 #        [--generalized [--codex-runner] [--stub-runner] [--expect-head <full-sha>]
-#          [--voice-fixture <public-json>]]
+#          [--voice-fixture <public-json>] [--codex-fault-sequence <csv>]]
 #        [--test-discipline --expect-head <full-sha> [--generalized]
 #          [--codex-runner]]
 #   If slot-number is provided, claims that specific slot.
@@ -201,6 +201,7 @@ VOICE_FIXTURE=""          # FLY-2655: opt-in isolated 529 voice-room coordinates
 VOICE_CHANNEL_ID=""       # FLY-2874: optional slot-owned voice map.
 VOICE_CHANNEL_NAME=""
 TEST_DISCIPLINE=0          # FLY-2802: real-runner local-test behavior acceptance room.
+CODEX_FAULT_SEQUENCE=""    # FLY-2925: explicit real-Codex loopback fault injection.
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --from-branch)
@@ -243,6 +244,13 @@ while [[ $# -gt 0 ]]; do
       GENERALIZED=1; shift ;;
     --codex-runner)
       CODEX_RUNNER=1; shift ;;
+    --codex-fault-sequence)
+      CODEX_FAULT_SEQUENCE="${2:?--codex-fault-sequence requires a comma-separated sequence}"; shift 2 ;;
+    --codex-fault-sequence=*)
+      CODEX_FAULT_SEQUENCE="${1#*=}"
+      [[ -n "$CODEX_FAULT_SEQUENCE" ]] \
+        || { echo "ERROR: --codex-fault-sequence requires a comma-separated sequence" >&2; exit 1; }
+      shift ;;
     --stub-runner)
       STUB_RUNNER=1; shift ;;
     --test-discipline)
@@ -300,6 +308,31 @@ fi
 if [[ "$CODEX_RUNNER" == "1" && "$STUB_RUNNER" == "1" ]]; then
   echo "ERROR: --codex-runner cannot be combined with --stub-runner" >&2
   exit 1
+fi
+if [[ -n "$CODEX_FAULT_SEQUENCE" ]]; then
+  if [[ "$GENERALIZED" != "1" || "$CODEX_RUNNER" != "1" \
+      || "$STUB_RUNNER" == "1" || "$MODE" != "slot" ]]; then
+    echo "ERROR: --codex-fault-sequence requires --generalized --codex-runner --mode slot" >&2
+    exit 1
+  fi
+  if [[ "$CODEX_HOME_RECONCILE" == "1" ]]; then
+    echo "ERROR: --codex-fault-sequence cannot be combined with --codex-home-reconcile" >&2
+    exit 1
+  fi
+  _qa_fault_count=0
+  IFS=',' read -r -a _qa_faults <<< "$CODEX_FAULT_SEQUENCE"
+  for _qa_fault in "${_qa_faults[@]}"; do
+    case "$_qa_fault" in
+      rate_limit|server_error|capacity|quota|unauthorized) ;;
+      *) echo "ERROR: --codex-fault-sequence contains unsupported fault '${_qa_fault}'" >&2; exit 1 ;;
+    esac
+    _qa_fault_count=$((_qa_fault_count + 1))
+  done
+  (( _qa_fault_count > 0 && _qa_fault_count <= 20 )) || {
+    echo "ERROR: --codex-fault-sequence requires 1-20 faults" >&2
+    exit 1
+  }
+  unset _qa_fault _qa_fault_count _qa_faults
 fi
 if [[ "$GENERALIZED" == "1" ]]; then
   case "${TEST_BRIDGE_DEPT_SCOPE_REJECT:-off}" in
@@ -706,6 +739,15 @@ cleanup_on_failure() {
   local lock_pid
 	local generalized_bridge_stopped=1
 	local qa_registry_stopped=1
+	if [[ "${CODEX_FAULT_STUB_PID:-}" =~ ^[1-9][0-9]*$ ]] \
+			&& ! qa_generalized_terminate_pid "$CODEX_FAULT_STUB_PID"; then
+		qa_registry_stopped=0
+		echo "ERROR: Codex fault stub cleanup did not converge; retaining slot ${SLOT} lock" >&2
+	fi
+	if [[ -n "${CODEX_FAULT_SOURCE_HOME:-}" \
+			&& "$CODEX_FAULT_SOURCE_HOME" == "/tmp/flywheel-test-slot-${SLOT}/state/codex-fault/source-home" ]]; then
+		rm -rf "$CODEX_FAULT_SOURCE_HOME"
+	fi
 	# FLY-1775: generalized/test-discipline readiness remains inside the deploy transaction even
 	# after bridge.pid replaces the "claiming" sentinel. A failure between
 	# /health and room-info finalization must leave no process, port, lock, or
@@ -927,6 +969,11 @@ fi
 SLOT_DIR="/tmp/flywheel-test-slot-${SLOT}"
 TEST_PROJECT_NAME="test-slot-${SLOT}"
 BRIDGE_LAUNCH_SPEC="${SLOT_DIR}/bridge-launch.json"
+CODEX_FAULT_ROOT=""
+CODEX_FAULT_RECEIPT=""
+CODEX_FAULT_SOURCE_HOME=""
+CODEX_FAULT_STUB_PID=""
+CODEX_FAULT_HOST_SOURCE_HOME=""
 LEAD_EXTRA_ENV=()
 BRIDGE_EXTRA_ENV=()
 BRIDGE_ENV_UNSET_ARGS=()
@@ -993,6 +1040,15 @@ chmod 700 "$GENERALIZED_CHILD_TMPDIR" "${SLOT_DIR}/state" \
   "${SLOT_DIR}/state/reports" "${SLOT_DIR}/state/report-host" \
   "${SLOT_DIR}/state/codex-home" "${SLOT_DIR}/state/carrier-assertions" \
   "${SLOT_DIR}/state/carrier-receipts"
+if [[ -n "$CODEX_FAULT_SEQUENCE" ]]; then
+  CODEX_FAULT_ROOT="${SLOT_DIR}/state/codex-fault"
+  CODEX_FAULT_RECEIPT="${CODEX_FAULT_ROOT}/receipt.json"
+  CODEX_FAULT_SOURCE_HOME="${CODEX_FAULT_ROOT}/source-home"
+  CODEX_FAULT_HOST_SOURCE_HOME="${FLYWHEEL_CODEX_SOURCE_HOME:-${HOME}/.codex}"
+  mkdir -p "$CODEX_FAULT_ROOT"
+  chmod 700 "$CODEX_FAULT_ROOT"
+  BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_SOURCE_HOME=${CODEX_FAULT_SOURCE_HOME}")
+fi
 while IFS= read -r _qa_slot_assignment; do
   [[ -n "$_qa_slot_assignment" ]] && BRIDGE_EXTRA_ENV+=("$_qa_slot_assignment")
 done < <(qa_slot_env_contract_render "$SLOT_DIR" "$TEST_PROJECT_NAME")
@@ -1046,6 +1102,66 @@ if [[ "$GENERALIZED" == "1" || "$TEST_DISCIPLINE" == "1" ]]; then
   GENERALIZED_READINESS_PENDING=1
   GENERALIZED_ROOM_INFO="${SLOT_DIR}/room-info.json"
 fi
+
+qa_start_codex_fault_stub() {
+  [[ -n "$CODEX_FAULT_SEQUENCE" \
+      && "$SLOT_DIR" == "/tmp/flywheel-test-slot-${SLOT}" \
+      && "$CODEX_FAULT_ROOT" == "${SLOT_DIR}/state/codex-fault" \
+      && "$CODEX_FAULT_RECEIPT" == "${CODEX_FAULT_ROOT}/receipt.json" \
+      && "$CODEX_FAULT_SOURCE_HOME" == "${CODEX_FAULT_ROOT}/source-home" ]] \
+    || campaign_abort "Codex fault coordinates escaped the selected slot"
+  [[ -f "$GENERALIZED_ROOM_INFO" && ! -L "$GENERALIZED_ROOM_INFO" \
+      && "$(qa_slot_bridge_mode "$GENERALIZED_ROOM_INFO")" == "600" ]] \
+    || campaign_abort "Codex fault injection requires a safe room-info.json"
+  jq -e --argjson slot "$SLOT" '
+    .schemaVersion == 1 and .slot == $slot and .mode == "slot" and
+    .generalized == true and .runnerMode == "real"
+  ' "$GENERALIZED_ROOM_INFO" >/dev/null \
+    || campaign_abort "Codex fault injection requires a generalized real-runner slot"
+  [[ -d "$CODEX_FAULT_HOST_SOURCE_HOME" ]] \
+    || campaign_abort "Codex fault source home is unavailable"
+  CODEX_FAULT_HOST_SOURCE_HOME="$(cd "$CODEX_FAULT_HOST_SOURCE_HOME" && pwd -P)" \
+    || campaign_abort "Codex fault source home cannot be canonicalized"
+  [[ -f "${CODEX_FAULT_HOST_SOURCE_HOME}/auth.json" \
+      && ! -L "${CODEX_FAULT_HOST_SOURCE_HOME}/auth.json" \
+      && "$(qa_slot_bridge_mode "${CODEX_FAULT_HOST_SOURCE_HOME}/auth.json")" == "600" ]] \
+    || campaign_abort "Codex fault source auth must be a mode-0600 regular file"
+  rm -f "$CODEX_FAULT_RECEIPT" "${CODEX_FAULT_ROOT}/pid"
+  rm -rf "$CODEX_FAULT_SOURCE_HOME"
+  "$QA_SLOT_BRIDGE_NODE" "${SCRIPT_DIR}/qa/codex-upstream-fault-stub.mjs" serve \
+    --slot "$SLOT" --receipt "$CODEX_FAULT_RECEIPT" \
+    --sequence "$CODEX_FAULT_SEQUENCE" \
+    >> "${CODEX_FAULT_ROOT}/stub.log" 2>&1 &
+  CODEX_FAULT_STUB_PID=$!
+  for _qa_fault_wait in $(seq 1 100); do
+    [[ -f "$CODEX_FAULT_RECEIPT" ]] && break
+    kill -0 "$CODEX_FAULT_STUB_PID" 2>/dev/null \
+      || campaign_abort "Codex fault stub exited before readiness"
+    sleep 0.05
+  done
+  [[ -f "$CODEX_FAULT_RECEIPT" && ! -L "$CODEX_FAULT_RECEIPT" \
+      && "$(qa_slot_bridge_mode "$CODEX_FAULT_RECEIPT")" == "600" ]] \
+    || campaign_abort "Codex fault stub did not publish a safe readiness receipt"
+  jq -e --argjson slot "$SLOT" --argjson pid "$CODEX_FAULT_STUB_PID" '
+    .schemaVersion == 1 and .slot == $slot and .pid == $pid and
+    .host == "127.0.0.1" and
+    (.baseUrl | test("^http://127\\.0\\.0\\.1:[1-9][0-9]*/v1$"))
+  ' "$CODEX_FAULT_RECEIPT" >/dev/null \
+    || campaign_abort "Codex fault stub readiness identity mismatch"
+  _qa_fault_source_receipt="${CODEX_FAULT_ROOT}/source-receipt.json"
+  _qa_fault_source_receipt_tmp="${_qa_fault_source_receipt}.tmp.$$"
+  ( umask 077
+    "$QA_SLOT_BRIDGE_NODE" "${SCRIPT_DIR}/qa/codex-upstream-fault-stub.mjs" prepare-source \
+    --slot "$SLOT" --receipt "$CODEX_FAULT_RECEIPT" \
+    --source-home "$CODEX_FAULT_HOST_SOURCE_HOME" \
+    --destination "$CODEX_FAULT_SOURCE_HOME" \
+    > "$_qa_fault_source_receipt_tmp"
+  ) \
+    || campaign_abort "Codex fault source preparation failed"
+  chmod 600 "$_qa_fault_source_receipt_tmp"
+  mv "$_qa_fault_source_receipt_tmp" "$_qa_fault_source_receipt"
+  log "Codex fault stub ready on slot-local loopback; sequence entries: $(jq '.sequence | length' "$CODEX_FAULT_RECEIPT")"
+}
 
 # ── FLY-529: QA Room roundtable + alert mirror config + env arrays ─────────
 # Resolved after SLOT/SLOT_DIR so the values weave into access.json,
@@ -2768,6 +2884,10 @@ elif [[ "$TEST_DISCIPLINE" == "1" ]]; then
   log "standalone test-discipline readiness: generic menu + exact built head"
 fi
 
+if [[ -n "$CODEX_FAULT_SEQUENCE" ]]; then
+  qa_start_codex_fault_stub
+fi
+
 # ── Bridge confirmed up → NOW finalize campaign locks ────────────────────────
 # FLY-1189: write the SAME live Bridge PID + campaign sidecar into EVERY
 # campaign lock (owner + borrowed). The live PID protects borrowed locks from
@@ -2886,6 +3006,17 @@ if [[ "$LEAD_CARRIER" == launchd-codex-tui ]]; then
   GENERALIZED_OUTPUT_FIELDS="${GENERALIZED_OUTPUT_FIELDS}$(cat <<EOF
 ,
   "codexLead": ${CODEX_LEAD_JSON}
+EOF
+)"
+fi
+if [[ -n "$CODEX_FAULT_SEQUENCE" ]]; then
+  GENERALIZED_OUTPUT_FIELDS="${GENERALIZED_OUTPUT_FIELDS}$(cat <<EOF
+,
+  "codexFault": {
+    "receipt": "${CODEX_FAULT_RECEIPT}",
+    "sourceHome": "${CODEX_FAULT_SOURCE_HOME}",
+    "pid": ${CODEX_FAULT_STUB_PID}
+  }
 EOF
 )"
 fi

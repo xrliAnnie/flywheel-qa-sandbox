@@ -73,10 +73,14 @@ import {
 	classifyGoalOutcome,
 	enforceObjectiveLimit,
 	goalQuotaFailure,
+	sanitizeCodexTurnError,
 } from "./codex-daemon-adapter-helpers.js";
 import type {
 	CodexDaemonEvents,
 	CodexResumeObservation,
+	RecoveryOwnershipReceipt,
+	ResidentWaitObservation,
+	UpstreamRetryEpisode,
 } from "./codex-daemon-client.js";
 import {
 	GOAL_OBJECTIVE_MAX_CHARS,
@@ -266,6 +270,15 @@ export type CodexRecoveryOptions =
 interface CodexSnapshotExecution {
 	snapshot: CodexLaunchSnapshot;
 	recoveryHooks?: CodexRecoveryCommitHooks;
+	/**
+	 * FLY-2925 §6.1: the execution's daemon is still alive — reconnect to it
+	 * (no spawn, no reap, no recovery commit, no goal re-activation or kick).
+	 */
+	adoptLiveDaemon?: true;
+	/** FLY-2925: fired once the adopted daemon's exact thread is attached. */
+	onAdopted?: (threadId: string) => void;
+	/** True only after the adopted goal posture receipt reached this adapter. */
+	isAdoptionConfirmed?: () => boolean;
 	founderWindow: CodexRecoveryOptions["founderWindow"];
 	windowName?: string;
 }
@@ -488,6 +501,33 @@ export function readCodexGateHoldLatch(executionId: string): boolean {
 		throw new Error(`invalid gateHold in ${p}`);
 	}
 	return state.gateHold;
+}
+
+/** FLY-2925: durable resident-wait latch (fail-closed on a malformed value). */
+export function readCodexResidentWaitLatch(executionId: string): boolean {
+	const p = join(codexSessionStateDir(executionId), "session.json");
+	if (!existsSync(p)) return false;
+	const state = JSON.parse(readFileSync(p, "utf-8")) as {
+		residentWaitHold?: unknown;
+	};
+	if (state.residentWaitHold === undefined) return false;
+	if (typeof state.residentWaitHold !== "boolean") {
+		throw new Error(`invalid residentWaitHold in ${p}`);
+	}
+	return state.residentWaitHold;
+}
+
+/**
+ * FLY-2925: the raw persisted same-thread upstream retry episode. The goal loop
+ * validates the shape; a malformed value is treated as "no episode".
+ */
+export function readCodexUpstreamRetryEpisode(executionId: string): unknown {
+	const p = join(codexSessionStateDir(executionId), "session.json");
+	if (!existsSync(p)) return null;
+	const state = JSON.parse(readFileSync(p, "utf-8")) as {
+		upstreamRetryEpisode?: unknown;
+	};
+	return state.upstreamRetryEpisode ?? null;
 }
 
 function capabilityDigest(
@@ -974,6 +1014,43 @@ export class CodexTmuxAdapter implements IAdapter {
 		});
 	}
 
+	/**
+	 * FLY-2925 §6.1: Bridge-restart reconnect. The execution's detached daemon
+	 * survived the Bridge; take control of it and keep driving the SAME thread
+	 * and goal. Nothing is spawned or re-kicked and no recovery budget is
+	 * charged; the engine binding, thread id and daemon identity are unchanged.
+	 * A daemon that cannot be proven adoptable fails before any input is sent.
+	 */
+	async adoptLiveExecution(
+		ctx: AdapterExecutionContext,
+		options?: CodexRecoveryOptions,
+		hooks?: { onAdopted?: (threadId: string) => void },
+	): Promise<AdapterExecutionResult> {
+		let snapshot: CodexLaunchSnapshot;
+		try {
+			snapshot = readCodexLaunchSnapshot(ctx.executionId);
+		} catch (error) {
+			return this.ownershipFailureResult(
+				ctx,
+				normalizeCodexRecoveryFailure(error, { stage: "context" }),
+			);
+		}
+		let adoptionConfirmed = false;
+		return this.runWithOwnership(ctx, "rescue", {
+			snapshot,
+			adoptLiveDaemon: true,
+			isAdoptionConfirmed: () => adoptionConfirmed,
+			onAdopted: (threadId) => {
+				adoptionConfirmed = true;
+				hooks?.onAdopted?.(threadId);
+			},
+			founderWindow: options?.founderWindow ?? "open",
+			...(options?.founderWindow === "open" && options.windowName
+				? { windowName: options.windowName }
+				: {}),
+		});
+	}
+
 	private async runWithOwnership(
 		ctx: AdapterExecutionContext,
 		kind: CodexExecutionOwnerKind,
@@ -1060,8 +1137,11 @@ export class CodexTmuxAdapter implements IAdapter {
 			} else {
 				lease?.release();
 			}
+			const preserveUnconfirmedLiveAdoption =
+				snapshotExecution?.adoptLiveDaemon === true &&
+				snapshotExecution.isAdoptionConfirmed?.() !== true;
 			try {
-				await retireOnce();
+				if (!preserveUnconfirmedLiveAdoption) await retireOnce();
 			} catch {
 				if (result) {
 					const primary = result.success
@@ -1453,6 +1533,7 @@ export class CodexTmuxAdapter implements IAdapter {
 		let teardownError: unknown;
 		let controlledShutdownRequestId: string | undefined;
 		let workflowUsageImported = false;
+		const adoptLiveDaemon = snapshotExecution?.adoptLiveDaemon === true;
 		const importWorkflowUsage = (): void => {
 			if (workflowUsageImported) return;
 			const usageThreadId = outcome?.threadId ?? tuiThreadId;
@@ -1513,7 +1594,9 @@ export class CodexTmuxAdapter implements IAdapter {
 			assertSocketPathFitsSunLen(socketPath);
 
 			// CommDB session registration (vendor=codex → send routing).
-			registeredSession = this.registerCommDbSession(ctx);
+			registeredSession = this.registerCommDbSession(ctx, {
+				preserveExisting: adoptLiveDaemon,
+			});
 			if (ctx.commDbPath) {
 				try {
 					gateDb = new CommDB(ctx.commDbPath);
@@ -1580,7 +1663,14 @@ export class CodexTmuxAdapter implements IAdapter {
 				const mismatchFields = (
 					Object.keys(checks) as Array<keyof typeof checks>
 				).filter((key) => checks[key]);
-				if (mismatchFields.length) {
+				if (mismatchFields.length && snapshotExecution.adoptLiveDaemon) {
+					// FLY-2925: the launch-context comparison guards a RE-launch. An
+					// adopted daemon is the original launch, still running — nothing is
+					// re-launched, so drift in today's recovery context is diagnostic.
+					this.log(
+						`[CodexTmuxAdapter] adopting live daemon exec=${ctx.executionId} despite recovery-context drift: ${mismatchFields.join(",")}`,
+					);
+				} else if (mismatchFields.length) {
 					throw new CodexRecoveryError(
 						createCodexRecoveryFailure({
 							code: "launch_snapshot_mismatch",
@@ -2004,6 +2094,17 @@ export class CodexTmuxAdapter implements IAdapter {
 					);
 				}
 			};
+			const exposeFounderWindow = (): void => {
+				if (founderWindowSuppressed) {
+					// FLY-2303 owns liveness-axis handling for this intentional :pending state.
+					this.pinCommDbSessionWindow(ctx, `${this.sessionName}:pending`);
+					emitTuiLost("label-unavailable");
+					return;
+				}
+				// FLY-2903: a stopping execution never opens a founder window.
+				if (termination?.reason()) return;
+				startOpenChain();
+			};
 
 			// HIGH-2 (FLY-159 resident replacement): a CONCURRENT gate-deadline
 			// watcher. The exec-cycle owned gate timeouts inside its blocking
@@ -2205,15 +2306,15 @@ export class CodexTmuxAdapter implements IAdapter {
 					founderWindowId = undefined;
 					tmuxWindow = undefined;
 				}
-				if (founderWindowSuppressed) {
-					// FLY-2303 owns liveness-axis handling for this intentional :pending state.
-					this.pinCommDbSessionWindow(ctx, `${this.sessionName}:pending`);
-					emitTuiLost("label-unavailable");
-					return;
+				// The inherited TUI/session binding remains untouched until the daemon's
+				// exact goal posture confirms this adoption. The receipt callback below
+				// starts visibility only after the ownership boundary commits.
+				if (
+					!adoptLiveDaemon ||
+					snapshotExecution?.isAdoptionConfirmed?.() === true
+				) {
+					exposeFounderWindow();
 				}
-				// FLY-2903: a stopping execution never opens a founder window.
-				if (termination?.reason()) return;
-				startOpenChain();
 			};
 
 			// FLY-245 launch commit written the INSTANT the goal is actually SET
@@ -2263,7 +2364,15 @@ export class CodexTmuxAdapter implements IAdapter {
 			) {
 				throw new Error("Codex resume session identity mismatch");
 			}
-			const reapOrphanPid = this.readPersistedDaemonPid(ctx.executionId);
+			if (adoptLiveDaemon && (!resumeThreadId || !resumeThreadId.trim())) {
+				throw new Error(
+					"Codex live-daemon adoption requires the persisted thread id",
+				);
+			}
+			// FLY-2925: an adopted body is never reaped as an "orphan".
+			const reapOrphanPid = adoptLiveDaemon
+				? undefined
+				: this.readPersistedDaemonPid(ctx.executionId);
 			const turnDbPath = ctx.commDbPath;
 			const turnLifecycle = turnDbPath
 				? {
@@ -2343,6 +2452,10 @@ export class CodexTmuxAdapter implements IAdapter {
 					writeGateHoldLatch: (held) =>
 						this.mergeSessionState(ctx.executionId, { gateHold: held }),
 					...(resumeThreadId ? { resumeThreadId } : {}),
+					...(adoptLiveDaemon ? { adoptLiveDaemon: true } : {}),
+					// FLY-2925: recovering an existing execution never re-activates or
+					// re-kicks the thread's own goal.
+					...(snapshotExecution ? { adoptExistingGoal: true } : {}),
 					...(ctx.processLifecycle?.mode === "resume"
 						? {
 								strictResumeIdentity: true,
@@ -2370,7 +2483,26 @@ export class CodexTmuxAdapter implements IAdapter {
 									snapshotExecution.recoveryHooks
 										.onRecoveryOwnershipEstablished,
 							}
-						: {}),
+						: snapshotExecution?.adoptLiveDaemon
+							? {
+									// FLY-2925: adoption commits only once the goal loop
+									// confirmed THIS run's goal posture on the attached thread.
+									onRecoveryOwnershipEstablished: (
+										receipt: RecoveryOwnershipReceipt,
+									) => {
+										try {
+											snapshotExecution.onAdopted?.(receipt.threadId);
+										} catch (error) {
+											this.log(
+												`[CodexTmuxAdapter] adoption observer threw (ignored): ${safeErr(error)}`,
+											);
+										}
+										if (snapshotExecution.isAdoptionConfirmed?.() === true) {
+											exposeFounderWindow();
+										}
+									},
+								}
+							: {}),
 					...(phaseLifecycle ? { phaseLifecycle } : {}),
 					...(turnLifecycle ? { turnLifecycle } : {}),
 					...(quotaResume ? { quotaResume } : {}),
@@ -2383,6 +2515,27 @@ export class CodexTmuxAdapter implements IAdapter {
 						!(ctx.processLifecycle?.retirementApproved?.() ?? false),
 					onRestartDecision: (decision) =>
 						this.recordRestartDecision(ctx.executionId, socketPath, decision),
+					// FLY-2925: a resident body sends no wake/resume/retry input once
+					// the engine terminated it or approved its retirement.
+					mayProceed: () =>
+						(termination?.reason() ?? null) === null &&
+						!(ctx.processLifecycle?.retirementApproved?.() ?? false),
+					onResidentWait: (observation) =>
+						this.recordResidentWait(ctx, observation),
+					readUpstreamRetryEpisode: () =>
+						readCodexUpstreamRetryEpisode(
+							ctx.executionId,
+						) as UpstreamRetryEpisode | null,
+					writeUpstreamRetryEpisode: (episode) =>
+						this.mergeSessionState(ctx.executionId, {
+							upstreamRetryEpisode: episode,
+						}),
+					readResidentWaitLatch: () =>
+						readCodexResidentWaitLatch(ctx.executionId),
+					writeResidentWaitLatch: (held) =>
+						this.mergeSessionState(ctx.executionId, {
+							residentWaitHold: held,
+						}),
 				},
 				{
 					onNotification: (method, params) => {
@@ -2573,7 +2726,25 @@ export class CodexTmuxAdapter implements IAdapter {
 					);
 				}
 			}
-			if (phaseLifecycle && controlledShutdownRequestId) {
+			const preserveUnconfirmedLiveAdoption =
+				adoptLiveDaemon && snapshotExecution?.isAdoptionConfirmed?.() !== true;
+			if (preserveUnconfirmedLiveAdoption) {
+				// The goal runtime already detached its client and released the daemon
+				// lock. Tear down only this Bridge attempt's local watchers/controller;
+				// the live daemon, inherited TUI/session, transcript, doorbells, and
+				// credential lease remain exactly as they were before adoption.
+				stopHeartbeat();
+				if (phaseLifecycle) {
+					try {
+						await phaseLifecycle.stop();
+					} catch (err) {
+						teardownError ??= err;
+					}
+				}
+				this.log(
+					`[CodexTmuxAdapter] live adoption unconfirmed for ${ctx.executionId}; preserved existing body and released owner claim.`,
+				);
+			} else if (phaseLifecycle && controlledShutdownRequestId) {
 				// FLY-1269 request-bound order: keep the heartbeat advancing while
 				// daemon drain and required cleanup run. The matching ack is written
 				// only after the TUI, registry status, and credential are retired.
@@ -3318,6 +3489,86 @@ export class CodexTmuxAdapter implements IAdapter {
 		return "timedOut";
 	}
 
+	/**
+	 * FLY-2925: a resident body is WAITING (native blocked / upstream error) or
+	 * retrying on the same thread — observation for the operator and Lead, never
+	 * a terminal. Persisted for the display and posted once per observation.
+	 */
+	private recordResidentWait(
+		ctx: AdapterExecutionContext,
+		observation: ResidentWaitObservation,
+	): void {
+		const error = observation.error
+			? sanitizeCodexTurnError({ message: observation.error.message })
+			: undefined;
+		const record = {
+			reason: observation.reason,
+			threadId: observation.threadId,
+			...(observation.turnId ? { turnId: observation.turnId } : {}),
+			...(observation.category ? { category: observation.category } : {}),
+			...(observation.attempt !== undefined
+				? { attempt: observation.attempt }
+				: {}),
+			...(observation.delayMs !== undefined
+				? { delayMs: observation.delayMs }
+				: {}),
+			...(observation.error?.code &&
+			/^[A-Za-z][A-Za-z0-9_-]{0,63}$/u.test(observation.error.code)
+				? { errorCode: observation.error.code }
+				: {}),
+			...(observation.error?.httpStatusCode !== undefined
+				? { httpStatusCode: observation.error.httpStatusCode }
+				: {}),
+			...(error ? { errorMessage: error.message } : {}),
+			observedAt: new Date().toISOString(),
+		};
+		this.log(
+			`[CodexTmuxAdapter] resident_wait exec=${ctx.executionId} reason=${record.reason}${record.category ? ` category=${record.category}` : ""}${record.attempt !== undefined ? ` attempt=${record.attempt}` : ""}`,
+		);
+		try {
+			this.mergeSessionState(ctx.executionId, { residentWait: record });
+		} catch (err) {
+			this.log(
+				`[CodexTmuxAdapter] resident_wait persist failed (ignored): ${safeErr(err)}`,
+			);
+		}
+		void this.emitResidentWait(ctx, record);
+	}
+
+	private async emitResidentWait(
+		ctx: AdapterExecutionContext,
+		record: Record<string, unknown>,
+	): Promise<void> {
+		if (!ctx.bridgeUrl || !ctx.projectName) return;
+		const headers: Record<string, string> = {
+			"Content-Type": "application/json",
+		};
+		if (ctx.bridgeIngestToken)
+			headers.Authorization = `Bearer ${ctx.bridgeIngestToken}`;
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), 2000);
+		try {
+			await fetch(`${ctx.bridgeUrl}/events`, {
+				method: "POST",
+				headers,
+				body: JSON.stringify({
+					event_id: randomUUID(),
+					execution_id: ctx.executionId,
+					issue_id: ctx.issueId,
+					project_name: ctx.projectName,
+					event_type: "codex_resident_wait",
+					source: "codex-tmux-adapter",
+					payload: record,
+				}),
+				signal: controller.signal,
+			});
+		} catch {
+			// best-effort observation — the durable session state keeps it
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+
 	/** FLY-159-isomorphic gate_timed_out payload via the Bridge /events route. */
 	private async emitGateTimedOut(
 		ctx: AdapterExecutionContext,
@@ -3485,7 +3736,10 @@ export class CodexTmuxAdapter implements IAdapter {
 	 * remains best-effort. A resident phase consumer is fail-loud because its
 	 * doorbell fence depends on this row.
 	 */
-	private registerCommDbSession(ctx: AdapterExecutionContext): boolean {
+	private registerCommDbSession(
+		ctx: AdapterExecutionContext,
+		options: { preserveExisting?: boolean } = {},
+	): boolean {
 		const residentLifecycle = Boolean(
 			ctx.phaseKeepAlive || ctx.residentLoopTarget,
 		);
@@ -3500,6 +3754,17 @@ export class CodexTmuxAdapter implements IAdapter {
 		let commDb: CommDB | undefined;
 		try {
 			commDb = new CommDB(ctx.commDbPath);
+			if (options.preserveExisting) {
+				if (!commDb.getSession(ctx.executionId)) {
+					throw new Error(
+						`live adoption requires an existing CommDB session for ${ctx.executionId}`,
+					);
+				}
+				if (residentLifecycle) {
+					commDb.assertPhaseKeepAliveSessionRunning(ctx.executionId);
+				}
+				return true;
+			}
 			commDb.registerSession(
 				ctx.executionId,
 				`${this.sessionName}:pending`,

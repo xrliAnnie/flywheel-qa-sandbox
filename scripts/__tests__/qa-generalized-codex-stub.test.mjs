@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -258,4 +259,255 @@ test("Codex founder resume TUI exits only after its explicit exit fence", async 
 	assert.equal(signal, null);
 	assert.equal(code, 0);
 	assert.match(stderr, /explicit exit fence observed/);
+});
+
+async function waitForFile(path, childProcess, readStderr, timeoutMs = 5_000) {
+	const deadline = Date.now() + timeoutMs;
+	while (!existsSync(path)) {
+		if (childProcess.exitCode !== null || childProcess.signalCode !== null) {
+			throw new Error(`process exited before ${path}: ${readStderr()}`);
+		}
+		if (Date.now() >= deadline) {
+			throw new Error(`timed out waiting for ${path}: ${readStderr()}`);
+		}
+		await sleep(20);
+	}
+}
+
+test("Codex upstream fault stub refuses a non-slot room before listening", async () => {
+	const slot = 47_000 + (process.pid % 1_000);
+	const slotRoot = `/tmp/flywheel-test-slot-${slot}`;
+	const receipt = join(slotRoot, "state", "codex-fault", "receipt.json");
+	rmSync(slotRoot, { recursive: true, force: true });
+	mkdirSync(join(slotRoot, "state", "codex-fault"), {
+		recursive: true,
+		mode: 0o700,
+	});
+	chmodSync(slotRoot, 0o700);
+	writeFileSync(
+		join(slotRoot, "room-info.json"),
+		`${JSON.stringify({ schemaVersion: 1, slot, mode: "mirror" })}\n`,
+		{ mode: 0o600 },
+	);
+	const fault = spawn(
+		process.execPath,
+		[
+			resolve(root, "scripts/qa/codex-upstream-fault-stub.mjs"),
+			"serve",
+			"--slot",
+			String(slot),
+			"--receipt",
+			receipt,
+		],
+		{ stdio: ["ignore", "ignore", "pipe"] },
+	);
+	let stderr = "";
+	fault.stderr.on("data", (chunk) => {
+		stderr += chunk;
+	});
+	const [code] = await once(fault, "exit");
+	try {
+		assert.notEqual(code, 0);
+		assert.match(stderr, /room-info\.json must identify this mode=slot room/);
+		assert.equal(existsSync(receipt), false);
+	} finally {
+		rmSync(slotRoot, { recursive: true, force: true });
+	}
+});
+
+test("Codex upstream fault stub serves faults and teardown retires it from the receipt", async () => {
+	const slot = 48_000 + (process.pid % 1_000);
+	const slotRoot = `/tmp/flywheel-test-slot-${slot}`;
+	const faultRoot = join(slotRoot, "state", "codex-fault");
+	const receipt = join(faultRoot, "receipt.json");
+	rmSync(slotRoot, { recursive: true, force: true });
+	mkdirSync(faultRoot, { recursive: true, mode: 0o700 });
+	chmodSync(slotRoot, 0o700);
+	chmodSync(join(slotRoot, "state"), 0o700);
+	chmodSync(faultRoot, 0o700);
+	writeFileSync(
+		join(slotRoot, "room-info.json"),
+		`${JSON.stringify({
+			schemaVersion: 1,
+			slot,
+			mode: "slot",
+			generalized: true,
+			runnerMode: "real",
+		})}\n`,
+		{ mode: 0o600 },
+	);
+	const fault = spawn(
+		process.execPath,
+		[
+			resolve(root, "scripts/qa/codex-upstream-fault-stub.mjs"),
+			"serve",
+			"--slot",
+			String(slot),
+			"--receipt",
+			receipt,
+			"--sequence",
+			"rate_limit,server_error,capacity,quota,unauthorized",
+		],
+		{ stdio: ["ignore", "ignore", "pipe"] },
+	);
+	let stderr = "";
+	fault.stderr.on("data", (chunk) => {
+		stderr += chunk;
+	});
+	try {
+		await waitForFile(receipt, fault, () => stderr);
+		const ready = JSON.parse(readFileSync(receipt, "utf8"));
+		assert.equal(ready.host, "127.0.0.1");
+		assert.match(ready.baseUrl, /^http:\/\/127\.0\.0\.1:[1-9][0-9]*\/v1$/);
+		assert.deepEqual(ready.sequence, [
+			"rate_limit",
+			"server_error",
+			"capacity",
+			"quota",
+			"unauthorized",
+		]);
+		const observed = [];
+		for (let index = 0; index < ready.sequence.length; index += 1) {
+			const response = await fetch(`${ready.baseUrl}/responses`, {
+				method: "POST",
+				headers: {
+					authorization: "Bearer must-not-be-logged",
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({ model: "gpt-5.6-sol", input: "fixture" }),
+			});
+			const body = await response.json();
+			observed.push({ status: response.status, code: body.error.code });
+		}
+		assert.deepEqual(observed, [
+			{ status: 429, code: "rate_limit_exceeded" },
+			{ status: 500, code: "server_error" },
+			{ status: 503, code: "server_overloaded" },
+			{ status: 429, code: "insufficient_quota" },
+			{ status: 401, code: "invalid_api_key" },
+		]);
+		assert.doesNotMatch(stderr, /must-not-be-logged/);
+
+		const sourceHome = join(tempRoot, `fault-source-${slot}`);
+		const destination = join(faultRoot, "source-home");
+		mkdirSync(sourceHome, { mode: 0o700 });
+		writeFileSync(join(sourceHome, "auth.json"), '{"fixture":"same-inode"}\n', {
+			mode: 0o600,
+		});
+		writeFileSync(
+			join(sourceHome, "config.toml"),
+			'model_provider = "proxy"\nopenai_base_url = "https://production.invalid/v1"\n[features]\nweb_search = true\n',
+			{ mode: 0o600 },
+		);
+		const prepared = spawnSync(
+			process.execPath,
+			[
+				resolve(root, "scripts/qa/codex-upstream-fault-stub.mjs"),
+				"prepare-source",
+				"--slot",
+				String(slot),
+				"--receipt",
+				receipt,
+				"--source-home",
+				sourceHome,
+				"--destination",
+				destination,
+			],
+			{ encoding: "utf8" },
+		);
+		assert.equal(prepared.status, 0, prepared.stderr);
+		const sourceAuth = statSync(join(sourceHome, "auth.json"));
+		const slotAuth = statSync(join(destination, "auth.json"));
+		assert.equal(slotAuth.dev, sourceAuth.dev);
+		assert.equal(slotAuth.ino, sourceAuth.ino);
+		const config = readFileSync(join(destination, "config.toml"), "utf8");
+		assert.match(
+			config,
+			/^model_provider = "openai"\nopenai_base_url = "http:\/\/127\.0\.0\.1:[1-9][0-9]*\/v1"\n/,
+		);
+		assert.doesNotMatch(config, /production\.invalid/);
+		assert.match(config, /\[features\]\nweb_search = true/);
+
+		// The readiness receipt is published before deploy finishes preparing the
+		// slot-local source home. Teardown must therefore be able to retire the
+		// stub from that receipt alone if deploy is interrupted in between.
+		assert.equal(existsSync(join(faultRoot, "pid")), false);
+		const teardownEnv = Object.fromEntries(
+			Object.entries(process.env).filter(
+				([name]) => name !== "BASH_ENV" && name !== "ENV",
+			),
+		);
+		const teardown = spawn(
+			"/bin/bash",
+			[
+				"--noprofile",
+				"--norc",
+				"-c",
+				'source "$1"; fault_slot="$2"; fault_script="$3"; ps() { printf "%s serve --slot %s --receipt fixture\\n" "$fault_script" "$fault_slot"; }; qa_teardown_codex_fault_stub "$fault_slot"',
+				"qa-fault-teardown",
+				resolve(root, "scripts/test-teardown.sh"),
+				String(slot),
+				resolve(root, "scripts/qa/codex-upstream-fault-stub.mjs"),
+			],
+			{ env: teardownEnv, stdio: ["ignore", "ignore", "pipe"] },
+		);
+		let teardownStderr = "";
+		teardown.stderr.on("data", (chunk) => {
+			teardownStderr += chunk;
+		});
+		const [teardownCode, teardownSignal] = await once(teardown, "exit");
+		assert.equal(teardownSignal, null, teardownStderr);
+		assert.equal(teardownCode, 0, teardownStderr);
+		if (fault.exitCode === null && fault.signalCode === null) {
+			await Promise.race([
+				once(fault, "exit"),
+				sleep(2_000).then(() => {
+					throw new Error("teardown left the Codex fault stub running");
+				}),
+			]);
+		}
+		assert.notEqual(
+			spawnSync("kill", ["-0", String(ready.pid)]).status,
+			0,
+			"teardown left the Codex fault stub PID observable",
+		);
+	} finally {
+		if (fault.exitCode === null) fault.kill("SIGTERM");
+		if (fault.exitCode === null) await once(fault, "exit");
+		rmSync(slotRoot, { recursive: true, force: true });
+	}
+});
+
+test("529 deploy wires the fault stub only through an explicit real-Codex slot switch", () => {
+	const deploy = readFileSync(resolve(root, "scripts/test-deploy.sh"), "utf8");
+	const teardown = readFileSync(
+		resolve(root, "scripts/test-teardown.sh"),
+		"utf8",
+	);
+	assert.match(deploy, /--codex-fault-sequence\)/);
+	assert.match(
+		deploy,
+		/--codex-fault-sequence requires --generalized --codex-runner --mode slot/,
+	);
+	assert.match(
+		deploy,
+		/FLYWHEEL_CODEX_SOURCE_HOME=\$\{CODEX_FAULT_SOURCE_HOME\}/,
+	);
+	assert.match(
+		deploy,
+		/codex-upstream-fault-stub\.mjs" serve[\s\S]+codex-upstream-fault-stub\.mjs" prepare-source/,
+	);
+	assert.match(
+		teardown,
+		/CODEX_FAULT_RECEIPT="\$\{CODEX_FAULT_ROOT\}\/receipt\.json"/,
+	);
+	assert.doesNotMatch(deploy, /CODEX_FAULT_ROOT\}\/pid\.tmp/);
+	assert.match(teardown, /if ! qa_teardown_codex_fault_stub "\$SLOT"; then/);
+	const roomGuard = teardown.indexOf('.mode == "slot"');
+	const faultSignal = teardown.indexOf(
+		'qa_generalized_terminate_pid "$CODEX_FAULT_PID"',
+	);
+	assert.ok(roomGuard >= 0 && roomGuard < faultSignal);
+	assert.match(teardown, /CODEX_FAULT_EXPECTED_SLOT_DIR/);
+	assert.match(teardown, /Codex fault stub identity mismatch/);
 });
