@@ -27,6 +27,7 @@
  * (a new input arriving mid-turn is enqueued and processed next).
  */
 
+import { codexMailboxTurnInput } from "./ack-action-batching-turn-input.js";
 import type {
 	BatchAcceptStatus,
 	JournalEntry,
@@ -161,6 +162,8 @@ export interface LeadInputRouterOptions {
 		entry: import("./LeadJournal.js").JournalEntry,
 		reason: typeof EMPTY_FINAL_ANSWER,
 	) => void;
+	/** FLY-2909: governed launch receipt; absent keeps turn input byte-identical. */
+	ackActionBatchingEnabled?: boolean;
 	logger?: {
 		warn: (m: string, c?: unknown) => void;
 		error: (m: string, c?: unknown) => void;
@@ -182,6 +185,7 @@ export class LeadInputRouter {
 	private readonly onEntryCompleted?: LeadInputRouterOptions["onEntryCompleted"];
 	private readonly onReplyFailed?: LeadInputRouterOptions["onReplyFailed"];
 	private readonly enterDeliveryContext?: LeadInputRouterOptions["enterDeliveryContext"];
+	private readonly ackActionBatchingEnabled?: boolean;
 	private readonly corr: () => string;
 	private readonly logger: {
 		warn: (m: string, c?: unknown) => void;
@@ -207,6 +211,7 @@ export class LeadInputRouter {
 		this.onEntryCompleted = opts.onEntryCompleted;
 		this.onReplyFailed = opts.onReplyFailed;
 		this.enterDeliveryContext = opts.enterDeliveryContext;
+		this.ackActionBatchingEnabled = opts.ackActionBatchingEnabled;
 		this.corr =
 			opts.correlationFactory ?? (() => globalThis.crypto.randomUUID());
 		this.logger = opts.logger ?? {
@@ -341,7 +346,13 @@ export class LeadInputRouter {
 			try {
 				const turnId = await this.executor.startTurn({
 					threadId: this.threadId,
-					input: entry.payload,
+					input:
+						entry.source === "mailbox"
+							? codexMailboxTurnInput(
+									entry.payload,
+									this.ackActionBatchingEnabled,
+								)
+							: entry.payload,
 					clientUserMessageId: corrId,
 				});
 				this.journal.toDispatched(id, turnId);

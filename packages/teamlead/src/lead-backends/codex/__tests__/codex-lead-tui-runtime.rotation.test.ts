@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initializeFlagStore } from "../../../bridge/flag-store-runtime.js";
 import { StateStore } from "../../../StateStore.js";
+import { CODEX_ACK_ACTION_BATCHING_DIRECTIVE } from "../ack-action-batching-turn-input.js";
 import * as runtimeModule from "../codex-lead-runtime.js";
 import * as rotation from "../codex-lead-thread-rotation.js";
 import {
@@ -42,6 +43,13 @@ const mocks = vi.hoisted(() => ({
 	})),
 	router: null as LeadInputRouter | null,
 	turnState: null as { snapshot(): TurnStateSnapshot } | null,
+	interrupt: null as {
+		submit(batch: {
+			batchId: string;
+			memberIds: string[];
+			payload: string;
+		}): Promise<unknown>;
+	} | null,
 	gatewayStart: vi.fn(async () => {}),
 	gatewayStop: vi.fn(async () => {}),
 }));
@@ -90,9 +98,11 @@ vi.mock("../CodexLeadInboxSocket.js", async (importOriginal) => ({
 		constructor(options: {
 			router: LeadInputRouter;
 			turnState?: { snapshot(): TurnStateSnapshot };
+			interrupt?: typeof mocks.interrupt;
 		}) {
 			mocks.router = options.router;
 			mocks.turnState = options.turnState ?? null;
+			mocks.interrupt = options.interrupt ?? null;
 		}
 	},
 }));
@@ -151,6 +161,7 @@ beforeEach(async () => {
 	mocks.proofs.splice(0);
 	mocks.router = null;
 	mocks.turnState = null;
+	mocks.interrupt = null;
 	mocks.create.mockClear();
 	mocks.kill.mockClear();
 	mocks.readExitEvidence.mockClear();
@@ -1274,4 +1285,67 @@ describe("turn-state provider wiring (FLY-2882)", () => {
 		await h.make().start();
 		expect(mocks.turnState!.snapshot().generation).not.toBe(firstGeneration);
 	});
+});
+
+describe("FLY-2909 ACK/action batching launch receipt", () => {
+	const BATCH =
+		"[mailbox-batch b-1 | 1 messages | from runner-x]\nYou must ack this batch with lead_actions.ack_batch promptly so the sender can see you received it; unacked batches are redelivered and eventually dead-lettered.\n\nrunner finished";
+	const texts = (
+		requests: Array<{ method: string; params: any }>,
+		method: string,
+	) =>
+		requests
+			.filter((r) => r.method === method)
+			.map((r) => r.params.input[0].text as string);
+	const setFlag = (raw: "0" | "1") =>
+		expect(
+			flagStore.applyScopedFlagValueChange({
+				name: "lead_ack_action_batching",
+				scope: "test",
+				op: "set",
+				rawTo: raw,
+				expectedChangeSeq: flagStore.getFlagValueChangeSeq(
+					"lead_ack_action_batching",
+					"test",
+				),
+				actor: "fixture",
+				reason: "FLY-2909 carrier receipt",
+			}),
+		).toMatchObject({ ok: true });
+
+	for (const [label, raw, on] of [
+		["on", "1", true],
+		["off", "0", false],
+		["absent", undefined, false],
+	] as const)
+		it(`reads the project flag once at launch and routes mailbox turns and steers accordingly (${label})`, async () => {
+			if (raw) setFlag(raw);
+			const h = harness();
+			// A later flip is the next launch's business, not this sidecar's.
+			setFlag(on ? "0" : "1");
+			const expected = on
+				? `${BATCH}\n\n${CODEX_ACK_ACTION_BATCHING_DIRECTIVE}`
+				: BATCH;
+			await h.make().start();
+			mocks.router!.submitBatch({
+				batchId: "b-1",
+				memberIds: ["d-1"],
+				payload: BATCH,
+			});
+			await vi.advanceTimersByTimeAsync(1_000);
+			expect(texts(h.requests, "turn/start")).toEqual([expected]);
+
+			h.emit("turn/started", {
+				threadId: OLD,
+				turn: { id: "live", status: "inProgress", startedAt: null },
+			});
+			await expect(
+				mocks.interrupt!.submit({
+					batchId: "b-2#r0",
+					memberIds: ["d-2#r0"],
+					payload: BATCH,
+				}),
+			).resolves.toEqual({ outcome: "steered" });
+			expect(texts(h.requests, "turn/steer")).toEqual([expected]);
+		});
 });

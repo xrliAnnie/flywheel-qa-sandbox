@@ -56,6 +56,7 @@ import {
 	resolvePersonaStateRoot,
 } from "flywheel-config";
 import { storeCodexLeadThreadRotationEnabled } from "../../bridge/flag-store-runtime.js";
+import { readLeadAckActionBatchingAtLaunch } from "../../lead-ack-action-batching.js";
 import { loadProjects, type ProjectEntry } from "../../ProjectConfig.js";
 import { findResidentCodexLeadTargets } from "../../resident-codex-lead-roster.js";
 import { StateStore } from "../../StateStore.js";
@@ -687,6 +688,15 @@ export function buildTuiGeneration(
 		env: process.env,
 		log: (m) => logger.warn(m),
 	});
+	// FLY-2909: one launch receipt per sidecar process. The daemon's loaded
+	// thread keeps its old baseInstructions, so mailbox turns carry the rule.
+	const ackActionBatchingEnabled = readLeadAckActionBatchingAtLaunch(
+		config.projectName,
+		config.flagStoreDbPath,
+	);
+	logger.info(
+		`[lead-ack-action-batching] Codex mailbox turn receipt=${ackActionBatchingEnabled ? 1 : 0}`,
+	);
 	return () => {
 		let activeVerifiedPersona: VerifiedPersona | null = null;
 		let threadRotationEnabled = false;
@@ -1629,6 +1639,7 @@ export function buildTuiGeneration(
 							journal,
 							executor,
 							sender: builtSender,
+							ackActionBatchingEnabled,
 							...(capabilityV2
 								? {
 										enterDeliveryContext: (entryId: string) =>
@@ -1688,6 +1699,7 @@ export function buildTuiGeneration(
 								router,
 								steer: (steerArgs) => p.steerTurn(steerArgs),
 								journal,
+								ackActionBatchingEnabled,
 								log: (message) => logger.warn(message),
 							}),
 							socketPath: resolveCodexLeadInboxSocketPath(config.stateDir),

@@ -14,6 +14,7 @@
  * submit call, so a lifecycle event can never land in between (R3#1).
  */
 
+import { codexMailboxTurnInput } from "./ack-action-batching-turn-input.js";
 import type { CodexLeadInterruptOutcome } from "./CodexLeadInboxSocket.js";
 import { CodexLeadProcessError } from "./CodexLeadProcess.js";
 import type { LeadInputBatch, LeadInputRouter } from "./LeadInputRouter.js";
@@ -33,6 +34,8 @@ export interface CodexLeadInterruptHandlerDeps {
 		clientUserMessageId: string;
 	}) => Promise<void>;
 	journal: Pick<LeadJournal, "getByIdempotencyKey" | "recordObservation">;
+	/** FLY-2909: governed launch receipt; absent keeps steer input byte-identical. */
+	ackActionBatchingEnabled?: boolean;
 	log?: (message: string) => void;
 }
 
@@ -89,7 +92,15 @@ export function createCodexLeadInterruptHandler(
 			const steering = deps.steer({
 				threadId: deps.threadId,
 				expectedTurnId: turn.turnId,
-				input: [{ type: "text", text: batch.payload }],
+				input: [
+					{
+						type: "text",
+						text: codexMailboxTurnInput(
+							batch.payload,
+							deps.ackActionBatchingEnabled,
+						),
+					},
+				],
 				clientUserMessageId: batch.batchId,
 			});
 			// ── end of synchronous section ──
