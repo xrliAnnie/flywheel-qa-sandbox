@@ -669,20 +669,6 @@
 			"disposition": "candidate_guarded"
 		},
 		{
-			"file": "packages/teamlead/src/bridge/execution-process-owner.ts",
-			"relation": "session_events",
-			"baseTable": "session_events",
-			"usage": "read",
-			"disposition": "candidate_guarded"
-		},
-		{
-			"file": "packages/teamlead/src/bridge/execution-process-owner.ts",
-			"relation": "workflow_run_event",
-			"baseTable": "workflow_run_event",
-			"usage": "read",
-			"disposition": "candidate_guarded"
-		},
-		{
 			"file": "packages/teamlead/src/lead-backends/codex/runner-actions.ts",
 			"relation": "mailbox",
 			"baseTable": "mailbox",
