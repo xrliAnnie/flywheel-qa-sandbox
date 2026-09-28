@@ -1,13 +1,13 @@
 ---
 issue: FLY-3030
 phase: design
-phaseCursor: 1/5
-updated: 2026-09-28T22:35:38.251Z
-nextStep: round-2 plan rewrite (claude-body + sleep 780), dry-run, design review
+phaseCursor: 2/5
+updated: 2026-09-28T22:39:01.473Z
+nextStep: "design_review: Codex review of round-2 plan"
 chunks: []
 pointers: {}
 ---
 
 # FLY-3030 progress
-**phase**: design (1/5)
-**next**: round-2 plan rewrite (claude-body + sleep 780), dry-run, design review
+**phase**: design (2/5)
+**next**: design_review: Codex review of round-2 plan
