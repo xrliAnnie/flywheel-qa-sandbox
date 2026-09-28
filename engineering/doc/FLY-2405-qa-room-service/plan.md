@@ -3,7 +3,7 @@ Issue: FLY-2405 (https://linear.app/geoforge3d/issue/FLY-2405/载体起房服务
 日期: 2026-09-28
 基于: research.md
 
-> 修订记录：v1 → v2（Codex 设计评审 R1：8 HIGH + 3 MEDIUM）→ v3（R2：5 HIGH + 1 MEDIUM + 3 澄清），处理表见 §10。
+> 修订记录：v1 → v2（Codex 设计评审 R1：8 HIGH + 3 MEDIUM）→ v3（R2：5 HIGH + 1 MEDIUM + 3 澄清）→ v4（R3：4 HIGH），处理表见 §10。
 
 ## 0. 目标、非目标、信任模型
 
@@ -108,15 +108,16 @@ flywheel-comm room teardown <roomId> [--lead [--accept-missing-snapshot --reason
 
 ## 4. 物理 claim 协议（R1-#2，R2-#2/#3）
 
-**claim 形态**：现有 `/tmp/flywheel-test-slot-<N>.lock` 目录；服务 claim 的 `owner` 文件内容 `service:<bridgeInstanceId>:<roomId>:<sha256(claimToken)>`。claimToken 明文只存 `SERVICE_ROOT/claims/<roomId>.token`（0600），DB 存 hash；重启后据此恢复。
+**claim 形态**：锁路径仍是 `/tmp/flywheel-test-slot-<N>.lock`（手工流程的 `mkdir` 锁不变）。服务 claim 是该路径上的**符号链接**，指向预先写好的服务目录 `SERVICE_ROOT/claims/<roomId>/slot-<N>/`，内含 `owner`（`service:<bridgeInstanceId>:<roomId>:<sha256(claimToken)>`）与 `pid`（内容 `service`，使旧读者 `cat $lock/pid` 得到非数字、不会走"PID 死即回收"）。claimToken 明文只存 `SERVICE_ROOT/claims/<roomId>/token`（0600），DB 存 hash。
 
-**原子发布（无无主空锁）**：先 `mkdir <lock>.staging-<roomId>` 并写好 `owner`，再 `rename(staging, lock)`；目标已存在 → rename 失败 → 该 slot 被占。锁目录一旦出现就带 owner。
+**原子不覆盖发布（R3-#1）**：`symlink(target, lockPath)` 是单个系统调用，路径已存在（手工 `mkdir` 出的空目录、别的锁、任何东西）即 `EEXIST`，**绝不替换**既有目标；成功时 owner 负载已随目标目录一并可见（目标目录在 symlink 前写完）。反之手工 `mkdir lockPath` 遇到服务 symlink 也 `EEXIST` → 视为占用。不使用 `rename`。
+- 残留风险（诚实）：`/tmp` 对 Codex runner 可写，runner 理论上能删锁 symlink——与今天手工锁同级；服务在每个破坏性步骤前 `readlink` 复核，锁丢失 → room `quarantined:claim_lost` 并告警，不继续删除。
 
 **获取序列（intent-first）**：
 1. DB：room `claiming` + `planned_slots_json`（升序）+ token hash（事务提交后才有副作用）。
-2. 按序逐 slot 原子发布；任一失败 → 回滚本 room 已发布的锁（只删 owner 匹配者）+ 清 staging → `refused/slot_busy`，`claimed=0`，**无任何 teardown 权**。
+2. 按序逐 slot `symlink` 发布；任一 `EEXIST` → 回滚本 room 已发布的锁（只删 `readlink` 指向本 room 目录者）→ `refused/slot_busy`，`claimed=0`，**无任何 teardown 权**。
 3. 全部成功 → `claimed=1` → 进入 §5 launch。
-- 重启恢复 `claiming`：逐 planned slot 检查——owner 匹配 → adopt；残留 `staging-<roomId>` → 删除；然后若 owner 仍有效则继续，否则整组回滚 → `canceled`。
+- 重启恢复 `claiming`：逐 planned slot `readlink`——指向本 room 目录 → adopt；不存在 → 未发布；其他 → 不属于本 room。然后若 owner exec 仍有效则继续补发布，否则整组回滚 → `canceled`。因为发布是单调用，不存在"半发布、无主"的锁。
 
 **所有入口一致识别服务 claim（与调用者是否带 token 无关）**：`test-deploy.sh` 的 claim / stale reclaim、失败 trap、`campaign_abort`、borrowed-lock cleanup，`test-teardown.sh` 的主锁与 borrowed 锁删除，以及实现基线中存在的多 Lead helper（`scripts/lib/qa-multilead.sh`）——凡见 owner 以 `service:` 开头：
 - 有 `FLYWHEEL_QA_SLOT_CLAIM_TOKEN` 且 hash 匹配 → 允许按服务模式运行（deploy 不自抢锁；teardown 清理但**不删锁**）；
@@ -132,11 +133,11 @@ flywheel-comm room teardown <roomId> [--lead [--accept-missing-snapshot --reason
 - **op-runner 包装器** `scripts/lib/qa-room-op.mjs`（Bridge 已安装代码的一部分）：由 Bridge `spawn(process.execPath, [wrapper, opSpecPath], {env: minimalEnv, detached: true, shell: false})`；包装器负责物化 checkout、pnpm install + build、跑脚本、记录阶段、最后**原子写回执** `<opDir>/receipt.json`。
 - **launch 交接（R2-#3）**：
   1. DB：op `launching`（`op_dir` 已定）提交后才 spawn。
-  2. 包装器第一件事：`open(<opDir>/started, O_CREAT|O_EXCL)` 写入自身 pid+lstart；**在此之前不做任何副作用**；EEXIST → 立即退出、无副作用。
-  3. Bridge 拿到 `started` 后写 op `running`（pid/pgid）。
-  4. 恢复 `launching`：Bridge 自己 `O_EXCL` 创建 `started`（内容 `fenced-by-bridge`）——Bridge 赢 → 包装器必然未开工（其 O_EXCL 会失败而退出），op `fenced`，以新 attempt/新 op_dir 重派；包装器赢 → 读其 pid+lstart 按 running adopt。不盲目重派。
-- **脚本进程组与"不再产生资源"条件（R2-#4）**：包装器以 `detached:true` 启动脚本使其成为新进程组 leader，`started` 之后补记 `pgid` + leader lstart。包装器只在 `waitpid` 到脚本退出**且**该 pgid 下已无存活进程（化身校验）后才写成功/失败回执——回执即"本操作不会再创建资源"的提交。自行 `setsid` 出去的房间进程（如房内 Bridge）是**资源**，由 §6 residue 覆盖，而非创建者。
-- **失联屏障**：包装器消失且无回执 → op `supervisor_lost`，room `quarantined`（不是 `deploy_failed`）；Bridge 对记录的 pgid 执行 TERM→(5s)→KILL，并确认该 pgid 已无存活进程（化身匹配）后才转 `deploy_failed` 并开放 `active_op_id` 屏障、放行 pending teardown；无法证明（探测出错 / 仍存活）→ 保持 `quarantined`、`probe_error` 告警，拒绝 teardown 以外的一切，teardown 请求排队。超时同样走此流程。
+  2. 包装器第一件事：把完整、不可变的启动记录（`kind:wrapper, pid, lstart, pgid`，含校验和）写入私有临时文件 `started.<pid>.tmp` 并 fsync，再 `link(tmp, <opDir>/started)`——`link` 原子且**不覆盖**（目标存在即 `EEXIST`），成功即意味着完整记录已可见（R3-#2）。**在 link 成功前不做任何副作用**；`EEXIST` → 删自己的 tmp，立即退出、无副作用。
+  3. Bridge 读到有效 `started` 后写 op `running`（pid/pgid）。
+  4. 恢复 `launching`：Bridge 以同样方式写完整 `kind:fence` 记录再 `link` 到 `started`——Bridge 赢 → 包装器的 link 必然失败而退出，op `fenced`，以新 attempt/新 op_dir 重派；包装器赢 → 读其记录按 running adopt。`started` 只可能是两种完整记录之一；`*.tmp` 残片不参与裁决，恢复时清理。校验和不符的 `started`（理论上不可能，防御）→ room `quarantined`。
+- **预登记进程组与"不再产生资源"条件（R2-#4，R3-#3）**：Bridge 以 `detached:true` 启动包装器，包装器自身即新进程组 leader，**pgid = 包装器 pid**，在第 2 步的启动记录里随 link 一起发布——即在任何子进程存在之前已登记。包装器启动的所有创建者（git fetch/worktree、`pnpm install`、build、`test-deploy.sh`/`test-teardown.sh`）一律**不** detached，留在同一进程组。于是"失联后找不到创建者"的窗口不存在：只要该 pgid 还有成员，组 ID 就不会被复用；组内无成员即证明所有创建者已退出。包装器只在 `waitpid` 到脚本退出**且**本组除自己外无存活成员后才写成功/失败回执——回执即"本操作不会再创建资源"的提交。自行 `setsid` 出去的房间进程（如房内 Bridge）是**资源**，由 §6 residue 覆盖，而非创建者。
+- **失联屏障**：包装器消失且无回执 → op `supervisor_lost`，room `quarantined`（不是 `deploy_failed`）；Bridge 对已登记的 pgid 执行 `kill(-pgid, TERM)`→(5s)→`KILL`，确认 `ps -g <pgid>` 为空后转 `deploy_failed` 并开放 `active_op_id` 屏障、放行 pending teardown；这一步在 tick 上自动重试直至成功，因此不会永久 quarantine；仅当探测工具本身出错时保持 `quarantined` 并 `probe_error` 告警。超时同样走此流程。
 - **串行化**：`UPDATE qa_rooms SET active_op_id=? WHERE room_id=? AND active_op_id IS NULL` CAS；deploy 进行中收到 teardown → teardown op 记为 `pending` 并在 deploy op 终态后执行（屏障），不并发。所有回写带 `(op_id, attempt)`，旧 attempt 回写被丢弃。
 - **toolDirectories**：必需 `bash node pnpm git jq tmux python3 gh sqlite3 claude`，`--codex-runner` 另需 `codex`；在 Bridge 的 `PATH` 上解析真实路径取目录去重 + `/usr/bin:/bin:/usr/sbin:/sbin`；缺失 → `tool_unavailable:<name>`，不 spawn。零写死用户路径。该 PATH 同时传给脚本、launchd plist env 投影（脚本用 `PATH` 生成 plist `EnvironmentVariables`，测试断言投影结果含 codex 目录）。
 - **minimalEnv**：`HOME USER LOGNAME TMPDIR LANG PATH` + 白名单 TEST_* + `FLYWHEEL_QA_DEPLOY_ID` + `FLYWHEEL_QA_SLOT_CLAIM_TOKEN`；`TEST_QA_ROOM_SERVICE=1` 由 `test-deploy.sh` 映射为房内 Bridge 的 `FLYWHEEL_QA_ROOM_SERVICE=1`（R1-#11，脚本改动 + env 投影测试）。
@@ -158,13 +159,16 @@ flywheel-comm room teardown <roomId> [--lead [--accept-missing-snapshot --reason
 
 ## 6. 快照与残留
 
-**DB 坐标（R2-#5）**：权威来源 = 物化 checkout 的 `test-teardown.sh <slot> --list-db-coordinates`（协议 v1 新增：只打印该脚本**实际会删除**的 DB 路径，不执行删除），再并上静态候选兜底：slot 根 `teamlead.db`、`state/comm/<project>/comm.db`（新布局）、`$HOME/.flywheel/comm/<project>/comm.db`（旧布局，单数 `comm`，对应 `test-teardown.sh:465` 删除的目录）。**每次** teardown 前重新探测，逐库处理。测试 fixture：只在正确 `comm` 路径建库、错误 `comms` 路径不存在 → 必须先导出再清理；只建 CommDB 场景同测。
+**DB 坐标（R2-#5，R3-#4）**——区分两类：
+- **预期库（expected）**：deploy 开始前由物化 checkout 的 `test-teardown.sh <slot> --list-db-coordinates`（协议 v1 新增：打印本布局**会创建且会删除**的 DB，每行 `role path`，不执行删除）得出，写入 `db_coords_json`。缺失规则只对预期库生效。
+- **发现候选（discovery）**：静态兜底 `slot 根 teamlead.db`、`state/comm/<project>/comm.db`、`$HOME/.flywheel/comm/<project>/comm.db`（单数 `comm`）。候选中**现存**的库一律快照；**不存在的候选直接忽略**，不触发缺库规则——不适用的另一种布局不会阻塞拆房。
+- **每次** teardown 前重新探测两类。测试 fixture：新、旧布局各只建本布局实际使用的库，owner 首次 teardown 均无需 Lead；只在正确 `comm` 路径建库、错误 `comms` 路径不存在 → 必须先导出再清理；只建 CommDB 场景同测。
 
 **规则**（R1-#7）：
 1. 任一现存 DB → 必须快照：`sqlite3 <db> ".backup <dest>"`（一致性含 WAL）到 `~/.flywheel/qa-evidence/qa-rooms/<roomId>/<opId>/`，逐文件 sha256 写 `qa_room_snapshots` 回执；任一失败 → `snapshot_failed`，不拆。
 2. 逐库：某库当前不存在，但本房此前 teardown op 对**该库坐标**有快照回执且回执文件 sha256 复核通过 → `already_taken:<opId>`，该库放行（QA@2 "物理已清再拆"场景）。不能用别的库或别房的回执推导。
-3. 逐库：不存在、无回执，且 deploy op 有完整回执、`last_phase` 证明脚本**从未进入建库阶段**（服务模式下 `test-deploy.sh` 在创建任一 DB 前写阶段标记 `db_init` 到 `FLYWHEEL_QA_PHASE_FILE`，包装器写入回执）→ `skipped:no_db_created`（QA 返工 2 "建库前失败"场景，无需 `--skip-snapshot`）。"没采样到"不算证明。
-4. 其余（进入过 `db_init` 但库缺失且无回执；未完整观测）→ `snapshot_missing_unobserved`，拒拆；仅 Lead `--accept-missing-snapshot --reason` 可放行并审计。
+3. 逐**预期**库：不存在、无回执，且 deploy op 有完整回执、阶段文件证明脚本**从未对该库写过** `db_init:<role>`（服务模式下 `test-deploy.sh` 在创建每个 DB 前向 `FLYWHEEL_QA_PHASE_FILE` 追加 `db_init:<role>`，包装器把阶段文件并入回执）→ `skipped:no_db_created`（QA 返工 2 "建库前失败"场景，无需 `--skip-snapshot`）。"没采样到"不算证明。
+4. 其余预期库缺失（已写过该库的 `db_init` 但库缺失且无回执；或 deploy 未完整观测）→ `snapshot_missing_unobserved`，拒拆；仅 Lead `--accept-missing-snapshot --reason` 可放行并审计。
 5. 多库中任一快照失败 → 整体 `snapshot_failed`，已成功的库回执保留，不拆。
 
 **residue()**（QA@2 HIGH-1）：只认房间归属集合——op 记录的 pid/pgid（化身匹配）、`launchd_labels_json` 中每个**精确** label（主 slot + extra slots，deployId 绑定）的 `launchctl print gui/<uid>/<label>` 存在、`lsof -iTCP:<slotPort> -sTCP:LISTEN`、`lsof -d cwd` 在房间目录内的进程。**命令行文本永不参与**。为空 → 进入 §4 释放流程 → `torn_down`。
@@ -183,8 +187,8 @@ flywheel-comm room teardown <roomId> [--lead [--accept-missing-snapshot --reason
 | C1 | `QaRoomStore` 五张表 + StateStore 接入 + 幂等迁移 | 状态机合法转移、CAS、幂等键、审计追加 |
 | C2 | 能力凭据 + 请求目录变量：dispatcher 发放（fresh+retry）+ 双 adapter env 注入 + 撤销 | 从 `TmuxAdapter`/`CodexTmuxAdapter` 真实 env 构造取凭据；retry 旧凭据失效 |
 | C3 | `qaRoomAuth` + 路由 + 参数白名单 + 负载门 + drain | 无 token / 两 token 相同→不挂载；ingest 调 Lead 面 401+审计；generic 角色 `runner_role_refused`；他人房 `room_not_owned`+审计；`TEST_LEAD_CLAUDE_CONFIG_DIR`/`TEST_API_TOKEN` 拒；生产 label 拒 |
-| C4 | 物理 claim 协议 + 所有脚本入口识别服务 claim + 协议版本/`--list-db-coordinates`/阶段标记 | 两个独立 StateStore 抢同 slot；手工房占槽 → `slot_busy` 且不 teardown；**无 token 显式 teardown 服务房被拒**；**死 PID 不触发自回收**；borrowed slot；kill-at-boundary：staging→rename、主→extra、claim→DB；释放后崩溃重放；非服务 claim 手工行为字节不变（sentinel） |
-| C5 | `SERVICE_ROOT` + 镜像物化 + 启动断言；op-runner 包装器 + launch 交接 + 进程组屏障 + toolDirectories + minimalEnv + 恢复矩阵 | **最小 env 中 codex 可解析且投影进 plist env**；缺 codex → `tool_unavailable:codex`；无写死路径；`SERVICE_ROOT` 落在可写根下 → 拒挂载；kill-at-boundary：spawn→started、started→running、commit→ack；O_EXCL 裁决两种结局；**只杀包装器、留阻塞 bash 子进程 → 重启 → teardown 请求 → 放行旧子进程 → 不产生新房资源**；超时、PID 复用 |
+| C4 | 物理 claim 协议 + 所有脚本入口识别服务 claim + 协议版本/`--list-db-coordinates`/阶段标记 | 两个独立 StateStore 抢同 slot；手工房占槽 → `slot_busy` 且不 teardown；**无 token 显式 teardown 服务房被拒**；**死 PID 不触发自回收**；borrowed slot；kill-at-boundary：symlink 发布前后、主→extra、claim→DB；**手工 claim 暂停在 mkdir 后 pid 写入前 → 服务抢同 slot 得 `slot_busy`、目录 inode 不变、无 service owner**（主 slot 与 extra slot 各测）；释放后崩溃重放；非服务 claim 手工行为字节不变（sentinel） |
+| C5 | `SERVICE_ROOT` + 镜像物化 + 启动断言；op-runner 包装器 + launch 交接 + 进程组屏障 + toolDirectories + minimalEnv + 恢复矩阵 | **最小 env 中 codex 可解析且投影进 plist env**；缺 codex → `tool_unavailable:codex`；无写死路径；`SERVICE_ROOT` 落在可写根下 → 拒挂载；kill-at-boundary：spawn→tmp 写入中、tmp→link、started→running、commit→ack；link 裁决两种结局 + `*.tmp` 残片；**在子进程已创建、刚要执行副作用时杀包装器 → 重启 → teardown 请求 → 放行旧子进程 → 它已被组 KILL，不产生新房资源，claim 最终释放（不永久 quarantine）**；超时、PID 复用 |
 | C6 | 快照 + residue + 幂等收尾 | **回归①** 外来进程命令行含房间路径 → 仍 `torn_down`；**回归②** 物理已清 + `teardown_failed` → 重拆成功、锁与 claim 释放；**回归③** 建库前失败 → `skipped:no_db_created`；只有 CommDB；WAL 未落盘数据被快照；部分快照失败拒拆；`supervisor_lost` 缺失回执拒拆 |
 | C7 | 拆房坑：marker deployId、socket 三态 | `scripts/__tests__/qa-room-teardown-guards.test.sh` |
 | C8 | CLI `flywheel-comm room` + `FLYWHEEL_QA_ROOM_REQUEST_DIR` 注入 | 退出码；requestId 落盘 + 响应丢失找回 + CLI 重启沿用；并发重复请求；`--wait` 按 opId；真实 Codex env 未继承 `FLYWHEEL_RUNNER_STATE_DIR` 仍可用；Claude commdb 模式；不可写路径 exit 1 |
@@ -222,4 +226,8 @@ flywheel-comm room teardown <roomId> [--lead [--accept-missing-snapshot --reason
 | R2-#4 失联子树屏障 | §5 进程组 + `quarantined` + 回执提交条件 |
 | R2-#5 CommDB 坐标 | §6 `--list-db-coordinates` + 单数 `comm` + fixture |
 | R2-#6 请求日志根 | §3.6 `FLYWHEEL_QA_ROOM_REQUEST_DIR` |
+| R3-#1 不覆盖发布 | §4 symlink 锁（EEXIST 语义）+ 手工 claim 暂停测试 |
+| R3-#2 启动身份原子 | §5 完整记录 + `link()` 不覆盖发布 |
+| R3-#3 预登记进程组 | §5 包装器 = 组 leader，pgid 随启动记录发布，创建者不 detached |
+| R3-#4 非适用 DB 坐标 | §6 预期库 vs 发现候选；逐库 `db_init:<role>` |
 | R2 澄清 | 精确 label 集合；阶段标记替代采样；逐库回执复核；协议版本拒绝；源 checkout 纳入释放 |
