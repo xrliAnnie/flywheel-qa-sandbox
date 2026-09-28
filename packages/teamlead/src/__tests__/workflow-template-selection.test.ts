@@ -3,7 +3,13 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { resetModelConfigCacheForTests } from "flywheel-config";
+import {
+	canonicalSubmissionDigest,
+	parseWeightedModelSplit,
+	resetModelConfigCacheForTests,
+	resolveWeightedModelSplit,
+	type WeightedModelSplitNodeId,
+} from "flywheel-config";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { classifyDurableLaunchDrain } from "../../../../scripts/lib/qa-generalized-e2e-lib.mjs";
 import { StateStore } from "../StateStore.js";
@@ -192,7 +198,8 @@ describe("workflow template selection", () => {
 			);
 			const materialize = vi.spyOn(store, "materializeWorkflowRun");
 			const selected = await resolveWorkflowTemplateSelection(store, input);
-			expect(priorAssignmentLookup).toHaveBeenCalledWith("flywheel", issueKey);
+			// FLY-3018: a fresh start never consults the issue's other runs.
+			expect(priorAssignmentLookup).not.toHaveBeenCalled();
 			const weightedSnapshot = parseWorkflowRunSnapshot(
 				store.getWorkflowRun(selected!.runId)!.snapshot!,
 			);
@@ -363,6 +370,8 @@ describe("workflow template selection", () => {
 				now: "2026-09-23T05:32:00.000Z",
 			});
 			expect(reassigned?.runId).not.toBe(selected?.runId);
+			// FLY-3018: the fresh run follows the edited policy (every node's
+			// first arm now holds 100 of 102 weight), not the terminated run.
 			const reassignedReceipts = store
 				.listWorkflowRunEvents(reassigned!.runId)
 				.filter((event) => event.kind === "model_arm_assigned");
@@ -370,15 +379,29 @@ describe("workflow template selection", () => {
 				reassignedReceipts.map((event) => ({
 					nodeId: event.node_id,
 					arm: (event.payload as { arm: string }).arm,
-					basis: (event.payload as { basis: unknown }).basis,
 				})),
-			).toEqual(
-				receipts.map((event) => ({
-					nodeId: event.node_id,
-					arm: (event.payload as { arm: string }).arm,
-					basis: (event.payload as { basis: unknown }).basis,
-				})),
+			).toEqual([
+				{ nodeId: "eng_design", arm: "design_astra" },
+				{ nodeId: "implement", arm: "impl_opus" },
+				{ nodeId: "qa", arm: "qa_opus" },
+			]);
+			const reassignedVersions = new Set(
+				reassignedReceipts.map(
+					(event) =>
+						(event.payload as { basis: { ruleVersion: string } }).basis
+							.ruleVersion,
+				),
 			);
+			expect(reassignedVersions.size).toBe(1);
+			expect(reassignedVersions).not.toContain(
+				(receipts[0]!.payload as { basis: { ruleVersion: string } }).basis
+					.ruleVersion,
+			);
+			expect(
+				store
+					.listWorkflowRunEvents(selected!.runId)
+					.filter((event) => event.kind === "model_arm_assigned"),
+			).toEqual(receipts);
 		} finally {
 			store.close();
 			if (previousPath === undefined) delete process.env.FLYWHEEL_MODELS_CONFIG;
@@ -2139,4 +2162,399 @@ describe("FLY-2570 real percentage admission", () => {
 			}
 		},
 	);
+});
+
+describe("FLY-3018 fresh starts read the current model policy", () => {
+	// Production records audited in the FLY-3018 plan: two issues whose old
+	// runs froze Codex implement arms, and one issue with no history.
+	const FLY_2405 = "f94cfb56-810f-429f-b1ef-dea21c320901";
+	const FLY_2909 = "e6755386-9508-485c-984e-b9224c868d8d";
+	const FLY_3017 = "678e8bab-2993-44fd-9c3d-f8af08ba9c0a";
+	/** Current policy still selects Codex for this issue's implement bucket. */
+	const CODEX_IMPLEMENT = "00000000-0000-4000-8000-000003018001";
+	const astraImplementPolicy = {
+		enabled: true,
+		rule: "issue_node_weighted",
+		nodes: {
+			eng_design: [
+				{ arm: "design_astra", model: "astra", weight: 1 },
+				{ arm: "design_opus", model: "opus", weight: 1 },
+			],
+			implement: [
+				{ arm: "impl_astra", model: "astra", weight: 3 },
+				{ arm: "impl_opus", model: "opus", weight: 1 },
+			],
+			qa: [
+				{ arm: "qa_sol56", model: "codex", weight: 3 },
+				{ arm: "qa_opus", model: "opus", weight: 1 },
+			],
+		},
+	};
+	const threeArmImplementPolicy = {
+		...astraImplementPolicy,
+		nodes: {
+			...astraImplementPolicy.nodes,
+			implement: [
+				{ arm: "impl_astra", model: "astra", weight: 2 },
+				{ arm: "impl_sol56", model: "codex", weight: 1 },
+				{ arm: "impl_opus", model: "opus", weight: 1 },
+			],
+		},
+	};
+	/** The models.json modelSplit live on 2026-09-28 (implement Opus 3 : Codex 1). */
+	const currentPolicy = {
+		enabled: true,
+		rule: "issue_node_weighted",
+		balance: { enabled: false },
+		nodes: {
+			eng_design: [
+				{ arm: "design_astra", model: "astra", weight: 1 },
+				{ arm: "design_opus", model: "opus", weight: 3 },
+			],
+			implement: [
+				{ arm: "impl_opus", model: "opus", weight: 3 },
+				{ arm: "impl_sol56", model: "codex", weight: 1 },
+			],
+			qa: [
+				{ arm: "qa_sol56", model: "codex", weight: 3 },
+				{ arm: "qa_opus", model: "opus", weight: 1 },
+			],
+		},
+	};
+
+	async function harness() {
+		const root = setupRoot();
+		const configPath = join(root, "models.json");
+		const writePolicy = (modelSplit: unknown) => {
+			writeFileSync(configPath, JSON.stringify({ version: 1, modelSplit }));
+			resetModelConfigCacheForTests();
+		};
+		const previousPath = process.env.FLYWHEEL_MODELS_CONFIG;
+		process.env.FLYWHEEL_MODELS_CONFIG = configPath;
+		writePolicy(astraImplementPolicy);
+		const store = await StateStore.create(":memory:");
+		for (const [taskCategory, templateId] of [
+			["code", "tpl_code"],
+			["simple_code", "tpl_simple_code"],
+		] as const) {
+			store.importWorkflowTemplateSeed(
+				loadWorkflowMenuSeeds().find(
+					(candidate) => candidate.templateId === templateId,
+				)!,
+			);
+			store.bindWorkflowCategory({
+				project: "flywheel",
+				taskCategory,
+				templateId,
+				updatedBy: "system:test",
+			});
+		}
+		let clock = 0;
+		const start = (
+			issueKey: string,
+			identifier: string,
+			key: string,
+			taskCategory: "code" | "simple_code" = "code",
+		) =>
+			resolveWorkflowTemplateSelection(store, {
+				project: "flywheel",
+				issueId: issueKey,
+				issueIdentifier: identifier,
+				issueKey,
+				entryIssueAliases: [identifier, issueKey],
+				entryRootKey: issueKey,
+				taskCategory,
+				selectedBy: "eng-lead",
+				actor: "master",
+				authKind: "master" as const,
+				canonicalRoot: REPO_ROOT,
+				idempotencyKey: key,
+				workKindEnforced: false,
+				requestedOverrideDigest: canonicalSubmissionDigest({}),
+				now: `2026-09-28T15:${String(10 + clock++).padStart(2, "0")}:00.000Z`,
+			});
+		const terminate = (runId: string) =>
+			expect(
+				store.terminateWorkflowRunByOperator({
+					runId,
+					reason: "FLY-3018 historical run",
+					clientRequestId: `terminate-${runId}`,
+					principal: "test",
+					evidence: [],
+					now: "2026-09-28T15:30:00.000Z",
+				}),
+			).toMatchObject({ ok: true });
+		const assignments = (runId: string) =>
+			Object.fromEntries(
+				store
+					.listWorkflowRunEvents(runId)
+					.filter((event) => event.kind === "model_arm_assigned")
+					.map((event) => [
+						event.node_id,
+						event.payload as {
+							arm: string;
+							modelAlias: string;
+							model: string;
+							basis: { ruleVersion: string };
+						},
+					]),
+			);
+		const dispatch = (runId: string, nodeId: string) =>
+			parseWorkflowRunSnapshot(
+				store.getWorkflowRun(runId)!.snapshot!,
+			).resolved.nodes.find((node) => node.id === nodeId)!.dispatch;
+		return {
+			store,
+			writePolicy,
+			start,
+			terminate,
+			assignments,
+			dispatch,
+			close: () => {
+				store.close();
+				if (previousPath === undefined)
+					delete process.env.FLYWHEEL_MODELS_CONFIG;
+				else process.env.FLYWHEEL_MODELS_CONFIG = previousPath;
+				resetModelConfigCacheForTests();
+			},
+		};
+	}
+
+	const expectedCurrent = (
+		issueKey: string,
+		nodeId: WeightedModelSplitNodeId,
+	) =>
+		resolveWeightedModelSplit(
+			parseWeightedModelSplit(currentPolicy),
+			issueKey,
+			nodeId,
+		).arm;
+
+	it("routes old issues with frozen Codex implement arms by today's split and bindings", async () => {
+		const h = await harness();
+		try {
+			const oldAstra = await h.start(FLY_2405, "FLY-2405", "fly2405-old");
+			expect(h.assignments(oldAstra!.runId).implement).toMatchObject({
+				arm: "impl_astra",
+				model: "gpt-6-astra",
+			});
+			h.terminate(oldAstra!.runId);
+			h.writePolicy(threeArmImplementPolicy);
+			const oldSol = await h.start(FLY_2909, "FLY-2909", "fly2909-old");
+			expect(h.assignments(oldSol!.runId).implement).toMatchObject({
+				arm: "impl_sol56",
+				model: "gpt-5.6-sol",
+			});
+			h.terminate(oldSol!.runId);
+			const historical = [oldAstra!.runId, oldSol!.runId].map((runId) => ({
+				run: h.store.getWorkflowRun(runId),
+				events: h.store.listWorkflowRunEvents(runId),
+			}));
+
+			h.writePolicy(currentPolicy);
+			const history = vi.spyOn(
+				h.store,
+				"listWorkflowModelAssignmentEventsForIssue",
+			);
+			const currentVersion = parseWeightedModelSplit(currentPolicy).version;
+			for (const [issueKey, identifier] of [
+				[FLY_2405, "FLY-2405"],
+				[FLY_2909, "FLY-2909"],
+			] as const) {
+				for (const taskCategory of ["code", "simple_code"] as const) {
+					const fresh = await h.start(
+						issueKey,
+						identifier,
+						`${identifier}-${taskCategory}-current`,
+						taskCategory,
+					);
+					const frozen = h.assignments(fresh!.runId);
+					expect(frozen.implement).toMatchObject({
+						arm: "impl_opus",
+						modelAlias: "opus",
+						model: "claude-opus-5-5",
+						basis: { ruleVersion: currentVersion },
+					});
+					expect(h.dispatch(fresh!.runId, "implement")).toMatchObject({
+						vendor: "claude",
+						model: "claude-opus-5-5",
+					});
+					for (const nodeId of taskCategory === "code"
+						? (["eng_design", "qa"] as const)
+						: (["qa"] as const)) {
+						expect(frozen[nodeId]).toMatchObject({
+							arm: expectedCurrent(issueKey, nodeId).arm,
+							basis: { ruleVersion: currentVersion },
+						});
+					}
+					h.terminate(fresh!.runId);
+				}
+			}
+			expect(history).not.toHaveBeenCalled();
+			expect(
+				[oldAstra!.runId, oldSol!.runId].map((runId) => ({
+					run: h.store.getWorkflowRun(runId),
+					events: h.store.listWorkflowRunEvents(runId),
+				})),
+			).toEqual(historical);
+		} finally {
+			h.close();
+		}
+	});
+
+	it("keeps a fresh start stable under an unchanged policy and still selects Codex arms", async () => {
+		const h = await harness();
+		try {
+			h.writePolicy(currentPolicy);
+			const history = vi.spyOn(
+				h.store,
+				"listWorkflowModelAssignmentEventsForIssue",
+			);
+			const first = await h.start(FLY_3017, "FLY-3017", "fly3017-first");
+			expect(h.assignments(first!.runId).implement).toMatchObject({
+				arm: "impl_opus",
+				model: "claude-opus-5-5",
+			});
+			h.terminate(first!.runId);
+			const again = await h.start(FLY_3017, "FLY-3017", "fly3017-again");
+			expect(
+				Object.fromEntries(
+					Object.entries(h.assignments(again!.runId)).map(([node, a]) => [
+						node,
+						{ arm: a.arm, model: a.model },
+					]),
+				),
+			).toEqual(
+				Object.fromEntries(
+					Object.entries(h.assignments(first!.runId)).map(([node, a]) => [
+						node,
+						{ arm: a.arm, model: a.model },
+					]),
+				),
+			);
+			const codex = await h.start(CODEX_IMPLEMENT, "FLY-3019", "codex-arm");
+			expect(expectedCurrent(CODEX_IMPLEMENT, "implement").arm).toBe(
+				"impl_sol56",
+			);
+			expect(h.assignments(codex!.runId).implement).toMatchObject({
+				arm: "impl_sol56",
+				modelAlias: "codex",
+				model: "gpt-5.6-sol",
+			});
+			expect(history).not.toHaveBeenCalled();
+		} finally {
+			h.close();
+		}
+	});
+
+	it("follows removed arms, weights, bindings and arm effort on the next fresh run only", async () => {
+		const h = await harness();
+		try {
+			h.writePolicy(currentPolicy);
+			const before = await h.start(FLY_2405, "FLY-2405", "policy-before");
+			const beforeEvents = h.store.listWorkflowRunEvents(before!.runId);
+			h.terminate(before!.runId);
+			writeFileSync(
+				process.env.FLYWHEEL_MODELS_CONFIG!,
+				JSON.stringify({
+					version: 1,
+					bindings: { opus: "claude-opus-5", opus1m: "claude-opus-5[1m]" },
+					modelSplit: {
+						...currentPolicy,
+						nodes: {
+							...currentPolicy.nodes,
+							implement: [
+								{
+									arm: "impl_opus_v2",
+									model: "opus",
+									weight: 100,
+									effort: "low",
+								},
+								{ arm: "impl_sol56", model: "codex", weight: 1 },
+							],
+						},
+					},
+				}),
+			);
+			resetModelConfigCacheForTests();
+			const after = await h.start(FLY_2405, "FLY-2405", "policy-after");
+			expect(h.assignments(after!.runId).implement).toMatchObject({
+				arm: "impl_opus_v2",
+				model: "claude-opus-5",
+			});
+			expect(h.dispatch(after!.runId, "implement")).toMatchObject({
+				model: "claude-opus-5",
+				effort: "low",
+			});
+			expect(
+				h.store
+					.listWorkflowRunEvents(before!.runId)
+					.filter((event) => event.kind === "model_arm_assigned"),
+			).toEqual(
+				beforeEvents.filter((event) => event.kind === "model_arm_assigned"),
+			);
+			expect(h.dispatch(before!.runId, "implement")).toMatchObject({
+				model: "claude-opus-5-5",
+			});
+		} finally {
+			h.close();
+		}
+	});
+
+	it("never lets ambiguous or corrupt issue history block or steer a fresh start", async () => {
+		const h = await harness();
+		try {
+			h.writePolicy(currentPolicy);
+			vi.spyOn(
+				h.store,
+				"listWorkflowModelAssignmentEventsForIssue",
+			).mockReturnValue([
+				{
+					run_id: "history-corrupt",
+					seq: 1,
+					event_uid: "history-corrupt-1",
+					kind: "model_arm_assigned",
+					node_id: "implement",
+					edge_id: null,
+					execution_id: null,
+					payload: {
+						arm: "impl_astra",
+						modelAlias: "astra",
+						model: "gpt-6-astra",
+						basis: { rule: "issue_node_weighted", issueKey: FLY_2909 },
+					},
+					at: "2026-09-26T03:42:58.000Z",
+				},
+			]);
+			const fresh = await h.start(FLY_2909, "FLY-2909", "history-corrupt");
+			expect(h.assignments(fresh!.runId).implement).toMatchObject({
+				arm: "impl_opus",
+				model: "claude-opus-5-5",
+			});
+		} finally {
+			h.close();
+		}
+	});
+
+	it("replays one reservation from its frozen run even after the policy changes", async () => {
+		const h = await harness();
+		try {
+			const frozen = await h.start(FLY_2405, "FLY-2405", "replay-frozen");
+			expect(h.assignments(frozen!.runId).implement).toMatchObject({
+				arm: "impl_astra",
+			});
+			const events = h.store.listWorkflowRunEvents(frozen!.runId);
+			h.writePolicy(currentPolicy);
+			const replay = await h.start(FLY_2405, "FLY-2405", "replay-frozen");
+			expect(replay).toMatchObject({ runId: frozen!.runId, replayed: true });
+			expect(h.store.listWorkflowRunEvents(frozen!.runId)).toEqual(events);
+			writeFileSync(process.env.FLYWHEEL_MODELS_CONFIG!, "{");
+			resetModelConfigCacheForTests();
+			await expect(
+				h.start(FLY_2405, "FLY-2405", "replay-frozen"),
+			).resolves.toMatchObject({ runId: frozen!.runId, replayed: true });
+		} finally {
+			h.close();
+		}
+	});
 });

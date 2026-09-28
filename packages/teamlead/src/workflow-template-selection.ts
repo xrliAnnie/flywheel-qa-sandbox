@@ -96,9 +96,12 @@ function mergeAutomaticModelSplit(
 	};
 }
 
+/**
+ * FLY-3018: a fresh start reads today's model policy only. Each run freezes
+ * its own selection at materialization; another run of the same issue never
+ * steers it (that run keeps its own frozen record for replay and recovery).
+ */
 function resolveAutomaticModelSplit(
-	store: StateStore,
-	projectName: string,
 	templateId: string,
 	issueIdentifier: string,
 	issueKey?: string,
@@ -115,98 +118,6 @@ function resolveAutomaticModelSplit(
 		issueIdentifier,
 		issueKey,
 	});
-	const manualModelNodes = new Set(
-		Object.entries(resolved.requestedTemplateOverride?.nodes ?? {})
-			.filter(([, override]) => override.model !== undefined)
-			.map(([nodeId]) => nodeId),
-	);
-	if (issueKey) {
-		const priorAssignments = new Map<string, WorkflowModelAssignmentReceipt>();
-		for (const event of store.listWorkflowModelAssignmentEventsForIssue(
-			projectName,
-			issueKey,
-		)) {
-			const assignment = event.payload as
-				| WorkflowModelAssignmentReceipt
-				| undefined;
-			if (assignment?.basis?.rule !== "issue_node_weighted") continue;
-			if (
-				!event.node_id ||
-				assignment.basis.issueKey !== issueKey ||
-				assignment.basis.nodeId !== event.node_id
-			)
-				throw new Error("prior workflow model assignment invalid");
-			try {
-				if (event.kind === "model_arm_assigned")
-					assertFrozenWeightedModelAssignment(assignment, {
-						runId: event.run_id,
-						nodeId: event.node_id,
-					});
-				else assertWeightedModelAssignment(assignment);
-			} catch {
-				throw new Error("prior workflow model assignment invalid");
-			}
-			const prior = priorAssignments.get(event.node_id);
-			if (
-				prior &&
-				canonicalSubmissionDigest({
-					arm: prior.arm,
-					modelAlias: prior.modelAlias,
-					model: prior.model,
-					basis: prior.basis,
-				}) !==
-					canonicalSubmissionDigest({
-						arm: assignment.arm,
-						modelAlias: assignment.modelAlias,
-						model: assignment.model,
-						basis: assignment.basis,
-					})
-			)
-				throw new Error("prior workflow model assignment ambiguous");
-			priorAssignments.set(event.node_id, prior ?? assignment);
-		}
-		const modelSnapshot = getModelConfigSnapshot();
-		for (const [nodeId, assignment] of priorAssignments) {
-			if (manualModelNodes.has(nodeId)) continue;
-			const node = menu.nodes.find((candidate) => candidate.id === nodeId);
-			if (!node) continue;
-			const policy = node.models?.find(
-				(candidate) => candidate.model === assignment.modelAlias,
-			);
-			const model = modelSnapshot.getModelRegistryEntry(assignment.modelAlias);
-			if (!policy || !model || model.id !== assignment.model) {
-				throw new Error(
-					`prior workflow model assignment unavailable:${nodeId}`,
-				);
-			}
-			// FLY-2891: a reused weighted assignment keeps the effort its arm
-			// pinned (frozen in basis.nodes); otherwise the template default.
-			const armEffort =
-				assignment.basis.rule === "issue_node_weighted"
-					? assignment.basis.nodes[assignment.basis.nodeId]?.find(
-							(candidate) => candidate.arm === assignment.arm,
-						)?.effort
-					: undefined;
-			const effort = armEffort ?? policy.defaultEffort;
-			if (!policy.allowedEfforts.includes(effort)) {
-				throw new Error(
-					`prior workflow model assignment effort unavailable:${nodeId}`,
-				);
-			}
-			resolved.assignments[nodeId] = {
-				arm: assignment.arm,
-				modelAlias: assignment.modelAlias,
-				model: assignment.model,
-				basis: assignment.basis,
-			};
-			resolved.templateOverride.nodes ??= {};
-			resolved.templateOverride.nodes[nodeId] = {
-				vendor: model.runtimeVendor,
-				model: model.id,
-				effort,
-			};
-		}
-	}
 	return Object.keys(resolved.assignments).length > 0
 		? {
 				override: resolved.templateOverride,
@@ -215,17 +126,24 @@ function resolveAutomaticModelSplit(
 		: { assignments: {} };
 }
 
-/** A committed start reuses its immutable policy, even if today's authority is invalid. */
-function resolveFrozenModelSplit(
+/**
+ * FLY-3018: the model assignments ONE run froze at materialization, each
+ * checked against that run's pinned dispatch. It never reads another run of
+ * the issue. Throws on any inconsistency, so every start path (fresh, replay,
+ * recovery) can refuse a self-corrupt run before admission.
+ */
+export function readFrozenRunModelAssignments(
 	store: StateStore,
 	runId: string,
-	issueIdentifier: string,
-): ReturnType<typeof resolveAutomaticModelSplit> {
+	options: { issueIdentifier?: string } = {},
+): {
+	snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
+	assignments: Record<string, WorkflowModelAssignmentReceipt>;
+} {
 	const run = store.getWorkflowRun(runId);
 	if (!run?.snapshot) throw new Error("reserved workflow run snapshot missing");
 	const snapshot = parseWorkflowRunSnapshot(run.snapshot);
 	const assignments: Record<string, WorkflowModelAssignmentReceipt> = {};
-	const nodes: NonNullable<WorkflowTemplateOverride["nodes"]> = {};
 	for (const event of store.listWorkflowRunEvents(runId)) {
 		if (
 			event.kind !== "design_model_arm_assigned" &&
@@ -242,7 +160,8 @@ function resolveFrozenModelSplit(
 			!node?.dispatch ||
 			!assignment?.basis ||
 			assignment.model !== node.dispatch.model ||
-			assignment.basis.issueIdentifier !== issueIdentifier ||
+			(options.issueIdentifier !== undefined &&
+				assignment.basis.issueIdentifier !== options.issueIdentifier) ||
 			!assignment.basis.ruleVersion
 		) {
 			throw new Error("reserved workflow model assignment invalid");
@@ -284,13 +203,32 @@ function resolveFrozenModelSplit(
 			model: assignment.model,
 			basis: assignment.basis,
 		};
-		nodes[node.id] = { ...node.dispatch };
 	}
+	return { snapshot, assignments };
+}
+
+/** A committed start reuses its immutable policy, even if today's authority is invalid. */
+function resolveFrozenModelSplit(
+	store: StateStore,
+	runId: string,
+	issueIdentifier: string,
+): ReturnType<typeof resolveAutomaticModelSplit> {
+	const { snapshot, assignments } = readFrozenRunModelAssignments(
+		store,
+		runId,
+		{ issueIdentifier },
+	);
 	if (snapshot.modelRouting)
 		return {
 			assignments,
 			override: snapshot.modelRouting.selectionOverride,
 		};
+	const nodes: NonNullable<WorkflowTemplateOverride["nodes"]> = {};
+	for (const nodeId of Object.keys(assignments)) {
+		const dispatch = snapshot.resolved.nodes.find((node) => node.id === nodeId)!
+			.dispatch!;
+		nodes[nodeId] = { ...dispatch };
+	}
 	return Object.keys(assignments).length
 		? { assignments, override: { reason: "automatic_model_split", nodes } }
 		: { assignments };
@@ -498,8 +436,6 @@ export async function resolveWorkflowTemplateSelection(
 				input.issueIdentifier ?? input.issueId,
 			)
 		: resolveAutomaticModelSplit(
-				store,
-				input.project,
 				templateId,
 				input.issueIdentifier ?? input.issueId,
 				input.issueKey,
