@@ -34,7 +34,7 @@ export interface WorkflowDispatchResolution {
 	modelAssignment?: WorkflowModelAssignmentReceipt;
 }
 
-function resolveModelAssignment(
+export function resolveModelAssignment(
 	store: StateStore,
 	input: { runId: string; nodeId: string; model: string },
 ): WorkflowModelAssignmentReceipt | undefined {

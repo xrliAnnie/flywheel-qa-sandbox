@@ -14,6 +14,7 @@ import {
 	DEFAULT_ENG_TIER,
 	type EngTier,
 } from "./work-kind.js";
+import { resolveModelAssignment } from "./workflow-dispatch-resolution.js";
 import {
 	loadWorkflowMenuLibrary,
 	resolveMenuOverrides,
@@ -144,21 +145,12 @@ export function readFrozenRunModelAssignments(
 	if (!run?.snapshot) throw new Error("reserved workflow run snapshot missing");
 	const snapshot = parseWorkflowRunSnapshot(run.snapshot);
 	const assignments: Record<string, WorkflowModelAssignmentReceipt> = {};
-	// Same cardinality as the launch reader: at most one record of each kind
-	// per node (a legacy + frozen dual write must agree), so a run this check
-	// passes cannot fail as ambiguous later at launch.
-	const seenKinds = new Set<string>();
 	for (const event of store.listWorkflowRunEvents(runId)) {
 		if (
 			event.kind !== "design_model_arm_assigned" &&
 			event.kind !== "model_arm_assigned"
 		)
 			continue;
-		const kindKey = JSON.stringify([event.node_id, event.kind]);
-		if (seenKinds.has(kindKey)) {
-			throw new Error("reserved workflow model assignment invalid");
-		}
-		seenKinds.add(kindKey);
 		const node = snapshot.resolved.nodes.find(
 			(node) => node.id === event.node_id,
 		);
@@ -212,6 +204,20 @@ export function readFrozenRunModelAssignments(
 			model: assignment.model,
 			basis: assignment.basis,
 		};
+	}
+	// The launch reader is the final judge of each node's record (cardinality,
+	// dual-write agreement); anything it would reject later is refused here,
+	// so a run that passes this check cannot fail as ambiguous at launch.
+	for (const [nodeId, assignment] of Object.entries(assignments)) {
+		try {
+			resolveModelAssignment(store, {
+				runId,
+				nodeId,
+				model: assignment.model,
+			});
+		} catch {
+			throw new Error("reserved workflow model assignment invalid");
+		}
 	}
 	return { snapshot, assignments };
 }

@@ -630,6 +630,69 @@ describe("FLY-3018 fresh starts route by today's models.json", () => {
 		expect(h.calls).toHaveLength(0);
 	});
 
+	it("refuses a dual write the launch reader would call ambiguous (key order) before admission", async () => {
+		const h = await startHarness();
+		let dualWrite = false;
+		const listEvents = h.store.listWorkflowRunEvents.bind(h.store);
+		vi.spyOn(h.store, "listWorkflowRunEvents").mockImplementation(
+			(runId: string): WorkflowRunEventRow[] =>
+				listEvents(runId).flatMap((event) => {
+					if (
+						!dualWrite ||
+						event.kind !== "model_arm_assigned" ||
+						event.node_id !== "implement"
+					)
+						return [event];
+					const payload = event.payload as {
+						arm: string;
+						modelAlias: string;
+						model: string;
+						basis: Record<string, unknown>;
+					};
+					// Same facts, basis keys in reverse order.
+					const basis = Object.fromEntries(
+						Object.entries(payload.basis).reverse(),
+					);
+					return [
+						{
+							...event,
+							seq: event.seq + 1000,
+							kind: "design_model_arm_assigned",
+							payload: {
+								arm: payload.arm,
+								modelAlias: payload.modelAlias,
+								model: payload.model,
+								basis,
+							},
+						},
+						event,
+					];
+				}),
+		);
+		const materialize = h.store.materializeWorkflowRun.bind(h.store);
+		vi.spyOn(h.store, "materializeWorkflowRun").mockImplementation((input) => {
+			const run = materialize(input);
+			dualWrite = true;
+			return run;
+		});
+		const request = {
+			issueKey: FLY_3017,
+			identifier: "FLY-3017",
+			taskCategory: "simple_code" as const,
+			idempotencyKey: "dual-write-key-order",
+		};
+		const first = await h.post(request);
+		expect(first.status, JSON.stringify(first.json)).toBe(409);
+		expect(first.json).toMatchObject({
+			code: "GENERALIZED_WORKFLOW_REJECTED",
+			reason: "reserved workflow model assignment invalid",
+		});
+		const retry = await h.post(request);
+		expect(retry.status).toBe(409);
+		expect(retry.json).toEqual(first.json);
+		expect(h.calls).toHaveLength(0);
+	});
+
 	it("keeps an admitted start accepted when its record changes after admission", async () => {
 		const h = await startHarness();
 		let corrupt = false;
