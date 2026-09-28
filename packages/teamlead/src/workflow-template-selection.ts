@@ -144,12 +144,21 @@ export function readFrozenRunModelAssignments(
 	if (!run?.snapshot) throw new Error("reserved workflow run snapshot missing");
 	const snapshot = parseWorkflowRunSnapshot(run.snapshot);
 	const assignments: Record<string, WorkflowModelAssignmentReceipt> = {};
+	// Same cardinality as the launch reader: at most one record of each kind
+	// per node (a legacy + frozen dual write must agree), so a run this check
+	// passes cannot fail as ambiguous later at launch.
+	const seenKinds = new Set<string>();
 	for (const event of store.listWorkflowRunEvents(runId)) {
 		if (
 			event.kind !== "design_model_arm_assigned" &&
 			event.kind !== "model_arm_assigned"
 		)
 			continue;
+		const kindKey = JSON.stringify([event.node_id, event.kind]);
+		if (seenKinds.has(kindKey)) {
+			throw new Error("reserved workflow model assignment invalid");
+		}
+		seenKinds.add(kindKey);
 		const node = snapshot.resolved.nodes.find(
 			(node) => node.id === event.node_id,
 		);

@@ -591,6 +591,45 @@ describe("FLY-3018 fresh starts route by today's models.json", () => {
 		).toBe(h.pinned(reservation.run_id, "implement").model);
 	});
 
+	it("refuses a duplicated same-kind assignment before admission, matching the launch reader", async () => {
+		const h = await startHarness();
+		let duplicate = false;
+		const listEvents = h.store.listWorkflowRunEvents.bind(h.store);
+		vi.spyOn(h.store, "listWorkflowRunEvents").mockImplementation(
+			(runId: string): WorkflowRunEventRow[] =>
+				listEvents(runId).flatMap((event) =>
+					duplicate &&
+					event.kind === "model_arm_assigned" &&
+					event.node_id === "implement"
+						? [event, { ...event, seq: event.seq + 1000 }]
+						: [event],
+				),
+		);
+		const materialize = h.store.materializeWorkflowRun.bind(h.store);
+		vi.spyOn(h.store, "materializeWorkflowRun").mockImplementation((input) => {
+			const run = materialize(input);
+			duplicate = true;
+			return run;
+		});
+		const request = {
+			issueKey: FLY_2909,
+			identifier: "FLY-2909",
+			taskCategory: "simple_code" as const,
+			idempotencyKey: "duplicate-assignment",
+		};
+		const first = await h.post(request);
+		expect(first.status, JSON.stringify(first.json)).toBe(409);
+		expect(first.json).toMatchObject({
+			success: false,
+			code: "GENERALIZED_WORKFLOW_REJECTED",
+			reason: "reserved workflow model assignment invalid",
+		});
+		const retry = await h.post(request);
+		expect(retry.status).toBe(409);
+		expect(retry.json).toEqual(first.json);
+		expect(h.calls).toHaveLength(0);
+	});
+
 	it("keeps an admitted start accepted when its record changes after admission", async () => {
 		const h = await startHarness();
 		let corrupt = false;
