@@ -738,105 +738,6 @@ fire_meta_alert() {
         "${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/meta-alert.sh" "$1" "$2" "$3" || true
 }
 
-# FLY-1659: audit detached same-uid tmux servers before a fleet restart. This
-# is intentionally observation-only: ppid=1 is shared by abandoned QA servers
-# and legitimate daemons, so it is not deletion authority. The production
-# default socket and the operator-owned atlas socket are allowlisted; every
-# other socket is logged with its session census. A foreign socket using the
-# production-reserved `flywheel` session name additionally raises a severe
-# alert, but never receives a signal or tmux mutation.
-audit_tmux_qa_residue_read_only() {
-    local current_uid timeout rows uid pid ppid command argv0 socket_rows line
-    local socket normalized_socket session_rows session_csv session_name has_reserved allowlist
-    local default_root default_socket seen_sockets="" normalized_allowlist=""
-    local allow normalized_allow old_ifs
-    if ! type tmux_rescue_probe >/dev/null 2>&1 \
-        || ! type _tmux_rescue_normalize_socket >/dev/null 2>&1; then
-        log "WARNING: tmux QA residue audit unavailable (bounded probe library missing)"
-        return 0
-    fi
-    current_uid="$(id -u 2>/dev/null)" || {
-        log "WARNING: tmux QA residue audit could not read the current uid"
-        return 0
-    }
-    timeout="${FLYWHEEL_TMUX_AUDIT_TIMEOUT_SEC:-3}"
-    [[ "$timeout" =~ ^[1-9][0-9]*$ ]] || timeout=3
-    default_root="${TMUX_TMPDIR:-/tmp}/tmux-${current_uid}"
-    default_socket="${FLYWHEEL_TMUX_AUDIT_DEFAULT_SOCKET:-${default_root}/default}"
-    allowlist="${default_socket}:${default_root}/atlas"
-    [[ -z "${FLYWHEEL_TMUX_AUDIT_ALLOWLIST:-}" ]] \
-        || allowlist="${allowlist}:${FLYWHEEL_TMUX_AUDIT_ALLOWLIST}"
-    old_ifs="$IFS"
-    IFS=:
-    for allow in $allowlist; do
-        if normalized_allow="$(_tmux_rescue_normalize_socket "$allow" 2>/dev/null)"; then
-            normalized_allowlist="${normalized_allowlist}${normalized_allowlist:+$'\n'}${normalized_allow}"
-        else
-            log "WARNING: tmux QA residue audit could not normalize allowlisted socket ${allow}"
-        fi
-    done
-    IFS="$old_ifs"
-
-    rows="$(tmux_rescue_probe "$timeout" \
-        ps axww -o uid= -o pid= -o ppid= -o command= 2>/dev/null)" || {
-        log "WARNING: tmux QA residue audit process census was unavailable"
-        return 0
-    }
-    while read -r uid pid ppid command; do
-        [[ "$uid" == "$current_uid" && "$ppid" == 1 && "$pid" =~ ^[1-9][0-9]*$ ]] \
-            || continue
-        argv0="${command%% *}"
-        case "$argv0" in
-            tmux|*/tmux) ;;
-            *) [[ "$command" == *"tmux: server"* || "$command" == *"tmux server"* ]] \
-                || continue ;;
-        esac
-
-        socket_rows="$(tmux_rescue_probe "$timeout" \
-            lsof -a -p "$pid" -U -Fn 2>/dev/null)" || {
-            log "WARNING: tmux QA residue audit socket census failed for pid=$pid"
-            continue
-        }
-        while IFS= read -r line; do
-            [[ "$line" == n/* ]] || continue
-            socket="${line#n}"
-            [[ "$socket" == *' type=STREAM' ]] && socket="${socket% type=STREAM}"
-            [[ "$socket" == /* ]] || continue
-            if ! normalized_socket="$(_tmux_rescue_normalize_socket "$socket" 2>/dev/null)"; then
-                log "WARNING: tmux QA residue audit could not normalize socket for pid=$pid"
-                continue
-            fi
-            if printf '%s\n' "$seen_sockets" | grep -Fqx -- "$normalized_socket"; then
-                continue
-            fi
-            seen_sockets="${seen_sockets}${seen_sockets:+$'\n'}${normalized_socket}"
-
-            if printf '%s\n' "$normalized_allowlist" | grep -Fqx -- "$normalized_socket"; then
-                continue
-            fi
-
-            session_rows="$(tmux_rescue_probe "$timeout" \
-                tmux -S "$socket" -N list-sessions -F '#{session_name}' 2>/dev/null)" \
-                || session_rows="<unreadable>"
-            session_csv="$(printf '%s\n' "$session_rows" \
-                | awk 'NF { if (out != "") out=out ","; out=out $0 } END { print out }')"
-            [[ -n "$session_csv" ]] || session_csv="<none>"
-            log "WARNING: non-production tmux server audit pid=${pid} socket=${socket} sessions=${session_csv}"
-
-            has_reserved=false
-            while IFS= read -r session_name; do
-                [[ "$session_name" == flywheel ]] && has_reserved=true
-            done <<< "$session_rows"
-            if [[ "$has_reserved" == true ]]; then
-                alert_severe "tmux-qa-residue-flywheel-session" \
-                    "QA tmux server uses the production session name" \
-                    "检测到非生产 tmux socket ${socket} (PID ${pid}) 使用保留 session 名 flywheel。restart 只读审计未做清理；请按 operator 手册核实并移除残留。"
-            fi
-        done <<< "$socket_rows"
-    done <<< "$rows"
-    return 0
-}
-
 # FLY-1081 (FLY-915 pain #3): ⚠️/🚨 deploy notices route through lead-alert.sh
 # — the FLY-927 sender seam (FLYWHEEL_ALERT_SENDER_TOKEN_ENV), claims dedup,
 # queue/dead-letter fail-loud all come for free. There is deliberately NO
@@ -1032,7 +933,7 @@ restart_on_exit() {
     rm -f "${LEAD_RESTART_NAMES_FILE:-}" 2>/dev/null || true
     while IFS= read -r path; do
         [[ -n "$path" ]] || continue
-        rm -f -- "$path" 2>/dev/null || true
+        rm -f -- "$path" 2>/dev/null || rmdir -- "$path" 2>/dev/null || true
     done <<< "${RESTART_TRANSIENT_FILES:-}"
     exit "$original_rc"
 }
@@ -3019,9 +2920,143 @@ restart_lead_visibility_round() {
     for pid in ${pids[@]+"${pids[@]}"}; do wait "$pid" || true; done
 }
 
+# FLY-2965: the cmux half of the visible proof for every carrier-verified
+# Lead of one batch, in one call. The per-Lead verifier repeated the whole
+# fleet surface enumeration twice for each Lead (2*N*W cmux calls, 1051s for
+# 17 Leads on 2026-09-27); the batch reads the fleet twice in total and keeps
+# each Lead's verdict independent. The child budget is the shared cmux proof
+# budget (AV_CMUX_TIMEOUT_DEFAULT_SECONDS in scripts/lib/agent-visibility.sh),
+# further capped by the caller's remaining phase time. A batch that times out
+# or returns anything but one well-formed result per requested Lead proves
+# nothing about any of them: every Lead is visibility_unproven.
+RESTART_VISIBILITY_BATCH_BUDGET_SECONDS=240
+
+restart_lead_visibility_batch_visible() {
+    local passed_file="$1" budget="$2" results_file="$3"
+    local sync bounded state_dir visibility_home output="" batch_rc=0 verdicts=""
+    local project lead key identity extra title status reasons kind unproven_reason=""
+    local titles_json="[]"
+    local -a args=()
+    sync="${FLYWHEEL_VISIBILITY_CMUX_SYNC:-${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/flywheel-cmux-sync.sh}"
+    bounded="${FLYWHEEL_RESTART_VISIBILITY_BOUNDED_RUN:-${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}/bin/lib/bounded-run.sh}"
+    if [[ -z "${FLYWHEEL_RESTART_VISIBILITY_BOUNDED_RUN:-}" ]] \
+      && [[ ! -x "$bounded" || -L "$bounded" ]]; then
+        bounded="${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts/lib/bounded-run.sh"
+    fi
+    while IFS=$'\t' read -r project lead key identity extra; do
+        [[ -n "$key" ]] || continue
+        title="${project}-${lead}"
+        if [[ ! "$title" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            unproven_reason=invalid_batch_target
+            continue
+        fi
+        args+=(--target "$title")
+        titles_json=$(jq -c --arg title "$title" '. + [$title]' <<<"$titles_json") || unproven_reason=result_allocation_failed
+    done < "$passed_file"
+    if [[ -z "$unproven_reason" ]]; then
+        if [[ ! -x "$sync" || -L "$sync" ]]; then
+            unproven_reason=batch_verifier_unavailable
+        elif [[ ! -x "$bounded" || -L "$bounded" ]]; then
+            unproven_reason=bounded_runner_unavailable
+        elif [[ ! "$budget" =~ ^[1-9][0-9]*$ ]]; then
+            unproven_reason=deadline_exhausted
+        elif (( ${#args[@]} == 0 )); then
+            unproven_reason=invalid_batch_target
+        fi
+    fi
+    if [[ -z "$unproven_reason" ]]; then
+        state_dir="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}"
+        visibility_home="$HOME"
+        case "$state_dir" in /*/.flywheel) visibility_home="${state_dir%/.flywheel}" ;; esac
+        # Same identity pinning as the per-Lead verifier's cmux child: observe
+        # the host's real cmux/tmux surfaces, never an inherited client socket.
+        output="$(
+            unset TMUX TMUX_TMPDIR
+            export HOME="$visibility_home" FLYWHEEL_STATE_DIR="$state_dir"
+            "$bounded" "$budget" "$sync" --verify-agents-visible "${args[@]}" --json 2>/dev/null
+        )" || batch_rc=$?
+        case "$batch_rc" in
+            0|1|2)
+                # Exactly one JSON document with exactly one complete result
+                # per requested Lead; anything else is not evidence.
+                verdicts="$(jq -rs --argjson want "$titles_json" --argjson rc "$batch_rc" '
+                  if length == 1 and (.[0] | type) == "object"
+                    and .[0].schemaVersion == 1 and (.[0].results | type) == "array"
+                    and all(.[0].results[]; type == "object"
+                      and (.target | type) == "string"
+                      and (.status == "pass" or .status == "fail" or .status == "inconclusive")
+                      and (.reasons | type) == "array" and all(.reasons[]; type == "string")
+                      and (.report | type) == "array" and all(.report[]; type == "string"))
+                    and ([.[0].results[].target] | length) == ($want | length)
+                    and ([.[0].results[].target] | unique) == ($want | unique)
+                    and ([.[0].results[].target] | unique | length) == ($want | length)
+                    and ((if any(.[0].results[]; .status == "inconclusive") then 2
+                          elif any(.[0].results[]; .status == "fail") then 1 else 0 end) == $rc)
+                  then .[0].results[] | [.target, .status, (.reasons | join(",") | gsub("[\t\r\n]"; " "))] | @tsv
+                  else error("invalid batch result") end' <<<"$output" 2>/dev/null)" \
+                  || unproven_reason=invalid_batch_result
+                ;;
+            124) unproven_reason=batch_timeout ;;
+            *) unproven_reason=invalid_batch_result ;;
+        esac
+    fi
+    while IFS=$'\t' read -r project lead key identity extra; do
+        [[ -n "$key" ]] || continue
+        if [[ -n "$unproven_reason" ]]; then
+            printf 'visibility_unproven\t%s\t%s;rc=%s;identity=%s\n' \
+              "$key" "$unproven_reason" "$batch_rc" "$identity" >> "$results_file"
+            continue
+        fi
+        title="${project}-${lead}"
+        status=""; reasons=""
+        IFS=$'\t' read -r _ status reasons \
+          < <(awk -F '\t' -v t="$title" '$1 == t { print; exit }' <<<"$verdicts") || true
+        case "$status" in
+            pass) kind=pass ;;
+            fail) kind=visibility_failed ;;
+            *) kind=visibility_unproven ;;
+        esac
+        printf '%s\t%s\tstatus=%s;reasons=%s;rc=%s;identity=%s\n' \
+          "$kind" "$key" "${status:-invalid}" "${reasons:-none}" "$batch_rc" "$identity" >> "$results_file"
+    done < "$passed_file"
+    return 0
+}
+
+# FLY-2965: a rollback resets the checkout before its window diagnosis, and
+# the first rollback across this change lands on a cmux-sync without the
+# batch entry the barrier calls. Pin the verifier the running restart shipped
+# with, plus the files it sources relative to itself, before that reset. The
+# copies are registered for the exit cleanup; an explicit override is kept.
+RESTART_VISIBILITY_VERIFIER_FILES="flywheel-cmux-sync.sh lead-alert.sh lib/bounded-run.sh lib/cmux-mutator-process-census.sh lib/flywheel-alert-lib.sh lib/lead-address.sh"
+
+pin_restart_visibility_verifier() {
+    local source_dir root relative copied=""
+    [[ -z "${FLYWHEEL_VISIBILITY_CMUX_SYNC:-}" ]] || return 0
+    source_dir="${FLYWHEEL_RUNTIME_DIR:-${FLYWHEEL_DIR}}/scripts"
+    root="$(mktemp -d "${TMPDIR:-/tmp}/flywheel-visibility-verifier-XXXXXX")" || return 1
+    if ! mkdir "$root/lib"; then
+        rmdir "$root" 2>/dev/null || true
+        return 1
+    fi
+    for relative in $RESTART_VISIBILITY_VERIFIER_FILES; do
+        if ! cp -p "$source_dir/$relative" "$root/$relative"; then
+            for relative in $copied; do rm -f "$root/$relative"; done
+            rmdir "$root/lib" "$root" 2>/dev/null || true
+            return 1
+        fi
+        copied="$copied $relative"
+    done
+    for relative in $copied; do register_restart_transient_file "$root/$relative" || true; done
+    register_restart_transient_file "$root/lib" || true
+    register_restart_transient_file "$root" || true
+    FLYWHEEL_VISIBILITY_CMUX_SYNC="$root/flywheel-cmux-sync.sh"
+    return 0
+}
+
 restart_lead_visibility_barrier() {
     local candidates_file="$1" pending_file="" round_file="" latest_file="" success_file="" next_file=""
-    local deadline candidate_count=0 rounds=0 max_rounds=0 remaining revalidation_reserve=0 cmux_preflight_rc=0
+    local passed_file="" visible_file=""
+    local deadline phase_deadline batch_budget candidate_count=0 rounds=0 max_rounds=0 remaining revalidation_reserve=0 cmux_preflight_rc=0
     local project lead key expected_identity actual_identity extra kind detail result_line
     LEAD_VISIBILITY_CONFIRMED_COUNT=0
     LEAD_VISIBILITY_UNPROVEN_COUNT=0
@@ -3063,7 +3098,11 @@ restart_lead_visibility_barrier() {
         return 0
     }
     next_file="${pending_file}.next"
+    passed_file="${pending_file}.passed"
+    visible_file="${pending_file}.visible"
     register_restart_transient_file "$pending_file" || true
+    register_restart_transient_file "$passed_file" || true
+    register_restart_transient_file "$visible_file" || true
     register_restart_transient_file "$round_file" || true
     register_restart_transient_file "$latest_file" || true
     register_restart_transient_file "$success_file" || true
@@ -3098,48 +3137,66 @@ restart_lead_visibility_barrier() {
     # host. Reserve 8s per batch plus cleanup headroom before considering any
     # retry of an inconclusive full-visibility probe.
     revalidation_reserve=$(( ((candidate_count + 3) / 4) * 8 + 5 ))
-    # Seventeen Leads run in five four-wide batches. The measured real-host
-    # visibility p95 is 158s and the child budget is 240s, so a 1320s fleet
-    # budget lets every batch finish
-    # once and still reserves the final cheap carrier revalidation.
+    # The fleet deadline is unchanged. Each batch now proves carrier identity
+    # per Lead (cheap, four-wide) and then proves cmux visibility for every
+    # carrier-verified Lead in one shared two-sample read (FLY-2965), so a
+    # batch no longer pays one fleet-wide surface enumeration per Lead. Only
+    # Leads that have not passed are retried: a Lead restarted moments ago may
+    # still be booting and the scheduled cmux refresh is asynchronous, so a
+    # first-batch miss is not final. Every probe of a batch stays inside the
+    # phase deadline so the final carrier revalidation keeps its reservation.
     deadline=$((SECONDS + 1320))
+    phase_deadline=$((deadline - revalidation_reserve))
     while [[ -s "$pending_file" ]]; do
         rounds=$((rounds + 1))
-        restart_lead_visibility_round "$pending_file" "$deadline" "$round_file"
-        cat "$round_file" >> "$latest_file"
+        restart_lead_visibility_round "$pending_file" "$phase_deadline" "$round_file" carrier
         : > "$next_file"
+        : > "$passed_file"
+        : > "$visible_file"
         while IFS=$'\t' read -r kind key detail extra; do
             [[ -n "$kind" && -n "$key" && -z "$extra" ]] || continue
-            case "$kind" in
-                pass)
-                    actual_identity=$(restart_lead_visibility_detail_identity "$detail" || true)
-                    if [[ -n "$actual_identity" ]]; then
-                        awk -F '\t' -v key="$key" -v identity="$actual_identity" \
-                          '$3 == key { print $1 "\t" $2 "\t" $3 "\t" identity; exit }' \
-                          "$pending_file" >> "$success_file"
-                    else
-                        awk -F '\t' -v key="$key" '$3 == key { print; exit }' "$pending_file" >> "$next_file"
-                    fi
-                    ;;
-                visibility_failed)
-                    # The verifier's two samples prove the current observation,
-                    # not that a freshly restarted Lead has finished booting.
-                    # Keep retrying within the fleet deadline; a final stable
-                    # failure remains a failure, while later convergence may
-                    # replace it with a pass and enter final revalidation.
-                    awk -F '\t' -v key="$key" '$3 == key { print; exit }' "$pending_file" >> "$next_file"
-                    ;;
-                *)
-                    awk -F '\t' -v key="$key" '$3 == key { print; exit }' "$pending_file" >> "$next_file"
-                    ;;
-            esac
+            actual_identity=""
+            if [[ "$kind" == pass ]]; then
+                actual_identity=$(restart_lead_visibility_detail_identity "$detail" || true)
+            fi
+            if [[ -n "$actual_identity" ]]; then
+                awk -F '\t' -v key="$key" -v identity="$actual_identity" \
+                  '$3 == key { print $1 "\t" $2 "\t" $3 "\t" identity; exit }' \
+                  "$pending_file" >> "$passed_file"
+            else
+                # Carrier failure or an unproven carrier is this batch's
+                # verdict; a cmux page can never offset a missing carrier.
+                [[ "$kind" == pass ]] && kind=visibility_unproven detail="invalid_identity;identity=none"
+                printf '%s\t%s\t%s\n' "$kind" "$key" "$detail" >> "$latest_file"
+                awk -F '\t' -v key="$key" '$3 == key { print; exit }' "$pending_file" >> "$next_file"
+            fi
         done < "$round_file"
+        if [[ -s "$passed_file" ]]; then
+            remaining=$((phase_deadline - SECONDS))
+            batch_budget=$((remaining - 1))
+            (( batch_budget <= RESTART_VISIBILITY_BATCH_BUDGET_SECONDS )) \
+              || batch_budget="$RESTART_VISIBILITY_BATCH_BUDGET_SECONDS"
+            (( batch_budget >= 1 )) || batch_budget=0
+            restart_lead_visibility_batch_visible "$passed_file" "$batch_budget" "$visible_file"
+            cat "$visible_file" >> "$latest_file"
+            while IFS=$'\t' read -r kind key detail extra; do
+                [[ -n "$kind" && -n "$key" && -z "$extra" ]] || continue
+                if [[ "$kind" == pass ]]; then
+                    # The success keeps the identity carrier-proven in this
+                    # batch; the final revalidation must observe the same one.
+                    awk -F '\t' -v key="$key" '$3 == key { print; exit }' "$passed_file" >> "$success_file"
+                else
+                    awk -F '\t' -v key="$key" '$3 == key { print; exit }' "$pending_file" >> "$next_file"
+                fi
+            done < "$visible_file"
+        fi
         mv "$next_file" "$pending_file"
         [[ -s "$pending_file" ]] || break
         if (( max_rounds > 0 && rounds >= max_rounds )); then break; fi
         remaining=$((deadline - SECONDS))
-        # A retry may consume the full 250s public-verifier bound. Start one
-        # only when it cannot steal the carrier revalidation reservation.
+        # A retry may consume a full carrier batch plus the shared cmux proof
+        # budget. Start one only when it cannot steal the carrier revalidation
+        # reservation.
         (( remaining > revalidation_reserve + 262 )) || break
         sleep 2
     done
@@ -3207,8 +3264,9 @@ restart_lead_visibility_barrier() {
                 ;;
         esac
     done < <(awk -F '\t' 'NF == 3 && !seen[$3]++ { print }' "$candidates_file")
-    rm -f "$pending_file" "$round_file" "$latest_file" "$success_file" "$next_file"
-    log "Lead visibility barrier: candidates=${candidate_count} confirmed_missing=${LEAD_VISIBILITY_CONFIRMED_COUNT} unproven=${LEAD_VISIBILITY_UNPROVEN_COUNT}" >&2
+    rm -f "$pending_file" "$round_file" "$latest_file" "$success_file" "$next_file" \
+      "$passed_file" "$visible_file"
+    log "Lead visibility barrier: candidates=${candidate_count} batches=${rounds} confirmed_missing=${LEAD_VISIBILITY_CONFIRMED_COUNT} unproven=${LEAD_VISIBILITY_UNPROVEN_COUNT}" >&2
     return 0
 }
 
@@ -3571,6 +3629,10 @@ rollback_and_restart() {
         return 1
     fi
 
+    if [[ "$restart_all_leads" == "true" ]] && ! pin_restart_visibility_verifier; then
+        log "WARNING: could not pin the batch visibility verifier before the rollback reset; the window diagnosis will use the rolled-back checkout"
+    fi
+
     if ! git -C "$FLYWHEEL_DIR" reset --hard "$rollback_sha"; then
         log "ERROR: git reset --hard ${rollback_sha:0:7} failed during rollback; working tree state unknown, stopping"
         alert_severe "rollback-reset-failed" "Flywheel rollback failed" \
@@ -3616,19 +3678,30 @@ rollback_and_restart() {
                 return 1
             fi
             rb_carrier_failed="$rb_leads_failed"
+        fi
+        if [[ "${restart_voice:-false}" == "true" ]] && ! restart_voice_managed; then
+            if [[ "$restart_bridge" == "true" ]]; then
+                resume_admission_best_effort
+            fi
+            alert_severe "rollback-voice-failed" "Flywheel deploy failed" \
+                "Flywheel 已回滚到旧版本，但 standalone voice 受管重启失败 (${VOICE_RESTART_DETAIL})。deployed-sha 未推进，需要手动介入。"
+            RESTART_TERMINAL_REPORTED=true
+            return 1
+        fi
+        # FLY-2965: the old code, Bridge, Leads, and voice are back; release
+        # the ordinary admission lease before the bounded window diagnosis.
+        if [[ "$restart_bridge" == "true" ]]; then
+            resume_admission_best_effort
+        fi
+        if [[ "$restart_all_leads" == "true" ]]; then
             # FLY-98: trigger cmux refresh after rollback restart
             trigger_cmux_refresh
             restart_lead_visibility_barrier "${LEAD_RESTART_VISIBILITY_CANDIDATES_FILE:-}"
             rb_leads_failed=$(merge_lead_visibility_failures "$rb_leads_failed")
         fi
-        if [[ "$restart_bridge" == "true" ]]; then
+        if [[ "$restart_bridge" == "true" && -n "${ADMISSION_PAUSE_LEASE_ID:-}" \
+          && "${ADMISSION_PAUSE_RELEASE_ON_EXIT:-true}" == "true" ]]; then
             resume_admission_best_effort
-        fi
-        if [[ "${restart_voice:-false}" == "true" ]] && ! restart_voice_managed; then
-            alert_severe "rollback-voice-failed" "Flywheel deploy failed" \
-                "Flywheel 已回滚到旧版本，但 standalone voice 受管重启失败 (${VOICE_RESTART_DETAIL})。deployed-sha 未推进，需要手动介入。"
-            RESTART_TERMINAL_REPORTED=true
-            return 1
         fi
         if (( rb_leads_failed > 0 )); then
             alert_severe "rollback-leads-failed" "Flywheel deploy failed" \
@@ -3676,12 +3749,6 @@ ensure_voice_for_deploy() {
 deploy_and_verify() {
     RESTART_NOTICE_STARTED=true
     notify_routine "🔄 开始全量重启 Flywheel (reason=${RESTART_REASON}): \`${DEPLOYED_SHA:0:7}\` → \`${CURRENT_HEAD:0:7}\`"
-
-    # Read-only preflight: surface detached QA tmux noise before the Lead wave
-    # without treating daemon shape as cleanup authority.
-    if type audit_tmux_qa_residue_read_only >/dev/null 2>&1; then
-        audit_tmux_qa_residue_read_only
-    fi
 
     # Step 0: reject new admissions before the Bridge begins draining. This runs
     # inside the detached deploy body, never in the self-detaching parent.
@@ -3939,13 +4006,6 @@ deploy_and_verify() {
     watcher_state="$CMUX_WATCHER_RESTART_STATE"
     watcher_detail="$CMUX_WATCHER_RESTART_DETAIL"
 
-    # FLY-98: trigger cmux refresh after watcher restart outcome capture.
-    if [[ "$restart_all_leads" == "true" ]]; then
-        trigger_cmux_refresh
-        restart_lead_visibility_barrier "${LEAD_RESTART_VISIBILITY_CANDIDATES_FILE:-}"
-        leads_failed=$(merge_lead_visibility_failures "$leads_failed")
-    fi
-
     # Step 5: Record code deployment truth independently of Lead health.
     # Bridge is already healthy and the new code is active at this point, so a
     # later Lead failure must not leave deployed-sha lying about the old code.
@@ -3953,6 +4013,21 @@ deploy_and_verify() {
     echo "$CURRENT_HEAD" > "$DEPLOYED_SHA_FILE"
     log "deployed-sha updated to ${CURRENT_HEAD:0:7}"
     update_project_shas
+
+    # FLY-2965: every real gate (build, Bridge identity, voice, Lead wave,
+    # watcher) has already decided. Release the ordinary admission lease now
+    # so Runner dispatch does not wait on the window diagnosis below; the
+    # restart lock still covers that bounded diagnosis.
+    if [[ "$restart_bridge" == "true" ]]; then
+        resume_admission_best_effort
+    fi
+
+    # FLY-98: trigger cmux refresh after watcher restart outcome capture.
+    if [[ "$restart_all_leads" == "true" ]]; then
+        trigger_cmux_refresh
+        restart_lead_visibility_barrier "${LEAD_RESTART_VISIBILITY_CANDIDATES_FILE:-}"
+        leads_failed=$(merge_lead_visibility_failures "$leads_failed")
+    fi
 
     # FLY-1830: the Bridge, the Leads and the cmux watcher all have somebody who
     # puts them back. The rest of the non-Lead daemons had nobody — a label that
@@ -4108,7 +4183,11 @@ deploy_and_verify() {
             "Flywheel 代码已部署到 \`${CURRENT_HEAD:0:7}\` 且 deployed-sha 已推进；${tail_detail}。"
     fi
 
-    if [[ "$restart_bridge" == "true" ]]; then
+    # One idempotent retry for an ordinary lease whose early resume failed.
+    # A cutover-owned fence is never released here; an abnormal exit before
+    # this point still relies on the lease TTL.
+    if [[ "$restart_bridge" == "true" && -n "${ADMISSION_PAUSE_LEASE_ID:-}" \
+      && "${ADMISSION_PAUSE_RELEASE_ON_EXIT:-true}" == "true" ]]; then
         resume_admission_best_effort
     fi
 

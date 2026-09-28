@@ -1,0 +1,273 @@
+file	disposition	matched_literals	reason
+packages/claude-runner/test/fixtures/kill-path-inventory.json	excluded	flywheel-cmux-sync, flywheel-cmux-sync.sh, lib/tmux-server-rescue, restart-services.sh, scripts/flywheel-cmux-sync.sh, scripts/lib/, scripts/lib/tmux-server-rescue.sh, scripts/restart-services.sh, tmux-server-rescue.sh	fixture consumed by packages/claude-runner/test/kill-path-inventory.test.ts (run)
+packages/claude-runner/test/kill-path-inventory.test.ts	run	scripts/lib/	run individually; result in the run table
+packages/claude-runner/test/kill-path-inventory.ts	excluded	restart-services.sh, scripts/lib/, scripts/restart-services.sh	helper module of packages/claude-runner/test/kill-path-inventory.test.ts (run)
+packages/claude-runner/test/scaffold-prune.real-tmux.test.ts	run	lib/tmux-server-rescue, scripts/lib/, scripts/lib/tmux-server-rescue.sh, tmux-server-rescue.sh	run individually; result in the run table
+packages/config/src/__tests__/auto-narrow-flag.test.ts	excluded	feature-flags/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/config/src/__tests__/drift-scan.test.ts	excluded	feature-flags/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/config/src/__tests__/drift-scan/index.ts	excluded	feature-flags/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/config/src/__tests__/feature-flags-direct-toggle.test.ts	excluded	feature-flags/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/config/src/__tests__/feature-flags-drift.test.ts	run	feature-flags/, feature-flags/truth	run individually; result in the run table
+packages/config/src/__tests__/feature-flags-registry.test.ts	run	feature-flags/, feature-flags/truth	run individually; result in the run table
+packages/config/src/__tests__/feature-flags-resolve.test.ts	excluded	feature-flags/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/config/src/__tests__/feature-flags-scan.test.ts	excluded	feature-flags/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/config/src/__tests__/feature-flags-store-policy.test.ts	excluded	feature-flags/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/config/src/__tests__/flag-truth.test.ts	run	FLYWHEEL_TMUX_AUDIT, feature-flags/, feature-flags/truth, scripts/lib/	run individually; result in the run table
+packages/config/src/__tests__/fly1808-wave-a.test.ts	run	feature-flags/, feature-flags/truth, flywheel-cmux-sync, flywheel-cmux-sync.sh, scripts/flywheel-cmux-sync.sh	run individually; result in the run table
+packages/config/src/__tests__/fly1981-final-ledgers.test.ts	run	feature-flags/, feature-flags/truth, packages/config/src/feature-flags/truth.ts, truth.ts	run individually; result in the run table
+packages/config/src/__tests__/fly1981-legacy-snapshot.ts	excluded	feature-flags/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/edge-worker/src/__tests__/fixtures/fly2533-phase-baseline.json	excluded	restart-services.sh	fixture consumed by packages/edge-worker/src/__tests__/Blueprint.generalized-workflow.test.ts (run)
+packages/flywheel-comm/src/__tests__/ci-full.test.ts	run	.github/workflows/ci.yml, ci.yml	run individually; result in the run table
+packages/flywheel-comm/src/__tests__/fly-2006-mailbox-archive-parity.test.ts	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/flywheel-comm/src/__tests__/lead-backend-migration-context.test.ts	run	restart-services.sh, scripts/restart-services.sh	run individually; result in the run table
+packages/flywheel-comm/src/__tests__/lead-backend-migration-owner.test.ts	run	restart-services.sh, scripts/restart-services.sh	run individually; result in the run table
+packages/flywheel-comm/src/__tests__/ship-ci-guard.test.ts	run	.github/workflows/ci.yml, ci.yml	run individually; result in the run table
+packages/onboard-shell/__tests__/auto-update.test.mjs	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/onboard-shell/__tests__/onboard-shell-publish-gate.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/scripts/__tests__/canonical-launcher-matrix.py	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/scripts/__tests__/codex-lead-args.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/scripts/__tests__/lead-model-authority-receipt.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/scripts/__tests__/mcp-inherit.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/scripts/__tests__/restart-env-propagation.test.sh	run	restart-services.sh	run individually; result in the run table
+packages/teamlead/scripts/__tests__/run-codex-infra-bot-tui.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/scripts/__tests__/run-codex-lead-mufasa-tui-fullaccess.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/scripts/__tests__/run-codex-lead-mufasa-tui.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/src/__tests__/StateStore.voice-health-demand.test.ts	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/src/__tests__/backend-migration-lifecycle.test.ts	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/src/__tests__/fixtures/fly2278-red/M4.txt	excluded	feature-flags/, feature-flags/truth, packages/config/src/feature-flags/truth.ts, truth.ts	fixture consumed by packages/teamlead/src/__tests__/fly2278-retirement.test.ts (run)
+packages/teamlead/src/__tests__/fly-1998-database-retention-sweep.test.ts	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/src/__tests__/fly-2006-database-retention-sweep.test.ts	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/src/__tests__/fly-2413-quota-retention-protection.test.ts	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/src/__tests__/fly-2413-retention-migration.test.ts	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/src/__tests__/fly-2413-retention-registry.test.ts	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/src/__tests__/fly-2563-retention-protection.test.ts	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/src/__tests__/fly-889-ci-workflow-timeout-guard.test.ts	run	.github/workflows/ci.yml, ci.yml	run individually; result in the run table
+packages/teamlead/src/__tests__/fly2139-maintenance-vacuum.test.ts	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/src/__tests__/fly2139-retention-rates.test.ts	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/src/__tests__/fly2139-standing-policy.test.ts	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/src/__tests__/fly2278-retirement.test.ts	run	feature-flags/, feature-flags/truth, truth.ts	run individually; result in the run table
+packages/teamlead/src/__tests__/fly2396-authorship-boundary.test.ts	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/src/__tests__/fly2398-narrow-boundary.test.ts	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/src/__tests__/fly2655-retention-protection.test.ts	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/src/__tests__/fly2799-retention-protection.test.ts	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/src/__tests__/required-wall-clock-thresholds.test.ts	run	.github/workflows/ci.yml, ci.yml	run individually; result in the run table
+packages/teamlead/src/__tests__/sync-flywheel-hooks.test.ts	run	tmux-server-rescue.sh	run individually; result in the run table
+packages/teamlead/src/__tests__/tmux-lookup.real-tmux.test.ts	run	flywheel-cmux-sync, flywheel-cmux-sync.sh	run individually; result in the run table
+packages/teamlead/src/__tests__/workflow-permissions.test.ts	run	ci.yml	run individually; result in the run table
+packages/teamlead/src/__tests__/workflow-template-selection.test.ts	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/src/bin/backend-migration-authority.test.ts	run	restart-services.sh, scripts/restart-services.sh	run individually; result in the run table
+packages/teamlead/src/bin/execute-backend-migration.test.ts	run	restart-services.sh, scripts/restart-services.sh	run individually; result in the run table
+packages/teamlead/src/bin/raya-migration-init.test.ts	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/src/bin/raya-migration-proof.test.ts	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/src/bin/raya-registry-identity.test.ts	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/src/bridge/__tests__/codex-quota-route.test.ts	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/src/bridge/__tests__/customer-release-store.test.ts	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/src/bridge/__tests__/flag-provenance.test.ts	excluded	feature-flags/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/src/bridge/__tests__/voice-health-projector.test.ts	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/teamlead/src/bridge/__tests__/voice-launchd-waker.test.ts	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/voice-codex/src/__tests__/config.test.ts	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/voice-codex/src/__tests__/daemon-health.test.ts	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/voice-codex/src/__tests__/health-heartbeat-realtime.test.ts	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+packages/voice-codex/src/__tests__/health.test.ts	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/agent-cli-provider-contract.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/agent-visibility.test.sh	run	FLYWHEEL_VISIBILITY_CMUX_SYNC, _verify_sidebar_once, flywheel-cmux-sync, flywheel-cmux-sync.sh, run_verify_agent_visible, scripts/flywheel-cmux-sync.sh, scripts/lib/	run individually; result in the run table
+scripts/__tests__/bridge-port.test.sh	excluded	scripts/lib/	listed in scripts/__tests__/ci-shell-suite-manual-only.txt (needs a real host/Discord/launchd, not hermetic); matched only via scripts/lib/; references none of the changed functions
+scripts/__tests__/buddy-escalate.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/check-flag-truth.test.sh	run	truth.ts	run individually; result in the run table
+scripts/__tests__/check-global-path-hygiene.test.sh	run	lib/tmux-server-rescue, restart-services.sh, scripts/lib/, scripts/lib/tmux-server-rescue.sh, scripts/restart-services.sh, tmux-server-rescue.sh	run individually; result in the run table
+scripts/__tests__/ci-classify.test.sh	run	ci.yml	run individually; result in the run table
+scripts/__tests__/ci-full-reuse.test.sh	run	.github/workflows/ci.yml, ci.yml	run individually; result in the run table
+scripts/__tests__/ci-matrix-coverage.test.sh	run	.github/workflows/ci.yml, ci.yml	run individually; result in the run table
+scripts/__tests__/ci-shell-suite-enumeration.test.sh	run	.github/workflows/ci.yml, ci.yml	run individually; result in the run table
+scripts/__tests__/ci-shell-suite-manual-only.txt	excluded	ci.yml	data file consumed by scripts/__tests__/ci-shell-suite-enumeration.test.sh (run)
+scripts/__tests__/ci-structure.test.sh	run	.github/workflows/ci.yml, ci.yml, restart-services.sh	run individually; result in the run table
+scripts/__tests__/cmux-cleanup-lifecycle.test.sh	run	flywheel-cmux-sync, flywheel-cmux-sync.sh, scripts/flywheel-cmux-sync.sh	run individually; result in the run table
+scripts/__tests__/cmux-view-rebind.test.sh	run	flywheel-cmux-sync, flywheel-cmux-sync.sh, scripts/flywheel-cmux-sync.sh	run individually; result in the run table
+scripts/__tests__/codex-guard.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/codex-home-reconcile-cadence.test.sh	run	restart-services.sh, resume_admission_best_effort, scripts/lib/, scripts/restart-services.sh	run individually; result in the run table
+scripts/__tests__/codex-home-reconcile-cycle.test.sh	run	restart-services.sh, scripts/restart-services.sh	run individually; result in the run table
+scripts/__tests__/codex-home-reconcile-process.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/codex-lead-home-rule.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/codex-lead-launchd-preflight.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/codex-lead-state-root.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/codex-quota-client.test.mjs	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/codex-quota-summary.test.sh	run	restart-services.sh, scripts/lib/, scripts/restart-services.sh	run individually; result in the run table
+scripts/__tests__/codex-runner-capability-env.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/conditional-restart.test.sh	run	restart-services.sh, scripts/lib/, scripts/restart-services.sh	run individually; result in the run table
+scripts/__tests__/converge-fly1389.test.sh	run	flywheel-cmux-sync, flywheel-cmux-sync.sh, lib/tmux-server-rescue, restart-services.sh, scripts/flywheel-cmux-sync.sh, scripts/lib/, scripts/lib/tmux-server-rescue.sh, tmux-server-rescue.sh	run individually; result in the run table
+scripts/__tests__/converge-flywheel-bin.test.sh	run	restart-services.sh, scripts/lib/, scripts/restart-services.sh	run individually; result in the run table
+scripts/__tests__/converge-nonlead-daemons.test.sh	run	restart-services.sh, scripts/lib/, scripts/restart-services.sh	run individually; result in the run table
+scripts/__tests__/db-maintenance.test.sh	run	restart-services.sh, scripts/restart-services.sh	run individually; result in the run table
+scripts/__tests__/deploy-build-identity.test.sh	excluded	scripts/lib/	listed in scripts/__tests__/ci-shell-suite-manual-only.txt (needs a real host/Discord/launchd, not hermetic); matched only via scripts/lib/; references none of the changed functions
+scripts/__tests__/discord-bot-pool.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/fleet-capture.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/fleet-sanitize.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/fly1364-discord-e2e.test.sh	excluded	flywheel-cmux-sync, flywheel-cmux-sync.sh, scripts/flywheel-cmux-sync.sh	listed in scripts/__tests__/ci-shell-suite-manual-only.txt (needs a real host/Discord/launchd, not hermetic); matched only via flywheel-cmux-sync, flywheel-cmux-sync.sh, scripts/flywheel-cmux-sync.sh; references none of the changed functions
+scripts/__tests__/fly1364-live-e2e.test.sh	excluded	flywheel-cmux-sync, flywheel-cmux-sync.sh, scripts/flywheel-cmux-sync.sh	listed in scripts/__tests__/ci-shell-suite-manual-only.txt (needs a real host/Discord/launchd, not hermetic); matched only via flywheel-cmux-sync, flywheel-cmux-sync.sh, scripts/flywheel-cmux-sync.sh; references none of the changed functions
+scripts/__tests__/fly1446-cmux-roster.test.sh	excluded	flywheel-cmux-sync, flywheel-cmux-sync.sh, scripts/flywheel-cmux-sync.sh	listed in scripts/__tests__/ci-shell-suite-manual-only.txt (needs a real host/Discord/launchd, not hermetic); matched only via flywheel-cmux-sync, flywheel-cmux-sync.sh, scripts/flywheel-cmux-sync.sh; references none of the changed functions
+scripts/__tests__/fly1577-alert-arrival.test.sh	run	restart-services.sh, scripts/lib/	run individually; result in the run table
+scripts/__tests__/fly1577-cmux-bin-closure.test.sh	run	flywheel-cmux-sync, flywheel-cmux-sync.sh, lib/tmux-server-rescue, restart-services.sh, scripts/flywheel-cmux-sync.sh, scripts/lib/, tmux-server-rescue.sh	run individually; result in the run table
+scripts/__tests__/fly1663-bridge-launchd.test.sh	run	restart-services.sh, scripts/lib/, scripts/restart-services.sh	run individually; result in the run table
+scripts/__tests__/fly1663-cmux-v2.test.sh	run	flywheel-cmux-sync, flywheel-cmux-sync.sh, scripts/flywheel-cmux-sync.sh	run individually; result in the run table
+scripts/__tests__/fly1663-launchd-foundation.test.sh	run	.github/workflows/ci.yml, ci.yml, restart-services.sh, scripts/lib/, scripts/restart-services.sh	run individually; result in the run table
+scripts/__tests__/fly1663-lead-v2-runtime.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/fly1663-qa-launchd-mutants.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/fly1663-qa-launchd.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/fly1674-residue.test.sh	run	feature-flags/, feature-flags/truth, packages/config/src/feature-flags/truth.ts, scripts/lib/, truth.ts	run individually; result in the run table
+scripts/__tests__/fly1678-install-statusline.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/fly1680-v1-extinction.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/fly1726-default-lead-delivery.test.sh	run	restart-services.sh, scripts/lib/, scripts/restart-services.sh	run individually; result in the run table
+scripts/__tests__/fly1783-restart-detach-contract.test.sh	run	restart-services.sh, scripts/restart-services.sh	run individually; result in the run table
+scripts/__tests__/fly1814-operator-tools.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/fly1884-attach-recovery.test.sh	run	flywheel-cmux-sync, flywheel-cmux-sync.sh, scripts/flywheel-cmux-sync.sh	run individually; result in the run table
+scripts/__tests__/fly1884-node-presence.test.sh	run	flywheel-cmux-sync, flywheel-cmux-sync.sh, scripts/flywheel-cmux-sync.sh	run individually; result in the run table
+scripts/__tests__/fly1944-attach-protocol.test.sh	run	flywheel-cmux-sync, flywheel-cmux-sync.sh, scripts/flywheel-cmux-sync.sh, scripts/lib/	run individually; result in the run table
+scripts/__tests__/fly1944-birth-adoption.test.sh	run	flywheel-cmux-sync, flywheel-cmux-sync.sh, scripts/flywheel-cmux-sync.sh	run individually; result in the run table
+scripts/__tests__/fly1944-dead-view-rebuild.test.sh	run	flywheel-cmux-sync, flywheel-cmux-sync.sh, scripts/flywheel-cmux-sync.sh	run individually; result in the run table
+scripts/__tests__/fly1944-helper-reap.test.sh	run	flywheel-cmux-sync, flywheel-cmux-sync.sh, scripts/flywheel-cmux-sync.sh	run individually; result in the run table
+scripts/__tests__/fly2030-summary-registry-activation.test.sh	run	restart-services.sh	run individually; result in the run table
+scripts/__tests__/fly2048-cmux-convergence.test.sh	run	flywheel-cmux-sync, flywheel-cmux-sync.sh, scripts/flywheel-cmux-sync.sh	run individually; result in the run table
+scripts/__tests__/fly2102-flag-freeze.test.sh	run	.github/workflows/ci.yml, ci.yml, feature-flags/, feature-flags/truth, packages/config/src/feature-flags/truth.ts, truth.ts	run individually; result in the run table
+scripts/__tests__/fly2103-project-config-generators.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/fly2121-node-contract-and-setup.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/fly2264-verify-native-cutover.test.sh	run	flywheel-cmux-sync, flywheel-cmux-sync.sh, scripts/flywheel-cmux-sync.sh	run individually; result in the run table
+scripts/__tests__/fly2266-cmux-lead-attach-health.test.sh	run	flywheel-cmux-sync, flywheel-cmux-sync.sh, scripts/flywheel-cmux-sync.sh	run individually; result in the run table
+scripts/__tests__/fly2758-launchd-install-real.test.sh	excluded	scripts/lib/	listed in scripts/__tests__/ci-shell-suite-manual-only.txt (needs a real host/Discord/launchd, not hermetic); matched only via scripts/lib/; references none of the changed functions
+scripts/__tests__/fly2829-node-registry.test.sh	run	flywheel-cmux-sync, flywheel-cmux-sync.sh, scripts/flywheel-cmux-sync.sh	run individually; result in the run table
+scripts/__tests__/fly2829-workspace-convergence.test.sh	run	flywheel-cmux-sync, flywheel-cmux-sync.sh, scripts/flywheel-cmux-sync.sh	run individually; result in the run table
+scripts/__tests__/fly2867-claude-lead-inbox-lease.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/fly2874-slot-pool.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/flywheel-buddy-captain.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/flywheel-buddy-connect.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/flywheel-buddy-github.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/flywheel-buddy-steps.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/flywheel-buddy.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/flywheel-cmux-install-link-only.test.sh	run	flywheel-cmux-sync, flywheel-cmux-sync.sh, scripts/flywheel-cmux-sync.sh, scripts/lib/	run individually; result in the run table
+scripts/__tests__/flywheel-daemon-install-verify.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/flywheel-daemon-restart-refusal.test.sh	excluded	restart-services.sh	listed in scripts/__tests__/ci-shell-suite-manual-only.txt (needs a real host/Discord/launchd, not hermetic); matched only via restart-services.sh; references none of the changed functions
+scripts/__tests__/flywheel-fleet.test.sh	excluded	scripts/lib/	listed in scripts/__tests__/ci-shell-suite-manual-only.txt (needs a real host/Discord/launchd, not hermetic); matched only via scripts/lib/; references none of the changed functions
+scripts/__tests__/flywheel-lead-packaging.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/flywheel-lead.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/flywheel-log-janitor.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/flywheel-log-rotate.test.sh	run	lib/tmux-server-rescue, scripts/lib/, scripts/lib/tmux-server-rescue.sh, tmux-server-rescue.sh	run individually; result in the run table
+scripts/__tests__/flywheel-onboard.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/flywheel-setup-config.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/flywheel-setup-engine.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/flywheel-voice-wrapper.test.sh	run	restart-services.sh, scripts/lib/, scripts/restart-services.sh	run individually; result in the run table
+scripts/__tests__/gate4-allowlist-masking.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/gate4-forms-probe.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/host-config.test.sh	excluded	scripts/lib/	listed in scripts/__tests__/ci-shell-suite-manual-only.txt (needs a real host/Discord/launchd, not hermetic); matched only via scripts/lib/; references none of the changed functions
+scripts/__tests__/host-path-allowlist.test.sh	excluded	restart-services.sh, scripts/lib/	listed in scripts/__tests__/ci-shell-suite-manual-only.txt (needs a real host/Discord/launchd, not hermetic); matched only via restart-services.sh, scripts/lib/; references none of the changed functions
+scripts/__tests__/host-tmux-selection-mounts.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/host-tmux-selection-restart-mounts.test.sh	run	restart-services.sh, restart_lead_visibility, scripts/restart-services.sh	run individually; result in the run table
+scripts/__tests__/host-tmux-selection-s0-scope.test.sh	run	lib/tmux-server-rescue, restart-services.sh, scripts/lib/, scripts/lib/tmux-server-rescue.sh, scripts/restart-services.sh, tmux-server-rescue.sh	run individually; result in the run table
+scripts/__tests__/install-hooks-fly1389.test.sh	run	flywheel-cmux-sync, flywheel-cmux-sync.sh, scripts/flywheel-cmux-sync.sh, scripts/lib/	run individually; result in the run table
+scripts/__tests__/kill-ledger.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/launchd-census-wiring.test.sh	run	restart-services.sh, scripts/lib/, scripts/restart-services.sh	run individually; result in the run table
+scripts/__tests__/launchd-census.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/launchd-units-manifest-fail-closed.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/launchd-units-manifest.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/lead-backend-migration-load.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/lead-backend-migration-wave.test.sh	run	restart-services.sh, scripts/lib/, scripts/restart-services.sh	run individually; result in the run table
+scripts/__tests__/lead-backend-migration.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/lead-body-evidence.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/lead-body-hard-clear.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/lead-body-provenance.test.sh	run	restart-services.sh, scripts/lib/, scripts/restart-services.sh	run individually; result in the run table
+scripts/__tests__/lead-clear-session-authority.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/lead-patrol-snapshot.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/lead-restart-controlled-wave.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/lead-restart-lifecycle-generic-carrier.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/lead-session-resume-gate.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/legacy-swap-broadcast-retirement.test.sh	run	restart-services.sh, resume_admission_best_effort, scripts/lib/, scripts/restart-services.sh	run individually; result in the run table
+scripts/__tests__/package-onboard-smoke.test.sh	run	lib/tmux-server-rescue, scripts/lib/, scripts/lib/tmux-server-rescue.sh, tmux-server-rescue.sh	run individually; result in the run table
+scripts/__tests__/package-onboard-version-injection.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/package-onboard.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/packaged-auto-update-wrapper.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/packaged-restart.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/packaged-seams.test.sh	run	restart-services.sh, scripts/lib/	run individually; result in the run table
+scripts/__tests__/path-hygiene.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/platform-deps.test.sh	excluded	scripts/lib/	listed in scripts/__tests__/ci-shell-suite-manual-only.txt (needs a real host/Discord/launchd, not hermetic); matched only via scripts/lib/; references none of the changed functions
+scripts/__tests__/provision-fleet-host.test.sh	run	restart-services.sh, scripts/lib/	run individually; result in the run table
+scripts/__tests__/provision-prebuilt.test.sh	run	restart-services.sh	run individually; result in the run table
+scripts/__tests__/qa-codex-lead-layers.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/qa-discord-liveness.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/qa-fly-2007-phase0-analyze.test.sh	run	.github/workflows/ci.yml, ci.yml	run individually; result in the run table
+scripts/__tests__/qa-fly1081-notify-identity.test.sh	run	restart-services.sh	run individually; result in the run table
+scripts/__tests__/qa-fly1501-bounded-run.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/qa-fly1501-brake-missing-alert.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/qa-generalized-helper.test.mjs	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/qa-lead-artifact-fixtures.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/qa-lead-coordinates.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/qa-lead-diagnostics.test.mjs	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/qa-metadata-snapshot.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/qa-report-host.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/qa-room-env.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/qa-slot-env-contract.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/r4-window.test.sh	run	restart-services.sh, scripts/lib/	run individually; result in the run table
+scripts/__tests__/raya-cos-shim.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/raya-prestop.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/raya-standard-migration.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/release-workflows-structure.test.sh	run	ci.yml	run individually; result in the run table
+scripts/__tests__/remove-retired-dist.test.mjs	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/resident-codex-lead-recover.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/restart-account-switch-runtime-preflight.test.sh	run	restart-services.sh, scripts/restart-services.sh	run individually; result in the run table
+scripts/__tests__/restart-cmux-watcher.test.sh	run	flywheel-cmux-sync, flywheel-cmux-sync.sh, restart-services.sh, scripts/flywheel-cmux-sync.sh, scripts/lib/, scripts/restart-services.sh	run individually; result in the run table
+scripts/__tests__/restart-deploy-consistency.test.sh	run	restart-services.sh, scripts/lib/, scripts/restart-services.sh	run individually; result in the run table
+scripts/__tests__/restart-deployed-range.test.sh	run	restart-services.sh, scripts/restart-services.sh	run individually; result in the run table
+scripts/__tests__/restart-discord-plugin.test.sh	excluded	restart-services.sh, scripts/restart-services.sh	listed in scripts/__tests__/ci-shell-suite-manual-only.txt (needs a real host/Discord/launchd, not hermetic); matched only via restart-services.sh, scripts/restart-services.sh; references none of the changed functions
+scripts/__tests__/restart-notify-routine.test.sh	run	restart-services.sh	run individually; result in the run table
+scripts/__tests__/restart-pull-preflight.test.sh	run	restart-services.sh, scripts/lib/, scripts/restart-services.sh	run individually; result in the run table
+scripts/__tests__/restart-quota-monitor.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/restart-self-detach.test.sh	run	restart-services.sh, scripts/restart-services.sh	run individually; result in the run table
+scripts/__tests__/restart-services-admission-pause.test.sh	run	restart-services.sh, resume_admission_best_effort	run individually; result in the run table
+scripts/__tests__/restart-services-no-voice-bridge.test.sh	run	merge_lead_visibility, restart-services.sh, restart_lead_visibility, resume_admission_best_effort, scripts/lib/, scripts/restart-services.sh	run individually; result in the run table
+scripts/__tests__/restart-services-notify.test.sh	run	restart-services.sh	run individually; result in the run table
+scripts/__tests__/restart-stop-bridge-portfree.test.sh	excluded	restart-services.sh	listed in scripts/__tests__/ci-shell-suite-manual-only.txt (needs a real host/Discord/launchd, not hermetic); matched only via restart-services.sh; references none of the changed functions
+scripts/__tests__/restart-storm-gate.test.sh	run	audit_tmux_qa_residue_read_only, restart-services.sh, scripts/restart-services.sh, tmux-qa-residue-flywheel-session	run individually; result in the run table
+scripts/__tests__/restart-summary-source-preflight.test.sh	run	restart-services.sh, scripts/restart-services.sh	run individually; result in the run table
+scripts/__tests__/restart-voice-on-demand.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/rollback-r4.test.sh	run	restart-services.sh, scripts/restart-services.sh	run individually; result in the run table
+scripts/__tests__/run-bridge-isolation-boot.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/runner-test-discipline-deploy.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/runner-test-discipline.test.mjs	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/script-sanity.test.sh	excluded	scripts/lib/	listed in scripts/__tests__/ci-shell-suite-manual-only.txt (needs a real host/Discord/launchd, not hermetic); matched only via scripts/lib/; references none of the changed functions
+scripts/__tests__/session-ctx-usage.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/shuttle-alert-route.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/shuttle-observation.test.py	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/shuttle-unit-results.test.sh	run	restart-services.sh, scripts/lib/, scripts/restart-services.sh	run individually; result in the run table
+scripts/__tests__/simba-grep-zero.test.sh	run	restart-services.sh, scripts/restart-services.sh	run individually; result in the run table
+scripts/__tests__/supervisor.test.sh	excluded	scripts/lib/	listed in scripts/__tests__/ci-shell-suite-manual-only.txt (needs a real host/Discord/launchd, not hermetic); matched only via scripts/lib/; references none of the changed functions
+scripts/__tests__/teamlead-shards.test.mjs	run	.github/workflows/ci.yml, ci.yml	run individually; result in the run table
+scripts/__tests__/test-claude-lead-session-start-adopt.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/test-cmux-autostart-flags.test.sh	run	flywheel-cmux-sync	run individually; result in the run table
+scripts/__tests__/test-cycle-bridge.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/test-deploy-fly1389.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/test-deploy-generalized.test.sh	run	feature-flags/, feature-flags/truth, scripts/lib/, truth.ts	run individually; result in the run table
+scripts/__tests__/test-deploy-launch-boundary.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/test-deploy-multilead.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/test-deploy-qa-room.test.sh	excluded	scripts/lib/	listed in scripts/__tests__/ci-shell-suite-manual-only.txt (needs a real host/Discord/launchd, not hermetic); matched only via scripts/lib/; references none of the changed functions
+scripts/__tests__/test-lead-memory-arrival-check.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/test-lead-memory-freshness-report.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/test-lead-memory-retire.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/test-lead-memory-sync.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/test-runner-workspace-trust.sh	run	.github/workflows/ci.yml, ci.yml	run individually; result in the run table
+scripts/__tests__/test-teardown-lease-contract.test.sh	run	flywheel-cmux-sync, flywheel-cmux-sync.sh, scripts/flywheel-cmux-sync.sh	run individually; result in the run table
+scripts/__tests__/test-teardown-live-watcher-e2e.test.sh	run	flywheel-cmux-sync, flywheel-cmux-sync.sh, scripts/flywheel-cmux-sync.sh	run individually; result in the run table
+scripts/__tests__/test-worktree-removal-contract.test.sh	run	.github/workflows/ci.yml, ci.yml, restart-services.sh	run individually; result in the run table
+scripts/__tests__/tmux-server-rescue-instrumentation.test.sh	run	lib/tmux-server-rescue, scripts/lib/, scripts/lib/tmux-server-rescue.sh, tmux-server-rescue.sh	run individually; result in the run table
+scripts/__tests__/tmux-server-rescue-lock.test.sh	run	_tmux_rescue_bounded_exec, lib/tmux-server-rescue, scripts/lib/, scripts/lib/tmux-server-rescue.sh, tmux-server-rescue.sh	run individually; result in the run table
+scripts/__tests__/tmux-server-rescue-real-tmux.test.sh	run	lib/tmux-server-rescue, tmux-server-rescue.sh	run individually; result in the run table
+scripts/__tests__/tmux-server-rescue.test.sh	run	lib/tmux-server-rescue, scripts/lib/, scripts/lib/tmux-server-rescue.sh, tmux-server-rescue.sh, tmux_rescue_probe	run individually; result in the run table
+scripts/__tests__/update-flywheel-sources.test.sh	run	.github/workflows/ci.yml, ci.yml, scripts/lib/	run individually; result in the run table
+scripts/__tests__/updater-raya-deploy.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/updater-trigger-policy.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/voice-health-alert-route.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/voucher-watch.test.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/__tests__/workflow-startup.test.mjs	run	.github/workflows/ci.yml, ci.yml	run individually; result in the run table
+scripts/ci-ubicloud/__tests__/runner-variable.test.mjs	run	ci.yml	run individually; result in the run table
+scripts/cycle-time/__tests__/wiring.test.mjs	run	.github/workflows/ci.yml, ci.yml	run individually; result in the run table
+scripts/test-cmux-sync-hooks-integration.sh	run	flywheel-cmux-sync, flywheel-cmux-sync.sh	run individually; result in the run table
+scripts/test-cmux-sync.sh	run	_verify_sidebar_once, flywheel-cmux-sync, flywheel-cmux-sync.sh, restart-services.sh, run_verify_agent_visible, scripts/flywheel-cmux-sync.sh	run individually; result in the run table
+scripts/test-deploy.sh	excluded	scripts/lib/	parent-directory-only match: references sibling files under the same directory; contains no changed file name or changed symbol
+scripts/test-restart-services.sh	run	FLYWHEEL_VISIBILITY_CMUX_SYNC, RESTART_VISIBILITY_BATCH, flywheel-cmux-sync, flywheel-cmux-sync.sh, lib/tmux-server-rescue, merge_lead_visibility, restart-services.sh, restart_lead_visibility, resume_admission_best_effort, scripts/flywheel-cmux-sync.sh, scripts/lib/, scripts/lib/tmux-server-rescue.sh, scripts/restart-services.sh, tmux-server-rescue.sh, verify-agents-visible	run individually; result in the run table
+scripts/test-teardown.sh	excluded	flywheel-cmux-sync, flywheel-cmux-sync.sh, restart-services.sh, scripts/flywheel-cmux-sync.sh	QA slot teardown tool, not a test; running it would tear down real 529 rooms

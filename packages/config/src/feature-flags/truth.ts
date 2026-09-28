@@ -193,7 +193,6 @@ const FLY1455_NON_FLAG_ENV = [
 	"FLYWHEEL_SYSTEM_HEALTH_DIR",
 	"FLYWHEEL_TEAMLEAD_PROJECTS_VALIDATOR",
 	"FLYWHEEL_TEAMLEAD_DB",
-	"FLYWHEEL_TMUX_AUDIT_ALLOWLIST",
 	"FLYWHEEL_TMUX_ENSURE_ATTEMPT_TIMEOUT_MS",
 	"FLYWHEEL_TMUX_ENSURE_DEADLINE_MS",
 	"FLYWHEEL_TMUX_MASS_LOSS_MIN",
@@ -357,6 +356,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"FLY-2643 plumbing: packaged restart-wave visibility verifier path override for hermetic tests, not an on/off gate",
 	FLYWHEEL_VISIBILITY_SAMPLE_SECONDS:
 		"FLY-2643 numeric tuning: observation interval for stable agent-visibility identity sampling, not an on/off gate",
+	FLYWHEEL_VISIBILITY_CMUX_SYNC:
+		"FLY-2643/FLY-2965 plumbing: executable path override for flywheel-cmux-sync, read by scripts/lib/agent-visibility.sh (per-Lead cmux half) and scripts/restart-services.sh (restart batch proof; the rollback pin keeps an explicit override), so hermetic tests and a rollback can name the verifier; not an on/off gate",
 	FLYWHEEL_MEETING_NOTES_CONFIG:
 		"config value: trusted meeting-notes YAML path override for hermetic QA and deployment (FLY-2033), not an on/off gate",
 	FLYWHEEL_LEAD_IGNORED_AUTHOR_IDS:
@@ -941,6 +942,9 @@ export const RETIRED_CONFIG_PATHS = [
 ] as const;
 
 export const RETIRED_FLAGS = [
+	// The foreign-socket tmux audit it tuned was deleted: a held descriptor never
+	// proved a tmux listener, and the probe pinned the 2026-09-27 shuttle.
+	{ envVar: "FLYWHEEL_TMUX_AUDIT_ALLOWLIST", retiredBy: "FLY-2965" },
 	{ envVar: "FLYWHEEL_ALERT_COPY_TO_CHANNEL", retiredBy: "FLY-2075" },
 	{ envVar: "FLYWHEEL_FLAG_STORE", retiredBy: "FLY-2102" },
 	{ envVar: "FLYWHEEL_GHOST_GUARD_WAIT_MS", retiredBy: "FLY-2102" },

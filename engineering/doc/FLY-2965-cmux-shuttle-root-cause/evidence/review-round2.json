@@ -1,0 +1,57 @@
+{
+  "reviewVerdict": "CHANGES_REQUESTED",
+  "reviewerVerdict": "CHANGES_REQUESTED",
+  "requestId": "742caa90-6a3b-46e1-9900-bbafe601263c",
+  "round": 2,
+  "findings": [
+    {
+      "id": "single-batch-drops-convergence-wait",
+      "severity": "HIGH",
+      "file": "engineering/doc/FLY-2965-cmux-shuttle-root-cause/plan.md",
+      "line": 76,
+      "title": "R2 只允许跑一批 visible 核对、删除截止时间内的重试，会把 FLY-2643 已裁定为 HIGH 的异步 refresh 竞态重新引入",
+      "detail": "R2 第 4 步写的是「删除deadline内反复retry/sleep2；仅一批，失败交原retry marker下一班」，第 78 行又要求「无第二批次重扫」。但现有重试不是冗余，它是 FLY-2643 R2 HIGH `visibility-barrier-races-async-cmux-refresh` 的修复。FLY-2643 plan.md 第 147-149 行规定：trigger_cmux_refresh 返回只代表 5s/10s 的后台任务已调度，不代表已完成；屏障必须等 subject 真正收敛，subject_drift 只能重试，不能记成缺窗。restart-services.sh 的 barrier 注释也写明：「two samples prove the current observation, not that a freshly restarted Lead has finished booting. Keep retrying within the fleet deadline」。按 R2 的顺序，这一批 visible 核对在 trigger_cmux_refresh 之后只隔「写 deployed-sha + resume + 首轮 carrier（约 30s）」就开始。此时刚被 restart_cmux_watcher 换掉的 watcher 可能还没重建 view，refresh-surfaces 也可能没跑完，Lead TUI 的画面可能还是空的。于是正在收敛的 Lead 会被判成 missing_surface、surface_mismatch 或 subject_drift，计入 leads_failed。后果有四个：(1) 发出误报的 degraded「visible-window missing」告警；(2) 按 R2 保留的 marker 语义，plugin-restart-pending 被留下，下一班在 restart-services.sh:2111 强制重启全舰队 Lead，重启后同样只核一批，可能每班反复；(3) leads-restart-status 写成 degraded，挡住 updater-raya-deploy.sh:1434 的 raya_rebind_flywheel（它要求 healthy/failed=0）；(4) 健康结论出错。计划没有给出「首批就能收敛」的实测依据。建议：保留「共享两次采样」这个性能根因修复，但允许只对未 pass 的子集重新跑批次，每批成本是 2W 而不是 2NW，跑到现有 1320s deadline 为止，并保留原有的最终 carrier 复验预留。代码账本和普通派工已经提前完成，重试只会多占重启锁，而计划已经接受锁最坏被占用 1320s。调用次数验收应改成「每批 2W，批次数有界」，并加一个用例：模拟 refresh 或 watcher 延迟收敛，首批失败、后续批次通过时，结果必须是 pass，且清除 marker。",
+      "findingKey": "single-batch-drops-convergence-wait"
+    },
+    {
+      "id": "admission-resume-exit-retry-nonexistent",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2965-cmux-shuttle-root-cause/plan.md",
+      "line": 82,
+      "title": "计划引用的「普通 lease 恢复失败仍保留 EXIT 幂等重试」机制在代码中不存在",
+      "detail": "restart_on_exit（restart-services.sh:998-1041）只负责终态告警、一致性检查、拆锁和清理临时文件，不调用 resume_admission_best_effort。restart admission receipt 也登记为临时文件，退出时删除（:2051）。resume 失败时，resume_admission_best_effort 只会记录「preserving the brake until TTL」。R2 把 resume 提前到 visible 核对之前，而核对之后最长还有约 1320s。计划应二选一写清楚：要么在核对结束后，若 ADMISSION_PAUSE_LEASE_ID 仍非空，就再调用一次幂等的 resume（resume 成功时已清空 lease id，重复调用安全）；要么明确说明只依赖原有的 1800s TTL。不能引用一个不存在的机制当作兜底。F 或 D 应加一个断言：首次 resume 失败后的行为。",
+      "findingKey": "admission-resume-exit-retry-nonexistent"
+    },
+    {
+      "id": "batch-timeout-status-mapping",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2965-cmux-shuttle-root-cause/plan.md",
+      "line": 68,
+      "title": "批次超时（rc 124）应映射成哪种状态，计划要写明，并与单目标路径的差异一起说明",
+      "detail": "单目标路径里，agent-visibility.sh:589-590 把 cmux-sync 的 rc 124 映射为 fail/visibility_timeout。R2 的批次接口在超时时拿不到 JSON，按第 68 行的规则会整批判成 unproven。两者都会保留 marker，但会进入不同的 visible-window missing / visibility-unproven 统计和告警文案。计划应写明批次超时统一为 unproven，并说明原因，J 验收也要覆盖批次超时。",
+      "findingKey": "batch-timeout-status-mapping"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "admission-resume-exit-retry-nonexistent",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2965-cmux-shuttle-root-cause/plan.md",
+      "line": 82,
+      "title": "计划引用的「普通 lease 恢复失败仍保留 EXIT 幂等重试」机制在代码中不存在",
+      "detail": "restart_on_exit（restart-services.sh:998-1041）只负责终态告警、一致性检查、拆锁和清理临时文件，不调用 resume_admission_best_effort。restart admission receipt 也登记为临时文件，退出时删除（:2051）。resume 失败时，resume_admission_best_effort 只会记录「preserving the brake until TTL」。R2 把 resume 提前到 visible 核对之前，而核对之后最长还有约 1320s。计划应二选一写清楚：要么在核对结束后，若 ADMISSION_PAUSE_LEASE_ID 仍非空，就再调用一次幂等的 resume（resume 成功时已清空 lease id，重复调用安全）；要么明确说明只依赖原有的 1800s TTL。不能引用一个不存在的机制当作兜底。F 或 D 应加一个断言：首次 resume 失败后的行为。",
+      "findingKey": "admission-resume-exit-retry-nonexistent"
+    },
+    {
+      "id": "batch-timeout-status-mapping",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2965-cmux-shuttle-root-cause/plan.md",
+      "line": 68,
+      "title": "批次超时（rc 124）应映射成哪种状态，计划要写明，并与单目标路径的差异一起说明",
+      "detail": "单目标路径里，agent-visibility.sh:589-590 把 cmux-sync 的 rc 124 映射为 fail/visibility_timeout。R2 的批次接口在超时时拿不到 JSON，按第 68 行的规则会整批判成 unproven。两者都会保留 marker，但会进入不同的 visible-window missing / visibility-unproven 统计和告警文案。计划应写明批次超时统一为 unproven，并说明原因，J 验收也要覆盖批次超时。",
+      "findingKey": "batch-timeout-status-mapping"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1"
+}

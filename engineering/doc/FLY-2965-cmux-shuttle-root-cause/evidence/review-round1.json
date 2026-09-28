@@ -1,0 +1,183 @@
+{
+  "reviewVerdict": "CHANGES_REQUESTED",
+  "reviewerVerdict": "CHANGES_REQUESTED",
+  "requestId": "b815ef28-95a7-40e8-8d45-57bcb2d40eea",
+  "round": 1,
+  "findings": [
+    {
+      "id": "patrol-coverage-gap-non-dept-leads",
+      "severity": "HIGH",
+      "file": "engineering/doc/FLY-2965-cmux-shuttle-root-cause/plan.md",
+      "line": 60,
+      "title": "计划指定接手窗口证明的「既有巡检」覆盖不到 7/17 个 Lead，而事故里缺窗的 3 个恰好都在其中",
+      "detail": "计划删掉了 forward 和 rollback 两条路径上的 restart_lead_visibility_barrier，理由是「既有 Lead 巡检是后续证明的责任人」（plan.md:17/26/60/106）。founder-design.html 也对 founder 写了「窗口由既有独立巡检核对」。这个前提与代码不符。(1) scripts/lead-patrol-snapshot.sh:461-463 的巡检只检查自己所属的 Lead。patrol 规则只装给 dept Lead，见 packages/teamlead/scripts/claude-lead.sh:3228-3232（canSpawnRunners=false 的 Lead 不在 patrol-tick 范围内）和 lead-rules-bundle.sh:441-443。(2) 只读核对生产 registry：以下 7 个 Lead 没有 canSpawnRunners，也就没有 patrol：geoforge3d/cos-lead、growth/mufasa-lead、flywheel/flywheel-cos-lead、flywheel/codex-infra-bot-lead、flywheel/claude-infra-bot-lead、tidal-echo/tidal-echo-cos-lead、raya/raya。本次事故中 barrier 抓到的 3 个缺窗 Lead（codex-infra-bot-lead、mufasa-lead、raya，见 incident-log.txt 第 1653 行）全部在这 7 个里。(3) watcher 的 fleet census 覆盖不到 visible 层级：reconcile_lead_roster 只查 tmux 层的窗口是否存在；lead-attach-missing 只针对 claude-private（v2）；对 Codex TUI Lead，ensure_codex_tui_lead_workspace 失败时只打 WARN 日志、不发告警（flywheel-cmux-sync.sh:6386-6388）。所以 Mufasa、codex-infra-bot 这类 Codex TUI 非 dept Lead 的 cmux 窗口丢了，改动后没有任何渠道会报出来。这违背了已随 Lead 规则下发的 packages/teamlead/lead-rules-base/visible-tui-default.md（「安装、激活、班车重启和巡检须核验该窗口；不可见或未通过即未上线」），也违背 lead-rules-bundle.sh:446-448 注释里「companion 的 host visibility gate still applies independently」的合同，以及 CLAUDE.md 中 FLY-398 要求 founder 能在 cmux 看见 Codex Lead 的硬规则。founder 会基于「巡检接手」这个错误前提批准。建议：不要删除 visible 核对，只调整它在收尾中的位置——先做 record_deployed_range、写 deployed-sha、update_project_shas、resume_admission_best_effort，再在同步、有界的前提下执行 barrier 与现有 degraded 告警。这样版本账本和派工恢复不再被窗口核对拖住，而且不引入后台任务；代价是重启锁多持有一段时间，这个取舍要在计划中说明。如果坚持删除：必须为这 7 个 Lead 指定实际存在的 visible 级责任人，或取得 founder 对这 7 个 Lead 失去复核的明确签字，并同步修改 visible-tui-default.md 及相关合同文字。",
+      "findingKey": "patrol-coverage-gap-non-dept-leads"
+    },
+    {
+      "id": "retry-marker-semantics-change",
+      "severity": "MEDIUM",
+      "file": "scripts/restart-services.sh",
+      "line": 4003,
+      "title": "删 barrier 会同时取消「缺窗则保留 plugin-restart-pending，下一班重试 Lead 重启」这条自愈路径，计划没有说明",
+      "detail": "目前 merge_lead_visibility_failures 会把 visibility_failed/unproven 计入 leads_failed。只要 leads_failed>0，$PLUGIN_RESTART_PENDING 就被保留（restart-services.sh:4003-4013），下一班在 restart-services.sh:2111 看到标记后会重试 Lead 重启。计划要求可见性不再计入失败（plan.md:59），这等于撤掉了缺窗 Lead 唯一的自动重试。结合上一条的覆盖缺口，这些 Lead 缺窗后既没人报、也没人重试。计划应写明这一语义变化，并在 D/F 用例里断言标记在各种情况下的行为；lead_restart_retry_marker_should_clear 的 cmux 缺席特例会变成死代码，删除前要按 dead-code 规则列出。",
+      "findingKey": "retry-marker-semantics-change"
+    },
+    {
+      "id": "refresh-background-launchd-teardown",
+      "severity": "MEDIUM",
+      "file": "scripts/restart-services.sh",
+      "line": 2848,
+      "title": "去掉长 barrier 后，trigger_cmux_refresh 延迟 5s/10s 的后台子 shell 可能在 launchd 清理进程组时被杀",
+      "detail": "trigger_cmux_refresh 用 `( sleep 5; flywheel-cmux-sync.sh --refresh ) &` 和 `( sleep 10; ...refresh-surfaces... ) &` 两个后台任务。updater 以 FLYWHEEL_RESTART_FOREGROUND=1 在 launchd job 内同步调用 restart（update-flywheel.sh:726），这些子 shell 与 job 同属一个进程组。仓库自己在 scripts/lib/bounded-run.sh:9-13 记录过：这些 plist 都没有设 AbandonProcessGroup，job 退出时 launchd 会杀掉剩余进程组。FLY-2643 之后，barrier 在 refresh 之后又运行几分钟，客观上保证了 refresh 能跑完；删除后，从 refresh 到退出可能只剩十几秒。--refresh 不是只读操作（会关闭 restored workspace、提交标题迁移，见 trigger_cmux_refresh 的注释），被中途 SIGKILL 可能留下半成品。FLY-2643 之前代码就是这个形状，所以不算全新风险，但计划宣称「保留 trigger_cmux_refresh」，却没有验证它能活到完成。请在 H/I 验收中加一项：检查退出后 /tmp/flywheel-cmux-sync.log 里 refresh 和 refresh-surfaces 是否完整记录。",
+      "findingKey": "refresh-background-launchd-teardown"
+    },
+    {
+      "id": "test-inventory-and-ts-contradiction",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2965-cmux-shuttle-root-cause/plan.md",
+      "line": 96,
+      "title": "计划写「不改 TS」，但 Chunk 1/3 实际需要改 truth.ts；保留测试清单漏了必然变红的用例",
+      "detail": "(1) packages/config/src/feature-flags/truth.ts:196 登记了 FLYWHEEL_TMUX_AUDIT_ALLOWLIST，truth.ts:348-352 登记了 FLYWHEEL_RESTART_VISIBILITY_BOUNDED_RUN/MAX_ATTEMPTS/VERIFIER。Chunk 1 明确要求「删除 truth 登记」，这是 TS 改动，与 plan.md:96 的「计划不改 TS」矛盾。应把 packages/config 的 flag-truth.test.ts、feature-flags-drift.test.ts 列入，并按 policy 跑 vitest related。(2) scripts/__tests__/host-tmux-selection-restart-mounts.test.sh:100-119 要求 restart_lead_visibility_round() 存在，函数删掉后这个测试必然失败，但计划的初查没有列出它。(3) 与 probe 直接相关、已接入 CI（ci.yml:981/984）的 scripts/__tests__/tmux-server-rescue.test.sh 和 tmux-server-rescue-real-tmux.test.sh，以及 tmux-server-rescue-instrumentation.test.sh，应明确列入，而不是留到「实施按发现补全」。",
+      "findingKey": "test-inventory-and-ts-contradiction"
+    },
+    {
+      "id": "tempfile-failure-rc-mapping",
+      "severity": "MEDIUM",
+      "file": "scripts/lib/tmux-server-rescue.sh",
+      "line": 226,
+      "title": "新增的 tempfile/spawn 异常要映射到 125；否则 Python 默认的 rc=1 会被当成 tmux 的「不存在」",
+      "detail": "Python 未捕获异常的退出码是 1。调用方把 tmux 的 rc=1 当作语义结果：has-session 返回 1 会进入 new-session 创建分支（tmux-server-rescue.sh:602-620）；lsof 返回 1 会进入二次枚举（:303）。当前实现下只有 Popen 失败会有这种碰撞；改用 TemporaryFile 后又多了一个失败源（TMPDIR 不可写或磁盘满）。计划只写了「必须非零」，应明确把 tempfile 创建、Popen、读回等异常统一映射为 125，让调用方走现有的 hold_unknown/command_timeout 失败关闭分支，并加一个 TMPDIR 不可写的负例。",
+      "findingKey": "tempfile-failure-rc-mapping"
+    },
+    {
+      "id": "shared-offset-seek-race",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2965-cmux-shuttle-root-cause/plan.md",
+      "line": 46,
+      "title": "seek(0)+read 与对端共享同一文件偏移；应改用 os.pread 读 fstat 快照",
+      "detail": "通过 SCM_RIGHTS 或继承拿到的 fd 与 wrapper 共享同一个 open file description，文件偏移也是共享的。wrapper 执行 seek(0) 会把仍在写的对端的写偏移拨回 0（对端会覆盖已捕获的开头），并发写还会让 read 的起点漂移。建议在收尾时 fstat 取长度 n，用 os.pread(fd, n, 0) 分块回放，不修改共享偏移。",
+      "findingKey": "shared-offset-seek-race"
+    },
+    {
+      "id": "secret-argv-at-rest",
+      "severity": "LOW",
+      "file": "scripts/lib/tmux-server-rescue.sh",
+      "line": 361,
+      "title": "ps axww 的完整 argv（可能含 -e 注入的 token）会从内存管道改为落到磁盘临时文件",
+      "detail": "FLY-1659 记录过生产 tmux client 的 argv 里带有 -e 注入的 API/bot token。_tmux_rescue_server_pids 通过 bounded exec 捕获 `ps axww -o command=`，改用 TemporaryFile 后这些内容会短暂写到 TMPDIR 所在的磁盘（mkstemp 权限 0600，创建后立即 unlink）。风险不大，但计划的安全节应写明，并确认 tempfile 不会回退到 cwd，或者只对这类调用改为有界的管道读取。",
+      "findingKey": "secret-argv-at-rest"
+    },
+    {
+      "id": "status-consumer-sweep-naming",
+      "severity": "LOW",
+      "file": "scripts/lib/updater-raya-deploy.sh",
+      "line": 1434,
+      "title": "leadsRestartStatus==healthy 的语义变窄，消费者 sweep 应点名已知消费者",
+      "detail": "raya_rebind_flywheel（updater-raya-deploy.sh:1434）和 scripts/cutover/FLY-2264/verify-native-tmux-cutover.sh:280 把 healthy/failed==0/total==17 当作门槛。改动后 healthy 不再包含可见性。Raya 自己的 `verify --stage live` 已含 visible 检查（flywheel-lead.sh:1028），所以实际影响有限，但计划的 sweep 应把这两个消费者列出来并写明处置。",
+      "findingKey": "status-consumer-sweep-naming"
+    },
+    {
+      "id": "nonexistent-do-full-restart",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2965-cmux-shuttle-root-cause/plan.md",
+      "line": 35,
+      "title": "计划引用的 do_full_restart 在代码中不存在",
+      "detail": "审计的唯一生产调用点在 deploy_and_verify（restart-services.sh:3682），主入口是文件末尾的 deploy_and_verify，rollback 入口是 rollback_and_restart。Chunk 1 和验收 D 的「调实际 do_full_restart 主函数」应改成真实函数名，现有测试就是用 awk 抽取 deploy_and_verify 来跑的。",
+      "findingKey": "nonexistent-do-full-restart"
+    },
+    {
+      "id": "reserved-session-alert-retirement",
+      "severity": "LOW",
+      "file": "scripts/restart-services.sh",
+      "line": 831,
+      "title": "一并退役的 tmux-qa-residue-flywheel-session severe 告警没有在计划中写明",
+      "detail": "删除审计会同时移除「非生产 socket 使用保留 session 名 flywheel」的 severe 告警，这是 FLY-1659 Fix 6 的设计。事故日志显示 QA slot 1/3 每一班都会触发它，退役有合理性。但计划的损失/回滚节应写明它被退役、没有替代，并在 restart-storm-gate 用例中同步删除对该告警的断言（第 1328-1329 行）。",
+      "findingKey": "reserved-session-alert-retirement"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "retry-marker-semantics-change",
+      "severity": "MEDIUM",
+      "file": "scripts/restart-services.sh",
+      "line": 4003,
+      "title": "删 barrier 会同时取消「缺窗则保留 plugin-restart-pending，下一班重试 Lead 重启」这条自愈路径，计划没有说明",
+      "detail": "目前 merge_lead_visibility_failures 会把 visibility_failed/unproven 计入 leads_failed。只要 leads_failed>0，$PLUGIN_RESTART_PENDING 就被保留（restart-services.sh:4003-4013），下一班在 restart-services.sh:2111 看到标记后会重试 Lead 重启。计划要求可见性不再计入失败（plan.md:59），这等于撤掉了缺窗 Lead 唯一的自动重试。结合上一条的覆盖缺口，这些 Lead 缺窗后既没人报、也没人重试。计划应写明这一语义变化，并在 D/F 用例里断言标记在各种情况下的行为；lead_restart_retry_marker_should_clear 的 cmux 缺席特例会变成死代码，删除前要按 dead-code 规则列出。",
+      "findingKey": "retry-marker-semantics-change"
+    },
+    {
+      "id": "refresh-background-launchd-teardown",
+      "severity": "MEDIUM",
+      "file": "scripts/restart-services.sh",
+      "line": 2848,
+      "title": "去掉长 barrier 后，trigger_cmux_refresh 延迟 5s/10s 的后台子 shell 可能在 launchd 清理进程组时被杀",
+      "detail": "trigger_cmux_refresh 用 `( sleep 5; flywheel-cmux-sync.sh --refresh ) &` 和 `( sleep 10; ...refresh-surfaces... ) &` 两个后台任务。updater 以 FLYWHEEL_RESTART_FOREGROUND=1 在 launchd job 内同步调用 restart（update-flywheel.sh:726），这些子 shell 与 job 同属一个进程组。仓库自己在 scripts/lib/bounded-run.sh:9-13 记录过：这些 plist 都没有设 AbandonProcessGroup，job 退出时 launchd 会杀掉剩余进程组。FLY-2643 之后，barrier 在 refresh 之后又运行几分钟，客观上保证了 refresh 能跑完；删除后，从 refresh 到退出可能只剩十几秒。--refresh 不是只读操作（会关闭 restored workspace、提交标题迁移，见 trigger_cmux_refresh 的注释），被中途 SIGKILL 可能留下半成品。FLY-2643 之前代码就是这个形状，所以不算全新风险，但计划宣称「保留 trigger_cmux_refresh」，却没有验证它能活到完成。请在 H/I 验收中加一项：检查退出后 /tmp/flywheel-cmux-sync.log 里 refresh 和 refresh-surfaces 是否完整记录。",
+      "findingKey": "refresh-background-launchd-teardown"
+    },
+    {
+      "id": "test-inventory-and-ts-contradiction",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2965-cmux-shuttle-root-cause/plan.md",
+      "line": 96,
+      "title": "计划写「不改 TS」，但 Chunk 1/3 实际需要改 truth.ts；保留测试清单漏了必然变红的用例",
+      "detail": "(1) packages/config/src/feature-flags/truth.ts:196 登记了 FLYWHEEL_TMUX_AUDIT_ALLOWLIST，truth.ts:348-352 登记了 FLYWHEEL_RESTART_VISIBILITY_BOUNDED_RUN/MAX_ATTEMPTS/VERIFIER。Chunk 1 明确要求「删除 truth 登记」，这是 TS 改动，与 plan.md:96 的「计划不改 TS」矛盾。应把 packages/config 的 flag-truth.test.ts、feature-flags-drift.test.ts 列入，并按 policy 跑 vitest related。(2) scripts/__tests__/host-tmux-selection-restart-mounts.test.sh:100-119 要求 restart_lead_visibility_round() 存在，函数删掉后这个测试必然失败，但计划的初查没有列出它。(3) 与 probe 直接相关、已接入 CI（ci.yml:981/984）的 scripts/__tests__/tmux-server-rescue.test.sh 和 tmux-server-rescue-real-tmux.test.sh，以及 tmux-server-rescue-instrumentation.test.sh，应明确列入，而不是留到「实施按发现补全」。",
+      "findingKey": "test-inventory-and-ts-contradiction"
+    },
+    {
+      "id": "tempfile-failure-rc-mapping",
+      "severity": "MEDIUM",
+      "file": "scripts/lib/tmux-server-rescue.sh",
+      "line": 226,
+      "title": "新增的 tempfile/spawn 异常要映射到 125；否则 Python 默认的 rc=1 会被当成 tmux 的「不存在」",
+      "detail": "Python 未捕获异常的退出码是 1。调用方把 tmux 的 rc=1 当作语义结果：has-session 返回 1 会进入 new-session 创建分支（tmux-server-rescue.sh:602-620）；lsof 返回 1 会进入二次枚举（:303）。当前实现下只有 Popen 失败会有这种碰撞；改用 TemporaryFile 后又多了一个失败源（TMPDIR 不可写或磁盘满）。计划只写了「必须非零」，应明确把 tempfile 创建、Popen、读回等异常统一映射为 125，让调用方走现有的 hold_unknown/command_timeout 失败关闭分支，并加一个 TMPDIR 不可写的负例。",
+      "findingKey": "tempfile-failure-rc-mapping"
+    },
+    {
+      "id": "shared-offset-seek-race",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2965-cmux-shuttle-root-cause/plan.md",
+      "line": 46,
+      "title": "seek(0)+read 与对端共享同一文件偏移；应改用 os.pread 读 fstat 快照",
+      "detail": "通过 SCM_RIGHTS 或继承拿到的 fd 与 wrapper 共享同一个 open file description，文件偏移也是共享的。wrapper 执行 seek(0) 会把仍在写的对端的写偏移拨回 0（对端会覆盖已捕获的开头），并发写还会让 read 的起点漂移。建议在收尾时 fstat 取长度 n，用 os.pread(fd, n, 0) 分块回放，不修改共享偏移。",
+      "findingKey": "shared-offset-seek-race"
+    },
+    {
+      "id": "secret-argv-at-rest",
+      "severity": "LOW",
+      "file": "scripts/lib/tmux-server-rescue.sh",
+      "line": 361,
+      "title": "ps axww 的完整 argv（可能含 -e 注入的 token）会从内存管道改为落到磁盘临时文件",
+      "detail": "FLY-1659 记录过生产 tmux client 的 argv 里带有 -e 注入的 API/bot token。_tmux_rescue_server_pids 通过 bounded exec 捕获 `ps axww -o command=`，改用 TemporaryFile 后这些内容会短暂写到 TMPDIR 所在的磁盘（mkstemp 权限 0600，创建后立即 unlink）。风险不大，但计划的安全节应写明，并确认 tempfile 不会回退到 cwd，或者只对这类调用改为有界的管道读取。",
+      "findingKey": "secret-argv-at-rest"
+    },
+    {
+      "id": "status-consumer-sweep-naming",
+      "severity": "LOW",
+      "file": "scripts/lib/updater-raya-deploy.sh",
+      "line": 1434,
+      "title": "leadsRestartStatus==healthy 的语义变窄，消费者 sweep 应点名已知消费者",
+      "detail": "raya_rebind_flywheel（updater-raya-deploy.sh:1434）和 scripts/cutover/FLY-2264/verify-native-tmux-cutover.sh:280 把 healthy/failed==0/total==17 当作门槛。改动后 healthy 不再包含可见性。Raya 自己的 `verify --stage live` 已含 visible 检查（flywheel-lead.sh:1028），所以实际影响有限，但计划的 sweep 应把这两个消费者列出来并写明处置。",
+      "findingKey": "status-consumer-sweep-naming"
+    },
+    {
+      "id": "nonexistent-do-full-restart",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2965-cmux-shuttle-root-cause/plan.md",
+      "line": 35,
+      "title": "计划引用的 do_full_restart 在代码中不存在",
+      "detail": "审计的唯一生产调用点在 deploy_and_verify（restart-services.sh:3682），主入口是文件末尾的 deploy_and_verify，rollback 入口是 rollback_and_restart。Chunk 1 和验收 D 的「调实际 do_full_restart 主函数」应改成真实函数名，现有测试就是用 awk 抽取 deploy_and_verify 来跑的。",
+      "findingKey": "nonexistent-do-full-restart"
+    },
+    {
+      "id": "reserved-session-alert-retirement",
+      "severity": "LOW",
+      "file": "scripts/restart-services.sh",
+      "line": 831,
+      "title": "一并退役的 tmux-qa-residue-flywheel-session severe 告警没有在计划中写明",
+      "detail": "删除审计会同时移除「非生产 socket 使用保留 session 名 flywheel」的 severe 告警，这是 FLY-1659 Fix 6 的设计。事故日志显示 QA slot 1/3 每一班都会触发它，退役有合理性。但计划的损失/回滚节应写明它被退役、没有替代，并在 restart-storm-gate 用例中同步删除对该告警的断言（第 1328-1329 行）。",
+      "findingKey": "reserved-session-alert-retirement"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1"
+}

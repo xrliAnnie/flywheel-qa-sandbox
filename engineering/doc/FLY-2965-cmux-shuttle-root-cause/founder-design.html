@@ -1,0 +1,77 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>FLY-2965 班车为什么被窗口检查拖住</title><style>
+  :root { color-scheme: light; }
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,"PingFang SC","Helvetica Neue",sans-serif; line-height:1.55; }
+  .wrap { max-width:960px; margin:0 auto; padding:28px 16px 60px; }
+  h1 { font-size:26px; margin:0 0 6px; }
+  .sub { color:#86868b; font-size:14px; margin-bottom:22px; }
+  .sub code { font-family:"SF Mono",Menlo,monospace; color:#1a365d; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,.06); padding:20px 22px; margin:0 0 18px; border-left:4px solid #007aff; }
+  .card.red { border-left-color:#ff3b30; } .card.amber { border-left-color:#ff9500; } .card.green { border-left-color:#34c759; } .card.purple { border-left-color:#af52de; } .card.gray { border-left-color:#86868b; } .card.navy { border-left-color:#1a365d; }
+  .card h2 { font-size:18px; margin:0 0 10px; }
+  .card h3 { font-size:15px; margin:16px 0 6px; color:#1a365d; }
+  .badge { display:inline-block; font-size:11px; font-weight:600; padding:2px 8px; border-radius:999px; margin-right:6px; vertical-align:middle; }
+  .badge.new { background:#e9f9ee; color:#1f8a3b; } .badge.update { background:#fff4e5; color:#b85c00; } .badge.candidate { background:#f5e9fb; color:#7a2ea8; } .badge.urgent { background:#ffe9e7; color:#c0271d; } .badge.medium { background:#f2f2f7; color:#5c5c61; }
+  p { margin:8px 0; }
+  ul { margin:6px 0 6px 20px; padding:0; } li { margin:4px 0; }
+  ol { margin:6px 0 6px 22px; padding:0; } ol li { margin:6px 0; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:8px 0; }
+  th, td { border-bottom:1px solid #eee; padding:7px 8px; text-align:left; vertical-align:top; }
+  th { background:#fafafa; color:#1a365d; font-weight:600; }
+  code { font-family:"SF Mono",Menlo,monospace; font-size:13px; background:#f2f2f7; padding:1px 5px; border-radius:4px; }
+  .term { border-bottom:1px dotted #86868b; }
+  .note { color:#86868b; font-size:13px; }
+  .diagram { margin:12px 0 4px; padding:10px; background:#fafafa; border:1px solid #e5e5ea; border-radius:10px; overflow-x:auto; }
+  .diagram svg { max-width:100%; height:auto; display:block; margin:0 auto; }
+  .comment { margin-top:14px; border-top:1px dashed #e5e5ea; padding-top:10px; }
+  .comment label { display:block; font-size:13px; color:#86868b; margin-bottom:4px; }
+  .comment textarea { width:100%; min-height:64px; box-sizing:border-box; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font:inherit; font-size:14px; resize:vertical; background:#fff; }
+  .comment textarea:focus { outline:none; border-color:#007aff; box-shadow:0 0 0 3px rgba(0,122,255,.15); }
+  .summary pre { background:#f2f2f7; color:#1d1d1f; white-space:pre-wrap; word-break:break-word; padding:12px 14px; border-radius:8px; font-size:13px; }
+  .btn { background:#007aff; color:#fff; border:0; border-radius:8px; padding:8px 14px; font:inherit; font-size:14px; cursor:pointer; margin:6px 8px 6px 0; }
+  .btn.secondary { background:#f2f2f7; color:#1d1d1f; }
+  .status { font-size:13px; color:#86868b; margin-left:4px; }
+  .chunk { margin:10px 0; padding:10px; border:1px solid #e5e5ea; border-radius:8px; }
+  .quad { display:grid; grid-template-columns:repeat(2,1fr); gap:12px; margin:12px 0 4px; }
+  .q { border-radius:10px; padding:14px 16px; background:#fafafa; border-top:3px solid #007aff; }
+  .q.move { border-top-color:#34c759; } .q.keep { border-top-color:#007aff; } .q.guard { border-top-color:#ff9500; } .q.card4 { border-top-color:#af52de; }
+  .q .lbl { font-size:12px; font-weight:700; letter-spacing:.04em; color:#86868b; text-transform:uppercase; }
+  .q .big { font-size:19px; font-weight:700; margin:4px 0 2px; color:#1d1d1f; }
+  .q .small { font-size:13px; color:#5c5c61; }
+  .legend span { display:inline-block; font-size:12px; padding:1px 8px; border-radius:6px; margin-right:6px; border:1px solid #ccc; }
+  @media (max-width:600px){ .quad { grid-template-columns:1fr; } .card { padding:16px; } }
+</style></head><body><main class="wrap"><h1>班车为什么被窗口检查拖住</h1><p class="sub">FLY-2965 · 2026-09-27 · 根因与实施设计 · R3 · 设计评审已通过</p>
+<section class="card" data-section="一句话"><h2>不乱查入口，不重复扫窗口，也不漏查任何 Lead</h2>
+<p>删掉把窗口应用入口当终端服务器的错误审计，修复“进程退出了却仍等输出管道关闭”的收尾。Lead 是负责各项工作的主管代理；窗口复核保留全部17个Lead，但每批共用两次数据采集，先记部署版本、恢复普通派工，再做复核。</p>
+<div class="comment"><label for="c0">对「一句话」的意见（自动保存在当前浏览器）</label><textarea id="c0" data-key="s0"></textarea></div></section>
+<section class="card" data-section="核心流程"><h2>先完成部署与派工恢复，再核对全部窗口</h2>
+<div class="diagram"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本机图形渲染被系统权限拒绝，两次尝试均失败。Mermaid 是用文字描述流程图的格式。图源已随设计保存；未调用远程渲染服务。</p></div>
+<p>socket 是本机程序互相通话的入口；cmux 是显示工作窗口的应用，tmux 是承载终端会话的服务，它们的通信格式不同。部署成功仍要经过服务身份和语音等原有检查；全部窗口仍由班车复核，已有独立巡检作为补充。</p>
+<div class="comment"><label for="c1">对「核心流程」的意见（自动保存在当前浏览器）</label><textarea id="c1" data-key="s1"></textarea></div></section>
+<section class="card" data-section="根因证据"><h2>不是“再加一个倒计时”</h2>
+<p>日志证实：00:01:06 至 08:54:42 卡在陌生 socket 审计；09:02:58 至 09:20:29 又用于窗口核对。Lead 保存的现场记录表明，挂住的是已有 3 秒时限的 Python 包装器，也就是负责启动命令并收集输出的短程序。隔离实验中，真实 tmux 把输出管道的两份引用交给对端；杀掉客户端后仍等不到管道关闭，直到对端释放引用。这个机制已复现，事故当时 cmux 内部堆栈没有保存。</p>
+<div class="comment"><label for="c2">对「根因证据」的意见（自动保存在当前浏览器）</label><textarea id="c2" data-key="s2"></textarea></div></section>
+<section class="card" data-section="数据模型"><h2>版本先记录，窗口健康仍须真证据</h2>
+<p>版本账本记录服务实际运行的提交；Lead健康继续包含启动和窗口证明。共享采样是同一批只读一次全体窗口清单，再分别判断每个Lead；间隔五秒再采一次。窗口缺失和无法判断仍明确保留，下一班重试标记不丢。</p>
+<table><thead><tr><th>事实</th><th>依据</th><th>不会证明</th></tr></thead><tbody><tr><td>代码已部署</td><td>服务运行身份与版本账本</td><td>所有窗口可见</td></tr><tr><td>Lead 已启动</td><td>启动结果与真实进程身份</td><td>画面不是空壳</td></tr><tr><td>窗口可见</td><td>班车全体复核中的真实窗口、内容与归属</td><td>部署版本已经推进</td></tr></tbody></table>
+<div class="comment"><label for="c3">对「数据模型」的意见（自动保存在当前浏览器）</label><textarea id="c3" data-key="s3"></textarea></div></section>
+<section class="card" data-section="实施取舍"><h2>保留17/17复核与刷新等待，删除重复扫描</h2>
+<p>第一步删除班车对陌生入口的主动查询。第二步用标准库提供的匿名临时文件捕获输出；这种文件关闭后不会留下名字和副本，并按固定长度读取，不等外部管道关闭，也不改动对端的写入位置。第三步共享两次全局窗口采样，保留逐目标身份、归属和可读画面判据，首批全绿立即结束；窗口仍在刷新时，只复核尚未通过的目标，避免把正在恢复误判成故障。临时输出可能含敏感进程参数，必须私有、立即移除文件名且不留下副本。没有采用外加倒计时或新告警来掩盖原因；也不把全部复核交给独立巡检，因为它漏覆盖7个主管代理。</p>
+<div class="comment"><label for="c4">对「实施取舍」的意见（自动保存在当前浏览器）</label><textarea id="c4" data-key="s4"></textarea></div></section>
+<section class="card" data-section="验收与边界"><h2>派工先恢复，但诊断期间仍占着部署锁</h2>
+<p>今天窗口复核精确耗时17分31秒。按现有单次采样与进程核对测量，首批全部通过时规划约2.5至5分钟另加记账与目标画面读取，必须通过隔离复演验证；等待窗口收敛的总预算仍是原22分钟，另有约5秒入口探测和清理。锁是防止两次重启同时改动服务的占用标记。诊断期间仍持有重启锁、父班车互斥锁，因此重叠班次仍会等待；普通派工在收到恢复回执后可继续，独立迁移暂停不受影响。本页设计已通过评审，尚未实现、未重启生产。</p>
+<div class="comment"><label for="c5">对「验收与边界」的意见（自动保存在当前浏览器）</label><textarea id="c5" data-key="s5"></textarea></div></section>
+<section class="card summary" data-section="汇总补充"><h2>页面意见汇总</h2><div class="comment"><label for="extra">其他意见</label><textarea id="extra" data-key="extra"></textarea></div><div id="summaryChunks"></div><button class="btn" id="copyAll">复制全部意见</button><span id="copyStatus" role="status"></span><p class="note">意见用于修订，不代表批准。超过约 1800 字会拆成可分别复制的段落。</p></section></main>
+<script nonce="__CSP_NONCE__">
+(function(){
+const mark='【页面意见汇总】FLY-2965', prefix='fly2965-comments:'+location.pathname+':';
+const areas=Array.from(document.querySelectorAll('textarea[data-key]'));
+function parts(){return areas.filter(a=>a.value.trim()).map(a=>'['+a.closest('[data-section]').dataset.section+'] '+a.value.trim());}
+function chunks(){const text=parts().join('\n');const result=[];const limit=1800-mark.length-1;for(let n=0;n<text.length;n+=limit)result.push(mark+'\n'+text.slice(n,n+limit));return result.length?result:[mark];}
+function fallback(text){const a=document.createElement('textarea');a.value=text;document.body.appendChild(a);a.select();let ok=false;try{ok=document.execCommand('copy');}catch(e){}a.remove();return ok;}
+async function copy(text){let ok=false;try{if(navigator.clipboard?.writeText){await navigator.clipboard.writeText(text);ok=true;}}catch(e){}if(!ok)ok=fallback(text);document.getElementById('copyStatus').textContent=ok?'已复制':'复制失败，请手动选择文本';}
+function render(){const box=document.getElementById('summaryChunks');box.replaceChildren();chunks().forEach((s,i)=>{const pre=document.createElement('pre');pre.textContent=s;const b=document.createElement('button');b.className='btn secondary';b.textContent='复制第 '+(i+1)+' 段';b.addEventListener('click',()=>copy(s));box.append(pre,b);});}
+areas.forEach(a=>{try{a.value=localStorage.getItem(prefix+a.dataset.key)||'';}catch(e){}a.addEventListener('input',()=>{try{localStorage.setItem(prefix+a.dataset.key,a.value);}catch(e){}render();});});
+document.getElementById('copyAll').addEventListener('click',()=>copy(chunks().join('\n\n')));
+render();
+})();
+</script></body></html>
