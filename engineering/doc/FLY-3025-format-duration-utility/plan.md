@@ -66,12 +66,12 @@ export function formatDuration(ms: number): string;
 
 ## 4. 实施步骤
 
-1. 写 `format-duration.test.ts`（T1–T11）→ 跑，确认因模块不存在而红。
+0. 环境准备：`pnpm install --frozen-lockfile`（本 worktree 尚无 node_modules）。安装失败单独记为环境阻塞，**不得**当作红灯证据。
+1. 写 `format-duration.test.ts`（T1–T11）→ 跑，确认红灯原因是目标模块 `../format-duration.js` 不存在（而不是 vitest 缺失）。
 2. 写 `format-duration.ts` 最小实现 → T1–T9、T11 绿。
 3. 加 `index.ts` 导出 → T10 绿。
 4. 验证：
    ```bash
-   pnpm install --frozen-lockfile   # 本 worktree 尚无 node_modules
    pnpm --filter flywheel-core exec vitest run src/__tests__/format-duration.test.ts
    pnpm --filter flywheel-core typecheck
    pnpm exec biome check packages/core/src/format-duration.ts packages/core/src/__tests__/format-duration.test.ts packages/core/src/index.ts
