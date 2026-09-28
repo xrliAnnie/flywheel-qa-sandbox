@@ -920,6 +920,7 @@ describe("RunDispatcher", () => {
 		);
 		expect(makeSeeded().getInflightIssues()).toEqual(new Set());
 		expect(makeSeeded().getInflightCount()).toBe(0);
+		expect(makeSeeded().hasInflightExecution("exec-terminal")).toBe(false);
 	});
 
 	it("keeps the lane occupied when the terminal-session probe is unreadable", () => {
@@ -933,6 +934,7 @@ describe("RunDispatcher", () => {
 		dispatcher.seedInflight("FLY-1775", "implement", "exec-unknown");
 
 		expect(dispatcher.hasInflightForRole("FLY-1775", "implement")).toBe(true);
+		expect(dispatcher.hasInflightExecution("exec-unknown")).toBe(true);
 		expect(warn).toHaveBeenCalledWith(
 			expect.stringContaining("keeping lane occupied"),
 		);

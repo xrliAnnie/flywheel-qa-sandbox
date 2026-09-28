@@ -693,3 +693,17 @@ question `287e07f8-4f93-44ea-b2bb-9e23e7ccbe0e` / request `cec6368e-dddd-42e3-b2
 本批最终定向复验逐个文件运行，共 **9 个具体文件 / 366 pass**：inspector 62、CommDB body-death 18、actions 63、retry route 29、lifecycle closeout 67、execution-body convergence 33、StateStore owner 45、StateStore body-death 28、Codex reown wiring 21。`git diff --check` 为0。受影响 package build 与 claude-runner/flywheel-comm/teamlead typecheck 均已通过；根 `pnpm lint` 最终退出0，只报告范围外既有 warning。
 
 changed-TS related 证据独立记录：claude-runner 的精确 changed-file related 选择21个文件，759 pass / 2 failed / 2 skipped；仅有两项 `codex-daemon-runtime.test.ts` 真实宿主 `ps` fixture 因 sandbox `spawnSync ps EPERM` 失败，留给529。flywheel-comm 的精确 changed-file related 选择81个文件并 1249 pass。依 `[lead-instruction e9cfb5af-ae02-489f-8d7a-6eb0aeb848a4]` 不重跑会扩张到600+文件的 teamlead related；以本节具体文件、build/typecheck 和精确头 PR CI 交接。没有运行本机整包/整仓 suite，不把相关测试或 lint 冒称 full CI、QA 或真机证明。
+
+### R4 代码复审第 2 轮修订
+
+question `9198cd20-beba-4e94-8e2e-68a2051866ab` / request `3fb5bd07-b2af-45d5-8bc6-f63681816afa` 在精确头 `d9b78db25925c0fbc73f7d7274b16e12dd417d71` 返回 `CHANGES_REQUESTED`。本批只处理唯一阻塞 HIGH `legacy-owner-normal-exit-marked-failed`；其余 MEDIUM/LOW 保持 advisory，不扩张本单。
+
+legacy 死亡授权现在满足三个同时条件：StateStore 状态仍为 `running`、CommDB 尚未记录 adapter 正常完成、进程内没有该 execution 的 Blueprint promise。`awaiting_review`、`approved_to_ship`、`ship_parked` 由 DecisionLayer 所有，身体退出后保持原状态；CommDB 已为 `completed` 的 one-shot adapter 正常退出也保持原结论。只有 Bridge 重启后仍为 running、没有进程内 owner、也没有正常退出记录的 orphan 才沿原 body-death 义务提交 failed 和双账本投影。
+
+异步观察后的最终同步事务再次检查 exact execution 的 Blueprint ownership、CommDB identity revision/status 以及 StateStore status，关闭“采样时未在飞、提交前 Blueprint 开始或 DecisionLayer 已落账”的竞态。`RetryDispatcher.hasInflightExecution` 先清理可确认 terminal 的旧 entry；读取失败时保留 entry 并 fail closed。生产 composition root 将该 exact-execution fence 注入共同 convergence；离线直接调用若未提供最终授权则拒绝 legacy fail。
+
+因果 TDD：先只加 DecisionLayer 三状态、Blueprint in-flight 与 adapter normal-exit 五个用例，旧实现结果为 **5 RED / 33 pass**；补最小实现后同一文件 **38/38 GREEN**。随后增加最终事务内 ownership 变化负控，最终 `execution-body-convergence.test.ts` **39/39 GREEN**。原 Bridge-restart orphan 正例保留并继续提交 failed，确保修复没有把真正死体改成永久 unknown。
+
+最终相关验证逐个具体文件运行，共 **8 文件 / 351 pass**：execution-body convergence 39、completion-before-death 11、StateStore body-death 28、Codex wiring 22、run-dispatcher 76、tmux process launch 14、Heartbeat body-death 15、workflow-engine-dispatcher 146。字面和直接调用者检索保留这些行为消费者；历史文档、通用路径扫描器、只使用可选接口的 mock-only retry consumers 没有运行时行为变化，记录为排除。依 `[lead-instruction e9cfb5af-ae02-489f-8d7a-6eb0aeb848a4]` 不运行会扩张到600+文件的 TeamLead `vitest related`。
+
+`pnpm --filter "flywheel-teamlead..." build`、`pnpm --filter "...flywheel-teamlead" typecheck` 和根 `pnpm lint` 均退出0；lint 只有26项范围外既有 warning。`git diff --check` 退出0。没有运行本机整包/整仓 suite，也不把这些定向证据冒称 full CI、QA 或529真机证明。

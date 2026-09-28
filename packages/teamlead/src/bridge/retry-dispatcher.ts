@@ -167,6 +167,8 @@ export interface RetryResult {
 export interface IRetryDispatcher {
 	dispatch(req: RetryRequest): Promise<RetryResult>;
 	getInflightIssues(): Set<string>;
+	/** Process-local ownership fence for a specific execution's Blueprint promise. */
+	hasInflightExecution?(executionId: string): boolean;
 	/** FLY-59: Check if a specific issue+role combo is currently inflight */
 	hasInflightForRole(issueId: string, role: string): boolean;
 	stopAccepting(): void;

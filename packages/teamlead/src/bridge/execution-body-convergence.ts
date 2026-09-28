@@ -7,6 +7,8 @@ export interface BodyDeathCommitInput {
 	observedTurnEpoch: number | null;
 	/** Synchronous final read of the managed switch and reowner/OS identity fences. */
 	isCurrent(observation: BodyObservation): boolean;
+	/** Final synchronous fence for non-workflow failure after process-local checks. */
+	isLegacyFailureAuthorized?: () => boolean;
 	markerDir?: string;
 	nowMs: number;
 }
@@ -47,6 +49,8 @@ export interface ExecutionBodyConvergenceDeps {
 	comm: CommDB;
 	observer: ReturnType<typeof createExecutionBodyObserver>;
 	completionBlocksDeath(executionId: string): Promise<boolean>;
+	/** Process-local Blueprint ownership; absent only in direct tests/offline callers. */
+	isExecutionInFlight?(executionId: string): boolean;
 	markerDir?: string;
 	now(): number;
 }
@@ -278,6 +282,36 @@ export async function convergeExecutionBody(
 			deps.store.getWorkflowActor(executionId) !== undefined;
 	if (workflowChanged)
 		return { kind: "deferred", reason: "body_activation_changed" };
+	const legacyScope = initialActivation === undefined;
+	const legacyFailureAuthorized = (): boolean => {
+		if (!legacyScope) return true;
+		try {
+			if (deps.isExecutionInFlight?.(executionId) === true) return false;
+		} catch {
+			return false;
+		}
+		const currentComm = deps.comm.getSessionCloseoutIdentity(executionId);
+		return (
+			currentComm.revision === initial.revision &&
+			currentComm.session?.status !== "completed"
+		);
+	};
+	if (legacyScope) {
+		const currentSession = deps.store.getSession(executionId);
+		if (currentSession?.status !== "running")
+			return { kind: "deferred", reason: "legacy_decision_owned" };
+		try {
+			if (deps.isExecutionInFlight?.(executionId) === true)
+				return { kind: "deferred", reason: "legacy_adapter_active" };
+		} catch {
+			return { kind: "deferred", reason: "legacy_adapter_active" };
+		}
+		if (
+			deps.comm.getSessionCloseoutIdentity(executionId).session?.status ===
+			"completed"
+		)
+			return { kind: "deferred", reason: "legacy_normal_exit" };
+	}
 	const issueId = run?.issue_id ?? deps.store.getSession(executionId)?.issue_id;
 	if (!issueId || issueId !== initialIssueId)
 		return { kind: "deferred", reason: "body_activation_changed" };
@@ -292,6 +326,7 @@ export async function convergeExecutionBody(
 		expectedCommIdentityRevision: initial.revision,
 		observedTurnEpoch: turn?.holder_exec_id === executionId ? turn.epoch : null,
 		isCurrent: deps.observer.isCurrent,
+		isLegacyFailureAuthorized: legacyFailureAuthorized,
 		markerDir: deps.markerDir,
 		nowMs: deps.now(),
 	});

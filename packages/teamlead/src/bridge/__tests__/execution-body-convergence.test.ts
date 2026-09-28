@@ -176,6 +176,62 @@ describe("FLY-2919 body death across StateStore and CommDB", () => {
 			)
 			.run(`activation-${attempt}`, attempt, boundAt);
 	}
+	function seedLegacyExecution(
+		executionId = "legacy-exec",
+		issueId = "FLY-2919-LEGACY",
+	) {
+		store.upsertSession({
+			execution_id: executionId,
+			issue_id: issueId,
+			project_name: "fixture",
+			status: "running",
+			adapter_type: "codex-tmux",
+		});
+		const legacyOwner = {
+			executionId,
+			activationId: null,
+			generation: 1,
+			ownerToken: `owner-${executionId}`,
+		};
+		const lifecycleRevision = store.getLifecycleRevision(executionId);
+		expect(
+			store.executionProcessOwners.claim({
+				...legacyOwner,
+				lifecycleRevision,
+				nowMs: clock,
+				controller: {
+					pid: 300,
+					startIdentity: "legacy-controller",
+					hostBootId: "boot",
+				},
+			}).ok,
+		).toBe(true);
+		const spawn = store.executionProcessOwners.beginSpawn({
+			...legacyOwner,
+			lifecycleRevision,
+			spawnEpoch: 0,
+			nowMs: clock,
+		});
+		if (!spawn.ok) throw new Error(spawn.reason);
+		expect(
+			store.executionProcessOwners.acceptSpawn({
+				...spawn.permit,
+				lifecycleRevision,
+				nowMs: clock,
+				binding: { ...binding, pid: 301, pgid: 301 },
+			}).ok,
+		).toBe(true);
+		comm.registerSession(
+			executionId,
+			"legacy-visible:@1",
+			"fixture",
+			issueId,
+			"lead",
+		);
+		comm.upsertDeclaredState(executionId, "parked", "waiting", clock, null);
+		comm.grantTurn(issueId, executionId, "main", clock);
+		return { executionId, issueId };
+	}
 	it("FLY-2919 settles the current logical activation without changing the physical owner", async () => {
 		const physical = store.executionProcessOwners.get("exec-1")!;
 		reenter();
@@ -231,58 +287,7 @@ describe("FLY-2919 body death across StateStore and CommDB", () => {
 		).not.toContain("exec-1");
 	});
 	it("converges and projects a dead non-workflow owner with no activation", async () => {
-		const executionId = "legacy-exec";
-		const issueId = "FLY-2919-LEGACY";
-		store.upsertSession({
-			execution_id: executionId,
-			issue_id: issueId,
-			project_name: "fixture",
-			status: "running",
-			adapter_type: "codex-tmux",
-		});
-		const legacyOwner = {
-			executionId,
-			activationId: null,
-			generation: 1,
-			ownerToken: "legacy-owner",
-		};
-		const lifecycleRevision = store.getLifecycleRevision(executionId);
-		expect(
-			store.executionProcessOwners.claim({
-				...legacyOwner,
-				lifecycleRevision,
-				nowMs: clock,
-				controller: {
-					pid: 300,
-					startIdentity: "legacy-controller",
-					hostBootId: "boot",
-				},
-			}).ok,
-		).toBe(true);
-		const spawn = store.executionProcessOwners.beginSpawn({
-			...legacyOwner,
-			lifecycleRevision,
-			spawnEpoch: 0,
-			nowMs: clock,
-		});
-		if (!spawn.ok) throw new Error(spawn.reason);
-		expect(
-			store.executionProcessOwners.acceptSpawn({
-				...spawn.permit,
-				lifecycleRevision,
-				nowMs: clock,
-				binding: { ...binding, pid: 301, pgid: 301 },
-			}).ok,
-		).toBe(true);
-		comm.registerSession(
-			executionId,
-			"legacy-visible:@1",
-			"fixture",
-			issueId,
-			"lead",
-		);
-		comm.upsertDeclaredState(executionId, "parked", "waiting", clock, null);
-		comm.grantTurn(issueId, executionId, "main", clock);
+		const { executionId } = seedLegacyExecution();
 
 		const result = await convergeExecutionBody(deps, executionId);
 
@@ -306,6 +311,72 @@ describe("FLY-2919 body death across StateStore and CommDB", () => {
 		expect(
 			store.executionProcessOwners.listObservationCandidates(),
 		).not.toContain(executionId);
+	});
+	it.each(["awaiting_review", "approved_to_ship", "ship_parked"])(
+		"preserves a legacy DecisionLayer-owned %s status after the body exits",
+		async (status) => {
+			const { executionId } = seedLegacyExecution(`legacy-${status}`);
+			store.forceStatus(executionId, status, new Date(clock).toISOString());
+
+			expect(await convergeExecutionBody(deps, executionId)).toEqual({
+				kind: "deferred",
+				reason: "legacy_decision_owned",
+			});
+			expect(store.getSession(executionId)?.status).toBe(status);
+			expect(comm.getSession(executionId)?.status).toBe("running");
+		},
+	);
+	it("defers a dead legacy body while its Blueprint is still in flight", async () => {
+		const { executionId } = seedLegacyExecution("legacy-inflight");
+		const inFlightDeps = {
+			...deps,
+			isExecutionInFlight: (candidate: string) => candidate === executionId,
+		} as ExecutionBodyConvergenceDeps;
+
+		expect(await convergeExecutionBody(inFlightDeps, executionId)).toEqual({
+			kind: "deferred",
+			reason: "legacy_adapter_active",
+		});
+		expect(store.getSession(executionId)?.status).toBe("running");
+		expect(comm.getSession(executionId)?.status).toBe("running");
+	});
+	it("rechecks Blueprint ownership inside the final legacy death transaction", async () => {
+		const { executionId } = seedLegacyExecution("legacy-inflight-race");
+		let reads = 0;
+		const racedDeps = {
+			...deps,
+			isExecutionInFlight: (candidate: string) => {
+				expect(candidate).toBe(executionId);
+				reads += 1;
+				return reads > 1;
+			},
+		} as ExecutionBodyConvergenceDeps;
+
+		expect(await convergeExecutionBody(racedDeps, executionId)).toEqual({
+			kind: "deferred",
+			reason: "legacy_failure_not_authorized",
+		});
+		expect(reads).toBe(2);
+		expect(store.getSession(executionId)?.status).toBe("running");
+		expect(comm.getSession(executionId)?.status).toBe("running");
+	});
+	it("preserves an adapter-recorded normal legacy exit after Bridge restart", async () => {
+		const { executionId } = seedLegacyExecution("legacy-normal-exit");
+		comm.updateSessionStatusIfRunning(executionId, "completed");
+		raw()
+			.prepare(
+				`UPDATE execution_process_owner
+				 SET close_requested=1, owner_drained_at=?, owner_drained_receipt='normal-exit'
+				 WHERE execution_id=?`,
+			)
+			.run(new Date(clock).toISOString(), executionId);
+
+		expect(await convergeExecutionBody(deps, executionId)).toEqual({
+			kind: "deferred",
+			reason: "legacy_normal_exit",
+		});
+		expect(store.getSession(executionId)?.status).toBe("running");
+		expect(comm.getSession(executionId)?.status).toBe("completed");
 	});
 	it("FLY-2919 invalidates an old logical observation during OS capture and resamples the same body", async () => {
 		const original = capture.getMockImplementation()!;

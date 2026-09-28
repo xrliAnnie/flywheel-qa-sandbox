@@ -16892,6 +16892,16 @@ export class StateStore {
 				) {
 					return { ok: false, reason: "body_death_authority_changed" };
 				}
+				if (legacyScope) {
+					if (session.status !== "running")
+						return { ok: false, reason: "legacy_decision_owned" };
+					try {
+						if (input.isLegacyFailureAuthorized?.() !== true)
+							return { ok: false, reason: "legacy_failure_not_authorized" };
+					} catch {
+						return { ok: false, reason: "legacy_failure_not_authorized" };
+					}
+				}
 				if (workflowScope) {
 					const node = this.getWorkflowRunNode(
 						activation!.run_id,

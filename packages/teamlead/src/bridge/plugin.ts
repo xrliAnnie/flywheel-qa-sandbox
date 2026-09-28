@@ -11369,6 +11369,8 @@ export async function startBridge(
 							now: Date.now,
 							completionBlocksDeath: (id) =>
 								heartbeatService.reconcileCompletionBeforeDeath(id),
+							isExecutionInFlight: (id) =>
+								internalDispatcher?.hasInflightExecution?.(id) ?? false,
 						},
 						executionId,
 					),

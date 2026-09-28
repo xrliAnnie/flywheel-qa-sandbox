@@ -1327,6 +1327,15 @@ export class RetryDispatcher implements IRetryDispatcher {
 		return issueIds;
 	}
 
+	/** Exact execution lookup used to fence legacy body-death convergence. */
+	hasInflightExecution(executionId: string): boolean {
+		this.pruneTerminalInflightEntries();
+		for (const entry of this.inflight.values()) {
+			if (entry.executionId === executionId) return true;
+		}
+		return false;
+	}
+
 	/** FLY-59: Check if a specific issue+role combo is currently inflight */
 	hasInflightForRole(issueId: string, role: string): boolean {
 		return Boolean(this.currentInflightEntry(this.inflightKey(issueId, role)));

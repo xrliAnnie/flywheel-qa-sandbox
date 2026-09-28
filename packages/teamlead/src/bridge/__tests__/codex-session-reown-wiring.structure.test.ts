@@ -256,6 +256,16 @@ describe("FLY-2268 resident receiver wiring", () => {
 		expect(source).toContain("onRecoveryActive: async (executionId)");
 		expect(source).not.toContain("const heartbeatBodyObserver =");
 	});
+	it("fences legacy death while the process-local Blueprint still owns the execution", () => {
+		const wiring = source.slice(
+			source.indexOf("heartbeatService.setExecutionBodyLifecycle({"),
+			source.indexOf("executionBodyRuntime = createExecutionBodyRuntime({"),
+		);
+		expect(wiring).toContain("isExecutionInFlight:");
+		expect(wiring).toContain(
+			"internalDispatcher?.hasInflightExecution?.(id) ?? false",
+		);
+	});
 	it("keeps injected dispatchers and Vitest away from native process capture", () => {
 		expect(source).toMatch(
 			/executionBodyProbesEnabled\s*=\s*!\(\s*opts\?\.startDispatcher \|\| process\.env\.VITEST\s*\)/,
