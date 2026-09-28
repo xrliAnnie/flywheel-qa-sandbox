@@ -57,6 +57,8 @@ FLY-2405 历史起点 `a763e09d-e51e-4366-8746-0e68be4e3492`（09-26 14:50:27Z�
 
 ### 2.3 影响边界与统计口径
 
+Lead 于本轮确认新 run/current policy、同 run/immutable 的边界，并要求 PR 附最近 7 天统计。固定窗口为 `[2026-09-21T15:12Z, 2026-09-28T15:12Z)`：按 project + assignment.basis.issueKey + nodeId 寻找更早不同 run 的 weighted assignment，去重 run/node（兼容双写事件），**91 个新 run、30 张 issue、149 个节点分配进入历史继承路径**（design 24、implement 35、QA 90）。这计的是跨 run 继承，不是“91 个都选错”；同 policy 重复选择也在其中。另在该窗口 309 份带 nodeModels 的持久 start response 中，发现 **8 份响应、9 个节点**出现跨 vendor 的 alias/exact 矛盾（design 2、implement 7）；这是可直接证明的错标签下界，不覆盖同 vendor 旧 binding/effort 错误。历史 models.json 当时每个时点的完整原文未保存，不能把所有继承都归为违反当时配置。下游 PR 必须引用本窗口、去重规则、91/8 的区别，不能只贴总数。
+
 - 机制影响有历史 weighted assignment 的 code/simple_code 新派单，涉及 design、implement、QA；跨类别 code → simple_code 也会继承同名节点。没有历史分配的新单不受此覆盖影响。仅有历史 Codex session、没有 assignment 的单不能据 session 判为受影响。
 - 在审计时 flywheel 的 `model_arm_assigned` 全历史中，design/implement/QA 分别有 30/44/50 张单；其中 design 27、implement 37 张的历史节点 policy 与当前节点 policy 不同。它们是**暴露集合**，不表示全部正在错跑。
 - 将历史 bucket 用当前节点权重计算，implement 候选发生变化的 23 张：FLY-2405、2407、2757、2760、2765、2873、2896、2900、2901、2907、2909、2910、2911、2912、2913、2914、2916、2917、2919、2920、2921、2922、2934。包含已终止/显式覆盖记录，不自动重派。
@@ -133,7 +135,7 @@ classDiagram
 
 修改 `packages/teamlead/src/workflow-menu.ts` 的 projector 和 `packages/teamlead/src/bridge/runs-route.ts` 两个消费者层；如需导出本 run frozen-assignment reader，仅在 `workflow-template-selection.ts` 内复用现有逻辑。在 `packages/teamlead/src/__tests__/workflow-dispatch-resolution.test.ts` 增加：当前菜单 opus + frozen astra assignment → `astra (= gpt-6-astra)`；无 assignment 时 → full ID；effort 更新；缺失/损坏记录拒绝；历史 Opus binding 的回执仍忠实 frozen assignment。
 
-`packages/teamlead/src/__tests__/workflow-menu-routes.test.ts` 加入真实 start-route fixture 的老/新 UUID 请求，捕获返回回执并通过同 execution ID 联接 runtime/session；不得只测 projector。若现有 start 夹具在别的精确测试文件，实施前搜索并记录选择理由，保留本节场景。
+新增 `packages/teamlead/src/__tests__/fly3018-current-model-routing.test.ts`，复用 `runs-route-generalized-pending.test.ts` 的 createBridgeApp/RunnerAdmissionController/start dispatcher 夹具，加载真实 code/simple_code menu seeds，添加老/新 UUID 的 start-route 请求，捕获返回回执并通过同 execution ID 联接 runtime/session；不得只测 projector。菜单 GET 测试 `workflow-menu-routes.test.ts` 不覆盖 start，不拿它冒充此项证据。
 
 新 schema/table/API 大改、全局 registry 重构、quota 策略改造均不需要。
 
@@ -180,7 +182,8 @@ git grep -lF -- 'packages/teamlead/src'
 ```sh
 pnpm --filter flywheel-teamlead exec vitest run src/__tests__/workflow-template-selection.test.ts
 pnpm --filter flywheel-teamlead exec vitest run src/__tests__/workflow-dispatch-resolution.test.ts
-pnpm --filter flywheel-teamlead exec vitest run src/__tests__/workflow-menu-routes.test.ts
+pnpm --filter flywheel-teamlead exec vitest run src/__tests__/fly3018-current-model-routing.test.ts
+pnpm --filter flywheel-teamlead exec vitest run src/__tests__/runs-route-generalized-pending.test.ts
 pnpm --filter flywheel-teamlead exec vitest run src/__tests__/workflow-model-split.test.ts
 pnpm --filter flywheel-teamlead exec vitest run src/__tests__/workflow-menu.test.ts
 pnpm --filter flywheel-teamlead exec vitest related src/workflow-template-selection.ts src/workflow-menu.ts src/bridge/runs-route.ts --run
