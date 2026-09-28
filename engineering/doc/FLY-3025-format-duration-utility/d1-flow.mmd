@@ -1,0 +1,11 @@
+flowchart TD
+    A["调用 formatDuration(ms)"] --> B{"typeof ms 是 number?"}
+    B -- 否 --> E1["抛 TypeError<br/>(字符串 / bigint / undefined / null)"]
+    B -- 是 --> C{"有限、非负、≤ MAX_SAFE_INTEGER?"}
+    C -- 否 --> E2["抛 RangeError<br/>(负数 / NaN / Infinity / 超上限)"]
+    C -- 是 --> D["totalSeconds = floor(ms / 1000)<br/>丢弃不足 1 秒的部分"]
+    D --> F{"totalSeconds === 0?"}
+    F -- 是 --> Z["返回 '0s'"]
+    F -- 否 --> G["拆分: h = ÷3600, m = 余数÷60, s = 余数%60"]
+    G --> H["只保留 > 0 的单位<br/>按 h → m → s 顺序"]
+    H --> I["用单个空格拼接<br/>例: '1h 2m 3s' / '1h 3s'"]

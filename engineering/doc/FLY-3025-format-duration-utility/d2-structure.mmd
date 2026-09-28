@@ -1,0 +1,22 @@
+classDiagram
+    direction LR
+    class format_duration_ts["core/src/format-duration.ts (新增)"] {
+        +formatDuration(ms: number) string
+        精确: 1h 2m 3s
+        非法输入: 抛错
+    }
+    class index_ts["core/src/index.ts (加一行导出)"] {
+        +export formatDuration
+    }
+    class test_ts["core/src/#95;#95;tests#95;#95;/format-duration.test.ts (新增)"] {
+        T1-T11 表驱动用例
+    }
+    class hook_payload_ts["teamlead/.../hook-payload.ts (不动)"] {
+        +formatDurationMs(ms) string
+        有损: 1h 2m
+        非法输入: 返回 —
+    }
+    index_ts --> format_duration_ts : 转出
+    test_ts ..> format_duration_ts : 验证
+    test_ts ..> index_ts : T10 验导出
+    hook_payload_ts .. format_duration_ts : 互不依赖
