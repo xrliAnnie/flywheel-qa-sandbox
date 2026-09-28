@@ -146,12 +146,21 @@ for rel in index.lock HEAD.lock "refs/heads/$BR.lock" "refs/remotes/origin/$BR.l
   [ -e "$L" ] || continue
   [ -n "$(find "$L" -mmin +2 -print 2>/dev/null)" ] || stop "发现 2 分钟内的 $L，可能仍有 git 进程在写：90 秒后重跑 Task 0"
   command -v lsof >/dev/null 2>&1 || stop "无 lsof，无法确认前体 git 进程已退出，不删锁"
-  # lsof 自检：必须能读到本 shell 自己的 cwd，否则「查不到 git 进程」可能只是 lsof 坏了（fail-closed）
-  [ "$(lsof -a -p $$ -d cwd -Fn 2>/dev/null | grep '^n')" = "n$ROOT" ] || stop "lsof 自检失败（读不到本 shell 的 cwd），无法确认前体 git 进程已退出，不删锁"
-  # 列出所有名字以 git 开头的进程的 cwd（lsof 无匹配时退出 1，属正常；上面的自检已证明 lsof 可用，故这里只看输出）
-  cwds=$(lsof -a -c git -d cwd -Fn 2>/dev/null)
-  live=$(printf '%s\n' "$cwds" | awk -v r="$ROOT" '$0 == "n" r || index($0, "n" r "/") == 1' | wc -l | tr -d ' ')
-  [ "$live" = 0 ] || stop "本工作区仍有 $live 个存活的 git 进程（前体子进程未退出）：不删 $L，90 秒后重跑 Task 0；持续存在则 ask Lead"
+  # 单次枚举全部进程的 cwd（必须 exit 0）；同一份输出里必须含本 shell（$$）的记录且 cwd = $ROOT（哨兵，证明本次枚举完整），
+  # 再数其中命令名以 git 开头、cwd 在工作区内的进程。awk 失败 / 输出为空都落到 * 分支 STOP（fail-closed）。
+  procs=$(lsof -d cwd -Fpcn 2>/dev/null) || stop "lsof 枚举失败（exit $?），无法确认前体 git 进程已退出，不删锁"
+  verdict=$(printf '%s\n' "$procs" | awk -v me="$$" -v r="$ROOT" '
+    /^p/ { pid = substr($0, 2); cmd = ""; next }
+    /^c/ { cmd = substr($0, 2); next }
+    /^n/ { d = substr($0, 2)
+           if (pid == me && d == r) sentinel = 1
+           if (cmd ~ /^git/ && (d == r || index(d, r "/") == 1)) live++ }
+    END { if (sentinel) print "LIVE=" (live + 0); else print "NOSENTINEL" }')
+  case "$verdict" in
+    LIVE=0) : ;;
+    LIVE=*) stop "本工作区仍有 ${verdict#LIVE=} 个存活的 git 进程（前体子进程未退出）：不删 $L，90 秒后重跑 Task 0；持续存在则 ask Lead" ;;
+    *) stop "lsof 输出里找不到本 shell 的 cwd 记录（枚举不完整：$verdict），不删 $L" ;;
+  esac
   rm -f "$L" || stop "删除孤儿锁 $L 失败"
   [ ! -e "$L" ] || stop "孤儿锁 $L 仍在"
   echo "已回收前体遗留的孤儿锁：$L"
@@ -172,7 +181,7 @@ cat "$LEDGER"
 git status --short
 ```
 
-**锁回收为什么安全**：删除前同时满足三条——持有 TURN（没有别的体会同时写）、锁已 ≥ 2 分钟未动、`lsof` 实查本工作区内没有任何存活的 git 进程（前体父 shell 被杀但 git 子进程仍在跑时会被这条拦下，Codex R2 实测场景）。本 plan 的所有 git 命令都在工作区根目录执行（§1 首行 `cd`），`flywheel-comm progress` 也以工作区为 cwd 调 git，所以「cwd 在工作区内的 git 进程」覆盖了所有可能持锁的写入者。`git commit` 先把新索引写进 `index.lock` 再原子改名，被杀在改名前 ⇒ 原索引完好，删锁即回到提交前；被杀在改名后 ⇒ 提交已完成，锁已不存在。回收后各 Task 的判据（行在不在、提交在不在、远端头、PR）重新判定该做什么。任何块因 `File exists` / `*.lock` 报错 STOP 时，一律回到 Task 0 重跑（Task 0 负责回收），不要手动删锁。
+**锁回收为什么安全**：删除前同时满足三条——持有 TURN（没有别的体会同时写）、锁已 ≥ 2 分钟未动、**同一次** `lsof -d cwd` 全进程枚举 exit 0 且含本 shell 的哨兵记录（证明这次枚举本身成功完整，Codex R3），并且其中没有任何 cwd 在本工作区内的存活 git 进程（前体父 shell 被杀但 git 子进程仍在跑时会被这条拦下，Codex R2 实测场景）。本 plan 的所有 git 命令都在工作区根目录执行（§1 首行 `cd`），`flywheel-comm progress` 也以工作区为 cwd 调 git，所以「cwd 在工作区内的 git 进程」覆盖了所有可能持锁的写入者。`git commit` 先把新索引写进 `index.lock` 再原子改名，被杀在改名前 ⇒ 原索引完好，删锁即回到提交前；被杀在改名后 ⇒ 提交已完成，锁已不存在。回收后各 Task 的判据（行在不在、提交在不在、远端头、PR）重新判定该做什么。任何块因 `File exists` / `*.lock` 报错 STOP 时，一律回到 Task 0 重跑（Task 0 负责回收），不要手动删锁。
 
 TURN 为 `not-yours` 时是正常等待态：**同一个体** 每 60–90 秒重跑 Task 0，拿到 `yours` 就继续 Task 1（同一个体不重睡）。
 
@@ -419,5 +428,6 @@ RC=$?
 | L2 较新的锁 | 刚创建的 `index.lock` | PASS：Task 0 `STOP: 发现 2 分钟内的 …index.lock`，锁保留不删 |
 | L3 分支 ref 锁残留 | 2 分钟前的 `refs/heads/<BR>.lock` | PASS：Task 0 回收，全流程终态正确 |
 | LG 前体 shell 已死、git 子进程仍在提交（R2） | 真 git：pre-commit 钩子 `sleep 25` 让 `git commit` 挂住，锁 mtime 调成 2 分钟前，跑 Task 0；再 `kill -9` 该 git 进程后从 Task 0 全跑 | PASS：git 存活时 `STOP: 本工作区仍有 1 个存活的 git 进程`，锁保留；git 死后 Task 0 回收孤儿锁，终态正确（5 行/111 字节，claude commit 1 个） |
+| LQ lsof 枚举失败 / 不完整（R3） | 桩 `lsof` 分别：exit 1 + 错误输出；exit 0 但输出不含本 shell 记录；真 lsof 但留一个活 git | PASS：前两种 `STOP: lsof 枚举失败` / `STOP: …找不到本 shell 的 cwd 记录`，第三种 `STOP: 本工作区仍有 1 个存活的 git 进程`；三种都保留锁 |
 
 诚实说明：`sleep 780` 在演练中由桩替代（只记录参数 `780`、不真睡）；真实前台 780 秒由本设计节点自己执行过一次（15:20:59 → 15:33:59 PDT，exit 0）。Task 5（评审）依赖注入的评审门，演练只跑了前置；GitHub 真实 push / PR edit / CI 只在实现节点发生。
