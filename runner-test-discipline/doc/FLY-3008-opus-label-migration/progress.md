@@ -1,13 +1,13 @@
 ---
 issue: FLY-3008
-phase: design
-phaseCursor: 1/4
-updated: 2026-09-28T11:53:26.815Z
-nextStep: Update exact-label assertions first and prove RED
+phase: implement
+phaseCursor: 2/4
+updated: 2026-09-28T11:55:08.936Z
+nextStep: Replace exact production literals, then run focused verification
 chunks: []
 pointers: {}
 ---
 
 # FLY-3008 progress
-**phase**: design (1/4)
-**next**: Update exact-label assertions first and prove RED
+**phase**: implement (2/4)
+**next**: Replace exact production literals, then run focused verification
