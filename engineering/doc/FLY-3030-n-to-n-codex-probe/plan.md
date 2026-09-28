@@ -37,14 +37,19 @@ prog() {
 scope_ok() {
   files=$(git diff --name-only origin/main...HEAD) || stop "git diff 失败，无法判定范围"
   bad=
-  while IFS= read -r f; do
+  # 不用 here-doc / 管道：here-doc 需要临时文件（受限沙箱里会失败而静默跳过循环），管道会丢变量
+  old_ifs=$IFS
+  IFS='
+'
+  set -f
+  for f in $files; do
     case "$f" in
-      ''|README.md|"$DOC"/*|engineering/doc/milestones/FLY-3030.md) : ;;
+      README.md|"$DOC"/*|engineering/doc/milestones/FLY-3030.md) : ;;
       *) bad="$bad $f" ;;
     esac
-  done <<SCOPE_EOF
-$files
-SCOPE_EOF
+  done
+  set +f
+  IFS=$old_ifs
   [ -z "$bad" ] || stop "diff 超出白名单：$bad"
 }
 # 推送：推送前查范围，推送后核对远端头
@@ -197,23 +202,26 @@ if frozen; then
 else
   prog 3/3 "已冻结：评审冻结头 → 精确头 CI → ask --report → complete needs_review（这些步骤不再写账本）"
   mkdir -p engineering/doc/milestones
-  cat > "$MS" <<EOF
-# FLY-3030 implementation milestone
-
-**Issue**: FLY-3030 — [529 合成单·勿派] FLY-2919 真房 N-to-N · Codex 体
-**Date**: $(date +%Y-%m-%d)
-**PR**: https://github.com/$REPO/pull/$PR
-
-## Delivered scope
-
-- README.md 末尾追加一行 \`FLY-2919 N-to-N codex-body probe\`（+1/-0），无其它产品改动。
-
-## Verification evidence
-
-- README 断言：目标行恰 1 次且为最后一行；4 行 / 77 字节；相对 origin/main numstat = 1/0。
-- local-test-policy/v1：选中测试集为空（纯文档改动），未跑任何本地套件；全量证据 = PR 精确头 CI。
-- 代码评审：对本 commit（冻结头）进行，批准绑定该头。
-EOF
+  # 用 printf 写文件（不用 here-doc，理由同 scope_ok）
+  printf '%s\n' \
+    '# FLY-3030 implementation milestone' \
+    '' \
+    '**Issue**: FLY-3030 — [529 合成单·勿派] FLY-2919 真房 N-to-N · Codex 体' \
+    "**Date**: $(date +%Y-%m-%d)" \
+    "**PR**: https://github.com/$REPO/pull/$PR" \
+    '' \
+    '## Delivered scope' \
+    '' \
+    '- README.md 末尾追加一行 `FLY-2919 N-to-N codex-body probe`（+1/-0），无其它产品改动。' \
+    '' \
+    '## Verification evidence' \
+    '' \
+    '- README 断言：目标行恰 1 次且为最后一行；4 行 / 77 字节；相对 origin/main numstat = 1/0。' \
+    '- local-test-policy/v1：选中测试集为空（纯文档改动），未跑任何本地套件；全量证据 = PR 精确头 CI。' \
+    '- 代码评审：对本 commit（冻结头）进行，批准绑定该头。' \
+    > "$MS" || stop "写 milestone 失败"
+  [ "$(head -n 1 "$MS")" = '# FLY-3030 implementation milestone' ] || stop "milestone 内容异常"
+  grep -qF "pull/$PR" "$MS" || stop "milestone 缺 PR 链接"
   git add "$MS"
   git commit -m "docs(FLY-3030): implementation milestone" -- "$MS" || stop "milestone commit failed"
 fi
@@ -334,8 +342,11 @@ RC=$?
 | K complete exit 3 | Task 6 的 `complete` 返回 3，再单跑 Task 6b | PASS：6b 在新 shell 重新推导 PR 并交卷，`ask` 调用 0 次 |
 | L Task 5 前置在新 shell | 冻结后单独执行 §1 + Task 5 前置 | PASS：打印非空 `PR #99 @ <40 位 SHA>`，与 HEAD 一致 |
 | M 未冻结就评审/交卷 | Task 3 后直接跑 Task 5 前置、Task 6 | PASS：两处都 `STOP: 未冻结` |
+| N 无临时文件依赖 | `TMPDIR=/nonexistent` 下跑 `scope_ok`（`CLAUDE.md` 越界输入） | PASS：`STOP: diff 超出白名单： CLAUDE.md` |
+| N2 无临时文件依赖（全流程） | `TMPDIR=/nonexistent` 下跑 Task 0–6 | PASS：milestone 内容完整（含 PR 链接），交卷成功 |
+| J3 带空格的越界文件名 | 仓库根 `x y.txt` | PASS：`STOP: diff 超出白名单： x y.txt` |
 | I 范围扫描失败 | 删掉 `origin/main` 引用后调 `scope_ok` | PASS：`STOP: git diff 失败，无法判定范围` |
 
-Task 5（评审）依赖注入的评审门，演练未覆盖；GitHub 真实 push / PR / CI 也只在实现节点发生。
+诚实说明：R3 指出的「here-doc 在禁止临时文件的沙箱里失败 → 循环被跳过 → 守卫放行」在本机没能复现（macOS `/bin/sh` 即 bash，`TMPDIR` 无效时回退 `/tmp`），但 plan 的代码块已完全不含 here-doc（范围检查用 IFS 换行 + `set -f` 的 `for` 循环，milestone 用 `printf` 写并断言内容），结构上消除了这类依赖。Task 5（评审）依赖注入的评审门，演练未覆盖；GitHub 真实 push / PR / CI 也只在实现节点发生。
 
 演练首轮（R1 前）抓到并修掉一个真问题：完工后换体重跑，Task 2/3 的账本更新会在 milestone 之后再落 commit → 引入 `frozen`/`prog`。README 追加后实测 77 字节、4 行。
