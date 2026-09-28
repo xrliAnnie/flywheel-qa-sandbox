@@ -1,13 +1,14 @@
 ---
 issue: FLY-3023
 phase: implement
-phaseCursor: 3/4
-updated: 2026-09-28T17:05:41.057Z
-nextStep: Run related tests, fixture verifier, lint/build, review, and PR handoff
+phaseCursor: 4/4
+updated: 2026-09-28T17:06:45.281Z
+nextStep: Push final implementation head, obtain code review, open PR, and hand
+  off via needs_review
 chunks: []
 pointers: {}
 ---
 
 # FLY-3023 progress
-**phase**: implement (3/4)
-**next**: Run related tests, fixture verifier, lint/build, review, and PR handoff
+**phase**: implement (4/4)
+**next**: Push final implementation head, obtain code review, open PR, and hand off via needs_review
