@@ -1,13 +1,13 @@
 ---
 issue: FLY-2405
 phase: design
-phaseCursor: 5/6
-updated: 2026-09-28T20:43:15.798Z
-nextStep: founder HTML + publish + complete
+phaseCursor: 6/6
+updated: 2026-09-28T20:45:29.205Z
+nextStep: complete phase_design_complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-2405 progress
-**phase**: design (5/6)
-**next**: founder HTML + publish + complete
+**phase**: design (6/6)
+**next**: complete phase_design_complete
