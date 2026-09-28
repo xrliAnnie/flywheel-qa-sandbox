@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
 phase: design
-phaseCursor: 3/7
-updated: 2026-09-28T22:01:56.993Z
-nextStep: "Revise plan.md: add reconciliation task + reuse existing PR #267"
+phaseCursor: 4/7
+updated: 2026-09-28T22:02:36.850Z
+nextStep: Render Mermaid SVGs, then enter design_review
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: design (3/7)
-**next**: Revise plan.md: add reconciliation task + reuse existing PR #267
+**phase**: design (4/7)
+**next**: Render Mermaid SVGs, then enter design_review
