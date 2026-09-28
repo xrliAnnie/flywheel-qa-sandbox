@@ -1,13 +1,13 @@
 ---
 issue: FLY-2957
 phase: design
-phaseCursor: 1/5
-updated: 2026-09-28T22:15:52.277Z
-nextStep: audit existing design artifacts and exact-plan review evidence
+phaseCursor: 2/5
+updated: 2026-09-28T22:16:38.295Z
+nextStep: confirm current research and plan still match exact design scope
 chunks: []
 pointers: {}
 ---
 
 # FLY-2957 progress
-**phase**: design (1/5)
-**next**: audit existing design artifacts and exact-plan review evidence
+**phase**: design (2/5)
+**next**: confirm current research and plan still match exact design scope
