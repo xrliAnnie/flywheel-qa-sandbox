@@ -1,13 +1,13 @@
 ---
 issue: FLY-3030
-phase: implement
-phaseCursor: 3/3
-updated: 2026-09-28T21:33:47.399Z
-nextStep: 已冻结：评审冻结头 → 精确头 CI → ask --report → complete needs_review（这些步骤不再写账本）
+phase: design
+phaseCursor: 1/5
+updated: 2026-09-28T22:35:38.251Z
+nextStep: round-2 plan rewrite (claude-body + sleep 780), dry-run, design review
 chunks: []
 pointers: {}
 ---
 
 # FLY-3030 progress
-**phase**: implement (3/3)
-**next**: 已冻结：评审冻结头 → 精确头 CI → ask --report → complete needs_review（这些步骤不再写账本）
+**phase**: design (1/5)
+**next**: round-2 plan rewrite (claude-body + sleep 780), dry-run, design review
