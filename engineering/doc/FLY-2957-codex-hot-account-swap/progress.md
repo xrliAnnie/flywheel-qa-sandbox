@@ -1,14 +1,13 @@
 ---
 issue: FLY-2957
 phase: design
-phaseCursor: 4/5
-updated: 2026-09-28T22:17:12.399Z
-nextStep: wait for design review question cddbcbf8-f9a3-4c59-929c-608248ed403d;
-  meanwhile verify founder HTML
+phaseCursor: 5/5
+updated: 2026-09-28T22:30:24.925Z
+nextStep: publish and report approved founder HTML, then complete phase_design_complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-2957 progress
-**phase**: design (4/5)
-**next**: wait for design review question cddbcbf8-f9a3-4c59-929c-608248ed403d; meanwhile verify founder HTML
+**phase**: design (5/5)
+**next**: publish and report approved founder HTML, then complete phase_design_complete
