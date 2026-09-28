@@ -107,13 +107,13 @@
     <div class="card red">
       <div class="tablewrap"><table>
         <tr><th>方案</th><th>结论</th><th>理由</th></tr>
-        <tr><td><b>A. 幂等状态机</b></td><td><span class="badge blue">采用</span></td><td>任意时刻被杀都收敛到同一终态；设计阶段在临时仓演练 5 个场景全部符合预期</td></tr>
+        <tr><td><b>A. 幂等状态机</b></td><td><span class="badge blue">采用</span></td><td>任意时刻被杀都收敛到同一终态；设计阶段在临时仓演练 17 个场景全部符合预期</td></tr>
         <tr><td>B. 直接「追加 → 提交 → 推送」顺序跑</td><td><span class="badge gray">否决</span></td><td>换体重跑会追加第二行、第二个提交，正好污染 FLY-2919 要看的「续干」证据</td></tr>
         <tr><td>C. 重写整个 README</td><td><span class="badge gray">否决</span></td><td>改动面变大、diff 不止一行，没有收益</td></tr>
         <tr><td>E. 先评审、后写 milestone</td><td><span class="badge gray">否决</span></td><td>评审批准绑定的是「当时的最新提交」；之后再提交 milestone 会让批准失效（Codex 设计评审第 1 轮指出）</td></tr>
         <tr><td>D. 用账本文字决定跳过哪步</td><td><span class="badge gray">否决</span></td><td>账本本身也会在半路被杀时停在旧值；git 状态才可靠</td></tr>
       </table></div>
-      <p>演练中抓到并修掉的真问题：完工后换体重跑时，中间步骤的账本更新会在 milestone 之后再落提交 → 加了「冻结后账本更新自动跳过」。Codex 设计评审又指出评审顺序、CI 失败仍交卷、越界文件先推送后才发现等问题，均已改掉并在临时仓演练 10 个场景验证。</p>
+      <p>演练中抓到并修掉的真问题：完工后换体重跑时，中间步骤的账本更新会在 milestone 之后再落提交 → 加了「冻结后账本更新自动跳过」。独立的 Codex 设计评审（gpt-6-astra，最高推理强度）跑了 4 轮才批准：先后指出「评审后又提交导致批准失效」「CI 失败仍交卷」「越界文件先推送后才发现」「跨步骤变量丢失」「受限沙箱里临时文件失败会让守卫静默放行」等问题，全部改掉，并在临时仓演练 17 个场景验证。</p>
       <div class="cbox"><label>对这一节的意见</label><textarea data-k="tradeoffs" data-title="关键取舍与否决方案"></textarea></div>
     </div>
   </div>
