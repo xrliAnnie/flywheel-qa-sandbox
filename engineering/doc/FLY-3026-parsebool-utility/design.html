@@ -72,7 +72,7 @@ button{background:var(--blue);color:#fff;border:0;border-radius:8px;padding:8px 
 <tr><td>全角 <code>"ＴＲＵＥ"</code>、含零宽字符的 <code>"true"</code></td><td><span class="badge b-no">报错</span></td><td>长得像但不是同一个字符</td></tr>
 <tr><td><code>"__proto__"</code> <code>"constructor"</code></td><td><span class="badge b-no">报错</span></td><td>防止 JavaScript 内置名字被误当成合法词</td></tr>
 <tr><td>非文字（空值、数字、对象）</td><td><span class="badge b-no">报错</span></td><td>只收文字；错误信息只说类型、不回显内容</td></tr>
-<tr><td>超长或含换行/引号的垃圾串</td><td><span class="badge b-no">报错</span></td><td>错误信息截断到 32 个字符并转义，防日志被刷屏或伪造</td></tr>
+<tr><td>超长或含换行/引号的垃圾串</td><td><span class="badge b-no">报错</span></td><td>错误信息里最多回显原输入的前 32 个字符（再加省略号），并做转义，防日志被刷屏或伪造</td></tr>
 </table>
 <p class="term">“转义”：把换行、引号这类特殊符号改写成安全的可见形式，避免它们在日志里伪装成别的内容。</p>
 </div>

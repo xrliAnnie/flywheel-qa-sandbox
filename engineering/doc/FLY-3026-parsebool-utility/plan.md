@@ -10,7 +10,7 @@ Issue: FLY-3026 (https://linear.app/geoforge3d/issue/FLY-3026/qa-sbx-fly-2913-c3
 **目标**：在 `flywheel-core` 新增纯函数 `parseBool(text)`，严格白名单把文本转布尔，其余一律抛错。
 
 **非目标**：
-- 不迁移现有 30 处 `process.env.X === "1"` 临时判断（语义各异，迁移会改行为；另立 issue）。
+- 不迁移现有 30 处 `process.env.X === "1"/"true"/"0"` 临时判断（语义各异，迁移会改行为；另立 issue）。
 - 不提供宽松词表（`on/off/y/n`）、不提供非抛错变体（YAGNI；调用方可 try/catch）。
 - 不改任何现有文件的行为；唯一对现有文件的改动是 `packages/core/src/index.ts` 追加一行导出。
 
@@ -28,14 +28,17 @@ export function parseBool(text: string): boolean;
 | 其他任何字符串（含 `""`） | 抛 `TypeError` |
 | 非字符串（`undefined` `null` 数字 布尔 对象） | 抛 `TypeError` |
 
-**单一真相**：一个模块内 `const` 冻结 `Map<string, boolean>`（6 个键），真值与假值都在同一张表里，不存在两份词表。
+**单一真相**：一个模块私有的 `const WORDS: ReadonlyMap<string, boolean>`（6 个键），初始化后不修改、不导出；真值与假值都在同一张表里，不存在两份词表。（不写 `Object.freeze(new Map(...))`——它冻结不了 Map 条目，不是有效保障；不可变性靠“私有 + 不导出 + 只读类型”。）
 
 **错误信息契约**（测试钉住）：
-- 字符串被拒：`parseBool: expected one of true/yes/1/false/no/0, got "<value>"`，其中 `<value>` = 原始输入（未 trim）按**码位**截断到 32 个码位（超出时追加 `…`）后 `JSON.stringify` —— 转义控制字符/引号，防日志注入与刷屏。
-- 非字符串被拒：`parseBool: expected a string, got <typeof>`（`null` 报 `null`），**不回显值**。
+- 字符串被拒：`message = "parseBool: expected one of true/yes/1/false/no/0, got " + JSON.stringify(excerpt)`。
+  - `excerpt` = **原始**输入（未 trim）的前 32 个**码位**（`Array.from(text)`，不拆代理对）；原始输入超过 32 个码位时再追加 `…`。
+  - **“32”只限制转义前的原始摘录**；`…`、`JSON.stringify` 加的一层引号、转义扩展（如 `\u0000` 变 6 个字符）、固定前缀都**不计入**该上限。只有这一层引号（不在前缀里再手写引号）。
+  - 作用：`JSON.stringify` 转义控制字符/引号/换行，防日志注入；32 码位上限防刷屏。
+- 非字符串被拒：`parseBool: expected a string, got <kind>`，`<kind>` = `text === null ? "null" : typeof text`（`typeof null` 是 `"object"`，故显式特判），**不回显值**。
 
 **实现要点**（给 implement 节点）：
-- 用 `toLowerCase()`，**禁止** `toLocaleLowerCase()`（土耳其语 locale 会让 `"TRUE"` 失败）。
+- 用 `toLowerCase()`，不用 `toLocaleLowerCase()`：本 API 的归一化必须与运行环境 locale 无关（结果可复现）。注：对当前 6 个词，tr locale 下也不会出错（词表不含 `I`），这是原则性选择而非已知故障。
 - 先 `typeof text !== "string"` 守卫，再 `trim()`。
 - 查表用 `Map.get` + `=== undefined` 判断未命中（不要用 `in`/对象字面量，避免 `"__proto__"`、`"constructor"` 之类原型键命中）。
 
@@ -52,7 +55,7 @@ export function parseBool(text: string): boolean;
 | E7 | `"ＴＲＵＥ"`（全角）、`"Kes"`（含开尔文符号） | 抛错 | Unicode 折叠陷阱（research §1） |
 | E8 | `"__proto__"` `"constructor"` `"toString"` | 抛错 | 原型键不得命中 |
 | E9 | `undefined` `null` `1` `true` `{}` | 抛错，信息只含 typeof | 非字符串一律拒绝、不回显值 |
-| E10 | 1000 字符的垃圾串、含 `"` 与 `\n` 的串 | 抛错；信息 ≤ 32 码位 + `…`，引号/换行被转义 | 日志安全 |
+| E10 | 32 / 33 码位的串、33 个 emoji、1000 字符垃圾串、含 `"` 与 `\n` 的串、33 个 `\u0000` | 抛错；摘录按 §2 规则（转义前 ≤ 32 码位，超出加 `…`），引号/换行/控制字符被 JSON 转义 | 日志安全 |
 
 ## 4. 测试计划（vitest，TDD 先红后绿）
 
@@ -61,9 +64,14 @@ export function parseBool(text: string): boolean;
 1. `it.each` 真值表：6 个规范词 × 大小写变体 × 空白变体 → 期望布尔（覆盖 E1/E2）。
 2. `it.each` 拒绝表：E3–E8 全部输入 → `toThrow(TypeError)` 且 `toThrow(/expected one of true\/yes\/1\/false\/no\/0/)`。
 3. 非字符串：E9 → `toThrow(TypeError)`，并断言 message 以 `got <typeof>` 结尾、**不含**值本身（例如 `{secret:"x"}` 的 `secret` 不出现）。
-4. 错误信息安全：E10 → 截断长度、`…` 后缀、`\n`/`"` 已转义（`message` 不含裸换行）。
+4. 错误信息契约：E10 用**精确期望串**断言（`toThrow(new TypeError(expected))` 或比对 `err.message`），`expected` 按 §2 公式由测试内的字面量写死，例如：
+   - `"maybe"` → `parseBool: expected one of true/yes/1/false/no/0, got "maybe"`
+   - `'a"b\nc'` → `parseBool: expected one of true/yes/1/false/no/0, got "a\"b\nc"`（message 中是转义后的 `\"` 与 `\n`，不含裸换行）
+   - `"x".repeat(32)` → 摘录完整、**无** `…`；`"x".repeat(33)` → 前 32 个 `x` + `…`
+   - `"😀".repeat(33)` → 前 32 个完整 emoji + `…`（不出现孤立代理项）
+   - `"\u0000".repeat(33)` → 32 个 `\u0000` 转义 + `…`（证明上限按转义前计数）
 5. 导出：`import { parseBool } from "../index.js"` 可用（防漏导出）。
-6. 纯函数性：同一输入多次调用结果一致；词表不可被外部修改（模块不导出词表）。
+6. 纯函数性：同一输入多次调用结果一致；模块只导出 `parseBool`（`Object.keys(await import("../parse-bool.js"))` 等于 `["parseBool"]`），词表不外露。
 
 验收命令：`pnpm --filter flywheel-core test` 全绿、`pnpm --filter flywheel-core typecheck` 通过、`pnpm lint`（biome）对新文件无报错。覆盖率目标：新文件 100% 行/分支。
 
@@ -80,7 +88,6 @@ export function parseBool(text: string): boolean;
 ## 6. 执行步骤（implement 节点）
 
 1. 写测试文件（§4），`pnpm --filter flywheel-core test` 确认**红**（模块不存在）。
-2. 写 `parse-bool.ts` 最小实现 → 绿。
-3. 加 `index.ts` 导出 → 导出测试绿。
-4. typecheck + biome lint；自审错误信息契约。
-5. 提交 `feat(FLY-3026): add parseBool strict boolean text parser`，开 PR。
+2. 写 `parse-bool.ts` 最小实现 **并** 在 `index.ts` 追加导出（同一步；否则导出测试仍红）→ 整个测试文件绿。
+3. typecheck + biome lint；对照 §2 自审错误信息契约。
+4. 提交 `feat(FLY-3026): add parseBool strict boolean text parser`，开 PR。

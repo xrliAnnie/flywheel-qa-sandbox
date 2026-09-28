@@ -8,7 +8,7 @@ Issue: FLY-3026 (https://linear.app/geoforge3d/issue/FLY-3026/qa-sbx-fly-2913-c3
 - `"K".toLowerCase() === "k"`（开尔文符号 K 会折叠成 ASCII `k`）；`"İ".toLowerCase()` 得到 `"i̇"`（两码位）。
 - 本词表只用到字母 `t r u e y s f a l n o` 与数字 `0 1`。已知的"非 ASCII → ASCII"小写折叠只有 `U+212A→k`、`U+0130→i̇`，**都不落在词表字母里**，所以"先 `toLowerCase()` 再精确查表"不会把怪字符误判成合法值。
 - 仍然加一道**测试**钉住：全角 `"ＴＲＵＥ"`、开尔文等必须被拒绝（防将来有人扩词表时踩坑）。
-- 用 `toLowerCase()` 而**不是** `toLocaleLowerCase()`：后者受运行环境 locale 影响（土耳其语 `I→ı`），会让 `"TRUE"` 在 tr 环境下失败。
+- 用 `toLowerCase()` 而**不是** `toLocaleLowerCase()`：后者结果依赖运行环境 locale，本 API 要求 locale 无关、可复现。（设计评审 R1 更正：实测 `"TRUE".toLocaleLowerCase("tr") === "true"`，当前词表不含 `I`，tr locale 下并不会失败；这是原则性选择。）
 
 ## 2. `trim()` 的范围（已实测）
 
@@ -26,4 +26,4 @@ Issue: FLY-3026 (https://linear.app/geoforge3d/issue/FLY-3026/qa-sbx-fly-2913-c3
 
 ## 4. 错误信息里回显输入的安全性
 
-错误信息会带上被拒的输入以便排障，但输入可能来自环境变量/配置文件（外部输入）。处理：`JSON.stringify` 转义控制字符与引号，且**截断到 32 个字符**，防止日志注入与超长刷屏。非字符串输入只回显 `typeof`，不回显值（避免把对象/秘密整坨打进日志）。
+错误信息会带上被拒的输入以便排障，但输入可能来自环境变量/配置文件（外部输入）。处理：`JSON.stringify` 转义控制字符与引号，且原始输入**最多取前 32 个码位**（在转义之前计数，超出加 `…`），防止日志注入与超长刷屏。非字符串输入只回显 `typeof`，不回显值（避免把对象/秘密整坨打进日志）。

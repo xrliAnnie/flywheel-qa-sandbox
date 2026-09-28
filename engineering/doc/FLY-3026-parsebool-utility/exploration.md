@@ -15,7 +15,7 @@ Issue: FLY-3026 (https://linear.app/geoforge3d/issue/FLY-3026/qa-sbx-fly-2913-c3
 |------|------|
 | 现有 `parseBool` / `parseBoolean` / `toBool` / `isTruthy` / `envFlag` 函数 | **0 个**（`grep -rnE "(function\|const) +(parseBool\|parseBoolean\|toBool\|isTruthy\|parseBooleanEnv\|envFlag\|parseFlag)\b" packages --include='*.ts'` 无命中） |
 | 生产代码里临时的 `process.env.X === "1"/"true"/"0"` 判断 | **30 处**（排除 `__tests__`），例如 `packages/edge-worker/src/EdgeWorker.ts:1924` 的 `process.env.CYRUS_WEBHOOK_DEBUG === "true"` |
-| 放置候选 | `packages/core`（`flywheel-core`，零运行时依赖的纯函数/类型集中地；已有 `Semaphore.ts`、`tmux-naming.ts` 这类小工具 + `src/__tests__/*.test.ts` vitest 布局） |
+| 放置候选 | `packages/core`（`flywheel-core`，纯函数/类型集中地（包本身已有 `zod` 等 3 个依赖，但本工具**不新增**依赖）；已有 `Semaphore.ts`、`tmux-naming.ts` 这类小工具 + `src/__tests__/*.test.ts` vitest 布局） |
 
 结论：没有可复用的单一真相；新增一个纯函数即可，不存在"两套词表并存"的冲突。
 
@@ -30,6 +30,6 @@ Issue: FLY-3026 (https://linear.app/geoforge3d/issue/FLY-3026/qa-sbx-fly-2913-c3
 
 | 方案 | 说明 | 取舍 |
 |------|------|------|
-| A. 冻结词表 `Map` + `trim().toLowerCase()` 查表，未命中抛 `TypeError` | 一处词表=单一真相；O(1) | **推荐** |
+| A. 模块私有只读词表 `Map` + `trim().toLowerCase()` 查表，未命中抛 `TypeError` | 一处词表=单一真相；O(1) | **推荐** |
 | B. 正则 `/^(true\|yes\|1)$/i` + `/^(false\|no\|0)$/i` | 同样短 | 两个正则=两份词表，易漂移；`i` 标志对 Unicode 行为需额外推敲 |
 | C. 引入第三方库（如 `yn`、`boolean`） | 现成 | 词表更宽（`on/off/y/n`），与需求"其余一律拒绝"冲突；新增依赖不值 |
