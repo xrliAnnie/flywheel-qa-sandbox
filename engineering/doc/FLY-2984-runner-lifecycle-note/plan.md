@@ -41,11 +41,14 @@ Work is handed in through the normal flow: the runner commits and pushes its cha
 ```zsh
 cd /private/tmp/flywheel-test-slot-2/project-slot-2-FLY-2984
 node "$FLYWHEEL_COMM_CLI" turn          # 必须输出以 "yours" 开头；not-yours 按 TURN WAIT LAW 每 60–90s 轮询，不碰工作树
-git status --porcelain --untracked-files=all -- . ':(exclude)qa-sandbox/fly2925-n2n.md'   # 必须无输出
+L=engineering/doc/FLY-2984-runner-lifecycle-note/progress.md
+git status --porcelain --untracked-files=all -- . ':(exclude)qa-sandbox/fly2925-n2n.md' \
+  ":(exclude)$L" ":(exclude)$L.lock" ":(exclude,glob)$L.tmp-*"                        # 必须无输出
 ```
 
-第二条命令有任何输出（即存在 `qa-sandbox/fly2925-n2n.md` 以外的改动）：停下，`ask` Lead，不自行清理。
-用 `--untracked-files=all` + pathspec 排除，是因为首次写入后未跟踪目录会显示为 `?? qa-sandbox/`，普通 `git status --porcelain` 会把它误判为「其他改动」。`run_step` 开头内置同一检查。
+第二条命令有任何输出（即存在交付文件与本任务账本残留以外的改动）：停下，`ask` Lead，不自行清理。
+被排除的只有两类：交付文件本身；`flywheel-comm progress` 写本任务账本时被杀可能留下的残留——未提交的 `progress.md`（CLI 先 temp+rename 写盘、再 `git add` + `git commit --only`，两者之间不是原子的）、`progress.md.lock`（CLI 自己会回收 >30s 的陈旧锁）、`progress.md.tmp-<pid>`（CLI 的临时文件名）。
+用 `--untracked-files=all` + pathspec 排除，是因为首次写入后未跟踪目录会显示为 `?? qa-sandbox/`，普通 `git status --porcelain` 会把它误判为「其他改动」。`run_step` 开头内置同一检查（`precheck`）。
 
 ### 3.1 定义（粘贴到当前 shell，不写入仓库）
 
@@ -74,17 +77,22 @@ st() {
 }
 state()  { if [[ -f $F ]]; then st "$(cat -- "$F"; printf x)"; else print 0; fi; }            # 工作区
 hstate() { if git cat-file -e "HEAD:$F" 2>/dev/null; then st "$(git show "HEAD:$F"; printf x)"; else print 0; fi; }  # 已提交
-# 账本里 implement 阶段已记到第几步（phase 不是 implement 或无账本 → 0）
+# 已提交（HEAD）账本里 implement 阶段记到第几步；只信已提交版本，工作区里未提交的游标不算
 LEDGER=engineering/doc/FLY-2984-runner-lifecycle-note/progress.md
 ledger_k() {
-  local n=0
-  if [[ -f $LEDGER ]] && grep -qx 'phase: implement' $LEDGER; then
-    n=$(sed -n 's#^phaseCursor: \([0-3]\)/3$#\1#p' $LEDGER | head -1); [[ -n $n ]] || n=0
+  local c n=0
+  if c=$(git show "HEAD:$LEDGER" 2>/dev/null) && print -r -- "$c" | grep -qx 'phase: implement'; then
+    n=$(print -r -- "$c" | sed -n 's#^phaseCursor: \([0-3]\)/3$#\1#p' | head -1); [[ -n $n ]] || n=0
   fi; print $n
+}
+# 工作树里除交付文件与本任务账本残留外不得有任何改动
+precheck() {
+  [[ -z $(git status --porcelain --untracked-files=all -- . ":(exclude)$F" \
+      ":(exclude)$LEDGER" ":(exclude)$LEDGER.lock" ":(exclude,glob)$LEDGER.tmp-*") ]]
 }
 ```
 
-说明：`$(cat; printf x)` 保留结尾换行，避免命令替换吞掉 `\n` 造成误判。工作区状态（`state`）决定要不要写，已提交状态（`hstate`）决定要不要提交，账本（`ledger_k`）只前进不回退——三者分开判断，重跑任一更早的步骤都不会误提交或把游标拉回。
+说明：`$(cat; printf x)` 保留结尾换行，避免命令替换吞掉 `\n` 造成误判。工作区状态（`state`）决定要不要写，已提交状态（`hstate`）决定要不要提交，账本（`ledger_k`）只前进不回退——三者分开判断，重跑任一更早的步骤都不会误提交或把游标拉回。账本只认 HEAD 里已提交的版本：若上次在 `progress` 内部（已写盘、未提交）被杀，`run_step` 开头先把本任务账本的残留（未提交改动、`.lock`、`.tmp-<pid>`）还原到 HEAD，`ledger_k` 仍返回旧值，(c) 随后重新记账。持有 TURN 的只有本 runner，且 `progress` 是同步调用，所以 `run_step` 开头不可能有活着的账本写入者，删锁是安全的。
 
 ### 3.2 单步过程 `run_step k`（k = 1, 2, 3 依次执行）
 
@@ -92,7 +100,12 @@ ledger_k() {
 run_step() {
   local k=$1 s h; s=$(state); h=$(hstate)
   [[ $s == X || $h == X ]] && { print "STOP: $F 内容不匹配任何已知前缀"; return 2; }
-  [[ -z $(git status --porcelain --untracked-files=all -- . ":(exclude)$F") ]] || { print "STOP: 工作树有 $F 以外的改动，ask Lead，不自行清理"; return 2; }
+  precheck || { print "STOP: 工作树有 $F 与本任务账本残留以外的改动，ask Lead，不自行清理"; return 2; }
+  # 账本残留一律还原到 HEAD：未提交的游标不可信，需要的话 (c) 会重新记账
+  if [[ -n $(git status --porcelain --untracked-files=all -- "$LEDGER" "$LEDGER.lock" ":(glob)$LEDGER.tmp-*") ]]; then
+    git restore --staged --worktree -- "$LEDGER" || return 2
+    rm -f -- "$LEDGER.lock" $LEDGER.tmp-*(N)
+  fi
   # (a) 写：工作区还没到第 k 步时，只有恰好停在 k-1 才写
   if (( s < k )); then
     (( s == k - 1 )) || { print "STOP: 需先完成第 $((k-1)) 步"; return 2; }
@@ -104,9 +117,10 @@ run_step() {
     (( h == k - 1 )) || { print "STOP: HEAD 停在第 $h 步"; return 2; }
     [[ $(state) == $k ]] || { print "STOP: 工作区不在第 $k 步（可能越步未提交），ask Lead"; return 2; }
     git add -- "$F"
-    [[ $(git diff --cached --name-only) == "$F" ]] || { print "STOP: 暂存区含其他文件"; return 2; }
+    [[ -z $(git diff --cached --name-only -- . ":(exclude)$F" ":(exclude)$LEDGER") ]] || { print "STOP: 暂存区含其他文件"; return 2; }
     local m; eval "m=\$MSG$k"
-    git commit -q -m "$m" -m 'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>' || return 2
+    # --only：即使账本残留已被暂存，也只提交交付文件
+    git commit -q --only -m "$m" -m 'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>' -- "$F" || return 2
   fi
   # (c) 记账：账本未到 k 才记（progress 会自行路径限定提交 progress.md）
   if (( $(ledger_k) < k )); then
@@ -133,6 +147,7 @@ run_step 1 && run_step 2 && run_step 3
 | 写文件前 | 正常写 → 提交 → 记账 → 推 |
 | 写完未提交 | 更早步骤全部跳过；本步 (a) 跳过（工作区已为 k）→ (b) 提交 |
 | 提交后未记账 | (a)(b) 跳过 → (c) 记账 → (d) 推 |
+| 在 `progress` 内部被杀（账本已写盘/已暂存未提交，可能残留 `.lock` / `.tmp-<pid>`） | precheck 放行这些残留 → 还原到 HEAD → (a)(b) 跳过 → `ledger_k` 读 HEAD 仍为 k-1 → (c) 重新记账 → (d) 推；结束时工作树干净 |
 | 记账后未推 | (a)(b)(c) 跳过 → (d) 推 |
 | 已推 | 全部跳过，零新 commit |
 
@@ -191,7 +206,7 @@ V1–V5 全 PASS 才能进入交卷；任一 FAIL 按 3.2 的 STOP 规则处理�
 
 | 场景 | 结果 |
 |---|---|
-| A 第 2 步写完未提交即被杀，重跑 1→2→3 | 第 1 步不误提交；第 2 步提交正确内容；最终 3 个交付 commit |
+| A 第 3 步写完未提交即被杀，重跑 1→2→3 | 第 1、2 步不误提交；第 3 步提交正确内容；最终 3 个交付 commit |
 | B 第 3 步已提交、远端落后两个 commit，重跑 | 零新 commit，只 fast-forward 推齐 |
 | 全部完成后重跑 1→2→3 | 零新 commit，零 push |
 | 全部完成后单独重跑第 1 步 | 账本仍为 `phaseCursor: 3/3`（不回退） |
@@ -200,8 +215,11 @@ V1–V5 全 PASS 才能进入交卷；任一 FAIL 按 3.2 的 STOP 规则处理�
 | D 暂存了其他文件 | `STOP: 工作树有 … 以外的改动`，rc=2 |
 | E 远端不可读（origin 指向不存在的仓） | `STOP: 远端分支不可读`，rc=2，不打印 OK |
 | F 第 1 步写完即被杀（`qa-sandbox/` 未跟踪） | 裸 `git status --porcelain` 为 `?? qa-sandbox/`；§3.0 的排除式检查为空，续跑正常 |
+| G 第 2 步在 `progress` 内部被杀（账本已写盘并暂存、未提交，残留 `.lock` 与 `.tmp-999`） | precheck 放行、`ledger_k`=1；重跑后账本 HEAD 为 `2/3`，工作树零残留 |
 
-Codex R1（额度中断前）指出三处：§3.0 首写后误判、`ls-remote | cut` 吞掉失败退出码、第 2 段「new session」与 FLY-2925「重启按原会话续接」不符——均已修正，E/F 两个场景即为回归证据。
+Codex R1 第一次调用（额度中断前）指出三处：§3.0 首写后误判、`ls-remote | cut` 吞掉失败退出码、第 2 段「new session」与 FLY-2925「重启按原会话续接」不符——均已修正，E/F 两个场景即为回归证据。
+
+Codex R1 第二次调用（额度恢复后）指出第四处（MEDIUM）：`flywheel-comm progress` 先 temp+rename 写盘、再 `git add` + `git commit --only`，两者之间被杀会留下未提交账本，旧 precheck 会永久拦住续跑。已改为 precheck 放行本任务账本残留、`run_step` 开头还原到 HEAD、`ledger_k` 只读 HEAD、交付提交用 `commit --only`；场景 G 即为回归证据。dry-run 的 `node` 桩也改为与真实 CLI 同序（temp+rename → add → commit --only）。
 
 第一版脚本在场景 A 中把「已写到第 2 步」的工作区内容误提交成 step 1——干跑发现后改为 `state`/`hstate`/`ledger_k` 三分判断，即现行版本。
 
