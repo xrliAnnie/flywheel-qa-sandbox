@@ -1,0 +1,15 @@
+sequenceDiagram
+  autonumber
+  participant R as 实现 runner
+  participant F as 本地文件与提交
+  participant O as 远端分支
+  participant L as 进度账本
+  R->>F: 第 2 步：追加第 2 段
+  Note over R: 被测试房重启（尚未提交）
+  R->>R: 以同一执行身份恢复，先确认 TURN
+  R->>F: 读文件：内容已到第 2 步；读已提交：停在第 1 步
+  R->>F: 第 1 步：全部跳过（不重复提交）
+  R->>F: 第 2 步：跳过写入，只提交
+  R->>L: 记账 2/3
+  R->>O: 推送（普通快进）
+  R->>F: 第 3 步：追加 → 提交 → 记账 → 推送
