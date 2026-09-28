@@ -2,14 +2,15 @@
 issue: FLY-3002
 phase: implement
 phaseCursor: 4/5
-updated: 2026-09-28T09:33:06.435Z
-nextStep: Milestone literal-last commit, push, PR against
-  qa/fly-2405-td-8b6e4bbe-20260928T0925Z, Codex review, complete --route
-  needs_review
+updated: 2026-09-28T09:43:21.110Z
+nextStep: Codex r1 CHANGES_REQUESTED (discovery evidence + milestone PR#). Fix
+  milestone as literal-last, run fly2045 guards, update PR body, Codex r2, then
+  complete --route needs_review --pr 287
 chunks: []
-pointers: {}
+pointers:
+  pr: https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/287
 ---
 
 # FLY-3002 progress
 **phase**: implement (4/5)
-**next**: Milestone literal-last commit, push, PR against qa/fly-2405-td-8b6e4bbe-20260928T0925Z, Codex review, complete --route needs_review
+**next**: Codex r1 CHANGES_REQUESTED (discovery evidence + milestone PR#). Fix milestone as literal-last, run fly2045 guards, update PR body, Codex r2, then complete --route needs_review --pr 287
