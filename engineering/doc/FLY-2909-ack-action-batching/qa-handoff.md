@@ -27,3 +27,8 @@ Claude Lead 与 Codex Lead 都测 OFF、ON、ON→OFF 回退。Codex 房间由 L
 `python3 packages/teamlead/scripts/measure-ack-roundtrips.py --transcript-root /Users/xiaorongli/.claude/projects --since 2026-09-11T22:00:00Z --until 2026-09-25T22:00:00Z --json`
 
 本轮重新扫描 240 个 transcript（较旧扫描新增文件，不改变窗口内计数），零解析错误：ACK-only 返回触发请求 6,811 / 3,293,551,689 tokens；其中随后无工具调用 5,457 / 2,582,466,787 tokens。原始汇总见 baseline.json。脚本统计 Claude transcript；Codex 真房用原生 transcript 的 response/tool id 另行记录，不宣称此脚本支持 Codex。
+
+## attempt 3 追加（Codex 路径返工）
+
+- Codex TUI Lead 的 daemon 与 thread 在 Lead 重启后存活，`baseInstructions` 不会刷新；**不要**用 rollout 里的 base_instructions 判断开关是否生效。ON 的 Codex 证据改看：sidecar 日志 `[lead-ack-action-batching] Codex mailbox turn receipt=1`，以及该 mailbox turn 的用户输入末尾含 `[ACK timing · lead_ack_action_batching]`（OFF 时不含，且输入与 Bridge 批次字节一致）。
+- 判据不变：真 529 Codex Lead 回合里 ACK 与首个处理动作出现在同一模型步骤（同一 `exec` 脚本或同一响应的并行调用），OFF 时拆开；首动作失败、处理中被杀两例仍须不丢信。runner-test-discipline A–D 在新头重跑。
