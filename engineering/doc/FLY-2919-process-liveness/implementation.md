@@ -5,7 +5,7 @@ Issue: FLY-2919 (https://linear.app/geoforge3d/issue/FLY-2919/病根修复-2-体
 
 ## 当前范围与游标
 
-当前执行 `9e96f8f7-d6cd-4dc1-a416-3701b50ed63b`，implement 5/6；最新精确提交与下一步以同目录 progress.md 为准。A–F 的实现与九单本地矩阵已经收敛到代码提交 `a7349581d`，等待同头有效代码复审、PR 与冻结头 CI。没有 QA、529 真机或 handoff 完成声明。以下保留各次检查点历史，文末是最近批次。
+当前执行 `242b29be-4bb5-4db0-86ef-0ffa7385120a`，implement 6/6；最新精确提交与下一步以同目录 progress.md 为准。A–F 与九单本地矩阵在 `6e94f101c` 收敛，代码复审在 `9d11cb48f` APPROVED；随后按 Lead 指令合入 origin/main `55eab0862`（见文末「合 main」小节），合并后的头需要重新做有效代码复审、PR 与冻结头 CI。没有 QA、529 真机或 handoff 完成声明。以下保留各次检查点历史，文末是最近批次。
 
 ## 首次开工范围与游标（历史）
 
@@ -707,3 +707,48 @@ legacy 死亡授权现在满足三个同时条件：StateStore 状态仍为 `run
 最终相关验证逐个具体文件运行，共 **8 文件 / 351 pass**：execution-body convergence 39、completion-before-death 11、StateStore body-death 28、Codex wiring 22、run-dispatcher 76、tmux process launch 14、Heartbeat body-death 15、workflow-engine-dispatcher 146。字面和直接调用者检索保留这些行为消费者；历史文档、通用路径扫描器、只使用可选接口的 mock-only retry consumers 没有运行时行为变化，记录为排除。依 `[lead-instruction e9cfb5af-ae02-489f-8d7a-6eb0aeb848a4]` 不运行会扩张到600+文件的 TeamLead `vitest related`。
 
 `pnpm --filter "flywheel-teamlead..." build`、`pnpm --filter "...flywheel-teamlead" typecheck` 和根 `pnpm lint` 均退出0；lint 只有26项范围外既有 warning。`git diff --check` 退出0。没有运行本机整包/整仓 suite，也不把这些定向证据冒称 full CI、QA 或529真机证明。
+
+### 合 main：origin/main `55eab0862`（执行 242b29be）
+
+按 Lead 2026-09-27 16:5x PDT 指令，在 R4 修订与 `9d11cb48f` APPROVED 之后、请求合并后复审之前合入 origin/main（FLY-2900/2912/2921/2934/2949/2965 等 18 个提交）。上一执行在 quota 撞墙前已解完 12 个冲突文件，Bridge 的 quota checkpoint 把解后的工作树记成单亲 wip 提交 `651778a58`（未推送）；本执行把分支指回 `3eac501b5`、保持解后的索引不动，以 `MERGE_HEAD` 作为第二亲生成真正的合并提交 `c059fe981`（树与 `651778a58` 逐字节相同），避免把 main 的改动伪装成本分支单亲提交。
+
+**文本冲突解法（12 个文件，两侧已批准行为都保留）**
+
+| 文件 | 取舍 |
+|---|---|
+| `HeartbeatService.ts` | 死亡仍只认 `BodyObservation`：不恢复 main 侧的 pane 连续缺失计数、tmux server 探测、`isCodexRecoveryProtected` 宽限与 `readoptParkedPhase`/`enterReconnecting` 旧实现；保留 main 的 FLY-2900 quota standby 豁免（declareZombie / reapOrphans / readopt / crash-reaper suppression 四处）与 FLY-2912 的恢复证据 `recovery` 字段，证据的 probe method/target 改记 `execution_process` 与 execution id。 |
+| `zombie-scan.ts` / `crash-reaper.ts` / `commdb-session-prune.ts` | 保留本分支的 body 输入（`bodyLiveness` / `readBodyLiveness`），不恢复 `targetAlive`/`nowMs`/`probe`/`kept_parked`；并入 main 的 `isQuotaStandby` / `isCodexQuotaStandby` / `isProtectedExecution`（`kept_quota_standby`）。 |
+| `plugin.ts` | import 取并集并按 biome 排序；zombie-scan 接线保留 `bodyLiveness` 并加 main 的 `isQuotaStandby`。 |
+| `StateStore.ts` | import 取并集；本分支的 `getPreAdapterQuiescenceSnapshot` 保留（run-quiescence 仍在用）。 |
+| `feature-flags-registry.test.ts` | 采用 main FLY-2934：删掉多余的 flag 总数断言。 |
+| `fly2567/compatibility.json` | rationale 取并集并追加本单一句；`db.ts` sha256 按合并后源码重算（所有 member 哈希逐一复核一致）。 |
+| HeartbeatService / zombie-reconcile / crash-reaper / StateStore.workflow-rework 测试 | main 的 FLY-2900 用例移植到本分支的 body 测试结构；main 侧已被本分支替换掉的 pane 探针用例不恢复；workflow-rework 测试 import 取并集（后续见语义修正 2）。 |
+
+**合并后的语义修正（文本合并查不出来，构建 / 定向测试暴露）**
+
+1. `HeartbeatService.reconcileCandidateReadoptV2`：main 的 standby 早退仍引用本分支已删除的 `zombieDeadStreak`（构建 TS2339）。只删这一行，早退保留。
+2. `StateStore.validateNeedsLeadReworkQuiescenceTx`：main 的 FLY-2921 删除了 needs_lead rework 的严格静止校验及其调用点（改为「同事务撤销被退回的 activation」，见 4a57feee1 的 C3.6 注释），合并后本分支 B14 修改过的版本无调用方（构建 TS6133）。**取舍**：按 Lead 定的边界「死亡真值归本单、铸替身归 2921 协调器」与本单「换体前置条件随之消失」，采用 FLY-2921 契约，删除该孤儿方法，`StateStore.workflow-rework.test.ts` 中本分支对 “grant-started needs_lead” 用例的扩展恢复为 main 版本（本分支对该文件只有这一处改动）。Lead 已在 question `fff5154c-80d8-4f80-b5b3-61f8a5b201d2` 批准该取舍及下一项的 standby 围栏。
+3. `StateStore.convergeProvenDeadExecution`：main 的 FLY-2900 约定「quota standby 是设计上无进程的 running」，main 在 `replaceWorkflowReworkActor` / `rollbackDeadWorkflowNodeExecution` 的事务里都加了 standby 围栏；本分支新的死亡提交点只在 Heartbeat `declareZombie` 入口检查，采样 await 期间进入 standby 仍会被判 failed。在同步事务内（幂等回执查询之后）加 `codex_quota_standby` 拒绝。因果 RED：`StateStore.body-death.test.ts` 新增 standby / resuming / fallback_prepared 三例，旧代码 3 RED / 28 pass，修后 31/31。
+4. `HeartbeatService.fly2912-quiet-recovery.test.ts`（main 新文件）：用 pane 探针 `probeRunnerProcessLivenessDetailed("test:@1")` 驱动恢复，合并后 11 项失败。FLY-2912 的行为断言（audit-only、证据、开关热切换、合法 park 门、相关告警保持可见）原样保留，只把生产者换成进程观测：注入 `setExecutionBodyLifecycle` 观测器，断言 pane 探针零调用、probeRef 为 `execution_process:<exec>`、payload 不再伪装 `tmux_pane_probe`；“indeterminate/absent pane” 两例改为 “unknown/missing observation”。21/21。
+5. `plugin.ts` import 排序（biome organizeImports 错误）。
+6. `statestore-ghost-reconcile.test.ts`（main FLY-2900 用例）断言已不存在的 `deps.probe`，改断言 `readBodyLiveness` 未被调用；生产侧 standby 早退已正确合入。
+
+**本分支既有缺口（合并前的头上同样会失败，上一执行的选测没覆盖到）**
+
+测试文件被 teamlead `tsconfig` 排除在 tsc 之外，删掉的选项名只会在运行时暴露。额外做了一次把测试文件纳入的仅类型检查，只筛 TS2353/TS2561 且属性名为本分支删除的窗口/探针选项：
+- `fleet-comm-operations.test.ts` 仍喂 `targetAlive`/`nowMs`（两侧都没改过该文件）→ 移植为 `bodyLiveness`，4/4。
+- `commdb-residue-layer-interaction.test.ts` 的 reconcile 调用仍传 `probe`（本分支已换成 `executionAbsence`，只移植了 prune 那一半）→ 改传 `executionAbsence`，5/5。
+- 其余残留 `probe`/`classifyFn`/`lookupTarget`/`cmuxSession` 的文件（commdb-fsm-reconcile、fly1329-parked-veto、codex-terminal-harvest、done-thread-archiver、bot-send-rearchive、close-runner）运行均通过，未扩张改动，列为清理 follow-up。
+
+**新增无消费字段（dead code hygiene，待 Lead 定夺，未删）**：删除 needs_lead 校验后，`RunQuiescenceEvidence.bodyDeathObligationId` / `preAdapterSnapshot` 仍由 `collectRunQuiescenceEvidence` 产出，但 StateStore 已无读取方。
+
+**验证**（逐文件运行，未跑整包/整仓）：
+- 冲突文件相关：按全路径/文件名检索 12 个冲突文件与本批改动文件的测试消费者，保留 **38 个具体文件**（teamlead 35、config 2、claude-runner kill-path-inventory 1）。首轮在合并头上 32 绿、6 红（上文语义修正 2/4 与既有缺口两例，以及 main 的 FLY-2900 prune/zombie-scan 两例仍喂旧 pane 输入）；修后同 38 文件 **1085 pass / 0 fail**。`StateStore.ts` / `plugin.ts` / `HeartbeatService.ts` 父目录命中的数百个通用消费者不逐一纳入（枢纽文件），改由下面的风险面集合覆盖。
+- 语义合并风险面：main 自 merge-base 以来新改、且 import 了本分支改动模块的测试文件，去掉已跑过的 12 个，共 **97 个具体文件**（覆盖 FLY-2900 quota 全族、FLY-2921 rework 全族、FLY-2912 通知、codex-session-reown、CodexTmuxAdapter、Blueprint、flywheel-comm db/cli）。96 个首轮即绿；`statestore-ghost-reconcile.test.ts` 的 main FLY-2900 用例断言已删除的 `deps.probe`，移植为 `readBodyLiveness` 后 27/27。合计 **2824 pass / 0 fail / 3 既有 skip**。
+- 残留选项名但仍通过的 4 个文件单独复跑：codex-terminal-harvest 38、commdb-fsm-reconcile.fly1329-parked-veto 8、done-thread-archiver 57、bot-send-rearchive 10。
+- `scripts/__tests__/fly2102-flag-freeze.test.sh`（引用冲突文件 feature-flags-registry）单独运行 40 PASS / 0 FAIL。
+- 依 `[lead-instruction e9cfb5af-ae02-489f-8d7a-6eb0aeb848a4]` 不运行会扩张到 600+ 文件的 TeamLead `vitest related`。
+- 合并引入 main 新依赖 `werift`：以工作树自身 store 执行 `pnpm install --frozen-lockfile`（lockfile 未变）。其 husky `prepare` 重写了共享 `.git/config` 中既有的 `core.hooksPath=.husky/_`（主仓库 12:01 已写过同值）；生效的 worktree 级 push-guard `core.hooksPath` 与 `extensions.worktreeConfig` 未变。
+- `pnpm --filter "flywheel-teamlead..." build` 退出 0；`pnpm --filter "...flywheel-teamlead" typecheck`（teamlead + voice-codex）退出 0（voice-codex 首次失败是 voice-core 旧 dist，重建其依赖后通过；本分支对 voice 包零改动）；根 biome error 级 0（26 个范围外既有 warning）；`git diff --check` 0。
+
+**仍留给后续门**：精确头 full CI、QA、529 真机与 Discord N-to-N E2E（founder 2026-09-27 追加判据）。本地证据不冒称 full CI。
