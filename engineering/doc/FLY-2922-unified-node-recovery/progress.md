@@ -1,15 +1,15 @@
 ---
 issue: FLY-2922
 phase: design
-phaseCursor: 4/6
-updated: 2026-09-28T18:07:36.169Z
-nextStep: "Current QA@2 failure researched: Bridge PATH exposed raw QA stub to
-  real review. Chosen harness-only identity-selective Claude shim; write and
-  self-review replacement plan."
+phaseCursor: 5/6
+updated: 2026-09-28T18:09:51.131Z
+nextStep: Revised exploration/research/plan now cover QA@2 identity-scoped
+  Claude selector. Self-review placeholders, consistency, exact source mapping
+  and local-test-policy before commit/review.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2922 progress
-**phase**: design (4/6)
-**next**: Current QA@2 failure researched: Bridge PATH exposed raw QA stub to real review. Chosen harness-only identity-selective Claude shim; write and self-review replacement plan.
+**phase**: design (5/6)
+**next**: Revised exploration/research/plan now cover QA@2 identity-scoped Claude selector. Self-review placeholders, consistency, exact source mapping and local-test-policy before commit/review.
