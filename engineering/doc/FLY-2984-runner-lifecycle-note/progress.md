@@ -1,13 +1,15 @@
 ---
 issue: FLY-2984
 phase: design
-phaseCursor: 2/4
-updated: 2026-09-28T02:39:56.140Z
-nextStep: Design review gate blocked on Codex quota; awaiting Lead ruling c0dc9262
+phaseCursor: 3/4
+updated: 2026-09-28T03:01:37.384Z
+nextStep: "Design APPROVED (Codex r3, plan blob 92de0b71; plan header status
+  line predates approval). Publish founder HTML, report Lead, complete
+  phase_design_complete. Implement: follow plan §3."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2984 progress
-**phase**: design (2/4)
-**next**: Design review gate blocked on Codex quota; awaiting Lead ruling c0dc9262
+**phase**: design (3/4)
+**next**: Design APPROVED (Codex r3, plan blob 92de0b71; plan header status line predates approval). Publish founder HTML, report Lead, complete phase_design_complete. Implement: follow plan §3.
