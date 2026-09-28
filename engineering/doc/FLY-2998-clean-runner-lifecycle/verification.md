@@ -1,4 +1,4 @@
-# FLY-2998 干净房间执行流程 — 调研
+# FLY-2998 干净房间执行流程 — 验证记录
 Issue: FLY-2998 (https://linear.app/geoforge3d/issue/FLY-2998/qa-sbx-fly-2925-clean-room-synthetic-runner-lifecycle-task-2)
 日期: 2026-09-28
 基于: plan.md
