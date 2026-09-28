@@ -1,0 +1,13 @@
+flowchart TD
+    A["implement 节点取得 TURN"] --> B{"origin/main 是否前进？<br/>behind > 0"}
+    B -- 是 --> C["普通 merge origin/main<br/>并 push（不 rebase）"]
+    C --> E
+    B -- 否 --> D{"四项定向验证<br/>在 exact head 是否全部通过？"}
+    D -- 全部通过 --> F["不改 notes、不造空 commit<br/>只重新确认 PR #267 证据"]
+    D -- 有失败 --> E["按 Task 1–5 刷新失败区块<br/>docs-only commit + fast-forward push"]
+    E --> G{"gh pr list --head<br/>是否已有 open PR？"}
+    G -- 有 --> H["push 已自动更新 PR<br/>追加一条验证摘要评论"]
+    G -- 无 --> I["新建对 sandbox main 的 PR"]
+    F --> J["更新 progress，交接给 QA"]
+    H --> J
+    I --> J
