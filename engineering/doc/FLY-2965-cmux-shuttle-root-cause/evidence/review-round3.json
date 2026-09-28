@@ -1,0 +1,32 @@
+{
+  "reviewVerdict": "APPROVED",
+  "reviewerVerdict": "APPROVED",
+  "requestId": "c6796e5c-2655-4855-b5a2-832610b8563d",
+  "round": 3,
+  "findings": [
+    {
+      "id": "final-aggregation-drops-confirmed-failure-precedence",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2965-cmux-shuttle-root-cause/plan.md",
+      "line": 78,
+      "title": "R3 按「逐项最新结果」汇总，会让后批 unproven 覆盖先前已确认的缺窗；现有代码保留的是先前的 fail",
+      "detail": "现有 barrier 的最终汇总 awk（restart-services.sh 中 restart_lead_visibility_barrier 末段）规则是：最新结果为 visibility_unproven、而更早批次出现过 visibility_failed 时，输出那条已确认的失败。R3 第 76 行写「保留逐项最新结果」，第 78 行写「最后批次的稳定缺失为fail，持续subject_drift/不可读/跨代为unproven」。设想批次 1 确认缺窗，批次 2 因 batch_timeout 或预算不足变成 unproven，R3 最终会报 unproven，现有逻辑报 fail。两种结果都不会 pass，也都会保留 retry marker，不影响正确性；差别只在 visible-window missing 与 visibility-unproven 的计数和告警文案。建议写明是否沿用原来「确认失败优先于后续 unproven」的规则，并在 J 中加一个对应用例。",
+      "findingKey": "final-aggregation-drops-confirmed-failure-precedence"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "final-aggregation-drops-confirmed-failure-precedence",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2965-cmux-shuttle-root-cause/plan.md",
+      "line": 78,
+      "title": "R3 按「逐项最新结果」汇总，会让后批 unproven 覆盖先前已确认的缺窗；现有代码保留的是先前的 fail",
+      "detail": "现有 barrier 的最终汇总 awk（restart-services.sh 中 restart_lead_visibility_barrier 末段）规则是：最新结果为 visibility_unproven、而更早批次出现过 visibility_failed 时，输出那条已确认的失败。R3 第 76 行写「保留逐项最新结果」，第 78 行写「最后批次的稳定缺失为fail，持续subject_drift/不可读/跨代为unproven」。设想批次 1 确认缺窗，批次 2 因 batch_timeout 或预算不足变成 unproven，R3 最终会报 unproven，现有逻辑报 fail。两种结果都不会 pass，也都会保留 retry marker，不影响正确性；差别只在 visible-window missing 与 visibility-unproven 的计数和告警文案。建议写明是否沿用原来「确认失败优先于后续 unproven」的规则，并在 J 中加一个对应用例。",
+      "findingKey": "final-aggregation-drops-confirmed-failure-precedence"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1",
+  "frozenHeadSha": null,
+  "planSha256": "6fd8ec666778db5b066a91a0f125de111edd865645d8ce4b94f830cee6907984"
+}

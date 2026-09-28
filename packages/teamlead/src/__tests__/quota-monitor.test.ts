@@ -3517,6 +3517,46 @@ it("keeps retired monitor-only passes scheduled and reports invalid configuratio
 	expect(h.verifyCandidate).not.toHaveBeenCalled();
 });
 
+describe("settleSuccessfulSwitch extraction (FLY-2896)", () => {
+	it("delivers the blocked-episode recovery on the state the local revive scan returned", async () => {
+		const h = harness();
+		h.deps.state = {
+			...emptyQuotaMonitorState(4),
+			nextPaneScanDueAt: NOW,
+			blockedEpisode: {
+				scope: "5h",
+				startedAt: new Date(NOW - 60_000).toISOString(),
+				lastConfirmedAlertAt: new Date(NOW - 60_000).toISOString(),
+				alertCount: 1,
+				blockedRound: 1,
+				recoveryRound: 0,
+				activeDelivery: null,
+			},
+		};
+		h.usages.set("secret-shopping", usage(95, 20));
+		// The real revive scan structuredClone()s its input.
+		h.deps.reviveSnapshot = vi.fn(async (state) => ({
+			state: { ...structuredClone(state), lastPollAt: 12_345 },
+			summary: { revived: 0, pending: 0, loginExpired: 0 },
+		}));
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("switched");
+		expect(h.alerts.map((alert) => alert.kind)).toContain(
+			"quota_blocked_recovered",
+		);
+		// Recovery confirmed on the replacement object: the episode is closed there.
+		expect(result.state.blockedEpisode).toBeNull();
+		expect(result.state.lastPollAt).toBe(12_345);
+		expect(result.state.reviveEpoch).toMatchObject({
+			open: true,
+			sourceAccount: "shopping",
+			generation: 5,
+		});
+	});
+});
+
 describe("FLY-2830 — sweep request mode", () => {
 	const A = "3f2a8c1e-4b5d-4e6f-8a9b-0c1d2e3f4a5b";
 	const B = "9e8d7c6b-5a49-4382-9716-0a1b2c3d4e5f";

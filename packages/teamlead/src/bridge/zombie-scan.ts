@@ -42,6 +42,8 @@ export interface ZombieScanInputs {
 		executionId: string,
 		projectName: string,
 	) => Promise<"alive" | "dead" | "unknown">;
+	/** FLY-2900: parked in Codex quota standby — never a zombie finding. */
+	isQuotaStandby?: (executionId: string) => boolean;
 }
 
 const TERMINAL_STATUSES = new Set([
@@ -60,6 +62,7 @@ export async function scanZombies(
 ): Promise<ZombieFinding[]> {
 	const out: ZombieFinding[] = [];
 	for (const row of inputs.commRunning) {
+		if (inputs.isQuotaStandby?.(row.execution_id) === true) continue;
 		const session = inputs.storeSession(row.execution_id);
 		if (!session) {
 			out.push({

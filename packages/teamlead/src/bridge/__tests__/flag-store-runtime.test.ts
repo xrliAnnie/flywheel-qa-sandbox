@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveAllFlags, resolveSkillFrameworkMode } from "flywheel-config";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StateStore } from "../../StateStore.js";
 import * as FlagRuntime from "../flag-store-runtime.js";
 import {
@@ -17,10 +17,13 @@ import {
 	storeCodexLeadThreadRotationEnabled,
 	storeCodexMemoryDistillEnabled,
 	storeCodexQuotaAutoSwitchEnabled,
+	storeCodexQuotaClaudeFallbackEnabled,
+	storeCodexQuotaStandbyEnabled,
 	storeCodexTerminalReapEnabled,
 	storeDatabaseArchiveEnabled,
 	storeDocFlowEnabled,
 	storeFlagRetirementScanEnabled,
+	storeLeadAlertWakeDedupEnabled,
 	storeLoopProfilerEnabled,
 	storeNodeDwellEnabled,
 	storeNodeDwellThresholdHours,
@@ -30,6 +33,7 @@ import {
 	storePipelineWorkKindEnabled,
 	storePonytailEnabled,
 	storeProofshotEnabled,
+	storeReviewEarlyStopEnabled,
 	storeReviewQuotaAutoRetryEnabled,
 	storeRunnerMemoryMode,
 	storeShippedHuskForceEnabled,
@@ -304,6 +308,44 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			expect(storeCodexQuotaAutoSwitchEnabled(runtime)).toBe(rawTo === null);
 		}
 	});
+	it("FLY-2900 defaults Codex quota standby and Claude fallback on and observes store off immediately", () => {
+		const runtime = initializeFlagStore(store, {});
+		for (const [name, read] of [
+			["codex_quota_standby", storeCodexQuotaStandbyEnabled],
+			["codex_quota_claude_fallback", storeCodexQuotaClaudeFallbackEnabled],
+		] as const) {
+			expect(read(runtime)).toBe(true);
+			expect(
+				store.applyFlagValueChange({
+					name,
+					rawTo: "0",
+					expectedRevision: store.getFlagValueRow(name)!.revision,
+					actor: "bridge-local-operator",
+					reason: "test quota standby toggle",
+				}),
+			).toMatchObject({ ok: true });
+			expect(read(runtime)).toBe(false);
+		}
+	});
+
+	it.each(["0", "off", "false"])(
+		"FLY-2911 early stop defaults on and observes rollback %s without restart",
+		(rawTo) => {
+			const runtime = initializeFlagStore(store, {});
+			expect(storeReviewEarlyStopEnabled(runtime)).toBe(true);
+			expect(
+				store.applyFlagValueChange({
+					name: "review_early_stop",
+					rawTo,
+					expectedRevision:
+						store.getFlagValueRow("review_early_stop")!.revision,
+					actor: "bridge-local-operator",
+					reason: "rollback review early retirement",
+				}),
+			).toMatchObject({ ok: true });
+			expect(storeReviewEarlyStopEnabled(runtime)).toBe(false);
+		},
+	);
 	it("FLY-2177 keeps quota retry default-on and observes an off write without restart", () => {
 		const runtime = initializeFlagStore(store, {});
 		expect(storeReviewQuotaAutoRetryEnabled(runtime)).toBe(true);
@@ -383,6 +425,7 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 	it.each([
 		["codex_memory_distill", storeCodexMemoryDistillEnabled],
 		["codex_lead_thread_rotation", storeCodexLeadThreadRotationEnabled],
+		["lead_alert_wake_dedup", storeLeadAlertWakeDedupEnabled],
 	] as const)(
 		"%s reads at call time with project, star, default precedence",
 		(name, reader) => {
@@ -415,6 +458,53 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			expect(store.getFlagValueRow(name, "flywheel")).toBeUndefined();
 		},
 	);
+
+	it.each(["", "true", "2", null])(
+		"disables alert wake dedup for invalid explicit raw value %j",
+		(raw) => {
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+			try {
+				for (const invalidScope of ["flywheel", "*"]) {
+					expect(
+						storeLeadAlertWakeDedupEnabled(
+							{
+								store: {
+									getFlagValueRow: (_name, scope) =>
+										scope === invalidScope
+											? { hasOverride: true, raw }
+											: undefined,
+								},
+							},
+							"flywheel",
+						),
+					).toBe(false);
+				}
+			} finally {
+				warn.mockRestore();
+			}
+		},
+	);
+
+	it("disables alert wake dedup when the flag store read fails", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			expect(
+				storeLeadAlertWakeDedupEnabled(
+					{
+						store: {
+							getFlagValueRow: () => {
+								throw new Error("flag store unavailable");
+							},
+						},
+					},
+					"flywheel",
+				),
+			).toBe(false);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
 	it("keeps database archive default-on and observes a project off write", () => {
 		const runtime = initializeFlagStore(store, {});
 		expect(storeDatabaseArchiveEnabled(runtime, "flywheel")).toBe(true);

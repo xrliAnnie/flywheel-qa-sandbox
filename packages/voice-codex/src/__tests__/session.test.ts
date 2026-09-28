@@ -37,6 +37,10 @@ function userTranscript(text: string) {
 function fixture(options?: {
 	founderPresent?: boolean;
 	playSpeech?: (speechId: string, pcm: Buffer) => Promise<void>;
+	appendReply?: (
+		text: string,
+		chunkCharacters: number,
+	) => Promise<"confirmed" | "unconfirmed" | "failed">;
 }) {
 	let frontendHandlers!: FrontendHandlers;
 	let roomHandlers!: RoomHandlers;
@@ -44,6 +48,9 @@ function fixture(options?: {
 		start: vi.fn(async () => {}),
 		appendAudio: vi.fn(),
 		appendSpeech: vi.fn(async () => {}),
+		...(options?.appendReply
+			? { appendReply: vi.fn(options.appendReply) }
+			: {}),
 		cancelSpeech: vi.fn(),
 		stop: vi.fn(async () => {}),
 	};
@@ -914,5 +921,27 @@ describe("GenericVoiceSession start fails fast on the first failure", () => {
 
 		landRoom({ founderPresent: true });
 		await vi.waitFor(() => expect(room.stop).toHaveBeenCalled());
+	});
+
+	it("reads a whole Lead reply through a frontend that can, and settles it on stop (FLY-2885 founder rework)", async () => {
+		expect(fixture().session.speakReply).toBeUndefined();
+		const test = fixture({
+			appendReply: () => new Promise(() => undefined),
+		});
+		await test.session.start();
+		await test.session.markLive();
+		const reply = test.session.speakReply!("第一句。第二句。", 80);
+		expect(
+			(test.frontend as unknown as { appendReply: ReturnType<typeof vi.fn> })
+				.appendReply,
+		).toHaveBeenCalledWith("第一句。第二句。", 80);
+		expect(test.room.setWaiting).toHaveBeenCalledWith(false);
+		// One reading at a time, whichever path it came through.
+		await expect(
+			test.session.speak(prepareReplySpeech("你好")[0]!),
+		).resolves.toBe("failed");
+		await test.session.stop({ kind: "ended", reason: "she-left" });
+		await expect(reply).resolves.toBe("failed");
+		expect(test.frontend.cancelSpeech).toHaveBeenCalledOnce();
 	});
 });

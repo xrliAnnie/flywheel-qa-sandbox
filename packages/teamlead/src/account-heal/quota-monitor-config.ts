@@ -16,6 +16,12 @@ export interface QuotaMonitorConfig {
 	degradedSwitch: boolean;
 	episodeRealertMinutes: number;
 	deadProbeStreak: number;
+	/** FLY-2896: master switch; false stops new asks and new executions. */
+	resetCardEnabled: boolean;
+	/** FLY-2896: active 5h/weekly pct at which a reset-card ask is evaluated. */
+	resetCardAskPct: number;
+	/** FLY-2896: how long the founder's consent card stays open. */
+	resetCardConsentMinutes: number;
 }
 
 export const DEFAULT_QUOTA_MONITOR_CONFIG: QuotaMonitorConfig = {
@@ -32,6 +38,9 @@ export const DEFAULT_QUOTA_MONITOR_CONFIG: QuotaMonitorConfig = {
 	degradedSwitch: false,
 	episodeRealertMinutes: 30,
 	deadProbeStreak: 2,
+	resetCardEnabled: true,
+	resetCardAskPct: 85,
+	resetCardConsentMinutes: 120,
 };
 
 export type LoadedQuotaMonitorConfig = {
@@ -88,6 +97,22 @@ function parseConfig(value: unknown): QuotaMonitorConfig | null {
 		boundedNumber(value.deadProbeStreak, 1, 10)
 			? value.deadProbeStreak
 			: DEFAULT_QUOTA_MONITOR_CONFIG.deadProbeStreak;
+	// FLY-2896 (I5): each reset-card key falls back to its own default; a bad
+	// value must never make the whole config invalid (→ monitor-only).
+	const resetCardEnabled =
+		typeof value.resetCardEnabled === "boolean"
+			? value.resetCardEnabled
+			: DEFAULT_QUOTA_MONITOR_CONFIG.resetCardEnabled;
+	const resetCardAskPct = boundedNumber(value.resetCardAskPct, 50, 99)
+		? value.resetCardAskPct
+		: DEFAULT_QUOTA_MONITOR_CONFIG.resetCardAskPct;
+	const resetCardConsentMinutes = boundedNumber(
+		value.resetCardConsentMinutes,
+		10,
+		1_440,
+	)
+		? value.resetCardConsentMinutes
+		: DEFAULT_QUOTA_MONITOR_CONFIG.resetCardConsentMinutes;
 	if (
 		!boundedNumber(value.trigger5hPct, 0, 100) ||
 		!boundedNumber(value.acceleratePct, 0, 100) ||
@@ -134,6 +159,9 @@ function parseConfig(value: unknown): QuotaMonitorConfig | null {
 		degradedSwitch,
 		episodeRealertMinutes,
 		deadProbeStreak,
+		resetCardEnabled,
+		resetCardAskPct,
+		resetCardConsentMinutes,
 	};
 }
 

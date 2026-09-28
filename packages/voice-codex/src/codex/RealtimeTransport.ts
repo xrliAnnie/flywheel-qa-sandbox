@@ -1,5 +1,11 @@
+import type { RealtimeMediaLeg } from "./WebRtcLeg.js";
+
 export const CODEX_REALTIME_INPUT_QUEUE_BYTES = 48_000;
 export const CODEX_REALTIME_MAX_INPUT_FRAME_BYTES = 4_800;
+/** The WebRTC leg takes whole 20 ms frames of 24 kHz mono PCM16. */
+const CODEX_REALTIME_FRAME_BYTES = 960;
+/** Pinned by FLY-2885: the same session shape as Codex CLI /voice. */
+export const CODEX_REALTIME_VERSION = "v3";
 const CODEX_REALTIME_START_TIMEOUT_MS = 60_000;
 const CODEX_REALTIME_CLOSE_TIMEOUT_MS = 5_000;
 
@@ -144,14 +150,13 @@ function rpcError(
 	}
 }
 
-function decodeCanonicalBase64(value: unknown): Buffer | undefined {
-	if (typeof value !== "string" || value.length === 0 || value.length % 4 !== 0)
-		return undefined;
-	const decoded = Buffer.from(value, "base64");
-	return decoded.toString("base64") === value ? decoded : undefined;
-}
-
 type State = "idle" | "opening" | "active" | "fenced" | "closed";
+
+function abortReason(signal: AbortSignal): Error {
+	return signal.reason instanceof Error
+		? signal.reason
+		: new Error("realtime_start_aborted");
+}
 
 interface InputOwnership {
 	owner?: CodexRealtimeInputOwner;
@@ -200,20 +205,24 @@ function sameOwner(
 }
 
 /**
- * A generation-fenced adapter over the Codex 0.156.1 V2 realtime RPCs.
+ * A generation-fenced adapter over the Codex 0.156.1 V3 realtime RPCs with a
+ * WebRTC media leg (FLY-2885). The app-server negotiates the call and carries
+ * the sideband (speech, handoffs, transcripts); audio only moves over the leg.
  *
  * It deliberately exposes raw server fields together with any inferred item
- * association. V2 transcript notifications do not carry an item id, so a
+ * association. Transcript notifications do not carry an item id, so a
  * preceding itemAdded association is useful ordering evidence but is not a
  * verbatim proof.
  */
 export class CodexRealtimeTransport {
 	private state: State = "idle";
 	private started?: Deferred<void>;
+	private answer?: Deferred<string>;
 	private closed?: Deferred<void>;
 	private cancelPromise?: Promise<void>;
-	private pendingAudioBytes = 0;
-	private audioTail: Promise<void> = Promise.resolve();
+	private requested = false;
+	/** The first error/close seen while opening: the reason the open failed. */
+	private openFailure?: Error;
 	private readonly lastItemByRole = new Map<string, string>();
 	private inputOwnership = freshInputOwnership();
 	private activeInputItemId?: string;
@@ -231,8 +240,8 @@ export class CodexRealtimeTransport {
 			sessionId: string;
 			threadId: string;
 			generation: number;
+			leg: RealtimeMediaLeg;
 			start: Record<string, unknown>;
-			onAudio?(delta: CodexRealtimeAudioDelta): void;
 			onTranscript?(transcript: CodexRealtimeTranscript): void;
 			onItem?(item: CodexRealtimeItem): void;
 			onInputGap?(gap: {
@@ -272,29 +281,70 @@ export class CodexRealtimeTransport {
 		return this.options.generation;
 	}
 
-	async start(): Promise<void> {
+	/** True once thread/realtime/start was sent: a stop is then owed. */
+	get startRequested(): boolean {
+		return this.requested;
+	}
+
+	/**
+	 * Offer → thread/realtime/start → started (v3) → sdp → leg connected. The
+	 * RPC succeeding is not an open session: an unsupported voice, for one,
+	 * arrives afterwards as thread/realtime/error (research R2).
+	 */
+	async start(signal?: AbortSignal): Promise<void> {
 		if (this.state !== "idle") throw new Error("realtime_start_state");
 		this.state = "opening";
 		this.started = deferred<void>();
-		try {
+		this.answer = deferred<string>();
+		// A failure can settle these before anything awaits them.
+		this.started.promise.catch(() => undefined);
+		this.answer.promise.catch(() => undefined);
+		let onAbort: (() => void) | undefined;
+		const aborted = new Promise<never>((_resolve, reject) => {
+			if (!signal) return;
+			onAbort = () => reject(abortReason(signal));
+			if (signal.aborted) onAbort();
+			else signal.addEventListener("abort", onAbort, { once: true });
+		});
+		aborted.catch(() => undefined);
+		const open = async () => {
+			const offer = await this.options.leg.prepareOffer(signal);
+			if (this.state !== "opening") throw this.openClosed();
+			this.requested = true;
 			const rpc = this.options.rpc
 				.request("thread/realtime/start", {
 					...this.options.start,
 					threadId: this.options.threadId,
-					version: "v2",
+					version: CODEX_REALTIME_VERSION,
+					transport: { type: "webrtc", sdp: offer },
 				})
 				.then((response) => rpcError("thread/realtime/start", response));
+			const [, , sdp] = await Promise.all([
+				rpc,
+				this.started!.promise,
+				this.answer!.promise,
+			]);
+			if (this.state !== "opening") throw this.openClosed();
+			await this.options.leg.acceptAnswer(sdp, signal);
+		};
+		try {
 			await withTimeout(
-				Promise.all([rpc, this.started.promise]).then(() => undefined),
+				Promise.race([open(), aborted]),
 				this.options.startTimeoutMs ?? CODEX_REALTIME_START_TIMEOUT_MS,
 				"realtime_start_timeout",
 			);
-			if (this.state !== "opening") throw new Error("realtime_start_closed");
+			if (this.state !== "opening") throw this.openClosed();
 			this.state = "active";
 		} catch (error) {
-			this.state = "fenced";
+			if (this.state === "opening") this.state = "fenced";
 			throw error;
+		} finally {
+			if (onAbort) signal?.removeEventListener("abort", onAbort);
 		}
+	}
+
+	private openClosed(): Error {
+		return this.openFailure ?? new Error("realtime_start_closed");
 	}
 
 	appendAudio(
@@ -308,65 +358,30 @@ export class CodexRealtimeTransport {
 		if (
 			frame.length === 0 ||
 			frame.length > CODEX_REALTIME_MAX_INPUT_FRAME_BYTES ||
-			frame.length % 2 !== 0
+			frame.length % CODEX_REALTIME_FRAME_BYTES !== 0
 		) {
 			throw new Error("realtime_audio_frame_invalid");
 		}
-		if (
-			this.pendingAudioBytes + frame.length >
-			CODEX_REALTIME_INPUT_QUEUE_BYTES
+		for (
+			let offset = 0;
+			offset < frame.length;
+			offset += CODEX_REALTIME_FRAME_BYTES
 		) {
-			this.inputOwnership.valid = false;
-			this.options.onInputGap?.({
-				generation,
-				...owner,
-				droppedBytes: frame.length,
-				reason: "backpressure",
-			});
-			return "dropped:backpressure";
-		}
-
-		this.observeInputOwner(owner);
-		this.pendingAudioBytes += frame.length;
-		if (!isSilentFrame(frame)) this.speechBytesSinceSettled += frame.length;
-		const ownership = this.inputOwnership;
-		const data = frame.toString("base64");
-		const send = this.audioTail.then(async () => {
-			if (this.state !== "active") return;
-			const response = await this.options.rpc.request(
-				"thread/realtime/appendAudio",
-				{
-					threadId: this.options.threadId,
-					audio: {
-						data,
-						sampleRate: 24_000,
-						numChannels: 1,
-						samplesPerChannel: frame.length / 2,
-					},
-				},
-			);
-			rpcError("thread/realtime/appendAudio", response);
-		});
-		this.audioTail = send
-			.catch((error: unknown) => {
-				ownership.valid = false;
+			const chunk = frame.subarray(offset, offset + CODEX_REALTIME_FRAME_BYTES);
+			if (!this.options.leg.writePcm24(chunk)) {
+				this.inputOwnership.valid = false;
 				this.options.onInputGap?.({
 					generation,
 					...owner,
-					droppedBytes: frame.length,
-					reason: "rpc_error",
+					droppedBytes: frame.length - offset,
+					reason: "backpressure",
 				});
-				this.options.onError?.(
-					error instanceof Error ? error : new Error(String(error)),
-				);
-			})
-			.finally(() => {
-				this.pendingAudioBytes -= frame.length;
-			});
-		return this.pendingAudioBytes >=
-			CODEX_REALTIME_INPUT_QUEUE_BYTES - CODEX_REALTIME_MAX_INPUT_FRAME_BYTES
-			? "sent:need-drain"
-			: "sent";
+				return "dropped:backpressure";
+			}
+		}
+		this.observeInputOwner(owner);
+		if (!isSilentFrame(frame)) this.speechBytesSinceSettled += frame.length;
+		return "sent";
 	}
 
 	invalidateInputOwnership(): void {
@@ -411,8 +426,9 @@ export class CodexRealtimeTransport {
 		this.assertCurrent(generation);
 	}
 
+	/** Audio is written synchronously to the leg; nothing is ever queued. */
 	drain(): Promise<void> {
-		return this.audioTail;
+		return Promise.resolve();
 	}
 
 	cancel(): Promise<void> {
@@ -447,7 +463,7 @@ export class CodexRealtimeTransport {
 
 		if (method === "thread/realtime/started") {
 			if (this.state !== "opening" || !this.started) return;
-			if (params.version !== "v2") {
+			if (params.version !== CODEX_REALTIME_VERSION) {
 				this.started.reject(new Error("realtime_version_mismatch"));
 				return;
 			}
@@ -462,19 +478,35 @@ export class CodexRealtimeTransport {
 			return;
 		}
 
+		if (method === "thread/realtime/sdp") {
+			if (this.state !== "opening" || !this.answer) return;
+			if (typeof params.sdp === "string" && params.sdp.startsWith("v=0"))
+				this.answer.resolve(params.sdp);
+			else this.answer.reject(new Error("realtime_sdp_invalid"));
+			return;
+		}
+
 		if (method === "thread/realtime/closed") {
 			const reason =
 				typeof params.reason === "string" ? params.reason : "realtime_closed";
 			const wasOpening = this.state === "opening";
 			this.state = "closed";
-			if (wasOpening) this.started?.reject(new Error(reason));
+			if (wasOpening) {
+				this.openFailure ??= new Error(reason);
+				this.started?.reject(new Error(reason));
+				this.answer?.reject(new Error(reason));
+			}
 			this.closed?.resolve();
 			this.reportClosed(reason);
 			return;
 		}
 		if (method === "thread/realtime/error") {
 			const error = new CodexRealtimeServerError(params);
-			if (this.state === "opening") this.started?.reject(error);
+			if (this.state === "opening") {
+				this.openFailure ??= error;
+				this.started?.reject(error);
+				this.answer?.reject(error);
+			}
 			this.state = "fenced";
 			this.options.onError?.(error);
 			return;
@@ -533,7 +565,17 @@ export class CodexRealtimeTransport {
 			return;
 		}
 		if (method === "thread/realtime/outputAudio/delta") {
-			this.outputAudio(params);
+			// Audio is RTP-only over WebRTC; a sideband copy would play twice.
+			const audio = record(params.audio);
+			const data = typeof audio?.data === "string" ? audio.data : "";
+			this.fenceExecution(
+				method,
+				{
+					threadId: this.options.threadId,
+					bytes: Buffer.from(data, "base64").length,
+				},
+				"webrtc_duplicate_audio",
+			);
 			return;
 		}
 		if (
@@ -677,38 +719,6 @@ export class CodexRealtimeTransport {
 		});
 	}
 
-	private outputAudio(params: Record<string, unknown>): void {
-		const audio = record(params.audio);
-		const pcm = decodeCanonicalBase64(audio?.data);
-		if (
-			!audio ||
-			!pcm ||
-			pcm.length === 0 ||
-			pcm.length % 2 !== 0 ||
-			audio.sampleRate !== 24_000 ||
-			audio.numChannels !== 1 ||
-			typeof audio.itemId !== "string" ||
-			audio.itemId.length === 0 ||
-			!(
-				audio.samplesPerChannel === null ||
-				typeof audio.samplesPerChannel === "number"
-			)
-		) {
-			this.state = "fenced";
-			this.options.onError?.(new Error("realtime_output_audio_invalid"));
-			return;
-		}
-		this.options.onAudio?.({
-			generation: this.options.generation,
-			itemId: audio.itemId,
-			pcm24Mono: pcm,
-			sampleRate: 24_000,
-			numChannels: 1,
-			samplesPerChannel: audio.samplesPerChannel,
-			raw: params,
-		});
-	}
-
 	private outputTranscript(
 		params: Record<string, unknown>,
 		final: boolean,
@@ -791,6 +801,7 @@ export class CodexRealtimeTransport {
 		].join(":");
 		this.state = "closed";
 		this.started?.reject(new Error(reason));
+		this.answer?.reject(new Error(reason));
 		this.closed?.reject(new Error(reason));
 		this.reportClosed(reason);
 	}

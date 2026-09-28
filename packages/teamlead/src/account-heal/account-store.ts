@@ -801,6 +801,53 @@ export function recordObservationInStore(
 	}
 }
 
+export type ResetCardRecoveryResult =
+	| "updated"
+	| "stale_generation"
+	| "active_changed"
+	| "missing_account"
+	| "invalid_store"
+	| "write_failed";
+
+/**
+ * FLY-2896: after a founder-approved reset card was verified to have refilled
+ * `name`, project that observation and lift the account's own quota gates so
+ * the switch (or, failing that, the ordinary switch line) can select it.
+ *
+ * Caller MUST hold the accounts lock. CAS first, then exactly one write: when
+ * the generation or the active account moved, another writer has acted (e.g.
+ * committed a fresh cooldown on this very account) and nothing is written.
+ */
+export function commitResetCardRecoveryInStore(
+	storePath: string,
+	input: {
+		name: string;
+		observation: AccountQuotaObservation;
+		expectedGeneration: number;
+		expectedActive: string;
+	},
+): ResetCardRecoveryResult {
+	const store = readStoreStrict(storePath);
+	if (store === null) return "invalid_store";
+	if (store.generation !== input.expectedGeneration) return "stale_generation";
+	if (store.activeAccount !== input.expectedActive) return "active_changed";
+	const index = store.accounts.findIndex((entry) => entry.name === input.name);
+	if (index === -1) return "missing_account";
+	const projected = applyObservation(
+		store.accounts[index] as AccountEntry,
+		input.observation,
+	);
+	const { switchCooldownUntil: _lifted, ...withoutCooldown } = projected;
+	const accounts = [...store.accounts];
+	accounts[index] = { ...withoutCooldown, quotaExhaustedUntil: null };
+	try {
+		writeStore({ ...store, accounts }, storePath);
+		return "updated";
+	} catch {
+		return "write_failed";
+	}
+}
+
 /**
  * Reconcile the machine's active profile marker into the account store while
  * the caller holds the shared account lock. Invalid input never manufactures

@@ -1,0 +1,21 @@
+{"t":3.7,"kind":"items_shape","data":{"role":"developer","layout":"sized","count":3,"itemBytes":[9145,9082,9082],"totalBytes":27309,"codexEstimatedTokens":6828}}
+{"t":169.6,"kind":"response","data":{"method":"initialize","error":null}}
+{"t":471,"kind":"response","data":{"method":"account/read","error":null}}
+{"t":471.2,"kind":"account","data":{"type":"chatgpt"}}
+{"t":1130.1,"kind":"response","data":{"method":"thread/start","error":null}}
+{"t":1216.4,"kind":"response","data":{"method":"thread/realtime/start","error":null}}
+{"t":1216.5,"kind":"start_response","data":{"error":null}}
+{"t":1857.6,"kind":"started","data":{"version":"v3"}}
+{"t":1859.3,"kind":"pc_state","data":{"s":"connecting"}}
+{"t":2411.3,"kind":"pc_state","data":{"s":"connected"}}
+{"t":2495.4,"kind":"dc_event","data":{"type":"session.started"}}
+{"t":5437.3,"kind":"watch_window_done","data":{"errors":0,"closed":0}}
+{"t":5440.7,"kind":"question_sent","data":{"ms":2340}}
+{"t":24872.8,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"user","transcript":"你好,请问暗号 是什么?"}}}
+{"t":24886.8,"kind":"transcript_done","data":{"role":"user","text":"你好,请问暗号 是什么?"}}
+{"t":25156.3,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"assistant","transcript":"紫檀九号。"}}}
+{"t":25163.6,"kind":"transcript_done","data":{"role":"assistant","text":"紫檀九号。"}}
+{"t":25707.5,"kind":"response","data":{"method":"thread/realtime/stop","error":null}}
+{"t":25707.6,"kind":"realtime_closed","data":{"reason":"requested"}}
+{"t":25708.1,"kind":"pc_state","data":{"s":"closed"}}
+{"t":25821.5,"kind":"summary","data":{"why":"done","role":"developer","layout":"sized","itemBytes":[9145,9082,9082],"totalBytes":27309,"errors":[],"closed":[{"t":25707.6,"reason":"requested"}],"transcripts":[{"t":24886.8,"role":"user","text":"你好,请问暗号 是什么?"},{"t":25163.6,"role":"assistant","text":"紫檀九号。"}],"dc":{"session.started":1,"input_transcript.added":6,"turn.created":2,"turn.delta":5,"output_transcript.added":4,"session.usage.updated":1,"turn.done":2},"codeWordAnswered":true,"verdict":"ACCEPTED","authSourceStillFile":true}}

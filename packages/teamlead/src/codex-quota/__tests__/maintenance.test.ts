@@ -90,3 +90,58 @@ describe("FLY-2869 — canonical reconciliation without the auto-switch runtime"
 		expect(flushOutbox).toHaveBeenCalledTimes(1);
 	});
 });
+
+describe("FLY-2900 — the standby resume loop rides every maintenance tick", () => {
+	it("runs with and without the auto-switch runtime, even when the runtime tick throws, before the outbox flush", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const order: string[] = [];
+		const resumeLoop = vi.fn(async () => {
+			order.push("resume");
+		});
+		const holder: { runtime?: { tick(): Promise<void> } } = {};
+		const maintenance = createCodexQuotaMaintenance({
+			store: store(),
+			refreshAvailability: automatic,
+			runtime: () => holder.runtime,
+			flushOutbox: async () => {
+				order.push("flush");
+			},
+			projectAudit: async () => {},
+			resumeLoop,
+		});
+		await maintenance.tick();
+		holder.runtime = {
+			tick: async () => {
+				throw new Error("quota_readiness_failed");
+			},
+		};
+		await expect(maintenance.tick()).rejects.toThrow("quota_readiness_failed");
+		expect(resumeLoop).toHaveBeenCalledTimes(2);
+		expect(order).toEqual(["resume", "flush", "resume", "flush"]);
+		warn.mockRestore();
+	});
+
+	it("isolates a failing resume loop from the outbox and the audit projection", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const flushOutbox = vi.fn(async () => {});
+		const projectAudit = vi.fn(async () => {});
+		const maintenance = createCodexQuotaMaintenance({
+			store: store(),
+			refreshAvailability: automatic,
+			runtime: () => undefined,
+			flushOutbox,
+			projectAudit,
+			resumeLoop: async () => {
+				throw new Error("standby_boom");
+			},
+		});
+		await maintenance.tick();
+		expect(flushOutbox).toHaveBeenCalledTimes(1);
+		expect(projectAudit).toHaveBeenCalledTimes(1);
+		expect(warn).toHaveBeenCalledWith(
+			"[Bridge] Codex quota standby resume loop failed",
+			"standby_boom",
+		);
+		warn.mockRestore();
+	});
+});

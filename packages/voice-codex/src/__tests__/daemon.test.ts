@@ -129,6 +129,59 @@ describe("VoiceDaemon", () => {
 		expect(stateStore.remove).toHaveBeenCalledWith(SESSION_ID);
 	});
 
+	it("hands the whole reply to a runtime that reads replies itself (FLY-2885 founder rework)", async () => {
+		const runtime = active({
+			speakReply: vi.fn(async () => "unconfirmed" as const),
+		});
+		const bridge = {
+			desired: vi.fn(async () => ({ sessionId: SESSION_ID })),
+			claim: vi.fn(async () => ({
+				lease: lease(),
+				leaseToken: "lease",
+				leaseExpiresAt: "later",
+				projection,
+			})),
+			renew: vi.fn(async () => ({ state: "live", leaseExpiresAt: "later" })),
+			renewRecovered: vi.fn(),
+			setState: vi.fn(async () => {}),
+			outbound: vi
+				.fn()
+				.mockResolvedValueOnce([
+					{ seq: 1, messageId: "m1", text: "第一句。第二句。" },
+				])
+				.mockResolvedValue([]),
+			claimOutbound: vi.fn(async () => "attempt"),
+			receipt: vi.fn(async () => {}),
+		};
+		const daemon = new VoiceDaemon({
+			bridge,
+			stateStore: { save: vi.fn(), list: vi.fn(() => []), remove: vi.fn() },
+			bootId: "22222222-2222-4222-8222-222222222222",
+			createSession: () => runtime,
+			recoverSession: vi.fn(),
+			sleep: vi.fn(async () => {}),
+			timing: {
+				idlePollMs: 5_000,
+				leaseRenewMs: 1,
+				leaseMissMax: 2,
+				presenceGraceMs: 10,
+				speechChunkTokens: 4,
+			},
+		});
+		await daemon.runOnce();
+		expect(runtime.speakReply).toHaveBeenCalledOnce();
+		expect(runtime.speakReply).toHaveBeenCalledWith("第一句。第二句。", 4);
+		expect(runtime.speak).not.toHaveBeenCalled();
+		expect(bridge.receipt).toHaveBeenCalledWith(
+			SESSION_ID,
+			1,
+			"lease",
+			expect.any(VoiceLease),
+			"attempt",
+			"unconfirmed",
+		);
+	});
+
 	it("fails without joining a founder-less room indefinitely", async () => {
 		const runtime = active({
 			start: vi.fn(async () => ({ founderPresent: false })),

@@ -538,7 +538,7 @@ export function makeCreateResource(voiceLib: {
 	// method syntax (bivariant) so the real @discordjs/voice module and the
 	// unit-test stub both satisfy the seam
 	createAudioResource(input: any, options?: any): unknown;
-	StreamType: { Raw: unknown };
+	StreamType: { Raw: unknown; Opus: unknown };
 }): (src: ResourceSource) => unknown {
 	return (src) =>
 		src.kind === "file"
@@ -547,7 +547,11 @@ export function makeCreateResource(voiceLib: {
 				? voiceLib.createAudioResource(src.stream as Readable, {
 						inputType: voiceLib.StreamType.Raw,
 					})
-				: voiceLib.createAudioResource(src.stream as Readable);
+				: src.kind === "opus-stream"
+					? voiceLib.createAudioResource(src.stream as Readable, {
+							inputType: voiceLib.StreamType.Opus,
+						})
+					: voiceLib.createAudioResource(src.stream as Readable);
 }
 
 /**

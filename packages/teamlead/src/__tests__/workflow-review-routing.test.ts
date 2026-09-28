@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
 	recordWorkflowReviewRoute,
+	resolveRequiredReviewModel,
 	resolveWorkflowReviewRoute,
 	resolveWorkflowReviewRouteForExecution,
 } from "../workflow-review-routing.js";
@@ -123,6 +124,93 @@ describe("FLY-2788 workflow review routing", () => {
 				reviewerModel: "gpt-5.6-sol",
 				reviewerEffort: "xhigh",
 			},
+		});
+	});
+
+	describe("FLY-2891 resolveRequiredReviewModel", () => {
+		const routed = (
+			reviewType: string,
+			requestId: string,
+			reviewerModel: string,
+			reviewerEffort = "xhigh",
+			reviewerVendor = "codex",
+			executionId = "exec-1",
+		) => ({
+			kind: "review_model_routed",
+			execution_id: executionId,
+			payload: {
+				reviewType,
+				requestId,
+				reviewerVendor,
+				reviewerModel,
+				reviewerEffort,
+			},
+		});
+		const storeWith = (events: unknown[], snapshot?: string) => ({
+			getWorkflowRunNodeForExecution: () => ({ run_id: "run-1" }),
+			getWorkflowRun: () => (snapshot ? { snapshot } : undefined),
+			getWorkflowExecutionRuntime: () => ({
+				model: "claude-opus-5-5",
+				vendor: "claude",
+			}),
+			listWorkflowRunEvents: () => events,
+		});
+
+		it("binds design to the manifest request's routed event", () => {
+			const store = storeWith([
+				routed("design", "req-1", "gpt-6-astra", "xhigh"),
+				routed("design", "req-2", "gpt-6-astra", "high"),
+			]);
+			expect(
+				resolveRequiredReviewModel(store as never, "exec-1", "design", "req-1"),
+			).toEqual({ reviewerModel: "gpt-6-astra", reviewerEffort: "xhigh" });
+			expect(
+				resolveRequiredReviewModel(store as never, "exec-1", "design", "nope"),
+			).toEqual({ reviewerModel: "gpt-6-astra", reviewerEffort: "high" });
+		});
+
+		it("takes the latest routed code event of this execution only", () => {
+			const store = storeWith([
+				routed("code", "e1", "gpt-5.6-sol", "high"),
+				routed("design", "r1", "gpt-6-astra"),
+				routed("code", "e2", "gpt-5.6-sol", "xhigh"),
+				routed("code", "e3", "gpt-6-sol", "low", "codex", "other-exec"),
+			]);
+			expect(
+				resolveRequiredReviewModel(store as never, "exec-1", "code"),
+			).toEqual({ reviewerModel: "gpt-5.6-sol", reviewerEffort: "xhigh" });
+		});
+
+		it("recomputes when nothing was recorded and ignores non-Codex routes", () => {
+			expect(
+				resolveRequiredReviewModel(
+					storeWith([], '{"modelRouting":{}}') as never,
+					"exec-1",
+					"code",
+				),
+			).toEqual({ reviewerModel: "gpt-5.6-sol", reviewerEffort: "xhigh" });
+			expect(
+				resolveRequiredReviewModel(
+					storeWith([
+						routed("code", "e1", "claude-opus-5-5", "xhigh", "claude"),
+					]) as never,
+					"exec-1",
+					"code",
+				),
+			).toBeUndefined();
+			expect(
+				resolveRequiredReviewModel(storeWith([]) as never, "exec-1", "code"),
+			).toBeUndefined();
+		});
+
+		it("propagates a corrupt routed snapshot instead of reading it as no requirement", () => {
+			expect(() =>
+				resolveRequiredReviewModel(
+					storeWith([], "{corrupt") as never,
+					"exec-1",
+					"design",
+				),
+			).toThrow(/snapshot is corrupt/);
 		});
 	});
 });

@@ -128,6 +128,17 @@ describe("reapCrashedRunners (FLY-2919 display cleanup)", () => {
 		expect(store.getSession("z1")?.status).toBe("running");
 		expect(deps.killCmuxLinkedSession).not.toHaveBeenCalled();
 	});
+	it("FLY-2900 never cleans a Codex quota standby body", async () => {
+		seed();
+		vi.spyOn(store, "isCodexQuotaStandby").mockReturnValue(true);
+		const deps = baseDeps();
+
+		const result = await reapCrashedRunners(deps);
+
+		expect(result.reaped).toBe(0);
+		expect(deps.killCmuxLinkedSession).not.toHaveBeenCalled();
+		expect(deps.killTmuxWindow).not.toHaveBeenCalled();
+	});
 	it("FLY-1238 pending CommDB projection cannot authorize cleanup or archive", async () => {
 		seed();
 		const deps = baseDeps({ readCurrentDeath: () => undefined });

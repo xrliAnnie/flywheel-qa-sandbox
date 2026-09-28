@@ -3,6 +3,7 @@ import {
 	loadVoiceDaemonConfig,
 	resolveLeadVoiceToken,
 	resolveVoiceCommDbPath,
+	scrubVoiceApiKeys,
 	voiceCodexEnv,
 } from "../config.js";
 
@@ -192,6 +193,100 @@ describe("voice daemon config", () => {
 					"/Users/tester",
 				),
 			).toThrow(/voice backend|standalone Codex binary/);
+		}
+	});
+
+	it("never requires or keeps an API key for the codex backend (FLY-2885)", () => {
+		const codex = {
+			TEAMLEAD_API_TOKEN: "master",
+			FLYWHEEL_VOICE_BACKEND: "codex-realtime",
+			FLYWHEEL_CODEX_BIN: "/opt/flywheel/codex-0.156.1/codex",
+		};
+		const withoutKey = loadVoiceDaemonConfig(codex, "/Users/tester");
+		expect(withoutKey).toMatchObject({
+			backendId: "codex-realtime",
+			realtimeApiKey: null,
+			codexAuthSource: "/Users/tester/.codex/auth.json",
+		});
+		// A key left in the shared .env for engine A is not carried into config.
+		expect(
+			loadVoiceDaemonConfig(
+				{ ...codex, OPENAI_API_KEY: "api-key" },
+				"/Users/tester",
+			).realtimeApiKey,
+		).toBeNull();
+		expect(
+			loadVoiceDaemonConfig(
+				{
+					...codex,
+					FLYWHEEL_VOICE_CODEX_AUTH_SOURCE: "/srv/codex/auth.json",
+				},
+				"/Users/tester",
+			).codexAuthSource,
+		).toBe("/srv/codex/auth.json");
+		expect(() =>
+			loadVoiceDaemonConfig(
+				{ ...codex, FLYWHEEL_VOICE_CODEX_AUTH_SOURCE: "auth.json" },
+				"/Users/tester",
+			),
+		).toThrow(/FLYWHEEL_VOICE_CODEX_AUTH_SOURCE/);
+		// The legacy engine keeps its key requirement unchanged.
+		expect(() =>
+			loadVoiceDaemonConfig({ TEAMLEAD_API_TOKEN: "master" }, "/Users/tester"),
+		).toThrow("OPENAI_API_KEY is required");
+	});
+
+	it("scrubs both API keys from the daemon's own environment", () => {
+		const env: NodeJS.ProcessEnv = {
+			OPENAI_API_KEY: "api-key",
+			CODEX_API_KEY: "codex-key",
+			PATH: "/usr/bin",
+		};
+		scrubVoiceApiKeys(env);
+		expect(env).toEqual({ PATH: "/usr/bin" });
+	});
+
+	it("reads the WebRTC room tuning with bounded values", () => {
+		const base = {
+			TEAMLEAD_API_TOKEN: "master",
+			FLYWHEEL_VOICE_BACKEND: "codex-realtime",
+			FLYWHEEL_CODEX_BIN: "/opt/flywheel/codex-0.156.1/codex",
+		};
+		expect(loadVoiceDaemonConfig(base, "/Users/tester")).toMatchObject({
+			uplinkMinOnsetDbfs: -30,
+			webrtcStunUrls: ["stun:stun.l.google.com:19302"],
+			qaFaults: false,
+		});
+		expect(
+			loadVoiceDaemonConfig(
+				{
+					...base,
+					FLYWHEEL_VOICE_UPLINK_MIN_ONSET_DBFS: "off",
+					FLYWHEEL_VOICE_WEBRTC_STUN: "",
+					FLYWHEEL_VOICE_QA_FAULTS: "1",
+				},
+				"/Users/tester",
+			),
+		).toMatchObject({
+			uplinkMinOnsetDbfs: null,
+			webrtcStunUrls: [],
+			qaFaults: true,
+		});
+		expect(
+			loadVoiceDaemonConfig(
+				{ ...base, FLYWHEEL_VOICE_UPLINK_MIN_ONSET_DBFS: "-42.5" },
+				"/Users/tester",
+			).uplinkMinOnsetDbfs,
+		).toBe(-42.5);
+		for (const bad of [
+			{ FLYWHEEL_VOICE_UPLINK_MIN_ONSET_DBFS: "5" },
+			{ FLYWHEEL_VOICE_UPLINK_MIN_ONSET_DBFS: "loud" },
+			{ FLYWHEEL_VOICE_WEBRTC_STUN: "http://stun.example" },
+			{ FLYWHEEL_VOICE_QA_FAULTS: "yes" },
+		]) {
+			expect(() =>
+				loadVoiceDaemonConfig({ ...base, ...bad }, "/Users/tester"),
+			).toThrow(/FLYWHEEL_VOICE_/);
 		}
 	});
 

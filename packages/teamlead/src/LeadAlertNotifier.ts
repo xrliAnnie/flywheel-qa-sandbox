@@ -263,6 +263,7 @@ export const ALERT_EVENT_TYPES = [
 	"codex_quota_automation_disabled",
 	// FLY-2869: the Codex quota readings stopped refreshing (one per episode).
 	"codex_quota_reading_stale",
+	"codex_quota_standby_diagnostic",
 	"quota_no_target",
 	"quota_blocked_recovered",
 	"quota_read_blind",
@@ -407,6 +408,7 @@ export const INFORMATIONAL_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"quota_switch_confirmation",
 	"codex_quota_automation_disabled",
 	"codex_quota_reading_stale",
+	"codex_quota_standby_diagnostic",
 	"quota_blocked_recovered",
 	"workflow_route_input_rejected",
 	"flag_scan_failed",
@@ -429,6 +431,7 @@ const PLAIN_DELIVERY_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"quota_switch_confirmation",
 	"codex_quota_automation_disabled",
 	"codex_quota_reading_stale",
+	"codex_quota_standby_diagnostic",
 ]);
 
 function hasValidDeliveryStyle(
@@ -465,6 +468,12 @@ export interface AlertMetadata {
 			| "rework_retry_exhausted"
 			| "rework_pane_loss_handoff"
 			| "rework_stall_recovered"
+			// FLY-2921: the only rework delivery failure ending, and the
+			// unknown-liveness escalation that replaced the frozen-run alerts.
+			| "rework_returned_to_lead"
+			| "rework_liveness_unknown"
+			| "rework_replacement_launch_rolled_back"
+			| "rework_replacement_launch_unresolved"
 			| "rework_completion_refused"
 			| "rework_reentry_paused"
 			| "rework_reentry_resumed"

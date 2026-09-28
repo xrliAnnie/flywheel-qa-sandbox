@@ -47,13 +47,18 @@ import {
 	type Session,
 	type StateStore,
 	type WorkflowCompletionActivationContext,
+	type WorkflowReworkCompletionEvidence,
 } from "../StateStore.js";
 import { normalizeTerminalFailureInfo } from "../terminal-failure-info.js";
 import {
 	recordWorkflowReviewRoute,
+	resolveRequiredReviewModel,
 	resolveWorkflowReviewRouteForExecution,
 } from "../workflow-review-routing.js";
-import { nodeRequiresFounderReview } from "../workflow-run-snapshot.js";
+import {
+	nodeRequiresFounderReview,
+	parseWorkflowRunSnapshot,
+} from "../workflow-run-snapshot.js";
 import { handleArtifactEvent } from "./artifact-event.js";
 import type { ChatThreadCreator } from "./ChatThreadCreator.js";
 import {
@@ -83,7 +88,10 @@ import {
 	isDoneButRunning,
 } from "./done-running-reconciler.js";
 import { type EventFilter, leadNotificationDecision } from "./EventFilter.js";
-import { storeLeadTokenSavingsEnabled } from "./flag-store-runtime.js";
+import {
+	storeLeadStageChangedAuditEnabled,
+	storeLeadTokenSavingsEnabled,
+} from "./flag-store-runtime.js";
 import {
 	evaluateFounderReviewAuthority,
 	type FounderReviewAuthorityResult,
@@ -95,6 +103,10 @@ import {
 	pinRunnerAttachForSession,
 	stampStageEmojiForSession,
 } from "./issue-display-refresher.js";
+import type {
+	NotificationBinding,
+	NotificationEvidenceV2,
+} from "./lead-notification-evidence.js";
 import {
 	GUARDRAIL_EVENT_TYPES,
 	type LeadEventEnvelope,
@@ -120,6 +132,10 @@ import { handleProofShotAutoTrigger } from "./proofshot-trigger.js";
 import { resolveBoundRepositoryAuthority } from "./repository-authority.js";
 import type { ReviewAuthorizationAlerts } from "./review-authorization-alerts.js";
 import { isReviewHeld } from "./review-hold.js";
+import {
+	buildReworkCompletionEvidence,
+	reworkDeltaTimeoutMs,
+} from "./rework-completion-evidence.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import {
 	parseDeclaredPrEvidence,
@@ -402,6 +418,203 @@ export function authoritativeReviewOwnerRef(
 }
 
 /**
+ * Runner contract v3 assigns explicit request-review ownership to a Codex
+ * author. This is responsibility evidence, not a claim that a reviewer exists.
+ * The sealed node capabilities select the checkpoint; names/prose never do.
+ */
+function codexStageReviewOwnerRef(
+	store: StateStore,
+	session: Session,
+	stage: string,
+	leadId: string,
+):
+	| { ownerRef: string; workflow?: NotificationEvidenceV2["workflow"] }
+	| undefined {
+	const reviewType =
+		stage === "design_review"
+			? "design"
+			: stage === "code_review" || stage === "pr_created"
+				? "code"
+				: undefined;
+	if (!reviewType || session.codex_skip) return undefined;
+	const questionId = session.review_question_id;
+	if (questionId && questionId !== REVIEW_BINDING_UNBOUND) {
+		const job = store.getCodexReviewJobByQuestionId(questionId);
+		if (
+			job &&
+			job.execution_id === session.execution_id &&
+			job.project_name === session.project_name &&
+			job.issue_id === session.issue_id &&
+			job.question_id === questionId &&
+			job.review_type === reviewType &&
+			(job.status === "pending" || job.status === "running") &&
+			session.pr_head_sha &&
+			job.frozen_head_sha === session.pr_head_sha &&
+			(reviewType === "code" ||
+				(job.target_path && job.target_path === session.plan_path))
+		) {
+			const dbPath = commDbPathForProject(session.project_name);
+			if (!existsSync(dbPath)) return undefined;
+			const comm = CommDB.openReadonly(dbPath);
+			try {
+				const question = comm.getMessageById(questionId);
+				if (
+					question?.type === "question" &&
+					question.from_agent === session.execution_id &&
+					question.to_agent === leadId &&
+					question.checkpoint === `review_${reviewType}` &&
+					!question.resolved_at &&
+					!question.superseded_at &&
+					!comm.getResponse(questionId)
+				) {
+					return {
+						ownerRef: `review-request:${job.request_id}:${job.frozen_head_sha}`,
+					};
+				}
+				return undefined;
+			} finally {
+				comm.close();
+			}
+		}
+		// A stale/broken explicitly bound review is not overridden by a generic
+		// responsibility declaration for the same checkpoint.
+		return undefined;
+	}
+	if (
+		adapterTypeToFamily(session.adapter_type) !== "codex" ||
+		!["full", "plan_only", "none"].includes(session.doc_tier ?? "") ||
+		(reviewType === "design" && session.doc_tier === "none")
+	)
+		return undefined;
+	const node = store.getWorkflowRunNodeForExecution(session.execution_id);
+	if (!node || !["admitted", "running"].includes(node.state)) return undefined;
+	const run = store.getWorkflowRun(node.run_id);
+	const latest = store.listWorkflowRunNodes(node.run_id, node.node_id).at(-1);
+	if (
+		!run ||
+		run.engine_owned !== 1 ||
+		run.status !== "active" ||
+		!run.snapshot ||
+		run.project_name !== session.project_name ||
+		run.issue_id !== session.issue_id ||
+		run.current_node_id !== node.node_id ||
+		latest?.attempt !== node.attempt ||
+		latest.execution_id !== session.execution_id
+	)
+		return undefined;
+	const activation = store.getWorkflowActivationForAttempt({
+		executionId: session.execution_id,
+		runId: node.run_id,
+		nodeId: node.node_id,
+		attempt: node.attempt,
+	});
+	if (
+		!activation ||
+		activation.execution_id !== session.execution_id ||
+		activation.run_id !== run.run_id ||
+		activation.node_id !== node.node_id ||
+		activation.attempt !== node.attempt
+	)
+		return undefined;
+	const snapshot = parseWorkflowRunSnapshot(run.snapshot);
+	if (snapshot.schema_version < 2) return undefined;
+	const frozenNode = snapshot.resolved.nodes.find(
+		(candidate) => candidate.id === node.node_id,
+	);
+	const capabilities = frozenNode?.capabilities;
+	if (
+		!frozenNode?.agent ||
+		frozenNode.dispatch?.vendor !== "codex" ||
+		!capabilities?.shared_branch_writer ||
+		!capabilities.needs_review_evidence ||
+		!capabilities.needs_mailbox_transport ||
+		(reviewType === "design"
+			? capabilities.completion_route !== "phase_design_complete"
+			: capabilities.completion_route !== "needs_review" ||
+				!capabilities.creates_pr)
+	)
+		return undefined;
+	return {
+		ownerRef: `runner-review-contract:v3:${snapshot.snapshot_digest}:${activation.activation_id}:${reviewType}`,
+		workflow: {
+			runId: run.run_id,
+			nodeId: node.node_id,
+			attempt: node.attempt,
+			activationId: activation.activation_id,
+		},
+	};
+}
+
+/**
+ * Bind only the accepted, current stage record. In particular, running is not
+ * a resolution receipt for an inherited completion/approval obligation.
+ */
+function stageNotificationEvidence(
+	store: StateStore,
+	row: ReturnType<StateStore["insertStageChangedEvent"]>["row"],
+	binding: NotificationBinding,
+	notificationContext: string | undefined,
+	hasPendingSideEffects: boolean,
+): NotificationEvidenceV2 | undefined {
+	try {
+		const session = store.getSession(binding.executionId);
+		const latest = store.latestStageEvent(binding.executionId);
+		const stage = asString((row.payload as Record<string, unknown>).stage);
+		if (
+			!session ||
+			!latest ||
+			!stage ||
+			row.event_id !== binding.eventId ||
+			row.execution_id !== binding.executionId ||
+			row.project_name !== binding.projectName ||
+			row.issue_id !== binding.issueId ||
+			session.project_name !== binding.projectName ||
+			session.issue_id !== binding.issueId ||
+			latest.id !== row.id ||
+			session.session_stage !== stage ||
+			session.stage_updated_at !== row.ts
+		)
+			return undefined;
+		const owner = codexStageReviewOwnerRef(
+			store,
+			session,
+			stage,
+			binding.leadId,
+		);
+		return {
+			version: 2,
+			kind: "stage",
+			binding,
+			stage,
+			proof: {
+				sourceRef: `stage-event:${row.event_id}`,
+				executionId: binding.executionId,
+				action:
+					hasPendingSideEffects || session.decision_route
+						? { state: "pending" }
+						: {
+								state: "none",
+								checkedRefs: [
+									`stage-event:${row.event_id}`,
+									`session:${session.execution_id}`,
+								],
+							},
+			},
+			templates:
+				notificationContext === undefined
+					? {}
+					: { notification_context: notificationContext },
+			ownerRef:
+				owner?.ownerRef ?? authoritativeReviewOwnerRef(store, row, stage),
+			workflow: owner?.workflow,
+		};
+	} catch {
+		// Proof lookup must never prevent the ordinary model notification.
+		return undefined;
+	}
+}
+
+/**
  * Handle stage_changed → design_review / pr_created. Reads session
  * state (codex_skip + worktree_path + plan_path) and either writes
  * skip.json or writes a CommDB instruction to the Runner inbox.
@@ -666,6 +879,68 @@ export function handleCodexAutoTrigger(
 		);
 		return "pending";
 	}
+}
+
+/**
+ * FLY-2891: the design review request bound to THIS stage event (a replay
+ * resolves the same source event → same manifest), echoed synchronously to
+ * `stage set` so the runner starts Codex with the required reviewer model
+ * instead of racing the inbox delivery. Absent manifest → no echo (old shape).
+ */
+function designReviewEcho(
+	store: StateStore,
+	executionId: string,
+	sourceEventId: string,
+):
+	| {
+			requestId: string;
+			revision: number;
+			planPath: string;
+			reviewedPlanBlobSha: string;
+			reviewerModel?: string;
+			reviewerEffort?: string;
+	  }
+	| undefined {
+	// The echo is advisory: a lookup failure must never fail the stage event
+	// (the runner falls back to the inbox manifest).
+	let manifest: ReturnType<StateStore["getDesignReviewManifestForSourceEvent"]>;
+	try {
+		manifest = store.getDesignReviewManifestForSourceEvent(
+			executionId,
+			sourceEventId,
+		);
+	} catch (err) {
+		console.warn(
+			`[codex-trigger] design review echo unavailable for ${executionId}: ${(err as Error).message}`,
+		);
+		return undefined;
+	}
+	if (!manifest) return undefined;
+	let required: ReturnType<typeof resolveRequiredReviewModel>;
+	try {
+		required = resolveRequiredReviewModel(
+			store,
+			executionId,
+			"design",
+			manifest.request_id,
+		);
+	} catch (err) {
+		console.warn(
+			`[codex-trigger] design reviewer model unresolved for ${executionId}: ${(err as Error).message}`,
+		);
+	}
+	return {
+		requestId: manifest.request_id,
+		revision: manifest.revision,
+		planPath: manifest.expected_plan_path,
+		reviewedPlanBlobSha: manifest.expected_blob_sha,
+		...(required
+			? {
+					reviewerModel: required.reviewerModel,
+					reviewerEffort: required.reviewerEffort,
+				}
+			: {}),
+	};
 }
 
 // FLY-907: `parseIssueLabels`, `issueStatusWordEnabled`, and the two legacy
@@ -1447,6 +1722,12 @@ export function createEventRouter(
 				return;
 			}
 		}
+		// The shared Runner token authorizes event ingestion, not internal
+		// notification evidence. Only the producer transaction creates proof rows.
+		if (event.event_type === "lead_notification_proof") {
+			res.status(400).json({ reason: "reserved_internal_event_type" });
+			return;
+		}
 
 		const rawTerminalFailure =
 			event.event_type === "session_failed"
@@ -1941,6 +2222,39 @@ export function createEventRouter(
 						}
 					}
 				}
+				// FLY-2921 C7 (FLY-2202 / FLY-2472): when this completion closes an
+				// open rework target on a needs_review node via its success route,
+				// prove server-side that the captured head is a new commit with a
+				// product change. `completionHead` above is the immutable capture
+				// the transition also binds as `subjectDigest`; the evidence never
+				// reads anything from the runner payload.
+				let reworkEvidence: WorkflowReworkCompletionEvidence | undefined;
+				if (
+					generalizedContext &&
+					completionRoute === "needs_review" &&
+					generalizedContext.node.capabilities.completion_route ===
+						"needs_review"
+				) {
+					const openTarget = store.resolveOpenWorkflowReworkTarget({
+						runId: generalizedContext.run.run_id,
+						nodeId: generalizedContext.binding.node_id,
+						attempt: generalizedContext.binding.attempt,
+					});
+					if (openTarget && !openTarget.conflict) {
+						reworkEvidence = await buildReworkCompletionEvidence({
+							requestId: openTarget.requestId,
+							baseRevision: openTarget.request.base_revision,
+							head: completionHead,
+							repoPath: completionRepoPath,
+							timeoutMs: reworkDeltaTimeoutMs(),
+						});
+						if (reworkEvidence.delta === "unverified") {
+							console.warn(
+								`[event-route] rework delta for ${event.execution_id} (${openTarget.requestId}) is unverified: head ${reworkEvidence.head ?? "unresolved"} vs base ${openTarget.request.base_revision}`,
+							);
+						}
+					}
+				}
 				const drainEnvelope = parseCompletionDrainEnvelope(event.payload);
 				if (!drainEnvelope.ok) {
 					res.status(409).json({
@@ -1960,6 +2274,7 @@ export function createEventRouter(
 						completionSubmission: drainEnvelope.completionSubmission,
 						...(drainProof ? { drainProof } : {}),
 						...(completionHead ? { subjectDigest: completionHead } : {}),
+						...(reworkEvidence ? { reworkEvidence } : {}),
 						...(workflowActivation ? { workflowActivation } : {}),
 						...(prBinding ? { prBinding } : {}),
 						...(worktreeBranchObservation ? { worktreeBranchObservation } : {}),
@@ -2192,6 +2507,17 @@ export function createEventRouter(
 					res.status(409).json({
 						error: "workflow_teardown_record_rejected",
 						reason: recorded.reason,
+					});
+					return;
+				}
+				if (recorded.quotaStandby) {
+					// FLY-2900: parked in quota standby; no teardown, no lead intent.
+					res.json({
+						ok: true,
+						generalized: true,
+						teardown: "quota_standby",
+						quotaStandby: true,
+						duplicate: recorded.idempotentReplay,
 					});
 					return;
 				}
@@ -3923,59 +4249,54 @@ export function createEventRouter(
 				} else {
 					// Persist every event after its domain side effects; routine trusted
 					// progress can remain audit-only without fabricating delivery.
-					const stage = asString(payload.stage);
-					const inheritedDecision = Boolean(hookPayload.decision_route);
-					const reviewOwnerRef =
-						stageRecord && stage
-							? authoritativeReviewOwnerRef(store, event, stage)
-							: undefined;
-					const notificationEvidence = stageRecord
-						? {
-								kind: "stage_recorded" as const,
-								proofRef: `stage-event:${stageRecord.row.event_id}`,
-								actionState: inheritedDecision
-									? session.status === "running"
-										? ("resolved" as const)
-										: ("pending" as const)
-									: ("none" as const),
-								...(inheritedDecision && session.status === "running"
-									? {
-											actionProofRef: `stage-event:${stageRecord.row.event_id}:current-running`,
-										}
-									: {}),
-								...(reviewOwnerRef ? { reviewOwnerRef } : {}),
-							}
-						: event.event_type === "session_started" &&
-								!transitionRejected &&
-								session.status === "running"
-							? {
-									kind: "session_registered" as const,
-									proofRef: `session-event:${event.event_id}`,
-								}
-							: undefined;
-					const deliveryDecision =
-						tokenSavingsEnabled && notificationEvidence
-							? [hookPayload, payload].map((part) =>
-									leadNotificationDecision(
-										event.event_type,
-										{ ...part },
-										notificationEvidence,
-									),
-								)
-							: [];
-					const seq = store.appendLeadEvent(
-						lead.agentId,
-						event.event_id,
-						event.event_type,
-						JSON.stringify(hookPayload),
-						sessionKey,
-						deliveryDecision.length > 0 &&
-							deliveryDecision.every(
-								(decision) => decision.disposition === "audit_only",
+					const binding: NotificationBinding = {
+						projectName: event.project_name,
+						leadId: lead.agentId,
+						eventId: event.event_id,
+						executionId: event.execution_id,
+						issueId: event.issue_id,
+					};
+					const evidence = stageRecord
+						? stageNotificationEvidence(
+								store,
+								stageRecord.row,
+								binding,
+								hookPayload.notification_context,
+								stagePending.size > 0,
 							)
-							? "audit_only"
-							: "model",
+						: undefined;
+					// HTTP startup has no DirectEventSink registration/thread/dispatch
+					// witness. Runner payload fields cannot mint that internal proof.
+					const deliveryDecision = leadNotificationDecision(
+						event.event_type,
+						payload,
+						evidence,
+						{
+							binding,
+							categoryEnabled: storeLeadStageChangedAuditEnabled(
+								{ store },
+								binding.projectName,
+							),
+							enabled: tokenSavingsEnabled,
+							projection: { ...hookPayload },
+						},
 					);
+					const seq = stageRecord
+						? store.appendLeadNotification({
+								binding,
+								eventType: event.event_type,
+								payload: JSON.stringify(hookPayload),
+								sessionKey,
+								evidence,
+								decision: deliveryDecision,
+							})
+						: store.appendLeadEvent(
+								lead.agentId,
+								event.event_id,
+								event.event_type,
+								JSON.stringify(hookPayload),
+								sessionKey,
+							);
 					const envelope: LeadEventEnvelope = {
 						eventId: event.event_id,
 						seq,
@@ -4032,6 +4353,10 @@ export function createEventRouter(
 			}
 		}
 
+		const designReview =
+			stageRecord && asString(payload.stage) === "design_review"
+				? designReviewEcho(store, event.execution_id, event.event_id)
+				: undefined;
 		res.json({
 			ok: true,
 			...(stageRecord
@@ -4039,6 +4364,7 @@ export function createEventRouter(
 						...(!isNew ? { duplicate: true } : {}),
 						applied: stagePending.size === 0,
 						...(stagePending.size ? { pending: [...stagePending] } : {}),
+						...(designReview ? { designReview } : {}),
 					}
 				: {}),
 		});

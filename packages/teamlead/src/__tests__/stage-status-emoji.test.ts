@@ -263,66 +263,70 @@ describe("FLY-560 UX iteration: splitStatusEmoji peels the glued word", () => {
 	});
 });
 
-describe("FLY-755: model-code front marker ([F]/[O]/[S]/[H])", () => {
+describe("FLY-755: model-code front marker", () => {
 	it("round-trips the shared maximum renderer payload through the title validator", () => {
 		const display = renderRunnerModelDisplay({
 			vendor: "future",
 			model: "x".repeat(RUNNER_MODEL_MARKER_PAYLOAD_MAX + 20),
 		});
 		expect(display?.threadMarker).toBe(
-			`Model ${"x".repeat(RUNNER_MODEL_MARKER_PAYLOAD_MAX)}`,
+			`[F][Model ${"x".repeat(RUNNER_MODEL_MARKER_PAYLOAD_MAX)}]`,
 		);
 		expect(applyModelMarker("[FLY-1255] Title", display?.threadMarker)).toBe(
-			`[Model ${"x".repeat(RUNNER_MODEL_MARKER_PAYLOAD_MAX)}] [FLY-1255] Title`,
+			`[F][Model ${"x".repeat(RUNNER_MODEL_MARKER_PAYLOAD_MAX)}] [FLY-1255] Title`,
 		);
 	});
-	it("applyModelMarker prepends the code before the issue key — all six codes", () => {
-		// FLY-755 Claude tiers.
-		expect(applyModelMarker("[FLY-728] Title", "F")).toBe(
-			"[F] [FLY-728] Title",
-		);
-		expect(applyModelMarker("[FLY-728] Title", "O")).toBe(
-			"[O] [FLY-728] Title",
-		);
-		expect(applyModelMarker("[FLY-728] Title", "S")).toBe(
-			"[S] [FLY-728] Title",
-		);
-		expect(applyModelMarker("[FLY-728] Title", "H")).toBe(
-			"[H] [FLY-728] Title",
-		);
-		// FLY-1255 Plan B: codex/GPT → G, kimi → K.
-		expect(applyModelMarker("[FLY-1255] Title", "G")).toBe(
-			"[G] [FLY-1255] Title",
-		);
-		expect(applyModelMarker("[FLY-1255] Title", "K")).toBe(
-			"[K] [FLY-1255] Title",
-		);
+	it("prepends every vendor/model combination before the issue key", () => {
+		for (const marker of [
+			"[A][F]",
+			"[A][O]",
+			"[A][S]",
+			"[A][H]",
+			"[O][A]",
+			"[O][S]",
+			"[O][G]",
+			"[K][K]",
+		]) {
+			expect(applyModelMarker("[FLY-2936] Title", marker)).toBe(
+				`${marker} [FLY-2936] Title`,
+			);
+		}
 	});
 
-	it("FLY-1255: the new G/K codes round-trip (stamp / label / strip / swap)", () => {
-		expect(modelMarkerLabel("[G] [FLY-1255] Title")).toBe("G");
-		expect(modelMarkerLabel("[K] [FLY-1255] Title")).toBe("K");
-		expect(stripModelMarker("[G] [FLY-1255] Title")).toBe("[FLY-1255] Title");
-		expect(stripModelMarker("[K] [FLY-1255] Title")).toBe("[FLY-1255] Title");
-		// idempotent + swappable like the Claude codes.
-		expect(applyModelMarker("[G] [FLY-1255] Title", "G")).toBe(
-			"[G] [FLY-1255] Title",
+	it("the paired marker round-trips (stamp / label / strip / swap)", () => {
+		expect(modelMarkerLabel("[O][G] [FLY-1255] Title")).toBe("[O][G]");
+		expect(modelMarkerLabel("[K][K] [FLY-1255] Title")).toBe("[K][K]");
+		expect(stripModelMarker("[O][G] [FLY-1255] Title")).toBe(
+			"[FLY-1255] Title",
 		);
-		expect(applyModelMarker("[G] [FLY-1255] Title", "K")).toBe(
-			"[K] [FLY-1255] Title",
+		expect(applyModelMarker("[O][G] [FLY-1255] Title", "[O][G]")).toBe(
+			"[O][G] [FLY-1255] Title",
 		);
-		// a keyless single-letter bracket is still real title text, never a marker.
-		expect(stripModelMarker("[G] Founder copy")).toBe("[G] Founder copy");
-		expect(modelMarkerLabel("[K] Founder copy")).toBeUndefined();
+		expect(applyModelMarker("[O][G] [FLY-1255] Title", "[K][K]")).toBe(
+			"[K][K] [FLY-1255] Title",
+		);
+		// A keyless pair is still real title text, never a managed marker.
+		expect(stripModelMarker("[O][G] Founder copy")).toBe("[O][G] Founder copy");
+		expect(modelMarkerLabel("[K][K] Founder copy")).toBeUndefined();
+	});
+
+	it("rejects uncurated model letters instead of treating them as managed markers", () => {
+		expect(applyModelMarker("[FLY-2936] Title", "[A][Z]")).toBe(
+			"[FLY-2936] Title",
+		);
+		expect(stripModelMarker("[A][Z] [FLY-2936] Title")).toBe(
+			"[A][Z] [FLY-2936] Title",
+		);
+		expect(modelMarkerLabel("[A][Z] [FLY-2936] Title")).toBeUndefined();
 	});
 
 	it("applyModelMarker is idempotent (re-stamp does not double the marker)", () => {
-		expect(applyModelMarker("[F] [FLY-728] Title", "F")).toBe(
-			"[F] [FLY-728] Title",
+		expect(applyModelMarker("[A][F] [FLY-728] Title", "[A][F]")).toBe(
+			"[A][F] [FLY-728] Title",
 		);
-		// and it can SWAP the code (model never changes in practice, but be safe)
-		expect(applyModelMarker("[F] [FLY-728] Title", "S")).toBe(
-			"[S] [FLY-728] Title",
+		// and it can swap both vendor and model codes.
+		expect(applyModelMarker("[A][F] [FLY-728] Title", "[O][S]")).toBe(
+			"[O][S] [FLY-728] Title",
 		);
 	});
 
@@ -340,8 +344,8 @@ describe("FLY-755: model-code front marker ([F]/[O]/[S]/[H])", () => {
 	});
 
 	it("applyModelMarker migrates a legacy tail suffix to the front", () => {
-		expect(applyModelMarker("[FLY-728] Title ·F", "F")).toBe(
-			"[F] [FLY-728] Title",
+		expect(applyModelMarker("[FLY-728] Title ·F", "[A][F]")).toBe(
+			"[A][F] [FLY-728] Title",
 		);
 	});
 
@@ -355,6 +359,8 @@ describe("FLY-755: model-code front marker ([F]/[O]/[S]/[H])", () => {
 	});
 
 	it("stripModelMarker removes the leading marker and/or a legacy tail", () => {
+		expect(stripModelMarker("[A][F] [FLY-728] Title")).toBe("[FLY-728] Title");
+		// Legacy single markers remain readable during migration.
 		expect(stripModelMarker("[F] [FLY-728] Title")).toBe("[FLY-728] Title");
 		expect(stripModelMarker("[FLY-728] Title ·H")).toBe("[FLY-728] Title");
 		// both forms present (defensive) → both removed
@@ -367,8 +373,8 @@ describe("FLY-755: model-code front marker ([F]/[O]/[S]/[H])", () => {
 	});
 
 	it("stripModelMarker never mis-strips bracket-start titles (Lead gate cases)", () => {
-		// The marker regex is single-letter [FOSH] followed by a bracketed issue
-		// key — multi-letter bracket segments and keyless brackets pass through.
+		// Managed markers must be followed by a bracketed issue key; unrelated
+		// bracket segments and keyless brackets pass through.
 		expect(stripModelMarker("[founder-UX] Title")).toBe("[founder-UX] Title");
 		expect(stripModelMarker("[infra] Title")).toBe("[infra] Title");
 		expect(stripModelMarker("[Fable] Title")).toBe("[Fable] Title");
@@ -382,14 +388,16 @@ describe("FLY-755: model-code front marker ([F]/[O]/[S]/[H])", () => {
 	it("coexists with the stage-emoji prefix — splitStatusEmoji peels only the badge", () => {
 		// The stage badge is the outermost PREFIX; the model marker sits between
 		// the badge and the issue key. Stripping the badge keeps the marker.
-		const stamped = "🔨实现中 [F] [FLY-728] Title";
-		expect(splitStatusEmoji(stamped).base).toBe("[F] [FLY-728] Title");
+		const stamped = "🔨实现中 [A][F] [FLY-728] Title";
+		expect(splitStatusEmoji(stamped).base).toBe("[A][F] [FLY-728] Title");
 		expect(stripModelMarker(splitStatusEmoji(stamped).base)).toBe(
 			"[FLY-728] Title",
 		);
 	});
 
 	it("modelMarkerLabel extracts the front marker, falling back to the legacy tail", () => {
+		expect(modelMarkerLabel("[A][F] [FLY-728] Title")).toBe("[A][F]");
+		// Legacy single markers remain readable during migration.
 		expect(modelMarkerLabel("[F] [FLY-728] Title")).toBe("F");
 		expect(modelMarkerLabel("[H] [FLY-728] Title")).toBe("H");
 		// legacy tail fallback (preserve path on un-migrated threads)
@@ -403,22 +411,27 @@ describe("FLY-755: model-code front marker ([F]/[O]/[S]/[H])", () => {
 		expect(modelMarkerLabel("[F] [infra] copy")).toBeUndefined();
 	});
 
-	it("supports only namespaced vendor-neutral markers", () => {
-		expect(applyModelMarker("[FLY-1255] Title", "Model GPT-5.6")).toBe(
-			"[Model GPT-5.6] [FLY-1255] Title",
+	it("supports namespaced fallback models inside the vendor/model pair", () => {
+		expect(applyModelMarker("[FLY-1255] Title", "[G][Model GPT-5.6]")).toBe(
+			"[G][Model GPT-5.6] [FLY-1255] Title",
 		);
-		expect(modelMarkerLabel("[Model kimi-for-coding] [FLY-1255] Title")).toBe(
-			"Model kimi-for-coding",
-		);
-		expect(stripModelMarker("[Model GPT-5.6] [FLY-1255] Title")).toBe(
+		expect(
+			modelMarkerLabel("[K][Model kimi-for-coding] [FLY-1255] Title"),
+		).toBe("[K][Model kimi-for-coding]");
+		expect(stripModelMarker("[G][Model GPT-5.6] [FLY-1255] Title")).toBe(
 			"[FLY-1255] Title",
 		);
 		expect(
 			applyModelMarker(
-				"[Model GPT-5.6] [FLY-1255] Title",
-				"Model kimi-for-coding",
+				"[G][Model GPT-5.6] [FLY-1255] Title",
+				"[K][Model kimi-for-coding]",
 			),
-		).toBe("[Model kimi-for-coding] [FLY-1255] Title");
+		).toBe("[K][Model kimi-for-coding] [FLY-1255] Title");
+
+		// The old single namespaced form is accepted only for migration.
+		expect(stripModelMarker("[Model GPT-5.6] [FLY-1255] Title")).toBe(
+			"[FLY-1255] Title",
+		);
 
 		expect(modelMarkerLabel("[infra] [FLY-1255] Title")).toBeUndefined();
 		expect(stripModelMarker("[infra] [FLY-1255] Title")).toBe(

@@ -820,10 +820,29 @@ describe("generalized execution admission and terminal contracts", () => {
 			)
 			.run();
 		store.baselineWorkflowDeliveryContracts("2026-09-22T02:00:01.000Z");
+		// FLY-2921: the rework-demand fallback runs inside the coordinator's own
+		// claim on the delivery row; without that claim it must refuse.
+		expect(
+			store.allocateWorkflowResumeFallback({
+				executionId: "exec-1",
+				demandId: "mail-1",
+				newExecutionId: "exec-fallback",
+				now: "2026-09-22T02:00:05.000Z",
+			}),
+		).toEqual({ ok: false, reason: "resume_fallback_context_changed" });
+		const claim = store.claimWorkflowReworkDelivery({
+			requestId: "mail-1",
+			ownerId: "coordinator",
+			now: "2026-09-22T02:00:04.000Z",
+			leaseExpiresAt: "2026-09-22T02:00:34.000Z",
+		});
+		if (!claim.ok) throw new Error(claim.reason);
 		const fallback = store.allocateWorkflowResumeFallback({
 			executionId: "exec-1",
 			demandId: "mail-1",
 			newExecutionId: "exec-fallback",
+			ownerId: "coordinator",
+			generation: claim.generation,
 			now: "2026-09-22T02:00:05.000Z",
 		});
 		expect(fallback).toMatchObject({ ok: true, launchOrdinal: 2 });
@@ -836,9 +855,16 @@ describe("generalized execution admission and terminal contracts", () => {
 			preferred_actor_execution_id: "exec-fallback",
 			interpreted_by: "engine:resume_fallback",
 		});
+		// FLY-2921: the new revision lands on `pending` (the replacement is
+		// launching), with the coordinator's claim released and the push facts
+		// of the replaced actor cleared.
 		expect(store.getWorkflowReworkDelivery("mail-1")).toMatchObject({
-			state: "replacement_pending",
+			state: "pending",
 			route_revision: 2,
+			owner_id: null,
+			hold_count: 0,
+			wake_sent_at: null,
+			liveness_unknown_since: null,
 		});
 		expect(store.getWorkflowActor("exec-fallback")).toMatchObject({
 			role: "execute",
@@ -862,6 +888,8 @@ describe("generalized execution admission and terminal contracts", () => {
 				executionId: "exec-1",
 				demandId: "mail-1",
 				newExecutionId: "exec-fallback-2",
+				ownerId: "coordinator",
+				generation: claim.generation,
 				now: "2026-09-22T02:00:06.000Z",
 			}),
 		).toEqual({

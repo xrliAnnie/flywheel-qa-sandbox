@@ -1,0 +1,21 @@
+{"t":5.3,"kind":"items_shape","data":{"role":"developer","layout":"sized","count":3,"itemBytes":[9493,9430,9430],"totalBytes":28353,"codexEstimatedTokens":7089}}
+{"t":221.4,"kind":"response","data":{"method":"initialize","error":null}}
+{"t":779.2,"kind":"response","data":{"method":"account/read","error":null}}
+{"t":779.4,"kind":"account","data":{"type":"chatgpt"}}
+{"t":1200.5,"kind":"response","data":{"method":"thread/start","error":null}}
+{"t":1359.2,"kind":"response","data":{"method":"thread/realtime/start","error":null}}
+{"t":1359.4,"kind":"start_response","data":{"error":null}}
+{"t":2010.5,"kind":"started","data":{"version":"v3"}}
+{"t":2013.3,"kind":"pc_state","data":{"s":"connecting"}}
+{"t":2805.5,"kind":"pc_state","data":{"s":"connected"}}
+{"t":2913,"kind":"dc_event","data":{"type":"session.started"}}
+{"t":5870.1,"kind":"watch_window_done","data":{"errors":0,"closed":0}}
+{"t":5875.9,"kind":"question_sent","data":{"ms":2340}}
+{"t":9888.7,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"user","transcript":"你好,请问暗号 是什么?"}}}
+{"t":9889.3,"kind":"transcript_done","data":{"role":"user","text":"你好,请问暗号 是什么?"}}
+{"t":13870,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"assistant","transcript":"记忆文件里没有暗号这一项,只有三条基本信息。"}}}
+{"t":13871.2,"kind":"transcript_done","data":{"role":"assistant","text":"记忆文件里没有暗号这一项,只有三条基本信息。"}}
+{"t":14409.2,"kind":"response","data":{"method":"thread/realtime/stop","error":null}}
+{"t":14409.9,"kind":"pc_state","data":{"s":"closed"}}
+{"t":14412.5,"kind":"realtime_closed","data":{"reason":"requested"}}
+{"t":14524.8,"kind":"summary","data":{"why":"done","role":"developer","layout":"sized","itemBytes":[9493,9430,9430],"totalBytes":28353,"errors":[],"closed":[{"t":14412.5,"reason":"requested"}],"transcripts":[{"t":9889.3,"role":"user","text":"你好,请问暗号 是什么?"},{"t":13871.2,"role":"assistant","text":"记忆文件里没有暗号这一项,只有三条基本信息。"}],"dc":{"session.started":1,"input_transcript.added":6,"turn.created":2,"turn.delta":13,"output_transcript.added":13,"turn.done":2},"codeWordAnswered":false,"verdict":"NOT_ACCEPTED","authSourceStillFile":true}}

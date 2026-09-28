@@ -24,6 +24,8 @@
 #   FLYWHEEL_CODEX_TUI_HOME   (required) managed CODEX_HOME path
 #   FLYWHEEL_CODEX_TUI_CWD    (required for ensure-home) Lead working dir to trust
 #   FLYWHEEL_CODEX_BIN        (optional) codex binary for ensure-daemon (default: codex)
+#   FLYWHEEL_CODEX_TUI_TEST_MODEL / FLYWHEEL_CODEX_TUI_TEST_REASONING_EFFORT
+#                              (optional, 529-room-only pair) exact test Lead pins
 
 set -euo pipefail
 
@@ -65,6 +67,41 @@ fi
 
 log() { echo "[codex-lead-tui-home] $*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
+
+# FLY-2950: test-deploy is the only caller that sets this pair. Keep the
+# accepted values deliberately closed so ambient or partial input cannot turn
+# this shared production home writer into another model-authority surface.
+validate_test_room_model_pin_request() {
+  local model="${FLYWHEEL_CODEX_TUI_TEST_MODEL:-}"
+  local effort="${FLYWHEEL_CODEX_TUI_TEST_REASONING_EFFORT:-}"
+  if [ -z "$model" ] && [ -z "$effort" ]; then
+    return 0
+  fi
+  if [ "$model" = "gpt-5.6-sol" ] && [ "$effort" = "high" ]; then
+    return 0
+  fi
+  die "529-room model pins must be the complete approved pair: FLYWHEEL_CODEX_TUI_TEST_MODEL=gpt-5.6-sol and FLYWHEEL_CODEX_TUI_TEST_REASONING_EFFORT=high"
+}
+
+emit_test_room_model_pins() {
+  [ -n "${FLYWHEEL_CODEX_TUI_TEST_MODEL:-}" ] || return 0
+  printf 'model = "gpt-5.6-sol"\n'
+  printf 'model_reasoning_effort = "high"\n'
+}
+
+verify_test_room_model_pins() {
+  local config="$1"
+  [ -n "${FLYWHEEL_CODEX_TUI_TEST_MODEL:-}" ] || return 0
+  python3 - "$config" <<'PYTESTMODELPINS' \
+    || die "529-room config.toml model pin verification failed for $config"
+import sys, tomllib
+with open(sys.argv[1], "rb") as stream:
+    config = tomllib.load(stream)
+ok = (config.get("model") == "gpt-5.6-sol"
+      and config.get("model_reasoning_effort") == "high")
+sys.exit(0 if ok else 1)
+PYTESTMODELPINS
+}
 
 # trim leading/trailing whitespace — mirrors the TS `.trim()` calls in
 # parseCodexLeadRuntimeConfig (channel ids are plain ASCII snowflakes / comma
@@ -575,6 +612,7 @@ write_full_access_config() {
     printf '# line carries -s workspace-write (double insurance).\n'
     printf 'sandbox_mode = "workspace-write"\n'
     printf 'approval_policy = "never"\n'
+    emit_test_room_model_pins
     printf '\n[sandbox_workspace_write]\n'
     printf 'network_access = true\n'
     printf 'writable_roots = [%s]\n' "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$cwd")"
@@ -754,6 +792,7 @@ append_full_access_lead_actions_mcp() {
 ensure_home() {
   local cwd="${FLYWHEEL_CODEX_TUI_CWD:-}"
   [ -n "$cwd" ] || die "FLYWHEEL_CODEX_TUI_CWD is required for ensure-home"
+  validate_test_room_model_pin_request
   mkdir -p "$HOME_DIR"
 
   # 1. auth must be a usable pre-provisioned link — -f also rejects dangling links.
@@ -794,6 +833,7 @@ ensure_home() {
     # FLY-2296: production Leads take this rewrite-and-return branch, so pin
     # here or every ensure would erase a prior manual never-show-again choice.
     ensure_notice_pin "$CONFIG"
+    verify_test_room_model_pins "$CONFIG"
     log "home OK (full-access): $HOME_DIR"
     return 0
   fi
@@ -826,6 +866,7 @@ PYCHECK
 sandbox_mode = "read-only"
 approval_policy = "never"
 EOF
+    emit_test_room_model_pins >> "$CONFIG"
     log "config.toml written with read-only/never pins"
   fi
 
@@ -882,6 +923,7 @@ EOF
 
   # FLY-2296: the read-only path has a separate final assembly endpoint.
   ensure_notice_pin "$CONFIG"
+  verify_test_room_model_pins "$CONFIG"
 
   log "home OK: $HOME_DIR"
 }

@@ -157,7 +157,7 @@ describe("FLY-560: event-route stage-emoji stamping", () => {
 			issueIdentifier: "FLY-560",
 			issueTitle: "Discord issue status",
 			botToken: "bot-token",
-			modelMarker: "G",
+			modelMarker: "[O][S]",
 		});
 	});
 

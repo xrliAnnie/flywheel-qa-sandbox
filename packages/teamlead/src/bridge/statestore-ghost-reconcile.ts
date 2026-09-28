@@ -27,6 +27,7 @@ export const STATESTORE_GHOST_SOURCE_STATUSES: ReadonlySet<string> = new Set([
 
 export type StateStoreGhostOutcome =
 	| "reaped"
+	| "kept_quota_standby"
 	| "kept_non_candidate_status"
 	| "kept_fresh_or_invalid_age"
 	| "kept_commdb_present"
@@ -156,6 +157,11 @@ async function reapStateStoreGhostUnlocked(
 	const projectName = session.project_name;
 	if (!STATESTORE_GHOST_SOURCE_STATUSES.has(session.status)) {
 		return "kept_non_candidate_status";
+	}
+	// FLY-2900 §4.2: a Codex quota standby body is running without a process
+	// (and may have lost its CommDB row) by design; the resume loop owns it.
+	if (deps.store.isCodexQuotaStandby?.(executionId) === true) {
+		return "kept_quota_standby";
 	}
 
 	const nowMs = deps.nowMs();

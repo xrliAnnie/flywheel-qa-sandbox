@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
@@ -13,7 +14,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -31,11 +32,13 @@ import {
 	loadSlot,
 	releaseVoiceRoomLease,
 	releaseVoiceRoomLeasesForSlot,
+	settleStoppedVoiceRun,
 	summarizeVoiceEvidence,
 	validateDiscordThreadPermissions,
 	validateDiscordVoicePermissions,
 	validateDiscordVoiceTarget,
 	validatePreparedTopology,
+	voiceCredentialInput,
 } from "../qa/fly2655-voice-room.mjs";
 
 const snowflake = (last) => `12345678901234567${last}`;
@@ -444,6 +447,78 @@ test("voice process env is an allowlist and binds the slot registry and CommDB",
 	);
 });
 
+test("codex voice env carries no API key and binds the subscription credential source (FLY-2885)", () => {
+	const slotDir = "/tmp/flywheel-test-slot-2";
+	const base = {
+		slotDir,
+		repoRoot: "/work/flywheel",
+		bridgeUrl: "http://127.0.0.1:9202",
+		apiToken: "slot-master",
+		botTokenEnv: "TEST_BOT_TOKEN_2",
+		botToken: "test-bot-secret",
+		projectsPath: `${slotDir}/flywheel-projects.json`,
+		projectsJson: '[{"projectName":"test-slot-2"}]',
+		projectName: "test-slot-2",
+		buildSha: "a".repeat(40),
+		voiceHostPath: `${slotDir}/state/voice-host.json`,
+		meetingNotesPath: `${slotDir}/state/meeting-notes.yaml`,
+		backendId: "codex-realtime",
+		codexBin: "/opt/codex-0.156.1/codex",
+		baseEnv: { PATH: "/usr/bin", HOME: "/Users/qa" },
+	};
+	const env = buildVoiceProcessEnv({
+		...base,
+		// Even a caller that still passes a key must not leak it to engine B.
+		openAiApiKey: "realtime-secret",
+		codexAuthSource: "/Users/qa/.codex/auth.json",
+	});
+	assert.equal(env.OPENAI_API_KEY, undefined);
+	assert.equal(env.CODEX_API_KEY, undefined);
+	assert.equal(env.FLYWHEEL_VOICE_BACKEND, "codex-realtime");
+	assert.equal(
+		env.FLYWHEEL_VOICE_CODEX_AUTH_SOURCE,
+		"/Users/qa/.codex/auth.json",
+	);
+	assert.throws(
+		() => buildVoiceProcessEnv({ ...base, codexAuthSource: "auth.json" }),
+		/voice_codex_auth_source_absolute_required/,
+	);
+	assert.throws(
+		() => buildVoiceProcessEnv(base),
+		/voice_codex_auth_source_absolute_required/,
+	);
+	const readKey = () => {
+		throw new Error("codex launch must not read the platform key");
+	};
+	assert.deepEqual(
+		voiceCredentialInput({
+			backendId: "codex-realtime",
+			homeDir: "/Users/qa",
+			env: {},
+			readManagedKey: readKey,
+		}),
+		{ codexAuthSource: "/Users/qa/.codex/auth.json" },
+	);
+	assert.deepEqual(
+		voiceCredentialInput({
+			backendId: "codex-realtime",
+			homeDir: "/Users/qa",
+			env: { FLYWHEEL_VOICE_CODEX_AUTH_SOURCE: "/srv/auth.json" },
+			readManagedKey: readKey,
+		}),
+		{ codexAuthSource: "/srv/auth.json" },
+	);
+	assert.deepEqual(
+		voiceCredentialInput({
+			backendId: undefined,
+			homeDir: "/Users/qa",
+			env: {},
+			readManagedKey: () => "engine-a-key",
+		}),
+		{ openAiApiKey: "engine-a-key" },
+	);
+});
+
 test("prepared topology and Discord channel checks fail closed", () => {
 	const base = {
 		slotDir: "/tmp/flywheel-test-slot-2",
@@ -592,7 +667,8 @@ test("voice room lease is same-slot idempotent and never releases a foreign owne
 		leadId: "flywheel-test-2655",
 	};
 	try {
-		assert.equal(acquireVoiceRoomLease(topology, { root }).created, true);
+		const lease = acquireVoiceRoomLease(topology, { root });
+		assert.equal(lease.created, true);
 		assert.equal(acquireVoiceRoomLease(topology, { root }).created, false);
 		assert.throws(
 			() =>
@@ -602,8 +678,19 @@ test("voice room lease is same-slot idempotent and never releases a foreign owne
 				),
 			/voice_room_lease_conflict/,
 		);
-		assert.equal(releaseVoiceRoomLease(topology, { root }), true);
-		assert.equal(releaseVoiceRoomLease(topology, { root }), false);
+		// FLY-2876: only the generation that created the lease releases it.
+		assert.equal(
+			releaseVoiceRoomLease(topology, { root, leaseId: "another-run" }),
+			false,
+		);
+		assert.equal(
+			releaseVoiceRoomLease(topology, { root, leaseId: lease.leaseId }),
+			true,
+		);
+		assert.equal(
+			releaseVoiceRoomLease(topology, { root, leaseId: lease.leaseId }),
+			false,
+		);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 		rmSync(liveOwnerSlot, { recursive: true, force: true });
@@ -782,6 +869,299 @@ test("FLY-2867 release-slot-leases CLI needs only the slot directory", () => {
 		assert.deepEqual(readdirSync(root), []);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+// FLY-2876: the same slot redeployed after a teardown that never ran `stop`
+// finds its own old lease; only a lease nothing alive stands behind is reclaimed.
+function fly2876Room() {
+	const root = mkdtempSync(join(tmpdir(), "fly2876-voice-lease-"));
+	const slot = realpathSync(mkdtempSync(join(tmpdir(), "fly2876-slot-")));
+	const topology = fly2867LeaseTopology(slot);
+	const name = `flywheel-voice-room-${topology.guildId}-${topology.voiceChannelId}.lock`;
+	const cleanup = () => {
+		rmSync(root, { recursive: true, force: true });
+		rmSync(slot, { recursive: true, force: true });
+	};
+	return { root, slot, topology, name, cleanup };
+}
+
+function fly2876DeadPid() {
+	return Number(
+		spawnSync("sh", ["-c", "echo $$"], { encoding: "utf8" }).stdout.trim(),
+	);
+}
+
+function fly2876WriteReceipt(slot, run) {
+	writeFileSync(
+		join(slot, "voice-run-receipt.json"),
+		`${JSON.stringify({ schemaVersion: 1, ...run })}\n`,
+	);
+}
+
+test("FLY-2876 a same-slot lease nothing alive stands behind is reclaimed", () => {
+	const room = fly2876Room();
+	const dead = fly2876DeadPid();
+	try {
+		// The incident: the old lease has no process record and the run
+		// receipt went away with the torn-down slot directory.
+		fly2867WriteLease(room.root, room.name, {
+			schemaVersion: 1,
+			slotDir: room.slot,
+		});
+		const claimed = acquireVoiceRoomLease(room.topology, { root: room.root });
+		assert.equal(claimed.created, true);
+		const owner = fly2867Owner(room.root, room.topology);
+		assert.equal(owner.slotDir, room.slot);
+		assert.equal(owner.leaseId, claimed.leaseId);
+		assert.equal(owner.holder.pid, process.pid);
+		assert.equal(owner.daemon, undefined);
+		assert.deepEqual(
+			readdirSync(room.root).filter((name) => name.includes(".stale-")),
+			[],
+		);
+
+		// A start that died before writing its own receipt, after an earlier
+		// run of the slot was stopped.
+		rmSync(join(room.root, room.name), { recursive: true });
+		fly2867WriteLease(room.root, room.name, {
+			schemaVersion: 1,
+			slotDir: room.slot,
+			holder: { pid: dead, processIdentity: "gone start" },
+			daemon: { pid: dead, processIdentity: "gone daemon" },
+		});
+		fly2876WriteReceipt(room.slot, {
+			status: "STOPPED",
+			pid: dead,
+			processIdentity: "gone daemon",
+		});
+		assert.equal(
+			acquireVoiceRoomLease(room.topology, { root: room.root }).created,
+			true,
+		);
+		assert.equal(
+			fly2867Owner(room.root, room.topology).holder.pid,
+			process.pid,
+		);
+	} finally {
+		room.cleanup();
+	}
+});
+
+test("FLY-2876 a same-slot lease with a live start, daemon, or STARTED receipt is kept", () => {
+	const room = fly2876Room();
+	const live = fly2867LiveDaemon();
+	const dead = fly2876DeadPid();
+	const leasePath = join(room.root, room.name);
+	const cases = [
+		// A concurrent `start` is still between lease creation and spawn.
+		{ owner: { schemaVersion: 1, slotDir: room.slot, holder: live } },
+		{ owner: { schemaVersion: 1, slotDir: room.slot, daemon: live } },
+		// A lease from before daemon records existed, still backed by its run.
+		{
+			owner: { schemaVersion: 1, slotDir: room.slot },
+			receipt: {
+				status: "STARTED",
+				pid: live.pid,
+				processIdentity: live.processIdentity,
+			},
+		},
+		// A run whose daemon exited on its own is closed by `stop`, never
+		// taken over by a start: an in-flight stop runs in exactly this state.
+		{
+			owner: {
+				schemaVersion: 1,
+				slotDir: room.slot,
+				holder: { pid: dead, processIdentity: "gone start" },
+				daemon: { pid: dead, processIdentity: "gone daemon" },
+			},
+			receipt: {
+				status: "STARTED",
+				pid: dead,
+				processIdentity: "gone daemon",
+			},
+		},
+	];
+	try {
+		for (const [index, { owner, receipt }] of cases.entries()) {
+			rmSync(leasePath, { recursive: true, force: true });
+			rmSync(join(room.slot, "voice-run-receipt.json"), { force: true });
+			if (receipt) fly2876WriteReceipt(room.slot, receipt);
+			fly2867WriteLease(room.root, room.name, owner);
+			assert.equal(
+				acquireVoiceRoomLease(room.topology, { root: room.root }).created,
+				false,
+				`owner ${index} must keep its lease`,
+			);
+			assert.deepEqual(fly2867Owner(room.root, room.topology), owner);
+		}
+	} finally {
+		process.kill(live.pid, "SIGTERM");
+		room.cleanup();
+	}
+});
+
+test("FLY-2876 a naturally ended run is closed by stop and an old stop never touches the next run", () => {
+	const room = fly2876Room();
+	const dead = fly2876DeadPid();
+	const receiptPath = join(room.slot, "voice-run-receipt.json");
+	try {
+		// Run A's start and daemon have exited; its receipt still says STARTED.
+		const leaseA = acquireVoiceRoomLease(room.topology, { root: room.root });
+		const ownerAPath = join(room.root, room.name, "owner.json");
+		writeFileSync(
+			ownerAPath,
+			`${JSON.stringify({
+				...JSON.parse(readFileSync(ownerAPath, "utf8")),
+				holder: { pid: dead, processIdentity: "gone start" },
+				daemon: { pid: dead, processIdentity: "gone daemon" },
+			})}\n`,
+		);
+		fly2876WriteReceipt(room.slot, {
+			status: "STARTED",
+			sessionId: "session-a",
+			leaseId: leaseA.leaseId,
+			pid: dead,
+			processIdentity: "gone daemon",
+		});
+		const runA = JSON.parse(readFileSync(receiptPath, "utf8"));
+
+		// While A is unstopped, start B cannot take the lease over.
+		assert.equal(
+			acquireVoiceRoomLease(room.topology, { root: room.root }).created,
+			false,
+		);
+
+		// Stop A releases A's generation and records STOPPED.
+		assert.equal(
+			settleStoppedVoiceRun(room.topology, receiptPath, runA, "ended", {
+				root: room.root,
+			}).status,
+			"STOPPED",
+		);
+		assert.deepEqual(readdirSync(room.root), []);
+		assert.equal(
+			JSON.parse(readFileSync(receiptPath, "utf8")).status,
+			"STOPPED",
+		);
+
+		// Start B now creates a new generation and publishes its receipt.
+		const leaseB = acquireVoiceRoomLease(room.topology, { root: room.root });
+		assert.equal(leaseB.created, true);
+		assert.equal(typeof leaseB.leaseId, "string");
+		assert.notEqual(leaseB.leaseId, leaseA.leaseId);
+		fly2876WriteReceipt(room.slot, {
+			status: "STARTED",
+			sessionId: "session-b",
+			leaseId: leaseB.leaseId,
+		});
+
+		// A replayed stop A never releases B's lease or overwrites B's receipt.
+		settleStoppedVoiceRun(room.topology, receiptPath, runA, "ended", {
+			root: room.root,
+		});
+		assert.equal(
+			fly2867Owner(room.root, room.topology).leaseId,
+			leaseB.leaseId,
+		);
+		const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+		assert.equal(receipt.sessionId, "session-b");
+		assert.equal(receipt.status, "STARTED");
+
+		// B's own stop releases B's generation and records STOPPED.
+		settleStoppedVoiceRun(room.topology, receiptPath, receipt, "ended", {
+			root: room.root,
+		});
+		assert.deepEqual(readdirSync(room.root), []);
+		assert.equal(
+			JSON.parse(readFileSync(receiptPath, "utf8")).status,
+			"STOPPED",
+		);
+
+		// A lease and run from before generations existed still pair up.
+		fly2867WriteLease(room.root, room.name, {
+			schemaVersion: 1,
+			slotDir: room.slot,
+		});
+		fly2876WriteReceipt(room.slot, {
+			status: "STARTED",
+			sessionId: "session-legacy",
+		});
+		settleStoppedVoiceRun(
+			room.topology,
+			receiptPath,
+			JSON.parse(readFileSync(receiptPath, "utf8")),
+			"ended",
+			{ root: room.root },
+		);
+		assert.deepEqual(readdirSync(room.root), []);
+		assert.equal(
+			JSON.parse(readFileSync(receiptPath, "utf8")).status,
+			"STOPPED",
+		);
+	} finally {
+		room.cleanup();
+	}
+});
+
+test("FLY-2876 no start while the slot's last run is unstopped, even with its lease gone", () => {
+	const room = fly2876Room();
+	const dead = fly2876DeadPid();
+	try {
+		// Stop A has released A's lease but not yet recorded STOPPED.
+		fly2876WriteReceipt(room.slot, {
+			status: "STARTED",
+			sessionId: "session-a",
+			leaseId: "lease-a",
+			pid: dead,
+			processIdentity: "gone daemon",
+		});
+		assert.equal(
+			acquireVoiceRoomLease(room.topology, { root: room.root }).created,
+			false,
+		);
+		assert.deepEqual(readdirSync(room.root), []);
+
+		// Once A is recorded STOPPED, the next start creates its lease.
+		fly2876WriteReceipt(room.slot, {
+			status: "STOPPED",
+			sessionId: "session-a",
+			leaseId: "lease-a",
+		});
+		assert.equal(
+			acquireVoiceRoomLease(room.topology, { root: room.root }).created,
+			true,
+		);
+	} finally {
+		room.cleanup();
+	}
+});
+
+test("FLY-2876 an unreadable or symlinked run receipt keeps the same-slot lease", () => {
+	const room = fly2876Room();
+	const outside = mkdtempSync(join(tmpdir(), "fly2876-outside-"));
+	const owner = { schemaVersion: 1, slotDir: room.slot };
+	try {
+		fly2867WriteLease(room.root, room.name, owner);
+		writeFileSync(join(room.slot, "voice-run-receipt.json"), "{not json");
+		assert.equal(
+			acquireVoiceRoomLease(room.topology, { root: room.root }).created,
+			false,
+		);
+		rmSync(join(room.slot, "voice-run-receipt.json"));
+		writeFileSync(join(outside, "receipt.json"), '{"status":"STOPPED"}\n');
+		symlinkSync(
+			join(outside, "receipt.json"),
+			join(room.slot, "voice-run-receipt.json"),
+		);
+		assert.equal(
+			acquireVoiceRoomLease(room.topology, { root: room.root }).created,
+			false,
+		);
+		assert.deepEqual(fly2867Owner(room.root, room.topology), owner);
+	} finally {
+		rmSync(outside, { recursive: true, force: true });
+		room.cleanup();
 	}
 });
 
@@ -987,5 +1367,471 @@ test("QA bot and voice room must be absent from the production registry", () => 
 				snowflake("6"),
 			),
 		/qa_identity_overlaps_production/,
+	);
+});
+
+// FLY-2876: a room torn down mid-session leaves a voice daemon that retries the
+// gone slot Bridge forever and keeps writing into the slot directory.
+// Started like `start` starts the real daemon: detached, so it leads its own
+// process group (its Codex children, spawned without `detached`, join it).
+function fly2876VoiceDaemon(dir, { ignoreTerm = false, worker = false } = {}) {
+	const cli = join(dir, "packages/voice-codex/dist/cli.js");
+	const ready = join(dir, "ready");
+	const workerPidPath = join(dir, "worker.pid");
+	mkdirSync(dirname(cli), { recursive: true });
+	const workerSource = `process.on("SIGTERM", () => {});
+require("node:fs").writeFileSync(${JSON.stringify(workerPidPath)}, String(process.pid));
+setInterval(() => {}, 1000);`;
+	writeFileSync(
+		cli,
+		`${ignoreTerm ? 'process.on("SIGTERM", () => {});' : ""}
+${
+	worker
+		? `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(workerSource)}], { stdio: "ignore" });`
+		: ""
+}
+require("node:fs").writeFileSync(${JSON.stringify(ready)}, "");
+setInterval(() => {}, 1000);
+`,
+	);
+	// Through a start that exits, as the real daemon outlives its start CLI.
+	const pid = Number(
+		spawnSync(
+			process.execPath,
+			[
+				"-e",
+				`const c = require("node:child_process").spawn(process.execPath, [${JSON.stringify(cli)}], { detached: true, stdio: "ignore" }); c.unref(); console.log(c.pid);`,
+			],
+			{ encoding: "utf8" },
+		).stdout.trim(),
+	);
+	const started = () =>
+		existsSync(ready) && (!worker || existsSync(workerPidPath));
+	for (let attempt = 0; attempt < 100 && !started(); attempt += 1) {
+		spawnSync("sleep", ["0.05"]);
+	}
+	assert.ok(started(), "fake voice daemon did not start");
+	const processIdentity = spawnSync(
+		"ps",
+		["-o", "lstart=,command=", "-p", String(pid)],
+		{ encoding: "utf8" },
+	).stdout.trim();
+	return {
+		pid,
+		processIdentity,
+		...(worker
+			? { workerPid: Number(readFileSync(workerPidPath, "utf8")) }
+			: {}),
+	};
+}
+
+function fly2876Alive(pid) {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+test("FLY-2876 teardown stops the slot's live voice daemon, then releases its lease", () => {
+	const root = mkdtempSync(join(tmpdir(), "fly2876-voice-lease-"));
+	const dir = mkdtempSync(join(tmpdir(), "fly2876-daemon-"));
+	const slot = `/tmp/flywheel-test-slot-2874${process.pid}`;
+	const daemon = fly2876VoiceDaemon(join(dir, "term"));
+	const stubborn = fly2876VoiceDaemon(join(dir, "stubborn"), {
+		ignoreTerm: true,
+	});
+	try {
+		fly2867WriteLease(root, "flywheel-voice-room-3-31.lock", {
+			schemaVersion: 1,
+			slotDir: slot,
+			daemon,
+		});
+		fly2867WriteLease(root, "flywheel-voice-room-3-32.lock", {
+			schemaVersion: 1,
+			slotDir: `/private${slot}`,
+			daemon: stubborn,
+		});
+		const result = releaseVoiceRoomLeasesForSlot(slot, {
+			root,
+			daemonStopTimeoutMs: 500,
+		});
+		assert.deepEqual(result, {
+			released: [
+				join(root, "flywheel-voice-room-3-31.lock"),
+				join(root, "flywheel-voice-room-3-32.lock"),
+			],
+			retained: [],
+		});
+		assert.equal(fly2876Alive(daemon.pid), false);
+		assert.equal(fly2876Alive(stubborn.pid), false);
+		assert.deepEqual(readdirSync(root), []);
+		// A teardown rerun finds nothing left and changes nothing.
+		assert.deepEqual(releaseVoiceRoomLeasesForSlot(slot, { root }), {
+			released: [],
+			retained: [],
+		});
+	} finally {
+		for (const { pid } of [daemon, stubborn]) {
+			if (fly2876Alive(pid)) process.kill(pid, "SIGKILL");
+		}
+		rmSync(root, { recursive: true, force: true });
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("FLY-2876 teardown stops the daemon's whole process group before releasing", () => {
+	const root = mkdtempSync(join(tmpdir(), "fly2876-voice-lease-"));
+	const dir = mkdtempSync(join(tmpdir(), "fly2876-daemon-"));
+	const slot = `/tmp/flywheel-test-slot-2877${process.pid}`;
+	// A Codex child that outlives its daemon (here one that ignores SIGTERM)
+	// would keep writing into the slot directory; the lease may only go once
+	// the whole group is gone.
+	const daemon = fly2876VoiceDaemon(dir, { worker: true });
+	try {
+		fly2867WriteLease(root, "flywheel-voice-room-5-51.lock", {
+			schemaVersion: 1,
+			slotDir: slot,
+			daemon: { pid: daemon.pid, processIdentity: daemon.processIdentity },
+		});
+		assert.deepEqual(
+			releaseVoiceRoomLeasesForSlot(slot, { root, daemonStopTimeoutMs: 500 }),
+			{ released: [join(root, "flywheel-voice-room-5-51.lock")], retained: [] },
+		);
+		assert.equal(fly2876Alive(daemon.pid), false);
+		assert.equal(fly2876Alive(daemon.workerPid), false);
+	} finally {
+		for (const pid of [daemon.pid, daemon.workerPid]) {
+			if (fly2876Alive(pid)) process.kill(pid, "SIGKILL");
+		}
+		rmSync(root, { recursive: true, force: true });
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("FLY-2876 teardown never signals a process that is not the recorded voice daemon", () => {
+	const root = mkdtempSync(join(tmpdir(), "fly2876-voice-lease-"));
+	const dir = mkdtempSync(join(tmpdir(), "fly2876-daemon-"));
+	const slot = `/tmp/flywheel-test-slot-2875${process.pid}`;
+	const voice = fly2876VoiceDaemon(dir);
+	const other = fly2867LiveDaemon();
+	try {
+		// Same pid, but not the process the start recorded (pid reuse).
+		fly2867WriteLease(root, "flywheel-voice-room-4-41.lock", {
+			schemaVersion: 1,
+			slotDir: slot,
+			daemon: {
+				pid: voice.pid,
+				processIdentity: `Thu Jan  1 00:00:00 1970 node ${dir}/packages/voice-codex/dist/cli.js`,
+			},
+		});
+		// The recorded process is alive but is not a voice daemon.
+		fly2867WriteLease(root, "flywheel-voice-room-4-42.lock", {
+			schemaVersion: 1,
+			slotDir: slot,
+			daemon: other,
+		});
+		const result = releaseVoiceRoomLeasesForSlot(slot, {
+			root,
+			daemonStopTimeoutMs: 500,
+		});
+		assert.deepEqual(result, {
+			released: [join(root, "flywheel-voice-room-4-41.lock")],
+			retained: [join(root, "flywheel-voice-room-4-42.lock")],
+		});
+		assert.equal(fly2876Alive(voice.pid), true);
+		assert.equal(fly2876Alive(other.pid), true);
+	} finally {
+		for (const { pid } of [voice, other]) {
+			if (fly2876Alive(pid)) process.kill(pid, "SIGKILL");
+		}
+		rmSync(root, { recursive: true, force: true });
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("FLY-2876 teardown inside the idle window after a natural end frees the slot's next start", () => {
+	const root = mkdtempSync(join(tmpdir(), "fly2876-voice-lease-"));
+	const dir = mkdtempSync(join(tmpdir(), "fly2876-daemon-"));
+	const slot = `/tmp/flywheel-test-slot-2876${process.pid}`;
+	const topology = fly2867LeaseTopology(slot);
+	// The session ended on its own; its daemon idles on until idleExitMs while
+	// the start CLI that took the lease has long exited.
+	const daemon = fly2876VoiceDaemon(dir);
+	try {
+		const first = acquireVoiceRoomLease(topology, { root });
+		assert.equal(first.created, true);
+		const ownerPath = join(first.path, "owner.json");
+		writeFileSync(
+			ownerPath,
+			`${JSON.stringify({
+				...JSON.parse(readFileSync(ownerPath, "utf8")),
+				holder: { pid: fly2876DeadPid(), processIdentity: "gone" },
+				daemon,
+			})}\n`,
+		);
+		assert.equal(acquireVoiceRoomLease(topology, { root }).created, false);
+		assert.deepEqual(releaseVoiceRoomLeasesForSlot(slot, { root }), {
+			released: [first.path],
+			retained: [],
+		});
+		assert.equal(fly2876Alive(daemon.pid), false);
+		const next = acquireVoiceRoomLease(topology, { root });
+		assert.equal(next.created, true);
+		assert.notEqual(next.leaseId, first.leaseId);
+	} finally {
+		if (fly2876Alive(daemon.pid)) process.kill(daemon.pid, "SIGKILL");
+		rmSync(root, { recursive: true, force: true });
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+// FLY-2876 review: every signal goes to a pid whose identity was re-read just
+// before; what cannot be proven keeps the lease and sends nothing more.
+function fly2876FakeProcesses(steps) {
+	const signals = [];
+	let state = steps.initial;
+	return {
+		signals,
+		processes: {
+			groups: () => (state.groups === null ? null : new Map(state.groups)),
+			identity: (pid) =>
+				state.identities.has(pid) ? state.identities.get(pid) : null,
+			signal: (pid, signal) => {
+				signals.push([pid, signal]);
+				state = steps.after?.[signal] ?? state;
+			},
+		},
+	};
+}
+
+test("FLY-2876 teardown fails closed when the daemon's pid or group cannot be proven", () => {
+	const slot = `/tmp/flywheel-test-slot-2878${process.pid}`;
+	const daemon = {
+		pid: 4242,
+		processIdentity:
+			"Sat Sep 26 12:00:00 2026 node /r/packages/voice-codex/dist/cli.js",
+	};
+	const codex = "Sat Sep 26 12:00:01 2026 codex app-server";
+	const stranger = "Sat Sep 26 12:00:09 2026 /usr/bin/other";
+	const verified = {
+		groups: [
+			[4242, 4242],
+			[4243, 4242],
+		],
+		identities: new Map([
+			[4242, daemon.processIdentity],
+			[4243, codex],
+		]),
+	};
+	const cases = [
+		{
+			name: "daemon pid reused by a new group leader (with a child) after SIGTERM",
+			steps: {
+				initial: verified,
+				after: {
+					SIGTERM: {
+						groups: [
+							[4242, 4242],
+							[4245, 4242],
+						],
+						identities: new Map([
+							[4242, stranger],
+							[4245, `${stranger} --child`],
+						]),
+					},
+				},
+			},
+			// The child's pid is re-read (gone) before its own signal.
+			signals: [[4242, "SIGTERM"]],
+		},
+		{
+			name: "ps cannot list process groups",
+			steps: {
+				initial: { ...verified, groups: null },
+			},
+			signals: [],
+		},
+		{
+			name: "a process of unknown identity in the daemon's group",
+			steps: {
+				initial: {
+					groups: [...verified.groups, [4244, 4242]],
+					identities: new Map([...verified.identities, [4244, undefined]]),
+				},
+				after: {
+					SIGTERM: {
+						groups: [[4244, 4242]],
+						identities: new Map([[4244, undefined]]),
+					},
+				},
+			},
+			signals: [[4242, "SIGTERM"]],
+		},
+		{
+			name: "daemon already gone while a child still holds its group",
+			steps: {
+				initial: {
+					groups: [[4243, 4242]],
+					identities: new Map([[4243, codex]]),
+				},
+			},
+			signals: [],
+		},
+		{
+			name: "daemon already gone and ps cannot list process groups",
+			steps: {
+				initial: { groups: null, identities: new Map() },
+			},
+			signals: [],
+		},
+	];
+	for (const entry of cases) {
+		const root = mkdtempSync(join(tmpdir(), "fly2876-voice-lease-"));
+		try {
+			fly2867WriteLease(root, "flywheel-voice-room-6-61.lock", {
+				schemaVersion: 1,
+				slotDir: slot,
+				daemon,
+			});
+			const fake = fly2876FakeProcesses(entry.steps);
+			assert.deepEqual(
+				releaseVoiceRoomLeasesForSlot(slot, {
+					root,
+					daemonStopTimeoutMs: 200,
+					processes: fake.processes,
+				}),
+				{
+					released: [],
+					retained: [join(root, "flywheel-voice-room-6-61.lock")],
+				},
+				entry.name,
+			);
+			assert.deepEqual(fake.signals, entry.signals, entry.name);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	}
+});
+
+test("FLY-2876 teardown leaves a lease whose start is still running", () => {
+	const root = mkdtempSync(join(tmpdir(), "fly2876-voice-lease-"));
+	const slot = `/tmp/flywheel-test-slot-2879${process.pid}`;
+	const holder = fly2867LiveDaemon();
+	try {
+		// `start` took the lease and has not recorded its daemon yet.
+		fly2867WriteLease(root, "flywheel-voice-room-7-71.lock", {
+			schemaVersion: 1,
+			slotDir: slot,
+			leaseId: "run-a",
+			holder,
+		});
+		assert.deepEqual(releaseVoiceRoomLeasesForSlot(slot, { root }), {
+			released: [],
+			retained: [join(root, "flywheel-voice-room-7-71.lock")],
+		});
+		assert.equal(fly2876Alive(holder.pid), true);
+		assert.deepEqual(readdirSync(root), ["flywheel-voice-room-7-71.lock"]);
+	} finally {
+		process.kill(holder.pid, "SIGTERM");
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("FLY-2876 teardown never removes a lease replaced while it stopped the daemon", () => {
+	const root = mkdtempSync(join(tmpdir(), "fly2876-voice-lease-"));
+	const slot = `/tmp/flywheel-test-slot-2880${process.pid}`;
+	const name = "flywheel-voice-room-8-81.lock";
+	const daemon = {
+		pid: 4242,
+		processIdentity:
+			"Sat Sep 26 12:00:00 2026 node /r/packages/voice-codex/dist/cli.js",
+	};
+	const next = { schemaVersion: 1, slotDir: slot, leaseId: "run-b" };
+	try {
+		fly2867WriteLease(root, name, {
+			schemaVersion: 1,
+			slotDir: slot,
+			leaseId: "run-a",
+			daemon,
+		});
+		let alive = true;
+		const processes = {
+			groups: () => new Map(alive ? [[4242, 4242]] : []),
+			identity: (pid) =>
+				alive && pid === 4242 ? daemon.processIdentity : null,
+			signal: () => {
+				// Meanwhile run A's `stop` released the lease and run B took it.
+				alive = false;
+				rmSync(join(root, name), { recursive: true });
+				fly2867WriteLease(root, name, next);
+			},
+		};
+		assert.deepEqual(
+			releaseVoiceRoomLeasesForSlot(slot, {
+				root,
+				daemonStopTimeoutMs: 200,
+				processes,
+			}),
+			{ released: [], retained: [join(root, name)] },
+		);
+		assert.deepEqual(
+			JSON.parse(readFileSync(join(root, name, "owner.json"), "utf8")),
+			next,
+		);
+		assert.deepEqual(readdirSync(root), [name]);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("FLY-2876 a start whose identity cannot be read still keeps its lease", () => {
+	const root = mkdtempSync(join(tmpdir(), "fly2876-voice-lease-"));
+	const slot = `/tmp/flywheel-test-slot-2881${process.pid}`;
+	const name = "flywheel-voice-room-9-91.lock";
+	const signals = [];
+	try {
+		fly2867WriteLease(root, name, {
+			schemaVersion: 1,
+			slotDir: slot,
+			leaseId: "run-a",
+			holder: {
+				pid: 4250,
+				processIdentity: "Sat Sep 26 12:00:00 2026 node start",
+			},
+		});
+		assert.deepEqual(
+			releaseVoiceRoomLeasesForSlot(slot, {
+				root,
+				processes: {
+					groups: () => new Map([[4250, 4250]]),
+					identity: () => undefined,
+					signal: (pid, signal) => signals.push([pid, signal]),
+				},
+			}),
+			{ released: [], retained: [join(root, name)] },
+		);
+		assert.deepEqual(signals, []);
+		assert.deepEqual(readdirSync(root), [name]);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("FLY-2876 start records its daemon before anything else can fail", () => {
+	const source = readFileSync(
+		fileURLToPath(new URL("../qa/fly2655-voice-room.mjs", import.meta.url)),
+		"utf8",
+	);
+	const body = source.slice(source.indexOf("async function start(args)"));
+	const spawned = body.indexOf("child.unref();");
+	const recorded = body.indexOf("recordVoiceRoomDaemon(lease, child.pid);");
+	assert.ok(spawned > 0 && recorded > spawned);
+	assert.equal(body.indexOf("recordVoiceRoomDaemon(", recorded + 1), -1);
+	// Nothing that can throw runs between the spawn and the record.
+	assert.doesNotMatch(
+		body.slice(spawned, recorded),
+		/mkdirSync|execFileSync|await |setTimeout/,
 	);
 });

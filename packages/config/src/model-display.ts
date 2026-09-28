@@ -1,8 +1,4 @@
-import {
-	modelDisplayName,
-	modelShortCode,
-	vendorModelShortCode,
-} from "./model-tiers.js";
+import { modelShortCode, vendorModelShortCode } from "./model-tiers.js";
 
 /** Shared producer/consumer cap for the payload after the `Model ` namespace. */
 export const RUNNER_MODEL_MARKER_PAYLOAD_MAX = 24;
@@ -35,6 +31,12 @@ function windowSafe(raw: string): string {
 		.slice(0, WINDOW_LABEL_MAX);
 }
 
+function vendorFamilyShortCode(family: string): string {
+	if (family === "claude" || family === "anthropic") return "A";
+	if (family === "codex" || family === "openai") return "O";
+	return /^[a-z0-9]/.test(family) ? family.charAt(0).toUpperCase() : "U";
+}
+
 export function renderRunnerModelDisplay(
 	input: RunnerModelDisplayInput,
 ): RunnerModelDisplay | undefined {
@@ -53,34 +55,27 @@ export function renderRunnerModelDisplay(
 				: "unknown";
 	const family = explicitFamily || inferredFamily;
 
-	// FLY-1255 (Plan B — Annie): resolve a SINGLE-LETTER short code by table
-	// lookup. Claude keeps its F/O/S/H tier codes (byte-unchanged); curated
-	// non-Claude families fold to `G` (codex/GPT) or `K` (kimi). A model with no
-	// curated code (gemini, antigravity, or another unlisted family) keeps the long
-	// `Model <id>` fallback below — the letter is NEVER fabricated.
-	const claudeCode = family === "claude" ? claudeCodeCandidate : undefined;
-	const vendorCode = vendorModelShortCode(family, model);
-	const code = claudeCode ?? vendorCode;
+	// FLY-2936: the first bracket identifies the vendor, while the second
+	// identifies the model family. Keep model matching tied to the normalized
+	// runtime family so mismatched metadata never claims the wrong model family.
+	const claudeCode =
+		family === "claude" || family === "anthropic"
+			? claudeCodeCandidate
+			: undefined;
+	const normalizedVendorFamily = family === "openai" ? "codex" : family;
+	const modelCode =
+		claudeCode ?? vendorModelShortCode(normalizedVendorFamily, model);
+	const vendorCode = vendorFamilyShortCode(family);
+	const payload = safeToken(model, RUNNER_MODEL_MARKER_PAYLOAD_MAX);
+	if (!modelCode && !payload) return undefined;
 
-	// Claude window keeps its readable tier name (`claude-Fable`, byte-unchanged);
-	// the NEW non-Claude codes use the compact letter in the window too so the
-	// short label frees up the tmux/cmux issue-title sidebar (`codex-G`, `kimi-K`).
-	// A model with no curated code falls back to its honest raw id in both the
-	// `Model <id>` marker and the `<family>-<id>` window label (a formerly-
-	// prettified `gpt-5.6` is now `G`, so the fallback no longer needs to reach
-	// for a display name).
-	const claudeDisplay =
-		family === "claude" && claudeCode ? modelDisplayName(model) : undefined;
-	const payload = safeToken(
-		claudeDisplay ?? model,
-		RUNNER_MODEL_MARKER_PAYLOAD_MAX,
-	);
-	if (!code && !payload) return undefined;
-
-	const windowSegment = vendorCode ?? payload;
+	const modelMarker = modelCode ? `[${modelCode}]` : `[Model ${payload}]`;
+	const windowSegment = modelCode
+		? `${vendorCode}${modelCode}`
+		: `${vendorCode}-${payload}`;
 
 	return {
-		threadMarker: code ?? `Model ${payload}`,
+		threadMarker: `[${vendorCode}]${modelMarker}`,
 		windowLabel: windowSafe(`${family}-${windowSegment}`),
 	};
 }

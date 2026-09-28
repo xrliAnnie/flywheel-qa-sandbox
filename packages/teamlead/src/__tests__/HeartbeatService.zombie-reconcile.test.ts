@@ -158,6 +158,7 @@ function makeStore(): MockStore {
 		forceStatus: vi.fn(),
 		insertEvent: vi.fn().mockReturnValue(true),
 		getZombieAlertBacklog: vi.fn().mockReturnValue([]),
+		isCodexQuotaStandby: vi.fn().mockReturnValue(false),
 		hasQuietWakeNotified: vi.fn().mockReturnValue(false),
 		recordQuietWakeNotified: vi.fn(),
 		clearQuietWakeNotified: vi.fn(),
@@ -262,7 +263,7 @@ describe("M2 process verdict dispatch", () => {
 		expect(bodyConverge).not.toHaveBeenCalled();
 		expect(store.updateHeartbeat).not.toHaveBeenCalled();
 	});
-	it("alive readoption reports process evidence without a fabricated pane target", async () => {
+	it("alive readoption reports an execution-process target, never a pane target", async () => {
 		store.getOrphanSessions.mockReturnValue([sess()]);
 		await service.reconcileMonitorLoss();
 		expect(store.updateHeartbeat).toHaveBeenCalledWith("exec-z1");
@@ -271,7 +272,7 @@ describe("M2 process verdict dispatch", () => {
 			method: "execution_process",
 			probedAt: expect.any(String),
 		});
-		expect(details.livenessProbe.target).toBeUndefined();
+		expect(details.livenessProbe.target).toBe("exec-z1");
 		expect(details.concurrentCount).toBeUndefined();
 	});
 	it.each(["unknown", "throw"])(
@@ -301,6 +302,16 @@ describe("M2 process verdict dispatch", () => {
 		expect(bodyConverge).toHaveBeenCalledExactlyOnceWith("exec-z1");
 		expect(mockedProbe).not.toHaveBeenCalled();
 		expect(mockedServer).not.toHaveBeenCalled();
+		expect(store.forceStatus).not.toHaveBeenCalled();
+	});
+	it("FLY-2900 quota standby remains owned by the resume loop", async () => {
+		primeDead();
+		store.isCodexQuotaStandby.mockReturnValue(true);
+
+		await service.reconcileMonitorLoss();
+
+		expect(bodyObserve).not.toHaveBeenCalled();
+		expect(bodyConverge).not.toHaveBeenCalled();
 		expect(store.forceStatus).not.toHaveBeenCalled();
 	});
 	it("CAS refusal releases the candidate for a later freshly observed attempt", async () => {

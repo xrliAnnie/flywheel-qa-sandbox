@@ -6,7 +6,9 @@ import { join } from "node:path";
 import express from "express";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StateStore } from "../../StateStore.js";
+import { VOICE_CONTEXT_TOKENIZER } from "../../voice-context-contract.js";
 import { voiceSessionAuthMiddleware } from "../voice-session-auth.js";
+import { VoiceSessionContextError } from "../voice-session-context.js";
 import { createVoiceSessionRouter } from "../voice-session-routes.js";
 
 const MASTER = "master-token";
@@ -295,6 +297,102 @@ describe("voice session routes", () => {
 		expect(getSessionContext.mock.calls[0]?.[1].leaseBindingDigest).not.toBe(
 			currentLease,
 		);
+	});
+
+	it("reports context failures as 503 with whitelisted details only (FLY-2885 plan §12.5)", async () => {
+		const { base, getSessionContext } = await start();
+		await call(base, "", {
+			method: "POST",
+			token: INGEST,
+			body: { meetingId: "20000000-0000-4000-8000-000000000001" },
+		});
+		const claimed = await call(base, `/${SESSION_ID}/claim`, {
+			method: "POST",
+			token: MASTER,
+			body: { daemonBootId: "boot-a" },
+		});
+		const lease = (claimed.body as { leaseToken: string }).leaseToken;
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			getSessionContext.mockRejectedValueOnce(
+				new VoiceSessionContextError("context_too_large", {
+					block: "realtime.prompt",
+					prompt: "realtimePrompt",
+					bytes: 61_000,
+					estimatedTokens: 18_000,
+					maxBytes: 131_072,
+					maxEstimatedTokens: 15_500,
+					itemsTokens: 7_056,
+					itemsCount: 7,
+					maxItemsTokens: 7_600,
+					tokenizer: VOICE_CONTEXT_TOKENIZER,
+					relativePath: "memory/MEMORY.md",
+					body: "SECRET MEMORY LINE",
+				}),
+			);
+			const tooLarge = await call(base, `/${SESSION_ID}/context`, {
+				token: MASTER,
+				lease,
+			});
+			expect(tooLarge).toEqual({
+				status: 503,
+				body: {
+					error: "voice_unavailable",
+					reason: "context_too_large",
+					details: {
+						block: "realtime.prompt",
+						bytes: 61_000,
+						estimatedTokens: 18_000,
+						maxBytes: 131_072,
+						maxEstimatedTokens: 15_500,
+						itemsTokens: 7_056,
+						itemsCount: 7,
+						maxItemsTokens: 7_600,
+						tokenizer: VOICE_CONTEXT_TOKENIZER,
+					},
+				},
+			});
+
+			getSessionContext.mockRejectedValueOnce(
+				new VoiceSessionContextError("context_token_count_unavailable", {
+					tokenizer: VOICE_CONTEXT_TOKENIZER,
+					// A path and free text are not identifiers: never forwarded.
+					block: "memory/MEMORY.md",
+					estimatedTokens: "记忆 正文",
+				}),
+			);
+			expect(
+				await call(base, `/${SESSION_ID}/context`, { token: MASTER, lease }),
+			).toEqual({
+				status: 503,
+				body: {
+					error: "voice_unavailable",
+					reason: "context_token_count_unavailable",
+					details: { tokenizer: VOICE_CONTEXT_TOKENIZER },
+				},
+			});
+
+			// Anything else keeps today's shape: a reason and nothing more.
+			getSessionContext.mockRejectedValueOnce(new Error("SECRET MEMORY LINE"));
+			expect(
+				await call(base, `/${SESSION_ID}/context`, { token: MASTER, lease }),
+			).toEqual({
+				status: 503,
+				body: {
+					error: "voice_unavailable",
+					reason: "context_state_unavailable",
+				},
+			});
+
+			const warned = warn.mock.calls.map((args) => args.join(" ")).join("\n");
+			expect(warned).toContain("reason=context_too_large");
+			expect(warned).toContain("itemsTokens=7056");
+			expect(warned).toContain("reason=context_token_count_unavailable");
+			expect(warned).not.toContain("SECRET");
+			expect(warned).not.toContain("MEMORY.md");
+		} finally {
+			warn.mockRestore();
+		}
 	});
 
 	it.each([

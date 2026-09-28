@@ -10,7 +10,7 @@
  *   - sha comparison is case-normalized
  */
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StateStore } from "../StateStore.js";
 
 const SHA_A = "a".repeat(40);
@@ -64,6 +64,7 @@ describe("StateStore — FLY-1278 frozen review payload", () => {
 			questionId: "q1",
 		});
 		const responseJson = JSON.stringify({ reviewVerdict: "APPROVED" });
+		store.claimCodexReviewJobRunning("r1");
 		store.completeCodexReviewJob("r1", "APPROVED", "[]", {
 			reviewerVerdict: "CHANGES_REQUESTED",
 			advisoriesJson: "[]",
@@ -91,6 +92,7 @@ describe("StateStore — FLY-1278 frozen review payload", () => {
 			reviewType: "design",
 			questionId: "q1",
 		});
+		store.claimCodexReviewJobRunning("r1");
 		store.completeCodexReviewJob("r1", "CHANGES_REQUESTED", "[]");
 
 		expect(store.getCodexReviewJob("r1")).toMatchObject({
@@ -540,6 +542,7 @@ describe("StateStore — FLY-1254 review failure evidence", () => {
 	it("completing a retried job clears failure reason and raw evidence", () => {
 		insertJob("raw-complete");
 		store.failCodexReviewJob("raw-complete", "no_verdict", "diagnostic");
+		store.claimCodexReviewJobRunning("raw-complete");
 		store.completeCodexReviewJob("raw-complete", "APPROVED", "[]");
 		expect(store.getCodexReviewJob("raw-complete")).toMatchObject({
 			status: "done",
@@ -560,6 +563,7 @@ describe("StateStore — FLY-1254 review failure evidence", () => {
 			reason: "nonzero_exit",
 			retryAt: "2026-08-31T00:10:00.000Z",
 		});
+		store.claimCodexReviewJobRunning("retry-complete");
 		store.completeCodexReviewJob("retry-complete", "APPROVED", "[]");
 
 		expect(store.getCodexReviewJob("retry-complete")?.status).toBe("done");
@@ -680,6 +684,7 @@ describe("StateStore — FLY-2452 account-switch review recovery", () => {
 			};
 			seen.push(...page.map((job) => job.request_id));
 			expect(store.claimCodexReviewJobRunning(page[0]!.request_id)).toBe(true);
+			store.claimCodexReviewJobRunning(page[1]!.request_id);
 			store.completeCodexReviewJob(page[1]!.request_id, "APPROVED", "[]");
 		}
 
@@ -887,10 +892,31 @@ describe("StateStore — FLY-2228 moved-head successor", () => {
 				 VALUES ('legacy-reuse', 'legacy-parent', 'exec-substitute',
 				         'question-substitute', 'legacy-nonce')`,
 			);
+			seed.run(`INSERT INTO codex_review_job
+				(request_id, execution_id, project_name, review_type, question_id, status)
+				VALUES ('legacy-rejected', 'e', 'p', 'code', 'q', 'failed')`);
+			seed.run(`INSERT INTO codex_review_job
+				(request_id, execution_id, project_name, review_type, question_id, status, target_path)
+				VALUES ('legacy-design', 'e', 'p', 'design', 'q', 'failed', '/plan.md')`);
 			fs.writeFileSync(dbPath, Buffer.from(seed.export()));
 			seed.close();
 
 			migrated = await StateStore.create(dbPath);
+			expect(
+				migrated.getCodexReviewJob("legacy-rejected")?.accept_seq,
+			).toBeUndefined();
+			expect(migrated.getCodexReviewJob("legacy-design")?.accept_seq).toBe(0);
+			expect(
+				migrated.getCodexReviewReuseBinding("legacy-reuse")?.accept_seq,
+			).toBeUndefined();
+			migrated.insertCodexReviewJob({
+				requestId: "new-rejected",
+				executionId: "e",
+				projectName: "p",
+				reviewType: "code",
+				questionId: "q",
+				accepted: false,
+			});
 			expect(migrated.getCodexReviewJob("legacy-parent")).toMatchObject({
 				head_move_retry_count: 0,
 				head_move_parent_request_id: undefined,
@@ -931,9 +957,13 @@ describe("StateStore — FLY-2228 moved-head successor", () => {
 				migrated.getCodexReviewJobByQuestionId("question-2228"),
 			).toMatchObject({
 				request_id: "migrated-child",
+				accept_seq: 0,
 				head_move_parent_request_id: "legacy-parent",
 				head_move_retry_count: 1,
 			});
+			expect(
+				migrated.getCodexReviewJob("new-rejected")?.accept_seq,
+			).toBeUndefined();
 		} finally {
 			migrated?.close();
 			fs.rmSync(dir, { recursive: true, force: true });
@@ -1403,5 +1433,566 @@ describe("StateStore — FLY-1188 family-aware review authority", () => {
 		const rec = store.getCodexReviewRecord("exec-replay", SHA);
 		expect(rec?.verdict_event_id).toBe("evt-1"); // anchor not restamped
 		expect(rec?.request_id).toBe("req-1");
+	});
+});
+
+describe("StateStore — FLY-2911 stale review fencing", () => {
+	let store: StateStore;
+	const nowIso = "2026-09-25T10:00:00.000Z";
+	const quietUntil = "2026-09-25T10:02:00.000Z";
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+	afterEach(() => {
+		vi.restoreAllMocks();
+		store.close();
+	});
+	function insert(
+		requestId: string,
+		extras: Partial<Parameters<StateStore["insertCodexReviewJob"]>[0]> = {},
+	) {
+		return store.insertCodexReviewJob({
+			requestId,
+			executionId: "exec",
+			projectName: "proj",
+			issueId: "FLY-2911",
+			reviewType: "code",
+			questionId: "q",
+			frozenHeadSha: SHA_A,
+			...extras,
+		});
+	}
+	function update(sql: string, params: unknown[] = []) {
+		(
+			store as unknown as { db: { run(sql: string, params: unknown[]): void } }
+		).db.run(sql, params);
+	}
+	function binding(requestId = "binding", sourceRequestId = "old") {
+		return store.insertCodexReviewReuseBinding({
+			requestId,
+			sourceRequestId,
+			executionId: "binding-exec",
+			questionId: "binding-q",
+			targetRepoPath: "/repo",
+			frozenHeadSha: SHA_A,
+		});
+	}
+	function voidJob(
+		requestId = "old",
+		extras: Partial<Parameters<StateStore["voidCodexReviewJob"]>[0]> = {},
+	) {
+		return store.voidCodexReviewJob({
+			requestId,
+			reason: "superseded_by_request",
+			trigger: "accept",
+			nowIso,
+			supersededByRequestId: "new",
+			...extras,
+		});
+	}
+	function headMove(
+		requestId = "old",
+		extras: Partial<
+			Parameters<StateStore["failAndRequeueCodexReviewJobForHeadMove"]>[0]
+		> = {},
+	) {
+		return store.failAndRequeueCodexReviewJobForHeadMove({
+			requestId,
+			successorRequestId: `${requestId}-child`,
+			currentHeadSha: SHA_B,
+			markParentVoided: true,
+			trigger: "freshness_check",
+			nowIso,
+			quietUntil,
+			...extras,
+		});
+	}
+
+	it("allocates one monotonic acceptance sequence across jobs and bindings, ignoring rejected requests", () => {
+		expect(store.getNextCodexReviewAcceptSeq()).toBe(1);
+		expect(insert("old").job.accept_seq).toBe(1);
+		expect(binding().binding.accept_seq).toBe(2);
+		expect(
+			insert("rejected", { accepted: false }).job.accept_seq,
+		).toBeUndefined();
+		expect(insert("new").job.accept_seq).toBe(3);
+		expect(insert("old").inserted).toBe(false);
+		expect(binding().inserted).toBe(false);
+		expect(store.getNextCodexReviewAcceptSeq()).toBe(4);
+	});
+
+	it.each([
+		["pending", null, null, true],
+		["running", null, null, true],
+		["failed", quietUntil, "reset_at", true],
+		["failed", null, "account_switch", true],
+		["done", null, null, false],
+		["skipped", null, null, false],
+		["failed", null, null, false],
+	] as const)(
+		"void CAS status=%s retry=%s trigger=%s",
+		(status, retryAt, retryTrigger, expected) => {
+			insert("old", { quietUntil });
+			binding();
+			update(
+				"UPDATE codex_review_job SET status=?, retry_at=?, retry_trigger=?, retry_parked_at_ms=123 WHERE request_id='old'",
+				[status, retryAt, retryTrigger],
+			);
+			const result = voidJob("old", {
+				retireBindingRequestIds: ["binding"],
+				gateState: "open",
+				observedHeadSha: SHA_B,
+			});
+			expect(result.voided).toBe(expected);
+			expect(store.getCodexReviewReuseBinding("binding")?.released_at).toBe(
+				expected ? nowIso : undefined,
+			);
+			if (!expected) {
+				expect(store.getEventsByExecution("exec")).toEqual([]);
+				return;
+			}
+			expect(result).toMatchObject({
+				priorStatus: status,
+				job: {
+					status: "failed",
+					failure_reason: "superseded_by_request",
+					voided_at: nowIso,
+					superseded_by_request_id: "new",
+					retry_at: undefined,
+					retry_trigger: undefined,
+					retry_parked_at_ms: undefined,
+					quiet_until: undefined,
+					failure_attempt_count: 1,
+				},
+			});
+			expect(voidJob().voided).toBe(false);
+			const events = store.getEventsByExecution("exec");
+			expect(
+				events.filter((e) => e.event_type === "review_job_voided"),
+			).toHaveLength(1);
+			expect(
+				events.find((e) => e.event_type === "review_job_voided"),
+			).toMatchObject({
+				event_id: "review-job-voided:old",
+				issue_id: "FLY-2911",
+				project_name: "proj",
+				source: "bridge.review-coordinator",
+				severity: "info",
+				payload: {
+					requestId: "old",
+					reason: "superseded_by_request",
+					trigger: "accept",
+					priorStatus: status,
+					questionId: "q",
+					reviewType: "code",
+					frozenHeadSha: SHA_A,
+					observedHeadSha: SHA_B,
+					gateState: "open",
+					supersededByRequestId: "new",
+				},
+			});
+		},
+	);
+
+	it("uses execution identity for the audit when the issue is missing", () => {
+		insert("old", { issueId: undefined });
+		voidJob();
+		expect(store.getEventsByExecution("exec")[0]?.issue_id).toBe("exec");
+	});
+
+	it("supersedes only supplied still-voidable candidates on inserted acceptance", () => {
+		insert("old");
+		insert("other");
+		insert("done");
+		binding();
+		store.claimCodexReviewJobRunning("done");
+		store.completeCodexReviewJob("done", "APPROVED");
+		const supersedeLane = {
+			nowIso,
+			expectedAcceptSeq: store.getNextCodexReviewAcceptSeq(),
+			candidates: [
+				{ requestId: "old", retireBindingRequestIds: ["binding"] },
+				{ requestId: "done", retireBindingRequestIds: [] },
+			],
+		};
+		expect(
+			insert("new", { supersedeLane }).voided.map((j) => j.request_id),
+		).toEqual(["old"]);
+		expect(store.getCodexReviewJob("other")?.voided_at).toBeUndefined();
+		expect(store.getCodexReviewJob("done")?.status).toBe("done");
+		expect(insert("new", { supersedeLane }).voided).toEqual([]);
+		expect(
+			insert("rejected", {
+				accepted: false,
+				supersedeLane: {
+					...supersedeLane,
+					candidates: [{ requestId: "other", retireBindingRequestIds: [] }],
+				},
+			}).voided,
+		).toEqual([]);
+		expect(store.getCodexReviewJob("other")?.voided_at).toBeUndefined();
+	});
+
+	it("fails acceptance when its sequence prediction changed without inserting or voiding", () => {
+		insert("old");
+		expect(() =>
+			insert("new", {
+				supersedeLane: {
+					nowIso,
+					expectedAcceptSeq: 1,
+					candidates: [{ requestId: "old", retireBindingRequestIds: [] }],
+				},
+			}),
+		).toThrow("review_accept_seq_changed");
+		expect(store.getCodexReviewJob("new")).toBeNull();
+		expect(store.getCodexReviewJob("old")?.voided_at).toBeUndefined();
+	});
+
+	it.each(["throw", "collision", "binding-collision"])(
+		"rolls back insertion, void, and binding retirement on %s audit failure",
+		(mode) => {
+			insert("old");
+			binding();
+			if (mode === "throw")
+				vi.spyOn(store, "insertEvent").mockImplementation(() => {
+					throw new Error("audit_failed");
+				});
+			else
+				store.insertEvent({
+					event_id:
+						mode === "collision"
+							? "review-job-voided:old"
+							: "review-reuse-retired:binding",
+					execution_id: "exec",
+					project_name: "proj",
+					issue_id: "FLY-2911",
+					event_type: "collision",
+					source: "test",
+				});
+			const before = store.getEventsByExecution("exec");
+			expect(() =>
+				insert("new", {
+					supersedeLane: {
+						nowIso,
+						expectedAcceptSeq: 3,
+						candidates: [
+							{ requestId: "old", retireBindingRequestIds: ["binding"] },
+						],
+					},
+				}),
+			).toThrow();
+			expect(store.getCodexReviewJob("new")).toBeNull();
+			expect(store.getCodexReviewJob("old")).toMatchObject({
+				status: "pending",
+				voided_at: undefined,
+				failure_attempt_count: 0,
+			});
+			expect(
+				store.getCodexReviewReuseBinding("binding")?.released_at,
+			).toBeUndefined();
+			expect(store.getEventsByExecution("exec")).toEqual(before);
+		},
+	);
+
+	it("recovery retirement is audited once and prevents late materialization", () => {
+		insert("old");
+		binding();
+		const input = {
+			bindingRequestId: "binding",
+			sourceRequestId: "old",
+			supersededByRequestId: "new",
+			nowIso,
+		};
+		expect(store.retireCodexReviewReuseBindingForSupersede(input)).toBe(true);
+		expect(store.retireCodexReviewReuseBindingForSupersede(input)).toBe(false);
+		expect(
+			store.releaseCodexReviewReuseBinding({
+				requestId: "binding",
+				reason: "late",
+				frozenHeadSha: SHA_B,
+			}),
+		).toMatchObject({ released: false, job: null });
+		expect(store.getEventsByExecution("exec")).toMatchObject([
+			{
+				event_id: "review-reuse-retired:binding",
+				event_type: "review_reuse_binding_retired",
+				payload: {
+					bindingRequestId: "binding",
+					sourceRequestId: "old",
+					supersededByRequestId: "new",
+					questionId: "binding-q",
+				},
+			},
+		]);
+	});
+
+	it("responded bindings cannot materialize and standalone retirement audit failure rolls back", () => {
+		insert("old");
+		binding();
+		vi.spyOn(store, "insertEvent").mockReturnValue(false);
+		expect(() =>
+			store.retireCodexReviewReuseBindingForSupersede({
+				bindingRequestId: "binding",
+				sourceRequestId: "old",
+				supersededByRequestId: "new",
+				nowIso,
+			}),
+		).toThrow();
+		expect(
+			store.getCodexReviewReuseBinding("binding")?.released_at,
+		).toBeUndefined();
+		store.stampCodexReviewReuseBindingResponded("binding");
+		expect(
+			store.releaseCodexReviewReuseBinding({
+				requestId: "binding",
+				reason: "late",
+				frozenHeadSha: SHA_B,
+			}),
+		).toMatchObject({ released: false, job: null });
+	});
+
+	it.each([false, true])(
+		"released jobs inherit the binding sequence (legacy=%s) and requested quiet window",
+		(legacy) => {
+			insert("old");
+			const b = binding().binding;
+			if (legacy)
+				update(
+					"UPDATE codex_review_reuse_binding SET accept_seq=NULL WHERE request_id='binding'",
+				);
+			insert("new");
+			const result = store.releaseCodexReviewReuseBinding({
+				requestId: "binding",
+				reason: "head_moved",
+				frozenHeadSha: SHA_B,
+				quietUntil,
+			});
+			expect(result).toMatchObject({
+				released: true,
+				job: {
+					accept_seq: legacy ? 0 : b.accept_seq,
+					quiet_until: quietUntil,
+					frozen_head_sha: SHA_B,
+				},
+			});
+			expect(store.getNextCodexReviewAcceptSeq()).toBe(legacy ? 3 : 4);
+			expect(
+				store.releaseCodexReviewReuseBinding({
+					requestId: "binding",
+					reason: "late",
+					frozenHeadSha: SHA_A,
+				}),
+			).toMatchObject({ released: false, job: { frozen_head_sha: SHA_B } });
+		},
+	);
+
+	it("claim respects optional quiet guard, clears it on claim, and always refuses voided rows", () => {
+		insert("old", { quietUntil });
+		expect(store.claimCodexReviewJobRunning("old", nowIso)).toBe(false);
+		expect(store.claimCodexReviewJobRunning("old", quietUntil)).toBe(true);
+		expect(store.getCodexReviewJob("old")?.quiet_until).toBeUndefined();
+		insert("bypass", { quietUntil });
+		expect(store.claimCodexReviewJobRunning("bypass")).toBe(true);
+		voidJob("bypass");
+		expect(store.claimCodexReviewJobRunning("bypass")).toBe(false);
+	});
+
+	it("completion requires running and failure optionally requires running; neither writes after void", () => {
+		insert("old");
+		expect(store.completeCodexReviewJob("old", "APPROVED")).toBe(false);
+		expect(
+			store.recordCodexReviewJobFailure({
+				requestId: "old",
+				reason: "late",
+				expectStatus: "running",
+			}).updated,
+		).toBe(false);
+		store.claimCodexReviewJobRunning("old");
+		expect(
+			store.recordCodexReviewJobFailure({
+				requestId: "old",
+				reason: "retry",
+				expectStatus: "running",
+			}).updated,
+		).toBe(true);
+		expect(store.completeCodexReviewJob("old", "APPROVED")).toBe(false);
+		store.claimCodexReviewJobRunning("old");
+		voidJob();
+		expect(store.completeCodexReviewJob("old", "APPROVED")).toBe(false);
+		expect(
+			store.recordCodexReviewJobFailure({ requestId: "old", reason: "late" })
+				.updated,
+		).toBe(false);
+		expect(store.getCodexReviewJob("old")?.failure_reason).toBe(
+			"superseded_by_request",
+		);
+		insert("valid");
+		store.claimCodexReviewJobRunning("valid");
+		expect(store.completeCodexReviewJob("valid", "APPROVED")).toBe(true);
+		expect(store.completeCodexReviewJob("valid", "CHANGES_REQUESTED")).toBe(
+			false,
+		);
+	});
+
+	it("quiet-window restart CAS records the previous head and strict audit", () => {
+		insert("old", { quietUntil });
+		const input = {
+			requestId: "old",
+			expectedHeadSha: SHA_A.toUpperCase(),
+			newHeadSha: SHA_B,
+			quietUntil,
+		};
+		expect(store.restartCodexReviewQuietWindow(input)).toBe(true);
+		expect(store.restartCodexReviewQuietWindow(input)).toBe(false);
+		expect(store.getCodexReviewJob("old")).toMatchObject({
+			frozen_head_sha: SHA_B,
+			quiet_until: quietUntil,
+		});
+		expect(store.getEventsByExecution("exec")[0]).toMatchObject({
+			event_id: `review-quiet-restart:old:${SHA_B}:${quietUntil}`,
+			event_type: "review_quiet_window_restarted",
+			payload: {
+				requestId: "old",
+				previousHeadSha: SHA_A,
+				newHeadSha: SHA_B,
+				quietUntil,
+			},
+		});
+		expect(() =>
+			store.restartCodexReviewQuietWindow({ ...input, newHeadSha: "bad" }),
+		).toThrow();
+		store.claimCodexReviewJobRunning("old");
+		expect(
+			store.restartCodexReviewQuietWindow({ ...input, expectedHeadSha: SHA_B }),
+		).toBe(false);
+		insert("collision");
+		vi.spyOn(store, "insertEvent").mockReturnValue(false);
+		expect(() =>
+			store.restartCodexReviewQuietWindow({ ...input, requestId: "collision" }),
+		).toThrow();
+		expect(store.getCodexReviewJob("collision")?.frozen_head_sha).toBe(SHA_A);
+	});
+
+	it("head move inherits acceptance and quiet time, permanently fences parent, and prioritizes existing successor", () => {
+		const parent = insert("old").job;
+		store.claimCodexReviewJobRunning("old");
+		expect(headMove("old", { expectStatus: "running" })).toMatchObject({
+			outcome: "requeued",
+			parent: { voided_at: nowIso, superseded_by_request_id: "old-child" },
+			successor: { accept_seq: parent.accept_seq, quiet_until: quietUntil },
+		});
+		expect(store.claimCodexReviewJobRunning("old")).toBe(false);
+		expect(headMove("old", { expectStatus: "running" })).toMatchObject({
+			outcome: "existing",
+			successor: { request_id: "old-child" },
+		});
+		expect(store.getEventsByExecution("exec")).toMatchObject([
+			{
+				event_type: "review_job_voided",
+				payload: {
+					reason: "head_moved",
+					successorRequestId: "old-child",
+					priorStatus: "running",
+					trigger: "freshness_check",
+				},
+			},
+		]);
+	});
+
+	it("head move returns voided before stale and stale without writes", () => {
+		insert("old");
+		expect(headMove("old", { expectStatus: "running" }).outcome).toBe("stale");
+		expect(store.getCodexReviewJob("old-child")).toBeNull();
+		voidJob();
+		expect(headMove("old", { expectStatus: "running" }).outcome).toBe("voided");
+		expect(store.getCodexReviewJob("old")?.failure_attempt_count).toBe(1);
+	});
+
+	it("exhaustion audit is per attempt and does not consume permanent void audit", () => {
+		insert("old");
+		update(
+			"UPDATE codex_review_job SET head_move_retry_count=2 WHERE request_id='old'",
+		);
+		for (const attempt of [1, 2]) {
+			store.claimCodexReviewJobRunning("old");
+			expect(headMove()).toMatchObject({
+				outcome: "exhausted",
+				parent: { voided_at: undefined, failure_attempt_count: attempt },
+			});
+		}
+		store.claimCodexReviewJobRunning("old");
+		voidJob();
+		expect(store.getEventsByExecution("exec").map((e) => e.event_id)).toEqual([
+			"review-head-move-exhausted:old:1",
+			"review-head-move-exhausted:old:2",
+			"review-job-voided:old",
+		]);
+	});
+
+	it.each([false, true])(
+		"head move rolls back strict audit failure including successor (exhausted=%s)",
+		(exhausted) => {
+			insert("old");
+			if (exhausted)
+				update(
+					"UPDATE codex_review_job SET head_move_retry_count=2 WHERE request_id='old'",
+				);
+			vi.spyOn(store, "insertEvent").mockReturnValue(false);
+			expect(() => headMove()).toThrow();
+			expect(store.getCodexReviewJob("old")).toMatchObject({
+				status: "pending",
+				voided_at: undefined,
+				failure_attempt_count: 0,
+			});
+			expect(store.getCodexReviewJob("old-child")).toBeNull();
+		},
+	);
+
+	it("feature-off head move retains legacy parent and emits no new audit", () => {
+		insert("old");
+		expect(headMove("old", { markParentVoided: false })).toMatchObject({
+			outcome: "requeued",
+			parent: { voided_at: undefined },
+		});
+		expect(store.getEventsByExecution("exec")).toEqual([]);
+		expect(store.claimCodexReviewJobRunning("old")).toBe(true);
+	});
+
+	it("lane reads separate issue/execution/repository/project/type and exclude lineage representations", () => {
+		const own = insert("old").job;
+		insert("same-issue", { executionId: "another" });
+		insert("different-issue", { issueId: "other" });
+		insert("different-project", { projectName: "other" });
+		insert("different-type", { reviewType: "design" });
+		insert("different-repo", { targetRepoIdentity: "other/repo" });
+		insert("rejected", { accepted: false });
+		store.failCodexReviewJob("rejected", "gate_missing");
+		insert("done");
+		store.claimCodexReviewJobRunning("done");
+		store.completeCodexReviewJob("done", "APPROVED");
+		expect(
+			store
+				.listLaneJobs(own, "voidable")
+				.map((j) => j.request_id)
+				.sort(),
+		).toEqual(["same-issue"]);
+		headMove();
+		expect(
+			store
+				.listLaneJobs(own, "acceptedOthers")
+				.map((j) => j.request_id)
+				.sort(),
+		).toEqual(["done", "same-issue"]);
+		expect(
+			store
+				.listLaneJobs(store.getCodexReviewJob("old-child")!, "acceptedOthers")
+				.map((j) => j.request_id),
+		).not.toContain("old");
+		const noIssue = insert("no-issue", { issueId: undefined }).job;
+		insert("no-issue-same", { issueId: undefined });
+		insert("no-issue-other", { issueId: undefined, executionId: "other" });
+		expect(
+			store.listLaneJobs(noIssue, "voidable").map((j) => j.request_id),
+		).toEqual(["no-issue-same"]);
 	});
 });

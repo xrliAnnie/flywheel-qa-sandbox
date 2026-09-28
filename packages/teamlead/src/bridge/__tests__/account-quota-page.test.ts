@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { sampleProposal } from "../../__tests__/reset-card-test-fixtures.js";
+import type {
+	ResetCardFiles,
+	ResetCardProposal,
+} from "../../account-heal/reset-card-files.js";
 import type { VercelAccountStore } from "../../vercel-quota/vercel-account-store.js";
 import {
 	buildAccountQuotaPageSections,
@@ -15,6 +20,10 @@ import type {
 	AccountQuotaView,
 	QuotaCell,
 } from "../account-quota-view.js";
+import {
+	loadResetCardDecision,
+	type ResetCardDecision,
+} from "../reset-card-decision.js";
 
 function cell(display: string, opts: Partial<QuotaCell> = {}): QuotaCell {
 	return {
@@ -747,6 +756,245 @@ describe("FLY-2875 — Vercel section markup", () => {
 		expect(vercel).toContain("&lt;i&gt;");
 		expect(vercel).toContain("&lt;s&gt;");
 		expect(vercel).not.toMatch(/<(b|i|s|y)>/);
+	});
+});
+
+describe("FLY-2896 §5.8 — reset-card banner and chip", () => {
+	const proposal = sampleProposal();
+	const live = {
+		askPct: 85,
+		activeAccount: "personal",
+		activeGeneration: 7,
+		activeMaxPct: 88,
+	};
+	const files = (
+		readProposal: () => ReturnType<ResetCardFiles["readProposal"]>,
+		readConsent: () => ReturnType<ResetCardFiles["readConsent"]> = () => ({
+			status: "absent",
+		}),
+	): Pick<ResetCardFiles, "readProposal" | "readConsent"> => ({
+		readProposal,
+		readConsent,
+	});
+	const decision = (
+		state: ResetCardDecision["state"],
+		chip: ResetCardDecision["chip"] = null,
+		patch: Partial<ResetCardDecision> = {},
+	): ResetCardDecision => ({
+		proposalId: proposal.proposalId,
+		active: "personal",
+		activePct: 88,
+		target: "business",
+		state,
+		chip,
+		...patch,
+	});
+	const rows = () => [
+		row("personal", 41, "2026-09-29T02:00:00.000Z", { active: true }),
+		row("business", 100, "2026-10-01T02:00:00.000Z"),
+		row("shopping", 30, "2026-09-30T02:00:00.000Z"),
+	];
+	const banner = (html: string) =>
+		html.match(/<div class="reset-card-banner"[^>]*>([\s\S]*?)<\/div>/)?.[1];
+	const chipRows = (html: string) =>
+		html
+			.split("</tr>")
+			.filter((chunk) => chunk.includes('class="reset-card-chip"'))
+			.map(
+				(chunk) =>
+					/account-name">(?:<span[^>]*><\/span><span[^>]*>在用<\/span>)?([^<]+)</.exec(
+						chunk,
+					)?.[1],
+			);
+
+	it("renders the banner above the Claude table from the live files", () => {
+		const html = renderAccountQuotaPageHtml(view(rows()), undefined, {
+			resetCardDecision: loadResetCardDecision({
+				...live,
+				files: files(() => ({ status: "ok", value: proposal })),
+			}),
+		});
+		expect(banner(html)).toBe(
+			"Claude 在用号 personal 已用 88%，没有能直接切的号 · 建议给 business 用卡 · <strong>已满、等你决定</strong> · 征询卡还没发出",
+		);
+		const claude = html.match(/<section class=[\s\S]*?<\/section>/g)?.[0];
+		expect(claude).toContain('<h2>Claude</h2><div class="reset-card-banner"');
+		expect(html.match(/class="reset-card-banner"/g)).toHaveLength(1);
+		expect(html.match(/<section/g)).toHaveLength(2);
+		expect(html.match(/<th>/g)).toHaveLength(13);
+	});
+
+	it.each([
+		[{ kind: "not_posted" }, "征询卡还没发出"],
+		[
+			{ kind: "posted", postedAt: "2026-09-25T23:05:10.000Z" },
+			// FLY-2830 clock: not the page's own Pacific day, so the date shows.
+			"征询卡 09/25 16:05 发出",
+		],
+		[{ kind: "posted", postedAt: null }, "征询卡已发出"],
+		[{ kind: "approved" }, "你已同意，等到切号线执行"],
+		[{ kind: "in_progress" }, "正在用卡并切号"],
+		[{ kind: "rejected" }, "你已拒绝"],
+		[{ kind: "expired" }, "已过期未用卡"],
+		[
+			{ kind: "post_failed", reason: "discord_403" },
+			"征询卡没发出去（discord_403）",
+		],
+		[{ kind: "post_failed", reason: null }, "征询卡没发出去（unknown）"],
+		[{ kind: "cancelled" }, "已取消未用卡"],
+		[{ kind: "failed" }, "用卡失败，请看告警"],
+		[{ kind: "ambiguous" }, "用卡后状态不确定，请人工核对"],
+	] as const)("suffix for %o is %s", (state, suffix) => {
+		const html = renderAccountQuotaPageHtml(view(rows()), undefined, {
+			resetCardDecision: decision(state),
+		});
+		expect(banner(html)).toBe(
+			`Claude 在用号 personal 已用 88%，没有能直接切的号 · 建议给 business 用卡 · <strong>已满、等你决定</strong> · ${suffix}`,
+		);
+	});
+
+	it("puts the chip on the target row only, worded by decision state", () => {
+		const awaiting = renderAccountQuotaPageHtml(view(rows()), undefined, {
+			resetCardDecision: decision(
+				{ kind: "posted", postedAt: null },
+				"awaiting",
+			),
+		});
+		expect(chipRows(awaiting)).toEqual(["business"]);
+		expect(awaiting).toContain(
+			'business<span class="reset-card-chip">有卡 · 等你决定</span></div>',
+		);
+
+		const approved = renderAccountQuotaPageHtml(view(rows()), undefined, {
+			resetCardDecision: decision({ kind: "approved" }, "approved"),
+		});
+		expect(chipRows(approved)).toEqual(["business"]);
+		expect(approved).toContain(
+			'business<span class="reset-card-chip">已同意 · 等切号线</span></div>',
+		);
+
+		for (const state of [
+			{ kind: "in_progress" },
+			{ kind: "rejected" },
+			{ kind: "failed" },
+		] as const) {
+			const html = renderAccountQuotaPageHtml(view(rows()), undefined, {
+				resetCardDecision: decision(state),
+			});
+			expect(html).toContain('class="reset-card-banner"');
+			expect(html).not.toContain('class="reset-card-chip"');
+		}
+	});
+
+	it("never marks a Codex row even when it shares the target's name", () => {
+		const html = renderAccountQuotaPageHtml(
+			view(rows(), [
+				row("business", 40, "2026-09-29T16:00:00.000Z", {
+					provider: "Codex",
+				}),
+			]),
+			undefined,
+			{ resetCardDecision: decision({ kind: "not_posted" }, "awaiting") },
+		);
+		expect(html.match(/reset-card-chip/g)).toHaveLength(2); // style + one chip
+		const [claude, codex] = html.match(/<section class=[\s\S]*?<\/section>/g)!;
+		expect(claude).toContain("reset-card-chip");
+		expect(codex).not.toContain("reset-card-chip");
+		expect(codex).not.toContain("reset-card-banner");
+	});
+
+	it("renders byte-identically to the baseline without a decision", () => {
+		const baseline = renderAccountQuotaPageHtml(view(rows()));
+		expect(baseline).not.toContain("reset-card");
+		expect(
+			renderAccountQuotaPageHtml(view(rows()), undefined, {
+				resetCardDecision: null,
+			}),
+		).toBe(baseline);
+		expect(
+			renderAccountQuotaPageHtml(view(rows()), undefined, {
+				resetCardDecision: loadResetCardDecision({
+					...live,
+					files: files(() => ({ status: "invalid", reason: "too_large" })),
+				}),
+			}),
+		).toBe(baseline);
+		expect(
+			renderAccountQuotaPageHtml(view(rows()), undefined, {
+				resetCardDecision: loadResetCardDecision({
+					...live,
+					files: files(() => {
+						throw new Error("EACCES");
+					}),
+				}),
+			}),
+		).toBe(baseline);
+		expect(
+			renderAccountQuotaPageHtml(view(rows()), undefined, {
+				resetCardDecision: loadResetCardDecision({
+					...live,
+					files: files(
+						() => ({ status: "ok", value: proposal }),
+						() => ({ status: "invalid", reason: "not_file" }),
+					),
+				}),
+			}),
+		).toBe(baseline);
+	});
+
+	it("shows no banner for another active, another generation, a cooler active, or a switched card", () => {
+		const baseline = renderAccountQuotaPageHtml(view(rows()));
+		const withProposal = (
+			patch: Partial<ResetCardProposal>,
+			context: Partial<typeof live> = {},
+		) =>
+			renderAccountQuotaPageHtml(view(rows()), undefined, {
+				resetCardDecision: loadResetCardDecision({
+					...live,
+					...context,
+					files: files(() => ({
+						status: "ok",
+						value: sampleProposal(patch),
+					})),
+				}),
+			});
+		expect(withProposal({}, { activeAccount: "shopping" })).toBe(baseline);
+		expect(withProposal({}, { activeGeneration: 6 })).toBe(baseline);
+		expect(withProposal({}, { activeMaxPct: 84 })).toBe(baseline);
+		expect(withProposal({ status: "switched" })).toBe(baseline);
+		expect(withProposal({})).not.toBe(baseline);
+	});
+
+	it("escapes every dynamic value in the banner and the chip", () => {
+		const html = renderAccountQuotaPageHtml(
+			view([
+				row("<img src=x>", 90, "2026-09-29T02:00:00.000Z", { active: true }),
+				row("t&<b>", 100, "2026-10-01T02:00:00.000Z"),
+			]),
+			undefined,
+			{
+				resetCardDecision: decision(
+					{ kind: "post_failed", reason: "<script>" },
+					"awaiting",
+					{
+						active: "<img src=x>",
+						activePct: 90,
+						target: "t&<b>",
+						proposalId: '"><i>',
+					},
+				),
+			},
+		);
+		expect(html).toContain("在用号 &lt;img src=x&gt; 已用 90%");
+		expect(html).toContain("建议给 t&amp;&lt;b&gt; 用卡");
+		expect(html).toContain("征询卡没发出去（&lt;script&gt;）");
+		expect(html).toContain('data-proposal="&quot;&gt;&lt;i&gt;"');
+		expect(html).toContain(
+			't&amp;&lt;b&gt;<span class="reset-card-chip">有卡 · 等你决定</span>',
+		);
+		expect(html).not.toContain("<img");
+		expect(html).not.toContain("<script>");
+		expect(html).not.toContain("<i>");
 	});
 });
 

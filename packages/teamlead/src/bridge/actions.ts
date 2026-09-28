@@ -1001,8 +1001,6 @@ async function handleRetry(
 		const dispatchResolution = resolveNodeDispatchAtLaunch(store, {
 			runId: predecessorBinding.run_id,
 			nodeId: predecessorBinding.node_id,
-			codexQuotaRootKey: quotaRootKey,
-			now: now.getTime(),
 		});
 		const admitted = store.admitGeneralizedWorkflowExecution({
 			codexQuotaRootKey: quotaRootKey,

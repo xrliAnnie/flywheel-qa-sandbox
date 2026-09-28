@@ -1,0 +1,21 @@
+{"t":6,"kind":"items_shape","data":{"role":"developer","layout":"sized","count":3,"itemBytes":[8193,8130,8130],"totalBytes":24453,"codexEstimatedTokens":6114}}
+{"t":162.1,"kind":"response","data":{"method":"initialize","error":null}}
+{"t":1012.6,"kind":"response","data":{"method":"account/read","error":null}}
+{"t":1012.8,"kind":"account","data":{"type":"chatgpt"}}
+{"t":1753.1,"kind":"response","data":{"method":"thread/start","error":null}}
+{"t":2059.2,"kind":"response","data":{"method":"thread/realtime/start","error":null}}
+{"t":2059.5,"kind":"start_response","data":{"error":null}}
+{"t":2831.5,"kind":"started","data":{"version":"v3"}}
+{"t":2836.2,"kind":"pc_state","data":{"s":"connecting"}}
+{"t":3362.7,"kind":"pc_state","data":{"s":"connected"}}
+{"t":3499.6,"kind":"dc_event","data":{"type":"session.started"}}
+{"t":6382,"kind":"watch_window_done","data":{"errors":0,"closed":0}}
+{"t":6385.7,"kind":"question_sent","data":{"ms":2340}}
+{"t":10372.8,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"user","transcript":"你好,请问暗号 是什么?"}}}
+{"t":10382.6,"kind":"transcript_done","data":{"role":"user","text":"你好,请问暗号 是什么?"}}
+{"t":12103.6,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"assistant","transcript":"紫檀九号。"}}}
+{"t":12107.2,"kind":"transcript_done","data":{"role":"assistant","text":"紫檀九号。"}}
+{"t":12612.7,"kind":"response","data":{"method":"thread/realtime/stop","error":null}}
+{"t":12613.2,"kind":"pc_state","data":{"s":"closed"}}
+{"t":12614.2,"kind":"realtime_closed","data":{"reason":"requested"}}
+{"t":12764.7,"kind":"summary","data":{"why":"done","role":"developer","layout":"sized","itemBytes":[8193,8130,8130],"totalBytes":24453,"errors":[],"closed":[{"t":12614.2,"reason":"requested"}],"transcripts":[{"t":10382.6,"role":"user","text":"你好,请问暗号 是什么?"},{"t":12107.2,"role":"assistant","text":"紫檀九号。"}],"dc":{"session.started":1,"input_transcript.added":6,"turn.created":2,"turn.delta":5,"output_transcript.added":4,"turn.done":2},"codeWordAnswered":true,"verdict":"ACCEPTED","authSourceStillFile":true}}

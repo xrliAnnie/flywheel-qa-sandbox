@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { ReceiveHealth } from "flywheel-voice-core";
 import type { VoiceSessionProjection } from "./bridge-client.js";
 import type { ActiveVoiceSession, VoiceEnd } from "./daemon.js";
@@ -43,6 +44,11 @@ interface FrontendLike {
 	appendSpeech(
 		speech: PreparedSpeech,
 	): Promise<void> | Promise<"confirmed" | "unconfirmed" | "failed">;
+	/** Engine B: a whole Lead reply in one read (FLY-2885 founder rework). */
+	appendReply?(
+		text: string,
+		chunkCharacters: number,
+	): Promise<"confirmed" | "unconfirmed" | "failed">;
 	cancelSpeech(speechId: string): void;
 	stop(): Promise<void>;
 }
@@ -120,10 +126,15 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 	private latestReceiveHealth?: ReceiveHealth;
 	private frontendResponseActive = false;
 	private pendingSpeech?: {
-		speech: PreparedSpeech;
+		speechId: string;
 		resolve(status: SpeechReceipt): void;
 		playbackTimer?: ReturnType<typeof setTimeout>;
 	};
+	/** Present only when the frontend reads whole replies (engine B). */
+	readonly speakReply?: (
+		text: string,
+		chunkCharacters: number,
+	) => Promise<SpeechReceipt>;
 
 	constructor(private readonly options: GenericVoiceSessionOptions) {
 		this.now = options.now ?? (() => new Date());
@@ -149,7 +160,11 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 					if (this.prewarmGated()) return;
 					if (
 						this.frontendResponseActive &&
-						metadata.ownerUserId === this.options.projection.founderUserId
+						metadata.ownerUserId !== null &&
+						(metadata.ownerUserId === this.options.projection.founderUserId ||
+							this.options.projection.qaAllowUserIds.includes(
+								metadata.ownerUserId,
+							))
 					) {
 						this.frontendResponseActive = false;
 						this.frontend.cancelSpeech("__conversation__");
@@ -168,6 +183,10 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 				}),
 			assertLease: () => this.options.assertLease?.(),
 		});
+		const appendReply = this.frontend.appendReply?.bind(this.frontend);
+		if (appendReply)
+			this.speakReply = (text, chunkCharacters) =>
+				this.deliver(randomUUID(), () => appendReply(text, chunkCharacters));
 	}
 
 	async start(): Promise<{ founderPresent: boolean }> {
@@ -371,18 +390,26 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 	}
 
 	async speak(speech: PreparedSpeech): Promise<SpeechReceipt> {
+		return this.deliver(speech.speechId, () =>
+			this.frontend.appendSpeech(speech),
+		);
+	}
+
+	private deliver(
+		speechId: string,
+		append: () => Promise<void> | Promise<SpeechReceipt>,
+	): Promise<SpeechReceipt> {
 		if (this.pendingSpeech || this.stopping || !this.admitted || !this.live)
-			return "failed";
+			return Promise.resolve("failed");
 		this.room.setWaiting?.(false);
 		return new Promise<SpeechReceipt>((resolve) => {
-			this.pendingSpeech = { speech, resolve };
-			void this.frontend
-				.appendSpeech(speech)
+			this.pendingSpeech = { speechId, resolve };
+			void append()
 				.then((result) => {
-					if (result) this.settleSpeech(speech.speechId, result);
+					if (result) this.settleSpeech(speechId, result);
 				})
 				.catch(() => {
-					this.settleSpeech(speech.speechId, "failed");
+					this.settleSpeech(speechId, "failed");
 				});
 		});
 	}
@@ -398,9 +425,9 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 		this.frontendResponseActive = false;
 		const pending = this.pendingSpeech;
 		if (pending) {
-			this.frontend.cancelSpeech(pending.speech.speechId);
-			this.room.cancelSpeech?.(pending.speech.speechId);
-			this.settleSpeech(pending.speech.speechId, "failed");
+			this.frontend.cancelSpeech(pending.speechId);
+			this.room.cancelSpeech?.(pending.speechId);
+			this.settleSpeech(pending.speechId, "failed");
 		}
 		try {
 			if (outcome) {
@@ -480,7 +507,7 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 	}): void {
 		if (this.stopping || !this.admitted || !this.live) return;
 		const pending = this.pendingSpeech;
-		if (!pending || pending.speech.speechId !== input.speechId) return;
+		if (!pending || pending.speechId !== input.speechId) return;
 		const playbackBudgetMs = Math.ceil(input.pcm24Mono.length / 48) + 5_000;
 		pending.playbackTimer = setTimeout(() => {
 			this.room.cancelSpeech?.(input.speechId);
@@ -527,7 +554,7 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 
 	private settleSpeech(speechId: string, status: SpeechReceipt): boolean {
 		const pending = this.pendingSpeech;
-		if (!pending || pending.speech.speechId !== speechId) return false;
+		if (!pending || pending.speechId !== speechId) return false;
 		if (pending.playbackTimer) clearTimeout(pending.playbackTimer);
 		this.pendingSpeech = undefined;
 		pending.resolve(status);

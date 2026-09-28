@@ -1,0 +1,16 @@
+sequenceDiagram
+  participant Q as QA 节点
+  participant C as 协调器
+  participant F as 驻留门
+  participant I as 实现体
+  I->>F: 首次交卷 停驻 resident 激活A0
+  Q->>C: 第一次判 FAIL 返工 R1
+  C->>F: 唤醒
+  F->>I: 推送成功 标记 woken
+  I->>F: 以激活 R1 交卷
+  Note over F: 修前 激活不同 直接拒绝 hold 永远停在 woken
+  Note over F: 修后 更新为当前激活 回到 resident
+  Q->>C: 第二次判 FAIL 返工 R2
+  C->>F: 唤醒
+  Note over F: 修前 woken 判投不到 重试 5 次 run 被冻结
+  F->>I: 修后 resident 正常送达 woken 也直接推送

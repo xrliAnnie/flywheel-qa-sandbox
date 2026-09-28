@@ -3,6 +3,7 @@ import type { WorkflowRunEventRow } from "./StateStore.js";
 import {
 	readScorecardAssignment,
 	readScorecardDegradation,
+	readScorecardQuotaFallback,
 } from "./workflow-model-assignment.js";
 
 export interface WorkflowScorecardReportOptions {
@@ -27,6 +28,44 @@ export interface WorkflowScorecardPoolCapacityConfig {
 			accounts: Array<{ slot: string; capacityUnits: number }>;
 		}
 	>;
+}
+
+export type ReviewCoverage = "complete" | "incomplete" | "unverified" | "none";
+
+/** FLY-2891: one raw reviewer verdict on the author's artifact. */
+export interface NormalizedRound {
+	at: string;
+	rawVerdict: "APPROVED" | "CHANGES_REQUESTED";
+	seriesKey: string;
+	ordinal: number;
+}
+
+/** One adapter unit whose completeness can be reconciled on its own. */
+export interface ReviewRoundGroup {
+	rounds: NormalizedRound[];
+	/** Rounds the source says exist; null = cannot say (→ unverified). */
+	expectedTotal: number | null;
+	/** A known hole in the source (→ incomplete). */
+	gap?: boolean;
+}
+
+export interface ReviewMetric {
+	firstPass: boolean | null;
+	roundsToApproval: number | null;
+	coverage: ReviewCoverage;
+}
+
+export interface WorkflowScorecardReviewReport extends ReviewMetric {
+	reviewerModels: string[];
+	source: "bridge_job" | "local_round" | "mixed" | "none";
+	timeBasisFallback: number;
+}
+
+export interface WorkflowScorecardReviewGroupMetrics {
+	firstPass: { numerator: number; denominator: number; rate: number | null };
+	roundsMean: number | null;
+	coverage: Record<ReviewCoverage, number>;
+	timeBasisFallback: number;
 }
 
 export interface WorkflowScorecardIssueReport {
@@ -65,6 +104,9 @@ export interface WorkflowScorecardIssueReport {
 		tokens: number | null;
 		durationMs: number | null;
 	}>;
+	/** FLY-2891: design/code review first pass + rounds, both review lines. */
+	designReview: WorkflowScorecardReviewReport;
+	codeReview: WorkflowScorecardReviewReport;
 }
 
 export interface WorkflowScorecardGroupReport {
@@ -103,6 +145,14 @@ export interface WorkflowScorecardGroupReport {
 	};
 	vendorMix: Array<{ vendor: string; model: string; tokens: number }>;
 	crossVendorUnitIncomparable: boolean;
+	designReviewFirstPass: WorkflowScorecardReviewGroupMetrics["firstPass"];
+	designReviewRoundsMean: number | null;
+	designReviewCoverage: Record<ReviewCoverage, number>;
+	designReviewTimeBasisFallback: number;
+	codeReviewFirstPass: WorkflowScorecardReviewGroupMetrics["firstPass"];
+	codeReviewRoundsMean: number | null;
+	codeReviewCoverage: Record<ReviewCoverage, number>;
+	codeReviewTimeBasisFallback: number;
 }
 
 export interface WorkflowScorecardReport {
@@ -131,9 +181,401 @@ export interface WorkflowScorecardReport {
 	detailPage: { offset: number; limit: number; returned: number };
 	issues: WorkflowScorecardIssueReport[];
 	groups: WorkflowScorecardGroupReport[];
+	/** FLY-2891: undelivered review-round records (filled by the CLI). */
+	reviewRoundSpool?: { pending: number; quarantined: number };
 }
 
 type Row = Record<string, unknown>;
+
+/** SQLite `datetime('now')` is UTC without a zone; never read it as local. */
+function parseDbTime(value: unknown): number {
+	if (typeof value !== "string") return Number.NaN;
+	return Date.parse(
+		/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?$/.test(value)
+			? `${value.replace(" ", "T")}Z`
+			: value,
+	);
+}
+
+/**
+ * FLY-2891: one shared definition for both review lines. A round is a raw
+ * reviewer verdict. Completeness must be provable (contiguous ordinals per
+ * series AND the source's expected total met) or the metric is unknown —
+ * missing data never counts as a pass.
+ */
+export function normalizeReviewRounds(
+	groups: readonly ReviewRoundGroup[],
+): ReviewMetric {
+	const all = groups.flatMap((group) => group.rounds);
+	if (
+		all.length === 0 &&
+		!groups.some((group) => group.gap || (group.expectedTotal ?? 0) > 0)
+	)
+		return { firstPass: null, roundsToApproval: null, coverage: "none" };
+	let incomplete = false;
+	let unverified = false;
+	for (const group of groups) {
+		if (group.gap) incomplete = true;
+		const bySeries = new Map<string, number[]>();
+		for (const round of group.rounds)
+			bySeries.set(round.seriesKey, [
+				...(bySeries.get(round.seriesKey) ?? []),
+				round.ordinal,
+			]);
+		for (const ordinals of bySeries.values()) {
+			ordinals.sort((left, right) => left - right);
+			if (ordinals.some((ordinal, index) => ordinal !== index + 1))
+				incomplete = true;
+		}
+		if (group.expectedTotal === null) unverified = true;
+		else if (group.expectedTotal !== group.rounds.length) incomplete = true;
+	}
+	if (incomplete)
+		return { firstPass: null, roundsToApproval: null, coverage: "incomplete" };
+	if (unverified)
+		return { firstPass: null, roundsToApproval: null, coverage: "unverified" };
+	const ordered = [...all].sort(
+		(left, right) =>
+			Date.parse(left.at) - Date.parse(right.at) ||
+			left.seriesKey.localeCompare(right.seriesKey) ||
+			left.ordinal - right.ordinal,
+	);
+	const approvedAt = ordered.findIndex(
+		(round) => round.rawVerdict === "APPROVED",
+	);
+	return {
+		firstPass: ordered[0]!.rawVerdict === "APPROVED",
+		roundsToApproval: approvedAt < 0 ? null : approvedAt + 1,
+		coverage: "complete",
+	};
+}
+
+type LocalRoundRow = {
+	execution_id: string;
+	review_type: string;
+	codex_thread_id: string;
+	codex_turn_id: string;
+	round: number;
+	verdict: string;
+	observed_model: string | null;
+	/** Server-derived at ingest: 1/0 when a requirement and evidence existed. */
+	model_match?: number | null;
+	required_model?: string | null;
+	reviewed_at: string;
+};
+type GateAcceptanceRow = {
+	execution_id: string;
+	review_type: string;
+	codex_thread_id: string;
+	codex_turn_id: string;
+	final_round: number;
+	rounds_total: number;
+	accepted_at: string;
+};
+
+/**
+ * Claude-author local rounds. Expected total = the earliest gate acceptance's
+ * rounds_total; rounds after the accepted turn are not counted; without an
+ * acceptance the rounds are unverified. Rounds that ran on a model other than
+ * the required reviewer (model_match=0 — the FLY-2830 pattern) are not review
+ * rounds: they are dropped and subtracted from rounds_total on both sides. A
+ * round with no model evidence under a requirement makes the unit unverified.
+ */
+export function localReviewGroups(
+	rounds: readonly LocalRoundRow[],
+	acceptances: readonly GateAcceptanceRow[],
+	asOf: string,
+): { groups: ReviewRoundGroup[]; reviewerModels: Set<string> } {
+	const asOfMs = Date.parse(asOf);
+	const key = (row: { execution_id: string; review_type: string }) =>
+		`${row.execution_id}|${row.review_type}`;
+	const roundsByKey = new Map<string, LocalRoundRow[]>();
+	const reviewerModels = new Set<string>();
+	for (const round of rounds) {
+		if (!(parseDbTime(round.reviewed_at) < asOfMs)) continue;
+		roundsByKey.set(key(round), [
+			...(roundsByKey.get(key(round)) ?? []),
+			round,
+		]);
+	}
+	const acceptedByKey = new Map<string, GateAcceptanceRow>();
+	for (const accepted of acceptances) {
+		if (!(parseDbTime(accepted.accepted_at) < asOfMs)) continue;
+		const current = acceptedByKey.get(key(accepted));
+		if (
+			!current ||
+			parseDbTime(accepted.accepted_at) < parseDbTime(current.accepted_at)
+		)
+			acceptedByKey.set(key(accepted), accepted);
+	}
+	const groups: ReviewRoundGroup[] = [];
+	const settle = (
+		rows: readonly LocalRoundRow[],
+		declaredTotal: number | null,
+		knownGap = false,
+	): void => {
+		const byThread = new Map<string, LocalRoundRow[]>();
+		for (const row of rows)
+			byThread.set(row.codex_thread_id, [
+				...(byThread.get(row.codex_thread_id) ?? []),
+				row,
+			]);
+		let gap = knownGap;
+		const counted: NormalizedRound[] = [];
+		for (const [thread, threadRows] of byThread) {
+			threadRows.sort(
+				(left, right) => Number(left.round) - Number(right.round),
+			);
+			// Contiguity is judged on everything recorded: a missing round is a
+			// hole even when its neighbours are later excluded as off-model.
+			if (threadRows.some((row, index) => Number(row.round) !== index + 1))
+				gap = true;
+			let ordinal = 0;
+			for (const row of threadRows) {
+				if (row.model_match === 0) continue;
+				if (row.verdict !== "APPROVED" && row.verdict !== "CHANGES_REQUESTED")
+					continue;
+				ordinal += 1;
+				counted.push({
+					at: new Date(parseDbTime(row.reviewed_at)).toISOString(),
+					rawVerdict: row.verdict,
+					seriesKey: `${key(row)}|${thread}`,
+					ordinal,
+				});
+				if (row.observed_model) reviewerModels.add(row.observed_model);
+			}
+		}
+		const offModel = rows.filter((row) => row.model_match === 0).length;
+		// More excluded rounds than the runner declared is a contradiction.
+		if (declaredTotal !== null && offModel > declaredTotal) gap = true;
+		const unproven = rows.some(
+			(row) => row.model_match == null && !!row.required_model,
+		);
+		groups.push({
+			rounds: counted,
+			expectedTotal:
+				declaredTotal === null || unproven ? null : declaredTotal - offModel,
+			...(gap ? { gap: true } : {}),
+		});
+	};
+	for (const groupKey of new Set([
+		...roundsByKey.keys(),
+		...acceptedByKey.keys(),
+	])) {
+		const rows = roundsByKey.get(groupKey) ?? [];
+		const accepted = acceptedByKey.get(groupKey);
+		if (!accepted) {
+			if (rows.length > 0) settle(rows, null);
+			continue;
+		}
+		const acceptedRound = rows.find(
+			(row) =>
+				row.codex_thread_id === accepted.codex_thread_id &&
+				row.codex_turn_id === accepted.codex_turn_id &&
+				row.verdict === "APPROVED" &&
+				// An off-model turn is not a review round, so it cannot be the
+				// accepted one; the unit is then a coverage gap.
+				row.model_match !== 0 &&
+				Number(row.round) === Number(accepted.final_round),
+		);
+		if (!acceptedRound) {
+			settle(rows, Number(accepted.rounds_total), true);
+			continue;
+		}
+		const cut = parseDbTime(acceptedRound.reviewed_at);
+		settle(
+			rows.filter((row) => parseDbTime(row.reviewed_at) <= cut),
+			Number(accepted.rounds_total),
+		);
+	}
+	return { groups, reviewerModels };
+}
+
+type ReviewJobRow = {
+	request_id: string;
+	execution_id: string;
+	review_type: string;
+	target_repo_identity: string | null;
+	status: string;
+	reviewer_verdict: string | null;
+	created_at: string;
+	updated_at: string | null;
+	completed_at?: string | null;
+};
+
+/**
+ * Bridge-run review jobs (the Astra line). Every done job is a round, keyed by
+ * the stable completion time (historical rows fall back to updated_at and are
+ * counted); a done job without a raw reviewer verdict is a coverage gap.
+ * Failed/skipped/pending jobs and reuse copies are not rounds.
+ */
+export function jobReviewGroups(
+	jobs: readonly ReviewJobRow[],
+	reuseCopies: ReadonlySet<string>,
+	asOf: string,
+): {
+	groups: ReviewRoundGroup[];
+	timeBasisFallback: number;
+	/** The done jobs that entered the metric (reviewer models come from these). */
+	countedRequestIds: Set<string>;
+} {
+	const asOfMs = Date.parse(asOf);
+	let timeBasisFallback = 0;
+	const countedRequestIds = new Set<string>();
+	const series = new Map<string, Array<ReviewJobRow & { at: number }>>();
+	for (const row of jobs) {
+		if (row.status !== "done" || reuseCopies.has(row.request_id)) continue;
+		const fallback = !row.completed_at;
+		const at = parseDbTime(
+			row.completed_at || row.updated_at || row.created_at,
+		);
+		if (!(at < asOfMs)) continue;
+		if (fallback) timeBasisFallback += 1;
+		countedRequestIds.add(row.request_id);
+		const seriesKey = `${row.execution_id}|${row.review_type}|${row.target_repo_identity ?? "__main__"}`;
+		series.set(seriesKey, [...(series.get(seriesKey) ?? []), { ...row, at }]);
+	}
+	const groups: ReviewRoundGroup[] = [];
+	for (const [seriesKey, rows] of series) {
+		rows.sort(
+			(left, right) =>
+				parseDbTime(left.created_at) - parseDbTime(right.created_at) ||
+				left.request_id.localeCompare(right.request_id),
+		);
+		let gap = false;
+		const rounds: NormalizedRound[] = [];
+		rows.forEach((row, index) => {
+			if (
+				row.reviewer_verdict !== "APPROVED" &&
+				row.reviewer_verdict !== "CHANGES_REQUESTED"
+			) {
+				gap = true;
+				return;
+			}
+			rounds.push({
+				at: new Date(row.at).toISOString(),
+				rawVerdict: row.reviewer_verdict,
+				seriesKey,
+				ordinal: index + 1,
+			});
+		});
+		groups.push({ rounds, expectedTotal: rows.length, gap });
+	}
+	return { groups, timeBasisFallback, countedRequestIds };
+}
+
+function readIssueReviewMetrics(
+	db: Database,
+	executionIds: readonly string[],
+	eventRows: readonly WorkflowRunEventRow[],
+	asOf: string,
+): Record<"design" | "code", WorkflowScorecardReviewReport> {
+	const placeholders = executionIds.map(() => "?").join(",") || "NULL";
+	const localRounds = tableExists(db, "review_round_record")
+		? (rows(
+				db,
+				`SELECT * FROM review_round_record WHERE execution_id IN (${placeholders})`,
+				...executionIds,
+			) as unknown as LocalRoundRow[])
+		: [];
+	const acceptances = tableExists(db, "review_gate_acceptance")
+		? (rows(
+				db,
+				`SELECT * FROM review_gate_acceptance WHERE execution_id IN (${placeholders})`,
+				...executionIds,
+			) as unknown as GateAcceptanceRow[])
+		: [];
+	const jobs = tableExists(db, "codex_review_job")
+		? (rows(
+				db,
+				`SELECT * FROM codex_review_job WHERE execution_id IN (${placeholders})`,
+				...executionIds,
+			) as unknown as ReviewJobRow[])
+		: [];
+	const reuseCopies = new Set<string>(
+		jobs.length > 0 && tableExists(db, "codex_review_reuse_binding")
+			? rows(
+					db,
+					`SELECT request_id FROM codex_review_reuse_binding
+					  WHERE request_id IN (${jobs.map(() => "?").join(",")})`,
+					...jobs.map((job) => job.request_id),
+				).map((row) => String(row.request_id))
+			: [],
+	);
+	const routedModels = new Map<string, string>();
+	for (const event of eventRows) {
+		if (event.kind !== "review_model_routed") continue;
+		const payload = event.payload as Record<string, unknown> | undefined;
+		if (
+			typeof payload?.requestId === "string" &&
+			typeof payload.reviewerModel === "string"
+		)
+			routedModels.set(payload.requestId, payload.reviewerModel);
+	}
+	const result = {} as Record<"design" | "code", WorkflowScorecardReviewReport>;
+	for (const reviewType of ["design", "code"] as const) {
+		const local = localReviewGroups(
+			localRounds.filter((row) => row.review_type === reviewType),
+			acceptances.filter((row) => row.review_type === reviewType),
+			asOf,
+		);
+		const typeJobs = jobs.filter((row) => row.review_type === reviewType);
+		const bridge = jobReviewGroups(typeJobs, reuseCopies, asOf);
+		const models = new Set(local.reviewerModels);
+		for (const requestId of bridge.countedRequestIds) {
+			const model = routedModels.get(requestId);
+			if (model) models.add(model);
+		}
+		result[reviewType] = {
+			...normalizeReviewRounds([...local.groups, ...bridge.groups]),
+			reviewerModels: [...models].sort(),
+			source:
+				local.groups.length > 0 && bridge.groups.length > 0
+					? "mixed"
+					: local.groups.length > 0
+						? "local_round"
+						: bridge.groups.length > 0
+							? "bridge_job"
+							: "none",
+			timeBasisFallback: bridge.timeBasisFallback,
+		};
+	}
+	return result;
+}
+
+function reviewGroupMetrics(
+	issues: readonly WorkflowScorecardIssueReport[],
+	key: "designReview" | "codeReview",
+): WorkflowScorecardReviewGroupMetrics {
+	const known = issues.filter((issue) => issue[key].firstPass !== null);
+	const passed = known.filter((issue) => issue[key].firstPass === true).length;
+	const coverage: Record<ReviewCoverage, number> = {
+		complete: 0,
+		incomplete: 0,
+		unverified: 0,
+		none: 0,
+	};
+	for (const issue of issues) coverage[issue[key].coverage] += 1;
+	return {
+		firstPass: {
+			numerator: passed,
+			denominator: known.length,
+			rate: rate(passed, known.length),
+		},
+		roundsMean: mean(
+			issues.flatMap((issue) =>
+				issue[key].roundsToApproval === null
+					? []
+					: [issue[key].roundsToApproval],
+			),
+		),
+		coverage,
+		timeBasisFallback: issues.reduce(
+			(sum, issue) => sum + issue[key].timeBasisFallback,
+			0,
+		),
+	};
+}
 
 function rows(db: Database, sql: string, ...params: unknown[]): Row[] {
 	return db.prepare(sql).all(...params) as Row[];
@@ -281,6 +723,20 @@ function groupReport(
 		vendorMix,
 		crossVendorUnitIncomparable:
 			new Set(vendorMix.map((entry) => entry.vendor)).size > 1,
+		...(() => {
+			const design = reviewGroupMetrics(issues, "designReview");
+			const code = reviewGroupMetrics(issues, "codeReview");
+			return {
+				designReviewFirstPass: design.firstPass,
+				designReviewRoundsMean: design.roundsMean,
+				designReviewCoverage: design.coverage,
+				designReviewTimeBasisFallback: design.timeBasisFallback,
+				codeReviewFirstPass: code.firstPass,
+				codeReviewRoundsMean: code.roundsMean,
+				codeReviewCoverage: code.coverage,
+				codeReviewTimeBasisFallback: code.timeBasisFallback,
+			};
+		})(),
 	};
 }
 
@@ -562,6 +1018,21 @@ export function readWorkflowScorecardReport(
 			let sawUnassigned = false;
 			let sawUnknown = false;
 			for (const activation of axisActivations) {
+				if (
+					readScorecardQuotaFallback(eventRows, {
+						runId: String(activation.run_id),
+						nodeId: String(activation.node_id),
+						activationId: String(activation.activation_id),
+					})
+				) {
+					// FLY-2900: a quota fallback sample is excluded like a degradation.
+					degraded = true;
+					degradations.set(String(activation.activation_id), {
+						degraded: true,
+						reason: "quota_fallback",
+					});
+					continue;
+				}
 				const assignment = readScorecardAssignment(eventRows, {
 					runId: String(activation.run_id),
 					nodeId: String(activation.node_id),
@@ -749,6 +1220,12 @@ export function readWorkflowScorecardReport(
 				Date.parse(String(activation.admitted_at)),
 			),
 		);
+		const reviews = readIssueReviewMetrics(
+			db,
+			[...new Set(activations.map((row) => String(row.execution_id)))],
+			eventRows,
+			options.asOf,
+		);
 		const lastClose = terminal
 			? Math.max(
 					...activations.map((activation) =>
@@ -793,6 +1270,8 @@ export function readWorkflowScorecardReport(
 			originalGroups,
 			originalGroupPolicies,
 			nodes,
+			designReview: reviews.design,
+			codeReview: reviews.code,
 		});
 	}
 	const selectedIssues =

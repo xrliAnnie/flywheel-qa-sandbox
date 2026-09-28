@@ -12,10 +12,21 @@ import { RETIRED_CONFIG_PATHS, RETIRED_FLAGS } from "../feature-flags/truth.js";
 import { auditFly1981LegacyLedger } from "./fly1981-legacy-snapshot.js";
 
 const EXPECTED_WHEN_ON = {
+	review_early_stop: "提前停止已被新版取代的评审，保留作废原因和接替任务记录",
 	auto_release_on_silence_enabled:
 		"满足启用授权、送达和健康条件后，在否决窗口到期时默认发布客户版本",
+	lead_stage_changed_audit:
+		"例行阶段变化只记账，等 Lead 下次处理任务时汇总查看；需要处理的仍立即通知",
+	lead_session_started_audit:
+		"Runner 正常开工只记账，等 Lead 下次处理任务时汇总查看；需要接手的仍立即通知",
+	lead_monitoring_reestablished_audit:
+		"监控恢复只记账，等 Lead 下次处理任务时汇总查看；仍有告警或待办的立即通知",
+	lead_replacement_notice_audit:
+		"未来换体预告只记账，等 Lead 下次处理任务时汇总查看；需要处理的仍立即通知",
 	lead_token_savings:
 		"恢复时先给摘要与分页入口，例行进度保留审计但不唤醒 Lead；常驻规则精简，巡检细节按需读取。",
+	lead_alert_wake_dedup:
+		"同一 Lead 6 小时内与已送达告警完全等价（同类别、同标题、同对象与处理要求、未升级、同代工单）的告警只记账不叫醒；info（带待办的除外）进下一次叫醒的摘要。",
 	codex_lead_thread_rotation:
 		"常驻 Codex Lead 在满足周期与空闲条件时开启新对话页，让旧页可进入原生记忆整理",
 	codex_memory_distill:
@@ -36,6 +47,10 @@ const EXPECTED_WHEN_ON = {
 	review_quota_auto_retry: "Claude 额度恢复后，自动重试仍然有效的跨模型评审",
 	codex_quota_auto_switch:
 		"Codex 额度耗尽后自动切换可用账号，并恢复受影响的任务",
+	codex_quota_standby:
+		"Codex 撞额度墙时让节点原地待命，额度恢复或切号成功后按原会话自动续上；关闭后新撞墙走原失败路径",
+	codex_quota_claude_fallback:
+		"所有 Codex 号都撞墙且最早恢复超过 30 分钟时，把待命节点改派 Claude 接手；关闭后保持排队并在额度页标出",
 	account_switch_wake_sweep:
 		"Claude 死号切换成功后，自动唤醒切号前已在运行的 Claude 节点继续工作",
 	loop_profiler: "Bridge 卡顿时自动抓取一份限时 CPU 分析，方便排查原因",
@@ -94,7 +109,6 @@ describe("feature-flag registry invariants", () => {
 	});
 
 	it("FLY-2368 gives every current flag its reviewed founder copy", () => {
-		expect(FEATURE_FLAGS).toHaveLength(38);
 		expect(
 			Object.fromEntries(FEATURE_FLAGS.map((flag) => [flag.name, flag.whenOn])),
 		).toEqual(EXPECTED_WHEN_ON);
@@ -525,6 +539,38 @@ describe("feature-flag registry invariants", () => {
 			"workflowDecisionRoutes",
 		]);
 		expect(flag?.directToggleProof).toMatch(/flag-store-runtime/i);
+	});
+
+	it("FLY-2900 registers Codex quota standby and its Claude fallback as default-on kill switches", () => {
+		for (const [name, envVar, resolverSymbol] of [
+			[
+				"codex_quota_standby",
+				"FLYWHEEL_CODEX_QUOTA_STANDBY",
+				"storeCodexQuotaStandbyEnabled",
+			],
+			[
+				"codex_quota_claude_fallback",
+				"FLYWHEEL_CODEX_QUOTA_CLAUDE_FALLBACK",
+				"storeCodexQuotaClaudeFallbackEnabled",
+			],
+		] as const) {
+			const flag = FEATURE_FLAGS.find((candidate) => candidate.name === name);
+			expect(flag).toMatchObject({
+				envVar,
+				category: "kill_switch",
+				scope: "bridge_global",
+				polarity: "default_on",
+				default: true,
+				toggleable: "direct",
+			});
+			expect(flag?.readSites).toEqual([
+				expect.objectContaining({
+					file: "packages/teamlead/src/bridge/plugin.ts",
+					symbol: "startBridge",
+					resolverSymbol,
+				}),
+			]);
+		}
 	});
 
 	it("FLY-2808 registers new-actor standby resume as a default-off live feature", () => {

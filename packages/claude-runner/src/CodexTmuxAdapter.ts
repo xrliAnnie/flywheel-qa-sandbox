@@ -55,6 +55,7 @@ import type {
 	AdapterExecutionContext,
 	AdapterExecutionResult,
 	AdapterHealthCheck,
+	CodexQuotaResumeLifecycle,
 	IAdapter,
 	IHookCallbackServer,
 } from "flywheel-core";
@@ -1411,6 +1412,16 @@ export class CodexTmuxAdapter implements IAdapter {
 			) {
 				throw new Error("Codex resume identity callback is unavailable");
 			}
+			if (
+				ctx.processLifecycle.quotaResume &&
+				(ctx.processLifecycle.mode !== "resume" ||
+					ctx.processLifecycle.quotaResume.authorization.executionId !==
+						ctx.executionId)
+			) {
+				throw new Error(
+					"Codex quota resume requires a resume of this execution",
+				);
+			}
 		}
 		const processGitIdentity = ctx.processLifecycle
 			? await this.captureProcessGitIdentity(sandboxCwd)
@@ -1767,9 +1778,41 @@ export class CodexTmuxAdapter implements IAdapter {
 				);
 			}
 
+			// FLY-2900: the claim authorizes restarts only until this quota
+			// resume settles. Later transport recovery uses ordinary admission.
+			const originalQuotaResume = ctx.processLifecycle?.quotaResume;
+			let quotaResumeSettled = false;
+			const quotaResume: CodexQuotaResumeLifecycle | undefined =
+				originalQuotaResume
+					? {
+							...originalQuotaResume,
+							onContinueProgress(input) {
+								originalQuotaResume.onContinueProgress(input);
+								quotaResumeSettled = true;
+							},
+							onContinueReconciled(outcome) {
+								const decision =
+									originalQuotaResume.onContinueReconciled(outcome);
+								if (decision.action === "send" && decision.settled)
+									quotaResumeSettled = true;
+								return decision;
+							},
+						}
+					: undefined;
+			const beforeCodexDaemonStart =
+				quotaResume && ctx.beforeCodexDaemonStart
+					? (home: string, executionId: string) =>
+							quotaResumeSettled
+								? ctx.beforeCodexDaemonStart!(home, executionId)
+								: ctx.beforeCodexDaemonStart!(
+										home,
+										executionId,
+										quotaResume.authorization,
+									)
+					: ctx.beforeCodexDaemonStart;
 			throwIfTerminationRequested();
 			runtime = this.runtimeFactory({
-				beforeCodexDaemonStart: ctx.beforeCodexDaemonStart,
+				beforeCodexDaemonStart,
 				codexQuotaBinding: ctx.codexQuotaBinding,
 				executionId: ctx.executionId,
 				codexBin: flywheelCodexBin(),
@@ -2191,13 +2234,29 @@ export class CodexTmuxAdapter implements IAdapter {
 					}
 					this.persistSessionState(ctx, threadId, processGitIdentity);
 					resumeIdentitySettled = true;
-					ctx.processLifecycle?.onIdentityVerified?.({
-						sessionId: threadId,
-						model: verifiedModel,
-						cwd: verifiedCwd,
-						verifiedAt: new Date().toISOString(),
-					});
-					if (ctx.processLifecycle?.mode === "resume") {
+					// Successful quota settlement closes the durable claim. Still
+					// verify the observed identity above on every daemon restart,
+					// but do not try to verify that closed claim again.
+					if (!quotaResumeSettled) {
+						let authDigest: string | undefined;
+						if (ctx.processLifecycle?.quotaResume) {
+							try {
+								authDigest = createHash("sha256")
+									.update(readFileSync(join(codexHome, "auth.json")))
+									.digest("hex");
+							} catch {
+								// No credential observation means no shared recovery proof.
+							}
+						}
+						ctx.processLifecycle?.onIdentityVerified?.({
+							sessionId: threadId,
+							model: verifiedModel,
+							cwd: verifiedCwd,
+							verifiedAt: new Date().toISOString(),
+							...(authDigest ? { authDigest } : {}),
+						});
+					}
+					if (ctx.processLifecycle?.mode === "resume" && !quotaResumeSettled) {
 						const deadline = Date.now() + CODEX_RESUME_IDENTITY_TIMEOUT_MS;
 						for (;;) {
 							const status =
@@ -2442,6 +2501,7 @@ export class CodexTmuxAdapter implements IAdapter {
 						: {}),
 					...(phaseLifecycle ? { phaseLifecycle } : {}),
 					...(turnLifecycle ? { turnLifecycle } : {}),
+					...(quotaResume ? { quotaResume } : {}),
 					// FLY-2903: a daemon killed by a Bridge terminal path (stop
 					// requested) or during an approved retirement is not a crash and
 					// is never resumed. A throwing retirement reader throws here, which

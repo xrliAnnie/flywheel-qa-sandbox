@@ -1,0 +1,17 @@
+{"t":287.3,"kind":"response","data":{"method":"initialize","error":null}}
+{"t":598.9,"kind":"response","data":{"method":"account/read","error":null}}
+{"t":599.1,"kind":"account","data":{"type":"chatgpt"}}
+{"t":1225.8,"kind":"response","data":{"method":"thread/start","error":null}}
+{"t":1333.5,"kind":"response","data":{"method":"thread/realtime/start","error":null}}
+{"t":1333.6,"kind":"marin_attempt","data":{"error":null,"accepted":true}}
+{"t":1333.9,"kind":"notify","data":{"method":"thread/realtime/error","params":{"threadId":"01a0daa5-bc78-7ac2-967f-c3f9e3df313a","message":"realtime voice `marin` is not supported for v3; supported voices: juniper, maple, spruce, ember, vale, breeze, arbor, sol, cove"}}}
+{"t":1835.4,"kind":"response","data":{"method":"thread/realtime/stop","error":null}}
+{"t":1835.7,"kind":"notify","data":{"method":"thread/realtime/closed","params":{"threadId":"01a0daa5-bc78-7ac2-967f-c3f9e3df313a","reason":"requested"}}}
+{"t":2836.6,"kind":"mark","data":{"k":"start_sent","ms":2836.6}}
+{"t":2841,"kind":"response","data":{"method":"thread/realtime/start","error":null}}
+{"t":3503.6,"kind":"notify","data":{"method":"thread/realtime/error","params":{"threadId":"01a0daa5-bc78-7ac2-967f-c3f9e3df313a","message":"{\n    \"error\": {\n        \"message\": \"Invalid AVAS session_data: UserError[400, user=Instructions must not exceed 16384 tokens.]\",\n        \"type\": \"invalid_request_error\",\n        \"code\": \"invalid_request_error\",\n        \"param\": \"\"\n    }\n}"}}}
+{"t":3503.8,"kind":"no_sdp","data":{"threadId":"01a0daa5-bc78-7ac2-967f-c3f9e3df313a","message":"{\n    \"error\": {\n        \"message\": \"Invalid AVAS session_data: UserError[400, user=Instructions must not exceed 16384 tokens.]\",\n        \"type\": \"invalid_request_error\",\n        \"code\": \"invalid_request_error\",\n        \"param\": \"\"\n    }\n}"}}
+{"t":3504.7,"kind":"response","data":{"method":"thread/realtime/stop","error":null}}
+{"t":3505.2,"kind":"pc_state","data":{"s":"closed"}}
+{"t":3505.6,"kind":"notify","data":{"method":"thread/realtime/closed","params":{"threadId":"01a0daa5-bc78-7ac2-967f-c3f9e3df313a","reason":"requested"}}}
+{"t":3554,"kind":"summary","data":{"why":"no_sdp","marks":{"start_sent":2836.6},"counts":{"outputAudioDelta":0,"dc":{},"notify":{"remoteControl/status/changed":1,"account/updated":1,"thread/started":1,"mcpServer/startupStatus/updated":3,"thread/realtime/error":2,"thread/realtime/closed":2}},"downPkts":0,"down960":0,"voicedDown":0,"transcripts":[],"promptBytes":61489,"authSourceStillFile":true}}

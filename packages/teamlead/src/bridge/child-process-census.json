@@ -141,6 +141,11 @@
 			"disposition": "one_shot_cli"
 		},
 		{
+			"file": "packages/flywheel-comm/src/commands/review-round.ts",
+			"sync_child": 1,
+			"disposition": "one_shot_cli"
+		},
+		{
 			"file": "packages/flywheel-comm/src/commands/summary-registry.ts",
 			"sync_child": 2,
 			"disposition": "one_shot_cli"
@@ -392,6 +397,12 @@
 			"disposition": "FLY-2465 isolated quota reader/probe only: async raw Codex child, sanitized environment, account lease, bounded deadline and output, abort process-group drain before credential persistence"
 		},
 		{
+			"file": "packages/teamlead/src/codex-quota/wip-checkpoint.ts",
+			"sync_child": 1,
+			"sync_marker": 1,
+			"disposition": "bridge_sync_marker_timeout: Codex quota fallback WIP checkpoint (rare: walled pool or exhausted resumes); local git plumbing only, every call under the sync-operation marker with a 5 s timeout and the whole checkpoint capped at 20 s (WIP_CHECKPOINT_BUDGET_MS); synchronous on purpose so no relaunch interleaves between the branch CAS and the index sync"
+		},
+		{
 			"file": "packages/teamlead/src/lead-auto-compact.ts",
 			"sync_child": 2,
 			"disposition": "FLY-2567 separate launcher probe process only; two CLI probes bounded by 5s timeout and 16KiB output each; not imported by Bridge"
@@ -508,6 +519,11 @@
 			"file": "packages/voice-codex/src/adapters.ts",
 			"raw_spawn": 1,
 			"disposition": "standalone_runtime_observed"
+		},
+		{
+			"file": "packages/voice-codex/src/health-alert.ts",
+			"raw_spawn": 1,
+			"disposition": "standalone_runtime_bounded: FLY-2885 voice daemon lead-alert sender only; async /bin/bash lead-alert.sh, shell:false, own detached process group, 30 s timeout and 4 KiB output bound with group TERM then KILL after 2 s, stopped as a group at daemon shutdown; not imported by Bridge"
 		},
 		{
 			"file": "packages/voice-codex/src/startup-alert.ts",

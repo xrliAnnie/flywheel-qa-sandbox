@@ -162,6 +162,20 @@ export interface RunnerPhaseWakeProjectionRow {
 	issue_id: string | null;
 }
 
+/**
+ * FLY-2921: outcome of re-arming a TURN wake for a hold resume. Only `reset`,
+ * `idempotent_replay` and `noop` may be settled as applied by the caller;
+ * `busy` means nothing ran and the caller must retry on a later pass.
+ */
+export type TurnWakeHoldResumeResult =
+	| { kind: "reset" }
+	| { kind: "idempotent_replay" }
+	| { kind: "noop"; reason: "source_missing" | "acked" | "cancelled" }
+	| { kind: "busy"; claimExpiresAt: number | null };
+
+/** Cancel-reason prefix written by the turn-wake patrol's terminal guard. */
+const TURN_WAKE_TERMINAL_GUARD_PREFIX = "terminal_guard:";
+
 export interface RunnerTurnWakeProjectionRow {
 	queue_seq: number;
 	wake_id: string;
@@ -3520,6 +3534,17 @@ export class CommDB {
 			.get(id) as Message | undefined;
 	}
 
+	getQuestionOrder(
+		id: string,
+	): { createdAt: string; rowId: number } | undefined {
+		return this.db
+			.prepare(
+				`SELECT created_at AS createdAt, rowid AS rowId
+				 FROM mailbox_message_projection WHERE id = ? AND type = 'question'`,
+			)
+			.get(id) as { createdAt: string; rowId: number } | undefined;
+	}
+
 	listRunnerDeliveryProjectionRows(
 		now = new Date().toISOString(),
 		page?: { afterSeq?: number; limit?: number; includeInflight?: boolean },
@@ -4199,27 +4224,51 @@ export class CommDB {
 			.immediate();
 	}
 
-	resumeTurnWakeHold(input: { sourceId: string; receiptId: string }): {
-		idempotentReplay: boolean;
-		noop?: true;
-	} {
-		if (!input.sourceId.trim() || !input.receiptId.trim()) {
+	/**
+	 * Re-arm the same TURN wake after its push budget was exhausted, keyed by
+	 * the hold-resume receipt. FLY-2921: one Lead re-delivery resets the row at
+	 * most once, and never underneath a live patrol push claim.
+	 *
+	 * - `reset`: push bookkeeping cleared, `cancel_reason` now carries the receipt.
+	 * - `idempotent_replay`: this receipt already reset the row; a completed
+	 *   push since then (`sent`) does not reopen the reset.
+	 * - `noop`: the source is acked, cancelled, or gone — nothing to re-arm.
+	 * - `busy`: a push claim is live; nothing was executed and the caller must
+	 *   retry later without settling the resume as applied.
+	 */
+	resumeTurnWakeHold(input: {
+		sourceId: string;
+		receiptId: string;
+		nowMs: number;
+	}): TurnWakeHoldResumeResult {
+		if (
+			!input.sourceId.trim() ||
+			!input.receiptId.trim() ||
+			!Number.isSafeInteger(input.nowMs) ||
+			input.nowMs < 0
+		) {
 			throw new Error("invalid TURN wake hold recovery");
 		}
 		return this.db
-			.transaction(() => {
+			.transaction((): TurnWakeHoldResumeResult => {
 				const source = this.getTurnWake(input.sourceId);
 				if (!source) {
-					return { idempotentReplay: false, noop: true as const };
+					return { kind: "noop", reason: "source_missing" };
 				}
 				if (source.state === "acked" || source.state === "cancelled") {
-					return { idempotentReplay: false, noop: true as const };
+					return { kind: "noop", reason: source.state };
+				}
+				if (source.cancel_reason === input.receiptId) {
+					return { kind: "idempotent_replay" };
 				}
 				if (
-					source.state === "pending" &&
-					source.cancel_reason === input.receiptId
+					source.claim_token !== null &&
+					(source.claim_expires_at ?? Number.POSITIVE_INFINITY) > input.nowMs
 				) {
-					return { idempotentReplay: true };
+					return {
+						kind: "busy",
+						claimExpiresAt: source.claim_expires_at ?? null,
+					};
 				}
 				const updated = this.db
 					.prepare(
@@ -4229,13 +4278,14 @@ export class CommDB {
 						        claim_token = NULL, claim_expires_at = NULL, acked_at = NULL,
 						        receipt_projected_at = NULL, alerted_at = NULL,
 						        alert_question_id = NULL, cancel_reason = ?
-						  WHERE wake_id = ? AND state IN ('pending','sent')`,
+						  WHERE wake_id = ? AND state IN ('pending','sent')
+						    AND (claim_token IS NULL OR claim_expires_at <= ?)`,
 					)
-					.run(input.receiptId, input.sourceId);
+					.run(input.receiptId, input.sourceId, input.nowMs);
 				if (updated.changes !== 1) {
 					throw new Error(`TURN wake hold source conflict: ${input.sourceId}`);
 				}
-				return { idempotentReplay: false };
+				return { kind: "reset" };
 			})
 			.immediate();
 	}
@@ -8900,6 +8950,12 @@ export class CommDB {
 		retryAfterMs: number;
 		leaseMs: number;
 		excludeWakeIds?: string[];
+		/**
+		 * FLY-2921: claim only rows strictly after this queue position
+		 * (`created_at, wake_id` order), so one patrol pass scans forward and
+		 * rows it chose to skip can never block the rest of the queue.
+		 */
+		after?: { createdAt: number; wakeId: string };
 	}): TurnWakeOutboxRow | null {
 		if (
 			!Number.isSafeInteger(input.nowMs) ||
@@ -8907,10 +8963,19 @@ export class CommDB {
 			!Number.isFinite(input.retryAfterMs) ||
 			input.retryAfterMs < 0 ||
 			!Number.isFinite(input.leaseMs) ||
-			input.leaseMs <= 0
+			input.leaseMs <= 0 ||
+			(input.after !== undefined &&
+				(!Number.isSafeInteger(input.after.createdAt) ||
+					!input.after.wakeId.trim()))
 		) {
 			throw new Error("invalid TURN wake claim window");
 		}
+		const afterSql = input.after
+			? "AND (created_at > ? OR (created_at = ? AND wake_id > ?))"
+			: "";
+		const afterParams = input.after
+			? [input.after.createdAt, input.after.createdAt, input.after.wakeId]
+			: [];
 		const excludeWakeIds = [
 			...new Set(
 				(input.excludeWakeIds ?? []).filter((wakeId) => wakeId.trim()),
@@ -8933,6 +8998,7 @@ export class CommDB {
 					      (push_count = 1 AND last_push_at <= ?)
 					    )
 					    ${exclusionSql}
+					    ${afterSql}
 					  ORDER BY created_at, wake_id
 					  LIMIT 1`,
 					)
@@ -8940,6 +9006,7 @@ export class CommDB {
 						input.nowMs,
 						input.nowMs - input.retryAfterMs,
 						...excludeWakeIds,
+						...afterParams,
 					) as TurnWakeOutboxRow | undefined;
 				if (!row) return;
 				const claimToken = randomUUID();
@@ -9261,6 +9328,19 @@ export class CommDB {
 						ok: true as const,
 						idempotentReplay: true,
 						noop: false,
+					};
+				}
+				if (
+					source.state === "cancelled" &&
+					source.cancel_reason?.startsWith(TURN_WAKE_TERMINAL_GUARD_PREFIX)
+				) {
+					// FLY-2921 C4.6: the turn-wake patrol's terminal guard already
+					// cancelled this source; the operator's cancel is the same outcome.
+					// Same shape as a DEAD mailbox so the staged cancel can land.
+					return {
+						ok: true as const,
+						idempotentReplay: false,
+						noop: true,
 					};
 				}
 				if (source.state === "cancelled") {

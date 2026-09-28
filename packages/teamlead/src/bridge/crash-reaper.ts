@@ -141,6 +141,9 @@ export async function reapCrashedRunners(
 	for (const execId of deps.candidates) {
 		const session = deps.store.getSession(execId);
 		if (!session || deps.isSuppressed(execId)) continue;
+		// Quota standby owns this same execution for a later resume. Even if a
+		// stale cleanup receipt exists, its founder-visible resources stay intact.
+		if (deps.store.isCodexQuotaStandby?.(execId) === true) continue;
 		if (
 			(await completionOwnsReap(execId, deps, result)) ||
 			pendingCompletionOwnsReap(execId, deps, result)

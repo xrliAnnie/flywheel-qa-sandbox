@@ -266,10 +266,9 @@ function reworkDeliveryIsProgressSource(
 	facts: PatrolLoopFacts,
 	delivery: PatrolLoopReworkDelivery,
 ): boolean {
-	if (
-		delivery.state === "pending" ||
-		delivery.state === "replacement_pending"
-	) {
+	// FLY-2921: `pending` (including a launching replacement) is always
+	// progress; `returned_to_lead` waits on the Lead and is not.
+	if (delivery.state === "pending") {
 		return true;
 	}
 	if (

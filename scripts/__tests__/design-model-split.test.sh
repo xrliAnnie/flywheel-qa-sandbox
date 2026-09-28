@@ -54,6 +54,33 @@ try {
  ]);
  assert.equal(command(['show']).ruleVersion,weighted.ruleVersion);
  assert.deepEqual(JSON.parse(readFileSync(path)).founderExtension,{keep:true});
+ // FLY-2891: effort-less arms show the template default they inherit.
+ assert.deepEqual(weighted.nodes.implement.map(({arm,effort})=>({arm,effort})),[
+  {arm:'impl_opus',effort:'inherit(xhigh)'},{arm:'impl_sol56',effort:'inherit(xhigh)'},{arm:'impl_sol6',effort:'inherit(xhigh)'},
+ ]);
+ assert.equal('templateDefaults' in weighted,false,'bundled registry defaults must resolve');
+ const effortPolicyPath=join(root,'weighted-effort-policy.json');
+ const effortPolicy=JSON.parse(readFileSync(policyPath));
+ effortPolicy.nodes.implement=[{arm:'impl_opus',model:'opus',weight:2,effort:'high'},{arm:'impl_sol56',model:'codex',weight:1},{arm:'impl_sol6',model:'sol',weight:1,effort:'max'}];
+ writeFileSync(effortPolicyPath,JSON.stringify(effortPolicy));
+ const withEffort=command(['set','--policy-file',effortPolicyPath]);
+ assert.notEqual(withEffort.ruleVersion,weighted.ruleVersion,'an arm effort derives a new policy version');
+ assert.deepEqual(withEffort.nodes.implement.map(({arm,effort,percent})=>({arm,effort,percent})),[
+  {arm:'impl_opus',effort:'high',percent:50},{arm:'impl_sol56',effort:'inherit(xhigh)',percent:25},{arm:'impl_sol6',effort:'max',percent:25},
+ ]);
+ assert.deepEqual(withEffort.nodes.qa.map(({arm,effort})=>({arm,effort})),[
+  {arm:'qa_sol56',effort:'inherit(high)'},{arm:'qa_sol6',effort:'inherit(high)'},{arm:'qa_opus',effort:'inherit(high)'},
+ ]);
+ assert.deepEqual(command(['show']).nodes,withEffort.nodes);
+ assert.deepEqual(JSON.parse(readFileSync(path)).modelSplit.nodes.implement,effortPolicy.nodes.implement,'effort is stored only where written');
+ const effortBytes=readFileSync(path,'utf8');
+ for(const bad of [{arm:'impl_opus',model:'opus',weight:2,effort:'ultra'},{arm:'impl_opus46',model:'opus-4-6',weight:2,effort:'xhigh'}]) {
+  const badPath=join(root,'bad-effort-policy.json');
+  writeFileSync(badPath,JSON.stringify({...effortPolicy,nodes:{...effortPolicy.nodes,implement:[bad,{arm:'impl_sol56',model:'codex',weight:1}]}}));
+  assert.match(command(['set','--policy-file',badPath],false),/effort/);
+  assert.equal(readFileSync(path,'utf8'),effortBytes);
+ }
+ assert.equal(command(['set','--policy-file',policyPath]).ruleVersion,weighted.ruleVersion,'removing arm efforts restores the effort-less version');
  const weightedBytes=readFileSync(path,'utf8');
  assert.match(command(['set','--codex-percent','75'],false),/cannot replace issue_node_weighted/);
  assert.equal(readFileSync(path,'utf8'),weightedBytes);

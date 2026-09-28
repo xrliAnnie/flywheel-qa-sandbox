@@ -116,7 +116,7 @@ export function findModelScopedQuota(
 	return null;
 }
 
-function validatePayload(value: unknown): ValidatedUsagePayload | null {
+export function validatePayload(value: unknown): ValidatedUsagePayload | null {
 	if (!isRecord(value)) return null;
 	if (!isQuotaWindow(value.five_hour) || !isQuotaWindow(value.seven_day)) {
 		return null;

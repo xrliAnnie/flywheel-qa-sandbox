@@ -68,6 +68,19 @@ describe("scanZombies (three shapes)", () => {
 		expect(out[0]!.shape).toBe("stale_target");
 	});
 
+	it("FLY-2900: a Codex quota standby body is never a zombie finding", async () => {
+		const out = await scanZombies({
+			commRunning: [
+				{ execution_id: "c", project_name: "fw", tmux_window: "s:@2" },
+			],
+			storeSession: () => ({ status: "running", heartbeat_at: STALE }),
+			targetAlive: async () => false,
+			nowMs: NOW,
+			isQuotaStandby: (id) => id === "c",
+		});
+		expect(out).toEqual([]);
+	});
+
 	it("healthy running session is NOT a zombie; indeterminate probe never counts", async () => {
 		const healthy = await scanZombies({
 			commRunning: [

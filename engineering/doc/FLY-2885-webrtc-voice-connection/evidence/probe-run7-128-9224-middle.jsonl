@@ -1,0 +1,21 @@
+{"t":412,"kind":"items_shape","data":{"role":"developer","layout":"file","count":128,"itemBytes":[224,236,216,223,236,224,231,252,283,218,238,243,218,264,243,248,248,230,226,238,233,285,221,243,243,229,285,230,264,264,222,238,218,230,234,230,285,227,248,247,227,238,222,264,226,226,243,238,221,264,235,234,247,243,259,221,238,210,264,264,221,226,243,243,331,248,222,243,248,255,218,135,143,152,152,152,135,147,152,152,135,173,152,147,147,152,152,135,152,152,143,152,135,173,143,147,152,152,147,154,154,154,149,154,175,154,175,146,154,138,138,146,149,146,154,154,154,154,149,138,146,149,138,146,154,138,146,154],"totalBytes":25618,"codexEstimatedTokens":6405}}
+{"t":1650.2,"kind":"response","data":{"method":"initialize","error":null}}
+{"t":2054.9,"kind":"response","data":{"method":"account/read","error":null}}
+{"t":2055.1,"kind":"account","data":{"type":"chatgpt"}}
+{"t":5937.5,"kind":"response","data":{"method":"thread/start","error":null}}
+{"t":6547.6,"kind":"response","data":{"method":"thread/realtime/start","error":null}}
+{"t":6547.8,"kind":"start_response","data":{"error":null}}
+{"t":7290.3,"kind":"started","data":{"version":"v3"}}
+{"t":7298.9,"kind":"pc_state","data":{"s":"connecting"}}
+{"t":8247.2,"kind":"pc_state","data":{"s":"connected"}}
+{"t":8390.1,"kind":"dc_event","data":{"type":"session.started"}}
+{"t":11315.1,"kind":"watch_window_done","data":{"errors":0,"closed":0}}
+{"t":11324.5,"kind":"question_sent","data":{"ms":2340}}
+{"t":15240,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"user","transcript":"你好,请问暗号 是什么?"}}}
+{"t":15315.2,"kind":"transcript_done","data":{"role":"user","text":"你好,请问暗号 是什么?"}}
+{"t":16894.5,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"assistant","transcript":"一帆风顺。"}}}
+{"t":16899.3,"kind":"transcript_done","data":{"role":"assistant","text":"一帆风顺。"}}
+{"t":17595.7,"kind":"response","data":{"method":"thread/realtime/stop","error":null}}
+{"t":17595.9,"kind":"realtime_closed","data":{"reason":"requested"}}
+{"t":17596.3,"kind":"pc_state","data":{"s":"closed"}}
+{"t":17754,"kind":"summary","data":{"why":"done","role":"developer","layout":"file","itemBytes":[224,236,216,223,236,224,231,252,283,218,238,243,218,264,243,248,248,230,226,238,233,285,221,243,243,229,285,230,264,264,222,238,218,230,234,230,285,227,248,247,227,238,222,264,226,226,243,238,221,264,235,234,247,243,259,221,238,210,264,264,221,226,243,243,331,248,222,243,248,255,218,135,143,152,152,152,135,147,152,152,135,173,152,147,147,152,152,135,152,152,143,152,135,173,143,147,152,152,147,154,154,154,149,154,175,154,175,146,154,138,138,146,149,146,154,154,154,154,149,138,146,149,138,146,154,138,146,154],"totalBytes":25618,"errors":[],"closed":[{"t":17595.9,"reason":"requested"}],"transcripts":[{"t":15315.2,"role":"user","text":"你好,请问暗号 是什么?"},{"t":16899.2,"role":"assistant","text":"一帆风顺。"}],"dc":{"session.started":1,"input_transcript.added":5,"turn.created":2,"turn.delta":4,"output_transcript.added":3,"turn.done":2},"codeWordAnswered":false,"verdict":"NOT_ACCEPTED","authSourceStillFile":true}}

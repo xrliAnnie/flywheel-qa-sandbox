@@ -1,0 +1,60 @@
+{
+  "reviewedHead": "dff5eb79e4d1224287e31979e4aff2c2166c9fb0",
+  "questionId": "0be420b8-5b87-484b-875a-0cd5d62ed310",
+  "reviewVerdict": "CHANGES_REQUESTED",
+  "reviewerVerdict": "CHANGES_REQUESTED",
+  "requestId": "57475e9a-4eb2-4a7d-85a6-00b49498ea0f",
+  "round": 1,
+  "findings": [
+    {
+      "id": "lease-requeue-self-suppression",
+      "severity": "HIGH",
+      "file": "packages/teamlead/src/bridge/alert-wake-dedup.ts",
+      "line": 220,
+      "title": "An alert the Lead never ACKed gets machine-ACKed when it is redelivered, because it matches its own delivery evidence",
+      "detail": "When the 30-minute ACK lease runs out on a delivered batch, reconcileExpiredLeases puts each row back to QUEUED. It sets batch_id=NULL and adds 1 to lease_retry_count, but leaves retry_count at 0. The next claim puts the row in a new batch, so the guard in lead-inbox-loop.ts:360-363 (freshBatch && retry_count===0) passes and revalidate runs again. At first delivery, recordDelivered already wrote a record for this row: same fingerprint, same generation, delivered_delivery_id pointing at this row. Revalidate returns suppress, and settleClaimAsAudit marks the row ACKED/audit_only with resolved_via=alert_wake_dedup. I reproduced this with a throwaway test (real MailboxQueue, StateStore, LeadInboxLoop and AlertWakeDedup, recipientState=alive; deleted afterwards). Tick 1 delivered the row and the Lead did not ACK. After ackLeaseMs+60s, tick 2 returned modelConsumed=0, the row was ACKED audit_only alert_wake_dedup with lease_retry_count=1, and the adapter had been called only once. Before this PR, admission.revalidate returned deliver:true and the row was redelivered. Impact: with the flag on by default, every provable A-class or B-class alert, including the first of its kind, loses its at-least-once redelivery and the lease_expired_unacked dead-letter safety net. The alert is ACKed even though the Lead never acknowledged it, and the digest shows it as a bogus '×1 重复'. This also breaks the plan's own rule (§1 不做 / §10) that redeliveries are always delivered. A redelivered row that wakes has a second, lesser problem from the same cause: revalidate starts from delivery_content, which already carries the earlier annotation, so the annotation or digest gets stacked a second time. Fix: in revalidate, return null (deliver unchanged) when the row is a redelivery, e.g. lease_retry_count > 0, or when this row's delivery_id already has evidence (alert_wake_letter.evidence_recorded_at set, or record.deliveredDeliveryId === row.delivery_id). Add a regression test for requeue after the ACK lease expires.",
+      "findingKey": "lease-requeue-self-suppression"
+    },
+    {
+      "id": "suppress-counter-before-settle",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/bridge/alert-wake-dedup.ts",
+      "line": 238,
+      "title": "Counts are bumped before the mailbox settle, so a failed settle leaves counts inflated",
+      "detail": "bumpAlertWakeSuppressed and bumpAlertWakeInfo commit in teamlead.db before settleClaimAsAudit runs in the CommDB. If the settle fails (owner fence lost), the tick throws and the frozen batch is delivered on the next tick. The row still counts as suppressed and digest_pending, so the next digest lists a merge that never happened. This only affects display and cannot be made fully atomic across two stores, but it should be documented or the order changed.",
+      "findingKey": "suppress-counter-before-settle"
+    },
+    {
+      "id": "unrecognized-counter-unexposed",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/bridge/alert-wake-dedup.ts",
+      "line": 175,
+      "title": "The unrecognized counter is never exposed and counts every non-alert row",
+      "detail": "The plan §4 calls for an alertWakeDedup.unrecognized counter, but nothing reads AlertWakeDedup.unrecognized: it is not on the board or in health output. It also goes up for every founder, question and lead_event row, not just for alert-shaped rows it failed to recognize, so it could not serve as a signal even if it were exposed.",
+      "findingKey": "unrecognized-counter-unexposed"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "suppress-counter-before-settle",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/bridge/alert-wake-dedup.ts",
+      "line": 238,
+      "title": "Counts are bumped before the mailbox settle, so a failed settle leaves counts inflated",
+      "detail": "bumpAlertWakeSuppressed and bumpAlertWakeInfo commit in teamlead.db before settleClaimAsAudit runs in the CommDB. If the settle fails (owner fence lost), the tick throws and the frozen batch is delivered on the next tick. The row still counts as suppressed and digest_pending, so the next digest lists a merge that never happened. This only affects display and cannot be made fully atomic across two stores, but it should be documented or the order changed.",
+      "findingKey": "suppress-counter-before-settle"
+    },
+    {
+      "id": "unrecognized-counter-unexposed",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/bridge/alert-wake-dedup.ts",
+      "line": 175,
+      "title": "The unrecognized counter is never exposed and counts every non-alert row",
+      "detail": "The plan §4 calls for an alertWakeDedup.unrecognized counter, but nothing reads AlertWakeDedup.unrecognized: it is not on the board or in health output. It also goes up for every founder, question and lead_event row, not just for alert-shaped rows it failed to recognize, so it could not serve as a signal even if it were exposed.",
+      "findingKey": "unrecognized-counter-unexposed"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1",
+  "reviewedHeadSha": "dff5eb79e4d1224287e31979e4aff2c2166c9fb0"
+}

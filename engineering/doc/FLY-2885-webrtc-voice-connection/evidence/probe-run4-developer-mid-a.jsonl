@@ -1,0 +1,21 @@
+{"t":16.7,"kind":"items_shape","data":{"count":3,"itemBytes":[10474,10248,10474],"totalBytes":31196,"codexEstimatedTokens":7799}}
+{"t":275.5,"kind":"response","data":{"method":"initialize","error":null}}
+{"t":549.4,"kind":"response","data":{"method":"account/read","error":null}}
+{"t":549.6,"kind":"account","data":{"type":"chatgpt"}}
+{"t":1257.5,"kind":"response","data":{"method":"thread/start","error":null}}
+{"t":1399.7,"kind":"response","data":{"method":"thread/realtime/start","error":null}}
+{"t":1399.8,"kind":"start_response","data":{"error":null}}
+{"t":2333.5,"kind":"started","data":{"version":"v3"}}
+{"t":2335.6,"kind":"pc_state","data":{"s":"connecting"}}
+{"t":2943,"kind":"pc_state","data":{"s":"connected"}}
+{"t":3081.2,"kind":"dc_event","data":{"type":"session.started"}}
+{"t":5969.4,"kind":"watch_window_done","data":{"errors":0,"closed":0}}
+{"t":5973.1,"kind":"question_sent","data":{"ms":2340}}
+{"t":9908,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"user","transcript":"你好,请问暗号 是什么?"}}}
+{"t":9924.6,"kind":"transcript_done","data":{"role":"user","text":"你好,请问暗号 是什么?"}}
+{"t":11676.5,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"assistant","transcript":"蓝色风铃。"}}}
+{"t":11703.2,"kind":"transcript_done","data":{"role":"assistant","text":"蓝色风铃。"}}
+{"t":12211.5,"kind":"response","data":{"method":"thread/realtime/stop","error":null}}
+{"t":12212.3,"kind":"pc_state","data":{"s":"closed"}}
+{"t":12213.8,"kind":"realtime_closed","data":{"reason":"requested"}}
+{"t":12498.6,"kind":"summary","data":{"why":"done","itemBytes":[10474,10248,10474],"totalBytes":31196,"errors":[],"closed":[{"t":12213.8,"reason":"requested"}],"transcripts":[{"t":9924.6,"role":"user","text":"你好,请问暗号 是什么?"},{"t":11703.1,"role":"assistant","text":"蓝色风铃。"}],"dc":{"session.started":1,"input_transcript.added":5,"turn.created":2,"turn.delta":4,"output_transcript.added":3,"turn.done":2},"codeWordAnswered":false,"verdict":"NOT_ACCEPTED","authSourceStillFile":true}}

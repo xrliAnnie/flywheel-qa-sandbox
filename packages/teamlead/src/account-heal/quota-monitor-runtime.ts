@@ -90,6 +90,7 @@ import {
 	type QuotaWitnessReadResult,
 	readQuotaWitness,
 } from "./quota-witness.js";
+import type { ResetCardRuntime } from "./reset-card-flow.js";
 import {
 	defaultSweepRequestPath,
 	readSweepRequest as readSweepRequestFile,
@@ -149,6 +150,12 @@ export interface QuotaMonitorRuntimeOptions {
 		alert: DurableAlertIntent["alert"],
 	) => Promise<StrictDeliveryResult>;
 	log?: (message: string) => void;
+	/**
+	 * FLY-2896: builds the reset-card runtime from the resolved paths. Absent =
+	 * feature off, so harnesses never touch the real reset-card files; the
+	 * production CLI passes it.
+	 */
+	resetCard?: (paths: QuotaMonitorPaths) => ResetCardRuntime;
 }
 
 export function defaultQuotaMonitorPaths(): QuotaMonitorPaths {
@@ -315,6 +322,7 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 			leadSockets: discoverPrivateLeadSockets(),
 		});
 	const tmuxSocket = process.env.FLYWHEEL_QUOTA_TMUX_SOCKET ?? "default";
+	const resetCard = opts.resetCard?.(paths);
 	let projectionFailureStreak = 0;
 	let lastReconcileAttempt: {
 		authority: string;
@@ -639,6 +647,7 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 				},
 				alert: emitAlert,
 				log: opts.log ?? (() => undefined),
+				...(resetCard === undefined ? {} : { resetCard }),
 			} satisfies QuotaMonitorDeps;
 			let polled: PollOnceResult;
 			try {

@@ -12,6 +12,7 @@ import {
 	parseDiscordChatRoute,
 } from "flywheel-comm/discord-chat-ingest";
 import type {
+	LeadAuditSummaryReceipt,
 	MailboxAuditDecision,
 	MailboxQueue,
 	MailboxRecipientState,
@@ -22,6 +23,11 @@ import type {
 	LeadDeliveryBatch,
 } from "./lead-delivery-adapter.js";
 import { LeadDeliveryUnavailableError } from "./lead-delivery-adapter.js";
+import { LEAD_INTERRUPT_MESSAGE_TYPE } from "./lead-interrupt-contract.js";
+import type {
+	LeadInterruptDecision,
+	LeadInterruptLoopHooks,
+} from "./lead-interrupt-delivery.js";
 import { formatMailboxBatchHeader } from "./mailbox-batch-header.js";
 import {
 	DEFAULT_MAILBOX_QUEUE_CONFIG,
@@ -60,17 +66,27 @@ export interface LeadInboxLoopOptions {
 	) => Promise<void> | void;
 	/** Fail-closed question/event dispatch revalidation. */
 	revalidateModel?: (row: MailboxRow) => Promise<
-		| { deliver: true }
+		| { deliver: true; deliveryContent?: string }
 		| { deliver: false; disposition: string; retry?: boolean }
 		| {
 				deliver: false;
 				disposition: "audit_only";
 				auditDecision: MailboxAuditDecision;
+				settle?: "acked";
 		  }
 	>;
 	/** Durable audit mirror update, called only after the adapter receipt. */
 	markAuditDelivered?: (row: MailboxRow) => Promise<void> | void;
 	renderModelBatch?: (rows: readonly MailboxRow[]) => string;
+	/** Freeze a read-only summary for this existing transport batch. */
+	prepareAuditSummary?: (input: {
+		batchId: string;
+		transportBatchId: string;
+		memberIds: readonly string[];
+		/** True only before a new batch's first possible transport handoff. */
+		canBuildSummary: boolean;
+		now: string;
+	}) => { content: string; receipt: LeadAuditSummaryReceipt } | undefined;
 	/** FLY-1573: resolved exactly once at the beginning of a tick. */
 	queueConfig?: () => MailboxQueueConfig;
 	/** Process-incarnation liveness; unknown holds expired batches in place. */
@@ -118,6 +134,11 @@ export interface LeadInboxLoopOptions {
 	logger?: { warn: (message: string, context?: unknown) => void };
 	/** FLY-1393 QA seam: stall after the heartbeat is durably started. */
 	afterTickStarted?: () => Promise<void>;
+	/**
+	 * FLY-2883: controlled interrupt letters (single-row batches of type
+	 * lead_interrupt). Absent = such letters are ordinary mail (byte-compat).
+	 */
+	interruptHooks?: LeadInterruptLoopHooks;
 }
 
 /**
@@ -364,33 +385,51 @@ export class LeadInboxLoop {
 							? await this.opts.revalidateModel(row)
 							: ({ deliver: true } as const);
 					if (!verdict.deliver) {
-						const changed =
-							"auditDecision" in verdict
-								? this.opts.queue.releaseClaimForAudit({
+						let changed: boolean;
+						if ("auditDecision" in verdict) {
+							const claim = {
+								id: row.id,
+								ownerEpoch: this.opts.ownerEpoch,
+								batchId: row.batch_id!,
+								decision: verdict.auditDecision,
+							};
+							changed =
+								verdict.settle === "acked"
+									? this.opts.queue.settleClaimAsAudit(claim)
+									: this.opts.queue.releaseClaimForAudit(claim);
+						} else {
+							changed = verdict.retry
+								? this.opts.queue.releaseClaimForRetry({
 										id: row.id,
 										ownerEpoch: this.opts.ownerEpoch,
 										batchId: row.batch_id!,
-										decision: verdict.auditDecision,
+										nextRetryAt: new Date(
+											this.now().getTime() + 30_000,
+										).toISOString(),
+										reason: verdict.disposition,
 									})
-								: verdict.retry
-									? this.opts.queue.releaseClaimForRetry({
-											id: row.id,
-											ownerEpoch: this.opts.ownerEpoch,
-											batchId: row.batch_id!,
-											nextRetryAt: new Date(
-												this.now().getTime() + 30_000,
-											).toISOString(),
-											reason: verdict.disposition,
-										})
-									: this.opts.queue.markDead(
-											row.id,
-											this.isoNow(),
-											verdict.disposition,
-										);
+								: this.opts.queue.markDead(
+										row.id,
+										this.isoNow(),
+										verdict.disposition,
+									);
+						}
 						if (!changed) {
 							throw new Error("owner fence lost while revoking model row");
 						}
 						continue;
+					}
+					if (
+						"deliveryContent" in verdict &&
+						verdict.deliveryContent !== undefined &&
+						!this.opts.queue.annotateLeadDelivery({
+							id: row.id,
+							ownerEpoch: this.opts.ownerEpoch,
+							batchId: row.batch_id!,
+							deliveryContent: verdict.deliveryContent,
+						})
+					) {
+						throw new Error("owner fence lost while annotating model row");
 					}
 					const materialized = this.opts.queue.getById(row.id);
 					if (!materialized)
@@ -399,7 +438,7 @@ export class LeadInboxLoop {
 				}
 
 				if (deliverable.length > 0) {
-					await this.deliverModelBatch(deliverable, queueConfig);
+					await this.deliverModelBatch(deliverable, queueConfig, freshBatch);
 					modelConsumed = deliverable.length;
 				}
 			}
@@ -423,6 +462,7 @@ export class LeadInboxLoop {
 	private async deliverModelBatch(
 		rows: MailboxRow[],
 		queueConfig: MailboxQueueConfig,
+		freshBatch: boolean,
 	): Promise<void> {
 		const batchId = rows[0]?.batch_id;
 		if (!batchId || rows.some((row) => row.batch_id !== batchId)) {
@@ -490,8 +530,52 @@ export class LeadInboxLoop {
 			}`,
 			...route,
 		};
+		let interrupt: LeadInterruptDecision | undefined;
+		if (
+			this.opts.interruptHooks &&
+			rows.some((row) => row.type === LEAD_INTERRUPT_MESSAGE_TYPE)
+		) {
+			// A controlled interrupt letter always travels alone (its sender id is
+			// unique). Anything else claiming the type is dead-lettered unseen.
+			if (rows.length !== 1) {
+				if (!this.interruptClaimLive(rows)) return;
+				this.opts.interruptHooks.rejectBatch?.(rows);
+				this.deadLetterInterrupt(rows, "lead_interrupt_batch_invalid");
+				return;
+			}
+			interrupt = await this.decideInterrupt(rows[0]!, batch);
+			if (!interrupt) return;
+		}
+		// Freeze the attachment before entering transport failure accounting. A
+		// local preparation/fencing failure has not attempted a send and must
+		// not exhaust real tasks or quarantine founder messages.
+		const summary = this.opts.prepareAuditSummary?.({
+			batchId,
+			transportBatchId,
+			memberIds: transportMemberIds,
+			// A resumed batch may have reached the adapter even if a crash left
+			// retry_count at zero. Only the claim's new batch can add new bytes.
+			canBuildSummary: freshBatch && rows.every((row) => row.retry_count === 0),
+			now: this.isoNow(),
+		});
+		if (summary?.content) {
+			const lastMember = batch.members.at(-1)!;
+			lastMember.content += `\n\n${summary.content}`;
+			batch.modelPayload += `\n\n${summary.content}`;
+		}
 		try {
-			const receipt = await this.opts.adapter.deliverBatch(batch);
+			let receipt: Awaited<ReturnType<LeadDeliveryAdapter["deliverBatch"]>>;
+			if (interrupt?.kind === "custom") {
+				const handled = await interrupt.deliver();
+				if ("hold" in handled) {
+					if (this.interruptClaimLive(rows))
+						this.holdInterrupt(rows[0]!, handled.hold);
+					return;
+				}
+				receipt = handled.receipt;
+			} else {
+				receipt = await this.opts.adapter.deliverBatch(batch);
+			}
 			if (receipt.status === "membership_conflict") {
 				if (discord) {
 					await this.quarantineDiscord(rows, `membership_conflict:${batchId}`);
@@ -524,12 +608,14 @@ export class LeadInboxLoop {
 			// Cross-store order is deliberate: adapter receipt → audit mirror → queue
 			// consume. Any crash before the last step retries through adapter dedupe.
 			for (const row of rows) await this.opts.markAuditDelivered?.(row);
+			if (interrupt?.kind === "mail") await interrupt.onDelivered();
 			if (
 				this.opts.queue.recordLeadBatchDelivered({
 					batchId,
 					ownerEpoch: this.opts.ownerEpoch,
 					now: this.isoNow(),
 					ackLeaseTtlMs: queueConfig.ackLeaseMs,
+					auditSummaryReceipt: summary?.receipt,
 				}) === "lost_race"
 			) {
 				throw new Error("owner fence lost before queue delivery receipt");
@@ -652,6 +738,130 @@ export class LeadInboxLoop {
 				});
 			}
 			throw error;
+		}
+	}
+
+	/**
+	 * FLY-2883: settle the terminal interrupt decisions here; return the
+	 * decision only when it still needs a transport handoff. A hook failure
+	 * holds the letter (no retry-count burn) instead of failing the tick.
+	 */
+	private async decideInterrupt(
+		row: MailboxRow,
+		batch: LeadDeliveryBatch,
+	): Promise<LeadInterruptDecision | undefined> {
+		let decision: LeadInterruptDecision;
+		try {
+			decision = await this.opts.interruptHooks!.decide(row, batch, {
+				assertCurrentOwner: () => {
+					if (!this.interruptClaimLive([row]))
+						throw new Error(`interrupt letter already settled: ${row.id}`);
+				},
+			});
+		} catch (error) {
+			this.opts.logger?.warn("lead_interrupt_hook_failed", {
+				leadId: this.opts.leadId,
+				deliveryId: row.delivery_id,
+				error: describeError(error),
+			});
+			decision = {
+				kind: "hold",
+				retryAfterMs: 30_000,
+				reason: "lead_interrupt_hook_failed",
+			};
+		}
+		// The hook awaited; another Bridge may own this lead now. Nothing below
+		// (ack, dead-letter, hold, or handoff) may run on a lost owner or claim.
+		// A letter settled meanwhile (the reply route acks it) needs nothing.
+		if (!this.interruptClaimLive([row])) return undefined;
+		if (decision.kind === "ack") {
+			if (
+				!this.opts.queue.ackBatch({
+					batchId: row.batch_id!,
+					ownerEpoch: this.opts.ownerEpoch,
+					memberIds: [row.delivery_id],
+					now: this.isoNow(),
+				})
+			)
+				throw new Error("owner fence lost while acking interrupt letter");
+			return undefined;
+		}
+		if (decision.kind === "dead") {
+			this.deadLetterInterrupt([row], decision.reason);
+			return undefined;
+		}
+		if (decision.kind === "hold") {
+			this.holdInterrupt(row, decision);
+			return undefined;
+		}
+		return decision;
+	}
+
+	/**
+	 * Owner lease AND this batch's claim, or throw (no write happens). Returns
+	 * false when every member was already settled elsewhere (ACKED/DEAD) —
+	 * e.g. the Lead's reply acked the letter — so there is nothing left to do.
+	 */
+	private interruptClaimLive(rows: readonly MailboxRow[]): boolean {
+		if (!this.opts.queue.isCurrentOwner(this.opts.ownerEpoch, this.isoNow())) {
+			throw new Error("owner fence lost during interrupt handling");
+		}
+		let settled = 0;
+		for (const row of rows) {
+			const live = this.opts.queue.getById(row.id);
+			if (live?.state === "ACKED" || live?.state === "DEAD") {
+				settled++;
+				continue;
+			}
+			if (
+				!live ||
+				live.state !== "LEASED" ||
+				live.claimed_by !== this.opts.ownerEpoch ||
+				live.batch_id !== row.batch_id
+			) {
+				throw new Error(`interrupt claim lost: ${row.id}`);
+			}
+		}
+		if (settled === 0) return true;
+		if (settled === rows.length) return false;
+		throw new Error("interrupt batch partially settled");
+	}
+
+	/** Claim-fenced terminal dead-letter for every member of the batch. */
+	private deadLetterInterrupt(
+		rows: readonly MailboxRow[],
+		reason: string,
+	): void {
+		const changed = this.opts.queue.recordLeadDeliveryFailure({
+			batchId: rows[0]!.batch_id!,
+			ownerEpoch: this.opts.ownerEpoch,
+			now: this.isoNow(),
+			nextRetryAt: this.isoNow(),
+			error: reason,
+			maxAttempts: 1,
+			deadReason: reason,
+		});
+		if (changed !== rows.length) {
+			throw new Error("owner fence lost while dead-lettering interrupt letter");
+		}
+	}
+
+	private holdInterrupt(
+		row: MailboxRow,
+		hold: { retryAfterMs: number; reason: string },
+	): void {
+		if (
+			!this.opts.queue.releaseClaimForRetry({
+				id: row.id,
+				ownerEpoch: this.opts.ownerEpoch,
+				batchId: row.batch_id!,
+				nextRetryAt: new Date(
+					this.now().getTime() + hold.retryAfterMs,
+				).toISOString(),
+				reason: hold.reason,
+			})
+		) {
+			throw new Error("owner fence lost while holding interrupt letter");
 		}
 	}
 

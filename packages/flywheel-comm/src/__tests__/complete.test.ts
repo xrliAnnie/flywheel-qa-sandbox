@@ -1508,6 +1508,67 @@ describe("complete command", () => {
 		},
 	);
 
+	it.each([
+		"rework_head_unchanged",
+		"rework_no_product_change",
+		"rework_head_unavailable",
+		"rework_evidence_stale",
+	])(
+		"FLY-2921 C7 %s prints the new-commit hint, does not retry, writes no marker",
+		async (transitionReason) => {
+			mockFetch.mockResolvedValue(
+				new Response(
+					JSON.stringify({
+						error: "workflow_completion_rejected",
+						reason: "transition_refused",
+						retryable: true,
+						detail: {
+							transitionReason,
+							requestId: "rework-2921",
+							deliveryState: "wake_delivered",
+							routeRevision: 1,
+						},
+					}),
+					{ status: 409 },
+				),
+			);
+			await expect(complete({ route: "needs_review", pr: 42 })).rejects.toThrow(
+				"process.exit(1)",
+			);
+			// A retryable 409 normally loops ATTEMPT_COUNT times and then leaves a
+			// FAIL-CLOSE marker for the reconciler; the same bytes would only be
+			// refused again, so this stops at once and leaves nothing to replay.
+			expect(mockFetch).toHaveBeenCalledTimes(1);
+			expect(
+				existsSync(
+					join(
+						tmpHome,
+						".flywheel",
+						"state",
+						"complete-failed",
+						"exec-108.json",
+					),
+				),
+			).toBe(false);
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining(`refused (${transitionReason})`),
+			);
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining("rework-2921"),
+			);
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining(
+					"返工交卷必须带新提交；若你判断确实不需要改代码，请用 `flywheel-comm ask` 向 Lead 说明，由 Lead 决定。",
+				),
+			);
+			// FLY-2922 owns `complete --route blocked` for enrolled nodes; until it
+			// lands, that route is refused as route_mismatch, so never suggest it.
+			for (const call of errorSpy.mock.calls) {
+				expect(String(call[0])).not.toContain("--route blocked");
+			}
+		},
+	);
+
 	it("retryable Bridge 409 still retries and succeeds", async () => {
 		vi.useFakeTimers();
 		try {

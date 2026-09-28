@@ -296,15 +296,13 @@ function deliverFounderRework(
 			now: input.now,
 		}),
 	).toMatchObject({ ok: true });
+	// FLY-2921: the pushed wake is a fact (`wake_sent_at`) on `turn_granted`.
 	expect(
-		store.advanceWorkflowReworkDelivery({
+		store.markWorkflowReworkWakeSent({
 			requestId: input.requestId,
 			ownerId: "coordinator",
 			generation: claim.generation,
-			from: "turn_granted",
-			to: "awaiting_receipt",
 			now: input.now,
-			releaseOwner: true,
 		}),
 	).toEqual({ ok: true });
 	expect(
@@ -695,15 +693,13 @@ describe("founder kickback new-card loop", () => {
 					now: "2026-08-14T03:00:02.000Z",
 				}),
 			).toMatchObject({ ok: true });
+			// FLY-2921: the pushed wake is a fact (`wake_sent_at`) on `turn_granted`.
 			expect(
-				store.advanceWorkflowReworkDelivery({
+				store.markWorkflowReworkWakeSent({
 					requestId: delivery.request_id,
 					ownerId: "coordinator",
 					generation: claim.generation,
-					from: "turn_granted",
-					to: "awaiting_receipt",
 					now: "2026-08-14T03:00:03.000Z",
-					releaseOwner: true,
 				}),
 			).toMatchObject({ ok: true });
 			expect(
@@ -808,15 +804,13 @@ describe("founder kickback new-card loop", () => {
 					now: "2026-08-14T03:10:02.000Z",
 				}),
 			).toEqual({ ok: true });
+			// FLY-2921: the pushed wake is a fact (`wake_sent_at`) on `turn_granted`.
 			expect(
-				store.advanceWorkflowReworkDelivery({
+				store.markWorkflowReworkWakeSent({
 					requestId: qaDelivery.request_id,
 					ownerId: "coordinator",
 					generation: qaClaim.generation,
-					from: "turn_granted",
-					to: "awaiting_receipt",
 					now: "2026-08-14T03:10:03.000Z",
-					releaseOwner: true,
 				}),
 			).toEqual({ ok: true });
 			expect(
@@ -968,6 +962,73 @@ describe("founder kickback new-card loop", () => {
 			expect(store.getWorkflowRun("run-1")).toMatchObject({
 				status: "active",
 				current_node_id: "land",
+			});
+		} finally {
+			store.close();
+		}
+	});
+
+	it("FLY-2921 C7 base semantics: a founder kickback's base_revision is the judged implement head", async () => {
+		const worktree = gitWorktree();
+		const head = worktree.head2;
+		const root = mkdtempSync(join(tmpdir(), "fly2921-kickback-base-"));
+		roots.push(root);
+		const commDbPath = join(root, "comm.db");
+		const store = await compiledRun();
+		try {
+			const holder = prepareCompiledFounderGate(store, head);
+			expect(
+				await materializeCard(store, commDbPath, holder.question_id, "card-A"),
+			).toMatchObject({ ok: true, cardMessageId: "card-A" });
+			const feedback = {
+				schema_version: 1,
+				run_id: "run-1",
+				issue_id: "FLY-1772",
+				question_id: holder.question_id,
+				response: { approved: false, feedback: "implement: 改错地方了" },
+				actor: "founder",
+				approved_head: head,
+				classification: "founder_direct_signal",
+				authority_id: holder.question_id,
+				rework: {
+					target: "implement",
+					invalidation_scope: ["implement", "qa"],
+					verification_policy: ["code_review", "qa_retest", "founder_gate"],
+					interpreted_by: "founder-reply-prefix",
+					interpretation_reason: "matched_prefix:implement",
+				},
+			};
+			expect(
+				store.applyWorkflowSourceEvent({
+					project: "flywheel",
+					sourceEventId: `founder-feedback:${holder.question_id}:implement`,
+					kind: "founder_feedback",
+					schemaVersion: 1,
+					payloadJson: JSON.stringify(feedback),
+					payloadDigest: canonicalSubmissionDigest(feedback),
+				}),
+			).toMatchObject({ status: "applied" });
+			const delivery = store.listWorkflowReworkDeliveries({
+				states: ["pending"],
+			})[0];
+			if (!delivery) throw new Error("implement rework delivery missing");
+			// The judged head is the implement#1 delivery the card carried; the
+			// C7 head check compares the rework completion against exactly it.
+			expect(store.getWorkflowReworkRequest(delivery.request_id)).toMatchObject(
+				{
+					authority: "founder",
+					base_revision: head,
+				},
+			);
+			expect(
+				store.getCurrentWorkflowNodePrBindingForHead("run-1", head),
+			).toMatchObject({ node_id: "qa", attempt: 1, head_sha: head });
+			expect(
+				store.getLatestWorkflowReworkRoute(delivery.request_id),
+			).toMatchObject({
+				target_node_id: "implement",
+				target_attempt: 2,
+				invalidation_scope: ["implement", "qa"],
 			});
 		} finally {
 			store.close();

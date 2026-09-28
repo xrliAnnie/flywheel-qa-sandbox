@@ -68,6 +68,9 @@ describe("loadQuotaMonitorConfig", () => {
 				degradedSwitch: false,
 				episodeRealertMinutes: 30,
 				deadProbeStreak: 2,
+				resetCardEnabled: true,
+				resetCardAskPct: 85,
+				resetCardConsentMinutes: 120,
 			},
 			monitorOnly: false,
 		});
@@ -120,6 +123,49 @@ describe("loadQuotaMonitorConfig", () => {
 				config: { deadProbeStreak: 2 },
 				monitorOnly: false,
 			});
+		},
+	);
+
+	it("FLY-2896: defaults the reset-card controls and accepts bounded overrides", () => {
+		expect(DEFAULT_QUOTA_MONITOR_CONFIG).toMatchObject({
+			resetCardEnabled: true,
+			resetCardAskPct: 85,
+			resetCardConsentMinutes: 120,
+		});
+		write({
+			...enabledConfig,
+			resetCardEnabled: false,
+			resetCardAskPct: 80,
+			resetCardConsentMinutes: 30,
+		});
+		expect(loadQuotaMonitorConfig(path)).toMatchObject({
+			config: {
+				resetCardEnabled: false,
+				resetCardAskPct: 80,
+				resetCardConsentMinutes: 30,
+			},
+			monitorOnly: false,
+		});
+	});
+
+	it.each([
+		["resetCardEnabled", "yes", true],
+		["resetCardEnabled", 1, true],
+		["resetCardAskPct", 49, 85],
+		["resetCardAskPct", 100, 85],
+		["resetCardAskPct", "85", 85],
+		["resetCardAskPct", Number.NaN, 85],
+		["resetCardConsentMinutes", 9, 120],
+		["resetCardConsentMinutes", 1441, 120],
+		["resetCardConsentMinutes", null, 120],
+	])(
+		"FLY-2896: an invalid %s (%s) falls back to its own default without disabling the monitor",
+		(key, value, fallback) => {
+			write({ ...enabledConfig, [key]: value });
+			const loaded = loadQuotaMonitorConfig(path);
+			expect(loaded.error).toBeUndefined();
+			expect(loaded.monitorOnly).toBe(false);
+			expect(loaded.config).toMatchObject({ [key]: fallback });
 		},
 	);
 

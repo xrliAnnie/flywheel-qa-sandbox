@@ -298,15 +298,13 @@ function activateRework(
 			now: "2026-08-17T20:02:03.000Z",
 		}),
 	).toMatchObject({ ok: true });
+	// FLY-2921: the pushed wake is a fact (`wake_sent_at`) on `turn_granted`.
 	expect(
-		store.advanceWorkflowReworkDelivery({
+		store.markWorkflowReworkWakeSent({
 			requestId: input.requestId,
 			ownerId: "coordinator",
 			generation: claim.generation,
-			from: "turn_granted",
-			to: "awaiting_receipt",
 			now: "2026-08-17T20:02:04.000Z",
-			releaseOwner: true,
 		}),
 	).toEqual({ ok: true });
 	expect(
@@ -860,6 +858,48 @@ describe("equivalent-head carryover authority", () => {
 					subjectDigest: HEAD_A,
 				}),
 			).toMatchObject({ valid: false, reason: "revoked" });
+		} finally {
+			store.close();
+		}
+	});
+
+	it("FLY-2921 C7 base semantics: a land-conflict rework's base_revision is the approved implement head", async () => {
+		const { store, operation, claim } = await fixture();
+		try {
+			expect(
+				store.recordLandOperationStep({
+					operationId: operation.operation_id,
+					ownerId: claim.ownerId,
+					generation: claim.generation,
+					step: "base_refresh_prepared",
+					receipt: { approvedHead: HEAD_A, baseOid: BASE_1 },
+					now: T1,
+				}),
+			).toMatchObject({ ok: true });
+			const opened = store.openEngineLandConflictResolution({
+				runId: "run-carryover",
+				operationId: operation.operation_id,
+				ownerId: claim.ownerId,
+				generation: claim.generation,
+				proofStep: "base_refresh_prepared",
+				reason: "merge_conflict_requires_resolution",
+				now: T1,
+			});
+			expect(opened).toMatchObject({ ok: true, targetNodeId: "implement" });
+			if (!opened.ok) throw new Error(opened.reason);
+			// The judged head is the founder-approved implement delivery the land
+			// operation carries; the C7 head check compares against exactly it.
+			expect(operation.approved_head).toBe(HEAD_A);
+			expect(store.getWorkflowReworkRequest(opened.requestId)).toMatchObject({
+				authority: "engine",
+				base_revision: HEAD_A,
+			});
+			expect(
+				store.getLatestWorkflowReworkRoute(opened.requestId),
+			).toMatchObject({
+				target_node_id: "implement",
+				invalidation_scope: ["implement", "qa"],
+			});
 		} finally {
 			store.close();
 		}

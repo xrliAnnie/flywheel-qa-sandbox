@@ -333,6 +333,13 @@
 			"disposition": "candidate_guarded"
 		},
 		{
+			"file": "packages/teamlead/src/bridge/notification-audit-store.ts",
+			"relation": "lead_events",
+			"baseTable": "lead_events",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
 			"file": "packages/teamlead/src/bridge/summary-presentation-store.ts",
 			"relation": "lead_events",
 			"baseTable": "lead_events",
@@ -523,6 +530,13 @@
 		},
 		{
 			"file": "scripts/qa-529-discord-roundtrip.mjs",
+			"relation": "mailbox",
+			"baseTable": "mailbox",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "scripts/qa-lead-activity-long-turn.mjs",
 			"relation": "mailbox",
 			"baseTable": "mailbox",
 			"usage": "read",
@@ -736,6 +750,20 @@
 			"relation": "workflow_run_event",
 			"baseTable": "workflow_run_event",
 			"usage": "read",
+			"disposition": "protect"
+		},
+		{
+			"file": "packages/teamlead/src/bridge/lead-activity/turn-trigger-attribution.ts",
+			"relation": "mailbox",
+			"baseTable": "mailbox",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "scripts/qa-529-generalized-e2e.mjs",
+			"relation": "workflow_run_event",
+			"baseTable": "workflow_run_event",
+			"usage": "anti_join",
 			"disposition": "protect"
 		},
 		{

@@ -285,7 +285,7 @@ function parseTier(organization: Record<string, unknown>): ClaudeTier | null {
 	};
 }
 
-function parseProfile(value: unknown): {
+export function parseProfile(value: unknown): {
 	organizationUuid: string;
 	subscription: ClaudeAccountDetailReading["subscription"];
 	tier: ClaudeTier | null;

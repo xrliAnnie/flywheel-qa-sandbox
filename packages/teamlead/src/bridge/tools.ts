@@ -193,7 +193,12 @@ export function createQueryRouter(
 				const threshold = Number.isFinite(rawThreshold)
 					? Math.min(Math.max(rawThreshold, 1), 1440)
 					: 15;
-				sessions = store.getStuckSessions(threshold);
+				// FLY-2900: a quota-standby body is parked on purpose, not stuck.
+				sessions = store
+					.getStuckSessions(threshold)
+					.filter(
+						(session) => !store.isCodexQuotaStandby(session.execution_id),
+					);
 				break;
 			}
 			case "by_identifier": {

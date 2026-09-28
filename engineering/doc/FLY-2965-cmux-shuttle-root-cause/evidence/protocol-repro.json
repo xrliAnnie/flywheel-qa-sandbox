@@ -1,0 +1,33 @@
+{
+  "model": "healthy newline server; real tmux 3.7c client; not actual cmux app",
+  "client_waited_past_1s": true,
+  "killed_client_returncode": -9,
+  "received_descriptor_count": 2,
+  "pipes_still_open_after_client_exit": true,
+  "peer_close_released_pipes": true,
+  "correct_protocol_control": {
+    "ok": true,
+    "result": {
+      "pong": true
+    }
+  },
+  "existing_wrapper": {
+    "rc": 124,
+    "seconds": 3.154,
+    "stderr": ""
+  },
+  "connections": [
+    {
+      "bytes": 425,
+      "newline": false
+    },
+    {
+      "bytes": 52,
+      "newline": true
+    },
+    {
+      "bytes": 1019,
+      "newline": false
+    }
+  ]
+}

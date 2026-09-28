@@ -141,6 +141,12 @@ const nodeDwellThresholdHoursCodec: FlagStoreCodec = {
 };
 
 export function getFlagStoreCodec(name: string): FlagStoreCodec | undefined {
+	if (name === "review_early_stop")
+		return {
+			parse: ({ hasOverride, raw }) =>
+				!hasOverride || !/^(0|off|false)$/i.test(raw?.trim() ?? ""),
+			canonicalEffective: String,
+		};
 	if (name === "auto_merge_narrow_gate") return autoNarrowModeCodec;
 	if (name === "summary_absorption_cadence_ms") {
 		return summaryAbsorptionCadenceCodec;
@@ -155,6 +161,8 @@ export function getFlagStoreCodec(name: string): FlagStoreCodec | undefined {
 		name === "review_quota_auto_retry" ||
 		name === "account_switch_wake_sweep" ||
 		name === "codex_quota_auto_switch" ||
+		name === "codex_quota_standby" ||
+		name === "codex_quota_claude_fallback" ||
 		name === "loop_profiler" ||
 		name === "shipped_husk_force" ||
 		name === "codex_terminal_reap_enabled" ||

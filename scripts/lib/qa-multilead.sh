@@ -71,7 +71,7 @@ qa_multilead_build_projects() {
 		--argjson extraLeads "$extra_leads_json" \
 		--argjson mainShape "$main_lead_shape_json" \
 		'
-  def codex_projection($shape):
+  def carrier_projection($shape):
     if $shape.backend == "codex-app-server" then
       {
         backend: "codex-app-server",
@@ -83,7 +83,7 @@ qa_multilead_build_projects() {
         {companion: true}
       end)
     else
-      {}
+      {model: "opus"}
     end;
   [
     ({
@@ -101,7 +101,7 @@ qa_multilead_build_projects() {
           botUserId: $botUserId,
           discordStateDir: $discordStateDir
         } else . end
-          | . + codex_projection($mainShape))
+          | . + carrier_projection($mainShape))
       ] + ($extraLeads | map(. as $lead |
         ({
           agentId: $lead.agentId,
@@ -113,7 +113,7 @@ qa_multilead_build_projects() {
           botUserId: $lead.botAppId,
           discordStateDir: $lead.discordStateDir
         } else . end
-          | . + codex_projection($lead))
+          | . + carrier_projection($lead))
       )))
     })
     | if $slotRole == "cos" then . + { generalChannel: $chatChannel } else . end

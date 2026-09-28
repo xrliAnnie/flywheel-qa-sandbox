@@ -59,7 +59,6 @@ FLY2523_TERMINAL_EVENTS="$terminal_events" bash -c '
 	source "$1"
 	log() { :; }
 	notify_routine() { :; }
-	audit_tmux_qa_residue_read_only() { :; }
 	pause_admission_best_effort() { return 0; }
 	stop_bridge() { return 0; }
 	bash() { return 0; }

@@ -223,34 +223,82 @@ _tmux_rescue_bounded_exec() {
     printf "%.10g\n", effective
   }')"
   awk -v timeout="$timeout_sec" 'BEGIN { exit !((timeout + 0) <= 0) }' && return 124
+  # FLY-2965: capture into anonymous files, not pipes. A tmux client hands
+  # its stdio descriptors to whatever answers the socket (SCM_RIGHTS); a peer
+  # that keeps them would hold a pipe open forever, and waiting for pipe EOF
+  # tied this probe's lifetime to that foreign process. The probe now ends
+  # when its managed child is reaped, then replays the fixed length captured
+  # at that moment with positional reads (never moving the offset it shares
+  # with the peer). Capture infrastructure failures exit 125, never a child
+  # status: a spurious 1 would read as "session absent" to has-session callers.
   /usr/bin/python3 - "$timeout_sec" "$@" <<'PY'
 import os
 import signal
 import subprocess
 import sys
+import tempfile
+
+INFRA_FAILURE = 125
+CHUNK = 1 << 20
 
 timeout = float(sys.argv[1])
 argv = sys.argv[2:]
-proc = subprocess.Popen(
-    argv,
-    stdin=subprocess.DEVNULL,
-    stdout=subprocess.PIPE,
-    stderr=subprocess.PIPE,
-    start_new_session=True,
-)
-try:
-    stdout, stderr = proc.communicate(timeout=timeout)
-except subprocess.TimeoutExpired:
+# An explicit absolute TMPDIR or /tmp; never an implicit working directory.
+capture_dir = os.environ.get("TMPDIR") or "/tmp"
+if not capture_dir.startswith("/"):
+    raise SystemExit(INFRA_FAILURE)
+
+
+def stop_group(proc):
     try:
         os.killpg(proc.pid, signal.SIGKILL)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
+        # Already gone, or an exited leader whose group has no live member.
         pass
-    stdout, stderr = proc.communicate()
-    sys.stdout.buffer.write(stdout)
-    sys.stderr.buffer.write(stderr)
+    proc.wait()
+
+
+def replay(capture, stream):
+    fd = capture.fileno()
+    length = os.fstat(fd).st_size
+    offset = 0
+    while offset < length:
+        chunk = os.pread(fd, min(CHUNK, length - offset), offset)
+        if not chunk:
+            break
+        stream.write(chunk)
+        offset += len(chunk)
+    stream.flush()
+
+
+proc = None
+try:
+    with tempfile.TemporaryFile(dir=capture_dir) as out_capture, \
+            tempfile.TemporaryFile(dir=capture_dir) as err_capture:
+        proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=out_capture,
+            stderr=err_capture,
+            start_new_session=True,
+        )
+        timed_out = False
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            stop_group(proc)
+        replay(out_capture, sys.stdout.buffer)
+        replay(err_capture, sys.stderr.buffer)
+except Exception:
+    if proc is not None and proc.returncode is None:
+        try:
+            stop_group(proc)
+        except Exception:
+            pass
+    raise SystemExit(INFRA_FAILURE)
+if timed_out:
     raise SystemExit(124)
-sys.stdout.buffer.write(stdout)
-sys.stderr.buffer.write(stderr)
 code = proc.returncode
 raise SystemExit(code if code >= 0 else 128 + (-code))
 PY

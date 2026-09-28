@@ -1,0 +1,21 @@
+{"t":4.6,"kind":"items_shape","data":{"role":"developer","layout":"file","count":16,"itemBytes":[1545,1600,1536,1556,1653,1502,1529,1508,1532,1446,1537,1530,1398,1483,1421,1579],"totalBytes":24355,"codexEstimatedTokens":6089}}
+{"t":169.8,"kind":"response","data":{"method":"initialize","error":null}}
+{"t":519.5,"kind":"response","data":{"method":"account/read","error":null}}
+{"t":519.8,"kind":"account","data":{"type":"chatgpt"}}
+{"t":2528.1,"kind":"response","data":{"method":"thread/start","error":null}}
+{"t":2902.4,"kind":"response","data":{"method":"thread/realtime/start","error":null}}
+{"t":2902.6,"kind":"start_response","data":{"error":null}}
+{"t":3680.1,"kind":"started","data":{"version":"v3"}}
+{"t":3685.9,"kind":"pc_state","data":{"s":"connecting"}}
+{"t":4329.7,"kind":"pc_state","data":{"s":"connected"}}
+{"t":4489.1,"kind":"dc_event","data":{"type":"session.started"}}
+{"t":7361.3,"kind":"watch_window_done","data":{"errors":0,"closed":0}}
+{"t":7384.7,"kind":"question_sent","data":{"ms":2340}}
+{"t":11296.9,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"user","transcript":"你好,请问暗号 是什么?"}}}
+{"t":11297.2,"kind":"transcript_done","data":{"role":"user","text":"你好,请问暗号 是什么?"}}
+{"t":13209.8,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"assistant","transcript":"紫檀九号。"}}}
+{"t":13217.3,"kind":"transcript_done","data":{"role":"assistant","text":"紫檀九号。"}}
+{"t":13793.8,"kind":"response","data":{"method":"thread/realtime/stop","error":null}}
+{"t":13794.7,"kind":"pc_state","data":{"s":"closed"}}
+{"t":13795.9,"kind":"realtime_closed","data":{"reason":"requested"}}
+{"t":13942.3,"kind":"summary","data":{"why":"done","role":"developer","layout":"file","itemBytes":[1545,1600,1536,1556,1653,1502,1529,1508,1532,1446,1537,1530,1398,1483,1421,1579],"totalBytes":24355,"errors":[],"closed":[{"t":13795.9,"reason":"requested"}],"transcripts":[{"t":11297.2,"role":"user","text":"你好,请问暗号 是什么?"},{"t":13217.3,"role":"assistant","text":"紫檀九号。"}],"dc":{"session.started":1,"input_transcript.added":5,"turn.created":2,"turn.delta":4,"output_transcript.added":4,"turn.done":2},"codeWordAnswered":true,"verdict":"ACCEPTED","authSourceStillFile":true}}

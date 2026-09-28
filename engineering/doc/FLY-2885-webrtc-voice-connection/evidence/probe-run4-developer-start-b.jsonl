@@ -1,0 +1,21 @@
+{"t":4.5,"kind":"items_shape","data":{"role":"developer","position":"start","count":3,"itemBytes":[10474,10189,10474],"totalBytes":31137,"codexEstimatedTokens":7785}}
+{"t":142.1,"kind":"response","data":{"method":"initialize","error":null}}
+{"t":559.9,"kind":"response","data":{"method":"account/read","error":null}}
+{"t":560.1,"kind":"account","data":{"type":"chatgpt"}}
+{"t":1353.6,"kind":"response","data":{"method":"thread/start","error":null}}
+{"t":1432.3,"kind":"response","data":{"method":"thread/realtime/start","error":null}}
+{"t":1432.5,"kind":"start_response","data":{"error":null}}
+{"t":2160.8,"kind":"started","data":{"version":"v3"}}
+{"t":2163.9,"kind":"pc_state","data":{"s":"connecting"}}
+{"t":2836.4,"kind":"pc_state","data":{"s":"connected"}}
+{"t":2921.6,"kind":"dc_event","data":{"type":"session.started"}}
+{"t":5852.7,"kind":"watch_window_done","data":{"errors":0,"closed":0}}
+{"t":5857.5,"kind":"question_sent","data":{"ms":2340}}
+{"t":9906.1,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"user","transcript":"你好,请问暗号 是什么?"}}}
+{"t":9909.2,"kind":"transcript_done","data":{"role":"user","text":"你好,请问暗号 是什么?"}}
+{"t":14321.8,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"assistant","transcript":"你好,暗号是「蓝色风铃」。"}}}
+{"t":14322.3,"kind":"transcript_done","data":{"role":"assistant","text":"你好,暗号是「蓝色风铃」。"}}
+{"t":14825.2,"kind":"response","data":{"method":"thread/realtime/stop","error":null}}
+{"t":14826.2,"kind":"pc_state","data":{"s":"closed"}}
+{"t":14827.1,"kind":"realtime_closed","data":{"reason":"requested"}}
+{"t":14924.5,"kind":"summary","data":{"why":"done","role":"developer","position":"start","itemBytes":[10474,10189,10474],"totalBytes":31137,"errors":[],"closed":[{"t":14827.1,"reason":"requested"}],"transcripts":[{"t":9909.2,"role":"user","text":"你好,请问暗号 是什么?"},{"t":14322.3,"role":"assistant","text":"你好,暗号是「蓝色风铃」。"}],"dc":{"session.started":1,"input_transcript.added":5,"turn.created":2,"turn.delta":8,"output_transcript.added":7,"turn.done":2},"codeWordAnswered":false,"verdict":"NOT_ACCEPTED","authSourceStillFile":true}}

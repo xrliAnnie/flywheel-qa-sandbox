@@ -8,6 +8,7 @@ import type {
 	ChatThreadCreator,
 } from "./bridge/ChatThreadCreator.js";
 import { resolveChatThreadId } from "./bridge/chat-thread-utils.js";
+import { commDbPathForProject } from "./bridge/commdb-path.js";
 import {
 	type CompleteMarkerHeldAlert,
 	type MarkerReconcilerDeps,
@@ -24,12 +25,21 @@ import {
 } from "./bridge/crash-reaper.js";
 import {
 	type EventFilter,
+	type LeadNotificationDecision,
 	leadEventDeliveryDisposition,
+	leadNotificationDecision,
 } from "./bridge/EventFilter.js";
 import type { ExecutionBodyConvergenceResult } from "./bridge/execution-body-convergence.js";
-import { storeLeadTokenSavingsEnabled } from "./bridge/flag-store-runtime.js";
+import {
+	storeLeadMonitoringReestablishedAuditEnabled,
+	storeLeadTokenSavingsEnabled,
+} from "./bridge/flag-store-runtime.js";
 import { buildSessionKey, type HookPayload } from "./bridge/hook-payload.js";
 import type { IssueDisplayRefreshHolder } from "./bridge/issue-display-refresher.js";
+import type {
+	NotificationBinding,
+	NotificationEvidenceV2,
+} from "./bridge/lead-notification-evidence.js";
 import {
 	GUARDRAIL_EVENT_TYPES,
 	type LeadEventEnvelope,
@@ -115,6 +125,15 @@ interface ReestablishedNoticeIntent {
 		probedAt: string;
 		method?: "execution_process";
 	};
+	recovery: MonitoringRecoveryObservation;
+}
+
+/** Producer-only observation; current membership cannot be supplied by an event payload. */
+interface MonitoringRecoveryObservation {
+	executionId: string;
+	episodeRef: string;
+	liveness: SessionLiveness;
+	isCurrentEpisode(): boolean;
 }
 
 /** FLY-1282: pass-local state for one zombie-ON readopt reconcile pass. */
@@ -166,8 +185,9 @@ export type SessionLivenessVerdict = "alive" | "dead" | "indeterminate";
 
 export interface SessionLiveness {
 	verdict: SessionLivenessVerdict;
-	/** tmux window target probed (absent when CommDB had no target). */
+	/** Exact evidence target; process observations use the execution id. */
 	target?: string;
+	method?: "execution_process";
 	/** ISO timestamp of this probe. */
 	probedAt: string;
 }
@@ -270,6 +290,7 @@ export interface HeartbeatNotifier {
 			 * (monitoring-side-interruption suspicion — observation, not diagnosis).
 			 */
 			concurrentCount?: number;
+			recovery?: MonitoringRecoveryObservation;
 		},
 	): Promise<void>;
 	/**
@@ -411,6 +432,7 @@ export class HeartbeatService implements ReconnectController {
 	/** Re-adopted process-alive executions. This tracks monitoring/title episodes,
 	 * not death authority; each pass samples again and markers still win. */
 	private reconnecting = new Set<string>();
+	private reconnectingEpisodes = new Map<string, string>();
 	/**
 	 * FLY-1264: founder-facing title ownership has a shorter lifetime than the
 	 * fallback-monitoring protection above. It starts with a reconnect episode and
@@ -836,6 +858,11 @@ export class HeartbeatService implements ReconnectController {
 			this.clearReconnecting(execId);
 			return;
 		}
+		// FLY-2900 §4.2: never declare a parked quota standby body a zombie.
+		if (this.isCodexQuotaStandby(execId)) {
+			this.zombieDeadStreak.delete(execId);
+			return;
+		}
 
 		// 1) Marker-first. A valid terminal marker proves the Runner finished.
 		const outcome = await tryReconcileComplete(execId, deps);
@@ -891,6 +918,8 @@ export class HeartbeatService implements ReconnectController {
 			)
 				return {
 					verdict: observation.verdict,
+					target: observation.identity.executionId,
+					method: "execution_process",
 					probedAt: observation.observedAt,
 				};
 		} catch {
@@ -922,6 +951,8 @@ export class HeartbeatService implements ReconnectController {
 		this.store.updateHeartbeat(execId);
 		if (this.reconnecting.has(execId)) return null; // stay (same episode)
 		this.reconnecting.add(execId);
+		const episodeRef = `reconnect:${execId}:${randomUUID()}`;
+		this.reconnectingEpisodes.set(execId, episodeRef);
 		if (!this.reconnectTitleRefresherReady) {
 			this.reconnectTitleActive.add(execId);
 		}
@@ -929,8 +960,17 @@ export class HeartbeatService implements ReconnectController {
 			session,
 			minutesSince,
 			livenessProbe: {
+				target: liveness.target,
 				probedAt: liveness.probedAt,
 				method: "execution_process",
+			},
+			recovery: {
+				executionId: execId,
+				episodeRef,
+				liveness,
+				isCurrentEpisode: () =>
+					this.reconnecting.has(execId) &&
+					this.reconnectingEpisodes.get(execId) === episodeRef,
 			},
 		};
 	}
@@ -951,7 +991,7 @@ export class HeartbeatService implements ReconnectController {
 		}
 		for (const intent of ctx.intents) {
 			const execId = intent.session.execution_id;
-			if (!this.reconnecting.has(execId)) continue; // episode already over
+			if (!intent.recovery.isCurrentEpisode()) continue; // exact episode already over
 			const stampNow = this.reconnectTitleActive.has(execId);
 			try {
 				await this.notifier.onSessionMonitoringReestablished(
@@ -960,6 +1000,7 @@ export class HeartbeatService implements ReconnectController {
 					{
 						stampReconnectTitle: stampNow,
 						livenessProbe: intent.livenessProbe,
+						recovery: intent.recovery,
 						...(k >= 3 ? { concurrentCount: k } : {}),
 					},
 				);
@@ -988,12 +1029,22 @@ export class HeartbeatService implements ReconnectController {
 		return true;
 	}
 
+	/** FLY-2900: parked in Codex quota standby (fails open on a store error). */
+	private isCodexQuotaStandby(executionId: string): boolean {
+		try {
+			return this.store.isCodexQuotaStandby?.(executionId) === true;
+		} catch {
+			return false;
+		}
+	}
+
 	private async declareZombie(session: Session): Promise<boolean> {
 		const execId = session.execution_id;
 		if (this.zombieDeclaring.has(execId)) return false;
 		this.zombieDeclaring.add(execId);
 		try {
 			if (await this.reconcileCompletionBeforeDeath(execId)) return false;
+			if (this.isCodexQuotaStandby(execId)) return false;
 			if (!this.executionBodyLifecycle) return false;
 			// The common path resamples and reconciles completion after awaits,
 			// then performs the exact-owner CAS and durable cross-store obligation.
@@ -1206,6 +1257,7 @@ export class HeartbeatService implements ReconnectController {
 	 */
 	clearReconnecting(executionId: string): void {
 		const wasReconnecting = this.reconnecting.delete(executionId);
+		this.reconnectingEpisodes.delete(executionId);
 		const wasTitleActive = this.reconnectTitleActive.delete(executionId);
 		if (!wasReconnecting && !wasTitleActive) return;
 		if (!wasTitleActive) return;
@@ -1813,7 +1865,8 @@ export class HeartbeatService implements ReconnectController {
 				isSuppressed: (id) =>
 					this.isMonitorSuppressed(id) ||
 					this.markerRetryPending.has(id) ||
-					tmuxHeld.has(id),
+					tmuxHeld.has(id) ||
+					this.isCodexQuotaStandby(id),
 				hasPendingCompleteMarker: (id) => this.completionPendingAtMutation(id),
 				reconcileCompletionBeforeDeath: (id) =>
 					this.reconcileCompletionBeforeDeath(id),
@@ -1846,6 +1899,7 @@ export class HeartbeatService implements ReconnectController {
 		for (const session of this.store.getOrphanSessions(
 			this.orphanThresholdMinutes,
 		)) {
+			if (this.isCodexQuotaStandby(session.execution_id)) continue;
 			if (
 				session.status !== "running" &&
 				!isReadoptParkedStatus(session.status)
@@ -1968,9 +2022,9 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 	/**
 	 * FLY-623: readopt-ON happy path. The Bridge re-adopted a live detached Runner
 	 * after a restart. Stamp the Display-A reconnecting title and
-	 * deliver a one-time, low-priority, NON-retryable FYI to the Lead. Best-effort:
-	 * `session_monitoring_reestablished` is not in GUARDRAIL/RETRYABLE sets, so
-	 * deliverHook marks it delivered regardless and it is never re-delivered.
+	 * record the recovery. FLY-2912 keeps a verified, action-free recovery in the
+	 * audit journal when savings are enabled. Model-visible recoveries retain the
+	 * existing one-time, best-effort delivery behavior.
 	 */
 	async onSessionMonitoringReestablished(
 		session: Session,
@@ -1983,6 +2037,7 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 				method?: "execution_process";
 			};
 			concurrentCount?: number;
+			recovery?: MonitoringRecoveryObservation;
 		},
 	): Promise<void> {
 		const label = session.issue_identifier ?? session.issue_id;
@@ -2031,7 +2086,7 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 		if (details?.stampReconnectTitle !== false) {
 			this.stampReconnect(session, "enter");
 		}
-		await this.deliverHook(session, hookPayload);
+		await this.deliverHook(session, hookPayload, details?.recovery);
 	}
 
 	/**
@@ -2122,7 +2177,9 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 	private async deliverHook(
 		session: Session,
 		hookPayload: HookPayload,
+		recovery?: MonitoringRecoveryObservation,
 	): Promise<boolean> {
+		const rawPayload = { ...hookPayload };
 		let agentId: string;
 		let chatChannel: string;
 		let runtime: import("./bridge/lead-runtime.js").LeadRuntime;
@@ -2169,6 +2226,49 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 
 		const sessionKey = buildSessionKey(session);
 		const eventId = `heartbeat-${session.execution_id}-${Date.now()}-${randomUUID()}`;
+		let notification:
+			| {
+					binding: NotificationBinding;
+					evidence?: NotificationEvidenceV2;
+					decision: LeadNotificationDecision;
+			  }
+			| undefined;
+		if (hookPayload.event_type === "session_monitoring_reestablished") {
+			const binding: NotificationBinding = {
+				projectName: session.project_name,
+				leadId: agentId,
+				eventId,
+				executionId: session.execution_id,
+				issueId: session.issue_id,
+			};
+			const evidence = this.monitoringRecoveryEvidence(
+				session,
+				binding,
+				rawPayload,
+				recovery,
+			);
+			notification = {
+				binding,
+				evidence,
+				decision: leadNotificationDecision(
+					hookPayload.event_type,
+					rawPayload,
+					evidence,
+					{
+						binding,
+						categoryEnabled: storeLeadMonitoringReestablishedAuditEnabled(
+							{ store: this.store },
+							binding.projectName,
+						),
+						enabled: storeLeadTokenSavingsEnabled(
+							{ store: this.store },
+							session.project_name,
+						),
+						projection: { ...hookPayload },
+					},
+				),
+			};
+		}
 		// FLY-1282 (R2 #3/R3 #5): shared append→deliver lifecycle. The legacy
 		// hook keeps "propagate" — a deliver() throw escapes to the caller with
 		// the appended row left untouched (attempt=0), exactly as before.
@@ -2181,11 +2281,132 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 			payloadForEnvelope: hookPayload,
 			runtime,
 			onDeliverThrow: "propagate",
+			notification,
 		});
 		// FLY-637 R1 #2: the event row IS in lead_events (guardrail retry owns
 		// redelivery), so this counts as persisted regardless of the immediate
 		// transport outcome.
 		return true;
+	}
+
+	private pendingMonitoringParkGate(binding: NotificationBinding): {
+		pending: boolean;
+		checkedRefs: string[];
+	} {
+		if (/[/\\]|\.\./.test(binding.projectName))
+			throw new Error("invalid monitoring project");
+		const comm = CommDB.openReadonly(commDbPathForProject(binding.projectName));
+		try {
+			const checkedRefs = [
+				`commdb-gates:${binding.projectName}:${binding.leadId}:${binding.executionId}`,
+			];
+			let cursor: { created_at: string; id: string } | undefined;
+			for (let page = 0; page < 4; page++) {
+				const questions = comm.getPendingQuestions(binding.leadId, {
+					kind: "gate",
+					limit: 50,
+					cursor,
+				});
+				for (const question of questions) {
+					if (
+						question.from_agent !== binding.executionId ||
+						question.superseded_at
+					)
+						continue;
+					checkedRefs.push(`gate:${question.id}:${question.checkpoint}`);
+					// A founder ship decision has its own durable delivery lane.
+					if (question.checkpoint !== "approve_to_ship")
+						return { pending: true, checkedRefs };
+				}
+				if (questions.length < 50) return { pending: false, checkedRefs };
+				const last = questions.at(-1)!;
+				cursor = { created_at: last.created_at, id: last.id };
+			}
+			throw new Error("monitoring gate read overflow");
+		} finally {
+			comm.close();
+		}
+	}
+
+	private monitoringRecoveryEvidence(
+		session: Session,
+		binding: NotificationBinding,
+		payload: Record<string, unknown>,
+		recovery?: MonitoringRecoveryObservation,
+	): NotificationEvidenceV2 | undefined {
+		if (!recovery) return undefined;
+		const probeMethod = recovery.liveness.method ?? "tmux_pane_probe";
+		let legalPark = false;
+		let alertState: "none" | "open" | "unknown" = "unknown";
+		let recoveredLostEventIds: string[] = [];
+		let checkedRefs: string[] = [];
+		try {
+			const current = this.store.getSession(session.execution_id);
+			legalPark = Boolean(current && isReadoptParkedStatus(current.status));
+			if (
+				recovery.executionId === session.execution_id &&
+				recovery.isCurrentEpisode() &&
+				recovery.liveness.verdict === "alive" &&
+				recovery.liveness.target &&
+				Number.isFinite(Date.parse(recovery.liveness.probedAt)) &&
+				current?.project_name === session.project_name &&
+				current.issue_id === session.issue_id &&
+				current.status === session.status &&
+				(current.status === "running" || legalPark)
+			) {
+				const context = this.store.getMonitoringRecoveryContext({
+					projectName: binding.projectName,
+					leadId: binding.leadId,
+					executionId: binding.executionId,
+				});
+				alertState =
+					context.openFailure || Boolean(current.last_error?.trim())
+						? "open"
+						: "none";
+				recoveredLostEventIds = context.recoveredLostEventIds;
+				checkedRefs = [
+					`session:${session.execution_id}`,
+					recovery.episodeRef,
+					...context.checkedRefs,
+				];
+				if (legalPark && alertState === "none") {
+					const gates = this.pendingMonitoringParkGate(binding);
+					checkedRefs.push(...gates.checkedRefs);
+					if (gates.pending) alertState = "open";
+				}
+			}
+		} catch {
+			// Missing/corrupt correlation evidence restores delivery; it never hides a task.
+			alertState = "unknown";
+		}
+		return {
+			version: 2,
+			kind: "monitoring",
+			binding,
+			proof: {
+				sourceRef: `session-event:${binding.eventId}:proof`,
+				executionId: session.execution_id,
+				action:
+					alertState === "none"
+						? { state: "none", checkedRefs }
+						: { state: alertState === "open" ? "pending" : "unknown" },
+			},
+			episodeRef: recovery.episodeRef,
+			probeRef: `${probeMethod}:${session.execution_id}:${recovery.liveness.probedAt}:${recovery.liveness.target ?? ""}`,
+			livenessProbe: {
+				method: probeMethod,
+				target: recovery.liveness.target ?? "",
+				result: "alive",
+				probed_at: recovery.liveness.probedAt,
+			},
+			alertState,
+			legalPark,
+			recoveredLostEventIds,
+			templates:
+				typeof payload.notification_context === "string"
+					? { notification_context: payload.notification_context }
+					: undefined,
+		};
 	}
 
 	/**
@@ -2211,24 +2432,36 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 		payloadForEnvelope: HookPayload;
 		runtime: LeadRuntime | undefined;
 		onDeliverThrow: "propagate" | "record";
+		notification?: {
+			binding: NotificationBinding;
+			evidence?: NotificationEvidenceV2;
+			decision: LeadNotificationDecision;
+		};
 	}): Promise<number> {
-		const seq = this.store.appendLeadEvent(
-			row.leadId,
-			row.eventId,
-			row.eventType,
-			row.payloadJson,
-			row.sessionKey,
-			storeLeadTokenSavingsEnabled(
-				{ store: this.store },
-				row.payloadForEnvelope.project_name ?? "",
-			)
-				? leadEventDeliveryDisposition(
-						row.eventType,
-						{ ...row.payloadForEnvelope },
-						true,
+		const seq = row.notification
+			? this.store.appendLeadNotification({
+					...row.notification,
+					eventType: row.eventType,
+					payload: row.payloadJson,
+					sessionKey: row.sessionKey,
+				})
+			: this.store.appendLeadEvent(
+					row.leadId,
+					row.eventId,
+					row.eventType,
+					row.payloadJson,
+					row.sessionKey,
+					storeLeadTokenSavingsEnabled(
+						{ store: this.store },
+						row.payloadForEnvelope.project_name ?? "",
 					)
-				: "model",
-		);
+						? leadEventDeliveryDisposition(
+								row.eventType,
+								{ ...row.payloadForEnvelope },
+								true,
+							)
+						: "model",
+				);
 		if (this.store.isLeadEventAuditOnly(seq, row.leadId)) return seq;
 		const isGuardrail = GUARDRAIL_EVENT_TYPES.has(row.eventType);
 		if (!row.runtime) {

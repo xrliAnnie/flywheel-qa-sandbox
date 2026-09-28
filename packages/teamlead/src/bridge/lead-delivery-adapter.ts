@@ -6,10 +6,13 @@ import {
 	writeMailboxBatch,
 } from "flywheel-agent-team-transport";
 import {
+	type CodexLeadInboxCapabilities,
 	CodexLeadInboxRejectedError,
+	LEAD_INTERRUPT_STEER_FEATURE,
 	probeCodexLeadInboxCapabilities,
 	resolveCodexLeadInboxSocketPath,
 	submitCodexLeadInboxBatch,
+	submitCodexLeadInterrupt,
 } from "../lead-backends/codex/CodexLeadInboxSocket.js";
 import type { BatchAcceptStatus } from "../lead-backends/codex/LeadJournal.js";
 
@@ -49,8 +52,23 @@ export interface DurableAcceptReceipt {
 	status: BatchAcceptStatus;
 }
 
+/** FLY-2883: how a controlled-interrupt letter reached a Codex Lead. */
+export type CodexInterruptResult =
+	| {
+			outcome: "steered" | "queued_turn";
+			receipt: DurableAcceptReceipt;
+	  }
+	| {
+			outcome: "mailbox_only";
+			reason: "steer_unsupported";
+			receipt: DurableAcceptReceipt;
+	  }
+	| { outcome: "steer_failed"; detail: string };
+
 export interface LeadDeliveryAdapter {
 	deliverBatch(batch: LeadDeliveryBatch): Promise<DurableAcceptReceipt>;
+	/** FLY-2883: Codex only — steer one interrupt letter into the current turn. */
+	deliverInterrupt?(batch: LeadDeliveryBatch): Promise<CodexInterruptResult>;
 }
 
 export class ClaudeLeadDeliveryAdapter implements LeadDeliveryAdapter {
@@ -104,21 +122,70 @@ export class CodexLeadDeliveryAdapter implements LeadDeliveryAdapter {
 	}
 
 	async deliverBatch(batch: LeadDeliveryBatch): Promise<DurableAcceptReceipt> {
+		return this.submitOrdinary(batch, await this.probe(batch));
+	}
+
+	/**
+	 * FLY-2883: steer an interrupt letter into the Lead's current turn when the
+	 * sidecar advertises the capability; otherwise deliver it as ordinary input.
+	 * A failed steer is returned (never retried as ordinary input here).
+	 */
+	async deliverInterrupt(
+		batch: LeadDeliveryBatch,
+	): Promise<CodexInterruptResult> {
+		const capabilities = await this.probe(batch);
+		const memberIds = batch.members.map(({ deliveryId }) => deliveryId);
+		if (!capabilities?.features.includes(LEAD_INTERRUPT_STEER_FEATURE)) {
+			return {
+				outcome: "mailbox_only",
+				reason: "steer_unsupported",
+				receipt: await this.submitOrdinary(batch, capabilities),
+			};
+		}
+		let result: Awaited<ReturnType<typeof submitCodexLeadInterrupt>>;
+		try {
+			result = await submitCodexLeadInterrupt({
+				socketPath: this.socketPath,
+				leadId: batch.leadId,
+				ownerEpoch: batch.ownerEpoch,
+				authSecret: this.opts.authSecret,
+				batch: {
+					batchId: batch.batchId,
+					memberIds,
+					payload: batch.modelPayload,
+				},
+				...(this.opts.timeoutMs ? { timeoutMs: this.opts.timeoutMs } : {}),
+			});
+		} catch (error) {
+			if (error instanceof CodexLeadInboxRejectedError) throw error;
+			throw new LeadDeliveryUnavailableError(
+				"lead",
+				`Codex Lead interrupt submit failed: ${(error as Error).message}`,
+			);
+		}
+		if (result.outcome === "steer_failed") return result;
+		return {
+			outcome: result.outcome,
+			receipt: { batchId: batch.batchId, memberIds, status: "accepted_new" },
+		};
+	}
+
+	/** Capabilities, or undefined for a v1 server that predates the probe. */
+	private async probe(
+		batch: LeadDeliveryBatch,
+	): Promise<CodexLeadInboxCapabilities | undefined> {
 		if (batch.leadId !== this.opts.leadId) {
 			throw new Error(
 				`CodexLeadDeliveryAdapter lead mismatch: ${batch.leadId} != ${this.opts.leadId}`,
 			);
 		}
-		let protocolVersion: 1 | 2 = 1;
 		try {
-			const capabilities = await probeCodexLeadInboxCapabilities({
+			return await probeCodexLeadInboxCapabilities({
 				socketPath: this.socketPath,
 				leadId: batch.leadId,
 				authSecret: this.opts.authSecret,
 				...(this.opts.timeoutMs ? { timeoutMs: this.opts.timeoutMs } : {}),
 			});
-			if (capabilities.features.includes("discord_route_v2"))
-				protocolVersion = 2;
 		} catch (error) {
 			// A v1 server rejects the additive capabilities method. Connection-level
 			// failures are Lead-wide and must not exhaust queued model rows.
@@ -134,7 +201,19 @@ export class CodexLeadDeliveryAdapter implements LeadDeliveryAdapter {
 					`Codex Lead inbox capability probe failed: ${(error as Error).message}`,
 				);
 			}
+			return undefined;
 		}
+	}
+
+	private async submitOrdinary(
+		batch: LeadDeliveryBatch,
+		capabilities: CodexLeadInboxCapabilities | undefined,
+	): Promise<DurableAcceptReceipt> {
+		const protocolVersion: 1 | 2 = capabilities?.features.includes(
+			"discord_route_v2",
+		)
+			? 2
+			: 1;
 		if (batch.kind === "discord_chat" && protocolVersion === 1) {
 			throw new LeadDeliveryUnavailableError(
 				"discord",

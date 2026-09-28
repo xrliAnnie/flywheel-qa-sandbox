@@ -407,6 +407,28 @@ describe("FLY-1393 flag truth", () => {
 		}
 	});
 
+	it("FLY-2965 retires the foreign-socket tmux audit allowlist with its audit", () => {
+		const tombstones = new Map(
+			RETIRED_FLAGS.map((flag) => [flag.envVar, flag.retiredBy]),
+		);
+		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_TMUX_AUDIT_ALLOWLIST).toBeUndefined();
+		expect(tombstones.get("FLYWHEEL_TMUX_AUDIT_ALLOWLIST")).toBe("FLY-2965");
+		expect(
+			validateFlagTruthEnvironment(["FLYWHEEL_TMUX_AUDIT_ALLOWLIST=/tmp/x"]).ok,
+		).toBe(false);
+	});
+
+	it("FLY-2965 classifies the visibility cmux-sync path seam as plumbing", () => {
+		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_VISIBILITY_CMUX_SYNC).toMatch(
+			/FLY-2965.*plumbing/,
+		);
+		expect(
+			validateFlagTruthEnvironment([
+				"FLYWHEEL_VISIBILITY_CMUX_SYNC=/tmp/flywheel-cmux-sync",
+			]),
+		).toEqual({ ok: true, errors: [] });
+	});
+
 	it("FLY-1501 solidifies the restart brake and registers only tuning/plumbing", () => {
 		const tombstones = new Map(
 			RETIRED_FLAGS.map((flag) => [flag.envVar, flag.retiredBy]),
@@ -1046,6 +1068,19 @@ describe("FLY-2131 Codex Lead model coordinates", () => {
 		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW).toMatch(
 			/numeric tuning/i,
 		);
+	});
+});
+
+describe("FLY-2950 529-room Codex Lead model coordinates", () => {
+	it("accounts for the model and reasoning effort as test-room config values", () => {
+		for (const envVar of [
+			"FLYWHEEL_CODEX_TUI_TEST_MODEL",
+			"FLYWHEEL_CODEX_TUI_TEST_REASONING_EFFORT",
+		]) {
+			expect(NON_FLAG_ALLOWLIST[envVar], envVar).toMatch(
+				/test-room.*config value/i,
+			);
+		}
 	});
 });
 

@@ -197,6 +197,41 @@ DROP TRIGGER IF EXISTS mailbox_log_no_delete;
 ${MAILBOX_TERMINAL_ARCHIVE_SCHEMA}`);
 }
 
+export const LEAD_AUDIT_SUMMARY_SCHEMA = `
+CREATE TABLE IF NOT EXISTS lead_audit_summary_cursor (
+  project_name TEXT NOT NULL,
+  lead_id TEXT NOT NULL,
+  store_epoch TEXT NOT NULL,
+  offered_through_seq INTEGER NOT NULL CHECK(offered_through_seq >= 0),
+  anchor_event_id TEXT,
+  PRIMARY KEY(project_name, lead_id, store_epoch)
+);
+CREATE TABLE IF NOT EXISTS lead_audit_summary_offer (
+  project_name TEXT NOT NULL,
+  lead_id TEXT NOT NULL,
+  store_epoch TEXT NOT NULL,
+  transport_batch_id TEXT NOT NULL,
+  from_seq INTEGER NOT NULL CHECK(from_seq >= 0),
+  through_seq INTEGER NOT NULL CHECK(through_seq >= from_seq),
+  anchor_event_id TEXT,
+  content TEXT NOT NULL,
+  content_sha256 TEXT NOT NULL CHECK(length(content_sha256) = 64),
+  accepted_at TEXT,
+  PRIMARY KEY(project_name, lead_id, store_epoch, transport_batch_id),
+  UNIQUE(project_name, lead_id, transport_batch_id)
+);
+CREATE TRIGGER IF NOT EXISTS lead_audit_summary_offer_frozen
+BEFORE UPDATE ON lead_audit_summary_offer
+WHEN NEW.project_name IS NOT OLD.project_name OR NEW.lead_id IS NOT OLD.lead_id
+  OR NEW.store_epoch IS NOT OLD.store_epoch
+  OR NEW.transport_batch_id IS NOT OLD.transport_batch_id
+  OR NEW.from_seq IS NOT OLD.from_seq OR NEW.through_seq IS NOT OLD.through_seq
+  OR NEW.anchor_event_id IS NOT OLD.anchor_event_id
+  OR NEW.content IS NOT OLD.content OR NEW.content_sha256 IS NOT OLD.content_sha256
+  OR (OLD.accepted_at IS NOT NULL AND NEW.accepted_at IS NOT OLD.accepted_at)
+BEGIN SELECT RAISE(ABORT, 'lead audit summary offer is frozen'); END;
+`;
+
 export const MAILBOX_CORE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS mailbox (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -429,6 +464,7 @@ CREATE TABLE IF NOT EXISTS loop_heartbeat (
   last_success_at TEXT,
   stall_episode_at TEXT
 );
+${LEAD_AUDIT_SUMMARY_SCHEMA}
 CREATE TABLE IF NOT EXISTS mailbox_migration_meta (
   singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
   schema_generation TEXT NOT NULL,

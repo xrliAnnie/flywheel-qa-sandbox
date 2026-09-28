@@ -549,9 +549,62 @@ SH
 chmod +x "$rn_visibility_root/verifier"
 cat > "$rn_visibility_root/bounded" <<'SH'
 #!/bin/bash
+[[ -z "${BOUNDED_CALLS_FILE:-}" ]] || printf '%s\t%s\n' "$1" "$(basename "$2")" >> "$BOUNDED_CALLS_FILE"
 shift
 exec "$@"
 SH
+# FLY-2965: the shared cmux proof for one batch of carrier-verified Leads.
+# Verdicts per Lead are driven by env; BATCH_MODE forges malformed replies.
+cat > "$rn_visibility_root/batch-sync" <<'SH'
+#!/bin/bash
+[[ "${1:-}" == --verify-agents-visible ]] || exit 64
+shift
+targets=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --target) targets+=("$2"); shift 2 ;;
+    --json) shift ;;
+    *) exit 64 ;;
+  esac
+done
+batch_n=$(( $(cat "$BATCH_COUNTER" 2>/dev/null || echo 0) + 1 ))
+echo "$batch_n" > "$BATCH_COUNTER"
+printf '%s\t%s\t%s\n' "$batch_n" "${TMUX-unset}" "${targets[*]}" >> "$BATCH_CALLS_FILE"
+case "${BATCH_MODE:-normal}" in
+  timeout)
+    printf '{"schemaVersion":1,"results":[{"target":"%s","status":"pass","reasons":[],"report":[]}' "${targets[0]}"
+    exit 124 ;;
+  truncated) printf '{"schemaVersion":1,"results":['; exit 0 ;;
+  unsupported) echo "usage" >&2; exit 64 ;;
+  hang) exec sleep 60 ;;
+esac
+json='[]'; rc=0
+for target in "${targets[@]}"; do
+  lead="${target#demo-}"; status=pass; reason=""
+  if [[ "$lead" == "${VISIBILITY_FAIL_LEAD:-}" ]]; then status=fail; reason=missing_surface; fi
+  if [[ "$lead" == "${VISIBILITY_BOOT_LEAD:-}" && "$batch_n" == 1 ]]; then status=fail; reason=missing_surface; fi
+  if [[ "$lead" == "${VISIBILITY_FAIL_THEN_UNKNOWN_LEAD:-}" ]]; then
+    if [[ "$batch_n" == 1 ]]; then status=fail; reason=missing_surface
+    else status=inconclusive; reason=probe_unavailable; fi
+  fi
+  case "$status" in inconclusive) rc=2 ;; fail) [[ "$rc" == 2 ]] || rc=1 ;; esac
+  json=$(jq -c --arg t "$target" --arg s "$status" --arg r "$reason" \
+    '. + [{target:$t,status:$s,reasons:(if $r == "" then [] else [$r] end),report:[]}]' <<<"$json")
+done
+case "${BATCH_MODE:-normal}" in
+  missing) json=$(jq -c '.[:-1]' <<<"$json") ;;
+  extra) json=$(jq -c '. + [{target:"demo-stranger",status:"pass",reasons:[],report:[]}]' <<<"$json") ;;
+  duplicate) json=$(jq -c '.[:-1] + [.[0]]' <<<"$json") ;;
+  rc_conflict) rc=1 ;;
+  no_report) json=$(jq -c 'map(del(.report))' <<<"$json") ;;
+  bad_report) json=$(jq -c 'map(.report = "PASS")' <<<"$json") ;;
+esac
+jq -nc --argjson results "$json" '{schemaVersion:1,results:$results}'
+# A stale or wrapped verifier printing a second document must not be trusted.
+[[ "${BATCH_MODE:-normal}" != multi_doc ]] || jq -nc --argjson results "$json" '{schemaVersion:1,results:$results}'
+exit "$rc"
+SH
+chmod +x "$rn_visibility_root/batch-sync"
 chmod +x "$rn_visibility_root/bounded"
 printf 'demo\tgood\tdemo-good\ndemo\tbad\tdemo-bad\ndemo\tunknown\tdemo-unknown\n' \
   > "$rn_visibility_root/candidates"
@@ -626,6 +679,10 @@ rn_visibility_result=$(bash -c '
   record_lead_restart_detail failed demo-bad
   FLYWHEEL_RESTART_VISIBILITY_VERIFIER="$root/verifier"
   FLYWHEEL_RESTART_VISIBILITY_BOUNDED_RUN="$root/bounded"
+  FLYWHEEL_VISIBILITY_CMUX_SYNC="$root/batch-sync"
+  BATCH_CALLS_FILE="$root/classify-batch-calls"
+  BATCH_COUNTER="$root/classify-batch-counter"
+  export BATCH_CALLS_FILE BATCH_COUNTER
   FLYWHEEL_RESTART_VISIBILITY_MAX_ATTEMPTS=1
   FLYWHEEL_DIR="$root/repo"
   FLYWHEEL_STATE_DIR="$root/state"
@@ -643,7 +700,7 @@ else
     fail "FLY-2643 restart visibility classification mismatch: result='$rn_visibility_result' details='$(cat "$rn_visibility_root/details")'"
 fi
 
-echo "Test: FLY-2643 fleet barrier spends the final sample on carrier identity"
+echo "Test: FLY-2965 fleet barrier proves carrier per Lead and cmux once per batch"
 cat > "$rn_visibility_root/fleet-verifier" <<'SH'
 #!/bin/bash
 project=""; lead=""; level=""
@@ -658,16 +715,11 @@ while [[ $# -gt 0 ]]; do
 done
 printf '%s\t%s\n' "$lead" "$level" >> "$VISIBILITY_CALLS_FILE"
 pid=4242; status=pass; reason=""; rc=0
-if [[ "$lead" == "${VISIBILITY_BOOT_LEAD:-}" && "$level" == visible ]]; then
-  attempts=$(awk -F '\t' -v lead="$lead" '$1 == lead && $2 == "visible" {n++} END {print n+0}' "$VISIBILITY_CALLS_FILE")
-  if (( attempts == 1 )); then status=fail; reason=missing_window; rc=1
-  else status=pass; reason=""; rc=0
-  fi
+if [[ "$lead" == "${VISIBILITY_CARRIER_FAIL_LEAD:-}" ]]; then status=fail; reason=missing_window; rc=1; fi
+if [[ "$lead" == "${VISIBILITY_DRIFT_LEAD:-}" ]]; then
+  carrier_calls=$(awk -F '\t' -v lead="$lead" '$1 == lead && $2 == "carrier" {n++} END {print n+0}' "$VISIBILITY_CALLS_FILE")
+  (( carrier_calls == 1 )) || pid=5252
 fi
-if [[ "$lead" == "${VISIBILITY_FAIL_LEAD:-}" && "$level" == visible ]]; then
-  status=fail; reason=missing_window; rc=1
-fi
-if [[ "$lead" == "${VISIBILITY_DRIFT_LEAD:-}" && "$level" == carrier ]]; then pid=5252; fi
 jq -nc --arg project "$project" --arg lead "$lead" --arg level "$level" \
   --arg status "$status" --arg reason "$reason" --argjson pid "$pid" \
   '{schemaVersion:1,subject:{kind:"lead",project:$project,leadId:$lead},level:$level,
@@ -680,113 +732,202 @@ chmod +x "$rn_visibility_root/fleet-verifier"
 for i in $(seq 1 17); do
   printf 'demo\tlead-%02d\tdemo-lead-%02d\n' "$i" "$i" >> "$rn_visibility_root/fleet-candidates"
 done
-: > "$rn_visibility_root/fleet-calls"
-rn_visibility_fleet=$(bash -c '
-  set -uo pipefail
-  source "$1"
-  root="$2"
-  log() { :; }
-  register_restart_transient_file() { :; }
-  record_lead_restart_detail() { :; }
-  LEAD_RESTART_NAMES_FILE="$root/fleet-details"
-  VISIBILITY_CALLS_FILE="$root/fleet-calls"
-  export VISIBILITY_CALLS_FILE
-  FLYWHEEL_RESTART_VISIBILITY_VERIFIER="$root/fleet-verifier"
-  FLYWHEEL_RESTART_VISIBILITY_BOUNDED_RUN="$root/bounded"
-  FLYWHEEL_RESTART_VISIBILITY_MAX_ATTEMPTS=1
-  FLYWHEEL_DIR="$root/repo"
-  FLYWHEEL_STATE_DIR="$root/state"
-  restart_lead_visibility_barrier "$root/fleet-candidates"
-  printf "%s|%s|%s|%s\n" \
-    "$LEAD_VISIBILITY_CONFIRMED_COUNT" "$LEAD_VISIBILITY_UNPROVEN_COUNT" \
-    "$(awk -F "\t" '\''$2 == "visible" {n++} END {print n+0}'\'' "$VISIBILITY_CALLS_FILE")" \
-    "$(awk -F "\t" '\''$2 == "carrier" {n++} END {print n+0}'\'' "$VISIBILITY_CALLS_FILE")"
-' _ "$rn_visibility_funcs" "$rn_visibility_root")
-if [[ "$rn_visibility_fleet" == "0|0|17|17" ]]; then
-  pass "FLY-2643 all 17 Leads receive one full visibility proof and one cheap final carrier revalidation"
+
+# Runs the barrier over the 17-Lead fleet. Prints
+# confirmed|unproven|per-Lead-visible-calls|carrier-calls|batches|first-batch-size
+# and leaves the call logs in $rn_visibility_root for extra assertions.
+rn_fleet_barrier() {
+  : > "$rn_visibility_root/fleet-calls"
+  : > "$rn_visibility_root/fleet-details"
+  : > "$rn_visibility_root/fleet-batch-calls"
+  : > "$rn_visibility_root/fleet-bounded-calls"
+  rm -f "$rn_visibility_root/fleet-batch-counter"
+  TMUX=/tmp/fly2965-inherited,1,0 bash -c '
+    set -uo pipefail
+    source "$1"
+    root="$2"
+    log() { :; }
+    register_restart_transient_file() { :; }
+    record_lead_restart_detail() { printf "%s\t%s\n" "$1" "$2" >> "$LEAD_RESTART_NAMES_FILE"; }
+    LEAD_RESTART_NAMES_FILE="$root/fleet-details"
+    VISIBILITY_CALLS_FILE="$root/fleet-calls"
+    BATCH_CALLS_FILE="$root/fleet-batch-calls"
+    BATCH_COUNTER="$root/fleet-batch-counter"
+    BOUNDED_CALLS_FILE="$root/fleet-bounded-calls"
+    export VISIBILITY_CALLS_FILE BATCH_CALLS_FILE BATCH_COUNTER BOUNDED_CALLS_FILE
+    FLYWHEEL_RESTART_VISIBILITY_VERIFIER="$root/fleet-verifier"
+    FLYWHEEL_RESTART_VISIBILITY_BOUNDED_RUN="$root/bounded"
+    FLYWHEEL_VISIBILITY_CMUX_SYNC="$root/batch-sync"
+    FLYWHEEL_RESTART_VISIBILITY_MAX_ATTEMPTS="${RN_MAX_ATTEMPTS:-1}"
+    FLYWHEEL_DIR="$root/repo"
+    FLYWHEEL_STATE_DIR="$root/state"
+    sleep() { :; }
+    restart_lead_visibility_barrier "$root/fleet-candidates"
+    printf "%s|%s|%s|%s|%s|%s\n" \
+      "$LEAD_VISIBILITY_CONFIRMED_COUNT" "$LEAD_VISIBILITY_UNPROVEN_COUNT" \
+      "$(awk -F "\t" '\''$2 == "visible" {n++} END {print n+0}'\'' "$VISIBILITY_CALLS_FILE")" \
+      "$(awk -F "\t" '\''$2 == "carrier" {n++} END {print n+0}'\'' "$VISIBILITY_CALLS_FILE")" \
+      "$(awk "END {print NR}" "$BATCH_CALLS_FILE")" \
+      "$(awk -F "\t" '\''NR == 1 {print split($3, t, " ")}'\'' "$BATCH_CALLS_FILE")"
+  ' _ "$rn_visibility_funcs" "$rn_visibility_root"
+}
+
+rn_visibility_fleet=$(rn_fleet_barrier)
+if [[ "$rn_visibility_fleet" == "0|0|0|34|1|17" ]] \
+  && [[ "$(cut -f2 "$rn_visibility_root/fleet-batch-calls")" == unset ]] \
+  && [[ "$(awk -F '\t' '$2 == "batch-sync" {print $1}' "$rn_visibility_root/fleet-bounded-calls")" == 240 ]]; then
+  pass "FLY-2965 17 Leads: carrier proof per Lead, one shared cmux proof, one final carrier revalidation"
 else
-  fail "FLY-2643 fleet barrier repeated the expensive visibility probe: result='$rn_visibility_fleet' calls='$(cat "$rn_visibility_root/fleet-calls")'"
+  fail "FLY-2965 fleet barrier call shape: result='$rn_visibility_fleet' batches='$(cat "$rn_visibility_root/fleet-batch-calls")' bounded='$(cat "$rn_visibility_root/fleet-bounded-calls")'"
 fi
 
-: > "$rn_visibility_root/fleet-calls"
-rn_visibility_failed=$(VISIBILITY_FAIL_LEAD=lead-17 bash -c '
-  set -uo pipefail
-  source "$1"
-  root="$2"
-  log() { :; }
-  register_restart_transient_file() { :; }
-  record_lead_restart_detail() { :; }
-  LEAD_RESTART_NAMES_FILE="$root/fleet-details"
-  VISIBILITY_CALLS_FILE="$root/fleet-calls"
-  export VISIBILITY_CALLS_FILE VISIBILITY_FAIL_LEAD
-  FLYWHEEL_RESTART_VISIBILITY_VERIFIER="$root/fleet-verifier"
-  FLYWHEEL_RESTART_VISIBILITY_BOUNDED_RUN="$root/bounded"
-  FLYWHEEL_RESTART_VISIBILITY_MAX_ATTEMPTS=1
-  FLYWHEEL_DIR="$root/repo"
-  FLYWHEEL_STATE_DIR="$root/state"
-  restart_lead_visibility_barrier "$root/fleet-candidates"
-  printf "%s|%s|%s|%s\n" \
-    "$LEAD_VISIBILITY_CONFIRMED_COUNT" "$LEAD_VISIBILITY_UNPROVEN_COUNT" \
-    "$(awk -F "\t" '\''$1 == "lead-17" && $2 == "visible" {n++} END {print n+0}'\'' "$VISIBILITY_CALLS_FILE")" \
-    "$(awk -F "\t" '\''$2 == "carrier" {n++} END {print n+0}'\'' "$VISIBILITY_CALLS_FILE")"
-' _ "$rn_visibility_funcs" "$rn_visibility_root")
-if [[ "$rn_visibility_failed" == "1|0|1|16" ]]; then
+if [[ "$(awk -F= '/^AV_CMUX_TIMEOUT_DEFAULT_SECONDS=/ {print $2}' "$SCRIPT_DIR/lib/agent-visibility.sh")" \
+      == "$(awk -F= '/^RESTART_VISIBILITY_BATCH_BUDGET_SECONDS=/ {print $2}' "$SCRIPT_DIR/restart-services.sh")" ]]; then
+  pass "FLY-2965 the batch cmux proof reuses the shared 240s child budget"
+else
+  fail "FLY-2965 batch budget drifted from AV_CMUX_TIMEOUT_DEFAULT_SECONDS"
+fi
+
+rn_visibility_failed=$(VISIBILITY_FAIL_LEAD=lead-17 rn_fleet_barrier)
+if [[ "$rn_visibility_failed" == "1|0|0|33|1|17" ]] \
+  && grep -qx $'visibility_failed\tdemo-lead-17' "$rn_visibility_root/fleet-details"; then
   pass "FLY-2643 a determinate missing Lead remains failed at the bounded final attempt"
 else
-  fail "FLY-2643 final determinate failure was overwritten or starved the healthy fleet: result='$rn_visibility_failed' calls='$(cat "$rn_visibility_root/fleet-calls")'"
+  fail "FLY-2643 final determinate failure was overwritten or starved the healthy fleet: result='$rn_visibility_failed' details='$(cat "$rn_visibility_root/fleet-details")'"
 fi
 
-: > "$rn_visibility_root/fleet-calls"
-rn_visibility_boot=$(VISIBILITY_BOOT_LEAD=lead-17 bash -c '
-  set -uo pipefail
-  source "$1"
-  root="$2"
-  log() { :; }
-  register_restart_transient_file() { :; }
-  record_lead_restart_detail() { :; }
-  LEAD_RESTART_NAMES_FILE="$root/fleet-details"
-  VISIBILITY_CALLS_FILE="$root/fleet-calls"
-  export VISIBILITY_CALLS_FILE VISIBILITY_BOOT_LEAD
-  FLYWHEEL_RESTART_VISIBILITY_VERIFIER="$root/fleet-verifier"
-  FLYWHEEL_RESTART_VISIBILITY_BOUNDED_RUN="$root/bounded"
-  FLYWHEEL_RESTART_VISIBILITY_MAX_ATTEMPTS=2
-  FLYWHEEL_DIR="$root/repo"
-  FLYWHEEL_STATE_DIR="$root/state"
-  restart_lead_visibility_barrier "$root/fleet-candidates"
-  printf "%s|%s|%s|%s\n" \
-    "$LEAD_VISIBILITY_CONFIRMED_COUNT" "$LEAD_VISIBILITY_UNPROVEN_COUNT" \
-    "$(awk -F "\t" '\''$1 == "lead-17" && $2 == "visible" {n++} END {print n+0}'\'' "$VISIBILITY_CALLS_FILE")" \
-    "$(awk -F "\t" '\''$2 == "carrier" {n++} END {print n+0}'\'' "$VISIBILITY_CALLS_FILE")"
-' _ "$rn_visibility_funcs" "$rn_visibility_root")
-if [[ "$rn_visibility_boot" == "0|0|2|17" ]]; then
-  pass "FLY-2643 a still-booting Lead can converge after an initial stable missing-window verdict"
+rn_visibility_boot=$(VISIBILITY_BOOT_LEAD=lead-17 RN_MAX_ATTEMPTS=2 rn_fleet_barrier)
+if [[ "$rn_visibility_boot" == "0|0|0|35|2|17" ]] \
+  && [[ "$(awk -F '\t' 'NR == 2 {print $3}' "$rn_visibility_root/fleet-batch-calls")" == demo-lead-17 ]] \
+  && [[ ! -s "$rn_visibility_root/fleet-details" ]]; then
+  pass "FLY-2965 a still-booting Lead converges in a later batch that re-judges only the unconverged Lead"
 else
-  fail "FLY-2643 startup visibility failure remained terminal: result='$rn_visibility_boot' calls='$(cat "$rn_visibility_root/fleet-calls")'"
+  fail "FLY-2965 delayed convergence mismatch: result='$rn_visibility_boot' batches='$(cat "$rn_visibility_root/fleet-batch-calls")' details='$(cat "$rn_visibility_root/fleet-details")'"
 fi
 
-: > "$rn_visibility_root/fleet-calls"
-rn_visibility_drift=$(VISIBILITY_DRIFT_LEAD=lead-17 bash -c '
-  set -uo pipefail
-  source "$1"
-  root="$2"
-  log() { :; }
-  register_restart_transient_file() { :; }
-  record_lead_restart_detail() { :; }
-  LEAD_RESTART_NAMES_FILE="$root/fleet-details"
-  VISIBILITY_CALLS_FILE="$root/fleet-calls"
-  export VISIBILITY_CALLS_FILE VISIBILITY_DRIFT_LEAD
-  FLYWHEEL_RESTART_VISIBILITY_VERIFIER="$root/fleet-verifier"
-  FLYWHEEL_RESTART_VISIBILITY_BOUNDED_RUN="$root/bounded"
-  FLYWHEEL_RESTART_VISIBILITY_MAX_ATTEMPTS=1
-  FLYWHEEL_DIR="$root/repo"
-  FLYWHEEL_STATE_DIR="$root/state"
-  restart_lead_visibility_barrier "$root/fleet-candidates"
-  printf "%s|%s\n" "$LEAD_VISIBILITY_CONFIRMED_COUNT" "$LEAD_VISIBILITY_UNPROVEN_COUNT"
-' _ "$rn_visibility_funcs" "$rn_visibility_root")
-if [[ "$rn_visibility_drift" == "0|1" ]]; then
+rn_visibility_fail_unknown=$(VISIBILITY_FAIL_THEN_UNKNOWN_LEAD=lead-17 RN_MAX_ATTEMPTS=2 rn_fleet_barrier)
+if [[ "$rn_visibility_fail_unknown" == "1|0|0|34|2|17" ]] \
+  && grep -qx $'visibility_failed\tdemo-lead-17' "$rn_visibility_root/fleet-details"; then
+  pass "FLY-2965 a later unproven batch cannot erase an earlier confirmed missing window"
+else
+  fail "FLY-2965 confirmed-failure precedence lost: result='$rn_visibility_fail_unknown' details='$(cat "$rn_visibility_root/fleet-details")'"
+fi
+
+rn_visibility_drift=$(VISIBILITY_DRIFT_LEAD=lead-17 rn_fleet_barrier)
+if [[ "$rn_visibility_drift" == "0|1|0|34|1|17" ]] \
+  && grep -qx $'visibility_unproven\tdemo-lead-17' "$rn_visibility_root/fleet-details"; then
   pass "FLY-2643 final carrier identity drift cannot inherit an earlier cmux visibility pass"
 else
   fail "FLY-2643 final carrier identity was not bound to the visible proof: result='$rn_visibility_drift'"
+fi
+
+rn_visibility_carrier=$(VISIBILITY_CARRIER_FAIL_LEAD=lead-03 rn_fleet_barrier)
+if [[ "$rn_visibility_carrier" == "1|0|0|33|1|16" ]] \
+  && ! grep -q 'demo-lead-03' "$rn_visibility_root/fleet-batch-calls"; then
+  pass "FLY-2965 a failed carrier is never offered to, or offset by, the cmux proof"
+else
+  fail "FLY-2965 carrier failure leaked into the cmux batch: result='$rn_visibility_carrier' batches='$(cat "$rn_visibility_root/fleet-batch-calls")'"
+fi
+
+rn_batch_invalid_ok=1
+rn_batch_invalid_detail=""
+for rn_batch_mode in timeout truncated unsupported missing extra duplicate rc_conflict no_report bad_report multi_doc; do
+  rn_batch_result=$(BATCH_MODE="$rn_batch_mode" rn_fleet_barrier)
+  rn_batch_invalid_detail+=" $rn_batch_mode=$rn_batch_result"
+  [[ "$rn_batch_result" == "0|17|0|17|1|17" ]] || rn_batch_invalid_ok=0
+  [[ "$(grep -c '^visibility_unproven' "$rn_visibility_root/fleet-details")" == 17 ]] || rn_batch_invalid_ok=0
+done
+if [[ "$rn_batch_invalid_ok" == 1 ]]; then
+  pass "FLY-2965 a timed-out, truncated, unsupported, or inconsistent batch proves no Lead and never falls back to per-Lead scans;$rn_batch_invalid_detail"
+else
+  fail "FLY-2965 malformed batch results were consumed;$rn_batch_invalid_detail"
+fi
+
+echo "Test: FLY-2965 rollback keeps the batch verifier of the running restart"
+# A rollback resets the checkout to an older head before its window diagnosis.
+# The first rollback across this change lands on a checkout whose cmux-sync
+# does not know --verify-agents-visible; the verifier must be pinned first.
+rn_pin_rt="$rn_visibility_root/pin-runtime"
+mkdir -p "$rn_pin_rt/scripts/lib"
+cp "$rn_visibility_root/batch-sync" "$rn_pin_rt/scripts/flywheel-cmux-sync.sh"
+for rn_pin_dep in lead-alert.sh lib/bounded-run.sh lib/cmux-mutator-process-census.sh \
+    lib/flywheel-alert-lib.sh lib/lead-address.sh; do
+  printf '#!/bin/bash\n# fixture %s\n' "$rn_pin_dep" > "$rn_pin_rt/scripts/$rn_pin_dep"
+done
+chmod +x "$rn_pin_rt/scripts/flywheel-cmux-sync.sh"
+printf 'demo\tlead-01\tdemo-lead-01\tidentity-a\ndemo\tlead-02\tdemo-lead-02\tidentity-b\n' \
+  > "$rn_visibility_root/pin-passed"
+: > "$rn_visibility_root/pin-registered"
+: > "$rn_visibility_root/pin-results"
+: > "$rn_visibility_root/unpinned-results"
+rn_pin_path=$(BATCH_CALLS_FILE="$rn_visibility_root/pin-batch-calls" \
+  BATCH_COUNTER="$rn_visibility_root/pin-batch-counter" bash -c '
+  set -euo pipefail
+  source "$1"
+  root="$2"
+  log() { :; }
+  # Not "$root": the helper under test has a local of that name, and Bash
+  # dynamic scoping would hand the stub the pinned directory instead.
+  pin_registry="$root/pin-registered"
+  register_restart_transient_file() { printf "%s\n" "$1" >> "$pin_registry"; }
+  export BATCH_CALLS_FILE BATCH_COUNTER
+  FLYWHEEL_RUNTIME_DIR="$root/pin-runtime"
+  FLYWHEEL_DIR="$root/pin-runtime"
+  FLYWHEEL_STATE_DIR="$root/state"
+  FLYWHEEL_RESTART_VISIBILITY_BOUNDED_RUN="$root/bounded"
+  unset FLYWHEEL_VISIBILITY_CMUX_SYNC
+  pin_restart_visibility_verifier
+  # git reset --hard to a pre-FLY-2965 head: the checkout no longer has it.
+  printf "#!/bin/bash\necho \"Usage: flywheel-cmux-sync [--once]\"\nexit 1\n" \
+    > "$root/pin-runtime/scripts/flywheel-cmux-sync.sh"
+  restart_lead_visibility_batch_visible "$root/pin-passed" 30 "$root/pin-results"
+  printf "%s\n" "$FLYWHEEL_VISIBILITY_CMUX_SYNC"
+  unset FLYWHEEL_VISIBILITY_CMUX_SYNC
+  restart_lead_visibility_batch_visible "$root/pin-passed" 30 "$root/unpinned-results"
+' _ "$rn_visibility_funcs" "$rn_visibility_root")
+rn_pin_root="${rn_pin_path%/flywheel-cmux-sync.sh}"
+if [[ -n "$rn_pin_path" && "$rn_pin_path" != "$rn_pin_rt"/* && -x "$rn_pin_path" ]] \
+  && [[ "$(grep -c $'^pass\tdemo-lead-0[12]\t' "$rn_visibility_root/pin-results")" == 2 ]] \
+  && [[ "$(grep -c $'^visibility_unproven\tdemo-lead-0[12]\tinvalid_batch_result' "$rn_visibility_root/unpinned-results")" == 2 ]] \
+  && [[ "$(grep -c "^$rn_pin_root/" "$rn_visibility_root/pin-registered")" -ge 7 ]] \
+  && [[ "$(tail -1 "$rn_visibility_root/pin-registered")" == "$rn_pin_root" ]]; then
+  pass "FLY-2965 a pinned verifier survives the rollback reset; the unpinned checkout would prove nothing"
+else
+  fail "FLY-2965 rollback verifier pin mismatch: path='$rn_pin_path' pinned='$(cat "$rn_visibility_root/pin-results")' unpinned='$(cat "$rn_visibility_root/unpinned-results")' registered='$(cat "$rn_visibility_root/pin-registered")'"
+fi
+# The pinned copies were registered for the exit cleanup; drop them here.
+while IFS= read -r rn_pin_file; do
+  [[ -n "$rn_pin_file" ]] || continue
+  rm -f -- "$rn_pin_file" 2>/dev/null || rmdir -- "$rn_pin_file" 2>/dev/null || true
+done < "$rn_visibility_root/pin-registered"
+if [[ -n "$rn_pin_root" && ! -e "$rn_pin_root" ]]; then
+  pass "FLY-2965 the exit cleanup removes the pinned files and their directories"
+else
+  fail "FLY-2965 pinned verifier residue: $rn_pin_root"
+fi
+
+echo "Test: FLY-2965 the batch cmux proof is bounded by the budget it is given"
+printf 'demo\tlead-01\tdemo-lead-01\tidentity-a\ndemo\tlead-02\tdemo-lead-02\tidentity-b\n' \
+  > "$rn_visibility_root/hang-passed"
+: > "$rn_visibility_root/hang-results"
+BATCH_MODE=hang BATCH_CALLS_FILE="$rn_visibility_root/hang-batch-calls" \
+BATCH_COUNTER="$rn_visibility_root/hang-batch-counter" bash -c '
+  set -uo pipefail
+  source "$1"
+  root="$2"
+  FLYWHEEL_RESTART_VISIBILITY_BOUNDED_RUN="$3"
+  FLYWHEEL_VISIBILITY_CMUX_SYNC="$root/batch-sync"
+  FLYWHEEL_DIR="$root/repo"
+  FLYWHEEL_STATE_DIR="$root/state"
+  export BATCH_MODE BATCH_CALLS_FILE BATCH_COUNTER
+  restart_lead_visibility_batch_visible "$root/hang-passed" 2 "$root/hang-results"
+' _ "$rn_visibility_funcs" "$rn_visibility_root" "$SCRIPT_DIR/lib/bounded-run.sh"
+# The hanging shim can only end as rc=124 if bounded-run terminated it; on
+# its own it would exit 0 with no result after 60s (invalid_batch_result).
+if [[ "$(grep -c $'^visibility_unproven\tdemo-lead-0[12]\tbatch_timeout;rc=124;identity=identity-[ab]$' "$rn_visibility_root/hang-results")" == 2 ]]; then
+  pass "FLY-2965 an unresponsive batch returns within its budget and leaves every Lead unproven"
+else
+  fail "FLY-2965 hanging batch was not bounded: results='$(cat "$rn_visibility_root/hang-results")'"
 fi
 
 rn_normal_trigger_line=$(grep -n 'trigger_cmux_refresh' "$rn_deploy_func" | tail -1 | cut -d: -f1 || true)
@@ -800,6 +941,37 @@ if [[ "$rn_normal_trigger_line" =~ ^[0-9]+$ && "$rn_normal_visibility_line" =~ ^
     pass "FLY-2643 normal and rollback waves gate final success after cmux refresh scheduling"
 else
     fail "FLY-2643 visibility barrier is missing or ordered before cmux refresh"
+fi
+
+echo "Test: FLY-2965 rollback pins the verifier before resetting and cleanup removes directories"
+rn_pin_line=$(grep -n 'pin_restart_visibility_verifier' "$rn_rollback_func" | head -1 | cut -d: -f1 || true)
+rn_reset_line=$(grep -n 'reset --hard "$rollback_sha"' "$rn_rollback_func" | head -1 | cut -d: -f1 || true)
+if [[ "$rn_pin_line" =~ ^[0-9]+$ && "$rn_reset_line" =~ ^[0-9]+$ ]] && (( rn_pin_line < rn_reset_line )) \
+  && grep -Fq 'rm -f -- "$path" 2>/dev/null || rmdir -- "$path" 2>/dev/null || true' "$SCRIPT_DIR/restart-services.sh"; then
+    pass "FLY-2965 the batch verifier is pinned before git reset and registered directories are removable"
+else
+    fail "FLY-2965 pin/reset ordering: pin=$rn_pin_line reset=$rn_reset_line"
+fi
+
+echo "Test: FLY-2965 code record and admission release precede the window diagnosis"
+rn_normal_sha_line=$(grep -n 'echo "$CURRENT_HEAD" > "$DEPLOYED_SHA_FILE"' "$rn_deploy_func" | head -1 | cut -d: -f1 || true)
+rn_normal_resume_line=$(awk -v after="${rn_normal_sha_line:-0}" 'NR > after && /resume_admission_best_effort/ { print NR; exit }' "$rn_deploy_func")
+rn_normal_retry_line=$(grep -n 'resume_admission_best_effort' "$rn_deploy_func" | tail -1 | cut -d: -f1 || true)
+rn_rollback_voice_line=$(grep -n 'restart_voice_managed' "$rn_rollback_func" | head -1 | cut -d: -f1 || true)
+rn_rollback_resume_line=$(awk -v after="${rn_rollback_voice_line:-0}" 'NR > after + 5 && /resume_admission_best_effort/ { print NR; exit }' "$rn_rollback_func")
+rn_rollback_retry_line=$(grep -n 'resume_admission_best_effort' "$rn_rollback_func" | tail -1 | cut -d: -f1 || true)
+if [[ "$rn_normal_sha_line" =~ ^[0-9]+$ && "$rn_normal_resume_line" =~ ^[0-9]+$ \
+  && "$rn_rollback_voice_line" =~ ^[0-9]+$ && "$rn_rollback_resume_line" =~ ^[0-9]+$ ]] \
+  && (( rn_normal_sha_line < rn_normal_resume_line \
+    && rn_normal_resume_line < rn_normal_visibility_line \
+    && rn_normal_visibility_line < rn_normal_retry_line \
+    && rn_rollback_voice_line < rn_rollback_resume_line \
+    && rn_rollback_resume_line < rn_rollback_visibility_line \
+    && rn_rollback_visibility_line < rn_rollback_retry_line )) \
+  && grep -B3 -n 'resume_admission_best_effort' "$rn_deploy_func" | grep -q 'ADMISSION_PAUSE_RELEASE_ON_EXIT'; then
+    pass "FLY-2965 deployed-sha and ordinary admission release happen before the bounded window diagnosis"
+else
+    fail "FLY-2965 ordering: sha=$rn_normal_sha_line resume=$rn_normal_resume_line barrier=$rn_normal_visibility_line retry=$rn_normal_retry_line rb_voice=$rn_rollback_voice_line rb_resume=$rn_rollback_resume_line rb_barrier=$rn_rollback_visibility_line rb_retry=$rn_rollback_retry_line"
 fi
 
 echo "Test: FLY-1603 skip-test candidates never inflate the Lead total"
@@ -2654,6 +2826,12 @@ case "\$args" in
   *"-o command= -p 334"*)
     echo "/bin/bash $BO_FLYWHEEL/scripts/flywheel-cmux-sync.sh --watch"
     ;;
+  *"-o uid= -o pid= -o ppid= -o command="*)
+    /bin/ps "\$@"
+    if [[ -n "\${FAKE_FOREIGN_TMUX_SOCKET:-}" ]]; then
+      printf '%s 777777 1 tmux: server\n' "\$(id -u)"
+    fi
+    ;;
   *"-axo pid=,command="*)
     if [[ "\${FAKE_NO_LEAD_PROCESS:-0}" != "1" && "\$(cat "$BO_LAUNCH_STATE" 2>/dev/null || echo loaded)" == "loaded" ]]; then
       echo "55555 claude --agent eng --append-system-prompt-file /tmp/lead-rules-bundles/flywheel-eng.424243-lstart-x.md --model claude-fable-5"
@@ -2723,6 +2901,29 @@ jq -nc --arg project "$project" --arg lead "$lead" --arg level "$level" \
   '{schemaVersion:1,subject:{kind:"lead",project:$project,leadId:$lead},level:$level,status:"pass",reasons:[],
     identity:{carrierPid:424242,carrierStart:"start",socket:null,session:"flywheel",windowId:"@1",paneId:"%1",panePid:4343,threadId:("thread-"+$lead)}}'
 EOF
+cat > "$BO_SHIMS/cmux-batch" <<EOF
+#!/bin/bash
+[[ "\${1:-}" == --verify-agents-visible ]] || exit 64
+shift
+targets=()
+while [[ \$# -gt 0 ]]; do
+  case "\$1" in
+    --target) targets+=("\$2"); shift 2 ;;
+    --json) shift ;;
+    *) exit 64 ;;
+  esac
+done
+resumed=no
+grep -q '/api/admission/resume' "$BO_CALLS/curl.calls" 2>/dev/null && resumed=yes
+printf '%s|%s|%s\n' "\$(cat "$BO_HOME/.flywheel/deployed-sha" 2>/dev/null)" "\$resumed" "\${targets[*]}" \
+  >> "$BO_CALLS/cmux-batch.calls"
+[[ "\${FAKE_BATCH_TIMEOUT:-0}" != 1 ]] || exit 124
+json='[]'
+for target in "\${targets[@]}"; do
+  json=\$(jq -c --arg t "\$target" '. + [{target:\$t,status:"pass",reasons:[],report:[]}]' <<<"\$json")
+done
+jq -nc --argjson results "\$json" '{schemaVersion:1,results:\$results}'
+EOF
 cat > "$BO_SHIMS/curl" <<EOF
 #!/bin/bash
 echo "\$*" >> "$BO_CALLS/curl.calls"
@@ -2750,6 +2951,9 @@ if [[ "\$url" == *"/api/admission/pause"* ]]; then
   exit 0
 fi
 if [[ "\$url" == *"/api/admission/resume"* ]]; then
+  resume_n=\$(cat "$BO_CALLS/admission-resume.n" 2>/dev/null || echo 0)
+  resume_n=\$((resume_n + 1)); echo "\$resume_n" > "$BO_CALLS/admission-resume.n"
+  (( resume_n > \${FAKE_RESUME_FAIL_COUNT:-0} )) || exit 22
   printf '%s\n' '{"ok":true,"admissionPause":{"active":false,"remainingSeconds":0}}'
   exit 0
 fi
@@ -2779,8 +2983,12 @@ if [[ "\${1:-}" == "+%s" ]]; then
 fi
 exec /bin/date "\$@"
 EOF
-cat > "$BO_SHIMS/lsof" <<'EOF'
+cat > "$BO_SHIMS/lsof" <<EOF
 #!/bin/bash
+echo "\$*" >> "$BO_CALLS/lsof.calls"
+if [[ -n "\${FAKE_FOREIGN_TMUX_SOCKET:-}" && " \$* " == *" 777777 "* ]]; then
+  printf 'p777777\nn%s\n' "\$FAKE_FOREIGN_TMUX_SOCKET"
+fi
 exit 0
 EOF
 chmod +x "$BO_SHIMS"/*
@@ -2887,7 +3095,7 @@ bo_run() {
     mkdir -p "$BO_HOME/.flywheel/state/cmux-watcher.lock"
     echo '333|watcher-old|watch|watcher-old-nonce' > "$BO_HOME/.flywheel/state/cmux-watcher.lock/owner"
     rm -f "$BO_CALLS/tmux-list.n" "$BO_CALLS/prewave-probe" \
-        "$BO_CALLS/admission-pause.n"
+        "$BO_CALLS/admission-pause.n" "$BO_CALLS/admission-resume.n"
     HOME="$BO_HOME" PATH="$BO_SHIMS:$PATH" \
         FLYWHEEL_STATE_DIR="$BO_HOME/.flywheel" \
         BRIDGE_URL="http://127.0.0.1:19876" \
@@ -2904,6 +3112,9 @@ bo_run() {
         FLYWHEEL_RESTART_VISIBILITY_VERIFIER="$BO_SHIMS/agent-visibility" \
         FLYWHEEL_RESTART_VISIBILITY_BOUNDED_RUN="$BO_SHIMS/bounded-run" \
         FLYWHEEL_RESTART_VISIBILITY_MAX_ATTEMPTS=1 \
+        FLYWHEEL_VISIBILITY_CMUX_SYNC="$BO_SHIMS/cmux-batch" \
+        FAKE_BATCH_TIMEOUT="${FAKE_BATCH_TIMEOUT:-0}" \
+        FAKE_RESUME_FAIL_COUNT="${FAKE_RESUME_FAIL_COUNT:-0}" \
         FLYWHEEL_RQM_RUNTIME_SHA_BIN="$BO_SHIMS/quota-runtime-sha" \
         FLYWHEEL_RQM_PS_BIN="$BO_SHIMS/ps" \
         FLYWHEEL_NODE_BIN="$BO_REAL_NODE" \
@@ -3093,6 +3304,55 @@ else
     fail "FLY-1434 order: SHA match — rc=$rc launchctl='$(bo_calls launchctl)' out tail: $(echo "$out" | tail -3)"
 fi
 
+# ── 1b) FLY-2965: a detached tmux-looking process holding a non-tmux Unix
+#         socket (the cmux app control endpoint on 2026-09-27) is never
+#         enumerated, connected, or sent `tmux -S` by the restart. The rescue
+#         library is mounted so a lingering audit would be live, and a real
+#         listener counts every connection attempt from the whole restart.
+echo "Test: FLY-2965 full restart makes zero access to a foreign protocol socket"
+fly2965_sock_dir="$(mktemp -d /tmp/f2965-sock.XXXXXX)"
+fly2965_sock="$fly2965_sock_dir/cmux.sock"
+fly2965_accepts="$fly2965_sock_dir/accepts"
+: > "$fly2965_accepts"
+python3 - "$fly2965_sock" "$fly2965_accepts" <<'PY_LISTENER' &
+import os, socket, sys, time
+path, log = sys.argv[1:3]
+server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+server.bind(path); server.listen(8); server.settimeout(0.2)
+deadline = time.monotonic() + 600
+while time.monotonic() < deadline and os.path.exists(path):
+    try:
+        conn, _ = server.accept()
+    except socket.timeout:
+        continue
+    with open(log, "a") as handle:
+        handle.write("accept\n")
+    conn.close()
+PY_LISTENER
+fly2965_listener=$!
+for _ in $(seq 1 50); do [[ -S "$fly2965_sock" ]] && break; /bin/sleep 0.1; done
+cp "$REAL_REPO_ROOT/scripts/lib/tmux-server-rescue.sh" "$BO_FLYWHEEL/scripts/lib/"
+printf 'scripts/lib/tmux-server-rescue.sh\n' >> "$BO_FLYWHEEL/.git/info/exclude"
+echo "$BO_HEAD_1" > "$BO_HOME/.flywheel/deployed-sha"
+rm -f "$BO_CALLS/lsof.calls"
+out=$(FAKE_FOREIGN_TMUX_SOCKET="$fly2965_sock" bo_run) && rc=0 || rc=$?
+fly2965_tmux_probe="$(bo_calls tmux | grep -F -- "$fly2965_sock" || true)"
+fly2965_lsof_probe="$(bo_calls lsof | grep -F -- 777777 || true)"
+fly2965_accept_count="$(grep -c accept "$fly2965_accepts" || true)"
+rm -f "$fly2965_sock"
+kill "$fly2965_listener" 2>/dev/null || true
+wait "$fly2965_listener" 2>/dev/null || true
+rm -f "$BO_FLYWHEEL/scripts/lib/tmux-server-rescue.sh"
+rm -rf "$fly2965_sock_dir"
+if (( rc == 0 )) \
+   && [[ -z "$fly2965_tmux_probe" && -z "$fly2965_lsof_probe" && "$fly2965_accept_count" == 0 ]] \
+   && [[ "$(cat "$BO_HOME/.flywheel/deployed-sha")" == "$BO_HEAD_1" ]] \
+   && ! echo "$out" | grep -Fq 'non-production tmux server audit'; then
+    pass "FLY-2965 restart deploys without enumerating or probing a foreign protocol socket"
+else
+    fail "FLY-2965 restart touched a foreign socket — rc=$rc tmux='$fly2965_tmux_probe' lsof='$fly2965_lsof_probe' accepts=$fly2965_accept_count out tail: $(echo "$out" | tail -4)"
+fi
+
 # ── 2) a new checkout rebuilds its immutable identity even for doc-only deltas ──
 echo "new doc" > "$BO_FLYWHEEL/README.md"
 git -C "$BO_FLYWHEEL" add README.md
@@ -3108,6 +3368,57 @@ if (( rc == 0 )) && echo "$out" | grep -q "Build successful" \
     pass "FLY-1655 doc-only checkout rebuilds its identity and restarts the full fleet"
 else
     fail "FLY-1434 order: doc-only mismatch — rc=$rc sha=$(cat "$BO_HOME/.flywheel/deployed-sha") out tail: $(echo "$out" | tail -3)"
+fi
+
+# ── 2a) FLY-2965: the window diagnosis runs after the code is recorded and
+#         ordinary admission is released; it never gates deployed-sha. ──
+echo "Test: FLY-2965 deployed-sha and admission release precede the window diagnosis"
+bo_resume_calls() { grep -c '/api/admission/resume' "$BO_CALLS/curl.calls" 2>/dev/null || true; }
+bo_status_field() { jq -r ".$1" "$BO_HOME/.flywheel/leads-restart-status.json" 2>/dev/null || echo missing; }
+echo "$BO_HEAD_1" > "$BO_HOME/.flywheel/deployed-sha"
+echo "failed=1" > "$BO_HOME/.flywheel/plugin-restart-pending"
+out=$(bo_run --reason fly2965-order) && rc=0 || rc=$?
+if (( rc == 0 )) \
+   && [[ "$(bo_calls cmux-batch)" == "$BO_HEAD_2|yes|flywheel-eng" ]] \
+   && [[ "$(cat "$BO_HOME/.flywheel/deployed-sha")" == "$BO_HEAD_2" ]] \
+   && [[ "$(bo_resume_calls)" == 1 ]] \
+   && [[ ! -e "$BO_HOME/.flywheel/plugin-restart-pending" ]] \
+   && [[ ! -e "$BO_HOME/.flywheel/restart.lock.d" ]]; then
+    pass "FLY-2965 one shared cmux proof runs after deployed-sha and the ordinary admission release"
+else
+    fail "FLY-2965 order mismatch — rc=$rc batch='$(bo_calls cmux-batch)' sha=$(cat "$BO_HOME/.flywheel/deployed-sha") resumes=$(bo_resume_calls) out tail: $(echo "$out" | tail -4)"
+fi
+
+echo "$BO_HEAD_1" > "$BO_HOME/.flywheel/deployed-sha"
+echo "failed=1" > "$BO_HOME/.flywheel/plugin-restart-pending"
+out=$(FAKE_BATCH_TIMEOUT=1 bo_run --reason fly2965-batch-timeout) && rc=0 || rc=$?
+alerts=$(bo_calls lead-alert)
+if (( rc == 0 )) \
+   && [[ "$(cat "$BO_HOME/.flywheel/deployed-sha")" == "$BO_HEAD_2" ]] \
+   && [[ "$(bo_resume_calls)" == 1 ]] \
+   && [[ -f "$BO_HOME/.flywheel/plugin-restart-pending" ]] \
+   && [[ "$(bo_status_field leadsRestartStatus)|$(bo_status_field failed)" == "degraded|1" ]] \
+   && echo "$alerts" | grep -q 'visibility-unproven: flywheel-eng' \
+   && [[ ! -e "$BO_HOME/.flywheel/restart.lock.d" ]]; then
+    pass "FLY-2965 an unresponsive window proof leaves the code deployed, dispatch released, and the Lead unproven"
+else
+    fail "FLY-2965 batch timeout mismatch — rc=$rc sha=$(cat "$BO_HOME/.flywheel/deployed-sha") resumes=$(bo_resume_calls) status=$(bo_status_field leadsRestartStatus)/$(bo_status_field failed) alerts='$alerts'"
+fi
+rm -f "$BO_HOME/.flywheel/plugin-restart-pending"
+
+echo "$BO_HEAD_1" > "$BO_HOME/.flywheel/deployed-sha"
+out=$(FAKE_RESUME_FAIL_COUNT=1 bo_run --reason fly2965-resume-retry) && rc=0 || rc=$?
+bo_retry_resumes=$(bo_resume_calls)
+echo "$BO_HEAD_1" > "$BO_HOME/.flywheel/deployed-sha"
+out2=$(FAKE_RESUME_FAIL_COUNT=9 bo_run --reason fly2965-resume-twice) && rc2=0 || rc2=$?
+bo_failed_resumes=$(bo_resume_calls)
+if (( rc == 0 && rc2 == 0 )) && [[ "$bo_retry_resumes:$bo_failed_resumes" == "2:2" ]] \
+   && echo "$out" | grep -q 'Bridge admission resumed' \
+   && echo "$out2" | grep -q 'preserving the brake until TTL' \
+   && ! echo "$out2" | grep -q 'Bridge admission resumed'; then
+    pass "FLY-2965 a failed early resume is retried once after the diagnosis, then left to the lease TTL"
+else
+    fail "FLY-2965 resume retry mismatch — rc=$rc/$rc2 resumes=$bo_retry_resumes/$bo_failed_resumes"
 fi
 
 # ── 2b) stale runtime identity cannot advance deployed-sha and alerts once ──

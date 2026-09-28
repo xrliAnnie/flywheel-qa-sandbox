@@ -1,0 +1,29 @@
+{"t":7.8,"kind":"arm","data":{"arm":"steer","bargeAfterMs":4500}}
+{"t":350.2,"kind":"response","data":{"method":"initialize","error":null}}
+{"t":783.3,"kind":"response","data":{"method":"account/read","error":null}}
+{"t":783.6,"kind":"account","data":{"type":"chatgpt"}}
+{"t":1946.2,"kind":"response","data":{"method":"thread/start","error":null}}
+{"t":2135.5,"kind":"response","data":{"method":"thread/realtime/start","error":null}}
+{"t":2136.3,"kind":"start_response","data":{"error":null}}
+{"t":2719.9,"kind":"started","data":{"version":"v3"}}
+{"t":2726.5,"kind":"pc_state","data":{"s":"connecting"}}
+{"t":3327.6,"kind":"pc_state","data":{"s":"connected"}}
+{"t":3400.9,"kind":"dc_event","data":{"type":"session.started"}}
+{"t":4891.3,"kind":"response","data":{"method":"thread/realtime/appendSpeech","error":null}}
+{"t":4891.5,"kind":"append_speech","data":{"error":null}}
+{"t":5441,"kind":"dc_event","data":{"type":"turn.created","turn":{"role":"assistant","transcript":"我把"}}}
+{"t":9928.3,"kind":"barge_in","data":{"ms":2570}}
+{"t":9930.5,"kind":"response","data":{"method":"thread/realtime/appendText","error":null}}
+{"t":9930.6,"kind":"steer_appended","data":{"error":null}}
+{"t":11283.4,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"assistant","transcript":"我把三个风险点列一下。第一个是测试房负载太高。第二个是额度可能不够用。第三"}}}
+{"t":11293.6,"kind":"transcript_done","data":{"role":"assistant","text":"我把三个风险点列一下。第一个是测试房负载太高。第二个是额度可能不够用。第三"}}
+{"t":11304.4,"kind":"dc_event","data":{"type":"turn.created","turn":{"role":"user","transcript":"打"}}}
+{"t":14091.2,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"user","transcript":"打断 一下,4 加 4 等 于 几?"}}}
+{"t":14096.8,"kind":"dc_event","data":{"type":"turn.created","turn":{"role":"assistant","transcript":"个是等于八。"}}}
+{"t":14103.7,"kind":"transcript_done","data":{"role":"user","text":"打断 一下,4 加 4 等 于 几?"}}
+{"t":15307.3,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"assistant","transcript":"个是等于八。"}}}
+{"t":15310.1,"kind":"transcript_done","data":{"role":"assistant","text":"个是等于八。"}}
+{"t":16123.2,"kind":"response","data":{"method":"thread/realtime/stop","error":null}}
+{"t":16123.8,"kind":"pc_state","data":{"s":"closed"}}
+{"t":16124.7,"kind":"realtime_closed","data":{"reason":"requested"}}
+{"t":16259.9,"kind":"summary","data":{"why":"done","arm":"steer","bargeAtMs":9928.2,"errors":[],"closed":[{"t":16124.7,"reason":"requested"}],"transcripts":[{"t":11293.6,"role":"assistant","text":"我把三个风险点列一下。第一个是测试房负载太高。第二个是额度可能不够用。第三"},{"t":14103.7,"role":"user","text":"打断 一下,4 加 4 等 于 几?"},{"t":15310.1,"role":"assistant","text":"个是等于八。"}],"assistantTurnsAfterBarge":["我把三个风险点列一下。第一个是测试房负载太高。第二个是额度可能不够用。第三","个是等于八。"],"answerText":"个是等于八。","answeredEight":true,"resumedMarkers":[],"verdict":"CLEAN","authSourceStillFile":true}}

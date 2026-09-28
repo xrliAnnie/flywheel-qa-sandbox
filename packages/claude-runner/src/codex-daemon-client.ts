@@ -25,6 +25,12 @@ import type { RunnerPhaseWakeStartResult } from "flywheel-comm/db";
  * state machine is unit-testable without a live daemon.
  */
 
+import type { CodexQuotaResumeLifecycle } from "flywheel-core";
+import {
+	isQuotaModelOutputItemType,
+	quotaContinueText,
+	reconcileQuotaContinue,
+} from "./codex-quota-resume.js";
 import { CodexTurnBarrier } from "./codex-turn-barrier.js";
 
 /** Native Goal status (app-server protocol v2 ThreadGoalStatus). */
@@ -825,6 +831,12 @@ export async function runGoalToTerminal(
 		phaseLifecycle?: GoalPhaseLifecycle;
 		/** FLY-2268: fail-closed durable turn boundary writer. */
 		turnLifecycle?: GoalTurnLifecycle;
+		/**
+		 * FLY-2900: this launch relaunches a Codex quota standby body. A
+		 * usage-limited (or already reactivated) goal of ours is resumed with
+		 * one marked continue turn instead of replaying the kick.
+		 */
+		quotaResume?: CodexQuotaResumeLifecycle;
 		/** Test seam; production constructs the fixed-budget barrier. */
 		turnBarrier?: CodexTurnBarrier;
 		/** Slow, zero-token phase control poll (default 15s). */
@@ -1018,6 +1030,71 @@ export async function runGoalToTerminal(
 			}
 		}
 	};
+	// FLY-2900: the continue turn's events are buffered from before turn/start
+	// until the Bridge durably recorded `continuing`, then drained in order.
+	let quotaContinue:
+		| { phase: "buffering"; events: Array<{ method: string; params: unknown }> }
+		| { phase: "watching"; turnId: string; settled: boolean }
+		| undefined;
+	let quotaContinueFailure: string | undefined;
+	const handleQuotaContinueEvent = (method: string, params: unknown): void => {
+		const quotaResume = input.quotaResume;
+		if (!quotaResume || quotaContinue?.phase !== "watching") return;
+		if (quotaContinue.settled) return;
+		if (extractTurnId(params) !== quotaContinue.turnId) return;
+		const turnId = quotaContinue.turnId;
+		if (method === "item/completed") {
+			const item =
+				typeof params === "object" && params !== null
+					? (params as { item?: { type?: unknown } }).item
+					: undefined;
+			if (!isQuotaModelOutputItemType(item?.type)) return;
+			quotaContinue.settled = true;
+			try {
+				quotaResume.onContinueProgress({ turnId, itemType: item.type });
+			} catch (error) {
+				client.logDiagnostic(
+					`quota continue progress callback failed: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+			return;
+		}
+		if (method !== "turn/completed") return;
+		quotaContinue.settled = true;
+		const completion = extractTurnCompletion(params);
+		const usageLimited = completion?.error?.code === "usageLimitExceeded";
+		const reasonCode = usageLimited
+			? "continue_turn_failed_before_output:usage_limit_exceeded"
+			: completion?.status === "completed"
+				? "continue_turn_no_output"
+				: "continue_turn_failed_before_output";
+		try {
+			quotaResume.onContinueFailed({ turnId, reasonCode, usageLimited });
+		} catch (error) {
+			client.logDiagnostic(
+				`quota continue failure callback failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+		// A usage wall ends as the ordinary usageLimited terminal (the Bridge
+		// settles it as a capacity rejection); anything else fails this launch.
+		if (!usageLimited) quotaContinueFailure = reasonCode;
+	};
+	const observeQuotaContinue = (method: string, params: unknown): void => {
+		if (
+			!quotaContinue ||
+			(method !== "item/completed" &&
+				method !== "turn/completed" &&
+				method !== "turn/started") ||
+			notificationThreadId(params) !== input.threadId
+		)
+			return;
+		if (quotaContinue.phase === "buffering") {
+			if (quotaContinue.events.length >= 256) quotaContinue.events.shift();
+			quotaContinue.events.push({ method, params });
+			return;
+		}
+		handleQuotaContinueEvent(method, params);
+	};
 	let latestTokens = 0;
 	let terminalSeen: GoalStatus | null = null;
 	let gateHoldActive = false;
@@ -1044,6 +1121,7 @@ export async function runGoalToTerminal(
 		onNotification: (method, params) => {
 			events?.onNotification?.(method, params);
 			observeTurnNotification(method, params);
+			observeQuotaContinue(method, params);
 			// R19 HIGH-1: only count turns for OUR thread (a daemon can host
 			// multiple threads; a stray notification must not inflate the count).
 			// R24 MEDIUM: and only AFTER our goal is armed — a prior goal's turn
@@ -1486,6 +1564,96 @@ export async function runGoalToTerminal(
 			throw error;
 		}
 	};
+	/**
+	 * FLY-2900 §6 step 5: reconcile a carried continue id (never blind-send),
+	 * start exactly one marked continue turn, and then reactivate our goal. The
+	 * ordering keeps native goal continuation from stealing the marked input;
+	 * first model output is the only success evidence.
+	 */
+	const runQuotaResumeContinue = async (
+		quotaResume: CodexQuotaResumeLifecycle,
+	): Promise<void> => {
+		let continueAttemptId = quotaResume.continueAttemptId;
+		let settledEarly = false;
+		if (!quotaResume.continueAttemptFresh) {
+			if (remainingBudget() <= 0)
+				timedOut("before quota continue reconciliation");
+			let outcome: ReturnType<typeof reconcileQuotaContinue>;
+			try {
+				outcome = reconcileQuotaContinue(
+					await client.readThread(input.threadId, remainingBudget()),
+					input.threadId,
+					continueAttemptId,
+				);
+			} catch (error) {
+				if (client.isClosed())
+					failClose(
+						`daemon transport closed during quota continue reconciliation: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				outcome = { kind: "unavailable" };
+			}
+			const decision = quotaResume.onContinueReconciled(outcome);
+			if (decision.action === "abort")
+				throw new GoalRunError(
+					`quota_resume_aborted:${decision.reason}`,
+					"setup_failed",
+				);
+			continueAttemptId = decision.continueAttemptId;
+			settledEarly = decision.settled;
+		}
+		terminalSeen = null;
+		lastTurnError = undefined;
+		if (remainingBudget() <= 0) timedOut("before quota continue turn");
+		quotaContinue = { phase: "buffering", events: [] };
+		beginTurnDispatch();
+		let turnId: string | undefined;
+		try {
+			turnId = await client.startTurn(
+				input.threadId,
+				quotaContinueText(continueAttemptId),
+				remainingBudget(),
+				continueAttemptId,
+			);
+			claimTurnDispatch(turnId);
+			await settleTurnBarrier();
+			await activateGoal();
+		} catch (error) {
+			abortTurnDispatch();
+			quotaContinue = undefined;
+			throw error;
+		}
+		const buffered =
+			quotaContinue?.phase === "buffering" ? quotaContinue.events : [];
+		if (!turnId) {
+			quotaContinue = undefined;
+			throw new GoalRunError(
+				"quota_continue_turn_unidentified",
+				"setup_failed",
+			);
+		}
+		if (settledEarly) {
+			// The earlier continue already proved the resume; this turn is
+			// ordinary work, nothing more to settle.
+			quotaContinue = undefined;
+		} else {
+			if (!quotaResume.onContinueStarted({ turnId })) {
+				quotaContinue = undefined;
+				throw new GoalRunError(
+					"quota_resume_aborted:continue_not_recorded",
+					"setup_failed",
+				);
+			}
+			quotaContinue = { phase: "watching", turnId, settled: false };
+			for (const event of buffered)
+				handleQuotaContinueEvent(event.method, event.params);
+		}
+		if (input.onRecoveryOwnershipEstablished)
+			await establishRecoveryOwnership({
+				kind: "turn_started",
+				threadId: input.threadId,
+				turnId,
+			});
+	};
 	const resumeHeldGoal = async (): Promise<void> => {
 		// Native goal/set(active) resumes a paused goal. A concurrent turn/start
 		// races that automatic continuation and can duplicate a turn.
@@ -1591,7 +1759,24 @@ export async function runGoalToTerminal(
 				}
 				const existingIsOurs =
 					existingGoal !== null && objectiveIsOurs(existingGoal);
-				if (existingIsOurs && existingGoal) {
+				if (input.quotaResume) {
+					// FLY-2900: a quota standby relaunch only ever continues its own
+					// usage-limited (or already reactivated) goal — never a fresh one.
+					if (
+						!existingIsOurs ||
+						!existingGoal ||
+						(existingGoal.status !== "usageLimited" &&
+							existingGoal.status !== "active")
+					)
+						throw new GoalRunError(
+							`quota_resume_goal_unexpected:${existingGoal?.status ?? "missing"}`,
+							"setup_failed",
+						);
+					if (typeof existingGoal.tokensUsed === "number")
+						latestTokens = existingGoal.tokensUsed;
+					await runQuotaResumeContinue(input.quotaResume);
+					skipInitialActivation = true;
+				} else if (existingIsOurs && existingGoal) {
 					if (typeof existingGoal.tokensUsed === "number")
 						latestTokens = existingGoal.tokensUsed;
 					const waiting = input.isWaiting?.() === true;
@@ -1732,6 +1917,11 @@ export async function runGoalToTerminal(
 			// terminal only when no gate is open. Once held, a resolved marker causes
 			// exactly one native active transition; duplicate/out-of-order blocked
 			// notifications cannot duplicate that resume.
+			if (quotaContinueFailure)
+				throw new GoalRunError(
+					`quota_continue_failed_before_output:${quotaContinueFailure}`,
+					"setup_failed",
+				);
 			let verdict = await settleTerminal();
 			if (verdict === "terminal") break;
 			if (verdict === "phase_held") continue;

@@ -3,6 +3,7 @@ import type {
 	WorkflowCarrierDeliveryRow,
 	WorkflowRunNodeRow,
 } from "../../StateStore.js";
+import { deliverResidentWake } from "../resident-wake-fence.js";
 import {
 	drainWorkflowShipCarrierDeliveries,
 	WorkflowShipCarrierDeliveryHandler,
@@ -354,5 +355,33 @@ describe("WorkflowShipCarrierDeliveryHandler", () => {
 			state: "completed",
 		});
 		expect(h.effects.getActorSession).not.toHaveBeenCalled();
+	});
+
+	it("FLY-2921 C5: wakes a carrier whose resident hold is already woken through the shared fence", async () => {
+		// plugin.ts wraps the carrier wake in deliverResidentWake exactly like
+		// the rework wake. A hold left at `woken` (FLY-2821) used to come back
+		// `resident_hold_already_woken` forever, so the carrier retried forever.
+		const h = harness();
+		const fenceStore = {
+			getResidentHold: vi.fn(() => ({ state: "woken", revision: 3 })),
+			wakeResidentHold: vi.fn(() => true),
+		};
+		const transport = vi.fn(async () => ({ ok: true as const }));
+		h.effects.wakeActor.mockImplementation(() =>
+			deliverResidentWake(fenceStore, "implement-1", transport),
+		);
+
+		await expect(h.handler.reconcile("approve-1")).resolves.toEqual({
+			kind: "awaiting_receipt",
+			executionId: "implement-1",
+			activationId: "carrier:run-1:founder_gate:1:approve-1",
+			epoch: 8,
+		});
+		expect(transport).toHaveBeenCalledOnce();
+		expect(fenceStore.wakeResidentHold).not.toHaveBeenCalled();
+		expect(h.store.completeWorkflowWakeSend).toHaveBeenCalledWith(
+			expect.objectContaining({ result: "sent" }),
+		);
+		expect(h.getDelivery().state).toBe("awaiting_receipt");
 	});
 });

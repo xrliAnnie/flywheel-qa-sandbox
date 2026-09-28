@@ -8332,6 +8332,247 @@ test_fly2643_agent_visibility_accepts_healthy_durable_tab() {
   fi
 }
 
+# FLY-2965: a fleet of W live Runner workspaces; the first N titles are
+# returned in FLY2965_TITLES. Every workspace carries a durable receipt, an
+# attached view client, a birth record, and a nonempty render.
+_fly2965_fleet_fixture() {
+  local workspaces="$1" index title ref workspace_uuid surface_uuid
+  local generation="cmux-generation-2965" births="" surfaces=""
+  reset_mocks
+  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_LINKED_VIEW=1
+  MOCK_SOCK_IDENT="$generation"
+  MOCK_CMUX_READSCREEN=$'⚡ runner\n[cmux attached]'
+  FLY2965_TITLES=()
+  topo_add_session runner-flywheel '$1'
+  MOCK_TMUX_CLIENTS=""
+  index=1
+  while (( index <= workspaces )); do
+    title=$(printf 'FLY-%d-implement' "$((2965000 + index))")
+    ref="workspace:$((5000 + index))"
+    workspace_uuid=$(printf '00000000-0000-4000-8000-%012d' "$index")
+    surface_uuid=$(printf '00000000-0000-4000-9000-%012d' "$index")
+    FLY2965_TITLES+=("$title")
+    topo_add_window runner-flywheel "@$((100 + index))" "$title" 1 0
+    topo_add_session "cmux-$title" "\$$((1000 + index))" "" runner-flywheel 0
+    topo_add_window "cmux-$title" "@$((100 + index))" "$title" 1 0
+    MOCK_TMUX_CLIENTS+="${MOCK_TMUX_CLIENTS:+$'\n'}cmux-$title=1"
+    surfaces+="${surfaces:+$'\n'}$ref;;$surface_uuid;;terminal;;true;;$title"
+    births+="${births:+$'\n'}$surface_uuid|$(build_attach_command "cmux-$title")"
+    test_ledger_upsert committed "$generation" "$ref" "$title" "$workspace_uuid"
+    index=$((index + 1))
+  done
+  MOCK_CMUX_SURFACES="$surfaces"
+  MOCK_CMUX_WORKSPACES_JSON=$(python3 -c '
+import json,sys
+n=int(sys.argv[1])
+print(json.dumps({"workspaces":[{"ref":"workspace:%d"%(5000+i),"id":"00000000-0000-4000-8000-%012d"%i,"title":"FLY-%d-implement"%(2965000+i)} for i in range(1,n+1)]}))
+' "$workspaces")
+  printf '%s\n' "$births" | python3 -c '
+import json,sys
+rows=[line.split("|",1) for line in sys.stdin.read().splitlines() if line]
+data={"windows":[{"tabManager":{"workspaces":[
+  {"focusedPanelId":surface,"processTitle":command,"panels":[{"type":"terminal","id":surface}]}
+  for surface,command in rows]}}]}
+json.dump(data,open(sys.argv[1],"w",encoding="utf-8"))
+' "$CMUX_SESSION_STATE"
+}
+
+_fly2965_batch() {
+  local target args=()
+  for target in "$@"; do args+=(--target "$target"); done
+  run_verify_agents_visible "${args[@]}" --json
+}
+
+test_fly2965_batch_visibility_matches_single_subject_rules() {
+  echo "Test: FLY-2965 batch visibility judges each subject by the single-subject rules"
+  local saved_derive rc=0 output healthy absent
+  saved_derive=$(declare -f derive_lead_roster)
+  derive_lead_roster() { LEAD_ROSTER_STATE=ok; LEAD_ROSTER_ROWS=""; }
+
+  _fly2965_fleet_fixture 2
+  healthy="${FLY2965_TITLES[0]}"; absent="FLY-2965999-implement"
+  # A dead source window is independent evidence of an owned, absent subject.
+  topo_add_window runner-flywheel '@999' "$absent" 1 1
+  output=$(_fly2965_batch "$healthy" "$absent" "${FLY2965_TITLES[1]}") || rc=$?
+  release_mutator_lease
+  eval "$saved_derive"
+  if [[ "$rc" -eq 1 ]] \
+      && jq -e --arg a "$healthy" --arg b "$absent" --arg c "${FLY2965_TITLES[1]}" '
+        .schemaVersion == 1 and (.results | length) == 3
+        and ([.results[].target] == [$a, $b, $c])
+        and .results[0].status == "pass" and .results[0].reasons == []
+        and (.results[0].report | any(contains("PASS " + $a + " live")))
+        and .results[1].status == "fail" and .results[1].reasons == ["missing_surface"]
+        and .results[2].status == "pass"' <<<"$output" >/dev/null; then
+    pass "each subject keeps its own verdict; a missing Lead window does not taint the others"
+  else
+    fail "batch verdicts mismatch rc=$rc output=[$output]"
+  fi
+}
+
+test_fly2965_batch_visibility_isolates_subject_failures() {
+  echo "Test: FLY-2965 batch visibility isolates per-subject authority and drift"
+  local saved_derive saved_loaded rc=0 output lead_title="growth-rafiki-lead" drift_rc=0 drift_output
+  saved_derive=$(declare -f derive_lead_roster)
+  saved_loaded=$(declare -f lead_job_loaded)
+  derive_lead_roster() { LEAD_ROSTER_STATE=ok; LEAD_ROSTER_ROWS=""; }
+  lead_job_loaded() { return 1; }
+
+  _fly2965_fleet_fixture 2
+  : > "$FLYWHEEL_LEAD_PLIST_DIR/com.flywheel.lead.${lead_title}.plist"
+  output=$(_fly2965_batch "${FLY2965_TITLES[0]}" "$lead_title") || rc=$?
+  release_mutator_lease
+
+  # Only the second subject's view client count changes between samples.
+  _fly2965_fleet_fixture 2
+  MOCK_TMUX_CLIENTS=$(printf '%s\n' "$MOCK_TMUX_CLIENTS" \
+    | sed "s/^cmux-${FLY2965_TITLES[1]}=1\$/cmux-${FLY2965_TITLES[1]}=1,2/")
+  drift_output=$(_fly2965_batch "${FLY2965_TITLES[0]}" "${FLY2965_TITLES[1]}") || drift_rc=$?
+  release_mutator_lease
+  eval "$saved_loaded"
+  eval "$saved_derive"
+  if [[ "$rc" -eq 2 && "$drift_rc" -eq 2 ]] \
+      && jq -e '.results[0].status == "pass"
+        and .results[1].status == "inconclusive"
+        and (.results[1].reasons | index("probe_unavailable") != null)
+        and (.results[1].reasons | any(startswith("target-authority-unavailable")))' <<<"$output" >/dev/null \
+      && jq -e '.results[0].status == "pass"
+        and .results[1].status == "inconclusive" and .results[1].reasons == ["subject_drift"]' \
+        <<<"$drift_output" >/dev/null; then
+    pass "an unavailable authority or a drifting subject stays local to that subject"
+  else
+    fail "batch isolation mismatch rc=$rc output=[$output] drift_rc=$drift_rc drift=[$drift_output]"
+  fi
+}
+
+test_fly2965_batch_visibility_global_failure_covers_every_subject() {
+  echo "Test: FLY-2965 an unreadable fleet input leaves every subject inconclusive"
+  local saved_derive rc=0 output
+  saved_derive=$(declare -f derive_lead_roster)
+  derive_lead_roster() { LEAD_ROSTER_STATE=ok; LEAD_ROSTER_ROWS=""; }
+  _fly2965_fleet_fixture 2
+  MOCK_CMUX_SURFACES_FAIL=1
+  # Production dispatch runs under errexit+nounset on Bash 3.2; no subject
+  # survives the first sample here, so the second-sample list stays empty.
+  output=$(set -euo pipefail; _fly2965_batch "${FLY2965_TITLES[0]}" "${FLY2965_TITLES[1]}") || rc=$?
+  release_mutator_lease
+  eval "$saved_derive"
+  if [[ "$rc" -eq 2 ]] \
+      && jq -e '(.results | length) == 2
+        and all(.results[]; .status == "inconclusive"
+          and (.reasons | index("probe_unavailable") != null)
+          and (.reasons | any(startswith("birth-authority-unavailable"))))' <<<"$output" >/dev/null; then
+    pass "a failed fleet read yields one inconclusive result per requested subject"
+  else
+    fail "global failure mismatch rc=$rc output=[$output]"
+  fi
+}
+
+test_fly2965_visibility_rejects_correlated_uuid_rotation() {
+  echo "Test: FLY-2965 a Lead workspace/receipt UUID rotation between samples is subject drift"
+  local saved_derive saved_loaded saved_wrapper lead_title="growth-rafiki-lead" lead_socket rotated hook
+  local batch_rc=0 batch_output single_rc=0 single_output steady_rc=0 steady_output
+  saved_derive=$(declare -f derive_lead_roster)
+  saved_loaded=$(declare -f lead_job_loaded)
+  saved_wrapper=$(declare -f lead_plist_wrapper_basename)
+  derive_lead_roster() { LEAD_ROSTER_STATE=ok; LEAD_ROSTER_ROWS=""; }
+  lead_job_loaded() { return 0; }
+  lead_plist_wrapper_basename() { printf '%s\n' flywheel-lead-wrapper-v2.sh; }
+  lead_socket=$(derive_lead_socket "growth/rafiki-lead" "${FLYWHEEL_LEAD_STATE_DIR:-$HOME/.flywheel}")
+  rotated="00000000-0000-4000-8000-999999991596"
+  # A Lead's authority is its plist/manifest, not the ledger, so only the
+  # receipt/birth UUIDs can tell two internally consistent samples apart when
+  # the workspace is replaced at the same ref with a matching fresh receipt.
+  hook='MOCK_CMUX_WORKSPACES_JSON=$(printf "%s" "$MOCK_CMUX_WORKSPACES_JSON" | sed "s/00000000-0000-4000-8000-000000001596/'"$rotated"'/"); test_ledger_upsert committed cmux-generation-1 workspace:1596 "'"$lead_title"'" '"$rotated"
+  _fly2965_lead_fixture() {
+    _fly1596_setup_healthy_sidebar_fixture "$lead_title" flywheel "$lead_socket"
+    MOCK_PRIVATE_TMUX_SOCKET="$lead_socket"
+    MOCK_PRIVATE_TMUX_CLIENTS=1
+    : > "$FLYWHEEL_LEAD_PLIST_DIR/com.flywheel.lead.${lead_title}.plist"
+    printf '{"projectName":"growth","leadId":"rafiki-lead","leadBackend":{"backendId":"claude-code"},"socketPath":"%s"}\n' \
+      "$lead_socket" > "$FLYWHEEL_MANIFEST_DIR/${lead_title}.json"
+  }
+  _fly2965_lead_fixture
+  steady_output=$(_fly2965_batch "$lead_title") || steady_rc=$?
+  release_mutator_lease
+  _fly2965_lead_fixture
+  MOCK_SLEEP_HOOK="$hook"
+  batch_output=$(_fly2965_batch "$lead_title") || batch_rc=$?
+  release_mutator_lease
+  _fly2965_lead_fixture
+  MOCK_SLEEP_HOOK="$hook"
+  single_output=$(run_verify_agent_visible --target "$lead_title" --json) || single_rc=$?
+  release_mutator_lease
+  MOCK_SLEEP_HOOK=""
+  unset -f _fly2965_lead_fixture
+  eval "$saved_wrapper"
+  eval "$saved_loaded"
+  eval "$saved_derive"
+  if [[ "$steady_rc" -eq 0 && "$batch_rc" -eq 2 && "$single_rc" -eq 2 ]] \
+      && jq -e '.results[0].status == "pass"' <<<"$steady_output" >/dev/null \
+      && jq -e '.results[0].status == "inconclusive" and .results[0].reasons == ["subject_drift"]' \
+        <<<"$batch_output" >/dev/null \
+      && jq -e '.status == "inconclusive" and .reasons == ["subject_drift"]' <<<"$single_output" >/dev/null; then
+    pass "a replaced Lead workspace instance with a fresh receipt never carries a pass across samples"
+  else
+    fail "Lead UUID rotation escaped stability: steady_rc=$steady_rc steady=[$steady_output] batch_rc=$batch_rc batch=[$batch_output] single_rc=$single_rc single=[$single_output]"
+  fi
+}
+
+test_fly2965_batch_visibility_rejects_bad_arguments_without_probes() {
+  echo "Test: FLY-2965 batch visibility rejects empty, duplicate, and unsafe targets"
+  local rc_empty=0 rc_dup=0 rc_bad=0 trace="$TMPDIR_ROOT/fly2965-usage.trace"
+  : > "$trace"
+  MOCK_CMUX_TRACE_FILE="$trace" run_verify_agents_visible --json >/dev/null 2>&1 || rc_empty=$?
+  MOCK_CMUX_TRACE_FILE="$trace" run_verify_agents_visible --target FLY-1-implement \
+    --target FLY-1-implement --json >/dev/null 2>&1 || rc_dup=$?
+  MOCK_CMUX_TRACE_FILE="$trace" run_verify_agents_visible --target 'bad;id' --json >/dev/null 2>&1 || rc_bad=$?
+  if [[ "$rc_empty:$rc_dup:$rc_bad" == "64:64:64" && ! -s "$trace" ]]; then
+    pass "argument errors are usage failures with zero cmux calls"
+  else
+    fail "batch argument boundary rc=$rc_empty:$rc_dup:$rc_bad trace=[$(tr '\n' ';' < "$trace")]"
+  fi
+}
+
+test_fly2965_batch_visibility_shares_each_fleet_read() {
+  echo "Test: FLY-2965 each batch sample enumerates workspace surfaces once (2W, not 2NW)"
+  local saved_derive workspaces live count targets rc output trace births screens ok=1 detail=""
+  saved_derive=$(declare -f derive_lead_roster)
+  derive_lead_roster() { LEAD_ROSTER_STATE=ok; LEAD_ROSTER_ROWS=""; }
+  # W < N and W > N both separate 2W from 2*N*W; larger fleets (W=100/200)
+  # were measured once locally for the FLY-2965 evidence and would only add
+  # CI shard time (FLY-1870 tripwire) without proving anything new.
+  for workspaces in 10 30; do
+    _fly2965_fleet_fixture "$workspaces"
+    targets=()
+    count=0
+    while (( count < 17 )); do
+      if (( count < workspaces )); then targets+=("${FLY2965_TITLES[$count]}")
+      else targets+=("$(printf 'FLY-%d-implement' "$((2966000 + count))")")
+      fi
+      count=$((count + 1))
+    done
+    live=$(( workspaces < 17 ? workspaces : 17 ))
+    trace="$TMPDIR_ROOT/fly2965-count-$workspaces.trace"
+    : > "$trace"
+    rc=0
+    output=$(MOCK_CMUX_TRACE_FILE="$trace" _fly2965_batch "${targets[@]}") || rc=$?
+    release_mutator_lease
+    births=$(grep -c -- '--id-format both list-pane-surfaces' "$trace" || true)
+    screens=$(grep -c 'read-screen' "$trace" || true)
+    detail+=" W=$workspaces rc=$rc births=$births screens=$screens"
+    [[ "$births" == "$((2 * workspaces))" && "$screens" == "$((2 * live))" ]] || ok=0
+    jq -e --argjson live "$live" '(.results | length) == 17
+      and ([.results[] | select(.status == "pass")] | length) == $live' <<<"$output" >/dev/null || ok=0
+  done
+  eval "$saved_derive"
+  if [[ "$ok" == 1 ]]; then
+    pass "17 subjects cost two fleet enumerations per batch;$detail"
+  else
+    fail "batch sample read count mismatch;$detail"
+  fi
+}
+
 test_fly1596_sidebar_judge_passes_only_complete_live_terminal_state() {
   echo "Test: FLY-1596 Fix 4 — sidebar judge passes the complete live terminal state"
   _fly1596_setup_healthy_sidebar_fixture
@@ -11297,6 +11538,12 @@ test_fly1596_recovery_decision_table_is_total_and_preserves_phase_invariants
 test_fly1596_adoption_budget_meets_five_minute_restart_bound
 test_fly2643_agent_visibility_accepts_healthy_durable_tab
 test_fly2643_agent_visibility_rejects_detached_or_unreadable_tabs
+test_fly2965_batch_visibility_matches_single_subject_rules
+test_fly2965_batch_visibility_isolates_subject_failures
+test_fly2965_batch_visibility_global_failure_covers_every_subject
+test_fly2965_visibility_rejects_correlated_uuid_rotation
+test_fly2965_batch_visibility_rejects_bad_arguments_without_probes
+test_fly2965_batch_visibility_shares_each_fleet_read
 test_fly1596_sidebar_judge_passes_only_complete_live_terminal_state
 test_fly1944_sidebar_judge_marks_birthless_identity_unattributable
 test_fly1596_sidebar_judge_ignores_live_screen_bytes_for_snapshot_stability

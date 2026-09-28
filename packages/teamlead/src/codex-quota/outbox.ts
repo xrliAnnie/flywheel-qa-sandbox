@@ -52,6 +52,103 @@ export interface CodexQuotaOutboxOptions {
 	now?: () => number;
 	timezone?: () => string;
 	log?: (line: string) => void;
+	/**
+	 * FLY-2900: post one line into the execution's issue thread. "posted" and
+	 * "undeliverable" are final (an undeliverable line becomes a Lead
+	 * diagnostic); "retry" keeps the row pending for the next claim window.
+	 */
+	notifyIssueThread?(input: {
+		executionId: string;
+		kind: string;
+		text: string;
+	}): Promise<
+		{ kind: "posted" | "retry" } | { kind: "undeliverable"; reason: string }
+	>;
+}
+
+/** FLY-2900 §7: human-readable minutes/hours for a standby duration. */
+function formatStandbyDuration(ms: unknown): string | null {
+	if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) return null;
+	const minutes = Math.round(ms / 60_000);
+	if (minutes < 60) return `${minutes}m`;
+	return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}m`;
+}
+
+const SAFE_NODE = /^[a-z0-9_-]{1,64}$/;
+const SAFE_PROFILE = /^[A-Za-z0-9._-]{1,64}$/;
+const SAFE_SHA = /^[0-9a-f]{7,40}$/;
+
+/**
+ * FLY-2900 §7: the one issue-thread line for a resume or a fallback, rendered
+ * only from the durable payload (identifiers re-validated, nothing free-form).
+ */
+export function codexQuotaResumeNoticeText(
+	payload: Record<string, unknown>,
+): string | null {
+	const node =
+		typeof payload.nodeId === "string" && SAFE_NODE.test(payload.nodeId)
+			? payload.nodeId
+			: "节点";
+	if (payload.notice === "resumed") {
+		const profile =
+			typeof payload.toProfile === "string" &&
+			SAFE_PROFILE.test(payload.toProfile)
+				? payload.toProfile
+				: null;
+		const how =
+			payload.permitKind === "switch_committed"
+				? profile
+					? `已切到 ${profile}`
+					: "已切号"
+				: profile
+					? `${profile} 额度已恢复`
+					: "额度已恢复";
+		const waited = formatStandbyDuration(payload.standbyMs);
+		return `⚙️ Codex 额度恢复：${node} 已在原会话续上（${how}${waited ? `，待命 ${waited}` : ""}）。`;
+	}
+	const checkpoint =
+		typeof payload.checkpointCommit === "string" &&
+		SAFE_SHA.test(payload.checkpointCommit)
+			? payload.checkpointCommit.slice(0, 7)
+			: null;
+	if (payload.notice === "fallback_claude")
+		return `⚙️ Codex 全部账号额度用尽，${node} 改由 Claude 接手${checkpoint ? `（WIP 已提交 ${checkpoint}）` : ""}。`;
+	if (payload.notice === "fallback_codex")
+		return `⚙️ 原会话无法恢复，${node} 换新 Codex 体接手（进度账本 + 已推提交保留${checkpoint ? `，WIP 已提交 ${checkpoint}` : ""}）。`;
+	return null;
+}
+
+const STANDBY_DIAGNOSTIC_TEXT: Record<string, string> = {
+	standby_entry_limit:
+		"同一节点 24 小时内额度待命已达上限，本次撞墙按原失败路径处理",
+	standby_permit_precondition:
+		"额度待命放行条件不满足（canonical 凭据链未就绪或身份不符），暂不能自动续上",
+	continue_reconcile_unavailable:
+		"续跑回合连续 3 次无法对账，保持待命、未盲发第二回合",
+	fallback_exhausted: "兜底替身已用满 2 次仍未接上，保持待命",
+	fallback_blocked: "兜底被阻止（WIP 提交失败），保持待命",
+	standby_overdue: "额度待命已超 12 小时仍无放行证据",
+	resume_notice_undeliverable: "续跑/兜底的 issue thread 通知投递失败",
+};
+
+/** FLY-2900: Lead-facing body of a quota standby diagnostic (payload only). */
+export function codexQuotaStandbyDiagnosticText(
+	payload: Record<string, unknown>,
+): string | null {
+	const reason = typeof payload.reason === "string" ? payload.reason : "";
+	const text = STANDBY_DIAGNOSTIC_TEXT[reason];
+	if (!text) return null;
+	const exec =
+		typeof payload.executionId === "string" &&
+		/^[A-Za-z0-9._:-]{1,128}$/.test(payload.executionId)
+			? payload.executionId
+			: null;
+	const detail =
+		typeof payload.detail === "string" &&
+		/^[a-z0-9_:.-]{1,80}$/.test(payload.detail)
+			? payload.detail
+			: null;
+	return `⚙️ Codex 额度待命：${text}${exec ? `（execution ${exec}）` : ""}${detail ? ` [${detail}]` : ""}。`;
 }
 function resolveTimezone(options: Pick<CodexQuotaOutboxOptions, "timezone">) {
 	try {
@@ -253,6 +350,58 @@ export function createCodexQuotaOutboxDelivery(
 					);
 				continue;
 			}
+			if (row.kind === "resume_notice") {
+				if (!options.notifyIssueThread) continue;
+				let payload: Record<string, unknown>;
+				try {
+					payload = JSON.parse(String(row.payload_json));
+				} catch {
+					continue;
+				}
+				const text = codexQuotaResumeNoticeText(payload);
+				const executionId =
+					typeof payload.executionId === "string" ? payload.executionId : "";
+				if (!text || !executionId) continue;
+				const claim = options.store.codexQuota.claimOutboxAttempt(
+					eventId,
+					(options.now ?? Date.now)(),
+				);
+				if (!claim) continue;
+				let outcome:
+					| { kind: "posted" | "retry" }
+					| { kind: "undeliverable"; reason: string };
+				try {
+					outcome = await options.notifyIssueThread({
+						executionId,
+						kind: `codex_quota_${String(payload.notice)}`,
+						text,
+					});
+				} catch {
+					continue;
+				}
+				if (outcome.kind === "retry") continue;
+				if (outcome.kind === "undeliverable")
+					options.store.codexQuota.enqueueOutbox({
+						incidentId: `codex-standby:${executionId}`,
+						kind: "lead_diagnostic",
+						eventId: `${eventId}:undeliverable`,
+						destination: "lead",
+						payload: {
+							reason: "resume_notice_undeliverable",
+							executionId,
+							detail: /^[a-z0-9_:.-]{1,80}$/.test(outcome.reason)
+								? outcome.reason
+								: "undeliverable",
+						},
+					});
+				options.store.codexQuota.markOutboxDelivered(
+					eventId,
+					outcome.kind === "posted"
+						? `${eventId}:thread`
+						: `${eventId}:undeliverable`,
+				);
+				continue;
+			}
 			const receipt = options.store.getAlertDeliveryReceipt(eventId);
 			if (receipt) {
 				options.store.codexQuota.markOutboxDelivered(
@@ -331,6 +480,44 @@ export function createCodexQuotaOutboxDelivery(
 					await options.send(payload, {
 						replayAfterAmbiguousAttempt: claim.replay,
 					});
+				} catch {
+					continue;
+				}
+				const delivered = options.store.getAlertDeliveryReceipt(eventId);
+				if (delivered)
+					options.store.codexQuota.markOutboxDelivered(
+						eventId,
+						`${delivered.outcome}:${delivered.recorded_at}`,
+					);
+				continue;
+			}
+			if (
+				row.kind === "lead_diagnostic" &&
+				String(row.incident_id ?? "").startsWith("codex-standby")
+			) {
+				let payload: Record<string, unknown> = {};
+				try {
+					payload = JSON.parse(String(row.payload_json));
+				} catch {
+					// Malformed durable row: rendered as the generic line below.
+				}
+				const body =
+					codexQuotaStandbyDiagnosticText(payload) ??
+					"⚙️ Codex 额度待命需要 Lead 查看。";
+				try {
+					await options.send(
+						{
+							leadId: "codex-quota",
+							projectName: "machine",
+							eventId,
+							eventType: "codex_quota_standby_diagnostic",
+							title: "Codex 额度待命",
+							body,
+							severity: "warning",
+							deliveryStyle: "plain",
+						},
+						{ replayAfterAmbiguousAttempt: claim.replay },
+					);
 				} catch {
 					continue;
 				}

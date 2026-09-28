@@ -5,8 +5,9 @@ import { classifyTurnWakeReceiptProjection } from "../turn-wake-receipt-classifi
  * FLY-2828 §3.3: the receipt handler's disposition table as a pure function.
  * `not_applicable` is reserved for facts that can never become valid again
  * (stale epoch / route revision / actor, or a delivery parked behind a Lead
- * decision). Everything else retries into the bounded quarantine lane so the
- * StateStore obligation stays visible to a Lead.
+ * decision — FLY-2921: `returned_to_lead` is the only such state; it only
+ * leaves via a new route revision). Everything else retries into the bounded
+ * quarantine lane so the StateStore obligation stays visible to a Lead.
  */
 describe("classifyTurnWakeReceiptProjection", () => {
 	it("closes legacy, unacked, and foreign-purpose receipts as not_applicable", () => {
@@ -68,7 +69,7 @@ describe("classifyTurnWakeReceiptProjection", () => {
 					ok: false,
 					reason: "rework_wake_receipt_identity_conflict",
 				},
-				deliveryState: "awaiting_receipt",
+				deliveryState: "turn_granted",
 			}),
 		).toEqual({
 			kind: "not_applicable",
@@ -105,33 +106,30 @@ describe("classifyTurnWakeReceiptProjection", () => {
 					purpose: "workflow_rework",
 					activationResolved: true,
 					projected: { ok: false, reason },
-					deliveryState: "awaiting_receipt",
+					deliveryState: "turn_granted",
 				}),
 			).toEqual({ kind: "retry", reason });
 		}
 	});
 
 	it("splits not_ready by delivery state", () => {
-		for (const deliveryState of [
-			"held",
-			"needs_lead",
-			"replacement_pending",
-		] as const) {
-			expect(
-				classifyTurnWakeReceiptProjection({
-					purpose: "workflow_rework",
-					activationResolved: true,
-					projected: { ok: false, reason: "rework_wake_receipt_not_ready" },
-					deliveryState,
-				}),
-			).toEqual({
-				kind: "not_applicable",
-				reason: `rework_wake_receipt_not_ready:${deliveryState}`,
-			});
-		}
+		// FLY-2921: `returned_to_lead` is the only Lead-parked state (the old
+		// held / needs_lead / replacement_pending states no longer exist).
+		expect(
+			classifyTurnWakeReceiptProjection({
+				purpose: "workflow_rework",
+				activationResolved: true,
+				projected: { ok: false, reason: "rework_wake_receipt_not_ready" },
+				deliveryState: "returned_to_lead",
+			}),
+		).toEqual({
+			kind: "not_applicable",
+			reason: "rework_wake_receipt_not_ready:returned_to_lead",
+		});
 		for (const deliveryState of [
 			"pending",
 			"turn_granted",
+			"wake_delivered",
 			undefined,
 		] as const) {
 			expect(

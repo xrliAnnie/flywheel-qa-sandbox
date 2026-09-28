@@ -1,13 +1,16 @@
+import { randomUUID } from "node:crypto";
 import type {
 	BackendFactory,
 	BackendRegistry,
 	ConversationOptions,
 	ConversationSession,
+	SpeakReceipt,
 	VoiceBackend,
+	VoiceSpeakOptions,
 } from "flywheel-voice-core";
 import type { VoiceEnd } from "../daemon.js";
 import type { RealtimeAudioOwner } from "../realtime.js";
-import type { PreparedSpeech } from "../speech.js";
+import { type PreparedSpeech, stripHandoffCorrelation } from "../speech.js";
 import { CodexVoiceContainerError } from "./CodexVoiceContainer.js";
 
 export interface CodexRoomFrontendHandlers {
@@ -47,6 +50,11 @@ function unavailableCopy(error: CodexVoiceContainerError): string {
 			return "📻 语音不可用：Codex 额度已用完";
 		case "codex_auth_rejected":
 			return "📻 语音不可用：Codex 认证失败";
+		// FLY-2885 plan §12.5: never the context itself, only why.
+		case "context_too_large":
+			return "📻 语音不可用：这位 Lead 的记忆与上下文超出语音会话上限";
+		case "context_invalid":
+			return "📻 语音不可用：上下文无法核对大小";
 		default:
 			return "📻 语音不可用：Codex 容器启动失败";
 	}
@@ -72,6 +80,15 @@ function failureReason(error: Error & { code?: string }): string {
 	return original.length <= 500
 		? original
 		: `${original.slice(0, 488)}:[truncated]`;
+}
+
+function readbackStatus(
+	receipt: SpeakReceipt,
+): "confirmed" | "unconfirmed" | "failed" {
+	if (receipt.outcome === "completed") return "confirmed";
+	return receipt.outcome === "failed" && receipt.transport !== "none"
+		? "unconfirmed"
+		: "failed";
 }
 
 /**
@@ -137,14 +154,45 @@ export class CodexRoomFrontend {
 			pendingKey: speech.speechId,
 			verification: "required",
 		});
-		if (receipt.outcome === "completed") return "confirmed";
-		return receipt.outcome === "failed" && receipt.transport !== "none"
-			? "unconfirmed"
-			: "failed";
+		return readbackStatus(receipt);
 	}
 
-	cancelSpeech(): void {
-		this.session?.interrupt();
+	/**
+	 * FLY-2885 founder rework: the whole Lead reply in one read, so it can wait
+	 * for the conversation, resume after an overrun and say what was left
+	 * unread. The handoff-id line the Lead quotes for correlation is not read.
+	 */
+	async appendReply(
+		text: string,
+		chunkCharacters: number,
+	): Promise<"confirmed" | "unconfirmed" | "failed"> {
+		const session = this.requireSession() as ConversationSession & {
+			readReply?: (
+				text: string,
+				options: VoiceSpeakOptions,
+			) => Promise<SpeakReceipt>;
+		};
+		if (!session.readReply) return "failed";
+		const receipt = await session.readReply(stripHandoffCorrelation(text), {
+			pendingKey: randomUUID(),
+			verification: "required",
+			chunkCharacters,
+		});
+		return readbackStatus(receipt);
+	}
+
+	/**
+	 * `__conversation__` is her barge-in (GenericVoiceSession); any other id
+	 * is the room stopping with a reading in flight, which is not hers.
+	 */
+	cancelSpeech(speechId?: string): void {
+		const session = this.session as
+			| (ConversationSession & { stopSpeech?: () => void })
+			| undefined;
+		if (speechId === undefined || speechId === "__conversation__")
+			session?.interrupt();
+		else if (session?.stopSpeech) session.stopSpeech();
+		else session?.interrupt();
 	}
 
 	stop(): Promise<void> {

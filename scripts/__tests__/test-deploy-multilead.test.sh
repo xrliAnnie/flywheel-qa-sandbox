@@ -126,7 +126,8 @@ reference_build_projects() {
           summaryRole: "exempt",
           chatChannel: $chatChannel,
           botTokenEnv: $botTokenEnv,
-          match: { labels: ["*"] }
+          match: { labels: ["*"] },
+          model: "opus"
         }
       ]
     })
@@ -212,11 +213,13 @@ checks=(
   '.[0].leads | length == 2'
   '.[0].leads[0].agentId == "flywheel-test-2"'
   '.[0].leads[0].summaryRole == "exempt"'
+  '.[0].leads[0].model == "opus"'
   '.[0].leads[0].chatChannel == "chan-2"'
   '.[0].leads[0].botTokenEnv == "TEST_BOT_TOKEN_2"'
   '.[0].leads[0].match.labels == ["Product-Test"]'
   '.[0].leads[1].agentId == "flywheel-test-3"'
   '.[0].leads[1].summaryRole == "exempt"'
+  '.[0].leads[1].model == "opus"'
   '.[0].leads[1].chatChannel == "chan-3"'
   '.[0].leads[1].botTokenEnv == "TEST_BOT_TOKEN_3"'
   '.[0].leads[1].match.labels == ["Ops-Test"]'
@@ -238,12 +241,14 @@ if jq -e '
   .[0].leads[0] | .backend == "codex-app-server" and
     .canSpawnRunners == false and .codexResidencyPatrol == true and
     .codexProfile == "full-access" and (has("companion") | not) and
+    (has("model") | not) and
     (has("codexSourceHome") | not)
 ' >/dev/null 2>&1 <<<"$codex_out" \
     && jq -e '
       .[0].leads[1] | .backend == "codex-app-server" and
         .canSpawnRunners == false and .codexResidencyPatrol == true and
         .companion == true and (has("codexProfile") | not) and
+        (has("model") | not) and
         (has("codexSourceHome") | not)
     ' >/dev/null 2>&1 <<<"$codex_out" \
     && ! grep -Fq '/tmp/codex-' <<<"$codex_out"; then
