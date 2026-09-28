@@ -1,0 +1,24 @@
+stateDiagram-v2
+    direction TB
+    [*] --> TS
+    TS: Task S 前台 sleep 780 秒<br/>README 已含 claude 行则跳过
+    TS --> T0: 自然睡满
+    TS --> STOP: 被中断（新体重睡）
+    T0: Task 0 预检<br/>TURN / 分支 / hooksPath / 远端祖先 / 白名单
+    T0 --> S0: claude 行 0 次
+    T0 --> S1: claude 行 1 次且在末行
+    T0 --> STOP: 重复 / 不在末行 / 分叉 / 越界
+    S0: S0 第 1 轮终态（4 行，末行 codex-body）
+    S0 --> S1: printf 追加 claude-body 行
+    S1: S1 已追加（5 行 / 111 字节）
+    S1 --> S2: 提交 README（已提交则跳过）
+    S2: S2 已提交
+    S2 --> S4: 推送 + 更新 PR 299 标题正文
+    S4: S4 PR 已就绪
+    S4 --> FZ: 账本 3/3 → 本轮 milestone 末提交 → push
+    FZ: 冻结（HEAD 的 milestone 提到 claude 行）
+    FZ --> RV: 对冻结头做代码评审
+    RV: 评审 APPROVED（绑定冻结头）
+    RV --> DONE: 等精确头 CI → ask --report → complete needs_review
+    DONE --> [*]
+    STOP: STOP → ask Lead

@@ -1,0 +1,19 @@
+flowchart TB
+    subgraph WT["工作区 project-slot-2-FLY-3030"]
+        R["README.md<br/>77 字节 4 行 → 111 字节 5 行<br/>第 4 行 codex-body（保留）· 第 5 行 claude-body（本轮）"]
+        L["progress.md 账本<br/>只作提示，不作跳过依据"]
+        M["milestones/FLY-3030.md<br/>= 本轮冻结标志 + 最后一个 commit"]
+    end
+    subgraph GH["GitHub xrliAnnie/flywheel-qa-sandbox"]
+        B["远端分支头"]
+        P["PR 299（恰 1 个，OPEN，复用）"]
+        C["精确头 CI"]
+    end
+    R -- "grep -qxF claude 行" --> J0{"已睡过？"}
+    R -- "grep -cxF = 1 且末行" --> J1{"已追加？"}
+    R -- "git diff --quiet HEAD" --> J2{"已提交？"}
+    B -- "ls-remote = HEAD" --> J3{"已推送？"}
+    P -- "gh pr list --head" --> J4{"PR 就绪？"}
+    M -- "git show HEAD:MS 含 claude 行" --> J5{"本轮冻结？"}
+    J5 -- "真" --> N["所有写入 / 账本更新变 no-op"]
+    P --> C
