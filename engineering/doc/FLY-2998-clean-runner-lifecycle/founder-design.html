@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2998 · 三步完成 runner 说明</title><style>
+:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#1d1d1f;background:#f5f5f7;color-scheme:light}*{box-sizing:border-box}body{margin:0;padding:32px 16px 64px}main{max-width:900px;margin:auto}h1{font-size:16px;color:#6e6e73;margin-bottom:24px}h2{font-size:27px;line-height:1.3;margin-top:0}.card{background:white;border:1px solid #e5e5ea;border-radius:20px;padding:30px;margin-bottom:22px}.card:first-of-type{border-top:5px solid #007aff}.lead{font-size:23px;line-height:1.6}p,td{line-height:1.75}.meta,label{font-size:13px;color:#6e6e73}label{display:block;margin-top:24px;padding-top:18px;border-top:1px solid #eee}textarea{width:100%;min-height:80px;margin-top:9px;border:1px solid #d2d2d7;border-radius:10px;padding:12px;font:inherit;resize:vertical}textarea:focus,button:focus{outline:2px solid #007aff;outline-offset:3px}.pending{padding:18px;background:#fff6e7;border:1px solid #f4ddad;border-radius:12px}.pending strong{font-size:14px;color:#885400}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f5f5f7;padding:16px;border-radius:10px;line-height:1.6;font-size:13px}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:12px 8px;border-bottom:1px solid #eee}button{background:#007aff;color:white;border:0;border-radius:9px;padding:12px 16px;font:inherit;cursor:pointer;margin:6px 8px 6px 0}summary{cursor:pointer}@media(max-width:600px){body{padding:20px 10px}.card{padding:22px 18px}h2{font-size:23px}.lead{font-size:20px}}
+</style></head><body><main><h1>FLY-2998 · 设计说明</h1><section class="card"><h2>一份小文档，留下三个完整工作步骤</h2><p class="lead">用三个独立提交和三次推送，记录执行者如何工作、重启后如何继续、怎样交回成果。</p><p>Runner 是领取任务并持续执行的工程助手。此次只写说明文字，不修改生产程序。设计阶段提交计划；实施阶段再写正文。</p><p class="meta">FLY-2998 · 2026-09-28 · 干净房间合成验收 · 尚未实施</p><label for="note-summary">这部分的意见（只保存在本机，不会自动发送）</label><textarea id="note-summary" data-note="summary" data-title="一份小文档，留下三个完整工作步骤"></textarea></section><section class="card"><h2>核心流程：每一步都保存到远端</h2><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本地图形程序被系统权限限制；已按标准参数重试一次，仍无法启动。下方保留 Mermaid 图稿；Mermaid 是用文字描述节点和连线的格式。</p><details><summary>查看图稿</summary><pre>flowchart TD
+ A[设计计划获得评审通过] --&gt; B[实施阶段取得写权限]
+ B --&gt; C[标题和职责段落]
+ C --&gt; D[提交并推送第一步]
+ D --&gt; E[追加重启段落]
+ E --&gt; F[提交并推送第二步]
+ F --&gt; G[追加交回段落]
+ G --&gt; H[提交并推送第三步]
+ H --&gt; I[核对内容和记录后正常交接]
+</pre></details></div><p>提交是给当前文件保存一个可追溯版本；推送是把这个版本送到远端仓库。上一段推送成功后，才进入下一段。</p><label for="note-flow">这部分的意见（只保存在本机，不会自动发送）</label><textarea id="note-flow" data-note="flow" data-title="核心流程：每一步都保存到远端"></textarea></section><section class="card"><h2>结构：一个文件，三段文字</h2><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本地图形程序被系统权限限制；已按标准参数重试一次，仍无法启动。下方保留 Mermaid 图稿；Mermaid 是用文字描述节点和连线的格式。</p><details><summary>查看图稿</summary><pre>flowchart LR
+ A[正文文件] --&gt; B[短标题]
+ A --&gt; C[职责段落]
+ A --&gt; D[重启段落]
+ A --&gt; E[交回段落]
+ F[分支提交历史] --&gt; G[三次内容提交]
+ G --&gt; H[每次成功推送的记录]
+</pre></details></div><table><tr><th>内容</th><th>说明</th></tr><tr><td>短标题</td><td>Runner lifecycle</td></tr><tr><td>第一段</td><td>任务职责、检查结果、保存进度</td></tr><tr><td>第二段</td><td>重启后核对文件与提交，从未完成处继续</td></tr><tr><td>第三段</td><td>核对结果、推送、汇报、正式交接</td></tr></table><label for="note-model">这部分的意见（只保存在本机，不会自动发送）</label><textarea id="note-model" data-note="model" data-title="结构：一个文件，三段文字"></textarea></section><section class="card"><h2>取舍：保留三个可观察的步骤</h2><p><strong>采用：</strong>逐段追加并提交、推送。这样能检查每一步是否真正完成，代价是多两次保存和上传。</p><p><strong>放弃：</strong>一次写完再提交，无法保留题目要求的三个观察点。也不新增脚本或主动重启服务，以免扩大这个简单验收任务。</p><label for="note-tradeoffs">这部分的意见（只保存在本机，不会自动发送）</label><textarea id="note-tradeoffs" data-note="tradeoffs" data-title="取舍：保留三个可观察的步骤"></textarea></section><section class="card"><h2>边界：说明文件不等于生产验证</h2><p>实施阶段只改 qa-sandbox/fly2925-clean.md。设计材料依照 Lead 本次授权单独保存在任务文档目录。</p><p>恢复时先核对写权限、文件和远端记录，避免重复提交。写完重启说明并不能证明真实重启已经测试过。本任务不部署、不合并、不修改账号或服务；由现有工作流安排下一阶段。</p><p>验收看最终一标题三段、三个内容提交，以及每步推送成功的记录。只看最终远端版本，不能证明中间两步曾推送。</p><label for="note-boundary">这部分的意见（只保存在本机，不会自动发送）</label><textarea id="note-boundary" data-note="boundary" data-title="边界：说明文件不等于生产验证"></textarea></section><section class="card"><h2>页面意见汇总</h2><p>意见是修订建议，不表示设计已通过。可复制后交给 Lead。超过约 1800 字符会分片，每片都带任务标记。</p><div id="chunks"></div><button type="button" id="copy-all">复制全部意见</button><p id="status" role="status" aria-live="polite"></p><label for="note-feedback">这部分的意见（只保存在本机，不会自动发送）</label><textarea id="note-feedback" data-note="feedback" data-title="页面意见汇总"></textarea></section></main><script nonce="__CSP_NONCE__">
+'use strict';
+const marker = '【页面意见汇总】FLY-2998';
+const notes = [...document.querySelectorAll('[data-note]')];
+const prefix = 'flywheel-comments:' + location.pathname + ':';
+const status = document.getElementById('status');
+let currentChunks = [];
+function chunksOf(text) {
+ const max = 1800 - marker.length - 1;
+ const points = Array.from(text);
+ const chunks = [];
+ for (let i = 0; i < points.length; i += max) chunks.push(marker + '\n' + points.slice(i, i + max).join(''));
+ return chunks.length ? chunks : [marker + '\n（暂无意见）'];
+}
+async function copyText(text) {
+ try {
+  if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('clipboard unavailable');
+  await navigator.clipboard.writeText(text);
+  status.textContent = '已复制。';
+ } catch (_) {
+  const field = document.createElement('textarea');
+  field.value = text; field.setAttribute('aria-label', '复制缓冲区');
+  document.body.appendChild(field); field.select();
+  try { status.textContent = document.execCommand('copy') ? '已复制。' : '复制失败，请手动选择汇总文字复制。'; }
+  catch (_) { status.textContent = '复制失败，请手动选择汇总文字复制。'; }
+  finally { field.remove(); }
+ }
+}
+function refresh() {
+ const body = notes.filter(n => n.value.trim()).map(n => '【' + n.dataset.title + '】\n' + n.value.trim()).join('\n\n');
+ currentChunks = chunksOf(body);
+ const container = document.getElementById('chunks');
+ container.replaceChildren();
+ currentChunks.forEach((chunk, i) => {
+  const pre = document.createElement('pre'); pre.textContent = chunk; container.appendChild(pre);
+  if (currentChunks.length > 1) {
+   const button = document.createElement('button'); button.type = 'button'; button.textContent = '复制第 ' + (i + 1) + ' 片';
+   button.addEventListener('click', () => copyText(chunk)); container.appendChild(button);
+  }
+ });
+}
+for (const note of notes) {
+ try { note.value = localStorage.getItem(prefix + note.dataset.note) || ''; }
+ catch (_) { status.textContent = '本机存储不可用；意见仍可汇总复制。'; }
+ note.addEventListener('input', () => {
+  try { localStorage.setItem(prefix + note.dataset.note, note.value); }
+  catch (_) { status.textContent = '保存失败；请复制意见，离开页面可能丢失。'; }
+  refresh();
+ });
+}
+document.getElementById('copy-all').addEventListener('click', () => copyText(currentChunks.join('\n\n')));
+refresh();
+</script></body></html>
