@@ -1,14 +1,13 @@
 ---
 issue: FLY-2919
 phase: implement
-phaseCursor: 2/3
-updated: 2026-09-28T10:15:27.193Z
-nextStep: discover affected tests; run changed-TS related, targeted regressions,
-  build and lint; commit/push and request fresh review
+phaseCursor: 3/3
+updated: 2026-09-28T10:55:47.102Z
+nextStep: push exact head, update PR 1379, request fresh code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2919 progress
-**phase**: implement (2/3)
-**next**: discover affected tests; run changed-TS related, targeted regressions, build and lint; commit/push and request fresh review
+**phase**: implement (3/3)
+**next**: push exact head, update PR 1379, request fresh code review
