@@ -1,13 +1,15 @@
 ---
 issue: FLY-3002
 phase: implement
-phaseCursor: 3/5
-updated: 2026-09-28T09:32:29.691Z
-nextStep: Codex code review of the 10-file literal migration, then PR
+phaseCursor: 4/5
+updated: 2026-09-28T09:33:06.435Z
+nextStep: Milestone literal-last commit, push, PR against
+  qa/fly-2405-td-8b6e4bbe-20260928T0925Z, Codex review, complete --route
+  needs_review
 chunks: []
 pointers: {}
 ---
 
 # FLY-3002 progress
-**phase**: implement (3/5)
-**next**: Codex code review of the 10-file literal migration, then PR
+**phase**: implement (4/5)
+**next**: Milestone literal-last commit, push, PR against qa/fly-2405-td-8b6e4bbe-20260928T0925Z, Codex review, complete --route needs_review
