@@ -2,15 +2,18 @@
 issue: FLY-2998
 phase: implement
 phaseCursor: 3/4
-updated: 2026-09-28T09:10:03.342Z
-nextStep: "Lead 70a32035 advisories applied: verification heading d766735e9;
-  milestone FLY-2998.md next as last commit. Then Codex review on final head,
-  review-round + codex-review-result, complete --route needs_review --pr 286
-  --base-ref origin/flywheel-FLY-2925, DONE report."
+updated: 2026-09-28T11:46:09.377Z
+nextStep: "Rework attempt 2 (rework:d9655411, QA 567f980c): content QA PASSED;
+  FAIL only because ci-full request_lost — PR #286 base flywheel-FLY-2925 never
+  triggers ci.yml (pull_request->main only), 0 check-runs on 8892a0273. Asked
+  Lead ef8cecd9 to choose (A) retarget main / (B) keep head + infra waiver +
+  re-complete / (C) infra CI. Poll check ef8cecd9; then touch milestone last,
+  code review, complete --route needs_review --pr 286 --base-ref
+  origin/flywheel-FLY-2925."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2998 progress
 **phase**: implement (3/4)
-**next**: Lead 70a32035 advisories applied: verification heading d766735e9; milestone FLY-2998.md next as last commit. Then Codex review on final head, review-round + codex-review-result, complete --route needs_review --pr 286 --base-ref origin/flywheel-FLY-2925, DONE report.
+**next**: Rework attempt 2 (rework:d9655411, QA 567f980c): content QA PASSED; FAIL only because ci-full request_lost — PR #286 base flywheel-FLY-2925 never triggers ci.yml (pull_request->main only), 0 check-runs on 8892a0273. Asked Lead ef8cecd9 to choose (A) retarget main / (B) keep head + infra waiver + re-complete / (C) infra CI. Poll check ef8cecd9; then touch milestone last, code review, complete --route needs_review --pr 286 --base-ref origin/flywheel-FLY-2925.
