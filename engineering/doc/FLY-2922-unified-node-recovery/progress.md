@@ -1,14 +1,14 @@
 ---
 issue: FLY-2922
 phase: implement
-phaseCursor: 2/4
-updated: 2026-09-28T20:58:26.776Z
-nextStep: Verify existing QA-stub identity selector on merged target head
-  7ae57f4f8 with focused tests, lint, and build
+phaseCursor: 3/4
+updated: 2026-09-28T21:06:25.268Z
+nextStep: Request exact-head code review for nested target 36b143b2a / PR 1374,
+  then complete root PR 297 with nested declaration
 chunks: []
 pointers: {}
 ---
 
 # FLY-2922 progress
-**phase**: implement (2/4)
-**next**: Verify existing QA-stub identity selector on merged target head 7ae57f4f8 with focused tests, lint, and build
+**phase**: implement (3/4)
+**next**: Request exact-head code review for nested target 36b143b2a / PR 1374, then complete root PR 297 with nested declaration
