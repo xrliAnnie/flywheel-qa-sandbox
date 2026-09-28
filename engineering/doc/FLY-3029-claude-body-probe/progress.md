@@ -1,20 +1,16 @@
 ---
 issue: FLY-3029
-phase: design
-phaseCursor: 5/5
-updated: 2026-09-28T22:18:13.083Z
-nextStep: "Design review APPROVED round 1: question
-  43207071-cbbb-475f-9ac7-36750a54aeb6, request
-  2347f64c-df7f-4c81-bbfd-5ad5e8f8e83a. Seven nonblocking advisories reported to
-  Lead for follow-up; plan unchanged. HTML c09dbc6c3 published and reported at
-  http://127.0.0.1:61254/fw-reports-8fb683/r/f8aac70ce24d85af5c97cd022bc83d42/ ;
-  HTTP 200 and nonce/CSP verified. Mermaid local render failed twice; explicit
-  placeholder accepted. Run phase_design_complete then park; later wakes must
-  recheck TURN and avoid duplicate effects."
+phase: implement
+phaseCursor: 2/5
+updated: 2026-09-28T22:20:05.531Z
+nextStep: "README probe line committed 62924d9de and pushed; RED->GREEN
+  assertion + git diff --check + pnpm lint rc=0 (14 pre-existing warnings).
+  Next: Codex code review via codex:rescue (gpt-5.6-sol/xhigh), then milestone
+  commit, PR, complete --route needs_review."
 chunks: []
 pointers: {}
 ---
 
 # FLY-3029 progress
-**phase**: design (5/5)
-**next**: Design review APPROVED round 1: question 43207071-cbbb-475f-9ac7-36750a54aeb6, request 2347f64c-df7f-4c81-bbfd-5ad5e8f8e83a. Seven nonblocking advisories reported to Lead for follow-up; plan unchanged. HTML c09dbc6c3 published and reported at http://127.0.0.1:61254/fw-reports-8fb683/r/f8aac70ce24d85af5c97cd022bc83d42/ ; HTTP 200 and nonce/CSP verified. Mermaid local render failed twice; explicit placeholder accepted. Run phase_design_complete then park; later wakes must recheck TURN and avoid duplicate effects.
+**phase**: implement (2/5)
+**next**: README probe line committed 62924d9de and pushed; RED->GREEN assertion + git diff --check + pnpm lint rc=0 (14 pre-existing warnings). Next: Codex code review via codex:rescue (gpt-5.6-sol/xhigh), then milestone commit, PR, complete --route needs_review.
