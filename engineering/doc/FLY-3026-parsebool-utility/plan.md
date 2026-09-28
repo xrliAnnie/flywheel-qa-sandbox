@@ -54,7 +54,7 @@ export function parseBool(text: string): boolean;
 | E6 | `"true!"` `"tr ue"` `"yes\u0000"` `"​true"` | 抛错 | 内部字符/零宽不被 trim |
 | E7 | `"ＴＲＵＥ"`（全角）、`"Kes"`（含开尔文符号） | 抛错 | Unicode 折叠陷阱（research §1） |
 | E8 | `"__proto__"` `"constructor"` `"toString"` | 抛错 | 原型键不得命中 |
-| E9 | `undefined` `null` `1` `true` `{}` | 抛错，信息只含 typeof | 非字符串一律拒绝、不回显值 |
+| E9 | `undefined` `null` `1` `true` `{}` | 抛错，信息只含 §2 的 `kind` 标签 | 非字符串一律拒绝、不回显值 |
 | E10 | 32 / 33 码位的串、33 个 emoji、1000 字符垃圾串、含 `"` 与 `\n` 的串、33 个 `\u0000` | 抛错；摘录按 §2 规则（转义前 ≤ 32 码位，超出加 `…`），引号/换行/控制字符被 JSON 转义 | 日志安全 |
 
 ## 4. 测试计划（vitest，TDD 先红后绿）
@@ -63,7 +63,12 @@ export function parseBool(text: string): boolean;
 
 1. `it.each` 真值表：6 个规范词 × 大小写变体 × 空白变体 → 期望布尔（覆盖 E1/E2）。
 2. `it.each` 拒绝表：E3–E8 全部输入 → `toThrow(TypeError)` 且 `toThrow(/expected one of true\/yes\/1\/false\/no\/0/)`。
-3. 非字符串：E9 → `toThrow(TypeError)`，并断言 message 以 `got <typeof>` 结尾、**不含**值本身（例如 `{secret:"x"}` 的 `secret` 不出现）。
+3. 非字符串：E9 → `toThrow(TypeError)`，并用精确期望串断言（按 §2 的 `kind`，测试内字面量写死，**不要**用 `"got " + typeof x` 构造——`typeof null` 是 `"object"`）：
+   - `undefined` → `parseBool: expected a string, got undefined`
+   - `null` → `parseBool: expected a string, got null`
+   - `1` → `parseBool: expected a string, got number`；`true` → `parseBool: expected a string, got boolean`
+   - `{}` → `parseBool: expected a string, got object`
+   - `{ secret: "x" }` → 同为 `... got object`，message 不含 `secret`（“不回显值”= 不序列化输入内容；`null`/`undefined` 作为规定的类型标签出现是允许的）。
 4. 错误信息契约：E10 用**精确期望串**断言（`toThrow(new TypeError(expected))` 或比对 `err.message`），`expected` 按 §2 公式由测试内的字面量写死，例如：
    - `"maybe"` → `parseBool: expected one of true/yes/1/false/no/0, got "maybe"`
    - `'a"b\nc'` → `parseBool: expected one of true/yes/1/false/no/0, got "a\"b\nc"`（message 中是转义后的 `\"` 与 `\n`，不含裸换行）
