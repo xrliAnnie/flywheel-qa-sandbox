@@ -1,15 +1,14 @@
 ---
 issue: FLY-2922
 phase: design
-phaseCursor: 1/6
-updated: 2026-09-28T14:49:54.227Z
-nextStep: "Onboarding complete and TURN acquired; baseline Lead question
-  d26e7f85 remains pending. Next: audit upstream approved design and latest QA
-  harness gap, then write exploration.md."
+phaseCursor: 2/6
+updated: 2026-09-28T14:53:33.284Z
+nextStep: "Exploration chose explicit real-room outer-evidence mailbox boundary.
+  Next: stage research and map exact driver/mailbox/test contracts."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2922 progress
-**phase**: design (1/6)
-**next**: Onboarding complete and TURN acquired; baseline Lead question d26e7f85 remains pending. Next: audit upstream approved design and latest QA harness gap, then write exploration.md.
+**phase**: design (2/6)
+**next**: Exploration chose explicit real-room outer-evidence mailbox boundary. Next: stage research and map exact driver/mailbox/test contracts.
