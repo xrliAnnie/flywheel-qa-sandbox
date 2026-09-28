@@ -54,7 +54,7 @@
     <p>“热换”指不重启程序，只替换它内存里正在使用的账号凭据。Bridge（Flywheel 的常驻协调服务）负责从只读号池挑选账号；runner 只执行一次有审计的授权，不直接理解号池。</p>
     <ul>
       <li class="ok">保持 execution、thread、PID 和 PGID 不变，线程上下文仍在。</li>
-      <li>撞墙那一轮已经失败，所以换号后自动发送同线程“继续”。</li>
+      <li>撞墙那一轮已经失败，所以换号后先钉回节点配置的模型与推理强度，再自动发送同线程“继续”。</li>
       <li class="warn">接口是实验能力；升级冒烟失败时自动关闭热换。</li>
       <li class="no">绝不写登录态、不轮换 refresh token、不兑重置卡。</li>
     </ul>
@@ -81,7 +81,7 @@
       <table>
         <thead><tr><th>选择</th><th>理由</th></tr></thead>
         <tbody>
-          <tr><td>Bridge 统一选号</td><td>号池、读数和审计只有一个真源。</td></tr>
+          <tr><td>Bridge 统一选号</td><td>号池、读数和审计只有一个真源；候选必须同时支持节点的模型与推理强度。</td></tr>
           <tr><td>首个模型产出才算成功</td><td>login 成功不等于线程真的续跑。</td></tr>
           <tr><td>不确定派发就停进程</td><td>宁可走兜底，也不在同线程制造两个并发“继续”。</td></tr>
           <tr><td>成功不打扰 founder</td><td>只留 issue thread 一句话；失败才升级提醒。</td></tr>

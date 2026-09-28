@@ -13,6 +13,27 @@ Issue: FLY-2957 (https://linear.app/geoforge3d/issue/FLY-2957/codex热换号-在
 
 ---
 
+## 0. 实施目标与硬前置
+
+本设计文档当前提交在交付载体 `xrliAnnie/flywheel-qa-sandbox` 的 `project-slot-5-FLY-2957` 分支；**这里不是实现仓，也不具备本计划依赖的 quota substrate（额度治理底座）**。实现节点必须切到：
+
+- 仓库：`https://github.com/xrliAnnie/flywheel.git`
+- 最低基线：`fa6e67b8cf751d547eca4173db6631f74ffd8cf2`
+- 该基线已含：FLY-2900 marked continue/standby、FLY-2925 同 execution 接管恢复、只读 `codex-accounts.json` 号池、`node_standby_resume` 与现有 quota fallback。
+
+实现开始前必须 fail closed：
+
+```bash
+test "$(git remote get-url origin)" = "https://github.com/xrliAnnie/flywheel.git"
+git merge-base --is-ancestor fa6e67b8cf751d547eca4173db6631f74ffd8cf2 HEAD
+git cat-file -e HEAD:packages/claude-runner/src/codex-quota-resume.ts
+git cat-file -e HEAD:packages/teamlead/src/codex-quota/quota-fallback.ts
+git grep -q 'quotaContinueText' HEAD -- packages/claude-runner/src/codex-daemon-client.ts
+git grep -q 'node_standby_resume' HEAD -- packages/config/src/feature-flags/registry.ts
+```
+
+任一检查失败，停止实施并报告 `wrong_implementation_substrate`；**不得在 QA sandbox 把这些缺失底座重新“Create”出来，也不得用当前 daemon teardown 冒充 FLY-2900/2925 无损兜底**。后续所有 `Modify/Create/Test` 路径均相对于上述实现仓和最低基线。
+
 ## 1. 端到端流程
 
 ```mermaid
@@ -29,8 +50,8 @@ sequenceDiagram
   C->>C: bind refresh handler before login
   C->>D: account/login/start(chatgptAuthTokens)
   C->>D: account/read + model/list
-  C->>D: thread/settings/update(configured model)
-  D-->>C: thread/settings/updated
+  C->>D: thread/settings/update(configured model + effort)
+  D-->>C: thread/settings/updated confirms both
   C->>D: turn/start(marked continue, grantId)
   C->>D: thread/goal/set(active)
   D-->>C: first model output
@@ -43,7 +64,7 @@ flowchart TD
   W[Confirmed usage wall] --> E{Eligible and protocol supported?}
   E -- no --> F[Existing FLY-2900/2925 fallback]
   E -- yes --> G[Grant best candidate]
-  G --> L[Login, identity check, model pin]
+  G --> L[Login, identity check, model + effort pin]
   L -- definite failure --> N{Another candidate and attempts left?}
   N -- yes --> G
   N -- no --> F
@@ -76,7 +97,7 @@ Only one `granted|installed|swapped` row may exist per execution. Every callback
 
 ### Persistence and migration
 
-Add/extend tables through the existing `StateStore` migration registry:
+Add/extend tables through the existing `StateStore.ts` inline migrations and `PRAGMA user_version` guard:
 
 - `codex_quota_hotswap_grant`: identifiers, phase, timings, profile/identity/account metadata, daemon owner, token fingerprint only.
 - `codex_quota_hotswap_event`: append-only phase/detail audit keyed by execution and optional grant.
@@ -94,15 +115,17 @@ Migration is additive and idempotent. CHECK constraints enumerate every real pha
 
 - Modify: `packages/core/src/codex-quota.ts`
 - Modify: `packages/config/src/feature-flags/registry.ts`
+- Modify: `packages/config/src/feature-flags/store-policy.ts`
 - Modify: `packages/teamlead/src/StateStore.ts`
-- Modify: `packages/teamlead/src/store-policy.ts`
 - Test: `packages/teamlead/src/__tests__/StateStore.codex-quota-hotswap.test.ts`
-- Test: relevant feature-flag registry drift test discovered by exact path/name search
+- Test: `packages/config/src/__tests__/feature-flags-drift.test.ts`
+- Test: `packages/config/src/__tests__/feature-flags-registry.test.ts`
 
 - [ ] Search changed paths, basenames, parent directories, and literals before choosing tests; record every excluded match and why.
 - [ ] Write failing tests for every grant phase, one-live-grant partial uniqueness, replayed CAS callbacks, protocol-lock version keys, idempotent migration, and retention protection.
 - [ ] Add typed contracts for grant, daemon identity, lifecycle callbacks, refresh/renewal answer, effective-account attribution, and sanitized machine codes.
-- [ ] Register kill switch `codex_quota_hotswap`, default enabled only behind protocol capability.
+- [ ] Register kill switch `codex_quota_hotswap`, default enabled only behind protocol capability, with every `readSites[]` entry explicitly `timing:"call_time"`. The switch gates only **new grants**; it never tears down refresh handlers, proactive renewal, or audit for a daemon already running external tokens.
+- [ ] Write a flag-timing test: after a grant reaches `continued`, switch OFF blocks the next `requestGrant` immediately without Bridge restart, while the existing grant can still answer refresh and perform same-account renewal.
 - [ ] Add the additive schema and indexes; never persist `accessToken` or refresh token.
 - [ ] Run exact StateStore and flag tests, then owning-package `vitest related` for changed TypeScript files.
 - [ ] Commit the task.
@@ -134,7 +157,7 @@ interface CodexQuotaHotSwapLifecycle {
 - [ ] Write failing tests proving initialize sends `capabilities:{experimentalApi:true}`.
 - [ ] Write failing server-request tests: registered handler result, sanitized handler error, unknown method `-32601`, 9-second local timeout, and no response after transport close.
 - [ ] Add `setServerRequestHandler`, `clearServerRequestHandler`, and ack-aware transport send needed to distinguish delivered from undelivered refresh answers.
-- [ ] Add bounded wrappers for `loginWithChatgptTokens`, `readAccount`, `listModels`, and `updateThreadSettings`; return sanitized discriminated results rather than throwing token-bearing server text.
+- [ ] Add bounded wrappers for `loginWithChatgptTokens`, `readAccount`, `listModels`, and `updateThreadSettings({model, effort})`; return sanitized discriminated results rather than throwing token-bearing server text.
 - [ ] Add a redaction test where the fake daemon echoes the access token in an error; assert logs, errors, adapter result, and callbacks do not contain it.
 - [ ] Run the two exact tests and `vitest related` for the changed files.
 - [ ] Commit the task.
@@ -151,13 +174,15 @@ interface CodexQuotaHotSwapLifecycle {
 - Test: `packages/claude-runner/test/codex-quota-resume-preflight.test.ts`
 
 - [ ] First extract the existing FLY-2900 marked-continue sequence without changing behavior; prove existing exact tests stay green.
-- [ ] Write the failing happy-path test: usage wall → grant → bind refresh → login → account identity match → configured model supported → settings update ack → marked `turn/start` before goal activation → first model output → main loop later completes.
+- [ ] Write the failing happy-path test: usage wall → grant → bind refresh → login → account identity match → configured model and configured reasoning effort both supported by `model/list` → one settings update pins both values → `thread/settings/updated` confirms both → marked `turn/start` before goal activation → first model output → main loop later completes.
 - [ ] Implement a run-scoped `CodexHotSwapSession` that serializes every login and tracks inflight, installed, and running grants separately.
 - [ ] Bind refresh before login. Accept `previousAccountId` only for the active grant; on same fingerprint allow at most two delivered retries so a server-side timeout can recover; advance fingerprint only after socket ack.
 - [ ] Schedule proactive renewal at token `exp - 30min`. Re-read the same slot only; if unchanged, request one existing account-reading refresh and retry every five minutes until expiry. Never perform OAuth refresh or write the slot.
+- [ ] Treat node `reasoningEffort` as account-independent launch configuration. Select only candidates whose target model advertises that effort; pin `{model, effort}` together and reject the candidate unless the acknowledgement contains both exact values.
 - [ ] On daemon restart, re-login only the last grant proven to have run; fail an inflight grant and never silently fall back to canonical credentials.
 - [ ] Handle `turn/start` uncertainty: retry the same grant id once only when reconciliation proves the turn absent and goal still usage-limited; otherwise stop the daemon and fall back. Never live-adopt an unproven turn.
 - [ ] For a resident `blocked + usageLimitExceeded` and native `usageLimited`, try hot swap before handing to quota governance. A non-hot-swapped 401 keeps existing behavior.
+- [ ] Add exact 401 tests in `codex-quota-hotswap.test.ts`: A→B reaches `continued`; same-fingerprint refresh retries are exhausted; unauthorized excludes B and requests C on the same daemon; C succeeds and continues. In the paired no-C case, a resident body calls `handToQuotaGovernance` with B as the effective identity, while a non-resident body preserves the real unauthorized terminal instead of fabricating `usageLimited`.
 - [ ] Run the two exact tests and `vitest related`.
 - [ ] Commit the task.
 
@@ -185,10 +210,10 @@ interface CodexQuotaHotSwapLifecycle {
 
 **Files:**
 
-- Modify: `packages/teamlead/src/bridge/run-dispatcher.ts` or the current RunDispatcher implementation found by symbol search
+- Modify: `packages/teamlead/src/bridge/run-dispatcher.ts`
 - Modify: `packages/teamlead/src/bridge/workflow-engine-dispatcher.ts`
 - Modify: `packages/teamlead/src/bridge/workflow-same-execution-relaunch.ts`
-- Modify: `packages/teamlead/src/bridge/codex-quota-hotswap-store.ts`
+- Create: `packages/teamlead/src/bridge/codex-quota-hotswap-store.ts`
 - Modify: `packages/teamlead/src/codex-quota/quota-fallback.ts`
 - Modify: `packages/claude-runner/src/CodexTmuxAdapter.ts`
 - Test: exact dispatcher, recovery, fallback, and adapter files discovered by path/name search
@@ -198,7 +223,7 @@ interface CodexQuotaHotSwapLifecycle {
 - [ ] Preserve execution/thread/daemon identity across hot swap. On explicit failure, emit the exact existing terminal signal so standby/handoff remains byte-compatible.
 - [ ] When a swapped account hits another wall, attribute the execution-scoped signal to its current identity; do not create a root incident for the original account or invalidate unrelated permits.
 - [ ] Test local pause semantics: the affected execution pauses until covered, while other executions on the original root remain eligible.
-- [ ] Merge FLY-3016 behavior: Claude fallback keeps the node's configured reasoning effort if supported; only then falls back to `xhigh`, otherwise declines fallback. Codex same-body relaunch preserves effort unchanged.
+- [ ] Apply the founder/Lead-added FLY-3016 acceptance requirement in this issue's fallback seam only: Claude fallback keeps the node's configured reasoning effort if supported; only then falls back to `xhigh`, otherwise declines fallback. Codex same-body relaunch preserves effort unchanged. Do not refactor unrelated effort selection.
 - [ ] Run every retained test as one concrete file at a time and run `vitest related` for changed TypeScript.
 - [ ] Commit the task.
 
@@ -230,7 +255,8 @@ interface CodexQuotaHotSwapLifecycle {
 - Test: `packages/teamlead/src/codex-quota/__tests__/hotswap-protocol.test.ts`
 
 - [ ] Write fixtures that independently remove each required schema element; each fixture must fail with a distinct machine code.
-- [ ] Implement token-free, network-free `codex app-server generate-json-schema` smoke using a throwaway `CODEX_HOME` and cleanup.
+- [ ] Implement token-free, network-free `codex app-server generate-json-schema --experimental --out <dir>` smoke using a throwaway `CODEX_HOME` and cleanup. Without `--experimental`, `thread/settings/update` is absent and the result is invalid for this capability check.
+- [ ] Add a fixture/argv test proving `--experimental` is passed, plus a negative schema fixture where `thread/settings/update` is absent even though `thread/settings/updated` remains.
 - [ ] Run once at Bridge startup and once per newly observed Codex version. Runtime method-not-found/invalid-params also marks that version unsupported.
 - [ ] Unsupported means decline before reading credentials, alert once, then continue through existing fallback.
 - [ ] Run the exact protocol test and the smoke against the installed Codex binary. Do not log paths containing secrets.
@@ -242,10 +268,10 @@ interface CodexQuotaHotSwapLifecycle {
 
 - Create: `scripts/qa/fly2957-hotswap-529.mjs`
 - Create: `scripts/qa/fly2957-hotswap-529.md`
-- Update: `engineering/doc/milestones/FLY-2957.md`
+- Create: `engineering/doc/milestones/FLY-2957.md`
 
 - [ ] Before testing, run literal discovery for `usageLimitExceeded`, `chatgptAuthTokens`, `codex_quota_hotswap`, and every changed full path/basename/parent. Record retained and excluded matches with reasons.
-- [ ] Run each retained Vitest file individually with its owning package, e.g. `pnpm --filter flywheel-claude-runner exec vitest run packages/claude-runner/test/codex-quota-hotswap.test.ts` using the repo-relative invocation shape that the package accepts.
+- [ ] Run each retained Vitest file individually with its owning package, e.g. `pnpm --filter flywheel-claude-runner exec vitest run test/codex-quota-hotswap.test.ts`. Paths after `pnpm --filter ... exec` are package-relative.
 - [ ] For changed TypeScript, run each owning package's `vitest related <changed-files> --run` in addition to explicit matches.
 - [ ] Run `pnpm lint`, owning package typechecks, and affected-package-plus-dependencies builds; do not run full test suites.
 - [ ] In 529, start a runner on a real 7-day-walled account, record a secret fact, trigger the wall, hot-swap to business, then ask for the fact. Capture unchanged execution id, thread id, PID and PGID before/after.
@@ -266,7 +292,7 @@ The implementation worker must not use `pnpm test`, bare `vitest`, directory/glo
 - Never put token material in errors, logger arguments, audit, outbox, HTML, snapshots, or test failure diffs.
 - Never write `auth.json`, update a symlink directly, perform OAuth refresh, rotate refresh tokens, consume reset credit, or select Luna Reserve as a dependency.
 - Never hot-swap review executors or non-Codex runners.
-- Never mark success on login response alone; require identity, model-pin acknowledgement, and first model output.
+- Never mark success on login response alone; require identity, exact model+effort acknowledgement, and first model output.
 - Never issue a second continue while delivery of the first is uncertain.
 
 ## 6. Rollout and rollback
@@ -274,10 +300,22 @@ The implementation worker must not use `pnpm test`, bare `vitest`, directory/glo
 1. Land code with the kill switch and protocol lock.
 2. Run targeted tests and offline protocol smoke.
 3. Pass 529 on the exact PR head.
-4. Enable hot swap only for protocol-supported versions; monitor failed/declined/succeeded ratios and renewal alerts.
-5. Roll back by disabling `codex_quota_hotswap`. Existing sessions then use FLY-2900/2925 without schema rollback or credential rewrites.
+4. Enable hot swap only for protocol-supported versions; the `call_time` read means no Bridge restart is required. Monitor failed/declined/succeeded ratios and renewal alerts.
+5. Roll back by disabling `codex_quota_hotswap`. This stops new grants immediately but intentionally keeps refresh answering, proactive same-account renewal, audit, and closeout for already-swapped daemons. A later wall on those daemons takes FLY-2900/2925 because a new grant is denied. No schema rollback or credential rewrite occurs.
 
 ## 7. Completion evidence
 
 Design acceptance requires an effective APPROVED review verdict on this exact plan. Implementation acceptance additionally requires targeted local checks, exact-head CI, and 529 evidence for same-context continuation, token continuation/alert, 401, in-flight change, failure fallback, and effort preservation. No narrower fixture or mock-only proof substitutes for the real-room identity invariants.
 
+## 8. Design review revision trail
+
+Round 1 changes, keyed to the structured findings:
+
+- `plan-targets-absent-substrate`: added §0 with the production repository, exact minimum commit, prerequisite probes, and fail-closed rule for this QA sandbox.
+- `smoke-missing-experimental-flag`: Task 7 now requires and tests `generate-json-schema --experimental`.
+- `effort-not-pinned-on-swap`: flow, protocol wrapper, candidate check, acknowledgement gate, tests, founder report, exploration, and research now pin model+effort together.
+- `killswitch-timing-inflight-semantics`: Task 1 and rollout now define `call_time`, new-grants-only shutdown, and continued refresh/renewal for existing grants.
+- `post-swap-401-path-untasked`: Task 3 now specifies A→B→C and no-C resident/non-resident unit tests.
+- `plan-path-inaccuracies`: corrected feature-flag store policy path, marked the hotswap store as Create, pinned inline `StateStore` migrations, and verified every Modify target exists at the pinned base.
+- `fly3016-scope-bundling`: documented the founder/Lead-added acceptance scope and limited it to this issue's fallback seam.
+- `test-invocation-shape`: changed the example to a package-relative test path.

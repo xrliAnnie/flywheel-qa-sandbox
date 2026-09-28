@@ -39,11 +39,12 @@ Codex runner 撞额度墙后，优先把另一个可用账号的短期 access to
 
 ### 做
 
-- `usageLimitExceeded` 被确认后，从只读号池挑选健康且支持目标模型的账号。
-- 先安装 refresh 应答器，再注入 token、核对账号、钉回配置模型、发送带幂等 id 的“继续”。
+- `usageLimitExceeded` 被确认后，从只读号池挑选健康且同时支持目标模型与 reasoning effort 的账号。
+- 先安装 refresh 应答器，再注入 token、核对账号、一起钉回配置模型与 reasoning effort、发送带幂等 id 的“继续”。
 - 每个 execution 串行热换；同一时刻最多一张未结算 grant，并排除本轮已失败账号。
 - 成功写审计和 issue thread 一句话；失败才通知 Lead/founder。
 - 升级时用协议 schema 冒烟，接口消失则自动关闭热换并走兜底。
+- 按 founder/Lead 追加验收收进 FLY-3016 的窄范围：全满回落 Claude 时保留节点 effort；只改本单 fallback seam，不做无关 effort 重构。
 
 ### 不做
 
@@ -64,4 +65,3 @@ Codex runner 撞额度墙后，优先把另一个可用账号的短期 access to
 ## 推荐方向
 
 采用“Bridge 授予一次性 grant，runner client 在同 daemon 中完成注入和续跑”的两层设计。Bridge 负责选号、持久化状态机、审计和兜底归因；client 负责协议时序和进程内安全边界。这样选号与凭据读取只有一个来源，daemon client 也不需要知道全局号池结构。
-

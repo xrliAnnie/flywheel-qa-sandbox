@@ -14,11 +14,11 @@ Issue: FLY-2957 (https://linear.app/geoforge3d/issue/FLY-2957/codex热换号-在
 | `InitializeCapabilities.experimentalApi` | 必须为 `true` | initialize 明确声明；缺失则热换直接 decline |
 | `account/login/start` + `chatgptAuthTokens` | 可立即替换内存凭据 | access token/account id 只走进程内 RPC |
 | `account/read` | 可核对实际账号 | login 响应成功后仍要做身份一致性检查 |
-| `model/list` | 可判断目标模型是否可用 | 候选号不支持配置模型时排除并试下一号 |
-| `thread/settings/update` | 实验接口 | 等 `thread/settings/updated` 确认，避免 TUI 留在 reserve 模型 |
+| `model/list` | 可判断目标模型及 reasoning effort 是否可用 | 候选号不支持任一节点配置时排除并试下一号 |
+| `thread/settings/update` | 实验接口 | 同一次请求钉回 model+effort，并等 `thread/settings/updated` 同时确认两者 |
 | `account/chatgptAuthTokens/refresh` | server→client 请求，10 秒超时 | handler 必须在 login 前绑定，9 秒内确认写回 |
 
-接口标为内部实验能力，因此不能只靠运行期失败发现兼容性。升级冒烟应离线生成 schema，检查 initialize 能力、login 变体、refresh 请求和 thread settings 四项，并按 Codex 版本保存能力锁。
+接口标为内部实验能力，因此不能只靠运行期失败发现兼容性。升级冒烟应离线执行 `codex app-server generate-json-schema --experimental`，检查 initialize 能力、login 变体、refresh 请求和 thread settings 四项，并按 Codex 版本保存能力锁；缺少 `--experimental` 会让 `thread/settings/update` 从 schema 消失，不能作为有效探测。
 
 ## 现有执行时序
 
@@ -53,6 +53,8 @@ FLY-2900 已有带标记的额度恢复回合：先 `turn/start`，再 `thread/g
 - 写审计、outbox 和能力锁。
 
 runner 与 Bridge 之间只交换一次性 grant 和机器码，不让 client 理解账号注册表、SQLite 或告警策略。
+
+Kill switch 采用 `call_time` 读取，只阻止新 grant。已经运行在外部 token 模式的 daemon 必须继续保有 refresh 应答、主动同号重注入、审计和 closeout；否则“关闭功能”本身会在 token 到期时制造 401。
 
 ## 选号规则
 
@@ -112,4 +114,3 @@ runner 与 Bridge 之间只交换一次性 grant 和机器码，不让 client �
 - 每个 changed TypeScript 集合额外执行 owning package 的 `vitest related <changed-files> --run`
 
 不得用 bare `vitest`、package 全量 test 或目录/glob 代替精确文件。真房验收还必须证明 execution/thread/PID/PGID 不变和上下文暗号保留；单测无法替代这项证据。
-

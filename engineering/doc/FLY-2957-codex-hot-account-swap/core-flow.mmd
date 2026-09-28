@@ -10,9 +10,8 @@ sequenceDiagram
   P-->>B: 可用账号与短期 token
   B-->>R: grant
   R->>D: 注入新账号 token
-  R->>D: 核对账号并钉回配置模型
+  R->>D: 核对账号并钉回配置模型 + 推理强度
   R->>D: 同线程发送「继续」
   D-->>R: 首个模型产出
   R->>B: 记成功审计
   Note over R,D: execution、thread、PID、PGID 全程不变
-
