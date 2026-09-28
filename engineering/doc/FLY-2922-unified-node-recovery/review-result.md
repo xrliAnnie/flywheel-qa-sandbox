@@ -128,3 +128,52 @@ Status: APPROVED
 #### Verdict
 
 APPROVED — ready to implement
+
+## 2026-09-28 沙箱再派发的 scoped review（execution aa6823a0，run 6a122f01）
+
+本 Bridge 评审门 requestId `70ebb784-ed3c-4674-81e1-6e9e2b5d0dfc`，plan blob `24413428775c482bdcd16cabcbfa9d5f619acf77`（与前两次批准相同，计划正文未改），reviewer gpt-6-astra/xhigh（服务端指定，review-round match=yes）。第 1 轮 APPROVED：thread `01a0e6db-bc35-77e1-a255-4c614a0f3bf7`，turn `01a0e6db-bf76-7e71-b718-152f001ec787`；审阅基线 HEAD `cbd39c96f`，相对上次批准头仅本目录的证据/进度文件有差异，packages/scripts 树完全相同。新增设计缺陷 0；保留 1 MEDIUM（shared-materializer-preconditions）/ 2 LOW（sibling-contract-unpinned、tests-not-run）为非阻塞 Follow-ups。`await-codex-gate design` 经 Bridge 校验通过。只批准设计，不批准实现完整性、行为验收或部署。
+
+Codex 反馈全文：
+
+### Design Review — plan.md (Round 1)
+
+Date: 2026-09-28
+Author: Codex
+Status: APPROVED
+
+#### Summary
+
+针对 Bridge request `70ebb784`，以当前 HEAD `cbd39c96f3dea7b6a7f338e4179a1a58a01d5e77` 完成限定范围设计复审。`plan.md` 结合 `design-correction.md:21–27` 的优先覆盖后，仍可沿当前 StateStore 事务、派发账本、dispatcher 和 rework coordinator 实施。新增设计缺陷 **0**；保留上次沙箱审阅的非阻塞 Follow-ups，不重开已关闭事项。
+
+本轮独立验证了审阅对象和源码：plan blob 为 `24413428775c482bdcd16cabcbfa9d5f619acf77`，补充合同 blob 为 `3ecbe57194f7e675b011b339e481e801a730d68a`。相较上次批准头 `6aa6e2bc7609188fbe6f7550041bcf913363b58d`，当前 HEAD 只改变本目录的 `delivery-evidence.md`、`progress.md`、`review-result.md`；`packages` tree 均为 `826d2e1f34841da2321f3600ec874e135d765349`，`scripts` tree 均为 `f7675c174f584bbb5f5284784e93ea81c39f7e2b`。因此不存在新增源码差异推翻既有结论；以下同时给出本轮直接读取当前源码的核验依据。
+
+已阅读根目录及 `packages/CLAUDE.md`、产品体验规范，以及 exploration、research、plan、补充合同、历次评审、implementation-evidence 和 watch-consumer-sweep。相关 teamlead/flywheel-comm 子树没有额外 CLAUDE.md。本结论只批准设计可实施性，不认定 WIP 实现完整、测试通过或可部署；历史实现日志未作为当前 HEAD 的行为验证。
+
+#### What's Good (Keep)
+
+- **恢复成功有真实事务承诺。** `packages/teamlead/src/StateStore.ts:92304` 的 allocator 返回 ordinal，并写 dispatch ledger 与 launch delivery。当前 `recoverWorkflowNode`（`:62998`）提供持久 receipt、精确 hold UID 结算、run 激活和 carrier revive 的事务接入点；`:62627` 重验 preflight，`:62767` 拒绝其他 active run。计划要求完整 tuple 查询 ledger ID、幂等重放及 stale 请求拒绝，符合现有结构。`recoverCurrentWorkflowNodeTx` 是计划职责名，不应因当前方法名称不同判为缺失接口。
+- **公开权限门和操作语义可以复用。** `bridge/runs-route.ts:453` 的 master/loopback 检查、`:501` 的 stage 和 `:557` 的 apply 接入 `prepareWorkflowNodeRecovery`（`bridge/workflow-node-recovery.ts:148`），并绑定 canonical/confirm token；重复成功请求读取持久 receipt。state-only、gate probe、已记录业务决定与物理替换分别保留真实语义，能避免对活体 pause 或已完成 source 套用死体替换守卫。land 旧 full-resume 门的收敛仍按计划作为实施义务保留，不能从设计批准推断其已经完成。
+- **FLY-2921 的写入与消费合同在当前源码有对应基础。** dispatcher 围栏和 replacement context 均要求 `pending`、精确 actor/request/route（`bridge/workflow-engine-dispatcher.ts:2791`、`:2822`）；启动写回检查相同状态（`StateStore.ts:46808`），coordinator 识别已存在的替身派发（`bridge/workflow-rework-coordinator.ts:817`）。共同物化内核 `StateStore.ts:45593` 和历史 held 适配器 `:62919` 接受各自权限/CAS，后者使用 held + returned_to_lead。stage/apply 与 dispatcher 复用 replacement context preflight（`bridge/workflow-node-recovery.ts:246`、`StateStore.ts:62708`、`bridge/workflow-engine-dispatcher.ts:2835`）。这些支持此前消费者依赖、共用方法和上下文预检建议的静态处理状态，不能外推为生产集成已完成。
+- **故障归属保持单一。** `StateStore.ts:65040` 排除 land/gate，`:65055` 用 pending/latest intent 加无 binding、activation、owner、completion 的事务内证据判断准入前未启动，`:65072` 排除 `rework_replacement:` 和已登记返工目标。原计划 §3.6/§5 的旧文字须继续按补充合同解释：active replacement 失败归 2921；历史 held 和非 replacement 故障归 2922。当前源码没有新增反证要求重开此前对应 advisories。
+- **派发后的消费条件已纳入设计。** `workflow-dispatch-lineage.ts` 解析精确替换链；`bridge/workflow-node-recovery.ts` 区分 root 未启动与真实 execution HEAD，`bridge/workflow-start-policy.ts` 共用启动选择规则。dispatcher 在 `:3375` 传递冻结的 initialPolicy，RunDispatcher 在 `:1540` 接收 recoveryStartPolicy，保留 resume/continuity 元数据的接入点。业务继续 edge 的 completion disposition 与 ship-ready 读取显式跳过 `hold_decision_resume`（`StateStore.ts:69643`、`:78876`）。真实 git、Blueprint 残留 worktree、连续替换及实际 admission 验证仍须按原矩阵完成。
+- **失败、关闭和额度边界有可实施落点。** enrolled failure 的独立事务在 `StateStore.ts:70266`，HTTP 早分流在 `bridge/event-route.ts:1904`；成功路径仍在 transition 后投影 session（`StateStore.ts:71059`、`:71085`）。close-runner 的 enrolled done 分流与 execution-only 回执位于 `bridge/close-runner.ts:539`、`:460`，显式 run terminate 仍独立。quota settlement 使用同事务 target CAS（`StateStore.ts:66698`、`bridge/codex-quota-store.ts:1035`），旧 terminate 有服务端拒绝位置（`StateStore.ts:54438`）；watch 清理仅选择达到 TTL 的 terminal/orphan（`:65298`）。保留计划中的并发、迟到完成、崩溃重放及公共入口到 consumer 验收，不能仅凭这些方法存在认定整单完成。
+
+#### Issues & Recommendations
+
+本轮没有 NEW 设计缺陷。以下三项均为 **retained prior follow-up**，保持非阻塞；已关闭或已有静态处理证据的其他建议不重新列为问题。
+
+1. **MEDIUM — shared-materializer-preconditions — retained prior follow-up（部分已有静态处理证据）**
+
+   共同内核和 held/returned_to_lead 适配器已经存在，但显式 operator 恢复与替身预算的语义仍应保留交接说明。`packages/teamlead/src/StateStore.ts:45655` 达到三次预算会拒绝；`:47223` 的计数包括 `engine:operator_recovery`，只从最近 `engine:hold_resume` 后重新起算。预算耗尽的历史 held 目标可能因此无法直接再派，不能仅以抽取共用方法宣称旧建议全部关闭。建议沿用既有 follow-up，明确显式恢复是否计入预算、何种授权允许重新起算，并验证预算耗尽及再次失败的出口。这与上次批准时的源码相同，不升级为新增阻塞，也不作为本轮实现完整性评判。
+
+2. **LOW — sibling-contract-unpinned — retained prior follow-up**
+
+   `design-correction.md:14–17` 仍是旧分支状态描述，C2/C4/C6 引用未固定版本。当前 consumer 已使用 pending，后续接手者若按旧描述实施，容易误读两单的集成边界。建议在后续交接记录中固定所依赖合同的 commit/blob、实际集成提交和 `:21–27` 的覆盖优先级，并明确 §3.6/§5 的 active replacement 归属。当前已核实源码基础可用，不因此要求改动本次冻结计划，也不将本地源码等同于 main 或生产部署状态。
+
+3. **LOW — tests-not-run — retained prior follow-up（验证边界）**
+
+   本轮逐项确认 §7 命令列出的 **18 个测试文件全部存在**。根目录、`packages/teamlead`、`packages/flywheel-comm` 均没有 `node_modules`，本轮未运行 Vitest、build 或生产验证，未安装依赖。测试文件和接口存在只能支持方案可落地，不能证明九单、真实 HEAD/admission、quota 竞争、land 权限门或重启行为已经通过。建议实现/QA 按原 §7 和补充矩阵逐文件运行，保存当前提交的公共入口到派发消费者证据；watch-consumer-sweep 仅覆盖历史 watch slice，外部插件 fork/cache 的整单 sweep 仍不得报告为零引用。
+
+#### Verdict
+
+APPROVED — ready to implement
