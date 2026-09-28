@@ -1,0 +1,36 @@
+classDiagram
+  class Execution {
+    execution_id
+    thread_id
+    configured_model
+    reasoning_effort
+  }
+  class DaemonIdentity {
+    daemon_instance_id
+    pid
+    pgid
+    codex_version
+  }
+  class HotSwapGrant {
+    grant_id
+    identity_key
+    profile_label
+    phase
+    token_fingerprint
+  }
+  class ProtocolLock {
+    codex_version
+    supported
+    checked_at
+  }
+  class AuditEvent {
+    detail_code
+    duration_ms
+    created_at
+  }
+  Execution "1" --> "1" DaemonIdentity : 当前进程
+  Execution "1" --> "0..*" HotSwapGrant : 最多一张未结算
+  DaemonIdentity "1" --> "0..1" HotSwapGrant : 安装到
+  HotSwapGrant "1" --> "0..*" AuditEvent : 留痕
+  ProtocolLock "1" --> "0..*" DaemonIdentity : 按版本放行
+

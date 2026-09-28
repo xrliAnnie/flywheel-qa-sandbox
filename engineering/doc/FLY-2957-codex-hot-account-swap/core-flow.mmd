@@ -1,0 +1,18 @@
+sequenceDiagram
+  autonumber
+  participant R as 在飞 Runner
+  participant B as Bridge 选号服务
+  participant P as 只读账号池
+  participant D as 同一个 Codex 进程
+  D-->>R: usageLimitExceeded
+  R->>B: 请求一次性换号授权
+  B->>P: 刷新读数并核验候选号
+  P-->>B: 可用账号与短期 token
+  B-->>R: grant
+  R->>D: 注入新账号 token
+  R->>D: 核对账号并钉回配置模型
+  R->>D: 同线程发送「继续」
+  D-->>R: 首个模型产出
+  R->>B: 记成功审计
+  Note over R,D: execution、thread、PID、PGID 全程不变
+
