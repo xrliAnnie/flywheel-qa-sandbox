@@ -75,6 +75,25 @@ describe("FLY-2919 committed physical death projection", () => {
 			expect(db.getTurn("FLY-2919")).toBeNull();
 		},
 	);
+	it("projects the same trusted duty for an explicitly non-workflow body", () => {
+		proof.activationId = null;
+		proof.runId = null;
+		proof.nodeId = null;
+		proof.attempt = null;
+
+		expect(project()).toMatchObject({
+			projected: true,
+			idempotentReplay: false,
+			result: { turnRevoked: true },
+		});
+	});
+	it("rejects a mixed workflow and non-workflow death scope", () => {
+		proof.activationId = null;
+		expect(project()).toEqual({
+			projected: false,
+			reason: "invalid_body_death_proof",
+		});
+	});
 	it("settles each founder wake durably without claiming its content was consumed", () => {
 		for (const id of ["founder-1", "founder-2"])
 			db.enqueueRunnerPhaseWake(

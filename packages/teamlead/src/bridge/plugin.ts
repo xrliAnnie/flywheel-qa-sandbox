@@ -3137,7 +3137,11 @@ export function createBridgeApp(
 			opts?.materializedHeadAuthority,
 			actionGateAuthorityView,
 			opts?.epicPageRefresher?.requestRefresh,
-			{ nodeStandbyResumeEnabled, readBodyLiveness: opts?.readBodyLiveness },
+			{
+				nodeStandbyResumeEnabled,
+				readBodyLiveness: opts?.readBodyLiveness,
+				observeBody: opts?.observeBody,
+			},
 			() => opts?.codexQuota?.rootKey,
 		),
 	);
@@ -3835,7 +3839,11 @@ export function createBridgeApp(
 			opts?.materializedHeadAuthority,
 			actionGateAuthorityView,
 			opts?.epicPageRefresher?.requestRefresh,
-			{ nodeStandbyResumeEnabled, readBodyLiveness: opts?.readBodyLiveness },
+			{
+				nodeStandbyResumeEnabled,
+				readBodyLiveness: opts?.readBodyLiveness,
+				observeBody: opts?.observeBody,
+			},
 			() => opts?.codexQuota?.rootKey,
 		),
 	);
@@ -7944,6 +7952,8 @@ export async function startBridge(
 	const lifecycleExecutorDeps = {
 		store,
 		transitionOpts,
+		observeBody: (executionId: string, projectName: string) =>
+			observeBodyOnDemand(executionId, projectName),
 		withIssueMutex: issueMutex,
 		withRepoLock: repoMutationLock.withRepoLock,
 		openPrDisposal: makeCanceledPrDisposal({
@@ -11313,7 +11323,10 @@ export async function startBridge(
 		for (const duty of pending) {
 			bodyDeathReplayCursor = duty.obligationId;
 			try {
-				const project = store.getWorkflowRun(duty.runId)?.project_name;
+				const project = duty.runId
+					? store.getWorkflowRun(duty.runId)?.project_name
+					: store.getSession(duty.observation.identity.executionId)
+							?.project_name;
 				if (!project) continue;
 				const path = commDbPathForProject(project);
 				if (!ffExistsSync(path)) continue;

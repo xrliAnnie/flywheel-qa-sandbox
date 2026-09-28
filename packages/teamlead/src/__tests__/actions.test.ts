@@ -577,6 +577,43 @@ describe("Action tools", () => {
 		expect(store.getSession("e1")!.last_error).toBe("Code quality issues");
 	});
 
+	it("FLY-2919 threads the fresh body observer into reject auto-close", async () => {
+		store.upsertSession({
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+		});
+		const observeBody = vi.fn(async () => "alive" as const);
+		const closeRunnerFn = vi.fn(async () => ({
+			closed: false,
+			commDbFinalized: false,
+			retiredGateCount: 0,
+			error: "phase_shutdown_body_alive",
+		}));
+
+		await transitionSession(
+			store,
+			"reject",
+			"e1",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			{ observeBody, closeRunnerFn },
+		);
+		await vi.waitFor(() => {
+			expect(closeRunnerFn).toHaveBeenCalledWith(
+				expect.objectContaining({ observeBody }),
+				expect.anything(),
+			);
+		});
+	});
+
 	it("reject from running fails", async () => {
 		store.upsertSession({
 			execution_id: "e1",

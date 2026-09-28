@@ -230,6 +230,83 @@ describe("FLY-2919 body death across StateStore and CommDB", () => {
 			store.executionProcessOwners.listObservationCandidates(),
 		).not.toContain("exec-1");
 	});
+	it("converges and projects a dead non-workflow owner with no activation", async () => {
+		const executionId = "legacy-exec";
+		const issueId = "FLY-2919-LEGACY";
+		store.upsertSession({
+			execution_id: executionId,
+			issue_id: issueId,
+			project_name: "fixture",
+			status: "running",
+			adapter_type: "codex-tmux",
+		});
+		const legacyOwner = {
+			executionId,
+			activationId: null,
+			generation: 1,
+			ownerToken: "legacy-owner",
+		};
+		const lifecycleRevision = store.getLifecycleRevision(executionId);
+		expect(
+			store.executionProcessOwners.claim({
+				...legacyOwner,
+				lifecycleRevision,
+				nowMs: clock,
+				controller: {
+					pid: 300,
+					startIdentity: "legacy-controller",
+					hostBootId: "boot",
+				},
+			}).ok,
+		).toBe(true);
+		const spawn = store.executionProcessOwners.beginSpawn({
+			...legacyOwner,
+			lifecycleRevision,
+			spawnEpoch: 0,
+			nowMs: clock,
+		});
+		if (!spawn.ok) throw new Error(spawn.reason);
+		expect(
+			store.executionProcessOwners.acceptSpawn({
+				...spawn.permit,
+				lifecycleRevision,
+				nowMs: clock,
+				binding: { ...binding, pid: 301, pgid: 301 },
+			}).ok,
+		).toBe(true);
+		comm.registerSession(
+			executionId,
+			"legacy-visible:@1",
+			"fixture",
+			issueId,
+			"lead",
+		);
+		comm.upsertDeclaredState(executionId, "parked", "waiting", clock, null);
+		comm.grantTurn(issueId, executionId, "main", clock);
+
+		const result = await convergeExecutionBody(deps, executionId);
+
+		expect(result).toMatchObject({
+			kind: "committed",
+			obligation: {
+				runId: null,
+				nodeId: null,
+				attempt: null,
+				observation: { identity: { activationId: null } },
+			},
+			projection: { projected: true },
+		});
+		expect(store.getSession(executionId)?.status).toBe("failed");
+		expect(comm.getSessionCloseoutIdentity(executionId).session?.status).toBe(
+			"failed",
+		);
+		expect(
+			store.getCurrentProjectedExecutionBodyDeath(executionId),
+		).toMatchObject({ disposition: "failed" });
+		expect(
+			store.executionProcessOwners.listObservationCandidates(),
+		).not.toContain(executionId);
+	});
 	it("FLY-2919 invalidates an old logical observation during OS capture and resamples the same body", async () => {
 		const original = capture.getMockImplementation()!;
 		capture.mockImplementationOnce(async () => {

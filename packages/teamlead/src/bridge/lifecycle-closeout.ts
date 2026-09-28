@@ -288,6 +288,11 @@ export interface LifecycleCloseoutDeps {
 	probeLiveness?: (w: string) => Promise<RunnerLiveness>;
 	/** Execution-identity-aware liveness proof for preserved crash forensics. */
 	probeExecutionLiveness?: RunExecutionLivenessProbe;
+	/** Fresh process-body observation used by closeRunner's shutdown gate. */
+	observeBody?: (
+		executionId: string,
+		projectName: string,
+	) => Promise<"alive" | "dead" | "unknown">;
 	/** Optional fresh-Linear alias contributor (D entry supplies its lookup). */
 	extraAliases?: string[];
 	/** Issue-level items, injected per entry (thread archive / Linear / etc.).
@@ -1703,6 +1708,7 @@ async function closeoutOneNode(
 				// R2#3: the executor already holds the issue mutex.
 				skipLifecycleGuard: true,
 				transitionOpts: deps.transitionOpts,
+				observeBody: deps.observeBody,
 				// R4#2: thread the fresh-authority probe INTO the kill sequence —
 				// closeRunner re-verifies before each subsequent external mutation
 				// (MCP reap → cmux kill → tmux kill → terminal view), so a Linear

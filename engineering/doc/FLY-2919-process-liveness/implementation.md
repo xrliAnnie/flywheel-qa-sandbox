@@ -679,3 +679,17 @@ question `f8ced131-aa0a-4fdc-8129-3fc27897dab0` 在精确头 `ec40d7dc2b2c5f85de
 测试发现先检索了旧 literal、源文件完整路径/文件名/父目录，以及测试文件路径/文件名。保留 inspector 因果测试与 kill-path inventory；父目录命中的历史文档、配置和通用路径卫生项不是本分支的直接行为消费者，不扩张测试范围。changed-TS `vitest related src/execution-process-inspector.ts test/execution-process-inspector.test.ts --run` 结果为 20/21 文件通过，合计 757 pass / 2 failed / 2 skipped；两项失败均为 `codex-daemon-runtime.test.ts` 在当前 sandbox 中调用真实 `ps` 的 `spawnSync ps EPERM`，不是断言回归，保留给 529。`flywheel-claude-runner` 依赖闭包 build、被依赖包 typecheck 与根 `pnpm lint` 均退出0；lint 仅有26项既有 warning。`git diff --check` 退出0。没有运行本机整包/整仓 suite，也不将上述证据冒称 full CI、QA 或真机验收。
 
 复审中的 MEDIUM/LOW 仍是非阻塞 advisory，本批不扩张修复。下一步推送同头并开新的有效代码复审。
+
+### R3 代码复审第 1 轮修订
+
+question `287e07f8-4f93-44ea-b2bb-9e23e7ccbe0e` / request `cec6368e-dddd-42e3-b23c-20ea14107727` 在精确头 `4116c7d2e10bcb746af9373e831954976e4e315d` 返回 `CHANGES_REQUESTED`。本批只处理三个阻塞 HIGH；其余 MEDIUM/LOW 保持 advisory，不借机扩大行为范围。
+
+| findingKey | 修订与红/绿证据 |
+|---|---|
+| `codex-sample-host-wide-census-compare` | Codex socket 探测前后不再比较整台主机的 `ps` 表，只比较 binding leader、已登记 writers、前后两次 scoped writers、已发现/nonce writers 与 socket holders 的 PID+start/树身份；无关宿主进程增删不再否决绑定，相关 socket holder 身份变化仍 fail closed。新增正反例在旧代码上 1 RED / 61 pass，修后 inspector 62/62。 |
+| `codex-phase-shutdown-store-only-reader` | lifecycle closeout、reject/defer/shelve 自动关闭与 retry force-close 都注入 composition root 的 `observeBodyOnDemand`；store-only reader 不再是这些路径唯一证据。三个调用面分别在旧代码上 1 RED，修后 lifecycle 67/67、actions 63/63、retry route 29/29。 |
+| `null-activation-never-converges` | 对明确的 non-workflow owner（owner activation 为 null、无 resolved activation、无 workflow actor）复用同一 `body_death:<execution>:<generation>` 义务、owner/lifecycle/lease CAS、TURN compare-delete 和 CommDB 投影；义务/证明要求 workflow 四字段全有或 legacy 四字段全 null，混合 scope 拒绝。legacy receipt 存在 `session_events`，投影后从采样库存退出。旧实现新集成例为 1 RED / 32 pass，修后 convergence 33/33；CommDB 证明 18/18、owner 45/45、StateStore body-death 28/28。 |
+
+本批最终定向复验逐个文件运行，共 **9 个具体文件 / 366 pass**：inspector 62、CommDB body-death 18、actions 63、retry route 29、lifecycle closeout 67、execution-body convergence 33、StateStore owner 45、StateStore body-death 28、Codex reown wiring 21。`git diff --check` 为0。受影响 package build 与 claude-runner/flywheel-comm/teamlead typecheck 均已通过；根 `pnpm lint` 最终退出0，只报告范围外既有 warning。
+
+changed-TS related 证据独立记录：claude-runner 的精确 changed-file related 选择21个文件，759 pass / 2 failed / 2 skipped；仅有两项 `codex-daemon-runtime.test.ts` 真实宿主 `ps` fixture 因 sandbox `spawnSync ps EPERM` 失败，留给529。flywheel-comm 的精确 changed-file related 选择81个文件并 1249 pass。依 `[lead-instruction e9cfb5af-ae02-489f-8d7a-6eb0aeb848a4]` 不重跑会扩张到600+文件的 teamlead related；以本节具体文件、build/typecheck 和精确头 PR CI 交接。没有运行本机整包/整仓 suite，不把相关测试或 lint 冒称 full CI、QA 或真机证明。

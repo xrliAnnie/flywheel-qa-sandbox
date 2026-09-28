@@ -56,6 +56,13 @@ let dispatchImpl: (req: RetryRequest) => Promise<{ newExecutionId: string }>;
 let generalizedRoot: string | undefined;
 let savedHome: string | undefined;
 const readBodyLiveness = vi.fn<() => "alive" | "dead" | "unknown">();
+const observeBody = vi.fn(async () => "alive" as const);
+const closeRunnerFn = vi.fn(async () => ({
+	closed: false,
+	commDbFinalized: false,
+	retiredGateCount: 0,
+	error: "phase_shutdown_body_alive",
+}));
 
 const WORKFLOW_ON = {
 	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
@@ -233,6 +240,8 @@ beforeEach(async () => {
 	});
 	dispatched = [];
 	readBodyLiveness.mockReset().mockReturnValue("unknown");
+	observeBody.mockClear();
+	closeRunnerFn.mockClear();
 	generalizedRoot = undefined;
 	generalizedRecoveryMocks.waitForDelivery
 		.mockReset()
@@ -273,7 +282,12 @@ beforeEach(async () => {
 			undefined,
 			undefined,
 			undefined,
-			{ nodeStandbyResumeEnabled: () => true, readBodyLiveness },
+			{
+				nodeStandbyResumeEnabled: () => true,
+				readBodyLiveness,
+				observeBody,
+				closeRunnerFn,
+			},
 		),
 	);
 	server = createServer(app);
@@ -357,6 +371,10 @@ describe("POST /api/actions/retry — D2 pre-bound dispatch flow", () => {
 			"dispatched",
 		);
 		expect(store.getSession("pred-1")?.retry_successor).toBe(SUCC);
+		expect(closeRunnerFn).toHaveBeenCalledWith(
+			expect.objectContaining({ observeBody }),
+			expect.anything(),
+		);
 	});
 
 	it("② crash window: dispatcher throws AFTER the intent commit → failure response, but the durable binding survives in state=intent", async () => {

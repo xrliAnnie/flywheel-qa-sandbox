@@ -599,6 +599,77 @@ describe("execution process inspector", () => {
 			}
 		},
 	);
+	it("ignores unrelated host process churn while validating Codex socket holders", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2919-inspector-churn-"));
+		try {
+			mkdirSync(join(root, "test-execution"));
+			writeFileSync(
+				join(root, "test-execution", "session.json"),
+				JSON.stringify({ daemonPgid: 42 }),
+			);
+			const { options } = fixture([
+				{ pid: 42 },
+				{ pid: 90, pgid: 90, env: "PATH=/bin" },
+			]);
+			let censusReads = 0;
+			const sample = await captureExecutionProcessSample(
+				{ ...binding, adapter: "codex-tmux" },
+				{
+					...options,
+					executionId: "test-execution",
+					env: {
+						FLYWHEEL_CODEX_SESSION_DIR: root,
+						FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT: root,
+					},
+					socketProbe: async () => true,
+					runCommand: async (file, args, control) => {
+						if (args.includes("-t")) return { stdout: "42\n" };
+						const result = await options.runCommand!(file, args, control);
+						if (
+							args.includes("pid=,ppid=,pgid=,uid=,stat=,lstart=") &&
+							++censusReads === 3
+						)
+							return { stdout: result.stdout.replace(/^90 /m, "91 ") };
+						return result;
+					},
+				},
+			);
+			expect(sample?.daemon).toBe("alive");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+	it("rejects a changed Codex socket-holder identity despite unrelated host stability", async () => {
+		const { options } = fixture([
+			{ pid: 42 },
+			{ pid: 90, pgid: 42, start: "Sat Sep 26 10:00:01 2026" },
+		]);
+		let censusReads = 0;
+		const sample = await captureExecutionProcessSample(
+			{ ...binding, adapter: "codex-tmux" },
+			{
+				...options,
+				executionId: "test-execution",
+				socketProbe: async () => true,
+				runCommand: async (file, args, control) => {
+					if (args.includes("-t")) return { stdout: "90\n" };
+					const result = await options.runCommand!(file, args, control);
+					if (
+						args.includes("pid=,ppid=,pgid=,uid=,stat=,lstart=") &&
+						++censusReads === 3
+					)
+						return {
+							stdout: result.stdout.replace(
+								"Sat Sep 26 10:00:01 2026",
+								"Sat Sep 26 10:00:02 2026",
+							),
+						};
+					return result;
+				},
+			},
+		);
+		expect(sample).toBeNull();
+	});
 	it("rejects PID reuse during the socket probe", async () => {
 		const { options } = fixture();
 		let socketRead = false;

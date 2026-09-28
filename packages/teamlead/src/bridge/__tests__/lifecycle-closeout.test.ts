@@ -679,6 +679,36 @@ describe("closeoutIssue — canceled disposition", () => {
 		);
 	});
 
+	it("FLY-2919 threads the fresh body observer into lifecycle teardown", async () => {
+		const store = await freshStore();
+		seedSession(store, "e1", "completed");
+		const observeBody = vi.fn(async () => "alive" as const);
+		const closeRunnerFn = vi.fn(async () => ({
+			closed: false,
+			commDbFinalized: false,
+			retiredGateCount: 0,
+			error: "phase_shutdown_body_alive",
+		}));
+
+		await closeoutIssue(
+			baseDeps(store, {
+				observeBody,
+				closeRunnerFn: closeRunnerFn as never,
+			}),
+			{
+				issueKey: UUID,
+				projectName: "proj",
+				disposition: "canceled",
+				authority: "linear_reconcile",
+			},
+		);
+
+		expect(closeRunnerFn).toHaveBeenCalledWith(
+			expect.objectContaining({ observeBody }),
+			expect.anything(),
+		);
+	});
+
 	it("FLY-1066 A4: a QA record without a session row finalizes CommDB directly", async () => {
 		const store = await freshStore();
 		seedSession(store, "parent", "completed");

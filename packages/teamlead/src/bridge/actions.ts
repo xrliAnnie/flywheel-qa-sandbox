@@ -92,6 +92,14 @@ type ExecFn = (
 	cwd: string,
 ) => Promise<{ stdout: string }>;
 
+interface ActionCloseDeps {
+	observeBody?: (
+		executionId: string,
+		projectName: string,
+	) => Promise<"alive" | "dead" | "unknown">;
+	closeRunnerFn?: typeof closeRunner;
+}
+
 // ExecFn kept for backward-compatible caller signatures
 // (no longer used internally after FLY-58 — approve no longer merges PR)
 
@@ -540,6 +548,7 @@ export async function transitionSession(
 	/** FLY-163: positional slot kept (was forumTagUpdater); now ignored. */
 	_unusedForumTagUpdater?: unknown,
 	registry?: RuntimeRegistry,
+	closeDeps?: ActionCloseDeps,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -633,12 +642,13 @@ export async function transitionSession(
 		action !== "retry" &&
 		action !== "terminate"
 	) {
-		closeRunner(
+		(closeDeps?.closeRunnerFn ?? closeRunner)(
 			{
 				executionId,
 				issueId: session.issue_id,
 				projectName: session.project_name,
 				reason: `transition_to_${targetStatus}`,
+				observeBody: closeDeps?.observeBody,
 			},
 			store,
 		).catch((e: Error) =>
@@ -686,6 +696,7 @@ async function handleRetry(
 	nodeStandbyResumeEnabled?: () => boolean,
 	codexQuotaRootKey?: (projectName: string) => string | undefined,
 	readBodyLiveness?: ExecutionBodyLivenessReader,
+	closeDeps?: ActionCloseDeps,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -842,7 +853,7 @@ async function handleRetry(
 	// otherwise the next runner can collide with stale state during dispatch.
 	// Cleanup errors are logged but do NOT block the retry.
 	try {
-		await closeRunner(
+		await (closeDeps?.closeRunnerFn ?? closeRunner)(
 			{
 				executionId,
 				issueId: session.issue_id,
@@ -850,6 +861,7 @@ async function handleRetry(
 				leadId: retryLeadId,
 				reason: "retry_force_close",
 				forcePreserved: true,
+				observeBody: closeDeps?.observeBody,
 			},
 			store,
 		);
@@ -1858,6 +1870,8 @@ export function createActionRouter(
 	runtime?: {
 		nodeStandbyResumeEnabled?: () => boolean;
 		readBodyLiveness?: ExecutionBodyLivenessReader;
+		observeBody?: ActionCloseDeps["observeBody"];
+		closeRunnerFn?: typeof closeRunner;
 	},
 	codexQuotaRootKey?: (projectName: string) => string | undefined,
 ): Router {
@@ -2082,6 +2096,10 @@ export function createActionRouter(
 						runtime?.nodeStandbyResumeEnabled,
 						codexQuotaRootKey,
 						runtime?.readBodyLiveness,
+						{
+							observeBody: runtime?.observeBody,
+							closeRunnerFn: runtime?.closeRunnerFn,
+						},
 					);
 					if (retryResult.success) {
 						res.status(retryResult.pending ? 202 : 200).json({
@@ -2111,6 +2129,10 @@ export function createActionRouter(
 						eventFilter,
 						undefined, // _unusedForumTagUpdater (FLY-163)
 						registry,
+						{
+							observeBody: runtime?.observeBody,
+							closeRunnerFn: runtime?.closeRunnerFn,
+						},
 					);
 					if (actionResult.success) {
 						res.json({ success: true, message: actionResult.message, action });
@@ -2152,6 +2174,10 @@ export function createActionRouter(
 					eventFilter,
 					undefined, // _unusedForumTagUpdater (FLY-163)
 					registry,
+					{
+						observeBody: runtime?.observeBody,
+						closeRunnerFn: runtime?.closeRunnerFn,
+					},
 				);
 				if (actionResult.success) {
 					res.json({ success: true, message: actionResult.message, action });

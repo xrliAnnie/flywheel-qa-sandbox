@@ -4,15 +4,15 @@ export interface BodyDeathProjectionProof {
 	version: 1;
 	obligationId: string;
 	executionId: string;
-	activationId: string;
+	activationId: string | null;
 	generation: number;
 	ownerToken: string;
 	spawnEpoch: number;
 	bindingDigest: string;
 	lifecycleRevision: number;
-	runId: string;
-	nodeId: string;
-	attempt: number;
+	runId: string | null;
+	nodeId: string | null;
+	attempt: number | null;
 	projectName: string;
 	issueId: string;
 	evidenceId: string;
@@ -57,14 +57,28 @@ export function isBodyDeathProjectionProof(
 	const observed = Date.parse(proof.observedAt);
 	const expires = Date.parse(proof.expiresAt);
 	const committed = Date.parse(proof.committedAt);
+	const workflowScope =
+		typeof proof.activationId === "string" &&
+		proof.activationId.trim().length > 0 &&
+		proof.activationId.length <= 4096 &&
+		typeof proof.runId === "string" &&
+		proof.runId.trim().length > 0 &&
+		proof.runId.length <= 4096 &&
+		typeof proof.nodeId === "string" &&
+		proof.nodeId.trim().length > 0 &&
+		proof.nodeId.length <= 4096 &&
+		proof.attempt !== null &&
+		positive(proof.attempt);
+	const legacyScope =
+		proof.activationId === null &&
+		proof.runId === null &&
+		proof.nodeId === null &&
+		proof.attempt === null;
 	return (
 		proof.version === 1 &&
 		[
 			proof.executionId,
-			proof.activationId,
 			proof.ownerToken,
-			proof.runId,
-			proof.nodeId,
 			proof.projectName,
 			proof.issueId,
 			proof.terminalLifecycleId,
@@ -74,7 +88,7 @@ export function isBodyDeathProjectionProof(
 		) &&
 		positive(proof.generation) &&
 		positive(proof.spawnEpoch) &&
-		positive(proof.attempt) &&
+		(workflowScope || legacyScope) &&
 		Number.isSafeInteger(proof.lifecycleRevision) &&
 		proof.lifecycleRevision >= 0 &&
 		(proof.observedTurnEpoch === null || positive(proof.observedTurnEpoch)) &&

@@ -14,9 +14,9 @@ export interface BodyDeathObligation {
 	version: 1;
 	obligationId: string;
 	observation: BodyObservation;
-	runId: string;
-	nodeId: string;
-	attempt: number;
+	runId: string | null;
+	nodeId: string | null;
+	attempt: number | null;
 	expectedCommIdentityRevision: string;
 	observedTurnEpoch: number | null;
 	terminalStatus: string;
@@ -83,9 +83,24 @@ function projectionProof(
 	store: StateStore,
 	duty: BodyDeathObligation,
 ): BodyDeathProjectionProof | undefined {
-	const run = store.getWorkflowRun(duty.runId);
 	const { observation } = duty;
-	if (!run || !duty.terminalLifecycleId || !observation.identity.activationId)
+	const activationId = observation.identity.activationId;
+	const run = duty.runId ? store.getWorkflowRun(duty.runId) : undefined;
+	const session = store.getSession(observation.identity.executionId);
+	const workflowScope = Boolean(
+		activationId && run && duty.nodeId && duty.attempt,
+	);
+	const legacyScope =
+		activationId === null &&
+		duty.runId === null &&
+		duty.nodeId === null &&
+		duty.attempt === null;
+	if (
+		(!workflowScope && !legacyScope) ||
+		!session ||
+		!session.issue_id ||
+		!duty.terminalLifecycleId
+	)
 		return undefined;
 	let status: BodyDeathProjectionProof["terminalStatus"];
 	switch (duty.terminalStatus) {
@@ -108,7 +123,7 @@ function projectionProof(
 		version: 1,
 		obligationId: duty.obligationId,
 		executionId: observation.identity.executionId,
-		activationId: observation.identity.activationId,
+		activationId,
 		generation: observation.identity.generation,
 		ownerToken: observation.ownerToken,
 		spawnEpoch: observation.spawnEpoch,
@@ -117,8 +132,8 @@ function projectionProof(
 		runId: duty.runId,
 		nodeId: duty.nodeId,
 		attempt: duty.attempt,
-		projectName: run.project_name,
-		issueId: run.issue_id,
+		projectName: run?.project_name ?? session.project_name,
+		issueId: run?.issue_id ?? session.issue_id,
 		evidenceId: canonicalSubmissionDigest(observation),
 		expectedIdentityRevision: duty.expectedCommIdentityRevision,
 		observedTurnEpoch: duty.observedTurnEpoch,
@@ -163,6 +178,13 @@ export function projectCommittedExecutionBodyDeath(input: {
 			const verified = current ? projectionProof(store, current) : undefined;
 			const owner = store.executionProcessOwners.get(proof.executionId);
 			const currentSession = store.getSession(proof.executionId);
+			const activationCurrent = proof.activationId
+				? store.resolveExecutionBodyActivation(proof.executionId)
+						?.activation_id === proof.activationId
+				: owner?.activation_id === null &&
+					store.resolveExecutionBodyActivation(proof.executionId) ===
+						undefined &&
+					store.getWorkflowActor(proof.executionId) === undefined;
 			return Boolean(
 				verified &&
 					canonicalSubmissionDigest(verified) ===
@@ -172,8 +194,7 @@ export function projectCommittedExecutionBodyDeath(input: {
 					currentSession.terminal_lifecycle_id === duty.terminalLifecycleId &&
 					owner &&
 					owner.generation === proof.generation &&
-					store.resolveExecutionBodyActivation(proof.executionId)
-						?.activation_id === proof.activationId &&
+					activationCurrent &&
 					owner.owner_token === proof.ownerToken &&
 					owner.spawn_epoch === proof.spawnEpoch &&
 					owner.binding_digest === proof.bindingDigest &&
@@ -217,9 +238,11 @@ export async function convergeExecutionBody(
 	const initialRun = initialActivation
 		? deps.store.getWorkflowRun(initialActivation.run_id)
 		: undefined;
-	if (!initialRun)
+	const initialSession = deps.store.getSession(executionId);
+	if (!initialSession || (initialActivation && !initialRun))
 		return { kind: "deferred", reason: "body_activation_missing" };
-	const initialTurn = deps.comm.getTurn(initialRun.issue_id);
+	const initialIssueId = initialRun?.issue_id ?? initialSession.issue_id;
+	const initialTurn = deps.comm.getTurn(initialIssueId);
 	const observation = await deps.observer.observe(executionId);
 	if (!observation || observation.verdict !== "dead")
 		return {
@@ -243,13 +266,22 @@ export async function convergeExecutionBody(
 	const run = activation
 		? deps.store.getWorkflowRun(activation.run_id)
 		: undefined;
-	if (
-		!run ||
-		run.run_id !== initialRun.run_id ||
-		activation?.activation_id !== initialActivation?.activation_id
-	)
+	const workflowChanged = initialActivation
+		? !run ||
+			run.run_id !== initialRun?.run_id ||
+			activation?.activation_id !== initialActivation.activation_id
+		: observation.identity.activationId !== null ||
+			activation !== undefined ||
+			deps.store.resolveExecutionBodyActivation(executionId) !== undefined ||
+			deps.store.executionProcessOwners.get(executionId)?.activation_id !==
+				null ||
+			deps.store.getWorkflowActor(executionId) !== undefined;
+	if (workflowChanged)
 		return { kind: "deferred", reason: "body_activation_changed" };
-	const turn = deps.comm.getTurn(run.issue_id);
+	const issueId = run?.issue_id ?? deps.store.getSession(executionId)?.issue_id;
+	if (!issueId || issueId !== initialIssueId)
+		return { kind: "deferred", reason: "body_activation_changed" };
+	const turn = deps.comm.getTurn(issueId);
 	if (
 		turn?.holder_exec_id !== initialTurn?.holder_exec_id ||
 		turn?.epoch !== initialTurn?.epoch

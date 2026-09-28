@@ -883,14 +883,29 @@ export async function captureExecutionProcessSample(
 				// Socket holder numbers must still refer to the processes in our census.
 				// A new/reused holder, or a fork after nonce attribution, invalidates capture.
 				const afterSocket = await c.processes();
-				const stableRows = (list: ProcessRow[]) =>
+				const afterScopedWriterPids = writerCandidatePids(
+					afterSocket,
+					binding,
+					hostBootId,
+					isViewer,
+				);
+				const relevantPids = new Set([
+					binding.pid,
+					...binding.writers.map((writer) => writer.pid),
+					...scopedWriterPids,
+					...afterScopedWriterPids,
+					...discovered.keys(),
+					...nonceWriters.keys(),
+					...holders,
+				]);
+				const stableRelevantRows = (list: ProcessRow[]) =>
 					list
-						.filter((row) => !c.owned.has(row.pid))
+						.filter((row) => relevantPids.has(row.pid) && !c.owned.has(row.pid))
 						.map((row) => JSON.stringify(row))
 						.sort()
 						.join("\n");
 				if (
-					stableRows(rows) !== stableRows(afterSocket) ||
+					stableRelevantRows(rows) !== stableRelevantRows(afterSocket) ||
 					(await c.boot()) !== hostBootId
 				)
 					return null;

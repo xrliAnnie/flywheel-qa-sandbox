@@ -16446,7 +16446,7 @@ export class StateStore {
 	getExecutionBodyDeathObligation(
 		obligationId: string,
 	): BodyDeathObligation | undefined {
-		const event =
+		const workflowEvent =
 			this.workflowSelectAll(
 				"SELECT * FROM workflow_run_event WHERE event_uid = ?",
 				[obligationId],
@@ -16454,7 +16454,15 @@ export class StateStore {
 			findArchivedTerminalRow(this.db.raw, "workflow_run_event", [
 				obligationId,
 			]);
-		if (!event || event.kind !== "body_death") return undefined;
+		const legacyEvent = workflowEvent
+			? undefined
+			: (this.workflowSelectAll(
+					"SELECT * FROM session_events WHERE event_id = ?",
+					[obligationId],
+				)[0] ??
+				findArchivedTerminalRow(this.db.raw, "session_events", [obligationId]));
+		const event = workflowEvent ?? legacyEvent;
+		if (!event) return undefined;
 		try {
 			const value = JSON.parse(String(event.payload)) as BodyDeathObligation;
 			if (
@@ -16463,9 +16471,26 @@ export class StateStore {
 				obligationId !==
 					`body_death:${value.observation.identity.executionId}:${value.observation.identity.generation}` ||
 				value.observation.verdict !== "dead" ||
-				event.execution_id !== value.observation.identity.executionId ||
-				event.run_id !== value.runId ||
-				event.node_id !== value.nodeId
+				event.execution_id !== value.observation.identity.executionId
+			)
+				return undefined;
+			if (workflowEvent) {
+				if (
+					workflowEvent.kind !== "body_death" ||
+					value.observation.identity.activationId === null ||
+					value.runId === null ||
+					value.nodeId === null ||
+					value.attempt === null ||
+					workflowEvent.run_id !== value.runId ||
+					workflowEvent.node_id !== value.nodeId
+				)
+					return undefined;
+			} else if (
+				legacyEvent?.event_type !== "body_death" ||
+				value.observation.identity.activationId !== null ||
+				value.runId !== null ||
+				value.nodeId !== null ||
+				value.attempt !== null
 			)
 				return undefined;
 			return value;
@@ -16538,6 +16563,21 @@ export class StateStore {
 		const activation = identity.activationId
 			? this.getWorkflowActivation(identity.activationId)
 			: undefined;
+		const workflowScope = Boolean(
+			activation &&
+				identity.activationId &&
+				duty.runId &&
+				duty.nodeId &&
+				duty.attempt,
+		);
+		const legacyScope =
+			identity.activationId === null &&
+			duty.runId === null &&
+			duty.nodeId === null &&
+			duty.attempt === null &&
+			owner.activation_id === null &&
+			this.resolveExecutionBodyActivation(executionId) === undefined &&
+			this.getWorkflowActor(executionId) === undefined;
 		const bodyMatchesProjection =
 			duty.disposition === "standby"
 				? body?.generation === identity.generation && body.state === "standby"
@@ -16546,14 +16586,15 @@ export class StateStore {
 						(body.state === "closed" || body.state === "standby"));
 		if (
 			!session ||
-			!activation ||
+			(!workflowScope && !legacyScope) ||
 			!bodyMatchesProjection ||
 			!duty.terminalLifecycleId ||
 			session.status !== duty.terminalStatus ||
 			session.terminal_lifecycle_id !== duty.terminalLifecycleId ||
 			session.adapter_type !== identity.adapter ||
-			this.resolveExecutionBodyActivation(executionId)?.activation_id !==
-				identity.activationId ||
+			(workflowScope &&
+				this.resolveExecutionBodyActivation(executionId)?.activation_id !==
+					identity.activationId) ||
 			owner.generation !== identity.generation ||
 			owner.owner_token !== observation.ownerToken ||
 			owner.spawn_epoch !== observation.spawnEpoch ||
@@ -16564,25 +16605,33 @@ export class StateStore {
 			owner.spawn_inflight !== 0 ||
 			owner.restart_in_progress !== 0 ||
 			!owner.owner_drained_receipt ||
-			activation.execution_id !== executionId ||
-			activation.run_id !== duty.runId ||
-			activation.node_id !== duty.nodeId ||
-			activation.attempt !== duty.attempt
+			(workflowScope &&
+				(activation!.execution_id !== executionId ||
+					activation!.run_id !== duty.runId ||
+					activation!.node_id !== duty.nodeId ||
+					activation!.attempt !== duty.attempt))
 		)
 			return undefined;
 		const receiptId = `${duty.obligationId}:projected`;
-		const receipt =
-			this.workflowSelectAll(
-				"SELECT * FROM workflow_run_event WHERE event_uid = ?",
-				[receiptId],
-			)[0] ??
-			findArchivedTerminalRow(this.db.raw, "workflow_run_event", [receiptId]);
+		const receipt = workflowScope
+			? (this.workflowSelectAll(
+					"SELECT * FROM workflow_run_event WHERE event_uid = ?",
+					[receiptId],
+				)[0] ??
+				findArchivedTerminalRow(this.db.raw, "workflow_run_event", [receiptId]))
+			: (this.workflowSelectAll(
+					"SELECT * FROM session_events WHERE event_id = ?",
+					[receiptId],
+				)[0] ??
+				findArchivedTerminalRow(this.db.raw, "session_events", [receiptId]));
 		if (
 			!receipt ||
-			receipt.kind !== "body_death_projected" ||
+			(workflowScope
+				? receipt.kind !== "body_death_projected"
+				: receipt.event_type !== "body_death_projected") ||
 			receipt.execution_id !== executionId ||
-			receipt.run_id !== duty.runId ||
-			receipt.node_id !== duty.nodeId
+			(workflowScope &&
+				(receipt.run_id !== duty.runId || receipt.node_id !== duty.nodeId))
 		)
 			return undefined;
 		try {
@@ -16616,7 +16665,9 @@ export class StateStore {
 			`SELECT owner.execution_id FROM execution_process_owner owner
 			WHERE owner.execution_id > ? AND owner.close_requested = 1
 			AND (EXISTS (SELECT 1 FROM workflow_run_event projected WHERE projected.event_uid = 'body_death:' || owner.execution_id || ':' || owner.generation || ':projected')
-			OR EXISTS (SELECT 1 FROM workflow_terminal_archive projected WHERE projected.source_table = 'workflow_run_event' AND json_extract(projected.row_json,'$.event_uid') = 'body_death:' || owner.execution_id || ':' || owner.generation || ':projected'))
+			OR EXISTS (SELECT 1 FROM workflow_terminal_archive projected WHERE projected.source_table = 'workflow_run_event' AND json_extract(projected.row_json,'$.event_uid') = 'body_death:' || owner.execution_id || ':' || owner.generation || ':projected')
+			OR EXISTS (SELECT 1 FROM session_events projected WHERE projected.event_id = 'body_death:' || owner.execution_id || ':' || owner.generation || ':projected')
+			OR EXISTS (SELECT 1 FROM workflow_terminal_archive projected WHERE projected.source_table = 'session_events' AND json_extract(projected.row_json,'$.event_id') = 'body_death:' || owner.execution_id || ':' || owner.generation || ':projected'))
 			AND owner.owner_drained_receipt IS NOT NULL
 			AND NOT EXISTS (SELECT 1 FROM session_events cleaned WHERE cleaned.event_id = 'body_death:' || owner.execution_id || ':' || owner.generation || ':ui-cleaned')
 			AND NOT EXISTS (SELECT 1 FROM workflow_terminal_archive cleaned WHERE cleaned.source_table = 'session_events' AND json_extract(cleaned.row_json,'$.event_id') = 'body_death:' || owner.execution_id || ':' || owner.generation || ':ui-cleaned')
@@ -16637,13 +16688,19 @@ export class StateStore {
 		)
 			throw new Error("invalid_body_death_page");
 		return this.workflowSelectAll(
-			`SELECT death.event_uid FROM workflow_run_event death
+			`SELECT death.event_uid AS obligation_id FROM workflow_run_event death
 			WHERE death.kind = 'body_death' AND death.event_uid > ?
 			AND NOT EXISTS (SELECT 1 FROM workflow_run_event projected WHERE projected.event_uid = death.event_uid || ':projected')
-			ORDER BY death.event_uid LIMIT ?`,
-			[input.afterId ?? "", input.limit],
+			UNION ALL
+			SELECT death.event_id AS obligation_id FROM session_events death
+			WHERE death.event_type = 'body_death' AND death.event_id > ?
+			AND NOT EXISTS (SELECT 1 FROM session_events projected WHERE projected.event_id = death.event_id || ':projected')
+			ORDER BY obligation_id LIMIT ?`,
+			[input.afterId ?? "", input.afterId ?? "", input.limit],
 		)
-			.map((row) => this.getExecutionBodyDeathObligation(String(row.event_uid)))
+			.map((row) =>
+				this.getExecutionBodyDeathObligation(String(row.obligation_id)),
+			)
 			.filter((value): value is BodyDeathObligation => value !== undefined);
 	}
 
@@ -16670,14 +16727,20 @@ export class StateStore {
 					obligationDigest: canonicalSubmissionDigest(obligation),
 					commReceiptId: `${obligation.obligationId}:projection`,
 				};
-				const prior =
-					this.workflowSelectAll(
-						"SELECT payload FROM workflow_run_event WHERE event_uid = ?",
-						[eventUid],
-					)[0] ??
-					findArchivedTerminalRow(this.db.raw, "workflow_run_event", [
-						eventUid,
-					]);
+				const legacy = obligation.runId === null;
+				const prior = legacy
+					? (this.workflowSelectAll(
+							"SELECT payload FROM session_events WHERE event_id = ?",
+							[eventUid],
+						)[0] ??
+						findArchivedTerminalRow(this.db.raw, "session_events", [eventUid]))
+					: (this.workflowSelectAll(
+							"SELECT payload FROM workflow_run_event WHERE event_uid = ?",
+							[eventUid],
+						)[0] ??
+						findArchivedTerminalRow(this.db.raw, "workflow_run_event", [
+							eventUid,
+						]));
 				if (prior) {
 					try {
 						return (
@@ -16688,14 +16751,33 @@ export class StateStore {
 						return false;
 					}
 				}
-				this.appendWorkflowRunEventCheckedTx({
-					runId: obligation.runId,
-					eventUid,
-					kind: "body_death_projected",
-					nodeId: obligation.nodeId,
-					executionId: obligation.observation.identity.executionId,
-					payload,
-				});
+				if (legacy) {
+					const session = this.getSession(
+						obligation.observation.identity.executionId,
+					);
+					if (!session) return false;
+					this.db.run(
+						`INSERT INTO session_events
+						(event_id, execution_id, issue_id, project_name, event_type, severity, payload, source)
+						VALUES (?, ?, ?, ?, 'body_death_projected', 'info', ?, 'execution-body-convergence')`,
+						[
+							eventUid,
+							session.execution_id,
+							session.issue_id,
+							session.project_name,
+							JSON.stringify(payload),
+						],
+					);
+				} else {
+					this.appendWorkflowRunEventCheckedTx({
+						runId: obligation.runId!,
+						eventUid,
+						kind: "body_death_projected",
+						nodeId: obligation.nodeId!,
+						executionId: obligation.observation.identity.executionId,
+						payload,
+					});
+				}
 				return true;
 			})
 			.immediate();
@@ -16716,7 +16798,7 @@ export class StateStore {
 		const executionId = identity.executionId;
 		if (
 			observation.verdict !== "dead" ||
-			!identity.activationId ||
+			(identity.activationId !== null && !identity.activationId.trim()) ||
 			!Number.isSafeInteger(input.nowMs) ||
 			input.nowMs < 0 ||
 			!Number.isSafeInteger(identity.generation) ||
@@ -16733,7 +16815,7 @@ export class StateStore {
 			.transaction((): BodyDeathCommitResult => {
 				// A durable commit survives expiry, a disabled flag and a later owner.
 				// Returning it grants no permission to mutate that later owner.
-				const prior =
+				const workflowPrior =
 					this.workflowSelectAll(
 						"SELECT kind, payload FROM workflow_run_event WHERE event_uid = ?",
 						[obligationId],
@@ -16741,6 +16823,16 @@ export class StateStore {
 					findArchivedTerminalRow(this.db.raw, "workflow_run_event", [
 						obligationId,
 					]);
+				const legacyPrior = workflowPrior
+					? undefined
+					: (this.workflowSelectAll(
+							"SELECT event_type AS kind, payload FROM session_events WHERE event_id = ?",
+							[obligationId],
+						)[0] ??
+						findArchivedTerminalRow(this.db.raw, "session_events", [
+							obligationId,
+						]));
+				const prior = workflowPrior ?? legacyPrior;
 				if (prior) {
 					let obligation: BodyDeathObligation;
 					try {
@@ -16749,7 +16841,7 @@ export class StateStore {
 						return { ok: false, reason: "body_death_receipt_corrupt" };
 					}
 					if (
-						prior.kind !== "body_death" ||
+						(prior.kind ?? prior.event_type) !== "body_death" ||
 						obligation?.version !== 1 ||
 						obligation.obligationId !== obligationId ||
 						canonicalSubmissionDigest(obligation.observation) !==
@@ -16765,14 +16857,22 @@ export class StateStore {
 				const session = this.getSession(executionId);
 				const owner = this.executionProcessOwners.get(executionId);
 				const body = this.getWorkflowExecutionProcessBody(executionId);
-				const activation = this.getWorkflowActivation(identity.activationId!);
+				const activation = identity.activationId
+					? this.getWorkflowActivation(identity.activationId)
+					: undefined;
+				const workflowScope = Boolean(activation && identity.activationId);
+				const legacyScope =
+					identity.activationId === null &&
+					owner?.activation_id === null &&
+					this.resolveExecutionBodyActivation(executionId) === undefined &&
+					this.getWorkflowActor(executionId) === undefined;
 				const observedAt = Date.parse(observation.observedAt);
 				const expiresAt = Date.parse(observation.expiresAt);
 				if (
 					!session ||
 					!owner ||
-					!activation ||
-					activation.execution_id !== executionId ||
+					(!workflowScope && !legacyScope) ||
+					(workflowScope && activation!.execution_id !== executionId) ||
 					owner.generation !== identity.generation ||
 					(body?.generation ?? 1) !== identity.generation ||
 					owner.owner_token !== observation.ownerToken ||
@@ -16792,18 +16892,20 @@ export class StateStore {
 				) {
 					return { ok: false, reason: "body_death_authority_changed" };
 				}
-				const node = this.getWorkflowRunNode(
-					activation.run_id,
-					activation.node_id,
-					activation.attempt,
-				);
-				if (
-					!node ||
-					node.execution_id !== executionId ||
-					this.resolveExecutionBodyActivation(executionId)?.activation_id !==
-						identity.activationId
-				) {
-					return { ok: false, reason: "body_death_activation_changed" };
+				if (workflowScope) {
+					const node = this.getWorkflowRunNode(
+						activation!.run_id,
+						activation!.node_id,
+						activation!.attempt,
+					);
+					if (
+						!node ||
+						node.execution_id !== executionId ||
+						this.resolveExecutionBodyActivation(executionId)?.activation_id !==
+							identity.activationId
+					) {
+						return { ok: false, reason: "body_death_activation_changed" };
+					}
 				}
 				// Fail closed on unreadable evidence, including a marker created while
 				// the OS sample awaited. Do not acquire a lease around marker replay.
@@ -16837,17 +16939,20 @@ export class StateStore {
 				if (!released.ok)
 					throw new Error(`body_death_lease_commit:${released.reason}`);
 				const now = new Date(input.nowMs).toISOString();
-				const receipt = this.getWorkflowNodeCompletion(
-					activation.run_id,
-					activation.node_id,
-					activation.attempt,
-				);
+				const receipt = activation
+					? this.getWorkflowNodeCompletion(
+							activation.run_id,
+							activation.node_id,
+							activation.attempt,
+						)
+					: undefined;
 				const accepted =
 					receipt?.execution_id === executionId &&
 					receipt.activation_id === identity.activationId
 						? receipt
 						: undefined;
 				const retirementApproved = Boolean(
+					activation &&
 					(body?.state === "retiring" || body?.state === "standby") &&
 					body.retirement_requested_at,
 				);
@@ -16912,9 +17017,9 @@ export class StateStore {
 					version: 1,
 					obligationId,
 					observation: structuredClone(observation),
-					runId: activation.run_id,
-					nodeId: activation.node_id,
-					attempt: activation.attempt,
+					runId: activation?.run_id ?? null,
+					nodeId: activation?.node_id ?? null,
+					attempt: activation?.attempt ?? null,
 					expectedCommIdentityRevision: input.expectedCommIdentityRevision,
 					observedTurnEpoch: input.observedTurnEpoch,
 					terminalStatus: terminal.status,
@@ -16923,14 +17028,29 @@ export class StateStore {
 					disposition,
 					committedAt: now,
 				};
-				this.appendWorkflowRunEventCheckedTx({
-					runId: activation.run_id,
-					eventUid: obligationId,
-					kind: "body_death",
-					nodeId: activation.node_id,
-					executionId,
-					payload: obligation,
-				});
+				if (activation) {
+					this.appendWorkflowRunEventCheckedTx({
+						runId: activation.run_id,
+						eventUid: obligationId,
+						kind: "body_death",
+						nodeId: activation.node_id,
+						executionId,
+						payload: obligation,
+					});
+				} else {
+					this.db.run(
+						`INSERT INTO session_events
+						(event_id, execution_id, issue_id, project_name, event_type, severity, payload, source)
+						VALUES (?, ?, ?, ?, 'body_death', 'warning', ?, 'execution-body-convergence')`,
+						[
+							obligationId,
+							executionId,
+							session.issue_id,
+							session.project_name,
+							JSON.stringify(obligation),
+						],
+					);
+				}
 				return { ok: true, obligation, idempotentReplay: false };
 			})
 			.immediate();

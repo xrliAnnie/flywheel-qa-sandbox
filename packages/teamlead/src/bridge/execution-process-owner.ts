@@ -181,7 +181,12 @@ export class ExecutionProcessOwnerStore {
 				WHERE projected.event_uid = 'body_death:' || owner.execution_id || ':' || owner.generation || ':projected')
 			OR EXISTS (SELECT 1 FROM workflow_terminal_archive projected
 				WHERE projected.source_table = 'workflow_run_event'
-				AND json_extract(projected.row_json,'$.event_uid') = 'body_death:' || owner.execution_id || ':' || owner.generation || ':projected')))
+				AND json_extract(projected.row_json,'$.event_uid') = 'body_death:' || owner.execution_id || ':' || owner.generation || ':projected')
+			OR EXISTS (SELECT 1 FROM session_events projected
+				WHERE projected.event_id = 'body_death:' || owner.execution_id || ':' || owner.generation || ':projected')
+			OR EXISTS (SELECT 1 FROM workflow_terminal_archive projected
+				WHERE projected.source_table = 'session_events'
+				AND json_extract(projected.row_json,'$.event_id') = 'body_death:' || owner.execution_id || ':' || owner.generation || ':projected')))
 			UNION SELECT session.execution_id FROM sessions session
 			WHERE session.adapter_type = 'claude-tmux'
 			AND session.status IN ('running', 'ship_parked', 'awaiting_review', 'design_done', 'approved_to_ship', 'pending')
