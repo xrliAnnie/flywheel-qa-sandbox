@@ -1,14 +1,13 @@
 ---
 issue: FLY-2957
-phase: implement
-phaseCursor: 1/1
-updated: 2026-09-28T21:55:12.744Z
-nextStep: "blocked: reopen-verify precondition mismatch in 529 QA room (sandbox
-  has no PR #1377; real PR head ff6c5c29 != 071f7017); no code changed"
+phase: design
+phaseCursor: 1/5
+updated: 2026-09-28T22:15:52.277Z
+nextStep: audit existing design artifacts and exact-plan review evidence
 chunks: []
 pointers: {}
 ---
 
 # FLY-2957 progress
-**phase**: implement (1/1)
-**next**: blocked: reopen-verify precondition mismatch in 529 QA room (sandbox has no PR #1377; real PR head ff6c5c29 != 071f7017); no code changed
+**phase**: design (1/5)
+**next**: audit existing design artifacts and exact-plan review evidence
