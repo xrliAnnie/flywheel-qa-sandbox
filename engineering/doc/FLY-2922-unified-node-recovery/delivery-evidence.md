@@ -80,3 +80,13 @@ scoped gate `0f29f815-f140-4e68-ac08-073a9a996389` 有效 reviewVerdict=APPROVED
 - HTML 已发布（publishOnly=true，messageId=null，delivered=false 为预期）：http://127.0.0.1:58038/fw-reports-d300b5/r/64394691fcd8da12b1080288c8bab089/ 。verify-report ok=true，HTTP 200，noncePlaceholder/scriptCsp/scriptNonce 均 pass，hasInlineSvg=true；线上页 `__CSP_NONCE__` 残留 0、SVG 2、占位 0、脚本 1、外链 0。
 - DESIGN-HTML ready 报告 receipt `a147c03e-706f-49ba-af7d-e9ed43c9019a`；lead-instruction design-review-manifest 的 DONE 回执 `4ebad22d-8adb-4411-bf01-7aeb497ac4e4`。
 - 本节点未实现、未运行实现测试、未派发后继、未申请 ship、未 merge/部署。下一步仅执行 `complete --route phase_design_complete`。
+
+## 2026-09-28 沙箱再派发（execution aa6823a0，run 6a122f01，TURN design epoch 1）
+
+本次是同一分支上设计节点的再派发（前次 execution c228b8e1 已完成到 5/5 但未发出 complete 收据）。⛔ 不重做设计、不改业务代码、不改 HTML 正文；exploration/research/plan/design-correction 与 founder-report.html 保持原样，plan blob 仍为 `24413428775c482bdcd16cabcbfa9d5f619acf77`。
+
+- 本 Bridge 为本 execution 铸出新设计门 request `70ebb784-ed3c-4674-81e1-6e9e2b5d0dfc`，reviewer gpt-6-astra/xhigh。Codex 第 1 轮 APPROVED（thread `01a0e6db-bc35-77e1-a255-4c614a0f3bf7`，turn `01a0e6db-bf76-7e71-b718-152f001ec787`），review-round 回写 match=yes，Runner 写入 design-review.json 后 `await-codex-gate design` 经 Bridge 校验通过。全文见 review-result.md 末节；未沿用前次 execution 的门 3043249d 冒充本次裁定。
+- HTML 已静默发布（publishOnly=true，messageId=null，delivered=false 为预期）：http://127.0.0.1:49292/fw-reports-d56d7c/r/d8cfdc87845bf055f55aeb01e7be979f/ 。verify-report ok=true，HTTP 200，noncePlaceholder/scriptCsp/scriptNonce 均 pass，hasInlineSvg=true；线上页 `__CSP_NONCE__` 残留 0、SVG 2、占位 0、脚本 1、汇总 marker 存在。
+- 本地 HTML SHA-256 `52dfe2e77a0f8bfbd5df1f54de19dd7b005f30acf3dbe36f0525332998853ca6`；托管 HTML SHA-256 `1568a5c440c00dc524a732159a2da2b198145cd4026bc6aa1c4c01c05755bf1f`（差异仅为铸出的 nonce 与注入的 CSP）。
+- DESIGN-HTML ready 报告 receipt `31f3a75e-649f-49a8-8002-e866be7cbb16`；lead-instruction design-review-manifest:aa6823a0-…:1 的 DONE 回执 `d6fa2b0f-5014-40a6-8f71-fd934be8e1f6`。
+- 本节点未实现、未运行实现测试、未派发后继、未申请 ship、未 merge/部署。下一步仅执行 `complete --route phase_design_complete` 后 park。
