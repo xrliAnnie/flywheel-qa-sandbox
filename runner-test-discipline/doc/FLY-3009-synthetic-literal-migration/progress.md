@@ -1,13 +1,14 @@
 ---
 issue: FLY-3009
 phase: implement
-phaseCursor: 4/6
-updated: 2026-09-28T10:18:19.916Z
-nextStep: Commit the verified literal migration
+phaseCursor: 5/6
+updated: 2026-09-28T10:19:22.155Z
+nextStep: Push branch, open the root PR, add the required final milestone
+  commit, and request code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-3009 progress
-**phase**: implement (4/6)
-**next**: Commit the verified literal migration
+**phase**: implement (5/6)
+**next**: Push branch, open the root PR, add the required final milestone commit, and request code review
