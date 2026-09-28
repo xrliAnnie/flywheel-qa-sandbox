@@ -1,0 +1,19 @@
+stateDiagram-v2
+  [*] --> requested
+  requested --> queued: 机器太忙
+  queued --> requested: 负载回落
+  requested --> claiming
+  claiming --> refused: 房位被占
+  claiming --> deploying
+  deploying --> ready: 回执成功
+  deploying --> deploy_failed: 回执失败
+  deploying --> quarantined: 包装器失联
+  quarantined --> deploy_failed: 确认创建者全部停止
+  ready --> tearing_down
+  deploy_failed --> tearing_down
+  tearing_down --> teardown_failed: 快照失败 / 有残留
+  teardown_failed --> tearing_down: owner 或 Lead 再拆（幂等）
+  tearing_down --> releasing: 零残留 + 快照齐全
+  releasing --> torn_down: 释放房位与服务记录
+  refused --> [*]
+  torn_down --> [*]

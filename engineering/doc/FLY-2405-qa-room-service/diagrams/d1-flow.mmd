@@ -1,0 +1,18 @@
+sequenceDiagram
+  autonumber
+  participant R as Runner（沙箱内）
+  participant B as Bridge 起房服务（沙箱外）
+  participant L as 房位锁（/tmp 锁）
+  participant W as 执行包装器（沙箱外）
+  R->>B: room deploy（能力凭据 + 请求号）
+  B->>B: 认证 / 角色 / 归属 / 参数 / 负载检查，写审计
+  B-->>R: 已受理（房间号）
+  B->>L: 原子抢房位（符号链接，已占就失败）
+  B->>W: 启动包装器（最小环境 + 操作暗号）
+  W->>W: 从远端取精确版本 → 安装构建 → 跑起房脚本
+  W-->>B: 回执：成功 / 失败
+  R->>B: room status（轮询）
+  R->>B: room teardown
+  B->>W: 逐库快照 → 拆房脚本 → 残留检查
+  W-->>B: 零残留
+  B->>L: 释放房位 → 已拆除

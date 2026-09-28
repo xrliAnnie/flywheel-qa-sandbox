@@ -53,7 +53,7 @@ sequenceDiagram
 
 **`qa_rooms`**：`room_id` PK（uuid）· `request_id` UNIQUE（幂等键）· `request_hash`（规范化请求 sha256）· `owner_exec_id` / `owner_issue_id` / `owner_role` / `owner_adapter`（均服务端推导）· `slot` · `extra_slots_json` · `expect_head` · `source_dir` · `state`（`requested|queued|claiming|deploying|ready|deploy_failed|quarantined|tearing_down|teardown_failed|releasing|torn_down|refused|canceled`）· `planned_slots_json`（有序 slot 集合）· `deploy_id` · `launchd_labels_json`（精确 label 集合，含 extra slots，由脚本 registry 回报并绑定 deployId）· `db_coords_json`· `active_op_id`（CAS 串行化）· `claim_token_hash` · `claimed`（是否真正持有物理 claim）· `last_error` · 时间戳。
 
-**`qa_room_ops`**：`op_id` PK · `room_id` · `kind`（`deploy|teardown`）· `request_id` UNIQUE · `attempt` · `state`（`pending|launching|running|succeeded|failed|supervisor_lost|fenced`）· `op_dir` · `op_nonce`（Bridge spawn 前生成，§5）· `pid` / `pid_start` / `pgid`（化身 = pid + `ps -o lstart=`；pgid = 脚本进程组）· `last_phase`（脚本阶段标记）· `deadline_at` · `receipt_path` · `exit_code` · `result_json`。
+**`qa_room_ops`**：`op_id` PK · `room_id` · `kind`（`deploy|teardown`）· `request_id` UNIQUE · `attempt` · `state`（`pending|launching|running|succeeded|failed|supervisor_lost|fenced`）· `op_dir` · `op_nonce`（Bridge spawn 前生成，§5）· `pid` / `pid_start` / `pgid`（化身 = pid + `ps -o lstart=`；pgid = 包装器进程组）· `last_phase`（脚本阶段标记）· `deadline_at` · `receipt_path` · `exit_code` · `result_json`。
 
 **`qa_room_capabilities`**：`exec_id` · `attempt` · `hash`（sha256）· `issued_at` · `revoked_at`；`UNIQUE(exec_id, attempt)`。
 

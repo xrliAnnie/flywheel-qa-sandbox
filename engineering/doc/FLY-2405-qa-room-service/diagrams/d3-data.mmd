@@ -1,0 +1,35 @@
+erDiagram
+  QA_ROOMS ||--o{ QA_ROOM_OPS : "一次起 / 一次拆"
+  QA_ROOMS ||--o{ QA_ROOM_AUDIT : "每个动作 / 拒绝"
+  QA_ROOMS ||--o{ QA_ROOM_SNAPSHOTS : "逐库快照回执"
+  QA_ROOM_CAPABILITIES }o--|| RUNNER_EXEC : "每次启动一把钥匙"
+  RUNNER_EXEC ||--o{ QA_ROOMS : "拥有"
+  QA_ROOMS {
+    string room_id
+    string request_id
+    string owner_exec_id
+    int slot
+    string state
+    string expect_head
+  }
+  QA_ROOM_OPS {
+    string op_id
+    string kind
+    string state
+    string op_nonce
+    int pgid
+  }
+  QA_ROOM_CAPABILITIES {
+    string exec_id
+    int attempt
+    string hash
+  }
+  QA_ROOM_SNAPSHOTS {
+    string db_role
+    string sha256
+  }
+  QA_ROOM_AUDIT {
+    string actor_kind
+    string action
+    string reason
+  }
