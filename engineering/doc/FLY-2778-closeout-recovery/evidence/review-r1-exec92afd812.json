@@ -1,0 +1,15 @@
+{
+  "executionId": "92afd812-2952-46dc-ac19-65e7c65ba95d",
+  "reviewType": "design",
+  "status": "APPROVED",
+  "reviewedTarget": "engineering/doc/FLY-2778-closeout-recovery/plan.md",
+  "timestamp": "2026-09-28T03:27:58Z",
+  "rounds": 1,
+  "finalRound": 1,
+  "codexThreadId": "01a0e608-4803-7691-b045-77bfb8d0e28a",
+  "codexTurnId": "01a0e608-4cba-79a3-a84b-c4a6b3d54852",
+  "reviewerModel": "gpt-6-astra",
+  "reviewerEffort": "xhigh",
+  "requestId": "5a55a76d-f438-4e72-875f-5055311a7f8e",
+  "reviewedPlanBlobSha": "ab06ff9db83ddba71f4cf70f84b6a2c16a5da251"
+}
