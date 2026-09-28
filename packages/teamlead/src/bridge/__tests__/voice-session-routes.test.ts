@@ -398,8 +398,6 @@ describe("voice session routes", () => {
 	it.each([
 		["realtime_session_expiring", "live"],
 		["realtime_session_expiring", "ending"],
-		["realtime_capacity", "live"],
-		["realtime_capacity", "ending"],
 	] as const)(
 		"accepts the daemon normal-end reason %s from %s",
 		async (reason, terminalFrom) => {

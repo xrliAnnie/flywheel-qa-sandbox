@@ -87,7 +87,6 @@ const projection: VoiceSessionProjection = {
 	projectName: "flywheel",
 	leadId: "flywheel-test-2",
 	displayName: "Peter",
-	realtimeVoice: "marin",
 	guildId: "guild",
 	voiceChannelId: "voice",
 	threadId: "thread",

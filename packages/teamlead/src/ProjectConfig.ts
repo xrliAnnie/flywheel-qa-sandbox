@@ -13,10 +13,8 @@ import type { LeadBackendId } from "./lead-backends/lead-backend.js";
 import { isLeadEffort, type LeadEffort } from "./lead-effort.js";
 import {
 	isLiveV3Voice,
-	isRealtimeV2Voice,
 	LIVE_V3_VOICES,
 	type LiveV3Voice,
-	type RealtimeV2Voice,
 } from "./realtime-voices.js";
 
 export type LeadCarrier = "v2";
@@ -237,11 +235,9 @@ export interface LeadConfig {
 	voice?: string | { voiceId: string; rate?: string; pitch?: string };
 	/** Generic Codex realtime voice modes. Missing meeting defaults on; missing RG defaults off. */
 	voiceModes?: { meeting?: boolean; rg?: boolean };
-	/** Codex Realtime v2 voice. Consumers default an absent value to marin. */
-	realtimeVoice?: RealtimeV2Voice;
 	/**
 	 * FLY-2885: engine B's voice (Codex realtime v3, gpt-live-1-codex). Engine B
-	 * defaults an absent value to cove; it never falls back to realtimeVoice.
+	 * defaults an absent value to cove.
 	 */
 	liveVoice?: LiveV3Voice;
 	/**
@@ -580,6 +576,10 @@ export function parseAndValidateProjects(
 				);
 				delete (lead as Record<string, unknown>).statusTagMap;
 			}
+			// FLY-2982: engine A (and its voice key) is gone. Existing projects.json
+			// files still carry the key, so strip it silently instead of warning on
+			// every load.
+			delete (lead as Record<string, unknown>).realtimeVoice;
 			if (
 				typeof lead.chatChannel !== "string" ||
 				lead.chatChannel.length === 0
@@ -708,14 +708,6 @@ export function parseAndValidateProjects(
 			) {
 				throw new Error(
 					`Project "${entry.projectName}" leads[${i}].codexVoiceActions: must be a boolean`,
-				);
-			}
-			if (
-				lead.realtimeVoice !== undefined &&
-				!isRealtimeV2Voice(lead.realtimeVoice)
-			) {
-				throw new Error(
-					`Project "${entry.projectName}" leads[${i}].realtimeVoice: must be a Realtime v2 voice`,
 				);
 			}
 			if (lead.liveVoice !== undefined && !isLiveV3Voice(lead.liveVoice)) {

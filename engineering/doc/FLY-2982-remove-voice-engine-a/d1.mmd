@@ -1,0 +1,11 @@
+flowchart LR
+  subgraph BEFORE["今天(删之前)"]
+    E1["生产 .env<br/>没写引擎开关"] --> S1{"FLYWHEEL_VOICE_BACKEND<br/>缺省 = openai-realtime"}
+    S1 -->|"缺省"| A1["引擎 A<br/>RealtimeFrontend<br/>API key + WebSocket"]
+    S1 -->|"写了 codex-realtime"| B1["引擎 B<br/>WebRTC + 订阅"]
+  end
+  subgraph AFTER["本单之后"]
+    E2["任何 .env<br/>(旧开关被忽略)"] --> W2["wrapper 无条件<br/>清掉 API key<br/>查订阅凭据 + 二进制"]
+    W2 --> B2["引擎 B<br/>唯一引擎"]
+  end
+  BEFORE ~~~ AFTER

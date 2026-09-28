@@ -337,7 +337,6 @@ function roomCommand(command, run, manifest, sessionId) {
 		stdio: ["ignore", "pipe", "inherit"],
 		env: {
 			...process.env,
-			FLYWHEEL_VOICE_BACKEND: manifest.engine.backendId,
 			FLYWHEEL_CODEX_BIN: manifest.engine.binaryPath,
 		},
 	});

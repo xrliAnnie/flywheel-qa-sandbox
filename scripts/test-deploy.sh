@@ -1677,8 +1677,8 @@ if [[ -n "$VOICE_FIXTURE" ]]; then
     "FLYWHEEL_VOICE_CODEX_HOME=${VOICE_FIXTURE_CODEX_HOME}"
     "OPENAI_API_KEY="
   )
-  # The launcher reads the existing managed ~/.flywheel/.env source directly;
-  # do not duplicate the realtime key into Bridge's slot secretEnvironment.
+  # Voice needs no platform key (engine B rides the ChatGPT subscription,
+  # FLY-2982); keep it out of Bridge's slot secretEnvironment.
   BRIDGE_ENV_UNSET_ARGS+=(-u OPENAI_API_KEY)
   if [[ "$NO_LEAD" != "1" ]] \
     && [[ "$(jq -r '.backend // "claude-code"' <<<"$MAIN_LEAD_SHAPE")" == "codex-app-server" ]]; then

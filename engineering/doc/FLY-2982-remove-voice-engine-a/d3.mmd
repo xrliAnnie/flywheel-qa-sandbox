@@ -1,0 +1,6 @@
+flowchart LR
+  PJ["projects.json · 每个 Lead<br/>liveVoice(可缺省)<br/>realtimeVoice(旧键,仍在)"] -->|"Bridge 加载:剥离旧键"| LD["内存里的 Lead<br/>只有 liveVoice"]
+  LD -->|"voice.session.start"| PR["会话投影<br/>liveVoice 缺省 cove<br/>不再有 realtimeVoice"]
+  PR --> DM["语音守护进程<br/>解析投影:不要求旧键<br/>磁盘旧投影照常可读"]
+  DM --> BE["引擎 B 用 liveVoice 开口"]
+  HC["voice-host-configure<br/>下次写配置时删旧键"] -.-> PJ

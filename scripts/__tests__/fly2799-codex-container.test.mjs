@@ -150,7 +150,7 @@ test("authorization manifest is exact, short-lived, gate-closed, and production-
 	}
 });
 
-test("test-slot env selects the pinned backend only through an explicit pair", () => {
+test("test-slot env always carries the pinned engine B binary and subscription source", () => {
 	const base = {
 		slotDir: "/tmp/flywheel-test-slot-27991",
 		repoRoot: "/work/flywheel",
@@ -158,7 +158,6 @@ test("test-slot env selects the pinned backend only through an explicit pair", (
 		apiToken: "slot-master",
 		botTokenEnv: "TEST_BOT_TOKEN_27991",
 		botToken: "test-bot-secret",
-		openAiApiKey: "realtime-secret",
 		projectsPath: "/tmp/flywheel-test-slot-27991/projects.json",
 		projectsJson: '[{"projectName":"raya"}]',
 		projectName: "raya",
@@ -167,16 +166,11 @@ test("test-slot env selects the pinned backend only through an explicit pair", (
 		meetingNotesPath: "/tmp/flywheel-test-slot-27991/meeting-notes.yaml",
 		baseEnv: { HOME: "/Users/qa", PATH: "/usr/bin" },
 	};
-	const untouched = buildVoiceProcessEnv(base);
-	assert.equal(untouched.FLYWHEEL_VOICE_BACKEND, undefined);
-	assert.equal(untouched.FLYWHEEL_CODEX_BIN, undefined);
 	const selected = buildVoiceProcessEnv({
 		...base,
-		backendId: "codex-realtime",
 		codexBin: "/opt/flywheel/codex-0.156.1/codex",
 		codexAuthSource: "/Users/qa/.codex/auth.json",
 	});
-	assert.equal(selected.FLYWHEEL_VOICE_BACKEND, "codex-realtime");
 	// FLY-2885: engine B rides the subscription; no key reaches it.
 	assert.equal(selected.OPENAI_API_KEY, undefined);
 	assert.equal(
@@ -188,7 +182,11 @@ test("test-slot env selects the pinned backend only through an explicit pair", (
 		"/opt/flywheel/codex-0.156.1/codex",
 	);
 	assert.throws(
-		() => buildVoiceProcessEnv({ ...base, backendId: "codex-realtime" }),
+		() =>
+			buildVoiceProcessEnv({
+				...base,
+				codexAuthSource: "/Users/qa/.codex/auth.json",
+			}),
 		/voice_codex_binary_absolute_required/,
 	);
 });

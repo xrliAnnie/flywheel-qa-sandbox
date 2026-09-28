@@ -1,0 +1,33 @@
+# FLY-2982 residue allowlist: <exact path> TAB <whole-line ERE> TAB <category> TAB <reason>
+# categories: tombstone | legacy-strip | scrub | bridge-env-hygiene | fixture-placeholder | negative-test (each limited to the files named in residue-check.sh)
+packages/voice-codex/retired-outputs.json	^[[:space:]]*"stems": \["realtime-transport"\],$	tombstone	retired dist stem the build removes from reused checkouts (D7)
+packages/teamlead/src/ProjectConfig.ts	^[[:space:]]*delete \(lead as Record<string, unknown>\)\.realtimeVoice;$	legacy-strip	silently strip the retired key from existing projects.json at load (D4)
+scripts/voice-host-configure.mjs	^[[:space:]]*delete lead\.realtimeVoice;$	legacy-strip	strip the retired key whenever voice-host-configure rewrites projects.json (D4)
+packages/voice-codex/src/__tests__/config.test.ts	^[[:space:]]*FLYWHEEL_VOICE_BACKEND: "openai-realtime",$	negative-test	N1: a stale engine A selector in env is inert
+packages/voice-codex/src/__tests__/config.test.ts	^[[:space:]]*expect\(config\)\.not\.toHaveProperty\("realtimeApiKey"\);$	negative-test	N1: config has no platform key field
+packages/voice-codex/src/__tests__/projection.test.ts	^[[:space:]]*const saved = \{ \.\.\.projection, realtimeVoice: "marin" \};$	negative-test	N3: a projection saved with the retired key still parses
+packages/teamlead/src/__tests__/huddle-config.test.ts	^[[:space:]]*leads: \[lead\(\{ realtimeVoice: retired, liveVoice: "sol" \}\)\],$	negative-test	N4: projects.json input carrying the retired key
+packages/teamlead/src/__tests__/huddle-config.test.ts	^[[:space:]]*expect\("realtimeVoice" in parsed\)\.toBe\(false\);$	negative-test	N4: the key is stripped at load
+packages/teamlead/src/bridge/__tests__/voice-session-services.test.ts	^[[:space:]]*expect\(unset\)\.not\.toHaveProperty\("realtimeVoice"\);$	negative-test	N5: Bridge projection has no engine A voice
+packages/teamlead/src/bridge/__tests__/voice-session-services.test.ts	^[[:space:]]*expect\(projected\)\.not\.toHaveProperty\("realtimeVoice"\);$	negative-test	N5: Bridge projection has no engine A voice with liveVoice set
+packages/teamlead/src/__tests__/StateStore.voice-session.test.ts	^[[:space:]]*\{ reason: "realtime_capacity", elapsedMs: 2_000, accepted: false \},$	negative-test	N6: the engine A ending is refused
+scripts/__tests__/flywheel-voice-wrapper.test.sh	^printf 'TEAMLEAD_API_TOKEN=test-only\\nFLYWHEEL_VOICE_BACKEND=openai-realtime\\n[^']*' > \"\$ROOT/state/\.env\"$	negative-test	N7: stale selector and both keys in .env still launch engine B
+scripts/__tests__/flywheel-voice-wrapper.test.sh	^[[:space:]]*&& ! grep -q voice_api_key_unset "\$ROOT/alert-calls" \\$	negative-test	N8: no missing-key alert
+scripts/__tests__/voice-host-configure.test.mjs	^[[:space:]]*realtimeVoice: "cedar",$	negative-test	N9: input Lead carrying the retired key
+scripts/__tests__/voice-host-configure.test.mjs	^[[:space:]]*assert\.equal\(Object\.hasOwn\(lead, "realtimeVoice"\), false, lead\.agentId\);$	negative-test	N9: output never carries the key
+packages/voice-codex/src/config.ts	^[[:space:]]*delete env\.OPENAI_API_KEY;$	scrub	scrubVoiceApiKeys removes the key from the daemon env (called unconditionally in cli.ts)
+scripts/flywheel-voice-wrapper.sh	^unset OPENAI_API_KEY CODEX_API_KEY$	scrub	wrapper unsets both keys before any node call
+scripts/test-deploy.sh	^[[:space:]]*"OPENAI_API_KEY="$	bridge-env-hygiene	slot Lead env blanks the key
+scripts/test-deploy.sh	^[[:space:]]*BRIDGE_ENV_UNSET_ARGS\+=\(-u OPENAI_API_KEY\)$	bridge-env-hygiene	slot Bridge env drops the key
+scripts/__tests__/fly2655-voice-room.test.mjs	^[[:space:]]*assert\.match\(source, /BRIDGE_ENV_UNSET_ARGS\\\+=\\\(-u OPENAI_API_KEY\\\)/\);$	bridge-env-hygiene	asserts test-deploy keeps the key out of the slot Bridge
+scripts/__tests__/install-voice-launchd.test.mjs	^[[:space:]]*"TEAMLEAD_API_TOKEN=fixture\\nOPENAI_API_KEY=fixture\\n",$	fixture-placeholder	.env placeholder; install-voice-launchd.sh never reads it (plan T5.8)
+packages/voice-codex/src/__tests__/codex-container.test.ts	^[[:space:]]*OPENAI_API_KEY: "wrong-inherited-key",$	negative-test	engine B container input with an inherited key
+packages/voice-codex/src/__tests__/codex-container.test.ts	^[[:space:]]*expect\(options\.baseEnv\.OPENAI_API_KEY\)\.toBeUndefined\(\);$	negative-test	engine B container never forwards the key
+packages/voice-codex/src/__tests__/config.test.ts	^[[:space:]]*OPENAI_API_KEY: "platform-key",$	negative-test	N1: a stale key in env is not kept in config
+packages/voice-codex/src/__tests__/config.test.ts	^[[:space:]]*OPENAI_API_KEY: "api-key",$	negative-test	scrubVoiceApiKeys input
+packages/voice-codex/src/__tests__/config.test.ts	^[[:space:]]*OPENAI_API_KEY: "api-secret",$	negative-test	voiceCodexEnv drops the key
+scripts/__tests__/fly2655-voice-room.test.mjs	^[[:space:]]*openAiApiKey: "realtime-secret",$	negative-test	a caller that still passes a key must not leak it to engine B
+scripts/__tests__/fly2655-voice-room.test.mjs	^[[:space:]]*assert\.equal\(env\.OPENAI_API_KEY, undefined\);$	negative-test	QA room env carries no key
+scripts/__tests__/fly2655-voice-room.test.mjs	^[[:space:]]*env: \{ OPENAI_API_KEY: "platform-key" \},$	negative-test	credential input ignores an exported key
+scripts/__tests__/fly2799-codex-container.test.mjs	^[[:space:]]*assert\.equal\(selected\.OPENAI_API_KEY, undefined\);$	negative-test	test-slot env carries no key
+scripts/__tests__/flywheel-voice-wrapper.test.sh	^printf '%s openai=%s codex=%s\\n' "\$\*" "\$\{OPENAI_API_KEY:\+present\}" \\$	negative-test	node stub records only whether a key reached the daemon

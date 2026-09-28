@@ -14,7 +14,6 @@ const projection: VoiceSessionProjection = {
 	projectName: "raya",
 	leadId: "raya",
 	displayName: "Raya",
-	realtimeVoice: "marin",
 	guildId: "guild",
 	voiceChannelId: "voice",
 	threadId: "thread",

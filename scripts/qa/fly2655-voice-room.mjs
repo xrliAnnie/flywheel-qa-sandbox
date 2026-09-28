@@ -115,36 +115,6 @@ function readSecret(slotDir, launch, name) {
 	return value;
 }
 
-function parseManagedEnvValue(source, name) {
-	const matches = [
-		...source.matchAll(
-			new RegExp(`^(?:export[ \\t]+)?${name}[ \\t]*=[ \\t]*(.*)$`, "gm"),
-		),
-	];
-	check(matches.length === 1, `${name}_clean_source_not_unique`);
-	const raw = matches[0][1].trim();
-	let value;
-	if (raw.startsWith("'") && raw.endsWith("'")) {
-		value = raw.slice(1, -1);
-	} else if (raw.startsWith('"') && raw.endsWith('"')) {
-		value = JSON.parse(raw);
-	} else {
-		check(!/[#'"`$\\\s]/.test(raw), `${name}_clean_source_unsafe`);
-		value = raw;
-	}
-	check(
-		typeof value === "string" && value.trim(),
-		`${name}_clean_source_empty`,
-	);
-	return value;
-}
-
-function readManagedOpenAiKey(homeDir = homedir()) {
-	const path = join(homeDir, ".flywheel", ".env");
-	mode600Regular(path, "managed_clean_source_invalid");
-	return parseManagedEnvValue(readFileSync(path, "utf8"), "OPENAI_API_KEY");
-}
-
 export function validatePreparedTopology(t) {
 	check(SLOT_RE.test(t.slotDir), "529_slot_directory_required");
 	check(
@@ -380,23 +350,15 @@ export function validateDiscordThreadPermissions(
 }
 
 /**
- * FLY-2885: only engine A reads the managed platform key. Engine B names the
- * subscription credential source instead and never touches the key file.
+ * FLY-2885: engine B names the subscription credential source and never
+ * touches a platform key (FLY-2982: it is the only engine).
  */
-export function voiceCredentialInput({
-	backendId,
-	homeDir,
-	env,
-	readManagedKey,
-}) {
-	if (backendId === "codex-realtime") {
-		return {
-			codexAuthSource:
-				env.FLYWHEEL_VOICE_CODEX_AUTH_SOURCE?.trim() ||
-				join(homeDir, ".codex", "auth.json"),
-		};
-	}
-	return { openAiApiKey: readManagedKey(homeDir) };
+export function voiceCredentialInput({ homeDir, env }) {
+	return {
+		codexAuthSource:
+			env.FLYWHEEL_VOICE_CODEX_AUTH_SOURCE?.trim() ||
+			join(homeDir, ".codex", "auth.json"),
+	};
 }
 
 export function buildVoiceProcessEnv(input) {
@@ -420,22 +382,17 @@ export function buildVoiceProcessEnv(input) {
 		input.meetingNotesPath,
 	])
 		contained(input.slotDir, path);
-	const codexBackendRequested =
-		input.backendId !== undefined || input.codexBin !== undefined;
-	if (codexBackendRequested) {
-		check(input.backendId === "codex-realtime", "voice_backend_invalid");
-		check(
-			typeof input.codexBin === "string" && isAbsolute(input.codexBin),
-			"voice_codex_binary_absolute_required",
-		);
-		// FLY-2885: engine B rides the ChatGPT subscription; it gets the
-		// credential source path, never an API key.
-		check(
-			typeof input.codexAuthSource === "string" &&
-				isAbsolute(input.codexAuthSource),
-			"voice_codex_auth_source_absolute_required",
-		);
-	}
+	check(
+		typeof input.codexBin === "string" && isAbsolute(input.codexBin),
+		"voice_codex_binary_absolute_required",
+	);
+	// FLY-2885: engine B rides the ChatGPT subscription; it gets the
+	// credential source path, never an API key.
+	check(
+		typeof input.codexAuthSource === "string" &&
+			isAbsolute(input.codexAuthSource),
+		"voice_codex_auth_source_absolute_required",
+	);
 	return {
 		HOME: input.baseEnv.HOME,
 		PATH: input.baseEnv.PATH,
@@ -443,7 +400,6 @@ export function buildVoiceProcessEnv(input) {
 		BRIDGE_URL: input.bridgeUrl,
 		FLYWHEEL_BRIDGE_URL: input.bridgeUrl,
 		TEAMLEAD_API_TOKEN: input.apiToken,
-		...(codexBackendRequested ? {} : { OPENAI_API_KEY: input.openAiApiKey }),
 		[tokenName]: input.botToken,
 		FLYWHEEL_PROJECTS_FILE: input.projectsPath,
 		FLYWHEEL_PROJECTS: input.projectsJson,
@@ -452,13 +408,8 @@ export function buildVoiceProcessEnv(input) {
 		FLYWHEEL_VOICE_STATE_DIR: join(stateDir, "voice"),
 		FLYWHEEL_VOICE_CODEX_HOME: join(stateDir, "voice-codex-home"),
 		FLYWHEEL_VOICE_BUILD_SHA: input.buildSha,
-		...(codexBackendRequested
-			? {
-					FLYWHEEL_VOICE_BACKEND: input.backendId,
-					FLYWHEEL_CODEX_BIN: input.codexBin,
-					FLYWHEEL_VOICE_CODEX_AUTH_SOURCE: input.codexAuthSource,
-				}
-			: {}),
+		FLYWHEEL_CODEX_BIN: input.codexBin,
+		FLYWHEEL_VOICE_CODEX_AUTH_SOURCE: input.codexAuthSource,
 		FLYWHEEL_VOICE_HOST_CONFIG: input.voiceHostPath,
 		FLYWHEEL_MEETING_NOTES_CONFIG: input.meetingNotesPath,
 		FLYWHEEL_DIR: input.repoRoot,
@@ -722,17 +673,11 @@ function voiceEnv(context) {
 			context.launch,
 			context.lead.botTokenEnv,
 		),
-		...voiceCredentialInput({
-			backendId: process.env.FLYWHEEL_VOICE_BACKEND,
-			homeDir: homedir(),
-			env: process.env,
-			readManagedKey: readManagedOpenAiKey,
-		}),
+		...voiceCredentialInput({ homeDir: homedir(), env: process.env }),
 		projectsPath: context.projectsPath,
 		projectsJson: context.projectsJson,
 		projectName: context.topology.projectName,
 		buildSha: context.topology.expectedHead,
-		backendId: process.env.FLYWHEEL_VOICE_BACKEND,
 		codexBin: process.env.FLYWHEEL_CODEX_BIN,
 		voiceHostPath: context.fixtureReceipt.voiceHostPath,
 		meetingNotesPath: context.fixtureReceipt.meetingNotesPath,

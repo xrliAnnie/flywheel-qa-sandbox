@@ -9,7 +9,6 @@ const projection = {
 	projectName: "raya",
 	leadId: "raya",
 	displayName: "Raya",
-	realtimeVoice: "marin",
 	guildId: "123456789012345678",
 	voiceChannelId: "223456789012345678",
 	threadId: "423456789012345678",
@@ -19,11 +18,12 @@ const projection = {
 };
 
 describe("parseVoiceProjection", () => {
-	it("reuses the Teamlead Realtime voice allowlist at the HTTP boundary", () => {
+	it("needs no engine A voice and still parses projections saved with one (FLY-2982)", () => {
 		expect(parseVoiceProjection(projection, sessionId)).toEqual(projection);
-		expect(() =>
-			parseVoiceProjection({ ...projection, realtimeVoice: "nova" }, sessionId),
-		).toThrow("voice_projection_invalid");
+		// Saved before FLY-2982: the retired engine A voice is an inert extra key.
+		const saved = { ...projection, realtimeVoice: "marin" };
+		expect(parseVoiceProjection(saved, sessionId)).toEqual(saved);
+		expect(engineBVoice(saved)).toBe("cove");
 	});
 
 	it("treats engine B's liveVoice as optional so stored projections still parse and recover (FLY-2885)", () => {
@@ -42,10 +42,8 @@ describe("parseVoiceProjection", () => {
 		}
 	});
 
-	it("resolves engine B's voice without falling back to realtimeVoice", () => {
+	it("resolves engine B's voice with the cove default", () => {
 		expect(engineBVoice(projection)).toBe("cove");
-		expect(
-			engineBVoice({ ...projection, realtimeVoice: "verse", liveVoice: "sol" }),
-		).toBe("sol");
+		expect(engineBVoice({ ...projection, liveVoice: "sol" })).toBe("sol");
 	});
 });

@@ -395,7 +395,6 @@ describe("engine B barge-in through the room session (FLY-2885 T5)", () => {
 				projectName: "flywheel",
 				leadId: "flywheel-eng-lead",
 				displayName: "Tadashi",
-				realtimeVoice: "verse",
 				guildId: "guild",
 				voiceChannelId: "voice",
 				threadId: "thread",

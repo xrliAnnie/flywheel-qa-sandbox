@@ -263,7 +263,6 @@ describe("StateStore voice sessions", () => {
 				projectName: "flywheel",
 				leadId: "lead-a",
 				displayName: "Lead A",
-				realtimeVoice: "marin",
 				guildId: reservation().guildId,
 				voiceBotUserId: "100000000000000005",
 				voiceChannelId: reservation().voiceChannelId,
@@ -687,7 +686,8 @@ it.each([
 	{ reason: "she-left", elapsedMs: 2_000, accepted: true },
 	{ reason: "voice-stop", elapsedMs: 2_000, accepted: true },
 	{ reason: "realtime_session_expiring", elapsedMs: 2_000, accepted: true },
-	{ reason: "realtime_capacity", elapsedMs: 2_000, accepted: true },
+	// FLY-2982: only the removed engine A reported this; it is no longer an ending.
+	{ reason: "realtime_capacity", elapsedMs: 2_000, accepted: false },
 	{ reason: "text-stop", elapsedMs: 2_000, accepted: false },
 	{ reason: "unknown", elapsedMs: 2_000, accepted: false },
 	{ reason: "voice-stop", elapsedMs: 15_000, accepted: false },

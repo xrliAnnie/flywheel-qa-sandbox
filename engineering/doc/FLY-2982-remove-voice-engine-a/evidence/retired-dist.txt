@@ -1,0 +1,46 @@
+# FLY-2982 retired dist outputs — same checkout, before and after
+# generated 2026-09-28T03:37:16Z
+
+## 1. Before (pre-change build of voice-codex in this checkout; code identical to origin/main)
+# pre-change dist oracle (HEAD=936ea339c, code identical to origin/main 55eab0862)
+$ ls -1 packages/voice-codex/dist | grep -E '^realtime'
+realtime-transport.d.ts
+realtime-transport.d.ts.map
+realtime-transport.js
+realtime-transport.js.map
+realtime.d.ts
+realtime.d.ts.map
+realtime.js
+realtime.js.map
+$ grep -c RealtimeFrontend packages/voice-codex/dist/realtime.js
+1
+
+## 2. After — first build on the branch (T1 commit ccd4a8e91) printed:
+remove-retired-dist: removed 4 retired output path(s)
+
+## 3. Re-run now at 88e62527e: plant the four stale outputs, then the package build
+$ ls packages/voice-codex/dist | grep ^realtime   (planted)
+realtime-transport.d.ts
+realtime-transport.d.ts.map
+realtime-transport.js
+realtime-transport.js.map
+realtime.d.ts
+realtime.d.ts.map
+realtime.js
+realtime.js.map
+$ pnpm --filter flywheel-voice-codex build
+> node ../../scripts/lib/remove-retired-dist.mjs . && tsc
+remove-retired-dist: removed 4 retired output path(s)
+$ ls packages/voice-codex/dist | grep ^realtime   (after build)
+realtime.d.ts
+realtime.d.ts.map
+realtime.js
+realtime.js.map
+$ cat packages/voice-codex/dist/realtime.js
+export {};
+//# sourceMappingURL=realtime.js.map
+$ grep -c RealtimeFrontend packages/voice-codex/dist/realtime.js packages/voice-codex/dist/realtime.d.ts
+packages/voice-codex/dist/realtime.d.ts:0
+packages/voice-codex/dist/realtime.js:0
+$ grep -rl -E 'openai-realtime|RealtimeFrontend|OPENAI_REALTIME_URL|realtimeApiKey' packages/voice-codex/dist
+(none)

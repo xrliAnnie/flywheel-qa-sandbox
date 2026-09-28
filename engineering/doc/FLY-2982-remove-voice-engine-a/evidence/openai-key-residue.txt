@@ -1,0 +1,46 @@
+# FLY-2982 — platform key (OPENAI_API_KEY / openAiApiKey) on the voice path after removing engine A
+# generated 2026-09-28T07:07:06Z at 12f6e16d3
+# scope = KEY_SCOPE in residue-check.sh (scan 2): packages/voice-codex, voice-core, voice-bridge, teamlead src/bridge/voice-* (+ tests),
+#   scripts/flywheel-voice-wrapper.sh, voice-host-configure.mjs, scripts/lib/*voice*, scripts/qa/*voice*, fly2655-voice-room.mjs,
+#   fly2799-codex-container.mjs, test-deploy.sh, scripts/__tests__/*{voice,fly2655,fly2799}*
+# every hit is one of: scrub | negative-test | bridge-env-hygiene | fixture-placeholder (else it is residue).
+# residue-check.sh enforces this line by line (each hit must match an allowlist row whose category is limited to named files);
+# this file is the readable listing of the same hits.
+# command: git grep -n -I -E 'OPENAI_API_KEY|openAiApiKey' -- <KEY_SCOPE>
+
+negative-test        packages/voice-codex/src/__tests__/codex-container.test.ts:340:			OPENAI_API_KEY: "wrong-inherited-key",
+                       -> engine B container never forwards an inherited key
+negative-test        packages/voice-codex/src/__tests__/codex-container.test.ts:425:			expect(options.baseEnv.OPENAI_API_KEY).toBeUndefined();
+                       -> engine B container never forwards an inherited key
+negative-test        packages/voice-codex/src/__tests__/config.test.ts:176:				OPENAI_API_KEY: "platform-key",
+                       -> N1: key in env is not kept in config
+negative-test        packages/voice-codex/src/__tests__/config.test.ts:208:			OPENAI_API_KEY: "api-key",
+                       -> scrubVoiceApiKeys removes the key
+negative-test        packages/voice-codex/src/__tests__/config.test.ts:417:				OPENAI_API_KEY: "api-secret",
+                       -> voiceCodexEnv drops the key
+scrub                packages/voice-codex/src/config.ts:134:	delete env.OPENAI_API_KEY;
+                       -> scrubVoiceApiKeys (unconditional in cli.ts)
+negative-test        scripts/__tests__/fly2655-voice-room.test.mjs:473:		openAiApiKey: "realtime-secret",
+                       -> a caller that still passes openAiApiKey must not leak it to engine B
+negative-test        scripts/__tests__/fly2655-voice-room.test.mjs:476:	assert.equal(env.OPENAI_API_KEY, undefined);
+                       -> QA room env carries no key
+negative-test        scripts/__tests__/fly2655-voice-room.test.mjs:509:			env: { OPENAI_API_KEY: "platform-key" },
+                       -> credential input ignores an exported key
+bridge-env-hygiene   scripts/__tests__/fly2655-voice-room.test.mjs:613:	assert.match(source, /BRIDGE_ENV_UNSET_ARGS\+=\(-u OPENAI_API_KEY\)/);
+                       -> asserts test-deploy keeps the key out of Bridge
+negative-test        scripts/__tests__/fly2799-codex-container.test.mjs:175:	assert.equal(selected.OPENAI_API_KEY, undefined);
+                       -> test-slot env carries no key
+negative-test        scripts/__tests__/flywheel-voice-wrapper.test.sh:80:printf '%s openai=%s codex=%s\n' "$*" "${OPENAI_API_KEY:+present}" \
+                       -> node stub records only whether a key reached the daemon
+negative-test        scripts/__tests__/flywheel-voice-wrapper.test.sh:275:printf 'TEAMLEAD_API_TOKEN=test-only\nFLYWHEEL_VOICE_BACKEND=openai-realtime\nFLYWHEEL_VOICE_CODEX_HOME=/must-not-be-used-as-the-install-home\nexport OPENAI_API_KEY=test-api-only\nexport CODEX_API_KEY=test-codex-only\n' > "$ROOT/state/.env"
+                       -> N7: key in .env never reaches the daemon
+fixture-placeholder  scripts/__tests__/install-voice-launchd.test.mjs:68:		"TEAMLEAD_API_TOKEN=fixture\nOPENAI_API_KEY=fixture\n",
+                       -> .env placeholder; install-voice-launchd.sh never reads it (plan T5.8: unchanged)
+scrub                scripts/flywheel-voice-wrapper.sh:72:unset OPENAI_API_KEY CODEX_API_KEY
+                       -> unconditional unset before any node call
+bridge-env-hygiene   scripts/test-deploy.sh:1678:    "OPENAI_API_KEY="
+                       -> slot Lead/Bridge env keeps the key out (behaviour unchanged, comment updated)
+bridge-env-hygiene   scripts/test-deploy.sh:1682:  BRIDGE_ENV_UNSET_ARGS+=(-u OPENAI_API_KEY)
+                       -> slot Lead/Bridge env keeps the key out (behaviour unchanged, comment updated)
+
+unclassified hits: 0

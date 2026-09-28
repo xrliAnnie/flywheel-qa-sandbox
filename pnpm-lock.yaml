@@ -655,16 +655,10 @@ importers:
       werift:
         specifier: 0.24.4
         version: 0.24.4
-      ws:
-        specifier: 8.19.0
-        version: 8.19.0
     devDependencies:
       '@types/node':
         specifier: ^20.0.0
         version: 20.19.21
-      '@types/ws':
-        specifier: ^8.18.0
-        version: 8.18.1
       typescript:
         specifier: ^5.3.3
         version: 5.9.3

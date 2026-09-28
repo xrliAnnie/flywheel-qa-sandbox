@@ -39,18 +39,6 @@ const paths = {
 	host: join(state, "voice-host.json"),
 	summary: join(state, "state/summary-registry/migration-receipt.json"),
 };
-const voices = new Set([
-	"alloy",
-	"ash",
-	"ballad",
-	"coral",
-	"echo",
-	"sage",
-	"shimmer",
-	"verse",
-	"marin",
-	"cedar",
-]);
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const encode = (value) => Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
 function present(path) {
@@ -189,13 +177,12 @@ function projectCandidate(bytes) {
 		for (const lead of project.leads) {
 			if (!lead || typeof lead.agentId !== "string")
 				throw Error("invalid_lead");
-			if (lead.realtimeVoice !== undefined && !voices.has(lead.realtimeVoice))
-				throw Error("invalid_realtime_voice");
 			lead.voiceModes = {
 				meeting: true,
 				rg: project.projectName === "raya" && lead.agentId === "raya",
 			};
-			lead.realtimeVoice ??= "marin";
+			// FLY-2982: engine A and its voice key are gone; engine B reads liveVoice.
+			delete lead.realtimeVoice;
 		}
 	}
 	return encode(projects);

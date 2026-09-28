@@ -30,7 +30,6 @@ export type VoiceEnd =
 				| "text-stop"
 				| "voice-stop"
 				| "realtime_session_expiring"
-				| "realtime_capacity"
 				// FLY-2701 plan §7: nobody came to a booked meeting. A normal
 				// ending, never a fault — and only reachable before going live.
 				| "no_human";

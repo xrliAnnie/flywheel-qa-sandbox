@@ -157,7 +157,7 @@ export interface ConversationOptions {
 }
 
 export interface VoiceBackend {
-	readonly id: "edge-tts" | "openai-realtime" | "cosyvoice" | (string & {});
+	readonly id: "edge-tts" | "cosyvoice" | (string & {});
 	/** Derived from the backend's configured model, never hardcoded. */
 	readonly capabilities: VoiceBackendCapabilities;
 	/** required when capabilities.announce is true (registry enforces). */

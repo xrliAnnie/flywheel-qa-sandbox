@@ -7,6 +7,8 @@ import {
 	voiceCodexEnv,
 } from "../config.js";
 
+const CODEX_BIN = "/opt/flywheel/codex-0.156.1/codex";
+
 describe("voice daemon config", () => {
 	const projection = {
 		projectName: "raya",
@@ -96,7 +98,7 @@ describe("voice daemon config", () => {
 			loadVoiceDaemonConfig(
 				{
 					TEAMLEAD_API_TOKEN: "master",
-					OPENAI_API_KEY: "api-key",
+					FLYWHEEL_CODEX_BIN: CODEX_BIN,
 					FLYWHEEL_VOICE_LEASE_TTL_MS: "10000",
 					FLYWHEEL_VOICE_LEASE_RENEW_MS: "4000",
 					FLYWHEEL_VOICE_LEASE_HTTP_TIMEOUT_MS: "1000",
@@ -111,7 +113,7 @@ describe("voice daemon config", () => {
 			loadVoiceDaemonConfig(
 				{
 					TEAMLEAD_API_TOKEN: "master",
-					OPENAI_API_KEY: "api-key",
+					FLYWHEEL_CODEX_BIN: CODEX_BIN,
 					FLYWHEEL_VOICE_LEASE_TTL_MS: "15000",
 					FLYWHEEL_VOICE_LEASE_RENEW_MS: "2000",
 					FLYWHEEL_VOICE_LEASE_HTTP_TIMEOUT_MS: "4500",
@@ -121,30 +123,16 @@ describe("voice daemon config", () => {
 		).toThrow(/health retry/);
 	});
 
-	it.each([undefined, "", "  "])(
-		"requires a nonempty parent API key: %s",
-		(key) => {
-			expect(() =>
-				loadVoiceDaemonConfig(
-					{ TEAMLEAD_API_TOKEN: "master", OPENAI_API_KEY: key },
-					"/Users/tester",
-				),
-			).toThrow("OPENAI_API_KEY is required");
-		},
-	);
-
 	it("uses bounded delivery retry defaults", () => {
 		const config = loadVoiceDaemonConfig(
 			{
 				TEAMLEAD_API_TOKEN: "master",
-				OPENAI_API_KEY: "api-key",
+				FLYWHEEL_CODEX_BIN: CODEX_BIN,
 				FLYWHEEL_VOICE_BUILD_SHA: "a".repeat(40),
 			},
 			"/Users/tester",
 		);
 		expect(config).toMatchObject({
-			backendId: "openai-realtime",
-			realtimeApiKey: "api-key",
 			buildSha: "a".repeat(40),
 			speechChunkTokens: 80,
 			bridgeUrl: "http://127.0.0.1:9876",
@@ -161,64 +149,43 @@ describe("voice daemon config", () => {
 		});
 	});
 
-	it("enables Codex only explicitly and requires an absolute standalone binary", () => {
+	it("requires an absolute standalone Codex binary unconditionally (FLY-2982)", () => {
+		expect(
+			loadVoiceDaemonConfig(
+				{ TEAMLEAD_API_TOKEN: "master", FLYWHEEL_CODEX_BIN: CODEX_BIN },
+				"/Users/tester",
+			).codexBin,
+		).toBe(CODEX_BIN);
+		for (const env of [{}, { FLYWHEEL_CODEX_BIN: "codex" }]) {
+			expect(() =>
+				loadVoiceDaemonConfig(
+					{ TEAMLEAD_API_TOKEN: "master", ...env },
+					"/Users/tester",
+				),
+			).toThrow(/standalone Codex binary/);
+		}
+	});
+
+	it("has no engine selector and never keeps a platform key (FLY-2982)", () => {
+		const config = loadVoiceDaemonConfig(
+			{
+				TEAMLEAD_API_TOKEN: "master",
+				FLYWHEEL_CODEX_BIN: CODEX_BIN,
+				// A stale engine-A selector and key left in the shared .env are inert.
+				FLYWHEEL_VOICE_BACKEND: "openai-realtime",
+				OPENAI_API_KEY: "platform-key",
+			},
+			"/Users/tester",
+		);
+		expect(config).not.toHaveProperty("backendId");
+		expect(config).not.toHaveProperty("realtimeApiKey");
+		expect(JSON.stringify(config)).not.toContain("platform-key");
+		expect(config.codexAuthSource).toBe("/Users/tester/.codex/auth.json");
 		expect(
 			loadVoiceDaemonConfig(
 				{
 					TEAMLEAD_API_TOKEN: "master",
-					OPENAI_API_KEY: "api-key",
-					FLYWHEEL_VOICE_BACKEND: "codex-realtime",
-					FLYWHEEL_CODEX_BIN: "/opt/flywheel/codex-0.156.1/codex",
-				},
-				"/Users/tester",
-			),
-		).toMatchObject({
-			backendId: "codex-realtime",
-			codexBin: "/opt/flywheel/codex-0.156.1/codex",
-		});
-		for (const env of [
-			{ FLYWHEEL_VOICE_BACKEND: "unknown" },
-			{
-				FLYWHEEL_VOICE_BACKEND: "codex-realtime",
-				FLYWHEEL_CODEX_BIN: "codex",
-			},
-		]) {
-			expect(() =>
-				loadVoiceDaemonConfig(
-					{
-						TEAMLEAD_API_TOKEN: "master",
-						OPENAI_API_KEY: "api-key",
-						...env,
-					},
-					"/Users/tester",
-				),
-			).toThrow(/voice backend|standalone Codex binary/);
-		}
-	});
-
-	it("never requires or keeps an API key for the codex backend (FLY-2885)", () => {
-		const codex = {
-			TEAMLEAD_API_TOKEN: "master",
-			FLYWHEEL_VOICE_BACKEND: "codex-realtime",
-			FLYWHEEL_CODEX_BIN: "/opt/flywheel/codex-0.156.1/codex",
-		};
-		const withoutKey = loadVoiceDaemonConfig(codex, "/Users/tester");
-		expect(withoutKey).toMatchObject({
-			backendId: "codex-realtime",
-			realtimeApiKey: null,
-			codexAuthSource: "/Users/tester/.codex/auth.json",
-		});
-		// A key left in the shared .env for engine A is not carried into config.
-		expect(
-			loadVoiceDaemonConfig(
-				{ ...codex, OPENAI_API_KEY: "api-key" },
-				"/Users/tester",
-			).realtimeApiKey,
-		).toBeNull();
-		expect(
-			loadVoiceDaemonConfig(
-				{
-					...codex,
+					FLYWHEEL_CODEX_BIN: CODEX_BIN,
 					FLYWHEEL_VOICE_CODEX_AUTH_SOURCE: "/srv/codex/auth.json",
 				},
 				"/Users/tester",
@@ -226,14 +193,14 @@ describe("voice daemon config", () => {
 		).toBe("/srv/codex/auth.json");
 		expect(() =>
 			loadVoiceDaemonConfig(
-				{ ...codex, FLYWHEEL_VOICE_CODEX_AUTH_SOURCE: "auth.json" },
+				{
+					TEAMLEAD_API_TOKEN: "master",
+					FLYWHEEL_CODEX_BIN: CODEX_BIN,
+					FLYWHEEL_VOICE_CODEX_AUTH_SOURCE: "auth.json",
+				},
 				"/Users/tester",
 			),
 		).toThrow(/FLYWHEEL_VOICE_CODEX_AUTH_SOURCE/);
-		// The legacy engine keeps its key requirement unchanged.
-		expect(() =>
-			loadVoiceDaemonConfig({ TEAMLEAD_API_TOKEN: "master" }, "/Users/tester"),
-		).toThrow("OPENAI_API_KEY is required");
 	});
 
 	it("scrubs both API keys from the daemon's own environment", () => {
@@ -249,8 +216,7 @@ describe("voice daemon config", () => {
 	it("reads the WebRTC room tuning with bounded values", () => {
 		const base = {
 			TEAMLEAD_API_TOKEN: "master",
-			FLYWHEEL_VOICE_BACKEND: "codex-realtime",
-			FLYWHEEL_CODEX_BIN: "/opt/flywheel/codex-0.156.1/codex",
+			FLYWHEEL_CODEX_BIN: CODEX_BIN,
 		};
 		expect(loadVoiceDaemonConfig(base, "/Users/tester")).toMatchObject({
 			uplinkMinOnsetDbfs: -30,
@@ -291,7 +257,10 @@ describe("voice daemon config", () => {
 	});
 
 	it("defaults the uplink VAD pre-roll to 200 ms and accepts an explicit override", () => {
-		const base = { TEAMLEAD_API_TOKEN: "master", OPENAI_API_KEY: "api-key" };
+		const base = {
+			TEAMLEAD_API_TOKEN: "master",
+			FLYWHEEL_CODEX_BIN: CODEX_BIN,
+		};
 		expect(loadVoiceDaemonConfig(base, "/Users/tester").uplinkPrerollMs).toBe(
 			200,
 		);
@@ -316,7 +285,7 @@ describe("voice daemon config", () => {
 			loadVoiceDaemonConfig(
 				{
 					TEAMLEAD_API_TOKEN: "master",
-					OPENAI_API_KEY: "api-key",
+					FLYWHEEL_CODEX_BIN: CODEX_BIN,
 					FLYWHEEL_VOICE_BUILD_SHA: "not-a-sha",
 				},
 				"/Users/tester",
@@ -328,7 +297,7 @@ describe("voice daemon config", () => {
 		const isolated = loadVoiceDaemonConfig(
 			{
 				TEAMLEAD_API_TOKEN: "master",
-				OPENAI_API_KEY: "api-key",
+				FLYWHEEL_CODEX_BIN: CODEX_BIN,
 				FLYWHEEL_COMM_DB: "/private/tmp/voice-slot/comm.db",
 			},
 			"/Users/tester",
@@ -337,7 +306,7 @@ describe("voice daemon config", () => {
 			"/private/tmp/voice-slot/comm.db",
 		);
 		const standard = loadVoiceDaemonConfig(
-			{ TEAMLEAD_API_TOKEN: "master", OPENAI_API_KEY: "api-key" },
+			{ TEAMLEAD_API_TOKEN: "master", FLYWHEEL_CODEX_BIN: CODEX_BIN },
 			"/Users/tester",
 		);
 		expect(resolveVoiceCommDbPath(standard, "raya", "/Users/tester")).toBe(
@@ -348,7 +317,7 @@ describe("voice daemon config", () => {
 				loadVoiceDaemonConfig(
 					{
 						TEAMLEAD_API_TOKEN: "master",
-						OPENAI_API_KEY: "api-key",
+						FLYWHEEL_CODEX_BIN: CODEX_BIN,
 						FLYWHEEL_COMM_DB: commDbPath,
 					},
 					"/Users/tester",
@@ -361,7 +330,7 @@ describe("voice daemon config", () => {
 		const config = loadVoiceDaemonConfig(
 			{
 				TEAMLEAD_API_TOKEN: "master",
-				OPENAI_API_KEY: "api-key",
+				FLYWHEEL_CODEX_BIN: CODEX_BIN,
 				FLYWHEEL_DIR: "/opt/flywheel",
 				FLYWHEEL_STATE_DIR: "/var/lib/flywheel",
 				FLYWHEEL_VOICE_STATE_DIR: "/var/lib/custom-voice",
@@ -377,7 +346,10 @@ describe("voice daemon config", () => {
 	});
 
 	it("gives the canonical Bridge URL precedence over the compatibility alias", () => {
-		const base = { TEAMLEAD_API_TOKEN: "master", OPENAI_API_KEY: "api-key" };
+		const base = {
+			TEAMLEAD_API_TOKEN: "master",
+			FLYWHEEL_CODEX_BIN: CODEX_BIN,
+		};
 		expect(
 			loadVoiceDaemonConfig(
 				{
@@ -400,7 +372,7 @@ describe("voice daemon config", () => {
 		const config = loadVoiceDaemonConfig(
 			{
 				TEAMLEAD_API_TOKEN: "master",
-				OPENAI_API_KEY: "api-key",
+				FLYWHEEL_CODEX_BIN: CODEX_BIN,
 				FLYWHEEL_VOICE_IDLE_HTTP_TIMEOUT_MS: "7000",
 				FLYWHEEL_VOICE_LEASE_HTTP_TIMEOUT_MS: "1500",
 			},
@@ -424,7 +396,7 @@ describe("voice daemon config", () => {
 				loadVoiceDaemonConfig(
 					{
 						TEAMLEAD_API_TOKEN: "master",
-						OPENAI_API_KEY: "api-key",
+						FLYWHEEL_CODEX_BIN: CODEX_BIN,
 						FLYWHEEL_BRIDGE_URL: url,
 						BRIDGE_URL: "http://127.0.0.1:9876",
 					},

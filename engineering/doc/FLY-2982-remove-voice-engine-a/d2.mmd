@@ -1,0 +1,8 @@
+flowchart TB
+  C1["commit 1 · 守护进程<br/>删引擎 A、开关、key<br/>投影不再要求 realtimeVoice"] --> C2["commit 2 · voice-core<br/>删 openai-realtime 字面量"]
+  C2 --> C3["commit 3 · Bridge<br/>投影不再发 realtimeVoice<br/>加载时剥离旧键<br/>删 realtime_capacity"]
+  C3 --> C4["commit 4 · 脚本 + 旗标登记<br/>wrapper / QA 房只起 B<br/>最后一个读取点与登记同删"]
+  C4 --> C5["commit 5 · 残留检查<br/>零未允许命中<br/>旧产物清理证明"]
+  C5 --> C6["commit 6 · 里程碑 + PR"]
+  C6 --> M["本单先合入 main"]
+  M -.->|"按合并指南解冲突"| P["FLY-2886 · PR #1360<br/>(语音大脑)"]

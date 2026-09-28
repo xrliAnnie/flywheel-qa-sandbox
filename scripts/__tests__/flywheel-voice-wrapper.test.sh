@@ -97,8 +97,27 @@ EOF
 chmod +x "$ROOT/meta-alert" "$ROOT/repo/scripts/lib/bounded-run.sh"
 chmod +x "$ROOT/host-gate" "$ROOT/restart-gate" "$ROOT/home/.local/bin/node"
 : > "$ROOT/repo/packages/voice-codex/dist/cli.js"
-printf 'TEAMLEAD_API_TOKEN=test-only\nexport OPENAI_API_KEY=test-api-only\n' > "$ROOT/state/.env"
+printf 'TEAMLEAD_API_TOKEN=test-only\n' > "$ROOT/state/.env"
 printf '%040d\n' 0 | tr '0' 'a' > "$ROOT/state/deployed-sha"
+# FLY-2982: engine B is the only engine, so every launch needs its
+# subscription credential and the pinned standalone Codex release.
+mkdir -p "$ROOT/home/.codex"
+printf '{}\n' > "$ROOT/home/.codex/auth.json"
+chmod 600 "$ROOT/home/.codex/auth.json"
+case "$(uname -m)" in
+  arm64) CODEX_RELEASE_TARGET="aarch64-apple-darwin" ;;
+  x86_64) CODEX_RELEASE_TARGET="x86_64-apple-darwin" ;;
+  *) CODEX_RELEASE_TARGET="unsupported" ;;
+esac
+PINNED_RELEASE="$ROOT/home/.codex-infra-bot/packages/standalone/releases/0.156.1-$CODEX_RELEASE_TARGET"
+CURRENT_RELEASE="$ROOT/home/.codex-infra-bot/packages/standalone/releases/0.157.1-$CODEX_RELEASE_TARGET"
+PINNED_BIN="$PINNED_RELEASE/bin/codex"
+mkdir -p "$PINNED_RELEASE/bin" "$CURRENT_RELEASE/bin"
+printf '#!/bin/bash\nexit 0\n' > "$PINNED_BIN"
+printf '#!/bin/bash\nexit 0\n' > "$CURRENT_RELEASE/bin/codex"
+chmod +x "$PINNED_BIN" "$CURRENT_RELEASE/bin/codex"
+ln -s "$CURRENT_RELEASE" "$ROOT/home/.codex-infra-bot/packages/standalone/current"
+PINNED_BIN_CANONICAL="$(cd -P "$(dirname "$PINNED_BIN")" && pwd)/$(basename "$PINNED_BIN")"
 
 # Adversarial inherited host settings must never reach a wrapper subprocess.
 # These are all fixtures: even the RED regression cannot touch production.
@@ -141,7 +160,7 @@ host_config_load() {
 }
 EOF
 : > "$ROOT/configured-repo/packages/voice-codex/dist/cli.js"
-printf 'TEAMLEAD_API_TOKEN=test-only\nexport OPENAI_API_KEY=test-api-only\n' > "$ROOT/configured-state/.env"
+printf 'TEAMLEAD_API_TOKEN=test-only\n' > "$ROOT/configured-state/.env"
 printf '%040d\n' 0 | tr '0' 'b' > "$ROOT/configured-state/deployed-sha"
 : > "$ROOT/node-calls"
 if env -i TEST_ROOT="$ROOT" HOME="$ROOT/home" PATH="/usr/bin:/bin" \
@@ -235,25 +254,9 @@ else
   fail "invalid daemon config startup spool"
 fi
 
-: > "$ROOT/node-calls"
-: > "$ROOT/alert-calls"
-printf 'TEAMLEAD_API_TOKEN=test-only\n' > "$ROOT/state/.env"
-API_RC=0
-env -i TEST_ROOT="$ROOT" HOME="$ROOT/home" PATH="/usr/bin:/bin" \
-FLYWHEEL_META_ALERT_BIN="$ROOT/meta-alert" \
-FLYWHEEL_DIR="$ROOT/repo" FLYWHEEL_STATE_DIR="$ROOT/state" \
-FLYWHEEL_HOST_TMUX_GATE_BIN="$ROOT/host-gate" \
-FLYWHEEL_RESTART_STORM_GATE_BIN="$ROOT/restart-gate" \
-  bash "$ROOT/repo/scripts/flywheel-voice-wrapper.sh" >/dev/null 2>&1 || API_RC=$?
-if [[ "$API_RC" -eq 0 && ! -s "$ROOT/node-calls" ]] && grep -qx voice_api_key_unset "$ROOT/alert-calls"; then
-  pass "missing platform key refuses startup with exit zero and a bounded alert"
-else
-  fail "missing platform key boundary"
-fi
-
-# FLY-2885: engine B rides the ChatGPT subscription over WebRTC. The shared
-# .env may still hold the platform key for engine A; it must not reach the
-# codex daemon, and a missing key must not block it.
+# FLY-2885/FLY-2982: engine B rides the ChatGPT subscription over WebRTC and
+# is the only engine. A platform key or a stale engine selector left in the
+# shared .env must not reach the daemon, and a missing key must not block it.
 run_codex_wrapper() {
   : > "$ROOT/node-calls"
   : > "$ROOT/node-env"
@@ -269,24 +272,7 @@ run_codex_wrapper() {
   TEST_CODEX_BINARY_CHECK_FAIL="${TEST_CODEX_BINARY_CHECK_FAIL:-0}" \
     bash "$ROOT/repo/scripts/flywheel-voice-wrapper.sh" >/dev/null 2>&1 || CODEX_RC=$?
 }
-mkdir -p "$ROOT/home/.codex"
-printf '{}\n' > "$ROOT/home/.codex/auth.json"
-chmod 600 "$ROOT/home/.codex/auth.json"
-case "$(uname -m)" in
-  arm64) CODEX_RELEASE_TARGET="aarch64-apple-darwin" ;;
-  x86_64) CODEX_RELEASE_TARGET="x86_64-apple-darwin" ;;
-  *) CODEX_RELEASE_TARGET="unsupported" ;;
-esac
-PINNED_RELEASE="$ROOT/home/.codex-infra-bot/packages/standalone/releases/0.156.1-$CODEX_RELEASE_TARGET"
-CURRENT_RELEASE="$ROOT/home/.codex-infra-bot/packages/standalone/releases/0.157.1-$CODEX_RELEASE_TARGET"
-PINNED_BIN="$PINNED_RELEASE/bin/codex"
-mkdir -p "$PINNED_RELEASE/bin" "$CURRENT_RELEASE/bin"
-printf '#!/bin/bash\nexit 0\n' > "$PINNED_BIN"
-printf '#!/bin/bash\nexit 0\n' > "$CURRENT_RELEASE/bin/codex"
-chmod +x "$PINNED_BIN" "$CURRENT_RELEASE/bin/codex"
-ln -s "$CURRENT_RELEASE" "$ROOT/home/.codex-infra-bot/packages/standalone/current"
-PINNED_BIN_CANONICAL="$(cd -P "$(dirname "$PINNED_BIN")" && pwd)/$(basename "$PINNED_BIN")"
-printf 'TEAMLEAD_API_TOKEN=test-only\nFLYWHEEL_VOICE_BACKEND=codex-realtime\nFLYWHEEL_VOICE_CODEX_HOME=/must-not-be-used-as-the-install-home\nexport OPENAI_API_KEY=test-api-only\nexport CODEX_API_KEY=test-codex-only\n' > "$ROOT/state/.env"
+printf 'TEAMLEAD_API_TOKEN=test-only\nFLYWHEEL_VOICE_BACKEND=openai-realtime\nFLYWHEEL_VOICE_CODEX_HOME=/must-not-be-used-as-the-install-home\nexport OPENAI_API_KEY=test-api-only\nexport CODEX_API_KEY=test-codex-only\n' > "$ROOT/state/.env"
 run_codex_wrapper
 if [[ "$CODEX_RC" -eq 0 ]] \
   && grep -Fqx "$PINNED_BIN_CANONICAL" "$ROOT/codex-bin-checks" \
@@ -296,21 +282,25 @@ else
   fail "codex backend pinned binary resolution ($(cat "$ROOT/codex-bin-checks"))"
 fi
 if [[ "$CODEX_RC" -eq 0 ]] \
+  && grep -qx 'packages/voice-codex/dist/cli.js --check-codex-binary openai= codex=' "$ROOT/node-env" \
   && grep -qx 'packages/voice-codex/dist/cli.js openai= codex=' "$ROOT/node-env" \
   && grep -qx 'packages/voice-codex/dist/cli.js --check-config openai= codex=' "$ROOT/node-env" \
-  && ! grep -q 'present' "$ROOT/node-env"; then
-  pass "codex backend unsets both API keys before exec even when the shared .env holds them"
+  && ! grep -q 'present' "$ROOT/node-env" \
+  && [[ ! -s "$ROOT/alert-calls" ]]; then
+  pass "a stale engine A selector and both API keys in .env still launch engine B with neither key"
 else
-  fail "codex backend API key scrub ($(cat "$ROOT/node-env"))"
+  fail "stale engine A selector or API key scrub ($(cat "$ROOT/node-env"))"
 fi
 
-printf 'TEAMLEAD_API_TOKEN=test-only\nFLYWHEEL_VOICE_BACKEND=codex-realtime\n' > "$ROOT/state/.env"
+printf 'TEAMLEAD_API_TOKEN=test-only\n' > "$ROOT/state/.env"
 run_codex_wrapper
 if [[ "$CODEX_RC" -eq 0 ]] && grep -qx 'packages/voice-codex/dist/cli.js' "$ROOT/node-calls" \
+  && grep -qx 'packages/voice-codex/dist/cli.js --check-codex-binary' "$ROOT/node-calls" \
+  && ! grep -q voice_api_key_unset "$ROOT/alert-calls" \
   && [[ ! -s "$ROOT/alert-calls" ]]; then
-  pass "codex backend starts without any platform key"
+  pass "engine B starts without any platform key or engine selector"
 else
-  fail "codex backend required a platform key"
+  fail "engine B required a platform key or engine selector"
 fi
 
 TEST_CODEX_BINARY_CHECK_FAIL=1 run_codex_wrapper
@@ -355,7 +345,7 @@ rm -f "$ROOT/home/.codex/auth.json" "$ROOT/home/codex-real-auth.json"
 
 mkdir -p "$ROOT/custom-auth"
 printf '{}\n' > "$ROOT/custom-auth/auth.json"
-printf 'TEAMLEAD_API_TOKEN=test-only\nFLYWHEEL_VOICE_BACKEND=codex-realtime\nFLYWHEEL_VOICE_CODEX_AUTH_SOURCE=%s\n' "$ROOT/custom-auth/auth.json" > "$ROOT/state/.env"
+printf 'TEAMLEAD_API_TOKEN=test-only\nFLYWHEEL_VOICE_CODEX_AUTH_SOURCE=%s\n' "$ROOT/custom-auth/auth.json" > "$ROOT/state/.env"
 run_codex_wrapper
 if [[ "$CODEX_RC" -eq 0 ]] && grep -qx 'packages/voice-codex/dist/cli.js' "$ROOT/node-calls"; then
   pass "codex backend honours the configured credential source"

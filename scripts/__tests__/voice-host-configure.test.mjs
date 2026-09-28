@@ -128,8 +128,9 @@ test("prepare is non-mutating; apply changes only approved voice fields; restore
 			{ meeting: true, rg: false },
 		],
 	);
-	assert.equal(p[0].leads[0].realtimeVoice, "cedar");
-	assert.equal(p[1].leads[0].realtimeVoice, "marin");
+	// FLY-2982: the retired engine A voice is stripped where present and never added.
+	for (const lead of p.flatMap((x) => x.leads))
+		assert.equal(Object.hasOwn(lead, "realtimeVoice"), false, lead.agentId);
 	assert.deepEqual(p[0].leads[0].summary, { keep: "same" });
 	assert.deepEqual(JSON.parse(readFileSync(f.host, "utf8")), {
 		schemaVersion: 1,

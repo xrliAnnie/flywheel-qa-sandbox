@@ -17,10 +17,7 @@ export interface VoiceBotBinding {
 }
 
 export interface VoiceDaemonConfig {
-	backendId: "openai-realtime" | "codex-realtime";
 	buildSha: string | null;
-	/** Engine A's platform key; always null for codex-realtime (FLY-2885). */
-	realtimeApiKey: string | null;
 	apiToken: string;
 	bridgeUrl: string;
 	voiceRoot: string;
@@ -195,17 +192,8 @@ export function loadVoiceDaemonConfig(
 	const voiceRoot = env.FLYWHEEL_VOICE_STATE_DIR ?? join(stateDir, "voice");
 	const commDbPath = env.FLYWHEEL_COMM_DB?.trim();
 	const buildSha = env.FLYWHEEL_VOICE_BUILD_SHA?.trim() || null;
-	const backendId = env.FLYWHEEL_VOICE_BACKEND?.trim() || "openai-realtime";
-	if (!new Set(["openai-realtime", "codex-realtime"]).has(backendId)) {
-		throw new Error("voice backend must be openai-realtime or codex-realtime");
-	}
-	// FLY-2885: engine B authenticates with the ChatGPT subscription over
-	// WebRTC. Only engine A still needs the platform key.
-	let realtimeApiKey: string | null = null;
-	if (backendId !== "codex-realtime") {
-		realtimeApiKey = env.OPENAI_API_KEY?.trim() || null;
-		if (!realtimeApiKey) throw new Error("OPENAI_API_KEY is required");
-	}
+	// FLY-2982: engine B is the only engine. It authenticates with the ChatGPT
+	// subscription over WebRTC, so no selector or platform key is read here.
 	const codexAuthSource =
 		env.FLYWHEEL_VOICE_CODEX_AUTH_SOURCE?.trim() ||
 		join(homeDir, ".codex", "auth.json");
@@ -215,10 +203,8 @@ export function loadVoiceDaemonConfig(
 		);
 	}
 	const codexBin = env.FLYWHEEL_CODEX_BIN ?? "codex";
-	if (backendId === "codex-realtime" && !isAbsolute(codexBin)) {
-		throw new Error(
-			"codex-realtime requires an absolute standalone Codex binary",
-		);
+	if (!isAbsolute(codexBin)) {
+		throw new Error("voice requires an absolute standalone Codex binary");
 	}
 	if (buildSha && !/^[0-9a-f]{40}$/u.test(buildSha)) {
 		throw new Error(
@@ -246,10 +232,8 @@ export function loadVoiceDaemonConfig(
 		);
 	}
 	return {
-		backendId: backendId as VoiceDaemonConfig["backendId"],
 		buildSha,
 		apiToken,
-		realtimeApiKey,
 		bridgeUrl,
 		voiceRoot,
 		healthStateRoot: stateDir,

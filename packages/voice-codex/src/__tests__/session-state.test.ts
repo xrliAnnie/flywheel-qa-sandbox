@@ -33,7 +33,6 @@ describe("SessionStateStore", () => {
 				projectName: "raya",
 				leadId: "raya",
 				displayName: "Raya",
-				realtimeVoice: "marin",
 				guildId: "123456789012345678",
 				voiceChannelId: "223456789012345678",
 				threadId: "423456789012345678",

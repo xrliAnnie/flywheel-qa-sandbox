@@ -237,7 +237,7 @@ it("projects the persisted tuple and permits token rotation with unchanged bot i
 	});
 });
 
-it("projects engine B's liveVoice, defaulting to cove without borrowing realtimeVoice (FLY-2885)", () => {
+it("projects only engine B's liveVoice, defaulting to cove (FLY-2885, FLY-2982)", () => {
 	const factory = vi.spyOn(routes, "createVoiceSessionRouter");
 	const project = configuredProject();
 	createVoiceSessionServices({
@@ -252,11 +252,11 @@ it("projects engine B's liveVoice, defaulting to cove without borrowing realtime
 	const unset = factory.mock.calls[0]![0].projectSession(
 		store.getVoiceSession(SESSION_ID)!,
 	);
-	expect(unset).toMatchObject({ realtimeVoice: "marin", liveVoice: "cove" });
+	expect(unset).toMatchObject({ liveVoice: "cove" });
+	expect(unset).not.toHaveProperty("realtimeVoice");
 
 	const chosen = configuredProject();
 	chosen.leads[0]!.liveVoice = "sol";
-	chosen.leads[0]!.realtimeVoice = "verse";
 	createVoiceSessionServices({
 		probeSelfFilter: validProbe,
 		store,
@@ -266,11 +266,11 @@ it("projects engine B's liveVoice, defaulting to cove without borrowing realtime
 		cwd: root,
 		config: {} as BridgeConfig,
 	});
-	expect(
-		factory.mock.calls[1]![0].projectSession(
-			store.getVoiceSession(SESSION_ID)!,
-		),
-	).toMatchObject({ realtimeVoice: "verse", liveVoice: "sol" });
+	const projected = factory.mock.calls[1]![0].projectSession(
+		store.getVoiceSession(SESSION_ID)!,
+	);
+	expect(projected).toMatchObject({ liveVoice: "sol" });
+	expect(projected).not.toHaveProperty("realtimeVoice");
 });
 
 it("projects authoritative demand into the durable voice health store", async () => {

@@ -1,7 +1,6 @@
 import {
 	DEFAULT_LIVE_V3_VOICE,
 	isLiveV3Voice,
-	isRealtimeV2Voice,
 } from "flywheel-teamlead/realtime-voices";
 import type { VoiceSessionProjection } from "./bridge-client.js";
 
@@ -29,7 +28,6 @@ export function parseVoiceProjection(
 		!/^[a-zA-Z0-9_-]+$/u.test(row.projectName) ||
 		!text(row.leadId) ||
 		!text(row.displayName) ||
-		!isRealtimeV2Voice(row.realtimeVoice) ||
 		// FLY-2885: optional so projections saved before it still parse.
 		(row.liveVoice !== undefined && !isLiveV3Voice(row.liveVoice)) ||
 		!["meeting", "rg"].includes(String(row.mode)) ||
@@ -61,8 +59,7 @@ export function parseVoiceProjection(
 
 /**
  * FLY-2885: engine B's voice. The cove default is applied only here, at the
- * engine B consumer; engine A keeps reading realtimeVoice, and neither field
- * falls back to the other.
+ * engine B consumer.
  */
 export function engineBVoice(
 	projection: Pick<VoiceSessionProjection, "liveVoice">,

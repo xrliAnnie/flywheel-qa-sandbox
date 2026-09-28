@@ -6,9 +6,9 @@
  * Contract: absent block/field = byte-compat (nothing normalized in);
  * a present voice is type-checked fail-loud at the config boundary.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { parseAndValidateProjects } from "../ProjectConfig.js";
-import { LIVE_V3_VOICES, REALTIME_V2_VOICES } from "../realtime-voices.js";
+import { LIVE_V3_VOICES } from "../realtime-voices.js";
 
 function lead(over: Record<string, unknown> = {}) {
 	return {
@@ -91,36 +91,40 @@ describe("LeadConfig.voice", () => {
 });
 
 describe("generic realtime voice registry fields", () => {
-	it("keeps absent fields byte-compatible and accepts the locked modes and voices", () => {
+	it("keeps absent fields byte-compatible and accepts the locked modes", () => {
 		const unchanged = parseAndValidateProjects([entry()])[0]!.leads[0]!;
 		expect("voiceModes" in unchanged).toBe(false);
-		expect("realtimeVoice" in unchanged).toBe(false);
 		expect("codexVoiceActions" in unchanged).toBe(false);
-		expect(REALTIME_V2_VOICES).toEqual([
-			"alloy",
-			"ash",
-			"ballad",
-			"coral",
-			"echo",
-			"sage",
-			"shimmer",
-			"verse",
-			"marin",
-			"cedar",
-		]);
-		for (const realtimeVoice of REALTIME_V2_VOICES) {
-			expect(() =>
-				parseAndValidateProjects([
+		expect(() =>
+			parseAndValidateProjects([
+				entry({
+					leads: [lead({ voiceModes: { meeting: true, rg: false } })],
+				}),
+			]),
+		).not.toThrow();
+	});
+
+	it("strips the retired engine A voice key at load without logging (FLY-2982)", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			for (const retired of ["marin", "bogus"]) {
+				const parsed = parseAndValidateProjects([
 					entry({
-						leads: [
-							lead({
-								voiceModes: { meeting: true, rg: false },
-								realtimeVoice,
-							}),
-						],
+						leads: [lead({ realtimeVoice: retired, liveVoice: "sol" })],
 					}),
-				]),
-			).not.toThrow();
+				])[0]!.leads[0]!;
+				expect("realtimeVoice" in parsed).toBe(false);
+				expect(parsed.liveVoice).toBe("sol");
+			}
+			expect(warn).not.toHaveBeenCalled();
+			expect(error).not.toHaveBeenCalled();
+			expect(log).not.toHaveBeenCalled();
+		} finally {
+			warn.mockRestore();
+			error.mockRestore();
+			log.mockRestore();
 		}
 	});
 
@@ -139,7 +143,7 @@ describe("generic realtime voice registry fields", () => {
 		}
 	});
 
-	it("rejects non-boolean modes, unknown mode keys, and unknown realtime voices", () => {
+	it("rejects non-boolean modes and unknown mode keys", () => {
 		for (const voiceModes of [
 			{ meeting: "true" },
 			{ rg: 1 },
@@ -150,14 +154,9 @@ describe("generic realtime voice registry fields", () => {
 				parseAndValidateProjects([entry({ leads: [lead({ voiceModes })] })]),
 			).toThrow(/voiceModes/);
 		}
-		expect(() =>
-			parseAndValidateProjects([
-				entry({ leads: [lead({ realtimeVoice: "nova" })] }),
-			]),
-		).toThrow(/realtimeVoice/);
 	});
 
-	it("keeps engine B's liveVoice separate from realtimeVoice and names the nine v3 voices on error (FLY-2885)", () => {
+	it("accepts engine B's liveVoice and names the nine v3 voices on error (FLY-2885)", () => {
 		expect(LIVE_V3_VOICES).toEqual([
 			"juniper",
 			"maple",
@@ -173,11 +172,9 @@ describe("generic realtime voice registry fields", () => {
 		expect("liveVoice" in absent).toBe(false);
 		for (const liveVoice of LIVE_V3_VOICES) {
 			const parsed = parseAndValidateProjects([
-				entry({ leads: [lead({ liveVoice, realtimeVoice: "marin" })] }),
+				entry({ leads: [lead({ liveVoice })] }),
 			])[0]!.leads[0]!;
 			expect(parsed.liveVoice).toBe(liveVoice);
-			// Neither field falls back to the other.
-			expect(parsed.realtimeVoice).toBe("marin");
 		}
 		for (const liveVoice of ["marin", "alloy", "Cove", "", 7]) {
 			expect(() =>

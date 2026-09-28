@@ -13,7 +13,6 @@ const projection = {
 	projectName: "raya",
 	leadId: "raya",
 	displayName: "Raya",
-	realtimeVoice: "marin",
 	guildId: "123456789012345678",
 	voiceChannelId: "223456789012345678",
 	voiceBotUserId: "323456789012345678",

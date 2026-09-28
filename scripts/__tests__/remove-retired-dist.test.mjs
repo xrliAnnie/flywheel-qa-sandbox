@@ -138,7 +138,7 @@ test("exits 0 when dist does not exist", () => {
 	assert.match(r.stdout, /removed 0 retired output path\(s\)/);
 });
 
-for (const name of ["voice-bridge", "voice-core"]) {
+for (const name of ["voice-bridge", "voice-codex", "voice-core"]) {
 	test(`${name}: manifest is valid, wired into build, and never retires a live source`, () => {
 		const pkgDir = path.join(ROOT, "packages", name);
 		const manifest = JSON.parse(

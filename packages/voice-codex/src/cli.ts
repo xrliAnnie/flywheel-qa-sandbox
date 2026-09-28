@@ -58,7 +58,6 @@ import { SessionJournal } from "./journal.js";
 import { probeVoiceLaunchdOwner } from "./launchd-owner.js";
 import { writeMeetingVoiceSignal } from "./meeting-voice-signal.js";
 import { engineBVoice, parseVoiceProjection } from "./projection.js";
-import { RealtimeFrontend } from "./realtime.js";
 import {
 	VOICE_CODEX_RECEIVE_POLICY,
 	voiceReceiveRuntimeEvidence,
@@ -177,11 +176,8 @@ export async function main(): Promise<void> {
 	const config = loadVoiceDaemonConfig(process.env, homedir());
 	// FLY-2885: second line of defence after the wrapper. Engine B never holds
 	// a platform key, so nothing below can hand one to a Codex child.
-	if (config.backendId === "codex-realtime") scrubVoiceApiKeys(process.env);
+	scrubVoiceApiKeys(process.env);
 	if (process.argv.length === 3 && process.argv[2] === "--check-codex-binary") {
-		if (config.backendId !== "codex-realtime") {
-			throw new Error("Codex binary preflight requires codex-realtime");
-		}
 		await assertCodexVoiceBinary(config.codexBin);
 		console.log("[voice] Codex binary ok");
 		return;
@@ -227,17 +223,12 @@ export async function main(): Promise<void> {
 		return;
 	}
 
-	if (config.backendId === "codex-realtime") {
-		// FLY-2885 T7: the lock proves no other daemon runs and this one has
-		// opened nothing yet, so any container root here is a leftover.
-		await sweepStaleCodexContainers(
-			join(config.voiceRoot, "codex-containers"),
-			{
-				listCwds: listProcessCwds,
-				evidence: (record) => console.log(`[voice] ${JSON.stringify(record)}`),
-			},
-		);
-	}
+	// FLY-2885 T7: the lock proves no other daemon runs and this one has
+	// opened nothing yet, so any container root here is a leftover.
+	await sweepStaleCodexContainers(join(config.voiceRoot, "codex-containers"), {
+		listCwds: listProcessCwds,
+		evidence: (record) => console.log(`[voice] ${JSON.stringify(record)}`),
+	});
 	// QA-3a only: the production wrapper never sets FLYWHEEL_VOICE_QA_FAULTS.
 	let qaConversation: CodexVoiceConversation | undefined;
 	if (config.qaFaults) {
@@ -402,11 +393,6 @@ export async function main(): Promise<void> {
 			}),
 		);
 		let room: DiscordVoiceRoom | undefined;
-		const saved: SavedVoiceSession = {
-			sessionId: context.sessionId,
-			leaseToken: context.leaseToken,
-			projection: context.projection,
-		};
 		const mirror = new DiscordMirrorClient({
 			token,
 			timeoutMs: config.discordTimeoutMs,
@@ -418,8 +404,10 @@ export async function main(): Promise<void> {
 			"codex-transcript.jsonl",
 		);
 		let contextDigest = "0".repeat(64);
-		let codexBackend: CodexVoiceBackend | undefined;
-		if (config.backendId === "codex-realtime") {
+		let codexBackend: CodexVoiceBackend;
+		// Engine B is the only engine (FLY-2982); the block keeps its per-session
+		// wiring scoped.
+		{
 			const registry = new BackendRegistry();
 			const transcriptPublisher = new CodexTranscriptPublisher({
 				sessionId: context.sessionId,
@@ -534,64 +522,27 @@ export async function main(): Promise<void> {
 				"codex-realtime",
 			)) as CodexVoiceBackend;
 		}
-		const delivery =
-			config.backendId === "codex-realtime"
-				? { capture: async () => false }
-				: buildDelivery(
-						saved,
-						token,
-						() => context.lease.assert(),
-						async (text) => {
-							if (room) await room.status(text);
-							else
-								await mirror.post(
-									context.projection.threadId,
-									text,
-									discordNonce(),
-								);
-						},
-					);
 		return new GenericVoiceSession({
 			projection: context.projection,
-			delivery,
+			// Engine B mirrors transcripts through CodexTranscriptPublisher, not the
+			// VoiceDelivery journal (FLY-2885).
+			delivery: { capture: async () => false },
 			startDeadlineMs: SESSION_START_DEADLINE_MS,
 			startDeadlineAt: () => startDeadlineAt,
-			createFrontend: (handlers) => {
-				if (codexBackend) {
-					return new CodexRoomFrontend({
-						backend: codexBackend,
-						conversationOptions: {
-							brain: CODEX_VOICE_BRAIN,
-							voice: engineBVoice(context.projection),
-							transcriptSink: new JsonlTranscriptSink(transcriptPath),
-						},
-						handlers,
-						onUnavailable: (text) =>
-							mirror
-								.post(context.projection.threadId, text, discordNonce())
-								.then(() => undefined),
-					});
-				}
-				if (!config.realtimeApiKey)
-					throw new Error("OPENAI_API_KEY is required");
-				return new RealtimeFrontend({
-					apiKey: config.realtimeApiKey,
-					voice: context.projection.realtimeVoice,
-					displayName: context.projection.displayName,
-					minimumSessionLifetimeMs: config.presenceGraceMs + 25_000,
-					onEvidence: (record) =>
-						evidence.appendBuffered({
-							ts: new Date().toISOString(),
-							transport: "openai_realtime_direct",
-							modelAlias: "gpt-realtime-1.5",
-							voiceSessionId: context.sessionId,
-							frontendGeneration: 1,
-							buildSha: config.buildSha,
-							...record,
-						}),
-					...handlers,
-				});
-			},
+			createFrontend: (handlers) =>
+				new CodexRoomFrontend({
+					backend: codexBackend,
+					conversationOptions: {
+						brain: CODEX_VOICE_BRAIN,
+						voice: engineBVoice(context.projection),
+						transcriptSink: new JsonlTranscriptSink(transcriptPath),
+					},
+					handlers,
+					onUnavailable: (text) =>
+						mirror
+							.post(context.projection.threadId, text, discordNonce())
+							.then(() => undefined),
+				}),
 			createRoom: (handlers) => {
 				room = new DiscordVoiceRoom({
 					onDiagnostic: (record) =>
@@ -608,12 +559,8 @@ export async function main(): Promise<void> {
 					founderUserId: context.projection.founderUserId,
 					qaAllowUserIds: context.projection.qaAllowUserIds,
 					uplinkPrerollMs: config.uplinkPrerollMs,
-					...(config.backendId === "codex-realtime"
-						? {
-								downlink: "opus-passthrough" as const,
-								uplinkMinOnsetDbfs: config.uplinkMinOnsetDbfs,
-							}
-						: {}),
+					downlink: "opus-passthrough",
+					uplinkMinOnsetDbfs: config.uplinkMinOnsetDbfs,
 					...handlers,
 				});
 				return room;
@@ -655,51 +602,45 @@ export async function main(): Promise<void> {
 			postStatus: async (text) => {
 				await mirror.post(context.projection.threadId, text, discordNonce());
 			},
-			finalize:
-				config.backendId === "codex-realtime"
-					? async (outcome) => {
-							let raw = "";
-							let complete = outcome?.kind === "ended";
-							try {
-								raw = existsSync(transcriptPath)
-									? readFileSync(transcriptPath, "utf8")
-									: "";
-							} catch {
-								complete = false;
-							}
-							const parsed = transcriptFacts(raw);
-							complete &&=
-								parsed.parseComplete &&
-								getTranscriptWriteFailure(transcriptPath) === undefined;
-							const job = minutesQueue.enqueue({
-								sessionId: context.sessionId,
-								leadId: context.projection.leadId,
-								projectName: context.projection.projectName,
-								threadId: context.projection.threadId,
-								voiceBotUserId: context.projection.voiceBotUserId,
-								founderUserId: context.projection.founderUserId,
-								displayName: context.projection.displayName,
-								transcriptDigest: createHash("sha256")
-									.update(raw)
-									.digest("hex"),
-								contextDigest,
-								status: complete ? "complete" : "incomplete",
-								facts: parsed.facts,
-								decisions: [],
-								pending: [],
-								handoffs: [],
-							});
-							await minutesQueue.drainAll().catch((error) => {
-								evidence.append({
-									ts: new Date().toISOString(),
-									kind: "voice_minutes_delivery_deferred",
-									jobId: job.jobId,
-									reason:
-										error instanceof Error ? error.message : "unknown_error",
-								});
-							});
-						}
-					: undefined,
+			finalize: async (outcome) => {
+				let raw = "";
+				let complete = outcome?.kind === "ended";
+				try {
+					raw = existsSync(transcriptPath)
+						? readFileSync(transcriptPath, "utf8")
+						: "";
+				} catch {
+					complete = false;
+				}
+				const parsed = transcriptFacts(raw);
+				complete &&=
+					parsed.parseComplete &&
+					getTranscriptWriteFailure(transcriptPath) === undefined;
+				const job = minutesQueue.enqueue({
+					sessionId: context.sessionId,
+					leadId: context.projection.leadId,
+					projectName: context.projection.projectName,
+					threadId: context.projection.threadId,
+					voiceBotUserId: context.projection.voiceBotUserId,
+					founderUserId: context.projection.founderUserId,
+					displayName: context.projection.displayName,
+					transcriptDigest: createHash("sha256").update(raw).digest("hex"),
+					contextDigest,
+					status: complete ? "complete" : "incomplete",
+					facts: parsed.facts,
+					decisions: [],
+					pending: [],
+					handoffs: [],
+				});
+				await minutesQueue.drainAll().catch((error) => {
+					evidence.append({
+						ts: new Date().toISOString(),
+						kind: "voice_minutes_delivery_deferred",
+						jobId: job.jobId,
+						reason: error instanceof Error ? error.message : "unknown_error",
+					});
+				});
+			},
 			cleanup: () => rmSync(scratch, { recursive: true, force: true }),
 		});
 	};

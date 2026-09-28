@@ -396,7 +396,8 @@ test("voice process env is an allowlist and binds the slot registry and CommDB",
 		apiToken: "slot-master",
 		botTokenEnv: "TEST_BOT_TOKEN_2",
 		botToken: "test-bot-secret",
-		openAiApiKey: "realtime-secret",
+		codexBin: "/opt/codex-0.156.1/codex",
+		codexAuthSource: "/Users/qa/.codex/auth.json",
 		projectsPath: `${slotDir}/flywheel-projects.json`,
 		projectsJson: '[{"projectName":"test-slot-2"}]',
 		projectName: "test-slot-2",
@@ -426,6 +427,7 @@ test("voice process env is an allowlist and binds the slot registry and CommDB",
 		[
 			"BRIDGE_URL",
 			"FLYWHEEL_BRIDGE_URL",
+			"FLYWHEEL_CODEX_BIN",
 			"FLYWHEEL_COMM_CLI",
 			"FLYWHEEL_COMM_DB",
 			"FLYWHEEL_DIR",
@@ -433,12 +435,12 @@ test("voice process env is an allowlist and binds the slot registry and CommDB",
 			"FLYWHEEL_PROJECTS",
 			"FLYWHEEL_PROJECTS_FILE",
 			"FLYWHEEL_STATE_DIR",
+			"FLYWHEEL_VOICE_CODEX_AUTH_SOURCE",
 			"FLYWHEEL_VOICE_CODEX_HOME",
 			"FLYWHEEL_VOICE_BUILD_SHA",
 			"FLYWHEEL_VOICE_HOST_CONFIG",
 			"FLYWHEEL_VOICE_STATE_DIR",
 			"HOME",
-			"OPENAI_API_KEY",
 			"PATH",
 			"TEAMLEAD_API_TOKEN",
 			"TEST_BOT_TOKEN_2",
@@ -462,7 +464,6 @@ test("codex voice env carries no API key and binds the subscription credential s
 		buildSha: "a".repeat(40),
 		voiceHostPath: `${slotDir}/state/voice-host.json`,
 		meetingNotesPath: `${slotDir}/state/meeting-notes.yaml`,
-		backendId: "codex-realtime",
 		codexBin: "/opt/codex-0.156.1/codex",
 		baseEnv: { PATH: "/usr/bin", HOME: "/Users/qa" },
 	};
@@ -474,7 +475,7 @@ test("codex voice env carries no API key and binds the subscription credential s
 	});
 	assert.equal(env.OPENAI_API_KEY, undefined);
 	assert.equal(env.CODEX_API_KEY, undefined);
-	assert.equal(env.FLYWHEEL_VOICE_BACKEND, "codex-realtime");
+	assert.equal(env.FLYWHEEL_CODEX_BIN, "/opt/codex-0.156.1/codex");
 	assert.equal(
 		env.FLYWHEEL_VOICE_CODEX_AUTH_SOURCE,
 		"/Users/qa/.codex/auth.json",
@@ -487,35 +488,34 @@ test("codex voice env carries no API key and binds the subscription credential s
 		() => buildVoiceProcessEnv(base),
 		/voice_codex_auth_source_absolute_required/,
 	);
-	const readKey = () => {
-		throw new Error("codex launch must not read the platform key");
-	};
+	// FLY-2982: engine B is the only engine, so the QA room always needs the
+	// pinned binary.
+	for (const codexBin of [undefined, "codex"]) {
+		assert.throws(
+			() =>
+				buildVoiceProcessEnv({
+					...base,
+					codexBin,
+					codexAuthSource: "/Users/qa/.codex/auth.json",
+				}),
+			/voice_codex_binary_absolute_required/,
+		);
+	}
+	// The credential input names only the subscription source, even when the
+	// launching shell still exports a platform key.
 	assert.deepEqual(
 		voiceCredentialInput({
-			backendId: "codex-realtime",
 			homeDir: "/Users/qa",
-			env: {},
-			readManagedKey: readKey,
+			env: { OPENAI_API_KEY: "platform-key" },
 		}),
 		{ codexAuthSource: "/Users/qa/.codex/auth.json" },
 	);
 	assert.deepEqual(
 		voiceCredentialInput({
-			backendId: "codex-realtime",
 			homeDir: "/Users/qa",
 			env: { FLYWHEEL_VOICE_CODEX_AUTH_SOURCE: "/srv/auth.json" },
-			readManagedKey: readKey,
 		}),
 		{ codexAuthSource: "/srv/auth.json" },
-	);
-	assert.deepEqual(
-		voiceCredentialInput({
-			backendId: undefined,
-			homeDir: "/Users/qa",
-			env: {},
-			readManagedKey: () => "engine-a-key",
-		}),
-		{ openAiApiKey: "engine-a-key" },
 	);
 });
 

@@ -5868,7 +5868,6 @@ export class StateStore {
 				"she-left",
 				"voice-stop",
 				"realtime_session_expiring",
-				"realtime_capacity",
 			]);
 			// Local departure/voice command and a normal Realtime terminal are the
 			// daemon's terminal intent; text stop still transitions through ending.

@@ -254,8 +254,7 @@ export function createVoiceSessionServices(input: {
 			projectName: session.projectName,
 			leadId: session.leadId,
 			displayName: lead.agentId,
-			realtimeVoice: lead.realtimeVoice ?? "marin",
-			// FLY-2885: engine B only; never derived from realtimeVoice.
+			// FLY-2885: engine B's voice (the only engine since FLY-2982).
 			liveVoice: lead.liveVoice ?? DEFAULT_LIVE_V3_VOICE,
 			guildId: session.guildId,
 			voiceBotUserId: session.voiceBotUserId,

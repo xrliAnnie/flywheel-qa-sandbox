@@ -54,7 +54,6 @@ function project(
 				botToken: "lead-token",
 				botTokenEnv: "LEAD_BOT_TOKEN",
 				voiceModes,
-				realtimeVoice: "marin",
 				match: { labels: [projectName] },
 			},
 		],

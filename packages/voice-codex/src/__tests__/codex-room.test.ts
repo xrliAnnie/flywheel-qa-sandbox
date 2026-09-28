@@ -605,7 +605,6 @@ describe("Codex room composition", () => {
 				projectName: "flywheel",
 				leadId: "raya",
 				displayName: "Raya",
-				realtimeVoice: "marin",
 				guildId: "1",
 				voiceChannelId: "2",
 				voiceBotUserId: "3",

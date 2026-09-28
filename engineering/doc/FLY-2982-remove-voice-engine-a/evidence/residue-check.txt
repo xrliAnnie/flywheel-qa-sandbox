@@ -1,0 +1,52 @@
+# FLY-2982 residue check — 2026-09-28T06:59:28Z at 3f5eedaae (+ working-tree fix for Codex gate R1: voice-path key scan)
+$ bash engineering/doc/FLY-2982-remove-voice-engine-a/residue-check.sh
+residue-check: OK — 31 hit(s), all matched by 31 line-scoped allowlist row(s); zero unallowed hits
+exit=0
+
+$ bash engineering/doc/FLY-2982-remove-voice-engine-a/residue-check.sh --self-test
+self-test ok   [unchanged copy passes] exit=0
+self-test ok   [engine A call injected into an allowlisted test file] exit=1
+self-test ok   [engine A read injected into the legacy-strip file] exit=1
+self-test ok   [engine A read injected into a non-allowlisted file] exit=1
+self-test ok   [platform key forwarding revived in the QA room launcher] exit=1
+self-test ok   [allowlist row whose line disappeared is stale] exit=1
+self-test ok   [category outside its permitted files is refused] exit=2
+self-test ok   [a failed git scan is an error, not zero hits] exit=2
+residue-check self-test: OK
+exit=0
+
+# raw hits, scan 1 (engine A identifiers): git grep -n -I -E "$PATTERN" -- . ':!engineering/doc' ':!doc' ':!product/doc'
+packages/teamlead/src/ProjectConfig.ts:582:			delete (lead as Record<string, unknown>).realtimeVoice;
+packages/teamlead/src/__tests__/StateStore.voice-session.test.ts:690:	{ reason: "realtime_capacity", elapsedMs: 2_000, accepted: false },
+packages/teamlead/src/__tests__/huddle-config.test.ts:115:						leads: [lead({ realtimeVoice: retired, liveVoice: "sol" })],
+packages/teamlead/src/__tests__/huddle-config.test.ts:118:				expect("realtimeVoice" in parsed).toBe(false);
+packages/teamlead/src/bridge/__tests__/voice-session-services.test.ts:256:	expect(unset).not.toHaveProperty("realtimeVoice");
+packages/teamlead/src/bridge/__tests__/voice-session-services.test.ts:273:	expect(projected).not.toHaveProperty("realtimeVoice");
+packages/voice-codex/retired-outputs.json:4:	"stems": ["realtime-transport"],
+packages/voice-codex/src/__tests__/config.test.ts:175:				FLYWHEEL_VOICE_BACKEND: "openai-realtime",
+packages/voice-codex/src/__tests__/config.test.ts:181:		expect(config).not.toHaveProperty("realtimeApiKey");
+packages/voice-codex/src/__tests__/projection.test.ts:24:		const saved = { ...projection, realtimeVoice: "marin" };
+scripts/__tests__/flywheel-voice-wrapper.test.sh:275:printf 'TEAMLEAD_API_TOKEN=test-only\nFLYWHEEL_VOICE_BACKEND=openai-realtime\nFLYWHEEL_VOICE_CODEX_HOME=/must-not-be-used-as-the-install-home\nexport OPENAI_API_KEY=test-api-only\nexport CODEX_API_KEY=test-codex-only\n' > "$ROOT/state/.env"
+scripts/__tests__/flywheel-voice-wrapper.test.sh:299:  && ! grep -q voice_api_key_unset "$ROOT/alert-calls" \
+scripts/__tests__/voice-host-configure.test.mjs:69:						realtimeVoice: "cedar",
+scripts/__tests__/voice-host-configure.test.mjs:133:		assert.equal(Object.hasOwn(lead, "realtimeVoice"), false, lead.agentId);
+scripts/voice-host-configure.mjs:185:			delete lead.realtimeVoice;
+
+# raw hits, scan 2 (platform key on the voice path): git grep -n -I -E 'OPENAI_API_KEY|openAiApiKey' -- <KEY_SCOPE from residue-check.sh>
+packages/voice-codex/src/__tests__/codex-container.test.ts:340:			OPENAI_API_KEY: "wrong-inherited-key",
+packages/voice-codex/src/__tests__/codex-container.test.ts:425:			expect(options.baseEnv.OPENAI_API_KEY).toBeUndefined();
+packages/voice-codex/src/__tests__/config.test.ts:176:				OPENAI_API_KEY: "platform-key",
+packages/voice-codex/src/__tests__/config.test.ts:208:			OPENAI_API_KEY: "api-key",
+packages/voice-codex/src/__tests__/config.test.ts:417:				OPENAI_API_KEY: "api-secret",
+packages/voice-codex/src/config.ts:134:	delete env.OPENAI_API_KEY;
+scripts/__tests__/fly2655-voice-room.test.mjs:473:		openAiApiKey: "realtime-secret",
+scripts/__tests__/fly2655-voice-room.test.mjs:476:	assert.equal(env.OPENAI_API_KEY, undefined);
+scripts/__tests__/fly2655-voice-room.test.mjs:509:			env: { OPENAI_API_KEY: "platform-key" },
+scripts/__tests__/fly2655-voice-room.test.mjs:613:	assert.match(source, /BRIDGE_ENV_UNSET_ARGS\+=\(-u OPENAI_API_KEY\)/);
+scripts/__tests__/fly2799-codex-container.test.mjs:175:	assert.equal(selected.OPENAI_API_KEY, undefined);
+scripts/__tests__/flywheel-voice-wrapper.test.sh:80:printf '%s openai=%s codex=%s\n' "$*" "${OPENAI_API_KEY:+present}" \
+scripts/__tests__/flywheel-voice-wrapper.test.sh:275:printf 'TEAMLEAD_API_TOKEN=test-only\nFLYWHEEL_VOICE_BACKEND=openai-realtime\nFLYWHEEL_VOICE_CODEX_HOME=/must-not-be-used-as-the-install-home\nexport OPENAI_API_KEY=test-api-only\nexport CODEX_API_KEY=test-codex-only\n' > "$ROOT/state/.env"
+scripts/__tests__/install-voice-launchd.test.mjs:68:		"TEAMLEAD_API_TOKEN=fixture\nOPENAI_API_KEY=fixture\n",
+scripts/flywheel-voice-wrapper.sh:72:unset OPENAI_API_KEY CODEX_API_KEY
+scripts/test-deploy.sh:1678:    "OPENAI_API_KEY="
+scripts/test-deploy.sh:1682:  BRIDGE_ENV_UNSET_ARGS+=(-u OPENAI_API_KEY)
