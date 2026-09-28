@@ -63,3 +63,13 @@ scoped gate `0f29f815-f140-4e68-ac08-073a9a996389` 有效 reviewVerdict=APPROVED
 - 两处 DIAGRAM PENDING LOCAL RENDER 沿用原允许的降级，不声称浏览器视觉 QA 或真实修复验收通过。
 
 设计完成审计：原 exploration/research/plan 与九单范围保留；新合同补充已有效批准；原代码 WIP 未改；补充/报告/评审与交付证据已落盘；HTML 已发布验证并报告。实现仍从旧 0/6 继续，不是整单完成。本轮下一步仅 exact phase_design_complete 收据及 park，由控制器决定后继，不自行派发。
+
+## 2026-09-27 设计节点重开（execution c228b8e1，run 40e9ac0c，TURN design epoch 1）
+
+本次重开在 test-slot-6 沙箱按 eng_design 节点合同重走设计交接；⛔ 不重做设计、不改业务代码。exploration/research/plan/design-correction 正文保持原样，plan.md 仍是已批准内容。
+
+- 两张 Mermaid 图本轮用本机 mmdc 11.12.0 渲染成功（`-w 1000 -b white --svgId FLY-2922-d1 / FLY-2922-d2`，均 exit 0），替换了 2026-09-26 保留的两处 `DIAGRAM PENDING LOCAL RENDER` 占位；图源 recovery-flow.mmd / recovery-model.mmd 保留在同目录。
+- 内联后静态检查：占位 0、`<svg id="FLY-2922-d1|d2">` 各 1、`<script>` 1 且含精确 `__CSP_NONCE__` 占位、自定义 CSP meta 0、inline handler 属性 0、innerHTML 0、外部 src/href 0、textarea 7、汇总 marker `【页面意见汇总】FLY-2922` 存在；评论脚本未改动。
+- SVG 内无 `<script>`、无 href/xlink:href 外链；mermaid 自身在同图内对边 path 与 label group 复用同一 id，跨图通过 svgId 前缀隔离。
+- 本 HTML SHA-256: `52dfe2e77a0f8bfbd5df1f54de19dd7b005f30acf3dbe36f0525332998853ca6`。
+- 本轮设计评审门、托管发布与报告回执在下方追加；不沿用生产 Bridge 的旧门 d9ab4f85 / 0f29f815 冒充本 Bridge 的有效裁定。
