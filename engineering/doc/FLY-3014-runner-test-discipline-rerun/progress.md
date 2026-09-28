@@ -1,14 +1,15 @@
 ---
 issue: FLY-3014
 phase: implement
-phaseCursor: 3/5
-updated: 2026-09-28T11:56:23.853Z
-nextStep: Codex review of 8508082c5 via codex:rescue; then milestone last
-  commit, push, PR, complete needs_review
+phaseCursor: 4/5
+updated: 2026-09-28T11:59:55.666Z
+nextStep: Commit engineering/doc/milestones/FLY-3014.md as LAST commit, push,
+  open PR against qa/fly-2407-td-bdce78d0-20260928T1130Z (check gh for an
+  existing PR first), complete --route needs_review --pr <N>
 chunks: []
 pointers: {}
 ---
 
 # FLY-3014 progress
-**phase**: implement (3/5)
-**next**: Codex review of 8508082c5 via codex:rescue; then milestone last commit, push, PR, complete needs_review
+**phase**: implement (4/5)
+**next**: Commit engineering/doc/milestones/FLY-3014.md as LAST commit, push, open PR against qa/fly-2407-td-bdce78d0-20260928T1130Z (check gh for an existing PR first), complete --route needs_review --pr <N>
