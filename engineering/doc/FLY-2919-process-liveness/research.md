@@ -64,4 +64,3 @@ Issue: FLY-2919 (https://linear.app/geoforge3d/issue/FLY-2919/病根修复-2-体
 ## 评审驱动的必要补强
 
 R1/R2 唯一 HIGH 是正常 Codex 原地重启空窗；保留提交已补 plan §4.1 的实际写点、owner token、spawn epoch、低层 spawn permit 与四边界红测。其他意见落实在 §4.2（writer 集合和采样预算）、§5（无后继 wake 与终态镜像）及 §10.1（旁路消费者）。本轮有效 APPROVED 前不得交付完成。
-

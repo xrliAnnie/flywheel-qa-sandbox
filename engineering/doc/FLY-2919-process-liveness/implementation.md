@@ -752,3 +752,11 @@ legacy 死亡授权现在满足三个同时条件：StateStore 状态仍为 `run
 - `pnpm --filter "flywheel-teamlead..." build` 退出 0；`pnpm --filter "...flywheel-teamlead" typecheck`（teamlead + voice-codex）退出 0（voice-codex 首次失败是 voice-core 旧 dist，重建其依赖后通过；本分支对 voice 包零改动）；根 biome error 级 0（26 个范围外既有 warning）；`git diff --check` 0。
 
 **仍留给后续门**：精确头 full CI、QA、529 真机与 Discord N-to-N E2E（founder 2026-09-27 追加判据）。本地证据不冒称 full CI。
+
+### 合并后代码复审 round 1（Codex gpt-5.6-sol / xhigh，thread `01a0e60f-7080-77a0-836c-f808e573ff86`）
+
+在头 `aea5bf074` 返回 CHANGES_REQUESTED，critical=0 / high=1 / medium=0 / low=0（PR review 5333737659），其余合并语义未发现阻断问题。
+
+- HIGH `execution-process-owner.ts:180`：`listObservationCandidates` 读取 retention 管理的 `session_events` / `workflow_run_event` 死亡投影回执，却没有在 FLY-2006 consumer gate 登记，exact-head Quick Gate 因两条 `unclassified_retention_consumer` 失败，后续测试矩阵因此被跳过。该查询对两表都带 `workflow_terminal_archive` 归档回退，与 StateStore / terminal-row-archive 的同类读取一致，因此登记为 `candidate_guarded`，retention 不新增受保护行。新增 gate 测试钉住扫描结果、归档回退与配置条目：旧配置 RED，补登记后 `fly-2006-retention-consumer-gate.test.mjs` 通过，`node scripts/fly-2006-retention-consumer-gate.mjs` 输出 ok。
+- 顺带清掉 exploration / research / review-followups 三个文档末尾的多余空行（`git diff --check` 相对 main 为 0）。
+- 本地补跑全仓扫描类守卫：`bridge-child-process-census` 1/1、`fly2121-legacy-census` 1/1。

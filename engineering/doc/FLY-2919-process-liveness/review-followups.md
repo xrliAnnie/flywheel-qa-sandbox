@@ -64,4 +64,3 @@ The 'founder wake not lost' acceptance is undefined for successor delivery
 Tests were not run: docs-only change and no node_modules in this worktree
 
 The reviewed commit changes only design docs. I checked that every test file listed in §8 exists, that package names (flywheel-claude-runner/teamlead/comm/edge-worker) match, and I read the referenced source symbols: inspectCodexDaemonOwnership, the runGoal restart loop, withExecutionMutationLease, terminalizeProvenDeadSessionTx, finalizeProvenGoneSession, deleteTurnIfCurrent, completeRunnerPhaseWakeTerminal, the CommDB status CHECK, and the TmuxAdapter pane_dead success:true branches. The branch is 7 commits behind main and does not contain FLY-2903 (cfc8d52). No vitest suite was run.
-
