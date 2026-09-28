@@ -1,0 +1,8 @@
+flowchart TD
+    A["调用 parseBool(text)"] --> B{"text 是字符串吗?"}
+    B -- 否 --> X1["抛 TypeError<br/>只说类型, 不回显值"]
+    B -- 是 --> C["trim() 去首尾空白<br/>toLowerCase() 转小写"]
+    C --> D{"在 6 词白名单里吗?"}
+    D -- "true / yes / 1" --> T["返回 true"]
+    D -- "false / no / 0" --> F["返回 false"]
+    D -- 其他任何内容 --> X2["抛 TypeError<br/>回显截断+转义后的原输入"]

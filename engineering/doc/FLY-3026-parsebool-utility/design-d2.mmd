@@ -1,0 +1,26 @@
+classDiagram
+    class parse_bool_ts {
+        -WORDS : ReadonlyMap~string, boolean~
+        +parseBool(text: string) boolean
+    }
+    class WORDS {
+        true : true
+        yes : true
+        1 : true
+        false : false
+        no : false
+        0 : false
+    }
+    class index_ts {
+        export parseBool
+    }
+    class parse_bool_test_ts {
+        accept table E1-E2
+        reject table E3-E8
+        non-string E9
+        message safety E10
+        export check
+    }
+    parse_bool_ts *-- WORDS : 单一词表
+    index_ts ..> parse_bool_ts : re-export
+    parse_bool_test_ts ..> index_ts : import
