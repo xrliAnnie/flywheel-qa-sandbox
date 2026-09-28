@@ -3,6 +3,7 @@ Issue: FLY-2405 (https://linear.app/geoforge3d/issue/FLY-2405/载体起房服务
 日期: 2026-09-28
 基于: research.md
 
+> 设计评审：Codex gpt-6-astra/xhigh，6 轮，R6 **APPROVED**（thread 01a0e998-09f2-7fa2-a709-da96b2908fe9）。
 > 修订记录：v1 → v2（Codex 设计评审 R1：8 HIGH + 3 MEDIUM）→ v3（R2：5 HIGH + 1 MEDIUM + 3 澄清）→ v4（R3：4 HIGH）→ v5（R4：1 HIGH + 1 LOW）→ v6（R5：1 HIGH + 1 LOW），处理表见 §10。
 
 ## 0. 目标、非目标、信任模型
@@ -52,7 +53,7 @@ sequenceDiagram
 
 **`qa_rooms`**：`room_id` PK（uuid）· `request_id` UNIQUE（幂等键）· `request_hash`（规范化请求 sha256）· `owner_exec_id` / `owner_issue_id` / `owner_role` / `owner_adapter`（均服务端推导）· `slot` · `extra_slots_json` · `expect_head` · `source_dir` · `state`（`requested|queued|claiming|deploying|ready|deploy_failed|quarantined|tearing_down|teardown_failed|releasing|torn_down|refused|canceled`）· `planned_slots_json`（有序 slot 集合）· `deploy_id` · `launchd_labels_json`（精确 label 集合，含 extra slots，由脚本 registry 回报并绑定 deployId）· `db_coords_json`· `active_op_id`（CAS 串行化）· `claim_token_hash` · `claimed`（是否真正持有物理 claim）· `last_error` · 时间戳。
 
-**`qa_room_ops`**：`op_id` PK · `room_id` · `kind`（`deploy|teardown`）· `request_id` UNIQUE · `attempt` · `state`（`pending|launching|running|succeeded|failed|supervisor_lost|fenced`）· `op_dir` · `pid` / `pid_start` / `pgid`（化身 = pid + `ps -o lstart=`；pgid = 脚本进程组）· `last_phase`（脚本阶段标记）· `deadline_at` · `receipt_path` · `exit_code` · `result_json`。
+**`qa_room_ops`**：`op_id` PK · `room_id` · `kind`（`deploy|teardown`）· `request_id` UNIQUE · `attempt` · `state`（`pending|launching|running|succeeded|failed|supervisor_lost|fenced`）· `op_dir` · `op_nonce`（Bridge spawn 前生成，§5）· `pid` / `pid_start` / `pgid`（化身 = pid + `ps -o lstart=`；pgid = 脚本进程组）· `last_phase`（脚本阶段标记）· `deadline_at` · `receipt_path` · `exit_code` · `result_json`。
 
 **`qa_room_capabilities`**：`exec_id` · `attempt` · `hash`（sha256）· `issued_at` · `revoked_at`；`UNIQUE(exec_id, attempt)`。
 
@@ -99,7 +100,8 @@ flywheel-comm room deploy --slot <n> --expect-head <sha> [--mode slot|mirror|rou
      [--generalized] [--codex-runner] [--extra-lead <slot>:<dept>]... [--seed <flag>]...
      [--env TEST_X=v]... [--wait]
 flywheel-comm room status <roomId> [--json]
-flywheel-comm room teardown <roomId> [--lead [--accept-missing-snapshot --reason <text>]] [--wait]
+flywheel-comm room teardown <roomId> [--lead [--accept-missing-snapshot|--accept-identity-uncertain] --reason <text>] [--wait]
+# --accept-* 仅 Lead 面可用，必须带 --reason，写审计
 ```
 
 - 请求日志根：新专用变量 `FLYWHEEL_QA_ROOM_REQUEST_DIR`，由 dispatcher 在 fresh/retry 位点经 `BlueprintContext` 显式注入两种 adapter，值 = `~/.flywheel/runner-state/<execId>/qa-room-requests`（exec 作用域，在 Codex 可写根内）；**不复用** `FLYWHEEL_RUNNER_STATE_DIR`（其 mailbox/commdb 语义不变）。变量缺失时 fallback 为由 `FLYWHEEL_EXEC_ID` 推导的同一路径，校验可写，不可写 → exit 1。
@@ -155,7 +157,7 @@ flywheel-comm room teardown <roomId> [--lead [--accept-missing-snapshot --reason
   超时同样走此流程（包装器本体仍活着时它满足创建者谓词，会被 TERM/KILL，不会因"无 nonce"被放过）。房内 `setsid` 出去的资源进程不在 P 中，由**资源谓词**在 residue()（§6）识别。
 - **串行化**：`UPDATE qa_rooms SET active_op_id=? WHERE room_id=? AND active_op_id IS NULL` CAS；deploy 进行中收到 teardown → teardown op 记为 `pending` 并在 deploy op 终态后执行（屏障），不并发。所有回写带 `(op_id, attempt)`，旧 attempt 回写被丢弃。
 - **toolDirectories**：必需 `bash node pnpm git jq tmux python3 gh sqlite3 claude`，`--codex-runner` 另需 `codex`；在 Bridge 的 `PATH` 上解析真实路径取目录去重 + `/usr/bin:/bin:/usr/sbin:/sbin`；缺失 → `tool_unavailable:<name>`，不 spawn。零写死用户路径。该 PATH 同时传给脚本、launchd plist env 投影（脚本用 `PATH` 生成 plist `EnvironmentVariables`，测试断言投影结果含 codex 目录）。
-- **minimalEnv**：`HOME USER LOGNAME TMPDIR LANG PATH` + 白名单 TEST_* + `FLYWHEEL_QA_DEPLOY_ID` + `FLYWHEEL_QA_SLOT_CLAIM_TOKEN`；`TEST_QA_ROOM_SERVICE=1` 由 `test-deploy.sh` 映射为房内 Bridge 的 `FLYWHEEL_QA_ROOM_SERVICE=1`（R1-#11，脚本改动 + env 投影测试）。
+- **minimalEnv**：`HOME USER LOGNAME TMPDIR LANG PATH` + 白名单 TEST_* + `FLYWHEEL_QA_DEPLOY_ID` + `FLYWHEEL_QA_SLOT_CLAIM_TOKEN` + `FLYWHEEL_QA_OP_NONCE`（§5）；`TEST_QA_ROOM_SERVICE=1` 由 `test-deploy.sh` 映射为房内 Bridge 的 `FLYWHEEL_QA_ROOM_SERVICE=1`（R1-#11，脚本改动 + env 投影测试）。
 - **pretrust**：`--codex-runner` 房的 workspace 预信任（`$HOME` 根锁）在包装器内、沙箱外完成（沿用现有 pretrust 脚本，若存在）。
 - **重启恢复矩阵**（Bridge 启动 + 既有周期 tick piggyback，零新 timer）：
 
@@ -164,7 +166,7 @@ flywheel-comm room teardown <roomId> [--lead [--accept-missing-snapshot --reason
 | room `requested`，op `pending`，未 spawn | — | 重新校验身份/凭据/claim 后 spawn；owner 已终态 → `canceled`（释放本服务 claim） |
 | room `queued` | 每 tick | 重新校验身份、凭据、负载；owner 终态 → `canceled` |
 | op `running` | 有回执 | 按回执落终态 |
-| op `running` | 无回执，pid+lstart 匹配存活 | 保持 running，tick 复查；超 `deadline_at` → 按进程组 TERM→KILL，确认退出后 `failed:timeout` |
+| op `running` | 无回执，pid+lstart 匹配存活 | 保持 running，tick 复查；超 `deadline_at` → 按 §5 失联屏障的逐 PID 重证流程 TERM→KILL（从不按组号群杀），确认后 `failed:timeout` |
 | op `launching` | — | §5 launch 交接第 4 步 `link()` 裁决 |
 | op `running` | 无回执，pid 死或化身不符 | `supervisor_lost` → room `quarantined` → pgid 屏障确认后 `*_failed`；快照策略按"未完整观测" |
 | room `claiming` | — | §4 恢复 |
