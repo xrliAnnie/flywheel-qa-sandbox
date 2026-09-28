@@ -1,16 +1,15 @@
 ---
 issue: FLY-2998
-phase: design
-phaseCursor: 5/5
-updated: 2026-09-28T09:05:19.897Z
-nextStep: Effective design review APPROVED; HTML committed, published and
-  reported. Advisories relayed to Lead. Push final evidence, run complete
-  --route phase_design_complete, then park; goal stays alive until issue
-  terminal.
+phase: implement
+phaseCursor: 0/4
+updated: 2026-09-28T09:07:34.118Z
+nextStep: "Implement start HEAD 25254d2a3. Step 1: create
+  qa-sandbox/fly2925-clean.md heading+responsibility paragraph, commit, push,
+  verify remote."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2998 progress
-**phase**: design (5/5)
-**next**: Effective design review APPROVED; HTML committed, published and reported. Advisories relayed to Lead. Push final evidence, run complete --route phase_design_complete, then park; goal stays alive until issue terminal.
+**phase**: implement (0/4)
+**next**: Implement start HEAD 25254d2a3. Step 1: create qa-sandbox/fly2925-clean.md heading+responsibility paragraph, commit, push, verify remote.
