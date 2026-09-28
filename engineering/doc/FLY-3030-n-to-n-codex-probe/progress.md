@@ -1,13 +1,13 @@
 ---
 issue: FLY-3030
 phase: design
-phaseCursor: 1/5
-updated: 2026-09-28T21:06:46.590Z
-nextStep: research.md（README 字节、CI、push-guard、implement 合同）
+phaseCursor: 3/5
+updated: 2026-09-28T21:10:45.434Z
+nextStep: "design_review: Codex 设计评审 → await-codex-gate"
 chunks: []
 pointers: {}
 ---
 
 # FLY-3030 progress
-**phase**: design (1/5)
-**next**: research.md（README 字节、CI、push-guard、implement 合同）
+**phase**: design (3/5)
+**next**: design_review: Codex 设计评审 → await-codex-gate
