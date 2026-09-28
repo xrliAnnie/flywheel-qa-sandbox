@@ -1,13 +1,13 @@
 ---
 issue: FLY-3005
 phase: implement
-phaseCursor: 1/5
-updated: 2026-09-28T11:12:25.573Z
-nextStep: Inspect reviewed diff and derive targeted literal/dependency test selection
+phaseCursor: 2/5
+updated: 2026-09-28T11:14:06.800Z
+nextStep: Run independent verifier, preservation checks, and lint
 chunks: []
 pointers: {}
 ---
 
 # FLY-3005 progress
-**phase**: implement (1/5)
-**next**: Inspect reviewed diff and derive targeted literal/dependency test selection
+**phase**: implement (2/5)
+**next**: Run independent verifier, preservation checks, and lint
