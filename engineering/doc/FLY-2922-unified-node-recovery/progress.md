@@ -1,14 +1,14 @@
 ---
 issue: FLY-2922
 phase: implement
-phaseCursor: 1/4
-updated: 2026-09-28T18:30:43.401Z
-nextStep: Clone nested target at pushed FLY-2922 head; audit existing QA
-  selector fix and run focused verification
+phaseCursor: 3/4
+updated: 2026-09-28T18:42:25.679Z
+nextStep: Await review gate 156a66a1 on nested target head e8db224ba; then
+  finalize carrier milestone and complete with both PR declarations
 chunks: []
 pointers: {}
 ---
 
 # FLY-2922 progress
-**phase**: implement (1/4)
-**next**: Clone nested target at pushed FLY-2922 head; audit existing QA selector fix and run focused verification
+**phase**: implement (3/4)
+**next**: Await review gate 156a66a1 on nested target head e8db224ba; then finalize carrier milestone and complete with both PR declarations
