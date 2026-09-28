@@ -1,14 +1,13 @@
 ---
 issue: FLY-2909
 phase: implement
-phaseCursor: 3/4
-updated: 2026-09-26T18:55:14.054Z
-nextStep: Make FLY-2909 milestone literal-last, push, obtain exact-head code
-  review, then complete needs_review for QA retest
+phaseCursor: 2/4
+updated: 2026-09-28T03:18:08.042Z
+nextStep: Run lint, push, obtain exact-head code review, then complete needs_review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2909 progress
-**phase**: implement (3/4)
-**next**: Make FLY-2909 milestone literal-last, push, obtain exact-head code review, then complete needs_review for QA retest
+**phase**: implement (2/4)
+**next**: Run lint, push, obtain exact-head code review, then complete needs_review
