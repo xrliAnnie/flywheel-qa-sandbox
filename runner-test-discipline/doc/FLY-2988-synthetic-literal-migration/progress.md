@@ -1,13 +1,13 @@
 ---
 issue: FLY-2988
 phase: implement
-phaseCursor: 3/5
-updated: 2026-09-28T02:25:41.510Z
-nextStep: migrate eight source constants and verify GREEN
+phaseCursor: 4/5
+updated: 2026-09-28T02:26:29.108Z
+nextStep: run literal, related, verifier, lint and build-scope verification
 chunks: []
 pointers: {}
 ---
 
 # FLY-2988 progress
-**phase**: implement (3/5)
-**next**: migrate eight source constants and verify GREEN
+**phase**: implement (4/5)
+**next**: run literal, related, verifier, lint and build-scope verification
