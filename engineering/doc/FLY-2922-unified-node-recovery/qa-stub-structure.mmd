@@ -1,0 +1,33 @@
+erDiagram
+  CALL_CONTEXT ||--o| ACTIVATION : may_carry
+  CALL_CONTEXT ||--o{ WORKFLOW_BINDING : resolves_standby
+  CALL_CONTEXT ||--|| ROUTE_DECISION : produces
+  ROUTE_DECISION }o--|| REAL_CLAUDE : passthrough
+  ROUTE_DECISION }o--|| QA_STUB : qa_only
+  CALL_CONTEXT {
+    string execution_id "optional"
+    string activation_id "optional"
+    string argv "unchanged"
+  }
+  ACTIVATION {
+    string execution_id
+    string run_id
+    string node_id
+    int attempt
+  }
+  WORKFLOW_BINDING {
+    string execution_id
+    string node_id
+  }
+  ROUTE_DECISION {
+    string destination
+    string reason
+  }
+  REAL_CLAUDE {
+    string absolute_path
+    boolean shim_marker_absent
+  }
+  QA_STUB {
+    string source_path
+    string required_execution
+  }
