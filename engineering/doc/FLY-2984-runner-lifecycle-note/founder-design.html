@@ -98,9 +98,10 @@ button { background:#007aff; color:#fff; border:0; border-radius:8px; padding:8p
 <tr><td>只看提交信息判断进度</td><td class="no">放弃</td><td>中间夹着账本的提交，且提交信息不代表文件内容</td></tr>
 <tr><td>把分支重新对齐到 main</td><td class="no">不做</td><td>工作目录绑定已锁定，且是多个节点共享的分支；已向 Lead 提非阻塞问题</td></tr>
 <tr><td>按角色惯例加里程碑文件</td><td class="no">默认不加</td><td>issue 明说「不改任何其他文件」，比通用惯例更具体；需 Lead 明确要求才加</td></tr>
+<tr><td>Git 锁残留自动清理</td><td class="no">不做</td><td>脚本无法可靠证明旧 Git 进程已退出；检测到就停下交 Lead，清理后原入口续跑（评审者给出的更简单选项）</td></tr>
 <tr><td>设计阶段直接写三段</td><td class="no">不做</td><td>设计节点只出方案；写文件是实现节点的活，否则测试就观察不到实现者的重启行为</td></tr>
 </table>
-<p class="dim">设计阶段在隔离的临时仓库里把方案脚本真跑了一遍（含 6 种中途被杀 / 异常场景），第一版就被抓出一个「重跑第 1 步会把第 2 步内容误提交」的错误，已修正。</p>
+<p class="dim">设计阶段在隔离的临时仓库里把方案脚本真跑了一遍（含 8 种中途被杀 / 异常场景），第一版就被抓出一个「重跑第 1 步会把第 2 步内容误提交」的错误，已修正。</p>
   <label class="cmt-label" for="c-tradeoffs">你的意见（自动保存在本浏览器）</label>
   <textarea class="cmt" id="c-tradeoffs" data-key="tradeoffs" rows="3" placeholder="对这一节有什么想法？"></textarea>
 </section>
@@ -119,9 +120,10 @@ button { background:#007aff; color:#fff; border:0; border-radius:8px; padding:8p
 <li>不改任何代码、配置、测试</li>
 <li>不合并、不部署、不决定下一个节点</li>
 <li>不决定 PR 的目标分支（交 Lead 决定）</li>
+<li>不自动处理 Git 自身写到一半被杀留下的锁文件（停下交 Lead）</li>
 </ul></div>
 </div>
-<p class="warn"><b>评审状态（如实）</b>：Codex 设计评审（一个独立 AI 审稿人）第 1 轮中途因全部账号额度用尽而中断，没有给出通过/不通过的结论；它中断前指出的 3 处问题已全部修正。设计评审门尚未通过，已请 Lead 裁定后续走法。</p>
+<p class="warn"><b>评审状态（如实）</b>：Codex 设计评审（一个独立 AI 审稿人，gpt-6-astra / xhigh）共 3 轮后<b>通过</b>。第 1 轮第一次调用因额度用尽中断，额度恢复后续完；前两轮共指出 5 个问题（首写误判、远端读取失败被吞、第 2 段措辞、记账中途被杀会卡住、Git 锁残留），均已修正并有干跑证据。设计评审门已由系统校验通过。设计通过不等于实现或 529 验收通过。</p>
   <label class="cmt-label" for="c-boundary">你的意见（自动保存在本浏览器）</label>
   <textarea class="cmt" id="c-boundary" data-key="boundary" rows="3" placeholder="对这一节有什么想法？"></textarea>
 </section>
