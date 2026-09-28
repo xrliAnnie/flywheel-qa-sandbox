@@ -1,13 +1,13 @@
 ---
 issue: FLY-3026
 phase: design
-phaseCursor: 3/6
-updated: 2026-09-28T17:44:35.976Z
-nextStep: "design_review: bind plan + Codex review"
+phaseCursor: 4/6
+updated: 2026-09-28T17:54:24.222Z
+nextStep: Codex R2 verdict → review-round → design-review.json → await-codex-gate
 chunks: []
 pointers: {}
 ---
 
 # FLY-3026 progress
-**phase**: design (3/6)
-**next**: design_review: bind plan + Codex review
+**phase**: design (4/6)
+**next**: Codex R2 verdict → review-round → design-review.json → await-codex-gate
