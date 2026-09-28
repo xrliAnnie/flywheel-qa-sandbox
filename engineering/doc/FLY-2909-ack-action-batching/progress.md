@@ -1,14 +1,14 @@
 ---
 issue: FLY-2909
 phase: implement
-phaseCursor: 2/4
-updated: 2026-09-28T15:31:55.654Z
-nextStep: build/typecheck/lint, consumer discovery + targeted tests, docs, push,
-  review, complete
+phaseCursor: 3/4
+updated: 2026-09-28T15:35:51.980Z
+nextStep: Milestone as last commit, push, exact-head code review, PR body
+  update, complete needs_review --pr 1348
 chunks: []
 pointers: {}
 ---
 
 # FLY-2909 progress
-**phase**: implement (2/4)
-**next**: build/typecheck/lint, consumer discovery + targeted tests, docs, push, review, complete
+**phase**: implement (3/4)
+**next**: Milestone as last commit, push, exact-head code review, PR body update, complete needs_review --pr 1348
