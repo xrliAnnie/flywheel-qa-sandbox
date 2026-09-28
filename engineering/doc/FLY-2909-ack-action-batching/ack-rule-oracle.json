@@ -10,7 +10,7 @@
     {
       "path": "lead-rules-base/runner-patrol-rules.md",
       "off": "e23d5d7a03b60e19487d80edcc082e7bff7410f8d76fed25cd635ab7f96dfe59",
-      "on": "e0087b1392cecee4d885b8d6c0c6fd11f768ca773da0ad3068bd600ab9346f49"
+      "on": "0e0d51632a08976030e768dab6b1e22efb7575092c6500f85956acd80ed38ebb"
     },
     {
       "path": "lead-rules-base/legacy-token-savings/inbox-ack-rule.md",
@@ -19,8 +19,8 @@
     },
     {
       "path": "lead-rules-base/legacy-token-savings/runner-patrol-rules.md",
-      "off": "bcee374943e5807eff632cc23786667cf630e7c6628b0145109a5226e4c32dd9",
-      "on": "7882391142f01bb91711aef402a2fe568c5d9701f202b00ce838a741be1ef507"
+      "off": "2a634cb185ed9d909e74a877d778c46e29d407432ed6907e92ef9539cde00511",
+      "on": "e75280e2bb55be21fd457b6ce2f73fe675083b30a215f70c98c98fa66e7679f4"
     }
   ],
   "bootstrapSources": {

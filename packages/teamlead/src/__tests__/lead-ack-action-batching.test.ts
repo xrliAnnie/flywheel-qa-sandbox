@@ -1,6 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -8,7 +9,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 import {
@@ -91,6 +92,35 @@ for (const backend of ["claude-code", "codex-app-server"] as const) {
 		});
 	}
 }
+
+it("resolves the same-version patrol runbook from the selected ON source", () => {
+	const selected = execFileSync(
+		"bash",
+		[
+			"-c",
+			'source "$1/scripts/lead-rules-bundle.sh"; _LEAD_TOKEN_SAVINGS_LAUNCH=1; _LEAD_ACK_ACTION_BATCHING_LAUNCH=1; rules_bundle_select_source "$1/lead-rules-base/runner-patrol-rules.md"',
+			"fixture",
+			root,
+		],
+		{ encoding: "utf8", env: { ...process.env, BASH_ENV: "/dev/null" } },
+	).trim();
+	const runbookPath = readFileSync(selected, "utf8").match(
+		/`((?:\.\.\/)*runbooks\/patrol-v1\.md)`/,
+	)?.[1];
+	expect(runbookPath).toBeDefined();
+	expect(existsSync(resolve(dirname(selected), runbookPath!))).toBe(true);
+});
+
+it("keeps the FLY-2921 rework safety contract in the legacy ON patrol source", () => {
+	const source = readFileSync(
+		`${root}/lead-rules-base/legacy-token-savings/ack-action-batching/runner-patrol-rules.md`,
+		"utf8",
+	);
+	expect(source).toContain("FLY-2921 之后本配方不再执行");
+	expect(source).toContain("rework_returned_to_lead");
+	expect(source).not.toContain("state='replacement_pending'");
+	expect(source).not.toContain("state='wake_delivered',hold_count=0");
+});
 
 it("preserves pre-batching Bootstrap generator and both formatters byte-for-byte", () => {
 	for (const [path, digest] of Object.entries(oracle.bootstrapSources)) {

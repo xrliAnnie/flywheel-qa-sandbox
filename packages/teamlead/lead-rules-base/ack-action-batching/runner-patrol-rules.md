@@ -19,9 +19,9 @@ merge/stop、authority、approval、claim 边界。
 
 ### 按需操作入口（必读）
 
-收到 patrol_tick 后，先读同版本 `runbooks/patrol-v1.md` 的准备段，再按需读取当前
+收到 patrol_tick 后，先读同版本 `../runbooks/patrol-v1.md` 的准备段，再按需读取当前
 STEP 的完整操作段；遇到 receipt/replacement 缺账才读对应附录，执行修复前必须读完整
-配方与前置条件。该文件位于本规则源文件的同级 runbooks 目录：从当前规则 bundle
+配方与前置条件。该文件位于本规则源文件上一级的 runbooks 目录：从当前规则 bundle
 的 MANIFEST 中找到 runner-patrol-rules.md 的绝对路径，再解析相对路径。不要从其他
 checkout 或旧部署取配方。legacy prompt-file 模式使用实际加载的规则文件所在目录。
 文件不存在、不可读或版本不匹配，写 UNAVAILABLE 并报 owner/下一动作；不得猜命令、
