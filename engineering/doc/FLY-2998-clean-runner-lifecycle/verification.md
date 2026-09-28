@@ -13,3 +13,10 @@ Issue: FLY-2998 (https://linear.app/geoforge3d/issue/FLY-2998/qa-sbx-fly-2925-cl
 
 ## 范围
 仅本目录新增设计产物；没有更改产品源码、服务配置或合成正文。真实生命周期恢复及三段正文历史由后续授权阶段验收，不在此声称通过。
+
+## 发布与评审回执
+- 设计产物提交 9d95e3a47，已成功普通推送至 origin/project-slot-2-FLY-2998。
+- review_design question：3dc93f15-78e7-4e16-8f74-4a70cef961d2；request-review accepted=true，requestId 0df18e62-dc79-49a7-abd0-b6b1aa159b2b；本次检查仍 pending，未宣称批准。
+- publish-report --publish-only 成功返回测试房间地址 http://127.0.0.1:53874/fw-reports-7c9d8a/r/72cf801d5ac5b98e41e9eb08f0867f17/ 。这是 loopback 地址，不宣称公网可访问。GET 得到 HTTP 200，nonce 占位已替换，脚本 nonce 与 CSP 匹配，评论标记存在。
+- DESIGN-HTML ready 已通过 ask --report 发送给 flywheel-test-2，回执 6564c28a-498a-4029-80c4-be7196be333b，包含托管地址、图形失败及浏览器未核验限制；未发频道消息。
+- 下一步：下一回合先 turn / inbox，再 check 上述 review question；仅有效 APPROVED 后执行 phase_design_complete 与 park。
