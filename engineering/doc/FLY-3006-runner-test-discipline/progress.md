@@ -1,9 +1,9 @@
 ---
 issue: FLY-3006
 phase: implement
-phaseCursor: 1/5
-updated: 2026-09-28T12:19:01.448Z
-nextStep: Update exact assertions and verify targeted RED failures
+phaseCursor: 2/5
+updated: 2026-09-28T12:20:38.710Z
+nextStep: Migrate the four exact production labels to claude-opus-5.5
 chunks:
   - id: audit
     order: 1
@@ -14,8 +14,8 @@ pointers: {}
 ---
 
 # FLY-3006 progress
-**phase**: implement (1/5)
-**next**: Update exact assertions and verify targeted RED failures
+**phase**: implement (2/5)
+**next**: Migrate the four exact production labels to claude-opus-5.5
 
 ## chunks
 - ✅ audit — 
