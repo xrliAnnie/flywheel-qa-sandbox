@@ -3,7 +3,7 @@ Issue: FLY-2405 (https://linear.app/geoforge3d/issue/FLY-2405/载体起房服务
 日期: 2026-09-28
 基于: research.md
 
-> 修订记录：v1 → v2（Codex 设计评审 R1：8 HIGH + 3 MEDIUM）→ v3（R2：5 HIGH + 1 MEDIUM + 3 澄清）→ v4（R3：4 HIGH），处理表见 §10。
+> 修订记录：v1 → v2（Codex 设计评审 R1：8 HIGH + 3 MEDIUM）→ v3（R2：5 HIGH + 1 MEDIUM + 3 澄清）→ v4（R3：4 HIGH）→ v5（R4：1 HIGH + 1 LOW），处理表见 §10。
 
 ## 0. 目标、非目标、信任模型
 
@@ -90,7 +90,7 @@ Lead 面（`/api/qa-rooms/*`）：`GET /`、`GET /:roomId`、`POST /:roomId/tear
 
 ### 3.5 拒绝原因（单一枚举 `QA_ROOM_REFUSALS`，审计 / HTTP / CLI 共用）
 
-`unauthenticated` · `runner_role_refused` · `exec_not_running` · `room_not_owned` · `slot_busy` · `slot_unknown` · `bad_expect_head` · `invalid_param:<field>` · `production_label_refused` · `tool_unavailable:<name>` · `idempotency_conflict` · `room_busy` · `room_service_disabled` · `room_service_draining` · `snapshot_failed` · `snapshot_missing_unobserved` · `probe_error` · `source_protocol_unsupported` · `room_quarantined`。
+`unauthenticated` · `runner_role_refused` · `exec_not_running` · `room_not_owned` · `slot_busy` · `slot_unknown` · `bad_expect_head` · `invalid_param:<field>` · `production_label_refused` · `tool_unavailable:<name>` · `idempotency_conflict` · `room_busy` · `room_service_disabled` · `room_service_draining` · `snapshot_failed` · `snapshot_missing_unobserved` · `probe_error` · `source_protocol_unsupported` · `room_quarantined` · `identity_uncertain`。
 
 ### 3.6 CLI（R1-#9/#10，R2-#6）
 
@@ -108,7 +108,7 @@ flywheel-comm room teardown <roomId> [--lead [--accept-missing-snapshot --reason
 
 ## 4. 物理 claim 协议（R1-#2，R2-#2/#3）
 
-**claim 形态**：锁路径仍是 `/tmp/flywheel-test-slot-<N>.lock`（手工流程的 `mkdir` 锁不变）。服务 claim 是该路径上的**符号链接**，指向预先写好的服务目录 `SERVICE_ROOT/claims/<roomId>/slot-<N>/`，内含 `owner`（`service:<bridgeInstanceId>:<roomId>:<sha256(claimToken)>`）与 `pid`（内容 `service`，使旧读者 `cat $lock/pid` 得到非数字、不会走"PID 死即回收"）。claimToken 明文只存 `SERVICE_ROOT/claims/<roomId>/token`（0600），DB 存 hash。
+**claim 形态**：锁路径仍是 `/tmp/flywheel-test-slot-<N>.lock`（手工流程的 `mkdir` 锁不变）。服务 claim 是该路径上的**符号链接**，指向预先写好的服务目录 `SERVICE_ROOT/claims/<roomId>/slot-<N>/`，内含 `owner`（`service:<bridgeInstanceId>:<roomId>:<sha256(claimToken)>`）与 `pid`（内容 `service`）。注意：`pid=service` **本身不提供**兼容保护——旧脚本的"非空且 `kill -0` 失败即 stale"判定会把它当死 PID；安全性完全依赖本节下方"所有入口先识别 `service:` owner + token 校验"的新 guard（覆盖实现基线全部入口），guard 测试用 `pid=service` 作 fixture。未升级的旧脚本不会自动尊重服务 claim——由 §0 协议版本门（`source_protocol_unsupported`）保证服务只调用已升级的 checkout。claimToken 明文只存 `SERVICE_ROOT/claims/<roomId>/token`（0600），DB 存 hash。
 
 **原子不覆盖发布（R3-#1）**：`symlink(target, lockPath)` 是单个系统调用，路径已存在（手工 `mkdir` 出的空目录、别的锁、任何东西）即 `EEXIST`，**绝不替换**既有目标；成功时 owner 负载已随目标目录一并可见（目标目录在 symlink 前写完）。反之手工 `mkdir lockPath` 遇到服务 symlink 也 `EEXIST` → 视为占用。不使用 `rename`。
 - 残留风险（诚实）：`/tmp` 对 Codex runner 可写，runner 理论上能删锁 symlink——与今天手工锁同级；服务在每个破坏性步骤前 `readlink` 复核，锁丢失 → room `quarantined:claim_lost` 并告警，不继续删除。
@@ -137,7 +137,18 @@ flywheel-comm room teardown <roomId> [--lead [--accept-missing-snapshot --reason
   3. Bridge 读到有效 `started` 后写 op `running`（pid/pgid）。
   4. 恢复 `launching`：Bridge 以同样方式写完整 `kind:fence` 记录再 `link` 到 `started`——Bridge 赢 → 包装器的 link 必然失败而退出，op `fenced`，以新 attempt/新 op_dir 重派；包装器赢 → 读其记录按 running adopt。`started` 只可能是两种完整记录之一；`*.tmp` 残片不参与裁决，恢复时清理。校验和不符的 `started`（理论上不可能，防御）→ room `quarantined`。
 - **预登记进程组与"不再产生资源"条件（R2-#4，R3-#3）**：Bridge 以 `detached:true` 启动包装器，包装器自身即新进程组 leader，**pgid = 包装器 pid**，在第 2 步的启动记录里随 link 一起发布——即在任何子进程存在之前已登记。包装器启动的所有创建者（git fetch/worktree、`pnpm install`、build、`test-deploy.sh`/`test-teardown.sh`）一律**不** detached，留在同一进程组。于是"失联后找不到创建者"的窗口不存在：只要该 pgid 还有成员，组 ID 就不会被复用；组内无成员即证明所有创建者已退出。包装器只在 `waitpid` 到脚本退出**且**本组除自己外无存活成员后才写成功/失败回执——回执即"本操作不会再创建资源"的提交。自行 `setsid` 出去的房间进程（如房内 Bridge）是**资源**，由 §6 residue 覆盖，而非创建者。
-- **失联屏障**：包装器消失且无回执 → op `supervisor_lost`，room `quarantined`（不是 `deploy_failed`）；Bridge 对已登记的 pgid 执行 `kill(-pgid, TERM)`→(5s)→`KILL`，确认 `ps -g <pgid>` 为空后转 `deploy_failed` 并开放 `active_op_id` 屏障、放行 pending teardown；这一步在 tick 上自动重试直至成功，因此不会永久 quarantine；仅当探测工具本身出错时保持 `quarantined` 并 `probe_error` 告警。超时同样走此流程。
+- **op 归属证明（R4-#1）**：包装器生成随机 `opNonce`（写入启动记录），并以 `FLYWHEEL_QA_OP_NONCE=<opNonce>` 放进传给所有创建者的 env。一个进程"属于本 op"当且仅当：它在进程组 P（= 登记的 pgid）中、`lstart ≥ A`（包装器启动时间），**且** `ps -E -ww -o command= -p <pid>`（同用户进程可读）显示的环境含该 nonce。**组号相等永远不足以授权发信号。**
+- **失联屏障**：包装器消失且无回执 → op `supervisor_lost`，room `quarantined`（不是 `deploy_failed`）。每次 tick（含首次）按下表裁决，**每次 TERM、每次 KILL 之前都重新计算**，只对逐个通过证明的 pid 单独 `kill(pid, sig)`，**从不** `kill(-pgid)`：
+
+| 观察 | 裁决 | 动作 |
+|---|---|---|
+| `ps -g P` 为空 | 原组已消失 | 转 `deploy_failed`，开放屏障 |
+| pid P 当前存在但 lstart ≠ A | 已确认编号复用（组 ID 只能由 pid P 的进程创建，原 leader 已死即说明原组早已清空） | 不发任何信号；视为原组已消失，开放屏障；新组不阻塞本 op |
+| 组内有成员通过归属证明 | 原组仍有已验证成员 | 仅对这些 pid TERM →（下个 tick 重新证明）→ KILL；直到无已验证成员 |
+| 组内有成员但全部**明确不含** nonce | 非本 op（leader 死后编号被复用、新 leader 又死） | 不发信号；视为原组已消失 |
+| 某成员环境不可读 / 探测出错 | 归属无法证明 | 不发信号；保持 `quarantined`，room 标 `identity_uncertain` 并告警；claim 保留；Lead 核实后可 `room teardown --lead --accept-identity-uncertain --reason` 放行并审计 |
+
+  超时同样走此流程。房内 `setsid` 出去的资源进程（如房内 Bridge）同样继承 nonce，residue()（§6）用同一证明识别它们。
 - **串行化**：`UPDATE qa_rooms SET active_op_id=? WHERE room_id=? AND active_op_id IS NULL` CAS；deploy 进行中收到 teardown → teardown op 记为 `pending` 并在 deploy op 终态后执行（屏障），不并发。所有回写带 `(op_id, attempt)`，旧 attempt 回写被丢弃。
 - **toolDirectories**：必需 `bash node pnpm git jq tmux python3 gh sqlite3 claude`，`--codex-runner` 另需 `codex`；在 Bridge 的 `PATH` 上解析真实路径取目录去重 + `/usr/bin:/bin:/usr/sbin:/sbin`；缺失 → `tool_unavailable:<name>`，不 spawn。零写死用户路径。该 PATH 同时传给脚本、launchd plist env 投影（脚本用 `PATH` 生成 plist `EnvironmentVariables`，测试断言投影结果含 codex 目录）。
 - **minimalEnv**：`HOME USER LOGNAME TMPDIR LANG PATH` + 白名单 TEST_* + `FLYWHEEL_QA_DEPLOY_ID` + `FLYWHEEL_QA_SLOT_CLAIM_TOKEN`；`TEST_QA_ROOM_SERVICE=1` 由 `test-deploy.sh` 映射为房内 Bridge 的 `FLYWHEEL_QA_ROOM_SERVICE=1`（R1-#11，脚本改动 + env 投影测试）。
@@ -150,7 +161,7 @@ flywheel-comm room teardown <roomId> [--lead [--accept-missing-snapshot --reason
 | room `queued` | 每 tick | 重新校验身份、凭据、负载；owner 终态 → `canceled` |
 | op `running` | 有回执 | 按回执落终态 |
 | op `running` | 无回执，pid+lstart 匹配存活 | 保持 running，tick 复查；超 `deadline_at` → 按进程组 TERM→KILL，确认退出后 `failed:timeout` |
-| op `launching` | — | §5 launch 交接第 4 步 O_EXCL 裁决 |
+| op `launching` | — | §5 launch 交接第 4 步 `link()` 裁决 |
 | op `running` | 无回执，pid 死或化身不符 | `supervisor_lost` → room `quarantined` → pgid 屏障确认后 `*_failed`；快照策略按"未完整观测" |
 | room `claiming` | — | §4 恢复 |
 | room `releasing` | — | 重放删锁 → `torn_down` |
@@ -171,7 +182,7 @@ flywheel-comm room teardown <roomId> [--lead [--accept-missing-snapshot --reason
 4. 其余预期库缺失（已写过该库的 `db_init` 但库缺失且无回执；或 deploy 未完整观测）→ `snapshot_missing_unobserved`，拒拆；仅 Lead `--accept-missing-snapshot --reason` 可放行并审计。
 5. 多库中任一快照失败 → 整体 `snapshot_failed`，已成功的库回执保留，不拆。
 
-**residue()**（QA@2 HIGH-1）：只认房间归属集合——op 记录的 pid/pgid（化身匹配）、`launchd_labels_json` 中每个**精确** label（主 slot + extra slots，deployId 绑定）的 `launchctl print gui/<uid>/<label>` 存在、`lsof -iTCP:<slotPort> -sTCP:LISTEN`、`lsof -d cwd` 在房间目录内的进程。**命令行文本永不参与**。为空 → 进入 §4 释放流程 → `torn_down`。
+**residue()**（QA@2 HIGH-1）：只认房间归属集合——带本房任一 op nonce 的进程（§5 归属证明）、`launchd_labels_json` 中每个**精确** label（主 slot + extra slots，deployId 绑定）的 `launchctl print gui/<uid>/<label>` 存在、`lsof -iTCP:<slotPort> -sTCP:LISTEN`、`lsof -d cwd` 在房间目录内的进程。**命令行文本永不参与**。为空 → 进入 §4 释放流程 → `torn_down`。
 
 **幂等收尾**：`teardown_failed` 房可由 owner 或 Lead 重拆；重拆从快照规则 1 开始重新走，residue 为空即释放 claim。
 
@@ -188,7 +199,7 @@ flywheel-comm room teardown <roomId> [--lead [--accept-missing-snapshot --reason
 | C2 | 能力凭据 + 请求目录变量：dispatcher 发放（fresh+retry）+ 双 adapter env 注入 + 撤销 | 从 `TmuxAdapter`/`CodexTmuxAdapter` 真实 env 构造取凭据；retry 旧凭据失效 |
 | C3 | `qaRoomAuth` + 路由 + 参数白名单 + 负载门 + drain | 无 token / 两 token 相同→不挂载；ingest 调 Lead 面 401+审计；generic 角色 `runner_role_refused`；他人房 `room_not_owned`+审计；`TEST_LEAD_CLAUDE_CONFIG_DIR`/`TEST_API_TOKEN` 拒；生产 label 拒 |
 | C4 | 物理 claim 协议 + 所有脚本入口识别服务 claim + 协议版本/`--list-db-coordinates`/阶段标记 | 两个独立 StateStore 抢同 slot；手工房占槽 → `slot_busy` 且不 teardown；**无 token 显式 teardown 服务房被拒**；**死 PID 不触发自回收**；borrowed slot；kill-at-boundary：symlink 发布前后、主→extra、claim→DB；**手工 claim 暂停在 mkdir 后 pid 写入前 → 服务抢同 slot 得 `slot_busy`、目录 inode 不变、无 service owner**（主 slot 与 extra slot 各测）；释放后崩溃重放；非服务 claim 手工行为字节不变（sentinel） |
-| C5 | `SERVICE_ROOT` + 镜像物化 + 启动断言；op-runner 包装器 + launch 交接 + 进程组屏障 + toolDirectories + minimalEnv + 恢复矩阵 | **最小 env 中 codex 可解析且投影进 plist env**；缺 codex → `tool_unavailable:codex`；无写死路径；`SERVICE_ROOT` 落在可写根下 → 拒挂载；kill-at-boundary：spawn→tmp 写入中、tmp→link、started→running、commit→ack；link 裁决两种结局 + `*.tmp` 残片；**在子进程已创建、刚要执行副作用时杀包装器 → 重启 → teardown 请求 → 放行旧子进程 → 它已被组 KILL，不产生新房资源，claim 最终释放（不永久 quarantine）**；超时、PID 复用 |
+| C5 | `SERVICE_ROOT` + 镜像物化 + 启动断言；op-runner 包装器 + launch 交接 + 进程组屏障 + toolDirectories + minimalEnv + 恢复矩阵 | **最小 env 中 codex 可解析且投影进 plist env**；缺 codex → `tool_unavailable:codex`；无写死路径；`SERVICE_ROOT` 落在可写根下 → 拒挂载；kill-at-boundary：spawn→tmp 写入中、tmp→link、started→running、commit→ack；link 裁决两种结局 + `*.tmp` 残片；**在子进程已创建、刚要执行副作用时杀包装器 → 重启 → teardown 请求 → 放行旧子进程 → 它已被 KILL，不产生新房资源，claim 最终释放（不永久 quarantine）**；**PGID 复用 fixture**（可控进程探测注入）：①重启前旧组消失 → 同 PGID 新 leader、不同 lstart；②TERM 后旧组消失 → KILL/下个 tick 前编号复用；③leader 死后新组成员不含 nonce——三者断言无关组收到的 TERM/KILL 为 0；④leader 已死、原 op 子进程仍存活（含 nonce）→ 安全停止后开放屏障；⑤环境不可读 → `identity_uncertain`、零信号；超时 |
 | C6 | 快照 + residue + 幂等收尾 | **回归①** 外来进程命令行含房间路径 → 仍 `torn_down`；**回归②** 物理已清 + `teardown_failed` → 重拆成功、锁与 claim 释放；**回归③** 建库前失败 → `skipped:no_db_created`；只有 CommDB；WAL 未落盘数据被快照；部分快照失败拒拆；`supervisor_lost` 缺失回执拒拆 |
 | C7 | 拆房坑：marker deployId、socket 三态 | `scripts/__tests__/qa-room-teardown-guards.test.sh` |
 | C8 | CLI `flywheel-comm room` + `FLYWHEEL_QA_ROOM_REQUEST_DIR` 注入 | 退出码；requestId 落盘 + 响应丢失找回 + CLI 重启沿用；并发重复请求；`--wait` 按 opId；真实 Codex env 未继承 `FLYWHEEL_RUNNER_STATE_DIR` 仍可用；Claude commdb 模式；不可写路径 exit 1 |
@@ -222,7 +233,7 @@ flywheel-comm room teardown <roomId> [--lead [--accept-missing-snapshot --reason
 | #11 开关映射与回滚 | §5 映射 + §10 drain |
 | R2-#1 物化目录可写 | §0 `SERVICE_ROOT` + 自有镜像 + 启动断言 + EPERM 实测；Claude 边界诚实写明 |
 | R2-#2 所有入口识别服务 claim | §4 |
-| R2-#3 崩溃交接 | §4 staging+rename / intent-first；§5 O_EXCL launch 交接；`bridgeInstanceId` |
+| R2-#3 崩溃交接 | §4 symlink 发布 / intent-first；§5 `link()` launch 交接；`bridgeInstanceId` |
 | R2-#4 失联子树屏障 | §5 进程组 + `quarantined` + 回执提交条件 |
 | R2-#5 CommDB 坐标 | §6 `--list-db-coordinates` + 单数 `comm` + fixture |
 | R2-#6 请求日志根 | §3.6 `FLYWHEEL_QA_ROOM_REQUEST_DIR` |
@@ -230,4 +241,6 @@ flywheel-comm room teardown <roomId> [--lead [--accept-missing-snapshot --reason
 | R3-#2 启动身份原子 | §5 完整记录 + `link()` 不覆盖发布 |
 | R3-#3 预登记进程组 | §5 包装器 = 组 leader，pgid 随启动记录发布，创建者不 detached |
 | R3-#4 非适用 DB 坐标 | §6 预期库 vs 发现候选；逐库 `db_init:<role>` |
+| R4-#1 历史 PGID 复用 | §5 nonce 归属证明 + 五分支裁决表 + 逐 pid 发信号前复核 + fixture ①–⑤ |
+| R4-#2 pid=service 说明 | §4 更正：安全性只来自新 guard + 协议版本门 |
 | R2 澄清 | 精确 label 集合；阶段标记替代采样；逐库回执复核；协议版本拒绝；源 checkout 纳入释放 |
