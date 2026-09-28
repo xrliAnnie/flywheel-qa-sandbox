@@ -22,6 +22,9 @@ mkdir -p engineering/doc/FLY-2984-runner-lifecycle-note
 echo base > README; git add -A; git commit -qm base; git push -q origin project-slot-2-FLY-2984
 source $S/defs.zsh; source $S/step.zsh
 
+print "== scenario F: crash after first write (untracked qa-sandbox/), §3.0 check must be clean"
+mkdir -p qa-sandbox; expect 1 > $F
+print "raw=[$(git status --porcelain)] precheck=[$(git status --porcelain --untracked-files=all -- . ":(exclude)$F")]"
 print "== scenario A: crash after write before commit in step 2"
 run_step 1
 expect 2 > $F          # simulate write, then 'crash'
@@ -38,6 +41,8 @@ print "== verify"
 source $S/verify.zsh
 print "== log"; git log --oneline --format='%h %s' | head -20
 print "== file bytes"; od -c $F | tail -3
+print "== scenario E: remote unreadable must STOP, not OK"
+git remote set-url origin $S/missing.git; run_step 3; print "rc=$?"; git remote set-url origin $S/origin.git
 print "== scenario C: unknown content"
 echo junk >> $F; run_step 3; print "rc=$?"; git checkout -q -- $F
 print "== scenario D: other file dirty"

@@ -19,7 +19,7 @@ implement 节点把 `qa-sandbox/fly2925-n2n.md` 分三步写成「标题 + 三�
 
 A runner is a single worker session that Flywheel starts for one node of a workflow. It receives a bounded task, writes to the shared git worktree only while it holds the TURN, reports its stage and progress to the Bridge, and asks its Lead through flywheel-comm whenever it needs a decision it cannot make alone.
 
-When a runner is restarted, it does not start over. The new session re-checks that it still holds the TURN, reads the progress ledger committed on the branch, and inspects the files themselves to see which steps are already done; finished work that was committed and pushed stays in place, and the runner continues from the first unfinished step instead of redoing or rolling back earlier ones.
+When a runner is restarted, it does not start over. It resumes as the same execution rather than a fresh one: it re-checks that it still holds the TURN, reads the progress ledger committed on the branch, and inspects the files themselves to see which steps are already done; finished work that was committed and pushed stays in place, and the runner continues from the first unfinished step instead of redoing or rolling back earlier ones.
 
 Work is handed in through the normal flow: the runner commits and pushes its changes to the issue branch, reports the result to its Lead with a structured flywheel-comm receipt, and then runs flywheel-comm complete with its node's route. It never merges, deploys, or dispatches the next node; the workflow orchestrator decides what happens next.
 ```
@@ -41,10 +41,11 @@ Work is handed in through the normal flow: the runner commits and pushes its cha
 ```zsh
 cd /private/tmp/flywheel-test-slot-2/project-slot-2-FLY-2984
 node "$FLYWHEEL_COMM_CLI" turn          # 必须输出以 "yours" 开头；not-yours 按 TURN WAIT LAW 每 60–90s 轮询，不碰工作树
-git status --porcelain                  # 只允许为空，或仅含 qa-sandbox/fly2925-n2n.md
+git status --porcelain --untracked-files=all -- . ':(exclude)qa-sandbox/fly2925-n2n.md'   # 必须无输出
 ```
 
-若 `git status` 出现 `qa-sandbox/fly2925-n2n.md` 以外的改动：停下，`ask` Lead，不自行清理。
+第二条命令有任何输出（即存在 `qa-sandbox/fly2925-n2n.md` 以外的改动）：停下，`ask` Lead，不自行清理。
+用 `--untracked-files=all` + pathspec 排除，是因为首次写入后未跟踪目录会显示为 `?? qa-sandbox/`，普通 `git status --porcelain` 会把它误判为「其他改动」。`run_step` 开头内置同一检查。
 
 ### 3.1 定义（粘贴到当前 shell，不写入仓库）
 
@@ -53,7 +54,7 @@ F=qa-sandbox/fly2925-n2n.md
 BR=project-slot-2-FLY-2984
 H='# FLY-2925 N-to-N runner lifecycle note'
 P1='A runner is a single worker session that Flywheel starts for one node of a workflow. It receives a bounded task, writes to the shared git worktree only while it holds the TURN, reports its stage and progress to the Bridge, and asks its Lead through flywheel-comm whenever it needs a decision it cannot make alone.'
-P2='When a runner is restarted, it does not start over. The new session re-checks that it still holds the TURN, reads the progress ledger committed on the branch, and inspects the files themselves to see which steps are already done; finished work that was committed and pushed stays in place, and the runner continues from the first unfinished step instead of redoing or rolling back earlier ones.'
+P2='When a runner is restarted, it does not start over. It resumes as the same execution rather than a fresh one: it re-checks that it still holds the TURN, reads the progress ledger committed on the branch, and inspects the files themselves to see which steps are already done; finished work that was committed and pushed stays in place, and the runner continues from the first unfinished step instead of redoing or rolling back earlier ones.'
 P3='Work is handed in through the normal flow: the runner commits and pushes its changes to the issue branch, reports the result to its Lead with a structured flywheel-comm receipt, and then runs flywheel-comm complete with its node'"'"'s route. It never merges, deploys, or dispatches the next node; the workflow orchestrator decides what happens next.'
 MSG1='docs(FLY-2984): add runner lifecycle note (step 1/3)'
 MSG2='docs(FLY-2984): describe runner restart (step 2/3)'
@@ -113,7 +114,10 @@ run_step() {
       --file "$LEDGER" --phase implement --cursor $k/3 --next "step $((k+1))/3" || return 2
   fi
   # (d) 推送：本地头与远端头不同才推；只允许 fast-forward
-  local remote; remote=$(git ls-remote --exit-code origin "refs/heads/$BR" | cut -f1) || { print "STOP: 远端分支不可读"; return 2; }
+  local out remote
+  out=$(git ls-remote --exit-code origin "refs/heads/$BR") || { print "STOP: 远端分支不可读"; return 2; }
+  remote=${out%%$'\t'*}
+  [[ ${#remote} == 40 && $remote != *[^0-9a-f]* ]] || { print "STOP: 远端头格式异常"; return 2; }
   if [[ $(git rev-parse HEAD) != $remote ]]; then
     git push origin "$BR" || { print "STOP: push 失败（可能非 fast-forward），ask Lead，不 force"; return 2; }
   fi
@@ -147,7 +151,7 @@ ok=1; for c in $C; do [[ $(git show --name-only --format= $c) == "$F" ]] || { ok
 B=${C[1]}^
 [[ $(git diff --name-only $B..HEAD | grep -v -x 'engineering/doc/FLY-2984-runner-lifecycle-note/progress.md') == "$F" ]] && print V3 PASS || print V3 FAIL
 # V4 远端头 == 本地头
-[[ $(git ls-remote origin "refs/heads/$BR" | cut -f1) == $(git rev-parse HEAD) ]] && print V4 PASS || print V4 FAIL
+out=$(git ls-remote --exit-code origin "refs/heads/$BR") && [[ ${out%%$'\t'*} == $(git rev-parse HEAD) ]] && print V4 PASS || print V4 FAIL
 # V5 三个 commit message 与合同一致、顺序正确
 [[ $(git log --reverse --format=%s -- "$F") == "$MSG1"$'\n'"$MSG2"$'\n'"$MSG3" ]] && print V5 PASS || print V5 FAIL
 ```
@@ -156,7 +160,14 @@ V1–V5 全 PASS 才能进入交卷；任一 FAIL 按 3.2 的 STOP 规则处理�
 
 ### 3.4 交卷
 
-按 implement 节点注入的收尾合同执行（账本已在 3.2(c) 写到 3/3 且已随最后一次 push 上远端 → `ask --report` 带 V1–V5 结果与三个 commit sha → 该节点规定的 `complete --route`）。本计划不硬编码 implement 的 route，不开 PR 到 main，不 merge。
+按 implement 节点注入的收尾合同执行：账本已在 3.2(c) 写到 3/3 且随最后一次 push 上远端 → 按注入合同做代码评审 / PR / `ask --report`（带 V1–V5 结果与三个交付 commit sha）→ 注入合同规定的 `complete --route`。本计划不硬编码 implement 的 route，不 merge、不部署。
+
+与 implement 角色通用合同的两处冲突，按下述默认处理并在报告中写明：
+
+| 冲突 | 默认 | 理由 |
+|---|---|---|
+| 角色合同要求 `engineering/doc/milestones/<ID>.md` 作为 PR 最后一个 commit | **不加**；先 `ask` Lead，只有 Lead 明确要求才加（加了则 V3 需把该路径加入排除表并在报告中说明） | issue 明文「Do not change any other file」，比通用角色合同更具体 |
+| 开 PR 的 base | 开 PR 不改文件，不违反 issue；base 由 Lead 决定——本分支领先 `origin/main` 2686 个 commit，对 main 开 PR 会带入 FLY-2925 全部历史。设计节点已发非阻塞问题 `cc147074-ac51-4b79-a8a1-857f36bce612`；implement 开 PR 前 `check` 该问题，无答复则 `ask` Lead 并按其回复执行 | 避免把无关历史推到 main 的 PR 上 |
 
 ## 4. 回滚边界
 
@@ -187,6 +198,10 @@ V1–V5 全 PASS 才能进入交卷；任一 FAIL 按 3.2 的 STOP 规则处理�
 | V1–V5 | 全 PASS |
 | C 文件被追加未知内容 | `STOP: … 不匹配任何已知前缀`，rc=2，不覆盖 |
 | D 暂存了其他文件 | `STOP: 工作树有 … 以外的改动`，rc=2 |
+| E 远端不可读（origin 指向不存在的仓） | `STOP: 远端分支不可读`，rc=2，不打印 OK |
+| F 第 1 步写完即被杀（`qa-sandbox/` 未跟踪） | 裸 `git status --porcelain` 为 `?? qa-sandbox/`；§3.0 的排除式检查为空，续跑正常 |
+
+Codex R1（额度中断前）指出三处：§3.0 首写后误判、`ls-remote | cut` 吞掉失败退出码、第 2 段「new session」与 FLY-2925「重启按原会话续接」不符——均已修正，E/F 两个场景即为回归证据。
 
 第一版脚本在场景 A 中把「已写到第 2 步」的工作区内容误提交成 step 1——干跑发现后改为 `state`/`hstate`/`ledger_k` 三分判断，即现行版本。
 
