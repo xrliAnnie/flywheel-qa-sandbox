@@ -26,6 +26,7 @@ import {
 import { registerCodexTerminalTeardown } from "../bridge/codex-daemon-teardown.js";
 import { commDbPathForProject } from "../bridge/commdb-path.js";
 import * as commDbSessionPrune from "../bridge/commdb-session-prune.js";
+import { readStoredExecutionBodyLiveness } from "../bridge/execution-body-reader.js";
 import { StateStore } from "../StateStore.js";
 
 type Fly2662PendingWindowFixture = {
@@ -184,6 +185,80 @@ function seedSession(store: StateStore, status: string): void {
 		project_name: "flywheel",
 		status,
 	});
+}
+
+function seedDrainedLegacyOwner(store: StateStore): void {
+	const identity = {
+		executionId: "exec-1",
+		activationId: null,
+		generation: 1,
+		ownerToken: "owner-1",
+	};
+	const lifecycleRevision = store.getLifecycleRevision("exec-1");
+	const controller = {
+		pid: 100,
+		startIdentity: "controller-start",
+		hostBootId: "boot-1",
+	};
+	expect(
+		store.executionProcessOwners.claim({
+			...identity,
+			lifecycleRevision,
+			nowMs: 1_000,
+			controller,
+		}),
+	).toEqual({ ok: true });
+	const started = store.executionProcessOwners.beginSpawn({
+		...identity,
+		lifecycleRevision,
+		spawnEpoch: 0,
+		nowMs: 1_001,
+	});
+	if (!started.ok) throw new Error(started.reason);
+	const accepted = store.executionProcessOwners.acceptSpawn({
+		...started.permit,
+		lifecycleRevision,
+		nowMs: 1_002,
+		binding: {
+			version: 1,
+			adapter: "claude-tmux",
+			pid: 200,
+			pgid: 200,
+			startIdentity: "worker-start",
+			hostBootId: "boot-1",
+			executable: "/opt/claude",
+			cwd: "/work",
+			nonce: "exec-1-spawn-1",
+			nativeSessionId: null,
+			writers: [],
+		},
+	});
+	if (!accepted.ok) throw new Error(accepted.reason);
+	expect(
+		store.executionProcessOwners.requestClose({
+			...started.permit,
+			lifecycleRevision,
+			nowMs: 1_003,
+		}),
+	).toEqual({ ok: true });
+	expect(
+		store.executionProcessOwners.recordDrained({
+			...started.permit,
+			lifecycleRevision,
+			nowMs: 1_004,
+			evidence: {
+				...started.permit,
+				controller,
+				bindingDigest: accepted.bindingDigest,
+				controllerState: "stopped",
+				groupState: "absent",
+				writersState: "absent",
+				observedAtMs: 1_003,
+				expiresAtMs: 11_003,
+			},
+			reason: "close_runner",
+		}),
+	).toMatchObject({ ok: true, receipt: expect.any(String) });
 }
 
 function seedCommSession(
@@ -1254,6 +1329,30 @@ describe("closeRunner", () => {
 
 		const result = await closeRunner(makeOpts({ observeBody }), store);
 
+		expect(result).toMatchObject({
+			closed: true,
+			alreadyGone: true,
+			terminalResidueAbsent: true,
+			physicalGone: false,
+			commDbFinalized: true,
+		});
+		expect(result).not.toHaveProperty("runnerDeathProven");
+	});
+
+	it("settles a terminal bound legacy session after an exact drain receipt", async () => {
+		seedSession(store, "running");
+		seedDrainedLegacyOwner(store);
+		store.forceStatus("exec-1", "completed", new Date(2_000).toISOString());
+		mockGetTmuxTarget.mockReturnValue(undefined);
+		const observeBody = vi.fn(
+			async (executionId: string, projectName: string) =>
+				readStoredExecutionBodyLiveness(store, executionId, projectName),
+		);
+
+		const result = await closeRunner(makeOpts({ observeBody }), store);
+
+		expect(observeBody).toHaveBeenCalledOnce();
+		await expect(observeBody.mock.results[0]?.value).resolves.toBe("unknown");
 		expect(result).toMatchObject({
 			closed: true,
 			alreadyGone: true,

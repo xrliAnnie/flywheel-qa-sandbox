@@ -313,17 +313,24 @@ describe("FLY-2919 body death across StateStore and CommDB", () => {
 		).not.toContain(executionId);
 	});
 	it.each(["awaiting_review", "approved_to_ship", "ship_parked"])(
-		"preserves a legacy DecisionLayer-owned %s status after the body exits",
+		"settles physical absence while preserving a legacy DecisionLayer-owned %s status",
 		async (status) => {
 			const { executionId } = seedLegacyExecution(`legacy-${status}`);
 			store.forceStatus(executionId, status, new Date(clock).toISOString());
 
 			expect(await convergeExecutionBody(deps, executionId)).toEqual({
 				kind: "deferred",
-				reason: "legacy_decision_owned",
+				reason: "legacy_outcome_preserved",
 			});
 			expect(store.getSession(executionId)?.status).toBe(status);
 			expect(comm.getSession(executionId)?.status).toBe("running");
+			expect(store.executionProcessOwners.get(executionId)).toMatchObject({
+				close_requested: 1,
+				owner_drained_receipt: expect.any(String),
+			});
+			expect(
+				store.executionProcessOwners.listObservationCandidates(),
+			).not.toContain(executionId);
 		},
 	);
 	it("defers a dead legacy body while its Blueprint is still in flight", async () => {

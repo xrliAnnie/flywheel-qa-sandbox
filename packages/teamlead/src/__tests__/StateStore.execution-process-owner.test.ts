@@ -175,7 +175,7 @@ describe("FLY-2919 execution process owner", () => {
 		).toEqual({ ok: false, reason: "legacy_binding_requires_adoption" });
 	});
 
-	it("samples terminal-labelled owners until the exact body-death projection is settled", () => {
+	it("stops sampling an exactly drained owner without manufacturing body death", () => {
 		claim();
 		store.createWorkflowRun({
 			runId: "inventory-run",
@@ -205,11 +205,11 @@ describe("FLY-2919 execution process owner", () => {
 			db.prepare(
 				"UPDATE execution_process_owner SET owner_drained_receipt='receipt' WHERE execution_id=?",
 			).run("exec-1");
-			expect(owners().listObservationCandidates()).toEqual(["exec-1"]);
+			expect(owners().listObservationCandidates()).toEqual([]);
 			db.prepare(
 				"UPDATE workflow_execution_process_body SET state='closed' WHERE execution_id=?",
 			).run("exec-1");
-			expect(owners().listObservationCandidates()).toEqual(["exec-1"]);
+			expect(owners().listObservationCandidates()).toEqual([]);
 			db.prepare(
 				`INSERT INTO workflow_run_event(run_id,seq,event_uid,kind,node_id,execution_id,payload,at)
 				 VALUES('inventory-run',1,'body_death:exec-1:1:projected','body_death_projected','implement','exec-1','{}','2026-09-26T00:00:01Z')`,

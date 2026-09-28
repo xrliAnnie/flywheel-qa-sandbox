@@ -62,6 +62,62 @@ export type ExecutionBodyConvergenceResult =
 			projection: ReturnType<typeof projectCommittedExecutionBodyDeath>;
 	  };
 
+function settleLegacyOutcomePreservedBody(
+	deps: ExecutionBodyConvergenceDeps,
+	observation: BodyObservation,
+): ExecutionBodyConvergenceResult {
+	const executionId = observation.identity.executionId;
+	const owner = deps.store.executionProcessOwners.get(executionId);
+	if (!owner)
+		return { kind: "deferred", reason: "body_death_authority_changed" };
+	try {
+		if (deps.observer.isCurrent(observation) !== true)
+			return { kind: "deferred", reason: "body_death_authority_changed" };
+	} catch {
+		return { kind: "deferred", reason: "body_death_authority_changed" };
+	}
+	const nowMs = deps.now();
+	const identity = {
+		executionId,
+		activationId: observation.identity.activationId,
+		generation: observation.identity.generation,
+		ownerToken: observation.ownerToken,
+		spawnEpoch: observation.spawnEpoch,
+		lifecycleRevision: observation.identity.lifecycleRevision,
+		nowMs,
+	};
+	const closed = deps.store.executionProcessOwners.requestClose(identity);
+	if (!closed.ok) return { kind: "deferred", reason: closed.reason };
+	try {
+		if (deps.observer.isCurrent(observation) !== true)
+			return { kind: "deferred", reason: "body_death_authority_changed" };
+	} catch {
+		return { kind: "deferred", reason: "body_death_authority_changed" };
+	}
+	const observedAtMs = Date.parse(observation.observedAt);
+	const drained = deps.store.executionProcessOwners.recordDrained({
+		...identity,
+		evidence: {
+			...identity,
+			controller: {
+				pid: owner.controller_pid,
+				startIdentity: owner.controller_start,
+				hostBootId: owner.host_boot_id,
+			},
+			bindingDigest: observation.bindingDigest,
+			controllerState: "absent",
+			groupState: "absent",
+			writersState: "absent",
+			observedAtMs,
+			expiresAtMs: Date.parse(observation.expiresAt),
+		},
+		reason: "body_death_outcome_preserved",
+	});
+	return drained.ok
+		? { kind: "deferred", reason: "legacy_outcome_preserved" }
+		: { kind: "deferred", reason: drained.reason };
+}
+
 /** Temporary lease contention is scheduling, not a semantic death refusal.
  * Each attempt reacquires/revalidates independently; no lease is held while waiting. */
 export async function retryExecutionBodyConvergence(
@@ -299,7 +355,7 @@ export async function convergeExecutionBody(
 	if (legacyScope) {
 		const currentSession = deps.store.getSession(executionId);
 		if (currentSession?.status !== "running")
-			return { kind: "deferred", reason: "legacy_decision_owned" };
+			return settleLegacyOutcomePreservedBody(deps, observation);
 		try {
 			if (deps.isExecutionInFlight?.(executionId) === true)
 				return { kind: "deferred", reason: "legacy_adapter_active" };

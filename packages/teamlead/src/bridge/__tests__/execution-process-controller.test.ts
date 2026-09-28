@@ -312,7 +312,21 @@ describe("FLY-2919 durable production process owner", () => {
 						state: "running",
 					},
 				];
-			if (kind === "binding") sample.hostBootId = "other-boot";
+			if (kind === "binding") {
+				sample.hostBootId = "other-boot";
+				// A reboot sample cannot simultaneously contain the exact identity
+				// accepted on the prior boot. Treat that census as contradictory,
+				// rather than authorizing a reown from a false death verdict.
+				sample.processes = [
+					{
+						pid: binding.pid,
+						ppid: 1,
+						pgid: binding.pgid,
+						startIdentity: binding.startIdentity,
+						state: "running",
+					},
+				];
+			}
 			options.readController = async () => ({ ...controller, pid: 101 });
 			const next = createExecutionProcessOwnerFactory(store, options)(
 				ctx,

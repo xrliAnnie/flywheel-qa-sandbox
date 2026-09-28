@@ -52,6 +52,7 @@ import {
 	type CloseArchiveDeps,
 	maybeArchiveThreadOnClose,
 } from "./done-thread-archiver.js";
+import { hasManagedExecutionProcessResidue } from "./execution-process-owner.js";
 import { probeRunExecutionLiveness } from "./run-quiescence.js";
 import { reapRunnerMcp } from "./runner-teardown.js";
 import { cleanupExecutionSnapshots } from "./snapshot-closeout.js";
@@ -67,12 +68,8 @@ function hasManagedProcessResidue(
 	store: StateStore,
 	executionId: string,
 ): boolean {
-	const owner = store.executionProcessOwners.get(executionId);
-	if (!owner) return false;
-	return Boolean(
-		owner.binding_json ||
-			owner.spawn_inflight ||
-			(owner.spawn_epoch > 0 && !owner.owner_drained_receipt),
+	return hasManagedExecutionProcessResidue(
+		store.executionProcessOwners.get(executionId),
 	);
 }
 

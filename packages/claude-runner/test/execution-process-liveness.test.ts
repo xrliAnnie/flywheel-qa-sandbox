@@ -173,6 +173,29 @@ describe("FLY-2919 execution process truth", () => {
 		},
 	);
 
+	it("refuses a reboot verdict while the prior bound worker identity is still present", () => {
+		const input = fixture();
+		input.sample!.hostBootId = "boot-2";
+		expect(observeExecutionProcesses(input)).toMatchObject({
+			verdict: "unknown",
+			reason: "process_identity_mismatch",
+		});
+	});
+
+	it.each(["spawn", "restart"])(
+		"does not let a stale %s fence survive a proven host reboot",
+		(kind) => {
+			const input = gone();
+			input.sample!.hostBootId = "boot-2";
+			if (kind === "spawn") input.spawnInflight = true;
+			if (kind === "restart") input.restartInProgress = true;
+			expect(observeExecutionProcesses(input)).toMatchObject({
+				verdict: "dead",
+				reason: "host_reboot",
+			});
+		},
+	);
+
 	it.each([
 		"executionId",
 		"activationId",

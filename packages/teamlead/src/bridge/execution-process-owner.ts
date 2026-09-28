@@ -119,6 +119,26 @@ export interface ExecutionProcessOwnerRow {
 	owner_drained_receipt: string | null;
 }
 
+/** Exact close + drain is durable physical-absence evidence for closeout and
+ * inventory. It does not manufacture a body-death decision or alter outcome. */
+export function hasManagedExecutionProcessResidue(
+	owner: ExecutionProcessOwnerRow | undefined,
+): boolean {
+	if (!owner) return false;
+	if (
+		owner.close_requested === 1 &&
+		owner.owner_drained_receipt !== null &&
+		owner.spawn_inflight === 0 &&
+		owner.restart_in_progress === 0
+	)
+		return false;
+	return Boolean(
+		owner.binding_json ||
+			owner.spawn_inflight ||
+			(owner.spawn_epoch > 0 && !owner.owner_drained_receipt),
+	);
+}
+
 /** Identity and launch exclusivity only. This table never asserts alive/dead. */
 export class ExecutionProcessOwnerStore {
 	constructor(
@@ -168,25 +188,15 @@ export class ExecutionProcessOwnerStore {
 	}
 
 	/** Scheduling inventory, never a liveness verdict. Business-terminal labels
-	 * cannot hide an owner until close/drain and the same-generation physical
-	 * body settlement are recorded. Owner drain alone still needs convergence. */
+	 * cannot hide an owner. An exact close/drain receipt already proves physical
+	 * absence without projecting a new body-death outcome. */
 	listObservationCandidates(): string[] {
 		return (
 			this.db
 				.prepare(`SELECT owner.execution_id FROM execution_process_owner owner
 			WHERE NOT (owner.close_requested = 1
 			AND owner.owner_drained_receipt IS NOT NULL
-			AND owner.spawn_inflight = 0 AND owner.restart_in_progress = 0
-			AND (EXISTS (SELECT 1 FROM workflow_run_event projected
-				WHERE projected.event_uid = 'body_death:' || owner.execution_id || ':' || owner.generation || ':projected')
-			OR EXISTS (SELECT 1 FROM workflow_terminal_archive projected
-				WHERE projected.source_table = 'workflow_run_event'
-				AND json_extract(projected.row_json,'$.event_uid') = 'body_death:' || owner.execution_id || ':' || owner.generation || ':projected')
-			OR EXISTS (SELECT 1 FROM session_events projected
-				WHERE projected.event_id = 'body_death:' || owner.execution_id || ':' || owner.generation || ':projected')
-			OR EXISTS (SELECT 1 FROM workflow_terminal_archive projected
-				WHERE projected.source_table = 'session_events'
-				AND json_extract(projected.row_json,'$.event_id') = 'body_death:' || owner.execution_id || ':' || owner.generation || ':projected')))
+			AND owner.spawn_inflight = 0 AND owner.restart_in_progress = 0)
 			UNION SELECT session.execution_id FROM sessions session
 			WHERE session.adapter_type = 'claude-tmux'
 			AND session.status IN ('running', 'ship_parked', 'awaiting_review', 'design_done', 'approved_to_ship', 'pending')

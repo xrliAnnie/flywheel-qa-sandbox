@@ -186,16 +186,22 @@ export function observeExecutionProcesses(
 			if (found && found.startIdentity !== identity.startIdentity)
 				return mismatch();
 		}
+	if (hostReboot) {
+		for (const identity of [binding, input.controller, ...writers]) {
+			const found = processes.get(identity.pid);
+			if (found?.startIdentity === identity.startIdentity) return mismatch();
+		}
+		if (input.recoveryActive)
+			return result("unknown", "controller_recovery_active");
+		if (!sample.writersComplete) return observation;
+		return result("dead", "host_reboot");
+	}
 	if (
 		input.spawnInflight ||
 		(input.restartInProgress && !input.ownerClosed) ||
 		input.recoveryActive
 	)
 		return result("unknown", "controller_recovery_active");
-	if (hostReboot) {
-		if (!sample.writersComplete) return observation;
-		return result("dead", "host_reboot");
-	}
 	const worker = processes.get(binding.pid);
 	if (worker?.state === "running") {
 		if (

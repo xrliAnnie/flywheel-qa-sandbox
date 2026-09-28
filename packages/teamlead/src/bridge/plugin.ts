@@ -534,6 +534,7 @@ import {
 } from "./execution-body-reader.js";
 import { createExecutionBodyRuntime } from "./execution-body-runtime.js";
 import { withExecutionMutationLease } from "./execution-mutation-lease.js";
+import { hasManagedExecutionProcessResidue } from "./execution-process-owner.js";
 import {
 	checkPrMergeViaGh,
 	createExternalMergeReconciler,
@@ -5886,12 +5887,8 @@ export function createBridgeApp(
 						opts?.readBodyLiveness?.(executionId, projectName) ??
 						"unknown",
 					hasManagedProcessResidue: (executionId) => {
-						const owner = store.executionProcessOwners.get(executionId);
-						if (!owner) return false;
-						return Boolean(
-							owner.binding_json ||
-								owner.spawn_inflight ||
-								(owner.spawn_epoch > 0 && !owner.owner_drained_receipt),
+						return hasManagedExecutionProcessResidue(
+							store.executionProcessOwners.get(executionId),
 						);
 					},
 					lookupTmuxTarget,
