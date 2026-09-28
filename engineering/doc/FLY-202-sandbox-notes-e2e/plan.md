@@ -3,7 +3,7 @@ Issue: FLY-202 (https://linear.app/geoforge3d/issue/FLY-202/qa-sandbox-fixture-s
 日期: 2026-09-28
 基于: research.md
 
-> **For agentic workers:** 在本 DAG 的 implement 节点按任务顺序执行；先取得 implement TURN，并逐项更新同目录 `progress.md`。不要 dispatch successor，不要 merge 或请求 ship authority。
+> **For agentic workers:** 在本 DAG 的 implement 节点按任务顺序执行；先取得 implement TURN，并逐项更新同目录 `progress.md`。不要 dispatch successor，不要把 PR 合入 main 或请求 ship authority（把 `origin/main` 普通 merge 进 feature branch 做技术同步不在此禁令内）。
 
 **Goal:** 原位刷新 `doc/qa/sandbox-notes.md`，逐项满足 FLY-202 的五个 fixture 要求，并保证 sandbox `main` 上存在**恰好一个** open PR（当前为 #267）。
 
@@ -111,11 +111,13 @@ git diff --check
 
 | 结果 | 动作 |
 | --- | --- |
-| behind=`0` 且四项全部 PASS | **不修改 `doc/qa/sandbox-notes.md`，不制造空 commit。** 跳到 Task 5 Step 4 确认 PR 证据，更新 progress，按 implement 节点协议交接。 |
+| behind=`0` 且四项全部 PASS | **不修改 `doc/qa/sandbox-notes.md`，不制造空 notes commit。** 跳过 Task 1–4，但**仍然必须走完 Task 5 Step 2–4**（先完成 progress 更新及其 commit → fast-forward push → PR 对账 → 在最终 HEAD 上校验 PR SHA）。无改动只免除 notes 编辑，不免除发布与对账。 |
 | behind>`0` | 先按 Task 0 Step 2 做技术同步 merge 并 push，然后从 Task 1 开始（merge 后 tree 或目录集合可能变化）。 |
 | 任一验证 FAIL | 从 Task 1 开始刷新对应区块；只重写失败区块及其依赖，不重写通过的段落。 |
 
 2026-09-28 design 复核结果：behind=`0`、四项全部 PASS。除非 implement 节点开始时 `origin/main` 已前进，否则默认走第一行。
+
+注意：`flywheel-comm progress` 只做 path-limited commit，**不 push**；design 节点交接时线上分支通常落后本地若干 progress/design commit。因此任何路径都不能在 push 之前校验 PR SHA，也不能在校验之后再产生 commit。
 
 ### Task 1: 建立失败基线
 
@@ -142,7 +144,7 @@ Expected: FAIL/non-zero；diff 显示旧 block 含 `FLY-202-generalized-e2e`，�
 使用 `# Flywheel QA Sandbox Notes` 标题，随后写三段，各自只承担一个职责：
 
 1. 说明仓库是 test-slot 的隔离 target，运行真实 Linear → Bridge → Runner 路径而非 synthetic fixture。
-2. 说明安全边界：slot 可以在 sandbox clone 中 branch / commit / push / PR，但不碰生产 repo、频道、alert queue 或数据库。
+2. 说明安全边界：slot 可以在 sandbox clone 中 branch / commit / push / PR，但不碰生产 repo 或 Discord 频道。**必须保留现有的条件说法**：alert queue / deadletter / claims DB 只在 slot 以 `--alerts` 部署时才隔离，未启用时按 `packages/qa-framework/README.md` 所述使用 production-path 默认存储（上一轮 `f2312a66a` 已修正过此点，不得回退为无条件的「不碰 alert queue 或数据库」）。
 3. 说明 disposable / repeatable 属性与 `test-deploy.sh` → `inject-linear-issue.sh` → `test-teardown.sh` 生命周期，并明确生产 Lead/Runner 不得 pick up FLY-202。
 
 保留真实名词（`flywheel-qa-sandbox`、PreHydrator、`FLYWHEEL_RUNNER_START_POINT`），首次出现时用一句白话解释，不写当前 slot 之外的临时绝对路径。
@@ -238,13 +240,15 @@ git diff --name-only origin/main...HEAD
 git diff -- doc/qa/sandbox-notes.md
 ```
 
-Expected: 无 whitespace error；变更只包含 `doc/qa/sandbox-notes.md` 与 `engineering/doc/FLY-202-sandbox-notes-e2e/` 下的本 issue artifacts。禁止用 bare `vitest`、package test alias 或 full-suite command；本任务没有 TypeScript 变更，因此不需要 `vitest related`。
+Expected: 无 whitespace error；`origin/main...HEAD` 的变更路径只包含 `doc/qa/sandbox-notes.md`、`engineering/doc/FLY-202-sandbox-notes-e2e/` 下的本 issue artifacts，以及已存在的 `engineering/doc/milestones/FLY-202.md`（上一轮 implement 产物，允许保留，不要求重写）。这份白名单与 Task 5 Step 4 和 QA 合同一致。禁止用 bare `vitest`、package test alias 或 full-suite command；本任务没有 TypeScript 变更，因此不需要 `vitest related`。
 
-### Task 5: Commit、push 并创建 PR
+### Task 5: 发布与 PR 对账（所有路径必经）
 
-**Files:** Commit `doc/qa/sandbox-notes.md` and updated `progress.md` if present。
+**Files:** Commit `doc/qa/sandbox-notes.md`（仅内容刷新路径）and updated `progress.md`。
 
-- [ ] **Step 1: Commit implement artifact**
+顺序固定为：Step 1（仅有 notes 改动时）→ 最后一次 `flywheel-comm progress` 更新 → Step 2 push → Step 3 PR 对账 → Step 4 在最终 HEAD 校验。**Step 4 之后不得再产生任何 commit**；若交接协议要求再写 progress，则必须重新执行 Step 2 与 Step 4，把证据重新绑定到新的 HEAD。
+
+- [ ] **Step 1: Commit implement artifact（仅内容刷新路径）**
 
 Run:
 
@@ -254,7 +258,7 @@ git diff --cached --check
 git commit -m "docs(FLY-202): refresh QA sandbox fixture notes"
 ```
 
-Expected: 一个 docs-only commit；若 progress 已被其专用命令单独 commit，则 `git add` 只暂存 notes。
+Expected: 一个 docs-only commit；若 progress 已被其专用命令单独 commit，则 `git add` 只暂存 notes。无改动路径跳过本步，直接做最后一次 progress 更新后进入 Step 2。
 
 - [ ] **Step 2: Push feature branch**
 
@@ -264,17 +268,25 @@ Run:
 git push -u origin project-slot-6-FLY-202
 ```
 
-Expected: fast-forward push 成功并建立 upstream。不得使用 `--no-verify`；若遇 non-fast-forward，不得自行 force-push。
+Expected: fast-forward push 成功并建立 upstream，且 `git rev-parse HEAD` 等于 `git ls-remote --heads origin project-slot-6-FLY-202` 的 SHA。无改动路径同样必须执行本步，把 design/progress commit 推到线上分支。不得使用 `--no-verify`；若遇 non-fast-forward，不得自行 force-push。
 
-- [ ] **Step 3: 复用现有 PR；仅在不存在时创建**
+- [ ] **Step 3: PR 对账 — 复用现有 PR；仅在不存在时创建（所有路径必经）**
 
 Run:
 
 ```bash
-gh pr list --repo xrliAnnie/flywheel-qa-sandbox --head project-slot-6-FLY-202 --state open --json number,url
+gh pr list --repo xrliAnnie/flywheel-qa-sandbox --base main --head project-slot-6-FLY-202 --state open --json number,url
 ```
 
-Expected: 返回恰好一个 open PR（当前 #267）。**若非空，跳过创建**：Step 2 的 push 已自动更新该 PR 的 head；如本轮有内容变化，用 `gh pr comment <number> --body-file -` 追加一条本轮验证摘要即可，不改标题。只有返回 `[]` 时才执行以下创建命令：
+按结果分流：
+
+| 结果 | 动作 |
+| --- | --- |
+| 命令成功，恰好一个 open PR（当前 #267） | 复用。Step 2 的 push 已自动更新其 head；如本轮有 notes 内容变化，用 `gh pr comment <number> --body-file -` 追加一条本轮验证摘要，不改标题。 |
+| 命令成功，返回 `[]`（PR 被外部关闭） | 执行下方创建命令，得到新的 open PR。不为此修改 notes，也不制造空 commit。 |
+| 命令失败（非零退出、认证错误）或返回多于一个 | **停止交接**，通过 Lead question gate 请求裁决；不得自行关闭或新建 PR。 |
+
+创建命令（仅第二行使用）：
 
 ```bash
 gh pr create \
@@ -318,11 +330,12 @@ gh pr view project-slot-6-FLY-202 --repo xrliAnnie/flywheel-qa-sandbox --json ur
 test "$(gh pr view project-slot-6-FLY-202 --repo xrliAnnie/flywheel-qa-sandbox --json headRefOid -q .headRefOid)" = "$(git rev-parse HEAD)"
 ```
 
-Expected: `state=OPEN`、`baseRefName=main`、`headRefName=project-slot-6-FLY-202`、`headRefOid` 等于本地 HEAD；files 仅为 FLY-202 notes、`engineering/doc/FLY-202-sandbox-notes-e2e/` 与 `engineering/doc/milestones/FLY-202.md`。记录 URL，按 implement 节点注入的 review、completion 和 park 协议交接；不要 merge。
+Expected: `state=OPEN`、`baseRefName=main`、`headRefName=project-slot-6-FLY-202`、`headRefOid` 等于本地 HEAD（`test` 退出码 0）；files 仅为 FLY-202 notes、`engineering/doc/FLY-202-sandbox-notes-e2e/` 与 `engineering/doc/milestones/FLY-202.md`（与 Task 4 Step 4 白名单一致）。本步必须是交接前最后一个改变证据的动作。记录 URL，按 implement 节点注入的 review、completion 和 park 协议交接；不要 merge。
 
 ## QA 节点验收合同
 
-0. 先确认 PR head SHA 等于分支 exact head；若 implement 节点走了 Task 0.5 的无改动路径，QA 仍需在该 head 独立复跑四项验证，不能以"没有新 commit"代替验证。
+0. 先确认 PR head SHA、`origin/project-slot-6-FLY-202` 与 implement 交接的 exact head 三者一致；若 implement 节点走了 Task 0.5 的无改动路径，QA 仍需在该 head 独立复跑四项验证，不能以「没有新 commit」代替验证。
+0b. 用途说明语义核对：确认第二段保留 `--alerts` 条件隔离说法（alert queue / claims DB 仅在 `--alerts` 时隔离）；这是四项机械验证覆盖不到的语义回退点。
 1. 重新读取 issue 五项要求，并逐项映射到 PR exact head。
 2. 复跑 Task 4 的四类定向验证，不扩大为 full package/repository suite。
 3. 验证 PR open、base/head 正确、没有生产代码/config 变更。
