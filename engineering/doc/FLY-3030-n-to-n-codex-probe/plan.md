@@ -36,7 +36,15 @@ prog() {
 # 范围白名单（§2）：先捕获列表并检查 git diff 退出码，再逐项匹配
 scope_ok() {
   files=$(git diff --name-only origin/main...HEAD) || stop "git diff 失败，无法判定范围"
-  bad=$(printf '%s\n' "$files" | grep -v -e '^$' -e '^README\.md$' -e "^$DOC/" -e '^engineering/doc/milestones/FLY-3030\.md$')
+  bad=
+  while IFS= read -r f; do
+    case "$f" in
+      ''|README.md|"$DOC"/*|engineering/doc/milestones/FLY-3030.md) : ;;
+      *) bad="$bad $f" ;;
+    esac
+  done <<SCOPE_EOF
+$files
+SCOPE_EOF
   [ -z "$bad" ] || stop "diff 超出白名单：$bad"
 }
 # 推送：推送前查范围，推送后核对远端头
@@ -47,7 +55,20 @@ pushbr() {
 }
 # 当前分支唯一 OPEN PR 号（没有则为空）
 open_pr() { gh pr list --repo "$REPO" --head "$BR" --state open --json number --jq '.[0].number // empty'; }
+# 冻结头校验：冻结 + milestone 为最后 commit + 远端头 = PR 头 = HEAD；成功时打印 "<HEAD_SHA> <PR>"
+frozen_head() {
+  frozen || { echo "STOP: 未冻结" >&2; return 1; }
+  h=$(git rev-parse HEAD) || return 1
+  [ "$(git log -1 --format=%H -- "$MS")" = "$h" ] || { echo "STOP: milestone 不是最后一个 commit" >&2; return 1; }
+  [ "$(git ls-remote origin "refs/heads/$BR" | cut -f1)" = "$h" ] || { echo "STOP: 远端头 != HEAD" >&2; return 1; }
+  p=$(open_pr) || { echo "STOP: gh pr list 失败" >&2; return 1; }
+  [ -n "$p" ] || { echo "STOP: 取不到 PR 号" >&2; return 1; }
+  [ "$(gh pr view "$p" --repo "$REPO" --json headRefOid --jq .headRefOid)" = "$h" ] || { echo "STOP: PR 头 != HEAD" >&2; return 1; }
+  echo "$h $p"
+}
 ```
+
+块与块之间不共享变量：凡是需要冻结头 / PR 号的块，都以 `fh=$(frozen_head) || stop "冻结头校验失败"; FROZEN_HEAD=${fh% *}; PR=${fh#* }` 开头重新推导，绝不引用别的块里 echo 过的值。
 
 **为什么要 `frozen`/`prog`**：`progress` 每次都会落一个 commit。若执行体在 milestone 提交之后被杀，新体从 Task 0 重跑时，Task 2/3 里的账本更新会在 milestone 之后再落 commit，破坏「milestone 是字面最后一个 commit」并让评审批准失效。所有账本更新都经 `prog`，冻结后自动变成 no-op（设计阶段演练实测抓到过这个问题）。
 
@@ -197,17 +218,29 @@ EOF
   git commit -m "docs(FLY-3030): implementation milestone" -- "$MS" || stop "milestone commit failed"
 fi
 pushbr
-HEAD_SHA=$(git rev-parse HEAD)
-[ "$(git log -1 --format=%H -- "$MS")" = "$HEAD_SHA" ] || stop "milestone 不是最后一个 commit"
-[ "$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)" = "$HEAD_SHA" ] || stop "PR 头 != 冻结头"
-echo "FROZEN_HEAD=$HEAD_SHA PR=$PR"
+fh=$(frozen_head) || stop "冻结头校验失败"
+echo "冻结完成：HEAD=${fh% *} PR=${fh#* }（仅供人读；后续块自行重新推导）"
 ```
 
 **换体安全性**：判据是 `frozen`（milestone 是否已进入 HEAD），与是否已推送无关。在 `prog 3/3` 之后、milestone commit 之前被杀 → 新体再写一次账本（多一个账本 commit，无害，且在 milestone 之前）后写 milestone，milestone 仍是最后；在 milestone commit 之后（无论推没推）被杀 → 新体所有写入都是 no-op，只做（幂等的）push 与断言。
 
 ### Task 5 — 对冻结头做代码评审（只读，幂等）
 
-前置：Task 4 的断言全过（`frozen`、HEAD = 远端头 = PR 头）。
+每次进入 Task 5（包括换体后）先在 **同一次 sh 执行** 里跑下面的前置，再在同一次执行里接注入的评审/落账命令：
+
+```sh
+fh=$(frozen_head) || stop "冻结头校验失败"
+FROZEN_HEAD=${fh% *}
+PR=${fh#* }
+echo "评审对象：PR #$PR @ $FROZEN_HEAD"
+# ↓ 在这里接注入的评审门命令（同一次执行，才能拿到上面的变量），例如 Claude 作者族落账：
+#   node "$CLI" codex-review-result --exec-id "$EXEC" --pr-head "$FROZEN_HEAD" …(其余参数照注入指令)… || stop "评审落账失败"
+# 注入指令要求 await-codex-gate 时：
+#   node "$CLI" await-codex-gate code --exec-id "$EXEC" || stop "code gate 未通过"
+#   [ "$(git rev-parse HEAD)" = "$FROZEN_HEAD" ] || stop "评审期间 HEAD 变化"
+```
+
+若注入的评审门是跨进程/异步的（例如 Codex 作者族的 `request-review --type code`，或后台跑的 `codex:rescue`），每次需要冻结头 / PR 号时都重新跑上面三行前置，不要手抄 SHA。
 
 - **评审对象** = 冻结头 `FROZEN_HEAD` 上相对 `origin/main` 的 PR diff（README 的 `+1` 行 + milestone + 设计文档）。评审提示词 **必须以 implement 协议里的 `local-test-policy/v1` 块原文作为最开头的字节**。
 - **走注入的评审门**：Claude 作者族 → `codex:rescue`，批准后按注入指令落账（例如 `codex-review-result --exec-id "$EXEC" --pr-head "$FROZEN_HEAD"`）；Codex 作者族 → 注入的 `request-review --type code` 通道。具体命令以 Bridge 注入的指令为准；落账的 reviewed head 必须等于 `FROZEN_HEAD`。
@@ -221,13 +254,9 @@ echo "FROZEN_HEAD=$HEAD_SHA PR=$PR"
 ### Task 6 — 精确头 CI + 回报 + 交卷（单块，只读直到 complete）
 
 ```sh
-frozen || stop "未冻结，不能交卷"
-PR=$(open_pr) || stop "gh pr list 失败"
-[ -n "$PR" ] || stop "取不到 PR 号"
-HEAD_SHA=$(git rev-parse HEAD)
-[ "$(git log -1 --format=%H -- "$MS")" = "$HEAD_SHA" ] || stop "milestone 不是最后一个 commit"
-[ "$(git ls-remote origin "refs/heads/$BR" | cut -f1)" = "$HEAD_SHA" ] || stop "远端头 != 本地 HEAD"
-[ "$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)" = "$HEAD_SHA" ] || stop "PR 头 != 本地 HEAD"
+fh=$(frozen_head) || stop "冻结头校验失败，不能交卷"
+HEAD_SHA=${fh% *}
+PR=${fh#* }
 i=0
 while :; do
   n=$(gh pr view "$PR" --repo "$REPO" --json statusCheckRollup --jq '.statusCheckRollup | length') || stop "gh pr view 失败"
@@ -245,7 +274,18 @@ RC=$?
 [ "$RC" = 0 ] || stop "complete exit $RC"
 ```
 
-- `complete` exit 3（有未读邮件）：读输出里的邮件、处理、`node "$CLI" inbox --ack-consumed <read-id>`，然后 **只重跑** `node "$CLI" complete --route needs_review --pr "$PR"`（不重发 report）。
+- `complete` exit 3（有未读邮件）：读输出里的邮件、处理、`node "$CLI" inbox --ack-consumed <read-id>`，然后 **只跑下面的 Task 6b**（不重发 report）。
+
+### Task 6b — 仅重试 complete（不重发 report）
+
+```sh
+fh=$(frozen_head) || stop "冻结头校验失败，不能交卷"
+PR=${fh#* }
+node "$CLI" complete --route needs_review --pr "$PR"
+RC=$?
+[ "$RC" = 0 ] || stop "complete exit $RC（exit 3 = 仍有未读邮件：处理并 ack 后再跑本块）"
+```
+
 - 实现节点注入的完成命令与此不同时，**以注入命令为准**。
 - 本块在 `ask --report` 之前被杀：新体重跑整块即可；在 `ask --report` 成功之后、`complete` 之前被杀：重跑整块会再发一次 report（内容相同，无害），然后交卷。
 
@@ -281,15 +321,19 @@ RC=$?
 
 | 场景 | 模拟 | 结果 |
 |---|---|---|
-| A 完工后换体重跑 | Task 0–4 + Task 6 全跑完，再从 Task 0 全部重跑 | PASS：HEAD 不变且 = 远端头；最后三个 commit 为 progress 2/3 → progress 3/3 → milestone |
+| A 完工后换体重跑 | Task 0–6 全跑完（Task 5 只跑前置块），再从 Task 0 全部重跑 | PASS：HEAD 不变且 = 远端头；最后三个 commit 为 progress 2/3 → progress 3/3 → milestone |
 | B 追加后被杀 | 只跑 Task 0–1，再从 Task 0 全跑 | PASS：目标行 1 次、README commit 1 个、milestone 为最后 |
 | C milestone 已提交、push 失败后被杀 | Task 4 在 push 处 STOP，恢复 remote 后从 Task 0 全跑 | PASS：HEAD 不变且 = 远端头，milestone 仍是最后 |
-| D 越界文件 | S2 后夹带 `foo.txt` 提交，跑 Task 0 | PASS：`STOP: diff 超出白名单：foo.txt`，远端未推 |
-| D2 越界文件 | 同上，直接跑 Task 3 | PASS：push 前 STOP，远端未推 |
+| D 越界文件 | S2 后夹带 `foo.txt` 提交，分别跑 Task 0 与 Task 3 | PASS：两处都 `STOP: diff 超出白名单： foo.txt`，远端未推 |
+| J 越界 `CLAUDE.md` | 夹带 `CLAUDE.md` 改动，跑 Task 3 | PASS：push 前 STOP，远端未推 |
+| J2 白名单目录内带空格文件名 | `$DOC/a b.txt` | PASS：放行（逐行 `case` 匹配，无 grep 退出码问题） |
 | E 目标行重复 | README 里已有 2 行目标行 | PASS：`STOP: 目标行出现 2 次` |
 | F 目标行不在末行 | 目标行后还有一行 | PASS：`STOP: 目标行已存在但不是最后一行` |
 | G CI 失败 | 桩 `gh pr checks` 返回 1 | PASS：`STOP: 精确头 CI 未全绿`，`ask`/`complete` 均未调用 |
 | H report 失败 | 桩 `ask` 返回 1 | PASS：`STOP: ask --report 失败，未交卷`，`complete` 未调用 |
+| K complete exit 3 | Task 6 的 `complete` 返回 3，再单跑 Task 6b | PASS：6b 在新 shell 重新推导 PR 并交卷，`ask` 调用 0 次 |
+| L Task 5 前置在新 shell | 冻结后单独执行 §1 + Task 5 前置 | PASS：打印非空 `PR #99 @ <40 位 SHA>`，与 HEAD 一致 |
+| M 未冻结就评审/交卷 | Task 3 后直接跑 Task 5 前置、Task 6 | PASS：两处都 `STOP: 未冻结` |
 | I 范围扫描失败 | 删掉 `origin/main` 引用后调 `scope_ok` | PASS：`STOP: git diff 失败，无法判定范围` |
 
 Task 5（评审）依赖注入的评审门，演练未覆盖；GitHub 真实 push / PR / CI 也只在实现节点发生。

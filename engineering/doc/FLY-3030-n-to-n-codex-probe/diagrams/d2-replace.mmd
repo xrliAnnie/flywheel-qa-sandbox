@@ -13,5 +13,6 @@ sequenceDiagram
     B->>G: Task 0：读分支 / 远端 / PR 状态
     G-->>B: 行已在、commit 已在
     B->>B: Task 1–2 判据命中 → 跳过
-    B->>G: Task 3–5：推送、开 PR、评审、milestone
+    B->>G: Task 3–4：推送、开 PR、milestone 冻结
+    B->>B: Task 5：对冻结头做代码评审
     B->>E: ask --report + complete needs_review（交卷回 thread）

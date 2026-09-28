@@ -74,7 +74,7 @@
     <div class="card purple">
       <p><b>状态机</b><span class="term">——把任务切成几个可检查的状态，每步先看「现在处在哪个状态」再决定做什么</span>。每个状态都有 git 上看得见的判据；被杀后新体从「Task 0 预检」重新判断即可。</p>
       <div class="diagram">{{D1}}</div>
-      <p><b>冻结</b><span class="term">——里程碑文件（milestone，交卷前的最后一份说明）一旦提交，分支就不再写任何东西，只剩推送、等 CI、交卷</span>。这保证 milestone 永远是最后一个提交。</p>
+      <p><b>冻结</b><span class="term">——里程碑文件（milestone，交卷前的最后一份说明）一旦提交，分支就不再写任何东西，只剩对这个最终提交做代码评审、等 CI、交卷</span>。这保证 milestone 永远是最后一个提交，代码评审也只针对这个冻结后的最终提交，批准不会因为之后又有提交而失效。</p>
       <div class="cbox"><label>对这一节的意见</label><textarea data-k="flow" data-title="核心流程图"></textarea></div>
     </div>
   </div>
@@ -110,9 +110,10 @@
         <tr><td><b>A. 幂等状态机</b></td><td><span class="badge blue">采用</span></td><td>任意时刻被杀都收敛到同一终态；设计阶段在临时仓演练 5 个场景全部符合预期</td></tr>
         <tr><td>B. 直接「追加 → 提交 → 推送」顺序跑</td><td><span class="badge gray">否决</span></td><td>换体重跑会追加第二行、第二个提交，正好污染 FLY-2919 要看的「续干」证据</td></tr>
         <tr><td>C. 重写整个 README</td><td><span class="badge gray">否决</span></td><td>改动面变大、diff 不止一行，没有收益</td></tr>
+        <tr><td>E. 先评审、后写 milestone</td><td><span class="badge gray">否决</span></td><td>评审批准绑定的是「当时的最新提交」；之后再提交 milestone 会让批准失效（Codex 设计评审第 1 轮指出）</td></tr>
         <tr><td>D. 用账本文字决定跳过哪步</td><td><span class="badge gray">否决</span></td><td>账本本身也会在半路被杀时停在旧值；git 状态才可靠</td></tr>
       </table></div>
-      <p>演练中抓到并修掉的真问题：完工后换体重跑时，中间步骤的账本更新会在 milestone 之后再落提交 → 加了「冻结后账本更新自动跳过」。</p>
+      <p>演练中抓到并修掉的真问题：完工后换体重跑时，中间步骤的账本更新会在 milestone 之后再落提交 → 加了「冻结后账本更新自动跳过」。Codex 设计评审又指出评审顺序、CI 失败仍交卷、越界文件先推送后才发现等问题，均已改掉并在临时仓演练 10 个场景验证。</p>
       <div class="cbox"><label>对这一节的意见</label><textarea data-k="tradeoffs" data-title="关键取舍与否决方案"></textarea></div>
     </div>
   </div>
