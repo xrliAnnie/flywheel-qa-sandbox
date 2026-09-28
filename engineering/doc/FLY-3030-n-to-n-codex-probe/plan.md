@@ -34,8 +34,15 @@ REPO=xrliAnnie/flywheel-qa-sandbox
 CLI="$FLYWHEEL_COMM_CLI"
 EXEC="$FLYWHEEL_EXEC_ID"
 stop() { echo "STOP: $*" >&2; exit 1; }
-# 本轮冻结判据：HEAD 里的 milestone 提到本轮目标行（第 1 轮 milestone 不含 → 未冻结）
-frozen() { git show "HEAD:$MS" 2>/dev/null | grep -qF -- "$LINE"; }
+# 本轮冻结判据：HEAD 里的 milestone 提到本轮目标行（第 1 轮 milestone 不含 → 未冻结）。
+# 本分支第 1 轮 milestone 必然存在，所以读取失败（缺文件 / git 出错）一律 STOP，绝不当成「未冻结」。
+frozen() {
+  ms_body=$(git show "HEAD:$MS") || stop "读取 HEAD:$MS 失败，无法判定冻结状态"
+  case "$ms_body" in
+    *"$LINE"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 prog() {
   if frozen; then echo "frozen: skip progress $1"
   else node "$CLI" progress --exec-id "$EXEC" --file "$LEDGER" --phase implement --cursor "$1" --next "$2" || stop "progress failed"
@@ -83,6 +90,8 @@ frozen_head() {
 
 块与块之间不共享变量：凡是需要冻结头 / PR 号的块，都以 `fh=$(frozen_head) || stop "冻结头校验失败"; FROZEN_HEAD=${fh% *}; PR=${fh#* }` 开头重新推导，绝不引用别的块里 echo 过的值。
 
+**`frozen` 为什么读取失败就 STOP**：若把「读不到 milestone」当成未冻结，冻结后的新体会再跑 `prog`，在 milestone 之后落账本 commit，批准失效（Codex R1 实测复现）。`frozen` 在 `if`/`&&` 里调用时 `stop` 直接结束本次 sh；在 `frozen_head` 的 `$(…)` 里调用时结束子 shell、使 `frozen_head` 失败，调用方再 STOP。
+
 **为什么要 `frozen`/`prog`**：`progress` 每次都会落一个 commit。若执行体在本轮 milestone 提交之后被杀，新体重跑时账本更新会在 milestone 之后再落 commit，破坏「milestone 是字面最后一个 commit」并让评审批准失效。所有账本更新都经 `prog`，冻结后自动变成 no-op。
 
 `stop` 之后的正确动作永远是：`node "$CLI" ask --lead flywheel-test-2 --exec-id "$EXEC" "<STOP 原文 + 当前 git status/log>"`，然后等 Lead，不自愈。
@@ -128,6 +137,17 @@ case "$(git config --get core.hooksPath)" in
   */state/push-guard/*) : ;;
   *) stop "core.hooksPath 不是 slot push-guard" ;;
 esac
+# 回收前体被杀时遗留的 git 锁（git commit / push 途中被杀会留下 *.lock，之后所有写操作都报 File exists）。
+# 前提：已持有 TURN（上一行），引擎已终结前体；锁超过 2 分钟未动才视为孤儿，较新的锁先等待。
+for rel in index.lock HEAD.lock "refs/heads/$BR.lock" "refs/remotes/origin/$BR.lock"; do
+  L=$(git rev-parse --git-path "$rel") || stop "git rev-parse --git-path $rel 失败"
+  [ -e "$L" ] || continue
+  [ -n "$(find "$L" -mmin +2 -print 2>/dev/null)" ] || stop "发现 2 分钟内的 $L，可能仍有 git 进程在写：90 秒后重跑 Task 0"
+  rm -f "$L" || stop "删除孤儿锁 $L 失败"
+  [ ! -e "$L" ] || stop "孤儿锁 $L 仍在"
+  echo "已回收前体遗留的孤儿锁：$L"
+done
+git status --porcelain >/dev/null || stop "git status 失败（锁回收后仍无法读写仓库）"
 git fetch -q origin || stop "fetch failed"
 git merge-base --is-ancestor origin/main HEAD || stop "HEAD 不含 origin/main（需要技术同步，先 ask）"
 if git ls-remote --exit-code origin "refs/heads/$BR" >/dev/null 2>&1; then
@@ -142,6 +162,8 @@ fi
 cat "$LEDGER"
 git status --short
 ```
+
+**锁回收为什么安全**：`git commit` 先把新索引写进 `index.lock` 再原子改名，被杀在改名前 ⇒ 原索引完好，删锁即回到提交前；被杀在改名后 ⇒ 提交已完成，锁已不存在。回收后各 Task 的判据（行在不在、提交在不在、远端头、PR）重新判定该做什么。任何块因 `File exists` / `*.lock` 报错 STOP 时，一律回到 Task 0 重跑（Task 0 负责回收），不要手动删锁。
 
 TURN 为 `not-yours` 时是正常等待态：**同一个体** 每 60–90 秒重跑 Task 0，拿到 `yours` 就继续 Task 1（同一个体不重睡）。
 
@@ -183,7 +205,7 @@ if git diff --quiet HEAD -- README.md; then
   echo "README 已提交，跳过"
 else
   frozen && stop "已冻结但 README 有未提交改动"
-  git add README.md
+  git add README.md || stop "git add README 失败（锁残留时回 Task 0）"
   git commit -m "docs(FLY-3030): append FLY-2919 N-to-N claude-body probe line" -- README.md || stop "commit failed"
 fi
 git diff --quiet HEAD -- README.md || stop "README 仍有未提交改动"
@@ -259,7 +281,7 @@ else
   [ "$(head -n 1 "$MS")" = '# FLY-3030 implementation milestone' ] || stop "milestone 内容异常"
   grep -qF "pull/$PR" "$MS" || stop "milestone 缺 PR 链接"
   grep -qF -- "$LINE" "$MS" || stop "milestone 未提到本轮目标行"
-  git add "$MS"
+  git add "$MS" || stop "git add milestone 失败（锁残留时回 Task 0）"
   git commit -m "docs(FLY-3030): implementation milestone (claude-body round)" -- "$MS" || stop "milestone commit failed"
 fi
 pushbr
@@ -382,5 +404,10 @@ RC=$?
 | K complete exit 3 | Task 6 的 `complete` 返回 3，再单跑 Task 6b | PASS：6b 在新 shell 重新推导 PR 并交卷，`ask` 共 1 次 |
 | T TURN not-yours | 桩 `turn` 返回 not-yours | PASS：Task S 照睡（只读），Task 0 `STOP: TURN not yours` 且无任何写入 |
 | N 无临时文件依赖 | `TMPDIR=/nonexistent` 下跑 S→6 | PASS：rc 0，终态正确，milestone 含 claude-body 行 |
+| R 冻结后 milestone 读取失败（R1） | 冻结后用 `git` 桩让 `git show` 返回 128，跑 Task 2 与 Task 5 | PASS：两处都 `STOP: 读取 HEAD:… 失败，无法判定冻结状态`，未调用 `progress`，HEAD 不变 |
+| R0 冻结前读取失败 | 起点即让 `git show` 失败，跑 S/0/1/2 | PASS：Task 0 STOP，零新 commit |
+| L 提交途中被杀留下 `index.lock`（R1） | 追加后放一个 2 分钟前的 `.git/index.lock`，Task 2 `STOP: commit failed`；新体从 S 全跑 | PASS：Task 0 回收孤儿锁，终态正确（5 行/111 字节，claude commit 1 个，milestone 最后） |
+| L2 较新的锁 | 刚创建的 `index.lock` | PASS：Task 0 `STOP: 发现 2 分钟内的 …index.lock`，锁保留不删 |
+| L3 分支 ref 锁残留 | 2 分钟前的 `refs/heads/<BR>.lock` | PASS：Task 0 回收，全流程终态正确 |
 
 诚实说明：`sleep 780` 在演练中由桩替代（只记录参数 `780`、不真睡）；真实前台 780 秒由本设计节点自己执行过一次（15:20:59 → 15:33:59 PDT，exit 0）。Task 5（评审）依赖注入的评审门，演练只跑了前置；GitHub 真实 push / PR edit / CI 只在实现节点发生。
