@@ -710,7 +710,7 @@ legacy 死亡授权现在满足三个同时条件：StateStore 状态仍为 `run
 
 ### 合 main：origin/main `55eab0862`（执行 242b29be）
 
-按 Lead 2026-09-27 16:5x PDT 指令，在 R4 修订与 `9d11cb48f` APPROVED 之后、请求合并后复审之前合入 origin/main（FLY-2900/2912/2921/2934/2949/2965 等 18 个提交）。上一执行在 quota 撞墙前已解完 12 个冲突文件，Bridge 的 quota checkpoint 把解后的工作树记成单亲 wip 提交 `651778a58`（未推送）；本执行把分支指回 `3eac501b5`、保持解后的索引不动，以 `MERGE_HEAD` 作为第二亲生成真正的合并提交 `c059fe981`（树与 `651778a58` 逐字节相同），避免把 main 的改动伪装成本分支单亲提交。
+按 Lead 2026-09-27 16:5x PDT 指令，在 R4 修订与 `9d11cb48f` APPROVED 之后、请求合并后复审之前合入 origin/main（FLY-2900/2912/2921/2934/2949/2965 等 18 个提交）。上一执行在 quota 撞墙前已解完 12 个冲突文件，Bridge 的 quota checkpoint 把解后的工作树记成单亲 wip 提交 `651778a58`（未推送）；本执行把分支指回 `3eac501b5`、保持解后的索引不动，以 `MERGE_HEAD` 作为第二亲生成真正的合并提交 `c059fe981`（树与 `651778a58` 逐字节相同），避免把 main 的改动伪装成本分支单亲提交。checkpoint 建树时不收 ignored 文件，因此漏掉了 main 强制跟踪的 `engineering/doc/FLY-2965-cmux-shuttle-root-cause/evidence/mermaid-render.log`（被 `*.log` 匹配）；复审前用 remerge-diff 发现，已从 `55eab0862` 逐字节恢复。复核结果：PR 相对 main 删除的文件数为 0，本分支自己强制跟踪的 ignored 文件无缺失。
 
 **文本冲突解法（12 个文件，两侧已批准行为都保留）**
 
