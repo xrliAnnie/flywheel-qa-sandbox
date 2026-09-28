@@ -53,6 +53,9 @@ print "== log"; git log --oneline --format='%h %s' | head -20
 print "== file bytes"; od -c $F | tail -3
 print "== scenario E: remote unreadable must STOP, not OK"
 git remote set-url origin $S/missing.git; run_step 3; print "rc=$?"; git remote set-url origin $S/origin.git
+print "== scenario H: stale Git index.lock must STOP and not be deleted; resume after Lead clears it"
+: > .git/index.lock; run_step 3; print "rc=$? lock_still_there=$([[ -f .git/index.lock ]] && print yes || print no)"
+rm -f .git/index.lock; run_step 1 && run_step 2 && run_step 3; print "after_clear_rc=$? ledger=$(git show HEAD:$LEDGER | grep phaseCursor)"
 print "== scenario C: unknown content"
 echo junk >> $F; run_step 3; print "rc=$?"; git checkout -q -- $F
 print "== scenario D: other file dirty"

@@ -85,6 +85,12 @@ ledger_k() {
     n=$(print -r -- "$c" | sed -n 's#^phaseCursor: \([0-3]\)/3$#\1#p' | head -1); [[ -n $n ]] || n=0
   fi; print $n
 }
+# 当前 worktree 的 Git 锁残留（Git 进程在写 index 时被杀会留下）；有则打印并返回 0
+gitlocks() {
+  local d; d=$(git rev-parse --git-path index.lock) || return 1; d=${d:h}
+  local l=( $d/index.lock(N) $d/next-index-*.lock(N) $d/HEAD.lock(N) )
+  (( ${#l} )) && { print -r -- "${l[*]}"; return 0; } || return 1
+}
 # 工作树里除交付文件与本任务账本残留外不得有任何改动
 precheck() {
   [[ -z $(git status --porcelain --untracked-files=all -- . ":(exclude)$F" \
@@ -92,7 +98,9 @@ precheck() {
 }
 ```
 
-说明：`$(cat; printf x)` 保留结尾换行，避免命令替换吞掉 `\n` 造成误判。工作区状态（`state`）决定要不要写，已提交状态（`hstate`）决定要不要提交，账本（`ledger_k`）只前进不回退——三者分开判断，重跑任一更早的步骤都不会误提交或把游标拉回。账本只认 HEAD 里已提交的版本：若上次在 `progress` 内部（已写盘、未提交）被杀，`run_step` 开头先把本任务账本的残留（未提交改动、`.lock`、`.tmp-<pid>`）还原到 HEAD，`ledger_k` 仍返回旧值，(c) 随后重新记账。持有 TURN 的只有本 runner，且 `progress` 是同步调用，所以 `run_step` 开头不可能有活着的账本写入者，删锁是安全的。
+说明：`$(cat; printf x)` 保留结尾换行，避免命令替换吞掉 `\n` 造成误判。工作区状态（`state`）决定要不要写，已提交状态（`hstate`）决定要不要提交，账本（`ledger_k`）只前进不回退——三者分开判断，重跑任一更早的步骤都不会误提交或把游标拉回。账本只认 HEAD 里已提交的版本：若上次在 `progress` 内部（已写盘、未提交）被杀，`run_step` 开头先把本任务账本的残留（未提交改动、`.lock`、`.tmp-<pid>`）还原到 HEAD，`ledger_k` 仍返回旧值，(c) 随后重新记账。持有 TURN 的只有本 runner，且 `progress` 是同步调用，所以 `run_step` 开头不可能有活着的账本写入者，删账本自己的 `.lock` 是安全的。
+
+**自动续跑的边界**：以上只覆盖「命令之间」和「`progress` 写盘与提交之间」的中断。若 Git 进程本身在写 index 时被杀，会留下 `index.lock` / `next-index-*.lock` 等 Git 锁；本合同**不自动删除 Git 锁**（无法在脚本内可靠证明旧 Git 进程已退出、锁归属于本次中断），`gitlocks` 检测到即 STOP 并 `ask` Lead。Lead 确认并清理后，续跑入口不变：重新执行 §3.0–3.2 即可，账本残留与未提交内容照常由上述规则处理。
 
 ### 3.2 单步过程 `run_step k`（k = 1, 2, 3 依次执行）
 
@@ -100,6 +108,7 @@ precheck() {
 run_step() {
   local k=$1 s h; s=$(state); h=$(hstate)
   [[ $s == X || $h == X ]] && { print "STOP: $F 内容不匹配任何已知前缀"; return 2; }
+  gitlocks && { print "STOP: 发现 Git 锁残留（$(gitlocks)），ask Lead 确认旧 Git 进程已退出并清理后再从 §3.0 重跑"; return 2; }
   precheck || { print "STOP: 工作树有 $F 与本任务账本残留以外的改动，ask Lead，不自行清理"; return 2; }
   # 账本残留一律还原到 HEAD：未提交的游标不可信，需要的话 (c) 会重新记账
   if [[ -n $(git status --porcelain --untracked-files=all -- "$LEDGER" "$LEDGER.lock" ":(glob)$LEDGER.tmp-*") ]]; then
@@ -140,7 +149,7 @@ run_step() {
 run_step 1 && run_step 2 && run_step 3
 ```
 
-续跑语义（重启后重新执行 3.0–3.2 即可，无需记住上次跑到哪）：
+续跑语义（重启后重新执行 3.0–3.2 即可，无需记住上次跑到哪；Git 锁残留是唯一需要 Lead 介入的例外）：
 
 | 被杀时刻 | 重启后 `run_step` 的行为 |
 |---|---|
@@ -149,6 +158,7 @@ run_step 1 && run_step 2 && run_step 3
 | 提交后未记账 | (a)(b) 跳过 → (c) 记账 → (d) 推 |
 | 在 `progress` 内部被杀（账本已写盘/已暂存未提交，可能残留 `.lock` / `.tmp-<pid>`） | precheck 放行这些残留 → 还原到 HEAD → (a)(b) 跳过 → `ledger_k` 读 HEAD 仍为 k-1 → (c) 重新记账 → (d) 推；结束时工作树干净 |
 | 记账后未推 | (a)(b)(c) 跳过 → (d) 推 |
+| Git 进程在写 index 时被杀（遗留 `index.lock` 等） | **不自动恢复**：`gitlocks` → STOP，`ask` Lead；Lead 清理后重新执行 §3.0–3.2，按上面各行续跑 |
 | 已推 | 全部跳过，零新 commit |
 
 任一 `STOP` / 非零返回：不重试循环、不改其他文件，用 `ask --lead flywheel-test-2` 报告原因后等待。
@@ -216,10 +226,13 @@ V1–V5 全 PASS 才能进入交卷；任一 FAIL 按 3.2 的 STOP 规则处理�
 | E 远端不可读（origin 指向不存在的仓） | `STOP: 远端分支不可读`，rc=2，不打印 OK |
 | F 第 1 步写完即被杀（`qa-sandbox/` 未跟踪） | 裸 `git status --porcelain` 为 `?? qa-sandbox/`；§3.0 的排除式检查为空，续跑正常 |
 | G 第 2 步在 `progress` 内部被杀（账本已写盘并暂存、未提交，残留 `.lock` 与 `.tmp-999`） | precheck 放行、`ledger_k`=1；重跑后账本 HEAD 为 `2/3`，工作树零残留 |
+| H 存在 Git `index.lock`（模拟 Git 写 index 时被杀） | `STOP: 发现 Git 锁残留…`，rc=2，不删锁；模拟 Lead 清锁后重跑 1→2→3 成功，账本不回退 |
 
 Codex R1 第一次调用（额度中断前）指出三处：§3.0 首写后误判、`ls-remote | cut` 吞掉失败退出码、第 2 段「new session」与 FLY-2925「重启按原会话续接」不符——均已修正，E/F 两个场景即为回归证据。
 
 Codex R1 第二次调用（额度恢复后）指出第四处（MEDIUM）：`flywheel-comm progress` 先 temp+rename 写盘、再 `git add` + `git commit --only`，两者之间被杀会留下未提交账本，旧 precheck 会永久拦住续跑。已改为 precheck 放行本任务账本残留、`run_step` 开头还原到 HEAD、`ledger_k` 只读 HEAD、交付提交用 `commit --only`；场景 G 即为回归证据。dry-run 的 `node` 桩也改为与真实 CLI 同序（temp+rename → add → commit --only）。
+
+Codex R2（fresh 线程）指出第五处（MEDIUM）：Git 自身在 `commit --only` 内被杀会留下 `index.lock`，`git restore` 也拿不到锁。采纳评审者给的更简单选项——不做 Git 锁自愈，改为 `gitlocks` 检测即 STOP 交 Lead、明确列为自动续跑的唯一例外并写出 Lead 清理后的续跑入口；场景 H 为证据。
 
 第一版脚本在场景 A 中把「已写到第 2 步」的工作区内容误提交成 step 1——干跑发现后改为 `state`/`hstate`/`ledger_k` 三分判断，即现行版本。
 
