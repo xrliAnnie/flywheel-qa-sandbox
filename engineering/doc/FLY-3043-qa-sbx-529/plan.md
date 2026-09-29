@@ -27,18 +27,16 @@ Issue: FLY-3043 (https://linear.app/geoforge3d/issue/FLY-3043/qa-sbx-fly-3024-b5
 
 ## 实施步骤（implement 节点执行）
 
-### Step 1 — 追加末行
-```bash
-printf '%s\n' '- Sandbox note: runners run only the tests related to their change.' \
-  >> packages/claude-runner/agents/codex-runner-contract.md
-```
-守卫：
-```bash
-git diff --stat -- packages/claude-runner/agents/codex-runner-contract.md   # 1 insertion(+), 0 deletions
-tail -1 packages/claude-runner/agents/codex-runner-contract.md              # 逐字等于追加行
-```
+顺序按 **准备依赖 → RED → 追加 → GREEN** 执行（Codex design review R1 low 建议：先看断言失败，再追加那一行，才能得到真实的 RED→GREEN 记录）。
 
-### Step 2 — 测试守卫（TDD：先写断言看它失败于未改文件，再改文件看它通过）
+### Step 0 — 准备依赖
+沙箱 worktree **默认没有 `node_modules`**（design 节点实测 `vitest` not found）。先在仓库根安装一次：
+```bash
+pnpm install --frozen-lockfile        # 仓库根；已装则幂等
+```
+若安装因沙箱网络受限失败，记为**环境阻塞**并在 PR body 如实写明「本机未能跑 vitest，以 CI 为准」；不得记作 RED 或 GREEN，不得伪造通过记录。
+
+### Step 1 — 先写断言，确认 RED
 在 `codex-home.test.ts` 的 `FLY-1188 AGENTS.md contract materialization` describe 内新增：
 ```ts
 // FLY-3043 (QA sandbox): the sandbox note is part of the materialized contract
@@ -50,20 +48,32 @@ it("materializes the FLY-3043 sandbox note", () => {
 	);
 });
 ```
-`env` 与 `provisionCodexHome` 沿用同 describe 已有 fixture（见 test:205 现有用例）。
-
-### Step 3 — 本机相关测试
-沙箱 worktree **默认没有 `node_modules`**（design 节点实测 `vitest` not found）。先在仓库根安装一次：
+`env` 与 `provisionCodexHome` 沿用同 describe 已有 fixture（见 test:205 现有用例）。然后只跑本文件，**期望这一条失败**（契约里还没有那一行）：
 ```bash
-pnpm install --frozen-lockfile        # 仓库根；已装则幂等
-cd packages/claude-runner && pnpm exec vitest run test/codex-home.test.ts
+cd packages/claude-runner && pnpm exec vitest run test/codex-home.test.ts   # 期望: 1 failed (新用例)
 ```
-只跑本文件；完整套件由 PR CI 证明（DoD 第 3 条，`pnpm test` 不裸跑）。若安装因沙箱网络受限失败，在 PR body 如实写明「本机未能跑 vitest，以 CI 为准」，不得伪造通过记录。
+
+### Step 2 — 追加末行
+```bash
+printf '%s\n' '- Sandbox note: runners run only the tests related to their change.' \
+  >> packages/claude-runner/agents/codex-runner-contract.md
+```
+守卫：
+```bash
+git diff --stat -- packages/claude-runner/agents/codex-runner-contract.md   # 1 insertion(+), 0 deletions
+tail -1 packages/claude-runner/agents/codex-runner-contract.md              # 逐字等于追加行
+```
+
+### Step 3 — 再跑同一文件，确认 GREEN
+```bash
+cd packages/claude-runner && pnpm exec vitest run test/codex-home.test.ts   # 期望: 全部通过
+```
+只跑本文件；完整套件由 PR CI 证明（DoD 第 3 条，`pnpm test` 不裸跑）。
 
 ### Step 4 — 提交 & PR
 - commit：`docs(FLY-3043): append sandbox note to codex runner contract`
 - PR 标题：`docs(FLY-3043): append sandbox note to codex-runner-contract.md`
-- PR body 含：变更摘要（1 行追加 + 1 断言）、测试计划（Step 3 命令与结果、CI）、`## Linear Issue` 段。
+- PR body 含：变更摘要（1 行追加 + 1 断言）、测试计划（Step 1 RED 与 Step 3 GREEN 的命令与结果、CI）、`## Linear Issue` 段。
 - 走常规 review（Codex code review），不自行 merge。
 
 ## 回滚边界
@@ -82,8 +92,8 @@ cd packages/claude-runner && pnpm exec vitest run test/codex-home.test.ts
 | DoD | 证据 |
 |-----|------|
 | 1 验收 | `tail -1` 逐字匹配 + diff 恰 1 insertion |
-| 2 测试 | 新 `it` 断言（RED→GREEN 记录在 PR body） |
-| 3 本地只跑相关测试 | Step 3 命令输出 |
+| 2 测试 | 新 `it` 断言（Step 1 RED → Step 3 GREEN 记录在 PR body） |
+| 3 本地只跑相关测试 | Step 1 / Step 3 命令输出 |
 | 4/5/6 commit / PR / 描述 | PR 链接 + body |
 | 7 独立生产仓 | 不适用（沙箱仓） |
 
