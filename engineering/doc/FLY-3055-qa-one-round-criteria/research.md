@@ -91,3 +91,12 @@ P3 细节：`auto_qa_record` 一条 record 一个 parent；`verdict_event_id` �
 - `mmdc` 在 `/opt/homebrew/bin/mmdc`（HTML 图用）。
 - Codex：`codex-with-fallback`、`codex-profile` 在 PATH；`codex-companion` 不在 PATH（设计评审用 `codex-design-review` 技能的现有流程）。
 - 测试运行遵守 local-test-policy：逐文件 `pnpm --filter <pkg> exec vitest run <file>`；包名 `flywheel-config` / `flywheel-comm` / `flywheel-teamlead` / `flywheel-edge-worker`。
+
+## R8. 更正（Codex design R1 核实）
+
+- R2 P3 「落点稳定」**错误**：`retargetAutoQaRecord`（`StateStore.ts:5307-5316`）与 `reopenAutoQaRecordForRespawn`（`:5351-5363`）都把 `verdict_event_id` 置 NULL，且 `driveRetest` 先 retarget 再 wake（`auto-qa-coordinator.ts:951-1011`）；`getAutoQaRecordByQaExec` 无排序（`:5040-5058`）。prior 改由 append-only 账本 `qa_verdict_accepted` 提供（plan §5.0）。
+- R1 「mailbox 无长度限制」不完整：`runner-wake.ts:58,78-86` 对 `feedbackText` 做 1,500 截断，O2 需要独立追加位。
+- R2 P2 「按事件序取最近一条」不等于消费者采纳的 verdict：三阶段以 `three_stage_verdict` intent 为 authority（`phase-orchestrator.ts:1073-1099`）；prior 必须是「已接受」。
+- 遗漏出口 O8：founder-feedback kickback 的 wake（`founder-consent/wiring.ts:205-217`、`founder-action-drain.ts:218-239`）。
+- `workflow-shadow-writer.ts:23-36` 明确支持同 attempt 替换 → 排序不能用 attempt。
+- StateStore 已是 better-sqlite3（`StateStore.ts:30-48`），同步事务可用。
