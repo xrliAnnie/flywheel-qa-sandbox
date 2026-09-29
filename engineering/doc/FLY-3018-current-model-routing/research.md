@@ -72,7 +72,17 @@ if (input.lane === "manual_test_deploy") {
 
 `packages/flywheel-comm/src/commands/qa-result.ts:91,114` 列有 `land_head_pr_identity_unavailable` 拒绝码；Bridge 侧在 `workflow-decision-routes.ts`。FLY-2407（`8e44ac64d`）已合入 main 并随 `5dab14d4c` 进入 PR 头。上一轮首交落在 FLY-2407 部署边界前的旧 Bridge 才缺 identity；本轮 Bridge buildSha `95e5cd708` 已含 FLY-2407。若仍被拒，按 Lead 判据显式交 FAIL 并写明原因。
 
-## 3. 当前 models.json（生产 `~/.flywheel/models.json`，只读）
+### 2.7 管理端契约与房的配置来源（设计评审 R1 补核）
+
+- `room drill` 请求发往 `FLYWHEEL_BRIDGE_URL` 指向的**管理 Bridge**（`commands/room.ts:508`），不是房内 Bridge。`git show 95e5cd708:packages/teamlead/src/bridge/qa-room-contract.ts | grep -c no_overrides` = 0：生产 main 的 strict schema 不认 `no_overrides`，会 `unknown_key`。本沙箱 `localhost:19873` buildSha = `7e28dd51c`，生产 `localhost:9876` = `95e5cd708`。
+- 房所有权：`qa-room-routes.ts` Lead actor = `lead:<id>`；`qa-room-service.ts:324-333` 非 owner 且非 Lead 的 drill 只在「同 issue 且 owner 已终态」时放行，否则 `403 room_not_owned`。
+- 房进程环境 `minimalRoomEnvironment` 继承宿主 `HOME`；`packages/config/src/model-config.ts` `configLocation()` 默认 `~/.flywheel/models.json`，仅 `FLYWHEEL_MODELS_CONFIG` 可覆盖，deploy env 白名单（`qa-room-contract.ts` `env` strict 对象）不放行该键 → 房读的就是生产 models.json。
+- 原始回执字段为 `response.resolved.nodeModels`（`runs-route.ts:4108`）；weighted basis 字段为 `issueIdentifier/issueKey/nodeId/rule/ruleVersion/bucket/nodes/weightAudit`（`workflow-menu.ts:899-907`）。回执原件持久化在 `workflow_start_response.response_json`，经 `workflow_start_reservation(idempotency_key → run_id/node_id/attempt/execution_id)` 关联；运行时在 `workflow_execution_runtime(vendor, model, effort)`；会话在 `sessions(execution_id, runner_model, dispatch_model)`。
+- `evidence-run record` 必填 `--head`（40 位小写）、`--site slot_529:<n>`、`--lane`、`--record-url`（https）、`--rerun-spec`、generalized 通道必填 `--driver-exit-code`；合法 ACK 即便 `verdict=unsatisfied` 也 exit 0（`evidence-run.ts:382-387`）。
+- `await-codex-gate code` 要求 `reviewedHeadSha` = 当前 HEAD（`await-codex-gate.ts:235-254`），没有改绑旧批准的能力。
+- driver 写死 `taskCategory: "code"`（`scripts/lib/qa-generalized-e2e-lib.mjs:745`）。
+
+## 3. 当前 models.json（生产 `~/.flywheel/models.json`，只读；房与生产共用同一文件）
 
 ```json
 "modelSplit": {"enabled": true, "rule": "issue_node_weighted",
