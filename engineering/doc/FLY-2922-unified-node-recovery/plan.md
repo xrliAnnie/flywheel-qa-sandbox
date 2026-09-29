@@ -25,7 +25,7 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 每个生产/房外执行者必须同时验证两类事实：
 
 1. **cwd 事实**：`git rev-parse --show-toplevel`、branch、repo、HEAD；
-2. **cwd 无关的可信身份**：`FLYWHEEL_PROJECT_NAME`、`FLYWHEEL_STATE_DB_PATH`，以及 StateStore `sessions` 表中以参数化查询读取的当前 `FLYWHEEL_EXEC_ID` 行。
+2. **cwd 无关的可信身份**：`FLYWHEEL_PROJECT_NAME`、按 Bridge 同序解析出的 StateStore 路径，以及 `sessions` 表中以参数化查询读取的当前 `FLYWHEEL_EXEC_ID` 行。路径优先级为 `FLYWHEEL_STATE_DB_PATH`、`TEAMLEAD_DB_PATH`、`$HOME/.flywheel/teamlead.db`；生产 runner 没有注入第一个变量时仍能命中 Bridge 的默认库。
 
 生产/房外执行者都必须拒绝 `project_name=test-slot-*`、任何 realpath 位于 `/tmp/flywheel-test-slot-*` 或 `/private/tmp/flywheel-test-slot-*` 的 StateStore，以及当前 git root 不等于该 exec 登记 `worktree_path` 的情况。生产 implement 还要求 `session_role=implement`；房外 QA 要求 `session_role=qa`。检查失败时只报告并停止，禁止换 cwd 重试。
 
@@ -52,29 +52,38 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 - [ ] **A1：取得 TURN 并确认生产身份**
 
 ```bash
+set -euo pipefail
+fail() { printf 'FLY-2922 preflight failed: %s\n' "$1" >&2; exit "$2"; }
+
 TURN_RECEIPT="$(node "$FLYWHEEL_COMM_CLI" turn)"
 case "$TURN_RECEIPT" in
   "yours phase=implement "*) ;;
-  *) exit 40 ;;
+  *) fail "implement TURN not held" 40 ;;
 esac
-ROOT="$(git rev-parse --show-toplevel)"
-test "${FLYWHEEL_PROJECT_NAME:-}" = "flywheel"
-case "$(realpath "$FLYWHEEL_STATE_DB_PATH")" in
-  /tmp/flywheel-test-slot-*|/private/tmp/flywheel-test-slot-*) exit 41 ;;
+ROOT="$(git rev-parse --show-toplevel)" || fail "cannot resolve git root" 41
+test "${FLYWHEEL_PROJECT_NAME:-}" = "flywheel" || fail "project is not production flywheel" 42
+test -z "${FLYWHEEL_ISOLATION_ROOT:-}" || fail "isolation root is present" 43
+STATE_DB="${FLYWHEEL_STATE_DB_PATH:-${TEAMLEAD_DB_PATH:-${HOME:?HOME is required}/.flywheel/teamlead.db}}"
+test -f "$STATE_DB" || fail "StateStore is missing" 44
+STATE_DB_REAL="$(realpath "$STATE_DB")" || fail "cannot resolve StateStore" 45
+case "$STATE_DB_REAL" in
+  /tmp/flywheel-test-slot-*|/private/tmp/flywheel-test-slot-*) fail "slot StateStore refused" 46 ;;
 esac
-IDENTITY_ROW="$(sqlite3 -noheader -separator '|' "$FLYWHEEL_STATE_DB_PATH" \
+[[ "${FLYWHEEL_EXEC_ID:-}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || \
+  fail "execution id is not a UUID" 47
+IDENTITY_ROW="$(sqlite3 -readonly -noheader -separator '|' "$STATE_DB_REAL" \
   -cmd '.parameter init' \
   -cmd ".parameter set @exec '$FLYWHEEL_EXEC_ID'" \
   'SELECT project_name, issue_identifier, session_role, worktree_path
-   FROM sessions WHERE execution_id = @exec;')"
-test "$IDENTITY_ROW" = "flywheel|FLY-2922|implement|$ROOT"
-test "$(gh repo view --json nameWithOwner --jq .nameWithOwner)" = "xrliAnnie/flywheel"
-test "$(git branch --show-current)" = "flywheel-FLY-2922"
-test -z "$(git status --porcelain)"
+   FROM sessions WHERE execution_id = @exec;')" || fail "StateStore query failed" 48
+test "$IDENTITY_ROW" = "flywheel|FLY-2922|implement|$ROOT" || fail "StateStore identity mismatch" 49
+test "$(gh repo view --json nameWithOwner --jq .nameWithOwner)" = "xrliAnnie/flywheel" || fail "repository mismatch" 50
+test "$(git branch --show-current)" = "flywheel-FLY-2922" || fail "branch mismatch" 51
+test -z "$(git status --porcelain)" || fail "worktree is dirty" 52
 git log --oneline -10
 ```
 
-预期：`yours phase=implement`、可信 session 行绑定当前 production root、生产 repo/branch、净树。任一不符就停；不得 stash/drop/切 cwd。StateStore 查询用 sqlite 参数 `@exec` 绑定，不能把 execution id 拼进 SQL。
+预期：`yours phase=implement`、可信 session 行绑定当前 production root、生产 repo/branch、净树。任一不符都会带诊断非零退出；不得 stash/drop/切 cwd。StateStore 只读查询先验证 execution id 的 UUID 形态，再用 sqlite 参数 `@exec` 绑定，不能把未验证输入拼进 SQL。
 
 - [ ] **A2：冻结三方 head 与 latest main**
 
@@ -217,22 +226,31 @@ node "$FLYWHEEL_COMM_CLI" ask --lead "$PRODUCTION_LEAD_ID" \
 进入 D1 前，先按 §1.1 的 StateStore 参数化查询验证：`project_name=flywheel`、`issue_identifier=FLY-2922`、`session_role=qa`，并确认 StateStore realpath 不位于任何 test slot。随后完成 §1.2 对旧递归 slots 2/3 的取证和 teardown；未完成时不得选新房。
 
 ```bash
+set -euo pipefail
+fail() { printf 'FLY-2922 QA preflight failed: %s\n' "$1" >&2; exit "$2"; }
+
 TURN_RECEIPT="$(node "$FLYWHEEL_COMM_CLI" turn)"
 case "$TURN_RECEIPT" in
   "yours phase=qa "*) ;;
-  *) exit 50 ;;
+  *) fail "QA TURN not held" 60 ;;
 esac
-QA_OWNER_ROOT="$(git rev-parse --show-toplevel)"
-test "${FLYWHEEL_PROJECT_NAME:-}" = "flywheel"
-case "$(realpath "$FLYWHEEL_STATE_DB_PATH")" in
-  /tmp/flywheel-test-slot-*|/private/tmp/flywheel-test-slot-*) exit 51 ;;
+QA_OWNER_ROOT="$(git rev-parse --show-toplevel)" || fail "cannot resolve git root" 61
+test "${FLYWHEEL_PROJECT_NAME:-}" = "flywheel" || fail "project is not production flywheel" 62
+test -z "${FLYWHEEL_ISOLATION_ROOT:-}" || fail "isolation root is present" 63
+STATE_DB="${FLYWHEEL_STATE_DB_PATH:-${TEAMLEAD_DB_PATH:-${HOME:?HOME is required}/.flywheel/teamlead.db}}"
+test -f "$STATE_DB" || fail "StateStore is missing" 64
+STATE_DB_REAL="$(realpath "$STATE_DB")" || fail "cannot resolve StateStore" 65
+case "$STATE_DB_REAL" in
+  /tmp/flywheel-test-slot-*|/private/tmp/flywheel-test-slot-*) fail "slot StateStore refused" 66 ;;
 esac
-IDENTITY_ROW="$(sqlite3 -noheader -separator '|' "$FLYWHEEL_STATE_DB_PATH" \
+[[ "${FLYWHEEL_EXEC_ID:-}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || \
+  fail "execution id is not a UUID" 67
+IDENTITY_ROW="$(sqlite3 -readonly -noheader -separator '|' "$STATE_DB_REAL" \
   -cmd '.parameter init' \
   -cmd ".parameter set @exec '$FLYWHEEL_EXEC_ID'" \
   'SELECT project_name, issue_identifier, session_role, worktree_path
-   FROM sessions WHERE execution_id = @exec;')"
-test "$IDENTITY_ROW" = "flywheel|FLY-2922|qa|$QA_OWNER_ROOT"
+   FROM sessions WHERE execution_id = @exec;')" || fail "StateStore query failed" 68
+test "$IDENTITY_ROW" = "flywheel|FLY-2922|qa|$QA_OWNER_ROOT" || fail "StateStore identity mismatch" 69
 ```
 
 - [ ] **D1：冻结生产头和 QA fixture**
@@ -316,7 +334,7 @@ node scripts/qa-529-generalized-e2e.mjs "$PRIMARY_SLOT" \
 - fixture body digest 等于 D1；
 - 当前 outer execution 不是 room 内 run 的 execution；
 - 没有任何 room actor worktree 指向 `/Users/xiaorongli/Dev/flywheel-FLY-2922`。
-- 已保存生产基线：PR #1374 的 `headRefOid`/`updatedAt`、remote branch SHA、生产 checkout HEAD/status、生产 push-guard audit log digest/size（文件不存在时记录 `ABSENT`，不能临时创建）。
+- 已保存生产基线：PR #1374 的 `headRefOid`/`updatedAt`、remote branch SHA、生产 checkout HEAD/status，以及生产 push-guard audit log digest/size（文件不存在时记录 `ABSENT`，不能临时创建）。remote branch SHA 与 PR `headRefOid` 是生产未写入的权威证据；push-guard audit 不记录所有 fast-forward push，因此只作辅助异常信号。
 
 `3600000` 是每个 wait 的一小时基础设施预算，覆盖真实 design、跨族 review 与 implement；任一 wait 超时单列为 infrastructure-inconclusive，保存证据并 teardown，不冒充产品行为 FAIL。任一身份/authority 不符即 teardown 自己房并判 FAIL，不尝试用生产 issue/repo“让流程继续”。
 
@@ -336,7 +354,7 @@ driver exit 0 只是必要条件。外层 owner 还要保存并核验：
 
 至少一层来自 StateStore/CommDB 原始行，另一层来自 driver artifact/Bridge log。摘要事件不能一份充两层。
 
-E3 还必须在 driver 结束后扫描所有 room `sessions.worktree_path`，证明没有生产 checkout；重新读取 PR `headRefOid`/`updatedAt`、remote branch SHA、生产 checkout HEAD/status、push-guard audit log digest/size。除允许的只读 GitHub `updatedAt` 漂移解释外，生产 branch SHA、checkout 和 audit delta 必须与 E2 基线一致；任何生产写入迹象都使 QA@4 FAIL 并保留房间取证。
+E3 还必须在 driver 结束后扫描所有 room `sessions.worktree_path`，证明没有生产 checkout；重新读取 PR `headRefOid`/`updatedAt`、remote branch SHA、生产 checkout HEAD/status、push-guard audit log digest/size。除允许的只读 GitHub `updatedAt` 漂移解释外，权威的 remote branch SHA、PR `headRefOid` 与 production checkout 必须与 E2 基线一致；push-guard audit delta 只作辅助诊断，不能替代 SHA 对照。任何生产写入迹象都使 QA@4 FAIL 并保留房间取证。
 
 ## 7. Task F — 先快照，再由 owner 拆房
 

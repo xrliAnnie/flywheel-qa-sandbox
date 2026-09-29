@@ -27,7 +27,7 @@ review coordinator 用执行体的 worktree binding 选择审阅对象；`comple
 
 ### 2.2 cwd 不是 actor 身份
 
-`turn` 只证明当前 execution 持有其 phase TURN；repo/branch/status 又都随 cwd 改变。两者合用仍挡不住房内 actor `cd` 到生产 checkout。可信身份必须来自 production Bridge 的 StateStore：用 `FLYWHEEL_EXEC_ID` 参数化读取 `sessions.project_name/session_role/worktree_path`，并同时拒绝 test-slot StateStore realpath。当前 exec 的实测行是 `test-slot-2 / design / /tmp/flywheel-test-slot-2/project-slot-2-FLY-2922`，因此无论 cwd 在哪都不能通过 production implement 或 host QA preflight。
+`turn` 只证明当前 execution 持有其 phase TURN；repo/branch/status 又都随 cwd 改变。两者合用仍挡不住房内 actor `cd` 到生产 checkout。可信身份必须来自 production Bridge 的 StateStore：按 `FLYWHEEL_STATE_DB_PATH`、`TEAMLEAD_DB_PATH`、`$HOME/.flywheel/teamlead.db` 的运行时优先级解析数据库，拒绝 test-slot realpath，验证 execution id 为 UUID，再用 `sqlite3 -readonly` 参数化读取 `sessions.project_name/session_role/worktree_path`。生产 runner 即使没有注入 `FLYWHEEL_STATE_DB_PATH`，仍会命中 Bridge 的默认库而不是误拒绝。当前 exec 的实测行是 `test-slot-2 / design / /tmp/flywheel-test-slot-2/project-slot-2-FLY-2922`，因此无论 cwd 在哪都不能通过 production implement 或 host QA preflight。
 
 ### 2.3 当前递归 driver 必须先退出
 
@@ -92,7 +92,7 @@ driver Steps 1–9 是受测流程的自动化证据，但外层 owner 还必须
 6. pane probe 使用房间 `TMUX_TMPDIR`；
 7. 快照发生在 teardown 之前，两个 slot 都由 owner 清理。
 8. driver 显式使用 `--timeout-ms 3600000`；超时记为基础设施未决，不冒充产品行为 FAIL。
-9. QA 前后生产 PR/remote/checkout/push-guard 不变，room session worktree 全量扫描不含生产 checkout。
+9. QA 前后生产 PR `headRefOid`、remote branch SHA 与 checkout 不变，room session worktree 全量扫描不含生产 checkout。push-guard 日志不覆盖所有 fast-forward push，只能作辅助异常信号，不能替代 SHA 对照。
 
 stub 的 `qaPassResult` 只说明脚本按预定路径走到 Step 8；生产 QA verdict 仍由房外 QA/Lead 基于上述原始证据签发。
 

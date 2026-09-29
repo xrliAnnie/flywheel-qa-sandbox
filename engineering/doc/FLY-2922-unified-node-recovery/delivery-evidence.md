@@ -95,6 +95,22 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 - 直接参数化读取 `$FLYWHEEL_STATE_DB_PATH` 的当前行得到 `test-slot-2|FLY-2922|design|/tmp/flywheel-test-slot-2/project-slot-2-FLY-2922`。用该可信行分别对 sandbox root 和 `/Users/xiaorongli/Dev/flywheel-FLY-2922` production root 执行 production-implement 判定，两者均拒绝；说明换 cwd 不改变 actor authority。
 - 宿主只读进程检查确认 `qa-529-generalized-e2e.mjs 2 --issue FLY-2922 --real --timeout-ms 3600000` 仍活，campaign owner slot 2 借 slot 3。修订计划把它归为 recursive-fixture，要求房外 owner 先受控快照、精确 TERM、owner teardown；当前 inner 后继只走 `no_code`。
 
+### Round 2 APPROVED 与 advisory 硬化
+
+- gate question `00d3169f-6da3-42dc-9739-c2e3144b11a0` / request `fed7084b-43d7-4988-9d98-1252b6882cae` 返回 effective `reviewVerdict=APPROVED`，blocking findings 为 0。
+- reviewer 的两个 MEDIUM advisory 可执行且已验证：`packages/teamlead/src/config.ts` 与 `packages/flywheel-comm/src/commands/verify-approval.ts` 都把 `$HOME/.flywheel/teamlead.db` 作为无 override 时的生产默认；旧 shell 示例没有 errexit，末尾 `git log` 可掩盖此前裸 `test` 失败。
+- 修订后的 A1/QA preflight 使用 `set -euo pipefail`、带诊断的非零出口、Bridge 同序 DB fallback、slot realpath 拒绝、UUID 形态检查与 `sqlite3 -readonly` 参数化查询。
+- LOW advisory 同步收口：production no-write 的权威证据是 remote branch SHA 与 PR `headRefOid` 前后相等；push-guard audit 只作辅助异常信号。
+- advisory 改写产生新 plan blob，因此不复用 Round 2 approval，将新开 Round 3 取得对最终 blob 的明确 verdict。
+
+### Advisory 修订验证
+
+- A1 与 QA preflight 两段都通过 `bash -n`。在当前 slot-2 actor 上执行时分别以 40（`implement TURN not held`）与 60（`QA TURN not held`）立即拒绝，没有被后续命令掩盖。
+- 清空 `FLYWHEEL_STATE_DB_PATH` 与 `TEAMLEAD_DB_PATH` 后，解析结果为 `/Users/xiaorongli/.flywheel/teamlead.db` 且文件存在；当前显式 slot DB 用 `sqlite3 -readonly` 参数化查询仍只返回 `test-slot-2|FLY-2922|design|/tmp/flywheel-test-slot-2/project-slot-2-FLY-2922`。
+- `founder-design.html` 更新后 SHA-256 为 `66d7a2b7fde1b8e28228e013158b2a7637c7a099ef19722e9fbcb8d99a3c6b49`。静态检查保持 nonce placeholder 1、script 1、inline handler 0、`innerHTML` 0、自定义 CSP 0、外链 0、9 sections / 9 textareas、marker 1、内联 SVG 2。
+- Headless Chrome 复验：路径 scoped localStorage、保存与 reload 恢复、3 个 ≤1800 字且均带 marker 的汇总 chunk、clipboard reject fallback、page errors 为空；截图 1440×10558，经人工查看布局与两张图正常。
+- Round 2 advisory durable report：`3564163d-027e-40df-b54e-52df113f2e9b`。
+
 ### 文档与 Founder HTML 本地验证
 
 - plan/research/exploration 已补：StateStore 参数化 identity gate、production QA 对称 gate、旧递归房处置、clone install + dependency build、HTTPS + sandbox default + production push disabled、明确 question ids、approve gate binding、一小时 driver timeout、生产未触达前后对照。

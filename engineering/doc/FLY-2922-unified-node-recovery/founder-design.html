@@ -88,7 +88,7 @@
       <li>真实 Claude 完成 design review；QA-only shim 只能截获 QA execution。</li>
       <li>driver Steps 1–9 全过，并证明 FAIL 后出现新的 execution、launch ordinal、dispatch ledger/receipt 与 sandbox PR head。</li>
       <li>driver 每步等待预算显式为一小时；超时归类基础设施未决，不冒充产品 FAIL。</li>
-      <li>外层 owner 同时核验 StateStore/CommDB 原始行和 driver/Bridge artifact，并证明生产 PR、branch、checkout、push audit 前后不变，再先快照后用 raw <code>test-teardown.sh</code> 拆 owner slot。</li>
+      <li>外层 owner 同时核验 StateStore/CommDB 原始行和 driver/Bridge artifact，并用 PR head、remote branch SHA 与 checkout 证明生产前后不变；push audit 只作辅助信号。之后先快照，再用 raw <code>test-teardown.sh</code> 拆 owner slot。</li>
     </ol>
     <div class="callout">Step 8 的 stub PASS 只说明 fixture run 可以继续；最终 QA verdict 必须由房外 owner 根据完整证据签发。</div>
     <div class="comment-wrap"><label for="comment-qa">对 QA@4 验收的意见</label><textarea id="comment-qa" data-comment-input placeholder="例如：还要补哪一个负控？"></textarea><div class="save-note">自动保存。</div></div>
@@ -100,7 +100,7 @@
       <thead><tr><th>选择</th><th>原因</th></tr></thead>
       <tbody>
         <tr><td>生产 closeout 与 QA room 分离</td><td>review/complete 都绑定 execution 的真实 worktree；房内 runner 无法替生产 DAG取得合法回执。</td></tr>
-        <tr><td>StateStore 身份，不信 cwd</td><td><code>turn + cd</code> 不能升级权限；production implement 与 host QA 都要参数化核对 execution 的 project、role 与 worktree。</td></tr>
+        <tr><td>StateStore 身份，不信 cwd</td><td><code>turn + cd</code> 不能升级权限；production implement 与 host QA 按 Bridge 默认路径找到数据库，再用只读、UUID 校验后的参数化查询核对 execution 的 project、role 与 worktree。</td></tr>
         <tr><td>isolated clone 而不是复用 implement worktree</td><td>冻结源码不会被 rework push 漂移；origin 可固定到 QA sandbox。</td></tr>
         <tr><td>安全 fixture，不用 FLY-2922</td><td>避免内层 design 重读当前生产任务并无限递归。</td></tr>
         <tr><td>房外 verdict，不复用 stub PASS</td><td>stub 只执行协议，不会独立检查房、快照、repo authority 或九步原始证据。</td></tr>

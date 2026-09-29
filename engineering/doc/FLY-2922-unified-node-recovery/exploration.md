@@ -46,7 +46,7 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 6. **放行要有体**：必须有新的 execution、launch ordinal、dispatch ledger/receipt 与 consumer 证据；状态字段或展示事件不够。
 7. **关体不关 run**：旧 actor 可关闭或停驻，run 在 replacement 真派发前不得被级联终结。
 8. **本机只定点**：merge/harness 改动只跑发现后的具体测试文件、owning-package related、lint 与 affected build；full suite 只认精确头 CI。
-9. **身份不由 cwd 决定**：生产/房外 owner 必须用当前 execution 的 StateStore `project_name/session_role/worktree_path` 通过参数化查询证明授权；`turn + cd` 不能升级权限。
+9. **身份不由 cwd 决定**：生产/房外 owner 必须按 Bridge 的 StateStore 路径优先级定位数据库，以只读、UUID 校验后的参数化查询核对当前 execution 的 `project_name/session_role/worktree_path`；`turn + cd` 不能升级权限，缺少显式 DB 环境变量也不能误伤合法生产 owner。
 10. **递归房先隔离清场**：已用 FLY-2922 自递归的 slots 2/3 只做取证、终止和 owner teardown，绝不复用为 QA@4；房内后继走 `no_code` 安全出口。
 
 ## 6. 明确边界

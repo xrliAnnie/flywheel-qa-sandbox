@@ -3,7 +3,7 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 日期: 2026-09-29
 基于: plan.md
 
-> **当前状态：exec e717d910 Round 2 PENDING。** 下方 2026-09-27 的 verify-then-submit Round 1–3 是历史记录，已被 2026-09-29 三域隔离计划取代，不能作为当前 plan blob 的批准，也不能执行已删除的 `handin.zsh`。上一 activation 的 Round 2 APPROVED 只覆盖旧 plan blob，不能外推到本次修订。
+> **当前状态：exec e717d910 Round 2 APPROVED with advisories；advisory 修订后将开 Round 3。** 下方 2026-09-27 的 verify-then-submit Round 1–3 是历史记录，已被 2026-09-29 三域隔离计划取代，不能作为当前 plan blob 的批准，也不能执行已删除的 `handin.zsh`。上一 activation 的 Round 2 APPROVED 只覆盖旧 plan blob，不能外推到本次修订。
 
 评审对象：本轮 design 节点的 verify-then-submit 合同（plan.md + handin.zsh），不是上游已批准的 held 恢复设计（那份的有效评审见 origin/flywheel-FLY-2922 的 review-result.md：gate d9ab4f85、0f29f815）。评审模型由 Bridge 指定：gpt-6-astra / xhigh；Codex thread `01a0e2e9-4f98-7502-b116-d377dd2fd8d6`。
 
@@ -80,9 +80,15 @@ design 节点被以新 exec `0edcc786-726c-42e3-a310-77c5fda21351` 重派。plan
   - E2/E3 加生产 PR/remote/checkout/push-guard 前后对照和 room worktree 全量扫描；
   - C4 按 runtime Blueprint 打开 `approve_to_ship` gate，并把真实 question id 绑定到 `complete --route needs_review`。
 
-## exec e717d910 Round 2 — PENDING
+## exec e717d910 Round 2 — APPROVED with advisories
 
 - 修订提交：`862377f34`
 - gate question：`00d3169f-6da3-42dc-9739-c2e3144b11a0`
 - request：`fed7084b-43d7-4988-9d98-1252b6882cae`
+- effective verdict：`APPROVED`；blocking findings：0。
 - 审阅对象：StateStore actor-authority、递归房处置与 QA source/evidence 修订后的 plan blob；Round 1 question 不复用。
+- MEDIUM `prod-state-db-env-absent`：生产 runner 可能不注入 `FLYWHEEL_STATE_DB_PATH`，旧 preflight 会误拒合法 owner。修订按运行时优先级解析显式变量与 `$HOME/.flywheel/teamlead.db` 默认值，同时继续拒绝 slot realpath。
+- MEDIUM `preflight-no-errexit-false-green`：旧 A1/QA 示例的裸 `test` 可能被末尾命令掩盖。修订加入 `set -euo pipefail`、逐项诊断与明确非零退出。
+- LOW `push-guard-audit-weak-evidence`：push audit 不记录所有 fast-forward push。修订将 remote branch SHA 与 PR `headRefOid` 定为权威证据，audit 仅作辅助。
+- LOW `identity-query-hardening`：修订加入 UUID 形态验证与 `sqlite3 -readonly`，再用 `@exec` 参数绑定。
+- 因 plan blob 已按 advisory 改写，本轮批准不外推到改写后 blob；必须新开 Round 3。
