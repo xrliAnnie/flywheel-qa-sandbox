@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
 phase: design
-phaseCursor: 1/6
-updated: 2026-09-29T16:16:08.795Z
-nextStep: Refresh exploration.md against baseline b436ac9ec
+phaseCursor: 2/6
+updated: 2026-09-29T16:16:34.752Z
+nextStep: Refresh research.md
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: design (1/6)
-**next**: Refresh exploration.md against baseline b436ac9ec
+**phase**: design (2/6)
+**next**: Refresh research.md
