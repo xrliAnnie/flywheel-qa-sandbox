@@ -1,253 +1,308 @@
-# FLY-2922 已复审实现头的 verify-then-submit 交卷合同 — 实施计划
+# FLY-2922 重开同头收口与 QA@4 — 实施计划
 Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-held-回滚之后有出口只留一个统一恢复口放行必须真铸出派发关死体不连带终结-run9-张-37)
-日期: 2026-09-27
+日期: 2026-09-29
 基于: research.md
 
-状态：R1（1 HIGH / 5 MEDIUM）与 R2（1 MEDIUM / 1 LOW）全部采纳并修订，待 R3 设计评审。design 节点，不含实现或生产验证。沙箱基线 `1855f7a1a`；被核验的实现头 `2dd29e0276617cf21e31ce4bfe2a4df792d8cf0a`。
+> **执行边界：** 本计划由 DAG 的 implement 与 QA 节点按 TURN 顺序执行。design 节点只交付本计划，不执行以下步骤、不调度后继、不请求 ship。
 
-## 1. 给 founder 的结论
+**目标：** 把 PR #1374 收敛到一个同时具备 latest-main ancestor、同头代码复审 APPROVED、精确头 `CI OK` 的冻结头，再由 QA@4 在自己占用的隔离双房中跑完真实 Claude 设计评审与九步 recovery driver。
 
-FLY-2922 的设计早已批准、实现早已写完并通过同头代码复审；这一轮 implement 节点**不写一行代码**，只跑一个已提交的脚本：用八条只读断言证明「沙箱镜像分支头 = 生产工作区头 = GitHub 远端头 = `2dd29e027`，两处树干净，生产 PR #1374 指向同一头」，然后引用复审 `92e28887` 交卷进 QA。任何一步失败：发一条带精确事实的 BLOCKED 报告，退出，不猜、不改、不重推、不轮询等 Lead。
+**架构：** 使用一个 40 位 head SHA 贯穿 merge、review、CI、房间部署和 QA evidence。实现阶段是“头收口器”；QA 阶段是“运行时证据采集器”。任何写入导致 head 变化，所有下游证据必须从该新 head 重绑。
 
-```mermaid
-flowchart TD
-  A[implement 节点拿到 TURN] --> B[handin.zsh 八条只读断言 A1-A8]
-  B --> C{每一步退出码与值都 PASS}
-  C -->|否| D[发一次 BLOCKED-DETAIL 报告 退出 1 不改 不重推 不轮询]
-  C -->|是| E[progress 3/3 → push → ls-remote 核对 → 冻结]
-  E --> F[ask --report DONE 含 4 MEDIUM 处置与 PR body 核对结果]
-  F --> G[complete --route needs_review 默认不带 --pr]
-  G --> H[QA 三条判据 生产仓 full CI 绿 / merge-tree 顺序可落地 / 529 由 Lead 宿主侧代跑]
-```
+**技术栈：** Git/GitHub PR、TypeScript/Vitest、Bash harness、tmux slot namespace、SQLite StateStore/CommDB、Flywheel review/room receipts。
 
-## 2. 范围与不变量
+---
 
-- **只核验、不改动**：`packages/`、`scripts/`、生产 checkout 的任何文件都不改；沙箱分支只新增本文件夹下文档、`handin.zsh`、`handin-body.md` 与 progress.md。
-- **头是 40 位完整 SHA** `2dd29e0276617cf21e31ce4bfe2a4df792d8cf0a`；短 SHA 只用于叙述。
-- **生产 checkout 全程只读**：不 `fetch`（会改 remote-tracking ref）、不 checkout/reset/stash/push。远端头用 `git ls-remote --exit-code origin refs/heads/flywheel-FLY-2922` 读取（不改本地任何 ref）。
-- **complete 的证据头是沙箱 HEAD，不是生产 SHA**：`complete.js:800–834 resolveEvidenceRepo` 拒绝绝对路径、`..`、`~`，并要求目标严格位于当前 worktree 之下且是嵌套仓库根；`--declare-pr`（`:836–860`）同样经该函数。因此**不能**用 `--target-repo`/`--declare-pr` 把生产 checkout 绑进 completion 证据。默认交卷（Lane A）不传 `--pr`/`--target-repo`，`evidence.headSha` = 沙箱 docs HEAD，报告里分别列出「沙箱交卷 HEAD」与「已核验实现头 + 生产仓身份 + PR #1374 + 复审 ID」。不因 CLI 的 `--pr` 可选就声称后端已把 completion 绑定到生产 PR。
-- **失败不等待**：Lead 明示「不等 Lead」。`ask --report` 是 fire-and-forget 报告（`dist/index.js:655–657`，不构成待答问题），所以失败路径只发一次 BLOCKED-DETAIL 后 `exit 1`，不 `check` 轮询、不 sleep 循环、不自行修复、不推进到成功 complete；新的明确指令到来再重跑脚本。TURN `not-yours` 是正常等待（exit 3，60–90s 后重跑），与「等 Lead 决定」区分。
-- **mutation freeze**：progress 账本写入 → 工作树必须干净 → push → `ls-remote` 核对远端 SHA == 本地 HEAD → 此后沙箱分支只读；push 失败不重推。
-- **不伪造可合并性**：镜像分支与沙箱 main 是两棵树（research §1，`merge-tree` 990 条 CONFLICT），沙箱不开「假装能合」的 PR；Lane B 只在 Lead 明确要求时开**仅含文档**的 PR，正文用已提交的 `handin-body.md`。
-- **合 main 冲突一律 abort + ask**：本合同不含 merge；若需同步沙箱 main，`git merge --abort` 后问 Lead。
+## 1. 当前基线与完成判据
 
-## 3. implement 节点合同
+设计时快照：PR head `6e21a123d34bb53ee29b8536503133d714f46435`，main `b165d649013d6b52899f395865e68d948c2f4831`，PR clean/mergeable，CI run `36544821509` 全绿。
 
-实现节点执行的就是已提交脚本 `engineering/doc/FLY-2922-unified-node-recovery/handin.zsh`（本节 §3.4 逐字附上；Task 0 用 `diff` 保证脚本与本文一致）。runner shell 是 zsh；脚本内部 `${EXPECT}:…` 写法避开 zsh `:e` 修饰符陷阱，`${top:A}` 解析 `/tmp` → `/private/tmp` 的 symlink。
+这个快照不是永久常量。implement 开始时必须重新取值。实现阶段只有在以下四条同时指向最终 `HEAD` 时才可 `complete --route needs_review --pr 1374`：
 
-### 3.1 调用方式（cursor 映射：脚本成功 = implement 3/3；脚本自己写账本）
+1. `origin/main` 是 `HEAD` 的祖先；
+2. `origin/flywheel-FLY-2922` 与 GitHub PR #1374 head 都等于 `HEAD`；
+3. 当前 review question 的 `reviewVerdict=APPROVED` 且审阅对象是 `HEAD`；
+4. GitHub 在 `HEAD` 上给出 `CI OK`，不是祖先提交的绿。
 
-```zsh
-cd "$(git rev-parse --show-toplevel)"
-diff <(awk '/^### 3\.4/{f=1} f&&/^```zsh$/{s=1;next} s&&/^```$/{exit} s{print}' engineering/doc/FLY-2922-unified-node-recovery/plan.md) engineering/doc/FLY-2922-unified-node-recovery/handin.zsh && echo SCRIPT-MATCHES-PLAN
+QA@4 只有在以下证据齐全时才 PASS：双房 claim 属于当前 QA；房间 source head = 冻结 `HEAD`；设计评审真实走 Claude；driver Steps 1–9 全部成功；Step 6/7 的 old→new actor/dispatch 证据可从持久账本复核；证据已快照；两个房位均由 owner teardown。
+
+## 2. Task 1 — implement 取得 TURN 并冻结远端身份
+
+**读写范围：** 生产 feature worktree 与其分支；不碰本 design sandbox。
+
+- [ ] **Step 1：取得 implement TURN，检查 mailbox**
+
+```bash
+node "$FLYWHEEL_COMM_CLI" turn
 node "$FLYWHEEL_COMM_CLI" inbox --exec-id "$FLYWHEEL_EXEC_ID"
-node "$FLYWHEEL_COMM_CLI" check 0d73b791-401b-40a3-b14a-68207eecfd03    # design 节点问 Lead 的 lane 问题；not yet 或未要求沙箱 PR → LANE=A
-LANE=A zsh engineering/doc/FLY-2922-unified-node-recovery/handin.zsh    # Lead 明确要求沙箱 PR 时改 LANE=B
 ```
 
-`diff` 非空 → 不跑脚本，按 §4 报 BLOCKED（脚本与批准计划漂移）。`check` 若返回 Lead 要求沙箱 PR 的明确答复才用 `LANE=B`；任何其他答复或 `not yet` 都是 Lane A。
+预期：`yours phase=implement`。`not-yours` 时不碰工作树，park 当前 turn，等待 phase wake。
 
-### 3.2 脚本各步与退出语义
+- [ ] **Step 2：确认 checkout 身份与干净状态**
 
-| 步骤 | 做什么 | 失败时 |
-|---|---|---|
-| Task 0 | env 存在、cwd 为仓库根、分支 = `project-slot-2-FLY-2922`、`turn` 为 `yours phase=implement` | env/cwd/分支错 → BLOCKED exit 1；`not-yours` → exit 3 等待重跑 |
-| A0 | `git fetch origin flywheel-FLY-2922`（沙箱侧，检查退出码） | BLOCKED |
-| A1 | 沙箱 `origin/flywheel-FLY-2922` == EXPECT | BLOCKED，带 observed/expected |
-| A2 / A3 | 生产 checkout HEAD == EXPECT 且分支 = `flywheel-FLY-2922` | BLOCKED，不 checkout |
-| A4 | 生产 `status --porcelain` 命令成功且输出为空 | BLOCKED，不 add/stash；输出原样带入报告 |
-| A5 | 生产 `ls-remote --exit-code origin refs/heads/flywheel-FLY-2922` == EXPECT | BLOCKED，不 push |
-| A6 | `cat-file -e ${EXPECT}:engineering/doc/milestones/FLY-2922.md` | BLOCKED |
-| A7 | 沙箱 `status --porcelain` 成功且为空 | BLOCKED，列出差异，不自删 |
-| A8 | `gh pr view 1374 --repo xrliAnnie/flywheel`：gh 成功且 JSON 含 40 位 `headRefOid` 与字符串 `body` 才算取得证据；head == EXPECT；正文含 7 个标记（`FLY-2921 must land first`、四个 advisory 名、`exhausted-return-alert-advertises-refused-door`、`92e28887`），缺失只记录不编辑。结果三态：`A8=PASS` / `A8=UNVERIFIABLE`（gh 非零、空输出、坏 JSON、字段形态不对，记原因继续）/ BLOCKED（合法 head 但 ≠ EXPECT） | 只有合法 head 不等才 BLOCKED；UNVERIFIABLE 不冒充 PASS，账本/DONE/completed steps 统一写 `A1-A7 PASS; A8=<状态>` |
-| DRY_RUN=1 | 到此为止打印 `DRY_RUN OK`，零写入 | — |
-| ledger | `progress --phase implement --cursor 3/3`，之后工作树必须干净 | BLOCKED（completed steps 如实含 ledger） |
-| push | `git push -u origin project-slot-2-FLY-2922`；`ls-remote` 远端 == 本地 HEAD | BLOCKED，不重推 |
-| Lane B | `gh pr create --body-file handin-body.md`，从 URL 捕获 `SANDBOX_PR`（必须是正整数） | BLOCKED |
-| report | `ask --report "DONE: …"`（完整文本见脚本） | BLOCKED |
-| complete | Lane A：`complete --route needs_review --summary …`；Lane B：`… --pr "$SANDBOX_PR"` | BLOCKED |
-
-每一步都是「先检查命令退出码，再比较值」；`|| echo FAIL` 这类把失败变成成功的写法一律不用。脚本 `exit 0` 只在 complete 成功之后。
-
-### 3.3 PR body 与 Follow-ups 的落地
-
-2026-09-27 本机核对生产 PR #1374（state OPEN，head = EXPECT，正文 21004 字）：已含「FLY-2921 merge dependency」（"FLY-2921 must land first"）、「Lead advisory disposition」四条全部 landed、「Follow-ups」与「Follow-ups from effective code review round 4」（含 `exhausted-return-alert-advertises-refused-door`）；**缺** `92e28887`（该复审晚于最后一次正文编辑）。沙箱 runner 不编辑生产 PR：A8 把缺失标记写进 DONE 报告的 `PR body checked; missing markers: …`，由 Lead 宿主侧补正文。Lane B 的沙箱 PR 正文 = `handin-body.md`（两仓/两头区别、复审 ID、四条处置、LOW、合入顺序）。
-
-### 3.4 脚本全文（与 `handin.zsh` 逐字一致）
-
-```zsh
-#!/bin/zsh
-# FLY-2922 verify-then-submit hand-in (implement node). Run from the sandbox repo root under TURN.
-#   LANE=A  (default) complete without --pr; prod PR cited in the report only.
-#   LANE=B  open a docs-only sandbox PR first (only when the Lead explicitly asks for it).
-#   DRY_RUN=1 run only the read-only assertions (design-node self check); never writes or reports.
-set -u
-EXPECT=2dd29e0276617cf21e31ce4bfe2a4df792d8cf0a
-PROD=/Users/xiaorongli/Dev/flywheel-FLY-2922
-PROD_REPO=xrliAnnie/flywheel
-PROD_PR=1374
-REVIEW_ID=92e28887
-SANDBOX_BRANCH=project-slot-2-FLY-2922
-DOC=engineering/doc/FLY-2922-unified-node-recovery
-LEDGER=$DOC/progress.md
-LANE=${LANE:-A}
-DRY_RUN=${DRY_RUN:-0}
-typeset -a DONE_STEPS
-DONE_STEPS=()
-
-fail() {
-  local msg="BLOCKED-DETAIL: FLY-2922 verify-then-submit | failed: $1 | detail: $2 | completed steps: ${(j:,:)DONE_STEPS:-none} | action taken: no checkout/reset/stash on prod, no re-push, no code change | waiting for a new Lead instruction (not polling)"
-  print -u2 -r -- "$msg"
-  if [[ $DRY_RUN == 0 ]]; then
-    node "$FLYWHEEL_COMM_CLI" ask --lead flywheel-test-2 --exec-id "$FLYWHEEL_EXEC_ID" --report "$msg" || print -u2 -- "report send failed (exit $?)"
-  fi
-  exit 1
-}
-
-# ---- Task 0: env, cwd, TURN ------------------------------------------------
-[[ -n ${FLYWHEEL_COMM_CLI:-} && -f $FLYWHEEL_COMM_CLI ]] || fail env "FLYWHEEL_COMM_CLI missing"
-[[ -n ${FLYWHEEL_EXEC_ID:-} ]] || fail env "FLYWHEEL_EXEC_ID missing"
-[[ $LANE == A || $LANE == B ]] || fail env "LANE must be A or B (got $LANE)"
-top=$(git rev-parse --show-toplevel 2>&1) || fail cwd "not a git worktree: $top"
-[[ ${top:A} == ${PWD:A} ]] || fail cwd "run from the sandbox repo root ($top)"
-branch=$(git branch --show-current 2>&1) || fail cwd "$branch"
-[[ $branch == $SANDBOX_BRANCH ]] || fail cwd "branch=$branch expected=$SANDBOX_BRANCH"
-if [[ $DRY_RUN == 0 ]]; then
-  turn=$(node "$FLYWHEEL_COMM_CLI" turn --exec-id "$FLYWHEEL_EXEC_ID" 2>&1) || fail turn "turn command exit $? : $turn"
-  if [[ $turn != yours* ]]; then print -- "TURN not yours ($turn): wait 60-90s and re-run; not a failure"; exit 3; fi
-  [[ $turn == *phase=implement* ]] || fail turn "unexpected TURN phase: $turn"
-fi
-DONE_STEPS+=(task0)
-
-# ---- Task 1: read-only assertions -------------------------------------------
-git fetch origin flywheel-FLY-2922 >/dev/null 2>&1 || fail A0 "sandbox fetch origin flywheel-FLY-2922 exit $?"
-mirror=$(git rev-parse --verify origin/flywheel-FLY-2922 2>&1) || fail A1 "$mirror"
-[[ $mirror == $EXPECT ]] || fail A1 "mirror=$mirror expected=$EXPECT"
-prod_head=$(git -C "$PROD" rev-parse --verify HEAD 2>&1) || fail A2 "$prod_head"
-[[ $prod_head == $EXPECT ]] || fail A2 "prod HEAD=$prod_head expected=$EXPECT"
-prod_branch=$(git -C "$PROD" branch --show-current 2>&1) || fail A3 "$prod_branch"
-[[ $prod_branch == flywheel-FLY-2922 ]] || fail A3 "prod branch=$prod_branch"
-prod_status=$(git -C "$PROD" status --porcelain 2>&1) || fail A4 "$prod_status"
-[[ -z $prod_status ]] || fail A4 "prod tree dirty: ${prod_status//$'\n'/ ; }"
-remote_line=$(git -C "$PROD" ls-remote --exit-code origin refs/heads/flywheel-FLY-2922 2>&1) || fail A5 "ls-remote exit $? : $remote_line"
-[[ ${remote_line%%$'\t'*} == $EXPECT ]] || fail A5 "remote=${remote_line%%$'\t'*} expected=$EXPECT"
-git -C "$PROD" cat-file -e "${EXPECT}:engineering/doc/milestones/FLY-2922.md" 2>/dev/null || fail A6 "milestone file missing in $EXPECT"
-sb_status=$(git status --porcelain 2>&1) || fail A7 "$sb_status"
-[[ -z $sb_status ]] || fail A7 "sandbox tree dirty: ${sb_status//$'\n'/ ; }"
-# A8: production PR head + body markers (read-only). Outcomes: PASS | UNVERIFIABLE (gh unreachable / empty / unparsable) | BLOCKED (valid head that differs)
-A8_STATUS=UNVERIFIABLE; A8_REASON=""; MISSING=""
-if pr_json=$(gh pr view "$PROD_PR" --repo "$PROD_REPO" --json state,headRefOid,body 2>&1); then
-  if pr_parsed=$(print -r -- "$pr_json" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let j;try{j=JSON.parse(s)}catch(e){process.exit(2)}if(!/^[0-9a-f]{40}$/.test(String(j.headRefOid||""))||typeof j.body!=="string"){process.exit(3)}process.stdout.write(j.headRefOid+"\n"+j.body)})' 2>/dev/null); then
-    pr_head=${pr_parsed%%$'\n'*}
-    pr_body=${pr_parsed#*$'\n'}
-    [[ $pr_head == $EXPECT ]] || fail A8 "PR $PROD_REPO#$PROD_PR head=$pr_head expected=$EXPECT"
-    typeset -a missing; missing=()
-    for m in 'FLY-2921 must land first' preadmission-producer-rework-carveout merge-order-dependency-unstated shared-materializer-preconditions rework-replacement-context-not-preflighted exhausted-return-alert-advertises-refused-door "$REVIEW_ID"; do
-      print -r -- "$pr_body" | grep -qF -- "$m" || missing+=("$m")
-    done
-    A8_STATUS=PASS; MISSING="${(j:,:)missing:-none}"
-  else
-    A8_REASON="gh output empty or unparsable (parse exit $?)"
-  fi
-else
-  A8_REASON="gh exit $? : ${pr_json:0:100}"
-fi
-if [[ $A8_STATUS == PASS ]]; then
-  PR_NOTE="A8=PASS (PR $PROD_REPO#$PROD_PR head == $EXPECT; body missing markers: $MISSING; sandbox never edits the prod PR — missing items are host-side Lead work)"
-else
-  PR_NOTE="A8=UNVERIFIABLE ($A8_REASON); prod PR head/body not observed from the sandbox"
-fi
-ASSERT_NOTE="A1-A7 PASS; $PR_NOTE"
-DONE_STEPS+=(A1-A7 "A8=$A8_STATUS")
-if [[ $DRY_RUN == 1 ]]; then print -- "DRY_RUN OK: $ASSERT_NOTE | head $EXPECT"; exit 0; fi
-
-# ---- Task 2: ledger, push, freeze ---------------------------------------------
-node "$FLYWHEEL_COMM_CLI" progress --exec-id "$FLYWHEEL_EXEC_ID" --file "$LEDGER" --phase implement --cursor 3/3 \
-  --next "$ASSERT_NOTE; head $EXPECT; lane $LANE; next: report + complete needs_review" || fail ledger "progress exit $?"
-DONE_STEPS+=(ledger)
-post=$(git status --porcelain 2>&1) || fail ledger "$post"
-[[ -z $post ]] || fail ledger "tree dirty after progress: ${post//$'\n'/ ; }"
-git push -u origin "$SANDBOX_BRANCH" || fail push "push exit $?"
-DONE_STEPS+=(push)
-local_head=$(git rev-parse HEAD)
-remote_sb=$(git ls-remote --exit-code origin "refs/heads/$SANDBOX_BRANCH" 2>&1) || fail push-sync "ls-remote exit $? : $remote_sb"
-[[ ${remote_sb%%$'\t'*} == $local_head ]] || fail push-sync "remote=${remote_sb%%$'\t'*} local=$local_head"
-# From here on the sandbox branch is read-only (mutation freeze).
-
-# ---- Lane B only: docs-only sandbox PR ----------------------------------------
-SANDBOX_PR=""
-if [[ $LANE == B ]]; then
-  [[ -f $DOC/handin-body.md ]] || fail laneB "$DOC/handin-body.md missing"
-  pr_url=$(gh pr create --base main --head "$SANDBOX_BRANCH" --title "docs(FLY-2922): design-node verify-then-submit contract" --body-file "$DOC/handin-body.md" 2>&1) || fail laneB "gh pr create exit $? : $pr_url"
-  SANDBOX_PR=${pr_url##*/}
-  [[ $SANDBOX_PR == <1-> ]] || fail laneB "could not parse PR number from: $pr_url"
-  DONE_STEPS+=(sandbox-pr-$SANDBOX_PR)
-fi
-
-# ---- Task 3: report, complete ---------------------------------------------------
-report="DONE: FLY-2922 verify-then-submit | verified implementation head: $EXPECT (sandbox origin/flywheel-FLY-2922 = prod checkout $PROD @flywheel-FLY-2922 = GitHub $PROD_REPO refs/heads/flywheel-FLY-2922; both trees clean; $ASSERT_NOTE) | sandbox hand-in HEAD (docs only, $SANDBOX_BRANCH): $local_head | code review: $REVIEW_ID APPROVED (Lead hand-off 2026-09-27 12:09:19Z) | prod PR: $PROD_REPO#$PROD_PR | MEDIUM dispositions (as in PR body): carveout=landed (rework_delivery_owned); merge-order=stated (FLY-2921 lands first, 5357dd5ce merged); shared-materializer=landed (materializeReworkReplacementCoreTx revalidates tx/run status/tuple/writer/owner/budget); context-preflight=landed (stage+apply return HTTP 409 with the specific reason, invalid context = engine_rework_replacement_context_invalid; digest rechecked in tx) | LOW follow-ups: PR body sections Follow-ups + Follow-ups from effective code review round 4 | commits: none to code | lane: $LANE${SANDBOX_PR:+ sandbox PR #$SANDBOX_PR}"
-node "$FLYWHEEL_COMM_CLI" ask --lead flywheel-test-2 --exec-id "$FLYWHEEL_EXEC_ID" --report "$report" || fail report "ask --report exit $?"
-DONE_STEPS+=(report)
-summary="FLY-2922: verified implementation head $EXPECT (code review $REVIEW_ID APPROVED, prod PR $PROD_REPO#$PROD_PR); sandbox hand-in is docs-only; no code changes; submit to QA"
-if [[ $LANE == B ]]; then
-  node "$FLYWHEEL_COMM_CLI" complete --route needs_review --pr "$SANDBOX_PR" --summary "$summary" || fail complete "complete exit $?"
-else
-  node "$FLYWHEEL_COMM_CLI" complete --route needs_review --summary "$summary" || fail complete "complete exit $?"
-fi
-print -- "hand-in complete (lane $LANE); this node is terminal — exit without polling turn or verify-approval"
+```bash
+test "$(git branch --show-current)" = "flywheel-FLY-2922"
+test -z "$(git status --porcelain)"
+git log --oneline -10
 ```
 
-## 4. 失败路径
+预期：三条退出 0；若有未知改动，停止并报告，不能 stash/drop 他人状态。
 
-任一步 FAIL：脚本发**一次** `BLOCKED-DETAIL: FLY-2922 verify-then-submit | failed: <step> | detail: <observed / expected> | completed steps: <真实已完成步骤，如 task0,A1-A8,ledger,push> | action taken: no checkout/reset/stash on prod, no re-push, no code change | waiting for a new Lead instruction (not polling)` 然后 `exit 1`。禁止：`git checkout`/`reset`/`stash` 生产 checkout、`push --no-verify`、改 hooksPath、为「让断言通过」而 reset 沙箱分支、`check`/sleep 轮询。
+- [ ] **Step 3：拉取 refs 并冻结三方 SHA**
 
-## 5. QA 节点判据（Lead 原文，不由本节点执行）
+```bash
+git fetch origin
+HEAD_SHA="$(git rev-parse HEAD)"
+REMOTE_SHA="$(git rev-parse origin/flywheel-FLY-2922)"
+MAIN_SHA="$(git rev-parse origin/main)"
+PR_SHA="$(gh pr view 1374 --repo xrliAnnie/flywheel --json headRefOid --jq .headRefOid)"
+test "$HEAD_SHA" = "$REMOTE_SHA"
+test "$HEAD_SHA" = "$PR_SHA"
+printf 'HEAD=%s\nMAIN=%s\n' "$HEAD_SHA" "$MAIN_SHA"
+```
 
-1. **新精确头 full CI 绿**（生产仓 PR #1374）。`ci-full.js:186–195, 549` 用 `process.cwd()` 的仓库跑 `gh pr view`，从沙箱根执行只会查沙箱仓。取证必须在生产仓上下文：`(cd /Users/xiaorongli/Dev/flywheel-FLY-2922 && node "$FLYWHEEL_COMM_CLI" ci-full ensure --pr 1374 --head 2dd29e0276617cf21e31ce4bfe2a4df792d8cf0a --json)`，由有该上下文与权限的一侧执行（QA 节点若具备则 QA 跑；否则与 529 一样由 Lead 宿主侧取证），记录 repo、PR、完整 HEAD、CI run URL、最终结果。拿不到证据不判 PASS。
-2. **按 FLY-2921 先合的顺序可落地**：FLY-2921 进 main 后，在生产仓 `git merge-tree --write-tree origin/main 2dd29e0276617cf21e31ce4bfe2a4df792d8cf0a` 无冲突。
-3. **529 N-to-N 真 runner**：Lead 宿主侧起房代跑；QA 只记录 Lead 给的证据链接。
+预期：两个 identity 断言通过。若远端已由别的 TURN holder 推进，停止；不得把本地旧头强推回去。
 
-QA 只验、不改产品代码；FAIL 交回作者头。implement 节点不跑测试、不请求 CI。
+## 3. Task 2 — 只在必要时合 latest main
 
-## 6. 4 MEDIUM / LOW 的处置（交卷报告逐条复述；事实按实现头 2dd29e027）
+- [ ] **Step 1：判定是否需要 merge**
 
-| Advisory | 落点 | 报告措辞 |
-|---|---|---|
-| preadmission-producer-rework-carveout | `StateStore.ts:65063–65076` 对 rework delivery owner 提前返回 `rework_delivery_owned`（在 permanent-error 判断之前），`:46300/:70224` 失败事件同名 | landed |
-| merge-order-dependency-unstated | milestone 与 PR body「FLY-2921 merge dependency」：FLY-2921 先合，`5357dd5ce` 已合入 | stated |
-| shared-materializer-preconditions | rework 恢复走 `StateStore.ts:63086 → materializeWorkflowReworkRecoveryTx:62919 → materializeReworkReplacementCoreTx:45593`，内核 `:45625–45656` 校验事务存在、run 状态、route/delivery/node/actor tuple、materialized writer、owner/generation、替身预算；`:63099 materializeWorkflowNodeReplacementTx` 是非 rework 分支 | landed |
-| rework-replacement-context-not-preflighted | `bridge/workflow-node-recovery.ts:243–246` 调 `getWorkflowReworkReplacementContextPreflight`，失败 `throw new Error(context.reason)`（上下文无效即 `engine_rework_replacement_context_invalid`，`StateStore.ts:44217–44225`）；`runs-route.ts` stage `:535–542` / apply `:671–677` 对 Error 返回 HTTP 409 并保留该具体 reason（`recovery_preflight_failed` 只是非 Error 的兜底值）；`StateStore.ts:62704–62725` 事务内复查 preflight digest，变化即 `recovery_preflight_required` 回滚零派发 | landed |
-| LOW ×4 | PR body「Follow-ups」+「Follow-ups from effective code review round 4」 | 已在 PR body；本轮不改代码 |
+```bash
+if git merge-base --is-ancestor "$MAIN_SHA" HEAD; then
+  printf 'MAIN_ALREADY_CONTAINED %s\n' "$MAIN_SHA"
+else
+  printf 'MERGE_REQUIRED %s\n' "$MAIN_SHA"
+fi
+```
 
-## 7. 风险与取舍
+设计时基线预期 `MAIN_ALREADY_CONTAINED b165d649…`。如果 main 已包含，不创建空 merge、不改文档来制造新 head，直接进入 Task 4。
 
-| 选择 | 为什么 | 拒绝的替代 |
-|---|---|---|
-| 一个已提交的 zsh 脚本 | 每步退出码可查、可 `DRY_RUN` 自检、与计划 `diff` 防漂移 | 散落的命令块：`|| echo FAIL` 让失败变成 exit 0（R1 实测 A7 FAIL 仍 exit 0） |
-| 三处核对（镜像 + 生产 checkout + GitHub 远端） | Lead 原话核对生产 checkout；镜像是后继唯一能 fetch 的；`ls-remote` 不改任何 ref | 生产侧 `fetch`：会改 remote-tracking ref，违反只读 |
-| Lane A 不带 `--pr` | CLI 不允许跨 worktree 绑定；`--pr 1374` 不带 repo 会让后端在沙箱仓找不存在的 PR | `--target-repo` 绝对路径：`complete.js:807` 直接 exit 1 |
-| 失败只报一次就退出 | Lead「不等 Lead」；report 不是问答 | 60–90s check 循环：无截止的静默等待 |
-| PR body 只核对不编辑 | 生产 PR 不在沙箱 runner 权限内 | 沙箱 `gh pr edit` 生产 PR：越界写 |
+- [ ] **Step 2：main 后移时执行 merge，不 rebase**
 
-## 8. 本 design 节点的验证边界
+```bash
+git merge --no-edit origin/main
+```
 
-未运行任何实现测试。`zsh -n handin.zsh` 通过；`DRY_RUN=1` 在本机全部只读断言 PASS（结果记入 delivery-evidence.md）。生产行为验收属于 QA 节点与 Lead 宿主侧。
+若冲突，逐文件应用 §3.1 的语义表。无法证明两边都保留时 `git merge --abort`，报告具体冲突；不猜、不重写历史。
 
-## 9. R1 审阅处置
+### 3.1 冲突语义表
 
-有效 verdict：CHANGES_REQUESTED，request `023e256d-3188-44b1-9a59-a5848b7b547b`，thread `01a0e2e9-4f98-7502-b116-d377dd2fd8d6`，round 1，findings high=1 medium=5。
+| 冲突面 | 必须保留的 FLY-2922 语义 | 必须保留的 main 语义 | 正向检查 |
+|---|---|---|---|
+| `run-dispatcher.ts` / `run-infra.ts` | `initialStartObserver` 最后一个参数；恢复派发读取冻结 root/non-root start authority | `workflowPrefixLookup` 及其 `resolveExecutionWorkflowPrefixContext` 调用 | constructor 与唯一工厂调用参数同序；恢复仍经正常 `start()` |
+| `workflow-node-recovery.ts` / StateStore | stage/apply CAS、真实 dispatch ledger/receipt、dead-only replacement、run 不因 carrier close 终结 | main 新增 lifecycle/rework/quota guard | parked body 交 coordinator；latched resume fail closed；dead 才铸替身 |
+| `test-deploy.sh` | 独立 `elif QA_STUB_RUNNER`、只装 Claude QA shim、真实 Claude 评审透传 | `STUB_RUNNER` 的 room-local Codex guard record 与 main 新 flags | QA-only 分支不写 Codex shim/guard，不吞并 STUB_RUNNER 分支 |
+| `qa-generalized.sh` | activation/StateStore 识别 QA，real Claude 防递归透传 | guard-record helper 与新 slot ownership helpers | 函数边界完整；无身份调用走 real Claude |
+| driver probe | `probeRoomPaneAlive` 以 slotDir 设 `TMUX_TMPDIR` | main 的新增观测/生命周期字段 | Step 4 活 pane 只在 room server 判 alive |
 
-- HIGH target-repo-rejected：接受。§2 删除 `--target-repo`/`--declare-pr` 用法并引用 `complete.js:800–860`；Lane A 改为无 `--pr` 交卷，报告分列沙箱 HEAD 与实现头。
-- MEDIUM control-flow：接受。合同改为 `handin.zsh`，每步检查退出码；生产侧 `fetch` 改 `ls-remote`；ledger/push/report/complete 失败各自停止并如实报告已完成步骤。
-- MEDIUM advisory-facts：接受。§6 与 research §2 改为 preflight landed（`workflow-node-recovery.ts:243–246`、`runs-route.ts` 409、`StateStore.ts:62704–62725`）与 rework core 前置条件（`materializeReworkReplacementCoreTx:45593`）。
-- MEDIUM wait-loop：接受。§4 失败只报一次即退出；TURN 等待与之区分。
-- MEDIUM follow-ups/Lane B：接受。§3.3 核对 PR #1374 正文实况、A8 机器核对 7 个标记、`handin-body.md` 已提交、Lane B 捕获真实 PR 号、所有占位符消除。
-- MEDIUM ci-full-repo：接受。§5 取证命令改到生产仓上下文并明确责任侧。
-- 附带修正：research §1「0 命中」收窄为「缺少本次 hold/recovery API（沙箱已有旧 `workflow_side_effect_ledger` 基础设施）」。
+## 4. Task 3 — merge 发生时做定点本地验证
 
-## 10. R2 审阅处置
+如果 Task 2 无新 merge，这一 task 为 N/A，不重复已绿 head 的本地测试。若发生 merge，必须先发现选择，再执行。
 
-有效 verdict：CHANGES_REQUESTED，request `d2c3ca1b-d42d-4405-8d3c-6103af5152e2`，turn `01a0e3aa-3a14-7da1-aa06-dc8026302ebb`，round 2，findings medium=1 low=1。R1 六项全部 CLOSED。
+- [ ] **Step 1：建立测试发现清单**
 
-- MEDIUM A8 三态不分：接受。A8 改为 `PASS | UNVERIFIABLE | BLOCKED`：gh 退出码、JSON 可解析、`headRefOid` 40 位、`body` 为字符串逐项检查；只有合法 head ≠ EXPECT 才 BLOCKED；gh 非零/空/坏 JSON 记原因进 UNVERIFIABLE；DRY_RUN 输出、账本、DONE、completed steps 统一 `A1-A7 PASS; A8=<状态>`，不再写 `A1-A8 PASS`。
-- LOW 409 reason 写成兜底值：接受。脚本 DONE 文本、§6、research §2 改为「HTTP 409 并保留具体 reason，上下文无效为 `engine_rework_replacement_context_invalid`」。
+对每个冲突文件执行完整路径、文件名、父目录与冲突符号的 `git grep -lF`。示例：
+
+```bash
+git grep -lF -- 'packages/teamlead/src/bridge/run-dispatcher.ts'
+git grep -lF -- 'run-dispatcher.ts'
+git grep -lF -- 'initialStartObserver'
+git grep -lF -- 'workflowPrefixLookup'
+git grep -lF -- 'scripts/test-deploy.sh'
+git grep -lF -- 'QA_STUB_RUNNER'
+git grep -lF -- 'probeRoomPaneAlive'
+```
+
+把每个命中标为 retained/excluded 并写原因。禁止用目录、glob、`-t`、裸 `vitest`，也禁止枚举整包全部文件模拟 suite。
+
+- [ ] **Step 2：逐个运行 retained concrete tests**
+
+最低保留集合是一文件一次；若 Step 1 发现更多直接消费者，再逐个追加，不能用一个目录或 glob 代替：
+
+```bash
+pnpm --filter flywheel-teamlead exec vitest run packages/teamlead/src/bridge/__tests__/run-dispatcher-prefix.test.ts
+pnpm --filter flywheel-teamlead exec vitest run packages/teamlead/src/bridge/__tests__/workflow-node-recovery.test.ts
+pnpm --filter flywheel-teamlead exec vitest run packages/teamlead/src/__tests__/workflow-prefix-context.test.ts
+node --test scripts/__tests__/qa-generalized-e2e-lib.test.mjs
+node --test scripts/__tests__/qa-generalized-codex-stub.test.mjs
+bash scripts/__tests__/test-deploy-generalized.test.sh
+```
+
+预期：每个命令 exit 0。
+
+- [ ] **Step 3：changed TypeScript 的 owning related 检查**
+
+```bash
+pnpm --filter flywheel-teamlead exec vitest related packages/teamlead/src/bridge/run-dispatcher.ts packages/teamlead/src/bridge/run-infra.ts --run
+```
+
+若实际 merge 还改了其他 TypeScript 文件，把它们的精确路径追加到同一 owning-package related 命令。不得用目录、glob 或 package alias 替代 changed-file 列表。
+
+- [ ] **Step 4：lint、affected build、typecheck 与 diff hygiene**
+
+```bash
+pnpm lint
+pnpm --filter "flywheel-teamlead..." build
+git diff --check origin/main...HEAD
+```
+
+若 exported API/type 变化，再运行实际依赖包的 typecheck。报告必须写“targeted local checks”，不能称 full suite。
+
+- [ ] **Step 5：记录冲突取舍并提交**
+
+只在 merge 产生实际新差异时更新 `engineering/doc/milestones/FLY-2922.md`，逐文件记录两边语义与测试选择；提交后工作树必须干净。
+
+## 5. Task 4 — push、同头代码复审、精确头 CI
+
+- [ ] **Step 1：push 并再次冻结 head**
+
+```bash
+git push origin HEAD:flywheel-FLY-2922
+HEAD_SHA="$(git rev-parse HEAD)"
+test "$(git ls-remote origin refs/heads/flywheel-FLY-2922 | awk '{print $1}')" = "$HEAD_SHA"
+```
+
+禁止 `--no-verify` 与 force push。push 后不再修改任何文件；若需修改，回到本 task 开头并形成新 head。
+
+- [ ] **Step 2：为当前 head 注册代码复审**
+
+```bash
+node "$FLYWHEEL_COMM_CLI" stage set code_review
+node "$FLYWHEEL_COMM_CLI" gate review_code --lead flywheel-test-2 --exec-id "$FLYWHEEL_EXEC_ID" --no-block "Code review requested for FLY-2922 exact head ${HEAD_SHA}"
+```
+
+捕获输出的 `questionId`，然后：
+
+```bash
+node "$FLYWHEEL_COMM_CLI" request-review --type code --question-id "$QUESTION_ID"
+```
+
+每个 turn 最多自然地执行一次 `check "$QUESTION_ID"`；不在同一 turn sleep/poll。`CHANGES_REQUESTED` 时只修 blocking finding，push 新 head，开启**新** gate/request；`APPROVED` 才继续。advisory 用 `ask --report` 转告 Lead，不伪称已修。
+
+- [ ] **Step 3：核验 review 与 head 同一**
+
+有效回执必须明确当前 `HEAD_SHA`、`reviewVerdict=APPROVED` 和 reviewer-model validation。旧 `9c5aef2d2` 或旧 question 的 APPROVED 不可复用。
+
+- [ ] **Step 4：确保精确头 full CI**
+
+```bash
+node "$FLYWHEEL_COMM_CLI" ci-full ensure --pr 1374 --head "$HEAD_SHA" --json
+gh pr checks 1374 --repo xrliAnnie/flywheel
+```
+
+预期：`CI OK` 与所需 job 在 `HEAD_SHA` 上成功。设计时 `6e21a123d` 已满足；若 Step 1 产生新 head，必须等新 run，不能引用 `36544821509`。
+
+- [ ] **Step 5：交给 QA**
+
+```bash
+node "$FLYWHEEL_COMM_CLI" complete --route needs_review --pr 1374
+```
+
+只有 §1 四条同时成立才执行。不请求 ship、不 merge PR。
+
+## 6. Task 5 — QA@4 自己选择并占用双房
+
+**所有权：** 这一 task 只由 QA 节点执行。QA 先取得自己的 TURN，并检查 inbox。
+
+- [ ] **Step 1：查 service ledger，不做写入**
+
+```bash
+node "$FLYWHEEL_COMM_CLI" room list
+```
+
+从输出选择两个未在服务账中的显式槽位。再逐个检查 `/tmp/flywheel-test-slot-N`、`.lock` 与活进程；任一存在就换号。两个都找不到时，QA 用非阻塞 `ask` 向 Lead 要号并 park；禁止 `auto`、禁止借用、禁止拆陌生房。
+
+- [ ] **Step 2：验证 source checkout 就是冻结 head**
+
+```bash
+QA_HEAD="$(gh pr view 1374 --repo xrliAnnie/flywheel --json headRefOid --jq .headRefOid)"
+test "$(git rev-parse HEAD)" = "$QA_HEAD"
+test "$(git rev-parse origin/flywheel-FLY-2922)" = "$QA_HEAD"
+```
+
+若 PR 在 implement handoff 后又推进，QA 不起房，退回新 head 的 review/CI gate。
+
+- [ ] **Step 3：用两个明确空槽起房**
+
+```bash
+EXTRA_LABEL=flywheel-test-2-extra
+test -n "$PRIMARY_SLOT"
+test -n "$SECONDARY_SLOT"
+test "$PRIMARY_SLOT" != "$SECONDARY_SLOT"
+scripts/test-deploy.sh "$PRIMARY_SLOT" \
+  --mode slot \
+  --generalized \
+  --codex-runner \
+  --qa-stub-runner \
+  --extra-lead "${SECONDARY_SLOT}:${EXTRA_LABEL}" \
+  --expect-head "$QA_HEAD" \
+  --from-branch main
+```
+
+`PRIMARY_SLOT` 与 `SECONDARY_SLOT` 必须由 QA 在 Step 1 根据实际 `room list` 与宿主空位审计设置；脚本输出的 room/campaign claim 与两个 slot 都要写入 QA evidence。
+
+## 7. Task 6 — QA@4 跑完整 driver 并证明恢复确实铸体
+
+- [ ] **Step 1：运行真实 driver**
+
+```bash
+node scripts/qa-529-generalized-e2e.mjs "$PRIMARY_SLOT" --issue FLY-2922 --real
+```
+
+唯一 PASS 是 exit 0 且 Steps 1–9 都有 evidence。exit 20/21 或其他非零都是 FAIL/诊断，不得降格成 PASS。
+
+- [ ] **Step 2：验证真实 Claude design review**
+
+从 slot `teamlead.db` / Bridge log 保存 `review_model_routed`、review request/verdict 与 reviewer execution 证据，证明 reviewer family/vendor 为 Claude。任何 `codex_quota_fallback` 把 eng_design producer 从 Codex 改成 Claude 的记录都使本轮拓扑无效；QA-only stub 日志只能属于 QA execution。
+
+- [ ] **Step 3：保存统一恢复的 strength-two 证据**
+
+至少保存：
+
+- run/node/attempt 的旧 execution 与 Step 7 当前 execution；
+- Step 6 精确 rework request、delivery state、`rework_delivery_wake_delivered` receipt；
+- run 在故障恢复期间仍为 `active`，没有 generic held/dead-run 级联；
+- 新当前 execution 的 launch ordinal、dispatch ledger/receipt 与被 driver 消费后的状态；
+- attempt 1/2 PR head 发生预期推进；
+- Step 9 park cleared、terminal timestamp 和 actor dead。
+
+同一个摘要事件不能同时充当两层证据；至少一层来自原始 StateStore/CommDB 行，另一层来自 driver step artifact/Bridge log。
+
+- [ ] **Step 4：完整性负控**
+
+确认 Step 4 的 pane probe 证据带房间 `TMUX_TMPDIR=/tmp/flywheel-test-slot-${PRIMARY_SLOT}`；宿主 namespace 不得被当作活 pane。确认 `dangerousReworkRows` 为空，且没有 `returned_to_lead`/generic held 偷换“新派发”。
+
+## 8. Task 7 — 先快照证据，再拆自己房
+
+- [ ] **Step 1：保存 evidence**
+
+在 teardown 前保存 driver Steps 1–9、Bridge log、room-info/owner claim、相关 SQLite snapshot 与 exact head/review/CI receipts。实时 `teamlead.db`/`comm.db` 必须通过 runner snapshot control 或 room service 的受控 snapshot，禁止直接 `cp`。
+
+- [ ] **Step 2：owner teardown**
+
+优先使用 room receipt 给出的 room id：
+
+```bash
+node "$FLYWHEEL_COMM_CLI" room teardown --room "$ROOM_ID"
+```
+
+若本轮确实由 raw `test-deploy.sh` 创建且有当前 claim/token，则按脚本回执使用 `scripts/test-teardown.sh "$PRIMARY_SLOT"`；先确认它会连同 campaign 的 extra slot 一起按 service claim 清理。snapshot 失败时保留房位并报告，不能用 `--skip-snapshot` 隐藏证据缺口。
+
+- [ ] **Step 3：最终 QA 报告**
+
+报告列出冻结 SHA、review gate、CI run、两个 slot/room claim、driver exit/9 个 step、old→new dispatch tuple、证据目录与 teardown receipts。没有这组闭环，就不是 QA PASS。
+
+## 9. 拒绝的替代方案
+
+- 再次固定合 `23a1d80e8` 或 `b165d6490`，而不先查 ancestor：拒绝，状态会继续前进。
+- 复用祖先 head 的 APPROVED/CI：拒绝，review 与 full CI 都是 head-bound。
+- 让 design/implement 代 QA 起房：拒绝，破坏 room owner 与证据归属。
+- 使用 `auto` 找槽或 raw teardown 清陌生目录：拒绝，可能破坏别人的房。
+- 把 Codex producer fallback 成 Claude 后继续：拒绝，目标拓扑已改变。
+- 只看 `node_dispatched` 或 run status：拒绝，不能证明真实 ledger/ordinal/consumer。
+- 关掉旧执行体时顺带终结 run：拒绝，直接违反本 issue 的核心不变量。
+
+## 10. 本设计节点的交付边界
+
+design 节点只提交 `exploration.md`、`research.md`、本计划、progress 与 founder HTML；取得有效 design-review APPROVED 后发布/报告 HTML，并以 `phase_design_complete` 交还 DAG。它不运行以上 implement/QA 步骤，也不以当前外部 CI 绿冒充后继节点已经完成。

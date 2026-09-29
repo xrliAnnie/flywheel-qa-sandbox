@@ -1,59 +1,99 @@
-# FLY-2922 沙箱基线与镜像分支核对 — 调研
+# FLY-2922 当前头、合并合同与 QA@4 证据面 — 调研
 Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-held-回滚之后有出口只留一个统一恢复口放行必须真铸出派发关死体不连带终结-run9-张-37)
-日期: 2026-09-27
+日期: 2026-09-29
 基于: exploration.md
 
-全部为 2026-09-27 本机静态核对结果（`git`、`gh`、`sqlite3`、flywheel-comm dist 源码阅读）；未运行任何实现测试，未改动生产或沙箱数据库。R1 评审纠正处以「R1」标出。
+本文件记录 2026-09-29 本轮 design 的只读审计。生产 checkout、GitHub PR 和宿主 QA 设施均未被修改；未执行本机测试、529 driver 或房间部署。
 
-## 1. 沙箱基线
+## 1. 权威状态快照
 
-| 项 | 核对命令 | 结果 |
+| 证据 | 当前值 | 设计含义 |
 |---|---|---|
-| 工作分支与起点 | `git rev-list --count origin/main..HEAD`（写文档前） | 0（`project-slot-2-FLY-2922` = `origin/main@1855f7a1a`，未漂移） |
-| 沙箱 main 有无本次 hold/recovery API | `git grep -n -E 'redispatch_current\|resumeWorkflowHold' origin/main -- packages` | exit 1、零命中。R1：沙箱 `StateStore.ts:11743` 等已有旧 `workflow_side_effect_ledger` 基础设施，所以结论收窄为「缺少本次统一恢复 API」，不是「没有账本」；不影响「不在沙箱重做实现」 |
-| 沙箱 PR | `gh pr list --state all --search FLY-2922`、`--head flywheel-FLY-2922`、`--head project-slot-2-FLY-2922` | 全部 `[]`（Codex 沙箱内 gh 返回空 stdout，标 unverifiable；以本机结果为准） |
-| 镜像分支头 | `git rev-parse origin/flywheel-FLY-2922` | `2dd29e0276617cf21e31ce4bfe2a4df792d8cf0a` |
-| 生产 checkout 头 | `git -C /Users/xiaorongli/Dev/flywheel-FLY-2922 rev-parse HEAD` / `branch --show-current` / `status --porcelain` | 同上 / `flywheel-FLY-2922` / 空 |
-| 生产 GitHub 远端头 | `git -C <prod> ls-remote --exit-code origin refs/heads/flywheel-FLY-2922` | 同上（只读，不改 remote-tracking ref） |
-| 生产 PR | `gh pr view 1374 --repo xrliAnnie/flywheel --json state,headRefOid,body` | OPEN，head = 同上，正文 21004 字；含「FLY-2921 must land first」、四条 advisory disposition、两段 Follow-ups；**缺** `92e28887` |
-| 镜像分支能否合进沙箱 main | `git merge-tree --write-tree origin/main origin/flywheel-FLY-2922` | exit 1，990 条 `CONFLICT`（`diff --stat` 16546 文件），两棵不同的树。R1：该命令会写 object database，不算零写入 |
-| run 行 | `sqlite3 teamlead.db "select … from workflow_run where run_id='5928c374-…'"` | `template_id=tpl_code`，`current_node_id=eng_design`，`status=active`，`engine_owned=1`；resolved nodes = eng_design/implement/qa/founder_gate/land |
-| TURN | `flywheel-comm turn` | `yours phase=design epoch=1` |
-| mmdc | `mmdc --version` + 渲染三张图 | 11.12.0，本机可渲染（生产那轮的 MachPort 权限故障在本沙箱不存在） |
-| Codex | `codex login status` | Logged in；companion `~/.claude/plugins/cache/openai-codex/codex/1.0.0/scripts/codex-companion.mjs` |
+| 生产 checkout / remote branch | `6e21a123d34bb53ee29b8536503133d714f46435`，树净 | 旧指令中的 `7d5d084cf` 已过期 |
+| GitHub PR #1374 | OPEN，head 同上，base `main@b165d6490`，`MERGEABLE/CLEAN` | 当前不需要再 merge；main 后移才重新同步 |
+| 当前 head 历史 | `7b5bc1520` 合入 `main@b165d6490`，`6e21a123d` 只追加 milestone | 合并语义已经落地，后续应先核祖先关系 |
+| 精确头 CI | run `36544821509`，`CI OK` 与 16 个展开 job 全绿 | 这是 `6e21a123d` 的 full-CI 证据；任何新 push 都使其失效 |
+| 生产 progress | `implement 3/4`；要求同头 review、CI、`needs_review` | CI 已完成，但同头 review 与 completion 仍须权威回执 |
+| 本 design worktree | QA sandbox `project-slot-2-FLY-2922` | 只承载设计文档；绝不能拿它替生产 PR 合并或 QA |
 
-## 2. 镜像分支上已批准设计与实现的证据
+“PR description 写过 APPROVED”不是当前复审证明；前一轮 `9c5aef2d2` 的 APPROVED 早于 `7b5bc1520/6e21a123d`。实现节点必须让 review gate 明确绑定最终头。
 
-分支 `origin/flywheel-FLY-2922` 的 `engineering/doc/FLY-2922-unified-node-recovery/` 含 exploration / research / plan / design-correction / review-result / implementation-evidence / delivery-evidence / watch-consumer-sweep / founder-report.html / 两张 `.mmd`；`engineering/doc/milestones/FLY-2922.md`（该头最后一次改动它的提交就是 `2dd29e027`）记录 PR #1374 与 QA@2/@3 返工链。关键 ID（来自这些文件与 Lead 交接原文；生产 comm DB 本轮不可访问，未复核）：
+## 2. 已解决冲突的语义
 
-- 设计 gate `d9ab4f85-f464-4fee-9c09-7af6295b0c9a` / request `16c59728-…` APPROVED，计划提交 `c4d40fbed`；FLY-2921 合同补充 scoped gate `0f29f815-…` / request `b5e92e5c-…` APPROVED。
-- 同头代码复审 `92e28887` APPROVED（2026-09-27 12:09:19Z，Lead 交接）。
-- 最近提交：`2dd29e027 docs(FLY-2922): record review boundary fixes` ← `8c3e77445 fix(teamlead): close recovery review boundaries` ← `b3b7df787 Merge origin/flywheel-FLY-2921`（`git merge-base --is-ancestor 5357dd5ce origin/flywheel-FLY-2922` exit 0）。
+### 2.1 FLY-2913 role prefix 与统一恢复 initial start
 
-Lead 裁定的 4 条 MEDIUM advisory 在实现头的落点（行号为 `2dd29e027`；R1 纠正了第 3、4 条）：
+merge `703ad7f7c` 解决 `run-dispatcher.ts` 和 `run-infra.ts` 冲突。当前 `RunDispatcher` 构造器顺序为：
 
-| Advisory | 分支落点 | 状态 |
+- `workflowUsageRecorder`
+- `workflowPrefixLookup`（main 的 FLY-2913）
+- `initialStartObserver`（FLY-2922）
+
+`run-infra.ts:1320–1321` 用相同顺序传入 `resolveExecutionWorkflowPrefixContext` 和 `input.initialStartObserver`。这不是任意参数排序：错位会让恢复派发读取错误依赖或失去 root 起点权威。若未来 main 再冲突，应维持这组调用/声明一致，并用具体 consumer 文件验证。
+
+### 2.2 FLY-3017 Codex guard 与 QA-only Claude stub
+
+merge `7b5bc1520` 解决 `scripts/test-deploy.sh` 与 `scripts/lib/qa-generalized.sh` 冲突：
+
+- 完整 `--stub-runner` 分支写 room-local Codex guard record；只放行该 stub binary/digest。
+- `--qa-stub-runner` 是后续独立 `elif`；只安装 Claude shim，不创建 Codex shim。
+- shim 按 activation / StateStore execution binding 识别 QA；无 Runner 身份的真实 Claude 评审透传到宿主 Claude。
+
+这正是 QA@2 曾失败的边界。冲突解法不能把 stub PATH 再变回全局截获 Claude，也不能把 QA-only 分支搬进 STUB_RUNNER 分支。
+
+### 2.3 parked body 与恢复门
+
+`workflow-node-recovery.ts:248–309` 先做 rework context preflight，再读 process body：
+
+- parked body 不是死亡证明，走 state-only `resume_rework`，交回 coordinator；
+- latched `resume_failed` 拒绝并要求 reopen；
+- 只有非 parked 且物理探活为 dead 才可 materialize replacement。
+
+这保证“关死体不连带终结 run”不会演化成“把无 OS 进程的 parked body 当死体重复铸替身”。
+
+## 3. QA driver 的可观察合同
+
+`qa-529-generalized-e2e.mjs` 当前不是一句“跑到绿”的黑盒，它把九个边界写成逐步证据：
+
+| Step | 关键事实 | 不能接受的替代证据 |
 |---|---|---|
-| preadmission-producer-rework-carveout | `StateStore.ts:65063–65076` 对 rework delivery owner 提前返回 `rework_delivery_owned`（在 `:65135–65141` permanent-error 集合判断之前）；`:46300/:70224` 失败事件 failureKind 同名；1 个测试文件 | landed |
-| merge-order-dependency-unstated | milestone 与 PR body「FLY-2921 merge dependency」：FLY-2921 先合、`5357dd5ce` 已合入、后合方保留 `pending + new preferred actor` | stated |
-| shared-materializer-preconditions | rework 恢复路径 `StateStore.ts:63086 → materializeWorkflowReworkRecoveryTx:62919 → materializeReworkReplacementCoreTx:45593`；内核 `:45625–45656` 校验事务存在、run 状态、route/delivery/node/actor tuple、materialized writer、owner/generation、替身预算（`replacement_budget_exhausted`）。`:63099 materializeWorkflowNodeReplacementTx` 是**非** rework 分支 | landed |
-| rework-replacement-context-not-preflighted | `bridge/workflow-node-recovery.ts:243–246` 调用 `getWorkflowReworkReplacementContextPreflight`，失败即抛；失败 `throw new Error(context.reason)`，上下文无效即 `engine_rework_replacement_context_invalid`（`StateStore.ts:44217–44225`）；`bridge/runs-route.ts` stage `:535–542` / apply `:671–677` 对 Error 返回 HTTP 409 并保留该具体 reason（`recovery_preflight_failed` 只是非 Error 的兜底值）；`StateStore.ts:62704–62725` 事务内复查 preflight digest，变化即 `recovery_preflight_required` 回滚。建议的错误码字符串 `rework_replacement_context_unlaunchable` 只出现在历史 review-result.md，运行时无此名字**不等于**无预检 | landed |
+| 1 | workflow_v2 entry authority 与 manifest 持久化 | 只看进程启动 |
+| 2 | design completion 符合 admitted lifecycle | stub 截获的假评审 |
+| 3 | implement attempt 1 已真实 dispatch 且节点有 PR 能力 | 仅创建 session 行 |
+| 4 | implement `ship_parked`、park open、pane 在房间 tmux server 存活 | 宿主 tmux namespace 的误判 |
+| 5 | QA attempt 1 已派出，question gate 在 parked implement 期间仍可投递 | implement 自己持 gate |
+| 6 | QA FAIL 有精确 rework request、durable wake receipt，run 仍 active，零 dangerous hold | 仅有 `returned_to_lead` 或 generic held |
+| 7 | implement attempt 2 完成并把 PR head 从 attempt 1 推进 | 没有新 head 的状态翻转 |
+| 8 | QA PASS authority、founder approval 与 land 终态 | 人工文本声称 PASS |
+| 9 | park cleared、terminal timestamp、当前 actor 已回收 | 只看 run 终态 |
 
-`cascadeRunTerminationOnCarrierClose` 在分支 `packages/` 下 0 命中（已删除）；`commitEnrolledFailure` 在 `StateStore.ts:70266` 与 `bridge/workflow-failure-completion.ts`。
+注入文案所称“held → unified-recovery → new-dispatch”在现有 driver 中由 Step 6 的故障/交付事实和 Step 7 的新当前 implement actor/head 共同体现。QA 报告还应导出 StateStore 的旧/新 execution tuple、dispatch ledger/receipt 与 run status，避免把 driver 的总结文字当唯一证据。
 
-## 3. 交卷命令的真实语义（flywheel-comm dist 源码）
+## 4. 房间与 tmux 隔离
 
-- `complete --route needs_review`：`--pr` 可选（强制 PR 只对 `pr_handoff`，`complete.js:114–131`）；给了 `--pr` 才写 `evidence.landingStatus={status:'ready_to_merge',prNumber}`（`:211–217`）；缺 `--question-id` 只 warn（`:322`）。`FLYWHEEL_FOUNDER_REVIEW_REQUIRED=1` 时再校验（本 slot env 未设）。
-- **R1 HIGH**：`--target-repo` 与 `--declare-pr` 都经 `resolveEvidenceRepo`（`:800–834`）：绝对路径 / `~` / `..` 直接 `exit 1`（`:807–812`），相对路径必须 realpath 严格位于当前 worktree 之下（`:815–821`）且是嵌套仓库根（`:823–828`）。生产 checkout `/Users/xiaorongli/Dev/flywheel-FLY-2922` 任何写法都不可能通过。故 completion 证据（`collectEvidence :709–754`）只能来自沙箱 worktree，`evidence.headSha` = 沙箱 HEAD。
-- `complete --route phase_design_complete`：要求 `merge-base(HEAD, origin/main)..HEAD` 范围内存在已提交 `.html`（`:636–655`），路径匹配 `(^|/)doc/FLY-2922(?:-[^/]+)?/`（`design-html-evidence.js:15–16`）—— `engineering/doc/FLY-2922-unified-node-recovery/*.html` 满足。「engine-owned gate」提示只在 `completionDisposition === 'engine_gate_handoff'` 时打印（`:367–379`）。
-- `ask --report`：fire-and-forget 报告（`dist/index.js:655–657`），不是待答问题（`dist/db.js:6743–6752`）；等回复要用普通 `ask` + `check`。
-- `ci-full ensure`：用 `process.cwd()` 的仓库跑 `gh pr view <pr>`（`ci-full.js:186–195, 549`），不带 repo 参数；从沙箱根执行只会查沙箱仓。
-- `progress` 只接受 `--phase/--cursor/--next/--handoff/--set-chunk/--pointer`，会 path-limited commit progress.md（`progress.js:81–104`）。
-- `stage set` 只有 set；design 节点停在 brainstorm/research/plan 档跑 `progress --phase design` 可过。
+`probeRoomPaneAlive`（`qa-generalized-e2e-lib.mjs:660–680`）显式把 `TMUX_TMPDIR` 设为 slot root，并删除继承的 `TMUX/TMUX_PANE`。`classifyImplementPark` 只有在 `ship_parked + park_opened` 且房间 pane 真活时才接受 `rework_reachable_wait`。
 
-## 4. 对 implement / qa 节点的直接含义
+QA@4 因此必须：
 
-- implement 节点没有代码工作：核验对象是「镜像头 = 生产 checkout 头 = GitHub 远端头 = `2dd29e027…`」且两处树净、生产 PR 指向同一头；交卷证据按 Lead 原文引用复审 `92e28887`。
-- 交卷不能把生产 checkout 绑进 completion 证据；默认 Lane A 不传 `--pr`，报告分列沙箱 docs HEAD 与已核验实现头 + 生产仓身份 + PR #1374。`--pr 1374` 不带 repo 会让后端在沙箱仓找不存在的 PR，不用。
-- 生产 PR #1374 正文已含合入顺序、四条 advisory 处置、LOW follow-ups；只缺 `92e28887`。沙箱 runner 不编辑生产 PR，缺项由 Lead 宿主侧补。
-- QA 判据来自 Lead 原文：新精确头 full CI 绿（须在生产仓上下文取证）；按 FLY-2921 先合的顺序可落地（`merge-tree` 无冲突）；529 N-to-N 真 runner 由 Lead 宿主侧起房代跑。
+1. 用 `flywheel-comm room list` 查服务账；再检查两个候选槽在宿主上都没有 `/tmp/flywheel-test-slot-N` 与对应活锁/进程。
+2. 传两个显式数字槽：主房参数和 `--extra-lead SLOT:LABEL`；禁止省略槽号或使用 `auto`。
+3. `--expect-head` 使用冻结的 PR 完整 SHA；脚本在取得任何 slot/lock 前核对运行它的 checkout HEAD。
+4. 先保存 strength-two evidence，再拆自己持有 claim 的房；不得对陌生房运行 raw teardown。
+
+当前脚本的相关边界：`test-deploy.sh:327–342` 在锁/构建/clone 前做 head fence；`:347–361` 约束 `--qa-stub-runner` 只与 generalized Codex room 合用；`:1607–1618` 安装 QA-only Claude shim。
+
+## 5. 本地验证选择合同
+
+如果 implement 因新 main 移动而产生新 merge commit，测试选择必须从**实际 merge diff**重新发现，不能沿用上一轮清单：
+
+- 对每个冲突文件，搜索完整路径、文件名、父目录、新旧字面量和直接 importers；逐条记录排除理由。
+- 每个保留的 Vitest 文件单独执行；changed TypeScript 再按 local-test-policy 执行 owning package 的 `vitest related file1 file2 --run`，参数只能是实际 changed-file 的精确路径，不能换成目录、glob 或 package filter。
+- 每个新增或受影响的 `scripts/__tests__/*.test.sh` 单独执行。
+- 保留 `pnpm lint`、affected package+dependencies build、导出 API 的 dependent typecheck 与 `git diff --check`。
+- 本地证据只能写“targeted checks passed”；只有精确头 GitHub `CI OK` 可证明 full suite。
+
+## 6. 未完成与不确定项
+
+- 当前 `6e21a123d` 已有 full CI 与 mergeable 证据，但同头有效 code-review gate 尚未在当前提交材料中得到证明。
+- QA@4 尚无 owner-isolated 双房、真实 Claude design review、完整九步 driver 或拆房收据。
+- main 若在 implementation handoff 前再移动，现有 clean/CI 都只是旧快照；必须从新 merge head 重新绑定 review 与 CI。
+- 本设计不声称 PR 可 ship，也不请求 shipping authority。
