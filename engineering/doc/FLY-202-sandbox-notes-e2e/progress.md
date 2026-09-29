@@ -1,13 +1,14 @@
 ---
 issue: FLY-202
 phase: implement
-phaseCursor: 3/6
-updated: 2026-09-29T02:01:57.944Z
-nextStep: Task 4 final verification (already-GREEN; Task 3 skipped)
+phaseCursor: 5/6
+updated: 2026-09-29T02:02:44.053Z
+nextStep: codex:rescue code review of PR head, then progress 6/6, milestone
+  commit, push, report, complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: implement (3/6)
-**next**: Task 4 final verification (already-GREEN; Task 3 skipped)
+**phase**: implement (5/6)
+**next**: codex:rescue code review of PR head, then progress 6/6, milestone commit, push, report, complete
