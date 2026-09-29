@@ -9,7 +9,7 @@ Issue: FLY-3018 (https://linear.app/geoforge3d/issue/FLY-3018/引擎路由-派�
 
 **在 PR #1381 头上，用 `generalized_e2e_real` 通道在真房重跑「不带 overrides 派单」，证明每个节点严格按当前 models.json 选模型、回执 `alias (= exact)` 与 `sessions.runner_model` 一致，并把证据记成 judge 能判定的强度二记录。**
 
-## 2. 精确头（唯一未决项，已 ask Lead）
+## 2. 精确头（Lead 已裁定：`7e28dd51c`）
 
 | 项 | 值 |
 |---|---|
@@ -18,15 +18,16 @@ Issue: FLY-3018 (https://linear.app/geoforge3d/issue/FLY-3018/引擎路由-派�
 | 差异 | `5dab14d4c` merge main；`950870cee` rerun_spec 支持 `noOverrides`；`97db7c68e` QA prompt fixture 同步 |
 | 两头 full CI | 均绿（36496804828 / 36504079616） |
 | 本计划默认 | **`7e28dd51c`**。理由：只有它能让强度二 `rerun_spec` 表达 no-overrides（上一轮 FAIL 的直接缺口）；implement 节点被要求核对 local=origin=PR 头一致，而这三者现在都是 `7e28dd51c` |
-| 裁定通道 | question `c43580f2-d4cb-41db-835f-65e1971d6813`；下游节点开工前 `check` 一次 |
+| 裁定通道 | question `c43580f2-d4cb-41db-835f-65e1971d6813` |
+| **Lead 裁定（2026-09-28）** | **同意改房头到 `7e28dd51c58a67cb04f37d392a8cf1f2b1e64c89`**。Lead 已核对 PR #1381 当前精确头即该 SHA、CI OK，且它包含上一轮缺口所需的 `noOverrides` rerun spec 与 `room drill --no-overrides`。后续 implement / QA 统一绑定该精确头 |
 
-若 Lead 裁定维持 `76cf3c249`：implement 节点仍按 §3 交卷（PR 头不变，代码不回退）；QA 节点在 §4.3 强度二一项记录「房头不含 `950870cee`，rerun_spec 无法表达 no-overrides」的缺口并 ask Lead 裁定，不硬判 PASS/FAIL。
+裁定附带的硬约束（原话）：「若 head 再变化，先停并重新核对，不沿用本次裁定」。因此本计划下文所有「PR 头」均指 `7e28dd51c`；任何节点发现 `gh pr view 1381 --json headRefOid` ≠ 该 SHA，立即停下 ask Lead，不得自行沿用旧裁定。
 
 ## 3. implement 节点：零改动交卷
 
 1. 在真仓 worktree 核对：`git rev-parse HEAD` = `git rev-parse origin/flywheel-FLY-3018` = `gh pr view 1381 --json headRefOid` 且 `git status --porcelain` 为空。
 2. 不改任何文件、不 merge main、不重跑 CI、不问 Lead。
-3. 沿用该头已有的 Codex 代码复审（返工线程 R1–R3，最后一轮 APPROVED）；若 gate 要求 head-bound `code-review.json`，按既有 `await-codex-gate code` 路径绑定到 `7e28dd51c`，不新起评审轮。
+3. 沿用该头已有的 Codex 代码复审（返工线程 R1–R3，最后一轮 APPROVED；`7e28dd51c` 相对 `76cf3c249` 只多 merge main、rerun_spec `noOverrides` 与 fixture 同步，产品路径未变）；若 gate 要求 head-bound `code-review.json`，按既有 `await-codex-gate code` 路径绑定到 `7e28dd51c`，不新起评审轮。
 4. `complete --route needs_review --pr 1381`。
 
 负向守卫：若三者任一不一致（例如 PR 头再次前进），**停下** ask Lead，不自行 merge 或 push。
@@ -35,7 +36,7 @@ Issue: FLY-3018 (https://linear.app/geoforge3d/issue/FLY-3018/引擎路由-派�
 
 ### 4.1 前置
 
-- 房由 Lead 起：slot 3、`--generalized`、精确头见 §2、Claude runner、不带 `--stub-runner`、保留 `TEST_REPLY_BY_ISSUE=1`。Lead 给 `room_id` / `roomInfo` 后开工；需要改参数 ask Lead。
+- 房由 Lead 起：slot 3、`--generalized`、精确头 `7e28dd51c`（§2 裁定）、Claude runner、不带 `--stub-runner`、保留 `TEST_REPLY_BY_ISSUE=1`。Lead 给 `room_id` / `roomInfo` 后开工；需要改参数 ask Lead。
 - 房内 Bridge 必须含 FLY-2407（`8e44ac64d`），否则 primary PR identity 仍会缺（§4.4）。
 - 房内 `models.json` 与生产同形：implement `impl_opus`(opus, 3) : `impl_sol56`(codex, 1)，`bindings.opus = claude-opus-5-5`。QA 先记录房内 models.json 摘要（policy hash 或文件 sha）作为「当前配置」的证据锚点。
 
@@ -46,7 +47,7 @@ Issue: FLY-3018 (https://linear.app/geoforge3d/issue/FLY-3018/引擎路由-派�
 | ① full CI | `gh run list --commit <头>`，引用 run id | 该精确头 full-request 全部 job pass |
 | ② `54a6b6b77`（receipt alias 按钉住的 runtime vendor 解析） | 在房源跑 `pnpm --filter flywheel-teamlead exec vitest run src/__tests__/workflow-dispatch-resolution.test.ts` | 含「alias 注册表 vendor ≠ dispatch vendor → exact 自标」用例绿 |
 | ② `47680000a`（冻结 alias 不再对照可变 bindings） | 同上 + `src/__tests__/workflow-template-selection.test.ts` | 含「热改绑后未缓存重放/恢复不误报 409」用例绿 |
-| ②（若房头为 `7e28dd51c`）`950870cee` | `pnpm --filter flywheel-comm exec vitest run src/__tests__/strength-two-contract.test.ts src/commands/__tests__/room.test.ts` | `noOverrides` 规范化/argv/`no_overrides_invalid` 用例绿 |
+| ② `950870cee`（rerun_spec `noOverrides`） | `pnpm --filter flywheel-comm exec vitest run src/__tests__/strength-two-contract.test.ts src/commands/__tests__/room.test.ts` | `noOverrides` 规范化/argv/`no_overrides_invalid` 用例绿 |
 
 ⛔ 只跑相关文件，不跑整包。
 
@@ -85,7 +86,7 @@ O2 是可选强证明：若 Lead 不改房内配置，QA 在报告里写明只�
 
 - `drill_config_not_reproducible` → 房参数不对（Codex-runner 房、非 main fixture、`--no-lead`），ask Lead 改房，不改自己的命令绕过。
 - 回执出现跨 vendor 拼接（如 `opus (= gpt-*)`）→ 直接 FAIL，附 nodeModels 原文。
-- 房头 sha 与 §2 裁定不符 → 停，ask Lead。
+- 房头 sha ≠ `7e28dd51c`，或 PR #1381 头再次前进 → 停，ask Lead 重新核对；不沿用本次裁定。
 
 ## 5. 数据与身份（本轮不新增）
 

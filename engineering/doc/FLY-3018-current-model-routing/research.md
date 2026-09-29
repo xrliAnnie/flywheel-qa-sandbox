@@ -108,4 +108,4 @@ implement 没有 astra arm；`opus` 绑定 `claude-opus-5-5`。分桶按 issue U
 
 1. 修复完整且在结构上封死了错标签；本 run 不需要也不应改代码。
 2. 上一轮 QA 的两处 FAIL 原因（通道 `lane_unproven`、PR identity 缺失）在 PR 头 + 当前 Bridge 上都有对应机制可解，前提是房头为 `7e28dd51c`。
-3. 本轮唯一未决项是房头裁定（question `c43580f2`）。
+3. 房头裁定已落：Lead 同意 `7e28dd51c`（question `c43580f2`，2026-09-28），并要求 head 再变化时先停再核对。

@@ -61,7 +61,7 @@ models.json 当前 implement 为 opus 3 : codex 1（arm `impl_opus` / `impl_sol5
 
 两头 full CI 均绿（`76cf3c249` run 36496804828；`7e28dd51c` run 36504079616）。但只有 `7e28dd51c` 才能在真房用 `generalized_e2e_real` 通道拿到「rerun_spec 带 noOverrides:true」的可判定强度二证据，也只有它 = local = origin = PR 头（implement 节点被要求核对三者一致再交卷）。
 
-已通过 `ask` 提交 Lead 裁定（question `c43580f2-d4cb-41db-835f-65e1971d6813`）。本设计**默认按 `7e28dd51c` 规划**；若 Lead 坚持 `76cf3c249`，则 QA 计划 §4.3 的强度二一项须显式记录缺口并 ask Lead，不硬判。
+已通过 `ask` 提交 Lead 裁定（question `c43580f2-d4cb-41db-835f-65e1971d6813`）。**Lead 2026-09-28 裁定：同意改房头到 `7e28dd51c`**，并附硬约束「若 head 再变化，先停并重新核对，不沿用本次裁定」。本设计据此按 `7e28dd51c` 定稿。
 
 ## 5. 方案空间（本轮只有验收方式可选）
 
@@ -75,7 +75,7 @@ models.json 当前 implement 为 opus 3 : codex 1（arm `impl_opus` / `impl_sol5
 
 ## 6. 假设（显式列出）
 
-1. Lead 会把房头改为 `7e28dd51c`，或明确说不改。
+1. Lead 已裁定房头为 `7e28dd51c`（question `c43580f2`）；若 PR 头再前进，本裁定失效，须重新 ask。
 2. 房是 slot 3、`--generalized`、Claude runner（`room drill` 对 Codex-runner 房和非可复现设置会拒 `drill_config_not_reproducible`）。
 3. 房内 models.json 与生产同形（implement opus 3 : codex 1）；如需在两次 drill 之间改房内权重来证明「历史不再牵引」，参数变更由 Lead 做。
 4. 本设计节点不派单、不起房、不终止任何 run。
