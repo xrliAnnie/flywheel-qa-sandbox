@@ -1,14 +1,13 @@
 ---
 issue: FLY-202
 phase: implement
-phaseCursor: 5/6
-updated: 2026-09-29T02:02:44.053Z
-nextStep: codex:rescue code review of PR head, then progress 6/6, milestone
-  commit, push, report, complete
+phaseCursor: 6/6
+updated: 2026-09-29T02:10:05.305Z
+nextStep: Milestone commit, push, prove PR head, report, complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: implement (5/6)
-**next**: codex:rescue code review of PR head, then progress 6/6, milestone commit, push, report, complete
+**phase**: implement (6/6)
+**next**: Milestone commit, push, prove PR head, report, complete
