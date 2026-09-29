@@ -1,11 +1,10 @@
 ---
 issue: FLY-3043
-phase: implement
+phase: qa
 title: QA 沙箱相关测试说明
-phaseCursor: 5/6
-updated: 2026-09-29T08:32:56.769Z
-nextStep: Commit and push the verified one-line change, create the final
-  milestone commit, and request code review
+phaseCursor: 1/4
+updated: 2026-09-29T09:00:00.979Z
+nextStep: Inspect reviewed diff and select issue-scoped QA checks
 chunks:
   - id: onboarding
     order: 1
@@ -49,8 +48,8 @@ pointers:
 ---
 
 # FLY-3043 progress — QA 沙箱相关测试说明
-**phase**: implement (5/6)
-**next**: Commit and push the verified one-line change, create the final milestone commit, and request code review
+**phase**: qa (1/4)
+**next**: Inspect reviewed diff and select issue-scoped QA checks
 
 ## chunks
 - ✅ onboarding — Onboarding complete and implement TURN acquired
