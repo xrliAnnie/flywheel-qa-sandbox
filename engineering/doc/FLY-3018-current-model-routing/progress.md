@@ -1,14 +1,13 @@
 ---
 issue: FLY-3018
 phase: design
-phaseCursor: 1/5
-updated: 2026-09-29T01:04:40.374Z
-nextStep: "exploration.md: audit PR #1381 head vs Lead reopen head, root cause
-  on main, fix shape on HEAD"
+phaseCursor: 2/5
+updated: 2026-09-29T01:08:46.498Z
+nextStep: commit+push exploration/research/plan, stage set design_review, gate flow
 chunks: []
 pointers: {}
 ---
 
 # FLY-3018 progress
-**phase**: design (1/5)
-**next**: exploration.md: audit PR #1381 head vs Lead reopen head, root cause on main, fix shape on HEAD
+**phase**: design (2/5)
+**next**: commit+push exploration/research/plan, stage set design_review, gate flow
