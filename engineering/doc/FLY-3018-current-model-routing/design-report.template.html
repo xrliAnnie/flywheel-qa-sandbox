@@ -49,7 +49,7 @@
   <div class="meta">
     <span class="badge amber">重开 · 只重做 QA</span>
     <span class="badge gray">设计节点交付</span>
-    Issue <code>FLY-3018</code> · 日期 2026-09-28 · 产品代码 PR <code>#1381</code> 精确头 <code>7e28dd51c</code>（Lead 已裁定）
+    Issue <code>FLY-3018</code> · 日期 2026-09-28 · 产品代码 PR <code>#1381</code> 精确头 <code>7e28dd51c</code>（Lead 已裁定）· plan v2.1
   </div>
 
   <!-- 1 -->
@@ -114,7 +114,8 @@
     <div class="caption">图 1 · implement 零改动交卷 → QA 四步验收 → 判定与提交</div>
     <ul>
       <li><b>implement 节点</b>：核对本地、远端、PR 三处头一致且树干净 → 不改文件、不 merge、不重跑 CI → 直接交卷。任一不一致就停下问 Lead。</li>
-      <li><b>QA 节点</b>：① 精确头 CI 全绿；② 两条新提交的单测；③ 真房用 <code>room drill --real --no-overrides</code> 跑派单矩阵；④ 用服务生成的重放规格记录强度二证据。</li>
+      <li><b>前置检查（评审第一轮补上的）</b>：派单命令打的是「管理 Bridge」而不是房内 Bridge。生产 Bridge 还在旧代码上，根本不认「不带覆盖」这个参数。Lead 裁定：QA 节点只挂测试槽的 Bridge（localhost:19873），且它的两个版本号字段都必须等于 <code>7e28dd51c</code>；不满足就停下问 Lead，不许自己部署、不许偷偷去掉参数。</li>
+      <li><b>QA 节点</b>：先自己起房（房的所有权规则只让 owner 操作，Lead 起的房 QA 碰不了，所以改成 Lead 给参数、QA 自起）；① 精确头 CI 全绿；② 单测一次一个文件；③ 先按哈希算好每张单会落到哪个模型，再用 <code>room drill --real --no-overrides</code> 跑矩阵；④ 用服务生成的重放规格记录强度二证据，并检查回执三项都 satisfied。</li>
     </ul>
     <p class="expl"><span class="term">房</span>：一套隔离的测试环境（独立 Bridge、独立数据库、独立 Discord 频道），由 Lead 起，参数改动也由 Lead 做。<span class="term">Bridge</span>：Flywheel 的中枢服务，负责派单、记录状态、跟 Lead 通话。</p>
     <div class="comment"><label for="c-s5">对这一节的意见</label><textarea id="c-s5" data-comment="s5" placeholder="写点什么…"></textarea><div class="saved" data-saved="s5"></div></div>
@@ -126,6 +127,7 @@
     <div class="diagram">{{D2}}</div>
     <div class="caption">图 2 · 从预留到会话的一条记录链；回执只从本 run 的记录投影</div>
     <p>判定顺序固定：先断言 <b>回执精确名 = 运行时模型 = 同一次执行的 <code>sessions.runner_model</code></b>（数据库里记录该会话实际用了哪个模型的字段），再核对实际载体（Claude 的终端界面或 Codex 的会话头）。</p>
+    <p><b>一个重要事实</b>：房进程继承宿主的 HOME，所以「房内的 models.json」其实就是生产那份 <code>~/.flywheel/models.json</code>。任何人改它就是改生产。因此本轮所有节点对该文件<b>只读</b>，QA 在矩阵前后各记一次文件哈希，两次必须一致。</p>
     <p class="expl"><span class="term">idempotency key</span>：同一次派单的唯一凭证，重试时凭它拿回同一个 run 而不是新开一个。<span class="term">arm</span>：配置里的一个选项，比如 impl_opus；<span class="term">分桶</span>：按 issue 编号与节点名做确定性哈希，同配置下同一张单每次落到同一个 arm。</p>
     <div class="comment"><label for="c-s6">对这一节的意见</label><textarea id="c-s6" data-comment="s6" placeholder="写点什么…"></textarea><div class="saved" data-saved="s6"></div></div>
   </section>
@@ -133,15 +135,17 @@
   <!-- 7 -->
   <section class="card green" data-section="s7" data-title="7. QA 验收矩阵">
     <h2><span class="badge green">7</span>QA 验收矩阵（每例都不带覆盖）</h2>
+    <p>先算再跑：分桶是按 issue 编号做确定性哈希，同配置下可以预先算出每张单会落到哪个 arm。QA 在 drill 之前把预期写进报告，「碰运气看落到哪」不算证据。</p>
     <table>
       <tr><th>例</th><th>输入</th><th>证明什么</th></tr>
-      <tr><td><b>N1 新单</b></td><td>房内没跑过的 issue，drill 一次</td><td>每个节点的 arm 来自当前 modelSplit；回执别名与精确名同一厂商</td></tr>
-      <tr><td><b>O1 老单（同配置）</b></td><td>同一 issue 再 drill 一次（房内已有 N1 历史）</td><td>选择与 N1 一致，且启动路径<b>没有读</b>历史（回执依据是当前配置）</td></tr>
-      <tr><td><b>O2 老单（改配置，可选强证明）</b></td><td>Lead 改房内 implement 权重后再 drill</td><td>新 run 用新配置、旧 run 记录不变——「历史不再牵引」的直接证据</td></tr>
-      <tr><td><b>N2 新单 Codex arm</b></td><td>另一个 issue，分桶落到 codex</td><td>仍合法选 Codex，修复不是「全量强制 Opus」</td></tr>
+      <tr><td><b>N1 新单 · Opus 桶</b></td><td>预先算出必落 impl_opus 的 issue，drill 一次</td><td>每个节点的 arm 来自当前 modelSplit；回执 <code>opus (= claude-opus-5-5)</code>；回执 = 运行时 = 会话记录</td></tr>
+      <tr><td><b>N2 新单 · Codex 桶</b></td><td>预先算出必落 impl_sol56 的 issue</td><td>仍合法选 Codex，修复不是「全量强制 Opus」</td></tr>
+      <tr><td><b>O1 老单 · 同配置</b></td><td>对 N1 的 issue 再 drill 一次（房内已有 N1 历史）</td><td>选择与 N1 一致，依据字段里的规则版本是当前版本</td></tr>
+      <tr><td><b>O2-seed 老单 · 不同配置历史（强证明）</b></td><td>Lead 条件授权：只在房内隔离的 QA 数据库植入一条明确标注 synthetic 的终态历史记录（旧配置的 astra 分配），再 drill 同一 issue</td><td>修复前会得到 <code>opus (= gpt-6-astra)</code>，修复后应得到 <code>opus (= claude-opus-5-5)</code>。这是「历史不再牵引」在真房里的直接证据。若证明不了房数据库隔离且可写，就不植入，PASS 范围明确缩小为单测 + 源码守卫 + 同配置矩阵</td></tr>
     </table>
-    <p>每例保留：请求 key、issue UUID、run id、节点 id、执行 id、房内 models.json 摘要、回执原文、run 快照、运行时的 vendor/model/effort、<code>sessions.runner_model</code>、实际会话证据。</p>
-    <p><b>负向守卫</b>：回执出现跨厂商拼接（如 <code>opus (= gpt-*)</code>）直接 FAIL；房参数不可复现（被拒 <code>drill_config_not_reproducible</code>）问 Lead 改房而不是改命令绕过；房头 ≠ <code>7e28dd51c</code> 停下问 Lead；PASS 被主 PR 身份缺失拒绝时按恢复路径<b>显式交 FAIL</b> 并写明原因，不绕过、不伪造。</p>
+    <p><b>诚实的缺口</b>：驱动脚本把任务类别写死成 code，而 founder 的事故是 simple_code。房内没有现成的、被授权的 simple_code 派单入口（加参数属于产品改动，超出本轮）。simple_code 只有单测覆盖，报告单列，是否算 PASS 阻断由 Lead 定。</p>
+    <p>每例保留：请求 key、issue UUID、预期 arm、run id、节点 id、执行 id、宿主 models.json 哈希、回执原文（从房数据库取原件 <code>response.resolved.nodeModels</code>，不用重建值冒充）、本 run 冻结分配、运行时的 vendor/model/effort、<code>sessions.runner_model</code>、实际会话证据。</p>
+    <p><b>负向守卫</b>：回执出现跨厂商拼接（如 <code>opus (= gpt-*)</code>）直接 FAIL；房参数不可复现（被拒 <code>drill_config_not_reproducible</code>）问 Lead 改房而不是改命令绕过；房头 ≠ <code>7e28dd51c</code> 停下问 Lead；PASS 被主 PR 身份缺失拒绝时按恢复路径<b>显式交 FAIL</b> 并写明原因，不绕过、不伪造；强度二记录命令返回 0 不等于通过，必须看回执里 verdict / ran / record 三项都 satisfied，不确定时用同一个记录 id 原样重试。</p>
     <div class="comment"><label for="c-s7">对这一节的意见</label><textarea id="c-s7" data-comment="s7" placeholder="写点什么…"></textarea><div class="saved" data-saved="s7"></div></div>
   </section>
 
@@ -154,7 +158,10 @@
       <tr><td>改裁判程序让手工通道可判定</td><td>属于产品改动，超出「只重做 QA」边界；且降低证据的证明力</td></tr>
       <tr><td>在旧头 <code>76cf3c249</code> 上硬判</td><td>该头的重放规格表达不了「不带覆盖」，证据不可判定</td></tr>
       <tr><td>只跑单测和 CI、不进真房</td><td>证明不了「回执 = 运行时 = 会话记录」，也不满足 Lead 的真房判据</td></tr>
-      <tr><td>让 QA 自己改房内 models.json 做 O2</td><td>房参数是 Lead 权限；QA 只能提出请求</td></tr>
+      <tr><td>由 Lead 或 QA 改「房内」models.json 做 O2</td><td>房读的就是生产文件，改它等于改生产且没有恢复边界；改为房内数据库植入 synthetic 历史（需授权）或退回单测 + 源码守卫</td></tr>
+      <tr><td>Lead 起房、QA 去 drill</td><td>房的 owner 是 Lead 身份，QA 身份会被拒（403 room_not_owned）</td></tr>
+      <tr><td>只检查 FLY-2407 就开跑</td><td>生产 Bridge 的请求校验不认「不带覆盖」参数，会被拒；必须挂在精确头的测试槽 Bridge 上</td></tr>
+      <tr><td>把旧的代码评审批准改绑到新头</td><td>gate 只接受「评审头 = 当前头」且 24 小时内的记录，没有改绑能力；头不符就是流程阻断，问 Lead，不改写记录</td></tr>
     </table>
     <div class="comment"><label for="c-s8">对这一节的意见</label><textarea id="c-s8" data-comment="s8" placeholder="写点什么…"></textarea><div class="saved" data-saved="s8"></div></div>
   </section>
@@ -164,7 +171,7 @@
     <h2><span class="badge amber">9</span>诚实边界：本设计做什么、不做什么</h2>
     <p><b>做</b>：审计头差异并拿到 Lead 裁定；给 implement 节点零改动交卷的边界；给 QA 节点可执行、可判定的矩阵与命令；把上一轮 FAIL 的两处流程缺口封死。</p>
     <p><b>不做</b>：不改代码、不起房、不派单、不判定 QA 结果；不重派生产老单（FLY-2405 / FLY-2909 由 Lead 按既有授权处置）；不处理统计口径（记分卡 mixed 分组是已知的后续项）。</p>
-    <p><b>回滚</b>：本 run 无代码改动，无回滚对象。产品代码若回退会恢复历史继承缺陷，且新旧配置并存后旧代码可能报「历史分配含糊」。</p>
+    <p><b>回滚</b>：本 run 无代码改动，配置也不写（生产 models.json 只读哈希），所以没有代码或配置回滚对象；若做了 O2-seed，回滚对象是房数据库里那几行 synthetic 记录，随房拆除一并消失。产品代码若回退会恢复历史继承缺陷，且新旧配置并存后旧代码可能报「历史分配含糊」。</p>
     <p><b>合并 ≠ 生效</b>：merge 与部署是两步，只有独立更新器在它的窗口部署。</p>
     <div class="comment"><label for="c-s9">对这一节的意见</label><textarea id="c-s9" data-comment="s9" placeholder="写点什么…"></textarea><div class="saved" data-saved="s9"></div></div>
   </section>

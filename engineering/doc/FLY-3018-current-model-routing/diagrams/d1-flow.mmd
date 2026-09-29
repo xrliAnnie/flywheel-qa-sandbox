@@ -1,13 +1,14 @@
 flowchart TD
-    A["Lead 起房<br/>slot 3 · generalized · 头 7e28dd51c"] --> B["implement 节点<br/>核对 local = origin = PR#1381 头<br/>零改动 → complete needs_review"]
-    B --> C["QA 节点开工"]
-    C --> D1["① 精确头 full CI 全绿"]
-    C --> D2["② 两条新提交单测<br/>receipt alias / 冻结 alias / noOverrides"]
-    C --> D3["③ 真房 room drill --real --no-overrides<br/>N1 新单 · O1 老单 · N2 Codex arm · O2 改配置(可选)"]
+    P["前置检查<br/>管理 Bridge = localhost:19873<br/>buildSha 与 artifactBuildSha 都 = 7e28dd51c<br/>CLI 支持 --no-overrides"] -->|不满足| PX["阻断 · ask Lead<br/>不自行部署 · 不去掉 --no-overrides"]
+    P -->|满足| B["implement 节点<br/>核对 local = origin = PR#1381 头<br/>零改动 → complete needs_review"]
+    B --> C["QA 节点 room deploy<br/>slot 3 · generalized · 头 7e28dd51c<br/>QA 自己是 owner，Lead 给参数"]
+    C --> D1["① ci-full ensure 同头 exit 0"]
+    C --> D2["② 单测一次一个文件<br/>receipt alias / 冻结 alias / noOverrides / 老 UUID"]
+    C --> D3["③ 先算分桶再 drill --real --no-overrides<br/>N1 Opus 桶 · N2 Codex 桶 · O1 同配置 · O2-seed(条件授权)"]
     D3 --> E{"receipt exact<br/>= runtime.model<br/>= sessions.runner_model ?"}
-    E -- 否 --> F["FAIL<br/>附 nodeModels 原文"]
-    E -- 是 --> G["④ evidence-run record<br/>lane generalized_e2e_real<br/>driver.noOverrides true"]
-    G --> H{"judge 判定"}
-    H -- lane_unproven --> G2["spec 来源错 → 回到 ④"]
-    H -- 通过 --> I["qa-result PASS"]
+    E -- 否 --> F["FAIL<br/>附 resolved.nodeModels 原文"]
+    E -- 是 --> G["④ evidence-run record<br/>lane generalized_e2e_real<br/>driver.noOverrides true · 保存 ACK"]
+    G --> H{"ACK verdict / ran / record<br/>三者都 satisfied ?"}
+    H -- 否 --> G2["同 record-id 重试或 FAIL<br/>exit 0 不等于通过"]
+    H -- 是 --> I["qa-result PASS"]
     I -- 被 pr_identity 拒 --> J["显式 FAIL<br/>写明 FLY-2407 边界"]
