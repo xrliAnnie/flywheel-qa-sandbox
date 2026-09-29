@@ -100,4 +100,3 @@ issue 点名的三个文件在本仓库**不存在**：
 - 因此本仓库的工作是**新增**流程门规则与机器校验，不是改写旧段落；evidence-run 记录核对没有存储可接，设计为可选接口（plan §2.1、R-j）。
 - 门的开关：`readAgentFile` 在 Blueprint `:1866` 才读角色文件，晚于 `session_started` 发出（`:661`），所以「spawn 时把标记写进会话」会有竞态；改用既有 `auto-qa-config-source.ts`（读项目主线根目录配置，runner 改不到）加一个 `qa.e2e_529_flow_gate` 键。
 - issue 顶部 Lead 裁定里的 `room_timeout_contract`（上限 3h）、`real_529_negative_control`、`second_round_carry` 依赖 room 基建，本仓库没有，不在设计范围（plan R-l）。
-
