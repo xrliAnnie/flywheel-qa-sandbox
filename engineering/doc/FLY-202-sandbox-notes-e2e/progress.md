@@ -1,14 +1,13 @@
 ---
 issue: FLY-202
-phase: design
-phaseCursor: 7/8
-updated: 2026-09-26T21:07:01.321Z
-nextStep: Commit advisory fixes, push final artifacts, publish founder HTML,
-  report URL, complete design phase
+phase: implement
+phaseCursor: 1/6
+updated: 2026-09-29T02:01:18.218Z
+nextStep: "Task 1: discover consumers and collect source facts"
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: design (7/8)
-**next**: Commit advisory fixes, push final artifacts, publish founder HTML, report URL, complete design phase
+**phase**: implement (1/6)
+**next**: Task 1: discover consumers and collect source facts
