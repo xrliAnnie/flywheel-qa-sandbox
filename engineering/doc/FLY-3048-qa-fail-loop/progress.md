@@ -1,13 +1,14 @@
 ---
 issue: FLY-3048
 phase: implement
-phaseCursor: 2/4
-updated: 2026-09-29T03:54:24.451Z
-nextStep: run targeted discovery and verification, then commit and push the QA rework
+phaseCursor: 3/4
+updated: 2026-09-29T03:55:11.294Z
+nextStep: refresh the milestone as the literal branch tip, push PR 303, and pass
+  exact-head code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-3048 progress
-**phase**: implement (2/4)
-**next**: run targeted discovery and verification, then commit and push the QA rework
+**phase**: implement (3/4)
+**next**: refresh the milestone as the literal branch tip, push PR 303, and pass exact-head code review
