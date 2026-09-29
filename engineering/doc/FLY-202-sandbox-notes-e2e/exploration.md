@@ -1,6 +1,6 @@
 # FLY-202 QA 沙箱说明夹具 — 探索
 Issue: FLY-202 (https://linear.app/geoforge3d/issue/FLY-202/qa-sandbox-fixture-slot-harness-real-runner-e2e-task-do-not-pick-up)
-日期: 2026-09-26
+日期: 2026-09-29
 基于: 无
 
 ## 一句话方向
@@ -28,15 +28,19 @@ PreHydrator（启动前把 issue 内容装入 Runner 上下文的组件）可读
 
 ## 当前约束与已知状态
 
-- 当前 branch `project-slot-1-FLY-202` 的 preserved baseline 为 `ab1d379b1`，PR #196 为 OPEN、
-  MERGEABLE、非 draft，两个 exact-head CI checks 均为 SUCCESS。
-- `doc/qa/sandbox-notes.md` 已由上一轮 implementation 刷新，并保留 inherited
-  `FLY-2456 drill marker r2 B1`。本节点没有授权删除或重写该历史。
+- 当前 branch `project-slot-1-FLY-202` 的 preserved baseline 为 `b436ac9ec`（上一轮 design 的
+  baseline 是 `ab1d379b1`）；PR #196 为 OPEN、MERGEABLE、非 draft，head OID 等于该 baseline，
+  两个 exact-head CI checks 均为 SUCCESS。
+- `doc/qa/sandbox-notes.md` 现在带有**两处** inherited 内容：列表项
+  `- FLY-2456 drill marker r2 B1`，以及 Lead rework（FLY-2861 QA@3 probe A3，commit `d22f2c249`）
+  追加的独立末行 `standby-resume-probe: qa2861-A3`。本节点没有授权删除或重写其中任何一处。
+- 上一轮 plan 的 validator 只守护第一处 marker，不检查 probe 末行；这是本轮设计要补的缺口
+  （见“本轮增量”）。
 - 当前 repository root 有 17 个 tracked/project directories；tracked tree 与 live checkout 枚举一致。
 - `packages/qa-framework/README.md` 仍是目录表之外最重要的内容 source of truth；目标摘要不得靠旧文档
   自证。
-- 现有 research 中“远端 head 仍为 `87f4e319f`”和 plan 中“listing parser 应先失败”都已过期，必须
-  按当前权威状态修订。
+- 上一轮 research / plan 中写死的 baseline `ab1d379b1`、“inherited marker 只有一处”以及
+  `implement n/6` 游标都已过期，必须按当前权威状态修订。
 - 本节点是 DAG 的 design phase；不实现、不 dispatch successor、不 request ship approval、不 merge。
 
 ## 方案比较
@@ -62,6 +66,18 @@ PreHydrator（启动前把 issue 内容装入 Runner 上下文的组件）可读
 - 否决原因：直接违反 branch continuity 与禁止 force-push 的约束，也会丢失 harness 正在观察的真实
   carrier。
 
+## 本轮增量（相对 2026-09-26 设计）
+
+| 变化 | 证据 | 设计响应 |
+| --- | --- | --- |
+| baseline 前移到 `b436ac9ec` | `git rev-parse HEAD` = PR #196 head OID | 文档中的 scope 检查改为相对新 baseline |
+| target 多了 probe 末行 | commit `d22f2c249`；文件最后一行是 `standby-resume-probe: qa2861-A3`，前一行为空行 | validator 新增“末行精确匹配 + 前置空行”断言 |
+| 修复 listing 时可能误伤 marker | 两处 inherited 内容都位于 fenced block 之后 | 修复步骤明确“fence 之后的尾部字节原样保留” |
+| 上一轮实现已两次验证 already-GREEN | milestone 的 2026-09-28 记录 | 保持方案 A，不引入新机制 |
+
+没有新的需求输入；issue 描述与上一轮完全相同。因此本轮不重新发明方案，只让设计与 branch 的
+真实状态重新对齐，并把新出现的 inherited 内容纳入负向守卫。
+
 ## 推荐设计
 
 采用方案 A。实现节点把稳定文件视为 materialized view（由当前仓库事实生成的文档视图）：source
@@ -77,7 +93,9 @@ sources，再逐项比对目标；只有 mismatch 才触发最小编辑。这样
 - 不把 open PR 或绿色 CI 单独当作内容正确；文件结构、live command output、PR head 和 CI 要分别验证。
 - 不为了获得新 commit 而无条件改写内容；若 no-op，明确记录“current evidence already satisfies contract”。
 - 不 merge、不 request ship approval、不 dispatch successor。
-- 不清理或改写 inherited FLY-2456 历史；若它影响最终 PR 语义，由 Lead 按当前授权处理。
+- 不清理或改写 inherited FLY-2456 marker 与 `standby-resume-probe: qa2861-A3` 末行；若它们影响
+  最终 PR 语义，由 Lead 按当前授权处理。
+- 不修改 PR #196 的 title/body（仍描述 FLY-2456 drill）；只在 handoff 中披露这一不一致。
 
 ## 设计批准方式
 
