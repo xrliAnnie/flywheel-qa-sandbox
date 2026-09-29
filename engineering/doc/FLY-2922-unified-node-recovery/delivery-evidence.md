@@ -3,6 +3,8 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 日期: 2026-09-29
 基于: plan.md
 
+> **阅读顺序：** 2026-09-27 的 verify-then-submit 与本文件前半历史收据已 superseded；当前有效设计证据从“QA@4 重开设计轮（exec 11c7ab0f）”开始。已删除的 `handin.zsh` 不得执行。
+
 ## 合同自检
 
 - `zsh -n handin.zsh` exit 0；plan §3.4 与 `handin.zsh` 的 `diff` 为空（§3.1 的 awk 提取）。
@@ -63,7 +65,23 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 - Playwright Chromium 在本地完整页面上验证：路径 scoped localStorage key、输入自动保存、reload 恢复、长意见拆 2 段、每段以 `【页面意见汇总】FLY-2922` 开头且 ≤1800 字、clipboard promise reject 时调用 `execCommand` fallback，page errors 为空。
 - 1440px full-page screenshot 为 1440×6595；人工查看确认 Apple-light 布局、两张图已渲染、九张卡与评论输入均可见。该截图只用于本地视觉 QA，不冒充 hosted CSP 验证。
 
-### 当前 gate 状态
+### Round 1 gate 状态（已被后续 CHANGES verdict 取代）
 
 - `stage set design_review --plan .../plan.md` 后显式打开 gate question `0c9bc1c3-8c9a-4fb0-a5d8-f7acca2b8b88`，request-review `0cfeca03-fa17-4e78-b649-6bd17c5dce97` 已 accepted。
-- 2026-09-29 本轮第一次 `check` 返回 `not yet`；按 resident phase law 已 park。尚未 publish/report/complete，不沿用 2026-09-27 的 hosted URL 冒充当前 HTML。
+- 早期 `check` 曾返回 `not yet`；最终结果见下方“Round 1 设计评审与三域修订”，不能把本段误读为仍 pending。
+
+### Round 1 设计评审与三域修订
+
+- gate question `0c9bc1c3-8c9a-4fb0-a5d8-f7acca2b8b88` / request `0cfeca03-fa17-4e78-b649-6bd17c5dce97` 最终 `reviewVerdict=CHANGES_REQUESTED`。
+- 两条 HIGH 已验证：当前 `test-slot-2` 是 `runnerMode=real, qaRunnerMode=stub` 的 QA sandbox，不能给生产 PR #1374 取得有效 review/completion；房内 QA 不执行 host tasks，再传 `--issue FLY-2922` 会让内层 design 递归收到当前生产任务。
+- 修订后的计划分为 Production Implement、Host QA Controller、Inner Sandbox DAG 三个授权域。inner actor 只写 `flywheel-qa-sandbox`；host driver 使用 Lead 授权的 fixture issue，明确拒绝 FLY-2922；source 使用 owner 专属 isolated clone，`origin` 为 QA sandbox、`production` remote 只读 fetch exact head。
+- 清理旧交接物：删除 `handin.zsh`、`handin-body.md` 与旧的 handoff/recovery Mermaid 文件；`review-result.md` 将 2026-09-27 的 plan approval 标成 superseded；`progress.md` 不再指向旧脚本。
+- 测试清单改成生产头实际存在的六个 teamlead 文件，Vitest 参数使用 package-relative `src/...`；raw `test-deploy.sh --qa-stub-runner` 的 teardown 只走 `scripts/test-teardown.sh PRIMARY_SLOT`。
+
+### 修订后的 Founder HTML 本地验证
+
+- `founder-design.html` 192461 bytes，SHA-256 `3acd551a320f036d84950d65d9f36fcabca729f20237f98504e45f25e4d706a5`。
+- 静态检查：`__CSP_NONCE__` 1、`<script` 1、inline event 0、`innerHTML` 0、自定义 CSP meta 0、外部 HTTP src/href 0、section card 9、comment textarea 9、汇总标记 1、内联 SVG 2。
+- Mermaid 本地渲染：`FLY-2922-d6` flow SVG SHA-256 `30f70ce4d3b07c49ad2ff86f5736174be95378da243d5b43812598e314fe076f`；`FLY-2922-d7` ER SVG SHA-256 `b5a77cb116cf5a80aa9def9730dc3d5b3c5d1969c7f23369a0dc411f2e77592d`。均已内联，页面无 runtime Mermaid 或外部依赖。
+- Headless Chrome 实页验证：9 cards / 9 inputs、2 SVG、路径 scoped localStorage、输入保存与 reload 恢复、长意见拆 3 段、每段固定 marker 且 ≤1800 字、clipboard promise reject 时调用 `execCommand` fallback、page errors 为空。
+- 1440px full-page screenshot 为 1440×8463；人工查看确认 Apple-light 布局、三域流程、数据模型、九张评论卡均正常。尚未 publish/report/complete；必须先取得修订 plan blob 的新 APPROVED。

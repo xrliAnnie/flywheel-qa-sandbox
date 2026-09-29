@@ -1,15 +1,33 @@
 flowchart LR
-  A[读取 PR 头与最新 main] --> B{main 已在头里?}
-  B -- 否 --> C[merge main\n两边语义都保留]
-  B -- 是 --> D[冻结最终 SHA]
-  C --> E[只跑相关本地验证]
-  E --> D
-  D --> F[同头代码复审 APPROVED]
-  F --> G[同头 CI OK]
-  G --> H[implement 交卷给 QA]
-  H --> I[QA 自选两个空房]
-  I --> J[真实 Claude 设计评审]
-  J --> K[九步 driver]
-  K --> L[held/rework 故障证据]
-  L --> M[新 execution + dispatch ledger]
-  M --> N[证据快照后拆房]
+  subgraph P[生产收口域]
+    P1[生产 DAG 读取 PR 头与 main] --> P2{main 已包含?}
+    P2 -- 否 --> P3[merge 并做定点验证]
+    P2 -- 是 --> P4[冻结生产 SHA]
+    P3 --> P4
+    P4 --> P5[同头 review APPROVED]
+    P5 --> P6[同头 CI OK]
+    P6 --> P7[生产 needs-review 回执]
+  end
+
+  subgraph H[房外 QA 控制域]
+    H1[Lead 授权安全 fixture] --> H2[隔离 source clone]
+    P7 --> H2
+    H2 --> H3[显式占两个空槽]
+    H3 --> H4[启动受测房]
+    H5[核验九步原始证据] --> H6[先快照再 owner teardown]
+    H6 --> H7[房外签发 QA verdict]
+  end
+
+  subgraph I[房内受测域 只写 QA sandbox]
+    I1[真实 Claude 设计评审] --> I2[Implement attempt 1]
+    I2 --> I3[QA stub 注入 FAIL]
+    I3 --> I4[统一恢复口]
+    I4 --> I5[新 execution 与 dispatch ledger]
+    I5 --> I6[QA stub 放行 fixture run]
+  end
+
+  H4 --> I1
+  I6 --> H5
+
+  X1[禁止生产 issue FLY-2922] -. fail closed .-> H4
+  X2[禁止房内触达生产 PR] -. fail closed .-> I2

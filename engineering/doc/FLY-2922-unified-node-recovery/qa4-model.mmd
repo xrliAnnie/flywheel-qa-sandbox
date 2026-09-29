@@ -1,61 +1,77 @@
 erDiagram
-  PR_HEAD ||--|| REVIEW : "同一 SHA"
-  PR_HEAD ||--|| CI_RUN : "同一 SHA"
-  PR_HEAD ||--|| QA_ROOM : "expect-head"
-  QA_ROOM ||--o{ WORKFLOW_RUN : contains
-  WORKFLOW_RUN ||--o{ NODE_ATTEMPT : advances
-  NODE_ATTEMPT ||--|| EXECUTION : binds
+  PRODUCTION_HEAD ||--|| CODE_REVIEW : binds
+  PRODUCTION_HEAD ||--|| CI_RUN : binds
+  PRODUCTION_HEAD ||--|| SOURCE_CLONE : supplies_bytes
+  QA_FIXTURE ||--|| SOURCE_CLONE : constrains_issue
+  SOURCE_CLONE ||--|| ROOM_CAMPAIGN : launches
+  ROOM_CAMPAIGN ||--|| SANDBOX_RUN : contains
+  SANDBOX_RUN ||--o{ EXECUTION : advances
   EXECUTION ||--o{ DISPATCH_LEDGER : materializes
-  DISPATCH_LEDGER ||--|| RECOVERY_RECEIPT : proves
-  WORKFLOW_RUN ||--o{ DRIVER_STEP : observes
-  QA_ROOM ||--|| ROOM_CLAIM : owns
-  ROOM_CLAIM ||--|| TEARDOWN_RECEIPT : closes
+  SANDBOX_RUN ||--o{ DRIVER_STEP : observes
+  ROOM_CAMPAIGN ||--|| EVIDENCE_BUNDLE : snapshots
+  EVIDENCE_BUNDLE ||--|| OUTER_QA_VERDICT : supports
+  ROOM_CAMPAIGN ||--|| TEARDOWN_RECEIPT : closes
 
-  PR_HEAD {
+  PRODUCTION_HEAD {
     string sha40 PK
-    string main_sha
+    string production_repo
+    string pr_number
   }
-  REVIEW {
+  CODE_REVIEW {
     string question_id
     string verdict
+    string sha40
   }
   CI_RUN {
     string run_id
     string conclusion
+    string sha40
   }
-  QA_ROOM {
+  QA_FIXTURE {
+    string issue_id PK
+    string description_digest
+    string sandbox_repo
+  }
+  SOURCE_CLONE {
+    string path
+    string detached_sha
+    string origin_sandbox
+    string production_remote
+  }
+  ROOM_CAMPAIGN {
     int primary_slot
     int secondary_slot
+    string owner_claim
   }
-  WORKFLOW_RUN {
+  SANDBOX_RUN {
     string run_id PK
     string status
-  }
-  NODE_ATTEMPT {
-    string node_id
-    int attempt
+    string fixture_issue
   }
   EXECUTION {
     string execution_id PK
+    string node
+    int attempt
     int launch_ordinal
   }
   DISPATCH_LEDGER {
     string ledger_id PK
     string state
-  }
-  RECOVERY_RECEIPT {
-    string operation_id
-    string digest
+    string receipt
   }
   DRIVER_STEP {
     int step
     string result
   }
-  ROOM_CLAIM {
-    string room_id
-    string owner
+  EVIDENCE_BUNDLE {
+    string snapshot_path
+    string digest
+  }
+  OUTER_QA_VERDICT {
+    string authority
+    string verdict
   }
   TEARDOWN_RECEIPT {
-    string snapshot_path
+    string owner
     string state
   }
