@@ -3,7 +3,7 @@ Issue: FLY-3018 (https://linear.app/geoforge3d/issue/FLY-3018/引擎路由-派�
 日期: 2026-09-29
 基于: research.md
 
-> 本 run 为「重开·只重做 QA」的**第三次**（Lead 2026-09-29 05:3xZ）。本计划**不含任何代码改动**；它定义 implement 节点的零改动交卷边界与 QA 节点的可判定验收矩阵。产品设计（新 run 读当前配置、同 run 冻结、回执从冻结记录重建）继承真仓 PR #1381 分支 `engineering/doc/FLY-3018-current-model-routing/plan.md`（有效评审 `e59792b3…` APPROVED）及其 `advisory-dispositions.md`，本文不重述、不修改。版本 **v2.5**：相对 v2.4 只改「精确头 → `6c091c4fd`、被测房 → 显式 slot 4、新增房服务 preflight 与 `12b82e4e9` 用例」，其余判据原样保留。
+> 本 run 为「重开·只重做 QA」的**第三次**（Lead 2026-09-29 05:3xZ）。本计划**不含任何代码改动**；它定义 implement 节点的零改动交卷边界与 QA 节点的可判定验收矩阵。产品设计（新 run 读当前配置、同 run 冻结、回执从冻结记录重建）继承真仓 PR #1381 分支 `engineering/doc/FLY-3018-current-model-routing/plan.md`（有效评审 `e59792b3…` APPROVED）及其 `advisory-dispositions.md`，本文不重述、不修改。版本 **v2.5**：相对 v2.4 只改「精确头 → `6c091c4fd`、被测房 → 显式 slot 4、新增房服务 preflight 与 `12b82e4e9` 用例」，其余判据原样保留。**v2.5.1（Codex R1 两项）**：④ 的顺序改为「记录 → 自己 teardown → 最后 qa-result」（qa-result 会消耗 submission credential，之后 teardown 必 403）；所有 preflight / 守卫改为**正向条件 + 保留 CLI 原始输出**，不再假设 CLI 会打印服务端 reason。
 
 ## 1. 一句话
 
@@ -38,14 +38,14 @@ Issue: FLY-3018 (https://linear.app/geoforge3d/issue/FLY-3018/引擎路由-派�
 
 | 组件 | 要求 | 检查方式 | 不满足时 |
 |---|---|---|---|
-| **管理 Bridge 房服务开关（本轮新增，第一道）** | `room list` 返回列表（可为空），**不是** `503 room_service_disabled` | `node "$FLYWHEEL_COMM_CLI" room list` | **阻断**。原因是外层房 Bridge 是隔离 Bridge且未带 `TEST_QA_ROOM_SERVICE=1`（research §8）。唯一合法解法 = **Lead 在宿主侧**给 slot 3 外层 Bridge 加 `TEST_QA_ROOM_SERVICE=1` 并原地重启（sessions 保留、不 teardown 房；question `d630d640` 已提请裁定）。QA 只做：把实测原文写进报告 → ask Lead（引用 `d630d640`）→ 轮询 `check` → 打开后重跑 preflight。⛔ 不改任何 Bridge 环境/配置、⛔ 不打生产 `9876`、⛔ 不直接跑 `qa-529-generalized-e2e.mjs` |
+| **管理 Bridge 房服务开关（本轮新增，第一道）** | **正向条件**：`node "$FLYWHEEL_COMM_CLI" room list` **exit 0 且 stdout 是有效 JSON `{ok:true, rooms:[…]}`**（可为空数组）。其它任何结果（非零 exit、`service request failed after 3 attempts (HTTP 503)`、`request refused (HTTP 401/403)`、transport failure）一律**阻断** | 跑一次 `room list`，把 **完整 stdout/stderr、exit code、`$FLYWHEEL_BRIDGE_URL`** 原样写进报告 | **阻断，ask Lead（引用 `d630d640`），不猜 reason**。CLI 对 5xx 会丢弃响应体、只打印 `HTTP 503`（`commands/room.ts:577-618`，reason 白名单仅 `operation_not_in_room`/`inconsistent_state`），所以 QA **拿不到** `room_service_disabled` 字样；「未开关」这个归因来自本设计节点在只读探测中直接看到的服务端诊断（research §8），QA 只引用、不重现。Lead 加开关并重启后若仍非正向 → 可能是 `room_auth_unconfigured`/`room_authority_unavailable`/凭据问题，**由 Lead/宿主看外层 Bridge 服务端诊断**，QA 继续等，⛔ 不改任何 Bridge 环境/配置、⛔ 不打生产 `9876`、⛔ 不换 Bridge、⛔ 不直接跑 `qa-529-generalized-e2e.mjs` |
 | 管理 Bridge 版本 | `curl $FLYWHEEL_BRIDGE_URL/health` 的 `buildSha` **与** `artifactBuildSha` 都 = `6c091c4fd2001c7aa3d41760dcde28b2054e23ff`（实测已满足，research §7.1） | 两个字段逐字比对 | 阻断 ask Lead；⛔ 不自行部署、⛔ 不去掉 `--no-overrides` |
 | CLI（`$FLYWHEEL_COMM_CLI`） | `room --help` 含 `[--no-overrides]`（实测已满足） | 直接看 usage | 同上 |
 | 被测房 Bridge | deploy 返回快照 `roomInfo.buildSha` = `6c091c4fd…`；judge 还要求 site `/health` 的 `buildSha` = `artifactBuildSha` = `--head`（`judge.ts:104-108`） | deploy 快照 + `curl http://localhost:19874/health` | 头不符 → 停，ask Lead |
 
 **Lead 裁定（question `d630d640`，2026-09-29）：选 A**。原话要点：已把 `TEST_QA_ROOM_SERVICE=1` 写入 slot 3 的安全 launch spec；官方 bridge-only cycle 因 stale `bridge.pid`/ownership（24341 已死，实际唯一 listener 25164）fail-closed，Lead 沙箱无 ps 身份/祖先核验能力，不能安全强杀或手改 PID；已在 FLY-3018 thread 提交 founderAsk 请宿主 operator 完成**保 sessions 的 bridge-only cycle**。**QA 必须保持上表第一道 preflight：只有 `room list` 不再 `room_service_disabled` 才执行 slot 4 deploy；不改打生产 Bridge、不绕过验证。** 在此之前 QA 先做与房无关的步骤 ①②（§4.2），并按 TURN 规则轮询等待，不空转报 FAIL。
 
-QA 报告开头逐字记录：管理 Bridge 两个 sha、CLI usage 片段、`room list` 首次响应原文、被测房 `roomInfo`、宿主 `~/.flywheel/models.json` sha256。拓扑：**管理端 = slot 3 (19873)，被测房 = slot 4 (19874)**；后文 `--site slot_529:4`、房 DB 路径、seed 目标都指被测房，由返回的 `roomInfo` 解析，⛔ 绝不写管理端（slot 3）的 DB。
+QA 报告开头逐字记录：管理 Bridge 两个 sha、CLI usage 片段、`room list` 首次 **CLI 输出原文（stdout/stderr/exit code）**、被测房 `roomInfo`、宿主 `~/.flywheel/models.json` sha256。拓扑：**管理端 = slot 3 (19873)，被测房 = slot 4 (19874)**；后文 `--site slot_529:4`、房 DB 路径、seed 目标都指被测房，由返回的 `roomInfo` 解析，⛔ 绝不写管理端（slot 3）的 DB。
 
 ### 4.1 房的所有权与参数
 
@@ -60,7 +60,7 @@ node "$FLYWHEEL_COMM_CLI" room deploy --slot 4 \
 # exit 3 → room wait --room <id>
 ```
 
-  `--slot 4` 返回 `409 slot_unavailable` → 说明 4 号已被占；**阻断 ask Lead**，⛔ 不改用 `--slot auto`（Lead 明令）、⛔ 不用 1/2/3（1–3 是断电后的死房 FLY-3046，且 1/2(+5)/3 当前有 service-claim）、⛔ 不清理/接管任何锁。改参数 ask Lead。
+  `--slot 4` 返回 `request refused (HTTP 409)` → CLI **不会**告诉你 reason（可能是 `slot_unavailable`、`actor_has_room` 等），QA 只记「HTTP 409，reason 未确认」+ 完整输出，**阻断 ask Lead** 由 Lead 看服务端审计；⛔ 不改用 `--slot auto`（Lead 明令）、⛔ 不用 1/2/3（1–3 是断电后的死房 FLY-3046，且 1/2(+5)/3 当前有 service-claim）、⛔ 不清理/接管任何锁。`request refused (HTTP 403)` 同理（凭据/角色/所有权任一），记原文 ask Lead。改参数 ask Lead。
 - **models.json 不是房内隔离的**（不变）：房进程继承宿主 `HOME`，模型配置读 `~/.flywheel/models.json` = 生产文件。QA 只在 drill 前后各记一次 `shasum -a 256 ~/.flywheel/models.json`（本设计实测 `27c91802…d8b0`）与 implement 摘要（`impl_opus`(opus,3) : `impl_sol56`(codex,1)，`bindings.opus = claude-opus-5-5`），两次必须一致；⛔ 任何节点都不得写该文件。
 
 ### 4.2 步骤 ①②：精确头 CI 与新提交行为
@@ -129,7 +129,9 @@ SELECT execution_id, runner_model, dispatch_model FROM sessions WHERE execution_
 
 判定顺序：先断言 **receipt exact = runtime.model = 同 execution 的 sessions.runner_model**（缺行或多行即 FAIL），再核对实际载体。code 类别必须观察到后继 implement 真启动，不能拿 design session 冒充。
 
-### 4.4 步骤 ④：强度二记录与提交
+### 4.4 步骤 ④：强度二记录 → 自己 teardown → 最后提交（顺序是合同的一部分，Codex R1 HIGH）
+
+**为什么顺序不能反**：`qa-result` 成功提交（PASS，或身份恢复分支的 FAIL）会经 `submitWorkflowDecisionByCredential` 写 submission credential 的 `consumed_at`；而 `room teardown` 与 deploy/drill 一样要过 `qa-room-routes.ts` 的凭据 preflight，已消耗凭据返回 `credential_consumed`（403），会话终态则 `runner_not_active`。先提交再拆房 = slot 4 留下房与 claim，只能再劳 Lead/后继清理。因此：**房在线 → 记录并确认 satisfied → 用尚未消耗的当前凭据 teardown → 等 `torn_down`、保存 `evidence_dir` → 最后 `qa-result`**。所有提前 FAIL 分支同样先走 teardown。
 
 1. 完整命令（`evidence-run.ts` 全部必填；`--local-copy` 不能替代 URL）：
 
@@ -145,18 +147,20 @@ node "$FLYWHEEL_COMM_CLI" evidence-run record \
 ```
 
 2. **rerun_spec 检查按 `12b82e4e9` 后的形态**：`lane` = `generalized_e2e_real`，且 `driver.noOverrides` **键存在且 === true**（不带旗的 drill 现在是「没有该键」，不是 `false`）。键缺失 = 这次 drill 没带 `--no-overrides`，不是本矩阵的证据 → 重跑，不得手改 spec。
-3. **exit 0 ≠ satisfied**：合法 ACK（含 `verdict=unsatisfied`）也退出 0。保存 ACK 原文，要求本次矩阵对应记录的 `verdict` / `ran` / `record` 三者都 satisfied 才算强度二通过；`lane_unproven`、`site_head_mismatch`、`driver_nonzero` 都是失败。
+3. **exit 0 ≠ satisfied**：合法 ACK（含 `verdict=unsatisfied`）也退出 0。CLI **不输出 HTTP ACK 原文**，只打印一行判定摘要 `strength-two: verdict=… ran=<status>/<reason> record=<status>/<reason> record_id=…`（`commands/evidence-run.ts:382-387`）。留证 = 这一行原样 + `record_id` + 传入的原始 `rerun_spec` 文件 + 服务返回的不可变 request receipt（drill/wait 快照里的 `operation_id`、`driver_exit_code`、`evidence_copy`）；⛔ 不把 CLI 摘要称作「HTTP 原文」。要求本次矩阵对应记录的 `verdict` / `ran` / `record` 三者都 satisfied 才算强度二通过；`lane_unproven`、`site_head_mismatch`、`driver_nonzero` 都是失败。
 4. driver 非零、证据缺、`evidence_copy` 不全、探测失败 → 先重跑或 FAIL；同一请求结果不确定时用**同一 record-id、同一 payload** 重试，不换 id。
-5. `qa-result` 提交 PASS 时若被 `land_head_pr_identity_unavailable` 拒：按 CLI 恢复路径**显式交 FAIL**，原因写「FLY-2407 部署边界缺陷，产品证据本身 PASS」，附 §4.3 证据清单；不绕过、不伪造 identity。
-6. 房 teardown 由 QA（owner）自己做：`room teardown --room <id>`；保留 `evidence_dir`；`snapshot_failed` 先看既有证据再用新 request `--skip-snapshot --reason` 重试。
+5. **teardown（在 qa-result 之前）**：QA（owner）自己 `room teardown --room <id>`；exit 3 → `room wait --room <id>` 直到 `torn_down`；保留返回的 `evidence_dir`；`snapshot_failed` 先看既有证据再用新 request `--skip-snapshot --reason <原因>` 重试。teardown 被拒（`request refused (HTTP 403/409)`）→ 保留现场、记原文、ask Lead；⛔ 不借凭据、⛔ 不删 `/tmp/flywheel-test-slot-4.lock`。
+6. **最后**提交 `qa-result`。PASS 被 `land_head_pr_identity_unavailable` 拒：按 CLI 恢复路径**显式交 FAIL**，原因写「FLY-2407 部署边界缺陷，产品证据本身 PASS」，附 §4.3 证据清单；不绕过、不伪造 identity。
 
 ### 4.5 QA 负向守卫
 
-- `room list` / `room deploy` 返回 `room_service_disabled`（503）→ 外层房服务未开（§4.0 第一道），ask Lead（引用 `d630d640`）；⛔ 不改 Bridge 环境、⛔ 不打生产 Bridge、⛔ 不跑裸驱动。
-- `slot_unavailable`（`--slot 4` 被占）→ ask Lead；⛔ 不改 `--slot auto`、⛔ 不用 1/2/3 死房、⛔ 不复用空 lock、⛔ 不接管他人房。
-- `slot_port_is_self`（site 指到管理端 slot 3）→ site 写错，改为 `slot_529:4`。
+- **守卫的分层**：CLI 只给「HTTP 状态已知」（`HTTP 503` / `request refused (HTTP 4xx)`），服务端 `reason` 只有 Lead/宿主能从审计/诊断确认。QA 报告两者分开写，不把猜测写成 reason。
+- `room list` / `room deploy` 非正向结果（含 `HTTP 503`）→ 外层房服务未开或其它服务端拒绝（§4.0 第一道），记原文 ask Lead（引用 `d630d640`）；⛔ 不改 Bridge 环境、⛔ 不打生产 Bridge、⛔ 不跑裸驱动。
+- `room deploy --slot 4` 得 `HTTP 409`（reason 未确认：`slot_unavailable` / `actor_has_room` …）→ ask Lead；⛔ 不改 `--slot auto`、⛔ 不用 1/2/3 死房、⛔ 不复用空 lock、⛔ 不接管他人房。
+- `evidence-run record` 被拒 `slot_port_is_self`（site 指到管理端 slot 3；该命令会打印拒绝码）→ site 写错，改为 `slot_529:4`。
+- teardown 前已提交 qa-result → 顺序错误（§4.4），凭据已消耗不可恢复；记录并 ask Lead 清房，⛔ 不借凭据。
 - `drill_config_not_reproducible` → 房参数不对（Codex-runner 房、非 main fixture、`--no-lead`），ask Lead 改房，不改自己的命令绕过。
-- `403 room_not_owned` → 所有权错位（§4.1），ask Lead，⛔ 不借 Lead 凭据。
+- drill/teardown `request refused (HTTP 403)`（可能 `room_not_owned` / `credential_*` / `runner_not_active`，CLI 不区分）→ 记原文 ask Lead，⛔ 不借 Lead 凭据。
 - 回执出现跨 vendor 拼接（如 `opus (= gpt-*)`）→ 直接 FAIL，附 `response.resolved.nodeModels` 原文。
 - 管理 Bridge 或 CLI ≠ `6c091c4fd`（症状 `field_not_supported` / `rerun_spec_invalid:unknown_key`）→ 阻断 ask Lead；⛔ 不去掉 `--no-overrides`、⛔ 不自行部署。
 - 宿主 `~/.flywheel/models.json` sha256 在矩阵前后不一致 → 环境被改动，FAIL 并上报。
@@ -175,7 +179,7 @@ node "$FLYWHEEL_COMM_CLI" evidence-run record \
 | 在 `76cf3c249` / `7e28dd51c` 上判 | 前者 rerun_spec 表达不了 no-overrides；后者已不是 PR 头（Lead 裁定硬约束：头变即失效） |
 | 由 Lead 或 QA 改「房内」models.json 做 O2 | 房读的是宿主 `~/.flywheel/models.json` = 生产文件，改它就是改生产且无恢复边界（Codex R1 #4） |
 | Lead 起房、QA 去 drill | owner 是 `lead:<id>`，QA 身份 403 `room_not_owned`（Codex R1 #2）；Lead 03:4xZ 已作废该路径 |
-| **QA 打生产 Bridge `9876` 起房**（本轮新增） | runner 身份只对派它的 Bridge 有效（`qa-room-routes.ts` 本店 `getSession`）→ 403；且生产 `95e5cd708` 无 `no_overrides` schema → `field_not_supported` |
+| **QA 打生产 Bridge `9876` 起房**（本轮新增） | 必被拒：ingest token 不匹配先 401；即便 token 过了，本店 `getSession` 不认识该 execution → 403（`qa-room-routes.ts:41-60`）；且生产 `95e5cd708` 无 `no_overrides` schema → `field_not_supported` |
 | **QA 自己给 19873 加 `TEST_QA_ROOM_SERVICE=1` 或重启 Bridge**（本轮新增） | 越权：README:400 明写「not an arbitrary runner environment option」；改 Bridge 环境是 Lead 宿主侧动作 |
 | **`--slot auto`**（v2.4 采用） | Lead 05:3xZ 明令别用（会抢别人的房）；且 1–3 是死房，auto 可能分到 |
 | 管理端与被测房同为 slot 3 | `slot_unavailable` / `slot_port_is_self` 守卫必拒（Codex R2 #1） |
