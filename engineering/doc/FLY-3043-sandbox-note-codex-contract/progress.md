@@ -1,14 +1,13 @@
 ---
 issue: FLY-3043
-phase: implement
-phaseCursor: 5/5
-updated: 2026-09-29T02:05:47.188Z
-nextStep: Create the required final milestone commit, push, open PR, await CI,
-  and complete code review
+phase: qa
+phaseCursor: 4/4
+updated: 2026-09-29T02:22:50.179Z
+nextStep: Publish ship report, re-ensure exact-head CI, and submit QA verdict
 chunks: []
 pointers: {}
 ---
 
 # FLY-3043 progress
-**phase**: implement (5/5)
-**next**: Create the required final milestone commit, push, open PR, await CI, and complete code review
+**phase**: qa (4/4)
+**next**: Publish ship report, re-ensure exact-head CI, and submit QA verdict
