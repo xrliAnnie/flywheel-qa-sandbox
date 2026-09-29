@@ -1,13 +1,13 @@
 ---
 issue: FLY-3029
 phase: design
-phaseCursor: 2/6
-updated: 2026-09-29T03:32:58.468Z
-nextStep: write repository-backed research and poll the head-mismatch question
+phaseCursor: 3/6
+updated: 2026-09-29T03:34:09.093Z
+nextStep: write and self-review the implementation plan
 chunks: []
 pointers: {}
 ---
 
 # FLY-3029 progress
-**phase**: design (2/6)
-**next**: write repository-backed research and poll the head-mismatch question
+**phase**: design (3/6)
+**next**: write and self-review the implementation plan
