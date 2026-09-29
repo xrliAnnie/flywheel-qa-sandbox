@@ -1,13 +1,14 @@
 ---
 issue: FLY-202
 phase: implement
-phaseCursor: 5/6
-updated: 2026-09-29T16:29:53.569Z
-nextStep: Effective code review, then final progress/push/PR proof
+phaseCursor: 6/6
+updated: 2026-09-29T16:35:03.866Z
+nextStep: Update implementation milestone as literal last commit, push, prove PR
+  head, report, complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: implement (5/6)
-**next**: Effective code review, then final progress/push/PR proof
+**phase**: implement (6/6)
+**next**: Update implementation milestone as literal last commit, push, prove PR head, report, complete
