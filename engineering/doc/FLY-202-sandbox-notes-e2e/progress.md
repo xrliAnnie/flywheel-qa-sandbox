@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
-phase: implement
-phaseCursor: 4/4
-updated: 2026-09-29T02:21:01.964Z
-nextStep: Milestone commit, push, prove PR head, report, complete
+phase: design
+phaseCursor: 1/6
+updated: 2026-09-29T16:16:08.795Z
+nextStep: Refresh exploration.md against baseline b436ac9ec
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: implement (4/4)
-**next**: Milestone commit, push, prove PR head, report, complete
+**phase**: design (1/6)
+**next**: Refresh exploration.md against baseline b436ac9ec
