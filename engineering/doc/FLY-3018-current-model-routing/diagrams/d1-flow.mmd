@@ -1,7 +1,7 @@
 flowchart TD
     P["前置检查<br/>管理 Bridge = localhost:19873<br/>buildSha 与 artifactBuildSha 都 = 7e28dd51c<br/>CLI 支持 --no-overrides"] -->|不满足| PX["阻断 · ask Lead<br/>不自行部署 · 不去掉 --no-overrides"]
     P -->|满足| B["implement 节点<br/>核对 local = origin = PR#1381 头<br/>零改动 → complete needs_review"]
-    B --> C["QA 节点 room deploy<br/>slot 3 · generalized · 头 7e28dd51c<br/>QA 自己是 owner，Lead 给参数"]
+    B --> C["QA 节点 room deploy --slot auto<br/>generalized · 头 7e28dd51c<br/>QA 自己是 owner，Lead 给参数；<br/>site 与 DB 路径只取自 roomInfo"]
     C --> D1["① ci-full ensure 同头 exit 0"]
     C --> D2["② 单测一次一个文件<br/>receipt alias / 冻结 alias / noOverrides / 老 UUID"]
     C --> D3["③ 先算分桶再 drill --real --no-overrides<br/>N1 Opus 桶 · N2 Codex 桶 · O1 同配置 · O2-seed(条件授权)"]
