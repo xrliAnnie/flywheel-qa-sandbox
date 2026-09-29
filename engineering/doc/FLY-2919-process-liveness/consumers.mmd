@@ -1,0 +1,19 @@
+flowchart LR
+  subgraph after[修后: 一个真源]
+    OB[observeBody<br/>BodyObservation] --> H2[HeartbeatService]
+    OB --> R2[crash-reaper]
+    OB --> M2[complete-marker 启动扫]
+    OB --> S2[started-evidence]
+    OB --> O2[phase-orchestrator]
+    OB --> X2[codex-phase-shutdown]
+    OB --> C2[commdb reconcile / prune]
+    W[窗口探针] -. 只给 windowState 展示 .-> OB
+  end
+  subgraph before[修前: 多份判据]
+    P1[pane 探针<br/>probeRunnerProcessLiveness] --> H1[HeartbeatService]
+    P1 --> R1[crash-reaper]
+    P2[窗口探针<br/>isTmuxWindowAlive] --> M1[complete-marker 启动扫]
+    P2 --> S1[started-evidence]
+    P1 --> O1[phase-orchestrator]
+    P1 --> X1[codex-phase-shutdown]
+  end

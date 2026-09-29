@@ -1,0 +1,11 @@
+flowchart TD
+  A[每轮巡检: 按执行身份读取进程证据<br/>Claude: pid + 开始时间 + boot<br/>Codex: daemon socket + 进程组] --> B{进程结果}
+  B -->|alive 活着| C[保留体与工作资格<br/>窗口缺失只报展示缺陷]
+  B -->|unknown 无法确认| D[保留现场 报告无法确认<br/>不判死 不铸替身]
+  B -->|dead 已死| E{有待处理的完成 marker?}
+  E -->|有| F[先对账完成<br/>不记 failed]
+  E -->|无| G[核对 lifecycle_revision 与代次<br/>CAS 不一致则重采样]
+  G --> H[StateStore: 记 failed 或保留原终态<br/>写 body_death 义务]
+  H --> I[CommDB: 清 parked 声明<br/>结束 running 投影 写回执]
+  I --> J[换体前置消失<br/>由 FLY-2921 协调器铸替身]
+  H -. 独立重试 .-> K[清理残留窗口<br/>失败不回滚死亡]

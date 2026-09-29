@@ -1,0 +1,43 @@
+classDiagram
+  class BodyIdentity {
+    executionId
+    generation 代次
+    lifecycleRevision
+    adapter 载体
+  }
+  class BodyObservation {
+    identity
+    verdict alive_dead_unknown
+    reason
+    observedAt
+    expiresAt 10秒
+    bindingDigest
+    windowState 仅展示
+  }
+  class execution_process_binding {
+    execution_id PK
+    generation
+    adapter
+    pid
+    proc_start
+    host_boot_id
+    exe_path
+    daemon_pgid
+    binding_digest
+    accepted_at
+  }
+  class body_death_obligation {
+    key body_death_exec_gen
+    observation
+    prior_status
+    resulting_status
+    commdb_projected_at
+  }
+  class CommDB_body_death_receipts {
+    obligation_id PK
+    finalized_at
+  }
+  BodyObservation --> BodyIdentity : 携带
+  execution_process_binding --> BodyObservation : 探针依据
+  BodyObservation --> body_death_obligation : verdict=dead 时写
+  body_death_obligation --> CommDB_body_death_receipts : 投影 幂等
