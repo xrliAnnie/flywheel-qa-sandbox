@@ -1,0 +1,14 @@
+flowchart LR
+  A["Driver step 4<br/>读取 implement execution"] --> B["CommDB<br/>取 tmux target @5"]
+  A --> C["slotDir<br/>/tmp/flywheel-test-slot-4"]
+  B --> D["统一探活口<br/>probeRoomPaneAlive"]
+  C --> D
+  D --> E["复制环境<br/>TMUX_TMPDIR = slotDir<br/>移除 TMUX / TMUX_PANE"]
+  E --> F["房间 tmux server<br/>不是宿主 server"]
+  F --> G{"精确观测是否匹配？<br/>window 或 pane id<br/>pane_dead = 0<br/>execution id 相同"}
+  G -->|是| H["liveness = alive"]
+  G -->|否| I["liveness = dead"]
+  H --> J{"既有 park 条件全部成立？"}
+  I --> K["step 4 继续等待"]
+  J -->|是| L["分类为<br/>rework_reachable_wait"]
+  J -->|否| K
