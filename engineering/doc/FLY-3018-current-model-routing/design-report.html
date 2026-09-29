@@ -49,7 +49,7 @@
   <div class="meta">
     <span class="badge amber">重开 · 只重做 QA</span>
     <span class="badge gray">设计节点交付</span>
-    Issue <code>FLY-3018</code> · 日期 2026-09-28 · 产品代码 PR <code>#1381</code> 精确头 <code>7e28dd51c</code>（Lead 已裁定）· plan v2.3
+    Issue <code>FLY-3018</code> · 日期 2026-09-28 · 产品代码 PR <code>#1381</code> 精确头 <code>7e28dd51c</code>（Lead 已裁定）· plan v2.4
   </div>
 
   <!-- 1 -->
@@ -141,7 +141,7 @@
       <tr><td><b>N1 新单 · Opus 桶</b></td><td>预先算出必落 impl_opus 的 issue，drill 一次</td><td>每个节点的 arm 来自当前 modelSplit；回执 <code>opus (= claude-opus-5-5)</code>；回执 = 运行时 = 会话记录</td></tr>
       <tr><td><b>N2 新单 · Codex 桶</b></td><td>预先算出必落 impl_sol56 的 issue</td><td>仍合法选 Codex，修复不是「全量强制 Opus」</td></tr>
       <tr><td><b>O1 老单 · 同配置</b></td><td>对 N1 的 issue 再 drill 一次（房内已有 N1 历史）</td><td>选择与 N1 一致，依据字段里的规则版本是当前版本</td></tr>
-      <tr><td><b>O2-seed 老单 · 不同配置历史（强证明）</b></td><td>Lead 条件授权，且五个前置全满足才做：用专门的第三张单、在它第一次 drill 之前植入（这样旧代码继承的是单一旧配置，不会走到「历史含糊」报错）；证明被测房数据库隔离且可写；植入的是从真实记录克隆、只替换旧配置字段的完整信封，并先用旧版代码的读取和校验函数验过「旧逻辑确实会命中」；一条参数化事务写入、明确标注 synthetic；写后读回比对摘要。任一不满足就不植入</td><td>修复前会得到 <code>opus (= gpt-6-astra)</code>，修复后应得到 <code>opus (= claude-opus-5-5)</code>。这是「历史不再牵引」在真房里的直接证据。若证明不了房数据库隔离且可写，就不植入，PASS 范围明确缩小为单测 + 源码守卫 + 同配置矩阵</td></tr>
+      <tr><td><b>O2-seed 老单 · 不同配置历史（强证明）</b></td><td>Lead 条件授权，且五个前置全满足才做：用专门的第三张单、在它第一次 drill 之前植入（这样旧代码继承的是单一旧配置，不会走到「历史含糊」报错）；证明被测房数据库隔离且可写；植入的信封由旧版代码自己的生成函数按「synthetic run + 第三张单 + 旧配置」完整生成（别名 astra、模型 gpt-6-astra），再用旧版代码的读取、校验与菜单检查验过「旧逻辑确实会命中」；一条参数化事务写入、明确标注 synthetic；写后读回比对摘要。任一不满足就不植入</td><td>修复前会得到 <code>opus (= gpt-6-astra)</code>，修复后应得到 <code>opus (= claude-opus-5-5)</code>。这是「历史不再牵引」在真房里的直接证据。若证明不了房数据库隔离且可写，就不植入，PASS 范围明确缩小为单测 + 源码守卫 + 同配置矩阵</td></tr>
     </table>
     <p><b>诚实的缺口</b>：驱动脚本把任务类别写死成 code，而 founder 的事故是 simple_code。房内没有现成的、被授权的 simple_code 派单入口（加参数属于产品改动，超出本轮）。simple_code 只有单测覆盖，报告单列，是否算 PASS 阻断由 Lead 定。</p>
     <p>每例保留：请求 key、issue UUID、预期 arm、run id、节点 id、执行 id、宿主 models.json 哈希、回执原文（从房数据库取原件 <code>response.resolved.nodeModels</code>，不用重建值冒充）、本 run 冻结分配、运行时的 vendor/model/effort、<code>sessions.runner_model</code>、实际会话证据。</p>
