@@ -76,7 +76,7 @@ scope_ok() {
 # 推送：推送前查范围，推送后核对远端头
 pushbr() {
   scope_ok
-  git push -u origin "HEAD:refs/heads/$BR" || stop "push 被拒（非快进需 Lead 确认 FORCE-PUSH ACK，禁止 --no-verify）"
+  git push origin "HEAD:refs/heads/$BR" || stop "push 被拒（非快进需 Lead 确认 FORCE-PUSH ACK，禁止 --no-verify）"
   [ "$(git ls-remote origin "refs/heads/$BR" | cut -f1)" = "$(git rev-parse HEAD)" ] || stop "远端头 != 本地 HEAD"
 }
 # 当前分支唯一 OPEN PR 号（没有则为空）
@@ -119,26 +119,53 @@ case "$(git config --get core.hooksPath)" in
   *) stop "core.hooksPath 不是 slot push-guard" ;;
 esac
 # 回收前体被杀时遗留的 git 锁（git commit / push 途中被杀会留下 *.lock，之后所有写操作都报 File exists）。
-# 删除授权 = 已持有 TURN（上面第一行）+ 本工作区内没有任何存活的 git 进程（lsof 实查）。锁龄 ≥ 2 分钟只是等待条件，不是删除授权。
+# 删除授权 = 已持有 TURN（上面第一行）+ 该锁所属作用域内没有任何存活的 git 进程（lsof 实查）。锁龄 ≥ 2 分钟只是等待条件，不是删除授权。
+# 作用域按锁的位置区分：本工作树私有 git 目录里的锁（index.lock、HEAD.lock）只有本工作树的 git 会写 → 查本工作树；
+# common git 目录里的锁（refs/…）兄弟工作树的 git 也会写 → 查本仓**所有**工作树 + common 目录本身。
+# 不回收 config.lock：它在 common 目录、任何工作树都可能正在写；本 plan 的 push 也不带 -u，不写 config。
 ROOT=$(pwd -P) || stop "pwd -P 失败"
-for rel in index.lock HEAD.lock config.lock "refs/heads/$BR.lock" "refs/remotes/origin/$BR.lock"; do
-  L=$(git rev-parse --git-path "$rel") || stop "git rev-parse --git-path $rel 失败"
+GD=$(git rev-parse --absolute-git-dir) || stop "git rev-parse --absolute-git-dir 失败"
+GD=$(cd "$GD" && pwd -P) || stop "解析 git 目录失败"
+CD=$(git rev-parse --path-format=absolute --git-common-dir) || stop "git rev-parse --git-common-dir 失败"
+CD=$(cd "$CD" && pwd -P) || stop "解析 common git 目录失败"
+wts=$(git worktree list --porcelain) || stop "git worktree list 失败"
+SHARED=$CD
+old_ifs=$IFS
+IFS='
+'
+set -f
+for w in $(printf '%s\n' "$wts" | sed -n 's/^worktree //p'); do
+  wp=$(cd "$w" 2>/dev/null && pwd -P) && SHARED="$SHARED
+$wp"
+done
+set +f
+IFS=$old_ifs
+for rel in index.lock HEAD.lock "refs/heads/$BR.lock" "refs/remotes/origin/$BR.lock"; do
+  L=$(git rev-parse --path-format=absolute --git-path "$rel") || stop "git rev-parse --git-path $rel 失败"
   [ -e "$L" ] || continue
   [ -n "$(find "$L" -mmin +2 -print 2>/dev/null)" ] || stop "发现 2 分钟内的 $L，可能仍有 git 进程在写：90 秒后重跑 Task 0"
-  command -v lsof >/dev/null 2>&1 || stop "无 lsof，无法确认前体 git 进程已退出，不删锁"
+  Ldir=$(cd "$(dirname "$L")" && pwd -P) || stop "解析 $L 所在目录失败"
+  SCOPE=$SHARED
+  if [ "$GD" != "$CD" ]; then
+    case "$Ldir" in "$GD"|"$GD"/*) SCOPE=$ROOT ;; esac
+  fi
+  command -v lsof >/dev/null 2>&1 || stop "无 lsof，无法确认 git 进程已退出，不删锁"
   # 单次枚举全部进程的 cwd（必须 exit 0）；同一份输出里必须含本 shell（$$）且 cwd = $ROOT 的记录（哨兵，证明枚举完整），
-  # 再数其中命令名以 git 开头、cwd 在工作区内的进程。awk 失败 / 输出为空都落到 * 分支 STOP（fail-closed）。
-  procs=$(lsof -d cwd -Fpcn 2>/dev/null) || stop "lsof 枚举失败（exit $?），无法确认前体 git 进程已退出，不删锁"
-  verdict=$(printf '%s\n' "$procs" | awk -v me="$$" -v r="$ROOT" '
+  # 再数其中命令名以 git 开头、cwd 落在作用域任一目录内的进程。awk 失败 / 输出为空都落到 * 分支 STOP（fail-closed）。
+  procs=$(lsof -d cwd -Fpcn 2>/dev/null) || stop "lsof 枚举失败（exit $?），无法确认 git 进程已退出，不删锁"
+  verdict=$(printf '%s\n' "$procs" | SCOPE="$SCOPE" awk -v me="$$" -v r="$ROOT" '
+    BEGIN { n = split(ENVIRON["SCOPE"], S, "\n") }
     /^p/ { pid = substr($0, 2); cmd = ""; next }
     /^c/ { cmd = substr($0, 2); next }
     /^n/ { d = substr($0, 2)
            if (pid == me && d == r) sentinel = 1
-           if (cmd ~ /^git/ && (d == r || index(d, r "/") == 1)) live++ }
+           if (cmd ~ /^git/)
+             for (i = 1; i <= n; i++)
+               if (S[i] != "" && (d == S[i] || index(d, S[i] "/") == 1)) { live++; break } }
     END { if (sentinel) print "LIVE=" (live + 0); else print "NOSENTINEL" }')
   case "$verdict" in
     LIVE=0) : ;;
-    LIVE=*) stop "本工作区仍有 ${verdict#LIVE=} 个存活的 git 进程：不删 $L，90 秒后重跑 Task 0；持续存在则 ask Lead" ;;
+    LIVE=*) stop "锁 $L 的作用域内仍有 ${verdict#LIVE=} 个存活的 git 进程：不删，90 秒后重跑 Task 0；持续存在则 ask Lead" ;;
     *) stop "lsof 输出里找不到本 shell 的 cwd 记录（枚举不完整：$verdict），不删 $L" ;;
   esac
   rm -f "$L" || stop "删除孤儿锁 $L 失败"
@@ -213,7 +240,7 @@ cat "$LEDGER"
 
 - TURN 为 `not-yours` 是正常等待态：**同一个体** 每 60–90 秒重跑 Task 0，拿到 `yours` 再继续。
 - 工作区只允许「干净」、「README 已追加未提交 / 已暂存」（前体在 Task 1 与 Task 2 之间被杀）、「milestone 已写未提交 / 已暂存」（前体在 Task 4 中途被杀）；其它未提交改动一律 STOP，不清理别人的东西。README 残留的内容由 Task 1 断言兜底，milestone 残留由 Task 4 整体覆写（`>`）再提交。
-- **锁回收为什么安全**（FLY-3030 R1–R3 已评审并演练）：删除前同时满足——持有 TURN（没有别的体会同时写）、锁已 ≥ 2 分钟未动、**同一次** `lsof -d cwd` 全进程枚举 exit 0 且含本 shell 的哨兵记录，并且其中没有 cwd 在本工作区内的存活 git 进程。`git commit` 先写 `index.lock` 再原子改名：改名前被杀 ⇒ 原索引完好，删锁即回到提交前；改名后被杀 ⇒ 提交已完成，锁已不存在。`config.lock` 来自 `git push -u` 写上游配置途中被杀。任何块因 `File exists` / `*.lock` STOP 时，一律回到 Task 0（它负责回收），不要手动删锁。
+- **锁回收为什么安全**（FLY-3030 R1–R3 已评审并演练）：删除前同时满足——持有 TURN（没有别的体会同时写）、锁已 ≥ 2 分钟未动、**同一次** `lsof -d cwd` 全进程枚举 exit 0 且含本 shell 的哨兵记录，并且锁所属作用域（见下）内没有存活的 git 进程。`git commit` 先写 `index.lock` 再原子改名：改名前被杀 ⇒ 原索引完好，删锁即回到提交前；改名后被杀 ⇒ 提交已完成，锁已不存在。**锁的作用域**（Codex R2 在「主仓 + linked worktree」里真实复现）：`refs/…` 锁位于所有工作树共享的 common git 目录，兄弟工作树的 `git fetch` 等也会持有；只查本工作树的进程不能证明写者已退出，所以这类锁要求**全仓所有工作树**内都没有存活 git 进程。`config.lock` 同在 common 目录且任何工作树都可能正在写配置，本 plan 不回收它——`pushbr` 不带 `-u`，本单自己不会写 config。任何块因 `File exists` / `*.lock` STOP 时，一律回到 Task 0（它负责回收），不要手动删锁。
 - **账本残留回收为什么安全**（Codex R1 用真实 `runProgress` 在四个内部切点 SIGKILL 复现）：`flywheel-comm progress` 的顺序是「拿 `<LEDGER>.lock` → 写 `<LEDGER>.tmp-<pid>` → rename → `git add` → `git commit --only` → 删锁」，被杀时 rollback / finally 都不执行，会留下锁、临时文件或未提交的账本改写。回收条件：持有 TURN、残留 ≥ 2 分钟未动（progress 本身几秒完成）、**同一次** `ps -Ao pid=,args=` 枚举含本 shell 哨兵且没有 `node … <CLI> progress …` 进程。未提交的账本改写还原到 HEAD——它只是尚未提交的游标，`prog` 按**已提交**游标判断是否需要重写，所以还原后会被补写，已提交的游标不会被重复写（不倒退）。冻结后账本已在 HEAD，回收不改变 HEAD。
 
 ### Task 1 — 追加目标行（幂等）
@@ -486,4 +513,4 @@ RC=$?
 
 ## 7. 设计阶段演练（dry-run）
 
-在临时仓复刻本分支起点（44 字节 README + 本地 bare origin），配 `gh` / `flywheel-comm` 桩，把 §3 的代码块从本文件逐字抽出执行（每块 = §1 + 该块，一次独立 `/bin/sh`）。脚本在 `dry-run/`（含 `progress-crash.mjs`：用真实 `runProgress` 在四个内部切点 SIGKILL），结果记录在 `dry-run.md`：29 个场景（完工重放、追加 / 暂存 / milestone / PR 创建后被杀、push 失败、越界、git 孤儿锁 / 新鲜锁 / `config.lock`、真实 progress 四个切点崩溃、progress 残留过新 / 写者存活、冻结后残留、评审记录的五种中断、TURN not-yours、CI 失败、complete exit 3、冻结后读取失败、无临时目录）全部符合预期。
+在临时仓复刻本分支起点（44 字节 README + 本地 bare origin），配 `gh` / `flywheel-comm` 桩，把 §3 的代码块从本文件逐字抽出执行（每块 = §1 + 该块，一次独立 `/bin/sh`）。脚本在 `dry-run/`（含 `progress-crash.mjs`：用真实 `runProgress` 在四个内部切点 SIGKILL），结果记录在 `dry-run.md`：31 个场景（完工重放、追加 / 暂存 / milestone / PR 创建后被杀、push 失败、越界、git 私有锁 / 共享 ref 锁（含兄弟工作树活写者负例）/ 新鲜锁、真实 progress 四个切点崩溃、progress 残留过新 / 写者存活、冻结后残留、评审记录的五种中断、TURN not-yours、CI 失败、complete exit 3、冻结后读取失败、无临时目录）全部符合预期。

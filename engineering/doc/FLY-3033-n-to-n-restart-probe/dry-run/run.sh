@@ -27,22 +27,22 @@ for t in 0 1 2 3 4 5a 5b 6 6b; do
   printf '%s\n%s\n' "$CONST" "$b" > "$T/blk-$t.sh"
 done
 ALL="0 1 2 3 4 5a 5b 6"
-setup() { # fresh world in $W
+setup() { # fresh world: main worktree $W/main + linked worktree $W/repo（与生产 slot 形态一致）
   W=$(mktemp -d "$T/w.XXXX"); export STATE=$W/state; mkdir -p "$STATE/push-guard/hooks"
   bash "$H/stubs.sh" "$W" >/dev/null
   export PATH="$W/bin:$PATH" FLYWHEEL_COMM_CLI=$W/comm.cjs FLYWHEEL_EXEC_ID=exec-dry
   git init -q --bare "$STATE/origin.git"
-  git init -q -b main "$W/repo"; cd "$W/repo" || exit 1
+  git init -q -b main "$W/main"; cd "$W/main" || exit 1
   git config user.email d@d; git config user.name d
   printf '.flywheel/runs/\n' >> .git/info/exclude
   (cd "$SRC" && git show origin/main:README.md) > README.md
   echo x > other.txt; git add .; git commit -qm base
   git remote add origin "$STATE/origin.git"; git push -q origin main
-  git switch -qc project-slot-2-FLY-3033
+  git worktree add -q -b project-slot-2-FLY-3033 "$W/repo" main; cd "$W/repo" || exit 1
   mkdir -p engineering/doc/FLY-3033-n-to-n-restart-probe
   cp "$PLAN" engineering/doc/FLY-3033-n-to-n-restart-probe/plan.md
   printf -- '---\nissue: FLY-3033\nphase: design\nphaseCursor: 5/5\nchunks: []\npointers: {}\n---\n' > engineering/doc/FLY-3033-n-to-n-restart-probe/progress.md
-  git add .; git commit -qm design; git push -q -u origin project-slot-2-FLY-3033
+  git add .; git commit -qm design; git push -q origin project-slot-2-FLY-3033
   git config core.hooksPath "$STATE/push-guard/hooks"
   git fetch -q origin
 }
@@ -78,9 +78,12 @@ scen "C2 gh pr create 成功后被杀"; setup; run 0 1 2; git push -q origin HEA
 scen "D milestone 已提交、push 失败后换体"; setup; run 0 1 2 3; printf '#!/bin/sh\nexit 1\n' > "$STATE/origin.git/hooks/pre-receive"; chmod +x "$STATE/origin.git/hooks/pre-receive"; run 4; rm "$STATE/origin.git/hooks/pre-receive"; run $ALL; final
 scen "E 越界提交"; setup; echo y > foo.txt; git add foo.txt; git commit -qm foo; run 0
 scen "E2 越界未跟踪文件"; setup; echo y > junk.txt; run 0
-scen "L 5 分钟前的孤儿 index.lock"; setup; run 0 1; touch .git/index.lock; age .git/index.lock; run 2; run $ALL; final
-scen "L2 新鲜锁"; setup; touch .git/index.lock; run 0; [ -e .git/index.lock ] && echo "  lock kept: OK"
-scen "LC push -u 途中被杀留下 config.lock"; setup; run 0 1 2; echo x > .git/config.lock; age .git/config.lock; run 3; run $ALL; final
+sibgit() { sleep 60 | git -C "$W/main" hash-object --stdin >/dev/null & SIBP=$!; sleep 1; }  # 兄弟工作树里一个存活的真实 git 进程
+scen "L 私有 index.lock 残留（兄弟工作树有活 git 也照常回收）"; setup; run 0 1; IL=$(git rev-parse --path-format=absolute --git-path index.lock); touch "$IL"; age "$IL"; run 2; sibgit; run $ALL; final; kill $SIBP 2>/dev/null; wait $SIBP 2>/dev/null
+scen "L2 新鲜锁"; setup; IL=$(git rev-parse --path-format=absolute --git-path index.lock); touch "$IL"; run 0; [ -e "$IL" ] && echo "  lock kept: OK"
+scen "S 共享 ref 锁 + 兄弟工作树活 git"; setup; run 0 1 2; RL=$(git rev-parse --path-format=absolute --git-path refs/remotes/origin/project-slot-2-FLY-3033.lock); touch "$RL"; age "$RL"; sibgit; run 0; [ -e "$RL" ] && echo "  shared lock kept: OK"; kill $SIBP 2>/dev/null; wait $SIBP 2>/dev/null; run $ALL; final
+scen "S2 共享 ref 锁、无活 git"; setup; run 0 1 2; RL=$(git rev-parse --path-format=absolute --git-path refs/heads/project-slot-2-FLY-3033.lock); touch "$RL"; age "$RL"; run $ALL; final
+scen "LC 共享 config.lock 不回收"; setup; CL=$(git rev-parse --path-format=absolute --git-path config.lock); touch "$CL"; age "$CL"; run 0 1 2 3; [ -e "$CL" ] && echo "  config.lock untouched: OK"
 for m in after-lock before-rename after-rename after-commit; do
   scen "P[$m] 真实 progress 在切点被 SIGKILL"; setup; run 0 1; git add README.md; git commit -qm README -- README.md
   node "$H/progress-crash.mjs" "$m" >/dev/null 2>&1; echo "  crash rc=$? residue: $(git status --porcelain --untracked-files=all | tr '\n' ';')"
