@@ -1,13 +1,14 @@
 ---
 issue: FLY-202
 phase: implement
-phaseCursor: 6/6
-updated: 2026-09-29T02:10:05.305Z
-nextStep: Milestone commit, push, prove PR head, report, complete
+phaseCursor: 1/4
+updated: 2026-09-29T02:15:10.657Z
+nextStep: "Rework A3: append standalone probe line to doc/qa/sandbox-notes.md,
+  commit, review, push, complete"
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: implement (6/6)
-**next**: Milestone commit, push, prove PR head, report, complete
+**phase**: implement (1/4)
+**next**: Rework A3: append standalone probe line to doc/qa/sandbox-notes.md, commit, review, push, complete
