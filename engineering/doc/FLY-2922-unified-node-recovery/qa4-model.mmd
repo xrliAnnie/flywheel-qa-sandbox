@@ -1,0 +1,61 @@
+erDiagram
+  PR_HEAD ||--|| REVIEW : "同一 SHA"
+  PR_HEAD ||--|| CI_RUN : "同一 SHA"
+  PR_HEAD ||--|| QA_ROOM : "expect-head"
+  QA_ROOM ||--o{ WORKFLOW_RUN : contains
+  WORKFLOW_RUN ||--o{ NODE_ATTEMPT : advances
+  NODE_ATTEMPT ||--|| EXECUTION : binds
+  EXECUTION ||--o{ DISPATCH_LEDGER : materializes
+  DISPATCH_LEDGER ||--|| RECOVERY_RECEIPT : proves
+  WORKFLOW_RUN ||--o{ DRIVER_STEP : observes
+  QA_ROOM ||--|| ROOM_CLAIM : owns
+  ROOM_CLAIM ||--|| TEARDOWN_RECEIPT : closes
+
+  PR_HEAD {
+    string sha40 PK
+    string main_sha
+  }
+  REVIEW {
+    string question_id
+    string verdict
+  }
+  CI_RUN {
+    string run_id
+    string conclusion
+  }
+  QA_ROOM {
+    int primary_slot
+    int secondary_slot
+  }
+  WORKFLOW_RUN {
+    string run_id PK
+    string status
+  }
+  NODE_ATTEMPT {
+    string node_id
+    int attempt
+  }
+  EXECUTION {
+    string execution_id PK
+    int launch_ordinal
+  }
+  DISPATCH_LEDGER {
+    string ledger_id PK
+    string state
+  }
+  RECOVERY_RECEIPT {
+    string operation_id
+    string digest
+  }
+  DRIVER_STEP {
+    int step
+    string result
+  }
+  ROOM_CLAIM {
+    string room_id
+    string owner
+  }
+  TEARDOWN_RECEIPT {
+    string snapshot_path
+    string state
+  }

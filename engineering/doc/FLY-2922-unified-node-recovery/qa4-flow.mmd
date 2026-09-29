@@ -1,0 +1,15 @@
+flowchart LR
+  A[读取 PR 头与最新 main] --> B{main 已在头里?}
+  B -- 否 --> C[merge main\n两边语义都保留]
+  B -- 是 --> D[冻结最终 SHA]
+  C --> E[只跑相关本地验证]
+  E --> D
+  D --> F[同头代码复审 APPROVED]
+  F --> G[同头 CI OK]
+  G --> H[implement 交卷给 QA]
+  H --> I[QA 自选两个空房]
+  I --> J[真实 Claude 设计评审]
+  J --> K[九步 driver]
+  K --> L[held/rework 故障证据]
+  L --> M[新 execution + dispatch ledger]
+  M --> N[证据快照后拆房]
