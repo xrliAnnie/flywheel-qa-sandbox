@@ -1,6 +1,6 @@
-# FLY-2922 设计交付验证（沙箱 slot-2 重派轮） — 调研
+# FLY-2922 设计交付验证（沙箱 slot-2 多轮） — 调研
 Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-held-回滚之后有出口只留一个统一恢复口放行必须真铸出派发关死体不连带终结-run9-张-37)
-日期: 2026-09-27
+日期: 2026-09-29
 基于: plan.md
 
 ## 合同自检
@@ -46,3 +46,24 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 - `publish-report --publish-only`：`{"url":"http://127.0.0.1:60111/fw-reports-9edb89/r/c836fe823b5ac62bff1c578522086f8d/","reportId":"c836fe823b5ac62bff1c578522086f8d","delivered":false,"publishOnly":true}`；托管页 HTTP 200，占位残留 0、nonce script 1、标记 1、内联 SVG 3。
 - Lead 报告 `DESIGN-HTML ready: <url> | repo: engineering/doc/FLY-2922-unified-node-recovery/founder-design.html | issue: FLY-2922`，durable report `e1ed0464-9934-4394-9f97-63cdcade5ca6`。
 - 上轮 `efa1eee3` 报告与 `c78cd567` 发布仍有效；本轮重发只为把收据绑到当前 exec。下一步 `complete --route phase_design_complete`。
+
+## QA@4 重开设计轮（exec 11c7ab0f，2026-09-29）
+
+### 当前事实与文档
+
+- 权威只读审计：生产 PR #1374 / remote head = `6e21a123d34bb53ee29b8536503133d714f46435`，base `main@b165d649013d6b52899f395865e68d948c2f4831`，GitHub 为 `MERGEABLE/CLEAN`；精确头 CI run `36544821509` 的 `CI OK` 与展开 job 全绿。当前头同头 code-review gate 与 QA@4 真房证据仍未证明，计划未把前两项外推成 QA PASS。
+- 刷新后的 exploration/research/plan 提交 `2f50b2fa1`；durable cursor 提交 `0f685feae`（design 4/5）；HTML/图提交 `a415b33f4`。全部已推 `origin/project-slot-2-FLY-2922`。
+- plan 的中心合同：先重读远端并按 ancestor 决定是否 merge；review/CI/room/evidence 全绑最终 40 位 SHA；QA 自己选两个显式空槽，真实 Claude 设计评审，九步 driver 后保存 old→new dispatch 两层证据再 teardown。
+
+### Founder HTML 本地验证
+
+- `founder-design.html` 146225 bytes，SHA-256 `2cdf81efd0c61ab4677bcbda819062ff5df20855a8302bee8bddf7f575bbf7c9`。
+- 静态检查：`__CSP_NONCE__` 1、`<script` 1、inline event 0、`innerHTML` 0、自定义 CSP meta 0、外部 HTTP src/href 0、card 9、textarea 9、汇总标记 1、内联 SVG 2。
+- 两张图由 Mermaid source 本地 `mmdc` 11.12.0 渲染：`FLY-2922-d4` flow SVG SHA-256 `3620045dc6032388b015ebbf525a3d0095dd30d7fc27952fc5bafaaab66b3253`；`FLY-2922-d5` ER SVG SHA-256 `482ac5c6b4cda725835c97b91fdc6831071a6d162655f6c54d41a8816c768c9f`。页面零 runtime Mermaid/外链依赖。
+- Playwright Chromium 在本地完整页面上验证：路径 scoped localStorage key、输入自动保存、reload 恢复、长意见拆 2 段、每段以 `【页面意见汇总】FLY-2922` 开头且 ≤1800 字、clipboard promise reject 时调用 `execCommand` fallback，page errors 为空。
+- 1440px full-page screenshot 为 1440×6595；人工查看确认 Apple-light 布局、两张图已渲染、九张卡与评论输入均可见。该截图只用于本地视觉 QA，不冒充 hosted CSP 验证。
+
+### 当前 gate 状态
+
+- `stage set design_review --plan .../plan.md` 后显式打开 gate question `0c9bc1c3-8c9a-4fb0-a5d8-f7acca2b8b88`，request-review `0cfeca03-fa17-4e78-b649-6bd17c5dce97` 已 accepted。
+- 2026-09-29 本轮第一次 `check` 返回 `not yet`；按 resident phase law 已 park。尚未 publish/report/complete，不沿用 2026-09-27 的 hosted URL 冒充当前 HTML。
