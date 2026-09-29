@@ -112,6 +112,13 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 - Round 2 advisory durable report：`3564163d-027e-40df-b54e-52df113f2e9b`。
 - advisory 修订提交 `37ba93cdc` 与 cursor 头 `145cf6ca0` 已推送；Round 3 gate question `ec861d78-cd5b-47de-bb82-e709c6a61e85` / request `c540b3b5-4970-4e27-b7f8-b7eb3bf6de5d` 返回 effective `APPROVED`，reviewer verdict 同为 `APPROVED`，findings/advisories/settled 均为 0。delivery nonce：`b827c78a-a68f-4cfe-b6d8-99feccce31fb`。
 
+### 最终发布与报告
+
+- 批准记录提交 `138a12fd288f7a239916c3fc8b94bf3028800815` 已推送，并与 `origin/project-slot-2-FLY-2922` 精确一致；发布前工作树为空。
+- `publish-report --publish-only`：`http://127.0.0.1:56957/fw-reports-b33a6e/r/8d2a4b73a2c406b1825edfc2e88a4ac6/`；report id `8d2a4b73a2c406b1825edfc2e88a4ac6`，`messageId=null`、`delivered=false` 符合 publish-only 合同。
+- 托管页实测：HTTP success；`__CSP_NONCE__` 残留 0；单一 nonced script；CSP 1；summary marker 1；内联 SVG 2；外部 fetch 0；inline handler 0；`innerHTML` 0。
+- Lead durable report `86b95bca-2d36-4f9e-a9da-3d38c4928f88`：`DESIGN-HTML ready: <hosted-url> | repo: engineering/doc/FLY-2922-unified-node-recovery/founder-design.html | issue: FLY-2922`。
+
 ### 文档与 Founder HTML 本地验证
 
 - plan/research/exploration 已补：StateStore 参数化 identity gate、production QA 对称 gate、旧递归房处置、clone install + dependency build、HTTPS + sandbox default + production push disabled、明确 question ids、approve gate binding、一小时 driver timeout、生产未触达前后对照。
