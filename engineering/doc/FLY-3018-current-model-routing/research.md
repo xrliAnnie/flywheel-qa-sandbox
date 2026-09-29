@@ -119,3 +119,42 @@ implement 没有 astra arm；`opus` 绑定 `claude-opus-5-5`。分桶按 issue U
 1. 修复完整且在结构上封死了错标签；本 run 不需要也不应改代码。
 2. 上一轮 QA 的两处 FAIL 原因（通道 `lane_unproven`、PR identity 缺失）在 PR 头 + 当前 Bridge 上都有对应机制可解，前提是房头为 `7e28dd51c`。
 3. 房头裁定已落：Lead 同意 `7e28dd51c`（question `c43580f2`，2026-09-28），并要求 head 再变化时先停再核对。
+
+## 7. 第三次重开：`6c091c4fd` 增量核对（2026-09-29）
+
+对象：真仓 `xrliAnnie/flywheel` PR #1381，`gh pr view 1381 --json headRefOid` = `6c091c4fd2001c7aa3d41760dcde28b2054e23ff`（OPEN，MERGEABLE，base main）。源码来自本房源 `~/.flywheel/state/qa-rooms/8b128544-…/src`（HEAD 即 `6c091c4fd`）。
+
+| 项 | 结果 |
+|---|---|
+| `7e28dd51c..6c091c4fd` 产品提交 | 仅 **`12b82e4e9` fix(FLY-3018): keep pre-flag bytes for absent no-overrides**；其余为 `0eb377157` merge main（带入 FLY-2913 等）、`aba3d175e`/`6c091c4fd` 文档、`e4aeb1fd3`/`6b9c731fb` 进度 |
+| `12b82e4e9` 行为 | `qa-room-contract.ts:195` `no_overrides: z.boolean().optional()`；`parseRoomDrill` 把 `false`/缺省**剥掉**，只有 `true` 留在请求体与 `rerun_spec.driver.noOverrides`（`:247`）；`strength-two-contract.ts:244-254` `validateRerunSpecV1` 同样只在 `true` 时记录字段，缺省/false 与加旗前 canonical 字节、request digest 完全一致（代码复审 R1 #1-2：升级后重试旧记录/回执不再冲突） |
+| 新增用例 | `strength-two-contract.test.ts` 「keeps pre-flag canonical bytes when no-overrides is absent or false」；`qa-room-drill-contract.test.ts` 「keeps the pre-flag drill digest when no-overrides is absent or false」 |
+| 祖先关系 | `950870cee`、`54a6b6b77`、`47680000a` 均为 `6c091c4fd` 祖先（`git merge-base --is-ancestor`） |
+| 精确头 full CI | run **36522011074**（`CI full-request 6c091c4fd…`）success，全部 job pass（Quick Gate / Unit ×8 / Script Tests ×6 / NPM payload）；另 run 36521462877 `CI` success |
+| 对 QA 的影响 | `room drill --no-overrides` 仍产出 `driver.noOverrides: true`；**不带**该旗的 drill 其 spec 里没有 `noOverrides` 键（不再是 `false`）。§4.4 的 spec 检查要按「键存在且为 true」写 |
+
+### 7.1 三处版本钉住的实测（本设计节点 2026-09-29 06:1xZ）
+
+| 组件 | 实测 |
+|---|---|
+| 管理 Bridge `localhost:19873`（slot 3 房内 Bridge） | `/health` `buildSha` = `artifactBuildSha` = `6c091c4fd…`，`buildMode=built` |
+| CLI `$FLYWHEEL_COMM_CLI`（房源 dist） | 房源 HEAD `6c091c4fd`；`room --help` 含 `drill … [--no-overrides]` |
+| 生产 Bridge `localhost:9876` | `buildSha` = `95e5cd708…`；`950870cee`、`12b82e4e9` **都不是**其祖先 → 不认 `no_overrides` |
+| 宿主 `~/.flywheel/models.json` | sha256 `27c91802901ed3d2a774eef76a7c221cd98b43bc99c745fa1e021ad33bc1d8b0`；implement = `impl_opus`(opus,3) : `impl_sol56`(codex,1)；`bindings.opus = claude-opus-5-5`（与 §3 一致） |
+
+## 8. 起房拓扑事实：为什么 QA 节点当前起不了房
+
+| 事实 | 位置 |
+|---|---|
+| 隔离 Bridge 的房服务默认关闭：`qaRoomServiceEnabled = storeEnabled && (!env.FLYWHEEL_ISOLATION_ROOT \|\| env.TEST_QA_ROOM_SERVICE === "1")` | `packages/teamlead/src/bridge/qa-room-host.ts:10-18` |
+| 19873 进程环境含 `FLYWHEEL_ISOLATION_ROOT=/tmp/flywheel-test-slot-3`，无 `TEST_QA_ROOM_SERVICE`；`room list` 实测 `503 {"ok":false,"reason":"room_service_disabled"}` | `ps eww`；`qa-room-routes.ts:121`、`qa-room-service.ts:106` |
+| 该键只能由 Lead 在宿主起外层验收房时注入：「Isolated Bridges default to room service disabled. A Lead may provision the outer FLY-2405 acceptance room with `TEST_QA_ROOM_SERVICE=1`; this is not an arbitrary runner environment option」 | `packages/qa-framework/README.md:400`；`scripts/test-deploy.sh:1149-1151` |
+| `room deploy --env` 白名单只有 `TEST_REPLY_BY_ISSUE` 等三键，不含 `TEST_QA_ROOM_SERVICE` | `qa-room-contract.ts:53-55`；`room --help` |
+| runner 身份认证：`Bearer FLYWHEEL_INGEST_TOKEN` + `execution_id` → **本 Bridge store** `getSession(execution)`；session 不存在/终态 → 403；须 `session_role=qa` 或当前 activation 节点为 implement/qa；有 workflow submission credential 时必须随请求带上 | `qa-room-routes.ts:41-90` |
+| 推论：QA runner 的 `room deploy` 只能打派它的 19873；打生产 9876（store 不认识该 execution）会 403，且 9876 是 `95e5cd708`，drill strict schema 无 `no_overrides` → `field_not_supported` | 同上 + §7.1 |
+| 槽锁是宿主级 `/tmp/flywheel-test-slot-<N>.lock/service-claim`，房内服务与生产服务共用同一锁目录，不会双分配同一槽 | `qa-room-service.ts:213-231` |
+| 2026-09-29 06:1xZ 锁快照：slot 1 = room `c676decf`、slot 2+5 = room `1b4ae2a6`（campaign）、slot 3 = 本房 `8b128544`；**slot 4、6 无锁**。Lead 指令：只用 4 号 | `ls /tmp/flywheel-test-slot-*.lock` |
+| 显式 `--slot 4`：`free(4)` 为假即 `409 slot_unavailable`；服务不会替 QA 换槽 | `qa-room-service.ts:200-214` |
+| judge 通道规则：`manual_test_deploy` → `lane_unproven`；`generalized_e2e_real` 要求 site `/health` 的 `buildSha` = `artifactBuildSha` = `--head` 且 `driverExitCode === 0` 才 `satisfied` | `packages/teamlead/src/strength-two/judge.ts:88-113` |
+
+结论：本轮 QA 若在**现状**外层房里直接执行 Lead 的「自己 room deploy」，第一步就会 503。唯一不越权的解法是 Lead 在宿主侧给 slot 3 外层 Bridge 加 `TEST_QA_ROOM_SERVICE=1` 并原地重启（sessions 保留，不 teardown 房），QA 再对 19873 起 slot 4 房。已以 question `d630d640-f104-44a4-a346-52e59aff88bf` 提交 Lead 裁定。

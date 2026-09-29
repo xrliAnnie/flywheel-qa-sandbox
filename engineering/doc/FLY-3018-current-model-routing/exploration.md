@@ -85,3 +85,15 @@ models.json 当前 implement 为 opus 3 : codex 1（arm `impl_opus` / `impl_sol5
 - 不重新设计路由（已批准方案「新 run 读当前配置、同 run 冻结」不变）。
 - 不改代码、不重开代码评审、不扩大到统计平台或 quota fallback。
 - 不替 QA 节点做判定；只给可执行的判据与命令。
+
+## 8. 第三次重开（2026-09-29，Lead 05:3xZ 指令）——本轮增补
+
+**为什么又重开**：上一轮（按 `7e28dd51c` 定稿）实现体已交卷，PR #1381 头前进到 **`6c091c4fd2001c7aa3d41760dcde28b2054e23ff`**（MERGEABLE，精确头 full CI 全绿）；QA 体 929fbcfd（Codex）04:51Z 起身即撞额度墙进入「额度待命」，该状态无恢复路（FLY-2371），Lead 终止旧 run 重开。本轮 implement 与 QA 都用 opus。
+
+**头再变化 → 旧裁定失效**：§4 的裁定 `c43580f2`（`7e28dd51c`）附带硬约束「head 再变化，先停并重新核对，不沿用本次裁定」。本轮 Lead 指令**自己写明**新头 `6c091c4fd`，这就是新的头裁定；设计节点核对 `gh pr view 1381 --json headRefOid` = `6c091c4fd…`、真仓 `origin/flywheel-FLY-3018` = 同值、full CI run 36522011074 全绿，且 `950870cee`/`54a6b6b77`/`47680000a` 都是它的祖先。`7e28dd51c..6c091c4fd` 只多一条产品提交 `12b82e4e9`（`no_overrides` 缺省/false 保持加旗前字节，见 research §7），其余是 merge main 与文档/进度。
+
+**Lead 起房规则更正（03:4xZ 与 05:3xZ）**：「房由 Lead 起」作废；QA 自己 `room deploy` 起房、跑 drill、记证据、自己 teardown。**不用 `--slot auto`**（会抢到别人的房）；现在只有 **4 号**空着；9-28 19:51 PT 主机断电重启后服务账上 1、2、3 号显示 ready 但都是死房（FLY-3046），别用。只有必须在宿主上跑、沙箱里跑不了的那一步才 ask Lead 代跑并写清命令。
+
+**本轮新发现的阻断（需 Lead 裁定，question `d630d640-f104-44a4-a346-52e59aff88bf`）**：QA 节点跟本设计节点一样，是被 slot 3 房内 Bridge（`localhost:19873`，build `6c091c4fd`）派出来的 runner；它的 `room deploy` 只能打这台管理 Bridge。但实测 `room list` → `503 room_service_disabled`：隔离 Bridge（`FLYWHEEL_ISOLATION_ROOT` 已设）默认关闭房服务，只有 Lead 在宿主用 `TEST_QA_ROOM_SERVICE=1` 起的「外层验收房」才开（源码与文档位置见 research §8）。`room deploy --env` 白名单不含该键，runner 不能自开；runner 身份又只对派它的 Bridge 有效，打生产 `9876` 会 403，且生产 `95e5cd708` 的 drill schema 不认 `no_overrides`。所以**在当前外层房形态下，QA 节点起不了房**——这不是 QA 的判定问题，是执行环境问题，计划 §4.0 把它列为第一道 preflight 并给出唯一合法解法（Lead 宿主侧加 env 原地重启外层 Bridge）。
+
+**本轮假设更新**：§6 第 1 条头改为 `6c091c4fd`；第 2 条房改为「被测房 = slot 4（显式），管理端 = slot 3」；新增第 5 条：外层房房服务由 Lead 打开后 QA 才能起房，未打开即阻断，⛔ QA 不自行改 Bridge 环境、不打生产 Bridge、不去掉 `--no-overrides`。
