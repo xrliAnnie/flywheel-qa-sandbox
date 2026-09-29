@@ -2,13 +2,15 @@
 issue: FLY-2919
 phase: design
 phaseCursor: 4/6
-updated: 2026-09-29T04:23:56.490Z
-nextStep: design_review R1 running (request 8137ebab, gpt-6-astra/xhigh);
-  rendering diagrams + founder HTML in parallel
+updated: 2026-09-29T04:28:26.846Z
+nextStep: "BLOCKED: design_review 8137ebab cannot run — all Codex profiles at
+  weekly limit (business→10-05, personal→10-03, school→10-03). Asked Lead
+  3d0bb332 (A wait / B Gemini / C Lead verdict). Running independent reviews
+  meanwhile."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2919 progress
 **phase**: design (4/6)
-**next**: design_review R1 running (request 8137ebab, gpt-6-astra/xhigh); rendering diagrams + founder HTML in parallel
+**next**: BLOCKED: design_review 8137ebab cannot run — all Codex profiles at weekly limit (business→10-05, personal→10-03, school→10-03). Asked Lead 3d0bb332 (A wait / B Gemini / C Lead verdict). Running independent reviews meanwhile.
