@@ -2,10 +2,10 @@
 issue: FLY-3043
 phase: qa
 title: QA 沙箱相关测试说明
-phaseCursor: 2/4
-updated: 2026-09-29T09:00:41.236Z
-nextStep: Run direct contract consumer test, lint, affected build, and
-  independent literal/EOF oracles
+phaseCursor: 4/4
+updated: 2026-09-29T09:03:49.353Z
+nextStep: Push final QA ledger head, require exact-head CI green, publish ship
+  report, then submit structured QA verdict
 chunks:
   - id: onboarding
     order: 1
@@ -41,7 +41,7 @@ chunks:
     deps:
       - implementation
     done: Review approved and root PR opened
-    status: doing
+    status: done
 pointers:
   plan: engineering/doc/FLY-3043-qa-sbx-related-tests/plan.md
   exploration: engineering/doc/FLY-3043-qa-sbx-related-tests/exploration.md
@@ -49,8 +49,8 @@ pointers:
 ---
 
 # FLY-3043 progress — QA 沙箱相关测试说明
-**phase**: qa (2/4)
-**next**: Run direct contract consumer test, lint, affected build, and independent literal/EOF oracles
+**phase**: qa (4/4)
+**next**: Push final QA ledger head, require exact-head CI green, publish ship report, then submit structured QA verdict
 
 ## chunks
 - ✅ onboarding — Onboarding complete and implement TURN acquired
@@ -58,4 +58,4 @@ pointers:
 - ✅ research — Target and related-test discovery documented
 - ✅ plan — Approved implementation plan recorded
 - ✅ implementation — Exact final line added and targeted checks pass
-- 🔨 review-and-pr — Review approved and root PR opened
+- ✅ review-and-pr — Review approved and root PR opened
