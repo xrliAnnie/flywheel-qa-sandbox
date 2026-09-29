@@ -1,13 +1,13 @@
 ---
 issue: FLY-3029
 phase: qa
-phaseCursor: 1/6
-updated: 2026-09-29T05:35:46.084Z
-nextStep: inspect PR diff, checks, and driver-thread evidence
+phaseCursor: 2/6
+updated: 2026-09-29T05:36:20.460Z
+nextStep: run literal/test discovery and static acceptance checks
 chunks: []
 pointers: {}
 ---
 
 # FLY-3029 progress
-**phase**: qa (1/6)
-**next**: inspect PR diff, checks, and driver-thread evidence
+**phase**: qa (2/6)
+**next**: run literal/test discovery and static acceptance checks
