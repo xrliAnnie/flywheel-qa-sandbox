@@ -1,13 +1,14 @@
 ---
 issue: FLY-3050
 phase: implement
-phaseCursor: 2/4
-updated: 2026-09-29T05:09:02.571Z
-nextStep: push branch and request code review
+phaseCursor: 3/4
+updated: 2026-09-29T05:10:49.040Z
+nextStep: final-head code review and needs_review completion
 chunks: []
-pointers: {}
+pointers:
+  pr: "307"
 ---
 
 # FLY-3050 progress
-**phase**: implement (2/4)
-**next**: push branch and request code review
+**phase**: implement (3/4)
+**next**: final-head code review and needs_review completion
