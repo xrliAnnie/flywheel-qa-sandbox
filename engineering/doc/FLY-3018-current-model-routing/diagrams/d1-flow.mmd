@@ -1,5 +1,5 @@
 flowchart TD
-    P0["前置 0 · 管理 Bridge 房服务开着吗？<br/>room list 不能是 503 room_service_disabled"] -->|关着| P0X["阻断 · ask Lead（裁定 A：Lead 在宿主给外层 Bridge<br/>加 TEST_QA_ROOM_SERVICE=1 原地重启）<br/>QA 不改 Bridge 环境 · 不打生产 Bridge"]
+    P0["前置 0 · 管理 Bridge 房服务开着吗？<br/>room list 必须 exit 0 且返回 ok:true 列表；其它一律阻断，留原始输出"] -->|关着| P0X["阻断 · ask Lead（裁定 A：Lead 在宿主给外层 Bridge<br/>加 TEST_QA_ROOM_SERVICE=1 原地重启）<br/>QA 不改 Bridge 环境 · 不打生产 Bridge"]
     P0 -->|开着| P["前置 1 · 三处版本都 = 6c091c4fd<br/>管理 Bridge 19873 两个 sha · CLI 有 --no-overrides · 被测房 sha"]
     P -->|不满足| PX["阻断 · ask Lead<br/>不自行部署 · 不去掉 --no-overrides"]
     P -->|满足| B["implement 节点（并行）<br/>核对 local = origin = PR#1381 头 6c091c4fd<br/>零改动 → complete needs_review"]
@@ -12,5 +12,7 @@ flowchart TD
     E -- 是 --> G["④ evidence-run record --site slot_529:4<br/>lane generalized_e2e_real<br/>rerun_spec.driver.noOverrides 存在且 true · 保存 ACK"]
     G --> H{"ACK verdict / ran / record<br/>三者都 satisfied ?"}
     H -- 否 --> G2["同 record-id 重试或 FAIL<br/>exit 0 不等于通过"]
-    H -- 是 --> I["qa-result PASS → QA 自己 teardown 房（保留 evidence_dir）"]
+    H -- 是 --> T["⑤ 用尚未消耗的凭据自己 teardown 房<br/>等 torn_down · 保留 evidence_dir"]
+    F --> T
+    T --> I["⑥ 最后 qa-result（提交会消耗凭据，之后拆不了房）"]
     I -- 被 pr_identity 拒 --> J["显式 FAIL<br/>写明 FLY-2407 边界"]
