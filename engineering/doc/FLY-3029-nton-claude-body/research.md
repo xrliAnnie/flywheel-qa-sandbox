@@ -13,8 +13,8 @@ Issue: FLY-3029 (https://linear.app/geoforge3d/issue/FLY-3029/529-合成单勿�
 一行追加 + 一次 PR + 正常 approve→ship 交卷,零新机制。实施节点需要注意的只有三件事:**换行守卫、幂等守卫、不自行 merge**。设计节点(本节点)交付的完成证据是 `engineering/doc/FLY-3029-*/` 下的 HTML,`complete --route phase_design_complete` 会校验它。
 
 ## 2. 改动目标:README.md
-- **[实测]** 现状 3 行:`\n\n FLY-1375 land E2E marker 20260722T023540Z\n`,末尾有换行(`git show e9a75dfed` 无 `\ No newline at end of file`)。
-- **[先例]** README 三次同类追加:`#24`(FLY-124 "append Hi")、`#58`(FLY-1286)、`#64`(FLY-1375)。全部是 1 insertion、单文件、`docs(...)`/`test(...)` 前缀 commit,经 `:cool:` ship。
+- **[实测]** 现状 3 行:`\n\nFLY-1375 land E2E marker 20260722T023540Z\n`(标记行前无空格),末尾有换行(`git show e9a75dfed` 无 `\ No newline at end of file`)。
+- **[先例]** README 三次同类改动:`#24`(FLY-124 "append Hi",README +1、全 commit 仅 1 文件——**唯一精确同形先例**)、`#58`(FLY-1286,README -1,commit 含 3412 文件)、`#64`(FLY-1375,README +3,commit 含 4 文件)。`#24`/`#58` commit 记有 `Shipped via :cool: comment`。(Codex R1 更正:三次并非都是单文件 +1。)
 - **追加命令(幂等 + 换行安全)**:
   ```bash
   LINE='FLY-2919 N-to-N claude-body probe'

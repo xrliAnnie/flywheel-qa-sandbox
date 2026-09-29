@@ -23,7 +23,7 @@ FLY-3029 是一张**合成单**(synthetic issue:不是真实产品需求,而是�
 
 - **仓库**:`origin` = `https://github.com/xrliAnnie/flywheel-qa-sandbox.git`,与 issue 指定的沙箱仓一致。分支 `project-slot-1-FLY-3029`,基于 `1855f7a1a`。
 - **README.md 现状**(3 行):两个空行 + `FLY-1375 land E2E marker 20260722T023540Z`,文件以换行符结尾。
-- **先例**:README 已被同类 QA 单改过三次(FLY-124 `#24` append Hi、FLY-1286 `#58`、FLY-1375 `#64`),均为「追加一行 → PR → :cool: ship」路径。本单完全复用这一形态。
+- **先例**:README 已被同类 QA 单改过三次(FLY-124 `#24` append Hi、FLY-1286 `#58`、FLY-1375 `#64`),形态各异(`#24` README +1 单文件;`#58` README -1;`#64` README +3),但都是「改 README → PR → :cool: ship」路径;本单与 `#24` 精确同形。
 - **项目配置**:`.flywheel/config.yaml` 是 test-deploy 生成的沙箱配置(`doc_flow.enabled: true`,`default_department: engineering`),故文档落 `engineering/doc/FLY-3029-nton-claude-body/`。
 - **运行环境事实**:本 runner 实际在 **test-slot-1**(`FLYWHEEL_PROJECT_NAME=test-slot-1`,Bridge `localhost:19871`),而 issue 文本写的是「529 测试房(slot 2,精确头 bfdea677)由 /tmp/fly2919-driver 派单」。派单本身是 Lead(flywheel-test-1)发起的合法 DAG 节点,故按派单执行;差异已上报 Lead(见 §6)。
 - **生产禁令**:issue 明确「⛔生产不要派单、不要动它」。本环境是 QA slot,不是生产,不违反禁令。
