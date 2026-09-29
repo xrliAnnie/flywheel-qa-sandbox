@@ -43,11 +43,13 @@ frozen() {
     *) stop "HEAD:$MS 存在但不含目标行（非本合同产物）" ;;
   esac
 }
-# 账本更新：冻结后自动 no-op（progress 每次都会落 commit）；账本已在本游标或更后时也 no-op（换体重放不让游标倒退）
+# 账本更新：冻结后自动 no-op（progress 每次都会落 commit）；**已提交**账本已在本游标或更后时也 no-op（换体重放不让游标倒退）。
+# 判据读 HEAD 里的账本而不是工作区文件：progress 在 rename 后、commit 前被杀时工作区会显示新游标，但它并未提交。
 prog() {
   if frozen; then echo "frozen: skip progress $1"; return 0; fi
-  ph=$(sed -n 's/^phase: //p' "$LEDGER")
-  cur=$(sed -n 's/^phaseCursor: \([0-9][0-9]*\)\/3$/\1/p' "$LEDGER")
+  lb=$(git show "HEAD:$LEDGER") || stop "读取 HEAD:$LEDGER 失败"
+  ph=$(printf '%s\n' "$lb" | sed -n 's/^phase: //p')
+  cur=$(printf '%s\n' "$lb" | sed -n 's/^phaseCursor: \([0-9][0-9]*\)\/3$/\1/p')
   if [ "$ph" = implement ] && [ -n "$cur" ] && [ "$cur" -ge "${1%/*}" ]; then
     echo "ledger already at implement $cur/3: skip progress $1"; return 0
   fi
@@ -119,7 +121,7 @@ esac
 # 回收前体被杀时遗留的 git 锁（git commit / push 途中被杀会留下 *.lock，之后所有写操作都报 File exists）。
 # 删除授权 = 已持有 TURN（上面第一行）+ 本工作区内没有任何存活的 git 进程（lsof 实查）。锁龄 ≥ 2 分钟只是等待条件，不是删除授权。
 ROOT=$(pwd -P) || stop "pwd -P 失败"
-for rel in index.lock HEAD.lock "refs/heads/$BR.lock" "refs/remotes/origin/$BR.lock"; do
+for rel in index.lock HEAD.lock config.lock "refs/heads/$BR.lock" "refs/remotes/origin/$BR.lock"; do
   L=$(git rev-parse --git-path "$rel") || stop "git rev-parse --git-path $rel 失败"
   [ -e "$L" ] || continue
   [ -n "$(find "$L" -mmin +2 -print 2>/dev/null)" ] || stop "发现 2 分钟内的 $L，可能仍有 git 进程在写：90 秒后重跑 Task 0"
@@ -144,6 +146,41 @@ for rel in index.lock HEAD.lock "refs/heads/$BR.lock" "refs/remotes/origin/$BR.l
   echo "已回收前体遗留的孤儿锁：$L"
 done
 git status --porcelain >/dev/null || stop "git status 失败（锁回收后仍无法读写仓库）"
+# 回收前体在 flywheel-comm progress 内部被杀留下的账本残留：<LEDGER>.lock、<LEDGER>.tmp-<pid>、未提交的账本改写。
+# （progress 的顺序是：拿锁 → 写 tmp → rename → git add → commit --only → 删锁；SIGKILL 不跑 rollback/finally。）
+# 回收授权 = 已持有 TURN + 残留 ≥ 2 分钟未动 + 进程表里没有存活的 progress 写者（ps 单次枚举，含本 shell 哨兵）。
+# 未提交的账本改写一律还原到 HEAD：它是 progress 生成的内容，下一次 prog 会按已提交游标重新写。
+pres=
+for f in "$LEDGER.lock" "$LEDGER".tmp-*; do
+  [ -e "$f" ] && pres="$pres $f"
+done
+ldirty=$(git status --porcelain -- "$LEDGER") || stop "git status $LEDGER 失败"
+if [ -n "$pres" ] || [ -n "$ldirty" ]; then
+  chk=$pres
+  [ -n "$ldirty" ] && chk="$chk $LEDGER"
+  for f in $chk; do
+    [ -n "$(find "$f" -mmin +2 -print 2>/dev/null)" ] || stop "账本残留 $f 在 2 分钟内有改动，可能仍有 progress 在写：90 秒后重跑 Task 0"
+  done
+  pl=$(ps -Ao pid=,args=) || stop "ps 枚举失败，无法确认前体 progress 已退出，不回收账本残留"
+  verdict=$(printf '%s\n' "$pl" | awk -v me="$$" -v cli="$CLI" '
+    { pid = $1; a = $0; sub(/^[ ]*[0-9]+[ ]+/, "", a)
+      if (pid == me) sentinel = 1
+      if (a ~ /^[^ ]*node / && index(a, cli " progress ") > 0) live++ }
+    END { if (sentinel) print "LIVE=" (live + 0); else print "NOSENTINEL" }')
+  case "$verdict" in
+    LIVE=0) : ;;
+    LIVE=*) stop "仍有 ${verdict#LIVE=} 个存活的 progress 进程：不回收账本残留，90 秒后重跑 Task 0；持续存在则 ask Lead" ;;
+    *) stop "ps 输出里找不到本 shell（枚举不完整：$verdict），不回收账本残留" ;;
+  esac
+  for f in $pres; do
+    rm -f "$f" || stop "删除账本残留 $f 失败"
+  done
+  if [ -n "$ldirty" ]; then
+    git checkout HEAD -- "$LEDGER" || stop "还原 $LEDGER 到 HEAD 失败"
+  fi
+  [ -z "$(git status --porcelain -- "$LEDGER")" ] || stop "账本还原后仍有改动"
+  echo "已回收前体遗留的账本残留：${pres:-无侧文件} ${ldirty:+（并还原未提交的账本改写）}"
+fi
 git fetch -q origin || stop "fetch failed"
 git merge-base --is-ancestor origin/main HEAD || stop "HEAD 不含 origin/main（需要技术同步，先 ask）"
 if git ls-remote --exit-code origin "refs/heads/$BR" >/dev/null 2>&1; then
@@ -176,7 +213,8 @@ cat "$LEDGER"
 
 - TURN 为 `not-yours` 是正常等待态：**同一个体** 每 60–90 秒重跑 Task 0，拿到 `yours` 再继续。
 - 工作区只允许「干净」、「README 已追加未提交 / 已暂存」（前体在 Task 1 与 Task 2 之间被杀）、「milestone 已写未提交 / 已暂存」（前体在 Task 4 中途被杀）；其它未提交改动一律 STOP，不清理别人的东西。README 残留的内容由 Task 1 断言兜底，milestone 残留由 Task 4 整体覆写（`>`）再提交。
-- **锁回收为什么安全**（FLY-3030 R1–R3 已评审并演练）：删除前同时满足——持有 TURN（没有别的体会同时写）、锁已 ≥ 2 分钟未动、**同一次** `lsof -d cwd` 全进程枚举 exit 0 且含本 shell 的哨兵记录，并且其中没有 cwd 在本工作区内的存活 git 进程。`git commit` 先写 `index.lock` 再原子改名：改名前被杀 ⇒ 原索引完好，删锁即回到提交前；改名后被杀 ⇒ 提交已完成，锁已不存在。任何块因 `File exists` / `*.lock` STOP 时，一律回到 Task 0（它负责回收），不要手动删锁。
+- **锁回收为什么安全**（FLY-3030 R1–R3 已评审并演练）：删除前同时满足——持有 TURN（没有别的体会同时写）、锁已 ≥ 2 分钟未动、**同一次** `lsof -d cwd` 全进程枚举 exit 0 且含本 shell 的哨兵记录，并且其中没有 cwd 在本工作区内的存活 git 进程。`git commit` 先写 `index.lock` 再原子改名：改名前被杀 ⇒ 原索引完好，删锁即回到提交前；改名后被杀 ⇒ 提交已完成，锁已不存在。`config.lock` 来自 `git push -u` 写上游配置途中被杀。任何块因 `File exists` / `*.lock` STOP 时，一律回到 Task 0（它负责回收），不要手动删锁。
+- **账本残留回收为什么安全**（Codex R1 用真实 `runProgress` 在四个内部切点 SIGKILL 复现）：`flywheel-comm progress` 的顺序是「拿 `<LEDGER>.lock` → 写 `<LEDGER>.tmp-<pid>` → rename → `git add` → `git commit --only` → 删锁」，被杀时 rollback / finally 都不执行，会留下锁、临时文件或未提交的账本改写。回收条件：持有 TURN、残留 ≥ 2 分钟未动（progress 本身几秒完成）、**同一次** `ps -Ao pid=,args=` 枚举含本 shell 哨兵且没有 `node … <CLI> progress …` 进程。未提交的账本改写还原到 HEAD——它只是尚未提交的游标，`prog` 按**已提交**游标判断是否需要重写，所以还原后会被补写，已提交的游标不会被重复写（不倒退）。冻结后账本已在 HEAD，回收不改变 HEAD。
 
 ### Task 1 — 追加目标行（幂等）
 
@@ -297,28 +335,87 @@ echo "冻结完成：HEAD=${fh% *} PR=${fh#* }（仅供人读；后续块自行�
 
 **换体安全性**：判据是 `frozen`（HEAD 里有提到目标行的 milestone），与是否已推送无关。`prog 3/3` 之后、milestone commit 之前被杀 → 新体再写一次账本（多一个账本 commit，在 milestone 之前，无害）后写 milestone，milestone 仍是最后；milestone 已写入工作区（或已 `git add`）但未提交时被杀 → HEAD 里没有 milestone，`frozen` 为假；Task 0 放行这条残留，Task 4 再写一次账本后用 `>` 整体覆写 milestone（PR 号重新推导）并提交；milestone commit 之后（无论推没推）被杀 → 新体所有写入都是 no-op，只做（幂等的）push 与断言。
 
-### Task 5 — 对冻结头请求代码复审（只读，幂等）
+### Task 5 — 对冻结头注册代码复审（幂等，沿用原身份）
 
-每次进入 Task 5（包括换体后）先在 **同一次 sh 执行** 里跑下面的前置，再在同一次执行里接注入的评审命令：
+复审身份（`questionId`、`requestId`）一旦产生就必须沿用：`gate review_code --no-block` 每调一次都会新建一个 pending 问题，`request-review` 不带 `--request-id` 每次都会生成新 UUID（`gate.ts:209-287`、`request-review.ts:85`）。FLY-2920 的中断恢复合同（`packages/claude-runner/agents/codex-runner-contract.md:138-146`）要求：被 Bridge 重启退役的评审用**原** `requestId` + `questionId` 重发，不开新门。所以本 Task **先落记录、后调命令**：记录文件 `.flywheel/runs/$EXEC/code-review.rec`（在 common `info/exclude` 里，被 git 忽略，不脏树、不产生 commit，冻结后照样可写；按 execution 隔离——换了 execution 的新体看不到旧记录，按引擎交接规则走自己的评审，不移植旧绑定）。
+
+#### Task 5a — 注册（每个步骤都先查记录）
+
+```sh
+[ "$(node "$CLI" turn --exec-id "$EXEC" | cut -d' ' -f1)" = yours ] || stop "TURN not yours（正常等待态）"
+fh=$(frozen_head) || stop "冻结头校验失败"
+FROZEN_HEAD=${fh% *}
+PR=${fh#* }
+REC=.flywheel/runs/$EXEC/code-review.rec
+git check-ignore -q "$REC" || stop "$REC 未被 git 忽略（会弄脏工作区），先 ask"
+mkdir -p ".flywheel/runs/$EXEC" || stop "mkdir 失败"
+recget() { [ -f "$REC" ] || return 0; sed -n "s/^$1=//p" "$REC" | tail -n 1; }
+if [ -f "$REC" ]; then
+  [ "$(recget head)" = "$FROZEN_HEAD" ] || stop "记录里的评审头与冻结头不同：不沿用旧身份，ask Lead"
+fi
+QID=$(recget questionId)
+if [ -z "$QID" ]; then
+  [ -z "$(recget gateOpening)" ] || stop "前体开门途中被杀（有 gateOpening 无 questionId）：可能已有一个未记录的 review_code 问题；ask Lead 核对，不开第二个门"
+  printf 'head=%s\ngateOpening=%s\n' "$FROZEN_HEAD" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$REC" || stop "写评审记录失败"
+  out=$(node "$CLI" gate review_code --lead flywheel-test-2 --exec-id "$EXEC" --no-block "Code review requested: PR https://github.com/$REPO/pull/$PR @ $FROZEN_HEAD") || stop "gate review_code 失败：$out"
+  QID=$(printf '%s\n' "$out" | sed -n 's/.*"questionId":"\([^"]*\)".*/\1/p')
+  [ -n "$QID" ] || stop "gate 输出里没有 questionId：$out"
+  printf 'questionId=%s\n' "$QID" >> "$REC" || stop "记录 questionId 失败（questionId=$QID，报给 Lead）"
+fi
+RID=$(recget requestId)
+if [ -z "$RID" ]; then
+  RID=$(uuidgen | tr 'A-Z' 'a-z') || stop "uuidgen 失败"
+  [ -n "$RID" ] || stop "requestId 为空"
+  printf 'requestId=%s\n' "$RID" >> "$REC" || stop "记录 requestId 失败"
+fi
+if [ -z "$(recget registered)" ]; then
+  node "$CLI" request-review --type code --question-id "$QID" --request-id "$RID" || stop "request-review 失败：重跑本块会用同一个 requestId 重试；409 = 运行体不是 Codex 作者族，改走注入的通道并 ask Lead"
+  printf 'registered=%s\n' "$RID" >> "$REC" || stop "记录 registered 失败"
+fi
+echo "已注册：question=$QID request=$RID head=$FROZEN_HEAD"
+```
+
+| 被杀时刻 | 记录状态 | 新体重跑 5a |
+|---|---|---|
+| 写 `gateOpening` 前 | 无记录 | 正常开门 |
+| 开门后、记下 `questionId` 前 | 只有 `head` + `gateOpening` | STOP + ask Lead（可能有一个未记录的问题；**唯一**要人核对的窗口，只有一行 shell 宽） |
+| 记下 `questionId` 后 | 有 `questionId` | 不再开门，沿用 |
+| 记下 `requestId` 后、注册成功前 / 注册成功但未记 `registered` | 有 `requestId` | 用**同一个** `requestId` 重发（`request-review` 自己的失败提示就是「retry with --request-id」） |
+| 记下 `registered` 后 | 完整 | 不再调用任何注册命令，直接去 5b |
+
+`--lead flywheel-test-2` 是本测试房的 Lead；实现节点注入的 `gate` 命令里 `--lead` 不同时，以注入为准。
+
+#### Task 5b — 轮询裁决（只读，重跑无副作用）
 
 ```sh
 fh=$(frozen_head) || stop "冻结头校验失败"
 FROZEN_HEAD=${fh% *}
-PR=${fh#* }
-echo "评审对象：PR #$PR @ $FROZEN_HEAD"
-# ↓ 在这里接实现节点注入的评审门命令（同一次执行，才能拿到上面的变量）。
-#   Codex 作者族：注入的 `gate review_code --no-block` → `request-review --type code --question-id <id> …`（Bridge 复审）。
-#   注入指令要求 await-codex-gate 时：
-#   node "$CLI" await-codex-gate code --exec-id "$EXEC" || stop "code gate 未通过"
-#   [ "$(git rev-parse HEAD)" = "$FROZEN_HEAD" ] || stop "评审期间 HEAD 变化"
+REC=.flywheel/runs/$EXEC/code-review.rec
+recget() { [ -f "$REC" ] || return 0; sed -n "s/^$1=//p" "$REC" | tail -n 1; }
+[ "$(recget head)" = "$FROZEN_HEAD" ] || stop "记录里的评审头与冻结头不同"
+QID=$(recget questionId)
+RID=$(recget requestId)
+[ -n "$QID" ] && [ -n "$RID" ] && [ -n "$(recget registered)" ] || stop "评审尚未注册完成：先跑 Task 5a"
+echo "question=$QID request=$RID head=$FROZEN_HEAD"
+node "$CLI" check "$QID"
 ```
 
-- **评审对象** = 冻结头 `FROZEN_HEAD` 上相对 `origin/main` 的 PR diff（README 一行 + milestone + 设计文档）。若注入的实现协议要求评审提示词以 `local-test-policy` 块开头，照注入原文。
-- **走注入的评审门**：本单 implement 按 models.json 分到 Codex，走 Bridge 复审（`request-review --type code`）；若实际运行体是 Claude 作者族，改走注入的 Claude 通道（`request-review` 会 409）。**具体命令以 Bridge 注入的指令为准**，本 plan 不替它发明参数。
-- 评审是跨进程 / 异步时：每次需要冻结头 / PR 号都重跑上面三行前置，不手抄 SHA。
-- **幂等**：已有绑定 `FROZEN_HEAD` 的 APPROVED（注入的 gate 命令立即通过）就跳过；否则重新请求——重复请求无副作用。
-- **CHANGES_REQUESTED 且需要改任何文件** → STOP + ask Lead。冻结后不自行落 commit，由 Lead 决定是否解冻重来。
+读 `check` 输出里的 `reviewVerdict`（只有它决定是否通过；`reviewerVerdict` / `advisories` 只是审计上下文）：
+
+- **APPROVED / SKIPPED** → 进入 Task 6（Task 6 会再校验冻结头未变）。带 advisories 时，在 Task 6 的回报里附一句摘要即可，不改文件。
+- **仍 pending** → 60–90 秒后重跑 5b。
+- **`bridge_restart_retired`（pending，不是裁决）且输出给出恢复命令** → 核对命令里的 `--request-id` = `$RID`、`--question-id` = `$QID`，再确认 TURN 是 `yours`，**逐字执行输出里的那条命令**；ID 不一致 → STOP + ask Lead。不开新门。
+- **`retry-held`** → 原身份仍活着或未知：继续按 60–90 秒重跑 5b 等 durable ready 通知，不重发。
+- **`operator_required`** → STOP + ask Lead（需要 Lead 的证据，不自动重试）。
+- **CHANGES_REQUESTED** → STOP + ask Lead。冻结后不自行落 commit，由 Lead 决定是否解冻重来（解冻后是新头、新门、新请求）。
+- **注册失败 / 评审 FAILED（评审者错误、超时）** → fail-closed：STOP + ask Lead，不进入 Task 6，不找同族评审替代。
+
+补充：
+
+- **评审对象** = 冻结头上相对 `origin/main` 的 PR diff（README 一行 + milestone + 设计文档）。注入的实现协议要求评审提示词以 `local-test-policy` 块开头时照注入原文。
+- 注入的指令若还要求 `await-codex-gate code`，在 APPROVED 之后、Task 6 之前跑，并断言 `git rev-parse HEAD` = 冻结头。
 - **本地测试**：选中测试集为空（research §4），**不回退到任何宽命令**；Task 1 的字节断言即本地证据。不 `pnpm install`、不跑 `pnpm lint/test`（无依赖树，且 husky `prepare` 会改写 `core.hooksPath`）。
+- **以 Bridge 注入的指令为准**：注入命令与本节冲突时照注入执行，但保留「先落记录、沿用原身份、不开第二个门」这三条。
 
 本 Task 不写账本（已冻结）。
 
@@ -389,4 +486,4 @@ RC=$?
 
 ## 7. 设计阶段演练（dry-run）
 
-在临时仓复刻本分支起点（44 字节 README + 本地 bare origin），配 `gh` / `flywheel-comm` 桩，把 §3 的代码块从本文件逐字抽出执行（每块 = §1 + 该块，一次独立 `/bin/sh`）。脚本在 `dry-run/`，结果记录在 `dry-run.md`：15 个场景（完工重放、追加后被杀、暂存后被杀、milestone 暂存后被杀、PR 已开后被杀、push 失败、越界、孤儿锁 / 新鲜锁、TURN not-yours、CI 失败、complete exit 3、冻结后读取失败、无临时目录）全部符合预期。
+在临时仓复刻本分支起点（44 字节 README + 本地 bare origin），配 `gh` / `flywheel-comm` 桩，把 §3 的代码块从本文件逐字抽出执行（每块 = §1 + 该块，一次独立 `/bin/sh`）。脚本在 `dry-run/`（含 `progress-crash.mjs`：用真实 `runProgress` 在四个内部切点 SIGKILL），结果记录在 `dry-run.md`：29 个场景（完工重放、追加 / 暂存 / milestone / PR 创建后被杀、push 失败、越界、git 孤儿锁 / 新鲜锁 / `config.lock`、真实 progress 四个切点崩溃、progress 残留过新 / 写者存活、冻结后残留、评审记录的五种中断、TURN not-yours、CI 失败、complete exit 3、冻结后读取失败、无临时目录）全部符合预期。

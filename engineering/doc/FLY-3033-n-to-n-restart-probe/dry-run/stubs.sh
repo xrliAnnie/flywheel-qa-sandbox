@@ -50,10 +50,14 @@ fs.appendFileSync(S + '/comm.log', a.join(' ') + '\n');
 const get = k => { const i = a.indexOf(k); return i >= 0 ? a[i + 1] : undefined; };
 if (a[0] === 'turn') { console.log((process.env.TURN || 'yours') + ' phase=implement epoch=1'); process.exit(0); }
 if (a[0] === 'progress') {
+  if (process.env.HANG) { setTimeout(() => process.exit(0), 60000); return; }
   const f = get('--file'); fs.writeFileSync(f, `---\nphase: ${get('--phase')}\nphaseCursor: ${get('--cursor')}\nupdated: ${new Date().toISOString()}${Math.random()}\nnextStep: "${get('--next')}"\n---\n`);
   execFileSync('git', ['add', '--', f]); execFileSync('git', ['commit', '-q', '--only', '-m', `chore(progress): FLY-3033 ${get('--phase')} ${get('--cursor')}`, '--', f]);
   process.exit(0);
 }
+if (a[0] === 'gate') { const n = fs.readdirSync(S).filter(f => f.startsWith('gate-')).length + 1; fs.writeFileSync(S + '/gate-' + n, a.join(' ')); console.log(JSON.stringify({status: 'pending', questionId: 'q-' + n, checkpoint: a[1]})); process.exit(0); }
+if (a[0] === 'request-review') { fs.appendFileSync(S + '/requests.log', get('--request-id') + ' ' + get('--question-id') + '\n'); process.exit(Number(process.env.REQ_RC || 0)); }
+if (a[0] === 'check') { console.log(JSON.stringify({questionId: a[1], reviewVerdict: process.env.VERDICT || 'APPROVED'})); process.exit(0); }
 if (a[0] === 'ask') process.exit(Number(process.env.ASK_RC || 0));
 if (a[0] === 'complete') process.exit(Number(process.env.COMPLETE_RC || 0));
 process.exit(0);
