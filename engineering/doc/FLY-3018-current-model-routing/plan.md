@@ -43,6 +43,8 @@ Issue: FLY-3018 (https://linear.app/geoforge3d/issue/FLY-3018/引擎路由-派�
 | CLI（`$FLYWHEEL_COMM_CLI`） | `room --help` 含 `[--no-overrides]`（实测已满足） | 直接看 usage | 同上 |
 | 被测房 Bridge | deploy 返回快照 `roomInfo.buildSha` = `6c091c4fd…`；judge 还要求 site `/health` 的 `buildSha` = `artifactBuildSha` = `--head`（`judge.ts:104-108`） | deploy 快照 + `curl http://localhost:19874/health` | 头不符 → 停，ask Lead |
 
+**Lead 裁定（question `d630d640`，2026-09-29）：选 A**。原话要点：已把 `TEST_QA_ROOM_SERVICE=1` 写入 slot 3 的安全 launch spec；官方 bridge-only cycle 因 stale `bridge.pid`/ownership（24341 已死，实际唯一 listener 25164）fail-closed，Lead 沙箱无 ps 身份/祖先核验能力，不能安全强杀或手改 PID；已在 FLY-3018 thread 提交 founderAsk 请宿主 operator 完成**保 sessions 的 bridge-only cycle**。**QA 必须保持上表第一道 preflight：只有 `room list` 不再 `room_service_disabled` 才执行 slot 4 deploy；不改打生产 Bridge、不绕过验证。** 在此之前 QA 先做与房无关的步骤 ①②（§4.2），并按 TURN 规则轮询等待，不空转报 FAIL。
+
 QA 报告开头逐字记录：管理 Bridge 两个 sha、CLI usage 片段、`room list` 首次响应原文、被测房 `roomInfo`、宿主 `~/.flywheel/models.json` sha256。拓扑：**管理端 = slot 3 (19873)，被测房 = slot 4 (19874)**；后文 `--site slot_529:4`、房 DB 路径、seed 目标都指被测房，由返回的 `roomInfo` 解析，⛔ 绝不写管理端（slot 3）的 DB。
 
 ### 4.1 房的所有权与参数
