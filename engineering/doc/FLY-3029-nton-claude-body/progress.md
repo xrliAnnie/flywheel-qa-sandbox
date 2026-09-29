@@ -1,13 +1,13 @@
 ---
 issue: FLY-3029
 phase: qa
-phaseCursor: 3/6
-updated: 2026-09-29T05:37:35.991Z
-nextStep: verify exact-head CI and publish founder ship report
+phaseCursor: 5/6
+updated: 2026-09-29T05:37:53.454Z
+nextStep: await exact-head CI, publish ship report, submit QA verdict
 chunks: []
 pointers: {}
 ---
 
 # FLY-3029 progress
-**phase**: qa (3/6)
-**next**: verify exact-head CI and publish founder ship report
+**phase**: qa (5/6)
+**next**: await exact-head CI, publish ship report, submit QA verdict
