@@ -15,7 +15,7 @@ Issue: FLY-3043 (https://linear.app/geoforge3d/issue/FLY-3043/qa-sbx-fly-3024-b5
 | # | 文件 | 改动 | 硬约束 |
 |---|---|---|---|
 | 1 | `packages/claude-runner/agents/codex-runner-contract.md` | 文件末尾追加一行（见 §3 Task 2 的逐字内容） | `git diff --numstat` 对该文件必须是 `1	0`；追加后 `tail -n1` 逐字等于目标行；文件仍以 `\n` 结尾 |
-| 2 | `packages/claude-runner/test/codex-home.test.ts` | 在 `describe("FLY-1188 AGENTS.md contract materialization")` 第一个 `it` 的末尾（现第 238 行 `expect(agents).toContain("Environment Translation");` 之后）加一条 `endsWith` 断言 | 不改动其他用例；biome 通过 |
+| 2 | `packages/claude-runner/test/codex-home.test.ts` | 在 `describe("FLY-1188 AGENTS.md contract materialization")` 第一个 `it` 的末尾（现第 228 行 `expect(agents).toContain("Environment Translation");` 之后）加一条「末行 = Sandbox note」断言（注释 1 行 + biome 格式的 3 行 `toMatch`） | 不改动其他用例；片段已按仓库 biome 配置预格式化，`biome check` 0 error |
 
 ### 1.2 负面守卫（实施节点必须遵守）
 
@@ -27,7 +27,7 @@ Issue: FLY-3043 (https://linear.app/geoforge3d/issue/FLY-3043/qa-sbx-fly-3024-b5
 
 ### 1.3 为什么要加断言（以及可退回的开关）
 
-issue 只要求改一行文档，但 DoD 第 2 条要"相关测试"。断言让"这一行进了每个 Codex runner 的 `AGENTS.md` 且在末尾"变成机器可复核的证据（`provisionCodexHome` 把契约逐字接在一行管理头之后，见 `codex-home.ts:467`，所以契约末行 = AGENTS.md 末行）。**若 Lead 明确要求只改一个文件**，删掉 Task 1 的两行即可，其余步骤不变——这是本 plan 唯一的可选项，默认执行。
+issue 只要求改一行文档，但 DoD 第 2 条要"相关测试"。断言让"这一行进了每个 Codex runner 的 `AGENTS.md` 且在末尾"变成机器可复核的证据（`provisionCodexHome` 把契约逐字接在一行管理头之后，见 `codex-home.ts:467`，所以契约末行 = AGENTS.md 末行）。**若 Lead 明确要求只改一个文件**，删掉 Task 1 新增的注释和断言即可，其余步骤不变——这是本 plan 唯一的可选项，默认执行。
 
 ## 2. 前置（Task 0）
 
@@ -48,12 +48,16 @@ pnpm --filter flywheel-claude-runner exec vitest run test/codex-home.test.ts   #
 
 ### Task 1 — RED：加断言（`packages/claude-runner/test/codex-home.test.ts`）
 
-在第 238 行 `expect(agents).toContain("Environment Translation");` 之后、该 `it` 的 `});` 之前插入两行（缩进与相邻行一致，3 个 tab）：
+以 `expect(agents).toContain("Environment Translation");` 为锚点（当前是第 228 行，位于 `it("writes AGENTS.md (0600) …")` 内；用锚点文本定位而不是死记行号），在它之后、该 `it` 的 `});` 之前插入下面 4 行（缩进与相邻行一致：注释与 `expect(` 用 3 个 tab，正则行 4 个 tab；这就是仓库 biome 配置的输出形态，原样插入即可通过 `biome check`）：
 
 ```ts
 			// FLY-3043: the sandbox note is the contract's LAST line — and AGENTS.md is header + contract verbatim
-			expect(agents.trimEnd()).toMatch(/- Sandbox note: runners run only the tests related to their change\.$/);
+			expect(agents.trimEnd()).toMatch(
+				/- Sandbox note: runners run only the tests related to their change\.$/,
+			);
 ```
+
+设计阶段已实测：把这 4 行插入后对该文件跑 `pnpm exec biome check` 为 0 error（单行写法会被 biome 要求拆成三行，所以不要手写成一行）。
 
 验证（必须先红）：
 
@@ -109,7 +113,8 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 # 4a 账本终值必须在 push 之前(progress 会真实 commit)
 node "$FLYWHEEL_COMM_CLI" progress --exec-id "$FLYWHEEL_EXEC_ID" \
   --file engineering/doc/FLY-3043-sandbox-note-codex-contract/progress.md \
-  --phase implement --cursor 5/5 --set-chunk implement=done --next "PR CI + review gate"
+  --phase implement --cursor 5/5 --next "PR CI + review gate"
+# 注:本账本 chunks 为 [],progress 的 --set-chunk 只更新既有 chunk、不创建;账本终值以 phase=implement + cursor=5/5 + next 为准
 # 4b 首次 push
 git push -u origin project-slot-2-FLY-3043
 # 4c PR body 写到绝对路径再引用
@@ -141,7 +146,31 @@ for i in $(seq 1 20); do n=$(gh pr view "$PR" --json statusCheckRollup -q '.stat
 gh pr checks "$PR" --watch --interval 30
 ```
 
-push 之后**不再产生任何 commit**；若 CI 红且原因在本改动，修复后重跑 4a→4d 整段（账本先于 push）；若 CI 红与本改动无关（历史 flaky / infra），`ask` Lead 并附 job 名与日志链接，不自行重试循环。
+**冻结规则**：每次最终 push 之后进入只读（不再产生任何 commit）。若 CI 红与本改动无关（历史 flaky / infra），`ask` Lead 并附 job 名与日志链接，不自行重试循环。若 CI 红**确因本改动**，走下面的返工路径（解冻 → 修 → 重新冻结），**不要**重跑 4a→4d：4a 的 `progress` 只提交账本文件不会带上修复，4c 的 `gh pr create` 对同一 head/base 已存在的 OPEN PR 会直接报 already-exists。
+
+#### Task 4′ — 返工路径（仅当 CI 因本改动变红）
+
+```bash
+# 4'a 修复(只允许动 §1.1 的两个文件),然后重跑相关测试 + 单文件 lint
+pnpm --filter flywheel-claude-runner exec vitest run test/codex-home.test.ts     # 期望 37 passed
+pnpm exec biome check packages/claude-runner/test/codex-home.test.ts             # 期望 0 error
+# 4'b 显式暂存并提交修复(progress 不会替你提交这些文件)
+git add packages/claude-runner/agents/codex-runner-contract.md packages/claude-runner/test/codex-home.test.ts
+git status --short                                                               # 期望仅这两个 M(或其一)
+git commit -m "fix(FLY-3043): <what CI caught>" -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+# 4'c 账本终值仍在 push 之前
+node "$FLYWHEEL_COMM_CLI" progress --exec-id "$FLYWHEEL_EXEC_ID" \
+  --file engineering/doc/FLY-3043-sandbox-note-codex-contract/progress.md \
+  --phase implement --cursor 5/5 --next "PR CI rerun after fix + review gate"
+# 4'd push 到已跟踪分支;跳过 gh pr create,复用已有 PR 编号
+git push origin project-slot-2-FLY-3043
+test "$(git rev-parse HEAD)" = "$(gh pr view "$PR" --json headRefOid -q .headRefOid)" && echo HEAD_OK
+# (需要更新描述时)gh pr edit "$PR" --body-file "$FLYWHEEL_RUNNER_STATE_DIR/fly-3043-pr-body.md"
+for i in $(seq 1 20); do n=$(gh pr view "$PR" --json statusCheckRollup -q '.statusCheckRollup|length'); [ "$n" -gt 0 ] && break; sleep 15; done; echo "rollup=$n"
+gh pr checks "$PR" --watch --interval 30
+```
+
+返工 push 之后重新冻结；若已经做过代码评审，新 head 需要重新评审（Task 5 的落账要用新的 `git rev-parse HEAD`）。
 
 ### Task 5 — 评审门与收口（以 implement 节点 dispatch 合同为准）
 
