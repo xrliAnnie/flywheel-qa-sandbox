@@ -1,13 +1,13 @@
 ---
 issue: FLY-3043
 phase: design
-phaseCursor: 2/6
-updated: 2026-09-29T01:46:10.438Z
-nextStep: plan.md
+phaseCursor: 3/6
+updated: 2026-09-29T01:47:51.508Z
+nextStep: commit docs + design_review bind
 chunks: []
 pointers: {}
 ---
 
 # FLY-3043 progress
-**phase**: design (2/6)
-**next**: plan.md
+**phase**: design (3/6)
+**next**: commit docs + design_review bind
