@@ -1,6 +1,6 @@
 # FLY-202 QA 沙箱说明夹具 — 实施计划
 Issue: FLY-202 (https://linear.app/geoforge3d/issue/FLY-202/qa-sandbox-fixture-slot-harness-real-runner-e2e-task-do-not-pick-up)
-日期: 2026-09-26
+日期: 2026-09-29
 基于: research.md
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:executing-plans` to implement this plan task-by-task. Execute inline in the authorized implementation node; do not dispatch subagents or successors.
@@ -21,8 +21,19 @@ Issue: FLY-202 (https://linear.app/geoforge3d/issue/FLY-202/qa-sandbox-fixture-s
 | `packages/qa-framework/README.md` | Read only | QA framework 摘要 source of truth |
 | `engineering/doc/FLY-202-sandbox-notes-e2e/progress.md` | Flywheel command only | restart-resilient cursor；不得手工与 target 同 commit 编辑 |
 
-不新增 verifier、runtime code、migration、config 或测试文件。preserved baseline `ab1d379b1` 已包含上一轮
-implementation milestone；不要回滚它，也不要为了产生新 commit 而无条件改写 target。
+不新增 verifier、runtime code、migration、config 或测试文件。preserved baseline `b436ac9ec` 已包含前两轮
+implementation milestone 与 Lead rework（probe 末行，commit `d22f2c249`）；不要回滚它们，也不要为了
+产生新 commit 而无条件改写 target。
+
+### Inherited 内容（只读，两处）
+
+| 内容 | 位置 | 来源 |
+| --- | --- | --- |
+| `- FLY-2456 drill marker r2 B1` | listing fenced block 之后的列表项 | 继承自 FLY-2456 drill |
+| `standby-resume-probe: qa2861-A3` | 文件最后一行，前一行为空行 | Lead rework，FLY-2861 QA@3 probe A3 |
+
+两处都位于 fenced block 之后。任何修复都只能改动失败字段本身；fence 结束标记之后的尾部字节必须
+原样保留。
 
 ### Task 0: 取得实现节点写权限并核对 carrier
 
@@ -59,7 +70,7 @@ Expected:
 
 - [ ] **Step 3: 更新 progress cursor**
 
-用 dispatch 注入的 exact exec id 和 progress path 写 `implement 1/6`，next step 指向 Task 1。只能通过
+用 dispatch 注入的 exact exec id 和 progress path 写 `implement 1/6`（写入前先 `stage set implement`），next step 指向 Task 1。只能通过
 `flywheel-comm progress` 更新该文件。
 
 ### Task 1: 发现相关测试与收集 source facts
@@ -186,11 +197,14 @@ const liveListing = cp.execFileSync('sh', ['-c', 'ls -R doc/ | head -50'], {
 }).replace(/\n$/, '');
 if (block[1] !== liveListing) throw new Error('captured doc listing does not match current checkout');
 if (!text.includes('- FLY-2456 drill marker r2 B1')) throw new Error('inherited marker removed');
+if (!text.endsWith('\n\nstandby-resume-probe: qa2861-A3\n')) throw new Error('inherited probe tail line missing or not standalone');
+if ((text.match(/^standby-resume-probe: /gm) || []).length !== 1) throw new Error('probe line must appear exactly once');
 console.log('sandbox-notes structure: PASS');
 NODE
 ```
 
-Expected on design baseline: `sandbox-notes structure: PASS`。如果出现 directory diagnostic，先按 Task 1
+Expected on design baseline `b436ac9ec`: `sandbox-notes structure: PASS`（design node 已于 2026-09-29 用含
+probe 断言的本脚本实测 PASS）。如果出现 directory diagnostic，先按 Task 1
 分类；它是 environment/user-state evidence，不自动成为 target repair。
 
 - [ ] **Step 2: 做内容语义复核**
@@ -235,7 +249,8 @@ plain-language description。`.git`、Git-ignored 目录与 untracked user-state
 - [ ] **Step 4: 修复 listing（仅当 byte mismatch）**
 
 在同一个 macOS slot environment 用 `LC_ALL=C ls -R doc/ | head -50` 的 exact stdout 替换 fenced
-`text` block 内容，保留 command label 与 fence 后的 inherited marker。不得从 GNU host 生成替代输出。
+`text` block 内容，保留 command label，以及 fence 之后的全部尾部字节（inherited marker、空行、probe
+末行、结尾换行）。不得从 GNU host 生成替代输出。
 
 - [ ] **Step 5: 重跑 Task 2 validator**
 
@@ -267,7 +282,7 @@ Expected: validator PASS；`git diff --check` exit 0、无输出。
 Run:
 
 ```bash
-git diff --name-status ab1d379b1...HEAD
+git diff --name-status b436ac9ec...HEAD
 git diff --name-status origin/main...HEAD
 git status --short
 gh pr view 196 --json files
@@ -337,7 +352,8 @@ Expected: local = remote = PR head OID；PR OPEN、非 draft、head current bran
 - [ ] **Step 5: 报告与 completion**
 
 报告必须同时包含 FLY-202 Linear URL、PR #196 URL、exact pushed SHA、target changed/no-op、validator、
-semantic review 与 lint 结果；no-op 时明确说明本轮没有新的 target-file commit。再按 implementation
+semantic review 与 lint 结果，并披露 PR #196 的 title/body 仍描述 FLY-2456 drill（本 plan 不授权修改
+PR metadata）；no-op 时明确说明本轮没有新的 target-file commit。再按 implementation
 dispatch 的 exact completion route 完成节点。不得 merge、request ship approval 或 dispatch successor。
 
 QA handoff 必须指向本 plan 的 Task 2 Step 1 validator，并要求确认 PR #196 仍 OPEN、未合并。若本轮
@@ -353,3 +369,10 @@ QA handoff 必须指向本 plan 的 Task 2 Step 1 validator，并要求确认 PR
 | command output in fenced block | live command vs fenced block byte equality + 50-line count |
 | feature branch and PR against main | Git branch/remote + PR #196 head/base/state + remote-head equality |
 | sandbox only / no production | diff-scope review + absence of deploy/merge/DB/config actions |
+| inherited content preserved（非 issue 要求，branch continuity 约束） | marker 存在 + probe 末行精确、独立、唯一 |
+
+## Rollback boundary
+
+本 plan 只可能产生一种 target 变更：对 `doc/qa/sandbox-notes.md` 失败字段的最小修复 commit。回滚即
+`git revert <that-commit>` 后 fast-forward push；不 reset、不 force-push。already-GREEN 路径没有 target
+commit，因此没有需要回滚的内容。progress 与 milestone commits 不属于回滚范围。
