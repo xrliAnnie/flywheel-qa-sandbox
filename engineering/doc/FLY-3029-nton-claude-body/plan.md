@@ -7,6 +7,7 @@ Issue: FLY-3029 (https://linear.app/geoforge3d/issue/FLY-3029/529-合成单勿�
 > 本计划给 DAG 的 implement 节点(Claude 体 runner)执行。设计方向来自 exploration.md 方案 A,
 > 事实底座来自 research.md。任务本身是 FLY-2919 N-to-N QA 的**被测负载**,不是功能开发。
 > v2(Codex R1 后):明确 PR 范围、账本提交与最终 push 的顺序、换体同步不吞错、交卷段跟随节点注入指令。
+> v3(Codex R2 后):换体恢复 README_SHA 只认非 merge、patch 精确匹配的提交。
 
 ## 1. 目标与非目标
 
@@ -113,10 +114,18 @@ Synthetic FLY-2919 N-to-N claude-body QA probe. Idempotent append (grep -qxF gua
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
   README_SHA=$(git rev-parse HEAD)
 else
-  README_SHA=$(git log --format=%H -1 -- README.md)      # 换体:旧体的 README 提交
+  # 换体恢复(Codex R2):不能用「最近触碰 README 的提交」——合过 origin/main 时会选中 merge commit。
+  # 只在非 merge 提交里按标题找候选,并核对其 patch 恰为「README 单文件、+1/-0、新增行 == 探针行」。
+  README_SHA=
+  for s in $(git log --no-merges --format=%H --grep='append FLY-2919 N-to-N claude-body probe to README' origin/main..HEAD); do
+    if [ "$(git show --format= --numstat "$s")" = "$(printf '1\t0\tREADME.md')" ] \
+       && [ "$(git show --format= "$s" -- README.md | grep -c "^+$LINE\$")" = 1 ]; then README_SHA=$s; break; fi
+  done
+  [ -n "$README_SHA" ] || { echo "README_SHA not found — stop, ask Lead"; exit 1; }
 fi
-git show --stat $README_SHA          # 恰 1 文件 1 insertion
+git show --stat $README_SHA          # 恰 1 文件 1 insertion,且是非 merge 提交
 ```
+- 负向守卫:`git rev-list --parents -n1 $README_SHA | wc -w` 必须为 2(单亲,非 merge)。
 
 ### Step 3b — 最后一次账本提交(Codex R1 #2:在最终 push 之前)
 ```bash
@@ -177,7 +186,7 @@ node $FLYWHEEL_COMM_CLI stage set pr_created
 
 ## 6. 回滚边界
 - 未 merge 前:关闭 PR + 删除远端分支即完全回滚(main 未动)。
-- merge 后:revert README 单行 commit(`README_SHA`);过程文档保留(doc-flow 惯例)。
+- merge 后:revert README 单行 commit(`README_SHA`,Step 3 已核对为单亲非 merge 提交,`git revert` 无需 mainline);过程文档保留(doc-flow 惯例)。
 
 ## 7. 风险
 | 风险 | 概率 | 处理 |
