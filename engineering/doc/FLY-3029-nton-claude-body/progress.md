@@ -1,13 +1,14 @@
 ---
 issue: FLY-3029
 phase: design
-phaseCursor: 4/5
-updated: 2026-09-29T05:22:35.762Z
-nextStep: Codex design review APPROVED (R3); build+publish founder HTML, then complete
+phaseCursor: 5/5
+updated: 2026-09-29T05:24:57.487Z
+nextStep: "design complete: Codex APPROVED R3, HTML published + reported;
+  complete --route phase_design_complete"
 chunks: []
 pointers: {}
 ---
 
 # FLY-3029 progress
-**phase**: design (4/5)
-**next**: Codex design review APPROVED (R3); build+publish founder HTML, then complete
+**phase**: design (5/5)
+**next**: design complete: Codex APPROVED R3, HTML published + reported; complete --route phase_design_complete
