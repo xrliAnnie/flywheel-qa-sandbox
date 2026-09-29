@@ -123,6 +123,7 @@
     <div class="section-title"><span style="color:#34c759;">●</span> 演练证据</div>
     <div class="card green">
       <p>设计阶段在临时仓里把计划里的每个代码块<b>逐字抽出</b>来跑了 31 个场景：完工后重放、加行 / 暂存 / milestone / 开 PR 后被杀、推送失败、越界文件、各种残留锁（包括「隔壁工作区有活的 git 正拿着共享锁」时必须不动它）、进度记录工具在 4 个内部时刻被真实杀掉、复审登记在 5 个时刻被打断、写权不在自己手上、CI 失败、交卷时有未读消息、冻结后读取失败、无临时目录——全部收敛到正确终态或按预期停下求助。</p>
+      <p><b>设计评审</b>：Codex（gpt-6-astra，最高推理强度）评审 3 轮后批准——第 1 轮抓出进度记录工具被杀后的残留会卡死重启、复审重放会换编号；第 2 轮抓出共享锁可能误删隔壁工作区正在用的锁；全部修复并加进演练后第 3 轮零问题通过。三轮意见原文见同目录 <code>design-review-round1/2/3.md</code>。</p>
       <p class="term">诚实说明：GitHub 与复审门在演练里是模拟的；真实推送、PR、CI、复审只在实现节点发生。</p>
       <div class="cbox"><label>对这一节的意见</label><textarea data-k="evidence" data-title="演练证据"></textarea></div>
     </div>
