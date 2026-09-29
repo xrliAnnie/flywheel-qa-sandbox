@@ -1,0 +1,34 @@
+classDiagram
+    class StartReservation {
+      idempotencyKey
+      runId
+    }
+    class RunSnapshot {
+      modelRouting
+      dispatchPinned
+    }
+    class AssignmentEvent {
+      arm
+      modelAlias
+      model
+      basis.policy
+    }
+    class ExecutionRuntime {
+      executionId
+      vendor
+      model
+      effort
+    }
+    class Session {
+      runner_model
+    }
+    class Receipt {
+      alias (= exact)
+      effort
+    }
+    StartReservation --> RunSnapshot : 冻结
+    RunSnapshot --> AssignmentEvent : 每节点一条
+    AssignmentEvent --> ExecutionRuntime : 启动
+    ExecutionRuntime --> Session : 落库
+    AssignmentEvent ..> Receipt : 只从本 run 投影
+    ExecutionRuntime ..> Receipt : vendor 一致才保留别名
