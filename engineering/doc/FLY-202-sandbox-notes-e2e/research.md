@@ -1,56 +1,97 @@
-# Research: 仓库事实盘点 — FLY-202（slot-2 E2E 轮）
+# FLY-202 QA 沙箱 fixture 说明刷新 — 调研
+Issue: FLY-202 (https://linear.app/geoforge3d/issue/FLY-202/qa-sandbox-fixture-slot-harness-real-runner-e2e-task-do-not-pick-up)
+日期: 2026-09-28
+基于: exploration.md
 
-**Issue**: FLY-202 — https://linear.app/geoforge3d/issue/FLY-202/qa-sandbox-fixture-slot-harness-real-runner-e2e-task-do-not-pick-up
-**Date**: 2026-07-19
-**基于**: `engineering/doc/FLY-202-sandbox-notes-e2e/exploration.md`；对 tip `7049f719` 的实测
+## 1. 仓库与分支事实
 
----
-
-## 1. Git / 分支状态
-
-| 事实 | 值 |
-|---|---|
-| 工作目录 | `/private/tmp/flywheel-test-slot-2/project-slot-2-FLY-202` |
+| 项目 | 当前证据 |
+| --- | --- |
 | origin | `https://github.com/xrliAnnie/flywheel-qa-sandbox.git` |
-| 当前分支 | `project-slot-2-FLY-202`（harness 创建，clean，无 upstream） |
-| tip | `7049f719` `test(FLY-1286): capture failed resident phase E2E (#58)` |
-| PR base | sandbox 仓库 `main` |
+| 当前分支 | `project-slot-6-FLY-202` |
+| base | `origin/main` at `1855f7a1a`（2026-09-28 re-dispatch 复核，与上一轮相同） |
+| divergence | 2026-09-28 时 ahead 19、behind 0；含上一轮 design、implement、progress 与 milestone commits |
+| 远端同名分支 | 已存在，指向 `8ab7e5fde`（本轮开始时的本地 HEAD） |
+| 同 head 的 PR | sandbox PR #267 open，base=`main`，head=`project-slot-6-FLY-202`，`mergeable=MERGEABLE`、`mergeStateStatus=CLEAN`，head SHA=`8ab7e5fde` |
+| 并行同 issue PR | sandbox PR #203 open，head=`project-slot-3-FLY-202`，也修改 `doc/qa/sandbox-notes.md` |
 
-**结论**：`project-slot-2-FLY-202` 就是本轮的 feature branch——issue step 5 的
-「feature branch」不需要另建分支，直接在其上 commit、`push -u origin`、开 PR 即可。
-这与历史轮次（#29/#30/#57 均由 slot 分支出 PR）一致。
+因此 implement 节点不应重锚、rebase 或 force-push。它应先 fetch；若 `origin/main` 已前进，用普通 merge 同步后再生成快照。之后在同一 feature branch 上追加 docs commit，普通 fast-forward `git push`。**PR #267 已存在**，任何后续 push 都会自动更新它；implement 节点必须先用 `gh pr list --head project-slot-6-FLY-202` 发现现有 PR，绝不创建第二个同 head 的 PR。
 
-## 2. 目标文件现状
+## 2. 目标文件与消费者
 
-- `doc/qa/sandbox-notes.md`：**不存在**（#58 移除）→ step 1 为干净新建。
-- `packages/qa-framework/README.md`：存在，316 行 / 16,485 bytes。主要 section：
-  Architecture、Quick Start、5-Step Protocol、Config Schema、Examples、
-  Test Slot Framework（FLY-115，含 Scripts/Pre-requisites/Runner worktree start point）、
-  FLY-60 Hard Gate Enforcement E2E（manual-trigger suite）、Mirror Mode（FLY-153）。
-  内容量足够支撑 ~10 条 bullet 摘要，implement 段须**通读原文**后归纳，不得照抄本清单。
+`doc/qa/sandbox-notes.md` 已存在，共 99 行、6628 bytes；Git 历史显示它是 FLY-202 多次真实 Runner E2E 的稳定刷新目标。当前内容已有 3 段用途说明、17 行目录表、10 条 README 摘要和 fenced tree 输出。
 
-## 3. 顶层目录清单（step 2 表格的原料，实测于 tip）
+`git grep -F sandbox-notes.md` 未发现运行时代码读取该文件；引用只出现在旧 FLY-202 设计资料中。因此它的消费者是 QA 操作者和 PR reviewer，而不是解析器。没有 schema migration、数据库迁移或兼容层；唯一稳定身份是路径本身。
 
-12 个目录：`agents`、`doc`、`docs`、`engineering`、`fleet`、`packages`、`patches`、
-`product`、`qa-fly294`、`qa-fly310`、`scripts`、`supabase`。
+上一轮开始时 tree block 已过期（列出已删除的 `doc/FLY-202-generalized-e2e`）。上一轮 implement 已在 `93710f3cc` / `f2312a66a` 完成刷新；2026-09-28 复核，当前 HEAD 的 notes 通过全部四项定向验证（目录集合 17 项一致、恰好 10 条 bullet、tree block 与 `LC_ALL=C ls -R doc/ | head -50` 逐字一致、`git diff --check` 干净）。本轮 design 在 `engineering/doc/` 下改文件，不影响 `doc/` tree，因此不会制造新的漂移。
 
-非目录条目（**不进表**）：`CLAUDE.md`、`SETUP.md`、`VISION.md`、`biome.json`、
-`memory.db`、`package.json`、`pnpm-lock.yaml`、`pnpm-workspace.yaml`、`review.json`、
-`tsconfig.base.json`，以及一个名为 **`=`** 的杂散文件。
+## 3. 顶层目录事实
 
-⚠️ 陷阱：裸 `ls` 会把 `=` 列在首位；issue 要求的是「every top-level **directory**」。
-implement 段应用 `find . -maxdepth 1 -type d` 或逐项 `[ -d ]` 判定，只收目录。
+现场命令 `git ls-tree -d --name-only HEAD | LC_ALL=C sort` 得到 17 个已跟踪顶层目录：
 
-## 4. `doc/` 形状（step 4 的 `ls -R doc/ | head -50` 语境）
+| 目录 | 一行职责描述的事实来源 |
+| --- | --- |
+| `.claude/` | QA config、commands、skills 与 orchestrator 辅助文件 |
+| `.flywheel/` | sandbox Flywheel config 与 executor role 文件 |
+| `.github/` | GitHub Actions workflows |
+| `.lead/` | 各 Lead 身份与共享规则 |
+| `.serena/` | Serena 项目配置与本地元数据 |
+| `agents/` | 通用与 QA Runner executor prompts |
+| `doc/` | 架构、工程、QA、计划、参考与复盘文档 |
+| `docs/` | 贡献说明、运维 runbook 与 operations 文档 |
+| `engineering/` | doc-flow 工程文档与 spikes |
+| `fleet/` | fleet 示例和说明 |
+| `packages/` | pnpm monorepo packages |
+| `patches/` | 版本化依赖补丁 |
+| `product/` | doc-flow 产品文档 |
+| `qa-fly294/` | FLY-294 QA scripts、fixtures 与报告 |
+| `qa-fly310/` | FLY-310 E2E scripts、evidence 与报告 |
+| `scripts/` | 开发、部署、维护与 QA 自动化 |
+| `supabase/` | Supabase metadata 与 migrations |
 
-`doc/` 顶层：`VERSION`、`architecture/`、`engineer/`、`plan/`、`qa/`、`reference/`、`retro/`。
-`doc/qa/` 下有 reports/test-plans/framework 等子目录。`ls -R doc/ | head -50` 输出稳定
-可截取；注意 step 1 新建 `doc/qa/sandbox-notes.md` 之后再跑该命令，输出会包含新文件——
-顺序上把 step 4 放在 step 1-3 之后执行即符合 issue 排序，无需特殊处理。
+隐藏目录也属于“every top-level directory”，所以不能用只显示非隐藏项的裸 `ls` 生成表格。Git tree 查询会自然排除 `.git/`、`node_modules/`、`dist/` 与其它未跟踪工具产物。implement 节点仍需在写入前重跑发现命令，以当前 HEAD 为准。
 
-## 5. doc-flow / 三段式配置
+## 4. README 摘要范围
 
-- `.flywheel/config.yaml`：`doc_flow.enabled: true`、`default_department: engineering`、
-  `pipeline.three_stage: true`。
-- 过程文档落点：`engineering/doc/FLY-202-sandbox-notes-e2e/`（本文件夹）。
-- progress ledger 由 `flywheel-comm progress` 维护（path-limited 只 commit progress.md）。
+`packages/qa-framework/README.md` 当前为 316 行、16485 bytes。约 10 条摘要应覆盖：
+
+1. 可复用、plan-aware 的 QA agent framework 定位。
+2. framework 与 project config 的两层架构。
+3. Quick Start 的 config / suite 接入流程。
+4. Onboard → Analyze + Plan → Research → Write + Execute → Finalize 五步协议。
+5. test-slot 用真实 Runner 跑 sandbox、没有 synthetic mode。
+6. `test-deploy.sh`、`inject-linear-issue.sh`、`test-teardown.sh` 三个入口。
+7. Linear key、GitHub auth、sandbox repo 与 branch 的前置条件。
+8. `FLYWHEEL_RUNNER_START_POINT` 只在 slot Bridge 生效的隔离边界。
+9. FLY-60 hard-gate suite，以及 mirror / roundtable / alert mirror 的用途和 Runner E2E 限制。
+10. plan discovery 与 QA skill interface 两份 contracts。
+
+摘要必须转述，不应大段复制 README；显示标签可以简化，但脚本名、环境变量名和模式边界必须准确。
+
+## 5. 命令输出与顺序
+
+issue 指定的命令是 `ls -R doc/ | head -50`。实测表明它随 locale 改变：`LC_ALL=C` 从 `FLY-145-s6-retry-product-test` 开始，而 `LC_ALL=en_US.UTF-8` 从 `architecture` 开始，前 50 行因此覆盖不同子树。implement 节点应在所有目标文档内容写完后用 `LC_ALL=C ls -R doc/ | head -50` 固定排序，把 stdout 原样放入 `text` fenced block，同时记录原命令与 locale；最终验证和 QA 必须使用同一 locale 逐字比较。
+
+由于设计文档位于 `engineering/doc/` 而非 `doc/`，本设计阶段新增文件不会改变该命令输出。后续若其他节点同时改变 `doc/`，应以目标文件最后写入时的同一 worktree 快照为准。
+
+## 6. 安全与验证边界
+
+- 内容是纯 Markdown，不渲染用户输入，也没有 SQL 或外部输入边界；HTML escaping / parameterized queries 不适用目标文件。
+- 上一轮 founder HTML 的两次本地 `mmdc` 渲染均因 sandbox 禁止 Chromium macOS rendezvous port 而失败，当时按合同保留 Mermaid 源并显示 `DIAGRAM PENDING LOCAL RENDER`。2026-09-28 实测 `mmdc` 11.12.0 在本 worktree 可以正常渲染（`-w 1000 -b white --svgId <id>`），本轮改为内联真实 SVG，每张图使用独立 `--svgId FLY-202-d<N>`。运行时评论只通过 `textContent` / `value` 写入，避免 derived data 进入 `innerHTML` 或 script。
+- 本任务不需要运行 package 或 repository test suite。验证应使用具体的 shell assertions、`git diff --check`、集合比对、bullet 计数、tree block 比对和 `gh pr view`。
+- 最终 diff 允许本 issue 的 design artifacts、progress ledger 与目标 notes；不允许生产代码、config 或无关文档改动。
+
+## 7. re-dispatch 对账事实
+
+| 检查项 | 2026-09-28 结果 |
+| --- | --- |
+| `git ls-remote --heads origin project-slot-6-FLY-202` | `8ab7e5fde` = 本地 HEAD |
+| `git rev-list --left-right --count origin/main...HEAD` | `0 19` |
+| 目录集合比对 | PASS（17 个 tracked 顶层目录） |
+| README 摘要 bullet 计数 | PASS（10） |
+| tree block 逐字比对 | PASS（50 行） |
+| `git diff --check` | PASS |
+| `gh pr view 267` | OPEN / MERGEABLE / CLEAN，head=`8ab7e5fde` |
+| 并行同 issue PR | #203（slot-3）仍 open；另有多个 `qa529-FLY-202-*` 分支的 529 fixture PR，与本分支无关 |
+
+结论：implement 节点的默认路径是**验证型无改动**：重跑上述检查；只有 `origin/main` 前进（`behind > 0`）或任一检查失败时才进入内容刷新路径。这避免为了"看起来有产出"制造无意义的文本 churn，也避免第二个 PR。
