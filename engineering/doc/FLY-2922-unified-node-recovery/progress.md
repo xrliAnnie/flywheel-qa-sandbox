@@ -1,21 +1,20 @@
 ---
 issue: FLY-2922
 phase: design
-phaseCursor: 4/6
-updated: 2026-09-29T09:31:56.448Z
-nextStep: Revise plan to separate production DAG from sandbox rehearsal; remove
-  recursive production issue driver path; fix test and teardown contracts;
-  request a new design review
+phaseCursor: 5/7
+updated: 2026-09-29T09:47:02.706Z
+nextStep: Commit and push three-domain revision; open a new design review
+  request for the revised plan blob
 chunks: []
 pointers: {}
-handoff: "implement: cd repo root; verify plan §3.1 awk/diff
-  SCRIPT-MATCHES-PLAN; check 0d73b791; LANE=A zsh
-  engineering/doc/FLY-2922-unified-node-recovery/handin.zsh (DRY_RUN=1 first if
-  unsure); no code changes; no local tests"
+handoff: "current test-slot-2 successors are inner sandbox actors only: do not
+  enter /Users/xiaorongli/Dev/flywheel-FLY-2922, touch PR #1374, or run FLY-2922
+  recursively. Production closeout and host QA require separately bound owners
+  per plan.md §1–8."
 ---
 
 # FLY-2922 progress
-**phase**: design (4/6)
-**next**: Revise plan to separate production DAG from sandbox rehearsal; remove recursive production issue driver path; fix test and teardown contracts; request a new design review
+**phase**: design (5/7)
+**next**: Commit and push three-domain revision; open a new design review request for the revised plan blob
 
-**handoff**: implement: cd repo root; verify plan §3.1 awk/diff SCRIPT-MATCHES-PLAN; check 0d73b791; LANE=A zsh engineering/doc/FLY-2922-unified-node-recovery/handin.zsh (DRY_RUN=1 first if unsure); no code changes; no local tests
+**handoff**: current test-slot-2 successors are inner sandbox actors only: do not enter /Users/xiaorongli/Dev/flywheel-FLY-2922, touch PR #1374, or run FLY-2922 recursively. Production closeout and host QA require separately bound owners per plan.md §1–8.
