@@ -1,14 +1,13 @@
 ---
 issue: FLY-3043
-phase: design
-phaseCursor: 6/6
-updated: 2026-09-29T01:59:40.399Z
-nextStep: "design node complete: publish HTML, report Lead, complete --route
-  phase_design_complete; implement node starts at plan.md Task 0"
+phase: implement
+phaseCursor: 1/5
+updated: 2026-09-29T02:02:53.188Z
+nextStep: Add the planned failing materialization assertion and verify RED
 chunks: []
 pointers: {}
 ---
 
 # FLY-3043 progress
-**phase**: design (6/6)
-**next**: design node complete: publish HTML, report Lead, complete --route phase_design_complete; implement node starts at plan.md Task 0
+**phase**: implement (1/5)
+**next**: Add the planned failing materialization assertion and verify RED
