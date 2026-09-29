@@ -1,13 +1,13 @@
 ---
 issue: FLY-3029
 phase: design
-phaseCursor: 2/6
-updated: 2026-09-29T04:49:06.126Z
-nextStep: write implementation plan; poll slot/head question at boundary
+phaseCursor: 3/6
+updated: 2026-09-29T04:50:38.362Z
+nextStep: commit and push reviewed design docs; request design review
 chunks: []
 pointers: {}
 ---
 
 # FLY-3029 progress
-**phase**: design (2/6)
-**next**: write implementation plan; poll slot/head question at boundary
+**phase**: design (3/6)
+**next**: commit and push reviewed design docs; request design review
