@@ -2,10 +2,10 @@
 issue: FLY-3043
 phase: implement
 title: QA 沙箱相关测试说明
-phaseCursor: 4/6
-updated: 2026-09-29T08:31:35.619Z
-nextStep: Install frozen dependencies, append the one required line, and run
-  targeted verification
+phaseCursor: 5/6
+updated: 2026-09-29T08:32:43.707Z
+nextStep: Commit and push the verified one-line change, create the final
+  milestone commit, and request code review
 chunks:
   - id: onboarding
     order: 1
@@ -35,27 +35,28 @@ chunks:
     deps:
       - plan
     done: Exact final line added and targeted checks pass
-    status: doing
+    status: done
   - id: review-and-pr
     order: 6
     deps:
       - implementation
     done: Review approved and root PR opened
-    status: todo
+    status: doing
 pointers:
   plan: engineering/doc/FLY-3043-qa-sbx-related-tests/plan.md
   exploration: engineering/doc/FLY-3043-qa-sbx-related-tests/exploration.md
   research: engineering/doc/FLY-3043-qa-sbx-related-tests/research.md
+  reviewedSha: unreviewed
 ---
 
 # FLY-3043 progress — QA 沙箱相关测试说明
-**phase**: implement (4/6)
-**next**: Install frozen dependencies, append the one required line, and run targeted verification
+**phase**: implement (5/6)
+**next**: Commit and push the verified one-line change, create the final milestone commit, and request code review
 
 ## chunks
 - ✅ onboarding — Onboarding complete and implement TURN acquired
 - ✅ exploration — Locked one-line scope documented
 - ✅ research — Target and related-test discovery documented
 - ✅ plan — Approved implementation plan recorded
-- 🔨 implementation — Exact final line added and targeted checks pass
-- ⬜ review-and-pr — Review approved and root PR opened
+- ✅ implementation — Exact final line added and targeted checks pass
+- 🔨 review-and-pr — Review approved and root PR opened
