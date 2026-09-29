@@ -1,0 +1,41 @@
+classDiagram
+    class 判据清单 {
+      version = 1
+      items 最多30条有效项
+    }
+    class 判据条目 {
+      id
+      title
+      status
+      evidence 证据
+      reason 没测的原因
+      claim 引用的上一轮编号
+      into 合并去向
+    }
+    class 状态 {
+      <<五选一>>
+      pass 通过
+      fail 不通过
+      not_run 没测_必须写原因
+      carried 沿用_必须引用上一轮
+      merged 已并入别的条目
+    }
+    class 槽位529 {
+      <<两种形态二选一>>
+      e2e_529 跑了_带房间号和退出码
+      e2e_529_exempt 豁免_带类别和理由
+    }
+    class 已接受判决账本行 {
+      seq 自增序号
+      ref 编号
+      scope 属于哪个任务
+      status pass或fail
+      pr_head_sha 验的是哪个版本
+      criteria 清单原文
+      e2e_529_verified 是否核对过记录
+    }
+    判据清单 "1" *-- "多条" 判据条目
+    判据条目 --> 状态
+    判据清单 "1" o-- "0或1" 槽位529
+    已接受判决账本行 "1" *-- "1" 判据清单
+    判据条目 ..> 已接受判决账本行 : carried 只能引用紧邻上一条

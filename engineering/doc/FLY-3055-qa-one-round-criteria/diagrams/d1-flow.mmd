@@ -1,0 +1,26 @@
+sequenceDiagram
+    autonumber
+    participant QA as QA（测试员）
+    participant CLI as 命令行 qa-result
+    participant BR as Bridge（调度服务）
+    participant LG as 已接受判决账本
+    participant DEV as 实现体（修 bug 的 agent）
+    QA->>QA: 第 1 轮：把判据全部测完，写清单文件
+    QA->>CLI: 交 FAIL + 清单
+    CLI->>CLI: 本地检查：没测的项有没有写原因
+    alt 清单不合格
+        CLI-->>QA: 拒收，不发请求
+    else 合格
+        CLI->>BR: 提交
+        BR->>BR: 再查一遍 + 对照上一轮
+        BR->>LG: 接受并登记（同一次写入）
+        BR-->>CLI: accepted ref=qv:…
+    end
+    BR->>DEV: 叫醒：要修的项 + 相邻路径一起补测试
+    DEV->>BR: 推送修复
+    BR->>LG: 读上一轮清单
+    BR->>QA: 叫醒：附上一轮清单，标明哪些可沿用
+    QA->>QA: 第 2 轮：只测改动碰到的 + 上轮没过的
+    QA->>CLI: 交 PASS（未动的项标 carried 引用上一轮）
+    CLI->>BR: 提交
+    BR->>LG: 核对引用后登记
