@@ -2,14 +2,14 @@
 issue: FLY-202
 phase: implement
 phaseCursor: 4/5
-updated: 2026-09-29T00:12:22.119Z
-nextStep: "re-dispatch 2 (exec a22228af) reconciled at e742919: 4 checks PASS,
-  behind=0; republish milestone as last commit, push, exact-head code review,
-  complete needs_review PR #267"
+updated: 2026-09-29T00:27:01.853Z
+nextStep: "rework attempt 2 (lead qa2861-A): probe line committed; republish
+  milestone last, push, fresh-head Codex review (gpt-5.6-sol/xhigh), write
+  code-review.json + await-codex-gate, complete needs_review PR #267"
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
 **phase**: implement (4/5)
-**next**: re-dispatch 2 (exec a22228af) reconciled at e742919: 4 checks PASS, behind=0; republish milestone as last commit, push, exact-head code review, complete needs_review PR #267
+**next**: rework attempt 2 (lead qa2861-A): probe line committed; republish milestone last, push, fresh-head Codex review (gpt-5.6-sol/xhigh), write code-review.json + await-codex-gate, complete needs_review PR #267
