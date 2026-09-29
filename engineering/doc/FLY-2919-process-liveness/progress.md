@@ -1,14 +1,14 @@
 ---
 issue: FLY-2919
 phase: design
-phaseCursor: 3/6
-updated: 2026-09-29T04:18:50.805Z
-nextStep: write plan.md (contract, convergence, 6 groups, 9-issue matrix,
-  tests); then stage set design_review + codex review
+phaseCursor: 4/6
+updated: 2026-09-29T04:23:56.490Z
+nextStep: design_review R1 running (request 8137ebab, gpt-6-astra/xhigh);
+  rendering diagrams + founder HTML in parallel
 chunks: []
 pointers: {}
 ---
 
 # FLY-2919 progress
-**phase**: design (3/6)
-**next**: write plan.md (contract, convergence, 6 groups, 9-issue matrix, tests); then stage set design_review + codex review
+**phase**: design (4/6)
+**next**: design_review R1 running (request 8137ebab, gpt-6-astra/xhigh); rendering diagrams + founder HTML in parallel
