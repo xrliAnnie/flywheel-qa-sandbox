@@ -2,9 +2,10 @@
 issue: FLY-3043
 phase: qa
 title: QA 沙箱相关测试说明
-phaseCursor: 1/4
-updated: 2026-09-29T09:00:00.979Z
-nextStep: Inspect reviewed diff and select issue-scoped QA checks
+phaseCursor: 2/4
+updated: 2026-09-29T09:00:41.236Z
+nextStep: Run direct contract consumer test, lint, affected build, and
+  independent literal/EOF oracles
 chunks:
   - id: onboarding
     order: 1
@@ -48,8 +49,8 @@ pointers:
 ---
 
 # FLY-3043 progress — QA 沙箱相关测试说明
-**phase**: qa (1/4)
-**next**: Inspect reviewed diff and select issue-scoped QA checks
+**phase**: qa (2/4)
+**next**: Run direct contract consumer test, lint, affected build, and independent literal/EOF oracles
 
 ## chunks
 - ✅ onboarding — Onboarding complete and implement TURN acquired
