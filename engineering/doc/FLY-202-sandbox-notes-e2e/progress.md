@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
 phase: design
-phaseCursor: 4/6
-updated: 2026-09-29T16:17:32.323Z
-nextStep: Codex design review of plan.md
+phaseCursor: 5/6
+updated: 2026-09-29T16:23:55.168Z
+nextStep: Publish founder HTML, report, complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: design (4/6)
-**next**: Codex design review of plan.md
+**phase**: design (5/6)
+**next**: Publish founder HTML, report, complete
