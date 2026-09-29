@@ -1,14 +1,15 @@
 ---
 issue: FLY-3043
 phase: implement
-phaseCursor: 4/6
-updated: 2026-09-29T04:03:28.929Z
-nextStep: request effective code review, commit implementation, add milestone as
-  last commit, push and open PR
+phaseCursor: 5/6
+updated: 2026-09-29T04:04:18.531Z
+nextStep: "on phase wake: acquire TURN, check review question
+  9a4fae95-56a3-42bf-b6ee-fc9a9fc59c5e; on APPROVED add milestone as literal
+  last commit, push, open PR, report and complete"
 chunks: []
 pointers: {}
 ---
 
 # FLY-3043 progress
-**phase**: implement (4/6)
-**next**: request effective code review, commit implementation, add milestone as last commit, push and open PR
+**phase**: implement (5/6)
+**next**: on phase wake: acquire TURN, check review question 9a4fae95-56a3-42bf-b6ee-fc9a9fc59c5e; on APPROVED add milestone as literal last commit, push, open PR, report and complete
