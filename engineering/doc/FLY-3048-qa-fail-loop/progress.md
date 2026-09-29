@@ -1,13 +1,13 @@
 ---
 issue: FLY-3048
 phase: implement
-phaseCursor: 1/5
-updated: 2026-09-29T03:40:59.668Z
-nextStep: record failing pre-change assertion, then create the round-one fixture
+phaseCursor: 2/5
+updated: 2026-09-29T03:41:40.127Z
+nextStep: run targeted policy discovery and verify the exact fixture bytes
 chunks: []
 pointers: {}
 ---
 
 # FLY-3048 progress
-**phase**: implement (1/5)
-**next**: record failing pre-change assertion, then create the round-one fixture
+**phase**: implement (2/5)
+**next**: run targeted policy discovery and verify the exact fixture bytes
