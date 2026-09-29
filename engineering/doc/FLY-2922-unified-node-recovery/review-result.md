@@ -3,7 +3,7 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 日期: 2026-09-29
 基于: plan.md
 
-> **当前状态：exec e717d910 Round 1 CHANGES_REQUESTED，修订中。** 下方 2026-09-27 的 verify-then-submit Round 1–3 是历史记录，已被 2026-09-29 三域隔离计划取代，不能作为当前 plan blob 的批准，也不能执行已删除的 `handin.zsh`。上一 activation 的 Round 2 APPROVED 只覆盖旧 plan blob，不能外推到本次修订。
+> **当前状态：exec e717d910 Round 2 PENDING。** 下方 2026-09-27 的 verify-then-submit Round 1–3 是历史记录，已被 2026-09-29 三域隔离计划取代，不能作为当前 plan blob 的批准，也不能执行已删除的 `handin.zsh`。上一 activation 的 Round 2 APPROVED 只覆盖旧 plan blob，不能外推到本次修订。
 
 评审对象：本轮 design 节点的 verify-then-submit 合同（plan.md + handin.zsh），不是上游已批准的 held 恢复设计（那份的有效评审见 origin/flywheel-FLY-2922 的 review-result.md：gate d9ab4f85、0f29f815）。评审模型由 Bridge 指定：gpt-6-astra / xhigh；Codex thread `01a0e2e9-4f98-7502-b116-d377dd2fd8d6`。
 
@@ -79,3 +79,10 @@ design 节点被以新 exec `0edcc786-726c-42e3-a310-77c5fda21351` 重派。plan
   - driver 显式一小时 timeout，超时归类 infrastructure-inconclusive；
   - E2/E3 加生产 PR/remote/checkout/push-guard 前后对照和 room worktree 全量扫描；
   - C4 按 runtime Blueprint 打开 `approve_to_ship` gate，并把真实 question id 绑定到 `complete --route needs_review`。
+
+## exec e717d910 Round 2 — PENDING
+
+- 修订提交：`862377f34`
+- gate question：`00d3169f-6da3-42dc-9739-c2e3144b11a0`
+- request：`fed7084b-43d7-4988-9d98-1252b6882cae`
+- 审阅对象：StateStore actor-authority、递归房处置与 QA source/evidence 修订后的 plan blob；Round 1 question 不复用。
