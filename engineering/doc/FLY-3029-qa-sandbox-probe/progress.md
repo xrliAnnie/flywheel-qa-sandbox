@@ -1,13 +1,13 @@
 ---
 issue: FLY-3029
 phase: design
-phaseCursor: 1/6
-updated: 2026-09-29T04:47:51.316Z
-nextStep: research repository evidence and resolve slot/head identity
+phaseCursor: 2/6
+updated: 2026-09-29T04:49:06.126Z
+nextStep: write implementation plan; poll slot/head question at boundary
 chunks: []
 pointers: {}
 ---
 
 # FLY-3029 progress
-**phase**: design (1/6)
-**next**: research repository evidence and resolve slot/head identity
+**phase**: design (2/6)
+**next**: write implementation plan; poll slot/head question at boundary
