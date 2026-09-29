@@ -3,13 +3,15 @@ Issue: FLY-3055 (https://linear.app/geoforge3d/issue/FLY-3055/机制qa-一轮测
 日期: 2026-09-29
 基于: exploration.md、research.md
 
-版本: v5（Codex R1 10 项 + R2 6 项 + R3 5 项 + R4 2 项全部处理，见 §13 修订轨迹）
+版本: v6（Codex R1 10 项 + R2 6 项 + R3 5 项 + R4 2 项全部处理；v6 新增 founder 2026-09-29 直令的 529 流程门 §2.1，见 §13 修订轨迹）
 
 ## 0. 一句话
 
 QA 交判决必须带一份结构化判据清单（`qa-criteria/v1`，`--criteria-file`）：CLI 先拒、Bridge 在两条 ingest 路径都在写库前权威校验；**被消费者接受**的 verdict 连同清单在**接受状态的同一事务**里登记进一张 append-only 的「已接受 QA verdict」账本；下一轮 QA（和修它的实现体）开局由 Bridge 从这张账本读**紧邻上一条已接受 verdict** 注入全部出口，未被改动碰到的 pass 项用 `carried` 引用沿用，不重跑。
 
 ## 1. 边界与不变量
+
+- **529 按「改没改 flow」判，不按「改没改 Discord」判**（founder 2026-09-29 07:12 直令 + 09:15 澄清，§2.1）：带流程门标记的 QA 交 PASS 必须带 `e2e_529`（跑了）或 `e2e_529_exempt`（四类豁免之一 + 理由）；理由为空或拿 Discord 说事 → 拒。是否改到 flow 由 QA 判断，机器只拒这两类无效理由。
 
 - **目标文件映射**（本仓库无 `phase-protocols/`、无 `agents/nodes/`，见 exploration §2.1）：QA 协议 = `Blueprint.ts` 两段 QA prompt + `.flywheel/agents/engineering/qa-executor.md`；implement 协议 = Blueprint `## QA Fix Round` 块 + `engineer-executor.md`。已非阻塞问 Lead（question `e8517948`），无异议按此。
 - **一份规则，三处执行。** 解析、判决规则、引用规则全在 `packages/config/src/qa-criteria.ts`（`flywheel-config`）；CLI 预检、Bridge 路由前置、P1 事务内复核调用同一函数。
@@ -51,6 +53,9 @@ CLI 输入 `--criteria-file <path>`（≤64KB，UTF-8 严格解码），JSON：
 | `reason` | 仅 `not_run`，必填，≤200，不等于占位词（大小写不敏感：`n/a` `na` `none` `skip` `skipped` `todo` `tbd` `-` `无` `略`） |
 | `claim` | 仅 `carried`，必填。正整数或字符串（`^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$`），规范化为字符串；语义 = Bridge 注入并在接受回执里返回的**上一条已接受 verdict 的 ref**（§5.0） |
 | `into` | 仅 `merged`，必填，指向本清单内另一条非 merged 条目 id，不可自指 |
+| `e2e` | 仅 id=`e2e_529` 且 status 为 `pass`/`fail`，必填；恰好三个键 `room_id`（小写 UUID）、`driver_exit_code`（0..255 整数）、`record_id`（小写 UUID）；status=`pass` 时 exit code 必须 ∈ {0, 20}（20 = driver 已知的 F2 诊断）。其他条目带 `e2e` → 拒 |
+| `exempt_category` | 仅 id=`e2e_529_exempt`，必填，`docs_only \| ci_config_only \| tests_only \| no_flow_change`；该条目 status 必须是 `not_run`（所以 `reason` 必填、非占位词）；`reason` 匹配 `/discord/i` → 拒 |
+| 条目键 | 只允许 `id title status evidence reason claim into e2e exempt_category`；未知键拒 |
 | 文本 | 拒 C0 控制字符（`\t` 除外）、U+2028/2029、孤立代理项 |
 
 `merged` 退役/合并旧判据不丢账：源 id 必须在紧邻上一轮清单里（服务端查）；源上一轮为 `pass`/`carried`（链可沿用）→ 目标任意非 merged 状态；源为 `fail`/`not_run` → 目标本轮必须是 `fail`/`not_run`。首轮不得出现 `carried`/`merged`。**满员（30 条非 merged）时要加新判据**（如 founder-feedback）：先把一条已通过的旧 id `merged` 进相邻判据腾位，再添加（R1#7）。
@@ -68,9 +73,44 @@ CLI 输入 `--criteria-file <path>`（≤64KB，UTF-8 严格解码），JSON：
 
 `evaluateQaCriteriaSubmission({family, status, criteria, loadPrior, loadByRef})` 把「家族 → 必填 → 判决 → 引用」串成一个调用。
 
+## 2.1 529 流程门 `e2e-529-flow-gate/v1`（founder 2026-09-29）
+
+**根因**：QA 协议把 529 写成「Discord-capable changes → run 529」并带「No Discord surface → exempt」，QA 照字面执行，出现「没改 Discord 所以没跑 529」。529 首先是 **flow 测试**（在候选头上把 design → implement → QA → gate 整条流程跑一遍），其次才是 Discord 测试。
+
+**规则（09:15 澄清后的最终版）**：
+- 改到 flow（运行中系统会执行的东西：引擎 / Bridge / runner 生命周期 / Lead 与 onboard 流程 / QA 流程 / 被执行的脚本与提示词）→ 必跑 529 generalized flow drill。
+- 是否改到 flow 由 QA 判断；拿不准就跑。
+- 豁免四类：`docs_only`、`ci_config_only`、`tests_only`、QA 判断的 `no_flow_change`；都必须在 `reason` 里写明改了什么、为什么运行中的 flow 不受影响。
+- 「没改 Discord」是无效理由。机器**只**拒两类：空理由（含占位词）和提到 Discord 的理由。理由是否充分不由机器判（R-i）。
+- Discord N-to-N 仍按原 Discord-capable 判据**额外**跑，不受本门影响。
+
+**两个保留条目 id**（互斥，同一清单同时出现两者的非 merged 条目 → `qa_criteria_invalid`）：
+
+```json
+{"id":"e2e_529","title":"529 generalized flow drill","status":"pass","evidence":"drill exit 0, 4 nodes advanced","e2e":{"room_id":"<uuid>","driver_exit_code":0,"record_id":"<uuid>"}}
+{"id":"e2e_529_exempt","title":"529 drill exempt","status":"not_run","exempt_category":"no_flow_change","reason":"only renamed a log field in a report formatter; no prompt, script or engine path reads it"}
+```
+
+**门 `checkQaE2e529Gate({required, status, criteria, subjectHead, loadRecord?})`**（纯函数，接在 `evaluateQaCriteriaSubmission` 引用规则之后；CLI 预检、ingress、接受事务内复核三处同一函数）：
+
+| 情形 | 结果 |
+|---|---|
+| `required=false`，或 verdict 为 FAIL | 放行（FAIL 不要求已跑 529；门只拦 PASS） |
+| 有非 merged 的 `e2e_529_exempt`（形状已由 §2 校验） | 放行 |
+| `e2e_529` status=`carried` | 放行（引用规则已保证上一轮同 id 为 pass/carried；即小修真房豁免） |
+| `e2e_529` status=`pass` 且 `loadRecord` 可用 | 记录必须存在、属于同一 scope、head = verdict head、lane 为 generalized、exit code 相等；否则 `qa_criteria_e2e_529_evidence_invalid`，detail `{record_id, cause: record_missing\|record_scope_mismatch\|record_head_mismatch\|record_lane_invalid\|record_exit_mismatch}` |
+| `e2e_529` status=`pass` 且 `loadRecord` 不可用 | 放行，账本行记 `e2e_529_verified=0`，Lead 通知行标 `529: 未核对记录`（R-j） |
+| 其余（两者都没有、`e2e_529` 为 `not_run`/`fail` 却交 PASS——后者已被判决规则拦） | `qa_criteria_e2e_529_required`，detail 带两种条目的最小示例 |
+
+**`required` 从哪来（单一真相）**：QA 角色文件含字面标记 `e2e-529-flow-gate/v1` ⇒ 该 QA 受门约束。Blueprint 在 spawn 时本就读角色文件（`readAgentFile`）；run-dispatcher 在创建 QA 会话时把 `e2e_529_gate: true` 写进该会话的 `session_params`（持久）。ingress 与接受事务从 **reporter 会话**读这个布尔值，不从请求体读。没有标记的项目（其它项目的 QA 角色文件）行为零变化。
+
+**`loadRecord`（证据记录核对）**：本仓库没有 `room` 命令、没有 evidence-run 记录存储（exploration §2，全仓 grep 零命中）。设计为 `StateStore.loadQaE2e529Record?(recordId)` 可选接口：有存储的部署接上后自动启用核对；本仓库不实现存储，只做形状校验。这是已声明的边界，不在本单伪造一个存储。
+
+**CLI 本地预检**：形状规则（含 Discord 理由、空理由、互斥）在 `loadQaCriteriaFile` 阶段即拒，零请求。`required` 由服务端判；CLI 另在环境变量 `FLYWHEEL_QA_E2E_529_GATE=1`（Bridge spawn QA 时按上述标记注入）时对 PASS 本地跑一次 `checkQaE2e529Gate`（无 `loadRecord`），让 QA 在发请求前就看到 `qa_criteria_e2e_529_required`。
+
 ## 3. 共享模块 `packages/config/src/qa-criteria.ts`（flywheel-config）
 
-导出：`QA_CRITERIA_SCHEMA="qa-criteria/v1"`、上限常量、类型 `QaCriteriaV1/QaCriterion/QaCriterionStatus/AcceptedQaVerdict/QaCriteriaRejection`、`parseQaCriteria`、`validateQaCriteriaVerdict`、`qaCriteriaCounts`、`workflowDecisionEvidence`、`qaCriteriaFromEvidence`（读回，解析失败 → null）、`canonicalQaResultPayload`、`qaCriterionCarryChain`、`checkQaCriteriaAgainstPrior`、`evaluateQaCriteriaSubmission`、`QA_CRITERIA_REJECTION_REASONS`（含 `qa_result_reporter_mismatch`、`qa_result_target_unbound`、`qa_result_replay_mismatch`）、`qaCriteriaRejectionHttpStatus`、`formatQaCriteriaRejection`、`loadQaCriteriaFile`。纯函数、无 I/O（除 `loadQaCriteriaFile`）。
+导出：`QA_CRITERIA_SCHEMA="qa-criteria/v1"`、上限常量、类型 `QaCriteriaV1/QaCriterion/QaCriterionStatus/AcceptedQaVerdict/QaCriteriaRejection`、`parseQaCriteria`、`validateQaCriteriaVerdict`、`qaCriteriaCounts`、`workflowDecisionEvidence`、`qaCriteriaFromEvidence`（读回，解析失败 → null）、`canonicalQaResultPayload`、`qaCriterionCarryChain`、`checkQaCriteriaAgainstPrior`、`evaluateQaCriteriaSubmission`、`QA_CRITERIA_REJECTION_REASONS`（含 `qa_result_reporter_mismatch`、`qa_result_target_unbound`、`qa_result_replay_mismatch`）、`QA_E2E_529_FLOW_GATE_MARKER`、`QA_E2E_529_ID`、`QA_E2E_529_EXEMPT_ID`、`QA_E2E_529_EXEMPT_CATEGORIES`、`QA_E2E_529_PASSING_EXIT_CODES`、`checkQaE2e529Gate`（拒收原因增 `qa_criteria_e2e_529_required`、`qa_criteria_e2e_529_evidence_invalid`）、`qaCriteriaRejectionHttpStatus`、`formatQaCriteriaRejection`、`loadQaCriteriaFile`。纯函数、无 I/O（除 `loadQaCriteriaFile`）。
 
 ## 4. CLI（`packages/flywheel-comm`）
 
@@ -98,6 +138,7 @@ CREATE TABLE IF NOT EXISTS qa_verdict_accepted (
   status TEXT NOT NULL CHECK (status IN ('pass','fail')),
   pr_head_sha TEXT NOT NULL,
   summary TEXT,
+  e2e_529_verified INTEGER,            -- NULL=门不适用/豁免/carried；1=记录已核对；0=仅形状校验（§2.1）
   criteria JSON,                       -- 规范形或 NULL（上线前 verdict）
   accepted_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -110,6 +151,7 @@ CREATE INDEX IF NOT EXISTS idx_qa_verdict_accepted_scope ON qa_verdict_accepted(
   1. **已接受？** `getAcceptedQaVerdictByEvent(event_id)`（或 P1 的 `claim:` ref）命中 → 核对规范提交（reporter execution、issue/project、head、status、`canonicalQaResultPayload` 含规范 criteria）一致 → **复用该 ref、只补写尚未写入的状态/intent、跳过 prior 校验**；不一致 → 抛（同 event_id 不同内容，账本损坏级别）。这解决 P1 镜像先在 claim 事务入账、再进 phase 接受事务的正常顺序（R3#1），以及 claim 后 / intent 前崩溃的恢复。
   2. **legacy 事件？** 解码结果 `criteriaKeyPresent === false`（部署前落库、intent/账本都没有的旧事件，经启动 sweep 首次消费，`event-route.ts:590-595` → `phase-orchestrator.ts:892-928`）→ **受限 legacy 分支**（R3#2）：跳过 evaluator；若 scope 最新已接受 prior **带清单** → 拒（`{accepted:false, reason:'qa_verdict_legacy_refused'}`，写 session_event + Lead 告警：旧事件不能压掉新协议的覆盖义务，QA 需带清单重交）；否则登记 `criteria=NULL` 行，现有 consumer guard 照旧，下游注入 summary + 规则块。新 HTTP 提交永远要求清单（§5.3），带键但损坏的事件仍抛。
   3. **首次接受**：`evaluateQaCriteriaSubmission` 对**此刻**的 `getLatestAcceptedQaVerdict(scope)` 重跑（纯函数 + 一条查询）；不通过 → 事务回滚、返回 `{accepted:false, reason, detail}`（在线路径由 route 同步返回给 CLI，见 §5.3；延迟消费路径写 `qa_verdict_stale_prior` session_event + `alertLeadPipelineError`），verdict 不采纳、QA 保活。通过 → 写状态/intent + 账本行。
+  首次接受分支的 `evaluateQaCriteriaSubmission` 带 `e2e529: {required: reporter 会话 session_params.e2e_529_gate === true, subjectHead, loadRecord?}`（§2.1）；「已接受」与 legacy 分支不跑门。
   ingress 校验（§5.2/§5.3）仍保留，负责即时 CLI 反馈；事务内复核只堵「延迟消费 / await 期间账本变化」的窗口。
   - `acceptAutoQaVerdictTx({parentExec, head, status, verdictEventId, ledgerRow})`：`setAutoQaStatus(...)` + 账本行。调用点 `auto-qa-coordinator.ts:1277`（PASS）/`:1300`（FAIL），替换原 `setAutoQaStatus` 首次调用；scope `auto-qa:<targetExec>`。
   - `acceptThreeStageQaVerdictTx({execId, intentPatch, ledgerRow})`：`patchSessionParams(three_stage_verdict ← intentPatch ∪ {ledger_ref})` + 账本行。`phase-orchestrator.ts` deps `qaVerdicts.acceptVerdict(...)` 替换 `:1161` 的首次 `patchIntent`（后续 `patchIntent` 不变）；scope `issue:<project>/<issue_id>`；被 intent 规则忽略的事件不登记。intent 新增字段 `ledger_ref`（有 = 新协议 verdict；无 = 部署前 legacy intent，R2#3）。
@@ -137,13 +179,13 @@ CREATE INDEX IF NOT EXISTS idx_qa_verdict_accepted_scope ON qa_verdict_accepted(
 1. **身份**（R1#3）：`payload.qaExecutionId` 存在且 ≠ `event.execution_id` → 400 `qa_result_reporter_mismatch`（CLI 恒相等，`qa-result.ts:89`）。reporter = `store.getSession(event.execution_id)`；不是 `session_role='qa'` → 409 `qa_result_reporter_not_qa`（下游本就拒，前移为显式拒，零副作用）。
 2. **重放**（R1#4、R2#4）：`getEventById(event.event_id)` 命中 → 比较 envelope 身份（`execution_id/issue_id/project_name/event_type`）+ `canonicalQaResultPayload`；全同 → `{ok:true, duplicate:true, outcome, ref?, reason?}`，`outcome` 按步骤 5 的持久化规则解析（账本行 → accepted+ref；否则最新 `qa_result_outcome` 事件；否则 not_accepted）；任一不同 → 409 `qa_result_replay_mismatch`；**不做 prior 校验**。
 3. **scope**：reporter `chat_thread_role='qa'` → `issue:<project>/<issue_id>`；否则 auto-QA：`listAutoQaRecordsByQaExec(reporter)` 中 `parent_execution_id === payload.targetExecutionId` 的 record 必须存在 → scope `auto-qa:<parent>`；不存在 → 409 `qa_result_target_unbound`。
-4. `payload.qa_criteria` → `parseQaCriteria`；`evaluateQaCriteriaSubmission({family:'qa_verdict', loadPrior: getLatestAcceptedQaVerdict(scope), loadByRef})`；拒 → 400/409 `{ok:false, reason, detail, hint}`，**不 insertEvent**。
+4. `payload.qa_criteria` → `parseQaCriteria`；`evaluateQaCriteriaSubmission({family:'qa_verdict', loadPrior: getLatestAcceptedQaVerdict(scope), loadByRef, e2e529})`（`e2e529.required` 取自步骤 1 已读到的 reporter 会话，§2.1；P1 路由 §5.2 步骤 2 同样传入）；拒 → 400/409 `{ok:false, reason, detail, hint}`，**不 insertEvent**。
 5. 通过 → 现有 `insertEvent` + 下游（`event-route.ts:564-606` 同步 await 消费者）。两个消费者的 `onQaResult` 改为返回 `QaVerdictOutcome = {outcome:'accepted'|'not_accepted', reason?, detail?}`（现有每条 ignore/warn 分支各给一个 reason 字符串；事务内复核拒 → 其 reason/detail）。**统一判定函数 `resolveQaResultReceipt(store, eventId, consumerResult?)`（首次响应、异常分支、重放、启动 sweep 全用它，R4#2）**，顺序固定：① `getAcceptedQaVerdictByEvent(eventId)` 有行 → `accepted` + 真实 ref（消费者在接受事务**之后**的副作用抛错——如 O2 打开 CommDB 失败、fail flow 抛——不撤销接受事实，只走现有告警/恢复）；② 无行且消费者返回/抛错 → `not_accepted` + reason/detail（抛错 reason=`consumer_error`）；③ 无行且三阶段 holder 缺失（`:590-595`，启动 sweep **确实**会重放）→ `pending`；auto-QA holder 缺失 → `not_accepted`（auto-QA 启动恢复**不重放**原始事件，`auto-qa-coordinator.ts:1795-1844`）。**每次判定都持久化**为 session_event `qa_result_outcome`（event_id `outcome:<verdict event_id>:<seq>`，payload `{outcome, reason}`）——不只 HTTP 响应，`reconcileQaVerdicts`（`phase-orchestrator.ts:914-933`）消费后也调用同一函数终结回执（R4#1）。重放（步骤 2）按「账本行 → 最新 outcome 事件 → 无记录视为 not_accepted」回答；**pending 的收窄承诺**：启动 sweep 只处理每个 execution 的最新 `qa_result`（`StateStore.ts:3376-3382`），因此写入 pending 时若同 execution 已有更新的 qa_result，旧事件的 outcome 直接写 `not_accepted`（reason `superseded_by_newer_verdict`）；缺账本行**绝不**回 pending 之外的成功。
 6. 「被拒 = 什么都没写」只对**新** event 的拒收成立；`pending` 只在有恢复 consumer 的三阶段 deferred 路径出现。
 
 ### 5.4 Lead 可见
 
-auto-QA FAIL `postThread`（`auto-qa-coordinator.ts:1322`）、三阶段对应通知：summary 前加 `判据: pass N · fail N · not_run N · carried N · merged N`，计数从**账本行**算（启动恢复路径同源，R1#5）。
+auto-QA FAIL `postThread`（`auto-qa-coordinator.ts:1322`）、三阶段对应通知：summary 前加 `判据: pass N · fail N · not_run N · carried N · merged N`，计数从**账本行**算（启动恢复路径同源，R1#5）。受 529 门约束的 PASS 另加一段：`529: ran exit <code>（已核对记录|未核对记录）` / `529: carried <ref>` / `529: exempt <category> — <reason ≤80>`，让 Lead 一眼看到豁免理由。
 
 ## 6. 注入（新文件 `packages/teamlead/src/qa-criteria-context.ts`）
 
@@ -218,6 +260,13 @@ Blueprint 只新增可选 `qaCriteriaBlock?`（ctx / `QaContext` / `phaseFixCont
 - Work loop 4：`On FAIL, hand specifics to the dev Runner and re-verify after the fix.` → `On FAIL, hand the COMPLETE criteria list to the dev Runner; re-verify only the changed parts per the injected re-verification context (carry untouched passes).`
 - Reporting 段命令加 `--criteria-file <criteria.json>`。
 
+### 7.5b 529 流程门文本（`qa-executor.md` + 规则块）
+
+- `qa-executor.md` CRITICAL rules 的 `Real-machine E2E` 条目后加一节，标题含标记：**`Flow changes → run the 529 generalized flow drill (e2e-529-flow-gate/v1)`**。正文：529 首先是 flow 测试；diff 改到运行中系统会执行的任何东西就跑 drill；`You judge whether the flow changed; when in doubt, run it.`；`"It does not touch Discord" / "no Discord surface" is never a reason to skip it.`；PASS 的清单必须含 `e2e_529` 或 `e2e_529_exempt`，给出 §2.1 两个 JSON 示例与四个类别；Discord-capable 的改动**额外**跑 Discord N-to-N。
+- 本仓库的角色文件没有「Discord-capable → run 529 / No Discord surface → exempt」旧段落（exploration §2.1，`qa-executor.md` 只有一行 Real-machine E2E）；因此这里是**新增**而非改写。合同测试断言「no Discord surface」只以否定句出现（即上面那句）。
+- `QA_CRITERIA_RULES_V1_QA` 规则块追加同义一句（≤300 units，仍在 2,000 上限内），仅当目标 QA 会话 `e2e_529_gate` 为真时附带。
+- Blueprint 两段 QA prompt 不写 529 规则正文（规则只在角色文件 + 规则块，单一来源）；只在命令模板旁加半句 `a PASS list includes e2e_529 or e2e_529_exempt when your role file carries e2e-529-flow-gate/v1`。
+
 ### 7.6 `.flywheel/agents/engineering/engineer-executor.md`
 
 Work loop 加 **2b. QA fix rounds（`qa-criteria/v1`, FLY-3055）**：`adjacent state paths` 一并补测试，交卷说明列出。
@@ -227,6 +276,7 @@ Work loop 加 **2b. QA fix rounds（`qa-criteria/v1`, FLY-3055）**：`adjacent 
 | 文件 | 覆盖 |
 |---|---|
 | `packages/config/src/__tests__/qa-criteria.test.ts`（新） | 形状矩阵；容量边界（30+2 合并+1 新增合法；31 拒）；判决真值表；规范化字节稳定；`workflowDecisionEvidence` 无清单时与旧字节一致；`claim` 数字/字符串规范为字符串；引用规则全 cause；三轮反例 A(AC1 pass)→B(AC1 fail)→C carried(A) 拒 `not_latest_prior`；三代链合法；链 seq 不递减 → `chain_broken`；撤销白名单内可 carry、外拒；merged 反例；满员合并腾位合法；`loadQaCriteriaFile` 非 UTF-8/超限/非文件拒；`canonicalQaResultPayload` 键序无关 |
+| `packages/config/src/__tests__/qa-criteria.test.ts`（续：529 门） | **issue 点名三条**：缺 529 证据的 PASS → `qa_criteria_e2e_529_required`；`e2e_529_exempt` 理由含「no Discord surface」（及大小写/中文夹杂 `没改 Discord`）→ 拒；`docs_only`/`ci_config_only`/`tests_only` 带理由 → 放行。**09:15 澄清**：`no_flow_change` 带理由 → 放行、空理由/占位词 → 拒、Discord 理由 → 拒。另：未知类别拒；exempt status≠not_run 拒；两个 id 同时出现拒；`e2e` 键数不对/非 UUID/exit 超界拒；pass + exit 3 拒、pass + exit 20 放行；fail + 任意 exit 合法；`e2e_529` carried 放行；FAIL verdict 无 529 条目放行；`required=false` 全放行；`loadRecord` 五种 cause 各一例 + 无 `loadRecord` 放行且 `verified=false` |
 | `packages/flywheel-comm/src/commands/__tests__/qa-result.test.ts` | 坏清单 → exit 1、零 fetch、零 marker；合法 → 两种 body 带规范化 `qa_criteria`；成功打印 `accepted ref=`；服务端 `qa_criteria_prior_uncovered`/`qa_result_replay_mismatch` → 不重试、无 marker、stderr 含 detail；503 仍 4 次重试 + marker |
 | `packages/flywheel-comm/src/__tests__/qa-result-criteria-cli.test.ts`（新） | 真 dist 入口 + 缺 reason 的 not_run → exit 1、中英文指引、零连接（BRIDGE_URL 指向监听器计数为 0 的本地 server）；正控 200 |
 | `packages/teamlead/src/__tests__/StateStore.qa-verdict-accepted.test.ts`（新） | 账本 append-only 触发器；UNIQUE 冲突幂等、NOT NULL/CHECK 失败抛且事务回滚（状态/intent/claim 都不落）；三个原子接受操作各自的**故障注入**（账本插入抛 → 状态未写；事务内复核拒 → 零写入 + `qa_verdict_stale_prior`）；两条待处理事件 B、C 都按 A 校验、先接受 B 后 C 被事务内复核拒；**P1 B carried(A) 整条路线** route→claim/ledger→phase 接受事务命中已入账行 → 复用 ref、补写 intent、零 stale-prior 告警、账本恰一行；claim 后 intent 前崩溃恢复同；legacy（无 `qa_criteria` 键）事件首次消费：scope 无新协议 prior → NULL 行 + summary 注入；scope 已有带清单 prior → `qa_verdict_legacy_refused` + 告警；scope 最新/精确 ref/按 event；**retarget 后仍可读到上一条**（`retargetAutoQaRecord` 前后）；reopen 后仍可读；同 exec 多历史 record 不影响；事务内复核拒 → credential 未消费、零 claim、零账本行 |
@@ -238,7 +288,8 @@ Work loop 加 **2b. QA fix rounds（`qa-criteria/v1`, FLY-3055）**：`adjacent 
 | `event-route-fly3055-qa-criteria.test.ts`（续） | 回执三态：accepted（ref 来自账本）/ pending（仅三阶段 holder 缺失）/ not_accepted（intent 忽略 B、auto-QA guard 丢弃、消费者抛错、auto-QA holder 缺失，各带 reason）；`qa_result_outcome` 事件落库；**ignored 响应丢失后精确重试 → not_accepted 而非 pending**；**接受事务提交后 `feedbackWakeMain` 抛错 → 首次响应与重放均 accepted、同 ref、账本恰一行**（对照：事务提交前抛错 → not_accepted）；**pending → 启动 sweep stale-prior 拒收 → 精确重放为 not_accepted**；同 execution 两条 pending → 启动只处理最新，旧条回执 `superseded_by_newer_verdict`；P1 镜像事件重放 → ref 为 `claim:`；同 id 同 payload 异 envelope → 409；部署前无账本事件重放 → not_accepted |
 | `runner-wake.test.ts` | `qaCriteriaSection` 在 1,500 截断后追加、上限 12,500；三阶段 QA 目标 feedback_wake 自动附带（O8）；非 QA 目标字节不变；`founder-action-drain` feedback_wake 同 |
 | `Blueprint.fly579-qa-mode.test.ts`、`fly859`、`fly793`、golden | 新 golden（协议文本更新后）；`qaCriteriaBlock` 缺省不引入额外字节；非 QA/非 fix 角色 prompt 与改动前逐字相同；命令模板六处含 `--criteria-file`；三条关键短语出现在对应段 |
-| `scripts/__tests__/test-qa-criteria-protocol-contract.sh`（新，接 CI） | grep 合同（§9.3）+ `QA_CRITERIA_RULES_V1_*` 与 role 文件关键短语一致 |
+| `packages/teamlead/src/__tests__/event-route-fly3055-qa-criteria.test.ts`（续：529 门） | reporter 会话 `e2e_529_gate=true`：PASS 无 529 条目 → 400 零落库；带 exempt → 接受、账本 `e2e_529_verified` NULL、Lead 行含 `529: exempt`；带 ran → `e2e_529_verified=0`；请求体自带 `e2e_529_gate:false` 被忽略；reporter 无标记 → 旧行为；dispatch 测试：角色文件含标记 → session_params 与 env 都带门，不含 → 都不带 |
+| `scripts/__tests__/test-qa-criteria-protocol-contract.sh`（新，接 CI） | grep 合同（§9.3）+ 529 门：角色文件含标记与四个类别名、`never a reason to skip`；全仓协议文本不存在肯定句式的 no-Discord 豁免+ `QA_CRITERIA_RULES_V1_*` 与 role 文件关键短语一致 |
 
 负控（删接线即红）：event-route 拒收分支、身份检查、事务内复核、账本登记（删掉后 O1 注入消失）、O2 的截断后追加。
 
@@ -247,7 +298,8 @@ Work loop 加 **2b. QA fix rounds（`qa-criteria/v1`, FLY-3055）**：`adjacent 
 1. **CLI 拒收**：真入口 `qa-result --status fail … --criteria-file bad.json`（无 reason 的 not_run）→ exit 1、指引「先把剩下的判据测完或写明为什么没测」、无 marker、零连接。
 2. **复验开局看到上一轮清单**：529 房（legacy auto-QA）：第一轮 FAIL 带清单（回执 `accepted ref=qv:…`）→ 实现体 push → `retest_wake` 文本含 `Previous QA verdict: qv:<same ref>` 与 `[pass]` 项 → 第二轮 `carried` 引用该 ref 被接受；截 wake 文本、清单文件、Bridge 日志、Lead 通知 `判据:` 行。三阶段与 P1 路径由 §8 测试证明。
 3. **协议 grep**：`grep -n "qa-criteria/v1\|never stop at the first blocker\|Small-fix real-room exemption" .flywheel/agents/engineering/qa-executor.md packages/edge-worker/src/Blueprint.ts` 命中 role 一处 + Blueprint 两段；`grep -n "adjacent state paths" .flywheel/agents/engineering/engineer-executor.md packages/edge-worker/src/Blueprint.ts` 各一处；`! grep "hand specifics to the dev Runner and re-verify after the fix" qa-executor.md`；`! grep "any blocking issue" Blueprint.ts`；`grep -c -- "--criteria-file" packages/edge-worker/src/Blueprint.ts` ≥ 7。
-4. `pnpm lint`、受影响包 build；exact-head PR CI 全绿为全量证据。
+4. **529 流程门**：真 CLI 三次——PASS 清单无 529 条目 → 拒；`e2e_529_exempt` 理由写「no Discord surface」→ 拒；`tests_only` + 具体理由 → 接受。grep：`qa-executor.md` 含 `e2e-529-flow-gate/v1`。
+5. `pnpm lint`、受影响包 build；exact-head PR CI 全绿为全量证据。
 
 ## 10. 上线、兼容、回滚（R1#9）
 
@@ -271,6 +323,7 @@ Work loop 加 **2b. QA fix rounds（`qa-criteria/v1`, FLY-3055）**：`adjacent 
 | C3 | 账本表 + 三个原子接受操作（含事务内复核）+ `getEventById` + `qaVerdictFromStoredEvent` 三处接线（含 `reconcileQaVerdicts`）+ intent `ledger_ref` + decision route + event-route（身份/重放/校验/三态回执）+ Lead 计数 + 既有 fixture | C1 |
 | C4 | `qa-criteria-context.ts`（三态入口）+ 规则块 + 九个出口（含 O9 actions retry）+ `runner-wake.ts` 追加位 + `WakePhaseRunnerArgs.qaCriteriaSection` + `RetryRequest`/`RunStartRequest`/Blueprint 可选字段 + drain deps | C3 |
 | C5 | 协议文本（Blueprint 三段 + effects 两处 + 两个 role 文件）+ golden 重钉 + shell 合同测试接 CI | C2b |
+| C6 | 529 流程门：共享模块字段与 `checkQaE2e529Gate` + dispatch 写 `e2e_529_gate`/env + ingress/接受事务传参 + 账本列 + Lead 行 + §7.5b 文本 + 测试 | C1,C3,C5 |
 
 ## 12. 风险与诚实边界
 
@@ -283,6 +336,11 @@ Work loop 加 **2b. QA fix rounds（`qa-criteria/v1`, FLY-3055）**：`adjacent 
 - R-h：legacy 首消费在 scope 已有新协议 prior 时被拒（`qa_verdict_legacy_refused`）→ 需要该 QA 重交带清单的 verdict；仅影响部署前落库、部署后首次消费的事件。
 - R-g：O9 implement 重试的 fixer 块取 issue scope 最新 FAIL（非 intent 精确），与 O5/O6 略有差异；重试本就是人工动作，写明。
 
+- R-i：机器不判豁免理由是否充分，只拒空理由和 Discord 理由。QA 可以写一个具体但错误的 `no_flow_change` 理由蒙混；防线是 Lead 通知行原样显示类别与理由，由人复核。founder 明确要 QA 保留判断权，所以不收紧。
+- R-j：本仓库无 evidence-run 存储，`e2e_529` 的 room_id / record_id 只做形状校验，伪造的 UUID 不会被机器发现；账本 `e2e_529_verified=0` 与 Lead 行「未核对记录」如实标出。接上存储后无需改协议。
+- R-k：Discord 理由用 `/discord/i` 整词拒，会误伤「改了 Discord 渲染的单测，只动测试文件」这类正当的 `tests_only` 理由——QA 需改写成不提 Discord 的表述（拒收提示里说明）。按否定句式匹配会漏（`Discord wasn't touched`）也会错，宁可严。
+- R-l：本仓库没有 `room` 命令，受门约束的 QA 在这里只能走豁免或引用外部房间的 drill；「房间超时上限 3h」「真 runner 负控」属于有 room 基建的部署，不在本仓库设计范围。
+
 ## 13. 修订轨迹
 
 - v1 2026-09-29 初稿。
@@ -290,3 +348,4 @@ Work loop 加 **2b. QA fix rounds（`qa-criteria/v1`, FLY-3055）**：`adjacent 
 - v3 2026-09-29 Codex R2（2H/4M）全部处理：#1 三个原子接受操作（状态/intent/claim 与账本同事务 + 事务内复核 + 普通 INSERT 只吞 UNIQUE）；#2 唯一解码函数 `qaVerdictFromStoredEvent` 三处接线含启动 sweep，`PhaseQaVerdict.qaCriteria`，legacy 仅按键缺失判定；#3 resolver 三态 + `{eventId}` 入口 + intent `ledger_ref` 区分 legacy，O5 经 `WakePhaseRunnerArgs.qaCriteriaSection`；#4 回执三态 accepted/stored/ignored，ref 只从账本读，重放比较 envelope + payload，CLI `not_accepted` exit 2；#5 新增 O9 actions retry 出口；#6 回滚用实际 dbPath + 冻结集合含 pending launch + 退出条件 = 集合为空（FAIL 保活不算）。
 - v4 2026-09-29 Codex R3（1H/3M/1L）全部处理：#1 接受事务三分流「已接受 → legacy → 首次」，已入账行复用 ref 跳过 prior 校验，DDL `UNIQUE(event_id)`；#2 legacy 事件首消费受限分支（scope 已有新协议 prior 则拒 + 告警）；#3 消费者返回 `QaVerdictOutcome`，回执 accepted/pending/not_accepted 持久化为 `qa_result_outcome` 事件，缺账本行绝不回 pending，R-f 措辞修正；#4 回滚冻结集合不按时间筛（`sessions` 无 `created_at`），C2b 与 C2a/C1 同步撤；#5 O9 implement 走 `RetryRequest.phaseFixContext` 复用既有 Fix Round 渲染，不加顶层 fixer 字段。
 - v5 2026-09-29 Codex R4（2M）全部处理：#1 回执终结接到消费边界（`resolveQaResultReceipt` 在 HTTP 与启动 sweep 都持久化 outcome；latest-only sweep 不再处理的旧 pending 写 `superseded_by_newer_verdict`）；#2 判定顺序账本行优先，接受后副作用抛错不撤销接受事实；§1 残留 stored/ignored 名称统一。
+- v6 2026-09-29 新增范围（founder 07:12 直令 + 09:15 澄清，非 Codex 意见）：§2.1 529 流程门——保留条目 `e2e_529` / `e2e_529_exempt`、四类豁免、只拒空理由与 Discord 理由、`required` 取自角色文件标记并持久到 reporter 会话、`loadRecord` 可选接口；§7.5b 文本；C6；R-i..R-l。
