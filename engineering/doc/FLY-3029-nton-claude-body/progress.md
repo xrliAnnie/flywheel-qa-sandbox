@@ -1,14 +1,13 @@
 ---
 issue: FLY-3029
-phase: design
-phaseCursor: 5/5
-updated: 2026-09-29T05:24:57.487Z
-nextStep: "design complete: Codex APPROVED R3, HTML published + reported;
-  complete --route phase_design_complete"
+phase: implement
+phaseCursor: 1/6
+updated: 2026-09-29T05:26:26.734Z
+nextStep: append probe line
 chunks: []
 pointers: {}
 ---
 
 # FLY-3029 progress
-**phase**: design (5/5)
-**next**: design complete: Codex APPROVED R3, HTML published + reported; complete --route phase_design_complete
+**phase**: implement (1/6)
+**next**: append probe line
