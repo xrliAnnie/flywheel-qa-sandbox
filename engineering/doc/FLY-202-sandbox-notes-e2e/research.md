@@ -1,6 +1,6 @@
 # FLY-202 QA 沙箱说明夹具 — 调研
 Issue: FLY-202 (https://linear.app/geoforge3d/issue/FLY-202/qa-sandbox-fixture-slot-harness-real-runner-e2e-task-do-not-pick-up)
-日期: 2026-09-26
+日期: 2026-09-29
 基于: exploration.md
 
 ## 1. 仓库、分支与 PR 事实
@@ -9,11 +9,11 @@ Issue: FLY-202 (https://linear.app/geoforge3d/issue/FLY-202/qa-sandbox-fixture-s
 | --- | --- | --- |
 | 仓库 | `xrliAnnie/flywheel-qa-sandbox` | 所有写操作仅留在 sandbox clone |
 | 分支 | `project-slot-1-FLY-202` | 继续现有 branch，不另建、不 rebase、不 force-push |
-| preserved baseline | `ab1d379b1` | 本轮 design 从该 implementation milestone 继续 |
+| preserved baseline | `b436ac9ec`（上一轮为 `ab1d379b1`） | 本轮 design 从最新 implementation milestone 继续 |
 | fetched `origin/main` | `1855f7a1a` | merge-base 与 main 相同，当前 branch behind=0 |
-| open PR | #196，OPEN、MERGEABLE、非 draft | 复用 carrier，不创建第二个 PR |
+| open PR | #196，OPEN、MERGEABLE、非 draft，head OID=`b436ac9ec` | 复用 carrier，不创建第二个 PR |
 | PR checks | exact preserved head 上两个 checks 均 SUCCESS | 是 baseline 证据，不代替本轮文档验证 |
-| inherited 内容 | `FLY-2456 drill marker r2 B1` | 本轮不得删除或改写 |
+| inherited 内容 | `- FLY-2456 drill marker r2 B1` 与末行 `standby-resume-probe: qa2861-A3` | 两处都不得删除或改写 |
 | doc-flow | enabled，department=`engineering` | 过程文档复用本文件夹 |
 
 PR title/body 仍描述 FLY-2456 drill。这是 branch continuity 的已知历史，不是 design node 改写 PR
@@ -24,7 +24,7 @@ metadata 的授权。最终 handoff 要明确披露，但不能通过另开 PR�
 对当前 `doc/qa/sandbox-notes.md` 运行 bounded parser 得到：
 
 ```json
-{"introParagraphs":3,"directories":17,"summaryBullets":10,"listingLines":50,"listingMatches":true,"marker":true}
+{"introParagraphs":3,"directories":17,"summaryBullets":10,"listingLines":50,"listingMatches":true,"marker":true,"lastLine":"standby-resume-probe: qa2861-A3","lineBeforeLast":"","endsWithNewline":true}
 ```
 
 这说明 preserved implementation 当前已经满足可机械核验的结构要求：
@@ -33,7 +33,12 @@ metadata 的授权。最终 handoff 要明确披露，但不能通过另开 PR�
 - 17 行顶层目录表；
 - 10 条 QA framework 摘要；
 - `ls -R doc/ | head -50` 的 50 行 fenced output，且与 live checkout 字节一致；
-- inherited marker 仍在。
+- inherited marker 仍在；
+- 文件共 103 行，最后一行精确为 `standby-resume-probe: qa2861-A3`，其前一行为空行，文件以换行结尾。
+
+最后一项是 2026-09-28 Lead rework（commit `d22f2c249`）带来的新事实。空行不是装饰：没有它，
+Markdown 会把 probe 折叠进上一条列表项。上一轮 validator 不检查这一行，所以一次“只替换 fenced
+block”的修复如果顺手截断了文件尾部，现有检查发现不了。本轮 plan 为此补一条断言。
 
 因此当前实现计划不能继续写“编辑前 parser 预期失败”。它应把首次创建和 re-dispatch 同时建模：
 先校验；失败时最小修复，成功时保留字节并记录 no-op evidence。
@@ -110,7 +115,11 @@ ls -R doc/ | head -50
 - `packages/qa-framework/__tests__/QaConfigLoader.test.ts`、`shell-export.test.ts` 只因 generic
   `doc/qa` config/path 出现而命中，不读取或解析 `sandbox-notes.md`，因此排除；
 - shell suites 和 runtime files 同样只使用 generic `doc/qa` path，与目标 Markdown contract 无关；
-- marker literal 命中目标文件及 FLY-202 文档，没有 concrete test consumer。
+- marker literal 命中目标文件及 FLY-202 文档，没有 concrete test consumer；
+- `standby-resume-probe` / `qa2861-A3` 只命中目标文件、本文件夹文档与 milestone，同样没有 test consumer；
+- `doc/FLY-202-qa-sandbox-fixture/`（更早一版 FLY-202 设计，已随 `main` 存在，不在本 PR diff 内）只是
+  历史文档，引用了目标路径但不解析它。本轮不读取它作为事实来源，也不修改它；doc-flow 规定的
+  过程文档目录仍是 `engineering/doc/FLY-202-sandbox-notes-e2e/`。
 
 结论：没有需要运行的 concrete test file。不得回退到 bare Vitest、package test alias 或 full repository
 suite；目标验证由 bounded Node parser、`git diff --check` 与 PR state inspection 覆盖。
@@ -131,7 +140,8 @@ live doc listing ────────────────┘
 ## 8. 验证策略
 
 1. bounded parser：标题、2–3 intro paragraphs、tracked directory set、10 bullets、50-line fence、live
-   stdout byte equality、inherited marker；另外把 filtered live directories 作为 diagnostic；
+   stdout byte equality、inherited marker、probe 末行（精确文本 + 前置空行 + 结尾换行）；另外把
+   filtered live directories 作为 diagnostic；
 2. `git diff --check`：Markdown whitespace hygiene；
 3. `git diff --name-status <preserved-baseline>...HEAD`：本 design node 只改授权过程文档、Mermaid 与 HTML；
 4. `gh pr view 196`：OPEN、base=`main`、head branch 正确，push 后 remote OID 等于 local HEAD；
@@ -149,5 +159,6 @@ live doc listing ────────────────┘
 | 顶层目录竞态 | implement 时重新枚举 tracked + live | 不回滚他人 authorized changes |
 | PR 元数据与 FLY-202 不一致 | 披露并复用 carrier | 不改写 published history |
 | inherited marker 混入结果 | 明确标为 inherited | 不删除既有 FLY-2456 变更 |
+| probe 末行被修复动作截断或折叠 | validator 断言末行与前置空行；修复只动 fence 内部 | 仅恢复尾部字节 |
 | fenced output 漂移 | 写入后立即重新比对 | 仅刷新 fenced block |
 | 生产资源误触 | 当前 clone + no deploy/merge/ship | design 阶段无生产副作用 |
