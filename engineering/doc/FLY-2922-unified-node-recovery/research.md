@@ -34,8 +34,8 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 
 ## R5. 与 origin/main 的冲突（`scripts/test-deploy.sh`）
 
-- main 侧：FLY-2405 起房/拆房、FLY-2902 等对 test-deploy.sh 的加性改动。
-- 本分支：generalized 房间逻辑（`--generalized --codex-runner --qa-stub-runner`，以及 QA@2 修过的「stub 只按 QA 执行作用域注入」）。
+- （Rev 2 更正）上一轮 merge `36b143b2a` × `35fbd2907` 的**实际**冲突只有 `test-deploy.sh` 用法注释一处：本分支 `--qa-stub-runner` vs main 侧 FLY-2957 `--codex-source-home`，已在 `bbd36fde3` 两侧都保留（现 `test-deploy.sh:6-9`）。
+- （Rev 2 新增）`origin/main` 现为 `23a1d80e8`，`git merge-tree` 显示新冲突在 `packages/teamlead/src/bridge/run-dispatcher.ts`（构造器尾部位置参数）与 `run-infra.ts`（对应调用点）——处置见 plan C1′。
 - 策略：`git merge origin/main`（**merge 不 rebase**，保留 QA 已审历史），逐块保留两侧；冲突块若是同一变量/函数的两种改法，以「main 的房间生命周期 + 本分支的 generalized flag 分支」组合；取舍写进 PR 描述。
 - 验证：`scripts/__tests__/test-deploy-generalized.test.sh` + 与 test-deploy 相关的现有 shell 测试。
 
