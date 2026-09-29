@@ -1,13 +1,13 @@
 ---
 issue: FLY-3055
 phase: design
-phaseCursor: 1/8
-updated: 2026-09-29T11:01:24.060Z
-nextStep: audit qa.md / implement.md / qa-result CLI / Bridge injection
+phaseCursor: 2/8
+updated: 2026-09-29T11:07:30.070Z
+nextStep: research.md code-level audit
 chunks: []
 pointers: {}
 ---
 
 # FLY-3055 progress
-**phase**: design (1/8)
-**next**: audit qa.md / implement.md / qa-result CLI / Bridge injection
+**phase**: design (2/8)
+**next**: research.md code-level audit
