@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-3018 设计说明 — 派单按当前模型配置选模型（重开·只重做 QA）</title>
+<style>
+  :root { --bg:#f5f5f7; --fg:#1d1d1f; --dim:#86868b; --card:#fff; --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --navy:#1a365d; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font-family:-apple-system,system-ui,"PingFang SC","Hiragino Sans GB",sans-serif; line-height:1.6; }
+  .wrap { max-width:960px; margin:0 auto; padding:32px 16px 64px; }
+  h1 { font-size:26px; margin:0 0 6px; color:var(--navy); }
+  h2 { font-size:18px; margin:0 0 12px; }
+  .meta { color:var(--dim); font-size:13px; margin-bottom:24px; }
+  .meta code, .card code { font-family:"SF Mono",Menlo,monospace; font-size:12px; background:#f0f0f2; padding:1px 5px; border-radius:4px; }
+  .card { background:var(--card); border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,.06); padding:20px; margin-bottom:20px; border-left:4px solid var(--blue); }
+  .card.red { border-left-color:var(--red); } .card.green { border-left-color:var(--green); } .card.amber { border-left-color:var(--amber); } .card.purple { border-left-color:var(--purple); } .card.gray { border-left-color:var(--dim); } .card.navy { border-left-color:var(--navy); }
+  .badge { display:inline-block; font-size:11px; font-weight:600; padding:2px 8px; border-radius:10px; margin-right:6px; vertical-align:middle; }
+  .badge.blue { background:#e5f1ff; color:var(--blue); } .badge.green { background:#e6f9ec; color:#1f8a3b; } .badge.red { background:#ffe5e3; color:var(--red); } .badge.amber { background:#fff1dc; color:#b36b00; } .badge.purple { background:#f3e6fb; color:var(--purple); } .badge.gray { background:#ececef; color:var(--dim); }
+  .lead { font-size:17px; font-weight:600; }
+  .term { border-bottom:1px dotted var(--dim); }
+  .expl { color:var(--dim); font-size:13px; }
+  table { width:100%; border-collapse:collapse; font-size:14px; margin:10px 0; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid #ececef; vertical-align:top; }
+  th { color:var(--dim); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.03em; }
+  .diagram { overflow-x:auto; background:#fff; border:1px solid #ececef; border-radius:8px; padding:8px; margin:12px 0; }
+  .diagram svg { max-width:100%; height:auto; display:block; margin:0 auto; }
+  .caption { color:var(--dim); font-size:12px; text-align:center; margin-top:4px; }
+  ul { padding-left:20px; margin:8px 0; } li { margin:4px 0; }
+  .ok { color:#1f8a3b; font-weight:600; } .bad { color:var(--red); font-weight:600; }
+  .comment { margin-top:16px; padding-top:12px; border-top:1px dashed #e0e0e3; }
+  .comment label { display:block; font-size:12px; color:var(--dim); margin-bottom:6px; }
+  .comment textarea { width:100%; min-height:64px; border:1px solid #d9d9de; border-radius:8px; padding:8px 10px; font:inherit; font-size:14px; resize:vertical; background:#fafafa; }
+  .comment textarea:focus { outline:2px solid #b3d4ff; border-color:var(--blue); background:#fff; }
+  .saved { font-size:11px; color:var(--dim); margin-top:4px; min-height:14px; }
+  .summary pre { white-space:pre-wrap; word-break:break-word; background:#f7f7f9; border:1px solid #ececef; border-radius:8px; padding:12px; font-size:13px; font-family:"SF Mono",Menlo,monospace; max-height:360px; overflow:auto; }
+  button { font:inherit; font-size:14px; font-weight:600; color:#fff; background:var(--blue); border:0; border-radius:8px; padding:8px 14px; cursor:pointer; margin:6px 6px 0 0; }
+  button.secondary { background:#ececef; color:var(--fg); }
+  button:active { opacity:.8; }
+  .status { font-size:13px; color:var(--dim); margin-top:6px; min-height:16px; }
+  .chunk { margin-top:10px; }
+  .chunk .chunk-head { font-size:12px; color:var(--dim); margin-bottom:4px; }
+  @media (max-width:600px){ .wrap{padding:20px 16px 48px;} h1{font-size:22px;} table{font-size:13px;} th,td{padding:6px;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-3018 · 派单不带覆盖时，每个节点按「当前模型配置」选模型</h1>
+  <div class="meta">
+    <span class="badge amber">重开 · 只重做 QA</span>
+    <span class="badge gray">设计节点交付</span>
+    Issue <code>FLY-3018</code> · 日期 2026-09-28 · 产品代码 PR <code>#1381</code> 精确头 <code>7e28dd51c</code>（Lead 已裁定）
+  </div>
+
+  <!-- 1 -->
+  <section class="card green" data-section="s1" data-title="1. 一句话总结">
+    <h2><span class="badge green">1</span>一句话总结</h2>
+    <p class="lead">在 PR #1381 已修好的代码头上，用真实 QA 房重跑「不带覆盖的派单」，用可判定的证据证明：每个节点严格按当前 models.json 选模型，回执写的模型就是实际启动的模型。</p>
+    <p class="expl">本轮<b>不改任何代码</b>。上一轮产品证据已全部通过，只是流程上走错了证据通道被判 FAIL；本轮把通道走对、把证据记对。</p>
+    <p class="expl">名词：<span class="term">models.json</span>（一份配置文件，写明每个工作节点用哪些模型、各占多少比例）；<span class="term">回执</span>（派单后系统回给 Lead 的一行说明，形如 <code>implement: opus (= claude-opus-5-5)</code>，括号里是精确模型名）。</p>
+    <div class="comment"><label for="c-s1">对这一节的意见（自动保存在你的浏览器里）</label><textarea id="c-s1" data-comment="s1" placeholder="写点什么…"></textarea><div class="saved" data-saved="s1"></div></div>
+  </section>
+
+  <!-- 2 -->
+  <section class="card red" data-section="s2" data-title="2. founder 看到了什么">
+    <h2><span class="badge red">2</span>founder 看到了什么</h2>
+    <p>2026-09-28 按 founder 直令不带任何覆盖派单（<span class="term">覆盖</span>：派单时手动指定某节点用某模型；不带覆盖就是让系统自己按配置选）。三张单的结果：</p>
+    <table>
+      <tr><th>单</th><th>类型</th><th>回执</th><th>实际启动</th><th>判断</th></tr>
+      <tr><td><code>FLY-2405</code></td><td>老单（历史上跑过）</td><td><code>implement: opus (= gpt-6-astra)</code></td><td>gpt-6-astra（Codex 家的模型）</td><td class="bad">错：标签写 opus，实际是 Codex</td></tr>
+      <tr><td><code>FLY-2909</code></td><td>老单</td><td><code>implement: opus (= gpt-5.6-sol)</code></td><td>gpt-5.6-sol（Codex）</td><td class="bad">错</td></tr>
+      <tr><td><code>FLY-3017</code></td><td>新单</td><td><code>implement: opus (= claude-opus-5-5)</code></td><td>claude-opus-5-5</td><td class="ok">对</td></tr>
+    </table>
+    <p>当前配置里 implement 节点是 opus 3 : codex 1，根本没有 astra 这个选项；48 小时统计却是 Codex 175 : Opus 26，其中 gpt-6-astra 53 个。founder 的问题很直接：「每个节点用哪些模型、比例是多少都写好了，你为什么不能 follow 那个去走？」</p>
+    <div class="comment"><label for="c-s2">对这一节的意见</label><textarea id="c-s2" data-comment="s2" placeholder="写点什么…"></textarea><div class="saved" data-saved="s2"></div></div>
+  </section>
+
+  <!-- 3 -->
+  <section class="card purple" data-section="s3" data-title="3. 根因与已落地的修复">
+    <h2><span class="badge purple">3</span>根因与已落地的修复（PR #1381）</h2>
+    <p>根因不是「opus 这个名字指向了 Codex」，而是两层叠加：</p>
+    <ul>
+      <li><b>选择层</b>：系统先按当前配置算好选择，然后回头去查这张 issue <b>所有历史 run</b>（<span class="term">run</span>：一次完整的派单执行）的模型分配，并用历史结果覆盖当前结果。老单沿用了旧配置年代的 astra / sol；新单没有历史，所以正确。</li>
+      <li><b>显示层</b>：回执只替换括号里的精确名、保留前面的别名，于是拼出 <code>opus (= gpt-6-astra)</code> 这种自相矛盾的字样。</li>
+    </ul>
+    <div class="diagram">{{D3}}</div>
+    <div class="caption">图 3 · 修复前后的选择路径对比（红=修复前，绿=修复后）</div>
+    <p>PR #1381 的修复：新 run 只读当前 models.json；同一个 run 内部把选择「冻结」下来供恢复与重放；回执只从本 run 的冻结记录重建，别名只在能证明它确实指向该模型（同一家厂商、同一型号或同一家族升代）时保留，否则直接写精确名。跨厂商拼接在结构上不可能再出现。</p>
+    <p class="expl">该 PR 已经过 Codex 代码复审三轮（最后一轮 APPROVED），精确头 <code>7e28dd51c</code> 的完整 CI（<span class="term">CI</span>：代码提交后自动跑的全套测试）全绿。</p>
+    <div class="comment"><label for="c-s3">对这一节的意见</label><textarea id="c-s3" data-comment="s3" placeholder="写点什么…"></textarea><div class="saved" data-saved="s3"></div></div>
+  </section>
+
+  <!-- 4 -->
+  <section class="card amber" data-section="s4" data-title="4. 为什么重开 · 精确头裁定">
+    <h2><span class="badge amber">4</span>为什么重开 · 精确头裁定</h2>
+    <p>上一轮 QA 在旧头上<b>产品证据全过</b>（老单/新单不带覆盖派单、回执与实际模型一致、界面一致），但被判 FAIL，原因是两处流程缺口：</p>
+    <ul>
+      <li>强度二证据记录走了 <code>manual_test_deploy</code> 通道，而裁判程序把这条通道写死成「无法证明」（<span class="term">强度二证据</span>：能被机器重放、可判定的端到端证据，不是人手写的说明）。</li>
+      <li>提交结果时缺少主 PR 身份（部署边界缺陷，已由 FLY-2407 修复并合入）。</li>
+    </ul>
+    <p>上一轮 QA 体已死，引擎不换替身，只能终结重开。本轮设计节点做的第一件事是审计事实：Lead 重开说明写的头是 <code>76cf3c249</code>，但 PR #1381 当前头已是 <code>7e28dd51c</code>，多出三条提交，其中 <code>950870cee</code> 正是让重放规格能表达「不带覆盖」的修复——没有它，本轮强度二证据依然不可判定。</p>
+    <table>
+      <tr><th>项</th><th>结论</th></tr>
+      <tr><td>Lead 裁定（question <code>c43580f2</code>）</td><td class="ok">同意改房头到 <code>7e28dd51c</code>；implement 与 QA 统一绑定该头</td></tr>
+      <tr><td>硬约束</td><td>若 head 再变化，先停并重新核对，不沿用本次裁定</td></tr>
+    </table>
+    <div class="comment"><label for="c-s4">对这一节的意见</label><textarea id="c-s4" data-comment="s4" placeholder="写点什么…"></textarea><div class="saved" data-saved="s4"></div></div>
+  </section>
+
+  <!-- 5 -->
+  <section class="card navy" data-section="s5" data-title="5. 核心流程">
+    <h2><span class="badge blue">5</span>核心流程：本轮两个节点各做什么</h2>
+    <div class="diagram">{{D1}}</div>
+    <div class="caption">图 1 · implement 零改动交卷 → QA 四步验收 → 判定与提交</div>
+    <ul>
+      <li><b>implement 节点</b>：核对本地、远端、PR 三处头一致且树干净 → 不改文件、不 merge、不重跑 CI → 直接交卷。任一不一致就停下问 Lead。</li>
+      <li><b>QA 节点</b>：① 精确头 CI 全绿；② 两条新提交的单测；③ 真房用 <code>room drill --real --no-overrides</code> 跑派单矩阵；④ 用服务生成的重放规格记录强度二证据。</li>
+    </ul>
+    <p class="expl"><span class="term">房</span>：一套隔离的测试环境（独立 Bridge、独立数据库、独立 Discord 频道），由 Lead 起，参数改动也由 Lead 做。<span class="term">Bridge</span>：Flywheel 的中枢服务，负责派单、记录状态、跟 Lead 通话。</p>
+    <div class="comment"><label for="c-s5">对这一节的意见</label><textarea id="c-s5" data-comment="s5" placeholder="写点什么…"></textarea><div class="saved" data-saved="s5"></div></div>
+  </section>
+
+  <!-- 6 -->
+  <section class="card blue" data-section="s6" data-title="6. 数据与结构模型">
+    <h2><span class="badge blue">6</span>数据与结构模型（本轮不新增，只沿用）</h2>
+    <div class="diagram">{{D2}}</div>
+    <div class="caption">图 2 · 从预留到会话的一条记录链；回执只从本 run 的记录投影</div>
+    <p>判定顺序固定：先断言 <b>回执精确名 = 运行时模型 = 同一次执行的 <code>sessions.runner_model</code></b>（数据库里记录该会话实际用了哪个模型的字段），再核对实际载体（Claude 的终端界面或 Codex 的会话头）。</p>
+    <p class="expl"><span class="term">idempotency key</span>：同一次派单的唯一凭证，重试时凭它拿回同一个 run 而不是新开一个。<span class="term">arm</span>：配置里的一个选项，比如 impl_opus；<span class="term">分桶</span>：按 issue 编号与节点名做确定性哈希，同配置下同一张单每次落到同一个 arm。</p>
+    <div class="comment"><label for="c-s6">对这一节的意见</label><textarea id="c-s6" data-comment="s6" placeholder="写点什么…"></textarea><div class="saved" data-saved="s6"></div></div>
+  </section>
+
+  <!-- 7 -->
+  <section class="card green" data-section="s7" data-title="7. QA 验收矩阵">
+    <h2><span class="badge green">7</span>QA 验收矩阵（每例都不带覆盖）</h2>
+    <table>
+      <tr><th>例</th><th>输入</th><th>证明什么</th></tr>
+      <tr><td><b>N1 新单</b></td><td>房内没跑过的 issue，drill 一次</td><td>每个节点的 arm 来自当前 modelSplit；回执别名与精确名同一厂商</td></tr>
+      <tr><td><b>O1 老单（同配置）</b></td><td>同一 issue 再 drill 一次（房内已有 N1 历史）</td><td>选择与 N1 一致，且启动路径<b>没有读</b>历史（回执依据是当前配置）</td></tr>
+      <tr><td><b>O2 老单（改配置，可选强证明）</b></td><td>Lead 改房内 implement 权重后再 drill</td><td>新 run 用新配置、旧 run 记录不变——「历史不再牵引」的直接证据</td></tr>
+      <tr><td><b>N2 新单 Codex arm</b></td><td>另一个 issue，分桶落到 codex</td><td>仍合法选 Codex，修复不是「全量强制 Opus」</td></tr>
+    </table>
+    <p>每例保留：请求 key、issue UUID、run id、节点 id、执行 id、房内 models.json 摘要、回执原文、run 快照、运行时的 vendor/model/effort、<code>sessions.runner_model</code>、实际会话证据。</p>
+    <p><b>负向守卫</b>：回执出现跨厂商拼接（如 <code>opus (= gpt-*)</code>）直接 FAIL；房参数不可复现（被拒 <code>drill_config_not_reproducible</code>）问 Lead 改房而不是改命令绕过；房头 ≠ <code>7e28dd51c</code> 停下问 Lead；PASS 被主 PR 身份缺失拒绝时按恢复路径<b>显式交 FAIL</b> 并写明原因，不绕过、不伪造。</p>
+    <div class="comment"><label for="c-s7">对这一节的意见</label><textarea id="c-s7" data-comment="s7" placeholder="写点什么…"></textarea><div class="saved" data-saved="s7"></div></div>
+  </section>
+
+  <!-- 8 -->
+  <section class="card gray" data-section="s8" data-title="8. 取舍与放弃的替代">
+    <h2><span class="badge gray">8</span>取舍与放弃的替代方案</h2>
+    <table>
+      <tr><th>放弃</th><th>原因</th></tr>
+      <tr><td>沿用 <code>manual_test_deploy</code> 手工记录</td><td>裁判程序写死为「无法证明」，上一轮就是这样 FAIL 的</td></tr>
+      <tr><td>改裁判程序让手工通道可判定</td><td>属于产品改动，超出「只重做 QA」边界；且降低证据的证明力</td></tr>
+      <tr><td>在旧头 <code>76cf3c249</code> 上硬判</td><td>该头的重放规格表达不了「不带覆盖」，证据不可判定</td></tr>
+      <tr><td>只跑单测和 CI、不进真房</td><td>证明不了「回执 = 运行时 = 会话记录」，也不满足 Lead 的真房判据</td></tr>
+      <tr><td>让 QA 自己改房内 models.json 做 O2</td><td>房参数是 Lead 权限；QA 只能提出请求</td></tr>
+    </table>
+    <div class="comment"><label for="c-s8">对这一节的意见</label><textarea id="c-s8" data-comment="s8" placeholder="写点什么…"></textarea><div class="saved" data-saved="s8"></div></div>
+  </section>
+
+  <!-- 9 -->
+  <section class="card amber" data-section="s9" data-title="9. 诚实边界">
+    <h2><span class="badge amber">9</span>诚实边界：本设计做什么、不做什么</h2>
+    <p><b>做</b>：审计头差异并拿到 Lead 裁定；给 implement 节点零改动交卷的边界；给 QA 节点可执行、可判定的矩阵与命令；把上一轮 FAIL 的两处流程缺口封死。</p>
+    <p><b>不做</b>：不改代码、不起房、不派单、不判定 QA 结果；不重派生产老单（FLY-2405 / FLY-2909 由 Lead 按既有授权处置）；不处理统计口径（记分卡 mixed 分组是已知的后续项）。</p>
+    <p><b>回滚</b>：本 run 无代码改动，无回滚对象。产品代码若回退会恢复历史继承缺陷，且新旧配置并存后旧代码可能报「历史分配含糊」。</p>
+    <p><b>合并 ≠ 生效</b>：merge 与部署是两步，只有独立更新器在它的窗口部署。</p>
+    <div class="comment"><label for="c-s9">对这一节的意见</label><textarea id="c-s9" data-comment="s9" placeholder="写点什么…"></textarea><div class="saved" data-saved="s9"></div></div>
+  </section>
+
+  <!-- summary -->
+  <section class="card navy summary" id="summary-card">
+    <h2><span class="badge blue">汇总</span>页面意见汇总</h2>
+    <p class="expl">下面实时汇总你在各节留下的意见。点「复制全部意见」后贴回给 Lead 即可；这是修订反馈，不是通过信号。</p>
+    <div id="summary-chunks"></div>
+    <div>
+      <button id="btn-copy-all" type="button">复制全部意见</button>
+      <button id="btn-clear-all" type="button" class="secondary">清空本页意见</button>
+    </div>
+    <div class="status" id="copy-status"></div>
+  </section>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  var MARKER = '【页面意见汇总】FLY-3018';
+  var CHUNK_LIMIT = 1800;
+  var prefix = 'fly3018-design-comments:' + (location.pathname || '/') + ':';
+
+  function lsGet(k) { try { return localStorage.getItem(prefix + k) || ''; } catch (e) { return ''; } }
+  function lsSet(k, v) { try { localStorage.setItem(prefix + k, v); return true; } catch (e) { return false; } }
+  function lsDel(k) { try { localStorage.removeItem(prefix + k); } catch (e) {} }
+
+  var sections = Array.prototype.slice.call(document.querySelectorAll('section[data-section]'));
+
+  function collect() {
+    var parts = [];
+    sections.forEach(function (sec) {
+      var id = sec.getAttribute('data-section');
+      var title = sec.getAttribute('data-title') || id;
+      var ta = sec.querySelector('textarea[data-comment="' + id + '"]');
+      var val = ta ? ta.value.trim() : '';
+      if (val) parts.push('■ ' + title + '\n' + val);
+    });
+    return parts;
+  }
+
+  function buildChunks(parts) {
+    if (!parts.length) return [MARKER + '\n（暂无意见）'];
+    var chunks = [], cur = MARKER;
+    parts.forEach(function (p) {
+      var candidate = cur + '\n\n' + p;
+      if (candidate.length > CHUNK_LIMIT && cur !== MARKER) {
+        chunks.push(cur);
+        cur = MARKER + '\n\n' + p;
+      } else {
+        cur = candidate;
+      }
+    });
+    chunks.push(cur);
+    return chunks;
+  }
+
+  var chunksEl = document.getElementById('summary-chunks');
+  var statusEl = document.getElementById('copy-status');
+  var currentChunks = [];
+
+  function setStatus(msg) { statusEl.textContent = msg; }
+
+  function copyText(text, done) {
+    var fallback = function () {
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed'; ta.style.top = '-1000px';
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        done(!!ok);
+      } catch (e) { done(false); }
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, fallback);
+    } else {
+      fallback();
+    }
+  }
+
+  function render() {
+    currentChunks = buildChunks(collect());
+    while (chunksEl.firstChild) chunksEl.removeChild(chunksEl.firstChild);
+    currentChunks.forEach(function (chunk, i) {
+      var box = document.createElement('div');
+      box.className = 'chunk';
+      if (currentChunks.length > 1) {
+        var head = document.createElement('div');
+        head.className = 'chunk-head';
+        head.textContent = '第 ' + (i + 1) + ' / ' + currentChunks.length + ' 段（超过约 1800 字已自动分段，每段自带标记）';
+        box.appendChild(head);
+      }
+      var pre = document.createElement('pre');
+      pre.textContent = chunk;
+      box.appendChild(pre);
+      if (currentChunks.length > 1) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'secondary';
+        btn.textContent = '复制第 ' + (i + 1) + ' 段';
+        btn.addEventListener('click', function () {
+          copyText(chunk, function (ok) { setStatus(ok ? '已复制第 ' + (i + 1) + ' 段' : '复制失败，请手动选中上方文本复制'); });
+        });
+        box.appendChild(btn);
+      }
+      chunksEl.appendChild(box);
+    });
+  }
+
+  sections.forEach(function (sec) {
+    var id = sec.getAttribute('data-section');
+    var ta = sec.querySelector('textarea[data-comment="' + id + '"]');
+    var saved = sec.querySelector('[data-saved="' + id + '"]');
+    if (!ta) return;
+    ta.value = lsGet(id);
+    ta.addEventListener('input', function () {
+      var ok = lsSet(id, ta.value);
+      if (saved) saved.textContent = ok ? (ta.value.trim() ? '已自动保存' : '') : '本浏览器不允许保存，离开页面前请先复制';
+      render();
+    });
+  });
+
+  document.getElementById('btn-copy-all').addEventListener('click', function () {
+    var text = currentChunks.join('\n\n');
+    copyText(text, function (ok) {
+      setStatus(ok ? '已复制全部意见（' + text.length + ' 字）' : '复制失败，请手动选中上方文本复制');
+    });
+  });
+
+  document.getElementById('btn-clear-all').addEventListener('click', function () {
+    sections.forEach(function (sec) {
+      var id = sec.getAttribute('data-section');
+      var ta = sec.querySelector('textarea[data-comment="' + id + '"]');
+      var saved = sec.querySelector('[data-saved="' + id + '"]');
+      if (ta) ta.value = '';
+      if (saved) saved.textContent = '';
+      lsDel(id);
+    });
+    render();
+    setStatus('已清空本页意见');
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

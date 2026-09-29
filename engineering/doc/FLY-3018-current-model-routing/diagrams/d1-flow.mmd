@@ -1,0 +1,13 @@
+flowchart TD
+    A["Lead 起房<br/>slot 3 · generalized · 头 7e28dd51c"] --> B["implement 节点<br/>核对 local = origin = PR#1381 头<br/>零改动 → complete needs_review"]
+    B --> C["QA 节点开工"]
+    C --> D1["① 精确头 full CI 全绿"]
+    C --> D2["② 两条新提交单测<br/>receipt alias / 冻结 alias / noOverrides"]
+    C --> D3["③ 真房 room drill --real --no-overrides<br/>N1 新单 · O1 老单 · N2 Codex arm · O2 改配置(可选)"]
+    D3 --> E{"receipt exact<br/>= runtime.model<br/>= sessions.runner_model ?"}
+    E -- 否 --> F["FAIL<br/>附 nodeModels 原文"]
+    E -- 是 --> G["④ evidence-run record<br/>lane generalized_e2e_real<br/>driver.noOverrides true"]
+    G --> H{"judge 判定"}
+    H -- lane_unproven --> G2["spec 来源错 → 回到 ④"]
+    H -- 通过 --> I["qa-result PASS"]
+    I -- 被 pr_identity 拒 --> J["显式 FAIL<br/>写明 FLY-2407 边界"]
