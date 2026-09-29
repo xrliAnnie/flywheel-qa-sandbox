@@ -85,7 +85,7 @@ Issue: FLY-2919 (https://linear.app/geoforge3d/issue/FLY-2919/病根修复-2-体
 
 `packages/config/src/feature-flags/registry.ts`：`FeatureFlagSpec`（:57-100）、`envSite()`（:103-110）、`FEATURE_FLAGS`（:112-）。对照条目 `liveness_pane_dead`（:856-876，`FLYWHEEL_LIVENESS_PANE_DEAD`，default_on，`call_time`，`toggleable:"direct"` + `directToggleProof`）。三条测试约束：`feature-flags-registry.test.ts`（唯一名、env 需 envVar+scope、read site 需 file/symbol/timing、direct 需全 call_time + proof）；`feature-flags-drift.test.ts`（新 `process.env.FLYWHEEL_*` 必须登记，且 read-site 文件真含该 env）；`feature-flags-direct-toggle.test.ts`（unset→0→1 翻转）。
 
-新开关 `body_death_authority`（`FLYWHEEL_BODY_DEATH_AUTHORITY`，default_on，call_time，direct）：`=0` 时 `execution-body-liveness` 对所有致死消费者返回 `unknown(reason="authority_disabled")`，消费者只观察/告警，不写 failed/terminated/不删 CommDB 行。`liveness_pane_dead` 在迁移完成后成为死旗标（只影响非致死窗口观察），登记为 `dormant`。
+新开关 `body_death_authority`（`FLYWHEEL_BODY_DEATH_AUTHORITY`，default_on，call_time，direct）：`=0` 时 `execution-body-liveness` 对所有致死消费者返回 `unknown(reason="authority_disabled")`，消费者只观察/告警，不写 failed/terminated/不删 CommDB 行。`liveness_pane_dead` 的唯一读点（`HeartbeatService.ts:923`）随迁移删除；registry 条目与读点**一起删**（drift 测试双向一致；`dormant` 仅用于 ConfigLoader 项目配置且要求 readonly，不能套在 env 旗标上）。
 
 ## 8. Lead 10 条实现义务在本树的落点
 
