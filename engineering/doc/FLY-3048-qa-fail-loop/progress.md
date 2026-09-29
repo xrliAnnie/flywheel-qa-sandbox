@@ -1,13 +1,14 @@
 ---
 issue: FLY-3048
 phase: implement
-phaseCursor: 2/5
-updated: 2026-09-29T03:41:40.127Z
-nextStep: run targeted policy discovery and verify the exact fixture bytes
+phaseCursor: 3/5
+updated: 2026-09-29T03:42:44.983Z
+nextStep: create the required milestone tip commit, push, and request effective
+  code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-3048 progress
-**phase**: implement (2/5)
-**next**: run targeted policy discovery and verify the exact fixture bytes
+**phase**: implement (3/5)
+**next**: create the required milestone tip commit, push, and request effective code review
