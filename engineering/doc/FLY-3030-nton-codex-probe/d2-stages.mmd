@@ -1,0 +1,8 @@
+flowchart LR
+    A[eng_design 设计节点<br/>本文档 + HTML] --> B[implement 实现节点<br/>sleep 780 → README +1 行 → PR]
+    B --> C[qa 节点 / FLY-2919 driver<br/>按 receipt 验收]
+    B -. 不走 .-> X[pr_handoff<br/>仅无 transport 体]
+    style X fill:#ffebea,stroke:#ff3b30
+    style A fill:#e8f0fe,stroke:#007aff
+    style B fill:#e8f8ee,stroke:#34c759
+    style C fill:#f3e8fd,stroke:#af52de

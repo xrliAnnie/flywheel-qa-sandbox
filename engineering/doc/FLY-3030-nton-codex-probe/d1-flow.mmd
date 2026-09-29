@@ -1,0 +1,16 @@
+sequenceDiagram
+    autonumber
+    participant Drv as FLY-2919 driver（派单脚本）
+    participant R as 房内 runner（执行体）
+    participant WD as 看门狗（判活巡检）
+    participant Repo as 沙箱仓 README.md
+    participant Lead as Lead（收卷）
+    Drv->>R: 派单 FLY-3030
+    R->>R: 前台 sleep 780（零输出）
+    Note over R,WD: 660 秒安静窗口：屏幕不变、无交互
+    WD->>R: 只看物理进程证据（pid/pgid/启动身份）
+    WD-->>Drv: 判 alive（不看窗口、不看状态）
+    R->>Repo: 幂等追加一行 FLY-2919 N-to-N claude-body probe
+    R->>Repo: commit + push + PR（引用 FLY-3030）
+    R->>Lead: 阶段完成交卷（正常路由）
+    Drv-->>Drv: 按 receipt 验收四项

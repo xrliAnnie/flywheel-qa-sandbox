@@ -1,0 +1,13 @@
+flowchart TD
+    S([sleep 780 前台]) --> Q1{timeout ≥ 900 秒?}
+    Q1 -- 否 --> K[2 分钟被工具层杀掉<br/>窗口作废 → 重跑整段]
+    Q1 -- 是 --> Q2{sleep 期间有输出?}
+    Q2 -- 是 --> P[污染安静窗口<br/>看门狗多拿信号]
+    Q2 -- 否 --> Q3{目标行已存在?}
+    Q3 -- 是 --> N[不重复追加]
+    Q3 -- 否 --> W[追加一行]
+    N --> G[只 add README.md<br/>不建分支 / 不 force push / 不 merge]
+    W --> G
+    style K fill:#ffebea,stroke:#ff3b30
+    style P fill:#ffebea,stroke:#ff3b30
+    style G fill:#e8f8ee,stroke:#34c759
