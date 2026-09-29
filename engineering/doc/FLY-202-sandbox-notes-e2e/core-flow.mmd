@@ -10,9 +10,9 @@ sequenceDiagram
     R->>W: Read root directories, QA README, and target
     R->>W: Run bounded document validator
     alt Current evidence already matches
-        W-->>R: PASS; preserve target bytes
+        W-->>R: PASS - keep target bytes unchanged
     else Evidence mismatch
-        R->>W: Repair only mismatched section
+        R->>W: Repair only the mismatched section, keep inherited tail
         R->>W: Re-run validator until PASS
     end
     R->>P: Fast-forward push current branch
