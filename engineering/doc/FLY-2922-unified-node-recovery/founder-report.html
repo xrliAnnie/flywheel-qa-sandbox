@@ -3,23 +3,24 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>FLY-2922 · 只让 QA 走测试替身</title>
+<title>FLY-2922 · 让测试房看见自己的活进程</title>
 <style>
   *{box-sizing:border-box}
   body{margin:0;background:#f5f5f7;color:#1d1d1f;font:16px/1.65 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif}
   main{max-width:980px;margin:auto;padding:34px 18px 72px}
-  h1{font-size:36px;line-height:1.18;letter-spacing:-.03em;margin:8px 0 12px}
+  h1{font-size:38px;line-height:1.15;letter-spacing:-.035em;margin:8px 0 12px}
   h2{font-size:23px;line-height:1.3;margin:0 0 14px}
   h3{font-size:17px;margin:20px 0 8px}
   p{margin:8px 0}
   .eyebrow,.muted{color:#6e6e73}.eyebrow{font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
-  .lede{font-size:22px;line-height:1.45;font-weight:600;max-width:850px;margin:0 0 24px}
-  .card{background:#fff;border-radius:16px;border:1px solid #e5e5ea;border-left:5px solid #007aff;padding:25px;margin:18px 0;box-shadow:0 2px 9px rgba(0,0,0,.045)}
+  .lede{font-size:22px;line-height:1.45;font-weight:600;max-width:875px;margin:0 0 24px}
+  .card{background:#fff;border-radius:17px;border:1px solid #e5e5ea;border-left:5px solid #007aff;padding:26px;margin:18px 0;box-shadow:0 2px 10px rgba(0,0,0,.045)}
   .card.green{border-left-color:#34c759}.card.amber{border-left-color:#ff9500}.card.purple{border-left-color:#af52de}.card.gray{border-left-color:#8e8e93}
   .callout{background:#eef6ff;border-radius:12px;padding:15px 17px;margin:14px 0}
-  .pending{background:#fff7e8;border:1px dashed #ff9500;border-radius:12px;padding:18px;margin:16px 0;color:#6c4300}
+  .diagram-pending{background:#fff7e8;border:1px dashed #ff9500;border-radius:12px;padding:20px;margin:16px 0;color:#6c4300}
+  .diagram-pending strong{display:block;font-size:16px;letter-spacing:.02em}
   .chip{display:inline-block;border-radius:999px;padding:3px 10px;font-size:12px;font-weight:700;margin:0 5px 5px 0;background:#e8f2ff;color:#075aa8}
-  .chip.real{background:#e8f8ee;color:#147832}.chip.stub{background:#f4eaff;color:#7a2aa8}.chip.stop{background:#ffebea;color:#b42318}
+  .chip.good{background:#e8f8ee;color:#147832}.chip.bad{background:#ffebea;color:#b42318}.chip.wait{background:#fff1d6;color:#8a5200}
   ul,ol{padding-left:22px}li{margin:7px 0}
   table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;vertical-align:top;border-bottom:1px solid #ececf0;padding:11px 9px}th{background:#f5f5f7;color:#515154}.scroll{overflow:auto}
   code,pre{font-family:"SFMono-Regular",Consolas,monospace}code{font-size:.88em;background:#f1f1f4;border-radius:5px;padding:2px 5px}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f7f7f9;border:1px solid #e5e5ea;border-radius:10px;padding:13px;font-size:12px;line-height:1.5}
@@ -37,133 +38,125 @@
 <body>
 <main>
   <div class="eyebrow">FLY-2922 · Engineering Design</div>
-  <h1>只让 QA 走测试替身，真实评审不再被截胡</h1>
-  <p class="lede">一句话：把“所有 Claude 都是假人”改成“只有身份确凿的 QA 是测试替身”，设计评审和其它执行仍走真实模型。</p>
+  <h1>让测试房看见自己的活进程</h1>
+  <p class="lede">一句话：把 driver 的探活查询固定到当前测试房的 tmux server，避免把正在等待返工的实现体误判为死亡，同时不碰产品恢复逻辑。</p>
 
   <section class="card green" data-section="一句话结论">
     <h2>一句话结论</h2>
-    <p><b>QA stub</b> 是质量验证节点使用的可控测试替身，它会按外层脚本的指令给出确定结果。当前故障不是产品恢复链，而是测试替身装得太宽：它覆盖了 Bridge 里所有名为 <code>claude</code> 的调用。</p>
-    <p>方案是把 raw stub 换成一个<b>身份选择器</b>——身份选择器是一道小门，只在证明调用属于当前 QA 节点时放去替身；没有 Runner 身份的设计评审、版本探测和其它节点全部原参数转给真实 Claude。</p>
-    <div class="callout"><b>验收一句话：</b>同一间房里，设计/实现是真 Codex，跨家族评审是真 Claude，只有 QA 是 stub；外层 driver 仍必须完整跑完并产出最终证据。</div>
+    <p><b>tmux server</b> 是承载终端窗口和 pane 的后台进程；每个隔离测试房都有自己的 server。QA@3 卡住，不是产品没有派出 QA，而是外层 driver 去宿主 server 查房内 pane，得到“找不到”，再把活实现体误写成 dead。</p>
+    <div class="callout"><b>设计决定：</b>所有 driver pane 探活只走一个 <code>probeRoomPaneAlive</code> 入口。它使用当前房间的绝对目录选择 tmux server，再校验 pane 身份、存活位和 execution 身份。</div>
+    <p><span class="chip bad">旧：查宿主 server</span><span class="chip good">新：查当前房间</span><span class="chip wait">产品状态机不改</span></p>
     <label for="comment-summary">这一节的意见</label>
     <textarea id="comment-summary" data-comment="summary" placeholder="写下意见；会自动保存在这个浏览器"></textarea>
   </section>
 
-  <section class="card amber" data-section="故障为什么发生">
-    <h2>故障为什么发生</h2>
+  <section class="card amber" data-section="QA@3 为什么停在 step 4">
+    <h2>QA@3 为什么停在 step 4</h2>
     <ol>
-      <li>测试房把 <code>stub-bin</code> 放到 Bridge 的搜索路径最前面。</li>
-      <li>设计评审也执行 bare <code>claude</code>，所以先找到 QA stub。</li>
-      <li>评审不是 workflow Runner，没有 <code>FLYWHEEL_EXEC_ID</code>。</li>
-      <li>stub 正确地拒绝缺身份调用，真实 Claude 评审从未启动，设计节点一直等。</li>
+      <li>slot 4 已走完 step 0–3；实现体已经 <code>ship_parked</code>，QA 也已经派出。</li>
+      <li>实现 pane <code>@5</code> 活在房间专属的 tmux server 上。</li>
+      <li>driver 删除了 <code>TMUX</code> 和 <code>TMUX_PANE</code>，却沿用了宿主的 <code>TMUX_TMPDIR</code>。</li>
+      <li><b>TMUX_TMPDIR</b> 是 tmux 找 socket 的根目录；它选错，就等于拨错房间。</li>
+      <li><code>classifyImplementPark</code> 是 step 4 的分类函数。它要求 liveness=alive，因此一直拒绝通过。</li>
     </ol>
-    <p><span class="chip stop">旧行为：全局截获</span><span class="chip real">目标：评审真实</span><span class="chip stub">目标：仅 QA 替身</span></p>
-    <p class="muted">不能通过“让 stub 接受缺身份”来修；那会抹掉安全边界。缺身份调用应进入真实 Claude。</p>
+    <p class="muted">这不是放宽分类规则的问题。状态证据本来是对的，driver 只是从错误的位置读取活性。</p>
     <label for="comment-problem">这一节的意见</label>
     <textarea id="comment-problem" data-comment="problem" placeholder="写下意见；会自动保存在这个浏览器"></textarea>
   </section>
 
-  <section class="card" data-section="核心路由流程">
-    <h2>核心路由流程</h2>
-    <div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>Mermaid 已按标准参数本地渲染两次；Chromium 的 macOS 进程通信权限均被拒绝。这里保留真实 Mermaid 图源，不用 CSS 方框冒充图。</p></div>
-    <details><summary>查看 Mermaid 图源</summary><pre>flowchart TD
-  A[Bridge 发起 claude 调用] --&gt; B{有 Runner 执行身份吗}
-  B --&gt;|没有：评审或版本探测| C[原参数执行真实 Claude]
-  B --&gt;|有| D{有本次 activation 吗}
-  D --&gt;|是| E{同 execution 且节点正好是 qa 吗}
-  E --&gt;|是| F[执行 QA deterministic stub]
-  E --&gt;|否：设计 实现 外来身份| C
-  D --&gt;|否：standby 恢复| G[只读查询 slot StateStore]
-  G --&gt;|唯一节点是 qa| F
-  G --&gt;|非 QA 或没有绑定| C
-  G --&gt;|QA 与别的节点并存 或查询失败| H[拒绝启动 exit 70]</pre></details>
-    <p><b>activation</b> 是一次具体节点启动的身份票据，写着 execution、run、node 和 attempt。新启动优先看它；QA 从暂停中原体恢复时可能没有 activation，才回查 slot 的持久绑定。</p>
+  <section class="card" data-section="核心流程图">
+    <h2>核心流程图</h2>
+    <div class="diagram-pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>流程图已用 Mermaid 语法写在 <code>room-probe-flow.mmd</code>。本地 <code>mmdc</code> 按标准参数渲染两次，Chromium 均被 macOS 进程通信权限拒绝；按交付规则保留明确占位，不用 CSS 方框冒充图。</p></div>
+    <details><summary>查看 Mermaid 图源</summary><pre>flowchart LR
+  Driver step 4 --> 读取 CommDB 的 tmux target
+  slotDir --> 统一探活口 probeRoomPaneAlive
+  tmux target --> 统一探活口 probeRoomPaneAlive
+  统一探活口 --> TMUX_TMPDIR 固定为 slotDir
+  TMUX_TMPDIR 固定为 slotDir --> 房间 tmux server
+  房间 tmux server --> 校验 object id / dead bit / execution id
+  校验通过 --> liveness alive --> 既有 park 分类
+  校验失败 --> liveness dead --> 继续等待</pre></details>
+    <p><b>探活</b> 是检查进程或 pane 是否仍真实存活。新的入口只负责“去哪里看”和“看到的是不是这个 execution”；它不替状态机做决定。</p>
     <label for="comment-flow">这一节的意见</label>
     <textarea id="comment-flow" data-comment="flow" placeholder="写下意见；会自动保存在这个浏览器"></textarea>
   </section>
 
   <section class="card purple" data-section="数据与结构模型">
     <h2>数据与结构模型</h2>
-    <div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本地图形浏览器同样被系统权限挡住。结构关系来自 Mermaid ER 图，源文件与页面一起提交。</p></div>
-    <details><summary>查看 Mermaid 图源</summary><pre>erDiagram
-  CALL_CONTEXT ||--o| ACTIVATION : may_carry
-  CALL_CONTEXT ||--o{ WORKFLOW_BINDING : resolves_standby
-  CALL_CONTEXT ||--|| ROUTE_DECISION : produces
-  ROUTE_DECISION }o--|| REAL_CLAUDE : passthrough
-  ROUTE_DECISION }o--|| QA_STUB : qa_only
-  CALL_CONTEXT {
-    string execution_id "optional"
-    string activation_id "optional"
-    string argv "unchanged"
-  }
-  ACTIVATION {
-    string execution_id
-    string run_id
-    string node_id
-    int attempt
-  }
-  WORKFLOW_BINDING {
-    string execution_id
-    string node_id
-  }
-  ROUTE_DECISION {
-    string destination
-    string reason
-  }</pre></details>
+    <div class="diagram-pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>结构图已用 Mermaid class diagram 写在 <code>room-probe-model.mmd</code>。同一台本地 renderer 权限失败，因此本页不内联未生成的 SVG。</p></div>
+    <details><summary>查看结构关系</summary><pre>ProbeInput
+  ├─ target：CommDB 记录的 @window / %pane
+  ├─ executionId：预期执行身份
+  ├─ slotDir：房间绝对目录，也是 server authority
+  ├─ env：只复制，不原地修改
+  └─ spawn：可注入，便于测试
+       ↓
+RoomNamespace
+  ├─ TMUX_TMPDIR = slotDir
+  ├─ 删除 TMUX
+  └─ 删除 TMUX_PANE
+       ↓
+TmuxObservation
+  ├─ windowId / paneId
+  ├─ paneDead
+  └─ executionId
+       ↓
+ExecutionProbe → 只把 liveness 交给既有 ParkClassifier</pre></details>
     <div class="scroll"><table>
-      <thead><tr><th>输入</th><th>可信含义</th><th>决定</th></tr></thead>
+      <thead><tr><th>数据</th><th>唯一职责</th><th>失败时</th></tr></thead>
       <tbody>
-        <tr><td>无 execution id</td><td>评审、版本探测或其它非 Runner 调用</td><td>真实 Claude</td></tr>
-        <tr><td>exact QA activation</td><td>当前 execution 的 QA 启动</td><td>QA stub</td></tr>
-        <tr><td>非 QA / 外来 activation</td><td>producer 或身份不匹配</td><td>真实 Claude</td></tr>
-        <tr><td>只有 execution id</td><td>可能是 standby 原体恢复</td><td>只读查绑定；唯一 QA 才进 stub</td></tr>
-        <tr><td>QA 与其它节点并存 / 数据库不可读</td><td>无法证明单一归属</td><td>拒绝，exit 70</td></tr>
+        <tr><td><code>slotDir</code></td><td>选择当前房间的 tmux server</td><td>缺失或非绝对路径：抛错，不回退宿主</td></tr>
+        <tr><td><code>target</code></td><td>指定 exact window 或 pane</td><td>格式不合法：false，且不启动 tmux</td></tr>
+        <tr><td><code>@flywheel_exec_id</code></td><td>证明 pane 属于当前 execution</td><td>不同或缺失：false</td></tr>
+        <tr><td><code>pane_dead</code></td><td>证明 tmux 认为 pane 仍活</td><td>不是 0：false</td></tr>
+        <tr><td><code>pidAlive || tmuxAlive</code></td><td>保持现有聚合语义</td><td>两者都 false 才投影为 dead</td></tr>
       </tbody>
     </table></div>
-    <p><b>StateStore</b> 是这间测试房的持久状态数据库。选择器只读查询现有 binding，不写新状态，不改变生产恢复规则。</p>
     <label for="comment-model">这一节的意见</label>
     <textarea id="comment-model" data-comment="model" placeholder="写下意见；会自动保存在这个浏览器"></textarea>
   </section>
 
-  <section class="card green" data-section="安全护栏与验收">
-    <h2>安全护栏与验收</h2>
-    <div class="scroll"><table>
-      <thead><tr><th>风险</th><th>护栏</th><th>证据</th></tr></thead>
-      <tbody>
-        <tr><td>选择器又找到自己，死循环</td><td>装房前钉死真实 Claude 的绝对路径；拒绝 symlink、hardlink 和带 marker 的 copy</td><td>alias 负控</td></tr>
-        <tr><td><code>qa-extra</code> 被当成 QA</td><td>node 必须逐字等于 <code>qa</code>，attempt 必须为正整数</td><td>近似名称负控</td></tr>
-        <tr><td>外来 activation 冒充</td><td>activation 的 execution 必须与环境里的 execution 相同</td><td>cross-execution 负控</td></tr>
-        <tr><td>QA 原体恢复没有 activation</td><td>用 slot DB 的 distinct node binding；唯一 QA 才放行</td><td>standby QA 正例</td></tr>
-        <tr><td>Codex producer 被替身化</td><td>QA-only 目录不得存在 <code>codex</code></td><td>文件边界断言</td></tr>
-      </tbody>
-    </table></div>
-    <p>本地只跑一个相关 shell 测试文件、lint 和受影响 build。最终强证据来自 QA@3：真实 Claude 完成设计评审，driver 全链完成，并看到 held → 统一恢复口 → 新派发账本。</p>
-    <label for="comment-guards">这一节的意见</label>
-    <textarea id="comment-guards" data-comment="guards" placeholder="写下意见；会自动保存在这个浏览器"></textarea>
-  </section>
-
-  <section class="card gray" data-section="取舍与拒绝方案">
-    <h2>取舍与拒绝方案</h2>
-    <h3>选择：测试房内的身份选择器</h3>
-    <p>优点是改动集中在 harness，production 默认行为零变化；也能覆盖没有 activation 的 QA standby。代价是 shell 选择器必须认真防自引用和身份歧义。</p>
-    <h3>拒绝：给生产 runner adapter 加 per-node binary override</h3>
-    <p>边界更纯，但要修改 Blueprint、adapter context 和多个执行后端，只为测试房加产品级 seam，回归面不值。</p>
-    <h3>拒绝：只把 review binary 钉死，或直接去掉 QA stub</h3>
-    <p>前者只救评审，仍会误伤版本探测和 Claude fallback；后者会回到房内 QA 等外层最终回执的递归死锁。</p>
+  <section class="card gray" data-section="关键取舍与拒绝方案">
+    <h2>关键取舍与拒绝方案</h2>
+    <h3>选择：library 内的单一 room-scoped helper</h3>
+    <p>优点是 driver 所有探活消费者共用同一 socket 选择和身份校验，且可以注入 spawn 做确定性测试。代价是 helper 显式知道 <code>slotDir</code>，但这个目录本来就是装房的权威坐标。</p>
+    <h3>拒绝：直接拼 <code>-S /tmp/.../tmux-&lt;uid&gt;/default</code></h3>
+    <p>虽然更显式，但会复制 uid 子目录和默认 socket 名，形成第二套房间布局合同。用 <code>TMUX_TMPDIR=slotDir</code> 能复用 tmux 自己的标准解析。</p>
+    <h3>拒绝：全局修改 driver 或 Bridge 的 tmux 环境</h3>
+    <p>作用域太宽，会让 teardown、宿主诊断或未来新增调用意外进入房间 server。探活边界应局部、可审计。</p>
+    <h3>main 冲突取舍</h3>
+    <p><code>scripts/test-deploy.sh</code> 同时保留本单的 <code>--qa-stub-runner</code> 和 main 的 <code>--codex-source-home</code>。两项分别控制 QA 替身与 Codex source-home fixture，不互相吞并。</p>
     <label for="comment-tradeoffs">这一节的意见</label>
     <textarea id="comment-tradeoffs" data-comment="tradeoffs" placeholder="写下意见；会自动保存在这个浏览器"></textarea>
   </section>
 
-  <section class="card" data-section="诚实边界">
+  <section class="card green" data-section="测试如何证明修复">
+    <h2>测试如何证明修复</h2>
+    <div class="scroll"><table>
+      <thead><tr><th>证据</th><th>能证明什么</th><th>不能证明什么</th></tr></thead>
+      <tbody>
+        <tr><td>注入 spawn 的 unit test</td><td>env 被复制；房间目录覆盖宿主；client 坐标被清除</td><td>真实 socket 一定存在</td></tr>
+        <tr><td>两个真实隔离 tmux server</td><td>旧宿主 probe 必定 miss，新 room probe 命中活 pane</td><td>完整 generalized 流程通过</td></tr>
+        <tr><td>step-4 classifier 正负对照</td><td>正确 liveness 让既有合法 park 通过；错误 liveness 继续等待</td><td>产品 held 恢复已验收</td></tr>
+        <tr><td>shell 结构守卫</td><td>driver 不再绕开统一 helper 直接 spawn tmux</td><td>未来任何仓库代码都不会新增其它入口</td></tr>
+        <tr><td>QA@4 真房</td><td>两 Lead、真实 Claude review、held → recovery → new dispatch 全链</td><td>未执行的生产场景自动成立</td></tr>
+      </tbody>
+    </table></div>
+    <p>本地只跑 concrete test files、lint 和受影响 build；full CI 属于 exact pushed head，真房属于 QA@4。</p>
+    <label for="comment-evidence">这一节的意见</label>
+    <textarea id="comment-evidence" data-comment="evidence" placeholder="写下意见；会自动保存在这个浏览器"></textarea>
+  </section>
+
+  <section class="card amber" data-section="诚实边界">
     <h2>诚实边界</h2>
-    <p>这份设计只解决 QA harness 的进程选择，不重新打开 FLY-2922 的产品状态机设计，也不宣称产品修复已经通过真房。</p>
+    <p>这份设计只修 529 QA harness 的观测坐标，不修改 FLY-2922 产品恢复代码，也不重新判定先前 QA@3 为成功。</p>
     <ul>
-      <li>它不会让 inner QA stub 生成 PASS 或最终 529 证据。</li>
-      <li>它不会修改真实 QA 的角色规则、review coordinator、StateStore 事务或 evidence judge。</li>
-      <li>它不会把上次两小时卡死的房追认为成功。</li>
-      <li>完成仍要求 exact-head CI、可合并状态、两个真实 Lead 和完整 held → recovery → dispatch 场景。</li>
+      <li>不改变统一恢复口、派发账本、complete 顺序或 carrier-close 行为。</li>
+      <li>不放松 step 4 的状态条件；只让它看到正确 server 的真实 liveness。</li>
+      <li>不把 unit test、lint、build 或 CI 当作 held → new dispatch 的真房证据。</li>
+      <li>最终仍需 QA@4 在 exact head、full CI 绿且 PR mergeable 后跑完整 driver。</li>
     </ul>
-    <p class="muted">本页是设计交付，不是上线或验收收据。</p>
+    <p class="muted">本页是设计交付，不是产品验收、ship 授权或上线收据。</p>
     <label for="comment-boundary">这一节的意见</label>
     <textarea id="comment-boundary" data-comment="boundary" placeholder="写下意见；会自动保存在这个浏览器"></textarea>
   </section>
@@ -178,7 +171,7 @@
     <textarea id="comment-comments" data-comment="comments" placeholder="写下意见；会自动保存在这个浏览器"></textarea>
   </section>
 
-  <p class="foot">FLY-2922 · 2026-09-28 · 设计 artifacts：exploration.md / research.md / plan.md / qa-stub-routing.mmd / qa-stub-structure.mmd</p>
+  <p class="foot">FLY-2922 · 2026-09-28 · exploration.md / research.md / plan.md / room-probe-flow.mmd / room-probe-model.mmd</p>
 </main>
 <script nonce="__CSP_NONCE__">
 (() => {
@@ -224,7 +217,7 @@
       .map((field) => '[' + field.closest('[data-section]').dataset.section + ']\n' + field.value.trim());
     const content = entries.join('\n\n');
     const characters = Array.from(content);
-    const capacity = 1750 - Array.from(marker).length - 1;
+    const capacity = 1700 - Array.from(marker).length - 1;
     chunks = [];
     for (let start = 0; start < characters.length; start += capacity) {
       chunks.push(marker + '\n' + characters.slice(start, start + capacity).join(''));

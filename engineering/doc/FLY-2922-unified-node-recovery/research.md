@@ -1,103 +1,97 @@
-# FLY-2922 QA stub 路由边界 — 调研
+# FLY-2922 房间 tmux 探活隔离 — 调研
 Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-held-回滚之后有出口只留一个统一恢复口放行必须真铸出派发关死体不连带终结-run9-张-37)
 日期: 2026-09-28
 基于: exploration.md
 
-## Evidence Scope
+## 证据范围
 
-设计 carrier 基线是 `2b7701c55`，不含 candidate harness 代码。为避免按旧符号猜测，本轮只读核对了注入任务指出的 host feature checkout；未在该 checkout 切分支、写文件、merge 或 reset。任务给出的失败证据是：QA@2 房内 `review-request-coordinator` 以默认 `claude` 启动真实评审，但被 Bridge-wide raw stub 截获；进程因没有 `FLYWHEEL_EXEC_ID` 在 stub 的前置条件处退出。
+本轮以 QA@3 失败描述、carrier PR #297、nested product PR #1374 的当前远端状态与 exact commit patch 为权威证据。carrier 起点为 `fa47a6ce6`；nested PR 在本轮调研时已前进到 `7d5d084cfc`，其中 main merge 为 `bbd36fde30`、harness 修复为 `5f182869af`。远端已经存在的实现只用于核对接口可行性和当前事实；设计节点不修改 nested product repository，也不把远端实现状态替代设计评审。
 
-本调研只把现有接口和调用关系当设计依据，不把 host checkout 的后续提交、测试或 review 状态当本设计节点的完成证明。
+QA@3 的直接事实是：slot 4 generalized 真房通过 step 0–3，step 4 等待近两小时；实现 execution `08ed6083` 已是 `ship_parked`，当前 park 为 `rework_reachable_wait`，QA 已派发；pane `@5` 在房间 server 上存活。driver 从 CommDB 读到 `tmux_window` 后以宿主 env 调 `tmux display-message`，因此查询了错误 server，返回非零并把 liveness 投影为 dead。
 
-## Current Harness Contract
+## 房间 tmux 合同
 
-`scripts/test-deploy.sh` 已有两类不同控制：
+`scripts/test-deploy.sh` 将 slot 根固定为 `/tmp/flywheel-test-slot-${SLOT}`，再通过 `qa_slot_env_contract_render "$SLOT_DIR" ...` 给房内 Bridge 注入环境。该合同把房间的 `TMUX_TMPDIR` 设为 slot 根；tmux 据此解析到该房间独立的 unix socket 命名空间。
 
-- `--stub-runner`：整个 generalized 房使用 stub，允许同时安装 `claude` 与 `codex` shim；
-- `--qa-stub-runner`：与 `--generalized --codex-runner` 绑定，目标是 design/implement 真 Codex、QA stub。
+宿主 Codex/Lead 自己也可能在 tmux 中运行，并带有另一组 `TMUX`、`TMUX_PANE` 和 `TMUX_TMPDIR`。删除 `TMUX` / `TMUX_PANE` 只能避免把命令当成当前 client 的子命令，不能选择正确 server；没有覆写 `TMUX_TMPDIR` 时，tmux 仍从宿主命名空间找 socket。
 
-缺陷发生在第二类：它把 raw QA stub 作为 `stub-bin/claude`，再把该目录放到 Bridge 可见的 `PATH` 前端。路径影响面不按 workflow node 分割，所有从 Bridge 派生的 bare `claude` 调用都可能命中它。
-
-`packages/teamlead/src/bridge/review-request-coordinator.ts` 将 `reviewerBinary` 交给 `runClaudeReviewRound`；未覆盖时最终使用 bare `claude`。`packages/teamlead/src/bridge/claude-review-runner.ts` 的真实 spawner 把 `opts.env` 原样传给 `spawn`。因此评审环境继承 candidate Bridge 的 `PATH`，但它不是 workflow Runner，没有 `FLYWHEEL_EXEC_ID` 或 workflow activation。
-
-`scripts/qa-529-generalized-stub.mjs` 正确要求 `FLYWHEEL_EXEC_ID`、StateStore 路径和 comm CLI；这些要求对 QA Runner 是安全边界，对 review child 则是确定性失败。这不是“让 stub 接受缺身份”能修的：缺身份调用必须走真实 Claude，而不是削弱 stub 前置条件。
-
-## Available Identity
-
-### Fresh workflow launch
-
-Runner 启动环境包含：
-
-- `FLYWHEEL_EXEC_ID`：逻辑 execution；
-- `FLYWHEEL_WORKFLOW_ACTIVATION_ID`：`activation:<execution>:<run>:<node>:<attempt>`；
-- `FLYWHEEL_STATE_DB_PATH`：slot-local StateStore。
-
-selector 应同时校验 activation 内 execution 等于 `FLYWHEEL_EXEC_ID`，node 精确等于 `qa`，attempt 是正整数。只匹配字符串包含 `qa` 会误接 `qa-extra`；只看 execution id 会把 producer、review 或跨节点复用误送到 stub。
-
-### Same-execution standby resume
-
-standby 恢复沿用 execution，但启动形态可以不带 activation。持久归属在 `workflow_execution_binding(execution_id, node_id, ...)`。selector 可用装房时钉死的 slot DB 只读查询 `SELECT DISTINCT node_id ... WHERE execution_id = ?`：
-
-- 唯一 `qa`：stub；
-- 唯一非 QA 或零行：真实 Claude；
-- `qa` 与其它节点并存：拒绝；
-- DB 查询失败：拒绝。
-
-execution id 必须先通过 `[A-Za-z0-9._-]+`，再进入 sqlite parameter binding；不把它直接拼成 SQL literal。
-
-## Real Binary Pinning
-
-selector 必须在安装前解析真实 Claude 并把绝对路径写进 owner-only shim。解析流程逐个检查原始 `PATH` entry：
-
-1. entry 必须是绝对目录；
-2. 跳过目标 shim 目录及其 realpath alias；
-3. candidate 必须是 regular executable；
-4. candidate 不能与已安装 shim `-ef`；
-5. candidate 前 512 bytes 不能带 QA shim marker，防止 symlink、hardlink 或复制后的 shim 被当作“真实 Claude”。
-
-没有合格 candidate 时装房失败。运行时 selector 不再调用 `command -v claude`，避免自递归。
-
-## Why Codex Must Stay Real
-
-`--qa-stub-runner` 的 generalized driver 已把 producer 节点固定到 Codex、QA 固定到 Claude。QA-only installer 因此只创建 `stub-bin/claude`，并在目录已有 `codex` 文件或链接时 fail closed。这样 design/implement 以及 Codex daemon/TUI 的路径都不经过该 shim；full `--stub-runner` 仍保留原有双 shim 行为，两种模式不能混合。
-
-## Proposed Selector Contract
+因此 probe 的最小完备环境转换是：
 
 ```text
-call claude
-  ├─ no FLYWHEEL_EXEC_ID ────────────────> exec pinned real Claude
-  ├─ malformed exec id ──────────────────> exit 70
-  ├─ activation present
-  │    ├─ exact same-exec / qa / n>=1 ──> exec node QA stub
-  │    └─ everything else ───────────────> exec pinned real Claude
-  └─ no activation (standby resume)
-       ├─ DB says only qa ───────────────> exec node QA stub
-       ├─ DB says non-qa or no row ──────> exec pinned real Claude
-       └─ unreadable / qa+other ─────────> exit 70
+host env
+  - TMUX
+  - TMUX_PANE
+  + TMUX_TMPDIR = validated absolute slotDir
+  -> tmux display-message -p -t <session:@window|session:%pane>
 ```
 
-Review child and version probes take the first branch. Fresh design/implement Runner calls take the activation/non-QA branch. QA attempt 1, QA replacement, and QA attempt 2 each use their own exact activation. A same-execution QA standby resume uses the DB branch。
+不需要自行拼接 `tmux-<uid>/default`，也不应修改 process-wide `process.env`。
 
-## Test Surface
+## 现有探活与分类
 
-| File | Required evidence |
-|---|---|
-| `scripts/__tests__/test-deploy-generalized.test.sh` | RED reproduces identity-free review hitting raw stub; GREEN proves review/version/producer passthrough, exact QA routing, standby QA routing, ambiguity/malformed/DB failure guards, argv preservation, real-binary anti-recursion, and no `codex` shadow |
-| `scripts/lib/qa-generalized.sh` | owner-only selector installer, real Claude resolver, shim marker/alias detection |
-| `scripts/test-deploy.sh` | `--qa-stub-runner` captures real Claude before install, pins slot DB, installs selector; full `--stub-runner` remains unchanged |
-| `doc/qa/framework/529-room-playbook.md` | operator-visible meaning: QA stub is node-scoped; review is real; final evidence still belongs to the outer driver |
+`scripts/qa-529-generalized-e2e.mjs` 的 `probeExecution(slotDir, commDb, executionId)` 汇总两类证据：stub state 记录的 pid 是否存活，以及 CommDB 记录的 tmux target 是否存活。返回的 `liveness` 是 `pidAlive || tmuxAlive ? "alive" : "dead"`。
 
-No production TypeScript test is required because the selected approach does not change product code. Discovery must search the changed full paths, filenames, parent directories, `--qa-stub-runner`, `qa_generalized_install_qa_stub`, `stub-bin`, and `FLYWHEEL_WORKFLOW_ACTIVATION_ID`; excluded matches and reasons must be recorded before running the one concrete shell test.
+tmux target 解析与观测校验已经在 `scripts/lib/qa-generalized-e2e-lib.mjs`：
 
-## Risks and Mitigations
+- `parseTmuxTargetIdentity` 只接受可选 session 前缀加 `@<digits>` 或 `%<digits>`；
+- `tmuxObservationIsAlive` 校验 exact window/pane id、`pane_dead === "0"` 与 `@flywheel_exec_id === expectedExecutionId`。
 
-- **Selector loops into itself**: pin absolute real binary before install; skip path aliases, `-ef` aliases and marker-bearing copies.
-- **Foreign activation spoofs QA**: require same execution prefix and exact node/positive attempt shape.
-- **Standby resume loses activation**: exact StateStore fallback; ambiguous QA ownership refuses.
-- **StateStore temporarily unreadable**: fail closed for exec-only identity, rather than silently running a QA as real or a producer as stub.
-- **Wrapper changes argv or signal behavior**: use shell `exec` for both branches and assert exact argv in the focused test.
-- **Production behavior becomes weaker**: flag remains isolated-room-only/default-off; no role prompt, judge, coordinator, dispatcher or product StateStore code changes.
+step 4 的 `classifyImplementPark` 还要求：node state 为 done、session 为非终态 `ship_parked`、park open 且 reason 与 run-start lifecycle flag 匹配。default-off 的本轮路径要求 `rework_reachable_wait`、无 standby process body、liveness alive。换言之，修复 socket 选择不会把弱证据升级为通过；它只是让既有强校验看到正确 server 的事实。
 
-## Honest Boundary
+同一 `probeExecution` 还被 step 2 design completion、step 9 actor retirement、A3 QA termination 和 prior-run drain 使用。它们此前也可能因错误 server 过早认定 dead。集中 helper 会恢复它们原本的「真实等待 pane 退出」语义，这是必要的一致性修复，不是扩大产品范围。
 
-Focused shell tests can prove the routing decision and installer guards, but not that a real subscription-backed Claude review succeeds in a room. QA@3 must launch the exact documented room parameters, observe a genuine design-review response from Claude, and complete all generalized driver steps. The prior two-hour wait is failure evidence, not a passing baseline.
+## 文件边界
+
+建议修改：
+
+- `scripts/lib/qa-generalized-e2e-lib.mjs`：新增并导出 room-scoped pane probe，保留现有 parser/observation predicate。
+- `scripts/qa-529-generalized-e2e.mjs`：删除内联 tmux spawn；`probeExecution` 传入 `slotDir`、`process.env` 与 `spawnSync`。
+- `scripts/__tests__/qa-generalized-e2e-lib.test.mjs`：纯注入单测 + real-tmux 隔离 socket 的 RED/GREEN + step-4 分类对照。
+- `scripts/__tests__/test-deploy-generalized.test.sh`：结构守卫，证明 helper 写入 `TMUX_TMPDIR: slotDir` 且 driver 不直接 spawn tmux。
+- `engineering/doc/milestones/FLY-2922.md`：记录 QA@3 根因、merge 取舍和定向证据。
+
+禁止修改产品 `StateStore`、workflow engine、recovery coordinator、runner adapter、QA role、review coordinator 或证据裁判。本修复没有产品状态迁移或数据库 schema 变化。
+
+## Main 同步与冲突
+
+QA 交接时 product PR 头 `36b143b2a` 与 `origin/main` 在 `scripts/test-deploy.sh` 冲突。main 带入 FLY-2957 的 `--codex-source-home <prepared-dir>`，本单已有 `--stub-runner|--qa-stub-runner`。两者分别控制 Codex source-home fixture 与 QA-only Claude stub，解析和校验互相独立。
+
+正确解法是 merge、不 rebase，并在 usage 注释同时列出两组参数；自动合并区继续保留双方各自 parser、validation 和 Bridge env 注入。不得为消冲突删除任一 flag，也不得让一个 flag 成为另一个 flag 的隐式前置条件。远端 merge `bbd36fde30` 的唯一文本冲突正是这行 usage，commit message 也记录了「keep both sides」。
+
+## 测试发现与选择
+
+按本地测试政策，implementation 在运行前必须以旧/新 literal 和 changed path 做发现：
+
+```bash
+git grep -lF -- 'paneAlive'
+git grep -lF -- 'probeRoomPaneAlive'
+git grep -lF -- 'tmuxObservationIsAlive'
+git grep -lF -- 'TMUX_TMPDIR'
+git grep -lF -- 'scripts/qa-529-generalized-e2e.mjs'
+git grep -lF -- 'scripts/lib/qa-generalized-e2e-lib.mjs'
+git grep -lF -- 'scripts/__tests__/qa-generalized-e2e-lib.test.mjs'
+git grep -lF -- 'scripts/__tests__/test-deploy-generalized.test.sh'
+```
+
+必须保留的直接测试：
+
+- `node --test scripts/__tests__/qa-generalized-e2e-lib.test.mjs`；
+- `bash scripts/__tests__/test-deploy-generalized.test.sh`（`scripts/__tests__/*.test.sh` 必须逐文件运行）。
+
+实现者应逐条记录发现结果中被排除的测试及理由。已知相近但不直接消费该 driver probe 的符号包括：房间 fixture 自写同名文件、产品侧 `paneAlive`、历史 prompt/JSON fixture；不能只凭名字相似纳入，也不能不记录就跳过。因为本轮不改 TypeScript，`vitest related` 的 changed-TypeScript 要求不触发；若 merge 冲突或实现意外产生 TypeScript diff，应停止并向 Lead 报告设计范围已失效，而不是临场扩大测试图。
+
+## 证明矩阵
+
+| 证据 | 应得结论 | 不得声称 |
+|---|---|---|
+| 注入 spawn 捕获 env | helper 钉死 `TMUX_TMPDIR=slotDir`，不污染 caller env | 真实 socket 存在 |
+| 两个隔离 tmux server 的负控/正控 | 旧宿主 probe miss、room probe 命中同一活 pane | generalized 全链完成 |
+| wrong execution / dead / malformed target | 身份与 liveness fail closed | 所有 tmux 故障都可恢复 |
+| step-4 classifier 对照 | 正确 room liveness 允许既有 `rework_reachable_wait` 形态，host miss 返回 null | QA 已证明 held 恢复产品行为 |
+| shell 结构守卫 | driver 没有绕开集中 helper 的直接 tmux spawn | 未来所有仓库代码都遵循同一口 |
+| exact-head CI | broad repository checks 在该 head 通过 | 真房拓扑和外部服务已验收 |
+| QA@4 real room | 两 Lead、真实 Claude review、完整 held → recovery → dispatch 链 | 未覆盖的生产场景自动成立 |
+
+## 结论
+
+根因不是 `classifyImplementPark` 状态规则，也不是 FLY-2922 的产品恢复事务，而是 driver 观察了错误的 tmux server。最小且完整的修复是把 server 选择收口到 `probeRoomPaneAlive`，以 validated `slotDir` 作为唯一 namespace authority，保留原有 exact target/execution 校验，并用真实隔离 socket 证明旧逻辑必败、新逻辑必成。产品代码不需要改动。

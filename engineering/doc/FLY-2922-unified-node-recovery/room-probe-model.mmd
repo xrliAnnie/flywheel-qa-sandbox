@@ -1,0 +1,35 @@
+classDiagram
+  class ProbeInput {
+    +string target
+    +string executionId
+    +string slotDir
+    +object env
+    +function spawn
+  }
+  class RoomNamespace {
+    +TMUX_TMPDIR = slotDir
+    -TMUX
+    -TMUX_PANE
+  }
+  class TmuxObservation {
+    +string windowId
+    +string paneId
+    +string paneDead
+    +string executionId
+  }
+  class ExecutionProbe {
+    +boolean pidAlive
+    +boolean tmuxAlive
+    +aliveOrDead()
+  }
+  class ParkClassifier {
+    +node done
+    +session ship_parked
+    +park rework_reachable_wait
+    +no process body
+    +liveness alive
+  }
+  ProbeInput --> RoomNamespace : selects exact room
+  RoomNamespace --> TmuxObservation : display-message
+  TmuxObservation --> ExecutionProbe : exact identity check
+  ExecutionProbe --> ParkClassifier : supplies liveness only

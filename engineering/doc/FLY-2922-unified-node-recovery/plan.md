@@ -1,47 +1,52 @@
-# FLY-2922 QA stub 身份隔离 — 实施计划
+# FLY-2922 房间 tmux 探活隔离 — 实施计划
 Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-held-回滚之后有出口只留一个统一恢复口放行必须真铸出派发关死体不连带终结-run9-张-37)
 日期: 2026-09-28
 基于: research.md
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:test-driven-development, then execute this plan task-by-task. The Implement DAG node owns code changes; the Design node must not implement or dispatch successors.
 
-**Goal:** 让 `--generalized --codex-runner --qa-stub-runner` 只把 exact QA execution 送入 deterministic stub，同时保证跨家族评审、版本探测和所有非 QA execution 使用真实 Claude。
+**Goal:** 让 generalized 529 driver 的所有 runner pane 探活都进入当前测试房间的 tmux server，使 step 4 正确识别已 `ship_parked` 且 QA 已派发的实现体，同时保持错误 target、execution 与 dead pane fail closed。
 
-**Architecture:** `stub-bin/claude` 从无条件 stub 改为 identity selector。它在安装时钉死真实 Claude 和 slot StateStore；fresh launch 用 exact activation tuple 选择，same-execution standby resume 用只读 binding 选择。缺少 Runner 身份直接 passthrough；模糊 QA 归属 fail closed。`codex` 不被 QA-only 模式遮蔽，生产协议和 review coordinator 不变。
+**Architecture:** 新增一个 library-level `probeRoomPaneAlive` 作为唯一 tmux 探活口。它以 validated absolute `slotDir` 选择 `TMUX_TMPDIR`，清除 client-local 坐标，再复用既有 exact object/execution predicate。driver 的 `probeExecution` 只消费该 helper；产品 workflow/recovery 代码不动。
 
-**Tech Stack:** Bash、SQLite CLI、Node.js ESM stub、现有 generalized 529 shell harness、GitHub Actions exact-head CI。
+**Tech Stack:** Node.js ESM、Node test runner、Bash harness、tmux、Git merge、pnpm lint/build、GitHub Actions exact-head CI。
 
 ---
 
-## 1. Scope and File Map
+## 1. 文件地图与边界
 
-只修改 harness 与说明：
+修改：
 
-- Modify: `scripts/__tests__/test-deploy-generalized.test.sh` — RED/GREEN route matrix、anti-recursion guards、CLI wiring assertions。
-- Modify: `scripts/lib/qa-generalized.sh` — real-Claude resolver、shim marker/alias guards、QA-only selector installer。
-- Modify: `scripts/test-deploy.sh` — 安装 selector 前钉死真实 Claude 与 slot DB；保留 full-stub 旧路径。
-- Modify: `doc/qa/framework/529-room-playbook.md` — 明示真实评审、QA-only route 和 evidence 边界。
+- `scripts/lib/qa-generalized-e2e-lib.mjs` — room-scoped tmux probe，保持纯边界和可注入 spawn。
+- `scripts/qa-529-generalized-e2e.mjs` — 删除内联 `paneAlive`，让 `probeExecution` 传递 slot authority。
+- `scripts/__tests__/qa-generalized-e2e-lib.test.mjs` — isolated-socket RED/GREEN、helper contract 和 step-4 classifier 对照。
+- `scripts/__tests__/test-deploy-generalized.test.sh` — 单一探活口的静态结构守卫。
+- `engineering/doc/milestones/FLY-2922.md` — merge 取舍、根因和定向证据。
+
+只因 merge main 而变更：
+
+- `scripts/test-deploy.sh` — 冲突时保留本单 `--qa-stub-runner` 与 main 的 `--codex-source-home`，不修改两者运行语义。
 
 禁止修改：
 
-- `packages/teamlead/src/bridge/review-request-coordinator.ts`
-- `packages/teamlead/src/bridge/claude-review-runner.ts`
-- `packages/claude-runner/**`
 - `packages/teamlead/src/StateStore.ts`
+- `packages/teamlead/src/bridge/workflow-node-recovery.ts`
+- `packages/teamlead/src/bridge/workflow-engine-dispatcher.ts`
+- `packages/claude-runner/**`
 - `.flywheel/agents/nodes/qa.md`
-- evidence judge / `qa-result` / workflow dispatcher
+- review coordinator / evidence judge / product schema
 
-如果 exact implementation head 证明必须触碰上述文件，停止并向 Lead 报告设计假设失效；不要把 test-only binary seam 加进产品层。
+若实现需要触碰禁止面，停止并报告设计假设失效；不要把 harness 的 socket 选择扩成产品协议。
 
-## 2. Preconditions and Test Discovery
+## 2. Task 1：取得 TURN、合 main、记录冲突取舍
 
-### Task 1: Acquire TURN, sync main, and inventory affected tests
+**Files:**
 
-**Files:** none
+- Modify only on conflict: `scripts/test-deploy.sh`
+- Inspect: `scripts/qa-529-generalized-e2e.mjs`
+- Inspect: `scripts/lib/qa-generalized-e2e-lib.mjs`
 
-- [ ] **Step 1: Acquire the injected TURN and merge main without rebase**
-
-Run:
+- [ ] **Step 1：取得写权限并合 main，不 rebase**
 
 ```bash
 node "$FLYWHEEL_COMM_CLI" turn
@@ -49,420 +54,342 @@ git fetch origin
 git merge origin/main
 ```
 
-Expected: `turn` prints `yours`; merge completes or conflicts are resolved by retaining both current generalized harness behavior and main. Do not rebase or force-push.
+Expected: `turn` 输出 `yours`；merge 完成或只留下需要人工处理的冲突。禁止 force-push。
 
-- [ ] **Step 2: Record exact baseline**
+- [ ] **Step 2：解决 `scripts/test-deploy.sh` 冲突**
 
-Run:
+usage 必须同时表达：
 
 ```bash
+#        [--generalized [--codex-runner] [--stub-runner|--qa-stub-runner]
+#          [--expect-head <full-sha>]
+#          [--voice-fixture <public-json>] [--codex-fault-sequence <csv>]
+#          [--codex-source-home <prepared-dir>]]
+```
+
+保留 main 的 `--codex-source-home` parser/validation/env injection，也保留本单的 `--qa-stub-runner` parser/validation/selector install。不要新增二者互相依赖。
+
+- [ ] **Step 3：核对 merge 后两边语义都在**
+
+```bash
+git grep -nF -- '--qa-stub-runner' scripts/test-deploy.sh
+git grep -nF -- '--codex-source-home' scripts/test-deploy.sh
+git diff --check
 git status --short --branch
-git rev-parse HEAD
 git log --oneline -10
-git diff --name-only origin/main...HEAD
 ```
 
-Expected: clean tree before TDD edits. Record the SHA and existing candidate files in the implementation evidence.
+Expected: 两个 literal 都有 usage、parse 和 validation 命中；`git diff --check` 无输出。
 
-- [ ] **Step 3: Discover tests before running any test**
-
-Run every search:
+- [ ] **Step 4：提交 main sync**
 
 ```bash
-git grep -lF -- '--qa-stub-runner'
-git grep -lF -- 'qa_generalized_install_qa_stub'
-git grep -lF -- 'qa-529-generalized-stub.mjs'
-git grep -lF -- 'stub-bin'
-git grep -lF -- 'FLYWHEEL_WORKFLOW_ACTIVATION_ID'
-git grep -lF -- 'scripts/test-deploy.sh'
-git grep -lF -- 'scripts/lib/qa-generalized.sh'
+git add scripts/test-deploy.sh
+git commit -m "Merge origin/main into flywheel-FLY-2922"
+```
+
+Expected: merge commit message 在正文记录双方合同均保留；若 merge 无冲突，按仓库正常 merge commit 流程提交。
+
+## 3. Task 2：发现所有直接测试，先写 isolated-socket RED
+
+**Files:**
+
+- Modify: `scripts/__tests__/qa-generalized-e2e-lib.test.mjs`
+- Inspect: all literal/path matches from the commands below
+
+- [ ] **Step 1：运行强制 test discovery**
+
+```bash
+git grep -lF -- 'paneAlive'
+git grep -lF -- 'probeRoomPaneAlive'
+git grep -lF -- 'tmuxObservationIsAlive'
+git grep -lF -- 'TMUX_TMPDIR'
+git grep -lF -- 'scripts/qa-529-generalized-e2e.mjs'
+git grep -lF -- 'scripts/lib/qa-generalized-e2e-lib.mjs'
+git grep -lF -- 'scripts/__tests__/qa-generalized-e2e-lib.test.mjs'
 git grep -lF -- 'scripts/__tests__/test-deploy-generalized.test.sh'
-git grep -lF -- 'doc/qa/framework/529-room-playbook.md'
 ```
 
-Expected retained test: `scripts/__tests__/test-deploy-generalized.test.sh`. Record every other test match and a specific exclusion reason. An empty match never authorizes a broad suite.
+Expected: 生成 retained/excluded 清单。每个排除项记录「不调用该 driver probe」等具体理由；不能用“看起来无关”代替证据。
 
-## 3. TDD: Reproduce the Review Interception
+- [ ] **Step 2：在 test file 导入 `spawnSync` 与待建 helper**
 
-### Task 2: Add failing routing tests
+```js
+import { execFileSync, spawnSync } from "node:child_process";
+// existing imports...
+import { probeRoomPaneAlive } from "../lib/qa-generalized-e2e-lib.mjs";
+```
+
+- [ ] **Step 3：写纯注入 contract test**
+
+测试必须捕获 spawn 参数并断言：
+
+```js
+const calls = [];
+const spawn = (file, args, options) => {
+  calls.push({ file, args, env: options.env });
+  return { status: 0, stdout: "@5|%7|0|implement-exec\n" };
+};
+const hostEnv = {
+  PATH: "/usr/bin:/bin",
+  TMUX: "/private/tmp/tmux-501/default,123,0",
+  TMUX_PANE: "%1",
+  TMUX_TMPDIR: "/tmp/host-namespace",
+};
+assert.equal(probeRoomPaneAlive({
+  target: "runner-test-slot-4:@5",
+  executionId: "implement-exec",
+  slotDir: "/tmp/flywheel-test-slot-4",
+  env: hostEnv,
+  spawn,
+}), true);
+assert.equal(calls[0].env.TMUX_TMPDIR, "/tmp/flywheel-test-slot-4");
+assert.equal("TMUX" in calls[0].env, false);
+assert.equal("TMUX_PANE" in calls[0].env, false);
+assert.equal(hostEnv.TMUX_TMPDIR, "/tmp/host-namespace");
+```
+
+再覆盖 malformed target 不 spawn、tmux non-zero 返回 false，以及 `undefined`、`""`、`"relative/slot"` slotDir 均抛错。
+
+- [ ] **Step 4：写真实隔离 socket RED**
+
+创建两个短路径 temp roots：host 与 room。仅在 room env 里用 tmux `new-session -d` 建 `runner-test-slot-4`，给 window 写 `@flywheel_exec_id=implement-exec`。先用 host env 跑旧式 `display-message`，断言非零；再调用待建 helper，预期 true。
+
+把 helper 返回的 liveness 输入既有 `classifyImplementPark`：
+
+```js
+const parked = {
+  node: { state: "done", execution_id: "implement-exec" },
+  session: { status: "ship_parked", terminal_at: null },
+  park: { event: "park_opened", reason: "rework_reachable_wait" },
+  processBody: null,
+  standbyResumeEnabled: false,
+};
+assert.equal(classifyImplementPark({
+  ...parked,
+  liveness: { liveness: "alive" },
+}), "rework_reachable_wait");
+assert.equal(classifyImplementPark({
+  ...parked,
+  liveness: { liveness: "dead" },
+}), null);
+```
+
+cleanup 必须以 exact room socket kill-server，并删除两个 temp roots；tmux 不存在时只 skip 这一条 real-tmux case。
+
+- [ ] **Step 5：运行具体文件，确认 RED 是缺 helper/错误 namespace**
+
+```bash
+node --test scripts/__tests__/qa-generalized-e2e-lib.test.mjs
+```
+
+Expected: FAIL，原因是 `probeRoomPaneAlive` 尚未导出，或在先原样搬入旧逻辑的中间态下 isolated room pane 被判 false；不得接受 fixture setup 自己失败的假 RED。
+
+- [ ] **Step 6：提交 RED**
+
+```bash
+git add scripts/__tests__/qa-generalized-e2e-lib.test.mjs
+git commit -m "test(qa): reproduce room tmux pane false death"
+```
+
+## 4. Task 3：实现唯一 room-scoped probe
 
 **Files:**
 
+- Modify: `scripts/lib/qa-generalized-e2e-lib.mjs`
+
+- [ ] **Step 1：在现有 target/observation helpers 后新增函数**
+
+```js
+export function probeRoomPaneAlive(input) {
+  const { target, executionId, slotDir, env, spawn } = input ?? {};
+  requiredString(slotDir, "slotDir", "room tmux probe");
+  if (!slotDir.startsWith("/")) {
+    throw new Error("room tmux probe slotDir must be an absolute path");
+  }
+  const identity = parseTmuxTargetIdentity(target);
+  if (!identity) return false;
+  const probeEnv = { ...env, TMUX_TMPDIR: slotDir };
+  delete probeEnv.TMUX;
+  delete probeEnv.TMUX_PANE;
+  const result = spawn(
+    "tmux",
+    [
+      "display-message",
+      "-p",
+      "-t",
+      identity.target,
+      "#{window_id}|#{pane_id}|#{pane_dead}|#{@flywheel_exec_id}",
+    ],
+    { encoding: "utf8", env: probeEnv },
+  );
+  if (result.status !== 0) return false;
+  return tmuxObservationIsAlive(identity.target, result.stdout, executionId);
+}
+```
+
+不要读取/修改 global env，不要拼 socket path，不要 catch 并吞掉 invalid slot authority。
+
+- [ ] **Step 2：运行具体 Node test，确认 GREEN**
+
+```bash
+node --test scripts/__tests__/qa-generalized-e2e-lib.test.mjs
+```
+
+Expected: PASS，包括 host miss / room hit、wrong execution、invalid target 与 invalid slotDir。
+
+- [ ] **Step 3：做 mutation 负控**
+
+临时删掉 `TMUX_TMPDIR: slotDir`，重跑同一 concrete file，确认 isolated-socket case 与 env contract case 都红；立即恢复并重跑到绿。不要提交 mutation。
+
+- [ ] **Step 4：提交 helper 与 tests**
+
+```bash
+git add scripts/lib/qa-generalized-e2e-lib.mjs scripts/__tests__/qa-generalized-e2e-lib.test.mjs
+git commit -m "fix(qa): probe runner panes on the room tmux server"
+```
+
+## 5. Task 4：让 driver 只经 helper 探活
+
+**Files:**
+
+- Modify: `scripts/qa-529-generalized-e2e.mjs`
 - Modify: `scripts/__tests__/test-deploy-generalized.test.sh`
-- Test: `scripts/__tests__/test-deploy-generalized.test.sh`
 
-- [ ] **Step 1: Create hermetic real-Claude and slot-DB fixtures**
+- [ ] **Step 1：替换 imports 与内联函数**
 
-Add an owner-executable fake real Claude that echoes argv, plus a slot-local SQLite fixture:
+从 driver import 移除 `parseTmuxTargetIdentity`、`tmuxObservationIsAlive`，加入 `probeRoomPaneAlive`。删除整个内联 `paneAlive`。
 
-```bash
-qa_real_claude_dir="$TMP_ROOT/real-claude-bin"
-mkdir -p "$qa_real_claude_dir"
-qa_real_claude="$qa_real_claude_dir/claude"
-cat > "$qa_real_claude" <<'EOF'
-#!/usr/bin/env bash
-printf 'REAL-CLAUDE'
-printf ' [%s]' "$@"
-printf '\n'
-EOF
-chmod 700 "$qa_real_claude"
+- [ ] **Step 2：改写 `probeExecution` 的 pane 分支**
 
-qa_state_dir="$TMP_ROOT/qa-state"
-mkdir -p "$qa_state_dir"
-qa_state_db="$qa_state_dir/teamlead.db"
-sqlite3 "$qa_state_db" '
-CREATE TABLE workflow_execution_binding (
-  activation_id TEXT PRIMARY KEY,
-  execution_id TEXT NOT NULL,
-  run_id TEXT NOT NULL,
-  node_id TEXT NOT NULL,
-  attempt INTEGER NOT NULL
-);
-INSERT INTO workflow_execution_binding VALUES
-  ("activation:exec-q:run-1:qa:1", "exec-q", "run-1", "qa", 1),
-  ("activation:exec-q:run-1:qa:2", "exec-q", "run-1", "qa", 2),
-  ("activation:exec-p:run-1:implement:1", "exec-p", "run-1", "implement", 1),
-  ("activation:exec-m:run-1:qa:1", "exec-m", "run-1", "qa", 1),
-  ("activation:exec-m:run-1:implement:1", "exec-m", "run-1", "implement", 1);
-'
+```js
+const tmuxAlive = probeRoomPaneAlive({
+  target: comm?.tmuxWindow,
+  executionId,
+  slotDir,
+  env: process.env,
+  spawn: spawnSync,
+});
 ```
 
-Use the repository test's existing temp root and cleanup; do not use a shared `/tmp/fly2922-*` path.
+保持返回对象与 `pidAlive || tmuxAlive` 聚合不变。
 
-- [ ] **Step 2: Add the exact RED reproduction**
+- [ ] **Step 3：增加 shell 结构守卫**
 
-Install the candidate QA-only stub and invoke a review-shaped, identity-free call:
+从 library 截取 `probeRoomPaneAlive` 函数体，断言它含：
 
 ```bash
-assert_eq \
-  "$(env -u FLYWHEEL_EXEC_ID -u FLYWHEEL_WORKFLOW_ACTIVATION_ID \
-    "$qa_stub_bin/claude" -p --model opus 'review this diff' 2>&1)" \
-  'REAL-CLAUDE [-p] [--model] [opus] [review this diff]' \
-  'QA-only route keeps identity-free design review on the real Claude'
+'"#{window_id}|#{pane_id}|#{pane_dead}|#{@flywheel_exec_id}"'
+'TMUX_TMPDIR: slotDir'
 ```
 
-Expected before the fix: FAIL because the raw stub requires `FLYWHEEL_EXEC_ID` instead of printing the real-Claude marker.
+从 driver 截取 `probeExecution`，断言含 `probeRoomPaneAlive({` 与 `slotDir,`。另外用 `rg -q '"tmux"' scripts/qa-529-generalized-e2e.mjs` 作为负向守卫：driver 不得直接 spawn tmux。
 
-- [ ] **Step 3: Add the full routing matrix before implementation**
-
-Use a small fake QA stub that prints `QA-STUB` and assert:
+- [ ] **Step 4：逐文件运行两个直接测试**
 
 ```bash
-# identity-free review and --version -> REAL-CLAUDE
-# activation:exec-a:run-1:eng_design:1 -> REAL-CLAUDE
-# activation:exec-a:run-1:implement:1 -> REAL-CLAUDE
-# activation:exec-a:run-1:qa:1 with FLYWHEEL_EXEC_ID=exec-a -> QA-STUB
-# activation:exec-b:run-1:qa:1 with FLYWHEEL_EXEC_ID=exec-a -> REAL-CLAUDE
-# activation:exec-a:run-1:qa-extra:1 -> REAL-CLAUDE
-# exec-q without activation -> QA-STUB
-# exec-p without activation -> REAL-CLAUDE
-# unbound execution without activation -> REAL-CLAUDE
-# exec-m without activation -> exit 70 (qa + implement is ambiguous)
-# malformed execution id -> exit 70
-# missing/unreadable DB for an exec-only potential QA -> exit 70
-```
-
-Also assert exact argv preservation for both `exec` branches and that `qa_stub_bin/codex` does not exist.
-
-- [ ] **Step 4: Add installer failure cases**
-
-Require failure for:
-
-- relative, missing, or non-executable real Claude;
-- real Claude inside the target shim directory;
-- symlink, hardlink, or marker-bearing copy of an existing selector;
-- relative StateStore path or missing parent directory;
-- unavailable `sqlite3`;
-- pre-existing `stub-bin/codex` file or symlink.
-
-- [ ] **Step 5: Run the one concrete test and confirm RED**
-
-Run:
-
-```bash
+node --test scripts/__tests__/qa-generalized-e2e-lib.test.mjs
 bash scripts/__tests__/test-deploy-generalized.test.sh
 ```
 
-Expected: the new review passthrough and route assertions fail for the missing selector behavior; fixture setup and unrelated existing assertions pass.
+Expected: 两个具体文件各自 exit 0；shell 输出中无 FAIL。
 
-- [ ] **Step 6: Commit the RED tests**
+- [ ] **Step 5：做 bypass mutation 负控**
+
+临时把 driver 改回直接 `spawnSync("tmux", ...)` 或删结构守卫所需 call，运行 `bash scripts/__tests__/test-deploy-generalized.test.sh`，确认红；恢复并重跑到绿。不要提交 mutation。
+
+- [ ] **Step 6：提交 driver wiring**
 
 ```bash
-git add scripts/__tests__/test-deploy-generalized.test.sh
-git commit -m "test(FLY-2922): reproduce QA stub intercepting real review"
+git add scripts/qa-529-generalized-e2e.mjs scripts/__tests__/test-deploy-generalized.test.sh
+git commit -m "fix(qa): bind generalized liveness to the room socket"
 ```
 
-## 4. Implement the Identity Selector
+## 6. Task 5：运行发现出的相关验证
 
-### Task 3: Add real-Claude resolution and alias guards
+**Files:** none unless a real failure requires a scoped fix
 
-**Files:**
+- [ ] **Step 1：运行所有 retained concrete tests，一次一个文件**
 
-- Modify: `scripts/lib/qa-generalized.sh`
-- Test: `scripts/__tests__/test-deploy-generalized.test.sh`
-
-- [ ] **Step 1: Add a stable marker and alias detector**
-
-Implement:
+最低集合：
 
 ```bash
-QA_GENERALIZED_SHIM_MARKER='# flywheel-qa-529-qa-only-shim'
-
-qa_generalized_is_qa_shim() {
-  local candidate="${1:-}" head_bytes
-  [[ -f "$candidate" ]] || return 1
-  head_bytes="$(head -c 512 "$candidate" 2>/dev/null | tr -d '\000')"
-  [[ "$head_bytes" == *"$QA_GENERALIZED_SHIM_MARKER"* ]]
-}
-
-qa_generalized_is_shim_alias() {
-  local candidate="${1:-}" shim_file="${2:-}"
-  if [[ -n "$shim_file" && -e "$shim_file" && "$candidate" -ef "$shim_file" ]]; then
-    return 0
-  fi
-  qa_generalized_is_qa_shim "$candidate"
-}
-```
-
-The marker check must catch copies; `-ef` catches symlink and hardlink aliases.
-
-- [ ] **Step 2: Resolve the real Claude before installing the shim**
-
-Implement `qa_generalized_resolve_real_claude <shim-dir>` to iterate absolute `PATH` entries, skip the shim directory and its realpath aliases, require a regular executable `claude`, reject shim aliases, and print the first valid absolute candidate. If none exists, print one diagnostic and return non-zero.
-
-Do not call `command -v claude` after the shim directory may already be first on `PATH`.
-
-- [ ] **Step 3: Run the concrete shell test**
-
-```bash
+node --test scripts/__tests__/qa-generalized-e2e-lib.test.mjs
 bash scripts/__tests__/test-deploy-generalized.test.sh
 ```
 
-Expected: resolver/alias cases pass; routing cases remain RED until the installer is updated.
+再逐文件运行 discovery 证明为直接消费者的测试；每个 `scripts/__tests__/*.test.sh` 必须单独 invocation。禁止 bare `vitest`、`pnpm test`、目录、glob、package alias 或枚举全仓文件模拟 full suite。
 
-### Task 4: Replace the raw QA stub with an exact selector
-
-**Files:**
-
-- Modify: `scripts/lib/qa-generalized.sh`
-- Test: `scripts/__tests__/test-deploy-generalized.test.sh`
-
-- [ ] **Step 1: Change the installer signature**
-
-Use the concrete call shape:
-
-```bash
-qa_generalized_install_qa_stub \
-  "${SLOT_DIR}/stub-bin" \
-  "${REPO_ROOT}/scripts/qa-529-generalized-stub.mjs" \
-  "$QA_REAL_CLAUDE_BIN" \
-  "${SLOT_DIR}/teamlead.db"
-```
-
-Validate all four arguments, require `sqlite3`, require the DB parent directory, and refuse any `codex` entry in the target directory.
-
-- [ ] **Step 2: Generate an owner-only selector atomically**
-
-Write `claude.tmp.$$`, `chmod 700`, then `mv` to `stub-bin/claude`. The generated script must contain the following decision core:
-
-```bash
-exec_id="${FLYWHEEL_EXEC_ID:-}"
-[[ -n "$exec_id" ]] || exec "$real" "$@"
-if [[ ! "$exec_id" =~ ^[A-Za-z0-9._-]+$ ]]; then
-  echo '[qa-529-shim] refusing a malformed FLYWHEEL_EXEC_ID' >&2
-  exit 70
-fi
-
-activation="${FLYWHEEL_WORKFLOW_ACTIVATION_ID:-}"
-if [[ -n "$activation" ]]; then
-  prefix="activation:${exec_id}:"
-  if [[ "$activation" == "$prefix"* \
-    && "${activation#"$prefix"}" =~ ^[A-Za-z0-9._-]+:qa:[1-9][0-9]*$ ]]; then
-    exec node "$stub" "$@"
-  fi
-  exec "$real" "$@"
-fi
-```
-
-For the standby branch, run read-only SQLite with `.timeout 5000` and a bound `@exec` parameter to select distinct node ids. Route only the exact single result `qa` to the stub. Zero rows or only non-QA rows use real Claude. Query failure or a result containing both `qa` and another node exits 70 with a `[qa-529-shim]` diagnostic.
-
-- [ ] **Step 3: Preserve process and argv semantics**
-
-Both branches must use `exec`; do not spawn a wrapper child or reinterpret argv. No secret, token, prompt, or user-derived text is embedded in the generated selector.
-
-- [ ] **Step 4: Run the concrete shell test GREEN**
-
-```bash
-bash scripts/__tests__/test-deploy-generalized.test.sh
-```
-
-Expected: all route, ambiguity, resolver, alias, permission and no-Codex-shadow assertions pass.
-
-- [ ] **Step 5: Commit the helper**
-
-```bash
-git add scripts/lib/qa-generalized.sh \
-  scripts/__tests__/test-deploy-generalized.test.sh
-git commit -m "fix(qa): route only QA execution into generalized stub"
-```
-
-## 5. Wire the Room and Document the Contract
-
-### Task 5: Install the selector without changing full-stub mode
-
-**Files:**
-
-- Modify: `scripts/test-deploy.sh`
-- Test: `scripts/__tests__/test-deploy-generalized.test.sh`
-
-- [ ] **Step 1: Keep the full-stub branch byte-compatible**
-
-The `STUB_RUNNER=1` branch continues installing both `claude` and `codex` stubs. Do not reuse the QA-only selector there.
-
-- [ ] **Step 2: Pin and install in QA-only mode**
-
-In the mutually exclusive `QA_STUB_RUNNER=1` branch:
-
-```bash
-QA_REAL_CLAUDE_BIN="$(qa_generalized_resolve_real_claude "${SLOT_DIR}/stub-bin")" \
-  || campaign_abort "QA-only stub needs a real Claude executable on PATH"
-qa_generalized_install_qa_stub "${SLOT_DIR}/stub-bin" \
-  "${REPO_ROOT}/scripts/qa-529-generalized-stub.mjs" \
-  "$QA_REAL_CLAUDE_BIN" "${SLOT_DIR}/teamlead.db" \
-  || campaign_abort "QA-only stub installation failed"
-BRIDGE_EXTRA_ENV+=("PATH=${SLOT_DIR}/stub-bin:${PATH}")
-```
-
-At this point the Bridge-wide path contains the selector, not the raw stub. Identity-free review and all proven non-QA calls immediately `exec` the pinned real Claude; only positive QA identity reaches the stub.
-
-- [ ] **Step 3: Assert wiring literals**
-
-Extend the focused shell test to require the resolver call, pinned StateStore argument, mutually exclusive flags, `qaRunnerMode=stub`, and no QA-only `codex` install.
-
-- [ ] **Step 4: Run focused test GREEN**
-
-```bash
-bash scripts/__tests__/test-deploy-generalized.test.sh
-```
-
-Expected: exit 0.
-
-### Task 6: Update the operator playbook
-
-**Files:**
-
-- Modify: `doc/qa/framework/529-room-playbook.md`
-
-- [ ] **Step 1: Document the exact invocation and boundary**
-
-Document:
-
-```bash
-bash scripts/test-deploy.sh "$SLOT" \
-  --generalized \
-  --codex-runner \
-  --qa-stub-runner \
-  --extra-lead 1:PM-Test
-```
-
-State plainly:
-
-- design/implement are real Codex;
-- design/code review is real Claude;
-- only exact QA execution is stubbed;
-- same-execution QA standby uses the slot DB fallback;
-- the inner stub cannot create PASS or final evidence;
-- the outer driver/QA owner remains the only final 529 evidence owner.
-
-- [ ] **Step 2: Commit wiring and docs**
-
-```bash
-git add scripts/test-deploy.sh \
-  scripts/__tests__/test-deploy-generalized.test.sh \
-  doc/qa/framework/529-room-playbook.md
-git commit -m "docs(FLY-2922): define QA-only stub routing boundary"
-```
-
-## 6. Targeted Verification and Handoff
-
-### Task 7: Verify only the affected surface
-
-- [ ] **Step 1: Re-run discovery after literal changes**
-
-Repeat every Task 1 search, plus:
-
-```bash
-git grep -lF -- 'flywheel-qa-529-qa-only-shim'
-git grep -lF -- 'QA_REAL_CLAUDE_BIN'
-git diff --name-only origin/main...HEAD
-```
-
-Record retained and excluded matches. Confirm the new commits touch only the four allowed files plus issue process docs/progress.
-
-- [ ] **Step 2: Run the existing shell test individually**
-
-```bash
-bash scripts/__tests__/test-deploy-generalized.test.sh
-```
-
-Expected: exit 0, including review-shaped real-Claude passthrough and QA/standby/negative route assertions. This is targeted evidence, not a full suite.
-
-- [ ] **Step 3: Run lint and affected build**
+- [ ] **Step 2：运行 lint 与受影响 build**
 
 ```bash
 pnpm lint
 pnpm --filter "flywheel-teamlead..." build
+git diff --check origin/main...HEAD
 ```
 
-Expected: both exit 0. There is no changed TypeScript file, so local-test-policy does not require `vitest related`; do not run it as a broad fallback.
+Expected: 命令 exit 0。warning 必须区分 changed-file 与 pre-existing，不能用过滤器掩盖 lint exit code。
 
-- [ ] **Step 4: Verify forbidden production paths are unchanged by this repair**
+- [ ] **Step 3：确认没有 changed TypeScript**
 
 ```bash
-git diff --name-only HEAD~3..HEAD | rg \
-  '^(packages/|\.flywheel/agents/nodes/qa\.md$)'
+git diff --name-only origin/main...HEAD -- '*.ts' '*.tsx'
 ```
 
-Expected: no output. Inspect the actual diff rather than relying on this guard alone.
+Expected: 本轮 harness fix 无输出。若有输出，停止实现并向 Lead 报告设计范围已失效；不要临场扩大到 TypeScript 或对 hub 文件运行宽泛 `related` 图。
 
-- [ ] **Step 5: Push normally and request exact-head code review**
+- [ ] **Step 4：记录证据与排除理由**
 
-Push without `--no-verify` and without force. Open a new `review_code` gate and `request-review` bound to the pushed exact head. Fix blocking findings only and re-request until the effective `reviewVerdict` is `APPROVED`.
+在 milestone/PR body 写出每个命令、测试数、head SHA，以及每个 excluded match 的具体理由。只称“targeted local verification”，不称 full suite。
 
-- [ ] **Step 6: Hand off to QA**
+## 7. Task 6：推送、同头复审与实现节点交接
 
-After exact-head review approval, run the injected `complete --route needs_review` command. QA@3 must prove on that exact head:
+**Files:**
 
-1. full CI green and PR mergeable;
-2. room starts with `--generalized --codex-runner --qa-stub-runner --extra-lead 1:PM-Test`;
-3. design review is completed by real Claude, not the QA stub;
-4. driver completes all steps, including held → unified recovery → new dispatch;
-5. final outer evidence is recorded by the authorized owner, never synthesized by the inner stub.
+- Modify: `engineering/doc/milestones/FLY-2922.md`
+- Modify: implementation progress ledger
 
-## 7. Rollback and Tradeoffs
+- [ ] **Step 1：写清根因、merge 取舍与边界**
 
-Rollback reverts the selector/install/docs commits and restores the prior QA-only raw stub behavior; that behavior is known to break real review and must not be used as a passing QA path. No database migration, product feature flag, StateStore vocabulary or production deployment is involved.
+里程碑必须包含：QA@3 pane `@5` 事实、host vs room namespace、`probeRoomPaneAlive` 单口、step-4 正负对照、`scripts/test-deploy.sh` 两边保留、定向测试清单，以及 QA@4 仍需真房的边界。
 
-The selector is less architecturally pure than a first-class per-node adapter binary, but it preserves the harness-only scope and default-off production behavior. The strict identity matrix, pinned absolute passthrough, alias rejection and standby DB proof keep this compromise bounded.
+- [ ] **Step 2：检查 mailbox、cleanliness 与 exact head**
 
-## 8. Acceptance Matrix
+```bash
+node "$FLYWHEEL_COMM_CLI" inbox --exec-id "$FLYWHEEL_EXEC_ID"
+git status --short --branch
+git diff --check
+git rev-parse HEAD
+```
 
-| Requirement | Authoritative proof |
-|---|---|
-| 真实设计评审不再被 stub 截获 | focused identity-free review test; QA@3 Bridge log/review verdict from real Claude |
-| 只有 QA execution 走 stub | exact activation matrix + standby binding matrix + room actor evidence |
-| 非 QA execution 保持真实 | design/implement activation passthrough tests; no `stub-bin/codex` |
-| QA standby 仍可继续 | exec-only unique-qa DB test and QA@3 recovery step |
-| foreign / ambiguous 身份不误放 | mismatch, `qa-extra`, malformed, multi-node, unreadable-DB negative tests |
-| selector 不自递归 | absolute resolver plus symlink/hardlink/copy alias tests |
-| 产品 QA 规则未放松 | four-file repair diff; no product/role/judge changes |
-| 不用去 flag 规避 | documented QA@3 command retains `--qa-stub-runner` |
-| FLY-2922 行为真正被验 | exact-head real room completes held → unified recovery → new dispatch with dispatch-ledger proof |
+Expected: 没有未处理 Lead 指令；tree clean；记录 exact SHA。
 
-## 9. Out of Scope
+- [ ] **Step 3：push feature branch**
 
-- 不把 QA-only selector 做成生产 feature flag。
-- 不修改 review coordinator binary policy。
-- 不让 raw QA stub 接受缺失身份。
-- 不推广 mixed node stubbing 到普通 run。
-- 不把 focused shell test、inner stub verdict 或旧 INCONCLUSIVE 房追认为 strength-two PASS。
+```bash
+git push origin HEAD
+```
+
+Expected: fast-forward push；不得 `--no-verify`、force-push 或修改 hook 配置。
+
+- [ ] **Step 4：在 exact pushed head 走新的 code review gate**
+
+按 Implement node 注入的 `gate review_code --no-block` + `request-review --type code` 命令注册 review，把 gate 返回的 UUID 原样保存为 `review_question_id`，跨 turn 运行 `node "$FLYWHEEL_COMM_CLI" check "$review_question_id"`。若 CHANGES_REQUESTED，修 HIGH finding、push 新 head、开全新 gate；若 APPROVED with advisories，向 Lead fire-and-forget 报 advisories。
+
+- [ ] **Step 5：以注入的 completion route 交给 QA**
+
+review APPROVED 且 push/CI 状态满足 Implement node 的精确要求后，运行其注入的 `complete --route needs_review --pr 1374`。不要 merge、ship、dispatch QA 或自行起真房。
+
+## 8. QA@4 验收矩阵
+
+QA@4 不是本计划的本地实现步骤，但必须按以下条件收口：
+
+1. PR #1374 exact head full CI 绿且 mergeable。
+2. Lead 用新 head 起 slot 房，包含主 Lead + extra Lead，参数为 `--generalized --codex-runner --qa-stub-runner`。
+3. 真实 Claude 完成 design review；QA stub 只接 QA execution。
+4. driver 走完全部 steps；step 4 证明房内活 pane 被识别。
+5. held 进入唯一 unified recovery door；恢复结果是当前节点的新 dispatch ledger entry，不是只改状态。
+6. incomplete carrier close 不终结 run；旧 actor 与新 actor 身份、route revision 和 dispatch reason 可审计。
+7. 保存 driver step artifacts、room DB snapshot 与 bridge log；在 teardown 前复制会被销毁的证据。
+
+本地定点测试、lint、build、CI 任一项都不能替代上述真房证据。
