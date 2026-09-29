@@ -3,7 +3,7 @@ issue: FLY-3043
 phase: implement
 title: QA 沙箱相关测试说明
 phaseCursor: 5/6
-updated: 2026-09-29T08:32:43.707Z
+updated: 2026-09-29T08:32:56.769Z
 nextStep: Commit and push the verified one-line change, create the final
   milestone commit, and request code review
 chunks:
@@ -46,7 +46,6 @@ pointers:
   plan: engineering/doc/FLY-3043-qa-sbx-related-tests/plan.md
   exploration: engineering/doc/FLY-3043-qa-sbx-related-tests/exploration.md
   research: engineering/doc/FLY-3043-qa-sbx-related-tests/research.md
-  reviewedSha: unreviewed
 ---
 
 # FLY-3043 progress — QA 沙箱相关测试说明
