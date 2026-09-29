@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-3033 重启演练探针</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #f5f5f7; color: #1d1d1f; font-family: -apple-system, system-ui, sans-serif; line-height: 1.6; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 26px; margin: 8px 0 4px; }
+  .sub { color: #86868b; font-size: 14px; }
+  code { font-family: 'SF Mono', ui-monospace, monospace; font-size: 0.92em; background: #f0f0f3; padding: 1px 5px; border-radius: 5px; overflow-wrap: anywhere; }
+  .section { margin-top: 28px; }
+  .section-title { font-size: 18px; font-weight: 600; margin-bottom: 10px; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 18px 20px; border-left: 4px solid #007aff; margin-bottom: 14px; }
+  .card.green { border-left-color: #34c759; } .card.amber { border-left-color: #ff9500; }
+  .card.red { border-left-color: #ff3b30; } .card.purple { border-left-color: #af52de; }
+  .card.navy { border-left-color: #1a365d; }
+  .issue-id { color: #1a365d; font-family: 'SF Mono', monospace; font-weight: 600; text-decoration: none; }
+  .diagram { overflow-x: auto; background: #fff; border-radius: 8px; padding: 8px; margin: 10px 0; }
+  .diagram svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid #eee; vertical-align: top; }
+  th { color: #86868b; font-weight: 600; }
+  .tablewrap { overflow-x: auto; }
+  .term { color: #86868b; font-size: 13px; }
+  .cbox { margin-top: 12px; }
+  .cbox label { font-size: 12px; color: #86868b; display: block; margin-bottom: 4px; }
+  .cbox textarea { width: 100%; min-height: 56px; border: 1px solid #d2d2d7; border-radius: 8px; padding: 8px; font: inherit; font-size: 14px; resize: vertical; background: #fbfbfd; }
+  .summary-out { white-space: pre-wrap; overflow-wrap: anywhere; background: #fbfbfd; border: 1px solid #e5e5ea; border-radius: 8px; padding: 10px; font-size: 13px; margin: 8px 0; }
+  button { background: #007aff; color: #fff; border: 0; border-radius: 8px; padding: 8px 14px; font-size: 14px; cursor: pointer; margin: 4px 6px 4px 0; }
+  button.secondary { background: #e5f1ff; color: #007aff; }
+  .status { color: #34c759; font-size: 13px; min-height: 1.2em; }
+  ul { padding-left: 20px; margin: 6px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="sub"><a class="issue-id" href="https://linear.app/geoforge3d/issue/FLY-3033">FLY-3033</a> · 设计节点交付 · 2026-09-28</div>
+  <h1>FLY-2920 重启演练探针：在 README 末尾加一行，被杀多少次都只加一次</h1>
+  <div class="sub">合成单 · 仅 529 测试房（slot 2 + extra slot 5）使用 · 生产不派单</div>
+
+  <div class="section">
+    <div class="section-title"><span style="color:#34c759;">●</span> 一句话总结</div>
+    <div class="card green">
+      下游的 <b>Codex 实现体</b><span class="term">（实现体 = 真正动手改文件、提交代码的那个 AI 进程）</span>在沙箱仓 <code>README.md</code> 末尾加一行
+      <code>FLY-2920 N-to-N restart probe</code>，推送、开 PR、请 Bridge 复审、等 CI 全绿后交卷；每一步都写成<b>幂等</b>的
+      <span class="term">（幂等 = 同一步做一次和做十次结果一样，做过的会自动跳过）</span>，所以测试驱动器在任何一步杀掉或重启它，新体从头重跑也只会得到 1 行新字、1 个 README 提交、1 个 PR。
+      <div class="cbox"><label>对这一节的意见</label><textarea data-k="summary" data-title="一句话总结"></textarea></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title"><span style="color:#007aff;">●</span> 背景：这张单为 FLY-2920 验什么</div>
+    <div class="card">
+      <p>FLY-2920 在隔离测试房里做<b>重启 / 负载演练</b><span class="term">（故意杀掉、重启、挤压正在干活的 AI 进程，看系统能不能自己接上）</span>。本单按模型分配表派给 <b>Codex</b>，因为驱动器要验「Codex 写代码 → Bridge 复审」这条链路<span class="term">（Bridge = Flywheel 的中枢服务，负责派活、收回报、组织评审）</span>。</p>
+      <div class="tablewrap"><table>
+        <tr><th>验收点</th><th>谁负责证明</th><th>本设计怎么配合</th></tr>
+        <tr><td>README 精确加一行并推送</td><td>实现体 + QA</td><td>字节级断言：4 行 / 74 字节 / 原 44 字节不动</td></tr>
+        <tr><td>被杀后换新体接着干</td><td>引擎 + 驱动器回执</td><td>每步判据只看 git 与 GitHub，任何新体都读得出进度</td></tr>
+        <tr><td>Codex 作者 → Bridge 复审</td><td>引擎</td><td>复审只针对「冻结头」，批准不会因后续提交失效</td></tr>
+        <tr><td>交卷回原对话</td><td>引擎 + 实现体</td><td>只用系统注入的回报 / 交卷命令</td></tr>
+      </table></div>
+      <div class="cbox"><label>对这一节的意见</label><textarea data-k="background" data-title="背景：这张单为 FLY-2920 验什么"></textarea></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title"><span style="color:#af52de;">●</span> 核心流程图：实现体每次（重）启动都走这一遍</div>
+    <div class="card purple">
+      <p>每个方框前都有一个「做过没」的检查。虚线表示：<b>任意一步被杀</b>，新体都回到 Task 0 重新判断，已完成的步骤自动跳过。</p>
+      <div class="diagram">{{D1}}</div>
+      <div class="cbox"><label>对这一节的意见</label><textarea data-k="flow" data-title="核心流程图"></textarea></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title"><span style="color:#1a365d;">●</span> 数据 / 结构模型：分支最终长什么样</div>
+    <div class="card navy">
+      <p>唯一的「数据」就是 git 分支上的提交序列。最后一个提交是 <b>milestone</b><span class="term">（里程碑说明文件，记录交付了什么）</span>，它就是<b>冻结头</b><span class="term">（冻结 = 交卷前最后一次提交，之后分支不再写任何东西，复审批准绑定这个提交）</span>。</p>
+      <div class="diagram">{{D2}}</div>
+      <div class="tablewrap"><table>
+        <tr><th>对象</th><th>终态</th><th>判据（新体靠它决定跳不跳）</th></tr>
+        <tr><td><code>README.md</code></td><td>4 行 / 74 字节，末行是目标行</td><td>目标行出现 0 次 → 追加；1 次且在末尾 → 跳过</td></tr>
+        <tr><td>README 提交</td><td>恰 1 个</td><td>工作区与 HEAD 无差异 → 跳过</td></tr>
+        <tr><td>PR</td><td>恰 1 个 OPEN，base = main</td><td>已有 1 个 OPEN → 只更新标题正文</td></tr>
+        <tr><td>账本 <code>progress.md</code><span class="term">（进度记录，重启后接着干的书签）</span></td><td>implement 3/3</td><td>已在该游标或更后 → 跳过（不倒退）</td></tr>
+        <tr><td>milestone</td><td>HEAD 就是它，内容提到目标行</td><td>HEAD 里有它 → 已冻结，一切写入变成空操作</td></tr>
+      </table></div>
+      <div class="cbox"><label>对这一节的意见</label><textarea data-k="model" data-title="数据 / 结构模型"></textarea></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title"><span style="color:#007aff;">●</span> 复审时序：为什么「先冻结、后复审」</div>
+    <div class="card">
+      <p>复审门会核对「批准的提交 = 当前 HEAD」。如果复审之后再落任何提交（哪怕只是账本），批准就作废。所以所有写入在复审前完成，冻结后只读。</p>
+      <div class="diagram">{{D3}}</div>
+      <div class="cbox"><label>对这一节的意见</label><textarea data-k="review" data-title="复审时序"></textarea></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title"><span style="color:#ff9500;">●</span> 关键取舍与被否决的方案</div>
+    <div class="card amber">
+      <div class="tablewrap"><table>
+        <tr><th>方案</th><th>结论</th><th>理由</th></tr>
+        <tr><td>一次性脚本，不做幂等</td><td>否决</td><td>提交后、推送前被杀，新体会重复加行或重复提交——演练单必然出错</td></tr>
+        <tr><td>靠驱动器 / 引擎兜底去重</td><td>否决</td><td>把责任推给外层，QA 证据会混进节点自己的错误</td></tr>
+        <tr><td><b>分块幂等 + 冻结后复审</b>（复用 FLY-3030 已批准结构）</td><td>采用</td><td>同房兄弟单已经过 3 轮 Codex 评审定型；本单只去掉无关的第 1 轮行和 13 分钟睡眠</td></tr>
+        <tr><td>孤儿锁<span class="term">（进程被杀后残留的 git 锁文件，会挡住后续所有写操作）</span>直接删</td><td>否决</td><td>前体的 git 子进程可能还活着；必须「持有写权 + 锁够旧 + lsof 实查无活 git」三条同时成立才删</td></tr>
+        <tr><td>账本每次都写</td><td>否决（演练中发现）</td><td>重放时游标会从 2/3 倒回 1/3；改为只前进不后退</td></tr>
+      </table></div>
+      <div class="cbox"><label>对这一节的意见</label><textarea data-k="tradeoffs" data-title="关键取舍与被否决的方案"></textarea></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title"><span style="color:#34c759;">●</span> 演练证据</div>
+    <div class="card green">
+      <p>设计阶段在临时仓里把计划里的每个代码块<b>逐字抽出</b>来跑了 15 个场景：完工后重放、加行后被杀、暂存后被杀、milestone 写到一半被杀、PR 已开后被杀、推送失败、越界文件、旧锁 / 新锁、写权不在自己手上、CI 失败、交卷时有未读消息、冻结后读取失败、无临时目录——全部收敛到正确终态或按预期停下求助。</p>
+      <p class="term">诚实说明：GitHub 与复审门在演练里是模拟的；真实推送、PR、CI、复审只在实现节点发生。</p>
+      <div class="cbox"><label>对这一节的意见</label><textarea data-k="evidence" data-title="演练证据"></textarea></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title"><span style="color:#ff3b30;">●</span> 诚实边界：做什么、不做什么</div>
+    <div class="card red">
+      <p><b>做</b>：给 Codex 实现体一份可逐字照抄、任意步被杀都能安全重跑的合同；README 只加一行；复审、CI、交卷走正常流程。</p>
+      <p><b>不做</b>：</p>
+      <ul>
+        <li>不证明 FLY-2920 整体通过——换体、续干、交卷回对话要看驱动器回执，README 成功不能代替它。</li>
+        <li>不改任何产品代码、CI、脚本；不装依赖、不跑本地测试套件（纯文档改动，全量证据看 PR 的 CI）。</li>
+        <li>不合并、不部署、不请求上线；不碰生产 Bridge 和生产仓。</li>
+        <li>不用「窗口还在不在」判断实现体死活。</li>
+      </ul>
+      <div class="cbox"><label>对这一节的意见</label><textarea data-k="boundary" data-title="诚实边界"></textarea></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title"><span style="color:#86868b;">●</span> 意见汇总</div>
+    <div class="card">
+      <p class="term">上面各节写的意见会自动汇总到这里（只存在你自己的浏览器里）。点按钮复制后贴回 Discord 即可；这是修改意见，不代表通过。</p>
+      <div id="chunks"></div>
+      <button type="button" id="copyAll">复制全部意见</button>
+      <div class="status" id="copyStatus"></div>
+    </div>
+  </div>
+</div>
+{{SCRIPT}}
+</body>
+</html>

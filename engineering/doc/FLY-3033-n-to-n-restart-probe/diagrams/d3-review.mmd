@@ -1,0 +1,12 @@
+sequenceDiagram
+  participant D as FLY-2920 driver
+  participant X as Codex 实现体
+  participant G as GitHub（沙箱仓）
+  participant B as Bridge（测试房）
+  X->>G: 推送冻结头 + PR
+  X->>B: 请求代码复审（绑定冻结头 SHA）
+  B-->>X: 复审结论
+  D--)X: 可能随时杀掉 / 重启
+  Note over X: 新体从 Task 0 重跑，<br/>所有写入自动跳过
+  X->>G: 等精确头 CI 全绿
+  X->>B: ask --report + complete 交卷

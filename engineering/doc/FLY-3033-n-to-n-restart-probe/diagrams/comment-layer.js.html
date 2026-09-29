@@ -1,0 +1,88 @@
+<script nonce="__CSP_NONCE__">
+(function () {
+  var MARKER = '【页面意见汇总】FLY-3033';
+  var LIMIT = 1700;
+  var PREFIX = 'fly-comments:' + location.pathname + ':';
+  function load(k) { try { return localStorage.getItem(PREFIX + k) || ''; } catch (e) { return ''; } }
+  function save(k, v) { try { localStorage.setItem(PREFIX + k, v); } catch (e) { /* storage unavailable */ } }
+  var boxes = Array.prototype.slice.call(document.querySelectorAll('textarea[data-k]'));
+  function entries() {
+    var out = [];
+    boxes.forEach(function (t) {
+      var v = t.value.trim();
+      if (v) out.push('【' + t.getAttribute('data-title') + '】\n' + v);
+    });
+    return out;
+  }
+  function chunks() {
+    var es = entries();
+    if (!es.length) return [];
+    var res = [], cur = [];
+    var curLen = 0;
+    es.forEach(function (e) {
+      var pieces = [];
+      for (var i = 0; i < e.length; i += LIMIT) pieces.push(e.slice(i, i + LIMIT));
+      pieces.forEach(function (p) {
+        if (cur.length && curLen + p.length + 2 > LIMIT) { res.push(cur); cur = []; curLen = 0; }
+        cur.push(p); curLen += p.length + 2;
+      });
+    });
+    if (cur.length) res.push(cur);
+    var n = res.length;
+    return res.map(function (c, i) {
+      return MARKER + '\n' + (n > 1 ? '（第 ' + (i + 1) + '/' + n + ' 段）\n' : '') + c.join('\n\n');
+    });
+  }
+  function copyText(text, statusEl) {
+    function fallback() {
+      var ta = document.createElement('textarea');
+      ta.value = text; ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      document.body.removeChild(ta);
+      statusEl.textContent = ok ? '已复制' : '复制失败，请手动选择文本复制';
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { statusEl.textContent = '已复制'; }, fallback);
+    } else { fallback(); }
+  }
+  var host = document.getElementById('chunks');
+  var status = document.getElementById('copyStatus');
+  function render() {
+    while (host.firstChild) host.removeChild(host.firstChild);
+    var cs = chunks();
+    if (!cs.length) {
+      var empty = document.createElement('div');
+      empty.className = 'summary-out';
+      empty.textContent = '（还没有意见）';
+      host.appendChild(empty);
+      return;
+    }
+    cs.forEach(function (c, i) {
+      var pre = document.createElement('div');
+      pre.className = 'summary-out';
+      pre.textContent = c;
+      host.appendChild(pre);
+      if (cs.length > 1) {
+        var b = document.createElement('button');
+        b.type = 'button'; b.className = 'secondary';
+        b.textContent = '复制第 ' + (i + 1) + ' 段';
+        b.addEventListener('click', function () { copyText(c, status); });
+        host.appendChild(b);
+      }
+    });
+  }
+  boxes.forEach(function (t) {
+    t.value = load(t.getAttribute('data-k'));
+    t.addEventListener('input', function () { save(t.getAttribute('data-k'), t.value); render(); });
+  });
+  document.getElementById('copyAll').addEventListener('click', function () {
+    var cs = chunks();
+    if (!cs.length) { status.textContent = '还没有意见可复制'; return; }
+    copyText(cs.join('\n\n'), status);
+  });
+  render();
+})();
+</script>
