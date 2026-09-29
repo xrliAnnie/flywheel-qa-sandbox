@@ -1,13 +1,13 @@
 ---
 issue: FLY-3055
 phase: design
-phaseCursor: 1/6
-updated: 2026-09-29T13:43:01.898Z
-nextStep: audit done; writing exploration.md
+phaseCursor: 2/6
+updated: 2026-09-29T13:45:44.781Z
+nextStep: exploration.md written; research.md
 chunks: []
 pointers: {}
 ---
 
 # FLY-3055 progress
-**phase**: design (1/6)
-**next**: audit done; writing exploration.md
+**phase**: design (2/6)
+**next**: exploration.md written; research.md
