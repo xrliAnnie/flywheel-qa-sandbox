@@ -40,16 +40,16 @@ Issue: FLY-3018 (https://linear.app/geoforge3d/issue/FLY-3018/引擎路由-派�
 
 | 组件 | 要求 | 检查方式 | 不满足时 |
 |---|---|---|---|
-| 被测房 Bridge | buildSha = `7e28dd51c`；**slot 由 Lead 指定，且 ≠ 管理端所在 slot 3**（question `560e8e5e-452c-42e1-95c6-ac45de2c51af`；Codex R2 #1：`localhost:19873` 就是 slot 3 的 Bridge，slot 3 lock 已占——对它 `room deploy --slot 3` 会 `slot_unavailable`(409, `qa-room-service.ts:213`)，`evidence-run --site slot_529:3` 会被 `slot_port_is_self` 拒(`strength-two-evidence-route.ts:420`)） | deploy 返回的 `roomInfo`（buildSha、端口、state dir） | Lead 未指定 slot 或该 slot 不可用 → **阻断** ask Lead；⛔ 不拆自测守卫，⛔ 不抢占别的 lock |
+| 被测房 Bridge | buildSha = `7e28dd51c`；**Lead 裁定（question `560e8e5e-452c-42e1-95c6-ac45de2c51af`）：不指定固定 slot——slot 1–3 有 service-claim、4–5 属同一活动 campaign、6 有活动进程；QA 节点 `room deploy --slot auto`，成功后以返回快照的 `slot` 与 `roomInfo` 的 DB 路径作为 `--site`、seed/SQL 的唯一来源**（Codex R2 #1 背景：Codex R2 #1：`localhost:19873` 就是 slot 3 的 Bridge，slot 3 lock 已占——对它 `room deploy --slot 3` 会 `slot_unavailable`(409, `qa-room-service.ts:213`)，`evidence-run --site slot_529:3` 会被 `slot_port_is_self` 拒(`strength-two-evidence-route.ts:420`)） | deploy 返回快照的 `slot` + `roomInfo`（buildSha、端口、state dir） | `--slot auto` 返回 `slot_unavailable` → **阻断** ask Lead；⛔ 不复用看似空的 lock，⛔ 不清理/接管其他房，⛔ 不拆自测守卫 |
 | 管理 Bridge（`$FLYWHEEL_BRIDGE_URL`） | **Lead 裁定（question `8af71ce4`）：QA 节点只挂 test-slot Bridge `http://localhost:19873`，不挂生产 Bridge**；preflight 要求 health 的 `buildSha` **与** `artifactBuildSha` 都等于 `7e28dd51c58a67cb04f37d392a8cf1f2b1e64c89`（该头含 `950870cee`：`qa-room-contract.ts` strict schema 才有 `no_overrides`，`strength-two-contract.ts` 才接受 `driver.noOverrides`） | `curl $FLYWHEEL_BRIDGE_URL/health`，两个字段逐字比对 | 生产 main `95e5cd708` 的 drill strict schema 对未知字段返回 `field_not_supported`（`qa-room-contract.ts` `parse()`，zod `unrecognized_keys`），服务端 evidence-run 对带 `noOverrides` 的 spec 返回 `evidence_run_rejected:rerun_spec_invalid:unknown_key` → **阻断**，ask Lead 解决执行环境（例如让 QA 节点挂在 PR 头的 Bridge 上）。⛔ 禁止自行部署生产 Bridge，⛔ 禁止去掉 `--no-overrides` 绕过 |
 | CLI（`$FLYWHEEL_COMM_CLI`） | 同上，`room --help` 出现 `[--no-overrides]` | 直接看 usage | 同上 |
 
-QA 报告开头记录三处 buildSha / 路径。Lead 与本设计各自实测：`localhost:19873`（slot 3）的 `buildSha` = `artifactBuildSha` = `7e28dd51c`；生产 `localhost:9876` = `95e5cd708`（不可用）。拓扑：**管理端 = slot 3 (19873)，被测房 = Lead 指定的另一空闲 slot**；后文 `--site slot_529:<N>`、房 DB 路径、seed 目标都指被测房，由 `roomInfo` 解析，⛔ 绝不写管理端（slot 3）的 DB。
+QA 报告开头记录三处 buildSha / 路径。Lead 与本设计各自实测：`localhost:19873`（slot 3）的 `buildSha` = `artifactBuildSha` = `7e28dd51c`；生产 `localhost:9876` = `95e5cd708`（不可用）。拓扑：**管理端 = slot 3 (19873)，被测房 = `--slot auto` 分到的 slot N**；后文 `--site slot_529:<N>`、房 DB 路径、seed 目标都指被测房，由返回的 `slot`/`roomInfo` 解析，⛔ 绝不写管理端（slot 3）的 DB。O2-seed 仅在新房成功部署且隔离性可证后执行（Lead 原话）。
 
 ### 4.1 房的所有权与参数（Codex R1 #2、#4）
 
 - **所有权**：`qa-room-service` 只允许 owner、Lead 或「同 issue 且 owner 已终态」的后继执行 drill / teardown；Lead actor 为 `lead:<id>`，QA runner 是 execution 身份，两者不同 → Lead 起的房 QA 去 drill 会 `403 room_not_owned`。因此**默认**：Lead 给定参数，**QA 节点自己 `room deploy`** 成为 owner（`.flywheel/agents/nodes/qa.md:61` 即此形态）。备选：若 Lead 坚持自起，则 drill 由 Lead 执行、QA 只读房 DB 取证（§4.3），并在报告记录 owner、`request_id`、`operation_id` 与任何拒绝码。⛔ 不借用 Lead 凭据。**Lead 已裁定选默认**（question `8af71ce4-aa22-4eee-ac4e-34dca48a50b3`）：QA 节点自己 `room deploy` 成为 owner，Lead 只提供参数，不走 Lead 起房后 QA drill 的 403 路径。
-- **参数**：`--slot <Lead 指定的空闲 slot，≠3>`、`--generalized`、`--head 7e28dd51c58a67cb04f37d392a8cf1f2b1e64c89`、Claude runner、不带 `--stub-runner`、`--env TEST_REPLY_BY_ISSUE=1`。改参数 ask Lead。
+- **参数**：`--slot auto`（Lead 裁定，不指定固定 slot）、`--generalized`、`--head 7e28dd51c58a67cb04f37d392a8cf1f2b1e64c89`、Claude runner、不带 `--stub-runner`、`--env TEST_REPLY_BY_ISSUE=1`。改参数 ask Lead。
 - **models.json 不是房内隔离的**：房进程继承宿主 `HOME`（`qa-room-runtime.ts` `minimalRoomEnvironment`），模型配置默认读 `~/.flywheel/models.json`（`packages/config/src/model-config.ts` `configLocation()`，仅 `FLYWHEEL_MODELS_CONFIG` 可覆盖，而 deploy env 白名单不放行该键）。所以「房内 models.json」**就是生产文件**。QA 只做：drill 前后各记一次 `shasum -a 256 ~/.flywheel/models.json` 与 implement 节点摘要（`impl_opus`(opus,3) : `impl_sol56`(codex,1)，`bindings.opus = claude-opus-5-5`），两次必须一致；⛔ 任何节点都不得写该文件。原 O2「Lead 改房内配置」**撤销**（见 §4.3）。
 
 ### 4.2 步骤 ①②：精确头 CI 与两条新提交行为（Codex R1 #8）
@@ -127,7 +127,7 @@ SELECT execution_id, runner_model, dispatch_model FROM sessions WHERE execution_
 node "$FLYWHEEL_COMM_CLI" evidence-run record \
   --exec-id <QA exec id> \
   --head 7e28dd51c58a67cb04f37d392a8cf1f2b1e64c89 \
-  --site slot_529:<被测房 slot N，≠3> --lane generalized_e2e_real \
+  --site slot_529:<deploy 返回的 slot N> --lane generalized_e2e_real \
   --record-url <已发布证据的 https URL> \
   --rerun-spec <服务返回的 rerun_spec 文件，须含 lane=generalized_e2e_real 且 driver.noOverrides=true> \
   --driver-exit-code <drill 返回的真实 driver_exit_code> \
@@ -144,7 +144,7 @@ node "$FLYWHEEL_COMM_CLI" evidence-run record \
 - `drill_config_not_reproducible` → 房参数不对（Codex-runner 房、非 main fixture、`--no-lead`），ask Lead 改房，不改自己的命令绕过。
 - 回执出现跨 vendor 拼接（如 `opus (= gpt-*)`）→ 直接 FAIL，附 `response.resolved.nodeModels` 原文。
 - 管理 Bridge 或 CLI 不含 `950870cee`（§4.0；症状 `field_not_supported` / `rerun_spec_invalid:unknown_key`）→ 阻断 ask Lead；⛔ 不去掉 `--no-overrides`，⛔ 不自行部署。
-- `slot_unavailable` / `slot_port_is_self` → 被测房与管理端重合（§4.0），ask Lead 指定另一 slot；⛔ 不拆守卫。
+- `slot_unavailable`（`--slot auto` 无空位）/ `slot_port_is_self`（site 指到管理端）→ ask Lead 阻断（§4.0）；⛔ 不拆守卫，⛔ 不复用空 lock，⛔ 不接管他人房。
 - `403 room_not_owned` → 所有权错位（§4.1），ask Lead，⛔ 不借 Lead 凭据。
 - 宿主 `~/.flywheel/models.json` sha256 在矩阵前后不一致 → 环境被改动，FAIL 并上报。
 - 房头 sha ≠ `7e28dd51c`，或 PR #1381 头再次前进 → 停，ask Lead 重新核对；不沿用本次裁定。
@@ -163,7 +163,8 @@ node "$FLYWHEEL_COMM_CLI" evidence-run record \
 | 由 Lead 或 QA 改「房内」models.json 做 O2 | 房读的是宿主 `~/.flywheel/models.json` = 生产文件，改它就是改生产，且没有恢复边界（Codex R1 #4）；改为 O2-seed（房 DB 历史夹具，需授权）或退回单测+源码守卫 |
 | Lead 起房、QA 去 drill | owner 是 `lead:<id>`，QA 身份会 403 `room_not_owned`（Codex R1 #2） |
 | 只检查 FLY-2407 就开跑 | 管理 Bridge 在 main 上没有 `no_overrides` schema：drill 被拒 `field_not_supported`，evidence-run 被拒 `rerun_spec_invalid:unknown_key`（Codex R1 #1 / R2 #4）；报告保留实际响应原文 |
-| 管理端与被测房同为 slot 3 | `slot_unavailable` / `slot_port_is_self` 自测守卫必拒（Codex R2 #1）；被测房必须是另一空闲 slot |
+| 管理端与被测房同为 slot 3 | `slot_unavailable` / `slot_port_is_self` 自测守卫必拒（Codex R2 #1）；被测房用 `--slot auto` 另开 |
+| Lead 指定固定 slot | 当前无可安全指定的空闲 slot（1–3 claim、4–5 campaign、6 活动进程）；固定指定会抢占，故用 `--slot auto` + 无空位即阻断 |
 
 ## 7. 回滚与边界（诚实）
 
