@@ -1,0 +1,29 @@
+classDiagram
+    class SlotEnvContract {
+      TMUX_TMPDIR = SLOT_DIR
+      disposition redirect
+      boot mustBeUnderRoot
+    }
+    class ProbeInput {
+      target : session:@window 或 %pane
+      executionId : string
+      slotDir : 绝对路径
+      env : 宿主环境 只读
+      spawn : 注入的子进程函数
+    }
+    class TmuxObservation {
+      window_id
+      pane_id
+      pane_dead = 0
+      flywheel_exec_id = executionId
+    }
+    class ParkState {
+      node.state = done
+      session.status = ship_parked
+      park.reason = rework_reachable_wait
+      processBody = null
+      liveness = alive
+    }
+    SlotEnvContract <.. ProbeInput : slotDir 同一来源
+    ProbeInput --> TmuxObservation : 在房间 server 上观测
+    TmuxObservation --> ParkState : 提供 liveness

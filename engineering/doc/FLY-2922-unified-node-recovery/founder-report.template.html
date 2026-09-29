@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-2922 返工设计</title>
+<style>
+  :root { --bg:#f5f5f7; --fg:#1d1d1f; --dim:#86868b; --card:#fff; --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --navy:#1a365d; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font-family:-apple-system,system-ui,sans-serif; line-height:1.6; }
+  .wrap { max-width:960px; margin:0 auto; padding:24px 16px 64px; }
+  h1 { font-size:26px; margin:0 0 4px; color:var(--navy); }
+  .meta { color:var(--dim); font-size:13px; margin-bottom:20px; }
+  .mono { font-family:'SF Mono',ui-monospace,monospace; font-size:.92em; }
+  .card { background:var(--card); border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,.06); padding:18px 20px; margin:16px 0; border-left:4px solid var(--blue); }
+  .card.green { border-left-color:var(--green); } .card.amber { border-left-color:var(--amber); } .card.red { border-left-color:var(--red); } .card.purple { border-left-color:var(--purple); }
+  .card h2 { font-size:18px; margin:0 0 10px; color:var(--navy); }
+  .diagram { overflow-x:auto; background:#fff; border:1px solid #eee; border-radius:8px; padding:8px; }
+  .diagram svg { max-width:100%; height:auto; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid #eee; vertical-align:top; }
+  th { color:var(--dim); font-weight:600; }
+  .badge { display:inline-block; padding:1px 8px; border-radius:10px; font-size:12px; color:#fff; }
+  .b-green { background:var(--green); } .b-amber { background:var(--amber); } .b-red { background:var(--red); } .b-gray { background:var(--dim); }
+  .term { color:var(--dim); font-size:13px; }
+  .cbox { margin-top:12px; }
+  .cbox textarea { width:100%; min-height:56px; border:1px solid #ddd; border-radius:8px; padding:8px; font:inherit; font-size:14px; resize:vertical; background:#fafafa; }
+  .cbox label { font-size:12px; color:var(--dim); }
+  #summaryOut { white-space:pre-wrap; background:#fafafa; border:1px solid #eee; border-radius:8px; padding:10px; font-size:13px; min-height:40px; }
+  .chunk { margin-top:10px; }
+  button { background:var(--blue); color:#fff; border:0; border-radius:8px; padding:8px 14px; font-size:14px; cursor:pointer; margin-top:8px; }
+  #copyStatus { margin-left:8px; font-size:13px; color:var(--dim); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-2922 · QA@3 返工设计：让测试脚本敲对门</h1>
+  <div class="meta"><span class="mono">FLY-2922</span> · 设计节点 eng_design · 2026-09-28 · 沙箱 slot 5</div>
+
+  <div class="card green" data-section="一句话总结">
+    <h2>① 一句话总结</h2>
+    <p>产品本身（「held 之后只留一个统一恢复口」）早已批准并实现；这次 QA 失败是<b>测试脚本（driver）自己的毛病</b>：它去宿主机的 tmux 里找房间里的 runner 窗口，当然找不到，于是把「活着」误判成「死了」，卡了近 2 小时。修法只有一处：让探活去<b>房间自己的 tmux</b> 里看，再把分支和 main 同步好。产品代码一行不动。</p>
+    <p class="term">tmux：一个终端「窗口管家」，每个 AI runner 跑在它的一个窗口里。每个 QA 房间有自己独立的一套 tmux（靠环境变量 <span class="mono">TMUX_TMPDIR</span> 区分，等于房间的门牌号）。</p>
+  </div>
+
+  <div class="card" data-section="核心流程图">
+    <h2>② 核心流程：修复前 vs 修复后</h2>
+    <div class="diagram">{{D1}}</div>
+    <p class="term">step 4：测试脚本的第 4 步，检查「实现体已经交 PR 并停在等返工的位置、QA 已被派出」。<span class="mono">classifyImplementPark</span>：负责判断这种「停车」状态的函数，它的规则本身是对的，只是被喂了错误的「死/活」信息。</p>
+  </div>
+
+  <div class="card purple" data-section="数据与结构模型">
+    <h2>③ 数据 / 结构模型</h2>
+    <div class="diagram">{{D2}}</div>
+    <p>房间门牌号只有一个真相来源：<span class="mono">qa-slot-env-contract.json</span> 里的 <span class="mono">TMUX_TMPDIR = SLOT_DIR</span>。探活函数直接用同一个值，不自己拼 socket 路径。</p>
+    <p class="term">socket：tmux server 的「电话号码」文件；<span class="mono">TMUX_TMPDIR</span> 决定这个号码存在哪个目录。</p>
+  </div>
+
+  <div class="card amber" data-section="改动分块与测试">
+    <h2>④ 改动分块与测试</h2>
+    <table>
+      <tr><th>块</th><th>做什么</th><th>怎么证明</th></tr>
+      <tr><td class="mono">C1</td><td>merge origin/main，解 <span class="mono">scripts/test-deploy.sh</span> 冲突（两边都保留）</td><td>无冲突标记、语法检查、相关 shell 测试绿</td></tr>
+      <tr><td class="mono">C2</td><td>先写会失败的测试（RED）</td><td>旧逻辑在隔离房间里把活窗口判「死」</td></tr>
+      <tr><td class="mono">C3</td><td>新增 <span class="mono">probeRoomPaneAlive</span>，driver 改用它</td><td>真 tmux 测试：房间里判「活」，step 4 分类为 <span class="mono">rework_reachable_wait</span></td></tr>
+      <tr><td class="mono">C4</td><td>静态守卫：探活格式串与 exec_id 绑定必须在新函数里</td><td><span class="mono">test-deploy-generalized.test.sh</span></td></tr>
+      <tr><td class="mono">C5</td><td>只跑相关测试 + lint + build，推送，同头复审，交卷</td><td><span class="mono">complete --route needs_review --pr 1374</span></td></tr>
+    </table>
+  </div>
+
+  <div class="card" data-section="关键取舍与否决方案">
+    <h2>⑤ 关键取舍与被否决的方案</h2>
+    <table>
+      <tr><th>选择</th><th>否决的方案</th><th>原因</th></tr>
+      <tr><td>子进程注入 <span class="mono">TMUX_TMPDIR=slotDir</span></td><td>自己拼 <span class="mono">-S slotDir/tmux-uid/default</span></td><td>拼路径等于复制 tmux 的规则（真实路径解析、uid 目录），多一处可能漂移</td></tr>
+      <tr><td>清掉宿主 <span class="mono">TMUX</span> / <span class="mono">TMUX_PANE</span></td><td>保留</td><td>如果 driver 本身跑在 tmux 里，<span class="mono">TMUX</span> 会把查询钉回宿主 server，门牌号失效</td></tr>
+      <tr><td>slotDir 缺失/相对路径就报错</td><td>静默回落到宿主</td><td>静默回落 = 复现这次 bug</td></tr>
+      <tr><td>只修输入（死/活）</td><td>放宽分类规则（不看死活）</td><td>放宽会让真正死掉的实现体也被判「停车正常」，掩盖真问题</td></tr>
+      <tr><td>merge main</td><td>rebase</td><td>保留 QA 已审的历史；不需要 force-push</td></tr>
+    </table>
+  </div>
+
+  <div class="card red" data-section="诚实边界">
+    <h2>⑥ 诚实边界：做什么 / 不做什么</h2>
+    <p><b>做：</b>修 QA driver 的探活命名空间；同步 main 并解冲突；补 RED→GREEN 测试和静态守卫。</p>
+    <p><b>不做：</b>不碰产品代码（hold 前置、恢复处理器、complete 顺序、关死体级联）；不改分类规则；不 rebase/force-push；不 ship、不 merge。</p>
+    <p><b>已知风险：</b>若将来房间设置 <span class="mono">FLYWHEEL_TMUX_SOCKET_OVERRIDE</span>，Codex runner 会换 socket，探活需同步读它（当前合同不设）。merge 冲突解错会导致起房失败，靠守卫测试 + QA@4 真房兜底。</p>
+    <p><b>评审状态：</b>{{REVIEW}}</p>
+    <p><b>QA@4 判据（交 Lead）：</b>新头 full CI 绿且可合并 → 按新头起真房（主房 + extra Lead），driver 走完全部 step（含 held → 统一恢复口 → 新派发）。</p>
+  </div>
+
+  <div class="card green" id="summaryCard">
+    <h2>意见汇总</h2>
+    <p class="term">上面每节下方的意见会自动汇总到这里（保存在本浏览器）。这是修改意见，不是通过信号。</p>
+    <div id="summaryChunks"><div id="summaryOut">（暂无意见）</div></div>
+    <button type="button" id="copyAll">复制全部意见</button><span id="copyStatus"></span>
+  </div>
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var MARK = "【页面意见汇总】FLY-2922";
+  var PREFIX = "fly2922-comments:" + location.pathname + ":";
+  function load(k) { try { return localStorage.getItem(PREFIX + k) || ""; } catch (e) { return ""; } }
+  function save(k, v) { try { localStorage.setItem(PREFIX + k, v); } catch (e) {} }
+  var sections = Array.prototype.slice.call(document.querySelectorAll("[data-section]"));
+  var boxes = [];
+  sections.forEach(function (sec, i) {
+    var title = sec.getAttribute("data-section");
+    var wrap = document.createElement("div"); wrap.className = "cbox";
+    var lab = document.createElement("label"); lab.textContent = "意见（" + title + "）";
+    var ta = document.createElement("textarea"); ta.value = load("s" + i);
+    ta.setAttribute("aria-label", "意见：" + title);
+    ta.addEventListener("input", function () { save("s" + i, ta.value); render(); });
+    wrap.appendChild(lab); wrap.appendChild(ta); sec.appendChild(wrap);
+    boxes.push({ title: title, ta: ta });
+  });
+  var chunks = [];
+  function render() {
+    var parts = boxes.filter(function (b) { return b.ta.value.trim() !== ""; })
+      .map(function (b) { return "【" + b.title + "】" + b.ta.value.trim(); });
+    chunks = [];
+    var cur = MARK;
+    parts.forEach(function (p) {
+      if ((cur + "\n" + p).length > 1800 && cur !== MARK) { chunks.push(cur); cur = MARK; }
+      cur += "\n" + p;
+    });
+    if (parts.length) chunks.push(cur);
+    var host = document.getElementById("summaryChunks");
+    while (host.firstChild) host.removeChild(host.firstChild);
+    if (!chunks.length) {
+      var e = document.createElement("div"); e.id = "summaryOut"; e.textContent = "（暂无意见）"; host.appendChild(e); return;
+    }
+    chunks.forEach(function (c, idx) {
+      var d = document.createElement("div"); d.className = "chunk";
+      var pre = document.createElement("div"); pre.id = idx === 0 ? "summaryOut" : ""; pre.style.whiteSpace = "pre-wrap";
+      pre.style.background = "#fafafa"; pre.style.border = "1px solid #eee"; pre.style.borderRadius = "8px"; pre.style.padding = "10px"; pre.style.fontSize = "13px";
+      pre.textContent = c;
+      d.appendChild(pre);
+      if (chunks.length > 1) {
+        var b = document.createElement("button"); b.type = "button"; b.textContent = "复制第 " + (idx + 1) + " 段";
+        b.addEventListener("click", function () { copy(c); });
+        d.appendChild(b);
+      }
+      host.appendChild(d);
+    });
+  }
+  function status(t) { document.getElementById("copyStatus").textContent = t; }
+  function fallback(text) {
+    var ta = document.createElement("textarea"); ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    var ok = false; try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta); status(ok ? "已复制" : "复制失败，请手动选择");
+  }
+  function copy(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { status("已复制"); }, function () { fallback(text); });
+    } else { fallback(text); }
+  }
+  document.getElementById("copyAll").addEventListener("click", function () {
+    if (!chunks.length) { status("暂无意见"); return; }
+    copy(chunks.join("\n\n"));
+  });
+  render();
+})();
+</script>
+</body>
+</html>

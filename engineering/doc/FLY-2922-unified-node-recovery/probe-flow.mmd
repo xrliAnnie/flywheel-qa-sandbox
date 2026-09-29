@@ -1,0 +1,20 @@
+sequenceDiagram
+    autonumber
+    participant Drv as QA driver (step 4)
+    participant Lib as probeRoomPaneAlive
+    participant Host as 宿主 tmux server
+    participant Room as 房间 tmux server<br/>TMUX_TMPDIR=slotDir
+    participant Cls as classifyImplementPark
+    Note over Drv,Host: 修复前
+    Drv->>Host: display-message -t runner-test-slot-4:@5
+    Host-->>Drv: 找不到 (exit≠0) → dead
+    Drv->>Cls: liveness=dead
+    Cls-->>Drv: null → 无限等待
+    Note over Drv,Room: 修复后
+    Drv->>Lib: target, executionId, slotDir
+    Lib->>Lib: slotDir 必须绝对路径 否则抛错<br/>env += TMUX_TMPDIR, 删 TMUX/TMUX_PANE
+    Lib->>Room: display-message window|pane|dead|exec_id
+    Room-->>Lib: @5|%7|0|implement-exec
+    Lib-->>Drv: alive (exec_id 匹配)
+    Drv->>Cls: liveness=alive
+    Cls-->>Drv: rework_reachable_wait → 进入 step 5
