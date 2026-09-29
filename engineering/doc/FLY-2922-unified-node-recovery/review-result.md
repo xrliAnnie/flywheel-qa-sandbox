@@ -3,7 +3,7 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 日期: 2026-09-29
 基于: plan.md
 
-> **当前状态：CHANGES_REQUESTED，等待修订计划的新评审。** 下方 2026-09-27 的 verify-then-submit Round 1–3 是历史记录，已被 2026-09-29 三域隔离计划取代，不能作为当前 plan blob 的批准，也不能执行已删除的 `handin.zsh`。
+> **当前状态：Round 2 PENDING。** 下方 2026-09-27 的 verify-then-submit Round 1–3 是历史记录，已被 2026-09-29 三域隔离计划取代，不能作为当前 plan blob 的批准，也不能执行已删除的 `handin.zsh`。
 
 评审对象：本轮 design 节点的 verify-then-submit 合同（plan.md + handin.zsh），不是上游已批准的 held 恢复设计（那份的有效评审见 origin/flywheel-FLY-2922 的 review-result.md：gate d9ab4f85、0f29f815）。评审模型由 Bridge 指定：gpt-6-astra / xhigh；Codex thread `01a0e2e9-4f98-7502-b116-d377dd2fd8d6`。
 
@@ -55,3 +55,10 @@ design 节点被以新 exec `0edcc786-726c-42e3-a310-77c5fda21351` 重派。plan
   - `teardown-path-mismatch`：raw `test-deploy.sh --qa-stub-runner` 只用 `scripts/test-teardown.sh PRIMARY_SLOT`。
 
 修订策略：把执行链拆为 Production Implement、Host QA Controller、Inner Sandbox DAG 三个授权域。inner runner 永不触达生产；host driver 使用 Lead 授权的 fixture issue（禁止 `FLY-2922`）与 QA sandbox repo authority；房内 stub verdict 只推进 fixture run，最终 QA verdict 由房外 owner 根据原始 evidence 给出。
+
+## 2026-09-29 Round 2 — PENDING
+
+- 修订提交：`01f1fb46a`
+- gate question：`f32da210-64ba-405f-8554-a15e3f52c909`
+- request：`3240a3cb-8fd7-48f4-8c89-24215054a784`
+- 审阅对象：三域隔离 plan blob；上一轮 question/verdict 不复用。

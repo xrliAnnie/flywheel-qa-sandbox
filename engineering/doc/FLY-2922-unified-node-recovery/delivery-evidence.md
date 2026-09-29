@@ -85,3 +85,4 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 - Mermaid 本地渲染：`FLY-2922-d6` flow SVG SHA-256 `30f70ce4d3b07c49ad2ff86f5736174be95378da243d5b43812598e314fe076f`；`FLY-2922-d7` ER SVG SHA-256 `b5a77cb116cf5a80aa9def9730dc3d5b3c5d1969c7f23369a0dc411f2e77592d`。均已内联，页面无 runtime Mermaid 或外部依赖。
 - Headless Chrome 实页验证：9 cards / 9 inputs、2 SVG、路径 scoped localStorage、输入保存与 reload 恢复、长意见拆 3 段、每段固定 marker 且 ≤1800 字、clipboard promise reject 时调用 `execCommand` fallback、page errors 为空。
 - 1440px full-page screenshot 为 1440×8463；人工查看确认 Apple-light 布局、三域流程、数据模型、九张评论卡均正常。尚未 publish/report/complete；必须先取得修订 plan blob 的新 APPROVED。
+- 修订提交 `01f1fb46a` 已推 `origin/project-slot-2-FLY-2922`。新 gate question `f32da210-64ba-405f-8554-a15e3f52c909`、request `3240a3cb-8fd7-48f4-8c89-24215054a784` 已注册；状态 PENDING，不复用 Round 1 verdict。
