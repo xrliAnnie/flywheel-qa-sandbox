@@ -40,16 +40,16 @@ Issue: FLY-3018 (https://linear.app/geoforge3d/issue/FLY-3018/引擎路由-派�
 
 | 组件 | 要求 | 检查方式 | 不满足时 |
 |---|---|---|---|
-| 房内 Bridge | buildSha = `7e28dd51c` | 房 `roomInfo` / health | 停，ask Lead 重起 |
-| 管理 Bridge（`$FLYWHEEL_BRIDGE_URL`） | **Lead 裁定（question `8af71ce4`）：QA 节点只挂 test-slot Bridge `http://localhost:19873`，不挂生产 Bridge**；preflight 要求 health 的 `buildSha` **与** `artifactBuildSha` 都等于 `7e28dd51c58a67cb04f37d392a8cf1f2b1e64c89`（该头含 `950870cee`：`qa-room-contract.ts` strict schema 才有 `no_overrides`，`strength-two-contract.ts` 才接受 `driver.noOverrides`） | `curl $FLYWHEEL_BRIDGE_URL/health`，两个字段逐字比对 | 生产 main `95e5cd708` 会以 `unknown_key` 拒 `no_overrides` → **阻断**，ask Lead 解决执行环境（例如让 QA 节点挂在 PR 头的 Bridge 上）。⛔ 禁止自行部署生产 Bridge，⛔ 禁止去掉 `--no-overrides` 绕过 |
+| 被测房 Bridge | buildSha = `7e28dd51c`；**slot 由 Lead 指定，且 ≠ 管理端所在 slot 3**（question `560e8e5e-452c-42e1-95c6-ac45de2c51af`；Codex R2 #1：`localhost:19873` 就是 slot 3 的 Bridge，slot 3 lock 已占——对它 `room deploy --slot 3` 会 `slot_unavailable`(409, `qa-room-service.ts:213`)，`evidence-run --site slot_529:3` 会被 `slot_port_is_self` 拒(`strength-two-evidence-route.ts:420`)） | deploy 返回的 `roomInfo`（buildSha、端口、state dir） | Lead 未指定 slot 或该 slot 不可用 → **阻断** ask Lead；⛔ 不拆自测守卫，⛔ 不抢占别的 lock |
+| 管理 Bridge（`$FLYWHEEL_BRIDGE_URL`） | **Lead 裁定（question `8af71ce4`）：QA 节点只挂 test-slot Bridge `http://localhost:19873`，不挂生产 Bridge**；preflight 要求 health 的 `buildSha` **与** `artifactBuildSha` 都等于 `7e28dd51c58a67cb04f37d392a8cf1f2b1e64c89`（该头含 `950870cee`：`qa-room-contract.ts` strict schema 才有 `no_overrides`，`strength-two-contract.ts` 才接受 `driver.noOverrides`） | `curl $FLYWHEEL_BRIDGE_URL/health`，两个字段逐字比对 | 生产 main `95e5cd708` 的 drill strict schema 对未知字段返回 `field_not_supported`（`qa-room-contract.ts` `parse()`，zod `unrecognized_keys`），服务端 evidence-run 对带 `noOverrides` 的 spec 返回 `evidence_run_rejected:rerun_spec_invalid:unknown_key` → **阻断**，ask Lead 解决执行环境（例如让 QA 节点挂在 PR 头的 Bridge 上）。⛔ 禁止自行部署生产 Bridge，⛔ 禁止去掉 `--no-overrides` 绕过 |
 | CLI（`$FLYWHEEL_COMM_CLI`） | 同上，`room --help` 出现 `[--no-overrides]` | 直接看 usage | 同上 |
 
-QA 报告开头记录三处 buildSha / 路径。Lead 与本设计各自实测：`localhost:19873` 的 `buildSha` = `artifactBuildSha` = `7e28dd51c`；生产 `localhost:9876` = `95e5cd708`（不可用）。
+QA 报告开头记录三处 buildSha / 路径。Lead 与本设计各自实测：`localhost:19873`（slot 3）的 `buildSha` = `artifactBuildSha` = `7e28dd51c`；生产 `localhost:9876` = `95e5cd708`（不可用）。拓扑：**管理端 = slot 3 (19873)，被测房 = Lead 指定的另一空闲 slot**；后文 `--site slot_529:<N>`、房 DB 路径、seed 目标都指被测房，由 `roomInfo` 解析，⛔ 绝不写管理端（slot 3）的 DB。
 
 ### 4.1 房的所有权与参数（Codex R1 #2、#4）
 
 - **所有权**：`qa-room-service` 只允许 owner、Lead 或「同 issue 且 owner 已终态」的后继执行 drill / teardown；Lead actor 为 `lead:<id>`，QA runner 是 execution 身份，两者不同 → Lead 起的房 QA 去 drill 会 `403 room_not_owned`。因此**默认**：Lead 给定参数，**QA 节点自己 `room deploy`** 成为 owner（`.flywheel/agents/nodes/qa.md:61` 即此形态）。备选：若 Lead 坚持自起，则 drill 由 Lead 执行、QA 只读房 DB 取证（§4.3），并在报告记录 owner、`request_id`、`operation_id` 与任何拒绝码。⛔ 不借用 Lead 凭据。**Lead 已裁定选默认**（question `8af71ce4-aa22-4eee-ac4e-34dca48a50b3`）：QA 节点自己 `room deploy` 成为 owner，Lead 只提供参数，不走 Lead 起房后 QA drill 的 403 路径。
-- **参数**：slot 3、`--generalized`、`--head 7e28dd51c58a67cb04f37d392a8cf1f2b1e64c89`、Claude runner、不带 `--stub-runner`、`--env TEST_REPLY_BY_ISSUE=1`。改参数 ask Lead。
+- **参数**：`--slot <Lead 指定的空闲 slot，≠3>`、`--generalized`、`--head 7e28dd51c58a67cb04f37d392a8cf1f2b1e64c89`、Claude runner、不带 `--stub-runner`、`--env TEST_REPLY_BY_ISSUE=1`。改参数 ask Lead。
 - **models.json 不是房内隔离的**：房进程继承宿主 `HOME`（`qa-room-runtime.ts` `minimalRoomEnvironment`），模型配置默认读 `~/.flywheel/models.json`（`packages/config/src/model-config.ts` `configLocation()`，仅 `FLYWHEEL_MODELS_CONFIG` 可覆盖，而 deploy env 白名单不放行该键）。所以「房内 models.json」**就是生产文件**。QA 只做：drill 前后各记一次 `shasum -a 256 ~/.flywheel/models.json` 与 implement 节点摘要（`impl_opus`(opus,3) : `impl_sol56`(codex,1)，`bindings.opus = claude-opus-5-5`），两次必须一致；⛔ 任何节点都不得写该文件。原 O2「Lead 改房内配置」**撤销**（见 §4.3）。
 
 ### 4.2 步骤 ①②：精确头 CI 与两条新提交行为（Codex R1 #8）
@@ -73,18 +73,33 @@ node "$FLYWHEEL_COMM_CLI" room drill --room <id> --issue <FLY-N> --real --no-ove
 # exit 3 → room wait --room <id> --operation <operation_id>；exit 4 = driver 非零
 ```
 
-**先算再跑**：分桶是 issue UUID + node ID 的确定性哈希，同配置下可预先算出。QA 在房源 worktree 用 `resolveAutomaticModelSplit`（`workflow-template-selection.ts`）对候选 issue 预计算 implement 期望 arm，**drill 前写入报告**，选出：一个必落 `impl_opus` 的 issue（N1）、一个必落 `impl_sol56` 的 issue（N2）。「如落到 codex」这种碰运气的用例不算证据。
+**先算再跑**（Codex R2 #3：`resolveAutomaticModelSplit` 未导出，不能从房源模块调用；⛔ 不为取证新增产品导出）：分桶是 issue UUID + node ID 的确定性哈希，同配置下可预先算出。QA 在房源 worktree 用 **现有导出** `getModelConfigSnapshot()`（`packages/config/src/model-config.ts`）与 `resolveWeightedModelSplit(policy, issueUuid, "implement")`（`packages/config/src/model-split.ts:260`，要求小写规范 UUID）做只读预计算：
+
+```sh
+cd <房源 worktree> && node -e '
+const { getModelConfigSnapshot, resolveWeightedModelSplit } = require("./packages/config/dist/index.js");
+const snap = getModelConfigSnapshot();
+const policy = snap.modelSplit?.rule === "issue_node_weighted" ? snap.modelSplit : null;
+if (!policy) throw new Error("modelSplit is not weighted/enabled");
+for (const uuid of process.argv.slice(1)) {
+  const r = resolveWeightedModelSplit(policy, uuid, "implement");
+  console.log(JSON.stringify({ uuid, bucket: r.bucket, arm: r.arm.arm, model: r.arm.model, version: policy.version }));
+}' <候选 issue UUID…>
+```
+
+输出（配置摘要 + UUID + bucket + 期望 arm）**drill 前写入报告**，并用房 DB 核实 N1/N2 在被测房**无任何历史 run**。选出：一个必落 `impl_opus` 的 issue（N1）、一个必落 `impl_sol56` 的 issue（N2）。「如落到 codex」这种碰运气的用例不算证据。issue UUID 取自房内注入的 Linear issue 记录。
 
 | 例 | 输入 | 证明什么 | 缺失时 |
 |---|---|---|---|
 | **N1 新单·Opus 桶** | 预计算落 `impl_opus` 的 issue，drill 一次 | 每个节点 arm 来自当前 modelSplit；回执 `opus (= claude-opus-5-5)`；receipt = runtime = session | FAIL |
 | **N2 新单·Codex 桶** | 预计算落 `impl_sol56` 的 issue | 仍合法选 Codex（`gpt-5.6-sol (= gpt-5.6-sol)` 或注册表别名），修复不是「全量强制 Opus」 | FAIL |
 | **O1 老单·同配置** | 对 N1 的 issue 再 drill（新 key，房内已有 N1 历史） | 同 UUID 同配置同分桶 → 与 N1 一致；basis `ruleVersion` = 当前 | FAIL |
-| **O2-seed 老单·不同 policy 历史（真房强证明）** | **Lead 条件授权**（question `8af71ce4`）：仅限**一次性**、**房内隔离 QA DB**（本沙箱 `/tmp/flywheel-test-slot-3/teamlead.db`，先用 realpath 证明它不是宿主 `~/.flywheel/*.db`，且房 Bridge 是 file-backed 实时读该文件而非内存快照——否则禁止 seed）；植入**一条终态 run**（`workflow_run` 行 status 终态、`selection_reason`/`selected_by` 明确标 `synthetic-fly3018-o2-seed`）的 `model_arm_assigned` 事件（`workflow_run_event` 行，payload arm=`impl_astra`、model=`gpt-6-astra`、旧 `ruleVersion`），再 drill N1 issue。⛔ 绝不写宿主/生产 DB 或 `~/.flywheel/models.json`；⛔ 报告不得把 synthetic fixture 表述为生产历史事实 | 修复前（main `:125` 历史覆写）会得 `opus (= gpt-6-astra)`；修复后期望 `impl_opus` / `opus (= claude-opus-5-5)`，且植入行字节不变。这是「历史不再牵引」在真房里的直接证据 | 不能证明房 DB 隔离且可写 → 禁止 seed，该项写「未做」，PASS 范围按 Lead 裁定降为 **单测 + 源码守卫 + 真房同配置矩阵**并明确报告（源码守卫：真仓 `git grep listWorkflowModelAssignmentEventsForIssue packages/teamlead/src/workflow-template-selection.ts` 在 `7e28dd51c` 为空） |
+| **O2-seed 老单·不同 policy 历史（真房强证明，可选）** | **Lead 条件授权**（question `8af71ce4`）+ 下列全部前置（Codex R2 #2），任一不满足即**不 seed**：(a) 用**专用第三个 issue**（预计算落 `impl_opus`，被测房内无历史），seed 在它**首次 drill 之前**，这样旧实现继承的是**单一旧 policy**（若像 N1 那样已有当前 policy 记录再加旧 policy，旧实现会报 `prior workflow model assignment ambiguous`，不会出 Astra 回执）；(b) 房 DB 隔离且可写：`realpath` 证明是被测房 `<state dir>/teamlead.db` 而非宿主 `~/.flywheel/*.db` 或 slot 3 DB，且房 Bridge 为 file-backed 实时读；(c) 夹具是**完整信封**：以被测房里一条真实 N1 `model_arm_assigned` 事件 payload 为模板，仅替换 arm=`impl_astra`、modelAlias/model=`gpt-6-astra`、`basis.ruleVersion`/`basis.nodes`/`basis.weightAudit`/`basis.bucket` 为旧 policy 的一致值，保留 `basis.rule="issue_node_weighted"`、`basis.issueKey`=该 issue UUID、`basis.nodeId`=`implement`；写前用 `95e5cd708` 只读 checkout 的 `assertFrozenWeightedModelAssignment`（`workflow-model-assignment.ts`）与 `listWorkflowModelAssignmentEventsForIssue` 的 project+UUID 关联条件验证「旧 reader 选得中、旧校验器接受」；(d) 一条**参数化事务 SQL** 写入：一行 `workflow_run`（synthetic run_id、issue_id=UUID、project_name=房项目、status 终态、`selected_by`/`selection_reason`=`synthetic-fly3018-o2-seed`）+ 一行 `workflow_run_event`（kind=`model_arm_assigned`、node_id=`implement`、seq=1、synthetic event_uid、payload=上述信封），SQL 原文与参数入报告；(e) 写后读回原件比对摘要。然后 drill 该 issue `--real --no-overrides` |
+修复前（`95e5cd708` `:125-165` 单一旧 policy 继承）会得 `opus (= gpt-6-astra)`；修复后期望 `impl_opus` / `opus (= claude-opus-5-5)`，且植入行字节不变。⛔ 绝不写宿主/生产 DB、slot 3 DB 或 `~/.flywheel/models.json`；⛔ 报告不得把 synthetic fixture 表述为生产历史事实 | (a)–(e) 任一不满足 → 不 seed，该项写「未做」，PASS 范围按 Lead 裁定降为 **单测 + 源码守卫 + 真房同配置矩阵**并明确报告（源码守卫：真仓 `git grep listWorkflowModelAssignmentEventsForIssue packages/teamlead/src/workflow-template-selection.ts` 在 `7e28dd51c` 为空） |
 
 **任务类别缺口（诚实）**：driver 写死 `taskCategory: "code"`（`scripts/lib/qa-generalized-e2e-lib.mjs:745`），founder 事故是 `simple_code`。房内**没有**现成受权的 simple_code 派单入口（加 `--task-category` 是产品改动，超出本 run）。simple_code 证据只来自 §4.2 ② `fly3018-current-model-routing.test.ts`；报告单列此缺口，是否作为 PASS 阻断由 Lead 裁定（同一 question）。
 
-**取证（只读房 DB，路径 `<房 state dir>/teamlead.db`，本沙箱为 `/tmp/flywheel-test-slot-3/teamlead.db`；`sqlite3 -readonly`）**。drill 步骤输出不含完整 start 响应，必须回房 DB 取原件，⛔ 不用重建值冒充原始响应：
+**取证（只读被测房 DB：路径从 `roomInfo` 的 state dir 解析为 `<state dir>/teamlead.db`，形如 `/tmp/flywheel-test-slot-<N>/teamlead.db`，⛔ 不是管理端 slot 3 的 `/tmp/flywheel-test-slot-3/teamlead.db`；`sqlite3 -readonly`）**。drill 步骤输出不含完整 start 响应，必须回房 DB 取原件，⛔ 不用重建值冒充原始响应：
 
 ```sql
 -- 原始回执：response.resolved.nodeModels（不是 response.nodeModels）
@@ -112,7 +127,7 @@ SELECT execution_id, runner_model, dispatch_model FROM sessions WHERE execution_
 node "$FLYWHEEL_COMM_CLI" evidence-run record \
   --exec-id <QA exec id> \
   --head 7e28dd51c58a67cb04f37d392a8cf1f2b1e64c89 \
-  --site slot_529:3 --lane generalized_e2e_real \
+  --site slot_529:<被测房 slot N，≠3> --lane generalized_e2e_real \
   --record-url <已发布证据的 https URL> \
   --rerun-spec <服务返回的 rerun_spec 文件，须含 lane=generalized_e2e_real 且 driver.noOverrides=true> \
   --driver-exit-code <drill 返回的真实 driver_exit_code> \
@@ -128,7 +143,8 @@ node "$FLYWHEEL_COMM_CLI" evidence-run record \
 
 - `drill_config_not_reproducible` → 房参数不对（Codex-runner 房、非 main fixture、`--no-lead`），ask Lead 改房，不改自己的命令绕过。
 - 回执出现跨 vendor 拼接（如 `opus (= gpt-*)`）→ 直接 FAIL，附 `response.resolved.nodeModels` 原文。
-- 管理 Bridge 或 CLI 不含 `950870cee`（§4.0）→ 阻断 ask Lead；⛔ 不去掉 `--no-overrides`，⛔ 不自行部署。
+- 管理 Bridge 或 CLI 不含 `950870cee`（§4.0；症状 `field_not_supported` / `rerun_spec_invalid:unknown_key`）→ 阻断 ask Lead；⛔ 不去掉 `--no-overrides`，⛔ 不自行部署。
+- `slot_unavailable` / `slot_port_is_self` → 被测房与管理端重合（§4.0），ask Lead 指定另一 slot；⛔ 不拆守卫。
 - `403 room_not_owned` → 所有权错位（§4.1），ask Lead，⛔ 不借 Lead 凭据。
 - 宿主 `~/.flywheel/models.json` sha256 在矩阵前后不一致 → 环境被改动，FAIL 并上报。
 - 房头 sha ≠ `7e28dd51c`，或 PR #1381 头再次前进 → 停，ask Lead 重新核对；不沿用本次裁定。
@@ -146,7 +162,8 @@ node "$FLYWHEEL_COMM_CLI" evidence-run record \
 | 在 `76cf3c249` 上硬判强度二 | 该头 rerun_spec 表达不了 no-overrides，证据不可判定 |
 | 由 Lead 或 QA 改「房内」models.json 做 O2 | 房读的是宿主 `~/.flywheel/models.json` = 生产文件，改它就是改生产，且没有恢复边界（Codex R1 #4）；改为 O2-seed（房 DB 历史夹具，需授权）或退回单测+源码守卫 |
 | Lead 起房、QA 去 drill | owner 是 `lead:<id>`，QA 身份会 403 `room_not_owned`（Codex R1 #2） |
-| 只检查 FLY-2407 就开跑 | 管理 Bridge 在 main 上没有 `no_overrides` schema，会 `unknown_key`（Codex R1 #1） |
+| 只检查 FLY-2407 就开跑 | 管理 Bridge 在 main 上没有 `no_overrides` schema：drill 被拒 `field_not_supported`，evidence-run 被拒 `rerun_spec_invalid:unknown_key`（Codex R1 #1 / R2 #4）；报告保留实际响应原文 |
+| 管理端与被测房同为 slot 3 | `slot_unavailable` / `slot_port_is_self` 自测守卫必拒（Codex R2 #1）；被测房必须是另一空闲 slot |
 
 ## 7. 回滚与边界（诚实）
 
