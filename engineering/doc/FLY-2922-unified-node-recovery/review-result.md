@@ -3,7 +3,7 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 日期: 2026-09-29
 基于: plan.md
 
-> **当前状态：exec e717d910 Round 2 APPROVED with advisories；advisory 修订后将开 Round 3。** 下方 2026-09-27 的 verify-then-submit Round 1–3 是历史记录，已被 2026-09-29 三域隔离计划取代，不能作为当前 plan blob 的批准，也不能执行已删除的 `handin.zsh`。上一 activation 的 Round 2 APPROVED 只覆盖旧 plan blob，不能外推到本次修订。
+> **当前状态：exec e717d910 Round 3 PENDING。** 下方 2026-09-27 的 verify-then-submit Round 1–3 是历史记录，已被 2026-09-29 三域隔离计划取代，不能作为当前 plan blob 的批准，也不能执行已删除的 `handin.zsh`。上一 activation 的 Round 2 APPROVED 只覆盖旧 plan blob，不能外推到本次修订。
 
 评审对象：本轮 design 节点的 verify-then-submit 合同（plan.md + handin.zsh），不是上游已批准的 held 恢复设计（那份的有效评审见 origin/flywheel-FLY-2922 的 review-result.md：gate d9ab4f85、0f29f815）。评审模型由 Bridge 指定：gpt-6-astra / xhigh；Codex thread `01a0e2e9-4f98-7502-b116-d377dd2fd8d6`。
 
@@ -92,3 +92,11 @@ design 节点被以新 exec `0edcc786-726c-42e3-a310-77c5fda21351` 重派。plan
 - LOW `push-guard-audit-weak-evidence`：push audit 不记录所有 fast-forward push。修订将 remote branch SHA 与 PR `headRefOid` 定为权威证据，audit 仅作辅助。
 - LOW `identity-query-hardening`：修订加入 UUID 形态验证与 `sqlite3 -readonly`，再用 `@exec` 参数绑定。
 - 因 plan blob 已按 advisory 改写，本轮批准不外推到改写后 blob；必须新开 Round 3。
+
+## exec e717d910 Round 3 — PENDING
+
+- advisory 修订提交：`37ba93cdc`；含 durable cursor 的远端头：`145cf6ca0`。
+- gate question：`ec861d78-cd5b-47de-bb82-e709c6a61e85`
+- request：`c540b3b5-4970-4e27-b7f8-b7eb3bf6de5d`
+- 审阅对象：Bridge 默认 StateStore fallback、fail-fast preflight、只读 UUID 参数查询与 authoritative SHA evidence 收口后的最终 plan blob。
+- Round 2 question 不复用；只有本 question 的 effective `reviewVerdict` 可批准当前 blob。

@@ -110,6 +110,7 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 - `founder-design.html` 更新后 SHA-256 为 `66d7a2b7fde1b8e28228e013158b2a7637c7a099ef19722e9fbcb8d99a3c6b49`。静态检查保持 nonce placeholder 1、script 1、inline handler 0、`innerHTML` 0、自定义 CSP 0、外链 0、9 sections / 9 textareas、marker 1、内联 SVG 2。
 - Headless Chrome 复验：路径 scoped localStorage、保存与 reload 恢复、3 个 ≤1800 字且均带 marker 的汇总 chunk、clipboard reject fallback、page errors 为空；截图 1440×10558，经人工查看布局与两张图正常。
 - Round 2 advisory durable report：`3564163d-027e-40df-b54e-52df113f2e9b`。
+- advisory 修订提交 `37ba93cdc` 与 cursor 头 `145cf6ca0` 已推送；Round 3 gate question `ec861d78-cd5b-47de-bb82-e709c6a61e85` / request `c540b3b5-4970-4e27-b7f8-b7eb3bf6de5d` 已注册，等待 effective verdict。
 
 ### 文档与 Founder HTML 本地验证
 
