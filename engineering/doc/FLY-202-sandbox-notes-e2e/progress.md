@@ -1,14 +1,13 @@
 ---
 issue: FLY-202
-phase: design
-phaseCursor: 6/6
-updated: 2026-09-29T16:24:08.589Z
-nextStep: Design complete; implement node runs plan.md Task 0 (see
-  design-review-advisories.md)
+phase: implement
+phaseCursor: 1/6
+updated: 2026-09-29T16:26:24.108Z
+nextStep: "Task 1: discover relevant tests and collect source facts"
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: design (6/6)
-**next**: Design complete; implement node runs plan.md Task 0 (see design-review-advisories.md)
+**phase**: implement (1/6)
+**next**: Task 1: discover relevant tests and collect source facts
