@@ -44,7 +44,7 @@ FLY-2919 N-to-N claude-body probe
 
 ## 4. 推荐方向
 
-采用方案 A。实现保持一次、精确、可审计：只在目标行不存在时追加；如果目标行已经存在，停止并向 Lead 报告，不重复写入。提交前以 `git diff --check`、目标字面量计数和 README 尾部检查证明结果；提交后推送 feature branch，按 implement 节点的正常完成路由交卷。
+采用方案 A。实现保持一次、精确、可审计：`origin/main` 不得预存目标行；issue 分支不存在时追加，存在时先证明它来自前一个 FLY-3029 body 的单行 diff 或 probe commit，再从 commit、push 或 handoff 的未完成处续跑。来源不明或重复多次才停止。提交前以 `git diff --check`、目标字面量计数、尾部 LF 和 README diff 证明结果；提交后以独立 probe SHA 锚定验证，即使 progress ledger 又产生后续 commit 也不误判。
 
 ## 5. 范围与负向守卫
 

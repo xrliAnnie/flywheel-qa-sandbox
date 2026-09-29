@@ -32,14 +32,16 @@ FLY-1375 land E2E marker 20260722T023540Z
 
 ## 3. 消费者与测试影响面
 
-仓库对字符串 `README.md` 的引用很多，但测试形状的 11 个文件经逐行检查后均不读取根 README 的真实内容：
+仓库对字符串 `README.md` 的引用很多。当前 HEAD 的逐行审计找到 21 个可执行测试、QA 脚本或测试配置形状的匹配；它们均不读取根 README 的真实内容：
 
-- `SkillInjector.test.ts`、`migrate-agents-path.test.ts`、`workflow-decision-routes.test.ts`、`shell-publish.e2e.test.ts` 各自在临时目录创建自己的 README fixture。
-- `fly152-reply-discipline.test.ts`、`fly369-patrol-rule.test.ts` 读取的是包内规则目录的 README。
-- `onboard-shell-publish-gate.test.sh`、`package-onboard-version-injection.test.sh`、`package-onboard.test.sh` 检查打包清单里的文件名，不断言仓库根 README 内容。
-- `test-setup-doc-flow.sh`、`test-setup-new-project.sh` 检查由 setup 脚本生成的其他 README 路径。
+- **临时 fixture 自建 README**：`SkillInjector.test.ts`、`migrate-agents-path.test.ts`、`workflow-decision-routes.test.ts`、`shell-publish.e2e.test.ts`、`scripts/e2e-heartbeat.ts`、`scripts/qa-fly-1188-e2e.mjs`、`scripts/qa-fly-1236-e2e.mjs`、`scripts/qa-fly-1239-e2e.mjs`、`scripts/qa-fly-1244-os-proof.mjs`、`scripts/test-restart-services.sh`。
+- **读取或引用其他 README**：`fly152-reply-discipline.test.ts`、`fly369-patrol-rule.test.ts` 读取包内规则 README；`scripts/qa-fly-153-mirror-smoke.sh`、`scripts/test-deploy.sh`、`scripts/test-slots.example.json` 只引用 qa-framework README 的说明。
+- **文件清单或生成路径**：`onboard-shell-publish-gate.test.sh`、`package-onboard-version-injection.test.sh`、`package-onboard.test.sh` 只核对打包文件名；`test-setup-doc-flow.sh`、`test-setup-new-project.sh` 检查脚本生成的其他 README 路径。
+- **注释命中**：`packages/teamlead/scripts/test-fly26-rules-split.sh` 明确在注释中排除它自己的包内 README。
 
-因此这些 11 个测试全部排除，理由是它们与根 README 内容没有依赖关系。变更是 Markdown-only，也没有 owning TypeScript package，所以不运行 Vitest、build 或 typecheck；验证应集中在 literal、diff 和 Git 提交证据。精确头 PR CI 仍是全套验证的唯一来源，但这个合成任务的主验收由 FLY-2919 driver receipt 完成。
+另外，`doc/qa/FLY-710-fly707-enablement-qa-report.md`、`doc/qa/sandbox-notes.md`、`engineering/doc/FLY-886-sub-fold-tidal-echo/qa-report.md` 是证据文档，不是可执行测试。Implement 节点仍需在自己的 HEAD 重新运行完整消费者搜索并逐项记录所有新增或变化的 test-shaped match，不能把上述数量当作固定预期。
+
+因此当前 21 个可执行/配置匹配全部排除，理由是与根 README 内容没有依赖关系。变更是 Markdown-only，也没有 owning TypeScript package，所以不运行 Vitest、build 或 typecheck。定向执行 `pnpm exec biome check README.md` 的权威结果是 `Checked 0 files`、`README.md` ignored、exit 1，证明 Biome 不覆盖 Markdown；因此也不运行全仓 `pnpm lint` 来制造无关证据。验证集中在 literal、diff、Git 提交和 driver receipt。精确头 PR CI 仍是全套验证的唯一来源，但这个合成任务的主验收由 FLY-2919 driver receipt 完成。
 
 ## 4. 实现边界和失败语义
 
@@ -49,10 +51,17 @@ FLY-1375 land E2E marker 20260722T023540Z
 
 ### 幂等与冲突处理
 
-- 写入前目标 literal 必须是 0 次；若已经存在，禁止再追加，向 Lead 报告已有状态和当前 HEAD。
+- `origin/main` 上目标 literal 必须是 0 次；若 main 已存在，按夹具冲突停止并向 Lead 报告。
+- 当前 issue 分支上目标 literal 若为 0 次，进入新写入路径；若恰好 1 次，则检查来源：前一个 FLY-3029 body 留下的单行工作树 diff 或该分支上的 probe commit 可以续跑，来源不明或多次出现才停止。
 - 写入后目标 literal 必须恰好 1 次，并且是文件最后一行。
+- 文件最后一个 byte 必须是 LF（hex `0a`）。
 - `git diff -- README.md` 必须只显示一行新增，不能删除或改写现有 marker。
 - 如果 implement 获得 TURN 后发现 README 或 HEAD 已变化，重新执行上述检查，以现场状态为准；不要照抄本调研的行号或 byte count。
+
+### 阶段身份与续跑
+
+- 每个 DAG phase/body 都有自己的 execution id。Implement 的 inbox 和 progress 只能使用运行时注入的 `$FLYWHEEL_EXEC_ID`；禁止复用 design id、旧 body id 或其他阶段 id，否则会漏读本体消息并破坏性消费别人的 inbox。
+- probe commit 后与首次 push 后各写一次 implement progress cursor。Progress 自身会生成独立 commit，所以最终验证不能假设 HEAD 就是 probe commit；必须通过固定 commit subject 恢复 probe SHA，并验证该 SHA 是 upstream 的祖先。
 
 ### Git 边界
 

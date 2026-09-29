@@ -139,12 +139,13 @@
 
   <section class="card diagram-card" data-comment-id="core-flow" data-section-title="核心流程">
     <h2>核心流程</h2>
-    <p>仓库动作只负责制造一个明确、可追踪的负载；DAG（有向无环流程图：把 design、implement、QA 等阶段按顺序连接的工作流）负责阶段交接；driver receipt 最后判断活体、死体与 thread 是否处理正确。</p>
+    <p>仓库动作只负责制造一个明确、可追踪的负载；若新 body 接手时 probe 已由前一 body 写入，它验证来源后从未完成的 commit、push 或 handoff 继续，而不是重复追加或误报失败。DAG（有向无环流程图：把 design、implement、QA 等阶段按顺序连接的工作流）负责阶段交接；driver receipt 最后判断活体、死体与 thread 是否处理正确。</p>
     <div class="diagram-pending" role="img" aria-label="核心流程图等待本地渲染">
       <strong>DIAGRAM PENDING LOCAL RENDER</strong>
       本地 Mermaid 渲染器连续两次被系统权限阻止。源码已保存在 <code>core-flow.mmd</code>，这里不使用 CSS 方框伪装成图。
       <pre>flowchart LR
-Design --&gt; Implement --&gt; Commit + Push --&gt; DAG handoff
+Design --&gt; Implement preflight --&gt; Append or resume
+Append or resume --&gt; Probe SHA + progress --&gt; Push --&gt; DAG handoff
 DAG handoff --&gt; FLY-2919 driver receipt --&gt; QA verdict</pre>
     </div>
     <div class="comment-wrap">
@@ -156,16 +157,17 @@ DAG handoff --&gt; FLY-2919 driver receipt --&gt; QA verdict</pre>
 
   <section class="card diagram-card" data-comment-id="evidence-model" data-section-title="数据与证据结构">
     <h2>数据与证据结构</h2>
-    <p>没有新增数据库或接口。证据分三层：README 的单行变更、Git 的本地与远端 SHA（提交身份：精确指向一次提交的哈希值）、driver 的四项生命周期回执。只有第三层能证明 N-to-N 行为。</p>
+    <p>没有新增数据库或接口。证据分四层：当前 body 自己的 execution id（执行身份：只允许读取本阶段信箱）、progress cursor（进度游标：换体后定位下一步）、README 的独立 probe SHA（提交身份：精确指向单行变更的哈希值）、driver 的四项生命周期回执。只有最后一层能证明 N-to-N 行为。</p>
     <div class="diagram-pending" role="img" aria-label="数据与证据结构图等待本地渲染">
       <strong>DIAGRAM PENDING LOCAL RENDER</strong>
       Mermaid UML 风格的 class diagram（类图：用方框描述数据对象及其关系）源码已保存在 <code>evidence-model.mmd</code>。
-      <pre>RepositoryChange --&gt; GitEvidence --&gt; DriverReceipt --&gt; Verdict
-一行变更             远端提交证据        四项生命周期回执      分层判定</pre>
+      <pre>PhaseIdentity --&gt; ProgressCursor --&gt; GitEvidence
+当前 body 信箱       换体续跑位置          独立 probe SHA
+GitEvidence --&gt; DriverReceipt --&gt; Verdict</pre>
     </div>
     <div class="two-col">
-      <div class="mini"><strong>仓库证据</strong>literal 恰好一次、尾行正确、diff 只有一行新增。</div>
-      <div class="mini"><strong>流程证据</strong>死体换体、活体不误杀、同 thread 续干、交卷回 thread。</div>
+      <div class="mini"><strong>仓库证据</strong>literal 恰好一次、尾行 LF、probe SHA 是远端祖先、README diff 只有一行新增。</div>
+      <div class="mini"><strong>流程证据</strong>每个 body 只读自己的 inbox；死体换体、活体不误杀、同 thread 续干、交卷回 thread。</div>
     </div>
     <div class="comment-wrap">
       <label for="comment-evidence-model">对“数据与证据结构”的意见</label>
@@ -195,7 +197,7 @@ DAG handoff --&gt; FLY-2919 driver receipt --&gt; QA verdict</pre>
   <section class="card boundary" data-comment-id="boundary" data-section-title="诚实边界">
     <h2>诚实边界：它做什么，也不做什么</h2>
     <div class="two-col">
-      <div class="mini"><strong>这份设计会保证</strong>目标仓正确、probe 不重复、diff 最小、提交与推送可追踪、交卷证据分层。</div>
+      <div class="mini"><strong>这份设计会保证</strong>目标仓正确、当前 body 只读自己的 inbox、probe 不重复、换体可续跑、独立 SHA 与推送可追踪、交卷证据分层。</div>
       <div class="mini"><strong>这份设计不会声称</strong>窗口消失等于死体、README 行存在等于 QA 通过、slot/head 差异可由 Runner 擅自修正、生产可以派发此 fixture。</div>
     </div>
     <p>当前设计 worktree 是 slot 5 / <code>1855f7a1a</code>，issue 文本记录的是 slot 2 / <code>bfdea677</code>。Lead 已裁定这是 QA test-slot identity override：继续 slot 5，不 reset、不转向生产 slot 2。实现节点仍须先取得 TURN（写入权：DAG 当前允许哪个阶段修改共享分支的令牌）并核对现场。</p>

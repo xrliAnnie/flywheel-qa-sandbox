@@ -5,9 +5,18 @@ classDiagram
       diff one added line
     }
     class GitEvidence {
-      local commit SHA
-      remote branch SHA
-      clean worktree
+      probe commit SHA
+      upstream contains probe SHA
+      branch README diff
+    }
+    class PhaseIdentity {
+      current FLYWHEEL_EXEC_ID
+      own inbox only
+    }
+    class ProgressCursor {
+      commit complete
+      push complete
+      next unfinished step
     }
     class DriverReceipt {
       dead runner replaced
@@ -20,5 +29,7 @@ classDiagram
       lifecycle proven separately
     }
     RepositoryChange --> GitEvidence : commit and push
+    PhaseIdentity --> ProgressCursor : writes own cursor
+    ProgressCursor --> GitEvidence : survives body swap
     GitEvidence --> DriverReceipt : handoff emits evidence
     DriverReceipt --> Verdict : authoritative QA signal

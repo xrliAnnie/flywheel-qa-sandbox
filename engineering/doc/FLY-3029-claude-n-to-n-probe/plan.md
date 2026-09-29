@@ -34,7 +34,8 @@ Run:
 
 ```bash
 node "$FLYWHEEL_COMM_CLI" turn
-node "$FLYWHEEL_COMM_CLI" inbox --exec-id 956363e8-696f-4492-9476-ef5613974289
+test -n "$FLYWHEEL_EXEC_ID"
+node "$FLYWHEEL_COMM_CLI" inbox --exec-id "$FLYWHEEL_EXEC_ID"
 git status --short --branch
 git rev-parse HEAD
 git remote get-url origin
@@ -46,6 +47,7 @@ Expected:
 - origin 精确为 `https://github.com/xrliAnnie/flywheel-qa-sandbox.git`。
 - 分支是 orchestrator 授权的 FLY-3029 feature branch，不是 `main`。
 - 记录现场 HEAD；不要为了匹配 issue 中的历史 `bfdea677` 而 reset、rebase 或 force push。
+- `$FLYWHEEL_EXEC_ID` 必须是当前 implement body 的运行时身份。禁止填 design exec-id、旧 body id 或其他 phase id；`inbox` 会把消息标记已读，读错 id 会破坏性消费别人的信箱。
 
 - [ ] **Step 2：遵守已记录的 QA identity override**
 
@@ -55,25 +57,31 @@ Lead 已在问题 `e54708b7-4322-417c-bf3e-933fc970e377` 明确回复：继续�
 
 **Files:**
 - Inspect: `README.md`
-- Exclude after inspection: 11 个只引用其他 README fixture/path 的测试文件（完整理由见 `research.md` §3）
+- Exclude after inspection: 所有只引用其他 README fixture/path 的 test/QA 匹配（当前审计分组与理由见 `research.md` §3；数量不是固定合同）
 
 - [ ] **Step 1：搜索旧尾行和新 literal**
 
 Run:
 
 ```bash
+git fetch origin main
 git grep -nF -- 'FLY-1375 land E2E marker 20260722T023540Z' -- README.md
+git grep -nF -e 'FLY-2919 N-to-N claude-body probe' origin/main -- README.md
 git grep -nF -- 'FLY-2919 N-to-N claude-body probe' -- README.md
 tail -n 5 README.md
+git diff -- README.md
+git log --format='%H %s' origin/main..HEAD -- README.md
+git diff origin/main..HEAD -- README.md
 ```
 
-Expected before write:
+Expected decision tree:
 
 - 旧尾行恰好命中一次。
-- 新 literal 零命中，第二条命令退出 1。
-- README 以现有 marker 和 LF 结束。
-
-If the new literal already exists: stop without editing, capture `git log -1 -- README.md`, and report the pre-existing state to Lead. Duplicate append is a failure, not a success path.
+- `origin/main` 中新 literal 必须零命中；若 main 已包含它，停止并向 Lead 报告夹具冲突。
+- **新写入路径**：工作树中新 literal 为 0，README 仍以原 marker 和 LF 结束；继续 Task 2 Step 2 后进入 Task 3。
+- **换体续跑路径 A（未提交）**：工作树中新 literal 恰好 1 次，`git diff -- README.md` 只新增该行；跳过 Task 3 Step 1，从 Task 3 Step 2 继续。
+- **换体续跑路径 B（已提交）**：工作树中新 literal 恰好 1 次，`git log origin/main..HEAD -- README.md` 存在 subject 精确为 `docs(FLY-3029): add N-to-N claude-body probe` 的 commit，且 branch diff 只新增该行；恢复该 probe SHA，跳过已完成的写入/commit 步骤，从未完成的 progress、push 或 handoff 继续。
+- 新 literal 多于 1 次、来源不明、或 README 还有其他变化时，停止并向 Lead 报告；只有重复追加或来源冲突是失败，前一个 body 的可信单行进度是正常续跑状态。
 
 - [ ] **Step 2：按本地测试策略重新发现消费者**
 
@@ -83,10 +91,10 @@ Run:
 git grep -lF -- 'FLY-1375 land E2E marker 20260722T023540Z' -- .
 git grep -lF -- 'FLY-2919 N-to-N claude-body probe' -- .
 git grep -lF -- 'README.md' -- .
-git grep -nF -- 'README.md' -- packages/edge-worker/src/__tests__/SkillInjector.test.ts packages/flywheel-cli/src/__tests__/migrate-agents-path.test.ts packages/onboard-shell/__tests__/onboard-shell-publish-gate.test.sh packages/teamlead/src/__tests__/fly152-reply-discipline.test.ts packages/teamlead/src/__tests__/fly369-patrol-rule.test.ts packages/teamlead/src/__tests__/workflow-decision-routes.test.ts packages/teamlead/src/bridge/publish-broker/__tests__/shell-publish.e2e.test.ts scripts/__tests__/package-onboard-version-injection.test.sh scripts/__tests__/package-onboard.test.sh scripts/__tests__/test-setup-doc-flow.sh scripts/__tests__/test-setup-new-project.sh
+git grep -lF -- 'README.md' -- . | rg '(^|/)(__tests__|tests?|spec|qa)(/|[.-])|(^|/)scripts/(test-|qa-|e2e)|test-slots' | sort
 ```
 
-Expected: root `README.md` 内容没有测试消费者。把 11 个 test-shaped match 逐项记录为排除，理由是临时 fixture、包内 README 或文件名清单，与根 README 内容无依赖。`README.md` 位于仓库根，父目录没有比 `.` 更窄的可搜索路径 token；因此以单文件 diff 和上述全仓文件名消费者审计替代无意义的 `.` 字面搜索。
+Expected: 对完整搜索结果逐项打开匹配行，并记录每一个 test/QA-shaped match 的保留或排除理由；不得把 research 的当前 21 个匹配当作固定清单。当前证据表明它们只使用临时 fixture、包内 README、生成路径、说明链接或注释，与根 README 内容无依赖。`README.md` 的完整路径和文件名相同；父目录是仓库根，没有比 `.` 更窄的可搜索路径 token，因此用全仓消费者审计 + 单文件 diff 覆盖 parent-directory discovery。
 
 ## Task 3：GREEN —— 只追加指定一行
 
@@ -102,7 +110,7 @@ Only if Task 2 still matches the researched tail, apply exactly:
 +FLY-2919 N-to-N claude-body probe
 ```
 
-Use `apply_patch`; do not rewrite the file through shell redirection, formatter, script, or editor-wide normalization.
+使用当前 runner 的原生精确编辑工具做一次最小插入：Codex 使用 `apply_patch`，Claude 使用 `Edit`。不要用 shell 重定向、脚本或全文件 formatter 重写；验收以 Step 2 的字节与 diff 断言为准，而不是以工具名称为准。
 
 - [ ] **Step 2：证明 literal 恰好一次且位于尾行**
 
@@ -111,11 +119,12 @@ Run:
 ```bash
 test "$(git grep -nF -- 'FLY-2919 N-to-N claude-body probe' -- README.md | wc -l | tr -d ' ')" = 1
 test "$(tail -n 1 README.md)" = 'FLY-2919 N-to-N claude-body probe'
+test "$(tail -c 1 README.md | od -An -tx1 | tr -d ' \n')" = '0a'
 git diff --check -- README.md
 git diff -- README.md
 ```
 
-Expected: 两个 `test` 退出 0，`git diff --check` 无输出，diff 只包含一行新增且不删除任何原内容。
+Expected: 三个 `test` 退出 0，最后 byte 是 LF，`git diff --check` 无输出，diff 只包含一行新增且不删除任何原内容。
 
 ## Task 4：验证范围并提交
 
@@ -124,7 +133,7 @@ Expected: 两个 `test` 退出 0，`git diff --check` 无输出，diff 只包含
 
 - [ ] **Step 1：确认没有相关本地测试，并拒绝 broad suite**
 
-本变更是根 Markdown 内容，Task 2 已证 11 个 test-shaped match 全部无关；因此不运行 Vitest、package test、build 或 typecheck。不得用 full-repository/full-package suite 代替影响面判断。
+本变更是根 Markdown 内容，Task 2 已逐项证明所有当前 test/QA-shaped match 都不读取其内容；因此不运行 Vitest、package test、build 或 typecheck。定向 `pnpm exec biome check README.md` 在 design 调研中返回 `Checked 0 files`、README ignored、exit 1，证明 Biome 不覆盖 Markdown，所以也不运行全仓 `pnpm lint`。不得用 full-repository/full-package suite 或无关全仓 lint 代替影响面判断。
 
 - [ ] **Step 2：只暂存 README 并核对 staged diff**
 
@@ -145,10 +154,12 @@ Run:
 
 ```bash
 git commit -m "docs(FLY-3029): add N-to-N claude-body probe"
-git log -1 --format='%H %s'
+task_probe_sha="$(git rev-parse HEAD)"
+git show --format='%H %s' --stat "$task_probe_sha"
+node "$FLYWHEEL_COMM_CLI" progress --exec-id "$FLYWHEEL_EXEC_ID" --file engineering/doc/FLY-3029-claude-n-to-n-probe/progress.md --phase implement --cursor 3/5 --set-chunk probe_commit=complete --next "push probe commit $task_probe_sha"
 ```
 
-Expected: commit 成功，输出真实 40-character SHA 和上述 subject。后续报告必须复制这个 SHA，不凭记忆写占位符。
+Expected: commit 成功，记录真实 40-character probe SHA；随后 progress 写下 durable cursor，并可能产生一个新的 progress commit，所以 HEAD 不再被假设为 probe commit。后续可按精确 subject 从 `origin/main..HEAD` 恢复 probe SHA，报告必须复制 Git 输出，不凭记忆写占位符。
 
 ## Task 5：推送与正常交卷
 
@@ -160,10 +171,17 @@ Expected: commit 成功，输出真实 40-character SHA 和上述 subject。后�
 Run:
 
 ```bash
-git push -u origin project-slot-5-FLY-3029
+task_branch="$(git branch --show-current)"
+test -n "$task_branch"
+test "$task_branch" != main
+git push -u origin "$task_branch"
+task_probe_sha="$(git log -1 --format='%H' --grep='^docs(FLY-3029): add N-to-N claude-body probe$' origin/main..HEAD -- README.md)"
+test -n "$task_probe_sha"
+node "$FLYWHEEL_COMM_CLI" progress --exec-id "$FLYWHEEL_EXEC_ID" --file engineering/doc/FLY-3029-claude-n-to-n-probe/progress.md --phase implement --cursor 4/5 --set-chunk probe_push=complete --next "verify probe $task_probe_sha and run exact handoff"
+git push
 ```
 
-Expected: fast-forward push 成功并设置 upstream。禁止 `--no-verify`、force push、修改 hooks 或 push `main`。若实际授权分支名在 implement 激活时不同，使用 `git branch --show-current` 的非-main FLY-3029 分支，不硬编码错误目标。
+Expected: 首次 fast-forward push 上传 probe + commit 后 progress；随后 progress 记录 push 完成，再次 push 使 cursor 也远端持久化。禁止 `--no-verify`、force push、修改 hooks 或 push `main`。始终使用运行时的非-main 当前分支，不硬编码 design 时的分支名。
 
 - [ ] **Step 2：验证远端和本地状态**
 
@@ -171,16 +189,19 @@ Run:
 
 ```bash
 git status --short --branch
-git rev-parse HEAD
-git rev-parse '@{upstream}'
-git show --stat --oneline --decorate HEAD
+task_probe_sha="$(git log -1 --format='%H' --grep='^docs(FLY-3029): add N-to-N claude-body probe$' origin/main..HEAD -- README.md)"
+test -n "$task_probe_sha"
+git show --format='%H %s' --stat "$task_probe_sha"
+git merge-base --is-ancestor "$task_probe_sha" '@{upstream}'
+git diff --check origin/main..'@{upstream}' -- README.md
+git diff origin/main..'@{upstream}' -- README.md
 ```
 
-Expected: 工作树没有未提交的 README 变化，本地 HEAD 与 upstream SHA 相同，HEAD commit 只新增 probe 行。
+Expected: 工作树没有未提交的 README 变化；锚定的 probe commit 只改 README 一行且是 upstream 祖先；`origin/main..@{upstream}` 的 README diff 只新增该 probe 行。HEAD 可以合法地是后续 progress commit，绝不因此改写历史。
 
 - [ ] **Step 3：按 implement 节点注入的精确 route 交卷**
 
-在完成前再次运行 inbox；如有 Lead instruction，完成并用带完整 `[lead-instruction <id>]` 的 `ask --report "DONE: ..."` 回执。然后使用 implement 动态提示给出的 exact completion/handoff command；不要在本计划中臆造 route，不要创建或合并 PR，除非 implement 动态提示明确要求。
+在完成前运行 `node "$FLYWHEEL_COMM_CLI" inbox --exec-id "$FLYWHEEL_EXEC_ID"`；禁止使用 design/旧 body 的 id。如有 Lead instruction，完成并用带完整 `[lead-instruction <id>]` 的 `ask --report "DONE: ..."` 回执。然后使用 implement 动态提示给出的 exact completion/handoff command；不要在本计划中臆造 route，不要创建或合并 PR，除非 implement 动态提示明确要求。
 
 交卷报告必须包含：真实 commit SHA、远端 feature branch、README literal count=1，以及“FLY-2919 driver receipt 仍是生命周期验收威权证据”。
 
@@ -189,9 +210,9 @@ Expected: 工作树没有未提交的 README 变化，本地 HEAD 与 upstream S
 | 要求 | 权威证据 | 通过条件 |
 |---|---|---|
 | 指定文本追加 | `git grep` + `tail` | 精确 literal 恰好一次且为尾行 |
-| 没有旁改 | cached/final commit diff | `README.md` 只新增一行 |
-| 已提交 | `git log -1` | subject 正确且 SHA 可复制 |
-| 已推送 | local/upstream `rev-parse` | SHA 相同 |
+| 没有旁改 | cached diff + `git show <probeSHA>` | probe commit 中 `README.md` 只新增一行 |
+| 已提交 | 精确 subject 恢复的 probe SHA | SHA 非空且 commit 内容正确 |
+| 已推送 | `merge-base --is-ancestor <probeSHA> @{upstream}` | probe SHA 已包含在 upstream；HEAD 可为 progress commit |
 | 正常交卷 | phase completion receipt | implement 节点按注入 route 完成 |
 | N-to-N 行为通过 | FLY-2919 driver receipt | 四项生命周期判据全部由 QA 记录 |
 
