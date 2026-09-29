@@ -1,13 +1,13 @@
 ---
 issue: FLY-3029
 phase: design
-phaseCursor: 3/5
-updated: 2026-09-29T05:04:45.257Z
-nextStep: plan.md committed; next stage set design_review + Codex review
+phaseCursor: 4/5
+updated: 2026-09-29T05:22:35.762Z
+nextStep: Codex design review APPROVED (R3); build+publish founder HTML, then complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-3029 progress
-**phase**: design (3/5)
-**next**: plan.md committed; next stage set design_review + Codex review
+**phase**: design (4/5)
+**next**: Codex design review APPROVED (R3); build+publish founder HTML, then complete
