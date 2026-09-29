@@ -1,13 +1,13 @@
 ---
 issue: FLY-3029
 phase: design
-phaseCursor: 1/6
-updated: 2026-09-29T03:31:43.493Z
-nextStep: audit target README, history, and analogous design artifacts
+phaseCursor: 2/6
+updated: 2026-09-29T03:32:58.468Z
+nextStep: write repository-backed research and poll the head-mismatch question
 chunks: []
 pointers: {}
 ---
 
 # FLY-3029 progress
-**phase**: design (1/6)
-**next**: audit target README, history, and analogous design artifacts
+**phase**: design (2/6)
+**next**: write repository-backed research and poll the head-mismatch question
