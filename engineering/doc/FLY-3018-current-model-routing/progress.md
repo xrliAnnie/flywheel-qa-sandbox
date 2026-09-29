@@ -1,13 +1,13 @@
 ---
 issue: FLY-3018
-phase: design
-phaseCursor: 5/5
-updated: 2026-09-29T02:25:18.458Z
-nextStep: report DESIGN-HTML URL to Lead; complete --route phase_design_complete
+phase: implement
+phaseCursor: 1/4
+updated: 2026-09-29T02:29:45.083Z
+nextStep: Validate exact-head code-review proof; then complete needs_review for PR 1381
 chunks: []
 pointers: {}
 ---
 
 # FLY-3018 progress
-**phase**: design (5/5)
-**next**: report DESIGN-HTML URL to Lead; complete --route phase_design_complete
+**phase**: implement (1/4)
+**next**: Validate exact-head code-review proof; then complete needs_review for PR 1381
