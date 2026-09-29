@@ -52,10 +52,10 @@ FLY-1375 land E2E marker 20260722T023540Z
 ### 幂等与冲突处理
 
 - `origin/main` 上目标 literal 必须是 0 次；若 main 已存在，按夹具冲突停止并向 Lead 报告。
-- 当前 issue 分支上目标 literal 若为 0 次，进入新写入路径；若恰好 1 次，则检查来源：前一个 FLY-3029 body 留下的单行工作树 diff 或该分支上的 probe commit 可以续跑，来源不明或多次出现才停止。
+- 当前 issue 分支上目标 literal 若为 0 次，进入新写入路径；若恰好 1 次，则检查来源：前一个 FLY-3029 body 留下的 staged/unstaged 单行 diff（相对 HEAD）或该分支上的 probe commit 可以续跑，来源不明或多次出现才停止。
 - 写入后目标 literal 必须恰好 1 次，并且是文件最后一行。
 - 文件最后一个 byte 必须是 LF（hex `0a`）。
-- `git diff -- README.md` 必须只显示一行新增，不能删除或改写现有 marker。
+- `git diff HEAD -- README.md` 必须只显示一行新增，不能删除或改写现有 marker；相对 HEAD 才能同时覆盖 staged 和 unstaged 状态。
 - 如果 implement 获得 TURN 后发现 README 或 HEAD 已变化，重新执行上述检查，以现场状态为准；不要照抄本调研的行号或 byte count。
 
 ### 阶段身份与续跑

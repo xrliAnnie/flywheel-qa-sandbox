@@ -69,7 +69,7 @@ git grep -nF -- 'FLY-1375 land E2E marker 20260722T023540Z' -- README.md
 git grep -nF -e 'FLY-2919 N-to-N claude-body probe' origin/main -- README.md
 git grep -nF -- 'FLY-2919 N-to-N claude-body probe' -- README.md
 tail -n 5 README.md
-git diff -- README.md
+git diff HEAD -- README.md
 git log --format='%H %s' origin/main..HEAD -- README.md
 git diff origin/main..HEAD -- README.md
 ```
@@ -79,7 +79,7 @@ Expected decision tree:
 - 旧尾行恰好命中一次。
 - `origin/main` 中新 literal 必须零命中；若 main 已包含它，停止并向 Lead 报告夹具冲突。
 - **新写入路径**：工作树中新 literal 为 0，README 仍以原 marker 和 LF 结束；继续 Task 2 Step 2 后进入 Task 3。
-- **换体续跑路径 A（未提交）**：工作树中新 literal 恰好 1 次，`git diff -- README.md` 只新增该行；跳过 Task 3 Step 1，从 Task 3 Step 2 继续。
+- **换体续跑路径 A（未提交）**：工作树中新 literal 恰好 1 次，`git diff HEAD -- README.md` 只新增该行；这个比较同时覆盖 staged 和 unstaged 变化。跳过 Task 3 Step 1，从 Task 3 Step 2 继续。
 - **换体续跑路径 B（已提交）**：工作树中新 literal 恰好 1 次，`git log origin/main..HEAD -- README.md` 存在 subject 精确为 `docs(FLY-3029): add N-to-N claude-body probe` 的 commit，且 branch diff 只新增该行；恢复该 probe SHA，跳过已完成的写入/commit 步骤，从未完成的 progress、push 或 handoff 继续。
 - 新 literal 多于 1 次、来源不明、或 README 还有其他变化时，停止并向 Lead 报告；只有重复追加或来源冲突是失败，前一个 body 的可信单行进度是正常续跑状态。
 
@@ -121,7 +121,7 @@ test "$(git grep -nF -- 'FLY-2919 N-to-N claude-body probe' -- README.md | wc -l
 test "$(tail -n 1 README.md)" = 'FLY-2919 N-to-N claude-body probe'
 test "$(tail -c 1 README.md | od -An -tx1 | tr -d ' \n')" = '0a'
 git diff --check -- README.md
-git diff -- README.md
+git diff HEAD -- README.md
 ```
 
 Expected: 三个 `test` 退出 0，最后 byte 是 LF，`git diff --check` 无输出，diff 只包含一行新增且不删除任何原内容。
@@ -156,7 +156,7 @@ Run:
 git commit -m "docs(FLY-3029): add N-to-N claude-body probe"
 task_probe_sha="$(git rev-parse HEAD)"
 git show --format='%H %s' --stat "$task_probe_sha"
-node "$FLYWHEEL_COMM_CLI" progress --exec-id "$FLYWHEEL_EXEC_ID" --file engineering/doc/FLY-3029-claude-n-to-n-probe/progress.md --phase implement --cursor 3/5 --set-chunk probe_commit=complete --next "push probe commit $task_probe_sha"
+node "$FLYWHEEL_COMM_CLI" progress --exec-id "$FLYWHEEL_EXEC_ID" --file engineering/doc/FLY-3029-claude-n-to-n-probe/progress.md --phase implement --cursor 3/5 --next "push probe commit $task_probe_sha"
 ```
 
 Expected: commit 成功，记录真实 40-character probe SHA；随后 progress 写下 durable cursor，并可能产生一个新的 progress commit，所以 HEAD 不再被假设为 probe commit。后续可按精确 subject 从 `origin/main..HEAD` 恢复 probe SHA，报告必须复制 Git 输出，不凭记忆写占位符。
@@ -177,7 +177,7 @@ test "$task_branch" != main
 git push -u origin "$task_branch"
 task_probe_sha="$(git log -1 --format='%H' --grep='^docs(FLY-3029): add N-to-N claude-body probe$' origin/main..HEAD -- README.md)"
 test -n "$task_probe_sha"
-node "$FLYWHEEL_COMM_CLI" progress --exec-id "$FLYWHEEL_EXEC_ID" --file engineering/doc/FLY-3029-claude-n-to-n-probe/progress.md --phase implement --cursor 4/5 --set-chunk probe_push=complete --next "verify probe $task_probe_sha and run exact handoff"
+node "$FLYWHEEL_COMM_CLI" progress --exec-id "$FLYWHEEL_EXEC_ID" --file engineering/doc/FLY-3029-claude-n-to-n-probe/progress.md --phase implement --cursor 4/5 --next "verify probe $task_probe_sha and run exact handoff"
 git push
 ```
 
