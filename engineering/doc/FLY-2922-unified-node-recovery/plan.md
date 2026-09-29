@@ -3,7 +3,7 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 日期: 2026-09-28
 基于: research.md
 
-**Status**: draft Rev 2（本轮返工计划；产品设计沿用已批 gate d9ab4f85 / plan c4d40fbed，不重开）
+**Status**: Rev 3（独立 Claude 评审 R2 APPROVED；Codex 门禁因额度耗尽待 Lead 裁决）（本轮返工计划；产品设计沿用已批 gate d9ab4f85 / plan c4d40fbed，不重开）
 
 ## 0. 范围
 
@@ -28,12 +28,18 @@ flowchart LR
 | Chunk | 内容 | 文件 | 完成判据 |
 |-------|------|------|---------|
 | C1 ✅ | 同步 main（上一轮） | 已在 `bbd36fde3` 完成：`test-deploy.sh` 用法注释一处冲突，两侧（`--qa-stub-runner` 与 FLY-2957 `--codex-source-home`）都保留 | 已完成 |
-| C1′ | 再同步最新 main | `git fetch && git merge origin/main`（`23a1d80e8`）；解 `run-dispatcher.ts` 构造器尾部（本分支 `initialStartObserver?` vs main `workflowPrefixLookup?`）与 `run-infra.ts` 对应调用点（`input.initialStartObserver` vs `(lookup) => resolveExecutionWorkflowPrefixContext(...)`）。**两个参数都保留，按一个显式顺序追加**（main 的 `workflowPrefixLookup` 在前、本分支 `initialStartObserver` 在后，使 main 侧已存在的调用者不移位），并用 `rg "new RunDispatcher\(\|createRunDispatcher" packages/teamlead` 在 src 与测试里逐一核对所有位置参数调用点 | 无冲突标记；teamlead typecheck + build；run-dispatcher / run-infra / unified recovery / initial-start 相关 vitest 绿；PR 描述写明取舍 |
+| C1′ | 再同步最新 main | `git fetch && git merge origin/main`（`23a1d80e8`）；解 `run-dispatcher.ts` 构造器尾部（本分支 `initialStartObserver?` vs main `workflowPrefixLookup?`）与 `run-infra.ts` 对应调用点（`input.initialStartObserver` vs `(lookup) => resolveExecutionWorkflowPrefixContext(...)`）。**两个参数都保留，按一个显式顺序追加**（main 的 `workflowPrefixLookup` 在前、本分支 `initialStartObserver` 在后，使 main 侧已存在的调用者不移位），并按 §1.1 的命令在 src 与测试里逐一核对所有位置参数调用点（唯一生产构造点是 `run-infra.ts` 的 `new Dispatcher(...)`，经 `dispatcherClass` 测试钩子） | 无冲突标记；teamlead typecheck + build；run-dispatcher / run-infra / unified recovery / initial-start 相关 vitest 绿；PR 描述写明取舍 |
 | C2 ✅ | RED 测试 | `scripts/__tests__/qa-generalized-e2e-lib.test.mjs` | 新测试在旧代码上失败（函数不存在 / 宿主命名空间判 dead） |
 | C3 ✅ | 实现探活库函数 | `scripts/lib/qa-generalized-e2e-lib.mjs` 新增 `probeRoomPaneAlive`；`scripts/qa-529-generalized-e2e.mjs` `probeExecution` 改调它 | C2 全绿 |
 | C4 ✅ | 静态守卫 | `scripts/__tests__/test-deploy-generalized.test.sh`：断言探活格式串 / `@flywheel_exec_id` 绑定 / `TMUX_TMPDIR` 注入落在 `probeRoomPaneAlive` 函数体内 | 守卫测试绿 |
-| C4b | 超时可诊断 + slotDir 早失败 | driver step 4 未就绪时记录最后一次输入（`sessionStatus / parkReason / liveness{pidAlive,tmuxAlive,tmuxWindow}`），`waitFor` 超时信息带出；driver 启动时一次性校验 `slotDir` 为绝对路径（或给该错误打 `qa529Abort`），不再被 `waitFor` 吞成慢超时 | 单测：未就绪返回的诊断字段；坏 slotDir 立即失败 |
+| C4b | 超时可诊断 + slotDir 早失败 | driver step 4 未就绪时记录最后一次输入（`sessionStatus / parkReason / liveness{pidAlive,tmuxAlive,tmuxWindow}`），`waitFor` 超时信息带出——**诊断绝不能作为返回值**（`waitFor` 视任何 truthy 返回为成功），只能存闭包变量 `lastStep4Observation` 拼进超时错误，或给 `waitFor` 增加独立的 `describe()` 通道；driver 启动时一次性校验 `slotDir` 为绝对路径（或给该错误打 `qa529Abort`），不再被 `waitFor` 吞成慢超时 | 单测：未就绪时 `waitFor` 仍超时且错误信息含诊断（诊断不会让 step 4 假通过）；坏 slotDir 立即失败 |
 | C5 | 验证 + 交卷 | 相关测试 + lint + build；推分支；同头复审 APPROVED；`complete --route needs_review --pr 1374` | 见 §4 |
+
+### 1.1 C1′ 调用点核对命令
+
+```bash
+rg -n 'new (Run|Retry)?Dispatcher\(|extends (Run|Retry)Dispatcher|dispatcherClass' packages/teamlead/src
+```
 
 ## 2. 接口（C3）
 
@@ -72,7 +78,7 @@ bash -n scripts/test-deploy.sh
 pnpm exec biome check scripts/lib/qa-generalized-e2e-lib.mjs scripts/qa-529-generalized-e2e.mjs scripts/__tests__/qa-generalized-e2e-lib.test.mjs
 pnpm --filter "flywheel-teamlead..." build          # 包名是 flywheel-teamlead；旧写法 --filter teamlead 匹配不到任何包、空跑 exit 0
 pnpm --filter flywheel-teamlead exec tsc --noEmit    # typecheck（C1′ 位置参数顺序）
-pnpm --filter flywheel-teamlead exec vitest run run-dispatcher run-infra   # + unified recovery / initial-start 相关测试文件
+pnpm --filter flywheel-teamlead exec vitest run run-dispatcher run-infra workflow-start-policy workflow-node-recovery workflow-recovery-contract workflow-carrier-close-recovery
 ```
 
 ## 5. 迁移 / 回滚 / 风险
@@ -101,3 +107,11 @@ Codex 所有账号本周额度耗尽（thread `01a0eb6f-93c3-7d73-bcae-b2253f5fd
 | 5 | LOW | step 4 超时无诊断 | 新增 C4b |
 | 6 | LOW | 坏 slotDir 被 waitFor 吞成慢超时 | 并入 C4b |
 | 7 | LOW | 风险 1 措辞过弱 | 已改为「合同起房时强制缺席」；slot 路径重复的静态守卫不做（driver 与 test-deploy 各自硬编码同一模式，改动收益低于范围成本） |
+
+### Rev 3（R2 APPROVED 后的非阻塞折入）
+
+| # | 级别 | 问题 | 处置 |
+|---|------|------|------|
+| 1 | MEDIUM | C4b 诊断若作返回值会让 `waitFor` 误判成功 | C4b 明确禁止，改闭包变量 / `describe()` 通道，并加反向测试 |
+| 2 | LOW | 调用点 rg 漏生产点 `new Dispatcher(`，且表格内 `\|` 粘贴即坏 | 移到 §1.1 代码块，改用覆盖 `Dispatcher`/`extends`/`dispatcherClass` 的模式 |
+| 3 | LOW | initial-start 相关测试未点名 | §4 点名 4 个测试文件 |
