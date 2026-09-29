@@ -1,20 +1,24 @@
-flowchart LR
+flowchart TB
   subgraph P[生产收口域]
-    P1[生产 DAG 读取 PR 头与 main] --> P2{main 已包含?}
+    P0[StateStore 证明 production implement 身份] --> P1[生产 DAG 读取 PR 头与 main]
+    P1 --> P2{main 已包含?}
     P2 -- 否 --> P3[merge 并做定点验证]
     P2 -- 是 --> P4[冻结生产 SHA]
     P3 --> P4
     P4 --> P5[同头 review APPROVED]
     P5 --> P6[同头 CI OK]
-    P6 --> P7[生产 needs-review 回执]
+    P6 --> P7[approve gate 绑定 needs-review 回执]
   end
 
   subgraph H[房外 QA 控制域]
-    H1[Lead 授权安全 fixture] --> H2[隔离 source clone]
+    H0[StateStore 证明 production QA 身份] --> H00[快照并清理递归 slots 2 和 3]
+    H00 --> H1[Lead 授权安全 fixture]
+    H1 --> H2[隔离 clone 安装并构建依赖]
     P7 --> H2
     H2 --> H3[显式占两个空槽]
-    H3 --> H4[启动受测房]
-    H5[核验九步原始证据] --> H6[先快照再 owner teardown]
+    H3 --> H4[记录生产基线后启动受测房]
+    H5[核验九步原始证据] --> H55[生产前后不变与 worktree 全量扫描]
+    H55 --> H6[先快照再 owner teardown]
     H6 --> H7[房外签发 QA verdict]
   end
 
@@ -31,3 +35,4 @@ flowchart LR
 
   X1[禁止生产 issue FLY-2922] -. fail closed .-> H4
   X2[禁止房内触达生产 PR] -. fail closed .-> I2
+  X3[身份不匹配只走 no-code 出口] -. fail closed .-> P0

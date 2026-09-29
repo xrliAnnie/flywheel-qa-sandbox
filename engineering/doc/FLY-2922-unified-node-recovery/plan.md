@@ -3,7 +3,7 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 日期: 2026-09-29
 基于: research.md
 
-> **执行边界：** 当前 `test-slot-2` 的 design/implement/QA 都是房内受测 actor，只能写 QA sandbox 产物。本计划中的生产收口由生产 Bridge 绑定的生产 DAG 执行；QA@4 由房外 QA controller/Lead 执行。任何 actor 身份不匹配都 fail closed，不用 `cd` 绕过。
+> **执行边界：** 当前 `test-slot-2` 的 design/implement/QA 都是房内受测 actor，只能写 QA sandbox 产物。本计划中的生产收口由生产 Bridge 绑定的生产 DAG 执行；QA@4 由生产 Bridge 派发的房外 QA exec 执行。身份以 StateStore 对当前 execution 的持久化登记为准，不以 cwd 推断；任何不匹配都 fail closed，`cd` 不能改变授权域。
 
 **目标：** 先由生产 DAG 把 PR #1374 收敛到 latest-main ancestor、同头复审 APPROVED、精确头 `CI OK` 的冻结 SHA；再由房外 QA 从隔离 source clone 启动双房，用安全 fixture issue 跑完整九步 recovery driver，并独立核验“统一恢复后真有新派发”。
 
@@ -16,15 +16,34 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 | Actor | 必须绑定 | 可写 | 输出 | 禁止 |
 |---|---|---|---|---|
 | Production Implement | 生产 Bridge exec + `xrliAnnie/flywheel` feature worktree | `flywheel-FLY-2922`、PR #1374 | final head、review、CI、`needs_review` receipt | 接受 slot stub verdict；让房内 runner 进入生产 checkout |
-| Host QA Controller | 房外宿主 session + 自己 claim 的两个 slot | 隔离 source clone、slot、evidence | QA verdict、snapshot、teardown receipts | 写生产 branch/PR；把 inner PASS 当最终 PASS |
+| Host QA Controller | 生产 Bridge 的 `qa` exec + 自己 claim 的两个 slot | 隔离 source clone、slot、evidence | QA verdict、snapshot、teardown receipts | 写生产 branch/PR；把 inner PASS 当最终 PASS |
 | Inner Design/Implement | `test-slot-N` + `flywheel-qa-sandbox` worktree | sandbox fixture branch/PR | Steps 1–7 受测产物 | `cd` 生产 checkout；引用 PR #1374 |
 | Inner QA Stub | slot-local stub control | 仅 stub result/receipt | 预定 FAIL→PASS 信号 | 起房、拆房、给生产头裁决 |
 
 ### 1.1 通用 fail-closed preflight
 
-每个执行者先输出并保存：`FLYWHEEL_EXEC_ID`、phase、`git rev-parse --show-toplevel`、`git branch --show-current`、`gh repo view --json nameWithOwner`、`git rev-parse HEAD`。与表中身份不符时停止并报告；不能切换到另一个域的路径继续。
+每个生产/房外执行者必须同时验证两类事实：
 
-当前 `test-slot-2` 明确属于 inner 域。因此它的后继 implement/QA 不执行 Task A–F 的 host/production 命令，也不对 PR #1374 调用 review、CI、complete、approve 或 land。
+1. **cwd 事实**：`git rev-parse --show-toplevel`、branch、repo、HEAD；
+2. **cwd 无关的可信身份**：`FLYWHEEL_PROJECT_NAME`、`FLYWHEEL_STATE_DB_PATH`，以及 StateStore `sessions` 表中以参数化查询读取的当前 `FLYWHEEL_EXEC_ID` 行。
+
+生产/房外执行者都必须拒绝 `project_name=test-slot-*`、任何 realpath 位于 `/tmp/flywheel-test-slot-*` 或 `/private/tmp/flywheel-test-slot-*` 的 StateStore，以及当前 git root 不等于该 exec 登记 `worktree_path` 的情况。生产 implement 还要求 `session_role=implement`；房外 QA 要求 `session_role=qa`。检查失败时只报告并停止，禁止换 cwd 重试。
+
+当前 `test-slot-2` 明确属于 inner 域。因此它的后继 implement/QA 不执行 Task A–F 的 host/production 命令，也不对 PR #1374 调用 review、CI、approve 或 land。后继 implement 的唯一合法动作是保存身份拒绝证据，向当前 Lead 报告，然后执行 `complete --route no_code --summary "FLY-2922 recursive sandbox run refused production/host tasks"`；不得创建 PR。inner QA stub 不签发生产 verdict。
+
+### 1.2 当前递归 run 的处置（房外 owner 专属）
+
+只读审计确认宿主正在运行 `qa-529-generalized-e2e.mjs 2 --issue FLY-2922 --real --timeout-ms 3600000`，campaign owner slot 2 借用 slot 3。这一轮是错误 fixture，不能继续，也不能被未来 QA@4 复用。
+
+生产 QA owner 在选择新房前必须：
+
+1. 记录精确 driver PID/argv、campaign manifest、slots 2/3 claims 与 Bridge log；
+2. 用 `node scripts/flywheel-snapshot-control.mjs runner --source /tmp/flywheel-test-slot-2/teamlead.db --kind teamlead` 与 `node scripts/flywheel-snapshot-control.mjs runner --source /tmp/flywheel-test-slot-2/state/comm/test-slot-2/comm.db --kind comm --project test-slot-2` 创建受控快照；
+3. 仅在 PID/argv 仍逐字匹配后向该 driver 发 `TERM`，保存 exit receipt；
+4. 从生产冻结源码执行 `scripts/test-teardown.sh 2`，确认 slots 2/3、campaign manifest、锁与相关进程均消失；
+5. 将该轮标记为 infrastructure-invalid / recursive-fixture，不得转写为 FLY-2922 产品 FAIL/PASS。
+
+当前 design/inner actor 不杀 driver、不拆房；处置权只属于房外 owner。
 
 ## 2. Task A — 生产 DAG 收口 PR #1374
 
@@ -33,14 +52,29 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 - [ ] **A1：取得 TURN 并确认生产身份**
 
 ```bash
-node "$FLYWHEEL_COMM_CLI" turn
+TURN_RECEIPT="$(node "$FLYWHEEL_COMM_CLI" turn)"
+case "$TURN_RECEIPT" in
+  "yours phase=implement "*) ;;
+  *) exit 40 ;;
+esac
+ROOT="$(git rev-parse --show-toplevel)"
+test "${FLYWHEEL_PROJECT_NAME:-}" = "flywheel"
+case "$(realpath "$FLYWHEEL_STATE_DB_PATH")" in
+  /tmp/flywheel-test-slot-*|/private/tmp/flywheel-test-slot-*) exit 41 ;;
+esac
+IDENTITY_ROW="$(sqlite3 -noheader -separator '|' "$FLYWHEEL_STATE_DB_PATH" \
+  -cmd '.parameter init' \
+  -cmd ".parameter set @exec '$FLYWHEEL_EXEC_ID'" \
+  'SELECT project_name, issue_identifier, session_role, worktree_path
+   FROM sessions WHERE execution_id = @exec;')"
+test "$IDENTITY_ROW" = "flywheel|FLY-2922|implement|$ROOT"
 test "$(gh repo view --json nameWithOwner --jq .nameWithOwner)" = "xrliAnnie/flywheel"
 test "$(git branch --show-current)" = "flywheel-FLY-2922"
 test -z "$(git status --porcelain)"
 git log --oneline -10
 ```
 
-预期：`yours phase=implement`、生产 repo/branch、净树。任一不符就停；不得 stash/drop/切 cwd。
+预期：`yours phase=implement`、可信 session 行绑定当前 production root、生产 repo/branch、净树。任一不符就停；不得 stash/drop/切 cwd。StateStore 查询用 sqlite 参数 `@exec` 绑定，不能把 execution id 拼进 SQL。
 
 - [ ] **A2：冻结三方 head 与 latest main**
 
@@ -138,14 +172,17 @@ test "$(gh pr view 1374 --repo xrliAnnie/flywheel --json headRefOid --jq .headRe
 
 ```bash
 node "$FLYWHEEL_COMM_CLI" stage set code_review
-node "$FLYWHEEL_COMM_CLI" gate review_code \
+PRODUCTION_LEAD_ID="${FLYWHEEL_LEAD_ID:?missing production Lead identity}"
+CODE_REVIEW_GATE="$(node "$FLYWHEEL_COMM_CLI" gate review_code \
   --lead "$PRODUCTION_LEAD_ID" \
   --exec-id "$FLYWHEEL_EXEC_ID" \
-  --no-block "Code review requested for FLY-2922 exact head $FINAL_HEAD"
-node "$FLYWHEEL_COMM_CLI" request-review --type code --question-id "$QUESTION_ID"
+  --no-block "Code review requested for FLY-2922 exact head $FINAL_HEAD")"
+CODE_REVIEW_QUESTION_ID="$(printf '%s' "$CODE_REVIEW_GATE" | jq -er .questionId)"
+node "$FLYWHEEL_COMM_CLI" request-review --type code \
+  --question-id "$CODE_REVIEW_QUESTION_ID"
 ```
 
-`PRODUCTION_LEAD_ID` 来自生产执行上下文，不硬编码成测试 Lead。每 turn 最多自然地 `check` 一次；CHANGES 后修复并开新 question。只有 `reviewVerdict=APPROVED` 且 receipt 明确绑定 `FINAL_HEAD` 才通过。
+`PRODUCTION_LEAD_ID` 来自生产执行上下文，不硬编码成测试 Lead。`CODE_REVIEW_QUESTION_ID` 只取上一步 gate JSON。每 turn 最多自然地 `check` 一次；CHANGES 后修复并开新 question。只有 `reviewVerdict=APPROVED` 且 receipt 明确绑定 `FINAL_HEAD` 才通过。
 
 - [ ] **C3：精确头 full CI**
 
@@ -159,14 +196,44 @@ gh pr checks 1374 --repo xrliAnnie/flywheel
 - [ ] **C4：生产 DAG 交给 QA**
 
 ```bash
-node "$FLYWHEEL_COMM_CLI" complete --route needs_review --pr 1374
+APPROVE_GATE="$(node "$FLYWHEEL_COMM_CLI" gate approve_to_ship \
+  --lead "$PRODUCTION_LEAD_ID" \
+  --exec-id "$FLYWHEEL_EXEC_ID" \
+  --no-block "PR #1374 exact head $FINAL_HEAD is ready for founder review")"
+APPROVE_QUESTION_ID="$(printf '%s' "$APPROVE_GATE" | jq -er .questionId)"
+node "$FLYWHEEL_COMM_CLI" complete --route needs_review --pr 1374 \
+  --question-id "$APPROVE_QUESTION_ID"
+node "$FLYWHEEL_COMM_CLI" ask --lead "$PRODUCTION_LEAD_ID" \
+  --exec-id "$FLYWHEEL_EXEC_ID" --report \
+  "DONE: FLY-2922 production handoff | HANDOFF_EXEC_ID=$FLYWHEEL_EXEC_ID | HANDOFF_HEAD=$FINAL_HEAD | PR: https://github.com/xrliAnnie/flywheel/pull/1374"
 ```
 
-仅当 latest-main ancestor、remote/PR head、review、CI 四项同头才执行。不 ship、不 merge main。
+仅当 latest-main ancestor、remote/PR head、review、CI 四项同头才执行。不 ship、不 merge main。若 production Blueprint 下发的 completion 合同不同，以运行时合同为准；不可省略它要求的 gate 或 question binding。
 
 ## 5. Task D — 房外 QA 准备安全 source 与 fixture
 
-**Owner：** 生产 QA phase 或 Lead 的房外 host controller。inner QA stub 不执行。
+**Owner：** 生产 Bridge 派发的 `qa` phase exec。Lead 只授权 fixture/房号，不代替 QA 执行 host commands；inner QA stub 也不执行。
+
+进入 D1 前，先按 §1.1 的 StateStore 参数化查询验证：`project_name=flywheel`、`issue_identifier=FLY-2922`、`session_role=qa`，并确认 StateStore realpath 不位于任何 test slot。随后完成 §1.2 对旧递归 slots 2/3 的取证和 teardown；未完成时不得选新房。
+
+```bash
+TURN_RECEIPT="$(node "$FLYWHEEL_COMM_CLI" turn)"
+case "$TURN_RECEIPT" in
+  "yours phase=qa "*) ;;
+  *) exit 50 ;;
+esac
+QA_OWNER_ROOT="$(git rev-parse --show-toplevel)"
+test "${FLYWHEEL_PROJECT_NAME:-}" = "flywheel"
+case "$(realpath "$FLYWHEEL_STATE_DB_PATH")" in
+  /tmp/flywheel-test-slot-*|/private/tmp/flywheel-test-slot-*) exit 51 ;;
+esac
+IDENTITY_ROW="$(sqlite3 -noheader -separator '|' "$FLYWHEEL_STATE_DB_PATH" \
+  -cmd '.parameter init' \
+  -cmd ".parameter set @exec '$FLYWHEEL_EXEC_ID'" \
+  'SELECT project_name, issue_identifier, session_role, worktree_path
+   FROM sessions WHERE execution_id = @exec;')"
+test "$IDENTITY_ROW" = "flywheel|FLY-2922|qa|$QA_OWNER_ROOT"
+```
 
 - [ ] **D1：冻结生产头和 QA fixture**
 
@@ -177,7 +244,7 @@ test "$QA_FIXTURE_ISSUE" != "FLY-2922"
 test -n "$QA_FIXTURE_ISSUE"
 ```
 
-`QA_FIXTURE_ISSUE` 必须由 Lead 明确授权，正文只描述 sandbox fixture 行为并明确：repo 仅 `xrliAnnie/flywheel-qa-sandbox`、禁止生产路径/PR、禁止 ship。保存 identifier、Linear object id、description digest 与授权 receipt。无 fixture 时 ask Lead 要 fixture 并 park；不能退回 FLY-2922。
+`HANDOFF_HEAD` 取自上一 production implement 的 `needs_review` completion receipt，并与 StateStore `pr_head_sha`、PR `headRefOid` 三方比对；禁止手填。`QA_FIXTURE_ISSUE` 必须由 Lead 明确授权，正文只描述 sandbox fixture 行为并明确：repo 仅 `xrliAnnie/flywheel-qa-sandbox`、禁止生产路径/PR、禁止 ship。保存 identifier、Linear object id、description digest 与授权 receipt。无 fixture 时 ask Lead 要 fixture 并 park；不能退回 FLY-2922。
 
 - [ ] **D2：创建隔离、detached source clone**
 
@@ -186,16 +253,26 @@ test -n "$QA_FIXTURE_ISSUE"
 ```bash
 QA_SRC_PARENT="$(mktemp -d /tmp/fly2922-qa-src.XXXXXX)"
 QA_SRC="$QA_SRC_PARENT/source"
-git clone --no-checkout git@github.com:xrliAnnie/flywheel-qa-sandbox.git "$QA_SRC"
-git -C "$QA_SRC" remote add production git@github.com:xrliAnnie/flywheel.git
+git clone --no-checkout https://github.com/xrliAnnie/flywheel-qa-sandbox.git "$QA_SRC"
+git -C "$QA_SRC" remote add production https://github.com/xrliAnnie/flywheel.git
+git -C "$QA_SRC" remote set-url --push production DISABLED
 git -C "$QA_SRC" fetch production "$QA_HEAD"
 git -C "$QA_SRC" checkout --detach "$QA_HEAD"
 test "$(git -C "$QA_SRC" rev-parse HEAD)" = "$QA_HEAD"
 test "$(git -C "$QA_SRC" status --porcelain)" = ""
+(cd "$QA_SRC" && gh repo set-default xrliAnnie/flywheel-qa-sandbox)
+test "$(git -C "$QA_SRC" remote get-url --push production)" = "DISABLED"
 test "$(cd "$QA_SRC" && gh repo view --json nameWithOwner --jq .nameWithOwner)" = "xrliAnnie/flywheel-qa-sandbox"
+LOCK_SHA="$(shasum -a 256 "$QA_SRC/pnpm-lock.yaml" | awk '{print $1}')"
+(cd "$QA_SRC" && pnpm install --frozen-lockfile)
+(cd "$QA_SRC" && pnpm --filter "flywheel-teamlead..." build)
+test "$(git -C "$QA_SRC" rev-parse HEAD)" = "$QA_HEAD"
+git -C "$QA_SRC" diff --quiet
+test -z "$(git -C "$QA_SRC" status --porcelain --untracked-files=no)"
+test "$(shasum -a 256 "$QA_SRC/pnpm-lock.yaml" | awk '{print $1}')" = "$LOCK_SHA"
 ```
 
-这个 remote 拓扑同时满足：运行字节来自生产冻结头，driver 的 PR authority 从 `room.flywheelRepo` 解析时只能落到 QA sandbox。
+这个 remote 拓扑同时满足：运行字节来自生产冻结头，GitHub 默认仓显式固定为 sandbox，production remote 没有可用 push URL。install/build 只准备依赖与 ignored dist；完成后冻结 HEAD、tracked diff 与 lockfile digest 必须不变。
 
 - [ ] **D3：选两个明确空槽**
 
@@ -203,7 +280,7 @@ test "$(cd "$QA_SRC" && gh repo view --json nameWithOwner --jq .nameWithOwner)" 
 node "$FLYWHEEL_COMM_CLI" room list
 ```
 
-只选服务账中不存在、宿主也没有 `/tmp/flywheel-test-slot-N`/活锁/活进程的两个显式槽。禁止 `auto`、禁止借房、禁止拆陌生房。不够就 ask Lead 要号并 park。
+把选定值显式写入 `PRIMARY_SLOT=<N>`、`SECONDARY_SLOT=<M>`；`EXTRA_LABEL=qa4-peer`。只选服务账中不存在、宿主也没有 `/tmp/flywheel-test-slot-N`/活锁/活进程的两个显式槽。禁止 `auto`、禁止借房、禁止拆陌生房。不够就 ask Lead 要号并 park。
 
 ## 6. Task E — 房外 QA 起房并运行安全 driver
 
@@ -229,7 +306,8 @@ scripts/test-deploy.sh "$PRIMARY_SLOT" \
 cd "$QA_SRC"
 node scripts/qa-529-generalized-e2e.mjs "$PRIMARY_SLOT" \
   --issue "$QA_FIXTURE_ISSUE" \
-  --real
+  --real \
+  --timeout-ms 3600000
 ```
 
 开跑前再次断言：
@@ -238,8 +316,9 @@ node scripts/qa-529-generalized-e2e.mjs "$PRIMARY_SLOT" \
 - fixture body digest 等于 D1；
 - 当前 outer execution 不是 room 内 run 的 execution；
 - 没有任何 room actor worktree 指向 `/Users/xiaorongli/Dev/flywheel-FLY-2922`。
+- 已保存生产基线：PR #1374 的 `headRefOid`/`updatedAt`、remote branch SHA、生产 checkout HEAD/status、生产 push-guard audit log digest/size（文件不存在时记录 `ABSENT`，不能临时创建）。
 
-任一不符即 teardown 自己房并判 FAIL，不尝试用生产 issue/repo“让流程继续”。
+`3600000` 是每个 wait 的一小时基础设施预算，覆盖真实 design、跨族 review 与 implement；任一 wait 超时单列为 infrastructure-inconclusive，保存证据并 teardown，不冒充产品行为 FAIL。任一身份/authority 不符即 teardown 自己房并判 FAIL，不尝试用生产 issue/repo“让流程继续”。
 
 - [ ] **E3：外层 owner 核验 Steps 1–9**
 
@@ -257,11 +336,13 @@ driver exit 0 只是必要条件。外层 owner 还要保存并核验：
 
 至少一层来自 StateStore/CommDB 原始行，另一层来自 driver artifact/Bridge log。摘要事件不能一份充两层。
 
+E3 还必须在 driver 结束后扫描所有 room `sessions.worktree_path`，证明没有生产 checkout；重新读取 PR `headRefOid`/`updatedAt`、remote branch SHA、生产 checkout HEAD/status、push-guard audit log digest/size。除允许的只读 GitHub `updatedAt` 漂移解释外，生产 branch SHA、checkout 和 audit delta 必须与 E2 基线一致；任何生产写入迹象都使 QA@4 FAIL 并保留房间取证。
+
 ## 7. Task F — 先快照，再由 owner 拆房
 
 - [ ] **F1：受控快照**
 
-teardown 前保存 Steps 1–9、Bridge log、room/campaign claims、fixture digest、source SHA、相关 SQLite snapshot。实时 `teamlead.db`/`comm.db` 通过 `scripts/flywheel-snapshot-control.mjs runner ...` 或等价受控接口，禁止直接 `cp`。
+teardown 前保存 Steps 1–9、Bridge log、room/campaign claims、fixture digest、source SHA、E2/E3 生产不变前后对照、全量 room worktree scan 与相关 SQLite snapshot。实时 `teamlead.db`/`comm.db` 通过 `scripts/flywheel-snapshot-control.mjs runner ...` 或等价受控接口，禁止直接 `cp`。
 
 - [ ] **F2：raw deploy 的唯一 teardown 路径**
 
@@ -287,6 +368,7 @@ scripts/test-teardown.sh "$PRIMARY_SLOT"
 - old/new execution tuple、launch ordinal、dispatch ledger/receipt；
 - run 在恢复期间保持 active；
 - snapshot 路径与 raw teardown receipts。
+- E2/E3 的生产 PR/remote/checkout/push-guard 前后对照，以及 room `sessions.worktree_path` 全量扫描。
 
 房内 stub 的 `qaPassResult`、生产 PR 的 CI 绿或单个 `node_dispatched` 都不能单独构成 QA PASS。
 
@@ -296,6 +378,7 @@ scripts/test-teardown.sh "$PRIMARY_SLOT"
 - QA source/repo 不匹配：不起 driver，拆 owner 房；不改生产 remote 配置。
 - fixture 指向 FLY-2922 或带生产写入指令：拒绝运行，向 Lead 要安全 fixture。
 - inner actor 触达生产 cwd/PR：立即 FAIL，保存证据并终止 fixture run；不把已产生的 stub verdict 用于生产。
+- 旧递归 slots 2/3 未按 §1.2 取证并清空：不启动 QA@4；当前 inner 后继只走 `no_code` 安全退出。
 - snapshot 不完整：保留房位等待取证，不清证据。
 
 ## 10. 本设计节点交付边界

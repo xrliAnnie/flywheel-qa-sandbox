@@ -1,4 +1,6 @@
 erDiagram
+  ACTOR_BINDING ||--|| PRODUCTION_HEAD : authorizes
+  ACTOR_BINDING ||--|| ROOM_CAMPAIGN : authorizes
   PRODUCTION_HEAD ||--|| CODE_REVIEW : binds
   PRODUCTION_HEAD ||--|| CI_RUN : binds
   PRODUCTION_HEAD ||--|| SOURCE_CLONE : supplies_bytes
@@ -9,9 +11,16 @@ erDiagram
   EXECUTION ||--o{ DISPATCH_LEDGER : materializes
   SANDBOX_RUN ||--o{ DRIVER_STEP : observes
   ROOM_CAMPAIGN ||--|| EVIDENCE_BUNDLE : snapshots
+  ROOM_CAMPAIGN ||--|| PRODUCTION_GUARD : monitors
   EVIDENCE_BUNDLE ||--|| OUTER_QA_VERDICT : supports
   ROOM_CAMPAIGN ||--|| TEARDOWN_RECEIPT : closes
 
+  ACTOR_BINDING {
+    string execution_id PK
+    string project_name
+    string session_role
+    string worktree_path
+  }
   PRODUCTION_HEAD {
     string sha40 PK
     string production_repo
@@ -36,7 +45,7 @@ erDiagram
     string path
     string detached_sha
     string origin_sandbox
-    string production_remote
+    string production_push_disabled
   }
   ROOM_CAMPAIGN {
     int primary_slot
@@ -66,6 +75,11 @@ erDiagram
   EVIDENCE_BUNDLE {
     string snapshot_path
     string digest
+  }
+  PRODUCTION_GUARD {
+    string before_digest
+    string after_digest
+    string room_worktree_scan
   }
   OUTER_QA_VERDICT {
     string authority

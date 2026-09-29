@@ -3,7 +3,7 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 日期: 2026-09-29
 基于: plan.md
 
-> **当前状态：Round 2 PENDING。** 下方 2026-09-27 的 verify-then-submit Round 1–3 是历史记录，已被 2026-09-29 三域隔离计划取代，不能作为当前 plan blob 的批准，也不能执行已删除的 `handin.zsh`。
+> **当前状态：exec e717d910 Round 1 CHANGES_REQUESTED，修订中。** 下方 2026-09-27 的 verify-then-submit Round 1–3 是历史记录，已被 2026-09-29 三域隔离计划取代，不能作为当前 plan blob 的批准，也不能执行已删除的 `handin.zsh`。上一 activation 的 Round 2 APPROVED 只覆盖旧 plan blob，不能外推到本次修订。
 
 评审对象：本轮 design 节点的 verify-then-submit 合同（plan.md + handin.zsh），不是上游已批准的 held 恢复设计（那份的有效评审见 origin/flywheel-FLY-2922 的 review-result.md：gate d9ab4f85、0f29f815）。评审模型由 Bridge 指定：gpt-6-astra / xhigh；Codex thread `01a0e2e9-4f98-7502-b116-d377dd2fd8d6`。
 
@@ -56,9 +56,26 @@ design 节点被以新 exec `0edcc786-726c-42e3-a310-77c5fda21351` 重派。plan
 
 修订策略：把执行链拆为 Production Implement、Host QA Controller、Inner Sandbox DAG 三个授权域。inner runner 永不触达生产；host driver 使用 Lead 授权的 fixture issue（禁止 `FLY-2922`）与 QA sandbox repo authority；房内 stub verdict 只推进 fixture run，最终 QA verdict 由房外 owner 根据原始 evidence 给出。
 
-## 2026-09-29 Round 2 — PENDING
+## 2026-09-29 上一 activation Round 2 — APPROVED with advisories
 
 - 修订提交：`01f1fb46a`
 - gate question：`f32da210-64ba-405f-8554-a15e3f52c909`
 - request：`3240a3cb-8fd7-48f4-8c89-24215054a784`
-- 审阅对象：三域隔离 plan blob；上一轮 question/verdict 不复用。
+- effective verdict：`APPROVED`
+- advisories：隔离 clone 需 install/build；`HANDOFF_HEAD`/question id 来源要显式；research 的 repo-authority 说法要与 plan remote 拓扑一致。
+- 审阅对象：提交 `01f1fb46a` 的三域隔离 plan blob；该批准不覆盖后续修订。
+
+## exec e717d910 Round 1 — CHANGES_REQUESTED
+
+- gate question：`06789ae1-dda9-4f84-85b8-147f3de10f16`
+- request：`dfac902c-7e8a-4e7e-ac04-c2d0087792d6`
+- effective verdict：`CHANGES_REQUESTED`
+- blocking HIGH `prod-preflight-cwd-bypassable`：`turn + cwd` 不能证明 production authority；房内 actor `cd` 生产 checkout 后会误过旧 A1。
+- 已验证的运行事实：当前 StateStore 行是 `test-slot-2 / design / /tmp/flywheel-test-slot-2/project-slot-2-FLY-2922`；宿主仍有 `--issue FLY-2922` 的递归 driver，slot 2 借 slot 3。
+- 修订方向：
+  - production implement 与 host QA 都用 `FLYWHEEL_EXEC_ID` 参数化查询 StateStore `project_name/session_role/worktree_path`，同时拒绝 test-slot DB realpath；
+  - 当前 inner 后继只走 `no_code` 安全退出；房外 owner 先快照、精确停止旧 driver、owner teardown slots 2/3；
+  - clone 使用 HTTPS，显式 `gh repo set-default` sandbox、禁用 production push URL，并 install + dependency build；
+  - driver 显式一小时 timeout，超时归类 infrastructure-inconclusive；
+  - E2/E3 加生产 PR/remote/checkout/push-guard 前后对照和 room worktree 全量扫描；
+  - C4 按 runtime Blueprint 打开 `approve_to_ship` gate，并把真实 question id 绑定到 `complete --route needs_review`。

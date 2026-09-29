@@ -85,4 +85,20 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 - Mermaid 本地渲染：`FLY-2922-d6` flow SVG SHA-256 `30f70ce4d3b07c49ad2ff86f5736174be95378da243d5b43812598e314fe076f`；`FLY-2922-d7` ER SVG SHA-256 `b5a77cb116cf5a80aa9def9730dc3d5b3c5d1969c7f23369a0dc411f2e77592d`。均已内联，页面无 runtime Mermaid 或外部依赖。
 - Headless Chrome 实页验证：9 cards / 9 inputs、2 SVG、路径 scoped localStorage、输入保存与 reload 恢复、长意见拆 3 段、每段固定 marker 且 ≤1800 字、clipboard promise reject 时调用 `execCommand` fallback、page errors 为空。
 - 1440px full-page screenshot 为 1440×8463；人工查看确认 Apple-light 布局、三域流程、数据模型、九张评论卡均正常。尚未 publish/report/complete；必须先取得修订 plan blob 的新 APPROVED。
-- 修订提交 `01f1fb46a` 已推 `origin/project-slot-2-FLY-2922`。新 gate question `f32da210-64ba-405f-8554-a15e3f52c909`、request `3240a3cb-8fd7-48f4-8c89-24215054a784` 已注册；状态 PENDING，不复用 Round 1 verdict。
+- 修订提交 `01f1fb46a` 已推 `origin/project-slot-2-FLY-2922`。gate question `f32da210-64ba-405f-8554-a15e3f52c909`、request `3240a3cb-8fd7-48f4-8c89-24215054a784` 后续返回 `APPROVED with advisories`；该裁决只覆盖当时 plan blob，不复用到本节后续修订。
+
+## cwd-bypass 复审修订（exec e717d910，2026-09-29）
+
+### 评审与运行事实
+
+- 当前 activation gate question `06789ae1-dda9-4f84-85b8-147f3de10f16` / request `dfac902c-7e8a-4e7e-ac04-c2d0087792d6` 返回 `CHANGES_REQUESTED`；blocking HIGH 是旧 A1 只看 TURN 与 cwd，可被房内 actor `cd` 生产 checkout 绕过。
+- 直接参数化读取 `$FLYWHEEL_STATE_DB_PATH` 的当前行得到 `test-slot-2|FLY-2922|design|/tmp/flywheel-test-slot-2/project-slot-2-FLY-2922`。用该可信行分别对 sandbox root 和 `/Users/xiaorongli/Dev/flywheel-FLY-2922` production root 执行 production-implement 判定，两者均拒绝；说明换 cwd 不改变 actor authority。
+- 宿主只读进程检查确认 `qa-529-generalized-e2e.mjs 2 --issue FLY-2922 --real --timeout-ms 3600000` 仍活，campaign owner slot 2 借 slot 3。修订计划把它归为 recursive-fixture，要求房外 owner 先受控快照、精确 TERM、owner teardown；当前 inner 后继只走 `no_code`。
+
+### 文档与 Founder HTML 本地验证
+
+- plan/research/exploration 已补：StateStore 参数化 identity gate、production QA 对称 gate、旧递归房处置、clone install + dependency build、HTTPS + sandbox default + production push disabled、明确 question ids、approve gate binding、一小时 driver timeout、生产未触达前后对照。
+- 两张 Mermaid 图由本机 `mmdc` 重新渲染：flow 使用 `--svgId FLY-2922-d8`，SHA-256 `806534b43e8d71890227472a9e384738f515d3a6834d1cfb92a5cf2a9a82767d`；ER model 使用 `--svgId FLY-2922-d9`，SHA-256 `cfec37a49cdcad275d9403c092559cdb90399a79ff21a95e4c2af5287afe99ae`。
+- `founder-design.html` 228047 bytes，SHA-256 `b27ff5f7af7e862058ef1d156f388200e2ff6808be6ef09f2e86656143bbbbbd`。静态检查：nonce placeholder 1、script 1、inline handler 0、`innerHTML` 0、自定义 CSP meta 0、外链 0、9 cards / 9 textarea、汇总 marker 1、两个新 SVG id 各 1。
+- Headless Chrome 实页验证：路径 scoped localStorage、输入保存与 reload 恢复、长意见拆 3 段、每段 marker 正确且 ≤1800 字、clipboard promise reject 时 fallback 生效、page errors 为空；full-page screenshot 1440×10532。人工查看确认三域流程、identity/递归清场、证据模型、全部评论输入均正常。
+- `git diff --check` exit 0；plan placeholder scan 为 0。尚未 publish/report/complete，必须先提交并取得当前 plan blob 的新 APPROVED。
