@@ -1,13 +1,13 @@
 ---
 issue: FLY-3056
 phase: implement
-phaseCursor: 2/4
-updated: 2026-09-29T07:50:10.375Z
-nextStep: commit the README-only implementation
+phaseCursor: 3/4
+updated: 2026-09-29T07:52:10.956Z
+nextStep: push the verified head and obtain review_code approval
 chunks: []
 pointers: {}
 ---
 
 # FLY-3056 progress
-**phase**: implement (2/4)
-**next**: commit the README-only implementation
+**phase**: implement (3/4)
+**next**: push the verified head and obtain review_code approval
