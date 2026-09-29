@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
 phase: implement
-phaseCursor: 1/6
-updated: 2026-09-29T02:01:18.218Z
-nextStep: "Task 1: discover consumers and collect source facts"
+phaseCursor: 2/6
+updated: 2026-09-29T02:01:42.397Z
+nextStep: "Task 2: run bounded validator + semantic review"
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: implement (1/6)
-**next**: Task 1: discover consumers and collect source facts
+**phase**: implement (2/6)
+**next**: Task 2: run bounded validator + semantic review
