@@ -1,0 +1,17 @@
+flowchart TB
+    D["Design approved"] --> R1["Implement Round 1"]
+    R1 --> F1["probe.txt = PROBE-1"]
+    F1 --> C1["Commit and open PR"]
+    C1 --> Q1{"QA asks for attempt 2?"}
+    Q1 -->|"Yes"| R2["Append PROBE-2"]
+    R2 --> C2["Commit to same branch"]
+    C2 --> P2["Same PR updates"]
+    P2 --> Q2["QA verifies two exact lines"]
+    Q1 -->|"No"| H["Hold Round 1 unchanged"]
+
+    classDef primary fill:#eaf3ff,stroke:#007aff,color:#1d1d1f,stroke-width:2px;
+    classDef success fill:#eaf8ef,stroke:#34c759,color:#1d1d1f,stroke-width:2px;
+    classDef guard fill:#fff7e8,stroke:#ff9500,color:#1d1d1f,stroke-width:2px;
+    class D,R1,C1,R2,C2,P2 primary;
+    class F1,Q2 success;
+    class Q1,H guard;

@@ -1,0 +1,17 @@
+flowchart TB
+    B["project-slot-2-FLY-3058 branch"]
+    B --> DD["engineering/doc/FLY-3058-qa-sbx-probe/<br/>design artifacts only"]
+    B --> QD["qa-2922/"]
+    QD --> PF["probe.txt"]
+    PF --> S1["Round 1 bytes<br/>PROBE-1 + LF"]
+    PF --> S2["Rework bytes<br/>PROBE-1 + LF<br/>PROBE-2 + LF"]
+    B --> PR["One pull request to main"]
+    S1 --> PR
+    S2 --> PR
+
+    classDef docs fill:#f5f5f7,stroke:#86868b,color:#1d1d1f;
+    classDef file fill:#eaf3ff,stroke:#007aff,color:#1d1d1f,stroke-width:2px;
+    classDef state fill:#eaf8ef,stroke:#34c759,color:#1d1d1f,stroke-width:2px;
+    class DD docs;
+    class B,QD,PF,PR file;
+    class S1,S2 state;
