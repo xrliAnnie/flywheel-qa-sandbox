@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>FLY-3029 Claude N-to-N 探针设计</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5f5f7;
+      --card: #ffffff;
+      --ink: #1d1d1f;
+      --muted: #6e6e73;
+      --line: #d2d2d7;
+      --blue: #0071e3;
+      --green: #248a3d;
+      --orange: #b25000;
+      --red: #d70015;
+      --soft-blue: #eef6ff;
+      --soft-orange: #fff7ed;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", system-ui, sans-serif;
+      line-height: 1.58;
+      -webkit-text-size-adjust: 100%;
+    }
+    main { width: min(920px, calc(100% - 28px)); margin: 0 auto; padding: 44px 0 72px; }
+    header { padding: 0 6px 18px; }
+    .eyebrow { color: var(--blue); font-size: 13px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+    h1 { margin: 8px 0 10px; font-size: clamp(30px, 6vw, 52px); line-height: 1.08; letter-spacing: -.035em; }
+    .deck { max-width: 760px; margin: 0; color: var(--muted); font-size: 17px; }
+    .card {
+      margin: 16px 0;
+      padding: clamp(20px, 4vw, 30px);
+      background: var(--card);
+      border: 1px solid rgba(0, 0, 0, .06);
+      border-radius: 22px;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, .055);
+    }
+    .card h2 { margin: 0 0 10px; font-size: 23px; letter-spacing: -.02em; }
+    .card h3 { margin: 22px 0 8px; font-size: 17px; }
+    .card p { margin: 8px 0; }
+    .summary { border-top: 5px solid var(--green); }
+    .diagram-card { border-top: 5px solid var(--blue); }
+    .tradeoffs { border-top: 5px solid var(--orange); }
+    .boundary { border-top: 5px solid var(--red); }
+    .pill {
+      display: inline-block;
+      margin: 4px 6px 4px 0;
+      padding: 5px 10px;
+      border-radius: 999px;
+      background: var(--soft-blue);
+      color: #004f9e;
+      font-size: 13px;
+      font-weight: 650;
+    }
+    code { padding: 2px 6px; border-radius: 6px; background: #f0f0f2; font-family: "SFMono-Regular", ui-monospace, monospace; font-size: .88em; }
+    .probe {
+      overflow-x: auto;
+      margin: 14px 0;
+      padding: 15px 17px;
+      border-radius: 12px;
+      background: #1d1d1f;
+      color: #f5f5f7;
+      font-family: "SFMono-Regular", ui-monospace, monospace;
+      white-space: pre;
+    }
+    .diagram-pending {
+      margin: 14px 0;
+      padding: 18px;
+      border: 2px dashed #f0a35e;
+      border-radius: 14px;
+      background: var(--soft-orange);
+    }
+    .diagram-pending strong { display: block; color: var(--orange); font-size: 16px; }
+    .diagram-pending pre {
+      overflow-x: auto;
+      margin: 12px 0 0;
+      padding: 12px;
+      border-radius: 10px;
+      background: #fff;
+      color: #3a3a3c;
+      font: 12px/1.5 "SFMono-Regular", ui-monospace, monospace;
+      white-space: pre;
+    }
+    .matrix { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 14px; }
+    .matrix th, .matrix td { padding: 11px 10px; border-bottom: 1px solid #e8e8ed; text-align: left; vertical-align: top; }
+    .matrix th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+    .choice { color: var(--green); font-weight: 700; }
+    .reject { color: var(--muted); }
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .mini { padding: 15px; border-radius: 14px; background: #f7f7f9; }
+    .mini strong { display: block; margin-bottom: 4px; }
+    .comment-wrap { margin-top: 22px; padding-top: 16px; border-top: 1px solid #e8e8ed; }
+    .comment-wrap label { display: block; margin-bottom: 7px; color: var(--muted); font-size: 13px; font-weight: 650; }
+    textarea.comment-input {
+      width: 100%; min-height: 82px; resize: vertical; border: 1px solid var(--line); border-radius: 12px;
+      padding: 11px 12px; background: #fbfbfd; color: var(--ink); font: inherit;
+    }
+    textarea.comment-input:focus { outline: 3px solid rgba(0, 113, 227, .16); border-color: var(--blue); }
+    .autosave-note { margin-top: 5px; color: var(--muted); font-size: 12px; }
+    .summary-output { display: grid; gap: 10px; margin: 14px 0; }
+    .summary-chunk { width: 100%; min-height: 110px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: #f7f7f9; font: 12px/1.5 "SFMono-Regular", ui-monospace, monospace; }
+    button { border: 0; border-radius: 999px; padding: 10px 17px; background: var(--blue); color: white; font: inherit; font-weight: 700; cursor: pointer; }
+    button:focus { outline: 3px solid rgba(0, 113, 227, .22); }
+    #copy-status { margin-left: 10px; color: var(--green); font-size: 13px; }
+    footer { padding: 20px 8px; color: var(--muted); font-size: 12px; text-align: center; }
+    @media (max-width: 640px) {
+      main { width: min(100% - 18px, 920px); padding-top: 26px; }
+      .card { border-radius: 18px; }
+      .two-col { grid-template-columns: 1fr; }
+      .matrix { display: block; overflow-x: auto; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">FLY-3029 · Design brief</div>
+    <h1>一行变更，验证整条续跑链路</h1>
+    <p class="deck">N-to-N 指一个任务跨多个独立阶段节点继续执行，并始终回到同一个讨论线程；这份设计让仓库改动保持最小，把真正的验收留给 FLY-2919 的 driver（测试驱动器：负责观察 Runner 状态并生成回执的程序）。</p>
+  </header>
+
+  <section class="card summary" data-comment-id="summary" data-section-title="一句话方案">
+    <h2>一句话方案</h2>
+    <p>后续实现节点只在沙箱根 <code>README.md</code> 末尾追加一次固定 probe 行，提交并推送；生命周期是否正确则只看 driver receipt（回执：测试驱动器记录的权威运行证据），不拿文件存在冒充流程通过。</p>
+    <div class="probe">FLY-2919 N-to-N claude-body probe</div>
+    <span class="pill">单文件</span><span class="pill">单行新增</span><span class="pill">不碰生产</span><span class="pill">不合并</span>
+    <div class="comment-wrap">
+      <label for="comment-summary">对“一句话方案”的意见</label>
+      <textarea class="comment-input" id="comment-summary" placeholder="这里写的内容会自动保存在本浏览器"></textarea>
+      <div class="autosave-note">本地自动保存；不会发送网络请求。</div>
+    </div>
+  </section>
+
+  <section class="card diagram-card" data-comment-id="core-flow" data-section-title="核心流程">
+    <h2>核心流程</h2>
+    <p>仓库动作只负责制造一个明确、可追踪的负载；DAG（有向无环流程图：把 design、implement、QA 等阶段按顺序连接的工作流）负责阶段交接；driver receipt 最后判断活体、死体与 thread 是否处理正确。</p>
+    <div class="diagram-pending" role="img" aria-label="核心流程图等待本地渲染">
+      <strong>DIAGRAM PENDING LOCAL RENDER</strong>
+      本地 Mermaid 渲染器连续两次被系统权限阻止。源码已保存在 <code>core-flow.mmd</code>，这里不使用 CSS 方框伪装成图。
+      <pre>flowchart LR
+Design --&gt; Implement --&gt; Commit + Push --&gt; DAG handoff
+DAG handoff --&gt; FLY-2919 driver receipt --&gt; QA verdict</pre>
+    </div>
+    <div class="comment-wrap">
+      <label for="comment-core-flow">对“核心流程”的意见</label>
+      <textarea class="comment-input" id="comment-core-flow" placeholder="例如：哪个交接点还不够清楚？"></textarea>
+      <div class="autosave-note">本地自动保存；按当前页面路径隔离。</div>
+    </div>
+  </section>
+
+  <section class="card diagram-card" data-comment-id="evidence-model" data-section-title="数据与证据结构">
+    <h2>数据与证据结构</h2>
+    <p>没有新增数据库或接口。证据分三层：README 的单行变更、Git 的本地与远端 SHA（提交身份：精确指向一次提交的哈希值）、driver 的四项生命周期回执。只有第三层能证明 N-to-N 行为。</p>
+    <div class="diagram-pending" role="img" aria-label="数据与证据结构图等待本地渲染">
+      <strong>DIAGRAM PENDING LOCAL RENDER</strong>
+      Mermaid UML 风格的 class diagram（类图：用方框描述数据对象及其关系）源码已保存在 <code>evidence-model.mmd</code>。
+      <pre>RepositoryChange --&gt; GitEvidence --&gt; DriverReceipt --&gt; Verdict
+一行变更             远端提交证据        四项生命周期回执      分层判定</pre>
+    </div>
+    <div class="two-col">
+      <div class="mini"><strong>仓库证据</strong>literal 恰好一次、尾行正确、diff 只有一行新增。</div>
+      <div class="mini"><strong>流程证据</strong>死体换体、活体不误杀、同 thread 续干、交卷回 thread。</div>
+    </div>
+    <div class="comment-wrap">
+      <label for="comment-evidence-model">对“数据与证据结构”的意见</label>
+      <textarea class="comment-input" id="comment-evidence-model" placeholder="例如：还需要哪一层证据？"></textarea>
+      <div class="autosave-note">本地自动保存；不会跨报告串评论。</div>
+    </div>
+  </section>
+
+  <section class="card tradeoffs" data-comment-id="tradeoffs" data-section-title="取舍与被拒方案">
+    <h2>取舍与被拒方案</h2>
+    <table class="matrix">
+      <thead><tr><th>方案</th><th>决定</th><th>原因</th></tr></thead>
+      <tbody>
+        <tr><td>直接追加固定行</td><td class="choice">采用</td><td>信号最纯，变更面只有一个文件和一行。</td></tr>
+        <tr><td>新增专用脚本</td><td class="reject">拒绝</td><td>为一次性夹具留下永久代码，扩大测试与评审面。</td></tr>
+        <tr><td>修改 Runner 或 driver</td><td class="reject">拒绝</td><td>把被测系统与测试负载耦合，无法分辨故障来源。</td></tr>
+        <tr><td>重置到 issue 中的旧 SHA</td><td class="reject">拒绝</td><td>会破坏当前 DAG worktree 身份；Lead 已裁定继续授权的 slot 5 当前头。</td></tr>
+      </tbody>
+    </table>
+    <div class="comment-wrap">
+      <label for="comment-tradeoffs">对“取舍与被拒方案”的意见</label>
+      <textarea class="comment-input" id="comment-tradeoffs" placeholder="例如：是否应重新考虑某个方案？"></textarea>
+      <div class="autosave-note">本地自动保存。</div>
+    </div>
+  </section>
+
+  <section class="card boundary" data-comment-id="boundary" data-section-title="诚实边界">
+    <h2>诚实边界：它做什么，也不做什么</h2>
+    <div class="two-col">
+      <div class="mini"><strong>这份设计会保证</strong>目标仓正确、probe 不重复、diff 最小、提交与推送可追踪、交卷证据分层。</div>
+      <div class="mini"><strong>这份设计不会声称</strong>窗口消失等于死体、README 行存在等于 QA 通过、slot/head 差异可由 Runner 擅自修正、生产可以派发此 fixture。</div>
+    </div>
+    <p>当前设计 worktree 是 slot 5 / <code>1855f7a1a</code>，issue 文本记录的是 slot 2 / <code>bfdea677</code>。Lead 已裁定这是 QA test-slot identity override：继续 slot 5，不 reset、不转向生产 slot 2。实现节点仍须先取得 TURN（写入权：DAG 当前允许哪个阶段修改共享分支的令牌）并核对现场。</p>
+    <div class="comment-wrap">
+      <label for="comment-boundary">对“诚实边界”的意见</label>
+      <textarea class="comment-input" id="comment-boundary" placeholder="例如：有没有哪项范围说得过头？"></textarea>
+      <div class="autosave-note">本地自动保存。</div>
+    </div>
+  </section>
+
+  <section class="card" data-comment-id="page-summary" data-section-title="页面意见汇总">
+    <h2>页面意见汇总</h2>
+    <p>下面会实时汇总每个非空评论，并在超过约 1800 字符时自动分块。每块都重复固定标记，方便直接发回。</p>
+    <button id="copy-all-comments" type="button">复制全部意见</button><span id="copy-status" role="status" aria-live="polite"></span>
+    <div class="summary-output" id="summary-output"></div>
+    <div class="comment-wrap">
+      <label for="comment-page-summary">对“页面意见汇总”本身的意见</label>
+      <textarea class="comment-input" id="comment-page-summary" placeholder="例如：汇总格式还需要怎样调整？"></textarea>
+      <div class="autosave-note">本地自动保存；也会进入汇总。</div>
+    </div>
+  </section>
+
+  <footer>FLY-3029 · Design node · 2026-09-28 · Mermaid source retained beside this report</footer>
+</main>
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var marker = "【页面意见汇总】FLY-3029";
+  var storagePrefix = "flywheel-report:" + window.location.pathname + ":FLY-3029:";
+  var inputs = Array.prototype.slice.call(document.querySelectorAll("textarea.comment-input"));
+  var output = document.getElementById("summary-output");
+  var status = document.getElementById("copy-status");
+
+  function safeLoad(key) {
+    try { return window.localStorage.getItem(storagePrefix + key) || ""; }
+    catch (error) { return ""; }
+  }
+
+  function safeSave(key, value) {
+    try { window.localStorage.setItem(storagePrefix + key, value); }
+    catch (error) { status.textContent = "浏览器未允许本地保存，但仍可复制。"; }
+  }
+
+  function collectEntries() {
+    return inputs.map(function (input) {
+      var section = input.closest("[data-section-title]");
+      return { title: section ? section.getAttribute("data-section-title") : "未命名部分", value: input.value.trim() };
+    }).filter(function (entry) { return entry.value.length > 0; });
+  }
+
+  function splitBodies(lines, limit) {
+    var bodies = [];
+    var current = "";
+    lines.forEach(function (line) {
+      var remaining = line;
+      while (remaining.length > limit) {
+        if (current) { bodies.push(current); current = ""; }
+        bodies.push(remaining.slice(0, limit));
+        remaining = remaining.slice(limit);
+      }
+      var candidate = current ? current + "\n\n" + remaining : remaining;
+      if (candidate.length > limit && current) { bodies.push(current); current = remaining; }
+      else { current = candidate; }
+    });
+    if (current || bodies.length === 0) { bodies.push(current); }
+    return bodies;
+  }
+
+  function buildChunks() {
+    var entries = collectEntries();
+    var lines = entries.length ? entries.map(function (entry) { return "【" + entry.title + "】\n" + entry.value; }) : ["（暂无意见）"];
+    var bodies = splitBodies(lines, 1660);
+    return bodies.map(function (body, index) {
+      var suffix = bodies.length > 1 ? "（" + (index + 1) + "/" + bodies.length + "）" : "";
+      return marker + suffix + "\n" + body;
+    });
+  }
+
+  function renderSummary() {
+    var chunks = buildChunks();
+    while (output.firstChild) { output.removeChild(output.firstChild); }
+    chunks.forEach(function (chunk, index) {
+      var area = document.createElement("textarea");
+      area.className = "summary-chunk";
+      area.readOnly = true;
+      area.setAttribute("aria-label", "意见汇总第 " + (index + 1) + " 块");
+      area.value = chunk;
+      output.appendChild(area);
+    });
+    return chunks;
+  }
+
+  function fallbackCopy(text) {
+    var helper = document.createElement("textarea");
+    helper.value = text;
+    helper.setAttribute("readonly", "");
+    helper.style.position = "fixed";
+    helper.style.opacity = "0";
+    document.body.appendChild(helper);
+    helper.select();
+    var copied = false;
+    try { copied = document.execCommand("copy"); }
+    catch (error) { copied = false; }
+    document.body.removeChild(helper);
+    status.textContent = copied ? "已复制全部意见。" : "复制失败，请手动选择下方文本。";
+  }
+
+  function copyAll() {
+    var text = renderSummary().join("\n\n");
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () {
+        status.textContent = "已复制全部意见。";
+      }).catch(function () { fallbackCopy(text); });
+    } else { fallbackCopy(text); }
+  }
+
+  inputs.forEach(function (input) {
+    var section = input.closest("[data-comment-id]");
+    var key = section ? section.getAttribute("data-comment-id") : input.id;
+    input.value = safeLoad(key);
+    input.addEventListener("input", function () {
+      safeSave(key, input.value);
+      renderSummary();
+    });
+  });
+  document.getElementById("copy-all-comments").addEventListener("click", copyAll);
+  renderSummary();
+})();
+</script>
+</body>
+</html>

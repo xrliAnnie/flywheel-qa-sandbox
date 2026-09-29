@@ -47,15 +47,9 @@ Expected:
 - 分支是 orchestrator 授权的 FLY-3029 feature branch，不是 `main`。
 - 记录现场 HEAD；不要为了匹配 issue 中的历史 `bfdea677` 而 reset、rebase 或 force push。
 
-- [ ] **Step 2：检查 Lead 对基线差异问题的回复**
+- [ ] **Step 2：遵守已记录的 QA identity override**
 
-Run:
-
-```bash
-node "$FLYWHEEL_COMM_CLI" check e54708b7-4322-417c-bf3e-933fc970e377
-```
-
-Expected: 若有明确 Lead 指令，按指令调整；若仍是 `not yet`，继续最小变更，因为问题是非阻塞且当前 worktree/turn 是写权限威权来源。
+Lead 已在问题 `e54708b7-4322-417c-bf3e-933fc970e377` 明确回复：继续授权的 slot 5 sandbox 当前头 `1855f7a1a`，不要 reset，也不要转向生产 slot 2 / `bfdea677`。Implement 节点无需重复提问；如果新的 inbox 指令与此冲突，停止写入并请 Lead 澄清。
 
 ## Task 2：RED —— 证明 probe 尚未落盘并完成影响面发现
 

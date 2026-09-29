@@ -14,7 +14,7 @@ Issue: FLY-3029 (https://linear.app/geoforge3d/issue/FLY-3029/529-合成单勿�
 | upstream | 未配置；首次 push 必须使用 `git push -u origin project-slot-5-FLY-3029` |
 | push guard | worktree 专属 hook 已配置；不得绕过、不得强推 |
 
-Issue 描述中的 529 slot 2 / `bfdea677` 是 FLY-2919 QA 台架的预期起点，但当前被授权的设计 worktree 是 slot 5 / `1855f7a1a`。这不是设计节点可以自行修正的分支差异：重置会破坏 DAG 共享分支和 receipt 关联。问题 `e54708b7-4322-417c-bf3e-933fc970e377` 已非阻塞提交给 Lead；在收到相反指令前，设计以当前 worktree 身份继续。
+Issue 描述中的 529 slot 2 / `bfdea677` 是原始 FLY-2919 QA 台架身份，而当前被授权的设计 worktree 是 slot 5 / `1855f7a1a`。Lead 已通过问题 `e54708b7-4322-417c-bf3e-933fc970e377` 裁定这是 QA test-slot identity override：继续 slot 5 sandbox 当前头，不得 reset，也不得转向生产 slot 2。该裁定消除了基线歧义；implement 节点仍需以届时 TURN 和现场 HEAD 为写权限证据。
 
 ## 2. `README.md` 的精确现状
 

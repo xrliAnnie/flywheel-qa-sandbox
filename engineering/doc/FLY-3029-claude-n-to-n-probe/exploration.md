@@ -18,7 +18,7 @@ FLY-2919 N-to-N claude-body probe
 ## 2. 已知事实与假设
 
 - 当前远端是 `https://github.com/xrliAnnie/flywheel-qa-sandbox.git`，因此写入目标确实是隔离沙箱，不是生产仓库。
-- 当前设计 worktree 的基线为 `1855f7a1a`，而 issue 文本记录的 529 slot 2 精确头为 `bfdea677`。设计节点不重置、不改写历史；已向 Lead 发出非阻塞问题，implement 节点以届时获得 TURN 的实际分支为权威。
+- 当前设计 worktree 的基线为 `1855f7a1a`，而 issue 文本记录的 529 slot 2 精确头为 `bfdea677`。Lead 已在问题 `e54708b7-4322-417c-bf3e-933fc970e377` 明确：这是 QA test-slot 身份覆盖，继续授权的 slot 5 sandbox 当前头，不得 reset 或转向生产 slot 2。
 - 根 `README.md` 当前为 44 bytes，内容以 LF 结尾；因此可以追加单独一行而不改写已有内容。
 - 本节点只产出设计文档和 founder HTML，不修改 `README.md`、不创建 PR、不请求 ship、不合并。
 

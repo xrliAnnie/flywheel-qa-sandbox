@@ -1,0 +1,24 @@
+classDiagram
+    class RepositoryChange {
+      target README.md
+      literal exactly once
+      diff one added line
+    }
+    class GitEvidence {
+      local commit SHA
+      remote branch SHA
+      clean worktree
+    }
+    class DriverReceipt {
+      dead runner replaced
+      live runner preserved
+      same thread resumed
+      submission returned
+    }
+    class Verdict {
+      repository change proven
+      lifecycle proven separately
+    }
+    RepositoryChange --> GitEvidence : commit and push
+    GitEvidence --> DriverReceipt : handoff emits evidence
+    DriverReceipt --> Verdict : authoritative QA signal
