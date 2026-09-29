@@ -1,0 +1,9 @@
+flowchart LR
+    A["设计已批准<br/>(plan.md, Codex 2 轮 APPROVED)"] --> B["Step 0<br/>安装依赖<br/>pnpm install"]
+    B --> C["Step 1<br/>先写测试断言<br/>只跑 codex-home.test.ts → 预期失败 (RED)"]
+    C --> D["Step 2<br/>契约文件末尾追加 1 行<br/>Sandbox note"]
+    D --> E["Step 3<br/>再跑同一测试文件<br/>→ 预期通过 (GREEN)"]
+    E --> F["Step 4<br/>commit + 开 PR"]
+    F --> G["常规 Codex code review"]
+    G --> H["QA 节点验证<br/>tail -1 逐字匹配 + diff 恰 1 行"]
+    B -. 安装失败 .-> X["记为环境阻塞<br/>PR 里如实写明,以 CI 为准"]

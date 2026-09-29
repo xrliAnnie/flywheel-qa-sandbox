@@ -1,0 +1,9 @@
+flowchart TB
+    subgraph SRC["单一真相 (single source)"]
+        F["packages/claude-runner/agents/<br/>codex-runner-contract.md<br/>113 行 + 新追加第 114 行"]
+    end
+    F -->|"codexRunnerContractSource()<br/>codex-home.ts:335"| P["provisionCodexHome()<br/>每个 runner 启动时调用"]
+    P -->|"整文件复制 + 管理头, 权限 0600"| A["$CODEX_HOME/AGENTS.md<br/>(每个 codex runner 一份)"]
+    A --> R["codex runner 进程<br/>把它当作持久行为契约读取"]
+    T["codex-home.test.ts<br/>新断言: AGENTS.md 含 Sandbox note"] -.->|"守卫"| A
+    S["package-onboard-smoke.test.sh<br/>只测文件存在"] -.->|"不受影响"| F
