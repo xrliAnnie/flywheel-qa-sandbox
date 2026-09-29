@@ -1,14 +1,14 @@
 ---
 issue: FLY-3050
 phase: implement
-phaseCursor: 3/4
-updated: 2026-09-29T05:10:49.040Z
-nextStep: final-head code review and needs_review completion
+phaseCursor: 1/4
+updated: 2026-09-29T05:23:44.148Z
+nextStep: reproduce QA failure then add PROBE-D2
 chunks: []
 pointers:
   pr: "307"
 ---
 
 # FLY-3050 progress
-**phase**: implement (3/4)
-**next**: final-head code review and needs_review completion
+**phase**: implement (1/4)
+**next**: reproduce QA failure then add PROBE-D2
