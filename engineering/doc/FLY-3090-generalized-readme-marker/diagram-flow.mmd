@@ -1,0 +1,12 @@
+flowchart LR
+    A["设计节点<br/>(本文档)"] -->|"plan.md 经 Codex 3 轮审批"| B["实施节点"]
+    B --> C1["C1 追加一行<br/>printf >> README.md"]
+    C1 --> C2["C2 窄验证<br/>只读 README"]
+    C2 -->|"任一项不符"| R["git checkout -- README.md<br/>回到 C1"]
+    C2 -->|"全部通过"| C3["C3 提交<br/>记录 README 提交 SHA → ledger handoff"]
+    C3 --> C4["C4 push + 开 PR<br/>base = main"]
+    C4 --> L["回报 Lead<br/>不 merge · 不 ship"]
+    style A fill:#e8f0fe,stroke:#007aff
+    style B fill:#fff4e0,stroke:#ff9500
+    style L fill:#e6f9ec,stroke:#34c759
+    style R fill:#ffe5e3,stroke:#ff3b30

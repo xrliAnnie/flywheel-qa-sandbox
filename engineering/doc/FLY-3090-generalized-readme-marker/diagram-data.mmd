@@ -1,0 +1,16 @@
+flowchart TB
+    subgraph before["README.md 现状(44 字节)"]
+        direction TB
+        b1["行1:(空)"] --- b2["行2:(空)"] --- b3["行3:FLY-1375 land E2E marker 20260722T023540Z"]
+    end
+    subgraph after["README.md 追加后(87 字节)"]
+        direction TB
+        a1["行1:(空)"] --- a2["行2:(空)"] --- a3["行3:FLY-1375 land E2E marker 20260722T023540Z"] --- a4["行4:Synthetic generalized QA marker: FLY-3084."]
+    end
+    before -->|"只追加,不改前三行<br/>diff = +1 / -0"| after
+    subgraph ledger["progress.md(进度账本)"]
+        h["handoff: readme_commit=&lt;sha&gt;<br/>回滚用 git revert &lt;sha&gt;"]
+    end
+    after -.->|"C3 提交后记录"| ledger
+    style a4 fill:#e6f9ec,stroke:#34c759
+    style ledger fill:#f3e8fd,stroke:#af52de

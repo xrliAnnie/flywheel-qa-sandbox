@@ -1,0 +1,17 @@
+sequenceDiagram
+    participant D as 设计节点
+    participant B as Bridge(协调服务)
+    participant X as Codex 审阅者<br/>gpt-6-astra / xhigh
+    D->>B: stage set design_review --plan plan.md
+    B-->>D: requestId + 已提交 plan 的 blob SHA + 指定审阅模型
+    loop 每一轮(共 3 轮)
+        D->>X: 审阅 plan.md(只读)
+        X-->>D: 判定 + findings
+        D->>B: review-round design --round n --verdict …
+        alt CHANGES_REQUESTED
+            D->>D: 修 plan → 提交 → 重新 stage set design_review
+        end
+    end
+    D->>B: design-review.json(APPROVED, round 3)
+    D->>B: await-codex-gate design(fail-closed 校验)
+    B-->>D: 通过 → 允许进入实施
