@@ -90,7 +90,7 @@
     <div class="diagram">__SVG_D4__</div>
     <ul>
       <li><b>发现:</b>send 的返回结果带 <span class="mono">transport_write</span> = ok / skipped / error(以前失败只在错误输出里打一行 WARN)。ok 只表示写进了传输层;「写进去了但 Runner 十分钟没回执、而且 Bridge 报它空转」只算<b>疑似</b>停滞——是调查触发器,不是确诊(Runner 也可能已读但在等外部条件)。skipped 有两种正常情况(回滚模式、无传输后端的 Runner),不当故障处理。</li>
-      <li><b>兜底:</b>账本那一行已经写了(信没丢)。Lead 收集证据(编号、写入时间、最后一次终端截屏、Bridge 空转事件),照契约里的完整命令模板报一个新的告警类型 <span class="mono">mailbox_channel_fault</span>(区分「即时写失败」和「疑似停滞」;每个 Runner 每种情况各成一个事件,重复上报自动去重、不刷屏;告警没发出去时 Lead 必须改在 issue thread 明文报告)——不凭空重启 Runner,不套「卡住 Runner」处置阶梯,更不换旁路。这条分支表同时写进契约和护栏的拒绝文案。</li>
+      <li><b>兜底:</b>账本那一行已经写了(信没丢)。Lead 收集证据(编号、写入时间、最后一次终端截屏、Bridge 空转事件),照契约里的完整命令模板报一个新的告警类型 <span class="mono">mailbox_channel_fault</span>(区分「即时写失败」和「疑似停滞」;以「Runner + 情况 + 这次故障的第一条消息编号」为一个事件,同一次故障重试自动去重、恢复后再犯算新事件;告警脚本路径由 Lead 启动时显式注入——评审发现原先假设的环境变量其实进不了 Lead 进程;「重复」只说明有人报过、不证明送到,Lead 没有送达凭据时必须改在 issue thread 明文报告)——不凭空重启 Runner,不套「卡住 Runner」处置阶梯,更不换旁路。这条分支表同时写进契约和护栏的拒绝文案。</li>
       <li><b>边界:</b>本沙箱的 Bridge 没有投递进度探针(它的健康接口只能证明进程活着,不能排除信箱故障),设计里如实写明;生产的 v2 信箱若有排队状态查询(FLY-1547),就用「排队超过十分钟」作直接证据。Bridge 投递循环本身停滞(真 FLY-3071 形态)在沙箱无法注入,归 FLY-3071 / v2 验收。信箱到 Runner 的最后一段怎么投由 FLY-2127 定,本单不重复。</li>
     </ul>
     <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s5" placeholder="写下你的意见…"></textarea></div>
