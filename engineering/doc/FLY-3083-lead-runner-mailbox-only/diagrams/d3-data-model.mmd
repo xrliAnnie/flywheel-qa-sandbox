@@ -1,0 +1,26 @@
+classDiagram
+  class sessions {
+    execution_id 全长 id(主键)
+    lead_id 所属 Lead
+    vendor 传输类型 claude-code / codex / none
+  }
+  class messages {
+    id 编号
+    from_agent Lead
+    to_agent execution_id
+    content 正文
+    delivered_at 送达时间(空 = 没送到)
+  }
+  class RunnerName {
+    runner-<execution_id 前 8 位>
+    由 deriveRunnerMailboxIdentity 唯一生成
+  }
+  class SendResult {
+    instructionId 编号
+    executionId 全长 id
+    delivered 真/假
+    skippedReason / wakeError
+  }
+  RunnerName --> sessions : 前缀解析(0 或多个命中 = 报错)
+  sessions --> messages : to_agent
+  messages --> SendResult : 返回给 Lead

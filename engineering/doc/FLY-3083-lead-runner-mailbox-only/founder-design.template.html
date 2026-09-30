@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-3083 设计:Lead 给 Runner 发消息只走一条路</title>
+<style>
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,sans-serif; }
+  .wrap { max-width:960px; margin:0 auto; padding:24px 16px 64px; }
+  h1 { font-size:26px; margin:8px 0 4px; }
+  .meta { color:#86868b; font-size:13px; margin-bottom:20px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin:18px 0; border-left:4px solid #007aff; }
+  .card.red { border-left-color:#ff3b30; }
+  .card.amber { border-left-color:#ff9500; }
+  .card.green { border-left-color:#34c759; }
+  .card.purple { border-left-color:#af52de; }
+  .card h2 { font-size:19px; margin:0 0 10px; color:#1a365d; }
+  .card h3 { font-size:15px; margin:16px 0 6px; }
+  p, li { font-size:14.5px; line-height:1.75; }
+  .term { color:#007aff; }
+  .diagram { overflow-x:auto; background:#fff; padding:8px 0; }
+  .diagram svg { max-width:100%; height:auto; }
+  table { border-collapse:collapse; width:100%; font-size:13.5px; margin:10px 0; }
+  th, td { border:1px solid #e5e5ea; padding:8px 10px; text-align:left; vertical-align:top; line-height:1.6; }
+  th { background:#f5f5f7; color:#1a365d; }
+  .mono { font-family:'SF Mono',monospace; font-size:12.5px; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:6px; font-size:12px; font-weight:600; margin-right:6px; }
+  .badge.reject { background:#fdecea; color:#ff3b30; }
+  .badge.keep { background:#e9f9ef; color:#248a3d; }
+  .badge.later { background:#f2e8fd; color:#af52de; }
+  .comment-box { margin-top:16px; padding-top:12px; border-top:1px dashed #e5e5ea; }
+  .comment-box label { font-size:12.5px; color:#86868b; display:block; margin-bottom:6px; }
+  .comment-box textarea { width:100%; box-sizing:border-box; min-height:60px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font-family:inherit; font-size:13.5px; resize:vertical; background:#fafafa; }
+  .comment-box textarea:focus { outline:none; border-color:#007aff; background:#fff; }
+  #summary-body { white-space:pre-wrap; font-size:13.5px; background:#fafafa; border:1px solid #e5e5ea; border-radius:8px; padding:12px; min-height:40px; }
+  .btn { display:inline-block; margin-top:10px; padding:8px 16px; border-radius:8px; border:none; background:#007aff; color:#fff; font-size:14px; cursor:pointer; }
+  .btn:active { opacity:.8; }
+  #copy-status { margin-left:10px; font-size:13px; color:#248a3d; }
+  .chunk { margin-top:10px; }
+  .chunk .btn { background:#1a365d; }
+  pre.cmd { background:#1d1d1f; color:#f5f5f7; border-radius:8px; padding:10px 12px; font-family:'SF Mono',monospace; font-size:12.5px; overflow-x:auto; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-3083:Lead 给 Runner 发消息只走一条路</h1>
+  <div class="meta">工程设计说明 · 2026-09-29 · 分支 project-slot-3-FLY-3083 · __REVIEW_META__ · 每个卡片下方都可以留意见,页底一键汇总复制</div>
+
+  <div class="card" data-section="一句话总结">
+    <h2>1. 一句话总结</h2>
+    <p><b>给 Lead 装一个「护栏」:它想用 Claude 自带的 <span class="term">SendMessage</span>(Claude Code 内建的队友私信工具)给 Runner 发消息——不管是点名发还是「群发给所有队友」——都当场被拦下并拿到一条可直接运行的正确命令;所有能带 Runner 的 Lead(部门 Lead 和 CoS,Claude 和 Codex 后端)共用一份「Runner 通道契约」:给 Runner 发消息只有 <span class="term">flywheel-comm send</span>(Flywheel 自己的信箱投递命令)这一条路;投递命令把「写没写进去」说清楚,通道卡住时有明确的发现和升级动作,不再靠旁路。</b></p>
+    <p>回答你 9-29 的两个问题:① 规矩还要,但只剩一句正向指引「给 Runner 发消息用 flywheel-comm send / respond」;② 机制现在能兜住——护栏拦住之后,规矩只是省一个回合的提示,不再是正确性的依赖。</p>
+    <div class="comment-box"><label>对这一节的意见(自动保存在你本机)</label><textarea data-ckey="s1" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card red" data-section="现状">
+    <h2>2. 现状:两条路,一条留底一条不留</h2>
+    <p>Lead 现在有两种办法给 Runner 发消息。走 <span class="term">flywheel-comm send</span> 的,先在 <span class="term">CommDB</span>(Flywheel 的通信账本数据库)写一行、拿到编号,再投到 Runner 的收件箱并叫醒它;走 SendMessage 的,只写收件箱文件——消息能到,但 Flywheel 完全不知道这封信存在:没编号、没送达记录、丢了没人报。9-29 实测:SendMessage 发的十几条一条都没留底;flywheel-comm 发的 249 条全部有账。</p>
+    <div class="diagram">__SVG_D1__</div>
+    <p>为什么会这样:5 月 FLY-142 时,Flywheel 的信箱就是 Claude 自带的队友收件箱文件,所以规矩写「日常聊天用 SendMessage」。5 月底 FLY-168 让 flywheel-comm send 变成「账本 + 收件箱」双写,7 月 FLY-1547 又升级成有编号、有状态的 v2 信箱——机制一路进化,规矩没跟上。而且代码里自己也打架:启动脚本的注释说「必须教 Lead 用 SendMessage」,另一处系统提示又说「用 flywheel-comm send(不是 SendMessage)」。这份规矩所有部门 Lead(Tadashi、Aunt Cass、Mufasa 等,含 Codex Lead)都装同一份。</p>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s2" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card green" data-section="核心流程">
+    <h2>3. 核心流程:护栏拦下 → 给命令 → 走账本投递</h2>
+    <p>护栏是一个 <span class="term">PreToolUse hook</span>(Claude Code 在每次调用工具之前先跑的一段小程序,可以否决这次调用)。它只盯 SendMessage,收件人是 Runner 的队名(形如 <span class="mono">runner-xxxxxxxx</span>,由 Flywheel 唯一生成)就拒绝,并把正确命令原样喂回给 Lead;收件人是别人(其他 Lead、founder)照常放行。</p>
+    <div class="diagram">__SVG_D2__</div>
+    <ul>
+      <li><b>拒绝时 Lead 看到什么:</b>一段可直接复制的命令,例如 <span class="mono">flywheel-comm send --from tadashi --to runner-42afa86c "…"</span>;答 gate(Runner 停下来等 Lead 拍板的问题)仍用 <span class="mono">flywheel-comm respond</span>。</li>
+      <li><b>也拦「群发」:</b>SendMessage 的收件人写 <span class="mono">*</span> 会发给团队里所有人,Runner 也在其中——同样不留底。护栏会看 Lead 的团队名单,里面有 Runner 就拦;名单读不到时宁可多拦。</li>
+      <li><b>命令是安全的、完整的:</b>正文里的 <span class="mono">$变量</span>、反引号、引号、换行都原样保留(用 shell 引用规则整体转义),不截断;协议类消息不给命令。</li>
+      <li><b>只拦不代发:</b>护栏不替 Lead 把消息发出去(见第 6 节的取舍),Lead 下一回合自己跑命令,拿到编号。</li>
+      <li><b>CoS 与 Codex Lead 也覆盖:</b>新写一份很短的「Runner 通道契约」,同时注入部门 Lead 和 CoS(CoS 也可能自己带 Runner——这是设计评审抓出来的原规矩漏洞),Claude 和 Codex 两种后端都装。Codex Lead 没有 SendMessage 工具;它直接操控 Codex Runner 的旁路(<span class="mono">codex queue --remote</span>)本单只在契约里明令禁止,机制拦截留后续单——不假装已经封死。</li>
+      <li><b>装在每个 Lead 自己的工作区:</b>护栏写进 Lead 工作区的本地设置文件,由 Lead 启动脚本在已有的工作区锁里装好(单写者,不和其他全局护栏抢同一个文件,也不会因为 Claude 配置目录切换而装错地方);一个环境变量开关可关(QA / 回滚用)。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s3" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card" data-section="数据与结构模型">
+    <h2>4. 数据 / 结构模型</h2>
+    <p>三样东西各只有一个来源:Runner 的队名由一个函数生成(执行 id 前 8 位);账本里每封信一行(编号 + 送达时间);flywheel-comm send 是唯一往账本写信的入口。本单给 send 加两处小改动:<b>接受 Runner 队名当收件人</b>(以前必须给 36 位的全长执行 id,护栏拿到的只有队名),以及<b>把「传输层写没写成功」放进返回结果</b>(诚实地讲:写成功 ≠ Runner 已读,后者要看回执)。</p>
+    <div class="diagram">__SVG_D3__</div>
+    <p>队名 → 全长 id 的解析「宁缺毋滥」:只有精确的 <span class="mono">runner-xxxxxxxx</span> 形状才去查,找不到或找到不止一个都直接报错、不写账本——没有确定收件人的信不留底;其他任何写法(全长 id、老测试用的自定义 id)原样放行,现有行为一字不变。</p>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s4" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card amber" data-section="通道故障怎么办">
+    <h2>5. 只走一条路之后,通道自己卡住了怎么办(Tadashi 的补充)</h2>
+    <p>9-29 Lead 之所以改用 SendMessage,是因为 FLY-3071 让信箱通道长时间卡住。只走一条路后,不能再靠旁路兜底,所以要回答「怎么发现、怎么办」:</p>
+    <div class="diagram">__SVG_D4__</div>
+    <ul>
+      <li><b>发现:</b>send 的返回结果带 <span class="mono">transport_write</span> = ok / skipped / error(以前失败只在错误输出里打一行 WARN)。ok 只表示写进了传输层;「写进去了但 Runner 十分钟没回执、而且 Bridge 报它空转」才判为消费停滞(9-29 FLY-3071 那种形态)。skipped 有两种正常情况(回滚模式、无传输后端的 Runner),不当故障处理。</li>
+      <li><b>兜底:</b>账本那一行已经写了(信没丢)。Lead 的动作是报一个新的告警类型 <span class="mono">mailbox_channel_fault</span>(区分「即时写失败」和「消费停滞」),先诊断通道——不凭空重启 Runner,不套「卡住 Runner」处置阶梯,更不换旁路;这条分支表同时写进契约和护栏的拒绝文案。</li>
+      <li><b>边界:</b>生产的 v2 信箱若有排队状态查询(FLY-1547),就用「排队超过十分钟」代替上面的空转信号;本沙箱没有这个接口,设计里不假造。信箱到 Runner 的最后一段怎么投(含 Codex Runner 的原生接口)由 FLY-2127 定,本单不重复。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s5" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card amber" data-section="取舍与被拒方案">
+    <h2>6. 关键取舍与被拒方案</h2>
+    <table>
+      <tr><th>方案</th><th>判定</th><th>原因</th></tr>
+      <tr><td>护栏拦下后自动替 Lead 发进信箱</td><td><span class="badge later">先不做</span></td><td>Lead 的记录里显示「被拒」但信其实发出去了,审计混淆;AI 一重试就重复投递;护栏里带副作用要另设记账;Codex Lead 没这条路,不对称。观察生产被拦频率,高了再做。</td></tr>
+      <tr><td>Bridge 事后巡检收件箱、把 SendMessage 的信补录进账本</td><td><span class="badge reject">拒</span></td><td>等于把第二条路合法化,不是「一条路」;分辨来源靠前缀,脆。</td></tr>
+      <tr><td>只改规矩,不加机制</td><td><span class="badge reject">拒</span></td><td>你明确要机制兜住;9-29 证明规矩挡不住临时兜底的冲动。</td></tr>
+      <tr><td>拆掉 Runner 在 Lead 团队里的登记,让 SendMessage 根本发不到</td><td><span class="badge reject">拒</span></td><td>flywheel-comm send 自己叫醒 Runner 也靠这个收件箱,拆了等于拆信箱。</td></tr>
+      <tr><td>护栏装进全局 Claude 设置(第一版方案)</td><td><span class="badge reject">拒(评审改)</span></td><td>Lead 可能用另一个 Claude 配置目录启动,全局装法会装错地方却报成功;而且和另外两个全局护栏抢同一个文件、没有共享锁。改为 Lead 工作区本地设置 + 既有工作区锁。</td></tr>
+      <tr><td>群发一律拦</td><td><span class="badge reject">拒</span></td><td>没有 Runner 的团队(比如只带 Lead 的 CoS)群发是合法用法;按团队名单判断,名单读不到才一律拦。</td></tr>
+      <tr><td>把「写成功」当通道健康</td><td><span class="badge reject">拒(评审改)</span></td><td>写成功只是写进传输层;消费停滞要用「没回执 + Bridge 报空转」判定。</td></tr>
+      <tr><td>护栏自己查数据库把队名换成全长 id</td><td><span class="badge reject">拒</span></td><td>会出现第二份读账本的逻辑;改成 send 命令直接接受队名,只有一个真相。</td></tr>
+    </table>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s6" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card purple" data-section="诚实边界">
+    <h2>7. 诚实边界:这个设计做什么、不做什么</h2>
+    <ul>
+      <li><b>做:</b>Lead 侧护栏(拦点名与群发 + 给安全完整的命令)、send 接受队名并外露传输结果、一份所有 Runner-capable Lead 共用的通道契约 + 四份规矩与启动脚本注释统一、一个新告警类型、回归测试(喂 SendMessage 给 Runner / 群发,断言被拦,且文案里的命令经 stub 命令行 round-trip 后参数逐字节正确)、一键卸载 / 环境变量开关回滚。</li>
+      <li><b>不做:</b>Runner 回报 Lead 的方向(FLY-208 已有黑洞巡检);信箱到 Runner 的最后一段(FLY-2127);信箱排队状态查询(FLY-1547 / FLY-3071);用机制拦 Codex Lead 的 <span class="mono">codex queue --remote</span> 旁路(契约禁止,机制记为后续单);顺带发现的 FLY-913 护栏装错配置目录的老问题(另开单)。</li>
+      <li><b>已知残余:</b>AI 可能连续两次撞护栏,多花一个回合;群发判定依赖团队名单文件,读不到时宁可多拦(只影响群发这一种用法);「消费停滞」的判定用的是十分钟无回执 + Bridge 空转信号,不是精确的排队状态。</li>
+      <li><b>沙箱说明:</b>本设计在测试沙箱(v1.55.0,没有 v2 信箱)上审计;对 send 的改动只有「解析队名 + 外露结果」,与 v1/v2 信箱无关,实现时以生产分支为准合并。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s7" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card" data-section="意见汇总">
+    <h2>8. 页面意见汇总</h2>
+    <p style="color:#86868b;font-size:13px;">下面实时汇总你在各节写的意见(存在你本机浏览器里,换设备不带走)。点按钮复制全部,发回给 Lead 即可。</p>
+    <div id="summary-body">(还没有意见)</div>
+    <div id="chunk-area"></div>
+    <button class="btn" id="copy-all">复制全部意见</button><span id="copy-status"></span>
+  </div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  var MARKER = '【页面意见汇总】FLY-3083';
+  var PREFIX;
+  try { PREFIX = 'fly3083-comment:' + location.pathname + ':'; }
+  catch (e) { PREFIX = 'fly3083-comment:unknown:'; }
+
+  function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* 私密窗口等场景下静默降级 */ } }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll('textarea[data-ckey]'));
+
+  function sectionTitleFor(area) {
+    var card = area.closest('.card');
+    return (card && card.getAttribute('data-section')) || '未命名小节';
+  }
+
+  function collect() {
+    var parts = [];
+    areas.forEach(function (area) {
+      var v = area.value.trim();
+      if (v) parts.push('【' + sectionTitleFor(area) + '】\n' + v);
+    });
+    return parts;
+  }
+
+  function buildFullText() {
+    var parts = collect();
+    if (parts.length === 0) return '';
+    return MARKER + '\n' + parts.join('\n\n');
+  }
+
+  function chunkText(full) {
+    if (full.length <= 1800) return [full];
+    var body = full.slice(MARKER.length + 1);
+    var chunks = [];
+    var budget = 1800 - MARKER.length - 20;
+    var pieces = body.split('\n\n');
+    var cur = '';
+    pieces.forEach(function (p) {
+      if (cur && (cur.length + p.length + 2) > budget) { chunks.push(cur); cur = ''; }
+      while (p.length > budget) { chunks.push(cur ? cur + '\n\n' + p.slice(0, budget - cur.length - 2) : p.slice(0, budget)); p = p.slice(budget); cur = ''; }
+      cur = cur ? cur + '\n\n' + p : p;
+    });
+    if (cur) chunks.push(cur);
+    return chunks.map(function (c, i) {
+      return MARKER + '(' + (i + 1) + '/' + chunks.length + ')\n' + c;
+    });
+  }
+
+  var summaryBody = document.getElementById('summary-body');
+  var chunkArea = document.getElementById('chunk-area');
+  var copyStatus = document.getElementById('copy-status');
+
+  function copyText(text, onDone) {
+    function fallback() {
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        onDone(ok);
+      } catch (e) { onDone(false); }
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { onDone(true); }, fallback);
+    } else { fallback(); }
+  }
+
+  function renderSummary() {
+    var full = buildFullText();
+    if (!full) {
+      summaryBody.textContent = '(还没有意见)';
+      chunkArea.textContent = '';
+      return;
+    }
+    summaryBody.textContent = full;
+    chunkArea.textContent = '';
+    var chunks = chunkText(full);
+    if (chunks.length > 1) {
+      chunks.forEach(function (c, i) {
+        var div = document.createElement('div');
+        div.className = 'chunk';
+        var btn = document.createElement('button');
+        btn.className = 'btn';
+        btn.textContent = '复制第 ' + (i + 1) + '/' + chunks.length + ' 段';
+        btn.addEventListener('click', function () {
+          copyText(c, function (ok) {
+            copyStatus.textContent = ok ? ('已复制第 ' + (i + 1) + ' 段') : '复制失败,请手动选择文本';
+          });
+        });
+        div.appendChild(btn);
+        chunkArea.appendChild(div);
+      });
+    }
+  }
+
+  areas.forEach(function (area) {
+    var key = PREFIX + area.getAttribute('data-ckey');
+    var saved = lsGet(key);
+    if (saved) area.value = saved;
+    area.addEventListener('input', function () {
+      lsSet(key, area.value);
+      renderSummary();
+    });
+  });
+
+  document.getElementById('copy-all').addEventListener('click', function () {
+    var full = buildFullText();
+    if (!full) { copyStatus.textContent = '还没有可复制的意见'; return; }
+    copyText(full, function (ok) {
+      copyStatus.textContent = ok ? '已复制' : '复制失败,请手动选择文本';
+    });
+  });
+
+  renderSummary();
+})();
+</script>
+</body>
+</html>
