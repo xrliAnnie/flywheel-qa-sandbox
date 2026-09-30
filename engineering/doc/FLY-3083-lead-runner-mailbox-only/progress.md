@@ -1,13 +1,13 @@
 ---
 issue: FLY-3083
 phase: design
-phaseCursor: 1/6
-updated: 2026-09-30T04:49:39.012Z
-nextStep: audit done; writing exploration.md
+phaseCursor: 2/6
+updated: 2026-09-30T04:51:04.878Z
+nextStep: exploration.md written; writing research.md
 chunks: []
 pointers: {}
 ---
 
 # FLY-3083 progress
-**phase**: design (1/6)
-**next**: audit done; writing exploration.md
+**phase**: design (2/6)
+**next**: exploration.md written; writing research.md
