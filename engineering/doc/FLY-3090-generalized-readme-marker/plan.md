@@ -55,9 +55,15 @@ git commit -m "docs(FLY-3090): append synthetic generalized QA marker to README"
 - 提交前跑 `flywheel-comm inbox` 兜底检查 Lead 指令。
 - 提交后 `git show --stat HEAD` 应只列 `README.md`（+1/-0）。
 - **紧接着、在更新 ledger 之前**记录 README 提交的完整 SHA：
-  `README_COMMIT=$(git rev-parse HEAD)`，并把它写进 progress ledger
-  （`--set-chunk readme_commit=<sha>`）。原因：ledger 的 `progress` 命令会另外产生
-  `chore(progress)` 提交，之后 `HEAD~1` 不再指向 README 提交，回滚（§4）必须按 SHA 定位。
+  `README_COMMIT=$(git rev-parse HEAD)`，并把它持久化进 progress ledger 的自由文本
+  handoff 字段：
+  `flywheel-comm progress --exec-id … --file …/progress.md --phase implement --cursor 3/4 --handoff "readme_commit=$README_COMMIT"`。
+  **不要用** `--set-chunk readme_commit=<sha>`（它只接受 `todo/doing/done/qa-pass/qa-fail`
+  状态，SHA 会被静默丢弃，Codex R2 medium），也不要用 `--pointer`（键有白名单）。
+  之后每次 ledger 更新若再传 `--handoff`，必须把 `readme_commit=<sha>` 原样带上（该字段是整体覆盖）；
+  恢复执行时从 progress.md 的 `handoff` 字段取回 SHA。
+  原因：ledger 的 `progress` 命令会另外产生 `chore(progress)` 提交，之后 `HEAD~1` 不再指向
+  README 提交，回滚（§4）必须按 SHA 定位。
 
 ### C4 — 推送并开 PR（base = `main`）
 
@@ -101,7 +107,8 @@ PR 打开后按节点协议回报 Lead（`flywheel-comm ask --report`），**不
 
 - 未提交：`git checkout -- README.md`。
 - 已提交（无论是否已 push / 已开 PR）：**按 SHA 定位、用 revert**，
-  `git revert --no-edit "$README_COMMIT"`（SHA 取自 C3 记录的 `readme_commit`）。
+  `git revert --no-edit "$README_COMMIT"`（SHA 取自 C3 写入 progress.md `handoff` 字段的 `readme_commit=<sha>`；
+  新 shell / 恢复执行时先从该字段读回）。
   **不要**用 `HEAD~1` 之类相对位置——ledger 的 `chore(progress)` 提交会插在中间，
   `reset --hard HEAD~1` 会撤错提交且留下 marker（Codex R1 medium）。
   revert 后只读复核：`od -c README.md` 应回到 44 字节基线、`git diff origin/main -- README.md` 为空。
