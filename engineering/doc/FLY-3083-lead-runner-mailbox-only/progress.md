@@ -2,13 +2,12 @@
 issue: FLY-3083
 phase: design
 phaseCursor: 4/6
-updated: 2026-09-30T04:58:10.978Z
-nextStep: Codex design review R1 running (gpt-6-astra/xhigh); founder HTML
-  drafted + 4 SVGs rendered
+updated: 2026-09-30T05:06:14.795Z
+nextStep: plan v2 committed (ee1604d48); Codex design review R2 running
 chunks: []
 pointers: {}
 ---
 
 # FLY-3083 progress
 **phase**: design (4/6)
-**next**: Codex design review R1 running (gpt-6-astra/xhigh); founder HTML drafted + 4 SVGs rendered
+**next**: plan v2 committed (ee1604d48); Codex design review R2 running
