@@ -57,7 +57,7 @@
     <b>覆盖的病根单</b><span>FLY-2127 主单 + FLY-2464 / 2480 / 2502 / 2569 / 2905 / 2953（详见第 5 节）</span>
     <b>依据</b><span>founder 2026-09-29 批「可以被取代的直接取代」；FLY-3064 已验证 Codex 原生能力 queue/add、turn/steer、goal/set active 可用</span>
     <b>预估</b><span>2–3 人日；改动集中在 Bridge 内的 Codex 适配层与 flywheel-comm 的投递入口；Claude runner 路径零改动</span>
-    <b>评审状态</b><span>Codex 设计评审两轮共 23 项（16 高 7 中）已全部吸收：串行控制边界、就绪态、逐消息回执与激活待办分离、队列保序与隔离、审计先于动作、tmux 兜底至多一次、按执行固定的投递模式（可回滚）</span>
+    <b>评审状态</b><span>Codex 设计评审（gpt-6-astra / xhigh）6 轮，共 37 项发现（24 高 12 中 1 低）全部吸收，第 6 轮 <b>APPROVED</b>：串行控制边界、观察身份与投递就绪分离、逐消息回执与激活待办分离、队列保序与隔离、审计先于动作、tmux 兜底至多一次（动作级独占）、按执行固定且可合法换任的投递模式、告警持久接收证据</span>
   </div>
   <div class="comment"><label for="c1">对这一节的意见（自动保存在本机浏览器）</label><textarea id="c1" data-key="s1" placeholder="写下你的意见…"></textarea></div>
 </section>
@@ -146,7 +146,7 @@
   </ul>
   <h3>已知风险</h3>
   <ul>
-    <li>原生命令的参数名与「看到 userMessage」的通知名要在本机 Codex 0.159 上用 M0 探针实测再定，plan 已留备用回执方案。</li>
+    <li>原生命令的参数名与「看到 userMessage」的通知名要在本机 Codex 0.159 上用 M0 探针实测再定；M0 是 go/no-go 关口，拿不到逐消息回执就停下请示，不用弱回执凑数。</li>
     <li>blocked 有可能是真卡（沙箱拒绝等）；进 hold 时会通过告警链直接通知 Lead（去重），不依赖任何还没落地的 stall 钟。</li>
   </ul>
   <div class="comment"><label for="c5">对这一节的意见</label><textarea id="c5" data-key="s5" placeholder="写下你的意见…"></textarea></div>
