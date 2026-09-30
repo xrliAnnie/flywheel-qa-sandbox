@@ -866,6 +866,47 @@ install_restart_guard_hook() {
   fi
 }
 
+# FLY-3083: runner-msg-guard PreToolUse hook — a Lead's `SendMessage` to a
+# Runner inbox (or the broadcast "*") is denied and the Lead gets a shell-safe
+# `flywheel-comm send` replacement command. Lead-LOCAL: merged into
+# <LEAD_WORKSPACE>/.claude/settings.local.json by the ONE installer
+# (scripts/hooks/install-runner-msg-guard.sh), called while the settings.local
+# lock below is held (--lock-held), so the launcher and a standalone ops run
+# share one lock protocol. cos + dept only — companion / external Leads carry
+# no Runners. A missing installer (e.g. a packaged Lead: hook scripts are not in
+# the npm payload, same precedent as the restart guard) → WARN and the Lead still
+# starts; the runner-channel contract text still applies.
+# The installer path is overridable ONLY under FLYWHEEL_LEAD_DRY_RUN=1 (hermetic
+# missing-installer test), same rule as FLYWHEEL_BASE_RULES_DIR.
+RUNNER_MSG_GUARD_INSTALLER="${FLYWHEEL_ROOT}/scripts/hooks/install-runner-msg-guard.sh"
+if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" = "1" ] && [ -n "${FLYWHEEL_RUNNER_MSG_GUARD_INSTALLER:-}" ]; then
+  RUNNER_MSG_GUARD_INSTALLER="$FLYWHEEL_RUNNER_MSG_GUARD_INSTALLER"
+fi
+install_runner_msg_guard_hook() {
+  local settings="$1"
+  if [ "$IS_COMPANION_ROLE" = true ]; then
+    log "Companion: skipping runner-msg-guard install (no Runners)"
+    return
+  fi
+  if [ "$IS_EXTERNAL_ROLE" = true ]; then
+    log "External: skipping runner-msg-guard install (no Runners)"
+    return
+  fi
+  if [ ! -f "$RUNNER_MSG_GUARD_INSTALLER" ]; then
+    log "WARNING: install-runner-msg-guard.sh not found: ${RUNNER_MSG_GUARD_INSTALLER} (runner-msg-guard not installed; Lead continues)"
+    return
+  fi
+  if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" = "1" ]; then
+    log "DRY-RUN: runner-msg-guard would install into ${settings} (--lock-held)"
+    return
+  fi
+  if bash "$RUNNER_MSG_GUARD_INSTALLER" --settings "$settings" --lock-held >/dev/null 2>&1; then
+    log "runner-msg-guard PreToolUse hook installed in ${settings}"
+  else
+    log "WARNING: runner-msg-guard hook install failed/skipped (non-fatal)"
+  fi
+}
+
 # ── FLY-954: converge <state>/bin runtime scripts (anti-drift) ──────────────
 # Incident 2026-07-06: 12-byte stubs sat in ~/.flywheel/bin for 8h, then a
 # deploy kickstart took all 13 Leads down. Every Lead start now verifies
@@ -1601,10 +1642,12 @@ if command -v jq >/dev/null 2>&1; then
       rm -f "$_tmp_settings" 2>/dev/null || true
       log "WARNING: Failed to pre-seed enableAllProjectMcpServers (jq error)"
     fi
+    # FLY-3083: converge the runner-msg-guard entry under the SAME lock.
+    install_runner_msg_guard_hook "$_SETTINGS_LOCAL_JSON"
     rmdir "$_lock_dir" 2>/dev/null || true
     _MCP_LOCK_HELD=false
   else
-    log "WARNING: Could not acquire lock on ${_SETTINGS_LOCAL_JSON} after 10s, skipping MCP pre-seed"
+    log "WARNING: Could not acquire lock on ${_SETTINGS_LOCAL_JSON} after 10s, skipping MCP pre-seed and runner-msg-guard install"
   fi
 fi
 

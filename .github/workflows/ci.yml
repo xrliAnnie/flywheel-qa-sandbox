@@ -244,6 +244,8 @@ jobs:
           bash scripts/hooks/test-restart-guard-install.sh
           bash scripts/__tests__/lead-alert-strict-delivery.test.sh
           python3 scripts/hooks/test-runner-msg-guard.py
+          bash scripts/hooks/test-runner-msg-guard-install.sh
+          bash packages/teamlead/scripts/__tests__/fly3083-guard-install-plan.test.sh
 
       # FLY-3083: the runner-msg-guard hook judges by the native inbox file
       # name; this oracle pins that against getClaudeInboxPath. The package has
