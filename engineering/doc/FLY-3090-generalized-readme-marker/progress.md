@@ -1,13 +1,13 @@
 ---
 issue: FLY-3090
 phase: design
-phaseCursor: 3/6
-updated: 2026-09-30T05:47:38.675Z
-nextStep: codex design review
+phaseCursor: 4/6
+updated: 2026-09-30T05:57:26.180Z
+nextStep: build founder design HTML (mermaid→svg), commit+push, publish-report
 chunks: []
 pointers: {}
 ---
 
 # FLY-3090 progress
-**phase**: design (3/6)
-**next**: codex design review
+**phase**: design (4/6)
+**next**: build founder design HTML (mermaid→svg), commit+push, publish-report
