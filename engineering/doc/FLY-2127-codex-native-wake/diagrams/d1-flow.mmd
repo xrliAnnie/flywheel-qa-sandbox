@@ -1,0 +1,19 @@
+sequenceDiagram
+    participant L as Lead / 引擎
+    participant DB as CommDB 队列
+    participant N as 投递 lane (Bridge 内)
+    participant D as runner 的 codex app-server
+    participant R as Codex runner (模型)
+    L->>DB: 写指令 (pending)
+    N->>DB: 每秒取队首
+    N->>D: goal/get 读状态
+    alt runner 正忙 (turn 进行中)
+        N->>D: turn/steer 并入当前 turn
+    else runner 停驻 / 空闲
+        N->>D: thread/queue/add 排队
+        N->>D: goal/set active 续跑
+    end
+    D->>R: 起 turn / 并入 turn
+    D-->>N: item/started userMessage (带消息 id)
+    N->>DB: 标 finished + read_at (回执)
+    Note over N,DB: 3 次失败 → 告警 Lead + 审计后 tmux 兜底

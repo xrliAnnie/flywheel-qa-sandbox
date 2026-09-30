@@ -1,0 +1,9 @@
+stateDiagram-v2
+    [*] --> pending: 写点入队 (send / rework wake / approval)
+    pending --> started: lane 发 RPC 成功 (attempts+1)
+    pending --> pending: RPC 失败, 退避 2s/8s/30s (attempts+1)
+    started --> finished: 通知流看到对应 userMessage
+    started --> pending: 退避到期仍无回执 → 重投
+    pending --> exhausted: attempts ≥ 3
+    exhausted --> [*]: runner_wake_exhausted 事件 + Lead 告警 + 审计 tmux 兜底
+    finished --> [*]

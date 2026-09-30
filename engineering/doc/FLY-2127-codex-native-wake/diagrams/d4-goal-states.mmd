@@ -1,0 +1,8 @@
+stateDiagram-v2
+    active --> complete: 模型宣布 Goal achieved
+    active --> blocked: 模型自判卡住, 等 Lead
+    active --> paused: 阶段边界停驻
+    complete --> paused: phase hold
+    blocked --> paused: phase hold (本单新增)
+    paused --> active: lane 投递 queue/add + goal/set active
+    note right of paused : Resume paused goal 菜单只挡键盘, 不挡 RPC

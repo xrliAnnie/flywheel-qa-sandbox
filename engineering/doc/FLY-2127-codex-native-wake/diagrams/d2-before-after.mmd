@@ -1,0 +1,23 @@
+flowchart LR
+    subgraph OLD[旧路：文件 + 谁来读]
+        direction TB
+        A1[Lead send] --> A2[写 JSON inbox 文件]
+        A2 --> A3{phase hold 中?}
+        A3 -- 是 --> A4[watcher 读到 → turn/start]
+        A3 -- 否 --> A5[没人读<br/>runner 永远不醒]
+        A4 --> A6{RPC 失败?}
+        A6 -- 是 --> A7[只写一条事件<br/>无人升级]
+    end
+    subgraph NEW[新路：原生 RPC]
+        direction TB
+        B1[Lead send] --> B2[写 CommDB 队列行]
+        B2 --> B3[常驻 lane 每秒取行]
+        B3 --> B4{turn 进行中?}
+        B4 -- 是 --> B5[turn/steer]
+        B4 -- 否 --> B6[queue/add + goal active]
+        B5 --> B7[看到 userMessage → 回执]
+        B6 --> B7
+        B3 --> B8{连续 3 次失败?}
+        B8 -- 是 --> B9[告警 Lead<br/>+ 审计 tmux 兜底]
+    end
+    OLD -.替换为.-> NEW
