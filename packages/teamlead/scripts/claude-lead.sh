@@ -1860,17 +1860,17 @@ elif [ "$IS_COS_ROLE" = false ]; then
     CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_DEPT_RULES")
     log "Appending base dept-lead rules: ${BASE_DEPT_RULES}"
   fi
-  # FLY-142 PR #186 Codex Round 1 HIGH: dept leads spawn + DM Runners, so
-  # they MUST be told to use `SendMessage` MCP for ordinary DM (mailbox
-  # path) rather than `flywheel-comm send` (suppressed by sentinel once
-  # mailbox cutover is active — silent message loss otherwise).
+  # FLY-3083: dept leads spawn + DM Runners; the ONLY Lead → Runner path is
+  # `flywheel-comm send` / `respond` (the Runner channel contract below states
+  # it for every Runner-capable Lead; the runner-msg-guard hook denies a
+  # SendMessage to a Runner). This file carries the mailbox-mode detail: the
+  # wake matrix, the gate `respond` forms and the channel fault table.
   #
-  # FLY-142 PR #186 codex:rescue Bug B: ONLY load this rule on the mailbox
+  # FLY-142 PR #186 codex:rescue Bug B: ONLY load this detail on the mailbox
   # path. On the `FLYWHEEL_COMM_BACKEND=commdb` rollback path, `run-dispatcher.ts:buildAgentTeamIdentity`
-  # returns `{}` so Runner spawns without Agent Team identity → Lead writes
-  # mailbox via SendMessage but nobody polls it → silent message loss. Skip
-  # the rule on rollback so Lead falls back to the legacy `flywheel-comm send`
-  # CommDB path that the rolled-back Runner side actually reads.
+  # returns `{}` so Runner spawns without Agent Team identity and nobody polls
+  # the mailbox; the Lead's `flywheel-comm send` then lands in the CommDB path
+  # the rolled-back Runner side actually reads.
   #
   # codex:rescue Round 2 MEDIUM: also trim leading/trailing whitespace —
   # an operator who writes `FLYWHEEL_COMM_BACKEND=" commdb "` in their
@@ -2027,6 +2027,18 @@ if [ "$IS_COMPANION_ROLE" != true ] && [ "$IS_EXTERNAL_ROLE" != true ] && [ -f "
   # covers each one's boundary in a non-engineering tone.
   CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_FOUNDER_AUTH_RULES")
   log "Appending base founder-only-authority rules: ${BASE_FOUNDER_AUTH_RULES}"
+fi
+
+# ── FLY-3083: Runner channel contract (universal — cos + dept, both backends) ──
+# One text for every Runner-capable Lead: `flywheel-comm send` / `respond` are the
+# ONLY Lead → Runner path, the forbidden side channels, the `send --json`
+# transport_write meaning, and the mailbox_channel_fault alert template. Loaded
+# regardless of FLYWHEEL_COMM_BACKEND (unlike runner-messaging-rules.md above).
+# Companion / external Leads carry no Runners → skipped. Optional file.
+BASE_RUNNER_CHANNEL_CONTRACT="${BASE_RULES_DIR}/runner-channel-contract.md"
+if [ "$IS_COMPANION_ROLE" != true ] && [ "$IS_EXTERNAL_ROLE" != true ] && [ -f "$BASE_RUNNER_CHANNEL_CONTRACT" ] && [ -r "$BASE_RUNNER_CHANNEL_CONTRACT" ]; then
+  CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_RUNNER_CHANNEL_CONTRACT")
+  log "Appending base runner-channel contract: ${BASE_RUNNER_CHANNEL_CONTRACT}"
 fi
 
 # ── FLY-598 / FLY-869: Founder brainstorm-alignment gate (universal — cos + dept, NOT companion) ──

@@ -90,8 +90,8 @@ writes CommDB but does **not** write the mailbox, so it **silently fails to wake
 `commdb` rollback path, where `runner-messaging-rules.md` is intentionally
 skipped): use the waking Runner channel **for your current backend** —
 
-- **mailbox** mode (prod default): `SendMessage` (MCP teammate API) or
-  `flywheel-comm send`.
+- **mailbox** mode (prod default): `flywheel-comm send` — the only Lead → Runner
+  path (FLY-3083); a `SendMessage` to a Runner is denied by the runner-msg-guard hook.
 - **commdb** rollback: the legacy `flywheel-comm send` path.
 
 Either way: **never** use `respond` as an ordinary driver. The full wake matrix

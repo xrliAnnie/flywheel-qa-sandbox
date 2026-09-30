@@ -195,6 +195,10 @@ normalize_plan() {
 # FLYWHEEL_FOUNDER_UX_GATE_ENABLED=1. run_dry uses `env -i` (no such env), so the
 # DEFAULT plan no longer carries founder-ux-rules.md — it was removed from both
 # goldens. The reverse (env=1 → still appended) is covered by T11 below.
+#
+# FLY-3083: cos + dept goldens gain rule=runner-channel-contract.md (the Runner
+# channel contract, universal for Runner-capable Leads) and
+# env=FLYWHEEL_LEAD_ALERT_SCRIPT=set (mailbox_channel_fault alert entry point).
 read -r -d '' DEPT_GOLDEN <<'G'
 env=BRIDGE_URL=set
 env=CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=set
@@ -229,6 +233,7 @@ rule=founder-html-delivery.md
 rule=founder-only-authority.md
 rule=inbox-ack-rule.md
 rule=model-routing.md
+rule=runner-channel-contract.md
 rule=runner-messaging-rules.md
 rule=runner-patrol-rules.md
 rule=runner-reengage-rules.md
@@ -265,6 +270,7 @@ rule=discord-reply-contract.md
 rule=founder-html-delivery.md
 rule=founder-only-authority.md
 rule=inbox-ack-rule.md
+rule=runner-channel-contract.md
 rule=screencapture-l3-skill.md
 G
 H=$(mktemp -d "/tmp/fly231-test.XXXXXX")
