@@ -4,7 +4,7 @@ Issue: FLY-3083 (https://linear.app/geoforge3d/issue/FLY-3083/规矩机制leadru
 日期: 2026-09-29
 基于: exploration.md, research.md
 
-> 修订记录:v2(Codex 设计评审 R1,5 HIGH / 2 MEDIUM 全部采纳)— 广播 `to:"*"` 拦截、结果语义分支表、CoS 覆盖的共享契约、shlex 安全命令生成、`send()` 签名兼容、Lead-local 安装走既有 workspace 锁、告警 kind 四面对齐、部署/回滚顺序。
+> 修订记录:v2(Codex R1,5 HIGH / 2 MEDIUM 全部采纳)— 广播拦截、结果语义分支表、CoS 覆盖的共享契约、shlex 安全命令生成、`send()` 签名兼容、Lead-local 安装、告警 kind 四面对齐、部署/回滚顺序。v3(Codex R2,2 HIGH / 2 MEDIUM / 1 LOW 全部采纳)— 广播在 Flywheel Lead 会话一律拒(去掉有竞态的名单豁免)、告警完整调用合同 + per-Runner episode signature + strict-delivery 结果分支、installer 加入同一 workspace 锁协议、「疑似停滞」分支去掉不存在的 `/health` 投递面并写清证据与边界、测试路径/CI 接线修正。R2 已从 Claude Code 源码确认:Lead-local settings 的 hook 在 `--permission-mode bypassPermissions` 下仍生效(deny 早于权限流程);`to:"*"` 是 SendMessage 唯一的多收件人形态。
 
 ## 0. 一句话
 
@@ -14,7 +14,7 @@ Issue: FLY-3083 (https://linear.app/geoforge3d/issue/FLY-3083/规矩机制leadru
 
 **目标(对应 issue「要的效果」1-4)**
 1. Lead 侧入口唯一:`flywheel-comm send`(普通消息)/ `respond`(gate 答复)。契约对**所有能与 Runner 通信的 Lead** 生效(覆盖矩阵见 §3.4)。
-2. 机制兜住:`SendMessage to:"runner-*"` 与 `SendMessage to:"*"`(广播)在 Flywheel Lead 会话里被 hook 硬拦(deny + 替代命令)。
+2. 机制兜住:`SendMessage to:"runner-*"` 与 `SendMessage to:"*"`(广播;Flywheel Lead 会话里**一律**拒,不看团队名单)被 hook 硬拦(deny + 替代命令)。
 3. `runner-messaging-rules.md`、`claude-lead.sh` 注释、`hook-payload.ts` 提示三处一致。
 4. 回归测试:喂一条 `SendMessage to:"runner-…"`/`to:"*"`,断言被拦下且 reason 里的命令经 stub CLI round-trip 后 argv/正文逐字节正确。
 
@@ -101,10 +101,11 @@ normalize(to):
   strip → 去掉尾部 ref 后缀 `\s+\[[0-9a-f]+\]$` → 得 name(判定与命令**都用** name)
 命中 A:name 匹配 RUNNER_RE = ^runner-[0-9a-f]{8}$
 命中 B:name == "*"(广播;本机 SendMessageTool 对 to:"*" 枚举团队成员逐个写收件箱,Runner 是成员 → 等同直发)
-  B 的放行例外:读 <CLAUDE_CONFIG_DIR|~/.claude>/teams/<FLYWHEEL_LEAD_ID>/config.json,
-  members 里**没有**任何 name 匹配 RUNNER_RE 且文件可读可解析 → 放行(团队里没有 Runner);
-  文件缺失/不可解析 → fail-closed deny(Flywheel Lead 会话里广播默认视为含 Runner)
+  → Flywheel Lead 会话(FLYWHEEL_LEAD_ID 已设)里**一律 deny,不读团队名单**。
+  R2 证明名单豁免有 check-then-use 竞态:hook 读名单时无 Runner → dispatcher 登记新 Runner(team-bootstrap.ts 的文件锁不覆盖原生工具的发送过程)→ 原生广播写进新 Runner 收件箱、CommDB 无记录。
+  非 Runner 队友要联系就逐个点名 SendMessage(不受影响);非 Flywheel 会话(无 FLYWHEEL_LEAD_ID)广播照常放行。
 ```
+`to:"*"` 是 SendMessage 唯一的多收件人形态(R2 核对 `SendMessageTool.ts`:`to` 为单 string,仅精确 `"*"` 走 handleBroadcast,含 `@` 的地址被拒,`uds:`/`bridge:` 为单目标)——hook 不需要覆盖其他形态。
 
 **deny reason 生成(R1 #4)**
 - 命令用 argv 列表构造后 `shlex.join`(每个数据参数整体引用,`$`/`$(…)`/反引号/引号/换行全部保真):
@@ -119,8 +120,9 @@ normalize(to):
 - 无 bypass 语法;唯一旁路 = env `FLYWHEEL_RUNNER_MSG_GUARD=0`。
 
 **测试 `scripts/hooks/test-runner-msg-guard.py`**
-- must-deny:`runner-42afa86c`;` runner-42afa86c `;`runner-42afa86c [3fa9c1]`;`*`(团队含 Runner);`*`(团队文件缺失);`*`(团队文件坏 JSON);协议对象 message。
-- must-allow:`team-lead`、`main`、`flywheel-eng-lead`、`runner-42afa86c-extra`、`Runner-42AFA86C`(队名只产小写)、`*`(团队文件可读且无 Runner 成员)、tool_name `Bash`、坏 stdin、空对象、`FLYWHEEL_RUNNER_MSG_GUARD=0`、未设 `FLYWHEEL_LEAD_ID`。
+- must-deny:`runner-42afa86c`;` runner-42afa86c `;`runner-42afa86c [3fa9c1]`;`*`(不论团队文件存在/缺失/坏 JSON/无 Runner 成员——四个 fixture 都 deny);协议对象 message。
+- must-allow:`team-lead`、`main`、`flywheel-eng-lead`、`runner-42afa86c-extra`、`Runner-42AFA86C`(队名只产小写)、tool_name `Bash`、坏 stdin、空对象、`FLYWHEEL_RUNNER_MSG_GUARD=0`、未设 `FLYWHEEL_LEAD_ID`(含 `*`)。
+- 负向:hook 源码中不得出现读团队 `config.json` 的代码(grep-zero,防止豁免被悄悄加回)。
 - **命令 round-trip**:用 stub `FLYWHEEL_COMM_CLI`(把 argv 以 JSON 打到文件)执行 reason 里抽出的命令(`bash -c`),断言 argv == `[send,--from,<lead>,--to,runner-42afa86c,--,<原文>]`,覆盖正文:`$VAR`、`$(printf X)`、反引号、单双引号混合、多行、以 `--` 开头、含 `[ref]` 时 `--to` 已归一化、>4000 字符时为占位且 reason 含「过长」。
 - deny 输出 schema 三键;审计路径不可写仍 deny。
 
@@ -128,13 +130,15 @@ normalize(to):
 
 - **位置**:`<LEAD_WORKSPACE>/.claude/settings.local.json`(Lead 进程 `cd "$LEAD_WORKSPACE"` 后启动,项目级 local settings 的 hooks 与 user settings 合并生效)。不再写全局 `~/.claude/settings.json`——既避开 `CLAUDE_CONFIG_DIR` profile 落错(R1 #6),又不与 restart-guard / reply-enforcer 争用同一全局文件(R1 #7);每个 workspace 只有 `claude-lead.sh` 一个写者,且已有 mkdir 自旋锁(`claude-lead.sh:1562-1608`)。
 - **hook 脚本稳定路径**:`<FLYWHEEL_STATE_DIR|~/.flywheel>/bin/flywheel-runner-msg-guard.py`,cp 走 `mktemp + mv`(原子替换,另一会话不会读到半成品)。
-- `scripts/hooks/install-runner-msg-guard.sh [--settings <path>] [--uninstall]`:jq-merge `hooks.PreToolUse` 一条 `{matcher:"SendMessage", hooks:[{type:"command", command:"python3 <stable-path>"}]}`;jq 1.6 输出非空判有效;只删自己的 command、保留兄弟、空组丢弃;mktemp+mv;bad JSON 不动文件 exit 2。`--settings` 缺省 = `${LEAD_WORKSPACE:?}/.claude/settings.local.json`。
-- `claude-lead.sh`:在现有 settings.local.json 锁块内(MCP 预置之后、释放锁之前)调用 installer(`--settings "$_SETTINGS_LOCAL_JSON"`);仅 cos + dept(`IS_COMPANION_ROLE`/`IS_EXTERNAL_ROLE` 跳过,与它们不加载 Runner 规则一致);DRY_RUN 只 log 计划路径;失败非致命 WARN。
+- `scripts/hooks/install-runner-msg-guard.sh [--settings <path>] [--uninstall] [--lock-held]`:jq-merge `hooks.PreToolUse` 一条 `{matcher:"SendMessage", hooks:[{type:"command", command:"python3 <stable-path>"}]}`;jq 1.6 输出非空判有效;只删自己的 command、保留兄弟、空组丢弃;mktemp+mv;bad JSON 不动文件 exit 2。`--settings` 缺省 = `${LEAD_WORKSPACE:?}/.claude/settings.local.json`。
+- **锁协议(R2 #3)**:installer 的 read→merge→rename 全程必须持有 `<settings>.flywheel-lock`(mkdir 自旋锁,与 `claude-lead.sh:1571-1605` 同名、同 60s 陈旧判定、同 10s 超时→exit 3 不写)。standalone 运行默认自取锁;launcher 已持锁时以 `--lock-held` 调用(内部约定,installer 断言锁目录存在,否则拒绝)以免自死锁。**launcher 与 ops 的 install/converge/uninstall 全部走这一套协议**,不存在无锁写者。
+- `--uninstall` 只移除**本 workspace 文件**里的条目;稳定路径脚本可能被其他 Lead 引用,不删(文档写明)。
+- `claude-lead.sh`:在现有 settings.local.json 锁块内(MCP 预置之后、释放锁之前)调用 `installer --settings "$_SETTINGS_LOCAL_JSON" --lock-held`;仅 cos + dept(`IS_COMPANION_ROLE`/`IS_EXTERNAL_ROLE` 跳过);DRY_RUN 只 log 计划路径;失败非致命 WARN。
 - 安装/卸载/收敛三者用**同一**解析出的路径。
-- `.github/workflows/ci.yml`:FLY-913 那步追加 `python3 scripts/hooks/test-runner-msg-guard.py`、`bash scripts/hooks/test-runner-msg-guard-install.sh`。
+- `.github/workflows/ci.yml`:FLY-913 那步追加 `python3 scripts/hooks/test-runner-msg-guard.py`、`bash scripts/hooks/test-runner-msg-guard-install.sh`、`bash packages/teamlead/scripts/__tests__/fly3083-guard-install-plan.test.sh`(现有 CI 不自动扫描该目录,必须显式列出)。
 - `doc/engineer/implementation/runner-msg-guard.md`:装/卸/开关/日志/为什么是 Lead-local。
 
-**测试 `scripts/hooks/test-runner-msg-guard-install.sh`**:jq 矩阵(幂等、只删自己、保留真实生产形状的兄弟 hook、bad JSON 不动文件);fake workspace 端到端 install/converge/uninstall;路径含空格;`--settings` 指向自定义文件时默认文件不被触碰;**不**碰真实用户 settings。新 `packages/teamlead/scripts/__tests__/fly3083-guard-install-plan.test.sh`:DRY_RUN 的 launch plan 日志含目标 settings 路径与角色跳过逻辑(companion/external 不装)。
+**测试 `scripts/hooks/test-runner-msg-guard-install.sh`**:jq 矩阵(幂等、只删自己、保留真实生产形状的兄弟 hook、bad JSON 不动文件);fake workspace 端到端 install/converge/uninstall;路径含空格;`--settings` 指向自定义文件时默认文件不被触碰;**锁矩阵**:锁被他人持有时 standalone 等待/超时不写、`--lock-held` 无锁目录时拒绝、受控交错(installer 读旧快照期间由测试模拟 launcher 在锁内写入 `enableAllProjectMcpServers` 与一个兄弟 hook → 最终文件同时保留三者)、并发 install+uninstall 收敛到确定状态;**不**碰真实用户 settings。新 `packages/teamlead/scripts/__tests__/fly3083-guard-install-plan.test.sh`:DRY_RUN 的 launch plan 日志含目标 settings 路径与角色跳过逻辑(companion/external 不装)。
 
 ### Chunk 4 — 规矩:一份共享契约 + 三处统一(R1 #3)
 
@@ -158,21 +162,34 @@ normalize(to):
 - `claude-lead.sh` 1821 段不含 `MUST be told to use \`SendMessage\``;含 `runner-channel-contract.md` 且在 cos/dept 共同路径;含 `install-runner-msg-guard.sh` 且位于 settings.local 锁块内(锁 `mkdir` 与 `rmdir` 之间)。
 - 现有 `fly369-patrol-rule.test.ts`、`misroute-render.test.ts` 原样通过;`lead-rules-bundle.test.ts` 仅更新期望列表。
 
-### Chunk 5 — 告警 kind:`mailbox_channel_fault`(四面对齐)
+### Chunk 5 — 告警 kind:`mailbox_channel_fault`(四面对齐 + 可执行调用合同)
 
-- 新 kind **一个**:`mailbox_channel_fault`,`--body` 首行区分 `subkind=transport_error|consumer_stall`。四面同步:`scripts/lead-alert.sh`(帮助与 case 白名单)、`LeadAlertNotifier.ts ALERT_EVENT_TYPES`、`kind-contract.ts`(owner `claude`,arc `human_by_design`——与 restart_guard_bypass 同类:人来修通道)、`infra-event-router.ts`;`kind-contract.test.ts` 漂移守卫覆盖。
-- 触发方仅为 Lead(照契约手动跑 `lead-alert.sh`),本单不加自动探测。
+- 新 kind **一个**:`mailbox_channel_fault`,subkind ∈ `transport_error | suspected_stall`。四面同步:`scripts/lead-alert.sh`(帮助与 case 白名单)、`LeadAlertNotifier.ts ALERT_EVENT_TYPES`、`kind-contract.ts`(owner `claude`,arc `human_by_design`——与 restart_guard_bypass 同类:人来修通道)、`infra-event-router.ts`;`packages/teamlead/src/bridge/__tests__/kind-contract.test.ts` 加**显式**断言:shell 白名单含该 kind、union 含该 kind、contract 条目 owner/arc 如上、router 分支覆盖(不能只靠 union 新增成员通过既有 drift guard)。
+- **完整调用模板(R2 #2;进契约文件与 runner-messaging-rules.md,Lead 照抄)**:
+  ```bash
+  bash "${FLYWHEEL_ROOT}/scripts/lead-alert.sh" \
+    --lead "$FLYWHEEL_LEAD_ID" --project "${FLYWHEEL_PROJECT_NAME:-$PROJECT_NAME}" \
+    --kind mailbox_channel_fault --severity severe --strict-delivery \
+    --signature "mailbox:<execution_id>:<subkind>" \
+    --title "Mailbox channel fault (<subkind>) runner <runner 队名> issue <FLY-xxx>" \
+    --body "subkind=<subkind>\ninstruction_id=<id>\nexecution_id=<execution_id>\nsent_at=<send 时间>\nevidence=<一行证据>"
+  ```
+  (`FLYWHEEL_ROOT`、`FLYWHEEL_LEAD_ID`、`FLYWHEEL_PROJECT_NAME` 均由 `claude-lead.sh` 注入 Lead pane env:`:203`、`:935`、`:1159`。)
+- **episode signature** = `mailbox:<execution_id>:<subkind>`:`lead-alert.sh` 的 event_id = sha1(project|lead|kind|signature),因此同一 Runner 同一 subkind 的重试去重(不刷屏),不同 Runner / 不同 subkind 各自成事件(不被默认「当天日期」签名吞掉)。
+- **strict-delivery 结果分支**(`lead-alert.sh --strict-delivery` 最后一行):`sent`/`queued_transient` = 已升级;`duplicate` = 该 episode 已上报,继续收集证据不重发;`dead_lettered`/`config_error`/其他 = **未升级**,Lead 必须改走 issue thread 明文向 founder 报告通道故障(不得把 exit 0 一概写成已升级)。
+- 触发方仅为 Lead(手动照模板),本单不加自动探测。
+- **测试** `scripts/__tests__/lead-alert-mailbox-fault.test.sh`(沿用 `lead-alert-fly927.test.sh` 的隔离方式:fake curl 于前置 PATH、隔离 `FLYWHEEL_*` 目录、不碰 `~/.flywheel`):同一 Lead 两个 Runner / 两个 subkind → 四个不同 event_id 全部进入发送路径;同一 episode 重复 → `duplicate`;缺 `--lead/--project/--title` → exit 1(合同的必填参数由测试钉死);未知 kind 仍 `config_error`。
 
 ### 3.3 通道故障分支表(R1 #2;进契约与 runner-messaging-rules.md)
 
 | `send` 结果 | 含义 | Lead 动作 |
 |---|---|---|
 | `transport_write:"ok"` | 已留底 + 写进传输层;**消费未知** | 正常。消费证据 = Runner 的回执(`flywheel-comm ask --report` / 终端可见 `[lead-instruction <id>]`)。 |
-| `ok` 但 **10 分钟**内无回执 **且** Bridge 对该 Runner 报 `runner_idle_detected`/stuck(FLY-92/369)或 `flywheel-comm sessions` 显示 running 但终端无变化 | 消费停滞(FLY-3071 形态) | 先诊断通道:`lead-alert.sh --kind mailbox_channel_fault --body "subkind=consumer_stall …"`;查 Bridge `/health` 的投递面;**不**凭空套 re-manage 阶梯,**不**重启 Runner,**不**换旁路。生产 v2 若有 mailbox 状态查询(FLY-1547),以「QUEUED > 10 分钟」替代上述 idle 信号——本沙箱无此接口,不在此假造。 |
+| `ok` 但 **10 分钟**内无回执 **且** Bridge 对该 Runner 报 `runner_idle_detected`/stuck(FLY-92/369)或终端 capture 无变化 | **疑似**消费/投递停滞(FLY-3071 形态)——这是**调查触发器,不是确诊**:指令可能已消费但 Runner 在等外部条件、或没产生回执 | 收集证据:instruction id、CommDB 该行的 `created_at`/`delivered_at`、最后一次终端 capture、Bridge idle 事件时间;按 Chunk 5 模板报 `subkind=suspected_stall`;**不**凭空套 re-manage 阶梯,**不**重启 Runner,**不**换旁路。**本快照没有投递进度探针**:Bridge `/health` 只返回 `ok/shuttingDown/uptime/sessions_count`,仅证明 Bridge 进程可响应,不能排除 Mailbox 故障(不得写成「查 /health 投递面」)。生产 v2 若有 mailbox 状态查询(FLY-1547),以「QUEUED > 10 分钟」作为直接证据——须在生产基线核实,本轮不宣称已验证。 |
 | `skipped/backend_commdb` | 回滚模式,Runner 从 CommDB 读 | 正常,无动作。 |
 | `skipped/no_transport` | 后端无传输(antigravity/kimi) | 正常;该 Runner 走 pr_handoff,不期待唤醒。 |
-| `skipped/no_session_lead` | session 行缺 lead_id(登记异常) | `lead-alert.sh … subkind=transport_error`;查 `sessions` 登记。 |
-| `error` + `wake_error` | 即时传输失败(收件箱不可写等) | CommDB 行已留底;`lead-alert.sh … subkind=transport_error`;修通道后**重发同一内容**(新 id,Runner 幂等协议按 id 去重不覆盖,故只在确认未送达时重发)。 |
+| `skipped/no_session_lead` | session 行缺 lead_id(登记异常) | 按 Chunk 5 模板报 `subkind=transport_error`;查 `sessions` 登记。 |
+| `error` + `wake_error` | 即时传输失败(收件箱不可写等) | CommDB 行已留底;按 Chunk 5 模板报 `subkind=transport_error`;修通道后**重发同一内容**(新 id,Runner 幂等协议按 id 去重不覆盖,故只在确认未送达时重发)。 |
 
 ### 3.4 覆盖矩阵(R1 #3)
 
@@ -213,27 +230,28 @@ normalize(to):
 | 拆 Runner 团队登记 | 拒 | `send` 的唤醒也走该收件箱 |
 | 全局 `~/.claude/settings.json`(v1 方案) | 拒(R1 #6/#7) | `CLAUDE_CONFIG_DIR` profile 落错;与其他全局写者无共享锁 |
 | hook 自查 sqlite 解析 execId | 拒 | 第二份读逻辑;改为 `send --to` 接受短名 |
-| 广播一律拒 | 拒 | 无 Runner 的团队(cos 只带 Lead)广播是合法用法;按团队成员判定,文件不可读才 fail-closed |
+| 广播按团队名单豁免(v2 方案) | 拒(R2 #1) | hook 读名单与原生工具发送之间有登记新 Runner 的竞态,R2 用原生 handleBroadcast 函数体复现;改为 Flywheel Lead 会话一律拒,非 Runner 队友逐个点名 |
+| 只在 launcher 调用点加锁(v2 方案) | 拒(R2 #3) | standalone installer 仍是无锁写者;改为所有入口同一锁协议 |
 | 把 `delivered:true` 当通道健康 | 拒(R1 #2) | 它只是传输层写成功;消费停滞用回执缺失 + Bridge idle 信号判定 |
 
 ## 7. 风险
 
 1. Lead 连续撞护栏多花回合 → reason 命令可直接运行;契约一句正向指引;观察审计 log 频率。
 2. 通道真卡住的诱惑 → 契约/hook reason 都写「不换旁路」+ 分支表给出具体动作与告警 kind。
-3. 广播判定依赖团队文件 → 不可读时 fail-closed(宁多拦);误拦只影响广播这一种用法。
+3. Flywheel Lead 会话广播一律被拦 → 只影响「群发给全队」这一种用法;需要联系非 Runner 队友时逐个点名,零功能损失。
 4. 生产 v2 信箱与本沙箱差异 → Chunk 1 改动限于解析 + 外露;分支表的 v2 判定明确写为「以 FLY-1547 状态接口为准,否则用 idle 信号」;实现者合并到生产分支时按 §3.3 校准,不得删分支。
 5. 本沙箱基线:`test-flywheel-restart-guard.py` 有 1 个既有失败(T8 真实 lead-alert HTTP 200 路径),与本单无关;vitest 需先 `pnpm install --frozen-lockfile`(不带 `--filter`)。
 
 ## 8. 验证与 QA 交接
 
-- 本机只跑相关测试:`python3 scripts/hooks/test-runner-msg-guard.py`;`bash scripts/hooks/test-runner-msg-guard-install.sh`;`bash packages/teamlead/scripts/__tests__/fly3083-guard-install-plan.test.sh`;`pnpm --filter flywheel-comm exec vitest run src/__tests__/db-resolve-execution-id.test.ts src/__tests__/send-mailbox.test.ts src/__tests__/send-backend-routing.test.ts src/__tests__/commands.test.ts src/__tests__/cli.test.ts src/__tests__/e2e-workflows.test.ts src/__tests__/declare-state.test.ts`;`pnpm --filter flywheel-teamlead exec vitest run src/__tests__/fly3083-mailbox-only-rules.test.ts src/__tests__/fly369-patrol-rule.test.ts src/__tests__/lead-rules-bundle.test.ts src/__tests__/misroute-render.test.ts src/__tests__/kind-contract.test.ts`;`bash scripts/__tests__/lead-alert-fly927.test.sh`。全量交 CI。
+- 本机只跑相关测试:`python3 scripts/hooks/test-runner-msg-guard.py`;`bash scripts/hooks/test-runner-msg-guard-install.sh`;`bash packages/teamlead/scripts/__tests__/fly3083-guard-install-plan.test.sh`;`pnpm --filter flywheel-comm exec vitest run src/__tests__/db-resolve-execution-id.test.ts src/__tests__/send-mailbox.test.ts src/__tests__/send-backend-routing.test.ts src/__tests__/commands.test.ts src/__tests__/cli.test.ts src/__tests__/e2e-workflows.test.ts src/__tests__/declare-state.test.ts`;`pnpm --filter flywheel-teamlead exec vitest run src/__tests__/fly3083-mailbox-only-rules.test.ts src/__tests__/fly369-patrol-rule.test.ts src/__tests__/lead-rules-bundle.test.ts src/__tests__/misroute-render.test.ts src/bridge/__tests__/kind-contract.test.ts`(每个文件单独确认被选中,不靠多文件命令的静默通过);`bash scripts/__tests__/lead-alert-mailbox-fault.test.sh`;`bash scripts/__tests__/lead-alert-fly927.test.sh`。全量交 CI。
 - QA 真机(slot,Claude dept Lead + cos Lead 各一):
   1. Lead `SendMessage to:"runner-…"` → deny reason;Runner 收件箱文件**无**新条目;
-  2. Lead `SendMessage to:"*"` → deny;收件箱无新条目;
+  2. Lead `SendMessage to:"*"` → deny(团队里有没有 Runner 都拦);收件箱无新条目;
   3. Lead 照 reason 命令跑 → Runner 收到 `[lead-instruction <id>]`,CommDB 有行、`delivered_at` 非空,`--json` 显示 `transport_write:"ok"`;
-  4. 故障注入四种结果:① 写成功但消费停止(`kill -STOP` Runner 进程 → 10 分钟无回执 + Bridge idle → Lead 按分支表报 `mailbox_channel_fault/consumer_stall`,不换旁路)② `FLYWHEEL_COMM_BACKEND=commdb` → `skipped/backend_commdb` 无告警 ③ vendor=none session → `skipped/no_transport` ④ 收件箱路径置为文件 → `error` + 告警;
+  4. 故障注入:① **消费端暂停**(`kill -STOP` Runner 进程 → 10 分钟无回执 + Bridge idle → Lead 按分支表报 `mailbox_channel_fault/suspected_stall`,不重启、不换旁路;报告措辞必须是「疑似」)② **对照组**:指令已消费但 Runner 在等外部条件、无后续输出 → Lead 的报告不得越过证据宣称通道故障 ③ `FLYWHEEL_COMM_BACKEND=commdb` → `skipped/backend_commdb` 无告警 ④ vendor=none session → `skipped/no_transport` ⑤ 收件箱路径置为文件 → `error` + `transport_error` 告警(fake 通道验证 event_id 按 Runner 区分)。**Bridge 投递循环本身停滞**(真 FLY-3071 形态)本沙箱无法注入,标注为 v2 生产基线 / FLY-3071 的验收项,本单不宣称已验;
   5. Codex Lead(infra-bot TUI)用 `flywheel-comm send` → CommDB 有行;契约文本在其 `baseInstructions` 中可见;
-  6. 卸载 / `=0` 开关 → SendMessage 恢复放行(回滚证据);`jq .hooks.PreToolUse` 证明条目只在 Lead workspace 文件里。
+  6. 卸载 / `=0` 开关 → SendMessage 恢复放行(回滚证据);`jq .hooks.PreToolUse` 证明条目只在 Lead workspace 文件里;standalone `install-runner-msg-guard.sh` 与 Lead 启动并发一次,`enableAllProjectMcpServers` 与条目均在。
 
 ## 9. Founder 设计 HTML
 
