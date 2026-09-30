@@ -4,7 +4,7 @@ Issue: FLY-2127 (https://linear.app/geoforge3d/issue/FLY-2127/病根同类合并
 基于: research.md
 
 **Version**: v1.56.0（ship 取空号）
-**Status**: draft（R5：按 Codex R1 12 项 + R2 11 项 + R3 7 项 + R4 6 项修订）
+**Status**: draft（R6：按 Codex R1 12 项 + R2 11 项 + R3 7 项 + R4 6 项 + R5 1 项修订）
 
 ## 1. 目标
 
@@ -208,8 +208,11 @@ exhausted 行被隔离，后续行照常。`kind='recovery'` 行耗尽只告警�
 - 升级状态机（lane 每 tick 推进，持久、可重试，R2 #10）：
   1. `pending` → 写 StateStore 事件 `runner_wake_exhausted`（幂等 event_id 同 eventId）→ 调 **`LeadAlertNotifier.ensureDelivered(payload)`**（新增，R3 #5 / R4 #4 / R4 #5）：
      - **不改队列文件名合同**（仍是时间戳前缀，drain / queueMax 淘汰的时间排序与 Claude/shell 告警行为零变化）；幂等改用 notifier 内新增的持久 **`alert_receipts`** 表（`event_id PRIMARY KEY, state sent|queued|dead_lettered, ref(队列/死信文件名), at`，与 claims.db 同库）。
-     - `alert()` / `drainQueue()` 的每个出口都写收据：直发成功 → `sent`（drain 成功删文件前先写 `sent`，避免「已送达但文件已删」被误判缺失）；入队 → `queued` + 文件名；死信 → 只有 `deadLetter()` **真正落盘**才返回 `deadLettered`（`deadLetter` 改为返回 boolean 并传播 mkdir/write 失败；meta-alert 失败单独记日志，不影响判定）。
-     - `ensureDelivered` 的判定：先查收据；`sent` / `dead_lettered` → 接收；`queued` 且文件存在 → 接收；`queued` 但文件缺失且无 `sent` → 幂等重新入队；无收据且 `alert()` 返回 `duplicate` → 视为缺失、重新入队；返回 `deadLettered:false`（落盘失败）→ 不接收、保持 `pending` 下 tick 重试。
+     - `alert()` / `drainQueue()` 的每个出口都写收据：直发成功 → `sent`（drain 成功删文件前先写 `sent`，避免「已送达但文件已删」被误判缺失）；死信 → 只有 `deadLetter()` **真正落盘**才返回 `deadLettered`（`deadLetter` 改为返回 boolean 并传播 mkdir/write 失败；meta-alert 失败单独记日志，不影响判定）。
+     - **入队先预留 ref、再写文件**（R5 #1）：`ensureDelivered` 需要入队时，先 `INSERT OR IGNORE INTO alert_receipts(event_id, state='reserving', ref=<一次生成的时间戳前缀文件名>)`，然后读回该行的 `ref`（并发重试读到同一个 ref），
+       以「文件不存在才写」的方式幂等创建**这一个**文件，成功后 CAS `reserving → queued`。恢复分支：无收据 → 预留；`reserving` → 检查 ref 文件，缺则补写，再置 `queued`；`queued` 且文件存在 → 接收。
+       eventId 在重试间永远只对应一个队列文件；时间戳排序合同不变。
+     - `ensureDelivered` 的判定：先查收据；`sent` / `dead_lettered` → 接收；`queued` 且文件存在 → 接收；`queued` 但文件缺失且无 `sent` → 按上条用**同一 ref** 补写；无收据且 `alert()` 返回 `duplicate` → 走预留分支（不会创建第二个文件）；返回 `deadLettered:false`（落盘失败）→ 不接收、保持 `pending` 下 tick 重试。
      只有接收才 CAS 到 `alerted`；抛错保持 `pending`。
   2. `alerted` → `claimRunnerWakeFallback(entry='final')` **一个事务**同时写 `fallback_claimed_at` 与 `escalation_state='fallback_claimed'`（R3 #7）；成功 → 进入 3。
      CAS 失败（accepted / unknown / 在途 / recovery 行）→ CAS 到 `done`，告警正文已含「输入可能已提交，未兜底」证据。
@@ -245,7 +248,7 @@ native 模式 lane 启动时：用 `CodexAdapter.getInboxPath / readUnread / ack
 | M0 | 探针（research §3 P1–P7 + P8 按 message id 读回），回填 §3.1 名称与 §3.5 通知名；go/no-go | `qa/m0-native-delivery-probe.md` |
 | M1 | 共同接口：§3.5 身份规则、§3.7 迁移 + helpers、§3.2 类型、§3.6 `delivery_mode`、notifier `alert_receipts` | db 测试：迁移幂等、旧库默认值、`headRunnerWake` 保序（A 退避时 B 不投；A exhausted 后 B 才投）、claim token / in_flight 拒绝、fallback CAS（recovery 行按入口、在途拒绝、事务内同写 state）、**动作级 CAS 只允许一个执行者**、`finalizeRunnerWake` 任意顺序（早回执 + undecided 不 finished、set active 失败后仍在 head、read_at 未提前写）、同事务 insert+enqueue（两连接屏障用例）、`registerSession` 不清空 mode、**expected-value owner CAS：前任正常 drain 后重执行 / 前任已死取得锁后重执行 均成功，活跃竞争者零影响**、`alert_receipts` 各出口写收据 |
 | M2 | §3.1 error phase + §3.2/§3.3 控制边界 + §3.4 blocked | `codex-daemon-client.test.ts`：complete→投递→不进 hold；paused→投递→ACK→leaveHold→再 complete/hold 且预算只恢复一次；ACK 先到/激活后失败 与 相反顺序；**accepted+activated、未 leaveHold 时断连→resume→preflight 走 set active 而非 pause→最终 active、预算恢复一次、正文不重投**；**新 generation 的 userMessage 先于恢复 set active 返回、无读回 RPC → 观察身份已发布故回执落库，旧 client 通知按 generation 拒绝**；`onOwnershipAcquired` reject → setup_failed 传播；thread/resume 断连仍重启；goal/get 超时后正文仍可补投；steer 过期 turn 拒绝=not_sent；shutdown 撤销 |
-| M3 | Lane + 升级状态机 | readiness 等待不计尝试；退避；accepted 只激活且**激活拒绝有界 exhausted 后 B 继续**；已激活行 ACK 超时不重跑；generation 过期后只重激活；exhausted 隔离；`ensureDelivered`：「claim 成功 + 队列写失败 → 恢复后确有队列文件」、「永久投递失败 + 死信写失败 + meta-alert 失败 → 保持 pending，存储恢复后接收」、「drain 已送达删文件后不重复入队」、旧/新文件混合 drain 顺序与 queueMax 淘汰对 Claude 告警零变化；**HTTP 门铃 capture 被屏障阻塞 + lane 同时 tick → 一次按键、一个结果、无伪 unknown**；租约过期 → unknown + 通知重试直到接收、按键不增加；recovery 行不派生；nudge id / 非 UUID flywheelId 回执 |
+| M3 | Lane + 升级状态机 | readiness 等待不计尝试；退避；accepted 只激活且**激活拒绝有界 exhausted 后 B 继续**；已激活行 ACK 超时不重跑；generation 过期后只重激活；exhausted 隔离；`ensureDelivered`：「claim 成功 + 队列写失败 → 恢复后确有队列文件」、「**文件写成功 → queued 收据写失败 → 库恢复后重试：真实 enqueue/drain 组合下只有一份队列文件、一次实际发送；同 eventId 并发恢复共享同一 ref**」、「永久投递失败 + 死信写失败 + meta-alert 失败 → 保持 pending，存储恢复后接收」、「drain 已送达删文件后不重复入队」、旧/新文件混合 drain 顺序与 queueMax 淘汰对 Claude 告警零变化；**HTTP 门铃 capture 被屏障阻塞 + lane 同时 tick → 一次按键、一个结果、无伪 unknown**；租约过期 → unknown + 通知重试直到接收、按键不增加；recovery 行不派生；nudge id / 非 UUID flywheelId 回执 |
 | M4 | §3.6 写点 / inbox / adapter / §3.10 shim | 改写 research §2.3 五个测试；发送方 env 与目标 mode 不一致按目标路由；无 marker approval/feedback/fix/retest 到 codex-native 入队且零 inbox 文件；backend_conflict；daemon 不可用 read_at NULL；custom teams dir 迁移；ON→OFF 接管对账（accepted/unknown 不重投、告警一条）；**同 execId 的 ON owner 与 OFF 竞争启动：loser 被 socket 锁拒绝，对 mode / 队列 / 路由零影响；mode 发布失败 fail-closed** |
 | M5 | §3.8 告警 + §3.9 门铃 | 真实工厂组合 → `ensureDelivered` payload + owner 解析断言；kind-contract / echo-immunity fixture；nudge：审计失败零调用、accepted 不碰 tmux、not_sent→CAS（recovery 行）→tmux 且 native 零重投、在途 attempt 409、unknown 202、final 模式不入队、Claude 路径对照 |
 | M6 | 529 真房 E2E | §6 |
