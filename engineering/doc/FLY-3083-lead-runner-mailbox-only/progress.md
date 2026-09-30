@@ -1,13 +1,13 @@
 ---
 issue: FLY-3083
 phase: implement
-phaseCursor: 0/6
-updated: 2026-09-30T08:26:36.317Z
-nextStep: "Chunk 1: flywheel-comm send short-name resolution + transport result (TDD)"
+phaseCursor: 2/6
+updated: 2026-09-30T08:34:36.591Z
+nextStep: "Chunk 3: installer + Lead-local settings lock + claude-lead.sh wiring"
 chunks: []
 pointers: {}
 ---
 
 # FLY-3083 progress
-**phase**: implement (0/6)
-**next**: Chunk 1: flywheel-comm send short-name resolution + transport result (TDD)
+**phase**: implement (2/6)
+**next**: Chunk 3: installer + Lead-local settings lock + claude-lead.sh wiring
