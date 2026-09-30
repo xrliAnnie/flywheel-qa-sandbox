@@ -1,9 +1,9 @@
 stateDiagram-v2
     [*] --> pending: 写点入队 (send / rework wake / approval)
-    pending --> started: lane 发 RPC 成功 (attempts+1)
-    pending --> pending: RPC 失败, 退避 2s/8s/30s (attempts+1)
-    started --> finished: 通知流看到对应 userMessage
-    started --> pending: 退避到期仍无回执 → 重投
-    pending --> exhausted: attempts ≥ 3
-    exhausted --> [*]: runner_wake_exhausted 事件 + Lead 告警 + 审计 tmux 兜底
+    pending --> started: lane 先记尝试 (attempts+1), 再交控制边界投递
+    started --> started: not_sent 退避 2s/8s/30s 后重投正文
+    started --> started: accepted 无回执 60s 后只补激活, 不重投
+    started --> finished: 通知流看到 [fw-msg id] 的 userMessage
+    started --> exhausted: attempts ≥ 3 → 隔离该行, 后面的行照常
+    exhausted --> [*]: runner_wake_exhausted 告警 + 审计门铃
     finished --> [*]
