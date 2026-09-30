@@ -1,14 +1,14 @@
 ---
 issue: FLY-3083
 phase: implement
-phaseCursor: 4/6
-updated: 2026-09-30T08:44:35.677Z
-nextStep: "Chunk 5: mailbox_channel_fault kind (4 surfaces) + lead-alert-env
-  helper + launchers + packaging"
+phaseCursor: 5/6
+updated: 2026-09-30T08:54:13.220Z
+nextStep: discovery sweep + related tests, lint, verification.md, push, PR,
+  Codex code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-3083 progress
-**phase**: implement (4/6)
-**next**: Chunk 5: mailbox_channel_fault kind (4 surfaces) + lead-alert-env helper + launchers + packaging
+**phase**: implement (5/6)
+**next**: discovery sweep + related tests, lint, verification.md, push, PR, Codex code review
