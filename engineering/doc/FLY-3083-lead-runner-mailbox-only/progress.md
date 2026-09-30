@@ -1,13 +1,13 @@
 ---
 issue: FLY-3083
 phase: design
-phaseCursor: 3/6
-updated: 2026-09-30T04:52:57.508Z
-nextStep: research.md written; writing plan.md
+phaseCursor: 4/6
+updated: 2026-09-30T04:54:45.301Z
+nextStep: plan.md committed; entering design_review (Codex)
 chunks: []
 pointers: {}
 ---
 
 # FLY-3083 progress
-**phase**: design (3/6)
-**next**: research.md written; writing plan.md
+**phase**: design (4/6)
+**next**: plan.md committed; entering design_review (Codex)
