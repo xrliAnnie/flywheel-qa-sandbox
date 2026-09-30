@@ -44,7 +44,7 @@
 <body>
 <div class="wrap">
   <h1>FLY-3083:Lead 给 Runner 发消息只走一条路</h1>
-  <div class="meta">工程设计说明 · 2026-09-29 · 分支 project-slot-3-FLY-3083 · Codex 设计评审进行中(R1–R3 共 16 项已采纳) · 每个卡片下方都可以留意见,页底一键汇总复制</div>
+  <div class="meta">工程设计说明 · 2026-09-29 · 分支 project-slot-3-FLY-3083 · Codex 设计评审进行中(R1–R5 共 18 项已采纳) · 每个卡片下方都可以留意见,页底一键汇总复制</div>
 
   <div class="card" data-section="一句话总结">
     <h2>1. 一句话总结</h2>
@@ -116,7 +116,7 @@
     <h2>7. 诚实边界:这个设计做什么、不做什么</h2>
     <ul>
       <li><b>做:</b>Lead 侧护栏(拦点名与群发 + 给安全完整的命令)、send 接受队名并外露传输结果、一份所有 Runner-capable Lead 共用的通道契约 + 四份规矩与启动脚本注释统一、一个新告警类型、回归测试(喂 SendMessage 给 Runner / 群发,断言被拦,且文案里的命令经 stub 命令行 round-trip 后参数逐字节正确)、一键卸载 / 环境变量开关回滚。</li>
-      <li><b>不做:</b>Runner 回报 Lead 的方向(FLY-208 已有黑洞巡检);信箱到 Runner 的最后一段(FLY-2127);信箱排队状态查询(FLY-1547 / FLY-3071);用机制拦 Codex Lead 的 <span class="mono">codex queue --remote</span> 旁路(契约禁止,机制记为后续单);顺带发现的 FLY-913 护栏装错配置目录的老问题(另开单)。</li>
+      <li><b>不做:</b>Runner 回报 Lead 的方向(FLY-208 已有黑洞巡检);信箱到 Runner 的最后一段(FLY-2127);信箱排队状态查询(FLY-1547 / FLY-3071);用机制拦 Codex Lead 的 <span class="mono">codex queue --remote</span> 旁路(契约禁止,机制记为后续单);顺带发现的 FLY-913 护栏装错配置目录的老问题(另开单);把两个护栏脚本放进 npm 安装包(给外部客户部署的 Flywheel)——沿用 FLY-913 护栏「不进包」的先例,打包版 Lead 只有契约文本、没有机制,记为后续单,不假装已覆盖。</li>
       <li><b>已知残余:</b>AI 可能连续两次撞护栏,多花一个回合;Flywheel Lead 会话里群发这一种用法被整体禁用(逐个点名替代);「疑似停滞」用的是十分钟无回执 + Bridge 空转信号,只触发调查,不是确诊。</li>
       <li><b>沙箱说明:</b>本设计在测试沙箱(v1.55.0,没有 v2 信箱)上审计;对 send 的改动只有「解析队名 + 外露结果」,与 v1/v2 信箱无关,实现时以生产分支为准合并。</li>
     </ul>
