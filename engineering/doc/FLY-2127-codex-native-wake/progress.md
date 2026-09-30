@@ -1,13 +1,14 @@
 ---
 issue: FLY-2127
 phase: design
-phaseCursor: 6/7
-updated: 2026-09-30T12:11:09.576Z
-nextStep: await-codex-gate, publish founder HTML, report, complete
+phaseCursor: 7/7
+updated: 2026-09-30T12:12:01.751Z
+nextStep: "complete --route phase_design_complete; implementer: apply R6 LOW
+  (alert_receipts enum add reserving) then M0 probe"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2127 progress
-**phase**: design (6/7)
-**next**: await-codex-gate, publish founder HTML, report, complete
+**phase**: design (7/7)
+**next**: complete --route phase_design_complete; implementer: apply R6 LOW (alert_receipts enum add reserving) then M0 probe
