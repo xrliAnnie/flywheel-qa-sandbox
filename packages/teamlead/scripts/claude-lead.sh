@@ -206,6 +206,15 @@ export FLYWHEEL_ROOT
 # path. The lib defines functions only; it does not change shell options.
 # shellcheck source=lib/reap-orphan-adapters.sh
 source "${SCRIPT_DIR}/lib/reap-orphan-adapters.sh"
+# FLY-3083: FLYWHEEL_LEAD_ALERT_SCRIPT = absolute scripts/lead-alert.sh for the
+# Runner channel contract's mailbox_channel_fault template. FLYWHEEL_ROOT above
+# is launcher-local (not in the pane's `-e` list), so the pane gets this
+# dedicated non-secret path instead (added to env_args in _launch_claude;
+# emptied for companion / external). Shared helper = one resolution rule for
+# every Claude and Codex entry point.
+# shellcheck source=lead-alert-env.sh
+source "${SCRIPT_DIR}/lead-alert-env.sh"
+export_lead_alert_script_env "${SCRIPT_DIR}"
 # FLY-83: Ensure all alert-path directories exist before anything can fail.
 # - blocked/  : marker files pausing supervisor until Annie clears them
 # - alert-queue/ : LeadAlertNotifier spills here when Discord POST fails
@@ -1179,6 +1188,7 @@ _launch_claude() {
   local _cz_comm_cli="${FLYWHEEL_COMM_CLI:-}"
   local _cz_comm_db="${FLYWHEEL_COMM_DB:-}"
   local _cz_openai_key="${OPENAI_API_KEY:-}"
+  local _cz_alert_script="${FLYWHEEL_LEAD_ALERT_SCRIPT:-}"
   # FLY-879: an external (customer-facing) Lead gets the SAME high-privilege-cred
   # emptying as a companion — no Bridge token, no CommDB, no OpenAI key in its pane.
   # Anna reaches nothing internal (its whole world is the interviews repo + Discord).
@@ -1188,6 +1198,7 @@ _launch_claude() {
     _cz_comm_cli=""
     _cz_comm_db=""
     _cz_openai_key=""
+    _cz_alert_script=""
   fi
   local env_args=(
     -e "DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:-}"
@@ -1196,6 +1207,8 @@ _launch_claude() {
     -e "FLYWHEEL_LEAD_ID=${LEAD_ID}"
     -e "FLYWHEEL_COMM_DB=${_cz_comm_db}"
     -e "FLYWHEEL_COMM_CLI=${_cz_comm_cli}"
+    # FLY-3083: mailbox_channel_fault alert entry point (Runner channel contract).
+    -e "FLYWHEEL_LEAD_ALERT_SCRIPT=${_cz_alert_script}"
     -e "PROJECT_NAME=${PROJECT_NAME}"
     -e "FLYWHEEL_PROJECT_NAME=${PROJECT_NAME}"
     # FLY-205: project root path for the doc-flow Lead rule's config self-check

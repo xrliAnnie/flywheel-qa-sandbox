@@ -391,6 +391,11 @@ export const FULL_ACCESS_ENV_ALLOWLIST = [
 	"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE",
 	"OPENAI_API_KEY",
 	"FLYWHEEL_TEAMLEAD_SCRIPT_DIR",
+	// FLY-3083: absolute scripts/lead-alert.sh for the Runner channel contract's
+	// mailbox_channel_fault template (non-secret path; the Claude pane gets the same
+	// name). Exported by lead-alert-env.sh in every full-access entry point —
+	// FLYWHEEL_ROOT itself is deliberately NOT allowlisted.
+	"FLYWHEEL_LEAD_ALERT_SCRIPT",
 	// gh/git auth — the ONLY sanctioned addition beyond the Claude-pane set (plan
 	// H-1). Default is the on-disk keyring via HOME (the same path Claude uses, no
 	// GH token in the Claude pane); these cover an opt-in env-token deploy + keep
