@@ -67,11 +67,11 @@
     <div class="diagram">__SVG_D2__</div>
     <ul>
       <li><b>拒绝时 Lead 看到什么:</b>一段可直接复制的命令,例如 <span class="mono">flywheel-comm send --from tadashi --to runner-42afa86c "…"</span>;答 gate(Runner 停下来等 Lead 拍板的问题)仍用 <span class="mono">flywheel-comm respond</span>。</li>
-      <li><b>也拦「群发」:</b>SendMessage 的收件人写 <span class="mono">*</span> 会发给团队里所有人,Runner 也在其中——同样不留底。护栏会看 Lead 的团队名单,里面有 Runner 就拦;名单读不到时宁可多拦。</li>
+      <li><b>也拦「群发」:</b>SendMessage 的收件人写 <span class="mono">*</span> 会发给团队里所有人,Runner 也在其中——同样不留底。在 Flywheel Lead 的会话里群发<b>一律</b>拦(第二轮评审证明「先看名单再放行」有竞态:看名单时没 Runner,下一秒新 Runner 登记进来,群发照样写进它的收件箱);要联系非 Runner 队友就逐个点名,零功能损失。</li>
       <li><b>命令是安全的、完整的:</b>正文里的 <span class="mono">$变量</span>、反引号、引号、换行都原样保留(用 shell 引用规则整体转义),不截断;协议类消息不给命令。</li>
       <li><b>只拦不代发:</b>护栏不替 Lead 把消息发出去(见第 6 节的取舍),Lead 下一回合自己跑命令,拿到编号。</li>
       <li><b>CoS 与 Codex Lead 也覆盖:</b>新写一份很短的「Runner 通道契约」,同时注入部门 Lead 和 CoS(CoS 也可能自己带 Runner——这是设计评审抓出来的原规矩漏洞),Claude 和 Codex 两种后端都装。Codex Lead 没有 SendMessage 工具;它直接操控 Codex Runner 的旁路(<span class="mono">codex queue --remote</span>)本单只在契约里明令禁止,机制拦截留后续单——不假装已经封死。</li>
-      <li><b>装在每个 Lead 自己的工作区:</b>护栏写进 Lead 工作区的本地设置文件,由 Lead 启动脚本在已有的工作区锁里装好(单写者,不和其他全局护栏抢同一个文件,也不会因为 Claude 配置目录切换而装错地方);一个环境变量开关可关(QA / 回滚用)。</li>
+      <li><b>装在每个 Lead 自己的工作区:</b>护栏写进 Lead 工作区的本地设置文件;Lead 启动脚本、运维手动安装/卸载全部走同一把工作区锁(不会互相覆盖,不和其他全局护栏抢同一个文件,也不会因为 Claude 配置目录切换而装错地方)。评审已从 Claude Code 源码确认:这种本地设置里的护栏在 Lead 的「跳过权限确认」模式下照样生效。一个环境变量开关可关(QA / 回滚用)。</li>
     </ul>
     <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s3" placeholder="写下你的意见…"></textarea></div>
   </div>
@@ -89,9 +89,9 @@
     <p>9-29 Lead 之所以改用 SendMessage,是因为 FLY-3071 让信箱通道长时间卡住。只走一条路后,不能再靠旁路兜底,所以要回答「怎么发现、怎么办」:</p>
     <div class="diagram">__SVG_D4__</div>
     <ul>
-      <li><b>发现:</b>send 的返回结果带 <span class="mono">transport_write</span> = ok / skipped / error(以前失败只在错误输出里打一行 WARN)。ok 只表示写进了传输层;「写进去了但 Runner 十分钟没回执、而且 Bridge 报它空转」才判为消费停滞(9-29 FLY-3071 那种形态)。skipped 有两种正常情况(回滚模式、无传输后端的 Runner),不当故障处理。</li>
-      <li><b>兜底:</b>账本那一行已经写了(信没丢)。Lead 的动作是报一个新的告警类型 <span class="mono">mailbox_channel_fault</span>(区分「即时写失败」和「消费停滞」),先诊断通道——不凭空重启 Runner,不套「卡住 Runner」处置阶梯,更不换旁路;这条分支表同时写进契约和护栏的拒绝文案。</li>
-      <li><b>边界:</b>生产的 v2 信箱若有排队状态查询(FLY-1547),就用「排队超过十分钟」代替上面的空转信号;本沙箱没有这个接口,设计里不假造。信箱到 Runner 的最后一段怎么投(含 Codex Runner 的原生接口)由 FLY-2127 定,本单不重复。</li>
+      <li><b>发现:</b>send 的返回结果带 <span class="mono">transport_write</span> = ok / skipped / error(以前失败只在错误输出里打一行 WARN)。ok 只表示写进了传输层;「写进去了但 Runner 十分钟没回执、而且 Bridge 报它空转」只算<b>疑似</b>停滞——是调查触发器,不是确诊(Runner 也可能已读但在等外部条件)。skipped 有两种正常情况(回滚模式、无传输后端的 Runner),不当故障处理。</li>
+      <li><b>兜底:</b>账本那一行已经写了(信没丢)。Lead 收集证据(编号、写入时间、最后一次终端截屏、Bridge 空转事件),照契约里的完整命令模板报一个新的告警类型 <span class="mono">mailbox_channel_fault</span>(区分「即时写失败」和「疑似停滞」;每个 Runner 每种情况各成一个事件,重复上报自动去重、不刷屏;告警没发出去时 Lead 必须改在 issue thread 明文报告)——不凭空重启 Runner,不套「卡住 Runner」处置阶梯,更不换旁路。这条分支表同时写进契约和护栏的拒绝文案。</li>
+      <li><b>边界:</b>本沙箱的 Bridge 没有投递进度探针(它的健康接口只能证明进程活着,不能排除信箱故障),设计里如实写明;生产的 v2 信箱若有排队状态查询(FLY-1547),就用「排队超过十分钟」作直接证据。Bridge 投递循环本身停滞(真 FLY-3071 形态)在沙箱无法注入,归 FLY-3071 / v2 验收。信箱到 Runner 的最后一段怎么投由 FLY-2127 定,本单不重复。</li>
     </ul>
     <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s5" placeholder="写下你的意见…"></textarea></div>
   </div>
@@ -105,7 +105,7 @@
       <tr><td>只改规矩,不加机制</td><td><span class="badge reject">拒</span></td><td>你明确要机制兜住;9-29 证明规矩挡不住临时兜底的冲动。</td></tr>
       <tr><td>拆掉 Runner 在 Lead 团队里的登记,让 SendMessage 根本发不到</td><td><span class="badge reject">拒</span></td><td>flywheel-comm send 自己叫醒 Runner 也靠这个收件箱,拆了等于拆信箱。</td></tr>
       <tr><td>护栏装进全局 Claude 设置(第一版方案)</td><td><span class="badge reject">拒(评审改)</span></td><td>Lead 可能用另一个 Claude 配置目录启动,全局装法会装错地方却报成功;而且和另外两个全局护栏抢同一个文件、没有共享锁。改为 Lead 工作区本地设置 + 既有工作区锁。</td></tr>
-      <tr><td>群发一律拦</td><td><span class="badge reject">拒</span></td><td>没有 Runner 的团队(比如只带 Lead 的 CoS)群发是合法用法;按团队名单判断,名单读不到才一律拦。</td></tr>
+      <tr><td>群发按团队名单豁免(第二版方案)</td><td><span class="badge reject">拒(评审改)</span></td><td>看名单和真正发送之间有「新 Runner 刚登记」的竞态,评审用原生群发代码复现了;改为 Flywheel Lead 会话一律拦。</td></tr>
       <tr><td>把「写成功」当通道健康</td><td><span class="badge reject">拒(评审改)</span></td><td>写成功只是写进传输层;消费停滞要用「没回执 + Bridge 报空转」判定。</td></tr>
       <tr><td>护栏自己查数据库把队名换成全长 id</td><td><span class="badge reject">拒</span></td><td>会出现第二份读账本的逻辑;改成 send 命令直接接受队名,只有一个真相。</td></tr>
     </table>
@@ -117,7 +117,7 @@
     <ul>
       <li><b>做:</b>Lead 侧护栏(拦点名与群发 + 给安全完整的命令)、send 接受队名并外露传输结果、一份所有 Runner-capable Lead 共用的通道契约 + 四份规矩与启动脚本注释统一、一个新告警类型、回归测试(喂 SendMessage 给 Runner / 群发,断言被拦,且文案里的命令经 stub 命令行 round-trip 后参数逐字节正确)、一键卸载 / 环境变量开关回滚。</li>
       <li><b>不做:</b>Runner 回报 Lead 的方向(FLY-208 已有黑洞巡检);信箱到 Runner 的最后一段(FLY-2127);信箱排队状态查询(FLY-1547 / FLY-3071);用机制拦 Codex Lead 的 <span class="mono">codex queue --remote</span> 旁路(契约禁止,机制记为后续单);顺带发现的 FLY-913 护栏装错配置目录的老问题(另开单)。</li>
-      <li><b>已知残余:</b>AI 可能连续两次撞护栏,多花一个回合;群发判定依赖团队名单文件,读不到时宁可多拦(只影响群发这一种用法);「消费停滞」的判定用的是十分钟无回执 + Bridge 空转信号,不是精确的排队状态。</li>
+      <li><b>已知残余:</b>AI 可能连续两次撞护栏,多花一个回合;Flywheel Lead 会话里群发这一种用法被整体禁用(逐个点名替代);「疑似停滞」用的是十分钟无回执 + Bridge 空转信号,只触发调查,不是确诊。</li>
       <li><b>沙箱说明:</b>本设计在测试沙箱(v1.55.0,没有 v2 信箱)上审计;对 send 的改动只有「解析队名 + 外露结果」,与 v1/v2 信箱无关,实现时以生产分支为准合并。</li>
     </ul>
     <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s7" placeholder="写下你的意见…"></textarea></div>
