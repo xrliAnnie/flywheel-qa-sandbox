@@ -54,6 +54,10 @@ git commit -m "docs(FLY-3090): append synthetic generalized QA marker to README"
 
 - 提交前跑 `flywheel-comm inbox` 兜底检查 Lead 指令。
 - 提交后 `git show --stat HEAD` 应只列 `README.md`（+1/-0）。
+- **紧接着、在更新 ledger 之前**记录 README 提交的完整 SHA：
+  `README_COMMIT=$(git rev-parse HEAD)`，并把它写进 progress ledger
+  （`--set-chunk readme_commit=<sha>`）。原因：ledger 的 `progress` 命令会另外产生
+  `chore(progress)` 提交，之后 `HEAD~1` 不再指向 README 提交，回滚（§4）必须按 SHA 定位。
 
 ### C4 — 推送并开 PR（base = `main`）
 
@@ -96,8 +100,12 @@ PR 打开后按节点协议回报 Lead（`flywheel-comm ask --report`），**不
 ## 4. 回滚边界
 
 - 未提交：`git checkout -- README.md`。
-- 已提交未 push：`git reset --hard HEAD~1`（只回退 README 提交；docs 提交保留）。
-- 已 push / 已开 PR：追加一个 revert commit，不 force-push（push-guard 会拦，且违反 FORCE-PUSH GUARD）。
+- 已提交（无论是否已 push / 已开 PR）：**按 SHA 定位、用 revert**，
+  `git revert --no-edit "$README_COMMIT"`（SHA 取自 C3 记录的 `readme_commit`）。
+  **不要**用 `HEAD~1` 之类相对位置——ledger 的 `chore(progress)` 提交会插在中间，
+  `reset --hard HEAD~1` 会撤错提交且留下 marker（Codex R1 medium）。
+  revert 后只读复核：`od -c README.md` 应回到 44 字节基线、`git diff origin/main -- README.md` 为空。
+- 任何情况下不 force-push（push-guard 会拦，且违反 FORCE-PUSH GUARD）；docs / ledger 提交一律保留。
 - 无持久化状态、无迁移、无消费者：README 无任何代码读取方（research §2 grep 零引用）。
 
 ## 5. 明确不做
