@@ -1065,6 +1065,11 @@ function titleFor(kind: AlertEventType): string {
 		// title); case exists for switch exhaustiveness.
 		case "restart_guard_bypass":
 			return "Restart-guard BYPASS used";
+		// FLY-3083: never emitted by LeadWatchdog (the Lead fires it via
+		// scripts/lead-alert.sh with its own title); case exists for switch
+		// exhaustiveness.
+		case "mailbox_channel_fault":
+			return "Lead → Runner Mailbox channel fault";
 		// FLY-939 (G-D): never emitted by LeadWatchdog (boot-sha-check builds its
 		// own title); case exists for switch exhaustiveness.
 		case "bridge_boot_stale_checkout":
@@ -1199,6 +1204,9 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		case "tui_window_lost":
 			return "A windowed Codex Lead's founder-facing cmux pane could not be (re)created for several minutes. Check the launchd job + tmux window (verify-windowed-lead.sh).";
 		// FLY-913: never emitted by LeadWatchdog (the restart-guard PreToolUse hook builds its own body via lead-alert.sh).
+		// FLY-3083: never emitted by LeadWatchdog (the Lead builds its own body via lead-alert.sh).
+		case "mailbox_channel_fault":
+			return "A Lead reported a Lead → Runner Mailbox channel fault (transport error or suspected stall). The body names the Runner, the instruction ids and the evidence — repair the channel; the Lead must not switch to a side channel.";
 		case "restart_guard_bypass":
 			return "An agent used the restart-guard bypass to run a manual Flywheel service restart. The command + reason are in ~/.flywheel/logs/restart-guard.log — review whether it was justified.";
 		// FLY-939 (G-D): never emitted by LeadWatchdog (boot-sha-check builds its own body).

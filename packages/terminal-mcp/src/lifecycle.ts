@@ -32,7 +32,7 @@ export interface RunnerRow {
 }
 
 export const REENGAGE_HINT =
-	"→ re-engageable via 'flywheel-comm send' / SendMessage (no new run needed)";
+	"→ re-engageable via 'flywheel-comm send' (no new run needed)";
 
 /** Render one row: `[id] tmux=… issue=… status=… alive=… class=… started=…`. */
 export function formatRunnerRow(row: RunnerRow): string {

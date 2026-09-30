@@ -38,6 +38,7 @@ Issue: FLY-1062 (URL 不可得,只写 issue 号)
 | packaged/create-compat-mirror.sh | `packages/` 命中 = 镜像自身逻辑 | included(FLY-1062 新增件) | package-onboard-smoke.test.sh |
 | packaged/bootstrap-services.sh | 无非注释命中 | included(FLY-1062 新增件,P2-5) | provision-prebuilt.test.sh(temp-HOME 装四类服务) |
 | packaged/restart-packaged-services.sh | 无非注释命中 | included(FLY-1062 新增件,P3 更新链用) | packaged-restart.test.sh(QA·FLY-1062 直测:哨兵拒绝 + bridge/leads 经 supervisor seam 重启 + 健康门 + rc 传播);supervisor seam 本体另由 packaged-seams.test.sh S11/S12 覆盖 |
+| node_modules/flywheel-teamlead/scripts/lead-alert-env.sh(FLY-3083,经 `PO_PACKAGE_ASSET_FILES` + `package-onboard-files.allow` 进包;claude-lead.sh / codex-lead.sh 在 `set -euo pipefail` 下 source 它) | `<scripts>/../../../scripts/lead-alert.sh`(打包树里 lead-alert.sh **不进包**,见下表 monorepo-only) | **included-guarded** — `[ -f ] && [ -r ]` 守卫:目标缺失 → WARN、`FLYWHEEL_LEAD_ALERT_SCRIPT` 保持 unset、launcher 照常启动;Runner 通道契约的 `${FLYWHEEL_LEAD_ALERT_SCRIPT:?…}` 让 Lead 改走 issue thread 明文报告 | package-onboard-fly3083.test.sh(真实 `po_copy_asset_files` 默认白名单组装 → 文件在 payload;真实 `po_gate` PASS;payload 内 `set -e` source:缺 lead-alert.sh → WARN + unset + rc 0,放入 stub → 导出其绝对路径) |
 | launchd 模板(com.flywheel.daily-standup.plist / com.flywheel.updater.plist / scripts/launchd/*) | 模板内路径 | included — packaged bootstrap 不用这些模板(supervisor spec 渲染);进包仅作 linux/darwin 参考资产;updater plist 指向的 update-flywheel.sh 在 packaged 树自拒(P1-4) | packaged-seams.test.sh(update 拒绝) |
 
 ## 表 · monorepo-only(不进包,客户路径不得调用)

@@ -37,7 +37,7 @@ outcomes:
 ## Step 2 — Re-manage ladder (escalate only as far as needed)
 
 **① Mailbox wake first.** Send the Runner an ordinary message via your normal
-Runner messaging path (`SendMessage` — see runner-messaging rules): ask it to
+Runner messaging path (`flywheel-comm send` — see the Runner channel contract): ask it to
 continue / report state. Then **wait a bounded `MAILBOX_WAKE_WAIT_MS` = 60
 seconds (60_000 ms)** and **re-capture the terminal**. Two outcomes:
 

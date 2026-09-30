@@ -1,0 +1,13 @@
+sequenceDiagram
+  participant L as Lead(AI)
+  participant H as 护栏 hook<br/>(runner-msg-guard)
+  participant S as flywheel-comm send
+  participant DB as CommDB(留底)
+  participant R as Runner 收件箱
+  L->>H: SendMessage to: runner-xxxxxxxx
+  H-->>L: 拒绝 + 给出正确命令<br/>(flywheel-comm send --to runner-xxxxxxxx …)
+  L->>S: 照命令执行
+  S->>DB: 1. 写一行(拿到编号)
+  S->>R: 2. 投递并唤醒 Runner
+  S-->>L: 3. 返回编号 + delivered 真/假
+  Note over L,S: delivered=假 = 通道故障 → 报 infra + 走 re-manage,不换旁路
