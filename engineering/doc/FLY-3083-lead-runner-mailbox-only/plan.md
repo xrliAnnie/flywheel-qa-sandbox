@@ -4,7 +4,7 @@ Issue: FLY-3083 (https://linear.app/geoforge3d/issue/FLY-3083/规矩机制leadru
 日期: 2026-09-29
 基于: exploration.md, research.md
 
-> 修订记录:v2(Codex R1,5 HIGH / 2 MEDIUM 全部采纳)— 广播拦截、结果语义分支表、CoS 覆盖的共享契约、shlex 安全命令生成、`send()` 签名兼容、Lead-local 安装、告警 kind 四面对齐、部署/回滚顺序。v3(Codex R2,2 HIGH / 2 MEDIUM / 1 LOW 全部采纳)— 广播在 Flywheel Lead 会话一律拒(去掉有竞态的名单豁免)、告警完整调用合同 + per-Runner episode signature + strict-delivery 结果分支、installer 加入同一 workspace 锁协议、「疑似停滞」分支去掉不存在的 `/health` 投递面并写清证据与边界、测试路径/CI 接线修正。v4(Codex R3,2 HIGH / 1 MEDIUM / 1 LOW 全部采纳)— 告警脚本路径改为显式注入的 `FLYWHEEL_LEAD_ALERT_SCRIPT`(`FLYWHEEL_ROOT` 其实不进 Claude pane 也不过 Codex 白名单)、`duplicate` 定义为「已 claim、投递未知」、signature 加 episode 锚点(anchor instruction id)、告警测试进 CI。R2 已从 Claude Code 源码确认:Lead-local settings 的 hook 在 `--permission-mode bypassPermissions` 下仍生效(deny 早于权限流程);`to:"*"` 是 SendMessage 唯一的多收件人形态。
+> 修订记录:v2(Codex R1,5 HIGH / 2 MEDIUM 全部采纳)— 广播拦截、结果语义分支表、CoS 覆盖的共享契约、shlex 安全命令生成、`send()` 签名兼容、Lead-local 安装、告警 kind 四面对齐、部署/回滚顺序。v3(Codex R2,2 HIGH / 2 MEDIUM / 1 LOW 全部采纳)— 广播在 Flywheel Lead 会话一律拒(去掉有竞态的名单豁免)、告警完整调用合同 + per-Runner episode signature + strict-delivery 结果分支、installer 加入同一 workspace 锁协议、「疑似停滞」分支去掉不存在的 `/health` 投递面并写清证据与边界、测试路径/CI 接线修正。v4(Codex R3,2 HIGH / 1 MEDIUM / 1 LOW 全部采纳)— 告警脚本路径改为显式注入的 `FLYWHEEL_LEAD_ALERT_SCRIPT`(`FLYWHEEL_ROOT` 其实不进 Claude pane 也不过 Codex 白名单)、`duplicate` 定义为「已 claim、投递未知」、signature 加 episode 锚点(anchor instruction id)、告警测试进 CI。v5(Codex R4,1 HIGH 采纳)— 告警脚本 env 改由共享 helper `lead-alert-env.sh` 注入,覆盖直接 exec runtime、不经 `codex-lead.sh` 的生产 Codex TUI launcher(infra-bot / Mufasa full-access)与 QA/rollback 直达入口。R2 已从 Claude Code 源码确认:Lead-local settings 的 hook 在 `--permission-mode bypassPermissions` 下仍生效(deny 早于权限流程);`to:"*"` 是 SendMessage 唯一的多收件人形态。
 
 ## 0. 一句话
 
@@ -175,9 +175,20 @@ normalize(to):
     --body "subkind=<subkind>\nanchor_instruction_id=<episode 首条 id>\ninstruction_id=<本次 id>\nexecution_id=<execution_id>\nsent_at=<send 时间>\nevidence=<一行证据>"
   ```
 - **脚本路径的端到端提供(R3 #1)**:`FLYWHEEL_ROOT` 只是 launcher 内 export(`claude-lead.sh:203`),**不在** tmux `env_args`(`:1151-1192`)里,也**不在** Codex `FULL_ACCESS_ENV_ALLOWLIST`(`codex-lead-runtime.ts:363-413`)里——R3 实跑 `buildFullAccessEnv` 证实被过滤。因此新增**一个非敏感 env** `FLYWHEEL_LEAD_ALERT_SCRIPT` = 绝对路径 `<flywheel 根>/scripts/lead-alert.sh`(launcher 端 `realpath`,文件不存在则 log WARN 且不注入,让契约的 `:?` 守卫兜底):
-  - Claude:`claude-lead.sh` 由 `$SCRIPT_DIR/../../../scripts/lead-alert.sh` 解析,加入 `env_args`(companion/external 与 `_cz_comm_cli` 同样置空);
-  - Codex:`codex-lead.sh` full-access 分支(`:146-147` 旁,紧邻 `FLYWHEEL_LEAD_ID/FLYWHEEL_PROJECT_NAME` 的 export)由其 `SCRIPT_DIR` 解析并 export;`FULL_ACCESS_ENV_ALLOWLIST` 增加该名(非敏感,不放宽其他过滤);`run-codex-infra-bot-tui.sh` 等 Runner-capable Codex launcher 经 `codex-lead.sh` 得到它,不各自硬编码。
-  - 测试:`fly3083-guard-install-plan.test.sh` 从 DRY_RUN launch plan 断言 Claude `env_args` 含 `FLYWHEEL_LEAD_ALERT_SCRIPT=<存在的文件>`;新 `codex-lead-runtime` 单测断言白名单含该名且 `buildFullAccessEnv`/`buildTuiDaemonEnv` 原样透传;`codex-lead-args.test.sh` 断言 full-access 分支 export;两侧都用 stub 脚本按模板调用一次证明可达。契约文本**不再**声称「已注入 pane」之外的任何环境事实。
+  - **共享 helper(R4 #1)** `packages/teamlead/scripts/lead-alert-env.sh`(sourced,零副作用函数):`export_lead_alert_script_env <script_dir>` → 由 `<script_dir>/../../../scripts/lead-alert.sh` `realpath`;存在且可读 → `export FLYWHEEL_LEAD_ALERT_SCRIPT=<abs>`,否则 log WARN、**不**导出(契约的 `:?` 兜底)。同一函数、同一解析规则,每个入口只加一行 source + 一行调用。
+  - **实际入口映射**(R4 用 canary 证实两个生产 Codex TUI launcher **不经过** `codex-lead.sh`,直接 `exec node "${TUI_RUNTIME}"`;`lead-rules-bundle.sh:102-104` 也记录了这一点):
+
+    | 入口 | 调用 helper 的位置 | 测试 |
+    |---|---|---|
+    | `claude-lead.sh`(Claude 全部角色) | 在 `env_args` 组装前调用;加入 `-e "FLYWHEEL_LEAD_ALERT_SCRIPT=…"`(companion/external 与 `_cz_comm_cli` 同样置空) | `fly3083-guard-install-plan.test.sh`:DRY_RUN launch plan 含该 env_arg 且文件存在 |
+    | `codex-lead.sh`(通用 Codex launcher) | full-access 分支 `:146-147` 旁 | `codex-lead-args.test.sh` 断言 export |
+    | `run-codex-infra-bot-tui.sh`(生产 Infra Bot TUI,直 exec runtime) | source 规则 helper 的同一处(`:93-95`)之后 | 扩 `run-codex-infra-bot-tui.test.sh`:从**未预设**该变量的环境启动,断言传给 runtime stub 的 env 含存在的 canonical 路径 |
+    | `run-codex-lead-mufasa-tui-fullaccess.sh`(生产 Mufasa TUI full-access,直 exec runtime) | `:101-102` 之后 | 扩 `run-codex-lead-mufasa-tui-fullaccess.test.sh`,同上 |
+    | `run-codex-lead-mufasa-fullaccess.sh`(headless full-access,QA/rollback 直达入口) | 同上 | 同类断言(该 launcher 的测试若无则新增最小 DRY_RUN 断言) |
+    | 不改 | `run-codex-lead-mufasa-tui.sh` / `-writecapable.sh` / `run-codex-lead-mufasa.sh`(companion / read-deny / write-capable,不带 Runner) | 反向断言:env 不含该变量(与 companion 置空一致) |
+
+    **不**把专用 launcher 改成调用整个 `codex-lead.sh`(它们固定既有 state/thread 目录以保持会话连续性,通用 launcher 会另生成按身份编码的目录 `codex-lead.sh:76-90`)。
+  - Codex runtime:`FULL_ACCESS_ENV_ALLOWLIST` 增加该名(非敏感,不放宽其他过滤);新单测断言白名单含该名且 `buildFullAccessEnv`/`buildTuiDaemonEnv` 原样透传;两侧都用 stub 告警脚本按契约模板经**真实环境构造函数**调用一次证明可达。契约文本**不再**声称「已注入 pane」之外的任何环境事实。
 - **episode signature(R3 #3)** = `mailbox:<execution_id>:<subkind>:<anchor_instruction_id>`。`anchor_instruction_id` = 本次故障 episode 的**第一条**受影响 instruction id;同一未恢复 episode 内的重试沿用同一锚点(去重不刷屏);恢复后再次出现同类故障用新的锚点(新 event_id,不会被旧 claim 吞掉——`lead-alert.sh` 的去重只看 project|lead|kind|signature,不看 body/claim age)。锚点写进 `--body` 与 issue 证据,便于对账。
 - **strict-delivery 结果分支**(`lead-alert.sh --strict-delivery` 最后一行;R3 #2):`sent`/`queued_transient` = 已升级;**`duplicate` = 该 signature 已被 claim,投递状态未知**(首发可能 403/缺 token/进程中断后 claim 仍在;脚本 `:333-335` 明说 strict caller 不得视为已投递)——仅当 Lead 手头有该 episode 此前的 `sent`/`queued_transient` 结果或 issue-thread 上报凭据时才按已升级处理,否则执行 issue-thread 兜底并如实写「告警投递状态未知」;`dead_lettered`/`config_error`/其他 = **未升级**,Lead 必须改走 issue thread 明文向 founder 报告通道故障。契约不改变共享 `lead-alert.sh` 的去重语义。
 - 触发方仅为 Lead(手动照模板),本单不加自动探测。
@@ -247,7 +258,7 @@ normalize(to):
 
 ## 8. 验证与 QA 交接
 
-- 本机只跑相关测试:`python3 scripts/hooks/test-runner-msg-guard.py`;`bash scripts/hooks/test-runner-msg-guard-install.sh`;`bash packages/teamlead/scripts/__tests__/fly3083-guard-install-plan.test.sh`;`pnpm --filter flywheel-comm exec vitest run src/__tests__/db-resolve-execution-id.test.ts src/__tests__/send-mailbox.test.ts src/__tests__/send-backend-routing.test.ts src/__tests__/commands.test.ts src/__tests__/cli.test.ts src/__tests__/e2e-workflows.test.ts src/__tests__/declare-state.test.ts`;`pnpm --filter flywheel-teamlead exec vitest run src/__tests__/fly3083-mailbox-only-rules.test.ts src/__tests__/fly369-patrol-rule.test.ts src/__tests__/lead-rules-bundle.test.ts src/__tests__/misroute-render.test.ts src/bridge/__tests__/kind-contract.test.ts`(每个文件单独确认被选中,不靠多文件命令的静默通过);`bash scripts/__tests__/lead-alert-mailbox-fault.test.sh`;`bash scripts/__tests__/lead-alert-fly927.test.sh`;`bash packages/teamlead/scripts/__tests__/codex-lead-args.test.sh`;`pnpm --filter flywheel-teamlead exec vitest run <codex-lead-runtime 白名单单测文件>`。全量交 CI。
+- 本机只跑相关测试:`python3 scripts/hooks/test-runner-msg-guard.py`;`bash scripts/hooks/test-runner-msg-guard-install.sh`;`bash packages/teamlead/scripts/__tests__/fly3083-guard-install-plan.test.sh`;`pnpm --filter flywheel-comm exec vitest run src/__tests__/db-resolve-execution-id.test.ts src/__tests__/send-mailbox.test.ts src/__tests__/send-backend-routing.test.ts src/__tests__/commands.test.ts src/__tests__/cli.test.ts src/__tests__/e2e-workflows.test.ts src/__tests__/declare-state.test.ts`;`pnpm --filter flywheel-teamlead exec vitest run src/__tests__/fly3083-mailbox-only-rules.test.ts src/__tests__/fly369-patrol-rule.test.ts src/__tests__/lead-rules-bundle.test.ts src/__tests__/misroute-render.test.ts src/bridge/__tests__/kind-contract.test.ts`(每个文件单独确认被选中,不靠多文件命令的静默通过);`bash scripts/__tests__/lead-alert-mailbox-fault.test.sh`;`bash scripts/__tests__/lead-alert-fly927.test.sh`;`bash packages/teamlead/scripts/__tests__/codex-lead-args.test.sh`;`bash packages/teamlead/scripts/__tests__/run-codex-infra-bot-tui.test.sh`;`bash packages/teamlead/scripts/__tests__/run-codex-lead-mufasa-tui-fullaccess.test.sh`;`pnpm --filter flywheel-teamlead exec vitest run <codex-lead-runtime 白名单单测文件>`。全量交 CI。
 - QA 真机(slot,Claude dept Lead + cos Lead 各一):
   1. Lead `SendMessage to:"runner-…"` → deny reason;Runner 收件箱文件**无**新条目;
   2. Lead `SendMessage to:"*"` → deny(团队里有没有 Runner 都拦);收件箱无新条目;
