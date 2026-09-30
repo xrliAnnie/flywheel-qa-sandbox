@@ -308,6 +308,10 @@ def t6_round_trip() -> None:
         "quote-break": "x" * 4001 + "'; printf REVIEW_BODY_EXECUTED; #",
         "metachars": "y" * 4001 + ' $(printf SUBST) `printf BT` "dq" \\ \n $HOME ) ( ; & |',
         "multi-line": ("z" * 2100 + "\n") * 2 + "last line with ' and \" and )",
+        # code review R2: trailing newlines survive (command substitution strips them)
+        "one trailing newline": "t" * 4001 + "\n",
+        "three trailing newlines": "t" * 4001 + " end\n\n\n",
+        "newline-only tail after quote": "q" * 4001 + "'\n",
     }
     for label, long_body in long_bodies.items():
         code, out, _ = run_hook(send_event(CANON, message=long_body),

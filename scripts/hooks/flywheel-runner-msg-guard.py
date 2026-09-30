@@ -125,25 +125,31 @@ def runner_reason(lead: str, canon: str, message) -> str:
         note = "\n\n改用下面的命令(正文已完整、按 shell 安全方式引用,可直接运行):"
         return head + note + "\n```bash\n" + command + "\n```" + REASON_TAIL
     # Long body: never ask the Lead to hand-escape it. A QUOTED heredoc takes the
-    # body verbatim (no expansion of $, `, \, quotes), the file is then passed as
-    # ONE argv via "$(cat file)" (a substitution result inside double quotes is
-    # never re-parsed). The heredoc sits at top level, not inside $(...), so old
+    # body verbatim (no expansion of $, `, \, quotes) into a temp file; the file
+    # is read back with a sentinel ("$(cat f; printf x)") so command substitution
+    # cannot strip the body's trailing newlines, then the sentinel and the ONE
+    # newline the heredoc itself appends are removed, and the value is passed as
+    # a single argv (a variable expansion inside double quotes is never
+    # re-parsed). The heredoc sits at top level, not inside $(...), so older
     # shells' parsing of unbalanced quotes/parens in the body cannot bite.
     token = secrets.token_hex(6)
     delim = f"FLYWHEEL_MSG_{token}"
+    var = f"_fw_msg_{token}"
     path = os.path.join(tempfile.gettempdir(), f"flywheel-runner-msg-{token}.txt")
     qpath = shlex.quote(path)
     send = shlex.join(cli_prefix() + ["send", "--from", lead, "--to", canon, "--"])
     template = (
-        f"cat > {qpath} <<'{delim}' && {send} \"$(cat {qpath})\" && rm -f {qpath}\n"
+        f"cat > {qpath} <<'{delim}' && {var}=\"$(cat {qpath}; printf x)\" && "
+        f"{var}=\"${{{var}%x}}\" && {var}=\"${{{var}%$'\\n'}}\" && "
+        f"{send} \"${var}\" && rm -f {qpath}\n"
         f"{PASTE_LINE}\n"
         f"{delim}"
     )
     note = (
         f"\n\n正文过长(>{MAX_INLINE_BODY} 字符),没有内联进命令。用下面的模板:"
         f"把第二行 `{PASTE_LINE}` 整行换成原文(原样整段粘贴,**不需要任何转义**——"
-        f"引号 heredoc 不做任何展开),其余行保持不变,作为一条 Bash 命令运行。"
-        f"原文里不能有一行恰好是 `{delim}`;命令替换会去掉原文末尾的换行,正文其余内容逐字节保留。"
+        f"引号 heredoc 不做任何展开),其余行保持不变,作为一条 Bash 命令运行(bash / zsh)。"
+        f"正文逐字节保留(含末尾换行);原文里不能有一行恰好是 `{delim}`。"
     )
     return head + note + "\n```bash\n" + template + "\n```" + REASON_TAIL
 

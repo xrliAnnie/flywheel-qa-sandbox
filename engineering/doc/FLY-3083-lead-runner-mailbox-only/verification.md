@@ -69,3 +69,11 @@ Issue: FLY-3083 (https://linear.app/geoforge3d/issue/FLY-3083/规矩机制leadru
 - HIGH — 长正文模板:原先让 Lead 把原文粘进单引号占位符,原文里的 `'` 会打断引用、可执行正文中的命令。改为引号 heredoc 写临时文件 + `"$(cat 文件)"` 作为单个 argv 传给 `send`;Lead 只需把一整行占位符换成原文,不做任何转义。测试对补全后的模板真跑(bash + zsh)。
 - MEDIUM — 安装器 JSON 校验:原先 `jq -c .` 的输出非空就当有效,有效对象后跟坏尾巴会被截断覆盖。改为 slurp 后必须恰好是一个 JSON 对象,合并失败不再被 `|| true` 吞掉;坏输入一律 exit 2、原文件字节不变。
 - 重跑:hook 测试 76/76、安装测试 27/27、oracle 127/127、path-helpers 20/20、install-plan 19/19、mailbox-only-rules 10/10。
+
+## 7. Codex 代码复审 R2 修复(2026-09-30)
+
+- R2(gpt-5.6-sol/xhigh,新线程 `01a0f19d…`,门禁要求的 reviewer):CHANGES REQUESTED,MEDIUM×3,均成立。R2 注明 R1 两项修复已独立核实;精确头 PR CI 两个 job 当时已成功。
+- 长正文末尾换行:`"$(cat f)"` 会去掉末尾换行。改为哨兵读取 `"$(cat f; printf x)"`,去掉哨兵和 heredoc 自带的那一个换行后作为单个 argv 传出;新增以 1 个 / 3 个换行结尾、引号后接换行三种正文,bash + zsh 真跑逐字节相等(hook 测试 82/82)。
+- `claude-lead.sh` 锁块:MCP 预置的 `jq` 会把多个顶层 JSON 值原样改写。现在两个写者之前先校验「恰好一个 JSON 对象」,不合格就都跳过、文件不动、WARN。新 `fly3083-settings-lock-block.test.sh` 抽出真实锁块非 dry-run 跑真实 installer:缺文件 / 合法对象 / 坏尾巴 / 多顶层值 / 数组 / 垃圾 6/6,并接入 CI。
+- Lead 可见运行时文案:`runs-route.ts` 409 提示、terminal-mcp 工具描述与 parked-alive 行不再写 `/ SendMessage`(gemini-agent mock 同步);`fly3083-mailbox-only-rules.test.ts` 把守卫扩到这些运行时文件(15/15)。
+- 重跑:terminal-mcp `lifecycle` 16 + `vitest related src/index.ts src/lifecycle.ts` 16;gemini-agent `bridge-client` 18;teamlead `start-e2e` 30、`retry-e2e` 11、`runs-route.stale-blocker` 3、`runs-route.founder-ux-exempt` 5、`createFetchIssue` 4、`ship-approval-route` 19、`three-stage-policy` 30、`signoff-and-guard` 13;launcher `fly3083-guard-install-plan` 19、`fly231` 46、`fly879` 40、`fly241` 23、`lead-env-propagation` 7;安装 27/27。teamlead `vitest related src/bridge/runs-route.ts`:709 通过、13 失败,失败文件与分布和 §3 的基线组完全相同。

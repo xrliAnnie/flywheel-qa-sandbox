@@ -15,6 +15,7 @@ import { describe, expect, it } from "vitest";
 
 const BASE = join(__dirname, "..", "..", "lead-rules-base");
 const SH_PATH = join(__dirname, "..", "..", "scripts", "claude-lead.sh");
+const REPO = join(__dirname, "..", "..", "..", "..");
 const RULE_FILES = [
 	"runner-messaging-rules.md",
 	"stuck-runner-remanage.md",
@@ -37,6 +38,28 @@ describe("FLY-3083 mailbox-only Lead rules", () => {
 			expect(offenders).toEqual([]);
 		},
 	);
+
+	// Code review R2: Lead-visible RUNTIME guidance (Bridge responses, MCP tool
+	// descriptions / rows, hook payload hints) must not recommend SendMessage to
+	// a Runner either. Remaining mentions are Runner → "team-lead" misroute
+	// diagnostics, explicit "NOT SendMessage" hints, or code comments.
+	it.each(
+		[
+			"packages/teamlead/src/bridge/runs-route.ts",
+			"packages/teamlead/src/bridge/gate-poller.ts",
+			"packages/teamlead/src/bridge/hook-payload.ts",
+			"packages/terminal-mcp/src/index.ts",
+			"packages/terminal-mcp/src/lifecycle.ts",
+		].map((f) => [f]),
+	)("%s: no runtime line recommends SendMessage to a Runner", (rel) => {
+		const lines = readFileSync(join(REPO, rel), "utf8").split("\n");
+		const offenders = lines.filter(
+			(line) =>
+				line.includes("SendMessage") &&
+				!/NOT SendMessage|team-lead|denied|hook|^\s*(\/\/|\*)/.test(line),
+		);
+		expect(offenders).toEqual([]);
+	});
 
 	it("the contract states the one path, gate respond, transport_write and the Codex bypass", () => {
 		const contract = readFileSync(

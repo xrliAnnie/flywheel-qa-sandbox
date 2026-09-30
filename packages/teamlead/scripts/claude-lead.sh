@@ -1646,17 +1646,26 @@ if command -v jq >/dev/null 2>&1; then
       log "MCP approval: created ${_SETTINGS_LOCAL_JSON}"
     fi
 
-    _tmp_settings="$(mktemp "${_SETTINGS_LOCAL_JSON}.tmp.XXXXXX")"
-    if jq '.enableAllProjectMcpServers = true' \
-       "$_SETTINGS_LOCAL_JSON" > "$_tmp_settings" 2>/dev/null; then
-      mv "$_tmp_settings" "$_SETTINGS_LOCAL_JSON"
-      log "MCP approval: enableAllProjectMcpServers=true in ${_SETTINGS_LOCAL_JSON}"
+    # FLY-3083: both writers below require the file to be EXACTLY one JSON
+    # object (slurped, output-based — jq 1.6 exits 0 on parse errors). jq
+    # streams several top-level values and would rewrite them all; a valid head
+    # with a broken tail is likewise not a settings file. Invalid → untouched.
+    if [ "$(jq -s -r 'if length == 1 and (.[0] | type) == "object" then "ok" else "no" end' \
+         "$_SETTINGS_LOCAL_JSON" 2>/dev/null)" != "ok" ]; then
+      log "WARNING: ${_SETTINGS_LOCAL_JSON} is not exactly one JSON object — skipping MCP pre-seed and runner-msg-guard install (file untouched)"
     else
-      rm -f "$_tmp_settings" 2>/dev/null || true
-      log "WARNING: Failed to pre-seed enableAllProjectMcpServers (jq error)"
+      _tmp_settings="$(mktemp "${_SETTINGS_LOCAL_JSON}.tmp.XXXXXX")"
+      if jq '.enableAllProjectMcpServers = true' \
+         "$_SETTINGS_LOCAL_JSON" > "$_tmp_settings" 2>/dev/null; then
+        mv "$_tmp_settings" "$_SETTINGS_LOCAL_JSON"
+        log "MCP approval: enableAllProjectMcpServers=true in ${_SETTINGS_LOCAL_JSON}"
+      else
+        rm -f "$_tmp_settings" 2>/dev/null || true
+        log "WARNING: Failed to pre-seed enableAllProjectMcpServers (jq error)"
+      fi
+      # FLY-3083: converge the runner-msg-guard entry under the SAME lock.
+      install_runner_msg_guard_hook "$_SETTINGS_LOCAL_JSON"
     fi
-    # FLY-3083: converge the runner-msg-guard entry under the SAME lock.
-    install_runner_msg_guard_hook "$_SETTINGS_LOCAL_JSON"
     rmdir "$_lock_dir" 2>/dev/null || true
     _MCP_LOCK_HELD=false
   else
