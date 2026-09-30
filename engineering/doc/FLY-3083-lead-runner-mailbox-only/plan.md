@@ -4,7 +4,7 @@ Issue: FLY-3083 (https://linear.app/geoforge3d/issue/FLY-3083/规矩机制leadru
 日期: 2026-09-29
 基于: exploration.md, research.md
 
-> 修订记录:v2(Codex R1,5 HIGH / 2 MEDIUM 全部采纳)— 广播拦截、结果语义分支表、CoS 覆盖的共享契约、shlex 安全命令生成、`send()` 签名兼容、Lead-local 安装、告警 kind 四面对齐、部署/回滚顺序。v3(Codex R2,2 HIGH / 2 MEDIUM / 1 LOW 全部采纳)— 广播在 Flywheel Lead 会话一律拒(去掉有竞态的名单豁免)、告警完整调用合同 + per-Runner episode signature + strict-delivery 结果分支、installer 加入同一 workspace 锁协议、「疑似停滞」分支去掉不存在的 `/health` 投递面并写清证据与边界、测试路径/CI 接线修正。R2 已从 Claude Code 源码确认:Lead-local settings 的 hook 在 `--permission-mode bypassPermissions` 下仍生效(deny 早于权限流程);`to:"*"` 是 SendMessage 唯一的多收件人形态。
+> 修订记录:v2(Codex R1,5 HIGH / 2 MEDIUM 全部采纳)— 广播拦截、结果语义分支表、CoS 覆盖的共享契约、shlex 安全命令生成、`send()` 签名兼容、Lead-local 安装、告警 kind 四面对齐、部署/回滚顺序。v3(Codex R2,2 HIGH / 2 MEDIUM / 1 LOW 全部采纳)— 广播在 Flywheel Lead 会话一律拒(去掉有竞态的名单豁免)、告警完整调用合同 + per-Runner episode signature + strict-delivery 结果分支、installer 加入同一 workspace 锁协议、「疑似停滞」分支去掉不存在的 `/health` 投递面并写清证据与边界、测试路径/CI 接线修正。v4(Codex R3,2 HIGH / 1 MEDIUM / 1 LOW 全部采纳)— 告警脚本路径改为显式注入的 `FLYWHEEL_LEAD_ALERT_SCRIPT`(`FLYWHEEL_ROOT` 其实不进 Claude pane 也不过 Codex 白名单)、`duplicate` 定义为「已 claim、投递未知」、signature 加 episode 锚点(anchor instruction id)、告警测试进 CI。R2 已从 Claude Code 源码确认:Lead-local settings 的 hook 在 `--permission-mode bypassPermissions` 下仍生效(deny 早于权限流程);`to:"*"` 是 SendMessage 唯一的多收件人形态。
 
 ## 0. 一句话
 
@@ -167,18 +167,21 @@ normalize(to):
 - 新 kind **一个**:`mailbox_channel_fault`,subkind ∈ `transport_error | suspected_stall`。四面同步:`scripts/lead-alert.sh`(帮助与 case 白名单)、`LeadAlertNotifier.ts ALERT_EVENT_TYPES`、`kind-contract.ts`(owner `claude`,arc `human_by_design`——与 restart_guard_bypass 同类:人来修通道)、`infra-event-router.ts`;`packages/teamlead/src/bridge/__tests__/kind-contract.test.ts` 加**显式**断言:shell 白名单含该 kind、union 含该 kind、contract 条目 owner/arc 如上、router 分支覆盖(不能只靠 union 新增成员通过既有 drift guard)。
 - **完整调用模板(R2 #2;进契约文件与 runner-messaging-rules.md,Lead 照抄)**:
   ```bash
-  bash "${FLYWHEEL_ROOT}/scripts/lead-alert.sh" \
+  bash "${FLYWHEEL_LEAD_ALERT_SCRIPT:?FLYWHEEL_LEAD_ALERT_SCRIPT 未注入(Lead 启动缺陷)— 改在 issue thread 明文报告}" \
     --lead "$FLYWHEEL_LEAD_ID" --project "${FLYWHEEL_PROJECT_NAME:-$PROJECT_NAME}" \
     --kind mailbox_channel_fault --severity severe --strict-delivery \
-    --signature "mailbox:<execution_id>:<subkind>" \
+    --signature "mailbox:<execution_id>:<subkind>:<anchor_instruction_id>" \
     --title "Mailbox channel fault (<subkind>) runner <runner 队名> issue <FLY-xxx>" \
-    --body "subkind=<subkind>\ninstruction_id=<id>\nexecution_id=<execution_id>\nsent_at=<send 时间>\nevidence=<一行证据>"
+    --body "subkind=<subkind>\nanchor_instruction_id=<episode 首条 id>\ninstruction_id=<本次 id>\nexecution_id=<execution_id>\nsent_at=<send 时间>\nevidence=<一行证据>"
   ```
-  (`FLYWHEEL_ROOT`、`FLYWHEEL_LEAD_ID`、`FLYWHEEL_PROJECT_NAME` 均由 `claude-lead.sh` 注入 Lead pane env:`:203`、`:935`、`:1159`。)
-- **episode signature** = `mailbox:<execution_id>:<subkind>`:`lead-alert.sh` 的 event_id = sha1(project|lead|kind|signature),因此同一 Runner 同一 subkind 的重试去重(不刷屏),不同 Runner / 不同 subkind 各自成事件(不被默认「当天日期」签名吞掉)。
-- **strict-delivery 结果分支**(`lead-alert.sh --strict-delivery` 最后一行):`sent`/`queued_transient` = 已升级;`duplicate` = 该 episode 已上报,继续收集证据不重发;`dead_lettered`/`config_error`/其他 = **未升级**,Lead 必须改走 issue thread 明文向 founder 报告通道故障(不得把 exit 0 一概写成已升级)。
+- **脚本路径的端到端提供(R3 #1)**:`FLYWHEEL_ROOT` 只是 launcher 内 export(`claude-lead.sh:203`),**不在** tmux `env_args`(`:1151-1192`)里,也**不在** Codex `FULL_ACCESS_ENV_ALLOWLIST`(`codex-lead-runtime.ts:363-413`)里——R3 实跑 `buildFullAccessEnv` 证实被过滤。因此新增**一个非敏感 env** `FLYWHEEL_LEAD_ALERT_SCRIPT` = 绝对路径 `<flywheel 根>/scripts/lead-alert.sh`(launcher 端 `realpath`,文件不存在则 log WARN 且不注入,让契约的 `:?` 守卫兜底):
+  - Claude:`claude-lead.sh` 由 `$SCRIPT_DIR/../../../scripts/lead-alert.sh` 解析,加入 `env_args`(companion/external 与 `_cz_comm_cli` 同样置空);
+  - Codex:`codex-lead.sh` full-access 分支(`:146-147` 旁,紧邻 `FLYWHEEL_LEAD_ID/FLYWHEEL_PROJECT_NAME` 的 export)由其 `SCRIPT_DIR` 解析并 export;`FULL_ACCESS_ENV_ALLOWLIST` 增加该名(非敏感,不放宽其他过滤);`run-codex-infra-bot-tui.sh` 等 Runner-capable Codex launcher 经 `codex-lead.sh` 得到它,不各自硬编码。
+  - 测试:`fly3083-guard-install-plan.test.sh` 从 DRY_RUN launch plan 断言 Claude `env_args` 含 `FLYWHEEL_LEAD_ALERT_SCRIPT=<存在的文件>`;新 `codex-lead-runtime` 单测断言白名单含该名且 `buildFullAccessEnv`/`buildTuiDaemonEnv` 原样透传;`codex-lead-args.test.sh` 断言 full-access 分支 export;两侧都用 stub 脚本按模板调用一次证明可达。契约文本**不再**声称「已注入 pane」之外的任何环境事实。
+- **episode signature(R3 #3)** = `mailbox:<execution_id>:<subkind>:<anchor_instruction_id>`。`anchor_instruction_id` = 本次故障 episode 的**第一条**受影响 instruction id;同一未恢复 episode 内的重试沿用同一锚点(去重不刷屏);恢复后再次出现同类故障用新的锚点(新 event_id,不会被旧 claim 吞掉——`lead-alert.sh` 的去重只看 project|lead|kind|signature,不看 body/claim age)。锚点写进 `--body` 与 issue 证据,便于对账。
+- **strict-delivery 结果分支**(`lead-alert.sh --strict-delivery` 最后一行;R3 #2):`sent`/`queued_transient` = 已升级;**`duplicate` = 该 signature 已被 claim,投递状态未知**(首发可能 403/缺 token/进程中断后 claim 仍在;脚本 `:333-335` 明说 strict caller 不得视为已投递)——仅当 Lead 手头有该 episode 此前的 `sent`/`queued_transient` 结果或 issue-thread 上报凭据时才按已升级处理,否则执行 issue-thread 兜底并如实写「告警投递状态未知」;`dead_lettered`/`config_error`/其他 = **未升级**,Lead 必须改走 issue thread 明文向 founder 报告通道故障。契约不改变共享 `lead-alert.sh` 的去重语义。
 - 触发方仅为 Lead(手动照模板),本单不加自动探测。
-- **测试** `scripts/__tests__/lead-alert-mailbox-fault.test.sh`(沿用 `lead-alert-fly927.test.sh` 的隔离方式:fake curl 于前置 PATH、隔离 `FLYWHEEL_*` 目录、不碰 `~/.flywheel`):同一 Lead 两个 Runner / 两个 subkind → 四个不同 event_id 全部进入发送路径;同一 episode 重复 → `duplicate`;缺 `--lead/--project/--title` → exit 1(合同的必填参数由测试钉死);未知 kind 仍 `config_error`。
+- **测试** `scripts/__tests__/lead-alert-mailbox-fault.test.sh`(沿用 `lead-alert-fly927.test.sh` 的隔离方式:fake curl 于前置 PATH、隔离 `FLYWHEEL_*` 目录、不碰 `~/.flywheel`):同一 Lead 两个 Runner / 两个 subkind → 四个不同 event_id 全部进入发送路径;同一 episode(同锚点)重复 → `duplicate`;**episode A 成功上报 → 同 Runner/subkind 的 episode B(新锚点)可再次发送**;**首发 403 → `dead_lettered`,修好发送器后重试 → `duplicate` 且无 POST**(钉死「duplicate ≠ 已上报」);仅预置 claim、无成功/排队凭据的 duplicate 同样不得被解释为已升级;缺 `--lead/--project/--title` → exit 1;未知 kind 仍 `config_error`。**CI**:加入 `.github/workflows/ci.yml` FLY-927 那步(`:252-256`,现有 step 逐条列举 shell 测试,不会自动扫描)。
 
 ### 3.3 通道故障分支表(R1 #2;进契约与 runner-messaging-rules.md)
 
@@ -208,7 +211,7 @@ normalize(to):
 | hook | `install-runner-msg-guard.sh --settings <path> --uninstall` 或发送方 env `FLYWHEEL_RUNNER_MSG_GUARD=0` | 立即回到「不拦」 |
 | send 增强 | revert Chunk 1(**须先卸 hook**,否则 reason 里的短名/`--` 命令对旧 send 无效) | 非 JSON stdout 本就兼容 |
 | 契约/规矩 | revert Chunk 4 + bundle 测试期望 | 文本回旧,hook 仍拦 |
-| alert kind | revert Chunk 5 四面 | 契约里的 `lead-alert` 命令会报 unknown kind(仅影响升级动作) |
+| alert kind + env | revert Chunk 5 四面与 `FLYWHEEL_LEAD_ALERT_SCRIPT` 注入 | 契约里的告警命令走 `:?` 守卫 → Lead 改 issue-thread 明文报告(仅影响升级动作) |
 
 无 schema 迁移;settings 只加一条 PreToolUse 条目(Lead-local)。
 
@@ -244,7 +247,7 @@ normalize(to):
 
 ## 8. 验证与 QA 交接
 
-- 本机只跑相关测试:`python3 scripts/hooks/test-runner-msg-guard.py`;`bash scripts/hooks/test-runner-msg-guard-install.sh`;`bash packages/teamlead/scripts/__tests__/fly3083-guard-install-plan.test.sh`;`pnpm --filter flywheel-comm exec vitest run src/__tests__/db-resolve-execution-id.test.ts src/__tests__/send-mailbox.test.ts src/__tests__/send-backend-routing.test.ts src/__tests__/commands.test.ts src/__tests__/cli.test.ts src/__tests__/e2e-workflows.test.ts src/__tests__/declare-state.test.ts`;`pnpm --filter flywheel-teamlead exec vitest run src/__tests__/fly3083-mailbox-only-rules.test.ts src/__tests__/fly369-patrol-rule.test.ts src/__tests__/lead-rules-bundle.test.ts src/__tests__/misroute-render.test.ts src/bridge/__tests__/kind-contract.test.ts`(每个文件单独确认被选中,不靠多文件命令的静默通过);`bash scripts/__tests__/lead-alert-mailbox-fault.test.sh`;`bash scripts/__tests__/lead-alert-fly927.test.sh`。全量交 CI。
+- 本机只跑相关测试:`python3 scripts/hooks/test-runner-msg-guard.py`;`bash scripts/hooks/test-runner-msg-guard-install.sh`;`bash packages/teamlead/scripts/__tests__/fly3083-guard-install-plan.test.sh`;`pnpm --filter flywheel-comm exec vitest run src/__tests__/db-resolve-execution-id.test.ts src/__tests__/send-mailbox.test.ts src/__tests__/send-backend-routing.test.ts src/__tests__/commands.test.ts src/__tests__/cli.test.ts src/__tests__/e2e-workflows.test.ts src/__tests__/declare-state.test.ts`;`pnpm --filter flywheel-teamlead exec vitest run src/__tests__/fly3083-mailbox-only-rules.test.ts src/__tests__/fly369-patrol-rule.test.ts src/__tests__/lead-rules-bundle.test.ts src/__tests__/misroute-render.test.ts src/bridge/__tests__/kind-contract.test.ts`(每个文件单独确认被选中,不靠多文件命令的静默通过);`bash scripts/__tests__/lead-alert-mailbox-fault.test.sh`;`bash scripts/__tests__/lead-alert-fly927.test.sh`;`bash packages/teamlead/scripts/__tests__/codex-lead-args.test.sh`;`pnpm --filter flywheel-teamlead exec vitest run <codex-lead-runtime 白名单单测文件>`。全量交 CI。
 - QA 真机(slot,Claude dept Lead + cos Lead 各一):
   1. Lead `SendMessage to:"runner-…"` → deny reason;Runner 收件箱文件**无**新条目;
   2. Lead `SendMessage to:"*"` → deny(团队里有没有 Runner 都拦);收件箱无新条目;
