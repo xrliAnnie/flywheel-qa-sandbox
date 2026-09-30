@@ -20,10 +20,11 @@
 # --lock-held; we then require the lock dir to exist (refuse otherwise) and
 # never release it. There is no lock-free writer.
 #
-# jq defenses inherited from install-restart-guard.sh: validity is judged by
-# OUTPUT non-emptiness (macOS jq 1.6 exits 0 on parse errors); bad JSON → skip,
-# file untouched; only our own command is removed from each group, siblings are
-# kept, emptied groups dropped.
+# jq defenses: validity is judged by OUTPUT (macOS jq 1.6 exits 0 on parse
+# errors) over the SLURPED input — the file must be exactly one JSON object, so a
+# valid head with a broken tail or several top-level values is rejected; bad JSON
+# → exit 2, file untouched; a failing merge never writes; only our own command is
+# removed from each group, siblings are kept, emptied groups dropped.
 #
 # Usage:
 #   bash scripts/hooks/install-runner-msg-guard.sh [--settings <path>] [--uninstall] [--lock-held]
@@ -109,12 +110,20 @@ else
   fi
 fi
 
+# is_single_object <json-text>: true iff the WHOLE text parses and is exactly
+# one top-level JSON object. Output-based (jq 1.6 exits 0 on parse errors) and
+# slurped, so a valid object followed by a broken tail — which `jq -c .` would
+# happily print the head of — or several top-level values are rejected.
+is_single_object() {
+  [ "$(printf '%s' "$1" | jq -s -r 'if length == 1 and (.[0] | type) == "object" then "ok" else "no" end' 2>/dev/null)" = "ok" ]
+}
+
 # ── Read + validate (under the lock) ────────────────────────────────────────
 EXISTING="{}"
 if [ -f "$SETTINGS_FILE" ]; then
   EXISTING=$(cat "$SETTINGS_FILE")
-  if [ -z "$(printf '%s' "$EXISTING" | jq -c . 2>/dev/null)" ]; then
-    log "WARNING: $SETTINGS_FILE is not valid JSON. Skipping (file untouched)."
+  if ! is_single_object "$EXISTING"; then
+    log "WARNING: $SETTINGS_FILE is not exactly one valid JSON object. Skipping (file untouched)."
     exit 2
   fi
 fi
@@ -134,8 +143,8 @@ INSTALL_FILTER="${STRIP_FILTER}"' |
 '
 
 write_settings() {
-  # $1 = merged JSON. Never write an empty/invalid result.
-  if [ -z "$1" ] || [ -z "$(printf '%s' "$1" | jq -c . 2>/dev/null)" ]; then
+  # $1 = merged JSON. Never write anything but exactly one valid object.
+  if ! is_single_object "$1"; then
     log "WARNING: settings merge produced empty/invalid JSON. Skipping (file untouched)."
     exit 2
   fi
@@ -146,7 +155,10 @@ write_settings() {
 }
 
 if [ "$UNINSTALL" = "1" ]; then
-  MERGED=$(printf '%s' "$EXISTING" | jq "$STRIP_FILTER" 2>/dev/null || true)
+  if ! MERGED=$(printf '%s' "$EXISTING" | jq "$STRIP_FILTER" 2>/dev/null); then
+    log "WARNING: settings merge failed. Skipping (file untouched)."
+    exit 2
+  fi
   write_settings "$MERGED"
   log "uninstalled: entry removed from $SETTINGS_FILE (siblings kept; $HOOK_SCRIPT left for other Leads)"
   exit 0
@@ -162,7 +174,10 @@ cp "$SRC_SCRIPT" "$TMP_HOOK"
 chmod 755 "$TMP_HOOK"
 mv "$TMP_HOOK" "$HOOK_SCRIPT"
 
-MERGED=$(printf '%s' "$EXISTING" | jq --arg cmd "$CMD" "$INSTALL_FILTER" 2>/dev/null || true)
+if ! MERGED=$(printf '%s' "$EXISTING" | jq --arg cmd "$CMD" "$INSTALL_FILTER" 2>/dev/null); then
+  log "WARNING: settings merge failed. Skipping (file untouched)."
+  exit 2
+fi
 write_settings "$MERGED"
 log "installed: $HOOK_SCRIPT + PreToolUse(SendMessage) entry in $SETTINGS_FILE"
 exit 0

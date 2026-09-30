@@ -25,12 +25,15 @@ sys.dont_write_bytecode = True  # don't litter scripts/hooks/ with __pycache__
 import json  # noqa: E402
 import os  # noqa: E402
 import re  # noqa: E402
+import shutil  # noqa: E402
 import subprocess  # noqa: E402
 import tempfile  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 HOOK = Path(__file__).resolve().parent / "flywheel-runner-msg-guard.py"
 LEAD = "flywheel-eng-lead"
+# The long-body template's single line the Lead replaces with the verbatim body.
+PASTE_LINE = "<<PASTE THE FULL MESSAGE HERE VERBATIM - no escaping>>"
 CANON = "runner-42afa86c"
 
 PASS = 0
@@ -295,16 +298,42 @@ def t6_round_trip() -> None:
                 ok(f"T6 round-trip {label} {to!r}")
             else:
                 bad(f"T6 round-trip {label} {to!r}", f"argv={argv!r}")
-    # >4000 chars: placeholder, never presented as runnable
-    long_body = "x" * 4001
-    code, out, _ = run_hook(send_event(CANON, message=long_body),
-                            base_env(FLYWHEEL_COMM_CLI=stub))
-    reason = reason_of(out)
-    cmd = extract_command(reason) or ""
-    if "过长" in reason and long_body not in reason and "在此粘贴原文" in cmd:
-        ok("T6 >4000 chars → placeholder + 过长 notice")
-    else:
-        bad("T6 long body", reason[:300])
+    # >4000 chars: the body is NOT inlined; the template takes it verbatim in a
+    # quoted heredoc (no escaping), then passes it via "$(cat file)" as ONE argv.
+    # Code review R1 HIGH: pasting into a single-quoted placeholder broke quoting
+    # and could execute body text — round-trip the COMPLETED template here.
+    long_bodies = {
+        "plain": "x" * 4001,
+        "apostrophe": "x" * 4001 + " Don't restart.",
+        "quote-break": "x" * 4001 + "'; printf REVIEW_BODY_EXECUTED; #",
+        "metachars": "y" * 4001 + ' $(printf SUBST) `printf BT` "dq" \\ \n $HOME ) ( ; & |',
+        "multi-line": ("z" * 2100 + "\n") * 2 + "last line with ' and \" and )",
+    }
+    for label, long_body in long_bodies.items():
+        code, out, _ = run_hook(send_event(CANON, message=long_body),
+                                base_env(FLYWHEEL_COMM_CLI=stub))
+        reason = reason_of(out)
+        tmpl = extract_command(reason) or ""
+        if "过长" not in reason or long_body[:4001] in reason or "PASTE" not in tmpl:
+            bad(f"T6 long {label}", "missing 过长 notice / body inlined / no paste line")
+            continue
+        filled = tmpl.replace(PASTE_LINE, long_body, 1)
+        shells = ["bash"] + (["zsh"] if shutil.which("zsh") else [])
+        for sh in shells:
+            if os.path.exists(argv_out):
+                os.remove(argv_out)
+            p = subprocess.run([sh, "-c", filled], capture_output=True, text=True,
+                               env={**os.environ, "STUB_ARGV_OUT": argv_out}, timeout=30)
+            try:
+                argv = json.loads(Path(argv_out).read_text())
+            except Exception as exc:  # noqa: BLE001
+                bad(f"T6 long {label} ({sh})", f"stub not run: {exc!r} rc={p.returncode} err={p.stderr[-200:]}")
+                continue
+            want = ["send", "--from", LEAD, "--to", CANON, "--", long_body]
+            if argv == want and "EXECUTED" not in p.stdout and "SUBST" not in p.stdout and p.returncode == 0:
+                ok(f"T6 long {label} ({sh}): completed template delivers the body byte-exact, nothing executed")
+            else:
+                bad(f"T6 long {label} ({sh})", f"rc={p.returncode} stdout={p.stdout[:120]!r} argv_tail={str(argv[-1:])[:120]!r}")
     exact = "y" * 4000
     code, out, _ = run_hook(send_event(CANON, message=exact), base_env(FLYWHEEL_COMM_CLI=stub))
     if exact in (extract_command(reason_of(out)) or ""):

@@ -142,6 +142,28 @@ else
   fail "M5 bad JSON" "rc=$rc content=$(cat "$TMP/bad.json")"
 fi
 
+# M5b/M5c (code review R1 MEDIUM): a valid object followed by a broken tail, or
+# several top-level values, is NOT one valid settings object — refuse (exit 2)
+# and keep the exact bytes, for install AND uninstall.
+printf '%s\n%s\n' '{"permissions":{"allow":["Bash(ls:*)"]}}' '{broken' >"$TMP/tail.json"
+printf '%s\n%s\n' '{"a":1}' '{"b":2}' >"$TMP/multi.json"
+printf '%s\n' '[{"a":1}]' >"$TMP/array.json"
+for fx in tail multi array; do
+  cp "$TMP/$fx.json" "$TMP/$fx.orig"
+  for mode in install uninstall; do
+    if [ "$mode" = "uninstall" ]; then
+      run_installer --settings "$TMP/$fx.json" --uninstall; rc=$?
+    else
+      run_installer --settings "$TMP/$fx.json"; rc=$?
+    fi
+    if [ "$rc" = "2" ] && cmp -s "$TMP/$fx.json" "$TMP/$fx.orig"; then
+      pass "M5 $fx.json $mode → exit 2, bytes unchanged"
+    else
+      fail "M5 $fx.json $mode" "rc=$rc content=$(cat "$TMP/$fx.json")"
+    fi
+  done
+done
+
 # M6 --settings custom file leaves the LEAD_WORKSPACE default untouched
 mkdir -p "$TMP/ws two/.claude"
 echo '{"keep":1}' >"$TMP/ws two/.claude/settings.local.json"

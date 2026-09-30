@@ -57,8 +57,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import shlex
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -66,7 +68,8 @@ RUNNER_RE = re.compile(r"^runner-[0-9a-f]{8}$")
 REF_SUFFIX_RE = re.compile(r"\s+\[[0-9a-f]+\]$")
 SAFE_CHAR_RE = re.compile(r"[A-Za-z0-9_-]")
 MAX_INLINE_BODY = 4000
-BODY_PLACEHOLDER = "<在此粘贴原文>"
+# The one line of the long-body template the Lead replaces with the verbatim body.
+PASTE_LINE = "<<PASTE THE FULL MESSAGE HERE VERBATIM - no escaping>>"
 
 
 def sanitize(value: str) -> str:
@@ -115,19 +118,34 @@ def runner_reason(lead: str, canon: str, message) -> str:
             "要让 Runner 停下或改方向,用 flywheel-comm send 发一条普通指令。"
             + REASON_TAIL
         )
-    too_long = len(message) > MAX_INLINE_BODY
-    body = BODY_PLACEHOLDER if too_long else message
-    command = shlex.join(
-        cli_prefix() + ["send", "--from", lead, "--to", canon, "--", body]
-    )
-    if too_long:
-        note = (
-            f"\n\n正文过长(>{MAX_INLINE_BODY} 字符),下面的命令用了占位符,"
-            "**不能直接运行**——请把原文粘贴到占位符处(保持单引号引用)后再运行:"
+    if len(message) <= MAX_INLINE_BODY:
+        command = shlex.join(
+            cli_prefix() + ["send", "--from", lead, "--to", canon, "--", message]
         )
-    else:
         note = "\n\n改用下面的命令(正文已完整、按 shell 安全方式引用,可直接运行):"
-    return head + note + "\n```bash\n" + command + "\n```" + REASON_TAIL
+        return head + note + "\n```bash\n" + command + "\n```" + REASON_TAIL
+    # Long body: never ask the Lead to hand-escape it. A QUOTED heredoc takes the
+    # body verbatim (no expansion of $, `, \, quotes), the file is then passed as
+    # ONE argv via "$(cat file)" (a substitution result inside double quotes is
+    # never re-parsed). The heredoc sits at top level, not inside $(...), so old
+    # shells' parsing of unbalanced quotes/parens in the body cannot bite.
+    token = secrets.token_hex(6)
+    delim = f"FLYWHEEL_MSG_{token}"
+    path = os.path.join(tempfile.gettempdir(), f"flywheel-runner-msg-{token}.txt")
+    qpath = shlex.quote(path)
+    send = shlex.join(cli_prefix() + ["send", "--from", lead, "--to", canon, "--"])
+    template = (
+        f"cat > {qpath} <<'{delim}' && {send} \"$(cat {qpath})\" && rm -f {qpath}\n"
+        f"{PASTE_LINE}\n"
+        f"{delim}"
+    )
+    note = (
+        f"\n\n正文过长(>{MAX_INLINE_BODY} 字符),没有内联进命令。用下面的模板:"
+        f"把第二行 `{PASTE_LINE}` 整行换成原文(原样整段粘贴,**不需要任何转义**——"
+        f"引号 heredoc 不做任何展开),其余行保持不变,作为一条 Bash 命令运行。"
+        f"原文里不能有一行恰好是 `{delim}`;命令替换会去掉原文末尾的换行,正文其余内容逐字节保留。"
+    )
+    return head + note + "\n```bash\n" + template + "\n```" + REASON_TAIL
 
 
 def broadcast_reason(lead: str) -> str:

@@ -25,9 +25,9 @@ Issue: FLY-3083 (https://linear.app/geoforge3d/issue/FLY-3083/规矩机制leadru
 | flywheel-comm `db-resolve-execution-id.test.ts` | 11/11 |
 | flywheel-comm `send-mailbox.test.ts` | 15/15 |
 | flywheel-comm `cli.test.ts` | 43/43 |
-| `scripts/hooks/test-runner-msg-guard.py` | 67/67 |
+| `scripts/hooks/test-runner-msg-guard.py` | 76/76(R1 后:>4000 字符正文按模板补全后经 bash + zsh 真跑,含 `Don't`、`'; printf …; #`、`$(…)`、反引号、多行,argv 逐字节相等且正文未被执行) |
 | agent-team-transport `fly3083-runner-alias-oracle.test.ts` + `path-helpers.test.ts` | 147/147(oracle 127 条;变异:把非 BMP 改成单个 `-`,8 条失败) |
-| `scripts/hooks/test-runner-msg-guard-install.sh` | 21/21 |
+| `scripts/hooks/test-runner-msg-guard-install.sh` | 27/27(R1 后:有效对象+坏尾巴、多个顶层值、数组 → install/uninstall 均 exit 2 且字节不变) |
 | `packages/teamlead/scripts/__tests__/fly3083-guard-install-plan.test.sh` | 19/19 |
 | teamlead `fly3083-mailbox-only-rules.test.ts` | 10/10 |
 | teamlead `lead-rules-bundle.test.ts`(期望列表更新) | 15/15 |
@@ -62,3 +62,10 @@ Issue: FLY-3083 (https://linear.app/geoforge3d/issue/FLY-3083/规矩机制leadru
 
 - 全量:精确头 PR CI(本机不跑全量)。
 - 真机 QA 场景见 plan §8(Lead `SendMessage` 被拦、别名、广播、照 reason 命令发送、故障注入、Codex Lead、卸载/开关)。
+
+## 6. Codex 代码复审 R1 修复(2026-09-30)
+
+- R1(gpt-6-astra/xhigh,thread `01a0f18e…`):CHANGES REQUESTED,HIGH×1 / MEDIUM×1,均复现成立。
+- HIGH — 长正文模板:原先让 Lead 把原文粘进单引号占位符,原文里的 `'` 会打断引用、可执行正文中的命令。改为引号 heredoc 写临时文件 + `"$(cat 文件)"` 作为单个 argv 传给 `send`;Lead 只需把一整行占位符换成原文,不做任何转义。测试对补全后的模板真跑(bash + zsh)。
+- MEDIUM — 安装器 JSON 校验:原先 `jq -c .` 的输出非空就当有效,有效对象后跟坏尾巴会被截断覆盖。改为 slurp 后必须恰好是一个 JSON 对象,合并失败不再被 `|| true` 吞掉;坏输入一律 exit 2、原文件字节不变。
+- 重跑:hook 测试 76/76、安装测试 27/27、oracle 127/127、path-helpers 20/20、install-plan 19/19、mailbox-only-rules 10/10。
