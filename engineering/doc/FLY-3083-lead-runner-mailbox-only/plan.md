@@ -4,7 +4,7 @@ Issue: FLY-3083 (https://linear.app/geoforge3d/issue/FLY-3083/规矩机制leadru
 日期: 2026-09-29
 基于: exploration.md, research.md
 
-> 修订记录:v2(Codex R1,5 HIGH / 2 MEDIUM 全部采纳)— 广播拦截、结果语义分支表、CoS 覆盖的共享契约、shlex 安全命令生成、`send()` 签名兼容、Lead-local 安装、告警 kind 四面对齐、部署/回滚顺序。v3(Codex R2,2 HIGH / 2 MEDIUM / 1 LOW 全部采纳)— 广播在 Flywheel Lead 会话一律拒(去掉有竞态的名单豁免)、告警完整调用合同 + per-Runner episode signature + strict-delivery 结果分支、installer 加入同一 workspace 锁协议、「疑似停滞」分支去掉不存在的 `/health` 投递面并写清证据与边界、测试路径/CI 接线修正。v4(Codex R3,2 HIGH / 1 MEDIUM / 1 LOW 全部采纳)— 告警脚本路径改为显式注入的 `FLYWHEEL_LEAD_ALERT_SCRIPT`(`FLYWHEEL_ROOT` 其实不进 Claude pane 也不过 Codex 白名单)、`duplicate` 定义为「已 claim、投递未知」、signature 加 episode 锚点(anchor instruction id)、告警测试进 CI。v5(Codex R4,1 HIGH 采纳)— 告警脚本 env 改由共享 helper `lead-alert-env.sh` 注入,覆盖直接 exec runtime、不经 `codex-lead.sh` 的生产 Codex TUI launcher(infra-bot / Mufasa full-access)与 QA/rollback 直达入口。v6(Codex R5,1 HIGH 采纳)— helper 进 `package-onboard.sh` 逐文件资产白名单 + 打包回归断言;打包树里 `scripts/lead-alert.sh` 本就不进包(FLY-1062 审计表政策),helper 按 included-guarded 处理;hook 脚本沿 restart-guard 先例不进 npm payload,边界写明。v7(Codex R6,1 MEDIUM 采纳)— helper 同时登记到独立的发布路径白名单 `scripts/package-onboard-files.allow`(`po_gate` gate② 逐文件拒绝未登记路径),打包回归对最小 payload 跑真实 `po_gate`。R2 已从 Claude Code 源码确认:Lead-local settings 的 hook 在 `--permission-mode bypassPermissions` 下仍生效(deny 早于权限流程);`to:"*"` 是 SendMessage 唯一的多收件人形态。
+> 修订记录:v2(Codex R1,5 HIGH / 2 MEDIUM 全部采纳)— 广播拦截、结果语义分支表、CoS 覆盖的共享契约、shlex 安全命令生成、`send()` 签名兼容、Lead-local 安装、告警 kind 四面对齐、部署/回滚顺序。v3(Codex R2,2 HIGH / 2 MEDIUM / 1 LOW 全部采纳)— 广播在 Flywheel Lead 会话一律拒(去掉有竞态的名单豁免)、告警完整调用合同 + per-Runner episode signature + strict-delivery 结果分支、installer 加入同一 workspace 锁协议、「疑似停滞」分支去掉不存在的 `/health` 投递面并写清证据与边界、测试路径/CI 接线修正。v4(Codex R3,2 HIGH / 1 MEDIUM / 1 LOW 全部采纳)— 告警脚本路径改为显式注入的 `FLYWHEEL_LEAD_ALERT_SCRIPT`(`FLYWHEEL_ROOT` 其实不进 Claude pane 也不过 Codex 白名单)、`duplicate` 定义为「已 claim、投递未知」、signature 加 episode 锚点(anchor instruction id)、告警测试进 CI。v5(Codex R4,1 HIGH 采纳)— 告警脚本 env 改由共享 helper `lead-alert-env.sh` 注入,覆盖直接 exec runtime、不经 `codex-lead.sh` 的生产 Codex TUI launcher(infra-bot / Mufasa full-access)与 QA/rollback 直达入口。v6(Codex R5,1 HIGH 采纳)— helper 进 `package-onboard.sh` 逐文件资产白名单 + 打包回归断言;打包树里 `scripts/lead-alert.sh` 本就不进包(FLY-1062 审计表政策),helper 按 included-guarded 处理;hook 脚本沿 restart-guard 先例不进 npm payload,边界写明。v7(Codex R6,1 MEDIUM 采纳)— helper 同时登记到独立的发布路径白名单 `scripts/package-onboard-files.allow`(`po_gate` gate② 逐文件拒绝未登记路径),打包回归对最小 payload 跑真实 `po_gate`。v8(新执行 Codex R1,1 HIGH / 1 LOW 全部采纳)— hook 判定改为**按原生收件箱路径归一化后**的队名匹配(镜像 stock `sanitizePathComponent` + ASCII 大小写折叠),`runner/42afa86c`、`runner.42afa86c`、`runner 42afa86c`、`Runner-42AFA86C` 等同 inbox 别名一律 deny 并给规范小写 `--to`;新增以真实 `getClaudeInboxPath` 为判据的别名 oracle 回归;`codex-lead.sh` helper 落点改正为 full-access 治理组装块(headless/TUI 分流之前)。R2 已从 Claude Code 源码确认:Lead-local settings 的 hook 在 `--permission-mode bypassPermissions` 下仍生效(deny 早于权限流程);`to:"*"` 是 SendMessage 唯一的多收件人形态。
 
 ## 0. 一句话
 
@@ -97,10 +97,18 @@ judgment 路径(fail-open,exit 0 无输出):
   stdin 非 JSON / 非 dict / tool_name != "SendMessage" / tool_input 非 dict / to 非 str
   env FLYWHEEL_RUNNER_MSG_GUARD == "0"(QA/回滚开关)
   env FLYWHEEL_LEAD_ID 未设(不是 Flywheel Lead 会话 → 本 hook 不管)
-normalize(to):
-  strip → 去掉尾部 ref 后缀 `\s+\[[0-9a-f]+\]$` → 得 name(判定与命令**都用** name)
-命中 A:name 匹配 RUNNER_RE = ^runner-[0-9a-f]{8}$
-命中 B:name == "*"(广播;本机 SendMessageTool 对 to:"*" 枚举团队成员逐个写收件箱,Runner 是成员 → 等同直发)
+normalize(to)(v8,Codex R1 HIGH-1:按**最终 inbox 文件名**判定,不按输入拼写):
+  strip → 去掉尾部 ref 后缀 `\s+\[[0-9a-f]+\]$` → 得 name
+  canon = sanitize(name).lower()
+    sanitize = re.sub(r"[^A-Za-z0-9_-]", "-", ·)  # 逐字镜像 stock sanitizePathComponent
+                                                   # (tasks.ts:217;仓库镜像 agent-team-transport/src/path-helpers.ts:40,
+                                                   #  getClaudeInboxPath :110 用它拼 inbox 路径)
+    .lower()  # 部署机 APFS 大小写不敏感 → `Runner-42AFA86C.json` 与标准文件是同一文件;
+              # 保留命名空间 runner-<8hex> 保守地大小写折叠
+命中 A:canon 匹配 RUNNER_RE = ^runner-[0-9a-f]{8}$
+  → deny;命令里的 `--to` 一律用 canon(规范小写队名,Chunk 1 短名解析器可直接接收),**不**回显原拼写
+  (`runner/42afa86c`、`runner.42afa86c`、`runner 42afa86c`、`runner‐42afa86c`(U+2010)、`Runner-42AFA86C` 全部落在这里)
+命中 B:name == "*"(广播,仍按 strip 后的**原** name 精确比较——原生只对精确 `"*"` 走 handleBroadcast;本机 SendMessageTool 对 to:"*" 枚举团队成员逐个写收件箱,Runner 是成员 → 等同直发)
   → Flywheel Lead 会话(FLYWHEEL_LEAD_ID 已设)里**一律 deny,不读团队名单**。
   R2 证明名单豁免有 check-then-use 竞态:hook 读名单时无 Runner → dispatcher 登记新 Runner(team-bootstrap.ts 的文件锁不覆盖原生工具的发送过程)→ 原生广播写进新 Runner 收件箱、CommDB 无记录。
   非 Runner 队友要联系就逐个点名 SendMessage(不受影响);非 Flywheel 会话(无 FLYWHEEL_LEAD_ID)广播照常放行。
@@ -109,7 +117,7 @@ normalize(to):
 
 **deny reason 生成(R1 #4)**
 - 命令用 argv 列表构造后 `shlex.join`(每个数据参数整体引用,`$`/`$(…)`/反引号/引号/换行全部保真):
-  `node <FLYWHEEL_COMM_CLI> send --from <FLYWHEEL_LEAD_ID> --to <name> -- <完整 message>`
+  `node <FLYWHEEL_COMM_CLI> send --from <FLYWHEEL_LEAD_ID> --to <canon> -- <完整 message>`
   (`--` 已核实:`node:util.parseArgs` 之后的参数全进 positionals,含以 `--` 开头的正文。)
 - **正文完整保留,不截断**。仅当正文 > 4000 字符时,命令中改用占位 `'<在此粘贴原文>'` 并在 reason 里明说「正文过长,请自行粘贴」——占位命令绝不标为可直接运行。
 - `message` 为协议对象(shutdown/plan_approval)→ deny,reason 说明「Runner 不走 Agent Team 协议消息」,**不给命令**。
@@ -121,7 +129,9 @@ normalize(to):
 
 **测试 `scripts/hooks/test-runner-msg-guard.py`**
 - must-deny:`runner-42afa86c`;` runner-42afa86c `;`runner-42afa86c [3fa9c1]`;`*`(不论团队文件存在/缺失/坏 JSON/无 Runner 成员——四个 fixture 都 deny);协议对象 message。
-- must-allow:`team-lead`、`main`、`flywheel-eng-lead`、`runner-42afa86c-extra`、`Runner-42AFA86C`(队名只产小写)、tool_name `Bash`、坏 stdin、空对象、`FLYWHEEL_RUNNER_MSG_GUARD=0`、未设 `FLYWHEEL_LEAD_ID`(含 `*`)。
+- must-deny(同 inbox 别名,v8):`runner/42afa86c`、`runner.42afa86c`、`runner 42afa86c`、`runner:42afa86c`、`runner‐42afa86c`(U+2010)、`Runner-42AFA86C`、`RUNNER-42afa86c`、`runner/42afa86c [3fa9c1]`——round-trip 断言 `--to` 均为规范 `runner-42afa86c`。
+- must-allow:`team-lead`、`main`、`flywheel-eng-lead`、`runner-42afa86c-extra`、`runner.42afa86c.extra`(归一化为 `runner-42afa86c-extra`,是**不同** inbox)、`runner--42afa86c`、tool_name `Bash`、坏 stdin、空对象、`FLYWHEEL_RUNNER_MSG_GUARD=0`、未设 `FLYWHEEL_LEAD_ID`(含 `*`)。
+- **别名 oracle 回归(v8,不自证)**:新 `packages/agent-team-transport/src/__tests__/fly3083-runner-alias-oracle.test.ts`(vitest,随该包进 CI)。判据是仓库既有的 `getClaudeInboxPath`(stock 镜像),**不是** hook 里的正则:语料 = 上面全部 deny/allow 名 + 生成集(标准名的 `-` 依次替换为每个非 `[A-Za-z0-9_-]` 可打印 ASCII 字符及 3 个 Unicode 分隔符 × 原样/全大写/首字母大写)。对每个输入 `x`,`sameInbox = getClaudeInboxPath(team, x).toLowerCase() === getClaudeInboxPath(team, "runner-42afa86c").toLowerCase()`,以 `python3 scripts/hooks/flywheel-runner-msg-guard.py` 子进程跑 hook(临时 `CLAUDE_CONFIG_DIR`/team 目录),断言 `sameInbox ⇔ deny`,且 deny 时 reason 命令的 `--to` == `runner-42afa86c`;跑完断言临时 inbox 目录**无新增文件**(hook 无收件箱副作用)。hook 源码对 sanitize 的镜像注明出处,oracle 测试即其漂移守卫。
 - 负向:hook 源码中不得出现读团队 `config.json` 的代码(grep-zero,防止豁免被悄悄加回)。
 - **命令 round-trip**:用 stub `FLYWHEEL_COMM_CLI`(把 argv 以 JSON 打到文件)执行 reason 里抽出的命令(`bash -c`),断言 argv == `[send,--from,<lead>,--to,runner-42afa86c,--,<原文>]`,覆盖正文:`$VAR`、`$(printf X)`、反引号、单双引号混合、多行、以 `--` 开头、含 `[ref]` 时 `--to` 已归一化、>4000 字符时为占位且 reason 含「过长」。
 - deny 输出 schema 三键;审计路径不可写仍 deny。
@@ -181,7 +191,7 @@ normalize(to):
     | 入口 | 调用 helper 的位置 | 测试 |
     |---|---|---|
     | `claude-lead.sh`(Claude 全部角色) | 在 `env_args` 组装前调用;加入 `-e "FLYWHEEL_LEAD_ALERT_SCRIPT=…"`(companion/external 与 `_cz_comm_cli` 同样置空) | `fly3083-guard-install-plan.test.sh`:DRY_RUN launch plan 含该 env_arg 且文件存在 |
-    | `codex-lead.sh`(通用 Codex launcher) | full-access 分支 `:146-147` 旁 | `codex-lead-args.test.sh` 断言 export |
+    | `codex-lead.sh`(通用 Codex launcher) | `FLYWHEEL_CODEX_LEAD_PROFILE=full-access` 治理组装块内(`:125` 起,`assemble_full_access_governance` 之后),位于 `:142` 的 headless/TUI 分流**之前**——**不是** `:146-147`(那是 TUI 分支的身份 export) | `codex-lead-args.test.sh`:从**未预设**该变量的环境分别跑 headless 与 TUI mode,均断言 export;非 full-access profile 反向断言无该变量 |
     | `run-codex-infra-bot-tui.sh`(生产 Infra Bot TUI,直 exec runtime) | source 规则 helper 的同一处(`:93-95`)之后 | 扩 `run-codex-infra-bot-tui.test.sh`:从**未预设**该变量的环境启动,断言传给 runtime stub 的 env 含存在的 canonical 路径 |
     | `run-codex-lead-mufasa-tui-fullaccess.sh`(生产 Mufasa TUI full-access,直 exec runtime) | `:101-102` 之后 | 扩 `run-codex-lead-mufasa-tui-fullaccess.test.sh`,同上 |
     | `run-codex-lead-mufasa-fullaccess.sh`(headless full-access,QA/rollback 直达入口) | 同上 | 同类断言(该 launcher 的测试若无则新增最小 DRY_RUN 断言) |
@@ -234,6 +244,7 @@ normalize(to):
 ## 5. 负向守卫(测试钉死)
 
 - hook 对非 `SendMessage` 零输出;对 `to:"team-lead"` 放行;未设 `FLYWHEEL_LEAD_ID` 时零输出。
+- hook 按原生 inbox 归一化后的名字判定:任何与标准 Runner 落到同一 inbox 文件(大小写不敏感)的 `to` 必 deny,归一化后是不同 inbox 的名字必放行——以 `getClaudeInboxPath` 为判据的 oracle 回归钉死(v8)。
 - `resolveExecutionId` 对非短名**不查库**;`send` 解析失败**不写** CommDB。
 - 前缀参数化查询,前缀正则限定 hex。
 - installer 不碰 `--settings` 之外的任何文件;companion/external 不装。
@@ -263,9 +274,10 @@ normalize(to):
 
 ## 8. 验证与 QA 交接
 
-- 本机只跑相关测试:`python3 scripts/hooks/test-runner-msg-guard.py`;`bash scripts/hooks/test-runner-msg-guard-install.sh`;`bash packages/teamlead/scripts/__tests__/fly3083-guard-install-plan.test.sh`;`pnpm --filter flywheel-comm exec vitest run src/__tests__/db-resolve-execution-id.test.ts src/__tests__/send-mailbox.test.ts src/__tests__/send-backend-routing.test.ts src/__tests__/commands.test.ts src/__tests__/cli.test.ts src/__tests__/e2e-workflows.test.ts src/__tests__/declare-state.test.ts`;`pnpm --filter flywheel-teamlead exec vitest run src/__tests__/fly3083-mailbox-only-rules.test.ts src/__tests__/fly369-patrol-rule.test.ts src/__tests__/lead-rules-bundle.test.ts src/__tests__/misroute-render.test.ts src/bridge/__tests__/kind-contract.test.ts`(每个文件单独确认被选中,不靠多文件命令的静默通过);`bash scripts/__tests__/lead-alert-mailbox-fault.test.sh`;`bash scripts/__tests__/lead-alert-fly927.test.sh`;`bash packages/teamlead/scripts/__tests__/codex-lead-args.test.sh`;`bash packages/teamlead/scripts/__tests__/run-codex-infra-bot-tui.test.sh`;`bash packages/teamlead/scripts/__tests__/run-codex-lead-mufasa-tui-fullaccess.test.sh`;`bash scripts/__tests__/package-onboard.test.sh`(或新增的 `package-onboard-fly3083.test.sh`);`pnpm --filter flywheel-teamlead exec vitest run <codex-lead-runtime 白名单单测文件>`。全量交 CI。
+- 本机只跑相关测试:`python3 scripts/hooks/test-runner-msg-guard.py`;`bash scripts/hooks/test-runner-msg-guard-install.sh`;`bash packages/teamlead/scripts/__tests__/fly3083-guard-install-plan.test.sh`;`pnpm --filter flywheel-comm exec vitest run src/__tests__/db-resolve-execution-id.test.ts src/__tests__/send-mailbox.test.ts src/__tests__/send-backend-routing.test.ts src/__tests__/commands.test.ts src/__tests__/cli.test.ts src/__tests__/e2e-workflows.test.ts src/__tests__/declare-state.test.ts`;`pnpm --filter flywheel-teamlead exec vitest run src/__tests__/fly3083-mailbox-only-rules.test.ts src/__tests__/fly369-patrol-rule.test.ts src/__tests__/lead-rules-bundle.test.ts src/__tests__/misroute-render.test.ts src/bridge/__tests__/kind-contract.test.ts`(每个文件单独确认被选中,不靠多文件命令的静默通过);`bash scripts/__tests__/lead-alert-mailbox-fault.test.sh`;`bash scripts/__tests__/lead-alert-fly927.test.sh`;`bash packages/teamlead/scripts/__tests__/codex-lead-args.test.sh`;`bash packages/teamlead/scripts/__tests__/run-codex-infra-bot-tui.test.sh`;`bash packages/teamlead/scripts/__tests__/run-codex-lead-mufasa-tui-fullaccess.test.sh`;`bash scripts/__tests__/package-onboard.test.sh`(或新增的 `package-onboard-fly3083.test.sh`);`pnpm --filter flywheel-teamlead exec vitest run <codex-lead-runtime 白名单单测文件>`;`pnpm --filter agent-team-transport exec vitest run src/__tests__/fly3083-runner-alias-oracle.test.ts src/__tests__/path-helpers.test.ts`(v8)。全量交 CI。
 - QA 真机(slot,Claude dept Lead + cos Lead 各一):
   1. Lead `SendMessage to:"runner-…"` → deny reason;Runner 收件箱文件**无**新条目;
+     1b.(v8)Lead `SendMessage to:"runner/<8hex>"` 与 `to:"Runner-<8HEX>"` → 同样 deny,reason 里 `--to` 是规范小写队名;Runner 收件箱无新条目;
   2. Lead `SendMessage to:"*"` → deny(团队里有没有 Runner 都拦);收件箱无新条目;
   3. Lead 照 reason 命令跑 → Runner 收到 `[lead-instruction <id>]`,CommDB 有行、`delivered_at` 非空,`--json` 显示 `transport_write:"ok"`;
   4. 故障注入:① **消费端暂停**(`kill -STOP` Runner 进程 → 10 分钟无回执 + Bridge idle → Lead 按分支表报 `mailbox_channel_fault/suspected_stall`,不重启、不换旁路;报告措辞必须是「疑似」)② **对照组**:指令已消费但 Runner 在等外部条件、无后续输出 → Lead 的报告不得越过证据宣称通道故障 ③ `FLYWHEEL_COMM_BACKEND=commdb` → `skipped/backend_commdb` 无告警 ④ vendor=none session → `skipped/no_transport` ⑤ 收件箱路径置为文件 → `error` + `transport_error` 告警(fake 通道验证 event_id 按 Runner 区分)。**Bridge 投递循环本身停滞**(真 FLY-3071 形态)本沙箱无法注入,标注为 v2 生产基线 / FLY-3071 的验收项,本单不宣称已验;

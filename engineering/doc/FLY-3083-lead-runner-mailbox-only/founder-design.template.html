@@ -63,7 +63,7 @@
 
   <div class="card green" data-section="核心流程">
     <h2>3. 核心流程:护栏拦下 → 给命令 → 走账本投递</h2>
-    <p>护栏是一个 <span class="term">PreToolUse hook</span>(Claude Code 在每次调用工具之前先跑的一段小程序,可以否决这次调用)。它只盯 SendMessage,收件人是 Runner 的队名(形如 <span class="mono">runner-xxxxxxxx</span>,由 Flywheel 唯一生成)就拒绝,并把正确命令原样喂回给 Lead;收件人是别人(其他 Lead、founder)照常放行。</p>
+    <p>护栏是一个 <span class="term">PreToolUse hook</span>(Claude Code 在每次调用工具之前先跑的一段小程序,可以否决这次调用)。它只盯 SendMessage,收件人是 Runner 的队名(形如 <span class="mono">runner-xxxxxxxx</span>,由 Flywheel 唯一生成)就拒绝,并把正确命令原样喂回给 Lead;收件人是别人(其他 Lead、founder)照常放行。判断时护栏先按 Claude Code 自己拼收件箱文件名的规则把名字「洗」一遍(把 <span class="mono">/</span>、<span class="mono">.</span>、空格等换成 <span class="mono">-</span>,再忽略大小写),所以 <span class="mono">runner/xxxxxxxx</span>、<span class="mono">Runner-XXXXXXXX</span> 这类「换个写法、其实落进同一个收件箱」的变体也一样被拦。</p>
     <div class="diagram">__SVG_D2__</div>
     <ul>
       <li><b>拒绝时 Lead 看到什么:</b>一段可直接复制的命令,例如 <span class="mono">flywheel-comm send --from tadashi --to runner-42afa86c "…"</span>;答 gate(Runner 停下来等 Lead 拍板的问题)仍用 <span class="mono">flywheel-comm respond</span>。</li>
@@ -107,6 +107,7 @@
       <tr><td>护栏装进全局 Claude 设置(第一版方案)</td><td><span class="badge reject">拒(评审改)</span></td><td>Lead 可能用另一个 Claude 配置目录启动,全局装法会装错地方却报成功;而且和另外两个全局护栏抢同一个文件、没有共享锁。改为 Lead 工作区本地设置 + 既有工作区锁。</td></tr>
       <tr><td>群发按团队名单豁免(第二版方案)</td><td><span class="badge reject">拒(评审改)</span></td><td>看名单和真正发送之间有「新 Runner 刚登记」的竞态,评审用原生群发代码复现了;改为 Flywheel Lead 会话一律拦。</td></tr>
       <tr><td>把「写成功」当通道健康</td><td><span class="badge reject">拒(评审改)</span></td><td>写成功只是写进传输层;消费停滞要用「没回执 + Bridge 报空转」判定。</td></tr>
+      <tr><td>护栏只认一字不差的 runner-xxxxxxxx 写法</td><td><span class="badge reject">拒(评审改)</span></td><td>本次执行的评审复现:原生工具会把 <span class="mono">runner/xxxxxxxx</span>、大小写变体等写进同一个收件箱;改为按「最终落到哪个收件箱文件」判定,并用仓库里现成的收件箱路径函数做对照测试。</td></tr>
       <tr><td>护栏自己查数据库把队名换成全长 id</td><td><span class="badge reject">拒</span></td><td>会出现第二份读账本的逻辑;改成 send 命令直接接受队名,只有一个真相。</td></tr>
     </table>
     <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s6" placeholder="写下你的意见…"></textarea></div>
