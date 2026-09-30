@@ -1,14 +1,13 @@
 ---
 issue: FLY-3090
-phase: design
-phaseCursor: 6/6
-updated: 2026-09-30T05:59:56.845Z
-nextStep: "handoff to implement node: execute plan.md C1-C4 (append README line,
-  narrow verify, commit+record SHA via --handoff, PR to main)"
+phase: implement
+phaseCursor: 0/4
+updated: 2026-09-30T06:05:45.962Z
+nextStep: "C1: run RED README marker assertion, then append exact final line"
 chunks: []
 pointers: {}
 ---
 
 # FLY-3090 progress
-**phase**: design (6/6)
-**next**: handoff to implement node: execute plan.md C1-C4 (append README line, narrow verify, commit+record SHA via --handoff, PR to main)
+**phase**: implement (0/4)
+**next**: C1: run RED README marker assertion, then append exact final line
