@@ -14,6 +14,11 @@ classDiagram
       +recipientExecId: UUID
       +rawBody: exact text
     }
+    class CommDbSnapshot {
+      +source: managed read-only copy
+      +fromAgent: Lead identity
+      +type: instruction
+    }
     class MarkerLine {
       +bytes: printable ASCII
       +length: 1..512
@@ -24,6 +29,16 @@ classDiagram
       +sha: local immutable commit
       +pushed: false
     }
+    class CompletionReceipt {
+      +instructionId: UUID
+      +rawBodySha256: hex
+      +probeCommitSha: hex
+      +state: completed
+    }
+    class TerminalRoute {
+      +empty: no_code if allowed
+      +committed: Lead close or cancel
+    }
     class DesignEvidence {
       +docs: exploration research plan
       +reviewVerdict: APPROVED
@@ -31,6 +46,9 @@ classDiagram
     }
     Execution "1" --> "1" TurnReceipt : must own write turn
     Execution "1" --> "0..1" NativeInstruction : must be recipient
+    NativeInstruction "1" --> "1" CommDbSnapshot : verify provenance
     NativeInstruction "1" --> "1..*" MarkerLine : exact extraction
     MarkerLine "1..*" --> "0..1" ProbeCommit : conditional append
+    ProbeCommit "1" --> "1" CompletionReceipt : durable idempotency
+    CompletionReceipt "1" --> "1" TerminalRoute : explicit closure
     Execution "1" --> "1" DesignEvidence : design output
