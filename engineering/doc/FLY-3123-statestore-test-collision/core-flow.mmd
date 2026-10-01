@@ -1,0 +1,17 @@
+sequenceDiagram
+    autonumber
+    participant P1408 as PR #1408 (FLY-2968)
+    participant P1379 as PR #1379 (FLY-2919)
+    participant Main as main 分支
+    participant CI as 所有 PR 的 CI
+    P1408->>Main: 16:31Z 合入：第 18 行改成 type StateStore（只剩类型）
+    P1379->>Main: 17:37Z 合入：新测试调用 StateStore.create（需要运行时值）
+    Main-->>CI: 运行时 StateStore 不存在 → ReferenceError，teamlead 分片全红
+    Note over Main,CI: 两个 PR 各自 CI 都是绿的，合在一起才撞
+    participant P1425 as PR #1425 (FLY-3123 修复)
+    P1425->>Main: 21:08Z 合入：改用 createGreenHandoffStore(":memory:")
+    Main-->>CI: 恢复全绿
+    participant P1430 as PR #1430 (回退)
+    P1430->>Main: 10-01 00:31Z 因 FLY-3143 回退 FLY-2919 + 本修复（测试整条不在了）
+    participant P1431 as PR #1431 / #1400 (在飞)
+    P1431-->>Main: 重新带回 FLY-2919 测试，且已用 helper 调用（teamlead 分片 pass）

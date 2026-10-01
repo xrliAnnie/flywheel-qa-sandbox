@@ -1,0 +1,9 @@
+flowchart TD
+    A[implement 阶段开始：检查当前 checkout] --> B{目标测试文件存在？}
+    B -- 否（如 QA 沙箱） --> X[不伪造文件<br/>引用 gh 证据交接<br/>零代码提交]
+    B -- 是 --> C{命名测试恰好 1 处，且 StateStore 为 type-only、helper 为值导入？}
+    C -- 测试 0 处（当前生产 main，已被 #1430 回退） --> Y[不单独补回测试<br/>记录修复随 #1431/#1400 重落地<br/>零代码提交]
+    C -- 是 --> D{下一行是哪种构造？}
+    D -- createGreenHandoffStore --> Z[no-op：核导入不变<br/>单文件跑绿<br/>零代码提交]
+    D -- StateStore.create 且导入吻合 --> E[碰撞形态：不在本单提交<br/>把 repo+SHA+一行建议交给所属 issue]
+    C -- 多处 / 导入不符 / 形态未知 --> G[不匹配：不套用这一行<br/>记录并交接 Lead]
