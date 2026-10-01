@@ -4,23 +4,30 @@ flowchart TD
     T -->|"yours: design"| D["Write exploration, research, plan"]
     D --> R["Approved design review"]
     R --> H["Publish Founder HTML"]
-    H --> C["Complete design phase only"]
+    H --> C["Complete design phase, then park"]
     C --> O["DAG orchestrator chooses next phase"]
     O --> T2{"Downstream TURN"}
     T2 -->|"not-yours"| W2["Wait without worktree writes"]
-    T2 -->|"yours"| M{"Exact marker delivered to this execution?"}
-    M -->|"No"| N["Report TURN receipt and wait"]
-    M -->|"Yes"| V["Validate raw line and exact-line count"]
-    V --> A["Append each missing line once"]
-    A --> G["Commit only probe.txt locally"]
-    G --> Q["Report instruction id plus actual SHA"]
-    Q --> B["Stop: no push, PR, ship, or deploy"]
+    T2 -->|"yours"| M{"Native Lead envelope present?"}
+    M -->|"No"| N["Report TURN only and park"]
+    M -->|"Yes"| P["Persist instruction id and raw body"]
+    P --> X{"One exact extraction grammar?"}
+    X -->|"No"| U["Ask Lead for literal and park"]
+    X -->|"Yes"| V["Validate bytes and exact-line count"]
+    V --> E{"Already committed exactly once?"}
+    E -->|"Yes"| S["Verify introducing SHA; no empty commit"]
+    E -->|"No"| A["Append only missing lines"]
+    A --> G["Stage, inspect exact diff, local commit"]
+    G --> Q["Report instruction id plus probe SHA"]
+    S --> Q
+    Q --> L["Ask Lead to close or cancel no-PR run"]
+    L --> B["Park: no push, PR, ship, or deploy"]
 
     classDef authority fill:#fff8e6,stroke:#ff9500,color:#1d1d1f;
     classDef action fill:#ffffff,stroke:#007aff,color:#1d1d1f;
     classDef success fill:#eefaf1,stroke:#34c759,color:#1d1d1f;
     classDef stop fill:#fff0ef,stroke:#ff3b30,color:#1d1d1f;
-    class T,T2,M authority;
-    class I,D,R,H,O,V,A,G action;
+    class T,T2,M,X,E authority;
+    class I,D,R,H,O,P,V,A,G,S,L action;
     class C,Q success;
-    class W,W2,N,B stop;
+    class W,W2,N,U,B stop;

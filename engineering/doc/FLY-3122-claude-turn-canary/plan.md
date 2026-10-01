@@ -112,9 +112,10 @@ Issue: FLY-3122 (https://linear.app/geoforge3d/issue/FLY-3122/529-canary-fly2127
 
   ```bash
   node "$FLYWHEEL_COMM_CLI" complete --route phase_design_complete
+  node "$FLYWHEEL_COMM_CLI" park --exec-id "$FLYWHEEL_EXEC_ID" --reason "DAG workflow design parked until ship"
   ```
 
-  Expected: phase completion receipt. Do not dispatch a successor, create a PR, request ship, merge, or deploy.
+  Expected: phase completion receipt followed by a durable design hold. End the current turn after `park`; do not dispatch a successor, create a PR, request ship, merge, or deploy.
 
 ## Task 3: Conditional probe append in the authorized downstream execution
 
@@ -131,22 +132,34 @@ Issue: FLY-3122 (https://linear.app/geoforge3d/issue/FLY-3122/529-canary-fly2127
 
   Expected: output begins with `yours`. `not-yours` is a wait state; do not read it as write authority.
 
-- [ ] **Step 2: Inspect current-execution instructions**
+- [ ] **Step 2: Consume the native instruction from the turn input**
 
-  Run:
+  Treat the current user turn's native envelope as the primary and authoritative carrier:
 
-  ```bash
-  node "$FLYWHEEL_COMM_CLI" inbox --exec-id "$FLYWHEEL_EXEC_ID"
-  ```
+  - Claude receives `<teammate-message>` whose body begins `[lead-instruction <id>]`;
+  - Codex receives the same envelope through its durable phase-wake/user-turn input.
+
+  Capture the full `instruction_id` and the complete raw body after the envelope prefix. For this canary, **do not run `flywheel-comm inbox` to discover the marker**: `inbox` ACKs a QUEUED/LEASED row with carrier `inbox`, while an already natively delivered row is absent from `inbox`; either outcome destroys or misses the native-receive evidence. The generic inbox path is only a fallback for tasks that do not require native proof, so it does not apply here.
 
   Branch behavior:
 
-  - no `[lead-instruction <id>]` containing exact marker line(s): do not create or modify `probe.txt`; report that TURN was acknowledged and no marker was delivered, then wait for the specific question or instruction;
-  - exact marker instruction present: retain its full instruction id and raw literal line(s), then continue.
+  - no native `[lead-instruction <id>]` input: do not touch `probe.txt`; report that TURN was acknowledged but no native marker instruction arrived, then `park` with reason `FLY-3122 awaiting native marker instruction` and end the current turn;
+  - native instruction present: persist its id and complete raw body before any probe mutation with the injected progress command, using `--phase implement --cursor 1/3 --set-chunk "instruction-${instruction_id}=received" --next "$native_body"`.
 
-- [ ] **Step 3: Validate every delivered marker before mutation**
+  If the progress ledger already records `instruction-${instruction_id}=done`, this is an at-least-once redelivery: do not repeat any mutation or external report. Re-check TURN, park idempotently, and end the turn.
 
-  For each raw marker line, verify all invariants before any append:
+- [ ] **Step 3: Extract exact marker line(s) without guessing**
+
+  Accept exactly one of these instruction grammars:
+
+  1. Canonical driver sentence: extract the byte substring between the single prefix `Append the exact line ` and the following single suffix ` to probe.txt`. The delimiters are instruction syntax; the interior substring is the marker and must not be trimmed or rewritten.
+  2. Explicit block: after the exact label `Exact marker lines:`, accept one fenced `text` block. Fence lines and line terminators are framing; every non-empty interior line is one marker, preserved byte-for-byte.
+
+  Reject the instruction without writing if neither grammar matches, both match, a delimiter is repeated, the fenced block is malformed, or the prose admits more than one extraction. Ask the Lead for an unambiguous literal and park. Do not infer a marker from the issue title, owner nonce, execution metadata, or surrounding prose.
+
+- [ ] **Step 4: Validate every extracted marker before mutation**
+
+  For each extracted marker line, verify all invariants before any append:
 
   ```text
   byte length: 1..512
@@ -155,9 +168,9 @@ Issue: FLY-3122 (https://linear.app/geoforge3d/issue/FLY-3122/529-canary-fly2127
   matching rule: exact complete line
   ```
 
-  If any line fails, leave `probe.txt` untouched and report the instruction id plus the failed invariant. Never normalize, trim, interpolate, or repair the literal.
+  If any line fails, leave `probe.txt` untouched and report the instruction id plus the failed invariant. Extraction removes only the specified instruction framing; never normalize, trim, interpolate, or repair marker bytes.
 
-- [ ] **Step 4: Inspect the worktree file directly**
+- [ ] **Step 5: Inspect the worktree file directly**
 
   Save each validated literal as `marker_line`, then run `grep -nxF -- "$marker_line" probe.txt` when the file exists. For each line:
 
@@ -167,11 +180,19 @@ Issue: FLY-3122 (https://linear.app/geoforge3d/issue/FLY-3122/529-canary-fly2127
 
   If an existing non-empty `probe.txt` does not end in `\n`, reject the append and report the malformed file rather than joining two records.
 
-- [ ] **Step 5: Append only missing exact lines**
+- [ ] **Step 6: Handle an already-complete delivery without a false commit**
 
-  Use `apply_patch` to preserve all existing content and append each missing raw literal once with a terminal newline. Do not substitute issue-title text, driver-derived Claude literals, execution metadata, or a guessed marker.
+  If every marker already appears exactly once, do not create an empty commit and do not claim a new append. For each marker, find the commit that introduced it with `git log -S "$marker_line" -1 --format=%H -- probe.txt`; verify that commit contains `probe.txt` and that its committed file contains the exact line. Then mark `instruction-${instruction_id}=done` in progress with the introducing commit SHA(s).
 
-- [ ] **Step 6: Verify and commit only the probe locally**
+  - If the same instruction id was already `done`, emit no second DONE report.
+  - If the id was only `received`, send a truthful receipt saying the exact marker was already present and name the verified introducing SHA(s).
+  - If no introducing commit exists, treat the line as uncommitted recovery residue and continue to the staged-diff path instead of inventing provenance.
+
+- [ ] **Step 7: Append only missing exact lines with a runner-neutral operation**
+
+  Preserve all existing content. Use the runner's native text-edit tool, or after validation append one line with the tool-neutral command `printf '%s\n' "$marker_line" >> probe.txt`. Repeat only for markers whose exact-line count was zero. Do not substitute issue-title text, driver-derived Claude literals, execution metadata, or a guessed marker.
+
+- [ ] **Step 8: Verify the staged bytes and commit only the probe locally**
 
   For every delivered line, run `grep -nxF` and `grep -cxF`; every count must equal `1`. Then inspect and commit:
 
@@ -181,22 +202,33 @@ Issue: FLY-3122 (https://linear.app/geoforge3d/issue/FLY-3122/529-canary-fly2127
   git add probe.txt
   git diff --cached --check
   git diff --cached --name-only
+  git diff --cached --unified=0 -- probe.txt
   git commit -m "test(FLY-3122): record requested transport marker"
   ```
 
-  Expected: the staged name list is exactly `probe.txt`, and the local commit contains only the requested append. Do not push, create a PR, request ship, merge, or deploy.
+  Expected: the staged name list is exactly `probe.txt`; the staged diff deletes no lines; and its added data lines (excluding diff headers) equal the ordered set of previously missing marker lines byte-for-byte. This staged-diff assertion is mandatory when `probe.txt` is new because an unstaged diff does not show untracked content. The local commit contains only that append. Do not push, create a PR, request ship, merge, or deploy.
 
-- [ ] **Step 7: Acknowledge the instruction**
+- [ ] **Step 9: Persist completion and acknowledge the instruction truthfully**
 
   Send this receipt through the injected `ask --report` channel:
 
-  Save the full instruction id as `instruction_id` and the output of `git log -1 --format=%H` as `commit_sha`, then send:
+  Obtain the probe commit with `git log -1 --format=%H -- probe.txt`, verify its changed-path list is exactly `probe.txt`, then update progress to `instruction-${instruction_id}=done` with that SHA. Send:
 
   ```text
   DONE: [lead-instruction ${instruction_id}] appended the exact requested marker line(s) and committed only probe.txt locally | commits: ${commit_sha} | PR: n/a
   ```
 
-  Do not use a remembered SHA. If only TURN was delivered, report TURN acknowledgment without claiming a marker commit.
+  Do not use `git log -1` without the `-- probe.txt` path filter, because a progress commit may be newer. Do not use a remembered SHA. If only TURN was delivered, report TURN acknowledgment without claiming a marker commit.
+
+- [ ] **Step 10: Park for Lead-controlled workflow close/cancel**
+
+  This DAG's implement completion route is pinned to `needs_review`, which requires a PR. The issue forbids push/PR/ship, and a changed repository makes `no_code` stale; therefore the implement node must not call `complete` with a fabricated or mismatched route. Ask the Lead to close or cancel the bounded run without dispatching QA/land, capture that question id, then run:
+
+  ```bash
+  node "$FLYWHEEL_COMM_CLI" park --exec-id "$FLYWHEEL_EXEC_ID" --reason "FLY-3122 bounded local-only probe complete; awaiting Lead workflow close/cancel"
+  ```
+
+  End the current turn. On wake, run `turn` first, check the close/cancel question, and remain read-only unless TURN still answers `yours` and a new explicit instruction requires action.
 
 ## Task 4: QA evidence contract
 
@@ -204,21 +236,29 @@ Issue: FLY-3122 (https://linear.app/geoforge3d/issue/FLY-3122/529-canary-fly2127
 - Inspect: `probe.txt` if an implement commit exists
 - Inspect: implement commit metadata and Lead instruction receipt
 
-- [ ] **Step 1: Verify provenance**
+- [ ] **Step 1: Follow the no-PR QA path only if QA was already activated**
+
+  The intended terminal action is Lead close/cancel before QA dispatch. If a QA node nevertheless exists, it first acquires its own TURN, remains read-only, and never opens an approve gate or calls a PR-dependent completion route.
+
+- [ ] **Step 2: Verify provenance**
 
   Confirm every marker literal appears in the actual Lead instruction addressed to the write execution, the commit touches only `probe.txt`, and every exact complete line appears once.
 
-- [ ] **Step 2: Verify negative boundaries**
+- [ ] **Step 3: Verify negative boundaries**
 
   Confirm no driver-derived Claude receipt was added without instruction, no product file changed, and no push / PR / ship / deploy action occurred.
 
-- [ ] **Step 3: Do not run a test suite**
+- [ ] **Step 4: Report the bounded no-PR verdict and park**
+
+  Send a structured `ask --report` with either `DONE: FLY-3122 no-PR QA PASS` plus the verified instruction id / marker / probe SHA, or `DONE: FLY-3122 no-PR QA FAIL` plus the exact contradiction. Ask the Lead to close/cancel the run, then `park` with reason `FLY-3122 no-PR QA awaiting Lead workflow close/cancel` and end the current turn. Do not emit a PR-bound `qa-result`, open an approve gate, request ship, or dispatch another node.
+
+- [ ] **Step 5: Do not run a test suite**
 
   This is a pure text transport probe. Exact-line, diff, commit and message provenance are the complete evidence set; repository/package test suites are outside scope and locally forbidden.
 
 ## Rollback and handoff boundaries
 
-- Before a probe commit, remove only the newly appended line(s) with `apply_patch` if the instruction is revoked.
+- Before a probe commit, use the runner's native text-edit operation to remove only newly appended line(s) if the instruction is revoked.
 - After a local probe commit, use a new corrective commit; never force-push without explicit Lead confirmation.
 - Design completion hands control back to the DAG orchestrator. It does not authorize successor dispatch, PR creation, ship, land, or deployment.
 - Lead question `861c3d24-e859-4352-bd91-93fc3e4af0c1` is resolved: no exact marker is currently verifiable; only a later execution that actually receives one may append it, and no PR / ship / deploy action is allowed. This ruling cannot retroactively authorize a marker written before delivery.

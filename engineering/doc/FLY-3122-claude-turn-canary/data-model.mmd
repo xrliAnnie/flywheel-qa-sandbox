@@ -9,10 +9,22 @@ classDiagram
       +epoch: integer
       +activation: stable identity
     }
-    class LeadInstruction {
+    class NativeInstruction {
       +instructionId: UUID
       +recipientExecId: UUID
+      +rawBody: exact delivered text
+      +carrier: native turn input
+    }
+    class MarkerExtraction {
+      +grammar: canonical or fenced text
       +markerLines: exact raw strings
+      +ambiguous: false
+    }
+    class ProgressReceipt {
+      +instructionId: UUID
+      +status: received or done
+      +rawBody: persisted before mutation
+      +probeSha: optional
     }
     class ProbeFile {
       +path: probe.txt
@@ -29,8 +41,17 @@ classDiagram
       +reviewVerdict: APPROVED
       +hostedReport: URL
     }
+    class WorkflowClose {
+      +owner: Lead
+      +action: close or cancel
+      +pullRequest: none
+    }
     CurrentExecution "1" --> "1" TurnReceipt : must own write turn
-    CurrentExecution "1" --> "0..1" LeadInstruction : must be recipient
-    LeadInstruction "1" --> "1" ProbeFile : authorizes exact lines
-    ProbeFile "1" --> "1" ProbeCommit : committed locally
+    CurrentExecution "1" --> "0..1" NativeInstruction : must be native recipient
+    NativeInstruction "1" --> "1" ProgressReceipt : persist before mutation
+    NativeInstruction "1" --> "0..1" MarkerExtraction : parse one grammar
+    MarkerExtraction "1" --> "0..1" ProbeFile : authorizes exact lines
+    ProbeFile "1" --> "0..1" ProbeCommit : local commit or verified no-op
+    ProbeCommit "0..1" --> "1" ProgressReceipt : records actual SHA
+    ProgressReceipt "1" --> "1" WorkflowClose : report then park
     CurrentExecution "1" --> "1" DesignEvidence : design phase output
