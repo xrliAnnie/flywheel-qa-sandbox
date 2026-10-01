@@ -26,7 +26,7 @@ Issue: FLY-3148 (https://linear.app/geoforge3d/issue/FLY-3148/qa-sbx-fly-3038-re
 ## 3. 测试选择（local-test-policy/v1）
 
 - 改动文件：`qa-fly-3038/runs/202610010731-f45ed7/probe.txt`（新建）、`qa-fly-3038/probes.txt`（追加一行），另加 `engineering/doc/…` 下的文档。
-- 发现：分别对 `qa-fly-3038`、`probes.txt`、`probe.txt` 跑 `git grep -lF`。
+- 发现：对下面每一项跑 `git grep -lF`：新字面量 `PROBE-1`，两个完整变更路径，basename `probe.txt` 和 `probes.txt`，以及父目录 `qa-fly-3038/runs/202610010731-f45ed7`、`qa-fly-3038/runs`、`qa-fly-3038`。完整清单见 plan.md 第 0 步，实际命中写进 milestone。
   - 保留：`qa-fly-3038/probe-registry.test.mjs`。这是唯一读这两个文件的测试，用 `node --test <该文件>` 单独跑。
   - 排除：`qa-fly-3038/README.md`、`qa-fly-3038/pre-handin-check.mjs`、`.flywheel/config.yaml`，以及字面量命中的 `engineering/doc/FLY-1071-enable-window-closeout/plan.md`。原因：这些不是测试文件（文档、夹具脚本、配置）；`pre-handin-check.mjs` 会作为交卷自检整体运行。
 - 没有改 TypeScript，所以不需要 `vitest related`。也没有新增 `scripts/__tests__/*.test.sh`。
