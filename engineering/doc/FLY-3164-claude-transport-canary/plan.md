@@ -149,13 +149,23 @@ Issue: FLY-3164 (https://linear.app/geoforge3d/issue/FLY-3164/529-canary-fly2127
 
 - [ ] **Step 6: 本地 commit(仅当 staged delta 非空)**
 
+  整个块用 `bash` 执行(不是 zsh),任何非零退出都立即停止，不生成成功回执：
+
   ```bash
-  git diff --cached --quiet -- probe.txt && echo "nothing staged: stop, re-run Step 4"
-  git commit -m "test(FLY-3164): record requested transport marker"
-  git show --format= --name-only HEAD   # 只能是 probe.txt
+  git diff --cached --quiet -- probe.txt
+  rc=$?
+  if [ "$rc" -eq 0 ]; then echo "nothing staged"; exit 3; fi      # 无 delta:停止，回到 Step 4 重新分类
+  if [ "$rc" -ne 1 ]; then echo "git diff failed rc=$rc"; exit 2; fi
+  before=$(git rev-parse --verify 'HEAD^{commit}') || exit 2
+  git commit -m "test(FLY-3164): record requested transport marker" || { echo "commit failed"; exit 2; }
+  after=$(git rev-parse --verify 'HEAD^{commit}') || exit 2
+  [ "$after" != "$before" ] || { echo "HEAD did not move"; exit 2; }
+  [ "$(git rev-parse 'HEAD^')" = "$before" ] || { echo "unexpected parent"; exit 2; }
+  [ "$(git show --format= --name-only HEAD)" = "probe.txt" ] || { echo "commit touches other paths"; exit 2; }
+  echo "marker_sha=$after"
   ```
 
-  marker commit SHA = 新 HEAD。不 push、不建 PR。
+  只有整个块 exit 0 时,`marker_sha` 才是本次 marker commit;否则不得用 HEAD(可能是旧提交)作回执。不 push、不建 PR。
 
 - [ ] **Step 7: `already_committed` 的原 commit 定位**
 
@@ -172,9 +182,14 @@ QA 是另一个 execution,没有收到发给 writer 的指令，**不得**用自
 - [ ] **Step 1: 确定预期身份** — writer execution id 取自 workflow 记录(`workflow_run_node` 中 `implement` 节点的 `execution_id`),并与 writer DONE 回执的发送者一致；Lead id、instruction id、`source_sha256`、marker commit SHA 取自该回执。任何缺失 → `unverifiable`。
 - [ ] **Step 2: 投递收据** — `message-status <instruction_id> --json`:`message_id` 相等、`location ∈ {live, archived}`、`delivered_at` 非空(live 时 `state ∈ {LEASED, ACKED}`)。
 - [ ] **Step 3: 指令行身份** — 只读打开 comm DB:live 用 `getMessageById`;已归档则用与 `MailboxQueue.archivedMailboxJson`(runtime `mailbox-queue.js:365`)相同的参数化查询读取归档快照 JSON(`mailbox_log` 中 `event='archived'` 的最新 `row_json`,否则 `mailbox_terminal_archive.mailbox_json`)。断言 `type='instruction'`、`to_agent = 预期 writer exec`、`from_agent = 预期 Lead`,并且 `sha256(content) = 回执中的 source_sha256`。
-- [ ] **Step 4: 内容与 commit 一致** — 用同一语法重新解析 `content` 得到 marker 集合；核验 commit `C`:`git show --format= --name-only C` 只有 `probe.txt`,`git diff C^ C -- probe.txt` 恰好新增这些 marker、无删除；当前 `probe.txt` 中每条 marker 计数 = 1;`git branch -r --contains C` 为空(未 push)。
-- [ ] **Step 5: 范围** — 无产品路径改动、无 PR / ship / merge / deploy / 测试套件。
-- [ ] **Step 6: 报告** — 通过注入的结构化收据报告 `pass` / `fail` / `unverifiable`(附原因)。证据不可得只能是 `unverifiable`,绝不是 `pass`;QA 不补写 marker、不代替 writer 制造证据；审计成功不授予任何写权限。
+- [ ] **Step 4: 内容与 commit 一致** — 用同一语法重新解析 `content` 得到 marker 集合；核验 commit `C`:`git show --format= --name-only C` 只有 `probe.txt`,`git diff C^ C -- probe.txt` 恰好新增这些 marker、无删除；当前 `probe.txt` 中每条 marker 计数 = 1。
+- [ ] **Step 5: 远端未包含 marker commit(只读，限定范围)** — 审计范围是 `origin` 上本 workflow 唯一会推送的分支 `refs/heads/project-slot-5-FLY-3164`。QA 不 fetch、不改任何 ref:
+  1. `git ls-remote --heads origin refs/heads/project-slot-5-FLY-3164` 读取远端**当前**分支顶端 `T`;网络失败或无输出 → `unverifiable`;
+  2. `git cat-file -e "$T^{commit}"` 要求 `T` 在本地对象库中存在，否则 → `unverifiable`;
+  3. `git merge-base --is-ancestor C "$T"`:exit 0 → `fail`(远端已包含 marker commit);exit 1 → 本项满足；其他 → `unverifiable`。
+  这只证明“远端 feature 分支当前不含 `C`”。“历史上从未推送过”无法从 ref 状态证明，只能在报告中注明依据是 writer 回执 + “有 marker commit 后不再 push”守卫(receipt-based),不得升级为证明；其他分支 / 其他远端不在审计范围内，报告中写明。
+- [ ] **Step 6: 范围** — 无产品路径改动、无 PR / ship / merge / deploy / 测试套件。
+- [ ] **Step 7: 报告** — 通过注入的结构化收据报告 `pass` / `fail` / `unverifiable`(附原因)。证据不可得只能是 `unverifiable`,绝不是 `pass`;QA 不补写 marker、不代替 writer 制造证据；审计成功不授予任何写权限。
 
 ## Negative guards
 

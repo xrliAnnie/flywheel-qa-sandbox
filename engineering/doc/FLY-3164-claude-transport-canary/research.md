@@ -93,7 +93,8 @@ QA 是另一个 execution:它没有收到发给 writer 的指令，因此不能�
 
 - writer execution id 来自 workflow 记录(`workflow_run_node` 中 `implement` 节点的 `execution_id`),并与 writer DONE 回执的发送者一致；instruction id、Lead id、`source_sha256`、marker commit SHA 来自该回执。
 - `message-status` 允许 `location = archived`:writer 可能因路由不匹配长期 park,live 行会被归档。归档行的完整快照可用与 `MailboxQueue.archivedMailboxJson`(runtime `mailbox-queue.js:365`)相同的参数化只读查询取得(`mailbox_log` 中 `event='archived'` 的最新 `row_json`,否则 `mailbox_terminal_archive.mailbox_json`),其中包含 `type`、`from_agent`、`to_agent`、`content`。QA 断言这些字段与预期身份一致，且 `sha256(content)` 等于回执里的哈希。
-- 用同一语法重新解析 `content`,核验 marker commit 只改 `probe.txt`、恰好新增这些 marker、无删除，且没有被 push。
+- 用同一语法重新解析 `content`,核验 marker commit 只改 `probe.txt`、恰好新增这些 marker、无删除。
+- “没有被 push”只能做**限定范围、当前时刻**的证明：用 `git ls-remote --heads origin refs/heads/project-slot-5-FLY-3164` 读取远端当前顶端 `T`(`git branch -r` 只看本地跟踪 ref,可能过期，不能作证据),要求 `T` 已在本地对象库，再用 `git merge-base --is-ancestor C T` 判断;网络失败或缺对象 → `unverifiable`。QA 不 fetch、不改 ref。“历史上从未推送”无法从 ref 状态证明，报告中标注为基于 writer 回执与守卫(receipt-based);其他分支 / 远端不在审计范围。
 - 证据不可得 → `unverifiable`,绝不判 `pass`。审计历史结果不授予写权限;writer 对 archive-only 指令拒绝新写入的规则保持不变。
 
 ## Workflow 能力不匹配
