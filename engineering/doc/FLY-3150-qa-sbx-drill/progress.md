@@ -1,14 +1,14 @@
 ---
 issue: FLY-3150
 phase: design
-phaseCursor: 4/5
-updated: 2026-10-01T12:34:25.472Z
-nextStep: publish-report design.html, report DESIGN-HTML to Lead, complete
-  phase_design_complete
+phaseCursor: 5/5
+updated: 2026-10-01T12:34:59.625Z
+nextStep: "design node complete; implement node: follow plan.md §3/§5 (attempt 1
+  = AWAITING-QA)"
 chunks: []
 pointers: {}
 ---
 
 # FLY-3150 progress
-**phase**: design (4/5)
-**next**: publish-report design.html, report DESIGN-HTML to Lead, complete phase_design_complete
+**phase**: design (5/5)
+**next**: design node complete; implement node: follow plan.md §3/§5 (attempt 1 = AWAITING-QA)
