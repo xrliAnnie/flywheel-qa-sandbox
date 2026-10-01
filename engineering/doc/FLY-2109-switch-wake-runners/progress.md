@@ -1,13 +1,13 @@
 ---
 issue: FLY-2109
 phase: design
-phaseCursor: 3/7
-updated: 2026-10-01T09:20:46.682Z
-nextStep: plan.md
+phaseCursor: 4/7
+updated: 2026-10-01T09:23:04.795Z
+nextStep: codex design review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2109 progress
-**phase**: design (3/7)
-**next**: plan.md
+**phase**: design (4/7)
+**next**: codex design review
