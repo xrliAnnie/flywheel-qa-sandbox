@@ -1,13 +1,13 @@
 ---
 issue: FLY-3122
 phase: design
-phaseCursor: 2/6
-updated: 2026-10-01T13:46:20.189Z
-nextStep: enter research and document external driver provenance
+phaseCursor: 3/6
+updated: 2026-10-01T13:47:05.022Z
+nextStep: write implementation-ready phase-safe plan
 chunks: []
 pointers: {}
 ---
 
 # FLY-3122 progress
-**phase**: design (2/6)
-**next**: enter research and document external driver provenance
+**phase**: design (3/6)
+**next**: write implementation-ready phase-safe plan
