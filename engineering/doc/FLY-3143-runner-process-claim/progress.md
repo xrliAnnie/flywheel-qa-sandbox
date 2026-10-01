@@ -1,13 +1,14 @@
 ---
 issue: FLY-3143
 phase: design
-phaseCursor: 4/6
-updated: 2026-10-01T10:23:41.883Z
-nextStep: "Codex 设计评审 R3（R2: 1 中，已修正）；通过后发布 HTML 并交卷"
+phaseCursor: 6/6
+updated: 2026-10-01T10:26:53.225Z
+nextStep: design 交付完成：R3 APPROVED、评审门通过、HTML 已发布并报 Lead；待 Lead 回 question
+  aa23e108（A/B/C），如改选记 design-correction.md
 chunks: []
 pointers: {}
 ---
 
 # FLY-3143 progress
-**phase**: design (4/6)
-**next**: Codex 设计评审 R3（R2: 1 中，已修正）；通过后发布 HTML 并交卷
+**phase**: design (6/6)
+**next**: design 交付完成：R3 APPROVED、评审门通过、HTML 已发布并报 Lead；待 Lead 回 question aa23e108（A/B/C），如改选记 design-correction.md
