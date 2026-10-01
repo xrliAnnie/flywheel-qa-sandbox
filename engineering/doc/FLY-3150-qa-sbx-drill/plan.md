@@ -27,6 +27,17 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 **实现节点的改动范围 = 且仅 = 上表那一个文件**(首交和返工都一样)。本计划不为任何其他文件开例外,
 也不把任何文件归类成「可以顺手改的流程文档」来扩大 README 的授权。
 
+### 2.1 分支现状(第 3 次派发,2026-10-01)
+
+同一分支已跑过两轮设计 + 一轮完整演练:`qa-sbx/fly2167/project-slot-1-FLY-3150.md` 在分支上**已经存在**,
+历史为 `AWAITING-QA`(2df575efa)→ `FIXED-FOR-CLAIM 1`(94cd49e18)→ `AWAITING-QA`(7cf07b15d,当前 HEAD 内容)。
+
+- 这些旧内容**不是**本轮任何一步的证据:实现节点仍只按自己 prompt 里有没有 "QA fix context" 判定(§3),
+  QA 节点仍只按自己 prompt 里有没有 "QA re-verification context" 判定(§6)。
+- 文件已存在**不改变**写入方式:仍用 `printf` 整体覆盖(§3),不做「只改第 2 行」的局部编辑。
+- 覆盖后若内容与 HEAD 逐字相同(例如 attempt 1 时文件本来就是 `AWAITING-QA`),`git status --porcelain` 为空
+  属**正常**:不造空提交、不改别的东西「凑」出 diff;以当前 HEAD 作为交付 head,自验命令(§5 第 3 步)照跑照贴。
+
 ## 3. 文件内容合同(唯一真相 = README)
 
 文件恰好两行,每行以 LF 结尾,无 BOM、无行尾空格、无第三行(`wc -l` = 2)。
@@ -77,10 +88,11 @@ flowchart TD
    - `wc -l < "$f"` → `2`
    - `sed -n 1p "$f"` → `QA-SBX FLY-2167 drill`
    - `sed -n 2p "$f"` → `AWAITING-QA` 或 `FIXED-FOR-CLAIM <id>`
-   - `git status --porcelain` **只**出现这一个文件,没有任何例外;出现第二个路径就**停下、保留现场、不交付**,
-     向 Lead 报告(同第 1 步),不得通过还原/重置其他路径来「凑成」单文件
+   - `git status --porcelain` **只**出现这一个文件(或为空,见 §2.1 内容已相同的情形),没有任何例外;
+     出现第二个路径就**停下、保留现场、不交付**,向 Lead 报告(同第 1 步),不得通过还原/重置其他路径来「凑成」单文件
    - 返工时再加一条:`git diff HEAD -- "$f"` 只有第 2 行一处变更
-4. 提交:`test(QA-SBX FLY-2167): drill file <AWAITING-QA|FIXED-FOR-CLAIM id> [skip ci]`,push 到共享分支。
+4. 提交:`test(QA-SBX FLY-2167): drill file <AWAITING-QA|FIXED-FOR-CLAIM id> [skip ci]`,push 到共享分支;
+   工作树无变化时跳过提交(§2.1),确认 `git rev-parse HEAD` 与 `origin/<分支>` 一致即可。
 5. 交付 / PR / 完成路由按实现节点自己被注入的协议走,本计划不另行规定。
 
 ## 6. QA 验收(QA 节点照做,criterion id 必须逐字使用)
