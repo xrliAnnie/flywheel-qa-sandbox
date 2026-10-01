@@ -65,7 +65,7 @@
 <header>
   <div class="eyebrow">FLY-3150 · 设计说明 · 2026-10-01</div>
   <h1>一个两行文件的「故意先失败、再修好」演练</h1>
-  <div class="meta">QA-SBX FLY-2167 real-runner generalized drill(仅限 529 room)· 设计节点产出 · 设计评审已通过(首轮 2 轮 + 重派 2 轮)</div>
+  <div class="meta">QA-SBX FLY-2167 real-runner generalized drill(仅限 529 room)· 设计节点产出 · 设计评审已通过(首轮 2 轮 + 第二次派发 2 轮 + 第三次派发 2 轮)</div>
 </header>
 
 <div class="section" data-section="1. 一句话总结">
@@ -153,6 +153,11 @@
     <div class="card-title">取舍六:发现别人的改动就停,绝不「顺手还原」</div>
     <p>本次重派的设计评审又抓到一句危险的话:原计划写「改动清单里多出一个文件就先还原再交付」。在共享工作树(多个节点轮流使用的同一份代码目录)里,这句话会让实现节点抹掉别人没提交的工作。现改为:<strong>写入前先记录现状,发现目标文件以外的改动就保留现场、不写不交,向负责人报告</strong>。<span class="badge no">否决</span>用还原、重置或删除其他文件的方式「凑成」只改一个文件。</p>
   </div>
+  <div class="card purple">
+    <div class="card-title">取舍七:文件本来就对,就不造「空提交」;回滚只撤本轮</div>
+    <p>第三次派发时,这个演练文件在分支上<strong>已经存在</strong>,内容恰好就是首交要写的两行。于是出现一个新情形:实现节点按规则整体重写一遍后,改动清单是<strong>空的</strong>。设计定为:这是正常结果,<strong>不造一个没有内容的提交(空提交),也不改别的东西去「凑」出改动</strong>;自检照跑,以分支当前状态交付。返工时同理:若上一次已写入同一个编号,改动为空也合法,但两行内容必须仍与本次收到的编号逐字一致。</p>
+    <p>回滚(撤销改动)也相应收窄:只撤<strong>本轮</strong>的那一次提交,<span class="badge no">否决</span>「删掉整个文件」或回退前几轮留下的历史提交 —— 那些不是本轮的改动。</p>
+  </div>
 </div>
 
 <div class="section" data-section="5. 诚实边界:做什么、不做什么">
@@ -181,7 +186,7 @@
   </div>
   <div class="card navy" style="margin-top:12px;">
     <div class="card-title"><span class="badge warn">还没验证</span>目前只是纸面设计</div>
-    <p><strong>本次为同一分支上的重派(re-dispatch)</strong>:分支里保留着上一轮运行留下的演练文件(第二行已是 <code>FIXED-FOR-CLAIM 1</code>)。这份旧内容<strong>不算</strong>本轮任何质检通过的证据;设计节点不碰它,首交/返工/质检由后续节点按各自收到的上下文重新来过。本页完成时,本轮的两轮质检<strong>都还没跑</strong>。设计评审只做了「计划与任务说明书逐条对照」的静态检查。演练真正的结论(编号有没有原样送达并写回)要等实现节点和质检节点跑完才有。</p>
+    <p><strong>本次为同一分支上的第三次派发(re-dispatch,即同一任务再次分配给设计节点)</strong>:分支里保留着前两轮运行留下的演练文件,它的历史是 <code>AWAITING-QA</code> → <code>FIXED-FOR-CLAIM 1</code> → <code>AWAITING-QA</code>(当前内容)。这份旧内容<strong>不算</strong>本轮任何质检通过的证据;设计节点不碰它,首交/返工/质检由后续节点按各自收到的上下文重新来过。本页完成时,本轮的两轮质检<strong>都还没跑</strong>。设计评审只做了「计划与任务说明书逐条对照」的静态检查。演练真正的结论(编号有没有原样送达并写回)要等实现节点和质检节点跑完才有。</p>
     <p>另有一处我无法由设计单方面消除的张力:流水线自身要求每个节点维护一份进度记录文件,而任务说明书要求只碰一个文件。本设计的立场是<strong>不替实现节点授权任何例外</strong>;流水线自带的记账行为由各节点自己收到的运行规则决定,不在本计划的授权范围内。</p>
   </div>
 </div>
@@ -206,6 +211,16 @@
       <tbody>
         <tr><td>重派第 1 轮</td><td><span class="badge warn">要求修改</span></td><td>1 个问题(P2):自检步骤「多出一个路径就先还原再交付」可能覆盖共享工作树里他人的改动。路径、两行内容、编号来源、三项检查再次核对无误。</td></tr>
         <tr><td>重派第 2 轮</td><td><span class="badge ok">通过</span></td><td>改为「写入前记基线、越界即停并报告、绝不还原他人路径」(见取舍六),问题关闭,无新增问题。</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p style="margin-top:14px;">第三次派发(2026-10-01,同一分支)再独立审了两轮,审稿模型仍为 gpt-6-astra / xhigh:</p>
+    <div class="tablewrap">
+    <table>
+      <thead><tr><th>轮次</th><th>结论</th><th>内容</th></tr></thead>
+      <tbody>
+        <tr><td>第三次第 1 轮</td><td><span class="badge warn">要求修改</span></td><td>2 个问题(均 P2):① 返工自检仍要求「必须有一处改动」,与新增的「内容已相同就不造空提交」冲突;② 回滚一句「或删掉该文件」会删掉本轮开始前就存在的交付物。路径、两行内容、编号来源、三次历史提交逐一核对无误。</td></tr>
+        <tr><td>第三次第 2 轮</td><td><span class="badge ok">通过</span></td><td>① 返工改动改为「为空或仅第 2 行」,为空时仍逐字核对;② 回滚只撤本轮提交、不删文件、不动历史提交(见取舍七)。两项关闭,无新增问题。</td></tr>
       </tbody>
     </table>
     </div>
