@@ -1,0 +1,36 @@
+classDiagram
+    class Execution {
+      +execId: UUID
+      +vendor: codex or claude-code
+      +phase: design or downstream
+    }
+    class TurnReceipt {
+      +result: yours or not-yours
+      +epoch: integer
+      +activation: stable identity
+    }
+    class NativeInstruction {
+      +instructionId: UUID
+      +recipientExecId: UUID
+      +rawBody: exact text
+    }
+    class MarkerLine {
+      +bytes: printable ASCII
+      +length: 1..512
+      +count: exactly one
+    }
+    class ProbeCommit {
+      +path: probe.txt only
+      +sha: local immutable commit
+      +pushed: false
+    }
+    class DesignEvidence {
+      +docs: exploration research plan
+      +reviewVerdict: APPROVED
+      +hostedReport: URL
+    }
+    Execution "1" --> "1" TurnReceipt : must own write turn
+    Execution "1" --> "0..1" NativeInstruction : must be recipient
+    NativeInstruction "1" --> "1..*" MarkerLine : exact extraction
+    MarkerLine "1..*" --> "0..1" ProbeCommit : conditional append
+    Execution "1" --> "1" DesignEvidence : design output
