@@ -5,15 +5,15 @@ Issue: FLY-3123 (https://linear.app/geoforge3d/issue/FLY-3123/main-红挡全部-
 
 ## 调研结论
 
-根因和修复边界都已由生产源 checkout 与 PR #1425 的精确提交确认：测试把 `StateStore` 保留为纯类型，却有一个新用例继续把它当运行时构造器使用。现有 `createGreenHandoffStore` 不只是构造器别名，它还安装了 FLY-2968 要求的绿色 handoff proof（交接证明，即“这个代码交接已在精确提交上通过 CI 且可安全向前”的测试前置条件）。因此替换该一个调用点既消除 `ReferenceError`，也让新测试采用文件内统一的交接语义。
+根因和修复边界都已由生产源 checkout、原 PR #1425 与 re-land PR #1431 的精确提交确认：测试把 `StateStore` 保留为纯类型，却有一个新用例继续把它当运行时构造器使用。现有 `createGreenHandoffStore` 不只是构造器别名，它还安装了 FLY-2968 要求的绿色 handoff proof（交接证明，即“这个代码交接已在精确提交上通过 CI 且可安全向前”的测试前置条件）。因此替换该一个调用点既消除 `ReferenceError`，也让新测试采用文件内统一的交接语义。PR #1430 后当前 main 暂时没有该测试；修复现由 #1431 携带，不能因测试暂时缺席而宣称问题自然消失。
 
 ## 事实来源与可信边界
 
 | 来源 | 已确认内容 | 边界 |
 |---|---|---|
-| 生产 Flywheel checkout | `5ff88e1cb` 可解析；目标文件导入为 `isWorkflowProcessBodyParked, type StateStore`；目标测试调用 `createGreenHandoffStore` | 只读检查，不在该 checkout 写入 |
-| 实现提交 `b3e0c1d37` | diff 只有目标测试的一行：`StateStore.create` → `createGreenHandoffStore` | 不把后续 milestone 文档提交算作实现代码 |
-| GitHub PR #1425 | 精确头 `5ff88e1cb`；完整 CI run `36757438947` 的 `CI OK` 成功；PR 已合并 | `reviewDecision` 为空不等于设计复审，本设计仍走当前 DAG 的独立 design review gate |
+| 原实现提交 `b3e0c1d37` / PR #1425 | diff 只有目标测试的一行：`StateStore.create` → `createGreenHandoffStore`；原精确头 `5ff88e1cb` 曾完整 `CI OK` 后合入 | PR #1430 后不再位于当前 main，不能作为当前闭环状态 |
+| 当前生产 `origin/main` | `e2997d2e9491007145778aed3a3f3a44b652f893` 的目标文件存在，但命名 FLY-2919 测试缺席 | #1430 回退整组 FLY-2919 + FLY-3123 的结果；不得单独补回测试 |
+| re-land PR #1431 | 精确头 `d7d72733b101472bd82236b558906f9c90d0e4d4` 在第 5468 行使用 helper；CI run `36841532431` 的 `CI OK` 成功 | PR 仍开放；它是修复回到 main 的当前载体 |
 | 当前 qa-sandbox 工作树 | 没有目标测试文件；分支是 `project-slot-2-FLY-3123` | 不能在 sandbox 本地重跑该生产测试，因此不伪造本地执行证据 |
 | Lead 交接 | 原始合并碰撞、单文件失败表现、tests-only QA 边界 | 作为任务范围和历史运行证据，不替代当前 git/GitHub 状态核验 |
 
@@ -107,12 +107,13 @@ pnpm --filter flywheel-teamlead exec vitest related src/__tests__/StateStore.gen
 ## 已存在的验证证据
 
 - 修复前历史：该文件 92 条通过、1 条因 `StateStore is not defined` 失败。
-- 修复后交接：同一测试文件全绿。
-- PR #1425 精确头：`5ff88e1cb36e0e58c03b99a3c0e0b9f3dc7c54b9`。
-- GitHub Actions：run `36757438947` 完成，最终 `CI OK` job 成功，teamlead 四个分片均成功。
+- 原修复后交接：PR #1425 上同一测试文件曾以 93/93 全绿；这是历史证据，不是当前固定测试总数。
+- 回退状态：PR #1430 已合入，当前 main 没有命名 FLY-2919 测试，故不得在 main 单独新建它。
+- 当前 re-land：PR #1431 精确头 `d7d72733b101472bd82236b558906f9c90d0e4d4` 的目标文件 100/100 全绿；测试数增加来自后续用例，不是回归。
+- GitHub Actions：run `36841532431` 完成，最终 `CI OK` job 成功，teamlead 四个分片均成功。
 - QA 分类：`529=not_run`，`exempt_category=tests_only`，因为没有生产流程代码变化。
 
-这些证据可被后续 phase 复用，但若 implementation phase 在当前共享分支新增任何代码提交，必须重新绑定新精确头，不能沿用祖先提交的 CI 结论。
+这些证据可被后续 phase 复用，但若 implementation phase 在 #1431 或其他载体新增任何代码提交，必须重新绑定新精确头，不能沿用 `d7d72733b` 或更早提交的 CI 结论。
 
 ## 风险与回滚
 
@@ -121,7 +122,6 @@ pnpm --filter flywheel-teamlead exec vitest related src/__tests__/StateStore.gen
 | helper 意外掩盖拒绝路径 | 目标测试不验证拒绝；断言完全保留；拒绝测试不在变更面 |
 | 机械替换扩大范围 | diff 必须只有命名测试中的一个调用点 |
 | 文档提交使实现精确头变化 | 实现/QA 以代码头和当前 PR 头分别核对，不把旧 CI 冒充新头证据 |
-| main 已含相同修复 | 合并 main 时 identical change 应无冲突；不得重复改写或新增等价 helper |
+| 当前 main 缺少命名测试、#1431 携带修复 | 不在 main 单独补测试；由 #1431 恢复整组功能，并保持原一行 helper 修复不漂移 |
 
 回滚是一行反向替换，但会恢复确定性失败。更合理的后续变更方式是：只有当 FLY-2968 的 helper 契约被新夹具正式替代时，才在同一变更中迁移所有消费者。
-

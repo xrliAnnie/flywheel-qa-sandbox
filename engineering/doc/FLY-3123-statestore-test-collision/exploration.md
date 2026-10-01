@@ -21,8 +21,9 @@ Issue: FLY-3123 (https://linear.app/geoforge3d/issue/FLY-3123/main-红挡全部-
 
 1. Lead 提供的失败点为原文件第 5467 行，断言本身不需要改变。
 2. FLY-2968 已在同文件引入 `createGreenHandoffStore`，用于构造满足绿色交接前置条件的内存 `StateStore`。
-3. 生产仓库 PR #1425 的实现提交 `b3e0c1d37d18edb07552cda71ed4956becf6735a` 只把该测试的构造调用替换为 helper；后续里程碑提交为 `5ff88e1cb36e0e58c03b99a3c0e0b9f3dc7c54b9`。
-4. PR #1425 的精确头 `5ff88e1cb` 已得到完整 `CI OK`，并已合入生产仓库。当前 QA-sandbox 工作树不携带该测试文件，因此本设计以生产源 checkout、PR 元数据和已保存历史为事实来源，不把 sandbox 缺文件误判为修复不存在。
+3. 生产仓库 PR #1425 的实现提交 `b3e0c1d37d18edb07552cda71ed4956becf6735a` 只把该测试的构造调用替换为 helper；该 PR 曾在精确头 `5ff88e1cb36e0e58c03b99a3c0e0b9f3dc7c54b9` 完整 `CI OK` 后合入。
+4. PR #1430 随 FLY-3143 紧急回退了 FLY-2919 与 FLY-3123，当前生产 `origin/main` 因而保留目标文件但没有命名的 FLY-2919 测试；这不等于一行修复错误，而是整组功能暂时退出 main。
+5. 开放中的 re-land PR #1431 在精确头 `d7d72733b101472bd82236b558906f9c90d0e4d4` 恢复该测试，并在第 5468 行保留 `createGreenHandoffStore(":memory:")`；完整 CI run `36841532431` 的 `CI OK` 已绿，单文件当前为 100/100。当前 QA-sandbox 工作树不携带该测试文件，因此本设计以生产源 checkout、PR 元数据和已保存历史为事实来源，不在 sandbox 伪造生产测试。
 
 ## 约束与目标
 
@@ -75,4 +76,3 @@ Issue: FLY-3123 (https://linear.app/geoforge3d/issue/FLY-3123/main-红挡全部-
 - `StateStore.generalized-execution.test.ts` 单文件全部通过。
 - 精确 PR 头完整 CI 显示 `CI OK`。
 - 代码 diff 限于目标测试的一行；断言零变化。
-

@@ -15,15 +15,16 @@ Issue: FLY-3123 (https://linear.app/geoforge3d/issue/FLY-3123/main-红挡全部-
 
 ## 当前状态与执行规则
 
-生产 Flywheel PR #1425 已在精确头 `5ff88e1cb36e0e58c03b99a3c0e0b9f3dc7c54b9` 实现并合入；实现提交是 `b3e0c1d37d18edb07552cda71ed4956becf6735a`。当前 design 工作树是 `flywheel-qa-sandbox`，目标测试文件不存在。
+生产 Flywheel PR #1425 曾在精确头 `5ff88e1cb36e0e58c03b99a3c0e0b9f3dc7c54b9` 实现并合入；实现提交是 `b3e0c1d37d18edb07552cda71ed4956becf6735a`。PR #1430 随后为处理 FLY-3143 回退了 FLY-2919 与 FLY-3123，因此当前生产 `origin/main` 保留目标文件、但没有命名的 FLY-2919 测试。开放中的 re-land PR #1431 在精确头 `d7d72733b101472bd82236b558906f9c90d0e4d4` 携带这行修复，并已有完整 `CI OK`。当前 design 工作树是 `flywheel-qa-sandbox`，目标测试文件不存在。
 
 因此 implementation phase 必须先识别实际 checkout：
 
 - 如果目标文件存在且命名测试已经调用 `createGreenHandoffStore(":memory:")`，不要重复编辑或提交代码；核对精确头证据后直接交接。
 - 如果目标文件存在且仍调用 `StateStore.create(":memory:")`，执行下面的一行修复。
-- 如果目标文件不存在，不得在 sandbox 伪造整份生产测试；向 Lead 报告 checkout 不匹配，并引用已合入的 PR #1425。
+- 如果目标文件存在、但命名的 FLY-2919 测试缺席，不得单独把测试加回；报告 main 已由 #1430 回退整组功能，再核对 #1431 re-land 头保留 helper 调用。
+- 如果目标文件不存在，不得在 sandbox 伪造整份生产测试；向 Lead 报告 checkout 不匹配，并引用 #1430 / #1431 的当前状态。
 
-任何实现后新提交都会产生新精确头，必须等待该新头自己的完整 CI；不能沿用 `5ff88e1cb` 的绿。
+任何实现后新提交都会产生新精确头，必须等待该新头自己的完整 CI；不能沿用 `d7d72733b` 或更早提交的绿。
 
 ## 文件结构
 
@@ -62,7 +63,7 @@ rg -n -C 8 'FLY-2919 resolves an admitted wake on the original physical owner|St
   packages/teamlead/src/__tests__/StateStore.generalized-execution.test.ts
 ```
 
-Expected: 命名测试中只出现旧调用或新调用之一；helper 已在文件顶部导入。
+Expected: 命名测试中只出现旧调用或新调用之一，或者命名测试完全缺席。缺席时执行当前状态规则：不单独补回，核对 #1431；存在时 helper 应已在文件顶部导入。
 
 - [ ] **Step 3：按本地测试政策完成 literal / path 发现**
 
@@ -80,7 +81,7 @@ Expected: 记录所有测试命中。保留目标文件；其他命中只要没�
 
 若当前 checkout 是旧态，复用已确认的失败证据：目标文件 92 passed / 1 failed，失败为 `ReferenceError: StateStore is not defined`。不要为了重现红态而运行任何包级或全仓套件。
 
-若当前 checkout 已是新态，记录“red evidence historical, current head already fixed”，不要回退代码制造失败。
+若当前 checkout 已是新态，记录“red evidence historical, current head already fixed”，不要回退代码制造失败。若命名测试缺席，记录“main reverted FLY-2919 with FLY-3123; verify #1431 reland”，同样不要制造失败或单独补测试。
 
 ## Task 2：应用最小修复
 
@@ -125,7 +126,7 @@ Expected: 仍为 `import { isWorkflowProcessBodyParked, type StateStore } from "
 pnpm --filter flywheel-teamlead exec vitest run src/__tests__/StateStore.generalized-execution.test.ts
 ```
 
-Expected: 目标文件全绿（历史实现证据为 93 tests passed），没有 `StateStore is not defined`。
+Expected: 目标文件全绿，没有 `StateStore is not defined`。PR #1425 的 93/93 只是历史证据；当前 #1431 re-land 头为 100/100，后续新增测试导致总数变化不构成回归。
 
 - [ ] **Step 2：运行 changed-TypeScript related 选择**
 
@@ -159,10 +160,11 @@ Expected: 工作树干净；记录完整 SHA。
 
 对该精确头等待 GitHub Actions 的最终 `CI OK`，且至少核对四个 teamlead unit shard 成功。不得把 `CI Scope OK`、局部测试或祖先提交的 `CI OK` 当作新头完整 CI。
 
-已合入历史头可复用的证据：
+当前 re-land 头可复用的证据：
 
-- head: `5ff88e1cb36e0e58c03b99a3c0e0b9f3dc7c54b9`
-- run: `36757438947`
+- PR: `#1431`（开放、mergeable）
+- head: `d7d72733b101472bd82236b558906f9c90d0e4d4`
+- run: `36841532431`
 - result: `CI OK` success
 
 - [ ] **Step 3：复审同一代码头**
@@ -184,5 +186,5 @@ Expected: 工作树干净；记录完整 SHA。
 - 单文件测试与 related 选择均通过。
 - 精确头完整 CI 为 `CI OK`。
 - 同头复审有效；QA 按 tests-only 三项交接。
-- 如果生产 PR #1425 已合入且当前 checkout 无目标文件，则以“无需重复实现 + checkout 边界已报告”收口，不创建替代测试或空提交。
-
+- 如果当前 main 的目标文件存在但命名测试缺席，则以“#1430 已回退整组功能；#1431 精确头保留修复并全绿”交接，不单独补测试。
+- 如果当前 checkout 无目标文件，则以“无需在 sandbox 重复实现 + checkout 边界已报告”收口，不创建替代测试或空提交。
