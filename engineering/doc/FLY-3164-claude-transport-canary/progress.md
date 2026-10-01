@@ -1,13 +1,14 @@
 ---
 issue: FLY-3164
 phase: design
-phaseCursor: 3/6
-updated: 2026-10-01T20:57:27.217Z
-nextStep: design review (Codex) on plan.md; loop until APPROVED
+phaseCursor: 4/6
+updated: 2026-10-01T21:09:27.257Z
+nextStep: Codex design review round 2 (thread 01a0f942-b4ea…, resume) running;
+  then review-round r2
 chunks: []
 pointers: {}
 ---
 
 # FLY-3164 progress
-**phase**: design (3/6)
-**next**: design review (Codex) on plan.md; loop until APPROVED
+**phase**: design (4/6)
+**next**: Codex design review round 2 (thread 01a0f942-b4ea…, resume) running; then review-round r2
