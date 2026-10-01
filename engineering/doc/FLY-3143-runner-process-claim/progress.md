@@ -1,14 +1,13 @@
 ---
 issue: FLY-3143
 phase: design
-phaseCursor: 1/6
-updated: 2026-10-01T09:57:48.590Z
-nextStep: 核验已批准 plan（生产 flywheel-FLY-3143@d7d72733b）对验收补充 1-3 的覆盖；等 Lead 回
-  question aa23e108
+phaseCursor: 3/6
+updated: 2026-10-01T10:06:31.964Z
+nextStep: design_review 绑定 plan 并跑 Codex 设计评审；并行做 Mermaid 图与 founder HTML
 chunks: []
 pointers: {}
 ---
 
 # FLY-3143 progress
-**phase**: design (1/6)
-**next**: 核验已批准 plan（生产 flywheel-FLY-3143@d7d72733b）对验收补充 1-3 的覆盖；等 Lead 回 question aa23e108
+**phase**: design (3/6)
+**next**: design_review 绑定 plan 并跑 Codex 设计评审；并行做 Mermaid 图与 founder HTML
