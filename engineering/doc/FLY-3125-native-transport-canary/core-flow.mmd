@@ -1,0 +1,25 @@
+sequenceDiagram
+    participant O as DAG 编排器
+    participant D as 当前 Design execution
+    participant L as Lead
+    participant W as 后续 Writer execution
+    participant G as Git worktree
+
+    O->>D: 派发 eng_design activation
+    D->>O: turn
+    O-->>D: yours phase=design
+    D->>D: 产出 docs、diagram、HTML
+    D->>L: 请求 design review
+    L-->>D: APPROVED
+    D->>L: 发布并报告 Founder HTML
+    D->>O: phase_design_complete
+    Note over D,G: 当前没有 exact marker，probe.txt 保持不存在
+
+    opt 后续 execution 收到绑定自身的 native exact-marker instruction
+        L->>W: Append the exact line … to probe.txt
+        W->>O: turn
+        O-->>W: yours
+        W->>G: 逐字 append，校验 staged diff
+        W->>G: local commit only
+        W->>L: 回执 instruction id 与 commit SHA
+    end

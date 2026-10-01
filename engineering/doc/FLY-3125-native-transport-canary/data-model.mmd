@@ -1,0 +1,32 @@
+classDiagram
+    class Execution {
+      +executionId
+      +phaseRole
+      +activationId
+    }
+    class TurnReceipt {
+      +ownerExecutionId
+      +epoch
+      +status
+    }
+    class NativeInstruction {
+      +instructionId
+      +senderLeadId
+      +recipientExecutionId
+      +exactMarkerBytes
+    }
+    class ProbeCommit {
+      +commitSha
+      +changedPath probe.txt
+      +remotePush false
+    }
+    class DesignEvidence {
+      +approvedPlan
+      +hostedReportUrl
+      +phaseCompletionReceipt
+    }
+
+    Execution "1" --> "0..1" TurnReceipt : owns current write right
+    Execution "1" --> "0..*" NativeInstruction : receives exact bytes
+    NativeInstruction "1" --> "0..1" ProbeCommit : authorizes only if same execution
+    Execution "1" --> "1" DesignEvidence : produces in design phase
