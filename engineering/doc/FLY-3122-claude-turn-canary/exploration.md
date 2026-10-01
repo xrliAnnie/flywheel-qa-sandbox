@@ -1,46 +1,46 @@
-# FLY-3122 Claude TURN 金丝雀 — 探索
+# FLY-3122 Claude 标签传输探针 — 探索
 Issue: FLY-3122 (https://linear.app/geoforge3d/issue/FLY-3122/529-canary-fly2127-canary-eeb549be-1af1-44c6-93d3-a0cb7f40022c-claude)
 日期: 2026-10-01
 基于: 无
 
 ## 一句话结论
 
-把本单限定为一次可审计的传输探针：在取得 design TURN 后，只向仓库根目录 `probe.txt` 追加两行稳定标记，提交到当前 feature branch；不修改产品代码、不发版、不部署。
+本 design node 只证明当前 Codex execution 收到了 server-authorized TURN，并产出经过审查的下游合同；它不创建 `probe.txt`，也不把属于另一条 Claude fixture 的 marker 冒充成本 execution 的回执。
 
 ## 已确认事实
 
-- Issue 的稳定 owner 是 `FLY2127-CANARY-eeb549be-1af1-44c6-93d3-a0cb7f40022c`，执行体标签是 `claude`。
-- 当前 design TURN 已由 `flywheel-comm turn` 返回 `yours`：epoch 为 `1`，activation 为 `activation:4514c33a-ba5c-4eb3-a046-08bb14e6b209:24efb425-bd4f-4d69-a813-e120e1e1bf1a:eng_design:1`。
-- 当前 mailbox 返回 `No instructions.`；因此本次用 TURN 本身作为“传输已到达”的权威回执。
-- Issue 和动态任务正文没有内嵌逐字 marker literal；仓库对应的 FLY-2127 canary driver 是该字段的 source of truth。它为 `claude` case 派生出 `…-CLAUDE-BOOT` 与 `…-R4-CLAUDE`，并以完整行匹配二者。先前向 Lead 发出的非阻塞问题 `66c1ce36-2433-4193-94bd-0a127dca1b1b` 不再阻塞，因为已经从 driver 取得精确证据。
+- Issue title 末尾的 `claude` 是 canary case 标签，不是当前执行体 vendor。当前环境的 `FLYWHEEL_RUNNER_VENDOR_ID=codex`，当前节点是 `eng_design`。
+- `flywheel-comm turn --exec-id "$FLYWHEEL_EXEC_ID"` 返回 `yours phase=design epoch=1`；这只授权当前 design node 写它自己的设计产物。
+- 当前 mailbox 返回 `No instructions.`。没有 Lead message 为 execution `4514c33a-ba5c-4eb3-a046-08bb14e6b209` 指定任何 marker literal。
+- root `probe.txt` 不存在，worktree 在文档提交后保持干净。
+- FLY-2127 外部 driver 中的 Claude BOOT / R4 literals 绑定它自己用 `TmuxAdapter` 启动的 `claude-code` execution 和原生 teammate-message 回执，不能跨 execution 复用。
 
 ## 成功标准
 
-1. `probe.txt` 只追加以下两行，不覆盖已有内容：
-
-   ```text
-   FLY2127-CANARY-eeb549be-1af1-44c6-93d3-a0cb7f40022c-CLAUDE-BOOT
-   FLY2127-CANARY-eeb549be-1af1-44c6-93d3-a0cb7f40022c-R4-CLAUDE
-   ```
-
-2. 变更被本地提交并推送到 `project-slot-2-FLY-3122`，不触碰 `main`。
-3. 设计文档、Founder HTML、设计审查和 phase completion 按本节点合同完成。
-4. 不创建产品实现、不运行部署、不请求 ship authority、不合并 PR。
+1. Design phase 只提交 `exploration.md`、`research.md`、`plan.md`、Founder HTML、Mermaid sources 与 `progress.md`；不创建或修改 `probe.txt`。
+2. 计划明确要求所有执行节点用自己的 `$FLYWHEEL_EXEC_ID` 取得 TURN，不硬编码 design execution 或 phase。
+3. 只有当 Lead instruction 明确给出 exact marker line 时，下游 implement node 才能逐字追加该 line；没有指令就保持 `probe.txt` 不存在或不变。
+4. Design review 必须在 design docs 已提交、index/worktree 干净时绑定；`CHANGES_REQUESTED` 修复后用新 gate 和新 request 重审。
+5. 本 issue 明示 no shipping / no deployment；当前 `tpl_code` template 却包含 creates-PR、founder-gate 和 land。该不匹配必须报告 Lead，且不能由 design node 擅自扩权或假装不存在。
 
 ## 备选方案
 
-### A. Driver 派生的 BOOT + R4-CLAUDE（采用）
+### A. TURN receipt + 条件式 Lead marker（采用）
 
-两行都直接来自 FLY-2127 canary driver 的构造规则。BOOT 行证明执行体完成初始落盘，R4 行是该 `claude` case 的完成标记；当前工作流另以 `flywheel-comm turn` 的 `yours` 结果完成授权确认。
+Design node 记录 TURN `yours`，并给下游节点一个明确条件：只有当前 execution 的 Lead message 提供 literal 才追加。这保留了真实 provenance，不会制造 canary 假阳性。
 
-### B. Owner + TURN 身份自定义行
+### B. 从外部 driver 推导 Claude BOOT / R4 marker（拒绝）
 
-可以记录更多本次 execution 元数据，但 harness 不匹配这些自定义 literal，无法成为 canary 的权威成功证据，因此拒绝。
+这些 literal 代表另一个 `claude-code` execution 的启动和原生 teammate-message 接收。当前 Codex design execution 没经历这两件事，写入等于伪造证据。
 
-### C. 把完整 mailbox / TURN JSON 写入文件
+### C. Design node 直接写 probe（拒绝）
 
-信息最多，但会把易变字段和工具输出格式固化进仓库，增加噪声，也可能把未来新增的敏感字段带入版本历史，因此拒绝。
+`eng_design` 的节点合同明确禁止实现。即使 marker 正确，也应由持有自己 TURN 的 implement node 执行；design review 必须先于交付物变更。
+
+### D. 默认让 `tpl_code` 一路 PR → ship（拒绝）
+
+Issue 明示 no shipping / deployment。Lead 尚未决定 re-route、cancel 或给 downstream 增加 no-PR/no-ship 限制，因此不能把 template capability 当作授权。
 
 ## 设计边界
 
-本设计验证的是“这个执行体收到了 TURN，并能在持有 TURN 时留下仓库标记”。它不验证 FLY-2127 的完整产品行为，不修改 native wake 实现，也不声称覆盖 mailbox 投递、跨重启恢复、部署或生产运行。
+本设计证明的是当前 design node 的 TURN 接收、身份判断、审查流程与诚实的下游合同。它不证明 Claude native mailbox 投递，不修改 FLY-2127 产品代码，不创建 probe marker，不创建 PR，不请求 ship，也不部署。

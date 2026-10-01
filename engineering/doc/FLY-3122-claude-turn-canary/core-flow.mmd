@@ -1,16 +1,28 @@
 flowchart TD
-    I["FLY-3122 task<br/>owner + claude case"] --> T{"TURN result"}
-    T -->|"yours"| S["Read FLY-2127 driver<br/>derive exact literals"]
+    I["FLY-3122 enters<br/>Codex eng_design"] --> T{"Current TURN result"}
     T -->|"not-yours"| W["Wait without writing"]
-    S --> A["Append two missing<br/>complete lines"]
-    A --> V["Verify each line<br/>appears exactly once"]
-    V --> C["Commit on feature branch"]
-    C --> P["Push + publish design report"]
-    P --> H["phase_design_complete"]
+    T -->|"yours"| M{"Exact Lead marker instruction<br/>for this execution?"}
+    M -->|"no"| N["Record TURN only<br/>probe.txt stays untouched"]
+    M -->|"yes"| C["Record instruction provenance<br/>design still does not write probe"]
+    N --> D["Commit docs + HTML"]
+    C --> D
+    D --> R{"Design review"}
+    R -->|"changes"| F["Fix, commit, open new review"]
+    F --> R
+    R -->|"approved"| P["Publish report +<br/>phase_design_complete"]
+
+    N -. "downstream" .-> L{"Lead resolves tpl_code<br/>no-shipping mismatch?"}
+    C -. "downstream" .-> L
+    L -->|"no"| Q["Park downstream<br/>no PR / ship / deploy"]
+    L -->|"yes + marker delivered"| E["Implement gets its own TURN"]
+    E --> A["Append only exact delivered line"]
+    A --> K["Local probe commit only<br/>no PR / ship / deploy"]
 
     classDef authority fill:#fff8e6,stroke:#ff9500,color:#1d1d1f;
     classDef action fill:#ffffff,stroke:#007aff,color:#1d1d1f;
     classDef success fill:#eefaf1,stroke:#34c759,color:#1d1d1f;
-    class T authority;
-    class I,S,A,V,C action;
-    class P,H success;
+    classDef stop fill:#fff0f0,stroke:#ff3b30,color:#1d1d1f;
+    class T,M,R,L authority;
+    class I,C,N,D,F,E,A action;
+    class P,K success;
+    class W,Q stop;

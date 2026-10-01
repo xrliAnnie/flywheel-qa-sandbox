@@ -1,153 +1,223 @@
-# FLY-3122 Claude TURN 金丝雀 — 实施计划
+# FLY-3122 Claude 标签传输探针 — 实施计划
 Issue: FLY-3122 (https://linear.app/geoforge3d/issue/FLY-3122/529-canary-fly2127-canary-eeb549be-1af1-44c6-93d3-a0cb7f40022c-claude)
 日期: 2026-10-01
 基于: research.md
 
-> **For agentic workers:** 逐项执行本计划；这是 bounded transport canary，不分派 subagent，不进入产品实现流程。
+> **For agentic workers:** 按 phase ownership 执行；design node 只产文档/HTML/review，implement node 只消费明确送达自己的 Lead instruction。禁止跨 execution 复制 marker，也禁止在本 issue 创建 PR、ship 或 deploy。
 
-**Goal:** 在持有 FLY-3122 design TURN 时，把 FLY-2127 driver 定义的两条 exact marker 幂等追加到 root `probe.txt`，留下 feature-branch commit evidence。
+**Goal:** 诚实记录当前 Codex design TURN，产出经批准的条件式下游合同；只有当前 implement execution 收到 exact Lead marker instruction 时才修改 `probe.txt`。
 
-**Architecture:** `probe.txt` 是唯一探针载体；owner nonce 绑定本次 canary，两个 suffix 分别表示 boot 与 R4 Claude marker。Git commit 是持久回执，`flywheel-comm turn` 的 `yours` 是写入授权。
+**Architecture:** Execution identity、TURN receipt 和 Lead instruction 是三道独立证据。TURN 只授予当前 phase 写权，不提供 marker 内容；marker 内容只能来自明确发给当前 execution 的 Lead message。Design evidence 与可选的 probe commit 分属不同 phase，不能在审查前混写。
 
-**Tech Stack:** UTF-8 plain text、Git、`flywheel-comm`。
+**Tech Stack:** UTF-8 plain text、Git、`flywheel-comm`、Mermaid CLI (`mmdc`)。
 
 ---
 
 ## 文件矩阵
 
-| 路径 | 动作 | 单一职责 |
-|---|---|---|
-| `probe.txt` | Create or append | 保存两条 exact canary marker line |
-| `engineering/doc/FLY-3122-claude-turn-canary/exploration.md` | 已创建 | 记录范围、选择与拒绝方案 |
-| `engineering/doc/FLY-3122-claude-turn-canary/research.md` | 已创建 | 锁定 driver 来源与 literal |
-| `engineering/doc/FLY-3122-claude-turn-canary/plan.md` | 本文件 | 给出可执行步骤与验收证据 |
-| `engineering/doc/FLY-3122-claude-turn-canary/founder-report.html` | Create | Founder 可读的设计摘要与评论层 |
-| `engineering/doc/FLY-3122-claude-turn-canary/core-flow.mmd` | Create | 核心流程 Mermaid source |
-| `engineering/doc/FLY-3122-claude-turn-canary/data-model.mmd` | Create | 数据/结构 Mermaid source |
-| `engineering/doc/FLY-3122-claude-turn-canary/progress.md` | flywheel-comm 管理 | restart-resilient phase cursor |
+| 路径 | Owner phase | 动作 | 单一职责 |
+|---|---|---|---|
+| `engineering/doc/FLY-3122-claude-turn-canary/exploration.md` | design | Modify | 范围、备选方案与拒绝理由 |
+| `engineering/doc/FLY-3122-claude-turn-canary/research.md` | design | Modify | execution 事实、driver 边界、DAG mismatch |
+| `engineering/doc/FLY-3122-claude-turn-canary/plan.md` | design | Modify | phase-safe 实施合同 |
+| `engineering/doc/FLY-3122-claude-turn-canary/core-flow.mmd` | design | Modify | 条件式核心流程 Mermaid source |
+| `engineering/doc/FLY-3122-claude-turn-canary/data-model.mmd` | design | Modify | identity / TURN / instruction / evidence 模型 |
+| `engineering/doc/FLY-3122-claude-turn-canary/founder-report.html` | design | Modify | Founder 可读摘要与评论层 |
+| `engineering/doc/FLY-3122-claude-turn-canary/progress.md` | flywheel-comm | Update | restart-resilient phase cursor |
+| `probe.txt` | implement only, conditional | Append only | 保存当前 execution 被明确要求写入的 exact marker lines |
 
-### Task 1: 确认授权与前置状态
-
-**Files:**
-- Inspect: `probe.txt`
-
-- [ ] **Step 1: 重查 TURN**
-
-  Run:
-
-  ```bash
-  node "$FLYWHEEL_COMM_CLI" turn --exec-id 4514c33a-ba5c-4eb3-a046-08bb14e6b209
-  ```
-
-  Expected: 输出以 `yours phase=design` 开头；若为 `not-yours`，不触碰 worktree，按 TURN WAIT LAW 停驻。
-
-- [ ] **Step 2: 检查 exact literals 与当前文件**
-
-  Run:
-
-  ```bash
-  git grep -nF -- 'FLY2127-CANARY-eeb549be-1af1-44c6-93d3-a0cb7f40022c-CLAUDE-BOOT' -- probe.txt || true
-  git grep -nF -- 'FLY2127-CANARY-eeb549be-1af1-44c6-93d3-a0cb7f40022c-R4-CLAUDE' -- probe.txt || true
-  ```
-
-  Expected: fresh branch has no matches. A pre-existing complete-line match means that line must not be duplicated.
-
-### Task 2: 追加 bounded marker
+## Task 1: Design node 修复、提交、再审查
 
 **Files:**
-- Create or modify: `probe.txt`
+- Modify: `engineering/doc/FLY-3122-claude-turn-canary/exploration.md`
+- Modify: `engineering/doc/FLY-3122-claude-turn-canary/research.md`
+- Modify: `engineering/doc/FLY-3122-claude-turn-canary/plan.md`
+- Modify: `engineering/doc/FLY-3122-claude-turn-canary/core-flow.mmd`
+- Modify: `engineering/doc/FLY-3122-claude-turn-canary/data-model.mmd`
+- Modify: `engineering/doc/FLY-3122-claude-turn-canary/founder-report.html`
+- Must not modify: `probe.txt`
 
-- [ ] **Step 1: 用 patch 幂等追加 exact lines**
-
-  Required final content for a fresh file:
-
-  ```text
-  FLY2127-CANARY-eeb549be-1af1-44c6-93d3-a0cb7f40022c-CLAUDE-BOOT
-  FLY2127-CANARY-eeb549be-1af1-44c6-93d3-a0cb7f40022c-R4-CLAUDE
-  ```
-
-  If `probe.txt` exists, preserve every existing byte and append only missing complete lines with a terminal newline.
-
-- [ ] **Step 2: 验证 exact-line multiplicity**
+- [ ] **Step 1: 确认当前 design TURN**
 
   Run:
 
   ```bash
-  test "$(grep -cxF 'FLY2127-CANARY-eeb549be-1af1-44c6-93d3-a0cb7f40022c-CLAUDE-BOOT' probe.txt)" -eq 1
-  test "$(grep -cxF 'FLY2127-CANARY-eeb549be-1af1-44c6-93d3-a0cb7f40022c-R4-CLAUDE' probe.txt)" -eq 1
+  node "$FLYWHEEL_COMM_CLI" turn --exec-id "$FLYWHEEL_EXEC_ID"
   ```
 
-  Expected: both commands exit `0`.
+  Expected: output begins with `yours`. Do not hardcode execution id or phase; `not-yours` means no worktree write.
 
-- [ ] **Step 3: 检查负向边界**
+- [ ] **Step 2: 修复 review findings**
+
+  Required content changes:
+
+  - remove every claim that the issue title authorizes Claude BOOT / R4 literals;
+  - state that current vendor is Codex and mailbox has no marker instruction;
+  - move all `probe.txt` mutation to the conditional implement contract;
+  - document external driver absolute path plus commit `a6174863d1889d009ed3d635a8d633afdea55245`;
+  - document `tpl_code` no-shipping mismatch and Lead question `2add653c-7fb8-4cdd-ae4e-67651c476e39`;
+  - use dynamic `$FLYWHEEL_EXEC_ID` and direct worktree `grep -nxF` in downstream steps.
+
+- [ ] **Step 3: Render diagrams locally**
 
   Run:
 
   ```bash
-  git diff -- probe.txt
+  mmdc -i engineering/doc/FLY-3122-claude-turn-canary/core-flow.mmd -o /tmp/FLY-3122-core-flow.svg -w 1000 -b white --svgId FLY-3122-d1
+  mmdc -i engineering/doc/FLY-3122-claude-turn-canary/data-model.mmd -o /tmp/FLY-3122-data-model.svg -w 1000 -b white --svgId FLY-3122-d2
+  ```
+
+  Expected: both commands exit `0`; the SVG ids are distinct and the HTML contains the freshly rendered self-contained SVGs.
+
+- [ ] **Step 4: Verify allowed paths and HTML contract**
+
+  Run:
+
+  ```bash
+  test ! -e probe.txt
+  git diff --check
   git status --short
   ```
 
-  Expected: `probe.txt` contains only the two intended additions; all other changes are this phase's required docs/HTML/progress artifacts，no product source files.
+  Expected: only the six design artifacts above are modified. Static HTML checks must prove one nonced script, no inline handlers/CSP meta/external dependencies, one comment textarea below every card, pathname-scoped localStorage, live summary chunks beginning `【页面意见汇总】FLY-3122`, and clipboard rejection fallback.
 
-### Task 3: 完成设计审查与 Founder artifact
-
-**Files:**
-- Create: `engineering/doc/FLY-3122-claude-turn-canary/core-flow.mmd`
-- Create: `engineering/doc/FLY-3122-claude-turn-canary/data-model.mmd`
-- Create: `engineering/doc/FLY-3122-claude-turn-canary/founder-report.html`
-
-- [ ] **Step 1: 请求显式 design review**
-
-  Run exact injected `stage set design_review`、`gate review_design --no-block` 和 `request-review --type design --plan .../plan.md` commands.
-
-  Expected: `check <questionId>` 最终返回 effective `APPROVED`；`CHANGES_REQUESTED` 必须先修复并以新 gate/new request 重审。
-
-- [ ] **Step 2: 构建并验证 HTML**
-
-  Render two Mermaid sources locally with unique SVG ids `FLY-3122-d1` and `FLY-3122-d2`, inline their self-contained SVG, and keep all JavaScript in one `<script nonce="__CSP_NONCE__">` block.
-
-  Expected: every card has autosaving comments; summary chunks start with `【页面意见汇总】FLY-3122`; no external dependencies, inline handlers, CSP meta, or unescaped derived HTML.
-
-### Task 4: Commit、push、publish 与 phase handoff
-
-**Files:**
-- Commit: `probe.txt`
-- Commit: `engineering/doc/FLY-3122-claude-turn-canary/*`
-
-- [ ] **Step 1: 提交并推送 feature branch**
+- [ ] **Step 5: Commit design artifacts before review binding**
 
   Run:
 
   ```bash
-  git add probe.txt engineering/doc/FLY-3122-claude-turn-canary
+  git add engineering/doc/FLY-3122-claude-turn-canary/exploration.md \
+    engineering/doc/FLY-3122-claude-turn-canary/research.md \
+    engineering/doc/FLY-3122-claude-turn-canary/plan.md \
+    engineering/doc/FLY-3122-claude-turn-canary/core-flow.mmd \
+    engineering/doc/FLY-3122-claude-turn-canary/data-model.mmd \
+    engineering/doc/FLY-3122-claude-turn-canary/founder-report.html
   git diff --cached --check
-  git commit -m "test(FLY-3122): record Claude TURN canary"
-  git push -u origin project-slot-2-FLY-3122
+  git commit -m "docs(FLY-3122): correct canary execution boundaries"
+  git push origin HEAD:project-slot-2-FLY-3122
   ```
 
-  Expected: clean index/worktree, push is fast-forward, and no main/ship action occurs.
+  Expected: clean index/worktree and fast-forward push. `probe.txt` is absent from the commit.
 
-- [ ] **Step 2: Publish and inspect hosted artifact**
+- [ ] **Step 6: Open a new review gate and request**
 
-  Run the injected `publish-report --publish-only` command, then `curl` the returned URL.
+  Run the injected `gate review_design --no-block "Design review requested for FLY-3122"`, save its returned `questionId` as `review_question_id`, then run `request-review --type design --question-id "$review_question_id" --plan engineering/doc/FLY-3122-claude-turn-canary/plan.md`.
 
-  Expected: HTTP `200`; hosted page contains a minted script nonce, contains no `__CSP_NONCE__`, and makes no external asset fetch.
+  Expected: manifest binding sees committed plan bytes at HEAD. Poll once per turn until effective `reviewVerdict=APPROVED`; another `CHANGES_REQUESTED` requires a new fix commit and another new gate/request.
 
-- [ ] **Step 3: Structured report and completion**
+## Task 2: Publish approved design and complete only the design phase
 
-  Report the hosted URL with injected `ask --report "DESIGN-HTML ready: ..."`, update progress to `6/6`, then run:
+**Files:**
+- Read: `engineering/doc/FLY-3122-claude-turn-canary/founder-report.html`
+- Update via CLI: `engineering/doc/FLY-3122-claude-turn-canary/progress.md`
+
+- [ ] **Step 1: Publish the committed HTML**
+
+  Run:
+
+  ```bash
+  node "$FLYWHEEL_COMM_CLI" publish-report \
+    --html engineering/doc/FLY-3122-claude-turn-canary/founder-report.html \
+    --project test-slot-2 --publish-only
+  ```
+
+  Expected: JSON contains a hosted URL. `curl` that URL and verify HTTP `200`, no `__CSP_NONCE__`, one minted script nonce, both SVG ids, and no external asset fetches.
+
+- [ ] **Step 2: Report the URL and update progress**
+
+  Save the publisher's returned URL as `hosted_url`, run the injected `ask --lead flywheel-test-2 --exec-id "$FLYWHEEL_EXEC_ID" --report "DESIGN-HTML ready: ${hosted_url} | repo: engineering/doc/FLY-3122-claude-turn-canary/founder-report.html | issue: FLY-3122"`, then update progress to `6/6`.
+
+- [ ] **Step 3: Complete design phase only**
+
+  Run:
 
   ```bash
   node "$FLYWHEEL_COMM_CLI" complete --route phase_design_complete
   ```
 
-  Expected: phase completion receipt. Do not dispatch a successor; the DAG orchestrator owns advancement.
+  Expected: phase completion receipt. Do not dispatch a successor, create a PR, request ship, or merge.
 
-## Verification coverage
+## Task 3: Conditional implement contract — only after Lead resolves DAG mismatch
 
-- Exact literals: complete-line count equals one for BOOT and R4.
-- Write authority: current TURN remains `yours` at mutation time.
-- Scope: `git diff --name-only` contains only `probe.txt` plus required issue docs.
-- Safety: no product tests are needed because no product code changes; no broad local suite is permitted.
-- Rollback boundary: before push, revert only the new canary commit if review rejects it; after push, use a new corrective commit—never force-push without explicit Lead confirmation.
+**Files:**
+- Create or append: `probe.txt` only if an exact marker instruction is delivered to the current implement execution
+
+- [ ] **Step 1: Verify downstream authorization**
+
+  Before any mutation, the implement node must have both:
+
+  1. its own `node "$FLYWHEEL_COMM_CLI" turn --exec-id "$FLYWHEEL_EXEC_ID"` result beginning `yours`; and
+  2. a Lead resolution that cancels/re-routes the creates-PR/land path or explicitly constrains this run to no-PR/no-ship.
+
+  If item 2 is absent, ask the Lead, register a watcher on that question, and park. Template capability is not authorization.
+
+- [ ] **Step 2: Inspect current-execution instructions**
+
+  Run:
+
+  ```bash
+  node "$FLYWHEEL_COMM_CLI" inbox --exec-id "$FLYWHEEL_EXEC_ID"
+  ```
+
+  Expected branch behavior:
+
+  - no `[lead-instruction <id>]` with exact marker line → do not create or modify `probe.txt`; report that TURN was acknowledged and no marker was delivered;
+  - exact marker instruction present → retain its full instruction id and exact literal, then continue.
+
+- [ ] **Step 3: Check the worktree file, not only tracked Git content**
+
+  Save the exact literal from the Lead message as `marker_line`, then run `grep -nxF -- "$marker_line" probe.txt` when the file exists. This is complete-line matching against the worktree, so it sees untracked recovery residue.
+
+  Expected: zero matches means append once; one match means no duplicate; more than one match is an integrity error to report before commit.
+
+- [ ] **Step 4: Append only the delivered line**
+
+  Use `apply_patch` to preserve all existing lines and append the exact Lead-supplied literal with a terminal newline. Never substitute the issue title, driver-derived Claude literals, execution metadata, or a guessed marker.
+
+- [ ] **Step 5: Verify and commit locally**
+
+  Run complete-line verification with `grep -nxF` and `grep -cxF`, inspect `git diff -- probe.txt`, then:
+
+  ```bash
+  git add probe.txt
+  git diff --cached --check
+  git diff --cached --name-only
+  git commit -m "test(FLY-3122): record requested transport marker"
+  ```
+
+  Expected: the staged name list is exactly `probe.txt`; marker count is exactly one. Do not push, create a PR, request ship, merge, or deploy under the current issue scope.
+
+- [ ] **Step 6: Acknowledge the instruction**
+
+  Use the required structured receipt:
+
+  ```text
+  DONE: [lead-instruction ${instruction_id}] appended the exact requested marker and committed only probe.txt locally | commits: ${commit_sha} | PR: n/a
+  ```
+
+  Send it through `ask --report`, never terminal prose. If there was no instruction, report TURN-only acknowledgment without claiming a marker commit.
+
+## Task 4: QA contract
+
+**Files:**
+- Inspect: `probe.txt` if an implement commit exists
+- Inspect: implement commit metadata and Lead instruction receipt
+
+- [ ] **Step 1: Verify provenance**
+
+  Confirm the marker literal is present in the actual Lead instruction addressed to the implement execution, the commit touches only `probe.txt`, and the exact complete line appears once.
+
+- [ ] **Step 2: Verify negative boundaries**
+
+  Confirm no driver-derived Claude receipt was added without instruction, no product file changed, and no PR / ship / deploy action occurred.
+
+- [ ] **Step 3: Do not run a test suite**
+
+  This is a pure text transport probe. Exact-line, diff, commit and message provenance are the complete evidence set; repository/package test suites are outside scope and locally forbidden.
+
+## Rollback and handoff boundaries
+
+- Before a probe commit, remove only the newly appended line with `apply_patch` if the instruction is revoked.
+- After a local probe commit, use a new corrective commit; never force-push without explicit Lead confirmation.
+- Design completion hands control back to the DAG orchestrator. It does not authorize successor dispatch, PR creation, ship, land, or deployment.
+- The downstream no-shipping mismatch remains a Lead-owned orchestration decision until question `2add653c-7fb8-4cdd-ae4e-67651c476e39` is answered.

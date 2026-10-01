@@ -1,23 +1,39 @@
 classDiagram
-    class CanaryOwner {
-      +issue: FLY-3122
-      +nonce: eeb549be-1af1-44c6-93d3-a0cb7f40022c
-      +case: claude
+    class CurrentExecution {
+      +execId: runtime env
+      +vendor: codex
+      +phase: eng_design
+    }
+    class TurnReceipt {
+      +result: yours
+      +epoch: 1
+      +activation: server-issued
+    }
+    class DesignEvidence {
+      +docsCommit: git head
+      +reviewVerdict: approved
+      +hostedReport: url
+    }
+    class LeadInstruction {
+      +instructionId: exact id
+      +toExecution: implement exec
+      +markerLine: exact delivered text
+    }
+    class ScopeResolution {
+      +noPr: true
+      +noShip: true
+      +noDeploy: true
     }
     class ProbeFile {
       +path: probe.txt
-      +bootLine: OWNER-CLAUDE-BOOT
-      +completionLine: OWNER-R4-CLAUDE
+      +line: LeadInstruction.markerLine
     }
-    class TurnReceipt {
-      +phase: design
-      +epoch: 1
-      +result: yours
+    class LocalCommit {
+      +changedPath: probe.txt
+      +push: forbidden
     }
-    class GitEvidence {
-      +branch: project-slot-2-FLY-3122
-      +commit: immutable head
-    }
-    CanaryOwner "1" --> "1" ProbeFile : derives exact lines
-    TurnReceipt "1" --> "1" ProbeFile : authorizes write
-    ProbeFile "1" --> "1" GitEvidence : committed as evidence
+    CurrentExecution "1" --> "1" TurnReceipt : requests own TURN
+    TurnReceipt "1" --> "1" DesignEvidence : authorizes design writes
+    LeadInstruction "0..1" --> "0..1" ProbeFile : supplies only valid line
+    ScopeResolution "1" --> "0..1" ProbeFile : permits bounded implement
+    ProbeFile "0..1" --> "0..1" LocalCommit : committed locally
