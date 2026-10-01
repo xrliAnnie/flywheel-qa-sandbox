@@ -1,15 +1,14 @@
 ---
 issue: FLY-2109
 phase: design
-phaseCursor: 5/7
-updated: 2026-10-01T10:06:11.436Z
-nextStep: "Codex R5 verdict → review-round 5 → (approve: re-run stage set
-  design_review, design-review.json, await-codex-gate) → finalize HTML →
-  commit/push → publish → complete"
+phaseCursor: 7/7
+updated: 2026-10-01T10:09:48.841Z
+nextStep: design node complete; implementer starts from plan.md +
+  design-review.md (R5 LOW reminder)
 chunks: []
 pointers: {}
 ---
 
 # FLY-2109 progress
-**phase**: design (5/7)
-**next**: Codex R5 verdict → review-round 5 → (approve: re-run stage set design_review, design-review.json, await-codex-gate) → finalize HTML → commit/push → publish → complete
+**phase**: design (7/7)
+**next**: design node complete; implementer starts from plan.md + design-review.md (R5 LOW reminder)
