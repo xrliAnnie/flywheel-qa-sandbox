@@ -1,13 +1,13 @@
 ---
 issue: FLY-3143
 phase: design
-phaseCursor: 3/6
-updated: 2026-10-01T10:06:31.964Z
-nextStep: design_review 绑定 plan 并跑 Codex 设计评审；并行做 Mermaid 图与 founder HTML
+phaseCursor: 4/6
+updated: 2026-10-01T10:19:44.161Z
+nextStep: "Codex 设计评审 R2（R1: 1 高 1 中 1 低，已全部修正）；通过后发布 HTML 并交卷"
 chunks: []
 pointers: {}
 ---
 
 # FLY-3143 progress
-**phase**: design (3/6)
-**next**: design_review 绑定 plan 并跑 Codex 设计评审；并行做 Mermaid 图与 founder HTML
+**phase**: design (4/6)
+**next**: Codex 设计评审 R2（R1: 1 高 1 中 1 低，已全部修正）；通过后发布 HTML 并交卷
