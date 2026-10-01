@@ -1,0 +1,15 @@
+stateDiagram-v2
+    direction LR
+    [*] --> 不存在
+    不存在 --> AWAITING_QA : 交付 #1 创建文件
+    AWAITING_QA --> FIXED_FOR_CLAIM : 返工只改第 2 行
+    FIXED_FOR_CLAIM --> [*] : 重验 pass
+    note right of AWAITING_QA
+        第 1 行恒为 QA-SBX FLY-2167 drill
+        第 2 行 = AWAITING-QA
+    end note
+    note right of FIXED_FOR_CLAIM
+        第 2 行 = FIXED-FOR-CLAIM <id>
+        id 四处逐字一致:
+        QA 判定 / 返工提示词 / 文件 / 重验提示词
+    end note
