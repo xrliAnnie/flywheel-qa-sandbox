@@ -1,13 +1,13 @@
 ---
 issue: FLY-3148
 phase: implement
-phaseCursor: 1/3
-updated: 2026-10-01T12:15:39.567Z
-nextStep: milestone + push + PR + pre-handin + ci-full + complete
+phaseCursor: 2/3
+updated: 2026-10-01T12:15:50.361Z
+nextStep: milestone commit, push, PR, Codex review, pre-handin, ci-full, complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-3148 progress
-**phase**: implement (1/3)
-**next**: milestone + push + PR + pre-handin + ci-full + complete
+**phase**: implement (2/3)
+**next**: milestone commit, push, PR, Codex review, pre-handin, ci-full, complete
