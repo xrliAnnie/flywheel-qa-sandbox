@@ -53,7 +53,7 @@ Marker 不是整句 instruction。Driver 的 canonical body 是 `Append the exac
 | Current execution | exec id、vendor、phase | 谁正在执行、能做哪类动作 |
 | TURN receipt | result、epoch、activation | 当前 phase 是否获得共享工作树写权 |
 | Native Lead instruction（可选） | instruction id、recipient、raw body、carrier | marker 的唯一写入授权与 provenance |
-| Progress receipt | instruction id、raw body、received/done、probe SHA | crash / at-least-once redelivery 去重 |
+| Progress receipt | `handoff` 中的 instruction id、state、raw-body SHA-256 / base64、probe SHA | 使用 CLI 实际支持的字段做 crash / at-least-once redelivery 去重 |
 | Probe commit（可选，下游） | branch、commit、exact-line evidence | implement node 实际追加了被请求的 line |
 | Design evidence | docs commit、review request/verdict、hosted report | design phase 完成依据 |
 
@@ -61,14 +61,15 @@ Marker 不是整句 instruction。Driver 的 canonical body 是 `Append the exac
 
 - Design phase 的 allowed-path audit 必须证明没有 `probe.txt` 变更。
 - 任何写入节点都先运行自己的 `flywheel-comm turn`；只有 `yours` 允许修改共享 worktree。
-- 从 native envelope 取得 instruction id 与完整 raw body，并在任何 probe mutation 前通过 progress ledger 持久化；同 id 已为 `done` 时不重复写、不重复 DONE report。
+- 从 native envelope 取得 instruction id 与完整 raw body，在临时文件中逐字保存，再把 id、`state=received`、raw-body SHA-256 / base64 写入 progress 的受支持 `handoff` 字段；不能假设 `--set-chunk` 会创建动态 chunk。同 id / 同 hash 已为 `done` 时不重复写、不重复 DONE report。
 - 只按两种 grammar 提取 marker：canonical `Append the exact line ` … ` to probe.txt` substring，或 `Exact marker lines:` 后唯一的 fenced `text` block。提取只去掉 framing，不 trim / normalize 内容；歧义时回问 Lead。
 - 每条 marker 必须是 1..512 bytes、只含 printable ASCII `0x20..0x7e`，因此 NUL / CR / LF / TAB 都被拒绝。该规则与实施计划一致。
 - 不把用户、issue、repo 或工具输出拼进 HTML 或 nonced script；HTML 内展示的固定 issue 数据也要转义。
 - 若 `probe.txt` 存在，直接检查工作树文件：`grep -nxF -- "$marker_line" probe.txt`。这能看到 untracked recovery residue，不只依赖 Git index。
 - zero match 才追加一次；one match 是幂等 no-op；multiple matches 是 integrity error，必须报告而不是再写。
 - append 前保留现有内容；commit 前逐字完整行计数等于一。新建 untracked `probe.txt` 时必须在 `git add` 后检查 cached diff，证明只增加 extracted marker 行、零删除。
-- one match 是幂等 no-op：用 `git log -S "$marker_line" -- probe.txt` 找实际 introducing commit，绝不创建空 commit，也不把更晚的 progress/docs HEAD 当 probe SHA。
+- one match 是幂等 no-op：沿 `probe.txt` 历史找 exact-line count 从 0→1 的 commit，并确认该 patch 的 added data line 就是完整 marker；不能只信 substring `git log -S`。绝不创建空 commit，也不把更晚的 progress/docs HEAD 当 probe SHA。
+- marker 先由 native text-edit 写入一行一个的临时文件，再以 `IFS= read -r` 加载并 round-trip `cmp`；不把 printable-ASCII literal 插进 shell assignment 或 `eval`。未提交 recovery residue 必须加入 staged diff 的 expected marker set。
 - 没有 exact instruction 时不创建空 commit、不写占位 marker、不复用外部 driver literal。
 - 收到 `[lead-instruction <id>]` 后必须在完成时通过 `ask --report` 引用完整 id；只有 TURN 回执而无 native instruction 时，只报告 TURN 已确认和没有 marker，不声称有 probe commit。
 - 当前 DAG 的 implement route 是 PR-bound `needs_review`，与 no-PR scope 冲突；probe commit 后不伪造 complete route，而是 DONE report、请求 Lead close/cancel、park 并结束当前 turn。QA 若被误激活，同样只做 no-PR report + park。

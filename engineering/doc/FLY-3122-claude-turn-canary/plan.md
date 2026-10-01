@@ -144,9 +144,9 @@ Issue: FLY-3122 (https://linear.app/geoforge3d/issue/FLY-3122/529-canary-fly2127
   Branch behavior:
 
   - no native `[lead-instruction <id>]` input: do not touch `probe.txt`; report that TURN was acknowledged but no native marker instruction arrived, then `park` with reason `FLY-3122 awaiting native marker instruction` and end the current turn;
-  - native instruction present: persist its id and complete raw body before any probe mutation with the injected progress command, using `--phase implement --cursor 1/3 --set-chunk "instruction-${instruction_id}=received" --next "$native_body"`.
+  - native instruction present: validate the envelope id as a UUID, then use the runner's native text-edit API to write the complete raw body byte-for-byte to a dedicated file under a newly created `/tmp/FLY-3122-receipt.XXXXXX/` directory. Compute its SHA-256 and one-line base64 encoding from that file. Before any probe mutation, persist a supported progress receipt with `--handoff "instruction_id=${instruction_id};state=received;raw_sha256=${raw_sha256};raw_body_base64=${raw_body_b64}"` and put only a short resume summary in `--next`. Do **not** use `--set-chunk`: the CLI cannot create a dynamic chunk and silently drops unsupported statuses.
 
-  If the progress ledger already records `instruction-${instruction_id}=done`, this is an at-least-once redelivery: do not repeat any mutation or external report. Re-check TURN, park idempotently, and end the turn.
+  On every resume, parse the frontmatter `handoff` receipt before acting. If it records the same id with `state=done` and the same raw-body hash, this is an at-least-once redelivery: do not repeat any mutation or external report. Re-check TURN, park idempotently, and end the turn. If it records `state=received`, resume from the durable raw body; if the same id arrives with a different hash, report an integrity error and park without writing.
 
 - [ ] **Step 3: Extract exact marker line(s) without guessing**
 
@@ -156,6 +156,8 @@ Issue: FLY-3122 (https://linear.app/geoforge3d/issue/FLY-3122/529-canary-fly2127
   2. Explicit block: after the exact label `Exact marker lines:`, accept one fenced `text` block. Fence lines and line terminators are framing; every non-empty interior line is one marker, preserved byte-for-byte.
 
   Reject the instruction without writing if neither grammar matches, both match, a delimiter is repeated, the fenced block is malformed, or the prose admits more than one extraction. Ask the Lead for an unambiguous literal and park. Do not infer a marker from the issue title, owner nonce, execution metadata, or surrounding prose.
+
+  For shell-safe handling, write each extracted marker to its own temporary file with the runner's native text-edit API as exactly one line plus `\n`. Load it only with `IFS= read -r marker_line < "$marker_file"`, then require `printf '%s\n' "$marker_line" | cmp -s - "$marker_file"`. Never create a shell assignment by interpolating marker text and never use `eval`; this preserves printable `$`, backticks, backslashes, quotes, `!`, and leading/trailing spaces byte-for-byte.
 
 - [ ] **Step 4: Validate every extracted marker before mutation**
 
@@ -182,15 +184,15 @@ Issue: FLY-3122 (https://linear.app/geoforge3d/issue/FLY-3122/529-canary-fly2127
 
 - [ ] **Step 6: Handle an already-complete delivery without a false commit**
 
-  If every marker already appears exactly once, do not create an empty commit and do not claim a new append. For each marker, find the commit that introduced it with `git log -S "$marker_line" -1 --format=%H -- probe.txt`; verify that commit contains `probe.txt` and that its committed file contains the exact line. Then mark `instruction-${instruction_id}=done` in progress with the introducing commit SHA(s).
+  If every marker already appears exactly once, do not create an empty commit and do not claim a new append. For each marker, enumerate `probe.txt` history oldest-to-newest and identify the first commit where the exact complete-line count changes from `0` in its parent to `1` in the commit. Inspect `git show --format= --unified=0 "$sha" -- probe.txt` and confirm that, after excluding diff headers, the exact data line `+${marker_line}` is among that commit's additions. A substring-only `git log -S` match is not sufficient. Save the verified introducing SHA(s) for the durable done receipt.
 
   - If the same instruction id was already `done`, emit no second DONE report.
   - If the id was only `received`, send a truthful receipt saying the exact marker was already present and name the verified introducing SHA(s).
-  - If no introducing commit exists, treat the line as uncommitted recovery residue and continue to the staged-diff path instead of inventing provenance.
+  - If no introducing commit exists, treat the line as uncommitted recovery residue, add it to `expected_staged_markers`, and continue to the staged-diff path instead of inventing provenance.
 
 - [ ] **Step 7: Append only missing exact lines with a runner-neutral operation**
 
-  Preserve all existing content. Use the runner's native text-edit tool, or after validation append one line with the tool-neutral command `printf '%s\n' "$marker_line" >> probe.txt`. Repeat only for markers whose exact-line count was zero. Do not substitute issue-title text, driver-derived Claude literals, execution metadata, or a guessed marker.
+  Preserve all existing content. Use the runner's native text-edit tool, or load `marker_line` from its verified temporary file and append one line with the tool-neutral command `printf '%s\n' "$marker_line" >> probe.txt`. Repeat only for markers whose exact-line count was zero. Do not substitute issue-title text, driver-derived Claude literals, execution metadata, or a guessed marker.
 
 - [ ] **Step 8: Verify the staged bytes and commit only the probe locally**
 
@@ -206,13 +208,13 @@ Issue: FLY-3122 (https://linear.app/geoforge3d/issue/FLY-3122/529-canary-fly2127
   git commit -m "test(FLY-3122): record requested transport marker"
   ```
 
-  Expected: the staged name list is exactly `probe.txt`; the staged diff deletes no lines; and its added data lines (excluding diff headers) equal the ordered set of previously missing marker lines byte-for-byte. This staged-diff assertion is mandatory when `probe.txt` is new because an unstaged diff does not show untracked content. The local commit contains only that append. Do not push, create a PR, request ship, merge, or deploy.
+  Expected: the staged name list is exactly `probe.txt`; the staged diff deletes no lines; and its added data lines (excluding diff headers) equal `expected_staged_markers` byte-for-byte. That set is the ordered union of previously missing markers and verified uncommitted recovery-residue markers. This staged-diff assertion is mandatory when `probe.txt` is new because an unstaged diff does not show untracked content. The local commit contains only that append or recovered append. Do not push, create a PR, request ship, merge, or deploy.
 
 - [ ] **Step 9: Persist completion and acknowledge the instruction truthfully**
 
   Send this receipt through the injected `ask --report` channel:
 
-  Obtain the probe commit with `git log -1 --format=%H -- probe.txt`, verify its changed-path list is exactly `probe.txt`, then update progress to `instruction-${instruction_id}=done` with that SHA. Send:
+  Obtain the probe commit with `git log -1 --format=%H -- probe.txt`, verify its changed-path list is exactly `probe.txt`, then update the supported progress `handoff` field to `instruction_id=${instruction_id};state=done;raw_sha256=${raw_sha256};raw_body_base64=${raw_body_b64};probe_shas=${probe_shas}` and set `--next` to a short completion/park summary. Re-read `progress.md` and verify the receipt survived serialization before sending:
 
   ```text
   DONE: [lead-instruction ${instruction_id}] appended the exact requested marker line(s) and committed only probe.txt locally | commits: ${commit_sha} | PR: n/a

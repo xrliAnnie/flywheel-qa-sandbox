@@ -23,8 +23,10 @@ classDiagram
     class ProgressReceipt {
       +instructionId: UUID
       +status: received or done
-      +rawBody: persisted before mutation
-      +probeSha: optional
+      +storage: supported handoff field
+      +rawSha256: integrity check
+      +rawBodyBase64: exact bytes
+      +probeShas: optional
     }
     class ProbeFile {
       +path: probe.txt
@@ -48,7 +50,7 @@ classDiagram
     }
     CurrentExecution "1" --> "1" TurnReceipt : must own write turn
     CurrentExecution "1" --> "0..1" NativeInstruction : must be native recipient
-    NativeInstruction "1" --> "1" ProgressReceipt : persist before mutation
+    NativeInstruction "1" --> "1" ProgressReceipt : persist supported receipt
     NativeInstruction "1" --> "0..1" MarkerExtraction : parse one grammar
     MarkerExtraction "1" --> "0..1" ProbeFile : authorizes exact lines
     ProbeFile "1" --> "0..1" ProbeCommit : local commit or verified no-op

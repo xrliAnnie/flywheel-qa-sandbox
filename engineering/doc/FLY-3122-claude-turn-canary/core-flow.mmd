@@ -10,12 +10,12 @@ flowchart TD
     T2 -->|"not-yours"| W2["Wait without worktree writes"]
     T2 -->|"yours"| M{"Native Lead envelope present?"}
     M -->|"No"| N["Report TURN only and park"]
-    M -->|"Yes"| P["Persist instruction id and raw body"]
+    M -->|"Yes"| P["Persist supported handoff receipt"]
     P --> X{"One exact extraction grammar?"}
     X -->|"No"| U["Ask Lead for literal and park"]
     X -->|"Yes"| V["Validate bytes and exact-line count"]
     V --> E{"Already committed exactly once?"}
-    E -->|"Yes"| S["Verify introducing SHA; no empty commit"]
+    E -->|"Yes"| S["Verify exact added line and introducing SHA"]
     E -->|"No"| A["Append only missing lines"]
     A --> G["Stage, inspect exact diff, local commit"]
     G --> Q["Report instruction id plus probe SHA"]
