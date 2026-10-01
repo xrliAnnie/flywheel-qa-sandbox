@@ -1,0 +1,25 @@
+flowchart TD
+    A["eng_design 启动<br/>exec 2cd673b2"] --> B{"turn = yours?"}
+    B -- "not-yours" --> W["等待 60-90 秒再查<br/>不写 worktree"]
+    W --> B
+    B -- "yours" --> C["审计：inbox 为空<br/>无 marker 原文<br/>probe.txt 不存在"]
+    C --> D["写 exploration / research / plan<br/>画图 + Founder HTML"]
+    D --> E["commit + push 文档<br/>probe.txt 不动"]
+    E --> F["Codex design review<br/>每轮 review-round 回写"]
+    F -- "CHANGES_REQUESTED" --> D
+    F -- "APPROVED" --> G["publish-report + ask --report<br/>TURN 回执"]
+    G --> H["complete<br/>phase_design_complete"]
+    H -.-> I["下游 implement execution"]
+    I --> J{"收到发给自己的<br/>lead-instruction?"}
+    J -- "否" --> P["结构化回执：结果或无 marker<br/>+ 路由不匹配，park"]
+    J -- "是" --> K{"message-status 收据<br/>+ DB 行身份断言通过?"}
+    K -- "否" --> R["拒绝，不写文件<br/>请求重发"]
+    K -- "是" --> L{"唯一受支持格式<br/>且 marker 合法?"}
+    L -- "否" --> R
+    L -- "是" --> M{"probe.txt 中已有几行?"}
+    M -- "1" --> N["已完成，跳过"]
+    M -- "2+" --> X["integrity error 停止"]
+    M -- "0" --> O["cat 临时文件 >> probe.txt<br/>只提交 probe.txt，仅本地"]
+    O --> Q["回执：instruction id<br/>source 哈希 + commit SHA"]
+    N --> Q
+    Q --> P

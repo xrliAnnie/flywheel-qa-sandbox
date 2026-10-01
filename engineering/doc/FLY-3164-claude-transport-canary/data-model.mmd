@@ -1,0 +1,47 @@
+classDiagram
+    direction LR
+    class Execution {
+        exec_id : uuid
+        activation_id : string
+        node : eng_design 或 implement
+        backend : claude-code
+    }
+    class TurnReceipt {
+        answer : yours 或 not-yours 或 no-turn
+        phase : string
+        epoch : int
+        说明「谁可以写」
+    }
+    class LeadInstruction {
+        id : uuid
+        type : instruction
+        from_agent : Lead id
+        to_agent : exec_id
+        content : 原始字节
+        说明「写什么」
+    }
+    class DeliveryReceipt {
+        message_id : uuid
+        location : live 或 archived
+        state : LEASED 或 ACKED
+        delivered_at : 时间戳
+    }
+    class SourceBuffer {
+        path : 私有临时目录 source.bin
+        sha256 : hex
+    }
+    class Marker {
+        bytes : 1-512 可打印 ASCII
+        无首尾空格
+    }
+    class ProbeCommit {
+        sha : git sha
+        paths : 只有 probe.txt
+        pushed : false
+    }
+    Execution "1" --> "1" TurnReceipt : 写前查询
+    Execution "1" <-- "0..*" LeadInstruction : to_agent 绑定
+    LeadInstruction "1" --> "1" DeliveryReceipt : message-status
+    LeadInstruction "1" --> "1" SourceBuffer : 只读复制 row.content
+    SourceBuffer "1" --> "0..*" Marker : 严格格式解析
+    Marker "1..*" --> "0..1" ProbeCommit : 仅当计数为 0 时追加
