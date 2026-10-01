@@ -1,14 +1,13 @@
 ---
 issue: FLY-3164
 phase: design
-phaseCursor: 1/6
-updated: 2026-10-01T20:48:17.880Z
-nextStep: "write exploration.md/research.md (audit done: TURN yours, inbox
-  empty, no probe.txt, tpl_code mismatch)"
+phaseCursor: 2/6
+updated: 2026-10-01T20:50:47.120Z
+nextStep: write plan.md, then stage design_review + Codex design review
 chunks: []
 pointers: {}
 ---
 
 # FLY-3164 progress
-**phase**: design (1/6)
-**next**: write exploration.md/research.md (audit done: TURN yours, inbox empty, no probe.txt, tpl_code mismatch)
+**phase**: design (2/6)
+**next**: write plan.md, then stage design_review + Codex design review
