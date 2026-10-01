@@ -13,15 +13,15 @@ Issue: FLY-2109 (https://linear.app/geoforge3d/issue/FLY-2109/病根-切号后�
 | runner 唤醒原语 | `CommDB.insertInstructionWithId` + `wakeRunnerMailbox`（= `flywheel-comm send` 的 ①④⑤） | `send.ts:31-112`，`wake.ts:30-121`，`db.ts:898-913` |
 | Lead 唤醒原语 | `store.appendLeadEvent` + `registry.getForLead(id).deliver(envelope)` + `markLeadEventDelivered` | `HeartbeatService.ts:2146-2172`，`StateStore.ts:6513-6539` |
 | Lead 看到什么 | 通用渲染：`[Event #seq] account_switch_wake` / `ID: — \| Issue: —` / `Summary: <文案>` | `mailbox-lead-runtime.ts` `formatEnvelope` 通用分支 |
-| Lead 枚举 | `RuntimeRegistry` 无 iterator；用 `fleetConfigProvider.snapshot().projects[].leads[]` 逐个 `getForLead` | `runtime-registry.ts`，`plugin.ts:3495-3527` |
+| Lead 枚举 | `RuntimeRegistry` 无 iterator；用 `fleetConfigProvider.snapshot().projects[].leads[]`（`snapshot()` 返回 `{projects, state}`）逐个 `getForLead` | `runtime-registry.ts`，`fleet-data.ts:547-549`，`plugin.ts:3495-3527` |
 | Lead 是不是 Claude | `effectiveLeadBackend(lead.backend, defaultLegacyBackendOf(project))`（显式 > 项目 config.yaml `roles.lead.backend` / `FLYWHEEL_LEAD_BACKEND` legacy > 默认 claude-code） | `lead-backends/lead-backend.ts:55-65`，`fleet-data.ts:611-627` |
 | Lead pane 活性 | `locateLeadWindow(project, leadId)` → `null` = 窗口不存在 | `LeadWindowLocator.ts:40-73` |
 | runner 枚举 | StateStore `getRunningSessions()`；真实 vendor 看项目 CommDB `getSession(exec).vendor` | `StateStore.ts:3610`，`db.ts:1576`，`types.ts:57-72` |
-| runner pane 活性 | `lookupTmuxTarget`（found/gone/error 三态）→ `probeRunnerProcessLiveness(tmuxWindow)`；`indeterminate`/error 当 unknown 照投 | `tmux-lookup.ts:155-196,371`，`HeartbeatService.isSessionTmuxAlive` |
+| runner pane 活性 | 从本 consumer 打开的同一 CommDB 取 `sessions.tmux_window` → `probeRunnerProcessLiveness(tmuxWindow)`；`indeterminate` 当 unknown 照投。不用 `lookupTmuxTarget`（硬编码 `~/.flywheel/comm`，无视 `FLYWHEEL_COMM_ROOT/DIR`） | `tmux-lookup.ts:172-179,371`，`commdb-path.ts:19-27` |
 | 幂等 / 证据 | 审计去重 = CommDB `INSERT OR IGNORE`；投递证据 = `delivered_at`（runner）/ `lead_events.delivered_at`（Lead）；transport 重试去重 = sidecar `flywheelId`，但 `finalized:false` 的 pending 不算成功，须 `MailboxTransport.writeVerified` | `db.ts:898-913`，`ClaudeMailboxCodec.ts:144-160`，`MailboxTransport.ts:59-95`，`StateStore.ts:6513-6539` |
 | 日志文件 | `FLYWHEEL_QUOTA_LOG_PATH ?? ~/.flywheel/logs/quota-monitor.log`，追加一行 JSON；仓内已有 `O_NOFOLLOW` 单 fd 写法可仿 | `reports-route.ts:126-141` |
 | kill switch | 注册表 `FEATURE_FLAGS` 条目 + 读点声明；drift 测试要求 env 读点文件真含该 env 名 | `registry.ts:102-145`，`feature-flags-drift.test.ts` |
-| 测试房隔离 | `FLYWHEEL_CLAUDE_ACCOUNTS_PATH`（已有）+ `FLYWHEEL_QUOTA_LOG_PATH`（新） | `account-store.ts:116-122` |
+| 测试房隔离 | 不止两个 env：账号库 / 账号锁 / pending 单 / 切号日志 / profile CLI fixture / CommDB（清 `FLYWHEEL_COMM_ROOT`）/ 收件箱 / StateStore，见 plan §5.1 | `account-store.ts:116-122`，`pending-store.ts:49-53`，`claude-profile-cli.ts:53-56`，`commdb-path.ts:19-27` |
 
 ## 2. 细节
 
@@ -43,14 +43,17 @@ Issue: FLY-2109 (https://linear.app/geoforge3d/issue/FLY-2109/病根-切号后�
 ```
 id = `account-switch-wake:g${generation}:${execution_id}`
 text = `【账号切换】额度已切到新账号 \`${to}\`，请接着做刚才的事。`
-db = new CommDB(commDbPathForProject(project))           // 与 plugin.ts:3340 / :5124 同一打开方式
-inserted = db.insertInstructionWithId(id, "bridge", exec, text)   // 审计行；false = 已有（幂等）
+db = new CommDB(commDbPathForProject(project))           // 与 plugin.ts:3340 / :5124 同一打开方式；遵守 FLYWHEEL_COMM_ROOT/DIR
+evidence = db.getMessageById(id)?.delivered_at           // 投递证据；有 → 只补附带动作
+sess = db.getSession(exec)                               // vendor + tmux_window 同源
+db.insertInstructionWithId(id, "bridge", exec, text)     // 审计行；false = 已有
 wake = await wakeRunnerMailbox({ db, execId: exec, fromAgent: "bridge",
         content: `[lead-instruction ${id}]\n${text}`, metadata: { flywheelId: id, execId: exec, kind: "account_switch_wake" },
-        backend: "claude-code" })                         // sidecar 按 flywheelId 去重；ok → db.markInstructionDelivered(id)
+        backend: "claude-code", transportFactory: verifyThenWrite })   // 先 verifyLastWrite 认回，再 MailboxTransport.writeVerified
+ok → db.markInstructionDelivered(id)                     // 只有这里写 delivered_at
 ```
 
-- `wakeRunnerMailbox` 的 `skippedReason:"no_session_lead"`（CommDB 行无 `lead_id`）和 `backend_commdb`（回滚模式）都不是失败：前者记 `skipped_no_mailbox`，后者记 `skipped_backend_commdb`（回滚模式下 PostToolUse hook 直接读 CommDB 行，审计行已落即到达）。
+- `wakeRunnerMailbox` 的 `skippedReason:"no_session_lead"`（CommDB 行无 `lead_id`）和 `backend_commdb`（回滚模式，`wake.ts:63-64` 直接返回、未调 transport）都不是失败：前者记 `skipped_no_mailbox`，后者记 `skipped_backend_commdb`，**都不写 `delivered_at`**（回滚模式下是否被 hook 读到没有确认信号，不能冒充投递证据）。
 - 不调 `clearDeclaredState`：派单说「只唤醒」，parked / long_task 声明保留（与生产裁定一致：仅 account_dead 才清，本仓没有 account_dead 触发）。
 - vendor 判定：`db.getSession(exec)?.vendor === "claude-code"` 才投；`codex` / `none` / NULL / 行缺失 → `skipped_vendor`。NULL 是 dispatcher 预注册（runner 还没自报）或 legacy 行；对尚未起来的体投唤醒没意义（它起来就用新号），legacy 行在本仓当前版本不会出现（FLY-1188 起所有 adapter 都写 vendor）。
 - `[lead-instruction <id>]` 前缀会让 runner 按协议回一条 DONE——这是可核对的副作用，Lead 由此看到「谁醒了」。
@@ -120,8 +123,8 @@ drift 测试：readSite 文件必须字面含该 env 名。
 
 - `FLYWHEEL_CLAUDE_ACCOUNTS_PATH`：已被 `defaultStorePath()` 读取；房内 Bridge 设到房内路径 → consumer 读房内账号库，不读生产。
 - `FLYWHEEL_QUOTA_LOG_PATH`：新读点；房内 Bridge 设到房内路径 → 生产 `quota-monitor.log` 零新增行。
-- 两者未设 → 生产默认路径，行为与生产约定一致。
-- 本仓 `scripts/lib/` 是否有 `qa-slot-env-contract.json`：**无**（生产 PR 新增）；plan 里把两个 env 作为 QA 房 Bridge 启动 env 的显式要求写进验收，不引入新 contract 文件。
+- 以上两个只是必要条件：账号池文件存在时 plugin 会装配**真实** `flywheel-claude-profile`（默认读写生产 profiles / Keychain / `~/.claude.json`），pending 单也有生产默认路径——完整隔离集见 plan §5.1（含 fake profile fixture 脚本、`FLYWHEEL_ACCOUNT_PENDING_PATH`、`FLYWHEEL_CLAUDE_ACCOUNTS_LOCK`、`FLYWHEEL_COMM_DIR` + 清 `FLYWHEEL_COMM_ROOT`、`CLAUDE_CONFIG_DIR`）。
+- 本仓 `scripts/lib/` 没有 `qa-slot-env-contract.json`（生产 PR 新增）；plan 把隔离集作为 QA 房 Bridge 启动 env 的显式要求写进验收，不引入新 contract 文件。
 
 ### 2.8 不碰的东西（scope 纪律）
 
