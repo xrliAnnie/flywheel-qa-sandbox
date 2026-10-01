@@ -1,13 +1,14 @@
 ---
 issue: FLY-3143
 phase: implement
-phaseCursor: 1/3
-updated: 2026-10-01T10:29:26.283Z
-nextStep: run body and resume verification for current execution
+phaseCursor: 2/3
+updated: 2026-10-01T10:29:39.503Z
+nextStep: write implementation.md with verbatim candidate/body/resume evidence
+  and not-run matrix
 chunks: []
 pointers: {}
 ---
 
 # FLY-3143 progress
-**phase**: implement (1/3)
-**next**: run body and resume verification for current execution
+**phase**: implement (2/3)
+**next**: write implementation.md with verbatim candidate/body/resume evidence and not-run matrix
