@@ -1,13 +1,13 @@
 ---
 issue: FLY-3150
 phase: design
-phaseCursor: 3/5
-updated: 2026-10-01T16:35:32.681Z
-nextStep: refresh founder HTML (epoch-3 state + review record), commit, publish, report
+phaseCursor: 4/5
+updated: 2026-10-01T16:36:24.380Z
+nextStep: publish-report + DESIGN-HTML report to Lead + complete phase_design_complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-3150 progress
-**phase**: design (3/5)
-**next**: refresh founder HTML (epoch-3 state + review record), commit, publish, report
+**phase**: design (4/5)
+**next**: publish-report + DESIGN-HTML report to Lead + complete phase_design_complete
