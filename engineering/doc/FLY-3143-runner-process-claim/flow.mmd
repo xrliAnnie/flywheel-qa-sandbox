@@ -1,0 +1,18 @@
+flowchart TD
+  A["派单：按已批准的设计实现 FLY-3143"] --> B{"沙箱仓库里有那套设计和代码吗？"}
+  B -- "没有，都在生产仓库" --> C["设计节点：不重新设计<br/>改为核验候选构建"]
+  C --> D["只读核验脚本<br/>verify-candidate.sh"]
+  D --> E{"退出码"}
+  E -- "0 通过" --> F["implement 节点<br/>重跑核验 + 记录自己的认领结果"]
+  E -- "1 某项不成立" --> X["停下，问 Lead<br/>不改脚本凑绿"]
+  E -- "2 核不了" --> X
+  E -- "3 候选头变了" --> X
+  F --> G["qa 节点<br/>重跑核验 + 收齐三个体的认领记录"]
+  G --> H["沙箱合同裁决<br/>看得到的给结论，看不到的标 not_run"]
+  H --> I["真机大矩阵<br/>归持有测试房的生产 QA"]
+  classDef stop fill:#fff1f0,stroke:#ff3b30,color:#1d1d1f;
+  classDef ok fill:#f0faf3,stroke:#34c759,color:#1d1d1f;
+  classDef out fill:#f5f0fb,stroke:#af52de,color:#1d1d1f;
+  class X stop;
+  class F,G,H ok;
+  class I out;
