@@ -89,6 +89,20 @@ sqlite3 "$DB" "
 
 # Claim verdict.
 expect "body: fresh accepted body" 0 sh "$V" body "$(id 1)" "$DB"
+# The documented output shape: line 1 identity, lines 2-4 the verdict inputs.
+count=$((count + 1))
+shape=$(sh "$V" body "$(id 1)" "$DB" | sed -n '1,4p')
+want_shape="execution=$(id 1)
+accepted=yes
+generation_consistent=no_body
+resume_current_state=none"
+if [ "$shape" = "$want_shape" ]; then
+	echo "ok   body: first four output lines have the documented shape"
+else
+	bad=$((bad + 1))
+	echo "FAIL body: first four output lines have the documented shape"
+	printf '%s\n' "$shape" | sed 's/^/     | /'
+fi
 expect "body: unknown execution id" 1 sh "$V" body "$(id 9)" "$DB"
 expect "body: DB text cannot forge an accepted line" 1 sh "$V" body "$(id 8)" "$DB"
 

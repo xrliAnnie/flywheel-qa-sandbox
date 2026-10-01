@@ -52,7 +52,7 @@ sh engineering/doc/FLY-3143-runner-process-claim/verify-candidate.sh resume "$FL
 | `body <执行 ID> [<状态库>]` | 状态库缺省取 `$FLYWHEEL_STATE_DB_PATH` | 这个体**当前这次起体**被严格认领（plan §4.2 的 accepted 判据）。只回答认领，不回答拉回是否成功 |
 | `resume <执行 ID> [<状态库>]` | 同上 | 这个体**当前代次**的原会话拉回成功，且这次起体已被认领、owner 代次与体代次一致。更早代次的成功只作为历史行打印，不满足本判定 |
 
-**输入边界。** 执行 ID 必须整串就是一个小写 UUID：正好 36 个字符、只含 `0-9a-f-`、四个连字符在固定位置。含换行、大写、引号的参数在拼任何查询之前就被拒（exit 2）。两个库模式各自在**一个只读事务**里取数；头三行（`accepted`、`generation_consistent`、`resume_current_state`）由 SQL 用固定字面量算出，判定只读这三行；其余文本字段去掉换行后才打印，库里的内容伪造不了判定行。只查安全投影：不读 `owner_token`、`spawn_nonce`、`binding_json`。
+**输入边界。** 执行 ID 必须整串就是一个小写 UUID：正好 36 个字符、只含 `0-9a-f-`、四个连字符在固定位置。含换行、大写、引号的参数在拼任何查询之前就被拒（exit 2）。两个库模式各自在**一个只读事务**里取数。输出第 1 行固定是 `execution=<执行 ID>`；第 2–4 行依次是 `accepted=`、`generation_consistent=`、`resume_current_state=`，由 SQL 用固定字面量算出，判定只读这三行；其余文本字段去掉换行后才打印，库里的内容伪造不了判定行。只查安全投影：不读 `owner_token`、`spawn_nonce`、`binding_json`。
 
 退出码是五态，只有 0 算通过：
 
@@ -75,7 +75,7 @@ sh engineering/doc/FLY-3143-runner-process-claim/verify-candidate.sh resume "$FL
 | 步 | 做什么 | 完成判据 |
 |---|---|---|
 | 1/3 | 跑 `candidate` 模式 | exit 0，末两行是 `SUMMARY total=46 fail=0 unverifiable=0` 和 `VERDICT PASS` |
-| 2/3 | 跑 `body "$FLYWHEEL_EXEC_ID"`，再跑 `resume "$FLYWHEEL_EXEC_ID"` | `body` exit 0，首行 `accepted=yes`。`resume` 新起的体预期 exit 4（not_run），照实记录；若是 0 / 1 / 2 按 §4 的表处理 |
+| 2/3 | 跑 `body "$FLYWHEEL_EXEC_ID"`，再跑 `resume "$FLYWHEEL_EXEC_ID"` | `body` exit 0，输出第 1 行是 `execution=<本体执行 ID>`，第 2 行是 `accepted=yes`。`resume` 新起的体预期 exit 4（not_run），照实记录；若是 0 / 1 / 2 按 §4 的表处理 |
 | 3/3 | 新建 `engineering/doc/FLY-3143-runner-process-claim/implementation.md`：抬头四行（同本目录其他文档，`基于: plan.md`）；三次输出各放一个代码块，原样不删行，并写明各自的退出码；一节「未执行」照抄 §6 表里标 not_run 的行 | 文件已提交 |
 
 除第 2 步 `resume` 允许 exit 4 之外，任一步非 exit 0：按 §4 的表处理，不继续后面的步骤。
@@ -120,11 +120,11 @@ sh engineering/doc/FLY-3143-runner-process-claim/verify-candidate.test.sh
 shellcheck -s sh engineering/doc/FLY-3143-runner-process-claim/verify-candidate.sh engineering/doc/FLY-3143-runner-process-claim/verify-candidate.test.sh
 ```
 
-自测在私有临时目录里建一个夹具状态库和一个无关的 git 仓库，跑 25 条用例，逐条比对退出码；结束时删掉临时目录。2026-10-01 实跑：`cases=25 failed=0`，exit 0；shellcheck 零告警。
+自测在私有临时目录里建一个夹具状态库和一个无关的 git 仓库，跑 26 条用例：25 条比对退出码，1 条比对输出前四行的固定形状；结束时删掉临时目录。2026-10-01 实跑：`cases=26 failed=0`，exit 0；shellcheck 零告警。
 
 | 组 | 用例数 | 覆盖 |
 |---|---|---|
-| 认领判定 | 3 | 已认领 → 0；不存在的执行 ID → 1；库里文本含换行和伪造的 `accepted=yes` → 仍是 1 |
+| 认领判定 | 4 | 已认领 → 0；它的输出前四行正是 `execution=`、`accepted=yes`、`generation_consistent=no_body`、`resume_current_state=none`；不存在的执行 ID → 1；库里文本含换行和伪造的 `accepted=yes` → 仍是 1 |
 | 拉回判定绑定当前代次 | 7 | 从未拉回 → 4；当前代次成功 → 0；旧代次成功但当前进行中 → 2；旧代次成功但当前失败 → 1；旧代次成功但当前没尝试 → 4；成功但 owner 正在关闭 → 1；成功但 owner 代次落后于体 → 1 |
 | 执行 ID 边界 | 8 | 单行 SQL 文本、多行 SQL 夹一行 UUID（设计评审 R1 的复现串）、两行 UUID、大写、连字符错位、36 个连字符、空串、`resume` 模式同样拒绝 → 全部 2 |
 | 输入读不到 / 结构不对 | 7 | 库文件不存在、库里没有这些表、候选目录不存在、没给目录也没有 `FLYWHEEL_COMM_CLI`、目录不是 git 检出、不带模式 → 2；另一个 git 头 → 3 |
