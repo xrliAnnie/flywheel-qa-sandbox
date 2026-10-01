@@ -30,7 +30,7 @@ Issue: FLY-3164 (https://linear.app/geoforge3d/issue/FLY-3164/529-canary-fly2127
 ## 成功标准
 
 1. 产出 `exploration.md`、`research.md`、`plan.md`、两份 Mermaid source + 本地渲染 SVG、Founder HTML、restart-resilient `progress.md`。
-2. 拿到有效的 `APPROVED` design-review verdict,提交并推送 design artifacts。
+2. 拿到有效的 `APPROVED` design-review verdict,提交 design artifacts 并推送到 feature 分支(依据：本 node 注入的 design 合同要求 “Commit and push the required artifacts”;issue 只要求 marker “commit locally”,没有禁止推送设计文档；不碰 main、不建 PR)。
 3. 发布 Founder HTML 并用结构化回执报告 URL。
 4. 通过结构化回执确认 TURN(满足 issue 的 “acknowledge … TURN”)。
 5. `probe.txt` 在 design phase 保持不存在；不改产品代码，不建 PR,不请求 ship,不 merge / deploy,不派发后继节点。
@@ -52,5 +52,5 @@ TURN 事实已经由 `flywheel-comm turn` 原生给出并会通过 `ask --report
 
 ## 诚实边界
 
-- **做**:记录本 design execution 的身份与 TURN;定义下游追加合同(来源核验、语法、幂等、提交范围、无 marker 时的停靠路径);走 review / HTML / 回执流程。
+- **做**:记录本 design execution 的身份与 TURN;定义下游追加合同(来源核验、语法、区分“已写入”与“已提交”的幂等恢复、提交范围、无 marker 时的停靠路径);定义 QA 按 writer 身份做只读审计(含归档指令);走 review / HTML / 回执流程。
 - **不做**:追加任何 marker;证明本 execution 收到原生 Claude 邮件(它没有收到);重新实现或替代 FLY-2127 driver 的 R4-claude 用例；创建 PR、push marker commit、ship、merge、deploy;解决 `tpl_code` 要求 PR 与本 issue 禁止 PR 之间的路由冲突(交给 workflow owner)。

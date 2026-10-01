@@ -4,22 +4,27 @@ flowchart TD
     W --> B
     B -- "yours" --> C["审计：inbox 为空<br/>无 marker 原文<br/>probe.txt 不存在"]
     C --> D["写 exploration / research / plan<br/>画图 + Founder HTML"]
-    D --> E["commit + push 文档<br/>probe.txt 不动"]
+    D --> E["commit + push 设计文档到 feature 分支<br/>probe.txt 不动"]
     E --> F["Codex design review<br/>每轮 review-round 回写"]
     F -- "CHANGES_REQUESTED" --> D
-    F -- "APPROVED" --> G["publish-report + ask --report<br/>TURN 回执"]
+    F -- "APPROVED" --> G["design-review.json + await-codex-gate<br/>publish-report + ask --report 回执"]
     G --> H["complete<br/>phase_design_complete"]
-    H -.-> I["下游 implement execution"]
+    H -.-> I["下游 writer：implement execution"]
     I --> J{"收到发给自己的<br/>lead-instruction?"}
     J -- "否" --> P["结构化回执：结果或无 marker<br/>+ 路由不匹配，park"]
     J -- "是" --> K{"message-status 收据<br/>+ DB 行身份断言通过?"}
     K -- "否" --> R["拒绝，不写文件<br/>请求重发"]
     K -- "是" --> L{"唯一受支持格式<br/>且 marker 合法?"}
     L -- "否" --> R
-    L -- "是" --> M{"probe.txt 中已有几行?"}
-    M -- "1" --> N["已完成，跳过"]
-    M -- "2+" --> X["integrity error 停止"]
-    M -- "0" --> O["cat 临时文件 >> probe.txt<br/>只提交 probe.txt，仅本地"]
-    O --> Q["回执：instruction id<br/>source 哈希 + commit SHA"]
+    L -- "是" --> M{"Git 状态<br/>工作区计数 W / HEAD 计数 H"}
+    M -- "fresh：W=0 H=0" --> O["cat 临时文件 >> probe.txt"]
+    M -- "已写未提交：H=0 且差异只含本指令 marker" --> O2["补齐缺的行"]
+    M -- "已提交：W=1 H=1 无差异" --> N["定位并核验原 commit<br/>already_present"]
+    M -- "其他组合" --> X["integrity error / 证据不足<br/>不写不提交"]
+    O --> CM["只提交 probe.txt，仅本地<br/>之后不再 push 分支"]
+    O2 --> CM
+    CM --> Q["回执：instruction id、writer exec<br/>source 哈希、commit SHA"]
     N --> Q
+    X --> Q
     Q --> P
+    P -.-> QA["QA 只读审计：按 writer 身份核对<br/>live 或归档指令 + commit"]

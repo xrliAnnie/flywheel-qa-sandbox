@@ -49,7 +49,7 @@ TURN 是写权限，不是 marker 内容。Issue 标题、owner nonce、executio
 ## 可执行的来源核验(provenance)合同
 
 1. 从当前 user turn 中定位**恰好一个**行首 sentinel `[lead-instruction <uuid>]`;0 个或多个都拒绝。只取 uuid,不取后面的显示文本。
-2. 运行 `node "$FLYWHEEL_COMM_CLI" message-status "$instruction_id" --json`,要求 `message_id` 精确等于 uuid、`location ∈ {live, archived}`、`state ∈ {LEASED, ACKED}`、`stamps.delivered_at` 非空。
+2. 运行 `node "$FLYWHEEL_COMM_CLI" message-status "$instruction_id" --json`,要求 `message_id` 精确等于 uuid、`location = live`(writer 只接受 live 指令；只剩 archive 的旧指令要求重新投递)、`state ∈ {LEASED, ACKED}`、`stamps.delivered_at` 非空。
 3. 在一个短生命周期 Node 进程里，从 `FLYWHEEL_COMM_CLI` 推导 runtime 根目录，动态 import `packages/flywheel-comm/dist/lib.js`,用**一个** `CommDB.openReadonly(FLYWHEEL_COMM_DB)` handle:
    - `row = getMessageById(id)`,要求 row 存在、`row.type === 'instruction'`、`row.to_agent === process.env.FLYWHEEL_EXEC_ID`、`row.from_agent === process.env.FLYWHEEL_LEAD_ID`;
    - `content = inspectMailboxDeliveryContent(id)`,要求 `content === row.content`(逐字节相等，任一为 undefined 即拒绝);
@@ -73,11 +73,28 @@ TURN 是写权限，不是 marker 内容。Issue 标题、owner nonce、executio
 ## 追加、幂等与提交合同
 
 - 写前再次运行 `flywheel-comm turn --exec-id "$FLYWHEEL_EXEC_ID"`;只有 `yours` 可写,`not-yours` 是正常等待态(每 60–90 秒轮询)。
-- Parser 把每条 marker 以“精确字节 + 一个 LF”写进各自的临时文件，并校验该文件恰好一行。Marker 永远不进入 shell 源码、shell 变量、`eval`,也不经模型重新抄写。
-- 已有 `probe.txt` 时用 `grep -cxF -f "$marker_file" probe.txt` 计数:0 → 可追加,1 → 已完成(幂等),≥2 → integrity error 停止。文件不存在视为 0。已有非空文件若没有结尾 LF,拒绝追加以免两行粘连。
+- Parser 把每条 marker 以“精确字节 + 一个 LF”写进各自的临时文件，并校验该文件恰好一行。Marker 永远不进入 shell 源码、shell 变量、命令 argv、`eval`,也不经模型重新抄写。
+- **文件计数 ≠ 已提交。**进程可能在 `cat` 之后、`commit` 之前中断，也可能在 commit 之后、回执之前中断。所以要同时看两个计数：工作区 `W`(`grep -cxF -f "$marker_file" probe.txt`)与 HEAD `H`(`git show HEAD:probe.txt | grep -cxF -f "$marker_file"`),再结合 `git status` / `git diff HEAD -- probe.txt` 判定状态：
+  - `fresh`:全部 `W=0,H=0`,工作区与 HEAD 相同 → 追加 + 提交；
+  - `appended_uncommitted`:全部 `H=0`、部分或全部 `W=1`,且未提交差异只新增本指令 marker → 补齐缺的行，再提交；
+  - `already_committed`:全部 `W=1,H=1`,无未提交差异 → 不追加、不提交，按时间顺序遍历 `git log --reverse -- probe.txt` 找到第一个让计数从 0 变 1 的 commit,核验它只改 `probe.txt` 且只新增这些 marker,回报 `already_present` 并引用该 SHA;
+  - 其他(计数 ≥2、`W=0,H=1`、混合或无法归属的差异、`probe.txt` 之外的未提交改动、非空文件无结尾 LF)→ 不写、不提交，报告 integrity error / 证据不足。
 - 只用 `cat "$marker_file" >> probe.txt` 追加，所以反引号、`$()`、引号、反斜杠永远只是数据。
-- staged diff 只能新增预期的 marker 行、不删任何行；commit 的变更路径只能是 `probe.txt`。
-- marker commit 只留在本地：不 push、不建 PR;回执引用 instruction id、`source.bin` sha256 与 path-filtered commit SHA。
+- 只有 staged delta 非空才 `git commit`;staged diff 只能新增预期的 marker 行、不删任何行；commit 的变更路径只能是 `probe.txt`。
+- marker commit 只留在本地：不 push、不建 PR;本地分支含 marker commit 后，writer 不再 push 该分支(`flywheel-comm progress` 只做 `git commit --only -- progress.md`,不 push,不受影响)。回执引用 instruction id、writer exec id、Lead id、`source.bin` sha256、状态关键词与 marker commit SHA。
+
+## 推送边界的来源
+
+Issue 原文只对 marker 说 “commit locally”,并写明 “No product implementation, shipping or deployment”;它没有禁止推送设计文档。本 design node 的注入合同要求 “Commit and push the required artifacts” 与 “Commit and push the final HTML”,Bridge 的 review gate 也绑定已提交的 plan blob。因此：设计文档 commit + push 到 feature 分支(不碰 main、不建 PR);marker commit 只在本地。FLY-3122 / FLY-3125 的 design node 也是这样做的。
+
+## 独立 QA 的审计合同
+
+QA 是另一个 execution:它没有收到发给 writer 的指令，因此不能用自己的 `FLYWHEEL_EXEC_ID` 或当前 user turn 重跑 writer 的写入授权检查。QA 用**预期身份**核对：
+
+- writer execution id 来自 workflow 记录(`workflow_run_node` 中 `implement` 节点的 `execution_id`),并与 writer DONE 回执的发送者一致；instruction id、Lead id、`source_sha256`、marker commit SHA 来自该回执。
+- `message-status` 允许 `location = archived`:writer 可能因路由不匹配长期 park,live 行会被归档。归档行的完整快照可用与 `MailboxQueue.archivedMailboxJson`(runtime `mailbox-queue.js:365`)相同的参数化只读查询取得(`mailbox_log` 中 `event='archived'` 的最新 `row_json`,否则 `mailbox_terminal_archive.mailbox_json`),其中包含 `type`、`from_agent`、`to_agent`、`content`。QA 断言这些字段与预期身份一致，且 `sha256(content)` 等于回执里的哈希。
+- 用同一语法重新解析 `content`,核验 marker commit 只改 `probe.txt`、恰好新增这些 marker、无删除，且没有被 push。
+- 证据不可得 → `unverifiable`,绝不判 `pass`。审计历史结果不授予写权限;writer 对 archive-only 指令拒绝新写入的规则保持不变。
 
 ## Workflow 能力不匹配
 

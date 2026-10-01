@@ -3,8 +3,8 @@ classDiagram
     class Execution {
         exec_id : uuid
         activation_id : string
-        node : eng_design 或 implement
-        backend : claude-code
+        node : eng_design 或 implement 或 qa
+        backend : claude-code 或 codex
     }
     class TurnReceipt {
         answer : yours 或 not-yours 或 no-turn
@@ -16,8 +16,9 @@ classDiagram
         id : uuid
         type : instruction
         from_agent : Lead id
-        to_agent : exec_id
+        to_agent : writer exec_id
         content : 原始字节
+        location : live 或 archived
         说明「写什么」
     }
     class DeliveryReceipt {
@@ -38,10 +39,24 @@ classDiagram
         sha : git sha
         paths : 只有 probe.txt
         pushed : false
+        state : fresh 或 补提交 或 already_present
+    }
+    class WriterReceipt {
+        instruction_id : uuid
+        writer_exec : uuid
+        source_sha256 : hex
+        commit_sha : git sha
+    }
+    class QaAudit {
+        verdict : pass 或 fail 或 unverifiable
+        只读，不授予写权限
     }
     Execution "1" --> "1" TurnReceipt : 写前查询
     Execution "1" <-- "0..*" LeadInstruction : to_agent 绑定
     LeadInstruction "1" --> "1" DeliveryReceipt : message-status
-    LeadInstruction "1" --> "1" SourceBuffer : 只读复制 row.content
+    LeadInstruction "1" --> "1" SourceBuffer : 只读复制 content
     SourceBuffer "1" --> "0..*" Marker : 严格格式解析
-    Marker "1..*" --> "0..1" ProbeCommit : 仅当计数为 0 时追加
+    Marker "1..*" --> "0..1" ProbeCommit : 按 Git 状态追加或复用
+    ProbeCommit "1" --> "1" WriterReceipt : ask --report
+    WriterReceipt "1" --> "1" QaAudit : 预期身份
+    LeadInstruction "1" --> "1" QaAudit : live 或归档快照核对
