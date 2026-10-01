@@ -1,0 +1,32 @@
+classDiagram
+    class Instruction {
+        +id 指令编号
+        +markerLines 要追加的行
+    }
+    class MarkerLine {
+        +bytes 1 到 512 字节
+        +charset 可打印 ASCII
+        +identity 整行内容
+    }
+    class ProbeFile {
+        +path 仓库根 probe.txt 固定
+        +rule 只增不改
+        +rule 每行以换行结尾
+        +rule 无重复行
+    }
+    class LocalCommit {
+        +sha 提交号
+        +files 只有 probe.txt
+        +deletions 0
+    }
+    class Receipt {
+        +instructionId 指令编号
+        +appended 新写入行数
+        +skipped 跳过行数
+        +commitSha 提交号或 none
+    }
+    Instruction "1" --> "1..*" MarkerLine : 携带
+    MarkerLine "0..*" --> "1" ProbeFile : 校验后追加
+    Instruction "1" --> "0..1" LocalCommit : appended 大于 0 时产生
+    Instruction "1" --> "1" Receipt : 必有回执
+    LocalCommit "1" --> "1" ProbeFile : 只改这一个文件

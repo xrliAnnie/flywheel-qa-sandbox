@@ -1,0 +1,19 @@
+sequenceDiagram
+    participant L as Lead（调度方）
+    participant R as Runner（干活的 AI）
+    participant S as 小脚本 append-markers.sh
+    participant G as 本地 git（功能分支）
+    L->>R: 指令：请追加这几行 marker
+    R->>R: 先问一句「现在轮到我吗」（TURN 自检）
+    R->>R: 把 marker 原样存成一个临时文件
+    R->>S: 把临时文件交给小脚本
+    alt 有任何一行不合规
+        S-->>R: 整批拒绝，probe.txt 一个字都不动
+        R->>L: 报告哪一行被拒
+    else 全部合规
+        S-->>R: 新写入 N 行，跳过 M 行（已存在）
+        opt N 大于 0
+            R->>G: 本地提交，只含 probe.txt
+        end
+        R->>L: 回执 DONE（引用指令编号 + 提交号）
+    end

@@ -1,0 +1,19 @@
+flowchart TD
+    A[收到一批 marker 行] --> B{文件非空?}
+    B -- 否 --> X[整批拒绝 零写入]
+    B -- 是 --> C{每一行都是 1 到 512 字节的可打印 ASCII?}
+    C -- 否 --> X
+    C -- 是 --> D{probe.txt 以换行结尾 或 还不存在?}
+    D -- 否 --> X
+    D -- 是 --> E[逐行处理]
+    E --> F{这一行已在 probe.txt 里?}
+    F -- 是 --> G[跳过 计入 skipped]
+    F -- 否 --> H[追加到文件末尾 计入 appended]
+    G --> I[打印 appended 和 skipped]
+    H --> I
+    X --> Y[Runner 向 Lead 报告 等指示]
+    I --> J{appended 大于 0?}
+    J -- 是 --> K[一笔本地提交 只含 probe.txt]
+    J -- 否 --> M[不提交]
+    K --> N[向 Lead 发回执]
+    M --> N
