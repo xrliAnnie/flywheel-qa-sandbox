@@ -70,12 +70,15 @@ flowchart TD
 ## 5. 实现步骤(实现节点照做)
 
 1. `turn` 自检为 `yours` 后才动工作树;`git branch --show-current` 取分支名。
+   **写入前**先跑 `git status --porcelain` 记录基线:若已有目标文件以外的改动(不论归属),
+   **保留现场、不写入、不提交**,用 `flywheel-comm ask` 向 Lead 报告冲突路径并等指示;绝不自行 `restore` / `reset` / 删除其他路径。
 2. 按 §3 判定是 attempt 1 还是 attempt 2,用 `printf` 写文件。
 3. 自验(证据贴进交付报告):
    - `wc -l < "$f"` → `2`
    - `sed -n 1p "$f"` → `QA-SBX FLY-2167 drill`
    - `sed -n 2p "$f"` → `AWAITING-QA` 或 `FIXED-FOR-CLAIM <id>`
-   - `git status --porcelain` **只**出现这一个文件,没有任何例外;出现第二个路径就停下,先还原多余改动再交付
+   - `git status --porcelain` **只**出现这一个文件,没有任何例外;出现第二个路径就**停下、保留现场、不交付**,
+     向 Lead 报告(同第 1 步),不得通过还原/重置其他路径来「凑成」单文件
    - 返工时再加一条:`git diff HEAD -- "$f"` 只有第 2 行一处变更
 4. 提交:`test(QA-SBX FLY-2167): drill file <AWAITING-QA|FIXED-FOR-CLAIM id> [skip ci]`,push 到共享分支。
 5. 交付 / PR / 完成路由按实现节点自己被注入的协议走,本计划不另行规定。
