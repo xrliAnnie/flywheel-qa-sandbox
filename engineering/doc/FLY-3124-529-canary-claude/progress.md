@@ -1,13 +1,13 @@
 ---
 issue: FLY-3124
 phase: design
-phaseCursor: 3/6
-updated: 2026-10-01T14:52:48.691Z
-nextStep: Create and locally verify founder HTML with rendered Mermaid diagrams
+phaseCursor: 4/6
+updated: 2026-10-01T14:57:58.472Z
+nextStep: Open and register explicit design review
 chunks: []
 pointers: {}
 ---
 
 # FLY-3124 progress
-**phase**: design (3/6)
-**next**: Create and locally verify founder HTML with rendered Mermaid diagrams
+**phase**: design (4/6)
+**next**: Open and register explicit design review
