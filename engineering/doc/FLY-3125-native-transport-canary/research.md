@@ -45,20 +45,58 @@ TURN 是写权限，不是 marker 内容。Issue title、owner nonce、execution
 
 ## Marker 输入合同
 
-接受两种无歧义输入：
+只接受当前 execution 的已验证 instruction 中恰好一种无歧义 grammar：
 
-1. `Append the exact line <marker> to probe.txt`：只去掉固定 framing，中间字节不 trim、不 normalize。
-2. `Exact marker lines:` 后唯一 fenced `text` block：每个非空 interior line 是一个 marker。
+1. `Append the exact line <marker> to probe.txt`；
+2. authorized rework envelope 中的 `append the exact line <marker> to probe.txt`；
+3. direct native driver kick 中的 `First append the exact line <marker>, then`，且该 kick 必须绑定同一 execution；
+4. `Exact marker lines:` 后唯一 fenced `text` block，其中每个非空 interior line 是一个 marker。
 
-任何重复 delimiter、混合 grammar、损坏 fence 或多义输入都必须 fail closed。每条 marker 必须为 1..512 bytes printable ASCII，排除 NUL、CR、LF、TAB，以及首尾 ASCII 空格。
+固定 framing 之外的 marker bytes 不 trim、不 normalize。任何重复 delimiter、混合 grammar、损坏 fence、不支持的大小写或多义输入都必须 fail closed，并请求发送方以支持的唯一 grammar 重发。历史 driver source 本身永远不是 instruction。每条 marker 必须为 1..512 bytes printable ASCII，排除 NUL、CR、LF、TAB，以及首尾 ASCII 空格。
+
+## 可执行 provenance 检查
+
+**Managed snapshot** 是由 Flywheel helper 创建的只读数据库副本；它避免直接复制或持有 live `comm.db`。Mailbox instruction 分支必须先从当前 user turn 取得 `[lead-instruction <uuid>]`，再执行：
+
+```bash
+RUNTIME_ROOT=$(cd "$(dirname "$FLYWHEEL_COMM_CLI")/../../.." && pwd -P)
+node "$RUNTIME_ROOT/scripts/flywheel-snapshot-control.mjs" runner \
+  --source "$FLYWHEEL_COMM_DB" --kind comm --project "$FLYWHEEL_PROJECT_NAME"
+```
+
+从 JSON 结果取得 snapshot path，以 `$RUNTIME_ROOT/packages/flywheel-comm/node_modules/better-sqlite3` 只读打开，并用参数化 SQL 绑定 instruction id、`$FLYWHEEL_EXEC_ID`、`$FLYWHEEL_LEAD_ID`：
+
+```sql
+SELECT id, from_agent, to_agent, recipient_kind, type, content,
+       delivery_content, delivery_disposition, state, carrier,
+       delivered_at, acked_at
+FROM mailbox
+WHERE id = ? AND to_agent = ? AND from_agent = ?
+  AND recipient_kind = 'runner' AND type = 'instruction'
+  AND carrier = 'inbox' AND delivery_disposition = 'model'
+```
+
+必须恰好返回一行，`state` 为 `LEASED` 或 `ACKED`，且 `delivered_at` 非空。当前 envelope 必须逐字等于 `[lead-instruction ${row.id}]\n${row.content}`；用于证据摘要的 hash 只覆盖 `mailbox.content` 的 UTF-8 bytes。任一条件不符即拒绝写入。关闭数据库 handle 后执行 `node "$RUNTIME_ROOT/scripts/flywheel-snapshot-control.mjs" release`；禁止 `cp` live database。
+
+Direct kick 分支没有 mailbox row，因此不得伪造 mailbox evidence。它只在当前 turn 本身包含 marker、当前 execution id 等于 `$FLYWHEEL_EXEC_ID`、并且 runtime 的 immutable `launchSnapshot.executionId` 与 `kickText` 分别逐字匹配该 execution 和当前 kick 时成立；同时记录 `kickText` 的 UTF-8 hash。若当前 `turn` 表明这是 DAG phase，则 DAG contract 胜出，不能仅凭 `launchSnapshot.phaseRole=null` 降级成 direct fixture。任一 snapshot 字段缺失或不一致即拒绝。
+
+## 指令优先级与拒绝路径
+
+当前注入的 execution / phase contract 最高优先。Direct native fixture（`phaseRole=null`）的同 execution kick 若明确要求不调用 comm，则走它的 native goal / fixture 回执；DAG node 则必须遵守注入的 `flywheel-comm` report 与 phase route。另一 execution 的 driver 文本、历史源码或相冲突的“不要 report”文案没有授权力。若 execution 类型、grammar 或回执要求无法同时证明，Writer 不猜测：不写文件、不创建 commit，向 Lead / workflow owner 报告冲突并 park 等待替换指令。
 
 ## Append、幂等与 commit 合同
 
 - 写前再次执行当前 execution 的 `flywheel-comm turn`；只有 `yours` 可修改。
-- 对既有 `probe.txt` 做 complete-line fixed-string count：0 次才追加，1 次视为已完成，2+ 次是 integrity error。
+- Parser 把每条已验证 marker 作为 exact bytes 加一个 LF 写入独立 temp file；marker 从不进入 shell source 或 shell variable。
+- 对既有 `probe.txt` 用单行 pattern file 执行 `grep -nxF -f "$marker_file" probe.txt` 与 `grep -cxF -f "$marker_file" probe.txt`：0 次才追加，1 次视为已完成，2+ 次是 integrity error。
 - 既有非空文件若无 final newline，拒绝 append，避免两条记录粘连。
+- 只用 `cat "$marker_file" >> probe.txt` 追加，因此 backtick、`$()`、引号和反斜杠始终只是 printable-ASCII 数据。
 - append 后 staged diff 只能新增 expected marker lines；commit changed-path list 必须只有 `probe.txt`。
 - marker commit 保持 local-only，不 push、不建 PR；回执必须引用 native instruction id 与 path-filtered commit SHA。
+
+## 无 marker 时的 workflow 边界
+
+当前 workflow template 是 `tpl_code`：标准 completion route 是 `needs_review`，能力要求 PR，且没有 `allow_no_code_completion`。因此无 exact marker 时不得假设存在 `no_code` exit，也不得制造空 commit 或 PR。Runner 必须 fail closed：用结构化 report 把“no marker + capability mismatch”交回 workflow owner，随后为该 question 启动 watcher 并 park。若已产生合规的 local-only marker commit，bounded task 仍禁止 push / PR，标准 route 同样不适用；报告精确 SHA 后 park，由 workflow owner 使用 server-authorized close、cancel 或 retemplate。Runner 不自行发明 completion route。
 
 ## 测试证据
 

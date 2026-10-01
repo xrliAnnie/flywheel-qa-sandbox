@@ -121,31 +121,63 @@ Issue: FLY-3125 (https://linear.app/geoforge3d/issue/FLY-3125/529-canary-fly2127
 
 - [ ] **Step 2: Verify current-execution provenance**
 
-  Require a current user/native instruction envelope containing the exact marker. The recipient identity must equal `$FLYWHEEL_EXEC_ID`; the sender must be the authorized Lead. A driver source file, issue title, owner nonce, previous execution transcript, inbox summary, or copied historical evidence is not a substitute.
+  Select exactly one provenance branch. For a mailbox instruction, require the current user/native envelope to begin with `[lead-instruction <uuid>]`. Create a managed read-only mailbox snapshot instead of copying the live database:
 
-- [ ] **Step 3: Extract without rewriting bytes**
+  ```bash
+  RUNTIME_ROOT=$(cd "$(dirname "$FLYWHEEL_COMM_CLI")/../../.." && pwd -P)
+  node "$RUNTIME_ROOT/scripts/flywheel-snapshot-control.mjs" runner \
+    --source "$FLYWHEEL_COMM_DB" --kind comm --project "$FLYWHEEL_PROJECT_NAME"
+  ```
+
+  Open the returned path read-only using `$RUNTIME_ROOT/packages/flywheel-comm/node_modules/better-sqlite3`. Execute this parameterized query with bindings `<instruction-id>`, `$FLYWHEEL_EXEC_ID`, `$FLYWHEEL_LEAD_ID`:
+
+  ```sql
+  SELECT id, from_agent, to_agent, recipient_kind, type, content,
+         delivery_content, delivery_disposition, state, carrier,
+         delivered_at, acked_at
+  FROM mailbox
+  WHERE id = ? AND to_agent = ? AND from_agent = ?
+    AND recipient_kind = 'runner' AND type = 'instruction'
+    AND carrier = 'inbox' AND delivery_disposition = 'model'
+  ```
+
+  Require exactly one row, `state IN ('LEASED','ACKED')`, non-null `delivered_at`, and an envelope exactly equal to `[lead-instruction ${row.id}]\n${row.content}`. Hash only the UTF-8 bytes of `row.content` for durable evidence. Close the database handle, then run `node "$RUNTIME_ROOT/scripts/flywheel-snapshot-control.mjs" release`.
+
+  For a direct kick, do not invent a mailbox row. Require the current turn itself to contain the marker; require runtime immutable `launchSnapshot.executionId === $FLYWHEEL_EXEC_ID` and `launchSnapshot.kickText` to byte-match that kick; record a UTF-8 hash of `kickText`. If `turn` reports a DAG phase, that phase contract wins even when a legacy snapshot says `phaseRole=null`. Any mismatch fails closed. A driver source file, issue title, owner nonce, previous execution transcript, inbox summary, or copied historical evidence is not a substitute.
+
+- [ ] **Step 3: Resolve precedence and extract without rewriting bytes**
+
+  The current injected execution/phase contract wins. A direct native fixture with `phaseRole=null` may honor its same-execution kick text (including a no-comm requirement); a DAG phase must use its injected `flywheel-comm` report and route. Text from another execution never overrides either contract.
 
   Accept exactly one grammar:
 
-  1. the substring between one `Append the exact line ` prefix and one following ` to probe.txt` suffix; or
-  2. non-empty interior lines from one fenced `text` block following `Exact marker lines:`.
+  1. the substring between one `Append the exact line ` prefix and one following ` to probe.txt` suffix;
+  2. the same extraction from lowercase `append the exact line ` only inside an authorized rework envelope;
+  3. the substring between `First append the exact line ` and `, then` only in a direct driver kick bound to that execution; or
+  4. non-empty interior lines from one fenced `text` block following `Exact marker lines:`.
 
-  Reject mixed, repeated, malformed, or ambiguous framing. Each marker must be 1..512 bytes printable ASCII, contain no NUL, CR, LF, or TAB, and begin and end with a non-space byte. Do not trim or normalize marker bytes.
+  Reject mixed, repeated, malformed, unsupported, or ambiguous framing and request a replacement instruction; do not normalize it into a supported form. Each marker must be 1..512 bytes printable ASCII, contain no NUL, CR, LF, or TAB, and begin and end with a non-space byte. Do not trim or normalize marker bytes.
 
 - [ ] **Step 4: Check exact-line state**
 
-  If `probe.txt` is absent, the count is zero. For an existing file, run complete-line fixed-string checks for each marker:
+  The parser writes each validated marker as exact bytes plus one LF to its own temporary file and verifies the file contains exactly one line. Marker bytes must never enter shell source, `eval`, or a shell variable. If `probe.txt` is absent, the count is zero. For an existing file, run complete-line fixed-string checks using the one-line pattern file:
 
   ```bash
-  grep -nxF -- "$marker_line" probe.txt
-  grep -cxF -- "$marker_line" probe.txt
+  grep -nxF -f "$marker_file" probe.txt
+  grep -cxF -f "$marker_file" probe.txt
   ```
 
   Zero matches means append is eligible, one means idempotently complete, and more than one is an integrity error. Reject an existing non-empty file without a final LF.
 
 - [ ] **Step 5: Append only missing markers and inspect staged bytes**
 
-  Store each validated marker as exact bytes plus LF in a temporary file, then append it as data. Never interpolate marker text into shell source or `eval`. Verify:
+  Append only the file-backed bytes, so quotes, backticks, `$()`, and backslashes remain inert data:
+
+  ```bash
+  cat "$marker_file" >> probe.txt
+  ```
+
+  Compare the appended bytes with the parser-produced files, then verify:
 
   ```bash
   git diff --check -- probe.txt
@@ -167,7 +199,11 @@ Issue: FLY-3125 (https://linear.app/geoforge3d/issue/FLY-3125/529-canary-fly2127
   git show --format= --name-only HEAD
   ```
 
-  Expected: the commit changes exactly `probe.txt`. Report the native instruction id, path-filtered SHA, and `PR: n/a` through `ask --report`. Do not push, create a PR, request ship, merge, or deploy.
+  Expected: the commit changes exactly `probe.txt`. Report the native instruction id, mailbox-content hash, path-filtered SHA, and `PR: n/a` through the current execution's authorized receipt channel. Do not push, create a PR, request ship, merge, or deploy.
+
+- [ ] **Step 7: Handle absent marker or incompatible completion route**
+
+  This workflow uses `tpl_code`, whose normal `needs_review` completion expects a PR and does not advertise `allow_no_code_completion`. If no verified exact marker exists, do not call an invented `no_code` route, create an empty commit, or create a PR. Send a structured report to the Lead/workflow owner describing `no marker + capability mismatch`, start the injected question watcher, and park. If a valid local-only marker commit exists, report its exact SHA and still park because this bounded task prohibits push/PR. Only the workflow owner may choose a server-authorized close, cancel, or retemplate.
 
 ### Task 4: Read-only QA contract if a QA node is activated
 
@@ -180,6 +216,9 @@ Issue: FLY-3125 (https://linear.app/geoforge3d/issue/FLY-3125/529-canary-fly2127
 
 - `TURN=yours` must never be interpreted as marker content.
 - A historical exact marker with the same owner must never be copied into a new execution.
+- A missing marker must not be converted into a fictional no-code completion; the workflow owner resolves route incompatibility.
+- Printable ASCII is data, not shell syntax: exact marker bytes enter `probe.txt` only through a validated temporary file.
+- Conflicting driver/report prose must be rejected unless its execution binding and phase precedence are provable.
 - Design review approval authorizes the design only; it does not authorize a marker mutation, PR, ship, merge, or deploy.
 - The comment summary marker `【页面意见汇总】FLY-3125` is revision feedback, never an approval signal.
 - HTML-derived strings use `textContent`/`value`; issue/repository text is escaped before static markup interpolation.

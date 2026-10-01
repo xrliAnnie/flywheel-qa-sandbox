@@ -15,10 +15,32 @@ classDiagram
       +recipientExecutionId
       +exactMarkerBytes
     }
+    class SnapshotEvidence {
+      +mailboxId
+      +fromAgent
+      +toAgent
+      +contentHash
+      +state LEASED_or_ACKED
+    }
+    class MarkerFile {
+      +exactBytesPlusLF
+      +printableASCII
+      +singleLine true
+    }
     class ProbeCommit {
       +commitSha
       +changedPath probe.txt
       +remotePush false
+    }
+    class WorkflowContract {
+      +template tpl_code
+      +normalRoute needs_review
+      +allowNoCode false
+    }
+    class OwnerHandoff {
+      +reason
+      +structuredReport
+      +parked true
     }
     class DesignEvidence {
       +approvedPlan
@@ -28,5 +50,9 @@ classDiagram
 
     Execution "1" --> "0..1" TurnReceipt : owns current write right
     Execution "1" --> "0..*" NativeInstruction : receives exact bytes
-    NativeInstruction "1" --> "0..1" ProbeCommit : authorizes only if same execution
+    NativeInstruction "1" --> "1" SnapshotEvidence : verified by parameterized query
+    NativeInstruction "1" --> "1..*" MarkerFile : parser preserves bytes
+    MarkerFile "1..*" --> "0..1" ProbeCommit : file-backed append only
+    Execution "1" --> "1" WorkflowContract : constrains completion
+    WorkflowContract "1" --> "0..1" OwnerHandoff : no valid runner route
     Execution "1" --> "1" DesignEvidence : produces in design phase

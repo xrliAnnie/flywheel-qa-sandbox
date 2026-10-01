@@ -3,6 +3,7 @@ sequenceDiagram
     participant D as 当前 Design execution
     participant L as Lead
     participant W as 后续 Writer execution
+    participant S as Managed mailbox snapshot
     participant G as Git worktree
 
     O->>D: 派发 eng_design activation
@@ -15,11 +16,21 @@ sequenceDiagram
     D->>O: phase_design_complete
     Note over D,G: 当前没有 exact marker，probe.txt 保持不存在
 
-    opt 后续 execution 收到绑定自身的 native exact-marker instruction
+    alt 后续 execution 没有 exact marker
+        W->>O: turn = yours
+        W->>L: report no marker + tpl_code route mismatch
+        W->>O: park，等待 owner close/cancel/retemplate
+        Note over W,G: fail closed：不写 probe、不造 PR、不发明 no-code route
+    else 后续 execution 收到绑定自身的 native exact-marker instruction
         L->>W: Append the exact line … to probe.txt
         W->>O: turn
         O-->>W: yours
-        W->>G: 逐字 append，校验 staged diff
+        W->>S: 参数化查询 sender/recipient/content
+        S-->>W: 唯一 LEASED/ACKED mailbox row
+        W->>W: grammar parser 写 exact bytes + LF temp file
+        W->>G: grep -F -f exact-line count
+        W->>G: cat temp file append，校验 staged diff
         W->>G: local commit only
-        W->>L: 回执 instruction id 与 commit SHA
+        W->>L: 回执 instruction id、content hash 与 commit SHA
+        W->>O: park，由 owner 处理不兼容 route
     end
