@@ -117,33 +117,21 @@ Issue: FLY-3125 (https://linear.app/geoforge3d/issue/FLY-3125/529-canary-fly2127
 
 - [ ] **Step 1: Acquire that execution's TURN**
 
-  Run `node "$FLYWHEEL_COMM_CLI" turn`. Only `yours` authorizes mutation; `not-yours` is a normal wait state.
+  For a DAG writer or any phase-wake, run `node "$FLYWHEEL_COMM_CLI" turn`. Only `yours` authorizes mutation; `not-yours` is a normal wait state. A direct fixture's initial kick may use its explicitly injected native-goal flow only after Step 2 proves the immutable launch snapshot and confirms there is no DAG phase TURN; it must not manufacture a TURN requirement that conflicts with that same-execution kick.
 
 - [ ] **Step 2: Verify current-execution provenance**
 
-  Select exactly one provenance branch. For a mailbox instruction, require the current user/native envelope to begin with `[lead-instruction <uuid>]`. Create a managed read-only mailbox snapshot instead of copying the live database:
+  Select exactly one provenance branch. For a mailbox instruction, scan the raw current user-turn bytes for exactly one line-start sentinel `[lead-instruction <uuid>]\n`. If bytes precede it, require the full turn to begin `[phase-wake <uuid>] `; treat everything before the sentinel as runtime transport prelude (including an optional standby notice), never as marker content. Reject missing/repeated sentinels or any other prefix. Then run the runner-accessible read-only receipt:
 
   ```bash
-  RUNTIME_ROOT=$(cd "$(dirname "$FLYWHEEL_COMM_CLI")/../../.." && pwd -P)
-  node "$RUNTIME_ROOT/scripts/flywheel-snapshot-control.mjs" runner \
-    --source "$FLYWHEEL_COMM_DB" --kind comm --project "$FLYWHEEL_PROJECT_NAME"
+  node "$FLYWHEEL_COMM_CLI" message-status "$instruction_id" --json
   ```
 
-  Open the returned path read-only using `$RUNTIME_ROOT/packages/flywheel-comm/node_modules/better-sqlite3`. Execute this parameterized query with bindings `<instruction-id>`, `$FLYWHEEL_EXEC_ID`, `$FLYWHEEL_LEAD_ID`:
+  Require `message_id === instruction_id`, `location IN ('live','archived')`, `state IN ('LEASED','ACKED')`, and non-null `stamps.delivered_at`. This command uses the runner's existing `FLYWHEEL_COMM_DB`, opens it read-only, and closes it; it needs no `TEAMLEAD_API_TOKEN` and creates no database copy. Accept recipient and authorized-sender provenance from the trusted mailbox-lane structure: only a server-rendered instruction row receives this sentinel, and `row.to_agent` is the execution targeted by the current model turn.
 
-  ```sql
-  SELECT id, from_agent, to_agent, recipient_kind, type, content,
-         delivery_content, delivery_disposition, state, carrier,
-         delivered_at, acked_at
-  FROM mailbox
-  WHERE id = ? AND to_agent = ? AND from_agent = ?
-    AND recipient_kind = 'runner' AND type = 'instruction'
-    AND carrier = 'inbox' AND delivery_disposition = 'model'
-  ```
+  Create a private temporary directory with `mktemp -d`. In a short-lived Node process, derive the runtime root from `FLYWHEEL_COMM_CLI`, dynamically import `packages/flywheel-comm/dist/lib.js`, call `CommDB.openReadonly(FLYWHEEL_COMM_DB).inspectMailboxDeliveryContent(instruction_id)`, and write the returned string as UTF-8 to a new mode-`0600` file named `source.bin`; close the database in `finally`. Do not print the content or place it in a shell variable. This file is the exact `row.content` `source_buffer`; hash it before parsing and remove the private directory after verification.
 
-  Require exactly one row, `state IN ('LEASED','ACKED')`, non-null `delivered_at`, and an envelope exactly equal to `[lead-instruction ${row.id}]\n${row.content}`. Hash only the UTF-8 bytes of `row.content` for durable evidence. Close the database handle, then run `node "$RUNTIME_ROOT/scripts/flywheel-snapshot-control.mjs" release`.
-
-  For a direct kick, do not invent a mailbox row. Require the current turn itself to contain the marker; require runtime immutable `launchSnapshot.executionId === $FLYWHEEL_EXEC_ID` and `launchSnapshot.kickText` to byte-match that kick; record a UTF-8 hash of `kickText`. If `turn` reports a DAG phase, that phase contract wins even when a legacy snapshot says `phaseRole=null`. Any mismatch fails closed. A driver source file, issue title, owner nonce, previous execution transcript, inbox summary, or copied historical evidence is not a substitute.
+  For a direct kick, do not invent a mailbox row. Resolve `session.json` from exactly one canonical existing candidate: `$FLYWHEEL_CODEX_SESSION_DIR/$FLYWHEEL_EXEC_ID/session.json` when set; the state root before `/codex-homes/` in `$CODEX_HOME` plus `/codex-sessions/$FLYWHEEL_EXEC_ID/session.json`; or `$HOME/.flywheel/state/codex-sessions/$FLYWHEEL_EXEC_ID/session.json`. The resolver filters existing files, maps each through `realpathSync(path)` (with an explicit one-argument callback), deduplicates, and requires length `1`. Read it without modification and require `launchSnapshot.schemaVersion === 1`, `executionId === $FLYWHEEL_EXEC_ID`, worktree-matching `cwd`, `launchContext.phaseRole === null`, and `kickText` byte-equal to the current initial user turn. Write that exact `kickText` UTF-8 buffer directly to the private `source.bin` and hash it. If `turn` reports a DAG phase, that phase contract wins even when the snapshot says `phaseRole=null`. Any missing, multiple, or mismatched candidate fails closed. A driver source file, issue title, owner nonce, previous execution transcript, inbox summary, or copied historical evidence is not a substitute.
 
 - [ ] **Step 3: Resolve precedence and extract without rewriting bytes**
 
@@ -160,7 +148,7 @@ Issue: FLY-3125 (https://linear.app/geoforge3d/issue/FLY-3125/529-canary-fly2127
 
 - [ ] **Step 4: Check exact-line state**
 
-  The parser writes each validated marker as exact bytes plus one LF to its own temporary file and verifies the file contains exactly one line. Marker bytes must never enter shell source, `eval`, or a shell variable. If `probe.txt` is absent, the count is zero. For an existing file, run complete-line fixed-string checks using the one-line pattern file:
+  Feed the `source_buffer` from Step 2 directly into the strict grammar parser—`row.content` bytes for mailbox delivery or `launchSnapshot.kickText` bytes for a direct kick. Do not copy marker text from the rendered conversation or an agent-authored patch. The parser writes each validated marker as exact bytes plus one LF to its own temporary file and verifies the file contains exactly one line. Marker bytes must never enter shell source, `eval`, or a shell variable. If `probe.txt` is absent, the count is zero. For an existing file, run complete-line fixed-string checks using the one-line pattern file:
 
   ```bash
   grep -nxF -f "$marker_file" probe.txt
@@ -199,7 +187,7 @@ Issue: FLY-3125 (https://linear.app/geoforge3d/issue/FLY-3125/529-canary-fly2127
   git show --format= --name-only HEAD
   ```
 
-  Expected: the commit changes exactly `probe.txt`. Report the native instruction id, mailbox-content hash, path-filtered SHA, and `PR: n/a` through the current execution's authorized receipt channel. Do not push, create a PR, request ship, merge, or deploy.
+  Expected: the commit changes exactly `probe.txt`. Report the native instruction id (or direct-kick snapshot identity), exact `source_buffer` hash, path-filtered SHA, and `PR: n/a` through the current execution's authorized receipt channel. Do not push, create a PR, request ship, merge, or deploy.
 
 - [ ] **Step 7: Handle absent marker or incompatible completion route**
 
@@ -219,6 +207,8 @@ Issue: FLY-3125 (https://linear.app/geoforge3d/issue/FLY-3125/529-canary-fly2127
 - A missing marker must not be converted into a fictional no-code completion; the workflow owner resolves route incompatibility.
 - Printable ASCII is data, not shell syntax: exact marker bytes enter `probe.txt` only through a validated temporary file.
 - Conflicting driver/report prose must be rejected unless its execution binding and phase precedence are provable.
+- Transport prefixes (`phase-wake` and standby notice) are never parser input; the unique server sentinel establishes the `row.content` byte boundary.
+- A marker must be parsed directly from verified `row.content` or `launchSnapshot.kickText`, never retyped from conversation text.
 - Design review approval authorizes the design only; it does not authorize a marker mutation, PR, ship, merge, or deploy.
 - The comment summary marker `【页面意见汇总】FLY-3125` is revision feedback, never an approval signal.
 - HTML-derived strings use `textContent`/`value`; issue/repository text is escaped before static markup interpolation.

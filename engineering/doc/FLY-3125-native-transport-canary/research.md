@@ -56,29 +56,19 @@ TURN 是写权限，不是 marker 内容。Issue title、owner nonce、execution
 
 ## 可执行 provenance 检查
 
-**Managed snapshot** 是由 Flywheel helper 创建的只读数据库副本；它避免直接复制或持有 live `comm.db`。Mailbox instruction 分支必须先从当前 user turn 取得 `[lead-instruction <uuid>]`，再执行：
+Round 2 review 证实 managed snapshot helper 不适用于 sanitized Codex runner：它要求未注入 runner 的 `TEAMLEAD_API_TOKEN`。最终方案只使用 runner 已具备的 `FLYWHEEL_COMM_CLI` 与 mailbox lane（原生邮箱投递通道）结构，不复制 database，也不依赖缺失 credential。
+
+Mailbox instruction 分支从当前 user turn bytes 中定位**唯一一个**行首 sentinel：`[lead-instruction <uuid>]\n`。若 sentinel 前有 bytes，则整个 turn 必须以 `[phase-wake <uuid>] ` 开头；中间允许 runtime 注入的 standby notice，但它不进入 instruction body。缺少 sentinel、出现多个 sentinel、或存在非 phase-wake 前缀时一律拒绝。随后执行：
 
 ```bash
-RUNTIME_ROOT=$(cd "$(dirname "$FLYWHEEL_COMM_CLI")/../../.." && pwd -P)
-node "$RUNTIME_ROOT/scripts/flywheel-snapshot-control.mjs" runner \
-  --source "$FLYWHEEL_COMM_DB" --kind comm --project "$FLYWHEEL_PROJECT_NAME"
+node "$FLYWHEEL_COMM_CLI" message-status "$instruction_id" --json
 ```
 
-从 JSON 结果取得 snapshot path，以 `$RUNTIME_ROOT/packages/flywheel-comm/node_modules/better-sqlite3` 只读打开，并用参数化 SQL 绑定 instruction id、`$FLYWHEEL_EXEC_ID`、`$FLYWHEEL_LEAD_ID`：
+要求 JSON 的 `message_id` 精确等于 sentinel id、`location` 为 `live` 或 `archived`、`state` 为 `LEASED` 或 `ACKED`、`stamps.delivered_at` 非空。`message-status` 是 runner 可执行的官方 read-only receipt：它只读打开当前 `FLYWHEEL_COMM_DB` 并在命令结束前关闭 handle。随后由一个短生命周期 Node process 从 `FLYWHEEL_COMM_CLI` 推导同一 runtime package，调用公开的 `CommDB.openReadonly(FLYWHEEL_COMM_DB).inspectMailboxDeliveryContent(instructionId)`，把返回的 `row.content` UTF-8 bytes 直接写入 mode `0600` 的 private temp source file，并在 `finally` 关闭 handle；不把内容打印到 terminal，也不经过 shell variable。
 
-```sql
-SELECT id, from_agent, to_agent, recipient_kind, type, content,
-       delivery_content, delivery_disposition, state, carrier,
-       delivered_at, acked_at
-FROM mailbox
-WHERE id = ? AND to_agent = ? AND from_agent = ?
-  AND recipient_kind = 'runner' AND type = 'instruction'
-  AND carrier = 'inbox' AND delivery_disposition = 'model'
-```
+Sender / recipient binding 不从可伪造的 prose 推断：server-side `renderRunnerMailboxEnvelope` 只为 mailbox `instruction` row 生成 `[lead-instruction id]`，并把 `row.to_agent` 同时放入 envelope execution id 后定向投递；当前 model turn 属于 `$FLYWHEEL_EXEC_ID`。这条 trusted-lane structural binding 加 exact-id delivery receipt 是可执行 provenance evidence。Sentinel 后的原始 bytes 是 renderer 携带的 `row.content`；直接以这些 bytes 作为 parser input 并计算 UTF-8 hash，绝不从屏幕文本或模型转述重新抄写。
 
-必须恰好返回一行，`state` 为 `LEASED` 或 `ACKED`，且 `delivered_at` 非空。当前 envelope 必须逐字等于 `[lead-instruction ${row.id}]\n${row.content}`；用于证据摘要的 hash 只覆盖 `mailbox.content` 的 UTF-8 bytes。任一条件不符即拒绝写入。关闭数据库 handle 后执行 `node "$RUNTIME_ROOT/scripts/flywheel-snapshot-control.mjs" release`；禁止 `cp` live database。
-
-Direct kick 分支没有 mailbox row，因此不得伪造 mailbox evidence。它只在当前 turn 本身包含 marker、当前 execution id 等于 `$FLYWHEEL_EXEC_ID`、并且 runtime 的 immutable `launchSnapshot.executionId` 与 `kickText` 分别逐字匹配该 execution 和当前 kick 时成立；同时记录 `kickText` 的 UTF-8 hash。若当前 `turn` 表明这是 DAG phase，则 DAG contract 胜出，不能仅凭 `launchSnapshot.phaseRole=null` 降级成 direct fixture。任一 snapshot 字段缺失或不一致即拒绝。
+Direct kick 分支没有 mailbox row，因此不得伪造 mailbox evidence。Resolver 按顺序构造三个受限 candidate：`$FLYWHEEL_CODEX_SESSION_DIR/$FLYWHEEL_EXEC_ID/session.json`（若 env 存在）、从 `$CODEX_HOME` 中 `/codex-homes/` 之前的 state root 推导出的 `codex-sessions/$FLYWHEEL_EXEC_ID/session.json`、以及 `$HOME/.flywheel/state/codex-sessions/$FLYWHEEL_EXEC_ID/session.json`；按 realpath 去重后必须恰有一个既有文件。只读解析 JSON，要求 `launchSnapshot.schemaVersion=1`、`executionId=$FLYWHEEL_EXEC_ID`、`cwd` realpath 等于当前 worktree、`launchContext.phaseRole=null`，且 `kickText` 与当前 initial user turn byte-for-byte 相等。Parser 直接以 `kickText` bytes 为输入并记录其 UTF-8 hash。若 `turn` 表明这是 DAG phase，则 DAG contract 胜出，不能仅凭 snapshot 的 `phaseRole=null` 降级成 direct fixture。任一 lookup 或字段不一致即拒绝。
 
 ## 指令优先级与拒绝路径
 
@@ -86,8 +76,8 @@ Direct kick 分支没有 mailbox row，因此不得伪造 mailbox evidence。它
 
 ## Append、幂等与 commit 合同
 
-- 写前再次执行当前 execution 的 `flywheel-comm turn`；只有 `yours` 可修改。
-- Parser 把每条已验证 marker 作为 exact bytes 加一个 LF 写入独立 temp file；marker 从不进入 shell source 或 shell variable。
+- DAG writer 与任何 phase-wake 写前再次执行当前 execution 的 `flywheel-comm turn`；只有 `yours` 可修改。Direct fixture 的 initial kick 仅在上述 immutable snapshot 分支通过且其 kick 明确规定 native goal flow 时按该 flow 执行。
+- Parser 的 byte source 必须是验证后的 `row.content` bytes（mailbox 分支）或 `launchSnapshot.kickText` bytes（direct-kick 分支）。Parser 从该 buffer 提取每条 marker，作为 exact bytes 加一个 LF 写入独立 temp file；marker 从不进入 shell source、shell variable 或模型重抄路径。
 - 对既有 `probe.txt` 用单行 pattern file 执行 `grep -nxF -f "$marker_file" probe.txt` 与 `grep -cxF -f "$marker_file" probe.txt`：0 次才追加，1 次视为已完成，2+ 次是 integrity error。
 - 既有非空文件若无 final newline，拒绝 append，避免两条记录粘连。
 - 只用 `cat "$marker_file" >> probe.txt` 追加，因此 backtick、`$()`、引号和反斜杠始终只是 printable-ASCII 数据。
@@ -100,7 +90,7 @@ Direct kick 分支没有 mailbox row，因此不得伪造 mailbox evidence。它
 
 ## 测试证据
 
-本 task 不修改 TypeScript 或产品行为，不运行 package/repository tests。Design phase 的证据是文档 frontmatter、Mermaid 本地渲染、HTML CSP/comment contract、`git diff --check`、effective design review 和发布 URL。Conditional marker phase 的完整证据是 native input、TURN receipt、exact-line count、staged diff 与 local commit tree。
+本 task 不修改 TypeScript 或产品行为，不运行 package/repository tests。Design phase 的证据是文档 frontmatter、Mermaid 本地渲染、HTML CSP/comment contract、`git diff --check`、effective design review 和发布 URL。Round 2 correction audit 已在 sanitized runner 中实际运行 `message-status` 并取得 ACKED receipt；同一受限 resolver 唯一定位本 execution 的 immutable `session.json`，核对 schema、execution id 与 worktree cwd。Conditional marker phase 的完整证据是 native input、TURN receipt、exact source-buffer hash、exact-line count、staged diff 与 local commit tree。
 
 ## 结论
 

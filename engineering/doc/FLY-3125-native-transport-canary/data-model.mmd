@@ -15,12 +15,17 @@ classDiagram
       +recipientExecutionId
       +exactMarkerBytes
     }
-    class SnapshotEvidence {
+    class DeliveryEvidence {
       +mailboxId
-      +fromAgent
-      +toAgent
-      +contentHash
+      +laneBoundExecutionId
+      +sourceBufferHash
       +state LEASED_or_ACKED
+    }
+    class LaunchSnapshotEvidence {
+      +sessionJsonPath
+      +executionId
+      +kickTextHash
+      +phaseRole null
     }
     class MarkerFile {
       +exactBytesPlusLF
@@ -50,7 +55,8 @@ classDiagram
 
     Execution "1" --> "0..1" TurnReceipt : owns current write right
     Execution "1" --> "0..*" NativeInstruction : receives exact bytes
-    NativeInstruction "1" --> "1" SnapshotEvidence : verified by parameterized query
+    NativeInstruction "1" --> "0..1" DeliveryEvidence : exact id receipt plus lane binding
+    NativeInstruction "1" --> "0..1" LaunchSnapshotEvidence : direct kick lookup
     NativeInstruction "1" --> "1..*" MarkerFile : parser preserves bytes
     MarkerFile "1..*" --> "0..1" ProbeCommit : file-backed append only
     Execution "1" --> "1" WorkflowContract : constrains completion
