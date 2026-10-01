@@ -3,7 +3,9 @@ Issue: FLY-2109 (https://linear.app/geoforge3d/issue/FLY-2109/病根-切号后�
 日期: 2026-10-01
 基于: research.md
 
-版本: v1.56.0（暂定，ship 时取空号）· 状态: draft R3（Codex design review R1 3H/6M/1L + R2 2H/5M 全部采纳）
+版本: v1.56.0（暂定，ship 时取空号）· 状态: draft R4（Codex design review R1 3H/6M/1L + R2 2H/5M + R3 3M 全部采纳）
+
+修订 R4 要点：逐目标流程统一为「恢复原投递材料 → 只读认回已有投递并记账 → 确认没有才做异步准备 → 写入边界上同步复核资格（读最新值）→ 发起写入 → 保存结果」；认回（数据库证据或信箱里原消息）不需要资格、先于任何 skipped / superseded 判定；Lead envelope 的 timestamp / sessionKey / payload 在名单冻结时一并落盘，重启后逐字重放；`getLeadRuntime` 类型含可选 `probeDelivered`。
 
 修订 R3 要点：资格复核覆盖「审计已落但无投递证据」的每次重试；目标三态 planned / audited / evidenced 统一 superseded 与失败规则；QA 用真正的 fake profile fixture 脚本；`snapshot().projects`；活性探测改从本 consumer 打开的同一 CommDB 取 `tmux_window`（遵守 `FLYWHEEL_COMM_ROOT/DIR`）；`backend_commdb` 不写 delivered 证据；去掉 `fromHint`，`from` 恒为 null/unknown；runner 写信箱改「先验后写」、Lead 加 `probeDelivered` 认回 main 已写但 sidecar 未 finalize 的写入。
 
@@ -65,18 +67,24 @@ stateDiagram-v2
 
 结论：「不漏投」由证据层（`delivered_at` / `lead_events.delivered_at`）保证——有审计行但无投递证据 → 按 §2.4 复核后用同一个 id 重试；「不重投」由「先验后写」（§3.1a：sidecar finalized 或 main 里已有 (from, content) 匹配 → 直接认回，不再写）+ sidecar 去重 + verify 共同保证。`[lead-instruction id]` 的 DONE 去重只是消费侧的最后一道，不代替信箱去重。
 
-**目标三态**（贯穿 §2.4 / §2.5）：`planned`（未开始）→ `audited`（审计行已落 / `appendLeadEvent` 已返回 seq，但无投递证据）→ `evidenced`（`delivered_at` / `lead_events.delivered_at` 已落）。只有 `evidenced` 的目标才允许「只补标记 / 事件 / 日志」；`audited` 的每一次信箱写入重试都要重新过资格复核。
+**目标三态**（贯穿 §2.4 / §2.5）：`planned`（未开始）→ `audited`（审计行已落 / `lead_events` 行已存在，但尚无确认）→ `evidenced`（已确认投递）。`evidenced` 有两种确认来源，等价：① 数据库证据（`delivered_at` / `lead_events.delivered_at`）；② **信箱只读认回**——用原投递身份 + 原 payload 在收件箱里找到那条消息（sidecar finalized 或 main 匹配），命中后立即补写数据库证据。认回与后续记账（标 delivered、补事件、写日志）**不需要**「发新信的资格」。
 
-### 2.4 投递前资格复核（R1#6）
+### 2.4 逐目标流程与资格复核的位置（R1#6、R2#1、R3#1、R3#2）
 
-名单冻结只固定**候选身份**。每个目标在异步准备（探 pane / 打开 CommDB）之后、**每一次**准备发起信箱写入之前（首次写入，以及 `audited` 状态下的每次重试），重新核对：
-① 账号库当前 `generation` 仍等于本回执代次（否则本代次剩余未开始目标记 `superseded`，已有结果保留，进入日志阶段；最新代次由下一个 tick 处理）；
-② flag 实时值（`=0` → `skipped_flag_off`）；③ runner：StateStore `getSession(exec).status === 'running'` 且 CommDB `vendor === 'claude-code'`（否则 `skipped_not_running` / `skipped_vendor`）；
-④ Lead：`effectiveLeadBackend` 仍为 claude-code（否则 `skipped_vendor`）。审计行 / seq 已存在**不是授权**：复核不过就记对应 `skipped_*`（审计行留作无害审计）。只有 `evidenced` 目标免复核，后续只补标记 / 事件 / 日志。真正已发出的异步写由 §3.1a 的先验认回收尾。
+名单冻结固定**候选身份 + 原投递材料**（§3.2）。每个非终态目标每次处理都按同一顺序：
+
+1. **恢复原投递材料**：从回执 `outcome_json` 取该目标冻结的 id / 信箱身份 / 文案（Lead 还有 envelope 的 timestamp、sessionKey、payload）。
+2. **只读认回 + 记账**（不看资格）：先查数据库证据；没有、但存在先前尝试的痕迹（runner：审计行存在；Lead：`lead_events` 行存在）→ 用原身份 + 原 payload 做信箱只读认回。命中 → 补数据库证据、补事件 → `already_enqueued`。读取出错（非 `verify_mismatch`）→ `failed` 重试，**绝不**当成「没有」。
+3. **确认没有原写入后**才做异步准备（探 pane / 查 Lead 窗口）。
+4. **写入边界上的最终资格复核**：全部用同步读取、读**最新值**——账号库当前 `generation` 等于本回执代次（否则 `superseded`）；flag 实时值（`=0` → `skipped_flag_off`）；runner：`store.getSession(exec).status==='running'`（否则 `skipped_not_running`）且**重新** `db.getSession(exec)?.vendor==='claude-code'`（不复用第 3 步之前读到的 `sess`；否则 `skipped_vendor`）；Lead：`effectiveLeadBackend` 现算仍为 claude-code（否则 `skipped_vendor`）。复核与发起写入之间**没有 await**。
+5. **发起写入**（审计行 / `appendLeadEvent` → 信箱 verified 写）。已发起的写不取消。
+6. **保存结果**（标 delivered、补事件、落回执）。
+
+资格拒绝一律映射成对应 `skipped_*` / `superseded`，不会让一个没写入的分支以成功返回。superseded 判定同样在第 2 步认回之后才做。
 
 ### 2.5 superseded 的确切语义（R1#8）
 
-新代次到来时旧回执：无投递证据的目标（`planned` / `audited` / `failed`）→ `superseded`；`evidenced` 及其它终态结果保留（`evidenced` 但附带动作未完成的继续补完）；若存在任何已开始的目标，旧回执仍走 `logging` 阶段把日志写出（日志里 `status:"superseded"` + 逐目标结果）；只有**零个已开始目标**的旧回执才是「零副作用跳过」，日志尽力而为。旧代次的日志补写不阻塞最新代次投递（tick 先处理最新代次，再补旧代次日志）。cursor = 终态（completed / skipped / superseded）最大代次。有日志义务的回执在日志成功前保持 pending（可恢复），终态后 `upsert` 拒绝更新。
+新代次到来时旧回执：先对每个有先前尝试痕迹的目标做 §2.4 第 2 步的只读认回；认回后仍无证据的目标（`planned` / `audited` / `failed`）→ `superseded`；`evidenced` 及其它终态结果保留（`evidenced` 但附带动作未完成的继续补完）；若存在任何已开始的目标，旧回执仍走 `logging` 阶段把日志写出（日志里 `status:"superseded"` + 逐目标结果）；只有**零个已开始目标**的旧回执才是「零副作用跳过」，日志尽力而为。旧代次的日志补写不阻塞最新代次投递（tick 先处理最新代次，再补旧代次日志）。cursor = 终态（completed / skipped / superseded）最大代次。有日志义务的回执在日志成功前保持 pending（可恢复），终态后 `upsert` 拒绝更新。
 
 ### 2.6 `from` 的来源（R1#9、R2#6）
 
@@ -97,12 +105,12 @@ export interface AccountSwitchWakeDeps {
   store: StateStore;                                   // getRunningSessions / getSession / insertEvent / appendLeadEvent / markLeadEventDelivered / isLeadEventDelivered + §3.2 新方法
   readAccountStore: () => AccountStore;                // 缺省 () => readStore(defaultStorePath())
   listClaudeLeads: () => Array<{ projectName: string; leadId: string }>;   // §3.5：effectiveLeadBackend(lead.backend, defaultLegacyBackendOf(project)).backend === "claude-code"
-  getLeadRuntime: (leadId: string) => Pick<LeadRuntime, "deliver"> | undefined;   // registry.getForLead
+  getLeadRuntime: (leadId: string) => Pick<LeadRuntime, "deliver" | "probeDelivered"> | undefined;   // registry.getForLead；probeDelivered 可选
   leadWindowExists: (projectName: string, leadId: string) => Promise<boolean>;    // (await locateLeadWindow(p, l)) !== null
   openCommDb: (projectName: string) => CommDB;         // 完整 CommDB（wakeRunnerMailbox 需要）；new CommDB(commDbPathForProject(p))
   probeRunnerPane: (tmuxWindow: string) => Promise<"alive" | "dead" | "unknown">;   // 只探测；tmux_window 来自本 consumer 已打开的同一 CommDB
   wakeRunner: typeof wakeRunnerMailbox;
-  runnerTransportFactory: (backend: "claude-code" | "codex") => Pick<IAgentTeamTransport, "write">;   // §3.1a 先验后写包装
+  runnerMailbox: { recognise(args: WriteVerifiedArgs): Promise<boolean>; factory: (backend: "claude-code" | "codex") => Pick<IAgentTeamTransport, "write"> };   // §3.1a：只读认回 + verified 写，分成两步
   appendSwitchLog?: (record: AccountSwitchWakeLogRecord) => void;   // VITEST 下 plugin 不接
   env: NodeJS.ProcessEnv; now: () => number; log: (msg: string) => void;
 }
@@ -114,41 +122,45 @@ export function appendAccountSwitchWakeLog(record, env): void      // §3.4
 `tick()` 按 §2 状态机实现。目标结果枚举：
 `planned | enqueued | already_enqueued | skipped_flag_off | skipped_vendor | skipped_not_running | skipped_pane_dead | skipped_no_mailbox | skipped_backend_commdb | skipped_runtime_missing | skipped_window_absent | superseded | failed | gave_up`。
 
-#### 3.1a runner 投递：先验后写（R1#1、R1#2、R2#7）
+#### 3.1a 信箱读写的两个原语（R1#1、R1#2、R2#7、R3#1）
 
-`wakeRunnerMailbox` 把 `transport.write()` 的返回值丢掉并直接 `ok:true`（`wake.ts:99-112`）；codec 对 <60s 的 pending sidecar 返回 `finalized:false`（main 可能为空）；而「main 已写、sidecar pending 过期」时 codec 会删旧 pending 再追加一条（`ClaudeMailboxCodec.ts:184-196,435-446`），`writeVerified` 是先写后验、拦不住这条重复。所以通过现有 `transportFactory` 接缝注入**先验后写**包装：
+`wakeRunnerMailbox` 把 `transport.write()` 的返回值丢掉并直接 `ok:true`（`wake.ts:99-112`）；codec 对 <60s 的 pending sidecar 返回 `finalized:false`（main 可能为空）；「main 已写、sidecar pending 过期」时 codec 会删旧 pending 再追加一条（`ClaudeMailboxCodec.ts:184-196,435-446`）。因此把**只读认回**与**受资格检查的写**拆成两个原语，中间插入 §2.4 第 3、4 步：
 
 ```ts
-runnerTransportFactory = (backend) => {
-  const adapter = AgentTeamTransportFactory.forBackend(backend);
-  const mt = new MailboxTransport(adapter);
-  return { write: async (a) => {
-    try { await adapter.verifyLastWrite({ leadName: a.leadName, recipient: a.recipient, expected: a.payload });
-          return { idempotent: true, finalized: true, wroteAt: Date.now() }; }      // sidecar finalized 或 main 已含 (from, content) → 认回，不写
-    catch (e) { if (!(e instanceof MailboxWriteError && e.code === "verify_mismatch")) throw e; }
-    await mt.writeVerified(a);                                                        // 真写 + 回读核对；pending<60s 的假成功会在 verify 抛错
-    return { idempotent: false, wroteAt: Date.now() };
-  } };
+const adapter = AgentTeamTransportFactory.forBackend("claude-code");
+const mt = new MailboxTransport(adapter);
+runnerMailbox = {
+  // 只读：sidecar finalized 或 main 扫到 (from, content) 匹配 → true；verify_mismatch → false；其它错误抛出
+  recognise: async (a) => { try { await adapter.verifyLastWrite({ leadName: a.leadName, recipient: a.recipient, expected: a.payload }); return true; }
+                            catch (e) { if (e instanceof MailboxWriteError && e.code === "verify_mismatch") return false; throw e; } },
+  // 写：真写 + 回读核对；<60s pending 的假成功会在 verify 抛错 → wakeRunnerMailbox 返回 ok:false → failed 重试
+  factory: () => ({ write: async (a) => { await mt.writeVerified(a); return { idempotent: false, wroteAt: Date.now() }; } }),
 };
 ```
 
-`verifyLastWrite`（`ClaudeCodeAdapter.ts:165-195`）先查 sidecar finalized，否则扫 main 全部条目匹配 `(from, content)`——本功能的 content 按 id 确定，所以能认回自己的写入。`send.ts` / `wake.ts` 既有行为不变。
+`verifyLastWrite`（`ClaudeCodeAdapter.ts:165-195`）先查 sidecar finalized，否则扫 main 全部条目匹配 `(from, content)`——runner 文案按 id 确定，Lead 文案按冻结的 envelope 确定（见下），所以都能逐字认回自己的写入。本 consumer 单飞且是这些 id 的唯一写者，「认回 false」之后到「发起写」之间不会有别的写者插入。`send.ts` / `wake.ts` 既有行为不变。
 
-**Lead 路径同一窗口**：`MailboxLeadRuntime.deliver` 直接 `writeVerified`，同样拦不住。为此 `mailbox-lead-runtime.ts` 新增可选方法 `probeDelivered(envelope): Promise<boolean>`（用自己的 `formatEnvelope` + `buildFlywheelId` 调 `verifyLastWrite`，不抛 → true；`verify_mismatch` → false；其它错误 → 抛出 → 目标 `failed`），`LeadRuntime` 接口上声明为可选；consumer 在 `deliver` 前调用，true → 直接 `markLeadEventDelivered` + `already_enqueued`。`CommDBLeadRuntime` 不实现（commdb 回滚模式：crash 在 `insertInstruction` 后、`markLeadEventDelivered` 前会多一条 Lead 指令——明确接受的回滚模式边界，写进 §6）。
+**Lead 路径**：`mailbox-lead-runtime.ts` 新增可选 `probeDelivered(envelope): Promise<boolean>`——复用与 `deliver` **同一个** payload 构造（把 `deliver` 里拼 `MailboxPayload` 的几行抽成私有 `buildPayload(envelope)`，`deliver` 输出字节不变）、用构造时注入的同一个 transport 调 `verifyLastWrite`（`MailboxTransport` 增一个只读透传 `verifyExisting(args): Promise<boolean>`）：不抛 → true；`verify_mismatch` → false；其它错误抛出。`LeadRuntime` 接口上声明为可选；`CommDBLeadRuntime` 不实现（commdb 回滚模式的重复窗口是明确接受的边界，§6）。
 
-**runner 分支**（每目标，顺序固定）：
-1. 证据：`db = openCommDb(project)`；`db.getMessageById(id)?.delivered_at` 非空 → `evidenced` → 跳到第 6 步。
-2. 异步准备：`sess = db.getSession(exec)`；无行或无 `tmux_window` → `skipped_pane_dead`；`probeRunnerPane(sess.tmux_window)`（`dead` → `skipped_pane_dead`；`unknown` 照投）。**不**用 `lookupTmuxTarget`（它硬编码 `~/.flywheel/comm`，`tmux-lookup.ts:172-179`，无视 `FLYWHEEL_COMM_ROOT/DIR` 覆盖，会把房内活体判死）——投递与活性查询同源于同一个 CommDB。
-3. §2.4 复核（首次与每次 `audited` 重试都做）：代次 / flag / `store.getSession(exec).status==='running'` / `sess.vendor==='claude-code'`。
-4. 审计行：`db.insertInstructionWithId(id, "bridge", exec, text)`（返回 false = 行已在，继续）→ 目标进入 `audited`。
-5. 写信箱：`wakeRunner({ db, execId: exec, fromAgent:"bridge", content:"[lead-instruction "+id+"]\n"+text, metadata:{flywheelId:id, execId:exec, kind:"account_switch_wake"}, backend:"claude-code", transportFactory: runnerTransportFactory })`；
-   `ok` → `db.markInstructionDelivered(id)`（= 证据，`evidenced`）→ `enqueued`；`skippedReason` `no_session_lead` → `skipped_no_mailbox`；`backend_commdb` → `skipped_backend_commdb`（**终态、不写 delivered**：该分支没有调 transport 也没有 hook 确认，`wake.ts:63-64`；审计行留着，重放时无证据且仍是 commdb 模式 → 同样 `skipped_backend_commdb`，不会升级成 `already_enqueued`）；其它 → `failed`。
-6. 附带动作（幂等）：`store.insertEvent({ event_id:id, execution_id:exec, issue_id: 名单里冻结的 issue_id, project_name, event_type:"account_switch_wake", source:"bridge.account-switch-wake", payload:{generation, to} })`（`event_id UNIQUE` → 重复返回 false 即可）。失败 → 本目标 `failed`，重放时第 1 步证据认回后只重做第 6 步。
-每目标 `finally db.close()`。崩溃窗口覆盖：insert 后 wake 前（无证据 → 复核 → 先验：无写入 → 写）；main 已写 sidecar 未 finalize（无证据 → 复核 → 先验：main 匹配 → 认回、不重写 → mark）；wake 后 mark 前（sidecar finalized → 认回 → mark）；mark 后 event 前（证据有 → 只补事件）。
+**Lead envelope 必须逐字可重放（R3#3）**：`formatEnvelope` 通用分支把 `env.timestamp` 与 `env.sessionKey` 写进全文（`mailbox-lead-runtime.ts` 通用分支末行），`verifyLastWrite` 比的是完整 content。所以名单冻结时就把每个 Lead 目标的 `timestamp`（冻结时刻的 ISO 字符串）、`sessionKey`（`account-switch:g<gen>`）、`payload` 写进回执 `outcome_json`；首次投递、重试、probe、重启恢复全部用这份落盘值重建 envelope，`seq` 用只读 `store.getLeadEventSeq(leadId, eventId)` 取（`appendLeadEvent` 同 `(lead_id,event_id)` 也返回同一 seq）。绝不在重放时用新的 `now()`。
 
-**Lead 分支**（每目标）：证据 `store.isLeadEventDelivered(leadId, eventId)` → `already_enqueued`；`getLeadRuntime` 缺 → `skipped_runtime_missing`；
-`!leadWindowExists` → `skipped_window_absent`；§2.4 复核；`seq = appendLeadEvent(leadId, eventId, "account_switch_wake", JSON.stringify(payload), "account-switch:g<gen>")`（目标进入 `audited`）；
-`runtime.probeDelivered?.(envelope)` 为 true → `markLeadEventDelivered(seq)` → `already_enqueued`；否则 `deliver(envelope)`；`delivered` → `markLeadEventDelivered(seq)` → `enqueued`；否则 `failed(error)`。`audited` 重试同样先复核再 probe 再 deliver。
+**runner 分支**（每目标，顺序固定，对应 §2.4 六步）：
+1. 材料：冻结的 `{id, exec, issue_id, project, teamName, agentName, text}`（`teamName/agentName` = 名单冻结时由 CommDB session 行的 `lead_id` 经 `deriveRunnerMailboxIdentity` 算出并落盘，认回不依赖 session 行此刻还在）。`db = openCommDb(project)`。
+2. 认回：`row = db.getMessageById(id)`；`row?.delivered_at` 非空 → `evidenced`；否则若 `row` 存在（先前尝试过）→ `runnerMailbox.recognise({leadName: teamName, recipient: agentName, payload: 原 payload})`，true → `db.markInstructionDelivered(id)` → `evidenced`。`evidenced` → 跳到第 6 步。
+3. 准备：`sess = db.getSession(exec)`；无行或无 `tmux_window` → `skipped_pane_dead`；`probeRunnerPane(sess.tmux_window)`（`dead` → `skipped_pane_dead`；`unknown` 照投）。不用 `lookupTmuxTarget`（硬编码 `~/.flywheel/comm`，`tmux-lookup.ts:172-179`，无视 `FLYWHEEL_COMM_ROOT/DIR`）。
+4. 最终资格复核（同步、读最新）：代次 / flag / `store.getSession(exec).status` / **重新** `db.getSession(exec)?.vendor`。
+5. 写：`db.insertInstructionWithId(id, "bridge", exec, text)`（false = 行已在，继续）→ `wakeRunner({ db, execId: exec, fromAgent:"bridge", content:"[lead-instruction "+id+"]\n"+text, metadata:{flywheelId:id, execId:exec, kind:"account_switch_wake"}, backend:"claude-code", transportFactory: runnerMailbox.factory })`；
+   `ok` → `db.markInstructionDelivered(id)` → `enqueued`；`no_session_lead` → `skipped_no_mailbox`；`backend_commdb` → `skipped_backend_commdb`（终态、不写 delivered、transport 未调用；重放时第 2 步 `recognise` 为 false、复核通过后仍得到同一 skip，不会升级成 `already_enqueued`）；其它 → `failed`。
+6. 记账（幂等、不看资格）：`store.insertEvent({ event_id:id, execution_id:exec, issue_id, project_name, event_type:"account_switch_wake", source:"bridge.account-switch-wake", payload:{generation, to} })`。失败 → `failed`，重放时第 2 步认回后只重做本步。
+每目标 `finally db.close()`。崩溃窗口：insert 后 wake 前（认回 false → 复核 → 写）；main 已写 sidecar 未 finalize（认回 true → 只记账，**即使此时 flag 已关 / session 已完成 / 已到 g2**）；wake 后 mark 前（同上）；mark 后 event 前（数据库证据 → 只补事件）。
+
+**Lead 分支**（每目标，同六步）：
+1. 材料：冻结的 `{eventId, leadId, project, sessionKey, timestamp, payload}`。
+2. 认回：`store.isLeadEventDelivered(leadId, eventId)` → `evidenced`；否则 `seq = store.getLeadEventSeq(leadId, eventId)`，有 seq（先前尝试过）→ `runtime = getLeadRuntime(leadId)`；`runtime?.probeDelivered` 存在 → `probeDelivered({seq, event:payload, sessionKey, leadId, timestamp})` 为 true → `markLeadEventDelivered(seq)` → `evidenced`（`already_enqueued`）；runtime 缺失但有 seq → `failed`（等 runtime 就绪后重试认回，不直接判「没有」）。
+3. 准备：`getLeadRuntime` 缺 → `skipped_runtime_missing`；`!leadWindowExists` → `skipped_window_absent`。
+4. 最终资格复核（同步、读最新）：代次 / flag / `effectiveLeadBackend` 现算。
+5. 写：`seq = appendLeadEvent(leadId, eventId, "account_switch_wake", JSON.stringify(payload), sessionKey)` → `deliver({seq, event:payload, sessionKey, leadId, timestamp})`；`delivered` → `markLeadEventDelivered(seq)` → `enqueued`；否则 `failed(error)`。
+6. 记账：落回执。
 `payload = {event_type:"account_switch_wake", execution_id:"", issue_id:"", project_name, summary:text}`（通用渲染 → `[Event #n] account_switch_wake` + `Summary: …`；flywheelId 形如 `<leadId>-<seq>-`，execution_id 为空串）。
 **不**把 `account_switch_wake` 加进 `RETRYABLE_LEAD_EVENT_TYPES`。
 
@@ -163,7 +175,8 @@ CREATE TABLE IF NOT EXISTS account_switch_wake_receipts (
   created_at TEXT NOT NULL DEFAULT (datetime('now')), completed_at TEXT)
 ```
 
-列 `trigger_from TEXT NULL` + `from_source TEXT NOT NULL DEFAULT 'unknown'`（§2.6）。
+列 `trigger_from TEXT NULL` + `from_source TEXT NOT NULL DEFAULT 'unknown'`（§2.6）。`outcome_json.targets[*]` 除结果外还保存冻结的**原投递材料**：runner `{instruction_id, execution_id, issue_id, project, teamName, agentName}`；Lead `{event_id, lead_id, project, sessionKey, timestamp, payload}`。
+新增只读 `getLeadEventSeq(leadId, eventId): number | undefined`（`SELECT seq FROM lead_events WHERE lead_id=? AND event_id=?`）。
 方法：`getAccountSwitchWakeCursor(): number`（终态 `completed|skipped|superseded` 最大代次）、`listPendingAccountSwitchWakes(): Receipt[]`（按代次升序）、
 `upsertAccountSwitchWakeReceipt(r)`（pending 期间保存进度；终态时写 `completed_at`；已终态行不可再改 → 返回 false）。superseded 不是单独方法，而是回执 `status:'superseded'` + 保留的 `outcome_json`。
 
@@ -173,7 +186,7 @@ CREATE TABLE IF NOT EXISTS account_switch_wake_receipts (
 
 ### 3.3a `packages/teamlead/src/bridge/mailbox-lead-runtime.ts` + `lead-runtime.ts`（R2#7）
 
-`LeadRuntime` 接口新增可选 `probeDelivered?(envelope: LeadEventEnvelope): Promise<boolean>`；`MailboxLeadRuntime` 实现（§3.1a）；`CommDBLeadRuntime` 不实现。现有 `deliver` / `formatEnvelope` 字节不变。
+`LeadRuntime` 接口新增可选 `probeDelivered?(envelope: LeadEventEnvelope): Promise<boolean>`；`MailboxLeadRuntime` 实现（§3.1a，复用抽出的私有 `buildPayload` 与注入的 transport）；`MailboxTransport` 增只读 `verifyExisting`；`CommDBLeadRuntime` 不实现。现有 `deliver` / `formatEnvelope` 输出字节不变（现有 `mailbox-lead-runtime.test.ts` 全过）。
 
 ### 3.3b `packages/teamlead/src/bridge/detection-gap-scan.ts`（R1#5）
 
@@ -229,6 +242,9 @@ readSite `packages/teamlead/src/bridge/account-switch-wake.ts` `createAccountSwi
 17. **superseded（R1#8、R2#1）**：g1 R1 `evidenced` / R2 `audited` 或 `failed` 时到 g2 → R2 `superseded`（无证据）、R1 结果保留、g1 走 logging 写出 `status:"superseded"` 日志；g1 停在 logging 失败时到 g2 → g2 先投、g1 日志随后补写；superseded 日志失败 + 重启 → 重放继续补日志。
 18. **from（R1#9、R2#6）**：钩子路径 / poll 路径 / 首次启动 g>0 / 跨多代次 / 两次切号回调交错 / noop 回调 → 一律 `from:null, from_source:"unknown"`，JSON 行显式含 `"from":null`；文案只含 `to`。
 19. **D6（R1#5）**：`detection-gap-scan` 测试：自动唤醒行 delivered 31 分钟未读 → 无 `delivery_unconsumed`；普通 Lead 指令同条件 → 有（阳性对照）。
+21. **await 之后的资格复核（R3#1）**：用 deferred Promise 分别卡住 runner 的 `recognise`（返回 false 前）与 Lead 的 `probeDelivered`（返回 false 前）以及 pane probe，期间改变 generation / flag / session status / Lead backend，恢复后断言**零新写**、结果为对应 `superseded` / `skipped_*`；pane probe 期间把 CommDB `vendor` 改成 codex → 复核读到新值 → `skipped_vendor`。
+22. **资格失效时仍认回（R3#2）**：runner 与 Lead 各预置「main 已写或 sidecar finalized、数据库 delivered 为空」，再分别关 flag / 结束 session / 推进 g2 → 恢复：零新增信、目标 `already_enqueued`、`delivered_at` 补上、runner `session_events` 补写、日志照写；对照组（main 为空 + 资格失效）仍然绝不写信。
+23. **Lead envelope 逐字重放（R3#3）**：首次投递（真实 `ClaudeCodeAdapter` + 临时 `CLAUDE_CONFIG_DIR`）后**关闭并重建** StateStore / consumer / runtime，时钟推进 >60s，从磁盘回执恢复 envelope → `probeDelivered` 命中、全文与首次逐字相同、main 仍恰一条；不允许测试直接复用内存里的 envelope 对象。
 20. **flag 实时（R1#10）**：同一 consumer 实例，`process.env` 置 0 后下一个 tick 观察到 `skipped_flag_off`，置回 1 后恢复。
 
 其它：
@@ -236,6 +252,7 @@ readSite `packages/teamlead/src/bridge/account-switch-wake.ts` `createAccountSwi
 - 日志追加器：临时文件一行合法 JSON、拒绝 symlink（`O_NOFOLLOW` 抛错）、`FLYWHEEL_QUOTA_LOG_PATH` 覆盖、父目录缺失抛错。
 - `account-switch-route.test.ts` / watchdog 测试：`onSwitchSuccess` 行为不变（签名不变，现有用例照过）。
 - `account-switch-wake.plugin-deps.test.ts`：真实 deps 装配（§3.5），杜绝 `p.name` / `snapshot()` 形状 / `insertEvent` 缺列这类接口不匹配；活性探测不触 HOME CommDB。
+- 装配测试同时覆盖 `getLeadRuntime` 返回类型含可选 `probeDelivered`（`tsc` 通过）。
 - `mailbox-lead-runtime.test.ts` 增 `probeDelivered`：sidecar finalized → true；main 匹配 / sidecar pending 过期 → true；都无 → false；其它 I/O 错误 → 抛。
 - `config` 包：registry 新条目 + drift 测试（readSite 文件含 env 名）+ `resolve.direct-toggle.test` live-observe。
 - 回归：`runner-wake*.test.ts`、`send-*.test.ts`、`mailbox-lead-runtime.test.ts` 不受影响（未改它们的被测代码）。

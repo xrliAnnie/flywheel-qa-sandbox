@@ -64,16 +64,24 @@ ok → db.markInstructionDelivered(id)                     // 只有这里写 de
 ### 2.3 Lead 投递细节
 
 ```
-eventId = `account-switch-wake:g${generation}:${leadId}`
-seq = store.appendLeadEvent(leadId, eventId, "account_switch_wake",
-        JSON.stringify({ event_type: "account_switch_wake", execution_id: "", issue_id: "",
-                         project_name, summary: text }), `account-switch:g${generation}`)
-runtime = registry.getForLead(leadId)        // undefined → skipped_runtime_missing（Lead 未就绪/未注册）
-if (!(await locateLeadWindow(project, leadId))) → skipped_window_absent   // 窗口不存在不投
-result = await runtime.deliver({ seq, event, sessionKey, leadId, timestamp })
+eventId   = `account-switch-wake:g${generation}:${leadId}`
+frozen    = { sessionKey: `account-switch:g${generation}`, timestamp: <名单冻结时刻 ISO，落盘>,
+              payload: { event_type: "account_switch_wake", execution_id: "", issue_id: "", project_name, summary: text } }
+// 认回（不看资格）
+store.isLeadEventDelivered(leadId, eventId)                         → evidenced
+seq = store.getLeadEventSeq(leadId, eventId)                        // 只读；有 = 先前尝试过
+runtime.probeDelivered?.({ seq, event: frozen.payload, sessionKey, leadId, timestamp: frozen.timestamp })
+    → true: store.markLeadEventDelivered(seq)                       → evidenced
+// 确认没有原写入后
+runtime = registry.getForLead(leadId)        // undefined → skipped_runtime_missing
+await locateLeadWindow(project, leadId)      // null → skipped_window_absent
+<同步资格复核：generation / flag / effectiveLeadBackend>
+seq = store.appendLeadEvent(leadId, eventId, "account_switch_wake", JSON.stringify(frozen.payload), frozen.sessionKey)
+result = await runtime.deliver({ seq, event: frozen.payload, sessionKey, leadId, timestamp: frozen.timestamp })
 result.delivered ? store.markLeadEventDelivered(seq) : failed(error)
 ```
 
+- `formatEnvelope` 通用分支把 `timestamp` 与 `sessionKey` 写进全文，`verifyLastWrite` 比完整 content → 重放必须用**同一份落盘的** timestamp / sessionKey / payload，不能用新的 `now()`。
 - `appendLeadEvent` 同 `(lead_id,event_id)` 返回已有 seq → `MailboxLeadRuntime.buildFlywheelId = <leadId>-<seq>-`（空 execution_id）稳定 → sidecar 去重 → 重放不双写。
 - `account_switch_wake` **不**加入 `RETRYABLE_LEAD_EVENT_TYPES`（否则 heartbeat 会在 Lead 离线时重投 5 次并在耗尽后触发 FLY-83 stuck 告警）；重试由本 consumer 自己按目标做（最多 20 次 ≈ 10 分钟 poll）。
 - `locateLeadWindow` 用 `tmux list-windows -t flywheel`，QA 房里 Lead 窗口名同样是 `<project>-<leadId>`。
