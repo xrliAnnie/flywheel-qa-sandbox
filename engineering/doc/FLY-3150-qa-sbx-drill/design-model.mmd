@@ -1,0 +1,36 @@
+classDiagram
+    direction LR
+    class 演练文件 {
+        路径 qa-sbx/fly2167/分支名.md
+        第1行 QA-SBX FLY-2167 drill
+        第2行 AWAITING-QA 或 FIXED-FOR-CLAIM id
+        恰好两行
+    }
+    class QA裁决 {
+        claim id
+        轮次 第1轮 或 复验轮
+    }
+    class 验收项 {
+        criterion id
+        结果 pass / fail / not_run
+        证据 少于80字符
+    }
+    class file_shape {
+        文件存在
+        第1行逐字正确
+    }
+    class fixed_for_claim {
+        第1轮 永远fail
+        复验轮 第2行等于上轮claim id
+    }
+    class e2e_529_exempt {
+        状态 not_run
+        类别 docs_only
+        附原因
+    }
+    QA裁决 "1" --> "3" 验收项 : 包含
+    验收项 <|-- file_shape
+    验收项 <|-- fixed_for_claim
+    验收项 <|-- e2e_529_exempt
+    QA裁决 ..> 演练文件 : 检查
+    演练文件 ..> QA裁决 : 第2行引用上一轮的 claim id

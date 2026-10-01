@@ -1,0 +1,21 @@
+sequenceDiagram
+    autonumber
+    participant D as 设计节点
+    participant I as 实现节点
+    participant F as 演练文件(两行)
+    participant Q as QA 节点
+    D->>D: 写短计划 + 设计评审通过
+    D-->>I: 交接(本页 + plan.md)
+    I->>F: 首交:第 2 行写 AWAITING-QA
+    I-->>Q: 交付第 1 轮
+    Q->>F: 检查 file-shape
+    Note over Q: 第 1 轮 fixed-for-claim 必定 fail<br/>(演练故意埋的失败)
+    Q-->>I: 打回,附 QA 裁决编号 claim id
+    I->>F: 返工:第 2 行改成 FIXED-FOR-CLAIM id
+    I-->>Q: 交付复验轮
+    Q->>F: 第 2 行与上一轮 claim id 逐字比对
+    alt 完全相等
+        Q-->>I: 通过
+    else 不相等
+        Q-->>I: 再次打回
+    end
