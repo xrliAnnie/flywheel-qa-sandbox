@@ -1,13 +1,13 @@
 ---
 issue: FLY-3148
-phase: design
-phaseCursor: 1/5
-updated: 2026-10-01T08:39:42.268Z
-nextStep: design review gate on plan.md
+phase: implement
+phaseCursor: 2/5
+updated: 2026-10-01T08:50:18.736Z
+nextStep: step0 discovery, RED/GREEN probe+registry
 chunks: []
 pointers: {}
 ---
 
 # FLY-3148 progress
-**phase**: design (1/5)
-**next**: design review gate on plan.md
+**phase**: implement (2/5)
+**next**: step0 discovery, RED/GREEN probe+registry
