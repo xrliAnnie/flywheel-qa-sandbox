@@ -1,0 +1,23 @@
+classDiagram
+    class CanaryOwner {
+      +issue: FLY-3122
+      +nonce: eeb549be-1af1-44c6-93d3-a0cb7f40022c
+      +case: claude
+    }
+    class ProbeFile {
+      +path: probe.txt
+      +bootLine: OWNER-CLAUDE-BOOT
+      +completionLine: OWNER-R4-CLAUDE
+    }
+    class TurnReceipt {
+      +phase: design
+      +epoch: 1
+      +result: yours
+    }
+    class GitEvidence {
+      +branch: project-slot-2-FLY-3122
+      +commit: immutable head
+    }
+    CanaryOwner "1" --> "1" ProbeFile : derives exact lines
+    TurnReceipt "1" --> "1" ProbeFile : authorizes write
+    ProbeFile "1" --> "1" GitEvidence : committed as evidence

@@ -1,0 +1,16 @@
+flowchart TD
+    I["FLY-3122 task<br/>owner + claude case"] --> T{"TURN result"}
+    T -->|"yours"| S["Read FLY-2127 driver<br/>derive exact literals"]
+    T -->|"not-yours"| W["Wait without writing"]
+    S --> A["Append two missing<br/>complete lines"]
+    A --> V["Verify each line<br/>appears exactly once"]
+    V --> C["Commit on feature branch"]
+    C --> P["Push + publish design report"]
+    P --> H["phase_design_complete"]
+
+    classDef authority fill:#fff8e6,stroke:#ff9500,color:#1d1d1f;
+    classDef action fill:#ffffff,stroke:#007aff,color:#1d1d1f;
+    classDef success fill:#eefaf1,stroke:#34c759,color:#1d1d1f;
+    class T authority;
+    class I,S,A,V,C action;
+    class P,H success;
