@@ -1,14 +1,13 @@
 ---
 issue: FLY-3123
 phase: design
-phaseCursor: 3/5
-updated: 2026-10-01T14:59:09.534Z
-nextStep: design review R2 running (R1 CHANGES_REQUESTED, 4 P2 addressed); then
-  founder HTML publish + complete
+phaseCursor: 5/5
+updated: 2026-10-01T15:03:07.550Z
+nextStep: design complete; implement = verify/hand-off per plan.md (no code commits)
 chunks: []
 pointers: {}
 ---
 
 # FLY-3123 progress
-**phase**: design (3/5)
-**next**: design review R2 running (R1 CHANGES_REQUESTED, 4 P2 addressed); then founder HTML publish + complete
+**phase**: design (5/5)
+**next**: design complete; implement = verify/hand-off per plan.md (no code commits)
