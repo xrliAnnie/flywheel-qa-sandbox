@@ -17,7 +17,9 @@ classDiagram
     }
     class DeliveryEvidence {
       +mailboxId
-      +laneBoundExecutionId
+      +type instruction
+      +toAgent currentExecution
+      +fromAgent lead
       +sourceBufferHash
       +state LEASED_or_ACKED
     }
@@ -55,7 +57,7 @@ classDiagram
 
     Execution "1" --> "0..1" TurnReceipt : owns current write right
     Execution "1" --> "0..*" NativeInstruction : receives exact bytes
-    NativeInstruction "1" --> "0..1" DeliveryEvidence : exact id receipt plus lane binding
+    NativeInstruction "1" --> "0..1" DeliveryEvidence : exact id plus row identity binding
     NativeInstruction "1" --> "0..1" LaunchSnapshotEvidence : direct kick lookup
     NativeInstruction "1" --> "1..*" MarkerFile : parser preserves bytes
     MarkerFile "1..*" --> "0..1" ProbeCommit : file-backed append only

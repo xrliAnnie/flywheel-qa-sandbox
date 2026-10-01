@@ -28,6 +28,8 @@ sequenceDiagram
         W->>W: 去除 phase-wake/standby prelude，定位唯一 sentinel
         W->>E: message-status exact instruction id
         E-->>W: delivered LEASED/ACKED receipt
+        W->>E: getMessageById on same read-only mailbox
+        E-->>W: type=instruction, to=current exec, from=Lead
         W->>W: 直接解析 row.content 或 verified kickText bytes
         W->>W: parser 写 exact bytes + LF temp file
         W->>G: grep -F -f exact-line count
