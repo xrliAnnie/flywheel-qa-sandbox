@@ -14,11 +14,11 @@ Issue: FLY-2109 (https://linear.app/geoforge3d/issue/FLY-2109/病根-切号后�
 | Lead 唤醒原语 | `store.appendLeadEvent` + `registry.getForLead(id).deliver(envelope)` + `markLeadEventDelivered` | `HeartbeatService.ts:2146-2172`，`StateStore.ts:6513-6539` |
 | Lead 看到什么 | 通用渲染：`[Event #seq] account_switch_wake` / `ID: — \| Issue: —` / `Summary: <文案>` | `mailbox-lead-runtime.ts` `formatEnvelope` 通用分支 |
 | Lead 枚举 | `RuntimeRegistry` 无 iterator；用 `fleetConfigProvider.snapshot().projects[].leads[]` 逐个 `getForLead` | `runtime-registry.ts`，`plugin.ts:3495-3527` |
-| Lead 是不是 Claude | `isPaneBasedLeadBackend(lead.backend)`（未设 = claude-code） | `lead-backends/lead-backend.ts:18-40` |
+| Lead 是不是 Claude | `effectiveLeadBackend(lead.backend, defaultLegacyBackendOf(project))`（显式 > 项目 config.yaml `roles.lead.backend` / `FLYWHEEL_LEAD_BACKEND` legacy > 默认 claude-code） | `lead-backends/lead-backend.ts:55-65`，`fleet-data.ts:611-627` |
 | Lead pane 活性 | `locateLeadWindow(project, leadId)` → `null` = 窗口不存在 | `LeadWindowLocator.ts:40-73` |
 | runner 枚举 | StateStore `getRunningSessions()`；真实 vendor 看项目 CommDB `getSession(exec).vendor` | `StateStore.ts:3610`，`db.ts:1576`，`types.ts:57-72` |
-| runner pane 活性 | `getTmuxTargetFromCommDb` → `probeRunnerProcessLiveness(tmuxWindow)`；`indeterminate`/error 当活 | `tmux-lookup.ts:207,371`，`HeartbeatService.isSessionTmuxAlive` |
-| 幂等 | 三层：StateStore 回执表（代次）、CommDB `INSERT OR IGNORE`（id）、收件箱 sidecar `flywheelId`（id）；Lead 侧 `lead_events UNIQUE(lead_id,event_id)` | `db.ts:898-913`，`agent-team-transport/src/types.ts:49-106`，`StateStore.ts:6513-6539` |
+| runner pane 活性 | `lookupTmuxTarget`（found/gone/error 三态）→ `probeRunnerProcessLiveness(tmuxWindow)`；`indeterminate`/error 当 unknown 照投 | `tmux-lookup.ts:155-196,371`，`HeartbeatService.isSessionTmuxAlive` |
+| 幂等 / 证据 | 审计去重 = CommDB `INSERT OR IGNORE`；投递证据 = `delivered_at`（runner）/ `lead_events.delivered_at`（Lead）；transport 重试去重 = sidecar `flywheelId`，但 `finalized:false` 的 pending 不算成功，须 `MailboxTransport.writeVerified` | `db.ts:898-913`，`ClaudeMailboxCodec.ts:144-160`，`MailboxTransport.ts:59-95`，`StateStore.ts:6513-6539` |
 | 日志文件 | `FLYWHEEL_QUOTA_LOG_PATH ?? ~/.flywheel/logs/quota-monitor.log`，追加一行 JSON；仓内已有 `O_NOFOLLOW` 单 fd 写法可仿 | `reports-route.ts:126-141` |
 | kill switch | 注册表 `FEATURE_FLAGS` 条目 + 读点声明；drift 测试要求 env 读点文件真含该 env 名 | `registry.ts:102-145`，`feature-flags-drift.test.ts` |
 | 测试房隔离 | `FLYWHEEL_CLAUDE_ACCOUNTS_PATH`（已有）+ `FLYWHEEL_QUOTA_LOG_PATH`（新） | `account-store.ts:116-122` |
@@ -54,9 +54,9 @@ wake = await wakeRunnerMailbox({ db, execId: exec, fromAgent: "bridge",
 - 不调 `clearDeclaredState`：派单说「只唤醒」，parked / long_task 声明保留（与生产裁定一致：仅 account_dead 才清，本仓没有 account_dead 触发）。
 - vendor 判定：`db.getSession(exec)?.vendor === "claude-code"` 才投；`codex` / `none` / NULL / 行缺失 → `skipped_vendor`。NULL 是 dispatcher 预注册（runner 还没自报）或 legacy 行；对尚未起来的体投唤醒没意义（它起来就用新号），legacy 行在本仓当前版本不会出现（FLY-1188 起所有 adapter 都写 vendor）。
 - `[lead-instruction <id>]` 前缀会让 runner 按协议回一条 DONE——这是可核对的副作用，Lead 由此看到「谁醒了」。
-- `detection-gap-scan` D6（`delivery_unconsumed`）的 SQL 按 `to_agent=? AND type='instruction' AND delivered_at IS NOT NULL AND read_at IS NULL`
-  扫（`:366-372`），我们的审计行**在它视野内**，与 Lead 手动 `flywheel-comm send` 落的行形态完全相同（`send.ts` 同样只设 `delivered_at`）。
-  也就是说：唤醒行被 runner 消费后 `read_at` 的落法与普通 Lead 指令一致，不是新噪音源；一个 30 分钟内没消费唤醒的体本来就是 D6 想抓的「投了没人读」。
+- `detection-gap-scan` D6（`delivery_unconsumed`）的 SQL 按 `to_agent=? AND type='instruction' AND delivered_at IS NOT NULL AND read_at IS NULL` 扫（`:366-372`），
+  mailbox 模式下 runner 侧没有可靠 ack（`send.ts:89-95`：`read_at` 故意不更新），所以一次切号自动扇出会让**每个健康 runner** 30 分钟后被报 `delivery_unconsumed`——
+  与 Lead 偶发手动 `send` 不同，这是批量、周期性的。处理：D6 按 id 前缀排除自动唤醒行（plan §3.3b），普通 Lead 指令照旧。
 
 ### 2.3 Lead 投递细节
 
@@ -71,7 +71,7 @@ result = await runtime.deliver({ seq, event, sessionKey, leadId, timestamp })
 result.delivered ? store.markLeadEventDelivered(seq) : failed(error)
 ```
 
-- `appendLeadEvent` 同 `(lead_id,event_id)` 返回已有 seq → `MailboxLeadRuntime.buildFlywheelId = <leadId>-<seq>-no-exec` 稳定 → sidecar 去重 → 重放不双写。
+- `appendLeadEvent` 同 `(lead_id,event_id)` 返回已有 seq → `MailboxLeadRuntime.buildFlywheelId = <leadId>-<seq>-`（空 execution_id）稳定 → sidecar 去重 → 重放不双写。
 - `account_switch_wake` **不**加入 `RETRYABLE_LEAD_EVENT_TYPES`（否则 heartbeat 会在 Lead 离线时重投 5 次并在耗尽后触发 FLY-83 stuck 告警）；重试由本 consumer 自己按目标做（最多 20 次 ≈ 10 分钟 poll）。
 - `locateLeadWindow` 用 `tmux list-windows -t flywheel`，QA 房里 Lead 窗口名同样是 `<project>-<leadId>`。
 - Lead 通用渲染没有 `[lead-instruction]` 前缀，Lead 看到的是一条普通事件 + Summary，不会触发 DONE 回执义务。
@@ -91,7 +91,7 @@ CREATE TABLE IF NOT EXISTS account_switch_wake_receipts (
 
 `outcome_json` 在 pending 期间保存**冻结的目标名单 + 逐目标状态**（名单在第一次尝试时一次性枚举并落盘，之后只处理未终态目标，不重新枚举，
 避免日志重试期间新起的体被并进旧代次）。`last completed generation = MAX(generation) WHERE status IN ('completed','skipped')`。
-StateStore 用 sql.js 单线程，表创建跟随现有 `CREATE TABLE IF NOT EXISTS` 迁移惯例（`StateStore.ts:1531` lead_events 同款）。
+StateStore 底层是 better-sqlite3（WAL，逐 statement 落盘；`StateStore.ts:4,31-33` 是 sql.js 兼容 shim），表创建跟随现有 `CREATE TABLE IF NOT EXISTS` 迁移惯例（`StateStore.ts:1531` lead_events 同款）。
 
 ### 2.5 日志追加器
 

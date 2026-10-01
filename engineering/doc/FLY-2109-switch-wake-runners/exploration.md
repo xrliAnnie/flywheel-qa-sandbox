@@ -105,7 +105,7 @@ Lead 的 pane 是 tmux 会话 `flywheel` 里的窗口 `<project>-<leadId>`。
 
 ### 3.7 现有「黑洞巡检」会不会被唤醒消息打扰
 
-- `detection-gap-scan.ts` 的 `delivery_unconsumed`（D6）查的是 CommDB `messages` 表（`:369-371`），不是 `instructions` 表 → 不受影响。
+- `detection-gap-scan.ts` 的 `delivery_unconsumed`（D6）扫 CommDB `messages` 表里 `type='instruction'` 且 `delivered_at` 已落、`read_at` 为空的行（`:366-372`）；唤醒行会落在它视野内，且 mailbox 模式 runner 侧没有可靠 ack → 需要排除自动唤醒行（research §2.2 / plan §3.3b）。
 - runner 协议要求对 `[lead-instruction <id>]` 回 DONE（FLY-208）。唤醒消息若用这个前缀，每个被唤醒的体都会给 Lead 回一条 DONE——
   这是**可见的、可核对的**副作用（Lead 看到「谁醒了」），prod 已接受同样形态。本设计沿用该前缀（§4 裁定 ④「同一路」）。
 
