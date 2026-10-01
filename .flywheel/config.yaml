@@ -90,3 +90,8 @@ checkpoints:
     enabled: true
     timeout_ms: 14400000     # 4h (FLY-159: ConfigLoader floor; anything lower is warn+raised)
     timeout_behavior: fail-close
+
+# QA-SBX FLY-3038 drill branch only (never merge to main): enroll the
+# pre-handin self-check with a sandbox-sized guard list.
+pre_handin:
+  script: qa-fly-3038/pre-handin-check.mjs
