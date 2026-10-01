@@ -1,13 +1,13 @@
 ---
 issue: FLY-3150
-phase: design
-phaseCursor: 6/7
-updated: 2026-10-01T22:22:05.434Z
-nextStep: complete --route phase_design_complete
+phase: implement
+phaseCursor: 1/6
+updated: 2026-10-01T22:24:23.305Z
+nextStep: capture base and create exact two-line first hand-in
 chunks: []
 pointers: {}
 ---
 
 # FLY-3150 progress
-**phase**: design (6/7)
-**next**: complete --route phase_design_complete
+**phase**: implement (1/6)
+**next**: capture base and create exact two-line first hand-in
