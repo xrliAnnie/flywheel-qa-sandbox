@@ -1,13 +1,13 @@
 ---
 issue: FLY-3122
 phase: design
-phaseCursor: 1/6
-updated: 2026-10-01T10:47:37.253Z
-nextStep: Write exploration and bounded probe contract
+phaseCursor: 2/6
+updated: 2026-10-01T10:48:21.078Z
+nextStep: Research repository and transport evidence
 chunks: []
 pointers: {}
 ---
 
 # FLY-3122 progress
-**phase**: design (1/6)
-**next**: Write exploration and bounded probe contract
+**phase**: design (2/6)
+**next**: Research repository and transport evidence
