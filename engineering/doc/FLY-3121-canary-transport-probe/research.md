@@ -12,7 +12,7 @@ exploration.md 选了「文档夹内 bash 辅助脚本 + 测试」方案。本�
 ### Q1 本地 commit 会不会触发任何副作用？
 
 - `core.hooksPath` 目录里非 `.sample` 的钩子只有 `pre-push`（5 行的 push-guard）。**没有** `pre-commit` / `commit-msg` / `prepare-commit-msg`。
-- 仓库没有 `.husky/`、没有 lint-staged。
+- `package.json` 声明了 Husky（`prepare: husky`）与 lint-staged 配置，但当前 worktree **没有** `.husky/` 目录，生效的 `core.hooksPath` 也不指向它——所以这些 commit 钩子在本 worktree 实际未启用。结论绑定的是当前实际配置，不是「仓库没装」。
 - `ci.yml` 的触发器只有 `pull_request: branches: [main]` 与 `push: branches: [main]`。
 
 结论：在功能分支上做本地 commit **零副作用**——不跑钩子、不触发 CI。
@@ -43,6 +43,13 @@ LC_ALL=C awk 'length($0) < 1 || length($0) > 512 || $0 !~ /^[ -~]+$/ { bad = 1; 
 | 513 字节 | 1 |
 | 512 字节 | 0 |
 | 空文件 | 0 ← **awk 自己挡不住**，需另加 `[ -s file ]` |
+| 行内 NUL 字节（`a<NUL>b`） | 0 ← **awk 也挡不住**（macOS awk 把 NUL 当字符串结尾，bash `read` 会静默丢掉 NUL），需另加字节计数比较（见下） |
+
+NUL 的补充检查（Codex R1 发现并实测复现）：去掉 NUL 后的字节数必须等于原字节数，否则整批拒绝。
+
+```bash
+[ "$(LC_ALL=C tr -d '\000' <file | wc -c)" -ne "$(wc -c <file)" ]
+```
 
 `[ -~]` 是可打印 ASCII（空格 0x20 到波浪号 0x7E）。选 512 字节上限的依据：canary marker 形如 `FLY2127-CANARY-<uuid> …`，远小于 512；上限只是防止误把大段文本灌进探针文件。
 
@@ -77,8 +84,8 @@ grep -Fxq -- "$line" "$probe"
 
 把 plan.md 里的两段脚本原文在临时目录跑过一遍：
 
-1. 只有测试、没有实现：5 条断言 FAIL（`got [127|]`，即脚本不存在），进程 exit 1 —— **RED 成立**。
-2. 加上实现：21 条断言全 `ok`，末行 `RESULT: PASS`，exit 0 —— **GREEN 成立**。
+1. 只有测试、没有实现：断言 FAIL（首条为 `got [127|]`，即脚本不存在），进程 exit 1 —— **RED 成立**。
+2. 加上实现：23 条断言全 `ok`，末行 `RESULT: PASS`，exit 0 —— **GREEN 成立**（用 `PATH=/bin:/usr/bin /bin/bash` 即 macOS 自带 bash 3.2 复跑结果相同）。
 3. `shellcheck append-markers.sh append-markers.test.sh`：无输出。
 
 ## 4. 被否决的做法

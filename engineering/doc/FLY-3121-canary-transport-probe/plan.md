@@ -39,7 +39,7 @@ sequenceDiagram
 |---|---|
 | 文件路径 | 固定为 `<repo-root>/probe.txt`。**不从指令文本取路径**。 |
 | 一行 marker 的身份 | 该行的完整字节内容（整行精确匹配，`grep -Fx`）。 |
-| 合法 marker 行 | 1–512 字节，全部为可打印 ASCII（0x20–0x7E）。空行、CR、TAB、非 ASCII、超长一律拒绝。 |
+| 合法 marker 行 | 1–512 字节，全部为可打印 ASCII（0x20–0x7E）。空行、CR、TAB、NUL 字节、非 ASCII、超长一律拒绝。 |
 | 行尾 | 每行以单个 LF 结尾，文件始终以 LF 结尾。 |
 | 顺序 | 按指令给出的顺序追加到文件末尾；已有行永不修改、永不删除、永不重排。 |
 | 幂等 | 文件里已有同一行 → 跳过（计入 `skipped`），不产生重复行。 |
@@ -143,6 +143,8 @@ printf '\344\270\255\n' >bad.txt
 reject "non-ascii" bad.txt
 printf '%s\n' "$(repeat 513)" >bad.txt
 reject "513 bytes" bad.txt
+printf 'new-ok\na\000b\n' >bad.txt
+reject "NUL byte (whole batch)" bad.txt
 : >bad.txt
 reject "empty file" bad.txt
 reject "missing file" nope.txt
@@ -183,6 +185,10 @@ if [ ! -s "$markers" ]; then
 	echo "REJECT: markers file missing or empty" >&2
 	exit 2
 fi
+if [ "$(LC_ALL=C tr -d '\000' <"$markers" | wc -c)" -ne "$(wc -c <"$markers")" ]; then
+	echo "REJECT: markers file contains a NUL byte" >&2
+	exit 2
+fi
 if ! LC_ALL=C awk 'length($0) < 1 || length($0) > 512 || $0 !~ /^[ -~]+$/ { bad = 1; print "REJECT: line " NR } END { exit bad }' "$markers" >&2; then
 	exit 2
 fi
@@ -212,7 +218,7 @@ done <"$markers"
 echo "appended=$appended skipped=$skipped"
 ```
 
-**1.4 确认 GREEN**：重跑 1.2 的命令。期望：退出码 0；21 行 `ok`，零行 `FAIL`；末行 `RESULT: PASS`。
+**1.4 确认 GREEN**：重跑 1.2 的命令。期望：退出码 0；23 行 `ok`，零行 `FAIL`；末行 `RESULT: PASS`。
 
 **1.5 自检**（本机有 shellcheck 才跑；它不是 CI 门）：
 
@@ -320,9 +326,11 @@ BASE=$(git merge-base HEAD origin/main)
 | V3 | `git log --format=%s "$BASE"..HEAD -- probe.txt` | 每一行都是 `test(FLY-3121): append canary marker lines to probe.txt`（没有 marker 指令时无输出） |
 | V4 | `git log --format=%H "$BASE"..HEAD -- probe.txt` 逐个 SHA 跑 `git show --numstat --format= <sha>` | 每笔恰好一行，删除数为 0，路径 `probe.txt` |
 | V5 | `sort probe.txt \| uniq -d`（`probe.txt` 存在时） | 无输出（没有重复行） |
-| V6 | 把 `probe.txt` 整个当 marker 文件重放：`bash engineering/doc/FLY-3121-canary-transport-probe/append-markers.sh probe.txt` 后 `git status --porcelain` | 脚本打印 `appended=0 skipped=<行数>`；工作树无改动（同时证明每一行都合法、且追加幂等） |
+| V6 | 把 `probe.txt` 整个当 marker 文件重放（`probe.txt` 存在时）：`bash engineering/doc/FLY-3121-canary-transport-probe/append-markers.sh probe.txt` 后 `git status --porcelain` | 脚本打印 `appended=0 skipped=<行数>`；工作树无改动（同时证明每一行都合法、且追加幂等） |
 | V7 | `git cat-file -e origin/main:probe.txt` | 失败（退出码非 0）：`probe.txt` 没有进 main |
 | V8 | Lead 侧每条 marker 指令都有一条引用其完整 `[lead-instruction <id>]` 的 DONE 回执 | 一一对应 |
+
+**没有 marker 指令的分支**（Task 4 的 TURN 回执路径）：`probe.txt` 不存在是合法结果。此时 V5、V6 不适用（照抄 V6 会得到退出码 2 的 `REJECT: markers file missing or empty`，那不是缺陷）；改为核对 `git ls-files -- probe.txt` 无输出、工作树里也没有 `probe.txt`，并且 Lead 侧有一条 `no marker request received; TURN acknowledged` 的 DONE 回执。V1–V4、V7 照常。
 
 ## 7. 负向守卫
 
