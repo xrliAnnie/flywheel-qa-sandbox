@@ -1,13 +1,13 @@
 ---
 issue: FLY-3121
 phase: design
-phaseCursor: 2/6
-updated: 2026-10-01T10:49:56.220Z
-nextStep: write plan.md
+phaseCursor: 3/6
+updated: 2026-10-01T10:52:03.332Z
+nextStep: codex design review of plan.md
 chunks: []
 pointers: {}
 ---
 
 # FLY-3121 progress
-**phase**: design (2/6)
-**next**: write plan.md
+**phase**: design (3/6)
+**next**: codex design review of plan.md
