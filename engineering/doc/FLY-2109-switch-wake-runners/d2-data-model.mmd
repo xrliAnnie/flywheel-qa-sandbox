@@ -1,0 +1,34 @@
+classDiagram
+  class claude_accounts_json {
+    generation: int  仅 commitSwitch 推进
+    activeAccount: string
+    accounts[]
+  }
+  class account_switch_wake_receipts {
+    generation PK
+    status pending|completed|skipped
+    phase delivering|logging
+    trigger_from, trigger_to
+    outcome_json 冻结名单 + 逐目标结果
+  }
+  class CommDB_messages {
+    id = account-switch-wake:g N:exec  INSERT OR IGNORE
+    type instruction
+    delivered_at
+  }
+  class Inbox_sidecar {
+    flywheelId = 同 id  去重
+  }
+  class lead_events {
+    UNIQUE lead_id, event_id
+    event_id = account-switch-wake:g N:leadId
+  }
+  class quota_monitor_log {
+    event account_switch_wake
+    generation, from, to, counts, targets[]
+  }
+  claude_accounts_json --> account_switch_wake_receipts : 代次比较
+  account_switch_wake_receipts --> CommDB_messages : runner 目标
+  CommDB_messages --> Inbox_sidecar : wakeRunnerMailbox
+  account_switch_wake_receipts --> lead_events : Lead 目标
+  account_switch_wake_receipts --> quota_monitor_log : 全部终态后追加

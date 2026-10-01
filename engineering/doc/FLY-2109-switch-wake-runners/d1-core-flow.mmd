@@ -1,0 +1,10 @@
+flowchart LR
+  A[账号库 generation 前进<br/>= 一次真切号 A→B] --> B{Bridge tick<br/>钩子即时 + 30s poll}
+  B -->|代次未前进| Z[什么都不做]
+  B -->|新代次| C[枚举并冻结目标名单<br/>runner: status=running<br/>Lead: Claude 后端]
+  C --> D[回执 pending 落盘]
+  D --> E[逐目标投唤醒<br/>runner: CommDB 行 + 收件箱<br/>Lead: lead_events + 收件箱]
+  E --> F[逐目标结果落盘<br/>enqueued / skipped_* / failed]
+  F --> G[追加一行 JSON<br/>到切号日志]
+  G --> H[回执 completed]
+  E -. 体在下一个 turn<br/>重读 Keychain 用新号 .-> R[(runner / Lead 复工)]

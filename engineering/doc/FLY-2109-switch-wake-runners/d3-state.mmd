@@ -1,0 +1,11 @@
+stateDiagram-v2
+  [*] --> idle
+  idle --> begin: generation 前进
+  begin --> skipped: kill switch 关
+  begin --> delivering: 冻结名单 + pending 落盘
+  delivering --> delivering: 逐目标 try/catch，失败留 pending 重试
+  delivering --> logging: 全部目标终态
+  logging --> logging: 日志写失败，只重试日志
+  logging --> completed: 日志写成功
+  skipped --> [*]
+  completed --> [*]
