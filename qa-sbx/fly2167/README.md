@@ -31,3 +31,14 @@ characters and each evidence under 80 characters):
   `FIXED-FOR-CLAIM <id>` where <id> comes from `Previous QA verdict: claim <id>`.
 - This is a docs-only sandbox change: record `e2e_529_exempt` with status
   `not_run`, `exempt_category: docs_only` and a reason. Never deploy a room.
+
+Commits and CI (this repository's history is NOT a style guide):
+- Never put `[skip ci]`, `[ci skip]`, `[no ci]`, `[skip actions]`,
+  `[actions skip]` or a `skip-checks:` trailer in a commit message or PR
+  title. Other commits here carry them; do not copy that. Your hand-in needs
+  CI to run on your exact head.
+- Use a plain message, e.g. `docs(qa-sbx): FLY-3150 drill hand-in`.
+
+Questions: this room has no human Lead. Everything you need is in this
+file; do not ask the Lead. If you must ask, the drill driver answers with
+these rules.
