@@ -1,14 +1,13 @@
 ---
 issue: FLY-3164
 phase: design
-phaseCursor: 5/6
-updated: 2026-10-01T21:16:55.850Z
-nextStep: publish founder HTML, report URL + TURN ack + DONE for review-manifest
-  instructions, then complete phase_design_complete
+phaseCursor: 6/6
+updated: 2026-10-01T21:17:44.536Z
+nextStep: run phase_design_complete and follow the controller epilogue
 chunks: []
 pointers: {}
 ---
 
 # FLY-3164 progress
-**phase**: design (5/6)
-**next**: publish founder HTML, report URL + TURN ack + DONE for review-manifest instructions, then complete phase_design_complete
+**phase**: design (6/6)
+**next**: run phase_design_complete and follow the controller epilogue
