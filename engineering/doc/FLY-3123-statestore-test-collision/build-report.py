@@ -90,7 +90,7 @@ button{{background:#007aff;color:#fff;border:0;border-radius:8px;padding:8px 14p
 #copy-status{{margin-left:10px;color:var(--dim);font-size:13px}}
 </style></head><body><div class="wrap">
 <header><h1>FLY-3123 · main 测试撞车的一行修复</h1>
-<div class="meta">设计阶段创始人报告 · 2026-10-01 · <span class="mono">engineering/doc/FLY-3123-statestore-test-collision/</span></div></header>
+<div class="meta">设计阶段创始人报告 · 2026-10-01 · Codex 设计评审 2 轮 APPROVED（R1 4 项中等问题已全部修正）· <span class="mono">engineering/doc/FLY-3123-statestore-test-collision/</span></div></header>
 {''.join(cards)}
 <section class="section" id="summary"><h2>意见汇总</h2>
 <p style="font-size:14px;color:#3a3a3c">自动汇总上面所有非空意见。这是修改意见，不是通过信号。</p>
