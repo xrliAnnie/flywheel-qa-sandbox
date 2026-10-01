@@ -1,13 +1,14 @@
 ---
 issue: FLY-3148
 phase: implement
-phaseCursor: 2/4
-updated: 2026-10-01T10:11:24.334Z
-nextStep: code review of probe+registry diff, then milestone commit + PR
+phaseCursor: 3/4
+updated: 2026-10-01T10:13:16.852Z
+nextStep: milestone last commit, PR, freeze HEAD, pre-handin check, ci-full
+  ensure, complete needs_review
 chunks: []
 pointers: {}
 ---
 
 # FLY-3148 progress
-**phase**: implement (2/4)
-**next**: code review of probe+registry diff, then milestone commit + PR
+**phase**: implement (3/4)
+**next**: milestone last commit, PR, freeze HEAD, pre-handin check, ci-full ensure, complete needs_review
