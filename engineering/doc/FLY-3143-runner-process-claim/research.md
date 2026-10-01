@@ -121,3 +121,5 @@ Codex（gpt-6-astra / xhigh）R1 要求修改，三条都采纳：
 
 
 R2 确认 R1 三条全部关闭，另提一条中级：plan §5 第 2 步写「首行 `accepted=yes`」，而脚本输出第 1 行其实是 `execution=<ID>`，照字面做的 implement 节点在健康的体上也过不了这一步。已改成与实际输出一致（第 1 行身份、第 2 行 `accepted=yes`），并在自测里加了一条输出形状用例（现共 26 条，全过）。
+
+R3（turn `01a0f6fe-1fdb-72f1-9ff4-027296b6d7c0`，线程 `01a0f6ee-f3b0-7c01-a6d6-8ffac0ea075f`）APPROVED，零意见；绑定 request `a91b21d4-bcd8-4297-8598-9352908f11fc`、plan blob `2f87049292424df8e0393c12d447c69ec85e0d3c`，`await-codex-gate design` 通过。评审者原话的限定：这次通过只覆盖沙箱核验合同，不是生产 plan §10 的真机验收。
