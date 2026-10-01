@@ -29,32 +29,45 @@ Runner 另受 Flywheel DAG **节点契约**(派发提示词注入的 DOC-FLOW / 
 
 ## 2. 实现节点(eng_implement)步骤
 
+两次交付用**同一个顺序**:固定基准 → 改文件 → 字节自检 → 提交目标文件 → 写本轮最后一次 ledger(`flywheel-comm progress` 只生成本地 path-limited commit,不推送)→ 固定交付 SHA → 对该 SHA 做提交间 diff 核验 → 推送同一 SHA → 核对远端分支头/PR 头与 CI 都在该 SHA 上 → 交付。核验之后若又产生任何提交(含 ledger),必须重新固定、重新核验、重新推送。
+
 ### 2.1 第 1 次交付(提示词**没有** "QA fix context")
 
 1. 重读 `origin/main:qa-sbx/fly2167/README.md`;确认 TURN `yours`。
-2. 写文件(精确两行,末尾一个换行,无 BOM、无尾随空格):
+2. **固定基准**:`BASE=$(git rev-parse HEAD)`(在创建文件之前执行,把值写进 progress.md 的 pointer)。
+3. 写文件(精确两行,末尾一个换行,无 BOM、无 CRLF、无尾随空格):
    ```
    QA-SBX FLY-2167 drill
    AWAITING-QA
    ```
-3. 自检(字节级,`wc -l`/`sed` 不够 —— 未终止的第三行能骗过它们):
+4. 字节自检(`wc -l`/`sed` 不够 —— 未终止的第三行能骗过它们):
    ```
    printf 'QA-SBX FLY-2167 drill\nAWAITING-QA\n' | cmp - qa-sbx/fly2167/project-slot-1-FLY-3150.md
    ```
-   `cmp` 必须零输出、退出码 0。再记录接手时的基准 SHA `BASE=$(git rev-parse HEAD)`(在创建文件之前取),交付前核验 `git diff --name-status $BASE..HEAD` 只有 `A qa-sbx/fly2167/project-slot-1-FLY-3150.md`,外加 `engineering/doc/FLY-3150-real-runner-drill/progress.md` 的 ledger 提交;其他任何路径 → 停止修正。
-4. 提交:`docs(qa-sbx): FLY-3150 drill hand-in`。**禁止** `[skip ci]` / `[ci skip]` / `[no ci]` / `[skip actions]` / `[actions skip]` / `skip-checks:` trailer,PR 标题同理。推送后 CI 必须在交付头 SHA 上运行。
-5. 用 `flywheel-comm progress` 更新账本(它只提交 progress.md),再按节点完成契约交付(PR 标题同样不得含跳过 CI 标记)。交付摘要里写明 `BASE` 与交付头 SHA。
+   `cmp` 必须零输出、退出码 0。
+5. 提交目标文件:`docs(qa-sbx): FLY-3150 drill hand-in`。**禁止** `[skip ci]` / `[ci skip]` / `[no ci]` / `[skip actions]` / `[actions skip]` / `skip-checks:` trailer,PR 标题同理。
+6. 写本轮最后一次 ledger:`flywheel-comm progress ...`(生成 progress.md 的本地提交)。
+7. **固定交付 SHA**:`HANDIN1=$(git rev-parse HEAD)`。
+8. 提交间核验(只比较提交,不看工作区):`git diff --name-status $BASE..$HANDIN1` 必须恰好是 `A qa-sbx/fly2167/project-slot-1-FLY-3150.md` 加 `M`/`A engineering/doc/FLY-3150-real-runner-drill/progress.md`;其他任何路径 → 停止修正,修正后从第 6 步重来。
+9. 推送 `$HANDIN1`;核对 `git rev-parse origin/project-slot-1-FLY-3150` = `$HANDIN1`,PR 头与 CI 运行都挂在 `$HANDIN1` 上。
+10. 交付(按节点完成契约);交付摘要写明 `BASE` 与 `HANDIN1`。
 
 ### 2.2 第 2 次交付(提示词含 "QA fix context",首行 `QA verdict to fix: claim <id> ...`)
 
-1. 从 "QA fix context" 首行按正则 `^QA verdict to fix: claim (\S+)` 取 `<id>`;**原样复制**,不改大小写、不截断。取不到 id 时停止并按节点失败通道上报,绝不猜 id。
-2. 只改第 2 行为 `FIXED-FOR-CLAIM <id>`;第 1 行与文件其余部分零变动。
-3. 自检(字节级):
+1. 从 "QA fix context" 首行按正则 `^QA verdict to fix: claim (\S+)` 取 `ID`;**原样复制**,不改大小写、不截断。取不到 → 停止并按节点失败通道上报,绝不猜 id。
+2. **固定基准**:`PREV` = 交付 #1 的 SHA(从交付摘要/progress pointer 取;兜底 `git log` 里 `docs(qa-sbx): FLY-3150 drill hand-in` 之后的最后一次 ledger 提交)。核对 `git show $PREV:qa-sbx/fly2167/project-slot-1-FLY-3150.md` 第 2 行是 `AWAITING-QA`。
+3. 只改第 2 行为 `FIXED-FOR-CLAIM $ID`;第 1 行与文件其余部分零变动。
+4. 字节自检:
    ```
    printf 'QA-SBX FLY-2167 drill\nFIXED-FOR-CLAIM %s\n' "$ID" | cmp - qa-sbx/fly2167/project-slot-1-FLY-3150.md
    ```
-   零输出、退出码 0。以上一次交付头 `PREV`(交付 #1 的 SHA,从交付摘要/`git log` 取)为基准,`git diff --name-status $PREV..HEAD` 只有 `M qa-sbx/fly2167/project-slot-1-FLY-3150.md`(+ progress.md ledger 提交),且 `git diff $PREV..HEAD -- qa-sbx/fly2167/project-slot-1-FLY-3150.md` 的 patch 恰好是 `-AWAITING-QA` / `+FIXED-FOR-CLAIM <id>` 两行。
-4. 提交 `docs(qa-sbx): FLY-3150 drill fix for claim <id>`(同样的禁词规则),推送,再次交付。
+   零输出、退出码 0。(提交前若想看 patch,用工作区 diff `git diff -- qa-sbx/fly2167/...`;这不是最终证据。)
+5. 提交 `docs(qa-sbx): FLY-3150 drill fix for claim $ID`(同样的禁词规则)。
+6. 写本轮最后一次 ledger(`flywheel-comm progress`)。
+7. **固定交付 SHA**:`HANDIN2=$(git rev-parse HEAD)`。
+8. 提交间核验:`git diff --name-status $PREV..$HANDIN2` 恰好是 `M qa-sbx/fly2167/project-slot-1-FLY-3150.md` 加 `M engineering/doc/FLY-3150-real-runner-drill/progress.md`;且 `git diff $PREV..$HANDIN2 -- qa-sbx/fly2167/project-slot-1-FLY-3150.md` 的改动行恰好是 `-AWAITING-QA` / `+FIXED-FOR-CLAIM $ID`。不符 → 停止修正,从第 6 步重来。
+9. 推送 `$HANDIN2`;核对远端分支头、PR 头与 CI 都在 `$HANDIN2` 上。
+10. 再次交付;交付摘要写明 `PREV` 与 `HANDIN2`。
 
 ## 3. QA 节点(qa)验收合同
 
@@ -112,7 +125,7 @@ sequenceDiagram
 
 - 回滚:整个变更 = 一个新文件,`git rm` 即回滚;不涉及任何共享状态。
 - 负向守卫(实现/QA 节点各自执行):
-  - 目标文件与 `engineering/doc/FLY-3150-real-runner-drill/`(节点契约产物,§1.1)之外任何路径出现在 `BASE..HEAD` / `PREV..HEAD` diff → 停止、修正后再交付。不得为了"diff 只有目标文件"删除已有设计材料。
+  - 目标文件与 `engineering/doc/FLY-3150-real-runner-drill/`(节点契约产物,§1.1)之外任何路径出现在 `BASE..HANDIN1` / `PREV..HANDIN2` 提交间 diff → 停止、修正后再交付。不得为了"diff 只有目标文件"删除已有设计材料。
   - commit message / PR 标题含禁词 → 不得推送。
   - 返工时 `<id>` 为空或与提示词不一致 → 不交付、走失败通道;QA 重验时 id 不可得同样走失败通道,绝不 pass。
   - `e2e_529_exempt` 不得是 `pass`/`fail`,必须 `not_run` + `docs_only`。
@@ -123,8 +136,8 @@ sequenceDiagram
 | 证据 | 命令 / 来源 |
 |---|---|
 | 文件形状 | `printf <期望两行> \| cmp - <目标文件>` 零输出、退出码 0(字节级,含末尾换行) |
-| 改动面 | 交付 #1:`git diff --name-status $BASE..HEAD` = `A` 目标文件(+ progress.md);交付 #2:`$PREV..HEAD` = `M` 目标文件(+ progress.md),patch 恰为 `-AWAITING-QA`/`+FIXED-FOR-CLAIM <id>`。`origin/main..HEAD` 还会含设计节点的 exploration/plan/design.html/progress,那是 §1.1 的节点契约产物,不是实现改动面 |
-| CI 在交付头 | PR checks 关联的 SHA = 交付头 SHA |
+| 改动面 | 交付 #1:`git diff --name-status $BASE..$HANDIN1` = `A` 目标文件(+ progress.md);交付 #2:`$PREV..$HANDIN2` = `M` 目标文件(+ progress.md),patch 恰为 `-AWAITING-QA`/`+FIXED-FOR-CLAIM <id>`。两者都在最后一次 ledger 提交**之后**、推送**之前**核验。`origin/main..HEAD` 还会含设计节点的 exploration/plan/design.html/progress,那是 §1.1 的节点契约产物,不是实现改动面 |
+| CI 在交付头 | `git rev-parse origin/<branch>` = 交付 SHA,PR checks 关联的 SHA = 同一交付 SHA(核验之后若再有提交则重新固定、推送、核对) |
 | QA 三条 criterion | `qa-result --criteria-file` 的 JSON 原文 |
 | claim id 贯通 | 返工提示词首行、文件第 2 行、重验提示词三者字符串 diff 为空 |
 
