@@ -22,7 +22,10 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 | 外部副作用 | 无(不动 Linear、不部署 529 room) |
 
 设计节点自己的产物只落在 `engineering/doc/FLY-3150-qa-sbx-drill/`(`plan.md`、`progress.md`、founder HTML 及其 Mermaid 源),
-它们是流程文档,不属于 README 所说的「one markdown file」交付物,实现节点**不得**修改它们(`progress.md` 游标除外)。
+它们在设计阶段已提交,实现节点**不得**修改其中任何一个。
+
+**实现节点的改动范围 = 且仅 = 上表那一个文件**(首交和返工都一样)。本计划不为任何其他文件开例外,
+也不把任何文件归类成「可以顺手改的流程文档」来扩大 README 的授权。
 
 ## 3. 文件内容合同(唯一真相 = README)
 
@@ -72,7 +75,8 @@ flowchart TD
    - `wc -l < "$f"` → `2`
    - `sed -n 1p "$f"` → `QA-SBX FLY-2167 drill`
    - `sed -n 2p "$f"` → `AWAITING-QA` 或 `FIXED-FOR-CLAIM <id>`
-   - `git status --porcelain` 只出现这一个文件(流程自带的 `progress.md` 除外)
+   - `git status --porcelain` **只**出现这一个文件,没有任何例外;出现第二个路径就停下,先还原多余改动再交付
+   - 返工时再加一条:`git diff HEAD -- "$f"` 只有第 2 行一处变更
 4. 提交:`test(QA-SBX FLY-2167): drill file <AWAITING-QA|FIXED-FOR-CLAIM id> [skip ci]`,push 到共享分支。
 5. 交付 / PR / 完成路由按实现节点自己被注入的协议走,本计划不另行规定。
 
