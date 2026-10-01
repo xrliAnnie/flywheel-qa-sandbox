@@ -1,13 +1,13 @@
 ---
 issue: FLY-3125
 phase: design
-phaseCursor: 3/6
-updated: 2026-10-01T15:28:48.333Z
-nextStep: author Mermaid diagrams and founder HTML comment layer
+phaseCursor: 4/6
+updated: 2026-10-01T15:32:43.074Z
+nextStep: verify, commit and push design artifacts; then request explicit review
 chunks: []
 pointers: {}
 ---
 
 # FLY-3125 progress
-**phase**: design (3/6)
-**next**: author Mermaid diagrams and founder HTML comment layer
+**phase**: design (4/6)
+**next**: verify, commit and push design artifacts; then request explicit review
