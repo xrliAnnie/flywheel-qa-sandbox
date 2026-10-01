@@ -242,10 +242,10 @@ readSite `packages/teamlead/src/bridge/account-switch-wake.ts` `createAccountSwi
 17. **superseded（R1#8、R2#1）**：g1 R1 `evidenced` / R2 `audited` 或 `failed` 时到 g2 → R2 `superseded`（无证据）、R1 结果保留、g1 走 logging 写出 `status:"superseded"` 日志；g1 停在 logging 失败时到 g2 → g2 先投、g1 日志随后补写；superseded 日志失败 + 重启 → 重放继续补日志。
 18. **from（R1#9、R2#6）**：钩子路径 / poll 路径 / 首次启动 g>0 / 跨多代次 / 两次切号回调交错 / noop 回调 → 一律 `from:null, from_source:"unknown"`，JSON 行显式含 `"from":null`；文案只含 `to`。
 19. **D6（R1#5）**：`detection-gap-scan` 测试：自动唤醒行 delivered 31 分钟未读 → 无 `delivery_unconsumed`；普通 Lead 指令同条件 → 有（阳性对照）。
+20. **flag 实时（R1#10）**：同一 consumer 实例，`process.env` 置 0 后下一个 tick 观察到 `skipped_flag_off`，置回 1 后恢复。
 21. **await 之后的资格复核（R3#1）**：用 deferred Promise 分别卡住 runner 的 `recognise`（返回 false 前）与 Lead 的 `probeDelivered`（返回 false 前）以及 pane probe，期间改变 generation / flag / session status / Lead backend，恢复后断言**零新写**、结果为对应 `superseded` / `skipped_*`；pane probe 期间把 CommDB `vendor` 改成 codex → 复核读到新值 → `skipped_vendor`。
 22. **资格失效时仍认回（R3#2）**：runner 与 Lead 各预置「main 已写或 sidecar finalized、数据库 delivered 为空」，再分别关 flag / 结束 session / 推进 g2 → 恢复：零新增信、目标 `already_enqueued`、`delivered_at` 补上、runner `session_events` 补写、日志照写；对照组（main 为空 + 资格失效）仍然绝不写信。
 23. **Lead envelope 逐字重放（R3#3）**：首次投递（真实 `ClaudeCodeAdapter` + 临时 `CLAUDE_CONFIG_DIR`）后**关闭并重建** StateStore / consumer / runtime，时钟推进 >60s，从磁盘回执恢复 envelope → `probeDelivered` 命中、全文与首次逐字相同、main 仍恰一条；不允许测试直接复用内存里的 envelope 对象。
-20. **flag 实时（R1#10）**：同一 consumer 实例，`process.env` 置 0 后下一个 tick 观察到 `skipped_flag_off`，置回 1 后恢复。
 
 其它：
 - `StateStore.account-switch-wake.test.ts`：pending 可更新、终态不可更新、cursor 取终态最大代次、superseded。
