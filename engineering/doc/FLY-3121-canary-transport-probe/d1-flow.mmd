@@ -1,0 +1,15 @@
+sequenceDiagram
+    participant O as DAG 编排器
+    participant R as eng_design Runner
+    participant W as 共享 worktree
+    participant L as Lead(flywheel-test-3)
+    O->>R: 派发 eng_design(activation 1)
+    R->>R: flywheel-comm turn
+    alt yours
+        R->>W: 追加一行标记到 probe.txt
+        R->>W: git commit(只含 probe.txt)
+        R->>L: ask --report 结构化回执
+        R->>O: complete --route phase_design_complete
+    else not-yours
+        R->>R: 每 60-90 秒再查 turn(正常等待，不算阻塞)
+    end

@@ -1,0 +1,19 @@
+classDiagram
+    class MarkerLine {
+        owner: FLY2127-CANARY-uuid
+        node: eng_design
+        exec: execution id
+        activation: activation id
+        turn: yours
+        ts: UTC 时间
+    }
+    class ProbeFile {
+        path: probe.txt
+        mode: append-only
+    }
+    class Commit {
+        scope: probe.txt only
+        pushed: branch only, never main
+    }
+    ProbeFile "1" o-- "many" MarkerLine : 每个节点一行
+    Commit --> ProbeFile : 记录
