@@ -1,0 +1,26 @@
+flowchart TD
+    I["FLY-3122 bounded canary"] --> T{"Current phase TURN"}
+    T -->|"not-yours"| W["Wait without worktree writes"]
+    T -->|"yours: design"| D["Write exploration, research, plan"]
+    D --> R["Approved design review"]
+    R --> H["Publish Founder HTML"]
+    H --> C["Complete design phase only"]
+    C --> O["DAG orchestrator chooses next phase"]
+    O --> T2{"Downstream TURN"}
+    T2 -->|"not-yours"| W2["Wait without worktree writes"]
+    T2 -->|"yours"| M{"Exact marker delivered to this execution?"}
+    M -->|"No"| N["Report TURN receipt and wait"]
+    M -->|"Yes"| V["Validate raw line and exact-line count"]
+    V --> A["Append each missing line once"]
+    A --> G["Commit only probe.txt locally"]
+    G --> Q["Report instruction id plus actual SHA"]
+    Q --> B["Stop: no push, PR, ship, or deploy"]
+
+    classDef authority fill:#fff8e6,stroke:#ff9500,color:#1d1d1f;
+    classDef action fill:#ffffff,stroke:#007aff,color:#1d1d1f;
+    classDef success fill:#eefaf1,stroke:#34c759,color:#1d1d1f;
+    classDef stop fill:#fff0ef,stroke:#ff3b30,color:#1d1d1f;
+    class T,T2,M authority;
+    class I,D,R,H,O,V,A,G action;
+    class C,Q success;
+    class W,W2,N,B stop;

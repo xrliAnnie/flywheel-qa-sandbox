@@ -1,0 +1,36 @@
+classDiagram
+    class CurrentExecution {
+      +execId: UUID
+      +vendor: codex or claude-code
+      +phase: design or implement or qa
+    }
+    class TurnReceipt {
+      +result: yours or not-yours
+      +epoch: integer
+      +activation: stable identity
+    }
+    class LeadInstruction {
+      +instructionId: UUID
+      +recipientExecId: UUID
+      +markerLines: exact raw strings
+    }
+    class ProbeFile {
+      +path: probe.txt
+      +rule: append-only
+      +lineCount: exactly one per marker
+    }
+    class ProbeCommit {
+      +sha: immutable local commit
+      +changedPath: probe.txt only
+      +pushed: false
+    }
+    class DesignEvidence {
+      +docs: exploration research plan
+      +reviewVerdict: APPROVED
+      +hostedReport: URL
+    }
+    CurrentExecution "1" --> "1" TurnReceipt : must own write turn
+    CurrentExecution "1" --> "0..1" LeadInstruction : must be recipient
+    LeadInstruction "1" --> "1" ProbeFile : authorizes exact lines
+    ProbeFile "1" --> "1" ProbeCommit : committed locally
+    CurrentExecution "1" --> "1" DesignEvidence : design phase output
