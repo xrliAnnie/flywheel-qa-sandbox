@@ -85,6 +85,8 @@ Issue: FLY-3143 (https://linear.app/geoforge3d/issue/FLY-3143/急起体-1238-pdt
 | 进程组 | 2 个进程（上限 32），唯一候选，nonce writer 1 个 |
 | session.last_error | 空 |
 
+同一个体跑 `resume` 模式返回 exit 4（NOT_RUN）：本体是新起的，没有被原会话拉回过。
+
 这是派单要的「真 Claude 新起认领通过」的一次真实样本，跑在当前 Claude Code 2.1.286 和候选构建上，新诊断列逐项记了时间线。
 
 **它不证明什么**：这个测试房的 Bridge 很闲（调度延迟 10ms），不是近生产负载；只有 1 次；不是原会话拉回，也不是 failed 后恢复。plan §10 要的次数和负载，这一条顶不了。
@@ -104,3 +106,15 @@ Issue: FLY-3143 (https://linear.app/geoforge3d/issue/FLY-3143/急起体-1238-pdt
 - 不新增设计；本目录 plan.md 只定沙箱后续节点做什么、不做什么。
 - 唯一真源：设计 = 候选头的 plan.md（按 blob 引用）；核验 = `verify-candidate.sh`。本目录文档不复述 plan 正文。
 - 候选头一旦移动，脚本返回 STALE（exit 3），后续节点停下问 Lead，不自己改指纹。
+
+## 7. 设计评审 R1 的修正
+
+Codex（gpt-6-astra / xhigh）R1 要求修改，三条都采纳：
+
+| 级别 | 问题 | 修正 |
+|---|---|---|
+| 高 | 执行 ID 校验用了按行匹配的 `grep`，多行参数里只要有一行是 UUID 就放行，其余内容被拼进 SQL，评审者实测注入后返回 PASS | 改成整串校验（长度、字符集、连字符位置），拼查询之前就拒；判定只读 SQL 用固定字面量算出的头三行 |
+| 中 | 「拉回成功」只看有没有一条 `succeeded`，旧代次的成功会被当成当前这次 | 新增 `resume` 模式，只认体当前代次的那次尝试，并要求认领与代次一致；进行中、失败、未尝试各有独立退出码 |
+| 低 | plan 里的 shellcheck 命令在仓库根跑不通 | 改成完整路径 |
+
+修正后的反向用例固化在 `verify-candidate.test.sh`（25 条，全过）。评审者给的注入复现串对真实状态库复测：exit 2。

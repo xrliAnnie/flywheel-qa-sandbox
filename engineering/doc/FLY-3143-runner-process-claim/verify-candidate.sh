@@ -4,12 +4,18 @@
 #
 #   sh verify-candidate.sh candidate [<candidate-checkout>]
 #   sh verify-candidate.sh body <execution-id> [<state-db>]
+#   sh verify-candidate.sh resume <execution-id> [<state-db>]
 #
-# exit 0 = PASS · 1 = FAIL · 2 = UNVERIFIABLE (input missing / unreadable)
+# exit 0 = PASS · 1 = FAIL · 2 = UNVERIFIABLE (input missing / unreadable / in flight)
 #      3 = STALE (candidate head is not the head this design verified)
+#      4 = NOT_RUN (resume mode only: this body was never pulled back in its
+#          current generation)
 #
-# UNVERIFIABLE and STALE are never PASS: report them to the Lead, do not retry
-# in a loop and do not edit the pins to make them green.
+# Only exit 0 is a pass. Report every other state to the Lead; do not retry in
+# a loop and do not edit the pins to make them green.
+
+LC_ALL=C
+export LC_ALL
 
 PIN_HEAD=d7d72733b101472bd82236b558906f9c90d0e4d4
 PIN_PLAN_BLOB=5e27094f7a3ad0573b52e1d92f8e361525b3dafd
@@ -164,20 +170,43 @@ candidate() {
 	finish
 }
 
-body() {
-	id=$1
-	DBP=${2:-${FLYWHEEL_STATE_DB_PATH:-}}
-	printf '%s' "$id" |
-		grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' ||
-		unverifiable "execution id is not a lowercase UUID"
-	[ -n "$DBP" ] || unverifiable "no state DB given and FLYWHEEL_STATE_DB_PATH is unset"
-	[ -r "$DBP" ] || unverifiable "state DB is not readable"
-	command -v sqlite3 >/dev/null 2>&1 || unverifiable "sqlite3 is not installed"
+# valid_uuid <arg>: the WHOLE argument is one lowercase UUID. Any other byte
+# (including a line break) is rejected before a query is built.
+valid_uuid() {
+	[ "${#1}" -eq 36 ] || return 1
+	case "$1" in
+	*[!0-9a-f-]*) return 1 ;;
+	????????-????-????-????-????????????) ;;
+	*) return 1 ;;
+	esac
+	hex=$(printf '%s' "$1" | tr -d '-')
+	[ "${#hex}" -eq 32 ]
+}
 
-	# Safe projection only: never selects owner_token, spawn_nonce or binding_json.
-	out=$(sqlite3 -readonly "$DBP" "
-		SELECT 'session_status=' || COALESCE(s.status, 'missing'),
-		       'adapter=' || COALESCE(s.adapter_type, 'missing'),
+# snapshot <execution-id> <state-db>: one read transaction, safe projection
+# only (never selects owner_token, spawn_nonce or binding_json).
+# Lines 1-3 are computed verdict inputs built from fixed literals; the rest is
+# informational. Text taken from the DB has its line breaks removed.
+snapshot() {
+	sqlite3 -readonly -separator '
+' "$2" "
+		BEGIN;
+		SELECT 'accepted=' || CASE
+		           WHEN o.execution_id IS NOT NULL AND o.spawn_inflight = 0
+		                AND o.binding_spawn_epoch IS o.spawn_epoch
+		                AND o.close_requested = 0 AND o.reconcile_required = 0
+		           THEN 'yes' ELSE 'no' END,
+		       'generation_consistent=' || CASE
+		           WHEN b.execution_id IS NULL THEN 'no_body'
+		           WHEN o.generation IS b.generation THEN 'yes' ELSE 'no' END,
+		       'resume_current_state=' || CASE
+		           WHEN r.id IS NULL THEN 'none'
+		           WHEN r.state IN ('started', 'succeeded', 'failed') THEN r.state
+		           ELSE 'other' END,
+		       'resume_current_attempt_id=' || COALESCE(r.id, 'none'),
+		       'resume_current_generation=' || COALESCE(r.generation, 'none'),
+		       'session_status=' || replace(replace(COALESCE(s.status, 'missing'), char(10), ' '), char(13), ' '),
+		       'adapter=' || replace(replace(COALESCE(s.adapter_type, 'missing'), char(10), ' '), char(13), ' '),
 		       'last_error=' || CASE WHEN COALESCE(s.last_error, '') = '' THEN 'empty' ELSE 'present' END,
 		       'owner_generation=' || COALESCE(o.generation, 'none'),
 		       'spawn_epoch=' || COALESCE(o.spawn_epoch, 'none'),
@@ -186,47 +215,88 @@ body() {
 		       'close_requested=' || COALESCE(o.close_requested, 'none'),
 		       'reconcile_required=' || COALESCE(o.reconcile_required, 'none'),
 		       'bind_attempts=' || COALESCE(o.bind_attempt_count, 'none'),
-		       'bind_last_stage=' || COALESCE(json_extract(o.last_bind_diagnostic_json, '\$.last.stage'), 'none'),
-		       'bind_last_reason=' || COALESCE(json_extract(o.last_bind_diagnostic_json, '\$.last.reason'), 'none'),
+		       'bind_last_stage=' || replace(replace(COALESCE(json_extract(o.last_bind_diagnostic_json, '\$.last.stage'), 'none'), char(10), ' '), char(13), ' '),
+		       'bind_last_reason=' || replace(replace(COALESCE(json_extract(o.last_bind_diagnostic_json, '\$.last.reason'), 'none'), char(10), ' '), char(13), ' '),
 		       'bind_elapsed_ms=' || COALESCE(json_extract(o.last_bind_diagnostic_json, '\$.last.elapsedMs'), 'none'),
 		       'bind_os_ms=' || COALESCE(json_extract(o.last_bind_diagnostic_json, '\$.last.osMs'), 'none'),
 		       'bind_schedule_lag_ms=' || COALESCE(json_extract(o.last_bind_diagnostic_json, '\$.last.scheduleLagMs'), 'none'),
-		       'executable_observed=' || COALESCE(json_extract(o.last_bind_diagnostic_json, '\$.last.observed.executable'), 'none'),
-		       'body_state=' || COALESCE(b.state, 'none'),
-		       'body_generation=' || COALESCE(b.generation, 'none'),
-		       'accepted=' || CASE
-		           WHEN o.execution_id IS NOT NULL AND o.spawn_inflight = 0
-		                AND o.binding_spawn_epoch IS o.spawn_epoch
-		                AND o.close_requested = 0 AND o.reconcile_required = 0
-		           THEN 'yes' ELSE 'no' END
-		  FROM (SELECT '$id' AS execution_id) k
+		       'executable_observed=' || replace(replace(COALESCE(json_extract(o.last_bind_diagnostic_json, '\$.last.observed.executable'), 'none'), char(10), ' '), char(13), ' '),
+		       'body_state=' || replace(replace(COALESCE(b.state, 'none'), char(10), ' '), char(13), ' '),
+		       'body_generation=' || COALESCE(b.generation, 'none')
+		  FROM (SELECT '$1' AS execution_id) k
 		  LEFT JOIN sessions s ON s.execution_id = k.execution_id
 		  LEFT JOIN execution_process_owner o ON o.execution_id = k.execution_id
-		  LEFT JOIN workflow_execution_process_body b ON b.execution_id = k.execution_id;
-	" 2>/dev/null) || unverifiable "state DB query failed (schema older than the candidate?)"
-	[ -n "$out" ] || unverifiable "state DB query returned nothing"
-	echo "execution=$id"
-	printf '%s\n' "$out" | tr '|' '\n'
-
-	resumes=$(sqlite3 -readonly "$DBP" "
-		SELECT 'resume_attempt id=' || id || ' generation=' || generation ||
-		       ' state=' || state || ' reason=' || COALESCE(reason_code, 'none') ||
+		  LEFT JOIN workflow_execution_process_body b ON b.execution_id = k.execution_id
+		  LEFT JOIN workflow_execution_resume_attempt r ON r.id = (
+		         SELECT MAX(id) FROM workflow_execution_resume_attempt
+		          WHERE execution_id = k.execution_id AND kind = 'original_session'
+		            AND generation = b.generation);
+		SELECT 'history resume_attempt id=' || id || ' kind=' || kind ||
+		       ' generation=' || generation || ' state=' || state ||
+		       ' reason=' || replace(replace(COALESCE(reason_code, 'none'), char(10), ' '), char(13), ' ') ||
 		       ' startup_ms=' || COALESCE(startup_ms, 'none')
 		  FROM workflow_execution_resume_attempt
-		 WHERE execution_id = '$id' ORDER BY id;
-	" 2>/dev/null) || unverifiable "resume attempt query failed"
-	if [ -n "$resumes" ]; then
-		printf '%s\n' "$resumes"
-	else
-		echo "resume_attempt none"
-	fi
+		 WHERE execution_id = '$1' ORDER BY id;
+		COMMIT;
+	" 2>/dev/null
+}
 
-	case "$out" in
-	*"accepted=yes"*)
+# load <execution-id> <state-db>: validates the boundary, then sets $out and
+# the three verdict inputs $accepted / $consistent / $resume_state.
+load() {
+	id=$1
+	DBP=${2:-${FLYWHEEL_STATE_DB_PATH:-}}
+	valid_uuid "$id" || unverifiable "execution id is not exactly one lowercase UUID"
+	[ -n "$DBP" ] || unverifiable "no state DB given and FLYWHEEL_STATE_DB_PATH is unset"
+	[ -r "$DBP" ] || unverifiable "state DB is not readable"
+	command -v sqlite3 >/dev/null 2>&1 || unverifiable "sqlite3 is not installed"
+	out=$(snapshot "$id" "$DBP") || unverifiable "state DB query failed (schema older than the candidate?)"
+	accepted=$(printf '%s\n' "$out" | sed -n '1p')
+	consistent=$(printf '%s\n' "$out" | sed -n '2p')
+	resume_state=$(printf '%s\n' "$out" | sed -n '3p')
+	case "$accepted" in
+	accepted=yes | accepted=no) ;;
+	*) unverifiable "state DB query returned an unexpected shape" ;;
+	esac
+	echo "execution=$id"
+	printf '%s\n' "$out"
+}
+
+# body: is the CURRENT spawn of this body claimed? Says nothing about resume.
+body() {
+	load "$1" "$2"
+	if [ "$accepted" = "accepted=yes" ]; then
 		record BODY 0 "current spawn of this body was claimed (strict binding accepted)"
+	else
+		record BODY 1 "current spawn of this body was claimed (strict binding accepted)"
+	fi
+	finish
+}
+
+# resume: did the original-session resume of the body's CURRENT generation
+# succeed? Earlier generations are history and never satisfy this.
+resume() {
+	load "$1" "$2"
+	case "$resume_state" in
+	resume_current_state=none)
+		echo "NOT_RUN: no original-session resume attempt exists for this body's current generation"
+		exit 4
+		;;
+	resume_current_state=started)
+		unverifiable "the current resume attempt is still in flight; re-run after it settles"
+		;;
+	resume_current_state=failed)
+		record RESUME 1 "original-session resume of the current generation succeeded"
+		;;
+	resume_current_state=succeeded)
+		if [ "$accepted" = "accepted=yes" ] && [ "$consistent" = "generation_consistent=yes" ]; then
+			record RESUME 0 "original-session resume of the current generation succeeded and its spawn is claimed"
+		else
+			record RESUME 1 "original-session resume of the current generation succeeded and its spawn is claimed"
+		fi
 		;;
 	*)
-		record BODY 1 "current spawn of this body was claimed (strict binding accepted)"
+		unverifiable "the current resume attempt is in an unexpected state"
 		;;
 	esac
 	finish
@@ -235,8 +305,9 @@ body() {
 case "${1:-}" in
 candidate) candidate "${2:-}" ;;
 body) body "${2:-}" "${3:-}" ;;
+resume) resume "${2:-}" "${3:-}" ;;
 *)
-	echo "usage: sh verify-candidate.sh candidate [<checkout>] | body <execution-id> [<state-db>]"
+	echo "usage: sh verify-candidate.sh candidate [<checkout>] | body <execution-id> [<state-db>] | resume <execution-id> [<state-db>]"
 	exit 2
 	;;
 esac
