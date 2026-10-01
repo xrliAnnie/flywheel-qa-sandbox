@@ -1,0 +1,35 @@
+classDiagram
+    direction LR
+
+    class TargetTest {
+      +createRun()
+      +admitExecution()
+      +resolveWake()
+      +assertOriginalOwner()
+    }
+
+    class GreenHandoffStoreFactory {
+      +createGreenHandoffStore(memoryPath)
+    }
+
+    class StateStore {
+      +create(memoryPath)
+      +commitEnrolledCompletion()
+      +submitWorkflowDecisionByCredential()
+    }
+
+    class HandoffProofAdapter {
+      +installGreenHandoffProofs(store)
+      +retryOnlyProofRequired()
+    }
+
+    class MemoryDatabase {
+      +path : memory
+      +schema : unchanged
+    }
+
+    TargetTest --> GreenHandoffStoreFactory : creates store through
+    GreenHandoffStoreFactory --> StateStore : creates real instance
+    GreenHandoffStoreFactory --> HandoffProofAdapter : installs
+    StateStore --> MemoryDatabase : persists test state
+    HandoffProofAdapter --> StateStore : wraps two handoff methods
