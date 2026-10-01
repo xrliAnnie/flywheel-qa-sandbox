@@ -1,13 +1,13 @@
 ---
 issue: FLY-3122
 phase: design
-phaseCursor: 3/6
-updated: 2026-10-01T13:47:05.022Z
-nextStep: write implementation-ready phase-safe plan
+phaseCursor: 4/6
+updated: 2026-10-01T13:48:46.800Z
+nextStep: build Mermaid diagrams and founder HTML, then commit and request review
 chunks: []
 pointers: {}
 ---
 
 # FLY-3122 progress
-**phase**: design (3/6)
-**next**: write implementation-ready phase-safe plan
+**phase**: design (4/6)
+**next**: build Mermaid diagrams and founder HTML, then commit and request review
