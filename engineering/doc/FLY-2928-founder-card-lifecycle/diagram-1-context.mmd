@@ -1,0 +1,17 @@
+flowchart TB
+  subgraph SBX["沙箱仓 公开"]
+    T["检查表<br/>26 行"]
+    ST["自测<br/>48 例 用夹具仓库"]
+    V["核验脚本<br/>只读"]
+    RP["核验报告<br/>含未证明清单"]
+  end
+  subgraph PROD["生产仓 私有 只读不写"]
+    C["两个钉死的提交<br/>基线 5d262f8c2<br/>头 b89b10716"]
+    BR["本地分支<br/>flywheel-FLY-2928"]
+  end
+  T --> V
+  T --> ST
+  ST -. "先验脚本本身" .-> V
+  V --> RP
+  V -- "读对象" --> C
+  V -. "读引用 看头是否前进" .-> BR

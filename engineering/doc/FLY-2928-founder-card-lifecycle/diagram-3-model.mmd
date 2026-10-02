@@ -1,0 +1,36 @@
+classDiagram
+  class PinnedSample {
+    base 基线提交
+    head 钉死的头
+    branch 生产分支名
+  }
+  class CheckRow {
+    id 稳定编号
+    group 所属组
+    kind 检查类型
+    path 生产仓路径
+    literal 标识符可空
+  }
+  class Kind {
+    <<enumeration>>
+    ADDED_FILE
+    ADDED_LIT
+    REMOVED_LIT
+    UNCHANGED
+    TEST_TOUCHED
+  }
+  class Verdict {
+    state 通过或不通过或无法核验
+    checks 行数
+    failed 失败行数
+    freshness 头是否前进
+  }
+  class Report {
+    pinned_run 原始输出
+    selftest 原始输出
+    not_proven 未证明清单
+  }
+  CheckRow --> Kind : 类型
+  Verdict --> PinnedSample : 针对
+  Verdict "1" --> "26" CheckRow : 每行一条结果
+  Report --> Verdict : 逐字引用
