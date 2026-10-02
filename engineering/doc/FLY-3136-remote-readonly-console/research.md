@@ -38,6 +38,20 @@ Issue: FLY-3136 (https://linear.app/geoforge3d/issue/FLY-3136/cloudflaref2-annie
 | 能被 F3（原型手机打开）复用 | 能（同一个 Access 团队 / 同一套登录门） | 能，但每台看的设备都要装 App |
 | 配错的后果 | Access 没挂 → Bridge 侧验签失败 → 401（fail-closed） | serve 被误开成 funnel → 无身份头 → 401（fail-closed） |
 
+## 3.1 第三个候选：临时隧道 + `--allowed-mail`（2026-10-01 Lead 转来的 FLY-3137 实测信息，未经本节点复现）
+
+据 FLY-3137 runner 实测：`cloudflared` ≥ 2026.9 的临时隧道（quick tunnel）支持 `--allowed-mail`，匿名访问会被带到 Cloudflare 一次性验证码登录页，名单邮箱收码即可进入；不需要 Cloudflare 账号、不用买域名。本机是 2026.6.1，需升级。公开文档里暂未查到该参数说明。
+
+| 维度 | 评估 |
+|---|---|
+| 手机体验 | 浏览器 + 邮箱验证码，零安装 ✅ |
+| 成本 | 无账号、无域名 ✅ |
+| 网址 | **每次隧道重启都变**（`*.trycloudflare.com` 随机名）→ 书签失效、每次要把新链接发给 Annie；Bridge 的 Host 门也无法用固定配置（需启动器把新主机名回传给 Bridge，增加一条动态链路） ❌ |
+| Bridge 侧能否独立验身份 | **未知**：需实测源站是否收到 `Cf-Access-Jwt-Assertion`、其 `iss`/`aud` 是什么、我们能否拿到对应 JWKS。若拿不到可验证的凭证，「登录门先于隧道」只靠一个命令行参数存在 —— 参数漏写 = 裸奔，Bridge 无从察觉 ❌（待验证） |
+| 稳定性 | Cloudflare 把临时隧道定位为测试用途，有请求限额、无 SLA ⚠️ |
+
+**结论**：对「长期在手机上看控制台」不推荐作为 v1 正式通道（网址不固定 + Bridge 侧验签能力未证实）。它更适合「临时、本来就会失效」的场景，例如 F3 的原型预览。若 Annie 选它，plan.md §6 的路线分支需要新增一个身份适配器，上线前置两个 spike：① 源站是否收到可验签的 JWT 及其 `iss`/`aud`/JWKS；② 动态主机名如何安全地传给 Bridge 的 Host 门。在两者都成立前 fail-closed（不启用远程端口）。
+
 ## 4. 推荐：Cloudflare
 
 1. 和 founder 原话「用手机登录自己的 Google 邮箱」一致，手机零安装；
