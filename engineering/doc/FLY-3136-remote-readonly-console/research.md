@@ -17,12 +17,13 @@ Issue: FLY-3136 (https://linear.app/geoforge3d/issue/FLY-3136/cloudflaref2-annie
 - 要校验：签名（按 `kid` 选钥）、`aud` 含本应用的 AUD tag、`iss` = `https://<team>.cloudflareaccess.com`、`exp` / `nbf`、`email`。
 - 钥匙约每 6 周轮换，旧钥再有效 7 天 → 必须按 `kid` 从端点取，不能写死；遇到未知 `kid` 要重新拉取（限频）。
 
-**依赖选择**：Node 25 自带 `crypto.createPublicKey({ key: jwk, format: "jwk" })` + `crypto.verify("sha256", …)`，RS256 校验约 60 行，**不加新依赖**（`jose` 也可以，但为一个算法加依赖不值；且自写便于把时钟 / fetch 注入做单测）。
+**依赖选择**：最初考虑用 Node 自带 crypto 自写 RS256 校验；Codex 设计评审 R1 指出维护成本主在 JWT/JWKS 解析与缓存生命周期（畸形输入、claims 类型、并发刷新、轮换），而 `jose@6.1.3` 已在仓库 lockfile 中（另一个包的依赖）且是 Cloudflare 官方 Node 示例所用（`jwtVerify` + `createRemoteJWKSet`）。→ **改用 `jose`**，作为 teamlead 直接依赖声明；我们只保留一层薄的邮箱授权。
 
 ## 2. Tailscale 路线：tailnet + `tailscale serve`
 
 - 手机和 Mac 都装 Tailscale 并登录同一 tailnet；`tailscale serve --bg --https=443 http://127.0.0.1:9877` 把本机端口只在 tailnet 内以 `https://<机器>.<tailnet>.ts.net` 暴露，不经公网、不要域名。
 - serve 给代理请求加身份头：`Tailscale-User-Login`（邮箱 / 登录名）、`Tailscale-User-Name`、`Tailscale-User-Profile-Pic`。**来自 tagged 设备的请求不带；`funnel`（公网）流量不带。**
+- Serve 会清除客户端伪造的同名身份头再填真实身份；但**本机任何进程**直连 9877 都能自己加这个头 —— Tailscale 路线即「信任本机进程」（与今天 9876 的姿态相同，不更弱）。
 - **文档未说明 serve 是否保留原 Host**。这影响「防 DNS rebinding」：身份头是普通请求头，本机上一个被 DNS rebinding 到 127.0.0.1 的恶意网页（同源）可以自己加 `Tailscale-User-Login` 头。必须靠 Host 检查挡 —— 只有 serve 转发时保留 `*.ts.net` Host（或给出不可伪造的等价信号）才成立。→ **实现期 spike 门**：真机抓一次 serve 转发的请求头；Host 若被改写成 127.0.0.1，Tailscale 适配器**不得上线**（fail-closed），改用别的绑定方式后再评。
 - 本机已装 tailscale 但未登录。
 
@@ -52,7 +53,7 @@ Issue: FLY-3136 (https://linear.app/geoforge3d/issue/FLY-3136/cloudflaref2-annie
 - 测试惯例：`app.listen(0)` + 真 `fetch`（`src/__tests__/fleet-routes-mount.test.ts`）。
 
 ## 6. 安全头（远程页面）
-`Content-Security-Policy: default-src 'none'; script-src 'nonce-<n>'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`，外加 `Cache-Control: no-store`、`Referrer-Policy: no-referrer`、`X-Content-Type-Options: nosniff`。`connect-src 'self'` 让页面只能 GET 自己的快照；`form-action 'none'` 让页面连表单都提交不了。
+`Content-Security-Policy: default-src 'none'; script-src 'nonce-<n>'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`，外加 `Cache-Control: no-store`、`Referrer-Policy: no-referrer`、`X-Content-Type-Options: nosniff`。`connect-src 'self'` 只限制页面能连到哪里（只能连自己），**不限制 HTTP 方法**；`form-action 'none'` 让页面不能提交表单。「不能改」的证据始终是服务端的方法 / 路径门（plan C3），CSP 只是纵深防御。
 
 ## 出处
 - https://developers.cloudflare.com/cloudflare-one/identity/authorization-cookie/validating-json/
