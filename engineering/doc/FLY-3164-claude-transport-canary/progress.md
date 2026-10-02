@@ -1,13 +1,13 @@
 ---
 issue: FLY-3164
 phase: design
-phaseCursor: 6/6
-updated: 2026-10-02T00:23:11.768Z
-nextStep: run phase_design_complete and follow the controller epilogue
+phaseCursor: 1/6
+updated: 2026-10-02T01:04:23.674Z
+nextStep: refresh docs for re-dispatched execution d27c7945
 chunks: []
 pointers: {}
 ---
 
 # FLY-3164 progress
-**phase**: design (6/6)
-**next**: run phase_design_complete and follow the controller epilogue
+**phase**: design (1/6)
+**next**: refresh docs for re-dispatched execution d27c7945
