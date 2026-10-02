@@ -4,7 +4,7 @@ Issue: FLY-3137 (https://linear.app/geoforge3d/issue/FLY-3137/cloudflaref3-runne
 基于: research.md
 
 **Version**: 暂定下一个空 minor（ship 时取空号）
-**Status**: draft v6（Codex design review R1–R5 CHANGES_REQUESTED 后修订）
+**Status**: draft v7（v6 经 Codex 6 轮批准；v7 并入 design-correction.md 的 quick_email 名单门加固，重新评审）
 
 ## 0. 一句话
 
@@ -15,6 +15,7 @@ runner 跑 `flywheel-comm preview start --port <p>`；**Bridge 自己**通过一
 | 轮次 | 主要变化 |
 |---|---|
 | v2（R1） | 去掉 runner 侧看守进程，隧道由 Bridge 起/记/关，API 不收 pid；`closing` 确认退出后才 `expired`；原型首页身份标记 + 监听进程工作目录核对；卡片独立对账；策略撤销；配置权威 = `ProjectEntry`；TTL 24h/72h + 重开路径；`--allowed-mail` 实测；路由 fail-closed。 |
+| v7（Lead 反馈） | 并入 `design-correction.md`：写明名单门**只靠** cloudflared 的 `--allowed-mail` 启动参数、源站不核验 Access JWT 这一风险；加两道防线——**启动前双重断言**（Bridge spawn 看门程序前、看门程序 spawn cloudflared 前，各自独立核对参数里的邮箱集合 = 配置名单，否则不起任何进程）和**运行中立即熔断**（周期外网探测拿到确定响应但不是「302 到本隧道的登录页」→ 立即以 `access_gate_missing` 关闭，不走 4 次宽限）；JWT 是否送达源站改为真机 QA 观测项，存在则另开 follow-up（§3、§5.0、§5.1、§5.4、§10）。 |
 | v6（R5） | 删除「开机标识变了就算进程已消失」的捷径（`kern.boottime` 会随校时变化）；重启场景由正向身份核对自然覆盖（§5.2）。 |
 | v5（R4） | ① 回收只认**正向身份**：看门程序/隧道各自的登记 pid+启动时间，或参数里精确含本预览专属 `run_dir` 路径；**取消进程组号推断和组信号**，逐个 pid 发信号（§5.2/§5.3）。② 同 nonce 重试拿回的是**旧消息**：按返回内容解析实际显示状态再改；一旦有未决的 POST，之后的明确失败不清除它（§7）。③ 卡片收敛改按「已知存在的消息」判定：每条已知消息在失效后都要改成失效；主卡 404 时优先把重复卡提升为主卡；只有「没有任何已知消息且没有未决投递」才算无事可做（§7）。 |
 | v4（R3） | ① 退出判据改为**整个进程组已证明消失**，用内核「进程组号在组内还有成员时不会被复用」的不变量；不再用裸 `tunnel.pid` 认领（§5.2/§5.3）。② Discord「查不到」只有在**同时证明能读历史**（同一 thread 能读到至少一条消息）时才算没发出；否则 `blocked`，不重发（§7）。③ 卡片「未收敛」改为对账器和 drain 共用的一个判据，覆盖 blocked / 未知投递 / 主卡 / 每张重复卡；`never + 已失效` 定义为已收敛（§7）。④ 看门程序 2s 轮询、硬到期前 10s 开始关、关闭一旦开始不可被续租撤回；对外时限统一为「Bridge 停摆 ≤5 分 10 秒、硬到期不晚于 expires_at」（§5.0）。⑤ §6 授权措辞改正。 |
@@ -89,6 +90,7 @@ prototypePreview?: {
 
 - 没有 `prototypePreview` = 这个项目没开放（create → 409 `access_mode_not_chosen`）。**无默认值**：验收③「由 Annie 选」的落点。非法值在加载时抛错（fail loud）。
 - `quick_email` 需要 cloudflared 支持 `--allowed-mail`（2026.9.3 实测有；实现以 `tunnel --help` 探测参数存在为准，结果按 Bridge 进程缓存）；不支持 → 503 `cloudflared_unsupported`，**不降级成 public**。
+- **名单门的单点风险**：`quick_email` 的「只有名单邮箱能打开」完全由 cloudflared 的 `--allowed-mail` 启动参数实现；源站（原型）不核验 Cloudflare Access 的登录凭证（JWT）。一旦这个参数漏传，链接就等于 `quick_public`（谁有链接谁能开）。因此设三道防线：① 启动前双重断言（§5.0 第 1 条、§5.1 第 4 步）；② 激活前外网自检必须看到登录门（§5.1 第 6 步）；③ 运行中立即熔断（§5.4 `access_gate_missing`）。任一防线没过，都不发链接或立即关闭。
 - 名单邮箱经 argv 传给 cloudflared（无对应环境变量）：同机同用户 `ps` 可见；cloudflared 日志自身打码。Discord 卡上**不列邮箱**。
 - `policy_digest = sha256(access + "\n" + 排序后的邮箱)`：用于发现策略变化。
 - 开关 `FLYWHEEL_PROTOTYPE_PREVIEW`（默认开；`=0` 拒绝新建，并把所有非 expired 预览按 `policy_revoked` 关闭）登记进 `packages/config/src/feature-flags/registry.ts`；`FLYWHEEL_CLOUDFLARED_BIN`（二进制路径，测试用假脚本）进 drift guard 的 `NON_FLAG_ALLOWLIST` 并写理由。
@@ -139,7 +141,7 @@ CREATE INDEX IF NOT EXISTS idx_pp_exec ON prototype_previews(execution_id);
 ```
 
 - **状态转移只走 CAS**：`UPDATE … SET status=? WHERE preview_id=? AND status=?`，`changes()==1` 才算成功；`expired` 不回退。卡片/告警元数据更新不带 status 条件。
-- `close_reason` 稳定 id（中文只在 `preview-card.ts` 一张映射表定义）：`start_failed` / `prototype_stopped` / `origin_changed` / `tunnel_closed` / `tunnel_unreachable` / `stopped_manually` / `runner_session_ended` / `max_lifetime` / `policy_revoked` / `lease_expired`。
+- `close_reason` 稳定 id（中文只在 `preview-card.ts` 一张映射表定义）：`start_failed` / `prototype_stopped` / `origin_changed` / `tunnel_closed` / `tunnel_unreachable` / `stopped_manually` / `runner_session_ended` / `max_lifetime` / `policy_revoked` / `lease_expired` / `access_gate_missing`（名单门失效）。
 - 参数化 SQL；better-sqlite3 同步写入即落盘。
 
 ## 5. PreviewController 与租约看门程序（C3）
@@ -147,7 +149,7 @@ CREATE INDEX IF NOT EXISTS idx_pp_exec ON prototype_previews(execution_id);
 ### 5.0 租约看门程序 `preview-lease-runner`
 
 Bridge 发布的一个极小 node 脚本（`packages/teamlead/dist/bridge/preview-lease-runner.js`，与 Bridge 同版本），由 Bridge 以 `detached:true` 启动（自成进程组组长）。参数：`--run-dir <run_dir>`、`--hard-deadline <epochMs>`；cloudflared 参数从 `run_dir/tunnel-args.json`（0600，Bridge 写）读取。职责只有这几条：
-1. 启动 cloudflared **之前**先校验：`lease` 有效且未过期、`now < hard-deadline - 10s`；否则直接退出（不产生任何隧道）。
+1. 启动 cloudflared **之前**先校验：`lease` 有效且未过期、`now < hard-deadline - 10s`；`tunnel-args.json` 里声明的模式为 `quick_email` 时，参数中必须恰有一个 `--allowed-mail`，其邮箱集合（逗号拆分、去空白、小写化）与同文件里 Bridge 写入的 `expectedEmailDigest`（排序后邮箱的 sha256）一致；任一不满足 → 直接退出（不产生任何隧道）。这是独立于 Bridge 的第二次断言。
 2. 以普通子进程（同一进程组）启动 cloudflared，参数含 `--pidfile <run_dir>/tunnel.pid`（专属标识；cloudflared 首次连通后自己写 pid），stdout/stderr 写 `run_dir/tunnel.log`（0600）。
 3. 每 **2s** 读 `run_dir/lease`（Bridge 写入的截止时间 epochMs，原子 rename）。**租约过期**（缺文件 / 解析失败 / 已过）→ 进入关闭：对 cloudflared TERM → 5s → KILL → 退出。**硬到期**提前开始：`now ≥ hard-deadline - 10s` 即 TERM，`hard-deadline - 5s` 仍在则 KILL，保证到 `hard-deadline` 时已退出。**关闭一旦开始不可撤回**：之后续租被忽略，看门程序必然退出。
 4. cloudflared 自己退出 → 看门程序随即退出。
@@ -166,7 +168,7 @@ Bridge 发布的一个极小 node 脚本（`packages/teamlead/dist/bridge/previe
 4. **同步临界段**（这一段内**没有任何 await**；Bridge 单进程 + JS 单线程 ⇒ 天然互斥）：
    1. 再核：会话非结果态、开关开、策略 digest、项目配置存在；
    2. 配额：该 execution 非 expired 行 < 3、全局 < 10（同一段内 COUNT + INSERT，并发 create 不会同时通过）；
-   3. `INSERT status='starting'`（含 origin 身份、`expires_at`、`manage_secret_hash`），建 `run_dir`（0700），写 `tunnel-args.json`、首个 `lease`；
+   3. `INSERT status='starting'`（含 origin 身份、`expires_at`、`manage_secret_hash`），建 `run_dir`（0700），写 `tunnel-args.json`（含 `mode`、cloudflared 参数数组、`expectedEmailDigest`）、首个 `lease`；随即**读回** `tunnel-args.json` 做第一次断言：`quick_email` 时参数中恰有一个 `--allowed-mail`，邮箱集合与当前项目配置名单**完全相等**（缺失、重复、多出、遗漏都算不符）；`quick_public` 时参数中不得出现 `--allowed-mail`（模式与参数必须一致）。不符 → 行直接 CAS 到 `expired`（`start_failed`，无进程、无卡），不进入第 4 步；
    4. `spawn(process.execPath, [leaseRunner, "--run-dir", runDir, "--hard-deadline", String(expiresAtMs)], {detached:true, stdio:"ignore"})`，`unref()`；
    5. **同步**取身份：`execFileSync("ps", ["-o","lstart=","-p",pid])` → `UPDATE lease_pid, lease_lstart, identity_state='complete'`。
    这里 spawn 与 UPDATE 之间只剩同一同步段内的几十毫秒；该段崩溃由 §5.3 的恢复路径兜底。
@@ -218,7 +220,8 @@ Bridge 发布的一个极小 node 脚本（`packages/teamlead/dist/bridge/previe
 | 看门程序或 cloudflared 不在（核身份） | `tunnel_closed`（看门程序日志写明是租约过期则 `lease_expired`） |
 | 监听该端口的 pid/lstart 与登记不同 | `origin_changed`（立即） |
 | `active`：本机首页校验（同 5.1，3s 超时）连续 3 次失败 | `prototype_stopped` |
-| `active`：每 4 轮一次外网就绪判定，连续 4 次失败 | `tunnel_unreachable` |
+| `active` 且 `quick_email`：每 4 轮一次的外网探测拿到**确定的 HTTP 响应**，但不是「302 且 Location 主机 = `login.trycloudflare.com`、`hostname` = 本隧道主机」（例如源站直接回 200） | `access_gate_missing`（**立即**，不走宽限） |
+| `active`：每 4 轮一次外网就绪判定，连续 4 次失败（超时、断网、5xx/530 等无法确认登录门状态的情况才计入这里） | `tunnel_unreachable` |
 
 `closing` 行继续 §5.2。探测异步、带超时、按 preview 单飞，不在锁内等网络。
 
@@ -325,6 +328,7 @@ CLI 把 `manageSecret` 存在 `$FLYWHEEL_RUNNER_STATE_DIR/previews/<previewId>.j
 - **路由/授权**：服务端未配 token → 503（经 plugin 挂载）；错 token 401；body 含 `pid`/`url`/未知字段 → 400；结果态/`approved_to_ship` → 409；配额 429；**A 列出 B 的预览拿不到密钥、用 previewId 调 stop → 403**；**A 用 B 的 executionId 暴露 A worktree 的原型 → 422**；A 替 B 打开 B 已标记的原型 → 卡进 B 的 thread、响应密钥只给调用方（记录为接受的残余，断言行为符合合同）。
 - **归属**：无标记 / 别人的 execId / public 缺警示 / 工作目录不在 worktree / 端口是 Bridge / 多个监听 pid → 422 且**从未 spawn**。
 - **准入交错**：原型观测 await 期间会话结束 / 开关关 / 策略变 → 临界段拒绝且未 spawn；4 个 create 并发通过初检 → 只有 3 个 INSERT+spawn。
+- **名单门加固**：Bridge 写出的参数缺 `--allowed-mail` / 邮箱多一个 / 少一个 / 重复 / 大小写不同但集合相同（应通过）→ 前四种不 spawn 任何进程、行 `start_failed`；看门程序收到被篡改的 `tunnel-args.json`（摘要不符或缺参数）→ 不起 cloudflared 直接退出；运行中外网探测从 302 变成 200 → 立即 `access_gate_missing` 关闭并改卡「名单门失效」；运行中探测超时 → 只计入 `tunnel_unreachable` 宽限，不触发 `access_gate_missing`。
 - **启动**：URL 解析（干扰行、超时）；starting 期间端口换进程 → `origin_changed` 关闭且未发卡；email 模式 302 到别的主机 / `hostname` 不符不就绪；public 403/404/429/530 不就绪；提交点会话已结束 → 关闭不激活。
 - **租约看门程序**（真进程，按实际消失时间断言）：Bridge 不续租 → 最后续租后 ≤5 分 10 秒两者都消失；在两次检查之间到期；子进程忽略 TERM → 硬到期时已被 KILL（不晚于 `expires_at`）；启动时租约已过期 → 不起 cloudflared；关闭开始后再续租 → 仍然退出；cloudflared 退出 → 看门程序退出；租约文件损坏 → 视为过期。
 - **崩溃与身份**：INSERT 后崩溃未 spawn → 扫描无命中 → expired；spawn 后身份未落库崩溃 → 按 `--run-dir` 精确参数恢复（含绝对二进制路径、路径带空格）→ 关闭；**看门程序被单独 KILL、cloudflared 存活** → 按 `--pidfile` 专属参数正向确认 T → 只对 T 发信号、不提前 expired；**看门程序在 cloudflared 写 pidfile 前崩溃** → 同上（参数在 spawn 时就有，不依赖 pidfile 已写）；**看门程序 pid 被无关进程复用** → lstart 不符且参数不含本 `run_dir` → 不杀；**旧组清空 → 组号被新组复用 → 新组长也死 → 无关成员仍在** → 不认领、不发任何信号（经可注入观测接口构造该进程历史）；**`tunnel.pid` 里的 pid 被另一个 cloudflared 复用** → 不认领、不杀；**系统校时导致 `kern.boottime` 变化、L/T 仍存活** → 不得直接 expired，必须确认退出后才改卡；**模拟重启（登记 pid 不存在或 lstart 不符、扫描无命中）** → 已证明消失且不误杀同号的新进程；`ps` 失败 → 保持 closing；comm 规范化（basename）。
@@ -337,7 +341,7 @@ CLI 把 `manageSecret` 存在 `$FLYWHEEL_RUNNER_STATE_DIR/previews/<previewId>.j
 - **反向兼容**：不配 `prototypePreview` 时现有测试全绿、Bridge 启动行为不变（空表 `reconcile` 无副作用）。
 
 真机 QA（独立 QA slot，真 cloudflared ≥2026.9.3、真 Discord 测试 thread）：
-1. `quick_email`（名单 = QA 可读收件箱的 Gmail，经 gog 取验证码）：卡出现；手机视口 + 外网打开 → 填邮箱 → 收码登录 → 新建记录、刷新仍在；非名单邮箱被拒。
+1. `quick_email`（名单 = QA 可读收件箱的 Gmail，经 gog 取验证码）：卡出现；手机视口 + 外网打开 → 填邮箱 → 收码登录 → 新建记录、刷新仍在；非名单邮箱被拒。**额外观测**：登录后在源站记录收到的请求头；若有 `Cf-Access-Jwt-Assertion`，另开 follow-up 评估源站本地核验（核验代理或校验库），不扩大本单 v1 范围；v1 的防线是上面三道。
 2. `quick_public`：首页可见警示横幅；新建/刷新仍在。
 3. 停原型 → 约 1 分钟内卡变已失效、链接不可用。
 4. 结束 runner 会话 → 隧道被关、卡改。
