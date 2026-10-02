@@ -34,6 +34,9 @@ implement 节点在当前分支新建**唯一**文件 `qa-sbx/fly2167/project-sl
 5. 提交信息：`docs(qa-sbx): FLY-3150 drill hand-in`。
    **禁止** `[skip ci]` `[ci skip]` `[no ci]` `[skip actions]` `[actions skip]` 及 `skip-checks:` trailer。
 6. 推分支、按节点协议 hand-in（PR 标题同样不得含上述 skip 标记）。
+7. CI 必须跑在**本次精确 head** 上：记录 `git rev-parse HEAD`，确认对应 CI run 的 head SHA 与之一致。
+   若未触发或无法核验，在协议回执里如实写明，不得拿旧 head 的 CI 记录顶替。README 只要求 CI 运行，
+   不额外引入"必须全绿"、本地测试套件或房间部署。
 
 ## 3. implement 节点步骤（第二次尝试：有 "QA fix context"）
 
@@ -42,9 +45,11 @@ implement 节点在当前分支新建**唯一**文件 `qa-sbx/fly2167/project-sl
 1. 从该首行解析 `<id>`：取 `claim ` 之后到下一个空白为止的 token，**逐字保留**（不改大小写、不去前后缀）。
    解析失败（没有 `claim ` 或 token 为空）→ 不要猜，按协议 `complete --route blocked` 并给出原因。
 2. 第二行改为 `FIXED-FOR-CLAIM <id>`；第一行不动；文件仍恰两行。
-3. 自检同 §2.4，另加 `sed -n 2p` 等于 `FIXED-FOR-CLAIM <id>`。
+3. 自检（**替换** §2.4 的第二行检查，不是追加）：`wc -l` 为 2；`sed -n 1p` 逐字等于 `QA-SBX FLY-2167 drill`；
+   `sed -n 2p` 逐字等于 `FIXED-FOR-CLAIM <id>`。此轮第二行不应再是 `AWAITING-QA`。
 4. 提交信息：`docs(qa-sbx): FLY-3150 drill fix for claim <id>`（同样禁 skip 标记）。
 5. 推分支、hand-in。
+6. 同 §2.7：CI 必须跑在修复轮的新 head 上；上一轮提交的 CI 记录不能覆盖新 head。
 
 ## 4. QA 节点判定规则
 
