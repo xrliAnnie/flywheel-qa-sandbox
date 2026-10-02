@@ -1,0 +1,32 @@
+flowchart LR
+  subgraph MAIN["Bridge 主线程"]
+    direction TB
+    RUN["派单接口<br/>写占位"]
+    FIN["合入收尾<br/>写释放 + 评估意图"]
+    SUPR["补单 supervisor<br/>(新写一套)"]
+    EPR["补单代发处理器<br/>(新写一套)"]
+    SUP7["3147 supervisor"]
+  end
+  subgraph WR["补单线程(新增,同一进程)"]
+    RF["pull · reconcile · evaluate<br/>remind · sweep"]
+  end
+  subgraph W7["3147 后台线程"]
+    OT["其他巡检组"]
+  end
+  subgraph EXT["外部 / 存储"]
+    direction TB
+    CFQ["Cloudflare Queue"]
+    LIN["Linear API"]
+    DB[("teamlead.db")]
+    INBOX["Lead 收件箱<br/>comm.db"]
+  end
+  RUN --> DB
+  FIN --> DB
+  RF -->|"自己的连接"| DB
+  OT -->|"自己的连接"| DB
+  RF -->|"拉取 / ack"| CFQ
+  RF -->|"重拿 · 对账 · 复核"| LIN
+  RF -->|"自定消息协议"| EPR
+  EPR --> INBOX
+  SUPR -.->|"监测 · 重启"| WR
+  SUP7 -.->|"监测 · 重启"| W7

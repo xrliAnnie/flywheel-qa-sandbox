@@ -1,0 +1,31 @@
+flowchart LR
+  subgraph MAIN["Bridge 主线程"]
+    direction TB
+    RUN["派单接口<br/>/api/runs/start<br/>写占位"]
+    FIN["合入收尾<br/>写释放 + 评估意图"]
+    DEP["/api/dependency<br/>增删依赖"]
+    SUP["3147 supervisor<br/>+ LockBroker"]
+    EP["3147 effect port<br/>按固定 key 投递"]
+  end
+  subgraph W["3147 后台线程(唯一)"]
+    direction TB
+    RF["refill 组 = 补单<br/>pull · reconcile · evaluate<br/>remind · sweep"]
+    OT["其他巡检组<br/>land · patrol · workflow …<br/>(land 合入也写释放)"]
+  end
+  subgraph EXT["外部 / 存储"]
+    direction TB
+    CFQ["Cloudflare Queue"]
+    LIN["Linear API"]
+    DB[("teamlead.db<br/>拷贝 · 占位 · 意图<br/>提醒 · outbox")]
+    INBOX["Lead 收件箱<br/>comm.db"]
+  end
+  RUN --> DB
+  FIN --> DB
+  DEP --> DB
+  OT -->|"自己的连接"| DB
+  RF -->|"自己的连接 · 短事务"| DB
+  RF -->|"拉取 / ack"| CFQ
+  RF -->|"重拿 · 对账 · 发送前复核"| LIN
+  RF -->|"请主线程代发"| EP
+  EP --> INBOX
+  SUP -.->|"监测 · 重启 · 熔断 · 发锁"| W

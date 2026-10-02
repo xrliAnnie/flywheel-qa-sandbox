@@ -1,0 +1,24 @@
+flowchart LR
+  LN["Linear"]
+  subgraph CF["Cloudflare"]
+    WKR["Worker(*.workers.dev,不要域名)<br/>① 验签:原始 body HMAC-SHA256<br/>② 签名覆盖的时间戳 ±60 秒<br/>③ 只留单号和改了什么<br/>④ 入队成功才回 200"]
+    Q[("Queue<br/>免费存 24 小时<br/>付费最多 14 天")]
+  end
+  subgraph MAC["本机 Bridge"]
+    PULL["每 30 秒拉一批<br/>先在本地记「已收下」再 ack"]
+    APP["按单合并 → 回 Linear 重拿<br/>改拷贝 + 记「已处理」同一事务"]
+    REC["对账<br/>10 分钟:改过的单 + 受影响 Epic 的完整快照<br/>每天:全量"]
+    LOC["本地事件<br/>改依赖 · 合入收尾"]
+    MIR[("本地拷贝<br/>只发布完整快照")]
+    HLT["健康检查<br/>推送断了 / 读 Linear 失败 / 被限流<br/>(安静不算故障)"]
+  end
+  LN -->|"webhook:单子状态 / 优先级 / 父单<br/>(不含依赖关系)"| WKR
+  WKR -->|"await send"| Q
+  PULL -->|"HTTP 拉取(只往外连)"| Q
+  PULL --> APP
+  APP --> MIR
+  REC -->|"GraphQL 分页"| LN
+  REC --> MIR
+  LOC --> MIR
+  PULL -.-> HLT
+  REC -.-> HLT

@@ -1,0 +1,63 @@
+erDiagram
+  refill_scope ||--o{ refill_scope_member : "完整快照(代号)"
+  refill_scope_member }o--|| refill_issue : "子单 / 依赖证据"
+  refill_issue ||--o{ refill_relation : "挡住 / 被挡"
+  refill_slot ||--o{ refill_eval_intent : "释放时写"
+  refill_eval_intent ||--|| refill_decision : "每条都有结论"
+  refill_decision ||--o{ refill_suggestion : "选中"
+  refill_suggestion ||--o{ refill_outbox : "固定 key 投递"
+  refill_issue {
+    text issue_id PK
+    text parent_id "所属 Epic"
+    text state_type
+    int priority
+    text owner_lead
+    text hold_until "复核失败暂缓"
+  }
+  refill_scope_member {
+    text epic_id PK
+    int generation PK
+    text issue_id PK
+    text kind "child / evidence"
+  }
+  refill_relation {
+    text blocker_id PK
+    text blocked_id PK
+  }
+  refill_scope {
+    text epic_id PK
+    int current_generation
+    int mutation_rev "发布前比对"
+    text status "新鲜 / 过期 / 未知"
+  }
+  refill_slot {
+    text issue_id PK "按单计,不按 runner"
+    text owner_lead
+    text released_at
+    text release_source_id "唯一"
+  }
+  refill_eval_intent {
+    int id PK
+    text lead_id
+    text source_kind
+    text consumed_at
+  }
+  refill_decision {
+    int id PK
+    text outcome "选中 / 满 / 没单 / 读数坏"
+  }
+  refill_suggestion {
+    int id PK
+    text issue_id
+    text state "pending / reminded / dispatched / stale / expired / recheck_failed"
+    text cooldown_until
+  }
+  refill_outbox {
+    text event_key PK "refill:sid:initial"
+    text status "待复核 / 可投 / 已投 / 不确定 / 撤销"
+    text valid_until "可投凭据"
+  }
+  refill_inbound {
+    text delivery_id PK
+    text status "已收下 / 已处理 / 放弃"
+  }

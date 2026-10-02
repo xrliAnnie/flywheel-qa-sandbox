@@ -1,0 +1,36 @@
+sequenceDiagram
+  autonumber
+  participant GH as GitHub(PR 合入)
+  participant MT as Bridge 主线程
+  participant DB as teamlead.db
+  participant WK as 后台线程 refill 组
+  participant LN as Linear
+  participant LD as Lead(Tadashi)
+  GH-->>MT: land 轮询确认已合入(有合入证据)
+  MT->>DB: 本次交付的 PR 全部合入 → 同一事务:占位标释放 + 写评估意图
+  WK->>DB: 取评估意图(崩溃后重启照样取到)
+  WK->>DB: 加写锁:收敛提醒 → 查新鲜度 → 空位 = 12 − 占位 − 有效提醒
+  alt 拷贝新鲜且有空位、有能开始的单
+    WK->>DB: 挑第 1 张,写提醒(pending)+ outbox(固定 key)+ 结论
+    WK->>LN: 发送前复核:这张单、挡它的单、所属 Epic
+    alt 仍可开始
+      WK->>DB: outbox 置「可投」(10 分钟内有效)
+      WK->>MT: 请代发(effect port) · 主线程再查开关和有效期
+      MT->>LD: 收件箱「现在可以做 X」+ 为什么 + 流程类型
+      MT->>DB: 拿到持久入队回执才标已投递
+      alt Lead 派出
+        LD->>MT: POST /api/runs/start
+        MT->>DB: 同一事务:提醒转已派 + 写占位
+      else 30 分钟没动
+        WK->>MT: 再提醒一次(只一次)
+        Note over WK,DB: 再 30 分钟仍没动 → 到期,记进验收数据,冷却,给下一张
+      end
+    else 已过时
+      WK->>DB: 最新事实写回拷贝 + 提醒标过时 + 写评估意图 → 重挑下一张
+    end
+  else 拷贝不新鲜
+    WK->>DB: 结论 = 读数不可用
+    WK->>MT: 告警「补单读数坏了」(没 runner 的 Lead 也发)
+  else 位子满 / 没有能开始的单
+    WK->>DB: 结论 = 为什么没补
+  end
