@@ -1,28 +1,15 @@
-classDiagram
-    class 交付文件 {
-        路径 qa-sbx/fly2167/分支名.md
-        第1行 "QA-SBX FLY-2167 drill"
-        第2行 AWAITING-QA 或 FIXED-FOR-CLAIM id
-        约束 恰好两行
-    }
-    class QA准则 {
-        file-shape
-        fixed-for-claim
-        e2e_529_exempt
-        title 少于120字符
-        evidence 少于80字符
-    }
-    class claim_id {
-        来源 QA 第1轮打回
-        传递 QA fix context 首行
-        比对 逐字精确匹配
-    }
-    class 禁区 {
-        Linear issue 零写入
-        529 Room 零部署
-        commit 不带 skip 标记
-    }
-    交付文件 "1" --> "3" QA准则 : 被判定
-    claim_id --> 交付文件 : 写入第2行
-    claim_id --> QA准则 : fixed-for-claim 再验证
-    禁区 .. 交付文件 : 全程约束
+stateDiagram-v2
+    direction LR
+    [*] --> Stale: 本轮起点 (main 上残留)
+    Stale: 第 2 行 = FIXED-FOR-CLAIM 1
+    Stale --> Awaiting: 实现节点第 1 次交付 (覆写)
+    Awaiting: 第 2 行 = AWAITING-QA
+    Awaiting --> Awaiting: QA 第 1 轮 fixed-for-claim 必 fail
+    Awaiting --> Fixed: 实现节点第 2 次交付 (写入本轮 claim id)
+    Fixed: 第 2 行 = FIXED-FOR-CLAIM id
+    Fixed --> [*]: QA 第 2 轮逐字匹配 pass
+    note right of Stale
+        文件 qa-sbx/fly2167/project-slot-5-FLY-3150.md
+        第 1 行永远是 QA-SBX FLY-2167 drill
+        文件恰两行，其他文件不碰
+    end note

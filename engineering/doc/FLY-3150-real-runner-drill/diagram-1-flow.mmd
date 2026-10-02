@@ -1,18 +1,14 @@
-sequenceDiagram
-    autonumber
-    participant DS as 设计节点
-    participant IM as 实现节点
-    participant QA as QA 节点
-    participant DR as 演练驱动器
-    DS->>DR: 短 plan 通过 Codex 评审（2 轮）
-    DR->>IM: 派发第 1 次实现
-    IM->>IM: 新建两行文件，第 2 行 AWAITING-QA
-    IM->>QA: hand-in（CI 跑在精确 head）
-    QA->>QA: file-shape 通过
-    QA->>QA: fixed-for-claim 必定 fail（植入）
-    QA-->>DR: 打回，附 claim <id>
-    DR->>IM: 第 2 次实现，带 QA fix context
-    IM->>IM: 第 2 行改为 FIXED-FOR-CLAIM <id>
-    IM->>QA: 再次 hand-in（新 head 重跑 CI）
-    QA->>QA: 逐字比对 <id>
-    QA-->>DR: 通过（e2e_529_exempt 记为 not_run）
+flowchart TD
+    A["设计节点<br/>读 README · 写短 plan<br/>Codex 评审 2 轮 APPROVED"] --> B["实现节点 · 第 1 次交付<br/>第 2 行覆写为 AWAITING-QA<br/>commit 不带 skip ci"]
+    B --> C["QA 节点 · 第 1 轮"]
+    C --> C1["file-shape → pass"]
+    C --> C2["fixed-for-claim → 必定 fail<br/>evidence: round 1: no previous QA claim yet"]
+    C --> C3["e2e_529_exempt → not_run / docs_only"]
+    C2 --> D["流水线把 claim id 带回实现节点<br/>(QA fix context: QA verdict to fix: claim id)"]
+    D --> E["实现节点 · 第 2 次交付<br/>第 2 行写 FIXED-FOR-CLAIM id<br/>id 逐字来自本轮 QA，不复用旧 id 1"]
+    E --> F["QA 节点 · 第 2 轮 (re-verification)"]
+    F --> F1["fixed-for-claim → 逐字匹配才 pass"]
+    F1 --> G["演练结束：验证了 QA 打回 → 修复 → 再验证 闭环"]
+    style C2 fill:#fff4e5,stroke:#ff9500,stroke-width:2px
+    style F1 fill:#e8f8ee,stroke:#34c759,stroke-width:2px
+    style G fill:#e9f2ff,stroke:#007aff

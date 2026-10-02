@@ -1,18 +1,14 @@
 ---
 issue: FLY-3150
 phase: implement
-phaseCursor: 2/5
-updated: 2026-10-02T03:05:29.769Z
-nextStep: push claim-1 fix and request effective exact-head code review
+phaseCursor: 4/5
+updated: 2026-10-02T04:15:05.378Z
+nextStep: commit and push FIXED-FOR-CLAIM 4, re-review exact head, run
+  exact-head CI, complete needs_review
 chunks: []
-pointers:
-  plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
-handoff: "design approved (codex 2 rounds); implement node: create
-  qa-sbx/fly2167/project-slot-5-FLY-3150.md per plan.md §2"
+pointers: {}
 ---
 
 # FLY-3150 progress
-**phase**: implement (2/5)
-**next**: push claim-1 fix and request effective exact-head code review
-
-**handoff**: design approved (codex 2 rounds); implement node: create qa-sbx/fly2167/project-slot-5-FLY-3150.md per plan.md §2
+**phase**: implement (4/5)
+**next**: commit and push FIXED-FOR-CLAIM 4, re-review exact head, run exact-head CI, complete needs_review
