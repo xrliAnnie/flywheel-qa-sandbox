@@ -8,6 +8,8 @@ Issue: FLY-3131 (https://linear.app/geoforge3d/issue/FLY-3131/epic在飞空位�
 > 已定:1A(共用 FLY-3147 后台线程)、2B(接 Linear webhook,可用 Cloudflare)、4A(走 Lead 收件箱)、5A(不依赖 Epic 页,从 Linear 增量算)。第 3 题待定。
 > 修订记录:R1(Codex 14 条)→ 本版:占位按「单」计、释放写持久评估意图、提醒状态机、跨库投递键、依赖 SQL 未知即挡、拷贝完整快照、
 > 新鲜度闸门 + 发送前复核、C 改为「申请修改 PRD §3.2」、「主线程过渡」改为需另批的 PRD §3.1 临时变更、webhook 入队后才回 200、token 权限按账号级写。
+> R2(Codex 6 条)→ 本版:释放按「本次交付全部 PR 合入」且核对派单身份(§2.2)、复核结果写回拷贝并有界暂缓(§2.4)、
+> 拷贝 mutation revision + 发布 CAS(§4.4)、事实与范围成员分表(§5.2)、可投递凭据 + 投递时再检查(§6)、thread 留痕独立条件与回执(§6)。
 
 ## 1. 一句话
 
@@ -36,14 +38,16 @@ Issue: FLY-3131 (https://linear.app/geoforge3d/issue/FLY-3131/epic在飞空位�
 | 现有路径(主仓 main `9fcbdebb1`) | 今天表示什么 | 在新设计里 |
 |---|---|---|
 | `event-route.ts:3982`、`DirectEventSink.ts:1472` 的 `notifyEpicChanged(…,"session_completed")` | 一次 session 状态变化,**早于**收尾,不代表合入 | **不算释放**(阶段之间、重试都会触发) |
-| land 收尾 `plugin.ts:9198`(可恢复 finalizer)、`DirectEventSink.ts:1655`、`event-route.ts:4128` 进入 `runPostShipFinalization` 且 `post-ship-finalization.ts:155-165` 认定有合入证据 | 真实合入 | **释放**,来源 id = PR 号 + merge sha |
-| `merge-ship-gate.ts:579-582`、`external-merge-reconcile.ts:503-506` 的 `linear_done` 回调 | 补救路径确认合入 | **释放**,同上来源 id(幂等:同一合入只释放一次) |
+| land 收尾 `plugin.ts:9198`(可恢复 finalizer)、`DirectEventSink.ts:1655`、`event-route.ts:4128` 进入 `runPostShipFinalization`,**且本次交付的全部必需 PR 都已合入**(单 PR = 已验证的合入回执;多 PR = 当前 run 的 PR manifest 全部合入,`post-ship-finalization.ts:1200-1245` 返回 `workflow_pr_manifest_partial` 时**不释放**) | 本次交付完成 | **释放**,来源 id = project + 仓库 + issue + dispatch/run id + manifest revision |
+| 只有部分 PR 合入(manifest partial / held) | 同一张单还在做 | **不释放** |
+| `merge-ship-gate.ts:579-582`、`external-merge-reconcile.ts:503-506` 的 `linear_done` 回调 | 补救路径确认合入 | 同上条件与来源 id(幂等:同一交付只释放一次) |
 | Linear 上被占位的单变成 canceled / duplicate(拷贝或对账看到) | 不做了 | **释放**,来源 = Linear 状态变化 |
 | Lead 明确放弃(新增:`/api/refill/release`) | 不做了 | **释放**,来源 = Lead 操作 id |
 | 无 PR 的工作流(如只出文档)以工作流终态 completed 结束 | 做完了 | **释放**,来源 = workflow 终态 id(实现第一步列全现有无 PR 路由) |
 | runner 失败 / 被停 / 重试 / 换 runner / 等批准 / park | 同一张单还在做 | **不释放** |
 
-- 释放 = 在占位表把这张单标 released(带来源 id,唯一约束防重复)+ 同一事务插一条 `refill_eval_intent`。线程无关:3147 把 land / external merge 巡检搬进 worker 后,
+- 释放 = 在占位表把这张单标 released(带来源 id,唯一约束防重复)+ 同一事务插一条 `refill_eval_intent`。
+  **释放前核对派单身份**:来源里的 dispatch/run id 必须等于占位行的 `dispatch_id`;不等(例如同一张单已重新派出,旧回执迟到)→ 不释放,只记日志。线程无关:3147 把 land / external merge 巡检搬进 worker 后,
   释放仍然写同一个库,评估器只看库,不依赖跨线程消息。
 - 每条评估意图必须落一条 `refill_decision`:选中了哪几张,或「为什么没补」(位子满 / 没有能开始的单 / 读数不新鲜 / 开关关着)——一周验收「每次合入都有下文」从这里出。
 
@@ -69,8 +73,11 @@ BEGIN IMMEDIATE                                       -- SQLite 写锁,等同 Ai
   6. 为每个候选插 suggestion(pending)+ outbox(key = refill:<sid>:initial)
   7. 写 decision(picked: [...]),标意图 consumed
 COMMIT
-发送前复核(事务外,主线程投递前由 worker 先做):按单号向 Linear 现拿这张单 + 它的 blockers + 所属 Epic,
-  仍满足条件才允许投递;不满足 → suggestion 标 stale、outbox 撤销、写新的评估意图(重挑)。
+发送前复核(事务外,worker 做):按单号向 Linear 现拿这张单(含完整 relations / inverseRelations)+ 它的 blockers + 所属 Epic。
+  · 取全了:按 §4.4 的单张刷新协议(revision CAS)把结果**写回拷贝**;同一短事务里,仍满足 → outbox 置 deliverable(§6);
+    不满足 → suggestion 标 stale、outbox 撤销、写评估意图。因为拷贝已更新,重挑不会再选中它,而是继续挑下一张(Y)。
+  · 没取全(网络 / 限流 / 无权限):**不算 stale**;suggestion 标 recheck_failed、该候选写 `hold_until`(有界退避 2→4→8 分钟,上限 30 分钟)、
+    释放名额并写评估意图;就绪查询排除 `hold_until > now` 的候选,下一轮挑 Y,不会反复复核 X。
 ```
 
 - 评估过程中到达的新意图留在表里,下一圈处理(对应 K8s 对「正在调度」期间事件的处理)。
@@ -84,7 +91,8 @@ COMMIT
 | pending | 评估器选中 | 占 | 投递成功后 30 分钟 → reminded;派出 → dispatched;过时 → stale |
 | reminded | 30 分钟内没派(只再提醒**一次**,key = `refill:<sid>:reminder:1`) | 占 | 再 30 分钟 → expired;派出 → dispatched;过时 → stale |
 | dispatched | `/api/runs/start` 接纳这张单(同事务转成占位) | 不再单独占(由占位表占) | 终态 |
-| stale | 拷贝或发送前复核发现它已不能开始(Epic 放回 Todo、单子被改、依赖新增等) | 不占 | 终态;写评估意图重挑 |
+| stale | 拷贝或发送前复核发现它已不能开始(Epic 放回 Todo、单子被改、依赖新增等;复核结果已写回拷贝) | 不占 | 终态;写评估意图重挑 |
+| recheck_failed | 发送前复核没能从 Linear 取全 | 不占 | 终态;候选进有界暂缓(`hold_until`),写评估意图 |
 | expired | 提醒后 60 分钟没动 | 不占 | 终态;记进验收数据;写评估意图 |
 
 - 约束:同一张单同一时刻最多一条 pending / reminded 提醒(SQLite 部分唯一索引)。
@@ -124,11 +132,21 @@ Bridge refill.pull(每 30 s)── HTTP 拉取(batch ≤ 100,可见超时 5 min)
 
 ### 4.4 拷贝协议(R1#7)
 
-- **范围(scope)**:每个项目「进行中的 Epic」;每个 Epic 一个范围,含它的全部子单和这些子单的全部 `blocks` 关系;范围外的 blocker 作为「仅依赖证据」行保存(不可派)。
-- **完整快照 + 代号(generation)**:对一个范围,按稳定分页游标取全子单和全依赖;**全部页成功**才把新代号发布为当前快照(mark-and-sweep:本代没出现的子单 / 边才删除);
+- **范围(scope)**:每个项目「进行中的 Epic」;每个 Epic 一个范围,含它的全部子单和这些子单的全部 `blocks` 关系;范围外的 blocker 只作为「依赖证据」被引用。
+- **事实与成员分开**(§5.2):单子的事实(状态、优先级、父单…)每张一行,和范围无关;「谁属于哪个范围、以什么身份」另存成员表。
+  同一张 X 可以同时是 Epic A 的子单(可派)和 Epic B 的依赖证据,两者互不覆盖。边按「被挡的那张单」整体替换,和范围无关。
+- **完整快照 + 代号(generation)**:对一个范围,按稳定分页游标取全子单和全依赖;**全部页成功且 CAS 通过**才把新代号发布为当前快照(mark-and-sweep 只清**本范围**的成员行;
+  事实行只在没有任何范围的成员引用时才回收;边按被挡单替换);
   任何一页失败 → 保留上一份完整快照,范围标 stale。依赖对账**不以 updatedAt 没变为跳过条件**(改依赖不一定刷新 updatedAt)。
-- **单张单的增量更新**(webhook / 本地事件):只改这张单的字段;拿到的 `updatedAt` 比库里旧则丢弃(防旧响应覆盖新状态);删除 / 404 / 无权限 → 标 tombstone 或 unknown,**不可派**。
-  单张单的依赖变化以「重拿这张单的 relations + inverseRelations 全集」替换它的边(全集取全才替换)。
+- **单张单的增量更新**(webhook / 本地事件 / 发送前复核):单张单的**字段**按 `updatedAt` 比较,旧的丢弃;删除 / 404 / 无权限 → 标 tombstone 或 unknown,**不可派**。
+  单张单的依赖变化以「重拿这张单的 relations + inverseRelations 全集」替换它的边(全集取全才替换)。**依赖不按 updatedAt 判新旧**(改依赖不一定刷新它)。
+- **冲突协议(mutation revision + 发布 CAS)**:每个范围有一个本地计数 `mutation_rev`;任何写入这个范围内单子或边的操作(单张刷新、`/api/dependency`、
+  webhook 应用、快照发布)都在同一事务里把它加一。
+  · 范围快照开始时记下 `start_rev`;所有页取完后,在一个短事务里检查 `mutation_rev == start_rev`,相等才发布;不等说明期间有更新的增量,
+    **丢弃这次扫描重来**(最多 3 次;仍冲突则范围标 stale 并告警,下一轮再试)。
+  · 单张刷新同理:取前记下涉及范围的 `mutation_rev`,写回时 CAS;冲突则重拿这一张。
+  · 网络请求期间**不持有** SQLite 写事务;只在最后的短事务里检查和发布。
+  · 这样「旧的全量扫描晚到、覆盖了新加 / 新删的依赖」不会发生。
 - **Epic 进出 In Progress / 移父单**:增量对账发现后,对受影响范围做一次完整快照。
 - **水位线**:每次增量对账固定扫描上界,全部所需页提交后才前移;重叠 5 分钟。
 - **每天全量**:全部范围重建快照,顺带清掉不再在范围内的行。
@@ -170,9 +188,10 @@ Bridge refill.pull(每 30 s)── HTTP 拉取(batch ≤ 100,可见超时 5 min)
 
 | 表 | 主键 / 唯一 | 字段(要点) |
 |---|---|---|
-| `refill_issue` | `issue_id` | identifier、title、project_key、parent_id、state_type(经 `normalizeLinearState`)、priority、labels_json、owner_lead、owner_match_method、owner_config_revision、workflow_hint、role(schedulable / evidence_only)、tombstone、linear_updated_at、scope_generation |
-| `refill_relation` | (`blocker_id`,`blocked_id`) | scope_generation |
-| `refill_scope` | (`project_key`,`epic_id`) | current_generation、last_complete_at、status(fresh / stale / unknown)、last_error |
+| `refill_issue` | `issue_id` | 只放事实:identifier、title、project_key、parent_id、state_type(经 `normalizeLinearState`)、priority、labels_json、owner_lead、owner_match_method、owner_config_revision、workflow_hint、tombstone、linear_updated_at、hold_until |
+| `refill_scope_member` | (`project_key`,`epic_id`,`generation`,`issue_id`) | kind(child = 可派 / evidence = 仅依赖证据) |
+| `refill_relation` | (`blocker_id`,`blocked_id`) | relations_fetched_at(按被挡单整体替换) |
+| `refill_scope` | (`project_key`,`epic_id`) | current_generation、mutation_rev、last_complete_at、status(fresh / stale / unknown)、last_error |
 | `refill_sync_state` | `project_key` | watermark、last_incremental_at、last_full_at、budget_state |
 | `refill_inbound` | `delivery_id` | issue_id、status(received / applied / dead)、attempts、received_at |
 | `refill_slot` | (`project_key`,`issue_id`) 未释放唯一 | owner_lead、occupied_at、dispatch_id、released_at、release_source_kind、release_source_id(唯一) |
@@ -192,16 +211,20 @@ Bridge refill.pull(每 30 s)── HTTP 拉取(batch ≤ 100,可见超时 5 min)
 
 ```sql
 SELECT c.issue_id, c.identifier, c.title, e.priority AS epic_pri, c.priority AS pri
-FROM refill_issue c
-JOIN refill_issue e  ON e.issue_id = c.parent_id
-JOIN refill_scope s  ON s.project_key = c.project_key AND s.epic_id = e.issue_id
-WHERE c.project_key = :project AND c.owner_lead = :lead
-  AND s.status = 'fresh' AND c.scope_generation = s.current_generation
+FROM refill_scope s
+JOIN refill_scope_member m ON m.project_key = s.project_key AND m.epic_id = s.epic_id
+                          AND m.generation = s.current_generation AND m.kind = 'child'
+JOIN refill_issue c ON c.issue_id = m.issue_id
+JOIN refill_issue e ON e.issue_id = s.epic_id
+WHERE s.project_key = :project AND c.owner_lead = :lead
+  AND s.status = 'fresh'
+  AND c.parent_id = s.epic_id                                             -- 移父单后旧范围不再算
   AND e.state_type = 'started' AND e.tombstone = 0
-  AND c.role = 'schedulable' AND c.tombstone = 0
+  AND c.tombstone = 0
   AND c.state_type <> 'backlog'
   AND c.state_type NOT IN ('completed','canceled','duplicate')            -- = isTerminalForScheduling
   AND NOT EXISTS (SELECT 1 FROM refill_slot sl WHERE sl.project_key = c.project_key AND sl.issue_id = c.issue_id AND sl.released_at IS NULL)
+  AND (c.hold_until IS NULL OR c.hold_until <= :now)                     -- 复核失败的有界暂缓
   AND NOT EXISTS (SELECT 1 FROM refill_suggestion g WHERE g.issue_id = c.issue_id
                   AND (g.state IN ('pending','reminded') OR g.cooldown_until > :now))
   AND NOT EXISTS (                                                         -- 只有「已知且 completed」的 blocker 才放行
@@ -223,10 +246,17 @@ LIMIT :free;
 - 每次逻辑通知一个固定 `event_key`:首次 `refill:<suggestionId>:initial`,再提醒 `refill:<suggestionId>:reminder:1`;`refill_outbox.event_key` 唯一。
 - 主线程(唯一能写 Lead 收件箱的一方,和 3147 边界一致)按 key 投递:`appendLeadEvent` 用 `event_id = event_key`(现有 `(lead_id, event_id)` 去重,`StateStore.ts:29753-29757`),
   再走现有 `enqueueLeadEvent`(canonical deliveryId `lead_event:<lead>:<eventId>`,`lead-event-queue.ts:8-12`)。
-- 只有拿到 comm.db 持久入队回执才把 outbox 标 delivered;超时 / 不确定 → unknown,用同一 key 读回或重放(重放被现有去重吸收,不会双发)。
-- outbox 由主线程在启动时和每个 GatePoller 维护轮次 drain;投递前检查 suggestion 仍是 pending / reminded,已 stale → outbox 标 canceled 不发。
-- 发送前复核(§2.4)在 worker 侧完成后才把 outbox 置为可投递。
-- 每补一张,在那张单的 thread 留一句为什么(PRD 2.9),同样走 outbox(key `refill:<sid>:thread-note`)。
+- outbox 状态:`awaiting_recheck` →(worker 复核通过)`deliverable` → `delivered`;另有 `unknown`、`needs_recheck`、`canceled`。
+- **可投递凭据**:置 deliverable 时写入 `valid_until`(复核后 10 分钟)、`config_rev`(项目开关 / cap / Lead 配置版本)、复核时的范围 `mutation_rev`。
+- **主线程产生外部效果前再检查**:项目开关仍开、suggestion 仍 pending / reminded、`valid_until` 未过、`config_rev` 未变;任何一条不满足 →
+  outbox 改 `needs_recheck` 交回 worker(重新复核或撤销),**不发**。所以「关开关前已有的待投消息」「复核后停机到过期再启动」都不会直接发出。
+- 只有拿到 comm.db 持久入队回执才标 delivered;超时 / 不确定 → unknown,**先按原 key 查回执**(`lead_events` 里已有该 event_id 即补标 delivered),
+  确认没入队才用同一 key 重发;不为了重新检查而生成第二条通知。
+- outbox 由主线程在启动时和每个 GatePoller 维护轮次 drain。
+- **thread 留痕(PRD 2.9)是另一种事件**,条件和回执都不同:只在 `/api/runs/start` 接纳、suggestion 变 dispatched **之后**创建
+  (key `refill:<sid>:thread-note`),绑定占位行的 `dispatch_id` 和那张单的 Discord thread;thread 还没建好就等着重试。
+  它的 delivered 依据是 **Discord 消息回执**,不是 comm.db 回执;响应丢失按 FLY-3147 plan 的 marker / 历史读回收敛,不靠本地 key 宣称防重。
+  不用 Lead 收件箱代替真正的 thread 留言。
 
 ## 7. 第 1 题:补单放在哪个后台线程(已选 A,本节讲清 A / B)
 
@@ -282,7 +312,10 @@ LIMIT :free;
 
 - 单元:就绪查询全部反例(§5.3 样例);占位不因阶段交接 / 重试 / runner 失败释放,只因 §2.2 证据释放、同一来源只释放一次;
   提醒状态机每条边;部分唯一索引挡住同单两条有效提醒;冷却期不重发;outbox 同 key 重放不双发;webhook 验签(原始 body、篡改、过期签名时间戳、错组织);
-  inbound received 未 applied 崩溃后重做;快照缺页不发布;旧 updatedAt 不覆盖;RATELIMITED(HTTP 400)退避。
+  inbound received 未 applied 崩溃后重做;快照缺页不发布;旧 updatedAt 不覆盖;RATELIMITED(HTTP 400)退避;
+  两 PR 只合入第一张不释放、最后一张合入只释放一次、旧派单回执不释放新占位;X 被新 blocker 挡住 → 复核写回拷贝 → 下一轮挑 Y,不反复复核 X;
+  复核取不全 → 有界暂缓;旧全量扫描晚于新增 / 删除依赖到达 → CAS 冲突丢弃重来;X 同时是 A 的子单和 B 的 blocker,A/B 任意刷新顺序、B 退出范围、X 移父单都不丢资格或证据;
+  关开关前已有 deliverable outbox → 不发;复核后停机超过 valid_until → 重新复核;unknown 先查回执不双发;thread 留痕只在派出后、以 Discord 回执为准。
 - 集成:3 张能开始的单 → 合入 1 张 → 收件箱 1 条「可以做 X」;Linear 标过时 → stale → 下一张;Epic 放回 Todo → 不再给;
   释放后杀掉 worker、Linear 不变 → S5 补上评估;丢一条 webhook → 对账补上;对账失败超预算 → 闸门关、「读数坏了」;Lead 无 runner 也收到告警;
   手动急活与评估器并发 → 不超过 13。
