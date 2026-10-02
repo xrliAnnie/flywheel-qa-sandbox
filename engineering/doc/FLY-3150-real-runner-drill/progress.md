@@ -1,13 +1,13 @@
 ---
 issue: FLY-3150
 phase: design
-phaseCursor: 2/5
-updated: 2026-10-02T03:40:53.460Z
-nextStep: stage set design_review + codex design review
+phaseCursor: 3/5
+updated: 2026-10-02T03:47:56.707Z
+nextStep: render mermaid + founder HTML, publish, report, complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-3150 progress
-**phase**: design (2/5)
-**next**: stage set design_review + codex design review
+**phase**: design (3/5)
+**next**: render mermaid + founder HTML, publish, report, complete
