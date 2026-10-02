@@ -1,13 +1,13 @@
 ---
 issue: FLY-3133
 phase: design
-phaseCursor: 1/7
-updated: 2026-10-02T01:48:36.813Z
-nextStep: code audit (report retention / console / CF) → exploration.md
+phaseCursor: 2/7
+updated: 2026-10-02T01:54:02.508Z
+nextStep: "research.md: per-sub-issue decisions"
 chunks: []
 pointers: {}
 ---
 
 # FLY-3133 progress
-**phase**: design (1/7)
-**next**: code audit (report retention / console / CF) → exploration.md
+**phase**: design (2/7)
+**next**: research.md: per-sub-issue decisions
