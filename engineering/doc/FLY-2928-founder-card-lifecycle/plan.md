@@ -5,7 +5,7 @@ Issue: FLY-2928 (https://linear.app/geoforge3d/issue/FLY-2928/病根修复-11-fo
 
 ## 0. 一句话
 
-implement 在沙箱里落三个文件（一张检查表、一个只读核验脚本、一个封闭自测），对生产仓钉死的两个提交跑一次静态核验，把原始输出和「没有证明什么」写进报告；不重新设计、不改生产、不运行生产测试。
+implement 在沙箱里落三个文件（一张检查表、一个只读核验脚本、一个封闭自测），对生产仓钉死的两个提交跑一次静态核验，把原始输出和「没有证明什么」写进报告；不重新设计、不改生产、不运行生产测试。「只读」指对被检查的仓库零写入。
 
 ## 1. 范围与不变量
 
@@ -50,6 +50,8 @@ implement 在沙箱里落三个文件（一张检查表、一个只读核验脚�
 
 每个数据行恰为 4 列或 5 列，用单个 TAB 分隔，任何一列都不得为空：`id`、`group`、`kind`、`path`，以及只有 `ADDED_LIT` / `REMOVED_LIT` 才有的第 5 列 `literal`。`#` 开头的行是注释，空行忽略。文件只允许 TAB、LF 和可打印 ASCII。连续 TAB、行首 TAB、行尾 TAB 都会产生空列，一律按坏表处理。
 
+`path` 必须是规范的仓库相对**文件**路径：不以 `/` 开头或结尾，不含空段、`.` 段、`..` 段，不含 `:`，不以 `-` 开头。带尾斜杠的目录写法（如 `dir/`）按坏路径处理。
+
 | kind | 通过条件（在 `BASE` → `HEAD` 之间） |
 |---|---|
 | `ADDED_FILE` | `path` 在基线不存在，在头是文件 |
@@ -65,7 +67,10 @@ implement 在沙箱里落三个文件（一张检查表、一个只读核验脚�
 读取规则（决定了它为什么是只读、为什么不会误报）：
 
 - `--repo` 必须正好是仓库的顶层目录（或裸仓库目录）；给子目录、给不是仓库的目录都按 `repo_unreadable` 处理，不向上找别的仓库。
-- 路径一律用 `git ls-tree --full-tree <提交> -- <路径>` 从树条目解析，再按条目里的 blob id 用 `git cat-file blob` 读内容、用 `grep -F` 找标识符。「路径不在树里」和「对象读不出来」是两种不同结果：前者是正常的 `none`，后者一律退出 2。
+- 路径一律用 `git ls-tree -z --full-tree <提交> -- <路径>` 从树条目解析。返回条目的路径必须与请求的路径逐字相同（否则 `tree_mismatch`），模式为普通文件（`100644` / `100755`）才算「文件」，目录、符号链接、子模块都算 `other`。「路径不在树里」和「对象读不出来」是两种不同结果：前者是正常的 `none`，后者一律退出 2。
+- 找标识符时，每个文件对象**只读一次**：`git cat-file blob <blob id>` 写进一个私有临时文件并检查这次读取自己的退出码，再对这份字节跑 `grep -F`。不用管道（管道只能拿到最后一个命令的退出码，上游读失败会被当成「没匹配」），也不用「先试读一遍再读」。
+- 不找标识符的三种类型同样要把涉及的文件对象完整读一遍，读不出来即退出 2。
+- 私有临时目录建在 `${TMPDIR:-/tmp}` 下（`mktemp -d`，仅本人可读），退出时删除；被检查的仓库里不写任何东西。
 - 启动时先清掉继承来的全部 `GIT_*` 环境变量（对象目录、alternates、配置注入、trace 输出等），再只设自己需要的；全局与系统级 git 配置不读。
 - 部分克隆（partial clone，缺的对象会在读取时自动从远端补取并写入仓库）直接拒绝：`repo_partial_clone`。另设 `GIT_NO_LAZY_FETCH=1` 作为第二道闸（Git 2.39.4 起支持；本机 2.39.5）。
 - 被检查仓库自己的 `.git/config` 视为受信输入；脚本关掉的是「惰性补取」和「trace 输出」这两条已知会在读命令里写文件的路径。
@@ -82,17 +87,17 @@ implement 在沙箱里落三个文件（一张检查表、一个只读核验脚�
 1. 第 1 行：`VERDICT: …`
 2. 第 2 行：`base=<40 位> head=<40 位>`（实际被核验的两个提交）
 3. 第 3 行：`freshness=CURRENT` 或 `freshness=MOVED:<40 位>` 或 `freshness=UNKNOWN`
-4. 其后每个检查一行：`ok|FAIL <id> <kind> <path> <细节>`，顺序同检查表。细节形如 `base=none head=blob`、`base=blob head=blob blob=same`、`literal=<标识符> base=yes(blob) head=no(blob)`（括号里是该路径在那个提交里的类型：`blob` 文件 / `none` 不存在 / `other` 目录等）
+4. 其后每个检查一行：`ok|FAIL <id> <kind> <path> <细节>`，顺序同检查表。细节形如 `base=none head=blob`、`base=blob head=blob blob=same`、`literal=<标识符> base=yes(blob) head=no(blob)`（括号里是该路径在那个提交里的类型：`blob` 普通文件 / `none` 不存在 / `other` 目录、符号链接等）
 
 `freshness` 只读本地引用（先 `refs/heads/flywheel-FLY-2928`，没有再看 `refs/remotes/origin/flywheel-FLY-2928`），与被核验的头比较；它是提示，不影响退出码。
 
 `USAGE` 的原因取值：`missing_value`、`unknown_argument`、`bad_base_sha`、`bad_head_sha`。
 
-`UNVERIFIABLE` 的原因取值：`repo_not_given`、`repo_unreadable`、`repo_partial_clone`、`repo_config_unreadable`、`base_missing`、`head_missing`、`base_not_ancestor`、`ancestry_error`、`tree_unreadable:<id>`、`tree_ambiguous:<id>`、`tree_unparsed:<id>`、`object_unreadable:<id>`、`content_error:<id>`、`table_unreadable`、`table_bad_bytes`、`table_bad_columns`、`table_empty`、`table_missing_group:<组>`、`table_bad_id`、`table_duplicate_id:<id>`、`table_bad_group:<id>`、`table_bad_path:<id>`、`table_missing_literal:<id>`、`table_unexpected_literal:<id>`、`table_bad_kind:<id>`、`script_dir`。
+`UNVERIFIABLE` 的原因取值：`repo_not_given`、`repo_unreadable`、`repo_partial_clone`、`repo_config_unreadable`、`base_missing`、`head_missing`、`base_not_ancestor`、`ancestry_error`、`tree_unreadable:<id>`、`tree_mismatch:<id>`、`tree_unparsed:<id>`、`object_unreadable:<id>`、`content_error:<id>`、`table_unreadable`、`table_bad_bytes`、`table_bad_columns`、`table_empty`、`table_missing_group:<组>`、`table_bad_id`、`table_duplicate_id:<id>`、`table_bad_group:<id>`、`table_bad_path:<id>`、`table_missing_literal:<id>`、`table_unexpected_literal:<id>`、`table_bad_kind:<id>`、`scratch_unavailable`、`script_dir`。
 
 ### 2.3 自测 `selftest.sh`
 
-`sh qa-sbx/fly2928/selftest.sh`：在 `${TMPDIR:-/tmp}` 下建一次性夹具仓库（内容由 `checks.tsv` 推导），逐例比对退出码、首行和指定输出行；结束自动删除夹具。末行 `SELFTEST: PASS cases=48 failed=0`（退出 0）或 `SELFTEST: FAIL cases=<n> failed=<m>`（退出 1）；环境准备失败为 `SELFTEST: ERROR <原因>`（退出 2）。它不读生产仓；第一次调用 git 之前就清掉继承来的全部 `GIT_*` 环境变量，所以即使调用者的环境把对象目录指到别处，写入也只落在一次性目录里。
+`sh qa-sbx/fly2928/selftest.sh`：在 `${TMPDIR:-/tmp}` 下建一次性夹具仓库（内容由 `checks.tsv` 推导），逐例比对退出码、首行和指定输出行；结束自动删除夹具。末行 `SELFTEST: PASS cases=55 failed=0`（退出 0）或 `SELFTEST: FAIL cases=<n> failed=<m>`（退出 1）；环境准备失败为 `SELFTEST: ERROR <原因>`（退出 2）。它不读生产仓；第一次调用 git 之前就清掉继承来的全部 `GIT_*` 环境变量，所以即使调用者的环境把对象目录指到别处，写入也只落在一次性目录里。
 
 ### 2.4 结构图
 
@@ -154,8 +159,8 @@ flowchart TD
 | 文件 | SHA-256 |
 |---|---|
 | `qa-sbx/fly2928/checks.tsv` | `9b3c5a9a47f36f2d98a2f7347a7615bab5caafd089c69254aaeb708e3cc9c9c4` |
-| `qa-sbx/fly2928/selftest.sh` | `9b56f3ea4cb7cd142e9fb34078e55f804676bc77026c149e71cccfe1a961e52e` |
-| `qa-sbx/fly2928/verify-prod-fix.sh` | `7441b2845d45143dfa7a2b72c9588fe26c2dad2c8c9f31d98c6830461e6e2635` |
+| `qa-sbx/fly2928/selftest.sh` | `0934ebf21bd9a130f62d61f4ae10a9622faa776e76cd5be4f0a2eb7f95fd3d72` |
+| `qa-sbx/fly2928/verify-prod-fix.sh` | `6a0da591abd341023559e60bcd9d913cccf4623fbd8823940d8cc4119787a6cc` |
 
 ### 4.1 检查表
 
@@ -197,7 +202,9 @@ K-2596	K	TEST_TOUCHED	packages/teamlead/src/bridge/__tests__/orphan-founder-revi
 ```sh
 #!/bin/sh
 # FLY-2928 — read-only static check of the production fix, against pinned commits.
-# Reads git objects only: no checkout, no fetch, no network, no writes.
+# Reads git objects only: no checkout, no fetch, no network, no write to the
+# inspected repository. Blob bytes being searched are held in one private
+# temporary file outside the repository, removed on exit.
 # Exit: 0 PASS | 1 FAIL | 2 UNVERIFIABLE | 64 usage error.
 set -u
 LC_ALL=C
@@ -287,8 +294,6 @@ esac
 
 [ -f "$table" ] && [ -r "$table" ] || unverifiable table_unreadable
 tab=$(printf '\t')
-nl='
-'
 # Only TAB, LF and printable ASCII are allowed (rejects CR, NUL, other bytes).
 stray=$(tr -d '\011\012\040-\176' <"$table" | wc -c) || unverifiable table_unreadable
 [ "$stray" -eq 0 ] || unverifiable table_bad_bytes
@@ -299,30 +304,42 @@ awk -F '\t' '
 	{ for (i = 1; i <= NF; i++) if ($i == "") { bad = 1; exit } }
 	END { exit bad }' "$table" || unverifiable table_bad_columns
 
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/fly2928-verify.XXXXXX") || unverifiable scratch_unavailable
+trap 'rm -rf "$scratch"' EXIT
+trap 'exit 2' INT TERM HUP
+
 # resolve ID REV PATH -> sets r_type (none | blob | other) and r_sha.
-# Runs in the main shell: an unreadable tree or blob stops the whole run.
+# Runs in the main shell: an unreadable tree stops the whole run.
 resolve() {
 	r_sha=
-	r_out=$(g ls-tree --full-tree "$2" -- "$3" 2>/dev/null) || unverifiable "tree_unreadable:$1"
+	r_out=$(g ls-tree -z --full-tree "$2" -- "$3" 2>/dev/null) || unverifiable "tree_unreadable:$1"
 	if [ -z "$r_out" ]; then
 		r_type=none
 		return 0
 	fi
-	case $r_out in *"$nl"*) unverifiable "tree_ambiguous:$1" ;; esac
+	# One entry: "<mode> <type> <sha>TAB<path>". The entry must be the requested
+	# path itself, never a child listed because the path names a directory.
+	[ "${r_out#*"$tab"}" = "$3" ] || unverifiable "tree_mismatch:$1"
+	r_mode=${r_out%% *}
 	r_rest=${r_out#* }
 	r_type=${r_rest%% *}
 	r_rest=${r_rest#* }
 	r_sha=${r_rest%%"$tab"*}
 	is_sha40 "$r_sha" || unverifiable "tree_unparsed:$1"
-	if [ "$r_type" = blob ]; then
-		g cat-file blob "$r_sha" >/dev/null 2>&1 || unverifiable "object_unreadable:$1"
-	else
-		r_type=other
-	fi
+	case "$r_mode $r_type" in
+	'100644 blob' | '100755 blob') r_type=blob ;;
+	*) r_type=other ;;
+	esac
 }
-# contains ID SHA LITERAL -> sets c_has (yes | no); the blob was proven readable by resolve.
+# readable ID SHA -> the blob must be fully readable, else the run stops.
+readable() {
+	g cat-file blob "$2" >/dev/null 2>&1 || unverifiable "object_unreadable:$1"
+}
+# contains ID SHA LITERAL -> sets c_has (yes | no). The bytes searched are the
+# bytes of one read whose own exit status is checked.
 contains() {
-	g cat-file blob "$2" 2>/dev/null | grep -q -F -e "$3"
+	g cat-file blob "$2" >"$scratch/blob" 2>/dev/null || unverifiable "object_unreadable:$1"
+	grep -q -F -e "$3" "$scratch/blob"
 	case $? in
 	0) c_has=yes ;;
 	1) c_has=no ;;
@@ -344,8 +361,10 @@ while IFS=$tab read -r id group kind path lit || [ -n "${id:-}" ]; do
 	*" $group "*) ;;
 	*) unverifiable "table_bad_group:$id" ;;
 	esac
-	case $path in
-	/* | -* | *..* | *:*) unverifiable "table_bad_path:$id" ;;
+	# A plain repository-relative file path: no leading or trailing slash, no
+	# empty, "." or ".." component, no leading dash, no colon.
+	case /$path/ in
+	*//* | */./* | */../* | *:* | /-*) unverifiable "table_bad_path:$id" ;;
 	esac
 	case $kind in
 	ADDED_LIT | REMOVED_LIT)
@@ -367,11 +386,14 @@ while IFS=$tab read -r id group kind path lit || [ -n "${id:-}" ]; do
 	ok=no
 	case $kind in
 	ADDED_FILE)
+		[ "$ht" = blob ] && readable "$id" "$hs"
 		detail="base=$bt head=$ht"
 		[ "$bt" = none ] && [ "$ht" = blob ] && ok=yes
 		;;
 	UNCHANGED | TEST_TOUCHED)
 		same=n/a
+		[ "$bt" = blob ] && readable "$id" "$bs"
+		[ "$ht" = blob ] && readable "$id" "$hs"
 		if [ "$bt" = blob ] && [ "$ht" = blob ]; then
 			if [ "$bs" = "$hs" ]; then same=same; else same=differs; fi
 		fi
@@ -576,7 +598,7 @@ snap() { (cd "$1/.git" && find . -type f -exec cksum {} \; | sort | cksum); }
 
 cases=0
 bad=0
-# expect NAME WANT_RC WANT_LINE1 WANT_REGEX|- ARGS...
+# expect NAME WANT_RC WANT_LINE1|- WANT_REGEX|- ARGS...
 expect() {
 	name=$1
 	want_rc=$2
@@ -588,7 +610,7 @@ expect() {
 	l1=$(printf '%s\n' "$out" | sed -n 1p)
 	okc=yes
 	[ "$rc" -eq "$want_rc" ] || okc=no
-	[ "$l1" = "$want_l1" ] || okc=no
+	[ "$want_l1" = - ] || [ "$l1" = "$want_l1" ] || okc=no
 	if [ "$want_re" != - ]; then
 		printf '%s\n' "$out" | grep -q -e "$want_re" || okc=no
 	fi
@@ -644,6 +666,34 @@ cp -R "$fx" "$work/fx-tree" || setup_error cp_tree
 drop_object "$work/fx-tree" "$(gfx rev-parse "$H:${first_path%%/*}")"
 expect "missing tree is unverifiable" 2 "${U}tree_unreadable:$first_id" - \
 	--repo "$work/fx-tree" --base "$B" --head "$H"
+# a read that fails at the moment the bytes are searched must stop the run:
+# the Nth read of the mutated blob (searched by several rows) exits 128
+mkdir "$work/shim" || setup_error shim
+FLY2928_REAL_GIT=$(command -v git) || setup_error real_git
+FLY2928_SHIM_SHA=$(gfx rev-parse "$M:$f_path") || setup_error shim_sha
+FLY2928_SHIM_COUNT=$work/shim/count
+export FLY2928_REAL_GIT FLY2928_SHIM_SHA FLY2928_SHIM_COUNT
+# shellcheck disable=SC2016
+{
+	printf '%s\n' '#!/bin/sh'
+	printf '%s\n' 'if [ "${3:-}" = cat-file ] && [ "${4:-}" = blob ] && [ "${5:-}" = "$FLY2928_SHIM_SHA" ]; then'
+	printf '%s\n' '	n=$(($(cat "$FLY2928_SHIM_COUNT") + 1))'
+	printf '%s\n' '	printf "%s\n" "$n" >"$FLY2928_SHIM_COUNT"'
+	printf '%s\n' '	[ "$n" -eq "$FLY2928_SHIM_FAIL_AT" ] && exit 128'
+	printf '%s\n' 'fi'
+	printf '%s\n' 'exec "$FLY2928_REAL_GIT" "$@"'
+} >"$work/shim/git" || setup_error shim_write
+chmod +x "$work/shim/git" || setup_error shim_mode
+old_path=$PATH
+for nth in 1 2; do
+	printf '0\n' >"$FLY2928_SHIM_COUNT" || setup_error shim_count
+	FLY2928_SHIM_FAIL_AT=$nth
+	export FLY2928_SHIM_FAIL_AT
+	PATH=$work/shim:$old_path
+	expect "failed read #$nth of a searched blob is unverifiable" 2 - "^${U}object_unreadable:" \
+		--repo "$fx" --base "$B" --head "$M"
+	PATH=$old_path
+done
 # control: a file that is really deleted at head still satisfies REMOVED_LIT
 solo=$(awk -F '\t' '
 	/^#/ || /^$/ { next }
@@ -657,6 +707,24 @@ gfx rm -q -- "$solo_path" || setup_error rm_solo
 variant "delete $solo_id file"
 expect "really deleted file passes REMOVED_LIT" 0 "$PASS1" "^ok $solo_id REMOVED_LIT .* head=no(none)\$" \
 	--repo "$fx" --base "$B" --head "$M"
+
+# a directory is never a file, with or without a trailing slash
+gfx checkout -q --detach "$H" || setup_error checkout
+put "$fx/newdir/only.txt" only
+variant "add newdir"
+t=$work/t.tsv
+{
+	cat "$table"
+	printf 'A99\tA\tADDED_FILE\tnewdir\n'
+} >"$t" || setup_error dir_table
+expect "directory is not a file" 1 "VERDICT: FAIL checks=$((rows + 1)) failed=1" \
+	'^FAIL A99 ADDED_FILE newdir base=none head=other$' --repo "$fx" --base "$B" --head "$M" --table "$t"
+{
+	cat "$table"
+	printf 'A99\tA\tADDED_FILE\tnewdir/\n'
+} >"$t" || setup_error dir_table
+expect "directory with trailing slash rejected" 2 "${U}table_bad_path:A99" - \
+	--repo "$fx" --base "$B" --head "$M" --table "$t"
 
 # 5. degenerate comparisons and repository selection
 expect "base equals head fails" 1 "VERDICT: FAIL checks=$rows failed=$((rows - unchanged))" - \
@@ -695,7 +763,6 @@ expect "unknown argument rejected" 64 "${X}unknown_argument" - --fetch
 expect "missing value rejected" 64 "${X}missing_value" - --repo
 
 # 8. malformed tables fail closed
-t=$work/t.tsv
 bad_table() {
 	printf '%b' "$3" >"$t" || setup_error tbl
 	expect "$1" 2 "${U}$2" - --repo "$fx" --base "$B" --head "$H" --table "$t"
@@ -708,6 +775,9 @@ bad_table "duplicate id" table_duplicate_id:A1 'A1\tA\tADDED_FILE\ta.txt\nA1\tA\
 bad_table "literal missing" table_missing_literal:A1 'A1\tA\tADDED_LIT\ta.txt\n'
 bad_table "literal unexpected" table_unexpected_literal:A1 'A1\tA\tADDED_FILE\ta.txt\tx\n'
 bad_table "path escaping the tree" table_bad_path:A1 'A1\tA\tADDED_FILE\t../a.txt\n'
+bad_table "path with empty component" table_bad_path:A1 'A1\tA\tADDED_FILE\ta//b.txt\n'
+bad_table "path with dot component" table_bad_path:A1 'A1\tA\tADDED_FILE\t./a.txt\n'
+bad_table "absolute path" table_bad_path:A1 'A1\tA\tADDED_FILE\t/a.txt\n'
 bad_table "six columns" table_bad_columns 'A1\tA\tADDED_LIT\ta.txt\tx\ty\n'
 bad_table "three columns" table_bad_columns 'A1\tA\tADDED_FILE\n'
 bad_table "doubled TAB" table_bad_columns 'A1\t\tA\tADDED_FILE\ta.txt\n'
@@ -770,7 +840,7 @@ extract qa-sbx/fly2928/checks.tsv
 extract qa-sbx/fly2928/selftest.sh
 printf '%s  %s\n' \
 	9b3c5a9a47f36f2d98a2f7347a7615bab5caafd089c69254aaeb708e3cc9c9c4 qa-sbx/fly2928/checks.tsv \
-	9b56f3ea4cb7cd142e9fb34078e55f804676bc77026c149e71cccfe1a961e52e qa-sbx/fly2928/selftest.sh | shasum -a 256 -c -
+	0934ebf21bd9a130f62d61f4ae10a9622faa776e76cd5be4f0a2eb7f95fd3d72 qa-sbx/fly2928/selftest.sh | shasum -a 256 -c -
 ```
 
 期望输出恰为两行：`qa-sbx/fly2928/checks.tsv: OK`、`qa-sbx/fly2928/selftest.sh: OK`。
@@ -782,7 +852,7 @@ sh qa-sbx/fly2928/selftest.sh >"${TMPDIR:-/tmp}/fly2928-red.txt" 2>&1; echo "rc=
 tail -n 1 "${TMPDIR:-/tmp}/fly2928-red.txt"
 ```
 
-期望：`rc=1`，末行 `SELFTEST: FAIL cases=48 failed=44`（只有「表行数」「仓库逐字节不变」「继承变量未写出」「部分克隆逐字节不变」四例因不依赖核验脚本的输出而为 ok）。
+期望：`rc=1`，末行 `SELFTEST: FAIL cases=55 failed=51`（只有「表行数」「仓库逐字节不变」「继承变量未写出」「部分克隆逐字节不变」四例因不依赖核验脚本的输出而为 ok）。
 
 提交：`git add qa-sbx/fly2928/checks.tsv qa-sbx/fly2928/selftest.sh`，主题 `test(FLY-2928): add static-check table and hermetic self-test`。账本 `1/5`。
 
@@ -800,7 +870,7 @@ extract() {
 }
 extract qa-sbx/fly2928/verify-prod-fix.sh
 printf '%s  %s\n' \
-	7441b2845d45143dfa7a2b72c9588fe26c2dad2c8c9f31d98c6830461e6e2635 qa-sbx/fly2928/verify-prod-fix.sh | shasum -a 256 -c -
+	6a0da591abd341023559e60bcd9d913cccf4623fbd8823940d8cc4119787a6cc qa-sbx/fly2928/verify-prod-fix.sh | shasum -a 256 -c -
 shellcheck -s sh qa-sbx/fly2928/verify-prod-fix.sh qa-sbx/fly2928/selftest.sh; echo "shellcheck rc=$?"
 ```
 
@@ -819,7 +889,7 @@ find "$SENT" -mindepth 1 | wc -l | tr -d ' '
 rmdir "$SENT" && echo "sentinel removed"
 ```
 
-期望输出恰为四行：`rc=0`、`SELFTEST: PASS cases=48 failed=0`、`0`、`sentinel removed`。自测在高负载机器上约需 1–2 分钟。
+期望输出恰为四行：`rc=0`、`SELFTEST: PASS cases=55 failed=0`、`0`、`sentinel removed`。自测在高负载机器上约需 1–2 分钟。
 第三行不是 `0` 即表示有文件写到了一次性目录之外：**停**，保留哨兵目录，按 §7 报 Lead。
 
 提交：`git add qa-sbx/fly2928/verify-prod-fix.sh`，主题 `feat(FLY-2928): add read-only static verifier for the production fix`。账本 `2/5`。
@@ -861,7 +931,7 @@ sh qa-sbx/fly2928/selftest.sh >"$E/selftest.txt" 2>&1; echo "selftest rc=$?"
 tail -n 1 "$E/selftest.txt"
 ```
 
-期望：`selftest rc=0`，末行 `SELFTEST: PASS cases=48 failed=0`。
+期望：`selftest rc=0`，末行 `SELFTEST: PASS cases=55 failed=0`。
 
 提交：`git add engineering/doc/FLY-2928-founder-card-lifecycle/evidence`，主题 `docs(FLY-2928): record pinned verification evidence`。账本 `3/5`。
 
@@ -909,7 +979,7 @@ git diff --name-only origin/main...HEAD | awk '
 
 | 编号 | 命令 / 检查 | 通过条件 |
 |---|---|---|
-| Q1 | `sh qa-sbx/fly2928/selftest.sh` | 退出 0；末行 `SELFTEST: PASS cases=48 failed=0` |
+| Q1 | `sh qa-sbx/fly2928/selftest.sh` | 退出 0；末行 `SELFTEST: PASS cases=55 failed=0` |
 | Q2 | `sh qa-sbx/fly2928/verify-prod-fix.sh` | 退出 0；第 1 行 `VERDICT: PASS checks=26 failed=0`；第 2 行等于 §5 Task 3 的期望值 |
 | Q3 | `shellcheck -s sh qa-sbx/fly2928/verify-prod-fix.sh qa-sbx/fly2928/selftest.sh` | 无输出，退出 0 |
 | Q4 | 三个文件的 SHA-256 | 等于 §4；不等时报告必须有「与设计的偏差」一节且 Q1–Q3 仍成立 |
@@ -964,6 +1034,7 @@ node "$FLYWHEEL_COMM_CLI" ask --lead "$FLYWHEEL_LEAD_ID" --exec-id "$FLYWHEEL_EX
 | 只认钉死的头 vs 跟随最新头 | 钉死为准 + 新鲜度提示 + 可选对新头再跑 | 钉死才可复现；提示让人不会把旧头结论当成最新结论 |
 | 头前进用独立退出码 vs 只作一行提示 | 一行提示 | 头前进不是核验失败；退出码只表达「这次核验本身」的结果 |
 | 读内容用 `git grep <提交> -- <路径>` vs 先解析树条目再读 blob | 树条目 + blob | `git grep` 的路径受当前目录影响，且读不出对象时可能表现为「没匹配」；树条目方式把「不存在」和「读不出」分成两种结果 |
+| 内容经管道直接喂给 grep vs 先落私有临时文件再搜 | 临时文件 | 管道拿不到读取端的退出码；落文件后「读」和「搜」各有自己的退出码，且搜的就是刚读成功的那份字节。代价：在仓库之外有一个用完即删的临时文件 |
 | 部分克隆：只关惰性补取 vs 直接拒绝 | 直接拒绝，并关惰性补取 | 拒绝不依赖 git 版本；缺对象的仓库本来也核验不了 |
 | 逐个清理已知的 git 环境变量 vs 清掉全部 `GIT_*` | 清掉全部 | 列举式清理总会漏（对象目录、trace、配置注入……）；全清后只设自己需要的 |
 | 自测接入 CI vs 只在本地跑 | 只在本地跑 | 这是一次性验收工具，不是长期产品守卫；改共享 CI 文件超出本单范围 |
@@ -973,6 +1044,6 @@ node "$FLYWHEEL_COMM_CLI" ask --lead "$FLYWHEEL_LEAD_ID" --exec-id "$FLYWHEEL_EX
 ## 10. 设计节点交付与交接
 
 - 本节点交付：`exploration.md`、`research.md`、本 `plan.md`、`progress.md`、Mermaid 源与本地渲染的 SVG、founder HTML、设计评审记录。
-- 原型已在草稿目录按 §5 的命令实跑：抽取后三个文件的 SHA-256 与 §4 一致，红态 `cases=48 failed=44`、带毒环境下绿态 `cases=48 failed=0` 且哨兵目录为空、钉死核验 `PASS checks=26` 均与本文期望相符。
+- 原型已在草稿目录按 §5 的命令实跑：抽取后三个文件的 SHA-256 与 §4 一致，红态 `cases=55 failed=51`、带毒环境下绿态 `cases=55 failed=0` 且哨兵目录为空、钉死核验 `PASS checks=26` 均与本文期望相符。
 - Lead 问题 `6deeea40-51e4-4a90-acb5-6c8ad560f0f9` 已答：B（镜像生产文档）否决；按 A（只读核验合同）推进；A/C 的范围已转 founder 拍板，未另行通知即照 A 做。founder 改范围时由当前 TURN 持有者追加 `design-correction.md`。
 - implement 从 Task 0 开始；QA 以 §6 为准。本设计不构成对生产 PR #1445 的批准或 ship 许可。
