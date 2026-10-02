@@ -50,7 +50,7 @@ Issue: FLY-3138 (https://linear.app/geoforge3d/issue/FLY-3138/cloudflaref5挂起
 现在的证据 = esbuild metafile 的 `inputs`。cf 没有 metafile。候选（GA 时按顺序试）：
 
 1. **Build Output 自带模块清单**：`cf build` 后读 `.cloudflare/output/v0/config.json` / 模块列表，若含源路径则断言同三条（首选，语义等价）。
-2. **内容哨兵**：在 `presign.mjs`、`release-contract/src/index.mjs` 各有一个稳定导出名；断言打包后的 JS 里出现对应标识（esbuild 不 minify 时保留）。语义稍弱（证明「代码在」而非「源文件在」），但足以挡住「打包漏了签名器」这一回归。
+2. **内容哨兵（三项都要）**：`aws4fetch` 用其实现内部稳定标识（GA 时从钉定版本源码选）、`presign.mjs` 与 `release-contract/src/index.mjs` 各用一个稳定导出名；**并** 断言产物没有 bare specifier 的 import（证明依赖闭合打包、没被外置）。语义稍弱（证明「代码在」而非「源文件在」），但足以挡住「打包漏了签名器 / 外置了 aws4fetch」的回归。（Codex R1 #5 补：只查两个本地名会漏掉 aws4fetch 外置。）
 3. 两者都不行 → 保留 wrangler 仅用于本地/CI 的打包证明会违反验收 ①，不选；回报 Lead。
 
 ## 5. 结构 lint 的新形状（S4a）
