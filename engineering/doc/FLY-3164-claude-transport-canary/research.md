@@ -67,7 +67,7 @@ TURN 是写权限，不是 marker 内容。Issue 标题、owner nonce、executio
 1. 唯一一处 `Append the exact line ` 前缀与其后唯一一处 ` to probe.txt` 后缀之间的子串；
 2. `Exact marker lines:` 之后唯一一个 ```` ```text ```` fenced block,其中每个非空内部行是一条 marker。
 
-任何重复 delimiter、混用两种格式、fence 损坏、大小写不符或其他歧义都 fail closed,请发送方用支持的唯一格式重发；不做“猜测性规范化”。每条 marker 必须是 1..512 字节的可打印 ASCII(0x20–0x7E),不含 NUL/CR/LF/TAB,首尾不是空格；不 trim、不改写。
+任何重复 delimiter、混用两种格式、fence 损坏、大小写不符或其他歧义都 fail closed,请发送方用支持的唯一格式重发；不做“猜测性规范化”。每条 marker 必须是 1..512 字节的可打印 ASCII(0x20–0x7E),不含 NUL/CR/LF/TAB,首尾不是空格；不 trim、不改写。marker 列表必须非空，并且按精确字节两两不同：fence 里出现两条相同的行时，在改动 `probe.txt` 或 index 之前整体拒绝、请求重发，不静默去重。否则“每条 marker 计数恰好为 1”的不变量会被输入本身打破，中断恢复时也会得到与一次跑完不同的结果。
 
 (FLY-3125 还支持 Codex direct-kick 的 `First append the exact line …, then` 与 rework envelope 的小写形式；这两种只在 Codex direct-kick / rework 场景存在，本 DAG 的 Claude implement node 不会遇到，故不纳入，减少攻击面。)
 
@@ -98,6 +98,7 @@ QA 是另一个 execution:它没有收到发给 writer 的指令，因此不能�
 - 用同一语法重新解析 `content`,核验 marker commit 只改 `probe.txt`、恰好新增这些 marker、无删除。
 - “没有被 push”只能做**限定范围、当前时刻**的证明：用 `git ls-remote --heads origin refs/heads/project-slot-5-FLY-3164` 读取远端当前顶端 `T`(`git branch -r` 只看本地跟踪 ref,可能过期，不能作证据),要求 `T` 已在本地对象库，再用 `git merge-base --is-ancestor C T` 判断;网络失败或缺对象 → `unverifiable`。QA 不 fetch、不改 ref。“历史上从未推送”无法从 ref 状态证明，报告中标注为基于 writer 回执与守卫(receipt-based);其他分支 / 远端不在审计范围。
 - 证据不可得 → `unverifiable`,绝不判 `pass`。审计历史结果不授予写权限;writer 对 archive-only 指令拒绝新写入的规则保持不变。
+- **报告出口。**当前 runtime 给 QA 注入的收尾动作是 `qa-result --status pass|fail … && ask --report …`(`edge-worker/dist/Blueprint.js:1281-1298`)。`qa-result` 只接受 `pass|fail`(`flywheel-comm/dist/commands/qa-result.js:20,497-501`),在 `qa → founder_gate` 路径上 PASS 还要核验 PR 身份(`teamlead/dist/bridge/workflow-decision-routes.js`),遇到 `land_head_pr_not_at_tip` 还会执行授权推送。本 issue 没有 PR 且禁止 push,所以 QA 把三态结果写进 `ask --report` 正文，并注明它只是审计报告、不是已被接受的 workflow verdict;不运行通用 `qa-result` closeout,不把 `unverifiable` 硬映射为 `fail`,不补 PR。若注入协议坚持要求该动作，就与 implement 一样报告 capability mismatch 并 park,交给 workflow owner。
 
 ## Workflow 能力不匹配
 

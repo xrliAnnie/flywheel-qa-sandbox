@@ -121,7 +121,7 @@ Issue: FLY-3164 (https://linear.app/geoforge3d/issue/FLY-3164/529-canary-fly2127
   3. 一个 `CommDB.openReadonly(FLYWHEEL_COMM_DB)` handle 上：`getMessageById` 行存在且 `type='instruction'`、`to_agent=$FLYWHEEL_EXEC_ID`、`from_agent=$FLYWHEEL_LEAD_ID`、`content_ref` 为 `null`(带外部引用 → 拒绝并请求内联重发，不跟随路径读文件);`inspectMailboxDeliveryContent(uuid) === row.content`;把 `row.content` 写入 `mktemp -d` 下 mode 0600 的 `source.bin`;`finally` 关闭；
   4. 对 `source.bin` 计算 sha256。Claude 对话里显示的 teammate-message 文本**不是** parser 输入。只剩 archive 的旧指令不授予写权限(要求重新投递)。
 
-- [ ] **Step 3: 解析** — 只接受 research.md 列出的两种格式之一(`Append the exact line <m> to probe.txt` 或 `Exact marker lines:` + 唯一 `text` fence);每条 marker 1..512 字节可打印 ASCII、首尾非空格、无 NUL/CR/LF/TAB;不 trim。每条 marker 写入独立的单行临时文件(精确字节 + LF)。任何歧义 → 不写文件，用 `ask --report` 请求按支持格式重发。
+- [ ] **Step 3: 解析** — 只接受 research.md 列出的两种格式之一(`Append the exact line <m> to probe.txt` 或 `Exact marker lines:` + 唯一 `text` fence);每条 marker 1..512 字节可打印 ASCII、首尾非空格、无 NUL/CR/LF/TAB;不 trim。marker 列表必须非空，且按精确字节两两不重复；出现重复就在改动 `probe.txt` 或 index **之前**拒绝并请求重发(不静默去重)。每条 marker 写入独立的单行临时文件(精确字节 + LF)。任何歧义 → 不写文件，用 `ask --report` 请求按支持格式重发。
 
 - [ ] **Step 4: 判定 Git 持久化状态(而不只是文件计数)**
 
@@ -189,7 +189,9 @@ QA 是另一个 execution,没有收到发给 writer 的指令，**不得**用自
   3. `git merge-base --is-ancestor C "$T"`:exit 0 → `fail`(远端已包含 marker commit);exit 1 → 本项满足；其他 → `unverifiable`。
   这只证明“远端 feature 分支当前不含 `C`”。“历史上从未推送过”无法从 ref 状态证明，只能在报告中注明依据是 writer 回执 + “有 marker commit 后不再 push”守卫(receipt-based),不得升级为证明；其他分支 / 其他远端不在审计范围内，报告中写明。
 - [ ] **Step 6: 范围** — 无产品路径改动、无 PR / ship / merge / deploy / 测试套件。
-- [ ] **Step 7: 报告** — 通过注入的结构化收据报告 `pass` / `fail` / `unverifiable`(附原因)。证据不可得只能是 `unverifiable`,绝不是 `pass`;QA 不补写 marker、不代替 writer 制造证据；审计成功不授予任何写权限。
+- [ ] **Step 7: 报告(审计报告 ≠ workflow verdict)** — 三态审计结果 `pass` / `fail` / `unverifiable`(附原因与上面各项证据)只放进 `ask --report` 的正文，并写明“这是 FLY-3164 canary 审计报告，不代表 workflow terminal verdict 已被接受”。证据不可得只能是 `unverifiable`,绝不是 `pass`;QA 不补写 marker、不代替 writer 制造证据；审计成功不授予任何写权限。
+
+  **不执行通用 `qa-result` closeout。** 当前 runtime 注入的 QA 收尾是 `qa-result --status pass|fail … && ask --report …`(`edge-worker/dist/Blueprint.js:1281-1298`):`qa-result` 只接受 `pass|fail`(`flywheel-comm/dist/commands/qa-result.js:20,497-501`),PASS 在 `qa → founder_gate` 路径上还要核验 PR 身份，并且在 `land_head_pr_not_at_tip` 时会执行授权推送。本 issue 没有 PR,也禁止 push,所以 QA 不把 `unverifiable` 硬映射成 `fail`、不为满足收据去造 PR、不运行会推送的 closeout。若注入协议坚持要求该动作，就像 Task 3 Step 8 一样在回执里写明 capability mismatch 并 park,由 workflow owner 提供与本 issue 边界兼容、server 授权的出口。
 
 ## Negative guards
 
@@ -200,6 +202,8 @@ QA 是另一个 execution,没有收到发给 writer 的指令，**不得**用自
 - Parser 输入只能是核验过的 `row.content`,不从渲染后的对话文本重抄；`content_ref` 非空的行不是 marker 来源。
 - “文件里已有这一行”不等于“已提交”;只有 Step 4 的状态表能决定是否 commit。
 - archive 中的指令只能用于 QA 审计，不能授权新写入。
+- 多行 marker 按精确字节去重检查：重复即拒绝，不静默去重，writer 与 QA 用同一规则。
+- QA 不运行通用 `qa-result` closeout(它只认 `pass|fail`、PASS 需要 PR、可能推送);审计结果只进 `ask --report`。
 - 本地分支一旦含 marker commit,writer 不再 push 该分支(任何 push 都会把 marker commit 一起推上去)。`flywheel-comm progress` 只做 path-limited 本地 commit、不 push,可照常使用。
 - Design review 的批准只授权设计本身，不授权 marker 写入、PR、ship、merge、deploy。
 - `【页面意见汇总】FLY-3164` 是修改意见标记，永远不是通过信号。
