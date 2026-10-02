@@ -6,184 +6,296 @@ Issue: FLY-3131 (https://linear.app/geoforge3d/issue/FLY-3131/epic在飞空位�
 > 状态:设计节点产出,**还没有和 Annie 过完**(PRD §6.0:开工前先和她过一遍设计)。本文是第二版设计页(founder-design.html)的工程底稿;
 > 标「待 Annie 定」的地方以她在页面上的选择为准。不写产品代码、不动 Bridge。
 > 已定:1A(共用 FLY-3147 后台线程)、2B(接 Linear webhook,可用 Cloudflare)、4A(走 Lead 收件箱)、5A(不依赖 Epic 页,从 Linear 增量算)。第 3 题待定。
+> 修订记录:R1(Codex 14 条)→ 本版:占位按「单」计、释放写持久评估意图、提醒状态机、跨库投递键、依赖 SQL 未知即挡、拷贝完整快照、
+> 新鲜度闸门 + 发送前复核、C 改为「申请修改 PRD §3.2」、「主线程过渡」改为需另批的 PRD §3.1 临时变更、webhook 入队后才回 200、token 权限按账号级写。
 
 ## 1. 一句话
 
-**Linear 的变化只增量更新一份本地副本(不排序);空出位子、或「有空位时副本变了」,才在副本上当场算出下一张,投进 Lead 收件箱;
-再用低频对账兜住漏掉的变化。**
+**Linear 的变化只增量更新一份本地拷贝(不挑单);空出位子(持久记录)、或「有空位时拷贝变了」,才在拷贝上挑出下一张,发送前再向 Linear 核一次,
+投进 Lead 收件箱;定时对账兜住漏掉的变化;拷贝不新鲜时宁可不发也不发过时的建议。**
 
 ## 2. 触发时机(回答 founder「每 5 分钟都要算吗」)
 
-### 2.1 结论
+### 2.1 信号与职责
 
-不再「每 5 分钟算一遍能开工的单」。三类信号,各管一件事:
-
-| 信号 | 来源 | 做什么 | 算不算「下一张」 |
+| 信号 | 来源 | 做什么 | 会不会挑单 |
 |---|---|---|---|
-| S1 空出位子 | 本地:收尾路径 `runPostShipFinalization` 的 5 个入口已汇到 `notifyEpicChanged(project,"session_completed")`;另含 runner 失败 / 被停 | 标记该 Lead「要评估」 | **算** |
-| S2 Linear 有变化 | Cloudflare 收的 webhook(拉取)+ 本地事件(`/api/dependency` 增删依赖、Flywheel 自己改状态) | 只更新副本里受影响的那几行 | 只有这个 Lead **此刻有空位**才算 |
-| S3 对账 | 定时,默认 10 分钟一轮增量 + 每天一次全量 | 把副本和 Linear 对齐(补漏掉的事件、依赖变化) | 同 S2:副本真变了且有空位才算 |
-| S4 再提醒 | 定时检查「提醒了 30 分钟没回应」 | 再投一次 | 不重新算,复用原提醒(若那张单已不可开始,则重新算一张) |
+| S1 位子释放 | 见 §2.2 入口矩阵;释放提交时**同一事务**写一条持久「评估意图」 | 评估器消费意图 | **会** |
+| S2 Linear 有变化 | Cloudflare 取来的 webhook + 本地事件(`/api/dependency`、收尾标 Done) | 只更新拷贝里受影响的部分 | 只在该 Lead **有空位**时写评估意图 |
+| S3 对账 | 定时:10 分钟增量 + 每天全量(§4.4) | 把拷贝和 Linear 对齐 | 同 S2 |
+| S4 提醒到期 | 定时检查提醒状态机(§3) | 30 分钟再提醒 / 60 分钟到期 | 到期、过时都写评估意图 |
+| S5 兜底巡查 | 每 5 分钟,读本地库,不读 Linear | 发现「有空位、拷贝新鲜、最近一次释放之后没有评估结论」→ 写评估意图;Worker 启动 / 重启 / 开关打开 / 配置变更时也跑一次 | 会 |
 
-- **位子满(最常见)时,零排序开销**:S2 / S3 只写副本。这就是 founder 的 ①「有 capacity 时再算」。
-- founder 的 ②「每次 Linear 变化重算 DAG」被拆成两半:**变化时只增量更新副本(便宜)**,**有空位时才算**(只取一张)。
-- 和成熟系统对齐:Kubernetes 调度器同型(事件只把「可能帮得上的」放回队列 + 定时 flush 兜底);Buildkite / Temporal「有空位才放下一个」;
-  Airflow「只有排队多于空位,排序才有意义」(research.md §1)。
+- **位子满(最常见)时,S2 / S3 只写拷贝,不挑单**。这就是 founder 的 ①「有 capacity 时再算」。
+- founder 的 ②「每次 Linear 变化重算 DAG」被拆成两半:变化时只增量更新拷贝;有空位时才挑。
+- S5 解决 R1#3:即使释放后进程崩溃、Linear 又没变化,空位也不会一直闲着。
+- 和成熟系统对齐:Kubernetes(事件放回队列 + 每 30 秒兜底)、Buildkite / Temporal(有空位才放行)、Airflow(排队多于空位时排序才有意义)(research.md §1)。
 
-### 2.2 评估器(每个 Lead 一个,single-flight)
+### 2.2 S1 入口矩阵(R1#3:现有代码并没有统一的「位子释放」事件)
+
+| 现有路径(主仓 main `9fcbdebb1`) | 今天表示什么 | 在新设计里 |
+|---|---|---|
+| `event-route.ts:3982`、`DirectEventSink.ts:1472` 的 `notifyEpicChanged(…,"session_completed")` | 一次 session 状态变化,**早于**收尾,不代表合入 | **不算释放**(阶段之间、重试都会触发) |
+| land 收尾 `plugin.ts:9198`(可恢复 finalizer)、`DirectEventSink.ts:1655`、`event-route.ts:4128` 进入 `runPostShipFinalization` 且 `post-ship-finalization.ts:155-165` 认定有合入证据 | 真实合入 | **释放**,来源 id = PR 号 + merge sha |
+| `merge-ship-gate.ts:579-582`、`external-merge-reconcile.ts:503-506` 的 `linear_done` 回调 | 补救路径确认合入 | **释放**,同上来源 id(幂等:同一合入只释放一次) |
+| Linear 上被占位的单变成 canceled / duplicate(拷贝或对账看到) | 不做了 | **释放**,来源 = Linear 状态变化 |
+| Lead 明确放弃(新增:`/api/refill/release`) | 不做了 | **释放**,来源 = Lead 操作 id |
+| 无 PR 的工作流(如只出文档)以工作流终态 completed 结束 | 做完了 | **释放**,来源 = workflow 终态 id(实现第一步列全现有无 PR 路由) |
+| runner 失败 / 被停 / 重试 / 换 runner / 等批准 / park | 同一张单还在做 | **不释放** |
+
+- 释放 = 在占位表把这张单标 released(带来源 id,唯一约束防重复)+ 同一事务插一条 `refill_eval_intent`。线程无关:3147 把 land / external merge 巡检搬进 worker 后,
+  释放仍然写同一个库,评估器只看库,不依赖跨线程消息。
+- 每条评估意图必须落一条 `refill_decision`:选中了哪几张,或「为什么没补」(位子满 / 没有能开始的单 / 读数不新鲜 / 开关关着)——一周验收「每次合入都有下文」从这里出。
+
+### 2.3 占位(R1#2:按「单」计,不按 runner 计)
+
+- 占位表 `refill_slot` 以 `(project, issue_id)` 为键:**第一次被 `/api/runs/start` 接纳派出**时写入(和派单同一事务;主线程,很小的一次写),
+  记录派出时的 owner Lead;阶段交接、等待批准、park、重试、换 runner 都保持占位。
+- 释放只按 §2.2 的证据;**拿不准(unknown)一律算占着**,宁可少补不误补。
+- 转交:Lead 改派时在同一事务里改占位行的 owner,不新增行(防双计 / 漏计)。
+- 上线时一次性回填:按现有活跃 workflow / session 把在飞的单写进占位表(只读推导,结果给 Lead 看一眼)。
+- 在飞数 = 该 Lead 名下未释放的占位行数。上限 `cap`(项目配置,默认 12);13–14 不自动提醒(PRD 2.7)。
+
+### 2.4 评估器(每个 Lead 一个,single-flight)
 
 ```
-dirty[lead] = true            ← S1;或 S2/S3 且 freeSlots(lead) > 0
-loop while dirty[lead]:
-  dirty[lead] = false
-  free = cap(lead) − inFlight(lead) − outstandingSuggestions(lead)
-  if free <= 0: break
-  pick = readyQuery(lead, limit = free, exclude = outstanding ∪ inFlight)
-  for each: write suggestion row (idempotency key = lead + issue + slotEpoch) → enqueue lead event
-  (评估过程中新到的事件会把 dirty 重新置 true,下一圈处理 —— 照 K8s 对「正在调度」期间事件的处理)
+消费一条或多条评估意图(同一 Lead 合并):
+BEGIN IMMEDIATE                                       -- SQLite 写锁,等同 Airflow 关键区
+  1. 收敛提醒:过时的标 stale、到 60 分钟的标 expired(§3)
+  2. 新鲜度闸门:该项目拷贝不新鲜 / 不完整 → 写 decision(read_unavailable),发告警,结束
+  3. free = cap − 未释放占位 − 有效提醒(pending/reminded)
+  4. free ≤ 0 → 写 decision(full),结束
+  5. 候选 = readyQuery(lead, limit = free)                 -- §5.3
+  6. 为每个候选插 suggestion(pending)+ outbox(key = refill:<sid>:initial)
+  7. 写 decision(picked: [...]),标意图 consumed
+COMMIT
+发送前复核(事务外,主线程投递前由 worker 先做):按单号向 Linear 现拿这张单 + 它的 blockers + 所属 Epic,
+  仍满足条件才允许投递;不满足 → suggestion 标 stale、outbox 撤销、写新的评估意图(重挑)。
 ```
 
-- `inFlight(lead)`:StateStore 里该 Lead 名下未终态的 runner(从派出占到合入,等 Annie 按卡的也占)。
-- `outstandingSuggestions`:已提醒、未派、未过期(默认 2 × 30 分钟)的提醒,先占着位子,避免同一个空位连发两张。
-- `cap(lead)`:项目配置,默认 12(PRD 2.7);13–14 不自动提醒。
-- 结果写库与投递用同一个 SQLite 事务写 suggestion 行 + outbox 行(Temporal 式 outbox),投递失败可重放、不重复。
+- 评估过程中到达的新意图留在表里,下一圈处理(对应 K8s 对「正在调度」期间事件的处理)。
+- 手动派单(急活或 Lead 自选)与评估器的竞争:`/api/runs/start` 写占位时,若该单有有效提醒,在同一事务里把提醒转成 dispatched(释放提醒占的名额、换成真占位);
+  派的是别的单则只加占位。两者都在 SQLite 写锁里,不会超卖;最坏结果是在飞到 13(落在 PRD 允许的 13–14 区间)。
 
-## 3. 第 1 题:补单放在哪个后台线程(已选 A,本节讲清 A / B)
+## 3. 提醒状态机(R1#4)
 
-两者**业务逻辑完全一样**(§2 的评估器、§4 的 Linear 接入、§5 的副本);区别只在「跑在哪个线程、谁管这个线程」。
+| 状态 | 进入条件 | 占不占名额 | 离开 |
+|---|---|---|---|
+| pending | 评估器选中 | 占 | 投递成功后 30 分钟 → reminded;派出 → dispatched;过时 → stale |
+| reminded | 30 分钟内没派(只再提醒**一次**,key = `refill:<sid>:reminder:1`) | 占 | 再 30 分钟 → expired;派出 → dispatched;过时 → stale |
+| dispatched | `/api/runs/start` 接纳这张单(同事务转成占位) | 不再单独占(由占位表占) | 终态 |
+| stale | 拷贝或发送前复核发现它已不能开始(Epic 放回 Todo、单子被改、依赖新增等) | 不占 | 终态;写评估意图重挑 |
+| expired | 提醒后 60 分钟没动 | 不占 | 终态;记进验收数据;写评估意图 |
 
-### 3.1 A:作为 FLY-3147 任务目录里的一组任务
-
-- 在 `bridge/patrol-worker/task-registry.ts` 注册组 `refill`:任务 `refill.pull`(拉 Cloudflare 队列)、`refill.reconcile`(对账)、
-  `refill.evaluate`(评估器)、`refill.remind`(30 分钟再提醒)。稳定 taskId、cadence、资源互斥 key 按 3147 规则写。
-- 线程内:自己的 SQLite 连接 + 短事务写副本 / 提醒;Linear / Cloudflare 的 HTTP 在线程内发。
-- 要发给 Lead 的提醒 → 经 3147 的 effect port 请主线程 `appendLeadEvent` + `enqueueLeadEvent`(Lead 收件箱只由主线程写,沿用现有链路)。
-- S1(空出位子)发生在主线程收尾路径 → 主线程只发一条「slot_freed(lead)」消息给线程。
-- 由 3147 的 supervisor 管重启、熔断;由 3147 的分组开关管「在主线程还是线程里跑」。
-
-| Pros | Cons |
-|---|---|
-| 只有一套线程框架:启动、重启、熔断、锁中介、日志、开关都复用,不重复造 | 补单的线程部分要等 3147 骨架(3147 又等 3146 合入);3147 现在只有设计 |
-| 3147 已过 3 轮 design review,线程边界(谁能写收件箱、谁能动 runner)已经想清楚 | 补单和其他巡检挤同一个线程:一个巡检任务卡住(3147 文档提到 land 最长 460 秒)可能拖慢补单提醒,要靠 3147 的「每任务 single-flight、await I/O 时让出」 |
-| 3147 每组「默认主线程、开关切换」:补单可以先按同一规则在主线程跑、3147 好了切开关,不必真的等(见 3.3) | 3147 的接口如果中途改,补单要跟着改 |
-| 以后其他 Lead 的队列也在同一框架下,不会出现第二套 | 出问题时排查要同时懂 3147 的框架 |
-
-### 3.2 B:补单自己先起一个线程,3147 以后复用或合并
-
-- 新建 `bridge/refill-worker/`:自己的 `new Worker(...)`、自己的 supervisor、自己的消息协议、自己的 SQLite 连接。
-- 向 Lead 投递同样要回主线程(收件箱写入方只能是主线程),所以也要自己写一套「请主线程代发」的消息。
-
-| Pros | Cons |
-|---|---|
-| 不等 3147 / 3146,线程部分可以和子单 1 并行开工 | 两套线程框架(启动 / 重启 / 熔断 / 消息协议 / 锁)——3147 已经设计了一套,这里再造一套 |
-| 补单独占线程,不被其他巡检任务拖慢 | Bridge 里多一个常驻线程:多一份内存(每个线程一个独立 V8,几十 MB 级 [推断]) |
-| 出问题边界清楚,只影响补单 | 以后合并进 3147 是一次额外迁移(或者永久两套) |
-| | 「谁能写 Lead 收件箱 / 谁能动 runner」的规矩要再写一遍、再审一遍 |
-
-### 3.3 建议(待 Annie 确认第 1 题)
-
-保持 **A**。补一个过渡做法给她选:**A-先主线程**——3147 线程骨架没到之前,`refill` 组按 3147 的「默认主线程」规则在主线程跑,
-每次评估 / 每批同步设耗时预算(超 50 ms 记告警);3147 到了切开关搬进线程。理由:本方案下补单单次计算是毫秒级(本地副本 + 一条查询),
-主线程上真正可能慢的只有对账时解析 Linear 返回;用小批量分页控制。若她坚持 PRD 第 3 节第 1 条的字面要求「不在主线程算」,则 **A-严格等 3147**。
+- 约束:同一张单同一时刻最多一条 pending / reminded 提醒(SQLite 部分唯一索引)。
+- expired 的单**冷却**:拷贝里这张单的版本变化前、或 24 小时内,不再重复提醒(防「换个 epoch 无限重发」),下一个空位会给下一张。
+- 「投递成功」= 主线程拿到 comm.db 持久入队回执(§6),不是 Lead 已读。
 
 ## 4. 第 2 题:怎么拿到 Linear 的变化(已选 B:webhook;推荐 Cloudflare Worker + Queues)
 
+### 4.1 链路
+
 ```
 Linear ──webhook──▶ Cloudflare Worker(*.workers.dev)
-                     · 验 Linear-Signature(原始 body,HMAC-SHA256)+ 时间戳 ±60s,可选 Linear 出口 IP 白名单
-                     · 只保留 {deliveryId, type, action, issueId, 改动字段名},写入 Cloudflare Queue,立刻回 200
-Bridge refill.pull(每 30 s)──HTTP 拉取──▶ Queue(batch ≤ 100,可见超时 5 min)
-   · deliveryId 去重 → 按 issueId 回 Linear 重拿这张单(状态/优先级/父单/子单/依赖)→ 写副本 → 成功后 ack
-本地事件(/api/dependency、收尾)──▶ 直接写副本
-refill.reconcile(10 min 增量 + 每天全量)──▶ Linear GraphQL(updatedAt > 水位线 − 5 min;进行中 Epic 树的依赖全拉)
+   · 限 body 大小;校验 organizationId / type / 字段合法
+   · 验 Linear-Signature(原始 body,HMAC-SHA256,Worker secret)
+   · 用 body 里**被签名覆盖的** webhookTimestamp 判 ±60 秒(只在入口判,不在消费时重判)
+   · await QUEUE.send({deliveryId, type, action, issueId, 改动字段名}) 成功 → 回 200;入队失败 → 回 5xx(让 Linear 重试)
+Bridge refill.pull(每 30 s)── HTTP 拉取(batch ≤ 100,可见超时 5 min)
+   · 每条先写本地 refill_inbound(delivery_id 主键,状态 received)→ 本地提交成功后才 ack Cloudflare
+   · 按 issueId 合并(10 秒内同单只重拿一次)→ 回 Linear 重拿 → 写拷贝 + 必要时写评估意图 + inbound 标 applied,同一本地事务
+本地事件(/api/dependency、收尾)──▶ 直接写拷贝(同事务写评估意图)
 ```
 
-- **为什么不信 payload、要回 Linear 重拿**:Linear 不保证顺序、重试可晚到 6 小时;重拿最新状态让乱序和迟到无害。
-- **为什么对账不能省**:Linear webhook **不推送依赖关系变化**(research.md §3.1);依赖在 Linear 界面里手改,只有对账能发现。
-- **为什么选 Worker + Queues 而不是 Tunnel**:不要域名(FLY-3102 的 F2 隧道 / Tailscale 还没定,不被它卡住)、本机不开任何入口、
-  本机关机时消息在队列里存 24 小时(免费)/ 最多 14 天(付费 5 美元 / 月);Linear 永远立刻拿到 200,webhook 不会因本机关机被停用。
-- **密钥**:Linear webhook 签名密钥只放在 Worker secret;本机只放一个只能读写这一个队列的 Cloudflare token(`~/.flywheel/.env`,不进仓库、不进 argv)。
-- **健康告警**:超过 N 小时(默认 6)一条 webhook 都没收到、或拉取连续失败 → 给 Lead 发「补单读数变慢 / 坏了」(PRD 2.8);
-  此时自动退回「只靠对账」,对账间隔缩到 3 分钟。
-- **交付顺序上的诚实说明**:webhook 只影响「位子空着、在等新的能开始的单」这类情况的延迟,不影响正确性(正确性由对账保证)。
-  所以子单顺序是先做副本 + 对账(没有 Cloudflare 也能用,最多晚 10 分钟),再把 webhook 当加速层叠上去。
-- 前提(要 Annie / 运维给):用哪个 Cloudflare 账号(FLY-3102 共同前提)、Linear 建 webhook 要 workspace 管理员。
+- 去重与「已处理」分离(R1#10):`received` 只表示收下;只有和拷贝改动同一事务提交才 `applied`。崩溃后 received 未 applied 的会被重做。
+- 重拿失败:按 §4.5 退避;同一条连续失败 N 次(默认 5)→ 标 dead,发告警,等对账覆盖。
+- 为什么不信 payload:Linear 不保证顺序、重试可晚到 6 小时;重拿最新状态让乱序和迟到无害。
 
-## 5. 第 3 题:待派的单存在哪(待定;推荐 C)
+### 4.2 为什么 Worker + Queues
 
-### 5.1 三个选项
+不要域名(FLY-3102 的 F2「隧道 / Tailscale」还没定,不被它卡住)、本机不开任何入口、本机关机时消息在队列里存 24 小时(免费)/ 最多 14 天(付费 5 美元 / 月)。
+诚实说明:Cloudflare 自身入队失败时会回非 200,仍要靠 Linear 的重试;Linear 长时间收不到 200 仍可能停用 webhook——由 §4.6 的健康检查发现。
 
-| | 做法 | 依据 |
+### 4.3 密钥与权限(R1#11)
+
+- Linear 签名密钥:只在 Worker secret。
+- 本机的 Cloudflare token:按官方拉取文档,权限是**选定 Cloudflare 账号的 Queues 读写**,不是「只能动这一个队列」。所以推荐给 Flywheel 用一个
+  **只放这条队列的 Cloudflare 账号**(或接受账号级权限);存 `~/.flywheel/.env`,不进仓库、不进命令行参数。落地前实测 token 实际范围,文档只承诺实测过的。
+
+### 4.4 拷贝协议(R1#7)
+
+- **范围(scope)**:每个项目「进行中的 Epic」;每个 Epic 一个范围,含它的全部子单和这些子单的全部 `blocks` 关系;范围外的 blocker 作为「仅依赖证据」行保存(不可派)。
+- **完整快照 + 代号(generation)**:对一个范围,按稳定分页游标取全子单和全依赖;**全部页成功**才把新代号发布为当前快照(mark-and-sweep:本代没出现的子单 / 边才删除);
+  任何一页失败 → 保留上一份完整快照,范围标 stale。依赖对账**不以 updatedAt 没变为跳过条件**(改依赖不一定刷新 updatedAt)。
+- **单张单的增量更新**(webhook / 本地事件):只改这张单的字段;拿到的 `updatedAt` 比库里旧则丢弃(防旧响应覆盖新状态);删除 / 404 / 无权限 → 标 tombstone 或 unknown,**不可派**。
+  单张单的依赖变化以「重拿这张单的 relations + inverseRelations 全集」替换它的边(全集取全才替换)。
+- **Epic 进出 In Progress / 移父单**:增量对账发现后,对受影响范围做一次完整快照。
+- **水位线**:每次增量对账固定扫描上界,全部所需页提交后才前移;重叠 5 分钟。
+- **每天全量**:全部范围重建快照,顺带清掉不再在范围内的行。
+- 需在真 Linear 上实测:改父单是否带 `updatedFrom.parentId`、改依赖是否刷新 `updatedAt`、删掉的依赖用 `includeArchived` 能否查到(子单 1 第一步)。
+
+### 4.5 用量与限流(R1#12)
+
+- 估算(待实测校准):11 个进行中 Epic、约 200 张子单;每轮增量对账 ≈ 1 次「改过的单」+ 受影响范围的快照(每个范围 1–3 页)≈ 5–30 次请求;
+  每天全量 ≈ 30–60 次;webhook 重拿按单合并,估计每小时 ≤ 100 次。合计每小时约 300 次以内,个人 key 上限 2,500 次 / 小时(和同一用户其他 key 共享)。
+- 共享一个有上限的并发 / 预算;HTTP 429 和 **HTTP 400 + `errors[].extensions.code = RATELIMITED`** 都按限流处理,按返回的重置信息退避,未提交的页保留重试。
+
+### 4.6 健康(区分三种情况,不把「安静」当故障)
+
+| 情况 | 怎么判断 | 怎么办 |
 |---|---|---|
-| A(第一版建议) | 存一张「已排好序的待派队列」表,每个变化增量改它 | 自己维护一份要和 Linear 同步的就绪表;漏一个事件就错一张、不会自愈。成熟系统没有这么做的(research.md §1.1 第 1 条) |
-| B(第一版) | 不存,每次需要时去 Linear 现拉、现算 | = 今天 ready.v1 的读法:20 秒截止、43/200 超时、1.5 MB 超限 |
-| **C(新,推荐)** | **存 Linear 的本地副本(增量同步);有空位时在副本上当场算、取第一张;另存我们自己的「提醒记录」** | Kubernetes informer 缓存 + 调度时当场挑;Airflow / Prefect「真相在库,就绪在查询那一刻算」 |
+| 最近没人改 Linear | 对账也没发现变化 | 正常,不告警 |
+| 推送链坏了 | 对账发现了变化,但同一单在 webhook 里没出现(连续 N 次);或拉取 Cloudflare 连续失败;或每日查 Linear webhook 配置显示已停用(待验证 API 字段) | 告警 Lead「推送断了」;**仅在 Linear 预算健康时**把增量对账临时缩到 3 分钟 |
+| 读 Linear 失败 / 被限流 | 对账或重拿失败 | 退避;超过新鲜度预算 → 闸门关闭、告警「补单读数坏了」;恢复后发恢复通知 |
 
-C 怎么满足 PRD 第 3 节第 2 条:「输入一变只增量更新受影响部分」→ 增量更新的是副本;「有空位直接取队头,不全量重排」→
-取队头是副本上一条 `ORDER BY … LIMIT n` 查询(几百行、毫秒级),不去 Linear 全量拉、位子满时不算。「队列是缓存不是第二份真相」→
-副本可随时从 Linear 重建(删表 + 全量对账)。字面上 PRD 说「持久队列」,C 把它落成「持久副本 + 当场算」,**需要 Annie 确认这个理解**。
+## 5. 第 3 题:待派的单存在哪(待定)
 
-### 5.2 C 的表(StateStore,`migrate()` 里幂等建表)
+### 5.1 先说清:A 和 C 都需要同一份 Linear 拷贝
 
-| 表 | 主键 | 字段(要点) | 说明 |
+要「随变化增量更新」就得先有 Linear 事实的本地拷贝(§4.4),否则不知道哪些单受影响。第一版的 A 隐含了这一层。所以 A 和 C 共用:拷贝、对账、新鲜度闸门、提醒状态机。
+**区别只在:要不要再多维护一份「排好序的就绪队列」。**
+
+| | 做法 | 好处 | 代价 |
 |---|---|---|---|
-| `refill_issue` | `issue_id` | identifier、project_key、parent_id、state_type、state_name、priority、owner_lead(按现有部门 label 规则)、linear_updated_at、synced_at、archived | 只放进行中 Epic 及其子单;Epic 本身也在这张表(parent_id 为空) |
-| `refill_relation` | (`blocker_id`,`blocked_id`) | synced_at | 只放 `blocks` 关系;对账时按 Epic 树整批替换 |
-| `refill_sync_state` | `project_key` | watermark、last_incremental_at、last_full_at、last_webhook_at、last_error | 水位线写库成功后才前移 |
-| `refill_delivery_seen` | `delivery_id` | received_at | webhook 去重,保留 7 天 |
-| `refill_suggestion` | `id` | lead_id、issue_id、slot_epoch、reason_json、suggested_at、reminded_at、outcome(dispatched / stale / expired)、resolved_at;唯一键(lead_id, issue_id, slot_epoch) | 提醒台账:30 分钟再提醒、一周验收数据都从这里出 |
-| `refill_outbox` | `id` | suggestion_id、event_kind、payload、delivered_at | 和 suggestion 同一事务写,主线程投递 |
+| A(PRD §3.2 字面) | 拷贝之外,再维护一份排好序的就绪队列(持久表或可重建的内存优先队列);拷贝一变,算出受影响的单进出队列;有空位取队头 | 和 PRD 字面一致;单子极多时挑单最省 | 多一层要和拷贝保持一致的派生数据:每种变化(依赖、Epic 进出、优先级、Lead 归属、配置)都要写「影响哪些单」的规则,写漏一个就出错;需要对账把队列也重建一遍来兜底 |
+| B(第一版) | 不存,每次去 Linear 现拉现算 | 最少代码 | 就是今天 ready.v1 的读法:20 秒截止、43/200 超时、1.5 MB 超限 |
+| **C(建议,需改 PRD §3.2)** | 只维护拷贝;有空位时在拷贝上跑一次就绪查询挑前 N 张 | 少一层派生数据,不存在「队列和拷贝对不上」;拷贝坏了删掉重建即可 | 每次挑单要在本地扫一遍候选并排序(几百行,预计毫秒级,**待实测**);字面不符合 PRD §3.2「维护一条队列」 |
 
-就绪查询(示意,参数化):
+- C 和 PRD §3.2 的关系(R1#1):PRD 要的是「增量维护队列、有空位取队头、不全量重排」。C 做到「增量维护事实、不去 Linear 全量拉、位子满时不挑」,
+  但**有空位时会在本地重新筛选和排序候选**——这不是「取队头」。所以 C 是**申请修改 PRD §3.2**:「增量同步事实,有空位时在本地按需重算候选,接受小规模本地扫描」,
+  需要 Annie 明确同意。她不同意就做 A(可重建的派生队列),拷贝层不变。
+- 成熟系统里两种都有:Kubernetes 维护内存优先队列(像 A,但重启就扔、从真相重建);Airflow / Prefect 在挑的那一刻从库里查(像 C)。**没有一家把派生队列当真相**。
+
+### 5.2 表(StateStore,`migrate()` 里幂等建表;A 额外多一张 `refill_ready_queue`)
+
+| 表 | 主键 / 唯一 | 字段(要点) |
+|---|---|---|
+| `refill_issue` | `issue_id` | identifier、title、project_key、parent_id、state_type(经 `normalizeLinearState`)、priority、labels_json、owner_lead、owner_match_method、owner_config_revision、workflow_hint、role(schedulable / evidence_only)、tombstone、linear_updated_at、scope_generation |
+| `refill_relation` | (`blocker_id`,`blocked_id`) | scope_generation |
+| `refill_scope` | (`project_key`,`epic_id`) | current_generation、last_complete_at、status(fresh / stale / unknown)、last_error |
+| `refill_sync_state` | `project_key` | watermark、last_incremental_at、last_full_at、budget_state |
+| `refill_inbound` | `delivery_id` | issue_id、status(received / applied / dead)、attempts、received_at |
+| `refill_slot` | (`project_key`,`issue_id`) 未释放唯一 | owner_lead、occupied_at、dispatch_id、released_at、release_source_kind、release_source_id(唯一) |
+| `refill_eval_intent` | `id` | project_key、lead_id、source_kind、source_id、created_at、consumed_at |
+| `refill_decision` | `id` | intent_id、lead_id、outcome(picked / full / no_ready / read_unavailable / disabled)、picked_json、created_at |
+| `refill_suggestion` | `id`;部分唯一(issue_id)where state in (pending, reminded) | lead_id、issue_id、decision_id、state、reason_json、suggested_at、reminded_at、resolved_at、cooldown_until |
+| `refill_outbox` | `event_key` 唯一 | suggestion_id、lead_id、payload、status(pending / delivered / unknown / canceled)、attempts |
+
+- **owner Lead**(R1#9):复用 `resolveLeadForIssue`(`ProjectConfig.ts:1432`):项目内按配置顺序、大小写不敏感的 label 首次匹配,无匹配回第一个 Lead;
+  general fallback 照 `epic-page/residual.ts:310-316` 检查能否起 runner。存 labels、匹配方式、配置 revision;配置或 label 变化 → 重算 owner,
+  旧 owner 的有效提醒标 stale,新旧两个 Lead 都写评估意图。占位按**派出时**的 owner 计,直到转交。
+- **流程类型**(PRD 2.3):派单接口接的是 `templateId` / `taskCategory`(`runs-route.ts`)。提醒里的流程类型取自单子上的流程类型标记
+  (实现第一步确认现有约定并写入 `workflow_hint`);取不到就在提醒里写「这张没定流程类型,请定类型再派」。
+- 项目开关、cap、Lead 队列都以 `(project_key, lead_id)` 为范围;开关关闭时评估器只写 decision(disabled),零行为变化。
+
+### 5.3 就绪查询(C;A 用同一谓词维护队列。参数化,示意)
 
 ```sql
-SELECT c.issue_id, c.identifier, e.priority AS epic_pri, c.priority AS pri
-FROM refill_issue c JOIN refill_issue e ON e.issue_id = c.parent_id
-WHERE e.state_type = 'started' AND e.archived = 0
-  AND c.owner_lead = :lead AND c.archived = 0
-  AND c.state_type NOT IN ('backlog','completed','canceled')
-  AND c.issue_id NOT IN (SELECT issue_id FROM <活跃 runner>)            -- 已在做
-  AND c.issue_id NOT IN (SELECT issue_id FROM refill_suggestion WHERE outcome IS NULL)
-  AND NOT EXISTS (SELECT 1 FROM refill_relation r JOIN refill_issue b ON b.issue_id = r.blocker_id
-                  WHERE r.blocked_id = c.issue_id AND b.state_type NOT IN ('completed','canceled'))
+SELECT c.issue_id, c.identifier, c.title, e.priority AS epic_pri, c.priority AS pri
+FROM refill_issue c
+JOIN refill_issue e  ON e.issue_id = c.parent_id
+JOIN refill_scope s  ON s.project_key = c.project_key AND s.epic_id = e.issue_id
+WHERE c.project_key = :project AND c.owner_lead = :lead
+  AND s.status = 'fresh' AND c.scope_generation = s.current_generation
+  AND e.state_type = 'started' AND e.tombstone = 0
+  AND c.role = 'schedulable' AND c.tombstone = 0
+  AND c.state_type <> 'backlog'
+  AND c.state_type NOT IN ('completed','canceled','duplicate')            -- = isTerminalForScheduling
+  AND NOT EXISTS (SELECT 1 FROM refill_slot sl WHERE sl.project_key = c.project_key AND sl.issue_id = c.issue_id AND sl.released_at IS NULL)
+  AND NOT EXISTS (SELECT 1 FROM refill_suggestion g WHERE g.issue_id = c.issue_id
+                  AND (g.state IN ('pending','reminded') OR g.cooldown_until > :now))
+  AND NOT EXISTS (                                                         -- 只有「已知且 completed」的 blocker 才放行
+      SELECT 1 FROM refill_relation r
+      LEFT JOIN refill_issue b ON b.issue_id = r.blocker_id
+      WHERE r.blocked_id = c.issue_id
+        AND (b.issue_id IS NULL OR b.tombstone = 1 OR b.state_type IS NULL
+             OR b.state_type <> 'completed'))                              -- = isSuccessForDependency
 ORDER BY pri_rank(e.priority), pri_rank(c.priority), identifier_number(c.identifier)
 LIMIT :free;
 ```
 
-- 「挡它的单不在副本里」(跨 Epic 依赖、或挡它的单在 Todo 的 Epic 下)→ 对账时把这些 blocker 也拉进 `refill_issue`(只用来判状态,不参与派单)。
-  拉不到(权限 / 已删)→ 按「仍被挡」处理并在提醒原因里写明,宁可少补不误补。
-- 台账型 Epic(FLY-2072)不进调度:按 PRD 4.3,Epic 不在 In Progress 就不进;若它常年 In Progress,用项目配置的排除名单。
+- 取消 / 重复的 blocker **不放行**(和现有 `isSuccessForDependency` 一致,需要人工复核依赖)。
+- 设计验收样例:blocker 缺失、state 为空、无权限(tombstone)、canceled、duplicate、跨 Epic、范围 stale —— 都必须不出现在结果里。
+- `pri_rank` / `identifier_number` 用确定的 SQL 表达式或注册的确定性函数实现;所有值走绑定参数。
 
-## 6. 读数坏了一定有声音(PRD 2.8)
+## 6. 投递(R1#5:跨库,不承诺原子,靠稳定键幂等)
 
-- 对账失败 / 拉取失败 / 副本过期(超过 2 个对账周期没成功)→ 给 Lead 投「补单读数坏了」,**手上没 runner 的 Lead 也投**(修 `patrol-tick.ts:377-390` 那种静音)。
-- 一次合入后若没有提醒,必须写一条「为什么没补」(没有能开始的单 / 位子满 / 读数坏了),进 suggestion 台账 → 一周验收「每次合入都有下文」。
+- 每次逻辑通知一个固定 `event_key`:首次 `refill:<suggestionId>:initial`,再提醒 `refill:<suggestionId>:reminder:1`;`refill_outbox.event_key` 唯一。
+- 主线程(唯一能写 Lead 收件箱的一方,和 3147 边界一致)按 key 投递:`appendLeadEvent` 用 `event_id = event_key`(现有 `(lead_id, event_id)` 去重,`StateStore.ts:29753-29757`),
+  再走现有 `enqueueLeadEvent`(canonical deliveryId `lead_event:<lead>:<eventId>`,`lead-event-queue.ts:8-12`)。
+- 只有拿到 comm.db 持久入队回执才把 outbox 标 delivered;超时 / 不确定 → unknown,用同一 key 读回或重放(重放被现有去重吸收,不会双发)。
+- outbox 由主线程在启动时和每个 GatePoller 维护轮次 drain;投递前检查 suggestion 仍是 pending / reminded,已 stale → outbox 标 canceled 不发。
+- 发送前复核(§2.4)在 worker 侧完成后才把 outbox 置为可投递。
+- 每补一张,在那张单的 thread 留一句为什么(PRD 2.9),同样走 outbox(key `refill:<sid>:thread-note`)。
 
-## 7. 拆单(更新版,子单由 Tadashi 定)
+## 7. 第 1 题:补单放在哪个后台线程(已选 A,本节讲清 A / B)
+
+两者**业务逻辑完全一样**(§2–§6);区别只在「跑在哪个线程、谁照看这个线程」。两者都是**同一 Bridge 进程里的线程**,
+都隔离不了原生模块崩溃、进程内存耗尽、同一 SQLite 的争用(FLY-3147 plan §1「诚实边界」)。
+
+### 7.1 A:作为 FLY-3147 任务目录里的一组任务
+
+- 在 `bridge/patrol-worker/task-registry.ts` 注册组 `refill`:`refill.pull`、`refill.reconcile`、`refill.evaluate`、`refill.remind`、`refill.sweep`;
+  稳定 taskId、cadence、资源互斥 key 按 3147 规则写。
+- 线程内:自己的 SQLite 连接 + 短事务;Linear / Cloudflare 的 HTTP 在线程内发。
+- 写 Lead 收件箱 / thread 留言 → 经 3147 effect port 由主线程按 §6 投递。
+- 释放与派单占位在主线程(派单接口、收尾)或 3147 worker(land / external merge)里写库;评估器只读库,与在哪个线程产生无关。
+- 由 3147 supervisor 管重启、熔断;由 3147 分组开关管启用。
+
+| Pros | Cons |
+|---|---|
+| 只有一套线程框架:启动、重启、熔断、锁中介、日志、开关都复用 | 补单要等 3147 骨架和数据库争用保护先落地(3147 又等 3146 合入);3147 现在只有设计 |
+| 3147 已过 3 轮 design review,「谁能写收件箱、谁能动 runner」的边界已想清楚 | 和其他巡检共用一个线程:某个巡检任务慢(3147 文档提到 land 最长 460 秒)可能拖慢补单,要靠 3147 的「每任务 single-flight、等 I/O 时让出」 |
+| 以后其他 Lead 的队列也在同一框架下 | 3147 接口中途改,补单跟着改;排查要懂 3147 框架 |
+
+### 7.2 B:补单自己先起一个线程,3147 以后复用或合并
+
+| Pros | Cons |
+|---|---|
+| 不等 3147 / 3146,线程部分可以先开工 | 两套线程框架(启动 / 重启 / 熔断 / 消息协议 / 锁),3147 已设计的那套再造一遍 |
+| 补单的普通 JavaScript 异常和慢操作不占其他巡检的线程,排查范围小 | 同一进程:原生崩溃、内存耗尽、SQLite 争用照样互相影响;多一条常驻线程多一份内存(几十 MB 量级,推断) |
+| | 以后合进 3147 是一次额外迁移(或永远两套);「谁能写收件箱 / 动 runner」规矩要再写一遍、再审一遍 |
+
+### 7.3 建议(R1#13)
+
+**默认按 1A:3147 骨架和数据库争用保护落地后启用 `refill` 组。**不推荐也不默认「先在主线程跑」:那是对 PRD §3.1(独立后台 worker)的临时变更,
+需要 Annie 另外批准;它的风险是同步 SQL / JSON 解析会直接占主线程(设耗时告警只能事后发现,不能中断),「单次毫秒级」也还没实测。
+若她批准这个临时变更,启用门槛 = 实测单次评估与单页对账的主线程耗时、上线后持续记录,3147 就绪后切开关迁回 worker。
+
+## 8. 读数坏了一定有声音(PRD 2.8)
+
+- 新鲜度闸门(§2.4 第 2 步):范围 stale / unknown,或最近一次完整快照超过 20 分钟(= 2 个对账周期)→ 不发新的「可以做」,decision 记 read_unavailable,
+  给 Lead 投「补单读数坏了」,**手上没 runner 的 Lead 也投**(修 `patrol-tick.ts:377-390` 那种静音);恢复后发一条恢复通知。
+- 允许的陈旧窗口:两次对账之间,Linear 里手改依赖、暂停 Epic 不会马上进拷贝;发送前复核(§2.4)把「发出时已过时」挡住,
+  但 Lead 看到之前仍可能过时——所以第一版保留「Lead 看一眼」,页面上明说。
+
+## 9. 拆单(更新版,子单由 Tadashi 定)
 
 | # | 子单 | 依赖 | 对应 |
 |---|---|---|---|
-| 1 | Linear 本地副本 + 对账(增量 / 全量 / 依赖)+ 就绪查询 + 坏了告警;取代 FLY-2971 的读法 | 无,现在可开 | 5A、第 3 题 C、2.8 |
-| 2 | 评估器 + 提醒台账 + outbox 投 Lead 收件箱 + 30 分钟再提醒 + 上限 12 / 项目开关 + thread 留痕 | 1;线程归属按第 1 题(A:注册进 3147 任务目录) | 4A、2.2–2.7、2.9 |
-| 3 | Cloudflare Worker + Queue + Bridge 拉取(webhook 加速层)+ 静默告警 | 1;Cloudflare 账号、Linear 管理员建 webhook | 2B |
+| 1 | Linear 拷贝:范围 / 完整快照 / 增量 / 对账 / 新鲜度 / 限流 + 读数坏了告警;实测三条 Linear 行为;取代 FLY-2971 的读法 | 和 Annie 过完设计;**不受第 3 题影响**(A、C 都需要) | 5A、2.8 |
+| 2 | 占位表 + 释放入口矩阵 + 评估意图 + 评估器 + 提醒状态机 + outbox 投递 + 30 分钟再提醒 + 上限 / 开关 + thread 留痕 + 「为什么没补」 | 1;线程按第 1 题;挑单方式按第 3 题 | 4A、2.2–2.7、2.9 |
+| 3 | Cloudflare Worker + Queue + Bridge 拉取 + 推送健康检查 | 1;Cloudflare 账号、Linear 管理员建 webhook | 2B |
 | 4 | 测试房演练 + 上线一周数据 | 2(3 可后补) | PRD §5 |
 
-## 8. 测试证据(实现阶段要交,本轮不跑)
+## 10. 测试证据(实现阶段要交,本轮不跑)
 
-- 单元:就绪查询(依赖未完成 / 跨 Epic blocker / Backlog / 已在做 / 已提醒 / 优先级三级排序);评估器 single-flight + 评估中到达事件不丢;
-  幂等键防同一空位重复提醒;webhook 验签(原始 body、过期时间戳、错签名拒绝);deliveryId 去重;水位线只在成功后前移。
-- 集成:模拟 3 张能开始的单 → 合入 1 张 → 收件箱 1 条「可以做 X」;Linear 标过时 → 下一张;Epic 放回 Todo → 不再给;
-  丢掉一条 webhook → 对账补上;拉取连续失败 → 「读数坏了」;Lead 无 runner 时也收到告警。
-- 反向守卫:位子满时 S2/S3 只写副本、不调用就绪查询(计数断言);项目开关关闭时零行为变化。
+- 单元:就绪查询全部反例(§5.3 样例);占位不因阶段交接 / 重试 / runner 失败释放,只因 §2.2 证据释放、同一来源只释放一次;
+  提醒状态机每条边;部分唯一索引挡住同单两条有效提醒;冷却期不重发;outbox 同 key 重放不双发;webhook 验签(原始 body、篡改、过期签名时间戳、错组织);
+  inbound received 未 applied 崩溃后重做;快照缺页不发布;旧 updatedAt 不覆盖;RATELIMITED(HTTP 400)退避。
+- 集成:3 张能开始的单 → 合入 1 张 → 收件箱 1 条「可以做 X」;Linear 标过时 → stale → 下一张;Epic 放回 Todo → 不再给;
+  释放后杀掉 worker、Linear 不变 → S5 补上评估;丢一条 webhook → 对账补上;对账失败超预算 → 闸门关、「读数坏了」;Lead 无 runner 也收到告警;
+  手动急活与评估器并发 → 不超过 13。
+- 反向守卫:位子满时 S2 / S3 不调用就绪查询(计数断言);项目开关关闭时零行为变化。
 
-## 9. 要 Annie 在设计页上定的
+## 11. 要 Annie 在设计页上定的
 
-1. 触发时机:推荐「变化只更新副本、有空位才算 + 对账兜底」(另两个:只按空位;每次变化重算)。
-2. 第 1 题:A-先主线程(推荐)/ A-严格等 3147 / 改选 B。
-3. 第 2 题落地:Cloudflare Worker + Queues(推荐)/ Cloudflare Tunnel(要域名)/ 先只用对账、webhook 以后再加。
-4. 第 3 题:C 本地副本 + 当场算(推荐)/ A 存排好序的队列 / B 每次现拉 Linear。
+1. 触发时机:推荐「变化只更新拷贝、有空位才挑 + 对账兜底」(另两个:只在释放时挑;每次变化重算)。
+2. 第 1 题:A,等 3147(推荐)/ A + 先在主线程跑(需另批的 PRD §3.1 临时变更)/ 改选 B。
+3. 第 2 题落地:Cloudflare Worker + Queues(推荐)/ Cloudflare Tunnel(要域名)/ 先只靠对账。
+4. 第 3 题:C(需同意修改 PRD §3.2,推荐)/ A(PRD 字面,多一层派生队列)/ B(每次现拉 Linear)。
 
-## 10. 边界
+## 12. 边界
 
 - 做:上面的设计与拆单建议。不做:产品代码、Bridge 改动、跑测试(机器负载高)、全自动派单(PRD 6.1)、模型 / 额度选择(另一份 PRD)、PM 验收(FLY-830)。
-- 没在真 Linear 上实测:改父单的 `updatedFrom.parentId`、改依赖是否刷新 `updatedAt`、删掉的依赖能否查到。实现子单 1 的第一步就是实测这三条。
+- 没实测:三条 Linear 行为(§4.4)、Cloudflare token 实际范围(§4.3)、挑单耗时(§5.1)、Linear webhook 停用状态的查询字段(§4.6)、请求量估算(§4.5)。

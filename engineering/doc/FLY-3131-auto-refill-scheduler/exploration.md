@@ -49,8 +49,9 @@ Issue: FLY-3131 (https://linear.app/geoforge3d/issue/FLY-3131/epic在飞空位�
   兜底:runner 自报 `merged`、`external-merge-reconcile.ts` 扫。没有 GitHub webhook。
 - 收尾 `runPostShipFinalization`(`post-ship-finalization.ts:949`)从 5 个入口调用(`DirectEventSink.ts:1655`、`event-route.ts:4128`、
   `merge-ship-gate.ts:554`、`external-merge-reconcile.ts:472`、`plugin.ts:9174`)。
-- 已有钩子 `notifyEpicChanged(project, "session_completed")`(`event-route.ts:1048`;`DirectEventSink.ts:1472`)
-  ⇒ **「有空位」这个事件今天就在本地,不需要外部推送**。
+- 已有钩子 `notifyEpicChanged(project, "session_completed")`(`event-route.ts:1048`、`:3982`;`DirectEventSink.ts:1472`),但它在 session 状态变化时触发,**早于**收尾,
+  不代表合入;补救路径 `merge-ship-gate.ts:579-582`、`external-merge-reconcile.ts:503-506` 用的是 `linear_done` 回调;land 走可恢复 finalizer(`plugin.ts:9198`)。
+  ⇒ **今天没有统一的「位子释放」事件**,但所有合入证据都在本地产生,不需要外部推送;新设计要按入口矩阵统一(plan.md §2.2)。
 
 ### 2.5 在飞上限
 - 代码里**没有数量上限**:`maxConcurrentRunners` 已退役(`runner-admission.ts:1-17`),`/api/runs/active` 返回 `max: null`;
@@ -77,8 +78,8 @@ Issue: FLY-3131 (https://linear.app/geoforge3d/issue/FLY-3131/epic在飞空位�
 
 ## 3. 从现状直接推出的设计约束
 
-1. **「空出位子」是本地事件**(收尾路径里已有钩子),补单的主触发不需要任何外部推送。
-2. **Linear 变化的推送只是为了「位子空着、但当时没有能开始的单」这一类**(例如依赖刚被解开、Epic 刚放进 In Progress)。
+1. **「空出位子」的证据都在本地**(合入确认 / 收尾 / linear_done),补单的主触发不需要外部推送;但现有钩子没统一,要新做一个按单计的占位与释放记录。
+2. **Linear 变化的推送用于缩短拷贝的陈旧窗口**:既让「位子空着、在等能开始的单」更快补上(依赖刚解开、Epic 刚放进 In Progress),也让暂停 / 撤单 / 改优先级更快进拷贝;正确性还要靠对账 + 发送前复核。
 3. **Linear 不推送依赖关系的变化**(见 research.md §3.1),所以无论选不选 webhook,都必须保留低频对账轮询。
 4. 不能沿用今天「每次从 Linear 全量现拉」的读法(慢 / 超时 / 超大小),必须有本地增量副本。
 5. FLY-3147 还没有代码;第 1 题选 A 意味着补单的后台部分排在 3147 骨架之后。

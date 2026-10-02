@@ -30,7 +30,7 @@ Issue: FLY-3131 (https://linear.app/geoforge3d/issue/FLY-3131/epic在飞空位�
 
 1. **真相永远是持久状态,队列只是从它派生的缓存。** Airflow / Prefect / Dagster 是库里的状态列;Kubernetes / Argo 是 API 对象;
    Temporal 是工作流历史。内存队列(Kubernetes、Argo 信号量)重启就扔掉、从真相重建。唯一落盘的队列(Temporal)是和状态变化**同一个事务**写的。
-   **没有一家是「另外维护一张就绪表,指望它和真相一直同步」**。[推断,依据上表各条官方出处]
+   **没有一家把派生队列当真相**:Kubernetes 维护内存优先队列,但重启就扔、靠事件 + 定时 flush 纠偏;Temporal 的持久队列和状态同一事务写。[推断,依据上表各条官方出处]
 2. **事件驱动求快 + 定时按状态兜底求稳。** 每家都对事件即时反应(任务完成、Pod 删除、空出位子),也都有一个不看事件、把全部重查一遍的定时器
    (K8s 30 秒 / 5 分钟、Argo 20 分钟、Airflow 循环 + 300 秒、Prefect 15 秒、Dagster 5 秒)。K8s 的设计文档直接承认:只靠事件,漏一个就卡住。
 3. **派单在「有空位」那一刻、在锁里做。** Airflow 锁池子行、Argo 只放队头、Buildkite 的 `limited` 状态、Temporal「有空槽才去拉」。
@@ -40,15 +40,13 @@ Issue: FLY-3131 (https://linear.app/geoforge3d/issue/FLY-3131/epic在飞空位�
 
 ### 1.2 对我们第 3 题的含义 [推断]
 
-- 我们的规模:几百张单、1 个(以后几个)Lead。在本地 SQLite 上「挑出能开始的单并排序」是一条查询,毫秒级。
-- 第一版的 A「存一张有序待派表,增量维护」= 自己造一份要和 Linear 同步的就绪表——正是上面第 1 条没人这么做的那种:
-  漏一个事件,表里就错一张单,而且不会自己好。它省下的只是一次毫秒级查询。
-- 第一版的 B「不存,每次现算」如果是**每次去 Linear 现拉**,就是今天 ready.v1 的样子:20 秒截止、43/200 超时、1.5MB 超限——不能要。
-- 成熟系统的做法是第三种:**把 Linear 的事实增量同步到本地(像 K8s 的 informer 缓存),空出位子时在本地当场算、取第一张**。
-  持久化的是「Linear 的副本」和「我们自己的派单记录(提醒了谁、什么时候、有没有回应)」,不是「排好序的队列」。
-- 这和 PRD 第 3 节第 2 条的本意一致:「输入一变只增量更新」——增量更新的是副本;「有空位直接取队头,不全量重排」——
-  取队头 = 在副本上一条带 `ORDER BY … LIMIT 1` 的查询,没有去 Linear 全量拉、也没有「每小时把 100 张重排一遍」。
-  但字面上 PRD 写的是「持久队列」,这里换成「持久副本 + 当场算」,**要 Annie 确认这样理解可以**(设计页第 3 题)。
+- 我们的规模:几百张单、1 个(以后几个)Lead。
+- 要「随变化增量更新」,先得有 Linear 事实的本地拷贝(否则不知道一个变化影响哪些单)。所以第一版的 A「存一张排好序的待派队列」
+  其实是「拷贝 + 再多一层派生队列」;B「不存、每次去 Linear 现拉」就是今天 ready.v1 的样子(20 秒截止、43/200 超时、1.5MB 超限),不能要。
+- 两种成熟做法都在用:**维护派生队列**(Kubernetes 的内存优先队列,可重建)和**挑的那一刻从库里查**(Airflow / Prefect)。
+  我们的选择因此是:A = 拷贝 + 可重建的派生就绪队列(PRD §3.2 字面);C = 只有拷贝,有空位时在拷贝上查一次(少一层要保持一致的派生数据)。
+- C 不是「取队头」,有空位时会在本地重新筛选、排序候选——所以 **C 是对 PRD §3.2 的修改申请**,要 Annie 明确同意;不同意就做 A。
+  C 的挑单耗时(几百行,预计毫秒级)是待实测的假设。详见 plan.md §5。
 
 ## 2. 触发时机:什么时候算「下一张派谁」
 
@@ -86,7 +84,8 @@ founder 的两个候选,加上第一版写的轮询,共三种,以及组合:
 ### 3.2 轮询(对账)的成本 [官方](https://linear.app/developers/rate-limiting)
 
 - 个人 API key:每小时 2,500 次请求、300 万复杂度点;按 `issues(filter: {updatedAt: {gt: T}})` 拉「T 之后改过的单」[官方](https://linear.app/developers/filtering)。
-- 每 5 分钟一次 = 每小时 12 次,远低于上限 [推断]。改依赖是否刷新 `updatedAt`——**文档未写明**;安全做法是对账时把「进行中 Epic 下所有单的依赖」重拉一遍(几百张单,便宜)[推断]。
+- 「每 5 分钟一次」不等于每小时 12 次请求:子单分页、依赖分页、blocker 重拿、webhook 重拿都要算;plan.md §4.5 估算合计每小时约 300 次以内(待实测),上限与同一用户的其他 key 共享 [推断]。
+- 限流除了 HTTP 429,还会以 **HTTP 400 + `errors[].extensions.code = RATELIMITED`** 返回,两种都要退避 [官方](https://linear.app/developers/rate-limiting)。改依赖是否刷新 `updatedAt`——**文档未写明**;安全做法是对账时把「进行中 Epic 下所有单的依赖」重拉一遍(几百张单,便宜)[推断]。
 
 ### 3.3 用 Cloudflare 收 webhook 再转给本机
 
@@ -94,7 +93,7 @@ founder 的两个候选,加上第一版写的轮询,共三种,以及组合:
 
 | 做法 | 怎么走 | 本机关机 / 断网时 | 要什么 | 出处 |
 |---|---|---|---|---|
-| **A. Worker + Queues(拉取)** | Linear → Cloudflare Worker(`*.workers.dev`)验签、立刻回 200 → 写进 Cloudflare Queue → Bridge 每 30–60 秒调拉取接口取一批、处理完 ack | 消息在队列里存着:免费版固定 24 小时,付费版默认 4 天、最多 14 天;Linear 总能立刻拿到 200,webhook 不会被停用 | Cloudflare 账号;一个只能读写这个队列的 API token 放本机;**不要域名、不开本机端口** | 拉取接口 `POST …/queues/{id}/messages/pull` 与 `/ack`,一批默认 5 最多 100,可见超时默认 30 秒最多 12 小时,没 ack 自动回队 [官方](https://developers.cloudflare.com/queues/configuration/pull-consumers/);免费版含 Queues,每天 1 万次操作(一条消息约写 / 读 / 删 3 次)[官方](https://developers.cloudflare.com/queues/platform/pricing/);至少一次投递、不保证顺序 [官方](https://developers.cloudflare.com/queues/reference/delivery-guarantees/) |
+| **A. Worker + Queues(拉取)** | Linear → Cloudflare Worker(`*.workers.dev`)验签 → `await` 写进 Cloudflare Queue 成功后才回 200(入队失败回 5xx 让 Linear 重试)→ Bridge 每 30–60 秒调拉取接口取一批,本地落盘后 ack | 消息在队列里存着:免费版固定 24 小时,付费版默认 4 天、最多 14 天;Cloudflare 正常时 Linear 很快拿到 200,本机关机不会导致 webhook 被停用 | Cloudflare 账号;本机放一个 token(按官方文档是**选定账号的 Queues 读写**,不是单队列权限;建议用只放这条队列的账号);**不要域名、不开本机端口** | 拉取接口 `POST …/queues/{id}/messages/pull` 与 `/ack`,一批默认 5 最多 100,可见超时默认 30 秒最多 12 小时,没 ack 自动回队 [官方](https://developers.cloudflare.com/queues/configuration/pull-consumers/);免费版含 Queues,每天 1 万次操作(一条消息约写 / 读 / 删 3 次)[官方](https://developers.cloudflare.com/queues/platform/pricing/);至少一次投递、不保证顺序 [官方](https://developers.cloudflare.com/queues/reference/delivery-guarantees/) |
 | B. Cloudflare Tunnel | 本机跑 `cloudflared`,只往外连;Linear 直接打到本机接收口 | 只靠 Linear 自己那 3 次重试(最晚 6 小时),再久就丢,webhook 还可能被停用 | **自己的域名挂在 Cloudflare 上**(正式隧道必须);临时隧道每次换地址、只供测试 | [官方](https://developers.cloudflare.com/tunnel/setup/) [官方](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/) |
 | C. Worker + D1 / Durable Object 事件日志 | Worker 把事件写成带序号的行,本机按「上次读到第几号」来取 | 想存多久存多久 | 游标、鉴权、清理都要自己写 | [官方](https://developers.cloudflare.com/workers/platform/pricing/) |
 
@@ -107,7 +106,7 @@ founder 的两个候选,加上第一版写的轮询,共三种,以及组合:
 1. **webhook 只当「某张单变了」的提醒**:收到后按单号回 Linear 重新拿这张单的最新状态(状态、优先级、父单、子单、依赖),不信 payload 本身——这样乱序、迟到的重试都无害。
 2. **按 `Linear-Delivery` 去重**;副本里只接受比已存 `updatedAt` 更新的数据。
 3. **定时对账**:每 10–15 分钟拉「水位线减几分钟重叠」之后改过的单 + 重拉进行中 Epic 树的依赖;每天一次全量。水位线只在写库成功后前移。
-4. **长时间一条 webhook 都没收到要告警**——否则「被 Linear 悄悄停用」和「最近没人改」看起来一模一样。
+4. **区分「最近没人改」和「推送断了」**:安静本身不是故障;对账发现了变化但 webhook 没送来、拉取 Cloudflare 失败、或 webhook 配置显示已停用,才算推送断了(plan.md §4.6)。
 
 ## 4. 第 1 题:补单计算放在哪个后台线程
 
@@ -120,6 +119,6 @@ effect port(线程要发消息 / 动 runner 时请主线程代做)+ supervisor �
 两张图和逐条 pros / cons 在 plan.md §3 与设计页。依据:Node `worker_threads` 每个线程是独立的 V8 isolate、独立事件循环,
 线程间只能传可序列化消息 [官方](https://nodejs.org/api/worker_threads.html);better-sqlite3 官方示例是每个线程自己开连接(文档没明说能否跨线程共享,按「每线程一个连接」处理)[官方](https://github.com/WiseLibs/better-sqlite3/blob/master/docs/threads.md) + [推断]。
 
-一个诚实的补充 [推断]:按本页推荐的「本地副本 + 当场算」,真正吃 CPU 的只有「解析 Linear 返回的大 JSON」和对账;
-补单单次计算是毫秒级。所以线程的价值主要是**隔离**(Linear 慢 / 出错不连累主线程),而不是算力。这让「等 3147」(A)的代价更小:
-3147 落地前,补单的事件链路可以先在主线程跑(和 3147 设计里「每组开关默认主线程」一致),3147 落地后切开关搬进去。
+一个补充 [推断]:按本页推荐,补单单次挑单预计是毫秒级(待实测),真正可能慢的是对账时解析 Linear 的大返回。线程的价值主要是隔离普通 JavaScript 的慢和异常;
+A、B 都是同一进程里的线程,隔离不了原生崩溃、内存耗尽、SQLite 争用(FLY-3147 plan「诚实边界」)。
+「3147 好之前先在主线程跑」不是 3147 规则自动允许的:3147 的「默认主线程」是既有巡检迁移的回退规则;对新功能而言,这是对 PRD §3.1 的临时变更,要另外批准(plan.md §7.3)。
