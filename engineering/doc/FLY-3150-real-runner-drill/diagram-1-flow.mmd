@@ -1,0 +1,18 @@
+sequenceDiagram
+    autonumber
+    participant DS as 设计节点
+    participant IM as 实现节点
+    participant QA as QA 节点
+    participant DR as 演练驱动器
+    DS->>DR: 短 plan 通过 Codex 评审（2 轮）
+    DR->>IM: 派发第 1 次实现
+    IM->>IM: 新建两行文件，第 2 行 AWAITING-QA
+    IM->>QA: hand-in（CI 跑在精确 head）
+    QA->>QA: file-shape 通过
+    QA->>QA: fixed-for-claim 必定 fail（植入）
+    QA-->>DR: 打回，附 claim <id>
+    DR->>IM: 第 2 次实现，带 QA fix context
+    IM->>IM: 第 2 行改为 FIXED-FOR-CLAIM <id>
+    IM->>QA: 再次 hand-in（新 head 重跑 CI）
+    QA->>QA: 逐字比对 <id>
+    QA-->>DR: 通过（e2e_529_exempt 记为 not_run）
