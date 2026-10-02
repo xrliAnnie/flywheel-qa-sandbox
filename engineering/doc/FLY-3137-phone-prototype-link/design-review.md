@@ -3,7 +3,9 @@ Issue: FLY-3137 (https://linear.app/geoforge3d/issue/FLY-3137/cloudflaref3-runne
 日期: 2026-10-01
 基于: plan.md
 
-Codex 设计评审（reviewer `gpt-6-astra` / `xhigh`，thread `01a0fb19-a209-7311-bd74-eda3fedd0bda`），6 轮，第 6 轮 **APPROVED**。批准对象：plan.md v6（commit `a1f8b3b6a`，blob `56049d2a`）。
+**当前有效批准：plan.md v8**（commit `cf0ff2f89`，blob `9a302c28`）——设计返工（attempt 2）中新 thread `01a0fb5a-264e-75e2-b12c-ec9ad2c70123` 第 2 轮 **APPROVED**。两个 thread 合计 8 轮，reviewer 均为 `gpt-6-astra` / `xhigh`。
+
+第一个 thread `01a0fb19-a209-7311-bd74-eda3fedd0bda`：6 轮，第 6 轮批准 plan v6（commit `a1f8b3b6a`，blob `56049d2a`）。
 
 | 轮次 | 结论 | 发现 | 主要内容 |
 |---|---|---|---|
@@ -14,6 +16,15 @@ Codex 设计评审（reviewer `gpt-6-astra` / `xhigh`，thread `01a0fb19-a209-73
 | R5 | CHANGES_REQUESTED | 1 HIGH | `kern.boottime` 随校时变化，不能证明重启 |
 | R6 | **APPROVED** | 无 | — |
 
+### 设计返工（attempt 2）：新 thread
+
+返工原因：Lead 转来 FLY-3136 runner 的提醒——`quick_email` 名单门只靠 cloudflared 的 `--allowed-mail` 参数、源站不核验 JWT。先并入 plan v7，再评审（旧 thread 在新会话里无法续接，开了新 thread 做全量复审）。
+
+| 轮次 | 结论 | 发现 | 主要内容 |
+|---|---|---|---|
+| 新 R1（v7） | CHANGES_REQUESTED | 1 HIGH / 1 MEDIUM | cloudflared 会读宿主机默认配置、其 ingress 优先于 `--url`（已实测复现：流量被劫持到另一服务）；「立即熔断」与「4 次宽限」对 5xx/530 规则冲突 |
+| 新 R2（v8） | **APPROVED** | 1 LOW | 分类器对未列举响应要有兜底 |
+
 ## 评审过程中的关键设计转变
 
 1. 第 1 版由 runner 侧看守进程管隧道 → 第 2 版起改为 **Bridge 统一起/记/关**，API 不收任何 pid。
@@ -23,6 +34,8 @@ Codex 设计评审（reviewer `gpt-6-astra` / `xhigh`，thread `01a0fb19-a209-73
 5. 名单门不再依赖 F2：cloudflared 2026.9.3 的 `--allowed-mail` 实测可用（research.md §2.2）。
 
 ## 留给实现与 QA 的非阻塞提醒
+
+- **新 R2 LOW（实现时必须做）**：`classifyPublicProbe()` 在明确的 healthy / access_gate_missing 分支之后，把所有未列举响应（如目标正确的 301/303/307/308、400/405 等其它 4xx）兜底为 `transient`；healthy 仍严格要求 302；畸形 `Location` 在分类器内捕获为失败结果，不让 URL 解析异常逃逸。表驱动测试补上这些用例，断言每次只返回三种结果之一。
 
 - 设计批准不替代 plan §10 的实现测试与真机 QA；Codex 全程只做了源码/文档静态审查，没有跑隧道、OTP 登录或 Discord。
 - 真邮箱收码登录的会话时长、手机浏览器体验尚未实测（research.md §2.2），放在真机 QA 第 1 条。

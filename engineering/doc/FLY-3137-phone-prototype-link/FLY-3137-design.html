@@ -55,7 +55,7 @@
 <body>
 <div class="wrap">
   <h1>FLY-3137 · 手机能打开的原型链接 — 设计说明</h1>
-  <div class="sub">Issue <a href="https://linear.app/geoforge3d/issue/FLY-3137">FLY-3137</a>（Cloudflare 提案 F3）· 2026-10-01 · 设计节点 eng_design · 文件夹 <span class="mono">engineering/doc/FLY-3137-phone-prototype-link/</span> · Codex 设计评审：6 轮通过</div>
+  <div class="sub">Issue <a href="https://linear.app/geoforge3d/issue/FLY-3137">FLY-3137</a>（Cloudflare 提案 F3）· 2026-10-01 · 设计节点 eng_design · 文件夹 <span class="mono">engineering/doc/FLY-3137-phone-prototype-link/</span> · Codex 设计评审：8 轮通过（v8）</div>
 
   <section class="card navy" data-section="summary" data-title="1 · 一句话">
     <h2>1 · 一句话</h2>
@@ -66,7 +66,7 @@
       <div class="kpi"><div class="n">0 元</div><div class="l">不要 Cloudflare 账号、不要买域名</div></div>
       <div class="kpi"><div class="n">3 档</div><div class="l">访问方式，由你在配置里选</div></div>
       <div class="kpi"><div class="n">≈1 分钟</div><div class="l">原型停后，卡变「已失效」</div></div>
-      <div class="kpi"><div class="n">6 轮通过</div><div class="l">Codex 设计评审</div></div>
+      <div class="kpi"><div class="n">8 轮通过（v8）</div><div class="l">Codex 设计评审</div></div>
     </div>
     <p class="note">好消息：调研时发现 Cloudflare 9 月底刚给「临时链接」加了<strong>邮箱名单门</strong>，我实测过：不在名单的人打开会先被拦到验证码登录页。所以「只有名单邮箱能打开」这条今天就能做，不用等 F2 定路线、也不用买域名。</p>
     <div class="comment">
@@ -140,6 +140,15 @@ https://xxx-xxx-xxx.trycloudflare.com
       <tr><td><strong>正式隧道</strong>（named）</td><td>名单门 + 固定网址</td><td>Cloudflare 账号 + 自己的域名（= F2 的路线）</td><td>v1 不做，留位置</td></tr>
     </table></div>
     <p>不选就不开：配置里没写访问方式时，runner 申请链接会被拒，并提示「Annie 还没选访问方式」。绝不默认公开。</p>
+    <h3>名单门的弱点和防线</h3>
+    <p>「只有名单邮箱能打开」完全靠打开隧道时带上的一个参数（--allowed-mail）。原型自己不检查访问者有没有登录。万一这个参数漏了，链接就变成「谁有链接谁能开」。所以加了这几道防线，任何一道没过都不发链接，或者立刻关掉：</p>
+    <ol style="padding-left:20px">
+      <li><strong>开之前查两遍</strong>：Bridge 和看门程序各自核对一次参数，名单要和你配置的邮箱一个不多、一个不少。</li>
+      <li><strong>发卡之前试一次</strong>：从外网打开链接，必须先被拦到 Cloudflare 的验证码登录页才算合格。</li>
+      <li><strong>开着的时候盯着</strong>：大约每分钟从外网再试一次。只要发现没被拦（比如直接看到了原型）、或者被跳去了不对的地方，立刻关掉；网络一时不通、Cloudflare 一时出错不算，连续 4 次才关，卡上写「名单门失效」。</li>
+      <li><strong>隧道只认这一次的设置</strong>：每次开链接都给隧道一份专属的、只写了「接到这个原型」的设置，不读电脑上原有的 Cloudflare 设置。我实测过：如果电脑上原本有别的设置，隧道会被悄悄带去别的程序；用专属设置后就只会接到这个原型。</li>
+    </ol>
+    <p class="note">另外，真机测试时会顺便看 Cloudflare 有没有把登录凭证转给原型。如果有，以后可以再加一道「原型自己也查登录」，这不在这一版里。</p>
     <div class="comment">
       <label for="c-modes">给这一节留意见（自动保存在你的浏览器里）</label>
       <textarea id="c-modes" data-comment-for="modes" rows="3" placeholder="写下你对这一节的看法、疑问或修改意见……"></textarea>
@@ -175,6 +184,7 @@ https://xxx-xxx-xxx.trycloudflare.com
       <li>Bridge 自己停摆超过 5 分钟：看门程序自动关隧道（安全优先），Bridge 恢复后再把卡补改成「已失效」。</li>
       <li>停链接要一个只发给开链接那个 runner 的「管理密钥」，别的 runner 关不了它。</li>
       <li>名单邮箱或「临时公开」二选一，由你定；不选不开。</li>
+      <li>名单门有几道防线：开之前查两遍参数、发卡前确认会被拦到登录页、开着时发现没拦住就立即关闭；隧道只用这一次的专属设置，不会被电脑上原有设置带去别的程序。</li>
     </ul>
     <h3>不做 / 做不到</h3>
     <ul>
