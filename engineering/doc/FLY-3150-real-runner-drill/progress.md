@@ -1,14 +1,14 @@
 ---
 issue: FLY-3150
 phase: implement
-phaseCursor: 3/5
-updated: 2026-10-02T04:14:21.537Z
-nextStep: apply FIXED-FOR-CLAIM 4 from QA attempt-1 claim, verify exact two-line
-  shape and adjacent stale states
+phaseCursor: 4/5
+updated: 2026-10-02T04:15:05.378Z
+nextStep: commit and push FIXED-FOR-CLAIM 4, re-review exact head, run
+  exact-head CI, complete needs_review
 chunks: []
 pointers: {}
 ---
 
 # FLY-3150 progress
-**phase**: implement (3/5)
-**next**: apply FIXED-FOR-CLAIM 4 from QA attempt-1 claim, verify exact two-line shape and adjacent stale states
+**phase**: implement (4/5)
+**next**: commit and push FIXED-FOR-CLAIM 4, re-review exact head, run exact-head CI, complete needs_review
