@@ -15,12 +15,12 @@ Issue 要求 “append requested marker lines to probe.txt, commit locally, and 
 
 | 证据 | 当前值 | 能证明什么 | 不能证明什么 |
 |---|---|---|---|
-| Execution | `2cd673b2-8210-45f9-982c-48dc9358da2b` | 当前 design runner 身份 | — |
-| Activation | `activation:2cd673b2-…:db0433f4-…:eng_design:1` | TURN 与 DAG activation 的绑定 | — |
+| Execution | `f0635f3b-cf33-4d40-89f7-a9cebb32ab9d` | 当前 design runner 身份 | — |
+| Activation | `activation:f0635f3b-…:2f38be47-…:eng_design:1` | TURN 与 DAG activation 的绑定 | — |
 | TURN | `yours phase=design epoch=1` | 当前 phase 有共享 worktree 写权 | marker 内容 |
-| Mailbox | `No instructions.`;comm DB 无 `instruction` row | 本 execution 没收到 Lead 指令 | — |
+| Mailbox | `No instructions.`;comm DB 中与本 execution 相关的行 = 0(live / log / archive) | 本 execution 没收到 Lead 指令 | — |
 | Native input | 无 exact marker literal | 没有可逐字追加的请求内容 | — |
-| Repository | 根目录无 `probe.txt`,分支 = `origin/main` `7df383e6f` | 无既有 marker 或恢复残留 | — |
+| Repository | 根目录无 `probe.txt`;分支 = `origin/project-slot-5-FLY-3164` `0de181bbd`(只含本文件夹的设计文档提交，`origin/main` `7df383e6f` 为祖先) | 无既有 marker 或恢复残留 | — |
 
 TURN 是写权限，不是 marker 内容。Issue 标题、owner nonce、execution metadata、另一条 execution 的历史证据都不能补齐缺失的 literal。
 
@@ -33,16 +33,17 @@ TURN 是写权限，不是 marker 内容。Issue 标题、owner nonce、executio
 - 该 prompt 要求先追加 `<owner>-CLAUDE-BOOT`,再在 `sleep 45` 期间消费 Agent Team 原生消息、追加 `<owner>-R4-CLAUDE`,且明确 “Do not poll flywheel-comm inbox: prove the native Claude receive path”;
 - 验收读取 driver 自己 worktree 里的 `probe.txt` 与 Claude 原生 teammate-message 收据。
 
-本 execution(`2cd673b2-…`)是 generalized workflow engine 为 `tpl_code` DAG 派发的 `eng_design` activation,工作目录是 slot-5 的 `project-slot-5-FLY-3164`,身份、prompt、工作区都不同。把 driver 的 literal 抄进本工作区，只能“复刻内容”,不能证明本 execution 收到原生投递。
+本 execution(`f0635f3b-…`)是 generalized workflow engine 为 `tpl_code` DAG 派发的 `eng_design` activation,工作目录是 slot-5 的 `project-slot-5-FLY-3164`,身份、prompt、工作区都不同。把 driver 的 literal 抄进本工作区，只能“复刻内容”,不能证明本 execution 收到原生投递。
 
 ## Claude runner 的原生指令投递路径
 
-已核实(QA room runtime `cecc15a4eb23f1e7710655727bab68e86efe2d0c`):
+已核实(QA room runtime `b8c37fcfa1f1fe4395b1a79f50dc46f2970d838c`;上一条 execution 核的是 `cecc15a4…`,行号已随 runtime 变化，下面是本次重新核对的值):
 
-- `flywheel-comm send` 对 runner 收件人把 `to_agent` 解析为**目标 execution id**(`commands/send.js:17`)。
-- Bridge 的 runner mailbox lane 把 `instruction` row 渲染为 `content: "[lead-instruction <row.id>]\n<row.content>"`,`executionId = row.to_agent`(`teamlead/dist/bridge/runner-mailbox-lane.js:48-65`)。对 `claude-code` backend,这段信封进入 Claude Agent Team 原生收件箱，在 runner 对话中显示为一条 teammate message;注入的协议要求 runner 以 `[lead-instruction <id>]` 为幂等键。
+- `flywheel-comm send` 对 runner 收件人把 `to_agent` 解析为**目标 execution id**(`commands/send.js:17`,`resolvedTo = recipient.executionId`)。
+- Bridge 的 runner mailbox lane 把 `instruction` row 渲染为 `content: "[lead-instruction <row.id>]\n<row.content>"`,`executionId = row.to_agent`(`teamlead/dist/bridge/runner-mailbox-lane.js:92-110` `renderRunnerMailboxEnvelope`);投递时 `vendor === "codex"` 走 Codex 原生通道，其他 backend 走 `wakeRunnerMailbox`(同文件 `:52-60`)。对 `claude-code` backend,这段信封进入 Claude Agent Team 原生收件箱，在 runner 对话中显示为一条 teammate message;注入的协议要求 runner 以 `[lead-instruction <id>]` 为幂等键。
 - `flywheel-comm message-status <id> --json` 是 runner 可执行的只读收据(已实测：未知 id 返回 `location:"absent"` 并 exit 1)。
-- `packages/flywheel-comm/dist/lib.js` 导出 `CommDB`;`CommDB.openReadonly(path)`、`getMessageById(id)`(读 `mailbox_message_projection`,只含 live 行)与 `inspectMailboxDeliveryContent(id)`(只读 `MailboxQueue`,live 行返回 `content`)均存在(`db.js:803 / 2338 / 648`)。
+- `packages/flywheel-comm/dist/lib.js` 导出 `CommDB`;`CommDB.openReadonly(path)`、`getMessageById(id)`(读 `mailbox_message_projection`,只含 live 行)与 `inspectMailboxDeliveryContent(id)`(只读 `MailboxQueue`,live 行返回 `content`)均存在(`db.js:832 / 2367 / 677`;`inspectMailboxDeliveryContent` 委托 `MailboxQueue.inspectDeliveryContent`,`mailbox-queue.js:566`,live 行直接返回 `content`,只有归档行才回退到 `archivedMailboxJson`)。
+- 行上还有 `content_ref` 字段：当正文过大时，发送方只在 `content` 存一个 `[content_ref: <path>]` 占位，真实字节在外部文件(`commands/gate.js:106-118`,目前只有 gate question 会这样做;`send` 不写 `content_ref`)。Lane 渲染信封时用的是 `row.content`,所以一旦 instruction 行带 `content_ref`,`content` 就不是 marker 原文。
 
 因此 Claude 与 Codex 共用同一条**与厂商无关**的来源证据：信封里的 `[lead-instruction <id>]` 只是“指路牌”,真正的字节来源是 comm DB 中被核验过身份的那一行 `row.content`。Claude 对话里看到的 teammate-message 文本是渲染结果，可能被包装或截断，**绝不作为 parser 输入**。
 
@@ -51,7 +52,7 @@ TURN 是写权限，不是 marker 内容。Issue 标题、owner nonce、executio
 1. 从当前 user turn 中定位**恰好一个**行首 sentinel `[lead-instruction <uuid>]`;0 个或多个都拒绝。只取 uuid,不取后面的显示文本。
 2. 运行 `node "$FLYWHEEL_COMM_CLI" message-status "$instruction_id" --json`,要求 `message_id` 精确等于 uuid、`location = live`(writer 只接受 live 指令；只剩 archive 的旧指令要求重新投递)、`state ∈ {LEASED, ACKED}`、`stamps.delivered_at` 非空。
 3. 在一个短生命周期 Node 进程里，从 `FLYWHEEL_COMM_CLI` 推导 runtime 根目录，动态 import `packages/flywheel-comm/dist/lib.js`,用**一个** `CommDB.openReadonly(FLYWHEEL_COMM_DB)` handle:
-   - `row = getMessageById(id)`,要求 row 存在、`row.type === 'instruction'`、`row.to_agent === process.env.FLYWHEEL_EXEC_ID`、`row.from_agent === process.env.FLYWHEEL_LEAD_ID`;
+   - `row = getMessageById(id)`,要求 row 存在、`row.type === 'instruction'`、`row.to_agent === process.env.FLYWHEEL_EXEC_ID`、`row.from_agent === process.env.FLYWHEEL_LEAD_ID`,且 `row.content_ref` 为 `null`(带外部引用的行 fail closed,要求发送方用内联正文重发;不跟随文件路径读取);
    - `content = inspectMailboxDeliveryContent(id)`,要求 `content === row.content`(逐字节相等，任一为 undefined 即拒绝);
    - 把 `row.content` 以 UTF-8 写入 `mktemp -d` 私有目录下 mode `0600` 的 `source.bin`,`finally` 关闭 handle。
    内容不打印到终端、不进 shell 变量。由于 `getMessageById` 只看 live 行，只剩 archive 收据的旧指令会在这里失败，要求重新投递，而不是从 archive 复活一次陈旧写操作。
@@ -92,7 +93,8 @@ Issue 原文只对 marker 说 “commit locally”,并写明 “No product imple
 QA 是另一个 execution:它没有收到发给 writer 的指令，因此不能用自己的 `FLYWHEEL_EXEC_ID` 或当前 user turn 重跑 writer 的写入授权检查。QA 用**预期身份**核对：
 
 - writer execution id 来自 workflow 记录(`workflow_run_node` 中 `implement` 节点的 `execution_id`),并与 writer DONE 回执的发送者一致；instruction id、Lead id、`source_sha256`、marker commit SHA 来自该回执。
-- `message-status` 允许 `location = archived`:writer 可能因路由不匹配长期 park,live 行会被归档。归档行的完整快照可用与 `MailboxQueue.archivedMailboxJson`(runtime `mailbox-queue.js:365`)相同的参数化只读查询取得(`mailbox_log` 中 `event='archived'` 的最新 `row_json`,否则 `mailbox_terminal_archive.mailbox_json`),其中包含 `type`、`from_agent`、`to_agent`、`content`。QA 断言这些字段与预期身份一致，且 `sha256(content)` 等于回执里的哈希。
+- 归档快照同样要求 `content_ref` 为空(与 writer 规则一致)。
+- `message-status` 允许 `location = archived`:writer 可能因路由不匹配长期 park,live 行会被归档。归档行的完整快照可用与 `MailboxQueue.archivedMailboxJson`(runtime `mailbox-queue.js:366`)相同的参数化只读查询取得(`mailbox_log` 中 `event='archived'` 的最新 `row_json`,否则 `mailbox_terminal_archive.mailbox_json`),其中包含 `type`、`from_agent`、`to_agent`、`content`。QA 断言这些字段与预期身份一致，且 `sha256(content)` 等于回执里的哈希。
 - 用同一语法重新解析 `content`,核验 marker commit 只改 `probe.txt`、恰好新增这些 marker、无删除。
 - “没有被 push”只能做**限定范围、当前时刻**的证明：用 `git ls-remote --heads origin refs/heads/project-slot-5-FLY-3164` 读取远端当前顶端 `T`(`git branch -r` 只看本地跟踪 ref,可能过期，不能作证据),要求 `T` 已在本地对象库，再用 `git merge-base --is-ancestor C T` 判断;网络失败或缺对象 → `unverifiable`。QA 不 fetch、不改 ref。“历史上从未推送”无法从 ref 状态证明，报告中标注为基于 writer 回执与守卫(receipt-based);其他分支 / 远端不在审计范围。
 - 证据不可得 → `unverifiable`,绝不判 `pass`。审计历史结果不授予写权限;writer 对 archive-only 指令拒绝新写入的规则保持不变。
@@ -111,7 +113,7 @@ QA 是另一个 execution:它没有收到发给 writer 的指令，因此不能�
 
 `implement` 的正常完成路线要求 PR,而本 issue 禁止 PR / push / ship;各 node 都没有 `allow_no_code_completion`。所以下游不得假设存在 `no_code` 出口，也不得造空 commit 或 PR。无论是否追加成功,implement runner 都应把“结果 + 能力不匹配”用结构化回执交给 Lead / workflow owner,然后按注入的问题 watcher 停靠(park),由 owner 决定 server 授权的 close / cancel / retemplate。
 
-这一点已经以非阻塞问题 `6a9a1905-f3b9-4400-b9a3-58af919e4b4d` 告知 Lead。
+这一点已由本 execution 以非阻塞问题 `e63f0895-385b-41ae-b720-0ae3b2756764` 告知 Lead(上一条 execution 的同类问题 `6a9a1905-…` 属于旧 comm DB,不再可查)。
 
 ## 测试证据
 

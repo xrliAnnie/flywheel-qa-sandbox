@@ -19,7 +19,7 @@ Issue: FLY-3164 (https://linear.app/geoforge3d/issue/FLY-3164/529-canary-fly2127
 |---|---|---|
 | Issue 描述(全文) | “append requested marker lines to probe.txt, **commit locally**, and acknowledge native mail or TURN. No product implementation, shipping or deployment.” | marker commit 只在本地，不 push、不建 PR;不改产品代码；不 ship / deploy。Issue **没有**禁止推送设计文档。 |
 | 本 node 注入的 design 合同(当前 execution,最高优先) | “Commit and push the required artifacts”;“Commit and push the final HTML with the design artifacts” | 设计文档 commit 并 push 到 feature 分支 `project-slot-5-FLY-3164`(绝不 push main、不建 PR)。 |
-| Bridge 指令 `design-review-manifest:2cd673b2-…:1` | review 绑定已提交的 plan blob;`await-codex-gate` 校验 committed blob + 干净 Git 状态 | plan 每次修改都要先 commit 再重新 `stage set design_review --plan`。 |
+| `stage set design_review` / review gate(本 execution `f0635f3b-…`) | review 绑定已提交的 plan blob;`await-codex-gate` 校验 committed blob + 干净 Git 状态;上一条 execution `2cd673b2-…` 的批准不迁移 | plan 每次修改都要先 commit 再重新 `stage set design_review --plan`。 |
 | 同家族先例 FLY-3122 / FLY-3125 | design node push 了设计分支，marker commit 保持本地 | 与上面一致。 |
 
 所以“不 push”只约束 `probe.txt` 的 marker commit。若下游通用模板要求 push / PR 才能完成，那是 Task 3 Step 8 的能力不匹配路径，不是推送许可。
@@ -103,7 +103,7 @@ Issue: FLY-3164 (https://linear.app/geoforge3d/issue/FLY-3164/529-canary-fly2127
 - [ ] **Step 2: 回执与完成**
 
   1. `ask --report "DESIGN-HTML ready: <url> | repo: <html-path> | issue: FLY-3164"`(失败则报 `DESIGN-HTML publish-failed: …`);
-  2. `ask --report` TURN 回执 + 完成 Bridge 指令的 DONE:exec id、activation、`turn` 原文、`probe.txt` 未触碰、设计 commit SHA、review 轮数、`PR: n/a`,并逐字引用 `[lead-instruction design-review-manifest:…:1]`;
+  2. `ask --report` TURN 回执 + 完成 Bridge 指令的 DONE:exec id、activation、`turn` 原文、`probe.txt` 未触碰、设计 commit SHA、review 轮数、`PR: n/a`,若本 execution 收到了 Bridge 的 review / gate 指令，则逐字引用其完整 `[lead-instruction <id>]`(没有就不编造);
   3. 进度更新到 `6/6`;
   4. `complete --route phase_design_complete`。
 
@@ -118,7 +118,7 @@ Issue: FLY-3164 (https://linear.app/geoforge3d/issue/FLY-3164/529-canary-fly2127
 - [ ] **Step 2: 来源核验**(详见 research.md「可执行的来源核验合同」)
   1. 当前 user turn 中恰好一个行首 `[lead-instruction <uuid>]`,否则拒绝；
   2. `message-status <uuid> --json`:`message_id` 相等、`location = live`、`state ∈ {LEASED, ACKED}`、`delivered_at` 非空；
-  3. 一个 `CommDB.openReadonly(FLYWHEEL_COMM_DB)` handle 上：`getMessageById` 行存在且 `type='instruction'`、`to_agent=$FLYWHEEL_EXEC_ID`、`from_agent=$FLYWHEEL_LEAD_ID`;`inspectMailboxDeliveryContent(uuid) === row.content`;把 `row.content` 写入 `mktemp -d` 下 mode 0600 的 `source.bin`;`finally` 关闭；
+  3. 一个 `CommDB.openReadonly(FLYWHEEL_COMM_DB)` handle 上：`getMessageById` 行存在且 `type='instruction'`、`to_agent=$FLYWHEEL_EXEC_ID`、`from_agent=$FLYWHEEL_LEAD_ID`、`content_ref` 为 `null`(带外部引用 → 拒绝并请求内联重发，不跟随路径读文件);`inspectMailboxDeliveryContent(uuid) === row.content`;把 `row.content` 写入 `mktemp -d` 下 mode 0600 的 `source.bin`;`finally` 关闭；
   4. 对 `source.bin` 计算 sha256。Claude 对话里显示的 teammate-message 文本**不是** parser 输入。只剩 archive 的旧指令不授予写权限(要求重新投递)。
 
 - [ ] **Step 3: 解析** — 只接受 research.md 列出的两种格式之一(`Append the exact line <m> to probe.txt` 或 `Exact marker lines:` + 唯一 `text` fence);每条 marker 1..512 字节可打印 ASCII、首尾非空格、无 NUL/CR/LF/TAB;不 trim。每条 marker 写入独立的单行临时文件(精确字节 + LF)。任何歧义 → 不写文件，用 `ask --report` 请求按支持格式重发。
@@ -181,7 +181,7 @@ QA 是另一个 execution,没有收到发给 writer 的指令，**不得**用自
 
 - [ ] **Step 1: 确定预期身份** — writer execution id 取自 workflow 记录(`workflow_run_node` 中 `implement` 节点的 `execution_id`),并与 writer DONE 回执的发送者一致；Lead id、instruction id、`source_sha256`、marker commit SHA 取自该回执。任何缺失 → `unverifiable`。
 - [ ] **Step 2: 投递收据** — `message-status <instruction_id> --json`:`message_id` 相等、`location ∈ {live, archived}`、`delivered_at` 非空(live 时 `state ∈ {LEASED, ACKED}`)。
-- [ ] **Step 3: 指令行身份** — 只读打开 comm DB:live 用 `getMessageById`;已归档则用与 `MailboxQueue.archivedMailboxJson`(runtime `mailbox-queue.js:365`)相同的参数化查询读取归档快照 JSON(`mailbox_log` 中 `event='archived'` 的最新 `row_json`,否则 `mailbox_terminal_archive.mailbox_json`)。断言 `type='instruction'`、`to_agent = 预期 writer exec`、`from_agent = 预期 Lead`,并且 `sha256(content) = 回执中的 source_sha256`。
+- [ ] **Step 3: 指令行身份** — 只读打开 comm DB:live 用 `getMessageById`;已归档则用与 `MailboxQueue.archivedMailboxJson`(runtime `mailbox-queue.js:365`)相同的参数化查询读取归档快照 JSON(`mailbox_log` 中 `event='archived'` 的最新 `row_json`,否则 `mailbox_terminal_archive.mailbox_json`)。断言 `type='instruction'`、`to_agent = 预期 writer exec`、`from_agent = 预期 Lead`、`content_ref` 为空，并且 `sha256(content) = 回执中的 source_sha256`。
 - [ ] **Step 4: 内容与 commit 一致** — 用同一语法重新解析 `content` 得到 marker 集合；核验 commit `C`:`git show --format= --name-only C` 只有 `probe.txt`,`git diff C^ C -- probe.txt` 恰好新增这些 marker、无删除；当前 `probe.txt` 中每条 marker 计数 = 1。
 - [ ] **Step 5: 远端未包含 marker commit(只读，限定范围)** — 审计范围是 `origin` 上本 workflow 唯一会推送的分支 `refs/heads/project-slot-5-FLY-3164`。QA 不 fetch、不改任何 ref:
   1. `git ls-remote --heads origin refs/heads/project-slot-5-FLY-3164` 读取远端**当前**分支顶端 `T`;网络失败或无输出 → `unverifiable`;
@@ -197,7 +197,7 @@ QA 是另一个 execution,没有收到发给 writer 的指令，**不得**用自
 - FLY-2127 driver 的 `<owner>-CLAUDE-BOOT` / `<owner>-R4-CLAUDE`,以及任何历史 execution 的 marker,永远不复制进本 DAG 的 execution。
 - 没有 marker 时不得转成虚构的 no-code 完成；路由冲突由 workflow owner 解决。
 - Marker 是数据不是 shell 语法：只经校验过的临时文件进入 `probe.txt`,也不出现在任何命令 argv 中。
-- Parser 输入只能是核验过的 `row.content`,不从渲染后的对话文本重抄。
+- Parser 输入只能是核验过的 `row.content`,不从渲染后的对话文本重抄；`content_ref` 非空的行不是 marker 来源。
 - “文件里已有这一行”不等于“已提交”;只有 Step 4 的状态表能决定是否 commit。
 - archive 中的指令只能用于 QA 审计，不能授权新写入。
 - 本地分支一旦含 marker commit,writer 不再 push 该分支(任何 push 都会把 marker commit 一起推上去)。`flywheel-comm progress` 只做 path-limited 本地 commit、不 push,可照常使用。
