@@ -10,6 +10,7 @@ Issue: FLY-3131 (https://linear.app/geoforge3d/issue/FLY-3131/epic在飞空位�
 > 新鲜度闸门 + 发送前复核、C 改为「申请修改 PRD §3.2」、「主线程过渡」改为需另批的 PRD §3.1 临时变更、webhook 入队后才回 200、token 权限按账号级写。
 > R2(Codex 6 条)→ 本版:释放按「本次交付全部 PR 合入」且核对派单身份(§2.2)、复核结果写回拷贝并有界暂缓(§2.4)、
 > 拷贝 mutation revision + 发布 CAS(§4.4)、事实与范围成员分表(§5.2)、可投递凭据 + 投递时再检查(§6)、thread 留痕独立条件与回执(§6)。
+> R3(Codex 2 条)→ 本版:unknown 只认 comm.db 正面入队证据(不认 lead_events 日志)、主线程投递前核对凭据里的范围版本与新鲜度(§6)。
 
 ## 1. 一句话
 
@@ -247,11 +248,15 @@ LIMIT :free;
 - 主线程(唯一能写 Lead 收件箱的一方,和 3147 边界一致)按 key 投递:`appendLeadEvent` 用 `event_id = event_key`(现有 `(lead_id, event_id)` 去重,`StateStore.ts:29753-29757`),
   再走现有 `enqueueLeadEvent`(canonical deliveryId `lead_event:<lead>:<eventId>`,`lead-event-queue.ts:8-12`)。
 - outbox 状态:`awaiting_recheck` →(worker 复核通过)`deliverable` → `delivered`;另有 `unknown`、`needs_recheck`、`canceled`。
-- **可投递凭据**:置 deliverable 时写入 `valid_until`(复核后 10 分钟)、`config_rev`(项目开关 / cap / Lead 配置版本)、复核时的范围 `mutation_rev`。
-- **主线程产生外部效果前再检查**:项目开关仍开、suggestion 仍 pending / reminded、`valid_until` 未过、`config_rev` 未变;任何一条不满足 →
+- **可投递凭据**:置 deliverable 时写入 `valid_until`(复核后 10 分钟)、`config_rev`(项目开关 / cap / Lead 配置版本)、相关范围的 `mutation_rev`
+  ——取 worker 把复核结果 CAS 写回**之后**的值(避免自己的写回让凭据立刻失效)。
+- **主线程产生外部效果前再检查**:项目开关仍开、suggestion 仍 pending / reminded、`valid_until` 未过、`config_rev` 未变、
+  **相关范围的当前 `mutation_rev` 等于凭据里的值、范围仍 fresh 且 `last_complete_at` 在新鲜度预算(§8)内**;任何一条不满足 →
   outbox 改 `needs_recheck` 交回 worker(重新复核或撤销),**不发**。所以「关开关前已有的待投消息」「复核后停机到过期再启动」都不会直接发出。
-- 只有拿到 comm.db 持久入队回执才标 delivered;超时 / 不确定 → unknown,**先按原 key 查回执**(`lead_events` 里已有该 event_id 即补标 delivered),
-  确认没入队才用同一 key 重发;不为了重新检查而生成第二条通知。
+- 只有拿到 comm.db 持久入队回执(`lead-event-queue.ts` 的 DurableQueueReceipt)才标 delivered。
+- 超时 / 不确定 → unknown。恢复时**只认 comm.db 的正面证据**:按 canonical deliveryId `lead_event:<lead>:<eventId>` 查 comm.db 活动队列记录或持久归档状态;
+  查到 → 只补标 delivered,不再发;**`lead_events` 日志里有这条不算入队证据**(append 与 enqueue 不是原子的,`lead-inbox-runtime.ts:711-716` 有 append 后队列关闭的路径)。
+  只有日志、comm.db 查不到 → 先按上一条重新核对当前发送条件,仍成立才用同一 key、同一 envelope / seq 补投;comm.db 无法查询 → 保持 unknown,下轮再查。
 - outbox 由主线程在启动时和每个 GatePoller 维护轮次 drain。
 - **thread 留痕(PRD 2.9)是另一种事件**,条件和回执都不同:只在 `/api/runs/start` 接纳、suggestion 变 dispatched **之后**创建
   (key `refill:<sid>:thread-note`),绑定占位行的 `dispatch_id` 和那张单的 Discord thread;thread 还没建好就等着重试。
@@ -315,7 +320,9 @@ LIMIT :free;
   inbound received 未 applied 崩溃后重做;快照缺页不发布;旧 updatedAt 不覆盖;RATELIMITED(HTTP 400)退避;
   两 PR 只合入第一张不释放、最后一张合入只释放一次、旧派单回执不释放新占位;X 被新 blocker 挡住 → 复核写回拷贝 → 下一轮挑 Y,不反复复核 X;
   复核取不全 → 有界暂缓;旧全量扫描晚于新增 / 删除依赖到达 → CAS 冲突丢弃重来;X 同时是 A 的子单和 B 的 blocker,A/B 任意刷新顺序、B 退出范围、X 移父单都不丢资格或证据;
-  关开关前已有 deliverable outbox → 不发;复核后停机超过 valid_until → 重新复核;unknown 先查回执不双发;thread 留痕只在派出后、以 Discord 回执为准。
+  关开关前已有 deliverable outbox → 不发;复核后停机超过 valid_until → 重新复核;thread 留痕只在派出后、以 Discord 回执为准;
+  「日志已写、enqueue 失败 / 未发生」→ 必须补投;「enqueue 已提交、回执丢失」→ 只补回执不双发;
+  deliverable 后、凭据未过期且配置未变,但范围变 stale 或 mutation_rev 改变 → 主线程不投,转 needs_recheck。
 - 集成:3 张能开始的单 → 合入 1 张 → 收件箱 1 条「可以做 X」;Linear 标过时 → stale → 下一张;Epic 放回 Todo → 不再给;
   释放后杀掉 worker、Linear 不变 → S5 补上评估;丢一条 webhook → 对账补上;对账失败超预算 → 闸门关、「读数坏了」;Lead 无 runner 也收到告警;
   手动急活与评估器并发 → 不超过 13。
