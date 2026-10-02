@@ -92,7 +92,7 @@ localhost URL 只放在卡里面。F3 要做的是给卡里的 localhost 原型�
 
 | 子单 | 候选 | 倾向 |
 |---|---|---|
-| F1a 保留期 | A. registry 加字段 + 网关读一个「保留期投影」对象；B. 写进对象路径/元数据；C. 网关查 Bridge | **A**（单一真相在 registry；网关只读派生投影；无 Bridge 外露） |
+| F1a 保留期 | A. registry 字段 + 全局派生投影；B. 每页策略对象 `r/<token>/policy.json`；C. 写进对象路径/元数据；D. 网关查 Bridge | **B**（r2：A 在裁剪/重发/retarget/写超时时会分裂，见 research §1） |
 | F1b 搬 CF | A. R2 + Worker 网关 + Access；B. Workers 静态文件每页重部署 | **A**（B 撞部署配额，先例 FLY-2140） |
 | F1b 分享 | A. Worker 读 Access JWT 邮箱 + 每页 ACL；B. 每页一个 Access 应用 | **A**（B 应用数爆炸、改名单要改 CF 配置） |
 | F2 远程控制台 | A. CF 正式隧道 + Access（要域名）；B. Tailscale Serve（手机装 App）；两者都接**独立只读监听面** | 路线由 Annie 定；只读监听面两条路线共用 |
