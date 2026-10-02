@@ -36,11 +36,11 @@ founder 输入 `default | permanent | N 天(1..365)`；落盘时 Bridge 把 N �
 
 ### 1.3 一致性（r3 定稿，细节见 plan B.3–B.5）
 - 设置 = 条件写：一致读拿 ETag → registry 预写 pending(opId, baseEtag) → `put(ifMatch=baseEtag)`（不存在时只许创建）→ 超时则回读，远端 opId 对上才提交；旧值/读失败 = 结果未知（不判定没写上），因为晚到的旧写只能在 ETag 未变时生效，一旦被后继 CAS 取代就必然失败。
-- 网关先读策略再读字节；清理先把策略条件写成「删除中」代际（使所有未决旧写失效），再条件删字节、最后条件删策略；清理进度持久记在 registry，崩溃可续；发布路径不再删远端字节；镜像只用于清单与挑候选。
+- 网关先读策略再读字节；策略对象永不删除（退役后留 `retired` 终态）；set、Epic 重发、清理认领都先对策略做条件写（ETag = 代际）；清理只删认领时记下的对象；整页退役要求所有对象都到期；清理进度持久记在 registry，崩溃可续；发布路径不再删远端字节；镜像只用于清单与挑候选。
 - set 与 retarget 共用跨进程 hosting 锁。
 
 ### 1.4 能力门
-线上探针用合法的 `until`（到期时刻已过）金丝雀：新网关 HTML 与 audit 都 404，旧网关 200；另一个未到期 until 金丝雀 200 作对照；金丝雀残留会被正常 sweep 自然回收。门绑定 deploymentId 与部署文件 sha256；permanent/default 分支由台架 + 同一份文件证明。每日重探，失败清门告警。
+线上探针用合法的 `until`（到期时刻已过）金丝雀：新网关 HTML 与 audit 都 404，旧网关 200；另一个未到期 until 金丝雀 200 作对照；金丝雀不主动删除，由正常 sweep 回收。门绑定 deploymentId 与部署文件 sha256；permanent/default 分支由台架 + 同一份文件证明。每日重探，失败清门告警。
 
 ### 1.5 谁能改
 Claude Lead：CLI → `POST /api/reports/retention`（master；ingest 403）。Codex Lead：新 lead capability `report.retention.set/list`，完整复用 verify/deliver 的所有权授权，**只能改自己发布的页面**（明确收窄）。已过期页面不复活。
