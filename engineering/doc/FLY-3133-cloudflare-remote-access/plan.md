@@ -6,7 +6,7 @@ Issue: FLY-3133 (https://linear.app/geoforge3d/issue/FLY-3133/epic用-cloudflare
 - 版本：ship 时取空号（生产 `doc/VERSION` 当前 v1.57.0）。
 - 代码基线：生产 main @ `9fcbdebb1`。本 QA 沙箱分支的 `packages/` 较旧，**实现必须在以生产 main 为基的分支上做**（implement 节点第一步核对基线；若本分支仍是沙箱旧代码，向 Lead 报告而不是在旧代码上实现）。
 - 本计划两部分：**A. Epic 级拆分与各子单技术合同**；**B. 第一个可实施增量 F1a 的实施级计划**（本分支下一个 implement 节点的范围）。F2/F8/F1b/F3/F6 各自开子单、各走自己的 design→implement，开工前先问对应的 founder 前提。
-- 修订记录：r2 按 Codex 设计评审 r1（15 项）重写 F1a 存储模型（全局派生投影 → 每页策略对象 + 预写状态机）并补 A.2/A.4 跨子单约束；r3 按 r2（10 项）改为条件写（ETag CAS）协议、绝对到期时刻、顺序读、删除前远端确认、set 与 retarget 共用跨进程锁、Codex Lead 只改自有页面、until 金丝雀探针；r4 按 r3（2 项）加删除代际 tombstone 与持久清理进度（gc 标记），发布路径不再删远端字节；r5 按 r4（3 项）定三条代际规则：策略对象永不删除（retired 终态）、所有改字节/保留期的写先推进代际、清理只删认领清单；整页退役需所有对象都到期；r6 按 r5（2 项）加 Epic 重发「发布中 → 完成」两段提交、清理跳过新鲜发布中、本地孤儿清理索引。
+- 修订记录：r2 按 Codex 设计评审 r1（15 项）重写 F1a 存储模型（全局派生投影 → 每页策略对象 + 预写状态机）并补 A.2/A.4 跨子单约束；r3 按 r2（10 项）改为条件写（ETag CAS）协议、绝对到期时刻、顺序读、删除前远端确认、set 与 retarget 共用跨进程锁、Codex Lead 只改自有页面、until 金丝雀探针；r4 按 r3（2 项）加删除代际 tombstone 与持久清理进度（gc 标记），发布路径不再删远端字节；r5 按 r4（3 项）定三条代际规则：策略对象永不删除（retired 终态）、所有改字节/保留期的写先推进代际、清理只删认领清单；整页退役需所有对象都到期；r6 按 r5（2 项）加 Epic 重发「发布中 → 完成」两段提交、清理跳过新鲜发布中、本地孤儿清理索引；r7 按 r6（4 项）收拢为两件基础设施：页级跨进程锁 + 同页操作日志（取代孤儿索引），统一「结果未知的条件写」恢复规则，重试保留 permanent，retired 之下残留字节的回收。
 
 ## 0. 给 founder 的说明（一图）
 
@@ -116,13 +116,13 @@ export function isReportExpired(nowMs: number, defaultBasisMs: number, p?: Store
 - **为什么落盘绝对时刻**（修 r2#5）：`until` 自带到期时刻，网关、sweep、retarget、重部署后都不需要再找「原始 createdAt」；迁移重传导致的 `uploadedAt` 变化、manifest 重建、registry 裁剪都改变不了一个已设置页面的到期时间。`default` 显式等于今天的规则（今天就存在的 retarget+重部署时间基准问题不在本单扩大，也不在本单修）。
 - **Epic 稳定 token 只允许 `default` / `permanent`**：稳定页每次重发都重新起算，`N 天` 在它身上语义含糊；founder 对 Epic 页的诉求是「一直在」。`set <稳定token> Nd` → 400 并提示可设永久。重发只覆盖 `index.html`，不碰 `policy.json`。
 - **audit 子对象**：父 `permanent` → audit 不按 TTL 失效；父 `until` → audit 在同一 `expiresAt` 失效；父 `default`/无策略 → 今天的规则（audit 自己的 `uploadedAt`）。发布前「父缺失/父过期时仍可读新 audit」的公开验证分支保留（`report-blob-store.ts:295-309`、`report-gateway-runtime.ts:90-91,116-129`），只把判定换成上述规则。现有「commit 后删除上上版 audit」（`report-blob-store.ts:287-294,312-321`）不变，永久页通常只保留当前与上一版 audit。
-- `ReportEntry` 新增可选镜像：`retention?: StoredReportPolicy`、`retentionEtag?: string`、`retentionPending?: {opId, policy, baseEtag: string | null, hostingKey, at}`、`retentionUnknown?: true`、`gc?: {gcId, hostingKey, startedAt}`（清理进度，持久）。
+- `ReportEntry` 新增可选镜像：`retention?: StoredReportPolicy`、`retentionEtag?: string`、`retentionPending?: {opId, policy, baseEtag: string | null, hostingKey, at}`、`retentionUnknown?: true`、`gc?: {gcId, hostingKey, startedAt}`（清理进度，持久）。另有本地 `reportsDir/token-ops.json`（同页操作日志）与 `reportsDir/token-locks/`（页级锁），见 B.5。
 - `ReportHostingState` / `HostingBinding` 新增 `reportPolicy?: {schema:"v1"; deploymentId; artifactSha256: Record<string,string>; provedAt}`（能力门）。
 - `ReportBlobClient` 抽象补齐 SDK 已有能力（`@vercel/blob@2.8.0`）：`put` 透传 `ifMatch`、返回 `etag`；`get`/`head` 返回 `etag`；`del` 支持单对象 `ifMatch`；`BlobPreconditionFailedError` 映射成 `PreconditionFailed`。
 
 ### B.3 设置协议（条件写，修 r2#1）
 
-全程持有跨进程 `withHostingMutationLock`（`report-registry.ts:414`；retarget 也全程持有它，`report-hosting-retarget.ts:135`），拿不到 → 409 `hosting_busy`（修 r2#4：set 与 retarget 天然互斥；不再看 journal 文件是否存在）。
+全程持有跨进程 `withHostingMutationLock` 与该页的页级锁（B.5）（`report-registry.ts:414`；retarget 也全程持有它，`report-hosting-retarget.ts:135`），拿不到 → 409 `hosting_busy`（修 r2#4：set 与 retarget 天然互斥；不再看 journal 文件是否存在）。
 
 ```mermaid
 stateDiagram-v2
@@ -160,30 +160,35 @@ stateDiagram-v2
 
 唯一原则：**删除远端对象前，必须以一致读确认该 token 的远端策略认为它已过期**；镜像只能用来挑候选，不能单独决定删除。
 
-- **代际规则（修 r3#1、r4#1、r4#2，三条合起来封住所有交错）**：
-  1. **策略对象一旦存在，永不删除。** 页面退役时它被条件写成终态 `{kind:"retired", gcId}` 并永久留下（约 200 字节；1 年约 1.4 万个、约 3 MB）。因此一个 token 的 `policy.json` 只会经历「不存在 →（存在，版本不断变化）」，「不存在」不会再次出现——任何超时未决的「只许创建」旧写，只要它当时没赢，就永远赢不了（无 ABA）。
-  2. **凡是会改一页字节或保留期的写，都先对 `policy.json` 做一次条件写（推进代际）**：set（B.3）、Epic 稳定 token 重发（下文，开始/完成两次）、清理认领（下一条）。`policy.json` 的 ETag 就是这一页的代际号；谁的条件写没赢，谁就重读重来或放弃。清理不认领处于新鲜 `publishing` 的代际，所以读到「发布中旧字节」的清理决策不可能在发布完成后成立。
-  3. **清理只删它在认领时记录下来的那批对象**：认领时把「要删的对象路径 + 各自 ETag」写进认领对象本身；之后（包括崩溃恢复）只按这份清单条件删，**从不重新列举并认领新出现的对象**。
-- **整页退役的准入（修 r4#3）**：只有当这一页**所有**对象都已到期（各自按 B.2 规则：`until` 用绝对时刻；`default` 下 HTML 与每个 audit 各按自己的起算时刻；`permanent` 永不）且都过了 1 小时宽限，才退役整页。页面仍有效时**不单独删任何对象**——网关已按各自规则对过期 audit 返回 404；稳定页的旧 audit 仍由现有「commit 后删除上上版 audit」处理（`report-blob-store.ts:287-294,312-321`，它在重发自己的代际内执行）。
-- **每日 sweep**（不进发布临界区，修 r2#9）：工作集 = LIST `r/` 中**仍有 HTML 或 audit 的 token** ∪ registry 中带 `gc` 标记的条目 ∪ registry 中镜像为 until 且已过 `expiresAt + 宽限` 的条目 ∪ **本地孤儿清理索引**（修 r5#2）。只剩 `policy.json` 且不在以上集合里的 token 不读（它们只可能是 retired：认领孤儿前必先登记索引，见第 2 步）。每个 token：
-  1. 有界并发（8）、单次超时 10 秒一致读策略（拿到 ETag=P，或不存在）；按上条准入判定整页是否可退役；否则跳过。
-  2. registry 锁内给条目写 `gc: {gcId, hostingKey, startedAt}`；孤儿 token（无 registry 条目，例如金丝雀或早已本地裁剪的默认页）则在同一把锁内追加到本地持久的孤儿清理索引 `reportsDir/gc-orphans.json`（`{token, gcId, hostingKey}`）。
-  3. **认领**：条件写 `policy.json` = `{kind:"deleting", gcId, objects:{路径: ETag}}`（`ifMatch=P`，或不存在时只许创建）。冲突 → 本轮放弃该 token（有人推进了代际）。成功后网关对这一页立即 404，set 读到 → 410。
-  4. 按认领对象里的清单逐个 `del(路径, ifMatch=记录的 ETag)`；冲突说明该路径已被新代际覆盖，跳过它。
-  5. 条件写 `policy.json` = `{kind:"retired", gcId}`（`ifMatch=认领时的 ETag`）；冲突 → 新代际已接管，什么都不做。
-  6. registry 锁内终结：仅当条目仍带**同一个** `gcId` 且 `hostingKey` 未变，才删条目与本地 `files/<token>.html`；否则什么都不删。孤儿 token：retired 写成功（或读到同 gcId 的 retired）后从孤儿索引移除。
-  恢复：工作集里的 token 读到 `deleting` 且 gcId 是自己（registry gc 标记或孤儿索引）→ 从第 4 步按认领清单继续（即使字节已全部删完，只剩 `policy.json`）；读到 `retired` → 直接第 6 步；读到别的代际 → 清掉自己的标记/索引项，不做任何远端动作。宽限 1 小时只决定「到期后多久开始清」，不承担正确性。
+- **同页操作的两件基础设施（r7，收拢 r5/r6 的竞态类问题）**：
+  - **页级锁**：set、Epic 稳定页重发、清理对某一页的认领与收尾，都在 Bridge 进程里执行（retarget/部署另有跨进程 hosting 锁排除）。它们对同一 token 先取跨进程 mkdir 锁 `reportsDir/token-locks/<token>.lock.d`（与现有 registry 锁同一实现，超时 5 秒；拿不到 → 本次放弃/409）。锁只按 token 持有，长扫描不持锁，所以不阻塞其它页的发布（r2#9 不回退）。**活着的操作之间不再交错**；剩下的只是「超时后仍可能在存储端晚到的请求」，由下面的条件写与日志处理。
+  - **同页操作日志**：`reportsDir/token-ops.json`（registry 锁内原子写；一页最多一条未结记录）`{token, kind:"publish"|"gc", opId|gcId, baseEtag|null, hostingKey, objects?, startedAt}`。**任何会对远端 `policy.json` 发条件写的操作（Epic 重发开始、清理认领），都先写日志再发请求**（set 的 pending 已在 registry 条目里，等价）。sweep 工作集包含日志里所有未结记录，所以「只剩 policy.json 的半成品」一定能被找到（修 r6#2、r6#3）。
+- **代际规则**：
+  1. **策略对象一旦存在，永不删除。** 页面退役时被条件写成终态 `{kind:"retired", gcId}` 并永久留下（约 200 字节/页）。「不存在」只在一页的第一次写之前成立，输掉的旧「只许创建」以后不可能再赢（修 r4#1）。
+  2. **凡是会改一页字节或保留期的写，都先对 `policy.json` 做条件写**（ETag = 代际号）：set、Epic 重发（开始/完成两次）、清理认领。
+  3. **清理只删认领时记录的对象**（记录在认领对象与日志里），恢复时也只按这份清单删，不重新认领新对象。唯一例外见第 4 条。
+  4. **retired 之下不应有字节**：sweep 发现某 token 的策略是 `retired` 却仍有 HTML/audit（失败或被接管的发布晚到的上传，r6#4）→ 持页级锁、确认策略 ETag 仍是该 retired → 以各对象当前 ETag 条件删除它们。安全性：retired 是终态，只有 Epic 重发能先以条件写把它推进到 `publishing` 才会再上传字节；重发持同一把页级锁，所以不会与这一步交错；晚到的旧上传本就是垃圾。
+- **结果未知的条件写如何恢复**（set、重发开始/完成、清理认领一律适用，修 r6#3）：日志记着 `baseEtag` 和自己的 opId/gcId。恢复时一致读：①看到自己的 opId/gcId → 已生效，按下一步继续；②仍是 `baseEtag` → 结果未知，**原样重发同一个条件写**（同 baseEtag、同内容；与晚到的原请求最多一个成功，成功的那个就是自己）；③是别的代际 → 说明后继条件写已取代它，原请求永远不会再生效，此时才结束这条日志。读失败 → 保持未结，下一轮再来。hostingKey 与当前不同 → 不在新 store 上做任何判断，保留记录并告警（retarget 开始前必须清空日志，否则 exit 2）。
+- **整页退役的准入（修 r4#3）**：只有当这一页**所有**对象都已到期（`until` 用绝对时刻；`default` 下 HTML 与每个 audit 各按自己的起算时刻；`permanent` 永不）且都过了 1 小时宽限，才退役整页。页面仍有效时不单独删任何对象（网关已对过期 audit 返回 404；稳定页的旧 audit 仍由现有「commit 后删除上上版 audit」在重发自己的代际内处理）。
+- **每日 sweep**（不进发布临界区）：工作集 = LIST `r/` 中仍有 HTML 或 audit 的 token ∪ 同页操作日志的未结记录 ∪ registry 中带 `gc` 标记的条目 ∪ registry 中镜像为 until 且已过 `expiresAt + 宽限` 的条目。只剩 `policy.json` 且不在以上集合的 token 不读——它们只可能是 retired（所有写 policy 的操作都先记日志）。每个 token：
+  1. 有界并发（8）、单次超时 10 秒一致读策略（不持锁）；新鲜 `publishing`（不到 24 小时）→ 跳过；`retired` 且有字节 → 走代际规则 4；否则按准入判定，不可退役 → 跳过。
+  2. 取页级锁 → 再一致读一次，ETag 不同 → 放弃本页。
+  3. 记日志 `{kind:"gc", gcId, baseEtag:P, objects}`（并在 registry 条目上写 `gc` 标记，若有条目）。
+  4. **认领**：条件写 `{kind:"deleting", gcId, objects}`（`ifMatch=P` / 只许创建）；结果未知按上面的恢复规则。成功后网关对这一页立即 404，set 读到 → 410。
+  5. 按认领清单逐个 `del(路径, ifMatch=记录的 ETag)`；冲突跳过。
+  6. 条件写 `{kind:"retired", gcId}`（`ifMatch=认领的 ETag`）。
+  7. registry 锁内终结：条目仍带同一 `gcId` 且 `hostingKey` 未变才删条目与本地文件；结束这条日志。释放页级锁。
   - 策略读失败 / schema 坏 → 该 token 本轮不删，聚合告警。
-  - 单 tick 工作预算 15 分钟、tick 不重叠（进程内标志 + 已有每日间隔）；超预算剩余留到下一轮。
-  - 成本（算例，非实测）：N 个有策略对象且仍有字节的 token 每天 N 次策略读；被清理的 token 每个多两次小写；1 万永久页 ≈ 每月 30 万次小对象读，加 LIST 分页（retired 对象只出现在 LIST 里）；按 Vercel 付费版按量计费估算远低于 20 美元月额度，存储 80% 告警继续覆盖。
+  - 单 tick 工作预算 15 分钟、tick 不重叠；超预算留到下一轮。
+  - 成本（算例，非实测）：N 个有策略对象且仍有字节的 token 每天 N 次策略读；被清理的 token 每个多两次小写；1 万永久页 ≈ 每月 30 万次小对象读，加 LIST 分页；按 Vercel 付费版按量计费估算远低于 20 美元月额度，存储 80% 告警继续覆盖。
 - **普通 publish 不再删除远端字节**（`reports-route.ts:473-478` 的 `staged.expired` 远端删除移除）：过期页面的远端删除只剩 sweep 这一条路径，全部走上面的代际协议（另两条保留的删除都在发布者自己的代际内：稳定页重发后删上上版 audit、B.6 金丝雀由正常 sweep 回收）。代价：过期字节最多晚约一天被删（网关早已 404），存储略增。
 - **本地裁剪**（`stageReport` 两处）：发布路径只裁剪「镜像为 default、无 pending/unknown/gc、按今天规则过期、且一致读远端确认无非默认策略」的条目（只动本地条目与本地文件）；读到远端非默认 → 保留条目并修正镜像。镜像为非默认（永久或 until）的条目**不在发布路径裁剪**，由 sweep 第 6 步终结——所以 until 页到期后不会在 registry 里无限累积。`retainedSnapshot` 只是迁移选择（不删除），按有效策略选「仍可打开」的页面，已到期但未清理的 until 页不进迁移集。
-- **Epic 稳定 token 重发**（修 r2#3、r4#2、r5#1）：发布分「开始」与「完成」两次条件写，**只有完成那次成功才回报发布成功**：
-  1. 开始（上传 audit 之前）：读到 P（或不存在 / `deleting` / `retired`）→ 条件写 `{kind:"publishing", base: 原来是 permanent 则 permanent 否则 default, opId, startedAt}`（`ifMatch=P` / 只许创建）；冲突 → 重读重来（≤3 次，仍冲突则发布失败）。
-  2. 上传 audit → 公开验证 → 上传 HTML → 本地 registry/publication 提交（原流程）。
-  3. 完成：条件写 `{kind: base, opId}`（`ifMatch=开始那次的 ETag`）。成功 → 回报成功；冲突（例如卡死超过 24 小时后被清理认领，或被 set 以外的写推进）→ 回报**发布失败**、请重发，绝不在页面可能被封住时报成功。
+- **Epic 稳定 token 重发**（修 r2#3、r4#2、r5#1、r6#1）：全程持页级锁；分「开始」与「完成」两次条件写，**只有完成那次成功才回报发布成功**：
+  1. 开始（上传 audit 之前）：一致读得 P；新代际的 `base` = 读到 `permanent`，或读到 `publishing` 且其 `base` 为 `permanent` → `permanent`；读到 `until`（稳定页不可能，防御）/`default`/不存在/`deleting`/`retired`/`publishing(default)` → `default`。**只有显式 retention set 才能把永久改成默认**，失败后的重试不会降级。先记日志 `{kind:"publish", opId, baseEtag:P}`，再条件写 `{kind:"publishing", base, opId, startedAt}`（`ifMatch=P` / 只许创建）；结果未知按恢复规则；冲突 → 重读重来（≤3 次，仍冲突则发布失败）。
+  2. 上传 audit → 公开验证 → 上传 HTML → 本地 registry 提交（原流程）。**本地 publication 状态（`StateStore` 的 last_published_at/version、`epic-page-route` 对外状态）在完成 CAS 成功之后才写**；之前任何失败都不对外显示「已发布」。
+  3. 完成：条件写 `{kind: base, opId}`（`ifMatch=开始的 ETag`）；成功 → 写 publication 状态、结束日志、回报成功。冲突 / 结果未知且恢复后不是自己 → 回报**发布失败**、请重发；若此时远端已被清理接管，迟到上传的字节由代际规则 4 回收。
   - 网关把 `publishing` 按它的 `base` 规则服务（新 audit 公开验证照常通过）；set 读到新鲜的 `publishing` → 409「页面正在更新，稍后再设」。
-  - 清理遇到 `publishing`：`startedAt` 不到 24 小时 → 跳过（不读字节、不做准入）；超过 24 小时（发布者已崩溃）→ 视同普通代际做准入与认领；认领成功会让那个迟到的发布者第 3 步冲突、报失败，所以不会出现「报成功后 404」。
+  - 清理遇到 `publishing`：不到 24 小时 → 跳过；超过 24 小时 → 视同普通代际准入与认领（它在日志里，必能被发现）；认领成功会让迟到发布者的完成写冲突、报失败。
   - 新条目镜像按 `base` 设；读/写失败 → 发布失败，不带着未知代际继续。新条目不带 `gc` 标记。
 - **resume**（`report-registry.ts:746-787`）：首次未提交发布没有策略（新发布永远是 default）；恢复已有条目时保留其镜像字段，并把 `:760` 的过期校验换成有效策略判定。
 
@@ -214,7 +219,7 @@ stateDiagram-v2
 | `report-blob-store.ts` | client 抽象补 etag/ifMatch/条件删；`getReportPolicy`/`casReportPolicy`/`delReportPolicyIfMatch`；`REPORT_PATH_RE` 识别 `policy.json`（仅分类，不进旧的按 uploadedAt 删除路径）；`sweepExpiredReports` 按 B.5（工作集、tombstone、条件删、gc 终结） |
 | `report-gateway-runtime.ts:63-129,173-194` | B.4 顺序读；HTML 与三条 audit 分支都按 B.2 audit 规则 |
 | `report-hosting-maintenance.ts` | sweep 移出发布临界区、预算/并发/超时；对账 tick（B.3）；能力探针与金丝雀 receipt 清理（B.6） |
-| `report-registry.ts` | 镜像字段；pending/unknown 写入与收敛（均在 `withLock`）；本地裁剪与 `retainedSnapshot` 按 B.5；`stageEpicPageRepublish` 继承远端策略；resume `:760` |
+| `report-registry.ts` | 镜像字段；pending/unknown 写入与收敛（均在 `withLock`）；本地裁剪与 `retainedSnapshot` 按 B.5；`stageEpicPageRepublish` 继承远端策略；resume `:760`；页级锁 `token-locks/` 与同页操作日志 `token-ops.json`（B.5） |
 | `reports-route.ts` | B.7 路由；移除 `staged.expired` 的远端删除（只留本地裁剪，B.5） |
 | `epic-page-publisher.ts` | 重发路径接 B.5 远端策略读取 |
 | `report-hosting-migration.ts` | 部署记录文件 sha；B.6 探针后写门；`:180-200` 初次迁移只服务尚未迁移的旧绑定（此时门不可能已开、不会有非默认策略），保留默认判断并加注释与测试证明 |
@@ -234,7 +239,7 @@ stateDiagram-v2
 | 2 | client 条件能力 | 假 client 支持 ETag/ifMatch/allowOverwrite:false/条件删，与 SDK 语义一致的契约测试 |
 | 3 | 设置协议 | **可调度假 client**：A 超时 → 回读旧值 → A 保持 unknown → B 以 ifMatch 成功 → A 晚到落盘必然 PreconditionFailed → 远端与镜像都是 B；A 超时后自己晚到成功 → 对账提交 A；并发创建只一个成功；rename 失败 → 202 + 对账补齐；重启后收敛；同命令重跑幂等 |
 | 4 | 网关 | 无策略 14d 404；永久 15d 200；until 到期 404 不读 HTML；策略坏 schema 502；读错 502；audit 三分支 × 三种父策略；**线性化交错：policy 读与 HTML 读之间插入 sweep 的「删 HTML → 删 policy」，短期页与 audit 都不会回落默认返回 200**（改成并行读 / 改删除顺序后必须变红） |
-| 5 | 清理 | 2d 到期 → 远端删除失败 → 下轮 sweep 删除，期间始终 404；**到期前获准的 A（ifMatch 或只许创建）→ 超时 UNKNOWN → 完整清理收尾到 retired → A 晚到 → 必然 PreconditionFailed**（含「初始无策略、A 为只许创建」与「其间稳定页已按 default 重发」两种；fake 只按当前存在性判定，不得私记删过的路径）；**清理已判定 / 已写 gc 标记、尚未认领 → Epic 完整重发成功 → 旧认领必然冲突，新页、新 audit、本地文件都保留**；认领插在新 audit 上传与公开验证之间同样冲突；**先认领后重发**：重发写回新代际，清理只删认领清单里的旧对象，第 5 步落空；**父 HTML 过期 + 宽限、audit 未到期（default 混合年龄）→ 不退役，audit 按自己时刻可读**；HTML 有效、旧 audit 过期 → 不退役、该 audit 404；远端已 retired、registry 终结前崩溃 / rename 失败 → 下一轮从 gc 标记完成本地终结；恢复只按认领清单删、不认领新对象；策略读失败零删除；**1 万 token + 慢/挂起读：发布等待不受 sweep 影响**；跨 LIST 分页分组；只剩 retired 的 token 不读；**发布者先完成开始 CAS（publishing）→ 清理此后才做准入读取并记录旧字节 → 发布完整成功（完成 CAS）→ 清理恢复认领：认领因 ETag 已变必然冲突，新页与 audit 保持可访问**；新鲜 publishing 被跳过、超 24 小时 publishing 被认领后迟到的发布者报失败而非成功；set 遇新鲜 publishing → 409；**无 registry 条目的孤儿 → 登记孤儿索引 → 认领 → 字节全删 → retired 前崩溃 → 重启后 LIST 只剩 policy.json → 从孤儿索引找回并幂等写 retired**；已 retired 且不在索引中的 token 不读 |
+| 5 | 清理 | 2d 到期 → 远端删除失败 → 下轮 sweep 删除，期间始终 404；**到期前获准的 A（ifMatch 或只许创建）→ 超时 UNKNOWN → 完整清理收尾到 retired → A 晚到 → 必然 PreconditionFailed**（含「初始无策略、A 为只许创建」与「其间稳定页已按 default 重发」两种；fake 只按当前存在性判定，不得私记删过的路径）；**清理已判定 / 已写 gc 标记、尚未认领 → Epic 完整重发成功 → 旧认领必然冲突，新页、新 audit、本地文件都保留**；认领插在新 audit 上传与公开验证之间同样冲突；**先认领后重发**：重发写回新代际，清理只删认领清单里的旧对象，第 5 步落空；**父 HTML 过期 + 宽限、audit 未到期（default 混合年龄）→ 不退役，audit 按自己时刻可读**；HTML 有效、旧 audit 过期 → 不退役、该 audit 404；远端已 retired、registry 终结前崩溃 / rename 失败 → 下一轮从 gc 标记完成本地终结；恢复只按认领清单删、不认领新对象；策略读失败零删除；**1 万 token + 慢/挂起读：发布等待不受 sweep 影响**；跨 LIST 分页分组；只剩 retired 的 token 不读；**发布者先完成开始 CAS（publishing）→ 清理此后才做准入读取并记录旧字节 → 发布完整成功（完成 CAS）→ 清理恢复认领：认领因 ETag 已变必然冲突，新页与 audit 保持可访问**；新鲜 publishing 被跳过、超 24 小时 publishing 被认领后迟到的发布者报失败而非成功；set 遇新鲜 publishing → 409；**无 registry 条目的孤儿 → 登记孤儿索引 → 认领 → 字节全删 → retired 前崩溃 → 重启后 LIST 只剩 policy.json → 从孤儿索引找回并幂等写 retired**；已 retired 且不在索引中的 token 不读；**r7**：permanent → publishing(permanent) → audit 验证失败 / 开始写回执丢失 / 完成前崩溃 → 再次重发 → 完成后仍 permanent，14 天后可开（新鲜与超 24 小时两种残留）；首次 Epic、无 registry 条目 → publishing 已建、未传字节就崩溃 → 重启后只剩 policy.json → 从日志找回，超 24 小时后安全退役；GC 认领在服务端挂起 → 超时重启 → 回读仍是 P0 → 原样重发 → 晚到的原请求与重发只一个成功 → 按原清单完成 retired；真正后继写改掉 P0 后才结束旧日志；超 24 小时 publishing 被接管、迟到发布者在认领后上传 HTML/audit 并报失败 → 下一轮按代际规则 4 回收 retired 下的字节；回退检查遇 retired-with-bytes 拒绝；同页两个活操作抢页级锁只有一个进入 |
 | 6 | Epic 重发 / 本地裁剪 | 稳定页 permanent → 构造镜像丢失（registry 条目不在）→ 重发 → 远端读回 permanent → 14 天后普通 publish / list / epic expires_at 一致且字节仍在；远端读失败 → unknown 保守保留；普通 28d 页到期 → 远端 policy 残留 + 字节删除失败 → 下轮 sweep 清除，期间始终 404；镜像为 default 但远端是 permanent（镜像过期）→ 发布路径本地裁剪前读到远端策略，保留条目并修正镜像 |
 | 7 | 能力门 | 不读策略的假网关：金丝雀 A 200 → 不写门；只在 HTML 读策略、audit 漏传 → 不写门；全部 404 的坏网关：B 不是 200 → 不写门；新网关通过 → 写门绑定 deploymentId + sha；deploymentId 变化拒非默认；每日探针失败清门；金丝雀残留由 sweep 回收，超 3 天未回收告警 |
 | 8 | retarget | 有 pending 时开始 → 收敛或 exit 2；set 在 retarget 期间 409 hosting_busy；新 store 的 policy.json 与源逐字节相同（含 until 绝对时刻）；**retarget → 按策略到期 → registry 裁剪 + 远端删除失败 → deploy-gateway-only → GET 仍 404**；成功后遗留 journal 不影响后续 set；源 store 上 deleting/retired/已到期的页不迁移 |
@@ -258,7 +263,7 @@ stateDiagram-v2
 2. operator 跑 `--deploy-gateway-only`：新网关在无策略对象时与今天一致；B.6 探针通过 → 写门。
 3. 之后 Lead 才能设非默认。
 - 软关闭（首选）：`FLYWHEEL_REPORT_RETENTION_SET=0` → 拒绝新的非默认 set；已存在策略继续被网关与 sweep 执行。
-- **代码回退的前置条件**（修 r2#6）：旧代码不认 `policy.json`，会把永久/长期页按 14 天删掉，并把已到期但字节未删的 until 页重新打开。所以只有同时满足以下才允许回退：①软关闭已开且无 pending/unknown；②把所有未到期的非默认页设回默认（它们都还在 registry 里：非默认条目从不被本地裁剪）；③跑 sweep 直到 `list --remote` 显示远端除 `retired` 外**没有任何** `policy.json` 对象（`retired` 对旧代码无害：旧 sweep 不认识它、旧网关因无 HTML 返回 404；已到期 until 页的字节随之删除；删不掉的逐个列出）；④Annie 知悉清单。达不到 → 只做软关闭 + 前向修复。不称为「无损回滚」。回退测试：孤儿 2d 页远端删除失败 + 镜像清单为空 → `list --remote` 非空 → runbook 检查拒绝。
+- **代码回退的前置条件**（修 r2#6）：旧代码不认 `policy.json`，会把永久/长期页按 14 天删掉，并把已到期但字节未删的 until 页重新打开。所以只有同时满足以下才允许回退：①软关闭已开且无 pending/unknown；②把所有未到期的非默认页设回默认（它们都还在 registry 里：非默认条目从不被本地裁剪）；③跑 sweep 直到 `list --remote` 显示远端除 `retired` 外**没有任何** `policy.json` 对象、**且没有任何 retired token 之下仍有 HTML/audit**、同页操作日志为空（满足这些时 `retired` 对旧代码无害：旧 sweep 不认识它、旧网关因无 HTML 返回 404；已到期 until 页的字节随之删除；删不掉的逐个列出）；④Annie 知悉清单。达不到 → 只做软关闭 + 前向修复。不称为「无损回滚」。回退测试：孤儿 2d 页远端删除失败 + 镜像清单为空 → `list --remote` 非空 → runbook 检查拒绝。
 
 ### B.12 本单不做
 
