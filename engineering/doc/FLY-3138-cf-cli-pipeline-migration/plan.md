@@ -4,7 +4,7 @@ Issue: FLY-3138 (https://linear.app/geoforge3d/issue/FLY-3138/cloudflaref5挂起
 基于: research.md
 
 **Version**: TBD（ship 时取空号）
-**Status**: draft r2（挂起单：触发条件 = cf 正式版 GA）
+**Status**: draft r3（挂起单：触发条件 = cf 正式版 GA）
 **目标仓**: 生产 Flywheel（`payload-activation.yml` 只在生产 main，本沙箱无，见 exploration §1；审计基线 = 生产 `origin/main` `2abffd1e6`）
 
 ## 0. 目标与非目标
@@ -55,7 +55,9 @@ Issue: FLY-3138 (https://linear.app/geoforge3d/issue/FLY-3138/cloudflaref5挂起
 ### 3.2 部署变量 `FW_R2_ACCOUNT_ID`（无需判断 dry-run）
 - `cloudflare.config.ts` **永远严格**：读 `process.env.FW_R2_ACCOUNT_ID`，要求匹配 `/^[a-f0-9]{32}$/`，否则抛错；**没有占位默认值，也不尝试判断本次是不是 dry-run**。
 - CI 演练（ci.yml）：步骤 env 设 `FW_R2_ACCOUNT_ID: "00000000000000000000000000000000"`（全零哨兵，注释说明「仅供无凭据打包」）。不引入任何 `CLOUDFLARE*` 名字，S4a 不受影响。
-- activation E 步骤：env `FW_R2_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}`；部署前守卫：值 == `CLOUDFLARE_ACCOUNT_ID`、匹配 32 hex、**≠ 全零哨兵**，否则拒绝部署。部署后读回（§3.3 E）确认远端 `FW_R2_ACCOUNT_ID` 文本绑定 == 账号 ID。
+- activation：在 **job 级 env**（与现有 `CLOUDFLARE_ACCOUNT_ID` 并列）加 `FW_R2_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}`，使 B2 校验、A/B/C/D/E/F/G 等所有可能求值配置的步骤拿到同一个真实账号（cf 多数命令会加载最近的配置，GA 时 V6/V7 核对，但接线按「全部覆盖」做）。API token、R2 密钥等 secret 的 step 级作用域 **不变**（账号 ID 不是密钥）。
+- 守卫位置：现有「Guards」步骤（首个配置求值之前）加断言：`FW_R2_ACCOUNT_ID` 匹配 32 hex、**≠ 全零哨兵**、== `CLOUDFLARE_ACCOUNT_ID`，否则整个 job 在任何写入前失败；E 的部署前守卫保留作二次防线。部署后读回（§3.3 E）确认远端 `FW_R2_ACCOUNT_ID` 文本绑定 == 账号 ID。
+- B2 校验从 **当前检出 + 同一有效 env** 求值配置，不依赖 CI 哨兵产物或遗留 Build Output。
 - 若 V6 有官方 CLI 变量覆盖，也可用它，但「配置严格 + 全零哨兵仅在 CI + 部署前拒绝哨兵」三条不变。V6 两种方式都不可行 → G5 ✗ → 挂起。
 
 ### 3.3 `.github/workflows/payload-activation.yml`（只改 infra 模式里的 CLI 调用，**步骤名、顺序、gate、环境、权限、并发组全不动**）
@@ -100,6 +102,7 @@ Issue: FLY-3138 (https://linear.app/geoforge3d/issue/FLY-3138/cloudflaref5挂起
   6. 空名单 → 零调用。
 - **`activation-config.test.mjs`**：B4 断言改为调用 helper（不再逐字断言 wrangler argv）；新增「B4 第一个 put 返回 `Aborted.`/0 → 只调用 1 次即停、后续 capability 未写」；保留「首个失败即停」与「缺省零写入」；B2 校验步骤保留「配置 bucket 与 FW_R2_BUCKET 不一致 → 拒绝」并新增变异「保留 identity import、但实际 `FW_R2_BUCKET` 改成 `other` → 拒绝」。
 - **E 部署合同测试（新，离线 mock execFileSync/fetch）**：合法旧 URL + 缺 version ID 的回执 → 失败；回执 OK 但活动部署指向别的 version → 失败；部署后名单少了部署前存在的 `FW_OPS_ADMIN_TOKEN_SHA256` → 失败（不进入 F/G）；`FW_R2_ACCOUNT_ID` 为全零哨兵 / 与账号不符 → 部署前拒绝。
+- **账号接线合同测试（新，离线解析 workflow YAML 推导每步有效 env = job env ∪ step env）**：正常 infra 下 B2 及所有 `pnpm exec cf ` 步骤得到同一 `FW_R2_ACCOUNT_ID` 来源（`vars.CLOUDFLARE_ACCOUNT_ID`）；变异「只在 E 注入」→ 失败；Guards 对缺失 / 非法 / 全零 / 与 `CLOUDFLARE_ACCOUNT_ID` 不一致 → 在任何写步骤前失败；ci.yml 只显式传全零哨兵且零 `CLOUDFLARE*` 引用。
 - **配置测试（新）**：`FW_R2_ACCOUNT_ID` 缺失 / 非法 → 求值抛错；合法值 → 准确进入 `FW_R2_ACCOUNT_ID` 文本绑定；求值后 name/entry/compat/`PAYLOADS`/`FW_R2_BUCKET` 等于 exploration §3 清单。
 - **打包证据变异测试**：对一个夹具 Build Output 删除 aws4fetch 实现 / 改成 bare import 但保留两个本地标识 → 断言脚本必须失败。
 - **`release-workflows-structure.test.sh` S4a 改形**（research §5）：ci.yml 恰好 1 处 `pnpm exec cf deploy --dry-run` 且 0 处非 dry-run 的 `cf deploy`；**全部 workflow 0 处 `wrangler`**（负向守卫）；含 `pnpm exec cf ` 的 workflow 必须设 `CF_SEND_TELEMETRY`；任何 workflow 出现 `--secrets-file` → FAIL。变异自测：塞回一个 `wrangler` → 必须 FAIL。
