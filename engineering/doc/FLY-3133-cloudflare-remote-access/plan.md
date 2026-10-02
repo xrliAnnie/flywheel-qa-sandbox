@@ -6,7 +6,7 @@ Issue: FLY-3133 (https://linear.app/geoforge3d/issue/FLY-3133/epic用-cloudflare
 - 版本：ship 时取空号（生产 `doc/VERSION` 当前 v1.57.0）。
 - 代码基线：生产 main @ `9fcbdebb1`。本 QA 沙箱分支的 `packages/` 较旧，**实现必须在以生产 main 为基的分支上做**（implement 节点第一步核对基线；若本分支仍是沙箱旧代码，向 Lead 报告而不是在旧代码上实现）。
 - 本计划两部分：**A. Epic 级拆分与各子单技术合同**；**B. 第一个可实施增量 F1a 的实施级计划**（本分支下一个 implement 节点的范围）。F2/F8/F1b/F3/F6 各自开子单、各走自己的 design→implement，开工前先问对应的 founder 前提。
-- 修订记录：r2 按 Codex 设计评审 r1（15 项）重写 F1a 存储模型（全局派生投影 → 每页策略对象 + 预写状态机）并补 A.2/A.4 跨子单约束。
+- 修订记录：r2 按 Codex 设计评审 r1（15 项）重写 F1a 存储模型（全局派生投影 → 每页策略对象 + 预写状态机）并补 A.2/A.4 跨子单约束；r3 按 r2（10 项）改为条件写（ETag CAS）协议、绝对到期时刻、顺序读、删除前远端确认、set 与 retarget 共用跨进程锁、Codex Lead 只改自有页面、until 金丝雀探针。
 
 ## 0. 给 founder 的说明（一图）
 
@@ -45,7 +45,7 @@ flowchart TD
 
 ### A.2 跨子单不变量（每个子单的 design 都要继承）
 
-1. **每页策略随页面存放**：一页的保留期（F1b 再加分享名单）存在该页自己的存储目录里（`r/<token>/policy.json`），与页面同生共死；网关和清理都读它。Bridge `registry.json` 是「预写意图 + 已确认值」的镜像，用于清单和本地清理，不是第二个生效来源。没有全局派生清单。
+1. **每页策略随页面存放**：一页的保留期（F1b 再加分享名单）存在该页自己的存储目录里（`r/<token>/policy.json`），与页面同生共死；网关和清理都读它，所有写/删是条件操作（ETag CAS）。Bridge `registry.json` 只是清单镜像（含预写意图），**任何远端删除都不由镜像单独决定**。没有全局派生清单。
 2. **9876 永不接隧道**。任何远程面都是只含读路由的独立监听面；改东西的处理器不在远程面上（不是拦，是不注册）。
 3. **钥匙放置**：写类 Cloudflare 钥匙（R2 写、Access 策略、Browser Rendering）只给 Bridge 用，放独立文件 `~/.flywheel/cloudflare-bridge.env`（0600）；F8 只读钥匙放另一个独立文件 `~/.flywheel/cloudflare-readonly.env`；都**不**进 Runner env 白名单。
    **诚实边界**：Runner 与 Bridge 是同一个 Unix 用户，同用户可读文件**不是**安全边界 —— Runner 若主动去读 `cloudflare-bridge.env` 是读得到的（今天 `~/.flywheel/.env` 里的 Discord 等钥匙也是同样处境）。本 Epic 做到的是「不注入、不引用、最小权限、可撤销」，不是「机制上拿不到」。是否要更强隔离（独立 Unix 用户或远程 broker）交 founder 定（A.3 ④）。
@@ -74,16 +74,19 @@ flowchart TD
 
 ## B. F1a 实施级计划（下一个 implement 节点的范围）
 
+> r3 核心原则（Codex r2 后定稿）：**远端每页策略对象是唯一生效来源，且所有远端写/删都是条件操作（ETag CAS）**；
+> registry 只是给清单显示用的镜像，**任何远端删除都不由镜像单独决定**。
+
 ### B.1 效果与验收（提案原文 → 证据）
 
 | 验收 | 证据 |
 |---|---|
 | ① 没设的页照旧 14 天失效 | 网关/清理单测：无策略对象时 14d−1 可开、14d 404（沿用现有边界） |
-| ② 永久页过 14 天仍可开；28 天 / 2 天按设定失效 | 网关 HTTP 集成台架（B.9）注入时钟 |
-| ③ 发布后还能改（14→永久、永久→默认），**回执说成功时下一次打开即按新策略** | 台架：set 返回后立刻 GET 即新行为（网关不缓存策略） |
-| ④ 有清单看到哪些页非默认、各到何时 | `report-retention list` 与 `GET /api/reports/retention` |
-| ⑤ 默认 14 天集中一处 | `DEFAULT_REPORT_RETENTION_DAYS` 唯一定义；守卫测试限定在报告保留期 import 图内（B.8） |
-| 「跟 Lead 说一句」对 Claude Lead 与 Codex Lead 都成立 | Claude Lead 走 CLI（master）；Codex Lead 走新的 lead capability（B.6），用真实受限 Codex Lead 环境验证 |
+| ② 永久页过 14 天仍可开；28 天 / 2 天按设定失效 | 网关 HTTP 集成台架（B.10）注入时钟 |
+| ③ 发布后还能改，**回执说成功时下一次打开即按新策略** | 台架：set 返回 committed 后立刻 GET 即新行为（网关不缓存策略） |
+| ④ 有清单看到哪些页非默认、各到何时 | `report-retention list`（镜像，标出未确认项）；`list --remote`（直接列远端策略对象，权威） |
+| ⑤ 默认 14 天集中一处 | `DEFAULT_REPORT_RETENTION_DAYS` 唯一定义；守卫限定在报告保留期 import 图（B.9 步 12） |
+| 「跟 Lead 说一句」 | Claude Lead：CLI（master token），覆盖所有页面；Codex Lead：新 capability，**只能改自己发布的页面**（B.7），其余页面由 Claude Lead 代办——这是对 founder 的明确收窄，写进交付说明 |
 
 ### B.2 数据合同
 
@@ -92,142 +95,152 @@ flowchart TD
 export const DEFAULT_REPORT_RETENTION_DAYS = 14;
 export const REPORT_RETENTION_MS = DEFAULT_REPORT_RETENTION_DAYS * 86_400_000; // 保留导出名
 export const MAX_REPORT_RETENTION_DAYS = 365;
-export type ReportRetentionPolicy =
-  | { kind: "default" } | { kind: "permanent" } | { kind: "days"; days: number }; // 1..365 整数
+export const SWEEP_DELETE_GRACE_MS = 60 * 60 * 1000; // 删除字节比 404 晚 1 小时（B.5）
+// founder 词表（输入）：default | permanent | N 天（1..365）
+// 落盘词表（生效）：Bridge 在设置时把「N 天」换算成绝对到期时刻
+export type StoredReportPolicy =
+  | { kind: "default" }                       // = 今天的规则（manifest / uploadedAt + 14 天）
+  | { kind: "permanent" }
+  | { kind: "until"; expiresAt: string; basisCreatedAt: string; days: number }; // 绝对到期 + 换算依据（只用于显示）
 export const REPORT_POLICY_SCHEMA = "flywheel.report-policy.v1";
-export function reportPolicyPath(token: string): string;             // `r/${token}/policy.json`
-export function renderReportPolicyObject(p: ReportRetentionPolicy, opId: string): string; // {schema, policy, opId}
-export function parseReportPolicyObject(json: string): { policy: ReportRetentionPolicy; opId: string }; // 严格，失败 throw
-export function reportExpiresAtMs(createdAtMs: number, p?: ReportRetentionPolicy): number | null; // null=永久；缺省/default=14天
-export function isReportExpired(nowMs: number, createdAtMs: number, p?: ReportRetentionPolicy): boolean; // 不传 p = 今天行为
+export interface ReportPolicyObject { schema: typeof REPORT_POLICY_SCHEMA; opId: string; policy: StoredReportPolicy }
+export function reportPolicyPath(token: string): string;          // `r/${token}/policy.json`
+export function parseReportPolicyObject(json: string): ReportPolicyObject;  // 严格；失败 throw
+export function reportExpiresAtMs(defaultBasisMs: number, p?: StoredReportPolicy): number | null; // null=永久
+export function isReportExpired(nowMs: number, defaultBasisMs: number, p?: StoredReportPolicy): boolean; // 不传 p = 今天行为
 ```
 
-- **远端每页策略对象** `r/<token>/policy.json`：生效值。缺失 = 从未设置 = 默认。设回默认写 `{kind:"default"}`，**正常流程从不删除它**；只在整页清理时最后一个删（B.4.3）。
-- `ReportEntry` 新增可选：`retention?: ReportRetentionPolicy`（已确认值）、`retentionPending?: {policy, opId, at}`（预写意图）、`retentionUpdatedAt?`。
-- `ReportRegistryData` 新增 `policyRevision: number`（每次 set 提交 +1，进 retarget CAS）。
-- `ReportHostingState` / `HostingBinding` 新增 `reportPolicy?: {schema:"v1"; deploymentId: string; provedAt: string}`（能力门，绑定具体网关部署）。
-- 旧 Bridge 读新 JSON 会忽略这些字段（可读），但**回滚不安全**，见 B.10。
+- **为什么落盘绝对时刻**（修 r2#5）：`until` 自带到期时刻，网关、sweep、retarget、重部署后都不需要再找「原始 createdAt」；迁移重传导致的 `uploadedAt` 变化、manifest 重建、registry 裁剪都改变不了一个已设置页面的到期时间。`default` 显式等于今天的规则（今天就存在的 retarget+重部署时间基准问题不在本单扩大，也不在本单修）。
+- **Epic 稳定 token 只允许 `default` / `permanent`**：稳定页每次重发都重新起算，`N 天` 在它身上语义含糊；founder 对 Epic 页的诉求是「一直在」。`set <稳定token> Nd` → 400 并提示可设永久。重发只覆盖 `index.html`，不碰 `policy.json`。
+- **audit 子对象**：父 `permanent` → audit 不按 TTL 失效；父 `until` → audit 在同一 `expiresAt` 失效；父 `default`/无策略 → 今天的规则（audit 自己的 `uploadedAt`）。发布前「父缺失/父过期时仍可读新 audit」的公开验证分支保留（`report-blob-store.ts:295-309`、`report-gateway-runtime.ts:90-91,116-129`），只把判定换成上述规则。现有「commit 后删除上上版 audit」（`report-blob-store.ts:287-294,312-321`）不变，永久页通常只保留当前与上一版 audit。
+- `ReportEntry` 新增可选镜像：`retention?: StoredReportPolicy`、`retentionEtag?: string`、`retentionPending?: {opId, policy, baseEtag: string | null, hostingKey, at}`、`retentionUnknown?: true`。
+- `ReportHostingState` / `HostingBinding` 新增 `reportPolicy?: {schema:"v1"; deploymentId; artifactSha256: Record<string,string>; provedAt}`（能力门）。
+- `ReportBlobClient` 抽象补齐 SDK 已有能力（`@vercel/blob@2.8.0`）：`put` 透传 `ifMatch`、返回 `etag`；`get`/`head` 返回 `etag`；`del` 支持单对象 `ifMatch`；`BlobPreconditionFailedError` 映射成 `PreconditionFailed`。
 
-### B.3 时间基准（所有执行点同一规则）
+### B.3 设置协议（条件写，修 r2#1）
 
-| 对象 | 起算时刻 | 策略来源 |
-|---|---|---|
-| 普通报告 HTML | registry `createdAt`；网关侧用迁移 manifest 或对象 `uploadedAt`（同今天） | 该 token 的 `policy.json` |
-| Epic 稳定 token HTML | 最新一次上传的 `uploadedAt`（同今天，重发即重新起算） | 同上（重发不碰 `policy.json`，策略天然保留） |
-| audit 子对象 | **自己的** `uploadedAt`（同今天） | **父 token 的** `policy.json` —— 即 `reportExpiresAtMs(auditUploadedAt, parentPolicy)` |
-
-audit 的公开读取分支（父页缺失 / 父页过期时仍可读 audit，用于「先传 audit、经公开网关验证、再写 HTML」）**保持不变**，只把判定换成上表规则；首次发布与过期 Epic 重发都能继续通过发布前验证。永久 token 下旧 audit 会累积（每次手动重发一个小 JSON），接受，写进文档。
-
-### B.4 状态机
-
-#### B.4.1 设置（set）
+全程持有跨进程 `withHostingMutationLock`（`report-registry.ts:414`；retarget 也全程持有它，`report-hosting-retarget.ts:135`），拿不到 → 409 `hosting_busy`（修 r2#4：set 与 retarget 天然互斥；不再看 journal 文件是否存在）。
 
 ```mermaid
 stateDiagram-v2
-  [*] --> 校验: set token policy
-  校验 --> 拒绝: 不存在或已过期 或 能力门未开 或 retarget进行中 或 已有pending且opId不同
-  校验 --> 预写: registry写 retentionPending 和 opId
-  预写 --> 远端写: put r/token/policy.json 带 opId
-  远端写 --> 回读: 无论put成功还是超时都回读
-  回读 --> 提交: 回读opId等于本次
-  回读 --> 撤回: 回读到旧值或不存在 确定没写上
-  回读 --> 未知: 回读失败
-  提交 --> [*]: registry写 retention 清pending revision加1 回执成功
-  撤回 --> [*]: 清pending 回执失败 可重试
-  未知 --> [*]: 保留pending 回执结果未知 请重跑同一命令
+  [*] --> 读远端: 一致读 policy.json 取 ETag 或不存在
+  读远端 --> 先收敛旧操作: 镜像有 pending
+  先收敛旧操作 --> 读远端: 远端 opId 是旧 pending 则提交旧值 否则保持
+  读远端 --> 拒绝: 页面已过期 或 门未开 或 稳定页设天数
+  读远端 --> 预写: registry 写 pending 含 opId 和 baseEtag
+  预写 --> 条件写: put 带 ifMatch baseEtag 或 不存在时只许创建
+  条件写 --> 提交: 成功返回新 ETag
+  条件写 --> 回读: 超时或网络错误
+  条件写 --> 冲突: PreconditionFailed
+  回读 --> 提交: 远端 opId 等于本次
+  回读 --> 未知: 远端仍是 baseEtag 或读失败
+  冲突 --> 读远端: 有人先写了 重新读一次 最多 3 次
+  提交 --> [*]: 镜像写新值和 ETag 清 pending 回执成功
+  未知 --> [*]: 保留 pending 回执结果未知 请重跑同一命令
 ```
 
-- 同一 token 的重复 set 幂等：带同一 policy 重跑会复用 pending 的 opId 继续流程。
-- **只有「提交」才回 Lead 成功**；此时网关的下一次读取已是新策略（网关不缓存策略对象）。
-- 对账（Bridge 启动一次 + 每日维护 tick）：对每个带 `retentionPending` 的条目回读远端，按上图收敛；收敛不了 > 24h → 走现有通知通道告警（不含 token 全文，只含前 8 位）。
+- **超时后为什么不会被「晚到的旧写」覆盖**：旧操作 A 的写只能在远端 ETag 仍等于它的 `baseEtag` 时成功。只要后来有任何人（B）以 `ifMatch` 成功写过，A 的晚到请求必然 `PreconditionFailed`。所以 A 的状态只有两种：远端出现 A 的 opId（A 生效）或被后继写取代（A 永远失效）；在此之前 A 保持「未知」，**从不因为「回读到旧值」就判定 A 没写上**。
+- 首次创建用「不存在才创建」（`allowOverwrite:false`），A、B 并发创建只有一个成功，另一个按冲突重读。
+- 同一 token 重跑同一命令：复用 pending 的 opId 继续（幂等）；换了 policy 的新命令先按上图收敛旧 pending 再走自己的 CAS（旧 A 被取代 = 确定失效）。
+- **只有「提交」才回 Lead 成功**；此时远端已是新值，网关下一次读取即生效。registry rename 失败（远端已提交）→ 返回 202「结果已生效、清单待同步」，对账 tick 用远端 opId 补齐镜像。
+- 对账（Bridge 启动 + 每日 tick）：对 `retentionPending` / `retentionUnknown` 条目一致读远端，按 opId 收敛；连续 24h 收敛不了 → 现有通知通道告警（只带 token 前 8 位）。
 
-#### B.4.2 本地决策（不影响谁能打开，只影响本地字节与清单）
-`stageReport` 裁剪、`retainedSnapshot`、`lead-capability-report` 所有权校验、`strength-two-probes`、`epic-page-route.expires_at` 用「有效策略」= `retentionPending` 存在时取 pending 与 retention 中**到期更晚**的那个（保守：未收敛时绝不提前删本地字节），否则取 `retention`，都没有 = 默认。
+### B.4 网关读取（修 r2#2）
 
-#### B.4.3 远端清理（决定字节何时消失）
-- 每日 sweep：列 `r/` → 按 token 分组 → 有 `policy.json` 的读它（读失败 / schema 坏 → 该 token 本轮**不删**并告警）→ 按 B.3 判 HTML 与每个 audit 是否过期 → 先删过期的 HTML / audit → **该 token 下只剩 `policy.json` 时才删它**（下一轮也行）。
-- registry 里已被裁剪的条目、registry 之外的孤儿：都按远端 `policy.json` 判，不回落到「未知 = 默认 14 天」——修 r1#1（2 天页在 registry 裁剪后被当成孤儿重新开放）。
-- 普通 publish 的 `staged.expired` 远端删除（`reports-route.ts:473-478`）与 `deleteReports` 只删 HTML（今天如此），policy 留给 sweep 收尾；Epic 发布路径不新增远端删除。
-- sweep 与 set 共用现有 `ReportCriticalSection`（`report-hosting-maintenance.ts:31-44`），避免「sweep 读到旧策略后、set 改成永久、sweep 删掉」的竞态：sweep 在临界区内对每个准备删除的 token 再读一次 `policy.json` 再删。
+- **顺序读**：先一致读 `policy.json`（`useCache:false`），再读 `index.html`/audit。不并行。
+- `policy.json` 404 → `default`；解析通过 → 用它；其它错误 / schema 不认识 → 502（fail-closed）。
+- 先判策略再取字节：`until` 已到期 → 直接 404，不读 HTML。
+- 与清理的配对证明：清理删除顺序固定为「HTML/audit 先删、`policy.json` 最后删」（B.5）。一个请求读到 `policy.json` 404 的时刻，若该 token 之前有策略，则它的 HTML/audit 必然已在更早删除 → 随后读 HTML 得 404。读到策略（存在）的请求按策略判定。存储是线性一致的（Vercel Blob 私有一致读；F1b 的 R2 强一致）。
+- 网关不缓存策略；每次打开 = 两次小对象读（顺序）。
 
-#### B.4.4 网关读取（公开打开页面）
-- 每请求并行 GET `index.html` 与 `policy.json`（`useCache:false`，不在进程内缓存）。
-- `policy.json` 404 → 默认；200 且解析通过 → 用它；其它错误或 schema 不认识 → 502（fail-closed，与今天 Blob 读失败一致）。
-- 「首次上线」与「曾设置后丢失」的区分：正常流程从不删除策略对象（B.4.3 只在整页清理最后删），因此丢失只可能来自人工误删或存储故障，等价于页面本身丢失的威胁模型；不另设全局初始化状态。
+### B.5 远端清理（修 r2#3 #9）
 
-### B.5 网关能力门（防止「Bridge 说永久、线上网关仍按 14 天 404」）
+唯一原则：**删除远端对象前，必须以一致读确认该 token 的远端策略认为它已过期**；镜像只能用来挑候选，不能单独决定删除。
 
-- `pnpm migrate:report-hosting --deploy-gateway-only` 部署后，对**公开网关地址**跑行为探针（金丝雀 token，不入 registry）：
-  1. put 金丝雀 HTML + **坏 schema** 的 `policy.json` → 新网关必须 502（旧网关会 200，从而区分新旧部署）；
-  2. 改成合法 `{kind:"permanent"}` → 200；改成 `{kind:"days",days:1}` → 200；
-  3. 金丝雀 audit 子对象在 permanent 父策略下 → 200；
-  4. 清理金丝雀全部对象（清理失败 → 告警；sweep 读到坏 schema 不会删也不会误开，只留垃圾）。
-- 全部通过 → CAS 写 `hosting.reportPolicy = {schema:"v1", deploymentId, provedAt}`（同 gzip-v1 写门的 CAS，`report-registry.ts:680-698`）。
-- Bridge 只在 `hosting.reportPolicy.deploymentId === hosting.gatewayDeploymentId` 时接受非默认 set；任何经命令的重部署会先清门再重新证明。
-- 每日维护 tick 重跑探针；失败 → 清门 + 告警（覆盖带外回退网关，≤24h 发现）。已存在的非默认策略在门关闭期间仍写在远端，新网关恢复后照旧生效；门关闭期间 set 非默认被拒（409 `gateway_not_policy_capable`），设回默认允许。
+- **每日 sweep**（不进发布临界区，修 r2#9）：LIST `r/`（跨分页按 token 分组）→ 有 `policy.json` 的 token 以有界并发（8）、单次超时 10 秒读策略 → 判定 HTML 与每个 audit：到期且 `now ≥ expiresAt + SWEEP_DELETE_GRACE_MS`（1 小时宽限）才是候选 → 删除前再一致读一次策略，ETag 与判定时相同才删（读到不同 → 本轮跳过）→ HTML/audit 都删完后，`del(policy.json, {ifMatch: 判定时 ETag})`（条件删，set 期间改过则不删）。
+  - 宽限的作用：set 拒绝延长已到期页面（B.3「拒绝」分支），所以「sweep 判定后、删除前，set 把它改成永久」只可能发生在到期前；宽限 1 小时 + 删前重读（读到删之间 < 10 秒超时）使这个窗口不存在。网关 404 不受宽限影响，到期即 404。
+  - 无 `policy.json` 的 token：今天的规则（registry createdAt → manifest → uploadedAt），不额外读。
+  - 策略读失败 / schema 坏 → 该 token 本轮不删，聚合告警。
+  - 单 tick 工作预算 15 分钟、tick 不重叠（进程内标志 + 已有每日间隔）；超预算剩余留到下一轮。
+  - 成本（算例，非实测）：N 个有策略对象的 token 每天 N 次策略读 + 删前重读；1 万永久页 ≈ 每月 30 万次小对象读，加 LIST 分页；按 Vercel 付费版按量计费估算远低于 20 美元月额度，存储 80% 告警继续覆盖。
+- **普通 publish 的 `staged.expired` 远端删除**（`reports-route.ts:473-478`）：对每个候选先一致读策略；无策略且按今天规则过期 / 有策略且按策略过期（含宽限）才删 HTML；否则只把它从本地裁剪中**保留**下来（见下）。
+- **本地裁剪**（`stageReport` 两处、`retainedSnapshot`）：发布路径只裁剪「镜像为 default、无 pending/unknown、按今天规则过期、且一致读远端确认无非默认策略」的条目；读到远端非默认 → 保留条目并修正镜像。镜像为非默认（永久或 until）的条目**不在发布路径裁剪**，由 sweep 在把该 token 的远端对象（含 `policy.json`）全部条件删除之后，再移除其 registry 条目与本地文件——所以 until 页到期后不会在 registry 里无限累积。镜像缺失但远端有策略（例如条目丢失后重发）由 Epic 重发恢复（下条）。
+- **Epic 稳定 token 重发**（修 r2#3）：`stageEpicPageRepublish` 的 commit 前一致读该 token 的远端策略，把结果写入新条目镜像（`permanent` 保留；读失败 → 新条目标 `retentionUnknown`，本地保守保留，对账 tick 补）；远端删除仍按上面原则，不会因为镜像回默认就删掉新 HTML。
+- **resume**（`report-registry.ts:746-787`）：首次未提交发布没有策略（新发布永远是 default）；恢复已有条目时保留其镜像字段，并把 `:760` 的过期校验换成有效策略判定。
 
-### B.6 写入口（Claude Lead 与 Codex Lead）
+### B.6 网关能力门（修 r2#8 #10）
 
-- Bridge：`GET /api/reports/retention`（非默认清单 + pending 状态）、`POST /api/reports/retention` body `{token, policy: "default"|"permanent"|{"days":N}}`；挂在既有 `reportsAuthMiddleware` 下（`plugin.ts:1648-1677`，只认 master；ingest 只放 `POST /publish`，其它 403）；**在真实 app + middleware 层**测「Runner 的 ingest token 设保留期 = 403」。
-- 回执：`{token, url, policy, expiresAt|null, state:"committed"|"unknown"}`；`unknown` 时 HTTP 202 + 提示重跑同一命令。
-- 输入：token `^[0-9a-f]{32}$`；body 严格（多余键拒绝）；days 整数 1–365；URL 形参只取 `/r/<32hex>/`。
-- CLI（Claude Lead）：`flywheel-comm report-retention set <url|token> <permanent|default|Nd>`、`list [--json]`；只有 ingest token 时直接报错不发请求；输出人话「这页现在永久保留」/「这页将于 2026-10-29（太平洋时间）失效」/「结果未知，请再跑一次同一命令」。
-- Codex Lead：新增 lead capability `report.retention.set`（write）与 `report.retention.list`（read），catalog + handler + `/api/lead-capabilities/reports` 白名单加 `/retention-set`、`/retention-list`；授权复用 `report.publish-receipt` 同款身份证明（leadId + identityDigest），且**目标报告的 projectName 必须在该 Lead 的项目范围内**，否则 403。不把 master token 放回 Codex Lead 环境。
-- 拒绝不复活：目标 token 不在 registry 或按有效策略已过期 → 404/410。
+- `--deploy-gateway-only` 记录本次上传的每个网关文件的 sha256（`artifactSha256`）与 `deploymentId`；单元测试与 HTTP 台架跑的就是这些同一份源文件（`report-retention.ts` 本就被原样复制）。
+- 线上行为探针（金丝雀，不入 registry；创建前先写本地 receipt）：
+  1. 金丝雀 A：HTML + audit + `{kind:"until", expiresAt: 现在−1 分钟}` → 新网关 HTML 与 audit 都必须 404；旧网关（不读策略）会 200。这是「合法策略产生与默认不同结果」的证据，HTML 与 audit 两个执行点各自覆盖。
+  2. 金丝雀 B：HTML + `{kind:"until", expiresAt: 现在+1 天}` → 200（对照，排除「全部 404」的坏部署）。
+  3. 结束后按 receipt 条件删除金丝雀全部对象；删不掉也无害：A 已过期、B 次日过期，正常 sweep 自然回收；receipt 在 Bridge 启动与每日 tick 重试清理，只删 receipt 里登记的 token。
+- 通过 → CAS 写 `hosting.reportPolicy`；Bridge 只在 `reportPolicy.deploymentId === gatewayDeploymentId` 时接受非默认 set。经命令的重部署先清门再证明；每日 tick 重跑探针（同样只用 until 金丝雀），失败 → 清门 + 告警（≤24h 发现带外回退；这期间已存在的非默认策略由旧网关怎么处理不作保证，runbook 写明不得带外回退）。
+- `permanent` 与 `default` 分支没有「刚上传就能区分」的线上信号，由台架 + 部署文件 sha 绑定证明；线上探针只声称证明「策略被读取且 until 生效」。
 
-### B.7 改动清单（逐消费者）
+### B.7 写入口
+
+- Bridge：`GET /api/reports/retention`（镜像清单 + pending/unknown 标记；`?remote=1` 走远端 LIST 权威清单）、`POST /api/reports/retention` body `{token, policy: "default"|"permanent"|{"days":N}}`；挂在既有 `reportsAuthMiddleware` 下（`plugin.ts:1648-1677`，ingest 只放 `POST /publish`）；在真实 app + middleware 层测 ingest 403。
+- 回执：`{token, url, policy, expiresAt|null, state:"committed"|"unknown"|"committed_unsynced"}`；HTTP 200 / 202 / 202。
+- 输入：token `^[0-9a-f]{32}$`；body 严格；days 整数 1–365；稳定 token 只收 default/permanent。
+- CLI（Claude Lead）：`flywheel-comm report-retention set <url|token> <permanent|default|Nd>`、`list [--remote] [--json]`；只有 ingest token 时直接报错；人话：「这页现在永久保留」/「这页将于 2026-10-29 14:05（太平洋时间）失效」/「结果未知，请再跑一次同一命令」。
+- Codex Lead capability `report.retention.set` / `report.retention.list`（修 r2#7）：**完整复用 verify/deliver 的所有权授权**（`lead-capability-report.ts:25-35` 的 proof 全字段 requestId/carrierClaim/activationId/issueId/leadId/identityDigest；`:98-165` 的 live carrier、backend、role、bundle、issue team/project/department 重验；`:210-248` 的 capabilityOwner 匹配，拒绝无 owner 的页面）；在取得 hosting 锁之后、写 pending 之前再重验一次；list 只列本 Lead 拥有的页面。不新增项目级管理权；不把 master token 放进 Codex Lead 环境。
+- 不复活：目标按远端策略已过期 → 410。
+
+### B.8 改动清单（逐消费者）
 
 | 位置（生产 main） | 动作 |
 |---|---|
 | `report-retention.ts` | B.2 |
-| `report-gateway-runtime.ts:63-129,173-191` | B.4.4；audit 按 B.3 |
-| `report-blob-store.ts` | 接口加 `putReportPolicy(token, json)`、`getReportPolicy(token)`；`sweepExpiredReports` 按 B.4.3；`REPORT_PATH_RE` 认识 `policy.json` |
-| `report-hosting-maintenance.ts:20-54` | sweep 走 B.4.3；tick 内加 pending 对账（B.4.1）与能力探针（B.5） |
-| `report-registry.ts` | 新字段与 `policyRevision`；`setRetention` 三段式（预写/提交/撤回，均在 `withLock`）；`stageReport` 裁剪两处、`retainedSnapshot` 用有效策略；**`stageEpicPageRepublish`/commit 合并在锁内从 fresh 条目继承 `retention`/`retentionPending`**（修 r1#2）；`resumePublish` 恢复已有条目时保留其策略字段 |
-| `report-hosting-migration.ts` | 部署包含新共享模块；deploy-gateway-only 后跑 B.5 探针再写门 |
-| `report-hosting-retarget.ts` | 开始前要求无 pending；搬运集按有效策略；复制每个 token 的 `policy.json`；snapshot / journal / 最终 CAS 加 `policyRevision`，不等则重跑；新部署过 B.5 探针后才在新绑定写门；旧 journal 无 `policyRevision` 字段 → 视为不匹配重跑 |
-| `reports-route.ts` | B.6 路由；retarget journal 存在时 set 返回 409 `hosting_migration_in_progress` |
-| `lead-capabilities/catalog.ts`、handlers、`plugin.ts:6299-6330` 白名单、`lead-skill-adapters/founder-html-delivery` 说明 | B.6 Codex Lead 能力 |
-| `lead-capability-report.ts:237,294`、`strength-two-probes.ts:454-475`、`epic-page-route.ts:171-189` | 有效策略（B.4.2）；`expires_at:null` 表示永久，「未发布」状态另有字段区分 |
-| `flywheel-comm` 新命令 `report-retention` + `index.ts` 注册 | B.6 |
-| `doc/reference/remote-report-pipeline.md` | 合同「完整可访问 14 天」→「默认 14 天，founder 可单页覆盖」；补 set/list、能力门、回滚限制 |
+| `report-blob-store.ts` | client 抽象补 etag/ifMatch/条件删；`getReportPolicy`/`casReportPolicy`/`delReportPolicyIfMatch`；`REPORT_PATH_RE` 识别 `policy.json`（仅分类，不进旧的按 uploadedAt 删除路径）；`sweepExpiredReports` 按 B.5 |
+| `report-gateway-runtime.ts:63-129,173-194` | B.4 顺序读；HTML 与三条 audit 分支都按 B.2 audit 规则 |
+| `report-hosting-maintenance.ts` | sweep 移出发布临界区、预算/并发/超时；对账 tick（B.3）；能力探针与金丝雀 receipt 清理（B.6） |
+| `report-registry.ts` | 镜像字段；pending/unknown 写入与收敛（均在 `withLock`）；本地裁剪与 `retainedSnapshot` 按 B.5；`stageEpicPageRepublish` 继承远端策略；resume `:760` |
+| `reports-route.ts` | B.7 路由；`staged.expired` 远端删除按 B.5 先读策略 |
+| `epic-page-publisher.ts` | 重发路径接 B.5 远端策略读取 |
+| `report-hosting-migration.ts` | 部署记录文件 sha；B.6 探针后写门；`:180-200` 初次迁移只服务尚未迁移的旧绑定（此时门不可能已开、不会有非默认策略），保留默认判断并加注释与测试证明 |
+| `report-hosting-retarget.ts` | 开始时（已持 hosting 锁）收敛所有 pending/unknown，收敛不了 → exit 2；按 token 从**源 store 远端**复制 `policy.json`（含 opId/expiresAt 原样）；新部署过 B.6 后才在新绑定写门 |
+| `lead-capabilities/catalog.ts` + handler + `plugin.ts:6299-6330` 白名单 + `lead-skill-adapters/founder-html-delivery` 说明 | B.7 Codex Lead 能力 |
+| `lead-capability-report.ts:237,294`、`strength-two-probes.ts:454-475`、`epic-page-route.ts:171-189` | 有效策略（镜像，unknown 时保守视为未过期）；`expires_at:null` = 永久，另有「未发布」字段区分 |
+| `flywheel-comm` 新命令 `report-retention` + `index.ts` 注册 | B.7 |
+| `doc/reference/remote-report-pipeline.md` | 合同「完整可访问 14 天」→「默认 14 天，founder 可单页覆盖」；set/list、能力门、禁止带外回退、回退前置条件 |
 | `lead-rules-base/` 一行规则 | founder 说「这页永久/留 N 天/2 天就行」→ Lead 设置并回一句失效时间；结果未知时重跑 |
 | FLY-2006 retention-tables | 无新 SQLite 表 → 不需要 |
 
-### B.8 实施步骤（TDD，每步先红后绿）
+### B.9 实施步骤（TDD，每步先红后绿）
 
 | 步 | 内容 | 先写的失败测试（节选） |
 |---|---|---|
-| 1 | 共享模块 | 默认边界不变；permanent→null；days N 天−1ms / N 天；parse 拒绝 0、366、1.5、多余键、未知 kind、坏 schema |
-| 2 | registry 状态机 | 预写后进程退出 → 重启对账收敛；put 抛错但远端已写（假 client 先写后抛）→ 回读提交；回读失败 → pending 保留、本地不裁剪；连续两次 set；stage 与 commit 之间改策略不丢 |
-| 3 | Epic 重发 / resume | 永久页重发后过 14 天仍保留；2d 页重发后从新上传起算；resume 已有条目保留策略 |
-| 4 | 网关 | 无策略 14d 404；永久 15d 200；2d 第 3 天 404；策略坏 schema 502；读错 502；audit：父 2d/永久、父缺失（发布前验证）、父过期 + 新 audit、父与 audit uploadedAt 不同 |
-| 5 | sweep | **2d 到期 → registry 裁剪 → 远端删除失败 → 下次 sweep：主页与 audit 都不可访问、不被当成默认孤儿**（移除「按远端策略判孤儿」后必须变红）；策略读失败零删除；只剩 policy.json 才删它；sweep 与 set 竞态 |
-| 6 | 能力门 | 探针：旧网关（不读策略的假实现）坏 schema 返回 200 → 不写门；新网关通过 → 写门绑定 deploymentId；deploymentId 变化 → 拒非默认 set；每日探针失败清门 |
-| 7 | retarget | 复制完成后改策略（token/HTML/createdAt 不变）→ CAS 因 `policyRevision` 失败重跑；有 pending 拒绝开始；旧 journal 恢复；新 store 有 policy.json |
-| 8 | 路由 + 认证 | 真实 app：master 200；ingest 403；门未开 409；retarget 中 409；未知/过期 404/410；严格 body；unknown → 202 |
-| 9 | CLI | 参数解析、ingest-only 拒绝、三种人话输出 |
-| 10 | Codex Lead 能力 | 本项目报告 200；他项目报告 403；无身份证明 401；list 只列本范围 |
-| 11 | 其余消费者 | lead-capability / strength-two / epic-page-route 的永久与 pending 用例 |
-| 12 | 守卫 | 报告保留期 import 图内（`report-retention.ts` 的所有导入方）不得自带 14 天字面量；行为测试覆盖「漏传策略」（任一执行点不传策略 → 永久用例变红）。不做全仓字面量扫描（release-contract / xiaohongshu / readiness / epic signals 的 14 天是别的业务） |
+| 1 | 共享模块 | 默认边界不变；permanent→null；until 边界；N 天换算；parse 拒绝 0、366、1.5、多余键、未知 kind、坏 schema |
+| 2 | client 条件能力 | 假 client 支持 ETag/ifMatch/allowOverwrite:false/条件删，与 SDK 语义一致的契约测试 |
+| 3 | 设置协议 | **可调度假 client**：A 超时 → 回读旧值 → A 保持 unknown → B 以 ifMatch 成功 → A 晚到落盘必然 PreconditionFailed → 远端与镜像都是 B；A 超时后自己晚到成功 → 对账提交 A；并发创建只一个成功；rename 失败 → 202 + 对账补齐；重启后收敛；同命令重跑幂等 |
+| 4 | 网关 | 无策略 14d 404；永久 15d 200；until 到期 404 不读 HTML；策略坏 schema 502；读错 502；audit 三分支 × 三种父策略；**线性化交错：policy 读与 HTML 读之间插入 sweep 的「删 HTML → 删 policy」，短期页与 audit 都不会回落默认返回 200**（改成并行读 / 改删除顺序后必须变红） |
+| 5 | 清理 | 2d 到期 → registry 裁剪 → 远端删除失败 → 下轮 sweep 删除且期间始终 404；删前重读 ETag 变化 → 不删；条件删 policy 冲突 → 不删；策略读失败零删除；宽限内不删；**1 万 token + 慢/挂起读：发布等待不受 sweep 影响**；跨 LIST 分页分组；`staged.expired` 遇远端非默认策略 → 不删字节 |
+| 6 | Epic 重发 / 本地裁剪 | 稳定页 permanent → 构造镜像丢失（registry 条目不在）→ 重发 → 远端读回 permanent → 14 天后普通 publish / list / epic expires_at 一致且字节仍在；远端读失败 → unknown 保守保留；普通 28d 页到期 → 远端 policy 残留 + 字节删除失败 → 下轮 sweep 清除，期间始终 404；镜像为 default 但远端是 permanent（镜像过期）→ `staged.expired` 读到远端策略后不删字节并修正镜像 |
+| 7 | 能力门 | 不读策略的假网关：金丝雀 A 200 → 不写门；只在 HTML 读策略、audit 漏传 → 不写门；全部 404 的坏网关：B 不是 200 → 不写门；新网关通过 → 写门绑定 deploymentId + sha；deploymentId 变化拒非默认；每日探针失败清门；receipt 清理只删登记 token、重启后重试 |
+| 8 | retarget | 有 pending 时开始 → 收敛或 exit 2；set 在 retarget 期间 409 hosting_busy；新 store 的 policy.json 与源逐字节相同（含 until 绝对时刻）；**retarget → 按策略到期 → registry 裁剪 + 远端删除失败 → deploy-gateway-only → GET 仍 404**；成功后遗留 journal 不影响后续 set |
+| 9 | 路由 + 认证 | 真实 app：master 200；ingest 403；门未开 409；锁忙 409；稳定页设天数 400；过期 410；严格 body；unknown/unsynced → 202 |
+| 10 | CLI | 参数解析、ingest-only 拒绝、三种人话输出 |
+| 11 | Codex Lead 能力 | 自己发布的页 200；同项目他 Lead 的页 403；无 owner 页 403；carrier 失效 403；identity digest 轮换 403；排队后撤权（锁内重验）403；list 只列自有 |
+| 12 | 其余消费者 + 守卫 | lead-capability / strength-two / epic-page-route 永久与 unknown 用例；`report-retention.ts` 的导入方不得自带 14 天字面量；任一执行点漏传策略 → 永久用例变红（行为变异） |
 | 13 | 文档 + Lead 规则 | — |
 
-### B.9 网关 HTTP 集成台架（QA 与负向守卫的载体）
+### B.10 网关 HTTP 集成台架（QA 与负向守卫的载体）
 
-529 loopback report host 是静态文件服务器（`scripts/lib/qa-report-host.mjs:272-298`），**不能**证明 TTL；不作为本单行为证据。新增测试台架：
-- 真实 `createReportGatewayHandler` 挂在 node `http` server 上，依赖注入**内存 Blob adapter**（同一份实例也注入 `VercelBlobReportStore` 的 client 位置）与**统一时钟**；Bridge 的 `reports-route` + registry 也接同一 adapter 与时钟。
-- 端到端：publish → set（route）→ 网关 GET → 拨钟 → GET；含 Epic 重发、sweep、retarget 到第二个内存 store、能力探针。
-- 负向守卫：关掉网关读策略 → 永久 15 天用例变红；时钟不传进网关 → 边界用例变红。
-- 独立 QA 节点在此台架上复跑并截证据；生产「挑一页设永久、15 天后仍可开」只作 ship 后延时观察，不算上线前证明。
+529 loopback report host 是静态文件服务器（`scripts/lib/qa-report-host.mjs:272-298`），不能证明 TTL，不作为本单行为证据。新增台架：
+- 真实 `createReportGatewayHandler` 挂在 node `http` server；注入**内存 Blob adapter**（实现 ETag / ifMatch / 条件删 / 线性一致读，并可在任意两步之间插入调度点）与**统一时钟**；Bridge 的 `reports-route` + registry + maintenance 接同一 adapter 与时钟。
+- 端到端：publish → set（route）→ 网关 GET → 拨钟 → GET；Epic 重发；sweep；retarget 到第二个内存 store；deploy-gateway-only 后探针。
+- 负向守卫：关掉网关读策略 → 永久 15 天用例变红；时钟不传进网关 → 边界用例变红；并行读 → 交错用例变红。
+- 独立 QA 节点在此台架复跑并截证据；生产「挑一页设永久、15 天后仍可开」只作 ship 后延时观察。
 
-### B.10 上线顺序与回滚（merge 之后，独立 updater / operator）
+### B.11 上线顺序与回滚（merge 之后，独立 updater / operator）
 
-1. 正常窗口部署 Bridge：新字段缺省，门未开 → 只允许设默认，行为与今天相同。
-2. operator 跑 `--deploy-gateway-only`：新网关在无策略对象时与今天一致；B.5 探针通过 → 写门。
+1. 正常窗口部署 Bridge：门未开 → 只允许设默认，行为与今天相同。
+2. operator 跑 `--deploy-gateway-only`：新网关在无策略对象时与今天一致；B.6 探针通过 → 写门。
 3. 之后 Lead 才能设非默认。
-- 软关闭（首选「回滚」）：环境开关 `FLYWHEEL_REPORT_RETENTION_SET=0` → 拒绝新的非默认 set；已存在策略仍被网关与 sweep 执行（不改变已承诺给 founder 的结果）。
-- **代码回退的真实后果**：旧 Bridge 的 sweep 不认 `policy.json`，会按 14 天删掉永久页与 28 天+ 页面，并让 2 天页最长开放到 14 天；旧网关同理。因此：**存在非默认策略时禁止代码回退**；确需回退时先 `report-retention list`，逐页设回默认（或经 founder 同意接受损失并告知受影响页面），回退后再无承诺偏差。runbook 写明，不称为「无损回滚」。
+- 软关闭（首选）：`FLYWHEEL_REPORT_RETENTION_SET=0` → 拒绝新的非默认 set；已存在策略继续被网关与 sweep 执行。
+- **代码回退的前置条件**（修 r2#6）：旧代码不认 `policy.json`，会把永久/长期页按 14 天删掉，并把已到期但字节未删的 until 页重新打开。所以只有同时满足以下才允许回退：①软关闭已开且无 pending/unknown；②把所有未到期的非默认页设回默认（它们都还在 registry 里：非默认条目从不被本地裁剪）；③跑 sweep 直到 `list --remote` 显示远端**没有任何** `policy.json` 对象（已到期 until 页的字节随之删除；删不掉的逐个列出）；④Annie 知悉清单。达不到 → 只做软关闭 + 前向修复。不称为「无损回滚」。回退测试：孤儿 2d 页远端删除失败 + 镜像清单为空 → `list --remote` 非空 → runbook 检查拒绝。
 
-### B.11 本单不做
+### B.12 本单不做
 
-不搬 Cloudflare、不改 URL 形态、不加分享名单（F1b）、不复活已过期页面、不自动给任何页面设非默认值、不清理永久 token 下累积的旧 audit。
+不搬 Cloudflare、不改 URL 形态、不加分享名单（F1b）、不复活已过期页面、不自动给任何页面设非默认值、Epic 稳定页不支持「N 天」、不修今天已有的「retarget+重部署后默认页时间基准」问题（default 语义保持今天）、Codex Lead 不能改别人发布的页面。

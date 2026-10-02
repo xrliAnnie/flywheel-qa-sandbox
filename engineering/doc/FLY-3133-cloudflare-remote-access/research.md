@@ -30,25 +30,23 @@ B 的好处：策略和它管的字节在同一前缀下，registry 裁剪、重
 retarget 按 token 复制对象时策略自然跟着走；网关每请求直接读对象（不缓存），设置成功即下一次打开生效。
 
 ### 1.2 策略值（唯一词表）
-`{kind:"default"} | {kind:"permanent"} | {kind:"days", days:1..365}`；缺省 = 默认；`DEFAULT_REPORT_RETENTION_DAYS = 14` 唯一集中设置。
+founder 输入 `default | permanent | N 天(1..365)`；落盘时 Bridge 把 N 天换算成绝对到期时刻 `{kind:"until", expiresAt}`（r3，修迁移后时间基准丢失）；Epic 稳定页只允许 default/permanent。缺省 = 默认；`DEFAULT_REPORT_RETENTION_DAYS = 14` 唯一集中设置。
 过期统一由 `report-retention.ts` 的纯函数计算 —— 该文件本来就被原样复制进网关部署，Bridge、sweep、网关同一份算法。
 时间基准不变（普通报告 = 首次 createdAt；Epic 稳定 token = 最新上传；audit = 自己的 uploadedAt + 父 token 的策略）。
 
-### 1.3 一致性
-- 设置是预写状态机：registry 写 pending(opId) → put 策略对象 → **无论 put 成功或超时都回读** → opId 对上才提交并回执成功；回读失败 = 结果未知，保留 pending，回执「请重跑」。
-- 本地决策（裁剪本地字节等）在 pending 未收敛时取到期更晚者（保守）。
-- 远端删除只看远端策略；策略读失败本轮不删；整页清理时策略对象最后删。
-- sweep 与 set 共用 `ReportCriticalSection`，删前再读一次策略。
+### 1.3 一致性（r3 定稿，细节见 plan B.3–B.5）
+- 设置 = 条件写：一致读拿 ETag → registry 预写 pending(opId, baseEtag) → `put(ifMatch=baseEtag)`（不存在时只许创建）→ 超时则回读，远端 opId 对上才提交；旧值/读失败 = 结果未知（不判定没写上），因为晚到的旧写只能在 ETag 未变时生效，一旦被后继 CAS 取代就必然失败。
+- 网关先读策略再读字节；清理「字节先删、策略最后条件删」；任何远端删除前一致读确认策略认为已过期（+1 小时删除宽限）；镜像只用于清单与挑候选。
+- set 与 retarget 共用跨进程 hosting 锁。
 
 ### 1.4 能力门
-旧网关不读策略。门 = 对公开网关地址做行为探针：金丝雀页配**坏 schema** 策略，新网关必须 502、旧网关会 200（区分新旧部署）；合法 permanent / days → 200；
-通过后在 registry hosting 写 `reportPolicy:{schema, deploymentId}`；Bridge 只在 deploymentId 与当前网关部署一致时接受非默认设置；每日维护重跑探针，失败清门告警。
+线上探针用合法的 `until`（到期时刻已过）金丝雀：新网关 HTML 与 audit 都 404，旧网关 200；另一个未到期 until 金丝雀 200 作对照；金丝雀残留会被正常 sweep 自然回收。门绑定 deploymentId 与部署文件 sha256；permanent/default 分支由台架 + 同一份文件证明。每日重探，失败清门告警。
 
 ### 1.5 谁能改
-Claude Lead：CLI → `POST /api/reports/retention`（master；ingest 403）。Codex Lead：新 lead capability `report.retention.set/list`，复用 publish-receipt 的身份证明，且目标报告必须在该 Lead 项目范围内。已过期页面不复活。
+Claude Lead：CLI → `POST /api/reports/retention`（master；ingest 403）。Codex Lead：新 lead capability `report.retention.set/list`，完整复用 verify/deliver 的所有权授权，**只能改自己发布的页面**（明确收窄）。已过期页面不复活。
 
 ### 1.6 成本
-每页约 87 KB，1 万页永久 < 1 GB；既有 80% 存储告警继续覆盖。每次打开多一次小对象读（无缓存），按每天约 37 页的发布量与少量打开远在额度内（估算，打开次数从未统计）。
+每页约 87 KB，1 万页永久 < 1 GB；既有 80% 存储告警继续覆盖。每次打开多一次小对象读（无缓存、先读策略）；每日 sweep 对每个有策略对象的 token 读一次（1 万永久页 ≈ 每月 30 万次小对象读，算例）。按 Vercel 付费版按量计费估算远低于月额度（打开次数从未统计）。
 
 ## 2. F1b 搬到 Cloudflare + 6 Gmail + 单页分享（架构层，实施等前提①③）
 
@@ -58,8 +56,8 @@ Claude Lead：CLI → `POST /api/reports/retention`（master；ingest 403）。C
 - 登录门：Access 应用保护 workers.dev 网关地址（官方支持，不强制自有域名）；登录方式 Google + 一次性验证码。
 - 身份：Worker 校验 `Cf-Access-Jwt-Assertion`（§0），取 `email`；**不信**明文邮箱头。
 - 授权（两层，founder 提案原文）：
-  - 第一层 Access 策略只放「6 个 Gmail ∪ 至少被分享过一页的朋友」。名单由 Bridge 从 registry 推导，经一个只能改**这一个** Access 应用策略的钥匙同步（钥匙只在 Bridge，Runner 拿不到）。是否改为「Access 放行任何登录、Worker 独断」是 F1b 设计节点的取舍点（后者省掉 Bridge 写 Access 的钥匙，但任何拿到链接的人都会占一个免费席位）。
-  - 第二层 Worker 读投影 v2：owner 6 邮箱放行所有页；朋友只放 `sharedWith` 含自己的页。
+  - 第一层 Access 策略只放「6 个 Gmail ∪ 至少被分享过一页的朋友」。名单由 Bridge 从 registry 推导，经一个只能改**这一个** Access 应用策略的钥匙同步（钥匙只给 Bridge 用、不注入 Runner；同用户文件不是隔离边界，见 plan A.2-3）。是否改为「Access 放行任何登录、Worker 独断」是 F1b 设计节点的取舍点（后者省掉 Bridge 写 Access 的钥匙，但任何拿到链接的人都会占一个免费席位）。
+  - 第二层 Worker 读该页 `policy.json`（加 `sharedWith`）：owner 6 邮箱放行所有页；朋友只放 `sharedWith` 含自己的页。
 - 分享名单与保留期同住每页策略对象（`r/<token>/policy.json` 加 `sharedWith`），registry 镜像 + 预写状态机同 F1a；Worker 每请求读该对象（R2 强一致、不缓存授权）→ 撤销对后续请求**立即**生效（founder 验收⑤原文，不放宽成缓存时限）。
 - 机器身份：Epic audit 探针、report verify、strength-two、截图这些服务端读者在 Access 开启后会被挡；F1b 用 Access service token（JWT `common_name`）定义只读机器身份，只能读报告、不能进 F2/F3，凭据只在 Bridge 侧；F6 复用。
 - 旧 Vercel 链接：所有已迁移 token（默认 / N 天 / 永久，含 audit）旧地址一律 301 到受保护新地址，旧网关不再直接返回字节（否则撤销分享可从旧地址绕过）；redirect 服务按这些 token 自己的策略保留到全部到期。回滚窗口 = Vercel 仍在线期间，反向迁移含策略与 ACL；窗口外只前向修复。
@@ -116,7 +114,7 @@ Claude Lead：CLI → `POST /api/reports/retention`（master；ingest 403）。C
 ## 8. 依赖与顺序（技术视角）
 ```
 前提①账号 ─┬─> F8 ─> (F1b/F6 出问题时 Runner 自查)
-           ├─> F1b（还需前提③ + F1a 的策略投影）
+           ├─> F1b（还需前提③ + F1a 的每页策略对象）
            └─> F6（F1b 后需 Access service token）
 前提②路线 ─> F2 ─> F3
 F1a（无前提）─> F1b
