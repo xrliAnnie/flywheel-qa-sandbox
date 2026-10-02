@@ -1,13 +1,14 @@
 ---
 issue: FLY-3136
 phase: design
-phaseCursor: 5/6
-updated: 2026-10-02T05:56:12.365Z
-nextStep: publish founder HTML, report, complete --route phase_design_complete
+phaseCursor: 6/6
+updated: 2026-10-02T05:56:50.809Z
+nextStep: design complete; route still pending Annie (question 1966b943);
+  implement per plan.md (Cloudflare default) + design-review.md R3 wording
 chunks: []
 pointers: {}
 ---
 
 # FLY-3136 progress
-**phase**: design (5/6)
-**next**: publish founder HTML, report, complete --route phase_design_complete
+**phase**: design (6/6)
+**next**: design complete; route still pending Annie (question 1966b943); implement per plan.md (Cloudflare default) + design-review.md R3 wording
