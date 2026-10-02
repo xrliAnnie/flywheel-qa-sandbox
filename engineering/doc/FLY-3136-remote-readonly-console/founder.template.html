@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FLY-3136 手机远程看控制台（只读）· 设计</title>
+<style>
+  :root{--red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;--gray:#86868b;--navy:#1a365d;}
+  *{box-sizing:border-box;}
+  body{margin:0 auto;background:#f5f5f7;color:#1d1d1f;font-family:-apple-system,system-ui,sans-serif;max-width:960px;padding:28px 16px 80px;line-height:1.6;}
+  h1{font-size:1.55em;letter-spacing:-0.02em;margin:0 0 4px;}
+  .sub{color:var(--gray);font-size:.9em;}
+  .id{font-family:'SF Mono',monospace;color:var(--navy);font-weight:600;}
+  .card{background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:18px 20px;margin:16px 0;border-left:4px solid var(--blue);}
+  .card.green{border-left-color:var(--green);} .card.amber{border-left-color:var(--amber);}
+  .card.red{border-left-color:var(--red);} .card.purple{border-left-color:var(--purple);} .card.navy{border-left-color:var(--navy);}
+  .card h2{font-size:1.1em;margin:0 0 8px;}
+  .one{font-size:1.15em;font-weight:600;}
+  .term{background:#f0f4fa;border-radius:8px;padding:8px 12px;font-size:.88em;color:#33475b;margin:8px 0;}
+  .diagram{overflow-x:auto;background:#fff;border:1px solid #eee;border-radius:10px;padding:8px;margin:8px 0;}
+  .diagram svg{max-width:100%;height:auto;display:block;margin:0 auto;}
+  table{border-collapse:collapse;width:100%;font-size:.9em;margin:8px 0;}
+  th,td{border-bottom:1px solid #eee;padding:7px 8px;text-align:left;vertical-align:top;}
+  th{color:var(--gray);font-weight:600;}
+  .badge{display:inline-block;border-radius:6px;padding:1px 8px;font-size:.78em;font-weight:600;}
+  .badge.green{background:#e7f8ec;color:#1f7a3a;} .badge.red{background:#ffecec;color:#b00020;} .badge.amber{background:#fff4e0;color:#9a5b00;} .badge.purple{background:#f5e9fb;color:#7a2e9e;}
+  code{font-family:'SF Mono',monospace;font-size:.88em;background:#f2f2f5;border-radius:4px;padding:1px 5px;}
+  ul{padding-left:20px;margin:6px 0;}
+  .cmt{margin-top:12px;}
+  .cmt textarea{width:100%;min-height:54px;border:1px solid #d9d9de;border-radius:8px;padding:8px;font:inherit;font-size:.9em;resize:vertical;background:#fafafc;}
+  .cmt label{font-size:.78em;color:var(--gray);}
+  #sumOut{white-space:pre-wrap;font-family:'SF Mono',monospace;font-size:.82em;background:#f7f7f9;border-radius:8px;padding:10px;min-height:40px;}
+  .btn{background:var(--navy);color:#fff;border:none;border-radius:8px;padding:8px 16px;font:inherit;font-size:.9em;cursor:pointer;margin:8px 8px 0 0;}
+  .chunk{margin-top:10px;}
+  #copyStatus{font-size:.85em;color:var(--green);margin-left:6px;}
+</style>
+</head>
+<body>
+<h1>手机远程看 Bridge 控制台（第一版只读）· 工程设计</h1>
+<div class="sub"><span class="id">FLY-3136</span> · 2026-10-01 · 设计节点产出 · 每张卡片下面可以写意见，最下面一键复制</div>
+
+<div class="card green" data-sec="一句话">
+  <h2>① 一句话</h2>
+  <p class="one">在 Bridge 里另开一扇只读的小窗（只在本机、端口 9877），它只给「看」不给「改」，而且每次都亲自检查你是用名单里的 Google 邮箱登录进来的；外网的隧道只接这扇小窗，永远不接本机完整控制台。</p>
+  <div class="term"><b>Bridge</b>：Flywheel 在你 Mac 上常驻的总调度程序，控制台就是它提供的网页。<br><b>隧道</b>：你 Mac 主动连到 Cloudflare 的一条加密通道，外面的请求顺着它进来，你的 Mac 不用对外开门。<br><b>端口</b>：同一台电脑上不同服务的「门牌号」；本机控制台是 9876，新的只读小窗是 9877。</div>
+</div>
+
+<div class="card" data-sec="核心流程">
+  <h2>② 你在手机上打开时，发生了什么</h2>
+  <div class="term"><b>Cloudflare Access（登录门）</b>：挡在网址前面的登录页，只放名单里的邮箱。<br><b>JWT（签名通行证）</b>：登录门发给每个请求的一张带数字签名的小纸条，写着「这是谁」，别人伪造不了。</div>
+  <div class="diagram">{{D1}}</div>
+  <p>通行证一共被验三次：登录门、你 Mac 上的隧道程序、只读小窗本身。即使前两道哪天配错了，最后一道也会把没通行证的请求挡回去。</p>
+  <p>另外两道保险：① 隧道的配置<b>不让人手写</b>，每次启动都由程序按固定格式重新生成——设计评审时发现隧道程序有一个隐藏选项，能在网址看着没错的情况下把请求转去别处，固定格式让这类选项根本写不进去；② 本机完整控制台（9876）一旦收到任何「从 Cloudflare 过来」的请求，直接拒绝。</p>
+</div>
+
+<div class="card navy" data-sec="每个请求的检查顺序">
+  <h2>③ 只读小窗怎么判断放不放行</h2>
+  <div class="diagram">{{D2}}</div>
+  <p>「默认拒绝」：小窗里只存在两条路——打开页面、读一份数据快照。批准 / 终止 runner、改 Lead 级别、开关功能……这些路在小窗里<b>根本不存在</b>，所以手机上即使有人想改也无处可改。</p>
+  <div class="term"><b>GET</b>：网页「读取」的请求方式；改东西一般用 POST / PUT / DELETE，小窗一律拒绝。<br><b>DNS rebinding</b>：一种骗浏览器把恶意网页当成本机网页的手法；检查「网址名必须是 console.你的域名」就是专门防它的。</div>
+</div>
+
+<div class="card purple" data-sec="数据与结构">
+  <h2>④ 数据从哪来、哪些不给手机看</h2>
+  <div class="diagram">{{D3}}</div>
+  <p>手机看到的和本机是<b>同一个页面、同一份数据</b>（只是切到只读模式），所以以后控制台加了新板块，手机上也会自动出现。唯一拿掉的是两条本机文件路径（只在本机「复制命令」时有用）。</p>
+  <div class="term"><b>快照</b>：控制台某一刻的全部状态打包成一份数据，页面拿它来画卡片。<br><b>FleetConsole / ConsoleSnapshot</b>：程序里「控制台数据」和「快照」的名字，图里照原名写，方便工程对照。<br><b>.env</b>：你 Mac 上存放 Flywheel 设置的那个文件；远程开关默认是关的。</div>
+</div>
+
+<div class="card amber" data-sec="为什么不直接把隧道接到本机控制台">
+  <h2>⑤ 取舍：为什么这样做、放弃了哪些做法</h2>
+  <table>
+    <tr><th>做法</th><th>结论</th><th>原因</th></tr>
+    <tr><td>隧道直接接本机控制台 9876</td><td><span class="badge red">放弃</span></td><td>审计发现 9876 上「批准 / 终止 runner」那组接口<b>没有任何登录检查</b>（今天靠「只在本机」当锁）。接上隧道 = 登录门成了唯一的门，而且远程能改。</td></tr>
+    <tr><td>在 9876 里加「远程模式」开关</td><td><span class="badge red">放弃</span></td><td>以后谁新加一个接口，默认就对远程开放；「远程不能改」守不住。</td></tr>
+    <tr><td>定时把快照发到托管网页</td><td><span class="badge red">放弃</span></td><td>不是活的控制台，托管页也没有登录门（拿到链接就能看）。</td></tr>
+    <tr><td>让人手写隧道配置、程序检查几个关键字段</td><td><span class="badge red">放弃</span></td><td>评审实测：隧道程序有个「跳板模式」选项，写上后网址字段看着正常，实际转发目标却由访问者决定，能绕到本机完整控制台。改为每次由程序从零生成固定格式。</td></tr>
+    <tr><td>单独做一个手机版页面</td><td><span class="badge red">放弃</span></td><td>会和本机页面越长越不一样；复用同一个页面的只读模式，内容天然一致。</td></tr>
+    <tr><td><b>另开只读小窗 9877 + 小窗自己验通行证</b></td><td><span class="badge green">采用</span></td><td>和本机控制台物理隔离、默认拒绝、不加任何新依赖；远程坏了本机照常。</td></tr>
+  </table>
+</div>
+
+<div class="card red" data-sec="需要你定的事">
+  <h2>⑥ 需要你定的事（路线）</h2>
+  <table>
+    <tr><th></th><th>Cloudflare 正式隧道（推荐）</th><th>Tailscale</th><th>Cloudflare 临时隧道 + 邮箱名单</th></tr>
+    <tr><td>手机上要做什么</td><td>浏览器打开网址，用 Google 邮箱登录</td><td>装 Tailscale App、登录、打开开关</td><td>浏览器打开网址，邮箱收验证码</td></tr>
+    <tr><td>要花什么</td><td>买一个域名（每年约 10 美元级）</td><td>不用买</td><td>不用账号、不用域名</td></tr>
+    <tr><td>网址固定吗</td><td>固定，可存书签</td><td>固定</td><td><b>每次重启都变</b>，要重新发链接给你</td></tr>
+    <tr><td>「是你」怎么证明</td><td>签名通行证，Bridge 能独立核对，伪造不了</td><td>普通请求头，要先在真机上验证一个前提才安全</td><td>还不知道 Bridge 能不能独立核对（要先实测）</td></tr>
+    <tr><td>以后给「手机试原型」(F3) 复用</td><td>能，同一个登录门</td><td>能，但每台设备都要装 App</td><td>很合适（原型本来就是临时的）</td></tr>
+  </table>
+  <p>第三列是另一个 runner（FLY-3137）实测发现的新选项，本设计没有亲自复现；它更适合「临时看一眼原型」，不推荐作为长期看控制台的通道。</p>
+  <p>还要你定：用哪个 Cloudflare 账号 / 域名；名单里放哪几个邮箱；登录方式用「Google 登录」还是「验证码发到 Gmail」（对你来说都是用 Google 邮箱登录，后者不用额外配置）。</p>
+</div>
+
+<div class="card green" data-sec="怎么关掉">
+  <h2>⑦ 怎么关掉远程访问（一句话）</h2>
+  <p class="one">运行 <code>scripts/remote-console.sh off</code>：隧道马上停掉、不再开机自启，本机控制台完全不受影响。</p>
+  <p>默认状态就是关的：不打开 <code>FLYWHEEL_REMOTE_CONSOLE</code> 开关时，Bridge 和今天一模一样。</p>
+</div>
+
+<div class="card navy" data-sec="诚实边界">
+  <h2>⑧ 诚实边界：这次做什么、不做什么</h2>
+  <p><b>做：</b></p>
+  <ul>
+    <li>手机登录后看到项目、Lead、Runner 默认设置、定时任务模型、功能开关——和本机一致；</li>
+    <li>没登录 / 名单外邮箱打不开；远程任何「改」都做不了；Bridge 仍只听本机；远程断了本机照常；</li>
+    <li>一个开关、一条关闭命令、一份你照着点的 Cloudflare 设置清单。</li>
+  </ul>
+  <p><b>不做：</b></p>
+  <ul>
+    <li>手机上改东西（要另开一张单，把「改」的接口改成认登录门的身份再加确认）；</li>
+    <li>runner 运行状态的实时推送、日志、Discord 内容——只放控制台快照；</li>
+    <li>自动买域名 / 自动建登录门（要你本人在 Cloudflare 上点一次，清单会写好）；</li>
+    <li>多台电脑（属于多机方案 FLY-1005）。</li>
+  </ul>
+  <p><b>要说清楚的风险：</b>上线需要你先完成 Cloudflare 那边的设置，再重启一次 Bridge；在那之前代码合进去也不会有任何变化。</p>
+</div>
+
+<div class="card purple" id="summaryCard">
+  <h2>意见汇总</h2>
+  <p class="sub">上面每张卡片写的意见会自动汇总到这里（只存在你这台设备的浏览器里）。复制后贴给 Lead 即可；这是修改意见，不代表通过。</p>
+  <div id="sumChunks"></div>
+  <button class="btn" id="copyAll" type="button">复制全部意见</button><span id="copyStatus"></span>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var MARK = "【页面意见汇总】FLY-3136";
+  var PREFIX = "fly3136-cmt:" + location.pathname + ":";
+  var LIMIT = 1800;
+  function lsGet(k){ try { return window.localStorage.getItem(k) || ""; } catch(e){ return ""; } }
+  function lsSet(k,v){ try { window.localStorage.setItem(k, v); } catch(e){} }
+  var secs = Array.prototype.slice.call(document.querySelectorAll("[data-sec]"));
+  var boxes = [];
+  secs.forEach(function(sec, i){
+    var title = sec.getAttribute("data-sec");
+    var wrap = document.createElement("div"); wrap.className = "cmt";
+    var lab = document.createElement("label"); lab.textContent = "你对「" + title + "」的意见（可不写）";
+    var ta = document.createElement("textarea"); ta.setAttribute("data-title", title);
+    var key = PREFIX + i;
+    ta.value = lsGet(key);
+    ta.addEventListener("input", function(){ lsSet(key, ta.value); render(); });
+    wrap.appendChild(lab); wrap.appendChild(ta); sec.appendChild(wrap);
+    boxes.push(ta);
+  });
+  function chunks(){
+    var items = [];
+    boxes.forEach(function(ta){ var v = ta.value.trim(); if (v) items.push("【" + ta.getAttribute("data-title") + "】" + v); });
+    if (!items.length) return [];
+    var out = [], cur = MARK;
+    items.forEach(function(it){
+      var next = cur + "\n" + it;
+      if (next.length > LIMIT && cur !== MARK) { out.push(cur); cur = MARK + "\n" + it; }
+      else { cur = next; }
+    });
+    out.push(cur);
+    return out;
+  }
+  var host = document.getElementById("sumChunks");
+  function render(){
+    while (host.firstChild) host.removeChild(host.firstChild);
+    var cs = chunks();
+    if (!cs.length) { var p = document.createElement("div"); p.id = "sumOut"; p.textContent = "（还没有意见）"; host.appendChild(p); return; }
+    cs.forEach(function(c, i){
+      var d = document.createElement("div"); d.className = "chunk";
+      var pre = document.createElement("div"); pre.id = i === 0 ? "sumOut" : ""; pre.style.whiteSpace = "pre-wrap";
+      pre.style.fontFamily = "'SF Mono',monospace"; pre.style.fontSize = ".82em"; pre.style.background = "#f7f7f9"; pre.style.borderRadius = "8px"; pre.style.padding = "10px";
+      pre.textContent = c;
+      d.appendChild(pre);
+      if (cs.length > 1) {
+        var b = document.createElement("button"); b.className = "btn"; b.type = "button"; b.textContent = "复制第 " + (i+1) + " 段";
+        b.addEventListener("click", function(){ copyText(c); });
+        d.appendChild(b);
+      }
+      host.appendChild(d);
+    });
+  }
+  function fallbackCopy(t){
+    var ta = document.createElement("textarea"); ta.value = t; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    var ok = false; try { ok = document.execCommand("copy"); } catch(e) {}
+    document.body.removeChild(ta); status(ok ? "已复制" : "复制失败，请手动选中复制");
+  }
+  function status(m){ document.getElementById("copyStatus").textContent = m; }
+  function copyText(t){
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(t).then(function(){ status("已复制"); }, function(){ fallbackCopy(t); });
+    } else { fallbackCopy(t); }
+  }
+  document.getElementById("copyAll").addEventListener("click", function(){
+    var cs = chunks(); if (!cs.length) { status("还没有意见"); return; }
+    copyText(cs.join("\n\n"));
+  });
+  render();
+})();
+</script>
+</body>
+</html>

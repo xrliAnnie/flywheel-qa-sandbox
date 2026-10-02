@@ -1,0 +1,10 @@
+flowchart LR
+  subgraph BR[Bridge 进程 · 只听本机]
+    direction TB
+    L[本机窗口 9876<br/>完整控制台 · 能改] --> FC[(FleetConsole<br/>一份共享数据)]
+    R[只读窗口 9877<br/>只有 2 条 GET] --> FC
+  end
+  FC --> S[ConsoleSnapshot 快照]
+  S --> V[远程可见<br/>leads · featureFlags · perIssueModels<br/>projectRunnerDefaults · cronModels · runnerCapabilities]
+  S --> X[远程剔除<br/>fleetScriptPath · commCliPath 本机路径]
+  ENV[~/.flywheel/.env<br/>FLYWHEEL_REMOTE_CONSOLE 默认关] -.配置.-> R

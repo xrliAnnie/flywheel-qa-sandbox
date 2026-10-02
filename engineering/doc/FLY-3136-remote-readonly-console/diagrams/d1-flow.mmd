@@ -1,0 +1,17 @@
+sequenceDiagram
+  autonumber
+  participant P as Annie 手机浏览器
+  participant A as Cloudflare 登录门 (Access)
+  participant T as 隧道 cloudflared (本机)
+  participant R as 只读窗口 127.0.0.1:9877
+  participant F as 控制台数据 (FleetConsole)
+  P->>A: 打开 https://console.域名
+  A-->>P: 没登录？先用 Google 邮箱登录
+  P->>A: 登录成功（邮箱在名单里）
+  A->>T: 转发请求 + 附上签名通行证 (JWT)
+  T->>T: 再验一次通行证
+  T->>R: 只转给 9877，从不转给 9876
+  R->>R: 第三次验：网址名 / 只许看 / 通行证签名 + 邮箱
+  R->>F: 取一份快照（去掉本机路径）
+  F-->>R: 项目 · Lead · Runner 默认 · 定时任务模型 · 功能开关
+  R-->>P: 同一个控制台页面，只读模式
