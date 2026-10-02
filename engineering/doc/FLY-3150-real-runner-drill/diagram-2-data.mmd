@@ -1,0 +1,28 @@
+classDiagram
+    class 交付文件 {
+        路径 qa-sbx/fly2167/分支名.md
+        第1行 "QA-SBX FLY-2167 drill"
+        第2行 AWAITING-QA 或 FIXED-FOR-CLAIM id
+        约束 恰好两行
+    }
+    class QA准则 {
+        file-shape
+        fixed-for-claim
+        e2e_529_exempt
+        title 少于120字符
+        evidence 少于80字符
+    }
+    class claim_id {
+        来源 QA 第1轮打回
+        传递 QA fix context 首行
+        比对 逐字精确匹配
+    }
+    class 禁区 {
+        Linear issue 零写入
+        529 Room 零部署
+        commit 不带 skip 标记
+    }
+    交付文件 "1" --> "3" QA准则 : 被判定
+    claim_id --> 交付文件 : 写入第2行
+    claim_id --> QA准则 : fixed-for-claim 再验证
+    禁区 .. 交付文件 : 全程约束
