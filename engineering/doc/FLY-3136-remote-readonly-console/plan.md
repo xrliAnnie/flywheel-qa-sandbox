@@ -4,11 +4,11 @@ Issue: FLY-3136 (https://linear.app/geoforge3d/issue/FLY-3136/cloudflaref2-annie
 基于: research.md
 
 **Version**: 下一个 minor（ship 时取空号；当前 doc/VERSION = v1.55.0）
-**Status**: draft（Codex design review R1 → 修订 R2）
+**Status**: draft（Codex design review R1、R2 → 修订 R3）
 
 ## 0. 一句话
 
-在 Bridge 进程里另开一个**只听 `127.0.0.1`** 的只读端口（默认 9877），它只认两个 GET（只读页面 + 投影后的只读快照），每个请求先在 Bridge 里**亲自验 Cloudflare Access 签发的登录凭证**（邮箱必须在名单里）；Cloudflare 隧道只经受管启动器接到 9877，启动器每次启动都校验配置，永远不让它指向 9876。
+在 Bridge 进程里另开一个**只听 `127.0.0.1`** 的只读端口（默认 9877），它只认两个 GET（只读页面 + 投影后的只读快照），每个请求先在 Bridge 里**亲自验 Cloudflare Access 签发的登录凭证**（邮箱必须在名单里）；Cloudflare 隧道只经受管启动器接到 9877：启动器每次启动都**从零生成**一份固定结构的隧道配置（不接受人手写的配置），永远不让它指向 9876。
 
 ## 1. 结构
 
@@ -23,7 +23,7 @@ flowchart LR
     Local["主 app :9876<br/>本机控制台 / actions / api"] --> FC
   end
   Mac["本机浏览器"] --> Local
-  LD["launchd"] -->|每次启动| W["受管启动器<br/>校验配置 → 写已校验副本 → exec cloudflared"]
+  LD["launchd"] -->|每次启动| W["受管启动器<br/>从 .env 生成固定 schema 配置 → 净化环境 → exec cloudflared"]
   W --> CFD
 ```
 
@@ -61,6 +61,7 @@ flowchart TD
 | `FLYWHEEL_REMOTE_CONSOLE_ALLOWED_EMAILS` | 开时必填 | 逗号分隔、每项合法邮箱、≥1 项；存小写 | 名单 |
 | `FLYWHEEL_REMOTE_CONSOLE_CF_TEAM` | cloudflare 必填 | `^[a-z0-9-]{1,63}$` | 推出 `iss = https://<team>.cloudflareaccess.com`、certs URL |
 | `FLYWHEEL_REMOTE_CONSOLE_CF_AUD` | cloudflare 必填 | `^[A-Za-z0-9]{16,128}$` | Access 应用 AUD tag（非秘密） |
+| `FLYWHEEL_REMOTE_CONSOLE_CF_TUNNEL_ID` | cloudflare 必填（仅启动器用） | UUID | 本地托管（`cloudflared tunnel create` 建的）named tunnel；凭证固定在 `~/.cloudflared/<id>.json` |
 
 - **端点合同（单一来源）**：远程监听地址**固定字面量 `127.0.0.1`**（不随 `TEAMLEAD_HOST` 变；`TEAMLEAD_HOST` 允许 `::1`/`localhost`，若复用会和隧道的 IPv4 目标对不上）。远程 origin URL = `http://127.0.0.1:<FLYWHEEL_REMOTE_CONSOLE_PORT>`，由 C1 导出的 `remoteConsoleOriginUrl(cfg)` 生成；隧道配置模板、启动器校验、`status` 探测全部用它（脚本侧经 C6 的同一 CLI 取值），不在任何地方再写死 9877 / 9876。
 - 开了但配置不合法 → **只禁用远程监听**并打一行 `[remote-console] DISABLED: <原因>`；Bridge 主体照常启动（验收 ⑤）。绝不抛出到 `startBridge`。
@@ -77,8 +78,8 @@ flowchart TD
 - 只读 `Cf-Access-Jwt-Assertion` 请求头（不读 cookie）；缺失或非单个字符串 → 401。
 - `createRemoteJWKSet(new URL("https://<team>.cloudflareaccess.com/cdn-cgi/access/certs"), { timeoutDuration: 5000, cooldownDuration: 30000, cacheMaxAge: 3600000 })` —— 由 jose 负责按 `kid` 选钥、未知 `kid` 刷新、冷却限频、并发请求共用一次进行中的拉取、轮换后撤出旧钥。
 - `jwtVerify(token, jwks, { algorithms: ["RS256"], issuer: "https://<team>.cloudflareaccess.com", audience: cfg.aud, clockTolerance: 60, requiredClaims: ["exp", "email"] })` —— jose 负责三段结构 / JSON / claims 类型 / NumericDate / `aud` 完整元素相等（字符串或数组，拒前后缀）/ `exp` 必填 / `nbf`、`iat` 合法性。
-- 我们自己只做：`typeof payload.email === "string"` 且小写后在名单内（否则 403）。
-- 错误映射（全部落入结果联合类型，**绝不抛出**）：`JWKSTimeout`、JWKS 拉取网络错误 / 非 2xx / 非法 JWKS → **503**；`JWKSNoMatchingKey`、`JWSSignatureVerificationFailed`、`JWTExpired`、`JWTClaimValidationFailed`、`JWSInvalid`、`JWTInvalid`、其他 → **401**；邮箱不在名单 → **403**。
+- 我们自己只做（R2 对齐）：`email` 非字符串 → **401**；字符串但小写后不在名单 → **403**；验签后再查 `iat`：若存在且 `iat > now + 60s` → **401**（jose 6.1.3 不设 `maxTokenAge` 时不检查未来 `iat`，我们不引入 token 年龄策略，只补这一条）。
+- 错误映射按**发生阶段**区分，不靠猜异常名（全部落入结果联合类型，**绝不抛出**）：把 jose 的 remote JWKS 包一层 `getKey` —— 包装内部捕获的 `JWKSNoMatchingKey` / `JWKSMultipleMatchingKeys` 原样抛出（→ **401**），其余一切（`JWKSTimeout`、网络错误、非 200、非法 JSON / 非法 JWKS 的通用 `JOSEError`）转成自有 `JwksUnavailableError`（→ **503**）；`jwtVerify` 阶段的其他错误（签名、过期、claims、畸形 token）→ **401**；邮箱规则见上。
 - `jwks` 工厂与「当前时间」通过 deps 注入（单测用本地 `createLocalJWKSet` + 自签钥匙，不发网络请求）。
 
 ### C3 `bridge/remote-console/server.ts`（新）
@@ -111,35 +112,39 @@ flowchart TD
 ### C5 `bridge/plugin.ts`（改，startBridge 组合根）
 - 主 `app.listen` 成功之后：`const rc = parseRemoteConsoleConfig(process.env)`；若 `enabled && fleetConsole` → `startRemoteConsole(rc, { buildSnapshot: () => fleetConsole.buildSnapshot(), refreshProjectConfigs: () => fleetConsole.refreshProjectConfigs?.(), … })`（只传两个读方法，**不传 FleetConsole 对象本身**，远程侧拿不到 stage/apply/reconcile/tokens/audit）；若 enabled 但 `fleetConsole` 未接线 → 日志 `DISABLED: fleet console not wired`。启动成功日志附上 §5 那句「怎么关」。
 - 关停：在现有 `fleetConsole?.close()`（`plugin.ts:8401`）**之前** `await remoteConsole?.close()`，包在 try/catch 里 —— 远程关停失败或超时**不跳过**之后的 FleetConsole / registry / 主 server / store 清理。
-- `createBridgeApp`（主 app）**不改**；不给主 app 加任何「远程」分支。
+- **主端口 Cloudflare 绊线（纵深防御，仅在 `FLYWHEEL_REMOTE_CONSOLE=1` 时挂载，默认关时主 app 逐字节不变）**：主 app 最前面加一个中间件——请求带 `Cf-Ray`、`Cf-Connecting-Ip` 或 `Cf-Access-Jwt-Assertion` 任一头（这些只由 Cloudflare 边缘添加，本机浏览器 / Lead / runner 从不发送）→ 直接 `403 {"error":"tunnel traffic not allowed on main port"}` 并打一行响亮日志。作用：无论隧道配置以何种方式漂移（手工跑、被迁移成远程托管、未来 cloudflared 新选项）而把 Cloudflare 流量送到主端口，`/actions` 等写入口也收不到。
+- 除上述绊线外，`createBridgeApp`（主 app）**不改**；不给主 app 加任何「远程」分支。
 
 ### C6 运维：受管隧道启动器 + 脚本 + runbook
-- **校验器（TypeScript，结构化解析 YAML，复用 teamlead 已有 `yaml` 依赖）**：`bridge/remote-console/tunnel-config-guard.ts` + CLI 入口 `remote-console-cli.ts`（编译到 `packages/teamlead/dist/...`），子命令：
+- **配置生成器（TypeScript，取代 R2 的「校验用户 YAML」方案 —— R2 实测 `originRequest.bastionMode` 能在 service 字段合法的情况下把实际转发目标改成由客户端头决定）**：`bridge/remote-console/tunnel-config.ts` + CLI 入口 `remote-console-cli.ts`（编译到 `packages/teamlead/dist/...`），子命令：
   - `print-env`：按 Bridge wrapper 同样的方式（`scripts/flywheel-bridge-wrapper.sh:31-49` 的 `.env` 加载逻辑）得到配置，打印 `ORIGIN_URL / PORT / TEAMLEAD_PORT / HOSTNAME`，给 shell 用（脚本不假设交互 shell 已导出变量）；
-  - `validate <config.yml> --out <validated.yml>`：解析 YAML，要求：`ingress` 是数组；除最后一条外每条都有 `hostname` 且**完整等于** `FLYWHEEL_REMOTE_CONSOLE_HOSTNAME`、`service` **完整等于** `remoteConsoleOriginUrl(cfg)`、`originRequest.access.required === true`、`teamName === CF_TEAM`、`audTag` 含 `CF_AUD`；最后一条恰为 `{ service: "http_status:404" }`；全文件不得出现任何指向 `TEAMLEAD_PORT` 的 service；顶层不得有 `originRequest.httpHostHeader`（会破坏 Host 门）。通过后把**解析后再序列化的规范化内容**原子写到 `~/.flywheel/remote-console/cloudflared.validated.yml`（0600），返回 0；否则打印原因返回非 0。
-- **启动器** `scripts/remote-console-tunnel.sh`（launchd 唯一入口；plist 只调用它，无秘密）：每次启动 → `validate ~/.flywheel/remote-console/cloudflared.yml --out …validated.yml` → 失败则记日志并 `exit 78`（launchd 不当作正常退出；配合 `ThrottleInterval` 防止狂刷）→ 成功则 `exec cloudflared tunnel --config ~/.flywheel/remote-console/cloudflared.validated.yml run`（**运行的就是刚校验过的那份**，避免校验后被改的 TOCTOU）。
+  - `generate --out <path>`：**不读任何人写的 cloudflared 配置**。只从已校验的 `.env` 值（§2）生成下面这份**固定结构**，原子写入（0600）：
+    ```yaml
+    tunnel: <CF_TUNNEL_ID>
+    credentials-file: <HOME>/.cloudflared/<CF_TUNNEL_ID>.json
+    no-autoupdate: true
+    ingress:
+      - hostname: <HOSTNAME>
+        service: <remoteConsoleOriginUrl(cfg)>
+        originRequest:
+          access: { required: true, teamName: <CF_TEAM>, audTag: [<CF_AUD>] }
+      - service: http_status:404
+    ```
+    生成器是**正向白名单**：上面之外的任何键（`bastionMode`、`httpHostHeader`、`proxyType`、`warp-routing`、`token` 等，以及 cloudflared 将来新增的选项）根本不会出现在输出里。生成前额外检查：凭证文件存在、是普通文件（非符号链接）、属主是当前用户、权限不宽于 0600；`service` 端口 ≠ `TEAMLEAD_PORT`（C1 已保证，这里再断言一次）。
+- **启动器** `scripts/remote-console-tunnel.sh`（launchd 唯一入口；plist 只调用它，无秘密）：每次启动 → `generate --out ~/.flywheel/remote-console/cloudflared.generated.yml` → 失败则记日志并 `exit 78`（launchd 配 `ThrottleInterval` 防狂刷）→ 成功则用**净化后的环境**执行：`exec env -i HOME="$HOME" PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" cloudflared tunnel --config <generated> run`（官方文档的参数位置）。
+  - **配置来源唯一**：`env -i` 清掉 `TUNNEL_TOKEN`、`TUNNEL_TOKEN_FILE` 及所有 `TUNNEL_*` 覆盖输入；命令行不带 `--token` / `--token-file`；生成的 YAML 里不可能有 token。cloudflared 的 token 参数优先于本地凭证、且远程托管隧道会用 Cloudflare 下发的配置替换本地 ingress —— 所以必须是「本地凭证 + 本地生成配置」这一条路。
+  - **剩余风险如实写明**：若有人在 Cloudflare 后台把这条隧道「迁移成远程托管」，cloudflared 可能改用后台配置。runbook 明写「不要在后台迁移 / 编辑这条隧道」；即使发生，主端口的 Cloudflare 绊线（C5）也会把到达 9876 的隧道流量 403 掉。
 - **管理脚本** `scripts/remote-console.sh status|on|off`（launchd 标签 `com.flywheel.remote-console-tunnel`）：
-  - `on` = 先跑一次同样的 validate（早报错）→ 写 plist（`ProgramArguments` = 启动器）→ `launchctl bootstrap`；幂等；
+  - `on` = 先跑一次同样的 `generate`（早报错）→ 写 plist（`ProgramArguments` = 启动器）→ `launchctl bootstrap`；幂等；
   - `off` = `launchctl bootout` + 删除 plist（不再开机自启）；幂等；
   - `status` = 隧道进程是否在跑 + `curl` 探测 `print-env` 给出的 `ORIGIN_URL`（期望 403：本机直连 Host 不对 → 证明门在）。
-- 模板 `scripts/remote-console/cloudflared.example.yml`：
-  ```yaml
-  tunnel: <TUNNEL_UUID>
-  credentials-file: ~/.cloudflared/<TUNNEL_UUID>.json
-  ingress:
-    - hostname: console.<域名>
-      service: http://127.0.0.1:9877   # = remoteConsoleOriginUrl；改端口时同步，启动器会核对
-      originRequest:
-        access: { required: true, teamName: <team>, audTag: [<AUD>] }
-    - service: http_status:404
-  ```
-- **这条守卫保证的范围**：经本受管启动路径（`remote-console.sh on` + launchd 自启 / 重启）跑起来的隧道不可能指向主端口。手工在终端运行任意 `cloudflared` / 其他代理不在保证范围内（runbook 明写「不要手工跑」）。
+- **这条守卫保证的范围**：经本受管启动路径（`remote-console.sh on` + launchd 自启 / 重启）跑起来的隧道，其本地配置只能是生成器产出的那一种形状，不可能指向主端口或开启 bastion / Host 改写。手工在终端运行任意 `cloudflared` / 其他代理、或在 Cloudflare 后台改隧道，不在这条保证范围内 —— 由 runbook 约束 + 主端口绊线（C5）兜底。
 - **验收 ⑥ 一句话**：「关掉远程访问：运行 `scripts/remote-console.sh off`（停掉隧道、不再开机自启；本机控制台不受影响）。」彻底关：再把 `.env` 里 `FLYWHEEL_REMOTE_CONSOLE` 删掉，下次 Bridge 重启后 9877 也不再监听。
-- runbook（`engineering/doc/FLY-3136-remote-readonly-console/runbook.md`）：founder/ops 一次性步骤 —— 买/接入域名 → Zero Trust 建 team → 建 Access 自托管应用（主机名 `console.<域名>`、策略「Emails = 名单」、登录方式 Google 或一次性验证码）→ 抄 AUD → `cloudflared tunnel login/create/route dns` → 写 `.env` + `cloudflared.yml` → 重启 Bridge → `remote-console.sh on`。**顺序硬规则：Access 应用先建好、Bridge 侧配置先生效，最后才 `on` 隧道**（登录门先于隧道；即使顺序错了，Bridge 侧验签也会 401）。
+- runbook（`engineering/doc/FLY-3136-remote-readonly-console/runbook.md`）：founder/ops 一次性步骤 —— 买/接入域名 → Zero Trust 建 team → 建 Access 自托管应用（主机名 `console.<域名>`、策略「Emails = 名单」、登录方式 Google 或一次性验证码）→ 抄 AUD → `cloudflared tunnel login` / `tunnel create`（本地托管，记下 UUID）/ `tunnel route dns` → 把 §2 的变量写进 `.env`（**不用手写 cloudflared 配置**）→ 重启 Bridge → `remote-console.sh on`。**顺序硬规则：Access 应用先建好、Bridge 侧配置先生效，最后才 `on` 隧道**（登录门先于隧道；即使顺序错了，Bridge 侧验签也会 401）。
 
 ### C7 测试（TDD，先红后绿）
 1. `remote-console-config.test.ts`：默认关；每个必填缺失 / 格式错 → `enabled:false + error`；端口 = TEAMLEAD_PORT（含自定义 TEAMLEAD_PORT）→ 拒；邮箱 / 主机名大小写归一；`TEAMLEAD_HOST` 为 `127.0.0.1` / `localhost` / `::1` 三种取值下 `remoteConsoleOriginUrl` 都是 `http://127.0.0.1:<port>`。
-2. `cf-access-verifier.test.ts`（`generateKeyPair("RS256")` 自签 + 本地 JWKS 注入，无网络）：有效 → ok；无头 / 多值头 → 401；畸形 JWT（两段、非 base64、非 JSON）→ 401；`alg: none` / HS256 → 401；签名被改 → 401；错 `iss`；`aud` 字符串前后缀 / 数组元素前后缀不匹配 → 401；数组 `aud` 含本 AUD → ok；缺 `exp` / 过期超容差 / 容差边界内 → 401 / 401 / ok；`nbf` 在未来超容差 → 401；`email` 缺失或非字符串 → 401；邮箱不在名单 → 403；JWKS 获取函数抛超时 / 网络错误 → 503；无匹配 `kid` → 401；轮换（新钥签发、旧钥撤出）后旧钥签的 token → 401。jose 自身的缓存/冷却/并发合并行为不重复测试，只测我们传入的参数（快照断言 options）。
+2. `cf-access-verifier.test.ts`（`generateKeyPair("RS256")` 自签 + 本地 JWKS 注入，无网络）：有效 → ok；无头 / 多值头 → 401；畸形 JWT（两段、非 base64、非 JSON）→ 401；`alg: none` / HS256 → 401；签名被改 → 401；错 `iss`；`aud` 字符串前后缀 / 数组元素前后缀不匹配 → 401；数组 `aud` 含本 AUD → ok；缺 `exp` / 过期超容差 / 容差边界内 → 401 / 401 / ok；`nbf` 在未来超容差 → 401；`email` 缺失或非字符串（数字 / 数组）→ 401；邮箱不在名单 → 403；`iat` 在未来超容差 → 401、容差内 → ok；remote JWKS 包装层：超时 / 网络错误 / 非 200 / 非法 JSON / 非法 JWKS → 503，无匹配 `kid` → 401；无匹配 `kid` → 401；轮换（新钥签发、旧钥撤出）后旧钥签的 token → 401。jose 自身的缓存/冷却/并发合并行为不重复测试，只测我们传入的参数（快照断言 options）。
 3. `remote-console-server.test.ts`（`listen(0)` + 真 `fetch`）：
    - 正确 Host + 有效 JWT：`GET /` 200（含 nonce 的唯一 script、CSP 头里的 nonce 与之相同、`no-store`），`GET /api/fleet/snapshot` 200 且**无** `fleetScriptPath` / `commCliPath`；`HEAD /` 200 无 body；
    - **负向矩阵**：路径 × 方法 —— `/sse`、`/health`、`/actions/approve`、`/actions/terminate`、`/api/fleet/stage`、`/api/fleet/apply`、`/api/fleet/flag/stage`、`/api/fleet/runner/apply`、`/api/fleet/progress`、`/api/fleet/flag-report.html`、`/events`、`/api/sessions`、`/xhs-review/x` 在 GET / POST / PUT / PATCH / DELETE 下，**即使带有效 JWT** 也全部 404 / 405；注入的 deps 里只有两个读函数，另用 spy 断言它们之外无任何调用；
@@ -149,13 +154,19 @@ flowchart TD
    - **有界关停**：① 挂起的身份校验 ② 挂起的 `refreshProjectConfigs` ③ 未结束的响应 三种情况下 `close(500)` 在预算内 resolve；关闭后晚到的 Promise 不调用 `buildSnapshot`（spy 计数）；关闭后新请求 → 503 或连接拒绝；重复 `close()` 返回同一 Promise。
 4. `fleet-console-html.test.ts`（扩）：无参输出与 golden **逐字节相同**；只读输出满足 C4 字符串合同、含 nonce、不含两条本机路径字段名的使用。
 5. `fleet-console-html.readonly-dom.test.ts`（新，`// @vitest-environment happy-dom`；teamlead 新增 devDependency `happy-dom`）：把只读 HTML 装进 DOM、stub `fetch`（返回包含 Lead / Runner 默认 / Cron / Flags / `config_unreadable` 的快照，记录 URL 与方法）、stub `EventSource` 构造计数、执行脚本；断言首屏卡片渲染完成、无未捕获错误、只发出一次 `GET /api/fleet/snapshot`、`EventSource` 计数 0、页面上无 `button`/`select` 可触发改动（只读模式应为 0 个可交互改动控件）。
-6. `remote-console-wiring.test.ts`：开关关 → 不监听远程端口；配置非法 → 主 app 仍 200、远程未起；远程端口被占 → 主 app 仍 200；关停时远程 close 抛错 / 超时 → `fleetConsole.close()` 与主 server 关闭仍被调用，且调用顺序为远程先。
-7. `tunnel-config-guard.test.ts`（纯 TS）+ `scripts/__tests__/test-remote-console-tunnel.sh`（stub `cloudflared` 记录 exec 次数）：合法配置 → 写出 validated 副本并 exec 1 次；**合法安装后把配置改成主端口（默认 9876 与自定义 `TEAMLEAD_PORT` 两种）再模拟 launchd 启动 → exec 0 次、退出码 78**；改回合法 → 允许 exec；缺 `access.required`、错 team / AUD / hostname、缺兜底、多一条通配规则、带 `httpHostHeader` → 拒；空 shell 环境下从 fixture `.env` 加载；`on` / `off` 重复运行幂等（launchctl 用 stub）。
-
+6. `remote-console-wiring.test.ts`：开关关 → 不监听远程端口，且主 app 对带 `Cf-Ray` 的请求行为与今天相同（绊线未挂）；开关开 → 主 app 对带 `Cf-Ray` / `Cf-Connecting-Ip` / `Cf-Access-Jwt-Assertion` 任一头的 `GET /`、`POST /actions/approve`、`GET /api/fleet/snapshot` 全部 403，不带这些头的本机请求不受影响；配置非法 → 主 app 仍 200、远程未起；远程端口被占 → 主 app 仍 200；关停时远程 close 抛错 / 超时 → `fleetConsole.close()` 与主 server 关闭仍被调用，且调用顺序为远程先。
+7. `tunnel-config.test.ts`（纯 TS）+ `scripts/__tests__/test-remote-console-tunnel.sh`（stub `cloudflared` 记录 argv / env / exec 次数）：
+   - 合法 `.env` → 生成的 YAML **深度等于**期望结构（只有允许的键），exec 1 次，argv 为 `tunnel --config <generated> run`，env 只有 `HOME`、`PATH`；
+   - 父进程环境里预置 `TUNNEL_TOKEN`、`TUNNEL_TOKEN_FILE`、`TUNNEL_ORIGIN_URL` 等 → 子进程 env 中均不存在；
+   - **漂移**：`.env` 改成远程端口 = 主端口（默认 9876 与自定义 `TEAMLEAD_PORT` 两种）后模拟 launchd 启动 → exec 0 次、退出码 78；改回合法 → 允许 exec；
+   - 历史遗留：`~/.flywheel/remote-console/cloudflared.yml`（人写的、含顶层或规则级 `bastionMode: true`、规则级 `httpHostHeader`、`token`）存在时**被完全忽略** —— 生成结果不含这些键（证明不存在「把用户配置序列化进运行副本」的路径）；
+   - 缺 `CF_TUNNEL_ID` / 非 UUID、凭证文件缺失 / 是符号链接 / 权限 0644 → 退出 78；缺 team / AUD / hostname → 78；
+   - 空 shell 环境下从 fixture `.env` 加载；`on` / `off` 重复运行幂等（launchctl 用 stub）。
+   - 真机补充（实现期，一次）：用本机 `cloudflared tunnel --config <generated> ingress rule https://<HOSTNAME>` 离线确认实际 service = `ORIGIN_URL`（R2 用同一方法复现了 bastion 问题）。
 ## 4. 负向守卫汇总（验收 ③ ④ 的「证据」）
 - 远程 app 里**不存在**任何非 GET 路由、任何 `/actions`、`/sse`、`/api/fleet/*stage|apply|progress` —— 负向矩阵测试钉死；远程侧拿不到 FleetConsole 对象本身。
 - 只读页面里**不存在**任何改动代码 —— 结构化省略 + 字符串合同 + DOM 执行测试。
-- 经受管路径启动的隧道不可能指向主端口 —— 每次启动都校验 + 运行已校验副本 + shell 测试钉死。
+- 经受管路径启动的隧道不可能指向主端口 / 开启 bastion —— 每次启动从零生成固定结构配置 + 净化环境 + shell 测试钉死；配置漂移的其他途径由主端口 Cloudflare 绊线兜底。
 - 远程监听地址固定 `127.0.0.1`；主 app 的 loopback 断言（`config.ts`）不变。
 - 远程快照不带本机路径、不带错误原文 —— 显式投影 + 嵌套字段覆盖守卫 + 合成标记测试。
 
@@ -187,5 +198,5 @@ flowchart TD
 - 不暴露运行状态推送 `/sse`、runner 列表、日志、Discord 内容 —— 只暴露 Fleet 控制台快照。
 - 不改主 app 的任何鉴权（`/actions` 无鉴权是本机既有姿态，不在本单范围；但本单保证经受管路径它永远到不了远程）。
 - 不自动购买域名 / 建 Access 应用（founder 一次性操作，runbook 指引）。
-- 不防「手工在终端跑任意隧道 / 代理」—— runbook 明写不要这样做。
+- 不保证「手工在终端跑任意隧道 / 代理」或「在 Cloudflare 后台改这条隧道」时的安全 —— runbook 明写不要这样做；即使发生，主端口 Cloudflare 绊线会把到达 9876 的隧道流量拒掉（但不拦非 Cloudflare 的其他代理）。
 - 不做多机（FLY-1005 范围）。
