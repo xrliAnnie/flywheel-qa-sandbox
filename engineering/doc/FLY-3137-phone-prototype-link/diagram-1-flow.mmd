@@ -1,0 +1,26 @@
+sequenceDiagram
+    autonumber
+    participant R as runner
+    participant B as Bridge（调度中心）
+    participant O as 原型（runner 电脑上）
+    participant L as 看门程序
+    participant CF as Cloudflare 临时隧道
+    participant D as Discord thread
+    participant A as Annie 的手机
+    R->>O: 在自己的工作区启动原型<br/>首页带「身份标记」
+    R->>B: 帮我给 5173 端口开个链接
+    B->>O: 核对：是这个 runner 自己的原型吗？
+    B->>L: 启动看门程序（记下进程号）
+    L->>CF: 打开隧道
+    CF-->>B: https://xxx.trycloudflare.com
+    B->>CF: 先从外网试开：名单模式应先跳到验证码登录页
+    B->>D: 发原型卡：🟢 可用 · 🔒 只有名单邮箱能开
+    A->>CF: 点链接 → 填邮箱 → 收验证码
+    CF->>O: 登录后转给原型：新建 / 保存都是真的
+    loop 每 15 秒
+        B->>L: 续租 5 分钟
+        B->>O: 原型还在吗？还是同一个程序吗？
+    end
+    Note over L: 如果 Bridge 自己停摆、不再续租<br/>→ 5 分钟内看门程序自己关隧道
+    B->>L: 原型停了 → 关隧道，确认真的关掉
+    B->>D: 把同一张卡改成 ⚫ 已失效，链接变成不可点
