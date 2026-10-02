@@ -20,8 +20,8 @@ implement 节点把当前分支上**已存在**的唯一文件 `qa-sbx/fly2167/p
 - **不**写代码、不加测试文件、不改 CI 配置。
 - 设计文件夹 `engineering/doc/FLY-3150-real-runner-drill/` 下只有 `exploration.md`、`plan.md`、`progress.md`、
   创始人 HTML 及其 Mermaid 源（`.mmd` + `.svg`）；无 research.md。
-- **分支同步已完成**：远端同名分支与 `origin/main` 均已 merge 进本地（exploration §3），后续 push 都是 fast-forward。
-  任何节点**不得** force-push；若再出现 non-fast-forward，先 `git merge origin/<branch>` 再推。
+- **分支同步已完成**：远端同名分支与 `origin/main` 均已 merge 进本地（exploration §3），相对于**当前已核验的远端引用**
+  可 fast-forward。任何节点**不得** force-push；若 push 被拒（non-fast-forward），按 §5 的恢复步骤处理。
 
 ## 2. implement 节点步骤（第一次 hand-in）
 
@@ -75,7 +75,12 @@ implement 节点把当前分支上**已存在**的唯一文件 `qa-sbx/fly2167/p
 
 - 回滚 = `git revert` 该 hand-in 提交；无迁移、无状态。
 - 任一节点若发现 README 与 `origin/main` 不一致，以 `origin/main` 版本为准重读。
-- 远端分支再次分叉时只允许 merge 同步，不允许 force-push（FORCE-PUSH GUARD）。
+- push 被拒（non-fast-forward）的恢复步骤（无人值守可机械执行；只允许 merge 同步，不允许 force-push）：
+  1. `git fetch origin`——**必须先 fetch**，否则本地 `origin/$BRANCH` 仍是旧引用，`git merge` 会返回 Already up to date 而再推仍被拒；
+  2. `git merge "origin/$BRANCH"`；有冲突则解决（drill 文件以本轮应有内容为准，progress.md 以本轮账本为准）；
+  3. 重新跑 §2.4 / §3.3 的文件自检，并用 `git diff --stat origin/main...HEAD` 确认提交范围没有多出无关文件；
+  4. 再 push。若 fetch 或 merge 失败，按协议 `complete --route blocked` 报告，不 force-push。
+  5. merge 产生了新 head → 按 §2.7 / §3.6 对**最终 head** 核验 CI，旧 head 的 CI 记录不算。
 - 房间无人类 Lead：不发提问；只发协议要求的结构化回执。
 
 ## 6. 测试证据（设计节点能给的）
