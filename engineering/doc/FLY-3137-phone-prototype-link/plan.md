@@ -4,7 +4,7 @@ Issue: FLY-3137 (https://linear.app/geoforge3d/issue/FLY-3137/cloudflaref3-runne
 基于: research.md
 
 **Version**: 暂定下一个空 minor（ship 时取空号）
-**Status**: draft v4（Codex design review R1–R3 CHANGES_REQUESTED 后修订）
+**Status**: draft v5（Codex design review R1–R4 CHANGES_REQUESTED 后修订）
 
 ## 0. 一句话
 
@@ -15,6 +15,7 @@ runner 跑 `flywheel-comm preview start --port <p>`；**Bridge 自己**通过一
 | 轮次 | 主要变化 |
 |---|---|
 | v2（R1） | 去掉 runner 侧看守进程，隧道由 Bridge 起/记/关，API 不收 pid；`closing` 确认退出后才 `expired`；原型首页身份标记 + 监听进程工作目录核对；卡片独立对账；策略撤销；配置权威 = `ProjectEntry`；TTL 24h/72h + 重开路径；`--allowed-mail` 实测；路由 fail-closed。 |
+| v5（R4） | ① 回收只认**正向身份**：看门程序/隧道各自的登记 pid+启动时间，或参数里精确含本预览专属 `run_dir` 路径；**取消进程组号推断和组信号**，逐个 pid 发信号；记开机标识，重启过即证明旧进程不在（§5.2/§5.3）。② 同 nonce 重试拿回的是**旧消息**：按返回内容解析实际显示状态再改；一旦有未决的 POST，之后的明确失败不清除它（§7）。③ 卡片收敛改按「已知存在的消息」判定：每条已知消息在失效后都要改成失效；主卡 404 时优先把重复卡提升为主卡；只有「没有任何已知消息且没有未决投递」才算无事可做（§7）。 |
 | v4（R3） | ① 退出判据改为**整个进程组已证明消失**，用内核「进程组号在组内还有成员时不会被复用」的不变量；不再用裸 `tunnel.pid` 认领（§5.2/§5.3）。② Discord「查不到」只有在**同时证明能读历史**（同一 thread 能读到至少一条消息）时才算没发出；否则 `blocked`，不重发（§7）。③ 卡片「未收敛」改为对账器和 drain 共用的一个判据，覆盖 blocked / 未知投递 / 主卡 / 每张重复卡；`never + 已失效` 定义为已收敛（§7）。④ 看门程序 2s 轮询、硬到期前 10s 开始关、关闭一旦开始不可被续租撤回；对外时限统一为「Bridge 停摆 ≤5 分 10 秒、硬到期不晚于 expires_at」（§5.0）。⑤ §6 授权措辞改正。 |
 | v3（R2） | ① 停止需要**只在创建时返回一次的管理密钥**，列表不泄露；创建授权合同写明（§6）。② 进程身份在 spawn 后**同步**取得；补「身份不完整」恢复路径（§5.3）。③ 最终准入（会话/策略/配额）与 INSERT + spawn 放进**同一个无 await 的临界段**；starting 期间也核对原型身份（§5.1）。④ 新增**租约看门程序**：Bridge 离线时 ≤5 分钟自动关隧道，并执行硬到期（§5.0）。⑤ 卡片投递三态 `never / post_pending / confirmed`，从未激活不发卡（§7）。⑥ 结果未知时**不盲发**：按发送时间分页查证、完整 previewId 关联、多条全部收敛，权限不足保持待定并上报（§7）。⑦ 排空状态接口同时看进程和卡片队列（§9）。⑧ 警示文案单一常量 + 提示词契约测试（§3）。⑨ 清理告警按 episode 只发一次，不在锁内（§5.2）。 |
 
@@ -69,7 +70,7 @@ sequenceDiagram
     Note over L: Bridge 停摆 → 租约过期 → L 自己关 CF 并退出
     Note over B: 原型停/换进程/隧道断/会话结束/到期/策略撤销
     B->>B: CAS → closing(reason)
-    B->>L: 对进程组 TERM → 等 → 核身份 → KILL → 确认退出
+    B->>L: 逐个核身份 → TERM 看门程序和隧道 → 等 → 再核 → KILL → 确认退出
     B->>B: CAS closing→expired
     B->>D: 卡片对账器：改卡 ⚫ 已失效
 ```
@@ -108,7 +109,9 @@ CREATE TABLE IF NOT EXISTS prototype_previews (
   local_port        INTEGER NOT NULL,
   origin_pid        INTEGER NOT NULL, origin_lstart TEXT NOT NULL,   -- 创建时观测到的监听进程
   run_dir           TEXT NOT NULL,           -- ~/.flywheel/previews/<previewId>/（0700）
-  lease_pid         INTEGER, lease_lstart TEXT,                      -- 看门程序 = 进程组组长；pgid == lease_pid
+  lease_pid         INTEGER, lease_lstart TEXT,                      -- 看门程序
+  tunnel_pid        INTEGER, tunnel_lstart TEXT,                     -- cloudflared（首次正向确认后登记）
+  boot_id           TEXT NOT NULL,                                   -- 创建时的 kern.boottime；变了 = 机器重启过
   identity_state    TEXT NOT NULL DEFAULT 'none'
                     CHECK (identity_state IN ('none','complete','recovered')),
   public_url        TEXT,
@@ -121,7 +124,7 @@ CREATE TABLE IF NOT EXISTS prototype_previews (
   created_at TEXT NOT NULL, activated_at TEXT, expires_at TEXT NOT NULL, expired_at TEXT,
   -- 卡片投递（不受 status 终态保护）
   thread_id TEXT, card_bot TEXT,                        -- 'lead:<leadId>' | 'global'；改卡用同一个 bot
-  card_delivery TEXT NOT NULL DEFAULT 'never' CHECK (card_delivery IN ('never','post_pending','confirmed','blocked')),
+  card_delivery TEXT NOT NULL DEFAULT 'idle' CHECK (card_delivery IN ('idle','post_pending','blocked')),  -- 未决投递事实
   card_generation INTEGER NOT NULL DEFAULT 0,           -- 每次「新发一条」+1（含 404 重发）
   card_post_started_at TEXT,                            -- 本代发送开始时间（查证分页下界）
   card_message_id TEXT,                                 -- 主卡
@@ -163,7 +166,7 @@ Bridge 发布的一个极小 node 脚本（`packages/teamlead/dist/bridge/previe
 4. **同步临界段**（这一段内**没有任何 await**；Bridge 单进程 + JS 单线程 ⇒ 天然互斥）：
    1. 再核：会话非结果态、开关开、策略 digest、项目配置存在；
    2. 配额：该 execution 非 expired 行 < 3、全局 < 10（同一段内 COUNT + INSERT，并发 create 不会同时通过）；
-   3. `INSERT status='starting'`（含 origin 身份、`expires_at`、`manage_secret_hash`），建 `run_dir`（0700），写 `tunnel-args.json`、首个 `lease`；
+   3. `INSERT status='starting'`（含 origin 身份、`expires_at`、`manage_secret_hash`、`boot_id`），建 `run_dir`（0700），写 `tunnel-args.json`、首个 `lease`；
    4. `spawn(process.execPath, [leaseRunner, "--run-dir", runDir, "--hard-deadline", String(expiresAtMs)], {detached:true, stdio:"ignore"})`，`unref()`；
    5. **同步**取身份：`execFileSync("ps", ["-o","lstart=","-p",pid])` → `UPDATE lease_pid, lease_lstart, identity_state='complete'`。
    这里 spawn 与 UPDATE 之间只剩同一同步段内的几十毫秒；该段崩溃由 §5.3 的恢复路径兜底。
@@ -178,27 +181,27 @@ Bridge 发布的一个极小 node 脚本（`packages/teamlead/dist/bridge/previe
 ### 5.2 关闭（`close(reason)`）
 
 1. CAS `starting|active → closing`，`close_reason` 仅在为空时写入；已是 `closing` 直接进第 2 步（重入安全）。生命周期锁内只做本地操作，**不等任何 Discord 调用**。
-2. 身份不是 `complete` → 先走 §5.3 恢复。
-3. **进程组判定**（G = 登记的 `lease_pid`，也是本预览进程组号）。依据内核不变量：一个进程组号在组内还有任何成员时，不会被分配给新进程。每次判定都重新取一次 `ps -axo pid=,pgid=`（成功才算数），再对相关 pid 分别调用 `ps -o lstart= -p` / `ps -o comm= -p`（comm 取 basename 规范化，与 `chrome-session-reaper.ts` 一致；不用按空格拆分的单行解析器）：
-   - pid G 存在且 lstart == 登记值 → **组仍在**（组长活着）；
-   - pid G 存在但 lstart ≠ 登记值 → pid 已被复用 ⇒ 复用时原组已无成员 ⇒ **已证明整组消失**；
-   - pid G 不存在、但有 pgid == G 的进程 → 它们只能是本组的**残留成员**（组长先死，例如看门程序被单独 KILL、或在写 `tunnel.pid` 前崩溃）⇒ **组仍在**，且这些成员可安全按组回收；
-   - pid G 不存在、且没有 pgid == G 的进程 → **已证明整组消失**。
-4. 回收：组仍在 → `process.kill(-G, "SIGTERM")` → 每 250ms 按第 3 步重新判定，≤5s → 仍在则**重新判定后** `SIGKILL` 进程组 → ≤2s 再判定。每次发信号前都重新判定，绝不对未判定为「本组」的 pid 发信号。`tunnel.pid` 只作日志参考，**不用于认领进程**。
-5. 结论三分：
-   - **已证明整组消失** → CAS `closing→expired`；
-   - **组仍在** → 下一轮重试；
-   - **无法证明**：`ps` 报错、权限不足 → 保持 `closing`、`close_attempts+1`。
+2. **找本预览的进程**（每次判定都重新做；只认**正向身份**，不靠进程组号推断归属）。本预览只有两个进程：看门程序和它的子进程 cloudflared（cloudflared 不再派生子进程）。
+   - 若行上 `boot_id` ≠ 当前开机标识（`sysctl -n kern.boottime`）→ 机器重启过，旧进程必然不在 → **已证明全部消失**。
+   - 看门程序 L：登记的 `lease_pid` 存在且 `lstart` 与登记值一致 → 是 L；否则用 §5.3 的精确参数规则扫描（comm basename == `node` 且参数中 `--run-dir` 后紧跟本行 `run_dir`）。
+   - 隧道 T：登记的 `tunnel_pid` 存在且 `lstart` 一致 → 是 T；否则扫描 comm basename == `cloudflared` 且参数中 `--pidfile` 后紧跟 `<run_dir>/tunnel.pid` 的进程（这个绝对路径含本 preview 的随机 uuid，只有本预览的看门程序会传）。
+   - 扫描命中的进程立即登记其 pid + lstart（`tunnel_pid/tunnel_lstart` 或 `lease_pid/lease_lstart`），之后的判定先用登记身份核对。
+   - 所有 `ps` 调用分开取 `comm=`（basename 规范化，与 `chrome-session-reaper.ts` 一致）、`lstart=`、`args=`，不用按空格拆分的单行解析器；`ps -axo pid=,comm=` 列举候选必须成功才算数。
+3. 回收：对每个**已正向确认**的进程（先 L 后 T）单独 `kill(pid, "SIGTERM")` → 每 250ms 重新做第 2 步，≤5s → 仍在则**重新确认身份后** `SIGKILL` → ≤2s 再做第 2 步。**只对正向确认过的 pid 发信号，不做进程组信号**；同号的其它进程、同组号但身份不符的进程一律不碰。
+4. 结论三分：
+   - **已证明全部消失**：开机标识变了；或列举成功、L 与 T 都既不在登记身份上（pid 不存在或 lstart 不符）、扫描也无命中 → CAS `closing→expired`；
+   - **仍有进程**：下一轮重试；
+   - **无法证明**：`ps`/`sysctl` 报错、权限不足 → 保持 `closing`、`close_attempts+1`。
 6. 清理告警按 episode 只发一次：`close_attempts` 首次到 3 → `cleanup_alert_state='pending'`；告警任务在锁外异步调用 `emitIssueThreadInfraNotification`（附 previewId、pid、原因），成功 → `sent`；`onUndeliverable` 按现有调用方式（同 `detection-escalation-sinks.ts`）落到告警票据队列 → `undeliverable`。之后同一 episode 不再发；进入 `expired` 时 episode 结束。
 7. **卡片只在 `expired` 之后才改成「已失效」**。
 
-### 5.3 身份恢复（identity_state ≠ complete）
+### 5.3 身份恢复（identity_state ≠ complete，或登记身份已失效）
 
-只在 Bridge 于 §5.1-4 同步段中崩溃时出现。
-1. 找组长：`ps -axo pid=,pgid=,comm=` 取 comm basename == `node` 且 pid == pgid 的候选，对每个候选单独 `ps -o args= -p` 取命令行，要求**参数精确相等**地出现 `--run-dir` 后紧跟本行 `run_dir` 绝对路径（`run_dir` 含本 preview 的随机 uuid，只有 Bridge 写得出）。命中 → 登记 `lease_pid`（= 组号）、`lease_lstart`、`identity_state='recovered'` → 按 §5.2 关闭。
-2. 组长不在：看门程序给 cloudflared 的参数里固定带 `--pidfile <run_dir>/tunnel.pid`（这是一个本 preview 专属的绝对路径参数）。找 comm basename == `cloudflared` 且参数精确相等地出现该路径的进程，取其 pgid 作为 G 登记（`identity_state='recovered'`），再按 §5.2 的组判定回收。
-3. 结果三分：扫描成功且两步都无命中 → **已证明无进程** → `expired`；命中 → 登记后按组关闭；扫描失败 → 保持 `closing` 重试，计入告警 episode。
-4. 只有 `starting` 行可能处于此状态；恢复后一律关闭（`start_failed`），不尝试续跑。
+身份规则就是 §5.2 第 2 步的两条精确参数规则；本节只说明什么时候用它：
+1. Bridge 于 §5.1-4 同步段中崩溃（`lease_pid` 未落库）：按规则扫描 L 与 T，命中即登记（`identity_state='recovered'`），再按 §5.2 关闭；两者都无命中且列举成功 → 已证明无进程 → `expired`；列举失败 → 保持 `closing` 重试，计入告警 episode。
+2. `identity_state='complete'` 但看门程序已死（例如被单独 KILL）而 cloudflared 还活着：T 的登记身份（若已登记）或 `--pidfile` 精确参数扫描给出正向依据，按 §5.2 只对 T 发信号。
+3. 只有 `starting` 行可能处于情况 1；恢复后一律关闭（`start_failed`），不尝试续跑。
+4. 「同组号但无正向身份」的进程永远不被认领：例如旧组清空 → 数字被新组复用 → 新组长也死 → 无关成员仍在，这些成员既不在登记身份上、参数也不含本预览的 `run_dir` → 不碰。
 
 ### 5.4 健康巡检、回收、续租与接管（同一个 `reconcile()`，单飞）
 
@@ -247,34 +250,35 @@ CLI 把 `manageSecret` 存在 `$FLYWHEEL_RUNNER_STATE_DIR/previews/<previewId>.j
 
 `packages/teamlead/src/bridge/preview-card.ts`，按 previewId 单飞；Bridge 启动、每次状态转移后、巡检 tick 触发；所有 Discord 请求 `AbortSignal.timeout(10s)`，失败指数退避（`card_next_try_at`，封顶 10 分钟）。
 
-**期望显示 `desiredShown(row)`**（唯一定义，对账器与 drain 共用）：
-- `activated_at` 为空（从未激活）→ `none`，永不发卡；
-- `status ∈ {active, closing}` → `active`（隧道未证明关闭前不宣告失效）；
-- `status = expired` 且 `card_delivery = never` → `none`（从未投递过，不补发失效卡；用户从没见过这张卡）；
-- `status = expired` 且 `card_delivery ∈ {post_pending, confirmed, blocked}` → `expired`。
+**卡片事实**（全部持久化）：
+- 已知消息：主卡 `card_message_id` + `card_shown`；重复卡 `card_extra = [{id, shown}]`。`shown` 一律从**消息实际内容**解析（卡片末行固定机读标记 `preview:<previewId> · active|expired`），不按「本次想渲染什么」推断。
+- 未决投递 `card_delivery ∈ {idle, post_pending, blocked}`：`post_pending` 表示「有一次 POST 结果未知、可能已在 Discord 上」；`blocked` 表示「需要查证但无法证明能读历史」。**一旦进入 post_pending，只有两种正向结论能清除它**：拿到该消息对象，或「已证明能读历史 + 分页完整 + 0 命中」。之后任何一次重试的明确失败都不清除它。
 
-**未收敛判据 `cardNeedsWork(row)`**（对账器选待办、drain-status 计数都只调这一个函数）为真当且仅当任一成立：
+**目标显示 `targetShown(row)`**（唯一定义）：`activated_at` 为空 → `none`；`status ∈ {active, closing}` → `active`（隧道未证明关闭前不宣告失效）；`status = expired` → `expired`。
+
+**未收敛判据 `cardNeedsWork(row)`**（对账器选待办、drain-status 计数只调这一个函数）为真当且仅当任一成立：
 1. `card_delivery ∈ {post_pending, blocked}`；
-2. `card_delivery = never` 且 `desiredShown = active` 且 `card_note ≠ 'no_chat_thread'`（该发未发）；
-3. `card_delivery = confirmed` 且 `card_shown ≠ desiredShown`；
-4. `card_extra` 中任一条 `shown ≠ desiredShown`。
+2. `targetShown = active`、没有任何已知消息、`card_note ≠ 'no_chat_thread'`（该发未发）；
+3. 主卡存在且 `card_shown ≠ targetShown`；
+4. 任一重复卡 `shown ≠ targetShown`。
+推论：没有任何已知消息且没有未决投递的行，在 expired 后天然收敛（Annie 从未看到过卡，或看到的卡已被删光）；只要还有任何一条已知消息，失效后它都必须被改成「已失效」。
 
-**发送（新一代）**——用于首次发卡和 404 后补发，内容永远按**发送当下**的 `desiredShown` 渲染：
-1. thread = `store.getChatThreadByIssue(issue_id, lead.chatChannel)`（lead 由 `resolveLeadForIssue(projects, project_name, issue_labels)` 得）；无 → `card_note='no_chat_thread'`（不计入未收敛；每次对账仍廉价地重查一次 thread，出现了就清掉标记照常发卡），CLI/查询显示 `no_thread`。
-2. 先持久化发送目标：`thread_id`、`card_bot`、`card_generation+1`、`card_post_started_at=now`、`card_delivery='post_pending'`（重启后查证对象不漂移）。
-3. `POST /channels/{thread}/messages`：`nonce` = previewId 与 generation 派生的 ≤25 字符串、`enforce_nonce:true`、`allowed_mentions:{parse:[]}`、正文过 `markAutomatedDiscordText`；正文末行含完整关联标记 `preview:<previewId>`（非秘密）。
-4. 明确成功 → `confirmed`、`card_message_id`、`card_shown = 本次渲染的显示`；然后**重新读** `desiredShown`，不同则立即改卡（晚到回执补偿）。
-5. 明确失败且无副作用（4xx 非 429）→ 回 `never`，退避重试。
+**发送（新一代）**——只在「`targetShown = active` 且没有任何已知消息」时发生（首次发卡，或主卡被删且没有可提升的重复卡）：
+1. thread = `store.getChatThreadByIssue(issue_id, lead.chatChannel)`（lead 由 `resolveLeadForIssue(projects, project_name, issue_labels)` 得）；无 → `card_note='no_chat_thread'`（不计入未收敛；每次对账廉价重查一次，出现了就清标记照常发），CLI/查询显示 `no_thread`。
+2. 先持久化：`thread_id`、`card_bot`、`card_generation+1`、`card_post_started_at=now`、`card_delivery='post_pending'`（重启后查证对象不漂移）。
+3. `POST /channels/{thread}/messages`：`nonce` = previewId 与 generation 派生的 ≤25 字符串、`enforce_nonce:true`、`allowed_mentions:{parse:[]}`、正文过 `markAutomatedDiscordText`，按发送当下的 `targetShown` 渲染。
+4. 得到消息对象（首发成功、或下面的同 nonce 重试命中）→ 按**返回内容**解析 `shown`，记为主卡（已有主卡则记为重复卡），`card_delivery='idle'`；然后按 `cardNeedsWork` 立即补改（例如返回的是旧 active 消息而行已 expired）。
+5. 本代**第一次** POST 就明确失败（4xx 非 429，此前无未决结果）→ `card_delivery='idle'`，退避后重新判断是否还需要发。
 6. **结果未知**（超时/断网，或重启时发现 `post_pending`）→ 永不盲目新发：
-   - 若距 `card_post_started_at` < 2 分钟：用**同一 nonce** 重发（Discord 在几分钟窗口内按 nonce 去重，返回原消息）→ 得到消息对象即 `confirmed`；
+   - 距 `card_post_started_at` < 2 分钟：用**同一 nonce、同一正文**重发（Discord 在几分钟窗口内按 nonce 去重，命中时返回原消息）→ 拿到消息对象按第 4 步处理；这次重试若明确失败 → **不清除** post_pending，转查证；
    - 否则查证：
-     a. **读权限正向证明**：`GET /channels/{thread}/messages?limit=1` 必须返回 ≥1 条消息（Flywheel issue thread 总有建 thread 时的消息）。返回空列表或报错 → **无法证明能读历史**（Discord 缺 READ_MESSAGE_HISTORY 时会返回空列表而非 403）→ `card_delivery='blocked'`，不新发，按 §5.2-6 的 episode 规则上报一次，之后退避重试查证。证明成功 → 记 `history_proof_at`。
-     b. 从 `card_post_started_at - 1min` 对应的 snowflake 起用 `after` 参数**分页**拉到当前时间；筛 `author.id == bot 自身 id`（`GET /users/@me`，缓存）且正文含 `preview:<previewId>`。
-     c. 找到 ≥1 条 → 最早一条为主卡（`card_shown` 按其当前内容判定），其余写入 `card_extra`；`confirmed`，随后按 `cardNeedsWork` 收敛全部条目。
-     d. 读权限已证明、分页完整（最后一页不足 100 条且已到当前时间）且 0 条 → 证明未投递 → 回 `never`（若此时已 expired，按 `desiredShown` 规则即为已收敛，不再发）。
-     e. 分页中途出错 → 保持 `post_pending`，退避重试。
+     a. **读权限正向证明**：`GET /channels/{thread}/messages?limit=1` 必须返回 ≥1 条消息（Flywheel issue thread 总有建 thread 时的消息）。空列表或报错 → 无法证明能读历史（Discord 缺 READ_MESSAGE_HISTORY 时返回空列表而非 403）→ `card_delivery='blocked'`，不新发，按 §5.2-6 的 episode 规则上报一次，之后退避重试查证。证明成功 → 记 `history_proof_at`。
+     b. 从 `card_post_started_at - 1min` 对应的 snowflake 起用 `after` **分页**拉到当前时间；筛 `author.id == bot 自身 id`（`GET /users/@me`，缓存）且含 `preview:<previewId>`。
+     c. 找到 ≥1 条 → 按内容解析各自 `shown`，最早一条为主卡（已有主卡则全部记为重复卡），`card_delivery='idle'`，按 `cardNeedsWork` 收敛全部。
+     d. 读权限已证明、分页完整（最后一页不足 100 条且已到当前时间）且 0 条 → 证明未投递 → `card_delivery='idle'`。
+     e. 分页中途出错 → 保持原状态，退避重试。
 
-**改卡**：用 `card_bot` 对应的同一 token `PATCH` 主卡与每一条 extra，各自成功后单独更新各自的 `shown`；404（主卡被删）→ 进入新一代发送（同上协议，按当前 `desiredShown` 渲染）；extra 404 → 从 `card_extra` 移除；瞬时失败退避。
+**改卡**：用 `card_bot` 对应的同一 token 对每条 `shown ≠ targetShown` 的已知消息 `PATCH`，各自成功后按返回内容更新各自 `shown`。主卡 404（被删）→ 从已知消息中移除；若有重复卡则**提升第一张为主卡**；若已无任何已知消息，按 `cardNeedsWork` 第 2 条决定是否需要发新一代（只在仍 active 时）。重复卡 404 → 移除。瞬时失败退避。
 
 模板（label 转义 Discord markdown、去换行与 `@`；Discord 时间戳按 Annie 本地时区显示）：
 
@@ -284,14 +288,14 @@ CLI 把 `manageSecret` 存在 `$FLYWHEEL_RUNNER_STATE_DIR/previews/<previewId>.j
 🔒 只有名单里的邮箱能打开：点开后填你的邮箱，收验证码登录。      ← quick_email
 ⚠️ {PREVIEW_PUBLIC_WARNING}。别在原型里填真实密码或个人信息。     ← quick_public
 🟢 可用 · <t:{activated}:t> 开启 · <t:{expires}:R> 自动关闭 · runner 结束也会关闭
--# preview:{previewId}
+-# preview:{previewId} · active
 ```
 
 ```
 📱 **原型链接（已失效）** · {label}
 `{url}`
 ⚫ 已失效 · <t:{expired}:t> · 原因：{原因中文}
--# preview:{previewId}
+-# preview:{previewId} · expired
 ```
 
 ## 8. CLI（C6）
@@ -311,7 +315,7 @@ CLI 把 `manageSecret` 存在 `$FLYWHEEL_RUNNER_STATE_DIR/previews/<previewId>.j
 **验收⑤ 定义**：评审期间 = runner 会话非结果态（在 gate 上等 Annie）且在 TTL 内（默认 24h、上限 72h）；超出走「重开」。临时隧道无在线保证（官方定位：测试和开发）。Bridge 停摆时链接会在最后续租后 ≤5 分 10 秒内自关（安全优先于可用）。
 
 **回滚顺序**：① `FLYWHEEL_PROTOTYPE_PREVIEW=0` + 重启 Bridge（新建被拒；现有预览按 `policy_revoked` 关闭并改卡）② `flywheel-comm preview drain-status` 三个计数全部为 0（进程已关、无 closing、卡片全部收敛）才算排空 ③ 再 revert 代码；表留着无害。卡片因 Discord 长期故障无法收敛时：不撤代码，保留开关关闭状态等待收敛；若必须撤，导出未收敛行（previewId、thread、message id）到运维说明里的手工改卡清单。
-**手工恢复**（代码已撤且有残留）：按行取 `lease_pid/lease_lstart`，两次 `ps` 核对 comm/lstart 一致后 `kill -TERM -<pgid>` → 确认消失；无法核对的不杀、记录。写在 `doc/engineer/implementation/` 运维说明。
+**手工恢复**（代码已撤且有残留）：按行取 `lease_pid/lease_lstart`、`tunnel_pid/tunnel_lstart`；对每个 pid 分别用 `ps` 核对 comm/lstart 一致，或参数中精确含本行 `run_dir`，确认后单独 `kill -TERM <pid>` → 确认消失；无法正向确认的不杀、记录。写在 `doc/engineer/implementation/` 运维说明。
 **部署前置**：本机 cloudflared 升到支持 `--allowed-mail` 的版本（≥2026.9.3）；按 Annie 的选择写 `projects.json` 的 `prototypePreview`；重启 Bridge。
 
 ## 10. 测试计划（C8，TDD 先写测试）
@@ -323,10 +327,10 @@ CLI 把 `manageSecret` 存在 `$FLYWHEEL_RUNNER_STATE_DIR/previews/<previewId>.j
 - **准入交错**：原型观测 await 期间会话结束 / 开关关 / 策略变 → 临界段拒绝且未 spawn；4 个 create 并发通过初检 → 只有 3 个 INSERT+spawn。
 - **启动**：URL 解析（干扰行、超时）；starting 期间端口换进程 → `origin_changed` 关闭且未发卡；email 模式 302 到别的主机 / `hostname` 不符不就绪；public 403/404/429/530 不就绪；提交点会话已结束 → 关闭不激活。
 - **租约看门程序**（真进程，按实际消失时间断言）：Bridge 不续租 → 最后续租后 ≤5 分 10 秒两者都消失；在两次检查之间到期；子进程忽略 TERM → 硬到期时已被 KILL（不晚于 `expires_at`）；启动时租约已过期 → 不起 cloudflared；关闭开始后再续租 → 仍然退出；cloudflared 退出 → 看门程序退出；租约文件损坏 → 视为过期。
-- **崩溃与身份**：INSERT 后崩溃未 spawn → 扫描无命中 → expired；spawn 后身份未落库崩溃 → 按 `--run-dir` 精确参数恢复（含绝对二进制路径、路径带空格）→ 关闭；**看门程序被单独 KILL、cloudflared 存活** → 组判定为「组仍在」→ 按组回收、不提前 expired；**看门程序在 cloudflared 写 pidfile 前崩溃** → 同上；**组长 pid 被无关进程复用** → 判定整组已消失、不杀该进程；**`tunnel.pid` 里的 pid 被另一个 cloudflared 复用** → 不认领、不杀；组长已不在且 identity 为 none → 按 `--pidfile` 专属路径找回组号；`ps` 失败 → 保持 closing；comm 规范化（basename）。
+- **崩溃与身份**：INSERT 后崩溃未 spawn → 扫描无命中 → expired；spawn 后身份未落库崩溃 → 按 `--run-dir` 精确参数恢复（含绝对二进制路径、路径带空格）→ 关闭；**看门程序被单独 KILL、cloudflared 存活** → 按 `--pidfile` 专属参数正向确认 T → 只对 T 发信号、不提前 expired；**看门程序在 cloudflared 写 pidfile 前崩溃** → 同上（参数在 spawn 时就有，不依赖 pidfile 已写）；**看门程序 pid 被无关进程复用** → lstart 不符且参数不含本 `run_dir` → 不杀；**旧组清空 → 组号被新组复用 → 新组长也死 → 无关成员仍在** → 不认领、不发任何信号（经可注入观测接口构造该进程历史）；**`tunnel.pid` 里的 pid 被另一个 cloudflared 复用** → 不认领、不杀；**开机标识变化** → 直接判定全部消失；`ps` 失败 → 保持 closing；comm 规范化（basename）。
 - **关闭**：忽略 TERM 的假进程被 KILL；pid 复用 → 视为已退出；清理告警持续失败多轮 + Bridge 重启 → **只发一次**；无 thread → 走 onUndeliverable。
 - **巡检**：各回收条件一例；外网断但进程活 → `tunnel_unreachable`；原型挂起（超时）计为失败；开关关闭时健康预览被关、starting 被取消；配置删除/改名单同上。
-- **卡片**（每例都断言对账可继续推进，且 drain 只在全部收敛后归零）：从未激活的 starting 关闭 → 永不发卡；激活后、首次发送前 expire → 已收敛不补发；首次发送明确失败后 expire → 已收敛；发卡在途时 expire → 回执后立即改卡；POST 已被接收、回执落库前崩溃 → 2 分钟内同 nonce 重发拿回原消息；超过 2 分钟 → 查证找回 → 改失效；超 100 条后续消息 → 分页仍找到；**历史因缺权限返回 `200 []`** → blocked、不重发、告警一次、drain 非零，权限恢复后找到原卡并改失效；历史 403 → 同上；expired 的未知发送查证为空 → 回 never 即收敛；查到两条重复卡 → 主卡收敛而某张 extra PATCH 失败 → drain 非零；active 主卡 404 → 新一代发送结果未知且查证受阻 → blocked 仍在待办；无 thread → no_thread 不计未收敛；label 清洗；`allowed_mentions.parse=[]`；Discord 挂起不阻塞关闭。
+- **卡片**（每例都断言对账可继续推进，且 drain 只在全部收敛后归零）：从未激活的 starting 关闭 → 永不发卡；激活后、首次发送前 expire → 已收敛不补发；首次发送明确失败后 expire → 已收敛；发卡在途时 expire → 回执后立即改卡；POST 已被接收、回执落库前崩溃 → 2 分钟内同 nonce 重发拿回原消息；超过 2 分钟 → 查证找回 → 改失效；超 100 条后续消息 → 分页仍找到；**历史因缺权限返回 `200 []`** → blocked、不重发、告警一次、drain 非零，权限恢复后找到原卡并改失效；历史 403 → 同上；expired 的未知发送查证为空 → idle 即收敛；**首次 active POST 成功但回执丢失、随后 expire、同 nonce 重试返回旧 active 消息 → 按内容记 active 并 PATCH 成失效后 drain 才归零**；**首次 POST 结果未知、同 nonce 重试明确 403 → 仍保留 post_pending 并转查证，不当作从未投递**；**主卡 404 + 补发明确失败 + 仍有重复卡（补发前/后各 expire 一次）→ 重复卡被提升/改失效、已删除的卡不阻塞、最终收敛**；查到两条重复卡 → 主卡收敛而某张 extra PATCH 失败 → drain 非零；active 主卡 404 → 新一代发送结果未知且查证受阻 → blocked 仍在待办；无 thread → no_thread 不计未收敛；label 清洗；`allowed_mentions.parse=[]`；Discord 挂起不阻塞关闭。
 - **排空**：隧道全关但 PATCH 仍失败 → drain-status 非 0。
 - **event-route**：`session_completed`→`awaiting_review` 不回收；转到结果态立即回收。
 - **CLI**：缺环境变量退出 2；超时退出 3 不取消；密钥文件 0600 且不出现在 stdout/`--json`；错误码中文映射。
