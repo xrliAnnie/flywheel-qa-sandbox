@@ -15,12 +15,12 @@ Issue 要求 “append requested marker lines to probe.txt, commit locally, and 
 
 | 证据 | 当前值 | 能证明什么 | 不能证明什么 |
 |---|---|---|---|
-| Execution | `f0635f3b-cf33-4d40-89f7-a9cebb32ab9d` | 当前 design runner 身份 | — |
-| Activation | `activation:f0635f3b-…:2f38be47-…:eng_design:1` | TURN 与 DAG activation 的绑定 | — |
+| Execution | `d27c7945-fbe3-40f1-9144-99486f6fb84b` | 当前 design runner 身份 | — |
+| Activation | `activation:d27c7945-…:b4d80259-…:eng_design:1` | TURN 与 DAG activation 的绑定 | — |
 | TURN | `yours phase=design epoch=1` | 当前 phase 有共享 worktree 写权 | marker 内容 |
 | Mailbox | `No instructions.`;comm DB 中与本 execution 相关的行 = 0(live / log / archive) | 本 execution 没收到 Lead 指令 | — |
 | Native input | 无 exact marker literal | 没有可逐字追加的请求内容 | — |
-| Repository | 根目录无 `probe.txt`;分支 = `origin/project-slot-5-FLY-3164` `0de181bbd`(只含本文件夹的设计文档提交，`origin/main` `7df383e6f` 为祖先) | 无既有 marker 或恢复残留 | — |
+| Repository | 根目录无 `probe.txt`;分支 = `origin/project-slot-5-FLY-3164` `b306fcf3a`(只含本文件夹的设计文档与 progress 提交，`origin/main` `7df383e6f` 为祖先) | 无既有 marker 或恢复残留 | — |
 
 TURN 是写权限，不是 marker 内容。Issue 标题、owner nonce、execution metadata、另一条 execution 的历史证据都不能补齐缺失的 literal。
 
@@ -33,11 +33,11 @@ TURN 是写权限，不是 marker 内容。Issue 标题、owner nonce、executio
 - 该 prompt 要求先追加 `<owner>-CLAUDE-BOOT`,再在 `sleep 45` 期间消费 Agent Team 原生消息、追加 `<owner>-R4-CLAUDE`,且明确 “Do not poll flywheel-comm inbox: prove the native Claude receive path”;
 - 验收读取 driver 自己 worktree 里的 `probe.txt` 与 Claude 原生 teammate-message 收据。
 
-本 execution(`f0635f3b-…`)是 generalized workflow engine 为 `tpl_code` DAG 派发的 `eng_design` activation,工作目录是 slot-5 的 `project-slot-5-FLY-3164`,身份、prompt、工作区都不同。把 driver 的 literal 抄进本工作区，只能“复刻内容”,不能证明本 execution 收到原生投递。
+本 execution(`d27c7945-…`)是 generalized workflow engine 为 `tpl_code` DAG 派发的 `eng_design` activation,工作目录是 slot-5 的 `project-slot-5-FLY-3164`,身份、prompt、工作区都不同。把 driver 的 literal 抄进本工作区，只能“复刻内容”,不能证明本 execution 收到原生投递。
 
 ## Claude runner 的原生指令投递路径
 
-已核实(QA room runtime `b8c37fcfa1f1fe4395b1a79f50dc46f2970d838c`;上一条 execution 核的是 `cecc15a4…`,行号已随 runtime 变化，下面是本次重新核对的值):
+已核实(QA room runtime `b8c37fcfa1f1fe4395b1a79f50dc46f2970d838c`;本 execution `d27c7945-…` 重新逐行核对，runtime 与上一条 execution 相同，下面的行号均为本次实测值):
 
 - `flywheel-comm send` 对 runner 收件人把 `to_agent` 解析为**目标 execution id**(`commands/send.js:17`,`resolvedTo = recipient.executionId`)。
 - Bridge 的 runner mailbox lane 把 `instruction` row 渲染为 `content: "[lead-instruction <row.id>]\n<row.content>"`,`executionId = row.to_agent`(`teamlead/dist/bridge/runner-mailbox-lane.js:92-110` `renderRunnerMailboxEnvelope`);投递时 `vendor === "codex"` 走 Codex 原生通道，其他 backend 走 `wakeRunnerMailbox`(同文件 `:52-60`)。对 `claude-code` backend,这段信封进入 Claude Agent Team 原生收件箱，在 runner 对话中显示为一条 teammate message;注入的协议要求 runner 以 `[lead-instruction <id>]` 为幂等键。
@@ -114,7 +114,7 @@ QA 是另一个 execution:它没有收到发给 writer 的指令，因此不能�
 
 `implement` 的正常完成路线要求 PR,而本 issue 禁止 PR / push / ship;各 node 都没有 `allow_no_code_completion`。所以下游不得假设存在 `no_code` 出口，也不得造空 commit 或 PR。无论是否追加成功,implement runner 都应把“结果 + 能力不匹配”用结构化回执交给 Lead / workflow owner,然后按注入的问题 watcher 停靠(park),由 owner 决定 server 授权的 close / cancel / retemplate。
 
-这一点已由本 execution 以非阻塞问题 `e63f0895-385b-41ae-b720-0ae3b2756764` 告知 Lead(上一条 execution 的同类问题 `6a9a1905-…` 属于旧 comm DB,不再可查)。
+这一点已由本 execution 以非阻塞问题 `58b9d751-487d-490d-a40d-e5a843b94edc` 告知 Lead(前两条 execution 的同类问题 `6a9a1905-…` / `e63f0895-…` 属于已重建的旧 comm DB,不再可查)。
 
 ## 测试证据
 

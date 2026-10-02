@@ -1,5 +1,5 @@
 flowchart TD
-    A["eng_design 启动<br/>exec f0635f3b(re-dispatch)"] --> B{"turn = yours?"}
+    A["eng_design 启动<br/>exec d27c7945(re-dispatch)"] --> B{"turn = yours?"}
     B -- "not-yours" --> W["等待 60-90 秒再查<br/>不写 worktree"]
     W --> B
     B -- "yours" --> C["审计：inbox 为空<br/>无 marker 原文<br/>probe.txt 不存在"]

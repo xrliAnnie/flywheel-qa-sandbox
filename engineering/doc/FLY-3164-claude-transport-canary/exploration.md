@@ -11,18 +11,18 @@ Issue: FLY-3164 (https://linear.app/geoforge3d/issue/FLY-3164/529-canary-fly2127
 
 | 事实 | 取值 | 来源 |
 |---|---|---|
-| Execution | `f0635f3b-cf33-4d40-89f7-a9cebb32ab9d` | 注入的 `FLYWHEEL_EXEC_ID` |
-| Activation | `activation:f0635f3b-cf33-4d40-89f7-a9cebb32ab9d:2f38be47-678d-496e-924e-2522a92aed4c:eng_design:1` | 注入的 `FLYWHEEL_WORKFLOW_ACTIVATION_ID` |
-| TURN | `yours phase=design epoch=1 … run=2f38be47-… node=eng_design attempt=1` | `flywheel-comm turn --exec-id …` |
+| Execution | `d27c7945-fbe3-40f1-9144-99486f6fb84b` | 注入的 `FLYWHEEL_EXEC_ID` |
+| Activation | `activation:d27c7945-fbe3-40f1-9144-99486f6fb84b:b4d80259-ad7c-43dd-8c99-e47b22cb3119:eng_design:1` | 注入的 `FLYWHEEL_WORKFLOW_ACTIVATION_ID` |
+| TURN | `yours phase=design epoch=1 … run=b4d80259-… node=eng_design attempt=1` | `flywheel-comm turn --exec-id …` |
 | Runner backend | `claude-code`(dispatch: `claude` / `claude-opus-5-5` / effort `xhigh`) | 注入 env + `workflow_run.snapshot` |
-| Workflow | run `2f38be47-…`,template `tpl_code` rev 1:`eng_design → implement → qa → founder_gate → land`;`workflow_run_node` 只有 `eng_design` 一行(running) | `workflow_run` / `workflow_run_node` 只读查询 |
+| Workflow | run `b4d80259-…`(本 QA room 的 workflow DB 中 FLY-3164 唯一的 run),template `tpl_code` rev 1:`eng_design → implement → qa → founder_gate → land`;`workflow_run_node` 只有 `eng_design` 一行(running) | `workflow_run` / `workflow_run_node` 只读查询 |
 | Mailbox | `inbox` → `No instructions.`;comm DB 中 `to_agent` / `from_agent` 为本 execution 的行 = 0(live projection、`mailbox_log`、`mailbox_terminal_archive` 都是 0) | `flywheel-comm inbox` + 只读 sqlite |
 | Marker literal | 当前 user turn 中没有 `Append the exact line … to probe.txt` 形式的文本 | 本 execution 的初始 prompt |
-| 分支基线 | `project-slot-5-FLY-3164` = `origin/project-slot-5-FLY-3164` = `0de181bbd`,`origin/main` `7df383e6f` 是其祖先且 main 无新提交；根目录无 `probe.txt` | `git rev-parse` / `git merge-base` / `ls` |
+| 分支基线 | `project-slot-5-FLY-3164` = `origin/project-slot-5-FLY-3164` = `b306fcf3a`,`origin/main` `7df383e6f` 是其祖先且 main 无新提交；根目录无 `probe.txt` | `git rev-parse` / `git merge-base` / `ls` |
 
 ## Re-dispatch 对账(本次 execution 的起点)
 
-本分支继承自上一条 design execution `2cd673b2-8210-45f9-982c-48dc9358da2b`(run `db0433f4-…`)。它产出了本文件夹的全部文档 / 图 / HTML,并在那条 execution 上拿到过 design-review `APPROVED`、进度到 6/6,但没有完成 `phase_design_complete`。
+本分支先后经过两条 design execution:`2cd673b2-8210-45f9-982c-48dc9358da2b`(run `db0433f4-…`)产出了本文件夹的文档 / 图 / HTML;`f0635f3b-cf33-4d40-89f7-a9cebb32ab9d`(run `2f38be47-…`)刷新身份、跑了一轮 review 修订(`fe990167c`)并把进度推到 6/6。两条都没有在当前 workflow DB 留下 `phase_design_complete` 记录——当前 DB 里 FLY-3164 只有 run `b4d80259-…`,其唯一节点 `eng_design` 由本 execution `d27c7945-…` 持有且仍为 running。所以本 execution 从 `b306fcf3a` 接续，而不是从头开始。
 
 | 继承物 | 是否沿用 | 原因 |
 |---|---|---|
