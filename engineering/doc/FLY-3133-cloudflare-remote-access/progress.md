@@ -1,14 +1,14 @@
 ---
 issue: FLY-3133
-phase: design
-phaseCursor: 7/7
-updated: 2026-10-02T03:24:35.216Z
-nextStep: design complete → implement F1a per plan.md Part B + review-notes.md
-  (verify production-main base first)
+phase: implement
+phaseCursor: 0/13
+updated: 2026-10-02T03:26:44.932Z
+nextStep: wait for Lead to rebind/provide production-main worktree; question
+  0fb565c7-7b27-47bb-a8c9-150fae4982cc
 chunks: []
 pointers: {}
 ---
 
 # FLY-3133 progress
-**phase**: design (7/7)
-**next**: design complete → implement F1a per plan.md Part B + review-notes.md (verify production-main base first)
+**phase**: implement (0/13)
+**next**: wait for Lead to rebind/provide production-main worktree; question 0fb565c7-7b27-47bb-a8c9-150fae4982cc
