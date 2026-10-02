@@ -1,13 +1,14 @@
 ---
 issue: FLY-3138
-phase: design
-phaseCursor: 5/6
-updated: 2026-10-02T09:56:57.358Z
-nextStep: HTML published; report to Lead then complete --route phase_design_complete
+phase: implement
+phaseCursor: 1/6
+updated: 2026-10-02T09:59:38.540Z
+nextStep: "Wait for cf GA: npm latest is 1.0.0-beta.11; official docs still beta
+  and single-secret put unsupported"
 chunks: []
 pointers: {}
 ---
 
 # FLY-3138 progress
-**phase**: design (5/6)
-**next**: HTML published; report to Lead then complete --route phase_design_complete
+**phase**: implement (1/6)
+**next**: Wait for cf GA: npm latest is 1.0.0-beta.11; official docs still beta and single-secret put unsupported
