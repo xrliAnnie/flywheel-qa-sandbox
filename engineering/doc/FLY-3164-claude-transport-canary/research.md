@@ -114,7 +114,7 @@ QA 是另一个 execution:它没有收到发给 writer 的指令，因此不能�
 
 `implement` 的正常完成路线要求 PR,而本 issue 禁止 PR / push / ship;各 node 都没有 `allow_no_code_completion`。所以下游不得假设存在 `no_code` 出口，也不得造空 commit 或 PR。无论是否追加成功,implement runner 都应把“结果 + 能力不匹配”用结构化回执交给 Lead / workflow owner,然后按注入的问题 watcher 停靠(park),由 owner 决定 server 授权的 close / cancel / retemplate。
 
-这一点已由本 execution 以非阻塞问题 `58b9d751-487d-490d-a40d-e5a843b94edc` 告知 Lead(前两条 execution 的同类问题 `6a9a1905-…` / `e63f0895-…` 属于已重建的旧 comm DB,不再可查)。
+这一点已由本 execution 以非阻塞问题 `58b9d751-487d-490d-a40d-e5a843b94edc` 告知 Lead(前两条 execution 的同类问题 `6a9a1905-…` / `e63f0895-…` 属于已重建的旧 comm DB,不再可查)。Lead 已回复(response `a76594d5-b9f6-4d6c-adf0-41809ffb6fe3`):确认按夹具原样执行——design 阶段不猜测、不写 marker;implement 只接受发给其自身 execution、来源可核验的 `[lead-instruction <id>]` 中的 inline marker;`creates_pr=true` / `needs_review` 与禁止 PR、push、ship 冲突时，明确报告 capability mismatch 后 park,不发明 `no_code` 路由，也不创建空 PR。
 
 ## 测试证据
 
