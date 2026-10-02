@@ -4,7 +4,7 @@ Issue: FLY-3137 (https://linear.app/geoforge3d/issue/FLY-3137/cloudflaref3-runne
 基于: research.md
 
 **Version**: 暂定下一个空 minor（ship 时取空号）
-**Status**: draft v7（v6 经 Codex 6 轮批准；v7 并入 design-correction.md 的 quick_email 名单门加固，重新评审）
+**Status**: draft v8（v6 经 Codex 6 轮批准；v7 并入名单门加固；v8 按新 thread 评审补启动隔离与探测分类）
 
 ## 0. 一句话
 
@@ -15,6 +15,7 @@ runner 跑 `flywheel-comm preview start --port <p>`；**Bridge 自己**通过一
 | 轮次 | 主要变化 |
 |---|---|
 | v2（R1） | 去掉 runner 侧看守进程，隧道由 Bridge 起/记/关，API 不收 pid；`closing` 确认退出后才 `expired`；原型首页身份标记 + 监听进程工作目录核对；卡片独立对账；策略撤销；配置权威 = `ProjectEntry`；TTL 24h/72h + 重开路径；`--allowed-mail` 实测；路由 fail-closed。 |
+| v8（新 thread R1） | ① **cloudflared 启动隔离**：每个预览用 Bridge 生成的专属配置文件 `--config <run_dir>/cloudflared.yml`（不含 ingress，只认 CLI 的 `--url` 指向已核验的原型），固定 `--no-autoupdate`；子进程环境走白名单（`HOME=run_dir`、`PATH`、`LANG`），不继承任何 `TUNNEL_*` 等变量；Bridge 与看门程序都断言配置路径、配置内容和回源目标（§5.0、§5.1）。宿主机已有的 `~/.cloudflared/config.yml` 不会再把流量串到别的服务（research.md §2.3 实测：不隔离时流量被假配置劫持到另一服务，加显式 `--config` 后回到原型）。② **外网探测单一分类器** `classifyPublicProbe()`：一次匿名、不跟随重定向的请求只产出 healthy / access_gate_missing / transient 之一，激活判定与周期巡检共用；5xx/530/429/401/403/404/超时一律 transient，只有「源站内容直接可见（2xx）」或「跳转去向不对」才是 access_gate_missing（§5.1、§5.4、§10）。 |
 | v7（Lead 反馈） | 并入 `design-correction.md`：写明名单门**只靠** cloudflared 的 `--allowed-mail` 启动参数、源站不核验 Access JWT 这一风险；加两道防线——**启动前双重断言**（Bridge spawn 看门程序前、看门程序 spawn cloudflared 前，各自独立核对参数里的邮箱集合 = 配置名单，否则不起任何进程）和**运行中立即熔断**（周期外网探测拿到确定响应但不是「302 到本隧道的登录页」→ 立即以 `access_gate_missing` 关闭，不走 4 次宽限）；JWT 是否送达源站改为真机 QA 观测项，存在则另开 follow-up（§3、§5.0、§5.1、§5.4、§10）。 |
 | v6（R5） | 删除「开机标识变了就算进程已消失」的捷径（`kern.boottime` 会随校时变化）；重启场景由正向身份核对自然覆盖（§5.2）。 |
 | v5（R4） | ① 回收只认**正向身份**：看门程序/隧道各自的登记 pid+启动时间，或参数里精确含本预览专属 `run_dir` 路径；**取消进程组号推断和组信号**，逐个 pid 发信号（§5.2/§5.3）。② 同 nonce 重试拿回的是**旧消息**：按返回内容解析实际显示状态再改；一旦有未决的 POST，之后的明确失败不清除它（§7）。③ 卡片收敛改按「已知存在的消息」判定：每条已知消息在失效后都要改成失效；主卡 404 时优先把重复卡提升为主卡；只有「没有任何已知消息且没有未决投递」才算无事可做（§7）。 |
@@ -150,7 +151,12 @@ CREATE INDEX IF NOT EXISTS idx_pp_exec ON prototype_previews(execution_id);
 
 Bridge 发布的一个极小 node 脚本（`packages/teamlead/dist/bridge/preview-lease-runner.js`，与 Bridge 同版本），由 Bridge 以 `detached:true` 启动（自成进程组组长）。参数：`--run-dir <run_dir>`、`--hard-deadline <epochMs>`；cloudflared 参数从 `run_dir/tunnel-args.json`（0600，Bridge 写）读取。职责只有这几条：
 1. 启动 cloudflared **之前**先校验：`lease` 有效且未过期、`now < hard-deadline - 10s`；`tunnel-args.json` 里声明的模式为 `quick_email` 时，参数中必须恰有一个 `--allowed-mail`，其邮箱集合（逗号拆分、去空白、小写化）与同文件里 Bridge 写入的 `expectedEmailDigest`（排序后邮箱的 sha256）一致；任一不满足 → 直接退出（不产生任何隧道）。这是独立于 Bridge 的第二次断言。
-2. 以普通子进程（同一进程组）启动 cloudflared，参数含 `--pidfile <run_dir>/tunnel.pid`（专属标识；cloudflared 首次连通后自己写 pid），stdout/stderr 写 `run_dir/tunnel.log`（0600）。
+2. 以普通子进程（同一进程组）启动 cloudflared。**受控启动合同**（Bridge 写、看门程序执行，两边都断言）：
+   - 参数固定为 `tunnel --no-autoupdate --config <run_dir>/cloudflared.yml --url http://127.0.0.1:<已核验端口> --pidfile <run_dir>/tunnel.pid [--allowed-mail <名单>]`，不接受其它参数；
+   - `<run_dir>/cloudflared.yml`（0600，Bridge 生成）只允许 `no-autoupdate: true` 一个键，**不含 `ingress`、`url`、`hello-world`、`tunnel` 等任何能改变回源或模式的键**；显式 `--config` 让 cloudflared 跳过默认配置搜索（`~/.cloudflared`、`/etc/cloudflared` 等），没有 ingress 时它只用 CLI 的 `--url`；
+   - 子进程环境**不继承** Bridge 环境，按白名单构造：`HOME=<run_dir>`、`PATH`（固定值）、`LANG`；不传任何 `TUNNEL_*`、代理或 cloudflared 相关变量；
+   - 看门程序在 spawn 前再次核对：参数数组与上面的形状逐项相等、`--url` 端口等于 `tunnel-args.json` 里的已核验端口、配置文件内容只有允许的键；不符直接退出。
+   stdout/stderr 写 `run_dir/tunnel.log`（0600）。
 3. 每 **2s** 读 `run_dir/lease`（Bridge 写入的截止时间 epochMs，原子 rename）。**租约过期**（缺文件 / 解析失败 / 已过）→ 进入关闭：对 cloudflared TERM → 5s → KILL → 退出。**硬到期**提前开始：`now ≥ hard-deadline - 10s` 即 TERM，`hard-deadline - 5s` 仍在则 KILL，保证到 `hard-deadline` 时已退出。**关闭一旦开始不可撤回**：之后续租被忽略，看门程序必然退出。
 4. cloudflared 自己退出 → 看门程序随即退出。
 5. 收到 TERM/INT → 关 cloudflared 后退出。
@@ -168,7 +174,7 @@ Bridge 发布的一个极小 node 脚本（`packages/teamlead/dist/bridge/previe
 4. **同步临界段**（这一段内**没有任何 await**；Bridge 单进程 + JS 单线程 ⇒ 天然互斥）：
    1. 再核：会话非结果态、开关开、策略 digest、项目配置存在；
    2. 配额：该 execution 非 expired 行 < 3、全局 < 10（同一段内 COUNT + INSERT，并发 create 不会同时通过）；
-   3. `INSERT status='starting'`（含 origin 身份、`expires_at`、`manage_secret_hash`），建 `run_dir`（0700），写 `tunnel-args.json`（含 `mode`、cloudflared 参数数组、`expectedEmailDigest`）、首个 `lease`；随即**读回** `tunnel-args.json` 做第一次断言：`quick_email` 时参数中恰有一个 `--allowed-mail`，邮箱集合与当前项目配置名单**完全相等**（缺失、重复、多出、遗漏都算不符）；`quick_public` 时参数中不得出现 `--allowed-mail`（模式与参数必须一致）。不符 → 行直接 CAS 到 `expired`（`start_failed`，无进程、无卡），不进入第 4 步；
+   3. `INSERT status='starting'`（含 origin 身份、`expires_at`、`manage_secret_hash`），建 `run_dir`（0700），写 `cloudflared.yml`（只含 `no-autoupdate: true`）、`tunnel-args.json`（含 `mode`、已核验端口、cloudflared 参数数组、`expectedEmailDigest`）、首个 `lease`；随即**读回**两个文件做第一次断言：参数数组符合 §5.0 第 2 条的固定形状、`--config` 指向本 `run_dir` 的配置文件且其内容只有允许的键、`--url` 指向已核验端口；`quick_email` 时参数中恰有一个 `--allowed-mail`，邮箱集合与当前项目配置名单**完全相等**（缺失、重复、多出、遗漏都算不符）；`quick_public` 时参数中不得出现 `--allowed-mail`（模式与参数必须一致）。不符 → 行直接 CAS 到 `expired`（`start_failed`，无进程、无卡），不进入第 4 步；
    4. `spawn(process.execPath, [leaseRunner, "--run-dir", runDir, "--hard-deadline", String(expiresAtMs)], {detached:true, stdio:"ignore"})`，`unref()`；
    5. **同步**取身份：`execFileSync("ps", ["-o","lstart=","-p",pid])` → `UPDATE lease_pid, lease_lstart, identity_state='complete'`。
    这里 spawn 与 UPDATE 之间只剩同一同步段内的几十毫秒；该段崩溃由 §5.3 的恢复路径兜底。
@@ -176,7 +182,7 @@ Bridge 发布的一个极小 node 脚本（`packages/teamlead/dist/bridge/previe
 6. 异步推进（创建 deadline 100s，超时 → 关闭 `start_failed`）：
    - 30s 内从 `tunnel.log` 解析严格正则 `https://[a-z0-9]+(-[a-z0-9]+)*\.trycloudflare\.com` 的第一个匹配；
    - **每一轮等待**都核对原型身份（监听 pid + lstart 与登记一致，否则 `origin_changed`）与看门程序身份；
-   - 外网就绪探测（10s 超时、不跟随重定向、退避）：`quick_email` 期望 **302 且 Location 主机为 `login.trycloudflare.com`、query `hostname` 等于本隧道主机**；`quick_public` 期望 **200 + 身份标记 + 警示文案**。403/404/429/5xx/530 均不算就绪；
+   - 外网就绪探测：调用 §5.4 的 `classifyPublicProbe()`（10s 超时、不跟随重定向、匿名、退避重试至 deadline），**只有 `healthy` 才算就绪**；`access_gate_missing` → 立即 `start_failed` 关闭（不发链接）；`transient` → 继续重试直到 deadline；
    - **锁内提交点**：再核会话非结果态、开关、策略 digest、未过 `expires_at`、原型身份未变、行仍 `starting` → CAS `starting→active`，写 `public_url`、`activated_at`；否则走关闭（对应原因）。
    - starting 期间链接只存在于 Bridge 本机日志里、未发卡，任何人都不知道这个随机地址；即使在这段时间原型被替换，也会在下一轮核对（≤2s 轮询）被关闭。
 
@@ -220,8 +226,15 @@ Bridge 发布的一个极小 node 脚本（`packages/teamlead/dist/bridge/previe
 | 看门程序或 cloudflared 不在（核身份） | `tunnel_closed`（看门程序日志写明是租约过期则 `lease_expired`） |
 | 监听该端口的 pid/lstart 与登记不同 | `origin_changed`（立即） |
 | `active`：本机首页校验（同 5.1，3s 超时）连续 3 次失败 | `prototype_stopped` |
-| `active` 且 `quick_email`：每 4 轮一次的外网探测拿到**确定的 HTTP 响应**，但不是「302 且 Location 主机 = `login.trycloudflare.com`、`hostname` = 本隧道主机」（例如源站直接回 200） | `access_gate_missing`（**立即**，不走宽限） |
-| `active`：每 4 轮一次外网就绪判定，连续 4 次失败（超时、断网、5xx/530 等无法确认登录门状态的情况才计入这里） | `tunnel_unreachable` |
+| `active`：每 4 轮一次 `classifyPublicProbe()` 结果为 `access_gate_missing` | `access_gate_missing`（**立即**，不走宽限） |
+| `active`：`classifyPublicProbe()` 连续 4 次 `transient`（任何一次 `healthy` 清零计数） | `tunnel_unreachable` |
+
+**外网探测分类器 `classifyPublicProbe(row)`**（激活与巡检共用，同一次匿名、不跟随重定向、10s 超时的 `GET <public_url>/` 只产出一个结果）：
+
+| 模式 | `healthy` | `access_gate_missing`（立即关闭） | `transient`（计入宽限） |
+|---|---|---|---|
+| `quick_email` | 302，且 `Location` 主机 = `login.trycloudflare.com`、query `hostname` = 本隧道主机 | 2xx（源站内容直接可见）；3xx 但缺 `Location`、`Location` 主机不对、或 `hostname` 不对 | 401/403/404/429、5xx、530、超时、断网、DNS 解析失败（新子域名可能被本机负缓存）、TLS 错误 |
+| `quick_public` | 200 且正文含身份标记与 `PREVIEW_PUBLIC_WARNING` | （不适用） | 其它一切（含 200 但缺标记——本机首页校验与 `origin_changed` 负责归属问题） |
 
 `closing` 行继续 §5.2。探测异步、带超时、按 preview 单飞，不在锁内等网络。
 
@@ -328,6 +341,8 @@ CLI 把 `manageSecret` 存在 `$FLYWHEEL_RUNNER_STATE_DIR/previews/<previewId>.j
 - **路由/授权**：服务端未配 token → 503（经 plugin 挂载）；错 token 401；body 含 `pid`/`url`/未知字段 → 400；结果态/`approved_to_ship` → 409；配额 429；**A 列出 B 的预览拿不到密钥、用 previewId 调 stop → 403**；**A 用 B 的 executionId 暴露 A worktree 的原型 → 422**；A 替 B 打开 B 已标记的原型 → 卡进 B 的 thread、响应密钥只给调用方（记录为接受的残余，断言行为符合合同）。
 - **归属**：无标记 / 别人的 execId / public 缺警示 / 工作目录不在 worktree / 端口是 Bridge / 多个监听 pid → 422 且**从未 spawn**。
 - **准入交错**：原型观测 await 期间会话结束 / 开关关 / 策略变 → 临界段拒绝且未 spawn；4 个 create 并发通过初检 → 只有 3 个 INSERT+spawn。
+- **启动隔离**（临时隔离 HOME 与配置 fixture，不碰宿主真实安装）：宿主默认配置含 catch-all 指向另一服务 B；或首页正确、其它路径指向 B 的 ingress；两档模式下 B 都收到**零请求**；继承环境里设 `TUNNEL_NAME` / `TUNNEL_HELLO_WORLD` 等变量不改变模式或目标；配置文件被加入 `ingress` 或参数多一项 → Bridge 与看门程序都拒绝启动。
+- **探测分类器**（表驱动）：`quick_email` 下 302→200、302 到别的主机、`hostname` 不符、缺 `Location` → 立即开始关闭（原因 `access_gate_missing`、确认隧道退出、卡片「名单门失效」）；单次 503/530/429/403 → 只计宽限；连续 4 次 transient → `tunnel_unreachable`；中间一次 healthy 清零；超时永不产出 `access_gate_missing`；激活阶段同一分类器只在 healthy 时激活。
 - **名单门加固**：Bridge 写出的参数缺 `--allowed-mail` / 邮箱多一个 / 少一个 / 重复 / 大小写不同但集合相同（应通过）→ 前四种不 spawn 任何进程、行 `start_failed`；看门程序收到被篡改的 `tunnel-args.json`（摘要不符或缺参数）→ 不起 cloudflared 直接退出；运行中外网探测从 302 变成 200 → 立即 `access_gate_missing` 关闭并改卡「名单门失效」；运行中探测超时 → 只计入 `tunnel_unreachable` 宽限，不触发 `access_gate_missing`。
 - **启动**：URL 解析（干扰行、超时）；starting 期间端口换进程 → `origin_changed` 关闭且未发卡；email 模式 302 到别的主机 / `hostname` 不符不就绪；public 403/404/429/530 不就绪；提交点会话已结束 → 关闭不激活。
 - **租约看门程序**（真进程，按实际消失时间断言）：Bridge 不续租 → 最后续租后 ≤5 分 10 秒两者都消失；在两次检查之间到期；子进程忽略 TERM → 硬到期时已被 KILL（不晚于 `expires_at`）；启动时租约已过期 → 不起 cloudflared；关闭开始后再续租 → 仍然退出；cloudflared 退出 → 看门程序退出；租约文件损坏 → 视为过期。

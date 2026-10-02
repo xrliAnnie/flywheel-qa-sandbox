@@ -68,6 +68,25 @@ gh release download 2026.9.3 --repo cloudflare/cloudflared   # 下载到 scratch
 
 结论：名单门今天就能做；外网就绪探测在该模式下应判定「302 到 `login.trycloudflare.com` 且 `hostname` 等于本隧道」。未实测：真邮箱收码登录后的会话时长、手机浏览器登录体验——放进真机 QA。
 
+### 2.3 宿主机默认配置会劫持回源（2026-10-02，真跑；新 thread Codex R1 提示后补做）
+
+cloudflared 2026.9.3 不传 `--config` 时会搜索默认配置目录（`~/.cloudflared` 等）；默认配置里只要有合法 ingress，就**优先于** CLI 的 `--url`。用 scratchpad 里的假 HOME 复现（宿主真实配置未动）：
+
+```
+原型 A = 127.0.0.1:48140（返回 ORIGIN-A）；另一服务 B = 127.0.0.1:48141（返回 ORIGIN-B）
+假 HOME/.cloudflared/config.yml:  ingress: [ { service: http://127.0.0.1:48141 } ]
+
+env -i HOME=<假HOME> cloudflared tunnel --no-autoupdate --url http://127.0.0.1:48140
+→ 外网打开链接得到 ORIGIN-B   ← --url 指 A，流量却去了 B
+env -i HOME=<假HOME> cloudflared tunnel --no-autoupdate --config <run_dir>/cloudflared.yml --url http://127.0.0.1:48140
+   （cloudflared.yml 只有 no-autoupdate: true）
+→ 外网打开链接得到 ORIGIN-A   ← 显式 --config 跳过默认搜索，回源正确
+```
+
+注：新建的 trycloudflare 子域名刚出现时，本机 DNS 可能先缓存一次「不存在」，curl 返回 000；探测时用 `--resolve <host>:443:<边缘 IP>` 或等缓存过期。实现的外网探测要把 DNS 解析失败归为 transient。
+
+结论：必须用每个预览专属的 `--config`（不含 ingress）+ 白名单环境变量启动 cloudflared（plan v8 §5.0 第 2 条）。
+
 ## 3. 关键设计结论（喂给 plan.md）
 
 1. **访问方式三档、可插拔**：`quick_email`（名单门，推荐）/ `quick_public`（临时、谁有链接谁能开）/ `named`（F2 正式隧道，v1 占位）。

@@ -22,6 +22,8 @@ plan v6 §5.1-6 已有第一道激活门：`quick_email` 只有在外网自检�
 
 `quick_email` 的周期外网探测只要取得一个确定 HTTP 响应，而结果不是「`302` 到 `login.trycloudflare.com` 且 `hostname` 等于当前隧道主机」，就立即关闭预览，不走普通网络失败的连续四次宽限。新增关闭原因 `access_gate_missing`，中文显示「名单门失效」。超时、断网等无法确认名单门是否缺失的情况仍按普通可达性失败累计。
 
+> v8 修订（新 thread 评审 R1）：「确定 HTTP 响应」的口径收窄为 plan.md §5.4 的单一分类器 `classifyPublicProbe()`——只有 2xx（源站内容直接可见）或跳转去向/`hostname` 不对才是 `access_gate_missing`；401/403/404/429、5xx、530、超时、断网、DNS 失败都是 transient，走四次宽限。另新增 cloudflared 启动隔离（专属 `--config` + 白名单环境），见 plan.md v8 §5.0。
+
 ### JWT 后续验证
 
 v1 不依赖源站 JWT 校验，安全防线是激活前外网自检、启动前双重参数断言和运行中立即熔断。真机 QA 的 `quick_email` 场景在 OTP 登录后额外记录源站收到的请求头：若存在 `Cf-Access-Jwt-Assertion`，另开 follow-up 评估源站本地核验代理或校验库；该 follow-up 不扩大本单 v1 范围。
