@@ -1,13 +1,14 @@
 ---
 issue: FLY-3133
 phase: design
-phaseCursor: 4/7
-updated: 2026-10-02T03:16:49.864Z
-nextStep: Codex design review r7 running (r6 1H/3M → plan r7 token lock + ops journal)
+phaseCursor: 7/7
+updated: 2026-10-02T03:24:35.216Z
+nextStep: design complete → implement F1a per plan.md Part B + review-notes.md
+  (verify production-main base first)
 chunks: []
 pointers: {}
 ---
 
 # FLY-3133 progress
-**phase**: design (4/7)
-**next**: Codex design review r7 running (r6 1H/3M → plan r7 token lock + ops journal)
+**phase**: design (7/7)
+**next**: design complete → implement F1a per plan.md Part B + review-notes.md (verify production-main base first)
