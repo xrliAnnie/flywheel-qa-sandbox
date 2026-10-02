@@ -1,14 +1,13 @@
 ---
 issue: FLY-3164
 phase: design
-phaseCursor: 1/6
-updated: 2026-10-02T00:09:38.200Z
-nextStep: "re-dispatch f0635f3b: refresh docs to current exec identity, then
-  design review"
+phaseCursor: 3/6
+updated: 2026-10-02T00:12:13.371Z
+nextStep: design review for exec f0635f3b on committed plan.md
 chunks: []
 pointers: {}
 ---
 
 # FLY-3164 progress
-**phase**: design (1/6)
-**next**: re-dispatch f0635f3b: refresh docs to current exec identity, then design review
+**phase**: design (3/6)
+**next**: design review for exec f0635f3b on committed plan.md
