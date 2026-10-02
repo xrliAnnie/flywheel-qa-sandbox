@@ -1,0 +1,19 @@
+sequenceDiagram
+  actor A as Annie
+  participant L as Lead
+  participant B as Bridge（本机）
+  participant S as 托管存储
+  participant G as 网关（打开页面的入口）
+  A->>L: 这页永久保留
+  L->>B: report-retention set 链接 permanent
+  B->>S: 读这页的策略小文件和版本号
+  B->>B: 登记簿先记下「正在改」
+  B->>S: 只在版本号没变时才写新策略
+  S-->>B: 写好了 新版本号
+  B->>B: 登记簿记为已生效
+  B-->>L: 这页现在永久保留
+  L-->>A: 回一句
+  Note over G,S: 之后有人打开页面
+  G->>S: 先读策略小文件
+  G->>S: 没到期才读页面
+  G-->>A: 没到期就显示 到期就 404

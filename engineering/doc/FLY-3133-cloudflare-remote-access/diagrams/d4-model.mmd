@@ -1,0 +1,28 @@
+classDiagram
+  class 页面目录 {
+    index.html 页面本身
+    audit 子文件 可选
+    policy.json 这页的保留期 可选
+  }
+  class policy_json {
+    schema 版本
+    opId 哪一次设置写的
+    kind 默认 或 永久 或 到某时刻
+    expiresAt 绝对到期时刻
+  }
+  class 登记簿镜像 {
+    retention 已确认的值
+    pending 正在改 还没确认
+    只用于清单 不决定删除
+  }
+  class 网关 {
+    先读策略 再读页面
+    不缓存
+  }
+  class 默认设置 {
+    DEFAULT_REPORT_RETENTION_DAYS = 14
+  }
+  页面目录 *-- policy_json : 同生共死
+  policy_json --> 网关 : 唯一生效来源
+  policy_json --> 登记簿镜像 : 确认后抄一份
+  默认设置 --> 网关 : 同一份代码

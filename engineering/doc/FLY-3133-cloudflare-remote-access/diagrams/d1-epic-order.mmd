@@ -1,0 +1,16 @@
+flowchart TD
+  P["先拍板：用哪个账号 / F2 走哪条路 / 6 个 Gmail"] --> B1
+  subgraph B1["第一批"]
+    F1a["F1a 页面保留期<br/>不需要 Cloudflare"]
+    F2["F2 手机只读看控制台"]
+    F8["F8 Runner 只读钥匙"]
+  end
+  B1 --> B2
+  subgraph B2["第二批"]
+    F1b["F1b 页面搬到 Cloudflare<br/>6 个 Gmail + 单页分享"]
+    F3["F3 手机试原型"]
+  end
+  B2 --> F6["第三批：F6 云截图"]
+  F5["F5 改用 cf：挂起，等正式版"]
+  F1a -- "保留期设置一起带过去" --> F1b
+  F2 -- "共用通道和登录门" --> F3

@@ -1,0 +1,7 @@
+flowchart TD
+  Phone["你的手机"] --> Gate["登录门<br/>Cloudflare Access 或 Tailscale"]
+  Gate --> Tunnel["隧道 / Serve<br/>从本机往外连"]
+  Tunnel --> RO["新的只读入口<br/>127.0.0.1 单独端口<br/>只有「看」的路由"]
+  RO --> Snap["控制台快照<br/>（所有开关显示为只读）"]
+  Local["本机浏览器"] --> Main["现有控制台 9876<br/>能看也能改"]
+  Tunnel -. "永远不接" .-> Main
