@@ -1,0 +1,20 @@
+sequenceDiagram
+  autonumber
+  participant GH as GitHub 发布任务<br/>(只在 main + release 环境)
+  participant CF as cf 命令行
+  participant API as Cloudflare
+  GH->>GH: 守卫: 账号 ID 合法, 非全零, 一致
+  GH->>CF: A 建存储桶 flywheel-payloads
+  CF->>API: 创建 (已存在 = 续跑)
+  GH->>CF: B 设过期规则 (前后用接口读回比对)
+  loop C / D 每个密钥一次 (值走管道, 不落盘)
+    GH->>CF: 设一个密钥
+    CF-->>GH: 成功回执
+    GH->>GH: 回执不对就立刻停, 不写下一个
+  end
+  GH->>API: E 前: 记下现有密钥名 + 当前版本
+  GH->>CF: E 部署 Worker flywheel-onboard-endpoint
+  CF-->>GH: 回执: 版本号 + 部署号 + 网址
+  GH->>API: E 后: 活动版本 = 新版本? 密钥名一个没少?
+  GH->>CF: F / G 写两个能力指纹 (同样逐个回执)
+  GH->>API: 初始化清单 (用测试令牌, 401 即失败)

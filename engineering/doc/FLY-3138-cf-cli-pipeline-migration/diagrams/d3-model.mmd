@@ -1,0 +1,17 @@
+flowchart LR
+  subgraph KEEP["不变 (验收 4)"]
+    W["Worker 名<br/>flywheel-onboard-endpoint"]
+    BK["存储桶 flywheel-payloads<br/>绑定名 PAYLOADS"]
+    S["密钥名 (CI 管的 5+N 个)"]
+    OPS["FW_OPS_ADMIN_TOKEN_SHA256<br/>创始人手设, 不进 CI"]
+    GHS["GitHub release 环境里的<br/>Cloudflare 令牌 + 账号 ID"]
+  end
+  subgraph CHANGE["要换的"]
+    T1["wrangler.toml"] --> T2["cloudflare.config.ts<br/>(cf migrate 生成, 人审)"]
+    D1["wrangler 4.111.0 依赖"] --> D2["cf 精确版本依赖"]
+    C1["9 处 wrangler 调用"] --> C2["cf 调用 + 共享设密钥助手"]
+    L1["结构检查: 数 wrangler"] --> L2["结构检查: 0 处 wrangler<br/>禁止整包密钥文件"]
+  end
+  T2 -. 读回校验 .-> W
+  T2 -. 读回校验 .-> BK
+  C2 -. 部署前后比对 .-> OPS
