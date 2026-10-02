@@ -6,7 +6,7 @@ Issue: FLY-3133 (https://linear.app/geoforge3d/issue/FLY-3133/epic用-cloudflare
 - 版本：ship 时取空号（生产 `doc/VERSION` 当前 v1.57.0）。
 - 代码基线：生产 main @ `9fcbdebb1`。本 QA 沙箱分支的 `packages/` 较旧，**实现必须在以生产 main 为基的分支上做**（implement 节点第一步核对基线；若本分支仍是沙箱旧代码，向 Lead 报告而不是在旧代码上实现）。
 - 本计划两部分：**A. Epic 级拆分与各子单技术合同**；**B. 第一个可实施增量 F1a 的实施级计划**（本分支下一个 implement 节点的范围）。F2/F8/F1b/F3/F6 各自开子单、各走自己的 design→implement，开工前先问对应的 founder 前提。
-- 修订记录：r2 按 Codex 设计评审 r1（15 项）重写 F1a 存储模型（全局派生投影 → 每页策略对象 + 预写状态机）并补 A.2/A.4 跨子单约束；r3 按 r2（10 项）改为条件写（ETag CAS）协议、绝对到期时刻、顺序读、删除前远端确认、set 与 retarget 共用跨进程锁、Codex Lead 只改自有页面、until 金丝雀探针。
+- 修订记录：r2 按 Codex 设计评审 r1（15 项）重写 F1a 存储模型（全局派生投影 → 每页策略对象 + 预写状态机）并补 A.2/A.4 跨子单约束；r3 按 r2（10 项）改为条件写（ETag CAS）协议、绝对到期时刻、顺序读、删除前远端确认、set 与 retarget 共用跨进程锁、Codex Lead 只改自有页面、until 金丝雀探针；r4 按 r3（2 项）加删除代际 tombstone 与持久清理进度（gc 标记），发布路径不再删远端字节。
 
 ## 0. 给 founder 的说明（一图）
 
@@ -101,6 +101,7 @@ export const SWEEP_DELETE_GRACE_MS = 60 * 60 * 1000; // 删除字节比 404 晚 
 export type StoredReportPolicy =
   | { kind: "default" }                       // = 今天的规则（manifest / uploadedAt + 14 天）
   | { kind: "permanent" }
+  | { kind: "deleting"; gcId: string }          // 清理中的删除代际（只由 sweep 写；网关视为已过期）
   | { kind: "until"; expiresAt: string; basisCreatedAt: string; days: number }; // 绝对到期 + 换算依据（只用于显示）
 export const REPORT_POLICY_SCHEMA = "flywheel.report-policy.v1";
 export interface ReportPolicyObject { schema: typeof REPORT_POLICY_SCHEMA; opId: string; policy: StoredReportPolicy }
@@ -113,7 +114,7 @@ export function isReportExpired(nowMs: number, defaultBasisMs: number, p?: Store
 - **为什么落盘绝对时刻**（修 r2#5）：`until` 自带到期时刻，网关、sweep、retarget、重部署后都不需要再找「原始 createdAt」；迁移重传导致的 `uploadedAt` 变化、manifest 重建、registry 裁剪都改变不了一个已设置页面的到期时间。`default` 显式等于今天的规则（今天就存在的 retarget+重部署时间基准问题不在本单扩大，也不在本单修）。
 - **Epic 稳定 token 只允许 `default` / `permanent`**：稳定页每次重发都重新起算，`N 天` 在它身上语义含糊；founder 对 Epic 页的诉求是「一直在」。`set <稳定token> Nd` → 400 并提示可设永久。重发只覆盖 `index.html`，不碰 `policy.json`。
 - **audit 子对象**：父 `permanent` → audit 不按 TTL 失效；父 `until` → audit 在同一 `expiresAt` 失效；父 `default`/无策略 → 今天的规则（audit 自己的 `uploadedAt`）。发布前「父缺失/父过期时仍可读新 audit」的公开验证分支保留（`report-blob-store.ts:295-309`、`report-gateway-runtime.ts:90-91,116-129`），只把判定换成上述规则。现有「commit 后删除上上版 audit」（`report-blob-store.ts:287-294,312-321`）不变，永久页通常只保留当前与上一版 audit。
-- `ReportEntry` 新增可选镜像：`retention?: StoredReportPolicy`、`retentionEtag?: string`、`retentionPending?: {opId, policy, baseEtag: string | null, hostingKey, at}`、`retentionUnknown?: true`。
+- `ReportEntry` 新增可选镜像：`retention?: StoredReportPolicy`、`retentionEtag?: string`、`retentionPending?: {opId, policy, baseEtag: string | null, hostingKey, at}`、`retentionUnknown?: true`、`gc?: {gcId, hostingKey, startedAt}`（清理进度，持久）。
 - `ReportHostingState` / `HostingBinding` 新增 `reportPolicy?: {schema:"v1"; deploymentId; artifactSha256: Record<string,string>; provedAt}`（能力门）。
 - `ReportBlobClient` 抽象补齐 SDK 已有能力（`@vercel/blob@2.8.0`）：`put` 透传 `ifMatch`、返回 `etag`；`get`/`head` 返回 `etag`；`del` 支持单对象 `ifMatch`；`BlobPreconditionFailedError` 映射成 `PreconditionFailed`。
 
@@ -149,23 +150,29 @@ stateDiagram-v2
 
 - **顺序读**：先一致读 `policy.json`（`useCache:false`），再读 `index.html`/audit。不并行。
 - `policy.json` 404 → `default`；解析通过 → 用它；其它错误 / schema 不认识 → 502（fail-closed）。
-- 先判策略再取字节：`until` 已到期 → 直接 404，不读 HTML。
-- 与清理的配对证明：清理删除顺序固定为「HTML/audit 先删、`policy.json` 最后删」（B.5）。一个请求读到 `policy.json` 404 的时刻，若该 token 之前有策略，则它的 HTML/audit 必然已在更早删除 → 随后读 HTML 得 404。读到策略（存在）的请求按策略判定。存储是线性一致的（Vercel Blob 私有一致读；F1b 的 R2 强一致）。
+- 先判策略再取字节：`until` 已到期或 `deleting` → 直接 404，不读 HTML。
+- 与清理的配对证明：清理先把策略写成 `deleting`（网关即 404），再删 HTML/audit，最后删 `policy.json`（B.5）。一个请求读到 `policy.json` 404 的时刻，若该 token 之前有策略，则它的 HTML/audit 必然已在更早删除 → 随后读 HTML 得 404。读到策略（存在）的请求按策略判定。存储是线性一致的（Vercel Blob 私有一致读；F1b 的 R2 强一致）。
 - 网关不缓存策略；每次打开 = 两次小对象读（顺序）。
 
 ### B.5 远端清理（修 r2#3 #9）
 
 唯一原则：**删除远端对象前，必须以一致读确认该 token 的远端策略认为它已过期**；镜像只能用来挑候选，不能单独决定删除。
 
-- **每日 sweep**（不进发布临界区，修 r2#9）：LIST `r/`（跨分页按 token 分组）→ 有 `policy.json` 的 token 以有界并发（8）、单次超时 10 秒读策略 → 判定 HTML 与每个 audit：到期且 `now ≥ expiresAt + SWEEP_DELETE_GRACE_MS`（1 小时宽限）才是候选 → 删除前再一致读一次策略，ETag 与判定时相同才删（读到不同 → 本轮跳过）→ HTML/audit 都删完后，`del(policy.json, {ifMatch: 判定时 ETag})`（条件删，set 期间改过则不删）。
-  - 宽限的作用：set 拒绝延长已到期页面（B.3「拒绝」分支），所以「sweep 判定后、删除前，set 把它改成永久」只可能发生在到期前；宽限 1 小时 + 删前重读（读到删之间 < 10 秒超时）使这个窗口不存在。网关 404 不受宽限影响，到期即 404。
-  - 无 `policy.json` 的 token：今天的规则（registry createdAt → manifest → uploadedAt），不额外读。
+- **删除代际（tombstone，修 r3#1）**：删任何一页的远端字节之前，sweep 先把该页 `policy.json` **条件写**成 `{kind:"deleting", gcId}`（已有对象用 `ifMatch=判定时 ETag`；不存在则只许创建）。从此刻起：网关把 `deleting` 当作已过期（404）；set 读到 `deleting` → 410；任何在此之前发出、仍未决的旧写（它的 `ifMatch` 是旧 ETag，或它是「只许创建」）都必然 `PreconditionFailed`，永远不会再生效。这一步成功之后才删字节；这一步冲突（有人刚写过）→ 本轮放弃该 token。于是「到期前获准、超时未决的写」与「删字节」不可能同时成功——不依赖宽限时长，也不依赖客户端超时。
+- **每日 sweep**（不进发布临界区，修 r2#9）：工作集 = LIST `r/`（跨分页按 token 分组）∪ registry 中带 `gc` 标记的条目 ∪ registry 中镜像为 until 且已过 `expiresAt + 宽限` 的条目（修 r3#2：远端已删完而本地没收尾的条目仍会被选中）。每个 token：
+  1. 有界并发（8）、单次超时 10 秒一致读策略；判定到期（`until`：`now ≥ expiresAt + 1 小时宽限`；无策略：今天的规则 + 同一宽限；`deleting`：上次没收尾，继续）。
+  2. registry 锁内给条目写 `gc: {gcId, hostingKey, startedAt}`（没有条目的孤儿 token 跳过这一步）。
+  3. 写删除代际 tombstone（上一条）。
+  4. 按判定时记录的 ETag 条件删 HTML 与每个 audit（重发上传了新字节 → ETag 变了 → 不删）。
+  5. `del(policy.json, ifMatch=tombstone 的 ETag)`（有人改过 → 不删）。
+  6. registry 锁内终结：仅当条目仍带**同一个** `gcId` 且 `hostingKey` 未变，才删条目与本地 `files/<token>.html`；否则（例如期间 Epic 重发换了新条目）什么都不删。
+  任一步失败 / 崩溃：`gc` 标记与 `deleting` 都是持久的，下一轮从对应步继续；远端已全无时直接做第 6 步。宽限 1 小时只用于「到期后多久开始删字节」，正确性不再依赖它；网关到期即 404。
   - 策略读失败 / schema 坏 → 该 token 本轮不删，聚合告警。
   - 单 tick 工作预算 15 分钟、tick 不重叠（进程内标志 + 已有每日间隔）；超预算剩余留到下一轮。
-  - 成本（算例，非实测）：N 个有策略对象的 token 每天 N 次策略读 + 删前重读；1 万永久页 ≈ 每月 30 万次小对象读，加 LIST 分页；按 Vercel 付费版按量计费估算远低于 20 美元月额度，存储 80% 告警继续覆盖。
-- **普通 publish 的 `staged.expired` 远端删除**（`reports-route.ts:473-478`）：对每个候选先一致读策略；无策略且按今天规则过期 / 有策略且按策略过期（含宽限）才删 HTML；否则只把它从本地裁剪中**保留**下来（见下）。
-- **本地裁剪**（`stageReport` 两处、`retainedSnapshot`）：发布路径只裁剪「镜像为 default、无 pending/unknown、按今天规则过期、且一致读远端确认无非默认策略」的条目；读到远端非默认 → 保留条目并修正镜像。镜像为非默认（永久或 until）的条目**不在发布路径裁剪**，由 sweep 在把该 token 的远端对象（含 `policy.json`）全部条件删除之后，再移除其 registry 条目与本地文件——所以 until 页到期后不会在 registry 里无限累积。镜像缺失但远端有策略（例如条目丢失后重发）由 Epic 重发恢复（下条）。
-- **Epic 稳定 token 重发**（修 r2#3）：`stageEpicPageRepublish` 的 commit 前一致读该 token 的远端策略，把结果写入新条目镜像（`permanent` 保留；读失败 → 新条目标 `retentionUnknown`，本地保守保留，对账 tick 补）；远端删除仍按上面原则，不会因为镜像回默认就删掉新 HTML。
+  - 成本（算例，非实测）：N 个有策略对象的 token 每天 N 次策略读；被清理的 token 每个多一次 tombstone 写；1 万永久页 ≈ 每月 30 万次小对象读，加 LIST 分页；按 Vercel 付费版按量计费估算远低于 20 美元月额度，存储 80% 告警继续覆盖。
+- **普通 publish 不再删除远端字节**（`reports-route.ts:473-478` 的 `staged.expired` 远端删除移除）：远端删除只剩 sweep 这一条路径，全部走上面的代际协议。代价：过期字节最多晚约一天被删（网关早已 404），存储略增。
+- **本地裁剪**（`stageReport` 两处）：发布路径只裁剪「镜像为 default、无 pending/unknown/gc、按今天规则过期、且一致读远端确认无非默认策略」的条目（只动本地条目与本地文件）；读到远端非默认 → 保留条目并修正镜像。镜像为非默认（永久或 until）的条目**不在发布路径裁剪**，由 sweep 第 6 步终结——所以 until 页到期后不会在 registry 里无限累积。`retainedSnapshot` 只是迁移选择（不删除），按有效策略选「仍可打开」的页面，已到期但未清理的 until 页不进迁移集。
+- **Epic 稳定 token 重发**（修 r2#3、r3#1）：重发在上传 audit **之前**一致读该 token 的远端策略：读到 `deleting`（旧代际正在被清理）→ 先条件写回 `{kind:"default"}`（新代际；使 sweep 后续的条件删全部落空），再走原发布流程；读到 `permanent` → 新条目镜像保留永久；读失败 → 新条目标 `retentionUnknown`，本地保守保留，对账 tick 补。新条目不带 `gc` 标记，所以旧 sweep 的第 6 步不会删掉它或它的本地文件。
 - **resume**（`report-registry.ts:746-787`）：首次未提交发布没有策略（新发布永远是 default）；恢复已有条目时保留其镜像字段，并把 `:760` 的过期校验换成有效策略判定。
 
 ### B.6 网关能力门（修 r2#8 #10）
@@ -192,11 +199,11 @@ stateDiagram-v2
 | 位置（生产 main） | 动作 |
 |---|---|
 | `report-retention.ts` | B.2 |
-| `report-blob-store.ts` | client 抽象补 etag/ifMatch/条件删；`getReportPolicy`/`casReportPolicy`/`delReportPolicyIfMatch`；`REPORT_PATH_RE` 识别 `policy.json`（仅分类，不进旧的按 uploadedAt 删除路径）；`sweepExpiredReports` 按 B.5 |
+| `report-blob-store.ts` | client 抽象补 etag/ifMatch/条件删；`getReportPolicy`/`casReportPolicy`/`delReportPolicyIfMatch`；`REPORT_PATH_RE` 识别 `policy.json`（仅分类，不进旧的按 uploadedAt 删除路径）；`sweepExpiredReports` 按 B.5（工作集、tombstone、条件删、gc 终结） |
 | `report-gateway-runtime.ts:63-129,173-194` | B.4 顺序读；HTML 与三条 audit 分支都按 B.2 audit 规则 |
 | `report-hosting-maintenance.ts` | sweep 移出发布临界区、预算/并发/超时；对账 tick（B.3）；能力探针与金丝雀 receipt 清理（B.6） |
 | `report-registry.ts` | 镜像字段；pending/unknown 写入与收敛（均在 `withLock`）；本地裁剪与 `retainedSnapshot` 按 B.5；`stageEpicPageRepublish` 继承远端策略；resume `:760` |
-| `reports-route.ts` | B.7 路由；`staged.expired` 远端删除按 B.5 先读策略 |
+| `reports-route.ts` | B.7 路由；移除 `staged.expired` 的远端删除（只留本地裁剪，B.5） |
 | `epic-page-publisher.ts` | 重发路径接 B.5 远端策略读取 |
 | `report-hosting-migration.ts` | 部署记录文件 sha；B.6 探针后写门；`:180-200` 初次迁移只服务尚未迁移的旧绑定（此时门不可能已开、不会有非默认策略），保留默认判断并加注释与测试证明 |
 | `report-hosting-retarget.ts` | 开始时（已持 hosting 锁）收敛所有 pending/unknown，收敛不了 → exit 2；按 token 从**源 store 远端**复制 `policy.json`（含 opId/expiresAt 原样）；新部署过 B.6 后才在新绑定写门 |
@@ -215,8 +222,8 @@ stateDiagram-v2
 | 2 | client 条件能力 | 假 client 支持 ETag/ifMatch/allowOverwrite:false/条件删，与 SDK 语义一致的契约测试 |
 | 3 | 设置协议 | **可调度假 client**：A 超时 → 回读旧值 → A 保持 unknown → B 以 ifMatch 成功 → A 晚到落盘必然 PreconditionFailed → 远端与镜像都是 B；A 超时后自己晚到成功 → 对账提交 A；并发创建只一个成功；rename 失败 → 202 + 对账补齐；重启后收敛；同命令重跑幂等 |
 | 4 | 网关 | 无策略 14d 404；永久 15d 200；until 到期 404 不读 HTML；策略坏 schema 502；读错 502；audit 三分支 × 三种父策略；**线性化交错：policy 读与 HTML 读之间插入 sweep 的「删 HTML → 删 policy」，短期页与 audit 都不会回落默认返回 200**（改成并行读 / 改删除顺序后必须变红） |
-| 5 | 清理 | 2d 到期 → registry 裁剪 → 远端删除失败 → 下轮 sweep 删除且期间始终 404；删前重读 ETag 变化 → 不删；条件删 policy 冲突 → 不删；策略读失败零删除；宽限内不删；**1 万 token + 慢/挂起读：发布等待不受 sweep 影响**；跨 LIST 分页分组；`staged.expired` 遇远端非默认策略 → 不删字节 |
-| 6 | Epic 重发 / 本地裁剪 | 稳定页 permanent → 构造镜像丢失（registry 条目不在）→ 重发 → 远端读回 permanent → 14 天后普通 publish / list / epic expires_at 一致且字节仍在；远端读失败 → unknown 保守保留；普通 28d 页到期 → 远端 policy 残留 + 字节删除失败 → 下轮 sweep 清除，期间始终 404；镜像为 default 但远端是 permanent（镜像过期）→ `staged.expired` 读到远端策略后不删字节并修正镜像 |
+| 5 | 清理 | 2d 到期 → 远端删除失败 → 下轮 sweep 删除，期间始终 404；**到期前获准的 A → 超时 UNKNOWN → 拨钟过宽限 → sweep 最后一次读仍是 P0 → A 的 CAS 在 tombstone 之后到达 → 必然 PreconditionFailed，字节删除与「确认永久」不会同时成立**（去掉 tombstone 后必须变红）；**sweep 清理中途插入 Epic 重发 → 重发把 deleting 写回 default → sweep 的条件删全部落空，新条目与本地文件保留**；**远端全删后、registry 终结前崩溃 / rename 失败 → 重启后 LIST 已无该 token → 下一轮仍从 gc 标记完成本地终结**；策略读失败零删除；tombstone 冲突放弃；**1 万 token + 慢/挂起读：发布等待不受 sweep 影响**；跨 LIST 分页分组；发布路径不再删远端字节 |
+| 6 | Epic 重发 / 本地裁剪 | 稳定页 permanent → 构造镜像丢失（registry 条目不在）→ 重发 → 远端读回 permanent → 14 天后普通 publish / list / epic expires_at 一致且字节仍在；远端读失败 → unknown 保守保留；普通 28d 页到期 → 远端 policy 残留 + 字节删除失败 → 下轮 sweep 清除，期间始终 404；镜像为 default 但远端是 permanent（镜像过期）→ 发布路径本地裁剪前读到远端策略，保留条目并修正镜像 |
 | 7 | 能力门 | 不读策略的假网关：金丝雀 A 200 → 不写门；只在 HTML 读策略、audit 漏传 → 不写门；全部 404 的坏网关：B 不是 200 → 不写门；新网关通过 → 写门绑定 deploymentId + sha；deploymentId 变化拒非默认；每日探针失败清门；receipt 清理只删登记 token、重启后重试 |
 | 8 | retarget | 有 pending 时开始 → 收敛或 exit 2；set 在 retarget 期间 409 hosting_busy；新 store 的 policy.json 与源逐字节相同（含 until 绝对时刻）；**retarget → 按策略到期 → registry 裁剪 + 远端删除失败 → deploy-gateway-only → GET 仍 404**；成功后遗留 journal 不影响后续 set |
 | 9 | 路由 + 认证 | 真实 app：master 200；ingest 403；门未开 409；锁忙 409；稳定页设天数 400；过期 410；严格 body；unknown/unsynced → 202 |

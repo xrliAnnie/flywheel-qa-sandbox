@@ -32,11 +32,11 @@ retarget 按 token 复制对象时策略自然跟着走；网关每请求直接�
 ### 1.2 策略值（唯一词表）
 founder 输入 `default | permanent | N 天(1..365)`；落盘时 Bridge 把 N 天换算成绝对到期时刻 `{kind:"until", expiresAt}`（r3，修迁移后时间基准丢失）；Epic 稳定页只允许 default/permanent。缺省 = 默认；`DEFAULT_REPORT_RETENTION_DAYS = 14` 唯一集中设置。
 过期统一由 `report-retention.ts` 的纯函数计算 —— 该文件本来就被原样复制进网关部署，Bridge、sweep、网关同一份算法。
-时间基准不变（普通报告 = 首次 createdAt；Epic 稳定 token = 最新上传；audit = 自己的 uploadedAt + 父 token 的策略）。
+到期规则：`until` 用绝对时刻（父页与 audit 同一时刻）；`permanent` 不按时间失效；`default` / 无策略 = 今天的规则（普通报告首次 createdAt，Epic 稳定 token 最新上传，audit 用自己的 uploadedAt）。
 
 ### 1.3 一致性（r3 定稿，细节见 plan B.3–B.5）
 - 设置 = 条件写：一致读拿 ETag → registry 预写 pending(opId, baseEtag) → `put(ifMatch=baseEtag)`（不存在时只许创建）→ 超时则回读，远端 opId 对上才提交；旧值/读失败 = 结果未知（不判定没写上），因为晚到的旧写只能在 ETag 未变时生效，一旦被后继 CAS 取代就必然失败。
-- 网关先读策略再读字节；清理「字节先删、策略最后条件删」；任何远端删除前一致读确认策略认为已过期（+1 小时删除宽限）；镜像只用于清单与挑候选。
+- 网关先读策略再读字节；清理先把策略条件写成「删除中」代际（使所有未决旧写失效），再条件删字节、最后条件删策略；清理进度持久记在 registry，崩溃可续；发布路径不再删远端字节；镜像只用于清单与挑候选。
 - set 与 retarget 共用跨进程 hosting 锁。
 
 ### 1.4 能力门
