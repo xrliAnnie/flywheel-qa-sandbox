@@ -119,3 +119,19 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 - 技术同步合入 `origin/main` 的 `ab686e643`;slot-1 的运行来源保留在 §10,当前 slot-5 的已批计划与生成设计继续作为本轮权威。
 - `qa-sbx/fly2167/project-slot-5-FLY-3150.md` 在 main 上仍为 `FIXED-FOR-CLAIM 4`,本分支继续以 `AWAITING-QA` 覆盖,演练语义不变。
 - §9 的 `9bf1be460 = origin/main` 明确是派发时快照;同步后不得再当当前 main 头。
+
+## 12. 本次派发审计(run `0750ae00`,2026-10-03,slot-6)
+
+新一轮运行(TURN:`yours phase=design epoch=1 run=0750ae00… node=eng_design attempt=1`),这次在 **slot-6** 分支上。§1–§11 是 slot-1 / slot-5 的历史;本节覆盖本轮事实。
+
+| 项 | 结果 |
+|---|---|
+| 分支 | `project-slot-6-FLY-3150` |
+| 分支头(派发时) | `be388bf10` = `origin/main` 头(零差异,无需同步合并) |
+| 远端分支 / PR | 远端无 `project-slot-6-FLY-3150`;无该 head 的 PR → 交付 #1 推新分支、开新 PR |
+| 目标文件 | `qa-sbx/fly2167/project-slot-6-FLY-3150.md` **不存在** → 交付 #1 是**新增**(diff 状态 `A`),不存在陈旧 claim 行 |
+| README | 自 `7df383e6f` 起未变 |
+| 收件箱 | 无 Lead 指令 |
+| Linear | Done(Lead 裁定);不碰 |
+
+与 slot-5 的差别:没有残留 `FIXED-FOR-CLAIM <n>` 可被误判,但交付 #1 仍用覆盖写(`printf … >`)保证幂等 —— 若实现节点重试时文件已被前一次尝试写过,结果不变。其他 slot 的目标文件(`project-slot-1/5-FLY-3150.md`)不得触碰。
