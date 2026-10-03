@@ -1,7 +1,7 @@
 # FLY-3150 真 Runner 通用演练(529 房间) — 实施计划
 
 Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-02(本次派发 run `251c390a`;沿用 047a5977 的已评审结构)
+日期: 2026-10-03(本次派发 run `60b69b26`;沿用 56c48d76 的已评审结构)
 基于: exploration.md(README 规定"一份短 plan 足够,不需要 research 文档")
 
 ## 1. 范围
@@ -13,27 +13,30 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 
 ## 2. 本轮起点
 
-目标文件**已存在**,内容 `QA-SBX FLY-2167 drill` / `FIXED-FOR-CLAIM 1`(上一轮残留)。`origin/main`(`6676fe269`)已是分支祖先,无需合并。判定第几次交付只看**本轮**提示词有没有 "QA fix context"。
+目标文件**已存在**,内容 `QA-SBX FLY-2167 drill` / `FIXED-FOR-CLAIM 1`(上一运行 run `56c48d76` 的交付 #2 残留)。分支头 `06042b238` 已含 `origin/main`(`9bf1be460`),无需合并;远端分支与 PR #490(OPEN)仍在,本轮推送直接更新 PR #490。判定第几次交付只看**本轮**提示词有没有 "QA fix context"。
 
 ## 3. 实现节点
 
+**单文件纪律(Codex R1)**:README 限定只改目标文件。节点协议的 progress ledger 会单独提交 `progress.md`,所以**每次交付前先写 ledger,再固定 BASE**;BASE 之后到交付头只允许一个提交,且只改目标文件。交付推送后到 `complete` 之间不再写 ledger(否则 HEAD ≠ PR 头)。
+
 **交付 #1(无 "QA fix context")**
-1. `BASE=$(git rev-parse HEAD)`。
+1. 先写 ledger(`--cursor` 到"即将交付 #1",`--next "run=60b69b26 HANDIN1 pending"`),然后 `BASE=$(git rev-parse HEAD)`。
 2. 覆盖写两行:`printf 'QA-SBX FLY-2167 drill\nAWAITING-QA\n' > <目标文件>`。必须重置 —— 留着 `FIXED-FOR-CLAIM 1` 时,若本轮 claim id 恰好也是 1,重验会假通过。
 3. 自检:`printf 'QA-SBX FLY-2167 drill\nAWAITING-QA\n' | cmp - <目标文件>` 零输出。
-4. 提交 `docs(qa-sbx): FLY-3150 drill hand-in`,再写本轮最后一次 ledger(`--next` 里写 `HANDIN1 pending`),`HANDIN1=$(git rev-parse HEAD)`。
-5. 核验:`git diff --name-status $BASE..$HANDIN1` 只有 `M` 目标文件 + `M` progress.md;目标文件 patch 恰为 `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`。
-6. 推送 `$HANDIN1`,确认远端分支头 / PR 头 / CI 都在该 SHA,交付;**交付摘要必须写明 `run=251c390a HANDIN1=<完整 SHA>`**(这是跨节点传给返工的唯一 PREV 来源 —— progress.md 里现存的 HANDIN2 指针与分支上同 message 的旧 hand-in/fix 提交(run `047a5977` 及更早),都不能用)。
+4. `git add <目标文件>` 后提交 `docs(qa-sbx): FLY-3150 drill hand-in`,`HANDIN1=$(git rev-parse HEAD)`。
+5. 核验:`git rev-list --count $BASE..$HANDIN1` = 1;`git diff --name-status $BASE..$HANDIN1` **只有** `M <目标文件>`;patch 恰为 `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`。
+6. 推送 `$HANDIN1`,确认远端分支头 / PR 头 / CI 都在该 SHA,交付;**交付摘要必须写明 `run=60b69b26 HANDIN1=<完整 SHA>`**(这是跨节点传给返工的唯一 PREV 来源 —— progress.md 里现存的指针与分支上同 message 的旧 hand-in/fix 提交(run `56c48d76`、`251c390a` 及更早,部分已合入 main),都不能用)。
 
 **交付 #2(提示词首行 `QA verdict to fix: claim <id> ...`)**
 1. 用 `^QA verdict to fix: claim (\S+)` 取 `ID`,原样复制;取不到 → 走失败通道,不猜。
-2. `PREV` = 本轮交付 #1 摘要里的 `HANDIN1`(返工提示词 / 交付记录中 `run=251c390a` 那条);确认它是 HEAD 的祖先,且 `git show $PREV:<目标文件>` 第 2 行是 `AWAITING-QA`。取不到本轮 HANDIN1 → 走失败通道,不得退回 `git log` 猜或用 progress 里的旧 PREV。
-3. 只改第 2 行为 `FIXED-FOR-CLAIM $ID`;自检 `printf 'QA-SBX FLY-2167 drill\nFIXED-FOR-CLAIM %s\n' "$ID" | cmp - <目标文件>` 零输出。
-4. 提交 `docs(qa-sbx): FLY-3150 drill fix for claim $ID`,写 ledger,`HANDIN2=$(git rev-parse HEAD)`。
-5. 核验:`$PREV..$HANDIN2` 只有 `M` 目标文件 + `M` progress.md;patch 恰为 `-AWAITING-QA` / `+FIXED-FOR-CLAIM $ID`。
-6. 推送并确认远端 / PR / CI 都在 `$HANDIN2`,交付。
+2. `PREV` = 本轮交付 #1 摘要里的 `HANDIN1`(返工提示词 / 交付记录中 `run=60b69b26` 那条);确认它是 HEAD 的祖先,且 `git show $PREV:<目标文件>` 第 2 行是 `AWAITING-QA`。取不到本轮 HANDIN1 → 走失败通道,不得退回 `git log` 猜或用 progress 里的旧 PREV。
+3. 先写 ledger(`--next "run=60b69b26 claim=$ID HANDIN2 pending"`),然后 `BASE2=$(git rev-parse HEAD)`。
+4. 只改第 2 行为 `FIXED-FOR-CLAIM $ID`;自检 `printf 'QA-SBX FLY-2167 drill\nFIXED-FOR-CLAIM %s\n' "$ID" | cmp - <目标文件>` 零输出。
+5. `git add <目标文件>` 后提交 `docs(qa-sbx): FLY-3150 drill fix for claim $ID`,`HANDIN2=$(git rev-parse HEAD)`。
+6. 核验:`$BASE2..$HANDIN2` 恰 1 个提交且只有 `M <目标文件>`;`git diff $PREV $HANDIN2 -- <目标文件>` 恰为 `-AWAITING-QA` / `+FIXED-FOR-CLAIM $ID`。
+7. 推送并确认远端 / PR / CI 都在 `$HANDIN2`,交付。
 
-核验后若又产生提交(含 ledger),重新固定 SHA、核验、推送。commit message 与 PR 标题不得含 `[skip ci]` / `[ci skip]` / `[no ci]` / `[skip actions]` / `[actions skip]` / `skip-checks:`。
+核验后若意外产生任何其他提交,回到该次交付第 1 步重来(重写 ledger → 新 BASE)。commit message 与 PR 标题不得含 `[skip ci]` / `[ci skip]` / `[no ci]` / `[skip actions]` / `[actions skip]` / `skip-checks:`。
 
 ## 4. QA 节点
 
