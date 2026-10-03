@@ -32,8 +32,8 @@ Issue: FLY-3228 (https://linear.app/geoforge3d/issue/FLY-3228/qa-sbx-fly-3228-re
 6. 核验:(a) `git diff --name-status $BASE..$HANDIN1` 只含 `"$F"`(`A`/`M`,第 2 步跳过时可无)+ progress.md;(b) `git show $HANDIN1:"$F"` 逐字节等于两行;(c) §1 PR 级断言通过。
 7. `git push -u origin HEAD`(普通快进)。PR:有本 head 的 OPEN PR 就复用,否则 `gh pr create --base main --head project-slot-6-FLY-3228 --title 'FLY-3228 QA-SBX real-runner drill hand-in'`,正文写 Linear 链接与本轮 run id。确认远端分支头 / PR 头 / CI 都在 `$HANDIN1` 再交付;**交付摘要写明 `HANDIN1=<完整 SHA>`**(返工 PREV 的唯一来源)。
 
-**交付 #2(提示词首行匹配 `^QA verdict to fix: claim (\S+)`)**
-1. 取 `ID`,原样复制(不改大小写、不去前导零);取不到 → 失败通道,不猜。
+**交付 #2(本轮提示词含 "QA fix context")**
+1. 定位本轮 "QA fix context" 的**内容首行**(context 前可以有其他说明,不要求它是整个提示词的首行),用 `^QA verdict to fix: claim (\S+)` 取 `ID`,原样复制(不改大小写、不去前导零);首行不匹配或取不到 → 失败通道,不猜,也不从提示词里的历史示例或其他上下文抓 ID。
 2. `PREV` = 本轮交付 #1 摘要里的 `HANDIN1`;确认它是 HEAD 的祖先,且 `git show $PREV:"$F"` 第 2 行为 `AWAITING-QA`。取不到 → 失败通道,不从 `git log` 猜。
 3. 只把第 2 行改为 `FIXED-FOR-CLAIM $ID`(重试时若 HEAD 中 blob 已逐字节正确,跳过第 4 步);自检 `printf '%s\nFIXED-FOR-CLAIM %s\n' "$L1" "$ID" | cmp - "$F"` 退出码 0。
 4. `git add "$F"`,提交 `docs(qa-sbx): FLY-3228 drill fix for claim $ID`。
@@ -53,7 +53,7 @@ Issue: FLY-3228 (https://linear.app/geoforge3d/issue/FLY-3228/qa-sbx-fly-3228-re
 | criterion | 第 1 轮 | 重验轮 |
 |---|---|---|
 | `file-shape` | 文件存在且第 1 行 = `QA-SBX FLY-3228 drill` | 同左 |
-| `fixed-for-claim` | **恒 `fail`**,evidence `round 1: no previous QA claim yet`(故意埋的失败,本演练的目的) | 第 2 行 = `FIXED-FOR-CLAIM <id>`(id 取自 `Previous QA verdict: claim <id>`)才 `pass`;取不到 id → `fail`,不得 pass |
+| `fixed-for-claim` | **恒 `fail`**,evidence `round 1: no previous QA claim yet`(故意埋的失败,本演练的目的) | 第 2 行 = `FIXED-FOR-CLAIM <id>`(id 取自 "QA re-verification context" 里的 `Previous QA verdict: claim <id>`)才 `pass`;取不到 id → `fail`,不得 pass |
 | `e2e_529_exempt` | `not_run`,`exempt_category: docs_only`,附原因 | 同左 |
 
 title < 120 字符,evidence < 80 字符;只读核验,不部署房间、不碰 Linear、不改目标文件。
