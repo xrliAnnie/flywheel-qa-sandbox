@@ -11,8 +11,9 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 - 不碰:README、任何代码、Linear issue、529 房间部署/拆除、其他 slot 的目标文件(`project-slot-1/2/3/5-FLY-3150.md`)。
 - **流程文档例外(不来自 README,明示边界)**:派发提示词的节点契约(DOC-FLOW / 进度账本 / 设计 HTML)强制把 `engineering/doc/FLY-3150-real-runner-drill/` 下的设计文档与 `progress.md` 提交并推送到同一共享分支。它们是 Runner 协议记账产物,不是演练内容,不进 QA 三条 criterion。为不稀释 README 的"只碰一个 md":
   - **演练内容范围断言**(PR 级,两次交付都跑):`git diff --name-only origin/main...HEAD -- . ':(exclude)engineering/doc/FLY-3150-real-runner-drill'` 的输出**恰好**一行 `qa-sbx/fly2167/<branch>.md`。出现任何其他路径 → 停,不交付。
-  - **流程文档白名单断言**(PR 级,与上条同时跑,不靠排除来"藏"路径):`git diff --name-only origin/main...HEAD | grep -v -x -F "qa-sbx/fly2167/<branch>.md" | grep -v '^engineering/doc/FLY-3150-real-runner-drill/'` 必须为空 —— 即完整 PR diff ⊆ {目标文件} ∪ 该文件夹;任何第三类路径 → 停,不交付。
-  - **公开披露,不宣称"只碰一个文件"**:交付摘要与 QA 证据都如实列出完整 `git diff --name-only origin/main...HEAD`,注明"演练内容 = 目标文件 1 个;其余为派发契约强制的流程文档"。这是 README("只碰一个 md")与派发节点契约(DOC-FLOW / 账本 / 设计 HTML 必须提交到同一分支)的已知冲突:实现节点**不**私自删掉流程文档去迎合 README(那会违反契约、丢失可恢复账本),也**不**把它们说成符合 README;冲突按本节如实记录,由驱动器 / Lead 裁决。此安排与已合入的 run `5743a2f5` / `c57ecd18` / `1525e2e2` 一致。
+  - **流程文档白名单断言**(PR 级,与上条同时跑,不靠排除来"藏"路径;`F` 同 §3):`git diff --name-only origin/main...HEAD | grep -v -x -F "$F" | grep -v '^engineering/doc/FLY-3150-real-runner-drill/'` 必须为空 —— 即完整 PR diff ⊆ {目标文件} ∪ 该文件夹;任何第三类路径 → hand-in 前阻断(不推送、不交付,走失败通道 `complete --route blocked`)。
+  - **冲突裁决规则(可执行,不等待人)**:README 管"演练内容"(只碰一个 md、两行内容、三条 criterion);派发提示词里的 Runner 节点契约(DOC-FLOW / 进度账本 / 设计 HTML 必须提交推送到本分支)是 Flywheel 编排层对**每个**节点的强制协议,优先级高于沙箱仓库文件,且只授权这一个文件夹。所以:目标文件以外**只**允许该文件夹的流程文档;两条断言都过 → 继续交付;任一不过 → 阻断。驱动器已按此接受过相同形态(run `5743a2f5` / `c57ecd18` / `1525e2e2` 的 PR #509 / #522 / #526 均带同一文件夹并已合入),本房间无人类 Lead,不另行等待裁决。
+  - **公开披露,不宣称"只碰一个文件"**:完整 `git diff --name-only origin/main...HEAD` 写进交付摘要(实现节点)与 QA 总结 / 交付记录(QA 节点),注明"演练内容 = 目标文件 1 个;其余为节点契约强制的流程文档"。**不**放进 criterion evidence —— 每条 evidence 仍须 < 80 字符、title < 120 字符(README 上限)。
 
 ## 2. 本轮起点(派发时快照,仅供参考)
 
