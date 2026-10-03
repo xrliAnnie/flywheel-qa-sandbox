@@ -70,3 +70,16 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 | Linear | 状态 Done(Lead 裁定);本节点不碰 |
 
 **新风险:陈旧 claim 行。** README 要求"第一次交付第 2 行写 `AWAITING-QA`"。若本轮实现节点看到文件已存在就跳过改写,第 2 行会保留上一轮的 `FIXED-FOR-CLAIM 1`。本轮 QA 第 1 轮照样恒 fail;但如果本轮新 claim id 恰好也是 `1`,重验会因为**上一轮的残留**而 pass —— 返工回路实际没跑,演练却被判通过。所以本轮第 1 次交付必须把第 2 行**重置**为 `AWAITING-QA`(diff 状态是 `M`,不是 `A`)。计划 §2.1 据此改写。
+
+## 8. 本次派发审计(run `251c390a`,2026-10-02)
+
+又一轮同分支新运行(TURN:`yours phase=design epoch=1 run=251c390a… attempt=1`)。
+
+| 项 | 结果 |
+|---|---|
+| 分支头(派发时) | `360a568e5`,PR #420 OPEN,头 = 同一 SHA |
+| 目标文件现状 | 仍是 `QA-SBX FLY-2167 drill` / `FIXED-FOR-CLAIM 1`(run `047a5977` 的返工结果) |
+| `origin/main` | `6676fe269`,已是本分支祖先(merge-base = main 头),无需同步合并;README 未变 |
+| 收件箱 | 无 Lead 指令 |
+
+§7 的陈旧 claim 行风险原样成立:本轮交付 #1 仍必须把第 2 行重置为 `AWAITING-QA`;分支上 `047a5977` 的 hand-in/fix 提交与 progress 指针都不能当本轮 PREV,只认本轮交付摘要里的 `run=251c390a HANDIN1=<sha>`。
