@@ -184,3 +184,5 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 **共享文档文件夹的并发风险**:本文件夹被所有 slot 共用。若实现期间别的 slot 的 PR 先合入 main,本分支的 exploration / plan / progress / design HTML 会出现 add/add 或内容冲突。处理沿用 §11 的先例:技术同步合并 `origin/main`,**保留本轮 slot-2 版本**作为本轮权威,同时把对方 slot 的运行来源写进 exploration 新小节(不静默丢弃);同步后的触发条件、冲突边界与替代核验见 plan §3.1(Codex R1 指出旧的全树双点范围限制在同步后必然不过)。
 
 **旧指针一律不认**:main 历史里 run `5743a2f5` / `0750ae00` / `9d02bd8f` 等的 hand-in / fix 提交、progress 里出现过的 `PREV/HANDIN1=c901c04df…`、`claim=1`,都不是本轮 BASE / PREV / claim id;交付 #2 的 PREV 只认本轮交付 #1 摘要里的 `run=c57ecd18 HANDIN1=<sha>`。
+
+**设计评审(run `c57ecd18`)**:Codex 2 轮(同一 thread `01a10232-e8e4…`,gpt-6-astra/xhigh)。R1 CHANGES_REQUESTED —— 一条 P2:plan 要求同步 main 时追加 exploration 记录,但两次交付的全树双点范围断言只允许目标文件 + progress.md,合法同步后必然不过(slot-5 的 §7 曾有替代断言,slot-6 版本删掉了)。采纳:新增 plan §3.1 —— 只在 PR 冲突或契约要求时同步;冲突仅限流程文档文件夹(保留本轮版本,目录外冲突 abort);交付区间含 merge 提交时改用 PR 级范围断言 + 目标 blob 精确比较 + 返工 patch 精确比较,PREV 仍是真实 HANDIN1。修订后重新 `stage set design_review` 绑定新 blob(request `6e8ab627…`)。R2 对绑定 blob `07659135…` APPROVED(P1/P2/P3 = 0/0/0);`await-codex-gate design` 通过;thread 已归档。
