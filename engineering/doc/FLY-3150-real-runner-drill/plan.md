@@ -38,11 +38,11 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 
 **交付 #2(提示词首行 `QA verdict to fix: claim <id> ...`)**
 1. 用 `^QA verdict to fix: claim (\S+)` 取 `ID`,原样复制;取不到 → 失败通道,不猜。
-2. `PREV` = 本轮交付 #1 摘要里的 `HANDIN1`(`run=f461016e`);确认它是 HEAD 的祖先,且 `git show $PREV:"$F"` 第 2 行是 `AWAITING-QA`。取不到 → 失败通道,不退回 `git log` 猜。 然后 `BASE2=$(git rev-parse HEAD)`,核验**交付间账本范围** `git diff --name-only $PREV..$BASE2` 为空或恰好一行 progress.md(实现节点开工时的 ledger 提交;无合并时)。
+2. `PREV` = 本轮交付 #1 摘要里的 `HANDIN1`(`run=f461016e`);确认它是 HEAD 的祖先,且 `git show $PREV:"$F"` 第 2 行是 `AWAITING-QA`。取不到 → 失败通道,不退回 `git log` 猜。 然后 `BASE2=$(git rev-parse HEAD)`,按 `git show $BASE2:"$F"` 分两种状态核验**交付间范围**(无合并时;Codex R2):**初始态**(blob = `AWAITING-QA` 两行)→ `git diff --name-only $PREV..$BASE2` 为空或恰好一行 progress.md;**已修复态**(上次尝试已提交修复后中断,blob 已逐字节等于 `QA-SBX FLY-2167 drill` / `FIXED-FOR-CLAIM $ID`)→ `$PREV..$BASE2` 只允许 `M "$F"` + 可选 progress.md,且 `git diff $PREV..$BASE2 -- "$F"` 的 patch 恰为 `-AWAITING-QA` / `+FIXED-FOR-CLAIM $ID`;blob 是其他任何内容(含别的 claim id)→ 失败通道。
 3. 只改第 2 行为 `FIXED-FOR-CLAIM $ID`(若重试且 `git show HEAD:"$F"` 的 blob 已逐字节等于该内容,跳过第 4 步的目标文件提交;只看工作树或 `git diff` 不算);自检 `printf 'QA-SBX FLY-2167 drill\nFIXED-FOR-CLAIM %s\n' "$ID" | cmp - "$F"` 零输出。
 4. `git add "$F"` 并提交 `docs(qa-sbx): FLY-3150 drill fix for claim $ID`。
 5. 先冻结 `IMPL2=$(git rev-parse HEAD)`(目标文件提交之后、ledger 之前;重试幂等时 `IMPL2=BASE2`)。再写 ledger(`progress` 命令自行提交 progress.md),确认工作树干净后才冻结 `HANDIN2=$(git rev-parse HEAD)`。
-6. 核验(分开验):(a) **演练实现范围** `git diff --name-status $BASE2..$IMPL2` 恰好一行 `M "$F"`(重试幂等且 `git show $BASE2:"$F"` 已逐字节正确时为空);(b) `git diff $PREV..$HANDIN2 -- "$F"` 的 patch 恰为 `-AWAITING-QA` / `+FIXED-FOR-CLAIM $ID`;(c) **账本范围** `git diff --name-only $IMPL2..$HANDIN2` 为空或恰好 progress.md、无合并提交;(d) `git show $HANDIN2:"$F"` 逐字节等于两行;(e) §1 断言仍通过。
+6. 核验(分开验):(a) **演练实现范围** `git diff --name-status $BASE2..$IMPL2`:初始态恰好一行 `M "$F"`;已修复态(第 3 步跳过提交,`IMPL2=BASE2`)必须为空;(b) `git diff $PREV..$HANDIN2 -- "$F"` 的 patch 恰为 `-AWAITING-QA` / `+FIXED-FOR-CLAIM $ID`;(c) **账本范围** `git diff --name-only $IMPL2..$HANDIN2` 为空或恰好 progress.md、无合并提交;(d) `git show $HANDIN2:"$F"` 逐字节等于两行;(e) §1 断言仍通过。
 7. 推送并确认远端 / PR / CI 都在 `$HANDIN2`,交付。
 
 核验后若又产生提交(含 ledger),重新固定 SHA、核验、推送。commit message 与 PR 标题不得含 `[skip ci]` / `[ci skip]` / `[no ci]` / `[skip actions]` / `[actions skip]` / `skip-checks:`。不 force-push;`origin/main` 前进时按 §3.1 处理。ledger 的 `--handoff` 只写**写入时已确定**的信息(本轮 `run=f461016e`、阶段、claim id、返工时已知的 PREV/HANDIN1),**不写本次最终交付头**(ledger 自提交会改变 HEAD,无法记录自身 SHA);最终 `HANDIN1`/`HANDIN2` 只写在不产生 Git 提交的交付摘要里。开出 PR 后用 `--pointer pr=<本轮 PR URL>` 覆盖账本里的 `none` 占位(本轮账本 `pr` 指针已是 PR #524,复用时保持)。
