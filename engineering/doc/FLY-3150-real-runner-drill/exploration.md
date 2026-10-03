@@ -207,3 +207,5 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 与 §14(slot-2)同形:文件不存在,所以没有残留 `FIXED-FOR-CLAIM <n>` 被误判的风险;交付 #1 仍按 HEAD blob 字节比较 + 覆盖写,保证实现节点重试幂等。§14 的共享文件夹并发风险与 plan §3.1 的同步核验分支原样沿用。
 
 **旧指针一律不认**:main 历史里 run `c57ecd18` / `5743a2f5` / `0750ae00` / `9d02bd8f` 等的 hand-in / fix 提交、progress 里出现过的 `PREV/HANDIN1=d9a5d6abd…`、`claim=1`、`pr` 指针 `#522`,都不是本轮 BASE / PREV / claim id / PR;交付 #2 的 PREV 只认本轮交付 #1 摘要里的 `run=1525e2e2 HANDIN1=<sha>`。
+
+**设计评审(run `1525e2e2`)**:Codex 1 轮(thread `01a102e4-2475…`,turn `01a102e4-2b21…`,gpt-6-astra/xhigh,request `836f56a4…`)。R1 对绑定 blob `6477f5ad…` 直接 APPROVED(P1/P2/P3 = 0/0/0):五项检查(本轮 retarget 与旧标识隔离 / 两次交付字节形状与幂等 / ledger-HANDIN-PREV 顺序 / main 同步分支 / QA 与禁止事项)全部通过;评审只读,未改仓库文件。评审期间 HEAD 因设计 HTML 提交前进,不影响已绑定的 plan blob。
