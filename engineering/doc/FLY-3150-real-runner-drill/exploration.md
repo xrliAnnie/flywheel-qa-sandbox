@@ -229,3 +229,5 @@ TURN:`yours phase=design epoch=1 run=f461016e… node=eng_design attempt=1`。�
 | Linear | Done;不碰 |
 
 **结论**:本轮交付 #1 走 plan §3 第 2 步幂等分支(不提交目标文件),复用 PR #524 并改写正文为本轮证据;上一轮 `HANDIN1=2f94020e3`、代码评审 `8eaee298…`、CI run `37136172147` 都**不是**本轮证据。合并提交在实现节点 BASE 之前,不进入交付区间。
+
+**设计评审(run `f461016e`)**:Codex 3 轮(thread `01a103bc-ad9b…`,gpt-6-luna/xhigh)。R1 CHANGES_REQUESTED(P2):`BASE..HANDIN1` 把 ledger 自提交与目标文件交付混在一起,幂等分支下区间只有 progress.md → 改为冻结 `IMPL1`,实现范围与账本范围分开验(交付 #2 同理 `BASE2`/`IMPL2`)。R2 CHANGES_REQUESTED(P2):交付 #2 在"修复已提交、ledger 前中断"后重试时,`PREV..BASE2` 前置检查必然失败 → 按 BASE2 blob 分初始态 / 已修复态核验,其他内容 fail closed。R3 对绑定 blob `43977ec3…`(request `2b1e2088…`)APPROVED(0/0/0);`await-codex-gate design` 通过;thread 已归档。founder HTML `design.html` 与 `d1-core-flow.*` / `d2-data-model.*` 已覆盖为本轮再派发版本(旧版本在本分支历史 `a66d6514a` 可追溯)。
