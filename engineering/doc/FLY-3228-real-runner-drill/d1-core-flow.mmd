@@ -1,0 +1,16 @@
+sequenceDiagram
+    autonumber
+    participant D as 演练驱动器
+    participant I as 实现节点
+    participant Q as QA 节点
+    Note over I: 起点:演练文件还不存在
+    D->>I: 派发(提示词里没有 QA fix context)
+    I->>I: 新建文件,第2行写 AWAITING-QA
+    I->>D: 交付 #35;1(推分支 + 开 PR,摘要记 HANDIN1)
+    D->>Q: 第 1 轮验收
+    Q->>D: fixed-for-claim 故意判 fail,生成 claim id
+    D->>I: QA fix context 首行: QA verdict to fix: claim id
+    I->>I: 只把第2行改成 FIXED-FOR-CLAIM id
+    I->>D: 交付 #35;2(PREV = 本轮 HANDIN1)
+    D->>Q: 重验(Previous QA verdict: claim id)
+    Q->>D: 第2行逐字匹配才 pass
