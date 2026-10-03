@@ -32,17 +32,17 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 2. 先按 **HEAD 中的 blob** 判断:若 `git show HEAD:"$F" 2>/dev/null | cmp - <(printf 'QA-SBX FLY-2167 drill\nAWAITING-QA\n')` 零输出(路径存在于 HEAD 且字节精确;未跟踪文件不算)→ 跳过第 3–4 步的目标文件提交,直接到第 5 步;否则覆盖写两行:`printf 'QA-SBX FLY-2167 drill\nAWAITING-QA\n' > "$F"`。
 3. 自检(**工作树**,目标文件此时尚未提交):`printf 'QA-SBX FLY-2167 drill\nAWAITING-QA\n' | cmp - "$F"` 退出码 0。
 4. `git add "$F"` 并提交 `docs(qa-sbx): FLY-3150 drill hand-in`。
-5. 写 ledger:`node "$FLYWHEEL_COMM_CLI" progress --exec-id "$FLYWHEEL_EXEC_ID" --file engineering/doc/FLY-3150-real-runner-drill/progress.md …`(从仓库根跑)—— 该命令会**自行提交** progress.md(path-limited commit),不要再手动 add/commit 它;之后确认 `git status --porcelain` 为空。**所有 ledger 提交完成后**才冻结 `HANDIN1=$(git rev-parse HEAD)`。
-6. 核验:(a) `git diff --name-status $BASE..$HANDIN1` 只含 `"$F"`(`A`/`M`)+ `M` progress.md;仅当 `git show $BASE:"$F"` 已是精确两行时允许目标文件不在该范围内;(b) `git show $HANDIN1:"$F"` = 上述两行;(c) §1 的 PR 级断言通过(这个对 `origin/main` 的断言在任何情况下都要求目标文件恰好一项)。
+5. **先冻结实现头** `IMPL1=$(git rev-parse HEAD)`(目标文件提交之后、任何 ledger 提交之前;幂等分支下 `IMPL1=BASE`)。再写 ledger:`node "$FLYWHEEL_COMM_CLI" progress --exec-id "$FLYWHEEL_EXEC_ID" --file engineering/doc/FLY-3150-real-runner-drill/progress.md …`(从仓库根跑)—— 该命令会**自行提交** progress.md(path-limited commit),不要再手动 add/commit 它;之后确认 `git status --porcelain` 为空。**所有 ledger 提交完成后**才冻结 `HANDIN1=$(git rev-parse HEAD)`。
+6. 核验(演练交付与账本分开验,Codex R1):(a) **演练实现范围** `git diff --name-status $BASE..$IMPL1`:非幂等分支恰好一行 `"$F"`(`A`/`M`);幂等分支(第 2 步跳过)必须**为空**,且 `git show $BASE:"$F"` 已逐字节等于两行;(b) **账本范围** `git diff --name-only $IMPL1..$HANDIN1` 为空或恰好一行 `engineering/doc/FLY-3150-real-runner-drill/progress.md`,且 `git log --format=%P $IMPL1..$HANDIN1` 每个提交只有一个父(无合并);任何其他路径 → 停,不交付;(c) `git show $HANDIN1:"$F"` = 上述两行;(d) §1 的 PR 级断言对 `$HANDIN1` 通过(对 `origin/main` 的断言在任何情况下都要求目标文件恰好一项)。
 7. `git push -u origin HEAD`(普通快进推送)。PR:先查 `gh pr list --head project-slot-4-FLY-3150 --state open --json number --jq '.[0].number'`;有 OPEN PR(本轮重试或再派发,当前为 #524)就复用,没有才 `gh pr create --base main --head project-slot-4-FLY-3150 --title 'FLY-3150 QA-SBX FLY-2167 real-runner drill (run f461016e)' --body-file "$TMPDIR/fly3150-pr-body.md"`(正文写明 Linear issue 链接与本轮 run id);复用已有 PR 时用 `gh pr edit <n> --body-file "$TMPDIR/fly3150-pr-body.md"` 把正文改写为本轮 run id 与本轮核验结果(不改标题,上一轮的 HANDIN1 / 评审 / CI 记录不得留作本轮证据)。确认远端分支头 / PR 头 / CI 都在 `$HANDIN1`,交付;**交付摘要写明 `run=f461016e HANDIN1=<完整 SHA>`**(返工唯一 PREV 来源)。
 
 **交付 #2(提示词首行 `QA verdict to fix: claim <id> ...`)**
 1. 用 `^QA verdict to fix: claim (\S+)` 取 `ID`,原样复制;取不到 → 失败通道,不猜。
-2. `PREV` = 本轮交付 #1 摘要里的 `HANDIN1`(`run=f461016e`);确认它是 HEAD 的祖先,且 `git show $PREV:"$F"` 第 2 行是 `AWAITING-QA`。取不到 → 失败通道,不退回 `git log` 猜。
+2. `PREV` = 本轮交付 #1 摘要里的 `HANDIN1`(`run=f461016e`);确认它是 HEAD 的祖先,且 `git show $PREV:"$F"` 第 2 行是 `AWAITING-QA`。取不到 → 失败通道,不退回 `git log` 猜。 然后 `BASE2=$(git rev-parse HEAD)`,核验**交付间账本范围** `git diff --name-only $PREV..$BASE2` 为空或恰好一行 progress.md(实现节点开工时的 ledger 提交;无合并时)。
 3. 只改第 2 行为 `FIXED-FOR-CLAIM $ID`(若重试且 `git show HEAD:"$F"` 的 blob 已逐字节等于该内容,跳过第 4 步的目标文件提交;只看工作树或 `git diff` 不算);自检 `printf 'QA-SBX FLY-2167 drill\nFIXED-FOR-CLAIM %s\n' "$ID" | cmp - "$F"` 零输出。
 4. `git add "$F"` 并提交 `docs(qa-sbx): FLY-3150 drill fix for claim $ID`。
-5. 写 ledger(`progress` 命令自行提交 progress.md),确认工作树干净后才冻结 `HANDIN2=$(git rev-parse HEAD)`。
-6. 核验:`$PREV..$HANDIN2` 只含 `M "$F"` + `M` progress.md;`$F` 的 patch 恰为 `-AWAITING-QA` / `+FIXED-FOR-CLAIM $ID`;§1 断言仍通过。
+5. 先冻结 `IMPL2=$(git rev-parse HEAD)`(目标文件提交之后、ledger 之前;重试幂等时 `IMPL2=BASE2`)。再写 ledger(`progress` 命令自行提交 progress.md),确认工作树干净后才冻结 `HANDIN2=$(git rev-parse HEAD)`。
+6. 核验(分开验):(a) **演练实现范围** `git diff --name-status $BASE2..$IMPL2` 恰好一行 `M "$F"`(重试幂等且 `git show $BASE2:"$F"` 已逐字节正确时为空);(b) `git diff $PREV..$HANDIN2 -- "$F"` 的 patch 恰为 `-AWAITING-QA` / `+FIXED-FOR-CLAIM $ID`;(c) **账本范围** `git diff --name-only $IMPL2..$HANDIN2` 为空或恰好 progress.md、无合并提交;(d) `git show $HANDIN2:"$F"` 逐字节等于两行;(e) §1 断言仍通过。
 7. 推送并确认远端 / PR / CI 都在 `$HANDIN2`,交付。
 
 核验后若又产生提交(含 ledger),重新固定 SHA、核验、推送。commit message 与 PR 标题不得含 `[skip ci]` / `[ci skip]` / `[no ci]` / `[skip actions]` / `[actions skip]` / `skip-checks:`。不 force-push;`origin/main` 前进时按 §3.1 处理。ledger 的 `--handoff` 只写**写入时已确定**的信息(本轮 `run=f461016e`、阶段、claim id、返工时已知的 PREV/HANDIN1),**不写本次最终交付头**(ledger 自提交会改变 HEAD,无法记录自身 SHA);最终 `HANDIN1`/`HANDIN2` 只写在不产生 Git 提交的交付摘要里。开出 PR 后用 `--pointer pr=<本轮 PR URL>` 覆盖账本里的 `none` 占位(本轮账本 `pr` 指针已是 PR #524,复用时保持)。
@@ -51,7 +51,7 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 
 - **何时同步**:只在 PR 显示冲突(`gh pr view --json mergeable` 为 `CONFLICTING`)或节点契约明确要求时才同步,不主动同步。同步 = `git fetch origin main && git merge origin/main`(不 rebase、不 force-push)。
 - **冲突处理**:冲突只允许落在 `engineering/doc/FLY-3150-real-runner-drill/` 内 —— 逐个 `git checkout --ours -- <path>` 保留本轮 slot-4 版本,并在 exploration.md 追加一个新小节记录对方 slot 的运行来源(不静默丢弃);冲突出现在该文件夹之外 → `git merge --abort`,走失败通道,不自行取舍。
-- **判定**:交付区间(交付 #1 为 `$BASE..$HANDIN1`,交付 #2 为 `$PREV..$HANDIN2`)里 `git rev-list --merges <区间>` 非空 → 走本分支的核验,**替代**第 1 次交付第 6(a) 步与第 2 次交付第 6 步的全树双点范围限制(合并会带进 main 的路径和新增的 exploration 记录,旧限制必然不过);为空 → 仍用原限制。
+- **判定**:交付区间(交付 #1 为 `$BASE..$HANDIN1`,交付 #2 为 `$PREV..$HANDIN2`)里 `git rev-list --merges <区间>` 非空 → 走本分支的核验,**替代**第 1 次交付第 6(a)(b) 步、第 2 次交付第 2 步的交付间账本范围与第 6(a)(c) 步的范围限制(合并会带进 main 的路径和新增的 exploration 记录,旧限制必然不过);为空 → 仍用原限制。
 - **同步后的核验**(仍要求工作树干净,`HANDIN` 在所有提交含 ledger 之后才冻结):
   - 交付 #1:(a) §1 的 PR 级范围断言对 `$HANDIN1` 通过(排除流程文档文件夹后恰好只有 `"$F"`);(b) `git show $HANDIN1:"$F"` 逐字节等于 `QA-SBX FLY-2167 drill` / `AWAITING-QA` 两行。
   - 交付 #2:`PREV` 不变,仍是本轮交付 #1 摘要里的真实 `HANDIN1`(照旧做祖先检查,不得因同步改指向合并后的头);(a) `git diff $PREV..$HANDIN2 -- "$F"` 的 patch 恰为 `-AWAITING-QA` / `+FIXED-FOR-CLAIM $ID`;(b) §1 的 PR 级范围断言对 `$HANDIN2` 通过;(c) `git show $HANDIN2:"$F"` 逐字节等于 `QA-SBX FLY-2167 drill` / `FIXED-FOR-CLAIM $ID` 两行。
