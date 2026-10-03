@@ -1,0 +1,15 @@
+stateDiagram-v2
+    direction LR
+    [*] --> Stale: 本轮起点 (main 上残留)
+    Stale: 第 2 行 = FIXED-FOR-CLAIM 1
+    Stale --> Awaiting: 实现节点第 1 次交付 (覆写)
+    Awaiting: 第 2 行 = AWAITING-QA
+    Awaiting --> Awaiting: QA 第 1 轮 fixed-for-claim 必 fail
+    Awaiting --> Fixed: 实现节点第 2 次交付 (写入本轮 claim id)
+    Fixed: 第 2 行 = FIXED-FOR-CLAIM id
+    Fixed --> [*]: QA 第 2 轮逐字匹配 pass
+    note right of Stale
+        文件 qa-sbx/fly2167/project-slot-5-FLY-3150.md
+        第 1 行永远是 QA-SBX FLY-2167 drill
+        文件恰两行，其他文件不碰
+    end note
