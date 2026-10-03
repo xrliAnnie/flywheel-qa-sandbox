@@ -1,42 +1,44 @@
 # FLY-3150 真 Runner 通用演练(529 房间) — 实施计划
 
 Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-03(本次派发 run `60b69b26`;沿用 56c48d76 的已评审结构)
+日期: 2026-10-03(本次派发 run `9d02bd8f`,slot-5;沿用前几轮已评审结构)
 基于: exploration.md(README 规定"一份短 plan 足够,不需要 research 文档")
 
 ## 1. 范围
 
 - 唯一权威:`origin/main:qa-sbx/fly2167/README.md`。每个节点开工先重读。
-- 演练内容只有一个文件:`qa-sbx/fly2167/project-slot-1-FLY-3150.md`(= `git branch --show-current` + `.md`)。
-- 不碰:README、任何代码、Linear issue、529 房间部署/拆除。
-- **独立要求(不来自 README)**:派发提示词的节点契约(DOC-FLOW / 进度账本 / 设计 HTML)另外要求 `engineering/doc/FLY-3150-real-runner-drill/` 下的设计文档与 `progress.md`。它们不是演练内容,不受 README 授权,也不进 QA 三条 criterion。
+- 演练内容只有一个文件:`qa-sbx/fly2167/project-slot-5-FLY-3150.md`(= `git branch --show-current` + `.md`;节点开工时重新算,不要硬编码)。
+- 不碰:README、任何代码、Linear issue、529 房间部署/拆除,其他 slot 的目标文件。
+- **流程文档例外(不来自 README,明示边界)**:派发提示词的节点契约(DOC-FLOW / 进度账本 / 设计 HTML)强制要求把 `engineering/doc/FLY-3150-real-runner-drill/` 下的设计文档与 `progress.md` 提交并推送到**同一共享分支**;本分支已有两个这样的提交(`5d1c1411d` progress、`28a0cbe3c` exploration/plan)。它们是 Runner 协议的记账产物,不是演练内容,不进 QA 三条 criterion。为了不让它们稀释 README 的"只碰一个 md":
+  - **演练内容范围断言**(PR 级,两次交付都跑):`git diff --name-only origin/main...HEAD -- . ':(exclude)engineering/doc/FLY-3150-real-runner-drill'` 的输出**恰好**一行 `qa-sbx/fly2167/<branch>.md`。任何其他路径(含 README、其他 slot 目标文件、代码)出现 → 停,不交付。
+  - 流程文档只允许落在这个文件夹;历史 PR #435/#438 也是同样形态并已合入。
+  - 无法把流程文档拆到另一分支:节点契约要求设计产物随本分支推送,另开分支会违反 TURN/共享 worktree 约定。
 
-## 2. 本轮起点
+## 2. 本轮起点(派发时快照,仅供参考)
 
-目标文件**已存在**,内容 `QA-SBX FLY-2167 drill` / `FIXED-FOR-CLAIM 1`(上一运行 run `56c48d76` 的交付 #2 残留)。分支头 `06042b238` 已含 `origin/main`(`9bf1be460`),无需合并;远端分支与 PR #490(OPEN)仍在,本轮推送直接更新 PR #490。判定第几次交付只看**本轮**提示词有没有 "QA fix context"。
+派发时分支头 `9bf1be460` = `origin/main`;远端分支不存在,无 OPEN PR。设计节点之后会再加流程文档提交(progress / exploration / plan / design HTML),所以**实现节点开工时的 HEAD 一定领先 `origin/main`**:实现节点必须自己重算 `BASE`,并按 §1 的 PR 级断言对 `origin/main` 核验,不要假定分支头 = main。目标文件**已存在**,内容 `QA-SBX FLY-2167 drill` / `FIXED-FOR-CLAIM 4`(上一轮残留)。判定第几次交付只看**本轮**提示词有没有 "QA fix context"。
 
 ## 3. 实现节点
 
-**单文件纪律(Codex R1)**:README 限定只改目标文件。节点协议的 progress ledger 会单独提交 `progress.md`,所以**每次交付前先写 ledger,再固定 BASE**;BASE 之后到交付头只允许一个提交,且只改目标文件。交付推送后到 `complete` 之间不再写 ledger(否则 HEAD ≠ PR 头)。
+记 `F=qa-sbx/fly2167/$(git branch --show-current).md`。
 
 **交付 #1(无 "QA fix context")**
-1. 先写 ledger(`--cursor` 到"即将交付 #1",`--next "run=60b69b26 HANDIN1 pending"`),然后 `BASE=$(git rev-parse HEAD)`。
-2. 覆盖写两行:`printf 'QA-SBX FLY-2167 drill\nAWAITING-QA\n' > <目标文件>`。必须重置 —— 留着 `FIXED-FOR-CLAIM 1` 时,若本轮 claim id 恰好也是 1,重验会假通过。
-3. 自检:`printf 'QA-SBX FLY-2167 drill\nAWAITING-QA\n' | cmp - <目标文件>` 零输出。
-4. `git add <目标文件>` 后提交 `docs(qa-sbx): FLY-3150 drill hand-in`,`HANDIN1=$(git rev-parse HEAD)`。
-5. 核验:`git rev-list --count $BASE..$HANDIN1` = 1;`git diff --name-status $BASE..$HANDIN1` **只有** `M <目标文件>`;patch 恰为 `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`。
-6. 推送 `$HANDIN1`,确认远端分支头 / PR 头 / CI 都在该 SHA,交付;**交付摘要必须写明 `run=60b69b26 HANDIN1=<完整 SHA>`**(这是跨节点传给返工的唯一 PREV 来源 —— progress.md 里现存的指针与分支上同 message 的旧 hand-in/fix 提交(run `56c48d76`、`251c390a` 及更早,部分已合入 main),都不能用)。
+1. `BASE=$(git rev-parse HEAD)`。
+2. 覆盖写两行:`printf 'QA-SBX FLY-2167 drill\nAWAITING-QA\n' > "$F"`。必须重置 —— 留着 `FIXED-FOR-CLAIM 4` 时,若本轮 claim id 恰好也是 4,重验会假通过。
+3. 自检:`printf 'QA-SBX FLY-2167 drill\nAWAITING-QA\n' | cmp - "$F"` 零输出。
+4. 提交 `docs(qa-sbx): FLY-3150 drill hand-in`,再写 ledger(`--next` 写 `HANDIN1 pending`),`HANDIN1=$(git rev-parse HEAD)`。
+5. 核验:(a) `git diff --name-status $BASE..$HANDIN1` 只含 `M "$F"` + `M engineering/doc/FLY-3150-real-runner-drill/progress.md`;(b) `$F` 的 patch 恰为 `-FIXED-FOR-CLAIM 4` / `+AWAITING-QA`;(c) §1 的 PR 级演练内容范围断言通过。
+6. `git push -u origin HEAD`(新远端分支,普通快进推送),开新 PR(标题如 `FLY-3150 QA-SBX FLY-2167 real-runner drill (run 9d02bd8f)`),确认远端分支头 / PR 头 / CI 都在 `$HANDIN1`,交付;**交付摘要必须写明 `run=9d02bd8f HANDIN1=<完整 SHA>`**(跨节点传给返工的唯一 PREV 来源)。
 
 **交付 #2(提示词首行 `QA verdict to fix: claim <id> ...`)**
 1. 用 `^QA verdict to fix: claim (\S+)` 取 `ID`,原样复制;取不到 → 走失败通道,不猜。
-2. `PREV` = 本轮交付 #1 摘要里的 `HANDIN1`(返工提示词 / 交付记录中 `run=60b69b26` 那条);确认它是 HEAD 的祖先,且 `git show $PREV:<目标文件>` 第 2 行是 `AWAITING-QA`。取不到本轮 HANDIN1 → 走失败通道,不得退回 `git log` 猜或用 progress 里的旧 PREV。
-3. 先写 ledger(`--next "run=60b69b26 claim=$ID HANDIN2 pending"`),然后 `BASE2=$(git rev-parse HEAD)`。
-4. 只改第 2 行为 `FIXED-FOR-CLAIM $ID`;自检 `printf 'QA-SBX FLY-2167 drill\nFIXED-FOR-CLAIM %s\n' "$ID" | cmp - <目标文件>` 零输出。
-5. `git add <目标文件>` 后提交 `docs(qa-sbx): FLY-3150 drill fix for claim $ID`,`HANDIN2=$(git rev-parse HEAD)`。
-6. 核验:`$BASE2..$HANDIN2` 恰 1 个提交且只有 `M <目标文件>`;`git diff $PREV $HANDIN2 -- <目标文件>` 恰为 `-AWAITING-QA` / `+FIXED-FOR-CLAIM $ID`。
-7. 推送并确认远端 / PR / CI 都在 `$HANDIN2`,交付。
+2. `PREV` = 本轮交付 #1 摘要里的 `HANDIN1`(`run=9d02bd8f` 那条);确认它是 HEAD 的祖先,且 `git show $PREV:"$F"` 第 2 行是 `AWAITING-QA`。取不到 → 失败通道,不得退回 `git log` 猜或用 progress 里的旧指针。
+3. 只改第 2 行为 `FIXED-FOR-CLAIM $ID`;自检 `printf 'QA-SBX FLY-2167 drill\nFIXED-FOR-CLAIM %s\n' "$ID" | cmp - "$F"` 零输出。
+4. 提交 `docs(qa-sbx): FLY-3150 drill fix for claim $ID`,写 ledger,`HANDIN2=$(git rev-parse HEAD)`。
+5. 核验:`$PREV..$HANDIN2` 只含 `M "$F"` + `M` progress.md;patch 恰为 `-AWAITING-QA` / `+FIXED-FOR-CLAIM $ID`;§1 的 PR 级断言仍通过。
+6. 推送并确认远端 / PR / CI 都在 `$HANDIN2`,交付。
 
-核验后若意外产生任何其他提交,回到该次交付第 1 步重来(重写 ledger → 新 BASE)。commit message 与 PR 标题不得含 `[skip ci]` / `[ci skip]` / `[no ci]` / `[skip actions]` / `[actions skip]` / `skip-checks:`。
+核验后若又产生提交(含 ledger),重新固定 SHA、核验、推送。commit message 与 PR 标题不得含 `[skip ci]` / `[ci skip]` / `[no ci]` / `[skip actions]` / `[actions skip]` / `skip-checks:`。不 force-push。
 
 ## 4. QA 节点
 
@@ -58,7 +60,7 @@ sequenceDiagram
     participant Q as qa
     participant B as 驱动器
     B->>I: 派发(无 QA fix context)
-    I->>B: 交付 #1:drill / AWAITING-QA(覆盖上一轮残留)
+    I->>B: 交付 #1:drill / AWAITING-QA(覆盖残留 FIXED-FOR-CLAIM 4)
     B->>Q: 第 1 轮
     Q->>B: fixed-for-claim = fail(planted),产生 claim <id>
     B->>I: QA fix context: claim <id>
@@ -70,3 +72,9 @@ sequenceDiagram
 ## 6. 诚实边界
 
 只覆盖 README 的两行文件 + 三条验收,证明 529 房间里真 Runner 的 fail → fix → re-verify 回路能贯通 claim id;不设计任何 Flywheel 代码,不验证生产 FLY-2167 实现本身。回滚 = revert 本轮提交。
+
+## 7. 实现阶段技术同步
+
+PR #490 在本轮首轮代码评审期间合入 `origin/main`(`ab686e643`),改动了同一共享过程文档文件夹并使 PR #499 冲突。同步时保留本轮 slot-5 的已批计划与生成设计;并行 slot-1 的 run `56c48d76` / `60b69b26` 来源记录追加到 `exploration.md` §10。目标文件仍按 §3 保持 `AWAITING-QA`,同步不改变演练语义。同步后的新头必须重新走完整代码评审、exact-head CI 与 handoff。
+
+同步后重新冻结 `HANDIN1` 为包含该技术合并的最终交付头(不得再沿用评审前的 `7981c1cc4`)。本次交付以两条证据替代 §3 第 5(a) 的旧 `$BASE..$HANDIN1` 范围断言:(1) PR 级 `git diff --name-only origin/main...HANDIN1 -- . ':(exclude)engineering/doc/FLY-3150-real-runner-drill'` 恰好只有 `qa-sbx/fly2167/project-slot-5-FLY-3150.md`;(2) 相对 `origin/main`,目标文件 patch 恰为 `-FIXED-FOR-CLAIM 4` / `+AWAITING-QA`。返工节点必须从本轮完成摘要读取这个同步后的 `HANDIN1`。
