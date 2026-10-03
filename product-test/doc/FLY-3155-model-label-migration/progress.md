@@ -1,13 +1,13 @@
 ---
 issue: FLY-3155
 phase: design
-phaseCursor: 1/5
-updated: 2026-10-03T22:24:47.646Z
-nextStep: discover exact literals, dependency tests, and owning package commands
+phaseCursor: 2/5
+updated: 2026-10-03T22:25:39.098Z
+nextStep: "RED: update exact assertions and run a dependency-backed concrete test file"
 chunks: []
 pointers: {}
 ---
 
 # FLY-3155 progress
-**phase**: design (1/5)
-**next**: discover exact literals, dependency tests, and owning package commands
+**phase**: design (2/5)
+**next**: RED: update exact assertions and run a dependency-backed concrete test file
