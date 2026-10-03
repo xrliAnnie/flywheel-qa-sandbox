@@ -1,12 +1,13 @@
 stateDiagram-v2
     direction LR
-    [*] --> 不存在
-    不存在 --> AWAITING_QA : 交付 #1 创建文件
+    [*] --> 上一轮残留
+    上一轮残留 --> AWAITING_QA : 交付 #1 覆盖重置
     AWAITING_QA --> FIXED_FOR_CLAIM : 返工只改第 2 行
     FIXED_FOR_CLAIM --> [*] : 重验 pass
-    note right of AWAITING_QA
-        第 1 行恒为 QA-SBX FLY-2167 drill
-        第 2 行 = AWAITING-QA
+    note right of 上一轮残留
+        第 2 行 = FIXED-FOR-CLAIM 1
+        不重置的话，本轮 id 若也是 1
+        重验会假通过
     end note
     note right of FIXED_FOR_CLAIM
         第 2 行 = FIXED-FOR-CLAIM <id>

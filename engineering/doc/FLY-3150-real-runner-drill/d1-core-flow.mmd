@@ -1,17 +1,15 @@
 sequenceDiagram
     autonumber
-    participant D as 设计节点
     participant I as 实现节点
     participant Q as QA 节点
     participant B as 驱动器(Bridge)
-    D->>B: 短 plan + 本设计页
     B->>I: 派发(无 QA fix context)
-    I->>I: 写两行:drill / AWAITING-QA
-    I->>B: 交付 #1(HANDIN1,CI 在该 SHA 跑)
+    I->>I: 覆盖写两行:drill / AWAITING-QA(清掉上一轮的 FIXED-FOR-CLAIM 1)
+    I->>B: 交付 #1(摘要带 run=047a5977 HANDIN1=SHA)
     B->>Q: QA 第 1 轮(无 QA re-verification context)
-    Q->>B: fixed-for-claim = fail(计划内失败,附 claim id)
+    Q->>B: fixed-for-claim = fail(计划内失败,产生 claim id)
     B->>I: 返工派发:QA verdict to fix: claim <id>
-    I->>I: 第 2 行改为 FIXED-FOR-CLAIM <id>
+    I->>I: PREV = 本轮 HANDIN1,第 2 行改为 FIXED-FOR-CLAIM <id>
     I->>B: 交付 #2(HANDIN2)
     B->>Q: 重验(Previous QA verdict: claim <id>)
     Q->>B: fixed-for-claim = pass(逐字匹配)
