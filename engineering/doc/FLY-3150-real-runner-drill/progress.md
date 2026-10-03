@@ -2,7 +2,7 @@
 issue: FLY-3150
 phase: implement
 phaseCursor: 4/6
-updated: 2026-10-03T12:57:10.728Z
+updated: 2026-10-03T12:57:38.846Z
 nextStep: "run=a6eb9810 claim=1
   HANDIN2=187d68521ecede72d636c34ba753947cf99300a1; verify scope, push PR #517,
   code review, exact-head CI"
