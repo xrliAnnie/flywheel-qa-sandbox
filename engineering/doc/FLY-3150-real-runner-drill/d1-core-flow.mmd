@@ -5,7 +5,7 @@ sequenceDiagram
     participant B as 驱动器(Bridge)
     B->>I: 派发(无 QA fix context)
     I->>I: 覆盖写两行:drill / AWAITING-QA(清掉上一轮的 FIXED-FOR-CLAIM 1)
-    I->>B: 交付 #1(摘要带 run=047a5977 HANDIN1=SHA)
+    I->>B: 交付 #1(摘要带 run=251c390a HANDIN1=SHA)
     B->>Q: QA 第 1 轮(无 QA re-verification context)
     Q->>B: fixed-for-claim = fail(计划内失败,产生 claim id)
     B->>I: 返工派发:QA verdict to fix: claim <id>
