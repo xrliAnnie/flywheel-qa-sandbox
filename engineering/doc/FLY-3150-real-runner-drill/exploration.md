@@ -1,7 +1,7 @@
 # FLY-3150 真 Runner 通用演练(529 房间) — 探索
 
 Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-03(2026-10-01 初版;§7–§10 为历史派发;§11 为本次同步记录)
+日期: 2026-10-03(2026-10-01 初版;§7/§8/§10 为历史,含并行 slot-1;§9 为本轮派发;§11 为本轮同步)
 基于: 无
 
 ## 1. 任务来源与唯一权威

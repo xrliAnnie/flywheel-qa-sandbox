@@ -76,3 +76,5 @@ sequenceDiagram
 ## 7. 实现阶段技术同步
 
 PR #490 在本轮首轮代码评审期间合入 `origin/main`(`ab686e643`),改动了同一共享过程文档文件夹并使 PR #499 冲突。同步时保留本轮 slot-5 的已批计划与生成设计;并行 slot-1 的 run `56c48d76` / `60b69b26` 来源记录追加到 `exploration.md` §10。目标文件仍按 §3 保持 `AWAITING-QA`,同步不改变演练语义。同步后的新头必须重新走完整代码评审、exact-head CI 与 handoff。
+
+同步后重新冻结 `HANDIN1` 为包含该技术合并的最终交付头(不得再沿用评审前的 `7981c1cc4`)。本次交付以两条证据替代 §3 第 5(a) 的旧 `$BASE..$HANDIN1` 范围断言:(1) PR 级 `git diff --name-only origin/main...HANDIN1 -- . ':(exclude)engineering/doc/FLY-3150-real-runner-drill'` 恰好只有 `qa-sbx/fly2167/project-slot-5-FLY-3150.md`;(2) 相对 `origin/main`,目标文件 patch 恰为 `-FIXED-FOR-CLAIM 4` / `+AWAITING-QA`。返工节点必须从本轮完成摘要读取这个同步后的 `HANDIN1`。
