@@ -23,19 +23,21 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 
 **交付 #1(无 "QA fix context")**
 1. `BASE=$(git rev-parse HEAD)`。
-2. 覆盖写两行:`printf 'QA-SBX FLY-2167 drill\nAWAITING-QA\n' > "$F"`(覆盖写 = 重试幂等)。
-3. 自检:`printf 'QA-SBX FLY-2167 drill\nAWAITING-QA\n' | cmp - "$F"` 零输出。
-4. 提交 `docs(qa-sbx): FLY-3150 drill hand-in`,再写 ledger,`HANDIN1=$(git rev-parse HEAD)`。
-5. 核验:(a) `git diff --name-status $BASE..$HANDIN1` 只含 `"$F"`(`A`,重试时可为 `M`)+ `M` progress.md;(b) `$F` 内容 = 上述两行;(c) §1 的 PR 级断言通过。
-6. `git push -u origin HEAD`(普通快进推送),开新 PR(标题如 `FLY-3150 QA-SBX FLY-2167 real-runner drill (run 0750ae00)`),确认远端分支头 / PR 头 / CI 都在 `$HANDIN1`,交付;**交付摘要写明 `run=0750ae00 HANDIN1=<完整 SHA>`**(返工唯一 PREV 来源)。
+2. 先按内容判断:若 `printf 'QA-SBX FLY-2167 drill\nAWAITING-QA\n' | cmp - "$F"` 已零输出且 `git diff --quiet HEAD -- "$F"`(重试且已提交)→ 跳过第 3–4 步的目标文件提交,直接到第 5 步;否则覆盖写两行:`printf 'QA-SBX FLY-2167 drill\nAWAITING-QA\n' > "$F"`。
+3. 自检:同上 `cmp` 零输出。
+4. `git add "$F"` 并提交 `docs(qa-sbx): FLY-3150 drill hand-in`。
+5. 写 ledger:`flywheel-comm progress --exec-id … --file engineering/doc/FLY-3150-real-runner-drill/progress.md …` —— 该命令会**自行提交** progress.md(path-limited commit),不要再手动 add/commit 它;之后确认 `git status --porcelain` 为空。**所有 ledger 提交完成后**才冻结 `HANDIN1=$(git rev-parse HEAD)`。
+6. 核验:(a) `git diff --name-status $BASE..$HANDIN1` 只含 `"$F"`(`A`/`M`)+ `M` progress.md;仅当 `git show $BASE:"$F"` 已是精确两行时允许目标文件不在该范围内;(b) `git show $HANDIN1:"$F"` = 上述两行;(c) §1 的 PR 级断言通过(这个对 `origin/main` 的断言在任何情况下都要求目标文件恰好一项)。
+7. `git push -u origin HEAD`(普通快进推送),开新 PR(或复用本轮已开的 PR;标题如 `FLY-3150 QA-SBX FLY-2167 real-runner drill (run 0750ae00)`),确认远端分支头 / PR 头 / CI 都在 `$HANDIN1`,交付;**交付摘要写明 `run=0750ae00 HANDIN1=<完整 SHA>`**(返工唯一 PREV 来源)。
 
 **交付 #2(提示词首行 `QA verdict to fix: claim <id> ...`)**
 1. 用 `^QA verdict to fix: claim (\S+)` 取 `ID`,原样复制;取不到 → 失败通道,不猜。
 2. `PREV` = 本轮交付 #1 摘要里的 `HANDIN1`(`run=0750ae00`);确认它是 HEAD 的祖先,且 `git show $PREV:"$F"` 第 2 行是 `AWAITING-QA`。取不到 → 失败通道,不退回 `git log` 猜。
-3. 只改第 2 行为 `FIXED-FOR-CLAIM $ID`;自检 `printf 'QA-SBX FLY-2167 drill\nFIXED-FOR-CLAIM %s\n' "$ID" | cmp - "$F"` 零输出。
-4. 提交 `docs(qa-sbx): FLY-3150 drill fix for claim $ID`,写 ledger,`HANDIN2=$(git rev-parse HEAD)`。
-5. 核验:`$PREV..$HANDIN2` 只含 `M "$F"` + `M` progress.md;patch 恰为 `-AWAITING-QA` / `+FIXED-FOR-CLAIM $ID`;§1 断言仍通过。
-6. 推送并确认远端 / PR / CI 都在 `$HANDIN2`,交付。
+3. 只改第 2 行为 `FIXED-FOR-CLAIM $ID`(若重试且 HEAD 已是该内容,跳过第 4 步的目标文件提交);自检 `printf 'QA-SBX FLY-2167 drill\nFIXED-FOR-CLAIM %s\n' "$ID" | cmp - "$F"` 零输出。
+4. `git add "$F"` 并提交 `docs(qa-sbx): FLY-3150 drill fix for claim $ID`。
+5. 写 ledger(`progress` 命令自行提交 progress.md),确认工作树干净后才冻结 `HANDIN2=$(git rev-parse HEAD)`。
+6. 核验:`$PREV..$HANDIN2` 只含 `M "$F"` + `M` progress.md;`$F` 的 patch 恰为 `-AWAITING-QA` / `+FIXED-FOR-CLAIM $ID`;§1 断言仍通过。
+7. 推送并确认远端 / PR / CI 都在 `$HANDIN2`,交付。
 
 核验后若又产生提交(含 ledger),重新固定 SHA、核验、推送。commit message 与 PR 标题不得含 `[skip ci]` / `[ci skip]` / `[no ci]` / `[skip actions]` / `[actions skip]` / `skip-checks:`。不 force-push。若 `origin/main` 前进导致冲突,技术同步合并(保留本轮 slot-6 文档),同步后重新冻结交付头。
 
