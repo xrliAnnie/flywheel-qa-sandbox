@@ -1,19 +1,20 @@
 ---
 issue: FLY-3150
 phase: implement
-phaseCursor: 2/2
-updated: 2026-10-03T19:55:03.563Z
-nextStep: exact-head CI then complete
+phaseCursor: 2/4
+updated: 2026-10-03T22:23:14.724Z
+nextStep: Push HANDIN2, exact-head CI, complete
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
   exploration: engineering/doc/FLY-3150-real-runner-drill/exploration.md
-  pr: https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/529
-handoff: "run=e1a786ce slot-6 hand-in #1 (AWAITING-QA) on PR #529; awaiting QA round 1."
+  pr: https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/524
+handoff: "run=f461016e hand-in #2 for QA claim 1;
+  PREV=HANDIN1=b515d5700bcbca858b289972e0a6f5a6a89fbaa3"
 ---
 
 # FLY-3150 progress
-**phase**: implement (2/2)
-**next**: exact-head CI then complete
+**phase**: implement (2/4)
+**next**: Push HANDIN2, exact-head CI, complete
 
-**handoff**: run=e1a786ce slot-6 hand-in #1 (AWAITING-QA) on PR #529; awaiting QA round 1.
+**handoff**: run=f461016e hand-in #2 for QA claim 1; PREV=HANDIN1=b515d5700bcbca858b289972e0a6f5a6a89fbaa3
