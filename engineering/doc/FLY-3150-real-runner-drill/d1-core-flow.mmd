@@ -2,10 +2,10 @@ sequenceDiagram
     participant D as 驱动器
     participant I as 实现节点
     participant Q as QA 节点
-    Note over I: 起点:slot-2 演练文件还不存在
+    Note over I: 起点:slot-3 演练文件还不存在
     D->>I: 派发(无 QA fix context)
     I->>I: 新建文件,第2行 = AWAITING-QA
-    I->>D: 交付 #35;1(推新分支 + 开新 PR,摘要写 HANDIN1)
+    I->>D: 交付 #35;1(推分支 + 开新 PR,摘要写 HANDIN1)
     D->>Q: 第 1 轮
     Q->>D: fixed-for-claim = fail(故意),产生 claim id
     D->>I: QA fix context: claim id
