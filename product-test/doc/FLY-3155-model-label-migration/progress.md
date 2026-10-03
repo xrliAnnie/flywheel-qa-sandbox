@@ -1,14 +1,13 @@
 ---
 issue: FLY-3155
 phase: implement
-phaseCursor: 3/5
-updated: 2026-10-03T22:27:29.628Z
-nextStep: discover affected tests from changed paths, verify literals, then run
-  each retained concrete test
+phaseCursor: 4/5
+updated: 2026-10-03T22:31:32.944Z
+nextStep: push exact head and request Bridge code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-3155 progress
-**phase**: implement (3/5)
-**next**: discover affected tests from changed paths, verify literals, then run each retained concrete test
+**phase**: implement (4/5)
+**next**: push exact head and request Bridge code review
