@@ -181,6 +181,6 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 
 与 §12(slot-6 首轮)同形:文件不存在,所以没有残留 `FIXED-FOR-CLAIM <n>` 被误判的风险;交付 #1 仍按 HEAD blob 字节比较 + 覆盖写,保证实现节点重试幂等。
 
-**共享文档文件夹的并发风险**:本文件夹被所有 slot 共用。若实现期间别的 slot 的 PR 先合入 main,本分支的 exploration / plan / progress / design HTML 会出现 add/add 或内容冲突。处理沿用 §11 的先例:技术同步合并 `origin/main`,**保留本轮 slot-2 版本**作为本轮权威,同时把对方 slot 的运行来源写进 exploration 新小节(不静默丢弃);同步后重新冻结交付头、重跑 PR 级范围断言。
+**共享文档文件夹的并发风险**:本文件夹被所有 slot 共用。若实现期间别的 slot 的 PR 先合入 main,本分支的 exploration / plan / progress / design HTML 会出现 add/add 或内容冲突。处理沿用 §11 的先例:技术同步合并 `origin/main`,**保留本轮 slot-2 版本**作为本轮权威,同时把对方 slot 的运行来源写进 exploration 新小节(不静默丢弃);同步后的触发条件、冲突边界与替代核验见 plan §3.1(Codex R1 指出旧的全树双点范围限制在同步后必然不过)。
 
 **旧指针一律不认**:main 历史里 run `5743a2f5` / `0750ae00` / `9d02bd8f` 等的 hand-in / fix 提交、progress 里出现过的 `PREV/HANDIN1=c901c04df…`、`claim=1`,都不是本轮 BASE / PREV / claim id;交付 #2 的 PREV 只认本轮交付 #1 摘要里的 `run=c57ecd18 HANDIN1=<sha>`。
