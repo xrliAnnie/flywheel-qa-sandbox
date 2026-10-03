@@ -11,7 +11,8 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 - 不碰:README、任何代码、Linear issue、529 房间部署/拆除、其他 slot 的目标文件(`project-slot-1/2/3/5-FLY-3150.md`)。
 - **流程文档例外(不来自 README,明示边界)**:派发提示词的节点契约(DOC-FLOW / 进度账本 / 设计 HTML)强制把 `engineering/doc/FLY-3150-real-runner-drill/` 下的设计文档与 `progress.md` 提交并推送到同一共享分支。它们是 Runner 协议记账产物,不是演练内容,不进 QA 三条 criterion。为不稀释 README 的"只碰一个 md":
   - **演练内容范围断言**(PR 级,两次交付都跑):`git diff --name-only origin/main...HEAD -- . ':(exclude)engineering/doc/FLY-3150-real-runner-drill'` 的输出**恰好**一行 `qa-sbx/fly2167/<branch>.md`。出现任何其他路径 → 停,不交付。
-  - 流程文档只允许落在这个文件夹。
+  - **流程文档白名单断言**(PR 级,与上条同时跑,不靠排除来"藏"路径):`git diff --name-only origin/main...HEAD | grep -v -x -F "qa-sbx/fly2167/<branch>.md" | grep -v '^engineering/doc/FLY-3150-real-runner-drill/'` 必须为空 —— 即完整 PR diff ⊆ {目标文件} ∪ 该文件夹;任何第三类路径 → 停,不交付。
+  - **公开披露,不宣称"只碰一个文件"**:交付摘要与 QA 证据都如实列出完整 `git diff --name-only origin/main...HEAD`,注明"演练内容 = 目标文件 1 个;其余为派发契约强制的流程文档"。这是 README("只碰一个 md")与派发节点契约(DOC-FLOW / 账本 / 设计 HTML 必须提交到同一分支)的已知冲突:实现节点**不**私自删掉流程文档去迎合 README(那会违反契约、丢失可恢复账本),也**不**把它们说成符合 README;冲突按本节如实记录,由驱动器 / Lead 裁决。此安排与已合入的 run `5743a2f5` / `c57ecd18` / `1525e2e2` 一致。
 
 ## 2. 本轮起点(派发时快照,仅供参考)
 
@@ -49,7 +50,7 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 
 - **何时同步**:只在 PR 显示冲突(`gh pr view --json mergeable` 为 `CONFLICTING`)或节点契约明确要求时才同步,不主动同步。同步 = `git fetch origin main && git merge origin/main`(不 rebase、不 force-push)。
 - **冲突处理**:冲突只允许落在 `engineering/doc/FLY-3150-real-runner-drill/` 内 —— 逐个 `git checkout --ours -- <path>` 保留本轮 slot-6 版本,并在 exploration.md 追加一个新小节记录对方 slot 的运行来源(不静默丢弃);冲突出现在该文件夹之外 → `git merge --abort`,走失败通道,不自行取舍。
-- **判定**:交付区间(交付 #1 为 `$BASE..$HANDIN1`,交付 #2 为 `$PREV..$HANDIN2`)里 `git rev-list --merges <区间>` 非空 → 走本分支的核验,**替代**第 1 次交付第 6(a) 步与第 2 次交付第 6 步的全树双点范围限制(合并会带进 main 的路径和新增的 exploration 记录,旧限制必然不过);为空 → 仍用原限制。
+- **判定**:不以 merge commit 是否存在推断(`git merge origin/main` 可能快进而不产生 merge commit)。实际执行同步时,当场记录 `SYNCED=1` 与 `SYNC_MAIN=$(git rev-parse origin/main)`,写入交付摘要;本交付区间(交付 #1 为 `$BASE..$HANDIN1`,交付 #2 为 `$PREV..$HANDIN2`)内执行过同步 → 走本分支的核验,**替代**第 1 次交付第 6(a) 步与第 2 次交付第 6 步的全树双点范围限制(合并会带进 main 的路径和新增的 exploration 记录,旧限制必然不过);未执行同步 → 仍用原限制。
 - **同步后的核验**(仍要求工作树干净,`HANDIN` 在所有提交含 ledger 之后才冻结):
   - 交付 #1:(a) §1 的 PR 级范围断言对 `$HANDIN1` 通过(排除流程文档文件夹后恰好只有 `"$F"`);(b) `git show $HANDIN1:"$F"` 逐字节等于 `QA-SBX FLY-2167 drill` / `AWAITING-QA` 两行。
   - 交付 #2:`PREV` 不变,仍是本轮交付 #1 摘要里的真实 `HANDIN1`(照旧做祖先检查,不得因同步改指向合并后的头);(a) `git diff $PREV..$HANDIN2 -- "$F"` 的 patch 恰为 `-AWAITING-QA` / `+FIXED-FOR-CLAIM $ID`;(b) §1 的 PR 级范围断言对 `$HANDIN2` 通过;(c) `git show $HANDIN2:"$F"` 逐字节等于 `QA-SBX FLY-2167 drill` / `FIXED-FOR-CLAIM $ID` 两行。
@@ -75,7 +76,7 @@ sequenceDiagram
     participant Q as qa
     participant B as 驱动器
     B->>I: 派发(无 QA fix context)
-    I->>B: 交付 #1:新增 drill / AWAITING-QA
+    I->>B: 交付 #1:改写现有文件第 2 行 FIXED-FOR-CLAIM 1 → AWAITING-QA
     B->>Q: 第 1 轮
     Q->>B: fixed-for-claim = fail(planted),产生 claim <id>
     B->>I: QA fix context: claim <id>
