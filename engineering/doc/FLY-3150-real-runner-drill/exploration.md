@@ -207,3 +207,5 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 与 §12 / §14(文件不存在的首轮)同形:没有残留 `FIXED-FOR-CLAIM <n>` 可被误判;交付 #1 仍按 HEAD blob 字节比较 + 覆盖写,保证实现节点重试幂等。§14 记录的共享文档文件夹并发风险与 plan §3.1 的同步处理原样适用。
 
 **旧指针一律不认**:main 历史里 run `c57ecd18` / `5743a2f5` / `0750ae00` 等的 hand-in / fix 提交、progress 里出现过的 `PREV/HANDIN1=d9a5d6ab…`、`claim=1`、`pr` 指针 `#522`(已合入的 slot-2 PR),都不是本轮 BASE / PREV / claim id / PR;交付 #2 的 PREV 只认本轮交付 #1 摘要里的 `run=2eae0ffd HANDIN1=<sha>`。
+
+**设计评审(run `2eae0ffd`)**:Codex 1 轮(thread `01a1027c-eae4…`,gpt-6-astra/xhigh,request `19b8522c…`)。R1 对绑定 blob `0ee6b0d8…` 直接 APPROVED(P1/P2/P3 = 0/0/0)。评审者在仓库外的临时 git 夹具里分别用 zsh / bash 实跑了交付 #1、两种重试、交付 #2、两次交付中的 main 冲突同步、目录外冲突 abort,全部符合 plan §3 / §3.1;并实查 reflog 确认 §2 的快进同步无 merge 提交、远端无 slot-4 分支与 PR。评审者声明的边界:未真推送、未真开 PR、未触发 CI(由实现节点在真实交付时核验)。`await-codex-gate design` 通过;thread 已归档。founder 设计 HTML 覆盖写 `design.html` / `d1-core-flow.*` / `d2-data-model.*` 为本轮 slot-4 版本(旧 slot-2 版本在 main 历史 `d92cf9042` 中可追溯)。
