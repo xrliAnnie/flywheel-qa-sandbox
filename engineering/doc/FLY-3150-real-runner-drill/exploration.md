@@ -1,7 +1,7 @@
 # FLY-3150 真 Runner 通用演练(529 房间) — 探索
 
 Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-03(2026-10-01 初版;§7–§14 为历史 —— slot-1 / slot-5 / slot-6 / slot-2 run `0750ae00` / `5743a2f5` / `c57ecd18`;§15 为本轮派发 run `2eae0ffd`,slot-4)
+日期: 2026-10-03(2026-10-01 初版;§7–§14 为历史 —— slot-1 / slot-5 / slot-6 / slot-2 run `0750ae00` / `5743a2f5` / `c57ecd18`;§15 为 run `2eae0ffd`,slot-4;§16 为本轮再派发 run `f461016e`,slot-4)
 基于: 无
 
 ## 1. 任务来源与唯一权威
@@ -209,3 +209,23 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 **旧指针一律不认**:main 历史里 run `c57ecd18` / `5743a2f5` / `0750ae00` 等的 hand-in / fix 提交、progress 里出现过的 `PREV/HANDIN1=d9a5d6ab…`、`claim=1`、`pr` 指针 `#522`(已合入的 slot-2 PR),都不是本轮 BASE / PREV / claim id / PR;交付 #2 的 PREV 只认本轮交付 #1 摘要里的 `run=2eae0ffd HANDIN1=<sha>`。
 
 **设计评审(run `2eae0ffd`)**:Codex 1 轮(thread `01a1027c-eae4…`,gpt-6-astra/xhigh,request `19b8522c…`)。R1 对绑定 blob `0ee6b0d8…` 直接 APPROVED(P1/P2/P3 = 0/0/0)。评审者在仓库外的临时 git 夹具里分别用 zsh / bash 实跑了交付 #1、两种重试、交付 #2、两次交付中的 main 冲突同步、目录外冲突 abort,全部符合 plan §3 / §3.1;并实查 reflog 确认 §2 的快进同步无 merge 提交、远端无 slot-4 分支与 PR。评审者声明的边界:未真推送、未真开 PR、未触发 CI(由实现节点在真实交付时核验)。`await-codex-gate design` 通过;thread 已归档。founder 设计 HTML 覆盖写 `design.html` / `d1-core-flow.*` / `d2-data-model.*` 为本轮 slot-4 版本(旧 slot-2 版本在 main 历史 `d92cf9042` 中可追溯)。
+
+## 16. 本次派发审计(run `f461016e`,2026-10-03,slot-4 再派发)
+
+TURN:`yours phase=design epoch=1 run=f461016e… node=eng_design attempt=1`。分支连续性:继续 `origin/project-slot-4-FLY-3150@2f94020e3`(OPEN PR #524)。§15 是同分支上一轮 run `2eae0ffd` 的历史。
+
+| 项 | 结果 |
+|---|---|
+| 分支头(派发时) | `2f94020e3`(上一轮交付 #1 冻结头,实现 3/4,已有代码评审 APPROVED + exact-head CI) |
+| 目标文件 | `qa-sbx/fly2167/project-slot-4-FLY-3150.md` 已在分支上,HEAD blob 逐字节 = `QA-SBX FLY-2167 drill` / `AWAITING-QA`(提交 `c179f8875`);main 上没有 → PR 级 diff 中为 `A` |
+| `origin/main` | 已前进到 `15c97916b`:slot-3 run `e1a786ce`(PR #529)、run `1525e2e2`(PR #526)的 FLY-3150 文档,以及 FLY-3224–3228 夹具 README / FLY-3228 文档 |
+| 冲突 | `git merge origin/main` 在 `engineering/doc/FLY-3150-real-runner-drill/` 内 8 个文件内容冲突(d1/d2 mmd+svg、design.html、exploration、plan、progress),另 `FLY-3150-design.html` 自动合并;全部恢复为本分支 slot-4 版本(`git checkout HEAD -- <folder>`)。目录外无冲突。合并提交 `679732054` |
+| 对方来源(不静默丢弃) | main 上被覆盖的版本来自 run `e1a786ce`(slot-3,PR #529)与 run `1525e2e2`(PR #526),在 main 历史 `15c97916b` / `237429a88` 中可追溯 |
+| 同步后 PR 级断言 | 排除流程文档文件夹后恰好一行 `qa-sbx/fly2167/project-slot-4-FLY-3150.md` |
+| 其他 slot 目标文件 | `project-slot-1/2/3/5/6-FLY-3150.md` 一律不碰 |
+| README | 未变 |
+| 收件箱 | 无 Lead 指令 |
+| onboard skill | 不存在 → 直接 `stage set brainstorm` |
+| Linear | Done;不碰 |
+
+**结论**:本轮交付 #1 走 plan §3 第 2 步幂等分支(不提交目标文件),复用 PR #524 并改写正文为本轮证据;上一轮 `HANDIN1=2f94020e3`、代码评审 `8eaee298…`、CI run `37136172147` 都**不是**本轮证据。合并提交在实现节点 BASE 之前,不进入交付区间。
