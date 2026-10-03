@@ -1,13 +1,13 @@
 ---
 issue: FLY-3152
 phase: implement
-phaseCursor: 3/5
-updated: 2026-10-03T12:09:08.896Z
-nextStep: Codex code review, then milestone + PR
+phaseCursor: 5/5
+updated: 2026-10-03T12:12:36.440Z
+nextStep: milestone commit, push, open PR, exact-head CI, complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-3152 progress
-**phase**: implement (3/5)
-**next**: Codex code review, then milestone + PR
+**phase**: implement (5/5)
+**next**: milestone commit, push, open PR, exact-head CI, complete
