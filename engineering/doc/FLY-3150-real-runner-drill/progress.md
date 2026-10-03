@@ -1,34 +1,22 @@
 ---
 issue: FLY-3150
-phase: implement
-phaseCursor: 4/4
-updated: 2026-10-03T15:22:43.988Z
-nextStep: "Attempt 2 effective code review APPROVED; only exact-head CI pending
-  advisory. Final ledger commit: push, freeze HEAD (HANDIN2 only in completion
-  report), ci-full ensure PR 522, needs_review then phase park. No further
-  commits during CI. Await independent QA re-verification of FIXED-FOR-CLAIM 1."
+phase: design
+phaseCursor: 1/4
+updated: 2026-10-03T15:57:05.300Z
+nextStep: Write exploration §15 + plan.md for slot-4 run 2eae0ffd, then Codex
+  design review
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
   exploration: engineering/doc/FLY-3150-real-runner-drill/exploration.md
-  pr: https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/522
-handoff: "run=c57ecd18 attempt=2; claim=1;
-  PREV/HANDIN1=d9a5d6abd4711547ce857de4099661b54d56015a. Fix commit fc9919fe0
-  changes only target line 2: AWAITING-QA -> FIXED-FOR-CLAIM 1. Red before edit
-  and green byte checks after edit verified; first line and two-line shape
-  preserved. Adjacent assertions: repeat hand-in detects already-committed blob
-  (skip empty target commit); strict comparison rejects unfixed, wrong claim,
-  stale claim, leading zero, trailing whitespace, extra line.
-  Queued/started/dead/superseded/concurrent runtime paths N/A: docs only, no
-  code changes or new test files. Literal/path discovery has no fixture tests.
-  Generic progress.md test exclusions and reasons remain in PREV ledger. Local
-  pnpm lint remains red solely from ignored design JSON receipts;
-  unchanged-source warnings. No TS or builds applicable. README prohibits room
-  deployment; retain docs-only e2e exemption."
+  pr: none
+handoff: "run=2eae0ffd slot-4 design node attempt=1. Old pointers (run c57ecd18
+  / PR #522 / HANDIN1 d9a5d6ab / claim=1) are NOT this run's authority. Target
+  qa-sbx/fly2167/project-slot-4-FLY-3150.md does not exist yet."
 ---
 
 # FLY-3150 progress
-**phase**: implement (4/4)
-**next**: Attempt 2 effective code review APPROVED; only exact-head CI pending advisory. Final ledger commit: push, freeze HEAD (HANDIN2 only in completion report), ci-full ensure PR 522, needs_review then phase park. No further commits during CI. Await independent QA re-verification of FIXED-FOR-CLAIM 1.
+**phase**: design (1/4)
+**next**: Write exploration §15 + plan.md for slot-4 run 2eae0ffd, then Codex design review
 
-**handoff**: run=c57ecd18 attempt=2; claim=1; PREV/HANDIN1=d9a5d6abd4711547ce857de4099661b54d56015a. Fix commit fc9919fe0 changes only target line 2: AWAITING-QA -> FIXED-FOR-CLAIM 1. Red before edit and green byte checks after edit verified; first line and two-line shape preserved. Adjacent assertions: repeat hand-in detects already-committed blob (skip empty target commit); strict comparison rejects unfixed, wrong claim, stale claim, leading zero, trailing whitespace, extra line. Queued/started/dead/superseded/concurrent runtime paths N/A: docs only, no code changes or new test files. Literal/path discovery has no fixture tests. Generic progress.md test exclusions and reasons remain in PREV ledger. Local pnpm lint remains red solely from ignored design JSON receipts; unchanged-source warnings. No TS or builds applicable. README prohibits room deployment; retain docs-only e2e exemption.
+**handoff**: run=2eae0ffd slot-4 design node attempt=1. Old pointers (run c57ecd18 / PR #522 / HANDIN1 d9a5d6ab / claim=1) are NOT this run's authority. Target qa-sbx/fly2167/project-slot-4-FLY-3150.md does not exist yet.
