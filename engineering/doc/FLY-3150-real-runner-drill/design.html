@@ -35,7 +35,7 @@ pre.summary{white-space:pre-wrap;background:#f0f0f3;border-radius:8px;padding:12
 <main>
 <header>
   <h1>FLY-3150 真 Runner 通用演练(529 房间)— 设计</h1>
-  <div class="sub">文档类型:founder 设计页 · 日期 2026-10-02 · 本次派发 run 047a5977 · 基于 plan.md(Codex 设计评审 3 轮 APPROVED)</div>
+  <div class="sub">文档类型:founder 设计页 · 日期 2026-10-02 · 本次派发 run 251c390a · 基于 plan.md(本轮 Codex 设计评审 1 轮 APPROVED,gpt-6-luna/xhigh)</div>
 </header>
 
 <section class="card blue" data-section="summary" data-title="1. 一句话总结">
@@ -101,7 +101,7 @@ pre.summary{white-space:pre-wrap;background:#f0f0f3;border-radius:8px;padding:12
     <tr><td>改动面核验</td><td>固定基准 SHA,提交后再比提交区间</td><td>比 origin/main..HEAD —— 区间里必然含设计文档,断言永远不成立;提交前比区间 —— 看不到未提交的修复</td></tr>
     <tr><td>CI</td><td>平实提交信息,让 CI 跑</td><td>模仿仓库历史的 [skip ci] —— README 明确禁止,交付头必须有 CI</td></tr>
     <tr><td>上一轮残留的第 2 行</td><td>交付 #1 一律覆盖成 <code>AWAITING-QA</code></td><td>"文件已存在就跳过" —— 若本轮 claim id 恰好也是 1,重验会靠上一轮的残留假通过,返工回路根本没跑</td></tr>
-    <tr><td>返工的基准提交(PREV)</td><td>只认本轮交付 #1 摘要里的 <code>run=047a5977 HANDIN1=SHA</code>,取不到就停</td><td>从 git log 或 progress 账本里找 —— 分支上有上一轮同名提交,账本里也有上一轮的 PREV,都会指错</td></tr>
+    <tr><td>返工的基准提交(PREV)</td><td>只认本轮交付 #1 摘要里的 <code>run=251c390a HANDIN1=SHA</code>,取不到就停</td><td>从 git log 或 progress 账本里找 —— 分支上有上一轮同名提交,账本里也有上一轮的 PREV,都会指错</td></tr>
     <tr><td>与 main 的冲突</td><td>设计节点先做技术性合并,同名文档保留本分支版本</td><td>留给实现节点 —— PR 会一直处于冲突状态,CI 和合并都卡住</td></tr>
     <tr><td>提问</td><td>不问 Lead</td><td>房间无人类 Lead,README 已覆盖一切</td></tr>
   </tbody>
