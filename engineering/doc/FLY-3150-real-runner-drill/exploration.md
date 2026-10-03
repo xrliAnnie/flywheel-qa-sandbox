@@ -160,3 +160,5 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 **旧指针一律不认**:分支历史里 run `0750ae00` 的 `bcf73060a`(hand-in)、`daa8685d3`(fix for claim 1)以及 progress 里的 `PREV=a41e95dc0…` 与本轮无关;交付 #2 的 PREV 只认本轮交付 #1 摘要里的 `run=5743a2f5 HANDIN1=<sha>`。
 
 **PR 复用**:#509 仍 OPEN,本轮复用它(不开新 PR),把标题改为本轮 run id 便于追溯;推送是普通快进(远端头 = 本地派发头)。
+
+**设计评审(run `5743a2f5`)**:Codex 2 轮(同一 thread `01a101f1-a1cd…`,gpt-6-astra/xhigh)。R1 CHANGES_REQUESTED —— 两条 P2 全部采纳:(1) 交付 #1 第 3 步"同上 cmp"实际比较的是旧 HEAD,在正常重置路径上必然失败(上一轮已批计划里就有这个缺陷,本轮才被抓出),改为工作树 `printf … | cmp - "$F"`;(2) 我新增的"ledger `--handoff` 记本次最终 HANDIN"与"ledger 提交后才冻结 HANDIN"循环依赖,改为 ledger 只写写入时已知信息、最终 HANDIN 只进交付摘要;P3(exploration 末尾多余空行)一并修。修订后重新 `stage set design_review` 绑定新 blob(request revision 2)。R2 对绑定 blob `1affb38f…` APPROVED(P1/P2/P3 = 0/0/0);`await-codex-gate design` 通过。另:一次误操作把 `task --help` 当提示词开了无关 thread `01a101f0-ec18…`,不是评审轮次,已与评审 thread 一并归档。
