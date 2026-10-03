@@ -1,25 +1,25 @@
 ---
 issue: FLY-3150
 phase: design
-phaseCursor: 2/4
-updated: 2026-10-03T16:07:52.696Z
-nextStep: "Design review APPROVED (r1, gpt-6-astra/xhigh, thread 01a1027c).
-  Next: exploration review note + founder design.html (mmdc d1/d2), commit,
-  push, publish-report, report, complete."
+phaseCursor: 4/4
+updated: 2026-10-03T16:10:17.623Z
+nextStep: "Design complete. Implement node: follow plan.md §3 hand-in #1 (create
+  qa-sbx/fly2167/project-slot-4-FLY-3150.md = 'QA-SBX FLY-2167 drill' /
+  'AWAITING-QA'), push, open PR, report run=2eae0ffd HANDIN1=<sha>."
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
   exploration: engineering/doc/FLY-3150-real-runner-drill/exploration.md
   pr: none
-handoff: "run=2eae0ffd slot-4 design node attempt=1. Plan blob 0ee6b0d8 approved
-  r1 (request 19b8522c). Old pointers (run c57ecd18 / PR #522 / HANDIN1 d9a5d6ab
-  / claim=1) are NOT this run's authority. Target
-  qa-sbx/fly2167/project-slot-4-FLY-3150.md does not exist yet (implement node
-  creates it)."
+handoff: "run=2eae0ffd slot-4. Design APPROVED r1 (plan blob 0ee6b0d8, request
+  19b8522c, thread 01a1027c gpt-6-astra/xhigh); await-codex-gate design passed.
+  Founder HTML design.html published (report 4ed7cdb2) and reported to Lead. No
+  PR yet (pointer pr=none). Old pointers (run c57ecd18 / PR #522 / HANDIN1
+  d9a5d6ab / claim=1) are NOT this run's authority."
 ---
 
 # FLY-3150 progress
-**phase**: design (2/4)
-**next**: Design review APPROVED (r1, gpt-6-astra/xhigh, thread 01a1027c). Next: exploration review note + founder design.html (mmdc d1/d2), commit, push, publish-report, report, complete.
+**phase**: design (4/4)
+**next**: Design complete. Implement node: follow plan.md §3 hand-in #1 (create qa-sbx/fly2167/project-slot-4-FLY-3150.md = 'QA-SBX FLY-2167 drill' / 'AWAITING-QA'), push, open PR, report run=2eae0ffd HANDIN1=<sha>.
 
-**handoff**: run=2eae0ffd slot-4 design node attempt=1. Plan blob 0ee6b0d8 approved r1 (request 19b8522c). Old pointers (run c57ecd18 / PR #522 / HANDIN1 d9a5d6ab / claim=1) are NOT this run's authority. Target qa-sbx/fly2167/project-slot-4-FLY-3150.md does not exist yet (implement node creates it).
+**handoff**: run=2eae0ffd slot-4. Design APPROVED r1 (plan blob 0ee6b0d8, request 19b8522c, thread 01a1027c gpt-6-astra/xhigh); await-codex-gate design passed. Founder HTML design.html published (report 4ed7cdb2) and reported to Lead. No PR yet (pointer pr=none). Old pointers (run c57ecd18 / PR #522 / HANDIN1 d9a5d6ab / claim=1) are NOT this run's authority.
