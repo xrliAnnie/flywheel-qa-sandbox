@@ -72,3 +72,7 @@ sequenceDiagram
 ## 6. 诚实边界
 
 只覆盖 README 的两行文件 + 三条验收,证明 529 房间里真 Runner 的 fail → fix → re-verify 回路能贯通 claim id;不设计任何 Flywheel 代码,不验证生产 FLY-2167 实现本身。回滚 = revert 本轮提交。
+
+## 7. 实现阶段技术同步
+
+PR #490 在本轮首轮代码评审期间合入 `origin/main`(`ab686e643`),改动了同一共享过程文档文件夹并使 PR #499 冲突。同步时保留本轮 slot-5 的已批计划与生成设计;并行 slot-1 的 run `56c48d76` / `60b69b26` 来源记录追加到 `exploration.md` §10。目标文件仍按 §3 保持 `AWAITING-QA`,同步不改变演练语义。同步后的新头必须重新走完整代码评审、exact-head CI 与 handoff。

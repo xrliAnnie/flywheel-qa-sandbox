@@ -1,7 +1,7 @@
 # FLY-3150 真 Runner 通用演练(529 房间) — 探索
 
 Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-03(2026-10-01 初版;§7/§8 为后续派发增补;§9 为本次 run `9d02bd8f` 增补)
+日期: 2026-10-03(2026-10-01 初版;§7–§10 为历史派发;§11 为本次同步记录)
 基于: 无
 
 ## 1. 任务来源与唯一权威
@@ -101,3 +101,21 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 §7 的**陈旧 claim 行风险**原样成立,只是残留 id 变成 `4`:交付 #1 必须把第 2 行重置为 `AWAITING-QA`;否则若本轮 claim id 恰好是 4,重验会靠残留假通过。分支历史里所有同 message 的 hand-in/fix 提交与 progress.md 里的旧指针(run `251c390a` / `047a5977`)都不能当本轮 PREV。
 
 **设计评审(run `9d02bd8f`)**:Codex 3 轮(同一 thread `01a100c9…`)。R1 CHANGES_REQUESTED —— P1 hand-in/PR 混入 README 未授权的流程文档(部分采纳:流程文档受节点契约强制、必须随共享分支推送,无法拆出;改为在 plan §1 明示例外、限定到本文件夹,并加 PR 级"排除本文件夹后 diff 恰为目标文件"断言);P2 §2 把派发快照当实现起点(采纳,标为快照,实现节点重算 BASE)。R2 APPROVED(P3 信息性:plan §1 写的"两个流程提交"已过时 —— 实际以 `git log origin/main..HEAD` 为准,计数不影响任何断言;为保持已评审 blob 不变,不改 plan,在此记录)。R3 对绑定 blob `4d248f18…` 确认 APPROVED;`await-codex-gate design` 通过。
+
+## 10. 并行 slot-1 运行记录(从 PR #490 保留)
+
+`origin/main` 的 PR #490 在本轮实现期间合入,携带同一共享文档文件夹下的 slot-1 历史。为避免技术同步静默覆盖其来源事实,保留如下摘要:
+
+| run | slot-1 起点与交付 |
+|---|---|
+| `56c48d76` | 起点 `9bf1be460`;将 `project-slot-1-FLY-3150.md` 从上一轮 `FIXED-FOR-CLAIM 1` 重置为 `AWAITING-QA`,随后按 claim 1 完成返工。 |
+| `60b69b26` | 起点 `06042b238`;沿用 PR #490,再次执行同一 fail → fix 回路;该 PR 最终以 `ab686e643` 合入 main。 |
+
+这些记录只说明并行 slot-1 的历史,不改变本轮 slot-5 的目标文件、run id 或 HANDIN1 来源。
+
+## 11. 实现阶段同步审计(PR #499)
+
+- 首轮代码评审绑定头 `7981c1cc4`,结论 APPROVED,但指出 PR #490 已让 PR #499 产生六个共享过程文档冲突。
+- 技术同步合入 `origin/main` 的 `ab686e643`;slot-1 的运行来源保留在 §10,当前 slot-5 的已批计划与生成设计继续作为本轮权威。
+- `qa-sbx/fly2167/project-slot-5-FLY-3150.md` 在 main 上仍为 `FIXED-FOR-CLAIM 4`,本分支继续以 `AWAITING-QA` 覆盖,演练语义不变。
+- §9 的 `9bf1be460 = origin/main` 明确是派发时快照;同步后不得再当当前 main 头。
