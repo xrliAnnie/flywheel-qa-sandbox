@@ -1,7 +1,7 @@
 # FLY-3150 真 Runner 通用演练(529 房间) — 探索
 
 Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-02(2026-10-01 初版;§7 为本次派发增补)
+日期: 2026-10-03(2026-10-01 初版;§7/§8 为后续派发增补;§9 为本次 run `9d02bd8f` 增补)
 基于: 无
 
 ## 1. 任务来源与唯一权威
@@ -83,3 +83,19 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 | 收件箱 | 无 Lead 指令 |
 
 §7 的陈旧 claim 行风险原样成立:本轮交付 #1 仍必须把第 2 行重置为 `AWAITING-QA`;分支上 `047a5977` 的 hand-in/fix 提交与 progress 指针都不能当本轮 PREV,只认本轮交付摘要里的 `run=251c390a HANDIN1=<sha>`。
+
+## 9. 本次派发审计(run `9d02bd8f`,2026-10-03,slot-5)
+
+又一轮新运行(TURN:`yours phase=design epoch=1 run=9d02bd8f… node=eng_design attempt=1`),这次在 **slot-5** 分支上。§1–§8 的旧审计写的是 slot-1 分支,仅作历史;本节覆盖本轮事实。
+
+| 项 | 结果 |
+|---|---|
+| 分支 | `project-slot-5-FLY-3150` |
+| 分支头(派发时) | `9bf1be460` = `origin/main` 头(零差异,无需同步合并) |
+| 远端分支 / PR | 远端分支不存在;历史 PR #435、#438 均已 MERGED,本轮无 OPEN PR → 实现节点交付 #1 需推新分支并开新 PR |
+| 目标文件 | `qa-sbx/fly2167/project-slot-5-FLY-3150.md` **已存在**(随 main 进来),内容 `QA-SBX FLY-2167 drill` / `FIXED-FOR-CLAIM 4`(上一轮残留) |
+| README | 自 `7df383e6f` 起未变 |
+| 收件箱 | 无 Lead 指令 |
+| Linear | Done(Lead 裁定);不碰 |
+
+§7 的**陈旧 claim 行风险**原样成立,只是残留 id 变成 `4`:交付 #1 必须把第 2 行重置为 `AWAITING-QA`;否则若本轮 claim id 恰好是 4,重验会靠残留假通过。分支历史里所有同 message 的 hand-in/fix 提交与 progress.md 里的旧指针(run `251c390a` / `047a5977`)都不能当本轮 PREV。
