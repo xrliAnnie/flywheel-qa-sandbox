@@ -1,14 +1,18 @@
 ---
 issue: FLY-3150
 phase: implement
-phaseCursor: 4/5
-updated: 2026-10-02T04:15:05.378Z
-nextStep: commit and push FIXED-FOR-CLAIM 4, re-review exact head, run
-  exact-head CI, complete needs_review
+phaseCursor: 4/4
+updated: 2026-10-03T03:54:53.513Z
+nextStep: run=251c390a claim=1 HANDIN2 pending code review and exact-head CI;
+  target is FIXED-FOR-CLAIM 1
 chunks: []
-pointers: {}
+pointers:
+  pr: https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/420
+handoff: none; use this run's completion summary for HANDIN2
 ---
 
 # FLY-3150 progress
-**phase**: implement (4/5)
-**next**: commit and push FIXED-FOR-CLAIM 4, re-review exact head, run exact-head CI, complete needs_review
+**phase**: implement (4/4)
+**next**: run=251c390a claim=1 HANDIN2 pending code review and exact-head CI; target is FIXED-FOR-CLAIM 1
+
+**handoff**: none; use this run's completion summary for HANDIN2

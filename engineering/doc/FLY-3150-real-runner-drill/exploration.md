@@ -1,78 +1,85 @@
-# FLY-3150 真 Runner 泛化演练（529 Room，第二轮运行）— 探索
+# FLY-3150 真 Runner 通用演练(529 房间) — 探索
 
 Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-01
+日期: 2026-10-02(2026-10-01 初版;§7 为本次派发增补)
 基于: 无
 
-## 1. 这张票是什么
+## 1. 任务来源与唯一权威
 
-FLY-3150 不是功能票，而是 FLY-2167 驱动器在 529 QA Room 里跑的"真 Runner 泛化演练"。
-被测对象是 Flywheel 的 DAG 流水线本身（design → implement → qa → QA 打回 → implement 修复 → qa 再验证），
-不是任何业务代码。沙箱仓库 `xrliAnnie/flywheel-qa-sandbox` 只是载体。
+- 任务全文 = 沙盒仓库 `origin/main` 上的 `qa-sbx/fly2167/README.md`(commit `7df383e6f`)。
+- README 明确:无代码;只碰一个 markdown 文件;"一份短 plan 足够,不需要 research 文档";房间没有人类 Lead,不要问 Lead。
+- 本 issue 是 FLY-2167 演练夹具,只存在于 `xrliAnnie/flywheel-qa-sandbox` 的 drill 分支;Linear 状态按 Lead 2026-10-01 裁定保持 Done(Canceled 会让 land 以 `canceled_fresh_linear` 拒绝合并),设计/实现/QA 节点都不得改动 issue。
 
-任务的唯一权威来源是沙箱 `main` 上的 `qa-sbx/fly2167/README.md`。
-本次工作区中的 README 与 `origin/main`（`568e55e27`）逐字一致。
+## 2. 当前仓库状态审计
 
-## 2. README 对每个节点的硬规则（逐条摘录）
+| 项 | 结果 |
+|---|---|
+| 分支 | `project-slot-1-FLY-3150`(`git branch --show-current`) |
+| 与 `origin/main` 差异 | 零(分支头 = main 头 `7df383e6f`) |
+| `qa-sbx/fly2167/` 内容 | 仅 `README.md`;目标文件 `qa-sbx/fly2167/project-slot-1-FLY-3150.md` 尚不存在 |
+| TURN | `yours phase=design epoch=1`(本节点持有共享 worktree 写权) |
+| 收件箱 | 无 Lead 指令 |
+| 本机 `mmdc` | 11.12.0 可用(设计 HTML 图表本地渲染) |
 
-| 规则 | 含义 | 本设计节点如何遵守 |
+同类历史分支(`qa529-FLY-3143/3163/3170`)是 stub-runner 夹具(`doc/<ISSUE>-generalized-e2e/design.html` 11 行 + fixture md),不是真 Runner 产物,不能当模板;本次按真 Runner 的 DOC-FLOW 产出。
+
+## 3. 交付物边界(来自 README,逐条对照)
+
+**实现节点要写的文件** `qa-sbx/fly2167/project-slot-1-FLY-3150.md`,恰好两行:
+
+1. `QA-SBX FLY-2167 drill`
+2. 首次交付 `AWAITING-QA`;当提示词含 "QA fix context" 且首行为 `QA verdict to fix: claim <id> ...` 时改为 `FIXED-FOR-CLAIM <id>`(同一 id),其余不变。
+
+**QA 节点验收标准**(criterion id 固定):
+
+- `file-shape`:文件存在且第 1 行精确等于 `QA-SBX FLY-2167 drill`。
+- `fixed-for-claim`:第 1 轮(提示词无 "QA re-verification context")**必定** `fail`,evidence 为 `round 1: no previous QA claim yet`;重验轮只有第 2 行精确等于 `FIXED-FOR-CLAIM <id>`(id 来自 `Previous QA verdict: claim <id>`)才 `pass`。
+- `e2e_529_exempt`:`not_run`,`exempt_category: docs_only` + 原因;绝不部署房间。
+
+**提交纪律**:commit message / PR 标题禁止 `[skip ci]`、`[ci skip]`、`[no ci]`、`[skip actions]`、`[actions skip]`、`skip-checks:` trailer(仓库历史里有,不可模仿);用平实消息如 `docs(qa-sbx): FLY-3150 drill hand-in`,CI 必须在交付头上跑。
+
+## 4. 本演练在验证什么(为什么要"故意失败")
+
+演练目标是 FLY-2167 的真 Runner 通用回路:**实现 → QA 判 fail(带 claim id)→ 实现带着 QA 修复上下文返工 → QA 重验精确匹配 claim id 才通过**。所以第 1 轮 `fixed-for-claim` 的失败是设计出来的触发器,不是缺陷;真正被测的是 claim id 从 QA 判定 → 返工提示词 → 文件第 2 行 → 重验的**逐字贯通**。
+
+## 5. 歧义与决策
+
+| 歧义 | 决策 | 理由 |
 |---|---|---|
-| 不改 Linear issue | 不改状态、不评论、不打标签 | 不调用任何 Linear 写操作（本会话 Linear MCP 本就 401 未连接） |
-| 不从演练内部部署 529 Room | 永不触碰 `test-deploy.sh` / `room deploy` | 设计里无任何部署步骤 |
-| 没有代码，只碰一个 markdown | 实现产物仅 `qa-sbx/fly2167/<branch>.md` | 实现范围锁定为单文件；设计文档落 `engineering/doc/`（DOC-FLOW 要求，不属"实现产物"） |
-| 设计只要一份短 plan，不要 research 文档 | 设计阶段产物最小化 | 本文件夹只有 exploration.md + plan.md + progress.md + 创始人 HTML，**不写 research.md** |
-| 提交信息禁止 `[skip ci]` 等 | hand-in 的 head 必须跑 CI | 所有 commit 用 `docs(qa-sbx): FLY-3150 ...` / `chore: ...` 形式，无 skip 标记 |
-| 房间没有人类 Lead，不要问 | 一切答案都在 README | 不发 `ask` 提问；只发协议要求的 `--report` 回执 |
+| DOC-FLOW full 档要求 research.md,README 说不要 research 文档 | 不写 research.md;产出 exploration.md + plan.md | README 是本任务的唯一权威,且"follow it exactly";exploration 是审计记录,不是 research |
+| 设计 HTML 放哪 | `engineering/doc/FLY-3150-real-runner-drill/design.html` | DOC-FLOW 指定 `engineering/doc/FLY-3150-<slug>/`;`complete` 的匹配规则 `(^|/)doc/FLY-3150(-<slug>)?/*.html` 能命中 |
+| 是否问 Lead | 不问 | README:房间无人类 Lead,一切都在 README 里 |
+| Linear issue | 不动 | README + issue 描述双重禁止 |
 
-## 3. 本轮与上一轮运行的关键差异（仓库现状审计）
+## 6. 不做的事
 
-这是 FLY-3150 在 slot-5 的**第二次**演练运行（TURN `epoch=6`，run `ad98df54`）。上一轮已经完整跑完：
-design → implement（`AWAITING-QA`）→ QA 打回 claim `1` → implement 修复（`FIXED-FOR-CLAIM 1`）→ PR #435 squash 合入 main。
+- 不写代码、不改 README、不改任何非目标文件。
+- 不部署 / 不拆 529 房间。
+- 不在设计节点创建目标 md 文件(那是实现节点的工作)。
 
-审计发现（全部已核实）：
+## 7. 本次派发审计(run `047a5977`,2026-10-02)
 
-- `origin/main` 为 `568e55e27`（PR #435），**已包含**目标文件 `qa-sbx/fly2167/project-slot-5-FLY-3150.md`，
-  内容为 `QA-SBX FLY-2167 drill` / `FIXED-FOR-CLAIM 1`，以及上一轮的整套设计文档文件夹。
-- 远端同名分支 `origin/project-slot-5-FLY-3150` 仍保留上一轮的 6 个 commit（未清理），
-  而本 worktree 从 `7df383e6f`（PR #435 的父提交）新建，两者**分叉**。
-- 直接 push 会是 non-fast-forward → 触发 FORCE-PUSH GUARD。
+本次是同一分支上的**新一轮** DAG 运行(TURN:`yours phase=design epoch=1 run=047a5977… attempt=1`),不是上一轮的续跑。上一轮已经走完 设计 → 实现 #1 → QA fail → 实现 #2,分支上留有它的产物。
 
-处置（已执行，纯技术 sync，不需要 ship 审批）：
-1. `git merge origin/project-slot-5-FLY-3150`（与自己分支的远端同步）；
-2. `git merge origin/main`；
-3. 两次 merge 唯一冲突都是 `progress.md`（add/add），均保留本轮账本；
-4. 之后 push 为 fast-forward，远端分支成为本地 HEAD 的祖先。
+| 项 | 结果 |
+|---|---|
+| 分支头(派发时) | `67717869b`,PR #420 OPEN,头 = 同一 SHA |
+| 目标文件现状 | **已存在**,内容 `QA-SBX FLY-2167 drill` / `FIXED-FOR-CLAIM 1`(上一轮 claim 1 的返工结果) |
+| `origin/main` | 已前进到 `6676fe269`(#435、#438:slot-5 跑同一演练,合入了同名文件夹下的 exploration/plan/progress + `qa-sbx/fly2167/project-slot-5-FLY-3150.md`);README 自 `7df383e6f` 起未变 |
+| 与 main 的冲突 | exploration/plan/progress 三个 add/add 冲突 → 本节点做了技术性同步合并 `63fa87eeb`,三处保留本分支版本;slot-5 的 `FLY-3150-design.html` / `diagram-*` / `project-slot-5-FLY-3150.md` 原样随 main 进来,不动 |
+| Linear | 状态 Done(Lead 裁定);本节点不碰 |
 
-后果：本轮 implement 节点面对的不是"新建文件"，而是"文件已存在、第 2 行是上一轮的 `FIXED-FOR-CLAIM 1`"。
-README 说第一次 hand-in 第 2 行必须是 `AWAITING-QA`，所以 implement 第一次 hand-in = **覆写**第 2 行。
-上一轮的 claim id `1` 对本轮没有任何效力，不得沿用。
+**新风险:陈旧 claim 行。** README 要求"第一次交付第 2 行写 `AWAITING-QA`"。若本轮实现节点看到文件已存在就跳过改写,第 2 行会保留上一轮的 `FIXED-FOR-CLAIM 1`。本轮 QA 第 1 轮照样恒 fail;但如果本轮新 claim id 恰好也是 `1`,重验会因为**上一轮的残留**而 pass —— 返工回路实际没跑,演练却被判通过。所以本轮第 1 次交付必须把第 2 行**重置**为 `AWAITING-QA`(diff 状态是 `M`,不是 `A`)。计划 §2.1 据此改写。
 
-## 4. 实现产物的精确形态
+## 8. 本次派发审计(run `251c390a`,2026-10-02)
 
-文件路径：`qa-sbx/fly2167/project-slot-5-FLY-3150.md`
-（`git branch --show-current` 当前输出 `project-slot-5-FLY-3150`；implement 节点必须实时取，不得硬编码）。
+又一轮同分支新运行(TURN:`yours phase=design epoch=1 run=251c390a… attempt=1`)。
 
-第一次 hand-in，文件恰好两行：
+| 项 | 结果 |
+|---|---|
+| 分支头(派发时) | `360a568e5`,PR #420 OPEN,头 = 同一 SHA |
+| 目标文件现状 | 仍是 `QA-SBX FLY-2167 drill` / `FIXED-FOR-CLAIM 1`(run `047a5977` 的返工结果) |
+| `origin/main` | `6676fe269`,已是本分支祖先(merge-base = main 头),无需同步合并;README 未变 |
+| 收件箱 | 无 Lead 指令 |
 
-```
-QA-SBX FLY-2167 drill
-AWAITING-QA
-```
-
-第二次 hand-in（prompt 带 "QA fix context"，首行 `QA verdict to fix: claim <id> ...`）：
-第 2 行改为 `FIXED-FOR-CLAIM <id>`，`<id>` 与本轮 QA 给的逐字相同，其余不动。
-
-## 5. 植入的必败点（演练目的）
-
-QA 第一轮对 `fixed-for-claim` 这条准则**必定 fail**，evidence 固定为 `round 1: no previous QA claim yet`。
-这不是 bug，是演练刻意制造的"QA 打回"，用来验证流水线能否把 QA claim id 带进 implement 第二次尝试 →
-implement 按 id 写回 → QA 第二轮用 `Previous QA verdict: claim <id>` 精确匹配通过。
-
-本轮的额外验证点：main 上残留的 `FIXED-FOR-CLAIM 1` 不能让 QA 第一轮误判为 pass（植入规则优先于文件内容），
-也不能让 implement 第二次尝试偷懒复用旧 id。
-
-## 6. 本节点的边界
-
-- 只产出设计文档 + 进度账本 + 创始人 HTML，**不**改 `qa-sbx/fly2167/<branch>.md`（那是 implement 节点的事）。
-- 不派发后继节点、不请求 ship、不 merge。
-- 需要澄清的点：无。README 已把每个判定点写成可机械执行的规则；分支分叉已用非破坏方式解决。
+§7 的陈旧 claim 行风险原样成立:本轮交付 #1 仍必须把第 2 行重置为 `AWAITING-QA`;分支上 `047a5977` 的 hand-in/fix 提交与 progress 指针都不能当本轮 PREV,只认本轮交付摘要里的 `run=251c390a HANDIN1=<sha>`。
