@@ -1,19 +1,19 @@
 ---
 issue: FLY-3150
-phase: design
-phaseCursor: 3/3
-updated: 2026-10-03T13:39:55.552Z
-nextStep: "implement hand-in #1: reset line 2 to AWAITING-QA, reuse PR #509 (plan §3)"
+phase: implement
+phaseCursor: 1/3
+updated: 2026-10-03T13:42:49.022Z
+nextStep: Register effective code review; freeze final ledger head before exact-head CI
 chunks: []
 pointers:
   pr: https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/509
-handoff: run 5743a2f5 design complete (Codex 2 rounds APPROVED, plan blob
-  1affb38f); design HTML published; stale run-0750ae00 PREV/claim are NOT
-  authority
+handoff: "run=5743a2f5 implement attempt=1; reset stale claim to AWAITING-QA;
+  exact worktree comparison passed; literal/path discovery found no executable
+  tests; no test exclusions; PR #509 will be reused"
 ---
 
 # FLY-3150 progress
-**phase**: design (3/3)
-**next**: implement hand-in #1: reset line 2 to AWAITING-QA, reuse PR #509 (plan §3)
+**phase**: implement (1/3)
+**next**: Register effective code review; freeze final ledger head before exact-head CI
 
-**handoff**: run 5743a2f5 design complete (Codex 2 rounds APPROVED, plan blob 1affb38f); design HTML published; stale run-0750ae00 PREV/claim are NOT authority
+**handoff**: run=5743a2f5 implement attempt=1; reset stale claim to AWAITING-QA; exact worktree comparison passed; literal/path discovery found no executable tests; no test exclusions; PR #509 will be reused
