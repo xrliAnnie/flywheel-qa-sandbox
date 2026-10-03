@@ -21,14 +21,14 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 1. `BASE=$(git rev-parse HEAD)`。
 2. 覆盖写两行:`printf 'QA-SBX FLY-2167 drill\nAWAITING-QA\n' > <目标文件>`。必须重置 —— 留着 `FIXED-FOR-CLAIM 1` 时,若本轮 claim id 恰好也是 1,重验会假通过。
 3. 自检:`printf 'QA-SBX FLY-2167 drill\nAWAITING-QA\n' | cmp - <目标文件>` 零输出。
-4. 提交 `docs(qa-sbx): FLY-3150 drill hand-in`,再写本轮最后一次 ledger,`HANDIN1=$(git rev-parse HEAD)`。
+4. 提交 `docs(qa-sbx): FLY-3150 drill hand-in`,再写本轮最后一次 ledger(`--next` 里写 `HANDIN1 pending`),`HANDIN1=$(git rev-parse HEAD)`。
 5. 核验:`git diff --name-status $BASE..$HANDIN1` 只有 `M` 目标文件 + `M` progress.md;目标文件 patch 恰为 `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`。
-6. 推送 `$HANDIN1`,确认远端分支头 / PR 头 / CI 都在该 SHA,交付。
+6. 推送 `$HANDIN1`,确认远端分支头 / PR 头 / CI 都在该 SHA,交付;**交付摘要必须写明 `run=047a5977 HANDIN1=<完整 SHA>`**(这是跨节点传给返工的唯一 PREV 来源 —— progress.md 里现存的 `PREV=2dfcc0d…; QA claim=1` 是上一轮的,分支上也有同 message 的旧 hand-in 提交,都不能用)。
 
 **交付 #2(提示词首行 `QA verdict to fix: claim <id> ...`)**
 1. 用 `^QA verdict to fix: claim (\S+)` 取 `ID`,原样复制;取不到 → 走失败通道,不猜。
-2. `PREV` = 本轮 `HANDIN1`;确认 `git show $PREV:<目标文件>` 第 2 行是 `AWAITING-QA`。
-3. 只改第 2 行为 `FIXED-FOR-CLAIM $ID`;`cmp` 自检同上。
+2. `PREV` = 本轮交付 #1 摘要里的 `HANDIN1`(返工提示词 / 交付记录中 `run=047a5977` 那条);确认它是 HEAD 的祖先,且 `git show $PREV:<目标文件>` 第 2 行是 `AWAITING-QA`。取不到本轮 HANDIN1 → 走失败通道,不得退回 `git log` 猜或用 progress 里的旧 PREV。
+3. 只改第 2 行为 `FIXED-FOR-CLAIM $ID`;自检 `printf 'QA-SBX FLY-2167 drill\nFIXED-FOR-CLAIM %s\n' "$ID" | cmp - <目标文件>` 零输出。
 4. 提交 `docs(qa-sbx): FLY-3150 drill fix for claim $ID`,写 ledger,`HANDIN2=$(git rev-parse HEAD)`。
 5. 核验:`$PREV..$HANDIN2` 只有 `M` 目标文件 + `M` progress.md;patch 恰为 `-AWAITING-QA` / `+FIXED-FOR-CLAIM $ID`。
 6. 推送并确认远端 / PR / CI 都在 `$HANDIN2`,交付。
