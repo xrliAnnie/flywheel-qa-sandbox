@@ -9,7 +9,8 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 - 唯一权威:`origin/main:qa-sbx/fly2167/README.md`。每个节点开工先重读。
 - 演练内容只有一个文件:`F=qa-sbx/fly2167/$(git branch --show-current).md`(本轮 = `project-slot-5-FLY-3150.md`;节点开工时重算,不硬编码)。
 - 不碰:README、任何代码、Linear issue、529 房间部署/拆除、其他 slot 的目标文件。
-- 流程文档例外:节点契约强制把 `engineering/doc/FLY-3150-real-runner-drill/` 下的设计文档与 `progress.md` 随同一分支推送。它们不是演练内容,不进 QA criterion。**PR 级演练内容范围断言**(两次交付都跑):
+- **每个交付提交只改 `$F`**(`git show --name-only --format= <提交>` 恰好一行 `$F`)。
+- 流程文档例外(节点契约强制,不来自 README):`engineering/doc/FLY-3150-real-runner-drill/` 下的设计文档与 `progress.md` 必须随同一共享分支推送(TURN/共享 worktree 约定不允许另开分支);`progress` 命令会以**独立提交**只写 `progress.md`。它们不是演练内容,不进 QA criterion,也不得出现在交付提交里。**PR 级演练内容范围断言**(两次交付都跑):
   `git diff --name-only origin/main...HEAD -- . ':(exclude)engineering/doc/FLY-3150-real-runner-drill'` 输出**恰好**一行 `$F`;否则停,不交付。
 
 ## 2. 派发快照(仅供参考,实现节点自己重算)
@@ -22,16 +23,16 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 1. `BASE=$(git rev-parse HEAD)`。
 2. 覆盖写两行:`printf 'QA-SBX FLY-2167 drill\nAWAITING-QA\n' > "$F"`。必须重置 —— 若留着 `FIXED-FOR-CLAIM 1` 而本轮 claim id 恰为 1,重验会靠残留假通过。
 3. 自检:`printf 'QA-SBX FLY-2167 drill\nAWAITING-QA\n' | cmp - "$F"` 零输出。
-4. 提交 `docs(qa-sbx): FLY-3150 drill hand-in`,写 ledger,`HANDIN1=$(git rev-parse HEAD)`。
-5. 核验:(a) `git diff --name-status $BASE..$HANDIN1` 只含 `M $F` 与本文件夹内的 `progress.md`;(b) `$F` 的 patch 恰为 `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`;(c) §1 断言通过。
+4. 只 `git add "$F"` 并提交 `docs(qa-sbx): FLY-3150 drill hand-in`;之后再写 ledger(独立提交);`HANDIN1=$(git rev-parse HEAD)`。
+5. 核验:(a) 交付提交只改 `$F`,`git diff --name-only $BASE..$HANDIN1 -- . ':(exclude)engineering/doc/FLY-3150-real-runner-drill'` 恰为 `$F`;(b) `$F` 的 patch 恰为 `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`;(c) §1 断言通过。
 6. `git push -u origin HEAD`,开新 PR(标题如 `FLY-3150 QA-SBX FLY-2167 real-runner drill (run a6eb9810)`),确认远端/PR/CI 头都在 `$HANDIN1`;交付摘要写明 `run=a6eb9810 HANDIN1=<完整 SHA>`(返工节点唯一的 PREV 来源)。
 
 **交付 #2(提示词首行 `QA verdict to fix: claim <id> ...`)**
 1. 用 `^QA verdict to fix: claim (\S+)` 取 `ID`,原样复制;取不到 → 失败通道,不猜。
 2. `PREV` = 本轮交付 #1 摘要里的 `HANDIN1`;确认是 HEAD 祖先,且 `git show $PREV:"$F"` 第 2 行为 `AWAITING-QA`。取不到 → 失败通道,不得用 `git log` 或 progress 旧指针猜。
 3. 只改第 2 行为 `FIXED-FOR-CLAIM $ID`;自检 `printf 'QA-SBX FLY-2167 drill\nFIXED-FOR-CLAIM %s\n' "$ID" | cmp - "$F"` 零输出。
-4. 提交 `docs(qa-sbx): FLY-3150 drill fix for claim $ID`,写 ledger,`HANDIN2=$(git rev-parse HEAD)`。
-5. 核验:`$PREV..$HANDIN2` 只含 `M $F` 与 progress.md;patch 恰为 `-AWAITING-QA` / `+FIXED-FOR-CLAIM $ID`;§1 断言仍过。
+4. 只 `git add "$F"` 并提交 `docs(qa-sbx): FLY-3150 drill fix for claim $ID`;之后写 ledger(独立提交);`HANDIN2=$(git rev-parse HEAD)`。
+5. 核验:修复提交只改 `$F`,`$PREV..$HANDIN2` 排除本文件夹后恰为 `$F`;patch 恰为 `-AWAITING-QA` / `+FIXED-FOR-CLAIM $ID`;§1 断言仍过。
 6. 推送,确认远端/PR/CI 头都在 `$HANDIN2`,交付。
 
 核验后若再产生提交(含 ledger),重新固定 SHA、核验、推送。commit message 与 PR 标题不得含 `[skip ci]` / `[ci skip]` / `[no ci]` / `[skip actions]` / `[actions skip]` / `skip-checks:`。不 force-push。若 `origin/main` 在途中前进导致冲突,技术同步合并 `origin/main`,保持 `$F` 语义不变,并在同步后重新冻结交付 SHA。
@@ -48,23 +49,6 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 
 title < 120 字符,evidence < 80 字符;不部署房间、不碰 Linear、不改目标文件。
 
-## 5. 流程
-
-```mermaid
-sequenceDiagram
-    participant I as eng_implement
-    participant Q as qa
-    participant B as 驱动器
-    B->>I: 派发(无 QA fix context)
-    I->>B: 交付 #1:drill / AWAITING-QA(覆盖残留 FIXED-FOR-CLAIM 1)
-    B->>Q: 第 1 轮
-    Q->>B: fixed-for-claim = fail(planted),产生 claim <id>
-    B->>I: QA fix context: claim <id>
-    I->>B: 交付 #2:FIXED-FOR-CLAIM <id>
-    B->>Q: 重验(Previous QA verdict: claim <id>)
-    Q->>B: 逐字匹配 → pass
-```
-
-## 6. 诚实边界
+## 5. 诚实边界
 
 只覆盖 README 的两行文件 + 三条验收,证明 529 房间里真 Runner 的 fail → fix → re-verify 回路能贯通 claim id;不设计任何 Flywheel 代码,不验证生产 FLY-2167 实现本身。回滚 = revert 本轮提交。
