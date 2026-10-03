@@ -83,3 +83,16 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 | 收件箱 | 无 Lead 指令 |
 
 §7 的陈旧 claim 行风险原样成立:本轮交付 #1 仍必须把第 2 行重置为 `AWAITING-QA`;分支上 `047a5977` 的 hand-in/fix 提交与 progress 指针都不能当本轮 PREV,只认本轮交付摘要里的 `run=251c390a HANDIN1=<sha>`。
+
+## 9. 本次派发审计(run `56c48d76`,2026-10-02)
+
+又一轮同分支新运行(TURN:`yours phase=design epoch=1 run=56c48d76… attempt=1`)。
+
+| 项 | 结果 |
+|---|---|
+| 分支头(派发时) | `9bf1be460` = `origin/main` 头;run `251c390a` 的 PR #420 已 **MERGED**(2026-10-03T04:13Z),远端分支已删,当前无 open PR |
+| 目标文件现状 | 仍是 `QA-SBX FLY-2167 drill` / `FIXED-FOR-CLAIM 1`(run `251c390a` 的返工结果,现已在 main 上) |
+| `origin/main` | 与分支头相同,无需同步合并;README 未变 |
+| 收件箱 | 无 Lead 指令 |
+
+§7 的陈旧 claim 行风险原样成立:本轮交付 #1 仍必须把第 2 行重置为 `AWAITING-QA`;main 上及分支历史里 `251c390a` / `047a5977` 的 hand-in/fix 提交与 progress 指针都不能当本轮 PREV,只认本轮交付摘要里的 `run=56c48d76 HANDIN1=<sha>`。因远端分支已删,本轮首次推送会新开 PR。
