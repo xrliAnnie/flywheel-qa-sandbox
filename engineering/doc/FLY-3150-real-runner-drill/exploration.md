@@ -209,3 +209,9 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 **旧指针一律不认**:main 历史里 run `c57ecd18` / `5743a2f5` / `0750ae00` / `9d02bd8f` 等的 hand-in / fix 提交、progress 里出现过的 `PREV/HANDIN1=d9a5d6abd…`、`claim=1`、`pr` 指针 `#522`,都不是本轮 BASE / PREV / claim id / PR;交付 #2 的 PREV 只认本轮交付 #1 摘要里的 `run=1525e2e2 HANDIN1=<sha>`。
 
 **设计评审(run `1525e2e2`)**:Codex 1 轮(thread `01a102e4-2475…`,turn `01a102e4-2b21…`,gpt-6-astra/xhigh,request `836f56a4…`)。R1 对绑定 blob `6477f5ad…` 直接 APPROVED(P1/P2/P3 = 0/0/0):五项检查(本轮 retarget 与旧标识隔离 / 两次交付字节形状与幂等 / ledger-HANDIN-PREV 顺序 / main 同步分支 / QA 与禁止事项)全部通过;评审只读,未改仓库文件。评审期间 HEAD 因设计 HTML 提交前进,不影响已绑定的 plan blob。
+
+## 本轮(run `e1a786ce`,slot-6,2026-10-03)补充
+
+- 重读 `origin/main:qa-sbx/fly2167/README.md`:规则未变(只碰一个 md、短 plan、不写 research、不碰 Linear、不部署房间、commit 不带 skip-ci 标记)。
+- 分支 `project-slot-6-FLY-3150` 派发时 = `origin/main` `237429a88`;远端无此分支;head 只有已合入旧 PR #509。
+- 目标文件 `qa-sbx/fly2167/project-slot-6-FLY-3150.md` **已存在**,内容为上一轮残留 `FIXED-FOR-CLAIM 1` → 交付 #1 必须改回 `AWAITING-QA`(见 plan §2)。
