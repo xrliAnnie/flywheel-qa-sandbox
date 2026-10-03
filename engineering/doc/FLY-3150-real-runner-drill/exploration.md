@@ -135,3 +135,5 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 | Linear | Done(Lead 裁定);不碰 |
 
 与 slot-5 的差别:没有残留 `FIXED-FOR-CLAIM <n>` 可被误判,但交付 #1 仍用覆盖写(`printf … >`)保证幂等 —— 若实现节点重试时文件已被前一次尝试写过,结果不变。其他 slot 的目标文件(`project-slot-1/5-FLY-3150.md`)不得触碰。
+
+**设计评审(run `0750ae00`)**:Codex 3 轮(同一 thread `01a10125…`,gpt-6-luna/xhigh)。R1 CHANGES_REQUESTED —— 两条 P2:ledger 提交步骤未写明(采纳:写明 `progress` 命令自行 path-limited 提交 progress.md,所有 ledger 提交后才冻结 HANDIN);已提交目标文件后的重试会空提交(采纳:先按内容判断,跳过空提交,范围断言放宽仅限 BASE 已含精确内容)。R2 CHANGES_REQUESTED —— P2:跳过判断用工作树 + `git diff`,未跟踪文件会被误判已提交(采纳:改为比对 HEAD 中的 blob)。R3 对绑定 blob `4982011d…` APPROVED;`await-codex-gate design` 通过。
