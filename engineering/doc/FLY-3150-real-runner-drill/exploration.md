@@ -160,4 +160,3 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 **旧指针一律不认**:分支历史里 run `0750ae00` 的 `bcf73060a`(hand-in)、`daa8685d3`(fix for claim 1)以及 progress 里的 `PREV=a41e95dc0…` 与本轮无关;交付 #2 的 PREV 只认本轮交付 #1 摘要里的 `run=5743a2f5 HANDIN1=<sha>`。
 
 **PR 复用**:#509 仍 OPEN,本轮复用它(不开新 PR),把标题改为本轮 run id 便于追溯;推送是普通快进(远端头 = 本地派发头)。
-
