@@ -1,29 +1,34 @@
 ---
 issue: FLY-3150
 phase: implement
-phaseCursor: 2/3
-updated: 2026-10-03T13:59:09.543Z
-nextStep: "Attempt 2: frozen-head code review, exact-head CI, then needs_review
-  QA retest handoff"
+phaseCursor: 4/4
+updated: 2026-10-03T15:22:43.988Z
+nextStep: "Attempt 2 effective code review APPROVED; only exact-head CI pending
+  advisory. Final ledger commit: push, freeze HEAD (HANDIN2 only in completion
+  report), ci-full ensure PR 522, needs_review then phase park. No further
+  commits during CI. Await independent QA re-verification of FIXED-FOR-CLAIM 1."
 chunks: []
 pointers:
-  pr: https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/509
-handoff: "run=5743a2f5 attempt=2 QA claim=1
-  PREV/HANDIN1=c901c04df2d0a80a275e0edf98e2f4c1b6791205; line 2 FIXED-FOR-CLAIM
-  1 exact; failing pre-fix and green post-fix cmp;
-  first-handin/wrong-claim/extra-line/whitespace/CRLF negatives checked;
-  unchanged first line; retry HEAD-blob safety and diff scope verified. Runtime
-  adjacent queued/started/dead/superseded/concurrent paths not applicable: no
-  runtime code. e2e_529_exempt not_run docs_only. Discovery: no executable drill
-  matches; 10 generic progress.md test/snapshot matches excluded as unchanged
-  protocol, recorded individually in
-  /tmp/fly3150-5743a2f5-attempt2-test-discovery.txt. Local lint generated
-  runtime JSON errors and unchanged warnings; no code/build/types. Attempt 1
-  review and CI passed; attempt 2 review/CI pending."
+  plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
+  exploration: engineering/doc/FLY-3150-real-runner-drill/exploration.md
+  pr: https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/522
+handoff: "run=c57ecd18 attempt=2; claim=1;
+  PREV/HANDIN1=d9a5d6abd4711547ce857de4099661b54d56015a. Fix commit fc9919fe0
+  changes only target line 2: AWAITING-QA -> FIXED-FOR-CLAIM 1. Red before edit
+  and green byte checks after edit verified; first line and two-line shape
+  preserved. Adjacent assertions: repeat hand-in detects already-committed blob
+  (skip empty target commit); strict comparison rejects unfixed, wrong claim,
+  stale claim, leading zero, trailing whitespace, extra line.
+  Queued/started/dead/superseded/concurrent runtime paths N/A: docs only, no
+  code changes or new test files. Literal/path discovery has no fixture tests.
+  Generic progress.md test exclusions and reasons remain in PREV ledger. Local
+  pnpm lint remains red solely from ignored design JSON receipts;
+  unchanged-source warnings. No TS or builds applicable. README prohibits room
+  deployment; retain docs-only e2e exemption."
 ---
 
 # FLY-3150 progress
-**phase**: implement (2/3)
-**next**: Attempt 2: frozen-head code review, exact-head CI, then needs_review QA retest handoff
+**phase**: implement (4/4)
+**next**: Attempt 2 effective code review APPROVED; only exact-head CI pending advisory. Final ledger commit: push, freeze HEAD (HANDIN2 only in completion report), ci-full ensure PR 522, needs_review then phase park. No further commits during CI. Await independent QA re-verification of FIXED-FOR-CLAIM 1.
 
-**handoff**: run=5743a2f5 attempt=2 QA claim=1 PREV/HANDIN1=c901c04df2d0a80a275e0edf98e2f4c1b6791205; line 2 FIXED-FOR-CLAIM 1 exact; failing pre-fix and green post-fix cmp; first-handin/wrong-claim/extra-line/whitespace/CRLF negatives checked; unchanged first line; retry HEAD-blob safety and diff scope verified. Runtime adjacent queued/started/dead/superseded/concurrent paths not applicable: no runtime code. e2e_529_exempt not_run docs_only. Discovery: no executable drill matches; 10 generic progress.md test/snapshot matches excluded as unchanged protocol, recorded individually in /tmp/fly3150-5743a2f5-attempt2-test-discovery.txt. Local lint generated runtime JSON errors and unchanged warnings; no code/build/types. Attempt 1 review and CI passed; attempt 2 review/CI pending.
+**handoff**: run=c57ecd18 attempt=2; claim=1; PREV/HANDIN1=d9a5d6abd4711547ce857de4099661b54d56015a. Fix commit fc9919fe0 changes only target line 2: AWAITING-QA -> FIXED-FOR-CLAIM 1. Red before edit and green byte checks after edit verified; first line and two-line shape preserved. Adjacent assertions: repeat hand-in detects already-committed blob (skip empty target commit); strict comparison rejects unfixed, wrong claim, stale claim, leading zero, trailing whitespace, extra line. Queued/started/dead/superseded/concurrent runtime paths N/A: docs only, no code changes or new test files. Literal/path discovery has no fixture tests. Generic progress.md test exclusions and reasons remain in PREV ledger. Local pnpm lint remains red solely from ignored design JSON receipts; unchanged-source warnings. No TS or builds applicable. README prohibits room deployment; retain docs-only e2e exemption.
