@@ -1,7 +1,7 @@
 # FLY-3150 真 Runner 通用演练(529 房间) — 探索
 
 Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-03(2026-10-01 初版;§7–§13 为历史 —— slot-1 / slot-5 / slot-6 run `0750ae00` / `5743a2f5`;§14 为本轮派发 run `c57ecd18`,slot-2)
+日期: 2026-10-03(2026-10-01 初版;§7–§14 为历史 —— slot-1 / slot-5 / slot-6 / slot-2 run `0750ae00` / `5743a2f5` / `c57ecd18`;§15 为本轮派发 run `2eae0ffd`,slot-4)
 基于: 无
 
 ## 1. 任务来源与唯一权威
@@ -186,3 +186,24 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 **旧指针一律不认**:main 历史里 run `5743a2f5` / `0750ae00` / `9d02bd8f` 等的 hand-in / fix 提交、progress 里出现过的 `PREV/HANDIN1=c901c04df…`、`claim=1`,都不是本轮 BASE / PREV / claim id;交付 #2 的 PREV 只认本轮交付 #1 摘要里的 `run=c57ecd18 HANDIN1=<sha>`。
 
 **设计评审(run `c57ecd18`)**:Codex 2 轮(同一 thread `01a10232-e8e4…`,gpt-6-astra/xhigh)。R1 CHANGES_REQUESTED —— 一条 P2:plan 要求同步 main 时追加 exploration 记录,但两次交付的全树双点范围断言只允许目标文件 + progress.md,合法同步后必然不过(slot-5 的 §7 曾有替代断言,slot-6 版本删掉了)。采纳:新增 plan §3.1 —— 只在 PR 冲突或契约要求时同步;冲突仅限流程文档文件夹(保留本轮版本,目录外冲突 abort);交付区间含 merge 提交时改用 PR 级范围断言 + 目标 blob 精确比较 + 返工 patch 精确比较,PREV 仍是真实 HANDIN1。修订后重新 `stage set design_review` 绑定新 blob(request `6e8ab627…`)。R2 对绑定 blob `07659135…` APPROVED(P1/P2/P3 = 0/0/0);`await-codex-gate design` 通过;thread 已归档。
+
+## 15. 本次派发审计(run `2eae0ffd`,2026-10-03,slot-4)
+
+新一轮运行(TURN:`yours phase=design epoch=1 run=2eae0ffd… node=eng_design attempt=1`),这次在 **slot-4** 分支上。§1–§14 是 slot-1 / slot-5 / slot-6 / slot-2 的历史;本节覆盖本轮事实。
+
+| 项 | 结果 |
+|---|---|
+| 分支 | `project-slot-4-FLY-3150` |
+| 分支头(派发时) | `f7a54499f`;`origin/main` 已前进到 `d92cf9042`(slot-2 PR #522 合入)。本分支派发时没有自己的提交,本节点做了**快进**同步(`git merge --ff-only origin/main`,无 merge 提交、无冲突) |
+| 远端分支 / PR | 远端无 `project-slot-4-FLY-3150`;`gh pr list --head project-slot-4-FLY-3150 --state all` 为空 → 交付 #1 推新分支、开新 PR |
+| 目标文件 | `qa-sbx/fly2167/project-slot-4-FLY-3150.md` **不存在**(main 上只有 slot-1/2/5/6 的同类文件)→ 交付 #1 是**新增**(diff 状态 `A`),不存在陈旧 claim 行 |
+| 其他 slot 目标文件 | `project-slot-1/2/5/6-FLY-3150.md` 在 main 上均为 `FIXED-FOR-CLAIM 1`;本轮一律不碰 |
+| README | 自 `7df383e6f` 起未变(blob `1de5e367…`) |
+| progress.md | 派发时是 slot-2 run `c57ecd18` 的 implement 4/4 记录(指针 PR #522、`HANDIN1=d9a5d6ab…`、claim 1);本节点已用 `--handoff` 覆盖为"本轮 run=2eae0ffd,旧指针非权威",`pr` 指针置 `none` |
+| 收件箱 | 无 Lead 指令 |
+| onboard skill | 本项目不存在 → 按前导规则直接 `stage set brainstorm` |
+| Linear | Done(Lead 裁定);不碰 |
+
+与 §12 / §14(文件不存在的首轮)同形:没有残留 `FIXED-FOR-CLAIM <n>` 可被误判;交付 #1 仍按 HEAD blob 字节比较 + 覆盖写,保证实现节点重试幂等。§14 记录的共享文档文件夹并发风险与 plan §3.1 的同步处理原样适用。
+
+**旧指针一律不认**:main 历史里 run `c57ecd18` / `5743a2f5` / `0750ae00` 等的 hand-in / fix 提交、progress 里出现过的 `PREV/HANDIN1=d9a5d6ab…`、`claim=1`、`pr` 指针 `#522`(已合入的 slot-2 PR),都不是本轮 BASE / PREV / claim id / PR;交付 #2 的 PREV 只认本轮交付 #1 摘要里的 `run=2eae0ffd HANDIN1=<sha>`。
