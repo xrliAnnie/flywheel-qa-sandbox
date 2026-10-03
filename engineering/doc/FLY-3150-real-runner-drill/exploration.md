@@ -119,3 +119,15 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 - 技术同步合入 `origin/main` 的 `ab686e643`;slot-1 的运行来源保留在 §10,当前 slot-5 的已批计划与生成设计继续作为本轮权威。
 - `qa-sbx/fly2167/project-slot-5-FLY-3150.md` 在 main 上仍为 `FIXED-FOR-CLAIM 4`,本分支继续以 `AWAITING-QA` 覆盖,演练语义不变。
 - §9 的 `9bf1be460 = origin/main` 明确是派发时快照;同步后不得再当当前 main 头。
+
+## 12. 本轮派发(run `a6eb9810`)
+
+| 项 | 值 |
+|---|---|
+| 分支头(派发时) | `be388bf10` = `origin/main`(PR #499 已合入) |
+| 远端分支 / PR | 远端分支不存在;无 OPEN PR → 交付 #1 推新分支开新 PR |
+| 目标文件 | `qa-sbx/fly2167/project-slot-5-FLY-3150.md` 已存在,内容 `QA-SBX FLY-2167 drill` / `FIXED-FOR-CLAIM 1`(上一轮残留) |
+| README | 重读,规则与前几轮一致 |
+| 收件箱 | 无 Lead 指令 |
+
+陈旧 claim 行风险仍成立,残留 id 现为 `1`:交付 #1 必须重置为 `AWAITING-QA`。plan.md 已按本轮重写(§7 旧技术同步记录属于 run `9d02bd8f`,已移除;历史见本文件 §11 与 git 历史)。
