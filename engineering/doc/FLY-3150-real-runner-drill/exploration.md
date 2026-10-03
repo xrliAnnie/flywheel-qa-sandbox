@@ -1,7 +1,7 @@
 # FLY-3150 真 Runner 通用演练(529 房间) — 探索
 
 Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-03(2026-10-01 初版;§7/§8/§10 为历史,含并行 slot-1;§9 为本轮派发;§11 为本轮同步)
+日期: 2026-10-03(2026-10-01 初版;§7–§14 为历史 —— slot-1 / slot-5 / slot-6 / slot-2 run `0750ae00` / `5743a2f5` / `c57ecd18`;§15 为本轮派发 run `1525e2e2`,slot-3)
 基于: 无
 
 ## 1. 任务来源与唯一权威
@@ -119,3 +119,99 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 - 技术同步合入 `origin/main` 的 `ab686e643`;slot-1 的运行来源保留在 §10,当前 slot-5 的已批计划与生成设计继续作为本轮权威。
 - `qa-sbx/fly2167/project-slot-5-FLY-3150.md` 在 main 上仍为 `FIXED-FOR-CLAIM 4`,本分支继续以 `AWAITING-QA` 覆盖,演练语义不变。
 - §9 的 `9bf1be460 = origin/main` 明确是派发时快照;同步后不得再当当前 main 头。
+
+## 12. 本次派发审计(run `0750ae00`,2026-10-03,slot-6)
+
+新一轮运行(TURN:`yours phase=design epoch=1 run=0750ae00… node=eng_design attempt=1`),这次在 **slot-6** 分支上。§1–§11 是 slot-1 / slot-5 的历史;本节覆盖本轮事实。
+
+| 项 | 结果 |
+|---|---|
+| 分支 | `project-slot-6-FLY-3150` |
+| 分支头(派发时) | `be388bf10` = `origin/main` 头(零差异,无需同步合并) |
+| 远端分支 / PR | 远端无 `project-slot-6-FLY-3150`;无该 head 的 PR → 交付 #1 推新分支、开新 PR |
+| 目标文件 | `qa-sbx/fly2167/project-slot-6-FLY-3150.md` **不存在** → 交付 #1 是**新增**(diff 状态 `A`),不存在陈旧 claim 行 |
+| README | 自 `7df383e6f` 起未变 |
+| 收件箱 | 无 Lead 指令 |
+| Linear | Done(Lead 裁定);不碰 |
+
+与 slot-5 的差别:没有残留 `FIXED-FOR-CLAIM <n>` 可被误判,但交付 #1 仍用覆盖写(`printf … >`)保证幂等 —— 若实现节点重试时文件已被前一次尝试写过,结果不变。其他 slot 的目标文件(`project-slot-1/5-FLY-3150.md`)不得触碰。
+
+**设计评审(run `0750ae00`)**:Codex 3 轮(同一 thread `01a10125…`,gpt-6-luna/xhigh)。R1 CHANGES_REQUESTED —— 两条 P2:ledger 提交步骤未写明(采纳:写明 `progress` 命令自行 path-limited 提交 progress.md,所有 ledger 提交后才冻结 HANDIN);已提交目标文件后的重试会空提交(采纳:先按内容判断,跳过空提交,范围断言放宽仅限 BASE 已含精确内容)。R2 CHANGES_REQUESTED —— P2:跳过判断用工作树 + `git diff`,未跟踪文件会被误判已提交(采纳:改为比对 HEAD 中的 blob)。R3 对绑定 blob `4982011d…` APPROVED;`await-codex-gate design` 通过。
+
+## 13. 本次派发审计(run `5743a2f5`,2026-10-03,slot-6 第二轮)
+
+同一 slot-6 分支上的又一轮新运行(TURN:`yours phase=design epoch=1 run=5743a2f5… node=eng_design attempt=1`)。§12 的 run `0750ae00` 已在本分支走完 设计 → 交付 #1 → QA fail → 交付 #2(claim 1),其产物全部留在分支上;本节覆盖本轮事实。
+
+| 项 | 结果 |
+|---|---|
+| 分支 | `project-slot-6-FLY-3150` |
+| 分支头(派发时) | `84482737c`(run `0750ae00` 最后一个 ledger 提交)= 远端分支头 = PR #509 头 |
+| PR | #509 **OPEN**,MERGEABLE,头上 CI 两项 SUCCESS;标题仍是 `(run 0750ae00)` |
+| `origin/main` | `be388bf10`(未前进),是本分支祖先 → 无需同步合并 |
+| 目标文件 | `qa-sbx/fly2167/project-slot-6-FLY-3150.md` **已存在**(main 上没有,分支上相对 main 是 `A`),内容 `QA-SBX FLY-2167 drill` / `FIXED-FOR-CLAIM 1`(run `0750ae00` 的返工结果) |
+| PR 级范围断言(派发时) | 排除流程文档文件夹后 `origin/main...HEAD` 只有 `A qa-sbx/fly2167/project-slot-6-FLY-3150.md` —— 已满足 |
+| progress.md | 派发时 `handoff:` 仍写 run `0750ae00` 的 `PREV=a41e95dc0… claim=1`;本节点已用 `--handoff` 覆盖为"非本轮权威" |
+| README | 自 `7df383e6f` 起未变 |
+| 收件箱 | 无 Lead 指令 |
+| Linear | Done(Lead 裁定);不碰 |
+
+**§7 的陈旧 claim 行风险在本轮重新成立**(§12 时文件不存在所以没有,现在有了):第 2 行残留 `FIXED-FOR-CLAIM 1`。若交付 #1 看到文件已存在就跳过改写,而本轮 QA 新 claim id 恰好又是 `1`,重验会靠上一轮残留假通过,返工回路实际没跑。所以本轮交付 #1 必须把第 2 行**重置**为 `AWAITING-QA`(相对 HEAD 的 diff 是 `M`,相对 main 仍是 `A`)。plan §3 的"按 HEAD blob 字节比较、不等则覆盖写"天然会重置(HEAD blob 是 `FIXED-FOR-CLAIM 1` ≠ `AWAITING-QA`)。
+
+**旧指针一律不认**:分支历史里 run `0750ae00` 的 `bcf73060a`(hand-in)、`daa8685d3`(fix for claim 1)以及 progress 里的 `PREV=a41e95dc0…` 与本轮无关;交付 #2 的 PREV 只认本轮交付 #1 摘要里的 `run=5743a2f5 HANDIN1=<sha>`。
+
+**PR 复用**:#509 仍 OPEN,本轮复用它(不开新 PR),把标题改为本轮 run id 便于追溯;推送是普通快进(远端头 = 本地派发头)。
+
+**设计评审(run `5743a2f5`)**:Codex 2 轮(同一 thread `01a101f1-a1cd…`,gpt-6-astra/xhigh)。R1 CHANGES_REQUESTED —— 两条 P2 全部采纳:(1) 交付 #1 第 3 步"同上 cmp"实际比较的是旧 HEAD,在正常重置路径上必然失败(上一轮已批计划里就有这个缺陷,本轮才被抓出),改为工作树 `printf … | cmp - "$F"`;(2) 我新增的"ledger `--handoff` 记本次最终 HANDIN"与"ledger 提交后才冻结 HANDIN"循环依赖,改为 ledger 只写写入时已知信息、最终 HANDIN 只进交付摘要;P3(exploration 末尾多余空行)一并修。修订后重新 `stage set design_review` 绑定新 blob(request revision 2)。R2 对绑定 blob `1affb38f…` APPROVED(P1/P2/P3 = 0/0/0);`await-codex-gate design` 通过。另:一次误操作把 `task --help` 当提示词开了无关 thread `01a101f0-ec18…`,不是评审轮次,已与评审 thread 一并归档。
+
+## 14. 本次派发审计(run `c57ecd18`,2026-10-03,slot-2)
+
+新一轮运行(TURN:`yours phase=design epoch=1 run=c57ecd18… node=eng_design attempt=1`),这次在 **slot-2** 分支上。§1–§13 是 slot-1 / slot-5 / slot-6 的历史;本节覆盖本轮事实。
+
+| 项 | 结果 |
+|---|---|
+| 分支 | `project-slot-2-FLY-3150` |
+| 分支头(派发时) | `f7a54499f` = `origin/main` 头(PR #509 合入后;零差异,无需同步合并) |
+| 远端分支 / PR | 远端无 `project-slot-2-FLY-3150`;`gh pr list --head project-slot-2-FLY-3150 --state all` 为空 → 交付 #1 推新分支、开新 PR |
+| 目标文件 | `qa-sbx/fly2167/project-slot-2-FLY-3150.md` **不存在**(main 上只有 slot-1/5/6 的同类文件)→ 交付 #1 是**新增**(diff 状态 `A`),不存在陈旧 claim 行 |
+| 其他 slot 目标文件 | `project-slot-1/5/6-FLY-3150.md` 在 main 上均为 `FIXED-FOR-CLAIM 1`;本轮一律不碰 |
+| README | 自 `7df383e6f` 起未变(blob `1de5e367…`) |
+| progress.md | 派发时是 slot-6 run `5743a2f5` 的 implement 2/3 记录;本节点已用 `--handoff` 覆盖为"本轮 run=c57ecd18,旧指针非权威" |
+| 收件箱 | 无 Lead 指令 |
+| Linear | Done(Lead 裁定);不碰 |
+
+与 §12(slot-6 首轮)同形:文件不存在,所以没有残留 `FIXED-FOR-CLAIM <n>` 被误判的风险;交付 #1 仍按 HEAD blob 字节比较 + 覆盖写,保证实现节点重试幂等。
+
+**共享文档文件夹的并发风险**:本文件夹被所有 slot 共用。若实现期间别的 slot 的 PR 先合入 main,本分支的 exploration / plan / progress / design HTML 会出现 add/add 或内容冲突。处理沿用 §11 的先例:技术同步合并 `origin/main`,**保留本轮 slot-2 版本**作为本轮权威,同时把对方 slot 的运行来源写进 exploration 新小节(不静默丢弃);同步后的触发条件、冲突边界与替代核验见 plan §3.1(Codex R1 指出旧的全树双点范围限制在同步后必然不过)。
+
+**旧指针一律不认**:main 历史里 run `5743a2f5` / `0750ae00` / `9d02bd8f` 等的 hand-in / fix 提交、progress 里出现过的 `PREV/HANDIN1=c901c04df…`、`claim=1`,都不是本轮 BASE / PREV / claim id;交付 #2 的 PREV 只认本轮交付 #1 摘要里的 `run=c57ecd18 HANDIN1=<sha>`。
+
+**设计评审(run `c57ecd18`)**:Codex 2 轮(同一 thread `01a10232-e8e4…`,gpt-6-astra/xhigh)。R1 CHANGES_REQUESTED —— 一条 P2:plan 要求同步 main 时追加 exploration 记录,但两次交付的全树双点范围断言只允许目标文件 + progress.md,合法同步后必然不过(slot-5 的 §7 曾有替代断言,slot-6 版本删掉了)。采纳:新增 plan §3.1 —— 只在 PR 冲突或契约要求时同步;冲突仅限流程文档文件夹(保留本轮版本,目录外冲突 abort);交付区间含 merge 提交时改用 PR 级范围断言 + 目标 blob 精确比较 + 返工 patch 精确比较,PREV 仍是真实 HANDIN1。修订后重新 `stage set design_review` 绑定新 blob(request `6e8ab627…`)。R2 对绑定 blob `07659135…` APPROVED(P1/P2/P3 = 0/0/0);`await-codex-gate design` 通过;thread 已归档。
+
+## 15. 本次派发审计(run `1525e2e2`,2026-10-03,slot-3)
+
+新一轮运行(TURN:`yours phase=design epoch=1 run=1525e2e2… node=eng_design attempt=1`),这次在 **slot-3** 分支上。§1–§14 是 slot-1 / slot-5 / slot-6 / slot-2 的历史;本节覆盖本轮事实。
+
+| 项 | 结果 |
+|---|---|
+| 分支 | `project-slot-3-FLY-3150` |
+| 分支头(派发时) | `d1f6dc80b` = `origin/main` 头(零差异,无需同步合并;main 在 #522 合入后只多了 FLY-3224…3228 的 drill README 安装提交,不碰本文件夹与 `qa-sbx/fly2167/`) |
+| 远端分支 / PR | `git ls-remote` 无 `project-slot-3-FLY-3150`;`gh pr list --head project-slot-3-FLY-3150 --state all` 为空 → 交付 #1 推新分支、开新 PR |
+| 目标文件 | `qa-sbx/fly2167/project-slot-3-FLY-3150.md` **不存在**(main 上只有 slot-1/2/5/6 的同类文件)→ 交付 #1 是**新增**(diff 状态 `A`),不存在陈旧 claim 行 |
+| 其他 slot 目标文件 | `project-slot-1/2/5/6-FLY-3150.md` 在 main 上均为 `FIXED-FOR-CLAIM 1`;本轮一律不碰 |
+| README | 自 `7df383e6f` 起未变(blob `1de5e367…`) |
+| progress.md | 派发时是 slot-2 run `c57ecd18` 的 implement 4/4 记录(`pr` 指针 = 已 MERGED 的 #522);本节点已用 `--handoff` / `--pointer pr=none-yet-for-run-1525e2e2` 覆盖(提交 `17dc513f4`) |
+| 收件箱 | 无 Lead 指令 |
+| Linear | Done(Lead 裁定);不碰 |
+| 本机 `mmdc` | 11.12.0 可用 |
+
+与 §14(slot-2)同形:文件不存在,所以没有残留 `FIXED-FOR-CLAIM <n>` 被误判的风险;交付 #1 仍按 HEAD blob 字节比较 + 覆盖写,保证实现节点重试幂等。§14 的共享文件夹并发风险与 plan §3.1 的同步核验分支原样沿用。
+
+**旧指针一律不认**:main 历史里 run `c57ecd18` / `5743a2f5` / `0750ae00` / `9d02bd8f` 等的 hand-in / fix 提交、progress 里出现过的 `PREV/HANDIN1=d9a5d6abd…`、`claim=1`、`pr` 指针 `#522`,都不是本轮 BASE / PREV / claim id / PR;交付 #2 的 PREV 只认本轮交付 #1 摘要里的 `run=1525e2e2 HANDIN1=<sha>`。
+
+**设计评审(run `1525e2e2`)**:Codex 1 轮(thread `01a102e4-2475…`,turn `01a102e4-2b21…`,gpt-6-astra/xhigh,request `836f56a4…`)。R1 对绑定 blob `6477f5ad…` 直接 APPROVED(P1/P2/P3 = 0/0/0):五项检查(本轮 retarget 与旧标识隔离 / 两次交付字节形状与幂等 / ledger-HANDIN-PREV 顺序 / main 同步分支 / QA 与禁止事项)全部通过;评审只读,未改仓库文件。评审期间 HEAD 因设计 HTML 提交前进,不影响已绑定的 plan blob。
+
+## 本轮(run `e1a786ce`,slot-6,2026-10-03)补充
+
+- 重读 `origin/main:qa-sbx/fly2167/README.md`:规则未变(只碰一个 md、短 plan、不写 research、不碰 Linear、不部署房间、commit 不带 skip-ci 标记)。
+- 分支 `project-slot-6-FLY-3150` 派发时 = `origin/main` `237429a88`;远端无此分支;head 只有已合入旧 PR #509。
+- 目标文件 `qa-sbx/fly2167/project-slot-6-FLY-3150.md` **已存在**,内容为上一轮残留 `FIXED-FOR-CLAIM 1` → 交付 #1 必须改回 `AWAITING-QA`(见 plan §2)。

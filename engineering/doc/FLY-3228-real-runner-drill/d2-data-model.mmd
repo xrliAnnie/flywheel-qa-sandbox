@@ -1,0 +1,23 @@
+classDiagram
+    direction LR
+    class 共享分支 {
+        project-slot-6-FLY-3228
+    }
+    class 演练文件 {
+        路径: qa-sbx/fly3228/分支名.md
+        第1行: QA-SBX FLY-3228 drill
+        第2行: AWAITING-QA 或 FIXED-FOR-CLAIM id
+    }
+    class 流程文档 {
+        engineering/doc/FLY-3228-real-runner-drill/
+        plan.md / progress.md
+        设计 HTML + 图
+    }
+    class QA验收 {
+        file-shape
+        fixed-for-claim
+        e2e_529_exempt = not_run, docs_only
+    }
+    共享分支 *-- 演练文件 : 演练内容(唯一)
+    共享分支 *-- 流程文档 : 记账产物(不进验收)
+    QA验收 ..> 演练文件 : 只读核验
