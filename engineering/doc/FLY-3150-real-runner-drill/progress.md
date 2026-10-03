@@ -1,18 +1,18 @@
 ---
 issue: FLY-3150
-phase: implement
-phaseCursor: 4/4
-updated: 2026-10-03T10:27:26.799Z
-nextStep: exact-head full CI, then complete needs_review
+phase: design
+phaseCursor: 1/3
+updated: 2026-10-03T13:24:28.955Z
+nextStep: update exploration §13 + plan for run 5743a2f5, then Codex design review
 chunks: []
 pointers:
   pr: https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/509
-handoff: attempt 2; PREV=a41e95dc0cb2961c6ebf014e73e2d1cf9edd262b; claim=1;
-  final HANDIN2 is the completion head
+handoff: run 5743a2f5 design; stale run-0750ae00 PREV a41e95dc0 / claim 1 are
+  NOT authority
 ---
 
 # FLY-3150 progress
-**phase**: implement (4/4)
-**next**: exact-head full CI, then complete needs_review
+**phase**: design (1/3)
+**next**: update exploration §13 + plan for run 5743a2f5, then Codex design review
 
-**handoff**: attempt 2; PREV=a41e95dc0cb2961c6ebf014e73e2d1cf9edd262b; claim=1; final HANDIN2 is the completion head
+**handoff**: run 5743a2f5 design; stale run-0750ae00 PREV a41e95dc0 / claim 1 are NOT authority
