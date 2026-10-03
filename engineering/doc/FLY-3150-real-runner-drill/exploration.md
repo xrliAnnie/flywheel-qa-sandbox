@@ -99,3 +99,5 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 | Linear | Done(Lead 裁定);不碰 |
 
 §7 的**陈旧 claim 行风险**原样成立,只是残留 id 变成 `4`:交付 #1 必须把第 2 行重置为 `AWAITING-QA`;否则若本轮 claim id 恰好是 4,重验会靠残留假通过。分支历史里所有同 message 的 hand-in/fix 提交与 progress.md 里的旧指针(run `251c390a` / `047a5977`)都不能当本轮 PREV。
+
+**设计评审(run `9d02bd8f`)**:Codex 3 轮(同一 thread `01a100c9…`)。R1 CHANGES_REQUESTED —— P1 hand-in/PR 混入 README 未授权的流程文档(部分采纳:流程文档受节点契约强制、必须随共享分支推送,无法拆出;改为在 plan §1 明示例外、限定到本文件夹,并加 PR 级"排除本文件夹后 diff 恰为目标文件"断言);P2 §2 把派发快照当实现起点(采纳,标为快照,实现节点重算 BASE)。R2 APPROVED(P3 信息性:plan §1 写的"两个流程提交"已过时 —— 实际以 `git log origin/main..HEAD` 为准,计数不影响任何断言;为保持已评审 blob 不变,不改 plan,在此记录)。R3 对绑定 blob `4d248f18…` 确认 APPROVED;`await-codex-gate design` 通过。

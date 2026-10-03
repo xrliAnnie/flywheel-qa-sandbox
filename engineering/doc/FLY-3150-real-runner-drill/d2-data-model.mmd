@@ -1,16 +1,8 @@
-stateDiagram-v2
-    direction LR
-    [*] --> 上一轮残留
-    上一轮残留 --> AWAITING_QA : 交付 #1 覆盖重置
-    AWAITING_QA --> FIXED_FOR_CLAIM : 返工只改第 2 行
-    FIXED_FOR_CLAIM --> [*] : 重验 pass
-    note right of 上一轮残留
-        第 2 行 = FIXED-FOR-CLAIM 1
-        不重置的话，本轮 id 若也是 1
-        重验会假通过
-    end note
-    note right of FIXED_FOR_CLAIM
-        第 2 行 = FIXED-FOR-CLAIM <id>
-        id 四处逐字一致:
-        QA 判定 / 返工提示词 / 文件 / 重验提示词
-    end note
+flowchart LR
+    B["分支 project-slot-5-FLY-3150"] --> T["演练文件<br/>qa-sbx/fly2167/project-slot-5-FLY-3150.md"]
+    B --> P["流程文档文件夹<br/>engineering/doc/FLY-3150-real-runner-drill/"]
+    T --> L1["第1行: QA-SBX FLY-2167 drill"]
+    T --> L2["第2行: AWAITING-QA 或 FIXED-FOR-CLAIM id"]
+    P --> X["exploration / plan / progress / design.html"]
+    T -. "QA 只验这里" .-> C["file-shape / fixed-for-claim / e2e_529_exempt"]
+    P -. "不进验收" .-> N["Runner 协议记账"]
