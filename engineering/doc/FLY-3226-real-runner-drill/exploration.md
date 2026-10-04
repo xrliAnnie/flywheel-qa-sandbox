@@ -58,3 +58,13 @@ run `4a9c615e` 已走完 design → implement → QA(claim `1`)→ merge,PR #546
 - 目标文件在 main 上 = `QA-SBX FLY-3226 drill` / `FIXED-FOR-CLAIM 1`(PR #546 残留)→ 交付 #1 仍是**重置**(diff 状态 `M`);若本轮 claim id 又是 `1`,交付 #2 后 PR 级演练净 diff 为空仍合法,返工由区间 patch `PREV..HANDIN2` 证明。
 - progress.md 原带 run `4a9c615e` 实现节点的 handoff(`PREV=86d50653…`、`IMPL2=b43dee8a6`、claim 1)。设计节点开工即用 `--handoff` 覆盖(提交 `0f4f817ca`);plan 写明这些指针本轮一律不认。
 - 结论:沿用已多轮评审通过的 plan 骨架,只更新本轮专属的快照、run id 与"旧指针"清单;设计 HTML 与两张图按本轮起点重画。
+
+## 8. 第六次派发(run `a1fb43f1`,exec `6df4dc76`,节点 `eng_design`,2026-10-04,slot-4)
+
+与前几轮不同:本轮是**通用 DAG**(设计节点 `eng_design` 只出设计,实现由后继节点做),且是在**仍 OPEN 的 PR #557** 分支上续跑(BRANCH CONTINUITY:不 force、在现有提交之上继续)。
+
+- 分支头 `6313c5e4f`(= PR #557 头,MERGEABLE);`origin/main` = `2067445f2`,与本练习单无关。
+- 分支上 `$F` 已是 `QA-SBX FLY-3226 drill` / `AWAITING-QA`(上一轮 run `0662a4ce` 交付 #1 `b10cfdc40`);main 上仍是残留 `FIXED-FOR-CLAIM 1`。
+- README 合同未变(blob `71e58f18…`)。
+- run `0662a4ce` 的 HANDIN1 / 设计评审 / CI / PR 正文里的 run 标记都是**旧证据**,本轮不认;progress handoff 已在开工时覆盖。
+- 结论:实现节点进入的是 plan §3 的"已就绪(重试)态"——内容提交可为空,只需刷新 ledger、证明头一致、更新 PR #557 正文为本轮 run,再交付。

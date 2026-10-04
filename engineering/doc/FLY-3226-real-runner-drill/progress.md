@@ -2,23 +2,19 @@
 issue: FLY-3226
 phase: implement
 phaseCursor: 2/2
-updated: 2026-10-04T11:11:10.076Z
-nextStep: Push claim-1 fix, re-open code review on new head, then exact-head CI
-  and needs_review handoff
+updated: 2026-10-04T19:15:28.206Z
+nextStep: Freeze exact head, push, run ci-full ensure, complete needs_review for
+  QA retest
 chunks: []
 pointers: {}
-handoff: "run=76b1635c implement rework attempt 2. Authoritative QA activation:
-  claim 1 on PREV/HANDIN1 4705c89e524c9cad0820e7a1fcffb87549810ad6. Changed only
-  qa-sbx/fly3226/project-slot-4-FLY-3226.md line 2 AWAITING-QA ->
-  FIXED-FOR-CLAIM 1; content commit b8b0c491e036ac895b419f770b039d61bb7772cb.
-  Adjacent queued/started/dead/superseded/retried/concurrent states are not
-  applicable to this two-line docs fixture; verified both pre-fix AWAITING-QA
-  and fixed exact-content states. Literal/path discovery found only
-  README/design-doc references, no executable tests."
+handoff: "run=a1fb43f1 exec=8c96f0b8-df68-445b-a86a-78c8fd8e2acb node=implement
+  attempt=2. QA claim 1 fixed: fixture is FIXED-FOR-CLAIM 1. Code review
+  APPROVED request 43901215-3556-40bb-938f-d3f6961a365a; LOW ledger cursor
+  advisory corrected in this write."
 ---
 
 # FLY-3226 progress
 **phase**: implement (2/2)
-**next**: Push claim-1 fix, re-open code review on new head, then exact-head CI and needs_review handoff
+**next**: Freeze exact head, push, run ci-full ensure, complete needs_review for QA retest
 
-**handoff**: run=76b1635c implement rework attempt 2. Authoritative QA activation: claim 1 on PREV/HANDIN1 4705c89e524c9cad0820e7a1fcffb87549810ad6. Changed only qa-sbx/fly3226/project-slot-4-FLY-3226.md line 2 AWAITING-QA -> FIXED-FOR-CLAIM 1; content commit b8b0c491e036ac895b419f770b039d61bb7772cb. Adjacent queued/started/dead/superseded/retried/concurrent states are not applicable to this two-line docs fixture; verified both pre-fix AWAITING-QA and fixed exact-content states. Literal/path discovery found only README/design-doc references, no executable tests.
+**handoff**: run=a1fb43f1 exec=8c96f0b8-df68-445b-a86a-78c8fd8e2acb node=implement attempt=2. QA claim 1 fixed: fixture is FIXED-FOR-CLAIM 1. Code review APPROVED request 43901215-3556-40bb-938f-d3f6961a365a; LOW ledger cursor advisory corrected in this write.
