@@ -1,13 +1,13 @@
 ---
 issue: FLY-3225
-phase: implement
-phaseCursor: 1/1
-updated: 2026-10-04T07:11:43.398Z
-nextStep: push, ci, complete needs_review
+phase: design
+phaseCursor: 2/6
+updated: 2026-10-04T07:53:17.216Z
+nextStep: design review (codex) on plan.md, then founder HTML
 chunks: []
 pointers: {}
 ---
 
 # FLY-3225 progress
-**phase**: implement (1/1)
-**next**: push, ci, complete needs_review
+**phase**: design (2/6)
+**next**: design review (codex) on plan.md, then founder HTML
