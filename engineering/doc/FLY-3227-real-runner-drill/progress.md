@@ -1,36 +1,25 @@
 ---
 issue: FLY-3227
 phase: implement
-phaseCursor: 2/5
-updated: 2026-10-04T11:23:01.116Z
-nextStep: "Fixture commit 0ff4b3991 resets only line 2 to AWAITING-QA. Expected
-  pre-edit cmp failed at line 2; post-edit/committed exact bytes PASS,
-  extra-line/trailing-space/old-claim/missing-final-newline negative comparisons
-  PASS; common-ancestor PR scope only target, BASE scope only target plus
-  ledger. Incorrect two-point local checker falsely included merged sibling
-  FLY-3224; fixed checker to approved common-ancestor method, no repository
-  change. pnpm lint exit 0 with 14 existing warnings in untouched files. git
-  grep old/new literals, full paths, names, parent directories found zero target
-  test consumers. Ten generic progress.md test matches EXCLUDED (unchanged
-  command/schema/path/resume behavior, generated data only):
-  packages/claude-runner/test/codex-daemon-adapter-helpers.test.ts;
-  packages/config/src/__tests__/progress-path-resolver.test.ts;
-  packages/config/src/__tests__/progress-schema.test.ts;
-  packages/edge-worker/src/__tests__/__snapshots__/Blueprint.fly1188-codex-prom\
-  pt.test.ts.snap; packages/edge-worker/src/__tests__/resume-mode.test.ts;
-  packages/flywheel-comm/src/commands/__tests__/progress.realgit.test.ts;
-  packages/flywheel-comm/src/commands/__tests__/progress.test.ts;
-  packages/teamlead/src/bridge/__tests__/progress-resume.test.ts;
-  packages/teamlead/src/bridge/__tests__/run-dispatcher-resume.test.ts;
-  packages/teamlead/src/bridge/__tests__/stale-approved-ship-reconciler.test.ts.
-  No TS/API/package changes: related/build/typechecks inapplicable; no local
-  full suite or new shell tests. .flywheel/config.yaml has no pre_handin.script.
-  Next: push current work and register effective code review with entire
-  local-test policy first in review task; no ordinary-head full CI."
+phaseCursor: 3/5
+updated: 2026-10-04T11:25:45.669Z
+nextStep: "Quota-resume reconciled clean/pushed HEAD
+  c18e78caa46a436dfdaa27a4416f628106dc38fc, TURN yours, no Lead instructions.
+  Fixture and local evidence unchanged from 2/5. Code review gate
+  993fa233-bb2f-4adb-800f-689988a0795d; registered request
+  c4da668b-6d5c-4d8b-8d75-8454837a3224 accepted, not skipped. Entire
+  local-test-policy first in gate task; injected current coordinator buildPrompt
+  also prepends canonical policy. This run PR opened for branch
+  project-slot-5-FLY-3227; do not use merged stale PR 544. Next: push ledger,
+  park on own question watcher while effective review pending; on wake first
+  TURN then check original gate and ack watcher. After effective APPROVED,
+  finalize ledger/head, update current PR body with one HANDIN1 full SHA, then
+  ci-full ensure frozen head and complete --route needs_review --pr current PR.
+  No full CI request yet, no Linear/room changes, no successor dispatch/merge."
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
-**phase**: implement (2/5)
-**next**: Fixture commit 0ff4b3991 resets only line 2 to AWAITING-QA. Expected pre-edit cmp failed at line 2; post-edit/committed exact bytes PASS, extra-line/trailing-space/old-claim/missing-final-newline negative comparisons PASS; common-ancestor PR scope only target, BASE scope only target plus ledger. Incorrect two-point local checker falsely included merged sibling FLY-3224; fixed checker to approved common-ancestor method, no repository change. pnpm lint exit 0 with 14 existing warnings in untouched files. git grep old/new literals, full paths, names, parent directories found zero target test consumers. Ten generic progress.md test matches EXCLUDED (unchanged command/schema/path/resume behavior, generated data only): packages/claude-runner/test/codex-daemon-adapter-helpers.test.ts; packages/config/src/__tests__/progress-path-resolver.test.ts; packages/config/src/__tests__/progress-schema.test.ts; packages/edge-worker/src/__tests__/__snapshots__/Blueprint.fly1188-codex-prompt.test.ts.snap; packages/edge-worker/src/__tests__/resume-mode.test.ts; packages/flywheel-comm/src/commands/__tests__/progress.realgit.test.ts; packages/flywheel-comm/src/commands/__tests__/progress.test.ts; packages/teamlead/src/bridge/__tests__/progress-resume.test.ts; packages/teamlead/src/bridge/__tests__/run-dispatcher-resume.test.ts; packages/teamlead/src/bridge/__tests__/stale-approved-ship-reconciler.test.ts. No TS/API/package changes: related/build/typechecks inapplicable; no local full suite or new shell tests. .flywheel/config.yaml has no pre_handin.script. Next: push current work and register effective code review with entire local-test policy first in review task; no ordinary-head full CI.
+**phase**: implement (3/5)
+**next**: Quota-resume reconciled clean/pushed HEAD c18e78caa46a436dfdaa27a4416f628106dc38fc, TURN yours, no Lead instructions. Fixture and local evidence unchanged from 2/5. Code review gate 993fa233-bb2f-4adb-800f-689988a0795d; registered request c4da668b-6d5c-4d8b-8d75-8454837a3224 accepted, not skipped. Entire local-test-policy first in gate task; injected current coordinator buildPrompt also prepends canonical policy. This run PR opened for branch project-slot-5-FLY-3227; do not use merged stale PR 544. Next: push ledger, park on own question watcher while effective review pending; on wake first TURN then check original gate and ack watcher. After effective APPROVED, finalize ledger/head, update current PR body with one HANDIN1 full SHA, then ci-full ensure frozen head and complete --route needs_review --pr current PR. No full CI request yet, no Linear/room changes, no successor dispatch/merge.
