@@ -1,19 +1,20 @@
 ---
 issue: FLY-3226
 phase: implement
-phaseCursor: 2/2
-updated: 2026-10-04T18:54:37.446Z
-nextStep: Freeze exact head, push, run ci-full ensure, then complete needs_review
+phaseCursor: 1/2
+updated: 2026-10-04T19:11:22.418Z
+nextStep: "Verify claim-1 patch, push PR #557, obtain effective code review,
+  freeze exact-head CI, complete needs_review"
 chunks: []
 pointers: {}
-handoff: "run=a1fb43f1 exec=8c96f0b8-df68-445b-a86a-78c8fd8e2acb node=implement.
-  HANDIN1 ready-state delivered on PR #557; code review APPROVED request
-  2adf2507-bd3b-4fd1-ad0a-1d2132d20f3d with one LOW advisory corrected in this
-  ledger write."
+handoff: run=a1fb43f1 exec=8c96f0b8-df68-445b-a86a-78c8fd8e2acb node=implement
+  attempt=2. QA claim 1 (qa_failed) bound to PREV
+  d5e730a48f3fbae2385411abf9f76fa7e95e1fc0; fixture changed to FIXED-FOR-CLAIM
+  1.
 ---
 
 # FLY-3226 progress
-**phase**: implement (2/2)
-**next**: Freeze exact head, push, run ci-full ensure, then complete needs_review
+**phase**: implement (1/2)
+**next**: Verify claim-1 patch, push PR #557, obtain effective code review, freeze exact-head CI, complete needs_review
 
-**handoff**: run=a1fb43f1 exec=8c96f0b8-df68-445b-a86a-78c8fd8e2acb node=implement. HANDIN1 ready-state delivered on PR #557; code review APPROVED request 2adf2507-bd3b-4fd1-ad0a-1d2132d20f3d with one LOW advisory corrected in this ledger write.
+**handoff**: run=a1fb43f1 exec=8c96f0b8-df68-445b-a86a-78c8fd8e2acb node=implement attempt=2. QA claim 1 (qa_failed) bound to PREV d5e730a48f3fbae2385411abf9f76fa7e95e1fc0; fixture changed to FIXED-FOR-CLAIM 1.
