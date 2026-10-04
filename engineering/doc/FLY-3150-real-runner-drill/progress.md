@@ -1,21 +1,25 @@
 ---
 issue: FLY-3150
-phase: design
-phaseCursor: 3/3
-updated: 2026-10-04T01:25:54.020Z
-nextStep: "implement run=417f5fe4: hand-in #1 resets line 2 FIXED-FOR-CLAIM 1 ->
-  AWAITING-QA per plan §3; reuse PR #517 (retitle to run 417f5fe4)"
+phase: implement
+phaseCursor: 2/4
+updated: 2026-10-04T01:29:17.825Z
+nextStep: "run=417f5fe4 hand-in #1: effective code review, exact-head CI,
+  needs_review completion on PR #517"
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
   pr: https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/517
-handoff: run=417f5fe4 design complete; plan approved (Codex R1 request 5ded3a1a,
-  blob aacd0896); design HTML published; sync merge 2bb23f05a precedes implement
-  BASE; run a6eb9810 pointers are NOT authority
+handoff: "run=417f5fe4 hand-in #1; BASE=a25b98d35a206fb98e1a1baf83f3a86a2c625394
+  IMPL1=2210678d81bb1602e1fab3a1bd1afeeeb9fffb0d; target exact two lines QA-SBX
+  FLY-2167 drill / AWAITING-QA; only line 2 reset; byte comparison red before
+  and green after; test discovery found no drill test, 11 generic progress
+  infrastructure test matches excluded because generated ledger data only; QA
+  planted fail pending, no QA fix context; final HANDIN1 will be in completion
+  report, no old run pointers."
 ---
 
 # FLY-3150 progress
-**phase**: design (3/3)
-**next**: implement run=417f5fe4: hand-in #1 resets line 2 FIXED-FOR-CLAIM 1 -> AWAITING-QA per plan §3; reuse PR #517 (retitle to run 417f5fe4)
+**phase**: implement (2/4)
+**next**: run=417f5fe4 hand-in #1: effective code review, exact-head CI, needs_review completion on PR #517
 
-**handoff**: run=417f5fe4 design complete; plan approved (Codex R1 request 5ded3a1a, blob aacd0896); design HTML published; sync merge 2bb23f05a precedes implement BASE; run a6eb9810 pointers are NOT authority
+**handoff**: run=417f5fe4 hand-in #1; BASE=a25b98d35a206fb98e1a1baf83f3a86a2c625394 IMPL1=2210678d81bb1602e1fab3a1bd1afeeeb9fffb0d; target exact two lines QA-SBX FLY-2167 drill / AWAITING-QA; only line 2 reset; byte comparison red before and green after; test discovery found no drill test, 11 generic progress infrastructure test matches excluded because generated ledger data only; QA planted fail pending, no QA fix context; final HANDIN1 will be in completion report, no old run pointers.
