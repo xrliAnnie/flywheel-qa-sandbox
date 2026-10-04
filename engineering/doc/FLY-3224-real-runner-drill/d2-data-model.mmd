@@ -1,0 +1,12 @@
+flowchart TD
+    M["main:没有本演练文件"] --> B["分支 project-slot-2-FLY-3224"]
+    B --> T["演练文件<br/>qa-sbx/fly3224/project-slot-2-FLY-3224.md"]
+    B --> P["流程文档文件夹<br/>engineering/doc/FLY-3224-real-runner-drill/"]
+    T --> L1["第 1 行: QA-SBX FLY-3224 drill"]
+    T --> L2["第 2 行: AWAITING-QA 或 FIXED-FOR-CLAIM id"]
+    P --> X["exploration / plan / progress / design.html"]
+    T -. "QA 只验这里" .-> C["file-shape / fixed-for-claim / e2e_529_exempt"]
+    P -. "不进验收" .-> N["Runner 协议记账"]
+    T --> A{"PR 级检查:排除流程文档后<br/>与 main 的差异"}
+    A -- "恰好演练文件 + 字节精确" --> OK["通过"]
+    A -- "为空 / 出现其他路径 / 字节不符" --> STOP["停,不交付"]
