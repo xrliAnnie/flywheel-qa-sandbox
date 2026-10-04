@@ -11,6 +11,7 @@ Issue: FLY-3225 (https://linear.app/geoforge3d/issue/FLY-3225/qa-sbx-fly-3225-re
 - 不碰 Linear issue（不改状态、不评论、不加 label）。
 - 不在演练内部署任何 QA 房间（529 room）。
 - 不写研究文档（README 明确：一份短 plan 就够）；因此本文件夹只有 `plan.md`、`progress.md` 和给创始人看的设计 HTML。
+- 本房间没有人类 Lead：一切信息都在 README 里，**不向 Lead 提问**、不等待人工答复；确有疑问时由演练驱动器（drill driver）按 README 的规则作答。
 
 ## 2. 实施步骤（给 implement 节点）
 
@@ -23,6 +24,8 @@ Issue: FLY-3225 (https://linear.app/geoforge3d/issue/FLY-3225/qa-sbx-fly-3225-re
 
 ## 3. QA 验收映射
 
+**判轮依据**：只看本次 prompt。prompt 里**没有** `QA re-verification context` ＝ 首轮（`fixed-for-claim` 一定 fail）；有 `QA re-verification context` ＝ 复验轮（`<id>` 取自其中的 `Previous QA verdict: claim <id>`）。不要用历史轮次或分支上的旧提交来推断。
+
 | 准则 id | 首轮预期 | 复验轮预期 |
 |---|---|---|
 | `file-shape` | pass：文件存在且第 1 行恰为 `QA-SBX FLY-3225 drill` | 同左 |
@@ -34,7 +37,8 @@ Issue: FLY-3225 (https://linear.app/geoforge3d/issue/FLY-3225/qa-sbx-fly-3225-re
 ## 4. 验证（本地，implement 节点执行）
 
 - `wc -l` 为 2；`sed -n 1p` 等于 `QA-SBX FLY-3225 drill`；`sed -n 2p` 等于期望的第 2 行。
-- `git diff --name-only <base>..HEAD` 在 qa-sbx 之外只允许出现本设计/实现阶段的 `engineering/doc/FLY-3225-real-runner-drill/` 文档；代码目录零改动。
+- **实施范围**：以设计节点交付完成时的 HEAD 为实施基线 `<impl-base>`（`git rev-parse HEAD`，在开始实现之前取）。首次实现及之后每次修复，`git diff --name-only <impl-base>..HEAD` 必须**恰好**只有一行：`qa-sbx/fly3225/<git 分支名>.md`。其它任何路径（含 `engineering/doc/FLY-3225-real-runner-drill/` 下的设计文档、兄弟练习单 `qa-sbx/fly2167`/`fly3224`/`fly3226`…、各 README、代码目录）一律零改动；实现节点不新增实现说明，也不回改设计文档。
+- 修复轮（`FIXED-FOR-CLAIM <id>`）相对首轮提交只改第 2 行：`git diff <首轮提交>..HEAD -- qa-sbx/fly3225/<分支名>.md` 只含第 2 行的一处替换。
 - 提交信息与 PR 标题 grep 不到 skip-ci 标记。
 
 ## 5. 风险与回退
@@ -44,7 +48,7 @@ Issue: FLY-3225 (https://linear.app/geoforge3d/issue/FLY-3225/qa-sbx-fly-3225-re
 | 文件名与分支名不一致 | 一律用 `git branch --show-current` 现取，不硬编码 |
 | 误把 `FIXED-FOR-CLAIM` 在首轮写进去 | 首轮只写 `AWAITING-QA`；没有 `QA fix context` 就不改第 2 行 |
 | 复制了仓库历史里的 `[skip ci]` 提交风格 | 提交前 `git log -1 --format=%B \| grep -iE 'skip'` 必须无输出 |
-| 越界改动 | 改动文件列表只含上述一个 markdown（+ 文档目录） |
+| 越界改动 | 实施基线之后的改动文件列表恰好只有 `qa-sbx/fly3225/<分支名>.md` 一个文件（见 §4） |
 
 回退：删除该 markdown 文件即可，无数据、无服务、无迁移。
 
