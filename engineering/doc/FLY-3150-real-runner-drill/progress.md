@@ -1,34 +1,41 @@
 ---
 issue: FLY-3150
 phase: implement
-phaseCursor: 4/5
-updated: 2026-10-04T07:21:31.772Z
-nextStep: Freeze/push final ledger HEAD, validate file/ranges/PR scope, ci-full
-  ensure PR 540 exact head; after exit 0 report HANDIN2 and complete
-  needs_review PR 540, then park
+phaseCursor: 5/6
+updated: 2026-10-04T09:07:57.748Z
+nextStep: Push frozen HANDIN2, update PR, register effective code review and
+  ci-full ensure; after passing gates complete needs_review and report
+  instruction receipt
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
-  pr: https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/540
-handoff: "run=ebfb0035 slot-1 implement attempt=2 claim=1
-  PREV=75d8a44ea94eecd1d24a03b8cc84ec605a299a7d
-  BASE2=75d8a44ea94eecd1d24a03b8cc84ec605a299a7d
-  IMPL2=2e2221d6d7919d48918a51327ee51d01459c4740. Fresh code review effective
-  APPROVED question=dfcf74a5-412a-4dbf-a72f-26a187093569
-  request=c6b1e304-a31e-42dd-bd88-a8a09d85fd32
-  reviewedHead=578b083cd051f06598ba2a4c0216979051ce40db. LOW advisories
-  forwarded. PR 540 OPEN/MERGEABLE. Exact claim marker and one-line PREV patch
-  PASS. Later commits only progress.md. Net drill PR diff empty because
-  merge-base has identical bytes, allowed by plan. Zero discovered
-  tests/exclusions. Adjacent paths: none applicable; markdown only, no runtime
-  logic. e2e_529_exempt=not_run/docs_only. No pre_handin script. Freeze/push
-  this final ledger HEAD; no commits after ci-full ensure. Final HANDIN2 appears
-  only in completion report. Resume
-  state=/tmp/FLY-3150-25636bfb-implement.json."
+  pr: "543"
+handoff: "run=4793ff8b-9820-4d87-b8ef-94468be88fb4 slot-1 implement attempt=2
+  exec=5a958624-fd6c-4b14-a752-45756ef33e6f TURN epoch=4. QA claim=1
+  sourceAttempt=1 sourceExecution=9c531ad9-3459-415b-8f57-2769ad18dbe2.
+  PREV=HANDIN1=7b0b2ae029073720499688cb3ed746812ab82205
+  BASE2=7b0b2ae029073720499688cb3ed746812ab82205
+  IMPL2=2eb48520946d9b6c86416bd56993426015e8725f. HANDIN1-to-current patch
+  exactly -AWAITING-QA/+FIXED-FOR-CLAIM 1. Exact two-line blob, target-only fix
+  commit, ledger-only later range, no merges, PR scope and whitespace guards
+  passed. Empty fixture PR diff is valid: merge-base blob already exact
+  FIXED-FOR-CLAIM 1; the actual rework is proven by HANDIN1 patch. Adjacent
+  states verified: initial awaiting state, exact fixed state/already-fixed retry
+  equality, incorrect-claim mismatch and same-claim main net-diff case. No
+  runtime logic changed, no queued/started/dead/concurrent paths applicable.
+  Discovery: old/new literals, full path, filename, parent had no test matches;
+  no excluded tests. Tracked-file pnpm lint passed 1894 files/14 existing
+  warnings. pre_handin.script absent. e2e_529_exempt remains not_run/docs_only;
+  only fixture/process markdown changed, no room deployment. Review gate
+  question=c9ae9683-1f97-4a7f-9079-371a6ca09f08 open, register new review at
+  final frozen head. Lead instruction [lead-instruction
+  fa3bad8e-cd37-4a39-8424-276fbcfb3cef] pending final gates and completion
+  receipt. Final HANDIN2 only in PR/report, not ledger; no further commits after
+  this freeze unless findings require changes."
 ---
 
 # FLY-3150 progress
-**phase**: implement (4/5)
-**next**: Freeze/push final ledger HEAD, validate file/ranges/PR scope, ci-full ensure PR 540 exact head; after exit 0 report HANDIN2 and complete needs_review PR 540, then park
+**phase**: implement (5/6)
+**next**: Push frozen HANDIN2, update PR, register effective code review and ci-full ensure; after passing gates complete needs_review and report instruction receipt
 
-**handoff**: run=ebfb0035 slot-1 implement attempt=2 claim=1 PREV=75d8a44ea94eecd1d24a03b8cc84ec605a299a7d BASE2=75d8a44ea94eecd1d24a03b8cc84ec605a299a7d IMPL2=2e2221d6d7919d48918a51327ee51d01459c4740. Fresh code review effective APPROVED question=dfcf74a5-412a-4dbf-a72f-26a187093569 request=c6b1e304-a31e-42dd-bd88-a8a09d85fd32 reviewedHead=578b083cd051f06598ba2a4c0216979051ce40db. LOW advisories forwarded. PR 540 OPEN/MERGEABLE. Exact claim marker and one-line PREV patch PASS. Later commits only progress.md. Net drill PR diff empty because merge-base has identical bytes, allowed by plan. Zero discovered tests/exclusions. Adjacent paths: none applicable; markdown only, no runtime logic. e2e_529_exempt=not_run/docs_only. No pre_handin script. Freeze/push this final ledger HEAD; no commits after ci-full ensure. Final HANDIN2 appears only in completion report. Resume state=/tmp/FLY-3150-25636bfb-implement.json.
+**handoff**: run=4793ff8b-9820-4d87-b8ef-94468be88fb4 slot-1 implement attempt=2 exec=5a958624-fd6c-4b14-a752-45756ef33e6f TURN epoch=4. QA claim=1 sourceAttempt=1 sourceExecution=9c531ad9-3459-415b-8f57-2769ad18dbe2. PREV=HANDIN1=7b0b2ae029073720499688cb3ed746812ab82205 BASE2=7b0b2ae029073720499688cb3ed746812ab82205 IMPL2=2eb48520946d9b6c86416bd56993426015e8725f. HANDIN1-to-current patch exactly -AWAITING-QA/+FIXED-FOR-CLAIM 1. Exact two-line blob, target-only fix commit, ledger-only later range, no merges, PR scope and whitespace guards passed. Empty fixture PR diff is valid: merge-base blob already exact FIXED-FOR-CLAIM 1; the actual rework is proven by HANDIN1 patch. Adjacent states verified: initial awaiting state, exact fixed state/already-fixed retry equality, incorrect-claim mismatch and same-claim main net-diff case. No runtime logic changed, no queued/started/dead/concurrent paths applicable. Discovery: old/new literals, full path, filename, parent had no test matches; no excluded tests. Tracked-file pnpm lint passed 1894 files/14 existing warnings. pre_handin.script absent. e2e_529_exempt remains not_run/docs_only; only fixture/process markdown changed, no room deployment. Review gate question=c9ae9683-1f97-4a7f-9079-371a6ca09f08 open, register new review at final frozen head. Lead instruction [lead-instruction fa3bad8e-cd37-4a39-8424-276fbcfb3cef] pending final gates and completion receipt. Final HANDIN2 only in PR/report, not ledger; no further commits after this freeze unless findings require changes.
