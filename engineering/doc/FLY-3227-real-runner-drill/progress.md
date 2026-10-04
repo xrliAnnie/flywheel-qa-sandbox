@@ -1,16 +1,18 @@
 ---
 issue: FLY-3227
 phase: design
-phaseCursor: 3/6
-updated: 2026-10-04T08:28:32.437Z
-nextStep: "Design review accepted: question=825ac193-dbab-4673-a0fd-2131ef6bf875
-  request=babdb88f-4dc9-40f0-9b38-f761f9fa8d07
-  plan=engineering/doc/FLY-3227-real-runner-drill/plan.md; STE disabled; finish
-  and verify HTML while pending."
+phaseCursor: 4/6
+updated: 2026-10-04T08:35:54.016Z
+nextStep: Final plan APPROVED, q=790725c1-57d5-4536-b0cd-3f11ae3240dc
+  req=d4e8dd39-af5d-4dbc-818a-c1b792660dbb, no findings. Chromium HTML behavior
+  checks PASS, lint exit 0 (14 existing warnings). STE disabled. Commit/push
+  final HTML, SVG and Mermaid source; publish-only and report hosted URL before
+  completion. Generic diagram checker expects motion scripts; required comment
+  script verified directly under nonce CSP instead.
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
-**phase**: design (3/6)
-**next**: Design review accepted: question=825ac193-dbab-4673-a0fd-2131ef6bf875 request=babdb88f-4dc9-40f0-9b38-f761f9fa8d07 plan=engineering/doc/FLY-3227-real-runner-drill/plan.md; STE disabled; finish and verify HTML while pending.
+**phase**: design (4/6)
+**next**: Final plan APPROVED, q=790725c1-57d5-4536-b0cd-3f11ae3240dc req=d4e8dd39-af5d-4dbc-818a-c1b792660dbb, no findings. Chromium HTML behavior checks PASS, lint exit 0 (14 existing warnings). STE disabled. Commit/push final HTML, SVG and Mermaid source; publish-only and report hosted URL before completion. Generic diagram checker expects motion scripts; required comment script verified directly under nonce CSP instead.
