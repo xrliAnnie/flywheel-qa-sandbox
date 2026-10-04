@@ -269,3 +269,5 @@ TURN:`yours phase=design epoch=1 run=417f5fe4… node=eng_design attempt=1`。�
 1. 陈旧 claim 行风险成立(残留 id `1`):交付 #1 必须把第 2 行重置为 `AWAITING-QA`,不能走幂等跳过分支。
 2. **新发现的边界**:main 上的 slot-5 目标文件已是 `FIXED-FOR-CLAIM 1`。若本轮 QA claim id 又是 `1`,交付 #2 后 PR 级演练净 diff 为空 —— 旧计划里"恰好一行目标文件"的 PR 级断言会误判失败(run `a6eb9810` 的 PR 正文已注意到这一现象)。plan §1 把断言改为"只能为空或恰好目标文件 + HEAD blob 精确 + 为空仅当合并基已含期望字节",返工真实发生由区间 patch(plan §3 交付 #2 第 6(b) 步)证明。
 3. 上一轮的 HANDIN1 `9e16f93d8…`、HANDIN2 `187d68521…`、claim `1`、代码评审与 CI 都**不是**本轮证据;PR #517 复用并改标题/正文为本轮 run id。
+
+**设计评审(run `417f5fe4`)**:Codex 1 轮(thread `01a10467-859a…`,turn `01a10467-8b4d…`,gpt-6-astra/xhigh,request `5ded3a1a…`)。R1 对绑定 blob `aacd0896…` 直接 APPROVED(P1/P2/P3 = 0/0/0)。评审者在仓库外临时 git 夹具里用 `/bin/bash`、Homebrew bash、`/bin/zsh` 实跑:交付 #1 重置与重试、交付间 ledger、返工提交后及 ledger 后重试、claim `1` 的空 PR 级 diff、claim `2` 的单文件 PR 级 diff、两次交付中的 main 冲突同步、目录外冲突 abort、未跟踪目标拒绝,全部符合 plan §1 / §3 / §3.1;并用独立对象库重算 `2bb23f05a` 的两父合并,确认恰 8 个冲突且全在本文件夹。评审者声明的边界:未推送、未改 PR、未触发 CI(由实现节点核验远端/PR/CI 头)。`review-round design` 记录 match=yes;`await-codex-gate design` 通过;thread 已归档。另:预检时误把 `task --help` 当提示词开了无关 thread `01a10466-c7ec…`,不是评审轮次,已归档。
