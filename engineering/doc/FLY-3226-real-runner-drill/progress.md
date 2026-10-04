@@ -1,20 +1,18 @@
 ---
 issue: FLY-3226
-phase: implement
-phaseCursor: 2/2
-updated: 2026-10-04T19:15:28.206Z
-nextStep: Freeze exact head, push, run ci-full ensure, complete needs_review for
-  QA retest
+phase: design
+phaseCursor: 1/4
+updated: 2026-10-04T20:03:49.914Z
+nextStep: Write exploration + plan for run 813f0792
 chunks: []
 pointers: {}
-handoff: "run=a1fb43f1 exec=8c96f0b8-df68-445b-a86a-78c8fd8e2acb node=implement
-  attempt=2. QA claim 1 fixed: fixture is FIXED-FOR-CLAIM 1. Code review
-  APPROVED request 43901215-3556-40bb-938f-d3f6961a365a; LOW ledger cursor
-  advisory corrected in this write."
+handoff: "run=813f0792 exec=b83a17a2 node=eng_design attempt=1. Fresh run from
+  main baace76a5; main target file = FIXED-FOR-CLAIM 1 (residue of merged PR
+  #557). Old run a1fb43f1/claim 1 evidence is NOT for this run."
 ---
 
 # FLY-3226 progress
-**phase**: implement (2/2)
-**next**: Freeze exact head, push, run ci-full ensure, complete needs_review for QA retest
+**phase**: design (1/4)
+**next**: Write exploration + plan for run 813f0792
 
-**handoff**: run=a1fb43f1 exec=8c96f0b8-df68-445b-a86a-78c8fd8e2acb node=implement attempt=2. QA claim 1 fixed: fixture is FIXED-FOR-CLAIM 1. Code review APPROVED request 43901215-3556-40bb-938f-d3f6961a365a; LOW ledger cursor advisory corrected in this write.
+**handoff**: run=813f0792 exec=b83a17a2 node=eng_design attempt=1. Fresh run from main baace76a5; main target file = FIXED-FOR-CLAIM 1 (residue of merged PR #557). Old run a1fb43f1/claim 1 evidence is NOT for this run.
