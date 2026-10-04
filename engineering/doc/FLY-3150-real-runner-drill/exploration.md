@@ -1,7 +1,7 @@
 # FLY-3150 真 Runner 通用演练(529 房间) — 探索
 
 Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-04(2026-10-01 初版;§7–§21 为历史 —— slot-1 / slot-5 / slot-6 / slot-2 / slot-4 各轮;§22 为历史;§23 为本轮 run `76a1d8a2`,slot-1)
+日期: 2026-10-04(2026-10-01 初版;§7–§21 为历史 —— slot-1 / slot-5 / slot-6 / slot-2 / slot-4 各轮;§22 为历史;§23–§25 为历史;§26 为本轮 run `46163449`,slot-1)
 基于: 无
 
 ## 1. 任务来源与唯一权威
@@ -411,3 +411,21 @@ TURN:`yours phase=design epoch=1 run=6f9cf806… node=eng_design attempt=1`(exec
 **结论**:与 §24 不同形 —— 陈旧 `FIXED-FOR-CLAIM 1` 已在分支上被上一轮重置,本轮交付 #1 无需再提交目标文件(plan §3 第 2 步跳过分支),但 PR 级断言、账本范围核验与 `run=6f9cf806 HANDIN1=<sha>` 照常。PR #565 上一轮的 HANDIN1、代码评审、CI、QA 结论与任何 claim id 都不是本轮证据。
 
 **设计评审(run `6f9cf806`)**:Codex(gpt-6-luna/xhigh,thread `01a10922-91a5…`,turn `01a10922-9686…`,request `a8851c79…`)对绑定 blob `76a48d2e…`(commit `23a698600`)第 1 轮即 APPROVED(P1/P2/P3 = 0/0/0),回合正常 `Turn completed`;核对 README blob、HEAD(`AWAITING-QA`)与 main(`FIXED-FOR-CLAIM 1`)上目标文件字节、合并提交 `1bf3a8aaa` 祖先关系、旧指针排除与 `## 查询与索引` 的「不适用」。边界:评审时 `gh pr view 565` 因网络失败未能实时确认 PR 状态,由实现节点交付时重查。`review-round` 记 r1,`await-codex-gate design` 通过。
+
+## 26. 本次派发审计(run `46163449`,2026-10-04,slot-1)
+
+TURN:`yours phase=design epoch=1 run=46163449… node=eng_design attempt=1`(exec `7d3952ba`)。§25 是 run `6f9cf806`,它已走完 交付 #1(跳过分支)→ QA 第 1 轮 claim `1` → 交付 #2(`ca7cccf28`,`FIXED-FOR-CLAIM 1`),分支停在其 implement 3/4 ledger 头 `0cf6941a3`;本轮是同一分支上的**新 run**,继续在其上工作,不 force-push。
+
+| 项 | 结果 |
+|---|---|
+| 分支头(派发时) | `0cf6941a3` = `origin/project-slot-1-FLY-3150` = PR #565 头 |
+| `origin/main` | `39754a419`,已是本分支祖先 → 无需同步合并 |
+| 远端分支 / PR | PR #565 OPEN / MERGEABLE(标题仍是 run `6f9cf806`)→ 本轮交付 #1 复用 #565(`gh pr edit` 改标题 / 正文);其余同名 PR 已合入或关闭 |
+| 目标文件 | HEAD 上 = `QA-SBX FLY-2167 drill` / `FIXED-FOR-CLAIM 1`(陈旧,blob `07bc88bb…`);main 上字节相同 → 交付 #1 走**正常分支**重置为 `AWAITING-QA` |
+| README | blob `1de5e367…`,未变 |
+| progress.md | 派发时是 run `6f9cf806` 的 implement 3/4(旧 `PREV=27069dae0` / `IMPL2=ca7cccf28`);本节点已用 `--handoff` 覆盖为本轮 run(提交 `fe77f1363`),`pr` 指针仍 `565` |
+| 收件箱 | 无 Lead 指令 |
+| onboard skill | 不存在 → 直接 `stage set brainstorm` |
+| Linear | Done(Lead 裁定);不碰 |
+
+**结论**:与 §24 同形(陈旧 `FIXED-FOR-CLAIM 1` 必须在交付 #1 重置),差别只是复用 OPEN PR #565 而不是开新 PR。PR #565 上一轮的任何 HANDIN、claim id、评审、CI、QA 结论都不是本轮证据。
