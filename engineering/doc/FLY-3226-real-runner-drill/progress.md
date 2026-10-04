@@ -1,20 +1,17 @@
 ---
 issue: FLY-3226
-phase: implement
-phaseCursor: 2/2
-updated: 2026-10-04T21:39:41.835Z
-nextStep: "Verify rework range, push PR #563, obtain fresh code review, and
-  freeze exact-head CI"
+phase: design
+phaseCursor: 0/4
+updated: 2026-10-04T23:19:57.190Z
+nextStep: Rewrite exploration/plan for run bea81b98
 chunks: []
 pointers: {}
-handoff: run=9ef89593 exec=5277f846 node=eng_design done. Plan blob 59d054e5
-  APPROVED r1 (request 0fd8bd66, thread 01a108c4). Main target = FIXED-FOR-CLAIM
-  1 residue; hand-in 1 is a reset. Design HTML
-  http://127.0.0.1:50980/fw-reports-aa168e/r/20568da1904584508bbacd6a39c05c30/
+handoff: run=bea81b98 exec=5bf049cc node=eng_design started; prior run handoffs
+  are stale. Main target = FIXED-FOR-CLAIM 1 residue (reset needed).
 ---
 
 # FLY-3226 progress
-**phase**: implement (2/2)
-**next**: Verify rework range, push PR #563, obtain fresh code review, and freeze exact-head CI
+**phase**: design (0/4)
+**next**: Rewrite exploration/plan for run bea81b98
 
-**handoff**: run=9ef89593 exec=5277f846 node=eng_design done. Plan blob 59d054e5 APPROVED r1 (request 0fd8bd66, thread 01a108c4). Main target = FIXED-FOR-CLAIM 1 residue; hand-in 1 is a reset. Design HTML http://127.0.0.1:50980/fw-reports-aa168e/r/20568da1904584508bbacd6a39c05c30/
+**handoff**: run=bea81b98 exec=5bf049cc node=eng_design started; prior run handoffs are stale. Main target = FIXED-FOR-CLAIM 1 residue (reset needed).
