@@ -1,7 +1,7 @@
 # FLY-3226 真 Runner 通用演练(529 房间) — 实施计划
 Issue: FLY-3226 (https://linear.app/geoforge3d/issue/FLY-3226/qa-sbx-fly-3226-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-04(本次派发 run `4a9c615e`,exec `e261dee3`,slot-4;骨架沿用 run `fee0ab7d` 已评审通过的"main 残留"结构)
-基于: exploration.md §5–§6(README 规定"一份短 plan 足够,不需要 research 文档")
+日期: 2026-10-04(本次派发 run `76b1635c`,exec `adebe138`,slot-4;骨架沿用 run `fee0ab7d` / `4a9c615e` 已评审通过的"main 残留"结构)
+基于: exploration.md §5–§7(README 规定"一份短 plan 足够,不需要 research 文档")
 
 ## 1. 范围
 
@@ -14,15 +14,15 @@ Issue: FLY-3226 (https://linear.app/geoforge3d/issue/FLY-3226/qa-sbx-fly-3226-re
 - **PR 级演练范围断言**(两次交付都跑,记 `X=':(exclude)engineering/doc/FLY-3226-real-runner-drill'`):
   1. `git diff --name-only origin/main...<交付头> -- . "$X"` 的输出**只能**是空或恰好一行 `"$F"`;出现其他路径 → 停,不交付。
   2. `git show <交付头>:"$F"` 逐字节等于本次交付的期望两行(每行以 `\n` 结尾,共两行)。
-  3. 输出为空**只在**合并基 `git merge-base origin/main <交付头>` 上的 `"$F"` 已逐字节等于本次期望两行时才合法。main 上残留的正是 `FIXED-FOR-CLAIM 1`:交付 #1 期望 `AWAITING-QA`,所以交付 #1 **必须**恰好一行 `"$F"`;交付 #2 若本轮 claim id 也是 `1`,PR 级演练净 diff 为空是预期结果,返工由 §3 交付 #2 第 6(b) 步的区间 patch 证明。
+  3. 输出为空**只在**合并基 `git merge-base origin/main <交付头>` 上的 `"$F"` 已逐字节等于本次期望两行时才合法。main 上残留(PR #546)的正是 `FIXED-FOR-CLAIM 1`:交付 #1 期望 `AWAITING-QA`,所以交付 #1 **必须**恰好一行 `"$F"`;交付 #2 若本轮 claim id 也是 `1`,PR 级演练净 diff 为空是预期结果,返工由 §3 交付 #2 第 6(b) 步的区间 patch 证明。
 
 ## 2. 本轮起点(派发时快照,实现节点自己重算)
 
-- 派发起点 `eb3f48ace`;`origin/main` 已前进到 `24d94e6fa`,领先两笔无关提交:`7ed21ce86`(FLY-3150,PR #543,只碰 FLY-3150 的演练与流程文档)和 `24d94e6fa`(FLY-3227,PR #544,只碰 `qa-sbx/fly3227/` 与 `engineering/doc/FLY-3227-*`),都没碰本轮目标文件和本轮流程文档目录。§1 的断言用三点 `origin/main...<交付头>`(按合并基比较),main 前进不影响判定;不主动同步,只按 §3.1 处理。
-- 派发时远端无本分支;同名 PR #539、#541 都已 MERGED → 交付 #1 开新 PR。设计节点会把自己的流程文档提交(不含 `"$F"`)普通推送到 `origin/project-slot-4-FLY-3226`,所以实现节点看到的远端分支头 = 设计节点最后一次提交,第 7 步照旧普通快进推送。
-- `HEAD:"$F"` = `QA-SBX FLY-3226 drill` / `FIXED-FOR-CLAIM 1`(PR #541 残留)。所以**交付 #1 走重置分支**:HEAD blob ≠ `AWAITING-QA` 两行 → 必须覆盖写并提交(diff 状态 `M`)。跳过重置的风险:本轮 claim id 恰好又是 `1` 时,重验会靠残留假通过,返工回路实际没跑。
-- 设计节点自己的流程文档提交(含 `3ceb80d78` 的 ledger 覆盖)都在实现节点 `BASE` 之前,不进入交付区间。
-- **旧指针一律不认**:PR #539 / #541,main 历史 / 旧 progress.md 里上两轮的 HANDIN / PREV(`e36c698…`、`2647ad8d…`)/ `IMPL2`(`e89cfc44…`)/ claim id / 代码评审(`b0fa5bf4…` 等)/ CI,都不是本轮 BASE / PREV / claim id。判定第几次交付只看**本轮**提示词有没有 "QA fix context";交付 #2 的 PREV 只认本轮交付 #1 摘要里的 `run=4a9c615e HANDIN1=<sha>`。
+- 派发起点 = `origin/main` = `2de71c2e2`(PR #546 合入点),本地与 main 无差异。§1 的断言用三点 `origin/main...<交付头>`(按合并基比较),main 之后若前进不影响判定;不主动同步,只按 §3.1 处理。
+- 派发时远端无本分支;同名 PR #539、#541、#546 都已 MERGED → 交付 #1 开新 PR。设计节点会把自己的流程文档提交(不含 `"$F"`)普通推送到 `origin/project-slot-4-FLY-3226`,所以实现节点看到的远端分支头 = 设计节点最后一次提交,第 7 步照旧普通快进推送。
+- `HEAD:"$F"` = `QA-SBX FLY-3226 drill` / `FIXED-FOR-CLAIM 1`(PR #546 残留)。所以**交付 #1 走重置分支**:HEAD blob ≠ `AWAITING-QA` 两行 → 必须覆盖写并提交(diff 状态 `M`)。跳过重置的风险:本轮 claim id 恰好又是 `1` 时,重验会靠残留假通过,返工回路实际没跑。
+- 设计节点自己的流程文档提交(含 `0f4f817ca` 的 ledger 覆盖)都在实现节点 `BASE` 之前,不进入交付区间。
+- **旧指针一律不认**:PR #539 / #541 / #546,main 历史 / 旧 progress.md 里前三轮的 HANDIN / PREV(`e36c698…`、`2647ad8d…`、`86d50653…`)/ `IMPL2`(`e89cfc44…`、`b43dee8a6`)/ claim id / 代码评审 / CI,都不是本轮 BASE / PREV / claim id。判定第几次交付只看**本轮**提示词有没有 "QA fix context";交付 #2 的 PREV 只认本轮交付 #1 摘要里的 `run=76b1635c HANDIN1=<sha>`。
 
 ## 3. 实现节点
 
@@ -35,7 +35,7 @@ Issue: FLY-3226 (https://linear.app/geoforge3d/issue/FLY-3226/qa-sbx-fly-3226-re
 4. 只 `git add "$F"`,提交 `docs(qa-sbx): FLY-3226 drill hand-in`。
 5. 冻结 `IMPL1=$(git rev-parse HEAD)`(重试态 `IMPL1=BASE`)。再从仓库根写 ledger:`node "$FLYWHEEL_COMM_CLI" progress --exec-id "$FLYWHEEL_EXEC_ID" --file "$L" --phase implement --cursor 1/2 --next "<下一步>" --handoff "<本轮已知信息>"` —— 它**自行** path-limited 提交 `$L`,不要手动 add/commit;`git status --porcelain` 为空后才冻结 `HANDIN1=$(git rev-parse HEAD)`。
 6. 核验:(a) **实现范围** `git diff --name-status $BASE..$IMPL1`:重置态恰好一行 `M "$F"`;重试态为空且 `git show $BASE:"$F"` 已逐字节等于 `AWAITING-QA` 两行;(b) 重置态下 `git diff $BASE..$IMPL1 -- "$F"` 的 patch 只改第 2 行(`-<BASE 第 2 行原值>` / `+AWAITING-QA`,本轮原值 `FIXED-FOR-CLAIM 1`);(c) **账本范围** `git diff --name-only $IMPL1..$HANDIN1` 为空或恰好 `"$L"`,且 `git rev-list --merges $BASE..$HANDIN1` 为空;(d) §1 的 PR 级断言对 `$HANDIN1` 通过(本轮期望恰好一行 `"$F"`)。任一不过 → 停,不交付。
-7. `git push -u origin HEAD`(普通推送,不 force)。PR:`gh pr list --head project-slot-4-FLY-3226 --state open --json number --jq '.[0].number'`;有 OPEN PR 就 `gh pr edit` 复用,没有就 `gh pr create --base main --head project-slot-4-FLY-3226`,标题 `FLY-3226 QA-SBX FLY-3226 real-runner drill (run 4a9c615e)`,正文写 Linear issue 链接、本轮 run id 与本轮核验结果。确认远端分支头 / PR 头 / CI 都在 `$HANDIN1`,交付;**交付摘要写明 `run=4a9c615e HANDIN1=<完整 SHA>`**(返工唯一 PREV 来源)。
+7. `git push -u origin HEAD`(普通推送,不 force)。PR:`gh pr list --head project-slot-4-FLY-3226 --state open --json number --jq '.[0].number'`;有 OPEN PR 就 `gh pr edit` 复用,没有就 `gh pr create --base main --head project-slot-4-FLY-3226`,标题 `FLY-3226 QA-SBX FLY-3226 real-runner drill (run 76b1635c)`,正文写 Linear issue 链接、本轮 run id 与本轮核验结果。确认远端分支头 / PR 头 / CI 都在 `$HANDIN1`,交付;**交付摘要写明 `run=76b1635c HANDIN1=<完整 SHA>`**(返工唯一 PREV 来源)。
 
 **交付 #2(提示词有 "QA fix context",首行 `QA verdict to fix: claim <id> ...`)**
 1. 用 `^QA verdict to fix: claim (\S+)` 取 `ID`,原样复制;取不到 → 失败通道,不猜。
@@ -75,7 +75,7 @@ sequenceDiagram
     participant Q as qa
     participant B as 驱动器
     B->>I: 派发(无 QA fix context)
-    I->>B: 交付 #1:第 2 行 FIXED-FOR-CLAIM 1(残留)重置为 AWAITING-QA
+    I->>B: 交付 #1:第 2 行 FIXED-FOR-CLAIM 1(PR 546 残留)重置为 AWAITING-QA
     B->>Q: 第 1 轮
     Q->>B: fixed-for-claim = fail(planted),产生 claim <id>
     B->>I: QA fix context: claim <id>
