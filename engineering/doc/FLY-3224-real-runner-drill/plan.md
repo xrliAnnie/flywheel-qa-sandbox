@@ -35,16 +35,21 @@ Issue: FLY-3224 (https://linear.app/geoforge3d/issue/FLY-3224/qa-sbx-fly-3224-re
 4. 只 `git add "$F"`,提交 `docs(qa-sbx): FLY-3224 drill hand-in`。
 5. 冻结 `IMPL1=$(git rev-parse HEAD)`(重试态 `IMPL1=BASE`)。再从仓库根写 ledger:`node "$FLYWHEEL_COMM_CLI" progress --exec-id "$FLYWHEEL_EXEC_ID" --file "$L" --phase implement --cursor 1/2 --next "<下一步>" --handoff "<本轮已知信息>"` —— 它**自行** path-limited 提交 `$L`,不要手动 add/commit;`git status --porcelain` 为空后才冻结 `HANDIN1=$(git rev-parse HEAD)`。
 6. 核验:(a) **实现范围** `git diff --name-status $BASE..$IMPL1`:新建态恰好一行 `A "$F"`;重试态为空且 `git show $BASE:"$F"` 已逐字节等于 `AWAITING-QA` 两行;(b) **账本范围** `git diff --name-only $IMPL1..$HANDIN1` 为空或恰好 `"$L"`,且 `git rev-list --merges $BASE..$HANDIN1` 为空;(c) §1 的 PR 级断言对 `$HANDIN1` 通过。任一不过 → 停,不交付。
-7. 推送并开 / 复用 PR(普通推送,不 force):
+7. 推送并开 / 复用 PR(普通推送,不 force)。下面的块自包含、在子 shell 里 `set -eu`,任一命令失败即整块停止(不会带着失败继续改 PR);两次交付共用,只换开头两个变量:
    ```bash
-   git push -u origin HEAD
-   BODY=$(mktemp "${TMPDIR:-/tmp}/fly3224-pr-body.XXXXXX")
-   printf '%s\n' '## Linear Issue' 'FLY-3224: https://linear.app/geoforge3d/issue/FLY-3224/qa-sbx-fly-3224-real-runner-generalized-drill-529-room-only' '' "run=0300be9d HANDIN1=$HANDIN1" '' '<本轮第 6 步核验结果,逐条写 PASS>' > "$BODY"
-   TITLE='FLY-3224 QA-SBX FLY-3224 real-runner drill (run 0300be9d)'
-   PR=$(gh pr list --head project-slot-2-FLY-3224 --state open --json number --jq '.[0].number')
-   if [ -n "$PR" ]; then gh pr edit "$PR" --title "$TITLE" --body-file "$BODY"; else gh pr create --base main --head project-slot-2-FLY-3224 --title "$TITLE" --body-file "$BODY"; fi
+   KIND=HANDIN1; HEADSHA="$HANDIN1"; NOTE='<本次第 6 步核验结果,逐条写 PASS>'
+   (
+     set -eu
+     git push -u origin HEAD
+     BODY=$(mktemp "${TMPDIR:-/tmp}/fly3224-pr-body.XXXXXX")
+     printf '%s\n' '## Linear Issue' 'FLY-3224: https://linear.app/geoforge3d/issue/FLY-3224/qa-sbx-fly-3224-real-runner-generalized-drill-529-room-only' '' "run=0300be9d $KIND=$HEADSHA" '' "$NOTE" > "$BODY"
+     TITLE='FLY-3224 QA-SBX FLY-3224 real-runner drill (run 0300be9d)'
+     PR=$(gh pr list --head project-slot-2-FLY-3224 --state open --json number --jq '.[0].number // empty')
+     if [ -n "$PR" ]; then gh pr edit "$PR" --title "$TITLE" --body-file "$BODY"; else gh pr create --base main --head project-slot-2-FLY-3224 --title "$TITLE" --body-file "$BODY"; fi
+     gh pr view project-slot-2-FLY-3224 --json number,headRefOid
+   )
    ```
-   正文里 `<…>` 占位要先替换成真实核验结果再执行;标题与正文都不得含 skip-CI 标记。确认远端分支头 / PR 头(`gh pr view --json headRefOid`)/ CI 都在 `$HANDIN1`,交付;**交付摘要写明 `run=0300be9d HANDIN1=<完整 SHA>`**(返工唯一 PREV 来源)。
+   `NOTE` 的 `<…>` 占位要先替换成真实核验结果;标题与正文都不得含 skip-CI 标记。块退出码非 0 → 停,不交付。确认远端分支头 / PR 头(上面最后一行打印的 `headRefOid`)/ CI 都在 `$HANDIN1`,交付;**交付摘要写明 `run=0300be9d HANDIN1=<完整 SHA>`**(返工唯一 PREV 来源)。
 
 **交付 #2(提示词有 "QA fix context",首行 `QA verdict to fix: claim <id> ...`)**
 1. 用 `^QA verdict to fix: claim (\S+)` 取 `ID`,原样复制;取不到 → 失败通道,不猜。
@@ -53,7 +58,7 @@ Issue: FLY-3224 (https://linear.app/geoforge3d/issue/FLY-3224/qa-sbx-fly-3224-re
 4. 只 `git add "$F"`,提交 `docs(qa-sbx): FLY-3224 drill fix for claim $ID`。
 5. 冻结 `IMPL2=$(git rev-parse HEAD)`(已修复态 `IMPL2=BASE2`),再写 ledger(同交付 #1 第 5 步命令,`--cursor 2/2`,handoff 可写 claim id 与 PREV),工作树干净后冻结 `HANDIN2=$(git rev-parse HEAD)`。
 6. 核验:(a) `git diff --name-status $BASE2..$IMPL2`:初始态恰好一行 `M "$F"`,已修复态为空;(b) `git diff $PREV..$HANDIN2 -- "$F"` 的 patch 恰为 `-AWAITING-QA` / `+FIXED-FOR-CLAIM $ID`(这一步才是"返工确实发生"的证据);(c) `git diff --name-only $IMPL2..$HANDIN2` 为空或恰好 `"$L"`、无合并提交;(d) §1 的 PR 级断言对 `$HANDIN2` 通过。
-7. `git push origin HEAD`(复用同一 PR;如需更新正文,用交付 #1 第 7 步同形的 `gh pr edit "$PR" --title "$TITLE" --body-file "$BODY"`,正文写 `HANDIN2` 与 claim id),确认远端 / PR / CI 都在 `$HANDIN2`,交付。
+7. 跑交付 #1 第 7 步的同一个块,开头改为 `KIND=HANDIN2; HEADSHA="$HANDIN2"; NOTE='claim <ID>; PREV=<PREV 完整 SHA>; <本次第 6 步核验结果>'`(占位先替换;块内会重新查询 PR、重建正文,不依赖第一次交付的 shell 变量)。块退出码非 0 → 停;确认远端 / PR / CI 都在 `$HANDIN2`,交付。
 
 通则:核验后若又产生提交(含 ledger),重新冻结 SHA、核验、推送。commit message 与 PR 标题不得含 `[skip ci]` / `[ci skip]` / `[no ci]` / `[skip actions]` / `[actions skip]` / `skip-checks:`(仓库历史里有,不可模仿)。不 force-push。ledger 的 `--handoff` 只写写入时已确定的信息(run id、阶段、claim id、返工时已知的 PREV),**不写本次最终交付头**(ledger 自提交会改变 HEAD);最终 `HANDIN1` / `HANDIN2` 只写在交付摘要里。
 
