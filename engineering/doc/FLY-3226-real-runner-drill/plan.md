@@ -1,7 +1,7 @@
 # FLY-3226 真 Runner 通用演练(529 房间) — 实施计划
 Issue: FLY-3226 (https://linear.app/geoforge3d/issue/FLY-3226/qa-sbx-fly-3226-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-04(run `9ef89593`,exec `5277f846`,设计节点 `eng_design`,slot-4)
-基于: exploration.md §9(README 规定"一份短 plan 足够,不需要 research 文档")
+日期: 2026-10-04(run `bea81b98`,exec `5bf049cc`,设计节点 `eng_design`,slot-4)
+基于: exploration.md §10(README 规定"一份短 plan 足够,不需要 research 文档")
 
 ## 1. 范围
 
@@ -12,9 +12,9 @@ Issue: FLY-3226 (https://linear.app/geoforge3d/issue/FLY-3226/qa-sbx-fly-3226-re
 
 ## 2. 起点(派发快照)
 
-- 分支起点 = `3984afdd6`(PR #560 合入后的 main);本分支此前所有 PR(#539/#541/#546/#548/#557/#560)均 MERGED,没有 OPEN 的 PR。之后 main 只多了与本演练无关的 FLY-3225 提交(`e6513c9b6`),不需要同步;仅在 PR `CONFLICTING` 时按 §3 通则合并。
-- `origin/main:"$F"` = `QA-SBX FLY-3226 drill\nFIXED-FOR-CLAIM 1\n`(PR #560 残留)→ 交付 #1 是**重置**。
-- 旧 run(`813f0792` 及更早)的 HANDIN / claim / 评审 / CI / PR 正文一律不作本轮证据;ledger handoff 已在本轮开头用 `--handoff` 覆盖。
+- 分支起点 = `39754a419`(PR #563 合入后又多一笔无关 FLY-3224 提交的 main);本分支此前所有 PR(#539/#541/#546/#548/#557/#560/#563)均 MERGED,没有 OPEN 的 PR。仅在 PR `CONFLICTING` 时按 §3 通则合并 main。
+- `origin/main:"$F"` = `QA-SBX FLY-3226 drill\nFIXED-FOR-CLAIM 1\n`(PR #563 残留)→ 交付 #1 是**重置**。
+- 旧 run(`9ef89593` 及更早)的 HANDIN / claim / 评审 / CI / PR 正文一律不作本轮证据;ledger handoff 已在本轮开头用 `--handoff` 覆盖。
 
 ## 3. 实现(后继实现节点)
 
@@ -24,7 +24,7 @@ Issue: FLY-3226 (https://linear.app/geoforge3d/issue/FLY-3226/qa-sbx-fly-3226-re
 1. `BASE=$(git rev-parse HEAD)`。若 `printf "$EXP" | cmp - "$F"` 退出 0 → 已就绪态(重试时可能出现):不做内容提交,`IMPL1=BASE`。否则(本轮预期)`printf "$EXP" > "$F"`,cmp 自检,只 `git add "$F"`,提交 `docs(qa-sbx): FLY-3226 drill hand-in`,`IMPL1=$(git rev-parse HEAD)`。
 2. 写 ledger(`progress … --phase implement --cursor 1/2`,它自行 path-limited 提交 `$L`);工作树干净后 `HANDIN1=$(git rev-parse HEAD)`。
 3. 核验:(a) `$BASE..$IMPL1` 为空,或恰好 `M "$F"` 且 patch 只有第 2 行 `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`;(b) `$IMPL1..$HANDIN1` 只含 `"$L"`,无合并提交;(c) PR 级 `git diff --name-only origin/main...$HANDIN1 -- . ':(exclude)engineering/doc/FLY-3226-real-runner-drill'` 恰好一行 `"$F"`;(d) `git show $HANDIN1:"$F"` 逐字节 = `$EXP`。任一不过 → 停,走 blocked。
-4. `git push -u origin HEAD`(fast-forward,不 force);若无 OPEN PR 则 `gh pr create`,标题 `FLY-3226 QA-SBX FLY-3226 real-runner drill (run 9ef89593)`,正文写 `run=9ef89593 HANDIN1=<完整 SHA>`、核验结果、`e2e_529_exempt`(docs_only)说明。确认远端头 = PR 头 = `$HANDIN1` 后,按实现节点自身注入的完成命令交付。
+4. `git push -u origin HEAD`(fast-forward,不 force);若无 OPEN PR 则 `gh pr create`,标题 `FLY-3226 QA-SBX FLY-3226 real-runner drill (run bea81b98)`,正文写 `run=bea81b98 HANDIN1=<完整 SHA>`、核验结果、`e2e_529_exempt`(docs_only)说明。确认远端头 = PR 头 = `$HANDIN1` 后,按实现节点自身注入的完成命令交付。
 
 **交付 #2(提示词有 "QA fix context",首行 `QA verdict to fix: claim <id> ...`)**
 1. 用 `^QA verdict to fix: claim (\S+)` 取 `ID`,原样复制;取不到 → blocked,不猜。

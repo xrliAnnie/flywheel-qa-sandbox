@@ -78,3 +78,13 @@ run `a1fb43f1` 已走完 design → implement → QA(claim `1`)→ merge,PR #557
 - 目标文件在 main 上 = `QA-SBX FLY-3226 drill` / `FIXED-FOR-CLAIM 1`(PR #557 残留)→ 交付 #1 是**重置**(diff 状态 `M`,第 2 行改回 `AWAITING-QA`);若本轮 claim id 又是 `1`,交付 #2 后 PR 级演练净 diff 为空仍合法,返工由区间 patch `PREV..HANDIN2` 证明。
 - progress.md 原带 run `a1fb43f1` 实现节点 attempt=2 的 handoff(claim 1、review request `43901215…`)。开工即用 `--handoff` 覆盖(提交 `70e672d84`);这些指针本轮一律不认。
 - 结论:回到 plan §3 的"重置态"分支(不是 run `a1fb43f1` 的"已就绪态");其余骨架沿用。
+
+## 10. 第九次派发(run `bea81b98`,exec `5bf049cc`,节点 `eng_design`,2026-10-04,slot-4)
+
+run `9ef89593` 已走完并由 PR #563 合入 main(`581cc2d52`)。本轮同一分支名、通用 DAG 再次派发:
+
+- 派发起点 = `origin/main` = `39754a419`(本地 HEAD 相同);#563 之后 main 只多了无关的 FLY-3224 提交。本分支所有 PR(含 #560/#563)均 MERGED,没有 OPEN 的 PR → 交付 #1 开**新 PR**。
+- README blob 仍是 `71e58f18…`,合同没变。
+- `origin/main:$F` = `QA-SBX FLY-3226 drill` / `FIXED-FOR-CLAIM 1`(PR #563 残留)→ 交付 #1 仍是**重置**(diff `M`)。
+- progress.md 原带 run `9ef89593` 的 handoff(plan blob `59d054e5`、request `0fd8bd66`、thread `01a108c4`、旧 HTML 链接);开工即用 `--handoff` 覆盖,这些指针本轮一律不认。
+- 结论:plan 骨架不变,只更新起点快照与 run id。
