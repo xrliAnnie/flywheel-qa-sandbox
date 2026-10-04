@@ -1,21 +1,21 @@
 ---
 issue: FLY-3150
 phase: implement
-phaseCursor: 1/4
-updated: 2026-10-04T20:55:43.298Z
-nextStep: "Hand-in 1: prove stale claim, reset target line 2 to AWAITING-QA, and
-  verify exact diff"
+phaseCursor: 2/4
+updated: 2026-10-04T20:56:32.568Z
+nextStep: Verify hand-in 1 scope and blob, push branch, open PR, and bind
+  review/CI to frozen HEAD
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
   pr: none
-handoff: run=f9254495-be6c-4a57-94ac-a60d62e8132d design APPROVED (Codex
-  gpt-6-astra/xhigh r2, thread 01a108ad-21e8, plan blob 306dcd9c); no PREV/IMPL
-  yet
+handoff: run=f9254495 implement hand-in 1 reset committed;
+  BASE=c6f713a6c4b7cef56e797539e24244dc8e04d11e;
+  IMPL1=72fdb60a27e294d1f77e43855f97d4324260d73d; no QA fix context
 ---
 
 # FLY-3150 progress
-**phase**: implement (1/4)
-**next**: Hand-in 1: prove stale claim, reset target line 2 to AWAITING-QA, and verify exact diff
+**phase**: implement (2/4)
+**next**: Verify hand-in 1 scope and blob, push branch, open PR, and bind review/CI to frozen HEAD
 
-**handoff**: run=f9254495-be6c-4a57-94ac-a60d62e8132d design APPROVED (Codex gpt-6-astra/xhigh r2, thread 01a108ad-21e8, plan blob 306dcd9c); no PREV/IMPL yet
+**handoff**: run=f9254495 implement hand-in 1 reset committed; BASE=c6f713a6c4b7cef56e797539e24244dc8e04d11e; IMPL1=72fdb60a27e294d1f77e43855f97d4324260d73d; no QA fix context
