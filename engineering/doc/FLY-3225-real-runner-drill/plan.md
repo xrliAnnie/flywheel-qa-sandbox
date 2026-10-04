@@ -5,88 +5,78 @@ Issue: FLY-3225 (https://linear.app/geoforge3d/issue/FLY-3225/qa-sbx-fly-3225-re
 
 ## 1. 目标与边界
 
-这是 529 QA 房间专用的**练习单**：没有产品代码，只验证「真 runner 从设计→实现→QA 打回→修复重交」这条链路能走通。
+529 测试房间内，只用两行 Markdown 文件验证「首交 → QA 故意打回 → 按本次裁决编号修复 → 复验」；不改 Linear 的状态、评论或标签，不部署任何房间。
 
-- 实现阶段唯一允许的改动：一个 markdown 文件 `qa-sbx/fly3225/project-slot-3-FLY-3225.md`（文件名 = `git branch --show-current` 的结果；文件已存在则就地更新）。流水线自己用 `flywheel-comm progress` 单独提交的 `progress.md` 账本不算实现改动，见 §4。
-- 不碰 Linear issue（不改状态、不评论、不加 label）。
-- 不在演练内部署任何 QA 房间（529 room）。
-- 不写研究文档（README 明确：一份短 plan 就够）；因此本文件夹只有 `plan.md`、`progress.md`、给创始人看的设计 HTML，以及 HTML 里两张图的 Mermaid 源文件 `design-d1.mmd` / `design-d2.mmd`。
-- 本房间没有人类 Lead：一切信息都在 README 里，**不向 Lead 提问**、不等待人工答复；确有疑问时由演练驱动器（drill driver）按 README 的规则作答。
-- **本轮依据**：2026-10-04 已 fetch 沙盒 `origin/main`，版本为 `eb3f48ace562`（PR #542 已合入）。已用 `git show origin/main:qa-sbx/fly3225/README.md` 读取本轮任务书；实现节点开始时再读取一次 main，若规则变化，以新任务书为准。
-- **继承文件**：分支 `project-slot-3-FLY-3225` 从该 main 起步，已带有练习文件 `qa-sbx/fly3225/project-slot-3-FLY-3225.md`（当前第 2 行是 `FIXED-FOR-CLAIM 1`）及本文件夹里的旧设计文档。这些是继承物，**不是**本轮的判轮依据；处理规则见 §2a。本轮仅更新设计文档与进度账本，重新申请独立设计评审并发布本轮设计 HTML。设计节点不修改练习文件、不派发后继、不申请 ship 授权、不合并、不部署。
+本轮已 fetch 并读取 `origin/main:qa-sbx/fly3225/README.md`；main 版本 `eb3f48ace562`，分支 `project-slot-3-FLY-3225`。继承的练习文件第二行是 `FIXED-FOR-CLAIM 1`，旧值和历史评审不是本轮的判轮依据。本轮 run 为 `c8dfc306-ee48-4c0c-ac44-3ecb1c8f7712`。
 
-## 2. 实施步骤（给 implement 节点）
+README 是演练内容契约：实现节点主动修改的唯一文件是 `qa-sbx/fly3225/<git 分支名>.md`。`flywheel-comm progress` 自动提交的本文件夹 `progress.md` 是流程账本。默认 milestone、DOC-FLOW 实现说明、相邻路径测试均不新增；完成摘要可写 `adjacent paths: N/A (docs-only drill)`。设计复用本文件夹，按 README 只写短计划，不新增探索或研究文档；保留流程强制的设计 HTML 和两份 Mermaid 图源。设计不改练习文件、不派发后继、不申请 ship、不合并。
 
-1. 读 `qa-sbx/fly3225/README.md`（沙盒仓库 main 分支）确认规则没变。
-2. `git branch --show-current` 取分支名，创建（文件已继承自 main 则就地更新）`qa-sbx/fly3225/<分支名>.md`，**恰好两行**：
-   - 第 1 行：`QA-SBX FLY-3225 drill`
-   - 第 2 行：首轮写 `AWAITING-QA`。
-3. 若 prompt 带 `QA fix context` 且首行是 `QA verdict to fix: claim <id> ...`：把第 2 行改成 `FIXED-FOR-CLAIM <id>`（`<id>` 与 claim 逐字相同），其余不动，再次交付。
-4. 提交信息用普通文字，例如 `docs(qa-sbx): FLY-3225 drill hand-in`。**绝不**带 `[skip ci]` / `[ci skip]` / `[no ci]` / `[skip actions]` / `[actions skip]` / `skip-checks:`（仓库历史里有这类提交，不能照抄；交付需要 CI 在确切的 head 上跑）。PR 标题同理。
+## 2. 实现步骤与稳定身份
 
-### 2a. 文件已继承时的处理（文件已存在时）
-
-实现节点**只看自己这次的 prompt** 来决定第 2 行，不看文件里继承来的旧值、不看历史提交：
-
-| 本次 prompt | 第 2 行目标值 | 文件已是目标值时 |
-|---|---|---|
-| 没有 `QA fix context` | `AWAITING-QA`（继承值不同就改写） | 不动文件 |
-| 有 `QA fix context`，首行 `QA verdict to fix: claim <id> ...` | `FIXED-FOR-CLAIM <id>`（`<id>` 与 claim 逐字相同） | 不动文件 |
-
-- 第 1 行始终恰为 `QA-SBX FLY-3225 drill`，文件始终恰好两行；除第 2 行外什么都不改。
-- 文件已是目标值＝没有文件 diff，这是合法的：交付说明里如实写“文件已是目标内容，未产生新改动”，**不得**为了凑出 diff 去改任何别的文件。
-- 本分支继承的是 `FIXED-FOR-CLAIM 1`：无 fix context 的新首交必须先改回 `AWAITING-QA`；之后带 fix context 修回同一个 claim id 时，相对 `<impl-base>` 的净 drill 文件 diff 可能再次为空——这也是合法的，所以验证看**内容**（§4 的完整内容比较），不看有没有 diff。
-- 判轮（QA 的 `fixed-for-claim` 首轮/复验轮）仍然只由 QA 那次 prompt 里有没有 `QA re-verification context` 决定，见 §3。
+1. 先运行本节点注入的 TURN；只有 `yours` 可写。重新读取 main 上的 README，运行 `git branch --show-current` 得到当前文件名，不硬编码其它房间的路径。
+2. 首次接手、尚未提交本 run 的实现时，取得设计交接 HEAD，通过本节点的 `progress --handoff` 保存单行状态，含 `runId`、完整 SHA `implBase`、`firstHandin` 和 `ownCommits`。首交之前 `firstHandin` 为空。重启只复用同一 run 的基线，不能把已实现的 HEAD 重新当起点，也不能复用 main 上上一轮的账本身份。每次更新保留所有已有状态字段；`--pointer` 只支持固定的文档指针，不支持这些自定义状态键。
+3. 真正的首次交付写恰好两行，末尾保留换行：第一行 `QA-SBX FLY-3225 drill`，第二行 `AWAITING-QA`。继承第二行不同则覆盖；文件已经是目标内容时不制造 diff。提交后用同一 `--handoff` 字段记录本 run 的 `firstHandin` 完整 SHA 和本节点自己的提交 SHA 清单 `ownCommits`。
+4. 收到本次 `QA fix context` 时，其标题之后的第一行 `QA verdict to fix: claim <id> ...` 指定要修的裁决；只把第二行改为 `FIXED-FOR-CLAIM <id>`，编号逐字相同，其余不变，再次交付。文件已是目标值时允许无改动。
+5. 首交之后没有修复上下文的唤醒（CI 返工、集成同步、冲突解决或后续反馈）不自动把第二行重置为 `AWAITING-QA`。遵守这次唤醒的限定任务；冲突解决只解决冲突，保留最近一次正确的第二行。首交与修复都以本 run 的持久身份和本次任务为准，不能由继承内容猜测。
+6. 普通提交信息可用 `docs(qa-sbx): FLY-3225 drill hand-in`。提交信息及 PR 标题均不得包含 `[skip ci]`、`[ci skip]`、`[no ci]`、`[skip actions]`、`[actions skip]` 或 `skip-checks:`。CI 必须检查最终交付的确切提交。
 
 ## 3. QA 验收映射
 
-**判轮依据**：只看本次 prompt。prompt 里**没有** `QA re-verification context` ＝ 首轮（`fixed-for-claim` 一定 fail）；有 `QA re-verification context` ＝ 复验轮（`<id>` 取自其中的 `Previous QA verdict: claim <id>`）。不要用历史轮次或分支上的旧提交来推断。
+QA 轮次只由本次 QA 指令决定；没有 `QA re-verification context` 为首轮，有该块为复验，编号取自 `Previous QA verdict: claim <id>`。不得用旧文件、旧 claim 或历史提交判轮。
 
-| 准则 id | 首轮预期 | 复验轮预期 |
+| 准则 id | 首轮 | 复验 |
 |---|---|---|
-| `file-shape` | pass：文件存在且第 1 行恰为 `QA-SBX FLY-3225 drill` | 同左 |
-| `fixed-for-claim` | **一定 fail**，evidence = `round 1: no previous QA claim yet`（故意埋的失败，是本演练的目的） | pass 当且仅当第 2 行恰为 `FIXED-FOR-CLAIM <id>`，`<id>` 取自 `Previous QA verdict: claim <id>` |
-| `e2e_529_exempt` | status `not_run`，`exempt_category: docs_only`，reason：纯 markdown 沙盒演练文件，无运行时代码，且演练规则禁止部署房间 | 同左 |
+| `file-shape` | 文件存在且第一行恰为 `QA-SBX FLY-3225 drill` 则 pass | 同左 |
+| `fixed-for-claim` | **总是 fail**；evidence 恰为 `round 1: no previous QA claim yet` | 第二行恰为 `FIXED-FOR-CLAIM <id>`，且编号来自本次复验指令才 pass |
+| `e2e_529_exempt` | status `not_run`，`exempt_category: docs_only`；reason：纯文档演练，规则禁止部署房间 | 同左 |
 
-准则 title < 120 字符，evidence < 80 字符。
+每条准则 title 少于 120 字符，evidence 少于 80 字符。
 
-## 4. 验证（本地，implement 节点执行）
+## 4. 验证与交付证据
 
-- **完整内容比较**（对应 HEAD 已提交的内容，用 `git show HEAD:qa-sbx/fly3225/<分支名>.md`）：`printf 'QA-SBX FLY-3225 drill\n<期望的第 2 行>\n' | cmp - <(git show HEAD:qa-sbx/fly3225/<分支名>.md)` 必须无输出、退出码 0。这同时排除了多余的第三行（包括没有末尾换行的第三行，`wc -l` 会漏掉它）。辅助检查：`awk 'END{print NR}'` 的结果为 2。
-- **实施范围**：以设计节点交付完成时的 HEAD 为实施基线 `<impl-base>`（`git rev-parse HEAD`，在开始实现之前取）。首次实现及之后每次修复，`git diff --name-only <impl-base>..HEAD` 只允许出现下面**两类**路径，其余一律零改动：
-  1. `qa-sbx/fly3225/<git 分支名>.md`（至多一个文件；文件已是目标值时可以没有，见 §2a）；
-  2. `engineering/doc/FLY-3225-real-runner-drill/progress.md`——流水线要求用 `flywheel-comm progress` 写进度账本，该命令会单独提交这一个文件。这是流水线自己的产物，不算实现改动。
-  `engineering/doc/FLY-3225-real-runner-drill/` 下的其它文件（`plan.md`、设计 HTML 等设计文档）、兄弟练习单 `qa-sbx/fly2167`/`fly3224`/`fly3226`…、各 README、代码目录一律零改动；实现节点不新增实现说明，也不回改设计文档。检查命令（`<impl-base>` 先替换成实际 SHA；路径用 `-F` 固定字符串逐字匹配，不能当正则，否则 `.md` 里的点会放行 `…Xmd` 之类的越界路径）：
+- 完整内容比较必须读取成功后再比较，排除多余行和错误编号。下列命令中 `expected_line2` 是本次任务的精确第二行（首交固定 `AWAITING-QA`；修复使用指令中的实际编号），不能填继承的旧编号：
   ```sh
-  git diff --name-only <impl-base>..HEAD | grep -Fvx \
-    -e "qa-sbx/fly3225/$(git branch --show-current).md" \
-    -e "engineering/doc/FLY-3225-real-runner-drill/progress.md"
+  drill_branch=$(git branch --show-current) || exit 1
+  drill_path="qa-sbx/fly3225/$drill_branch.md"
+  expected_line2='AWAITING-QA'
+  printf 'QA-SBX FLY-3225 drill\n%s\n' "$expected_line2" > /tmp/fly3225-expected-content
+  git show "HEAD:$drill_path" > /tmp/fly3225-actual-content || exit 1
+  cmp /tmp/fly3225-expected-content /tmp/fly3225-actual-content || exit 1
   ```
-  必须无输出。grep 没选中任何行时退出码是 1，这是通过，不要误报成失败；`git diff` 自己的退出码要单独确认是 0。
-- 修复轮（`FIXED-FOR-CLAIM <id>`）相对本轮自己的首交提交只改第 2 行：`git diff <本轮首交提交>..HEAD -- qa-sbx/fly3225/<分支名>.md` 只含第 2 行的一处替换；最终仍以上面的完整内容比较为准。
-- **提交后**核对实际提交信息和实际 PR 标题，都必须没有 skip-ci 标记。**先确认读取成功，再 grep**——管道会吞掉上游命令的失败，读不到内容不等于“没有标记”（`<impl-base>` 先替换成实际 SHA）：
+  修复时先把 `expected_line2` 设置成实际的 `FIXED-FOR-CLAIM <id>`。完整字节比较检查恰好两行及末尾换行。相对本 run 首交的练习文件 diff 只应替换第二行；如果同编号修复使相对实现基线的净 diff 再次为空，仍以当前内容为证据。
+- 范围检查针对**本实现节点主动提交的每一个改动提交**。从同一 run 账本读取并确认实际 `own_change_sha`，不要把整个共享分支的 tree diff 误当作本节点改动。对每个自己的非 merge 提交，运行：
+  ```sh
+  files=$(git diff-tree --root --no-commit-id --name-only -r "$own_change_sha") || exit 1
+  printf '%s\n' "$files" | grep -Fvx -e '' \
+    -e "$drill_path" \
+    -e 'engineering/doc/FLY-3225-real-runner-drill/progress.md'
+  scope_status=$?
+  test "$scope_status" -eq 1 || exit 1
+  ```
+  grep 退出 1 且无输出表示没有越界路径；0 表示发现越界，2 或更大表示检查出错。先确认读取成功再过滤。交付时还要核对共享分支当前练习文件内容和本节点提交清单。**绝不为通过范围检查去回滚 main 合并进来的改动、删除 QA 证据或撤销其他节点提交。** 合法技术同步按其限定指令执行并记录合并基线；遇到归属不明的路径如实报告，不私自恢复旧树。
+- 实现不改计划、设计 HTML、图源、各 README、代码或兄弟练习单。不会为此新增自动测试代码或运行仓库/包全套测试。生产代码未变、TypeScript 未变，没有相关包构建或类型检查。
+- 提交后读取实际提交信息和实际 PR 标题再检查跳过 CI 标记，任何读取失败都不能解释成通过：
   ```sh
   PAT='\[(skip ci|ci skip|no ci|skip actions|actions skip)\]|skip-checks:'
-  msgs=$(git log --format=%B <impl-base>..HEAD) || echo "READ-FAIL: git log"
-  title=$(gh pr view --json title -q .title) || echo "READ-FAIL: gh pr view"
-  [ -n "$title" ] || echo "READ-FAIL: empty PR title"
-  printf '%s\n' "$msgs"  | grep -iE "$PAT"; echo "msgs-grep=$?"
-  printf '%s\n' "$title" | grep -iE "$PAT"; echo "title-grep=$?"
+  msgs=$(git log --format=%B "$impl_base..HEAD") || exit 1
+  title=$(gh pr view --json title -q .title) || exit 1
+  test -n "$title" || exit 1
+  printf '%s\n' "$msgs" | grep -iE "$PAT"
+  msg_status=$?
+  printf '%s\n' "$title" | grep -iE "$PAT"
+  title_status=$?
+  test "$msg_status" -eq 1 && test "$title_status" -eq 1 || exit 1
   ```
-  判定：没有任何 `READ-FAIL` 行，且两个 grep 都**没有匹配输出**、状态都是 `1`，才算通过。grep 状态 `0` = 发现了禁用标记（失败，要改提交/标题）；状态 `2` 或更大 = grep 自己出错；出现 `READ-FAIL` = 没取到待检内容（停止，先修好读取，不得当作通过）。
+  `impl_base` 必须来自同一 run 的持久 `implBase`；历史上 main 的旧提交不作为本轮提交风格模板。PR 建立前仅检查已有提交，建好后必须核对实际标题。最终 full-suite 证据只认冻结交付提交的 `CI OK`；本地文档比较不代表全套测试通过。
 
-## 5. 风险与回退
+## 5. 风险、回退与设计交接
 
-| 风险 | 应对 |
-|---|---|
-| 文件名与分支名不一致 | 一律用 `git branch --show-current` 现取，不硬编码 |
-| 误把 `FIXED-FOR-CLAIM` 写进或留在首轮 | 没有 `QA fix context` 时确保第 2 行是 `AWAITING-QA`（继承值不同必须覆盖）；只有 prompt 带有效 `QA fix context` 才使用它的 claim id |
-| 复制了仓库历史里的 `[skip ci]` 提交风格 | 提交后用 §4 的检查脚本核对实际提交信息和 PR 标题：无 `READ-FAIL`、两个 grep 都无匹配且状态为 1 |
-| 越界改动 | 实施基线之后的改动文件只能是练习文件和流水线账本 `progress.md`（见 §4 的 grep 检查） |
-| 拿继承来的旧第 2 行当判轮依据 | 只看本次 prompt 有没有 `QA fix context`（见 §2a）；继承值不是依据 |
+主要风险是误用旧编号、把维护唤醒当新首交、读取失败被当作空检查，以及为了范围检查回滚他人改动；分别由本轮账本身份、首交标记、失败即停止的读取检查和提交归属检查约束。
 
-回退：无数据、无服务、无迁移。把练习文件恢复到实施基线 `<impl-base>` 已提交的内容即可（`git checkout <impl-base> -- qa-sbx/fly3225/<分支名>.md`，等于撤销本轮对第 2 行的改动）；**只有**基线上本来没有这个文件时，才是删除它。继承文件的场景下不能直接删除——那会新增对 main 已合入产物的删除，并使 `file-shape` 失败。
+回退没有服务或数据迁移：只撤销本节点对练习文件的修改，恢复同一 run 的实现基线内容；继承文件不能直接删除。若期间 main 或其它节点已修改同一路径，先按本次集成任务核对正确内容，不以旧基线覆盖他人结果。
 
-## 6. 查询与索引
+设计提交并 push 本计划、最终 HTML、图源及进度账本；经有效批准的设计评审，发布并用指定 receipt 命令报告 HTML 后，运行注入的 `complete --route phase_design_complete`，随后按返回的 park 指令结束本轮。设计不自行派发实现，也不把阶段完成等同于整个 issue 已完成。
 
-不适用：本演练不新增、不修改任何表、查询或索引，纯 markdown 文件改动。
+## 查询与索引
+
+不适用：本演练不新增、不修改表、查询或索引，只有文档与流程交付物。

@@ -1,15 +1,15 @@
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"PingFang SC, sans-serif","primaryColor":"#f5f5f7","primaryTextColor":"#1d1d1f","primaryBorderColor":"#86868b","lineColor":"#4b5563","actorBkg":"#eef5ff","actorBorder":"#007aff","actorTextColor":"#1d1d1f","noteBkgColor":"#fff7e6","noteBorderColor":"#ff9500"}}}%%
 sequenceDiagram
     autonumber
-    participant M as 沙盒 main
-    participant D as 设计节点(本次)
+    participant D as 设计节点
+    participant C as 流程控制器
     participant I as 实现节点
-    participant Q as QA 验收
-    M-->>D: 新分支从 main 起步 已带上一轮练习文件 第2行 FIXED-FOR-CLAIM 1
-    D->>M: 订正 plan 过期描述 通过设计评审 提交本设计页面
-    D->>I: 交接 (设计评审通过后)
-    I->>I: 只看本次 prompt 决定第2行 不看继承值
-    I->>Q: 第 1 轮交付 第2行 AWAITING-QA
-    Q-->>I: file-shape 通过 fixed-for-claim 故意失败
-    Note over Q,I: 证据固定为 round 1 no previous QA claim yet
-    I->>Q: prompt 带 QA fix context 时 第2行改为 FIXED-FOR-CLAIM 编号 再交付
-    Q-->>I: 复验轮 两条准则都通过
+    participant Q as 独立验收
+    D->>C: 评审通过、发布页面后报告设计完成
+    C->>I: 授予本轮写入权
+    I->>Q: 首交：第二行 AWAITING-QA
+    Q-->>C: 故意打回，生成裁决编号
+    C->>I: 派发带编号的修复指令
+    I->>Q: 修复：第二行 FIXED-FOR-CLAIM 编号
+    Q-->>C: 复验：核对同一编号
+    Note over I,Q: 轮次与编号只看本次指令，继承内容不是依据
