@@ -1,21 +1,23 @@
 ---
 issue: FLY-3226
 phase: design
-phaseCursor: 1/4
-updated: 2026-10-04T09:41:10.835Z
-nextStep: Rewrite exploration §6 + plan for run 4a9c615e restart (main residue
-  FIXED-FOR-CLAIM 1), then design review
+phaseCursor: 3/4
+updated: 2026-10-04T09:49:54.788Z
+nextStep: Write + publish founder design HTML (ste begin, mmdc diagrams, comment
+  layer), report URL, complete phase_design_complete
 chunks: []
 pointers: {}
-handoff: "run=4a9c615e (exec e261dee3) design node start 2026-10-04. Fresh
-  re-dispatch: previous run fee0ab7d (PR #541 MERGED) pointers
-  PREV/BASE2/IMPL2/claim/code-review/CI are NOT valid for this run. Branch head
-  eb3f48ace, origin/main 24d94e6fa, main target file = FIXED-FOR-CLAIM 1 residue
-  -> hand-in #1 is a reset (diff M)."
+handoff: "run=4a9c615e (exec e261dee3) design. Plan approved: Codex
+  gpt-6-astra/xhigh 2 rounds (r1 APPROVED w/ 1 LOW snapshot fix, r2 APPROVED),
+  requestId 7695959b, plan blob 74745a8e, await-codex-gate design PASS. Previous
+  run fee0ab7d pointers (PR #541, PREV 2647ad8d, IMPL2 e89cfc44, claim 1, review
+  b0fa5bf4) NOT valid. main target = FIXED-FOR-CLAIM 1 residue -> implement
+  hand-in #1 is a reset (diff M); PREV for hand-in #2 only from this run's
+  run=4a9c615e HANDIN1 summary."
 ---
 
 # FLY-3226 progress
-**phase**: design (1/4)
-**next**: Rewrite exploration §6 + plan for run 4a9c615e restart (main residue FIXED-FOR-CLAIM 1), then design review
+**phase**: design (3/4)
+**next**: Write + publish founder design HTML (ste begin, mmdc diagrams, comment layer), report URL, complete phase_design_complete
 
-**handoff**: run=4a9c615e (exec e261dee3) design node start 2026-10-04. Fresh re-dispatch: previous run fee0ab7d (PR #541 MERGED) pointers PREV/BASE2/IMPL2/claim/code-review/CI are NOT valid for this run. Branch head eb3f48ace, origin/main 24d94e6fa, main target file = FIXED-FOR-CLAIM 1 residue -> hand-in #1 is a reset (diff M).
+**handoff**: run=4a9c615e (exec e261dee3) design. Plan approved: Codex gpt-6-astra/xhigh 2 rounds (r1 APPROVED w/ 1 LOW snapshot fix, r2 APPROVED), requestId 7695959b, plan blob 74745a8e, await-codex-gate design PASS. Previous run fee0ab7d pointers (PR #541, PREV 2647ad8d, IMPL2 e89cfc44, claim 1, review b0fa5bf4) NOT valid. main target = FIXED-FOR-CLAIM 1 residue -> implement hand-in #1 is a reset (diff M); PREV for hand-in #2 only from this run's run=4a9c615e HANDIN1 summary.
