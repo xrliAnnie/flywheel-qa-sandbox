@@ -1,13 +1,13 @@
 ---
 issue: FLY-3225
 phase: design
-phaseCursor: 3/6
-updated: 2026-10-04T06:48:10.472Z
-nextStep: stage set design_review, Codex design review, then refresh founder HTML
+phaseCursor: 5/6
+updated: 2026-10-04T07:01:42.694Z
+nextStep: push, publish-report, ask DESIGN-HTML report, complete phase_design_complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-3225 progress
-**phase**: design (3/6)
-**next**: stage set design_review, Codex design review, then refresh founder HTML
+**phase**: design (5/6)
+**next**: push, publish-report, ask DESIGN-HTML report, complete phase_design_complete
