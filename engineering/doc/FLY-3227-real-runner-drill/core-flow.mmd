@@ -1,5 +1,5 @@
 %%{init: {"theme": "base", "htmlLabels": false, "themeVariables": {"fontFamily": "-apple-system, BlinkMacSystemFont, PingFang SC, sans-serif", "fontSize": "16px", "primaryColor": "#ffffff", "primaryTextColor": "#1d1d1f", "primaryBorderColor": "#c7c7cc", "lineColor": "#86868b", "background": "#ffffff"}, "flowchart": {"htmlLabels": false, "curve": "stepAfter", "nodeSpacing": 24, "rankSpacing": 32}}}%%
-flowchart LR
+flowchart TB
     D["设计<br/>短计划与评审"] --> I["实现首交<br/>AWAITING-QA"]
     I --> Q["首轮验收<br/>故意失败"]
     Q --> F["修复重交<br/>沿用本轮标识"]
