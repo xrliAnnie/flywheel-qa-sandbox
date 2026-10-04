@@ -1,0 +1,15 @@
+sequenceDiagram
+    autonumber
+    participant P as 上一轮留下的分支
+    participant D as 设计节点(本次)
+    participant I as 实现节点
+    participant Q as QA 验收
+    P-->>D: 已带练习文件 第2行是 FIXED-FOR-CLAIM 1
+    D->>P: 订正 plan 并提交设计页面
+    D->>I: 交接 (设计评审通过后)
+    I->>I: 只看本次 prompt 决定第2行
+    I->>Q: 第 1 轮交付 第2行 AWAITING-QA
+    Q-->>I: file-shape 通过 fixed-for-claim 故意失败
+    Note over Q,I: 证据固定为 round 1 no previous QA claim yet
+    I->>Q: prompt 带 QA fix context 时 第2行改为 FIXED-FOR-CLAIM 编号 再交付
+    Q-->>I: 复验轮 两条准则都通过
