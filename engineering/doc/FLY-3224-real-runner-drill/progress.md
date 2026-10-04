@@ -1,18 +1,19 @@
 ---
 issue: FLY-3224
-phase: design
-phaseCursor: 5/5
-updated: 2026-10-04T15:15:33.801Z
-nextStep: "implement: hand-in #1 resets line 2 FIXED-FOR-CLAIM 1 -> AWAITING-QA
-  per plan.md §3"
+phase: implement
+phaseCursor: 1/2
+updated: 2026-10-04T15:34:29.937Z
+nextStep: "push hand-in #1, open PR, request code review, exact-head CI, then
+  complete needs_review"
 chunks: []
 pointers: {}
-handoff: run=0565c800 design done; Codex design review R1 APPROVED
-  (gpt-6-astra/xhigh, request 6836938d, plan blob 8ae20bbd); no hand-in SHAs yet
+handoff: "run=0565c800 hand-in #1 implementation commit
+  77cdb3bf563bae411368a9ae6261eda679a032a6; exact fixture AWAITING-QA;
+  literal/path discovery found only docs/fixtures, no executable tests retained"
 ---
 
 # FLY-3224 progress
-**phase**: design (5/5)
-**next**: implement: hand-in #1 resets line 2 FIXED-FOR-CLAIM 1 -> AWAITING-QA per plan.md §3
+**phase**: implement (1/2)
+**next**: push hand-in #1, open PR, request code review, exact-head CI, then complete needs_review
 
-**handoff**: run=0565c800 design done; Codex design review R1 APPROVED (gpt-6-astra/xhigh, request 6836938d, plan blob 8ae20bbd); no hand-in SHAs yet
+**handoff**: run=0565c800 hand-in #1 implementation commit 77cdb3bf563bae411368a9ae6261eda679a032a6; exact fixture AWAITING-QA; literal/path discovery found only docs/fixtures, no executable tests retained
