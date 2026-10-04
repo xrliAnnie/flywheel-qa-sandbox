@@ -1,25 +1,29 @@
 ---
 issue: FLY-3226
-phase: design
-phaseCursor: 4/4
-updated: 2026-10-04T09:52:27.633Z
-nextStep: "Design complete; implementation node: hand-in #1 reset line 2
-  FIXED-FOR-CLAIM 1 -> AWAITING-QA per plan §3"
+phase: implement
+phaseCursor: 1/2
+updated: 2026-10-04T09:56:28.308Z
+nextStep: First hand-in implemented; obtain effective code review, open PR,
+  freeze exact head, CI and needs_review. QA claim fix follows only injected QA
+  fix context.
 chunks: []
 pointers: {}
-handoff: "run=4a9c615e (exec e261dee3) design DONE. Plan approved (Codex
-  gpt-6-astra/xhigh, 2 rounds, requestId 7695959b, plan blob 74745a8e,
-  await-codex-gate design PASS). Founder HTML committed 41bff65f6 + published
-  (publish-only)
-  http://127.0.0.1:49691/fw-reports-f8de2b/r/56c5be5651efcfb7ef219281b757071f/
-  and reported. Branch pushed to origin (docs only, drill file untouched).
-  Previous run fee0ab7d pointers NOT valid; main target = FIXED-FOR-CLAIM 1
-  residue -> hand-in #1 is a reset (diff M); PREV for hand-in #2 only from this
-  run's run=4a9c615e HANDIN1 summary."
+handoff: "run=4a9c615e exec=fe2f2bbe first hand-in;
+  BASE=700a9ff88ded07d3171f1066a60fbee903ee84f3 IMPL1=27dd210dc (line 2 reset
+  FIXED-FOR-CLAIM 1 -> AWAITING-QA). Approved plan blob 74745a8e verified
+  against design receipt request 7695959b. Exact two-line byte comparison and
+  diff check pass. Literal old/new and full path/file name/parent discovery
+  found no matching test files; excluded test matches: none. No TS, package API
+  or executable change, so vitest/build/typecheck not applicable. Plain pnpm
+  lint fails only on two generated git-ignored design receipt JSONs;
+  Git-ignore-aware lint result recorded in hand-in report. Scope: only drill
+  file plus protocol progress ledger; no milestone/research per approved plan.
+  Previous run pointers invalid; HANDIN1 is supplied in final report only. No
+  main sync performed."
 ---
 
 # FLY-3226 progress
-**phase**: design (4/4)
-**next**: Design complete; implementation node: hand-in #1 reset line 2 FIXED-FOR-CLAIM 1 -> AWAITING-QA per plan §3
+**phase**: implement (1/2)
+**next**: First hand-in implemented; obtain effective code review, open PR, freeze exact head, CI and needs_review. QA claim fix follows only injected QA fix context.
 
-**handoff**: run=4a9c615e (exec e261dee3) design DONE. Plan approved (Codex gpt-6-astra/xhigh, 2 rounds, requestId 7695959b, plan blob 74745a8e, await-codex-gate design PASS). Founder HTML committed 41bff65f6 + published (publish-only) http://127.0.0.1:49691/fw-reports-f8de2b/r/56c5be5651efcfb7ef219281b757071f/ and reported. Branch pushed to origin (docs only, drill file untouched). Previous run fee0ab7d pointers NOT valid; main target = FIXED-FOR-CLAIM 1 residue -> hand-in #1 is a reset (diff M); PREV for hand-in #2 only from this run's run=4a9c615e HANDIN1 summary.
+**handoff**: run=4a9c615e exec=fe2f2bbe first hand-in; BASE=700a9ff88ded07d3171f1066a60fbee903ee84f3 IMPL1=27dd210dc (line 2 reset FIXED-FOR-CLAIM 1 -> AWAITING-QA). Approved plan blob 74745a8e verified against design receipt request 7695959b. Exact two-line byte comparison and diff check pass. Literal old/new and full path/file name/parent discovery found no matching test files; excluded test matches: none. No TS, package API or executable change, so vitest/build/typecheck not applicable. Plain pnpm lint fails only on two generated git-ignored design receipt JSONs; Git-ignore-aware lint result recorded in hand-in report. Scope: only drill file plus protocol progress ledger; no milestone/research per approved plan. Previous run pointers invalid; HANDIN1 is supplied in final report only. No main sync performed.
