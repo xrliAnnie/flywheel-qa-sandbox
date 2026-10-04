@@ -1,24 +1,22 @@
 ---
 issue: FLY-3227
-phase: implement
-phaseCursor: 3/4
-updated: 2026-10-04T09:13:29.696Z
-nextStep: Attempt 2 final pre-CI ledger. QA claim 1 line-2-only fix committed
-  b20a08883; HANDIN1=e72ffa992ce5b7104ed8321ea968e9ed09d870e6 preserved.
-  Byte/ancestry/scope/idempotent retry and
-  stale/wrong/superseded/leading-zero/whitespace/extra-line checks PASS; lint
-  exit 0, 14 existing warnings. New code review
-  q=6f9c1787-ed2a-45af-ac0e-6e04b3a47f7e
-  req=7dd8227d-aa4f-4d50-8952-502ebb1c8956, register after pushing this commit.
-  PR 544 reused. Freeze after push; no further commits. On effective APPROVED
-  rerun ci-full ensure --pr 544 --head HEAD --json and obey server-owned frozen
-  B-prime requirement; only exit 0 permits complete needs_review --pr 544 then
-  park. No pre_handin.script; docs_only exemption, no room deployment or Linear
-  changes.
+phase: design
+phaseCursor: 1/6
+updated: 2026-10-04T10:43:50.191Z
+nextStep: "Onboarding audited fresh sandbox origin/main
+  2de71c2e2eec04ac54d884962a20a49dc61cb585 with design TURN epoch 1. Reuse
+  existing FLY-3227-real-runner-drill folder; inherited plan/page/claim 1 are
+  historical, not this run evidence. Scope question
+  8da5357d-26e4-4a52-92e3-8519f9eb5b9d pending: README single-file/no-research
+  versus injected full DOC-FLOW and mandatory HTML. Check it on next TURN; do
+  not implement or change Linear, config, room, or drill file. Next: apply
+  driver document-scope ruling, prepare current-run plan/artifacts, register
+  effective design review, publish/report HTML, complete phase_design_complete
+  then park."
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
-**phase**: implement (3/4)
-**next**: Attempt 2 final pre-CI ledger. QA claim 1 line-2-only fix committed b20a08883; HANDIN1=e72ffa992ce5b7104ed8321ea968e9ed09d870e6 preserved. Byte/ancestry/scope/idempotent retry and stale/wrong/superseded/leading-zero/whitespace/extra-line checks PASS; lint exit 0, 14 existing warnings. New code review q=6f9c1787-ed2a-45af-ac0e-6e04b3a47f7e req=7dd8227d-aa4f-4d50-8952-502ebb1c8956, register after pushing this commit. PR 544 reused. Freeze after push; no further commits. On effective APPROVED rerun ci-full ensure --pr 544 --head HEAD --json and obey server-owned frozen B-prime requirement; only exit 0 permits complete needs_review --pr 544 then park. No pre_handin.script; docs_only exemption, no room deployment or Linear changes.
+**phase**: design (1/6)
+**next**: Onboarding audited fresh sandbox origin/main 2de71c2e2eec04ac54d884962a20a49dc61cb585 with design TURN epoch 1. Reuse existing FLY-3227-real-runner-drill folder; inherited plan/page/claim 1 are historical, not this run evidence. Scope question 8da5357d-26e4-4a52-92e3-8519f9eb5b9d pending: README single-file/no-research versus injected full DOC-FLOW and mandatory HTML. Check it on next TURN; do not implement or change Linear, config, room, or drill file. Next: apply driver document-scope ruling, prepare current-run plan/artifacts, register effective design review, publish/report HTML, complete phase_design_complete then park.
