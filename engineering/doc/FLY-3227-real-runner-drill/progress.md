@@ -1,27 +1,32 @@
 ---
 issue: FLY-3227
 phase: design
-phaseCursor: 4/6
-updated: 2026-10-04T10:54:12.125Z
-nextStep: "Artifacts committed/pushed at
-  99f9c90e5cb977f710c9d1ba76314958e026a005. Design review gate
-  b46ce961-5dc8-4c84-b074-5ec20e2ced2f; request
-  11456e53-e4fe-4dc9-ba32-fcf1bc8eac6e accepted=true skipped=false
-  duplicate=false. Reviewed plan blob f8e8fe0c85ac9e61f361ecf913da36087e293b94;
-  preserve it while pending. Scope driver answer read, short plan with embedded
-  exploration/local research, mandatory existing page/diagram/ledger retained as
-  workflow artifacts; no drill/Linear/room changes. Verification evidence and
-  every excluded test match are in cursor-3 commit
-  d04f03be4d7096f1c46dab543fcd5d43023a0cce. STE disabled, no unit. Next: publish
-  current committed design.html once with --publish-only, report hosted receipt
-  URL to actual Lead, check effective design verdict once per turn, then
-  complete phase_design_complete and park after approval. Exact-head full CI
-  belongs to downstream implementation PR; local checks are not full-suite
-  evidence."
+phaseCursor: 5/6
+updated: 2026-10-04T10:56:17.493Z
+nextStep: "Mandatory committed design HTML published successfully with
+  --publish-only: reportId 6dd8dc888a7ba08ff008b05dd6b23156; URL
+  http://127.0.0.1:58024/fw-reports-d3ada2/r/6dd8dc888a7ba08ff008b05dd6b23156/ .
+  STE begin disabled, no unit/patch/cancel needed; successful hosted SHA256
+  1df2d801d5623ceaa63a0c693dc5587d9e2a630541e60e35402bb36f193b40d5, no fallback
+  indicated. DESIGN-HTML ready report sent via ask --report to flywheel-test-5,
+  receipt de3847e0-e45a-4e1f-aad9-5164ddb5465d. Hosted HTTP 200 and browser
+  checks PASS: minted nonce/matching injected CSP, 6 inputs, autosave/reload,
+  zero external requests/errors. Design gate
+  b46ce961-5dc8-4c84-b074-5ec20e2ced2f checked once this turn and pending;
+  request 11456e53-e4fe-4dc9-ba32-fcf1bc8eac6e accepted; unchanged committed
+  plan blob f8e8fe0c85ac9e61f361ecf913da36087e293b94. Artifact commit
+  99f9c90e5cb977f710c9d1ba76314958e026a005 pushed. Next: own wait watcher for
+  this question and end current turn; on wake FIRST turn then check gate and
+  wait ack. Effective APPROVED required before phase_design_complete, then park;
+  advisories reported to Lead if present. Scope interpretation: README short
+  plan containing exploration/local research; required existing
+  page/diagram/ledger are workflow records. No implementation, Linear changes,
+  room deployment, successor dispatch, PR creation or ship actions. Exact-head
+  CI is downstream PR responsibility and not claimed locally."
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
-**phase**: design (4/6)
-**next**: Artifacts committed/pushed at 99f9c90e5cb977f710c9d1ba76314958e026a005. Design review gate b46ce961-5dc8-4c84-b074-5ec20e2ced2f; request 11456e53-e4fe-4dc9-ba32-fcf1bc8eac6e accepted=true skipped=false duplicate=false. Reviewed plan blob f8e8fe0c85ac9e61f361ecf913da36087e293b94; preserve it while pending. Scope driver answer read, short plan with embedded exploration/local research, mandatory existing page/diagram/ledger retained as workflow artifacts; no drill/Linear/room changes. Verification evidence and every excluded test match are in cursor-3 commit d04f03be4d7096f1c46dab543fcd5d43023a0cce. STE disabled, no unit. Next: publish current committed design.html once with --publish-only, report hosted receipt URL to actual Lead, check effective design verdict once per turn, then complete phase_design_complete and park after approval. Exact-head full CI belongs to downstream implementation PR; local checks are not full-suite evidence.
+**phase**: design (5/6)
+**next**: Mandatory committed design HTML published successfully with --publish-only: reportId 6dd8dc888a7ba08ff008b05dd6b23156; URL http://127.0.0.1:58024/fw-reports-d3ada2/r/6dd8dc888a7ba08ff008b05dd6b23156/ . STE begin disabled, no unit/patch/cancel needed; successful hosted SHA256 1df2d801d5623ceaa63a0c693dc5587d9e2a630541e60e35402bb36f193b40d5, no fallback indicated. DESIGN-HTML ready report sent via ask --report to flywheel-test-5, receipt de3847e0-e45a-4e1f-aad9-5164ddb5465d. Hosted HTTP 200 and browser checks PASS: minted nonce/matching injected CSP, 6 inputs, autosave/reload, zero external requests/errors. Design gate b46ce961-5dc8-4c84-b074-5ec20e2ced2f checked once this turn and pending; request 11456e53-e4fe-4dc9-ba32-fcf1bc8eac6e accepted; unchanged committed plan blob f8e8fe0c85ac9e61f361ecf913da36087e293b94. Artifact commit 99f9c90e5cb977f710c9d1ba76314958e026a005 pushed. Next: own wait watcher for this question and end current turn; on wake FIRST turn then check gate and wait ack. Effective APPROVED required before phase_design_complete, then park; advisories reported to Lead if present. Scope interpretation: README short plan containing exploration/local research; required existing page/diagram/ledger are workflow records. No implementation, Linear changes, room deployment, successor dispatch, PR creation or ship actions. Exact-head CI is downstream PR responsibility and not claimed locally.
