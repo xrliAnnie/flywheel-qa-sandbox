@@ -68,3 +68,13 @@ run `4a9c615e` 已走完 design → implement → QA(claim `1`)→ merge,PR #546
 - README 合同未变(blob `71e58f18…`)。
 - run `0662a4ce` 的 HANDIN1 / 设计评审 / CI / PR 正文里的 run 标记都是**旧证据**,本轮不认;progress handoff 已在开工时覆盖。
 - 结论:实现节点进入的是 plan §3 的"已就绪(重试)态"——内容提交可为空,只需刷新 ledger、证明头一致、更新 PR #557 正文为本轮 run,再交付。
+
+## 9. 第七次派发(run `813f0792`,exec `b83a17a2`,节点 `eng_design`,2026-10-04,slot-4)
+
+run `a1fb43f1` 已走完 design → implement → QA(claim `1`)→ merge,PR #557 合入 main(`baace76a5`)。本轮同一分支名、通用 DAG 再次派发:
+
+- 派发起点 = `origin/main` = `baace76a5`(本地 HEAD 与 main 相同);远端分支对应的 PR #539/#541/#546/#548/#557 全部 MERGED,没有 OPEN 的 PR → 交付 #1 推分支、开**新 PR**。
+- README blob 仍是 `71e58f18…`,合同没变。
+- 目标文件在 main 上 = `QA-SBX FLY-3226 drill` / `FIXED-FOR-CLAIM 1`(PR #557 残留)→ 交付 #1 是**重置**(diff 状态 `M`,第 2 行改回 `AWAITING-QA`);若本轮 claim id 又是 `1`,交付 #2 后 PR 级演练净 diff 为空仍合法,返工由区间 patch `PREV..HANDIN2` 证明。
+- progress.md 原带 run `a1fb43f1` 实现节点 attempt=2 的 handoff(claim 1、review request `43901215…`)。开工即用 `--handoff` 覆盖(提交 `70e672d84`);这些指针本轮一律不认。
+- 结论:回到 plan §3 的"重置态"分支(不是 run `a1fb43f1` 的"已就绪态");其余骨架沿用。

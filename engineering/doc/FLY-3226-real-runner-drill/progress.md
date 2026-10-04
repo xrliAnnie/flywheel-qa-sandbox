@@ -2,19 +2,18 @@
 issue: FLY-3226
 phase: implement
 phaseCursor: 2/2
-updated: 2026-10-04T19:15:28.206Z
-nextStep: Freeze exact head, push, run ci-full ensure, complete needs_review for
-  QA retest
+updated: 2026-10-04T20:26:28.018Z
+nextStep: "Verify claim-1 patch, push PR #560, obtain code review, and hand back to QA"
 chunks: []
 pointers: {}
-handoff: "run=a1fb43f1 exec=8c96f0b8-df68-445b-a86a-78c8fd8e2acb node=implement
-  attempt=2. QA claim 1 fixed: fixture is FIXED-FOR-CLAIM 1. Code review
-  APPROVED request 43901215-3556-40bb-938f-d3f6961a365a; LOW ledger cursor
-  advisory corrected in this write."
+handoff: "run=813f0792 exec=b83a17a2 node=eng_design done. Plan blob 2c028296
+  APPROVED r1 (request 46b2e113, thread 01a10884). Main target = FIXED-FOR-CLAIM
+  1 residue; hand-in #1 is a reset. Design HTML
+  http://127.0.0.1:60412/fw-reports-172892/r/eb309d3301543756b3995a8edd790be7/"
 ---
 
 # FLY-3226 progress
 **phase**: implement (2/2)
-**next**: Freeze exact head, push, run ci-full ensure, complete needs_review for QA retest
+**next**: Verify claim-1 patch, push PR #560, obtain code review, and hand back to QA
 
-**handoff**: run=a1fb43f1 exec=8c96f0b8-df68-445b-a86a-78c8fd8e2acb node=implement attempt=2. QA claim 1 fixed: fixture is FIXED-FOR-CLAIM 1. Code review APPROVED request 43901215-3556-40bb-938f-d3f6961a365a; LOW ledger cursor advisory corrected in this write.
+**handoff**: run=813f0792 exec=b83a17a2 node=eng_design done. Plan blob 2c028296 APPROVED r1 (request 46b2e113, thread 01a10884). Main target = FIXED-FOR-CLAIM 1 residue; hand-in #1 is a reset. Design HTML http://127.0.0.1:60412/fw-reports-172892/r/eb309d3301543756b3995a8edd790be7/
