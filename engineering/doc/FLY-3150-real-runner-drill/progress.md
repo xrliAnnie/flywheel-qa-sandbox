@@ -1,20 +1,27 @@
 ---
 issue: FLY-3150
 phase: implement
-phaseCursor: 2/4
-updated: 2026-10-03T22:23:14.724Z
-nextStep: Push HANDIN2, exact-head CI, complete
+phaseCursor: 3/4
+updated: 2026-10-04T01:32:36.087Z
+nextStep: "run=417f5fe4 hand-in #1: request effective code review, freeze HEAD
+  for exact-head CI, needs_review completion on PR #517; no further planned
+  commits"
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
-  exploration: engineering/doc/FLY-3150-real-runner-drill/exploration.md
-  pr: https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/524
-handoff: "run=f461016e hand-in #2 for QA claim 1;
-  PREV=HANDIN1=b515d5700bcbca858b289972e0a6f5a6a89fbaa3"
+  pr: https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/517
+handoff: "run=417f5fe4 hand-in #1; BASE=a25b98d35a206fb98e1a1baf83f3a86a2c625394
+  IMPL1=2210678d81bb1602e1fab3a1bd1afeeeb9fffb0d; exact target QA-SBX FLY-2167
+  drill / AWAITING-QA, only line 2 reset; implementation interval and PR scope
+  pass; 10 generic progress infrastructure tests excluded for generated
+  ledger-only data, no drill test matches; pnpm lint exits 1 only on two ignored
+  runtime review JSON files, git confirms neither tracked; tracked-file pnpm
+  lint passes (1894 files, 14 warnings); current code review and exact-head CI
+  pending; final HANDIN1 belongs in completion report, no old run pointers."
 ---
 
 # FLY-3150 progress
-**phase**: implement (2/4)
-**next**: Push HANDIN2, exact-head CI, complete
+**phase**: implement (3/4)
+**next**: run=417f5fe4 hand-in #1: request effective code review, freeze HEAD for exact-head CI, needs_review completion on PR #517; no further planned commits
 
-**handoff**: run=f461016e hand-in #2 for QA claim 1; PREV=HANDIN1=b515d5700bcbca858b289972e0a6f5a6a89fbaa3
+**handoff**: run=417f5fe4 hand-in #1; BASE=a25b98d35a206fb98e1a1baf83f3a86a2c625394 IMPL1=2210678d81bb1602e1fab3a1bd1afeeeb9fffb0d; exact target QA-SBX FLY-2167 drill / AWAITING-QA, only line 2 reset; implementation interval and PR scope pass; 10 generic progress infrastructure tests excluded for generated ledger-only data, no drill test matches; pnpm lint exits 1 only on two ignored runtime review JSON files, git confirms neither tracked; tracked-file pnpm lint passes (1894 files, 14 warnings); current code review and exact-head CI pending; final HANDIN1 belongs in completion report, no old run pointers.

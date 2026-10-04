@@ -1,7 +1,7 @@
 # FLY-3150 真 Runner 通用演练(529 房间) — 探索
 
 Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-03(2026-10-01 初版;§7–§14 为历史 —— slot-1 / slot-5 / slot-6 / slot-2 run `0750ae00` / `5743a2f5` / `c57ecd18`;§15 为 run `2eae0ffd`,slot-4;§16 为本轮再派发 run `f461016e`,slot-4)
+日期: 2026-10-03(2026-10-01 初版;§7–§17 为历史 —— slot-1 / slot-5 / slot-6 / slot-2 / slot-4 各轮;§18 为本轮再派发 run `417f5fe4`,slot-5)
 基于: 无
 
 ## 1. 任务来源与唯一权威
@@ -231,3 +231,43 @@ TURN:`yours phase=design epoch=1 run=f461016e… node=eng_design attempt=1`。�
 **结论**:本轮交付 #1 走 plan §3 第 2 步幂等分支(不提交目标文件),复用 PR #524 并改写正文为本轮证据;上一轮 `HANDIN1=2f94020e3`、代码评审 `8eaee298…`、CI run `37136172147` 都**不是**本轮证据。合并提交在实现节点 BASE 之前,不进入交付区间。
 
 **设计评审(run `f461016e`)**:Codex 3 轮(thread `01a103bc-ad9b…`,gpt-6-luna/xhigh)。R1 CHANGES_REQUESTED(P2):`BASE..HANDIN1` 把 ledger 自提交与目标文件交付混在一起,幂等分支下区间只有 progress.md → 改为冻结 `IMPL1`,实现范围与账本范围分开验(交付 #2 同理 `BASE2`/`IMPL2`)。R2 CHANGES_REQUESTED(P2):交付 #2 在"修复已提交、ledger 前中断"后重试时,`PREV..BASE2` 前置检查必然失败 → 按 BASE2 blob 分初始态 / 已修复态核验,其他内容 fail closed。R3 对绑定 blob `43977ec3…`(request `2b1e2088…`)APPROVED(0/0/0);`await-codex-gate design` 通过;thread 已归档。founder HTML `design.html` 与 `d1-core-flow.*` / `d2-data-model.*` 已覆盖为本轮再派发版本(旧版本在本分支历史 `a66d6514a` 可追溯)。
+
+## 17. 并行 slot-5 运行记录(run `a6eb9810`,从 PR #517 保留)
+
+本节由 slot-5 run `417f5fe4` 的设计节点在技术同步 `origin/main`(`02d12bdec`)时补入:本分支原 §12 记录的是 run `a6eb9810`,与 main 上 §12–§16(其他 slot)编号冲突,故改号保留,不静默丢弃。
+
+| 项 | 值 |
+|---|---|
+| 分支 / 起点 | `project-slot-5-FLY-3150`,派发时 `be388bf10` = 当时 `origin/main`(PR #499 已合入) |
+| 目标文件起点 | `qa-sbx/fly2167/project-slot-5-FLY-3150.md` 已存在,残留 `FIXED-FOR-CLAIM 1` |
+| 交付 #1 | `9e16f93d8`:第 2 行重置为 `AWAITING-QA`,开 PR #517 |
+| QA 第 1 轮 | planted fail,claim `1` |
+| 交付 #2 | `187d68521`:第 2 行 `FIXED-FOR-CLAIM 1` |
+| 代码评审 | 冻结头 `a5d4243ea` APPROVED;exact-head CI 两项 SUCCESS |
+| 结果 | PR #517 未合入即被新一轮派发;main 前进(#509/#522/#526/#529/#524 等)后变为 CONFLICTING |
+
+这些是 run `a6eb9810` 的历史证据,**不是**后续任何一轮的 BASE / PREV / HANDIN / claim id。
+
+## 18. 本次派发审计(run `417f5fe4`,2026-10-03,slot-5 再派发)
+
+TURN:`yours phase=design epoch=1 run=417f5fe4… node=eng_design attempt=1`。分支连续性:继续 `origin/project-slot-5-FLY-3150@a5d4243ea`(OPEN PR #517)。§17 是同分支上一轮 run `a6eb9810` 的历史。
+
+| 项 | 结果 |
+|---|---|
+| 分支头(派发时) | `a5d4243ea`(上一轮交付 #2 后的 ledger 头,已有代码评审 APPROVED + exact-head CI SUCCESS)= 远端分支头 = PR #517 头 |
+| PR | #517 OPEN,`CONFLICTING` / `DIRTY`;标题仍是 `(run a6eb9810)` |
+| 目标文件 | `qa-sbx/fly2167/project-slot-5-FLY-3150.md` HEAD blob = `QA-SBX FLY-2167 drill` / `FIXED-FOR-CLAIM 1`;`origin/main` 上同一路径字节相同 |
+| `origin/main` | 已前进到 `02d12bdec`(slot-2/3/4/6 的 FLY-3150 PR #509/#522/#526/#529/#524 与 FLY-3224–3228 夹具);README 未变(blob `1de5e367…`) |
+| 冲突与同步 | `git merge origin/main` 在本文件夹内 8 个文件冲突(d1/d2 mmd+svg、design.html、exploration、plan、progress),目录外无冲突。plan / progress / design HTML / 图保留 slot-5 版本;exploration 取 main 版本(含 §12–§16 其他 slot 历史),本分支原 §12 改号为 §17 保留。合并提交 `2bb23f05a` |
+| 同步后 PR 级演练 diff | 排除本文件夹后**为空**(目标文件与 main 字节相同) |
+| 其他 slot 目标文件 | `project-slot-1/2/3/4/6-FLY-3150.md` 一律不碰 |
+| 收件箱 | 无 Lead 指令 |
+| onboard skill | 本项目不存在 → 直接 `stage set brainstorm` |
+| Linear | Done(Lead 裁定);不碰 |
+
+**结论**:
+1. 陈旧 claim 行风险成立(残留 id `1`):交付 #1 必须把第 2 行重置为 `AWAITING-QA`,不能走幂等跳过分支。
+2. **新发现的边界**:main 上的 slot-5 目标文件已是 `FIXED-FOR-CLAIM 1`。若本轮 QA claim id 又是 `1`,交付 #2 后 PR 级演练净 diff 为空 —— 旧计划里"恰好一行目标文件"的 PR 级断言会误判失败(run `a6eb9810` 的 PR 正文已注意到这一现象)。plan §1 把断言改为"只能为空或恰好目标文件 + HEAD blob 精确 + 为空仅当合并基已含期望字节",返工真实发生由区间 patch(plan §3 交付 #2 第 6(b) 步)证明。
+3. 上一轮的 HANDIN1 `9e16f93d8…`、HANDIN2 `187d68521…`、claim `1`、代码评审与 CI 都**不是**本轮证据;PR #517 复用并改标题/正文为本轮 run id。
+
+**设计评审(run `417f5fe4`)**:Codex 1 轮(thread `01a10467-859a…`,turn `01a10467-8b4d…`,gpt-6-astra/xhigh,request `5ded3a1a…`)。R1 对绑定 blob `aacd0896…` 直接 APPROVED(P1/P2/P3 = 0/0/0)。评审者在仓库外临时 git 夹具里用 `/bin/bash`、Homebrew bash、`/bin/zsh` 实跑:交付 #1 重置与重试、交付间 ledger、返工提交后及 ledger 后重试、claim `1` 的空 PR 级 diff、claim `2` 的单文件 PR 级 diff、两次交付中的 main 冲突同步、目录外冲突 abort、未跟踪目标拒绝,全部符合 plan §1 / §3 / §3.1;并用独立对象库重算 `2bb23f05a` 的两父合并,确认恰 8 个冲突且全在本文件夹。评审者声明的边界:未推送、未改 PR、未触发 CI(由实现节点核验远端/PR/CI 头)。`review-round design` 记录 match=yes;`await-codex-gate design` 通过;thread 已归档。另:预检时误把 `task --help` 当提示词开了无关 thread `01a10466-c7ec…`,不是评审轮次,已归档。

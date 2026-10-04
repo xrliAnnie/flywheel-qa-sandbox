@@ -1,11 +1,14 @@
-flowchart LR
-    B["分支 project-slot-4-FLY-3150<br/>复用 PR #524"] --> T["演练文件<br/>qa-sbx/fly2167/project-slot-4-FLY-3150.md"]
+flowchart TD
+    B["分支 project-slot-5-FLY-3150"] --> T["演练文件<br/>qa-sbx/fly2167/project-slot-5-FLY-3150.md"]
     B --> P["流程文档文件夹<br/>engineering/doc/FLY-3150-real-runner-drill/"]
-    T --> L1["第1行: QA-SBX FLY-2167 drill"]
-    T --> L2["第2行状态"]
-    L2 --> S1["AWAITING-QA<br/>上一轮已写好,本轮交付 #1 不改"]
-    S1 -->|"交付 #2"| S2["FIXED-FOR-CLAIM 本轮 id"]
+    T --> L1["第 1 行: QA-SBX FLY-2167 drill"]
+    T --> L2["第 2 行: AWAITING-QA 或 FIXED-FOR-CLAIM id"]
     P --> X["exploration / plan / progress / design.html"]
-    M["origin/main 前进<br/>(其他 slot 合入)"] -->|"合并,冲突处保留 slot-4 版本"| P
     T -. "QA 只验这里" .-> C["file-shape / fixed-for-claim / e2e_529_exempt"]
     P -. "不进验收" .-> N["Runner 协议记账"]
+    T --> A{"PR 级检查:排除流程文档后<br/>与 main 的差异"}
+    A -- "恰好演练文件" --> OK1["通过(交付头字节精确)"]
+    A -- "为空" --> E{"合并基上的演练文件<br/>已等于期望两行?"}
+    E -- "是(例:claim id 也是 1)" --> OK2["通过,返工由<br/>HANDIN1→HANDIN2 patch 证明"]
+    E -- "否" --> STOP["停,不交付"]
+    A -- "出现其他路径" --> STOP
