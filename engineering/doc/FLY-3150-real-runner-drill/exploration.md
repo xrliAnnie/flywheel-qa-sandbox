@@ -392,3 +392,20 @@ TURN:`yours phase=design epoch=1 run=0c3b88f3… node=eng_design attempt=1`(exec
 **结论**:与 §23 同形 —— 交付 #1 必须把第 2 行从残留的 `FIXED-FOR-CLAIM 1` 重置为 `AWAITING-QA`;plan 结构沿用已评审版本,只换 run id 与派发快照。PR #562 / #559 及任何旧 HANDIN、claim id、评审、CI 都不是本轮证据。
 
 **设计评审(run `0c3b88f3`)**:Codex(gpt-6-luna/xhigh,thread `01a108f0-7b64…`,request `a662156f…`)对绑定 blob `eb25a54e…`(commit `c8b67dd94`)第 1 轮即 APPROVED(P1/P2/P3 = 0/0/0):核对 README、HEAD/main 上目标文件字节、PR 列表(#562 关闭 / #559 合入)、远端无本分支、`ci.yml` 触发条件,确认陈旧 `FIXED-FOR-CLAIM 1` 重置、交付区间核验与 `## 查询与索引` 的「不适用」成立。第 1 轮回合以 "completion inferred" 结束,故在同一 thread 追加一个不改 plan 的确认回合(turn `01a108f5…`,同样 APPROVED);`review-round` 把该回合记为 r1,`await-codex-gate design` 通过;thread 已归档。
+
+## 25. 本次派发审计(run `6f9cf806`,2026-10-04,slot-1)
+
+TURN:`yours phase=design epoch=1 run=6f9cf806… node=eng_design attempt=1`(exec `246e1090`)。§24 是 run `0c3b88f3`,它的交付 #1 已推送并开 PR #565(仍 OPEN,头 `9429bb968`);本轮是同一分支上的**新 run**,继续在其上工作,不 force-push。
+
+| 项 | 结果 |
+|---|---|
+| 分支头(派发时) | `9429bb968` = `origin/project-slot-1-FLY-3150` = PR #565 头;落后 `origin/main` 一个提交(`39754a419`,FLY-3224 夹具,只动 `engineering/doc/FLY-3224-real-runner-drill/`)→ 普通 `git merge origin/main`,合并提交 `1bf3a8aaa`,无冲突 |
+| 远端分支 / PR | 远端有本分支;PR #565 OPEN(run `0c3b88f3`)→ 本轮交付 #1 复用 #565(`gh pr edit` 改标题 / 正文为 run `6f9cf806`);其余同名 PR 已合入或关闭 |
+| 目标文件 | HEAD 上已逐字节 = `QA-SBX FLY-2167 drill` / `AWAITING-QA`(run `0c3b88f3` 的 `a896ba8e5`);main 上仍是 `FIXED-FOR-CLAIM 1` → 交付 #1 走跳过分支,`IMPL1=BASE`,PR 级净 diff 恰好一行目标文件 |
+| README | blob `1de5e367…`,未变 |
+| progress.md | 派发时是 run `0c3b88f3` 的 implement 2/4;本节点已用 `--handoff` 覆盖为本轮 run(提交 `6d252b484`),`pr` 指针 = `565` |
+| 收件箱 | 无 Lead 指令 |
+| onboard skill | 不存在 → 直接 `stage set brainstorm` |
+| Linear | Done(Lead 裁定);不碰 |
+
+**结论**:与 §24 不同形 —— 陈旧 `FIXED-FOR-CLAIM 1` 已在分支上被上一轮重置,本轮交付 #1 无需再提交目标文件(plan §3 第 2 步跳过分支),但 PR 级断言、账本范围核验与 `run=6f9cf806 HANDIN1=<sha>` 照常。PR #565 上一轮的 HANDIN1、代码评审、CI、QA 结论与任何 claim id 都不是本轮证据。
