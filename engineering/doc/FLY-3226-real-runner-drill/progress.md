@@ -1,26 +1,44 @@
 ---
 issue: FLY-3226
 phase: implement
-phaseCursor: 1/2
-updated: 2026-10-04T07:55:04.258Z
-nextStep: Code review question 29715e88-2c5f-4ffc-a533-83f912b283a5; open PR,
-  freeze final HEAD, ci-full ensure then complete needs_review
+phaseCursor: 2/2
+updated: 2026-10-04T08:19:17.956Z
+nextStep: Check fresh code review b0fa5bf4-2144-4c74-b216-0289c6a36a10; freeze
+  final head, server ci-full ensure, complete needs_review PR 541 for QA retest
 chunks: []
 pointers: {}
-handoff: "run=fee0ab7d; hand-in #1, no QA fix context;
-  BASE1=96b8339aa0c273391e4846e530a385640055cde8;
-  IMPL1=01a515d89ede2d64a524e86b37e9a1ff897c6245; exact two lines AWAITING-QA,
-  implementation/ledger/PR scope assertions and diff-check PASS, no merges,
-  clean tree. Literal/path discovery found no tests, none excluded; docs-only,
-  no TS/build/typecheck. pnpm lint exit 1: two git-ignored runtime
-  .flywheel/runs/97e6a16d-e6dc-44d5-b821-506ec4031367/codex/design-{request,rev\
-  iew}.json formatting errors outside diff; 14 existing warnings. Code gate
-  29715e88-2c5f-4ffc-a533-83f912b283a5 pending. Plan blob 3731f8dd APPROVED;
-  prior run PR #539/PREV/claim invalid."
+handoff: "run=fee0ab7d; implement attempt 2, QA fix claim 1;
+  PREV=2647ad8d2a0679b14beb6597726c527872107bad;
+  BASE2=2647ad8d2a0679b14beb6597726c527872107bad;
+  IMPL2=e89cfc443f2d5a0baa2ea410ec1710270ca58052; only line 2 AWAITING-QA ->
+  FIXED-FOR-CLAIM 1. Byte/scope/interval-patch/initial-state/claim provenance
+  checks PASS; missing/wrong claim rejected; line 1 and two terminal newlines
+  preserved. PR net drill diff empty is valid only because merge-base drill blob
+  already equals expected claim 1; interval patch proves actual rework. Adjacent
+  software queued/started/dead/superseded/retried/concurrent paths N/A: static
+  markdown only; committed retry guard also verified before handoff.
+  e2e_529_exempt remains docs_only/not_run; no room deployment, source tests,
+  code or Linear edits. New code gate b0fa5bf4-2144-4c74-b216-0289c6a36a10
+  pending. pnpm lint exit 1: same two ignored design runtime JSON format errors
+  outside diff, 14 warnings; no TS/build/typecheck. Literal and
+  full-path/name/parent discovery found no drill tests. All generic progress.md
+  test/snapshot matches excluded because only generated ledger prose changed, no
+  progress implementation/schema changes:
+  packages/claude-runner/test/codex-daemon-adapter-helpers.test.ts,
+  packages/config/src/__tests__/progress-path-resolver.test.ts,
+  packages/config/src/__tests__/progress-schema.test.ts,
+  packages/edge-worker/src/__tests__/__snapshots__/Blueprint.fly1188-codex-prom\
+  pt.test.ts.snap, packages/edge-worker/src/__tests__/resume-mode.test.ts,
+  packages/flywheel-comm/src/commands/__tests__/progress.realgit.test.ts,
+  packages/flywheel-comm/src/commands/__tests__/progress.test.ts,
+  packages/teamlead/src/bridge/__tests__/progress-resume.test.ts,
+  packages/teamlead/src/bridge/__tests__/run-dispatcher-resume.test.ts,
+  packages/teamlead/src/bridge/__tests__/stale-approved-ship-reconciler.test.ts\
+  ."
 ---
 
 # FLY-3226 progress
-**phase**: implement (1/2)
-**next**: Code review question 29715e88-2c5f-4ffc-a533-83f912b283a5; open PR, freeze final HEAD, ci-full ensure then complete needs_review
+**phase**: implement (2/2)
+**next**: Check fresh code review b0fa5bf4-2144-4c74-b216-0289c6a36a10; freeze final head, server ci-full ensure, complete needs_review PR 541 for QA retest
 
-**handoff**: run=fee0ab7d; hand-in #1, no QA fix context; BASE1=96b8339aa0c273391e4846e530a385640055cde8; IMPL1=01a515d89ede2d64a524e86b37e9a1ff897c6245; exact two lines AWAITING-QA, implementation/ledger/PR scope assertions and diff-check PASS, no merges, clean tree. Literal/path discovery found no tests, none excluded; docs-only, no TS/build/typecheck. pnpm lint exit 1: two git-ignored runtime .flywheel/runs/97e6a16d-e6dc-44d5-b821-506ec4031367/codex/design-{request,review}.json formatting errors outside diff; 14 existing warnings. Code gate 29715e88-2c5f-4ffc-a533-83f912b283a5 pending. Plan blob 3731f8dd APPROVED; prior run PR #539/PREV/claim invalid.
+**handoff**: run=fee0ab7d; implement attempt 2, QA fix claim 1; PREV=2647ad8d2a0679b14beb6597726c527872107bad; BASE2=2647ad8d2a0679b14beb6597726c527872107bad; IMPL2=e89cfc443f2d5a0baa2ea410ec1710270ca58052; only line 2 AWAITING-QA -> FIXED-FOR-CLAIM 1. Byte/scope/interval-patch/initial-state/claim provenance checks PASS; missing/wrong claim rejected; line 1 and two terminal newlines preserved. PR net drill diff empty is valid only because merge-base drill blob already equals expected claim 1; interval patch proves actual rework. Adjacent software queued/started/dead/superseded/retried/concurrent paths N/A: static markdown only; committed retry guard also verified before handoff. e2e_529_exempt remains docs_only/not_run; no room deployment, source tests, code or Linear edits. New code gate b0fa5bf4-2144-4c74-b216-0289c6a36a10 pending. pnpm lint exit 1: same two ignored design runtime JSON format errors outside diff, 14 warnings; no TS/build/typecheck. Literal and full-path/name/parent discovery found no drill tests. All generic progress.md test/snapshot matches excluded because only generated ledger prose changed, no progress implementation/schema changes: packages/claude-runner/test/codex-daemon-adapter-helpers.test.ts, packages/config/src/__tests__/progress-path-resolver.test.ts, packages/config/src/__tests__/progress-schema.test.ts, packages/edge-worker/src/__tests__/__snapshots__/Blueprint.fly1188-codex-prompt.test.ts.snap, packages/edge-worker/src/__tests__/resume-mode.test.ts, packages/flywheel-comm/src/commands/__tests__/progress.realgit.test.ts, packages/flywheel-comm/src/commands/__tests__/progress.test.ts, packages/teamlead/src/bridge/__tests__/progress-resume.test.ts, packages/teamlead/src/bridge/__tests__/run-dispatcher-resume.test.ts, packages/teamlead/src/bridge/__tests__/stale-approved-ship-reconciler.test.ts.
