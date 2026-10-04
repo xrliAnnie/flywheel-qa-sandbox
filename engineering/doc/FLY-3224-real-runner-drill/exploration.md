@@ -1,27 +1,26 @@
-# FLY-3224 真 Runner 通用演练(529 房间) — 探索
+# FLY-3224 真 Runner 通用演练（529 房间） — 探索
 Issue: FLY-3224 (https://linear.app/geoforge3d/issue/FLY-3224/qa-sbx-fly-3224-real-runner-generalized-drill-529-room-only)
 日期: 2026-10-04
 基于: 无
 
-## 1. 任务来源
+## 任务与当前证据
 
-- 唯一权威:`origin/main:qa-sbx/fly3224/README.md`(blob `c4a1b333…`)。同 FLY-3150 合同,目录与第 1 行文字换成 FLY-3224。
-- README 规定:设计"一份短 plan 足够,不需要 research 文档"。所以本文件夹只有 exploration.md(本文)+ plan.md + progress.md + 设计 HTML 与图源,没有 research.md(README 覆盖 DOC-FLOW full 档的 research 要求,在此明示)。
-- 不改 Linear issue(状态 / 评论 / 标签都不碰);不部署 529 房间。
+本次只设计 README 规定的两行文档演练，不设计 Flywheel 功能。已读取新鲜拉取的 `origin/main:qa-sbx/fly3224/README.md`：main 为 `e6513c9b6867e3773a9bd69b17522cad9d9b828d`，README blob 为 `c4a1b3334b84d73b95cf4e2943c2c8f1474aef87`。
 
-## 2. 现状快照(本次派发 run `18c10fbd`,exec `7cab2c09`,slot-2)
+- 当前分支：`project-slot-2-FLY-3224`。目标文件：`qa-sbx/fly3224/project-slot-2-FLY-3224.md`。
+- 起点文件已有两行：`QA-SBX FLY-3224 drill` / `FIXED-FOR-CLAIM 1`。这是 main 留下的历史内容，不是本轮 QA 结果；实现第一次交付必须恢复 `AWAITING-QA`。
+- `gh pr list --head project-slot-2-FLY-3224 --state open` 返回空列表；远端同名分支查询也为空。旧计划中的 PR 553、run 18c10fbd 和交付指针全部失效。
+- 本轮 run：`cb1aa71a-8686-466e-90a6-ddca7f324c7e`；设计 exec：`f08ad580-f90d-4546-af89-f754ccd0426d`；TURN 为 design / epoch 1 / eng_design / attempt 1。
+- 已阅读 CLAUDE.md、声明的 onboarding 材料、产品体验与架构概要。旧的生产路径、Linear 更新与部署要求不适用于本演练。注入的节点契约和本次 README 约束优先。
 
-- `origin/main` = `caabb83da`;目标文件 `qa-sbx/fly3224/project-slot-2-FLY-3224.md` 在 main 上仍是 `QA-SBX FLY-3224 drill` / `FIXED-FOR-CLAIM 1`(更早 run `0300be9d` 的 PR #547 合入后残留)。
-- 分支 `project-slot-2-FLY-3224` 继承上一轮 run `0565c800`(exec `78025e65`)的工作:交付 #1 提交 `77cdb3bf…` 已把目标文件写成 `QA-SBX FLY-3224 drill` / `AWAITING-QA`,远端分支头 `44bf91dd…`(ledger),PR #553 仍 OPEN,CI 绿。
-- 所以本轮交付 #1 的目标文件**已经**是 `AWAITING-QA` 两行:实现节点不重写、不提交它,只加 ledger 提交得到新交付头,复用 PR #553(改标题/正文为本轮),CI 在新头上重跑。上一轮的 HANDIN1 / PR 正文 / CI 都不当本轮证据。
-- 本文件夹的 plan / exploration / design.html 由本轮刷新,progress.md 由 `flywheel-comm progress` 覆盖。
+## 文档范围与取舍
 
-## 3. 参考
+README 明确“one short plan is enough. No research document.”，所以不创建 research.md，也不宣称进入 research 阶段。本探索将已有证据直接交给 plan.md。
 
-- `origin/main:engineering/doc/FLY-3226-real-runner-drill/plan.md`:同合同、"main 残留"结构已评审通过(重置态、PR 级断言允许交付 #2 净 diff 为空的条件、main 同步后的替代核验)。
-- 上一轮(run `0565c800`)已评审通过的 FLY-3224 plan:本轮只改起点(继承态)与 run id;其第 7 步自包含推送块(`set -eu` 子 shell,失败即停)。本轮合并两者。
-- 仓库历史里有带 `[skip ci]` 的提交,README 明确禁止模仿。
+README 的单文件限制用于演练内容；注入的设计节点契约另要求 DOC-FLOW 文档、进度账本及提交/发布设计 HTML。为同时满足两者，协议文档只落在本文件夹；不参与 QA criterion，不改变演练内容。设计阶段只更新 exploration.md、plan.md、progress.md、design.html 与本页两份 Mermaid 图源及本地 SVG。实现/QA 的内容改动仍只有演练 Markdown，另允许各自注入契约要求的 progress.md。没有额外 research 文档、代码、数据库或部署产物。
 
-## 4. 结论
+采用两次交付：先 AWAITING-QA，首轮故意失败产生本轮编号，再按返工提示复制编号并重验。直接沿用旧编号会掩盖演练目的；增加程序、测试文件或新存储会超出 README 范围。
 
-无代码、无表、无查询。设计 = 把 README 的两行文件契约 + 三条验收写成可执行、可核验的步骤给实现 / QA 节点,并显式处理 main 残留。
+## 约束与设计验收
+
+不改 Linear 状态、评论或标签；不部署/拆除 529 房间；不调度后续节点；不请求 shipping 权限。当前设计不改目标文件。完成证据为本轮有效 APPROVED 设计评审、已推送的设计文档、已发布并通过 structured report 报给指定 Lead 的 HTML，以及 phase_design_complete 的服务端回执。完成设计阶段后保留 resident goal，等待控制器。
