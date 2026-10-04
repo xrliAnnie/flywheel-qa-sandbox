@@ -1,19 +1,20 @@
 ---
 issue: FLY-3150
 phase: design
-phaseCursor: 1/4
-updated: 2026-10-04T22:01:18.892Z
-nextStep: Update plan/exploration for run 0c3b88f3, then Codex design review
+phaseCursor: 4/4
+updated: 2026-10-04T22:09:12.651Z
+nextStep: "eng_implement: hand-in 1 resets line 2 to AWAITING-QA per plan §3"
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
   pr: none
-handoff: run=0c3b88f3-4968-439d-8aaf-e1241b506b7a design attempt 1; prior run
-  pointers (PREV/IMPL2/claim) are NOT evidence for this run
+handoff: run=0c3b88f3-4968-439d-8aaf-e1241b506b7a design complete (Codex
+  APPROVED, gate passed); implement starts hand-in 1; prior run pointers are NOT
+  evidence
 ---
 
 # FLY-3150 progress
-**phase**: design (1/4)
-**next**: Update plan/exploration for run 0c3b88f3, then Codex design review
+**phase**: design (4/4)
+**next**: eng_implement: hand-in 1 resets line 2 to AWAITING-QA per plan §3
 
-**handoff**: run=0c3b88f3-4968-439d-8aaf-e1241b506b7a design attempt 1; prior run pointers (PREV/IMPL2/claim) are NOT evidence for this run
+**handoff**: run=0c3b88f3-4968-439d-8aaf-e1241b506b7a design complete (Codex APPROVED, gate passed); implement starts hand-in 1; prior run pointers are NOT evidence
