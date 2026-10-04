@@ -2,43 +2,22 @@
 issue: FLY-3228
 phase: implement
 phaseCursor: 4/5
-updated: 2026-10-04T12:29:22.945Z
-nextStep: All rework commits written; freeze HANDIN2, push, get effective review
-  and server-owned CI requirement, then complete needs_review for PR 551.
+updated: 2026-10-04T18:29:39.857Z
+nextStep: Push branch, open PR, confirm CI on exact head, complete needs_review
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3228-real-runner-drill/plan.md
   pr: https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/551
-handoff: |-
-  Rework attempt 2 for run dce567d4, activation rework:496b890da1fbcbc49acff38043068bdb570da0a444cd36dd5ffed16f3cff4669, epoch 4. Exact original QA fix context received in thread and independently read from own CommDB runner_phase_wakes queue_seq=2: claim 1 on HANDIN1=63613f566616db99e20eee88b96192a673b95bff. Fix commit b27d7e9a0 changes only line 2 AWAITING-QA -> FIXED-FOR-CLAIM 1. Red cmp before change; green exact bytes after. Negative probes reject stale awaiting, wrong claim 2, leading-zero claim 01, extra line, trailing whitespace, missing final newline. Identical committed bytes pass retry/no-rewrite guard. Runtime queued/started/dead/superseded/concurrent states not applicable to two-line Markdown; no code or TS changes. e2e_529_exempt remains docs_only; no room deployment. pnpm lint exit 1 solely on two ignored generated design JSON formatting errors plus 14 existing warnings. No pre_handin.script. Final ledger commit before frozen HANDIN2 review/CI; final SHA recorded externally.
-
-  Local selection: no drill literal/path test matches; generic progress.md test matches excluded individually because only generated cursor/text changes, parser/schema unchanged:
-  EXCLUDED packages/claude-runner/test/codex-daemon-adapter-helpers.test.ts: generic progress-ledger reference; only generated cursor/text changes, parser and schema unchanged
-  EXCLUDED packages/config/src/__tests__/progress-path-resolver.test.ts: generic progress-ledger reference; only generated cursor/text changes, parser and schema unchanged
-  EXCLUDED packages/config/src/__tests__/progress-schema.test.ts: generic progress-ledger reference; only generated cursor/text changes, parser and schema unchanged
-  EXCLUDED packages/edge-worker/src/__tests__/__snapshots__/Blueprint.fly1188-codex-prompt.test.ts.snap: generic progress-ledger reference; only generated cursor/text changes, parser and schema unchanged
-  EXCLUDED packages/edge-worker/src/__tests__/resume-mode.test.ts: generic progress-ledger reference; only generated cursor/text changes, parser and schema unchanged
-  EXCLUDED packages/flywheel-comm/src/commands/__tests__/progress.realgit.test.ts: generic progress-ledger reference; only generated cursor/text changes, parser and schema unchanged
-  EXCLUDED packages/flywheel-comm/src/commands/__tests__/progress.test.ts: generic progress-ledger reference; only generated cursor/text changes, parser and schema unchanged
-  EXCLUDED packages/teamlead/src/bridge/__tests__/progress-resume.test.ts: generic progress-ledger reference; only generated cursor/text changes, parser and schema unchanged
-  EXCLUDED packages/teamlead/src/bridge/__tests__/run-dispatcher-resume.test.ts: generic progress-ledger reference; only generated cursor/text changes, parser and schema unchanged
-  EXCLUDED packages/teamlead/src/bridge/__tests__/stale-approved-ship-reconciler.test.ts: generic progress-ledger reference; only generated cursor/text changes, parser and schema unchanged
+handoff: "Run ddc84d0c general node exec a4262905, branch
+  project-slot-4-FLY-3228. Design review APPROVED r3 (gpt-6-astra/xhigh, plan
+  blob cfc34da6). Hand-in #1: new file qa-sbx/fly3228/project-slot-4-FLY-3228.md
+  = 'QA-SBX FLY-3228 drill' / 'AWAITING-QA' (cmp red exit2 -> green exit0;
+  negatives fail). No QA fix context in this prompt. e2e_529_exempt docs_only;
+  no room deploy. HANDIN1 recorded in completion summary, not here."
 ---
 
 # FLY-3228 progress
 **phase**: implement (4/5)
-**next**: All rework commits written; freeze HANDIN2, push, get effective review and server-owned CI requirement, then complete needs_review for PR 551.
+**next**: Push branch, open PR, confirm CI on exact head, complete needs_review
 
-**handoff**: Rework attempt 2 for run dce567d4, activation rework:496b890da1fbcbc49acff38043068bdb570da0a444cd36dd5ffed16f3cff4669, epoch 4. Exact original QA fix context received in thread and independently read from own CommDB runner_phase_wakes queue_seq=2: claim 1 on HANDIN1=63613f566616db99e20eee88b96192a673b95bff. Fix commit b27d7e9a0 changes only line 2 AWAITING-QA -> FIXED-FOR-CLAIM 1. Red cmp before change; green exact bytes after. Negative probes reject stale awaiting, wrong claim 2, leading-zero claim 01, extra line, trailing whitespace, missing final newline. Identical committed bytes pass retry/no-rewrite guard. Runtime queued/started/dead/superseded/concurrent states not applicable to two-line Markdown; no code or TS changes. e2e_529_exempt remains docs_only; no room deployment. pnpm lint exit 1 solely on two ignored generated design JSON formatting errors plus 14 existing warnings. No pre_handin.script. Final ledger commit before frozen HANDIN2 review/CI; final SHA recorded externally.
-
-Local selection: no drill literal/path test matches; generic progress.md test matches excluded individually because only generated cursor/text changes, parser/schema unchanged:
-EXCLUDED packages/claude-runner/test/codex-daemon-adapter-helpers.test.ts: generic progress-ledger reference; only generated cursor/text changes, parser and schema unchanged
-EXCLUDED packages/config/src/__tests__/progress-path-resolver.test.ts: generic progress-ledger reference; only generated cursor/text changes, parser and schema unchanged
-EXCLUDED packages/config/src/__tests__/progress-schema.test.ts: generic progress-ledger reference; only generated cursor/text changes, parser and schema unchanged
-EXCLUDED packages/edge-worker/src/__tests__/__snapshots__/Blueprint.fly1188-codex-prompt.test.ts.snap: generic progress-ledger reference; only generated cursor/text changes, parser and schema unchanged
-EXCLUDED packages/edge-worker/src/__tests__/resume-mode.test.ts: generic progress-ledger reference; only generated cursor/text changes, parser and schema unchanged
-EXCLUDED packages/flywheel-comm/src/commands/__tests__/progress.realgit.test.ts: generic progress-ledger reference; only generated cursor/text changes, parser and schema unchanged
-EXCLUDED packages/flywheel-comm/src/commands/__tests__/progress.test.ts: generic progress-ledger reference; only generated cursor/text changes, parser and schema unchanged
-EXCLUDED packages/teamlead/src/bridge/__tests__/progress-resume.test.ts: generic progress-ledger reference; only generated cursor/text changes, parser and schema unchanged
-EXCLUDED packages/teamlead/src/bridge/__tests__/run-dispatcher-resume.test.ts: generic progress-ledger reference; only generated cursor/text changes, parser and schema unchanged
-EXCLUDED packages/teamlead/src/bridge/__tests__/stale-approved-ship-reconciler.test.ts: generic progress-ledger reference; only generated cursor/text changes, parser and schema unchanged
+**handoff**: Run ddc84d0c general node exec a4262905, branch project-slot-4-FLY-3228. Design review APPROVED r3 (gpt-6-astra/xhigh, plan blob cfc34da6). Hand-in #1: new file qa-sbx/fly3228/project-slot-4-FLY-3228.md = 'QA-SBX FLY-3228 drill' / 'AWAITING-QA' (cmp red exit2 -> green exit0; negatives fail). No QA fix context in this prompt. e2e_529_exempt docs_only; no room deploy. HANDIN1 recorded in completion summary, not here.
