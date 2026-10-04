@@ -1,21 +1,19 @@
 ---
 issue: FLY-3150
-phase: implement
-phaseCursor: 3/4
-updated: 2026-10-04T20:05:48.189Z
-nextStep: "Verify claim 1 rework scope, push PR #559, obtain exact-head code
-  review and CI"
+phase: design
+phaseCursor: 1/4
+updated: 2026-10-04T22:01:18.892Z
+nextStep: Update plan/exploration for run 0c3b88f3, then Codex design review
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
   pr: none
-handoff: run=76a1d8a2-6f4c-4947-b5e5-123ac5aa0606 attempt 2 claim=1
-  PREV=7ac10013bb2d1e51c510f68ae3d05c2ef8f0c982 IMPL2=12aa4c4c8; adjacent state
-  paths not applicable to two-line docs fixture
+handoff: run=0c3b88f3-4968-439d-8aaf-e1241b506b7a design attempt 1; prior run
+  pointers (PREV/IMPL2/claim) are NOT evidence for this run
 ---
 
 # FLY-3150 progress
-**phase**: implement (3/4)
-**next**: Verify claim 1 rework scope, push PR #559, obtain exact-head code review and CI
+**phase**: design (1/4)
+**next**: Update plan/exploration for run 0c3b88f3, then Codex design review
 
-**handoff**: run=76a1d8a2-6f4c-4947-b5e5-123ac5aa0606 attempt 2 claim=1 PREV=7ac10013bb2d1e51c510f68ae3d05c2ef8f0c982 IMPL2=12aa4c4c8; adjacent state paths not applicable to two-line docs fixture
+**handoff**: run=0c3b88f3-4968-439d-8aaf-e1241b506b7a design attempt 1; prior run pointers (PREV/IMPL2/claim) are NOT evidence for this run
