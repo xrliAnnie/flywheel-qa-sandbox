@@ -1,34 +1,29 @@
 ---
 issue: FLY-3150
 phase: implement
-phaseCursor: 4/5
-updated: 2026-10-04T06:55:22.262Z
-nextStep: Freeze and push this final ledger HEAD; validate file/ranges/PR scope;
-  ci-full ensure PR 540 exact head; after exit 0 report HANDIN1 and complete
-  needs_review --pr 540, then park
+phaseCursor: 2/5
+updated: 2026-10-04T07:12:51.966Z
+nextStep: Push claim 1 fix, register fresh code review, then freeze/push final
+  ledger and ensure exact-head CI before needs_review PR 540
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
   pr: https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/540
-handoff: run=ebfb0035 slot-1 implement attempt=1
-  exec=25636bfb-27f3-4cfa-825a-023242bfb380.
-  BASE=a86b37ec2582241552cd4568e3f7e392cb038fa7
-  IMPL1=ec50b1b60610c87a3068aca70feba1629892e068. Code review effective APPROVED
-  question=7c7f19c0-aa07-4529-a60d-2af6d2a76c03
-  request=db0cf187-11ad-4962-8eb4-bf270050dcdd
-  reviewedHead=9c23183adda6d1213d26205ed1a51e26532e7671. LOW advisories
-  forwarded in report 9f5e1416-d5e8-4c51-a9dd-44fb4feb7fba. PR 540
-  OPEN/MERGEABLE. Exact target bytes QA-SBX FLY-2167 drill / AWAITING-QA;
-  implementation only line 2; later commits only progress.md; PR scope outside
-  approved doc folder only target; zero discovered test matches and exclusions.
-  No code changes or adjacent behavior paths. No pre_handin script configured.
-  Final HANDIN1 is published in completion report after this self-committing
-  ledger; never commit after ci-full ensure. Resume
-  state=/tmp/FLY-3150-25636bfb-implement.json.
+handoff: "run=ebfb0035 slot-1 implement attempt=2 claim=1
+  PREV=75d8a44ea94eecd1d24a03b8cc84ec605a299a7d
+  BASE2=75d8a44ea94eecd1d24a03b8cc84ec605a299a7d
+  IMPL2=2e2221d6df94478a4b08db63b267607219d53745. Exact two-line FIXED-FOR-CLAIM
+  1 bytes PASS, patch from PREV only -AWAITING-QA / +FIXED-FOR-CLAIM 1. PR net
+  drill diff empty and merge-base contains identical claim marker, per plan.
+  Discovery old/new literals/full path/filename/parent: zero tests, zero
+  excluded. Adjacent runtime paths not applicable: markdown-only, no
+  queued/started/dead/superseded/retried/concurrent logic. e2e_529_exempt
+  remains not_run docs_only; no room deployment. Resume
+  state=/tmp/FLY-3150-25636bfb-implement.json."
 ---
 
 # FLY-3150 progress
-**phase**: implement (4/5)
-**next**: Freeze and push this final ledger HEAD; validate file/ranges/PR scope; ci-full ensure PR 540 exact head; after exit 0 report HANDIN1 and complete needs_review --pr 540, then park
+**phase**: implement (2/5)
+**next**: Push claim 1 fix, register fresh code review, then freeze/push final ledger and ensure exact-head CI before needs_review PR 540
 
-**handoff**: run=ebfb0035 slot-1 implement attempt=1 exec=25636bfb-27f3-4cfa-825a-023242bfb380. BASE=a86b37ec2582241552cd4568e3f7e392cb038fa7 IMPL1=ec50b1b60610c87a3068aca70feba1629892e068. Code review effective APPROVED question=7c7f19c0-aa07-4529-a60d-2af6d2a76c03 request=db0cf187-11ad-4962-8eb4-bf270050dcdd reviewedHead=9c23183adda6d1213d26205ed1a51e26532e7671. LOW advisories forwarded in report 9f5e1416-d5e8-4c51-a9dd-44fb4feb7fba. PR 540 OPEN/MERGEABLE. Exact target bytes QA-SBX FLY-2167 drill / AWAITING-QA; implementation only line 2; later commits only progress.md; PR scope outside approved doc folder only target; zero discovered test matches and exclusions. No code changes or adjacent behavior paths. No pre_handin script configured. Final HANDIN1 is published in completion report after this self-committing ledger; never commit after ci-full ensure. Resume state=/tmp/FLY-3150-25636bfb-implement.json.
+**handoff**: run=ebfb0035 slot-1 implement attempt=2 claim=1 PREV=75d8a44ea94eecd1d24a03b8cc84ec605a299a7d BASE2=75d8a44ea94eecd1d24a03b8cc84ec605a299a7d IMPL2=2e2221d6df94478a4b08db63b267607219d53745. Exact two-line FIXED-FOR-CLAIM 1 bytes PASS, patch from PREV only -AWAITING-QA / +FIXED-FOR-CLAIM 1. PR net drill diff empty and merge-base contains identical claim marker, per plan. Discovery old/new literals/full path/filename/parent: zero tests, zero excluded. Adjacent runtime paths not applicable: markdown-only, no queued/started/dead/superseded/retried/concurrent logic. e2e_529_exempt remains not_run docs_only; no room deployment. Resume state=/tmp/FLY-3150-25636bfb-implement.json.
