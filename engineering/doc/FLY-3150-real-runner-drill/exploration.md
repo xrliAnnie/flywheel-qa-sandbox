@@ -373,3 +373,20 @@ TURN:`yours phase=design epoch=1 run=76a1d8a2… node=eng_design attempt=1`(exec
 | Linear | Done(Lead 裁定);不碰 |
 
 **结论**:与 §22 同形 —— 陈旧 claim 行风险成立(残留 id `1`),交付 #1 必须把第 2 行重置为 `AWAITING-QA`;若本轮 claim id 又是 `1`,交付 #2 后 PR 级演练净 diff 为空,返工由区间 patch 证明(plan §1 / §3)。plan 结构沿用已评审版本,只换 run id 与派发快照。上一轮 ledger 里的 `PREV` / `IMPL2` / 评审 gate / Lead 指令 id 属于 run `571849e4`,**不是**本轮证据;旧指针(PR #555 / #543 / #540 / #490 / #420、任何旧 HANDIN、claim `1`、旧评审与 CI)同样不认。
+
+## 24. 本次派发审计(run `0c3b88f3`,2026-10-04,slot-1)
+
+TURN:`yours phase=design epoch=1 run=0c3b88f3… node=eng_design attempt=1`(exec `88efd5e0`)。§23 是 run `76a1d8a2`(PR #559 已合入);其后 run `f9254495` 的 PR #562 于 2026-10-04 22:00Z **关闭未合入**,它的文档 / ledger 提交不在 main 上,本轮不继承。
+
+| 项 | 结果 |
+|---|---|
+| 分支头(派发时) | `e6513c9b6`,落后 `origin/main` 一个提交(`581cc2d52`,FLY-3226 夹具,只动 `engineering/doc/FLY-3226-real-runner-drill/`);本分支没有自己的提交 → `git merge --ff-only`,无合并提交 |
+| 远端分支 / PR | 远端无 `project-slot-1-FLY-3150`;PR 只有已合入 #559 / #555 / #543 / #540 / #490 / #420 与已关闭 #562 / #413 / #407 → 交付 #1 推新分支、开**新** PR |
+| 目标文件 | HEAD / main 上逐字节 = `QA-SBX FLY-2167 drill` / `FIXED-FOR-CLAIM 1`(PR #559 留下) |
+| README | blob `1de5e367…`,未变 |
+| progress.md | 派发时是 run `76a1d8a2` 的 implement 3/4 记录(旧 `PREV=7ac10013…` / `IMPL2=12aa4c4c8`);本节点已用 `--handoff` 覆盖为本轮 run(提交 `a5307c222`),`pr` 置 `none` |
+| 收件箱 | 无 Lead 指令 |
+| onboard skill | 不存在 → 直接 `stage set brainstorm` |
+| Linear | Done(Lead 裁定);不碰 |
+
+**结论**:与 §23 同形 —— 交付 #1 必须把第 2 行从残留的 `FIXED-FOR-CLAIM 1` 重置为 `AWAITING-QA`;plan 结构沿用已评审版本,只换 run id 与派发快照。PR #562 / #559 及任何旧 HANDIN、claim id、评审、CI 都不是本轮证据。
