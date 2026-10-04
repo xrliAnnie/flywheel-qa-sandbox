@@ -1,19 +1,20 @@
 ---
 issue: FLY-3224
 phase: design
-phaseCursor: 2/4
-updated: 2026-10-04T09:59:55.294Z
-nextStep: Design review of plan.md, then founder HTML, publish, complete
+phaseCursor: 4/4
+updated: 2026-10-04T10:22:23.178Z
+nextStep: "Implement: follow plan.md section 3 delivery #1 (create two-line
+  drill file, AWAITING-QA)"
 chunks: []
 pointers: {}
-handoff: run=0300be9d exec=af728aa7 design; plan moved to
-  engineering/doc/FLY-3224-real-runner-drill/plan.md; drill file removed so
-  implement starts from absent file. Prior design exec pointers (0cf3d0de,
-  784eaa9e) invalid.
+handoff: "run=0300be9d exec=af728aa7 design done; approved plan blob 68b9add0
+  request b30ff867 (Codex gpt-6-luna/xhigh r4 APPROVED, thread 01a1065c); drill
+  file absent at HEAD and on main -> delivery #1 creates it (A). Prior design
+  exec pointers invalid. No main sync performed."
 ---
 
 # FLY-3224 progress
-**phase**: design (2/4)
-**next**: Design review of plan.md, then founder HTML, publish, complete
+**phase**: design (4/4)
+**next**: Implement: follow plan.md section 3 delivery #1 (create two-line drill file, AWAITING-QA)
 
-**handoff**: run=0300be9d exec=af728aa7 design; plan moved to engineering/doc/FLY-3224-real-runner-drill/plan.md; drill file removed so implement starts from absent file. Prior design exec pointers (0cf3d0de, 784eaa9e) invalid.
+**handoff**: run=0300be9d exec=af728aa7 design done; approved plan blob 68b9add0 request b30ff867 (Codex gpt-6-luna/xhigh r4 APPROVED, thread 01a1065c); drill file absent at HEAD and on main -> delivery #1 creates it (A). Prior design exec pointers invalid. No main sync performed.
