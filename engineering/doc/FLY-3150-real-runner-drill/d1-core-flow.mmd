@@ -1,15 +1,19 @@
 sequenceDiagram
-    participant D as 驱动器
+    participant M as origin/main
+    participant S as 设计节点(本轮)
     participant I as 实现节点
     participant Q as QA 节点
-    Note over I: 起点:上一轮已把演练文件写成 AWAITING-QA,PR #524 仍开着
-    D->>I: 本轮派发(无 QA fix context)
-    I->>I: 文件已逐字节正确 → 不再改文件,只记进度账本
-    I->>D: 交付 #35;1(推送 + 复用 PR #524,摘要写本轮 HANDIN1)
+    participant D as 驱动器
+    M->>S: main 已前进,PR #517 冲突
+    S->>S: 技术同步合并 2bb23f05a(冲突只在流程文档文件夹)
+    S->>D: 计划 + Codex 评审 APPROVED + 设计 HTML
+    D->>I: 派发(无 QA fix context)
+    I->>I: 第 2 行 FIXED-FOR-CLAIM 1 → AWAITING-QA
+    I->>D: 交付 #1(run=417f5fe4 HANDIN1=sha)
     D->>Q: 第 1 轮
     Q->>D: fixed-for-claim = fail(故意),产生 claim id
     D->>I: QA fix context: claim id
-    I->>I: 第2行改为 FIXED-FOR-CLAIM id
-    I->>D: 交付 #35;2(PREV = 本轮 HANDIN1)
+    I->>I: 第 2 行 → FIXED-FOR-CLAIM id
+    I->>D: 交付 #2(PREV = 本轮 HANDIN1)
     D->>Q: 重验(Previous QA verdict: claim id)
-    Q->>D: 逐字匹配才 pass
+    Q->>D: 逐字匹配 → pass

@@ -1,20 +1,31 @@
 ---
 issue: FLY-3150
 phase: implement
-phaseCursor: 2/4
-updated: 2026-10-03T22:23:14.724Z
-nextStep: Push HANDIN2, exact-head CI, complete
+phaseCursor: 3/4
+updated: 2026-10-04T01:52:20.800Z
+nextStep: "run=417f5fe4 hand-in #2 claim 1: new effective code review, freeze
+  HEAD for exact-head CI, needs_review on PR #517; no further planned commits"
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
-  exploration: engineering/doc/FLY-3150-real-runner-drill/exploration.md
-  pr: https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/524
-handoff: "run=f461016e hand-in #2 for QA claim 1;
-  PREV=HANDIN1=b515d5700bcbca858b289972e0a6f5a6a89fbaa3"
+  pr: https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/517
+handoff: "run=417f5fe4 attempt=2 claim=1 from QA fix context;
+  PREV/HANDIN1=d4b0819b478db1ecf95c131c94cdd067326b4c71
+  BASE2=d4b0819b478db1ecf95c131c94cdd067326b4c71
+  IMPL2=77aee207d7c29c22b6638f25e7aa3b65dd729a55; target exact QA-SBX FLY-2167
+  drill / FIXED-FOR-CLAIM 1; real PREV-to-IMPL2 patch only -AWAITING-QA /
+  +FIXED-FOR-CLAIM 1; expected empty PR drill diff because main already has
+  final bytes; adjacent verification covers awaiting-to-fixed transition and
+  committed retry state, no runtime queued/started/dead/superseded/concurrent
+  paths in docs fixture; no test files added, 10 generic infrastructure matches
+  excluded for generated ledger-only data; byte check red before green after;
+  tracked-file lint passes (1894 files, 14 warnings), root lint only two ignored
+  runtime JSON errors; review and CI for hand-in #2 pending, previous-head
+  review/CI not reused; final HANDIN2 goes in completion summary."
 ---
 
 # FLY-3150 progress
-**phase**: implement (2/4)
-**next**: Push HANDIN2, exact-head CI, complete
+**phase**: implement (3/4)
+**next**: run=417f5fe4 hand-in #2 claim 1: new effective code review, freeze HEAD for exact-head CI, needs_review on PR #517; no further planned commits
 
-**handoff**: run=f461016e hand-in #2 for QA claim 1; PREV=HANDIN1=b515d5700bcbca858b289972e0a6f5a6a89fbaa3
+**handoff**: run=417f5fe4 attempt=2 claim=1 from QA fix context; PREV/HANDIN1=d4b0819b478db1ecf95c131c94cdd067326b4c71 BASE2=d4b0819b478db1ecf95c131c94cdd067326b4c71 IMPL2=77aee207d7c29c22b6638f25e7aa3b65dd729a55; target exact QA-SBX FLY-2167 drill / FIXED-FOR-CLAIM 1; real PREV-to-IMPL2 patch only -AWAITING-QA / +FIXED-FOR-CLAIM 1; expected empty PR drill diff because main already has final bytes; adjacent verification covers awaiting-to-fixed transition and committed retry state, no runtime queued/started/dead/superseded/concurrent paths in docs fixture; no test files added, 10 generic infrastructure matches excluded for generated ledger-only data; byte check red before green after; tracked-file lint passes (1894 files, 14 warnings), root lint only two ignored runtime JSON errors; review and CI for hand-in #2 pending, previous-head review/CI not reused; final HANDIN2 goes in completion summary.
