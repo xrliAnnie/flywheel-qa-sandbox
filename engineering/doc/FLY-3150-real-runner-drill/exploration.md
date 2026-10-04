@@ -373,3 +373,22 @@ TURN:`yours phase=design epoch=1 run=76a1d8a2… node=eng_design attempt=1`(exec
 | Linear | Done(Lead 裁定);不碰 |
 
 **结论**:与 §22 同形 —— 陈旧 claim 行风险成立(残留 id `1`),交付 #1 必须把第 2 行重置为 `AWAITING-QA`;若本轮 claim id 又是 `1`,交付 #2 后 PR 级演练净 diff 为空,返工由区间 patch 证明(plan §1 / §3)。plan 结构沿用已评审版本,只换 run id 与派发快照。上一轮 ledger 里的 `PREV` / `IMPL2` / 评审 gate / Lead 指令 id 属于 run `571849e4`,**不是**本轮证据;旧指针(PR #555 / #543 / #540 / #490 / #420、任何旧 HANDIN、claim `1`、旧评审与 CI)同样不认。
+
+## 24. 本次派发审计(run `f9254495`,2026-10-04,slot-1)
+
+TURN:`yours phase=design epoch=1 run=f9254495… node=eng_design attempt=1`(exec `296b57cd`)。§23 是本分支上一轮 run `76a1d8a2`(设计 exec `94cd7a36`),其 PR #559 已合入 main(合并提交 `91b1c9eef`);§22 及更早是再之前几轮。
+
+| 项 | 结果 |
+|---|---|
+| 分支头(派发时) | `3984afdd6` = `origin/main`(PR #559 之后又合入 FLY-3226 夹具 #560,不在本文件夹);本分支没有自己的提交,无需同步 |
+| 远端分支 / PR | 远端无 `project-slot-1-FLY-3150`;`gh pr list --head project-slot-1-FLY-3150 --state all` 只有已合入的 #559 / #555 / #543 / #540 / #490 等 → 交付 #1 推新分支、开**新** PR |
+| 目标文件 | `qa-sbx/fly2167/project-slot-1-FLY-3150.md` 在 HEAD / main 上逐字节 = `QA-SBX FLY-2167 drill` / `FIXED-FOR-CLAIM 1`(PR #559 留下) |
+| 其他 slot 目标文件 | `project-slot-2/3/4/5/6-FLY-3150.md` 在 main 上均为 `FIXED-FOR-CLAIM 1`;本轮一律不碰 |
+| README | 未变(blob `1de5e367…`) |
+| progress.md | 派发时是上一轮 run `76a1d8a2` 的 implement 3/4 记录(含旧 `PREV=7ac10013…` / `IMPL2=12aa4c4c8`);本节点已用 `--handoff` 覆盖为本轮 run(提交 `838160c56`),`pr` 指针置 `none` |
+| CI | `ci.yml` 只对 main 的 push 与指向 main 的 PR 触发 → 交付头 CI 在开 PR 之后核对 |
+| 收件箱 | 无 Lead 指令 |
+| onboard skill | 本项目不存在 → 直接 `stage set brainstorm` |
+| Linear | Done(Lead 裁定);不碰 |
+
+**结论**:与 §23 同形 —— 残留 claim 行 `FIXED-FOR-CLAIM 1`,交付 #1 必须把第 2 行重置为 `AWAITING-QA`;plan 结构沿用已评审版本,只换 run id 与派发快照。run `76a1d8a2` 的 `PREV` / `IMPL2` / PR #559 / 旧评审与 CI 都**不是**本轮证据。
