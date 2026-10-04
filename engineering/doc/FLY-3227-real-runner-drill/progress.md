@@ -1,27 +1,34 @@
 ---
 issue: FLY-3227
 phase: design
-phaseCursor: 3/6
-updated: 2026-10-04T11:00:03.582Z
-nextStep: "Round-1 gate b46ce961-5dc8-4c84-b074-5ec20e2ced2f effective
-  CHANGES_REQUESTED; request 11456e53-e4fe-4dc9-ba32-fcf1bc8eac6e. HIGH
-  findingKey pr-scope-empty-on-claim-1 reproduced: inherited main fixture is
-  already FIXED-FOR-CLAIM 1, so valid claim-1 repair has empty net fixture PR
-  diff. Fix plan to allow empty PR fixture diff only with merge-base byte
-  equality plus current-run first-handoff-to-HEAD line-2-only patch proof;
-  retain one-file first-handoff scope and reject unrelated paths. MEDIUM
-  handin1-sole-source-brittle: persist HANDIN1 in current PR body and allow
-  verified QA fix-context head when prior summary missing, with byte/ancestry
-  cross-check. LOW fix-context-heading-line: skip context heading, parse actual
-  verdict line. Verified live QA context renderer emits heading then claim line
-  with 40-char head. New STE begin disabled. Next: revise plan/page, narrow
-  probe (no implementation file changes), commit/push, NEW design gate/request,
-  publish/report revised page; do not complete until effective APPROVED.
-  Original HTML publication retained as prior version, no ambiguous retry."
+phaseCursor: 4/6
+updated: 2026-10-04T11:07:36.276Z
+nextStep: "All round-1 findings addressed in plan/page: HIGH
+  pr-scope-empty-on-claim-1 now permits empty net PR fixture diff only when
+  merge-base bytes match expected fix plus current-run reference-to-HEAD
+  line-2-only proof; first hand-in still one-file. MEDIUM
+  handin1-sole-source-brittle now stores HANDIN1 in current PR body and accepts
+  authoritative current QA_HEAD for replacements without old summary, with
+  ancestry and complete-byte checks. LOW fix-context-heading-line explicitly
+  skips heading and reads actual verdict line. Scratch-only scope-check.py
+  reproduced old failure then PASS on claim-1 empty net diff, distinct-claim
+  nonempty diff, heading/claim/head parsing, ledger-descendant QA reference,
+  fresh replacement, idempotent retry, exact leading-zero preservation and
+  negative wrong/stale/whitespace/unrelated-file guards. Real fixture unchanged.
+  Updated HTML full narrow browser/CSP/comments/mobile checks PASS; comment JS
+  and rendered Mermaid unchanged. New correction literals have no test
+  consumers; generic-name exclusions remain in d04f03be4. No TS/package APIs
+  changed; prior lint exit 0 with 14 untouched warnings. Prior HTML reported and
+  driver acknowledged separate founder delivery URL
+  http://127.0.0.1:58024/fw-reports-d3ada2/r/57665ebd5877f4aa00ae296c03a6636f/
+  via question de3847e0-e45a-4e1f-aad9-5164ddb5465d. STE begin for revised page
+  again disabled. Next: commit/push plan+page, register NEW gate/request for new
+  plan blob, publish/report revised committed page, await effective approval.
+  Never implement, change Linear, deploy rooms or dispatch/ship."
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
-**phase**: design (3/6)
-**next**: Round-1 gate b46ce961-5dc8-4c84-b074-5ec20e2ced2f effective CHANGES_REQUESTED; request 11456e53-e4fe-4dc9-ba32-fcf1bc8eac6e. HIGH findingKey pr-scope-empty-on-claim-1 reproduced: inherited main fixture is already FIXED-FOR-CLAIM 1, so valid claim-1 repair has empty net fixture PR diff. Fix plan to allow empty PR fixture diff only with merge-base byte equality plus current-run first-handoff-to-HEAD line-2-only patch proof; retain one-file first-handoff scope and reject unrelated paths. MEDIUM handin1-sole-source-brittle: persist HANDIN1 in current PR body and allow verified QA fix-context head when prior summary missing, with byte/ancestry cross-check. LOW fix-context-heading-line: skip context heading, parse actual verdict line. Verified live QA context renderer emits heading then claim line with 40-char head. New STE begin disabled. Next: revise plan/page, narrow probe (no implementation file changes), commit/push, NEW design gate/request, publish/report revised page; do not complete until effective APPROVED. Original HTML publication retained as prior version, no ambiguous retry.
+**phase**: design (4/6)
+**next**: All round-1 findings addressed in plan/page: HIGH pr-scope-empty-on-claim-1 now permits empty net PR fixture diff only when merge-base bytes match expected fix plus current-run reference-to-HEAD line-2-only proof; first hand-in still one-file. MEDIUM handin1-sole-source-brittle now stores HANDIN1 in current PR body and accepts authoritative current QA_HEAD for replacements without old summary, with ancestry and complete-byte checks. LOW fix-context-heading-line explicitly skips heading and reads actual verdict line. Scratch-only scope-check.py reproduced old failure then PASS on claim-1 empty net diff, distinct-claim nonempty diff, heading/claim/head parsing, ledger-descendant QA reference, fresh replacement, idempotent retry, exact leading-zero preservation and negative wrong/stale/whitespace/unrelated-file guards. Real fixture unchanged. Updated HTML full narrow browser/CSP/comments/mobile checks PASS; comment JS and rendered Mermaid unchanged. New correction literals have no test consumers; generic-name exclusions remain in d04f03be4. No TS/package APIs changed; prior lint exit 0 with 14 untouched warnings. Prior HTML reported and driver acknowledged separate founder delivery URL http://127.0.0.1:58024/fw-reports-d3ada2/r/57665ebd5877f4aa00ae296c03a6636f/ via question de3847e0-e45a-4e1f-aad9-5164ddb5465d. STE begin for revised page again disabled. Next: commit/push plan+page, register NEW gate/request for new plan blob, publish/report revised committed page, await effective approval. Never implement, change Linear, deploy rooms or dispatch/ship.
