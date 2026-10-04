@@ -2,121 +2,86 @@
 issue: FLY-3227
 phase: implement
 phaseCursor: 3/4
-updated: 2026-10-04T15:58:44.343Z
-nextStep: "QA rework NEW CODE REVIEW PENDING: gate
-  bb1b4ecb-cf32-4aad-8782-c29edf0a125f,
-  request4d81e3bc-e2af-41f4-9bac-d7a03365d623 accepted/skipped=false. Checked
-  once this turn not yet. PR554 body rewritten around final repair; preserves
-  HANDIN1/QA_HEAD fa904338c276994099a40bb87baba7f413490d86, QA_CLAIM1,
-  repair70935897c and adjacent-path checks, pending REWORK_HEAD freeze. Next
-  push this cursor and wait start --for
-  question:bb1b4ecb-cf32-4aad-8782-c29edf0a125f; exit10 end current turn with
-  goal active. Wake FIRST turn, check effective review and ack; APPROVED ->
-  final cursor/push/freeze/no further commits, REWORK_HEAD in PR body,
-  pre_handin absent, ci-full ensure exact repair head (server owns requirement,
-  no inferred scoped exception), successful ensure -> report/complete
-  needs_review PR554 >=600000ms then park phase hold. QA claim1 repair COMMITTED
-  70935897c2c137129fc4c95a70c744ad9244f2be. Comparator red line2 then green;
-  line2-only patch vs QA_HEAD=HANDIN1=fa904338c276994099a40bb87baba7f413490d86;
-  exact bytes FIXED-FOR-CLAIM 1, first line/newlines preserved. Adjacent tests
-  executed: first-handin rejected for rework, repeated repair idempotent with
-  unchanged mtime, wrong/leading-zero claim rejected, extra line/missing
-  newline/trailing space/wrong case rejected.
-  Queued/started/dead/superseded/concurrent inapplicable for static document.
-  pnpm lint exit0,14 existing unchanged warnings; diff/scope/approved plan blob
-  PASS. No deployment for e2e_529_exempt not_run/docs_only. Next push, register
-  NEW effective code review for attempt2; prior round approval is not authority
-  for repair. CURRENT QA REWORK attempt2; TURN yours implement epoch4
+updated: 2026-10-04T16:03:59.850Z
+nextStep: "QA CLAIM1 REPAIR artifact/local-check/code-review preparation
+  complete; frozen-head CI and needs_review receipt PENDING. Current attempt2
+  exec4970a3cd-26a0-44a8-b3ca-74159cb17a1e, TURN yours epoch4
   activation:rework:fb7c301490a8a9e95f4cd41b83cbc5f7a6a719fdf2749847c37bef730bb\
-  24af9. QA fix context FIRST LINE names claim1 qa_failed on head
-  fa904338c276994099a40bb87baba7f413490d86, same current rework baseline. PR554
-  remains OPEN; HANDIN1 unchanged. Main README freshly fetched/read. Current
-  fixture exactly first-handin two lines; plan precondition satisfied. Root
-  cause is deliberate first-round fixed-for-claim failure; repair required line2
-  FIXED-FOR-CLAIM 1, preserve line1/newlines. e2e_529_exempt not_run/docs_only:
-  no room deployment permitted. Same discovery old/new
-  literals/paths/basenames/parents again retained no repository tests; generic
-  progress-filename test exclusions below still apply. Adjacent checks planned:
-  first-handin mismatch, claim-specific repaired bytes, repeated identical
-  repair/idempotence, wrong claim and malformed-byte guards;
-  queued/started/dead/superseded/concurrent inapplicable (no runtime change).
-  Next comparator red, minimal line2 repair, green checks/lint, commit/push, NEW
-  code review, final ledger/freeze and server-owned CI then complete
-  needs_review. Prior first-handin history follows (pending statements
-  superseded by actual prior successful completion): Handoff preparation
-  complete; CI and completion receipt PENDING. PR
-  https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/554. Current implement
-  exec 4970a3cd-26a0-44a8-b3ca-74159cb17a1e; activation
-  activation:4970a3cd-26a0-44a8-b3ca-74159cb17a1e:1aa66339-a147-4530-9e07-5be8d\
-  faa3d9f:implement:1; TURN yours epoch2, baseline
-  cadd1f345974684584b5a792eb0f6f758689d200. Main README read at
-  bd42785c98e83707577d16ef04d096789b79e603. First hand-in, no QA fix context:
-  exact fixture QA-SBX FLY-3227 drill newline AWAITING-QA newline. Fixture
-  commit c1507d4dc. Effective design APPROVED
-  gate299a30cd-1cb5-40d9-bf48-eb31ac1c3c60
-  request62e9dc35-c333-4181-adf9-f3cf13164dbc; approved plan unchanged blob
-  b8bee90e0091e6baeea1bf82807620d5320b02e1. Effective code review
-  APPROVED/reviewer APPROVED round1 gate d67104f6-286c-4343-99b0-7c83599a5279
-  request c4fde7a7-c091-4d79-92da-44429c1f4472 reviewedHead
-  0cc13aae3b6bb64013f7da3297362dea88810534. LOW
-  plan-handin1-location-unspecified advisory relayed
-  report9de405b6-2eb5-41d0-a8c0-192ad79ca76b; frozen first-handin SHA must be
-  recorded HANDIN1 in PR body and recovered via gh pr view 554 --json body.
-  Review watcher wait:e34c444547d83ea5ecc9d7f16d723f21 gen1 answered/consumed
-  and acked. Comparator red then green, complete bytes on worktree and committed
-  fixture, line1 preservation, malformed-byte guards, approved plan/scope/clean
-  worktree/diff/message checks PASS. pnpm lint exit0 with14 existing unchanged
-  warnings. Discovery git grep -lF old FIXED-FOR-CLAIM 1/new AWAITING-QA/line1,
-  fixture+ledger full paths/basenames/parents retained no dependent repository
-  tests; EXCLUDED
+  24af9. Rework request same digest, source QA exec
+  bdf02cf8-d79d-4a09-9496-8e35529b4766 attempt1, qa_fail. HANDIN1=QA_HEAD=rework
+  baseline=fa904338c276994099a40bb87baba7f413490d86; claim1 extracted only from
+  injected QA fix context first line. PR
+  https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/554 still OPEN. Main
+  README freshly read on rework. Repair commit70935897c replaces only line2
+  AWAITING-QA -> FIXED-FOR-CLAIM 1, firstline/newlines untouched, exact two-line
+  bytes PASS. Approved plan unchanged blob
+  b8bee90e0091e6baeea1bf82807620d5320b02e1; no redesign. NEW effective
+  review_code APPROVED/reviewer APPROVED round2
+  gatebb1b4ecb-cf32-4aad-8782-c29edf0a125f
+  request4d81e3bc-e2af-41f4-9bac-d7a03365d623
+  reviewedHead910bc228132e2533e9cc22a33b64761666838abf;
+  findings/advisories/settled empty. Watcher
+  wait:3a9490c5c814aa65526846855cceab31 gen1 answered/consumed/acked. Inbox
+  empty. Red before fix then green committed/worktree bytes and only-line2 patch
+  vs QA_HEAD. Adjacent tests executed: first-handin mismatch rejected, replayed
+  identical repair no-op/mtime unchanged, wrong/leading-zero claim, extra line,
+  missing newline, trailing space, wrong case rejected.
+  Queued/started/dead/superseded/concurrent process paths inapplicable: static
+  Markdown fixture, no runtime edits. pnpm lint exit0,14 existing unchanged
+  warnings; diff/scope/plan/clean checks PASS. Discovery git grep -lF
+  AWAITING-QA/FIXED-FOR-CLAIM 1 and fixture+ledger fullpaths/basenames/parents:
+  retained no dependent tests; EXCLUDED
   packages/claude-runner/test/codex-daemon-adapter-helpers.test.ts: generic
-  progress filename/static sample; no dependency on the drill fixture or issue
-  ledger; no runtime/schema change | EXCLUDED
+  progress filename/static sample; no dependency on the drill fixture/issue
+  ledger; no runtime or schema change | EXCLUDED
   packages/config/src/__tests__/progress-path-resolver.test.ts: generic progress
-  filename/static sample; no dependency on the drill fixture or issue ledger; no
-  runtime/schema change | EXCLUDED
+  filename/static sample; no dependency on the drill fixture/issue ledger; no
+  runtime or schema change | EXCLUDED
   packages/config/src/__tests__/progress-schema.test.ts: generic progress
-  filename/static sample; no dependency on the drill fixture or issue ledger; no
-  runtime/schema change | EXCLUDED
+  filename/static sample; no dependency on the drill fixture/issue ledger; no
+  runtime or schema change | EXCLUDED
   packages/edge-worker/src/__tests__/__snapshots__/Blueprint.fly1188-codex-prom\
   pt.test.ts.snap: generic progress filename/static sample; no dependency on the
-  drill fixture or issue ledger; no runtime/schema change | EXCLUDED
+  drill fixture/issue ledger; no runtime or schema change | EXCLUDED
   packages/edge-worker/src/__tests__/resume-mode.test.ts: generic progress
-  filename/static sample; no dependency on the drill fixture or issue ledger; no
-  runtime/schema change | EXCLUDED
+  filename/static sample; no dependency on the drill fixture/issue ledger; no
+  runtime or schema change | EXCLUDED
   packages/flywheel-comm/src/commands/__tests__/progress.realgit.test.ts:
-  generic progress filename/static sample; no dependency on the drill fixture or
-  issue ledger; no runtime/schema change | EXCLUDED
+  generic progress filename/static sample; no dependency on the drill
+  fixture/issue ledger; no runtime or schema change | EXCLUDED
   packages/flywheel-comm/src/commands/__tests__/progress.test.ts: generic
-  progress filename/static sample; no dependency on the drill fixture or issue
-  ledger; no runtime/schema change | EXCLUDED
+  progress filename/static sample; no dependency on the drill fixture/issue
+  ledger; no runtime or schema change | EXCLUDED
   packages/teamlead/src/bridge/__tests__/progress-resume.test.ts: generic
-  progress filename/static sample; no dependency on the drill fixture or issue
-  ledger; no runtime/schema change | EXCLUDED
+  progress filename/static sample; no dependency on the drill fixture/issue
+  ledger; no runtime or schema change | EXCLUDED
   packages/teamlead/src/bridge/__tests__/run-dispatcher-resume.test.ts: generic
-  progress filename/static sample; no dependency on the drill fixture or issue
-  ledger; no runtime/schema change | EXCLUDED
+  progress filename/static sample; no dependency on the drill fixture/issue
+  ledger; no runtime or schema change | EXCLUDED
   packages/teamlead/src/bridge/__tests__/stale-approved-ship-reconciler.test.ts:
-  generic progress filename/static sample; no dependency on the drill fixture or
-  issue ledger; no runtime/schema change. No TS/API/package changes:
-  related/build/typecheck inapplicable; no local full suites. Implement diff
-  fixture+required progress only; PR includes five inherited design records.
-  Task-specific scope forbids new research/exploration/milestone files; approved
-  plan left unchanged. No pre_handin.script configured. After this LAST ledger
-  commit: push, freeze HEAD (no more commits including progress), set HANDIN1 in
-  PR body, verify exact remote head and fixture/scope, ci-full ensure --pr554
-  --head frozenSHA --json. Exit8 use returned durable wait target; exit1 fix
-  named jobs; exit0 report exact evidence then complete --route needs_review
-  --pr554 with explicit >=600000ms timeout, wait for exit. Unread-mail exit3
-  drain all pages, act/report full lead-instruction IDs, ack and retry same
-  complete in this turn. Successful phase completion -> park indefinitely and
-  end current turn; keep resident goal active, wake FIRST turn. No Linear
-  changes, room deploy, successor/QA dispatch, ship approval, merge or main
-  push."
+  generic progress filename/static sample; no dependency on the drill
+  fixture/issue ledger; no runtime or schema change. No TS/API/package changes:
+  related/build/typecheck inapplicable; no local full suite. e2e_529_exempt
+  not_run/docs_only: README forbids room deployment. Own repair diff
+  fixture+required ledger; PR preserves five inherited design records. Net
+  fixture main diff may be empty because older main already had this claim; use
+  QA_HEAD->repair patch, never omit CI. No new research/exploration/milestone
+  under task-specific scope. No pre_handin.script configured. After THIS LAST
+  ledger commit: push/freeze(no more commits including progress), preserve
+  HANDIN1/QA_HEAD and record REWORK_HEAD in PR body, verify remote exacthead and
+  fixture/scope, ci-full ensure --pr554 --head frozenSHA --json; never infer
+  scoped exception from attempt number. Exit8 durable watcher on returned
+  run/target; exit1 inspect actual run and fix named failed jobs; exit0
+  mandatory report then complete --route needs_review --pr554 explicit>=600000ms
+  timeout and wait for exit. Exit3 completion unread mail drain all pages,
+  act/report full lead-instruction IDs, ack then retry same complete this turn.
+  Successful completion -> park phase hold and end only turn, keep goal active.
+  Wake FIRST turn. No Linear changes, deploy, successor/QA dispatch,
+  ship/merge/mainpush."
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
 **phase**: implement (3/4)
-**next**: QA rework NEW CODE REVIEW PENDING: gate bb1b4ecb-cf32-4aad-8782-c29edf0a125f, request4d81e3bc-e2af-41f4-9bac-d7a03365d623 accepted/skipped=false. Checked once this turn not yet. PR554 body rewritten around final repair; preserves HANDIN1/QA_HEAD fa904338c276994099a40bb87baba7f413490d86, QA_CLAIM1, repair70935897c and adjacent-path checks, pending REWORK_HEAD freeze. Next push this cursor and wait start --for question:bb1b4ecb-cf32-4aad-8782-c29edf0a125f; exit10 end current turn with goal active. Wake FIRST turn, check effective review and ack; APPROVED -> final cursor/push/freeze/no further commits, REWORK_HEAD in PR body, pre_handin absent, ci-full ensure exact repair head (server owns requirement, no inferred scoped exception), successful ensure -> report/complete needs_review PR554 >=600000ms then park phase hold. QA claim1 repair COMMITTED 70935897c2c137129fc4c95a70c744ad9244f2be. Comparator red line2 then green; line2-only patch vs QA_HEAD=HANDIN1=fa904338c276994099a40bb87baba7f413490d86; exact bytes FIXED-FOR-CLAIM 1, first line/newlines preserved. Adjacent tests executed: first-handin rejected for rework, repeated repair idempotent with unchanged mtime, wrong/leading-zero claim rejected, extra line/missing newline/trailing space/wrong case rejected. Queued/started/dead/superseded/concurrent inapplicable for static document. pnpm lint exit0,14 existing unchanged warnings; diff/scope/approved plan blob PASS. No deployment for e2e_529_exempt not_run/docs_only. Next push, register NEW effective code review for attempt2; prior round approval is not authority for repair. CURRENT QA REWORK attempt2; TURN yours implement epoch4 activation:rework:fb7c301490a8a9e95f4cd41b83cbc5f7a6a719fdf2749847c37bef730bb24af9. QA fix context FIRST LINE names claim1 qa_failed on head fa904338c276994099a40bb87baba7f413490d86, same current rework baseline. PR554 remains OPEN; HANDIN1 unchanged. Main README freshly fetched/read. Current fixture exactly first-handin two lines; plan precondition satisfied. Root cause is deliberate first-round fixed-for-claim failure; repair required line2 FIXED-FOR-CLAIM 1, preserve line1/newlines. e2e_529_exempt not_run/docs_only: no room deployment permitted. Same discovery old/new literals/paths/basenames/parents again retained no repository tests; generic progress-filename test exclusions below still apply. Adjacent checks planned: first-handin mismatch, claim-specific repaired bytes, repeated identical repair/idempotence, wrong claim and malformed-byte guards; queued/started/dead/superseded/concurrent inapplicable (no runtime change). Next comparator red, minimal line2 repair, green checks/lint, commit/push, NEW code review, final ledger/freeze and server-owned CI then complete needs_review. Prior first-handin history follows (pending statements superseded by actual prior successful completion): Handoff preparation complete; CI and completion receipt PENDING. PR https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/554. Current implement exec 4970a3cd-26a0-44a8-b3ca-74159cb17a1e; activation activation:4970a3cd-26a0-44a8-b3ca-74159cb17a1e:1aa66339-a147-4530-9e07-5be8dfaa3d9f:implement:1; TURN yours epoch2, baseline cadd1f345974684584b5a792eb0f6f758689d200. Main README read at bd42785c98e83707577d16ef04d096789b79e603. First hand-in, no QA fix context: exact fixture QA-SBX FLY-3227 drill newline AWAITING-QA newline. Fixture commit c1507d4dc. Effective design APPROVED gate299a30cd-1cb5-40d9-bf48-eb31ac1c3c60 request62e9dc35-c333-4181-adf9-f3cf13164dbc; approved plan unchanged blob b8bee90e0091e6baeea1bf82807620d5320b02e1. Effective code review APPROVED/reviewer APPROVED round1 gate d67104f6-286c-4343-99b0-7c83599a5279 request c4fde7a7-c091-4d79-92da-44429c1f4472 reviewedHead 0cc13aae3b6bb64013f7da3297362dea88810534. LOW plan-handin1-location-unspecified advisory relayed report9de405b6-2eb5-41d0-a8c0-192ad79ca76b; frozen first-handin SHA must be recorded HANDIN1 in PR body and recovered via gh pr view 554 --json body. Review watcher wait:e34c444547d83ea5ecc9d7f16d723f21 gen1 answered/consumed and acked. Comparator red then green, complete bytes on worktree and committed fixture, line1 preservation, malformed-byte guards, approved plan/scope/clean worktree/diff/message checks PASS. pnpm lint exit0 with14 existing unchanged warnings. Discovery git grep -lF old FIXED-FOR-CLAIM 1/new AWAITING-QA/line1, fixture+ledger full paths/basenames/parents retained no dependent repository tests; EXCLUDED packages/claude-runner/test/codex-daemon-adapter-helpers.test.ts: generic progress filename/static sample; no dependency on the drill fixture or issue ledger; no runtime/schema change | EXCLUDED packages/config/src/__tests__/progress-path-resolver.test.ts: generic progress filename/static sample; no dependency on the drill fixture or issue ledger; no runtime/schema change | EXCLUDED packages/config/src/__tests__/progress-schema.test.ts: generic progress filename/static sample; no dependency on the drill fixture or issue ledger; no runtime/schema change | EXCLUDED packages/edge-worker/src/__tests__/__snapshots__/Blueprint.fly1188-codex-prompt.test.ts.snap: generic progress filename/static sample; no dependency on the drill fixture or issue ledger; no runtime/schema change | EXCLUDED packages/edge-worker/src/__tests__/resume-mode.test.ts: generic progress filename/static sample; no dependency on the drill fixture or issue ledger; no runtime/schema change | EXCLUDED packages/flywheel-comm/src/commands/__tests__/progress.realgit.test.ts: generic progress filename/static sample; no dependency on the drill fixture or issue ledger; no runtime/schema change | EXCLUDED packages/flywheel-comm/src/commands/__tests__/progress.test.ts: generic progress filename/static sample; no dependency on the drill fixture or issue ledger; no runtime/schema change | EXCLUDED packages/teamlead/src/bridge/__tests__/progress-resume.test.ts: generic progress filename/static sample; no dependency on the drill fixture or issue ledger; no runtime/schema change | EXCLUDED packages/teamlead/src/bridge/__tests__/run-dispatcher-resume.test.ts: generic progress filename/static sample; no dependency on the drill fixture or issue ledger; no runtime/schema change | EXCLUDED packages/teamlead/src/bridge/__tests__/stale-approved-ship-reconciler.test.ts: generic progress filename/static sample; no dependency on the drill fixture or issue ledger; no runtime/schema change. No TS/API/package changes: related/build/typecheck inapplicable; no local full suites. Implement diff fixture+required progress only; PR includes five inherited design records. Task-specific scope forbids new research/exploration/milestone files; approved plan left unchanged. No pre_handin.script configured. After this LAST ledger commit: push, freeze HEAD (no more commits including progress), set HANDIN1 in PR body, verify exact remote head and fixture/scope, ci-full ensure --pr554 --head frozenSHA --json. Exit8 use returned durable wait target; exit1 fix named jobs; exit0 report exact evidence then complete --route needs_review --pr554 with explicit >=600000ms timeout, wait for exit. Unread-mail exit3 drain all pages, act/report full lead-instruction IDs, ack and retry same complete in this turn. Successful phase completion -> park indefinitely and end current turn; keep resident goal active, wake FIRST turn. No Linear changes, room deploy, successor/QA dispatch, ship approval, merge or main push.
+**next**: QA CLAIM1 REPAIR artifact/local-check/code-review preparation complete; frozen-head CI and needs_review receipt PENDING. Current attempt2 exec4970a3cd-26a0-44a8-b3ca-74159cb17a1e, TURN yours epoch4 activation:rework:fb7c301490a8a9e95f4cd41b83cbc5f7a6a719fdf2749847c37bef730bb24af9. Rework request same digest, source QA exec bdf02cf8-d79d-4a09-9496-8e35529b4766 attempt1, qa_fail. HANDIN1=QA_HEAD=rework baseline=fa904338c276994099a40bb87baba7f413490d86; claim1 extracted only from injected QA fix context first line. PR https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/554 still OPEN. Main README freshly read on rework. Repair commit70935897c replaces only line2 AWAITING-QA -> FIXED-FOR-CLAIM 1, firstline/newlines untouched, exact two-line bytes PASS. Approved plan unchanged blob b8bee90e0091e6baeea1bf82807620d5320b02e1; no redesign. NEW effective review_code APPROVED/reviewer APPROVED round2 gatebb1b4ecb-cf32-4aad-8782-c29edf0a125f request4d81e3bc-e2af-41f4-9bac-d7a03365d623 reviewedHead910bc228132e2533e9cc22a33b64761666838abf; findings/advisories/settled empty. Watcher wait:3a9490c5c814aa65526846855cceab31 gen1 answered/consumed/acked. Inbox empty. Red before fix then green committed/worktree bytes and only-line2 patch vs QA_HEAD. Adjacent tests executed: first-handin mismatch rejected, replayed identical repair no-op/mtime unchanged, wrong/leading-zero claim, extra line, missing newline, trailing space, wrong case rejected. Queued/started/dead/superseded/concurrent process paths inapplicable: static Markdown fixture, no runtime edits. pnpm lint exit0,14 existing unchanged warnings; diff/scope/plan/clean checks PASS. Discovery git grep -lF AWAITING-QA/FIXED-FOR-CLAIM 1 and fixture+ledger fullpaths/basenames/parents: retained no dependent tests; EXCLUDED packages/claude-runner/test/codex-daemon-adapter-helpers.test.ts: generic progress filename/static sample; no dependency on the drill fixture/issue ledger; no runtime or schema change | EXCLUDED packages/config/src/__tests__/progress-path-resolver.test.ts: generic progress filename/static sample; no dependency on the drill fixture/issue ledger; no runtime or schema change | EXCLUDED packages/config/src/__tests__/progress-schema.test.ts: generic progress filename/static sample; no dependency on the drill fixture/issue ledger; no runtime or schema change | EXCLUDED packages/edge-worker/src/__tests__/__snapshots__/Blueprint.fly1188-codex-prompt.test.ts.snap: generic progress filename/static sample; no dependency on the drill fixture/issue ledger; no runtime or schema change | EXCLUDED packages/edge-worker/src/__tests__/resume-mode.test.ts: generic progress filename/static sample; no dependency on the drill fixture/issue ledger; no runtime or schema change | EXCLUDED packages/flywheel-comm/src/commands/__tests__/progress.realgit.test.ts: generic progress filename/static sample; no dependency on the drill fixture/issue ledger; no runtime or schema change | EXCLUDED packages/flywheel-comm/src/commands/__tests__/progress.test.ts: generic progress filename/static sample; no dependency on the drill fixture/issue ledger; no runtime or schema change | EXCLUDED packages/teamlead/src/bridge/__tests__/progress-resume.test.ts: generic progress filename/static sample; no dependency on the drill fixture/issue ledger; no runtime or schema change | EXCLUDED packages/teamlead/src/bridge/__tests__/run-dispatcher-resume.test.ts: generic progress filename/static sample; no dependency on the drill fixture/issue ledger; no runtime or schema change | EXCLUDED packages/teamlead/src/bridge/__tests__/stale-approved-ship-reconciler.test.ts: generic progress filename/static sample; no dependency on the drill fixture/issue ledger; no runtime or schema change. No TS/API/package changes: related/build/typecheck inapplicable; no local full suite. e2e_529_exempt not_run/docs_only: README forbids room deployment. Own repair diff fixture+required ledger; PR preserves five inherited design records. Net fixture main diff may be empty because older main already had this claim; use QA_HEAD->repair patch, never omit CI. No new research/exploration/milestone under task-specific scope. No pre_handin.script configured. After THIS LAST ledger commit: push/freeze(no more commits including progress), preserve HANDIN1/QA_HEAD and record REWORK_HEAD in PR body, verify remote exacthead and fixture/scope, ci-full ensure --pr554 --head frozenSHA --json; never infer scoped exception from attempt number. Exit8 durable watcher on returned run/target; exit1 inspect actual run and fix named failed jobs; exit0 mandatory report then complete --route needs_review --pr554 explicit>=600000ms timeout and wait for exit. Exit3 completion unread mail drain all pages, act/report full lead-instruction IDs, ack then retry same complete this turn. Successful completion -> park phase hold and end only turn, keep goal active. Wake FIRST turn. No Linear changes, deploy, successor/QA dispatch, ship/merge/mainpush.
