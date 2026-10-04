@@ -1,19 +1,17 @@
 ---
 issue: FLY-3226
-phase: implement
-phaseCursor: 2/2
-updated: 2026-10-04T20:26:28.018Z
-nextStep: "Verify claim-1 patch, push PR #560, obtain code review, and hand back to QA"
+phase: design
+phaseCursor: 1/3
+updated: 2026-10-04T21:13:54.318Z
+nextStep: Rewrite plan for run 9ef89593, then design review
 chunks: []
 pointers: {}
-handoff: "run=813f0792 exec=b83a17a2 node=eng_design done. Plan blob 2c028296
-  APPROVED r1 (request 46b2e113, thread 01a10884). Main target = FIXED-FOR-CLAIM
-  1 residue; hand-in #1 is a reset. Design HTML
-  http://127.0.0.1:60412/fw-reports-172892/r/eb309d3301543756b3995a8edd790be7/"
+handoff: run=9ef89593 exec=5277f846 node=eng_design started; main target =
+  FIXED-FOR-CLAIM 1 residue (PR 560); hand-in 1 is a reset
 ---
 
 # FLY-3226 progress
-**phase**: implement (2/2)
-**next**: Verify claim-1 patch, push PR #560, obtain code review, and hand back to QA
+**phase**: design (1/3)
+**next**: Rewrite plan for run 9ef89593, then design review
 
-**handoff**: run=813f0792 exec=b83a17a2 node=eng_design done. Plan blob 2c028296 APPROVED r1 (request 46b2e113, thread 01a10884). Main target = FIXED-FOR-CLAIM 1 residue; hand-in #1 is a reset. Design HTML http://127.0.0.1:60412/fw-reports-172892/r/eb309d3301543756b3995a8edd790be7/
+**handoff**: run=9ef89593 exec=5277f846 node=eng_design started; main target = FIXED-FOR-CLAIM 1 residue (PR 560); hand-in 1 is a reset
