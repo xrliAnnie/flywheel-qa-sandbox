@@ -1,19 +1,18 @@
 ---
 issue: FLY-3224
-phase: implement
-phaseCursor: 1/2
-updated: 2026-10-04T15:34:29.937Z
-nextStep: "push hand-in #1, open PR, request code review, exact-head CI, then
-  complete needs_review"
+phase: design
+phaseCursor: 1/5
+updated: 2026-10-04T17:27:38.090Z
+nextStep: update plan.md for run 18c10fbd (inherited AWAITING-QA head, reuse PR
+  553), design review
 chunks: []
 pointers: {}
-handoff: "run=0565c800 hand-in #1 implementation commit
-  77cdb3bf563bae411368a9ae6261eda679a032a6; exact fixture AWAITING-QA;
-  literal/path discovery found only docs/fixtures, no executable tests retained"
+handoff: run=18c10fbd design started; inherits run 0565c800 hand-in on PR 553
+  (not a valid PREV for this run)
 ---
 
 # FLY-3224 progress
-**phase**: implement (1/2)
-**next**: push hand-in #1, open PR, request code review, exact-head CI, then complete needs_review
+**phase**: design (1/5)
+**next**: update plan.md for run 18c10fbd (inherited AWAITING-QA head, reuse PR 553), design review
 
-**handoff**: run=0565c800 hand-in #1 implementation commit 77cdb3bf563bae411368a9ae6261eda679a032a6; exact fixture AWAITING-QA; literal/path discovery found only docs/fixtures, no executable tests retained
+**handoff**: run=18c10fbd design started; inherits run 0565c800 hand-in on PR 553 (not a valid PREV for this run)
