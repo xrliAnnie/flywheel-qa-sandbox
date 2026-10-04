@@ -1,7 +1,7 @@
 # FLY-3150 真 Runner 通用演练(529 房间) — 探索
 
 Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-03(2026-10-01 初版;§7–§18 为历史 —— slot-1 / slot-5 / slot-6 / slot-2 / slot-4 各轮;§19 为本轮 run `b98e6529`,slot-4)
+日期: 2026-10-03(2026-10-01 初版;§7–§19 为历史 —— slot-1 / slot-5 / slot-6 / slot-2 / slot-4 各轮;§20 为本轮 run `ebfb0035`,slot-1)
 基于: 无
 
 ## 1. 任务来源与唯一权威
@@ -291,3 +291,22 @@ TURN:`yours phase=design epoch=1 run=b98e6529… node=eng_design attempt=1`。§
 **结论**:与 §18 同形 —— 陈旧 claim 行风险成立(残留 id `1`),交付 #1 必须把第 2 行重置为 `AWAITING-QA`;若本轮 claim id 又是 `1`,交付 #2 后 PR 级演练净 diff 为空,返工由区间 patch 证明(plan §1 / §3)。差别:本轮分支 = main、无冲突、无 OPEN PR,所以不复用旧 PR、不需要技术同步。旧指针(PR #524 / #517、任何旧 HANDIN、claim `1`、旧评审与 CI)都**不是**本轮证据。
 
 **设计评审(run `b98e6529`)**:Codex 1 轮(thread `01a104bc-8b09…`,turn `01a104bc-924c…`,gpt-6-astra/xhigh,request `6ff6b569…`)。R1 对绑定 blob `cf9860af…` 直接 APPROVED(P1/P2/P3 = 0/0/0)。评审者在仓库外临时 git 夹具里用 `/bin/bash` 3.2 与 `/bin/zsh` 5.9 实跑:陈旧 `FIXED-FOR-CLAIM 1` → `AWAITING-QA` 重置与重试、claim `1` / `2` 两次交付、交付间 ledger、返工提交后及 ledger 后重试、claim `1` 的空 PR 级 diff(返工 patch 仍在)、未跟踪目标拒绝、错误 claim 拒绝、两次交付中的 main 同步与目录外冲突 abort,全部符合 plan §1 / §3 / §3.1;并核对 `progress` 的 `git commit --only` 自提交、`.github/workflows/ci.yml` 对 main 的 PR 无 docs 路径过滤。评审者声明的边界:未推送、未写 PR、未触发 CI(由实现节点在真实交付头核验)。`review-round design` 记录 match=yes;`await-codex-gate design` 通过;thread 已归档。
+
+## 20. 本次派发审计(run `ebfb0035`,2026-10-03,slot-1)
+
+TURN:`yours phase=design epoch=1 run=ebfb0035… node=eng_design attempt=1`(exec `cd924a30`)。§7 / §8 / §10 是 slot-1 分支更早几轮(run `047a5977` / `251c390a` / `56c48d76` / `60b69b26`)的历史,其 PR #420 / #490 已合入 main;§19 是刚合入的 slot-4 run `b98e6529`(PR #537)。
+
+| 项 | 结果 |
+|---|---|
+| 分支头(派发时) | `aedb97bf4` = `origin/main`(slot-4 PR #537 已合入);本分支没有自己的提交,无需同步 |
+| 远端分支 / PR | 远端无 `project-slot-1-FLY-3150`;`gh pr list --head project-slot-1-FLY-3150 --state all` 只有已合入的 #490 / #420 和已关闭的 #413 → 交付 #1 推新分支、开**新** PR |
+| 目标文件 | `qa-sbx/fly2167/project-slot-1-FLY-3150.md` 在 HEAD / main 上逐字节 = `QA-SBX FLY-2167 drill` / `FIXED-FOR-CLAIM 1`(PR #490 留下) |
+| 其他 slot 目标文件 | `project-slot-2/3/4/5/6-FLY-3150.md` 在 main 上均为 `FIXED-FOR-CLAIM 1`;本轮一律不碰 |
+| README | 自 `7df383e6f` 起未变(blob `1de5e367…`) |
+| progress.md | 派发时是 slot-4 run `b98e6529` 的 implement 3/4 记录;本节点已用 `--handoff` 覆盖为本轮 run,`pr` 指针置 `none` |
+| CI | `.github/workflows/*.yml` 无 `paths` / `paths-ignore` 过滤 → 纯 markdown 交付头也会跑 CI |
+| 收件箱 | 无 Lead 指令 |
+| onboard skill | 本项目不存在 → 直接 `stage set brainstorm` |
+| Linear | Done(Lead 裁定);不碰 |
+
+**结论**:与 §19 同形 —— 陈旧 claim 行风险成立(残留 id `1`),交付 #1 必须把第 2 行重置为 `AWAITING-QA`;若本轮 claim id 又是 `1`,交付 #2 后 PR 级演练净 diff 为空,返工由区间 patch 证明(plan §1 / §3)。差别只在 slot:目标文件与分支名换成 slot-1,plan 里的命令全部从 `git branch --show-current` 现算,不硬编码。旧指针(PR #537 / #490 / #420、任何旧 HANDIN、claim `1`、旧评审与 CI)都**不是**本轮证据。
