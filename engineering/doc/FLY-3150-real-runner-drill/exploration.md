@@ -289,3 +289,5 @@ TURN:`yours phase=design epoch=1 run=b98e6529… node=eng_design attempt=1`。§
 | Linear | Done(Lead 裁定);不碰 |
 
 **结论**:与 §18 同形 —— 陈旧 claim 行风险成立(残留 id `1`),交付 #1 必须把第 2 行重置为 `AWAITING-QA`;若本轮 claim id 又是 `1`,交付 #2 后 PR 级演练净 diff 为空,返工由区间 patch 证明(plan §1 / §3)。差别:本轮分支 = main、无冲突、无 OPEN PR,所以不复用旧 PR、不需要技术同步。旧指针(PR #524 / #517、任何旧 HANDIN、claim `1`、旧评审与 CI)都**不是**本轮证据。
+
+**设计评审(run `b98e6529`)**:Codex 1 轮(thread `01a104bc-8b09…`,turn `01a104bc-924c…`,gpt-6-astra/xhigh,request `6ff6b569…`)。R1 对绑定 blob `cf9860af…` 直接 APPROVED(P1/P2/P3 = 0/0/0)。评审者在仓库外临时 git 夹具里用 `/bin/bash` 3.2 与 `/bin/zsh` 5.9 实跑:陈旧 `FIXED-FOR-CLAIM 1` → `AWAITING-QA` 重置与重试、claim `1` / `2` 两次交付、交付间 ledger、返工提交后及 ledger 后重试、claim `1` 的空 PR 级 diff(返工 patch 仍在)、未跟踪目标拒绝、错误 claim 拒绝、两次交付中的 main 同步与目录外冲突 abort,全部符合 plan §1 / §3 / §3.1;并核对 `progress` 的 `git commit --only` 自提交、`.github/workflows/ci.yml` 对 main 的 PR 无 docs 路径过滤。评审者声明的边界:未推送、未写 PR、未触发 CI(由实现节点在真实交付头核验)。`review-round design` 记录 match=yes;`await-codex-gate design` 通过;thread 已归档。
