@@ -1,14 +1,14 @@
 ---
 issue: FLY-3227
 phase: design
-phaseCursor: 1/6
-updated: 2026-10-04T08:20:02.091Z
-nextStep: Main-branch README audited; write one short plan with integrated
-  exploration and findings, no research document.
+phaseCursor: 2/6
+updated: 2026-10-04T08:22:56.356Z
+nextStep: Short plan written; self-check and commit plan, then register
+  effective design review.
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
-**phase**: design (1/6)
-**next**: Main-branch README audited; write one short plan with integrated exploration and findings, no research document.
+**phase**: design (2/6)
+**next**: Short plan written; self-check and commit plan, then register effective design review.
