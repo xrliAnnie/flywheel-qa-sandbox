@@ -14,8 +14,8 @@ README 是演练内容契约：实现节点**自己编写并提交**的唯一文
 ## 2. 实现步骤与稳定身份
 
 1. 先运行本节点注入的 TURN；只有 `yours` 可写。重新读取 main 上的 README，运行 `git branch --show-current` 得到当前文件名，不硬编码其它房间的路径。
-2. 首次接手、尚未提交本 run 的实现时，取得设计交接 HEAD，通过本节点的 `progress --handoff` 保存单行状态，含 `runId`、完整 SHA `implBase`、`firstHandin` 和 `ownCommits`。首交之前 `firstHandin` 为空。重启只复用同一 run 的基线，不能把已实现的 HEAD 重新当起点，也不能复用 main 上上一轮的账本身份。每次更新保留所有已有状态字段；`--pointer` 只支持固定的文档指针，不支持这些自定义状态键。
-3. 真正的首次交付写恰好两行，末尾保留换行：第一行 `QA-SBX FLY-3225 drill`，第二行 `AWAITING-QA`。继承第二行不同则覆盖；文件已经是目标内容时不制造 diff。提交后用同一 `--handoff` 字段记录本 run 的 `firstHandin` 完整 SHA 和本节点自己的提交 SHA 清单 `ownCommits`。本轮再派发时继承内容已经是 `AWAITING-QA`：不制造空提交，`firstHandin` 记为本 run 冻结交付时的 HEAD 完整 SHA，`ownCommits` 记为空清单；此时第 4 节的提交信息扫描只对非空清单执行（空清单直接跳过 `git show`，不得把空参数当成读 HEAD），PR 标题检查与内容比较照常执行。
+2. 首次接手、尚未提交本 run 的实现时，取得设计交接 HEAD，通过本节点的 `progress --handoff` 保存单行状态，含 `runId`、完整 SHA `implBase`、`firstHandin` 和 `ownCommits`。首交之前 `firstHandin` 为空。重启只复用同一 run 的基线，不能把已实现的 HEAD 重新当起点，也不能复用 main 上上一轮的账本身份。同一 run 内每次更新保留所有已有状态字段；但若账本里的 `runId` 不是本 run（再派发继承的旧状态），本 run 第一次写入时整体替换 run 专属字段：`runId`、`execId`、`activationId`、`implBase`、`firstHandin`、`ownCommits` 以及旧的评审/验证结果（`designReview`、`codeReview`、`codeReviewRequestId`、`reviewedHead`、`advisories`、`localVerification`、`nextRoute`），只允许保留 PR 引用（`pr`、`prUrl`）。`--pointer` 只支持固定的文档指针，不支持这些自定义状态键。
+3. 真正的首次交付写恰好两行，末尾保留换行：第一行 `QA-SBX FLY-3225 drill`，第二行 `AWAITING-QA`。继承第二行不同则覆盖；文件已经是目标内容时不制造 diff。提交后用同一 `--handoff` 字段记录本 run 的 `firstHandin` 完整 SHA 和本节点自己的提交 SHA 清单 `ownCommits`。本轮再派发时继承内容已经是 `AWAITING-QA`：不制造空提交，`firstHandin` 记为写该账本之前已存在、内容已达标的 HEAD 完整 SHA（即本 run `implBase`），`ownCommits` 记为空清单；账本不记录它自己提交之后的 HEAD，最终交付头 `HANDIN` 在所有 progress 提交之后冻结，写进完成摘要并以它为 CI 证据对象；此时第 4 节的提交信息扫描只对非空清单执行（空清单直接跳过 `git show`，不得把空参数当成读 HEAD），PR 标题检查与内容比较照常执行。
 4. 收到本次 `QA fix context` 时，其标题之后的第一行 `QA verdict to fix: claim <id> ...` 指定要修的裁决；只把第二行改为 `FIXED-FOR-CLAIM <id>`，编号逐字相同，其余不变，再次交付。文件已是目标值时允许无改动。
 5. 首交之后没有修复上下文的唤醒（CI 返工、集成同步、冲突解决或后续反馈）不自动把第二行重置为 `AWAITING-QA`。遵守这次唤醒的限定任务；冲突解决只解决冲突，保留最近一次正确的第二行。首交与修复都以本 run 的持久身份和本次任务为准，不能由继承内容猜测。
 6. 普通提交信息可用 `docs(qa-sbx): FLY-3225 drill hand-in`。提交信息及 PR 标题均不得包含 `[skip ci]`、`[ci skip]`、`[no ci]`、`[skip actions]`、`[actions skip]` 或 `skip-checks:`。CI 必须检查最终交付的确切提交。
@@ -39,9 +39,12 @@ QA 轮次只由本次 QA 指令决定；没有 `QA re-verification context` 为�
   drill_branch=$(git branch --show-current) || exit 1
   drill_path="qa-sbx/fly3225/$drill_branch.md"
   expected_line2='AWAITING-QA'
-  printf 'QA-SBX FLY-3225 drill\n%s\n' "$expected_line2" > /tmp/fly3225-expected-content
-  git show "HEAD:$drill_path" > /tmp/fly3225-actual-content || exit 1
-  cmp /tmp/fly3225-expected-content /tmp/fly3225-actual-content || exit 1
+  expected=$(mktemp) || exit 1
+  actual=$(mktemp) || exit 1
+  trap 'rm -f "$expected" "$actual"' EXIT
+  printf 'QA-SBX FLY-3225 drill\n%s\n' "$expected_line2" > "$expected" || exit 1
+  git show "HEAD:$drill_path" > "$actual" || exit 1
+  cmp "$expected" "$actual" || exit 1
   ```
   修复时先把 `expected_line2` 设置成实际的 `FIXED-FOR-CLAIM <id>`。完整字节比较检查恰好两行及末尾换行。相对本 run 首交的练习文件 diff 只应替换第二行；如果同编号修复使相对实现基线的净 diff 再次为空，仍以当前内容为证据。
 - 范围检查针对**本实现节点主动提交的每一个改动提交**（即 `ownCommits`，不含工具自动写的 `chore(progress)` 账本提交）。从同一 run 账本读取并确认实际 `own_change_sha`，不要把整个共享分支的 tree diff 误当作本节点改动。对每个自己的非 merge 提交，运行：
