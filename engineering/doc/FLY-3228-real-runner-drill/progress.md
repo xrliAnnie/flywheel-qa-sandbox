@@ -1,21 +1,24 @@
 ---
 issue: FLY-3228
 phase: design
-phaseCursor: 3/5
-updated: 2026-10-04T12:03:21.971Z
-nextStep: Build founder HTML (mmdc diagrams + comment layer), commit, push,
-  publish-report, report URL, then complete phase_design_complete
+phaseCursor: 5/5
+updated: 2026-10-04T12:05:08.659Z
+nextStep: "Design complete. Implementation node: follow plan.md §3 hand-in #1
+  (line 2 FIXED-FOR-CLAIM 1 residue -> AWAITING-QA), open a new PR (#525/#545
+  are merged, do not reuse)."
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3228-real-runner-drill/plan.md
   pr: https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/545
-handoff: "Run dce567d4 design: plan blob 632e8edf approved by Codex
-  gpt-6-astra/xhigh round 1 (request 2090fffe, thread 01a106c7-420b, turn
-  01a106c7-494b); await-codex-gate design exit 0."
+handoff: "Run dce567d4 design done: plan blob 632e8edf approved by Codex
+  gpt-6-astra/xhigh round 1 (request 2090fffe, turn 01a106c7-494b);
+  await-codex-gate design exit 0. Founder HTML published (report 0c5e9e17) and
+  reported to Lead (a28c2170). No drill file touched; no PR opened by design
+  node."
 ---
 
 # FLY-3228 progress
-**phase**: design (3/5)
-**next**: Build founder HTML (mmdc diagrams + comment layer), commit, push, publish-report, report URL, then complete phase_design_complete
+**phase**: design (5/5)
+**next**: Design complete. Implementation node: follow plan.md §3 hand-in #1 (line 2 FIXED-FOR-CLAIM 1 residue -> AWAITING-QA), open a new PR (#525/#545 are merged, do not reuse).
 
-**handoff**: Run dce567d4 design: plan blob 632e8edf approved by Codex gpt-6-astra/xhigh round 1 (request 2090fffe, thread 01a106c7-420b, turn 01a106c7-494b); await-codex-gate design exit 0.
+**handoff**: Run dce567d4 design done: plan blob 632e8edf approved by Codex gpt-6-astra/xhigh round 1 (request 2090fffe, turn 01a106c7-494b); await-codex-gate design exit 0. Founder HTML published (report 0c5e9e17) and reported to Lead (a28c2170). No drill file touched; no PR opened by design node.
