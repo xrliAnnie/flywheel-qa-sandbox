@@ -1,7 +1,7 @@
 # FLY-3150 真 Runner 通用演练(529 房间) — 探索
 
 Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-04(2026-10-01 初版;§7–§20 为历史 —— slot-1 / slot-5 / slot-6 / slot-2 / slot-4 各轮;§21 为本轮 run `4793ff8b`,slot-1)
+日期: 2026-10-04(2026-10-01 初版;§7–§21 为历史 —— slot-1 / slot-5 / slot-6 / slot-2 / slot-4 各轮;§22 为本轮 run `571849e4`,slot-1)
 基于: 无
 
 ## 1. 任务来源与唯一权威
@@ -333,3 +333,22 @@ TURN:`yours phase=design epoch=1 run=4793ff8b… node=eng_design attempt=1`(exec
 **结论**:与 §20 同形 —— 陈旧 claim 行风险成立(残留 id `1`),交付 #1 必须把第 2 行重置为 `AWAITING-QA`;若本轮 claim id 又是 `1`,交付 #2 后 PR 级演练净 diff 为空,返工由区间 patch 证明(plan §1 / §3)。plan 结构沿用已评审版本,只换 run id 与派发快照;命令全部从 `git branch --show-current` 现算。上一轮 ledger 里的 `PREV=75d8a44e…` / `IMPL2=2e2221d6…` / 评审 question / request id 属于 run `ebfb0035`,**不是**本轮证据;旧指针(PR #540 / #537 / #490 / #420、任何旧 HANDIN、claim `1`、旧评审与 CI)同样不认。
 
 **设计评审(run `4793ff8b`)**:Codex 1 轮(thread `01a1060a-3329…`,turn `01a1060a-3bae…`,gpt-6-astra/xhigh,request `6d4fee59…`)。R1 对绑定 blob `4449bedd…`(commit `8a725822b`)直接 APPROVED(P1/P2/P3 = 0/0/0)。评审者在仓库外临时 git 夹具里用 `/bin/bash` 3.2.57 与 `/bin/zsh` 5.9 各跑 22 项(共 44 PASS),并调用真实 `progress` CLI(独立 SQLite / `FLYWHEEL_COMM_DB`):陈旧 `FIXED-FOR-CLAIM 1` 重置、两次交付、实现提交后与 ledger 后重试、claim `1` / `23`、错误 claim、缺失上下文、未跟踪目标、缺末尾 LF、已暂存其他文件、改其他 slot / 相似前缀目录越界、双点 / 三点范围、两次交付中的 main 同步、修复后同步、目录外冲突 `merge --abort`,全部符合 plan §1 / §3 / §3.1;`## 查询与索引` 的「不适用」成立。评审附注(非问题):`ci.yml` 只对 main 的 push 与指向 main 的 PR 触发,feature 分支单独 push 不触发,所以「交付头 CI」要在开 PR 之后核对;评审未推送、未建 PR、未触发 CI。`review-round design` 记录 match=yes。
+
+## 22. 本次派发审计(run `571849e4`,2026-10-04,slot-1)
+
+TURN:`yours phase=design epoch=1 run=571849e4… node=eng_design attempt=1`(exec `8d111835`)。§21 是本分支上一轮 run `4793ff8b`(设计 exec `1460c887`),其 PR #543 已于 2026-10-04 09:31Z 合入 main(合并提交 `7ed21ce86`);§20 / §10 / §8 / §7 是更早几轮。
+
+| 项 | 结果 |
+|---|---|
+| 分支头(派发时) | `caabb83da` = `origin/main`(PR #543 之后又合入 FLY-3226/3227/3228 的其他夹具,不在本文件夹);本分支没有自己的提交,无需同步 |
+| 远端分支 / PR | 远端无 `project-slot-1-FLY-3150`;`gh pr list --head project-slot-1-FLY-3150 --state all` 只有已合入的 #543 / #540 / #490 / #420 和已关闭的 #413 / #407 → 交付 #1 推新分支、开**新** PR |
+| 目标文件 | `qa-sbx/fly2167/project-slot-1-FLY-3150.md` 在 HEAD / main 上逐字节 = `QA-SBX FLY-2167 drill` / `FIXED-FOR-CLAIM 1`(PR #543 留下) |
+| 其他 slot 目标文件 | `project-slot-2/3/4/5/6-FLY-3150.md` 在 main 上均为 `FIXED-FOR-CLAIM 1`;本轮一律不碰 |
+| README | 自 `7df383e6f` 起未变(blob `1de5e367…`) |
+| progress.md | 派发时是上一轮 run `4793ff8b` 的 implement 5/6 记录(含旧 `PREV=HANDIN1=7b0b2ae0…` / `IMPL2=2eb48520…` / 旧评审 question / 旧 Lead 指令 id);本节点已用 `--handoff` 覆盖为本轮 run(提交 `3793ad963`),`pr` 指针置 `none` |
+| CI | `.github/workflows/ci.yml` 只对 main 的 push 与指向 main 的 PR 触发,无 `paths` 过滤 → 交付头 CI 要在开 PR 之后核对 |
+| 收件箱 | 无 Lead 指令 |
+| onboard skill | 本项目不存在(只有 `onboarding` 命令,不是 `onboard` skill)→ 直接 `stage set brainstorm` |
+| Linear | Done(Lead 裁定);不碰 |
+
+**结论**:与 §21 同形 —— 陈旧 claim 行风险成立(残留 id `1`),交付 #1 必须把第 2 行重置为 `AWAITING-QA`;若本轮 claim id 又是 `1`,交付 #2 后 PR 级演练净 diff 为空,返工由区间 patch 证明(plan §1 / §3)。plan 结构沿用已评审版本,只换 run id 与派发快照;命令全部从 `git branch --show-current` 现算。上一轮 ledger 里的 `PREV` / `IMPL2` / 评审 question / Lead 指令 id 属于 run `4793ff8b`,**不是**本轮证据;旧指针(PR #543 / #540 / #537 / #490 / #420、任何旧 HANDIN、claim `1`、旧评审与 CI)同样不认。
