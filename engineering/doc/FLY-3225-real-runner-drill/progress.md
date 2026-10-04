@@ -1,13 +1,14 @@
 ---
 issue: FLY-3225
-phase: implement
-phaseCursor: 1/1
-updated: 2026-10-04T08:19:29.860Z
-nextStep: code review r1 on fix head, ci-full ensure, complete needs_review
+phase: design
+phaseCursor: 1/6
+updated: 2026-10-04T09:10:04.079Z
+nextStep: Refresh the short plan from main eb3f48ace562; preserve the inherited
+  drill payload
 chunks: []
 pointers: {}
 ---
 
 # FLY-3225 progress
-**phase**: implement (1/1)
-**next**: code review r1 on fix head, ci-full ensure, complete needs_review
+**phase**: design (1/6)
+**next**: Refresh the short plan from main eb3f48ace562; preserve the inherited drill payload
