@@ -1,19 +1,20 @@
 ---
 issue: FLY-3224
 phase: design
-phaseCursor: 2/5
-updated: 2026-10-04T21:41:07.371Z
-nextStep: Finish and verify the refreshed HTML, commit/push design artifacts,
-  then register the exact design review request.
+phaseCursor: 3/5
+updated: 2026-10-04T21:51:14.164Z
+nextStep: Commit and push verified design artifacts; register review_design and
+  publish/report the committed HTML.
 chunks: []
 pointers: {}
-handoff: README overrides research output; fixture remains historical
-  FIXED-FOR-CLAIM 1. Current run has no QA claim or OPEN PR; old IDs are
-  rejected.
+handoff: "Local artifact verification: 7 comments, pathname isolation, reload
+  persistence, 1800-character chunks, clipboard success/rejected/unavailable
+  paths, storage failure handled, no page errors/external assets. Both Mermaid
+  diagrams locally rendered and visually inspected."
 ---
 
 # FLY-3224 progress
-**phase**: design (2/5)
-**next**: Finish and verify the refreshed HTML, commit/push design artifacts, then register the exact design review request.
+**phase**: design (3/5)
+**next**: Commit and push verified design artifacts; register review_design and publish/report the committed HTML.
 
-**handoff**: README overrides research output; fixture remains historical FIXED-FOR-CLAIM 1. Current run has no QA claim or OPEN PR; old IDs are rejected.
+**handoff**: Local artifact verification: 7 comments, pathname isolation, reload persistence, 1800-character chunks, clipboard success/rejected/unavailable paths, storage failure handled, no page errors/external assets. Both Mermaid diagrams locally rendered and visually inspected.
