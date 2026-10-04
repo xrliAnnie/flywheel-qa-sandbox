@@ -1,9 +1,9 @@
 ---
 issue: FLY-3225
 phase: design
-phaseCursor: 1/4
-updated: 2026-10-04T17:52:56.334Z
-nextStep: design review for run a9608866
+phaseCursor: 3/4
+updated: 2026-10-04T18:02:36.118Z
+nextStep: publish design HTML, report, complete phase_design_complete
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3225-real-runner-drill/plan.md
@@ -16,7 +16,7 @@ handoff: '{"runId":"ee861e33-a46c-42b1-8e4f-dcba059c2934","execId":"55c9bfe5-597
 ---
 
 # FLY-3225 progress
-**phase**: design (1/4)
-**next**: design review for run a9608866
+**phase**: design (3/4)
+**next**: publish design HTML, report, complete phase_design_complete
 
 **handoff**: {"runId":"ee861e33-a46c-42b1-8e4f-dcba059c2934","execId":"55c9bfe5-5975-47fd-9bb9-c38b6d62961c","activationId":"activation:55c9bfe5-5975-47fd-9bb9-c38b6d62961c:ee861e33-a46c-42b1-8e4f-dcba059c2934:implement:1","implBase":"445e4886330f860ae7863175e48134515391d8d0","firstHandin":"a073b63afb6bd7dd80ba0bce08783e929bd34058","ownCommits":["a073b63afb6bd7dd80ba0bce08783e929bd34058"],"designReview":"APPROVED","codeReview":"APPROVED","codeReviewRequestId":"69b74735-6eb5-4bd3-a9c6-9df1b2e22b51","reviewedHead":"f827bd1b06dbcbfc9450af9061d988a7d6f2b19e","pr":552,"prUrl":"https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/552","advisories":["stale-reviewedsha-pointer (LOW) resolved"],"localVerification":"exact-byte cmp, implementation scope, diff --check, skip-marker scan pass; no executable tests applicable","adjacentPaths":"N/A (docs-only drill)","nextRoute":"needs_review"}
