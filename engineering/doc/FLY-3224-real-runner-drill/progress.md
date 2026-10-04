@@ -1,20 +1,18 @@
 ---
 issue: FLY-3224
-phase: design
-phaseCursor: 4/4
-updated: 2026-10-04T10:22:23.178Z
-nextStep: "Implement: follow plan.md section 3 delivery #1 (create two-line
-  drill file, AWAITING-QA)"
+phase: implement
+phaseCursor: 1/2
+updated: 2026-10-04T10:24:50.236Z
+nextStep: Verify hand-in scope, push, open PR, obtain code review, then exact-head CI
 chunks: []
 pointers: {}
-handoff: "run=0300be9d exec=af728aa7 design done; approved plan blob 68b9add0
-  request b30ff867 (Codex gpt-6-luna/xhigh r4 APPROVED, thread 01a1065c); drill
-  file absent at HEAD and on main -> delivery #1 creates it (A). Prior design
-  exec pointers invalid. No main sync performed."
+handoff: run=0300be9d first hand-in; implementation commit
+  0da5dbc211847fc33697c53e6e3702c4f93aba28; target uses AWAITING-QA; no QA fix
+  context
 ---
 
 # FLY-3224 progress
-**phase**: design (4/4)
-**next**: Implement: follow plan.md section 3 delivery #1 (create two-line drill file, AWAITING-QA)
+**phase**: implement (1/2)
+**next**: Verify hand-in scope, push, open PR, obtain code review, then exact-head CI
 
-**handoff**: run=0300be9d exec=af728aa7 design done; approved plan blob 68b9add0 request b30ff867 (Codex gpt-6-luna/xhigh r4 APPROVED, thread 01a1065c); drill file absent at HEAD and on main -> delivery #1 creates it (A). Prior design exec pointers invalid. No main sync performed.
+**handoff**: run=0300be9d first hand-in; implementation commit 0da5dbc211847fc33697c53e6e3702c4f93aba28; target uses AWAITING-QA; no QA fix context
