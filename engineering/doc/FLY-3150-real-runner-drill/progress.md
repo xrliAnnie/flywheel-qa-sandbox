@@ -1,21 +1,19 @@
 ---
 issue: FLY-3150
-phase: implement
-phaseCursor: 3/4
-updated: 2026-10-04T20:05:48.189Z
-nextStep: "Verify claim 1 rework scope, push PR #559, obtain exact-head code
-  review and CI"
+phase: design
+phaseCursor: 1/4
+updated: 2026-10-04T20:47:57.531Z
+nextStep: Refresh exploration §24 + plan for run f9254495, then design review
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
   pr: none
-handoff: run=76a1d8a2-6f4c-4947-b5e5-123ac5aa0606 attempt 2 claim=1
-  PREV=7ac10013bb2d1e51c510f68ae3d05c2ef8f0c982 IMPL2=12aa4c4c8; adjacent state
-  paths not applicable to two-line docs fixture
+handoff: run=f9254495-be6c-4a57-94ac-a60d62e8132d design node exec 296b57cd; no
+  PREV/IMPL yet (prior run 76a1d8a2 pointers are NOT this run's evidence)
 ---
 
 # FLY-3150 progress
-**phase**: implement (3/4)
-**next**: Verify claim 1 rework scope, push PR #559, obtain exact-head code review and CI
+**phase**: design (1/4)
+**next**: Refresh exploration §24 + plan for run f9254495, then design review
 
-**handoff**: run=76a1d8a2-6f4c-4947-b5e5-123ac5aa0606 attempt 2 claim=1 PREV=7ac10013bb2d1e51c510f68ae3d05c2ef8f0c982 IMPL2=12aa4c4c8; adjacent state paths not applicable to two-line docs fixture
+**handoff**: run=f9254495-be6c-4a57-94ac-a60d62e8132d design node exec 296b57cd; no PREV/IMPL yet (prior run 76a1d8a2 pointers are NOT this run's evidence)
