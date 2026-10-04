@@ -409,3 +409,5 @@ TURN:`yours phase=design epoch=1 run=6f9cf806… node=eng_design attempt=1`(exec
 | Linear | Done(Lead 裁定);不碰 |
 
 **结论**:与 §24 不同形 —— 陈旧 `FIXED-FOR-CLAIM 1` 已在分支上被上一轮重置,本轮交付 #1 无需再提交目标文件(plan §3 第 2 步跳过分支),但 PR 级断言、账本范围核验与 `run=6f9cf806 HANDIN1=<sha>` 照常。PR #565 上一轮的 HANDIN1、代码评审、CI、QA 结论与任何 claim id 都不是本轮证据。
+
+**设计评审(run `6f9cf806`)**:Codex(gpt-6-luna/xhigh,thread `01a10922-91a5…`,turn `01a10922-9686…`,request `a8851c79…`)对绑定 blob `76a48d2e…`(commit `23a698600`)第 1 轮即 APPROVED(P1/P2/P3 = 0/0/0),回合正常 `Turn completed`;核对 README blob、HEAD(`AWAITING-QA`)与 main(`FIXED-FOR-CLAIM 1`)上目标文件字节、合并提交 `1bf3a8aaa` 祖先关系、旧指针排除与 `## 查询与索引` 的「不适用」。边界:评审时 `gh pr view 565` 因网络失败未能实时确认 PR 状态,由实现节点交付时重查。`review-round` 记 r1,`await-codex-gate design` 通过。
