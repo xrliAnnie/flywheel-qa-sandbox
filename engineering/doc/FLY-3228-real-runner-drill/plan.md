@@ -13,7 +13,10 @@ Issue: FLY-3228 (https://linear.app/geoforge3d/issue/FLY-3228/qa-sbx-fly-3228-re
 - 起点:`origin/main` 上**没有**该文件(只有 README 和 slot-6 的文件),所以交付 #1 是**新增**(`A`)。
 - 不碰:README、任何代码、Linear issue、529 房间部署、其他 slot 的目标文件。
 - 流程文档例外(授权来源 = 本轮节点派发提示词里的 DOC-FLOW 段:full 档要求在 `engineering/doc/FLY-3228-<slug>/` 写 `plan.md`,并要求同文件夹 `progress.md` 进度账本,由 `flywheel-comm progress` 做 path-limited 提交;README 也明确"一份短 plan 足够"):只允许这**两个具体文件** `engineering/doc/FLY-3228-real-runner-drill/plan.md` 与 `engineering/doc/FLY-3228-real-runner-drill/progress.md` 变动。它们是 Runner 协议记账,不进 QA criterion。同文件夹内前几轮遗留的 HTML / 图 / 其他文件一律不改。
-- 范围断言(每次交付前跑):`git diff --name-only origin/main...HEAD | grep -vxF -e "$F" -e engineering/doc/FLY-3228-real-runner-drill/plan.md -e engineering/doc/FLY-3228-real-runner-drill/progress.md` 输出必须为空,且输出列表里必须含 `$F`。任何其他路径(包括同文件夹的 HTML / 图)→ 停,不交付。
+- 范围断言(每次交付前跑,两条都要成立):
+  1. 原始路径列表含 `$F`:`git diff --name-only origin/main...HEAD | grep -qxF "$F"` 退出码 0。
+  2. 过滤后的越界路径列表为空:`git diff --name-only origin/main...HEAD | grep -vxF -e "$F" -e engineering/doc/FLY-3228-real-runner-drill/plan.md -e engineering/doc/FLY-3228-real-runner-drill/progress.md` 无输出。
+  任一不成立(包括同文件夹的 HTML / 图出现在列表里)→ 停,不交付。
 
 ## 2. 实现
 
