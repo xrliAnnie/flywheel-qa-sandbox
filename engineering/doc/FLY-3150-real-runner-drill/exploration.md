@@ -310,3 +310,6 @@ TURN:`yours phase=design epoch=1 run=ebfb0035… node=eng_design attempt=1`(exec
 | Linear | Done(Lead 裁定);不碰 |
 
 **结论**:与 §19 同形 —— 陈旧 claim 行风险成立(残留 id `1`),交付 #1 必须把第 2 行重置为 `AWAITING-QA`;若本轮 claim id 又是 `1`,交付 #2 后 PR 级演练净 diff 为空,返工由区间 patch 证明(plan §1 / §3)。差别只在 slot:目标文件与分支名换成 slot-1,plan 里的命令全部从 `git branch --show-current` 现算,不硬编码。旧指针(PR #537 / #490 / #420、任何旧 HANDIN、claim `1`、旧评审与 CI)都**不是**本轮证据。
+
+**设计评审(run `ebfb0035`)**:Codex 1 轮(thread `01a105a0-59ed…`,turn `01a105a0-6130…`,gpt-6-astra/xhigh,request `ee58543d…`)。R1 对绑定 blob `4facbba0…`(commit `7ce8651a2`)直接 APPROVED(P1/P2/P3 = 0/0/0)。评审者在仓库外临时 git 夹具里用 `/bin/bash` 3.2 与 `/bin/zsh` 5.9 各跑 19 个情形(共 38 PASS),并调用真实 `progress` CLI(独立 SQLite):陈旧 `FIXED-FOR-CLAIM 1` 重置与重试、claim `1` / `23` 两次交付、修复后账本前中断、账本后重试、错误 claim 与未跟踪目标拒绝、claim `1` 的空 PR 级净 diff(返工 patch 仍在)、两次交付中的 main 同步、目录外冲突 abort、改其他 slot 被范围守卫拒绝,全部符合 plan §1 / §3 / §3.1;`## 查询与索引` 的「不适用」成立。评审附注(非问题):`.github/workflows/ci.yml` 对 main 的 PR 触发、无 paths 过滤,job 检出的是 PR merge commit,所以「CI 在 HANDIN 上」按 run/check 的 `head_sha` 核对。评审期间 origin/main 前进到 `e0099630e`(FLY-3226 另一演练,PR #539),只动 `engineering/doc/FLY-3226-*/` 与 `qa-sbx/fly3226/`,与本分支无冲突,本节点不同步。`review-round design` 记录 match=yes。
+
