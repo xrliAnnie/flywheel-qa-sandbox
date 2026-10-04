@@ -20,7 +20,8 @@ Issue: FLY-3224 (https://linear.app/geoforge3d/issue/FLY-3224/qa-sbx-fly-3224-re
 - 分支延续 `9438c5d`;`origin/main` = `24d94e6fa`,领先合并基 13 笔无关提交(FLY-3150/3225/3226/3227 的合入),都没碰 `qa-sbx/fly3224/` 和本轮流程文档目录。§1 的断言用三点 `origin/main...<交付头>`(按合并基比较),main 前进不影响判定;不主动同步,只按 §3.1 处理。
 - 无同名 PR → 交付 #1 开新 PR。设计节点会把自己的流程文档提交普通推送到 `origin/project-slot-2-FLY-3224`,实现节点看到的远端分支头 = 设计节点最后一次提交,第 7 步普通快进推送。
 - 前几轮 design 把短计划写在了 `"$F"` 路径上;本设计节点已 `git rm` 它(计划挪到本文件夹)。所以实现节点开工时 `HEAD:"$F"` **不存在**,交付 #1 走新建分支(PR 级 diff 状态 `A`)。
-- 设计节点自己的提交都在实现节点 `BASE` 之前,不进入交付区间。
+- 设计节点自己的提交都在实现节点 `BASE` 之前,不进入交付区间。设计节点在完成前提交并推送本文件夹的全部流程文档(exploration / plan / progress / `design.html` / 图源 `.mmd` 与 `.svg`),不留未跟踪文件。
+- **开工前置**:实现节点第 1 步之前先跑 `git status --porcelain`,输出必须为空;不为空 → 不清理、不提交别人的文件,走失败通道(`flywheel-comm ask` 报告路径后停)。
 - **旧指针一律不认**:前几轮 design 执行(`0cf3d0de`、`784eaa9e`)的 requestId、问题 id、游标,以及其他练习单的 HANDIN / PREV / claim id / CI,都不是本轮 BASE / PREV / claim id。判定第几次交付只看**本轮**提示词有没有 "QA fix context";交付 #2 的 PREV 只认本轮交付 #1 摘要里的 `run=0300be9d HANDIN1=<sha>`。
 
 ## 3. 实现节点
@@ -34,7 +35,16 @@ Issue: FLY-3224 (https://linear.app/geoforge3d/issue/FLY-3224/qa-sbx-fly-3224-re
 4. 只 `git add "$F"`,提交 `docs(qa-sbx): FLY-3224 drill hand-in`。
 5. 冻结 `IMPL1=$(git rev-parse HEAD)`(重试态 `IMPL1=BASE`)。再从仓库根写 ledger:`node "$FLYWHEEL_COMM_CLI" progress --exec-id "$FLYWHEEL_EXEC_ID" --file "$L" --phase implement --cursor 1/2 --next "<下一步>" --handoff "<本轮已知信息>"` —— 它**自行** path-limited 提交 `$L`,不要手动 add/commit;`git status --porcelain` 为空后才冻结 `HANDIN1=$(git rev-parse HEAD)`。
 6. 核验:(a) **实现范围** `git diff --name-status $BASE..$IMPL1`:新建态恰好一行 `A "$F"`;重试态为空且 `git show $BASE:"$F"` 已逐字节等于 `AWAITING-QA` 两行;(b) **账本范围** `git diff --name-only $IMPL1..$HANDIN1` 为空或恰好 `"$L"`,且 `git rev-list --merges $BASE..$HANDIN1` 为空;(c) §1 的 PR 级断言对 `$HANDIN1` 通过。任一不过 → 停,不交付。
-7. `git push -u origin HEAD`(普通推送,不 force)。PR:`gh pr list --head project-slot-2-FLY-3224 --state open --json number --jq '.[0].number'`;有 OPEN PR 就 `gh pr edit` 复用,没有就 `gh pr create --base main --head project-slot-2-FLY-3224`,标题 `FLY-3224 QA-SBX FLY-3224 real-runner drill (run 0300be9d)`,正文写 Linear issue 链接、本轮 run id 与本轮核验结果。确认远端分支头 / PR 头 / CI 都在 `$HANDIN1`,交付;**交付摘要写明 `run=0300be9d HANDIN1=<完整 SHA>`**(返工唯一 PREV 来源)。
+7. 推送并开 / 复用 PR(普通推送,不 force):
+   ```bash
+   git push -u origin HEAD
+   BODY=$(mktemp "${TMPDIR:-/tmp}/fly3224-pr-body.XXXXXX")
+   printf '%s\n' '## Linear Issue' 'FLY-3224: https://linear.app/geoforge3d/issue/FLY-3224/qa-sbx-fly-3224-real-runner-generalized-drill-529-room-only' '' "run=0300be9d HANDIN1=$HANDIN1" '' '<本轮第 6 步核验结果,逐条写 PASS>' > "$BODY"
+   TITLE='FLY-3224 QA-SBX FLY-3224 real-runner drill (run 0300be9d)'
+   PR=$(gh pr list --head project-slot-2-FLY-3224 --state open --json number --jq '.[0].number')
+   if [ -n "$PR" ]; then gh pr edit "$PR" --title "$TITLE" --body-file "$BODY"; else gh pr create --base main --head project-slot-2-FLY-3224 --title "$TITLE" --body-file "$BODY"; fi
+   ```
+   正文里 `<…>` 占位要先替换成真实核验结果再执行;标题与正文都不得含 skip-CI 标记。确认远端分支头 / PR 头(`gh pr view --json headRefOid`)/ CI 都在 `$HANDIN1`,交付;**交付摘要写明 `run=0300be9d HANDIN1=<完整 SHA>`**(返工唯一 PREV 来源)。
 
 **交付 #2(提示词有 "QA fix context",首行 `QA verdict to fix: claim <id> ...`)**
 1. 用 `^QA verdict to fix: claim (\S+)` 取 `ID`,原样复制;取不到 → 失败通道,不猜。
@@ -43,7 +53,7 @@ Issue: FLY-3224 (https://linear.app/geoforge3d/issue/FLY-3224/qa-sbx-fly-3224-re
 4. 只 `git add "$F"`,提交 `docs(qa-sbx): FLY-3224 drill fix for claim $ID`。
 5. 冻结 `IMPL2=$(git rev-parse HEAD)`(已修复态 `IMPL2=BASE2`),再写 ledger(同交付 #1 第 5 步命令,`--cursor 2/2`,handoff 可写 claim id 与 PREV),工作树干净后冻结 `HANDIN2=$(git rev-parse HEAD)`。
 6. 核验:(a) `git diff --name-status $BASE2..$IMPL2`:初始态恰好一行 `M "$F"`,已修复态为空;(b) `git diff $PREV..$HANDIN2 -- "$F"` 的 patch 恰为 `-AWAITING-QA` / `+FIXED-FOR-CLAIM $ID`(这一步才是"返工确实发生"的证据);(c) `git diff --name-only $IMPL2..$HANDIN2` 为空或恰好 `"$L"`、无合并提交;(d) §1 的 PR 级断言对 `$HANDIN2` 通过。
-7. 推送,确认远端 / PR / CI 都在 `$HANDIN2`,交付。
+7. `git push origin HEAD`(复用同一 PR;如需更新正文,用交付 #1 第 7 步同形的 `gh pr edit "$PR" --title "$TITLE" --body-file "$BODY"`,正文写 `HANDIN2` 与 claim id),确认远端 / PR / CI 都在 `$HANDIN2`,交付。
 
 通则:核验后若又产生提交(含 ledger),重新冻结 SHA、核验、推送。commit message 与 PR 标题不得含 `[skip ci]` / `[ci skip]` / `[no ci]` / `[skip actions]` / `[actions skip]` / `skip-checks:`(仓库历史里有,不可模仿)。不 force-push。ledger 的 `--handoff` 只写写入时已确定的信息(run id、阶段、claim id、返工时已知的 PREV),**不写本次最终交付头**(ledger 自提交会改变 HEAD);最终 `HANDIN1` / `HANDIN2` 只写在交付摘要里。
 
