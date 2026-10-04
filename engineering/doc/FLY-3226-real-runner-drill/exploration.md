@@ -41,7 +41,7 @@ Issue: FLY-3226 (https://linear.app/geoforge3d/issue/FLY-3226/qa-sbx-fly-3226-re
 
 run `fee0ab7d` 已走完 design → implement → QA(claim `1`)→ merge,PR #541 合入 main(`3ec694479`)。本轮同一分支名再次派发,起点与 §5 **同构**:
 
-- 分支头 `eb3f48ace`(FLY-3225 hand-in #542 之后);`origin/main` 已前进到 `24d94e6fa`(多了一个 FLY-3227 的 hand-in,只碰 `qa-sbx/fly3227/` 和 `engineering/doc/FLY-3227-*`,与本练习单无交集)。PR 级断言一律用三点 `origin/main...<交付头>`(按合并基比较),main 前进不影响;只有 PR 显示 `CONFLICTING` 才按 plan §3.1 同步。
+- 派发起点 `eb3f48ace`(FLY-3225 hand-in #542 之后);`origin/main` 已前进到 `24d94e6fa`,领先两笔无关提交:`7ed21ce86`(FLY-3150,PR #543)和 `24d94e6fa`(FLY-3227,PR #544),都没碰 `qa-sbx/fly3226/` 和本练习单的流程文档目录。PR 级断言一律用三点 `origin/main...<交付头>`(按合并基比较),main 前进不影响;只有 PR 显示 `CONFLICTING` 才按 plan §3.1 同步。
 - 远端没有本分支;同名 PR #539、#541 都已 MERGED → 交付 #1 推新分支、开新 PR。
 - README blob 仍是 `71e58f18…`,合同没变。
 - 目标文件在 main 上 = `QA-SBX FLY-3226 drill` / `FIXED-FOR-CLAIM 1`(PR #541 残留,与 §5 时完全相同)→ 交付 #1 仍是**重置**(diff 状态 `M`);若本轮 claim id 又是 `1`,交付 #2 后 PR 级演练净 diff 为空仍合法,返工由区间 patch `PREV..HANDIN2` 证明。

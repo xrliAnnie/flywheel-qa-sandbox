@@ -18,7 +18,7 @@ Issue: FLY-3226 (https://linear.app/geoforge3d/issue/FLY-3226/qa-sbx-fly-3226-re
 
 ## 2. 本轮起点(派发时快照,实现节点自己重算)
 
-- 分支头 `eb3f48ace`;`origin/main` 已前进到 `24d94e6fa`(多一个 FLY-3227 hand-in,只碰 `qa-sbx/fly3227/` 与 `engineering/doc/FLY-3227-*`)。§1 的断言用三点 `origin/main...<交付头>`(按合并基比较),main 前进不影响判定;不主动同步,只按 §3.1 处理。
+- 派发起点 `eb3f48ace`;`origin/main` 已前进到 `24d94e6fa`,领先两笔无关提交:`7ed21ce86`(FLY-3150,PR #543,只碰 FLY-3150 的演练与流程文档)和 `24d94e6fa`(FLY-3227,PR #544,只碰 `qa-sbx/fly3227/` 与 `engineering/doc/FLY-3227-*`),都没碰本轮目标文件和本轮流程文档目录。§1 的断言用三点 `origin/main...<交付头>`(按合并基比较),main 前进不影响判定;不主动同步,只按 §3.1 处理。
 - 派发时远端无本分支;同名 PR #539、#541 都已 MERGED → 交付 #1 开新 PR。设计节点会把自己的流程文档提交(不含 `"$F"`)普通推送到 `origin/project-slot-4-FLY-3226`,所以实现节点看到的远端分支头 = 设计节点最后一次提交,第 7 步照旧普通快进推送。
 - `HEAD:"$F"` = `QA-SBX FLY-3226 drill` / `FIXED-FOR-CLAIM 1`(PR #541 残留)。所以**交付 #1 走重置分支**:HEAD blob ≠ `AWAITING-QA` 两行 → 必须覆盖写并提交(diff 状态 `M`)。跳过重置的风险:本轮 claim id 恰好又是 `1` 时,重验会靠残留假通过,返工回路实际没跑。
 - 设计节点自己的流程文档提交(含 `3ceb80d78` 的 ledger 覆盖)都在实现节点 `BASE` 之前,不进入交付区间。
