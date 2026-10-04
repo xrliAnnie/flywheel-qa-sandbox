@@ -14,7 +14,7 @@ textarea{width:100%;min-height:64px;margin-top:12px;border:1px solid #d2d2d7;bor
 button{background:var(--blue);color:#fff;border:0;border-radius:8px;padding:8px 14px;font-size:14px;cursor:pointer;margin:6px 6px 0 0}
 pre{white-space:pre-wrap;word-break:break-word;background:#f0f0f3;border-radius:8px;padding:10px;font-family:"SF Mono",Menlo,monospace;font-size:13px}#status{color:var(--dim);font-size:13px}
 </style></head><body><main>
-<header><h1>FLY-3150 真 Runner 通用演练(529 房间)— 设计</h1><div class="sub">run 0c3b88f3 · slot-1 · 分支 project-slot-1-FLY-3150 · 交付 #1 时开新 PR · 2026-10-04 · Codex 设计评审 APPROVED(1 轮,0 个问题)</div></header>
+<header><h1>FLY-3150 真 Runner 通用演练(529 房间)— 设计</h1><div class="sub">run 0c3b88f3 · slot-1 · 分支 project-slot-1-FLY-3150 · 交付 #1 时开新 PR · 2026-10-04 · Codex 设计评审 APPROVED(第 1 轮 0 个问题 + 1 次确认回合)</div></header>
 
 <section class="card blue" data-title="一句话总结"><h2>一句话总结</h2>
 <p class="lead">本轮在 slot-1 分支上让真 Runner 走一圈「交付 → QA 故意判失败 → 带着 claim 编号返工 → QA 逐字核对后通过」,唯一的演练改动是一个两行 markdown 文件;关键点是先把主干上残留的旧结果 <code>FIXED-FOR-CLAIM 1</code> 重置掉,保证返工回路是真跑出来的,而不是靠旧字节「假通过」。</p>

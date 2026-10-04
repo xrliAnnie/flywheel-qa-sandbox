@@ -390,3 +390,5 @@ TURN:`yours phase=design epoch=1 run=0c3b88f3… node=eng_design attempt=1`(exec
 | Linear | Done(Lead 裁定);不碰 |
 
 **结论**:与 §23 同形 —— 交付 #1 必须把第 2 行从残留的 `FIXED-FOR-CLAIM 1` 重置为 `AWAITING-QA`;plan 结构沿用已评审版本,只换 run id 与派发快照。PR #562 / #559 及任何旧 HANDIN、claim id、评审、CI 都不是本轮证据。
+
+**设计评审(run `0c3b88f3`)**:Codex(gpt-6-luna/xhigh,thread `01a108f0-7b64…`,request `a662156f…`)对绑定 blob `eb25a54e…`(commit `c8b67dd94`)第 1 轮即 APPROVED(P1/P2/P3 = 0/0/0):核对 README、HEAD/main 上目标文件字节、PR 列表(#562 关闭 / #559 合入)、远端无本分支、`ci.yml` 触发条件,确认陈旧 `FIXED-FOR-CLAIM 1` 重置、交付区间核验与 `## 查询与索引` 的「不适用」成立。第 1 轮回合以 "completion inferred" 结束,故在同一 thread 追加一个不改 plan 的确认回合(turn `01a108f5…`,同样 APPROVED);`review-round` 把该回合记为 r1,`await-codex-gate design` 通过;thread 已归档。
