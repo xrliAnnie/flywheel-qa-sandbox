@@ -1,6 +1,6 @@
 # FLY-3226 真 Runner 通用演练(529 房间) — 探索
 Issue: FLY-3226 (https://linear.app/geoforge3d/issue/FLY-3226/qa-sbx-fly-3226-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-03(首轮);2026-10-04 追加 §5(run `fee0ab7d`)、§6(run `4a9c615e`)
+日期: 2026-10-03(首轮);2026-10-04 追加 §5(run `fee0ab7d`)、§6(run `4a9c615e`)、§7(run `76b1635c`)
 基于: 无
 
 ## 1. 任务来源
@@ -47,3 +47,14 @@ run `fee0ab7d` 已走完 design → implement → QA(claim `1`)→ merge,PR #541
 - 目标文件在 main 上 = `QA-SBX FLY-3226 drill` / `FIXED-FOR-CLAIM 1`(PR #541 残留,与 §5 时完全相同)→ 交付 #1 仍是**重置**(diff 状态 `M`);若本轮 claim id 又是 `1`,交付 #2 后 PR 级演练净 diff 为空仍合法,返工由区间 patch `PREV..HANDIN2` 证明。
 - progress.md 原带 run `fee0ab7d` 实现节点的 handoff(`PREV=2647ad8d…`、`IMPL2=e89cfc44…`、claim 1、代码评审 `b0fa5bf4…`)。设计节点开工即用 `--handoff` 覆盖(提交 `3ceb80d78`);plan 写明这些指针本轮一律不认。
 - 结论:沿用 run `fee0ab7d` 已两轮评审通过的 plan 骨架,只更新本轮专属的快照、run id 与"旧指针"清单;设计 HTML 与两张图按本轮起点重画。
+
+## 7. 第四次派发(run `76b1635c`,exec `adebe138`,2026-10-04,slot-4)
+
+run `4a9c615e` 已走完 design → implement → QA(claim `1`)→ merge,PR #546 合入 main(`2de71c2e2`)。本轮同一分支名再次派发:
+
+- 派发起点 = `origin/main` = `2de71c2e2`(本地 HEAD 与 main 相同,没有领先的无关提交)。PR 级断言照旧用三点 `origin/main...<交付头>`;只有 PR 显示 `CONFLICTING` 才按 plan §3.1 同步。
+- 远端没有本分支;同名 PR #539、#541、#546 都已 MERGED → 交付 #1 推新分支、开新 PR。
+- README blob 仍是 `71e58f18…`,合同没变。
+- 目标文件在 main 上 = `QA-SBX FLY-3226 drill` / `FIXED-FOR-CLAIM 1`(PR #546 残留)→ 交付 #1 仍是**重置**(diff 状态 `M`);若本轮 claim id 又是 `1`,交付 #2 后 PR 级演练净 diff 为空仍合法,返工由区间 patch `PREV..HANDIN2` 证明。
+- progress.md 原带 run `4a9c615e` 实现节点的 handoff(`PREV=86d50653…`、`IMPL2=b43dee8a6`、claim 1)。设计节点开工即用 `--handoff` 覆盖(提交 `0f4f817ca`);plan 写明这些指针本轮一律不认。
+- 结论:沿用已多轮评审通过的 plan 骨架,只更新本轮专属的快照、run id 与"旧指针"清单;设计 HTML 与两张图按本轮起点重画。
