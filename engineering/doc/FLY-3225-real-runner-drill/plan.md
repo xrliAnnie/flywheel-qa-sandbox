@@ -63,7 +63,16 @@ Issue: FLY-3225 (https://linear.app/geoforge3d/issue/FLY-3225/qa-sbx-fly-3225-re
   ```
   必须无输出。grep 没选中任何行时退出码是 1，这是通过，不要误报成失败；`git diff` 自己的退出码要单独确认是 0。
 - 修复轮（`FIXED-FOR-CLAIM <id>`）相对本轮自己的首交提交只改第 2 行：`git diff <本轮首交提交>..HEAD -- qa-sbx/fly3225/<分支名>.md` 只含第 2 行的一处替换；最终仍以上面的完整内容比较为准。
-- **提交后**核对实际提交信息和实际 PR 标题，都必须没有 skip-ci 标记：`git log --format=%B <impl-base>..HEAD | grep -iE '\[(skip ci|ci skip|no ci|skip actions|actions skip)\]|skip-checks:'` 与 `gh pr view --json title -q .title | grep -iE '\[(skip ci|ci skip|no ci|skip actions|actions skip)\]|skip-checks:'` 都必须无输出。
+- **提交后**核对实际提交信息和实际 PR 标题，都必须没有 skip-ci 标记。**先确认读取成功，再 grep**——管道会吞掉上游命令的失败，读不到内容不等于“没有标记”（`<impl-base>` 先替换成实际 SHA）：
+  ```sh
+  PAT='\[(skip ci|ci skip|no ci|skip actions|actions skip)\]|skip-checks:'
+  msgs=$(git log --format=%B <impl-base>..HEAD) || echo "READ-FAIL: git log"
+  title=$(gh pr view --json title -q .title) || echo "READ-FAIL: gh pr view"
+  [ -n "$title" ] || echo "READ-FAIL: empty PR title"
+  printf '%s\n' "$msgs"  | grep -iE "$PAT"; echo "msgs-grep=$?"
+  printf '%s\n' "$title" | grep -iE "$PAT"; echo "title-grep=$?"
+  ```
+  判定：没有任何 `READ-FAIL` 行，且两个 grep 都**没有匹配输出**、状态都是 `1`，才算通过。grep 状态 `0` = 发现了禁用标记（失败，要改提交/标题）；状态 `2` 或更大 = grep 自己出错；出现 `READ-FAIL` = 没取到待检内容（停止，先修好读取，不得当作通过）。
 
 ## 5. 风险与回退
 
@@ -71,11 +80,11 @@ Issue: FLY-3225 (https://linear.app/geoforge3d/issue/FLY-3225/qa-sbx-fly-3225-re
 |---|---|
 | 文件名与分支名不一致 | 一律用 `git branch --show-current` 现取，不硬编码 |
 | 误把 `FIXED-FOR-CLAIM` 写进或留在首轮 | 没有 `QA fix context` 时确保第 2 行是 `AWAITING-QA`（继承值不同必须覆盖）；只有 prompt 带有效 `QA fix context` 才使用它的 claim id |
-| 复制了仓库历史里的 `[skip ci]` 提交风格 | 提交后用 §4 的两条命令核对实际提交信息和 PR 标题，必须无输出 |
+| 复制了仓库历史里的 `[skip ci]` 提交风格 | 提交后用 §4 的检查脚本核对实际提交信息和 PR 标题：无 `READ-FAIL`、两个 grep 都无匹配且状态为 1 |
 | 越界改动 | 实施基线之后的改动文件只能是练习文件和流水线账本 `progress.md`（见 §4 的 grep 检查） |
 | 拿继承来的旧第 2 行当判轮依据 | 只看本次 prompt 有没有 `QA fix context`（见 §2a）；继承值不是依据 |
 
-回退：删除该 markdown 文件即可，无数据、无服务、无迁移。
+回退：无数据、无服务、无迁移。把练习文件恢复到实施基线 `<impl-base>` 已提交的内容即可（`git checkout <impl-base> -- qa-sbx/fly3225/<分支名>.md`，等于撤销本轮对第 2 行的改动）；**只有**基线上本来没有这个文件时，才是删除它。继承文件的场景下不能直接删除——那会新增对 main 已合入产物的删除，并使 `file-shape` 失败。
 
 ## 6. 查询与索引
 
