@@ -63,7 +63,7 @@
     <div class="meta">
       <span class="badge purple">QA 沙箱演练</span>
       <span class="badge green">设计评审已通过</span>
-      <span class="mono">2026-10-04 · 本轮 run dce567d4 · 分支 project-slot-6-FLY-3228</span>
+      <span class="mono">2026-10-04 · 本轮 run dd71f848 · 分支 project-slot-6-FLY-3228</span>
     </div>
   </header>
 
@@ -128,7 +128,7 @@
     <table>
       <tr><th>选择</th><th>理由</th><th>被否决的做法</th></tr>
       <tr><td>只写一份短 plan，不写调研文档</td><td>演练规则文件（README）明确这么要求；它是这次任务的唯一权威</td><td>按常规流程写探索 + 调研 + 计划三份文档（多余，且违背 README）</td></tr>
-      <tr><td>上一轮的编号、提交号、合并申请号一律不作数</td><td>主线上遗留的 <code>FIXED-FOR-CLAIM 1</code> 和旧进度记录很容易被误当成「已经修好」</td><td>看到文件已是 FIXED-FOR-CLAIM 就跳过交付，或复用前几轮已合并的 PR #525 / #545</td></tr>
+      <tr><td>上一轮的编号、提交号、合并申请号一律不作数</td><td>主线上遗留的 <code>FIXED-FOR-CLAIM 1</code> 和旧进度记录很容易被误当成「已经修好」</td><td>看到文件已是 FIXED-FOR-CLAIM 就跳过交付，或复用前几轮已合并的 PR #525 / #545 / #551</td></tr>
       <tr><td>流程文档单独放一个文件夹，并加「范围断言」</td><td>节点合同要求留档；但验收只看那一个演练文件，断言保证除流程文件夹外只改了它</td><td>把流程文档也算进演练内容（会稀释「只改一个文件」的要求）</td></tr>
       <tr><td>返工编号只从 QA fix context 的第一行取，取不到就停</td><td>防止从历史例子、主线遗留或别的房间的旧记录里误抓编号</td><td>从 git 历史或旧进度记录里「猜」编号</td></tr>
       <tr><td>提交说明里禁止出现 <code>[skip ci]</code> 等跳过标记</td><td>交付必须让自动检查（<b>CI</b>：每次提交后自动跑的检查）在这个确切版本上真跑一遍</td><td>照抄仓库历史里带跳过标记的提交风格</td></tr>
