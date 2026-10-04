@@ -1,17 +1,19 @@
 # FLY-3227 真 Runner 通用演练 — 实施计划
 Issue: FLY-3227 (https://linear.app/geoforge3d/issue/FLY-3227/qa-sbx-fly-3227-real-runner-generalized-drill-529-room-only)
 日期: 2026-10-04
-基于: 无（任务书为沙盒仓库 main 分支的 qa-sbx/fly3227/README.md）
+基于: 无
 
 ## 探索与仓库核验
 
 目标是在 529 隔离测试房间验证真实执行节点的「首交 → QA 故意打回 → 按本轮 claim 修复 → 再验收」交接。claim 是 QA 给一次验收结果分配的标识，修复必须逐字沿用它。
 
-已读取并重新 fetch 沙盒 main 的任务书；设计起点为 `3f2041e5f`，分支为 `project-slot-5-FLY-3227`，目标文件尚不存在。每个后续节点重读 main 上的 README，并现取分支名；历史文件、历史 claim 和兄弟房间不决定本轮规则。
+已重新 fetch 并读取沙盒 `origin/main` 上的任务书；本轮设计起点为 `2de71c2e2eec04ac54d884962a20a49dc61cb585`，分支为 `project-slot-5-FLY-3227`。目标文件已从之前的演练继承，第 2 行是 `FIXED-FOR-CLAIM 1`；它不是本轮修复依据。每个后续节点重读 main 上的 README，并现取分支名；历史文件、历史 claim 和兄弟房间不决定本轮规则。
 
-README 明确「一份短 plan 足够，不写 research 文档」，因此探索与本地核验合并在此。实现内容仅一个文件 `qa-sbx/fly3227/<当前分支名>.md`。本轮对应 `qa-sbx/fly3227/project-slot-5-FLY-3227.md`。设计节点不创建这个文件。
+README 明确「一份短 plan 足够，不写 research 文档」，因此探索与本地调研合并在此，不另建探索、调研文档。实现内容仅一个文件 `qa-sbx/fly3227/<当前分支名>.md`。本轮对应 `qa-sbx/fly3227/project-slot-5-FLY-3227.md`。设计节点不改这个文件。
 
-节点契约另要求提交 `engineering/doc/FLY-3227-real-runner-drill/` 下的计划、设计 HTML、Mermaid 图源/本地 SVG 和自动提交的 `progress.md`；这些是流程产物，不是实现内容或 QA 准则。实现节点基线之后只允许目标文件与该 `progress.md` 变化。
+已通过问题 `8da5357d-26e4-4a52-92e3-8519f9eb5b9d` 核对文档范围；drill driver 重申按 README 执行，未覆盖的细节选最保守且能推进演练的做法，并在交接中说明。这里采用短计划，复用既有文档目录；节点契约仍要求更新计划、设计 HTML、Mermaid 图源/本地 SVG 和自动提交的 `progress.md`，它们只作流程记录，不扩展实现或 QA 准则。此范围解释会随交接报告提交。实现节点基线之后只允许目标文件与该 `progress.md` 变化。
+
+本地调研核对了任务书、项目说明、继承的目标文件与流程记录；没有需要外部服务或新依赖来解决的技术问题。已有设计页面中的「文件尚未创建」属于旧轮次描述，本轮必须改成「已有旧文件，首交仍重置为等待验收」。
 
 ## 方案与边界
 
