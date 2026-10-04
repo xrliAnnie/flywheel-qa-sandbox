@@ -1,30 +1,30 @@
 ---
 issue: FLY-3227
 phase: implement
-phaseCursor: 1/5
-updated: 2026-10-04T11:47:02.602Z
-nextStep: "QA rework activation
-  rework:76084822a58fdc94124a763e554310092d11042bc9cecaa98357f688bfd40f18,
-  attempt 2 TURN yours epoch 4. Current prompt claim 1 qa_failed on
-  QA_HEAD=7da0e5c0cec360804395d8889b32a41318d08c0e. Rework BASE same head, clean
-  tree. PR 550 OPEN, its single HANDIN1 matches QA_HEAD; both committed fixtures
-  byte-equal first hand-in AWAITING-QA and ancestor checks PASS. Fresh main
-  README unchanged; approved plan unchanged. Pre-edit exact FIXED-FOR-CLAIM 1
-  cmp RED (line 2), as expected. Literal/path/name/parent discovery found no
-  fixture test consumers; generic ten progress.md matches remain excluded
-  because ledger data only (same paths as first-hand-in ledger commit
-  7da0e5c0c). Next change only fixture line 2 to current claim 1, run
-  byte/scope/claim-negative guards and lint; then commit/push, NEW code
-  gate/request, final freeze/server CI receipt/needs_review hand-in. No runtime
-  state paths apply to Markdown fixture: adjacent validation paths will cover
-  waiting marker, wrong claim, padded claim, case, whitespace, extra line,
-  missing newline and idempotent rerun. e2e_529_exempt remains docs_only not_run
-  because README forbids deployment. No code/new docs/tests/room/Linear
-  changes."
+phaseCursor: 2/5
+updated: 2026-10-04T11:48:05.688Z
+nextStep: "Rework claim 1 fixture committed; only line 2 changes AWAITING-QA to
+  FIXED-FOR-CLAIM 1 relative to current QA_HEAD/HANDIN1
+  7da0e5c0cec360804395d8889b32a41318d08c0e. Pre-edit RED, post-edit and
+  committed full bytes GREEN, path scope target+ledger PASS. PR common-ancestor
+  fixture net diff empty is valid: merge-base target already byte-equals current
+  fixed content; QA_HEAD-to-HEAD patch still required and proven. Adjacent
+  validation cases PASS: waiting marker, wrong claim 2, padded claim 01,
+  case-changed marker, trailing whitespace, extra line, missing final newline;
+  already-correct retry skips write and preserves mtime/clean target diff. No
+  queued/started/dead/superseded/concurrent runtime state applies to two-line
+  Markdown; no repo test additions per README one-file scope. pnpm lint exit 0
+  with 14 pre-existing untouched warnings, no TS/API/build/typecheck changes or
+  local full suite. Discovery exclusions remain recorded in ancestor
+  first-hand-in ledger 7da0e5c0c; no new fixture consumers. e2e_529_exempt
+  docs_only not_run, no room deployment. Next push, open NEW code gate/request
+  for current rework head; then final ledger/freeze, server ci-full ensure and
+  needs_review PR 550. Preserve original single HANDIN1 marker in PR; never
+  substitute a new claim from historical file."
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
-**phase**: implement (1/5)
-**next**: QA rework activation rework:76084822a58fdc94124a763e554310092d11042bc9cecaa98357f688bfd40f18, attempt 2 TURN yours epoch 4. Current prompt claim 1 qa_failed on QA_HEAD=7da0e5c0cec360804395d8889b32a41318d08c0e. Rework BASE same head, clean tree. PR 550 OPEN, its single HANDIN1 matches QA_HEAD; both committed fixtures byte-equal first hand-in AWAITING-QA and ancestor checks PASS. Fresh main README unchanged; approved plan unchanged. Pre-edit exact FIXED-FOR-CLAIM 1 cmp RED (line 2), as expected. Literal/path/name/parent discovery found no fixture test consumers; generic ten progress.md matches remain excluded because ledger data only (same paths as first-hand-in ledger commit 7da0e5c0c). Next change only fixture line 2 to current claim 1, run byte/scope/claim-negative guards and lint; then commit/push, NEW code gate/request, final freeze/server CI receipt/needs_review hand-in. No runtime state paths apply to Markdown fixture: adjacent validation paths will cover waiting marker, wrong claim, padded claim, case, whitespace, extra line, missing newline and idempotent rerun. e2e_529_exempt remains docs_only not_run because README forbids deployment. No code/new docs/tests/room/Linear changes.
+**phase**: implement (2/5)
+**next**: Rework claim 1 fixture committed; only line 2 changes AWAITING-QA to FIXED-FOR-CLAIM 1 relative to current QA_HEAD/HANDIN1 7da0e5c0cec360804395d8889b32a41318d08c0e. Pre-edit RED, post-edit and committed full bytes GREEN, path scope target+ledger PASS. PR common-ancestor fixture net diff empty is valid: merge-base target already byte-equals current fixed content; QA_HEAD-to-HEAD patch still required and proven. Adjacent validation cases PASS: waiting marker, wrong claim 2, padded claim 01, case-changed marker, trailing whitespace, extra line, missing final newline; already-correct retry skips write and preserves mtime/clean target diff. No queued/started/dead/superseded/concurrent runtime state applies to two-line Markdown; no repo test additions per README one-file scope. pnpm lint exit 0 with 14 pre-existing untouched warnings, no TS/API/build/typecheck changes or local full suite. Discovery exclusions remain recorded in ancestor first-hand-in ledger 7da0e5c0c; no new fixture consumers. e2e_529_exempt docs_only not_run, no room deployment. Next push, open NEW code gate/request for current rework head; then final ledger/freeze, server ci-full ensure and needs_review PR 550. Preserve original single HANDIN1 marker in PR; never substitute a new claim from historical file.
