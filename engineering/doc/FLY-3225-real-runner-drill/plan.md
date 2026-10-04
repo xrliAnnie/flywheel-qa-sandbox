@@ -7,7 +7,7 @@ Issue: FLY-3225 (https://linear.app/geoforge3d/issue/FLY-3225/qa-sbx-fly-3225-re
 
 529 测试房间内，只用两行 Markdown 文件验证「首交 → QA 故意打回 → 按本次裁决编号修复 → 复验」；不改 Linear 的状态、评论或标签，不部署任何房间。
 
-本轮已 fetch 并读取 `origin/main:qa-sbx/fly3225/README.md`；main 版本 `bd42785c98e8`，分支 `project-slot-3-FLY-3225`。继承的练习文件第二行是 `FIXED-FOR-CLAIM 1`，那是上一轮（run `37fb0f88`，PR #549 已合并）的结果，只是历史证据，不是本轮的判轮依据。本轮 run 为 `ee861e33-a46c-42b1-8e4f-dcba059c2934`，设计执行为 `355da9df-c699-49cc-bcc7-4a49ad1f12a2`，从 main `bd42785c98e83707577d16ef04d096789b79e603` 起步，保留已有计划和页面并刷新本轮身份。设计批准必须由本次执行重新注册的评审确认。
+本轮已 fetch 并读取 `origin/main:qa-sbx/fly3225/README.md`；main 版本 `caabb83da339`，分支 `project-slot-3-FLY-3225`。本轮 run 为 `a9608866-6271-4f29-bdd5-b79678c445c5`，设计执行为 `3a1c103f-9e8b-49ad-b716-dc45fe0c697b`，设计接手 HEAD 为 `04d1d3690d67edb19836c4477b34d72b92f615b7`（再派发继承，分支未改写、不 force-push）。继承的练习文件第二行是 `AWAITING-QA`，PR #552 仍为 open；那是上一轮 run `ee861e33` 首交的结果，`progress.md` 里的 handoff 状态（`runId`、`firstHandin`、`ownCommits`）也属于上一轮，都只是历史证据，不是本轮的判轮依据，本轮实现不得复用其 `firstHandin`/`ownCommits`。保留已有计划和页面并刷新本轮身份。设计批准必须由本次执行重新注册的评审确认。
 
 README 是演练内容契约：实现节点**自己编写并提交**的唯一文件是 `qa-sbx/fly3225/<git 分支名>.md`。本文件夹的 `progress.md` 不是实现产物，而是工具账本：只由 `flywheel-comm progress` 以独立的、只含该路径的 `chore(progress)` 提交写入（重启续跑依赖它），这些工具提交不计入 `ownCommits`，实现节点也不得把它与练习文件写进同一个提交。默认 milestone、DOC-FLOW 实现说明、相邻路径测试均不新增；完成摘要可写 `adjacent paths: N/A (docs-only drill)`。设计复用本文件夹，按 README 只写短计划，不新增探索或研究文档；另外，本设计节点的完成契约（节点角色注入的「Founder design HTML (MANDATORY)」条款，必须提交、push、发布并报告后才能运行设计完成命令）强制要求本文件夹里的设计 HTML；该页面的图必须用本地 Mermaid 渲染，所以同时保留两份图源 `design-d1.mmd`、`design-d2.mmd`。这三份文件只由设计节点产出，README 的「只改一个文件」约束针对实现节点，实现节点不碰它们。设计不改练习文件、不派发后继、不申请 ship、不合并。审计与方案比较记录在此短计划和页面：采用本次指令加持久账本；否决从旧文件推断轮次、增加代码或部署测试房间。
 
@@ -15,7 +15,7 @@ README 是演练内容契约：实现节点**自己编写并提交**的唯一文
 
 1. 先运行本节点注入的 TURN；只有 `yours` 可写。重新读取 main 上的 README，运行 `git branch --show-current` 得到当前文件名，不硬编码其它房间的路径。
 2. 首次接手、尚未提交本 run 的实现时，取得设计交接 HEAD，通过本节点的 `progress --handoff` 保存单行状态，含 `runId`、完整 SHA `implBase`、`firstHandin` 和 `ownCommits`。首交之前 `firstHandin` 为空。重启只复用同一 run 的基线，不能把已实现的 HEAD 重新当起点，也不能复用 main 上上一轮的账本身份。每次更新保留所有已有状态字段；`--pointer` 只支持固定的文档指针，不支持这些自定义状态键。
-3. 真正的首次交付写恰好两行，末尾保留换行：第一行 `QA-SBX FLY-3225 drill`，第二行 `AWAITING-QA`。继承第二行不同则覆盖；文件已经是目标内容时不制造 diff。提交后用同一 `--handoff` 字段记录本 run 的 `firstHandin` 完整 SHA 和本节点自己的提交 SHA 清单 `ownCommits`。
+3. 真正的首次交付写恰好两行，末尾保留换行：第一行 `QA-SBX FLY-3225 drill`，第二行 `AWAITING-QA`。继承第二行不同则覆盖；文件已经是目标内容时不制造 diff。提交后用同一 `--handoff` 字段记录本 run 的 `firstHandin` 完整 SHA 和本节点自己的提交 SHA 清单 `ownCommits`。本轮再派发时继承内容已经是 `AWAITING-QA`：不制造空提交，`firstHandin` 记为本 run 冻结交付时的 HEAD 完整 SHA，`ownCommits` 记为空清单；此时第 4 节的提交信息扫描只对非空清单执行（空清单直接跳过 `git show`，不得把空参数当成读 HEAD），PR 标题检查与内容比较照常执行。
 4. 收到本次 `QA fix context` 时，其标题之后的第一行 `QA verdict to fix: claim <id> ...` 指定要修的裁决；只把第二行改为 `FIXED-FOR-CLAIM <id>`，编号逐字相同，其余不变，再次交付。文件已是目标值时允许无改动。
 5. 首交之后没有修复上下文的唤醒（CI 返工、集成同步、冲突解决或后续反馈）不自动把第二行重置为 `AWAITING-QA`。遵守这次唤醒的限定任务；冲突解决只解决冲突，保留最近一次正确的第二行。首交与修复都以本 run 的持久身份和本次任务为准，不能由继承内容猜测。
 6. 普通提交信息可用 `docs(qa-sbx): FLY-3225 drill hand-in`。提交信息及 PR 标题均不得包含 `[skip ci]`、`[ci skip]`、`[no ci]`、`[skip actions]`、`[actions skip]` 或 `skip-checks:`。CI 必须检查最终交付的确切提交。
