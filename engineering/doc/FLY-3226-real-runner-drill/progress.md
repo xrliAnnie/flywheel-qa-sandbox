@@ -1,19 +1,18 @@
 ---
 issue: FLY-3226
 phase: design
-phaseCursor: 1/4
-updated: 2026-10-04T18:44:49.484Z
-nextStep: Rewrite plan.md for run a1fb43f1 (eng_design), commit, Codex design review
+phaseCursor: 3/4
+updated: 2026-10-04T18:46:33.468Z
+nextStep: Founder design HTML, publish, report, complete phase_design_complete
 chunks: []
 pointers: {}
-handoff: run=a1fb43f1 exec=6df4dc76 node=eng_design attempt=1. Re-dispatch on PR
-  557 branch; prior run 0662a4ce artifacts (HANDIN1 6313c5e4, review, CI) not
-  reused as this run's evidence. Branch file already AWAITING-QA; main residue
-  FIXED-FOR-CLAIM 1.
+handoff: "run=a1fb43f1 exec=6df4dc76 node=eng_design. Design APPROVED r1
+  (gpt-6-luna/medium, blob 5908dde3, request 390485ba). Implement node: plan §3
+  ready-state (branch file already AWAITING-QA)."
 ---
 
 # FLY-3226 progress
-**phase**: design (1/4)
-**next**: Rewrite plan.md for run a1fb43f1 (eng_design), commit, Codex design review
+**phase**: design (3/4)
+**next**: Founder design HTML, publish, report, complete phase_design_complete
 
-**handoff**: run=a1fb43f1 exec=6df4dc76 node=eng_design attempt=1. Re-dispatch on PR 557 branch; prior run 0662a4ce artifacts (HANDIN1 6313c5e4, review, CI) not reused as this run's evidence. Branch file already AWAITING-QA; main residue FIXED-FOR-CLAIM 1.
+**handoff**: run=a1fb43f1 exec=6df4dc76 node=eng_design. Design APPROVED r1 (gpt-6-luna/medium, blob 5908dde3, request 390485ba). Implement node: plan §3 ready-state (branch file already AWAITING-QA).
