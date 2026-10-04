@@ -1,16 +1,11 @@
 sequenceDiagram
-    participant S as 设计节点(本轮)
-    participant D as 驱动器
+    participant S as eng_design(本节点)
     participant I as 实现节点
     participant Q as QA 节点
-    S->>D: 短 plan + Codex 评审 APPROVED + 设计 HTML
-    D->>I: 派发(无 QA fix context)
-    I->>I: 第 2 行 FIXED-FOR-CLAIM 1(上轮 PR 546 残留)→ AWAITING-QA
-    I->>D: 第 1 次交付:开新 PR(run=76b1635c HANDIN1=sha)
-    D->>Q: 第 1 轮
-    Q->>D: fixed-for-claim = fail(故意),产生 claim id
-    D->>I: QA fix context: claim id
+    S->>I: 已评审 plan(Codex 第 1 轮 APPROVED)
+    I->>I: 检查第 2 行:已是 AWAITING-QA → 不改内容
+    I->>Q: 第 1 次交付:刷新 ledger + PR 557 正文(run a1fb43f1)
+    Q->>I: fixed-for-claim = fail(故意),产生 claim id
     I->>I: 第 2 行 AWAITING-QA → FIXED-FOR-CLAIM id
-    I->>D: 第 2 次交付(PREV = 本轮 HANDIN1)
-    D->>Q: 重验(Previous QA verdict: claim id)
-    Q->>D: 逐字匹配 → pass
+    I->>Q: 第 2 次交付(PREV = 本轮 HANDIN1)
+    Q->>Q: 重验 → 逐字匹配则 pass
