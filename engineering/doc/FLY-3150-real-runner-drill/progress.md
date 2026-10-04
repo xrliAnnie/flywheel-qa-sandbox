@@ -1,41 +1,25 @@
 ---
 issue: FLY-3150
-phase: implement
-phaseCursor: 5/6
-updated: 2026-10-04T09:07:57.748Z
-nextStep: Push frozen HANDIN2, update PR, register effective code review and
-  ci-full ensure; after passing gates complete needs_review and report
-  instruction receipt
+phase: design
+phaseCursor: 1/6
+updated: 2026-10-04T17:03:01.599Z
+nextStep: Append exploration §22 for run 571849e4, refresh plan run id/snapshot,
+  commit+push, design review
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
-  pr: "543"
-handoff: "run=4793ff8b-9820-4d87-b8ef-94468be88fb4 slot-1 implement attempt=2
-  exec=5a958624-fd6c-4b14-a752-45756ef33e6f TURN epoch=4. QA claim=1
-  sourceAttempt=1 sourceExecution=9c531ad9-3459-415b-8f57-2769ad18dbe2.
-  PREV=HANDIN1=7b0b2ae029073720499688cb3ed746812ab82205
-  BASE2=7b0b2ae029073720499688cb3ed746812ab82205
-  IMPL2=2eb48520946d9b6c86416bd56993426015e8725f. HANDIN1-to-current patch
-  exactly -AWAITING-QA/+FIXED-FOR-CLAIM 1. Exact two-line blob, target-only fix
-  commit, ledger-only later range, no merges, PR scope and whitespace guards
-  passed. Empty fixture PR diff is valid: merge-base blob already exact
-  FIXED-FOR-CLAIM 1; the actual rework is proven by HANDIN1 patch. Adjacent
-  states verified: initial awaiting state, exact fixed state/already-fixed retry
-  equality, incorrect-claim mismatch and same-claim main net-diff case. No
-  runtime logic changed, no queued/started/dead/concurrent paths applicable.
-  Discovery: old/new literals, full path, filename, parent had no test matches;
-  no excluded tests. Tracked-file pnpm lint passed 1894 files/14 existing
-  warnings. pre_handin.script absent. e2e_529_exempt remains not_run/docs_only;
-  only fixture/process markdown changed, no room deployment. Review gate
-  question=c9ae9683-1f97-4a7f-9079-371a6ca09f08 open, register new review at
-  final frozen head. Lead instruction [lead-instruction
-  fa3bad8e-cd37-4a39-8424-276fbcfb3cef] pending final gates and completion
-  receipt. Final HANDIN2 only in PR/report, not ledger; no further commits after
-  this freeze unless findings require changes."
+  pr: none
+handoff: "run=571849e4-be9a-494b-86a0-281d5dca8a78 slot-1 eng_design attempt=1
+  exec=8d111835-9072-42e6-9396-c2e08bdd4f97 TURN epoch=1. NEW run: dispatch HEAD
+  caabb83da = origin/main (PR #543 merged, no remote branch, no OPEN PR). Target
+  file HEAD blob = QA-SBX FLY-2167 drill / FIXED-FOR-CLAIM 1 (stale from run
+  4793ff8b) -> hand-in 1 must reset line 2 to AWAITING-QA. All
+  PREV/HANDIN/IMPL/claim/review ids from run 4793ff8b are history, not evidence
+  for this run."
 ---
 
 # FLY-3150 progress
-**phase**: implement (5/6)
-**next**: Push frozen HANDIN2, update PR, register effective code review and ci-full ensure; after passing gates complete needs_review and report instruction receipt
+**phase**: design (1/6)
+**next**: Append exploration §22 for run 571849e4, refresh plan run id/snapshot, commit+push, design review
 
-**handoff**: run=4793ff8b-9820-4d87-b8ef-94468be88fb4 slot-1 implement attempt=2 exec=5a958624-fd6c-4b14-a752-45756ef33e6f TURN epoch=4. QA claim=1 sourceAttempt=1 sourceExecution=9c531ad9-3459-415b-8f57-2769ad18dbe2. PREV=HANDIN1=7b0b2ae029073720499688cb3ed746812ab82205 BASE2=7b0b2ae029073720499688cb3ed746812ab82205 IMPL2=2eb48520946d9b6c86416bd56993426015e8725f. HANDIN1-to-current patch exactly -AWAITING-QA/+FIXED-FOR-CLAIM 1. Exact two-line blob, target-only fix commit, ledger-only later range, no merges, PR scope and whitespace guards passed. Empty fixture PR diff is valid: merge-base blob already exact FIXED-FOR-CLAIM 1; the actual rework is proven by HANDIN1 patch. Adjacent states verified: initial awaiting state, exact fixed state/already-fixed retry equality, incorrect-claim mismatch and same-claim main net-diff case. No runtime logic changed, no queued/started/dead/concurrent paths applicable. Discovery: old/new literals, full path, filename, parent had no test matches; no excluded tests. Tracked-file pnpm lint passed 1894 files/14 existing warnings. pre_handin.script absent. e2e_529_exempt remains not_run/docs_only; only fixture/process markdown changed, no room deployment. Review gate question=c9ae9683-1f97-4a7f-9079-371a6ca09f08 open, register new review at final frozen head. Lead instruction [lead-instruction fa3bad8e-cd37-4a39-8424-276fbcfb3cef] pending final gates and completion receipt. Final HANDIN2 only in PR/report, not ledger; no further commits after this freeze unless findings require changes.
+**handoff**: run=571849e4-be9a-494b-86a0-281d5dca8a78 slot-1 eng_design attempt=1 exec=8d111835-9072-42e6-9396-c2e08bdd4f97 TURN epoch=1. NEW run: dispatch HEAD caabb83da = origin/main (PR #543 merged, no remote branch, no OPEN PR). Target file HEAD blob = QA-SBX FLY-2167 drill / FIXED-FOR-CLAIM 1 (stale from run 4793ff8b) -> hand-in 1 must reset line 2 to AWAITING-QA. All PREV/HANDIN/IMPL/claim/review ids from run 4793ff8b are history, not evidence for this run.
