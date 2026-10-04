@@ -1,22 +1,22 @@
 ---
 issue: FLY-3228
 phase: implement
-phaseCursor: 1/5
-updated: 2026-10-04T12:06:47.990Z
-nextStep: Verify initial two-line file, change only line 2 to AWAITING-QA, then
-  review and open a new root PR.
+phaseCursor: 2/5
+updated: 2026-10-04T12:07:46.728Z
+nextStep: Push the verified docs-only change and request effective code review.
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3228-real-runner-drill/plan.md
   pr: n/a
-handoff: "Implement run dce567d4; first hand-in, no QA fix context. Re-read
-  origin/main README and approved plan. No pre_handin.script declared. Local
-  selection: exact byte and scope assertions only; no code or TypeScript
-  changed."
+handoff: "First hand-in content verified: QA-SBX FLY-3228 drill / AWAITING-QA,
+  exact bytes with final newline. Red cmp before change, green after.
+  Literal/path discovery found only documentation and drill Markdown; no
+  matching test files to retain or exclude. No TypeScript, package build, or
+  behavior change. Review pending; final HANDIN1 not yet frozen."
 ---
 
 # FLY-3228 progress
-**phase**: implement (1/5)
-**next**: Verify initial two-line file, change only line 2 to AWAITING-QA, then review and open a new root PR.
+**phase**: implement (2/5)
+**next**: Push the verified docs-only change and request effective code review.
 
-**handoff**: Implement run dce567d4; first hand-in, no QA fix context. Re-read origin/main README and approved plan. No pre_handin.script declared. Local selection: exact byte and scope assertions only; no code or TypeScript changed.
+**handoff**: First hand-in content verified: QA-SBX FLY-3228 drill / AWAITING-QA, exact bytes with final newline. Red cmp before change, green after. Literal/path discovery found only documentation and drill Markdown; no matching test files to retain or exclude. No TypeScript, package build, or behavior change. Review pending; final HANDIN1 not yet frozen.
