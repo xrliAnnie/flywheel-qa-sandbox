@@ -18,8 +18,10 @@ Issue: FLY-3224 (https://linear.app/geoforge3d/issue/FLY-3224/qa-sbx-fly-3224-re
 不适用：只读写上述 Markdown 文件；不新增或修改数据库表、查询或索引。
 
 ## 设计进度
-执行：`fa2569ec-b80b-408b-b394-608e864ac2aa`（重派，延续 `ae255e3f6`）；阶段：design；游标：3/4（设计审查登记前提交快照）。
-已完成：主分支 README 复读、TURN 核验（yours, epoch=1）、上轮短计划复核（计划第 1–7 条与查询索引节不变）。
-范围：沿用上轮 Lead 指令——只改本单文件，不增写其他文档、不另建 progress.md、不发布 HTML。
-上轮执行 `40087565-51ce-426a-a754-0950732a5ab2` 未取得设计审查批准；本执行重新登记并审查。
-下一步：登记并取得有效设计审查 APPROVED；提交 `phase_design_complete` 收据并 park。
+执行：`0cf3d0de-4eb4-4a0d-8686-1553207fb30d`（重派，延续 `76a34c47a`）；阶段：design；游标：2/4（当前执行的计划已复核，待登记审查）。
+身份：run=`ae1a876a-6cf3-40ca-ae2a-3f0ce8a7c803`；node=`eng_design`；attempt=1；TURN=yours, epoch=1。
+已完成：复读新抓取主分支的 README、onboarding、TURN 核验、分支和 PR 审计（当前无 PR）；计划第 1–7 条与查询索引节保持不变。
+范围：Lead 对问题 `91b5d025-6c1e-4445-80f3-7ee41227bfc4` 的当前答复确认 README 优先于通用 design 提示；只改本文件，内联游标即持久进度，不另建文档或 progress.md。
+DESIGN-HTML: n/a — QA-SBX drill, README scope is a single md file
+审查：不继承上轮批准；本执行将显式登记新的设计审查，只有服务端有效 reviewVerdict=APPROVED 才能交接。
+下一步：提交并推送当前计划，登记设计审查并记录 questionId/requestId；取得有效 APPROVED 后提交 `phase_design_complete` 收据并 park。
