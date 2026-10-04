@@ -1,19 +1,17 @@
 ---
 issue: FLY-3226
-phase: design
-phaseCursor: 5/5
-updated: 2026-10-04T05:51:59.352Z
-nextStep: "eng_implement: follow plan.md §2 (new file
-  qa-sbx/fly3226/project-slot-4-FLY-3226.md)"
+phase: implement
+phaseCursor: 1/2
+updated: 2026-10-04T05:54:51.784Z
+nextStep: push frozen first hand-in, open PR, obtain code review, and hand off to QA
 chunks: []
 pointers: {}
-handoff: "design done: plan.md Codex APPROVED r2 (thread
-  01a1056a-bad9-7041-9a2a-56a2d440be05, blob 00be10d3); design HTML
-  http://127.0.0.1:54947/fw-reports-b95292/r/8d9443b4838a1bd6b954f0fc6ab0fcf9/"
+handoff: first-round drill artifact committed with AWAITING-QA; no QA fix
+  context present
 ---
 
 # FLY-3226 progress
-**phase**: design (5/5)
-**next**: eng_implement: follow plan.md §2 (new file qa-sbx/fly3226/project-slot-4-FLY-3226.md)
+**phase**: implement (1/2)
+**next**: push frozen first hand-in, open PR, obtain code review, and hand off to QA
 
-**handoff**: design done: plan.md Codex APPROVED r2 (thread 01a1056a-bad9-7041-9a2a-56a2d440be05, blob 00be10d3); design HTML http://127.0.0.1:54947/fw-reports-b95292/r/8d9443b4838a1bd6b954f0fc6ab0fcf9/
+**handoff**: first-round drill artifact committed with AWAITING-QA; no QA fix context present
