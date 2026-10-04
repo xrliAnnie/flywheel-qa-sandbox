@@ -1,0 +1,11 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "-apple-system, BlinkMacSystemFont, PingFang SC, sans-serif", "fontSize": "16px", "primaryColor": "#ffffff", "primaryTextColor": "#1d1d1f", "primaryBorderColor": "#c7c7cc", "lineColor": "#86868b", "background": "#ffffff"}, "flowchart": {"htmlLabels": false, "curve": "stepAfter", "nodeSpacing": 24, "rankSpacing": 32}}}%%
+flowchart LR
+    D["设计<br/>短计划与评审"] --> I["实现首交<br/>AWAITING-QA"]
+    I --> Q["首轮验收<br/>故意失败"]
+    Q --> F["修复重交<br/>沿用本轮标识"]
+    F --> R["再次验收<br/>逐字核对标识"]
+    R --> G["验收通过<br/>交给控制器"]
+    classDef expected fill:#fff4e5,stroke:#c77700,color:#663c00;
+    classDef repair fill:#edf5ff,stroke:#007aff,color:#003d80;
+    class Q expected;
+    class F repair;

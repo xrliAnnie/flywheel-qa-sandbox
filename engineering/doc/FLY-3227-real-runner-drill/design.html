@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="FLY-3227：用两行文件验证首交、故意打回、按本轮标识修复与再验收的交接。">
+  <title>FLY-3227 · 两行文件走完整个修复回路</title>
+  <style>
+    :root{--paper:#f5f5f7;--card:#fff;--ink:#1d1d1f;--muted:#62626a;--line:#dedee4;--blue:#007aff;--amber:#a05d00}
+    *{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.65 -apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",sans-serif}
+    main{max-width:1120px;margin:auto;padding:48px 24px 64px}header{margin-bottom:28px}.eyebrow{color:var(--muted);font-size:13px;letter-spacing:.08em}
+    h1{font-size:clamp(28px,4vw,40px);line-height:1.25;letter-spacing:-.03em;margin:12px 0}h2{font-size:23px;line-height:1.35;margin:0 0 16px}
+    p{margin:12px 0}.intro{max-width:820px;font-size:18px}.meta{color:var(--muted);font-size:14px}a{color:#0059b9;text-underline-offset:3px}
+    .section{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:28px;margin:20px 0}.number{color:var(--blue);font-size:14px;display:block;margin-bottom:8px}
+    .note{padding:12px 16px;border-left:3px solid var(--blue);background:#f2f7ff}.expected{border-color:#cf8a20;background:#fff7eb}.diagram{overflow-x:auto;margin:20px -8px}.diagram svg{display:block;width:100%;height:auto;min-width:900px}
+    code{font:14px/1.5 ui-monospace,"SF Mono",Menlo,monospace;overflow-wrap:anywhere;background:#f2f2f7;padding:2px 5px;border-radius:4px}
+    .table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:15px}th,td{text-align:left;padding:12px 14px;vertical-align:top;border-bottom:1px solid var(--line)}th{color:var(--muted);font-weight:600}
+    .comment{margin-top:24px;padding-top:16px;border-top:1px solid var(--line)}label{display:block;font-size:14px;color:var(--muted);margin-bottom:8px}
+    textarea{display:block;width:100%;min-height:76px;resize:vertical;padding:12px;border:1px solid #c6c6cd;border-radius:6px;background:#fafafd;color:var(--ink);font:inherit;font-size:15px;line-height:1.6}
+    textarea:focus,button:focus-visible{outline:2px solid var(--blue);outline-offset:3px}button{border:0;border-radius:6px;padding:10px 16px;background:var(--blue);color:#fff;font:inherit;cursor:pointer}button:disabled{background:#b1b1b8;cursor:default}
+    .feedback-chunk{margin:16px 0}.feedback-chunk textarea{min-height:150px;margin-bottom:8px}.status{font-size:14px;color:var(--muted)}.boundary{font-size:17px}footer{margin-top:28px;color:var(--muted);font-size:13px}
+    @media(max-width:640px){main{padding:28px 16px 48px}.section{padding:20px 16px}h2{font-size:21px}th,td{padding:10px 8px}table{min-width:520px}}
+    @media print{body{background:white}main{max-width:none;padding:0}.section{break-inside:avoid}.comment,button,.status{display:none}.diagram svg{min-width:0}textarea{border:0}}
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">529 隔离测试房间 · 设计交接 · 2026-10-04</div>
+    <h1>两行文件，走完整个修复回路</h1>
+    <p class="intro">用一个两行文件，让真实执行节点走完「首交、故意打回、按本轮标识修复、再验收」的交接。</p>
+    <p class="meta">FLY-3227 · 这是一份设计说明；图中的后续验收结果尚未发生。</p>
+  </header>
+
+  <section class="section" data-comment-section="summary">
+    <span class="number">01 · 一句话</span>
+    <h2>这次要证明什么</h2>
+    <p>QA 是独立验收节点，负责按规则检查交付文件。它在首轮故意给出失败，随后检查实现节点是否沿用这次失败的标识修复文件。</p>
+    <p>claim 是一次 QA 验收结果的标识。拿旧标识、另一个房间的标识或提前猜一个标识，都不能证明本轮交接走通。</p>
+    <div class="comment"><label for="comment-summary">对「这次要证明什么」的意见</label><textarea id="comment-summary" data-comment-title="这次要证明什么" placeholder="写下修改建议，输入时自动保存。"></textarea></div>
+  </section>
+
+  <section class="section" data-comment-section="flow">
+    <span class="number">02 · 核心流程</span>
+    <h2>首轮失败是演练的一步</h2>
+    <div class="diagram">
+      <svg id="FLY-3227-d1" width="100%" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" class="flowchart" style="max-width: 1063.05px; background-color: white;" viewBox="0 0 1063.046875 94" role="img" aria-labelledby="FLY-3227-d1-title FLY-3227-d1-desc"><title id="FLY-3227-d1-title">首交、故意失败、修复与再验收</title><desc id="FLY-3227-d1-desc">设计交接后实现节点首次提交，独立验收故意失败，收到本轮标识后修复，再逐字核对标识完成验收。</desc><style>#FLY-3227-d1{font-size:16px;fill:#1d1d1f;}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#FLY-3227-d1 .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#FLY-3227-d1 .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#FLY-3227-d1 .error-icon{fill:hsl(180, 0%, 100%);}#FLY-3227-d1 .error-text{fill:rgb(0, 0, 0);stroke:rgb(0, 0, 0);}#FLY-3227-d1 .edge-thickness-normal{stroke-width:1px;}#FLY-3227-d1 .edge-thickness-thick{stroke-width:3.5px;}#FLY-3227-d1 .edge-pattern-solid{stroke-dasharray:0;}#FLY-3227-d1 .edge-thickness-invisible{stroke-width:0;fill:none;}#FLY-3227-d1 .edge-pattern-dashed{stroke-dasharray:3;}#FLY-3227-d1 .edge-pattern-dotted{stroke-dasharray:2;}#FLY-3227-d1 .marker{fill:#86868b;stroke:#86868b;}#FLY-3227-d1 .marker.cross{stroke:#86868b;}#FLY-3227-d1 svg{font-size:16px;}#FLY-3227-d1 p{margin:0;}#FLY-3227-d1 .label{color:#1d1d1f;}#FLY-3227-d1 .cluster-label text{fill:rgb(0, 0, 0);}#FLY-3227-d1 .cluster-label span{color:rgb(0, 0, 0);}#FLY-3227-d1 .cluster-label span p{background-color:transparent;}#FLY-3227-d1 .label text,#FLY-3227-d1 span{fill:#1d1d1f;color:#1d1d1f;}#FLY-3227-d1 .node rect,#FLY-3227-d1 .node circle,#FLY-3227-d1 .node ellipse,#FLY-3227-d1 .node polygon,#FLY-3227-d1 .node path{fill:#ffffff;stroke:#c7c7cc;stroke-width:1px;}#FLY-3227-d1 .rough-node .label text,#FLY-3227-d1 .node .label text,#FLY-3227-d1 .image-shape .label,#FLY-3227-d1 .icon-shape .label{text-anchor:middle;}#FLY-3227-d1 .node .katex path{fill:#000;stroke:#000;stroke-width:1px;}#FLY-3227-d1 .rough-node .label,#FLY-3227-d1 .node .label,#FLY-3227-d1 .image-shape .label,#FLY-3227-d1 .icon-shape .label{text-align:center;}#FLY-3227-d1 .node.clickable{cursor:pointer;}#FLY-3227-d1 .root .anchor path{fill:#86868b!important;stroke-width:0;stroke:#86868b;}#FLY-3227-d1 .arrowheadPath{fill:#000000;}#FLY-3227-d1 .edgePath .path{stroke:#86868b;stroke-width:2.0px;}#FLY-3227-d1 .flowchart-link{stroke:#86868b;fill:none;}#FLY-3227-d1 .edgeLabel{background-color:hsl(-120, 0%, 100%);text-align:center;}#FLY-3227-d1 .edgeLabel p{background-color:hsl(-120, 0%, 100%);}#FLY-3227-d1 .edgeLabel rect{opacity:0.5;background-color:hsl(-120, 0%, 100%);fill:hsl(-120, 0%, 100%);}#FLY-3227-d1 .labelBkg{background-color:rgba(255, 255, 255, 0.5);}#FLY-3227-d1 .cluster rect{fill:hsl(180, 0%, 100%);stroke:hsl(180, 0%, 90%);stroke-width:1px;}#FLY-3227-d1 .cluster text{fill:rgb(0, 0, 0);}#FLY-3227-d1 .cluster span{color:rgb(0, 0, 0);}#FLY-3227-d1 div.mermaidTooltip{position:absolute;text-align:center;max-width:200px;padding:2px;font-size:12px;background:hsl(180, 0%, 100%);border:1px solid hsl(180, 0%, 90%);border-radius:2px;pointer-events:none;z-index:100;}#FLY-3227-d1 .flowchartTitleText{text-anchor:middle;font-size:18px;fill:#1d1d1f;}#FLY-3227-d1 rect.text{fill:none;stroke-width:0;}#FLY-3227-d1 .icon-shape,#FLY-3227-d1 .image-shape{background-color:hsl(-120, 0%, 100%);text-align:center;}#FLY-3227-d1 .icon-shape p,#FLY-3227-d1 .image-shape p{background-color:hsl(-120, 0%, 100%);padding:2px;}#FLY-3227-d1 .icon-shape rect,#FLY-3227-d1 .image-shape rect{opacity:0.5;background-color:hsl(-120, 0%, 100%);fill:hsl(-120, 0%, 100%);}#FLY-3227-d1 .label-icon{display:inline-block;height:1em;overflow:visible;vertical-align:-0.125em;}#FLY-3227-d1 .node .label-icon path{fill:currentColor;stroke:revert;stroke-width:revert;}#FLY-3227-d1 :root{--mermaid-font-family:"trebuchet ms",verdana,arial,sans-serif;}#FLY-3227-d1 .expected rect{fill:#fff4e5!important;stroke:#c77700!important;color:#663c00!important;}#FLY-3227-d1 .expected polygon{fill:#fff4e5!important;stroke:#c77700!important;color:#663c00!important;}#FLY-3227-d1 .expected ellipse{fill:#fff4e5!important;stroke:#c77700!important;color:#663c00!important;}#FLY-3227-d1 .expected circle{fill:#fff4e5!important;stroke:#c77700!important;color:#663c00!important;}#FLY-3227-d1 .expected path{fill:#fff4e5!important;stroke:#c77700!important;color:#663c00!important;}#FLY-3227-d1 .expected tspan{fill:#663c00!important;}#FLY-3227-d1 .repair rect{fill:#edf5ff!important;stroke:#007aff!important;color:#003d80!important;}#FLY-3227-d1 .repair polygon{fill:#edf5ff!important;stroke:#007aff!important;color:#003d80!important;}#FLY-3227-d1 .repair ellipse{fill:#edf5ff!important;stroke:#007aff!important;color:#003d80!important;}#FLY-3227-d1 .repair circle{fill:#edf5ff!important;stroke:#007aff!important;color:#003d80!important;}#FLY-3227-d1 .repair path{fill:#edf5ff!important;stroke:#007aff!important;color:#003d80!important;}#FLY-3227-d1 .repair tspan{fill:#003d80!important;}</style><g><marker id="FLY-3227-d1_flowchart-v2-pointEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-3227-d1_flowchart-v2-pointStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="4.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 5 L 10 10 L 10 0 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-3227-d1_flowchart-v2-circleEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="11" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-3227-d1_flowchart-v2-circleStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="-1" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-3227-d1_flowchart-v2-crossEnd" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="12" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-3227-d1_flowchart-v2-crossStart" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="-1" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><g class="root"><g class="clusters"/><g class="edgePaths"><path d="M164,47L180,47L180,47L192,47L192,47" id="L_D_I_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_D_I_0" data-points="W3sieCI6MTY0LCJ5Ijo0N30seyJ4IjoxODAsInkiOjQ3fSx7IngiOjE5NiwieSI6NDd9XQ==" marker-end="url(#FLY-3227-d1_flowchart-v2-pointEnd)"/><path d="M351.047,47L367.047,47L367.047,47L379.047,47L379.047,47" id="L_I_Q_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_I_Q_0" data-points="W3sieCI6MzUxLjA0Njg3NSwieSI6NDd9LHsieCI6MzY3LjA0Njg3NSwieSI6NDd9LHsieCI6MzgzLjA0Njg3NSwieSI6NDd9XQ==" marker-end="url(#FLY-3227-d1_flowchart-v2-pointEnd)"/><path d="M507.047,47L523.047,47L523.047,47L535.047,47L535.047,47" id="L_Q_F_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_Q_F_0" data-points="W3sieCI6NTA3LjA0Njg3NSwieSI6NDd9LHsieCI6NTIzLjA0Njg3NSwieSI6NDd9LHsieCI6NTM5LjA0Njg3NSwieSI6NDd9XQ==" marker-end="url(#FLY-3227-d1_flowchart-v2-pointEnd)"/><path d="M695.047,47L711.047,47L711.047,47L723.047,47L723.047,47" id="L_F_R_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_F_R_0" data-points="W3sieCI6Njk1LjA0Njg3NSwieSI6NDd9LHsieCI6NzExLjA0Njg3NSwieSI6NDd9LHsieCI6NzI3LjA0Njg3NSwieSI6NDd9XQ==" marker-end="url(#FLY-3227-d1_flowchart-v2-pointEnd)"/><path d="M883.047,47L899.047,47L899.047,47L911.047,47L911.047,47" id="L_R_G_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_R_G_0" data-points="W3sieCI6ODgzLjA0Njg3NSwieSI6NDd9LHsieCI6ODk5LjA0Njg3NSwieSI6NDd9LHsieCI6OTE1LjA0Njg3NSwieSI6NDd9XQ==" marker-end="url(#FLY-3227-d1_flowchart-v2-pointEnd)"/></g><g class="edgeLabels"><g><rect class="background" style="stroke: none"/></g><g><rect class="background" style="stroke: none"/></g><g><rect class="background" style="stroke: none"/></g><g><rect class="background" style="stroke: none"/></g><g><rect class="background" style="stroke: none"/></g><g class="edgeLabel"><g class="label" data-id="L_D_I_0" transform="translate(0, 0)"><text y="-10.1"><tspan class="text-outer-tspan" x="0" y="-0.1em" dy="1.1em"/></text></g></g><g class="edgeLabel"><g class="label" data-id="L_I_Q_0" transform="translate(0, 0)"><text y="-10.1"><tspan class="text-outer-tspan" x="0" y="-0.1em" dy="1.1em"/></text></g></g><g class="edgeLabel"><g class="label" data-id="L_Q_F_0" transform="translate(0, 0)"><text y="-10.1"><tspan class="text-outer-tspan" x="0" y="-0.1em" dy="1.1em"/></text></g></g><g class="edgeLabel"><g class="label" data-id="L_F_R_0" transform="translate(0, 0)"><text y="-10.1"><tspan class="text-outer-tspan" x="0" y="-0.1em" dy="1.1em"/></text></g></g><g class="edgeLabel"><g class="label" data-id="L_R_G_0" transform="translate(0, 0)"><text y="-10.1"><tspan class="text-outer-tspan" x="0" y="-0.1em" dy="1.1em"/></text></g></g></g><g class="nodes"><g class="node default" id="flowchart-D-0" transform="translate(86, 47)"><rect class="basic label-container" style="" x="-78" y="-39" width="156" height="78"/><g class="label" style="" transform="translate(-48, -24)"><rect/><foreignObject width="96" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>设计<br />短计划与评审</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-I-1" transform="translate(273.5234375, 47)"><rect class="basic label-container" style="" x="-77.5234375" y="-39" width="155.046875" height="78"/><g class="label" style="" transform="translate(-47.5234375, -24)"><rect/><foreignObject width="95.046875" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>实现首交<br />AWAITING-QA</p></span></div></foreignObject></g></g><g class="node default expected" id="flowchart-Q-3" transform="translate(445.046875, 47)"><rect class="basic label-container" style="fill:#fff4e5 !important;stroke:#c77700 !important" x="-62" y="-39" width="124" height="78"/><g class="label" style="color:#663c00 !important" transform="translate(-32, -24)"><rect/><foreignObject width="64" height="48"><div style="color: rgb(102, 60, 0) !important; display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;" xmlns="http://www.w3.org/1999/xhtml"><span style="color:#663c00 !important" class="nodeLabel"><p>首轮验收<br />故意失败</p></span></div></foreignObject></g></g><g class="node default repair" id="flowchart-F-5" transform="translate(617.046875, 47)"><rect class="basic label-container" style="fill:#edf5ff !important;stroke:#007aff !important" x="-78" y="-39" width="156" height="78"/><g class="label" style="color:#003d80 !important" transform="translate(-48, -24)"><rect/><foreignObject width="96" height="48"><div style="color: rgb(0, 61, 128) !important; display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;" xmlns="http://www.w3.org/1999/xhtml"><span style="color:#003d80 !important" class="nodeLabel"><p>修复重交<br />沿用本轮标识</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-R-7" transform="translate(805.046875, 47)"><rect class="basic label-container" style="" x="-78" y="-39" width="156" height="78"/><g class="label" style="" transform="translate(-48, -24)"><rect/><foreignObject width="96" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>再次验收<br />逐字核对标识</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-G-9" transform="translate(985.046875, 47)"><rect class="basic label-container" style="" x="-70" y="-39" width="140" height="78"/><g class="label" style="" transform="translate(-40, -24)"><rect/><foreignObject width="80" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>验收通过<br />交给控制器</p></span></div></foreignObject></g></g></g></g></g></svg>
+    </div>
+    <p class="note expected">首交写 <code>AWAITING-QA</code>，表示等待验收。首轮验收必须失败，证据固定为 <code>round 1: no previous QA claim yet</code>，意思是本轮还没有前次验收标识。</p>
+    <p>只有收到本轮修复提示，才把第 2 行改为 <code>FIXED-FOR-CLAIM &lt;id&gt;</code>，表示已按该标识修复。再次验收必须把它与本轮前次验收标识逐字比较；错标识仍然失败。</p>
+    <p>控制器是现有的流程调度程序，决定下一个节点何时接手。设计节点提交计划与页面后交还控制权。</p>
+    <div class="comment"><label for="comment-flow">对「首轮失败是演练的一步」的意见</label><textarea id="comment-flow" data-comment-title="首轮失败是演练的一步" placeholder="例如：交接或失败条件是否清楚？"></textarea></div>
+  </section>
+
+  <section class="section" data-comment-section="model">
+    <span class="number">03 · 文件与结构</span>
+    <h2>同一个文件，固定第一行</h2>
+    <p>分支是这次演练的独立工作版本。文件名必须来自当前分支名；本轮为 <code>project-slot-5-FLY-3227</code>。</p>
+    <p><code>qa-sbx/fly3227/project-slot-5-FLY-3227.md</code></p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>内容</th><th>首交</th><th>收到修复提示后</th></tr></thead>
+      <tbody>
+        <tr><td>第 1 行</td><td><code>QA-SBX FLY-3227 drill</code></td><td>逐字保持相同</td></tr>
+        <tr><td>第 2 行</td><td><code>AWAITING-QA</code></td><td><code>FIXED-FOR-CLAIM &lt;id&gt;</code></td></tr>
+        <tr><td>标识来源</td><td>此时没有前次标识</td><td>本轮修复提示的第一行；保留大小写、前导零</td></tr>
+        <tr><td>文件形状</td><td>恰好两行，各有换行</td><td>只改第 2 行，没有第 3 行</td></tr>
+      </tbody>
+    </table></div>
+    <p>当前设计阶段尚未创建演练文件。计划、页面、图源和进度账本保存在本 issue 的文档目录，作为交接记录。没有新增数据库表、查询或索引。</p>
+    <div class="comment"><label for="comment-model">对「同一个文件，固定第一行」的意见</label><textarea id="comment-model" data-comment-title="同一个文件，固定第一行" placeholder="例如：字段或标识来源是否有歧义？"></textarea></div>
+  </section>
+
+  <section class="section" data-comment-section="choices">
+    <span class="number">04 · 取舍</span>
+    <h2>保持任务书规定的最小交付</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>选择</th><th>理由</th><th>代价或边界</th></tr></thead>
+      <tbody>
+        <tr><td>采用两行文件与现有交接</td><td>直接看出是否沿用了本轮失败标识</td><td>只证明这个演练回路</td></tr>
+        <tr><td>不新增自动修复程序</td><td>任务书没有要求产品代码</td><td>没有新的产品能力</td></tr>
+        <tr><td>不提前写入修复标识</td><td>保留首轮故意失败的环节</td><td>必须经历一次返工</td></tr>
+        <tr><td>只写短计划</td><td>沙盒仓库主版本的任务书明确无需研究文档</td><td>本地核验与探索放在计划内</td></tr>
+      </tbody>
+    </table></div>
+    <div class="comment"><label for="comment-choices">对「保持任务书规定的最小交付」的意见</label><textarea id="comment-choices" data-comment-title="保持任务书规定的最小交付" placeholder="例如：哪项取舍需要调整？"></textarea></div>
+  </section>
+
+  <section class="section" data-comment-section="boundary">
+    <span class="number">05 · 证据与边界</span>
+    <h2>验收范围只到这次沙盒演练</h2>
+    <p class="boundary">后续验收看完整文件内容、本轮标识、改动路径，以及交付版本上的自动检查结果。</p>
+    <p>CI 是提交到仓库后运行的自动检查；它必须运行在这次交付的精确版本上。提交消息与 PR 标题不得含跳过 CI 的标记。PR 是供仓库审查与合并的变更申请，由实现节点按自己的协议提交。</p>
+    <p>QA 使用 <code>file-shape</code> 与 <code>fixed-for-claim</code> 两条准则；房间端到端测试记为 <code>e2e_529_exempt</code>，状态 <code>not_run</code>、类别 <code>docs_only</code>，因为任务是纯文档且禁止部署房间。</p>
+    <p class="note">Linear 是登记这张工作单的系统。本设计不修改其中的单据，不部署房间，不改产品代码，也不验证生产功能。设计节点不实现、不派发后续节点、不请求发布权限、不合并。</p>
+    <p>无需数据库或服务迁移。撤回演练内容只需还原本轮目标文件的提交；不回滚共享分支或其他节点的记录。页面意见是修订反馈，不代表评审或发布批准。</p>
+    <div class="comment"><label for="comment-boundary">对「验收范围只到这次沙盒演练」的意见</label><textarea id="comment-boundary" data-comment-title="验收范围只到这次沙盒演练" placeholder="例如：证据或边界是否缺漏？"></textarea></div>
+  </section>
+
+  <section class="section" data-comment-section="feedback">
+    <span class="number">06 · 页面意见</span>
+    <h2>复制后交给负责人</h2>
+    <p id="feedback-marker">【页面意见汇总】FLY-3227</p>
+    <p class="status" id="storage-status">意见只保存在当前浏览器，按页面路径分别保存；不会自动发送。</p>
+    <div id="feedback-chunks" aria-live="polite"></div>
+    <button type="button" id="copy-all" disabled>复制全部意见</button>
+    <p class="status" id="copy-status" role="status">尚无意见。</p>
+    <div class="comment"><label for="comment-feedback">对「复制后交给负责人」的意见</label><textarea id="comment-feedback" data-comment-title="复制后交给负责人" placeholder="还可以在这里补充整体意见。"></textarea></div>
+  </section>
+
+  <footer>依据：沙盒仓库主版本的 <code>qa-sbx/fly3227/README.md</code> 与本轮设计节点契约。完整计划：<code>engineering/doc/FLY-3227-real-runner-drill/plan.md</code>。图由本地工具把流程文字转换成图片，页面不加载外部字体、脚本或图片。</footer>
+</main>
+<script nonce="__CSP_NONCE__">
+  'use strict';
+  const fields = Array.from(document.querySelectorAll('textarea[data-comment-title]'));
+  const prefix = location.pathname + ':FLY-3227:comments:v1:';
+  const marker = document.getElementById('feedback-marker').textContent;
+  const output = document.getElementById('feedback-chunks');
+  const copyAll = document.getElementById('copy-all');
+  const status = document.getElementById('copy-status');
+  let currentChunks = [];
+
+  function splitFeedback() {
+    const entries = fields.filter(field => field.value.trim()).map(field => '[' + field.dataset.commentTitle + ']\n' + field.value.trim());
+    if (!entries.length) return [];
+    const points = Array.from(entries.join('\n\n'));
+    const budget = 1800 - Array.from(marker).length - 1;
+    const chunks = [];
+    for (let start = 0; start < points.length; start += budget) {
+      chunks.push(marker + '\n' + points.slice(start, start + budget).join(''));
+    }
+    return chunks;
+  }
+
+  function fallbackCopy(text) {
+    const previousFocus = document.activeElement;
+    const helper = document.createElement('textarea');
+    helper.value = text;
+    helper.setAttribute('aria-label', '用于复制意见的临时文本');
+    helper.style.position = 'fixed';
+    helper.style.top = '-10000px';
+    document.body.appendChild(helper);
+    helper.focus();
+    helper.select();
+    try {
+      if (!document.execCommand('copy')) throw new Error('copy unavailable');
+    } finally {
+      helper.remove();
+      if (previousFocus && previousFocus.focus) previousFocus.focus();
+    }
+  }
+
+  async function copyText(text) {
+    try {
+      if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('clipboard unavailable');
+      await navigator.clipboard.writeText(text);
+    } catch {
+      try {
+        fallbackCopy(text);
+      } catch {
+        status.textContent = '复制未成功，请直接选中上方汇总文本复制。';
+        return;
+      }
+    }
+    status.textContent = '已复制；这些文字是修订反馈，不是通过信号。';
+  }
+
+  function refresh() {
+    currentChunks = splitFeedback();
+    output.replaceChildren();
+    currentChunks.forEach((chunk, index) => {
+      const group = document.createElement('div');
+      group.className = 'feedback-chunk';
+      const text = document.createElement('textarea');
+      text.readOnly = true;
+      text.value = chunk;
+      text.setAttribute('aria-label', '意见汇总第 ' + (index + 1) + ' 段');
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = '复制第 ' + (index + 1) + ' 段';
+      button.addEventListener('click', () => copyText(chunk));
+      group.append(text, button);
+      output.appendChild(group);
+    });
+    copyAll.disabled = currentChunks.length === 0;
+    status.textContent = currentChunks.length ? '共 ' + currentChunks.length + ' 段，每段不超过 1800 个字符，并重复意见标记。' : '尚无意见。';
+  }
+
+  fields.forEach(field => {
+    try {
+      field.value = localStorage.getItem(prefix + field.id) || '';
+    } catch {
+      document.getElementById('storage-status').textContent = '浏览器禁止本地保存；本次输入仍可汇总和复制，刷新后可能丢失。';
+    }
+    field.addEventListener('input', () => {
+      try {
+        localStorage.setItem(prefix + field.id, field.value);
+      } catch {
+        document.getElementById('storage-status').textContent = '浏览器禁止本地保存；本次输入仍可汇总和复制，刷新后可能丢失。';
+      }
+      refresh();
+    });
+  });
+  copyAll.addEventListener('click', () => copyText(currentChunks.join('\n\n')));
+  refresh();
+</script>
+</body>
+</html>
