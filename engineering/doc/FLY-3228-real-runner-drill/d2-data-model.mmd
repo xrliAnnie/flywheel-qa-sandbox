@@ -8,6 +8,11 @@ classDiagram
         第1行: QA-SBX FLY-3228 drill
         第2行: AWAITING-QA 或 FIXED-FOR-CLAIM id
     }
+    class 上一轮遗留 {
+        主线上的旧第2行 FIXED-FOR-CLAIM 1
+        旧 progress / 旧 PR 525
+        只是起点,不是本轮依据
+    }
     class 流程文档 {
         engineering/doc/FLY-3228-real-runner-drill/
         plan.md / progress.md
@@ -20,4 +25,5 @@ classDiagram
     }
     共享分支 *-- 演练文件 : 演练内容(唯一)
     共享分支 *-- 流程文档 : 记账产物(不进验收)
+    上一轮遗留 ..> 演练文件 : 本轮会覆盖
     QA验收 ..> 演练文件 : 只读核验
