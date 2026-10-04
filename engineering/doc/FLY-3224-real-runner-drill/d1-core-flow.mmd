@@ -1,16 +1,15 @@
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"-apple-system, system-ui, PingFang SC, sans-serif","fontSize":"16px","primaryColor":"#f5f5f7","primaryTextColor":"#1d1d1f","primaryBorderColor":"#a1a1a6","lineColor":"#636366","secondaryColor":"#f0f7ff","tertiaryColor":"#ffffff","actorBkg":"#f5f5f7","actorBorder":"#a1a1a6","actorTextColor":"#1d1d1f","signalColor":"#636366","signalTextColor":"#1d1d1f","noteBkgColor":"#f0f7ff","noteBorderColor":"#007aff"},"flowchart":{"htmlLabels":false,"curve":"stepAfter"},"sequence":{"mirrorActors":false}}}%%
 sequenceDiagram
-    participant S as 设计节点(本轮)
-    participant D as 驱动器
-    participant I as 实现节点
-    participant Q as QA 节点
-    S->>D: 短 plan + Codex 评审 APPROVED + 设计 HTML
-    D->>I: 派发(无 QA fix context)
-    I->>I: 演练文件已是 AWAITING-QA(继承上一轮),只加账本提交
-    I->>D: 第 1 次交付:复用 PR 553(run=18c10fbd HANDIN1=sha)
-    D->>Q: 第 1 轮
-    Q->>D: fixed-for-claim = fail(故意),产生 claim id
-    D->>I: QA fix context: claim id
-    I->>I: 第 2 行 AWAITING-QA → FIXED-FOR-CLAIM id
-    I->>D: 第 2 次交付(PREV = 本轮 HANDIN1)
-    D->>Q: 重验(Previous QA verdict: claim id)
-    Q->>D: 逐字匹配 → pass
+    participant S as 设计会话
+    participant D as 演练控制器
+    participant I as 实现会话
+    participant Q as 验收会话
+    S->>D: 评审通过的计划与已发布设计页
+    D->>I: 第一次任务：重置历史第二行
+    I->>D: 第一次交付：AWAITING-QA
+    D->>Q: 首轮验收
+    Q->>D: 故意失败，生成本轮失败记录编号
+    D->>I: 返工提示带本轮编号
+    I->>D: 第二次交付：FIXED-FOR-CLAIM 编号
+    D->>Q: 重验提示带上一次失败编号
+    Q->>D: 文件编号逐字匹配后通过

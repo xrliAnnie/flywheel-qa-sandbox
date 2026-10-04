@@ -1,13 +1,10 @@
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"-apple-system, system-ui, PingFang SC, sans-serif","fontSize":"16px","primaryColor":"#f5f5f7","primaryTextColor":"#1d1d1f","primaryBorderColor":"#a1a1a6","lineColor":"#636366","secondaryColor":"#f0f7ff","tertiaryColor":"#ffffff","actorBkg":"#f5f5f7","actorBorder":"#a1a1a6","actorTextColor":"#1d1d1f","signalColor":"#636366","signalTextColor":"#1d1d1f","noteBkgColor":"#f0f7ff","noteBorderColor":"#007aff"},"flowchart":{"htmlLabels":false,"curve":"stepAfter"},"sequence":{"mirrorActors":false}}}%%
 flowchart TD
-    M["main:演练文件已存在<br/>第 2 行 FIXED-FOR-CLAIM 1(PR 547 残留)"] --> B["分支 project-slot-2-FLY-3224<br/>已继承 AWAITING-QA,PR 553 打开"]
-    B --> T["演练文件<br/>qa-sbx/fly3224/project-slot-2-FLY-3224.md"]
-    B --> P["流程文档文件夹<br/>engineering/doc/FLY-3224-real-runner-drill/"]
-    T --> L1["第 1 行: QA-SBX FLY-3224 drill"]
-    T --> L2["第 2 行: AWAITING-QA 或 FIXED-FOR-CLAIM id"]
-    P --> X["exploration / plan / progress / design.html"]
-    T -. "QA 只验这里" .-> C["file-shape / fixed-for-claim / e2e_529_exempt"]
-    P -. "不进验收" .-> N["Runner 协议记账"]
-    T --> A{"PR 级检查:排除流程文档后<br/>与 main 的差异"}
-    A -- "恰好演练文件 + 字节精确" --> OK["通过"]
-    A -- "为空:只在 claim id 使文件与 main 相同时合法" --> OK
-    A -- "出现其他路径 / 字节不符" --> STOP["停,不交付"]
+    B["本轮工作分支"] --> F["演练文件：只有两行"]
+    B --> P["协议文档：同一设计文件夹"]
+    F --> L1["第一行固定<br/>演练名称"]
+    F --> L2["第二行：先 AWAITING-QA<br/>返工后 FIXED-FOR-CLAIM 编号"]
+    C["本轮验收失败记录编号"] -. "只从本轮提示取值" .-> L2
+    P --> R["探索 · 短计划 · 进度 · 本页"]
+    classDef focus fill:#f0f7ff,stroke:#007aff,color:#1d1d1f
+    class L2 focus
