@@ -1,58 +1,72 @@
 # FLY-3226 真 Runner 通用演练(529 房间) — 实施计划
 Issue: FLY-3226 (https://linear.app/geoforge3d/issue/FLY-3226/qa-sbx-fly-3226-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-03
-基于: exploration.md(README 规定"一份短 plan 足够,不需要 research 文档")
+日期: 2026-10-04(本次派发 run `fee0ab7d`,slot-4;骨架沿用 FLY-3150 已评审的"main 残留"结构)
+基于: exploration.md §5(README 规定"一份短 plan 足够,不需要 research 文档")
 
 ## 1. 范围
 
-- 唯一权威:`origin/main:qa-sbx/fly3226/README.md`。每个节点开工先重读。
-- 演练文件:`F=qa-sbx/fly3226/$(git branch --show-current).md`,本轮 = `qa-sbx/fly3226/project-slot-4-FLY-3226.md`(节点开工时重算,不硬编码)。
-- 不碰:README、任何代码、Linear issue、529 房间部署、其他 slot / 其他练习单的文件。
-- **流程文档例外(不来自 README,来源与边界明示)**:README 的 "Touch only the one markdown file" 约束的是**演练内容**。每个节点的派发提示词另外注入了 Flywheel 节点契约(权威来源 = Bridge 注入的系统提示,不是本仓库文件):DOC-FLOW(`engineering/doc/FLY-3226-<slug>/` 下的 exploration/plan)、PROGRESS LEDGER(同文件夹 `progress.md`,由 `flywheel-comm progress` 自行 path-limited 提交)、设计节点强制的创始人设计 HTML(必须提交并推送)。不交这些,设计节点无法 `complete`、实现节点的重启续跑也会丢游标 —— 所以它们是协议记账,不是演练交付物:
+- 唯一权威:`origin/main:qa-sbx/fly3226/README.md`(blob `71e58f18…`)。每个节点开工先重读。
+- 演练内容只有一个文件:`F=qa-sbx/fly3226/$(git branch --show-current).md`,本轮 = `qa-sbx/fly3226/project-slot-4-FLY-3226.md`(节点开工时重算,不硬编码)。
+- 不碰:README、任何代码、Linear issue(状态 / 评论 / 标签)、529 房间部署/拆除、其他 slot / 其他练习单的文件。
+- **流程文档例外(不来自 README,来源与边界明示)**:README 的 "Touch only the one markdown file" 约束的是**演练内容**。每个节点的派发提示词另外注入了 Flywheel 节点契约(权威来源 = Bridge 注入的系统提示,不是本仓库文件):DOC-FLOW(`engineering/doc/FLY-3226-<slug>/` 下的 exploration / plan)、PROGRESS LEDGER(同文件夹 `progress.md`,由 `flywheel-comm progress` 自行 path-limited 提交)、设计节点强制的创始人设计 HTML(必须提交并推送)。它们是协议记账,不是演练交付物:
   - 只允许落在 `engineering/doc/FLY-3226-real-runner-drill/` 一个文件夹;实现 / QA 节点除 `progress.md` 外不新增、不修改这里的文件。
-  - 不进任何 QA criterion;§1 PR 级断言把这个文件夹排除后,演练净 diff 必须恰好是 `"$F"`。
-  - 同合同的前序练习单 FLY-3150 用的是同一例外结构,已多次走完 design → implement → QA → merge(如 PR #537)。
-- **PR 级范围断言**(两次交付都跑,`X=':(exclude)engineering/doc/FLY-3226-real-runner-drill'`):
-  1. `git diff --name-only origin/main...<交付头> -- . "$X"` 输出**恰好**一行 `"$F"`(main 上没有 `$F`,所以空输出也不合法);出现别的路径 → 停,不交付。
-  2. `git show <交付头>:"$F"` 逐字节等于本次期望的两行(每行以 `\n` 结尾,共两行)。
+  - 不进任何 QA criterion;PR 级断言把这个文件夹排除后再看演练净 diff。
+- **PR 级演练范围断言**(两次交付都跑,记 `X=':(exclude)engineering/doc/FLY-3226-real-runner-drill'`):
+  1. `git diff --name-only origin/main...<交付头> -- . "$X"` 的输出**只能**是空或恰好一行 `"$F"`;出现其他路径 → 停,不交付。
+  2. `git show <交付头>:"$F"` 逐字节等于本次交付的期望两行(每行以 `\n` 结尾,共两行)。
+  3. 输出为空**只在**合并基 `git merge-base origin/main <交付头>` 上的 `"$F"` 已逐字节等于本次期望两行时才合法。main 上残留的正是 `FIXED-FOR-CLAIM 1`:交付 #1 期望 `AWAITING-QA`,所以交付 #1 **必须**恰好一行 `"$F"`;交付 #2 若本轮 claim id 也是 `1`,PR 级演练净 diff 为空是预期结果,返工由 §3 交付 #2 第 6(b) 步的区间 patch 证明。
 
-## 2. 实现节点
+## 2. 本轮起点(派发时快照,实现节点自己重算)
 
-记 `L=engineering/doc/FLY-3226-real-runner-drill/progress.md`。判定第几次交付只看**本轮**提示词有没有 "QA fix context"。
+- 分支头 `2e65d3791` = `origin/main`;远端无本分支;唯一同名 PR #539 已 MERGED → 交付 #1 推新分支、开新 PR。
+- `HEAD:"$F"` = `QA-SBX FLY-3226 drill` / `FIXED-FOR-CLAIM 1`(PR #539 残留)。所以**交付 #1 走重置分支**:HEAD blob ≠ `AWAITING-QA` 两行 → 必须覆盖写并提交(diff 状态 `M`)。跳过重置的风险:本轮 claim id 恰好又是 `1` 时,重验会靠残留假通过,返工回路实际没跑。
+- 设计节点自己的流程文档提交都在实现节点 `BASE` 之前,不进入交付区间。
+- **旧指针一律不认**:PR #539、main 历史 / progress.md 里上一轮的 HANDIN / PREV(`e36c698…`)/ claim id / 代码评审 / CI,都不是本轮 BASE / PREV / claim id。判定第几次交付只看**本轮**提示词有没有 "QA fix context";交付 #2 的 PREV 只认本轮交付 #1 摘要里的 `run=fee0ab7d HANDIN1=<sha>`。
+
+## 3. 实现节点
+
+记 `F=qa-sbx/fly3226/$(git branch --show-current).md`,`L=engineering/doc/FLY-3226-real-runner-drill/progress.md`。
 
 **交付 #1(无 "QA fix context")**
 1. `BASE=$(git rev-parse HEAD)`。
-2. 分两态(按 **HEAD 里的 blob** 判,未跟踪文件不算):**重试态** = `git show HEAD:"$F" 2>/dev/null | cmp -s - <(printf 'QA-SBX FLY-3226 drill\nAWAITING-QA\n')` 成立(只在本节点上次已提交后中断重来时出现)→ 跳到第 5 步;**新交付态**(HEAD 里没有 `$F`)→ `mkdir -p qa-sbx/fly3226 && printf 'QA-SBX FLY-3226 drill\nAWAITING-QA\n' > "$F"`。
-3. 自检 `printf 'QA-SBX FLY-3226 drill\nAWAITING-QA\n' | cmp - "$F"` 退出码 0。
+2. 按 **HEAD 中的 blob** 判断:`git show HEAD:"$F" 2>/dev/null | cmp -s - <(printf 'QA-SBX FLY-3226 drill\nAWAITING-QA\n')` 退出码 0(未跟踪文件不算)→ **重试态**,跳过第 3–4 步(只发生在本节点上次已提交后中断重来时);否则 **重置态**:`printf 'QA-SBX FLY-3226 drill\nAWAITING-QA\n' > "$F"`。
+3. 自检工作树:`printf 'QA-SBX FLY-3226 drill\nAWAITING-QA\n' | cmp - "$F"` 退出码 0。
 4. 只 `git add "$F"`,提交 `docs(qa-sbx): FLY-3226 drill hand-in`。
-5. `IMPL1=$(git rev-parse HEAD)`(重试态下 `IMPL1=BASE`);从仓库根写 ledger:`node "$FLYWHEEL_COMM_CLI" progress --exec-id "$FLYWHEEL_EXEC_ID" --file "$L" --phase implement --cursor 1/2 --next "<下一步>" --handoff "<本轮已知信息,不写最终交付头>"`(它自行 path-limited 提交 `$L`,不要手动 add/commit);`git status --porcelain` 为空后冻结 `HANDIN1=$(git rev-parse HEAD)`。
-6. 核验:(a) 新交付态:`git diff --name-status $BASE..$IMPL1` 恰好一行 `A "$F"`;重试态:该区间为空,且 `git show $BASE:"$F"` 逐字节等于 `AWAITING-QA` 两行(两态择一,其他结果一律停);(b) `git diff --name-only $IMPL1..$HANDIN1` 为空或恰好 `"$L"`,`git rev-list --merges $BASE..$HANDIN1` 为空;(c) §1 两条断言对 `$HANDIN1` 通过。任一不过 → 停。
-7. `git push -u origin HEAD`(普通推送,不 force)。`gh pr list --head project-slot-4-FLY-3226 --state open` 有就复用,没有就 `gh pr create --base main`,标题 `FLY-3226 QA-SBX FLY-3226 real-runner drill`,正文含 Linear 链接与核验结果。确认远端头 / PR 头 / CI 都在 `$HANDIN1` 后交付;交付摘要写 `HANDIN1=<完整 SHA>`(返工唯一 PREV 来源)。
+5. 冻结 `IMPL1=$(git rev-parse HEAD)`(重试态 `IMPL1=BASE`)。再从仓库根写 ledger:`node "$FLYWHEEL_COMM_CLI" progress --exec-id "$FLYWHEEL_EXEC_ID" --file "$L" --phase implement --cursor 1/2 --next "<下一步>" --handoff "<本轮已知信息>"` —— 它**自行** path-limited 提交 `$L`,不要手动 add/commit;`git status --porcelain` 为空后才冻结 `HANDIN1=$(git rev-parse HEAD)`。
+6. 核验:(a) **实现范围** `git diff --name-status $BASE..$IMPL1`:重置态恰好一行 `M "$F"`;重试态为空且 `git show $BASE:"$F"` 已逐字节等于 `AWAITING-QA` 两行;(b) 重置态下 `git diff $BASE..$IMPL1 -- "$F"` 的 patch 只改第 2 行(`-<BASE 第 2 行原值>` / `+AWAITING-QA`,本轮原值 `FIXED-FOR-CLAIM 1`);(c) **账本范围** `git diff --name-only $IMPL1..$HANDIN1` 为空或恰好 `"$L"`,且 `git rev-list --merges $BASE..$HANDIN1` 为空;(d) §1 的 PR 级断言对 `$HANDIN1` 通过(本轮期望恰好一行 `"$F"`)。任一不过 → 停,不交付。
+7. `git push -u origin HEAD`(普通推送,不 force)。PR:`gh pr list --head project-slot-4-FLY-3226 --state open --json number --jq '.[0].number'`;有 OPEN PR 就 `gh pr edit` 复用,没有就 `gh pr create --base main --head project-slot-4-FLY-3226`,标题 `FLY-3226 QA-SBX FLY-3226 real-runner drill (run fee0ab7d)`,正文写 Linear issue 链接、本轮 run id 与本轮核验结果。确认远端分支头 / PR 头 / CI 都在 `$HANDIN1`,交付;**交付摘要写明 `run=fee0ab7d HANDIN1=<完整 SHA>`**(返工唯一 PREV 来源)。
 
 **交付 #2(提示词有 "QA fix context",首行 `QA verdict to fix: claim <id> ...`)**
 1. 用 `^QA verdict to fix: claim (\S+)` 取 `ID`,原样复制;取不到 → 失败通道,不猜。
-2. `PREV` = 本轮交付 #1 摘要里的 `HANDIN1`;确认是 HEAD 祖先且 `git show $PREV:"$F"` 第 2 行为 `AWAITING-QA`;取不到 → 失败通道。`BASE2=$(git rev-parse HEAD)`。
-3. 若 `$BASE2:"$F"` 已逐字节等于 `QA-SBX FLY-3226 drill` / `FIXED-FOR-CLAIM $ID`(上次尝试已提交)→ 跳到第 5 步;若是别的 claim id → 失败通道;否则只改第 2 行:`printf 'QA-SBX FLY-3226 drill\nFIXED-FOR-CLAIM %s\n' "$ID" > "$F"`,自检 `cmp` 退出码 0。
+2. `PREV` = 本轮交付 #1 摘要里的 `HANDIN1`;确认它是 HEAD 的祖先,且 `git show $PREV:"$F"` 第 2 行是 `AWAITING-QA`;取不到 → 失败通道,不用 `git log` / progress 旧指针猜。`BASE2=$(git rev-parse HEAD)`,按 `git show $BASE2:"$F"` 分两态核验(区间无合并时):**初始态**(blob = `AWAITING-QA` 两行)→ `git diff --name-only $PREV..$BASE2` 为空或恰好 `"$L"`;**已修复态**(上次尝试已提交修复、ledger 前中断,blob 已逐字节等于 `QA-SBX FLY-3226 drill` / `FIXED-FOR-CLAIM $ID`)→ `$PREV..$BASE2` 只允许 `M "$F"` + 可选 `"$L"`,且 `git diff $PREV..$BASE2 -- "$F"` 的 patch 恰为 `-AWAITING-QA` / `+FIXED-FOR-CLAIM $ID`;其他任何内容(含别的 claim id)→ 失败通道。
+3. 只改第 2 行:`printf 'QA-SBX FLY-3226 drill\nFIXED-FOR-CLAIM %s\n' "$ID" > "$F"`(已修复态跳过第 3–4 步);自检 `printf 'QA-SBX FLY-3226 drill\nFIXED-FOR-CLAIM %s\n' "$ID" | cmp - "$F"` 退出码 0。
 4. 只 `git add "$F"`,提交 `docs(qa-sbx): FLY-3226 drill fix for claim $ID`。
-5. `IMPL2=$(git rev-parse HEAD)`;写 ledger(同交付 #1 第 5 步命令,`--cursor 2/2`,handoff 可写 claim id 与 PREV);工作树干净后冻结 `HANDIN2`。
-6. 核验:(a) `git diff $PREV..$HANDIN2 -- "$F"` 的 patch 恰为 `-AWAITING-QA` / `+FIXED-FOR-CLAIM $ID`(返工确实发生的证据);(b) `git diff --name-only $PREV..$HANDIN2 -- . "$X"` 恰好 `"$F"`;(c) §1 断言对 `$HANDIN2` 通过。
+5. 冻结 `IMPL2=$(git rev-parse HEAD)`(已修复态 `IMPL2=BASE2`),再写 ledger(同交付 #1 第 5 步命令,`--cursor 2/2`,handoff 可写 claim id 与 PREV),工作树干净后冻结 `HANDIN2=$(git rev-parse HEAD)`。
+6. 核验:(a) `git diff --name-status $BASE2..$IMPL2`:初始态恰好一行 `M "$F"`,已修复态为空;(b) `git diff $PREV..$HANDIN2 -- "$F"` 的 patch 恰为 `-AWAITING-QA` / `+FIXED-FOR-CLAIM $ID`(这一步才是"返工确实发生"的证据);(c) `git diff --name-only $IMPL2..$HANDIN2` 为空或恰好 `"$L"`、无合并提交;(d) §1 的 PR 级断言对 `$HANDIN2` 通过(`ID` = `1` 时 PR 级演练 diff 为空是预期结果)。
 7. 推送,确认远端 / PR / CI 都在 `$HANDIN2`,交付。
 
-通则:核验后若又产生提交(含 ledger),重新冻结、核验、推送。commit message 与 PR 标题不得含 `[skip ci]` / `[ci skip]` / `[no ci]` / `[skip actions]` / `[actions skip]` / `skip-checks:`。不 force-push。只在 PR 显示 `CONFLICTING` 时 `git merge origin/main`(不 rebase);冲突落在流程文档文件夹外 → `git merge --abort` 走失败通道;发生合并时 §2 交付 #1 第 6(a)(b) 步改为只做 §1 断言 + `$HANDIN1:"$F"` 字节检查。
+通则:核验后若又产生提交(含 ledger),重新冻结 SHA、核验、推送。commit message 与 PR 标题不得含 `[skip ci]` / `[ci skip]` / `[no ci]` / `[skip actions]` / `[actions skip]` / `skip-checks:`(仓库历史里有,不可模仿)。不 force-push。ledger 的 `--handoff` 只写写入时已确定的信息(run id、阶段、claim id、返工时已知的 PREV),**不写本次最终交付头**(ledger 自提交会改变 HEAD);最终 `HANDIN1` / `HANDIN2` 只写在交付摘要里。
 
-## 3. QA 节点
+### 3.1 发生 main 同步时的核验分支
+
+- **何时同步**:只在 PR 显示 `CONFLICTING` 或节点契约明确要求时;同步 = `git fetch origin main && git merge origin/main`(不 rebase、不 force-push)。
+- **冲突处理**:冲突只允许落在 `engineering/doc/FLY-3226-real-runner-drill/` 内 —— 保留本轮 slot-4 版本(`git checkout --ours -- <path>`),并在 exploration.md 追加新小节记录对方运行来源(不静默丢弃);冲突落在该文件夹之外(含 `"$F"`)→ `git merge --abort`,走失败通道。
+- **判定**:交付区间(交付 #1 `$BASE..$HANDIN1`,交付 #2 `$PREV..$HANDIN2`)里 `git rev-list --merges <区间>` 非空 → 用下面的核验**替代**交付 #1 第 6(a)(b)(c) 步、交付 #2 第 2 步的交付间范围与第 6(a)(c) 步;为空 → 仍用原限制。
+- **同步后的核验**(工作树干净、所有提交含 ledger 之后才冻结 HANDIN):交付 #1 —— §1 的 PR 级断言对 `$HANDIN1` 通过,且 `git show $HANDIN1:"$F"` 逐字节等于 `AWAITING-QA` 两行;交付 #2 —— `PREV` 不变(照旧做祖先检查),`git diff $PREV..$HANDIN2 -- "$F"` 的 patch 恰为 `-AWAITING-QA` / `+FIXED-FOR-CLAIM $ID`,§1 的 PR 级断言对 `$HANDIN2` 通过,`git show $HANDIN2:"$F"` 逐字节等于两行。推送后照旧确认三处头一致;交付摘要注明发生过同步。
+
+## 4. QA 节点
 
 分轮只看提示词有没有 "QA re-verification context"。
 
 | criterion | 第 1 轮 | 重验轮 |
 |---|---|---|
 | `file-shape` | 文件存在且第 1 行 = `QA-SBX FLY-3226 drill` | 同左 |
-| `fixed-for-claim` | 恒 `fail`,evidence `round 1: no previous QA claim yet` | 第 2 行 = `FIXED-FOR-CLAIM <id>`(id 取自 `Previous QA verdict: claim <id>`)才 `pass`;取不到 id → 不得 pass |
+| `fixed-for-claim` | 恒 `fail`,evidence `round 1: no previous QA claim yet` | 第 2 行 = `FIXED-FOR-CLAIM <id>`(id 取自 `Previous QA verdict: claim <id>`)才 `pass`;取不到 id → 失败通道,不得 pass |
 | `e2e_529_exempt` | `not_run`,`exempt_category: docs_only`,附原因 | 同左 |
 
-title < 120 字符,evidence < 80 字符;QA 不部署房间、不碰 Linear、不改目标文件。
+title < 120 字符,evidence < 80 字符;QA 不部署房间、不碰 Linear、不改目标文件。QA 读的是交付头上的 `"$F"`(不是 main 上的残留)。
 
-## 4. 流程
+## 5. 流程
 
 ```mermaid
 sequenceDiagram
@@ -60,19 +74,19 @@ sequenceDiagram
     participant Q as qa
     participant B as 驱动器
     B->>I: 派发(无 QA fix context)
-    I->>B: 交付 #1:新增文件,第 2 行 AWAITING-QA
+    I->>B: 交付 #1:第 2 行 FIXED-FOR-CLAIM 1(残留)重置为 AWAITING-QA
     B->>Q: 第 1 轮
-    Q->>B: fixed-for-claim = fail(故意),产生 claim id
-    B->>I: QA fix context: claim id
-    I->>B: 交付 #2:FIXED-FOR-CLAIM id
-    B->>Q: 重验(Previous QA verdict: claim id)
+    Q->>B: fixed-for-claim = fail(planted),产生 claim <id>
+    B->>I: QA fix context: claim <id>
+    I->>B: 交付 #2:FIXED-FOR-CLAIM <id>
+    B->>Q: 重验(Previous QA verdict: claim <id>)
     Q->>B: 逐字匹配 → pass
 ```
 
 ## 查询与索引
 
-不适用:本演练只新增一个两行 markdown 文件,不新增或修改任何表、查询或索引。
+不适用:本演练只改一个两行 markdown 文件,不新增或修改任何表、查询或索引。
 
-## 5. 诚实边界
+## 6. 诚实边界
 
-只覆盖 README 的两行文件 + 三条验收,证明 529 房间里真 Runner 的 fail → fix → re-verify 回路能贯通 claim id;不设计任何 Flywheel 代码,不验证生产实现。回滚 = revert 本轮提交。
+只覆盖 README 的两行文件 + 三条验收,证明 529 房间里真 Runner 的 fail → fix → re-verify 回路能贯通 claim id;不设计任何 Flywheel 代码,不验证生产实现。设计节点不推演练文件、不开 PR、不跑 CI —— 由实现节点交付时核验。回滚 = revert 本轮提交。
