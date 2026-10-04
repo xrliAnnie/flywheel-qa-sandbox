@@ -1,0 +1,6 @@
+stateDiagram-v2
+    [*] --> 文件不存在
+    文件不存在 --> 首轮交付: 新建文件 第1行固定 第2行 AWAITING-QA
+    首轮交付 --> QA打回: fixed-for-claim 故意失败
+    QA打回 --> 复验交付: 第2行改为 FIXED-FOR-CLAIM 加 claim 编号
+    复验交付 --> [*]: 编号逐字一致 准则通过
