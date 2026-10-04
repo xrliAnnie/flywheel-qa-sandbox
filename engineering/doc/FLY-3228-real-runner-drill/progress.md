@@ -1,30 +1,33 @@
 ---
 issue: FLY-3228
 phase: implement
-phaseCursor: 3/3
-updated: 2026-10-04T09:09:13.465Z
-nextStep: After this final ledger commit push and freeze HANDIN1; run ci-full
-  ensure --pr 545 on frozen HEAD, then complete --route needs_review --pr 545.
-  No commits after freeze.
+phaseCursor: 1/3
+updated: 2026-10-04T09:24:01.995Z
+nextStep: "Push claim 1 repair to PR #545 and register fresh effective code
+  review; afterward commit final ledger, freeze HANDIN2, run ci-full ensure and
+  complete needs_review."
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3228-real-runner-drill/plan.md
   pr: https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/545
-handoff: "Run 034a537c-d825-421d-8200-c97c951983b1, implement attempt 1;
-  BASE=eb764bb59910e96dac523d1e6ffe07e186d67386. First hand-in target bytes
-  QA-SBX FLY-3228 drill / AWAITING-QA verified; cmp red before edit, green
-  afterward, scope and diff checks pass. Literal and path discovery found no
-  test files or exclusions; no code/TS changes. PR #545 open, mergeable. Code
-  review question 9f0cfde8-6b6e-46e3-a9c4-5952670f01e4 request
-  fabb1527-55fc-4941-9399-5f926fbb2ae2 round 1 effective APPROVED on
-  a1ef55326d16b222e71de7e1d57bc88ff2a62f18. Nonblocking LOW CI-pending advisory
-  reported; frozen-head CI still required. Config declares no pre_handin script.
-  Final HANDIN1 SHA and CI evidence go in completion report, not another ledger
-  commit. No Linear changes or deployment."
+handoff: "Run 034a537c-d825-421d-8200-c97c951983b1; implement rework attempt 2,
+  epoch 4, request
+  rework:5c4c98cadabfaf50777aab9919ec78f44a1f3f976d9620d979ed9f419f7b1581. Claim
+  ID 1 copied from injected QA fix context first line.
+  PREV=HANDIN1=63b3c22da4593cade4f3b40de9b797d7a9a99968 verified ancestor,
+  target AWAITING-QA. Only line 2 changed to FIXED-FOR-CLAIM 1. cmp red before
+  edit and green afterward; exact repair patch and clean whitespace pass.
+  Adjacent validations: unfixed first-round state, wrong claim 2, leading-zero
+  claim 01, extra line, trailing whitespace, missing newline all rejected by
+  cmp. Queued/started/dead/superseded/concurrent runtime paths inapplicable: no
+  executable logic. Old/new literal, full path, filename and parent discovery
+  found no related test files; none excluded. e2e_529_exempt remains
+  not_run/docs_only: only fixture/process documentation, no room deployment.
+  HANDIN2 not frozen yet."
 ---
 
 # FLY-3228 progress
-**phase**: implement (3/3)
-**next**: After this final ledger commit push and freeze HANDIN1; run ci-full ensure --pr 545 on frozen HEAD, then complete --route needs_review --pr 545. No commits after freeze.
+**phase**: implement (1/3)
+**next**: Push claim 1 repair to PR #545 and register fresh effective code review; afterward commit final ledger, freeze HANDIN2, run ci-full ensure and complete needs_review.
 
-**handoff**: Run 034a537c-d825-421d-8200-c97c951983b1, implement attempt 1; BASE=eb764bb59910e96dac523d1e6ffe07e186d67386. First hand-in target bytes QA-SBX FLY-3228 drill / AWAITING-QA verified; cmp red before edit, green afterward, scope and diff checks pass. Literal and path discovery found no test files or exclusions; no code/TS changes. PR #545 open, mergeable. Code review question 9f0cfde8-6b6e-46e3-a9c4-5952670f01e4 request fabb1527-55fc-4941-9399-5f926fbb2ae2 round 1 effective APPROVED on a1ef55326d16b222e71de7e1d57bc88ff2a62f18. Nonblocking LOW CI-pending advisory reported; frozen-head CI still required. Config declares no pre_handin script. Final HANDIN1 SHA and CI evidence go in completion report, not another ledger commit. No Linear changes or deployment.
+**handoff**: Run 034a537c-d825-421d-8200-c97c951983b1; implement rework attempt 2, epoch 4, request rework:5c4c98cadabfaf50777aab9919ec78f44a1f3f976d9620d979ed9f419f7b1581. Claim ID 1 copied from injected QA fix context first line. PREV=HANDIN1=63b3c22da4593cade4f3b40de9b797d7a9a99968 verified ancestor, target AWAITING-QA. Only line 2 changed to FIXED-FOR-CLAIM 1. cmp red before edit and green afterward; exact repair patch and clean whitespace pass. Adjacent validations: unfixed first-round state, wrong claim 2, leading-zero claim 01, extra line, trailing whitespace, missing newline all rejected by cmp. Queued/started/dead/superseded/concurrent runtime paths inapplicable: no executable logic. Old/new literal, full path, filename and parent discovery found no related test files; none excluded. e2e_529_exempt remains not_run/docs_only: only fixture/process documentation, no room deployment. HANDIN2 not frozen yet.
