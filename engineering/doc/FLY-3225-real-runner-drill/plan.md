@@ -1,7 +1,7 @@
 # FLY-3225 真 runner 通用演练 — 实施计划
 Issue: FLY-3225 (https://linear.app/geoforge3d/issue/FLY-3225/qa-sbx-fly-3225-real-runner-generalized-drill-529-room-only)
 日期: 2026-10-04
-基于: 无（上游只有沙盒仓库 main 分支上的 `qa-sbx/fly3225/README.md`，它就是这张练习单的全部任务书）
+基于: 无
 
 ## 1. 目标与边界
 
@@ -12,7 +12,8 @@ Issue: FLY-3225 (https://linear.app/geoforge3d/issue/FLY-3225/qa-sbx-fly-3225-re
 - 不在演练内部署任何 QA 房间（529 room）。
 - 不写研究文档（README 明确：一份短 plan 就够）；因此本文件夹只有 `plan.md`、`progress.md`、给创始人看的设计 HTML，以及 HTML 里两张图的 Mermaid 源文件 `design-d1.mmd` / `design-d2.mmd`。
 - 本房间没有人类 Lead：一切信息都在 README 里，**不向 Lead 提问**、不等待人工答复；确有疑问时由演练驱动器（drill driver）按 README 的规则作答。
-- **继承文件**：本轮是全新一轮设计派发，分支 `project-slot-3-FLY-3225` 起点是沙盒 main 的 `2e65d3791`（上一轮演练的 PR #538 已合入 main）。因此 main 上已带有上一轮留下的练习文件 `qa-sbx/fly3225/project-slot-3-FLY-3225.md`（当前第 2 行是 `FIXED-FOR-CLAIM 1`）和本文件夹里的旧设计文档。这些是继承物，**不是**本轮的判轮依据；处理规则见 §2a。本轮设计只订正 plan 中“PR #538 还开着”之类的过期描述并重做评审，不 force-push，不跳过任何流水线门。
+- **本轮依据**：2026-10-04 已 fetch 沙盒 `origin/main`，版本为 `eb3f48ace562`（PR #542 已合入）。已用 `git show origin/main:qa-sbx/fly3225/README.md` 读取本轮任务书；实现节点开始时再读取一次 main，若规则变化，以新任务书为准。
+- **继承文件**：分支 `project-slot-3-FLY-3225` 从该 main 起步，已带有练习文件 `qa-sbx/fly3225/project-slot-3-FLY-3225.md`（当前第 2 行是 `FIXED-FOR-CLAIM 1`）及本文件夹里的旧设计文档。这些是继承物，**不是**本轮的判轮依据；处理规则见 §2a。本轮仅更新设计文档与进度账本，重新申请独立设计评审并发布本轮设计 HTML。设计节点不修改练习文件、不派发后继、不申请 ship 授权、不合并、不部署。
 
 ## 2. 实施步骤（给 implement 节点）
 
