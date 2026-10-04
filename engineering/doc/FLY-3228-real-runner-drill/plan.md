@@ -4,7 +4,7 @@ Issue: FLY-3228 (https://linear.app/geoforge3d/issue/FLY-3228/qa-sbx-fly-3228-re
 日期: 2026-10-04
 基于: 无(README 规定"一份短 plan 足够,不需要 research 文档",所以本档不出 exploration/research;本文件是上一轮已合并 plan 的本轮改写版)
 
-本轮:run `dce567d4-4502-4e0b-bed7-501122f3e493`,设计节点 exec `28b36fd4-4e34-4dca-8ae1-8e72cf482e31`。
+本轮:run `dd71f848-68a5-4eaa-89d5-e0dbb8d217f9`,设计节点 exec `a7758102-f5fd-4c53-97d7-f156f0eb6061`。
 
 ## 1. 范围
 
@@ -19,9 +19,9 @@ Issue: FLY-3228 (https://linear.app/geoforge3d/issue/FLY-3228/qa-sbx-fly-3228-re
 
 ## 2. 起点(设计节点派发时快照,仅供参考)
 
-- 分支起点 = `origin/main` = `09a7d7ce6`,远端没有 `project-slot-6-FLY-3228` 分支;`gh pr list --head project-slot-6-FLY-3228 --state all` 只有前几轮已 MERGED 的 #525、#545(都不复用,本轮开新 PR)。
+- 分支起点 = `origin/main` = `caabb83da`,远端没有 `project-slot-6-FLY-3228` 分支;`gh pr list --head project-slot-6-FLY-3228 --state all` 只有前几轮已 MERGED 的 #525、#545、#551(都不复用,本轮开新 PR)。
 - **目标文件已存在于 main**,内容是上一轮遗留的 `QA-SBX FLY-3228 drill` / `FIXED-FOR-CLAIM 1`。所以本轮交付 #1 是**修改**(`M`,第 2 行 → `AWAITING-QA`),不是新增。
-- main 上的旧 plan、旧 HTML/图、旧 `progress.md`(run `034a537c`)都来自上一轮;其中的 claim id、`HANDIN1`、PR 号、SHA **都不是本轮权威**。判定第几次交付、取 claim id、取 `PREV` **只看本轮提示词与本轮交付摘要**。
+- main 上的旧 plan、旧 HTML/图、旧 `progress.md`(run `dce567d4`,其中 PR #551、`HANDIN1=63613f56…`)都来自上一轮;其中的 claim id、`HANDIN1`、PR 号、SHA **都不是本轮权威**。判定第几次交付、取 claim id、取 `PREV` **只看本轮提示词与本轮交付摘要**。
 - 设计节点已在分支上加了 ledger 提交,还会再加流程文档提交;实现节点自己重算 `BASE`。
 
 ## 3. 实现节点
