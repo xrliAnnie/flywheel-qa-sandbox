@@ -1,6 +1,6 @@
 # FLY-3224 529 房间演练 — 实施计划
 Issue: FLY-3224 (https://linear.app/geoforge3d/issue/FLY-3224/qa-sbx-fly-3224-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-03
+日期: 2026-10-04
 基于: README.md（origin/main:qa-sbx/fly3224/README.md）
 
 目标：用一个 Markdown 文件验证设计、实现、首次 QA 拒绝、按原 claim 修复和复验的真实工作流。
@@ -18,10 +18,11 @@ Issue: FLY-3224 (https://linear.app/geoforge3d/issue/FLY-3224/qa-sbx-fly-3224-re
 不适用：只读写上述 Markdown 文件；不新增或修改数据库表、查询或索引。
 
 ## 设计进度
-执行：`0cf3d0de-4eb4-4a0d-8686-1553207fb30d`（重派，延续 `76a34c47a`）；阶段：design；游标：3/4（设计审查已登记并获服务端 accepted，待有效裁决）。
-身份：run=`ae1a876a-6cf3-40ca-ae2a-3f0ce8a7c803`；node=`eng_design`；attempt=1；TURN=yours, epoch=1。
-已完成：复读新抓取主分支的 README、onboarding、TURN 核验、分支和 PR 审计（当前无 PR）；计划第 1–7 条与查询索引节保持不变。
-范围：Lead 对问题 `91b5d025-6c1e-4445-80f3-7ee41227bfc4` 的当前答复确认 README 优先于通用 design 提示；只改本文件，内联游标即持久进度，不另建文档或 progress.md。
-DESIGN-HTML: n/a — QA-SBX drill, README scope is a single md file
-审查：questionId=`8c109bf4-24c0-4576-b411-b59ba21ed086`；requestId=`21632a9d-a4bb-4bb2-9e38-a96963628bc3`；plan=`qa-sbx/fly3224/project-slot-2-FLY-3224.md`；不继承上轮批准，只有服务端有效 reviewVerdict=APPROVED 才能交接。
-下一步：每个 turn 仅 check 一次上述 questionId；pending 时注册自己的 wait watcher 并结束当前 turn；有效 APPROVED 后报告设计完成、提交 `phase_design_complete` 收据并 park。
+执行：`784eaa9e-ef0b-420d-bebd-876230c8db2c`（重派，延续 `2b5109696`）；阶段：design；游标：2/4（主分支范围和短计划已核验，等待当前范围答复及新设计审查）。
+身份：run=`e50560ad-e739-4b53-9c50-976affb2a6a0`；node=`eng_design`；attempt=1；TURN=yours, epoch=1；activation=`activation:784eaa9e-ef0b-420d-bebd-876230c8db2c:e50560ad-e739-4b53-9c50-976affb2a6a0:eng_design:1`。
+已完成：抓取并复读主分支 README、onboarding、TURN 核验、分支和 PR 审计（当前无 PR）；计划第 1–7 条与查询索引节保持不变；相对主分支仅本文件有改动。
+范围：主分支 README 明确只改本文件、设计只需短计划且无调研文档；当前注入的完整文档、progress.md 和 mandatory HTML 要求与此冲突，已向 drill driver 登记非阻塞问题 `df017544-843e-45b9-933a-658923a9615c`，当前为 pending。答复前不新增范围外文件，不视历史答复为本轮授权。
+历史身份：执行 `0cf3d0de-4eb4-4a0d-8686-1553207fb30d` 的范围问题 `91b5d025-6c1e-4445-80f3-7ee41227bfc4` 和审查问题 `8c109bf4-24c0-4576-b411-b59ba21ed086` 在当前 comm 服务均为 not found；旧 requestId=`21632a9d-a4bb-4bb2-9e38-a96963628bc3` 仅作审计记录，不继承其裁决。
+DESIGN-HTML: pending scope reconciliation — 尚未创建、发布或取得本轮豁免。
+审查：本轮尚未登记；plan=`qa-sbx/fly3224/project-slot-2-FLY-3224.md`；只有服务端有效 reviewVerdict=APPROVED 才能交接。
+下一步：下个 turn 先核验 TURN，再 check 范围问题；落实当前答复后显式登记新设计审查。pending 时登记自己的 wait watcher 并结束当前 turn；完成本轮文档/HTML义务和有效审查后提交 `phase_design_complete` 收据并 park。
