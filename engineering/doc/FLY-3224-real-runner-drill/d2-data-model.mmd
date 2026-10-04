@@ -1,5 +1,5 @@
 flowchart TD
-    M["main:没有本演练文件"] --> B["分支 project-slot-2-FLY-3224"]
+    M["main:演练文件已存在<br/>第 2 行 FIXED-FOR-CLAIM 1(PR 547 残留)"] --> B["分支 project-slot-2-FLY-3224<br/>已继承 AWAITING-QA,PR 553 打开"]
     B --> T["演练文件<br/>qa-sbx/fly3224/project-slot-2-FLY-3224.md"]
     B --> P["流程文档文件夹<br/>engineering/doc/FLY-3224-real-runner-drill/"]
     T --> L1["第 1 行: QA-SBX FLY-3224 drill"]
@@ -9,4 +9,5 @@ flowchart TD
     P -. "不进验收" .-> N["Runner 协议记账"]
     T --> A{"PR 级检查:排除流程文档后<br/>与 main 的差异"}
     A -- "恰好演练文件 + 字节精确" --> OK["通过"]
-    A -- "为空 / 出现其他路径 / 字节不符" --> STOP["停,不交付"]
+    A -- "为空:只在 claim id 使文件与 main 相同时合法" --> OK
+    A -- "出现其他路径 / 字节不符" --> STOP["停,不交付"]
