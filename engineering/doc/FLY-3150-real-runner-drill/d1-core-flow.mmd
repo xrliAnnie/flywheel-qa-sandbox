@@ -4,12 +4,11 @@ sequenceDiagram
     participant I as 实现节点
     participant Q as QA 节点
     participant D as 驱动器
-    M->>S: main 已前进,PR #517 冲突
-    S->>S: 技术同步合并 2bb23f05a(冲突只在流程文档文件夹)
-    S->>D: 计划 + Codex 评审 APPROVED + 设计 HTML
+    M->>S: 分支 = main,演练文件残留 FIXED-FOR-CLAIM 1
+    S->>D: 短 plan + Codex 评审 APPROVED + 设计 HTML
     D->>I: 派发(无 QA fix context)
     I->>I: 第 2 行 FIXED-FOR-CLAIM 1 → AWAITING-QA
-    I->>D: 交付 #1(run=417f5fe4 HANDIN1=sha)
+    I->>D: 交付 #1:开新 PR(run=b98e6529 HANDIN1=sha)
     D->>Q: 第 1 轮
     Q->>D: fixed-for-claim = fail(故意),产生 claim id
     D->>I: QA fix context: claim id
