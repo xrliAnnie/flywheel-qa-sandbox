@@ -32,9 +32,9 @@ README 明确「一份短 plan 足够，不写 research 文档」，因此探索
    ```
 
    写入命令：`printf 'QA-SBX FLY-3227 drill\nAWAITING-QA\n' > "$FILE"`。若 HEAD 中文件已逐字节相同，不为凑 diff 修改其他文件。
-3. **修复重交**仅从本轮 QA fix context 的内容首行，用 `^QA verdict to fix: claim (\S+)` 取首个非空白 token 作为 `CLAIM_ID`，把第 2 行改为 `FIXED-FOR-CLAIM <id>`。保留大小写与前导零；缺失或不匹配则不猜，使用节点失败通道。第 1 行与其他内容不得变化。若 HEAD 中文件已逐字节等于本轮修复目标，跳过文件写入和提交，继续账本、冻结版本与核验。
+3. **修复重交**先跳过 `## QA fix context (...)` 标题，再在该块的实际正文行用 `^QA verdict to fix: claim (\S+)` 取首个非空白 token 作为 `CLAIM_ID`；同一行的 `on head <40 字符 SHA>.` 给出本轮 QA 验证版本 `QA_HEAD`。SHA 是 Git 为一个提交分配的版本标识。只取当前提示中的这两个值，不从旧文件、标题或历史推断。把第 2 行改为 `FIXED-FOR-CLAIM <id>`，保留大小写与前导零；缺失或不匹配则不猜，使用节点失败通道。第 1 行与其他内容不得变化。若 HEAD 中文件已逐字节等于本轮修复目标，跳过文件写入和提交，继续账本、冻结版本与核验。
 4. 提交目标文件，采用普通消息 `docs(qa-sbx): FLY-3227 drill hand-in`；按节点要求用 `progress` 更新账本。工作树干净后冻结交付 SHA，推送正常快进分支，再由实现节点按自己的协议复用或创建 PR 并取得该精确 SHA 的 CI 证据。账本产生新提交后必须重新冻结、推送、核验。
-5. 首交交付摘要必须写 `HANDIN1=<完整 SHA>`，这是修复轮读取首交 SHA 的唯一来源；不要写入会自行改变 HEAD 的账本再当最终 SHA。修复轮先确认该 SHA 是 HEAD 的祖先，且其目标文件第 2 行为 `AWAITING-QA`，再核对目标文件只改第 2 行。摘要缺失或证据不符则用节点失败通道，不从 git log 或其他演练历史猜测。不得使用 force-push 或 `--no-verify`。
+5. 首交冻结最终版本后，在交付摘要和**本轮 PR 的正文**都记录唯一一条 `HANDIN1=<完整 SHA>`；写 PR 正文不会改变 Git 版本。不要把最终 SHA 写进会自行产生提交的账本。修复轮可用 `gh pr view <本轮 PR 号> --json body` 恢复它；缺少旧摘要不能直接失败。若 `HANDIN1` 可用，验证它等于 `QA_HEAD` 或是其祖先，且两者的完整目标文件都逐字节等于首交两行，再设 `REF="$HANDIN1"`。若它在本轮摘要和 PR 正文都不可用，则以当前 QA fix context 的已验证版本设 `REF="$QA_HEAD"`，仍逐字节检查该版本为首交两行。两种路径都要求 `git merge-base --is-ancestor "$QA_HEAD" HEAD` 及 `git merge-base --is-ancestor "$REF" HEAD` 成功，再核对 `REF` 至 HEAD 的目标文件只改第 2 行；冲突、缺失有效 QA_HEAD 或证据不符才走失败通道。不从 git log 或其他演练历史猜测，不使用 force-push 或 `--no-verify`。
 
 ## 验收与验证证据
 
@@ -50,7 +50,8 @@ QA 判轮只看本轮提示词是否有 QA re-verification context；不以分�
 
 - 首交逐字节检查：`printf 'QA-SBX FLY-3227 drill\nAWAITING-QA\n' | cmp - "$FILE"`；修复检查：`printf 'QA-SBX FLY-3227 drill\nFIXED-FOR-CLAIM %s\n' "$CLAIM_ID" | cmp - "$FILE"`，均应退出 0。提交后再以同样内容比较 `git show HEAD:"$FILE"`，避免只验证未提交内容。
 - 改前不匹配、改后匹配是本演练的红/绿证据。多一行、尾随空白、错 id、前导零变化都必须比较失败；`wc -l` 不能代替完整内容比较。
-- 无 main 同步合并时，相对 `BASE` 的文件清单只能是 `"$FILE"` 与 `engineering/doc/FLY-3227-real-runner-drill/progress.md`，逐字比较路径；其他文件即越界。PR 范围始终用共同祖先差异：`git diff --name-only origin/main...HEAD -- . ':(exclude)engineering/doc/FLY-3227-real-runner-drill'`，实现交付时必须恰好一行 `"$FILE"`；设计交付时应为空。不得用两点的树差异把 main 后来合入的兄弟演练误判成本轮改动。
+- 无 main 同步合并时，相对 `BASE` 的文件清单只能是 `"$FILE"` 与 `engineering/doc/FLY-3227-real-runner-drill/progress.md`，逐字比较路径；其他文件即越界。PR 范围始终用共同祖先差异：`git diff --name-only origin/main...HEAD -- . ':(exclude)engineering/doc/FLY-3227-real-runner-drill'`。本轮首交必须恰好一行 `"$FILE"`，设计交付时应为空。修复轮允许恰好一行 `"$FILE"`；只有共同祖先中的目标文件逐字节等于本轮期望修复内容时，才允许这个清单为空。任意其他路径、多个路径或共同祖先内容不符都拒绝。不得用两点的树差异把 main 后来合入的兄弟演练误判成本轮改动。
+- 修复轮还必须核对 `git diff "$REF"..HEAD -- "$FILE"`（正常路径即 `HANDIN1..HEAD`）：内容删除行仅为 `-AWAITING-QA`，内容新增行仅为 `+FIXED-FOR-CLAIM <本轮 id>`。同时逐字节比较 `git show "$REF:$FILE"` 与首交两行、`git show "HEAD:$FILE"` 与本轮修复两行，证明第 1 行及换行不变、没有多余行。共同祖先检查用 `MERGE_BASE=$(git merge-base origin/main HEAD)`，读取 `git show "$MERGE_BASE:$FILE"`，与 `printf 'QA-SBX FLY-3227 drill\nFIXED-FOR-CLAIM %s\n' "$CLAIM_ID"` 逐字节比较。本轮 id 若为 `1`，修复会回到 main 的旧内容，PR 层净差异为空是预期；本轮首交或 QA 验证版本至修复的补丁仍必须存在，不得因净差异为空跳过返工证据或精确版本 CI。
 - 如果节点协议要求同步 main，正常 merge `origin/main`，不改写历史。同步后不用 `BASE..HEAD` 的全树清单；改用上述共同祖先 PR 范围、HEAD 文件逐字节比较，以及首交/修复的目标文件补丁。仅本轮文档目录冲突可以保留本轮版本；遇到其他冲突先 abort，使用节点失败通道。
 - 核对实际提交消息和实际 PR 标题，不含 `[skip ci]`、`[ci skip]`、`[no ci]`、`[skip actions]`、`[actions skip]` 或 `skip-checks:`。历史提交不能当范本。精确交付 SHA 的 CI 是后续交付要求，本地文档检查不代表全套 CI 通过。
 - 设计 HTML 验证：本地渲染 SVG、无外部依赖、单一 nonce 脚本、逐节评论保存与恢复、跨路径隔离、长评论分块、剪贴板缺失与拒绝时的回退。发布后检查托管页面并保留成功发布与 Lead 报告收据。
