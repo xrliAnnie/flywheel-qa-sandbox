@@ -1,14 +1,13 @@
 ---
 issue: FLY-3225
 phase: design
-phaseCursor: 1/6
-updated: 2026-10-04T06:47:01.101Z
-nextStep: "re-dispatch audit: reuse plan.md, refresh design.html, run design
-  review for this exec"
+phaseCursor: 3/6
+updated: 2026-10-04T06:48:10.472Z
+nextStep: stage set design_review, Codex design review, then refresh founder HTML
 chunks: []
 pointers: {}
 ---
 
 # FLY-3225 progress
-**phase**: design (1/6)
-**next**: re-dispatch audit: reuse plan.md, refresh design.html, run design review for this exec
+**phase**: design (3/6)
+**next**: stage set design_review, Codex design review, then refresh founder HTML
