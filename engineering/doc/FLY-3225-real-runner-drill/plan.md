@@ -7,7 +7,7 @@ Issue: FLY-3225 (https://linear.app/geoforge3d/issue/FLY-3225/qa-sbx-fly-3225-re
 
 529 测试房间内，只用两行 Markdown 文件验证「首交 → QA 故意打回 → 按本次裁决编号修复 → 复验」；不改 Linear 的状态、评论或标签，不部署任何房间。
 
-本轮已 fetch 并读取 `origin/main:qa-sbx/fly3225/README.md`；main 版本 `2de71c2e2eec`，分支 `project-slot-3-FLY-3225`。继承的练习文件第二行是 `FIXED-FOR-CLAIM 1`，旧值和历史评审不是本轮的判轮依据。本轮 run 为 `37fb0f88-11d4-48d8-ba5d-0bd9b38bb51f`，设计执行为 `8994f3b1-703b-4e84-ad26-40d2f95a456e`。从 `acd40bbeeb545196513a725b17bc33c2cfd23c16` 继续保留已有计划和页面；既有 PR #542 已合并，只是历史证据。设计批准必须由本次执行重新注册的评审确认。
+本轮已 fetch 并读取 `origin/main:qa-sbx/fly3225/README.md`；main 版本 `bd42785c98e8`，分支 `project-slot-3-FLY-3225`。继承的练习文件第二行是 `FIXED-FOR-CLAIM 1`，那是上一轮（run `37fb0f88`，PR #549 已合并）的结果，只是历史证据，不是本轮的判轮依据。本轮 run 为 `ee861e33-a46c-42b1-8e4f-dcba059c2934`，设计执行为 `355da9df-c699-49cc-bcc7-4a49ad1f12a2`，从 main `bd42785c98e83707577d16ef04d096789b79e603` 起步，保留已有计划和页面并刷新本轮身份。设计批准必须由本次执行重新注册的评审确认。
 
 README 是演练内容契约：实现节点主动修改的唯一文件是 `qa-sbx/fly3225/<git 分支名>.md`。`flywheel-comm progress` 自动提交的本文件夹 `progress.md` 是流程账本。默认 milestone、DOC-FLOW 实现说明、相邻路径测试均不新增；完成摘要可写 `adjacent paths: N/A (docs-only drill)`。设计复用本文件夹，按 README 只写短计划，不新增探索或研究文档；保留流程强制的设计 HTML 和两份 Mermaid 图源。设计不改练习文件、不派发后继、不申请 ship、不合并。审计与方案比较记录在此短计划和页面：采用本次指令加持久账本；否决从旧文件推断轮次、增加代码或部署测试房间。
 
