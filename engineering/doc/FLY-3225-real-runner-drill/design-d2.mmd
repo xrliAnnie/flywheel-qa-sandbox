@@ -1,9 +1,11 @@
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"PingFang SC, sans-serif","primaryColor":"#f5f5f7","primaryTextColor":"#1d1d1f","primaryBorderColor":"#86868b","lineColor":"#4b5563"}}}%%
 stateDiagram-v2
-    [*] --> 全新分支
-    [*] --> 继承文件
-    全新分支 --> 首轮交付: 新建文件 第2行 AWAITING-QA
-    继承文件 --> 首轮交付: 本次 prompt 无 QA fix context 第2行改回 AWAITING-QA 已是则不动
-    继承文件 --> 复验交付: 本次 prompt 有 QA fix context 第2行 FIXED-FOR-CLAIM 编号
-    首轮交付 --> QA打回: fixed-for-claim 故意失败
-    QA打回 --> 复验交付: 第2行改为 FIXED-FOR-CLAIM 加 claim 编号
-    复验交付 --> [*]: 编号逐字一致 准则通过
+    direction TB
+    [*] --> 待实现: 可继承旧文件
+    待实现 --> 首交: 本轮首次交付
+    首交: 第2行 AWAITING-QA
+    首交 --> 修复: 首轮故意打回
+    待实现 --> 修复: 本次收到有效修复指令
+    修复: 第2行 FIXED-FOR-CLAIM 本次编号
+    修复 --> 复验通过: 本次编号逐字一致
+    复验通过 --> [*]
