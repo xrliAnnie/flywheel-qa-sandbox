@@ -1,32 +1,27 @@
 ---
 issue: FLY-3227
 phase: design
-phaseCursor: 5/6
-updated: 2026-10-04T10:56:17.493Z
-nextStep: "Mandatory committed design HTML published successfully with
-  --publish-only: reportId 6dd8dc888a7ba08ff008b05dd6b23156; URL
-  http://127.0.0.1:58024/fw-reports-d3ada2/r/6dd8dc888a7ba08ff008b05dd6b23156/ .
-  STE begin disabled, no unit/patch/cancel needed; successful hosted SHA256
-  1df2d801d5623ceaa63a0c693dc5587d9e2a630541e60e35402bb36f193b40d5, no fallback
-  indicated. DESIGN-HTML ready report sent via ask --report to flywheel-test-5,
-  receipt de3847e0-e45a-4e1f-aad9-5164ddb5465d. Hosted HTTP 200 and browser
-  checks PASS: minted nonce/matching injected CSP, 6 inputs, autosave/reload,
-  zero external requests/errors. Design gate
-  b46ce961-5dc8-4c84-b074-5ec20e2ced2f checked once this turn and pending;
-  request 11456e53-e4fe-4dc9-ba32-fcf1bc8eac6e accepted; unchanged committed
-  plan blob f8e8fe0c85ac9e61f361ecf913da36087e293b94. Artifact commit
-  99f9c90e5cb977f710c9d1ba76314958e026a005 pushed. Next: own wait watcher for
-  this question and end current turn; on wake FIRST turn then check gate and
-  wait ack. Effective APPROVED required before phase_design_complete, then park;
-  advisories reported to Lead if present. Scope interpretation: README short
-  plan containing exploration/local research; required existing
-  page/diagram/ledger are workflow records. No implementation, Linear changes,
-  room deployment, successor dispatch, PR creation or ship actions. Exact-head
-  CI is downstream PR responsibility and not claimed locally."
+phaseCursor: 3/6
+updated: 2026-10-04T11:00:03.582Z
+nextStep: "Round-1 gate b46ce961-5dc8-4c84-b074-5ec20e2ced2f effective
+  CHANGES_REQUESTED; request 11456e53-e4fe-4dc9-ba32-fcf1bc8eac6e. HIGH
+  findingKey pr-scope-empty-on-claim-1 reproduced: inherited main fixture is
+  already FIXED-FOR-CLAIM 1, so valid claim-1 repair has empty net fixture PR
+  diff. Fix plan to allow empty PR fixture diff only with merge-base byte
+  equality plus current-run first-handoff-to-HEAD line-2-only patch proof;
+  retain one-file first-handoff scope and reject unrelated paths. MEDIUM
+  handin1-sole-source-brittle: persist HANDIN1 in current PR body and allow
+  verified QA fix-context head when prior summary missing, with byte/ancestry
+  cross-check. LOW fix-context-heading-line: skip context heading, parse actual
+  verdict line. Verified live QA context renderer emits heading then claim line
+  with 40-char head. New STE begin disabled. Next: revise plan/page, narrow
+  probe (no implementation file changes), commit/push, NEW design gate/request,
+  publish/report revised page; do not complete until effective APPROVED.
+  Original HTML publication retained as prior version, no ambiguous retry."
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
-**phase**: design (5/6)
-**next**: Mandatory committed design HTML published successfully with --publish-only: reportId 6dd8dc888a7ba08ff008b05dd6b23156; URL http://127.0.0.1:58024/fw-reports-d3ada2/r/6dd8dc888a7ba08ff008b05dd6b23156/ . STE begin disabled, no unit/patch/cancel needed; successful hosted SHA256 1df2d801d5623ceaa63a0c693dc5587d9e2a630541e60e35402bb36f193b40d5, no fallback indicated. DESIGN-HTML ready report sent via ask --report to flywheel-test-5, receipt de3847e0-e45a-4e1f-aad9-5164ddb5465d. Hosted HTTP 200 and browser checks PASS: minted nonce/matching injected CSP, 6 inputs, autosave/reload, zero external requests/errors. Design gate b46ce961-5dc8-4c84-b074-5ec20e2ced2f checked once this turn and pending; request 11456e53-e4fe-4dc9-ba32-fcf1bc8eac6e accepted; unchanged committed plan blob f8e8fe0c85ac9e61f361ecf913da36087e293b94. Artifact commit 99f9c90e5cb977f710c9d1ba76314958e026a005 pushed. Next: own wait watcher for this question and end current turn; on wake FIRST turn then check gate and wait ack. Effective APPROVED required before phase_design_complete, then park; advisories reported to Lead if present. Scope interpretation: README short plan containing exploration/local research; required existing page/diagram/ledger are workflow records. No implementation, Linear changes, room deployment, successor dispatch, PR creation or ship actions. Exact-head CI is downstream PR responsibility and not claimed locally.
+**phase**: design (3/6)
+**next**: Round-1 gate b46ce961-5dc8-4c84-b074-5ec20e2ced2f effective CHANGES_REQUESTED; request 11456e53-e4fe-4dc9-ba32-fcf1bc8eac6e. HIGH findingKey pr-scope-empty-on-claim-1 reproduced: inherited main fixture is already FIXED-FOR-CLAIM 1, so valid claim-1 repair has empty net fixture PR diff. Fix plan to allow empty PR fixture diff only with merge-base byte equality plus current-run first-handoff-to-HEAD line-2-only patch proof; retain one-file first-handoff scope and reject unrelated paths. MEDIUM handin1-sole-source-brittle: persist HANDIN1 in current PR body and allow verified QA fix-context head when prior summary missing, with byte/ancestry cross-check. LOW fix-context-heading-line: skip context heading, parse actual verdict line. Verified live QA context renderer emits heading then claim line with 40-char head. New STE begin disabled. Next: revise plan/page, narrow probe (no implementation file changes), commit/push, NEW design gate/request, publish/report revised page; do not complete until effective APPROVED. Original HTML publication retained as prior version, no ambiguous retry.
