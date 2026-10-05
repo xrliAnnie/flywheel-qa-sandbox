@@ -10,7 +10,8 @@ Issue: FLY-3227 (https://linear.app/geoforge3d/issue/FLY-3227/qa-sbx-fly-3227-re
 ## 实现步骤
 
 1. `flywheel-comm turn` 为 `yours` 才写工作树。轮次只由 runner 提示正文决定（是否含 QA fix context / QA re-verification context）；`flywheel-comm inbox` 只用于确认有无 Lead 指令（本房间无人类 Lead），不构成 README 之外的验收条件。
-2. 设 `FILE=qa-sbx/fly3227/$(git branch --show-current).md`。提示中**没有** QA fix context：`EXPECTED='QA-SBX FLY-3227 drill\nAWAITING-QA\n'`，即使旧文件已有 claim。
+2. 上下文分工：实现节点只看 **QA fix context**（README 实现段）；**QA re-verification context** 是 QA 节点的上下文。实现节点提示若含 re-verification context 却无 QA fix context，或两者都在而 `QA verdict to fix: claim <id>` 与 `Previous QA verdict: claim <id>` 的 id 不逐字一致 → `complete --route blocked`，不写文件。
+   设 `FILE=qa-sbx/fly3227/$(git branch --show-current).md`。提示中**既无** QA fix context **也无** re-verification context：`EXPECTED='QA-SBX FLY-3227 drill\nAWAITING-QA\n'`，即使旧文件已有 claim。
 3. 提示中**有** QA fix context：从其首行 `QA verdict to fix: claim <id> ...` 逐字取 `<id>`（缺失或无法解析则 `complete --route blocked`，不猜），`EXPECTED='QA-SBX FLY-3227 drill\nFIXED-FOR-CLAIM <id>\n'`。第 1 行不动。
 4. 按序核验，任一步非零即停：
    - 写入：`printf "$EXPECTED" > "$FILE"`
@@ -24,7 +25,7 @@ Issue: FLY-3227 (https://linear.app/geoforge3d/issue/FLY-3227/qa-sbx-fly-3227-re
 | 准则 id | 首轮 | 再验收轮 |
 |---|---|---|
 | `file-shape` | 文件存在且第 1 行逐字为 `QA-SBX FLY-3227 drill` | 相同 |
-| `fixed-for-claim` | 必 `fail`，evidence `round 1: no previous QA claim yet` | 第 2 行逐字为 `FIXED-FOR-CLAIM <id>`（id 取自 `Previous QA verdict: claim <id>`）才 `pass` |
+| `fixed-for-claim` | 提示无 re-verification context 时必 `fail`，evidence `round 1: no previous QA claim yet` | 仅当第 2 行逐字为 `FIXED-FOR-CLAIM <id>` 且 id 取自 `Previous QA verdict: claim <id>` 才 `pass`；缺 id 或不一致即 `fail` |
 | `e2e_529_exempt` | `not_run`，`exempt_category: docs_only`，reason：纯文档沙盒演练，禁止部署房间 | 相同 |
 
 标题 <120 字符，evidence <80 字符。
