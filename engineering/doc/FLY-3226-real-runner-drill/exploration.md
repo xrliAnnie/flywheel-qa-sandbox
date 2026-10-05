@@ -1,6 +1,6 @@
 # FLY-3226 真 Runner 通用演练(529 房间) — 探索
 Issue: FLY-3226 (https://linear.app/geoforge3d/issue/FLY-3226/qa-sbx-fly-3226-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-03(首轮);2026-10-04 追加 §5(run `fee0ab7d`)、§6(run `4a9c615e`)、§7(run `76b1635c`)、§11(run `b00b1faf`);2026-10-05 追加 §12(run `6b794ca0`)
+日期: 2026-10-03(首轮);2026-10-04 追加 §5(run `fee0ab7d`)、§6(run `4a9c615e`)、§7(run `76b1635c`)、§11(run `b00b1faf`);2026-10-05 追加 §12(run `6b794ca0`)、§13(run `a8c92934`)
 基于: 无
 
 ## 1. 任务来源
@@ -106,3 +106,12 @@ run `b00b1faf` 已走完并由 PR #568 合入 main(`6311d2e7a`,2026-10-05T03:25Z
 - progress.md 原带 run `b00b1faf` 的 handoff(plan blob `f344b18e`、request `03436b5a`、thread `01a109ed`、"续接 PR 568"、旧 HTML 链接);开工即用 `--handoff` 覆盖(提交 `c9db86425`),这些指针本轮一律不认。上一轮 plan §2 的"续接 OPEN PR #568"对本轮**不成立**,plan 按本节改写。
 - research.md 仍按 README 省略(见 §1);本轮"调研"只是上面这些事实核对。
 - 结论:plan 骨架沿用 §9/§10 的重置态(新 PR);只更新起点快照、run id 与"旧指针"清单;设计 HTML 与两张图按本轮起点重画。
+
+## 13. 第十二次派发(run `a8c92934`,exec `80eb7a40`,节点 `eng_design`,2026-10-05,slot-4)
+
+run `6b794ca0` 已走完并由 PR #586 合入 main(`555372a42`)。本轮同名分支再次派发,形态与 §12 相同(重置态,开新 PR):
+
+- 派发起点 = 本地 HEAD = `555372a42`;之后 `origin/main` 只多了无关的 `573f7592e`(FLY-3224 #585),不碰本练习单。
+- 远端**没有**本分支(`git ls-remote` 为空;本地 `origin/project-slot-4-FLY-3226` 跟踪引用 `39123bd2d` 是陈旧残留,不作推送依据,push 是新建分支);#539…#586 全部 MERGED,没有 OPEN 的 PR。
+- `origin/main:$F` = `QA-SBX FLY-3226 drill` / `FIXED-FOR-CLAIM 1`(PR #586 残留)→ 交付 #1 是**重置**。
+- progress.md 原带 run `6b794ca0` 的 handoff(plan blob `d3e75945`、request `3f9ba602`、thread `01a10b96`、旧 HTML 链接);开工即用 `--handoff` 覆盖(`3e2028f37`),旧指针本轮一律不认。plan 只改派发快照与 run 标识,步骤沿用 run `6b794ca0` 已批准版本(blob `d3e75945`)。
