@@ -51,7 +51,7 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 - **何时同步**:只在 PR 显示 `CONFLICTING` 或节点契约明确要求时;同步 = `git fetch origin main && git merge --no-ff origin/main`(强制产生合并提交,让下面的 `rev-list --merges` 判定必然命中;不 rebase、不 force-push)。若 `origin/main` 已是 HEAD 祖先(`git merge-base --is-ancestor origin/main HEAD` 退出码 0),或 main 的新提交与本 issue 文件夹、`"$F"` 路径不相交且 PR 不是 `CONFLICTING`,不同步 —— 本轮派发时属后者。
 - **冲突处理**:冲突只允许落在 `engineering/doc/FLY-3150-real-runner-drill/` 内 —— 保留本轮 slot-1 版本(`git checkout --ours -- <path>`),并在 exploration.md 追加新小节记录对方运行来源(不静默丢弃);冲突落在该文件夹之外(含 `"$F"`)→ `git merge --abort`,走失败通道。
 - **判定**:交付区间(交付 #1 `$BASE..$HANDIN1`,交付 #2 `$PREV..$HANDIN2`)里 `git rev-list --merges <区间>` 非空 → 用下面的核验**替代**交付 #1 第 6(a)(b)(c) 步、交付 #2 第 2 步的交付间范围与第 6(a)(c) 步;为空 → 仍用原限制。
-- 发生同步时,交付区间里的合并提交按本节处理,不套用 §3 第 6(a) 的提交计数;实现提交本身(合并之外)仍须恰好 1 个(跳过 / 已修复分支为 0),用 `git rev-list --no-merges --count <区间> -- "$F"` 核对。
+- 发生同步时,交付区间里的合并提交按本节处理,不套用 §3 第 6(a) 的提交计数;实现提交本身(合并之外)仍须恰好 1 个(跳过 / 已修复分支为 0),用 `git rev-list --no-merges --count <区间> ^origin/main -- "$F"` 核对(`^origin/main` 排除同步带入的 main 提交,只数本分支自己的实现提交;交付 #2 的返工证据仍是 `$PREV..$HANDIN2` 的 patch 检查)。
 - **同步后的核验**(工作树干净、所有提交含 ledger 之后才冻结 HANDIN):交付 #1 —— §1 的 PR 级断言对 `$HANDIN1` 通过,且 `git show $HANDIN1:"$F"` 逐字节等于 `AWAITING-QA` 两行;交付 #2 —— `PREV` 不变(照旧做祖先检查),`git diff $PREV..$HANDIN2 -- "$F"` 的 patch 恰为 `-AWAITING-QA` / `+FIXED-FOR-CLAIM $ID`,§1 的 PR 级断言对 `$HANDIN2` 通过,`git show $HANDIN2:"$F"` 逐字节等于两行。推送后照旧确认分支头 / PR 头一致且该 PR head 的 CI 成功;交付摘要注明发生过同步。
 
 ## 4. QA 节点
