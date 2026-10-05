@@ -598,3 +598,4 @@ TURN:`yours phase=design epoch=1 run=4dea7fe2… node=eng_design attempt=1`(exec
 - run `ef0f0e9c` 的 PR #606 已合入、远端分支已删;本地分支 = `origin/main` = `e1c2e258d`(#606 之后主干只多了 FLY-3225/3227/3228 三个别的文件夹的演练提交)→ 不同步,首次推送新建远端分支并新开 PR。
 - 起点:`"$F"` = main 上残留的 `FIXED-FOR-CLAIM 1` → 交付 #1 走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`)。旧 progress.md handoff(`run=ef0f0e9c attempt=2; QA claim=1; PREV=6a57d6b7…`)不是本轮证据。
 - 与 §39 同形,plan 沿用 §39 已评审结构,只更新本轮起点与 run id;§39 的 LOW(交付 #1 同步判定区间)本轮不同步、不受影响,仍保留为已知提示。
+- Codex 设计评审(gpt-6-astra/xhigh,thread `01a10e47-7fa9…`)第 1 轮 APPROVED,干净 "Turn completed";HIGH 0 / MEDIUM 0 / LOW 1(仍是 §39 的同步判定区间提示,本轮不同步、不受影响)。已评审 plan blob `b4a38ee7…`。
