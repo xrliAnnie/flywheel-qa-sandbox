@@ -1,7 +1,7 @@
 # FLY-3226 真 Runner 通用演练(529 房间) — 实施计划
 Issue: FLY-3226 (https://linear.app/geoforge3d/issue/FLY-3226/qa-sbx-fly-3226-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-05(run `6b794ca0`,exec `7530071a`,设计节点 `eng_design`,slot-4)
-基于: exploration.md §12(README 规定"一份短 plan 足够,不需要 research 文档")
+日期: 2026-10-05(run `a8c92934`,exec `80eb7a40`,设计节点 `eng_design`,slot-4)
+基于: exploration.md §13(README 规定"一份短 plan 足够,不需要 research 文档")
 
 ## 1. 范围
 
@@ -12,10 +12,10 @@ Issue: FLY-3226 (https://linear.app/geoforge3d/issue/FLY-3226/qa-sbx-fly-3226-re
 
 ## 2. 起点(派发快照)
 
-- 分支起点 = `ab48f1517`(= 派发时 `origin/main`);本分支此前所有 PR(#539/#541/#546/#548/#557/#560/#563/#568)均 MERGED,远端没有本分支,也没有 OPEN 的 PR → 交付 #1 推分支、开**新 PR**。上一轮 plan 的"续接 OPEN PR #568"对本轮不成立。
-- #568 合入(`6311d2e7a`)后 main 只多了与本演练无关的 FLY-3224/3225/3227/3228 提交,不需要同步;PR 若 `CONFLICTING` 按 §3 通则走 blocked(不合并)。
-- `origin/main:"$F"` = `QA-SBX FLY-3226 drill\nFIXED-FOR-CLAIM 1\n`(PR #568 残留)→ 交付 #1 是**重置**。
-- 旧 run(`b00b1faf` 及更早)的 HANDIN / claim / 评审 / CI / PR 正文 / 设计 HTML 链接一律不作本轮证据;ledger handoff 已在本轮开头用 `--handoff` 覆盖(`c9db86425`)。
+- 分支起点 = `555372a42`(= 派发时本地 HEAD,PR #586 合入点);本分支此前所有 PR(#539…#568、#586)均 MERGED,`git ls-remote` 显示远端没有本分支(本地 `origin/project-slot-4-FLY-3226` 跟踪引用是陈旧残留,不作依据),也没有 OPEN 的 PR → 交付 #1 推分支、开**新 PR**。
+- 派发后 main 只多了与本演练无关的 `573f7592e`(FLY-3224),不需要同步;PR 若 `CONFLICTING` 按 §3 通则走 blocked(不合并)。
+- `origin/main:"$F"` = `QA-SBX FLY-3226 drill\nFIXED-FOR-CLAIM 1\n`(PR #586 残留)→ 交付 #1 是**重置**。
+- 旧 run(`6b794ca0` 及更早)的 HANDIN / claim / 评审 / CI / PR 正文 / 设计 HTML 链接一律不作本轮证据;ledger handoff 已在本轮开头用 `--handoff` 覆盖(`3e2028f37`)。
 
 ## 3. 实现(后继实现节点)
 
@@ -27,7 +27,7 @@ Issue: FLY-3226 (https://linear.app/geoforge3d/issue/FLY-3226/qa-sbx-fly-3226-re
 1. `BASE=$(git rev-parse HEAD)`。若工作树干净且 `git show "$BASE:$F" | cmp - <(exp1)` 退出 0 → 已就绪态(重试时可能出现,按**已提交**字节判断,只写进工作树不算):不做内容提交,`IMPL1="$BASE"`。否则(本轮预期)`exp1 > "$F"`,`exp1 | cmp - "$F"` 自检,只 `git add "$F"`,提交 `docs(qa-sbx): FLY-3226 drill hand-in`,`IMPL1=$(git rev-parse HEAD)`。
 2. 写 ledger(`progress … --phase implement --cursor 1/2`,它自行 path-limited 提交 `$L`);工作树干净后 `HANDIN1=$(git rev-parse HEAD)`。
 3. 核验:(a) `$BASE..$IMPL1` 为空,或恰好 `M "$F"` 且 patch 只有第 2 行 `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`;(b) `$IMPL1..$HANDIN1` 只含 `"$L"`,无合并提交;(c) PR 级 `git diff --name-only origin/main...$HANDIN1 -- . ':(exclude)engineering/doc/FLY-3226-real-runner-drill'` 恰好一行 `"$F"`;(d) `git show "$HANDIN1:$F" | cmp - <(exp1)` 退出 0。任一不过 → 停,走 blocked。
-4. `git push -u origin HEAD`(fast-forward,不 force);若无 OPEN PR 则 `gh pr create`,标题 `FLY-3226 QA-SBX FLY-3226 real-runner drill (run 6b794ca0)`,正文写 `run=6b794ca0 HANDIN1=<完整 SHA>`、核验结果、`e2e_529_exempt`(not_run / docs_only / 原因)说明;若重试时已有本轮 OPEN PR,则复用它,不重复开。确认远端头 = PR 头 = `$HANDIN1` 后,按实现节点自身注入的完成命令交付。
+4. `git push -u origin HEAD`(fast-forward,不 force);若无 OPEN PR 则 `gh pr create`,标题 `FLY-3226 QA-SBX FLY-3226 real-runner drill (run a8c92934)`,正文写 `run=a8c92934 HANDIN1=<完整 SHA>`、核验结果、`e2e_529_exempt`(not_run / docs_only / 原因)说明;若重试时已有本轮 OPEN PR,则复用它,不重复开。确认远端头 = PR 头 = `$HANDIN1` 后,按实现节点自身注入的完成命令交付。
 
 **交付 #2(提示词有 "QA fix context",首行 `QA verdict to fix: claim <id> ...`)**
 1. 用 `^QA verdict to fix: claim (\S+)` 取 `ID`,原样复制;取不到 → blocked,不猜。
