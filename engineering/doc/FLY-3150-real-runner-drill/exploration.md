@@ -538,3 +538,10 @@ TURN:`yours phase=design epoch=1 run=4dea7fe2… node=eng_design attempt=1`(exec
 **结论**:与 §31(run `4dea7fe2`)同形 —— 目标已是 `AWAITING-QA`,交付 #1 走跳过分支,复用 OPEN PR #565。上一轮的 HANDIN、`IMPL1=7b15f485…`、评审、CI 都不是本轮证据。
 
 **设计评审(run `c56b5f01`)**:Codex(gpt-6-luna/xhigh,profile `school`,thread `01a10b6a-5d6e…`)。R1(turn `01a10b6a-63d3…`)CHANGES_REQUESTED:HIGH = ledger 提交落进 `BASE..HANDIN` 交付区间;P2 = `gh pr list --jq '.[0].number'` 空结果为 `null`。修复 = 「账本先行」(ledger 在冻结 `BASE` 之前,`HANDIN` = 实现提交,跳过分支 `HANDIN=BASE`,冻结后再写 ledger 即重新交付)+ `// empty`。R2(turn `01a10b72-af0b…`,blob `c5b889a8…`,request `d92d5a8c…`)APPROVED,"Turn completed";design-review.json rounds=2 / finalRound=2,`await-codex-gate design` 通过。founder HTML `design.html` 与 `d1-core-flow.*` 已覆盖为本轮版本。
+
+## 33. 本次派发审计(run `5dbe2353`,2026-10-05,slot-1)
+
+- 派发:exec `2f164e6d`,TURN `yours phase=design epoch=7`,inbox 无指令。README(`origin/main:qa-sbx/fly2167/README.md`)与上一轮一致,重读无变化。
+- **新形态**:本地分支被重建在 `origin/main` `ab48f1517` 上(本地 = main,`"$F"` 也是 main 上的 `FIXED-FOR-CLAIM 1`),而 `origin/project-slot-1-FLY-3150` / OPEN PR #565 头是 run `c56b5f01` 的返工交付 `d6f34eb29`,领先 main 73、落后 8。直接从本地推送会是 non-fast-forward。处理:`git reset --hard origin/project-slot-1-FLY-3150`(本地无独有提交,无损)→ `git merge --no-ff origin/main`(`83d64747a`,`git merge-tree` 预检无冲突;main 的 8 个提交只碰 FLY-3224…3228 文件夹与 milestones)。
+- 起点:`HEAD:"$F"` = `FIXED-FOR-CLAIM 1` → 交付 #1 走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`)。合并后 `origin/main` 是 HEAD 祖先,实现节点不再同步。
+- 旧 progress.md handoff 指向 run `76a1d8a2`,是更早残留,不作 PREV。
