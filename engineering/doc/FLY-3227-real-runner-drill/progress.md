@@ -1,13 +1,14 @@
 ---
 issue: FLY-3227
-phase: implement
-phaseCursor: 2/2
-updated: 2026-10-05T19:41:42.426Z
-nextStep: push, review, CI, complete
+phase: design
+phaseCursor: 4/4
+updated: 2026-10-05T23:01:58.213Z
+nextStep: "implement: per plan.md, prompt round decides line 2 (no QA fix
+  context => AWAITING-QA); reuse PR #595"
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
-**phase**: implement (2/2)
-**next**: push, review, CI, complete
+**phase**: design (4/4)
+**next**: implement: per plan.md, prompt round decides line 2 (no QA fix context => AWAITING-QA); reuse PR #595
