@@ -7,9 +7,9 @@ Issue: FLY-3225 (https://linear.app/geoforge3d/issue/FLY-3225/qa-sbx-fly-3225-re
 
 在 529 沙盒房间，用两行文件验证「首交 → 独立 QA 故意打回 → 按本次裁决编号修复 → 复验」。QA 是独立验收角色；claim 是其生成的裁决编号。
 
-已 fetch 并读取 `origin/main:qa-sbx/fly3225/README.md`，main/接手基线为 `39754a41985b9c91430d6ab9086e678a6cd35e68`；分支为 `project-slot-3-FLY-3225`。本次 run 为 `d470760d-b6ec-4a8e-a743-86495c9dcaf0`，设计 exec 为 `f95dd2a1-fbbf-469c-adfd-5e5d296d316e`，TURN 为 design/epoch 1/attempt 1。现有练习文件第二行为 `FIXED-FOR-CLAIM 1`，现有账本、评审和旧 PR #561 属于旧 run，均不能决定本轮轮次或代表本次批准。
+已 fetch 并读取 `origin/main:qa-sbx/fly3225/README.md`，main/接手基线为 `c68c2b7d4639ed9a1019faa05dc4414c340d3396`；分支为 `project-slot-3-FLY-3225`。本次 run 为 `33870046-da46-45b4-a344-5c73b46b9606`，设计 exec 为 `1391710a-833b-4b50-a5b3-371afd34cdaf`，activation 为 `activation:1391710a-833b-4b50-a5b3-371afd34cdaf:33870046-da46-45b4-a344-5c73b46b9606:eng_design:1`，TURN 为 design/epoch 1/attempt 1。现有练习文件第二行为 `FIXED-FOR-CLAIM 1`，继承的账本、评审和旧 PR #573 属于旧 run，均不能决定本轮轮次或代表本次批准。
 
-任务书要求短计划、不另写研究文档，因此探索、调研结论及取舍收在本计划。注入的设计完成契约另外明确要求复用本目录的 `design.html`、本地 Mermaid 图源和工具管理的 `progress.md`。这些是设计交付物；实现节点主动修改的唯一交付文件是 `qa-sbx/fly3225/<当前 git 分支名>.md`。设计节点不写练习文件；不改 Linear 状态、评论或标签，不改 README、代码或兄弟练习单，不部署房间。
+任务书要求短计划、不另写研究文档，因此探索、调研结论及取舍收在本计划。已核对任务书、现有练习文件、旧设计和进度记录；不需要外部调研。注入的设计完成契约另外明确要求复用本目录的 `design.html`、本地 Mermaid 图源和工具管理的 `progress.md`。这些是设计交付物；实现节点主动修改的唯一交付文件是 `qa-sbx/fly3225/<当前 git 分支名>.md`。设计节点不写练习文件；不改 Linear 状态、评论或标签，不改 README、代码或兄弟练习单，不部署房间。
 
 ## 实施步骤
 
