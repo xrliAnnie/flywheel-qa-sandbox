@@ -567,3 +567,4 @@ TURN:`yours phase=design epoch=1 run=4dea7fe2… node=eng_design attempt=1`(exec
 - run `fc930bd2` 的 PR #594 已合入、远端分支已删;本地分支 = `origin/main` = `e63535617` → 不同步,首次推送新建远端分支并新开 PR。
 - 起点:`"$F"` = main 上残留的 `FIXED-FOR-CLAIM 1` → 交付 #1 走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`)。旧 progress.md handoff(`run=fc930bd2 attempt=2; QA claim=1; PREV=1b286ca2…`)不是本轮证据。
 - 与 §35 同形,plan 沿用 §35 已评审(含 Codex r1 HIGH 修复后的文件夹白名单)结构,只更新本轮起点与 run id。
+- **设计评审(run `dd21313e`)**:Codex(gpt-6-luna/xhigh,profile `business`,thread `01a10cf2-ff6d…`)。R1(turn `01a10cf3-05b6…`)CHANGES_REQUESTED:HIGH = README 只授权一个文件,计划放行文档文件夹。处置 = plan §1 断言 6:写明运行时节点契约(DOC-FLOW / 进度账本 / 设计 HTML)优先于仓库 README、不可删除,演练内容仍单文件,白名单封闭,交付摘要与 PR 正文显式披露。R2(turn `01a10cf8-0457…`,blob `a86c97a5…`,request `e01617ba…`)零发现 APPROVED,"Turn completed"。

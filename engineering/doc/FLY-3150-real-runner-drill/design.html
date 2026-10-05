@@ -26,7 +26,7 @@ pre{white-space:pre-wrap;word-break:break-word;background:#f0f0f3;border-radius:
 <tr><th>分支头(派发时)</th><td>本地分支 = 主干 <code>e63535617</code>(上一轮 run fc930bd2 的 PR #594 已合入,远端同名分支已删)。主干就是分支本身 → 不做主干同步(merge = 把主干新提交并进来)。第一次推送新建远端分支,不强推</td></tr>
 <tr><th>PR</th><td>没有开着的同名 PR → 本轮第 1 次交付新开一个。PR = 合并请求,把分支改动提交给主干审核的单子。其他同名旧 PR(含 #594、#565)已合入或关闭</td></tr>
 <tr><th>演练文件现状</th><td>分支与主干上都是残留的 <code>FIXED-FOR-CLAIM 1</code> → 第 1 次交付走正常重置(1 个实现提交,第 2 行由 FIXED-FOR-CLAIM 1 变为 AWAITING-QA),PR 相对主干的差异恰好是这一个文件。这样也杜绝「残留 claim 碰巧和本轮 claim 同号 → 重验假通过」</td></tr>
-<tr><th>本节点已做</th><td>确认主干改动与本 issue 路径不相交(无需同步)、更新短 plan、追加 exploration §36 审计、过 Codex 设计评审(第 1 轮通过)、更新进度账本(progress.md,让中断后能从原位置继续的记录)</td></tr>
+<tr><th>本节点已做</th><td>确认主干改动与本 issue 路径不相交(无需同步)、更新短 plan、追加 exploration §36 审计、过 Codex 设计评审(第 1 轮要求修改,第 2 轮通过)、更新进度账本(progress.md,让中断后能从原位置继续的记录)</td></tr>
 </table>
 <textarea class="cmt" data-key="s2" aria-label="对「本轮起点」的意见" placeholder="对这一节的意见(自动保存)"></textarea></section>
 
@@ -45,6 +45,7 @@ pre{white-space:pre-wrap;word-break:break-word;background:#f0f0f3;border-radius:
 <ul>
 <li><span class="badge ok">采纳</span><b>第 1 次交付只看分支头上的文件字节</b>:已等于 <code>AWAITING-QA</code> 两行就走跳过分支,否则必须重置。<br><span class="badge no">否决</span>只看「文件存在」就跳过:残留的 <code>FIXED-FOR-CLAIM 1</code> 会让 claim 编号恰为 1 时「假通过」。<br><span class="badge no">否决</span>为了「看起来有改动」再造一个空提交:违反「只碰一个文件」,也没有证据价值。</li>
 <li><span class="badge ok">采纳</span><b>PR 级检查「只能为空或恰好演练文件 + 交付头字节精确 + 为空仅当合并基已含期望字节」</b>。<br><span class="badge no">否决</span>「必须恰好一行」:claim 编号为 1 时合法交付会被误判失败。<br><span class="badge no">否决</span>为了让差异非空去改别的内容:违反 README「只碰一个文件」。</li>
+<li><span class="badge ok">采纳</span><b>流程记账文件随分支一起交付,但封闭在白名单里并在 PR 里写明</b>:节点规则要求设计文档、进度账本、本页必须提交到同一分支;演练改动本身仍只有一个文件,QA 也只看它。<br><span class="badge no">否决</span>把记账文件从分支上删掉、让 PR 只含演练文件(Codex 第 1 轮建议):节点规则优先于沙盒说明文件,删不掉;改为把冲突写明而不是悄悄放宽(第 2 轮通过)。</li>
 <li><span class="badge ok">采纳</span><b>账本先行</b>:每次交付先写进度账本,再冻结开工点 BASE,交付区间只含目标文件那一笔提交(跳过分支则为空)。<br><span class="badge no">否决</span>先改文件、后写账本再交付:交付区间会夹带账本提交,「只碰一个文件」无法对整个区间成立(Codex 第 1 轮指出)。</li>
 <li><span class="badge ok">采纳</span><b>返工只认本轮交付 #1 摘要里的 <code>run=dd21313e HANDIN1</code></b>。<br><span class="badge no">否决</span>沿用已合入的 PR #594 上一轮的交付头、评审、CI 或 QA 结论,或从 git 历史 / 旧进度账本里找指纹:那是别的轮次的证据,会让核验对错对象。</li>
 <li><span class="badge ok">采纳</span><b>主干若在两次交付之间前进,用普通合并同步</b>,冲突只允许在流程文档文件夹内。<br><span class="badge no">否决</span>rebase / 强推(force-push,覆盖远端历史):会改写共享分支,护栏明令禁止。</li>
