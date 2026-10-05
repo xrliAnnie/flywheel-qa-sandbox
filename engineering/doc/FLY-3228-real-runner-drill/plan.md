@@ -4,7 +4,7 @@ Issue: FLY-3228 (https://linear.app/geoforge3d/issue/FLY-3228/qa-sbx-fly-3228-re
 日期: 2026-10-05
 基于: 无(README 规定"一份短 plan 足够,不需要 research 文档",所以本档不出 exploration/research;本文件是上一轮已合并 plan 的本轮改写版)
 
-本轮:run `9a1676ff-6b94-41c8-a0a9-dfa3eb3d4e7c`,设计节点 exec `e68e4dca-885c-4529-8d37-2898d4db0f7d`(全新派发,分支从当前 `origin/main` `ab48f1517` 起步;main 上的 plan/HTML/progress 都是上一轮 run `617c41a6` 经 PR #582 合并进去的产物,本文件为本轮改写版)。
+本轮:run `631aa850-801c-4eb1-8c07-7fcf9caab835`,设计节点 exec `ffeaf00c-b053-4bd4-bc26-ac634d41bbdc`(全新派发,分支从当前 `origin/main` `09806ae2d` 起步;main 上的 plan/HTML/progress 都是上一轮 run `9a1676ff` 经 PR #587 合并进去的产物,本文件为本轮改写版)。
 
 ## 1. 范围
 
@@ -20,9 +20,9 @@ Issue: FLY-3228 (https://linear.app/geoforge3d/issue/FLY-3228/qa-sbx-fly-3228-re
 
 ## 2. 起点(设计节点派发时快照,仅供参考)
 
-- 设计节点派发时:本地分支 `project-slot-6-FLY-3228` 头 = `origin/main` = `ab48f1517`(上一轮 PR #582 的合并提交),工作树干净;**远端分支不存在**(`git ls-remote origin refs/heads/project-slot-6-FLY-3228` 为空,设计节点首次推送时新建)。`gh pr list --head project-slot-6-FLY-3228 --state all` 只有前几轮已 MERGED 的 #525、#545、#551、#575、#582(都不复用,本轮开新 PR)。
+- 设计节点派发时:本地分支 `project-slot-6-FLY-3228` 头 = `origin/main` = `09806ae2d`(main 当前头;上一轮本 issue 的 PR #587 已合并在其之前),工作树干净;**远端分支不存在**(`git ls-remote origin refs/heads/project-slot-6-FLY-3228` 为空,设计节点首次推送时新建)。`gh pr list --head project-slot-6-FLY-3228 --state all` 只有前几轮已 MERGED 的 #525、#545、#551、#575、#582、#587(都不复用,本轮开新 PR)。
 - **目标文件已存在于 main**,内容是上一轮遗留的 `QA-SBX FLY-3228 drill` / `FIXED-FOR-CLAIM 1`。所以本轮交付 #1 是**修改**(`M`,第 2 行 → `AWAITING-QA`),不是新增。
-- main 上的旧 plan、旧 HTML/图、旧 `progress.md`(run `617c41a6`,其中 PR #582、`PREV/HANDIN1=7abeab01…`、claim 1、review gate / requestId)都来自之前的轮次;其中的 claim id、`HANDIN1`、PR 号、SHA、gate id **都不是本轮权威**。判定第几次交付、取 claim id、取 `PREV` **只看本轮提示词与本轮交付摘要**。设计节点首次写 ledger 时已把 `progress.md` 的 phase/handoff 改成本轮内容,`pr` 指针改为 `none`(本轮新 PR 在交付 #1 时才开)。
+- main 上的旧 plan、旧 HTML/图、旧 `progress.md`(run `9a1676ff`,其中 PR #587、`PREV/HANDIN1=84c62e46…`、claim 1、rework / review gate / requestId)都来自之前的轮次;其中的 claim id、`HANDIN1`、PR 号、SHA、gate id **都不是本轮权威**。判定第几次交付、取 claim id、取 `PREV` **只看本轮提示词与本轮交付摘要**。设计节点首次写 ledger 时已把 `progress.md` 的 phase/handoff 改成本轮内容,`pr` 指针改为 `none`(本轮新 PR 在交付 #1 时才开)。
 - 设计节点会在分支上加 ledger 提交和流程文档提交;实现节点自己重算 `BASE`。
 
 ## 3. 实现节点
