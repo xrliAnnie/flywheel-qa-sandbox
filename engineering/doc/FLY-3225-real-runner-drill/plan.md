@@ -16,7 +16,7 @@ Issue: FLY-3225 (https://linear.app/geoforge3d/issue/FLY-3225/qa-sbx-fly-3225-re
 ## 实施步骤
 
 - [ ] 接手先取得自己的 TURN，再读 main 任务书，用 `git branch --show-current` 确认目标文件名。在账本记录本 run 的 `runId`、本节点 `execId`、`activationId`、完整起点 SHA `implBase`、`firstHandin` 和主动提交清单 `ownCommits`。旧 run（含 `0e7cbf2d`）的实现、QA、评审、CI、PR 字段不得沿用。只用注入的 progress 工具独立提交账本。
-- [ ] **优先检查本次指令的修复上下文。** `QA fix context` 标题下第一条正文行若为 `QA verdict to fix: claim <id> ...`，只把第二行改为 `FIXED-FOR-CLAIM <id>`，逐字使用该编号。编号须匹配 `^[A-Za-z0-9._:-]+$`；若与当前内容相同（如继承的 `1`，diff 为空）只记录达标 HEAD，不制造空提交。上下文存在但格式错误、缺编号或身份矛盾时保留文件并报告，不猜编号、不落入首交分支。
+- [ ] **优先检查本次指令的修复上下文。** `QA fix context` 标题下第一条正文行若为 `QA verdict to fix: claim <id> ...`，只把第二行改为 `FIXED-FOR-CLAIM <id>`，逐字使用该编号。编号须匹配 `^[A-Za-z0-9._:-]+$`。**修复的前提是本 run 已有首交**：账本 `firstHandin` 存在，或 `implBase..HEAD` 中能找到本 run 把第二行从继承值改为 `AWAITING-QA` 的主动提交（只改目标文件）。前提不成立（例如上下文是旧 run 遗留、或本 run 还没首交）时**不写文件**，保留现状并报告异常；继承的 `FIXED-FOR-CLAIM 1` 永远不能被记为本轮修复。前提成立时第二行此刻是 `AWAITING-QA`，修复必然产生一个真实提交并记入 `ownCommits`；只有重试时该编号的修复提交已在 `ownCommits`（或 `implBase..HEAD` 中可证明是本 run 写入）才允许无差异地记录达标 HEAD。上下文存在但格式错误、缺编号或身份矛盾时同样保留文件并报告，不猜编号、不落入首交分支。
 - [ ] 无修复上下文且本 run 尚未首交时，将目标文件写成以下精确两行（保留末尾换行），即把继承的 `FIXED-FOR-CLAIM 1` 替换为 `AWAITING-QA`；设计节点不修改它。
 
   ```text
@@ -56,7 +56,7 @@ git show "HEAD:$drill_path" > "$actual" || exit 1
 cmp "$expected" "$actual" || exit 1
 ```
 
-对每个本 run 主动提交，用 `git diff-tree --root --no-commit-id --name-only -r <完整 SHA>` 核对只含目标文件；修复 diff 只能替换第二行。读取失败即停止，不把空输出当通过。
+修复前另核对首交证据：`git log --format=%H implBase..HEAD -- "$drill_path"` 中至少有一个本 run 主动提交，且 `git show <该 SHA>:"$drill_path"` 第二行为 `AWAITING-QA`；找不到即停止并报告，不改文件。对每个本 run 主动提交，用 `git diff-tree --root --no-commit-id --name-only -r <完整 SHA>` 核对只含目标文件；修复 diff 只能替换第二行。读取失败即停止，不把空输出当通过。
 
 采用本次指令上下文作为轮次与编号来源；否决用继承的旧 claim 推测复验、提前修成通过、增加代码或部署房间。代价是首轮必然失败，这正是演练所需。无服务或数据库迁移；回退仅恢复本节点对练习文件的修改（按 `implBase` 内容），不删除旧文件、不覆盖他人后续修改。
 
