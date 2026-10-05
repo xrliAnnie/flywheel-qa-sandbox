@@ -1,7 +1,7 @@
 # FLY-3150 真 Runner 通用演练(529 房间) — 探索
 
 Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-05(2026-10-01 初版;§7–§21 为历史 —— slot-1 / slot-5 / slot-6 / slot-2 / slot-4 各轮;§22 为历史;§23–§25 为历史;§26–§27 为历史;§28 为历史;§29 为历史;§30 为历史;§31–§35 为历史;§36 为本轮 run `dd21313e`,slot-1)
+日期: 2026-10-05(2026-10-01 初版;§7–§21 为历史 —— slot-1 / slot-5 / slot-6 / slot-2 / slot-4 各轮;§22 为历史;§23–§25 为历史;§26–§27 为历史;§28 为历史;§29 为历史;§30 为历史;§31–§36 为历史;§37 为本轮 run `a40703e6`,slot-1)
 基于: 无
 
 ## 1. 任务来源与唯一权威
@@ -568,3 +568,11 @@ TURN:`yours phase=design epoch=1 run=4dea7fe2… node=eng_design attempt=1`(exec
 - 起点:`"$F"` = main 上残留的 `FIXED-FOR-CLAIM 1` → 交付 #1 走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`)。旧 progress.md handoff(`run=fc930bd2 attempt=2; QA claim=1; PREV=1b286ca2…`)不是本轮证据。
 - 与 §35 同形,plan 沿用 §35 已评审(含 Codex r1 HIGH 修复后的文件夹白名单)结构,只更新本轮起点与 run id。
 - **设计评审(run `dd21313e`)**:Codex(gpt-6-luna/xhigh,profile `business`,thread `01a10cf2-ff6d…`)。R1(turn `01a10cf3-05b6…`)CHANGES_REQUESTED:HIGH = README 只授权一个文件,计划放行文档文件夹。处置 = plan §1 断言 6:写明运行时节点契约(DOC-FLOW / 进度账本 / 设计 HTML)优先于仓库 README、不可删除,演练内容仍单文件,白名单封闭,交付摘要与 PR 正文显式披露。R2(turn `01a10cf8-0457…`,blob `a86c97a5…`,request `e01617ba…`)零发现 APPROVED,"Turn completed"。
+
+## 37. 本次派发审计(run `a40703e6`,2026-10-05,slot-1)
+
+- 派发:exec `9bf999e1`,TURN `yours phase=design epoch=1 attempt=1`,inbox 无指令。README(`origin/main:qa-sbx/fly2167/README.md`,blob `1de5e367…`)重读无变化。onboard skill 不存在 → 直接 `stage set brainstorm`。
+- run `dd21313e` 的 PR #599 已合入、远端分支已删;本地分支 = `origin/main` = `3c3cbd5f8`(#599 之后 main 只多了 FLY-3227 演练交付 #598,只碰 `engineering/doc/FLY-3227-real-runner-drill/` 与 `engineering/doc/milestones/FLY-3227.md`,与本 issue 路径不相交)→ 不同步,首次推送新建远端分支并新开 PR。
+- 起点:`"$F"` = main 上残留的 `FIXED-FOR-CLAIM 1` → 交付 #1 走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`)。旧 progress.md handoff(`run=dd21313e attempt=2; QA claim=1; PREV=599d81f2…`)不是本轮证据。
+- 与 §36 同形,plan 沿用 §36 已评审结构(含 §1 断言 4 白名单 + 断言 6 指令优先级),只更新本轮起点与 run id。
+- **设计评审(run `a40703e6`)**:Codex(gpt-6-astra/xhigh,profile `business`,thread `01a10d6c-1f40…`)。R1(turn `01a10d6c-2559…`)CHANGES_REQUESTED:MEDIUM = §3.1 同步分支把「本次新增」与「整轮」提交计数混在 `$PREV..$HANDIN2` 一个区间,已修复态 + 同步后重试会被误判(整轮恒含上次的修复提交,计数是 1 不是 0)。修复 = §3.1 拆成两种区间(本次新增 `BASE..HANDIN` = 1/0;整轮 `PREV..HANDIN2` 恒 = 1 + patch 检查)。LOW = plan 历史列表过长 → 日期行与 §2 旧 PR 列表精简。R2(turn `01a10d70-00fb…`,blob `2832b1da…`,request `3be064fc…`)零新增问题 APPROVED,"Turn completed";design-review.json rounds=2 / finalRound=2,`await-codex-gate design` 通过。`ste begin` 返回 disabled。
