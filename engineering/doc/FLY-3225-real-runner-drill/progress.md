@@ -1,33 +1,24 @@
 ---
 issue: FLY-3225
 phase: implement
-phaseCursor: 1/2
-updated: 2026-10-05T10:31:32.044Z
-nextStep: push, code review, ci-full, complete
+phaseCursor: 4/4
+updated: 2026-10-05T22:29:35.518Z
+nextStep: Repair review APPROVED question 9e2675c9-da7a-49cf-aec9-41ec295f7ead
+  request 6ff4f1ac-2534-477b-bff8-1d6ba5e332d6 reviewed
+  e7e2fd47eb81de6aff4014aaa591b7aca53eb92c. Freeze after pushing progress;
+  ci-full ensure then needs_review PR 603 claim 1. Adjacent paths N/A docs-only.
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3225-real-runner-drill/plan.md
-  reviewedSha: c2eec2faafbe96e2822ab9998b05dbb84aefaff0
-handoff: '{"runId":"f3dcfe7a-b291-4a5d-a7b6-2dcbd9588f65","execId":"1bcff05d-5164-424b-912a-e984da41924e","activationId":"activation:1bcff05d-5164-424b-912a-e984da41924e:f3dcfe7a-b291-4a5d-a7b6-2dcbd9588f65:eng_design:1","designBase":"65adf768ce47d7dfb819690862976a9e43c63128","readmeBlob":"f025871e500834ce5bab62335a4d29bd6b308d78","designArtifactsSha":"a0c4b0b293d0247b56859812c6476e0c2ab97e1f","planBlob":"2352aa1f9e8c158b3a6442ada5c0cecc6fa68aa9","steStatus":"disabled","verification":"pnpm
-  lint exit 0 (14 existing warnings); browser page checks PASS (6 cards, 2 SVGs,
-  nonce CSP, zero external requests, storage isolation, chunks, clipboard
-  fallbacks); fixture unchanged; diagram generic self_check motion-only
-  constraints incompatible with required comment script, directly verified SVG
-  accessibility.","reviewQuestionId":"3d883e75-4c60-447f-bb5d-b31ee099d1ff","reviewRequestId":"45880616-9511-41ed-acb7-5e8d4ddcec3e","reviewStatus":"APPROVED","publicationStatus":"published-and-reported","reportUrl":"http://127.0.0.1:51676/fw-reports-a31125/r/4131bad2d656e2a3def312bcc5ab2143/","reportId":"4131bad2d656e2a3def312bcc5ab2143","reportReceiptId":"b33a3f04-998a-460f-937a-6c1968127977","publishedSha256":"95d31194799cf0df859ee6f61d9df382efe013ae6a82c6298b69f392200eff35","publisherFallback":"STE
-  disabled; original HTML publication path","nextAction":"Run exact
-  phase_design_complete command, consume any unread mail and retry as
-  instructed, then park this phase controller. Design boundary is not
-  issue-terminal.","reviewVerdict":"APPROVED","reviewerVerdict":"APPROVED","reviewRound":1,"reviewDeliveryNonce":"2c2cac25-146e-4a17-a8a8-45307b246b2f","reviewRegisteredAtHead":"c2eec2faafbe96e2822ab9998b05dbb84aefaff0","reviewedPlanBlobSha":"2352aa1f9e8c158b3a6442ada5c0cecc6fa68aa9","reviewAdvisories":["qa-read-revision-unspecified
-  (MEDIUM)","claim-1-net-zero-diff (LOW)","claim-id-validation
-  (LOW)","verify-script-bare-exit
-  (LOW)"],"advisoriesReportReceiptId":"8af955d1-835c-4d16-9cf9-413040f56751","watcherWaitId":"wait:c57baf371ad99a73876d97123fcf9174","watcherGeneration":1,"watcherStatus":"consumed","hostedVerification":"HTTP
-  200; body matches committed HTML; minted nonce script runs; six comments; zero
-  external fetches; sha256 matches
-  publishedSha256","phaseCompletionRoute":"phase_design_complete"}'
+  pr: "603"
+  reviewedSha: 9a84fcef1d3b33c915cc71c42c14a7408303d9b8
+handoff: '{"runId":"0e7cbf2d-df17-4a44-847e-f8331109baaa","execId":"e038fb03-ff08-472b-b0c8-df4b07a40850","activationId":"activation:rework:09556b97240efc0a18bb1c66a4e8aa13d1951195279a465b772c2ae17c114e05","attempt":2,"implBase":"499457efdbbe5321641edc71eb676f1f7377df53","firstHandin":"289eb8184babe2ec82d742837d53a92013cbc390","qaFailedHead":"1413c3e47966287c0adf70185d0a3e9c8a76c9c0","claim":"1","ownCommits":["289eb8184babe2ec82d742837d53a92013cbc390","aa7601976e02f45bab72a53d97e7f31e9c1b694f"],"verification":"Claim
+  1 exact bytes PASS; local-tests none","adjacentPaths":"N/A (docs-only
+  drill)","e2e529":"not_run docs_only; task prohibits deployment"}'
 ---
 
 # FLY-3225 progress
-**phase**: implement (1/2)
-**next**: push, code review, ci-full, complete
+**phase**: implement (4/4)
+**next**: Repair review APPROVED question 9e2675c9-da7a-49cf-aec9-41ec295f7ead request 6ff4f1ac-2534-477b-bff8-1d6ba5e332d6 reviewed e7e2fd47eb81de6aff4014aaa591b7aca53eb92c. Freeze after pushing progress; ci-full ensure then needs_review PR 603 claim 1. Adjacent paths N/A docs-only.
 
-**handoff**: {"runId":"f3dcfe7a-b291-4a5d-a7b6-2dcbd9588f65","execId":"1bcff05d-5164-424b-912a-e984da41924e","activationId":"activation:1bcff05d-5164-424b-912a-e984da41924e:f3dcfe7a-b291-4a5d-a7b6-2dcbd9588f65:eng_design:1","designBase":"65adf768ce47d7dfb819690862976a9e43c63128","readmeBlob":"f025871e500834ce5bab62335a4d29bd6b308d78","designArtifactsSha":"a0c4b0b293d0247b56859812c6476e0c2ab97e1f","planBlob":"2352aa1f9e8c158b3a6442ada5c0cecc6fa68aa9","steStatus":"disabled","verification":"pnpm lint exit 0 (14 existing warnings); browser page checks PASS (6 cards, 2 SVGs, nonce CSP, zero external requests, storage isolation, chunks, clipboard fallbacks); fixture unchanged; diagram generic self_check motion-only constraints incompatible with required comment script, directly verified SVG accessibility.","reviewQuestionId":"3d883e75-4c60-447f-bb5d-b31ee099d1ff","reviewRequestId":"45880616-9511-41ed-acb7-5e8d4ddcec3e","reviewStatus":"APPROVED","publicationStatus":"published-and-reported","reportUrl":"http://127.0.0.1:51676/fw-reports-a31125/r/4131bad2d656e2a3def312bcc5ab2143/","reportId":"4131bad2d656e2a3def312bcc5ab2143","reportReceiptId":"b33a3f04-998a-460f-937a-6c1968127977","publishedSha256":"95d31194799cf0df859ee6f61d9df382efe013ae6a82c6298b69f392200eff35","publisherFallback":"STE disabled; original HTML publication path","nextAction":"Run exact phase_design_complete command, consume any unread mail and retry as instructed, then park this phase controller. Design boundary is not issue-terminal.","reviewVerdict":"APPROVED","reviewerVerdict":"APPROVED","reviewRound":1,"reviewDeliveryNonce":"2c2cac25-146e-4a17-a8a8-45307b246b2f","reviewRegisteredAtHead":"c2eec2faafbe96e2822ab9998b05dbb84aefaff0","reviewedPlanBlobSha":"2352aa1f9e8c158b3a6442ada5c0cecc6fa68aa9","reviewAdvisories":["qa-read-revision-unspecified (MEDIUM)","claim-1-net-zero-diff (LOW)","claim-id-validation (LOW)","verify-script-bare-exit (LOW)"],"advisoriesReportReceiptId":"8af955d1-835c-4d16-9cf9-413040f56751","watcherWaitId":"wait:c57baf371ad99a73876d97123fcf9174","watcherGeneration":1,"watcherStatus":"consumed","hostedVerification":"HTTP 200; body matches committed HTML; minted nonce script runs; six comments; zero external fetches; sha256 matches publishedSha256","phaseCompletionRoute":"phase_design_complete"}
+**handoff**: {"runId":"0e7cbf2d-df17-4a44-847e-f8331109baaa","execId":"e038fb03-ff08-472b-b0c8-df4b07a40850","activationId":"activation:rework:09556b97240efc0a18bb1c66a4e8aa13d1951195279a465b772c2ae17c114e05","attempt":2,"implBase":"499457efdbbe5321641edc71eb676f1f7377df53","firstHandin":"289eb8184babe2ec82d742837d53a92013cbc390","qaFailedHead":"1413c3e47966287c0adf70185d0a3e9c8a76c9c0","claim":"1","ownCommits":["289eb8184babe2ec82d742837d53a92013cbc390","aa7601976e02f45bab72a53d97e7f31e9c1b694f"],"verification":"Claim 1 exact bytes PASS; local-tests none","adjacentPaths":"N/A (docs-only drill)","e2e529":"not_run docs_only; task prohibits deployment"}
