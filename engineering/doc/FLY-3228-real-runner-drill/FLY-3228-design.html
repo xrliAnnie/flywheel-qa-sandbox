@@ -63,7 +63,7 @@
     <div class="meta">
       <span class="badge purple">QA 沙箱演练</span>
       <span class="badge green">设计评审已通过</span>
-      <span class="mono">2026-10-04 · 本轮 run dce567d4 · 分支 project-slot-6-FLY-3228</span>
+      <span class="mono">2026-10-04 · 本轮 run ad2ead99 · 分支 project-slot-6-FLY-3228</span>
     </div>
   </header>
 
@@ -128,13 +128,13 @@
     <table>
       <tr><th>选择</th><th>理由</th><th>被否决的做法</th></tr>
       <tr><td>只写一份短 plan，不写调研文档</td><td>演练规则文件（README）明确这么要求；它是这次任务的唯一权威</td><td>按常规流程写探索 + 调研 + 计划三份文档（多余，且违背 README）</td></tr>
-      <tr><td>上一轮的编号、提交号、合并申请号一律不作数</td><td>主线上遗留的 <code>FIXED-FOR-CLAIM 1</code> 和旧进度记录很容易被误当成「已经修好」</td><td>看到文件已是 FIXED-FOR-CLAIM 就跳过交付，或复用前几轮已合并的 PR #525 / #545</td></tr>
-      <tr><td>流程文档单独放一个文件夹，并加「范围断言」</td><td>节点合同要求留档；但验收只看那一个演练文件，断言保证除流程文件夹外只改了它</td><td>把流程文档也算进演练内容（会稀释「只改一个文件」的要求）</td></tr>
+      <tr><td>上一轮的编号、提交号、合并申请号一律不作数</td><td>主线上遗留的 <code>FIXED-FOR-CLAIM 1</code> 和旧进度记录很容易被误当成「已经修好」</td><td>看到文件已是 FIXED-FOR-CLAIM 就跳过交付，或复用前几轮已合并的 PR #525 / #545 / #551</td></tr>
+      <tr><td>流程文档只允许 7 个点名的文件（<b>白名单</b>：事先列好、唯一被允许出现的文件清单），再加一条只看演练文件的检查</td><td>节点合同要求留档，进度记录命令也会自动提交；但整份改动里出现白名单以外的任何文件都会拦下交付，验收也只看那一个演练文件</td><td>①把整个流程文件夹排除在检查之外（审稿人指出这会把夹带的其他文件也藏起来）；②干脆不提交流程文档（违背节点合同，进度记录命令也做不到）</td></tr>
       <tr><td>返工编号只从 QA fix context 的第一行取，取不到就停</td><td>防止从历史例子、主线遗留或别的房间的旧记录里误抓编号</td><td>从 git 历史或旧进度记录里「猜」编号</td></tr>
       <tr><td>提交说明里禁止出现 <code>[skip ci]</code> 等跳过标记</td><td>交付必须让自动检查（<b>CI</b>：每次提交后自动跑的检查）在这个确切版本上真跑一遍</td><td>照抄仓库历史里带跳过标记的提交风格</td></tr>
       <tr><td>不强推，必要时只用普通合并同步主线</td><td>保住 HANDIN1 这个指纹，返工时才能证明「只改了第 2 行」</td><td>改写历史（rebase / 强推，会让指纹失效）</td></tr>
     </table>
-    <p><b>设计评审</b>：Codex（另一个 AI 审稿人，模型 gpt-6-astra，最高推理强度）审了 1 轮即通过，高 / 中 / 低问题都是 0。它实跑了 32 个逐字节比较的正反例（多一行、行尾空格、少换行、错编号等都会被自检拦下）和 7 个编号提取的例子，并用上一轮的真实合并记录核实了「编号碰巧为 1」时的处理；「同步主线」那一段只做了纸面推演，没有实际跑。</p>
+    <p><b>设计评审</b>：Codex（另一个 AI 审稿人，模型 gpt-6-luna，最高推理强度）审了 2 轮通过。第 1 轮提出 1 个高优先级问题：旧做法把整个流程文件夹排除在范围检查之外，可能藏住多余文件；改成逐文件白名单 + 完整改动检查后，第 2 轮通过，没有剩余问题。「不提交流程文档」这条建议没采纳，原因是节点合同和进度记录命令都要求提交，审稿人接受了这一说明。</p>
     <div class="comment"><label for="c-tradeoffs">你的意见（自动保存在本机浏览器）</label>
       <textarea id="c-tradeoffs" class="cmt" data-section-id="tradeoffs" data-section-title="关键取舍与被否决的方案" placeholder="哪个取舍你想换个选法？"></textarea>
       <div class="saved" data-saved-for="tradeoffs"></div></div>
