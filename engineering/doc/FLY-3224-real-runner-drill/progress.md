@@ -1,24 +1,24 @@
 ---
 issue: FLY-3224
-phase: implement
-phaseCursor: 3/4
-updated: 2026-10-05T01:13:33.304Z
-nextStep: freeze rework head for PR 571; obtain effective code review,
-  exact-head CI, complete needs_review
+phase: design
+phaseCursor: 4/4
+updated: 2026-10-05T02:35:10.367Z
+nextStep: "implement (new run 278e6c90): first hand-in rewrites drill line 2
+  FIXED-FOR-CLAIM 1 -> AWAITING-QA; reuse OPEN PR #571; old review/CI/claim not
+  evidence"
 chunks: []
 pointers: {}
-handoff: run=bdb3fbec-e55a-488b-8da3-7d94b30683b4
-  designExec=fc7e075d-7ec6-46f7-9bd8-b43bb89952a2. Design APPROVED r1
-  gpt-6-astra/xhigh thread=01a1098a-f984-7b02-aef4-e9fee08c939c
-  turn=01a1098b-0394-7c32-a8f1-f71df113c635
-  request=64f5e9b3-d209-4f24-9f10-8226ff8b40f4
-  planBlob=dae19f377e338769549d83d2c385b39e720ada1b. Start=main 39754a41 (drill
-  file residual FIXED-FOR-CLAIM 1, no OPEN PR).
-  HTML=http://127.0.0.1:64592/fw-reports-1c4653/r/58ba12cc331a7fe4bc7301aa10b1ed1e/
+handoff: "run=278e6c90-e543-4846-ba3f-d20495ae0ad8
+  designExec=a472d2a8-fa45-479f-b412-308231865c79. Design APPROVED r1
+  gpt-6-astra/xhigh thread=01a109e5-dd60-7c03-83a2-da741bf1e370
+  turn=01a109e6-074d-7eb2-9e93-c358c544089b
+  request=53c4f350-8286-4c43-aef0-105fb29f27ee
+  planBlob=0102eef0447c7f5905c2f38cda72b5bc3f451e0d. Start: main c68c2b7d,
+  branch inherits run bdb3fbec (drill FIXED-FOR-CLAIM 1), PR #571 OPEN."
 ---
 
 # FLY-3224 progress
-**phase**: implement (3/4)
-**next**: freeze rework head for PR 571; obtain effective code review, exact-head CI, complete needs_review
+**phase**: design (4/4)
+**next**: implement (new run 278e6c90): first hand-in rewrites drill line 2 FIXED-FOR-CLAIM 1 -> AWAITING-QA; reuse OPEN PR #571; old review/CI/claim not evidence
 
-**handoff**: run=bdb3fbec-e55a-488b-8da3-7d94b30683b4 designExec=fc7e075d-7ec6-46f7-9bd8-b43bb89952a2. Design APPROVED r1 gpt-6-astra/xhigh thread=01a1098a-f984-7b02-aef4-e9fee08c939c turn=01a1098b-0394-7c32-a8f1-f71df113c635 request=64f5e9b3-d209-4f24-9f10-8226ff8b40f4 planBlob=dae19f377e338769549d83d2c385b39e720ada1b. Start=main 39754a41 (drill file residual FIXED-FOR-CLAIM 1, no OPEN PR). HTML=http://127.0.0.1:64592/fw-reports-1c4653/r/58ba12cc331a7fe4bc7301aa10b1ed1e/
+**handoff**: run=278e6c90-e543-4846-ba3f-d20495ae0ad8 designExec=a472d2a8-fa45-479f-b412-308231865c79. Design APPROVED r1 gpt-6-astra/xhigh thread=01a109e5-dd60-7c03-83a2-da741bf1e370 turn=01a109e6-074d-7eb2-9e93-c358c544089b request=53c4f350-8286-4c43-aef0-105fb29f27ee planBlob=0102eef0447c7f5905c2f38cda72b5bc3f451e0d. Start: main c68c2b7d, branch inherits run bdb3fbec (drill FIXED-FOR-CLAIM 1), PR #571 OPEN.
