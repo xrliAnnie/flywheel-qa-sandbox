@@ -1,7 +1,7 @@
 # FLY-3150 真 Runner 通用演练(529 房间) — 探索
 
 Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-04(2026-10-01 初版;§7–§21 为历史 —— slot-1 / slot-5 / slot-6 / slot-2 / slot-4 各轮;§22 为历史;§23–§25 为历史;§26–§27 为历史;§28 为本轮 run `a5651dbc`,slot-1)
+日期: 2026-10-04(2026-10-01 初版;§7–§21 为历史 —— slot-1 / slot-5 / slot-6 / slot-2 / slot-4 各轮;§22 为历史;§23–§25 为历史;§26–§27 为历史;§28 为历史;§29 为本轮 run `d1cedf09`,slot-1)
 基于: 无
 
 ## 1. 任务来源与唯一权威
@@ -467,3 +467,20 @@ TURN:`yours phase=design epoch=1 run=a5651dbc… node=eng_design attempt=1`(exec
 | Linear | Done(Lead 裁定);不碰 |
 
 **结论**:与 §26 / §27 完全同形;plan 只更新 run / exec 标识与 §2 起点快照。上一轮任何 HANDIN、claim id、评审、CI、QA 结论都不是本轮证据。
+
+## 29. 本次派发审计(run `d1cedf09`,2026-10-04,slot-1)
+
+TURN:`yours phase=design epoch=1 run=d1cedf09… node=eng_design attempt=1`(exec `649dd9dc`)。§28 是 run `a5651dbc`,它只走到交付 #1(`e1e80f7a7`,把陈旧的 `FIXED-FOR-CLAIM 1` 重置为 `AWAITING-QA`)+ implement 1/4 ledger(`6002aab7e`),没有返工;本轮是同一分支上的**新 run**,继续在其上工作,不 force-push。
+
+| 项 | 结果 |
+|---|---|
+| 分支头(派发时) | `6002aab7e` = PR #565 头(OPEN,标题仍是 run `a5651dbc`) |
+| `origin/main` | `62a604d44`,**领先 4 个提交**(FLY-3224 / 3225 / 3226 / 3228 演练),只改它们各自的 `engineering/doc/FLY-322x-*` 文件夹,不碰本 issue 文件夹与 `"$F"` → 路径不相交,无冲突;按 §3.1 不同步(既非 `CONFLICTING`,也无契约要求) |
+| 目标文件 | HEAD 上 = `QA-SBX FLY-2167 drill` / `AWAITING-QA`(上一轮交付 #1 写入);main 上仍是 `FIXED-FOR-CLAIM 1` → 本轮交付 #1 走**跳过分支**(`IMPL1=BASE`),PR 级净 diff 恰为 `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA` |
+| README | 未变(blob `1de5e367…`) |
+| progress.md | 派发时是 run `a5651dbc` 的 implement 1/4;本节点用 `--handoff` 覆盖为本轮 run |
+| 收件箱 | 无 Lead 指令 |
+| onboard skill | 不存在 → 直接 `stage set brainstorm` |
+| Linear | Done(Lead 裁定);不碰 |
+
+**结论**:与 run `6f9cf806`(目标已是 `AWAITING-QA`、走跳过分支)同形,区别只是 main 领先但路径不相交。跳过分支没有"残留 claim 假通过"风险:HEAD 上没有任何 `FIXED-FOR-CLAIM`。上一轮的 HANDIN `e1e80f7a7`、评审、CI 都不是本轮证据。
