@@ -12,4 +12,4 @@ sequenceDiagram
     C->>I: 派发带编号的修复指令
     I->>Q: 修复：第二行 FIXED-FOR-CLAIM 编号
     Q-->>C: 复验：核对同一编号
-    Note over I,Q: 轮次与编号只看本次指令，继承内容不是依据
+    Note over I,Q: 轮次与编号看本次指令和同轮记录，旧结果不是依据

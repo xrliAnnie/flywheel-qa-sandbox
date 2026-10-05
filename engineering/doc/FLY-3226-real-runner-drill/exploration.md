@@ -1,6 +1,6 @@
 # FLY-3226 真 Runner 通用演练(529 房间) — 探索
 Issue: FLY-3226 (https://linear.app/geoforge3d/issue/FLY-3226/qa-sbx-fly-3226-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-03(首轮);2026-10-04 追加 §5(run `fee0ab7d`)、§6(run `4a9c615e`)、§7(run `76b1635c`)
+日期: 2026-10-03(首轮);2026-10-04 追加 §5(run `fee0ab7d`)、§6(run `4a9c615e`)、§7(run `76b1635c`)、§11(run `b00b1faf`)
 基于: 无
 
 ## 1. 任务来源
@@ -78,3 +78,19 @@ run `a1fb43f1` 已走完 design → implement → QA(claim `1`)→ merge,PR #557
 - 目标文件在 main 上 = `QA-SBX FLY-3226 drill` / `FIXED-FOR-CLAIM 1`(PR #557 残留)→ 交付 #1 是**重置**(diff 状态 `M`,第 2 行改回 `AWAITING-QA`);若本轮 claim id 又是 `1`,交付 #2 后 PR 级演练净 diff 为空仍合法,返工由区间 patch `PREV..HANDIN2` 证明。
 - progress.md 原带 run `a1fb43f1` 实现节点 attempt=2 的 handoff(claim 1、review request `43901215…`)。开工即用 `--handoff` 覆盖(提交 `70e672d84`);这些指针本轮一律不认。
 - 结论:回到 plan §3 的"重置态"分支(不是 run `a1fb43f1` 的"已就绪态");其余骨架沿用。
+
+## 10. 第九次派发(run `bea81b98`,exec `5bf049cc`,节点 `eng_design`,2026-10-04,slot-4)
+
+run `9ef89593` 已走完并由 PR #563 合入 main(`581cc2d52`)。本轮同一分支名、通用 DAG 再次派发:
+
+- 派发起点 = `origin/main` = `39754a419`(本地 HEAD 相同);#563 之后 main 只多了无关的 FLY-3224 提交。本分支所有 PR(含 #560/#563)均 MERGED,没有 OPEN 的 PR → 交付 #1 开**新 PR**。
+- README blob 仍是 `71e58f18…`,合同没变。
+- `origin/main:$F` = `QA-SBX FLY-3226 drill` / `FIXED-FOR-CLAIM 1`(PR #563 残留)→ 交付 #1 仍是**重置**(diff `M`)。
+- progress.md 原带 run `9ef89593` 的 handoff(plan blob `59d054e5`、request `0fd8bd66`、thread `01a108c4`、旧 HTML 链接);开工即用 `--handoff` 覆盖,这些指针本轮一律不认。
+- 结论:plan 骨架不变,只更新起点快照与 run id。
+
+## 11. 第十次派发(run `b00b1faf`,exec `800088de`,节点 `eng_design`,2026-10-04,slot-4)
+
+- 与前几轮不同:本轮**续接 OPEN 的 PR #568**(头 `041556a`,CI 两项 SUCCESS),不开新 PR。分支上 `$F` = `FIXED-FOR-CLAIM 1`(run `bea81b98` 交付 #2 的结果);`origin/main:$F` 同样是 `FIXED-FOR-CLAIM 1`。
+- README(`origin/main`)内容不变,仍是唯一权威。
+- 结论:本轮交付 #1 = 在 PR #568 上**追加**一笔重置提交(第 2 行改回 `AWAITING-QA`),不 force、不 rebase;PR 标题/正文换成本轮 run 与 HANDIN 证据。run `bea81b98` 的 HANDIN1/HANDIN2/claim 1 一律不作本轮证据。ledger handoff 已在本轮开头用 `--handoff` 覆盖。

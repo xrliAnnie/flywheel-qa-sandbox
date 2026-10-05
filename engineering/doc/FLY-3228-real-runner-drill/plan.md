@@ -1,28 +1,29 @@
 # FLY-3228 真 Runner 通用演练(529 房间) — 实施计划
 
 Issue: FLY-3228 (https://linear.app/geoforge3d/issue/FLY-3228/qa-sbx-fly-3228-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-04
+日期: 2026-10-05
 基于: 无(README 规定"一份短 plan 足够,不需要 research 文档",所以本档不出 exploration/research;本文件是上一轮已合并 plan 的本轮改写版)
 
-本轮:run `dce567d4-4502-4e0b-bed7-501122f3e493`,设计节点 exec `28b36fd4-4e34-4dca-8ae1-8e72cf482e31`。
+本轮:run `617c41a6-a9d0-4409-b393-c97c36fce664`,设计节点 exec `91920598-1d64-4789-8503-ae656445500a`(全新派发,分支从当前 `origin/main` `62a604d44` 起步;main 上的 plan/HTML/progress 都是上一轮 run `ad2ead99` 合并进去的产物,本文件为本轮改写版)。
 
 ## 1. 范围
 
 - 唯一权威:`origin/main:qa-sbx/fly3228/README.md`。每个节点开工先重读;本 plan 与 README 冲突时以 README 为准。
 - 演练内容只有一个文件 `F=qa-sbx/fly3228/$(git branch --show-current).md`。本轮分支 `project-slot-6-FLY-3228` → `qa-sbx/fly3228/project-slot-6-FLY-3228.md`;节点开工时重新算,不要硬编码。
 - 不碰:README、任何代码、Linear issue(不改状态、不评论、不加标签)、529 房间部署/拆除、其他 slot / 其他 issue 的目标文件。
-- **流程文档例外(不来自 README,明示边界)**:节点契约(DOC-FLOW / 进度账本 / 设计 HTML)要求把 `engineering/doc/FLY-3228-real-runner-drill/` 下的 plan、图、HTML 与 `progress.md` 提交并推到同一分支。它们是 Runner 协议记账产物,不是演练内容,不进 QA criterion。为不稀释 README 的"只碰一个 md",每次交付都跑**演练内容范围断言**:
-  - `D=$(git diff --name-only origin/main...HEAD -- . ':(exclude)engineering/doc/FLY-3228-real-runner-drill')`。
-  - 交付 #1:`D` **恰好**一行 `"$F"`。
-  - 交付 #2:`D` 为 `"$F"` 或**为空**(见 §2:本轮 claim id 若与 main 上遗留的编号相同,`$F` 回到与 main 逐字节相同,PR 级 diff 里自然消失;此时以 §3 交付 #2 第 6 步的 `$PREV..$HANDIN2` patch 核验为准)。
-  - 出现 `"$F"` 以外的任何路径 → 停,不交付。流程文档只允许落在上述文件夹。
+- **流程文档例外(不来自 README,明示边界)**:节点契约(DOC-FLOW / 进度账本 / 设计 HTML)要求把 `engineering/doc/FLY-3228-real-runner-drill/` 下的 plan、图、HTML 与 `progress.md` 提交并推到同一分支。它们是 Runner 协议记账产物,不是演练内容,不进 QA criterion。为不稀释 README 的"只碰一个 md",每次交付都跑下面两条断言:
+  - 为什么不能干脆不提交它们:`flywheel-comm progress` 命令本身就会把 `progress.md` path-limited 提交到本分支(Runner 协议强制,不可关闭);设计节点契约要求 plan/HTML "commit and push"。这些都是 Lead 注入的节点协议,不在 README 授权范围内也不在其禁止范围内(README 管的是演练内容)。所以本 plan 不扩大 README 的演练范围,而是把流程文件收成**逐文件白名单**,让任何其他路径都失败。
+  - 白名单(仅以下精确路径,目录前缀 `W=engineering/doc/FLY-3228-real-runner-drill`):`$W/plan.md`、`$W/progress.md`、`$W/d1-core-flow.mmd`、`$W/d1-core-flow.svg`、`$W/d2-data-model.mmd`、`$W/d2-data-model.svg`、`$W/FLY-3228-design.html`(共 7 个文件)。
+  - **完整 diff 断言**(不排除任何目录):`git diff --name-only origin/main...HEAD | grep -vxF -e "$F" -e "$W/plan.md" -e "$W/progress.md" -e "$W/d1-core-flow.mmd" -e "$W/d1-core-flow.svg" -e "$W/d2-data-model.mmd" -e "$W/d2-data-model.svg" -e "$W/FLY-3228-design.html"` 输出必须为空;出现任何其他路径(包括 `$W` 下的新文件)→ 停,不交付。
+  - **演练内容断言**:上述完整 diff 中属于 `qa-sbx/` 的行:交付 #1 **恰好**一行 `"$F"`;交付 #2 为 `"$F"` 或**为空**(见 §2:本轮 claim id 若与 main 上遗留的编号相同,`$F` 回到与 main 逐字节相同,PR 级 diff 里自然消失;此时以 §3 交付 #2 第 6 步的 `$PREV..$HANDIN2` patch 核验为准)。
+  - 实现节点不新增、不修改白名单里除 `progress.md`(由 `progress` 命令自动提交)以外的任何流程文件。
 
 ## 2. 起点(设计节点派发时快照,仅供参考)
 
-- 分支起点 = `origin/main` = `09a7d7ce6`,远端没有 `project-slot-6-FLY-3228` 分支;`gh pr list --head project-slot-6-FLY-3228 --state all` 只有前几轮已 MERGED 的 #525、#545(都不复用,本轮开新 PR)。
+- 设计节点派发时:本地分支 `project-slot-6-FLY-3228` 头 = `origin/main` = `62a604d44`(上一轮 PR #575 的合并提交),工作树干净;**远端分支不存在**(`git ls-remote origin refs/heads/project-slot-6-FLY-3228` 为空,设计节点首次推送时新建)。`gh pr list --head project-slot-6-FLY-3228 --state all` 只有前几轮已 MERGED 的 #525、#545、#551、#575(都不复用,本轮开新 PR)。
 - **目标文件已存在于 main**,内容是上一轮遗留的 `QA-SBX FLY-3228 drill` / `FIXED-FOR-CLAIM 1`。所以本轮交付 #1 是**修改**(`M`,第 2 行 → `AWAITING-QA`),不是新增。
-- main 上的旧 plan、旧 HTML/图、旧 `progress.md`(run `034a537c`)都来自上一轮;其中的 claim id、`HANDIN1`、PR 号、SHA **都不是本轮权威**。判定第几次交付、取 claim id、取 `PREV` **只看本轮提示词与本轮交付摘要**。
-- 设计节点已在分支上加了 ledger 提交,还会再加流程文档提交;实现节点自己重算 `BASE`。
+- main 上的旧 plan、旧 HTML/图、旧 `progress.md`(run `ad2ead99`,其中 PR #575、`PREV/HANDIN1=3f8829e0…`、claim 1)都来自之前的轮次;其中的 claim id、`HANDIN1`、PR 号、SHA **都不是本轮权威**。判定第几次交付、取 claim id、取 `PREV` **只看本轮提示词与本轮交付摘要**。
+- 设计节点会在分支上加 ledger 提交和流程文档提交;实现节点自己重算 `BASE`。
 
 ## 3. 实现节点
 

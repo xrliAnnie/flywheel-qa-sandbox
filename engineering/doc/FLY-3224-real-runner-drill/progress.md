@@ -2,33 +2,43 @@
 issue: FLY-3224
 phase: implement
 phaseCursor: 2/4
-updated: 2026-10-04T22:14:53.135Z
-nextStep: "rework claim 1: push fix, codex review, exact-head CI, complete needs_review"
+updated: 2026-10-05T08:25:52.181Z
+nextStep: Push and freeze revised HEAD; open new code-review gate/request for
+  this rework, then ci-full ensure server-owned policy, complete needs_review
+  --pr 580 and park for QA retest.
 chunks: []
-pointers: {}
-handoff: run=cb1aa71a-8686-466e-90a6-ddca7f324c7e
-  designExec=f08ad580-f90d-4546-af89-f754ccd0426d activation=eng_design:1
-  epoch=1. effectiveReviewVerdict=APPROVED reviewerVerdict=APPROVED round=1
-  question=31bb829f-7361-4776-b0ef-8ba932647d48
-  request=013d482a-68b7-4b12-bfa4-b521e351d160
-  planBlob=5ce202103b24a018708a7a9741e868db6b4f99d7. Four non-blocking
-  advisories (qa-worktree-mutation, dirty-tree-recovery-gap,
-  first-delivery-sha-bound, claim-id-validation) relayed to Lead via report
-  a36971d4-20a9-4a97-a3ee-428706ec0a84; no reviewed plan changes. Design
-  commit=37a0758683ce9f1ec28d5c8d38afa5cbbf8cc698.
-  HTML=http://127.0.0.1:64794/fw-reports-dec868/r/eec9fc5ed8a8121e9ca495a7bc8de0b9/
-  reportReceipt=839c82e3-1ea0-4cb5-8f1e-a60f77f9a529
-  sourceSha256=dcbfe9cbd5b28224685ac5588bf059e2d044773ccb447f32bf56a766a57be18e
-  STE=disabled; hosted HTTP/CSP/nonce checks pass. Local report comments and 2
-  rendered Mermaid diagrams verified. Only the existing design folder changed;
-  fixture unchanged, research omitted per README. No
-  implementation/Linear/deployment/PR/ship actions. Watcher
-  wait:315c002966c7e356d4e5b9e20b9d6e6b g1 answered; phase completion receipt
-  still to emit.
+pointers:
+  pr: "580"
+handoff: "run=8794dd59-6028-4df4-895b-1d0124bf0cb1
+  implementExec=f1a2105c-d4c3-414c-9f3e-c089cbb0374f attempt=2 epoch=4
+  activation=activation:rework:29e8bf05ea94fb0f4e9d78c5da6662ac3a7f199e2b81aa1e\
+  1d50fbc77a73c0ef
+  request=rework:29e8bf05ea94fb0f4e9d78c5da6662ac3a7f199e2b81aa1e1d50fbc77a73c0\
+  ef. QA verdict claim 1 qa_failed on
+  baseRevision=6755e2fdb2afe75aeb2d815ff775a1cc7b58683d; claim id taken only
+  from first line of injected QA fix context. Fixed criterion fixed-for-claim
+  via commit 95835795b0c149ae039fc74d2b352e0cfed95c48: second line AWAITING-QA
+  -> FIXED-FOR-CLAIM 1; first line and two-LF shape unchanged. Current-run
+  first_handin=8e997979718903558ca68b6bdd23e6403c9eb14a remains verified
+  ancestor with AWAITING-QA; CLI custom pointer limitation accepted by Lead,
+  durable handoff is source. Fresh main README reread; approved plan unchanged.
+  Local exact-byte check red before fix and green after; wrong-claim comparison,
+  first-handin/base ancestry, unchanged first line, replay-no-edit shape and
+  fixture-only diff verified. Runtime
+  queued/started/dead/superseded/retried/concurrent paths not applicable: no
+  code; no test files added, local-tests declares none/smoke none; pnpm lint
+  exit 0 with 14 existing warnings. e2e_529_exempt stays not_run docs_only
+  reason Markdown-only drill; no room deployment. Protocol ledger is sole
+  additional rework path; 9-entry whitelist covers existing design docs and
+  fixture; no milestone/research. Final rework head and review/CI/needs_review
+  receipts will be reported without further commits. Reuse PR
+  https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/580. QA must bind
+  verdict to delivered head before ledger commit. No Linear mutation, QA
+  dispatch, deploy or merge."
 ---
 
 # FLY-3224 progress
 **phase**: implement (2/4)
-**next**: rework claim 1: push fix, codex review, exact-head CI, complete needs_review
+**next**: Push and freeze revised HEAD; open new code-review gate/request for this rework, then ci-full ensure server-owned policy, complete needs_review --pr 580 and park for QA retest.
 
-**handoff**: run=cb1aa71a-8686-466e-90a6-ddca7f324c7e designExec=f08ad580-f90d-4546-af89-f754ccd0426d activation=eng_design:1 epoch=1. effectiveReviewVerdict=APPROVED reviewerVerdict=APPROVED round=1 question=31bb829f-7361-4776-b0ef-8ba932647d48 request=013d482a-68b7-4b12-bfa4-b521e351d160 planBlob=5ce202103b24a018708a7a9741e868db6b4f99d7. Four non-blocking advisories (qa-worktree-mutation, dirty-tree-recovery-gap, first-delivery-sha-bound, claim-id-validation) relayed to Lead via report a36971d4-20a9-4a97-a3ee-428706ec0a84; no reviewed plan changes. Design commit=37a0758683ce9f1ec28d5c8d38afa5cbbf8cc698. HTML=http://127.0.0.1:64794/fw-reports-dec868/r/eec9fc5ed8a8121e9ca495a7bc8de0b9/ reportReceipt=839c82e3-1ea0-4cb5-8f1e-a60f77f9a529 sourceSha256=dcbfe9cbd5b28224685ac5588bf059e2d044773ccb447f32bf56a766a57be18e STE=disabled; hosted HTTP/CSP/nonce checks pass. Local report comments and 2 rendered Mermaid diagrams verified. Only the existing design folder changed; fixture unchanged, research omitted per README. No implementation/Linear/deployment/PR/ship actions. Watcher wait:315c002966c7e356d4e5b9e20b9d6e6b g1 answered; phase completion receipt still to emit.
+**handoff**: run=8794dd59-6028-4df4-895b-1d0124bf0cb1 implementExec=f1a2105c-d4c3-414c-9f3e-c089cbb0374f attempt=2 epoch=4 activation=activation:rework:29e8bf05ea94fb0f4e9d78c5da6662ac3a7f199e2b81aa1e1d50fbc77a73c0ef request=rework:29e8bf05ea94fb0f4e9d78c5da6662ac3a7f199e2b81aa1e1d50fbc77a73c0ef. QA verdict claim 1 qa_failed on baseRevision=6755e2fdb2afe75aeb2d815ff775a1cc7b58683d; claim id taken only from first line of injected QA fix context. Fixed criterion fixed-for-claim via commit 95835795b0c149ae039fc74d2b352e0cfed95c48: second line AWAITING-QA -> FIXED-FOR-CLAIM 1; first line and two-LF shape unchanged. Current-run first_handin=8e997979718903558ca68b6bdd23e6403c9eb14a remains verified ancestor with AWAITING-QA; CLI custom pointer limitation accepted by Lead, durable handoff is source. Fresh main README reread; approved plan unchanged. Local exact-byte check red before fix and green after; wrong-claim comparison, first-handin/base ancestry, unchanged first line, replay-no-edit shape and fixture-only diff verified. Runtime queued/started/dead/superseded/retried/concurrent paths not applicable: no code; no test files added, local-tests declares none/smoke none; pnpm lint exit 0 with 14 existing warnings. e2e_529_exempt stays not_run docs_only reason Markdown-only drill; no room deployment. Protocol ledger is sole additional rework path; 9-entry whitelist covers existing design docs and fixture; no milestone/research. Final rework head and review/CI/needs_review receipts will be reported without further commits. Reuse PR https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/580. QA must bind verdict to delivered head before ledger commit. No Linear mutation, QA dispatch, deploy or merge.
