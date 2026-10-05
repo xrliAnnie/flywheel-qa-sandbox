@@ -1,13 +1,13 @@
 ---
 issue: FLY-3227
-phase: implement
-phaseCursor: 1/1
-updated: 2026-10-05T08:32:32.643Z
-nextStep: request code review for claim 1 repair a2a50cebb
+phase: design
+phaseCursor: 1/3
+updated: 2026-10-05T12:52:21.429Z
+nextStep: design review of plan.md
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
-**phase**: implement (1/1)
-**next**: request code review for claim 1 repair a2a50cebb
+**phase**: design (1/3)
+**next**: design review of plan.md
