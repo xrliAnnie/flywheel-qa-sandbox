@@ -4,11 +4,11 @@ sequenceDiagram
     participant I as 实现节点
     participant Q as QA 节点
     participant D as 驱动器
-    M->>S: main 已是祖先,继承 OPEN PR 565(文件残留 FIXED-FOR-CLAIM 1)
+    M->>S: main 领先但路径不相交,继承 OPEN PR 565(文件已是 AWAITING-QA)
     S->>D: 短 plan + Codex 评审 APPROVED + 设计 HTML
     D->>I: 派发(无 QA fix context)
-    I->>I: 第 2 行重置为 AWAITING-QA 并提交(去掉上一轮残留)
-    I->>D: 第 1 次交付,复用 PR 565(run=a5651dbc HANDIN1=sha)
+    I->>I: 文件已是 AWAITING-QA 两行,跳过改动(IMPL1 = BASE)
+    I->>D: 第 1 次交付,复用 PR 565(run=d1cedf09 HANDIN1=sha)
     D->>Q: 第 1 轮
     Q->>D: fixed-for-claim = fail(故意),产生 claim id
     D->>I: QA fix context: claim id
