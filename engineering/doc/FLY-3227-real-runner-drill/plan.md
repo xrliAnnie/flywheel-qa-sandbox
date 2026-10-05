@@ -21,6 +21,21 @@ Issue: FLY-3227 (https://linear.app/geoforge3d/issue/FLY-3227/qa-sbx-fly-3227-re
 
 唯一实现消费者是按 README 工作的独立 QA 节点。没有新增接口、显示标签字典、持久化表或迁移。用旧/新字面量、目标和设计文件的完整路径、文件名及父目录做 `git grep -lF` 搜索，未发现本 fixture 或本 issue 文档的测试消费者。通用 `plan.md` / `progress.md` 名称命中框架自身测试与静态样例，逐项排除理由记在进度账本；本任务不改变被测命令、路径解析、schema 或恢复行为。
 
+## 允许路径清单（范围审计）
+
+授权来源：本 issue 每个节点提示中由编排器注入的 DOC-FLOW 段（规定 `engineering/doc/FLY-3227-<slug>/` 下的计划与 `progress.md` 账本）与「Founder design HTML (MANDATORY)」设计节点完成契约（规定同目录下的设计说明页）。相对 `origin/main` 的分支差异只允许以下精确路径，其他任何路径一律视为越界：
+
+| 路径 | 写入者 | 性质 |
+|---|---|---|
+| `qa-sbx/fly3227/project-slot-5-FLY-3227.md` | 实现节点 | 演练交付物（唯一演练内容） |
+| `engineering/doc/FLY-3227-real-runner-drill/plan.md` | 仅设计节点 | 平台设计记录 |
+| `engineering/doc/FLY-3227-real-runner-drill/design.html` | 仅设计节点 | 平台设计说明页 |
+| `engineering/doc/FLY-3227-real-runner-drill/core-flow.mmd` | 仅设计节点 | 设计页图源 |
+| `engineering/doc/FLY-3227-real-runner-drill/core-flow.svg` | 仅设计节点 | 设计页图渲染结果 |
+| `engineering/doc/FLY-3227-real-runner-drill/progress.md` | 各节点经 `flywheel-comm progress` 自动提交 | 平台进度账本 |
+
+审计命令：`git diff --name-only origin/main...HEAD | grep -vxF -f <(printf '%s\n' <上表六个路径>)` 输出必须为空；实现节点相对自身起点的差异（`git diff --name-only <起点>..HEAD`）只能是第 1 行与最后 1 行两个路径。目标路径必须实际存在于 HEAD。
+
 ## 方案与取舍
 
 采用任务书的两行 Markdown 文件与现有交接流程，不建立新的自动化程序。拒绝新增修复程序，因为没有代码需求；拒绝首交预填或沿用旧 claim，因为会跳过故意失败。内容规则唯一来源是 main 的 README；本计划说明执行方法，不增加 QA 准则。
