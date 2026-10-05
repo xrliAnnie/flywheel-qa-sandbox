@@ -15,9 +15,9 @@ Issue: FLY-3227 (https://linear.app/geoforge3d/issue/FLY-3227/qa-sbx-fly-3227-re
 
 ## 调研：当前仓库证据
 
-本次已 fetch 并完整读取 `origin/main:qa-sbx/fly3227/README.md`，main 为 `bd42785c98e83707577d16ef04d096789b79e603`。已读项目 CLAUDE.md、产品体验说明、架构和项目声明的 onboarding 参考；任务不需要外部调研或新依赖。
+本次已 fetch 并完整读取 `origin/main:qa-sbx/fly3227/README.md`，main 为 `c68c2b7d4639ed9a1019faa05dc4414c340d3396`。已读项目 CLAUDE.md、产品体验说明、架构和项目声明的 onboarding 参考；任务不需要外部调研或新依赖。
 
-复用 `engineering/doc/FLY-3227-real-runner-drill/`。继承文件第 2 行为 `FIXED-FOR-CLAIM 1`；继承账本含以前的评审、PR、QA 与 CI 记录。这些都不是本轮验收或授权依据。当前设计执行标识为 `3483a259-c274-4df4-8b1a-9234c2414006`，TURN 为 design / epoch 1；后续节点须现取自己的 TURN 和当前提示。
+复用 `engineering/doc/FLY-3227-real-runner-drill/`。继承文件第 2 行为 `FIXED-FOR-CLAIM 1`；继承账本含以前的评审、PR、QA 与 CI 记录。这些都不是本轮验收或授权依据。当前设计执行标识为 `2c30cad4-413e-4081-98e5-9fae7abccccc`，TURN 为 design / epoch 1；后续节点须现取自己的 TURN 和当前提示。
 
 唯一实现消费者是按 README 工作的独立 QA 节点。没有新增接口、显示标签字典、持久化表或迁移。用旧/新字面量、目标和设计文件的完整路径、文件名及父目录做 `git grep -lF` 搜索，未发现本 fixture 或本 issue 文档的测试消费者。通用 `plan.md` / `progress.md` 名称命中框架自身测试与静态样例，逐项排除理由记在进度账本；本任务不改变被测命令、路径解析、schema 或恢复行为。
 
@@ -70,4 +70,4 @@ QA 判轮只看当前提示是否含 QA re-verification context，不根据旧�
 
 计划提交、推送后，以注入的 `gate review_design --no-block` 与 `request-review --type design --plan ...` 显式注册评审，取得当前服务端有效 `reviewVerdict=APPROVED`；stage 或原始评审文字不能代替批准。评审者接收标记的本地选测政策，禁止全仓/全包本地测试。
 
-最终 HTML 随设计记录提交并推送；先 `ste begin`，再 `publish-report --project test-slot-5 --occasion design_page --artifact ... --publish-only`。本次 STE begin 返回 `disabled`、`sent=false`，无 unitId，使用普通发布路径。成功后按注入身份 `ask --report` 报 URL 给 `flywheel-test-5`，只在取得批准且完成发布/报告后运行 `complete --route phase_design_complete`、`park`。不等待 founder_review，不自行实现或派发；resident goal 在阶段持有期间保持 active，后续意见交当前 TURN 持有人增量处理。
+最终 HTML 随设计记录提交并推送；先 `ste begin`，再 `publish-report --project test-slot-5 --occasion design_page --artifact ... --publish-only`。STE begin 若返回 disabled/unavailable 或无 unitId，使用普通发布路径。成功后按注入身份 `ask --report` 报 URL 给 `flywheel-test-5`，只在取得批准且完成发布/报告后运行 `complete --route phase_design_complete`、`park`。不等待 founder_review，不自行实现或派发；resident goal 在阶段持有期间保持 active，后续意见交当前 TURN 持有人增量处理。
