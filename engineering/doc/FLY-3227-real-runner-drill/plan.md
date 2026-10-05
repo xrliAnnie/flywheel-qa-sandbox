@@ -16,7 +16,7 @@ Issue: FLY-3227 (https://linear.app/geoforge3d/issue/FLY-3227/qa-sbx-fly-3227-re
 4. 按序核验，任一步非零即停：
    - 写入：`printf '%s\n' "$EXPECTED" > "$FILE"`
    - 工作树核验：`printf '%s\n' "$EXPECTED" | cmp - "$FILE"`
-   - 提交：`git add "$FILE" && git commit -m 'docs(qa-sbx): FLY-3227 drill hand-in'`（无任何 skip-ci 标记或 `skip-checks:` trailer）
+   - 提交：若 `git diff --quiet HEAD -- "$FILE"` exit 0（内容已与 HEAD 一致，如同一 claim 重派），跳过提交、直接进入下一步；否则 `git add "$FILE" && git commit -m 'docs(qa-sbx): FLY-3227 drill hand-in'`（无任何 skip-ci 标记或 `skip-checks:` trailer）
    - HEAD 核验：`printf '%s\n' "$EXPECTED" | cmp - <(git show HEAD:"$FILE")`
    - 推送：普通 `git push origin HEAD`，再读取 `git rev-parse HEAD` 这个精确 head 的 CI。
 
