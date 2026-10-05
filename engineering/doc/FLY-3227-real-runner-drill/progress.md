@@ -1,13 +1,13 @@
 ---
 issue: FLY-3227
-phase: implement
-phaseCursor: 2/2
-updated: 2026-10-05T02:37:32.320Z
-nextStep: "PR #574 open; frozen head; ci-full ensure then complete needs_review"
+phase: design
+phaseCursor: 3/4
+updated: 2026-10-05T03:12:39.702Z
+nextStep: design approved r2; refresh+publish design HTML, report, complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
-**phase**: implement (2/2)
-**next**: PR #574 open; frozen head; ci-full ensure then complete needs_review
+**phase**: design (3/4)
+**next**: design approved r2; refresh+publish design HTML, report, complete
