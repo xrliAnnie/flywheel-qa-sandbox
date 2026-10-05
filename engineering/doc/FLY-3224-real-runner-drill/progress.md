@@ -1,44 +1,38 @@
 ---
 issue: FLY-3224
 phase: implement
-phaseCursor: 2/4
-updated: 2026-10-05T08:25:52.181Z
-nextStep: Push and freeze revised HEAD; open new code-review gate/request for
-  this rework, then ci-full ensure server-owned policy, complete needs_review
-  --pr 580 and park for QA retest.
+phaseCursor: 3/4
+updated: 2026-10-05T10:38:21.614Z
+nextStep: Update existing milestone as literal last commit, push, freeze final
+  rework HEAD, update PR585, register fresh effective code review; after
+  approval ensure CI and complete needs_review.
 chunks: []
 pointers:
-  pr: "580"
-handoff: "run=8794dd59-6028-4df4-895b-1d0124bf0cb1
-  implementExec=f1a2105c-d4c3-414c-9f3e-c089cbb0374f attempt=2 epoch=4
-  activation=activation:rework:29e8bf05ea94fb0f4e9d78c5da6662ac3a7f199e2b81aa1e\
-  1d50fbc77a73c0ef
-  request=rework:29e8bf05ea94fb0f4e9d78c5da6662ac3a7f199e2b81aa1e1d50fbc77a73c0\
-  ef. QA verdict claim 1 qa_failed on
-  baseRevision=6755e2fdb2afe75aeb2d815ff775a1cc7b58683d; claim id taken only
-  from first line of injected QA fix context. Fixed criterion fixed-for-claim
-  via commit 95835795b0c149ae039fc74d2b352e0cfed95c48: second line AWAITING-QA
-  -> FIXED-FOR-CLAIM 1; first line and two-LF shape unchanged. Current-run
-  first_handin=8e997979718903558ca68b6bdd23e6403c9eb14a remains verified
-  ancestor with AWAITING-QA; CLI custom pointer limitation accepted by Lead,
-  durable handoff is source. Fresh main README reread; approved plan unchanged.
-  Local exact-byte check red before fix and green after; wrong-claim comparison,
-  first-handin/base ancestry, unchanged first line, replay-no-edit shape and
-  fixture-only diff verified. Runtime
-  queued/started/dead/superseded/retried/concurrent paths not applicable: no
-  code; no test files added, local-tests declares none/smoke none; pnpm lint
-  exit 0 with 14 existing warnings. e2e_529_exempt stays not_run docs_only
-  reason Markdown-only drill; no room deployment. Protocol ledger is sole
-  additional rework path; 9-entry whitelist covers existing design docs and
-  fixture; no milestone/research. Final rework head and review/CI/needs_review
-  receipts will be reported without further commits. Reuse PR
-  https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/580. QA must bind
-  verdict to delivered head before ledger commit. No Linear mutation, QA
-  dispatch, deploy or merge."
+  pr: "585"
+handoff: Rework activation
+  activation:rework:2c45ad197b391190262c9c51aea07dfc8a14b36fa3488e86802af6a7c9429722;
+  TURN implement epoch 4 attempt 2. Authoritative injected QA claim 1 failed on
+  base 606fa72da22e4bf8cb556fd70c82a180621e8545; ancestry and first-hand-in
+  exact AWAITING-QA bytes verified before write. Fix commit
+  a86b33c658ef31e559374bea3ca9b215228fd6d8 replaces only line2 with
+  FIXED-FOR-CLAIM 1; exact two-line LF cmp passes and patch against QA base is
+  -AWAITING-QA / +FIXED-FOR-CLAIM 1. git diff --check passes. local-tests has no
+  changed/direct tests or smoke set; lint exit 0 with 14 existing warnings.
+  Adjacent queued/started/dead/superseded/retried/concurrent runtime paths and
+  tests N/A because README forbids code and deployment for docs-only drill.
+  e2e_529_exempt remains not_run and requires no repair. Required protocol
+  progress/milestone updates only; prior spacing advisory corrected in new
+  handoff text; approved design/SVG unchanged. Fresh main README blob
+  c4a1b3334b84d73b95cf4e2943c2c8f1474aef87 on main
+  ab48f15175b9514701de68993ca7991891eb5005; no pre_handin.script. PR 585 OPEN.
+  Prior-head code review/CI/completion are historical; new-head effective
+  review, CI ensure and needs_review receipt pending. No further commit after
+  last milestone freeze except named review/CI fixes. No Linear, config, source,
+  database, room deployment, QA dispatch, ship request or main push.
 ---
 
 # FLY-3224 progress
-**phase**: implement (2/4)
-**next**: Push and freeze revised HEAD; open new code-review gate/request for this rework, then ci-full ensure server-owned policy, complete needs_review --pr 580 and park for QA retest.
+**phase**: implement (3/4)
+**next**: Update existing milestone as literal last commit, push, freeze final rework HEAD, update PR585, register fresh effective code review; after approval ensure CI and complete needs_review.
 
-**handoff**: run=8794dd59-6028-4df4-895b-1d0124bf0cb1 implementExec=f1a2105c-d4c3-414c-9f3e-c089cbb0374f attempt=2 epoch=4 activation=activation:rework:29e8bf05ea94fb0f4e9d78c5da6662ac3a7f199e2b81aa1e1d50fbc77a73c0ef request=rework:29e8bf05ea94fb0f4e9d78c5da6662ac3a7f199e2b81aa1e1d50fbc77a73c0ef. QA verdict claim 1 qa_failed on baseRevision=6755e2fdb2afe75aeb2d815ff775a1cc7b58683d; claim id taken only from first line of injected QA fix context. Fixed criterion fixed-for-claim via commit 95835795b0c149ae039fc74d2b352e0cfed95c48: second line AWAITING-QA -> FIXED-FOR-CLAIM 1; first line and two-LF shape unchanged. Current-run first_handin=8e997979718903558ca68b6bdd23e6403c9eb14a remains verified ancestor with AWAITING-QA; CLI custom pointer limitation accepted by Lead, durable handoff is source. Fresh main README reread; approved plan unchanged. Local exact-byte check red before fix and green after; wrong-claim comparison, first-handin/base ancestry, unchanged first line, replay-no-edit shape and fixture-only diff verified. Runtime queued/started/dead/superseded/retried/concurrent paths not applicable: no code; no test files added, local-tests declares none/smoke none; pnpm lint exit 0 with 14 existing warnings. e2e_529_exempt stays not_run docs_only reason Markdown-only drill; no room deployment. Protocol ledger is sole additional rework path; 9-entry whitelist covers existing design docs and fixture; no milestone/research. Final rework head and review/CI/needs_review receipts will be reported without further commits. Reuse PR https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/580. QA must bind verdict to delivered head before ledger commit. No Linear mutation, QA dispatch, deploy or merge.
+**handoff**: Rework activation activation:rework:2c45ad197b391190262c9c51aea07dfc8a14b36fa3488e86802af6a7c9429722; TURN implement epoch 4 attempt 2. Authoritative injected QA claim 1 failed on base 606fa72da22e4bf8cb556fd70c82a180621e8545; ancestry and first-hand-in exact AWAITING-QA bytes verified before write. Fix commit a86b33c658ef31e559374bea3ca9b215228fd6d8 replaces only line2 with FIXED-FOR-CLAIM 1; exact two-line LF cmp passes and patch against QA base is -AWAITING-QA / +FIXED-FOR-CLAIM 1. git diff --check passes. local-tests has no changed/direct tests or smoke set; lint exit 0 with 14 existing warnings. Adjacent queued/started/dead/superseded/retried/concurrent runtime paths and tests N/A because README forbids code and deployment for docs-only drill. e2e_529_exempt remains not_run and requires no repair. Required protocol progress/milestone updates only; prior spacing advisory corrected in new handoff text; approved design/SVG unchanged. Fresh main README blob c4a1b3334b84d73b95cf4e2943c2c8f1474aef87 on main ab48f15175b9514701de68993ca7991891eb5005; no pre_handin.script. PR 585 OPEN. Prior-head code review/CI/completion are historical; new-head effective review, CI ensure and needs_review receipt pending. No further commit after last milestone freeze except named review/CI fixes. No Linear, config, source, database, room deployment, QA dispatch, ship request or main push.
