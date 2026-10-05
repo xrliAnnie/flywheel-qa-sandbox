@@ -2,19 +2,18 @@
 issue: FLY-3150
 phase: implement
 phaseCursor: 2/4
-updated: 2026-10-05T21:24:11.035Z
-nextStep: freeze BASE2, write FIXED-FOR-CLAIM 1, verify exact retry diff, commit and push
+updated: 2026-10-05T22:10:47.312Z
+nextStep: "hand-in 2: set line 2 to FIXED-FOR-CLAIM 1, push, CI, complete"
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
   pr: "602"
-handoff: run=1469defd attempt=2; QA claim=1;
-  PREV=243edbc0414bc2197e3dab7c419b9af3ad426df1; rework
-  baseRevision=243edbc0414bc2197e3dab7c419b9af3ad426df1
+handoff: run=ef0f0e9c attempt=2; QA claim=1;
+  PREV=6a57d6b72c3ce84abb52c4633eaaa512f8700a53
 ---
 
 # FLY-3150 progress
 **phase**: implement (2/4)
-**next**: freeze BASE2, write FIXED-FOR-CLAIM 1, verify exact retry diff, commit and push
+**next**: hand-in 2: set line 2 to FIXED-FOR-CLAIM 1, push, CI, complete
 
-**handoff**: run=1469defd attempt=2; QA claim=1; PREV=243edbc0414bc2197e3dab7c419b9af3ad426df1; rework baseRevision=243edbc0414bc2197e3dab7c419b9af3ad426df1
+**handoff**: run=ef0f0e9c attempt=2; QA claim=1; PREV=6a57d6b72c3ce84abb52c4633eaaa512f8700a53
