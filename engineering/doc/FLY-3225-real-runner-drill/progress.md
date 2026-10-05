@@ -1,68 +1,19 @@
 ---
 issue: FLY-3225
 phase: implement
-phaseCursor: 4/5
-updated: 2026-10-05T01:38:11.637Z
-nextStep: Push final rework ledger, freeze HEAD, run server ci-full ensure --pr
-  573 for actual HEAD; only exit 0 permits exact needs_review completion and
-  phase park.
+phaseCursor: 2/2
+updated: 2026-10-05T09:22:38.618Z
+nextStep: push, update PR 576 body, lint, code review, CI, complete needs_review
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3225-real-runner-drill/plan.md
-  reviewedSha: 0a3eee5b23f36df58bcb511f717f0e983c459e7f
-handoff: '{"runId":"d470760d-b6ec-4a8e-a743-86495c9dcaf0","execId":"0bd01954-2cd3-4286-8de8-de858f221973","designExecId":"f95dd2a1-fbbf-469c-adfd-5e5d296d316e","activationId":"activation:rework:9ffb43d10815f858e820abc8bc25ac9f10b1e696ac223ba39a311600d0a9a835","designActivationId":"activation:f95dd2a1-fbbf-469c-adfd-5e5d296d316e:d470760d-b6ec-4a8e-a743-86495c9dcaf0:eng_design:1","attempt":2,"designBase":"39754a41985b9c91430d6ab9086e678a6cd35e68","readmeMain":"39754a41985b9c91430d6ab9086e678a6cd35e68","taskPath":"qa-sbx/fly3225/project-slot-3-FLY-3225.md","inheritedLine2":"FIXED-FOR-CLAIM
-  1","designReview":"APPROVED","designCommits":["93befdc2dc41c439beb7adf49f980b2cacd538d0","0a3eee5b23f36df58bcb511f717f0e983c459e7f"],"nextRoute":"needs_review","scope":"One
-  two-line drill markdown file; required tool-owned progress only; no research,
-  milestone, code, Linear changes, deployment, or QA
-  dispatch","designQuestionId":"5df55231-5cd1-4bb7-9c4c-d6da039474cd","designReviewRequestId":"01fee1cd-0020-455d-9cf3-c8e6bbcbe93d","reviewedSha":"0a3eee5b23f36df58bcb511f717f0e983c459e7f","reviewPlanBlob":"74d45f383eb56134d94947e70cb839c3a2cdcb34","ste":"disabled","designReviewHistory":[{"questionId":"e9f45605-78f7-4385-8b95-d5391a119840","requestId":"cdf2868d-3fc1-466b-a0a1-b2f24d904e20","planBlob":"9124add6b0d609fada86e45ba09405d03c069a29","verdict":"APPROVED","round":1,"advisories":["MEDIUM
-  fix-context-first-line-ambiguity","LOW fixer-block-extra-asks-na","LOW
-  recovery-author-not-discriminating"],"advisoryReportReceipt":"bd5bfd63-641e-4a1e-b2ed-10bc2cc5629b"}],"advisoriesClarified":true,"htmlSourceHash":"a36d275e5cf54dc093c54b49f4f28d2f3df7bdfbaf45aeecf5888971d01b917e","htmlVerification":"PASS:
-  6 section comments, CSP nonce, path isolation, reload persistence, text-only
-  rendering, <=1800 chunks with marker, clipboard
-  success/absence/rejection/throw, storage denial, 390px layout, accessible
-  unique SVG IDs, unclipped AWAITING-QA, zero external
-  requests","diagramSkillSelfCheck":"Not applicable to required comment script:
-  tool expects animation controller data-diagram-controls/data-motion-root.
-  Required script verified directly in browser.","localTests":"No changed or
-  direct test files; no fixed smoke set declared","lint":"PASS: rework pnpm lint
-  exit 0; 14 inherited warnings","scopeVerification":"Both own implementation
-  commits modify only qa-sbx/fly3225/project-slot-3-FLY-3225.md; other rework
-  changes only tool-owned
-  progress","publication":"published","reviewerVerdict":"APPROVED","reviewRound":2,"findings":[],"advisories":[],"branchPushed":true,"publishedReportId":"fed76be6382695dbf25e9d99b14fe7c6","publishedUrl":"http://127.0.0.1:57118/fw-reports-1382d4/r/fed76be6382695dbf25e9d99b14fe7c6/","htmlReportReceipt":"c4e6b9a2-1a01-4cc6-9793-bef188517ce2","publishedReceipt":{"publishOnly":true,"delivered":false,"finalHash":"not
-  supplied by receipt","fallbackReason":"not supplied by
-  receipt"},"hostedBodySha256":"0f2de9799b4a8eabc6dc278db029998ac80c61111a98f8e1a4583e1d68181f6e","htmlHostedVerification":"PASS:
-  HTTP 200, minted script nonce matches CSP, six comments and live aggregate
-  execute, zero external
-  requests","completionRoute":"needs_review","completionStatus":"QA claim-1 fix
-  and effective new code review complete; final ledger/push then freeze; server
-  CI and needs_review remain","phaseKeepAlive":"After accepted completion, park
-  and end current turn; goal remains active until issue-terminal
-  shutdown","implBase":"6651b58744ece81ee1d622596ea2ff6884712986","firstHandin":"82c44899a2958b16c9045e67383c0924c2ee05c5","ownCommits":["82c44899a2958b16c9045e67383c0924c2ee05c5","e372659c86aeedea0975bbf99634de6c03f7d9ea"],"designVerifiedEffectiveVerdict":"APPROVED","codeReview":"APPROVED","ci":"Pending
-  ci-full ensure on final frozen rework head","pr":573,"fileVerification":"PASS:
-  exact claim-1 two-line bytes, first line unchanged, trailing newline; rework
-  diff changes only second line","adjacentPaths":"N/A (docs-only drill; no
-  queued/started/dead/superseded/retried/concurrent executable
-  paths)","e2e529":"not_run; exempt_category docs_only; reason only drill
-  documentation changes and README forbids room
-  deployment","prUrl":"https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/573","codeQuestionId":"3d59f342-2e97-4213-bb19-e1a2231a71f2","codeReviewRequestId":"71b36e6c-8c7e-40ec-8fa1-ec77d30108a4","codeReviewerVerdict":"APPROVED","codeReviewRound":2,"codeReviewedHeadSha":"911315af1c7856285abd6dd206afc4d83adb7ac2","codeReviewAdvisories":[{"findingKey":"progress-report-token-committed","severity":"LOW","title":"progress.md
-  的 handoff 里仍提交了已发布报告的 token 路径 ID 和 URL","disposition":"Relayed as
-  non-blocking report; preserved task
-  scope"},{"findingKey":"drill-net-diff-empty-vs-base","severity":"LOW","title":"相对
-  main，练习文件的净 diff 为空","disposition":"Relayed as non-blocking report; preserved
-  task scope"}],"preHandin":"No pre_handin.script declared in worktree
-  .flywheel/config.yaml","frozenHeadPolicy":"This is final planned rework ledger
-  commit; no further commits after successful push. Actual frozen HEAD bound by
-  ci-full/complete
-  receipts.","codeReviewHistory":[{"questionId":"ae477231-db46-4d4c-b6ca-ea81bc9ef1ab","requestId":"cb0abce2-0d98-446d-8ad4-fb7411817966","verdict":"APPROVED","reviewedHeadSha":"b9c891d7d560d19fd7b6e16475067395c1cbba28","advisories":[{"findingKey":"progress-report-token-committed","severity":"LOW","disposition":"Relayed
-  to Lead as non-blocking future hosted-report ledger recommendation;
-  implementation scope
-  preserved"}],"attempt":1}],"reworkBase":"79d473b09b5dcdafc6b08a2014d1a10b34ae71db","qaFixClaim":1,"reworkRequestId":"rework:9ffb43d10815f858e820abc8bc25ac9f10b1e696ac223ba39a311600d0a9a835","qaAuthority":"qa_fail
-  from node qa attempt 1; sourceExecutionId
-  8365af0e-002d-4d92-b344-e990d682f451","priorHandin":{"head":"79d473b09b5dcdafc6b08a2014d1a10b34ae71db","ci":"legacy_ci_green","runId":37250618978,"route":"needs_review","reportReceipt":"f584e649-161b-435a-ae74-cb1c13738d26"},"qaFixCommit":"e372659c86aeedea0975bbf99634de6c03f7d9ea","codeAdvisoryReportReceipt":"d2184188-5d46-47c9-a676-e18ad803c7f2"}'
+  reviewedSha: b3add4705a7cbd228830967837afb4978b3c3117
+handoff: '{"runId":"d91dc5fb-3878-47b1-a994-01d0fd6c1a19","execId":"2d51a95a-a53f-468b-9aa7-44d425302a25","activationId":"activation:rework:c52bb4e5540cf18a4f760883f573c5a080b1b641e6eb1c70b5473ba1c6b098b1","implBase":"e7bb7618a2128891e87cd3bc12602871ca9eded8","firstHandin":"42257504aa6c4763bb48c79c2f494b3a0bebd410","ownCommits":["5f20d7e3f9948b860b744c1c2ad13312404eeea5"],"round":2,"claimId":"1","note":"line
+  2 set to FIXED-FOR-CLAIM 1"}'
 ---
 
 # FLY-3225 progress
-**phase**: implement (4/5)
-**next**: Push final rework ledger, freeze HEAD, run server ci-full ensure --pr 573 for actual HEAD; only exit 0 permits exact needs_review completion and phase park.
+**phase**: implement (2/2)
+**next**: push, update PR 576 body, lint, code review, CI, complete needs_review
 
-**handoff**: {"runId":"d470760d-b6ec-4a8e-a743-86495c9dcaf0","execId":"0bd01954-2cd3-4286-8de8-de858f221973","designExecId":"f95dd2a1-fbbf-469c-adfd-5e5d296d316e","activationId":"activation:rework:9ffb43d10815f858e820abc8bc25ac9f10b1e696ac223ba39a311600d0a9a835","designActivationId":"activation:f95dd2a1-fbbf-469c-adfd-5e5d296d316e:d470760d-b6ec-4a8e-a743-86495c9dcaf0:eng_design:1","attempt":2,"designBase":"39754a41985b9c91430d6ab9086e678a6cd35e68","readmeMain":"39754a41985b9c91430d6ab9086e678a6cd35e68","taskPath":"qa-sbx/fly3225/project-slot-3-FLY-3225.md","inheritedLine2":"FIXED-FOR-CLAIM 1","designReview":"APPROVED","designCommits":["93befdc2dc41c439beb7adf49f980b2cacd538d0","0a3eee5b23f36df58bcb511f717f0e983c459e7f"],"nextRoute":"needs_review","scope":"One two-line drill markdown file; required tool-owned progress only; no research, milestone, code, Linear changes, deployment, or QA dispatch","designQuestionId":"5df55231-5cd1-4bb7-9c4c-d6da039474cd","designReviewRequestId":"01fee1cd-0020-455d-9cf3-c8e6bbcbe93d","reviewedSha":"0a3eee5b23f36df58bcb511f717f0e983c459e7f","reviewPlanBlob":"74d45f383eb56134d94947e70cb839c3a2cdcb34","ste":"disabled","designReviewHistory":[{"questionId":"e9f45605-78f7-4385-8b95-d5391a119840","requestId":"cdf2868d-3fc1-466b-a0a1-b2f24d904e20","planBlob":"9124add6b0d609fada86e45ba09405d03c069a29","verdict":"APPROVED","round":1,"advisories":["MEDIUM fix-context-first-line-ambiguity","LOW fixer-block-extra-asks-na","LOW recovery-author-not-discriminating"],"advisoryReportReceipt":"bd5bfd63-641e-4a1e-b2ed-10bc2cc5629b"}],"advisoriesClarified":true,"htmlSourceHash":"a36d275e5cf54dc093c54b49f4f28d2f3df7bdfbaf45aeecf5888971d01b917e","htmlVerification":"PASS: 6 section comments, CSP nonce, path isolation, reload persistence, text-only rendering, <=1800 chunks with marker, clipboard success/absence/rejection/throw, storage denial, 390px layout, accessible unique SVG IDs, unclipped AWAITING-QA, zero external requests","diagramSkillSelfCheck":"Not applicable to required comment script: tool expects animation controller data-diagram-controls/data-motion-root. Required script verified directly in browser.","localTests":"No changed or direct test files; no fixed smoke set declared","lint":"PASS: rework pnpm lint exit 0; 14 inherited warnings","scopeVerification":"Both own implementation commits modify only qa-sbx/fly3225/project-slot-3-FLY-3225.md; other rework changes only tool-owned progress","publication":"published","reviewerVerdict":"APPROVED","reviewRound":2,"findings":[],"advisories":[],"branchPushed":true,"publishedReportId":"fed76be6382695dbf25e9d99b14fe7c6","publishedUrl":"http://127.0.0.1:57118/fw-reports-1382d4/r/fed76be6382695dbf25e9d99b14fe7c6/","htmlReportReceipt":"c4e6b9a2-1a01-4cc6-9793-bef188517ce2","publishedReceipt":{"publishOnly":true,"delivered":false,"finalHash":"not supplied by receipt","fallbackReason":"not supplied by receipt"},"hostedBodySha256":"0f2de9799b4a8eabc6dc278db029998ac80c61111a98f8e1a4583e1d68181f6e","htmlHostedVerification":"PASS: HTTP 200, minted script nonce matches CSP, six comments and live aggregate execute, zero external requests","completionRoute":"needs_review","completionStatus":"QA claim-1 fix and effective new code review complete; final ledger/push then freeze; server CI and needs_review remain","phaseKeepAlive":"After accepted completion, park and end current turn; goal remains active until issue-terminal shutdown","implBase":"6651b58744ece81ee1d622596ea2ff6884712986","firstHandin":"82c44899a2958b16c9045e67383c0924c2ee05c5","ownCommits":["82c44899a2958b16c9045e67383c0924c2ee05c5","e372659c86aeedea0975bbf99634de6c03f7d9ea"],"designVerifiedEffectiveVerdict":"APPROVED","codeReview":"APPROVED","ci":"Pending ci-full ensure on final frozen rework head","pr":573,"fileVerification":"PASS: exact claim-1 two-line bytes, first line unchanged, trailing newline; rework diff changes only second line","adjacentPaths":"N/A (docs-only drill; no queued/started/dead/superseded/retried/concurrent executable paths)","e2e529":"not_run; exempt_category docs_only; reason only drill documentation changes and README forbids room deployment","prUrl":"https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/573","codeQuestionId":"3d59f342-2e97-4213-bb19-e1a2231a71f2","codeReviewRequestId":"71b36e6c-8c7e-40ec-8fa1-ec77d30108a4","codeReviewerVerdict":"APPROVED","codeReviewRound":2,"codeReviewedHeadSha":"911315af1c7856285abd6dd206afc4d83adb7ac2","codeReviewAdvisories":[{"findingKey":"progress-report-token-committed","severity":"LOW","title":"progress.md 的 handoff 里仍提交了已发布报告的 token 路径 ID 和 URL","disposition":"Relayed as non-blocking report; preserved task scope"},{"findingKey":"drill-net-diff-empty-vs-base","severity":"LOW","title":"相对 main，练习文件的净 diff 为空","disposition":"Relayed as non-blocking report; preserved task scope"}],"preHandin":"No pre_handin.script declared in worktree .flywheel/config.yaml","frozenHeadPolicy":"This is final planned rework ledger commit; no further commits after successful push. Actual frozen HEAD bound by ci-full/complete receipts.","codeReviewHistory":[{"questionId":"ae477231-db46-4d4c-b6ca-ea81bc9ef1ab","requestId":"cb0abce2-0d98-446d-8ad4-fb7411817966","verdict":"APPROVED","reviewedHeadSha":"b9c891d7d560d19fd7b6e16475067395c1cbba28","advisories":[{"findingKey":"progress-report-token-committed","severity":"LOW","disposition":"Relayed to Lead as non-blocking future hosted-report ledger recommendation; implementation scope preserved"}],"attempt":1}],"reworkBase":"79d473b09b5dcdafc6b08a2014d1a10b34ae71db","qaFixClaim":1,"reworkRequestId":"rework:9ffb43d10815f858e820abc8bc25ac9f10b1e696ac223ba39a311600d0a9a835","qaAuthority":"qa_fail from node qa attempt 1; sourceExecutionId 8365af0e-002d-4d92-b344-e990d682f451","priorHandin":{"head":"79d473b09b5dcdafc6b08a2014d1a10b34ae71db","ci":"legacy_ci_green","runId":37250618978,"route":"needs_review","reportReceipt":"f584e649-161b-435a-ae74-cb1c13738d26"},"qaFixCommit":"e372659c86aeedea0975bbf99634de6c03f7d9ea","codeAdvisoryReportReceipt":"d2184188-5d46-47c9-a676-e18ad803c7f2"}
+**handoff**: {"runId":"d91dc5fb-3878-47b1-a994-01d0fd6c1a19","execId":"2d51a95a-a53f-468b-9aa7-44d425302a25","activationId":"activation:rework:c52bb4e5540cf18a4f760883f573c5a080b1b641e6eb1c70b5473ba1c6b098b1","implBase":"e7bb7618a2128891e87cd3bc12602871ca9eded8","firstHandin":"42257504aa6c4763bb48c79c2f494b3a0bebd410","ownCommits":["5f20d7e3f9948b860b744c1c2ad13312404eeea5"],"round":2,"claimId":"1","note":"line 2 set to FIXED-FOR-CLAIM 1"}
