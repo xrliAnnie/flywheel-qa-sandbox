@@ -590,3 +590,4 @@ TURN:`yours phase=design epoch=1 run=4dea7fe2… node=eng_design attempt=1`(exec
 - run `1469defd` 的 PR #602 已合入、远端分支已删;本地分支 = `origin/main` = `295978c2b`(即 #602 合并提交本身)→ 不同步,首次推送新建远端分支并新开 PR。
 - 起点:`"$F"` = main 上残留的 `FIXED-FOR-CLAIM 1` → 交付 #1 走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`)。旧 progress.md handoff(`run=1469defd attempt=2; QA claim=1; PREV=243edbc0…`)不是本轮证据。
 - 与 §38 同形,plan 沿用 §38 已评审结构(含 §1 断言 4 白名单 + 断言 6 指令优先级 + §3.1 两种计数区间),只更新本轮起点与 run id。
+- Codex 设计评审(gpt-6-astra/xhigh,thread `01a10e10-6dad…`)第 1 轮 APPROVED,干净 "Turn completed";HIGH 0 / MEDIUM 0 / LOW 1:§3.1 交付 #1 用 `rev-list --merges $BASE..$HANDIN1` 判定同步,但同步规定在冻结 BASE 之前完成,该区间按规定不会含合并提交("必然命中"对交付 #1 不成立)。本轮 `origin/main` 是 HEAD 祖先、不同步,不受影响;plan 保持已评审 blob `9f1c8532…` 不动,留给后续轮次在需要改 plan 时一并修正(建议:显式记录本次是否同步与同步的 main SHA,据此选择交付 #1 的核验)。
