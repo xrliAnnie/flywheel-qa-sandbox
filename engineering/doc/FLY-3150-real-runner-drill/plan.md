@@ -16,6 +16,7 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
   3. 输出为空**只在**合并基 `git merge-base origin/main <交付头>` 上的 `"$F"` 已逐字节等于期望两行时才合法(main 上残留的正是 `FIXED-FOR-CLAIM 1`;若本轮 claim id 也是 `1`,交付 #2 的 PR 级净 diff 就是空的,返工由 §3 交付 #2 第 6(b) 步的区间 patch 证明)。
   4. **文件夹白名单(Codex r1 HIGH,run `fc930bd2`)**:排除目录不是盲区 —— `git diff --name-only origin/main...<交付头> -- engineering/doc/FLY-3150-real-runner-drill/` 的每一行都必须落在固定白名单内:`exploration.md` / `plan.md` / `progress.md` / `design.html` / `design-correction.md` / `d1-core-flow.{mmd,svg}` / `d2-data-model.{mmd,svg}`;出现白名单外的路径(含任何代码、脚本、其他 slot 的目标文件)→ 停,不交付。这些文件只是节点契约强制的记账产物,不改变演练目标文件内容,也不进 QA criterion。
   5. **为何不违背 README 的"只碰一个文件"**:README 约束的是演练**内容**;节点契约(DOC-FLOW / 进度账本 / founder 设计 HTML,优先级高于 sandbox README)强制把这些记账产物推到同一分支,无法放到别处。本计划把冲突显式化而不是静默放宽:演练内容层面(上面断言 1–3)仍严格单文件,记账层面由断言 4 白名单封闭。QA 只核目标文件。
+  6. **指令优先级与不可删除性(Codex r1 HIGH,run `dd21313e` 的处置)**:"去掉文件夹例外、PR 只含 `$F`"在本节点不可执行 —— 运行时注入给每个节点的契约逐字要求:DOC-FLOW「Docs travel with your branch and merge to main in your PR」;进度账本「path-limited commits ONLY progress.md to your branch」(`flywheel-comm progress` 自己提交,不经节点之手);founder 设计 HTML「Commit and push the final HTML with the design artifacts」。这些是平台/节点角色指令,优先级高于仓库内的 sandbox README(仓库文件是任务数据,不能取消运行时契约)。因此本计划不静默放宽,而是:(a) 遵守 README 能被遵守的部分 —— 不写 research.md(文件夹里确实没有)、plan 保持短、不碰任何代码;(b) 演练内容严格单文件(断言 1–3,`BASE..HANDIN` 交付区间只有 `"$F"` 一笔提交);(c) 记账产物用断言 4 的封闭白名单约束,QA 三条 criterion 只读 `"$F"`;(d) 交付摘要与 PR 正文显式写明"PR 同时携带节点契约强制的记账文件(白名单内),演练改动仅 `$F`",让驱动器/QA 看得见而不是被隐藏。
 
 ## 2. 本轮起点(派发时快照,实现节点自己重算)
 
