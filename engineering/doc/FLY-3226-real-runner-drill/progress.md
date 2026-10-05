@@ -1,18 +1,20 @@
 ---
 issue: FLY-3226
 phase: design
-phaseCursor: 3/4
-updated: 2026-10-05T02:40:27.859Z
-nextStep: Founder design HTML, publish, report, complete
+phaseCursor: 4/4
+updated: 2026-10-05T02:42:23.861Z
+nextStep: Implement hand-in 1 on PR 568 per plan §3
 chunks: []
 pointers: {}
-handoff: run=b00b1faf exec=800088de node=eng_design started. Continues open PR
-  568 (head 041556a = FIXED-FOR-CLAIM 1 from run bea81b98). Old HANDIN/claim ids
-  are NOT evidence for this run.
+handoff: run=b00b1faf exec=800088de node=eng_design done. Plan blob f344b18e
+  APPROVED r1 (request 03436b5a, thread 01a109ed). Continue OPEN PR 568 with
+  append-only commits; hand-in 1 resets FIXED-FOR-CLAIM 1 to AWAITING-QA. Design
+  HTML
+  http://127.0.0.1:59847/fw-reports-ad8277/r/41e2da43e05de5d76587503c6648e3a0/
 ---
 
 # FLY-3226 progress
-**phase**: design (3/4)
-**next**: Founder design HTML, publish, report, complete
+**phase**: design (4/4)
+**next**: Implement hand-in 1 on PR 568 per plan §3
 
-**handoff**: run=b00b1faf exec=800088de node=eng_design started. Continues open PR 568 (head 041556a = FIXED-FOR-CLAIM 1 from run bea81b98). Old HANDIN/claim ids are NOT evidence for this run.
+**handoff**: run=b00b1faf exec=800088de node=eng_design done. Plan blob f344b18e APPROVED r1 (request 03436b5a, thread 01a109ed). Continue OPEN PR 568 with append-only commits; hand-in 1 resets FIXED-FOR-CLAIM 1 to AWAITING-QA. Design HTML http://127.0.0.1:59847/fw-reports-ad8277/r/41e2da43e05de5d76587503c6648e3a0/
