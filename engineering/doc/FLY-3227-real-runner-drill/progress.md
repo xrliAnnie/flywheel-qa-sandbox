@@ -1,15 +1,15 @@
 ---
 issue: FLY-3227
 phase: design
-phaseCursor: 2/5
-updated: 2026-10-05T21:16:33.783Z
-nextStep: "Scope response read: README short-plan exception; reuse required
-  existing process artifacts, leave payload unchanged. Refresh plan for current
-  main, register fresh design review, validate and publish HTML."
+phaseCursor: 3/5
+updated: 2026-10-05T21:20:00.649Z
+nextStep: Short plan refreshed against current main; Mermaid sequence rendered
+  locally; stale approval removed from HTML. Validate comments/CSP/layout,
+  commit and push artifacts, register explicit review, then publish/report.
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
-**phase**: design (2/5)
-**next**: Scope response read: README short-plan exception; reuse required existing process artifacts, leave payload unchanged. Refresh plan for current main, register fresh design review, validate and publish HTML.
+**phase**: design (3/5)
+**next**: Short plan refreshed against current main; Mermaid sequence rendered locally; stale approval removed from HTML. Validate comments/CSP/layout, commit and push artifacts, register explicit review, then publish/report.
