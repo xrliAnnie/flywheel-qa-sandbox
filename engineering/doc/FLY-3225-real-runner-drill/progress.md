@@ -1,23 +1,22 @@
 ---
 issue: FLY-3225
 phase: implement
-phaseCursor: 2/3
-updated: 2026-10-05T21:15:25.116Z
-nextStep: Code review APPROVED; final progress commit, push and freeze HEAD;
-  ci-full ensure then needs_review. Local lint errors only git-excluded runtime
-  receipts, not branch files.
+phaseCursor: 1/3
+updated: 2026-10-05T21:33:10.746Z
+nextStep: Claim 1 repaired; fresh code review, freeze head, CI, needs_review
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3225-real-runner-drill/plan.md
-  reviewedSha: 2392aba1f7f5cb65cf6bb4d07ceea7d9feeeaf69
   pr: "603"
-handoff: '{"runId":"ba2f6f2c-5349-4a91-9cdc-114cb4b77630","execId":"494d0b49-7f98-4e66-be9a-a693a444b9f2","activationId":"activation:494d0b49-7f98-4e66-be9a-a693a444b9f2:ba2f6f2c-5349-4a91-9cdc-114cb4b77630:implement:1","implBase":"1d349c6ada3581269c915019b4ea14b9d73f8db6","firstHandin":"9486e96755547a438d50ed1fcb136ca941a00e5c","ownCommits":["9486e96755547a438d50ed1fcb136ca941a00e5c"],"verification":"Exact
-  bytes PASS; lint exit 1: 2 generated design review JSON formatting errors, 14
-  warnings; local-tests none","adjacentPaths":"N/A (docs-only drill)"}'
+  reviewedSha: 2392aba1f7f5cb65cf6bb4d07ceea7d9feeeaf69
+handoff: '{"runId":"ba2f6f2c-5349-4a91-9cdc-114cb4b77630","execId":"494d0b49-7f98-4e66-be9a-a693a444b9f2","activationId":"activation:rework:0984f96fac701cbabbb1ac8d407779682fe15e27788ca17b56c752662a3cb821","attempt":2,"implBase":"1d349c6ada3581269c915019b4ea14b9d73f8db6","firstHandin":"9486e96755547a438d50ed1fcb136ca941a00e5c","qaFailedHead":"b5803bb3bf0d4d4bcb4bdf39dffe3c98f8762b31","claim":"1","ownCommits":["9486e96755547a438d50ed1fcb136ca941a00e5c","8b06db4cfcc1c1749ad287c69cea06927e273dde"],"verification":"Claim
+  1 exact bytes PASS; local-tests none; lint 2 ignored runtime receipt format
+  errors, 14 warnings","adjacentPaths":"N/A (docs-only drill)","e2e529":"not_run
+  docs_only; task prohibits deployment"}'
 ---
 
 # FLY-3225 progress
-**phase**: implement (2/3)
-**next**: Code review APPROVED; final progress commit, push and freeze HEAD; ci-full ensure then needs_review. Local lint errors only git-excluded runtime receipts, not branch files.
+**phase**: implement (1/3)
+**next**: Claim 1 repaired; fresh code review, freeze head, CI, needs_review
 
-**handoff**: {"runId":"ba2f6f2c-5349-4a91-9cdc-114cb4b77630","execId":"494d0b49-7f98-4e66-be9a-a693a444b9f2","activationId":"activation:494d0b49-7f98-4e66-be9a-a693a444b9f2:ba2f6f2c-5349-4a91-9cdc-114cb4b77630:implement:1","implBase":"1d349c6ada3581269c915019b4ea14b9d73f8db6","firstHandin":"9486e96755547a438d50ed1fcb136ca941a00e5c","ownCommits":["9486e96755547a438d50ed1fcb136ca941a00e5c"],"verification":"Exact bytes PASS; lint exit 1: 2 generated design review JSON formatting errors, 14 warnings; local-tests none","adjacentPaths":"N/A (docs-only drill)"}
+**handoff**: {"runId":"ba2f6f2c-5349-4a91-9cdc-114cb4b77630","execId":"494d0b49-7f98-4e66-be9a-a693a444b9f2","activationId":"activation:rework:0984f96fac701cbabbb1ac8d407779682fe15e27788ca17b56c752662a3cb821","attempt":2,"implBase":"1d349c6ada3581269c915019b4ea14b9d73f8db6","firstHandin":"9486e96755547a438d50ed1fcb136ca941a00e5c","qaFailedHead":"b5803bb3bf0d4d4bcb4bdf39dffe3c98f8762b31","claim":"1","ownCommits":["9486e96755547a438d50ed1fcb136ca941a00e5c","8b06db4cfcc1c1749ad287c69cea06927e273dde"],"verification":"Claim 1 exact bytes PASS; local-tests none; lint 2 ignored runtime receipt format errors, 14 warnings","adjacentPaths":"N/A (docs-only drill)","e2e529":"not_run docs_only; task prohibits deployment"}
