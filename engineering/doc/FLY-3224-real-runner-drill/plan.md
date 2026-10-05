@@ -5,11 +5,11 @@ Issue: FLY-3224 (https://linear.app/geoforge3d/issue/FLY-3224/qa-sbx-fly-3224-re
 
 ## 范围与权威
 
-每个节点先取得自己的 TURN，再读 `origin/main:qa-sbx/fly3224/README.md`。本轮 run 为 `cb1aa71a-8686-466e-90a6-ddca7f324c7e`。本计划只安排 README 的两行 Markdown 演练；节点的评审、CI、交付与等待身份由各自注入提示词提供，不复用设计 exec 或旧 run 的回执。
+每个节点先取得自己的 TURN，再读 `origin/main:qa-sbx/fly3224/README.md`。本轮 run 为 `bdb3fbec-e55a-488b-8da3-7d94b30683b4`。本计划只安排 README 的两行 Markdown 演练；节点的评审、CI、交付与等待身份由各自注入提示词提供，不复用设计 exec 或旧 run 的回执。
 
 演练文件由当前分支名确定：`qa-sbx/fly3224/project-slot-2-FLY-3224.md`。只改这个演练文件；协议文档例外限于 `engineering/doc/FLY-3224-real-runner-drill/`，来源是注入的 DOC-FLOW、PROGRESS LEDGER、强制设计 HTML 契约，且不属于 QA criterion。设计节点更新该文件夹，实现/QA 节点仅更新自身契约要求的 progress.md，不编辑其他设计文档。README 规定无需 research.md。本轮设计不实现演练、不建 PR、不运行演练 CI。
 
-当前 main 为 `e6513c9b6867e3773a9bd69b17522cad9d9b828d`；README blob 为 `c4a1b3334b84d73b95cf4e2943c2c8f1474aef87`。演练文件已存在且第二行是历史 `FIXED-FOR-CLAIM 1`。无本轮 QA claim、无 OPEN PR。后续节点重新读取当前状态；旧 PR 553、旧 claim 1 和旧 progress 指针均不作为本轮证据。
+当前 main 为 `39754a41985b9c91430d6ab9086e678a6cd35e68`；README blob 为 `c4a1b3334b84d73b95cf4e2943c2c8f1474aef87`。演练文件已存在且第二行是历史 `FIXED-FOR-CLAIM 1`。无本轮 QA claim、无 OPEN PR。后续节点重新读取当前状态；旧 PR 553/564、旧 claim 1 和旧 progress 指针均不作为本轮证据。
 
 ## 实现：第一次交付
 
