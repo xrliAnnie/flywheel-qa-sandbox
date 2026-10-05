@@ -1,13 +1,14 @@
 ---
 issue: FLY-3227
-phase: implement
-phaseCursor: 1/1
-updated: 2026-10-05T08:32:32.643Z
-nextStep: request code review for claim 1 repair a2a50cebb
+phase: design
+phaseCursor: 1/5
+updated: 2026-10-05T10:30:23.039Z
+nextStep: scope answer consumed; refresh existing short plan, validate required
+  HTML, register fresh design review
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
-**phase**: implement (1/1)
-**next**: request code review for claim 1 repair a2a50cebb
+**phase**: design (1/5)
+**next**: scope answer consumed; refresh existing short plan, validate required HTML, register fresh design review
