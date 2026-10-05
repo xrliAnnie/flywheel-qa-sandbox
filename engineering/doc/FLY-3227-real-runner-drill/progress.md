@@ -1,13 +1,14 @@
 ---
 issue: FLY-3227
-phase: design
-phaseCursor: 4/4
-updated: 2026-10-05T03:13:17.423Z
-nextStep: design complete (Codex r2 APPROVED, HTML published); implement node next
+phase: implement
+phaseCursor: 1/1
+updated: 2026-10-05T03:14:22.135Z
+nextStep: "first hand-in: target file already AWAITING-QA (byte-verified);
+  exact-head CI then complete needs_review PR #574"
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
-**phase**: design (4/4)
-**next**: design complete (Codex r2 APPROVED, HTML published); implement node next
+**phase**: implement (1/1)
+**next**: first hand-in: target file already AWAITING-QA (byte-verified); exact-head CI then complete needs_review PR #574
