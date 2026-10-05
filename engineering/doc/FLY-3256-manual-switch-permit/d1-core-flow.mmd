@@ -1,0 +1,9 @@
+flowchart LR
+  A([Codex 撞额度墙]) --> B[原 execution 进入额度待命]
+  B --> C[Lead 人工切到新账号]
+  C --> D{新账号有后墙新读数?}
+  D -- 否 --> E[保留原载体继续等]
+  D -- 是 --> F[铸造一次 reading-confirmed permit]
+  F --> G([原 execution · 原 thread · 原模型续跑])
+  E -. 新读数 .-> D
+
