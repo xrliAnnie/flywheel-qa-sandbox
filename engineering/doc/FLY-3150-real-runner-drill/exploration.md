@@ -501,3 +501,5 @@ TURN:`yours phase=design epoch=1 run=1e45bf82… node=eng_design attempt=1`(exec
 | Linear | Done(Lead 裁定);不碰 |
 
 **结论**:与 §26 / §27 同形(陈旧 `FIXED-FOR-CLAIM 1` 必须在交付 #1 重置,复用 OPEN PR #565),差别只是 main 领先但路径不相交。若本轮 claim id 恰好又是 `1`,正因交付 #1 先重置成 `AWAITING-QA`,返工区间 `$PREV..$HANDIN2` 的 patch 才能证明返工真的发生。PR #565 上一轮的任何 HANDIN、claim id、评审、CI、QA 结论都不是本轮证据。
+
+**设计评审(run `1e45bf82`)**:Codex(gpt-6-luna/xhigh,profile `school`,thread `01a10b00-4f5e…`)。R1(turn `01a10b00-5642…`,blob `c4a2d268…`)CHANGES_REQUESTED,P2:区间最终差异不能证明只有一个实现提交 → §3 第 6(a) 加 `git rev-list --count` 断言(正常 / 初始态 1,跳过 / 已修复态 0)。R2(turn `01a10b05-6694…`,blob `3164acfa…`)CHANGES_REQUESTED,P2:同步分支计数会算进 main 带入的提交 → §3.1 计数加 `^origin/main`。R3(turn `01a10b06-fc20…`,blob `3adff3d2…`,request `8e71f128…`)APPROVED(0/0/0)。三轮均记 `review-round`;`await-codex-gate design` 通过。founder HTML `design.html` 与 `d1-core-flow.*` 已覆盖为本轮版本。
