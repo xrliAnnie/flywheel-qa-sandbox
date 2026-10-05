@@ -545,3 +545,10 @@ TURN:`yours phase=design epoch=1 run=4dea7fe2… node=eng_design attempt=1`(exec
 - **新形态**:本地分支被重建在 `origin/main` `ab48f1517` 上(本地 = main,`"$F"` 也是 main 上的 `FIXED-FOR-CLAIM 1`),而 `origin/project-slot-1-FLY-3150` / OPEN PR #565 头是 run `c56b5f01` 的返工交付 `d6f34eb29`,领先 main 73、落后 8。直接从本地推送会是 non-fast-forward。处理:`git reset --hard origin/project-slot-1-FLY-3150`(本地无独有提交,无损)→ `git merge --no-ff origin/main`(`83d64747a`,`git merge-tree` 预检无冲突;main 的 8 个提交只碰 FLY-3224…3228 文件夹与 milestones)。
 - 起点:`HEAD:"$F"` = `FIXED-FOR-CLAIM 1` → 交付 #1 走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`)。合并后 `origin/main` 是 HEAD 祖先,实现节点不再同步。
 - 旧 progress.md handoff 指向 run `76a1d8a2`,是更早残留,不作 PREV。
+
+## 34. 本次派发审计(run `bd3915a0`,2026-10-05,slot-1)
+
+- 派发:exec `1fefc9d4`,TURN `yours phase=design epoch=1`,inbox 无指令。README(`origin/main:qa-sbx/fly2167/README.md`)重读无变化。onboard skill 不存在 → 直接 `stage set brainstorm`。
+- 分支头 = `origin/project-slot-1-FLY-3150` = OPEN PR #565 头 `a8cc57c11`(MERGEABLE / CLEAN),即 run `5dbe2353` 实现第 3 次尝试(Lead 返工反馈给出 claim 4)的交付;`"$F"` = 陈旧 `FIXED-FOR-CLAIM 4`。
+- `origin/main` `0c0793178` 领先 4 个提交(FLY-3224 / 3225 / 3226 / 3228),路径不相交 → 按 §3.1 不同步。
+- 起点:交付 #1 走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 4` / `+AWAITING-QA`)。旧 progress.md handoff(`run=5dbe2353 … PREV=HANDIN1=394eb6304…`)与 claim 1 / 3 / 4 都不是本轮证据。
