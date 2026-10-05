@@ -4,7 +4,7 @@ Issue: FLY-3228 (https://linear.app/geoforge3d/issue/FLY-3228/qa-sbx-fly-3228-re
 日期: 2026-10-05
 基于: 无(README 规定"一份短 plan 足够,不需要 research 文档",所以本档不出 exploration/research;本文件是上一轮已合并 plan 的本轮改写版)
 
-本轮:run `617c41a6-a9d0-4409-b393-c97c36fce664`,设计节点 exec `91920598-1d64-4789-8503-ae656445500a`(全新派发,分支从当前 `origin/main` `62a604d44` 起步;main 上的 plan/HTML/progress 都是上一轮 run `ad2ead99` 合并进去的产物,本文件为本轮改写版)。
+本轮:run `9a1676ff-6b94-41c8-a0a9-dfa3eb3d4e7c`,设计节点 exec `e68e4dca-885c-4529-8d37-2898d4db0f7d`(全新派发,分支从当前 `origin/main` `ab48f1517` 起步;main 上的 plan/HTML/progress 都是上一轮 run `617c41a6` 经 PR #582 合并进去的产物,本文件为本轮改写版)。
 
 ## 1. 范围
 
@@ -20,9 +20,9 @@ Issue: FLY-3228 (https://linear.app/geoforge3d/issue/FLY-3228/qa-sbx-fly-3228-re
 
 ## 2. 起点(设计节点派发时快照,仅供参考)
 
-- 设计节点派发时:本地分支 `project-slot-6-FLY-3228` 头 = `origin/main` = `62a604d44`(上一轮 PR #575 的合并提交),工作树干净;**远端分支不存在**(`git ls-remote origin refs/heads/project-slot-6-FLY-3228` 为空,设计节点首次推送时新建)。`gh pr list --head project-slot-6-FLY-3228 --state all` 只有前几轮已 MERGED 的 #525、#545、#551、#575(都不复用,本轮开新 PR)。
+- 设计节点派发时:本地分支 `project-slot-6-FLY-3228` 头 = `origin/main` = `ab48f1517`(上一轮 PR #582 的合并提交),工作树干净;**远端分支不存在**(`git ls-remote origin refs/heads/project-slot-6-FLY-3228` 为空,设计节点首次推送时新建)。`gh pr list --head project-slot-6-FLY-3228 --state all` 只有前几轮已 MERGED 的 #525、#545、#551、#575、#582(都不复用,本轮开新 PR)。
 - **目标文件已存在于 main**,内容是上一轮遗留的 `QA-SBX FLY-3228 drill` / `FIXED-FOR-CLAIM 1`。所以本轮交付 #1 是**修改**(`M`,第 2 行 → `AWAITING-QA`),不是新增。
-- main 上的旧 plan、旧 HTML/图、旧 `progress.md`(run `ad2ead99`,其中 PR #575、`PREV/HANDIN1=3f8829e0…`、claim 1)都来自之前的轮次;其中的 claim id、`HANDIN1`、PR 号、SHA **都不是本轮权威**。判定第几次交付、取 claim id、取 `PREV` **只看本轮提示词与本轮交付摘要**。
+- main 上的旧 plan、旧 HTML/图、旧 `progress.md`(run `617c41a6`,其中 PR #582、`PREV/HANDIN1=7abeab01…`、claim 1、review gate / requestId)都来自之前的轮次;其中的 claim id、`HANDIN1`、PR 号、SHA、gate id **都不是本轮权威**。判定第几次交付、取 claim id、取 `PREV` **只看本轮提示词与本轮交付摘要**。设计节点首次写 ledger 时已把 `progress.md` 的 phase/handoff 改成本轮内容,`pr` 指针改为 `none`(本轮新 PR 在交付 #1 时才开)。
 - 设计节点会在分支上加 ledger 提交和流程文档提交;实现节点自己重算 `BASE`。
 
 ## 3. 实现节点
@@ -36,7 +36,7 @@ Issue: FLY-3228 (https://linear.app/geoforge3d/issue/FLY-3228/qa-sbx-fly-3228-re
 4. `git add "$F"`,提交 `docs(qa-sbx): FLY-3228 drill hand-in`。
 5. 写 ledger(`progress` 命令自行做 path-limited 提交,不要手动 add/commit progress.md);确认 `git status --porcelain` 为空后才冻结 `HANDIN1=$(git rev-parse HEAD)`。
 6. 核验:(a) `git diff --name-status $BASE..$HANDIN1` 只含 `M "$F"`(第 2 步跳过时可无)+ progress.md;(b) `git show $HANDIN1:"$F"` 逐字节等于两行;(c) §1 断言(交付 #1 形态)通过。
-7. `git push -u origin HEAD`(普通快进)。PR:有本 head 的 OPEN PR 就复用,否则 `gh pr create --base main --head project-slot-6-FLY-3228 --title 'FLY-3228 QA-SBX real-runner drill hand-in'`,正文写 Linear 链接与本轮 run id。确认远端分支头 / PR 头 / CI 都在 `$HANDIN1` 再交付;**交付摘要写明 `HANDIN1=<完整 SHA>`**(返工 `PREV` 的唯一来源)。
+7. `git push -u origin HEAD`(普通快进)。PR:有本 head 的 OPEN PR 就复用,否则 `gh pr create --base main --head project-slot-6-FLY-3228 --title 'FLY-3228 QA-SBX real-runner drill hand-in' --body-file <正文文件>`(必须带 `--body-file`,无 TTY 时缺正文会失败或卡在输入提示;正文写 Linear 链接与本轮 run id,同样不得含跳过 CI 标记)。确认远端分支头 / PR 头 / CI 都在 `$HANDIN1` 再交付;**交付摘要写明 `HANDIN1=<完整 SHA>`**(返工 `PREV` 的唯一来源)。
 
 **交付 #2(本轮提示词含 "QA fix context")**
 1. 定位本轮 "QA fix context" 的**内容首行**(context 前可以有其他说明,不要求它是整个提示词的首行),用 `^QA verdict to fix: claim (\S+)` 取 `ID`,原样复制(不改大小写、不去前导零);首行不匹配或取不到 → 失败通道,不猜,也不从提示词里的历史示例、main 上遗留的 `FIXED-FOR-CLAIM 1`、旧 progress.md 或其他上下文抓 ID。
