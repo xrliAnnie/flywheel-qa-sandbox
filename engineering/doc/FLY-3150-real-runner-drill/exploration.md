@@ -1,7 +1,7 @@
 # FLY-3150 真 Runner 通用演练(529 房间) — 探索
 
 Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-05(2026-10-01 初版;§7–§21 为历史 —— slot-1 / slot-5 / slot-6 / slot-2 / slot-4 各轮;§22 为历史;§23–§25 为历史;§26–§27 为历史;§28 为历史;§29 为历史;§30 为历史;§31 为本轮 run `4dea7fe2`,slot-1)
+日期: 2026-10-05(2026-10-01 初版;§7–§21 为历史 —— slot-1 / slot-5 / slot-6 / slot-2 / slot-4 各轮;§22 为历史;§23–§25 为历史;§26–§27 为历史;§28 为历史;§29 为历史;§30 为历史;§31–§35 为历史;§36 为本轮 run `dd21313e`,slot-1)
 基于: 无
 
 ## 1. 任务来源与唯一权威
@@ -560,3 +560,11 @@ TURN:`yours phase=design epoch=1 run=4dea7fe2… node=eng_design attempt=1`(exec
 - run `bd3915a0` 的 PR #565 已合入、远端分支已删;本地分支 = `origin/main` = `4c125c50a` → 不同步,首次推送新建远端分支并新开 PR。
 - 起点:`"$F"` = main 上残留的 `FIXED-FOR-CLAIM 1` → 交付 #1 走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`)。旧 progress.md handoff(`run=bd3915a0 attempt=2; QA claim=1; PREV=18ba43d4…`)不是本轮证据。
 - **设计评审(run `fc930bd2`)**:Codex(gpt-6-luna/xhigh,profile `school`,thread `01a10c50-8b37…`)。R1(turn `01a10c50-916d…`)CHANGES_REQUESTED:HIGH = §1 PR 断言整目录排除流程文档文件夹,看不到该目录内的额外改动(且 README 只授权一个文件)。修复 = §1 断言 4 文件夹白名单 + 断言 5 写明节点契约优先、演练内容仍单文件。R2(turn `01a10c54-7e1e…`,blob `3313ffdd…`,request `1daf82e9…`)零发现 APPROVED("inferred",但 `review-round --turn` + design-review.json rounds=2 / finalRound=2 直接过 `await-codex-gate design`)。founder HTML `design.html` 与 `d1-core-flow.*` 已覆盖为本轮版本。
+
+## 36. 本次派发审计(run `dd21313e`,2026-10-05,slot-1)
+
+- 派发:exec `9d174ddb`,TURN `yours phase=design epoch=1 attempt=1`,inbox 无指令。README(`origin/main:qa-sbx/fly2167/README.md`)重读无变化。onboard skill 不存在 → 直接 `stage set brainstorm`。
+- run `fc930bd2` 的 PR #594 已合入、远端分支已删;本地分支 = `origin/main` = `e63535617` → 不同步,首次推送新建远端分支并新开 PR。
+- 起点:`"$F"` = main 上残留的 `FIXED-FOR-CLAIM 1` → 交付 #1 走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`)。旧 progress.md handoff(`run=fc930bd2 attempt=2; QA claim=1; PREV=1b286ca2…`)不是本轮证据。
+- 与 §35 同形,plan 沿用 §35 已评审(含 Codex r1 HIGH 修复后的文件夹白名单)结构,只更新本轮起点与 run id。
+- **设计评审(run `dd21313e`)**:Codex(gpt-6-luna/xhigh,profile `business`,thread `01a10cf2-ff6d…`)。R1(turn `01a10cf3-05b6…`)CHANGES_REQUESTED:HIGH = README 只授权一个文件,计划放行文档文件夹。处置 = plan §1 断言 6:写明运行时节点契约(DOC-FLOW / 进度账本 / 设计 HTML)优先于仓库 README、不可删除,演练内容仍单文件,白名单封闭,交付摘要与 PR 正文显式披露。R2(turn `01a10cf8-0457…`,blob `a86c97a5…`,request `e01617ba…`)零发现 APPROVED,"Turn completed"。
