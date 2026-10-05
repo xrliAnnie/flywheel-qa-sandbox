@@ -1,13 +1,13 @@
 ---
 issue: FLY-3227
-phase: design
-phaseCursor: 4/4
-updated: 2026-10-05T08:00:29.806Z
-nextStep: design complete; implement node next
+phase: implement
+phaseCursor: 0/1
+updated: 2026-10-05T08:06:35.200Z
+nextStep: write exact first-round two-line hand-in and verify bytes
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
-**phase**: design (4/4)
-**next**: design complete; implement node next
+**phase**: implement (0/1)
+**next**: write exact first-round two-line hand-in and verify bytes
