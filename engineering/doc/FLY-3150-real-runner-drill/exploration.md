@@ -1,7 +1,7 @@
 # FLY-3150 真 Runner 通用演练(529 房间) — 探索
 
 Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-05(2026-10-01 初版;§7–§21 为历史 —— slot-1 / slot-5 / slot-6 / slot-2 / slot-4 各轮;§22 为历史;§23–§25 为历史;§26–§27 为历史;§28 为历史;§29 为历史;§30 为本轮 run `1e45bf82`,slot-1)
+日期: 2026-10-05(2026-10-01 初版;§7–§21 为历史 —— slot-1 / slot-5 / slot-6 / slot-2 / slot-4 各轮;§22 为历史;§23–§25 为历史;§26–§27 为历史;§28 为历史;§29 为历史;§30 为历史;§31 为本轮 run `4dea7fe2`,slot-1)
 基于: 无
 
 ## 1. 任务来源与唯一权威
@@ -503,3 +503,20 @@ TURN:`yours phase=design epoch=1 run=1e45bf82… node=eng_design attempt=1`(exec
 **结论**:与 §26 / §27 同形(陈旧 `FIXED-FOR-CLAIM 1` 必须在交付 #1 重置,复用 OPEN PR #565),差别只是 main 领先但路径不相交。若本轮 claim id 恰好又是 `1`,正因交付 #1 先重置成 `AWAITING-QA`,返工区间 `$PREV..$HANDIN2` 的 patch 才能证明返工真的发生。PR #565 上一轮的任何 HANDIN、claim id、评审、CI、QA 结论都不是本轮证据。
 
 **设计评审(run `1e45bf82`)**:Codex(gpt-6-luna/xhigh,profile `school`,thread `01a10b00-4f5e…`)。R1(turn `01a10b00-5642…`,blob `c4a2d268…`)CHANGES_REQUESTED,P2:区间最终差异不能证明只有一个实现提交 → §3 第 6(a) 加 `git rev-list --count` 断言(正常 / 初始态 1,跳过 / 已修复态 0)。R2(turn `01a10b05-6694…`,blob `3164acfa…`)CHANGES_REQUESTED,P2:同步分支计数会算进 main 带入的提交 → §3.1 计数加 `^origin/main`。R3(turn `01a10b06-fc20…`,blob `3adff3d2…`,request `8e71f128…`)APPROVED(0/0/0)。三轮均记 `review-round`;`await-codex-gate design` 通过。founder HTML `design.html` 与 `d1-core-flow.*` 已覆盖为本轮版本。
+
+## 31. 本次派发审计(run `4dea7fe2`,2026-10-05,slot-1)
+
+TURN:`yours phase=design epoch=1 run=4dea7fe2… node=eng_design attempt=1`(exec `5c2e402e`)。§30 是 run `1e45bf82`,它只走到交付 #1(`9a0fe6d17`,把陈旧的 `FIXED-FOR-CLAIM 1` 重置为 `AWAITING-QA`)+ implement 1/4 ledger(`57c364636`),没有返工;本轮是同一分支上的**新 run**,继续在其上工作,不 force-push。
+
+| 项 | 结果 |
+|---|---|
+| 分支头(派发时) | `57c364636` = `origin/project-slot-1-FLY-3150` = PR #565 头(OPEN / MERGEABLE,标题仍是旧 run) |
+| `origin/main` | `62a604d44`,领先 4 个提交(FLY-3224 / 3225 / 3226 / 3228 演练),`git diff --name-only HEAD...origin/main` 不含本 issue 文件夹与 `"$F"` → 路径不相交;按 §3.1 不同步 |
+| 目标文件 | HEAD 上 = `QA-SBX FLY-2167 drill` / `AWAITING-QA`(上一轮交付 #1 写入);main 上仍是 `FIXED-FOR-CLAIM 1` → 本轮交付 #1 走**跳过分支**(`IMPL1=BASE`),PR 级净 diff 恰为 `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA` |
+| README | blob `1de5e367…`,未变 |
+| progress.md | 派发时是 run `1e45bf82` 的 implement 1/4(旧 `IMPL1=9a0fe6d17`);本节点用 `--handoff` 覆盖为本轮 run |
+| 收件箱 | 无 Lead 指令 |
+| onboard skill | 不存在 → 直接 `stage set brainstorm` |
+| Linear | Done(Lead 裁定);不碰 |
+
+**结论**:与 §29(run `d1cedf09`)完全同形 —— 目标已是 `AWAITING-QA`,交付 #1 走跳过分支,复用 OPEN PR #565。跳过分支没有"残留 claim 假通过"风险:HEAD 上没有任何 `FIXED-FOR-CLAIM`。上一轮的 HANDIN、`IMPL1=9a0fe6d17`、评审、CI 都不是本轮证据。
