@@ -2,20 +2,16 @@
 issue: FLY-3227
 phase: design
 phaseCursor: 4/5
-updated: 2026-10-05T21:26:54.849Z
-nextStep: "Fresh review pending: question fe6dc227-22e8-41cd-9456-15d5d5087b0f,
-  request 056b90a9-3035-488e-8a45-14af68ae2adc, plan
-  engineering/doc/FLY-3227-real-runner-drill/plan.md. HTML published and
-  reported (report a2b39314-c859-403f-b12a-ba932b9c94ff):
-  http://127.0.0.1:56332/fw-reports-b6a884/r/fcf976e7edc24d4d05427f787fc347d7/ .
-  STE disabled; local and hosted browser checks pass; served SHA256
-  c72118fc228bfbf3447f81eb1d51afe3e6605581d007741c5d116a67185d9e9e. On approved
-  verdict finalize progress and hand in phase_design_complete; on changes revise
-  and open a new review."
+updated: 2026-10-05T21:33:31.804Z
+nextStep: Round 1 effectively APPROVED with 3 nonblocking advisories, relayed in
+  report c4499810-a4c6-4eaa-bd27-5d5052246707. Verified runtime context header
+  and Git path-only option; clarified all 3 in plan and HTML. Local browser
+  checks pass. Commit/push revisions, register fresh review and republish/report
+  final HTML; no payload change.
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
 **phase**: design (4/5)
-**next**: Fresh review pending: question fe6dc227-22e8-41cd-9456-15d5d5087b0f, request 056b90a9-3035-488e-8a45-14af68ae2adc, plan engineering/doc/FLY-3227-real-runner-drill/plan.md. HTML published and reported (report a2b39314-c859-403f-b12a-ba932b9c94ff): http://127.0.0.1:56332/fw-reports-b6a884/r/fcf976e7edc24d4d05427f787fc347d7/ . STE disabled; local and hosted browser checks pass; served SHA256 c72118fc228bfbf3447f81eb1d51afe3e6605581d007741c5d116a67185d9e9e. On approved verdict finalize progress and hand in phase_design_complete; on changes revise and open a new review.
+**next**: Round 1 effectively APPROVED with 3 nonblocking advisories, relayed in report c4499810-a4c6-4eaa-bd27-5d5052246707. Verified runtime context header and Git path-only option; clarified all 3 in plan and HTML. Local browser checks pass. Commit/push revisions, register fresh review and republish/report final HTML; no payload change.
