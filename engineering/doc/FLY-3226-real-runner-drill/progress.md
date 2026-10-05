@@ -1,19 +1,18 @@
 ---
 issue: FLY-3226
-phase: implement
-phaseCursor: 2/2
-updated: 2026-10-04T23:48:53.802Z
-nextStep: Code review, exact-head CI policy, and QA re-verification handoff
+phase: design
+phaseCursor: 0/4
+updated: 2026-10-05T02:37:51.197Z
+nextStep: Update plan for run b00b1faf continuing open PR 568
 chunks: []
 pointers: {}
-handoff: run=bea81b98 exec=5bf049cc node=eng_design done. Plan blob 9468cb29
-  APPROVED r1 (request f7b721ea, thread 01a10938). Main target = FIXED-FOR-CLAIM
-  1 residue; hand-in 1 is a reset. Design HTML
-  http://127.0.0.1:59178/fw-reports-62d475/r/ee25bf5513d3f24f1a9d6da46208dcf3/
+handoff: run=b00b1faf exec=800088de node=eng_design started. Continues open PR
+  568 (head 041556a = FIXED-FOR-CLAIM 1 from run bea81b98). Old HANDIN/claim ids
+  are NOT evidence for this run.
 ---
 
 # FLY-3226 progress
-**phase**: implement (2/2)
-**next**: Code review, exact-head CI policy, and QA re-verification handoff
+**phase**: design (0/4)
+**next**: Update plan for run b00b1faf continuing open PR 568
 
-**handoff**: run=bea81b98 exec=5bf049cc node=eng_design done. Plan blob 9468cb29 APPROVED r1 (request f7b721ea, thread 01a10938). Main target = FIXED-FOR-CLAIM 1 residue; hand-in 1 is a reset. Design HTML http://127.0.0.1:59178/fw-reports-62d475/r/ee25bf5513d3f24f1a9d6da46208dcf3/
+**handoff**: run=b00b1faf exec=800088de node=eng_design started. Continues open PR 568 (head 041556a = FIXED-FOR-CLAIM 1 from run bea81b98). Old HANDIN/claim ids are NOT evidence for this run.
