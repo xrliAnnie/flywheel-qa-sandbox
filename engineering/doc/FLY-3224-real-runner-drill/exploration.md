@@ -5,12 +5,12 @@ Issue: FLY-3224 (https://linear.app/geoforge3d/issue/FLY-3224/qa-sbx-fly-3224-re
 
 ## 任务与当前证据
 
-本次只设计 README 规定的两行文档演练，不设计 Flywheel 功能。已读取新鲜拉取的 `origin/main:qa-sbx/fly3224/README.md`：main 为 `e6513c9b6867e3773a9bd69b17522cad9d9b828d`，README blob 为 `c4a1b3334b84d73b95cf4e2943c2c8f1474aef87`。
+本次只设计 README 规定的两行文档演练，不设计 Flywheel 功能。已读取新鲜拉取的 `origin/main:qa-sbx/fly3224/README.md`：main 为 `c68c2b7d4639ed9a1019faa05dc4414c340d3396`，README blob 为 `c4a1b3334b84d73b95cf4e2943c2c8f1474aef87`。
 
 - 当前分支：`project-slot-2-FLY-3224`。目标文件：`qa-sbx/fly3224/project-slot-2-FLY-3224.md`。
-- 起点文件已有两行：`QA-SBX FLY-3224 drill` / `FIXED-FOR-CLAIM 1`。这是 main 留下的历史内容，不是本轮 QA 结果；实现第一次交付必须恢复 `AWAITING-QA`。
-- `gh pr list --head project-slot-2-FLY-3224 --state open` 返回空列表；远端同名分支查询也为空。旧计划中的 PR 553、run 18c10fbd 和交付指针全部失效。
-- 本轮 run：`cb1aa71a-8686-466e-90a6-ddca7f324c7e`；设计 exec：`f08ad580-f90d-4546-af89-f754ccd0426d`；TURN 为 design / epoch 1 / eng_design / attempt 1。
+- 起点文件已有两行：`QA-SBX FLY-3224 drill` / `FIXED-FOR-CLAIM 1`（分支头与 main 同内容）。这是上一轮 run 的返工结果，不是本轮 QA 结果；实现第一次交付必须恢复 `AWAITING-QA`。
+- 分支继承上一轮 run `bdb3fbec` 的提交，PR #571（base main）仍 OPEN，头 `2ee7e48b969a35f063e53eaf2580d0f3dec274d9`。本轮复用这个 PR，但它的旧评审、旧 CI、旧 claim 1 都不作本轮证据。分支比 main 落后一个只改 FLY-3225 文件夹的提交，与本单无重叠。
+- 本轮 run：`278e6c90-e543-4846-ba3f-d20495ae0ad8`；设计 exec：`a472d2a8-fa45-479f-b412-308231865c79`；TURN 为 design / epoch 1 / eng_design / attempt 1。
 - 已阅读 CLAUDE.md、声明的 onboarding 材料、产品体验与架构概要。旧的生产路径、Linear 更新与部署要求不适用于本演练。注入的节点契约和本次 README 约束优先。
 
 ## 文档范围与取舍
