@@ -68,6 +68,6 @@ QA 判轮只看当前提示是否含 QA re-verification context，不根据旧�
 
 ## 设计完成顺序
 
-计划提交、推送后，以注入的 `gate review_design --no-block` 与 `request-review --type design --plan ...` 显式注册评审，取得当前服务端有效 `reviewVerdict=APPROVED`；stage 或原始评审文字不能代替批准。评审者接收标记的本地选测政策，禁止全仓/全包本地测试。
+计划提交、推送后，以注入的 `gate review_design --no-block` 打开评审 gate。本执行是 Claude 作者，Bridge 对 `request-review` 返回 409（非 Claude 通道），故走旧式 Codex 设计评审：逐轮运行 codex-companion，并在每轮后以 `review-round design --round <n> --verdict ... --thread <codexThreadId>` 回写 Bridge；只有回写的 APPROVED 轮次才算批准，stage 或原始评审文字不能代替。评审者接收标记的本地选测政策，禁止全仓/全包本地测试。
 
 最终 HTML 随设计记录提交并推送；先 `ste begin`，再 `publish-report --project test-slot-5 --occasion design_page --artifact ... --publish-only`。STE begin 若返回 disabled/unavailable 或无 unitId，使用普通发布路径。成功后按注入身份 `ask --report` 报 URL 给 `flywheel-test-5`，只在取得批准且完成发布/报告后运行 `complete --route phase_design_complete`、`park`。不等待 founder_review，不自行实现或派发；resident goal 在阶段持有期间保持 active，后续意见交当前 TURN 持有人增量处理。
