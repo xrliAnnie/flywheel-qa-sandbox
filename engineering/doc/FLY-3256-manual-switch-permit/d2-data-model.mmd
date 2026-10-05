@@ -1,0 +1,29 @@
+erDiagram
+  CODEX_QUOTA_ROOT ||--o{ EXTERNAL_GENERATION : "records identity"
+  CODEX_QUOTA_ROOT ||--o{ CAPACITY_PERMIT : "owns"
+  CAPACITY_PERMIT ||--o{ STANDBY_CARRIER : "releases"
+  CODEX_QUOTA_ROOT {
+    text root_key PK
+    int generation
+    text profile
+    text account_key
+  }
+  EXTERNAL_GENERATION {
+    text root_key FK
+    int generation
+    text auth_digest
+    text reason
+  }
+  CAPACITY_PERMIT {
+    text permit_id PK
+    text root_key FK
+    int generation
+    text kind
+    int covers_signal_seq
+  }
+  STANDBY_CARRIER {
+    text execution_id PK
+    text state
+    int trigger_signal_seq
+    text entered_at
+  }
