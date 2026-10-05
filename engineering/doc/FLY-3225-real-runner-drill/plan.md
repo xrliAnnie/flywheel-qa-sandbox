@@ -7,16 +7,16 @@ Issue: FLY-3225 (https://linear.app/geoforge3d/issue/FLY-3225/qa-sbx-fly-3225-re
 
 目标是在隔离的 529 测试房间验证「首次交付 → 独立 QA 故意打回 → 按本次裁决编号修复 → 复验」。QA 是独立验收角色，claim 是验收生成的裁决编号。
 
-已 fetch 并读取 `origin/main:qa-sbx/fly3225/README.md`。审计时 main 与继承 HEAD 均为 `65adf768ce47d7dfb819690862976a9e43c63128`，任务书 blob 为 `f025871e500834ce5bab62335a4d29bd6b308d78`；分支为 `project-slot-3-FLY-3225`。练习文件继承的第二行是 `FIXED-FOR-CLAIM 1`，PR #576 已合并，当前分支没有开放 PR。这些都是旧轮次事实，不能作为本轮首交、复验或批准证据。
+已 fetch 并读取 `origin/main:qa-sbx/fly3225/README.md`。审计时 main 与继承 HEAD 均为 `09806ae2d36bed03c2cf11d7369c4c76f19258b5`，任务书 blob 为 `f025871e500834ce5bab62335a4d29bd6b308d78`；分支为 `project-slot-3-FLY-3225`。练习文件继承的第二行是 `FIXED-FOR-CLAIM 1`，最近交付 PR #584 已合并，当前分支没有开放 PR。这些都是旧轮次事实，不能作为本轮首交、复验或批准证据。
 
-本 run 为 `f3dcfe7a-b291-4a5d-a7b6-2dcbd9588f65`；设计 exec 为 `1bcff05d-5164-424b-912a-e984da41924e`；activation 为 `activation:1bcff05d-5164-424b-912a-e984da41924e:f3dcfe7a-b291-4a5d-a7b6-2dcbd9588f65:eng_design:1`。已取得 design / epoch 1 / attempt 1 TURN；TURN 是当前节点写共享分支的授权，只有 `yours` 可写。
+本 run 为 `ba2f6f2c-5349-4a91-9cdc-114cb4b77630`；设计 exec 为 `d18ac6e1-8c8d-4dfb-98a3-460584fd33ed`；activation 为 `activation:d18ac6e1-8c8d-4dfb-98a3-460584fd33ed:ba2f6f2c-5349-4a91-9cdc-114cb4b77630:eng_design:1`。已取得 design / epoch 1 / attempt 1 TURN；TURN 是当前节点写共享分支的授权，只有 `yours` 可写。
 
 已核对项目 onboarding、架构、main 任务书、现有文件与旧设计；没有需要改动的运行时代码消费者，无需外部调研。任务书明确只需短计划、不另写 research 文档，探索与调研结论合并在此。注入的设计完成契约另要求本目录的 `design.html`、本地 Mermaid 图源及工具管理的 `progress.md`。设计只刷新这些流程文档；实现主动修改的唯一文件为 `qa-sbx/fly3225/project-slot-3-FLY-3225.md`。不改任务书、代码、兄弟练习单或 Linear，不部署房间。
 
 ## 实施步骤
 
 - [ ] 接手先取得自己的 TURN，再读 main 任务书，用 `git branch --show-current` 确认目标文件名。保存本 run 的 `runId`、本节点 `execId`、`activationId`、完整起点 SHA `implBase`、`firstHandin` 和主动提交清单 `ownCommits`。旧 run 的实现、QA、评审和 CI 字段不得沿用；本 run 重启保留原基线与首交记录。只用注入的 progress 工具独立提交账本。
-- [ ] **优先检查本次指令的修复上下文。** `QA fix context` 标题下第一条正文行若为 `QA verdict to fix: claim <id> ...`，直接只改第二行为 `FIXED-FOR-CLAIM <id>`，逐字使用该编号，即使账本没有首交记录也不重置。上下文存在但首行格式错误、缺编号或身份矛盾时保留文件并报告异常，不能猜编号或落入首交分支。
+- [ ] **优先检查本次指令的修复上下文。** `QA fix context` 标题下第一条正文行若为 `QA verdict to fix: claim <id> ...`，直接只改第二行为 `FIXED-FOR-CLAIM <id>`，逐字使用该编号，即使账本没有首交记录也不重置。编号必须匹配 `^[A-Za-z0-9._:-]+$`；即使编号与继承的旧值相同（如 `1`，diff 为空）也只记录达标 HEAD，不制造空提交。上下文存在但首行格式错误、缺编号或身份矛盾时保留文件并报告异常，不能猜编号或落入首交分支。
 - [ ] 无修复上下文且本 run 尚未首交时，将目标文件写成以下精确两行并保留末尾换行。本次继承的旧 claim 1 必须由实现节点替换为 `AWAITING-QA`；设计节点不修改它。
 
   ```text
@@ -26,11 +26,11 @@ Issue: FLY-3225 (https://linear.app/geoforge3d/issue/FLY-3225/qa-sbx-fly-3225-re
 
   提交信息使用 `docs(qa-sbx): FLY-3225 drill hand-in`，记录完整首交 SHA 与主动提交。目标内容已达标时不制造空提交，记录达标 HEAD。提交成功但账本未更新时，读取本 run 的 `implBase..HEAD` 历史，核对仅修改目标文件且 diff 符合当次指令的提交后补记；排除进度提交与同步合并，不能用共享作者或空清单判断归属。
 - [ ] 首交后的普通唤醒、CI 返工或主分支同步保留最近正确内容；收到有效修复上下文才按本次 claim 改第二行并追加主动提交。同编号内容已正确时无需新修改。旧文件、旧账本和普通唤醒都不决定 QA 轮次。
-- [ ] 最后一次进度提交后正常 push，再以最终交付 HEAD 执行实现节点自己的评审、CI、PR 和完成流程。PR #576 已合并，不复用它；按实现节点注入的路径创建或核对本轮开放 PR。提交信息、PR 标题不得含 `[skip ci]`、`[ci skip]`、`[no ci]`、`[skip actions]`、`[actions skip]` 或 `skip-checks:`。不 force-push、不撤销其他节点或合法 main 同步的提交。
+- [ ] 最后一次进度提交后正常 push，再以最终交付 HEAD 执行实现节点自己的评审、CI、PR 和完成流程。PR #584 等旧 PR 已合并，不复用；按实现节点注入的路径创建或核对本轮开放 PR。提交信息、PR 标题不得含 `[skip ci]`、`[ci skip]`、`[no ci]`、`[skip actions]`、`[actions skip]` 或 `skip-checks:`。不 force-push、不撤销其他节点或合法 main 同步的提交。
 
 ## QA 验收
 
-判轮只看本次 QA 指令：无 `QA re-verification context` 是首轮；复验编号仅取自 `Previous QA verdict: claim <id>`。
+QA 读取本次指令给出的交付 HEAD（未给出则读当前开放 PR 的 head SHA）。判轮只看本次 QA 指令：无 `QA re-verification context` 是首轮；复验编号仅取自 `Previous QA verdict: claim <id>`。
 
 | criterion id | 首轮 | 复验 |
 |---|---|---|
