@@ -520,3 +520,5 @@ TURN:`yours phase=design epoch=1 run=4dea7fe2… node=eng_design attempt=1`(exec
 | Linear | Done(Lead 裁定);不碰 |
 
 **结论**:与 §29(run `d1cedf09`)完全同形 —— 目标已是 `AWAITING-QA`,交付 #1 走跳过分支,复用 OPEN PR #565。跳过分支没有"残留 claim 假通过"风险:HEAD 上没有任何 `FIXED-FOR-CLAIM`。上一轮的 HANDIN、`IMPL1=9a0fe6d17`、评审、CI 都不是本轮证据。
+
+**设计评审(run `4dea7fe2`)**:Codex(gpt-6-luna/xhigh,profile `school`,thread `01a10b30-4d5e…`)。R1(turn `01a10b30-55b7…`,blob `6f39d185…`,request `e366e934…`)APPROVED,零发现;因 companion 报 "completion inferred",追加一个 `--resume-last` 复述回合(turn `01a10b37-35a5…`)仍 APPROVED,`review-round --round 1` 绑定该回合;design-review.json rounds=2 / finalRound=1,`await-codex-gate design` 通过。founder HTML `design.html` 与 `d1-core-flow.*` 已覆盖为本轮版本。
