@@ -1,9 +1,9 @@
 ---
 issue: FLY-3228
 phase: design
-phaseCursor: 2/5
-updated: 2026-10-05T03:02:19.898Z
-nextStep: Codex design review of plan.md (run ad2ead99)
+phaseCursor: 3/5
+updated: 2026-10-05T03:08:02.748Z
+nextStep: Codex design review round 2
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3228-real-runner-drill/plan.md
@@ -25,8 +25,8 @@ handoff: |-
 ---
 
 # FLY-3228 progress
-**phase**: design (2/5)
-**next**: Codex design review of plan.md (run ad2ead99)
+**phase**: design (3/5)
+**next**: Codex design review round 2
 
 **handoff**: Rework attempt 2 for run dce567d4, activation rework:496b890da1fbcbc49acff38043068bdb570da0a444cd36dd5ffed16f3cff4669, epoch 4. Exact original QA fix context received in thread and independently read from own CommDB runner_phase_wakes queue_seq=2: claim 1 on HANDIN1=63613f566616db99e20eee88b96192a673b95bff. Fix commit b27d7e9a0 changes only line 2 AWAITING-QA -> FIXED-FOR-CLAIM 1. Red cmp before change; green exact bytes after. Negative probes reject stale awaiting, wrong claim 2, leading-zero claim 01, extra line, trailing whitespace, missing final newline. Identical committed bytes pass retry/no-rewrite guard. Runtime queued/started/dead/superseded/concurrent states not applicable to two-line Markdown; no code or TS changes. e2e_529_exempt remains docs_only; no room deployment. pnpm lint exit 1 solely on two ignored generated design JSON formatting errors plus 14 existing warnings. No pre_handin.script. Final ledger commit before frozen HANDIN2 review/CI; final SHA recorded externally.
 
