@@ -1,21 +1,18 @@
 ---
 issue: FLY-3226
-phase: implement
-phaseCursor: 2/2
-updated: 2026-10-05T03:06:02.029Z
-nextStep: Verify claim-1 interval, request code review, push PR 568, run
-  exact-head CI, and complete needs_review
+phase: design
+phaseCursor: 1/4
+updated: 2026-10-05T10:20:59.117Z
+nextStep: Write exploration.md (re-dispatch audit) then plan.md
 chunks: []
 pointers: {}
-handoff: run=b00b1faf exec=800088de node=eng_design done. Plan blob f344b18e
-  APPROVED r1 (request 03436b5a, thread 01a109ed). Continue OPEN PR 568 with
-  append-only commits; hand-in 1 resets FIXED-FOR-CLAIM 1 to AWAITING-QA. Design
-  HTML
-  http://127.0.0.1:59847/fw-reports-ad8277/r/41e2da43e05de5d76587503c6648e3a0/
+handoff: run=6b794ca0 exec=7530071a node=eng_design in progress. Fresh branch
+  (no remote, PR 568 MERGED). Prior runs' PREV/claim/PR/HTML are NOT evidence
+  for this run.
 ---
 
 # FLY-3226 progress
-**phase**: implement (2/2)
-**next**: Verify claim-1 interval, request code review, push PR 568, run exact-head CI, and complete needs_review
+**phase**: design (1/4)
+**next**: Write exploration.md (re-dispatch audit) then plan.md
 
-**handoff**: run=b00b1faf exec=800088de node=eng_design done. Plan blob f344b18e APPROVED r1 (request 03436b5a, thread 01a109ed). Continue OPEN PR 568 with append-only commits; hand-in 1 resets FIXED-FOR-CLAIM 1 to AWAITING-QA. Design HTML http://127.0.0.1:59847/fw-reports-ad8277/r/41e2da43e05de5d76587503c6648e3a0/
+**handoff**: run=6b794ca0 exec=7530071a node=eng_design in progress. Fresh branch (no remote, PR 568 MERGED). Prior runs' PREV/claim/PR/HTML are NOT evidence for this run.
