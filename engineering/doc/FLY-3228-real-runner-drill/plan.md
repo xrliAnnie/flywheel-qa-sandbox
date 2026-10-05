@@ -11,11 +11,12 @@ Issue: FLY-3228 (https://linear.app/geoforge3d/issue/FLY-3228/qa-sbx-fly-3228-re
 - 唯一权威:`origin/main:qa-sbx/fly3228/README.md`。每个节点开工先重读;本 plan 与 README 冲突时以 README 为准。
 - 演练内容只有一个文件 `F=qa-sbx/fly3228/$(git branch --show-current).md`。本轮分支 `project-slot-6-FLY-3228` → `qa-sbx/fly3228/project-slot-6-FLY-3228.md`;节点开工时重新算,不要硬编码。
 - 不碰:README、任何代码、Linear issue(不改状态、不评论、不加标签)、529 房间部署/拆除、其他 slot / 其他 issue 的目标文件。
-- **流程文档例外(不来自 README,明示边界)**:节点契约(DOC-FLOW / 进度账本 / 设计 HTML)要求把 `engineering/doc/FLY-3228-real-runner-drill/` 下的 plan、图、HTML 与 `progress.md` 提交并推到同一分支。它们是 Runner 协议记账产物,不是演练内容,不进 QA criterion。为不稀释 README 的"只碰一个 md",每次交付都跑**演练内容范围断言**:
-  - `D=$(git diff --name-only origin/main...HEAD -- . ':(exclude)engineering/doc/FLY-3228-real-runner-drill')`。
-  - 交付 #1:`D` **恰好**一行 `"$F"`。
-  - 交付 #2:`D` 为 `"$F"` 或**为空**(见 §2:本轮 claim id 若与 main 上遗留的编号相同,`$F` 回到与 main 逐字节相同,PR 级 diff 里自然消失;此时以 §3 交付 #2 第 6 步的 `$PREV..$HANDIN2` patch 核验为准)。
-  - 出现 `"$F"` 以外的任何路径 → 停,不交付。流程文档只允许落在上述文件夹。
+- **流程文档例外(不来自 README,明示边界)**:节点契约(DOC-FLOW / 进度账本 / 设计 HTML)要求把 `engineering/doc/FLY-3228-real-runner-drill/` 下的 plan、图、HTML 与 `progress.md` 提交并推到同一分支。它们是 Runner 协议记账产物,不是演练内容,不进 QA criterion。为不稀释 README 的"只碰一个 md",每次交付都跑下面两条断言:
+  - 为什么不能干脆不提交它们:`flywheel-comm progress` 命令本身就会把 `progress.md` path-limited 提交到本分支(Runner 协议强制,不可关闭);设计节点契约要求 plan/HTML "commit and push"。这些都是 Lead 注入的节点协议,不在 README 授权范围内也不在其禁止范围内(README 管的是演练内容)。所以本 plan 不扩大 README 的演练范围,而是把流程文件收成**逐文件白名单**,让任何其他路径都失败。
+  - 白名单(仅以下精确路径,目录前缀 `W=engineering/doc/FLY-3228-real-runner-drill`):`$W/plan.md`、`$W/progress.md`、`$W/d1-core-flow.mmd`、`$W/d1-core-flow.svg`、`$W/d2-data-model.mmd`、`$W/d2-data-model.svg`、`$W/FLY-3228-design.html`(共 7 个文件)。
+  - **完整 diff 断言**(不排除任何目录):`git diff --name-only origin/main...HEAD | grep -vxF -e "$F" -e "$W/plan.md" -e "$W/progress.md" -e "$W/d1-core-flow.mmd" -e "$W/d1-core-flow.svg" -e "$W/d2-data-model.mmd" -e "$W/d2-data-model.svg" -e "$W/FLY-3228-design.html"` 输出必须为空;出现任何其他路径(包括 `$W` 下的新文件)→ 停,不交付。
+  - **演练内容断言**:上述完整 diff 中属于 `qa-sbx/` 的行:交付 #1 **恰好**一行 `"$F"`;交付 #2 为 `"$F"` 或**为空**(见 §2:本轮 claim id 若与 main 上遗留的编号相同,`$F` 回到与 main 逐字节相同,PR 级 diff 里自然消失;此时以 §3 交付 #2 第 6 步的 `$PREV..$HANDIN2` patch 核验为准)。
+  - 实现节点不新增、不修改白名单里除 `progress.md`(由 `progress` 命令自动提交)以外的任何流程文件。
 
 ## 2. 起点(设计节点派发时快照,仅供参考)
 
