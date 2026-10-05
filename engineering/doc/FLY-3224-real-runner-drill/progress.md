@@ -1,50 +1,64 @@
 ---
 issue: FLY-3224
 phase: design
-phaseCursor: 4/5
-updated: 2026-10-05T10:09:34.520Z
-nextStep: Read effective verdict for review
-  question4cbf7e0b-dd71-4a30-a1ad-7bfeafc15829 once per turn; on APPROVED
-  finalize ledger/push/report, complete phase_design_complete and park.
+phaseCursor: 5/5
+updated: 2026-10-05T10:12:32.332Z
+nextStep: All design requirements verified; push this final ledger, complete
+  --route phase_design_complete, then park. Successors obey their injected
+  TURN/task; any later correction belongs to current TURN holder.
 chunks: []
 pointers: {}
 handoff: "run=2a051096-5e56-4f49-b7c8-6b5bf4cd6d4c;
   designExec=220d8957-9edf-4280-a5b2-31e1dcf31d43;
   activation=activation:220d8957-9edf-4280-a5b2-31e1dcf31d43:2a051096-5e56-4f49\
-  -b7c8-6b5bf4cd6d4c:eng_design:1; TURN yours epoch1 attempt1. Artifact
-  commit2e98779a0 plus progress commits86a7767c1,5c0ab4707,30e51ee8a pushed
-  normally to origin/project-slot-2-FLY-3224. Stage design_review with plan
-  path; gate4cbf7e0b-dd71-4a30-a1ad-7bfeafc15829 opened and request-review
-  design accepted:true request51519353-4840-4c63-88af-12edcf9f5016 skipped:false
-  duplicate:false. Full local-test-policy block prepended to review task gate
-  body; no local test delegation. Effective verdict not yet checked this turn.
-  Committed design.html published --publish-only (no channel message):
-  reportId6405eb56aafd26c39e3e682b7bca4e2a, URL
+  -b7c8-6b5bf4cd6d4c:eng_design:1; design TURN epoch1 attempt1 revalidated.
+  Effective reviewVerdict APPROVED/reviewerVerdict APPROVED, round1,
+  question4cbf7e0b-dd71-4a30-a1ad-7bfeafc15829, accepted
+  request51519353-4840-4c63-88af-12edcf9f5016,
+  deliveryNoncee8081acb-284c-4479-b79d-c0a822070421; no HIGH findings. Four
+  advisories relayed via DONE review-passed report, not blocking: MEDIUM
+  rework-base-sha-source use QA fix context on head SHA as authority, ledger
+  cross-check only; LOW fixer-block-adjacent-tests-na completion summary
+  adjacent runtime tests N/A docs-only and e2e_529_exempt stays not_run; LOW
+  fix-context-first-line-wording read QA verdict line inside block; LOW
+  claim-one-likely-not-coincidence claim1 can recur so final fixture can match
+  main. Approved plan unchanged. Artifact commit2e98779a0 and earlier ledger
+  commits pushed; remote/local were f89138f30461bc973de06e835f90d0c58aabb3f6
+  before this final cursor update. Committed design.html successfully published
+  --publish-only, reportId6405eb56aafd26c39e3e682b7bca4e2a URL
   http://127.0.0.1:60326/fw-reports-496a30/r/6405eb56aafd26c39e3e682b7bca4e2a/,
-  STE disabled/no unit; successful publication receipt delivered:false matches
-  publishOnly:true. DESIGN-HTML ready report
-  question6405978b-69cd-4866-aa40-818cc9c63435 issued. Hosted HTTP200, minted
-  nonce/CSP match, actual hosted comments/persistence work, browser
-  errors0/external requests0. Hosted
-  SHA25694400d44532d913ae1b03dc5898c18069541ab1b30e359bc70037b31e2167f43; source
-  SHA2568ec2f901d95f622463c2ac5e8477dc61673370b8ae98264f0b97b40161eb5f6e. Both
-  local Mermaid renders and desktop/mobile visual checks passed; seven comments,
-  escaped input, path-scoped storage with denial catches, <=1800 chunks/exact
-  marker, clipboard success and two fallbacks verified. Generic diagram skill
-  self_check exited1 only on required Linear hyperlink and nonce comment script
-  being noncanonical motion/no data-motion-root; user mandate takes precedence,
-  SVG accessibility/id checks and contract-specific runtime validation passed.
-  Lint exit0/14 existing warnings; local-tests none/no smoke; no full-suite
-  claim. README exception: no research.md, existing mandatory protocol artifacts
-  only, fixture byte-identical to fresh-main
-  baseline65adf768ce47d7dfb819690862976a9e43c63128. No
-  source/db/config/Linear/room change, implementation, PR creation, successor
-  dispatch, shipping authority or merge. Phase completion still unproven until
-  effective approval and exact complete receipt."
+  STE disabled/no unit; mandatory DESIGN-HTML ready
+  report6405978b-69cd-4866-aa40-818cc9c63435 sent and response read. Hosted
+  HTTP200/minted nonce+CSP match/comments persistence/no browser errors/no
+  external requests verified; hosted
+  SHA25694400d44532d913ae1b03dc5898c18069541ab1b30e359bc70037b31e2167f43/source
+  SHA2568ec2f901d95f622463c2ac5e8477dc61673370b8ae98264f0b97b40161eb5f6e. Fresh
+  local Mermaid d1/d2 renders with stable unique svgIds, accessible unique ids;
+  diagram semantics and desktop/mobile screenshots inspected. Seven sections
+  each save comments; hostile comments stay text, localStorage catch/path
+  isolation, <=1800 feedback chunks exact marker, clipboard
+  success/unavailable/rejection verified. Generic skill static/motion checker
+  incompatible with required nonce comment script and ordinary Linear link;
+  explicit task HTML checks passed. Lint exit0/14 existing warnings; local-tests
+  none/no smoke, no code/API/build/type changes and no full-suite claim. README
+  main blobc4a1b3334b84d73b95cf4e2943c2c8f1474aef87
+  baseline65adf768ce47d7dfb819690862976a9e43c63128, no research.md/research
+  stage under explicit exception; only pre-existing mandatory workflow artifacts
+  changed. Fixture remains exact inherited two lines QA-SBX FLY-3224 drill /
+  FIXED-FOR-CLAIM1; historical1 must be reset to AWAITING-QA by first
+  implementation, then rework id solely from current QA context. Scope
+  question66387d0b answered follow README/conservative option; report
+  reply2c03e0d4 and HTML reply6405978b say additional founder scope ruling may
+  arrive, do not implement/touch fixture while pending; current mandate
+  satisfied with minimal existing protocol artifact reuse and disclosure. No
+  Linear, source, config, database, room deploy, PR creation, successor
+  dispatch, shipping request or merge. Final command receipt is still pending at
+  this cursor write; phase handoff is not issue-terminal completion. After exact
+  phase_design_complete park and retain resident goal."
 ---
 
 # FLY-3224 progress
-**phase**: design (4/5)
-**next**: Read effective verdict for review question4cbf7e0b-dd71-4a30-a1ad-7bfeafc15829 once per turn; on APPROVED finalize ledger/push/report, complete phase_design_complete and park.
+**phase**: design (5/5)
+**next**: All design requirements verified; push this final ledger, complete --route phase_design_complete, then park. Successors obey their injected TURN/task; any later correction belongs to current TURN holder.
 
-**handoff**: run=2a051096-5e56-4f49-b7c8-6b5bf4cd6d4c; designExec=220d8957-9edf-4280-a5b2-31e1dcf31d43; activation=activation:220d8957-9edf-4280-a5b2-31e1dcf31d43:2a051096-5e56-4f49-b7c8-6b5bf4cd6d4c:eng_design:1; TURN yours epoch1 attempt1. Artifact commit2e98779a0 plus progress commits86a7767c1,5c0ab4707,30e51ee8a pushed normally to origin/project-slot-2-FLY-3224. Stage design_review with plan path; gate4cbf7e0b-dd71-4a30-a1ad-7bfeafc15829 opened and request-review design accepted:true request51519353-4840-4c63-88af-12edcf9f5016 skipped:false duplicate:false. Full local-test-policy block prepended to review task gate body; no local test delegation. Effective verdict not yet checked this turn. Committed design.html published --publish-only (no channel message): reportId6405eb56aafd26c39e3e682b7bca4e2a, URL http://127.0.0.1:60326/fw-reports-496a30/r/6405eb56aafd26c39e3e682b7bca4e2a/, STE disabled/no unit; successful publication receipt delivered:false matches publishOnly:true. DESIGN-HTML ready report question6405978b-69cd-4866-aa40-818cc9c63435 issued. Hosted HTTP200, minted nonce/CSP match, actual hosted comments/persistence work, browser errors0/external requests0. Hosted SHA25694400d44532d913ae1b03dc5898c18069541ab1b30e359bc70037b31e2167f43; source SHA2568ec2f901d95f622463c2ac5e8477dc61673370b8ae98264f0b97b40161eb5f6e. Both local Mermaid renders and desktop/mobile visual checks passed; seven comments, escaped input, path-scoped storage with denial catches, <=1800 chunks/exact marker, clipboard success and two fallbacks verified. Generic diagram skill self_check exited1 only on required Linear hyperlink and nonce comment script being noncanonical motion/no data-motion-root; user mandate takes precedence, SVG accessibility/id checks and contract-specific runtime validation passed. Lint exit0/14 existing warnings; local-tests none/no smoke; no full-suite claim. README exception: no research.md, existing mandatory protocol artifacts only, fixture byte-identical to fresh-main baseline65adf768ce47d7dfb819690862976a9e43c63128. No source/db/config/Linear/room change, implementation, PR creation, successor dispatch, shipping authority or merge. Phase completion still unproven until effective approval and exact complete receipt.
+**handoff**: run=2a051096-5e56-4f49-b7c8-6b5bf4cd6d4c; designExec=220d8957-9edf-4280-a5b2-31e1dcf31d43; activation=activation:220d8957-9edf-4280-a5b2-31e1dcf31d43:2a051096-5e56-4f49-b7c8-6b5bf4cd6d4c:eng_design:1; design TURN epoch1 attempt1 revalidated. Effective reviewVerdict APPROVED/reviewerVerdict APPROVED, round1, question4cbf7e0b-dd71-4a30-a1ad-7bfeafc15829, accepted request51519353-4840-4c63-88af-12edcf9f5016, deliveryNoncee8081acb-284c-4479-b79d-c0a822070421; no HIGH findings. Four advisories relayed via DONE review-passed report, not blocking: MEDIUM rework-base-sha-source use QA fix context on head SHA as authority, ledger cross-check only; LOW fixer-block-adjacent-tests-na completion summary adjacent runtime tests N/A docs-only and e2e_529_exempt stays not_run; LOW fix-context-first-line-wording read QA verdict line inside block; LOW claim-one-likely-not-coincidence claim1 can recur so final fixture can match main. Approved plan unchanged. Artifact commit2e98779a0 and earlier ledger commits pushed; remote/local were f89138f30461bc973de06e835f90d0c58aabb3f6 before this final cursor update. Committed design.html successfully published --publish-only, reportId6405eb56aafd26c39e3e682b7bca4e2a URL http://127.0.0.1:60326/fw-reports-496a30/r/6405eb56aafd26c39e3e682b7bca4e2a/, STE disabled/no unit; mandatory DESIGN-HTML ready report6405978b-69cd-4866-aa40-818cc9c63435 sent and response read. Hosted HTTP200/minted nonce+CSP match/comments persistence/no browser errors/no external requests verified; hosted SHA25694400d44532d913ae1b03dc5898c18069541ab1b30e359bc70037b31e2167f43/source SHA2568ec2f901d95f622463c2ac5e8477dc61673370b8ae98264f0b97b40161eb5f6e. Fresh local Mermaid d1/d2 renders with stable unique svgIds, accessible unique ids; diagram semantics and desktop/mobile screenshots inspected. Seven sections each save comments; hostile comments stay text, localStorage catch/path isolation, <=1800 feedback chunks exact marker, clipboard success/unavailable/rejection verified. Generic skill static/motion checker incompatible with required nonce comment script and ordinary Linear link; explicit task HTML checks passed. Lint exit0/14 existing warnings; local-tests none/no smoke, no code/API/build/type changes and no full-suite claim. README main blobc4a1b3334b84d73b95cf4e2943c2c8f1474aef87 baseline65adf768ce47d7dfb819690862976a9e43c63128, no research.md/research stage under explicit exception; only pre-existing mandatory workflow artifacts changed. Fixture remains exact inherited two lines QA-SBX FLY-3224 drill / FIXED-FOR-CLAIM1; historical1 must be reset to AWAITING-QA by first implementation, then rework id solely from current QA context. Scope question66387d0b answered follow README/conservative option; report reply2c03e0d4 and HTML reply6405978b say additional founder scope ruling may arrive, do not implement/touch fixture while pending; current mandate satisfied with minimal existing protocol artifact reuse and disclosure. No Linear, source, config, database, room deploy, PR creation, successor dispatch, shipping request or merge. Final command receipt is still pending at this cursor write; phase handoff is not issue-terminal completion. After exact phase_design_complete park and retain resident goal.
