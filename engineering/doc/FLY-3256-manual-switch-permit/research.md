@@ -54,11 +54,11 @@ Issue: FLY-3256 (https://linear.app/geoforge3d/issue/FLY-3256/额度standby-撞�
 
 `createCodexQuotaResumeLoop()` 仅在存在 standby 时周期执行：先 `reconcileCanonical()`，再跑 readiness，然后从 `readReadings()` 中按 `root.profile` 找 reading，调用 `issueReadingConfirmedPermit()`；缺/旧读数时异步触发 `requestReadingRefresh()`。
 
-生产表为 0 行说明至少存在一个连接缺口需要在实现前用 RED 用例钉死：
+生产表为 0 行说明至少存在一个连接缺口需要在实现前用 RED 用例钉死。复审进一步核对出：store 层的人工 A→B + B 新读数本身已能发 permit，真正的阻断集中在 resume loop 的 readiness/context 与 observer 能否产生新 requestSeq：
 
 - reconcile 观察到人工新号，但同 tick 读取的是切号前 snapshot；
 - refresh 完成后没有保证下一次 evaluation 使用同一 canonical generation 的新 requestSeq；
-- readiness 的自动切号前置条件误挡了只需读数确认的人工恢复；
+- readiness 的 `authority_unavailable` 挡住了 permit 评估，同时把 `lastRoot/context.root` 留空，使 resumer 即使看见 permit 也不能 claim；
 - activeAccount/profile 命名或 identityKey 在整机切号后短暂不一致，只有 reason 留在 snapshot，没有持久诊断；
 - refresh promise 被 fire-and-forget 后，失败/成功都不触发即时重评，只能等 tick，且 snapshot 不能区分是哪一道围栏拒绝。
 
@@ -69,9 +69,9 @@ Issue: FLY-3256 (https://linear.app/geoforge3d/issue/FLY-3256/额度standby-撞�
 1. standby loop 发现至少一个未覆盖 carrier。
 2. reconcile canonical；若人工切号，持久化 external generation，得到稳定 `(root,generation,profile,account,digest)`。
 3. 读取该 profile 的 snapshot。若缺失、身份不一致或 requestSeq 不晚于 wall，触发 single-flight refresh，并在 refresh 完成后的后续 tick重评。
-4. readiness 只检查“在该 canonical 上安全启动 Codex”的共享凭据链；不得要求自动切号 authority。
+4. readiness 只对一种可证明安全的 `authority_unavailable` 子形状放宽：inventory/home ownership 不完整但 occupancy guard 仍能给目标账号读出新 requestSeq。`canonical_unavailable`、`credential_not_shared`、`readiness_receipt_*` 与 collector 抛错导致的 guard=`unknown` 继续硬拒。collector 抛错时 observer 只 carry 旧 requestSeq，不能绕过读数围栏。
 5. `issueReadingConfirmedPermit()` 原子校验 root 尚未移动与 causal fences，写一张 permit。
-6. resumer 对每个 eligible standby 做现有同 execution/thread 恢复；首个模型输出后才 settle incident。
+6. 被允许的 `authority_unavailable` 分支仍设置 `lastRoot/context.root`；拉起时 `codex-home.ts` 强制 `auth.json` 指向 truth path，无法链接时写 canonical 副本，漂移则抛 `credential_link_drift`。resumer 对每个 eligible standby 做现有同 execution/thread 恢复；首个模型输出后才 settle incident。
 
 关键点：人工切号 provenance 和容量证据是两个事实，必须在 permit 审计中同时可追溯，但不能合并成一个弱事实。
 
@@ -97,7 +97,9 @@ JOIN workflow_run r ON r.run_id=s.run_id AND r.status='active'
 WHERE s.state IN ('standby','resuming','fallback_prepared')
 ```
 
-再用 execution 的 CommDB 历史 identity 取 project/lead/tmux target；身份缺失或歧义时 fail-visible，不猜 owner。这样 standby 是 roster 的补集来源，不改变正常 session 的 status 语义。
+再按 CommDB `sessions.execution_id` 主键取唯一 project/lead/tmux target；身份缺失或歧义时 fail-visible，不猜 owner。这样 standby 是 roster 的补集来源，不改变正常 session 的 status 语义。
+
+补集行必须携带 `quota_standby=1`。它证明“仍持棒但有意等待”，因此下游 STEP 1 不把无 pane 记为 `MISSING_PANE`，STEP 2 不把静止记为 `STALLED_60M`/`REQUIRED`，也不进入普通 continuity completeness 分母；只输出额度待命事实。否则巡检会误触发 nudge/close，反过来释放 carrier。
 
 ## 时间研究
 
@@ -108,7 +110,8 @@ WHERE s.state IN ('standby','resuming','fallback_prepared')
 - ISO UTC：`YYYY-MM-DDTHH:mm:ss(.sss)?Z` 原样解析；
 - SQLite UTC：`YYYY-MM-DD HH:mm:ss(.sss)?` 把空格换 `T` 并补 `Z`；
 - 其余返回 null；
-- `buildCodexStandbyPageSection()` 选择“有效 epoch 最小”的 oldest，不按原字符串排序；
+- 任一 active row 的时间非法就不能证明 oldest，整项 fail visible；不能跳过坏行后低估时长；
+- 同一 parser 也用于 audit 的 24h/14d 计数与 standby 入场次数，不能再用 ISO/SQLite 混合字符串字典序比较；
 - formatter/writer 遇 null 或未来超容忍值时输出 unavailable/null，而不是 0。
 
 ## 与 FLY-2195 的合并边界
@@ -134,17 +137,17 @@ issue 交接指出后续实现分支会同时包含 FLY-2195 的“满载原地�
 | 查询 | 预期索引/计划 | 最坏行数 | 热路径 |
 |---|---|---:|---|
 | eligible standby | `codex_quota_standby_state(state,trigger_signal_seq)` | 非终态 standby 数 | 每 maintenance tick |
-| permit by root/generation | permit UNIQUE + root PK | 每 carrier 1 个候选窗口 | resumer claim |
+| permit eligibility | 实测为 `SCAN p USING INDEX sqlite_autoindex_codex_quota_capacity_permit_2`；相关 signal 子查询走 MULTI-INDEX OR，但 `COALESCE(signal_seq,0)` 不能用 signal-seq 索引 | permit 数 × 未绑定 signal 数 / carrier | 每 resumer tick，乘以 standby 数 |
 | patrol standby 补集 | standby state index → workflow node PK → workflow run PK | 非终态 standby 数 | patrol snapshot（非 Bridge 热 tick） |
-| newest execution identity | CommDB execution/index（实施时 EXPLAIN 核实） | 每 execution 历史行数 | patrol snapshot |
+| execution identity | CommDB `sessions.execution_id` PRIMARY KEY | 每 execution 1 行 | patrol snapshot |
 
 若 `EXPLAIN QUERY PLAN` 显示 patrol 从 workflow/event 大表全扫，实施必须改写查询；不为便利新增镜像 roster 表。
 
 ## 测试切面
 
 - capacity permit：人工 A→B + B 后墙新读数；同 generation 重放；切号后读数仍是 A；B 满额；request 后再 wall；多个 carriers 同一 permit。
-- resume loop：refresh 前旧 snapshot 拒绝、refresh 后重评发 permit；`codex_quota_auto_switch=off` 仍可 reading-confirmed；readiness 不依赖 authority；refresh 失败留 reason。
+- resume loop：refresh 前旧 snapshot 拒绝、refresh 后重评发 permit；inventory/home unknown 但可读的新 requestSeq 允许继续并设置 context.root；collector error/guard unknown 只 carry 旧 seq 且拒发；其余 readiness 失败码硬拒。
 - hotswap：无 permit 保持原地、permit 后同 exec 恢复；FLY-2195 满载对照仍原地重试。
-- patrol：CommDB timeout + active standby 纳入；timeout + closed 排除；owner 歧义 fail-visible。
-- timestamp：ISO Z、SQLite UTC、DST 两侧、非法值、未来值。
-
+- patrol：CommDB timeout + active standby 纳入但标记 quota_standby，不产生 MISSING_PANE/STALLED_60M/REQUIRED；timeout + closed 排除；owner 歧义 fail-visible。
+- timestamp：ISO Z、SQLite UTC、DST 两侧、非法值、未来值，以及 audit 24h/14d 与入场次数。
+- straggler：B 读数请求后若 A 上旧进程再撞墙，先可见拒绝 `reading_superseded`；所有旧进程停下后的下一份读数收敛为覆盖全部 wall 的新 permit。
