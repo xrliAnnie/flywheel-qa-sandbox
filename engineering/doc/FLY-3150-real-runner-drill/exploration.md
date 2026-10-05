@@ -1,7 +1,7 @@
 # FLY-3150 真 Runner 通用演练(529 房间) — 探索
 
 Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-04(2026-10-01 初版;§7–§21 为历史 —— slot-1 / slot-5 / slot-6 / slot-2 / slot-4 各轮;§22 为历史;§23–§25 为历史;§26 为本轮 run `46163449`,slot-1)
+日期: 2026-10-04(2026-10-01 初版;§7–§21 为历史 —— slot-1 / slot-5 / slot-6 / slot-2 / slot-4 各轮;§22 为历史;§23–§25 为历史;§26–§27 为历史;§28 为本轮 run `a5651dbc`,slot-1)
 基于: 无
 
 ## 1. 任务来源与唯一权威
@@ -449,3 +449,21 @@ TURN:`yours phase=design epoch=1 run=93c1c760… node=eng_design attempt=1`(exec
 | Linear | Done(Lead 裁定);不碰 |
 
 **结论**:与 §26 完全同形;plan 只更新 run / exec 标识与 §2 起点快照。上一轮任何 HANDIN、claim id、评审、CI、QA 结论都不是本轮证据。
+
+## 28. 本次派发审计(run `a5651dbc`,2026-10-04,slot-1)
+
+TURN:`yours phase=design epoch=1 run=a5651dbc… node=eng_design attempt=1`(exec `cb8f15f2`)。§27 是 run `93c1c760`,它已走完 交付 #1(`fc479f191`,重置为 `AWAITING-QA`)→ QA 第 1 轮 claim `1` → 交付 #2(`4f15aa6a8`,`FIXED-FOR-CLAIM 1`),分支停在其 implement 4/4 ledger 头 `9459875d3`;本轮是同一分支上的**新 run**,继续在其上工作,不 force-push。
+
+| 项 | 结果 |
+|---|---|
+| 分支头(派发时) | `9459875d3` = PR #565 头 |
+| `origin/main` | `39754a419`,已是本分支祖先 → 无需同步合并 |
+| 远端分支 / PR | PR #565 OPEN(标题仍是上一轮)→ 本轮交付 #1 复用 #565(`gh pr edit`) |
+| 目标文件 | HEAD 上 = `QA-SBX FLY-2167 drill` / `FIXED-FOR-CLAIM 1`(陈旧);main 上字节相同 → 交付 #1 走**正常分支**重置为 `AWAITING-QA` |
+| README | 未变(两行文件 + 三条验收) |
+| progress.md | 派发时是 run `93c1c760` 的 implement 4/4(旧 `PREV=b1887ae49` / `IMPL2=4f15aa6a8`);本节点已用 `--handoff` 覆盖为本轮 run(提交 `bfbfc28e5`) |
+| 收件箱 | 无 Lead 指令 |
+| onboard skill | 不存在 → 直接 `stage set brainstorm` |
+| Linear | Done(Lead 裁定);不碰 |
+
+**结论**:与 §26 / §27 完全同形;plan 只更新 run / exec 标识与 §2 起点快照。上一轮任何 HANDIN、claim id、评审、CI、QA 结论都不是本轮证据。
