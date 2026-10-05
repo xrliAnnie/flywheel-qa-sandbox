@@ -7,24 +7,25 @@ Issue: FLY-3225 (https://linear.app/geoforge3d/issue/FLY-3225/qa-sbx-fly-3225-re
 
 在 529 沙盒房间，用两行文件验证「首交 → 独立 QA 故意打回 → 按本次裁决编号修复 → 复验」。QA 是独立验收角色；claim 是其生成的裁决编号。
 
-已 fetch 并读取 `origin/main:qa-sbx/fly3225/README.md`，main/接手基线为 `baace76a50fc4f52a2ae655106f9092f83a5bf1d`；分支为 `project-slot-3-FLY-3225`。本次 run 为 `152d927a-1c44-48a1-9a6a-8bdc0e3a48cb`，设计 exec 为 `e7a43e1c-8e94-4b6f-b0a4-66bebdaa17fe`，TURN 为 design/epoch 1/attempt 1。现有练习文件第二行为 `FIXED-FOR-CLAIM 1`，现有账本和评审属于旧 run，均不能决定本轮轮次或代表本次批准。
+已 fetch 并读取 `origin/main:qa-sbx/fly3225/README.md`，main/接手基线为 `39754a41985b9c91430d6ab9086e678a6cd35e68`；分支为 `project-slot-3-FLY-3225`。本次 run 为 `d470760d-b6ec-4a8e-a743-86495c9dcaf0`，设计 exec 为 `f95dd2a1-fbbf-469c-adfd-5e5d296d316e`，TURN 为 design/epoch 1/attempt 1。现有练习文件第二行为 `FIXED-FOR-CLAIM 1`，现有账本、评审和旧 PR #561 属于旧 run，均不能决定本轮轮次或代表本次批准。
 
-任务书要求短计划、不另写研究文档，因此审计和取舍收在本计划。注入的设计完成契约另外明确要求复用本目录的 `design.html`、本地 Mermaid 图源和工具管理的 `progress.md`。这些是设计交付物；实现节点主动修改的唯一交付文件是 `qa-sbx/fly3225/<当前 git 分支名>.md`。不改 Linear 状态、评论或标签，不改 README、代码或兄弟练习单，不部署房间。
+任务书要求短计划、不另写研究文档，因此探索、调研结论及取舍收在本计划。注入的设计完成契约另外明确要求复用本目录的 `design.html`、本地 Mermaid 图源和工具管理的 `progress.md`。这些是设计交付物；实现节点主动修改的唯一交付文件是 `qa-sbx/fly3225/<当前 git 分支名>.md`。设计节点不写练习文件；不改 Linear 状态、评论或标签，不改 README、代码或兄弟练习单，不部署房间。
 
 ## 实施步骤
 
 - [ ] 接手先运行本节点的 TURN，仅 `yours` 可写；重新读取 main 的任务书，用 `git branch --show-current` 得到文件名。本分支目标为 `qa-sbx/fly3225/project-slot-3-FLY-3225.md`。
-- [ ] 用注入的 `progress --handoff` 保存同一 run 的 `runId`、本节点 `execId`、`activationId`、接手时完整 SHA `implBase`、`firstHandin`、主动提交清单 `ownCommits`。本 run 首次接手须整体替换旧 run 的专属状态及旧评审/验收字段；旧 PR 不能直接视为本轮开放 PR。重启保留本 run 的基线和首交记录，不能把新 HEAD 当新起点。账本只由 progress 工具独立提交，不与练习文件同提交。
-- [ ] 本 run 首次交付，写以下精确内容，恰好两行且末尾换行；本次继承值不同，必须重置第二行。提交信息使用 `docs(qa-sbx): FLY-3225 drill hand-in`。
+- [ ] 用注入的 `progress --handoff` 保存同一 run 的 `runId`、本节点 `execId`、`activationId`、接手时完整 SHA `implBase`、`firstHandin`、主动提交清单 `ownCommits`。清除旧 run 的实现、QA、代码评审、CI 和 PR 字段，保留本 run 有效的设计证据。重启保留本 run 的基线和首交记录，不能把新 HEAD 当新起点。账本只由 progress 工具独立提交，不与练习文件同提交。
+- [ ] **先判断本次指令是否有修复上下文。** 若首行是 `QA verdict to fix: claim <id> ...`，直接执行下面的按编号修复步骤；即使账本缺首交记录，也不得先重置为等待 QA。无该上下文且本 run 尚未首交时，写以下精确内容，恰好两行且末尾换行；本次继承值不同，必须重置第二行。提交信息使用 `docs(qa-sbx): FLY-3225 drill hand-in`。
 
   ```text
   QA-SBX FLY-3225 drill
   AWAITING-QA
   ```
 
-  提交后记录该完整 SHA 为 `firstHandin`，将主动改动提交加入 `ownCommits`。若同一 run 恢复时内容已经达标且尚无首交记录，不制造空提交；记录更新账本之前的达标 HEAD，`ownCommits` 可为空。之后冻结最终交付 HEAD 作为 CI 对象；CI 是提交后自动运行的检查流水线。
+  提交后记录该完整 SHA 为 `firstHandin`，将主动改动提交加入 `ownCommits`。若提交成功但账本未更新，恢复时先读取 `implBase..HEAD` 的历史，核对作者、路径与完整 diff，再补回本节点确实已作的提交，不能把空清单当无改动证据。内容已经达标则不制造空提交，记录更新账本之前的达标 HEAD。最后一次账本提交后 push，再冻结最终交付 HEAD 作为 CI 对象；CI 是提交后自动运行的检查流水线，后续提交必须重新检查。
 - [ ] 仅在本次指令带 `QA fix context`、其首行是 `QA verdict to fix: claim <id> ...` 时，只将第二行改为 `FIXED-FOR-CLAIM <id>`，编号逐字使用该指令值，追加主动修复提交到本 run 清单，重新交付。不能复制旧 claim 1。
 - [ ] 首交后的 CI 返工、同步、冲突处理或普通唤醒不自动重置第二行；按唤醒的限定任务保留最近正确内容。同编号修复已达标则允许无改动。不撤销其他节点或合法 main 同步的提交。
+- [ ] 首交核对当前分支的开放 PR；旧 run 已合并或关闭的 PR 不复用。必要时依实现节点指令新建本轮 PR，检查实际标题；设计节点不创建 PR。
 - [ ] 遵守实现节点自己的评审、CI、报告和完成指令。本设计节点只交接计划，不派发后继、不请求 ship、不创建或合并 PR。
 
 ## QA 验收契约
@@ -57,7 +58,7 @@ cmp "$expected" "$actual" || exit 1
 
 对本 run 非空 `ownCommits` 中每个主动改动提交，用 `git diff-tree --root --no-commit-id --name-only -r <实际 SHA>` 核对只含目标文件；不含 progress 工具提交或同步合并。读取失败须停止，不能把空输出当通过。修复相对本 run 首交的文件 diff 只替换第二行。空主动提交清单跳过提交扫描，仍核对文件和实际 PR 标题，不能用空 SHA 参数意外读 HEAD。
 
-主动提交完整信息和实际 PR 标题均不能含 `[skip ci]`、`[ci skip]`、`[no ci]`、`[skip actions]`、`[actions skip]` 或 `skip-checks:`，历史提交不是风格模板。冻结交付 HEAD 的 `CI OK` 才是全套证据；本地文件比较和 `CI Scope OK` 不代表全套通过。仅运行本地测试策略允许的具体测试文件和固定 smoke 命令；不新增测试代码、不运行包或仓库全套。无生产源码或导出类型变化，没有受影响的包构建/类型检查。
+主动提交完整信息和实际 PR 标题均不能含 `[skip ci]`、`[ci skip]`、`[no ci]`、`[skip actions]`、`[actions skip]` 或 `skip-checks:`，历史提交不是风格模板。冻结交付 HEAD 的 `CI OK` 才是全套证据；本地文件比较和 `CI Scope OK` 不代表全套通过。仅运行本地测试策略允许的具体测试文件和固定 smoke 命令；不新增测试代码、不运行包或仓库全套。保留节点要求的 lint。无生产源码或导出类型变化，没有受影响的包构建/类型检查。
 
 否决以旧文件判断轮次、提前写旧 claim、增加代码和部署房间。主要风险是误用旧身份、重复首交或范围检查误撤他人提交；由本次上下文、本 run 账本及主动提交归属限制。无服务或数据库迁移；回退仅恢复本节点对练习文件的修改，按本 run `implBase` 核对原内容，不删除继承文件，也不覆盖后续他人修改。
 
