@@ -1,13 +1,13 @@
 ---
 issue: FLY-3227
-phase: design
-phaseCursor: 3/3
-updated: 2026-10-05T13:04:02.533Z
-nextStep: design complete; implement node writes AWAITING-QA hand-in
+phase: implement
+phaseCursor: 1/3
+updated: 2026-10-05T13:06:53.513Z
+nextStep: replace stale claim line with first-hand-in AWAITING-QA
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
-**phase**: design (3/3)
-**next**: design complete; implement node writes AWAITING-QA hand-in
+**phase**: implement (1/3)
+**next**: replace stale claim line with first-hand-in AWAITING-QA
