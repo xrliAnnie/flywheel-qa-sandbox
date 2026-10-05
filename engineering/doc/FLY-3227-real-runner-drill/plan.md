@@ -9,10 +9,15 @@ Issue: FLY-3227 (https://linear.app/geoforge3d/issue/FLY-3227/qa-sbx-fly-3227-re
 
 ## 实现步骤
 
-1. `turn` 为 `yours` 才写；读 main 的 README 与 inbox。
-2. 提示中**没有** QA fix context：文件写为恰好两行（各以换行结束）`QA-SBX FLY-3227 drill` / `AWAITING-QA`，即使旧文件已有 claim。
-3. 提示中**有** QA fix context：从正文首行 `QA verdict to fix: claim <id> ...` 取 `<id>`（逐字，不猜，缺失则走失败通道），仅把第 2 行改为 `FIXED-FOR-CLAIM <id>`。
-4. 用 `printf '<期望两行>' | cmp - "$FILE"` 做完整字节核验（工作树与 `git show HEAD:"$FILE"`）。普通提交消息 `docs(qa-sbx): FLY-3227 drill hand-in`，不含任何 skip-ci 标记；正常推送，取精确交付 HEAD 的 CI。
+1. `flywheel-comm turn` 为 `yours` 才写工作树。轮次只由 runner 提示正文决定（是否含 QA fix context / QA re-verification context）；`flywheel-comm inbox` 只用于确认有无 Lead 指令（本房间无人类 Lead），不构成 README 之外的验收条件。
+2. 设 `FILE=qa-sbx/fly3227/$(git branch --show-current).md`。提示中**没有** QA fix context：`EXPECTED='QA-SBX FLY-3227 drill\nAWAITING-QA\n'`，即使旧文件已有 claim。
+3. 提示中**有** QA fix context：从其首行 `QA verdict to fix: claim <id> ...` 逐字取 `<id>`（缺失或无法解析则 `complete --route blocked`，不猜），`EXPECTED='QA-SBX FLY-3227 drill\nFIXED-FOR-CLAIM <id>\n'`。第 1 行不动。
+4. 按序核验，任一步非零即停：
+   - 写入：`printf "$EXPECTED" > "$FILE"`
+   - 工作树核验：`printf "$EXPECTED" | cmp - "$FILE"`
+   - 提交：`git add "$FILE" && git commit -m 'docs(qa-sbx): FLY-3227 drill hand-in'`（无任何 skip-ci 标记或 `skip-checks:` trailer）
+   - HEAD 核验：`printf "$EXPECTED" | cmp - <(git show HEAD:"$FILE")`
+   - 推送：普通 `git push origin HEAD`，再读取 `git rev-parse HEAD` 这个精确 head 的 CI。
 
 ## QA 验收
 
