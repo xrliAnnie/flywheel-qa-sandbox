@@ -1,10 +1,10 @@
 # FLY-3228 真 Runner 通用演练(529 房间) — 实施计划
 
 Issue: FLY-3228 (https://linear.app/geoforge3d/issue/FLY-3228/qa-sbx-fly-3228-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-04
+日期: 2026-10-05
 基于: 无(README 规定"一份短 plan 足够,不需要 research 文档",所以本档不出 exploration/research;本文件是上一轮已合并 plan 的本轮改写版)
 
-本轮:run `ad2ead99-37a7-4281-b981-e969df098b4d`,设计节点 exec `0afc317b-dc7e-4981-be2e-899159d0573f`(本轮重派发,接续分支 `48045e7`;该点上的 plan/HTML/progress 是上一轮 run `dd71f848` 未合并的设计产物,本文件为本轮改写版)。
+本轮:run `617c41a6-a9d0-4409-b393-c97c36fce664`,设计节点 exec `91920598-1d64-4789-8503-ae656445500a`(全新派发,分支从当前 `origin/main` `62a604d44` 起步;main 上的 plan/HTML/progress 都是上一轮 run `ad2ead99` 合并进去的产物,本文件为本轮改写版)。
 
 ## 1. 范围
 
@@ -20,10 +20,10 @@ Issue: FLY-3228 (https://linear.app/geoforge3d/issue/FLY-3228/qa-sbx-fly-3228-re
 
 ## 2. 起点(设计节点派发时快照,仅供参考)
 
-- 设计节点派发时:远端分支 `project-slot-6-FLY-3228` 已存在,头 = `48045e7`(基于旧 `origin/main` `caabb83da`,只多了上一轮 run `dd71f848` 的设计文档/ledger 提交,没有演练内容提交);`origin/main` 已前进到 `c68c2b7d4`,新增的只是其他 issue 的提交,不涉及 `qa-sbx/fly3228/` 或本文件夹。`gh pr list --head project-slot-6-FLY-3228 --state all` 只有前几轮已 MERGED 的 #525、#545、#551(都不复用,本轮开新 PR)。
+- 设计节点派发时:本地分支 `project-slot-6-FLY-3228` 头 = `origin/main` = `62a604d44`(上一轮 PR #575 的合并提交),工作树干净;**远端分支不存在**(`git ls-remote origin refs/heads/project-slot-6-FLY-3228` 为空,设计节点首次推送时新建)。`gh pr list --head project-slot-6-FLY-3228 --state all` 只有前几轮已 MERGED 的 #525、#545、#551、#575(都不复用,本轮开新 PR)。
 - **目标文件已存在于 main**,内容是上一轮遗留的 `QA-SBX FLY-3228 drill` / `FIXED-FOR-CLAIM 1`。所以本轮交付 #1 是**修改**(`M`,第 2 行 → `AWAITING-QA`),不是新增。
-- main 上的旧 plan、旧 HTML/图、旧 `progress.md`(run `dce567d4`,其中 PR #551、`HANDIN1=63613f56…`)以及分支上 run `dd71f848` 的设计提交都来自之前的轮次;其中的 claim id、`HANDIN1`、PR 号、SHA **都不是本轮权威**。判定第几次交付、取 claim id、取 `PREV` **只看本轮提示词与本轮交付摘要**。
-- 设计节点已在分支上加了 ledger 提交,还会再加流程文档提交;实现节点自己重算 `BASE`。
+- main 上的旧 plan、旧 HTML/图、旧 `progress.md`(run `ad2ead99`,其中 PR #575、`PREV/HANDIN1=3f8829e0…`、claim 1)都来自之前的轮次;其中的 claim id、`HANDIN1`、PR 号、SHA **都不是本轮权威**。判定第几次交付、取 claim id、取 `PREV` **只看本轮提示词与本轮交付摘要**。
+- 设计节点会在分支上加 ledger 提交和流程文档提交;实现节点自己重算 `BASE`。
 
 ## 3. 实现节点
 
