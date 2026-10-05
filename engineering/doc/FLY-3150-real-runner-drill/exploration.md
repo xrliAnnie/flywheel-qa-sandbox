@@ -552,3 +552,4 @@ TURN:`yours phase=design epoch=1 run=4dea7fe2… node=eng_design attempt=1`(exec
 - 分支头 = `origin/project-slot-1-FLY-3150` = OPEN PR #565 头 `a8cc57c11`(MERGEABLE / CLEAN),即 run `5dbe2353` 实现第 3 次尝试(Lead 返工反馈给出 claim 4)的交付;`"$F"` = 陈旧 `FIXED-FOR-CLAIM 4`。
 - `origin/main` `0c0793178` 领先 4 个提交(FLY-3224 / 3225 / 3226 / 3228),路径不相交 → 按 §3.1 不同步。
 - 起点:交付 #1 走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 4` / `+AWAITING-QA`)。旧 progress.md handoff(`run=5dbe2353 … PREV=HANDIN1=394eb6304…`)与 claim 1 / 3 / 4 都不是本轮证据。
+- **设计评审(run `bd3915a0`)**:Codex(gpt-6-luna/xhigh,profile `school`,thread `01a10be5-f07f…`,turn `01a10be5-f744…`,blob `d6a8a36c…`,request `eada6a81…`)R1 零发现 APPROVED,"Turn completed";design-review.json rounds=1 / finalRound=1,`await-codex-gate design` 通过。founder HTML `design.html` 与 `d1-core-flow.*` 已覆盖为本轮版本。
