@@ -1,20 +1,20 @@
 ---
 issue: FLY-3150
-phase: design
-phaseCursor: 4/4
-updated: 2026-10-05T01:39:26.723Z
-nextStep: "eng_implement: hand-in 1 per plan §3"
+phase: implement
+phaseCursor: 1/4
+updated: 2026-10-05T01:41:13.273Z
+nextStep: verify first hand-in scope, push, review, and exact-head CI
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
   pr: "565"
-handoff: run=a5651dbc design approved (Codex gpt-6-luna/xhigh r1 APPROVED);
-  implement hand-in 1 resets line 2 to AWAITING-QA; PREV only from this run's
-  HANDIN1 summary
+handoff: run=a5651dbc hand-in 1 resets stale prior-run claim to AWAITING-QA;
+  literal/path discovery found docs and other slot fixtures only, so no
+  executable local tests retained
 ---
 
 # FLY-3150 progress
-**phase**: design (4/4)
-**next**: eng_implement: hand-in 1 per plan §3
+**phase**: implement (1/4)
+**next**: verify first hand-in scope, push, review, and exact-head CI
 
-**handoff**: run=a5651dbc design approved (Codex gpt-6-luna/xhigh r1 APPROVED); implement hand-in 1 resets line 2 to AWAITING-QA; PREV only from this run's HANDIN1 summary
+**handoff**: run=a5651dbc hand-in 1 resets stale prior-run claim to AWAITING-QA; literal/path discovery found docs and other slot fixtures only, so no executable local tests retained
