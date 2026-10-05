@@ -10,7 +10,7 @@ Issue: FLY-3228 (https://linear.app/geoforge3d/issue/FLY-3228/qa-sbx-fly-3228-re
 
 - 唯一权威:`origin/main:qa-sbx/fly3228/README.md`,每个节点开工先重读;冲突以 README 为准。
 - 演练内容只有 `F=qa-sbx/fly3228/$(git branch --show-current).md`(本轮 = `qa-sbx/fly3228/project-slot-6-FLY-3228.md`)。不碰 README、代码、Linear、529 房间部署。
-- 流程记账文件(不是演练内容,不进验收):`engineering/doc/FLY-3228-real-runner-drill/` 下的 `plan.md`、`progress.md`、设计 HTML 及其图源/SVG。它们来自节点协议而非 README:`flywheel-comm progress` 会自动把 `progress.md` 提交到本分支(不可关闭),设计节点契约要求 plan/HTML 提交推送,README 本身也要求有一份 plan。实现节点只允许 `progress.md` 被 `progress` 命令改动,不新增/修改其他任何路径;`qa-sbx/` 下只许出现 `$F`。
+- 流程记账文件(不是演练内容,不进验收):`engineering/doc/FLY-3228-real-runner-drill/` 下的 `plan.md`、`progress.md`、设计 HTML 及其图源/SVG。README 的「只碰一个 markdown 文件」约束的是**演练内容**(`qa-sbx/` 下与 QA 验收对象),不是这些记账文件:README 自己要求写一份 plan(这份 plan 本身就是一个文件,必须落在某处),而下面几项是运行时节点协议的强制产物、无法关闭,且优先级不低于 README;上一轮已合并的 #607 同样携带了 plan/progress/HTML 改动并通过了 QA。因此判定「无冲突」:演练内容恰一个文件,记账文件仅限本目录。具体来源:`flywheel-comm progress` 会自动把 `progress.md` 提交到本分支(不可关闭),设计节点契约要求 plan/HTML 提交推送,README 本身也要求有一份 plan。实现节点只允许 `progress.md` 被 `progress` 命令改动,不新增/修改其他任何路径;`qa-sbx/` 下只许出现 `$F`。
 
 ## 2. 遗留(上一轮残留,不作数)
 
