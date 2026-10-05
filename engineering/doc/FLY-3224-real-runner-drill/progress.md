@@ -1,35 +1,33 @@
 ---
 issue: FLY-3224
 phase: implement
-phaseCursor: 3/4
-updated: 2026-10-05T10:20:37.893Z
-nextStep: Commit milestone last, push all commits, open PR for this branch,
-  freeze HEAD, request code review, ensure CI, complete needs_review, then park.
+phaseCursor: 1/4
+updated: 2026-10-05T10:36:33.787Z
+nextStep: Replace only fixture line2 with FIXED-FOR-CLAIM 1, verify exact bytes
+  and QA-base patch, commit and push; final milestone then new effective code
+  review.
 chunks: []
 pointers:
-  pr: none
-handoff: run=2a051096-5e56-4f49-b7c8-6b5bf4cd6d4c; implement
-  exec=a0e96004-174e-4680-9ae7-97d17f586d9d;
-  activation=activation:a0e96004-174e-4680-9ae7-97d17f586d9d:2a051096-5e56-4f49-b7c8-6b5bf4cd6d4c:implement:1;
-  TURN epoch2 attempt1. Fixture commit175de7f0d36591094e0de3d659a9f6adc0aac9bb
-  holds exact first-hand-in bytes QA-SBX FLY-3224 drill LF AWAITING-QA LF. cmp
-  and diff-check pass; local-tests none/no smoke; lint exit0/14 pre-existing
-  warnings. No pre_handin.script, no code/types/build changes. Fresh main
-  ab48f1517 merged cleanly; design effective APPROVED verified by
-  check4cbf7e0b-dd71-4a30-a1ad-7bfeafc15829. Original plan unchanged; README no
-  research exception honored. Next last commit is required
-  engineering/doc/milestones/FLY-3224.md, then no commits after freeze unless
-  review/CI findings require rework. Locate current OPEN root PR by head
-  project-slot-2-FLY-3224; never use historical PR580. Code review gate/question
-  and final CI/complete receipts will be authoritative external state after
-  freeze. Runtime adjacent-state tests N/A, docs-only; QA e2e_529_exempt stays
-  not_run. A future QA fix claim/base SHA must come exclusively from injected
-  current QA context. First QA planted failure is intentional. No Linear
-  mutations, deployment, successor dispatch, ship request or main push.
+  pr: "585"
+handoff: Rework run 2a051096-5e56-4f49-b7c8-6b5bf4cd6d4c; exec
+  a0e96004-174e-4680-9ae7-97d17f586d9d; TURN yours epoch 4 node implement
+  attempt 2; activation
+  activation:rework:2c45ad197b391190262c9c51aea07dfc8a14b36fa3488e86802af6a7c9429722.
+  Authoritative injected QA fix context names claim 1 on head
+  606fa72da22e4bf8cb556fd70c82a180621e8545. Current head equals QA base,
+  ancestry and exact inherited two-line AWAITING-QA content verified; expected
+  repaired cmp fails at line2 before write. Fresh main README re-read; original
+  approved plan still governs; no uncommitted changes or inbox instructions.
+  First-hand-in PR 585 remains OPEN; review APPROVED on base, CI run 37296027509
+  jobs SUCCESS, needs_review exit0 delivered. This wake authorizes only named
+  claim replacement plus mandatory existing progress/milestone protocol updates.
+  Runtime adjacent-state tests N/A docs-only; e2e_529_exempt remains not_run
+  with no deployment. No code, Linear, config, database, design, QA dispatch,
+  ship or main push changes.
 ---
 
 # FLY-3224 progress
-**phase**: implement (3/4)
-**next**: Commit milestone last, push all commits, open PR for this branch, freeze HEAD, request code review, ensure CI, complete needs_review, then park.
+**phase**: implement (1/4)
+**next**: Replace only fixture line2 with FIXED-FOR-CLAIM 1, verify exact bytes and QA-base patch, commit and push; final milestone then new effective code review.
 
-**handoff**: run=2a051096-5e56-4f49-b7c8-6b5bf4cd6d4c; implement exec=a0e96004-174e-4680-9ae7-97d17f586d9d; activation=activation:a0e96004-174e-4680-9ae7-97d17f586d9d:2a051096-5e56-4f49-b7c8-6b5bf4cd6d4c:implement:1; TURN epoch2 attempt1. Fixture commit175de7f0d36591094e0de3d659a9f6adc0aac9bb holds exact first-hand-in bytes QA-SBX FLY-3224 drill LF AWAITING-QA LF. cmp and diff-check pass; local-tests none/no smoke; lint exit0/14 pre-existing warnings. No pre_handin.script, no code/types/build changes. Fresh main ab48f1517 merged cleanly; design effective APPROVED verified by check4cbf7e0b-dd71-4a30-a1ad-7bfeafc15829. Original plan unchanged; README no research exception honored. Next last commit is required engineering/doc/milestones/FLY-3224.md, then no commits after freeze unless review/CI findings require rework. Locate current OPEN root PR by head project-slot-2-FLY-3224; never use historical PR580. Code review gate/question and final CI/complete receipts will be authoritative external state after freeze. Runtime adjacent-state tests N/A, docs-only; QA e2e_529_exempt stays not_run. A future QA fix claim/base SHA must come exclusively from injected current QA context. First QA planted failure is intentional. No Linear mutations, deployment, successor dispatch, ship request or main push.
+**handoff**: Rework run 2a051096-5e56-4f49-b7c8-6b5bf4cd6d4c; exec a0e96004-174e-4680-9ae7-97d17f586d9d; TURN yours epoch 4 node implement attempt 2; activation activation:rework:2c45ad197b391190262c9c51aea07dfc8a14b36fa3488e86802af6a7c9429722. Authoritative injected QA fix context names claim 1 on head 606fa72da22e4bf8cb556fd70c82a180621e8545. Current head equals QA base, ancestry and exact inherited two-line AWAITING-QA content verified; expected repaired cmp fails at line2 before write. Fresh main README re-read; original approved plan still governs; no uncommitted changes or inbox instructions. First-hand-in PR 585 remains OPEN; review APPROVED on base, CI run 37296027509 jobs SUCCESS, needs_review exit0 delivered. This wake authorizes only named claim replacement plus mandatory existing progress/milestone protocol updates. Runtime adjacent-state tests N/A docs-only; e2e_529_exempt remains not_run with no deployment. No code, Linear, config, database, design, QA dispatch, ship or main push changes.
