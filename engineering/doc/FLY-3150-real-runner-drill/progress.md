@@ -1,20 +1,19 @@
 ---
 issue: FLY-3150
 phase: design
-phaseCursor: 1/4
-updated: 2026-10-05T08:30:25.075Z
-nextStep: update exploration §31 + plan for run 4dea7fe2, then design review
+phaseCursor: 4/4
+updated: 2026-10-05T08:40:07.571Z
+nextStep: "implement: hand-in 1 skip branch (HEAD already AWAITING-QA), reuse PR #565"
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
   pr: "565"
-handoff: run=1e45bf82 hand-in 1 implementation committed;
-  IMPL1=9a0fe6d1724230de135355b9cb10a009283e0100; expected target state
-  AWAITING-QA; final HANDIN1 belongs only in delivery summary
+handoff: run=4dea7fe2 design approved (Codex r1, gate passed); hand-in 1 = skip
+  branch IMPL1=BASE; PREV only from this run's HANDIN1 summary
 ---
 
 # FLY-3150 progress
-**phase**: design (1/4)
-**next**: update exploration §31 + plan for run 4dea7fe2, then design review
+**phase**: design (4/4)
+**next**: implement: hand-in 1 skip branch (HEAD already AWAITING-QA), reuse PR #565
 
-**handoff**: run=1e45bf82 hand-in 1 implementation committed; IMPL1=9a0fe6d1724230de135355b9cb10a009283e0100; expected target state AWAITING-QA; final HANDIN1 belongs only in delivery summary
+**handoff**: run=4dea7fe2 design approved (Codex r1, gate passed); hand-in 1 = skip branch IMPL1=BASE; PREV only from this run's HANDIN1 summary
