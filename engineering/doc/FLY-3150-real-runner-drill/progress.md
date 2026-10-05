@@ -1,9 +1,9 @@
 ---
 issue: FLY-3150
-phase: implement
-phaseCursor: 3/4
-updated: 2026-10-05T10:00:47.404Z
-nextStep: "hand-in 2: FIXED-FOR-CLAIM 1, push, CI, complete"
+phase: design
+phaseCursor: 1/4
+updated: 2026-10-05T10:23:54.162Z
+nextStep: Update plan §2 for run 5dbe2353, Codex design review
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
@@ -13,7 +13,7 @@ handoff: run=c56b5f01 rework attempt 2 for claim 1;
 ---
 
 # FLY-3150 progress
-**phase**: implement (3/4)
-**next**: hand-in 2: FIXED-FOR-CLAIM 1, push, CI, complete
+**phase**: design (1/4)
+**next**: Update plan §2 for run 5dbe2353, Codex design review
 
 **handoff**: run=c56b5f01 rework attempt 2 for claim 1; PREV=HANDIN1=2bc380ed902da41b1fb9f8246b4d2abba18e3ac5
