@@ -9,7 +9,7 @@ Issue: FLY-3227 (https://linear.app/geoforge3d/issue/FLY-3227/qa-sbx-fly-3227-re
 
 实现只涉及 `qa-sbx/fly3227/<当前 git 分支名>.md`。本轮分支为 `project-slot-5-FLY-3227`，目标为 `qa-sbx/fly3227/project-slot-5-FLY-3227.md`。设计节点保持目标文件原样。
 
-任务专用的 main 分支 README 明确一份短计划足够、不写 research 文档，且只触碰一个 Markdown 文件、没有代码。因此探索与本地调研合并于本计划，不另建探索、调研文件。**范围界定**：演练交付物只有目标文件；实现节点在演练内容上只改这一个文件，不写任何代码。Flywheel 工作流平台对每个节点另有强制簿记——设计节点的计划与设计说明页（编排器注入的设计节点完成契约），以及所有节点的 `progress.md` 进度账本（由 `flywheel-comm progress` 自动做仅限该文件的提交）。这些是平台交接记录，不属于演练内容，不算 README 所说的「代码」，也不进入 QA 准则；后续节点不得借此修改其他文件。设计说明页由本设计节点一次性制作发布，实现与 QA 节点不再修改或发布它。
+任务专用的 main 分支 README 明确一份短计划足够、不写 research 文档，且只触碰一个 Markdown 文件、没有代码。**演练范围**因此只有一个路径：`qa-sbx/fly3227/project-slot-5-FLY-3227.md`；本计划只把这一个文件交给实现节点，实现节点不得改动其他任何文件。
 
 禁止修改 Linear issue 的状态、评论或标签；禁止部署任何 QA 房间。没有产品代码、配置或服务变更。设计节点不实现、不创建 PR、不派发后续节点、不请求 ship 批准、不合并。后续节点由现有控制器推进。
 
@@ -21,20 +21,11 @@ Issue: FLY-3227 (https://linear.app/geoforge3d/issue/FLY-3227/qa-sbx-fly-3227-re
 
 唯一实现消费者是按 README 工作的独立 QA 节点。没有新增接口、显示标签字典、持久化表或迁移。用旧/新字面量、目标和设计文件的完整路径、文件名及父目录做 `git grep -lF` 搜索，未发现本 fixture 或本 issue 文档的测试消费者。通用 `plan.md` / `progress.md` 名称命中框架自身测试与静态样例，逐项排除理由记在进度账本；本任务不改变被测命令、路径解析、schema 或恢复行为。
 
-## 允许路径清单（范围审计）
+## 演练范围审计
 
-授权来源：本 issue 每个节点提示中由编排器注入的 DOC-FLOW 段（规定 `engineering/doc/FLY-3227-<slug>/` 下的计划与 `progress.md` 账本）与「Founder design HTML (MANDATORY)」设计节点完成契约（规定同目录下的设计说明页）。相对 `origin/main` 的分支差异只允许以下精确路径，其他任何路径一律视为越界：
+README 授权的演练变更只有 `qa-sbx/fly3227/project-slot-5-FLY-3227.md`。实现节点相对自身起点的差异（`git diff --name-only <起点>..HEAD`）中，除平台自动提交的本 issue 进度账本外，只能出现这一个路径；出现其他路径即越界。
 
-| 路径 | 写入者 | 性质 |
-|---|---|---|
-| `qa-sbx/fly3227/project-slot-5-FLY-3227.md` | 实现节点 | 演练交付物（唯一演练内容） |
-| `engineering/doc/FLY-3227-real-runner-drill/plan.md` | 仅设计节点 | 平台设计记录 |
-| `engineering/doc/FLY-3227-real-runner-drill/design.html` | 仅设计节点 | 平台设计说明页 |
-| `engineering/doc/FLY-3227-real-runner-drill/core-flow.mmd` | 仅设计节点 | 设计页图源 |
-| `engineering/doc/FLY-3227-real-runner-drill/core-flow.svg` | 仅设计节点 | 设计页图渲染结果 |
-| `engineering/doc/FLY-3227-real-runner-drill/progress.md` | 各节点经 `flywheel-comm progress` 自动提交 | 平台进度账本 |
-
-审计命令：`git diff --name-only origin/main...HEAD | grep -vxF -f <(printf '%s\n' <上表六个路径>)` 输出必须为空；实现节点相对自身起点的差异（`git diff --name-only <起点>..HEAD`）只能是第 1 行与最后 1 行两个路径。目标路径必须实际存在于 HEAD。
+本计划不授权任何其他文件。编排器另以独立平台契约（DOC-FLOW 与设计节点完成契约，不由 README 授权，也不属演练范围）要求设计节点在 `engineering/doc/FLY-3227-real-runner-drill/` 留下设计记录与设计说明页，并由 `flywheel-comm progress` 维护 `progress.md`；这些由设计节点按该契约自行处理，不是实现或 QA 的工作项，也不进入 QA 准则。
 
 ## 方案与取舍
 
@@ -67,11 +58,9 @@ QA 判轮只看当前提示是否含 QA re-verification context，不根据旧�
 
 完整内容比较必须拒绝错误标识、大小写或前导零变化、尾随空白、第三行及缺少最终换行；`wc -l` 不能代替字节比较。本任务不增加仓库测试或运行本地全仓/全包测试。保留 `pnpm lint`；无 TypeScript、导出 API 或包变化，related、build、typecheck 不适用。精确版本 PR CI 由后续节点取得，本地文档检查不代表全套 CI。
 
-实现节点相对自身起点的改动只允许目标文件，外加平台自动提交的本 issue `progress.md` 账本（非演练内容）。PR 范围使用共同祖先差异 `git diff --name-only origin/main...HEAD`，区分已交接设计记录与实现内容，不把 main 后来合入的兄弟演练当本轮变更。修复后文件可能再次等于 main 的旧内容，PR 中净差异为空不能否定本轮修复；必须以本轮首交/QA 版本至修复版本的目标文件补丁和完整字节比较证明只改第 2 行。不得因为净差异为空跳过当前交付版本的 CI。
+实现节点相对自身起点的改动只允许目标文件（平台自动提交的进度账本除外，见上）。不把 main 后来合入的兄弟演练当本轮变更。修复后文件可能再次等于 main 的旧内容，PR 中净差异为空不能否定本轮修复；必须以本轮首交/QA 版本至修复版本的目标文件补丁和完整字节比较证明只改第 2 行。不得因为净差异为空跳过当前交付版本的 CI。
 
 新增提交消息与实际 PR 标题不得含 `[skip ci]`、`[ci skip]`、`[no ci]`、`[skip actions]`、`[actions skip]` 或 `skip-checks:`。历史提交不是样板。不使用 force-push、`--no-verify` 或更改 hooks。禁止未经授权推 main。
-
-设计说明页仅属本设计节点的平台交付（见范围界定），不是实现或 QA 的工作项；其样式与评论层遵循编排器注入的契约，本计划不展开。
 
 ## 风险、迁移与回退
 
@@ -81,8 +70,6 @@ QA 判轮只看当前提示是否含 QA re-verification context，不根据旧�
 
 不适用：仅两行 Markdown 演练内容与设计交接文档，没有新增或修改任何表、查询或索引。
 
-## 设计完成顺序
+## 设计节点收尾
 
-计划提交、推送后，以注入的 `gate review_design --no-block` 打开评审 gate。本执行是 Claude 作者，Bridge 对 `request-review` 返回 409（非 Claude 通道），故走旧式 Codex 设计评审：逐轮运行 codex-companion，并在每轮后以 `review-round design --round <n> --verdict ... --thread <codexThreadId>` 回写 Bridge；只有回写的 APPROVED 轮次才算批准，stage 或原始评审文字不能代替。评审者接收标记的本地选测政策，禁止全仓/全包本地测试。
-
-最终 HTML 随设计记录提交并推送；先 `ste begin`，再 `publish-report --project test-slot-5 --occasion design_page --artifact ... --publish-only`。STE begin 若返回 disabled/unavailable 或无 unitId，使用普通发布路径。成功后按注入身份 `ask --report` 报 URL 给 `flywheel-test-5`，只在取得批准且完成发布/报告后运行 `complete --route phase_design_complete`、`park`。不等待 founder_review，不自行实现或派发；resident goal 在阶段持有期间保持 active，后续意见交当前 TURN 持有人增量处理。
+设计节点在评审批准后按编排器的平台契约收尾（不属于演练范围），不实现、不派发后续节点、不请求 ship、不合并。
