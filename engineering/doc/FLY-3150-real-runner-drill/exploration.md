@@ -591,3 +591,10 @@ TURN:`yours phase=design epoch=1 run=4dea7fe2… node=eng_design attempt=1`(exec
 - 起点:`"$F"` = main 上残留的 `FIXED-FOR-CLAIM 1` → 交付 #1 走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`)。旧 progress.md handoff(`run=1469defd attempt=2; QA claim=1; PREV=243edbc0…`)不是本轮证据。
 - 与 §38 同形,plan 沿用 §38 已评审结构(含 §1 断言 4 白名单 + 断言 6 指令优先级 + §3.1 两种计数区间),只更新本轮起点与 run id。
 - Codex 设计评审(gpt-6-astra/xhigh,thread `01a10e10-6dad…`)第 1 轮 APPROVED,干净 "Turn completed";HIGH 0 / MEDIUM 0 / LOW 1:§3.1 交付 #1 用 `rev-list --merges $BASE..$HANDIN1` 判定同步,但同步规定在冻结 BASE 之前完成,该区间按规定不会含合并提交("必然命中"对交付 #1 不成立)。本轮 `origin/main` 是 HEAD 祖先、不同步,不受影响;plan 保持已评审 blob `9f1c8532…` 不动,留给后续轮次在需要改 plan 时一并修正(建议:显式记录本次是否同步与同步的 main SHA,据此选择交付 #1 的核验)。
+
+## 40. 本次派发审计(run `1ec283f0`,2026-10-05,slot-1)
+
+- 派发:exec `fd9f2853`,TURN `yours phase=design epoch=1 attempt=1`。README(`origin/main:qa-sbx/fly2167/README.md`)重读无变化。onboard skill 不存在 → 直接 `stage set brainstorm`。
+- run `ef0f0e9c` 的 PR #606 已合入、远端分支已删;本地分支 = `origin/main` = `e1c2e258d`(#606 之后主干只多了 FLY-3225/3227/3228 三个别的文件夹的演练提交)→ 不同步,首次推送新建远端分支并新开 PR。
+- 起点:`"$F"` = main 上残留的 `FIXED-FOR-CLAIM 1` → 交付 #1 走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`)。旧 progress.md handoff(`run=ef0f0e9c attempt=2; QA claim=1; PREV=6a57d6b7…`)不是本轮证据。
+- 与 §39 同形,plan 沿用 §39 已评审结构,只更新本轮起点与 run id;§39 的 LOW(交付 #1 同步判定区间)本轮不同步、不受影响,仍保留为已知提示。
