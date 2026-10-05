@@ -1,20 +1,21 @@
 ---
 issue: FLY-3225
-phase: implement
-phaseCursor: 1/1
-updated: 2026-10-05T06:42:56.179Z
-nextStep: Push; run ci-full ensure on frozen HEAD; complete --route needs_review --pr 576
+phase: design
+phaseCursor: 1/6
+updated: 2026-10-05T08:51:17.161Z
+nextStep: Refresh the short plan for this activation; preserve the README drill
+  contract and inherited fixture
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3225-real-runner-drill/plan.md
-  reviewedSha: d76868bf59a2a3ab09c1a070381f899c688ae0ca
-handoff: '{"runId":"11162b6f-3557-4d40-936a-7a7fae53dd12","execId":"9503c459-cee7-4306-8449-835a045f069d","activationId":"activation:9503c459-cee7-4306-8449-835a045f069d:11162b6f-3557-4d40-936a-7a7fae53dd12:implement:1","attempt":1,"turnEpoch":2,"implBase":"8dc6dd6f95ac56f8fd7b2a67136d1c4b79aabcf4","firstHandin":"8dc6dd6f95ac56f8fd7b2a67136d1c4b79aabcf4","ownCommits":[],"pr":576,"taskPath":"qa-sbx/fly3225/project-slot-3-FLY-3225.md","fixContext":"none
-  (first round)","note":"task file already exactly two lines with AWAITING-QA at
-  implBase; no empty commit made"}'
+  reviewedSha: ""
+handoff: '{"runId":"d91dc5fb-3878-47b1-a994-01d0fd6c1a19","execId":"09be8223-130b-4a05-93ea-ec327d96e264","activationId":"activation:09be8223-130b-4a05-93ea-ec327d96e264:d91dc5fb-3878-47b1-a994-01d0fd6c1a19:eng_design:1","attempt":1,"turnEpoch":1,"designBase":"2443d8b1c591293b49c1c81583135cc3c8ecef35","taskPath":"qa-sbx/fly3225/project-slot-3-FLY-3225.md","inheritedPr":576,"reviewQuestionId":null,"reviewRequestId":null,"note":"Onboarding
+  complete; origin/main README verified; inherited approvals and implementation
+  fields belong to another run and are not current evidence"}'
 ---
 
 # FLY-3225 progress
-**phase**: implement (1/1)
-**next**: Push; run ci-full ensure on frozen HEAD; complete --route needs_review --pr 576
+**phase**: design (1/6)
+**next**: Refresh the short plan for this activation; preserve the README drill contract and inherited fixture
 
-**handoff**: {"runId":"11162b6f-3557-4d40-936a-7a7fae53dd12","execId":"9503c459-cee7-4306-8449-835a045f069d","activationId":"activation:9503c459-cee7-4306-8449-835a045f069d:11162b6f-3557-4d40-936a-7a7fae53dd12:implement:1","attempt":1,"turnEpoch":2,"implBase":"8dc6dd6f95ac56f8fd7b2a67136d1c4b79aabcf4","firstHandin":"8dc6dd6f95ac56f8fd7b2a67136d1c4b79aabcf4","ownCommits":[],"pr":576,"taskPath":"qa-sbx/fly3225/project-slot-3-FLY-3225.md","fixContext":"none (first round)","note":"task file already exactly two lines with AWAITING-QA at implBase; no empty commit made"}
+**handoff**: {"runId":"d91dc5fb-3878-47b1-a994-01d0fd6c1a19","execId":"09be8223-130b-4a05-93ea-ec327d96e264","activationId":"activation:09be8223-130b-4a05-93ea-ec327d96e264:d91dc5fb-3878-47b1-a994-01d0fd6c1a19:eng_design:1","attempt":1,"turnEpoch":1,"designBase":"2443d8b1c591293b49c1c81583135cc3c8ecef35","taskPath":"qa-sbx/fly3225/project-slot-3-FLY-3225.md","inheritedPr":576,"reviewQuestionId":null,"reviewRequestId":null,"note":"Onboarding complete; origin/main README verified; inherited approvals and implementation fields belong to another run and are not current evidence"}
