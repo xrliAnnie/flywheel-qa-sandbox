@@ -431,3 +431,21 @@ TURN:`yours phase=design epoch=1 run=46163449… node=eng_design attempt=1`(exec
 **结论**:与 §24 同形(陈旧 `FIXED-FOR-CLAIM 1` 必须在交付 #1 重置),差别只是复用 OPEN PR #565 而不是开新 PR。PR #565 上一轮的任何 HANDIN、claim id、评审、CI、QA 结论都不是本轮证据。
 
 **设计评审(run `46163449`)**:Codex(gpt-6-luna/xhigh,thread `01a10956-e383…`,request `81d9af24…`)。R1(turn `01a10956-eaaa…`,blob `916135ad…`)CHANGES_REQUESTED,1 个 P2:§3.1 只用 `rev-list --merges` 判定是否同步,若 `git merge origin/main` 以快进完成就没有合并提交,核验会走错分支 → plan 改为 `git merge --no-ff origin/main`,并在 main 已是祖先时不同步(提交 `5ec2493b2`)。R2(turn `01a1095c-6d87…`,blob `e5b3b38a…`)APPROVED(P1/P2/P3 = 0/0/0),确认仅一行改动、无回归。两轮均记 `review-round`;`await-codex-gate design` 通过。边界:评审时 GitHub API 不可达,PR #565 实时状态由实现节点交付时重查。founder HTML `design.html` 与 `d1-core-flow.*` 已覆盖为本轮版本。
+
+## 27. 本次派发审计(run `93c1c760`,2026-10-04,slot-1)
+
+TURN:`yours phase=design epoch=1 run=93c1c760… node=eng_design attempt=1`(exec `2b2014f0`)。§26 是 run `46163449`,它已走完 交付 #1(`233bfe607`,重置为 `AWAITING-QA`)→ QA 第 1 轮 claim `1` → 交付 #2(`766d3b43f`,`FIXED-FOR-CLAIM 1`),分支停在其 implement 2/4 ledger 头 `4f590fc40`;本轮是同一分支上的**新 run**,继续在其上工作,不 force-push。
+
+| 项 | 结果 |
+|---|---|
+| 分支头(派发时) | `4f590fc40` = PR #565 头 |
+| `origin/main` | `39754a419`,已是本分支祖先 → 无需同步合并 |
+| 远端分支 / PR | PR #565 OPEN(标题仍是上一轮)→ 本轮交付 #1 复用 #565(`gh pr edit`) |
+| 目标文件 | HEAD 上 = `QA-SBX FLY-2167 drill` / `FIXED-FOR-CLAIM 1`(陈旧);main 上字节相同 → 交付 #1 走**正常分支**重置为 `AWAITING-QA` |
+| README | 未变(两行文件 + 三条验收) |
+| progress.md | 派发时是 run `46163449` 的 implement 2/4(旧 `PREV=6748deaae` / `IMPL2=766d3b43f`);本节点已用 `--handoff` 覆盖为本轮 run(提交 `b8083ff13`) |
+| 收件箱 | 无 Lead 指令 |
+| onboard skill | 不存在 → 直接 `stage set brainstorm` |
+| Linear | Done(Lead 裁定);不碰 |
+
+**结论**:与 §26 完全同形;plan 只更新 run / exec 标识与 §2 起点快照。上一轮任何 HANDIN、claim id、评审、CI、QA 结论都不是本轮证据。
