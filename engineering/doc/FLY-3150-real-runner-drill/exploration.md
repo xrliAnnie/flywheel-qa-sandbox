@@ -522,3 +522,17 @@ TURN:`yours phase=design epoch=1 run=4dea7fe2… node=eng_design attempt=1`(exec
 **结论**:与 §29(run `d1cedf09`)完全同形 —— 目标已是 `AWAITING-QA`,交付 #1 走跳过分支,复用 OPEN PR #565。跳过分支没有"残留 claim 假通过"风险:HEAD 上没有任何 `FIXED-FOR-CLAIM`。上一轮的 HANDIN、`IMPL1=9a0fe6d17`、评审、CI 都不是本轮证据。
 
 **设计评审(run `4dea7fe2`)**:Codex(gpt-6-luna/xhigh,profile `school`,thread `01a10b30-4d5e…`)。R1(turn `01a10b30-55b7…`,blob `6f39d185…`,request `e366e934…`)APPROVED,零发现;因 companion 报 "completion inferred",追加一个 `--resume-last` 复述回合(turn `01a10b37-35a5…`)仍 APPROVED,`review-round --round 1` 绑定该回合;design-review.json rounds=2 / finalRound=1,`await-codex-gate design` 通过。founder HTML `design.html` 与 `d1-core-flow.*` 已覆盖为本轮版本。
+
+## 32. 本次派发审计(run `c56b5f01`,2026-10-05,slot-1)
+
+| 项 | 结果 |
+|---|---|
+| 分支头(派发时) | `dd3353e11` = `origin/project-slot-1-FLY-3150` = PR #565 头(OPEN / MERGEABLE,标题是 run `4dea7fe2`) |
+| `origin/main` | `31975977e`,领先 6 个提交(FLY-3224 / 3225 / 3226 / 3227 / 3228 演练),`git diff --name-only $(merge-base)..origin/main` 不含本 issue 文件夹与 `"$F"` → 路径不相交;按 §3.1 不同步 |
+| 目标文件 | HEAD 上 = `QA-SBX FLY-2167 drill` / `AWAITING-QA`;main 上仍是 `FIXED-FOR-CLAIM 1` → 本轮交付 #1 走**跳过分支**(`IMPL1=BASE`) |
+| README | 未变(与 §31 同一份规则) |
+| progress.md | 派发时是 run `4dea7fe2` 的 implement 2/4(`IMPL1=BASE=7b15f485…`);本节点用 `--handoff` 覆盖为本轮 run |
+| onboard skill | 不存在 → 直接 `stage set brainstorm` |
+| Linear | Done(Lead 裁定);不碰 |
+
+**结论**:与 §31(run `4dea7fe2`)同形 —— 目标已是 `AWAITING-QA`,交付 #1 走跳过分支,复用 OPEN PR #565。上一轮的 HANDIN、`IMPL1=7b15f485…`、评审、CI 都不是本轮证据。
