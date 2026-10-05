@@ -1,10 +1,9 @@
 ---
 issue: FLY-3150
-phase: design
-phaseCursor: 4/4
-updated: 2026-10-05T11:56:50.198Z
-nextStep: "eng_implement: hand-in 1 normal reset (FIXED-FOR-CLAIM 4 ->
-  AWAITING-QA), reuse PR #565"
+phase: implement
+phaseCursor: 1/4
+updated: 2026-10-05T11:59:57.741Z
+nextStep: Reset branch fixture to AWAITING-QA and verify exact two-line content
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
@@ -13,7 +12,7 @@ handoff: "run=bd3915a0 design approved (Codex r1); PR #565; hand-in 1 normal res
 ---
 
 # FLY-3150 progress
-**phase**: design (4/4)
-**next**: eng_implement: hand-in 1 normal reset (FIXED-FOR-CLAIM 4 -> AWAITING-QA), reuse PR #565
+**phase**: implement (1/4)
+**next**: Reset branch fixture to AWAITING-QA and verify exact two-line content
 
 **handoff**: run=bd3915a0 design approved (Codex r1); PR #565; hand-in 1 normal reset
