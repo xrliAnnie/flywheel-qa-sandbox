@@ -553,3 +553,9 @@ TURN:`yours phase=design epoch=1 run=4dea7fe2… node=eng_design attempt=1`(exec
 - `origin/main` `0c0793178` 领先 4 个提交(FLY-3224 / 3225 / 3226 / 3228),路径不相交 → 按 §3.1 不同步。
 - 起点:交付 #1 走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 4` / `+AWAITING-QA`)。旧 progress.md handoff(`run=5dbe2353 … PREV=HANDIN1=394eb6304…`)与 claim 1 / 3 / 4 都不是本轮证据。
 - **设计评审(run `bd3915a0`)**:Codex(gpt-6-luna/xhigh,profile `school`,thread `01a10be5-f07f…`,turn `01a10be5-f744…`,blob `d6a8a36c…`,request `eada6a81…`)R1 零发现 APPROVED,"Turn completed";design-review.json rounds=1 / finalRound=1,`await-codex-gate design` 通过。founder HTML `design.html` 与 `d1-core-flow.*` 已覆盖为本轮版本。
+
+## 35. 本次派发审计(run `fc930bd2`,2026-10-05,slot-1)
+
+- 派发:exec `5dcb2d33`,TURN `yours phase=design epoch=1 attempt=1`,inbox 无指令。README(`origin/main:qa-sbx/fly2167/README.md`)重读无变化。onboard skill 不存在 → 直接 `stage set brainstorm`。
+- run `bd3915a0` 的 PR #565 已合入、远端分支已删;本地分支 = `origin/main` = `4c125c50a` → 不同步,首次推送新建远端分支并新开 PR。
+- 起点:`"$F"` = main 上残留的 `FIXED-FOR-CLAIM 1` → 交付 #1 走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`)。旧 progress.md handoff(`run=bd3915a0 attempt=2; QA claim=1; PREV=18ba43d4…`)不是本轮证据。
