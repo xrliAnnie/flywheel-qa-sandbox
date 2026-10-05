@@ -1,7 +1,7 @@
 # FLY-3150 真 Runner 通用演练(529 房间) — 探索
 
 Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-05(2026-10-01 初版;§7–§21 为历史 —— slot-1 / slot-5 / slot-6 / slot-2 / slot-4 各轮;§22 为历史;§23–§25 为历史;§26–§27 为历史;§28 为历史;§29 为历史;§30 为历史;§31–§37 为历史;§38 为本轮 run `1469defd`,slot-1)
+日期: 2026-10-05(2026-10-01 初版;§7–§21 为历史 —— slot-1 / slot-5 / slot-6 / slot-2 / slot-4 各轮;§22 为历史;§23–§25 为历史;§26–§27 为历史;§28 为历史;§29 为历史;§30 为历史;§31–§38 为历史;§39 为本轮 run `ef0f0e9c`,slot-1)
 基于: 无
 
 ## 1. 任务来源与唯一权威
@@ -583,3 +583,10 @@ TURN:`yours phase=design epoch=1 run=4dea7fe2… node=eng_design attempt=1`(exec
 - run `a40703e6` 的 PR #601 已合入、远端分支已删;本地分支 = `origin/main` = `09806ae2d`(即 #601 合并提交本身)→ 不同步,首次推送新建远端分支并新开 PR。
 - 起点:`"$F"` = main 上残留的 `FIXED-FOR-CLAIM 1` → 交付 #1 走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`)。旧 progress.md handoff(`run=a40703e6 attempt=2; QA claim=1; PREV=0d484e02…`)不是本轮证据。
 - 与 §37 同形,plan 沿用 §37 已评审结构(含 §1 断言 4 白名单 + 断言 6 指令优先级 + §3.1 两种计数区间),只更新本轮起点与 run id。
+
+## 39. 本次派发审计(run `ef0f0e9c`,2026-10-05,slot-1)
+
+- 派发:exec `2da6ecd4`,TURN `yours phase=design epoch=1 attempt=1`。README(`origin/main:qa-sbx/fly2167/README.md`)重读无变化。onboard skill 不存在 → 直接 `stage set brainstorm`。
+- run `1469defd` 的 PR #602 已合入、远端分支已删;本地分支 = `origin/main` = `295978c2b`(即 #602 合并提交本身)→ 不同步,首次推送新建远端分支并新开 PR。
+- 起点:`"$F"` = main 上残留的 `FIXED-FOR-CLAIM 1` → 交付 #1 走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`)。旧 progress.md handoff(`run=1469defd attempt=2; QA claim=1; PREV=243edbc0…`)不是本轮证据。
+- 与 §38 同形,plan 沿用 §38 已评审结构(含 §1 断言 4 白名单 + 断言 6 指令优先级 + §3.1 两种计数区间),只更新本轮起点与 run id。
