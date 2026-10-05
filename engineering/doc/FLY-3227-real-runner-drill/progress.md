@@ -1,13 +1,13 @@
 ---
 issue: FLY-3227
 phase: design
-phaseCursor: 3/4
-updated: 2026-10-05T03:12:39.702Z
-nextStep: design approved r2; refresh+publish design HTML, report, complete
+phaseCursor: 4/4
+updated: 2026-10-05T03:13:17.423Z
+nextStep: design complete (Codex r2 APPROVED, HTML published); implement node next
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
-**phase**: design (3/4)
-**next**: design approved r2; refresh+publish design HTML, report, complete
+**phase**: design (4/4)
+**next**: design complete (Codex r2 APPROVED, HTML published); implement node next
