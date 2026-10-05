@@ -1,13 +1,13 @@
 ---
 issue: FLY-3227
 phase: implement
-phaseCursor: 2/3
-updated: 2026-10-05T16:47:58.524Z
-nextStep: push and request effective code review
+phaseCursor: 3/3
+updated: 2026-10-05T16:54:00.877Z
+nextStep: open PR, commit final milestone, freeze handoff head
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
-**phase**: implement (2/3)
-**next**: push and request effective code review
+**phase**: implement (3/3)
+**next**: open PR, commit final milestone, freeze handoff head
