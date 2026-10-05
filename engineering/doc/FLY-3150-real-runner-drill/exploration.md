@@ -429,3 +429,5 @@ TURN:`yours phase=design epoch=1 run=46163449… node=eng_design attempt=1`(exec
 | Linear | Done(Lead 裁定);不碰 |
 
 **结论**:与 §24 同形(陈旧 `FIXED-FOR-CLAIM 1` 必须在交付 #1 重置),差别只是复用 OPEN PR #565 而不是开新 PR。PR #565 上一轮的任何 HANDIN、claim id、评审、CI、QA 结论都不是本轮证据。
+
+**设计评审(run `46163449`)**:Codex(gpt-6-luna/xhigh,thread `01a10956-e383…`,request `81d9af24…`)。R1(turn `01a10956-eaaa…`,blob `916135ad…`)CHANGES_REQUESTED,1 个 P2:§3.1 只用 `rev-list --merges` 判定是否同步,若 `git merge origin/main` 以快进完成就没有合并提交,核验会走错分支 → plan 改为 `git merge --no-ff origin/main`,并在 main 已是祖先时不同步(提交 `5ec2493b2`)。R2(turn `01a1095c-6d87…`,blob `e5b3b38a…`)APPROVED(P1/P2/P3 = 0/0/0),确认仅一行改动、无回归。两轮均记 `review-round`;`await-codex-gate design` 通过。边界:评审时 GitHub API 不可达,PR #565 实时状态由实现节点交付时重查。founder HTML `design.html` 与 `d1-core-flow.*` 已覆盖为本轮版本。
