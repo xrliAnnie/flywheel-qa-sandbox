@@ -1,24 +1,30 @@
 ---
 issue: FLY-3228
 phase: implement
-phaseCursor: 1/4
-updated: 2026-10-05T10:50:13.363Z
-nextStep: Write first-hand-in two-line fixture; verify byte content and scope;
-  commit and push; open new PR and request effective code review
+phaseCursor: 2/4
+updated: 2026-10-05T10:52:20.403Z
+nextStep: Freeze and push this ledger head; register code review; ensure
+  exact-head CI; complete needs_review PR 587
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3228-real-runner-drill/plan.md
-  pr: none
+  pr: https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/587
 handoff: "Run 9a1676ff-6b94-41c8-a0a9-dfa3eb3d4e7c; implement exec
-  8673df7f-fc28-4b3b-bcad-a6d1407db54b; TURN implement epoch 2.
-  BASE=3e5f1c274b5d2a527f9fd4ab2a42e3d8d172cd60. Approved plan read; current
-  origin/main README read. First hand-in, no QA fix context. Red cmp: old line 2
-  FIXED-FOR-CLAIM 1 does not match AWAITING-QA. No code/tests/build; local-tests
-  lists none and no smoke set. No pre_handin.script declared."
+  8673df7f-fc28-4b3b-bcad-a6d1407db54b; TURN epoch 2.
+  BASE=3e5f1c274b5d2a527f9fd4ab2a42e3d8d172cd60. First-hand-in fixture
+  commit=37aa148b803b2c48f9f5924a371af98b5c1cbed0: exact QA-SBX FLY-3228 drill /
+  AWAITING-QA. Red-green cmp verified; committed bytes, BASE interval, complete
+  whitelist and single qa-sbx path pass. Extra line, trailing whitespace,
+  stale/leading-zero claim contents and extra paths reject. No code/tests/build,
+  local-tests none/no smoke; no pre_handin.script. New PR 587 OPEN and
+  MERGEABLE. Code review and exact-head CI still pending; no QA claim in this
+  dispatch. Final HANDIN1 will be reported only after this ledger commit is
+  frozen and gates resolve. No further worktree commits after freeze unless
+  review/CI requires a fix."
 ---
 
 # FLY-3228 progress
-**phase**: implement (1/4)
-**next**: Write first-hand-in two-line fixture; verify byte content and scope; commit and push; open new PR and request effective code review
+**phase**: implement (2/4)
+**next**: Freeze and push this ledger head; register code review; ensure exact-head CI; complete needs_review PR 587
 
-**handoff**: Run 9a1676ff-6b94-41c8-a0a9-dfa3eb3d4e7c; implement exec 8673df7f-fc28-4b3b-bcad-a6d1407db54b; TURN implement epoch 2. BASE=3e5f1c274b5d2a527f9fd4ab2a42e3d8d172cd60. Approved plan read; current origin/main README read. First hand-in, no QA fix context. Red cmp: old line 2 FIXED-FOR-CLAIM 1 does not match AWAITING-QA. No code/tests/build; local-tests lists none and no smoke set. No pre_handin.script declared.
+**handoff**: Run 9a1676ff-6b94-41c8-a0a9-dfa3eb3d4e7c; implement exec 8673df7f-fc28-4b3b-bcad-a6d1407db54b; TURN epoch 2. BASE=3e5f1c274b5d2a527f9fd4ab2a42e3d8d172cd60. First-hand-in fixture commit=37aa148b803b2c48f9f5924a371af98b5c1cbed0: exact QA-SBX FLY-3228 drill / AWAITING-QA. Red-green cmp verified; committed bytes, BASE interval, complete whitelist and single qa-sbx path pass. Extra line, trailing whitespace, stale/leading-zero claim contents and extra paths reject. No code/tests/build, local-tests none/no smoke; no pre_handin.script. New PR 587 OPEN and MERGEABLE. Code review and exact-head CI still pending; no QA claim in this dispatch. Final HANDIN1 will be reported only after this ledger commit is frozen and gates resolve. No further worktree commits after freeze unless review/CI requires a fix.
