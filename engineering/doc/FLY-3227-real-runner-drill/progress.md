@@ -1,15 +1,15 @@
 ---
 issue: FLY-3227
 phase: design
-phaseCursor: 1/5
-updated: 2026-10-05T21:15:21.664Z
-nextStep: Audit complete; scope question 41a00add-e9b2-4877-9f29-c1ebdb7f1ff3
-  pending. Confirm process-artifact exception, then refresh plan and HTML for
-  this activation.
+phaseCursor: 2/5
+updated: 2026-10-05T21:16:33.783Z
+nextStep: "Scope response read: README short-plan exception; reuse required
+  existing process artifacts, leave payload unchanged. Refresh plan for current
+  main, register fresh design review, validate and publish HTML."
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
-**phase**: design (1/5)
-**next**: Audit complete; scope question 41a00add-e9b2-4877-9f29-c1ebdb7f1ff3 pending. Confirm process-artifact exception, then refresh plan and HTML for this activation.
+**phase**: design (2/5)
+**next**: Scope response read: README short-plan exception; reuse required existing process artifacts, leave payload unchanged. Refresh plan for current main, register fresh design review, validate and publish HTML.
