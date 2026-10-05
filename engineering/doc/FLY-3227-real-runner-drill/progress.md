@@ -1,13 +1,13 @@
 ---
 issue: FLY-3227
 phase: implement
-phaseCursor: 2/3
-updated: 2026-10-05T17:15:40.511Z
-nextStep: push claim-1 repair and obtain exact-head code review
+phaseCursor: 3/3
+updated: 2026-10-05T17:20:12.908Z
+nextStep: refresh milestone as final commit, freeze head, and hand back to QA
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
-**phase**: implement (2/3)
-**next**: push claim-1 repair and obtain exact-head code review
+**phase**: implement (3/3)
+**next**: refresh milestone as final commit, freeze head, and hand back to QA
