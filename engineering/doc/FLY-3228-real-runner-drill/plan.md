@@ -36,7 +36,7 @@ Issue: FLY-3228 (https://linear.app/geoforge3d/issue/FLY-3228/qa-sbx-fly-3228-re
 4. `git add "$F"`,提交 `docs(qa-sbx): FLY-3228 drill hand-in`。
 5. 写 ledger(`progress` 命令自行做 path-limited 提交,不要手动 add/commit progress.md);确认 `git status --porcelain` 为空后才冻结 `HANDIN1=$(git rev-parse HEAD)`。
 6. 核验:(a) `git diff --name-status $BASE..$HANDIN1` 只含 `M "$F"`(第 2 步跳过时可无)+ progress.md;(b) `git show $HANDIN1:"$F"` 逐字节等于两行;(c) §1 断言(交付 #1 形态)通过。
-7. `git push -u origin HEAD`(普通快进)。PR:有本 head 的 OPEN PR 就复用,否则 `gh pr create --base main --head project-slot-6-FLY-3228 --title 'FLY-3228 QA-SBX real-runner drill hand-in'`,正文写 Linear 链接与本轮 run id。确认远端分支头 / PR 头 / CI 都在 `$HANDIN1` 再交付;**交付摘要写明 `HANDIN1=<完整 SHA>`**(返工 `PREV` 的唯一来源)。
+7. `git push -u origin HEAD`(普通快进)。PR:有本 head 的 OPEN PR 就复用,否则 `gh pr create --base main --head project-slot-6-FLY-3228 --title 'FLY-3228 QA-SBX real-runner drill hand-in' --body-file <正文文件>`(必须带 `--body-file`,无 TTY 时缺正文会失败或卡在输入提示;正文写 Linear 链接与本轮 run id,同样不得含跳过 CI 标记)。确认远端分支头 / PR 头 / CI 都在 `$HANDIN1` 再交付;**交付摘要写明 `HANDIN1=<完整 SHA>`**(返工 `PREV` 的唯一来源)。
 
 **交付 #2(本轮提示词含 "QA fix context")**
 1. 定位本轮 "QA fix context" 的**内容首行**(context 前可以有其他说明,不要求它是整个提示词的首行),用 `^QA verdict to fix: claim (\S+)` 取 `ID`,原样复制(不改大小写、不去前导零);首行不匹配或取不到 → 失败通道,不猜,也不从提示词里的历史示例、main 上遗留的 `FIXED-FOR-CLAIM 1`、旧 progress.md 或其他上下文抓 ID。
