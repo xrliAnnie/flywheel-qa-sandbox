@@ -17,7 +17,7 @@ Issue: FLY-3227 (https://linear.app/geoforge3d/issue/FLY-3227/qa-sbx-fly-3227-re
 
 本次已 fetch 并完整读取 `origin/main:qa-sbx/fly3227/README.md`，main 为 `c68c2b7d4639ed9a1019faa05dc4414c340d3396`。已读项目 CLAUDE.md、产品体验说明、架构和项目声明的 onboarding 参考；任务不需要外部调研或新依赖。
 
-复用 `engineering/doc/FLY-3227-real-runner-drill/`。继承文件第 2 行为 `FIXED-FOR-CLAIM 1`；继承账本含以前的评审、PR、QA 与 CI 记录。这些都不是本轮验收或授权依据。当前设计执行标识为 `2c30cad4-413e-4081-98e5-9fae7abccccc`，TURN 为 design / epoch 1；后续节点须现取自己的 TURN 和当前提示。
+复用 `engineering/doc/FLY-3227-real-runner-drill/`。重派时继承分支已有 PR #574 与目标文件（第 2 行为 `AWAITING-QA`）；继承账本含以前的评审、PR、QA 与 CI 记录。这些都不是本轮验收或授权依据。当前设计执行标识为 `a21c915a-ac4c-4150-927d-fa46d3a7f3a6`（本次重派），TURN 为 design / epoch 1；后续节点须现取自己的 TURN 和当前提示。
 
 唯一实现消费者是按 README 工作的独立 QA 节点。没有新增接口、显示标签字典、持久化表或迁移。用旧/新字面量、目标和设计文件的完整路径、文件名及父目录做 `git grep -lF` 搜索，未发现本 fixture 或本 issue 文档的测试消费者。通用 `plan.md` / `progress.md` 名称命中框架自身测试与静态样例，逐项排除理由记在进度账本；本任务不改变被测命令、路径解析、schema 或恢复行为。
 
