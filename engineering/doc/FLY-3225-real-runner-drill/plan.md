@@ -1,13 +1,13 @@
 # FLY-3225 真 runner 通用演练 — 实施计划
 Issue: FLY-3225 (https://linear.app/geoforge3d/issue/FLY-3225/qa-sbx-fly-3225-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-04
+日期: 2026-10-05
 基于: 无
 
 ## 目标与已核对事实
 
 在 529 沙盒房间，用两行文件验证「首交 → 独立 QA 故意打回 → 按本次裁决编号修复 → 复验」。QA 是独立验收角色；claim 是其生成的裁决编号。
 
-已 fetch 并读取 `origin/main:qa-sbx/fly3225/README.md`，main 为 `62a604d441b959318623292e07bf8af9ebdc28b3`，任务书 blob 为 `f025871e500834ce5bab62335a4d29bd6b308d78`；分支为 `project-slot-3-FLY-3225`，继承 head 为 `cc7ddcfb289a36da3c0c3754a86ffa3e5ff3436a`，开放 PR #576，保留已有历史并正常 push。本次 run 为 `11162b6f-3557-4d40-936a-7a7fae53dd12`，设计 exec 为 `1bffed8c-a115-4df1-bfb8-f897ed247bec`，activation 为 `activation:1bffed8c-a115-4df1-bfb8-f897ed247bec:11162b6f-3557-4d40-936a-7a7fae53dd12:eng_design:1`，TURN 为 design/epoch 1/attempt 1。现有练习文件第二行为 `AWAITING-QA`；继承的账本、首交、评审和 CI 属于旧 run，不能决定本轮轮次或代表本次批准。
+已 fetch 并读取 `origin/main:qa-sbx/fly3225/README.md`，main 为 `62a604d441b959318623292e07bf8af9ebdc28b3`，任务书 blob 为 `f025871e500834ce5bab62335a4d29bd6b308d78`；分支为 `project-slot-3-FLY-3225`，继承 head 为 `2443d8b1c591293b49c1c81583135cc3c8ecef35`，开放 PR #576，保留已有历史并正常 push。本次 run 为 `d91dc5fb-3878-47b1-a994-01d0fd6c1a19`，设计 exec 为 `09be8223-130b-4a05-93ea-ec327d96e264`，activation 为 `activation:09be8223-130b-4a05-93ea-ec327d96e264:d91dc5fb-3878-47b1-a994-01d0fd6c1a19:eng_design:1`，TURN 为 design/epoch 1/attempt 1。现有练习文件第二行为 `AWAITING-QA`；继承的账本、首交、评审和 CI 属于旧 run，不能决定本轮轮次或代表本次批准。
 
 任务书要求短计划、不另写研究文档，因此探索、调研结论及取舍收在本计划。已核对项目 onboarding、任务书、现有练习文件、旧设计、进度记录和 PR 描述；限定搜索未发现需要修改的运行时代码消费者，不需要外部调研。注入的设计完成契约另外明确要求复用本目录的 `design.html`、本地 Mermaid 图源和工具管理的 `progress.md`。这些是设计交付物；实现节点主动修改的唯一交付文件是 `qa-sbx/fly3225/<当前 git 分支名>.md`。设计节点不写练习文件；不改 Linear 状态、评论或标签，不改 README、代码或兄弟练习单，不部署房间。
 
