@@ -1,33 +1,38 @@
 ---
 issue: FLY-3224
 phase: implement
-phaseCursor: 1/4
-updated: 2026-10-05T10:36:33.787Z
-nextStep: Replace only fixture line2 with FIXED-FOR-CLAIM 1, verify exact bytes
-  and QA-base patch, commit and push; final milestone then new effective code
-  review.
+phaseCursor: 3/4
+updated: 2026-10-05T10:38:21.614Z
+nextStep: Update existing milestone as literal last commit, push, freeze final
+  rework HEAD, update PR585, register fresh effective code review; after
+  approval ensure CI and complete needs_review.
 chunks: []
 pointers:
   pr: "585"
-handoff: Rework run 2a051096-5e56-4f49-b7c8-6b5bf4cd6d4c; exec
-  a0e96004-174e-4680-9ae7-97d17f586d9d; TURN yours epoch 4 node implement
-  attempt 2; activation
-  activation:rework:2c45ad197b391190262c9c51aea07dfc8a14b36fa3488e86802af6a7c9429722.
-  Authoritative injected QA fix context names claim 1 on head
-  606fa72da22e4bf8cb556fd70c82a180621e8545. Current head equals QA base,
-  ancestry and exact inherited two-line AWAITING-QA content verified; expected
-  repaired cmp fails at line2 before write. Fresh main README re-read; original
-  approved plan still governs; no uncommitted changes or inbox instructions.
-  First-hand-in PR 585 remains OPEN; review APPROVED on base, CI run 37296027509
-  jobs SUCCESS, needs_review exit0 delivered. This wake authorizes only named
-  claim replacement plus mandatory existing progress/milestone protocol updates.
-  Runtime adjacent-state tests N/A docs-only; e2e_529_exempt remains not_run
-  with no deployment. No code, Linear, config, database, design, QA dispatch,
-  ship or main push changes.
+handoff: Rework activation
+  activation:rework:2c45ad197b391190262c9c51aea07dfc8a14b36fa3488e86802af6a7c9429722;
+  TURN implement epoch 4 attempt 2. Authoritative injected QA claim 1 failed on
+  base 606fa72da22e4bf8cb556fd70c82a180621e8545; ancestry and first-hand-in
+  exact AWAITING-QA bytes verified before write. Fix commit
+  a86b33c658ef31e559374bea3ca9b215228fd6d8 replaces only line2 with
+  FIXED-FOR-CLAIM 1; exact two-line LF cmp passes and patch against QA base is
+  -AWAITING-QA / +FIXED-FOR-CLAIM 1. git diff --check passes. local-tests has no
+  changed/direct tests or smoke set; lint exit 0 with 14 existing warnings.
+  Adjacent queued/started/dead/superseded/retried/concurrent runtime paths and
+  tests N/A because README forbids code and deployment for docs-only drill.
+  e2e_529_exempt remains not_run and requires no repair. Required protocol
+  progress/milestone updates only; prior spacing advisory corrected in new
+  handoff text; approved design/SVG unchanged. Fresh main README blob
+  c4a1b3334b84d73b95cf4e2943c2c8f1474aef87 on main
+  ab48f15175b9514701de68993ca7991891eb5005; no pre_handin.script. PR 585 OPEN.
+  Prior-head code review/CI/completion are historical; new-head effective
+  review, CI ensure and needs_review receipt pending. No further commit after
+  last milestone freeze except named review/CI fixes. No Linear, config, source,
+  database, room deployment, QA dispatch, ship request or main push.
 ---
 
 # FLY-3224 progress
-**phase**: implement (1/4)
-**next**: Replace only fixture line2 with FIXED-FOR-CLAIM 1, verify exact bytes and QA-base patch, commit and push; final milestone then new effective code review.
+**phase**: implement (3/4)
+**next**: Update existing milestone as literal last commit, push, freeze final rework HEAD, update PR585, register fresh effective code review; after approval ensure CI and complete needs_review.
 
-**handoff**: Rework run 2a051096-5e56-4f49-b7c8-6b5bf4cd6d4c; exec a0e96004-174e-4680-9ae7-97d17f586d9d; TURN yours epoch 4 node implement attempt 2; activation activation:rework:2c45ad197b391190262c9c51aea07dfc8a14b36fa3488e86802af6a7c9429722. Authoritative injected QA fix context names claim 1 on head 606fa72da22e4bf8cb556fd70c82a180621e8545. Current head equals QA base, ancestry and exact inherited two-line AWAITING-QA content verified; expected repaired cmp fails at line2 before write. Fresh main README re-read; original approved plan still governs; no uncommitted changes or inbox instructions. First-hand-in PR 585 remains OPEN; review APPROVED on base, CI run 37296027509 jobs SUCCESS, needs_review exit0 delivered. This wake authorizes only named claim replacement plus mandatory existing progress/milestone protocol updates. Runtime adjacent-state tests N/A docs-only; e2e_529_exempt remains not_run with no deployment. No code, Linear, config, database, design, QA dispatch, ship or main push changes.
+**handoff**: Rework activation activation:rework:2c45ad197b391190262c9c51aea07dfc8a14b36fa3488e86802af6a7c9429722; TURN implement epoch 4 attempt 2. Authoritative injected QA claim 1 failed on base 606fa72da22e4bf8cb556fd70c82a180621e8545; ancestry and first-hand-in exact AWAITING-QA bytes verified before write. Fix commit a86b33c658ef31e559374bea3ca9b215228fd6d8 replaces only line2 with FIXED-FOR-CLAIM 1; exact two-line LF cmp passes and patch against QA base is -AWAITING-QA / +FIXED-FOR-CLAIM 1. git diff --check passes. local-tests has no changed/direct tests or smoke set; lint exit 0 with 14 existing warnings. Adjacent queued/started/dead/superseded/retried/concurrent runtime paths and tests N/A because README forbids code and deployment for docs-only drill. e2e_529_exempt remains not_run and requires no repair. Required protocol progress/milestone updates only; prior spacing advisory corrected in new handoff text; approved design/SVG unchanged. Fresh main README blob c4a1b3334b84d73b95cf4e2943c2c8f1474aef87 on main ab48f15175b9514701de68993ca7991891eb5005; no pre_handin.script. PR 585 OPEN. Prior-head code review/CI/completion are historical; new-head effective review, CI ensure and needs_review receipt pending. No further commit after last milestone freeze except named review/CI fixes. No Linear, config, source, database, room deployment, QA dispatch, ship request or main push.
