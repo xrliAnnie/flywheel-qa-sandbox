@@ -1,7 +1,7 @@
 # FLY-3150 真 Runner 通用演练(529 房间) — 探索
 
 Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-04(2026-10-01 初版;§7–§21 为历史 —— slot-1 / slot-5 / slot-6 / slot-2 / slot-4 各轮;§22 为历史;§23–§25 为历史;§26–§27 为历史;§28 为历史;§29 为本轮 run `d1cedf09`,slot-1)
+日期: 2026-10-05(2026-10-01 初版;§7–§21 为历史 —— slot-1 / slot-5 / slot-6 / slot-2 / slot-4 各轮;§22 为历史;§23–§25 为历史;§26–§27 为历史;§28 为历史;§29 为历史;§30 为本轮 run `1e45bf82`,slot-1)
 基于: 无
 
 ## 1. 任务来源与唯一权威
@@ -484,3 +484,20 @@ TURN:`yours phase=design epoch=1 run=d1cedf09… node=eng_design attempt=1`(exec
 | Linear | Done(Lead 裁定);不碰 |
 
 **结论**:与 run `6f9cf806`(目标已是 `AWAITING-QA`、走跳过分支)同形,区别只是 main 领先但路径不相交。跳过分支没有"残留 claim 假通过"风险:HEAD 上没有任何 `FIXED-FOR-CLAIM`。上一轮的 HANDIN `e1e80f7a7`、评审、CI 都不是本轮证据。
+
+## 30. 本次派发审计(run `1e45bf82`,2026-10-05,slot-1)
+
+TURN:`yours phase=design epoch=1 run=1e45bf82… node=eng_design attempt=1`(exec `335c1962`)。§29 是 run `d1cedf09`,它已走完 交付 #1(跳过分支)→ QA 第 1 轮 claim `1` → 交付 #2(`aefacd838`,`FIXED-FOR-CLAIM 1`),分支停在其 implement 3/4 ledger 头 `bab87a3d6`;本轮是同一分支上的**新 run**,继续在其上工作,不 force-push。
+
+| 项 | 结果 |
+|---|---|
+| 分支头(派发时) | `bab87a3d6` = `origin/project-slot-1-FLY-3150` = PR #565 头(OPEN / MERGEABLE,标题仍是 run `d1cedf09`) |
+| `origin/main` | `62a604d44`,领先 4 个提交(FLY-3224 / 3225 / 3226 / 3228 演练),只改各自 `engineering/doc/FLY-322x-*` 文件夹,与本 issue 文件夹和 `"$F"` 不相交 → 按 §3.1 不同步 |
+| 目标文件 | HEAD 上 = `QA-SBX FLY-2167 drill` / `FIXED-FOR-CLAIM 1`(陈旧,上一轮交付 #2 写入);main 上字节相同 → 交付 #1 走**正常分支**重置为 `AWAITING-QA` |
+| README | blob `1de5e367…`,未变 |
+| progress.md | 派发时是 run `d1cedf09` 的 implement 3/4(旧 `PREV=a6880474e`);本节点用 `--handoff` 覆盖为本轮 run |
+| 收件箱 | 无 Lead 指令 |
+| onboard skill | 不存在 → 直接 `stage set brainstorm` |
+| Linear | Done(Lead 裁定);不碰 |
+
+**结论**:与 §26 / §27 同形(陈旧 `FIXED-FOR-CLAIM 1` 必须在交付 #1 重置,复用 OPEN PR #565),差别只是 main 领先但路径不相交。若本轮 claim id 恰好又是 `1`,正因交付 #1 先重置成 `AWAITING-QA`,返工区间 `$PREV..$HANDIN2` 的 patch 才能证明返工真的发生。PR #565 上一轮的任何 HANDIN、claim id、评审、CI、QA 结论都不是本轮证据。
