@@ -1,22 +1,24 @@
 ---
 issue: FLY-3224
 phase: design
-phaseCursor: 2/6
-updated: 2026-10-05T07:45:53.002Z
-nextStep: Render and verify founder HTML, commit and request the effective design review
+phaseCursor: 3/6
+updated: 2026-10-05T07:52:05.918Z
+nextStep: Commit and push design artifacts; register explicit design review
 chunks: []
 pointers: {}
 handoff: run=8794dd59-6028-4df4-895b-1d0124bf0cb1
-  designExec=ecabec65-e3b0-47c1-905b-1104ef56a4b9
-  activation=activation:ecabec65-e3b0-47c1-905b-1104ef56a4b9:8794dd59-6028-4df4-895b-1d0124bf0cb1:eng_design:1
-  epoch=1. Start HEAD=main=62a604d441b959318623292e07bf8af9ebdc28b3; README
-  blob=c4a1b3334b84d73b95cf4e2943c2c8f1474aef87; inherited FIXED-FOR-CLAIM 1 is
-  not current evidence; no OPEN PR for this branch; design review not yet
-  requested.
+  designExec=ecabec65-e3b0-47c1-905b-1104ef56a4b9. Main README audited; fixture
+  unchanged; short plan ready. Two local Mermaid renders and SVG checks passed.
+  Founder page passed 13 browser checks under nonce CSP, including saved
+  comments, pathname isolation, repeated chunk marker, missing/rejected
+  clipboard fallback and denied storage. Generic HTML skill self-check is
+  incompatible with mandatory feedback script/issue hyperlink; actual injected
+  page requirements checked in browser. STE disabled; review not yet requested;
+  publication pending.
 ---
 
 # FLY-3224 progress
-**phase**: design (2/6)
-**next**: Render and verify founder HTML, commit and request the effective design review
+**phase**: design (3/6)
+**next**: Commit and push design artifacts; register explicit design review
 
-**handoff**: run=8794dd59-6028-4df4-895b-1d0124bf0cb1 designExec=ecabec65-e3b0-47c1-905b-1104ef56a4b9 activation=activation:ecabec65-e3b0-47c1-905b-1104ef56a4b9:8794dd59-6028-4df4-895b-1d0124bf0cb1:eng_design:1 epoch=1. Start HEAD=main=62a604d441b959318623292e07bf8af9ebdc28b3; README blob=c4a1b3334b84d73b95cf4e2943c2c8f1474aef87; inherited FIXED-FOR-CLAIM 1 is not current evidence; no OPEN PR for this branch; design review not yet requested.
+**handoff**: run=8794dd59-6028-4df4-895b-1d0124bf0cb1 designExec=ecabec65-e3b0-47c1-905b-1104ef56a4b9. Main README audited; fixture unchanged; short plan ready. Two local Mermaid renders and SVG checks passed. Founder page passed 13 browser checks under nonce CSP, including saved comments, pathname isolation, repeated chunk marker, missing/rejected clipboard fallback and denied storage. Generic HTML skill self-check is incompatible with mandatory feedback script/issue hyperlink; actual injected page requirements checked in browser. STE disabled; review not yet requested; publication pending.
