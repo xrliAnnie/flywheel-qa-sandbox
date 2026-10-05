@@ -1,6 +1,6 @@
 # FLY-3226 真 Runner 通用演练(529 房间) — 探索
 Issue: FLY-3226 (https://linear.app/geoforge3d/issue/FLY-3226/qa-sbx-fly-3226-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-03(首轮);2026-10-04 追加 §5(run `fee0ab7d`)、§6(run `4a9c615e`)、§7(run `76b1635c`)、§11(run `b00b1faf`)
+日期: 2026-10-03(首轮);2026-10-04 追加 §5(run `fee0ab7d`)、§6(run `4a9c615e`)、§7(run `76b1635c`)、§11(run `b00b1faf`);2026-10-05 追加 §12(run `6b794ca0`)
 基于: 无
 
 ## 1. 任务来源
@@ -94,3 +94,15 @@ run `9ef89593` 已走完并由 PR #563 合入 main(`581cc2d52`)。本轮同一�
 - 与前几轮不同:本轮**续接 OPEN 的 PR #568**(头 `041556a`,CI 两项 SUCCESS),不开新 PR。分支上 `$F` = `FIXED-FOR-CLAIM 1`(run `bea81b98` 交付 #2 的结果);`origin/main:$F` 同样是 `FIXED-FOR-CLAIM 1`。
 - README(`origin/main`)内容不变,仍是唯一权威。
 - 结论:本轮交付 #1 = 在 PR #568 上**追加**一笔重置提交(第 2 行改回 `AWAITING-QA`),不 force、不 rebase;PR 标题/正文换成本轮 run 与 HANDIN 证据。run `bea81b98` 的 HANDIN1/HANDIN2/claim 1 一律不作本轮证据。ledger handoff 已在本轮开头用 `--handoff` 覆盖。
+
+## 12. 第十一次派发(run `6b794ca0`,exec `7530071a`,节点 `eng_design`,2026-10-05,slot-4)
+
+run `b00b1faf` 已走完并由 PR #568 合入 main(`6311d2e7a`,2026-10-05T03:25Z)。本轮同一分支名、通用 DAG 再次派发,起点回到 §9 / §10 的"重置态",**不是** §11 的"续接 OPEN PR":
+
+- 派发起点 = `origin/main` = `ab48f1517`(本地 HEAD 相同,开工后只多了本节点的 ledger 提交 `c9db86425`)。#568 之后 main 多了 5 笔无关提交(FLY-3228 #575/#582、FLY-3227 #574、FLY-3224 #580、FLY-3225 #576),`git log origin/main -- <$F> <本文件夹>` 最新仍是 `6311d2e7a`,都没碰本练习单。
+- 远端**没有**本分支(`git ls-remote --heads` 为空);同名 PR #539/#541/#546/#548/#557/#560/#563/#568 全部 MERGED,没有 OPEN 的 PR → 交付 #1 推分支、开**新 PR**。
+- README blob 仍是 `71e58f18…`,合同没变。
+- `origin/main:$F` = `QA-SBX FLY-3226 drill` / `FIXED-FOR-CLAIM 1`(PR #568 残留)→ 交付 #1 是**重置**(diff `M`,第 2 行改回 `AWAITING-QA`);若本轮 claim id 又是 `1`,交付 #2 后 PR 级演练净 diff 为空仍合法,返工由区间 patch `PREV..HANDIN2` 证明。
+- progress.md 原带 run `b00b1faf` 的 handoff(plan blob `f344b18e`、request `03436b5a`、thread `01a109ed`、"续接 PR 568"、旧 HTML 链接);开工即用 `--handoff` 覆盖(提交 `c9db86425`),这些指针本轮一律不认。上一轮 plan §2 的"续接 OPEN PR #568"对本轮**不成立**,plan 按本节改写。
+- research.md 仍按 README 省略(见 §1);本轮"调研"只是上面这些事实核对。
+- 结论:plan 骨架沿用 §9/§10 的重置态(新 PR);只更新起点快照、run id 与"旧指针"清单;设计 HTML 与两张图按本轮起点重画。

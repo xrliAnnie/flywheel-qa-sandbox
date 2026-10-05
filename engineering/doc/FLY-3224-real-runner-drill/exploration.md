@@ -5,20 +5,20 @@ Issue: FLY-3224 (https://linear.app/geoforge3d/issue/FLY-3224/qa-sbx-fly-3224-re
 
 ## 当前证据
 
-这是 `xrliAnnie/flywheel-qa-sandbox` 内的文档演练。本轮 run：`8794dd59-6028-4df4-895b-1d0124bf0cb1`；设计 exec：`ecabec65-e3b0-47c1-905b-1104ef56a4b9`。已取得 `yours phase=design epoch=1 node=eng_design attempt=1`；activation：`activation:ecabec65-e3b0-47c1-905b-1104ef56a4b9:8794dd59-6028-4df4-895b-1d0124bf0cb1:eng_design:1`。
+这是 `xrliAnnie/flywheel-qa-sandbox` 内的文档演练。本轮 run：`2a051096-5e56-4f49-b7c8-6b5bf4cd6d4c`；设计 exec：`220d8957-9edf-4280-a5b2-31e1dcf31d43`。已取得 `yours phase=design epoch=1 node=eng_design attempt=1`；activation：`activation:220d8957-9edf-4280-a5b2-31e1dcf31d43:2a051096-5e56-4f49-b7c8-6b5bf4cd6d4c:eng_design:1`。
 
-- 新鲜拉取的 main 与分支起点均为 `62a604d441b959318623292e07bf8af9ebdc28b3`。已逐条读取 `origin/main:qa-sbx/fly3224/README.md`，blob 为 `c4a1b3334b84d73b95cf4e2943c2c8f1474aef87`。
+- 分支初始版本为 `31975977e754e18d113efc92c037c6cac6b0e783`；取得 TURN 后快进同步到新鲜 main `65adf768ce47d7dfb819690862976a9e43c63128`。已逐条读取 `origin/main:qa-sbx/fly3224/README.md`，blob 为 `c4a1b3334b84d73b95cf4e2943c2c8f1474aef87`。
 - 当前分支：`project-slot-2-FLY-3224`；演练文件：`qa-sbx/fly3224/project-slot-2-FLY-3224.md`。继承的两行是 `QA-SBX FLY-3224 drill` / `FIXED-FOR-CLAIM 1`；这个 1 是历史内容，不能当作本轮 QA 编号。
-- 查询当前分支的 OPEN PR 返回空列表。旧 PR #571 已在 main 历史内；本轮实现需重新检查 PR 状态，不能沿用旧评审、旧 CI 或旧账本。
+- 查询当前分支的 OPEN PR 返回空列表。原有 progress.md 属于旧运行并指向 PR #580；本轮进度已重新绑定执行身份并清除旧 PR 指针。后续实现需重新检查 PR 状态，不能沿用旧评审、旧 CI 或旧账本。
 - 已读取 CLAUDE.md、项目声明的 onboarding、产品体验规范及架构概览。仓库配置中的旧 `test-slot-4` 身份不覆盖注入的 `test-slot-2` 和上述执行身份；不改配置，不访问生产存储。
 
 ## 方案与调研结论
 
 采用 README 规定的两次交付：首次写 `AWAITING-QA`，首轮验收故意失败产生本轮编号；返工只写该编号，再独立重验。直接保留历史编号会跳过演练目的；增加程序、数据库、测试套件或部署会超出范围。
 
-README 明确 “one short plan is enough. No research document.”，因此将本地调研结论写在本探索和 plan.md 内，不新增 research.md，也不进入无实际工作的 research 阶段。无需外部研究或 Lead 问题。
+README 明确 “one short plan is enough. No research document.”，因此将本地调研结论写在本探索和 plan.md 内，不新增 research.md，也不进入无实际工作的 research 阶段。无需外部研究。
 
-README 的单文件范围约束演练内容；注入的设计节点契约另外强制 DOC-FLOW、progress 账本和 founder HTML。协议产物仅复用本文件夹：exploration.md、plan.md、progress.md、design.html 与已有两份 Mermaid 图源、SVG；它们不参与演练 QA criterion。设计阶段不修改演练文件。
+README 的单文件范围约束演练内容；注入的设计节点契约另外强制 DOC-FLOW、progress 账本和 founder HTML。范围问题 `66387d0b-dc1a-4ba4-bb9e-8f666dc5e161` 的实际回复重申 README，并要求未覆盖事项取保守方案、在交付中说明；进度回复要求裁定前不动 fixture、不做实现，没有授予额外实现权限。因此仅复用本文件夹内已有的 exploration.md、plan.md、progress.md、design.html 与两份 Mermaid 图源、SVG 完成强制协议交付，不扩展演练内容或 QA criterion。设计阶段不修改演练文件；任何后续裁定由当时的 TURN 持有者处理。
 
 ## 边界与完成证据
 

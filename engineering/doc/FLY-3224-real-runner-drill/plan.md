@@ -5,11 +5,11 @@ Issue: FLY-3224 (https://linear.app/geoforge3d/issue/FLY-3224/qa-sbx-fly-3224-re
 
 ## 目标与范围
 
-在 529 sandbox 完成一次真实的首轮失败 → 按失败记录编号返工 → 独立重验。每个节点先取得注入的 TURN，读 inbox 与新鲜 main 的 `qa-sbx/fly3224/README.md`；只在 `yours` 时写共享工作树。本轮 run 是 `8794dd59-6028-4df4-895b-1d0124bf0cb1`；后续节点使用自己的 exec、activation、gate 与交付身份。
+在 529 sandbox 完成一次真实的首轮失败 → 按失败记录编号返工 → 独立重验。每个节点先取得注入的 TURN，读 inbox 与新鲜 main 的 `qa-sbx/fly3224/README.md`；只在 `yours` 时写共享工作树。本轮 run 是 `2a051096-5e56-4f49-b7c8-6b5bf4cd6d4c`；后续节点使用自己的 exec、activation、gate 与交付身份。
 
-演练内容只允许 `qa-sbx/fly3224/project-slot-2-FLY-3224.md`，分支名必须为 `project-slot-2-FLY-3224`。设计契约要求的协议产物仅在 `engineering/doc/FLY-3224-real-runner-drill/`；后续节点只更新自身契约要求的账本/证据。README 明确不需要 research.md，调研证据见 exploration.md。
+演练内容只允许 `qa-sbx/fly3224/project-slot-2-FLY-3224.md`，分支名必须为 `project-slot-2-FLY-3224`。设计契约要求的协议产物仅复用 `engineering/doc/FLY-3224-real-runner-drill/` 已有文件；后续节点只更新自身契约要求的账本/证据。README 明确不需要 research.md，调研证据见 exploration.md。范围回复未覆盖强制文档的细节，按保守方案交付既有协议产物并说明，不新增研究或演练实现。
 
-起点 HEAD 与 main：`62a604d441b959318623292e07bf8af9ebdc28b3`；README blob：`c4a1b3334b84d73b95cf4e2943c2c8f1474aef87`。目标文件已有历史 `FIXED-FOR-CLAIM 1`。当前无同分支 OPEN PR；这不代表本轮已经交付或已有 QA claim。
+同步后的设计起点 main：`65adf768ce47d7dfb819690862976a9e43c63128`；README blob：`c4a1b3334b84d73b95cf4e2943c2c8f1474aef87`。目标文件已有历史 `FIXED-FOR-CLAIM 1`。当前无同分支 OPEN PR；这不代表本轮已经交付或已有 QA claim。
 
 ## 第一次交付（实现节点）
 
