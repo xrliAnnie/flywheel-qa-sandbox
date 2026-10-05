@@ -22,6 +22,7 @@ main 上已有上一轮的 `$F`(第 2 行 `FIXED-FOR-CLAIM 1`)、旧 progress / 
 
 - **交付 #1**(提示词无 "QA fix context"):`printf '%s\nAWAITING-QA\n' "$L1" > "$F"`,用 `cmp` 自检恰两行、末尾单换行;提交 `docs(qa-sbx): FLY-3228 drill hand-in`,推送,开新 PR(`gh pr create --body-file …`,不复用旧 PR),摘要写 `HANDIN1=<完整 SHA>`。
 - **交付 #2**(提示词含 "QA fix context"):从其首行 `^QA verdict to fix: claim (\S+)` 原样取 `ID`(取不到 → 失败通道,不猜、不用遗留值);确认 `PREV`(本轮 HANDIN1)是 HEAD 祖先且其第 2 行为 `AWAITING-QA`;只把第 2 行改为 `FIXED-FOR-CLAIM $ID`,`cmp` 自检,提交 `docs(qa-sbx): FLY-3228 drill fix for claim $ID`,推送;核验 `$PREV..HEAD` 中 `$F` 的 patch 恰为 `-AWAITING-QA/+FIXED-FOR-CLAIM $ID`。
+- 交付顺序(两次都一样):先改 `$F` 并提交 → 写完本次 `progress` ledger(其自提交会改变 HEAD)→ 确认工作树干净后冻结完整 SHA → 推送 → 确认远端分支头、PR 头、CI 都在这个 SHA 上 → 才在摘要里报 `HANDIN1`/`HANDIN2=<该 SHA>`。冻结后若又有任何提交,重新冻结、推送、核对。
 - 纪律:commit/PR 标题不得含 `[skip ci]` 类标记或 `skip-checks:`;不 force-push、不 `--no-verify`;只在 PR 冲突时 `git merge origin/main`(冲突只许落在上述流程目录内)。
 
 ## 4. QA 节点
