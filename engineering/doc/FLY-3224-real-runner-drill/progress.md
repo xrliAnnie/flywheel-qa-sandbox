@@ -1,32 +1,38 @@
 ---
 issue: FLY-3224
 phase: design
-phaseCursor: 2/5
-updated: 2026-10-05T09:57:37.608Z
-nextStep: Validate the reused design page and local Mermaid renders, commit/push
-  artifacts, then explicitly register design review.
+phaseCursor: 3/5
+updated: 2026-10-05T10:05:08.015Z
+nextStep: Commit/push refreshed artifacts and open explicit design-review
+  gate/request; publish the committed mandatory HTML while review proceeds.
 chunks: []
 pointers: {}
-handoff: "run=2a051096-5e56-4f49-b7c8-6b5bf4cd6d4c;
+handoff: run=2a051096-5e56-4f49-b7c8-6b5bf4cd6d4c;
   designExec=220d8957-9edf-4280-a5b2-31e1dcf31d43;
-  activation=activation:220d8957-9edf-4280-a5b2-31e1dcf31d43:2a051096-5e56-4f49\
-  -b7c8-6b5bf4cd6d4c:eng_design:1; TURN yours design epoch1 attempt1. Scope
-  question66387d0b-dc1a-4ba4-bb9e-8f666dc5e161 answered: follow main README
-  exactly, conservative option for uncovered matters, say so in hand-in. Report
-  response2c03e0d4-5b26-4b2b-b1b3-66a726ca3b3c read: keep fixture untouched and
-  no implementation pending further scope ruling; no lead-instruction id.
-  Wait079625b88361a3d0aff369403352b791 g1 already consumed on ack. Conservative
-  reconciliation: fixture only is product scope; update only existing mandatory
-  workflow artifacts, omit research.md and research stage per README.
-  Exploration/plan refreshed to current identities and fresh-main
-  baseline65adf768ce47d7dfb819690862976a9e43c63128; removed historical PR580
-  pointer. STE begin design_page existing design.html disabled, no unitId. No
-  fixture/source/config/Linear/room mutation or successor dispatch; historical
-  claim1 not current authority."
+  activation=activation:220d8957-9edf-4280-a5b2-31e1dcf31d43:2a051096-5e56-4f49-b7c8-6b5bf4cd6d4c:eng_design:1;
+  TURN yours epoch1 attempt1. Current exploration/short plan preserve injected
+  frontmatter and README no-research exception; reused existing eight-file
+  protocol folder, no new research file. Conservative scope interpretation and
+  driver replies documented in exploration/plan; fixture unchanged, inherited
+  claim1 is historical. Both existing Mermaid sources freshly rendered locally
+  via mmdc -w1000 -bwhite --svgId FLY-3224-d1/d2; generated labels inspected,
+  ids namespaced and accessibility title/desc added, SVGs embedded. Page current
+  run2a051096. Terminal Chromium inspection of design.html passed:7 cards/7
+  comments,2 accessible diagrams, unique actual ids, local nonce CSP, zero
+  external requests, localStorage persistence/path isolation/storage-denial
+  catch, hostile comment as text,4 feedback chunks <=1800 each exact marker,
+  clipboard success plus unavailable/rejection fallbacks, desktop1100/mobile390
+  no page overflow; screenshots /tmp/fly3224-design-220d8957/desktop.png and
+  mobile.png visually inspected. STE begin design_page disabled/no unit. git
+  diff --check green; fixture byte-identical to baseline65adf768; local-tests no
+  changed/direct tests and no smoke; pnpm lint exit0 with14 existing warnings.
+  No source/config/db/API changes so package build/typecheck not applicable; no
+  full-suite claim, successor must freeze PR-head CI per its contract. Awaiting
+  new effective design review, HTML publication/report and phase completion.
 ---
 
 # FLY-3224 progress
-**phase**: design (2/5)
-**next**: Validate the reused design page and local Mermaid renders, commit/push artifacts, then explicitly register design review.
+**phase**: design (3/5)
+**next**: Commit/push refreshed artifacts and open explicit design-review gate/request; publish the committed mandatory HTML while review proceeds.
 
-**handoff**: run=2a051096-5e56-4f49-b7c8-6b5bf4cd6d4c; designExec=220d8957-9edf-4280-a5b2-31e1dcf31d43; activation=activation:220d8957-9edf-4280-a5b2-31e1dcf31d43:2a051096-5e56-4f49-b7c8-6b5bf4cd6d4c:eng_design:1; TURN yours design epoch1 attempt1. Scope question66387d0b-dc1a-4ba4-bb9e-8f666dc5e161 answered: follow main README exactly, conservative option for uncovered matters, say so in hand-in. Report response2c03e0d4-5b26-4b2b-b1b3-66a726ca3b3c read: keep fixture untouched and no implementation pending further scope ruling; no lead-instruction id. Wait079625b88361a3d0aff369403352b791 g1 already consumed on ack. Conservative reconciliation: fixture only is product scope; update only existing mandatory workflow artifacts, omit research.md and research stage per README. Exploration/plan refreshed to current identities and fresh-main baseline65adf768ce47d7dfb819690862976a9e43c63128; removed historical PR580 pointer. STE begin design_page existing design.html disabled, no unitId. No fixture/source/config/Linear/room mutation or successor dispatch; historical claim1 not current authority.
+**handoff**: run=2a051096-5e56-4f49-b7c8-6b5bf4cd6d4c; designExec=220d8957-9edf-4280-a5b2-31e1dcf31d43; activation=activation:220d8957-9edf-4280-a5b2-31e1dcf31d43:2a051096-5e56-4f49-b7c8-6b5bf4cd6d4c:eng_design:1; TURN yours epoch1 attempt1. Current exploration/short plan preserve injected frontmatter and README no-research exception; reused existing eight-file protocol folder, no new research file. Conservative scope interpretation and driver replies documented in exploration/plan; fixture unchanged, inherited claim1 is historical. Both existing Mermaid sources freshly rendered locally via mmdc -w1000 -bwhite --svgId FLY-3224-d1/d2; generated labels inspected, ids namespaced and accessibility title/desc added, SVGs embedded. Page current run2a051096. Terminal Chromium inspection of design.html passed:7 cards/7 comments,2 accessible diagrams, unique actual ids, local nonce CSP, zero external requests, localStorage persistence/path isolation/storage-denial catch, hostile comment as text,4 feedback chunks <=1800 each exact marker, clipboard success plus unavailable/rejection fallbacks, desktop1100/mobile390 no page overflow; screenshots /tmp/fly3224-design-220d8957/desktop.png and mobile.png visually inspected. STE begin design_page disabled/no unit. git diff --check green; fixture byte-identical to baseline65adf768; local-tests no changed/direct tests and no smoke; pnpm lint exit0 with14 existing warnings. No source/config/db/API changes so package build/typecheck not applicable; no full-suite claim, successor must freeze PR-head CI per its contract. Awaiting new effective design review, HTML publication/report and phase completion.
