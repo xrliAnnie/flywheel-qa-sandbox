@@ -1,13 +1,13 @@
 ---
 issue: FLY-3227
-phase: implement
-phaseCursor: 1/1
-updated: 2026-10-05T04:04:04.951Z
-nextStep: "freeze HEAD, ci-full ensure, complete PR #574"
+phase: design
+phaseCursor: 1/4
+updated: 2026-10-05T07:52:49.184Z
+nextStep: design review
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
-**phase**: implement (1/1)
-**next**: freeze HEAD, ci-full ensure, complete PR #574
+**phase**: design (1/4)
+**next**: design review
