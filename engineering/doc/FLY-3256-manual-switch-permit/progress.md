@@ -1,14 +1,13 @@
 ---
 issue: FLY-3256
 phase: design
-phaseCursor: 1/6
-updated: 2026-10-05T23:32:22.161Z
-nextStep: write exploration from FLY-2900 implementation evidence and FLY-3256
-  production symptoms
+phaseCursor: 2/6
+updated: 2026-10-05T23:35:25.973Z
+nextStep: self-review plan and request design review
 chunks: []
 pointers: {}
 ---
 
 # FLY-3256 progress
-**phase**: design (1/6)
-**next**: write exploration from FLY-2900 implementation evidence and FLY-3256 production symptoms
+**phase**: design (2/6)
+**next**: self-review plan and request design review
