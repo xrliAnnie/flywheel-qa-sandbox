@@ -1,13 +1,13 @@
 ---
 issue: FLY-3227
 phase: implement
-phaseCursor: 1/3
-updated: 2026-10-05T13:06:53.513Z
-nextStep: replace stale claim line with first-hand-in AWAITING-QA
+phaseCursor: 2/3
+updated: 2026-10-05T13:08:09.430Z
+nextStep: push exact head and obtain effective code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
-**phase**: implement (1/3)
-**next**: replace stale claim line with first-hand-in AWAITING-QA
+**phase**: implement (2/3)
+**next**: push exact head and obtain effective code review
