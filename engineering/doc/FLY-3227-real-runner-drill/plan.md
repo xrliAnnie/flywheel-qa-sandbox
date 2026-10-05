@@ -5,7 +5,7 @@ Issue: FLY-3227 (https://linear.app/geoforge3d/issue/FLY-3227/qa-sbx-fly-3227-re
 
 ## 范围
 
-任务唯一来源：`origin/main:qa-sbx/fly3227/README.md`（main `62a604d44`）。只改一个文件 `qa-sbx/fly3227/<git branch --show-current>.md`，本分支即 `qa-sbx/fly3227/project-slot-5-FLY-3227.md`。无代码、无 research 文档。不改 Linear issue，不部署 QA 房间。继承的 PR #574 与文件旧内容（`FIXED-FOR-CLAIM 1`）不决定本轮轮次。平台契约要求的 `engineering/doc/FLY-3227-real-runner-drill/` 设计记录与 `progress.md` 账本不属演练范围。
+任务唯一来源：`origin/main:qa-sbx/fly3227/README.md`（main `4c125c50a`）。只改一个文件 `qa-sbx/fly3227/<git branch --show-current>.md`，本分支即 `qa-sbx/fly3227/project-slot-5-FLY-3227.md`。无代码、无 research 文档。不改 Linear issue，不部署 QA 房间。继承的已合并 PR（#544–#588）与文件旧内容（`FIXED-FOR-CLAIM 1`）不决定本轮轮次。平台契约要求的 `engineering/doc/FLY-3227-real-runner-drill/` 设计记录与 `progress.md` 账本不属演练范围。
 
 ## 实现步骤
 
