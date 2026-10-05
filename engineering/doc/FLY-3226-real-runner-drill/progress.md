@@ -1,20 +1,18 @@
 ---
 issue: FLY-3226
-phase: implement
-phaseCursor: 2/2
-updated: 2026-10-05T10:42:11.544Z
-nextStep: "Hand-in #2 (FIXED-FOR-CLAIM 1) pushed to PR 586; await QA re-verify"
+phase: design
+phaseCursor: 1/4
+updated: 2026-10-05T11:10:15.979Z
+nextStep: Write run a8c92934 plan.md, then design review
 chunks: []
 pointers: {}
-handoff: run=6b794ca0 exec=7530071a node=eng_design done. Plan blob d3e75945
-  APPROVED r2 (request 3f9ba602, thread 01a10b96, gpt-6-astra/xhigh). Hand-in 1
-  = reset FIXED-FOR-CLAIM 1 -> AWAITING-QA, open NEW PR (no OPEN PR exists);
-  CONFLICTING -> blocked, no merge. Design HTML
-  http://127.0.0.1:50329/fw-reports-746373/r/bb6dec1fc1d99fe8bc6222c72807caf7/
+handoff: run=a8c92934 exec=80eb7a40 node=eng_design started. Base 555372a42
+  (=dispatch origin/main). Old run 6b794ca0 PR 586 MERGED; no remote branch, no
+  OPEN PR. main:F = FIXED-FOR-CLAIM 1 residue -> hand-in 1 is a reset.
 ---
 
 # FLY-3226 progress
-**phase**: implement (2/2)
-**next**: Hand-in #2 (FIXED-FOR-CLAIM 1) pushed to PR 586; await QA re-verify
+**phase**: design (1/4)
+**next**: Write run a8c92934 plan.md, then design review
 
-**handoff**: run=6b794ca0 exec=7530071a node=eng_design done. Plan blob d3e75945 APPROVED r2 (request 3f9ba602, thread 01a10b96, gpt-6-astra/xhigh). Hand-in 1 = reset FIXED-FOR-CLAIM 1 -> AWAITING-QA, open NEW PR (no OPEN PR exists); CONFLICTING -> blocked, no merge. Design HTML http://127.0.0.1:50329/fw-reports-746373/r/bb6dec1fc1d99fe8bc6222c72807caf7/
+**handoff**: run=a8c92934 exec=80eb7a40 node=eng_design started. Base 555372a42 (=dispatch origin/main). Old run 6b794ca0 PR 586 MERGED; no remote branch, no OPEN PR. main:F = FIXED-FOR-CLAIM 1 residue -> hand-in 1 is a reset.
