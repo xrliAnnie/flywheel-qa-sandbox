@@ -1,23 +1,18 @@
 ---
 issue: FLY-3226
-phase: implement
-phaseCursor: 2/2
-updated: 2026-10-06T06:25:51.538Z
-nextStep: "rework claim 4: line2=FIXED-FOR-CLAIM 4 pushed on PR #619; ci-full
-  ensure + complete"
+phase: design
+phaseCursor: 1/4
+updated: 2026-10-06T07:42:30.270Z
+nextStep: write plan for run 615c8900
 chunks: []
 pointers: {}
-handoff: "run=d24cf9f7 exec=51383437 node=eng_design done. Plan blob 7f067b86
-  APPROVED r1 (request 3cecbec2, thread 01a10fd6, gpt-6-sol/xhigh). Base
-  926269a37 (origin/main moved to dc103115f, unrelated FLY-3224 docs; do not
-  merge). main F line2 = FIXED-FOR-CLAIM 1 -> hand-in 1 resets to AWAITING-QA;
-  branch pushed with design docs only, no OPEN PR -> open NEW PR. Non-blocking:
-  recheck remote branch/PR live (reviewer had no network). Design HTML
-  http://127.0.0.1:54697/fw-reports-4d6446/r/5360a3f8ec51456bc799ddd44b144228/"
+handoff: "run=615c8900 exec=107358f5 node=eng_design started. Continues OPEN PR
+  #619 (head 1d48555, branch F line2=FIXED-FOR-CLAIM 4 from run d24cf9f7). Prior
+  run HANDIN/claim/review evidence NOT reused."
 ---
 
 # FLY-3226 progress
-**phase**: implement (2/2)
-**next**: rework claim 4: line2=FIXED-FOR-CLAIM 4 pushed on PR #619; ci-full ensure + complete
+**phase**: design (1/4)
+**next**: write plan for run 615c8900
 
-**handoff**: run=d24cf9f7 exec=51383437 node=eng_design done. Plan blob 7f067b86 APPROVED r1 (request 3cecbec2, thread 01a10fd6, gpt-6-sol/xhigh). Base 926269a37 (origin/main moved to dc103115f, unrelated FLY-3224 docs; do not merge). main F line2 = FIXED-FOR-CLAIM 1 -> hand-in 1 resets to AWAITING-QA; branch pushed with design docs only, no OPEN PR -> open NEW PR. Non-blocking: recheck remote branch/PR live (reviewer had no network). Design HTML http://127.0.0.1:54697/fw-reports-4d6446/r/5360a3f8ec51456bc799ddd44b144228/
+**handoff**: run=615c8900 exec=107358f5 node=eng_design started. Continues OPEN PR #619 (head 1d48555, branch F line2=FIXED-FOR-CLAIM 4 from run d24cf9f7). Prior run HANDIN/claim/review evidence NOT reused.
