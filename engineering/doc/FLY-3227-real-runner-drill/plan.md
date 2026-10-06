@@ -5,9 +5,9 @@ Issue: FLY-3227 (https://linear.app/geoforge3d/issue/FLY-3227/qa-sbx-fly-3227-re
 
 ## 范围
 
-任务来源：新获取的 `origin/main:qa-sbx/fly3227/README.md`（main `08c9de878d6f8561848ee1547a2d40e4620818f6`，README blob `0ebd338267190d8910178d1b06295b50ac172e12`）。演练交付只有 `qa-sbx/fly3227/<git branch --show-current>.md`，本分支即 `qa-sbx/fly3227/project-slot-5-FLY-3227.md`。不改产品代码、Linear issue 或房间部署。旧文件的 `FIXED-FOR-CLAIM 1` 不决定本轮轮次或标识。
+任务来源：新获取的 `origin/main:qa-sbx/fly3227/README.md`（main `5fb86bfb34d2b14bafd313f0a08ce8019bb36b07`，README blob `0ebd338267190d8910178d1b06295b50ac172e12`）。演练交付只有 `qa-sbx/fly3227/<git branch --show-current>.md`，本分支即 `qa-sbx/fly3227/project-slot-5-FLY-3227.md`。不改产品代码、Linear issue 或房间部署。旧文件的 `FIXED-FOR-CLAIM 1` 不决定本轮轮次或标识。
 
-本轮 design 执行标识：`d6f474f8-817f-42ba-a69b-f17bc53df43e`；activation：`activation:d6f474f8-817f-42ba-a69b-f17bc53df43e:5df0533e-711d-4927-933b-44cd5656f50b:eng_design:1`。设计节点不写演练文件，由调度程序交给实现节点。
+本轮 design 执行标识：`cbde90be-95f6-4fd1-8f29-85a1b6f68cfe`；activation：`activation:cbde90be-95f6-4fd1-8f29-85a1b6f68cfe:d97db9a9-703f-4de3-bfd7-96a94181a03b:eng_design:1`。设计节点不写演练文件，由调度程序交给实现节点。
 
 范围解释：任务书明确允许一个短计划且禁止 research 文档，因此不另建 exploration/research。注入的节点协议同时强制进度账本和已提交、已发布的设计 HTML；本轮保守复用既有文档目录中的计划、图源、图和页面，只更新这些流程记录。任务书写明本房间没有人类 Lead、不需要提问；对任务书未覆盖之处采用保守方案并在交卷说明，不视为额外授权。本解释随交卷上报，流程记录不扩展演练验收条件。
 
