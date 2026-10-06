@@ -1,10 +1,10 @@
 ---
 issue: FLY-3150
-phase: implement
-phaseCursor: 2/3
-updated: 2026-10-06T11:53:36.888Z
-nextStep: Write exact FIXED-FOR-CLAIM 1; byte/scope verification; fresh code
-  review and frozen-head CI; QA retest handoff
+phase: design
+phaseCursor: 1/3
+updated: 2026-10-06T12:23:35.802Z
+nextStep: "eng_implement: hand-in #1 resets line 2 to AWAITING-QA per plan §3
+  (run 3e80ce96)"
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
@@ -14,7 +14,7 @@ handoff: run=cf71c93b implement attempt 2; QA claim=1;
 ---
 
 # FLY-3150 progress
-**phase**: implement (2/3)
-**next**: Write exact FIXED-FOR-CLAIM 1; byte/scope verification; fresh code review and frozen-head CI; QA retest handoff
+**phase**: design (1/3)
+**next**: eng_implement: hand-in #1 resets line 2 to AWAITING-QA per plan §3 (run 3e80ce96)
 
 **handoff**: run=cf71c93b implement attempt 2; QA claim=1; PREV=1507d69f51bc8abca7a568721cfea8f0e301be86
