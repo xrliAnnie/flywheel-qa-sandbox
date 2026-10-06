@@ -5,11 +5,11 @@ Issue: FLY-3224 (https://linear.app/geoforge3d/issue/FLY-3224/qa-sbx-fly-3224-re
 
 ## 目标与范围
 
-在 529 sandbox 完成一次真实的首轮失败 → 按失败记录编号返工 → 独立重验。每个节点先取得注入的 TURN，读 inbox 与新鲜 main 的 `qa-sbx/fly3224/README.md`；只在 `yours` 时写共享工作树。本轮 run 是 `e37d69c6-b692-4cad-bc3f-e231c90358c2`；后续节点使用自己的 exec、activation、gate 与交付身份。
+在 529 sandbox 完成一次真实的首轮失败 → 按失败记录编号返工 → 独立重验。每个节点先取得注入的 TURN，读 inbox 与新鲜 main 的 `qa-sbx/fly3224/README.md`；只在 `yours` 时写共享工作树。本轮 run 是 `8d7f9f07-5449-497d-bd86-75cd021b4da2`；后续节点使用自己的 exec、activation、gate 与交付身份。
 
 演练内容只允许 `qa-sbx/fly3224/project-slot-2-FLY-3224.md`，分支名必须为 `project-slot-2-FLY-3224`。设计契约要求的协议产物仅复用 `engineering/doc/FLY-3224-real-runner-drill/` 已有文件；后续节点只更新自身契约要求的账本/证据。README 明确不需要 research.md，调研证据见 exploration.md。范围回复未覆盖强制文档的细节，按保守方案交付既有协议产物并说明，不新增研究或演练实现。
 
-设计起点 main：`2f22229e79d309b765a6cfa729478a967f0fa4af`；README blob：`c4a1b3334b84d73b95cf4e2943c2c8f1474aef87`。目标文件在分支上是上一轮返工写入的 `FIXED-FOR-CLAIM 1`（main 上同为历史 `FIXED-FOR-CLAIM 1`），本轮首次交付会把第二行改回 `AWAITING-QA`。同分支 OPEN PR #628 是上一轮遗留；实现节点复用它，但这不代表本轮已经交付或已有 QA claim——本轮首次交付 SHA 取实现节点核对后的 PR 头，旧评审、旧 CI 不作本轮证据。
+设计起点 main：`2f22229e79d309b765a6cfa729478a967f0fa4af`；README blob：`c4a1b3334b84d73b95cf4e2943c2c8f1474aef87`。目标文件在分支上是上一轮返工写入的 `FIXED-FOR-CLAIM 3`（main 上为历史 `FIXED-FOR-CLAIM 1`），本轮首次交付会把第二行改回 `AWAITING-QA`。同分支 OPEN PR #628 是上一轮遗留；实现节点复用它，但这不代表本轮已经交付或已有 QA claim——本轮首次交付 SHA 取实现节点核对后的 PR 头，旧评审、旧 CI 不作本轮证据。
 
 ## 第一次交付（实现节点）
 

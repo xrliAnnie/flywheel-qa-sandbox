@@ -5,11 +5,11 @@ Issue: FLY-3224 (https://linear.app/geoforge3d/issue/FLY-3224/qa-sbx-fly-3224-re
 
 ## 当前证据
 
-这是 `xrliAnnie/flywheel-qa-sandbox` 内的文档演练。本轮 run：`e37d69c6-b692-4cad-bc3f-e231c90358c2`；设计 exec：`3fa9485f-25a7-4a17-b5a3-ad35db895c81`。已取得 `yours phase=design epoch=6 node=eng_design attempt=1`；activation：`activation:3fa9485f-25a7-4a17-b5a3-ad35db895c81:e37d69c6-b692-4cad-bc3f-e231c90358c2:eng_design:1`。
+这是 `xrliAnnie/flywheel-qa-sandbox` 内的文档演练。本轮 run：`8d7f9f07-5449-497d-bd86-75cd021b4da2`；设计 exec：`eb5ea161-c773-47e0-a7ae-461dc4bf32f4`。已取得 `yours phase=design epoch=1 node=eng_design attempt=1`；activation：`activation:eb5ea161-c773-47e0-a7ae-461dc4bf32f4:8d7f9f07-5449-497d-bd86-75cd021b4da2:eng_design:1`。
 
-- 取得 TURN 时分支落后新鲜 main `2f22229e79d309b765a6cfa729478a967f0fa4af`（只差 FLY-3150/FLY-3225 文档），已做技术同步合并，未改演练内容。已逐条读取 `origin/main:qa-sbx/fly3224/README.md`，blob 为 `c4a1b3334b84d73b95cf4e2943c2c8f1474aef87`。
-- 当前分支：`project-slot-2-FLY-3224`；演练文件：`qa-sbx/fly3224/project-slot-2-FLY-3224.md`。分支上继承的两行是 `QA-SBX FLY-3224 drill` / `FIXED-FOR-CLAIM 1`（上一轮 run 32e818f1 的返工内容）；main 上同为历史 `FIXED-FOR-CLAIM 1`，这个 1 不能当作本轮 QA 编号。本轮首次交付须先写回 `AWAITING-QA`，因此会有真实内容提交。
-- 当前分支已有 OPEN PR #628（上一轮 run 32e818f1 的首次交付与 claim 1 返工，未合并，头 `5591699e`）。原有 progress.md 属于上一轮；本轮复用该 PR，本轮进度重新绑定执行身份，历史 PR 与账本指针不代表本轮交付。后续实现需重新检查 PR 状态，不能沿用旧评审、旧 CI 或旧账本。
+- 取得 TURN 时分支已包含新鲜 main `2f22229e79d309b765a6cfa729478a967f0fa4af`，无需技术同步合并。已逐条读取 `origin/main:qa-sbx/fly3224/README.md`，blob 为 `c4a1b3334b84d73b95cf4e2943c2c8f1474aef87`。
+- 当前分支：`project-slot-2-FLY-3224`；演练文件：`qa-sbx/fly3224/project-slot-2-FLY-3224.md`。分支上继承的两行是 `QA-SBX FLY-3224 drill` / `FIXED-FOR-CLAIM 3`（上一轮 run e37d69c6 的返工内容）；main 上为历史 `FIXED-FOR-CLAIM 1`，这里的 3 和 1 都不能当作本轮 QA 编号。本轮首次交付须先写回 `AWAITING-QA`，因此会有真实内容提交。
+- 当前分支已有 OPEN PR #628（上一轮 run e37d69c6 的首次交付与 claim 3 返工，未合并，头 `288e5f94`）。原有 progress.md 属于上一轮；本轮复用该 PR，本轮进度重新绑定执行身份，历史 PR 与账本指针不代表本轮交付。后续实现需重新检查 PR 状态，不能沿用旧评审、旧 CI 或旧账本。
 - 已读取 CLAUDE.md、项目声明的 onboarding、产品体验规范及架构概览。仓库配置中的旧 `test-slot-4` 身份不覆盖注入的 `test-slot-2` 和上述执行身份；不改配置，不访问生产存储。
 
 ## 方案与调研结论
