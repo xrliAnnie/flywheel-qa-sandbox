@@ -4,7 +4,7 @@ Issue: FLY-3228 (https://linear.app/geoforge3d/issue/FLY-3228/qa-sbx-fly-3228-re
 日期: 2026-10-05
 基于: 无(README 规定"一份短 plan 足够,不需要 research 文档")
 
-本轮:run `8b093fac-bd74-4776-b93e-eca835477f54`,设计 exec `2011577f`,分支 `project-slot-6-FLY-3228` 从 `origin/main` `9a4740f5f` 起步。
+本轮:run `38e9b6ae-0331-47f9-bbf9-bb9ad31036c4`,设计 exec `7f790fbd`,分支 `project-slot-6-FLY-3228` 从 `origin/main` `357fe55a3` 起步。
 
 ## 1. 范围
 
@@ -14,7 +14,7 @@ Issue: FLY-3228 (https://linear.app/geoforge3d/issue/FLY-3228/qa-sbx-fly-3228-re
 
 ## 2. 遗留(上一轮残留,不作数)
 
-main 上已有上一轮的 `$F`(第 2 行 `FIXED-FOR-CLAIM 1`)、旧 progress / HTML,以及已合并的 PR #525/#545/#551/#575/#582/#587/#604。其中的 claim id、HANDIN1、PR 号、SHA 都**不是本轮依据**;claim id 只取本轮提示词,`PREV` 只取本轮交付 #1 摘要。所以:交付 #1 是修改(`M`)而非新增;本轮 claim id 若又是 `1`,交付 #2 后 `$F` 与 main 逐字节相同,PR 级 diff 中 `$F` 可为空,此时以 `$PREV..HEAD` 的 patch 核验为准。
+main 上已有上一轮的 `$F`(第 2 行 `FIXED-FOR-CLAIM 4`)、旧 progress / HTML,以及已合并的 PR #525/#545/#551/#575/#582/#587/#604/#607。其中的 claim id、HANDIN1、PR 号、SHA 都**不是本轮依据**;claim id 只取本轮提示词,`PREV` 只取本轮交付 #1 摘要。所以:交付 #1 是修改(`M`)而非新增;本轮 claim id 若又是 `4`,交付 #2 后 `$F` 与 main 逐字节相同,PR 级 diff 中 `$F` 可为空,此时以 `$PREV..HEAD` 的 patch 核验为准。
 
 ## 3. 实现节点
 
