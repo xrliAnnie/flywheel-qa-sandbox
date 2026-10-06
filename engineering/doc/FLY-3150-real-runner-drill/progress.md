@@ -1,19 +1,20 @@
 ---
 issue: FLY-3150
 phase: implement
-phaseCursor: 3/4
-updated: 2026-10-06T00:32:04.597Z
-nextStep: "hand-in 2: line 2 -> FIXED-FOR-CLAIM 1 (run 7a850ba8)"
+phaseCursor: 2/4
+updated: 2026-10-06T08:47:55.898Z
+nextStep: set qa-sbx/fly2167/project-slot-1-FLY-3150.md line 2 to
+  FIXED-FOR-CLAIM 1; freeze hand-in 2
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
   pr: "602"
-handoff: run=7a850ba8 implement attempt 2; QA claim=1;
-  PREV=c2835f15212a29a04c1848bdfc53407156c0a0c3
+handoff: run=a9716d46 implement attempt 2; QA claim=1;
+  PREV=251a20d577cc36835ba7cd36a8a96a6293aaa670
 ---
 
 # FLY-3150 progress
-**phase**: implement (3/4)
-**next**: hand-in 2: line 2 -> FIXED-FOR-CLAIM 1 (run 7a850ba8)
+**phase**: implement (2/4)
+**next**: set qa-sbx/fly2167/project-slot-1-FLY-3150.md line 2 to FIXED-FOR-CLAIM 1; freeze hand-in 2
 
-**handoff**: run=7a850ba8 implement attempt 2; QA claim=1; PREV=c2835f15212a29a04c1848bdfc53407156c0a0c3
+**handoff**: run=a9716d46 implement attempt 2; QA claim=1; PREV=251a20d577cc36835ba7cd36a8a96a6293aaa670

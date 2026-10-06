@@ -1,7 +1,7 @@
 # FLY-3150 真 Runner 通用演练(529 房间) — 探索
 
 Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-05(2026-10-01 初版;§7–§21 为历史 —— slot-1 / slot-5 / slot-6 / slot-2 / slot-4 各轮;§22 为历史;§23–§25 为历史;§26–§27 为历史;§28 为历史;§29 为历史;§30 为历史;§31–§38 为历史;§39 为本轮 run `ef0f0e9c`,slot-1)
+日期: 2026-10-06(2026-10-01 初版;§7–§21 为历史 —— slot-1 / slot-5 / slot-6 / slot-2 / slot-4 各轮;§22 为历史;§23–§25 为历史;§26–§27 为历史;§28 为历史;§29 为历史;§30 为历史;§31–§38 为历史;§39–§41 为历史;§42 为本轮 run `a9716d46`)
 基于: 无
 
 ## 1. 任务来源与唯一权威
@@ -607,3 +607,11 @@ TURN:`yours phase=design epoch=1 run=4dea7fe2… node=eng_design attempt=1`(exec
 - 起点:`"$F"` = main 上残留的 `FIXED-FOR-CLAIM 1` → 交付 #1 走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`)。旧 progress.md handoff(`run=1ec283f0 attempt=2; QA claim=1; PREV=4211ee4e…`)不是本轮证据。
 - 与 §40 同形,plan 沿用 §40 已评审结构,只更新本轮起点与 run id;§39 的 LOW(交付 #1 同步判定区间)本轮不同步、不受影响,仍保留为已知提示。
 - Codex 设计评审(gpt-6-astra/xhigh,thread `01a10e91-926c…`)第 1 轮 APPROVED,干净 "Turn completed";HIGH 0 / MEDIUM 0 / LOW 1(仍是 §39 的同步判定区间提示,本轮不同步、不受影响)。已评审 plan blob `23993cd0…`(requestId `076ab4b3…`),`await-codex-gate design` 通过。
+
+## 42. 本次派发审计(run `a9716d46`,2026-10-06,slot-1)
+
+- 派发:exec `13fc4f90`,TURN `yours phase=design epoch=1 attempt=1`。README(`origin/main:qa-sbx/fly2167/README.md`)重读无变化。onboard skill 不存在 → 直接 `stage set brainstorm`。
+- run `7a850ba8` 的 PR #613 已合入(`eb30f1c04`)、远端分支已删;本地分支 = `origin/main` = `b472f5b58`(之后主干只多了 FLY-3224/3226/3227/3228 各自文件夹的演练提交,不碰本文件夹与 `"$F"`)→ 不同步,首次推送新建远端分支并新开 PR。
+- 起点:`"$F"` = main 上残留的 `FIXED-FOR-CLAIM 1` → 交付 #1 走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`)。旧 progress.md handoff(`run=7a850ba8 implement attempt 2; QA claim=1; PREV=c2835f15…`)不是本轮证据。
+- 与 §41 同形,plan 沿用 §41 已评审结构,只更新本轮起点与 run id。
+- Codex 设计评审(gpt-6-sol/xhigh,thread `01a1104b-921f…`,turn `01a1104b-9bd5…`)第 1 轮 APPROVED,HIGH 0 / MEDIUM 0 / LOW 0。已评审 plan blob `cc970f13…`(requestId `5dac0959…`),`await-codex-gate design` 通过。
