@@ -646,3 +646,4 @@ TURN:`yours phase=design epoch=1 run=4dea7fe2… node=eng_design attempt=1`(exec
 - run `9ff55b37` 的 PR #631 已合入(`666867793`)、远端分支已删;本地分支 = `origin/main` = `57e42464f`(之后主干只多了 #619 / #632 / #628,各改 FLY-3226 / FLY-3228 / FLY-3224 自己的路径,不碰本文件夹与 `"$F"`)→ 不同步;设计节点推送时新建远端分支，实现节点首推是普通快进。
 - 起点:`"$F"` = main 上残留的 `FIXED-FOR-CLAIM 1` → 交付 #1 走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`)。旧 progress.md handoff(`run=9ff55b37 attempt=2 claim=1 PREV=d1c363b5… PR=631`)不是本轮证据。
 - 与 §45 同形,plan 沿用已评审结构，只更新本轮起点与 run id。
+- Codex 设计评审(gpt-6-sol/xhigh,thread `01a1132a-45b3…`,turn `01a1132a-4a46…`)第 1 轮 APPROVED,HIGH 0 / MEDIUM 0 / LOW 1(§3.1 同步判定区间与"冻结 BASE 前同步"顺序不一致，建议显式记录同步状态与 main SHA;本轮无需同步，非阻塞)。已评审 plan blob `9019007a…`(requestId `321ce6b4…`),`await-codex-gate design` 通过。评审沙箱连不上 GitHub,"无 OPEN PR" 由本节点评审后 `gh pr list --head` 复查为空。
