@@ -1,13 +1,13 @@
 ---
 issue: FLY-3256
 phase: design
-phaseCursor: 4/8
-updated: 2026-10-06T07:54:10.143Z
-nextStep: commit validated design artifacts and request review
+phaseCursor: 5/8
+updated: 2026-10-06T07:54:53.702Z
+nextStep: await design review verdict
 chunks: []
 pointers: {}
 ---
 
 # FLY-3256 progress
-**phase**: design (4/8)
-**next**: commit validated design artifacts and request review
+**phase**: design (5/8)
+**next**: await design review verdict
