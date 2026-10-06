@@ -1,19 +1,17 @@
 ---
 issue: FLY-3226
-phase: design
-phaseCursor: 4/4
-updated: 2026-10-06T19:46:39.290Z
-nextStep: implement hand-in 1 (AWAITING-QA) per plan §3
+phase: implement
+phaseCursor: 1/2
+updated: 2026-10-06T19:47:36.874Z
+nextStep: effective code review, push PR 619, freeze CI handoff
 chunks: []
 pointers: {}
-handoff: "run=73d4b360 exec=a7f1321f design DONE: plan blob 06a86705 Codex r1
-  APPROVED (thread 01a112be-e905, 1 MEDIUM advisory = refresh design page,
-  done). Branch F line2 still FIXED-FOR-CLAIM 4 → impl resets to AWAITING-QA on
-  PR #619. DBASE=d5be4f339. Recheck remote PR live."
+handoff: "run=73d4b360 implement hand-in 1: exact two-line AWAITING-QA file
+  verified; awaiting code review and exact-head CI"
 ---
 
 # FLY-3226 progress
-**phase**: design (4/4)
-**next**: implement hand-in 1 (AWAITING-QA) per plan §3
+**phase**: implement (1/2)
+**next**: effective code review, push PR 619, freeze CI handoff
 
-**handoff**: run=73d4b360 exec=a7f1321f design DONE: plan blob 06a86705 Codex r1 APPROVED (thread 01a112be-e905, 1 MEDIUM advisory = refresh design page, done). Branch F line2 still FIXED-FOR-CLAIM 4 → impl resets to AWAITING-QA on PR #619. DBASE=d5be4f339. Recheck remote PR live.
+**handoff**: run=73d4b360 implement hand-in 1: exact two-line AWAITING-QA file verified; awaiting code review and exact-head CI
