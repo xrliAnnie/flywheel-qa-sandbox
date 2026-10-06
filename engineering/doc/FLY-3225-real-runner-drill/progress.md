@@ -2,23 +2,34 @@
 issue: FLY-3225
 phase: implement
 phaseCursor: 4/4
-updated: 2026-10-05T22:29:35.518Z
-nextStep: Repair review APPROVED question 9e2675c9-da7a-49cf-aec9-41ec295f7ead
-  request 6ff4f1ac-2534-477b-bff8-1d6ba5e332d6 reviewed
-  e7e2fd47eb81de6aff4014aaa591b7aca53eb92c. Freeze after pushing progress;
-  ci-full ensure then needs_review PR 603 claim 1. Adjacent paths N/A docs-only.
+updated: 2026-10-06T11:15:52.128Z
+nextStep: QA fix code review APPROVED; freeze after this ledger commit and push;
+  ensure CI then complete needs_review PR 610
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3225-real-runner-drill/plan.md
-  pr: "603"
-  reviewedSha: 9a84fcef1d3b33c915cc71c42c14a7408303d9b8
-handoff: '{"runId":"0e7cbf2d-df17-4a44-847e-f8331109baaa","execId":"e038fb03-ff08-472b-b0c8-df4b07a40850","activationId":"activation:rework:09556b97240efc0a18bb1c66a4e8aa13d1951195279a465b772c2ae17c114e05","attempt":2,"implBase":"499457efdbbe5321641edc71eb676f1f7377df53","firstHandin":"289eb8184babe2ec82d742837d53a92013cbc390","qaFailedHead":"1413c3e47966287c0adf70185d0a3e9c8a76c9c0","claim":"1","ownCommits":["289eb8184babe2ec82d742837d53a92013cbc390","aa7601976e02f45bab72a53d97e7f31e9c1b694f"],"verification":"Claim
-  1 exact bytes PASS; local-tests none","adjacentPaths":"N/A (docs-only
-  drill)","e2e529":"not_run docs_only; task prohibits deployment"}'
+  pr: "610"
+  reviewedSha: 92ad5caa353044ae4300801b53715b29279e2ffb
+handoff: '{"runId": "1b76e9dd-b374-46f8-9d90-5a7e632e10f3", "execId":
+  "4f3682b7-85b5-4d5a-85f6-3877d61ca227", "activationId":
+  "activation:rework:5462e2602beed94f96462a84bfce6d205ee02921c7837a2b331278a6ed03c314",
+  "attempt": 2, "implBase": "f01d418dde85ae02347bcccd2c8ddcc949e07839",
+  "handinMode": "qa-fix", "ownCommits":
+  ["697172282da3a032a746419fad6c240f37be8045",
+  "f3751adc599d13337bc0bc7b0e6cefaaa4ca6224"], "pr": 610, "firstHandin":
+  "697172282da3a032a746419fad6c240f37be8045", "verification": "Exact
+  FIXED-FOR-CLAIM 1 two-line bytes PASS; current-run firstHandin verified;
+  local-tests selected none; lint baseline/generated errors disclosed in first
+  hand-in", "adjacentPaths": "N/A (docs-only drill)", "e2e529": "not_run
+  docs_only; task prohibits room deployment", "reviewVerdict": "APPROVED",
+  "qaClaim": "1", "qaFailedHead": "d7b9a06ab8400b0111ee29cdf962f3f93c8b255d",
+  "reviewQuestionId": "38cee852-7188-4f08-9080-555e44944efc", "reviewRequestId":
+  "f2afd1e5-22b3-41c8-a645-04eb5c9d896f", "reviewedSha":
+  "92ad5caa353044ae4300801b53715b29279e2ffb"}'
 ---
 
 # FLY-3225 progress
 **phase**: implement (4/4)
-**next**: Repair review APPROVED question 9e2675c9-da7a-49cf-aec9-41ec295f7ead request 6ff4f1ac-2534-477b-bff8-1d6ba5e332d6 reviewed e7e2fd47eb81de6aff4014aaa591b7aca53eb92c. Freeze after pushing progress; ci-full ensure then needs_review PR 603 claim 1. Adjacent paths N/A docs-only.
+**next**: QA fix code review APPROVED; freeze after this ledger commit and push; ensure CI then complete needs_review PR 610
 
-**handoff**: {"runId":"0e7cbf2d-df17-4a44-847e-f8331109baaa","execId":"e038fb03-ff08-472b-b0c8-df4b07a40850","activationId":"activation:rework:09556b97240efc0a18bb1c66a4e8aa13d1951195279a465b772c2ae17c114e05","attempt":2,"implBase":"499457efdbbe5321641edc71eb676f1f7377df53","firstHandin":"289eb8184babe2ec82d742837d53a92013cbc390","qaFailedHead":"1413c3e47966287c0adf70185d0a3e9c8a76c9c0","claim":"1","ownCommits":["289eb8184babe2ec82d742837d53a92013cbc390","aa7601976e02f45bab72a53d97e7f31e9c1b694f"],"verification":"Claim 1 exact bytes PASS; local-tests none","adjacentPaths":"N/A (docs-only drill)","e2e529":"not_run docs_only; task prohibits deployment"}
+**handoff**: {"runId": "1b76e9dd-b374-46f8-9d90-5a7e632e10f3", "execId": "4f3682b7-85b5-4d5a-85f6-3877d61ca227", "activationId": "activation:rework:5462e2602beed94f96462a84bfce6d205ee02921c7837a2b331278a6ed03c314", "attempt": 2, "implBase": "f01d418dde85ae02347bcccd2c8ddcc949e07839", "handinMode": "qa-fix", "ownCommits": ["697172282da3a032a746419fad6c240f37be8045", "f3751adc599d13337bc0bc7b0e6cefaaa4ca6224"], "pr": 610, "firstHandin": "697172282da3a032a746419fad6c240f37be8045", "verification": "Exact FIXED-FOR-CLAIM 1 two-line bytes PASS; current-run firstHandin verified; local-tests selected none; lint baseline/generated errors disclosed in first hand-in", "adjacentPaths": "N/A (docs-only drill)", "e2e529": "not_run docs_only; task prohibits room deployment", "reviewVerdict": "APPROVED", "qaClaim": "1", "qaFailedHead": "d7b9a06ab8400b0111ee29cdf962f3f93c8b255d", "reviewQuestionId": "38cee852-7188-4f08-9080-555e44944efc", "reviewRequestId": "f2afd1e5-22b3-41c8-a645-04eb5c9d896f", "reviewedSha": "92ad5caa353044ae4300801b53715b29279e2ffb"}
