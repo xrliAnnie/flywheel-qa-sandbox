@@ -1,20 +1,18 @@
 ---
 issue: FLY-3224
-phase: implement
+phase: design
 phaseCursor: 2/3
-updated: 2026-10-06T20:14:39.411Z
-nextStep: Claim 1 fix verified; freeze after milestone, fresh review/CI,
-  complete needs_review PR 628
+updated: 2026-10-06T23:08:03.134Z
+nextStep: Codex design review of plan.md
 chunks: []
 pointers: {}
-handoff: Run 2dd4ec8c; implement exec cd4077f3, attempt 2, epoch 4. QA claim 1
-  on first hand-in 83d01d473 authorizes FIXED-FOR-CLAIM 1. Content b3d1b1e36
-  changes only line 2; exact bytes and diff check passed. PR 628 reused; foreign
-  residue disclosed. Fresh review and CI pending.
+handoff: Run e8788aad; design exec afb1d3ca. Branch == main 57e42464f (PR 628
+  merged); drill file FIXED-FOR-CLAIM 1 historical; no OPEN PR, implement
+  creates new PR.
 ---
 
 # FLY-3224 progress
-**phase**: implement (2/3)
-**next**: Claim 1 fix verified; freeze after milestone, fresh review/CI, complete needs_review PR 628
+**phase**: design (2/3)
+**next**: Codex design review of plan.md
 
-**handoff**: Run 2dd4ec8c; implement exec cd4077f3, attempt 2, epoch 4. QA claim 1 on first hand-in 83d01d473 authorizes FIXED-FOR-CLAIM 1. Content b3d1b1e36 changes only line 2; exact bytes and diff check passed. PR 628 reused; foreign residue disclosed. Fresh review and CI pending.
+**handoff**: Run e8788aad; design exec afb1d3ca. Branch == main 57e42464f (PR 628 merged); drill file FIXED-FOR-CLAIM 1 historical; no OPEN PR, implement creates new PR.
