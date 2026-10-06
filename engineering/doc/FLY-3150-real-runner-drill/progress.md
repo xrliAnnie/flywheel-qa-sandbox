@@ -1,19 +1,20 @@
 ---
 issue: FLY-3150
 phase: implement
-phaseCursor: 2/2
-updated: 2026-10-06T10:23:23.011Z
-nextStep: Fix claim 1, exact-content verification, code review and handoff
+phaseCursor: 2/3
+updated: 2026-10-06T11:53:36.888Z
+nextStep: Write exact FIXED-FOR-CLAIM 1; byte/scope verification; fresh code
+  review and frozen-head CI; QA retest handoff
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
-  pr: "627"
-handoff: run=2ebdb3cc implement attempt 2; QA claim=1;
-  PREV=2588e0f0d38a04c1be10ee570b49aae2b2fac79d; ledger before BASE2
+  pr: "629"
+handoff: run=cf71c93b implement attempt 2; QA claim=1;
+  PREV=1507d69f51bc8abca7a568721cfea8f0e301be86
 ---
 
 # FLY-3150 progress
-**phase**: implement (2/2)
-**next**: Fix claim 1, exact-content verification, code review and handoff
+**phase**: implement (2/3)
+**next**: Write exact FIXED-FOR-CLAIM 1; byte/scope verification; fresh code review and frozen-head CI; QA retest handoff
 
-**handoff**: run=2ebdb3cc implement attempt 2; QA claim=1; PREV=2588e0f0d38a04c1be10ee570b49aae2b2fac79d; ledger before BASE2
+**handoff**: run=cf71c93b implement attempt 2; QA claim=1; PREV=1507d69f51bc8abca7a568721cfea8f0e301be86
