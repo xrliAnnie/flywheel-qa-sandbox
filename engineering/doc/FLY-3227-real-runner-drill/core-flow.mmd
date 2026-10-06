@@ -1,14 +1,12 @@
-%%{init: {"theme": "base", "htmlLabels": false, "themeVariables": {"fontFamily": "-apple-system, BlinkMacSystemFont, PingFang SC, sans-serif", "fontSize": "16px", "primaryColor": "#ffffff", "primaryTextColor": "#1d1d1f", "primaryBorderColor": "#c7c7cc", "lineColor": "#86868b", "actorBkg": "#edf5ff", "actorBorder": "#c7c7cc", "actorTextColor": "#1d1d1f", "signalColor": "#62626a", "noteBkgColor": "#fff7eb", "noteBorderColor": "#cf8a20"}, "sequence": {"mirrorActors": false, "useMaxWidth": true, "width": 120, "actorMargin": 36, "messageMargin": 40, "wrap": true}}}%%
-sequenceDiagram
-    participant D as 设计节点
-    participant C as 流程调度
-    participant I as 实现节点
-    participant Q as 验收节点
-    D->>C: 本轮评审通过，计划与页面已交付
-    C->>I: 首次交付
-    I->>Q: 第 2 行：AWAITING-QA
-    Q-->>C: 首轮故意失败，生成本轮标识
-    C->>I: 修复提示携带同一个标识
-    I->>Q: 第 2 行：FIXED-FOR-CLAIM 加该标识
-    Q-->>C: 再次验收，逐字比较标识
-    Note over Q: 标识一致才通过；不一致仍失败
+%%{init: {"theme": "base", "htmlLabels": false, "themeVariables": {"fontFamily": "-apple-system, BlinkMacSystemFont, PingFang SC, sans-serif", "fontSize": "16px", "primaryColor": "#ffffff", "primaryTextColor": "#1d1d1f", "primaryBorderColor": "#c7c7cc", "lineColor": "#86868b", "background": "#ffffff"}, "flowchart": {"htmlLabels": false, "curve": "stepAfter", "nodeSpacing": 24, "rankSpacing": 32}}}%%
+flowchart TB
+    D["设计<br/>短计划与评审"] --> I["实现首交<br/>AWAITING-QA"]
+    I --> Q["首轮验收<br/>故意失败"]
+    Q --> F["修复重交<br/>沿用本轮标识"]
+    F --> R{"本轮标识<br/>逐字一致？"}
+    R -->|一致| G["验收通过<br/>交给控制器"]
+    R -->|不一致| F
+    classDef expected fill:#fff4e5,stroke:#c77700,color:#663c00;
+    classDef repair fill:#edf5ff,stroke:#007aff,color:#003d80;
+    class Q expected;
+    class F repair;
