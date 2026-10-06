@@ -1,24 +1,21 @@
 ---
 issue: FLY-3225
-phase: design
-phaseCursor: 4/4
-updated: 2026-10-06T05:49:15.054Z
-nextStep: Design complete for run 0cb91cd5; implement node takes over
+phase: implement
+phaseCursor: 1/4
+updated: 2026-10-06T05:51:13.918Z
+nextStep: Audit complete; establish this run first hand-in on exact inherited
+  two-line content
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3225-real-runner-drill/plan.md
   pr: "610"
   reviewedSha: ae36a9cba68ddcb33fcef4c9a6695fbe4cc37257
-handoff: '{"runId":"086899cb-7bb9-41cf-b9ab-939828f678d9","execId":"1b9e7c08-fec0-40f2-83b0-6bba8ba5a77f","activationId":"activation:1b9e7c08-fec0-40f2-83b0-6bba8ba5a77f:086899cb-7bb9-41cf-b9ab-939828f678d9:implement:1","attempt":1,"implBase":"808c9d94ab5e99b9874aac62d7e55588759ce978","firstHandin":"e5b972fc25788380047b12b341cb855de459cb6e","handinMode":"inherited-content-no-diff","ownCommits":[],"pr":610,"reviewQuestionId":"a56280af-4e5f-4f8c-aacb-9c5c9f4bf319","reviewRequestId":"4a93d4a6-f4e6-45d2-89ce-b7194a041acd","reviewVerdict":"APPROVED","reviewedSha":"ae36a9cba68ddcb33fcef4c9a6695fbe4cc37257","verification":"Exact
-  two-line bytes PASS; local-tests selected none; pnpm lint attempted and found
-  only baseline/generated out-of-scope diagnostics; prior head 2a3a57a1
-  exact-head CI green run 37417742096; corrected ledger head requires fresh
-  CI","adjacentPaths":"N/A (docs-only drill)","e2e529":"not_run docs_only; task
-  prohibits deployment"}'
+handoff: '{"runId":"0cb91cd5-5c2b-47c6-a66c-c31f3e4027db","execId":"0cd1f8cd-fd6e-4f39-b6b6-c69447a0aa12","activationId":"activation:0cd1f8cd-fd6e-4f39-b6b6-c69447a0aa12:0cb91cd5-5c2b-47c6-a66c-c31f3e4027db:implement:1","attempt":1,"implBase":"7ae77e0149360a4c6e814866702686bbd7a6f8a0","ownCommits":[],"pr":610,"adjacentPaths":"N/A
+  (docs-only drill)","e2e529":"not_run docs_only; task prohibits deployment"}'
 ---
 
 # FLY-3225 progress
-**phase**: design (4/4)
-**next**: Design complete for run 0cb91cd5; implement node takes over
+**phase**: implement (1/4)
+**next**: Audit complete; establish this run first hand-in on exact inherited two-line content
 
-**handoff**: {"runId":"086899cb-7bb9-41cf-b9ab-939828f678d9","execId":"1b9e7c08-fec0-40f2-83b0-6bba8ba5a77f","activationId":"activation:1b9e7c08-fec0-40f2-83b0-6bba8ba5a77f:086899cb-7bb9-41cf-b9ab-939828f678d9:implement:1","attempt":1,"implBase":"808c9d94ab5e99b9874aac62d7e55588759ce978","firstHandin":"e5b972fc25788380047b12b341cb855de459cb6e","handinMode":"inherited-content-no-diff","ownCommits":[],"pr":610,"reviewQuestionId":"a56280af-4e5f-4f8c-aacb-9c5c9f4bf319","reviewRequestId":"4a93d4a6-f4e6-45d2-89ce-b7194a041acd","reviewVerdict":"APPROVED","reviewedSha":"ae36a9cba68ddcb33fcef4c9a6695fbe4cc37257","verification":"Exact two-line bytes PASS; local-tests selected none; pnpm lint attempted and found only baseline/generated out-of-scope diagnostics; prior head 2a3a57a1 exact-head CI green run 37417742096; corrected ledger head requires fresh CI","adjacentPaths":"N/A (docs-only drill)","e2e529":"not_run docs_only; task prohibits deployment"}
+**handoff**: {"runId":"0cb91cd5-5c2b-47c6-a66c-c31f3e4027db","execId":"0cd1f8cd-fd6e-4f39-b6b6-c69447a0aa12","activationId":"activation:0cd1f8cd-fd6e-4f39-b6b6-c69447a0aa12:0cb91cd5-5c2b-47c6-a66c-c31f3e4027db:implement:1","attempt":1,"implBase":"7ae77e0149360a4c6e814866702686bbd7a6f8a0","ownCommits":[],"pr":610,"adjacentPaths":"N/A (docs-only drill)","e2e529":"not_run docs_only; task prohibits deployment"}
