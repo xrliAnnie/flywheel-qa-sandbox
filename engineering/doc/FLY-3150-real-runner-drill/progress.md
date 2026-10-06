@@ -1,19 +1,20 @@
 ---
 issue: FLY-3150
 phase: implement
-phaseCursor: 1/3
-updated: 2026-10-06T11:40:38.188Z
-nextStep: Reset target to AWAITING-QA; verify exact bytes and scope; code review
-  then frozen-head CI
+phaseCursor: 2/3
+updated: 2026-10-06T11:53:36.888Z
+nextStep: Write exact FIXED-FOR-CLAIM 1; byte/scope verification; fresh code
+  review and frozen-head CI; QA retest handoff
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
-  pr: "627"
-handoff: run=cf71c93b implement attempt 1; no QA fix context; approved plan retained
+  pr: "629"
+handoff: run=cf71c93b implement attempt 2; QA claim=1;
+  PREV=1507d69f51bc8abca7a568721cfea8f0e301be86
 ---
 
 # FLY-3150 progress
-**phase**: implement (1/3)
-**next**: Reset target to AWAITING-QA; verify exact bytes and scope; code review then frozen-head CI
+**phase**: implement (2/3)
+**next**: Write exact FIXED-FOR-CLAIM 1; byte/scope verification; fresh code review and frozen-head CI; QA retest handoff
 
-**handoff**: run=cf71c93b implement attempt 1; no QA fix context; approved plan retained
+**handoff**: run=cf71c93b implement attempt 2; QA claim=1; PREV=1507d69f51bc8abca7a568721cfea8f0e301be86
