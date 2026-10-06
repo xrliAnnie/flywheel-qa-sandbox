@@ -2,19 +2,18 @@
 issue: FLY-3150
 phase: implement
 phaseCursor: 2/3
-updated: 2026-10-06T11:53:36.888Z
-nextStep: Write exact FIXED-FOR-CLAIM 1; byte/scope verification; fresh code
-  review and frozen-head CI; QA retest handoff
+updated: 2026-10-06T18:01:58.590Z
+nextStep: "Claim 1 fix: set FIXED-FOR-CLAIM 1; verify rework interval; review and CI"
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
-  pr: "629"
-handoff: run=cf71c93b implement attempt 2; QA claim=1;
-  PREV=1507d69f51bc8abca7a568721cfea8f0e301be86
+  pr: none-yet
+handoff: run=9ff55b37 attempt=2 claim=1
+  PREV=d1c363b55deb5678fcfb38812038c09100ac978b PR=631
 ---
 
 # FLY-3150 progress
 **phase**: implement (2/3)
-**next**: Write exact FIXED-FOR-CLAIM 1; byte/scope verification; fresh code review and frozen-head CI; QA retest handoff
+**next**: Claim 1 fix: set FIXED-FOR-CLAIM 1; verify rework interval; review and CI
 
-**handoff**: run=cf71c93b implement attempt 2; QA claim=1; PREV=1507d69f51bc8abca7a568721cfea8f0e301be86
+**handoff**: run=9ff55b37 attempt=2 claim=1 PREV=d1c363b55deb5678fcfb38812038c09100ac978b PR=631
