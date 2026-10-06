@@ -1,10 +1,9 @@
 ---
 issue: FLY-3226
-phase: design
-phaseCursor: 4/4
-updated: 2026-10-06T23:02:22.565Z
-nextStep: "implement hand-in 1: reset line 2 FIXED-FOR-CLAIM 1 -> AWAITING-QA,
-  open new PR"
+phase: implement
+phaseCursor: 1/2
+updated: 2026-10-06T23:03:16.706Z
+nextStep: First hand-in bytes verified; code review then PR and frozen-head CI
 chunks: []
 pointers: {}
 handoff: "run e39cc50c design done: plan blob 2ff68f9a Codex r1 APPROVED (gate
@@ -14,7 +13,7 @@ handoff: "run e39cc50c design done: plan blob 2ff68f9a Codex r1 APPROVED (gate
 ---
 
 # FLY-3226 progress
-**phase**: design (4/4)
-**next**: implement hand-in 1: reset line 2 FIXED-FOR-CLAIM 1 -> AWAITING-QA, open new PR
+**phase**: implement (1/2)
+**next**: First hand-in bytes verified; code review then PR and frozen-head CI
 
 **handoff**: run e39cc50c design done: plan blob 2ff68f9a Codex r1 APPROVED (gate passed); base 57e42464f, residue claim 1, PR #619 merged so open a NEW PR; design.html published. Reviewer had no network: recheck remote branch/PR live.
