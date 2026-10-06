@@ -1,20 +1,19 @@
 ---
 issue: FLY-3224
 phase: design
-phaseCursor: 1/3
-updated: 2026-10-06T11:46:38.487Z
-nextStep: design review on rebound plan
+phaseCursor: 2/3
+updated: 2026-10-06T11:49:39.622Z
+nextStep: publish design HTML, report, complete
 chunks: []
 pointers: {}
-handoff: "Design run 61e8c550 exec 0283542e done: Codex gpt-6-sol/xhigh R1
-  CHANGES_REQUESTED (1 HIGH git-status fail-open, fixed) R2 APPROVED (thread
-  01a110c8-a5d1, request 629eef30, plan blob dea918d6), await-codex-gate passed,
-  HTML published 8397083e. Start main 436bee27 residue FIXED-FOR-CLAIM 1; no
-  OPEN PR."
+handoff: "Design run 32e818f1 exec 533d28a3: Codex gpt-6-sol/xhigh R1 APPROVED 0
+  findings (thread 01a11109-e0e3, request c2b1b945, plan blob 93f25d87),
+  await-codex-gate passed. Start main 4b5f7984; OPEN PR #628 (prev run 018f025a
+  head bb791d72) reused; branch already AWAITING-QA."
 ---
 
 # FLY-3224 progress
-**phase**: design (1/3)
-**next**: design review on rebound plan
+**phase**: design (2/3)
+**next**: publish design HTML, report, complete
 
-**handoff**: Design run 61e8c550 exec 0283542e done: Codex gpt-6-sol/xhigh R1 CHANGES_REQUESTED (1 HIGH git-status fail-open, fixed) R2 APPROVED (thread 01a110c8-a5d1, request 629eef30, plan blob dea918d6), await-codex-gate passed, HTML published 8397083e. Start main 436bee27 residue FIXED-FOR-CLAIM 1; no OPEN PR.
+**handoff**: Design run 32e818f1 exec 533d28a3: Codex gpt-6-sol/xhigh R1 APPROVED 0 findings (thread 01a11109-e0e3, request c2b1b945, plan blob 93f25d87), await-codex-gate passed. Start main 4b5f7984; OPEN PR #628 (prev run 018f025a head bb791d72) reused; branch already AWAITING-QA.
