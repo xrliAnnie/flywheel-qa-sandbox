@@ -5,11 +5,11 @@ Issue: FLY-3224 (https://linear.app/geoforge3d/issue/FLY-3224/qa-sbx-fly-3224-re
 
 ## 当前证据
 
-这是 `xrliAnnie/flywheel-qa-sandbox` 内的文档演练。本轮 run：`8d7f9f07-5449-497d-bd86-75cd021b4da2`；设计 exec：`eb5ea161-c773-47e0-a7ae-461dc4bf32f4`。已取得 `yours phase=design epoch=1 node=eng_design attempt=1`；activation：`activation:eb5ea161-c773-47e0-a7ae-461dc4bf32f4:8d7f9f07-5449-497d-bd86-75cd021b4da2:eng_design:1`。
+这是 `xrliAnnie/flywheel-qa-sandbox` 内的文档演练。本轮 run：`2dd4ec8c-dffe-4b3f-9143-6e86eebd6df8`；设计 exec：`003ef467-95c3-4a16-b0fd-e06dc2ed2b13`。已取得 `yours phase=design epoch=1 node=eng_design attempt=1`；activation：`activation:003ef467-95c3-4a16-b0fd-e06dc2ed2b13:2dd4ec8c-dffe-4b3f-9143-6e86eebd6df8:eng_design:1`。
 
-- 取得 TURN 时分支已包含新鲜 main `2f22229e79d309b765a6cfa729478a967f0fa4af`，无需技术同步合并。已逐条读取 `origin/main:qa-sbx/fly3224/README.md`，blob 为 `c4a1b3334b84d73b95cf4e2943c2c8f1474aef87`。
-- 当前分支：`project-slot-2-FLY-3224`；演练文件：`qa-sbx/fly3224/project-slot-2-FLY-3224.md`。分支上继承的两行是 `QA-SBX FLY-3224 drill` / `FIXED-FOR-CLAIM 3`（上一轮 run e37d69c6 的返工内容）；main 上为历史 `FIXED-FOR-CLAIM 1`，这里的 3 和 1 都不能当作本轮 QA 编号。本轮首次交付须先写回 `AWAITING-QA`，因此会有真实内容提交。
-- 当前分支已有 OPEN PR #628（上一轮 run e37d69c6 的首次交付与 claim 3 返工，未合并，头 `288e5f94`）。原有 progress.md 属于上一轮；本轮复用该 PR，本轮进度重新绑定执行身份，历史 PR 与账本指针不代表本轮交付。后续实现需重新检查 PR 状态，不能沿用旧评审、旧 CI 或旧账本。
+- 取得 TURN 时分支落后新鲜 main `666867793919811e893b4703cb452f449904635d`，已做技术同步合并（`7bdce71fe`，无冲突，未触及演练文件）。已逐条读取 `origin/main:qa-sbx/fly3224/README.md`，blob 为 `c4a1b3334b84d73b95cf4e2943c2c8f1474aef87`。
+- 当前分支：`project-slot-2-FLY-3224`；演练文件：`qa-sbx/fly3224/project-slot-2-FLY-3224.md`。分支上继承的两行是 `QA-SBX FLY-3224 drill` / `FIXED-FOR-CLAIM 5`（上一轮 run 8d7f9f07 的返工内容）；main 上为历史 `FIXED-FOR-CLAIM 1`，这里的 5 和 1 都不能当作本轮 QA 编号。本轮首次交付须先写回 `AWAITING-QA`，因此会有真实内容提交。
+- 当前分支已有 OPEN PR #628（上一轮 run 8d7f9f07 的首次交付与 claim 5 返工，未合并，头 `41afc700`）。原有 progress.md 属于上一轮；本轮复用该 PR，本轮进度重新绑定执行身份，历史 PR 与账本指针不代表本轮交付。后续实现需重新检查 PR 状态，不能沿用旧评审、旧 CI 或旧账本。分支上另有他人 QA 负向测试遗留的 `fly2966-qa-negative.txt`（提交 `41afc700`）：不属于本演练，按 README 不碰它，只在交付说明中如实列出。
 - 已读取 CLAUDE.md、项目声明的 onboarding、产品体验规范及架构概览。仓库配置中的旧 `test-slot-4` 身份不覆盖注入的 `test-slot-2` 和上述执行身份；不改配置，不访问生产存储。
 
 ## 方案与调研结论
