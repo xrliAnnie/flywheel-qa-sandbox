@@ -1,19 +1,19 @@
 ---
 issue: FLY-3150
-phase: implement
-phaseCursor: 3/4
-updated: 2026-10-06T00:32:04.597Z
-nextStep: "hand-in 2: line 2 -> FIXED-FOR-CLAIM 1 (run 7a850ba8)"
+phase: design
+phaseCursor: 4/4
+updated: 2026-10-06T08:28:51.740Z
+nextStep: "implement hand-in 1: line 2 -> AWAITING-QA (run a9716d46)"
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
   pr: "602"
-handoff: run=7a850ba8 implement attempt 2; QA claim=1;
-  PREV=c2835f15212a29a04c1848bdfc53407156c0a0c3
+handoff: run=a9716d46 design approved (codex r1 APPROVED, plan blob cc970f13);
+  implement hand-in 1 next
 ---
 
 # FLY-3150 progress
-**phase**: implement (3/4)
-**next**: hand-in 2: line 2 -> FIXED-FOR-CLAIM 1 (run 7a850ba8)
+**phase**: design (4/4)
+**next**: implement hand-in 1: line 2 -> AWAITING-QA (run a9716d46)
 
-**handoff**: run=7a850ba8 implement attempt 2; QA claim=1; PREV=c2835f15212a29a04c1848bdfc53407156c0a0c3
+**handoff**: run=a9716d46 design approved (codex r1 APPROVED, plan blob cc970f13); implement hand-in 1 next
