@@ -1,6 +1,6 @@
 # FLY-3226 真 Runner 通用演练(529 房间) — 实施计划
 Issue: FLY-3226 (https://linear.app/geoforge3d/issue/FLY-3226/qa-sbx-fly-3226-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-05(run `d24cf9f7`,exec `51383437`,设计节点 `eng_design`,slot-4)
+日期: 2026-10-06(run `615c8900`,exec `107358f5`,设计节点 `eng_design`,slot-4)
 基于: 无(README 规定"一份短 plan 足够,不需要 research 文档";同文件夹 exploration.md 是旧 run 留档,本轮不依赖)
 
 ## 1. 范围
@@ -12,9 +12,10 @@ Issue: FLY-3226 (https://linear.app/geoforge3d/issue/FLY-3226/qa-sbx-fly-3226-re
 
 ## 2. 起点(派发快照)
 
-- 分支起点 = `926269a37`(上一 run `26677b9a` 的 PR #616 合入点)。派发后 `origin/main` 又前进到 `dc103115f`(#617,只改 `engineering/doc/FLY-3224-real-runner-drill/` 下文档,与 `$F` 无关)→ 不合并 main;PR 合并基仍是 `926269a37`。本分支此前 PR(…#589、#616)全部 MERGED,远端无本分支、无 OPEN PR → 交付 #1 推分支并开**新 PR**。
-- `origin/main:"$F"` = `QA-SBX FLY-3226 drill\nFIXED-FOR-CLAIM 1\n`(旧 run 残留,main 与合并基相同)→ 交付 #1 是把第 2 行**重置**为 `AWAITING-QA`。
-- 旧 run(`26677b9a` 及更早)的 HANDIN / claim / 评审 / CI / PR / 设计 HTML 一律不作本轮证据;ledger handoff 已在本轮开头覆盖。
+- 本轮续接上一 run `d24cf9f7` 留下的 **OPEN PR #619**(头 `1d48555fe`,MERGEABLE/CLEAN,远端分支头同为 `1d48555fe`)。按 BRANCH CONTINUITY 在其上继续:不 force、不新开 PR、不合并 main。
+- 分支 `"$F"` = `QA-SBX FLY-3226 drill\nFIXED-FOR-CLAIM 4\n`(上一 run claim 4 残留);`origin/main:"$F"` = `…FIXED-FOR-CLAIM 1\n`,合并基 `926269a37`。`origin/main` 已前进到 `08c9de878`(#617/#620/#615 只改 FLY-3224/FLY-3228 文件,与 `$F` 无关)→ 不合并。
+- 交付 #1 = 把第 2 行从 `FIXED-FOR-CLAIM 4` **重置**为 `AWAITING-QA`;PR 级演练 diff 随之变为 `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`。
+- 上一 run 的 HANDIN / claim 4 / 评审 / CI / 设计 HTML 一律不作本轮证据;ledger handoff 已在本轮开头覆盖。
 
 ## 3. 实现(后继实现节点)
 
@@ -24,14 +25,14 @@ Issue: FLY-3226 (https://linear.app/geoforge3d/issue/FLY-3226/qa-sbx-fly-3226-re
 **交付 #1(提示词无 "QA fix context")**
 1. `BASE=$(git rev-parse HEAD)`。若工作树干净且 `git show "$BASE:$F" | cmp - <(exp1)` 退出 0(重试已提交)→ 不重复提交,`IMPL1=$BASE`;否则 `exp1 > "$F"`,`exp1 | cmp - "$F"` 自检,只 `git add "$F"`,提交 `docs(qa-sbx): FLY-3226 drill hand-in`,`IMPL1=$(git rev-parse HEAD)`。
 2. 写 ledger(`--phase implement --cursor 1/2`,它只提交 `$L`);工作树干净后 `HANDIN1=$(git rev-parse HEAD)`。
-3. 核验:(a) `$BASE..$IMPL1` 为空或恰好 `M "$F"`,patch 只有 `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`;(b) `$IMPL1..$HANDIN1` 只含 `$L`,无合并提交;(c) `git diff --name-only origin/main...$HANDIN1 -- . ':(exclude)engineering/doc/FLY-3226-real-runner-drill'` 恰好一行 `$F`;(d) `git show "$HANDIN1:$F" | cmp - <(exp1)` 退出 0。任一不过 → blocked。
-4. `git push -u origin HEAD`(fast-forward,不 force);无 OPEN PR 则 `gh pr create`,标题 `FLY-3226 QA-SBX FLY-3226 real-runner drill (run d24cf9f7)`,正文写 `run=d24cf9f7 HANDIN1=<完整 SHA>`、核验结果、`e2e_529_exempt` 说明;重试时复用本轮 OPEN PR。确认远端头 = PR 头 = `$HANDIN1` 后按实现节点自身的完成命令交付。
+3. 核验:(a) `$BASE..$IMPL1` 为空或恰好 `M "$F"`,patch 只有 `-FIXED-FOR-CLAIM 4` / `+AWAITING-QA`;(b) `$IMPL1..$HANDIN1` 只含 `$L`,无合并提交;(c) `git diff --name-only origin/main...$HANDIN1 -- . ':(exclude)engineering/doc/FLY-3226-real-runner-drill'` 恰好一行 `$F`;(d) `git show "$HANDIN1:$F" | cmp - <(exp1)` 退出 0。任一不过 → blocked。
+4. `git push origin HEAD`(fast-forward,不 force)到 PR #619;`gh pr edit 619` 把标题改为 `FLY-3226 QA-SBX FLY-3226 real-runner drill (run 615c8900)`,正文写 `run=615c8900 HANDIN1=<完整 SHA>`、核验结果、`e2e_529_exempt` 说明(旧 run 内容移到"历史"小节或删除,不作证据)。PR 若已非 OPEN → 开新 PR 同标题。确认远端头 = PR 头 = `$HANDIN1` 后按实现节点自身的完成命令交付。
 
 **交付 #2(提示词有 "QA fix context",首行 `QA verdict to fix: claim <id> ...`)**
 1. 用 `^QA verdict to fix: claim (\S+)` 取 `ID`,原样复制;取不到 → blocked,不猜。
 2. `PREV` = 本轮 `HANDIN1`;确认它是 HEAD 祖先且 `git show "$PREV:$F" | cmp - <(exp1)` 退出 0。
 3. 若工作树干净且 `git show "HEAD:$F" | cmp - <(exp2)` 退出 0 → 不重复提交;否则 `exp2 > "$F"`,自检,只提交 `$F`:`docs(qa-sbx): FLY-3226 drill fix for claim $ID`。写 ledger;`HANDIN2=$(git rev-parse HEAD)` 冻结。
-4. 核验:`git diff $PREV..$HANDIN2 -- "$F"` 恰为 `-AWAITING-QA` / `+FIXED-FOR-CLAIM $ID`;`git show "$HANDIN2:$F" | cmp - <(exp2)` 退出 0;`$PREV..$HANDIN2` 只含 `$F` + `$L`,无合并提交。`ID=1` 时 PR 级演练 diff 为空属预期(合并基就是 claim 1 残留),返工由区间 patch 证明。
+4. 核验:`git diff $PREV..$HANDIN2 -- "$F"` 恰为 `-AWAITING-QA` / `+FIXED-FOR-CLAIM $ID`;`git show "$HANDIN2:$F" | cmp - <(exp2)` 退出 0;`$PREV..$HANDIN2` 只含 `$F` + `$L`,无合并提交。`ID=1` 时 PR 级演练 diff 对 `$F` 为空属预期(main 残留就是 claim 1),返工由区间 patch 证明。
 5. 推送同一 PR(fast-forward),正文追加 `HANDIN2=<完整 SHA>` 与 claim id;三处头一致后交付。
 
 通则:commit message / PR 标题不得含 `[skip ci]` / `[ci skip]` / `[no ci]` / `[skip actions]` / `[actions skip]` / `skip-checks:`。不合并 main、不 rebase、不 force;PR 若 `CONFLICTING` → 停、走 blocked。不问 Lead(房间无人值守)。
@@ -54,7 +55,7 @@ sequenceDiagram
     participant I as 实现节点
     participant Q as QA 节点
     D->>I: 已评审 plan
-    I->>Q: 交付 #1:第 2 行 FIXED-FOR-CLAIM 1 → AWAITING-QA,开新 PR
+    I->>Q: 交付 #1:第 2 行 FIXED-FOR-CLAIM 4 → AWAITING-QA,续用 PR #619
     Q->>I: fixed-for-claim = fail(planted),claim id
     I->>Q: 交付 #2:FIXED-FOR-CLAIM id
     Q->>Q: 重验 → pass
