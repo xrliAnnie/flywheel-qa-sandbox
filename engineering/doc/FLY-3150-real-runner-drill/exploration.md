@@ -622,3 +622,4 @@ TURN:`yours phase=design epoch=1 run=4dea7fe2… node=eng_design attempt=1`(exec
 - run `a9716d46` 的 PR #622 已合入(`1e5ac7eec`)、远端分支已删;本地分支 = `origin/main` = `436bee277`(之后主干只多了 FLY-3224/3228 各自文件夹的演练提交,不碰本文件夹与 `"$F"`)→ 不同步,首次推送新建远端分支并新开 PR。
 - 起点:`"$F"` = main 上残留的 `FIXED-FOR-CLAIM 1` → 交付 #1 走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`)。旧 progress.md handoff(`run=a9716d46 implement attempt 2; QA claim=1; PREV=251a20d5…`)不是本轮证据。
 - 与 §42 同形,plan 沿用 §42 已评审结构,只更新本轮起点与 run id。
+- Codex 设计评审(gpt-6-sol/xhigh,thread `01a110ad-9050…`,turn `01a110ad-9a8e…`)第 1 轮 APPROVED,HIGH 0 / MEDIUM 0 / LOW 0。已评审 plan blob `b0c86d2f…`(requestId `523cd61c…`),`await-codex-gate design` 通过。设计 HTML 只更新 run id / 起点快照并重渲 d1 图。
