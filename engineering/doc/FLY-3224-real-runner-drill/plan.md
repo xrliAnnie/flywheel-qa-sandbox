@@ -5,20 +5,21 @@ Issue: FLY-3224 (https://linear.app/geoforge3d/issue/FLY-3224/qa-sbx-fly-3224-re
 
 ## 目标与范围
 
-在 529 sandbox 完成一次真实的首轮失败 → 按失败记录编号返工 → 独立重验。每个节点先取得注入的 TURN，读 inbox 与新鲜 main 的 `qa-sbx/fly3224/README.md`；只在 `yours` 时写共享工作树。本轮 run 是 `1f3de749-9b98-4299-bdc0-adcc9fc31536`；后续节点使用自己的 exec、activation、gate 与交付身份。
+在 529 sandbox 完成一次真实的首轮失败 → 按失败记录编号返工 → 独立重验。每个节点先取得注入的 TURN，读 inbox 与新鲜 main 的 `qa-sbx/fly3224/README.md`；只在 `yours` 时写共享工作树。本轮 run 是 `2dd4ec8c-dffe-4b3f-9143-6e86eebd6df8`；后续节点使用自己的 exec、activation、gate 与交付身份。
 
 演练内容只允许 `qa-sbx/fly3224/project-slot-2-FLY-3224.md`，分支名必须为 `project-slot-2-FLY-3224`。设计契约要求的协议产物仅复用 `engineering/doc/FLY-3224-real-runner-drill/` 已有文件；后续节点只更新自身契约要求的账本/证据。README 明确不需要 research.md，调研证据见 exploration.md。范围回复未覆盖强制文档的细节，按保守方案交付既有协议产物并说明，不新增研究或演练实现。
 
-设计起点 main：`5fb86bfb34d2b14bafd313f0a08ce8019bb36b07`；README blob：`c4a1b3334b84d73b95cf4e2943c2c8f1474aef87`。目标文件已有历史 `FIXED-FOR-CLAIM 4`。当前无同分支 OPEN PR；这不代表本轮已经交付或已有 QA claim。
+设计起点 main：`666867793919811e893b4703cb452f449904635d`（已技术同步合并）；README blob：`c4a1b3334b84d73b95cf4e2943c2c8f1474aef87`。目标文件在分支上是上一轮返工写入的 `FIXED-FOR-CLAIM 5`（main 上为历史 `FIXED-FOR-CLAIM 1`），本轮首次交付会把第二行改回 `AWAITING-QA`。同分支 OPEN PR #628 是上一轮遗留；实现节点复用它，但这不代表本轮已经交付或已有 QA claim——本轮首次交付 SHA 取实现节点核对后的 PR 头，旧评审、旧 CI 不作本轮证据。
 
 ## 第一次交付（实现节点）
 
-- [ ] 取得 TURN；工作树非空先核对归属，不覆盖他人或恢复中未提交的内容。记录本轮起点 SHA（提交版本的唯一编号）。没有 `QA fix context` 时写入精确两行，已有相同内容则跳过重复内容提交。
+- [ ] 取得 TURN；`git status` 必须单独赋值并成功（失败即停止，不写文件），工作树非空先核对归属，不覆盖他人或恢复中未提交的内容。记录本轮起点 SHA（提交版本的唯一编号）。没有 `QA fix context` 时写入精确两行，已有相同内容则跳过重复内容提交。
 
 ```bash
 (
   set -eu
-  test -z "$(git status --porcelain)"
+  DRILL_STATUS=$(git status --porcelain)
+  test -z "$DRILL_STATUS"
   test "$(git branch --show-current)" = project-slot-2-FLY-3224
   printf 'QA-SBX FLY-3224 drill\nAWAITING-QA\n' > qa-sbx/fly3224/project-slot-2-FLY-3224.md
   printf 'QA-SBX FLY-3224 drill\nAWAITING-QA\n' | cmp - qa-sbx/fly3224/project-slot-2-FLY-3224.md
@@ -37,7 +38,8 @@ Issue: FLY-3224 (https://linear.app/geoforge3d/issue/FLY-3224/qa-sbx-fly-3224-re
 ```bash
 (
   set -eu
-  test -z "$(git status --porcelain)"
+  DRILL_STATUS=$(git status --porcelain)
+  test -z "$DRILL_STATUS"
   test "$(git branch --show-current)" = project-slot-2-FLY-3224
   test -n "$DRILL_CLAIM"
   case "$DRILL_CLAIM" in *[[:space:]]*) exit 1 ;; esac
@@ -59,7 +61,7 @@ Issue: FLY-3224 (https://linear.app/geoforge3d/issue/FLY-3224/qa-sbx-fly-3224-re
 | `fixed-for-claim` | 恒为 `fail`，evidence 精确为 `round 1: no previous QA claim yet` | 第二行仅在逐字等于 `FIXED-FOR-CLAIM <id>` 时 pass；编号来自 `Previous QA verdict: claim <id>` |
 | `e2e_529_exempt` | `not_run`，`exempt_category: docs_only`，reason `Markdown-only drill; no room deployment` | 同左 |
 
-编号缺失不猜测。排除注入要求的协议文档，PR diff 只能包含目标演练文件或为空；若本轮编号碰巧为 4，最终内容可能与 main 相同，仍须保留本轮首次交付及返工之间的 patch 和 QA 回执。检查精确两行、范围及编号；无程序或测试文件改动，不新增测试套件。本地遵守 local-test-policy/v2，只运行明确文件和注入固定 smoke；只有 frozen-head CI OK 是全套证据。
+编号缺失不猜测。范围分两层核对：(1) **本轮提交**（从设计起点 `16d2477be` 之后）排除注入要求的协议文档（本文件夹与 `engineering/doc/milestones/FLY-3224.md`）后只能改目标演练文件；(2) **整个 PR #628 相对 main** 已知另含外来文件 `fly2966-qa-negative.txt`（QA 负向测试提交 `41afc700`，早于本轮，不属本演练）。实现节点不得修改或删除它（README：只碰演练文件），首次交付前用非阻塞 `ask` 向 Lead 报告并在 PR 正文与 handoff 中如实列出；只有 Lead 明确授权时才以单独提交移除。是否带着它合并由 ship 门的所有者决定，本链路不 merge。演练文件本身若本轮编号碰巧为 1，最终内容可能与 main 相同，仍须保留本轮首次交付及返工之间的 patch 和 QA 回执。检查精确两行、范围及编号；无程序或测试文件改动，不新增测试套件。本地遵守 local-test-policy/v2，只运行明确文件和注入固定 smoke；只有 frozen-head CI OK 是全套证据。
 
 ## 查询与索引
 

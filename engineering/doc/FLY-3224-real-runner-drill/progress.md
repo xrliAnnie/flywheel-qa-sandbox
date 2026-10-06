@@ -1,20 +1,20 @@
 ---
 issue: FLY-3224
 phase: implement
-phaseCursor: 3/3
-updated: 2026-10-06T09:19:30.318Z
-nextStep: QA claim 1 fixed in 5e0fb55f4; verify new frozen head review and CI
-  then needs_review PR 624
+phaseCursor: 2/3
+updated: 2026-10-06T20:14:39.411Z
+nextStep: Claim 1 fix verified; freeze after milestone, fresh review/CI,
+  complete needs_review PR 628
 chunks: []
 pointers: {}
-handoff: "Design run 1f3de749 exec b95f6cfb done: Codex gpt-6-sol/xhigh R1
-  APPROVED (thread 01a11072-0bb0, request f8a2f643, plan blob 46ccc7ba),
-  await-codex-gate passed, HTML published d4c91d1c. Start main 5fb86bfb residue
-  FIXED-FOR-CLAIM 4; no OPEN PR."
+handoff: Run 2dd4ec8c; implement exec cd4077f3, attempt 2, epoch 4. QA claim 1
+  on first hand-in 83d01d473 authorizes FIXED-FOR-CLAIM 1. Content b3d1b1e36
+  changes only line 2; exact bytes and diff check passed. PR 628 reused; foreign
+  residue disclosed. Fresh review and CI pending.
 ---
 
 # FLY-3224 progress
-**phase**: implement (3/3)
-**next**: QA claim 1 fixed in 5e0fb55f4; verify new frozen head review and CI then needs_review PR 624
+**phase**: implement (2/3)
+**next**: Claim 1 fix verified; freeze after milestone, fresh review/CI, complete needs_review PR 628
 
-**handoff**: Design run 1f3de749 exec b95f6cfb done: Codex gpt-6-sol/xhigh R1 APPROVED (thread 01a11072-0bb0, request f8a2f643, plan blob 46ccc7ba), await-codex-gate passed, HTML published d4c91d1c. Start main 5fb86bfb residue FIXED-FOR-CLAIM 4; no OPEN PR.
+**handoff**: Run 2dd4ec8c; implement exec cd4077f3, attempt 2, epoch 4. QA claim 1 on first hand-in 83d01d473 authorizes FIXED-FOR-CLAIM 1. Content b3d1b1e36 changes only line 2; exact bytes and diff check passed. PR 628 reused; foreign residue disclosed. Fresh review and CI pending.
