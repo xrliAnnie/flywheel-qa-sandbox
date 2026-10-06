@@ -9,7 +9,7 @@ Issue: FLY-3224 (https://linear.app/geoforge3d/issue/FLY-3224/qa-sbx-fly-3224-re
 
 - 取得 TURN 时分支版本已等于新鲜 main `eb30f1c0495de00751db2a324915f3b0b66637af`，无需同步。已逐条读取 `origin/main:qa-sbx/fly3224/README.md`，blob 为 `c4a1b3334b84d73b95cf4e2943c2c8f1474aef87`。
 - 当前分支：`project-slot-2-FLY-3224`；演练文件：`qa-sbx/fly3224/project-slot-2-FLY-3224.md`。继承的两行是 `QA-SBX FLY-3224 drill` / `FIXED-FOR-CLAIM 1`；这个 1 是历史内容，不能当作本轮 QA 编号。
-- 查询当前分支的 OPEN PR 返回空列表。原有 progress.md 属于旧运行并指向 PR #585；本轮进度已重新绑定执行身份并清除旧 PR 指针。后续实现需重新检查 PR 状态，不能沿用旧评审、旧 CI 或旧账本。
+- 查询当前分支的 OPEN PR 返回空列表。原有 progress.md 属于旧运行并指向 PR #585；本轮进度已重新绑定执行身份；账本里残留的 `pr: "585"` 指针是已合并的历史 PR，不代表本轮交付。后续实现需重新检查 PR 状态，不能沿用旧评审、旧 CI 或旧账本。
 - 已读取 CLAUDE.md、项目声明的 onboarding、产品体验规范及架构概览。仓库配置中的旧 `test-slot-4` 身份不覆盖注入的 `test-slot-2` 和上述执行身份；不改配置，不访问生产存储。
 
 ## 方案与调研结论
