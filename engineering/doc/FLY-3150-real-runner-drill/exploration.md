@@ -599,3 +599,11 @@ TURN:`yours phase=design epoch=1 run=4dea7fe2… node=eng_design attempt=1`(exec
 - 起点:`"$F"` = main 上残留的 `FIXED-FOR-CLAIM 1` → 交付 #1 走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`)。旧 progress.md handoff(`run=ef0f0e9c attempt=2; QA claim=1; PREV=6a57d6b7…`)不是本轮证据。
 - 与 §39 同形,plan 沿用 §39 已评审结构,只更新本轮起点与 run id;§39 的 LOW(交付 #1 同步判定区间)本轮不同步、不受影响,仍保留为已知提示。
 - Codex 设计评审(gpt-6-astra/xhigh,thread `01a10e47-7fa9…`)第 1 轮 APPROVED,干净 "Turn completed";HIGH 0 / MEDIUM 0 / LOW 1(仍是 §39 的同步判定区间提示,本轮不同步、不受影响)。已评审 plan blob `b4a38ee7…`。
+
+## 41. 本次派发审计(run `7a850ba8`,2026-10-05,slot-1)
+
+- 派发:exec `5df027b6`,TURN `yours phase=design epoch=1 attempt=1`。README(`origin/main:qa-sbx/fly2167/README.md`)重读无变化。onboard skill 不存在 → 直接 `stage set brainstorm`。
+- run `1ec283f0` 的 PR #609 已合入、远端分支已删;本地分支 = `origin/main` = `357fe55a3`(即 #609 的合入提交,之后主干无新提交)→ 不同步,首次推送新建远端分支并新开 PR。
+- 起点:`"$F"` = main 上残留的 `FIXED-FOR-CLAIM 1` → 交付 #1 走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`)。旧 progress.md handoff(`run=1ec283f0 attempt=2; QA claim=1; PREV=4211ee4e…`)不是本轮证据。
+- 与 §40 同形,plan 沿用 §40 已评审结构,只更新本轮起点与 run id;§39 的 LOW(交付 #1 同步判定区间)本轮不同步、不受影响,仍保留为已知提示。
+- Codex 设计评审(gpt-6-astra/xhigh,thread `01a10e91-926c…`)第 1 轮 APPROVED,干净 "Turn completed";HIGH 0 / MEDIUM 0 / LOW 1(仍是 §39 的同步判定区间提示,本轮不同步、不受影响)。已评审 plan blob `23993cd0…`(requestId `076ab4b3…`),`await-codex-gate design` 通过。
