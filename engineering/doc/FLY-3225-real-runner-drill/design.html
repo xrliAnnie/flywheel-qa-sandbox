@@ -57,14 +57,14 @@
 <header>
   <h1>FLY-3225 两行文件演练 — 设计</h1>
   <div class="meta">Issue: <a href="https://linear.app/geoforge3d/issue/FLY-3225/qa-sbx-fly-3225-real-runner-generalized-drill-529-room-only">FLY-3225</a></div>
-  <div class="meta">日期: 2026-10-05</div>
+  <div class="meta">日期: 2026-10-06</div>
   <div class="meta">基于: <code>plan.md</code></div>
 </header>
 <section class="card navy" id="overview" data-title="1. 一句话总结">
   <h2><span class="num">1</span>一句话总结</h2>
   <p><strong>用一份两行纯文本练习文件，故意让首次验收打回一次，验证“按裁决编号修复再交”的链路。</strong></p>
   <p>529 测试房间是与生产隔离的演练环境，这张练习单只在这里运行。分支是仓库里独立的一条修改线；本次分支为 <code>project-slot-3-FLY-3225</code>。</p>
-  <p><code>main</code> 是沙盒仓库的主分支；本轮编号为 <code>0cb91cd5-5c2b-47c6-a66c-c31f3e4027db</code>，已读取主分支上的任务书（内容与上一轮相同）。本轮是接续派发：分支接着上一轮 <code>086899cb</code> 的提交 <code>afe1e89</code>，上一轮的合并请求 #610 仍开放。继承的练习文件已是 <code>AWAITING-QA</code>，但那是上一轮的首交，不是本轮证据；旧进度、旧评审和旧检查结果都不沿用。</p>
+  <p><code>main</code> 是沙盒仓库的主分支；本轮编号为 <code>1b76e9dd-b374-46f8-9d90-5a7e632e10f3</code>，已读取主分支上的任务书（内容与上一轮相同）。本轮是接续派发：分支接着上一轮 <code>0cb91cd5</code> 的提交 <code>46242015</code>，上一轮的合并请求 #610 仍开放。继承的练习文件第二行是 <code>FIXED-FOR-CLAIM 1</code>，那是上一轮的修复结果，不是本轮证据，所以本轮首交要把它改回 <code>AWAITING-QA</code>；旧进度、旧评审和旧检查结果都不沿用。</p>
 </section>
 <section class="card" id="flow" data-title="2. 核心流程">
   <h2><span class="num">2</span>核心流程</h2>
