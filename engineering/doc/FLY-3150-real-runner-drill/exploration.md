@@ -1,7 +1,7 @@
 # FLY-3150 真 Runner 通用演练(529 房间) — 探索
 
 Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-06(2026-10-01 初版;§7–§21 为历史 —— slot-1 / slot-5 / slot-6 / slot-2 / slot-4 各轮;§22 为历史;§23–§25 为历史;§26–§27 为历史;§28 为历史;§29 为历史;§30 为历史;§31–§38 为历史;§39–§41 为历史;§42 为历史;§43 为本轮 run `2ebdb3cc`)
+日期: 2026-10-06(2026-10-01 初版;§7–§21 为历史 —— slot-1 / slot-5 / slot-6 / slot-2 / slot-4 各轮;§22 为历史;§23–§25 为历史;§26–§27 为历史;§28 为历史;§29 为历史;§30 为历史;§31–§38 为历史;§39–§41 为历史;§42 为历史;§43 为历史;§44 为本轮 run `3e80ce96`)
 基于: 无
 
 ## 1. 任务来源与唯一权威
@@ -623,3 +623,10 @@ TURN:`yours phase=design epoch=1 run=4dea7fe2… node=eng_design attempt=1`(exec
 - 起点:`"$F"` = main 上残留的 `FIXED-FOR-CLAIM 1` → 交付 #1 走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`)。旧 progress.md handoff(`run=a9716d46 implement attempt 2; QA claim=1; PREV=251a20d5…`)不是本轮证据。
 - 与 §42 同形,plan 沿用 §42 已评审结构,只更新本轮起点与 run id。
 - Codex 设计评审(gpt-6-sol/xhigh,thread `01a110ad-9050…`,turn `01a110ad-9a8e…`)第 1 轮 APPROVED,HIGH 0 / MEDIUM 0 / LOW 0。已评审 plan blob `b0c86d2f…`(requestId `523cd61c…`),`await-codex-gate design` 通过。设计 HTML 只更新 run id / 起点快照并重渲 d1 图。
+
+## 44. 本次派发审计(run `3e80ce96`,2026-10-06,slot-1)
+
+- 派发:exec `b9aebbf7`,TURN `yours phase=design epoch=1 attempt=1`。README(`origin/main:qa-sbx/fly2167/README.md`,blob `1de5e367…`)重读无变化。onboard skill 不存在 → 直接 `stage set brainstorm`。
+- run `cf71c93b` 的 PR #629 已合入(`280ba9c52`)、远端分支已删;本地分支 = `origin/main` = `280ba9c52`,零差异 → 不同步,首次推送新建远端分支并新开 PR。
+- 起点:`"$F"` = main 上残留的 `FIXED-FOR-CLAIM 1` → 交付 #1 走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`)。旧 progress.md handoff(`run=cf71c93b implement attempt 2; QA claim=1; PREV=1507d69f…`)不是本轮证据。
+- 与 §43 同形,plan 沿用已评审结构,只更新本轮起点与 run id。
