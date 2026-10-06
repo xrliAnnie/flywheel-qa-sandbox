@@ -7,15 +7,15 @@ Issue: FLY-3225 (https://linear.app/geoforge3d/issue/FLY-3225/qa-sbx-fly-3225-re
 
 目标是在隔离的 529 测试房间验证「首次交付 → 独立 QA 故意打回 → 按本次裁决编号修复 → 复验」。QA 是独立验收角色，claim 是验收生成的裁决编号。
 
-已 fetch 并读取 `origin/main:qa-sbx/fly3225/README.md`（任务书 blob `f025871e500834ce5bab62335a4d29bd6b308d78`，与上轮相同）。本轮是**接续派发**：分支 `project-slot-3-FLY-3225` 接续 `origin/project-slot-3-FLY-3225@46242015d3d5546ebbad96f99d7b5d300a1b938b`，**PR #610 仍开放**（未合并，head 即 `46242015`）。练习文件继承内容为两行 `QA-SBX FLY-3225 drill` / `FIXED-FOR-CLAIM 1`——这是旧 run `0cb91cd5` 的修复交付，不是本轮证据；旧 run（`6a7cfcf9`、`0e7cbf2d`、`9a0b4d9c`、`086899cb`、`0cb91cd5`）的评审、CI、QA 结论、claim 编号与账本 handoff 一律不沿用。
+已 fetch 并读取 `origin/main:qa-sbx/fly3225/README.md`（任务书 blob `f025871e500834ce5bab62335a4d29bd6b308d78`）。本轮是**新 run**：分支 `project-slot-3-FLY-3225` 起点为 `origin/main@280ba9c52dfb60a87a0a614b117ef25090751f41`，远端同名分支已不存在，此前的 PR #610 等**均已合并**，没有可复用的开放 PR。练习文件继承内容为两行 `QA-SBX FLY-3225 drill` / `FIXED-FOR-CLAIM 1`——这是旧 run 已合并的修复交付，不是本轮证据；旧 run（`1b76e9dd`、`0cb91cd5`、`086899cb` 等）的评审、CI、QA 结论、claim 编号与账本 handoff 一律不沿用。
 
-本 run 为 `1b76e9dd-b374-46f8-9d90-5a7e632e10f3`；设计 exec 为 `cc49312b-81a9-4d77-af5c-5325985ccf7a`；activation 为 `activation:cc49312b-81a9-4d77-af5c-5325985ccf7a:1b76e9dd-b374-46f8-9d90-5a7e632e10f3:eng_design:1`。已取得 design / epoch 1 / attempt 1 TURN（`yours`）；只有 `yours` 可写共享分支。
+本 run 为 `54a5ed1f-c0fb-441f-b8e8-8e94e128474a`；设计 exec 为 `d7951380-770d-4d15-9077-7c1e79488af6`；activation 为 `activation:d7951380-770d-4d15-9077-7c1e79488af6:54a5ed1f-c0fb-441f-b8e8-8e94e128474a:eng_design:1`。已取得 design / epoch 1 / attempt 1 TURN（`yours`）；只有 `yours` 可写共享分支。
 
 任务书明确只需短计划、不另写 research 文档，探索与调研结论合并在此；没有运行时代码消费者，无需外部调研。注入的设计完成契约另要求本目录的 `design.html`、本地 Mermaid 图源及工具管理的 `progress.md`。设计只刷新这些流程文档；实现唯一可改的文件为 `qa-sbx/fly3225/project-slot-3-FLY-3225.md`。不改任务书、代码、兄弟练习单或 Linear，不部署房间。
 
 ## 实施步骤
 
-- [ ] 接手先取得自己的 TURN，再读 main 任务书，用 `git branch --show-current` 确认目标文件名。在账本记录本 run 的 `runId`、本节点 `execId`、`activationId`、完整起点 SHA `implBase`、`firstHandin` 和主动提交清单 `ownCommits`。旧 run（含 `6a7cfcf9`、`0e7cbf2d`、`9a0b4d9c`、`086899cb`、`0cb91cd5`）的 `firstHandin`、评审、CI、QA 字段一律不得沿用，账本 handoff 必须先换成本 run 身份。只用注入的 progress 工具独立提交账本。
+- [ ] 接手先取得自己的 TURN，再读 main 任务书，用 `git branch --show-current` 确认目标文件名。在账本记录本 run 的 `runId`、本节点 `execId`、`activationId`、完整起点 SHA `implBase`、`firstHandin` 和主动提交清单 `ownCommits`。旧 run（含 `1b76e9dd`、`0cb91cd5`、`086899cb`）的 `firstHandin`、评审、CI、QA 字段一律不得沿用，账本 handoff 必须先换成本 run 身份。只用注入的 progress 工具独立提交账本。
 - [ ] **优先检查本次指令的修复上下文。** `QA fix context` 标题下第一条正文行若为 `QA verdict to fix: claim <id> ...`，只把第二行改为 `FIXED-FOR-CLAIM <id>`，逐字使用该编号（须匹配 `^[A-Za-z0-9._:-]+$`）。**修复前提是本 run 账本已记录 `firstHandin`**（`runId` 等于本 run）。前提不成立、上下文格式错误、缺编号或身份矛盾时**不写文件**，保留现状并报告异常，不猜编号、不落入首交分支。前提成立时第二行此刻是 `AWAITING-QA`，修复产生一个真实提交并记入 `ownCommits`；重试时该编号修复提交已在 `ownCommits` 才允许无差异记录达标 HEAD。
 - [ ] 无修复上下文且本 run 尚未首交时执行首交：用下方字节比较核对目标文件是否已恰为
 
@@ -24,14 +24,14 @@ Issue: FLY-3225 (https://linear.app/geoforge3d/issue/FLY-3225/qa-sbx-fly-3225-re
   AWAITING-QA
   ```
 
-  - 若不一致（本次接续的预期情形：继承的第二行是旧 run 的 `FIXED-FOR-CLAIM 1`）：写成上述精确两行（保留末尾换行），提交 `docs(qa-sbx): FLY-3225 drill hand-in`，记入 `ownCommits`，该提交即本 run 的 `firstHandin`。
+  - 若不一致（本次的预期情形：继承的第二行是旧 run 的 `FIXED-FOR-CLAIM 1`）：写成上述精确两行（保留末尾换行），提交 `docs(qa-sbx): FLY-3225 drill hand-in`，记入 `ownCommits`，该提交即本 run 的 `firstHandin`。
   - 若已一致：**不造空提交、不改文件**；在账本标注 `handinMode: inherited-content-no-diff`，以本 run 最后一次账本提交后的 HEAD 作为 `firstHandin`。这样「首交」由本 run 账本身份确立，而不是由继承内容推断。
 - [ ] 首交后的普通唤醒、CI 返工或主分支同步保留最近正确内容；只有有效修复上下文才改第二行。旧文件、旧账本和普通唤醒都不决定 QA 轮次。
-- [ ] 最后一次进度提交后正常 push，再以最终交付 HEAD 执行实现节点自己的评审、CI、PR 和完成流程。**复用开放的 PR #610**（base `main`），刷新其描述为本 run 身份，不新建重复 PR。提交信息、PR 标题不得含 `[skip ci]`、`[ci skip]`、`[no ci]`、`[skip actions]`、`[actions skip]` 或 `skip-checks:`。不 force-push、不撤销其他节点或合法 main 同步的提交。
+- [ ] 最后一次进度提交后正常 push，再以最终交付 HEAD 执行实现节点自己的评审、CI、PR 和完成流程。旧 PR 均已合并，**为本 run 新建一个 PR**（base `main`，标题 `docs(qa-sbx): FLY-3225 drill hand-in`），描述写本 run 身份；之后的修复复用这个新 PR，不再新建。提交信息、PR 标题不得含 `[skip ci]`、`[ci skip]`、`[no ci]`、`[skip actions]`、`[actions skip]` 或 `skip-checks:`。不 force-push、不撤销其他节点或合法 main 同步的提交。
 
 ## QA 验收
 
-QA 读取本次指令给出的交付 HEAD（未给出则读当前开放 PR 的 head SHA）。判轮只看本次 QA 指令：无 `QA re-verification context` 即首轮；复验编号仅取自 `Previous QA verdict: claim <id>`。
+QA 读取本次指令给出的交付 HEAD（未给出则读本 run 新建 PR 的 head SHA）。判轮只看本次 QA 指令：无 `QA re-verification context` 即首轮；复验编号仅取自 `Previous QA verdict: claim <id>`。
 
 | criterion id | 首轮 | 复验 |
 |---|---|---|
@@ -65,7 +65,7 @@ cmp "$expected" "$actual" || exit 1
 
 ## 设计交接
 
-本轮注册显式设计评审，只认服务端有效 `reviewVerdict=APPROVED`；旧 run（`6a7cfcf9`、`9a0b4d9c`、`086899cb`、`0cb91cd5` 等）的批准无效。提交并 push 计划、最终 HTML 与图源。页面含核心流程、结构、取舍、边界和逐节评论；评论按 `location.pathname` 隔离、存储异常受保护、按约 1800 字符分段且每段以 `【页面意见汇总】FLY-3225` 开头；复制失败有回退，只有一个 nonce 脚本且无外部依赖；派生文本 HTML 转义，运行时仅用 `textContent` / `value`。图用本地 mmdc 与不同 SVG id。
+本轮注册显式设计评审，只认服务端有效 `reviewVerdict=APPROVED`；旧 run（`1b76e9dd`、`0cb91cd5`、`086899cb` 等）的批准无效。提交并 push 计划、最终 HTML 与图源。页面含核心流程、结构、取舍、边界和逐节评论；评论按 `location.pathname` 隔离、存储异常受保护、按约 1800 字符分段且每段以 `【页面意见汇总】FLY-3225` 开头；复制失败有回退，只有一个 nonce 脚本且无外部依赖；派生文本 HTML 转义，运行时仅用 `textContent` / `value`。图用本地 mmdc 与不同 SVG id。
 
 提交的 HTML 发布并用注入的 `ask --report` 报告 hosted URL 后，运行 `complete --route phase_design_complete`，按返回指令 park。设计不实现、不派发后继、不创建或合并 PR、不申请 ship；阶段完成不等于 issue 完成。
 
