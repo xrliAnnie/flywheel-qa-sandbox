@@ -1,13 +1,14 @@
 ---
 issue: FLY-3227
 phase: implement
-phaseCursor: 2/4
-updated: 2026-10-06T07:20:34.877Z
-nextStep: Code review; reuse root PR 618; freeze then exact-head CI
+phaseCursor: 3/4
+updated: 2026-10-06T07:24:31.158Z
+nextStep: Code review APPROVED; freeze HEAD, server CI requirement, then
+  needs_review handoff; no commits after freeze
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
-**phase**: implement (2/4)
-**next**: Code review; reuse root PR 618; freeze then exact-head CI
+**phase**: implement (3/4)
+**next**: Code review APPROVED; freeze HEAD, server CI requirement, then needs_review handoff; no commits after freeze
