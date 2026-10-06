@@ -1,18 +1,17 @@
 ---
 issue: FLY-3226
-phase: implement
-phaseCursor: 2/2
-updated: 2026-10-06T20:00:50.887Z
-nextStep: review claim 1 fix, freeze CI, hand in PR 619
+phase: design
+phaseCursor: 1/4
+updated: 2026-10-06T22:59:09.673Z
+nextStep: rewrite plan for run e39cc50c (base 57e42464f, residue claim 1)
 chunks: []
 pointers: {}
-handoff: HANDIN1=61538961f28add637988959744a3440ec8cc3cd7 passed review and CI
-  37521599986; QA claim 1 planted fail fixed by exact FIXED-FOR-CLAIM 1 line. No
-  executable state paths apply to static markdown.
+handoff: "run e39cc50c started at design; base 57e42464f = origin/main; PR #619
+  merged, remote branch absent; old HANDIN/claim/PR evidence void"
 ---
 
 # FLY-3226 progress
-**phase**: implement (2/2)
-**next**: review claim 1 fix, freeze CI, hand in PR 619
+**phase**: design (1/4)
+**next**: rewrite plan for run e39cc50c (base 57e42464f, residue claim 1)
 
-**handoff**: HANDIN1=61538961f28add637988959744a3440ec8cc3cd7 passed review and CI 37521599986; QA claim 1 planted fail fixed by exact FIXED-FOR-CLAIM 1 line. No executable state paths apply to static markdown.
+**handoff**: run e39cc50c started at design; base 57e42464f = origin/main; PR #619 merged, remote branch absent; old HANDIN/claim/PR evidence void
