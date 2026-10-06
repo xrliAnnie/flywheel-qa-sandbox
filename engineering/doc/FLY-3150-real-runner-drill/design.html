@@ -52,7 +52,7 @@ pre{white-space:pre-wrap;word-break:break-word;background:#f0f0f3;border-radius:
 <li><span class="badge ok">采纳</span><b>主干若在两次交付之间前进,用普通合并同步</b>,冲突只允许在流程文档文件夹内。<br><span class="badge no">否决</span>rebase / 强推(force-push,覆盖远端历史):会改写共享分支,护栏明令禁止。</li>
 <li><span class="badge no">否决</span>写 research 文档或大段设计:README 明确「一份短 plan 足够」。</li>
 </ul>
-<p class="term">Codex 设计评审 = 由另一个 AI 模型(gpt-6-astra,最高推理档)独立审计划;本轮它对照真实 git 状态核对了:派发时分支 = 主干 <code>b472f5b58</code>、演练文件是残留的 <code>FIXED-FOR-CLAIM 1</code> → 第 1 次交付必须走正常重置;验收三条与 README 一致;往轮已通过的「记账文件白名单 + 节点规则优先 + 两种计数区间」处置仍成立;查询与索引一节「不适用」理由成立(不涉及任何数据库表)。第 1 轮 APPROVED(高 0 / 中 0 / 低 1:备用的「主干同步」分支里,第 1 次交付用来判断「是否发生过同步」的提交区间与同步发生的时间点表述不一致;本轮主干无需同步,完全不受影响,不阻断。计划保持评审通过时的原样,不为这条低优先级提示改动已评审版本)。CI = 持续集成,每次更新 PR 自动跑的检查。</p>
+<p class="term">Codex 设计评审 = 由另一个 AI 模型(gpt-6-sol,最高推理档)独立审计划;本轮它对照真实 git 状态核对了:派发时分支 = 主干 <code>b472f5b58</code>、演练文件是残留的 <code>FIXED-FOR-CLAIM 1</code> → 第 1 次交付必须走正常重置;验收三条与 README 一致;往轮已通过的「记账文件白名单 + 节点规则优先 + 两种计数区间」处置仍成立;查询与索引一节「不适用」理由成立(不涉及任何数据库表)。第 1 轮 APPROVED(高 0 / 中 0 / 低 0,无任何发现;评审模型 gpt-6-sol,最高推理档)。CI = 持续集成,每次更新 PR 自动跑的检查。</p>
 <textarea class="cmt" data-key="s5" aria-label="对「关键取舍与否决方案」的意见" placeholder="对这一节的意见(自动保存)"></textarea></section>
 
 <section class="card red" data-title="诚实边界"><h2>诚实边界</h2>
