@@ -11,6 +11,8 @@ Issue: FLY-3227 (https://linear.app/geoforge3d/issue/FLY-3227/qa-sbx-fly-3227-re
 
 范围解释：任务书明确允许一个短计划且禁止 research 文档，因此不另建 exploration/research。注入的节点协议同时强制进度账本和已提交、已发布的设计 HTML；本轮保守复用既有文档目录中的计划、图源、图和页面，只更新这些流程记录。任务书写明本房间没有人类 Lead、不需要提问；对任务书未覆盖之处采用保守方案并在交卷说明，不视为额外授权。本解释随交卷上报，流程记录不扩展演练验收条件。
 
+文件范围的权威划分（回应设计评审 r1 HIGH）：README 的“只碰下面这一个 markdown 文件”约束的是演练交付物——实现节点只写、只提交 `qa-sbx/fly3227/<branch>.md`，第 3 步用 `git diff-tree` 核验该提交只含这一个文件。设计节点的 `plan.md`、`progress.md` 与设计 HTML 来自注入的节点契约（DOC-FLOW、PROGRESS LEDGER、Founder design HTML 均为 MANDATORY），只位于 `engineering/doc/FLY-3227-real-runner-drill/`，不进入演练交付提交，也不被 QA 准则检查；它们与 README 不冲突，因为 README 第 1 行明确把自身定义为 issue 的任务、并允许“one short plan”，而计划必须以文件形式提交才能被评审。若调度程序日后要求设计节点零文件，则改为按调度程序指令执行。
+
 ## 实现步骤
 
 1. 实现节点先运行 `node "$FLYWHEEL_COMM_CLI" turn`，只有 `yours` 才写工作树。设 `DRILL_FILE="qa-sbx/fly3227/$(git branch --show-current).md"`。该交付轮首次进入时记录 `DRILL_ENTRY_HEAD=$(git rev-parse HEAD)`，用节点注入的 `progress` 命令存入既有账本；重启或重复投递复用这个值，不能重新取 HEAD 替换。无 **QA fix context** 的首次交付，即使旧文件已有修复标识，也设置 `DRILL_EXPECTED=$(printf 'QA-SBX FLY-3227 drill\nAWAITING-QA')`。
