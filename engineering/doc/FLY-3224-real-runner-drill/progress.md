@@ -2,19 +2,19 @@
 issue: FLY-3224
 phase: implement
 phaseCursor: 2/3
-updated: 2026-10-06T20:00:40.122Z
-nextStep: Freeze after milestone; effective code review, exact-head CI, complete
-  needs_review PR 628
+updated: 2026-10-06T20:14:39.411Z
+nextStep: Claim 1 fix verified; freeze after milestone, fresh review/CI,
+  complete needs_review PR 628
 chunks: []
 pointers: {}
-handoff: Run 2dd4ec8c; implement exec cd4077f3, attempt 1. Content 9f15e9a40
-  resets marker to AWAITING-QA. Exact bytes and diff check passed. PR 628
-  reused; foreign fly2966-qa-negative.txt remains disclosed. Final review and CI
-  pending.
+handoff: Run 2dd4ec8c; implement exec cd4077f3, attempt 2, epoch 4. QA claim 1
+  on first hand-in 83d01d473 authorizes FIXED-FOR-CLAIM 1. Content b3d1b1e36
+  changes only line 2; exact bytes and diff check passed. PR 628 reused; foreign
+  residue disclosed. Fresh review and CI pending.
 ---
 
 # FLY-3224 progress
 **phase**: implement (2/3)
-**next**: Freeze after milestone; effective code review, exact-head CI, complete needs_review PR 628
+**next**: Claim 1 fix verified; freeze after milestone, fresh review/CI, complete needs_review PR 628
 
-**handoff**: Run 2dd4ec8c; implement exec cd4077f3, attempt 1. Content 9f15e9a40 resets marker to AWAITING-QA. Exact bytes and diff check passed. PR 628 reused; foreign fly2966-qa-negative.txt remains disclosed. Final review and CI pending.
+**handoff**: Run 2dd4ec8c; implement exec cd4077f3, attempt 2, epoch 4. QA claim 1 on first hand-in 83d01d473 authorizes FIXED-FOR-CLAIM 1. Content b3d1b1e36 changes only line 2; exact bytes and diff check passed. PR 628 reused; foreign residue disclosed. Fresh review and CI pending.
