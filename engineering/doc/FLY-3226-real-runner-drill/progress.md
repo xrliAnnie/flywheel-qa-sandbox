@@ -1,21 +1,17 @@
 ---
 issue: FLY-3226
-phase: implement
-phaseCursor: 2/2
-updated: 2026-10-06T05:26:55.499Z
-nextStep: freeze head, ci-full ensure, complete
+phase: design
+phaseCursor: 1/4
+updated: 2026-10-06T06:10:09.269Z
+nextStep: rewrite plan for run d24cf9f7, design review
 chunks: []
 pointers: {}
-handoff: "run=26677b9a exec=4871c2eb node=eng_design done. Plan blob 60c979dc
-  APPROVED r1 (request 94c625b3, thread 01a10f9b, gpt-6-sol/xhigh). Base
-  a3cdce64e; main F line2 = FIXED-FOR-CLAIM 4 -> hand-in 1 resets to
-  AWAITING-QA; branch pushed with design docs only, no OPEN PR -> open NEW PR.
-  Non-blocking: verify CI ran on exact HANDIN SHA. Design HTML
-  http://127.0.0.1:54697/fw-reports-4d6446/r/497b3cabe0b76ccd4f093ebf496620ae/"
+handoff: run=d24cf9f7 exec=51383437 node=eng_design started; old run 26677b9a
+  evidence void
 ---
 
 # FLY-3226 progress
-**phase**: implement (2/2)
-**next**: freeze head, ci-full ensure, complete
+**phase**: design (1/4)
+**next**: rewrite plan for run d24cf9f7, design review
 
-**handoff**: run=26677b9a exec=4871c2eb node=eng_design done. Plan blob 60c979dc APPROVED r1 (request 94c625b3, thread 01a10f9b, gpt-6-sol/xhigh). Base a3cdce64e; main F line2 = FIXED-FOR-CLAIM 4 -> hand-in 1 resets to AWAITING-QA; branch pushed with design docs only, no OPEN PR -> open NEW PR. Non-blocking: verify CI ran on exact HANDIN SHA. Design HTML http://127.0.0.1:54697/fw-reports-4d6446/r/497b3cabe0b76ccd4f093ebf496620ae/
+**handoff**: run=d24cf9f7 exec=51383437 node=eng_design started; old run 26677b9a evidence void
