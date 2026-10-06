@@ -1,6 +1,6 @@
 # FLY-3256 手动切号后解冻额度待命 — 实施计划
 Issue: FLY-3256 (https://linear.app/geoforge3d/issue/FLY-3256/额度standby-撞墙进-codex-quota-standby-的体永远不解冻手动整机切号不产生-permitcapacity)
-日期: 2026-10-05
+日期: 2026-10-06
 基于: research.md
 
 > **For agentic workers:** 按任务逐项 TDD；每一步只跑本计划列出的具体测试文件。实现节点必须遵守 runner local-test-policy/v2，禁止任何 package test alias、目录、glob 或全量测试。

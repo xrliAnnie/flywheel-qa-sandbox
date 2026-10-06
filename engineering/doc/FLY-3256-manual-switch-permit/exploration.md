@@ -1,6 +1,6 @@
 # FLY-3256 手动切号后解冻额度待命 — 探索
 Issue: FLY-3256 (https://linear.app/geoforge3d/issue/FLY-3256/额度standby-撞墙进-codex-quota-standby-的体永远不解冻手动整机切号不产生-permitcapacity)
-日期: 2026-10-05
+日期: 2026-10-06
 基于: 无
 
 ## 一句话
@@ -115,4 +115,3 @@ FLY-2900 的 `codex_quota_capacity_permit` 只有两类：
 - 回归：没有新读数时仍 `hotswap_no_candidate`/原地等待，不产生替身体；FLY-2195 满载原地重试用例保持通过。
 - 巡检：CommDB status=timeout 但 TeamLeadDB 当前 standby 的 execution 出现在 roster；released/closed 对照不出现。
 - 时间：`2026-10-04 11:24:00` 在 PDT 主机按 UTC 计算，不能是 0m；非法时间输出 unavailable。
-
