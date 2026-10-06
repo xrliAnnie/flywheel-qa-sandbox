@@ -16,6 +16,10 @@ Issue: FLY-3228 (https://linear.app/geoforge3d/issue/FLY-3228/qa-sbx-fly-3228-re
 
 main 上已有上一轮的 `$F`(第 2 行 `FIXED-FOR-CLAIM 4`)、旧 progress / HTML,以及已合并的 PR #525/#545/#551/#575/#582/#587/#604/#607。其中的 claim id、HANDIN1、PR 号、SHA 都**不是本轮依据**;claim id 只取本轮提示词,`PREV` 只取本轮交付 #1 摘要。所以:交付 #1 是修改(`M`)而非新增;本轮 claim id 若又是 `4`,交付 #2 后 `$F` 与 main 逐字节相同,PR 级 diff 中 `$F` 可为空,此时以 `$PREV..HEAD` 的 patch 核验为准。
 
+## 2a. 设计节点本轮产物
+
+旧 `FLY-3228-design.html` 与旧发布 URL 属遗留,不复用。设计节点本轮在同一文件夹内重新生成设计 HTML:更新本轮 run / exec / 基线 SHA / 遗留 claim 等标识,mmdc 本地重渲图源为 SVG 内联,提交推送后用 `publish-report --publish-only` 发布得到本轮新 URL,并上报 Lead;`progress.md` 的 handoff 也显式改写为本轮内容。
+
 ## 3. 实现节点
 
 `L1='QA-SBX FLY-3228 drill'`
