@@ -1,13 +1,13 @@
 ---
 issue: FLY-3227
 phase: design
-phaseCursor: 2/4
-updated: 2026-10-06T07:13:54.754Z
-nextStep: design review round 1
+phaseCursor: 3/4
+updated: 2026-10-06T07:18:34.263Z
+nextStep: publish design HTML + complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
-**phase**: design (2/4)
-**next**: design review round 1
+**phase**: design (3/4)
+**next**: publish design HTML + complete
