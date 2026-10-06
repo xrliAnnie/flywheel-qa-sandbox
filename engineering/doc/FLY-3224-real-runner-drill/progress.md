@@ -2,20 +2,20 @@
 issue: FLY-3224
 phase: implement
 phaseCursor: 3/3
-updated: 2026-10-06T14:07:12.707Z
-nextStep: Fresh effective code review, frozen-head CI and needs_review completion
+updated: 2026-10-06T14:18:45.185Z
+nextStep: Review and CI for claim 3 rework, then needs_review
 chunks: []
 pointers: {}
-handoff: "Rework attempt 2 epoch 4; QA context claim 1 failed at first head
-  936f0eb. Only drill line 2 changed AWAITING-QA to FIXED-FOR-CLAIM 1. Before
-  byte check failed; after exact two-line LF check passed. Adjacent runtime
-  state paths inapplicable: Markdown only. local-tests none; room E2E docs_only
-  exempt/not_run, no deploy. No pre_handin.script; no new durable memory
-  lesson."
+handoff: "Run e37d69c6; exec 412bc5c5; implement attempt 2 epoch 9. QA claim 3
+  failed on first-hand-in e254093b3. Content commit 2f3b29ebe changes only drill
+  line 2 AWAITING-QA to FIXED-FOR-CLAIM 3; exact LF byte comparison red before,
+  green after. Reuse PR #628. local-tests none; adjacent runtime-state tests
+  inapplicable to Markdown. E2E docs_only exempt/not_run; no deploy. Fresh
+  review and frozen-head CI required. Supersedes prior-run claim 1 handoff."
 ---
 
 # FLY-3224 progress
 **phase**: implement (3/3)
-**next**: Fresh effective code review, frozen-head CI and needs_review completion
+**next**: Review and CI for claim 3 rework, then needs_review
 
-**handoff**: Rework attempt 2 epoch 4; QA context claim 1 failed at first head 936f0eb. Only drill line 2 changed AWAITING-QA to FIXED-FOR-CLAIM 1. Before byte check failed; after exact two-line LF check passed. Adjacent runtime state paths inapplicable: Markdown only. local-tests none; room E2E docs_only exempt/not_run, no deploy. No pre_handin.script; no new durable memory lesson.
+**handoff**: Run e37d69c6; exec 412bc5c5; implement attempt 2 epoch 9. QA claim 3 failed on first-hand-in e254093b3. Content commit 2f3b29ebe changes only drill line 2 AWAITING-QA to FIXED-FOR-CLAIM 3; exact LF byte comparison red before, green after. Reuse PR #628. local-tests none; adjacent runtime-state tests inapplicable to Markdown. E2E docs_only exempt/not_run; no deploy. Fresh review and frozen-head CI required. Supersedes prior-run claim 1 handoff.
