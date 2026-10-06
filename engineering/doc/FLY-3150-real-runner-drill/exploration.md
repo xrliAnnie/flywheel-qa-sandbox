@@ -631,3 +631,10 @@ TURN:`yours phase=design epoch=1 run=4dea7fe2… node=eng_design attempt=1`(exec
 - 起点:`"$F"` = main 上残留的 `FIXED-FOR-CLAIM 1` → 交付 #1 走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`)。旧 progress.md handoff(`run=cf71c93b implement attempt 2; QA claim=1; PREV=1507d69f…`)不是本轮证据。
 - 与 §43 同形,plan 沿用已评审结构,只更新本轮起点与 run id。
 - Codex 设计评审(gpt-6-sol/xhigh,thread `01a11128-5d08…`,turn `01a11128-642d…`)第 1 轮 APPROVED,HIGH 0 / MEDIUM 0 / LOW 0。已评审 plan blob `c513bd1f…`(requestId `8ed64429…`),`await-codex-gate design` 通过。注:`stage set design_review` 在 plan 提交并推送之前只回 "request pending",推送后重跑才拿到请求。设计 HTML 只更新 run id / 起点快照并重渲 d1 图。
+
+## 45. 本次派发审计(run `1262139d`,2026-10-06,slot-1)
+
+- 派发:exec `aac617a7`,TURN `yours phase=design epoch=1 attempt=1`。README(`origin/main:qa-sbx/fly2167/README.md`,blob `1de5e367…`)重读无变化。onboard skill 不存在 → 直接 `stage set brainstorm`。
+- 分支延续:run `3e80ce96` 只做完设计节点就结束(无交付、无 PR)。本地分支 = 远端同名分支 = `54975a87c`,比 `origin/main`(`280ba9c52`)多 5 个提交,全部只在本文件夹内;`origin/main` 是 HEAD 祖先 → 不同步,无 OPEN PR → 交付 #1 后新开 PR。
+- 起点:`"$F"` 在 HEAD 上仍是 main 残留的 `FIXED-FOR-CLAIM 1` → 交付 #1 走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`)。旧 progress.md handoff(`run=3e80ce96 design approved …`)与 run `3e80ce96` 的评审记录不是本轮证据。
+- 与 §44 同形,plan 沿用已评审结构,只更新本轮起点与 run id。
