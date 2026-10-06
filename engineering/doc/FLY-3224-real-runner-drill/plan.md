@@ -13,12 +13,13 @@ Issue: FLY-3224 (https://linear.app/geoforge3d/issue/FLY-3224/qa-sbx-fly-3224-re
 
 ## 第一次交付（实现节点）
 
-- [ ] 取得 TURN；工作树非空先核对归属，不覆盖他人或恢复中未提交的内容。记录本轮起点 SHA（提交版本的唯一编号）。没有 `QA fix context` 时写入精确两行，已有相同内容则跳过重复内容提交。
+- [ ] 取得 TURN；`git status` 必须单独赋值并成功（失败即停止，不写文件），工作树非空先核对归属，不覆盖他人或恢复中未提交的内容。记录本轮起点 SHA（提交版本的唯一编号）。没有 `QA fix context` 时写入精确两行，已有相同内容则跳过重复内容提交。
 
 ```bash
 (
   set -eu
-  test -z "$(git status --porcelain)"
+  DRILL_STATUS=$(git status --porcelain)
+  test -z "$DRILL_STATUS"
   test "$(git branch --show-current)" = project-slot-2-FLY-3224
   printf 'QA-SBX FLY-3224 drill\nAWAITING-QA\n' > qa-sbx/fly3224/project-slot-2-FLY-3224.md
   printf 'QA-SBX FLY-3224 drill\nAWAITING-QA\n' | cmp - qa-sbx/fly3224/project-slot-2-FLY-3224.md
@@ -37,7 +38,8 @@ Issue: FLY-3224 (https://linear.app/geoforge3d/issue/FLY-3224/qa-sbx-fly-3224-re
 ```bash
 (
   set -eu
-  test -z "$(git status --porcelain)"
+  DRILL_STATUS=$(git status --porcelain)
+  test -z "$DRILL_STATUS"
   test "$(git branch --show-current)" = project-slot-2-FLY-3224
   test -n "$DRILL_CLAIM"
   case "$DRILL_CLAIM" in *[[:space:]]*) exit 1 ;; esac
