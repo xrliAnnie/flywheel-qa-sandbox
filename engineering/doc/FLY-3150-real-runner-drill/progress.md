@@ -1,19 +1,18 @@
 ---
 issue: FLY-3150
 phase: design
-phaseCursor: 1/3
-updated: 2026-10-06T10:05:47.948Z
-nextStep: design review of plan.md (run 2ebdb3cc)
+phaseCursor: 3/3
+updated: 2026-10-06T10:09:16.360Z
+nextStep: "eng_implement: hand-in 1 per plan §3 (reset line 2 to AWAITING-QA)"
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
   pr: "602"
-handoff: run=a9716d46 implement attempt 2; QA claim=1;
-  PREV=251a20d577cc36835ba7cd36a8a96a6293aaa670
+handoff: run=2ebdb3cc design approved (Codex r1); implement attempt 1 next
 ---
 
 # FLY-3150 progress
-**phase**: design (1/3)
-**next**: design review of plan.md (run 2ebdb3cc)
+**phase**: design (3/3)
+**next**: eng_implement: hand-in 1 per plan §3 (reset line 2 to AWAITING-QA)
 
-**handoff**: run=a9716d46 implement attempt 2; QA claim=1; PREV=251a20d577cc36835ba7cd36a8a96a6293aaa670
+**handoff**: run=2ebdb3cc design approved (Codex r1); implement attempt 1 next
