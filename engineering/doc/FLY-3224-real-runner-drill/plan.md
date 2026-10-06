@@ -61,7 +61,7 @@ Issue: FLY-3224 (https://linear.app/geoforge3d/issue/FLY-3224/qa-sbx-fly-3224-re
 | `fixed-for-claim` | 恒为 `fail`，evidence 精确为 `round 1: no previous QA claim yet` | 第二行仅在逐字等于 `FIXED-FOR-CLAIM <id>` 时 pass；编号来自 `Previous QA verdict: claim <id>` |
 | `e2e_529_exempt` | `not_run`，`exempt_category: docs_only`，reason `Markdown-only drill; no room deployment` | 同左 |
 
-编号缺失不猜测。排除注入要求的协议文档，PR diff 只能包含目标演练文件或为空；若本轮编号碰巧为 1，最终内容可能与 main 相同，仍须保留本轮首次交付及返工之间的 patch 和 QA 回执。检查精确两行、范围及编号；无程序或测试文件改动，不新增测试套件。本地遵守 local-test-policy/v2，只运行明确文件和注入固定 smoke；只有 frozen-head CI OK 是全套证据。
+编号缺失不猜测。范围分两层核对：(1) **本轮提交**（从设计起点 `16d2477be` 之后）排除注入要求的协议文档（本文件夹与 `engineering/doc/milestones/FLY-3224.md`）后只能改目标演练文件；(2) **整个 PR #628 相对 main** 已知另含外来文件 `fly2966-qa-negative.txt`（QA 负向测试提交 `41afc700`，早于本轮，不属本演练）。实现节点不得修改或删除它（README：只碰演练文件），首次交付前用非阻塞 `ask` 向 Lead 报告并在 PR 正文与 handoff 中如实列出；只有 Lead 明确授权时才以单独提交移除。是否带着它合并由 ship 门的所有者决定，本链路不 merge。演练文件本身若本轮编号碰巧为 1，最终内容可能与 main 相同，仍须保留本轮首次交付及返工之间的 patch 和 QA 回执。检查精确两行、范围及编号；无程序或测试文件改动，不新增测试套件。本地遵守 local-test-policy/v2，只运行明确文件和注入固定 smoke；只有 frozen-head CI OK 是全套证据。
 
 ## 查询与索引
 
