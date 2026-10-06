@@ -1,16 +1,15 @@
 ---
 issue: FLY-3227
 phase: implement
-phaseCursor: 4/4
-updated: 2026-10-05T21:54:03.569Z
-nextStep: "Fix round claim 1: payload ee172837b (FIXED-FOR-CLAIM 1), Codex
-  review APPROVED 0 findings. Freeze HEAD -> ci-full ensure -> complete
-  needs_review. DRILL_ENTRY_HEAD=2d009298ada9c3285b2e958283f052f9d624e680
-  DRILL_PRIOR_QA_HEAD=2d009298ada9c3285b2e958283f052f9d624e680"
+phaseCursor: 3/4
+updated: 2026-10-06T07:41:07.131Z
+nextStep: Attempt 2 claim 1 fixed by dd6f77985; review APPROVED
+  fe46761e-b877-46b2-a90b-d2e063d44514 at 12e4c68a8; freeze after this progress
+  commit, server CI then needs_review
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
-**phase**: implement (4/4)
-**next**: Fix round claim 1: payload ee172837b (FIXED-FOR-CLAIM 1), Codex review APPROVED 0 findings. Freeze HEAD -> ci-full ensure -> complete needs_review. DRILL_ENTRY_HEAD=2d009298ada9c3285b2e958283f052f9d624e680 DRILL_PRIOR_QA_HEAD=2d009298ada9c3285b2e958283f052f9d624e680
+**phase**: implement (3/4)
+**next**: Attempt 2 claim 1 fixed by dd6f77985; review APPROVED fe46761e-b877-46b2-a90b-d2e063d44514 at 12e4c68a8; freeze after this progress commit, server CI then needs_review

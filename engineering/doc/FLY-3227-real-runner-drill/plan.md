@@ -1,15 +1,17 @@
 # FLY-3227 真 Runner 通用演练 — 实施计划
 Issue: FLY-3227 (https://linear.app/geoforge3d/issue/FLY-3227/qa-sbx-fly-3227-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-05
+日期: 2026-10-06
 基于: 无
 
 ## 范围
 
-任务来源：新获取的 `origin/main:qa-sbx/fly3227/README.md`（main `09806ae2d36bed03c2cf11d7369c4c76f19258b5`，README blob `0ebd338267190d8910178d1b06295b50ac172e12`）。演练交付只有 `qa-sbx/fly3227/<git branch --show-current>.md`，本分支即 `qa-sbx/fly3227/project-slot-5-FLY-3227.md`。不改产品代码、Linear issue 或房间部署。旧文件的 `FIXED-FOR-CLAIM 1` 不决定本轮轮次或标识。
+任务来源：新获取的 `origin/main:qa-sbx/fly3227/README.md`（main `08c9de878d6f8561848ee1547a2d40e4620818f6`，README blob `0ebd338267190d8910178d1b06295b50ac172e12`）。演练交付只有 `qa-sbx/fly3227/<git branch --show-current>.md`，本分支即 `qa-sbx/fly3227/project-slot-5-FLY-3227.md`。不改产品代码、Linear issue 或房间部署。旧文件的 `FIXED-FOR-CLAIM 1` 不决定本轮轮次或标识。
 
-本轮 design 执行标识：`a1e1af37-38c9-4a23-b3b6-9ad1a6c125c5`；activation：`activation:a1e1af37-38c9-4a23-b3b6-9ad1a6c125c5:c46ea2c1-1953-4847-a4ba-76b01144c4bf:eng_design:1`。设计节点不写演练文件，由调度程序交给实现节点。
+本轮 design 执行标识：`d6f474f8-817f-42ba-a69b-f17bc53df43e`；activation：`activation:d6f474f8-817f-42ba-a69b-f17bc53df43e:5df0533e-711d-4927-933b-44cd5656f50b:eng_design:1`。设计节点不写演练文件，由调度程序交给实现节点。
 
-范围解释：任务书明确允许一个短计划且禁止 research 文档，因此不另建 exploration/research。注入的节点协议同时强制进度账本和已提交、已发布的设计 HTML；本轮保守复用既有文档目录中的计划、图源、图和页面，只更新这些流程记录。范围问题 `41a00add-e9b2-4877-9f29-c1ebdb7f1ff3` 的 driver 答复要求按 README 执行、对未覆盖处采用保守方案并在交卷说明；该答复没有额外授权。本解释随交卷上报，流程记录不扩展演练验收条件。
+范围解释：任务书明确允许一个短计划且禁止 research 文档，因此不另建 exploration/research。注入的节点协议同时强制进度账本和已提交、已发布的设计 HTML；本轮保守复用既有文档目录中的计划、图源、图和页面，只更新这些流程记录。任务书写明本房间没有人类 Lead、不需要提问；对任务书未覆盖之处采用保守方案并在交卷说明，不视为额外授权。本解释随交卷上报，流程记录不扩展演练验收条件。
+
+文件范围的权威划分（回应设计评审 r1 HIGH）：README 的“只碰下面这一个 markdown 文件”约束的是演练交付物——实现节点只写、只提交 `qa-sbx/fly3227/<branch>.md`，第 3 步用 `git diff-tree` 核验该提交只含这一个文件。设计节点的 `plan.md`、`progress.md` 与设计 HTML 来自注入的节点契约（DOC-FLOW、PROGRESS LEDGER、Founder design HTML 均为 MANDATORY），只位于 `engineering/doc/FLY-3227-real-runner-drill/`，不进入演练交付提交，也不被 QA 准则检查；它们与 README 不冲突，因为 README 第 1 行明确把自身定义为 issue 的任务、并允许“one short plan”，而计划必须以文件形式提交才能被评审。若调度程序日后要求设计节点零文件，则改为按调度程序指令执行。
 
 ## 实现步骤
 
