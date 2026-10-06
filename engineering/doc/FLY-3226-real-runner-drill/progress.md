@@ -2,21 +2,20 @@
 issue: FLY-3226
 phase: implement
 phaseCursor: 2/2
-updated: 2026-10-05T11:40:14.741Z
-nextStep: "Frozen hand-in 2: push PR #589, exact-head code review and
-  server-owned CI, then complete needs_review"
+updated: 2026-10-06T05:26:55.499Z
+nextStep: freeze head, ci-full ensure, complete
 chunks: []
 pointers: {}
-handoff: run=a8c92934 exec=80eb7a40 node=eng_design done. Plan blob e8d5b72a
-  APPROVED r1 (request d2dcd53c, thread 01a10bc2, gpt-6-luna/medium). Base
-  555372a42. Hand-in 1 = reset FIXED-FOR-CLAIM 1 -> AWAITING-QA, branch already
-  pushed with design docs only, open NEW PR (no OPEN PR); CONFLICTING ->
-  blocked. Design HTML
-  http://127.0.0.1:50329/fw-reports-746373/r/e568f28ecc14d462b354023808d7202d/
+handoff: "run=26677b9a exec=4871c2eb node=eng_design done. Plan blob 60c979dc
+  APPROVED r1 (request 94c625b3, thread 01a10f9b, gpt-6-sol/xhigh). Base
+  a3cdce64e; main F line2 = FIXED-FOR-CLAIM 4 -> hand-in 1 resets to
+  AWAITING-QA; branch pushed with design docs only, no OPEN PR -> open NEW PR.
+  Non-blocking: verify CI ran on exact HANDIN SHA. Design HTML
+  http://127.0.0.1:54697/fw-reports-4d6446/r/497b3cabe0b76ccd4f093ebf496620ae/"
 ---
 
 # FLY-3226 progress
 **phase**: implement (2/2)
-**next**: Frozen hand-in 2: push PR #589, exact-head code review and server-owned CI, then complete needs_review
+**next**: freeze head, ci-full ensure, complete
 
-**handoff**: run=a8c92934 exec=80eb7a40 node=eng_design done. Plan blob e8d5b72a APPROVED r1 (request d2dcd53c, thread 01a10bc2, gpt-6-luna/medium). Base 555372a42. Hand-in 1 = reset FIXED-FOR-CLAIM 1 -> AWAITING-QA, branch already pushed with design docs only, open NEW PR (no OPEN PR); CONFLICTING -> blocked. Design HTML http://127.0.0.1:50329/fw-reports-746373/r/e568f28ecc14d462b354023808d7202d/
+**handoff**: run=26677b9a exec=4871c2eb node=eng_design done. Plan blob 60c979dc APPROVED r1 (request 94c625b3, thread 01a10f9b, gpt-6-sol/xhigh). Base a3cdce64e; main F line2 = FIXED-FOR-CLAIM 4 -> hand-in 1 resets to AWAITING-QA; branch pushed with design docs only, no OPEN PR -> open NEW PR. Non-blocking: verify CI ran on exact HANDIN SHA. Design HTML http://127.0.0.1:54697/fw-reports-4d6446/r/497b3cabe0b76ccd4f093ebf496620ae/
