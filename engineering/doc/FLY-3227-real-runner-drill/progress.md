@@ -1,15 +1,14 @@
 ---
 issue: FLY-3227
 phase: implement
-phaseCursor: 0/4
-updated: 2026-10-06T07:36:55.856Z
-nextStep: "Attempt 2: QA claim 1; entry and prior QA head
-  543c46133d245b626c4d355a114e00ee2f961d8d; set FIXED-FOR-CLAIM 1; then review
-  and frozen-head CI"
+phaseCursor: 2/4
+updated: 2026-10-06T07:37:16.863Z
+nextStep: Attempt 2 claim 1 payload committed; exact bytes and only-line-2 diff
+  verified; request new code review, freeze and CI then needs_review
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
-**phase**: implement (0/4)
-**next**: Attempt 2: QA claim 1; entry and prior QA head 543c46133d245b626c4d355a114e00ee2f961d8d; set FIXED-FOR-CLAIM 1; then review and frozen-head CI
+**phase**: implement (2/4)
+**next**: Attempt 2 claim 1 payload committed; exact bytes and only-line-2 diff verified; request new code review, freeze and CI then needs_review
