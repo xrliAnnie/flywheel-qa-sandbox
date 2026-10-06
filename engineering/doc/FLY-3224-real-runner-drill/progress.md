@@ -1,20 +1,20 @@
 ---
 issue: FLY-3224
 phase: implement
-phaseCursor: 2/3
-updated: 2026-10-06T23:12:30.942Z
-nextStep: Freeze milestone HEAD, effective review and CI; complete needs_review
+phaseCursor: 3/3
+updated: 2026-10-06T23:25:03.301Z
+nextStep: Freeze rework milestone, fresh review/CI, needs_review PR 636
 chunks: []
 pointers: {}
-handoff: Run e8788aad; exec 48f163a6; content abe2d5772 resets AWAITING-QA.
-  Exact bytes and diff check passed. No local tests declared. Lint fails on two
-  ignored generated design-review JSON files, 14 existing warnings. Code gate
-  57a1c6f1-7b06-482d-af5a-6be3a0746de3 pending registration; new root PR
-  required.
+handoff: Run e8788aad; attempt 2; TURN epoch 4. Injected QA claim 1 failed head
+  96c6e6b62; only line 2 changed AWAITING-QA to FIXED-FOR-CLAIM 1. Exact
+  comparison failed before and passed after; first hand-in ancestry verified. No
+  runtime state paths apply; local-tests declares no tests/smoke. PR 636 reused;
+  prior review/CI are historical, fresh evidence required.
 ---
 
 # FLY-3224 progress
-**phase**: implement (2/3)
-**next**: Freeze milestone HEAD, effective review and CI; complete needs_review
+**phase**: implement (3/3)
+**next**: Freeze rework milestone, fresh review/CI, needs_review PR 636
 
-**handoff**: Run e8788aad; exec 48f163a6; content abe2d5772 resets AWAITING-QA. Exact bytes and diff check passed. No local tests declared. Lint fails on two ignored generated design-review JSON files, 14 existing warnings. Code gate 57a1c6f1-7b06-482d-af5a-6be3a0746de3 pending registration; new root PR required.
+**handoff**: Run e8788aad; attempt 2; TURN epoch 4. Injected QA claim 1 failed head 96c6e6b62; only line 2 changed AWAITING-QA to FIXED-FOR-CLAIM 1. Exact comparison failed before and passed after; first hand-in ancestry verified. No runtime state paths apply; local-tests declares no tests/smoke. PR 636 reused; prior review/CI are historical, fresh evidence required.
