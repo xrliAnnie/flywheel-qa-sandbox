@@ -1,9 +1,9 @@
 ---
 issue: FLY-3226
 phase: design
-phaseCursor: 1/4
-updated: 2026-10-06T22:59:09.673Z
-nextStep: rewrite plan for run e39cc50c (base 57e42464f, residue claim 1)
+phaseCursor: 3/4
+updated: 2026-10-06T23:01:44.331Z
+nextStep: patch design.html + d1, publish, report, complete
 chunks: []
 pointers: {}
 handoff: "run e39cc50c started at design; base 57e42464f = origin/main; PR #619
@@ -11,7 +11,7 @@ handoff: "run e39cc50c started at design; base 57e42464f = origin/main; PR #619
 ---
 
 # FLY-3226 progress
-**phase**: design (1/4)
-**next**: rewrite plan for run e39cc50c (base 57e42464f, residue claim 1)
+**phase**: design (3/4)
+**next**: patch design.html + d1, publish, report, complete
 
 **handoff**: run e39cc50c started at design; base 57e42464f = origin/main; PR #619 merged, remote branch absent; old HANDIN/claim/PR evidence void
