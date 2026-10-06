@@ -1,13 +1,13 @@
 ---
 issue: FLY-3256
 phase: design
-phaseCursor: 2/8
-updated: 2026-10-06T07:53:37.975Z
-nextStep: revalidate docs, update dates, and request design review
+phaseCursor: 3/8
+updated: 2026-10-06T07:54:08.116Z
+nextStep: validate implementation plan against research
 chunks: []
 pointers: {}
 ---
 
 # FLY-3256 progress
-**phase**: design (2/8)
-**next**: revalidate docs, update dates, and request design review
+**phase**: design (3/8)
+**next**: validate implementation plan against research
