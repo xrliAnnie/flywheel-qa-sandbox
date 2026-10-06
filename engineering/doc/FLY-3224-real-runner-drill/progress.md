@@ -1,19 +1,19 @@
 ---
 issue: FLY-3224
-phase: design
-phaseCursor: 3/3
-updated: 2026-10-06T11:49:50.060Z
-nextStep: "implement: first hand-in on PR #628 per plan"
+phase: implement
+phaseCursor: 1/3
+updated: 2026-10-06T11:50:46.448Z
+nextStep: Register fresh code review; reuse PR 628
 chunks: []
 pointers: {}
-handoff: "Design run 32e818f1 exec 533d28a3: Codex gpt-6-sol/xhigh R1 APPROVED 0
-  findings (thread 01a11109-e0e3, request c2b1b945, plan blob 93f25d87),
-  await-codex-gate passed. Start main 4b5f7984; OPEN PR #628 (prev run 018f025a
-  head bb791d72) reused; branch already AWAITING-QA."
+handoff: "Run 32e818f1 first hand-in: existing exact two-line AWAITING-QA
+  verified; no QA fix context. Start HEAD 0f2a3b3d; PR 628 OPEN. No source/test
+  changes; local-tests lists no tests or smoke. No pre_handin.script
+  configured."
 ---
 
 # FLY-3224 progress
-**phase**: design (3/3)
-**next**: implement: first hand-in on PR #628 per plan
+**phase**: implement (1/3)
+**next**: Register fresh code review; reuse PR 628
 
-**handoff**: Design run 32e818f1 exec 533d28a3: Codex gpt-6-sol/xhigh R1 APPROVED 0 findings (thread 01a11109-e0e3, request c2b1b945, plan blob 93f25d87), await-codex-gate passed. Start main 4b5f7984; OPEN PR #628 (prev run 018f025a head bb791d72) reused; branch already AWAITING-QA.
+**handoff**: Run 32e818f1 first hand-in: existing exact two-line AWAITING-QA verified; no QA fix context. Start HEAD 0f2a3b3d; PR 628 OPEN. No source/test changes; local-tests lists no tests or smoke. No pre_handin.script configured.
