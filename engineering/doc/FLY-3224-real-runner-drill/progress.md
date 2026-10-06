@@ -1,20 +1,18 @@
 ---
 issue: FLY-3224
-phase: implement
-phaseCursor: 3/3
-updated: 2026-10-06T23:25:03.301Z
-nextStep: Freeze rework milestone, fresh review/CI, needs_review PR 636
+phase: design
+phaseCursor: 2/3
+updated: 2026-10-06T23:50:31.328Z
+nextStep: Codex design review of plan.md
 chunks: []
 pointers: {}
-handoff: Run e8788aad; attempt 2; TURN epoch 4. Injected QA claim 1 failed head
-  96c6e6b62; only line 2 changed AWAITING-QA to FIXED-FOR-CLAIM 1. Exact
-  comparison failed before and passed after; first hand-in ancestry verified. No
-  runtime state paths apply; local-tests declares no tests/smoke. PR 636 reused;
-  prior review/CI are historical, fresh evidence required.
+handoff: "Run d20eedd9; design exec 6f8f31c5; docs rebound from run e8788aad (PR
+  #636 merged); branch == main c21de8cbb; no OPEN PR, implement creates a new
+  PR."
 ---
 
 # FLY-3224 progress
-**phase**: implement (3/3)
-**next**: Freeze rework milestone, fresh review/CI, needs_review PR 636
+**phase**: design (2/3)
+**next**: Codex design review of plan.md
 
-**handoff**: Run e8788aad; attempt 2; TURN epoch 4. Injected QA claim 1 failed head 96c6e6b62; only line 2 changed AWAITING-QA to FIXED-FOR-CLAIM 1. Exact comparison failed before and passed after; first hand-in ancestry verified. No runtime state paths apply; local-tests declares no tests/smoke. PR 636 reused; prior review/CI are historical, fresh evidence required.
+**handoff**: Run d20eedd9; design exec 6f8f31c5; docs rebound from run e8788aad (PR #636 merged); branch == main c21de8cbb; no OPEN PR, implement creates a new PR.
