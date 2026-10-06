@@ -630,3 +630,4 @@ TURN:`yours phase=design epoch=1 run=4dea7fe2… node=eng_design attempt=1`(exec
 - run `cf71c93b` 的 PR #629 已合入(`280ba9c52`)、远端分支已删;本地分支 = `origin/main` = `280ba9c52`,零差异 → 不同步,首次推送新建远端分支并新开 PR。
 - 起点:`"$F"` = main 上残留的 `FIXED-FOR-CLAIM 1` → 交付 #1 走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`)。旧 progress.md handoff(`run=cf71c93b implement attempt 2; QA claim=1; PREV=1507d69f…`)不是本轮证据。
 - 与 §43 同形,plan 沿用已评审结构,只更新本轮起点与 run id。
+- Codex 设计评审(gpt-6-sol/xhigh,thread `01a11128-5d08…`,turn `01a11128-642d…`)第 1 轮 APPROVED,HIGH 0 / MEDIUM 0 / LOW 0。已评审 plan blob `c513bd1f…`(requestId `8ed64429…`),`await-codex-gate design` 通过。注:`stage set design_review` 在 plan 提交并推送之前只回 "request pending",推送后重跑才拿到请求。设计 HTML 只更新 run id / 起点快照并重渲 d1 图。
