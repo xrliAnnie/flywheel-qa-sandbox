@@ -1,18 +1,19 @@
 ---
 issue: FLY-3228
-phase: implement
-phaseCursor: 1/1
-updated: 2026-10-06T08:50:05.557Z
-nextStep: hand in after CI
+phase: design
+phaseCursor: 1/3
+updated: 2026-10-06T09:10:44.463Z
+nextStep: codex design review
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3228-real-runner-drill/plan.md
   pr: "623"
-handoff: "Run f102d493 implement exec 5dd2a757: hand-in #1 AWAITING-QA, new PR 623"
+handoff: "Run 67f6db40 design exec 594da560: plan updated for this run, design
+  review next"
 ---
 
 # FLY-3228 progress
-**phase**: implement (1/1)
-**next**: hand in after CI
+**phase**: design (1/3)
+**next**: codex design review
 
-**handoff**: Run f102d493 implement exec 5dd2a757: hand-in #1 AWAITING-QA, new PR 623
+**handoff**: Run 67f6db40 design exec 594da560: plan updated for this run, design review next
