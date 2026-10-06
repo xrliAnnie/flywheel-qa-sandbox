@@ -3,7 +3,7 @@ sequenceDiagram
     participant D as 演练驱动器
     participant I as 实现节点
     participant Q as QA 节点
-    Note over I: 起点:分支从主线新起(PR 621 已合并),第2行是上一轮遗留的 FIXED-FOR-CLAIM 1(不作数)
+    Note over I: 起点:分支从主线新起(PR 623 已合并),第2行是上一轮遗留的 FIXED-FOR-CLAIM 4(不作数)
     D->>I: 派发(提示词里没有 QA fix context)
     I->>I: 把第2行改成 AWAITING-QA
     I->>D: 交付 #35;1(推分支 + 新开 PR,记本轮 HANDIN1)
