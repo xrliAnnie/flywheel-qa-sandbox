@@ -1,10 +1,10 @@
 ---
 issue: FLY-3150
-phase: design
-phaseCursor: 3/3
-updated: 2026-10-06T17:49:48.835Z
-nextStep: "eng_implement: hand-in #1 resets line 2 to AWAITING-QA per plan §3
-  (run 9ff55b37), new PR"
+phase: implement
+phaseCursor: 1/3
+updated: 2026-10-06T17:50:35.664Z
+nextStep: Reset first hand-in to AWAITING-QA; verify scope; code review; PR and
+  exact-head CI
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
@@ -14,7 +14,7 @@ handoff: run=9ff55b37 design approved (plan blob de6a24c3); no PR yet; old
 ---
 
 # FLY-3150 progress
-**phase**: design (3/3)
-**next**: eng_implement: hand-in #1 resets line 2 to AWAITING-QA per plan §3 (run 9ff55b37), new PR
+**phase**: implement (1/3)
+**next**: Reset first hand-in to AWAITING-QA; verify scope; code review; PR and exact-head CI
 
 **handoff**: run=9ff55b37 design approved (plan blob de6a24c3); no PR yet; old 1262139d/3e80ce96/cf71c93b pointers not evidence
