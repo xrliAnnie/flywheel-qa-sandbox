@@ -1,18 +1,19 @@
 ---
 issue: FLY-3150
 phase: implement
-phaseCursor: 1/2
-updated: 2026-10-06T10:10:08.299Z
-nextStep: Reset second line to AWAITING-QA, verify, review and hand in
+phaseCursor: 2/2
+updated: 2026-10-06T10:23:23.011Z
+nextStep: Fix claim 1, exact-content verification, code review and handoff
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
-  pr: "602"
-handoff: run=2ebdb3cc implement attempt 1; no QA fix context; ledger before BASE
+  pr: "627"
+handoff: run=2ebdb3cc implement attempt 2; QA claim=1;
+  PREV=2588e0f0d38a04c1be10ee570b49aae2b2fac79d; ledger before BASE2
 ---
 
 # FLY-3150 progress
-**phase**: implement (1/2)
-**next**: Reset second line to AWAITING-QA, verify, review and hand in
+**phase**: implement (2/2)
+**next**: Fix claim 1, exact-content verification, code review and handoff
 
-**handoff**: run=2ebdb3cc implement attempt 1; no QA fix context; ledger before BASE
+**handoff**: run=2ebdb3cc implement attempt 2; QA claim=1; PREV=2588e0f0d38a04c1be10ee570b49aae2b2fac79d; ledger before BASE2
