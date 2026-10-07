@@ -26,7 +26,7 @@ pre{white-space:pre-wrap;word-break:break-word;background:#f0f0f3;border-radius:
 <tr><th>分支头(派发时)</th><td>本地分支 = 主干 = <code>e771f9526</code>:上一轮 run 14456cb0 的 PR #648 已合入,它就是主干最新提交,之后主干没有新提交 → 不做主干同步(merge = 把主干新提交并进来)。远端同名分支合入时已删,本设计节点推送文档时重新建立;实现节点第一次推送是普通快进推送,不强推</td></tr>
 <tr><th>PR</th><td>没有开着的同名 PR → 本轮第 1 次交付新开一个。PR = 合并请求,把分支改动提交给主干审核的单子。已合入的 #648 及其正文里的旧交付指纹不算本轮证据</td></tr>
 <tr><th>演练文件现状</th><td>分支与主干上都是残留的 <code>FIXED-FOR-CLAIM 1</code> → 第 1 次交付走正常重置(1 个实现提交,第 2 行由 FIXED-FOR-CLAIM 1 变为 AWAITING-QA),PR 相对主干的差异恰好是这一个文件。这样也杜绝「残留 claim 碰巧和本轮 claim 同号 → 重验假通过」</td></tr>
-<tr><th>本节点已做</th><td>确认分支就是主干(上轮 PR 已合入,无需同步)、刷新短 plan 的本轮快照、过 Codex 设计评审(第 1 轮通过,无任何发现)、更新进度账本(progress.md,让中断后能从原位置继续的记录)</td></tr>
+<tr><th>本节点已做</th><td>确认分支就是主干(上轮 PR 已合入,无需同步)、刷新短 plan 的本轮快照、过 Codex 设计评审(第 1 轮通过,1 中 1 低均非阻断)、更新进度账本(progress.md,让中断后能从原位置继续的记录)</td></tr>
 </table>
 <textarea class="cmt" data-key="s2" aria-label="对「本轮起点」的意见" placeholder="对这一节的意见(自动保存)"></textarea></section>
 
@@ -52,7 +52,7 @@ pre{white-space:pre-wrap;word-break:break-word;background:#f0f0f3;border-radius:
 <li><span class="badge ok">采纳</span><b>主干若在两次交付之间前进,用普通合并同步</b>,冲突只允许在流程文档文件夹内。<br><span class="badge no">否决</span>rebase / 强推(force-push,覆盖远端历史):会改写共享分支,护栏明令禁止。</li>
 <li><span class="badge no">否决</span>写 research 文档或大段设计:README 明确「一份短 plan 足够」。</li>
 </ul>
-<p class="term">Codex 设计评审 = 由另一个 AI 模型(gpt-6-sol,最高推理档)独立审计划;本轮它对照真实 git 状态核对了:主干停在上轮 PR #648 的合入提交 <code>e771f9526</code>,本分支在其上只多本节点的 1 个设计文档提交和 1 个进度账本提交(只落在本 issue 文档文件夹)→ 不同步,本轮新开 PR;演练文件仍是残留的 <code>FIXED-FOR-CLAIM 1</code> → 第 1 次交付必须走正常重置;验收三条与 README 一致;查询与索引一节「不适用」理由成立(不涉及任何数据库表)。第 1 轮 APPROVED(高 0 / 中 0 / 低 0)。评审沙箱连不上 GitHub,「没有开着的 PR」由设计节点用 <code>gh pr list</code> 实查。CI = 持续集成,每次更新 PR 自动跑的检查。</p>
+<p class="term">Codex 设计评审 = 由另一个 AI 模型(gpt-6-sol,最高推理档)独立审计划;本轮它对照真实 git 状态核对了:主干停在上轮 PR #648 的合入提交 <code>e771f9526</code>,本分支在其上只多本节点的设计文档提交(评审时 1 个;评审后再加进度账本与本页的记账提交,都只落在本 issue 文档文件夹)→ 不同步,本轮新开 PR;演练文件仍是残留的 <code>FIXED-FOR-CLAIM 1</code> → 第 1 次交付必须走正常重置;验收三条与 README 一致;查询与索引一节「不适用」理由成立(不涉及任何数据库表)。第 1 轮 APPROVED(高 0 / 中 1 / 低 1,均非阻断:中 = 评审时进度账本还没写本轮,已在评审后补写;低 = 流程图源码里的 <code>#35;648</code> 是 Mermaid 对「#」的转义写法,渲染出来就是 #648,有意保留)。评审沙箱连不上 GitHub,「没有开着的 PR」由设计节点用 <code>gh pr list</code> 实查。CI = 持续集成,每次更新 PR 自动跑的检查。</p>
 <textarea class="cmt" data-key="s5" aria-label="对「关键取舍与否决方案」的意见" placeholder="对这一节的意见(自动保存)"></textarea></section>
 
 <section class="card red" data-title="诚实边界"><h2>诚实边界</h2>
