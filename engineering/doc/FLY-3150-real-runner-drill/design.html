@@ -14,10 +14,10 @@ textarea{width:100%;min-height:64px;margin-top:12px;border:1px solid #d2d2d7;bor
 button{background:var(--blue);color:#fff;border:0;border-radius:8px;padding:8px 14px;font-size:14px;cursor:pointer;margin:6px 6px 0 0}
 pre{white-space:pre-wrap;word-break:break-word;background:#f0f0f3;border-radius:8px;padding:10px;font-family:"SF Mono",Menlo,monospace;font-size:13px}#status{color:var(--dim);font-size:13px}
 </style></head><body><main>
-<header><h1>FLY-3150 真 Runner 通用演练(529 房间)— 设计</h1><div class="sub">run 48d9ca3a · slot-1 · 分支 project-slot-1-FLY-3150 · 上轮 e4c67d5c 的 PR #644 仍开着,本轮复用 · 2026-10-06 · Codex 设计评审 REVIEW_PENDING</div></header>
+<header><h1>FLY-3150 真 Runner 通用演练(529 房间)— 设计</h1><div class="sub">run 48d9ca3a · slot-1 · 分支 project-slot-1-FLY-3150 · 上轮 e4c67d5c 的 PR #644 仍开着,本轮复用 · 2026-10-06 · Codex 设计评审 APPROVED</div></header>
 
 <section class="card blue" data-title="一句话总结"><h2>一句话总结</h2>
-<p class="lead">本轮在 slot-1 分支上让真 Runner 走一圈「交付 → QA 故意判失败 → 带着 claim 编号返工 → QA 逐字核对后通过」,唯一的演练改动是一个两行 markdown 文件;分支(此刻与主干完全相同)上还留着上一轮返工写入的 <code>FIXED-FOR-CLAIM 1</code>,所以本轮第 1 次交付走「正常重置」:把第 2 行写回 <code>AWAITING-QA</code>,新增恰好 1 个提交;返工只认本轮的指纹,不认上一轮的任何交付头。</p>
+<p class="lead">本轮在 slot-1 分支上让真 Runner 走一圈「交付 → QA 故意判失败 → 带着 claim 编号返工 → QA 逐字核对后通过」,唯一的演练改动是一个两行 markdown 文件;分支上(演练文件在分支与主干上内容相同)还留着上一轮返工写入的 <code>FIXED-FOR-CLAIM 1</code>,所以本轮第 1 次交付走「正常重置」:把第 2 行写回 <code>AWAITING-QA</code>,新增恰好 1 个提交;返工只认本轮的指纹,不认上一轮的任何交付头。</p>
 <p class="term">Runner = 被派来自动干活的 AI 会话。529 房间 = 与生产隔离的 QA 测试环境。claim 编号 = QA 判失败时生成的唯一编号,返工必须原样抄回文件里。主干(main)= 仓库的正式分支,其他分支最终合回这里。</p>
 <textarea class="cmt" data-key="s1" aria-label="对「一句话总结」的意见" placeholder="对这一节的意见(自动保存)"></textarea></section>
 
@@ -26,7 +26,7 @@ pre{white-space:pre-wrap;word-break:break-word;background:#f0f0f3;border-radius:
 <tr><th>分支头(派发时)</th><td>本地分支 = 远端同名分支 = <code>d8a615f4d</code>:上一轮 run e4c67d5c 的 PR #644 还没合入,分支比主干(<code>6f9a2d855</code>)多上一轮的 9 个记账 / 交付提交;两者分叉之后主干只多了 1 个提交(#643),只改 FLY-3224 的文档文件夹和它的里程碑文件,与本 issue 的文件夹和演练文件不相交 → 不做主干同步(merge = 把主干新提交并进来)。实现节点推送是普通快进推送,不强推</td></tr>
 <tr><th>PR</th><td>同名 PR #644 仍开着(可合并,无冲突)→ 本轮第 1 次交付复用它,把标题 / 正文改成本轮,删掉上一轮的旧交付指纹。PR = 合并请求,把分支改动提交给主干审核的单子。已合入的 #641 / #633 及 #644 正文里上一轮的交付指纹都不算本轮证据</td></tr>
 <tr><th>演练文件现状</th><td>分支与主干上都是残留的 <code>FIXED-FOR-CLAIM 1</code> → 第 1 次交付走正常重置(1 个实现提交,第 2 行由 FIXED-FOR-CLAIM 1 变为 AWAITING-QA),PR 相对主干的差异恰好是这一个文件。这样也杜绝「残留 claim 碰巧和本轮 claim 同号 → 重验假通过」</td></tr>
-<tr><th>本节点已做</th><td>确认分支续上轮开着的 PR #644(主干新提交不相交,无需同步)、刷新短 plan 的本轮快照与流程图、过 Codex 设计评审(REVIEW_PENDING)、更新进度账本(progress.md,让中断后能从原位置继续的记录)</td></tr>
+<tr><th>本节点已做</th><td>确认分支续上轮开着的 PR #644(主干新提交不相交,无需同步)、刷新短 plan 的本轮快照与流程图、过 Codex 设计评审(第 1 轮通过,1 条非阻塞中级建议已采纳)、更新进度账本(progress.md,让中断后能从原位置继续的记录)</td></tr>
 </table>
 <textarea class="cmt" data-key="s2" aria-label="对「本轮起点」的意见" placeholder="对这一节的意见(自动保存)"></textarea></section>
 
@@ -52,7 +52,7 @@ pre{white-space:pre-wrap;word-break:break-word;background:#f0f0f3;border-radius:
 <li><span class="badge ok">采纳</span><b>主干若在两次交付之间前进,用普通合并同步</b>,冲突只允许在流程文档文件夹内。<br><span class="badge no">否决</span>rebase / 强推(force-push,覆盖远端历史):会改写共享分支,护栏明令禁止。</li>
 <li><span class="badge no">否决</span>写 research 文档或大段设计:README 明确「一份短 plan 足够」。</li>
 </ul>
-<p class="term">Codex 设计评审 = 由另一个 AI 模型独立审计划。REVIEW_PENDING</p>
+<p class="term">Codex 设计评审 = 由另一个 AI 模型(gpt-6-sol,最高推理档)独立审计划;本轮它对照真实 git 状态核对了:合并基 <code>425b5729f</code>,主干新增的 #643 只改 FLY-3224 文档 → 不同步,复用开着的 PR #644;分支、合并基、主干上的演练文件都是 <code>FIXED-FOR-CLAIM 1</code> → 第 1 次交付必须走正常重置;验收三条与 README 一致;查询与索引一节「不适用」理由成立(不涉及任何数据库表)。第 1 轮 APPROVED(高 0 / 中 1 / 低 0)。唯一的中级建议:本页摘要曾写「分支与主干完全相同」,与起点表格矛盾 → 已改为「演练文件在分支与主干上内容相同」。评审沙箱连不上 GitHub,PR #644 仍开着且可合并由设计节点用 <code>gh pr view</code> 实查。CI = 持续集成,每次更新 PR 自动跑的检查。</p>
 <textarea class="cmt" data-key="s5" aria-label="对「关键取舍与否决方案」的意见" placeholder="对这一节的意见(自动保存)"></textarea></section>
 
 <section class="card red" data-title="诚实边界"><h2>诚实边界</h2>
