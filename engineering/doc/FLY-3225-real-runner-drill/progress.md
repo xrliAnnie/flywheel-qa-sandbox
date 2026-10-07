@@ -1,23 +1,31 @@
 ---
 issue: FLY-3225
 phase: implement
-phaseCursor: 4/4
-updated: 2026-10-07T01:20:21.641Z
-nextStep: "Frozen handoff: exact-head CI then complete needs_review PR 639"
+phaseCursor: 2/4
+updated: 2026-10-07T01:31:38.515Z
+nextStep: Push claim 1 fix and register fresh code review
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3225-real-runner-drill/plan.md
   pr: "639"
-  reviewedSha: b59be58cb67ef71f261250a00e3e4f000edbf68c
-handoff: '{"runId":"3296d4fe-d449-4510-8ed1-439970d8995f","execId":"2d800462-38b6-4bd3-9797-c9e22dce461f","activationId":"activation:2d800462-38b6-4bd3-9797-c9e22dce461f:3296d4fe-d449-4510-8ed1-439970d8995f:implement:1","attempt":1,"implBase":"7f31a408a1f023648a51312e90af94f949778199","firstHandin":"159a589ea6f6817e25d71f2641d5b0b6c375a9ea","ownCommits":["159a589ea6f6817e25d71f2641d5b0b6c375a9ea"],"handinMode":"initial","pr":639,"verification":"Exact
-  AWAITING-QA bytes and single-file hand-in commit PASS","adjacentPaths":"N/A
-  (docs-only drill)","e2e529":"not_run docs_only; deployment
-  prohibited","reviewQuestionId":"a3f1beee-6af4-45bf-a003-12c93cb865a7","reviewRequestId":"ebd623e7-d3da-4d6e-8551-40cebf85d95d","reviewVerdict":"APPROVED","reviewedSha":"b59be58cb67ef71f261250a00e3e4f000edbf68c","memoryCloseout":"No
-  new durable lesson; existing run identity and inherited-claim lessons apply"}'
+  reviewedSha: ""
+handoff: '{"runId": "3296d4fe-d449-4510-8ed1-439970d8995f", "execId":
+  "2d800462-38b6-4bd3-9797-c9e22dce461f", "activationId":
+  "activation:rework:361a93949bdccd03b2d7f3183b81fd5670d75c597019046bd313798bfcf13f38",
+  "attempt": 2, "implBase": "7f31a408a1f023648a51312e90af94f949778199",
+  "firstHandin": "159a589ea6f6817e25d71f2641d5b0b6c375a9ea", "ownCommits":
+  ["159a589ea6f6817e25d71f2641d5b0b6c375a9ea",
+  "d31fde438eea18692266b7f1437072b6e9d47eac"], "handinMode": "qa-fix", "pr":
+  639, "verification": "Exact FIXED-FOR-CLAIM 1 bytes; same-run firstHandin and
+  single-file fix commit PASS", "adjacentPaths": "N/A (docs-only drill)",
+  "e2e529": "not_run docs_only; deployment prohibited", "reviewVerdict":
+  "pending", "memoryCloseout": "One inherited-run identity lesson saved on first
+  hand-in; no new lesson in fix round", "qaClaim": "1", "qaFailedHead":
+  "af8a11c5e7b48e254abe8abdd5160164c46013bb"}'
 ---
 
 # FLY-3225 progress
-**phase**: implement (4/4)
-**next**: Frozen handoff: exact-head CI then complete needs_review PR 639
+**phase**: implement (2/4)
+**next**: Push claim 1 fix and register fresh code review
 
-**handoff**: {"runId":"3296d4fe-d449-4510-8ed1-439970d8995f","execId":"2d800462-38b6-4bd3-9797-c9e22dce461f","activationId":"activation:2d800462-38b6-4bd3-9797-c9e22dce461f:3296d4fe-d449-4510-8ed1-439970d8995f:implement:1","attempt":1,"implBase":"7f31a408a1f023648a51312e90af94f949778199","firstHandin":"159a589ea6f6817e25d71f2641d5b0b6c375a9ea","ownCommits":["159a589ea6f6817e25d71f2641d5b0b6c375a9ea"],"handinMode":"initial","pr":639,"verification":"Exact AWAITING-QA bytes and single-file hand-in commit PASS","adjacentPaths":"N/A (docs-only drill)","e2e529":"not_run docs_only; deployment prohibited","reviewQuestionId":"a3f1beee-6af4-45bf-a003-12c93cb865a7","reviewRequestId":"ebd623e7-d3da-4d6e-8551-40cebf85d95d","reviewVerdict":"APPROVED","reviewedSha":"b59be58cb67ef71f261250a00e3e4f000edbf68c","memoryCloseout":"No new durable lesson; existing run identity and inherited-claim lessons apply"}
+**handoff**: {"runId": "3296d4fe-d449-4510-8ed1-439970d8995f", "execId": "2d800462-38b6-4bd3-9797-c9e22dce461f", "activationId": "activation:rework:361a93949bdccd03b2d7f3183b81fd5670d75c597019046bd313798bfcf13f38", "attempt": 2, "implBase": "7f31a408a1f023648a51312e90af94f949778199", "firstHandin": "159a589ea6f6817e25d71f2641d5b0b6c375a9ea", "ownCommits": ["159a589ea6f6817e25d71f2641d5b0b6c375a9ea", "d31fde438eea18692266b7f1437072b6e9d47eac"], "handinMode": "qa-fix", "pr": 639, "verification": "Exact FIXED-FOR-CLAIM 1 bytes; same-run firstHandin and single-file fix commit PASS", "adjacentPaths": "N/A (docs-only drill)", "e2e529": "not_run docs_only; deployment prohibited", "reviewVerdict": "pending", "memoryCloseout": "One inherited-run identity lesson saved on first hand-in; no new lesson in fix round", "qaClaim": "1", "qaFailedHead": "af8a11c5e7b48e254abe8abdd5160164c46013bb"}
