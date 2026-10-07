@@ -1,14 +1,14 @@
 ---
 issue: FLY-3227
 phase: implement
-phaseCursor: 3/4
-updated: 2026-10-07T01:52:52.603Z
-nextStep: Await effective review; refresh milestone as last commit, freeze HEAD
-  and ensure CI
+phaseCursor: 4/4
+updated: 2026-10-07T01:58:43.080Z
+nextStep: Milestone-only final commit then freeze HEAD, exact-head CI and
+  needs_review handoff
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
-**phase**: implement (3/4)
-**next**: Await effective review; refresh milestone as last commit, freeze HEAD and ensure CI
+**phase**: implement (4/4)
+**next**: Milestone-only final commit then freeze HEAD, exact-head CI and needs_review handoff
