@@ -1,19 +1,19 @@
 ---
 issue: FLY-3150
-phase: design
-phaseCursor: 4/4
-updated: 2026-10-07T06:34:35.984Z
-nextStep: "eng_implement: hand-in #1 per plan §3 (reset line 2 to AWAITING-QA, new PR)"
+phase: implement
+phaseCursor: 1/2
+updated: 2026-10-07T06:35:44.906Z
+nextStep: Reset target to AWAITING-QA; verify scope, review, open PR and exact-head CI
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
   pr: none
-handoff: run=14456cb0 design APPROVED (Codex r1, blob 513a16fb); HEAD base
-  origin/main e9fba2f93; no open PR -> gh pr create
+handoff: run=14456cb0 attempt=1; approved plan consumed; no QA fix context;
+  final HANDIN1 will be in report
 ---
 
 # FLY-3150 progress
-**phase**: design (4/4)
-**next**: eng_implement: hand-in #1 per plan §3 (reset line 2 to AWAITING-QA, new PR)
+**phase**: implement (1/2)
+**next**: Reset target to AWAITING-QA; verify scope, review, open PR and exact-head CI
 
-**handoff**: run=14456cb0 design APPROVED (Codex r1, blob 513a16fb); HEAD base origin/main e9fba2f93; no open PR -> gh pr create
+**handoff**: run=14456cb0 attempt=1; approved plan consumed; no QA fix context; final HANDIN1 will be in report
