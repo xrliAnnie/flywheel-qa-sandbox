@@ -5,11 +5,11 @@ Issue: FLY-3224 (https://linear.app/geoforge3d/issue/FLY-3224/qa-sbx-fly-3224-re
 
 ## 目标与范围
 
-在 529 sandbox 完成一次真实的首轮失败 → 按失败记录编号返工 → 独立重验。每个节点先取得注入的 TURN，读 inbox 与新鲜 main 的 `qa-sbx/fly3224/README.md`；只在 `yours` 时写共享工作树。本轮 run 是 `506a149c-9ec6-414f-9dcf-c71d46118db3`；后续节点使用自己的 exec、activation、gate 与交付身份。
+在 529 sandbox 完成一次真实的首轮失败 → 按失败记录编号返工 → 独立重验。每个节点先取得注入的 TURN，读 inbox 与新鲜 main 的 `qa-sbx/fly3224/README.md`；只在 `yours` 时写共享工作树。本轮 run 是 `a99bc53d-6a1d-4354-99a4-b744dcb072c0`；后续节点使用自己的 exec、activation、gate 与交付身份。
 
 演练内容只允许 `qa-sbx/fly3224/project-slot-2-FLY-3224.md`，分支名必须为 `project-slot-2-FLY-3224`。设计契约要求的协议产物仅复用 `engineering/doc/FLY-3224-real-runner-drill/` 已有文件；后续节点只更新自身契约要求的账本/证据。README 明确不需要 research.md，调研证据见 exploration.md。范围回复未覆盖强制文档的细节，按保守方案交付既有协议产物并说明，不新增研究或演练实现。
 
-设计起点 main：`425b5729faf80a8c623ce3ef7270152541f38e42`（分支头即 main，无需同步）；README blob：`c4a1b3334b84d73b95cf4e2943c2c8f1474aef87`。目标文件在分支与 main 上都是上一轮返工写入并已经 PR #638 合并的 `FIXED-FOR-CLAIM 1`，本轮首次交付会把第二行改回 `AWAITING-QA`。同分支没有 OPEN PR；实现节点新建 PR，本轮首次交付 SHA 取实现节点核对后的 PR 头，旧评审、旧 CI 不作本轮证据。
+设计起点 main：`6f9a2d85519f6897dd3dc31a9ffaacf771c1eccb`（分支头即 main，无需同步）；README blob：`c4a1b3334b84d73b95cf4e2943c2c8f1474aef87`。目标文件在分支与 main 上都是上一轮返工写入并已经 PR #643 合并的 `FIXED-FOR-CLAIM 1`，本轮首次交付会把第二行改回 `AWAITING-QA`。同分支没有 OPEN PR；实现节点新建 PR，本轮首次交付 SHA 取实现节点核对后的 PR 头，旧评审、旧 CI 不作本轮证据。
 
 ## 第一次交付（实现节点）
 
@@ -61,7 +61,7 @@ Issue: FLY-3224 (https://linear.app/geoforge3d/issue/FLY-3224/qa-sbx-fly-3224-re
 | `fixed-for-claim` | 恒为 `fail`，evidence 精确为 `round 1: no previous QA claim yet` | 第二行仅在逐字等于 `FIXED-FOR-CLAIM <id>` 时 pass；编号来自 `Previous QA verdict: claim <id>` |
 | `e2e_529_exempt` | `not_run`，`exempt_category: docs_only`，reason `Markdown-only drill; no room deployment` | 同左 |
 
-编号缺失不猜测。范围分两层核对：(1) **本轮提交**（从设计起点 `425b5729f` 之后）排除注入要求的协议文档（本文件夹与 `engineering/doc/milestones/FLY-3224.md`）后只能改目标演练文件；(2) **整个新 PR 相对 main** 同样只能含目标演练文件与上述协议文档；`fly2966-qa-negative.txt` 已在 main 上，实现节点不得修改或删除它。本链路不 merge。演练文件本身若本轮编号碰巧为 1，最终内容可能与 main 相同，仍须保留本轮首次交付及返工之间的 patch 和 QA 回执。检查精确两行、范围及编号；无程序或测试文件改动，不新增测试套件。本地遵守 local-test-policy/v2，只运行明确文件和注入固定 smoke；只有 frozen-head CI OK 是全套证据。
+编号缺失不猜测。范围分两层核对：(1) **本轮提交**（从设计起点 `6f9a2d855` 之后）排除注入要求的协议文档（本文件夹与 `engineering/doc/milestones/FLY-3224.md`）后只能改目标演练文件；(2) **整个新 PR 相对 main** 同样只能含目标演练文件与上述协议文档；`fly2966-qa-negative.txt` 已在 main 上，实现节点不得修改或删除它。本链路不 merge。演练文件本身若本轮编号碰巧为 1，最终内容可能与 main 相同，仍须保留本轮首次交付及返工之间的 patch 和 QA 回执。检查精确两行、范围及编号；无程序或测试文件改动，不新增测试套件。本地遵守 local-test-policy/v2，只运行明确文件和注入固定 smoke；只有 frozen-head CI OK 是全套证据。
 
 ## 查询与索引
 
