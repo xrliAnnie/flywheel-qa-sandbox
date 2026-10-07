@@ -2,19 +2,18 @@
 issue: FLY-3224
 phase: implement
 phaseCursor: 3/3
-updated: 2026-10-06T23:25:03.301Z
-nextStep: Freeze rework milestone, fresh review/CI, needs_review PR 636
+updated: 2026-10-07T00:04:59.458Z
+nextStep: "Claim 1 rework frozen handoff: review, exact-head CI, needs_review"
 chunks: []
 pointers: {}
-handoff: Run e8788aad; attempt 2; TURN epoch 4. Injected QA claim 1 failed head
-  96c6e6b62; only line 2 changed AWAITING-QA to FIXED-FOR-CLAIM 1. Exact
-  comparison failed before and passed after; first hand-in ancestry verified. No
-  runtime state paths apply; local-tests declares no tests/smoke. PR 636 reused;
-  prior review/CI are historical, fresh evidence required.
+handoff: "Run d20eedd9; implement exec f448ebb3; attempt 2, TURN epoch 4. First
+  hand-in head 13a106206 (content a579d0390) passed code review and CI; OPEN
+  root PR #637. Injected QA claim 1 authorizes FIXED-FOR-CLAIM 1 rework; fresh
+  code review, CI and needs_review handoff required."
 ---
 
 # FLY-3224 progress
 **phase**: implement (3/3)
-**next**: Freeze rework milestone, fresh review/CI, needs_review PR 636
+**next**: Claim 1 rework frozen handoff: review, exact-head CI, needs_review
 
-**handoff**: Run e8788aad; attempt 2; TURN epoch 4. Injected QA claim 1 failed head 96c6e6b62; only line 2 changed AWAITING-QA to FIXED-FOR-CLAIM 1. Exact comparison failed before and passed after; first hand-in ancestry verified. No runtime state paths apply; local-tests declares no tests/smoke. PR 636 reused; prior review/CI are historical, fresh evidence required.
+**handoff**: Run d20eedd9; implement exec f448ebb3; attempt 2, TURN epoch 4. First hand-in head 13a106206 (content a579d0390) passed code review and CI; OPEN root PR #637. Injected QA claim 1 authorizes FIXED-FOR-CLAIM 1 rework; fresh code review, CI and needs_review handoff required.
