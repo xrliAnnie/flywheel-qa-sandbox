@@ -1,15 +1,14 @@
 ---
 issue: FLY-3227
 phase: implement
-phaseCursor: 1/4
-updated: 2026-10-07T02:09:47.024Z
-nextStep: "Attempt 2: entry/prior QA HEAD
-  f2bda690535a098f1c7068b0d8447c454843ac65; claim 1; set only line 2 to
-  FIXED-FOR-CLAIM 1"
+phaseCursor: 2/4
+updated: 2026-10-07T02:09:59.961Z
+nextStep: Attempt 2 claim 1 fixed in c9e0db3e9; exact bytes and line-2-only diff
+  verified; local-tests none; register new code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
-**phase**: implement (1/4)
-**next**: Attempt 2: entry/prior QA HEAD f2bda690535a098f1c7068b0d8447c454843ac65; claim 1; set only line 2 to FIXED-FOR-CLAIM 1
+**phase**: implement (2/4)
+**next**: Attempt 2 claim 1 fixed in c9e0db3e9; exact bytes and line-2-only diff verified; local-tests none; register new code review
