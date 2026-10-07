@@ -1,8 +1,8 @@
 # FLY-3150 真 Runner 通用演练(529 房间) — 实施计划
 
 Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-06(本次派发 run `48d9ca3a`,slot-1,exec `6731103a`;沿用上一轮 run `e4c67d5c` 已评审结构,更早各轮沿革见 exploration.md)
-基于: exploration.md §49(README 规定"一份短 plan 足够,不需要 research 文档")
+日期: 2026-10-07(本次派发 run `14456cb0`,slot-1,exec `e70490d6`;沿用上一轮 run `48d9ca3a` 已评审结构,更早各轮沿革见 exploration.md)
+基于: exploration.md §50(README 规定"一份短 plan 足够,不需要 research 文档")
 
 ## 1. 范围
 
@@ -20,9 +20,9 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 
 ## 2. 本轮起点(派发时快照,实现节点自己重算)
 
-- 上一轮 run `e4c67d5c` **未落地**:它的 PR #644 仍 OPEN(头 `d8a615f4d`,`MERGEABLE`/`CLEAN`),本地分支 `project-slot-1-FLY-3150` 派发时 = `origin/project-slot-1-FLY-3150` = `d8a615f4d`,比 `origin/main`(`6f9a2d855`)多上一轮的设计 / 账本 / 两次交付共 9 个提交;合并基 `425b5729f` 之后主干只多了 #643(`6f9a2d855`),只改 `engineering/doc/FLY-3224-real-runner-drill/` + `engineering/doc/milestones/FLY-3224.md`,与本 issue 文件夹、`"$F"` 不相交 → 不同步。远端分支已存在,实现节点推送是普通快进;本分支已有 OPEN PR #644 → §3 第 7 步 `gh pr list` 输出 `644` → `gh pr edit` 复用并把标题 / 正文改成本轮(正文里上一轮的 HANDIN1/HANDIN2 一律删掉,不当本轮证据);若 PR 显示 `CONFLICTING` 才按 §3.1 同步。
+- 上一轮 run `48d9ca3a` **已落地**:它的 PR #644 已合入(squash 提交 `e9fba2f93`,2026-10-07T05:19:54Z),远端同名分支已删。本地分支 `project-slot-1-FLY-3150` 派发时 = `origin/main` = `e9fba2f93`(#644 就是主干最新提交,之后主干没有新提交)→ 不同步。没有远端分支、没有 OPEN PR:设计节点推送本轮文档时已新建远端分支,实现节点首推是普通快进;§3 第 7 步 `gh pr list` 输出空 → `gh pr create` 新开 PR(已合入的 #644 及其正文里的上一轮 HANDIN1/HANDIN2 一律不当本轮证据;别的 slot 的同 issue PR,如 slot-2 分支 `project-slot-2-FLY-3150` 的 OPEN PR #596,不是本分支的 PR,`--head` 过滤后不会命中)。
 - `HEAD:"$F"` = 上一轮交付 #2 留下的 `FIXED-FOR-CLAIM 1`(合并基 / main 上也是残留的 `FIXED-FOR-CLAIM 1`)。所以**交付 #1 走正常重置分支**:第 2 步 `cmp` 非 0 → 写回 `AWAITING-QA` 并提交 1 个实现提交;核验按 §3 第 6(a) 正常路径(`M "$F"`、计数 1)+ 6(b)(patch 恰为 `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`);PR 级断言期望相对合并基恰好一行 `"$F"`。这一步同时消除"残留 claim 恰好同号 → 重验假通过":交付 #2 的证据必须是 `$PREV..$HANDIN2` 上 `-AWAITING-QA` / `+FIXED-FOR-CLAIM $ID` 的真实 patch。
-- **旧指针一律不认**:run `e4c67d5c` / `8e3798db` / `cd8922c5` / `1785c254` / `9ff55b37` / `1262139d` / `3e80ce96` / `cf71c93b` 及更早各轮的 HANDIN、代码评审、CI、QA 结论与 claim id,main 历史里任何 run 的 HANDIN / claim id、派发时 progress.md 的旧 handoff(上一轮 `run=e4c67d5c attempt=2 claim=1 PREV=667b2b0b…`、`push PR 644`)、OPEN PR #644 正文里上一轮的 `HANDIN1=667b2b0b…` / `HANDIN2=d8a615f4…`、已合入 PR #641 / #633 正文里往轮的 HANDIN1 / HANDIN2,以及 run `e4c67d5c` 及更早各轮的设计评审记录,都不是本轮 BASE / PREV / claim id。判定第几次交付只看**本轮**提示词有没有 "QA fix context"(或 Lead 返工反馈里明确给出的 claim id);交付 #2 的 PREV 只认本轮交付 #1 摘要里的 `run=48d9ca3a HANDIN1=<sha>`。
+- **旧指针一律不认**:run `48d9ca3a` / `e4c67d5c` / `8e3798db` / `cd8922c5` / `1785c254` / `9ff55b37` / `1262139d` / `3e80ce96` / `cf71c93b` 及更早各轮的 HANDIN、代码评审、CI、QA 结论与 claim id,main 历史里任何 run 的 HANDIN / claim id、派发时 progress.md 的旧 handoff(上一轮 `run=48d9ca3a attempt=2 claim=1 PREV=0b88dd83…`、`pr: 644`)、已合入 PR #644 / #641 / #633 正文里往轮的 HANDIN1 / HANDIN2,以及 run `48d9ca3a` 及更早各轮的设计评审记录,都不是本轮 BASE / PREV / claim id。判定第几次交付只看**本轮**提示词有没有 "QA fix context"(或 Lead 返工反馈里明确给出的 claim id);交付 #2 的 PREV 只认本轮交付 #1 摘要里的 `run=14456cb0 HANDIN1=<sha>`。
 
 ## 3. 实现节点
 
@@ -32,12 +32,12 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 
 **交付 #1(无 "QA fix context")**
 1. 先按上面「账本先行」写 ledger;然后 `BASE=$(git rev-parse HEAD)`。
-2. 按 **HEAD 中的 blob** 判断:`git show HEAD:"$F" 2>/dev/null | cmp - <(printf 'QA-SBX FLY-2167 drill\nAWAITING-QA\n')` 退出码 0(未跟踪文件不算)→ 跳过第 3–4 步(本轮派发时**不属**此情况:HEAD 上是上一轮交付 #2 留下的 `FIXED-FOR-CLAIM 1`,走写入路径);否则 `printf 'QA-SBX FLY-2167 drill\nAWAITING-QA\n' > "$F"`。
+2. 按 **HEAD 中的 blob** 判断:`git show HEAD:"$F" 2>/dev/null | cmp - <(printf 'QA-SBX FLY-2167 drill\nAWAITING-QA\n')` 退出码 0(未跟踪文件不算)→ 跳过第 3–4 步(本轮派发时**不属**此情况:HEAD 上是 main 残留的 `FIXED-FOR-CLAIM 1`,走写入路径);否则 `printf 'QA-SBX FLY-2167 drill\nAWAITING-QA\n' > "$F"`。
 3. 自检工作树:`printf 'QA-SBX FLY-2167 drill\nAWAITING-QA\n' | cmp - "$F"` 退出码 0。
 4. 只 `git add "$F"`,提交 `docs(qa-sbx): FLY-3150 drill hand-in`。
 5. `git status --porcelain` 为空后冻结 `HANDIN1=$(git rev-parse HEAD)`(跳过分支下 `HANDIN1=BASE`)。此后不写 ledger。
 6. 核验:(a) **整个交付区间** `git diff --name-status $BASE..$HANDIN1`:正常路径恰好一行 `M "$F"` 且 `git rev-list --count $BASE..$HANDIN1` = `1`(恰好一个实现提交,区间内没有 ledger);跳过分支为空、`git rev-list --count $BASE..$HANDIN1` = `0` 且 `git show $BASE:"$F"` 已逐字节等于两行;(b) 正常路径下 `git diff $BASE..$HANDIN1 -- "$F"` 的 patch 只改第 2 行(`-<BASE 第 2 行原值>` / `+AWAITING-QA`);跳过分支无此 patch,改由 `git diff origin/main...$HANDIN1 -- "$F"` 恰为 `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA` 佐证;(c) `git rev-list --merges $BASE..$HANDIN1` 为空;(d) §1 的 PR 级断言对 `$HANDIN1` 通过(本轮期望相对合并基恰好一行 `"$F"`)。任一不过 → 停,不交付。
-7. `git push -u origin HEAD`(普通推送,不 force)。PR:`gh pr list --head "$BR" --state open --json number --jq '.[0].number // empty'`(Codex r1 P2:无结果时输出空串而不是 `null`);输出非空 = 有 OPEN PR 就 `gh pr edit` 复用并改标题 / 正文为本轮(本轮预期 `644` → 复用),没有就 `gh pr create --base main --head "$BR"`,标题 `FLY-3150 QA-SBX FLY-2167 real-runner drill (run 48d9ca3a)`,正文写 Linear issue 链接、本轮 run id 与本轮核验结果。确认远端分支头与 PR `headRefOid` 都等于 `$HANDIN1`,且 **该 PR head 对应的** CI 运行成功(`gh pr checks` / `gh run list --commit $HANDIN1`,按 run 的 `headSha` = `$HANDIN1` 匹配;`ci.yml` 走 `pull_request` 事件,checkout 的是 PR merge ref,`GITHUB_SHA` 是合并提交而不是 PR head,所以不按 `GITHUB_SHA` 比对,只记录它测的 merge SHA 与 `$HANDIN1` 的对应关系;feature 分支单独 push 不跑 CI,所以 CI 在开 / 更新 PR 之后核对),交付;**交付摘要写明 `run=48d9ca3a HANDIN1=<完整 SHA>`**(返工唯一 PREV 来源)。
+7. `git push -u origin HEAD`(普通推送,不 force)。PR:`gh pr list --head "$BR" --state open --json number --jq '.[0].number // empty'`(Codex r1 P2:无结果时输出空串而不是 `null`);输出非空 = 有 OPEN PR 就 `gh pr edit` 复用并改标题 / 正文为本轮(本轮预期为空 → 新开),没有就 `gh pr create --base main --head "$BR"`,标题 `FLY-3150 QA-SBX FLY-2167 real-runner drill (run 14456cb0)`,正文写 Linear issue 链接、本轮 run id 与本轮核验结果。确认远端分支头与 PR `headRefOid` 都等于 `$HANDIN1`,且 **该 PR head 对应的** CI 运行成功(`gh pr checks` / `gh run list --commit $HANDIN1`,按 run 的 `headSha` = `$HANDIN1` 匹配;`ci.yml` 走 `pull_request` 事件,checkout 的是 PR merge ref,`GITHUB_SHA` 是合并提交而不是 PR head,所以不按 `GITHUB_SHA` 比对,只记录它测的 merge SHA 与 `$HANDIN1` 的对应关系;feature 分支单独 push 不跑 CI,所以 CI 在开 / 更新 PR 之后核对),交付;**交付摘要写明 `run=14456cb0 HANDIN1=<完整 SHA>`**(返工唯一 PREV 来源)。
 
 **交付 #2(提示词首行 `QA verdict to fix: claim <id> ...`)**
 1. 用 `^QA verdict to fix: claim (\S+)` 取 `ID`,原样复制;取不到 → 失败通道,不猜。
@@ -52,7 +52,7 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 
 ### 3.1 发生 main 同步时的核验分支
 
-- **何时同步**:只在 PR 显示 `CONFLICTING` 或节点契约明确要求时;同步 = `git fetch origin main && git merge --no-ff origin/main`(强制产生合并提交,让下面的 `rev-list --merges` 判定必然命中;不 rebase、不 force-push)。若 `origin/main` 已是 HEAD 祖先(`git merge-base --is-ancestor origin/main HEAD` 退出码 0),或 main 的新提交与本 issue 文件夹、`"$F"` 路径不相交且 PR 不是 `CONFLICTING`,不同步 —— 本轮派发时 main 的新提交(#643)与本 issue 文件夹、`"$F"` 不相交且 PR #644 为 `MERGEABLE`,属后者(PR 若显示 `CONFLICTING` 再同步)。
+- **何时同步**:只在 PR 显示 `CONFLICTING` 或节点契约明确要求时;同步 = `git fetch origin main && git merge --no-ff origin/main`(强制产生合并提交,让下面的 `rev-list --merges` 判定必然命中;不 rebase、不 force-push)。若 `origin/main` 已是 HEAD 祖先(`git merge-base --is-ancestor origin/main HEAD` 退出码 0),或 main 的新提交与本 issue 文件夹、`"$F"` 路径不相交且 PR 不是 `CONFLICTING`,不同步 —— 本轮派发时 `origin/main` 就是 HEAD 本身(祖先判定成立),属前者(之后若 main 前进且 PR 显示 `CONFLICTING` 再同步)。
 - **冲突处理**:冲突只允许落在 `engineering/doc/FLY-3150-real-runner-drill/` 内 —— 保留本轮 slot-1 版本(`git checkout --ours -- <path>`),并在 exploration.md 追加新小节记录对方运行来源(不静默丢弃);冲突落在该文件夹之外(含 `"$F"`)→ `git merge --abort`,走失败通道。
 - **判定**:交付区间(交付 #1 `$BASE..$HANDIN1`,交付 #2 `$PREV..$HANDIN2`)里 `git rev-list --merges <区间>` 非空 → 用下面的核验**替代**交付 #1 第 6(a)(b)(c) 步、交付 #2 第 2 步的交付间范围与第 6(a)(c) 步;为空 → 仍用原限制。
 - 发生同步时,交付区间里的合并提交按本节处理,不套用 §3 第 6(a) 的提交计数。实现提交计数分**两种区间,不混用**(Codex r1 MEDIUM,run `a40703e6`;`^origin/main` 排除同步带入的 main 提交,只数本分支自己的实现提交):
