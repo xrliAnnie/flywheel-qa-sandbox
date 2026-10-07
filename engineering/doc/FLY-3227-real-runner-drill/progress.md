@@ -1,14 +1,14 @@
 ---
 issue: FLY-3227
 phase: implement
-phaseCursor: 2/4
-updated: 2026-10-07T02:09:59.961Z
-nextStep: Attempt 2 claim 1 fixed in c9e0db3e9; exact bytes and line-2-only diff
-  verified; local-tests none; register new code review
+phaseCursor: 3/4
+updated: 2026-10-07T02:10:26.830Z
+nextStep: "Attempt 2: payload c9e0db3e9 fixes claim 1; await code review
+  bfd841c8-414a-4261-8846-d51c9d8258a1; final milestone then freeze and CI"
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
-**phase**: implement (2/4)
-**next**: Attempt 2 claim 1 fixed in c9e0db3e9; exact bytes and line-2-only diff verified; local-tests none; register new code review
+**phase**: implement (3/4)
+**next**: Attempt 2: payload c9e0db3e9 fixes claim 1; await code review bfd841c8-414a-4261-8846-d51c9d8258a1; final milestone then freeze and CI
