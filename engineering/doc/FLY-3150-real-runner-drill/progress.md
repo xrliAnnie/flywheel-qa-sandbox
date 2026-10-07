@@ -1,10 +1,10 @@
 ---
 issue: FLY-3150
-phase: design
+phase: implement
 phaseCursor: 1/1
-updated: 2026-10-07T01:39:52.399Z
-nextStep: "eng_implement: hand-in #1 reset line 2 to AWAITING-QA; gh pr create
-  (no open PR)"
+updated: 2026-10-07T01:40:57.104Z
+nextStep: "run=8e3798db hand-in #1: reset target to AWAITING-QA, verify exact
+  bytes, review, push and open PR; no QA fix context"
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
@@ -14,7 +14,7 @@ handoff: run=8e3798db design approved (Codex r1); branch=main+docs, no open PR;
 ---
 
 # FLY-3150 progress
-**phase**: design (1/1)
-**next**: eng_implement: hand-in #1 reset line 2 to AWAITING-QA; gh pr create (no open PR)
+**phase**: implement (1/1)
+**next**: run=8e3798db hand-in #1: reset target to AWAITING-QA, verify exact bytes, review, push and open PR; no QA fix context
 
 **handoff**: run=8e3798db design approved (Codex r1); branch=main+docs, no open PR; no prior HANDIN valid
