@@ -1,20 +1,20 @@
 ---
 issue: FLY-3150
 phase: design
-phaseCursor: 1/4
-updated: 2026-10-07T02:54:28.885Z
-nextStep: "run=e4c67d5c refresh plan snapshot (PR #641 merged, main=425b5729f),
-  Codex design review, design HTML"
+phaseCursor: 2/4
+updated: 2026-10-07T02:56:38.205Z
+nextStep: run=e4c67d5c Codex design review r1 (task-muxinfik-wcxulp,
+  gpt-6-astra/xhigh), then gate json + design HTML publish
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
   pr: none
-handoff: run=e4c67d5c design in progress; branch=origin/main 425b5729f, no open
-  PR; no prior HANDIN valid
+handoff: run=e4c67d5c plan refreshed+pushed (request 1fdfb66a, blob 1a23f721);
+  branch=main+docs, no open PR; no prior HANDIN valid
 ---
 
 # FLY-3150 progress
-**phase**: design (1/4)
-**next**: run=e4c67d5c refresh plan snapshot (PR #641 merged, main=425b5729f), Codex design review, design HTML
+**phase**: design (2/4)
+**next**: run=e4c67d5c Codex design review r1 (task-muxinfik-wcxulp, gpt-6-astra/xhigh), then gate json + design HTML publish
 
-**handoff**: run=e4c67d5c design in progress; branch=origin/main 425b5729f, no open PR; no prior HANDIN valid
+**handoff**: run=e4c67d5c plan refreshed+pushed (request 1fdfb66a, blob 1a23f721); branch=main+docs, no open PR; no prior HANDIN valid
