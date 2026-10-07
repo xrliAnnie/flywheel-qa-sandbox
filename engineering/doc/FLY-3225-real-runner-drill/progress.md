@@ -1,35 +1,34 @@
 ---
 issue: FLY-3225
 phase: implement
-phaseCursor: 4/4
-updated: 2026-10-07T01:37:22.821Z
-nextStep: "Frozen claim 1 fix: resolve server CI requirement then complete
-  needs_review PR 639"
+phaseCursor: 3/4
+updated: 2026-10-07T04:47:43.680Z
+nextStep: Frozen claim 1 repair; wait effective review and server CI
+  requirement, then needs_review
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3225-real-runner-drill/plan.md
-  pr: "639"
-  reviewedSha: 80c5d2a6b33432e68e7538949e3b02ba09a30543
-handoff: '{"runId": "3296d4fe-d449-4510-8ed1-439970d8995f", "execId":
-  "2d800462-38b6-4bd3-9797-c9e22dce461f", "activationId":
-  "activation:rework:361a93949bdccd03b2d7f3183b81fd5670d75c597019046bd313798bfcf13f38",
-  "attempt": 2, "implBase": "7f31a408a1f023648a51312e90af94f949778199",
-  "firstHandin": "159a589ea6f6817e25d71f2641d5b0b6c375a9ea", "ownCommits":
-  ["159a589ea6f6817e25d71f2641d5b0b6c375a9ea",
-  "d31fde438eea18692266b7f1437072b6e9d47eac"], "handinMode": "qa-fix", "pr":
-  639, "verification": "Exact FIXED-FOR-CLAIM 1 bytes; same-run firstHandin and
-  single-file fix commit PASS", "adjacentPaths": "N/A (docs-only drill)",
-  "e2e529": "not_run docs_only; deployment prohibited", "reviewVerdict":
-  "APPROVED", "memoryCloseout": "One inherited-run identity lesson saved on
-  first hand-in; no new lesson in fix round", "qaClaim": "1", "qaFailedHead":
-  "af8a11c5e7b48e254abe8abdd5160164c46013bb", "reviewQuestionId":
-  "4aa13a3f-dbfb-45b5-b57b-0c22cadf893d", "reviewRequestId":
-  "c3bb9e51-eea0-433e-9212-53730c68adec", "reviewedSha":
-  "80c5d2a6b33432e68e7538949e3b02ba09a30543"}'
+  pr: "646"
+  reviewedSha: pending
+handoff: '{"runId": "018dd70e-e76b-40ff-9318-e8a5e64f518c", "execId":
+  "7a75e1d1-dd1b-43ec-b9ec-a4e497283c94", "activationId":
+  "activation:rework:1b7fa84d2c97dde53f9ae994a2e1f54e60b67e40c3f3b473c13674692d55b16f",
+  "implBase": "cb510051d9e68a2a3d498375a4e4b507c89df58c", "firstHandin":
+  "f203c3b6aaeea327528c7b1f459c5d8c1728b262", "ownCommits":
+  ["f203c3b6aaeea327528c7b1f459c5d8c1728b262",
+  "0e87feb15a6b90f9f137d710002290df47d1e161"], "attempt": 2, "handinMode":
+  "qa-fix", "pr": 646, "qaClaim": "1", "qaFailedHead":
+  "0e3c04f60f8f8fb21487643f319d31fe2f72fe75", "verification": "Exact
+  FIXED-FOR-CLAIM 1 bytes; same-run firstHandin and single-file line-2 diff
+  PASS", "adjacentPaths": "N/A (docs-only drill)", "e2e529": "not_run docs_only;
+  deployment prohibited", "memoryCloseout": "No new durable judgment; existing
+  drill-run identity lesson applies", "reviewQuestionId":
+  "60469433-4c8e-4d8a-a7d7-12081c360389", "reviewRequestId":
+  "730ec89c-8ee9-4f3b-a95c-18b7c1ef3170"}'
 ---
 
 # FLY-3225 progress
-**phase**: implement (4/4)
-**next**: Frozen claim 1 fix: resolve server CI requirement then complete needs_review PR 639
+**phase**: implement (3/4)
+**next**: Frozen claim 1 repair; wait effective review and server CI requirement, then needs_review
 
-**handoff**: {"runId": "3296d4fe-d449-4510-8ed1-439970d8995f", "execId": "2d800462-38b6-4bd3-9797-c9e22dce461f", "activationId": "activation:rework:361a93949bdccd03b2d7f3183b81fd5670d75c597019046bd313798bfcf13f38", "attempt": 2, "implBase": "7f31a408a1f023648a51312e90af94f949778199", "firstHandin": "159a589ea6f6817e25d71f2641d5b0b6c375a9ea", "ownCommits": ["159a589ea6f6817e25d71f2641d5b0b6c375a9ea", "d31fde438eea18692266b7f1437072b6e9d47eac"], "handinMode": "qa-fix", "pr": 639, "verification": "Exact FIXED-FOR-CLAIM 1 bytes; same-run firstHandin and single-file fix commit PASS", "adjacentPaths": "N/A (docs-only drill)", "e2e529": "not_run docs_only; deployment prohibited", "reviewVerdict": "APPROVED", "memoryCloseout": "One inherited-run identity lesson saved on first hand-in; no new lesson in fix round", "qaClaim": "1", "qaFailedHead": "af8a11c5e7b48e254abe8abdd5160164c46013bb", "reviewQuestionId": "4aa13a3f-dbfb-45b5-b57b-0c22cadf893d", "reviewRequestId": "c3bb9e51-eea0-433e-9212-53730c68adec", "reviewedSha": "80c5d2a6b33432e68e7538949e3b02ba09a30543"}
+**handoff**: {"runId": "018dd70e-e76b-40ff-9318-e8a5e64f518c", "execId": "7a75e1d1-dd1b-43ec-b9ec-a4e497283c94", "activationId": "activation:rework:1b7fa84d2c97dde53f9ae994a2e1f54e60b67e40c3f3b473c13674692d55b16f", "implBase": "cb510051d9e68a2a3d498375a4e4b507c89df58c", "firstHandin": "f203c3b6aaeea327528c7b1f459c5d8c1728b262", "ownCommits": ["f203c3b6aaeea327528c7b1f459c5d8c1728b262", "0e87feb15a6b90f9f137d710002290df47d1e161"], "attempt": 2, "handinMode": "qa-fix", "pr": 646, "qaClaim": "1", "qaFailedHead": "0e3c04f60f8f8fb21487643f319d31fe2f72fe75", "verification": "Exact FIXED-FOR-CLAIM 1 bytes; same-run firstHandin and single-file line-2 diff PASS", "adjacentPaths": "N/A (docs-only drill)", "e2e529": "not_run docs_only; deployment prohibited", "memoryCloseout": "No new durable judgment; existing drill-run identity lesson applies", "reviewQuestionId": "60469433-4c8e-4d8a-a7d7-12081c360389", "reviewRequestId": "730ec89c-8ee9-4f3b-a95c-18b7c1ef3170"}
