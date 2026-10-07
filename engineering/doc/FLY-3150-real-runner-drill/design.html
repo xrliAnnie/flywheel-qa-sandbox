@@ -52,7 +52,7 @@ pre{white-space:pre-wrap;word-break:break-word;background:#f0f0f3;border-radius:
 <li><span class="badge ok">采纳</span><b>主干若在两次交付之间前进,用普通合并同步</b>,冲突只允许在流程文档文件夹内。<br><span class="badge no">否决</span>rebase / 强推(force-push,覆盖远端历史):会改写共享分支,护栏明令禁止。</li>
 <li><span class="badge no">否决</span>写 research 文档或大段设计:README 明确「一份短 plan 足够」。</li>
 </ul>
-<p class="term">Codex 设计评审 = 由另一个 AI 模型(gpt-6-sol,最高推理档)独立审计划;本轮它对照真实 git 状态核对了:派发时分支续上轮未合入的 PR #633(头 <code>d510e97dd</code>;主干新提交只改别的 issue 的文件夹 → 不同步)、演练文件是上轮留下的 <code>FIXED-FOR-CLAIM 1</code> → 第 1 次交付必须走正常重置;验收三条与 README 一致;往轮已通过的「记账文件白名单 + 节点规则优先 + 两种计数区间」处置仍成立;查询与索引一节「不适用」理由成立(不涉及任何数据库表)。第 1 轮 APPROVED(高 0 / 中 0 / 低 1;评审模型 gpt-6-sol,最高推理档)。唯一的低优先级提醒:§3.1「同步发生在冻结起点之前，却用起点之后的区间找合并提交」顺序上自相矛盾，建议直接记录是否同步过、同步到哪个 main 提交;本轮不需要同步，不影响正常路径。评审沙箱连不上 GitHub,「没有开着的同名 PR」由设计节点评审后再查一次确认。CI = 持续集成,每次更新 PR 自动跑的检查。</p>
+<p class="term">Codex 设计评审 = 由另一个 AI 模型(gpt-6-sol,最高推理档)独立审计划;本轮它对照真实 git 状态核对了:派发时分支续上轮未合入的 PR #633(头 <code>d510e97dd</code>;主干新提交只改别的 issue 的文件夹 → 不同步)、演练文件是上轮留下的 <code>FIXED-FOR-CLAIM 1</code> → 第 1 次交付必须走正常重置;验收三条与 README 一致;往轮已通过的「记账文件白名单 + 节点规则优先 + 两种计数区间」处置仍成立;查询与索引一节「不适用」理由成立(不涉及任何数据库表)。第 1 轮 APPROVED(高 0 / 中 0 / 低 1;评审模型 gpt-6-sol,最高推理档)。唯一的低优先级提醒:计划里描述主干新提交改了哪些路径时漏写了 <code>engineering/doc/milestones/FLY-3224.md</code>(仍与本 issue 不相交，不需要同步);为保持已评审的计划不变，只在探索文档记录。评审沙箱连不上 GitHub,PR #633 仍 OPEN 且可合并由设计节点用 <code>gh pr view</code> 实查。CI = 持续集成,每次更新 PR 自动跑的检查。</p>
 <textarea class="cmt" data-key="s5" aria-label="对「关键取舍与否决方案」的意见" placeholder="对这一节的意见(自动保存)"></textarea></section>
 
 <section class="card red" data-title="诚实边界"><h2>诚实边界</h2>
