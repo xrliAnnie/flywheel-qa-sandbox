@@ -4,7 +4,7 @@ sequenceDiagram
     participant Q as QA 节点
     D->>I: 已评审的 plan(Codex 第 1 轮通过)
     I->>I: 第 2 行 FIXED-FOR-CLAIM 1(旧残留)改成 AWAITING-QA
-    I->>Q: 第 1 次交付:推新分支、开新 PR(run 77dfe0aa)
+    I->>Q: 第 1 次交付:推分支、开新 PR(run ef066ba8)
     Q->>I: fixed-for-claim 故意判 fail,产生 claim 编号
     I->>I: 第 2 行改成 FIXED-FOR-CLAIM 编号
     I->>Q: 第 2 次交付(同一个 PR)

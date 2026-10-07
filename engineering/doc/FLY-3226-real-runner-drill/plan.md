@@ -1,6 +1,6 @@
 # FLY-3226 真 Runner 通用演练(529 房间) — 实施计划
 Issue: FLY-3226 (https://linear.app/geoforge3d/issue/FLY-3226/qa-sbx-fly-3226-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-06(run `77dfe0aa`,exec `1440a296`,设计节点 `eng_design`,slot-4)
+日期: 2026-10-07(run `ef066ba8`,exec `251cd775`,设计节点 `eng_design`,slot-4)
 基于: 无(README 规定"一份短 plan 足够,不需要 research 文档";同文件夹 exploration.md 是旧 run 留档,本轮不依赖)
 
 ## 1. 范围
@@ -12,7 +12,7 @@ Issue: FLY-3226 (https://linear.app/geoforge3d/issue/FLY-3226/qa-sbx-fly-3226-re
 
 ## 2. 起点(派发快照)
 
-- 派发头 `DBASE=c21de8cbb` = 本地 HEAD = `origin/main`。上一 run `e39cc50c` 的 PR #635 已 MERGED(`40c1333f4`),远端分支 `project-slot-4-FLY-3226` 不存在 → 本轮从 `DBASE` 开**新 PR**;不合并 main、不 rebase、不 force。
+- 分支延续:派发头 = `88f090960` = `origin/project-slot-4-FLY-3226`(上一 run `77dfe0aa` 只到设计节点,未开 PR;它的设计提交留在分支上)。演练基线 `DBASE=c21de8cbb` = 本分支与 main 的 merge-base;上一 run `e39cc50c` 的 PR #635 已 MERGED(`40c1333f4`)。`origin/main` 之后前进到 `d0b3a1dd8`(只有其他练习单的无关文档,未碰 `$F`)→ 不合并 main、不 rebase、不 force;远端分支已存在但**无 PR** → 本轮 fast-forward 推送并开**新 PR**。
 - `"$F"` 在 `DBASE` = `QA-SBX FLY-3226 drill\nFIXED-FOR-CLAIM 1\n`(上一 run claim 1 残留)。交付 #1 = 把第 2 行从 `FIXED-FOR-CLAIM 1` **重置**为 `AWAITING-QA`;PR 级演练 diff = `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`。
 - 若新 claim id 也是 `1`,交付 #2 后 PR 级 `$F` diff 为空属预期,返工由提交区间 patch 证明(见 §3 交付 #2 第 4 步)。
 - 上一 run 的 HANDIN / claim / 评审 / CI / 设计 HTML 一律不作本轮证据;ledger handoff 已在本轮开头覆盖。
@@ -27,7 +27,7 @@ Issue: FLY-3226 (https://linear.app/geoforge3d/issue/FLY-3226/qa-sbx-fly-3226-re
 1. `BASE=$(git rev-parse HEAD)`。若 `git show "$BASE:$F" | cmp - <(exp1)` 退出 0(重试已提交)→ 不重复提交,`IMPL1=$BASE`;否则 `exp1 > "$F"`,`exp1 | cmp - "$F"` 自检,只 `git add "$F"`,提交 `docs(qa-sbx): FLY-3226 drill hand-in`,`IMPL1=$(git rev-parse HEAD)`。
 2. 写 ledger(`--phase implement --cursor 1/2`,它只提交 `$L`);工作树干净后 `HANDIN1=$(git rev-parse HEAD)`。
 3. 核验:(a) `$BASE..$IMPL1` 为空或恰好 `M "$F"`,patch 只有 `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`;(b) `$IMPL1..$HANDIN1` 只含 `$L`,无合并提交;(c) 逐文件白名单(不用目录排除):`git diff --name-status c21de8cbb..$HANDIN1` 每行状态 ∈ {A,M}(无 D)且路径 ∈ `W` = {`$F`,`$D/plan.md`,`$D/progress.md`,`$D/design.html`,`$D/d1-core-flow.mmd`,`$D/d1-core-flow.svg`}(`$D`=本文件夹;旧 `exploration.md`/`d2-*` 不在 W,本轮不得改),且 `$F` 必在其中;(d) `git show "$HANDIN1:$F" | cmp - <(exp1)` 退出 0。任一不过 → blocked。README 说"只碰一个文件"指演练内容;`$D` 下文件来自节点契约(DOC-FLOW/ledger/设计 HTML),不进 QA criterion。
-4. `git push -u origin HEAD`(新分支,不 force);`gh pr create --base main` 标题 `FLY-3226 QA-SBX FLY-3226 real-runner drill (run 77dfe0aa)`,正文写 `run=77dfe0aa HANDIN1=<完整 SHA>`、核验结果、`e2e_529_exempt` 说明。若该分支已有 OPEN PR(重试)→ 复用并 `gh pr edit`,不新开。确认远端头 = PR 头 = `$HANDIN1` 后按实现节点自身的完成命令交付。
+4. `git push -u origin HEAD`(fast-forward 已有远端分支,不 force);`gh pr create --base main` 标题 `FLY-3226 QA-SBX FLY-3226 real-runner drill (run ef066ba8)`,正文写 `run=ef066ba8 HANDIN1=<完整 SHA>`、核验结果、`e2e_529_exempt` 说明。若该分支已有 OPEN PR(重试)→ 复用并 `gh pr edit`,不新开。确认远端头 = PR 头 = `$HANDIN1` 后按实现节点自身的完成命令交付。
 
 **交付 #2(提示词有 "QA fix context",首行 `QA verdict to fix: claim <id> ...`)**
 1. 用 `^QA verdict to fix: claim (\S+)` 取 `ID`,原样复制;取不到 → blocked,不猜。若提示词同时有 `Previous QA verdict: claim <id>`,两者必须相等,否则 blocked。写前守卫同交付 #1 第 0 步。
