@@ -2,18 +2,18 @@
 issue: FLY-3224
 phase: implement
 phaseCursor: 2/3
-updated: 2026-10-07T03:09:14.994Z
-nextStep: Milestone, PR, effective review and frozen-head CI before needs_review
+updated: 2026-10-07T03:22:24.126Z
+nextStep: Finalize milestone, push, fresh review and exact-head CI; needs_review PR 643
 chunks: []
 pointers: {}
-handoff: "Run 506a149c first hand-in fixture c6d2d1077: exact two LF lines,
-  AWAITING-QA; review gate e045ac49-04cd-4bed-bb61-40f3f80a393d request
-  d32a09d9-234d-488a-8cce-d8ce8889e060 pending; lint failed only on two
-  generated review JSON files, 14 warnings; no local tests or smoke configured."
+handoff: "Attempt 2 epoch 4 rework for injected QA claim 1, base 072ab035a:
+  first-hand-in ancestor verified; exact expected bytes failed before edit,
+  passed after. Fixture line 2 now FIXED-FOR-CLAIM 1. Fresh code review and
+  final-head CI required; reuse PR #643."
 ---
 
 # FLY-3224 progress
 **phase**: implement (2/3)
-**next**: Milestone, PR, effective review and frozen-head CI before needs_review
+**next**: Finalize milestone, push, fresh review and exact-head CI; needs_review PR 643
 
-**handoff**: Run 506a149c first hand-in fixture c6d2d1077: exact two LF lines, AWAITING-QA; review gate e045ac49-04cd-4bed-bb61-40f3f80a393d request d32a09d9-234d-488a-8cce-d8ce8889e060 pending; lint failed only on two generated review JSON files, 14 warnings; no local tests or smoke configured.
+**handoff**: Attempt 2 epoch 4 rework for injected QA claim 1, base 072ab035a: first-hand-in ancestor verified; exact expected bytes failed before edit, passed after. Fixture line 2 now FIXED-FOR-CLAIM 1. Fresh code review and final-head CI required; reuse PR #643.
