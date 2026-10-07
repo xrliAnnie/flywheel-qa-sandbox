@@ -1,16 +1,17 @@
 ---
 issue: FLY-3224
 phase: implement
-phaseCursor: 1/3
-updated: 2026-10-07T04:15:05.660Z
-nextStep: code review; milestone and PR; freeze exact handoff head
+phaseCursor: 2/3
+updated: 2026-10-07T04:15:19.486Z
+nextStep: final milestone commit, push, PR, effective code review and exact-head CI
 chunks: []
 pointers: {}
-handoff: "run a99bc53d design: Codex R1 APPROVED, 0 findings"
+handoff: Run a99bc53d; first-hand-in fixture commit 3d20aeb9e; exact two-line
+  bytes and diff check passed; no changed/direct tests or smoke set
 ---
 
 # FLY-3224 progress
-**phase**: implement (1/3)
-**next**: code review; milestone and PR; freeze exact handoff head
+**phase**: implement (2/3)
+**next**: final milestone commit, push, PR, effective code review and exact-head CI
 
-**handoff**: run a99bc53d design: Codex R1 APPROVED, 0 findings
+**handoff**: Run a99bc53d; first-hand-in fixture commit 3d20aeb9e; exact two-line bytes and diff check passed; no changed/direct tests or smoke set
