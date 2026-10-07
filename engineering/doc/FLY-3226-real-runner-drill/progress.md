@@ -1,10 +1,11 @@
 ---
 issue: FLY-3226
 phase: implement
-phaseCursor: 1/2
-updated: 2026-10-07T02:05:05.853Z
-nextStep: "Exact bytes verified: AWAITING-QA; open PR and obtain effective
-  review, then freeze HEAD for CI"
+phaseCursor: 2/2
+updated: 2026-10-07T02:09:10.019Z
+nextStep: PR 642; code review APPROVED bd4f81c1 on b9e30bfe3; exact bytes and
+  whitelist passed; freeze/push ledger HEAD then ci-full ensure and complete
+  needs_review
 chunks: []
 pointers: {}
 handoff: "run ef066ba8: plan/design patched on inherited branch 88f0909, base
@@ -12,7 +13,7 @@ handoff: "run ef066ba8: plan/design patched on inherited branch 88f0909, base
 ---
 
 # FLY-3226 progress
-**phase**: implement (1/2)
-**next**: Exact bytes verified: AWAITING-QA; open PR and obtain effective review, then freeze HEAD for CI
+**phase**: implement (2/2)
+**next**: PR 642; code review APPROVED bd4f81c1 on b9e30bfe3; exact bytes and whitelist passed; freeze/push ledger HEAD then ci-full ensure and complete needs_review
 
 **handoff**: run ef066ba8: plan/design patched on inherited branch 88f0909, base c21de8cbb residue claim 1
