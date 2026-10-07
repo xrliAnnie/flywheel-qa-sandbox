@@ -2,23 +2,18 @@
 issue: FLY-3226
 phase: implement
 phaseCursor: 2/2
-updated: 2026-10-06T23:22:26.075Z
-nextStep: Freeze HANDIN2; server CI requirement then needs_review PR 635 for QA
-  re-verification claim 1
+updated: 2026-10-07T02:25:31.553Z
+nextStep: Claim 1 fix verified; review round 2 APPROVED request 8fcb61ce on
+  7946769fc; freeze final ledger head, server CI requirement, complete
+  needs_review PR 642
 chunks: []
 pointers: {}
-handoff: "Run e39cc50c attempt 2 claim 1 fix: exact FIXED-FOR-CLAIM 1 bytes
-  verified. PREV HANDIN1 3e402e56447c15ab153502fab09b343c297928ac; fix commit
-  0747dbcb6; review head 020a8017f3d29fa58d4c5af2d3ae80dfd4b0d263 effective
-  APPROVED round 2 gate 3d4e314b-43c4-41a0-80c2-e1caaf282f7b. Same PR 635; final
-  HANDIN2 recorded in PR/CI/completion receipts after this ledger. Rework
-  interval changes only drill file and ledger; no runtime adjacent state paths
-  apply. Docs-only exemption, no local tests/smoke declared, no deployment. No
-  commits after this freeze."
+handoff: "run ef066ba8: plan/design patched on inherited branch 88f0909, base
+  c21de8cbb residue claim 1"
 ---
 
 # FLY-3226 progress
 **phase**: implement (2/2)
-**next**: Freeze HANDIN2; server CI requirement then needs_review PR 635 for QA re-verification claim 1
+**next**: Claim 1 fix verified; review round 2 APPROVED request 8fcb61ce on 7946769fc; freeze final ledger head, server CI requirement, complete needs_review PR 642
 
-**handoff**: Run e39cc50c attempt 2 claim 1 fix: exact FIXED-FOR-CLAIM 1 bytes verified. PREV HANDIN1 3e402e56447c15ab153502fab09b343c297928ac; fix commit 0747dbcb6; review head 020a8017f3d29fa58d4c5af2d3ae80dfd4b0d263 effective APPROVED round 2 gate 3d4e314b-43c4-41a0-80c2-e1caaf282f7b. Same PR 635; final HANDIN2 recorded in PR/CI/completion receipts after this ledger. Rework interval changes only drill file and ledger; no runtime adjacent state paths apply. Docs-only exemption, no local tests/smoke declared, no deployment. No commits after this freeze.
+**handoff**: run ef066ba8: plan/design patched on inherited branch 88f0909, base c21de8cbb residue claim 1
