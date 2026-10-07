@@ -1,7 +1,7 @@
 # FLY-3150 真 Runner 通用演练(529 房间) — 实施计划
 
 Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-real-runner-generalized-drill-529-room-only)
-日期: 2026-10-07(本次派发 run `78fe9b99`,slot-1,exec `a94962ea`;沿用上一轮 run `14456cb0` 已评审结构,更早各轮沿革见 exploration.md)
+日期: 2026-10-07(本次派发 run `4d103803`,slot-1,exec `45f82d4b`;沿用上一轮 run `78fe9b99` 已评审结构,更早各轮沿革见 exploration.md)
 基于: exploration.md §50(README 规定"一份短 plan 足够,不需要 research 文档")
 
 ## 1. 范围
@@ -20,9 +20,9 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 
 ## 2. 本轮起点(派发时快照,实现节点自己重算)
 
-- 上一轮 run `14456cb0` **已落地**:它的 PR #648 已合入(squash 提交 `e771f9526`,2026-10-07T07:07:03Z),远端同名分支已删。本地分支 `project-slot-1-FLY-3150` 派发时 = `origin/main` = `e771f9526`(#648 就是主干最新提交,之后主干没有新提交)→ 不同步。没有远端分支、没有 OPEN PR:设计节点推送本轮文档时已新建远端分支,实现节点首推是普通快进;§3 第 7 步 `gh pr list` 输出空 → `gh pr create` 新开 PR(已合入的 #648 及其正文里的上一轮 HANDIN1/HANDIN2 一律不当本轮证据;别的 slot 的同 issue PR,如 slot-2 分支 `project-slot-2-FLY-3150` 的 OPEN PR #596,不是本分支的 PR,`--head` 过滤后不会命中)。
+- 上一轮 run `78fe9b99` **已落地**:它的 PR #649 已合入(squash 提交 `63f6bc8dd`,2026-10-07T08:14:05Z),远端同名分支已删。本地分支 `project-slot-1-FLY-3150` 派发时 = `origin/main` = `63f6bc8dd`(#649 就是主干最新提交,之后主干没有新提交)→ 不同步。没有远端分支、没有 OPEN PR:设计节点推送本轮文档时已新建远端分支,实现节点首推是普通快进;§3 第 7 步 `gh pr list` 输出空 → `gh pr create` 新开 PR(已合入的 #649 及其正文里的上一轮 HANDIN1/HANDIN2 一律不当本轮证据;别的 slot 的同 issue PR,如 slot-2 分支 `project-slot-2-FLY-3150` 的 OPEN PR #596,不是本分支的 PR,`--head` 过滤后不会命中)。
 - `HEAD:"$F"` = 上一轮交付 #2 留下的 `FIXED-FOR-CLAIM 1`(合并基 / main 上也是残留的 `FIXED-FOR-CLAIM 1`)。所以**交付 #1 走正常重置分支**:第 2 步 `cmp` 非 0 → 写回 `AWAITING-QA` 并提交 1 个实现提交;核验按 §3 第 6(a) 正常路径(`M "$F"`、计数 1)+ 6(b)(patch 恰为 `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`);PR 级断言期望相对合并基恰好一行 `"$F"`。这一步同时消除"残留 claim 恰好同号 → 重验假通过":交付 #2 的证据必须是 `$PREV..$HANDIN2` 上 `-AWAITING-QA` / `+FIXED-FOR-CLAIM $ID` 的真实 patch。
-- **旧指针一律不认**:run `14456cb0` / `48d9ca3a` / `e4c67d5c` / `8e3798db` / `cd8922c5` / `1785c254` / `9ff55b37` / `1262139d` / `3e80ce96` / `cf71c93b` 及更早各轮的 HANDIN、代码评审、CI、QA 结论与 claim id,main 历史里任何 run 的 HANDIN / claim id、派发时 progress.md 的旧 handoff(上一轮 `run=14456cb0 attempt=2 claim=1 PREV=2c2bde1b…`、`pr: 648`)、已合入 PR #648 / #644 / #641 / #633 正文里往轮的 HANDIN1 / HANDIN2,以及 run `14456cb0` 及更早各轮的设计评审记录,都不是本轮 BASE / PREV / claim id。判定第几次交付只看**本轮**提示词有没有 "QA fix context"(或 Lead 返工反馈里明确给出的 claim id);交付 #2 的 PREV 只认本轮交付 #1 摘要里的 `run=78fe9b99 HANDIN1=<sha>`。
+- **旧指针一律不认**:run `78fe9b99` / `14456cb0` / `48d9ca3a` / `e4c67d5c` / `8e3798db` / `cd8922c5` / `1785c254` / `9ff55b37` / `1262139d` / `3e80ce96` / `cf71c93b` 及更早各轮的 HANDIN、代码评审、CI、QA 结论与 claim id,main 历史里任何 run 的 HANDIN / claim id、派发时 progress.md 的旧 handoff(上一轮 `run=78fe9b99 attempt=2 claim=1 PREV=2bffcf73…`、`pr: 649`)、已合入 PR #649 / #648 / #644 / #641 / #633 正文里往轮的 HANDIN1 / HANDIN2,以及 run `78fe9b99` 及更早各轮的设计评审记录,都不是本轮 BASE / PREV / claim id。判定第几次交付只看**本轮**提示词有没有 "QA fix context"(或 Lead 返工反馈里明确给出的 claim id);交付 #2 的 PREV 只认本轮交付 #1 摘要里的 `run=4d103803 HANDIN1=<sha>`。
 
 ## 3. 实现节点
 
@@ -37,7 +37,7 @@ Issue: FLY-3150 (https://linear.app/geoforge3d/issue/FLY-3150/qa-sbx-fly-2167-re
 4. 只 `git add "$F"`,提交 `docs(qa-sbx): FLY-3150 drill hand-in`。
 5. `git status --porcelain` 为空后冻结 `HANDIN1=$(git rev-parse HEAD)`(跳过分支下 `HANDIN1=BASE`)。此后不写 ledger。
 6. 核验:(a) **整个交付区间** `git diff --name-status $BASE..$HANDIN1`:正常路径恰好一行 `M "$F"` 且 `git rev-list --count $BASE..$HANDIN1` = `1`(恰好一个实现提交,区间内没有 ledger);跳过分支为空、`git rev-list --count $BASE..$HANDIN1` = `0` 且 `git show $BASE:"$F"` 已逐字节等于两行;(b) 正常路径下 `git diff $BASE..$HANDIN1 -- "$F"` 的 patch 只改第 2 行(`-<BASE 第 2 行原值>` / `+AWAITING-QA`);跳过分支无此 patch,改由 `git diff origin/main...$HANDIN1 -- "$F"` 恰为 `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA` 佐证;(c) `git rev-list --merges $BASE..$HANDIN1` 为空;(d) §1 的 PR 级断言对 `$HANDIN1` 通过(本轮期望相对合并基恰好一行 `"$F"`)。任一不过 → 停,不交付。
-7. `git push -u origin HEAD`(普通推送,不 force)。PR:`gh pr list --head "$BR" --state open --json number --jq '.[0].number // empty'`(Codex r1 P2:无结果时输出空串而不是 `null`);输出非空 = 有 OPEN PR 就 `gh pr edit` 复用并改标题 / 正文为本轮(本轮预期为空 → 新开),没有就 `gh pr create --base main --head "$BR"`,标题 `FLY-3150 QA-SBX FLY-2167 real-runner drill (run 78fe9b99)`,正文写 Linear issue 链接、本轮 run id 与本轮核验结果。确认远端分支头与 PR `headRefOid` 都等于 `$HANDIN1`,且 **该 PR head 对应的** CI 运行成功(`gh pr checks` / `gh run list --commit $HANDIN1`,按 run 的 `headSha` = `$HANDIN1` 匹配;`ci.yml` 走 `pull_request` 事件,checkout 的是 PR merge ref,`GITHUB_SHA` 是合并提交而不是 PR head,所以不按 `GITHUB_SHA` 比对,只记录它测的 merge SHA 与 `$HANDIN1` 的对应关系;feature 分支单独 push 不跑 CI,所以 CI 在开 / 更新 PR 之后核对),交付;**交付摘要写明 `run=78fe9b99 HANDIN1=<完整 SHA>`**(返工唯一 PREV 来源)。
+7. `git push -u origin HEAD`(普通推送,不 force)。PR:`gh pr list --head "$BR" --state open --json number --jq '.[0].number // empty'`(Codex r1 P2:无结果时输出空串而不是 `null`);输出非空 = 有 OPEN PR 就 `gh pr edit` 复用并改标题 / 正文为本轮(本轮预期为空 → 新开),没有就 `gh pr create --base main --head "$BR"`,标题 `FLY-3150 QA-SBX FLY-2167 real-runner drill (run 4d103803)`,正文写 Linear issue 链接、本轮 run id 与本轮核验结果。确认远端分支头与 PR `headRefOid` 都等于 `$HANDIN1`,且 **该 PR head 对应的** CI 运行成功(`gh pr checks` / `gh run list --commit $HANDIN1`,按 run 的 `headSha` = `$HANDIN1` 匹配;`ci.yml` 走 `pull_request` 事件,checkout 的是 PR merge ref,`GITHUB_SHA` 是合并提交而不是 PR head,所以不按 `GITHUB_SHA` 比对,只记录它测的 merge SHA 与 `$HANDIN1` 的对应关系;feature 分支单独 push 不跑 CI,所以 CI 在开 / 更新 PR 之后核对),交付;**交付摘要写明 `run=4d103803 HANDIN1=<完整 SHA>`**(返工唯一 PREV 来源)。
 
 **交付 #2(提示词首行 `QA verdict to fix: claim <id> ...`)**
 1. 用 `^QA verdict to fix: claim (\S+)` 取 `ID`,原样复制;取不到 → 失败通道,不猜。
