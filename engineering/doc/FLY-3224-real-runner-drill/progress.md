@@ -2,17 +2,19 @@
 issue: FLY-3224
 phase: implement
 phaseCursor: 2/3
-updated: 2026-10-07T04:15:40.594Z
-nextStep: freeze after milestone; create PR and review; exact-head CI; needs_review
+updated: 2026-10-07T04:27:28.360Z
+nextStep: final rework milestone; push frozen head; new code review and
+  server-owned CI; needs_review PR 645
 chunks: []
 pointers: {}
-handoff: Fixture 3d20aeb9e verified byte-for-byte. No local test files/smoke;
-  lint fails only on two excluded generated design receipt JSON files, with 14
-  existing warnings. Review/CI/handoff still pending.
+handoff: Run a99bc53d attempt 2 epoch 4; injected claim 1 failed at 65e1d7e29.
+  Fixed only fixture line 2 to FIXED-FOR-CLAIM 1; expected bytes failed before
+  and passed after. No runtime adjacent paths or tests applicable. Review and CI
+  for rework pending.
 ---
 
 # FLY-3224 progress
 **phase**: implement (2/3)
-**next**: freeze after milestone; create PR and review; exact-head CI; needs_review
+**next**: final rework milestone; push frozen head; new code review and server-owned CI; needs_review PR 645
 
-**handoff**: Fixture 3d20aeb9e verified byte-for-byte. No local test files/smoke; lint fails only on two excluded generated design receipt JSON files, with 14 existing warnings. Review/CI/handoff still pending.
+**handoff**: Run a99bc53d attempt 2 epoch 4; injected claim 1 failed at 65e1d7e29. Fixed only fixture line 2 to FIXED-FOR-CLAIM 1; expected bytes failed before and passed after. No runtime adjacent paths or tests applicable. Review and CI for rework pending.
