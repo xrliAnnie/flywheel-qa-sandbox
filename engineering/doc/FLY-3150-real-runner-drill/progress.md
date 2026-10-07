@@ -1,18 +1,18 @@
 ---
 issue: FLY-3150
-phase: implement
-phaseCursor: 2/2
-updated: 2026-10-07T03:34:35.238Z
-nextStep: "hand-in #2: line 2 FIXED-FOR-CLAIM 1, verify, push PR 644, CI, complete"
+phase: design
+phaseCursor: 1/4
+updated: 2026-10-07T04:40:12.851Z
+nextStep: Codex design review of refreshed plan
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
-  pr: none
-handoff: run=e4c67d5c attempt=2 claim=1 PREV=667b2b0b85faaeaaad5cae59ac63624a51672fd5
+  pr: "644"
+handoff: "run=48d9ca3a design: plan refreshed, review pending"
 ---
 
 # FLY-3150 progress
-**phase**: implement (2/2)
-**next**: hand-in #2: line 2 FIXED-FOR-CLAIM 1, verify, push PR 644, CI, complete
+**phase**: design (1/4)
+**next**: Codex design review of refreshed plan
 
-**handoff**: run=e4c67d5c attempt=2 claim=1 PREV=667b2b0b85faaeaaad5cae59ac63624a51672fd5
+**handoff**: run=48d9ca3a design: plan refreshed, review pending
