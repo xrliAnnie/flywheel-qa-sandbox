@@ -1,15 +1,15 @@
 ---
 issue: FLY-3227
 phase: implement
-phaseCursor: 4/4
-updated: 2026-10-07T02:15:44.393Z
-nextStep: Attempt 2 claim 1 repair c9e0db3e9; review
-  bfd841c8-414a-4261-8846-d51c9d8258a1 APPROVED; finalize milestone, freeze head
-  and ensure CI before needs_review
+phaseCursor: 3/3
+updated: 2026-10-07T09:14:03.112Z
+nextStep: Claim 1 repair verified and review round 2 APPROVED; freeze after
+  ledger push, ensure CI for PR 651, complete needs_review
 chunks: []
-pointers: {}
+pointers:
+  pr: "651"
 ---
 
 # FLY-3227 progress
-**phase**: implement (4/4)
-**next**: Attempt 2 claim 1 repair c9e0db3e9; review bfd841c8-414a-4261-8846-d51c9d8258a1 APPROVED; finalize milestone, freeze head and ensure CI before needs_review
+**phase**: implement (3/3)
+**next**: Claim 1 repair verified and review round 2 APPROVED; freeze after ledger push, ensure CI for PR 651, complete needs_review
