@@ -1,11 +1,10 @@
 ---
 issue: FLY-3226
-phase: design
-phaseCursor: 4/4
-updated: 2026-10-07T05:55:58.541Z
-nextStep: "design approved (r1, request 273576ec, blob f1f53dfb); implement
-  hand-in #1. Advisory LOW: plan §3 step 4 says push -u creates remote branch —
-  branch now exists, push is fast-forward"
+phase: implement
+phaseCursor: 1/2
+updated: 2026-10-07T05:57:35.321Z
+nextStep: Exact two-line first hand-in verified; code review, push and open new
+  PR for run 53c6ff0a
 chunks: []
 pointers: {}
 handoff: "run 53c6ff0a: plan/design patched, base e9fba2f93 (=origin/main),
@@ -13,7 +12,7 @@ handoff: "run 53c6ff0a: plan/design patched, base e9fba2f93 (=origin/main),
 ---
 
 # FLY-3226 progress
-**phase**: design (4/4)
-**next**: design approved (r1, request 273576ec, blob f1f53dfb); implement hand-in #1. Advisory LOW: plan §3 step 4 says push -u creates remote branch — branch now exists, push is fast-forward
+**phase**: implement (1/2)
+**next**: Exact two-line first hand-in verified; code review, push and open new PR for run 53c6ff0a
 
 **handoff**: run 53c6ff0a: plan/design patched, base e9fba2f93 (=origin/main), residue claim 1, new branch+new PR
