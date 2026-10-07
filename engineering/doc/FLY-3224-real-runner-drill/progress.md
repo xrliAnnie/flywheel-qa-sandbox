@@ -2,17 +2,18 @@
 issue: FLY-3224
 phase: implement
 phaseCursor: 3/3
-updated: 2026-10-06T23:54:25.629Z
-nextStep: "Frozen handoff: effective review, exact-head CI, complete needs_review"
+updated: 2026-10-07T00:04:59.458Z
+nextStep: "Claim 1 rework frozen handoff: review, exact-head CI, needs_review"
 chunks: []
 pointers: {}
-handoff: "Run d20eedd9; design exec 6f8f31c5; Codex design R1 APPROVED 0
-  findings (thread 01a113a0). Branch base main c21de8cbb (PR #636 merged); no
-  OPEN PR, implement creates a new PR; first hand-in writes AWAITING-QA."
+handoff: "Run d20eedd9; implement exec f448ebb3; attempt 2, TURN epoch 4. First
+  hand-in head 13a106206 (content a579d0390) passed code review and CI; OPEN
+  root PR #637. Injected QA claim 1 authorizes FIXED-FOR-CLAIM 1 rework; fresh
+  code review, CI and needs_review handoff required."
 ---
 
 # FLY-3224 progress
 **phase**: implement (3/3)
-**next**: Frozen handoff: effective review, exact-head CI, complete needs_review
+**next**: Claim 1 rework frozen handoff: review, exact-head CI, needs_review
 
-**handoff**: Run d20eedd9; design exec 6f8f31c5; Codex design R1 APPROVED 0 findings (thread 01a113a0). Branch base main c21de8cbb (PR #636 merged); no OPEN PR, implement creates a new PR; first hand-in writes AWAITING-QA.
+**handoff**: Run d20eedd9; implement exec f448ebb3; attempt 2, TURN epoch 4. First hand-in head 13a106206 (content a579d0390) passed code review and CI; OPEN root PR #637. Injected QA claim 1 authorizes FIXED-FOR-CLAIM 1 rework; fresh code review, CI and needs_review handoff required.
