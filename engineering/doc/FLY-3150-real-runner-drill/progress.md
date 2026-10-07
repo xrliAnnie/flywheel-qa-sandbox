@@ -1,20 +1,21 @@
 ---
 issue: FLY-3150
 phase: implement
-phaseCursor: 1/3
-updated: 2026-10-07T04:44:54.300Z
-nextStep: "First hand-in: reset AWAITING-QA, verify exact bytes and scope, code
-  review, push PR 644"
+phaseCursor: 2/3
+updated: 2026-10-07T05:00:31.847Z
+nextStep: "Attempt 2: exact FIXED-FOR-CLAIM 1, verify PREV patch, review, CI,
+  needs_review"
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
   pr: "644"
-handoff: run=48d9ca3a attempt=1; approved plan audited; ledger before BASE;
-  final HANDIN1 will be in completion report
+handoff: run=48d9ca3a attempt=2 claim=1
+  PREV=0b88dd83954ae1e862988751a3d53d8e576455d0; QA fix context received; ledger
+  before BASE2
 ---
 
 # FLY-3150 progress
-**phase**: implement (1/3)
-**next**: First hand-in: reset AWAITING-QA, verify exact bytes and scope, code review, push PR 644
+**phase**: implement (2/3)
+**next**: Attempt 2: exact FIXED-FOR-CLAIM 1, verify PREV patch, review, CI, needs_review
 
-**handoff**: run=48d9ca3a attempt=1; approved plan audited; ledger before BASE; final HANDIN1 will be in completion report
+**handoff**: run=48d9ca3a attempt=2 claim=1 PREV=0b88dd83954ae1e862988751a3d53d8e576455d0; QA fix context received; ledger before BASE2
