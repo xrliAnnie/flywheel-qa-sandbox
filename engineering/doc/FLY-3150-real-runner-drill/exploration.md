@@ -647,3 +647,10 @@ TURN:`yours phase=design epoch=1 run=4dea7fe2… node=eng_design attempt=1`(exec
 - 起点:`"$F"` = main 上残留的 `FIXED-FOR-CLAIM 1` → 交付 #1 走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`)。旧 progress.md handoff(`run=9ff55b37 attempt=2 claim=1 PREV=d1c363b5… PR=631`)不是本轮证据。
 - 与 §45 同形,plan 沿用已评审结构，只更新本轮起点与 run id。
 - Codex 设计评审(gpt-6-sol/xhigh,thread `01a1132a-45b3…`,turn `01a1132a-4a46…`)第 1 轮 APPROVED,HIGH 0 / MEDIUM 0 / LOW 1(§3.1 同步判定区间与"冻结 BASE 前同步"顺序不一致，建议显式记录同步状态与 main SHA;本轮无需同步，非阻塞)。已评审 plan blob `9019007a…`(requestId `321ce6b4…`),`await-codex-gate design` 通过。评审沙箱连不上 GitHub,"无 OPEN PR" 由本节点评审后 `gh pr list --head` 复查为空。
+
+## 47. 本次派发审计(run `cd8922c5`,2026-10-06,slot-1)
+
+- 派发:exec `4d420bb9`,TURN `yours phase=design epoch=1 attempt=1`。README(`origin/main:qa-sbx/fly2167/README.md`,blob `1de5e367…`)重读无变化。onboard skill 不存在 → 直接 `stage set brainstorm`。
+- 与前几轮不同:run `1785c254` **未合入** —— PR #633 仍 OPEN(头 `d510e97dd`,`MERGEABLE`/`CLEAN`),本地分支 = 远端同名分支 = `d510e97dd`。合并基 `57e42464f` 之后 `origin/main`(`2501252c7`)只多了 #634–#637,只改 FLY-3224 / FLY-3225 / FLY-3226 自己的路径 → 不相交，不同步。
+- 起点:`"$F"` = 上轮交付 #2 留下的 `FIXED-FOR-CLAIM 1` → 交付 #1 仍走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`);PR 级相对合并基仍恰好一行 `"$F"`。PR:复用 #633(`gh pr edit` 改标题 / 正文为本轮，删去上轮 HANDIN 指针)。旧 progress.md handoff(`run=1785c254 attempt=2 claim=1 PREV=36a5891d…`)与 PR #633 正文的上轮 HANDIN1/HANDIN2 都不是本轮证据。
+- plan 沿用已评审结构，只更新本轮起点、PR 复用与 run id;d1 图重渲。
