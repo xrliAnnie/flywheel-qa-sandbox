@@ -1,22 +1,20 @@
 ---
 issue: FLY-3150
-phase: implement
-phaseCursor: 1/1
-updated: 2026-10-07T01:55:36.464Z
-nextStep: "run=8e3798db attempt=2 claim=1
-  PREV=b440912dd239c1a931a1f0f5e202cf6834b3d607: set line 2 FIXED-FOR-CLAIM 1,
-  exact-byte/scope verification, fresh code review, push PR 641, CI and
-  needs_review"
+phase: design
+phaseCursor: 1/4
+updated: 2026-10-07T02:54:28.885Z
+nextStep: "run=e4c67d5c refresh plan snapshot (PR #641 merged, main=425b5729f),
+  Codex design review, design HTML"
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
   pr: none
-handoff: run=8e3798db design approved (Codex r1); branch=main+docs, no open PR;
-  no prior HANDIN valid
+handoff: run=e4c67d5c design in progress; branch=origin/main 425b5729f, no open
+  PR; no prior HANDIN valid
 ---
 
 # FLY-3150 progress
-**phase**: implement (1/1)
-**next**: run=8e3798db attempt=2 claim=1 PREV=b440912dd239c1a931a1f0f5e202cf6834b3d607: set line 2 FIXED-FOR-CLAIM 1, exact-byte/scope verification, fresh code review, push PR 641, CI and needs_review
+**phase**: design (1/4)
+**next**: run=e4c67d5c refresh plan snapshot (PR #641 merged, main=425b5729f), Codex design review, design HTML
 
-**handoff**: run=8e3798db design approved (Codex r1); branch=main+docs, no open PR; no prior HANDIN valid
+**handoff**: run=e4c67d5c design in progress; branch=origin/main 425b5729f, no open PR; no prior HANDIN valid
