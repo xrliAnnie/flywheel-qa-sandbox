@@ -1,32 +1,20 @@
 ---
 issue: FLY-3225
-phase: design
-phaseCursor: 3/4
-updated: 2026-10-07T01:12:40.258Z
-nextStep: publish design HTML, complete
+phase: implement
+phaseCursor: 1/4
+updated: 2026-10-07T01:14:09.255Z
+nextStep: Write first hand-in and verify exact bytes
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3225-real-runner-drill/plan.md
-  pr: "634"
-  reviewedSha: d162e76e82aeefab6f5f077c52315857e426ae36
-handoff: '{"runId": "76b2394c-e171-4655-9214-eb63069531a8", "execId":
-  "bd0fd65a-afc7-483a-a84a-845306ff6235", "activationId":
-  "activation:rework:380e0f419e3ffe60efbb5c1b24d1d4b92f5def1bcad5229781f36a38bad87a2d",
-  "attempt": 2, "implBase": "7c6eccc38975c3d0ff5ec3c76b12b8d200041ec9",
-  "firstHandin": "dbac58a7d67e363a5c1ebe6f58172fbf68bcff93", "ownCommits":
-  ["dbac58a7d67e363a5c1ebe6f58172fbf68bcff93",
-  "674c59cece5c6361618efddd460dbbf63d87bfeb"], "handinMode": "qa-fix", "pr":
-  634, "verification": "Exact FIXED-FOR-CLAIM 1 bytes, same-run firstHandin and
-  single-file fix commit PASS", "adjacentPaths": "N/A (docs-only drill)",
-  "e2e529": "not_run docs_only; deployment prohibited", "reviewQuestionId":
-  "43066d74-a9ad-47ab-b924-c066e5f8c17d", "reviewRequestId":
-  "64e4ffc8-2ff0-4ba3-80e1-f33d43f81433", "reviewVerdict": "APPROVED",
-  "reviewedSha": "d162e76e82aeefab6f5f077c52315857e426ae36", "qaClaim": "1",
-  "qaFailedHead": "4025dfab335192fa1ec256f82942584f959ed439"}'
+  pr: ""
+  reviewedSha: ""
+handoff: '{"runId":"3296d4fe-d449-4510-8ed1-439970d8995f","execId":"2d800462-38b6-4bd3-9797-c9e22dce461f","activationId":"activation:2d800462-38b6-4bd3-9797-c9e22dce461f:3296d4fe-d449-4510-8ed1-439970d8995f:implement:1","attempt":1,"implBase":"7f31a408a","firstHandin":null,"ownCommits":[],"handinMode":"initial","adjacentPaths":"N/A
+  (docs-only drill)","e2e529":"not_run docs_only; deployment prohibited"}'
 ---
 
 # FLY-3225 progress
-**phase**: design (3/4)
-**next**: publish design HTML, complete
+**phase**: implement (1/4)
+**next**: Write first hand-in and verify exact bytes
 
-**handoff**: {"runId": "76b2394c-e171-4655-9214-eb63069531a8", "execId": "bd0fd65a-afc7-483a-a84a-845306ff6235", "activationId": "activation:rework:380e0f419e3ffe60efbb5c1b24d1d4b92f5def1bcad5229781f36a38bad87a2d", "attempt": 2, "implBase": "7c6eccc38975c3d0ff5ec3c76b12b8d200041ec9", "firstHandin": "dbac58a7d67e363a5c1ebe6f58172fbf68bcff93", "ownCommits": ["dbac58a7d67e363a5c1ebe6f58172fbf68bcff93", "674c59cece5c6361618efddd460dbbf63d87bfeb"], "handinMode": "qa-fix", "pr": 634, "verification": "Exact FIXED-FOR-CLAIM 1 bytes, same-run firstHandin and single-file fix commit PASS", "adjacentPaths": "N/A (docs-only drill)", "e2e529": "not_run docs_only; deployment prohibited", "reviewQuestionId": "43066d74-a9ad-47ab-b924-c066e5f8c17d", "reviewRequestId": "64e4ffc8-2ff0-4ba3-80e1-f33d43f81433", "reviewVerdict": "APPROVED", "reviewedSha": "d162e76e82aeefab6f5f077c52315857e426ae36", "qaClaim": "1", "qaFailedHead": "4025dfab335192fa1ec256f82942584f959ed439"}
+**handoff**: {"runId":"3296d4fe-d449-4510-8ed1-439970d8995f","execId":"2d800462-38b6-4bd3-9797-c9e22dce461f","activationId":"activation:2d800462-38b6-4bd3-9797-c9e22dce461f:3296d4fe-d449-4510-8ed1-439970d8995f:implement:1","attempt":1,"implBase":"7f31a408a","firstHandin":null,"ownCommits":[],"handinMode":"initial","adjacentPaths":"N/A (docs-only drill)","e2e529":"not_run docs_only; deployment prohibited"}
