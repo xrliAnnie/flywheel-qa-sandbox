@@ -1,35 +1,19 @@
 ---
 issue: FLY-3225
-phase: design
-phaseCursor: 4/4
-updated: 2026-10-07T04:34:27.027Z
-nextStep: Design APPROVED r1 (gpt-6-sol/xhigh); HTML published; implement first
-  hand-in for run 018dd70e
+phase: implement
+phaseCursor: 1/4
+updated: 2026-10-07T04:35:33.327Z
+nextStep: Write first hand-in; obtain effective code review; new PR
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3225-real-runner-drill/plan.md
-  pr: "639"
-  reviewedSha: 80c5d2a6b33432e68e7538949e3b02ba09a30543
-handoff: '{"runId": "3296d4fe-d449-4510-8ed1-439970d8995f", "execId":
-  "2d800462-38b6-4bd3-9797-c9e22dce461f", "activationId":
-  "activation:rework:361a93949bdccd03b2d7f3183b81fd5670d75c597019046bd313798bfcf13f38",
-  "attempt": 2, "implBase": "7f31a408a1f023648a51312e90af94f949778199",
-  "firstHandin": "159a589ea6f6817e25d71f2641d5b0b6c375a9ea", "ownCommits":
-  ["159a589ea6f6817e25d71f2641d5b0b6c375a9ea",
-  "d31fde438eea18692266b7f1437072b6e9d47eac"], "handinMode": "qa-fix", "pr":
-  639, "verification": "Exact FIXED-FOR-CLAIM 1 bytes; same-run firstHandin and
-  single-file fix commit PASS", "adjacentPaths": "N/A (docs-only drill)",
-  "e2e529": "not_run docs_only; deployment prohibited", "reviewVerdict":
-  "APPROVED", "memoryCloseout": "One inherited-run identity lesson saved on
-  first hand-in; no new lesson in fix round", "qaClaim": "1", "qaFailedHead":
-  "af8a11c5e7b48e254abe8abdd5160164c46013bb", "reviewQuestionId":
-  "4aa13a3f-dbfb-45b5-b57b-0c22cadf893d", "reviewRequestId":
-  "c3bb9e51-eea0-433e-9212-53730c68adec", "reviewedSha":
-  "80c5d2a6b33432e68e7538949e3b02ba09a30543"}'
+  pr: unassigned
+  reviewedSha: unassigned
+handoff: '{"runId":"018dd70e-e76b-40ff-9318-e8a5e64f518c","execId":"7a75e1d1-dd1b-43ec-b9ec-a4e497283c94","activationId":"activation:7a75e1d1-dd1b-43ec-b9ec-a4e497283c94:018dd70e-e76b-40ff-9318-e8a5e64f518c:implement:1","implBase":"cb510051d9e68a2a3d498375a4e4b507c89df58c","firstHandin":null,"ownCommits":[],"attempt":1}'
 ---
 
 # FLY-3225 progress
-**phase**: design (4/4)
-**next**: Design APPROVED r1 (gpt-6-sol/xhigh); HTML published; implement first hand-in for run 018dd70e
+**phase**: implement (1/4)
+**next**: Write first hand-in; obtain effective code review; new PR
 
-**handoff**: {"runId": "3296d4fe-d449-4510-8ed1-439970d8995f", "execId": "2d800462-38b6-4bd3-9797-c9e22dce461f", "activationId": "activation:rework:361a93949bdccd03b2d7f3183b81fd5670d75c597019046bd313798bfcf13f38", "attempt": 2, "implBase": "7f31a408a1f023648a51312e90af94f949778199", "firstHandin": "159a589ea6f6817e25d71f2641d5b0b6c375a9ea", "ownCommits": ["159a589ea6f6817e25d71f2641d5b0b6c375a9ea", "d31fde438eea18692266b7f1437072b6e9d47eac"], "handinMode": "qa-fix", "pr": 639, "verification": "Exact FIXED-FOR-CLAIM 1 bytes; same-run firstHandin and single-file fix commit PASS", "adjacentPaths": "N/A (docs-only drill)", "e2e529": "not_run docs_only; deployment prohibited", "reviewVerdict": "APPROVED", "memoryCloseout": "One inherited-run identity lesson saved on first hand-in; no new lesson in fix round", "qaClaim": "1", "qaFailedHead": "af8a11c5e7b48e254abe8abdd5160164c46013bb", "reviewQuestionId": "4aa13a3f-dbfb-45b5-b57b-0c22cadf893d", "reviewRequestId": "c3bb9e51-eea0-433e-9212-53730c68adec", "reviewedSha": "80c5d2a6b33432e68e7538949e3b02ba09a30543"}
+**handoff**: {"runId":"018dd70e-e76b-40ff-9318-e8a5e64f518c","execId":"7a75e1d1-dd1b-43ec-b9ec-a4e497283c94","activationId":"activation:7a75e1d1-dd1b-43ec-b9ec-a4e497283c94:018dd70e-e76b-40ff-9318-e8a5e64f518c:implement:1","implBase":"cb510051d9e68a2a3d498375a4e4b507c89df58c","firstHandin":null,"ownCommits":[],"attempt":1}
