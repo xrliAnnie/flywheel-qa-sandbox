@@ -1,25 +1,19 @@
 ---
 issue: FLY-3228
-phase: implement
-phaseCursor: 3/3
-updated: 2026-10-06T20:06:57.651Z
-nextStep: Freeze HANDIN2; server CI requirement then needs_review; await QA
-  re-verification
+phase: design
+phaseCursor: 1/4
+updated: 2026-10-07T01:30:19.911Z
+nextStep: Write plan.md for run 95d35687 then design review
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3228-real-runner-drill/plan.md
   pr: "632"
-handoff: "Attempt 2 fixes injected QA verdict claim 1 on HANDIN1
-  ca6c10c84ce37fce35ebb1a78972c5a703f48724. Fixture exact FIXED-FOR-CLAIM 1;
-  patch from HANDIN1 only line 2. Code review APPROVED round 2 request
-  b89dc364-1b81-431c-9fdb-78a64d6d824c reviewed
-  316918116dac61cd8a0ff1ce045449e99b03f539; final ledger-only commit follows.
-  HANDIN2 recorded externally in PR #632. Adjacent runtime paths inapplicable
-  docs-only; no local tests/smoke, no room deployment."
+handoff: "Design node exec 3d51cd87 (run 95d35687) started; branch = origin/main
+  b3f71d79b; prior PR #632 merged (residue claim 1). Writing plan."
 ---
 
 # FLY-3228 progress
-**phase**: implement (3/3)
-**next**: Freeze HANDIN2; server CI requirement then needs_review; await QA re-verification
+**phase**: design (1/4)
+**next**: Write plan.md for run 95d35687 then design review
 
-**handoff**: Attempt 2 fixes injected QA verdict claim 1 on HANDIN1 ca6c10c84ce37fce35ebb1a78972c5a703f48724. Fixture exact FIXED-FOR-CLAIM 1; patch from HANDIN1 only line 2. Code review APPROVED round 2 request b89dc364-1b81-431c-9fdb-78a64d6d824c reviewed 316918116dac61cd8a0ff1ce045449e99b03f539; final ledger-only commit follows. HANDIN2 recorded externally in PR #632. Adjacent runtime paths inapplicable docs-only; no local tests/smoke, no room deployment.
+**handoff**: Design node exec 3d51cd87 (run 95d35687) started; branch = origin/main b3f71d79b; prior PR #632 merged (residue claim 1). Writing plan.
