@@ -1,19 +1,19 @@
 ---
 issue: FLY-3224
 phase: implement
-phaseCursor: 1/2
-updated: 2026-10-07T01:31:36.380Z
-nextStep: Claim 1 fixed; final milestone, fresh code review and server-owned CI
-  for PR 638
+phaseCursor: 2/3
+updated: 2026-10-07T03:22:24.126Z
+nextStep: Finalize milestone, push, fresh review and exact-head CI; needs_review PR 643
 chunks: []
 pointers: {}
-handoff: "Run 5bdd09e1; design exec df0ebb2c; start main b3f71d79b (PR #637
-  merged, no OPEN PR); design R1 APPROVED 0 findings; implement must write
-  AWAITING-QA and open a new PR"
+handoff: "Attempt 2 epoch 4 rework for injected QA claim 1, base 072ab035a:
+  first-hand-in ancestor verified; exact expected bytes failed before edit,
+  passed after. Fixture line 2 now FIXED-FOR-CLAIM 1. Fresh code review and
+  final-head CI required; reuse PR #643."
 ---
 
 # FLY-3224 progress
-**phase**: implement (1/2)
-**next**: Claim 1 fixed; final milestone, fresh code review and server-owned CI for PR 638
+**phase**: implement (2/3)
+**next**: Finalize milestone, push, fresh review and exact-head CI; needs_review PR 643
 
-**handoff**: Run 5bdd09e1; design exec df0ebb2c; start main b3f71d79b (PR #637 merged, no OPEN PR); design R1 APPROVED 0 findings; implement must write AWAITING-QA and open a new PR
+**handoff**: Attempt 2 epoch 4 rework for injected QA claim 1, base 072ab035a: first-hand-in ancestor verified; exact expected bytes failed before edit, passed after. Fixture line 2 now FIXED-FOR-CLAIM 1. Fresh code review and final-head CI required; reuse PR #643.
