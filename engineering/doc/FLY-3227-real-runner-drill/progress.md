@@ -1,15 +1,13 @@
 ---
 issue: FLY-3227
-phase: implement
-phaseCursor: 4/4
-updated: 2026-10-06T09:14:46.859Z
-nextStep: Payload 2577f9336 verified; review r1 APPROVED with LOW advisories.
-  Commit milestone last, push, open PR, review final head, freeze and ensure CI,
-  then complete needs_review. No new durable memory lessons.
+phase: design
+phaseCursor: 2/4
+updated: 2026-10-07T01:44:58.047Z
+nextStep: Plan refreshed; run design review round 1
 chunks: []
 pointers: {}
 ---
 
 # FLY-3227 progress
-**phase**: implement (4/4)
-**next**: Payload 2577f9336 verified; review r1 APPROVED with LOW advisories. Commit milestone last, push, open PR, review final head, freeze and ensure CI, then complete needs_review. No new durable memory lessons.
+**phase**: design (2/4)
+**next**: Plan refreshed; run design review round 1
