@@ -1,17 +1,17 @@
 ---
 issue: FLY-3226
 phase: design
-phaseCursor: 3/4
-updated: 2026-10-07T00:42:54.766Z
-nextStep: "publish design HTML + complete. Note: eng_design pushed branch (no PR
-  yet); implement node pushes + gh pr create (recheck remote branch/PR live)"
+phaseCursor: 1/4
+updated: 2026-10-07T02:00:57.418Z
+nextStep: design review
 chunks: []
 pointers: {}
-handoff: "run 77dfe0aa: plan/design patched for base c21de8cbb residue claim 1"
+handoff: "run ef066ba8: plan/design patched on inherited branch 88f0909, base
+  c21de8cbb residue claim 1"
 ---
 
 # FLY-3226 progress
-**phase**: design (3/4)
-**next**: publish design HTML + complete. Note: eng_design pushed branch (no PR yet); implement node pushes + gh pr create (recheck remote branch/PR live)
+**phase**: design (1/4)
+**next**: design review
 
-**handoff**: run 77dfe0aa: plan/design patched for base c21de8cbb residue claim 1
+**handoff**: run ef066ba8: plan/design patched on inherited branch 88f0909, base c21de8cbb residue claim 1
