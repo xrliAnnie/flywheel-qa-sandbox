@@ -1,21 +1,19 @@
 ---
 issue: FLY-3150
-phase: implement
-phaseCursor: 2/3
-updated: 2026-10-07T05:00:31.847Z
-nextStep: "Attempt 2: exact FIXED-FOR-CLAIM 1, verify PREV patch, review, CI,
-  needs_review"
+phase: design
+phaseCursor: 2/4
+updated: 2026-10-07T06:32:00.216Z
+nextStep: Codex design review of refreshed plan (run 14456cb0)
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
-  pr: "644"
-handoff: run=48d9ca3a attempt=2 claim=1
-  PREV=0b88dd83954ae1e862988751a3d53d8e576455d0; QA fix context received; ledger
-  before BASE2
+  pr: none
+handoff: "run=14456cb0 design: plan refreshed (prev run 48d9ca3a landed via
+  #644; HEAD=origin/main e9fba2f93; no open PR)"
 ---
 
 # FLY-3150 progress
-**phase**: implement (2/3)
-**next**: Attempt 2: exact FIXED-FOR-CLAIM 1, verify PREV patch, review, CI, needs_review
+**phase**: design (2/4)
+**next**: Codex design review of refreshed plan (run 14456cb0)
 
-**handoff**: run=48d9ca3a attempt=2 claim=1 PREV=0b88dd83954ae1e862988751a3d53d8e576455d0; QA fix context received; ledger before BASE2
+**handoff**: run=14456cb0 design: plan refreshed (prev run 48d9ca3a landed via #644; HEAD=origin/main e9fba2f93; no open PR)
