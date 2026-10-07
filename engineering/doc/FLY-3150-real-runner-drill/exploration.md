@@ -672,3 +672,11 @@ TURN:`yours phase=design epoch=1 run=4dea7fe2… node=eng_design attempt=1`(exec
 - 与 §48 同形,plan 沿用已评审结构,只更新本轮起点与 run id;d1 图重渲。
 - 顺带修正:d1 图里 Mermaid 把消息文本中的 `#` 当实体前缀,往轮图上这条消息被截断在「上轮 PR」;改写为 `#35;641` 后完整渲染。
 - Codex 设计评审(gpt-6-astra/xhigh,thread `01a1144a-9275…`,turn `01a1144a-9879…`)第 1 轮 APPROVED,HIGH 0 / MEDIUM 0 / LOW 0。已评审 plan blob `1a23f721…`(requestId `1fdfb66a…`),`await-codex-gate design` 通过。"无 OPEN PR" 由本节点评审后 `gh pr list --head` 复查为空。
+
+## 50. 本次派发审计(run `14456cb0`,2026-10-07,slot-1)
+
+- 派发:exec `e70490d6`,TURN `yours phase=design epoch=1 attempt=1`。README(`origin/main:qa-sbx/fly2167/README.md`)重读无变化。onboard skill 不存在 → 直接 `stage set brainstorm`。
+- run `48d9ca3a` 的 PR #644 已合入(squash `e9fba2f93`,2026-10-07T05:19:54Z,它就是主干最新提交)、远端分支已删(`git ls-remote origin project-slot-1-FLY-3150` 为空)。本地分支派发时 = `origin/main` = `e9fba2f93` → 不同步;`gh pr list` 里没有 `project-slot-1-FLY-3150` 的 OPEN PR(slot-2 的 #596 是另一分支)→ 交付 #1 后新开 PR。设计节点推送本轮文档时新建远端分支,实现节点首推是普通快进。
+- 起点:`"$F"` = main 上残留的 `FIXED-FOR-CLAIM 1` → 交付 #1 走正常重置分支(1 个实现提交,patch `-FIXED-FOR-CLAIM 1` / `+AWAITING-QA`)。旧 progress.md handoff(`run=48d9ca3a attempt=2 claim=1 PREV=0b88dd83…`,`pr: 644`)与已合入 PR #644 正文的上轮 HANDIN1 / HANDIN2 都不是本轮证据。
+- 与 §48 同形(上轮已合入、主干无新提交),plan 以 run `8e3798db` 版本为底,只更新本轮起点与 run id;d1 图重渲。
+- Codex 设计评审(gpt-6-sol/xhigh,thread `01a11510-23fc…`,turn `01a11510-2c1b…`)第 1 轮 APPROVED,HIGH 0 / MEDIUM 0 / LOW 0。已评审 plan blob `513a16fb…`(requestId `2a946c36…`),`await-codex-gate design` 通过。"无 OPEN PR" 由本节点评审后 `gh pr list --head` 复查为空(`[]`)。

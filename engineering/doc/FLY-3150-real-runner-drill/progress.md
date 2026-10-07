@@ -1,21 +1,20 @@
 ---
 issue: FLY-3150
 phase: implement
-phaseCursor: 2/3
-updated: 2026-10-07T05:00:31.847Z
-nextStep: "Attempt 2: exact FIXED-FOR-CLAIM 1, verify PREV patch, review, CI,
-  needs_review"
+phaseCursor: 2/2
+updated: 2026-10-07T06:48:49.715Z
+nextStep: Fix target for current QA claim 1, verify PREV patch, code review and
+  exact-head CI
 chunks: []
 pointers:
   plan: engineering/doc/FLY-3150-real-runner-drill/plan.md
-  pr: "644"
-handoff: run=48d9ca3a attempt=2 claim=1
-  PREV=0b88dd83954ae1e862988751a3d53d8e576455d0; QA fix context received; ledger
-  before BASE2
+  pr: "648"
+handoff: run=14456cb0 attempt=2 claim=1
+  PREV=2c2bde1befd0952aefbfa56ec19d8d97767beb93; final HANDIN2 will be in report
 ---
 
 # FLY-3150 progress
-**phase**: implement (2/3)
-**next**: Attempt 2: exact FIXED-FOR-CLAIM 1, verify PREV patch, review, CI, needs_review
+**phase**: implement (2/2)
+**next**: Fix target for current QA claim 1, verify PREV patch, code review and exact-head CI
 
-**handoff**: run=48d9ca3a attempt=2 claim=1 PREV=0b88dd83954ae1e862988751a3d53d8e576455d0; QA fix context received; ledger before BASE2
+**handoff**: run=14456cb0 attempt=2 claim=1 PREV=2c2bde1befd0952aefbfa56ec19d8d97767beb93; final HANDIN2 will be in report
