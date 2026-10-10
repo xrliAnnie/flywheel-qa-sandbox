@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { ALERT_EVENT_TYPES } from "../../LeadAlertNotifier.js";
+import { classifyInfraEvent, TICKET_KINDS } from "../infra-event-router.js";
 import {
 	escalatesAtEnqueue,
 	KIND_CONTRACTS,
@@ -185,5 +186,50 @@ describe("FLY-1082 TS union ↔ lead-alert.sh allowlist drift guard (Task 1.2)",
 		for (const kind of FLEET_KINDS) {
 			expect(allow.has(kind), `shell allowlist missing "${kind}"`).toBe(true);
 		}
+	});
+});
+
+describe("FLY-3083 mailbox_channel_fault kind (all four faces)", () => {
+	const KIND = "mailbox_channel_fault";
+
+	function shellAllowlistLine(): string {
+		const here = dirname(fileURLToPath(import.meta.url));
+		const script = readFileSync(
+			join(here, "../../../../../scripts/lead-alert.sh"),
+			"utf-8",
+		);
+		const m = script.match(/^\s*([a-z_]+(?:\|[a-z_]+)+\)) ;;$/m);
+		expect(m).not.toBeNull();
+		return (m as RegExpMatchArray)[1];
+	}
+
+	it("the lead-alert.sh allowlist accepts it", () => {
+		expect(shellAllowlistLine().replace(/\)$/, "").split("|")).toContain(KIND);
+	});
+
+	it("the TS union carries it", () => {
+		expect(ALERT_EVENT_TYPES).toContain(KIND);
+	});
+
+	it("its contract is claude-owned, human by design (people fix the channel)", () => {
+		expect(KIND_CONTRACTS[KIND]).toEqual({
+			owner: "claude",
+			arc: "human_by_design",
+		});
+	});
+
+	it("the router queues it as an infra ticket, even when an issue thread is bound", () => {
+		expect(TICKET_KINDS.has(KIND)).toBe(true);
+		expect(
+			classifyInfraEvent({
+				eventType: KIND,
+				boundIssueThread: {
+					threadId: "t",
+					channelId: "c",
+					issueId: "i",
+					executionId: "e",
+				},
+			}),
+		).toBe("ticket");
 	});
 });

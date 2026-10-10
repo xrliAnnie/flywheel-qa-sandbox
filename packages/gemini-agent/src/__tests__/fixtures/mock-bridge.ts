@@ -157,7 +157,7 @@ export async function startMockBridge(
 				const execId = existing?.executionId ?? "exec-mock-preexisting";
 				return json(409, {
 					success: false,
-					message: `Issue ${issueId} already has an active session for role "main" (${execId}, status: running). If that session is parked and still alive (idle), re-engage it via 'flywheel-comm send' / SendMessage instead of starting a new run — check runner_terminal_list (class=parked-alive).`,
+					message: `Issue ${issueId} already has an active session for role "main" (${execId}, status: running). If that session is parked and still alive (idle), re-engage it via 'flywheel-comm send' (the only Lead → Runner path) instead of starting a new run — check runner_terminal_list (class=parked-alive).`,
 				});
 			}
 			state.counters.run += 1;

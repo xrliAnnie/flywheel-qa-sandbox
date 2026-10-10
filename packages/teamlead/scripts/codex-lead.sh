@@ -131,6 +131,12 @@ if [ "${FLYWHEEL_CODEX_LEAD_PROFILE:-}" = "full-access" ]; then
     exit 1
   fi
   log "FLY-350 full-access governance bundle (${FLY350_FULL_ACCESS_ROLE:-dept}): ${FLY350_FULL_ACCESS_BUNDLE:-}"
+  # FLY-3083: absolute lead-alert.sh for the Runner channel contract's
+  # mailbox_channel_fault template — BEFORE the headless/TUI split below, so both
+  # modes carry it (FLYWHEEL_ROOT never reaches the runtime env).
+  # shellcheck source=lead-alert-env.sh
+  . "${SCRIPT_DIR}/lead-alert-env.sh"
+  export_lead_alert_script_env "${SCRIPT_DIR}"
 fi
 
 # FLY-259 ③: TUI mode — the Lead runs as the daemon-WS sidecar runtime and a

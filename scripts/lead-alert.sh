@@ -19,7 +19,7 @@
 # Usage:
 #   lead-alert.sh \
 #     --lead <lead-id> --project <project-name> \
-#     --kind <rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|bin_integrity_drift|notify_digest_failed|deploy_failed|deploy_degraded> \
+#     --kind <rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|bin_integrity_drift|notify_digest_failed|deploy_failed|deploy_degraded|mailbox_channel_fault> \
 #     --severity <info|warning|severe> \
 #     --title <string> --body <string> \
 #     [--signature <string>] [--strict-delivery] [--mention-user <snowflake>]
@@ -112,7 +112,11 @@ case "$KIND" in
   # on this leg (the wrapper preflight dirty-marker page fires while the Bridge
   # is down); the other four are added for face parity with the TS union
   # (kind-contract.test.ts is the drift guard on both faces).
-  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|bridge_wrapper_fail|bin_integrity_drift|notify_digest_failed|deploy_failed|deploy_degraded|swap_pressure_high|tmux_server_lost|bridge_abnormal_exit|infra_bot_down|zombie_session_backlog) ;;
+  # FLY-3083: mailbox_channel_fault — a Lead reports a Lead → Runner Mailbox
+  # channel fault (subkind transport_error | suspected_stall) with the Runner
+  # channel contract's template (--strict-delivery). Lead-fired only; same
+  # TS-union parity convention.
+  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|bridge_wrapper_fail|bin_integrity_drift|notify_digest_failed|deploy_failed|deploy_degraded|swap_pressure_high|tmux_server_lost|bridge_abnormal_exit|infra_bot_down|zombie_session_backlog|mailbox_channel_fault) ;;
   *)
     log "ERROR: unknown --kind '$KIND'"
     emit_result "config_error"

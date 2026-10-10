@@ -172,6 +172,7 @@ jobs:
       - name: Test — FLY-1062 packaging pipeline + packaged-mode seams
         run: |
           bash scripts/__tests__/package-onboard.test.sh
+          bash scripts/__tests__/package-onboard-fly3083.test.sh
           bash scripts/__tests__/packaged-seams.test.sh
           bash scripts/__tests__/packaged-restart.test.sh
           bash scripts/__tests__/gate4-allowlist-masking.test.sh
@@ -243,6 +244,17 @@ jobs:
           python3 scripts/hooks/test-flywheel-restart-guard.py
           bash scripts/hooks/test-restart-guard-install.sh
           bash scripts/__tests__/lead-alert-strict-delivery.test.sh
+          python3 scripts/hooks/test-runner-msg-guard.py
+          bash scripts/hooks/test-runner-msg-guard-install.sh
+          bash packages/teamlead/scripts/__tests__/fly3083-guard-install-plan.test.sh
+          bash packages/teamlead/scripts/__tests__/fly3083-settings-lock-block.test.sh
+
+      # FLY-3083: the runner-msg-guard hook judges by the native inbox file
+      # name; this oracle pins that against getClaudeInboxPath. The package has
+      # no test:run script, so the Test step above never reaches it — run it
+      # explicitly (--fail-if-no-match: a vanished package fails, not skips).
+      - name: Test — FLY-3083 runner alias oracle
+        run: pnpm --filter flywheel-agent-team-transport --fail-if-no-match exec vitest run src/__tests__/fly3083-runner-alias-oracle.test.ts src/__tests__/path-helpers.test.ts
 
       # FLY-927: infra-alert shell path (lead-alert.sh unified-channel/sender/
       # rate/schema alignment, external-kind hygiene, bridge-wrapper fail-loud
@@ -252,6 +264,7 @@ jobs:
       - name: Test — FLY-927 infra-alert shell path
         run: |
           bash scripts/__tests__/lead-alert-fly927.test.sh
+          bash scripts/__tests__/lead-alert-mailbox-fault.test.sh
           bash scripts/__tests__/lead-alert-external-kind.test.sh
           bash scripts/__tests__/bridge-wrapper-fail-loud.test.sh
 

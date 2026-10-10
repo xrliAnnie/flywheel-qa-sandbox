@@ -3,6 +3,11 @@
  * and wireDemuxedProcess (demux ↔ executor facade contract).
  */
 
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import {
 	type CodexLeadProcess,
@@ -16,6 +21,64 @@ import {
 	requirePersona,
 	wireDemuxedProcess,
 } from "../codex-lead-tui-runtime.js";
+
+const TEST_DIR = dirname(fileURLToPath(import.meta.url));
+
+/** FLY-3083: fill the Runner channel contract's mailbox_channel_fault template
+ * and run it with `env` against a stub alert script that records its argv.
+ * Returns the recorded argv (null if the template never reached the stub). */
+function runContractAlertTemplate(
+	buildEnv: (stub: string) => NodeJS.ProcessEnv,
+): string[] | null {
+	const dir = mkdtempSync(join(tmpdir(), "fly3083-alert-"));
+	try {
+		const argvOut = join(dir, "argv.json");
+		const stub = join(dir, "lead-alert.sh");
+		writeFileSync(
+			stub,
+			`#!/bin/bash\nnode -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify(process.argv.slice(2)))' ${JSON.stringify(argvOut)} "$@"\necho sent\n`,
+			{ mode: 0o755 },
+		);
+		const contract = readFileSync(
+			join(
+				TEST_DIR,
+				"..",
+				"..",
+				"..",
+				"..",
+				"lead-rules-base",
+				"runner-channel-contract.md",
+			),
+			"utf8",
+		);
+		const block = /\n {3}```bash\n([\s\S]*?)\n {3}```/.exec(contract);
+		if (!block)
+			throw new Error("no bash template in runner-channel-contract.md");
+		const fills: Array<[string, string]> = [
+			["<execution_id>", "eeeeeeee-1111-4222-8333-444455556666"],
+			["<subkind>", "transport_error"],
+			["<anchor_instruction_id>", "anchor-1"],
+			["<runner 队名>", "runner-eeeeeeee"],
+			["<FLY-xxx>", "FLY-3083"],
+			["<episode 首条 id>", "anchor-1"],
+			["<本次 id>", "anchor-1"],
+			["<send 时间>", "2026-09-30T00:00:00Z"],
+			["<一行证据>", "inbox unwritable"],
+		];
+		let script = (block[1] as string).replace(/^ {3}/gm, "");
+		for (const [from, to] of fills) script = script.split(from).join(to);
+		const r = spawnSync("bash", ["-c", script], {
+			env: buildEnv(stub),
+			encoding: "utf8",
+		});
+		if (r.status !== 0) return null;
+		return JSON.parse(readFileSync(argvOut, "utf8")) as string[];
+	} catch {
+		return null;
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
 
 describe("buildTuiDaemonEnv — runtime→home daemon-env boundary (FLY-398 Codex R1 HIGH-1)", () => {
 	const base = {
@@ -44,6 +107,31 @@ describe("buildTuiDaemonEnv — runtime→home daemon-env boundary (FLY-398 Code
 		expect(e.SOME_RANDOM_SECRET).toBeUndefined();
 		// allowlisted Claude-pane env survives.
 		expect(e.TEAMLEAD_API_TOKEN).toBe("api-tok");
+	});
+
+	it("FLY-3083 full-access: FLYWHEEL_LEAD_ALERT_SCRIPT survives, and the contract template reaches it", () => {
+		const e = buildTuiDaemonEnv({
+			...base,
+			env: { ...base.env, FLYWHEEL_LEAD_ALERT_SCRIPT: "/abs/lead-alert.sh" },
+			profile: "full-access",
+		});
+		expect(e.FLYWHEEL_LEAD_ALERT_SCRIPT).toBe("/abs/lead-alert.sh");
+		const argv = runContractAlertTemplate((stub) =>
+			buildTuiDaemonEnv({
+				...base,
+				env: {
+					HOME: process.env.HOME,
+					PATH: process.env.PATH,
+					FLYWHEEL_LEAD_ALERT_SCRIPT: stub,
+					FLYWHEEL_LEAD_ID: "eng-lead",
+					FLYWHEEL_PROJECT_NAME: "flywheel",
+				},
+				profile: "full-access",
+			}),
+		);
+		expect(argv).not.toBeNull();
+		expect(argv as string[]).toContain("mailbox_channel_fault");
+		expect((argv as string[]).slice(0, 2)).toEqual(["--lead", "eng-lead"]);
 	});
 
 	it("companion: raw env (byte-compat) + home pin", () => {

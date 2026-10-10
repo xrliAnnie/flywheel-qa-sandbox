@@ -43,7 +43,7 @@ import { requestReview } from "./commands/request-review.js";
 import { respond } from "./commands/respond.js";
 import { runRunnerConfig } from "./commands/runner-config.js";
 import { search } from "./commands/search.js";
-import { send } from "./commands/send.js";
+import { sendDetailed } from "./commands/send.js";
 import { sessions } from "./commands/sessions.js";
 import { type SetArtifactArgs, setArtifact } from "./commands/set-artifact.js";
 import { stage } from "./commands/stage.js";
@@ -484,7 +484,9 @@ async function runSend(args: string[]): Promise<void> {
 		throw new Error("--from is required (Lead agent ID)");
 	}
 	if (!values.to) {
-		throw new Error("--to is required (Runner execution ID)");
+		throw new Error(
+			"--to is required (Runner execution ID or runner-<8hex> mailbox name)",
+		);
 	}
 
 	const content = positionals.join(" ");
@@ -493,7 +495,7 @@ async function runSend(args: string[]): Promise<void> {
 	}
 
 	const dbPath = resolveDbPath({ db: values.db, project: values.project });
-	const instructionId = await send({
+	const result = await sendDetailed({
 		fromAgent: values.from,
 		toAgent: values.to,
 		content,
@@ -501,9 +503,25 @@ async function runSend(args: string[]): Promise<void> {
 	});
 
 	if (values.json) {
-		console.log(JSON.stringify({ instruction_id: instructionId }));
+		// FLY-3083: transport fields are APPENDED after instruction_id (existing
+		// consumers read only instruction_id). transport_write is a transport
+		// fact, not a consumption ack — see SendResult.
+		console.log(
+			JSON.stringify({
+				instruction_id: result.instructionId,
+				execution_id: result.executionId,
+				transport_write: result.transportWrite,
+				...(result.skippedReason !== undefined && {
+					skipped_reason: result.skippedReason,
+				}),
+				...(result.wakeError !== undefined && {
+					wake_error: result.wakeError,
+				}),
+				delivered: result.delivered,
+			}),
+		);
 	} else {
-		console.log(instructionId);
+		console.log(result.instructionId);
 	}
 }
 

@@ -59,6 +59,9 @@ export const TICKET_KINDS: ReadonlySet<AlertEventType> =
 		"runner_throttle_stalled",
 		"tui_window_lost",
 		"restart_guard_bypass",
+		// FLY-3083: a Mailbox channel fault is infra — the owner bot / a human
+		// repairs the channel, so it queues as a ticket even when issue-bound.
+		"mailbox_channel_fault",
 		"bridge_boot_stale_checkout",
 		"auto_qa_stuck",
 		"codex_gate_blocked",
