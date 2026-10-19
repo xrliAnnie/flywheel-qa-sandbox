@@ -1,0 +1,19 @@
+sequenceDiagram
+    participant H as QA slot harness
+    participant B as Slot Bridge
+    participant R as Real Runner
+    participant W as Sandbox worktree
+    participant P as GitHub PR 196
+
+    H->>B: Inject real Linear issue FLY-202
+    B->>R: Start Runner with hydrated issue context
+    R->>W: Read root directories, QA README, and target
+    R->>W: Run bounded document validator
+    alt Current evidence already matches
+        W-->>R: PASS - keep target bytes unchanged
+    else Evidence mismatch
+        R->>W: Repair only the mismatched section, keep inherited tail
+        R->>W: Re-run validator until PASS
+    end
+    R->>P: Fast-forward push current branch
+    P-->>H: Open PR remains available for QA observation
