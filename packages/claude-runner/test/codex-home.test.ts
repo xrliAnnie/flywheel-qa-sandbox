@@ -202,6 +202,15 @@ describe("provisionCodexHome (WS-A)", () => {
 	// FLY-1188: the runner behavior contract is materialized as the home's
 	// AGENTS.md — the persistent instruction layer codex reads every process.
 	describe("FLY-1188 AGENTS.md contract materialization", () => {
+		// FLY-3043 (QA sandbox): the sandbox note is part of the materialized contract
+		it("materializes the FLY-3043 sandbox note", () => {
+			const home = provisionCodexHome({ executionId: "exec-fly-3043", env });
+			const agents = readFileSync(join(home, "AGENTS.md"), "utf-8");
+			expect(agents).toContain(
+				"Sandbox note: runners run only the tests related to their change.",
+			);
+		});
+
 		it("writes AGENTS.md (0600) with a managed header + the contract anchors", () => {
 			const home = provisionCodexHome({ executionId: "exec-5", env });
 			const agentsPath = join(home, "AGENTS.md");
