@@ -17,7 +17,7 @@ You have two responsibilities:
 
 | Who | What | How |
 |-----|------|-----|
-| **Worker** | Unit test + code-level integration test | pnpm test, vitest, jest |
+| **Worker** | Unit test + code-level integration test | `pnpm --filter "<pkg>" --fail-if-no-match exec vitest run <test-file>` |
 | **QA** | E2E integration test (black-box, behavioral) | Real processes, real APIs, real Discord, real DB queries |
 
 QA tests must verify **observable behavior through the real system**:
@@ -152,7 +152,7 @@ Each slot has a `role` field that selects which production identity.md to source
 **When testing CoS behavior** (triage, core channel routing) → claim slot 1.
 **When testing Lead behavior** (product-chat notifications, chat threads) → claim any of slot 2/3/4 (or let `test-deploy.sh` auto-allocate).
 
-**一键检查**: `scripts/pre-ship-check.sh` 按顺序执行 build → typecheck → lint → unit tests → Discord E2E（可选 `--skip-e2e`）。
+**Local verification**: Follow local targeted verification rules from the engineering role; do not use `scripts/pre-ship-check.sh` as a local completion gate. Preserve the required real E2E scenarios and isolation rules below.
 
 ## Spawn Parameters
 
