@@ -174,6 +174,18 @@ If the message clearly asks for opinion, explanation, triage, or discussion only
 
 ### 4. Department enforcement: trust Bridge, don't second-guess
 
+Caller identity is mandatory at the transport boundary:
+
+- For every `POST /api/runs/start`, send your own non-empty `leadId` from the current Lead session (`$LEAD_ID`). Do not derive it from issue labels or response data.
+- You must never substitute `canonicalLeadId` or another Lead's identity into `leadId`, even when Bridge says that Lead owns the issue. A rejection means **you do not spawn**; it is not permission to impersonate the owner.
+- If `$LEAD_ID` is missing or blank, do not call the endpoint. Report the configuration error once; do not fall back to an owner-resolved or identity-less request.
+
+Base request body (add `agentName`, `docTier`, or other approved optional fields without changing the identity):
+
+```json
+{ "issueId": "<ISSUE-ID>", "projectName": "<project>", "leadId": "<your-agentId>" }
+```
+
 Always let Bridge enforce department scope server-side. **Do not pre-filter** based on labels yourself — call `POST /api/runs/start` and let the server decide. If Bridge returns `success: false` with a `code: "DEPT_SCOPE_REJECT"` field, **do not retry**:
 
 | `reason` | Your reply (1 line, deduped per `(issue, reason)`, **N=1**) |
@@ -182,6 +194,7 @@ Always let Bridge enforce department scope server-side. **Do not pre-filter** ba
 | `issue_no_department_label` | `<ISSUE-ID> 没有 department label，请补 label 后回 起。` |
 | `issue_multiple_department_labels` | `<ISSUE-ID> 有多个 department label，请决定归属后再回。` |
 | `lead_cannot_spawn` | `我不负责启动 Runner，请找对应 department Lead。` |
+| `lead_identity_required` | `当前 Lead identity 缺失，我不会启动；请修复配置后再回 起。` |
 
 Substitute the actual `<ISSUE-ID>` and `<canonicalLeadId>` from the Bridge response. The `canonicalLeadId` field is always present (`string | null`) — when null, omit the phrase referencing it.
 

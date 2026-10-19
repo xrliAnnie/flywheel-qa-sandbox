@@ -128,6 +128,34 @@ qa_multilead_parse_spec() {
 	return 1
 }
 
+# Resolve the MAIN test Lead's effective department label as compact JSON.
+# An explicit --lead-label override wins; otherwise the canonical slot
+# deptLabel is required. Wildcards and malformed labels fail closed so the
+# production DepartmentRegistry scope gate is exercised by default QA deploys.
+# Args: slotsFile slotId [explicitLabel]
+qa_multilead_main_labels_json() {
+	local slots_file="$1" slot="${2:-}" explicit_label="${3:-}"
+	local label idx
+	if [[ ! "$slot" =~ ^[1-9][0-9]*$ ]]; then
+		echo "[qa-multilead] invalid main slot '${slot}' (positive integer required)" >&2
+		return 1
+	fi
+	if [[ -n "$explicit_label" ]]; then
+		label="$explicit_label"
+	else
+		idx=$((slot - 1))
+		label=$(jq -er ".slots[${idx}].deptLabel | select(type == \"string\" and length > 0)" "$slots_file" 2>/dev/null) || {
+			echo "[qa-multilead] slot ${slot}: field 'deptLabel' missing, null, or empty in ${slots_file}" >&2
+			return 1
+		}
+	fi
+	if [[ ! "$label" =~ ^[A-Za-z0-9._-]+$ ]]; then
+		echo "[qa-multilead] invalid main Lead label '${label}' (charset [A-Za-z0-9._-])" >&2
+		return 1
+	fi
+	jq -cn --arg label "$label" '[$label]'
+}
+
 # Resolve one slot's fields from test-slots.json. Fails loud when the slot is
 # missing or any required field is null/empty (identitySource stays optional —
 # legacy role fallback applies downstream).

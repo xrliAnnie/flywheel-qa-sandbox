@@ -154,7 +154,6 @@ export function createRunsRouter(
 
 		const { issueId, sessionRole } = req.body;
 		const rawProjectName = req.body.projectName;
-		let leadId = req.body.leadId as string | undefined;
 
 		// Input validation
 		if (!issueId || typeof issueId !== "string") {
@@ -182,6 +181,25 @@ export function createRunsRouter(
 		// downstream code reads `req.body.projectName` directly. Unknown projects
 		// pass through unchanged and still reject normally below.
 		const projectName = resolveCanonicalProjectName(projects, rawProjectName);
+
+		const rawLeadId = req.body.leadId;
+		if (
+			rawLeadId !== undefined &&
+			rawLeadId !== null &&
+			typeof rawLeadId !== "string"
+		) {
+			res.status(400).json({
+				success: false,
+				code: "INVALID_LEAD_ID",
+				reason: "wrong_type",
+				silent: false,
+			});
+			return;
+		}
+		let leadId = typeof rawLeadId === "string" ? rawLeadId : undefined;
+		const hasLeadIdentity =
+			typeof leadId === "string" && leadId.trim().length > 0;
+		const deptScopeRejectEnabled = isDeptScopeRejectEnabled();
 
 		// FLY-137 v1.27.2: optional Lead override `agentName` body field.
 		// Semantics per Codex v1.27.0 Round 1 #2:
@@ -338,7 +356,7 @@ export function createRunsRouter(
 		}
 
 		// Lead scope validation — project membership check
-		if (leadId) {
+		if (hasLeadIdentity) {
 			const project = projects.find((p) => p.projectName === projectName);
 			if (project) {
 				const leadExists = project.leads.some((l) => l.agentId === leadId);
@@ -400,9 +418,20 @@ export function createRunsRouter(
 				issueLabelsFetchFailed = true;
 			}
 
-			// FLY-80: Auto-resolve leadId from project config if not provided.
-			// Without leadId, Blueprint skips approve gate instructions entirely.
-			if (!leadId) {
+			if (deptScopeRejectEnabled && !hasLeadIdentity) {
+				res.status(403).json({
+					success: false,
+					code: "DEPT_SCOPE_REJECT",
+					reason: "lead_identity_required",
+					canonicalLeadId: null,
+					silent: false,
+				});
+				return;
+			}
+
+			// FLY-80 rollback: when department-scope enforcement is explicitly off,
+			// preserve legacy owner auto-resolution for identity-less callers.
+			if (!hasLeadIdentity) {
 				try {
 					const { lead } = resolveLeadForIssue(
 						projects,
@@ -435,15 +464,15 @@ export function createRunsRouter(
 
 		// FLY-127 R3 Layer 2: Server-side department scope check.
 		//
-		// Runs only when:
-		//   - the feature flag is on (BRIDGE_DEPT_SCOPE_REJECT != off)
-		//   - leadId is known (either provided by caller or auto-resolved above)
+		// Runs only when the feature flag is on
+		// (BRIDGE_DEPT_SCOPE_REJECT != off). The post-preflight guard above proves
+		// `leadId` is a nonblank caller identity whenever enforcement is enabled.
 		//
 		// On reject, returns a machine-readable diagnostic that Lead daemons
 		// translate into one short Chinese line per their Action Gate rule.
 		// `silent: false` because Bridge is only called on explicit-intent paths
 		// (Layer 1b filters passive cross-dept noise before any API call).
-		if (isDeptScopeRejectEnabled() && leadId) {
+		if (deptScopeRejectEnabled && leadId) {
 			const decision = departmentRegistry.isLeadInScope(
 				projectName,
 				leadId,

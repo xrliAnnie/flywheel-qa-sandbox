@@ -215,6 +215,37 @@ describe("lead-rules-bundle.sh — PARITY with claude-lead.sh (anti-drift bind)"
 	});
 });
 
+describe("FLY-127 Runner-start identity rules", () => {
+	const departmentRules = execFileSync(
+		"cat",
+		[join(BASE_RULES_DIR, "department-lead-rules.md")],
+		{ encoding: "utf8" },
+	);
+	const docFlowRules = execFileSync(
+		"cat",
+		[join(BASE_RULES_DIR, "doc-flow-rules.md")],
+		{ encoding: "utf8" },
+	);
+
+	it("requires every Runner start to carry the current Lead's own non-empty identity", () => {
+		expect(departmentRules).toMatch(
+			/every `POST \/api\/runs\/start`[\s\S]{0,300}own non-empty `leadId`/,
+		);
+		expect(departmentRules).toContain('"leadId": "<your-agentId>"');
+	});
+
+	it("forbids substituting a canonical or other Lead identity", () => {
+		expect(departmentRules).toMatch(
+			/never substitute `canonicalLeadId`[\s\S]{0,200}another Lead/,
+		);
+		expect(departmentRules).toContain("lead_identity_required");
+	});
+
+	it("keeps Lead identity in the doc-flow Runner-start example", () => {
+		expect(docFlowRules).toContain('"leadId": "<your-agentId>"');
+	});
+});
+
 describe("codex-lead.sh — full-access governance wiring (H-2)", () => {
 	const codexSh = execFileSync("cat", [join(SCRIPTS, "codex-lead.sh")], {
 		encoding: "utf8",

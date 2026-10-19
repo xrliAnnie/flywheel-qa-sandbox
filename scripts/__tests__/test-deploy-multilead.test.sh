@@ -5,6 +5,7 @@
 #   A1  FLYWHEEL_PROJECTS builder byte-compat (slotRole=lead, no new flags)
 #   A2  FLYWHEEL_PROJECTS builder byte-compat (slotRole=cos → generalChannel)
 #   A3  canonical config.yaml byte-compat (no grace override)
+#   B0  main Lead labels default to the slot department; explicit override wins
 #   B1  --extra-lead → leads[] has exactly 2 entries, field-by-field
 #   B2  --lead-label narrows main lead labels
 #   C1  invalid --extra-lead specs rejected
@@ -61,10 +62,10 @@ cat >"$SLOTS" <<'JSON'
 {
   "guildId": "g-1",
   "slots": [
-    {"id":1,"bridgePort":19871,"botName":"flywheel-test-1","tokenEnvVar":"TEST_BOT_TOKEN_1","botAppId":"111","channelId":"chan-1","role":"cos"},
-    {"id":2,"bridgePort":19872,"botName":"flywheel-test-2","tokenEnvVar":"TEST_BOT_TOKEN_2","botAppId":"222","channelId":"chan-2","role":"lead","identitySource":"product-lead"},
-    {"id":3,"bridgePort":19873,"botName":"flywheel-test-3","tokenEnvVar":"TEST_BOT_TOKEN_3","botAppId":"333","channelId":"chan-3","role":"lead","identitySource":"ops-lead"},
-    {"id":4,"bridgePort":19874,"botName":"flywheel-test-4","tokenEnvVar":"TEST_BOT_TOKEN_4","botAppId":"","channelId":"chan-4","role":"lead"}
+    {"id":1,"bridgePort":19871,"botName":"flywheel-test-1","tokenEnvVar":"TEST_BOT_TOKEN_1","botAppId":"111","channelId":"chan-1","role":"cos","deptLabel":"PM-Test"},
+    {"id":2,"bridgePort":19872,"botName":"flywheel-test-2","tokenEnvVar":"TEST_BOT_TOKEN_2","botAppId":"222","channelId":"chan-2","role":"lead","identitySource":"product-lead","deptLabel":"Product-Test"},
+    {"id":3,"bridgePort":19873,"botName":"flywheel-test-3","tokenEnvVar":"TEST_BOT_TOKEN_3","botAppId":"333","channelId":"chan-3","role":"lead","identitySource":"ops-lead","deptLabel":"Ops-Test"},
+    {"id":4,"bridgePort":19874,"botName":"flywheel-test-4","tokenEnvVar":"TEST_BOT_TOKEN_4","botAppId":"","channelId":"chan-4","role":"lead","deptLabel":"Finance-Test"}
   ]
 }
 JSON
@@ -158,6 +159,39 @@ else
   fail "A3: config.yaml drifted from reference"
   diff <(printf '%s' "$ref") <(printf '%s' "$new") | head -10
 fi
+
+# ── B0: main Lead label defaults to its slot department ──
+B0_OK=1
+if ! type qa_multilead_main_labels_json >/dev/null 2>&1; then
+  B0_OK=0; fail "B0: qa_multilead_main_labels_json must resolve the main Lead label"
+else
+  if labels="$(qa_multilead_main_labels_json "$SLOTS" 2 "" 2>/dev/null)" &&
+    jq -e '. == ["Product-Test"]' >/dev/null 2>&1 <<<"$labels"; then
+    :
+  else
+    B0_OK=0; fail "B0: slot 2 default must be [\"Product-Test\"] (got '${labels:-}')"
+  fi
+
+  if labels="$(qa_multilead_main_labels_json "$SLOTS" 2 "Finance-Test" 2>/dev/null)" &&
+    jq -e '. == ["Finance-Test"]' >/dev/null 2>&1 <<<"$labels"; then
+    :
+  else
+    B0_OK=0; fail "B0: explicit --lead-label must override the slot default (got '${labels:-}')"
+  fi
+
+  MISSING_DEPT_SLOTS="${TMP}/missing-dept-slots.json"
+  jq 'del(.slots[1].deptLabel)' "$SLOTS" >"$MISSING_DEPT_SLOTS"
+  if qa_multilead_main_labels_json "$MISSING_DEPT_SLOTS" 2 "" >/dev/null 2>&1; then
+    B0_OK=0; fail "B0: missing slot deptLabel must fail closed"
+  fi
+
+  INVALID_DEPT_SLOTS="${TMP}/invalid-dept-slots.json"
+  jq '.slots[1].deptLabel = "*"' "$SLOTS" >"$INVALID_DEPT_SLOTS"
+  if qa_multilead_main_labels_json "$INVALID_DEPT_SLOTS" 2 "" >/dev/null 2>&1; then
+    B0_OK=0; fail "B0: wildcard slot deptLabel must fail closed"
+  fi
+fi
+[[ "$B0_OK" == "1" ]] && pass "B0: main Lead labels use slot deptLabel by default; explicit override wins"
 
 # ── B1: two leads, field-by-field ──
 EXTRAS='[{"slotId":3,"agentId":"flywheel-test-3","botAppId":"333","tokenEnvVar":"TEST_BOT_TOKEN_3","chatChannel":"chan-3","role":"lead","identitySource":"ops-lead","deptLabel":"Ops-Test","labels":["Ops-Test"]}]'
@@ -506,6 +540,7 @@ grep -q 'qa-multilead.sh' "$DEPLOY" || { S1_OK=0; fail "S1: test-deploy.sh must 
 grep -q -- '--extra-lead' "$DEPLOY" || { S1_OK=0; fail "S1: --extra-lead flag not parsed"; }
 grep -q -- '--lead-label' "$DEPLOY" || { S1_OK=0; fail "S1: --lead-label flag not parsed"; }
 grep -q -- '--detection-lead-grace-ms' "$DEPLOY" || { S1_OK=0; fail "S1: --detection-lead-grace-ms flag not parsed"; }
+grep -q 'qa_multilead_main_labels_json' "$DEPLOY" || { S1_OK=0; fail "S1: main Lead labels must resolve from slot deptLabel"; }
 grep -q 'qa_multilead_build_projects' "$DEPLOY" || { S1_OK=0; fail "S1: FLYWHEEL_PROJECTS must be built via qa_multilead_build_projects"; }
 grep -q 'qa_multilead_config_yaml' "$DEPLOY" || { S1_OK=0; fail "S1: config.yaml must be generated via qa_multilead_config_yaml"; }
 # The old inline builder must be GONE (single source) — its distinctive line:
