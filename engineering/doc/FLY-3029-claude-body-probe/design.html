@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-3029 · Claude 体探针设计</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f5f5f7;color:#1d1d1f;font:17px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:900px;margin:auto;padding:48px 20px}header{padding:8px 8px 24px}h1{font-size:38px;line-height:1.2;letter-spacing:-1px}h2{font-size:23px;margin-top:0}.eyebrow{color:#0066cc;font-weight:600}section{background:#fff;border:1px solid #e5e5ea;border-radius:20px;padding:28px;margin:20px 0;box-shadow:0 4px 18px #00000004}label{display:block;font-size:14px;color:#515156;margin-top:24px}textarea{display:block;width:100%;resize:vertical;min-height:90px;border:1px solid #c7c7cc;border-radius:10px;background:#fafafa;padding:12px;font:inherit;margin:8px 0}textarea:focus,button:focus{outline:3px solid #99c7ff;outline-offset:2px}button{border:0;border-radius:999px;padding:12px 20px;background:#0066cc;color:#fff;font:inherit;cursor:pointer;margin:8px 0}.pending{padding:20px;border:1px dashed #ae7c26;border-radius:12px;background:#fffbf0;color:#6b4d19}#status{font-size:14px;color:#515156}#summary-text{min-height:180px}@media(max-width:600px){main{padding:20px 14px}section{padding:20px}h1{font-size:30px}}
+</style></head><body><main><header><p class="eyebrow">FLY-3029 · 仅测试房使用</p><h1>一行文字，追踪一次续跑</h1><p>设计阶段 · 2026-09-28 · 实际文件变更交由实现阶段执行</p></header><section aria-labelledby="summary-title"><h2 id="summary-title">一句话结论</h2><p>在隔离测试仓的说明文件末尾添加一条固定文字，让外部质量检查追踪任务是否续跑并交回原对话。</p><label for="comment-summary">本节意见</label><textarea id="comment-summary" data-title="一句话结论" rows="3" placeholder="写下意见，自动保存在本机"></textarea></section><section aria-labelledby="flow-title"><h2 id="flow-title">核心流程</h2><p>设计审核通过后，系统交给实现阶段；实现者取得写入权限，追加一行、提交推送，再由外部质量检查核对回执。</p><div class="pending" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>流程图本地渲染两次均被系统权限拒绝。Mermaid 是用文字描述节点和关系的制图语法；源文件已保留，尚无已渲染图。</p></div><label for="comment-flow">本节意见</label><textarea id="comment-flow" data-title="核心流程" rows="3" placeholder="写下意见，自动保存在本机"></textarea></section><section aria-labelledby="structure-title"><h2 id="structure-title">文件与记录</h2><p>README.md 是仓库说明文件。它保留原来所有字节，末尾只增加一行：FLY-2919 N-to-N claude-body probe。Git 提交是保存文件版本的记录；外部测试回执记录进程恢复与消息投递。两类证据分别验收。</p><label for="comment-structure">本节意见</label><textarea id="comment-structure" data-title="文件与记录" rows="3" placeholder="写下意见，自动保存在本机"></textarea></section><section aria-labelledby="choices-title"><h2 id="choices-title">取舍与放弃的方案</h2><p>选择单行追加，便于辨认和撤销。恢复后先检查同一行是否已存在，避免重复。放弃重写整个说明文件，也不在这次合成任务中修改进程检测或自动恢复逻辑。</p><label for="comment-choices">本节意见</label><textarea id="comment-choices" data-title="取舍与放弃的方案" rows="3" placeholder="写下意见，自动保存在本机"></textarea></section><section aria-labelledby="boundary-title"><h2 id="boundary-title">诚实边界</h2><p>这份设计仅规定沙箱文件变更。死体换体、活体丢窗口不误判死亡、同一任务对话续跑、交卷回原对话，由 FLY-2919 外部质量检查核对真实回执。当前设计不代表这些验收已通过，不执行生产派单、部署或合并。</p><label for="comment-boundary">本节意见</label><textarea id="comment-boundary" data-title="诚实边界" rows="3" placeholder="写下意见，自动保存在本机"></textarea></section><section aria-labelledby="review-title"><h2 id="review-title">接下来怎么看</h2><p>实现阶段检查原文保留、标记仅一次且在末尾、远端提交一致。您的页面评论只保存在当前浏览器，请复制汇总发回任务对话；评论不是通过或发版授权。</p><label for="comment-review">本节意见</label><textarea id="comment-review" data-title="接下来怎么看" rows="3" placeholder="写下意见，自动保存在本机"></textarea></section><section aria-labelledby="feedback-title"><h2 id="feedback-title">页面意见汇总</h2><p>以下内容实时汇总上方所有非空意见。超过约 1800 字时提供分段复制。</p><textarea id="summary-text" readonly aria-label="全部意见汇总"></textarea><button id="copy-all" type="button">复制全部意见</button><div id="chunks"></div><p id="status" role="status" aria-live="polite"></p><label for="comment-final">汇总补充意见</label><textarea id="comment-final" data-title="汇总补充意见" rows="3"></textarea></section></main><script nonce="__CSP_NONCE__">(() => {
+  const marker = '【页面意见汇总】FLY-3029';
+  const prefix = 'flywheel-comments:' + location.pathname + ':';
+  const inputs = Array.from(document.querySelectorAll('textarea[data-title]'));
+  const summary = document.getElementById('summary-text');
+  const chunkArea = document.getElementById('chunks');
+  const status = document.getElementById('status');
+  let allText = marker;
+  function fallbackCopy(text) {
+    const scratch = document.createElement('textarea');
+    scratch.value = text;
+    scratch.style.position = 'fixed';
+    scratch.style.opacity = '0';
+    document.body.appendChild(scratch);
+    scratch.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } finally { scratch.remove(); }
+    if (!ok) throw new Error('copy unavailable');
+  }
+  async function copy(text) {
+    try {
+      if (!navigator.clipboard || !navigator.clipboard.writeText) fallbackCopy(text);
+      else { try { await navigator.clipboard.writeText(text); } catch { fallbackCopy(text); } }
+      status.textContent = '已复制，请粘贴回任务对话。';
+    } catch { status.textContent = '自动复制失败，请选中汇总文字手动复制。'; }
+  }
+  function update() {
+    const entries = inputs.filter(el => el.value.trim()).map(el => el.dataset.title + '：' + el.value.trim());
+    const body = entries.join('\n\n');
+    allText = marker + (body ? '\n' + body : '');
+    summary.value = allText;
+    chunkArea.replaceChildren();
+    if (allText.length > 1800) {
+      const chars = Array.from(body);
+      const size = 1700;
+      for (let start = 0, count = 1; start < chars.length; start += size, count++) {
+        const text = marker + '\n' + chars.slice(start, start + size).join('');
+        const output = document.createElement('textarea');
+        output.readOnly = true;
+        output.value = text;
+        output.setAttribute('aria-label', '第 ' + count + ' 段意见');
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = '复制第 ' + count + ' 段';
+        button.addEventListener('click', () => copy(text));
+        chunkArea.append(output, button);
+      }
+    }
+  }
+  for (const input of inputs) {
+    try { input.value = localStorage.getItem(prefix + input.id) || ''; }
+    catch { status.textContent = '浏览器不允许本地保存；请及时复制意见。'; }
+    input.addEventListener('input', () => {
+      try { localStorage.setItem(prefix + input.id, input.value); }
+      catch { status.textContent = '本地保存不可用；请及时复制意见。'; }
+      update();
+    });
+  }
+  document.getElementById('copy-all').addEventListener('click', () => copy(allText));
+  update();
+})();</script></body></html>
