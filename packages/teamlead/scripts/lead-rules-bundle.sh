@@ -90,6 +90,9 @@ compute_lead_rule_bundle() {
   # founder-only-authority + html-delivery: cos + dept (companion skips both).
   if [ "$role" != "companion" ]; then
     _lrb_emit "${base}/founder-only-authority.md" "$governance_required" || return 10
+    # FLY-3083: the Runner channel contract — cos AND dept, mailbox AND commdb
+    # (unlike runner-messaging-rules above); same position as claude-lead.sh.
+    _lrb_emit "${base}/runner-channel-contract.md" 0 || return 10
     _lrb_emit "${base}/founder-html-delivery.md" 0 || return 10
   fi
   # cross-dept channel rules: ALL roles (companion included).

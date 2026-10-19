@@ -3,9 +3,33 @@ import { wakeRunnerMailbox } from "../wake.js";
 
 export interface SendArgs {
 	fromAgent: string;
+	/** Full execution id, or (FLY-3083) the Runner mailbox short name
+	 *  "runner-<8hex>" — resolved against the sending Lead's sessions. */
 	toAgent: string;
 	content: string;
 	dbPath: string;
+}
+
+/**
+ * FLY-3083: what `send` did, surfaced so a Lead (`send --json`) can tell a
+ * rollback-mode skip from a transport failure. `transportWrite` is a TRANSPORT
+ * fact, never a consumption ack:
+ *   ok      — CommDB row written AND the Runner transport write returned ok
+ *   skipped — CommDB row written; no transport write by design
+ *             (backend_commdb = rollback mode, Runner reads CommDB;
+ *              no_transport   = vendor "none" backend, e.g. antigravity/kimi;
+ *              no_session_lead = session row missing/without lead_id)
+ *   error   — CommDB row written; the transport write failed (wakeError)
+ */
+export interface SendResult {
+	instructionId: string;
+	/** The resolved recipient (full execution id when a short name was given). */
+	executionId: string;
+	transportWrite: "ok" | "skipped" | "error";
+	skippedReason?: "backend_commdb" | "no_session_lead" | "no_transport";
+	wakeError?: string;
+	/** @deprecated alias: transportWrite === "ok". NOT a consumption ack. */
+	delivered: boolean;
 }
 
 /**
@@ -29,9 +53,31 @@ export interface SendArgs {
  * go to stderr only.
  */
 export async function send(args: SendArgs): Promise<string> {
+	return (await sendDetailed(args)).instructionId;
+}
+
+/**
+ * FLY-3083: `send` with the transport result exposed (see SendResult). A
+ * short-name recipient that does not resolve to exactly one of the sending
+ * Lead's sessions throws BEFORE anything is written.
+ */
+export async function sendDetailed(args: SendArgs): Promise<SendResult> {
 	const db = new CommDB(args.dbPath);
 	try {
-		const id = db.insertInstruction(args.fromAgent, args.toAgent, args.content);
+		const execId = db.resolveExecutionId(args.toAgent, {
+			leadId: args.fromAgent,
+		});
+		const id = db.insertInstruction(args.fromAgent, execId, args.content);
+		const result = (
+			transportWrite: SendResult["transportWrite"],
+			extra: Pick<SendResult, "skippedReason" | "wakeError"> = {},
+		): SendResult => ({
+			instructionId: id,
+			executionId: execId,
+			transportWrite,
+			...extra,
+			delivered: transportWrite === "ok",
+		});
 
 		// FLY-626: a Lead/founder instruction to the runner is a RE-ENGAGEMENT —
 		// it clears any self-declared park/busy marker so the stall watchdogs
@@ -40,7 +86,7 @@ export async function send(args: SendArgs): Promise<string> {
 		// session_stuck for a runner that is no longer intentionally parked
 		// (Codex code-review #1 — protects the FLY-369 "never silently hide a
 		// genuinely stuck runner" posture). No-op when no marker exists.
-		db.clearDeclaredState(args.toAgent);
+		db.clearDeclaredState(execId);
 
 		// FLY-191: wake logic extracted to wake.ts (shared with the approval
 		// write-sites). Semantics unchanged from FLY-168: best-effort, CommDB
@@ -66,23 +112,23 @@ export async function send(args: SendArgs): Promise<string> {
 		// including "" — flows through so an unknown vendor is a LOUD wake
 		// error (never a silent claude fallback), surfaced via the stderr
 		// path below.
-		const targetVendor = db.getSession(args.toAgent)?.vendor;
+		const targetVendor = db.getSession(execId)?.vendor;
 		if (targetVendor === "none") {
 			// No-transport backend (antigravity/kimi): there is NO mailbox to
 			// wake. Loud skip — the CommDB row above stays the durable record,
 			// and delivered_at is NEVER set (nothing was delivered). Writing
 			// the env-default claude inbox here would fake delivery.
 			console.error(
-				`[flywheel-comm send] runner ${args.toAgent} uses a no-transport backend (vendor="none") — no mailbox wake is possible; instruction recorded in CommDB only`,
+				`[flywheel-comm send] runner ${execId} uses a no-transport backend (vendor="none") — no mailbox wake is possible; instruction recorded in CommDB only`,
 			);
-			return id;
+			return result("skipped", { skippedReason: "no_transport" });
 		}
 		const wake = await wakeRunnerMailbox({
 			db,
-			execId: args.toAgent,
+			execId,
 			fromAgent: args.fromAgent,
 			content: `[lead-instruction ${id}]\n${args.content}`,
-			metadata: { flywheelId: id, execId: args.toAgent },
+			metadata: { flywheelId: id, execId },
 			...(targetVendor != null && { backend: targetVendor }),
 		});
 		if (wake.ok) {
@@ -95,17 +141,27 @@ export async function send(args: SendArgs): Promise<string> {
 			// don't fake one. Reuses the FLY-109 column + helper — no second
 			// marking scheme.
 			db.markInstructionDelivered(id);
-		} else if (wake.skippedReason === "no_session_lead") {
+			return result("ok");
+		}
+		if (wake.skippedReason === "no_session_lead") {
 			console.warn(
-				`[flywheel-comm send] no session/lead_id for ${args.toAgent}; mailbox wake skipped (CommDB instruction written)`,
+				`[flywheel-comm send] no session/lead_id for ${execId}; mailbox wake skipped (CommDB instruction written)`,
 			);
 		} else if (wake.error) {
 			console.error(
-				`[flywheel-comm send] mailbox wake failed for ${args.toAgent}: ${wake.error}`,
+				`[flywheel-comm send] mailbox wake failed for ${execId}: ${wake.error}`,
 			);
+			return result("error", { wakeError: wake.error });
 		}
-
-		return id;
+		if (wake.skippedReason) {
+			return result("skipped", { skippedReason: wake.skippedReason });
+		}
+		// ok=false with neither a skip reason nor an error is not a shape
+		// wakeRunnerMailbox produces; report it as a transport error rather
+		// than pretend it was skipped by design.
+		return result("error", {
+			wakeError: "wake returned ok=false without a reason",
+		});
 	} finally {
 		db.close();
 	}

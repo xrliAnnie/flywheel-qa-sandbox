@@ -1,0 +1,10 @@
+flowchart LR
+  subgraph now["现状:两条路,一条留底一条不留"]
+    L1[Lead] -->|SendMessage to: runner-xxxxxxxx| F1[Runner 收件箱文件]
+    L1 -->|flywheel-comm send| S1[send 命令]
+    S1 --> DB1[(CommDB 留底<br/>编号 + 送达时间)]
+    S1 --> F1
+    F1 --> R1[Runner]
+  end
+  style F1 fill:#fff4e5,stroke:#ff9500
+  style DB1 fill:#e9f9ef,stroke:#34c759

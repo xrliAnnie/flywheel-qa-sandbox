@@ -29,7 +29,7 @@ trap 'rm -rf "$T"' EXIT
 
 # Scrub launcher-behavior-changing vars from the ambient env (a parent Lead session
 # may carry them) so a clean baseline is seen.
-unset FLYWHEEL_CODEX_LEAD_PROFILE FLYWHEEL_CODEX_LEAD_SANDBOX \
+unset FLYWHEEL_LEAD_ALERT_SCRIPT FLYWHEEL_CODEX_LEAD_PROFILE FLYWHEEL_CODEX_LEAD_SANDBOX \
 	FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES FLYWHEEL_CODEX_LEAD_OUTBOUND \
 	FLYWHEEL_CODEX_LEAD_PROJECT_DIR FLYWHEEL_CODEX_LEAD_READ_DENY
 
@@ -89,6 +89,13 @@ if [ -f "$D" ]; then
 	sp=$(envval "$D" FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES)
 	case "$sp" in *founder-only-authority.md*) pass "governance: founder-only-authority appended" ;; *) fail "founder-only-authority not in SYSTEM_PROMPT_FILES ($sp)" ;; esac
 	case "$sp" in *identity.md*) pass "persona: identity.md present (before governance)" ;; *) fail "identity.md missing ($sp)" ;; esac
+	# FLY-3083: the mailbox_channel_fault alert entry point reaches the runtime env
+	# (started from an env that does NOT preset it — scrubbed above).
+	las=$(envval "$D" FLYWHEEL_LEAD_ALERT_SCRIPT)
+	case "$las" in
+		/*/scripts/lead-alert.sh) [ -f "$las" ] && pass "FLY-3083: FLYWHEEL_LEAD_ALERT_SCRIPT = existing canonical lead-alert.sh" || fail "FLY-3083: FLYWHEEL_LEAD_ALERT_SCRIPT points at a missing file ($las)" ;;
+		*) fail "FLY-3083: FLYWHEEL_LEAD_ALERT_SCRIPT not exported ($las)" ;;
+	esac
 	# FLY-1241: the retired read-deny env pin must NEVER be emitted (full-access has no read-deny).
 	if grep -q "^FLYWHEEL_CODEX_LEAD_READ_DENY=" "$D"; then
 		fail "retired FLYWHEEL_CODEX_LEAD_READ_DENY pin is still emitted"

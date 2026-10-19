@@ -28,7 +28,7 @@ trap 'rm -rf "$T"' EXIT
 # set it via inheritance into run_dry (which passes inherited env through). Without
 # this, a parent shell carrying FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS (e.g. a Lead
 # session) flips bridge cases to the cross-dept-conflict path (Codex R2/R3 finding).
-unset FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS FLYWHEEL_CODEX_LEAD_PROFILE \
+unset FLYWHEEL_LEAD_ALERT_SCRIPT FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS FLYWHEEL_CODEX_LEAD_PROFILE \
 	FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES FLYWHEEL_CODEX_LEAD_OUTBOUND
 
 # Fake worktree with the built runtime + the tui-home script (a no-op stub; ensures
@@ -70,6 +70,8 @@ if [ -f "$D" ]; then
 	esac
 	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_MODE)" = "tui" ] && pass "MODE=tui" || fail "MODE not tui"
 	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_PROFILE)" = "companion" ] && pass "PROFILE=companion" || fail "PROFILE not companion"
+	# FLY-3083 reverse: a companion (no Runners) launcher never carries the alert entry point.
+	grep -q "^FLYWHEEL_LEAD_ALERT_SCRIPT=" "$D" && fail "FLY-3083: companion must not carry FLYWHEEL_LEAD_ALERT_SCRIPT" || pass "FLY-3083: companion carries no FLYWHEEL_LEAD_ALERT_SCRIPT"
 	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_SANDBOX)" = "read-only" ] && pass "SANDBOX=read-only" || fail "SANDBOX not read-only"
 	[ "$(envval "$D" FLYWHEEL_LEAD_ID)" = "mufasa-lead" ] && pass "LEAD_ID=mufasa-lead" || fail "LEAD_ID wrong"
 	[ "$(envval "$D" FLYWHEEL_PROJECT_NAME)" = "growth" ] && pass "PROJECT_NAME=growth" || fail "PROJECT_NAME wrong"

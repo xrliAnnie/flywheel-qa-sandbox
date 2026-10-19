@@ -1580,6 +1580,43 @@ export class CommDB {
 	}
 
 	/**
+	 * FLY-3083: resolve a Runner mailbox short name ("runner-<8hex>", exact
+	 * match of deriveRunnerMailboxIdentity's shape) to the full execution_id.
+	 * ANY other string (UUID, "exec-123", "runner-e1", …) is returned verbatim —
+	 * the existing opaque-id contract is untouched. Fail-closed on 0 or >1 hits;
+	 * never guesses the newest session.
+	 */
+	resolveExecutionId(ref: string, opts?: { leadId?: string }): string {
+		const match = /^runner-([0-9a-f]{8})$/.exec(ref);
+		if (!match) return ref;
+		// The prefix is hex-only (regex above), so it carries no LIKE wildcards.
+		const prefix = `${match[1]}%`;
+		const rows = (
+			opts?.leadId !== undefined
+				? this.db
+						.prepare(
+							"SELECT execution_id FROM sessions WHERE execution_id LIKE ? ESCAPE '\\' AND lead_id = ?",
+						)
+						.all(prefix, opts.leadId)
+				: this.db
+						.prepare(
+							"SELECT execution_id FROM sessions WHERE execution_id LIKE ? ESCAPE '\\'",
+						)
+						.all(prefix)
+		) as Array<{ execution_id: string }>;
+		const scope = opts?.leadId !== undefined ? ` (lead ${opts.leadId})` : "";
+		if (rows.length === 0) {
+			throw new Error(`no session for runner ref ${ref}${scope}`);
+		}
+		if (rows.length > 1) {
+			throw new Error(
+				`ambiguous runner ref ${ref} (${rows.length} sessions)${scope}; pass the full execution id`,
+			);
+		}
+		return rows[0]!.execution_id;
+	}
+
+	/**
 	 * FLY-1238: atomically retire every unanswered checkpoint gate owned by a
 	 * runner and remove its session registry row. A checkpoint-less `ask` is not
 	 * a gate; an answered question is immutable history. Errors deliberately

@@ -22,8 +22,8 @@ The default view (`active_only=true`) shows `running` + `parked-alive`. A
 
 **For a `parked-alive` runner, RE-ENGAGE — do not terminate + start a new run.**
 
-1. Send the next instruction via your normal Runner messaging path (`SendMessage`
-   / `flywheel-comm send`). The idle runner wakes and continues on the same
+1. Send the next instruction via your Runner messaging path (`flywheel-comm send`
+   — the only one, FLY-3083). The idle runner wakes and continues on the same
    worktree/branch/context.
 2. Do NOT `terminate` (or `close_runner --abandon`) just to "free a slot" and
    then start a fresh run for the same issue — that throws away the runner's

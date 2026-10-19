@@ -1,0 +1,9 @@
+flowchart TD
+  A[Lead 跑 flywheel-comm send] --> B{delivered?}
+  B -->|真| C[Runner 已唤醒<br/>编号可追]
+  B -->|假 / stderr WARN| D[CommDB 已留底<br/>但没送到]
+  D --> E[报 infra alert<br/>例如 FLY-3071 类通道故障]
+  D --> F[走 stuck-runner-remanage 阶梯<br/>直读终端 / 重启 Runner]
+  D -.->|禁止| G[换 SendMessage 旁路<br/>hook 会拦]
+  style G fill:#fdecea,stroke:#ff3b30
+  style C fill:#e9f9ef,stroke:#34c759

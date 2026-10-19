@@ -7,12 +7,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import {
 	ClaudeCodeAdapter,
 	deriveRunnerMailboxIdentity,
 } from "flywheel-agent-team-transport";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { send } from "../commands/send.js";
+import { send, sendDetailed } from "../commands/send.js";
 import { CommDB } from "../db.js";
 
 /**
@@ -210,5 +211,198 @@ describe("send mailbox dual-write (FLY-168)", () => {
 		db.close();
 		expect(id).toBeTruthy();
 		expect(console.error).toHaveBeenCalled(); // loud stderr
+	});
+});
+
+/**
+ * FLY-3083 — `sendDetailed`: short-name resolution + the transport result the
+ * runner-msg-guard hook and the Runner channel contract rely on. `send()` keeps
+ * returning the bare id (every existing caller is untouched).
+ */
+describe("sendDetailed transport result + short-name --to (FLY-3083)", () => {
+	let tmpDir: string;
+	let dbPath: string;
+	const EXEC = "42afa86c-1111-4222-8333-444455556666";
+	const SHORT = "runner-42afa86c";
+	const LEAD = "flywheel-eng-lead";
+
+	const origCfg = process.env.CLAUDE_CONFIG_DIR;
+	const origBackend = process.env.FLYWHEEL_COMM_BACKEND;
+	const origAgent = process.env.FLYWHEEL_AGENT_BACKEND;
+
+	const inboxPath = () => {
+		const { agentName, teamName } = deriveRunnerMailboxIdentity(EXEC, LEAD);
+		return new ClaudeCodeAdapter().getInboxPath(teamName, agentName);
+	};
+	const register = (vendor?: string) => {
+		const db = new CommDB(dbPath);
+		db.registerSession(EXEC, "sess:win", "proj", "FLY-3083", LEAD, vendor);
+		db.close();
+	};
+	const messageRows = () => {
+		const raw = new Database(dbPath, { readonly: true });
+		try {
+			return raw
+				.prepare(
+					"SELECT id, to_agent, content, delivered_at FROM messages ORDER BY rowid",
+				)
+				.all() as Array<{
+				id: string;
+				to_agent: string;
+				content: string;
+				delivered_at: string | null;
+			}>;
+		} finally {
+			raw.close();
+		}
+	};
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "fly3083-send-"));
+		dbPath = join(tmpDir, "comm.db");
+		process.env.CLAUDE_CONFIG_DIR = join(tmpDir, "claude-config");
+		delete process.env.FLYWHEEL_COMM_BACKEND;
+		delete process.env.FLYWHEEL_AGENT_BACKEND;
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		vi.spyOn(console, "error").mockImplementation(() => {});
+	});
+	afterEach(() => {
+		rmSync(tmpDir, { recursive: true, force: true });
+		if (origCfg === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+		else process.env.CLAUDE_CONFIG_DIR = origCfg;
+		if (origBackend === undefined) delete process.env.FLYWHEEL_COMM_BACKEND;
+		else process.env.FLYWHEEL_COMM_BACKEND = origBackend;
+		if (origAgent === undefined) delete process.env.FLYWHEEL_AGENT_BACKEND;
+		else process.env.FLYWHEEL_AGENT_BACKEND = origAgent;
+		vi.restoreAllMocks();
+	});
+
+	it("resolves a runner short name to the full exec id for CommDB and inbox", async () => {
+		register();
+		const result = await sendDetailed({
+			fromAgent: LEAD,
+			toAgent: SHORT,
+			content: "hello via short name",
+			dbPath,
+		});
+		expect(result.executionId).toBe(EXEC);
+		expect(result.transportWrite).toBe("ok");
+		expect(result.delivered).toBe(true);
+		expect(result.skippedReason).toBeUndefined();
+		expect(result.wakeError).toBeUndefined();
+
+		const rows = messageRows();
+		expect(rows).toHaveLength(1);
+		expect(rows[0]!.id).toBe(result.instructionId);
+		expect(rows[0]!.to_agent).toBe(EXEC);
+		expect(rows[0]!.delivered_at).not.toBeNull();
+
+		const entries = JSON.parse(readFileSync(inboxPath(), "utf-8")) as Array<{
+			text: string;
+		}>;
+		expect(entries).toHaveLength(1);
+		expect(entries[0]!.text).toBe(
+			`[lead-instruction ${result.instructionId}]\nhello via short name`,
+		);
+	});
+
+	it("reports transportWrite=error with the wake error when the inbox is unwritable", async () => {
+		register();
+		const badCfg = join(tmpDir, "not-a-dir");
+		writeFileSync(badCfg, "x");
+		process.env.CLAUDE_CONFIG_DIR = badCfg;
+
+		const result = await sendDetailed({
+			fromAgent: LEAD,
+			toAgent: SHORT,
+			content: "inbox unwritable",
+			dbPath,
+		});
+		expect(result.transportWrite).toBe("error");
+		expect(result.delivered).toBe(false);
+		expect(result.wakeError).toBeTruthy();
+		const rows = messageRows();
+		expect(rows).toHaveLength(1);
+		expect(rows[0]!.delivered_at).toBeNull();
+		expect(console.error).toHaveBeenCalled();
+	});
+
+	it("reports skipped/backend_commdb in rollback mode", async () => {
+		process.env.FLYWHEEL_COMM_BACKEND = "commdb";
+		register();
+		const result = await sendDetailed({
+			fromAgent: LEAD,
+			toAgent: EXEC,
+			content: "rollback",
+			dbPath,
+		});
+		expect(result.transportWrite).toBe("skipped");
+		expect(result.skippedReason).toBe("backend_commdb");
+		expect(result.delivered).toBe(false);
+		expect(existsSync(inboxPath())).toBe(false);
+	});
+
+	it("reports skipped/no_transport for a vendor=none runner", async () => {
+		register("none");
+		const result = await sendDetailed({
+			fromAgent: LEAD,
+			toAgent: SHORT,
+			content: "antigravity runner",
+			dbPath,
+		});
+		expect(result.executionId).toBe(EXEC);
+		expect(result.transportWrite).toBe("skipped");
+		expect(result.skippedReason).toBe("no_transport");
+		expect(messageRows()).toHaveLength(1);
+		expect(existsSync(inboxPath())).toBe(false);
+	});
+
+	it("reports skipped/no_session_lead when the full-id target has no session", async () => {
+		const result = await sendDetailed({
+			fromAgent: LEAD,
+			toAgent: EXEC,
+			content: "unregistered",
+			dbPath,
+		});
+		expect(result.transportWrite).toBe("skipped");
+		expect(result.skippedReason).toBe("no_session_lead");
+		expect(messageRows()).toHaveLength(1);
+	});
+
+	it("throws on an unresolvable short name and writes nothing", async () => {
+		await expect(
+			sendDetailed({
+				fromAgent: LEAD,
+				toAgent: "runner-deadbeef",
+				content: "nobody home",
+				dbPath,
+			}),
+		).rejects.toThrow(/no session for runner ref runner-deadbeef/);
+		expect(messageRows()).toHaveLength(0);
+	});
+
+	it("scopes short-name resolution to the sending Lead", async () => {
+		register();
+		await expect(
+			sendDetailed({
+				fromAgent: "some-other-lead",
+				toAgent: SHORT,
+				content: "not my runner",
+				dbPath,
+			}),
+		).rejects.toThrow(/no session for runner ref/);
+		expect(messageRows()).toHaveLength(0);
+	});
+
+	it("send() still resolves to the bare instruction id", async () => {
+		register();
+		const id = await send({
+			fromAgent: LEAD,
+			toAgent: SHORT,
+			content: "compat",
+			dbPath,
+		});
+		expect(typeof id).toBe("string");
+		expect(messageRows().map((r) => r.id)).toEqual([id]);
 	});
 });

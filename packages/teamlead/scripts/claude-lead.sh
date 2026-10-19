@@ -206,6 +206,15 @@ export FLYWHEEL_ROOT
 # path. The lib defines functions only; it does not change shell options.
 # shellcheck source=lib/reap-orphan-adapters.sh
 source "${SCRIPT_DIR}/lib/reap-orphan-adapters.sh"
+# FLY-3083: FLYWHEEL_LEAD_ALERT_SCRIPT = absolute scripts/lead-alert.sh for the
+# Runner channel contract's mailbox_channel_fault template. FLYWHEEL_ROOT above
+# is launcher-local (not in the pane's `-e` list), so the pane gets this
+# dedicated non-secret path instead (added to env_args in _launch_claude;
+# emptied for companion / external). Shared helper = one resolution rule for
+# every Claude and Codex entry point.
+# shellcheck source=lead-alert-env.sh
+source "${SCRIPT_DIR}/lead-alert-env.sh"
+export_lead_alert_script_env "${SCRIPT_DIR}"
 # FLY-83: Ensure all alert-path directories exist before anything can fail.
 # - blocked/  : marker files pausing supervisor until Annie clears them
 # - alert-queue/ : LeadAlertNotifier spills here when Discord POST fails
@@ -866,6 +875,47 @@ install_restart_guard_hook() {
   fi
 }
 
+# FLY-3083: runner-msg-guard PreToolUse hook — a Lead's `SendMessage` to a
+# Runner inbox (or the broadcast "*") is denied and the Lead gets a shell-safe
+# `flywheel-comm send` replacement command. Lead-LOCAL: merged into
+# <LEAD_WORKSPACE>/.claude/settings.local.json by the ONE installer
+# (scripts/hooks/install-runner-msg-guard.sh), called while the settings.local
+# lock below is held (--lock-held), so the launcher and a standalone ops run
+# share one lock protocol. cos + dept only — companion / external Leads carry
+# no Runners. A missing installer (e.g. a packaged Lead: hook scripts are not in
+# the npm payload, same precedent as the restart guard) → WARN and the Lead still
+# starts; the runner-channel contract text still applies.
+# The installer path is overridable ONLY under FLYWHEEL_LEAD_DRY_RUN=1 (hermetic
+# missing-installer test), same rule as FLYWHEEL_BASE_RULES_DIR.
+RUNNER_MSG_GUARD_INSTALLER="${FLYWHEEL_ROOT}/scripts/hooks/install-runner-msg-guard.sh"
+if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" = "1" ] && [ -n "${FLYWHEEL_RUNNER_MSG_GUARD_INSTALLER:-}" ]; then
+  RUNNER_MSG_GUARD_INSTALLER="$FLYWHEEL_RUNNER_MSG_GUARD_INSTALLER"
+fi
+install_runner_msg_guard_hook() {
+  local settings="$1"
+  if [ "$IS_COMPANION_ROLE" = true ]; then
+    log "Companion: skipping runner-msg-guard install (no Runners)"
+    return
+  fi
+  if [ "$IS_EXTERNAL_ROLE" = true ]; then
+    log "External: skipping runner-msg-guard install (no Runners)"
+    return
+  fi
+  if [ ! -f "$RUNNER_MSG_GUARD_INSTALLER" ]; then
+    log "WARNING: install-runner-msg-guard.sh not found: ${RUNNER_MSG_GUARD_INSTALLER} (runner-msg-guard not installed; Lead continues)"
+    return
+  fi
+  if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" = "1" ]; then
+    log "DRY-RUN: runner-msg-guard would install into ${settings} (--lock-held)"
+    return
+  fi
+  if bash "$RUNNER_MSG_GUARD_INSTALLER" --settings "$settings" --lock-held >/dev/null 2>&1; then
+    log "runner-msg-guard PreToolUse hook installed in ${settings}"
+  else
+    log "WARNING: runner-msg-guard hook install failed/skipped (non-fatal)"
+  fi
+}
+
 # ── FLY-954: converge <state>/bin runtime scripts (anti-drift) ──────────────
 # Incident 2026-07-06: 12-byte stubs sat in ~/.flywheel/bin for 8h, then a
 # deploy kickstart took all 13 Leads down. Every Lead start now verifies
@@ -1138,6 +1188,7 @@ _launch_claude() {
   local _cz_comm_cli="${FLYWHEEL_COMM_CLI:-}"
   local _cz_comm_db="${FLYWHEEL_COMM_DB:-}"
   local _cz_openai_key="${OPENAI_API_KEY:-}"
+  local _cz_alert_script="${FLYWHEEL_LEAD_ALERT_SCRIPT:-}"
   # FLY-879: an external (customer-facing) Lead gets the SAME high-privilege-cred
   # emptying as a companion — no Bridge token, no CommDB, no OpenAI key in its pane.
   # Anna reaches nothing internal (its whole world is the interviews repo + Discord).
@@ -1147,6 +1198,7 @@ _launch_claude() {
     _cz_comm_cli=""
     _cz_comm_db=""
     _cz_openai_key=""
+    _cz_alert_script=""
   fi
   local env_args=(
     -e "DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:-}"
@@ -1155,6 +1207,8 @@ _launch_claude() {
     -e "FLYWHEEL_LEAD_ID=${LEAD_ID}"
     -e "FLYWHEEL_COMM_DB=${_cz_comm_db}"
     -e "FLYWHEEL_COMM_CLI=${_cz_comm_cli}"
+    # FLY-3083: mailbox_channel_fault alert entry point (Runner channel contract).
+    -e "FLYWHEEL_LEAD_ALERT_SCRIPT=${_cz_alert_script}"
     -e "PROJECT_NAME=${PROJECT_NAME}"
     -e "FLYWHEEL_PROJECT_NAME=${PROJECT_NAME}"
     # FLY-205: project root path for the doc-flow Lead rule's config self-check
@@ -1592,19 +1646,30 @@ if command -v jq >/dev/null 2>&1; then
       log "MCP approval: created ${_SETTINGS_LOCAL_JSON}"
     fi
 
-    _tmp_settings="$(mktemp "${_SETTINGS_LOCAL_JSON}.tmp.XXXXXX")"
-    if jq '.enableAllProjectMcpServers = true' \
-       "$_SETTINGS_LOCAL_JSON" > "$_tmp_settings" 2>/dev/null; then
-      mv "$_tmp_settings" "$_SETTINGS_LOCAL_JSON"
-      log "MCP approval: enableAllProjectMcpServers=true in ${_SETTINGS_LOCAL_JSON}"
+    # FLY-3083: both writers below require the file to be EXACTLY one JSON
+    # object (slurped, output-based — jq 1.6 exits 0 on parse errors). jq
+    # streams several top-level values and would rewrite them all; a valid head
+    # with a broken tail is likewise not a settings file. Invalid → untouched.
+    if [ "$(jq -s -r 'if length == 1 and (.[0] | type) == "object" then "ok" else "no" end' \
+         "$_SETTINGS_LOCAL_JSON" 2>/dev/null)" != "ok" ]; then
+      log "WARNING: ${_SETTINGS_LOCAL_JSON} is not exactly one JSON object — skipping MCP pre-seed and runner-msg-guard install (file untouched)"
     else
-      rm -f "$_tmp_settings" 2>/dev/null || true
-      log "WARNING: Failed to pre-seed enableAllProjectMcpServers (jq error)"
+      _tmp_settings="$(mktemp "${_SETTINGS_LOCAL_JSON}.tmp.XXXXXX")"
+      if jq '.enableAllProjectMcpServers = true' \
+         "$_SETTINGS_LOCAL_JSON" > "$_tmp_settings" 2>/dev/null; then
+        mv "$_tmp_settings" "$_SETTINGS_LOCAL_JSON"
+        log "MCP approval: enableAllProjectMcpServers=true in ${_SETTINGS_LOCAL_JSON}"
+      else
+        rm -f "$_tmp_settings" 2>/dev/null || true
+        log "WARNING: Failed to pre-seed enableAllProjectMcpServers (jq error)"
+      fi
+      # FLY-3083: converge the runner-msg-guard entry under the SAME lock.
+      install_runner_msg_guard_hook "$_SETTINGS_LOCAL_JSON"
     fi
     rmdir "$_lock_dir" 2>/dev/null || true
     _MCP_LOCK_HELD=false
   else
-    log "WARNING: Could not acquire lock on ${_SETTINGS_LOCAL_JSON} after 10s, skipping MCP pre-seed"
+    log "WARNING: Could not acquire lock on ${_SETTINGS_LOCAL_JSON} after 10s, skipping MCP pre-seed and runner-msg-guard install"
   fi
 fi
 
@@ -1817,17 +1882,17 @@ elif [ "$IS_COS_ROLE" = false ]; then
     CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_DEPT_RULES")
     log "Appending base dept-lead rules: ${BASE_DEPT_RULES}"
   fi
-  # FLY-142 PR #186 Codex Round 1 HIGH: dept leads spawn + DM Runners, so
-  # they MUST be told to use `SendMessage` MCP for ordinary DM (mailbox
-  # path) rather than `flywheel-comm send` (suppressed by sentinel once
-  # mailbox cutover is active — silent message loss otherwise).
+  # FLY-3083: dept leads spawn + DM Runners; the ONLY Lead → Runner path is
+  # `flywheel-comm send` / `respond` (the Runner channel contract below states
+  # it for every Runner-capable Lead; the runner-msg-guard hook denies a
+  # SendMessage to a Runner). This file carries the mailbox-mode detail: the
+  # wake matrix, the gate `respond` forms and the channel fault table.
   #
-  # FLY-142 PR #186 codex:rescue Bug B: ONLY load this rule on the mailbox
+  # FLY-142 PR #186 codex:rescue Bug B: ONLY load this detail on the mailbox
   # path. On the `FLYWHEEL_COMM_BACKEND=commdb` rollback path, `run-dispatcher.ts:buildAgentTeamIdentity`
-  # returns `{}` so Runner spawns without Agent Team identity → Lead writes
-  # mailbox via SendMessage but nobody polls it → silent message loss. Skip
-  # the rule on rollback so Lead falls back to the legacy `flywheel-comm send`
-  # CommDB path that the rolled-back Runner side actually reads.
+  # returns `{}` so Runner spawns without Agent Team identity and nobody polls
+  # the mailbox; the Lead's `flywheel-comm send` then lands in the CommDB path
+  # the rolled-back Runner side actually reads.
   #
   # codex:rescue Round 2 MEDIUM: also trim leading/trailing whitespace —
   # an operator who writes `FLYWHEEL_COMM_BACKEND=" commdb "` in their
@@ -1984,6 +2049,18 @@ if [ "$IS_COMPANION_ROLE" != true ] && [ "$IS_EXTERNAL_ROLE" != true ] && [ -f "
   # covers each one's boundary in a non-engineering tone.
   CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_FOUNDER_AUTH_RULES")
   log "Appending base founder-only-authority rules: ${BASE_FOUNDER_AUTH_RULES}"
+fi
+
+# ── FLY-3083: Runner channel contract (universal — cos + dept, both backends) ──
+# One text for every Runner-capable Lead: `flywheel-comm send` / `respond` are the
+# ONLY Lead → Runner path, the forbidden side channels, the `send --json`
+# transport_write meaning, and the mailbox_channel_fault alert template. Loaded
+# regardless of FLYWHEEL_COMM_BACKEND (unlike runner-messaging-rules.md above).
+# Companion / external Leads carry no Runners → skipped. Optional file.
+BASE_RUNNER_CHANNEL_CONTRACT="${BASE_RULES_DIR}/runner-channel-contract.md"
+if [ "$IS_COMPANION_ROLE" != true ] && [ "$IS_EXTERNAL_ROLE" != true ] && [ -f "$BASE_RUNNER_CHANNEL_CONTRACT" ] && [ -r "$BASE_RUNNER_CHANNEL_CONTRACT" ]; then
+  CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_RUNNER_CHANNEL_CONTRACT")
+  log "Appending base runner-channel contract: ${BASE_RUNNER_CHANNEL_CONTRACT}"
 fi
 
 # ── FLY-598 / FLY-869: Founder brainstorm-alignment gate (universal — cos + dept, NOT companion) ──

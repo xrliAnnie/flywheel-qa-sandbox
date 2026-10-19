@@ -73,6 +73,15 @@ if ! assemble_full_access_governance "${FLYWHEEL_LEAD_ID}" "${TEAMLEAD_ROOT}/lea
 	exit 1
 fi
 
+# ── FLY-3083: absolute lead-alert.sh path for the Runner channel contract's
+#    mailbox_channel_fault template. FLYWHEEL_ROOT never reaches the runtime env
+#    (not in the full-access env allowlist), so the shared helper exports a
+#    dedicated non-secret FLYWHEEL_LEAD_ALERT_SCRIPT. Missing target → WARN and
+#    the variable stays unset (the contract then falls back to the issue thread). ──
+# shellcheck source=lead-alert-env.sh
+. "${SCRIPT_DIR}/lead-alert-env.sh"
+export_lead_alert_script_env "${SCRIPT_DIR}"
+
 # ── secrets / Discord (Claude-equal). The runtime posts to Discord directly (direct
 #     outbound, no Bridge), so DISCORD_BOT_TOKEN is the only secret this launcher
 #     sets. The model shell's flywheel-comm uses TEAMLEAD_API_TOKEN — sourced from

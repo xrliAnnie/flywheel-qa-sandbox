@@ -65,6 +65,61 @@ describe("CLI", () => {
 			);
 		});
 
+		it("appends the FLY-3083 transport fields to --json and resolves a runner short name", () => {
+			const EXEC = "42afa86c-1111-4222-8333-444455556666";
+			const db = new CommDB(dbPath);
+			db.registerSession(EXEC, "s:w", "proj", "FLY-3083", "product-lead");
+			db.close();
+			const result = runCli(
+				[
+					"send",
+					"--from",
+					"product-lead",
+					"--to",
+					"runner-42afa86c",
+					"--db",
+					dbPath,
+					"--json",
+					"--",
+					"--looks-like-a-flag $(not expanded)",
+				],
+				{
+					CLAUDE_CONFIG_DIR: join(tmpDir, "claude-config"),
+					FLYWHEEL_COMM_BACKEND: "commdb",
+				},
+			);
+			const parsed = JSON.parse(result);
+			expect(parsed.instruction_id).toBeTruthy();
+			expect(parsed.execution_id).toBe(EXEC);
+			expect(parsed.transport_write).toBe("skipped");
+			expect(parsed.skipped_reason).toBe("backend_commdb");
+			expect(parsed.delivered).toBe(false);
+			const check = new CommDB(dbPath);
+			const unread = check.getUnreadInstructions(EXEC);
+			check.close();
+			expect(unread.map((m) => m.content)).toEqual([
+				"--looks-like-a-flag $(not expanded)",
+			]);
+		});
+
+		it("fails non-zero and writes nothing for an unresolvable runner short name", () => {
+			const { exitCode } = runCliSafe([
+				"send",
+				"--from",
+				"product-lead",
+				"--to",
+				"runner-deadbeef",
+				"--db",
+				dbPath,
+				"hello",
+			]);
+			expect(exitCode).not.toBe(0);
+			const check = new CommDB(dbPath);
+			const unread = check.getUnreadInstructions("runner-deadbeef");
+			check.close();
+			expect(unread).toHaveLength(0);
+		});
+
 		it("should output JSON with --json", () => {
 			const result = runCli([
 				"ask",

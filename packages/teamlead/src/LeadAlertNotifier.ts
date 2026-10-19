@@ -124,6 +124,13 @@ export const ALERT_EVENT_TYPES = [
 	// present in the union so a queued bypass alert drains with a known
 	// eventType and the shared kind face (lead-alert.sh ↔ TS) has no drift.
 	"restart_guard_bypass",
+	// FLY-3083: a Lead's report of a Lead → Runner Mailbox channel fault
+	// (subkind transport_error | suspected_stall in the body/signature) — fired
+	// ONLY via scripts/lead-alert.sh --strict-delivery from the Runner channel
+	// contract's template. NOT emitted by the TS LeadWatchdog / notifier; present
+	// in the union so a queued alert drains with a known eventType and the
+	// shared kind face (lead-alert.sh ↔ TS) has no drift.
+	"mailbox_channel_fault",
 	// FLY-939 (G-D): the Bridge booted on a STALE checkout — its running HEAD is
 	// strictly behind origin/main, so merged work is NOT live (the FLY-887
 	// silent-non-deploy incident shape). A Lead-only alert; the durable

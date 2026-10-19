@@ -78,6 +78,7 @@ describe("lead-rules-bundle.sh — behavioral", () => {
 			"auto-qa-pipeline.md",
 			"xiaohongshu-memory-rules.md",
 			"founder-only-authority.md",
+			"runner-channel-contract.md",
 			"founder-html-delivery.md",
 			"cross-dept-channel-rules.md",
 		]);
@@ -86,6 +87,8 @@ describe("lead-rules-bundle.sh — behavioral", () => {
 	it("dept (commdb) → SKIPS runner-messaging but STILL loads runner-patrol (FLY-369: patrol is backend-independent)", () => {
 		const { lines } = runBundle("dept", BASE_RULES_DIR, "commdb", "1");
 		expect(names(lines)).not.toContain("runner-messaging-rules.md");
+		// FLY-3083: the Runner channel contract is backend-independent.
+		expect(names(lines)).toContain("runner-channel-contract.md");
 		// FLY-369: RC-1 relay / RC-3 patrol / RC-6 handoff are backend-independent,
 		// so patrol loads on the commdb rollback path too (its RC-2 section is
 		// self-contained for commdb — it does NOT rely on runner-messaging-rules.md).
@@ -100,6 +103,7 @@ describe("lead-rules-bundle.sh — behavioral", () => {
 		expect(names(lines)).toEqual([
 			"cos-lead-rules.md",
 			"founder-only-authority.md",
+			"runner-channel-contract.md",
 			"founder-html-delivery.md",
 			"cross-dept-channel-rules.md",
 		]);

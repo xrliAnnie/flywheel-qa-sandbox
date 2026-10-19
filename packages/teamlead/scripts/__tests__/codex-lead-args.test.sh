@@ -53,6 +53,38 @@ if [ "$code" -ne 0 ] && printf '%s' "$r" | grep -qi "Unexpected argument"; then
   pass "rejects an extra positional argument"
 else fail "extra positional should be rejected (got: $r)"; fi
 
+# ── FLY-3083: FLYWHEEL_LEAD_ALERT_SCRIPT is exported on the full-access path in
+# BOTH headless and TUI mode (set before the headless/TUI split), starting from
+# an env that does NOT preset it; a non-full-access profile never gets it.
+# A PATH-injected mock `node` dumps the env the launcher execs the runtime with.
+mkdir -p "$TMP/bin" "$TMP/home"
+cat > "$TMP/bin/node" <<'MOCK'
+#!/bin/bash
+env > "$ENVDUMP"
+exit 0
+MOCK
+chmod +x "$TMP/bin/node"
+REPO_ALERT="$(cd "${SCRIPT_DIR}/../../../../scripts" && pwd -P)/lead-alert.sh"
+run_env_dump() {
+  local dump="$TMP/env.$RANDOM"
+  env -u FLYWHEEL_LEAD_ALERT_SCRIPT -u FLYWHEEL_LEAD_CORE_CHANNEL_ID -u FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES \
+    PATH="$TMP/bin:$PATH" HOME="$TMP/home" ENVDUMP="$dump" FLYWHEEL_LEAD_DRY_RUN=1 "$@" \
+    bash "$CODEX_LEAD" good-lead "$TMP/project" proj >/dev/null 2>&1
+  echo "$dump"
+}
+alert_of() { grep '^FLYWHEEL_LEAD_ALERT_SCRIPT=' "$1" 2>/dev/null | head -1 | cut -d= -f2-; }
+for mode in headless tui; do
+  D=$(run_env_dump FLYWHEEL_CODEX_LEAD_PROFILE=full-access FLYWHEEL_CODEX_LEAD_MODE="$mode")
+  got=$(alert_of "$D")
+  if [ -n "$got" ] && [ "$got" = "$REPO_ALERT" ] && [ -f "$got" ]; then
+    pass "FLY-3083 full-access $mode: FLYWHEEL_LEAD_ALERT_SCRIPT exported (existing canonical path)"
+  else fail "FLY-3083 full-access $mode: FLYWHEEL_LEAD_ALERT_SCRIPT missing/wrong ('$got', dump=$([ -f "$D" ] && echo yes || echo none))"; fi
+done
+D=$(run_env_dump FLYWHEEL_CODEX_LEAD_PROFILE=companion)
+if [ -f "$D" ] && ! grep -q '^FLYWHEEL_LEAD_ALERT_SCRIPT=' "$D"; then
+  pass "FLY-3083 non-full-access profile: no FLYWHEEL_LEAD_ALERT_SCRIPT"
+else fail "FLY-3083 non-full-access profile must not carry FLYWHEEL_LEAD_ALERT_SCRIPT (dump=$([ -f "$D" ] && echo yes || echo none))"; fi
+
 echo ""
 echo "[codex-lead-args] passed=$PASSED failed=$FAILED"
 [ "$FAILED" -eq 0 ]

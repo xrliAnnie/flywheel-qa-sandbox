@@ -63,6 +63,7 @@ PO_PACKAGE_ASSET_FILES=${PO_PACKAGE_ASSET_FILES:-"teamlead:scripts/claude-lead.s
 teamlead:scripts/codex-lead.sh
 teamlead:scripts/codex-lead-tui-home.sh
 teamlead:scripts/lead-rules-bundle.sh
+teamlead:scripts/lead-alert-env.sh
 teamlead:scripts/apply-core-room-mention-gate.sh
 teamlead:scripts/find-window.sh
 teamlead:scripts/post-compact-bootstrap.sh
@@ -508,6 +509,23 @@ console.log(`vendored ${dep} closure (${seen.size} pkgs) into ${destNM}`);
 EOF
 }
 
+# po_copy_asset_files <repo-root> <tree-out-dir>
+# Copy the file-level runtime assets (PO_PACKAGE_ASSET_FILES) into the embedded
+# packages under <tree>/node_modules/<npm-name>/. Fail-closed on a missing entry.
+# Extracted from po_assemble (FLY-3083) so the whitelist can be exercised in
+# isolation against the real repo.
+po_copy_asset_files() {
+  local root="$1" tree="$2" spec dir afile name
+  while IFS= read -r spec; do
+    case "$spec" in *[![:space:]]*) ;; *) continue ;; esac
+    dir="${spec%%:*}"; afile="${spec#*:}"
+    name="$(po_pkg_npm_name "$root" "$dir")" || return 1
+    [ -f "$root/packages/$dir/$afile" ] || { po_err "package asset file missing: packages/$dir/$afile"; return 1; }
+    mkdir -p "$tree/node_modules/$name/$(dirname "$afile")"
+    cp -p "$root/packages/$dir/$afile" "$tree/node_modules/$name/$afile" || return 1
+  done <<<"$PO_PACKAGE_ASSET_FILES"
+}
+
 # ── assembly ────────────────────────────────────────────────────────────────
 # po_assemble <repo-root> <tree-out-dir>
 # Deterministic + idempotent: the tree is rebuilt from scratch each run.
@@ -577,14 +595,7 @@ po_assemble() {
     cp -Rp "$root/packages/$dir/$asset" "$tree/node_modules/$name/$asset" || return 1
     rm -rf "$tree/node_modules/$name/$asset/__tests__"
   done < <(printf '%s\n' $PO_PACKAGE_ASSETS)
-  while IFS= read -r spec; do
-    case "$spec" in *[![:space:]]*) ;; *) continue ;; esac
-    dir="${spec%%:*}"; local afile="${spec#*:}"
-    name="$(po_pkg_npm_name "$root" "$dir")" || return 1
-    [ -f "$root/packages/$dir/$afile" ] || { po_err "package asset file missing: packages/$dir/$afile"; return 1; }
-    mkdir -p "$tree/node_modules/$name/$(dirname "$afile")"
-    cp -p "$root/packages/$dir/$afile" "$tree/node_modules/$name/$afile" || return 1
-  done <<<"$PO_PACKAGE_ASSET_FILES"
+  po_copy_asset_files "$root" "$tree" || return 1
 
   # 5. strip non-runtime residue from the embedded packages. Source maps are a
   #    HARD strip: tsc sourcemaps can embed the ORIGINAL TypeScript source via

@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import {
 	mkdirSync,
 	mkdtempSync,
@@ -13,6 +14,62 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
+
+/** FLY-3083: fill the Runner channel contract's mailbox_channel_fault template
+ * and run it with `env` against a stub alert script that records its argv.
+ * Returns the recorded argv (null if the template never reached the stub). */
+function runContractAlertTemplate(
+	buildEnv: (stub: string) => NodeJS.ProcessEnv,
+): string[] | null {
+	const dir = mkdtempSync(join(tmpdir(), "fly3083-alert-"));
+	try {
+		const argvOut = join(dir, "argv.json");
+		const stub = join(dir, "lead-alert.sh");
+		writeFileSync(
+			stub,
+			`#!/bin/bash\nnode -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify(process.argv.slice(2)))' ${JSON.stringify(argvOut)} "$@"\necho sent\n`,
+			{ mode: 0o755 },
+		);
+		const contract = readFileSync(
+			join(
+				TEST_DIR,
+				"..",
+				"..",
+				"..",
+				"..",
+				"lead-rules-base",
+				"runner-channel-contract.md",
+			),
+			"utf8",
+		);
+		const block = /\n {3}```bash\n([\s\S]*?)\n {3}```/.exec(contract);
+		if (!block)
+			throw new Error("no bash template in runner-channel-contract.md");
+		const fills: Array<[string, string]> = [
+			["<execution_id>", "eeeeeeee-1111-4222-8333-444455556666"],
+			["<subkind>", "transport_error"],
+			["<anchor_instruction_id>", "anchor-1"],
+			["<runner 队名>", "runner-eeeeeeee"],
+			["<FLY-xxx>", "FLY-3083"],
+			["<episode 首条 id>", "anchor-1"],
+			["<本次 id>", "anchor-1"],
+			["<send 时间>", "2026-09-30T00:00:00Z"],
+			["<一行证据>", "inbox unwritable"],
+		];
+		let script = (block[1] as string).replace(/^ {3}/gm, "");
+		for (const [from, to] of fills) script = script.split(from).join(to);
+		const r = spawnSync("bash", ["-c", script], {
+			env: buildEnv(stub),
+			encoding: "utf8",
+		});
+		if (r.status !== 0) return null;
+		return JSON.parse(readFileSync(argvOut, "utf8")) as string[];
+	} catch {
+		return null;
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
 
 import {
 	assertWriteCapableRelease,
@@ -905,6 +962,45 @@ describe("buildFullAccessEnv (H-1: positive allowlist mirroring a Claude Lead pa
 		// regression pins for the Codex-caught extras
 		expect(FULL_ACCESS_ENV_ALLOWLIST as readonly string[]).not.toContain(
 			"FLYWHEEL_API_TOKEN",
+		);
+	});
+});
+
+describe("FLY-3083: FLYWHEEL_LEAD_ALERT_SCRIPT reaches a full-access Codex Lead", () => {
+	it("is allowlisted, non-secret, and passed through verbatim (FLYWHEEL_ROOT is not)", () => {
+		expect(FULL_ACCESS_ENV_ALLOWLIST).toContain("FLYWHEEL_LEAD_ALERT_SCRIPT");
+		expect(/TOKEN|SECRET|KEY/i.test("FLYWHEEL_LEAD_ALERT_SCRIPT")).toBe(false);
+		const out = buildFullAccessEnv({
+			FLYWHEEL_LEAD_ALERT_SCRIPT: "/abs/scripts/lead-alert.sh",
+			FLYWHEEL_ROOT: "/abs",
+		});
+		expect(out.FLYWHEEL_LEAD_ALERT_SCRIPT).toBe("/abs/scripts/lead-alert.sh");
+		// the reason the dedicated env exists: FLYWHEEL_ROOT never reaches the child
+		expect(out.FLYWHEEL_ROOT).toBeUndefined();
+	});
+
+	it("the contract's alert template reaches the script inside the env buildFullAccessEnv builds", () => {
+		const argv = runContractAlertTemplate((stub) =>
+			buildFullAccessEnv({
+				HOME: process.env.HOME,
+				PATH: process.env.PATH,
+				FLYWHEEL_LEAD_ALERT_SCRIPT: stub,
+				FLYWHEEL_LEAD_ID: "eng-lead",
+				FLYWHEEL_PROJECT_NAME: "flywheel",
+			}),
+		);
+		expect(argv).not.toBeNull();
+		const a = argv as string[];
+		expect(a.slice(0, 4)).toEqual([
+			"--lead",
+			"eng-lead",
+			"--project",
+			"flywheel",
+		]);
+		expect(a).toContain("mailbox_channel_fault");
+		expect(a).toContain("--strict-delivery");
+		expect(a).toContain(
+			"mailbox:eeeeeeee-1111-4222-8333-444455556666:transport_error:anchor-1",
 		);
 	});
 });

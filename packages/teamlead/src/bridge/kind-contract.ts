@@ -119,6 +119,9 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	founder_milestone_undelivered: { owner: "claude", arc: "human_by_design" },
 	tui_window_lost: { owner: "claude", arc: "human_by_design" },
 	restart_guard_bypass: { owner: "claude", arc: "human_by_design" },
+	// FLY-3083: people fix the Lead → Runner channel (same class as
+	// restart_guard_bypass); no reversible auto-remediation exists.
+	mailbox_channel_fault: { owner: "claude", arc: "human_by_design" },
 	bridge_boot_stale_checkout: { owner: "claude", arc: "human_by_design" },
 	bridge_wrapper_fail: { owner: "claude", arc: "human_by_design" },
 	bin_integrity_drift: { owner: "claude", arc: "human_by_design" },
