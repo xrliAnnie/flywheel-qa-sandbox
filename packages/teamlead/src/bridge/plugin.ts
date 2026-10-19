@@ -101,7 +101,11 @@ import {
 	type ProjectEntry,
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
-import { RunnerIdleWatchdog } from "../RunnerIdleWatchdog.js";
+import {
+	type IdleWatchdogHealth,
+	type IdleWatchdogHealthProvider,
+	RunnerIdleWatchdog,
+} from "../RunnerIdleWatchdog.js";
 import {
 	OUTCOME_STATUSES,
 	REVIEW_BINDING_UNBOUND,
@@ -931,6 +935,15 @@ export interface BridgeAppOptions {
 	 */
 	stuckDetectorHolder?: { current: StuckRunnerDetector | null };
 	/**
+	 * FLY-204: late-bound holder connecting the unauthenticated /health route to
+	 * RunnerIdleWatchdog, which is constructed post-listen in startBridge.
+	 * Absent / null (standalone createBridgeApp or boot window) reports an
+	 * explicit unavailable snapshot instead of implying a dead poll loop.
+	 */
+	idleWatchdogHealthHolder?: {
+		current: IdleWatchdogHealthProvider | null;
+	};
+	/**
 	 * FLY-623 (Codex R2 MED-5): late-bound holder connecting the event router +
 	 * idle watchdog to the live HeartbeatService reconnecting set. Both are wired
 	 * inside createBridgeApp (pre-listen) but HeartbeatService is constructed
@@ -1037,6 +1050,17 @@ function parseJsonStringArray(raw: string | undefined): string[] {
 	} catch {
 		return [];
 	}
+}
+
+function unavailableIdleWatchdogHealth(): IdleWatchdogHealth {
+	return {
+		timerRunning: false,
+		pollIntervalMs: null,
+		pollInProgress: false,
+		lastPollAt: null,
+		lastPollResult: null,
+		activeRunningSessions: null,
+	};
 }
 
 export function createBridgeApp(
@@ -1159,6 +1183,9 @@ export function createBridgeApp(
 		// double-start. Read at request time via the late-bound holder (mirrors
 		// stuckDetectorHolder); absent (standalone createBridgeApp) ⇒ false.
 		const shuttingDown = opts?.shutdownStateHolder?.shuttingDown === true;
+		const watchdog =
+			opts?.idleWatchdogHealthHolder?.current?.health() ??
+			unavailableIdleWatchdogHealth();
 		res.json({
 			// `ok` is byte-compatible (true in steady state); it flips false during
 			// shutdown so the deploy health check + wrapper preflight treat a
@@ -1167,6 +1194,7 @@ export function createBridgeApp(
 			shuttingDown,
 			uptime: process.uptime(),
 			sessions_count: active.length,
+			watchdog,
 		});
 	});
 
@@ -4157,6 +4185,11 @@ export async function startBridge(
 	const stuckDetectorHolder: { current: StuckRunnerDetector | null } = {
 		current: null,
 	};
+	const idleWatchdogHealthHolder: {
+		current: IdleWatchdogHealthProvider | null;
+	} = {
+		current: null,
+	};
 
 	// FLY-516: shared shutdown flag — /health (in createBridgeApp) reads it,
 	// close() (below) flips it at teardown start.
@@ -4292,6 +4325,8 @@ export async function startBridge(
 			globalBotToken: config.discordBotToken,
 			// FLY-253: holder filled after the detector is created post-listen.
 			stuckDetectorHolder,
+			// FLY-204: /health reads this after RunnerIdleWatchdog is constructed.
+			idleWatchdogHealthHolder,
 			stuckLatchTtlMs: stuckLatchTtlMs(),
 			fleetConsole,
 			// FLY-516: /health reads this; close() flips it at teardown start.
@@ -8017,6 +8052,7 @@ export async function startBridge(
 				})()
 			: undefined,
 	});
+	idleWatchdogHealthHolder.current = idleWatchdog;
 	idleWatchdog.start();
 	console.log(
 		`[Bridge] RunnerIdleWatchdog started (${Math.round(idlePollMs / 1000)}s poll${stuckDetector ? ", FLY-195 stuck detection ON" : ", FLY-195 stuck detection OFF (FLYWHEEL_STUCK_DETECT=0)"})`,

@@ -79,6 +79,21 @@ export interface IdleWatchdogConfig {
 	runnerQuotaScan?: (session: Session, pane: string) => void | Promise<void>;
 }
 
+export type IdleWatchdogPollResult = "ok" | "error";
+
+export interface IdleWatchdogHealth {
+	timerRunning: boolean;
+	pollIntervalMs: number | null;
+	pollInProgress: boolean;
+	lastPollAt: string | null;
+	lastPollResult: IdleWatchdogPollResult | null;
+	activeRunningSessions: number | null;
+}
+
+export interface IdleWatchdogHealthProvider {
+	health(): IdleWatchdogHealth;
+}
+
 type IdleStatus = "waiting" | "idle" | "unknown";
 
 interface SessionIdleState {
@@ -92,6 +107,9 @@ export class RunnerIdleWatchdog {
 	private stateMap = new Map<string, SessionIdleState>();
 	private timerHandle: ReturnType<typeof setInterval> | null = null;
 	private polling = false;
+	private lastPollAt: string | null = null;
+	private lastPollResult: IdleWatchdogPollResult | null = null;
+	private activeRunningSessions: number | null = null;
 	private statusQuery: ReturnType<typeof createStatusQuery>;
 
 	constructor(private config: IdleWatchdogConfig) {
@@ -122,6 +140,17 @@ export class RunnerIdleWatchdog {
 		this.statusQuery.stopEviction();
 	}
 
+	health(): IdleWatchdogHealth {
+		return {
+			timerRunning: this.timerHandle !== null,
+			pollIntervalMs: this.config.pollIntervalMs,
+			pollInProgress: this.polling,
+			lastPollAt: this.lastPollAt,
+			lastPollResult: this.lastPollResult,
+			activeRunningSessions: this.activeRunningSessions,
+		};
+	}
+
 	/** Exposed for testing — runs one poll cycle. */
 	async pollOnce(): Promise<void> {
 		return this.poll();
@@ -134,6 +163,7 @@ export class RunnerIdleWatchdog {
 			const sessions = this.config.store
 				.getActiveSessions()
 				.filter((s) => s.status === "running");
+			this.activeRunningSessions = sessions.length;
 
 			// Evict stale entries for sessions no longer active
 			const activeIds = new Set(sessions.map((s) => s.execution_id));
@@ -152,6 +182,7 @@ export class RunnerIdleWatchdog {
 			for (const session of sessions) {
 				await this.checkSession(session);
 			}
+			this.lastPollResult = "ok";
 		} catch (err) {
 			// FLY-639: the proven Bridge crash path. `getActiveSessions()` is the one
 			// StateStore touch above the per-session try/catch; a sql.js corruption
@@ -159,6 +190,8 @@ export class RunnerIdleWatchdog {
 			// mismatch") thrown here used to reject this un-awaited poll() →
 			// unhandled rejection → Bridge exit 1. Contain it: log, attempt a
 			// best-effort StateStore self-heal, and skip this cycle.
+			this.lastPollResult = "error";
+			this.activeRunningSessions = null;
 			console.warn(
 				"[IdleWatchdog] poll error (skipping cycle, Bridge stays up):",
 				err instanceof Error ? err.message : String(err),
@@ -168,6 +201,7 @@ export class RunnerIdleWatchdog {
 				this.config.store.recoverFromCorruption(err);
 			}
 		} finally {
+			this.lastPollAt = new Date().toISOString();
 			this.polling = false;
 		}
 	}
