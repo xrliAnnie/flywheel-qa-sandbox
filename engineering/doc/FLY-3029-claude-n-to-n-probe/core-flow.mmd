@@ -1,0 +1,12 @@
+flowchart LR
+    A["Design<br/>只定义单行负载"] --> B{"Implement preflight<br/>probe 是否已有可信来源"}
+    B -->|"不存在"| C["精确追加一行"]
+    B -->|"前一 body 已写"| D["从未完成步骤续跑"]
+    B -->|"main 已有或来源不明"| X["停止并报告冲突"]
+    C --> E["Probe commit<br/>记录独立 SHA"]
+    D --> E
+    E --> F["Progress + Push<br/>cursor 与 SHA 持久化"]
+    F --> G["DAG handoff<br/>同一任务进入下一节点"]
+    G --> H["FLY-2919 driver receipt<br/>核对存活、续跑、回 thread"]
+    H -->|"四项都成立"| I["QA 判定"]
+    H -->|"任一证据缺失"| J["不宣称通过"]
