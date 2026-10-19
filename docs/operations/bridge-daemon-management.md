@@ -45,6 +45,106 @@ it on crash (throttled to one restart per 30 s).
 the plist is loaded; otherwise it falls back to the legacy `nohup` branch and
 logs a warning.
 
+## Chat-thread trigger configuration (FLY-147)
+
+These switches are independent. Edit `~/.flywheel/.env`, then restart Bridge;
+the running process does not reload them dynamically.
+
+| Variable | Scope | Required companion configuration |
+|----------|-------|----------------------------------|
+| `TEAMLEAD_CHAT_THREADS_ENABLED=true` | Automatic/background create-or-reuse on `session_started` for every `sessionRole` | Lead `chatChannel`; Lead/global Discord bot token |
+| `TEAMLEAD_API_TOKEN=<secret>` | Authenticates Bridge API calls; required for manual create/register/archive writes | Callers send `Authorization: Bearer ...`; manual create also needs `LINEAR_API_KEY` and Discord config |
+| `TEAMLEAD_REPLY_BY_ISSUE_ENABLED=true` | Enables `POST /api/chat-threads/send`; on a mapping miss, `/send` may create the thread | `TEAMLEAD_API_TOKEN` is mandatory (Bridge fails startup otherwise), plus Linear + Discord config |
+
+`TEAMLEAD_CHAT_THREADS_ENABLED=false` disables only automatic/background
+creation. It does not disable authenticated manual create, send, lookup, or
+archive routes. The two GET lookup routes read local mappings and are protected
+by Bearer auth whenever `TEAMLEAD_API_TOKEN` is configured.
+
+Use placeholder variables for smoke tests; never paste real tokens into docs or
+shell history. The issue must already exist in Linear and belong to a configured
+project/Lead channel.
+
+```bash
+export BRIDGE_URL="http://localhost:9876"
+export ISSUE_IDENTIFIER="FLY-EXAMPLE"
+export PROJECT_NAME="Flywheel"
+export LEAD_ID="product-lead"
+export CHAT_CHANNEL="discord-channel-id"
+```
+
+### Smoke 1 — manual create while automatic creation is off
+
+Set `TEAMLEAD_CHAT_THREADS_ENABLED=false`, keep `TEAMLEAD_API_TOKEN` and the
+Linear/Discord configuration present, restart Bridge, then:
+
+```bash
+PAYLOAD=$(jq -n \
+  --arg issueIdentifier "$ISSUE_IDENTIFIER" \
+  --arg channelId "$CHAT_CHANNEL" \
+  --arg leadId "$LEAD_ID" \
+  --arg projectName "$PROJECT_NAME" \
+  '{issueIdentifier: $issueIdentifier, channelId: $channelId, leadId: $leadId, projectName: $projectName}')
+
+curl -sS -X POST "$BRIDGE_URL/api/chat-threads/create" \
+  -H "Authorization: Bearer $TEAMLEAD_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "$PAYLOAD"
+# Expect 200: {"threadId":"...","created":true|false}
+```
+
+Repeat the call and expect `created:false` for the same issue/channel.
+
+### Smoke 2 — automatic creation for any Runner role
+
+Set `TEAMLEAD_CHAT_THREADS_ENABLED=true`, restart Bridge, and use a disposable
+issue with the normal run-start API. `designer` is intentional; `main`, `qa`,
+and custom roles follow the same `session_started` path.
+
+```bash
+START=$(jq -n \
+  --arg issueId "$ISSUE_IDENTIFIER" \
+  --arg projectName "$PROJECT_NAME" \
+  '{issueId: $issueId, projectName: $projectName, sessionRole: "designer"}' |
+  curl -sS -X POST "$BRIDGE_URL/api/runs/start" \
+    -H "Authorization: Bearer $TEAMLEAD_API_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d @-)
+
+EXECUTION_ID=$(printf '%s' "$START" | jq -r '.executionId')
+SESSION=$(curl -sS "$BRIDGE_URL/api/sessions/$EXECUTION_ID" \
+  -H "Authorization: Bearer $TEAMLEAD_API_TOKEN")
+ISSUE_KEY=$(printf '%s' "$SESSION" | jq -r '.issue_id')
+
+curl -sS "$BRIDGE_URL/api/chat-threads?issueId=$ISSUE_KEY&channelId=$CHAT_CHANNEL" \
+  -H "Authorization: Bearer $TEAMLEAD_API_TOKEN"
+# Expect 200 with a non-null threadId after session_started is processed.
+```
+
+### Smoke 3 — reply-by-issue while automatic creation is off or on
+
+Set `TEAMLEAD_REPLY_BY_ISSUE_ENABLED=true`, restart Bridge, then:
+
+```bash
+PAYLOAD=$(jq -n \
+  --arg issueIdentifier "$ISSUE_IDENTIFIER" \
+  --arg channelId "$CHAT_CHANNEL" \
+  --arg leadId "$LEAD_ID" \
+  --arg projectName "$PROJECT_NAME" \
+  --arg text "FLY-147 chat-thread smoke" \
+  '{issueIdentifier: $issueIdentifier, channelId: $channelId, leadId: $leadId, projectName: $projectName, text: $text}')
+
+curl -sS -X POST "$BRIDGE_URL/api/chat-threads/send" \
+  -H "Authorization: Bearer $TEAMLEAD_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "$PAYLOAD"
+# Expect 200 with threadId/messageIds. A row miss may return created:true.
+```
+
+For manual writes, 503 means a required API token, Linear key, or Discord bot
+token is unavailable. For `/send`, 404 means reply-by-issue is disabled (or the
+project is unknown), not that automatic creation is disabled.
+
 ## Troubleshooting — confirm env actually loaded
 
 After a restart, verify the new process inherited the expected environment:

@@ -62,6 +62,60 @@ function makeEnvelope(overrides: Partial<EventEnvelope> = {}): EventEnvelope {
 	};
 }
 
+describe("DirectEventSink — FLY-147 role-agnostic chat thread creation", () => {
+	let store: StateStore;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	afterEach(() => {
+		store.close();
+	});
+
+	it.each(["main", "qa", "designer", "custom-role"])(
+		"auto-creates the issue thread for sessionRole=%s",
+		async (sessionRole) => {
+			const ensureChatThread = vi.fn(async () => ({
+				created: true,
+				threadId: `thread-${sessionRole}`,
+			}));
+			const creator = {
+				ensureChatThread,
+			} as unknown as import("../bridge/ChatThreadCreator.js").ChatThreadCreator;
+			const sink = new DirectEventSink(
+				store,
+				makeConfig({ chatThreadsEnabled: true }),
+				testProjects,
+				undefined,
+				undefined,
+				creator,
+			);
+
+			await sink.emitStarted(
+				makeEnvelope({
+					executionId: `exec-${sessionRole}`,
+					sessionRole,
+					labels: ["Product"],
+				}),
+			);
+
+			expect(ensureChatThread).toHaveBeenCalledOnce();
+			expect(ensureChatThread).toHaveBeenCalledWith(
+				expect.objectContaining({
+					issueId: "issue-1",
+					issueIdentifier: "GEO-100",
+					chatChannelId: "chat-ch-1",
+					leadId: "product-lead",
+				}),
+			);
+			expect(store.getSession(`exec-${sessionRole}`)?.session_role).toBe(
+				sessionRole,
+			);
+		},
+	);
+});
+
 describe("DirectEventSink — GEO-151 ProofShot config persistence", () => {
 	let store: StateStore;
 
