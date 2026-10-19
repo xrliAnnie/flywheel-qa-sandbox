@@ -1,0 +1,18 @@
+flowchart TD
+    T0["Task 0 盘点<br/>TURN=yours · 树干净 · 读 Lead 回复"] --> T1["Task 1 带上 subject fixture<br/>git cherry-pick 01838552f<br/>断言：14 文件、与 r17 零 diff"]
+    T1 --> T2["Task 2 锁文件 + 安装 + 基线<br/>pnpm-lock 只多 6 行 importer<br/>基线 34/34 绿 · verify.mjs 报 10 个旧值文件"]
+    T2 --> T3["Task 3 RED 只改 6 个测试文件<br/>perl 精确替换 (?![.\\d])<br/>期望 25 fail / 9 pass"]
+    T3 --> T4["Task 4 GREEN 只改 4 个 model.ts<br/>34/34 绿 · verify.mjs passed:true newMatches=38"]
+    T4 --> G{"负向守卫<br/>index.ts / unrelated.test.ts /<br/>package.json / verify.mjs<br/>与 subject commit 零 diff？<br/>再跑一次替换树仍干净？"}
+    G -- 是 --> T5["Task 5 里程碑 + 账本 5/5<br/>push · gh pr create (base main)"]
+    G -- 否 --> STOP["STOP → flywheel-comm ask Lead<br/>不猜、不改守卫文件"]
+    T5 --> F["push 之后只读<br/>head == PR headRefOid · 等 CI · 上报 · complete"]
+    F --> CI["完整套件由 exact-head PR CI 证明<br/>本机绝不裸跑 pnpm test"]
+    classDef red fill:#fff1f0,stroke:#ff3b30,color:#1d1d1f
+    classDef green fill:#e8f9ee,stroke:#34c759,color:#1d1d1f
+    classDef blue fill:#e9f2ff,stroke:#007aff,color:#1d1d1f
+    classDef amber fill:#fff4e5,stroke:#ff9500,color:#1d1d1f
+    class T3 red
+    class T4,CI green
+    class T0,T1,T2,T5,F blue
+    class G,STOP amber
