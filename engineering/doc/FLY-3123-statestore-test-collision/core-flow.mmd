@@ -1,0 +1,18 @@
+flowchart LR
+    A["PR #1408<br/>StateStore 变为纯类型导入"] --> C{"合并后的测试执行"}
+    B["PR #1379<br/>新测试仍调用 StateStore.create"] --> C
+    C --> D["确定性失败<br/>ReferenceError"]
+    D --> E["仅替换一个构造调用"]
+    E --> F["createGreenHandoffStore"]
+    F --> G["相同测试步骤与断言"]
+    G --> H["单文件全绿"]
+    H --> I["精确头 CI OK"]
+
+    classDef source fill:#f5f5f7,stroke:#86868b,color:#1d1d1f
+    classDef bad fill:#fff2f1,stroke:#ff3b30,color:#7a1b14
+    classDef fix fill:#eef7ff,stroke:#007aff,color:#15395b
+    classDef good fill:#eef9f0,stroke:#34c759,color:#1f5c2c
+    class A,B source
+    class C,D bad
+    class E,F fix
+    class G,H,I good
