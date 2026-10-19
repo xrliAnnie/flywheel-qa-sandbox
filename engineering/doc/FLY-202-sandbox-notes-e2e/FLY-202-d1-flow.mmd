@@ -1,0 +1,12 @@
+flowchart TD
+  A["Sandbox Runner receives FLY-202"] --> B["Acquire TURN and read branch plus PR 194"]
+  B --> C["Run V1-V9 checks against current sources"]
+  C -->|all pass| D["Keep sandbox-notes.md byte-identical"]
+  C -->|one or more fail| E["Repair only the failed paragraph, row, bullet, or listing"]
+  E --> C
+  D --> F["Write final progress ledger"]
+  F --> G["Push feature branch fast-forward"]
+  G --> H{"Local HEAD, remote branch, and PR head are identical?"}
+  H -->|no| X["Stop and report evidence to Lead"]
+  H -->|yes| I["Hand off to independent QA; keep PR open"]
+  B -->|dirty, diverged, or wrong PR| X
