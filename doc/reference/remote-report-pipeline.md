@@ -2,7 +2,7 @@
 
 **Issue**: FLY-203
 **Since**: v1.32.0
-**Plan**: `doc/engineer/plan/inprogress/v1.32.0-FLY-203-remote-report-pipeline.md`
+**Plan**: `doc/engineer/plan/archive/v1.32.0-FLY-203-remote-report-pipeline.md`
 
 ## 这是什么
 
@@ -74,7 +74,7 @@ sequenceDiagram
 
 - "Anyone with link"：URL 路径含 128-bit 随机 token，不可猜（等价 signed URL 强度）；域名带随机后缀
 - 根路径/错误 token 404，无目录列表；`robots.txt` Disallow all + `noindex` meta 注入
-- CSP meta 注入（`default-src 'none'; style-src 'unsafe-inline'; img-src data:`）—— 防报告内意外 `<script>`/外链跑起来
+- 默认注入严格 CSP（`default-src 'none'; style-src 'unsafe-inline'; img-src data:`），报告内脚本和外链不会执行。需要自有交互脚本的报告必须显式使用 `<script nonce="__CSP_NONCE__">`：发布器会为每份报告生成独立 nonce，并只放行该 nonce 的脚本。`__CSP_NONCE__` 会在整个 HTML 文档中替换，不只处理生成器自己的 `<script>` 标签；因此使用 nonce opt-in 时，HTML-escape 所有不可信内容是防止攻击者注入同一占位符并获得有效 nonce 的安全边界，不是可选建议。若报告 `<head>` 已含自带的 `<meta http-equiv="Content-Security-Policy">`，发布器会跳过默认 CSP 注入但仍执行 nonce 替换，生成器必须确保自带策略只放行预期脚本。事件绑定必须使用 `addEventListener`（inline handler 不受 nonce 保护）
 - Retention：**链接 7 天后自动失效**(Annie 拍的隐私要求;在下一次发布的重部署中摘除 —— 无新增定时器,挂在 publish 动作上)+ 最多 100 份 / 10MB 滚动上限,谁先到谁生效
 
 ## 注意
