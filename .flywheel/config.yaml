@@ -6,22 +6,25 @@ linear:
   team_id: FLY
 
 runners:
-  default: claude
+  default: codex
   available:
     claude:
       type: claude
       model: sonnet
+    codex:
+      type: openai
+      model: gpt-5.6-sol
 
 roles:
   runner:
-    backend: claude-tmux
-    model: claude-opus-4-8[1m]
+    backend: codex-tmux
+    model: gpt-5.6-sol
 
 teams:
   - name: default
     orchestrators:
       - type: dag
-        runner: claude
+        runner: codex
 
 decision_layer:
   autonomy_level: advisor
