@@ -1,0 +1,21 @@
+sequenceDiagram
+    participant L as Lead 派单(无覆盖)
+    participant S as 选择层
+    participant H as 历史 run 记录
+    participant M as models.json(当前)
+    participant R as 回执
+    rect rgb(255,235,235)
+    note over S,H: 修复前(main)
+    L->>S: start FLY-2405
+    S->>M: 按当前 modelSplit 选 impl_opus
+    S->>H: 查该 issue 全部历史 assignment
+    H-->>S: 旧 policy 的 impl_astra
+    S-->>R: opus (= gpt-6-astra) ✗
+    end
+    rect rgb(232,247,236)
+    note over S,M: 修复后(PR #1381)
+    L->>S: start FLY-2405
+    S->>M: 只读当前 arm / 权重 / bindings
+    S-->>S: 本 run 冻结 assignment
+    S-->>R: opus (= claude-opus-5-5) ✓<br/>跨 vendor 时改用 exact 自标
+    end
