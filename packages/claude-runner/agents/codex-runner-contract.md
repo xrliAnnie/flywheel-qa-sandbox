@@ -111,3 +111,4 @@ assume Claude Code tooling. Translate as follows:
 - **Precedence**: where a repository AGENTS.md, a global AGENTS.md, or a role
   file conflicts with THIS contract or with your dynamic prompt, this
   contract and the dynamic prompt win (FLY-123 §5.5).
+- Sandbox note: runners run only the tests related to their change.

@@ -226,6 +226,10 @@ describe("provisionCodexHome (WS-A)", () => {
 			// three-stage discipline + environment translation present
 			expect(agents).toContain("Three-stage discipline");
 			expect(agents).toContain("Environment Translation");
+			// FLY-3043: the sandbox note is the contract's LAST line — and AGENTS.md is header + contract verbatim
+			expect(agents.trimEnd()).toMatch(
+				/- Sandbox note: runners run only the tests related to their change\.$/,
+			);
 		});
 
 		it("missing contract source → provisioning FAILS LOUD with ZERO residue (no home, no credential on disk)", () => {
