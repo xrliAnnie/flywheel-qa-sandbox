@@ -1,0 +1,9 @@
+vitest:src/alpha/__tests__/model.test.ts	0	pnpm --filter @flywheel/runner-test-discipline-fixture exec vitest run src/alpha/__tests__/model.test.ts	Tests  6 passed (6)
+vitest:src/beta/__tests__/model.test.ts	0	pnpm --filter @flywheel/runner-test-discipline-fixture exec vitest run src/beta/__tests__/model.test.ts	Tests  6 passed (6)
+vitest:src/gamma/__tests__/model.test.ts	0	pnpm --filter @flywheel/runner-test-discipline-fixture exec vitest run src/gamma/__tests__/model.test.ts	Tests  6 passed (6)
+vitest:src/delta/__tests__/model.test.ts	0	pnpm --filter @flywheel/runner-test-discipline-fixture exec vitest run src/delta/__tests__/model.test.ts	Tests  6 passed (6)
+vitest:src/__tests__/literal-only.test.ts	0	pnpm --filter @flywheel/runner-test-discipline-fixture exec vitest run src/__tests__/literal-only.test.ts	Tests  1 passed (1)
+vitest:src/__tests__/static-dependency.test.ts	0	pnpm --filter @flywheel/runner-test-discipline-fixture exec vitest run src/__tests__/static-dependency.test.ts	Tests  1 passed (1)
+vitest:src/__tests__/unrelated.test.ts	0	pnpm --filter @flywheel/runner-test-discipline-fixture exec vitest run src/__tests__/unrelated.test.ts	Tests  8 passed (8)
+vitest:related	0	pnpm --filter @flywheel/runner-test-discipline-fixture exec vitest related <10 changed files> --run	Test Files  7 passed (7) | Tests  34 passed (34)
+verify.mjs	0	node packages/runner-test-discipline-fixture/verify.mjs	{"passed":true,"oldMatches":[],"newMatches":38,"nearValuePreserved":true,"unrelatedValuePreserved":true}
