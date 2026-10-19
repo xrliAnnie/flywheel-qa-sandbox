@@ -1,0 +1,13 @@
+flowchart TD
+  A["Runner 醒来\n(implement 节点)"] --> B{"TURN 是自己的?"}
+  B -- "不是" --> B0["每 60-90 秒再问一次"] --> B
+  B -- "是" --> C["同步分支\n(远端已有旧体提交则续接)"]
+  C --> D{"README 已有探针行?"}
+  D -- "有(换体续干)" --> F["复用旧体的 README 提交"]
+  D -- "没有" --> E["末尾追加一行\nFLY-2919 N-to-N claude-body probe"]
+  E --> F2["单行 commit"]
+  F2 --> G["push + 开 PR\n(已有 PR 则复用)"]
+  F --> G
+  G --> H["核对本地 HEAD == PR head"]
+  H --> I["交卷:complete --route needs_review"]
+  I --> J["回到同一个 Discord thread\nfounder/Lead 决定 ship"]

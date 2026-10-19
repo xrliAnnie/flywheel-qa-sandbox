@@ -1,0 +1,16 @@
+flowchart LR
+  subgraph QA["FLY-2919 N-to-N QA(裁判)"]
+    DR["driver receipt\n(判定死活/换体/thread)"]
+  end
+  subgraph LOAD["FLY-3029 探针负载(被测)"]
+    R["README.md\n末尾 +1 行"]
+    C["commit\nREADME_SHA"]
+    P["PR → main"]
+    T["同一个 Discord thread"]
+  end
+  subgraph DOC["随分支走的过程文档"]
+    X["exploration / research / plan\nprogress 账本 / 本页 HTML"]
+  end
+  R --> C --> P --> T
+  X -. "只进 PR,不进 README" .-> P
+  T -. "交卷证据" .-> DR
