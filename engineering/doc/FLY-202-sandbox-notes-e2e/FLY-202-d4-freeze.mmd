@@ -1,0 +1,12 @@
+flowchart TD
+    A["1 硬断言工作树全净"] --> B["2 写账本 progress 5/5<br/>(最后一笔 commit)"]
+    B --> C["3 git push (fast-forward)<br/>网络失败仅此步内重试一次"]
+    C --> F(["mutation freeze 生效<br/>此后不 commit · 不 push · 不 gh pr edit"])
+    F --> D{"4 PR headRefOid == 本地 HEAD ?"}
+    D -->|"否"| D2["等 10 秒重读一次"]
+    D2 -->|"仍不等"| STOP(["ask Lead + 停止<br/>绝不再 push"])
+    D -->|"是"| E["5 有界轮询 statusCheckRollup 非空<br/>(gh pr checks --watch 在空 rollup 时会立刻退出)"]
+    D2 -->|"相等"| E
+    E --> G["6 gh pr checks --watch 到结束"]
+    G --> H["7 复核 head 不变 · 文件全命中白名单"]
+    H --> I(["按 dispatch route complete<br/>不 merge · 不 approve · 不请求 ship"])
