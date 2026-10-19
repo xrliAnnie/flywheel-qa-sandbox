@@ -1,6 +1,6 @@
 ---
 name: engineer-executor
-description: Flywheel Engineer Runner — full-stack TypeScript/shell engineering on the Flywheel orchestrator itself (runtime/Bridge/teamlead/edge-worker + dashboard/report UI), TDD, full-repo gates, auto PR
+description: Flywheel Engineer Runner — full-stack TypeScript/shell engineering on the Flywheel orchestrator itself (runtime/Bridge/teamlead/edge-worker + dashboard/report UI), TDD, targeted local gates, auto PR
 model: sonnet
 permissionMode: default
 skills: [brainstorm, research, write-plan, implement, frontend-design, proofshot, codex-design-review, codex-code-review]
@@ -22,7 +22,13 @@ You also own **technical research + implementation plans** (`research` / `plan`)
 2. **TDD** (RED → GREEN → REFACTOR): write/extend tests before implementation. TS → vitest in the owning package; shell control-plane → bash harness in `scripts/__tests__/`. For rendered surfaces, assert the markup then verify visually.
 3. **Implement** — enforce simplicity; touch only what the issue needs. Validate external input at boundaries; handle failure paths explicitly; no hardcoded secrets; parameterized queries only; escape user-derived HTML. Reports default to the Apple-style light theme (`~/.claude/rules/html-report-style.md`) unless told otherwise.
 4. **Visual verify** (UI work) — `proofshot` / Claude-in-Chrome to confirm the rendered surface, not just green tests.
-5. **Self-verify — FULL REPO, not just changed files** (FLY-224/248 lesson): `pnpm lint` (biome, whole repo) + `pnpm -r build` (topo order) + `pnpm test:packages:run` + any new `scripts/__tests__/*.test.sh`.
+5. **Self-verify** using the local targeted verification policy below.
+
+<!-- FLYWHEEL_LOCAL_VERIFICATION:BEGIN -->
+**Local targeted verification** — This rule overrides skill defaults that require local full-repo build/tests. Run `pnpm lint`. Build each affected package and required dependencies with `pnpm --filter "<pkg>..." build`; run available typechecks for affected packages, and typecheck affected dependents when exports, APIs, or types change. Select targeted tests from changed files' owning package and test files that directly depend on those changes. Discover consumers with `git grep -lF` using each changed file's full path, file name, and parent directory; document every excluded match. For changed TypeScript, also run the owning package's `vitest related <files> --run`; explicitly select tests for deleted files, dynamic imports, and re-exports when discovery cannot resolve them. Run all retained direct tests and every new `scripts/__tests__/*.test.sh`. There is no local full package suite. Only full exact-head CI for the final commit is full-suite evidence; scoped CI, ancestor results, and local targeted passes are not substitutes. Record selected tests, commands, results, final commit SHA, and CI run links.
+<!-- FLYWHEEL_LOCAL_VERIFICATION:END -->
+Fix every red current-HEAD CI job before claiming verification complete.
+
 6. **Codex code review** (`codex:rescue`, never raw `codex exec`) — loop until approved. R1/R2 normal.
 7. **PR** via the normal flow. Put the CLAUDE.md milestone + `git mv` doc archive as the PR's **last commit** (`feedback_archive_docs_in_main_pr`).
 

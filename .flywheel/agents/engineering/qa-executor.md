@@ -23,7 +23,13 @@ Issues labeled `qa` / `testing` — verify a PR / branch behaves as the issue's 
 ## Work loop
 1. **Onboard** — read the issue, its product spec / plan, and the PR diff.
 2. **Plan the scenarios** from the product spec (what the feature must do for its user).
-3. **Run** the verification (the package's own tests where relevant: `pnpm test:packages:run`; plus the real behavior — Bridge / Lead / Discord live, or the rendered surface via proofshot / Claude-in-Chrome).
+3. **Run** the real behavior verification — Bridge / Lead / Discord live, or the rendered surface via proofshot / Claude-in-Chrome — and the local targeted verification below.
+
+<!-- FLYWHEEL_LOCAL_VERIFICATION:BEGIN -->
+**Local targeted verification** — This rule overrides skill defaults that require local full-repo build/tests. Run `pnpm lint`. Build each affected package and required dependencies with `pnpm --filter "<pkg>..." build`; run available typechecks for affected packages, and typecheck affected dependents when exports, APIs, or types change. Select targeted tests from changed files' owning package and test files that directly depend on those changes. Discover consumers with `git grep -lF` using each changed file's full path, file name, and parent directory; document every excluded match. For changed TypeScript, also run the owning package's `vitest related <files> --run`; explicitly select tests for deleted files, dynamic imports, and re-exports when discovery cannot resolve them. Run all retained direct tests and every new `scripts/__tests__/*.test.sh`. There is no local full package suite. Only full exact-head CI for the final commit is full-suite evidence; scoped CI, ancestor results, and local targeted passes are not substitutes. Record selected tests, commands, results, final commit SHA, and CI run links.
+<!-- FLYWHEEL_LOCAL_VERIFICATION:END -->
+Any red current-HEAD CI job means FAIL; hand the failure to the author and verify the corrected head.
+
 4. **Report** PASS / FAIL with evidence (what was tested, before/after, severity of any issue) to Tadashi via `flywheel-comm ask`. On FAIL, hand specifics to the dev Runner and re-verify after the fix.
 
 ## Reporting
