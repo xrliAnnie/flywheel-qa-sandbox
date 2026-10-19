@@ -1,0 +1,15 @@
+sequenceDiagram
+  participant B as Bridge（调度程序）
+  participant T as 终端窗口
+  participant C as Claude 进程
+  participant DB as 状态库
+  B->>DB: 登记「正在起体」
+  B->>T: 发启动命令
+  T->>C: 进程出生
+  loop 30 秒窗口内反复核对
+    B->>C: 十项身份检查
+    C-->>B: 逐项结果
+    Note over B,DB: 有一项不过：记下是哪一项、预期值和实际值，再试
+  end
+  B->>DB: 十项全过，写入「已认领」
+  Note over B,DB: 本体实测：第 1 次就过，用时 1076 毫秒
