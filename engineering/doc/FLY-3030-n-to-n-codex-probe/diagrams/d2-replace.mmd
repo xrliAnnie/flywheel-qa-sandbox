@@ -1,0 +1,20 @@
+sequenceDiagram
+    autonumber
+    participant D as FLY-2919 驱动器
+    participant E as 引擎 / Bridge
+    participant A as 执行体 A（旧体）
+    participant B as 执行体 B（新体）
+    participant G as git + GitHub（唯一真相）
+    E->>A: 派节点
+    A->>A: Task S：前台 sleep 780 秒
+    D-->>A: 拿掉窗口（进程仍活着）
+    E->>E: 660 秒窗口内不判死
+    A->>G: Task 1–2：追加 claude 行并提交
+    D-->>A: 杀掉进程（模拟死体）
+    E->>E: 判死体 → 当场终结 A
+    E->>B: 换体，同一 thread 续干
+    B->>G: Task S / 0：读 README、分支、远端、PR
+    G-->>B: claude 行已在 → 跳过 sleep 与追加
+    B->>G: Task 3–4：推送、更新 PR、milestone 冻结
+    B->>B: Task 5：对冻结头做代码评审
+    B->>E: ask --report + complete needs_review（交卷回 thread）
